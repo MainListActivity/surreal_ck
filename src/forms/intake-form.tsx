@@ -101,7 +101,9 @@ export function buildSubmissionTransaction(
   return {
     query: `BEGIN TRANSACTION;
       LET $record = CREATE type::table($tableName) CONTENT $recordData;
-      CREATE intake_submission CONTENT $submissionData RETURN NONE;
+      LET $submission = CREATE intake_submission CONTENT $submissionData;
+      RELATE $workspace->workspace_has_submission->$submission;
+      RELATE $submission->submission_uses_form->$formDefinition;
       COMMIT TRANSACTION`,
     params: {
       tableName: targetTable,
@@ -111,12 +113,12 @@ export function buildSubmissionTransaction(
         ...payload,
       },
       submissionData: {
-        workspace: workspaceId,
-        form_definition: formDefinitionId,
         submission_token: submissionToken,
         payload,
         unverified: false,
       },
+      workspace: workspaceId,
+      formDefinition: formDefinitionId,
     },
   };
 }
@@ -184,7 +186,17 @@ export function IntakeForm({ db, formSlug, workspaceId }: IntakeFormProps) {
     dispatch({ type: 'load-start' });
     try {
       const [rows] = await db.query<[FormDefinition[]]>(
-        'SELECT * FROM form_definition WHERE workspace = $ws AND slug = $slug LIMIT 1',
+        `SELECT
+           out.id AS id,
+           out.title AS title,
+           out.slug AS slug,
+           out.fields AS fields,
+           out.conditional_rules AS conditional_rules,
+           out.auto_relations AS auto_relations,
+           out->form_targets_entity_type->entity_type[0].key AS target_table
+         FROM workspace_has_form_definition
+         WHERE in = $ws AND out.slug = $slug
+         LIMIT 1`,
         { ws: workspaceId, slug: formSlug },
       );
       const formDef = rows?.[0];

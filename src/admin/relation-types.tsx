@@ -71,7 +71,15 @@ export function RelationTypesPanel({ db, workspaceId }: RelationTypesPanelProps)
     dispatch({ type: 'load-start' });
     try {
       const [rows] = await db.query<[RelationType[]]>(
-        'SELECT * FROM relation_type WHERE workspace = $ws ORDER BY label',
+        `SELECT
+           out.id AS id,
+           out.key AS key,
+           out.label AS label,
+           out->relation_from_type->entity_type[0].key AS from_entity_type,
+           out->relation_to_type->entity_type[0].key AS to_entity_type
+         FROM workspace_has_relation_type
+         WHERE in = $ws
+         ORDER BY out.label`,
         { ws: workspaceId },
       );
       dispatch({ type: 'load-ok', items: rows ?? [] });
@@ -90,12 +98,46 @@ export function RelationTypesPanel({ db, workspaceId }: RelationTypesPanelProps)
     dispatch({ type: 'create-start' });
 
     try {
+      const [fromRows] = await db.query<[Array<{ id: string }> ]>(
+        'SELECT out.id AS id FROM workspace_has_entity_type WHERE in = $ws AND out.key = $key LIMIT 1',
+        { ws: workspaceId, key: fromType },
+      );
+      const [toRows] = await db.query<[Array<{ id: string }> ]>(
+        'SELECT out.id AS id FROM workspace_has_entity_type WHERE in = $ws AND out.key = $key LIMIT 1',
+        { ws: workspaceId, key: toType },
+      );
+      const fromEntityId = fromRows?.[0]?.id;
+      const toEntityId = toRows?.[0]?.id;
+      if (!fromEntityId || !toEntityId) {
+        throw new Error('Both source and target entity types must exist before creating a relationship type.');
+      }
+
       const [created] = await db.query<[RelationType[]]>(
-        `INSERT INTO relation_type {
-           workspace: $ws, key: $key, label: $label,
-           from_entity_type: $from, to_entity_type: $to
-         } RETURN *`,
-        { ws: workspaceId, key, label, from: fromType, to: toType },
+        `LET $relation = (INSERT INTO relation_type {
+           workspace_key: $wsKey,
+           key: $key,
+           label: $label
+         } RETURN AFTER)[0];
+         RELATE $ws->workspace_has_relation_type->$relation;
+         RELATE $relation->relation_from_type->$fromEntity;
+         RELATE $relation->relation_to_type->$toEntity;
+         RETURN {
+           id: $relation.id,
+           key: $relation.key,
+           label: $relation.label,
+           from_entity_type: $fromKey,
+           to_entity_type: $toKey
+         };`,
+        {
+          ws: workspaceId,
+          wsKey: workspaceId,
+          key,
+          label,
+          fromEntity: fromEntityId,
+          toEntity: toEntityId,
+          fromKey: fromType,
+          toKey: toType,
+        },
       );
       const item = created?.[0];
       if (!item) throw new Error('relation_type record not returned');
@@ -110,7 +152,13 @@ export function RelationTypesPanel({ db, workspaceId }: RelationTypesPanelProps)
 
   async function handleDelete(item: RelationType) {
     try {
-      await db.query('DELETE relation_type WHERE id = $id AND workspace = $ws', { id: item.id, ws: workspaceId });
+      await db.query(
+        `DELETE relation_from_type WHERE in = $id;
+         DELETE relation_to_type WHERE in = $id;
+         DELETE workspace_has_relation_type WHERE in = $ws AND out = $id;
+         DELETE relation_type WHERE id = $id AND workspace_key = $wsKey`,
+        { id: item.id, ws: workspaceId, wsKey: workspaceId },
+      );
       dispatch({ type: 'delete-ok', id: item.id });
     } catch {
       // non-fatal

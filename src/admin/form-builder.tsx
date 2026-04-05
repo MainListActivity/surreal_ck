@@ -93,7 +93,15 @@ export function FormBuilderPanel({ db, workspaceId }: FormBuilderPanelProps) {
     dispatch({ type: 'load-start' });
     try {
       const [rows] = await db.query<[FormDefinition[]]>(
-        'SELECT * FROM form_definition WHERE workspace = $ws ORDER BY title',
+        `SELECT
+           out.id AS id,
+           out.title AS title,
+           out.slug AS slug,
+           out.fields AS fields,
+           out->form_targets_entity_type->entity_type[0].key AS target_table
+         FROM workspace_has_form_definition
+         WHERE in = $ws
+         ORDER BY out.title`,
         { ws: workspaceId },
       );
       dispatch({ type: 'load-ok', items: rows ?? [] });
@@ -140,13 +148,34 @@ export function FormBuilderPanel({ db, workspaceId }: FormBuilderPanelProps) {
     dispatch({ type: 'save-start' });
 
     try {
+      const [targetRows] = await db.query<[Array<{ id: string }> ]>(
+        'SELECT out.id AS id FROM workspace_has_entity_type WHERE in = $ws AND out.key = $key LIMIT 1',
+        { ws: workspaceId, key: target },
+      );
+      const targetEntityId = targetRows?.[0]?.id;
+      if (!targetEntityId) {
+        throw new Error('Target entity type must exist before creating a form.');
+      }
+
       const [created] = await db.query<[FormDefinition[]]>(
-        `INSERT INTO form_definition {
-           workspace: $ws, title: $title, slug: $slug,
-           target_table: $target, fields: $fields,
-           conditional_rules: [], auto_relations: []
-         } RETURN *`,
-        { ws: workspaceId, title, slug, target, fields },
+        `LET $form = (INSERT INTO form_definition {
+           workspace_key: $wsKey,
+           title: $title,
+           slug: $slug,
+           fields: $fields,
+           conditional_rules: [],
+           auto_relations: []
+         } RETURN AFTER)[0];
+         RELATE $ws->workspace_has_form_definition->$form;
+         RELATE $form->form_targets_entity_type->$targetEntity;
+         RETURN {
+           id: $form.id,
+           title: $form.title,
+           slug: $form.slug,
+           target_table: $targetKey,
+           fields: $form.fields
+         };`,
+        { ws: workspaceId, wsKey: workspaceId, title, slug, targetEntity: targetEntityId, targetKey: target, fields },
       );
       const item = created?.[0];
       if (!item) throw new Error('form_definition record not returned');
@@ -163,7 +192,12 @@ export function FormBuilderPanel({ db, workspaceId }: FormBuilderPanelProps) {
 
   async function handleDelete(item: FormDefinition) {
     try {
-      await db.query('DELETE form_definition WHERE id = $id AND workspace = $ws', { id: item.id, ws: workspaceId });
+      await db.query(
+        `DELETE form_targets_entity_type WHERE in = $id;
+         DELETE workspace_has_form_definition WHERE in = $ws AND out = $id;
+         DELETE form_definition WHERE id = $id AND workspace_key = $wsKey`,
+        { id: item.id, ws: workspaceId, wsKey: workspaceId },
+      );
       dispatch({ type: 'delete-ok', id: item.id });
     } catch {
       // non-fatal

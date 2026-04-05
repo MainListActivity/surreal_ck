@@ -64,24 +64,28 @@ export async function provisionTemplate(
 
   try {
     // Step 1: Create workspace record.
-    const [ws] = await db.query<[{ id: string }[]]>(
-      'INSERT INTO workspace { name: $name, slug: $slug, owner: $owner } RETURN id',
+    const [ws] = await db.query<[string[]]>(
+      `LET $workspace = (INSERT INTO workspace { name: $name, slug: $slug } RETURN AFTER)[0];
+       RELATE $owner->owns_workspace->$workspace;
+       RETURN $workspace.id`,
       { name: workspaceName, slug: workspaceSlug, owner: ownerUserId },
     );
-    if (!ws?.[0]?.id) {
+    if (!ws?.[0]) {
       return { ok: false, step: 'workspace-create', message: 'Failed to create workspace record.' };
     }
-    workspaceId = ws[0].id;
+    workspaceId = ws[0];
 
     // Step 2: Create workbook record.
-    const [wb] = await db.query<[{ id: string }[]]>(
-      'INSERT INTO workbook { workspace: $ws, name: $name, template_key: $tk } RETURN id',
+    const [wb] = await db.query<[string[]]>(
+      `LET $workbook = (INSERT INTO workbook { name: $name, template_key: $tk } RETURN AFTER)[0];
+       RELATE $ws->workspace_has_workbook->$workbook;
+       RETURN $workbook.id`,
       { ws: workspaceId, name: TEMPLATE_NAMES[templateKey], tk: templateKey },
     );
-    if (!wb?.[0]?.id) {
+    if (!wb?.[0]) {
       return { ok: false, step: 'workbook-create', message: 'Failed to create workbook record.' };
     }
-    workbookId = wb[0].id;
+    workbookId = wb[0];
 
     // Step 3: Run the template provisioning script.
     // Variables $ws and $wb are bound as SurrealDB record references.
@@ -114,19 +118,18 @@ async function compensatingCleanup(
 ): Promise<void> {
   try {
     if (workbookId) {
-      await db.query('DELETE $wb', { wb: workbookId });
+      await db.query('DELETE workspace_has_workbook WHERE out = $wb; DELETE $wb', { wb: workbookId });
     }
     if (workspaceId) {
-      // Remove entity types, relation types, form definitions tied to this workspace.
-      await db.query(
-        'DELETE entity_type WHERE workspace = $ws; DELETE relation_type WHERE workspace = $ws; DELETE form_definition WHERE workspace = $ws; DELETE workspace_member WHERE workspace = $ws; DELETE $ws',
-        { ws: workspaceId },
-      );
+      await db.query('DELETE form_targets_entity_type WHERE in INSIDE (SELECT VALUE out FROM workspace_has_form_definition WHERE in = $ws)', { ws: workspaceId });
+      await db.query('DELETE relation_from_type WHERE in INSIDE (SELECT VALUE out FROM workspace_has_relation_type WHERE in = $ws); DELETE relation_to_type WHERE in INSIDE (SELECT VALUE out FROM workspace_has_relation_type WHERE in = $ws)', { ws: workspaceId });
+      await db.query('DELETE workspace_has_form_definition WHERE in = $ws; DELETE workspace_has_relation_type WHERE in = $ws; DELETE workspace_has_entity_type WHERE in = $ws; DELETE workspace_has_member WHERE in = $ws; DELETE owns_workspace WHERE out = $ws', { ws: workspaceId });
+      await db.query('DELETE entity_type WHERE workspace_key = $wsKey; DELETE relation_type WHERE workspace_key = $wsKey; DELETE form_definition WHERE workspace_key = $wsKey; DELETE workspace_member WHERE workspace_key = $wsKey; DELETE $ws', { wsKey: workspaceId, ws: workspaceId });
     }
   } catch {
     // Cleanup failure is non-fatal — log to client_error in a fire-and-forget manner.
     void db
-      .query('INSERT INTO client_error { error_code: "CLEANUP_FAILED", message: $msg }', {
+      .query('CREATE client_error CONTENT { error_code: "CLEANUP_FAILED", message: $msg }', {
         msg: `Compensating cleanup failed for workspace=${workspaceId ?? 'unknown'}`,
       })
       .catch(() => undefined);

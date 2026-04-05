@@ -26,12 +26,12 @@ describe('buildSubmissionTransaction', () => {
         ...payload,
       },
       submissionData: {
-        workspace: 'workspace:legal',
-        form_definition: 'form_definition:intake',
         submission_token: 'submission-1',
         payload,
         unverified: false,
       },
+      workspace: 'workspace:legal',
+      formDefinition: 'form_definition:intake',
     });
   });
 });

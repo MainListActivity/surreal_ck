@@ -4,13 +4,13 @@ export interface Workspace {
   id: string;
   name: string;
   slug: string;
-  owner: string;
+  owner?: string;
   created_at: string;
 }
 
 export interface Workbook {
   id: string;
-  workspace: string;
+  workspace?: string;
   name: string;
   template_key?: string;
   last_viewed_sheet?: string;
@@ -20,7 +20,7 @@ export interface Workbook {
 
 export interface WorkspaceMember {
   id: string;
-  workspace: string;
+  workspace?: string;
   user?: string;
   email: string;
   role: WorkspaceRole;
@@ -29,8 +29,8 @@ export interface WorkspaceMember {
 
 export interface MutationRecord {
   id: string;
-  workbook: string;
-  workspace: string;
+  workbook?: string;
+  workspace?: string;
   command_id: string;
   params: Record<string, unknown>;
   client_id: string;
@@ -40,8 +40,8 @@ export interface MutationRecord {
 
 export interface SnapshotRecord {
   id: string;
-  workbook: string;
-  workspace: string;
+  workbook?: string;
+  workspace?: string;
   data: Record<string, unknown>;
   coordinator_client_id: string;
   mutation_watermark?: string;
@@ -50,7 +50,7 @@ export interface SnapshotRecord {
 
 export interface FormDefinition {
   id: string;
-  workspace: string;
+  workspace?: string;
   title: string;
   slug: string;
   target_table: string;

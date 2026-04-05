@@ -3,8 +3,6 @@ import { Table } from 'surrealdb';
 
 export interface PresenceRecord {
   id?: string;
-  workspace: string;
-  workbook: string;
   client_id: string;
   expires_at: string;
 }
@@ -35,18 +33,21 @@ export function startPresenceHeartbeat(
 
     try {
       if (!presenceId) {
-        const result = await db.query<[PresenceRecord[]]>(
-          `CREATE presence CONTENT $data RETURN id`,
+        const result = await db.query<[string[]]>(
+          `LET $presence = (CREATE presence CONTENT $data RETURN AFTER)[0];
+           RELATE $ws->workspace_has_presence->$presence;
+           RELATE $wb->workbook_has_presence->$presence;
+           RETURN $presence.id`,
           {
             data: {
-              workspace: workspaceId,
-              workbook: workbookId,
               client_id: clientId,
               expires_at: expiresAt,
             },
+            ws: workspaceId,
+            wb: workbookId,
           },
         );
-        presenceId = (result[0]?.[0] as PresenceRecord | undefined)?.id ?? null;
+        presenceId = result[0]?.[0] ?? null;
       } else {
         await db.query(`UPDATE $id SET expires_at = $exp`, {
           id: presenceId,
@@ -72,7 +73,12 @@ export function startPresenceHeartbeat(
     }
 
     if (presenceId) {
-      void db.query(`DELETE $id`, { id: presenceId }).catch(() => undefined);
+      void db.query(
+        `DELETE workspace_has_presence WHERE out = $id;
+         DELETE workbook_has_presence WHERE out = $id;
+         DELETE $id`,
+        { id: presenceId },
+      ).catch(() => undefined);
     }
   };
 }
@@ -92,7 +98,11 @@ export async function watchCoordinator(
   const getLowest = async (): Promise<string | null> => {
     const now = new Date().toISOString();
     const result = await db.query<[PresenceRecord[]]>(
-      `SELECT client_id FROM presence WHERE workbook = $wb AND expires_at > $now ORDER BY client_id ASC LIMIT 1`,
+      `SELECT out.client_id AS client_id
+       FROM workbook_has_presence
+       WHERE in = $wb AND out.expires_at > $now
+       ORDER BY out.client_id ASC
+       LIMIT 1`,
       { wb: workbookId, now },
     );
     return (result[0]?.[0] as PresenceRecord | undefined)?.client_id ?? null;

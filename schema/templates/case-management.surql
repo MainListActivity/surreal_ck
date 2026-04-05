@@ -7,7 +7,7 @@
 -- ─── Entity types ────────────────────────────────────────────────────────────
 
 UPSERT entity_type:case_t CONTENT {
-  workspace: $ws,
+  workspace_key: <string>$ws,
   key: "case",
   label: "Case",
   fields: [
@@ -20,7 +20,7 @@ UPSERT entity_type:case_t CONTENT {
 };
 
 UPSERT entity_type:client_t CONTENT {
-  workspace: $ws,
+  workspace_key: <string>$ws,
   key: "client",
   label: "Client",
   fields: [
@@ -31,7 +31,7 @@ UPSERT entity_type:client_t CONTENT {
 };
 
 UPSERT entity_type:document_t CONTENT {
-  workspace: $ws,
+  workspace_key: <string>$ws,
   key: "document",
   label: "Document",
   fields: [
@@ -45,28 +45,37 @@ UPSERT entity_type:document_t CONTENT {
 -- ─── Relation types ───────────────────────────────────────────────────────────
 
 UPSERT relation_type:assigned_to_t CONTENT {
-  workspace: $ws,
+  workspace_key: <string>$ws,
   key: "assigned_to",
-  label: "Assigned To",
-  from_entity_type: "case",
-  to_entity_type: "client"
+  label: "Assigned To"
 };
 
 UPSERT relation_type:filed_in_t CONTENT {
-  workspace: $ws,
+  workspace_key: <string>$ws,
   key: "filed_in",
-  label: "Filed In",
-  from_entity_type: "case",
-  to_entity_type: "case"
+  label: "Filed In"
 };
 
 UPSERT relation_type:belongs_to_t CONTENT {
-  workspace: $ws,
+  workspace_key: <string>$ws,
   key: "belongs_to",
-  label: "Belongs To",
-  from_entity_type: "document",
-  to_entity_type: "case"
+  label: "Belongs To"
 };
+
+RELATE $ws->workspace_has_entity_type->entity_type:case_t;
+RELATE $ws->workspace_has_entity_type->entity_type:client_t;
+RELATE $ws->workspace_has_entity_type->entity_type:document_t;
+
+RELATE $ws->workspace_has_relation_type->relation_type:assigned_to_t;
+RELATE $ws->workspace_has_relation_type->relation_type:filed_in_t;
+RELATE $ws->workspace_has_relation_type->relation_type:belongs_to_t;
+
+RELATE relation_type:assigned_to_t->relation_from_type->entity_type:case_t;
+RELATE relation_type:assigned_to_t->relation_to_type->entity_type:client_t;
+RELATE relation_type:filed_in_t->relation_from_type->entity_type:case_t;
+RELATE relation_type:filed_in_t->relation_to_type->entity_type:case_t;
+RELATE relation_type:belongs_to_t->relation_from_type->entity_type:document_t;
+RELATE relation_type:belongs_to_t->relation_to_type->entity_type:case_t;
 
 -- ─── Dynamic entity tables (DDL, idempotent) ─────────────────────────────────
 
@@ -102,10 +111,9 @@ DEFINE TABLE IF NOT EXISTS belongs_to TYPE RELATION IN document OUT case SCHEMAL
 -- ─── Form definition ─────────────────────────────────────────────────────────
 
 UPSERT form_definition:matter_intake CONTENT {
-  workspace: $ws,
+  workspace_key: <string>$ws,
   title: "Matter Intake",
   slug: "matter-intake",
-  target_table: "case",
   fields: [
     { key: "title",       label: "Case Title",    type: "text", required: true  },
     { key: "matter_id",   label: "Matter ID",     type: "text", required: false },
@@ -116,6 +124,9 @@ UPSERT form_definition:matter_intake CONTENT {
   conditional_rules: [],
   auto_relations: []
 };
+
+RELATE $ws->workspace_has_form_definition->form_definition:matter_intake;
+RELATE form_definition:matter_intake->form_targets_entity_type->entity_type:case_t;
 
 -- ─── Sample data ─────────────────────────────────────────────────────────────
 

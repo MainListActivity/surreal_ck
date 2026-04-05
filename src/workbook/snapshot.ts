@@ -34,6 +34,14 @@ export function createSnapshotController(
   let unsubscribeLive: (() => void) | null = null;
   let lastSnapshotTs: string | null = null;
 
+  const loadSnapshot = async (id: string): Promise<SnapshotRecord | null> => {
+    const [rows] = await db.query<[SnapshotRecord[]]>(
+      'SELECT * FROM $id LIMIT 1',
+      { id },
+    );
+    return rows?.[0] ?? null;
+  };
+
   const writeSnapshot = async () => {
     if (!isCoordinator) {
       return;
@@ -43,7 +51,14 @@ export function createSnapshotController(
       // Replay mutations since last snapshot before writing (coordinator correctness)
       const data = getWorkbookData();
       const result = await db.query<[SnapshotRecord[]]>(
-        `INSERT INTO snapshot (workbook, workspace, data, coordinator_client_id, mutation_watermark) VALUES ($wb, $ws, $data, $cid, $wm) RETURN *`,
+        `LET $snapshot = (CREATE snapshot CONTENT {
+           data: $data,
+           coordinator_client_id: $cid,
+           mutation_watermark: $wm
+         } RETURN AFTER)[0];
+         RELATE $ws->workspace_has_snapshot->$snapshot;
+         RELATE $wb->workbook_has_snapshot->$snapshot;
+         RETURN $snapshot;`,
         {
           wb: workbookId,
           ws: workspaceId,
@@ -82,21 +97,29 @@ export function createSnapshotController(
       }
 
       // Subscribe to new snapshots from others
-      liveQuery = await db.live(new Table('snapshot'));
+      liveQuery = await db.live(new Table('workbook_has_snapshot'));
       unsubscribeLive = liveQuery.subscribe((message) => {
         if (message.action !== 'CREATE') {
           return;
         }
 
-        const snap = message.value as unknown as SnapshotRecord;
-        if (snap.workbook !== workbookId) {
+        const edge = message.value as { in?: string; out?: string };
+        if (edge.in !== workbookId || !edge.out) {
           return;
         }
 
-        if (!lastSnapshotTs || snap.created_at > lastSnapshotTs) {
-          lastSnapshotTs = snap.created_at;
-          onSnapshotReceived(snap);
-        }
+        void loadSnapshot(edge.out)
+          .then((snap) => {
+            if (!snap) {
+              return;
+            }
+
+            if (!lastSnapshotTs || snap.created_at > lastSnapshotTs) {
+              lastSnapshotTs = snap.created_at;
+              onSnapshotReceived(snap);
+            }
+          })
+          .catch(() => undefined);
       });
     },
 
@@ -132,7 +155,11 @@ export function createSnapshotController(
     async loadLatest(): Promise<SnapshotRecord | null> {
       const result = await db
         .query<[SnapshotRecord[]]>(
-          `SELECT * FROM snapshot WHERE workbook = $wb ORDER BY created_at DESC LIMIT 1`,
+          `SELECT VALUE out
+           FROM workbook_has_snapshot
+           WHERE in = $wb
+           ORDER BY out.created_at DESC
+           LIMIT 1`,
           { wb: workbookId },
         )
         .catch(() => [[]] as [SnapshotRecord[]]);

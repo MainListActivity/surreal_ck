@@ -79,21 +79,58 @@ export function RecentChangesPanel({ db, workbookId }: RecentChangesPanelProps) 
   useEffect(() => {
     let liveQuery: LiveSubscription | undefined;
 
+    async function fetchMutation(mutationId: string): Promise<MutationRecord | null> {
+      const [rows] = await db.query<[MutationRecord[]]>(
+        `SELECT
+           id,
+           command_id,
+           client_id,
+           created_at,
+           ->mutation_actor_user->app_user[0] AS actor
+         FROM $id
+         LIMIT 1`,
+        { id: mutationId },
+      );
+      return rows?.[0] ?? null;
+    }
+
     async function init() {
       dispatch({ type: 'load-start' });
       try {
         const [rows] = await db.query<[MutationRecord[]]>(
-          'SELECT *, actor.* FROM mutation WHERE workbook = $wb ORDER BY created_at DESC LIMIT 20',
+          `SELECT
+             out.id AS id,
+             out.command_id AS command_id,
+             out.client_id AS client_id,
+             out.created_at AS created_at,
+             out->mutation_actor_user->app_user[0] AS actor
+           FROM workbook_has_mutation
+           WHERE in = $wb
+           ORDER BY out.created_at DESC
+           LIMIT 20`,
           { wb: workbookId },
         );
         dispatch({ type: 'load-ok', items: rows ?? [] });
 
         // LIVE SELECT for real-time prepend.
-        liveQuery = await db.live(new Table('mutation'));
+        liveQuery = await db.live(new Table('workbook_has_mutation'));
         liveQuery.subscribe((message: LiveMessage) => {
-          if (message.action === 'CREATE') {
-            dispatch({ type: 'prepend', item: message.value as unknown as MutationRecord });
+          if (message.action !== 'CREATE') {
+            return;
           }
+
+          const edge = message.value as { in?: string; out?: string };
+          if (edge.in !== workbookId || !edge.out) {
+            return;
+          }
+
+          void fetchMutation(edge.out)
+            .then((item) => {
+              if (item) {
+                dispatch({ type: 'prepend', item });
+              }
+            })
+            .catch(() => undefined);
         });
       } catch (err) {
         dispatch({ type: 'load-err', error: err instanceof Error ? err.message : 'Failed to load.' });

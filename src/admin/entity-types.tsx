@@ -92,7 +92,7 @@ export function EntityTypesPanel({ db, workspaceId }: EntityTypesPanelProps) {
     dispatch({ type: 'load-start' });
     try {
       const [rows] = await db.query<[EntityType[]]>(
-        'SELECT * FROM entity_type WHERE workspace = $ws ORDER BY label',
+        'SELECT VALUE out FROM workspace_has_entity_type WHERE in = $ws ORDER BY out.label',
         { ws: workspaceId },
       );
       dispatch({ type: 'load-ok', items: rows ?? [] });
@@ -137,8 +137,15 @@ export function EntityTypesPanel({ db, workspaceId }: EntityTypesPanelProps) {
 
       // Step 3: DML — create the entity_type metadata record.
       const [created] = await db.query<[EntityType[]]>(
-        'INSERT INTO entity_type { workspace: $ws, key: $key, label: $label, fields: [] } RETURN *',
-        { ws: workspaceId, key: tableKey, label: label },
+        `LET $entity = (INSERT INTO entity_type {
+           workspace_key: $wsKey,
+           key: $key,
+           label: $label,
+           fields: []
+         } RETURN AFTER)[0];
+         RELATE $ws->workspace_has_entity_type->$entity;
+         RETURN $entity;`,
+        { ws: workspaceId, wsKey: workspaceId, key: tableKey, label: label },
       );
       const item = created?.[0];
       if (!item) throw Object.assign(new Error('entity_type record not returned'), { step: 'dml' });
@@ -159,8 +166,8 @@ export function EntityTypesPanel({ db, workspaceId }: EntityTypesPanelProps) {
   async function handleDelete(item: EntityType) {
     try {
       await db.query(
-        'DELETE entity_type WHERE id = $id AND workspace = $ws',
-        { id: item.id, ws: workspaceId },
+        'DELETE workspace_has_entity_type WHERE in = $ws AND out = $id; DELETE entity_type WHERE id = $id AND workspace_key = $wsKey',
+        { id: item.id, ws: workspaceId, wsKey: workspaceId },
       );
       dispatch({ type: 'delete-ok', id: item.id });
     } catch {

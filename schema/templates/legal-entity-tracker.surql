@@ -8,7 +8,7 @@
 -- ─── Entity types ────────────────────────────────────────────────────────────
 
 UPSERT entity_type:company_t CONTENT {
-  workspace: $ws,
+  workspace_key: <string>$ws,
   key: "company",
   label: "Company",
   fields: [
@@ -20,7 +20,7 @@ UPSERT entity_type:company_t CONTENT {
 };
 
 UPSERT entity_type:person_t CONTENT {
-  workspace: $ws,
+  workspace_key: <string>$ws,
   key: "person",
   label: "Person",
   fields: [
@@ -31,7 +31,7 @@ UPSERT entity_type:person_t CONTENT {
 };
 
 UPSERT entity_type:trust_t CONTENT {
-  workspace: $ws,
+  workspace_key: <string>$ws,
   key: "trust",
   label: "Trust",
   fields: [
@@ -44,28 +44,37 @@ UPSERT entity_type:trust_t CONTENT {
 -- ─── Relation types ───────────────────────────────────────────────────────────
 
 UPSERT relation_type:owns_t CONTENT {
-  workspace: $ws,
+  workspace_key: <string>$ws,
   key: "owns",
-  label: "Owns",
-  from_entity_type: "company",
-  to_entity_type: "company"
+  label: "Owns"
 };
 
 UPSERT relation_type:controls_t CONTENT {
-  workspace: $ws,
+  workspace_key: <string>$ws,
   key: "controls",
-  label: "Controls",
-  from_entity_type: "company",
-  to_entity_type: "company"
+  label: "Controls"
 };
 
 UPSERT relation_type:filed_by_t CONTENT {
-  workspace: $ws,
+  workspace_key: <string>$ws,
   key: "filed_by",
-  label: "Filed By",
-  from_entity_type: "company",
-  to_entity_type: "person"
+  label: "Filed By"
 };
+
+RELATE $ws->workspace_has_entity_type->entity_type:company_t;
+RELATE $ws->workspace_has_entity_type->entity_type:person_t;
+RELATE $ws->workspace_has_entity_type->entity_type:trust_t;
+
+RELATE $ws->workspace_has_relation_type->relation_type:owns_t;
+RELATE $ws->workspace_has_relation_type->relation_type:controls_t;
+RELATE $ws->workspace_has_relation_type->relation_type:filed_by_t;
+
+RELATE relation_type:owns_t->relation_from_type->entity_type:company_t;
+RELATE relation_type:owns_t->relation_to_type->entity_type:company_t;
+RELATE relation_type:controls_t->relation_from_type->entity_type:company_t;
+RELATE relation_type:controls_t->relation_to_type->entity_type:company_t;
+RELATE relation_type:filed_by_t->relation_from_type->entity_type:company_t;
+RELATE relation_type:filed_by_t->relation_to_type->entity_type:person_t;
 
 -- ─── Dynamic entity tables (DDL, idempotent) ─────────────────────────────────
 
@@ -100,10 +109,9 @@ DEFINE TABLE IF NOT EXISTS filed_by TYPE RELATION IN company OUT person SCHEMALE
 -- ─── Form definition ─────────────────────────────────────────────────────────
 
 UPSERT form_definition:new_client_intake CONTENT {
-  workspace: $ws,
+  workspace_key: <string>$ws,
   title: "New Client Intake",
   slug: "new-client-intake",
-  target_table: "company",
   fields: [
     { key: "name",         label: "Company Name",  type: "text",   required: true  },
     { key: "jurisdiction", label: "Jurisdiction",  type: "text",   required: false },
@@ -114,6 +122,9 @@ UPSERT form_definition:new_client_intake CONTENT {
   conditional_rules: [],
   auto_relations: []
 };
+
+RELATE $ws->workspace_has_form_definition->form_definition:new_client_intake;
+RELATE form_definition:new_client_intake->form_targets_entity_type->entity_type:company_t;
 
 -- ─── Sample data (DML — inside transaction for rollback safety) ───────────────
 
