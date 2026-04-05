@@ -34,7 +34,8 @@ const createMockDb = () => {
     db: {
       live: vi.fn(async () => liveQuery),
       kill: vi.fn(async () => undefined),
-      query: vi.fn(async () => [[]]),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      query: vi.fn(async () => [[]] as any),
     },
     emit,
   };

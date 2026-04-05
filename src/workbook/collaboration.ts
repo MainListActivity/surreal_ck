@@ -70,7 +70,7 @@ export function createCollabController(
       const item = retryQueue[0];
       try {
         await db.query(
-          `INSERT INTO mutation (workbook, workspace, command_id, params, client_id) VALUES ($wb, $ws, $cmd, $params, $cid)`,
+          `INSERT INTO mutation { workbook: $wb, workspace: $ws, command_id: $cmd, params: $params, client_id: $cid }`,
           {
             wb: workbookId,
             ws: workspaceId,
@@ -90,7 +90,7 @@ export function createCollabController(
     try {
       await flushRetryQueue();
       await db.query(
-        `INSERT INTO mutation (workbook, workspace, command_id, params, client_id) VALUES ($wb, $ws, $cmd, $params, $cid)`,
+        `INSERT INTO mutation { workbook: $wb, workspace: $ws, command_id: $cmd, params: $params, client_id: $cid }`,
         {
           wb: mutation.workbook,
           ws: mutation.workspace,
@@ -122,7 +122,7 @@ export function createCollabController(
     if (!COLLAB_COMMAND_WHITELIST.has(record.command_id)) {
       void db
         .query(
-          `INSERT INTO client_error (workbook, workspace, client_id, error_code, message, meta) VALUES ($wb, $ws, $cid, $code, $msg, $meta)`,
+          `INSERT INTO client_error { workbook: $wb, workspace: $ws, client_id: $cid, error_code: $code, message: $msg, meta: $meta }`,
           {
             wb: workbookId,
             ws: workspaceId,

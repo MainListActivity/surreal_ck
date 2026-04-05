@@ -25,14 +25,13 @@ export interface UniverInstance {
  * Bootstrap a Univer spreadsheet, wire up collab capture/replay,
  * snapshot coordination, and presence.
  *
- * NOTE: Univer is loaded dynamically to avoid bundling its heavy CSS in tests
- * and in non-workbook routes.
+ * Univer is loaded dynamically (dynamic import) to keep it out of the critical
+ * path for routes that don't mount a workbook.
  */
 export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<UniverInstance> {
   const { db, workbookId, workspaceId, clientId, container, onSyncWarning, onSnapshotNeeded } = opts;
 
-  // Dynamic import keeps Univer out of the critical path for other routes
-  const { createUniver, UniverInstanceType } = await import('@univerjs/presets');
+  const { createUniver } = await import('@univerjs/presets');
   const { UniverSheetsCorePreset } = await import('@univerjs/preset-sheets-core');
 
   const { univer, univerAPI } = createUniver({
@@ -43,8 +42,29 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
     ],
   });
 
-  // Create an empty workbook; will be replaced by snapshot/entity data below
-  let workbook = univerAPI.createUniverSheet({});
+  // Create an empty workbook as starting point
+  univerAPI.createUniverSheet({});
+
+  // Helper: get active workbook data for snapshots
+  const getWorkbookData = (): Record<string, unknown> => {
+    try {
+      const wb = univerAPI.getActiveWorkbook();
+      if (!wb) return {};
+      // @ts-expect-error — save() is available on FWorkbook but not yet typed in presets
+      return (wb.save?.() as Record<string, unknown>) ?? {};
+    } catch {
+      return {};
+    }
+  };
+
+  // Helper: reload workbook from snapshot data (replaces current sheet)
+  const loadWorkbookData = (data: Record<string, unknown>) => {
+    try {
+      univerAPI.createUniverSheet(data);
+    } catch {
+      // Non-fatal: workbook stays in current state
+    }
+  };
 
   // --- Snapshot controller ---
   const snapshotController = createSnapshotController(
@@ -52,38 +72,16 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
     workbookId,
     workspaceId,
     clientId,
-    () => {
-      // Serialize current workbook state for snapshot
-      try {
-        const wb = univerAPI.getActiveWorkbook();
-        if (!wb) {
-          return {};
-        }
-        return (wb as unknown as { save(): Record<string, unknown> }).save() ?? {};
-      } catch {
-        return {};
-      }
-    },
+    getWorkbookData,
     (snap) => {
-      // Apply incoming snapshot from another coordinator
-      try {
-        univer.disposeUnit(workbook.id);
-        workbook = univerAPI.createUniverSheet(snap.data as Record<string, unknown>);
-      } catch {
-        // Non-fatal: workbook stays in current state
-      }
+      loadWorkbookData(snap.data as Record<string, unknown>);
     },
   );
 
-  // Load latest snapshot or fall back to entity table data
+  // Load latest snapshot on startup
   const latestSnapshot = await snapshotController.loadLatest().catch(() => null);
   if (latestSnapshot?.data) {
-    try {
-      univer.disposeUnit(workbook.id);
-      workbook = univerAPI.createUniverSheet(latestSnapshot.data as Record<string, unknown>);
-    } catch {
-      // Fall through — keep empty workbook
-    }
+    loadWorkbookData(latestSnapshot.data as Record<string, unknown>);
   }
 
   // --- Collab controller ---
@@ -97,17 +95,22 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
     (cmd) => {
       // Replay remote mutation via Univer command service
       try {
+        // Access internal command service through the facade layer
         const commandService = (univerAPI as unknown as {
-          getCommandService?(): {
-            executeCommand(id: string, params: Record<string, unknown>, opts: { fromCollab: boolean }): Promise<boolean>;
+          _commandService?: {
+            executeCommand(
+              id: string,
+              params: Record<string, unknown>,
+              opts: { fromCollab: boolean },
+            ): Promise<boolean>;
           };
-        }).getCommandService?.();
+        })._commandService;
 
         if (commandService) {
           void commandService.executeCommand(cmd.command_id, cmd.params, { fromCollab: true });
         }
       } catch {
-        // Skip — logged to client_error by the collab controller
+        // Skip — collab controller has already logged to client_error
       }
       snapshotController.onMutationApplied();
       lastMutationTs = new Date().toISOString();
@@ -122,7 +125,7 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
 
   await collabController.start();
 
-  // Capture local mutations and broadcast them
+  // Capture local mutations and broadcast them to SurrealDB
   univerAPI.addEvent(univerAPI.Event.CommandExecuted, (event) => {
     const { id, params, type, options } = event as {
       id: string;
@@ -135,51 +138,38 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
       return;
     }
 
+    // INSERT with SurrealQL object syntax (per SurrealDB JS SDK v2 rules)
     void db
       .query(
-        `INSERT INTO mutation (workbook, workspace, command_id, params, client_id) VALUES ($wb, $ws, $cmd, $params, $cid)`,
-        {
-          wb: workbookId,
-          ws: workspaceId,
-          cmd: id,
-          params,
-          cid: clientId,
-        },
+        `INSERT INTO mutation { workbook: $wb, workspace: $ws, command_id: $cmd, params: $params, client_id: $cid }`,
+        { wb: workbookId, ws: workspaceId, cmd: id, params, cid: clientId },
       )
-      .catch(() => {
-        // Retry logic handled inside CollabController; this path is best-effort direct insert
-      });
+      .catch(() => undefined);
 
     snapshotController.onMutationApplied();
     lastMutationTs = new Date().toISOString();
   });
 
-  // --- Presence + coordinator election ---
+  // --- Presence heartbeat + coordinator election ---
   const stopHeartbeat = startPresenceHeartbeat(db, workspaceId, workbookId, clientId);
 
   const stopWatchCoordinator = await watchCoordinator(
     db,
     workbookId,
     clientId,
-    (isCoordinator) => {
-      snapshotController.setCoordinator(isCoordinator);
-    },
+    (isCoordinator) => snapshotController.setCoordinator(isCoordinator),
   ).catch(() => () => undefined);
 
-  await snapshotController.start(false); // coordinator role will be set by watchCoordinator callback
+  // Start snapshot watcher (coordinator role is set by watchCoordinator above)
+  await snapshotController.start(false);
 
-  // Handle reconnection
+  // --- Reconnect handler ---
   const handleReconnect = async () => {
     const result = await collabController.handleReconnect(lastMutationTs);
     if (result === 'snapshot') {
       const fresh = await snapshotController.loadLatest().catch(() => null);
       if (fresh?.data) {
-        try {
-          univer.disposeUnit(workbook.id);
-          workbook = univerAPI.createUniverSheet(fresh.data as Record<string, unknown>);
-        } catch {
-          // Best effort
-        }
+        loadWorkbookData(fresh.data as Record<string, unknown>);
       }
     }
   };
@@ -197,20 +187,10 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
       try {
         univer.dispose();
       } catch {
-        // Ignore cleanup errors
+        // Ignore disposal errors
       }
     },
 
-    getWorkbookData(): Record<string, unknown> {
-      try {
-        const wb = univerAPI.getActiveWorkbook();
-        if (!wb) {
-          return {};
-        }
-        return (wb as unknown as { save(): Record<string, unknown> }).save() ?? {};
-      } catch {
-        return {};
-      }
-    },
+    getWorkbookData,
   };
 }
