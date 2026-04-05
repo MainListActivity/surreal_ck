@@ -300,7 +300,7 @@ Disconnect detected
 
 ---
 
-- [ ] **Unit 3: Univer Bootstrap + Workbook Loader**
+- [x] **Unit 3: Univer Bootstrap + Workbook Loader**
 
 **Goal:** Mount the Univer spreadsheet on the page, load a workbook's entity table data from SurrealDB into Univer cells, and establish the two-way binding: cell edits → mutations table; mutations table LIVE SELECT → cell updates.
 
