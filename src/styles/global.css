@@ -710,3 +710,149 @@ code {
     padding: var(--space-lg);
   }
 }
+
+/* ─── Admin sidebar ──────────────────────────────────────────────────────── */
+
+.admin-sidebar__nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding-bottom: var(--space-md);
+  border-bottom: 1px solid var(--color-line);
+  margin-bottom: var(--space-md);
+}
+
+.admin-sidebar__content {
+  overflow-y: auto;
+}
+
+.admin-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-md);
+}
+
+.admin-section-header h3 {
+  font-size: var(--font-size-h2);
+  margin: 0;
+}
+
+.admin-inline-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  background: var(--color-parchment);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-line);
+  margin-bottom: var(--space-md);
+}
+
+.admin-form-label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  font-size: var(--font-size-small);
+  color: var(--color-muted);
+  font-family: var(--font-ui);
+}
+
+.admin-form-input {
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-sm);
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-size: var(--font-size-body);
+  font-family: var(--font-body);
+  width: 100%;
+}
+
+.admin-form-input--sm {
+  font-size: var(--font-size-small);
+  padding: var(--space-2xs) var(--space-xs);
+  width: auto;
+  flex: 1;
+}
+
+.admin-form-input:focus {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+}
+
+.admin-form-error {
+  font-size: var(--font-size-small);
+  color: var(--color-error);
+  margin: 0;
+}
+
+.admin-form-actions {
+  display: flex;
+  gap: var(--space-sm);
+  padding-top: var(--space-xs);
+}
+
+.admin-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.admin-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  padding: var(--space-sm) 0;
+  border-bottom: 1px solid var(--color-parchment-2);
+}
+
+.admin-list-item > div {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  min-width: 0;
+}
+
+.admin-list-item__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  flex-shrink: 0;
+}
+
+/* Field list inside form builder */
+
+.admin-field-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding-top: var(--space-sm);
+}
+
+.admin-field-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  cursor: grab;
+}
+
+.admin-field-drag {
+  color: var(--color-muted);
+  user-select: none;
+  cursor: grab;
+}
+
+.admin-field-required {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  font-size: var(--font-size-small);
+  color: var(--color-muted);
+  white-space: nowrap;
+  cursor: pointer;
+}

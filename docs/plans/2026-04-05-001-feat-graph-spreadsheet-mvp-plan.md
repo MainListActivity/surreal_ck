@@ -511,7 +511,7 @@ Disconnect detected
 
 ---
 
-- [ ] **Unit 7: Admin Sidebar**
+- [x] **Unit 7: Admin Sidebar**
 
 **Goal:** Build the admin sidebar panel with four sections: Entity Types, Relationship Types, Form Builder, Workspace Members. Admin-only, renders inside the right sidebar slot.
 
