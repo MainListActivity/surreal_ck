@@ -1,14 +1,10 @@
 /// <reference types="vite/client" />
 
-import type { ConnectionSnapshot, ConnectionState } from './types';
-import type {
-  WorkerEvent,
-  WorkerRequest,
-  WorkerRequestMap,
-  WorkerRequestType,
-  WorkerResponse,
-  WorkerResponseMap,
-} from './protocol';
+import { Surreal, type Tokens } from 'surrealdb';
+
+import type { ConnectionSnapshot, ConnectionState, EnvironmentConfig } from './types';
+
+const DEFAULT_AUTH_ACCESS = 'lawyer_access';
 
 type Listener = (snapshot: ConnectionSnapshot) => void;
 
@@ -33,11 +29,11 @@ class ConnectionStateStore {
     };
   }
 
-  set(state: ConnectionState, detail?: string, updatedAt = Date.now()): void {
+  set(state: ConnectionState, detail?: string): void {
     this.#snapshot = {
       state,
       detail,
-      updatedAt,
+      updatedAt: Date.now(),
     };
 
     for (const listener of this.#listeners) {
@@ -47,109 +43,76 @@ class ConnectionStateStore {
 }
 
 export const connectionState = new ConnectionStateStore();
-let workerInstance: Worker | null = null;
-let messageCounter = 0;
-const inflight = new Map<
-  string,
-  {
-    resolve: (value: any) => void;
-    reject: (reason?: unknown) => void;
+export const getEnvironmentConfig = (
+  env: ImportMetaEnv | Record<string, string | undefined> = import.meta.env,
+): EnvironmentConfig => ({
+  surrealUrl: env.VITE_SURREAL_URL ?? 'wss://cuckoox-06efnpc64psu927c5555v64q5g.aws-usw2.surreal.cloud/rpc',
+  namespace: env.VITE_SURREAL_NS ?? 'main',
+  database: env.VITE_SURREAL_DB ?? 'main',
+  authAccess: env.VITE_SURREAL_ACCESS ?? DEFAULT_AUTH_ACCESS,
+});
+
+const db = new Surreal();
+const attachedClients = new WeakSet<object>();
+
+export type SurrealLike = Pick<
+  Surreal,
+  'connect' | 'close' | 'signin' | 'authenticate' | 'invalidate' | 'subscribe'
+>;
+
+export const surreal = db;
+
+export function attachConnectionListeners(client: SurrealLike = db): void {
+  if (attachedClients.has(client as object)) {
+    return;
   }
->();
 
-function isWorkerEvent(message: WorkerResponse | WorkerEvent): message is WorkerEvent {
-  return 'kind' in message;
-}
-
-function createWorker(): Worker {
-  const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
-
-  worker.addEventListener('message', (event: MessageEvent<WorkerResponse | WorkerEvent>) => {
-    const message = event.data;
-
-    if (isWorkerEvent(message)) {
-      connectionState.set(
-        message.snapshot.state,
-        message.snapshot.detail,
-        message.snapshot.updatedAt,
-      );
-      return;
-    }
-
-    const response = message;
-    const pending = inflight.get(response.id);
-
-    if (!pending) {
-      return;
-    }
-
-    inflight.delete(response.id);
-
-    if (response.ok) {
-      pending.resolve(response.result);
-      return;
-    }
-
-    pending.reject(new Error(response.error));
+  client.subscribe('connecting', () => {
+    connectionState.set('connecting');
   });
 
-  return worker;
-}
-
-function getWorker(): Worker {
-  workerInstance ??= createWorker();
-  return workerInstance;
-}
-
-async function callWorker<T extends WorkerRequestType>(
-  type: T,
-  payload: WorkerRequestMap[T],
-): Promise<WorkerResponseMap[T]> {
-  const id = `surreal-${++messageCounter}`;
-  const worker = getWorker();
-  const request: WorkerRequest<T> = {
-    id,
-    type,
-    payload,
-  };
-
-  return new Promise((resolve, reject) => {
-    inflight.set(id, { resolve, reject });
-    worker.postMessage(request);
+  client.subscribe('connected', (url) => {
+    connectionState.set('connected', url);
   });
+
+  client.subscribe('reconnecting', () => {
+    connectionState.set('reconnecting');
+  });
+
+  client.subscribe('disconnected', () => {
+    connectionState.set('disconnected');
+  });
+
+  client.subscribe('error', (error) => {
+    connectionState.set('error', error.message);
+  });
+
+  client.subscribe('auth', (tokens) => {
+    const nextState = tokens ? 'connected' : 'disconnected';
+    connectionState.set(nextState);
+  });
+
+  attachedClients.add(client as object);
 }
 
-export interface SurrealWorkerClient {
-  connect(): Promise<boolean>;
-  close(): Promise<true>;
-  signIn(email: string, password: string): Promise<WorkerResponseMap['signIn']>;
-  restoreSession(): Promise<WorkerResponseMap['restoreSession']>;
-  signOut(): Promise<true>;
-  getConnectionSnapshot(): Promise<ConnectionSnapshot>;
-}
+export async function connectToSurreal(client: SurrealLike = db): Promise<true> {
+  const config = getEnvironmentConfig();
 
-export const surreal: SurrealWorkerClient = {
-  connect() {
-    return callWorker('connect', undefined);
-  },
-  close() {
-    return callWorker('close', undefined);
-  },
-  signIn(email, password) {
-    return callWorker('signIn', { email, password });
-  },
-  restoreSession() {
-    return callWorker('restoreSession', undefined);
-  },
-  signOut() {
-    return callWorker('signOut', undefined);
-  },
-  getConnectionSnapshot() {
-    return callWorker('getConnectionSnapshot', undefined);
-  },
-};
-
-export async function connectToSurreal(client: SurrealWorkerClient = surreal): Promise<boolean> {
+  attachConnectionListeners(client);
   connectionState.set('connecting');
-  return client.connect();
+
+  return client.connect(config.surrealUrl, {
+    namespace: config.namespace,
+    database: config.database,
+    reconnect: {
+      enabled: true,
+      attempts: -1,
+      retryDelay: 1_000,
+      retryDelayMax: 30_000,
+    },
+  });
+}
+
+export function isTokens(value: unknown): value is Tokens {
+  return typeof value === 'object' && value !== null && 'access' in value;
 }

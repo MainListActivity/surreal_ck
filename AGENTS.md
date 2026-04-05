@@ -5,10 +5,6 @@
 - Package manager is `pnpm` only. Use `pnpm add`, `pnpm remove`, `pnpm install`, and `pnpm run`.
 - Do not introduce or regenerate `package-lock.json` or `yarn.lock`.
 - Keep the repository lockfile as `pnpm-lock.yaml` and keep `packageManager` in `package.json` aligned with the installed pnpm major version.
-- SurrealDB runtime access is worker-only. UI code must not import `surrealdb` directly.
-- All database connect/auth/query/mutation flows go through the shared Web Worker boundary under `src/surreal`.
-- Architecture is offline-first: app shell uses a service worker cache; Surreal session/cache state persists locally; optimistic mutations queue locally before network replay; network recovery must reconcile from cached state instead of blocking the UI.
-- Treat edge caching as a first-class deployment concern for static assets and workbook bootstrap payloads. Avoid designs that require every first render to hit origin.
 
 ## Skill routing
 
