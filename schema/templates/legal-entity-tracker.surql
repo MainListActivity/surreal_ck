@@ -8,7 +8,7 @@
 -- ─── Entity types ────────────────────────────────────────────────────────────
 
 UPSERT entity_type:company_t CONTENT {
-  workspace_key: <string>$ws,
+  workspace: $ws,
   key: "company",
   label: "Company",
   fields: [
@@ -20,7 +20,7 @@ UPSERT entity_type:company_t CONTENT {
 };
 
 UPSERT entity_type:person_t CONTENT {
-  workspace_key: <string>$ws,
+  workspace: $ws,
   key: "person",
   label: "Person",
   fields: [
@@ -31,7 +31,7 @@ UPSERT entity_type:person_t CONTENT {
 };
 
 UPSERT entity_type:trust_t CONTENT {
-  workspace_key: <string>$ws,
+  workspace: $ws,
   key: "trust",
   label: "Trust",
   fields: [
@@ -44,19 +44,19 @@ UPSERT entity_type:trust_t CONTENT {
 -- ─── Relation types ───────────────────────────────────────────────────────────
 
 UPSERT relation_type:owns_t CONTENT {
-  workspace_key: <string>$ws,
+  workspace: $ws,
   key: "owns",
   label: "Owns"
 };
 
 UPSERT relation_type:controls_t CONTENT {
-  workspace_key: <string>$ws,
+  workspace: $ws,
   key: "controls",
   label: "Controls"
 };
 
 UPSERT relation_type:filed_by_t CONTENT {
-  workspace_key: <string>$ws,
+  workspace: $ws,
   key: "filed_by",
   label: "Filed By"
 };
@@ -109,7 +109,7 @@ DEFINE TABLE IF NOT EXISTS filed_by TYPE RELATION IN company OUT person SCHEMALE
 -- ─── Form definition ─────────────────────────────────────────────────────────
 
 UPSERT form_definition:new_client_intake CONTENT {
-  workspace_key: <string>$ws,
+  workspace: $ws,
   title: "New Client Intake",
   slug: "new-client-intake",
   fields: [

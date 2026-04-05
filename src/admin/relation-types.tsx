@@ -114,7 +114,7 @@ export function RelationTypesPanel({ db, workspaceId }: RelationTypesPanelProps)
 
       const [created] = await db.query<[RelationType[]]>(
         `LET $relation = (INSERT INTO relation_type {
-           workspace_key: $wsKey,
+           workspace: $ws,
            key: $key,
            label: $label
          } RETURN AFTER)[0];
@@ -130,7 +130,6 @@ export function RelationTypesPanel({ db, workspaceId }: RelationTypesPanelProps)
          };`,
         {
           ws: workspaceId,
-          wsKey: workspaceId,
           key,
           label,
           fromEntity: fromEntityId,
@@ -156,8 +155,8 @@ export function RelationTypesPanel({ db, workspaceId }: RelationTypesPanelProps)
         `DELETE relation_from_type WHERE in = $id;
          DELETE relation_to_type WHERE in = $id;
          DELETE workspace_has_relation_type WHERE in = $ws AND out = $id;
-         DELETE relation_type WHERE id = $id AND workspace_key = $wsKey`,
-        { id: item.id, ws: workspaceId, wsKey: workspaceId },
+         DELETE $id`,
+        { id: item.id, ws: workspaceId },
       );
       dispatch({ type: 'delete-ok', id: item.id });
     } catch {

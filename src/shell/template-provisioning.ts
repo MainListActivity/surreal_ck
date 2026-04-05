@@ -124,7 +124,7 @@ async function compensatingCleanup(
       await db.query('DELETE form_targets_entity_type WHERE in INSIDE (SELECT VALUE out FROM workspace_has_form_definition WHERE in = $ws)', { ws: workspaceId });
       await db.query('DELETE relation_from_type WHERE in INSIDE (SELECT VALUE out FROM workspace_has_relation_type WHERE in = $ws); DELETE relation_to_type WHERE in INSIDE (SELECT VALUE out FROM workspace_has_relation_type WHERE in = $ws)', { ws: workspaceId });
       await db.query('DELETE workspace_has_form_definition WHERE in = $ws; DELETE workspace_has_relation_type WHERE in = $ws; DELETE workspace_has_entity_type WHERE in = $ws; DELETE workspace_has_member WHERE in = $ws; DELETE owns_workspace WHERE out = $ws', { ws: workspaceId });
-      await db.query('DELETE entity_type WHERE workspace_key = $wsKey; DELETE relation_type WHERE workspace_key = $wsKey; DELETE form_definition WHERE workspace_key = $wsKey; DELETE workspace_member WHERE workspace_key = $wsKey; DELETE $ws', { wsKey: workspaceId, ws: workspaceId });
+      await db.query('DELETE entity_type WHERE workspace = $ws; DELETE relation_type WHERE workspace = $ws; DELETE form_definition WHERE workspace = $ws; DELETE workspace_member WHERE workspace = $ws; DELETE $ws', { ws: workspaceId });
     }
   } catch {
     // Cleanup failure is non-fatal — log to client_error in a fire-and-forget manner.

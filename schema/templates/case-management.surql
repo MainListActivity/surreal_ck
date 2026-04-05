@@ -7,7 +7,7 @@
 -- ─── Entity types ────────────────────────────────────────────────────────────
 
 UPSERT entity_type:case_t CONTENT {
-  workspace_key: <string>$ws,
+  workspace: $ws,
   key: "case",
   label: "Case",
   fields: [
@@ -20,7 +20,7 @@ UPSERT entity_type:case_t CONTENT {
 };
 
 UPSERT entity_type:client_t CONTENT {
-  workspace_key: <string>$ws,
+  workspace: $ws,
   key: "client",
   label: "Client",
   fields: [
@@ -31,7 +31,7 @@ UPSERT entity_type:client_t CONTENT {
 };
 
 UPSERT entity_type:document_t CONTENT {
-  workspace_key: <string>$ws,
+  workspace: $ws,
   key: "document",
   label: "Document",
   fields: [
@@ -45,19 +45,19 @@ UPSERT entity_type:document_t CONTENT {
 -- ─── Relation types ───────────────────────────────────────────────────────────
 
 UPSERT relation_type:assigned_to_t CONTENT {
-  workspace_key: <string>$ws,
+  workspace: $ws,
   key: "assigned_to",
   label: "Assigned To"
 };
 
 UPSERT relation_type:filed_in_t CONTENT {
-  workspace_key: <string>$ws,
+  workspace: $ws,
   key: "filed_in",
   label: "Filed In"
 };
 
 UPSERT relation_type:belongs_to_t CONTENT {
-  workspace_key: <string>$ws,
+  workspace: $ws,
   key: "belongs_to",
   label: "Belongs To"
 };
@@ -111,7 +111,7 @@ DEFINE TABLE IF NOT EXISTS belongs_to TYPE RELATION IN document OUT case SCHEMAL
 -- ─── Form definition ─────────────────────────────────────────────────────────
 
 UPSERT form_definition:matter_intake CONTENT {
-  workspace_key: <string>$ws,
+  workspace: $ws,
   title: "Matter Intake",
   slug: "matter-intake",
   fields: [

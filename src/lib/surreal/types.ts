@@ -20,8 +20,7 @@ export interface Workbook {
 
 export interface WorkspaceMember {
   id: string;
-  workspace?: string;
-  user?: string;
+  workspace: string;
   email: string;
   role: WorkspaceRole;
   invited_at: string;

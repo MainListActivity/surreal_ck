@@ -31,11 +31,11 @@ DEFINE FIELD IF NOT EXISTS created_at ON TABLE workbook TYPE datetime VALUE time
 DEFINE FIELD IF NOT EXISTS updated_at ON TABLE workbook TYPE datetime VALUE time::now();
 
 DEFINE TABLE IF NOT EXISTS workspace_member SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS workspace_key ON TABLE workspace_member TYPE string;
+DEFINE FIELD IF NOT EXISTS workspace ON TABLE workspace_member TYPE record<workspace>;
 DEFINE FIELD IF NOT EXISTS email ON TABLE workspace_member TYPE string ASSERT string::is_email($value);
 DEFINE FIELD IF NOT EXISTS role ON TABLE workspace_member TYPE string ASSERT $value INSIDE ["admin", "editor", "viewer"];
 DEFINE FIELD IF NOT EXISTS invited_at ON TABLE workspace_member TYPE datetime VALUE time::now();
-DEFINE INDEX IF NOT EXISTS workspace_member_email_unique ON TABLE workspace_member COLUMNS workspace_key, email UNIQUE;
+DEFINE INDEX IF NOT EXISTS workspace_member_email_unique ON TABLE workspace_member COLUMNS workspace, email UNIQUE;
 
 DEFINE TABLE IF NOT EXISTS mutation SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS command_id ON TABLE mutation TYPE string;
@@ -71,29 +71,29 @@ UPSERT field_type:multi_select CONTENT { key: "multi_select", label: "Multi Sele
 UPSERT field_type:file CONTENT { key: "file", label: "File", supports_options: false, supports_relations: false };
 
 DEFINE TABLE IF NOT EXISTS entity_type SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS workspace_key ON TABLE entity_type TYPE string;
+DEFINE FIELD IF NOT EXISTS workspace ON TABLE entity_type TYPE record<workspace>;
 DEFINE FIELD IF NOT EXISTS key ON TABLE entity_type TYPE string;
 DEFINE FIELD IF NOT EXISTS label ON TABLE entity_type TYPE string;
 DEFINE FIELD IF NOT EXISTS fields ON TABLE entity_type TYPE array<object>;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE entity_type TYPE datetime VALUE time::now();
-DEFINE INDEX IF NOT EXISTS entity_type_workspace_key_unique ON TABLE entity_type COLUMNS workspace_key, key UNIQUE;
+DEFINE INDEX IF NOT EXISTS entity_type_workspace_key_unique ON TABLE entity_type COLUMNS workspace, key UNIQUE;
 
 DEFINE TABLE IF NOT EXISTS relation_type SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS workspace_key ON TABLE relation_type TYPE string;
+DEFINE FIELD IF NOT EXISTS workspace ON TABLE relation_type TYPE record<workspace>;
 DEFINE FIELD IF NOT EXISTS key ON TABLE relation_type TYPE string;
 DEFINE FIELD IF NOT EXISTS label ON TABLE relation_type TYPE string;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE relation_type TYPE datetime VALUE time::now();
-DEFINE INDEX IF NOT EXISTS relation_type_workspace_key_unique ON TABLE relation_type COLUMNS workspace_key, key UNIQUE;
+DEFINE INDEX IF NOT EXISTS relation_type_workspace_key_unique ON TABLE relation_type COLUMNS workspace, key UNIQUE;
 
 DEFINE TABLE IF NOT EXISTS form_definition SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS workspace_key ON TABLE form_definition TYPE string;
+DEFINE FIELD IF NOT EXISTS workspace ON TABLE form_definition TYPE record<workspace>;
 DEFINE FIELD IF NOT EXISTS title ON TABLE form_definition TYPE string;
 DEFINE FIELD IF NOT EXISTS slug ON TABLE form_definition TYPE string;
 DEFINE FIELD IF NOT EXISTS fields ON TABLE form_definition TYPE array<object>;
 DEFINE FIELD IF NOT EXISTS conditional_rules ON TABLE form_definition TYPE array<object> DEFAULT [];
 DEFINE FIELD IF NOT EXISTS auto_relations ON TABLE form_definition TYPE array<object> DEFAULT [];
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE form_definition TYPE datetime VALUE time::now();
-DEFINE INDEX IF NOT EXISTS form_definition_workspace_slug_unique ON TABLE form_definition COLUMNS workspace_key, slug UNIQUE;
+DEFINE INDEX IF NOT EXISTS form_definition_workspace_slug_unique ON TABLE form_definition COLUMNS workspace, slug UNIQUE;
 
 DEFINE TABLE IF NOT EXISTS intake_submission SCHEMALESS;
 DEFINE FIELD IF NOT EXISTS submission_token ON TABLE intake_submission TYPE string;

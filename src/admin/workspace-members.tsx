@@ -116,13 +116,13 @@ export function WorkspaceMembersPanel({ db, workspaceId }: WorkspaceMembersPanel
     try {
       const [created] = await db.query<[WorkspaceMember[]]>(
         `LET $member = (INSERT INTO workspace_member {
-           workspace_key: $wsKey,
+           workspace: $ws,
            email: $email,
            role: $role
          } RETURN AFTER)[0];
          RELATE $ws->workspace_has_member->$member;
          RETURN $member;`,
-        { ws: workspaceId, wsKey: workspaceId, email, role: inviteRole },
+        { ws: workspaceId, email, role: inviteRole },
       );
       const item = created?.[0];
       if (!item) throw new Error('workspace_member record not returned');

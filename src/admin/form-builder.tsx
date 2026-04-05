@@ -159,7 +159,7 @@ export function FormBuilderPanel({ db, workspaceId }: FormBuilderPanelProps) {
 
       const [created] = await db.query<[FormDefinition[]]>(
         `LET $form = (INSERT INTO form_definition {
-           workspace_key: $wsKey,
+           workspace: $ws,
            title: $title,
            slug: $slug,
            fields: $fields,
@@ -175,7 +175,7 @@ export function FormBuilderPanel({ db, workspaceId }: FormBuilderPanelProps) {
            target_table: $targetKey,
            fields: $form.fields
          };`,
-        { ws: workspaceId, wsKey: workspaceId, title, slug, targetEntity: targetEntityId, targetKey: target, fields },
+        { ws: workspaceId, title, slug, targetEntity: targetEntityId, targetKey: target, fields },
       );
       const item = created?.[0];
       if (!item) throw new Error('form_definition record not returned');
@@ -195,8 +195,8 @@ export function FormBuilderPanel({ db, workspaceId }: FormBuilderPanelProps) {
       await db.query(
         `DELETE form_targets_entity_type WHERE in = $id;
          DELETE workspace_has_form_definition WHERE in = $ws AND out = $id;
-         DELETE form_definition WHERE id = $id AND workspace_key = $wsKey`,
-        { id: item.id, ws: workspaceId, wsKey: workspaceId },
+         DELETE $id`,
+        { id: item.id, ws: workspaceId },
       );
       dispatch({ type: 'delete-ok', id: item.id });
     } catch {
