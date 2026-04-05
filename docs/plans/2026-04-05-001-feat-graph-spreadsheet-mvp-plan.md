@@ -261,7 +261,7 @@ Disconnect detected
 
 ---
 
-- [ ] **Unit 2: SurrealDB Connection Layer + Auth**
+- [x] **Unit 2: SurrealDB Connection Layer + Auth**
 
 **Goal:** Establish the SurrealDB WebSocket connection module, JWT-based authentication (lawyer_access), token persistence, and reconnect/event plumbing that all other units depend on.
 

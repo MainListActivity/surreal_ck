@@ -76,12 +76,78 @@ export interface AuthTokens {
   refresh?: string;
 }
 
+export type AuthStatus = 'checking' | 'authorizing' | 'authenticated' | 'unauthenticated' | 'error';
+
+export interface JwtClaims {
+  aud?: string | string[];
+  email?: string;
+  exp?: number;
+  name?: string;
+  preferred_username?: string;
+  sub?: string;
+  [key: string]: unknown;
+}
+
+export interface UserProfile {
+  sub: string;
+  email?: string;
+  name?: string;
+  recordId: string;
+}
+
+export interface OidcConfig {
+  issuer: string;
+  authorizationEndpoint: string;
+  tokenEndpoint: string;
+  jwksUrl: string;
+  clientId: string;
+  audience: string;
+  scope: string;
+  redirectUri: string;
+}
+
+export interface AuthPendingLogin {
+  state: string;
+  codeVerifier: string;
+  redirectUri: string;
+  createdAt: number;
+}
+
+export interface OidcTokenBundle {
+  accessToken: string;
+  refreshToken?: string;
+  idToken?: string;
+  tokenType?: string;
+  scope?: string;
+  accessExpiresAt: number;
+  refreshExpiresAt?: number;
+  issuedAt: number;
+}
+
+export interface TokenEndpointResponse {
+  access_token: string;
+  expires_in?: number;
+  id_token?: string;
+  refresh_token?: string;
+  scope?: string;
+  token_type?: string;
+}
+
+export interface AuthSnapshot {
+  status: AuthStatus;
+  isLoggedIn: boolean;
+  user?: UserProfile;
+  error?: string;
+  updatedAt: number;
+}
+
 export type ConnectionState =
   | 'idle'
   | 'connecting'
   | 'connected'
   | 'reconnecting'
   | 'disconnected'
+  | 'auth-failed'
   | 'error';
 
 export interface ConnectionSnapshot {

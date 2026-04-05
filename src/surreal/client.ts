@@ -55,7 +55,7 @@ export const getEnvironmentConfig = (
 ): EnvironmentConfig => ({
   surrealUrl: env.VITE_SURREAL_URL ?? 'wss://cuckoox-06efnpc64psu927c5555v64q5g.aws-usw2.surreal.cloud/rpc',
   namespace: env.VITE_SURREAL_NS ?? 'main',
-  database: env.VITE_SURREAL_DB ?? 'main',
+  database: env.VITE_SURREAL_DB ?? 'docs',
   authAccess: env.VITE_SURREAL_ACCESS ?? DEFAULT_AUTH_ACCESS,
 });
 
@@ -65,7 +65,7 @@ const attachedClients = new WeakSet<object>();
 export type SurrealConnectParams = NonNullable<Parameters<Surreal['connect']>[1]>;
 export type SurrealLike = Pick<
   Surreal,
-  'connect' | 'close' | 'signin' | 'authenticate' | 'invalidate' | 'subscribe'
+  'connect' | 'close' | 'use' | 'authenticate' | 'invalidate' | 'subscribe'
 >;
 
 export const surreal = db;
@@ -74,20 +74,17 @@ export function getDefaultConnectParams(
   env: ImportMetaEnv | Record<string, string | undefined> = import.meta.env,
   overrides: Partial<SurrealConnectParams> = {},
 ): SurrealConnectParams {
-  const config = getEnvironmentConfig(env);
   const reconnect =
     overrides.reconnect === undefined
       ? DEFAULT_RECONNECT
       : typeof overrides.reconnect === 'object' && overrides.reconnect !== null
         ? {
-            ...DEFAULT_RECONNECT,
-            ...overrides.reconnect,
-          }
+          ...DEFAULT_RECONNECT,
+          ...overrides.reconnect,
+        }
         : overrides.reconnect;
 
   return {
-    namespace: config.namespace,
-    database: config.database,
     ...overrides,
     reconnect,
   };
@@ -139,8 +136,27 @@ export async function connectToSurreal(client: SurrealLike = db): Promise<true> 
 
   attachConnectionListeners(client);
   connectionState.set('connecting');
+  await client.connect(config.surrealUrl, getDefaultConnectParams());
+  await client.use({
+    namespace: config.namespace,
+    database: config.database,
+  });
+  return true;
+}
 
-  return client.connect(config.surrealUrl, getDefaultConnectParams());
+export async function authenticateSurrealAccessToken(
+  accessToken: string,
+  client: SurrealLike = db,
+): Promise<Tokens> {
+  try {
+    const tokens = await client.authenticate(accessToken);
+    connectionState.set('connected');
+    return tokens;
+  } catch (error) {
+    await client.close();
+    connectionState.set('auth-failed', error instanceof Error ? error.message : 'Authentication failed');
+    throw error;
+  }
 }
 
 export function isTokens(value: unknown): value is Tokens {

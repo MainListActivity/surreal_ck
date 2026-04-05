@@ -1,7 +1,25 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { App } from './App';
+
+// Provide an authenticated stub so App renders the workbook shell in tests
+vi.mock('../surreal/auth', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../surreal/auth')>();
+  return {
+    ...original,
+    useAuthSnapshot: () => ({
+      status: 'authenticated',
+      isLoggedIn: true,
+      user: { sub: 'test-user', email: 'test@example.com', name: 'Test User', recordId: 'app_user:test-user' },
+      updatedAt: Date.now(),
+    }),
+    authGateway: {
+      startLogin: vi.fn(),
+      logout: vi.fn(),
+    },
+  };
+});
 
 describe('App shell', () => {
   it('shows the template picker when there is no workbook to resume', () => {

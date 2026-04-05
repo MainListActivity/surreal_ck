@@ -1,24 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { clearTokens, getTokens, persistTokens, restoreSession, signIn, signOut } from './auth';
-import { attachConnectionListeners, connectionState, connectToSurreal } from './client';
-import type { SessionStorageLike } from './types';
-
-class MemoryStorage implements SessionStorageLike {
-  #store = new Map<string, string>();
-
-  getItem(key: string): string | null {
-    return this.#store.get(key) ?? null;
-  }
-
-  setItem(key: string, value: string): void {
-    this.#store.set(key, value);
-  }
-
-  removeItem(key: string): void {
-    this.#store.delete(key);
-  }
-}
+import { attachConnectionListeners, authenticateSurrealAccessToken, connectionState, connectToSurreal } from './client';
 
 const createFakeClient = () => {
   const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
@@ -38,8 +20,8 @@ const createFakeClient = () => {
 
   return {
     connect: vi.fn(async () => true as const),
-    signin: vi.fn(async () => ({ access: 'access-token', refresh: 'refresh-token' })),
-    authenticate: vi.fn(async () => ({ access: 'renewed-access', refresh: 'renewed-refresh' })),
+    use: vi.fn(async () => ({ namespace: 'main', database: 'main' })),
+    authenticate: vi.fn(async () => ({ access: 'renewed-access' })),
     invalidate: vi.fn(async () => undefined),
     close: vi.fn(async () => true as const),
     subscribe,
@@ -47,61 +29,8 @@ const createFakeClient = () => {
   };
 };
 
-describe('surreal auth and connection', () => {
-  it('stores tokens on sign in', async () => {
-    const storage = new MemoryStorage();
-    const client = createFakeClient();
-
-    const tokens = await signIn('lawyer@example.com', 'secret', client, storage);
-
-    expect(tokens.access).toBe('access-token');
-    expect(getTokens(storage)).toEqual(tokens);
-  });
-
-  it('restores and refreshes a saved session', async () => {
-    const storage = new MemoryStorage();
-    const client = createFakeClient();
-
-    persistTokens({ access: 'stale-access', refresh: 'stale-refresh' }, storage);
-
-    const refreshed = await restoreSession(client, storage);
-
-    expect(client.authenticate).toHaveBeenCalledWith({
-      access: 'stale-access',
-      refresh: 'stale-refresh',
-    });
-    expect(refreshed).toEqual({
-      access: 'renewed-access',
-      refresh: 'renewed-refresh',
-    });
-    expect(getTokens(storage)).toEqual(refreshed);
-  });
-
-  it('clears tokens when restore fails', async () => {
-    const storage = new MemoryStorage();
-    const client = createFakeClient();
-
-    persistTokens({ access: 'bad-access' }, storage);
-    client.authenticate.mockRejectedValueOnce(new Error('expired'));
-
-    const restored = await restoreSession(client, storage);
-
-    expect(restored).toBeNull();
-    expect(getTokens(storage)).toBeNull();
-  });
-
-  it('invalidates and clears tokens on sign out', async () => {
-    const storage = new MemoryStorage();
-    const client = createFakeClient();
-
-    persistTokens({ access: 'access-token' }, storage);
-    await signOut(client, storage);
-
-    expect(client.invalidate).toHaveBeenCalled();
-    expect(getTokens(storage)).toBeNull();
-  });
-
-  it('forwards connection options with reconnect enabled', async () => {
+describe('surreal connection', () => {
+  it('connects and calls use with namespace/database', async () => {
     const client = createFakeClient();
 
     await connectToSurreal(client);
@@ -116,6 +45,34 @@ describe('surreal auth and connection', () => {
         }),
       }),
     );
+    expect(client.use).toHaveBeenCalledWith(
+      expect.objectContaining({ namespace: expect.any(String), database: expect.any(String) }),
+    );
+  });
+
+  it('authenticates access token and sets connected state', async () => {
+    const client = createFakeClient();
+    const seen: string[] = [];
+
+    connectionState.subscribe((snapshot) => seen.push(snapshot.state));
+
+    await authenticateSurrealAccessToken('my-access-token', client);
+
+    expect(client.authenticate).toHaveBeenCalledWith('my-access-token');
+    expect(seen).toContain('connected');
+  });
+
+  it('sets auth-failed state and closes on authentication error', async () => {
+    const client = createFakeClient();
+    client.authenticate.mockRejectedValueOnce(new Error('invalid token'));
+
+    const seen: string[] = [];
+    connectionState.subscribe((snapshot) => seen.push(snapshot.state));
+
+    await expect(authenticateSurrealAccessToken('bad-token', client)).rejects.toThrow('invalid token');
+
+    expect(client.close).toHaveBeenCalled();
+    expect(seen).toContain('auth-failed');
   });
 
   it('updates connection state from subscribed events', () => {
@@ -139,13 +96,13 @@ describe('surreal auth and connection', () => {
     expect(seen).toContain('disconnected');
   });
 
-  it('clears malformed saved tokens', () => {
-    const storage = new MemoryStorage();
+  it('does not attach listeners twice for the same client instance', () => {
+    const client = createFakeClient();
 
-    storage.setItem('surreal_ck.auth.tokens', '{broken json');
+    attachConnectionListeners(client);
+    attachConnectionListeners(client);
 
-    expect(getTokens(storage)).toBeNull();
-    clearTokens(storage);
-    expect(storage.getItem('surreal_ck.auth.tokens')).toBeNull();
+    const eventTypes = client.subscribe.mock.calls.map(([event]) => event);
+    expect(eventTypes.filter((e) => e === 'connecting').length).toBe(1);
   });
 });

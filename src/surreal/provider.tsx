@@ -10,7 +10,9 @@ import {
 } from 'react';
 import { Surreal } from 'surrealdb';
 
+import { authGateway, useAuthSnapshot } from './auth';
 import {
+  authenticateSurrealAccessToken,
   attachConnectionListeners,
   connectionState,
   getDefaultConnectParams,
@@ -46,6 +48,7 @@ export function SurrealProvider({
   autoConnect = true,
 }: SurrealProviderProps) {
   const [instance] = useState(() => client ?? new Surreal());
+  const auth = useAuthSnapshot();
   const config = getEnvironmentConfig();
   const resolvedEndpoint = endpoint ?? config.surrealUrl;
   const resolvedParams = useMemo(() => getDefaultConnectParams(import.meta.env, params), [params]);
@@ -58,9 +61,22 @@ export function SurrealProvider({
     reset,
   } = useMutation({
     mutationFn: async () => {
+      const accessToken = await authGateway.validAccessToken();
+
+      if (!accessToken) {
+        connectionState.set('auth-failed', 'Authentication required');
+        throw new Error('Authentication required');
+      }
+
       attachConnectionListeners(instance);
       connectionState.set('connecting');
-      return instance.connect(resolvedEndpoint, resolvedParams);
+      await instance.connect(resolvedEndpoint, resolvedParams);
+      await instance.use({
+        namespace: config.namespace,
+        database: config.database,
+      });
+      await authenticateSurrealAccessToken(accessToken, instance);
+      return true as const;
     },
   });
 
@@ -72,14 +88,26 @@ export function SurrealProvider({
   }, [instance, reset]);
 
   useEffect(() => {
-    if (autoConnect) {
-      void connect().catch(() => undefined);
+    if (!autoConnect) {
+      return;
     }
 
-    return () => {
+    if (!auth.isLoggedIn) {
+      reset();
+      connectionState.set(auth.status === 'error' ? 'auth-failed' : 'disconnected', auth.error);
+      void instance.close().catch(() => undefined);
+      return;
+    }
+
+    void connect().catch(() => undefined);
+  }, [auth.error, auth.isLoggedIn, auth.status, autoConnect, connect, instance, reset]);
+
+  useEffect(
+    () => () => {
       void close();
-    };
-  }, [autoConnect, close, connect]);
+    },
+    [close],
+  );
 
   const value = useMemo<SurrealProviderState>(
     () => ({

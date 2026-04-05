@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 
+import { bootstrapAuth } from './surreal/auth';
 import { SurrealProvider } from './surreal/provider';
 import { App } from './workbook/App';
 import './styles/design-system.css';
@@ -13,6 +14,8 @@ const app = document.querySelector<HTMLDivElement>('#app');
 if (!app) {
   throw new Error('Application root #app was not found.');
 }
+
+void bootstrapAuth().catch(() => undefined);
 
 createRoot(app).render(
   <StrictMode>

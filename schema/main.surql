@@ -3,17 +3,21 @@ OPTION IMPORT;
 DEFINE NAMESPACE IF NOT EXISTS surreal_ck;
 USE NS surreal_ck DB app;
 
-DEFINE TABLE IF NOT EXISTS user SCHEMAFULL;
-DEFINE FIELD IF NOT EXISTS email ON TABLE user TYPE string ASSERT string::is_email($value);
-DEFINE FIELD IF NOT EXISTS name ON TABLE user TYPE option<string>;
-DEFINE FIELD IF NOT EXISTS password_hash ON TABLE user TYPE string;
-DEFINE FIELD IF NOT EXISTS created_at ON TABLE user TYPE datetime VALUE time::now();
-DEFINE INDEX IF NOT EXISTS user_email_unique ON TABLE user COLUMNS email UNIQUE;
+DEFINE TABLE IF NOT EXISTS app_user SCHEMAFULL
+  PERMISSIONS
+    FOR select, update, delete WHERE id = $auth.id,
+    FOR create NONE;
+DEFINE FIELD IF NOT EXISTS subject ON TABLE app_user TYPE string;
+DEFINE FIELD IF NOT EXISTS email ON TABLE app_user TYPE option<string> ASSERT $value = NONE OR string::is_email($value);
+DEFINE FIELD IF NOT EXISTS name ON TABLE app_user TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS created_at ON TABLE app_user TYPE datetime VALUE time::now();
+DEFINE FIELD IF NOT EXISTS updated_at ON TABLE app_user TYPE datetime VALUE time::now();
+DEFINE INDEX IF NOT EXISTS app_user_subject_unique ON TABLE app_user COLUMNS subject UNIQUE;
 
 DEFINE TABLE IF NOT EXISTS workspace SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS name ON TABLE workspace TYPE string;
 DEFINE FIELD IF NOT EXISTS slug ON TABLE workspace TYPE string;
-DEFINE FIELD IF NOT EXISTS owner ON TABLE workspace TYPE record<user>;
+DEFINE FIELD IF NOT EXISTS owner ON TABLE workspace TYPE record<app_user>;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE workspace TYPE datetime VALUE time::now();
 DEFINE INDEX IF NOT EXISTS workspace_slug_unique ON TABLE workspace COLUMNS slug UNIQUE;
 
@@ -27,7 +31,7 @@ DEFINE FIELD IF NOT EXISTS updated_at ON TABLE workbook TYPE datetime VALUE time
 
 DEFINE TABLE IF NOT EXISTS workspace_member SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS workspace ON TABLE workspace_member TYPE record<workspace>;
-DEFINE FIELD IF NOT EXISTS user ON TABLE workspace_member TYPE record<user>;
+DEFINE FIELD IF NOT EXISTS user ON TABLE workspace_member TYPE record<app_user>;
 DEFINE FIELD IF NOT EXISTS email ON TABLE workspace_member TYPE string ASSERT string::is_email($value);
 DEFINE FIELD IF NOT EXISTS role ON TABLE workspace_member TYPE string ASSERT $value INSIDE ["admin", "editor", "viewer"];
 DEFINE FIELD IF NOT EXISTS invited_at ON TABLE workspace_member TYPE datetime VALUE time::now();
@@ -40,7 +44,7 @@ DEFINE FIELD IF NOT EXISTS workspace ON TABLE mutation TYPE record<workspace>;
 DEFINE FIELD IF NOT EXISTS command_id ON TABLE mutation TYPE string;
 DEFINE FIELD IF NOT EXISTS params ON TABLE mutation TYPE object;
 DEFINE FIELD IF NOT EXISTS client_id ON TABLE mutation TYPE string;
-DEFINE FIELD IF NOT EXISTS actor ON TABLE mutation TYPE option<record<user>>;
+DEFINE FIELD IF NOT EXISTS actor ON TABLE mutation TYPE option<record<app_user>>;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE mutation TYPE datetime VALUE time::now();
 DEFINE INDEX IF NOT EXISTS mutation_by_workbook_ts ON TABLE mutation COLUMNS workbook, created_at;
 
@@ -57,7 +61,7 @@ DEFINE TABLE IF NOT EXISTS presence SCHEMALESS;
 DEFINE FIELD IF NOT EXISTS workspace ON TABLE presence TYPE record<workspace>;
 DEFINE FIELD IF NOT EXISTS workbook ON TABLE presence TYPE option<record<workbook>>;
 DEFINE FIELD IF NOT EXISTS client_id ON TABLE presence TYPE string;
-DEFINE FIELD IF NOT EXISTS user ON TABLE presence TYPE option<record<user>>;
+DEFINE FIELD IF NOT EXISTS user ON TABLE presence TYPE option<record<app_user>>;
 DEFINE FIELD IF NOT EXISTS expires_at ON TABLE presence TYPE datetime;
 DEFINE INDEX IF NOT EXISTS presence_by_workbook ON TABLE presence COLUMNS workbook, client_id;
 
@@ -127,24 +131,30 @@ DEFINE FIELD IF NOT EXISTS bucket_path ON TABLE workbook_file TYPE string;
 DEFINE FIELD IF NOT EXISTS original_name ON TABLE workbook_file TYPE string;
 DEFINE FIELD IF NOT EXISTS mime_type ON TABLE workbook_file TYPE string;
 DEFINE FIELD IF NOT EXISTS size_bytes ON TABLE workbook_file TYPE int;
-DEFINE FIELD IF NOT EXISTS uploaded_by ON TABLE workbook_file TYPE option<record<user>>;
+DEFINE FIELD IF NOT EXISTS uploaded_by ON TABLE workbook_file TYPE option<record<app_user>>;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE workbook_file TYPE datetime VALUE time::now();
 
 DEFINE BUCKET IF NOT EXISTS spreadsheet_files BACKEND "file:/data/uploads" PERMISSIONS FULL;
 
-DEFINE ACCESS lawyer_access ON DATABASE TYPE RECORD
-  SIGNIN (
-    SELECT *
-    FROM user
-    WHERE email = $email
-      AND crypto::argon2::compare(password_hash, $password)
-  )
-  SIGNUP (
-    CREATE user CONTENT {
-      email: $email,
-      password_hash: crypto::argon2::generate($password),
-      name: $name
-    }
+DEFINE ACCESS maplayer ON DATABASE TYPE RECORD WITH JWT URL "https://o.maplayer.top/t/ck/jwks.json"
+  AUTHENTICATE (
+    IF !$token.sub THEN
+      THROW "Missing token subject"
+    ELSE IF !(
+      $token.aud = "https://auth.maplayer.top"
+      OR (type::is::array($token.aud) AND array::len(array::filter($token.aud, |$value| $value = "https://auth.maplayer.top")) > 0)
+    ) THEN
+      THROW "Invalid token audience"
+    ELSE (
+      UPSERT type::thing("app_user", $token.sub) CONTENT {
+        subject: $token.sub,
+        email: $token.email ?? NONE,
+        name: $token.name ?? $token.preferred_username ?? NONE,
+        updated_at: time::now()
+      };
+      RETURN type::thing("app_user", $token.sub)
+    )
+    END
   );
 
 DEFINE ACCESS form_submit ON DATABASE TYPE RECORD

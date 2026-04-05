@@ -1,5 +1,6 @@
 import { useState } from 'react';
 
+import { authGateway, useAuthSnapshot } from '../surreal/auth';
 import { useConnectionSnapshot } from '../surreal/client';
 import type { ConnectionSnapshot } from '../surreal/types';
 import {
@@ -33,6 +34,7 @@ export function App({ initialScenario = 'resume-workbook' }: AppProps) {
   const activeWorkbook =
     workspaceSeed.workbooks.find((workbook) => workbook.id === activeWorkbookId) ?? blankWorkbook;
   const primaryRow = activeWorkbook.rows[0] ?? blankWorkbook.rows[0];
+  const auth = useAuthSnapshot();
   const connection = useConnectionSnapshot();
 
   const openWorkbook = (templateKey: TemplateKey) => {
@@ -50,6 +52,26 @@ export function App({ initialScenario = 'resume-workbook' }: AppProps) {
     setActivePanel(templateKey === 'case-management' ? 'recent' : 'graph');
     setScreen('workbook');
   };
+
+  if (auth.status === 'checking' || auth.status === 'authorizing') {
+    return <AuthScreen title="Authorizing workspace" body="Completing OIDC login and preparing the workbook session." />;
+  }
+
+  if (!auth.isLoggedIn) {
+    return (
+      <AuthScreen
+        title="Sign in to open the workbook"
+        body="Authentication runs through the local OIDC gateway. The UI only receives session state and user profile data."
+        error={auth.error}
+        actionLabel="Continue with MapLayer"
+        onAction={() => {
+          void authGateway.startLogin().catch(() => undefined);
+        }}
+      />
+    );
+  }
+
+  const displayName = auth.user?.name ?? auth.user?.email ?? auth.user?.sub ?? workspaceSeed.userName;
 
   return (
     <div className={`app-shell ${isRailCollapsed ? 'app-shell--rail-collapsed' : ''}`}>
@@ -114,7 +136,9 @@ export function App({ initialScenario = 'resume-workbook' }: AppProps) {
         </nav>
 
         <div className="rail-meta">
-          <span className={`status-chip ${connection.state === 'error' ? 'status-chip--warning' : ''}`}>
+          <span
+            className={`status-chip ${connection.state === 'error' || connection.state === 'auth-failed' ? 'status-chip--warning' : ''}`}
+          >
             {formatConnectionLabel(connection.state)}
           </span>
           <p>
@@ -145,8 +169,14 @@ export function App({ initialScenario = 'resume-workbook' }: AppProps) {
                 <button className="secondary-button" type="button">
                   Share & Members
                 </button>
-                <button className="ghost-button" type="button">
-                  {workspaceSeed.userName}
+                <button
+                  className="ghost-button"
+                  type="button"
+                  onClick={() => {
+                    void authGateway.logout().catch(() => undefined);
+                  }}
+                >
+                  {displayName}
                 </button>
               </div>
             </header>
@@ -259,6 +289,8 @@ function formatConnectionLabel(state: ConnectionSnapshot['state']) {
       return 'Surreal connecting';
     case 'reconnecting':
       return 'Surreal reconnecting';
+    case 'auth-failed':
+      return 'Surreal auth failed';
     case 'error':
       return 'Surreal error';
     case 'disconnected':
@@ -272,6 +304,40 @@ function formatConnectionMeta(connection: ConnectionSnapshot) {
   return connection.detail
     ? `${formatConnectionLabel(connection.state)} · ${connection.detail}`
     : formatConnectionLabel(connection.state);
+}
+
+function AuthScreen({
+  title,
+  body,
+  error,
+  actionLabel,
+  onAction,
+}: {
+  title: string;
+  body: string;
+  error?: string;
+  actionLabel?: string;
+  onAction?: () => void;
+}) {
+  return (
+    <main className="canvas-shell">
+      <section className="template-picker" aria-label="Authentication">
+        <div className="template-picker__hero">
+          <div>
+            <p className="eyebrow">Authentication</p>
+            <h2 className="template-picker__title">{title}</h2>
+          </div>
+          <p className="template-picker__copy">{body}</p>
+          {error ? <p className="template-picker__copy">Last error: {error}</p> : null}
+          {actionLabel && onAction ? (
+            <button className="primary-button" type="button" onClick={onAction}>
+              {actionLabel}
+            </button>
+          ) : null}
+        </div>
+      </section>
+    </main>
+  );
 }
 
 function TemplatePicker({ onSelectTemplate }: { onSelectTemplate: (templateKey: TemplateKey) => void }) {
