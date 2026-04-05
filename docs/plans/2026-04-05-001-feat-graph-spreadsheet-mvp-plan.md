@@ -216,7 +216,7 @@ Disconnect detected
 
 ---
 
-- [ ] **Unit 1: Project Scaffold + Design System Foundation**
+- [x] **Unit 1: Project Scaffold + Design System Foundation**
 
 **Goal:** Initialize the Vite + TypeScript project with all dependencies, design system CSS variables, and base HTML shell. No app logic — just the foundation every subsequent unit builds on.
 

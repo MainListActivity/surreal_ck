@@ -2,3 +2,5 @@
 .gstack/
 node_modules/
 dist/
+*.tsbuildinfo
+.env

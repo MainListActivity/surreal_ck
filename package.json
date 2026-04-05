@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "check:univer-versions": "node ./scripts/check-univer-versions.mjs",
     "postinstall": "npm run check:univer-versions"
@@ -20,6 +21,7 @@
   "devDependencies": {
     "@types/node": "^24.5.2",
     "typescript": "^5.9.2",
-    "vite": "^7.1.5"
+    "vite": "^7.1.5",
+    "vitest": "^3.2.4"
   }
 }

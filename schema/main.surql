@@ -134,10 +134,10 @@ DEFINE BUCKET IF NOT EXISTS spreadsheet_files BACKEND "file:/data/uploads" PERMI
 
 DEFINE ACCESS lawyer_access ON DATABASE TYPE RECORD
   SIGNIN (
-    SELECT VALUE {
-      access: "placeholder-access",
-      refresh: "placeholder-refresh"
-    }
+    SELECT *
+    FROM user
+    WHERE email = $email
+      AND crypto::argon2::compare(password_hash, $password)
   )
   SIGNUP (
     CREATE user CONTENT {
@@ -148,5 +148,10 @@ DEFINE ACCESS lawyer_access ON DATABASE TYPE RECORD
   );
 
 DEFINE ACCESS form_submit ON DATABASE TYPE RECORD
-  SIGNIN (SELECT VALUE { access: "form-submit-access", refresh: NONE })
+  SIGNIN (
+    SELECT *
+    FROM form_definition
+    WHERE slug = $slug
+    LIMIT 1
+  )
   SIGNUP NONE;

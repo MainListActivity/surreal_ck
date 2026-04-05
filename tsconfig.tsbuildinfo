@@ -1,1 +1,1 @@
-{"root":["./src/main.ts","./spike/collab-test.ts","./vite.config.ts"],"version":"5.9.3"}
+{"root":["./src/main.ts","./src/vite-env.d.ts","./src/surreal/auth.ts","./src/surreal/client.test.ts","./src/surreal/client.ts","./src/surreal/types.ts","./spike/collab-test.ts","./vite.config.ts"],"version":"5.9.3"}
