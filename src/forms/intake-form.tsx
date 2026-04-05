@@ -25,6 +25,7 @@ interface State {
   isSubmitting: boolean;
   submitError: string | null;
   submittedAt: Date | null;
+  submittedAttachments: string[];
 }
 
 type Action =
@@ -35,7 +36,7 @@ type Action =
   | { type: 'set-field-error'; key: string; error: string }
   | { type: 'clear-field-error'; key: string }
   | { type: 'submit-start' }
-  | { type: 'submit-ok'; at: Date }
+  | { type: 'submit-ok'; at: Date; attachments: string[] }
   | { type: 'submit-err'; error: string }
   | { type: 'reset' };
 
@@ -56,11 +57,23 @@ function reducer(state: State, action: Action): State {
     case 'submit-start':
       return { ...state, isSubmitting: true, submitError: null };
     case 'submit-ok':
-      return { ...state, isSubmitting: false, submittedAt: action.at };
+      return {
+        ...state,
+        isSubmitting: false,
+        submittedAt: action.at,
+        submittedAttachments: action.attachments,
+      };
     case 'submit-err':
       return { ...state, isSubmitting: false, submitError: action.error };
     case 'reset':
-      return { ...state, values: {}, fieldErrors: {}, submitError: null, submittedAt: null };
+      return {
+        ...state,
+        values: {},
+        fieldErrors: {},
+        submitError: null,
+        submittedAt: null,
+        submittedAttachments: [],
+      };
     default:
       return state;
   }
@@ -75,7 +88,38 @@ const INITIAL_STATE: State = {
   isSubmitting: false,
   submitError: null,
   submittedAt: null,
+  submittedAttachments: [],
 };
+
+export function buildSubmissionTransaction(
+  targetTable: string,
+  workspaceId: string,
+  formDefinitionId: string,
+  submissionToken: string,
+  payload: Record<string, unknown>,
+) {
+  return {
+    query: `BEGIN TRANSACTION;
+      LET $record = CREATE type::table($tableName) CONTENT $recordData;
+      CREATE intake_submission CONTENT $submissionData RETURN NONE;
+      COMMIT TRANSACTION`,
+    params: {
+      tableName: targetTable,
+      recordData: {
+        workspace: workspaceId,
+        submission_token: submissionToken,
+        ...payload,
+      },
+      submissionData: {
+        workspace: workspaceId,
+        form_definition: formDefinitionId,
+        submission_token: submissionToken,
+        payload,
+        unverified: false,
+      },
+    },
+  };
+}
 
 // ─── Draft persistence ────────────────────────────────────────────────────────
 
@@ -203,35 +247,23 @@ export function IntakeForm({ db, formSlug, workspaceId }: IntakeFormProps) {
     }
 
     try {
-      await db.query(
-        `BEGIN TRANSACTION;
-         LET $record = INSERT INTO ${state.formDef.target_table} {
-           workspace: $ws,
-           submission_token: $token,
-           ...($payload)
-         } RETURN NONE;
-         INSERT INTO intake_submission {
-           workspace: $ws,
-           form_definition: $formId,
-           submission_token: $token,
-           payload: $payload,
-           unverified: false
-         };
-         COMMIT TRANSACTION`,
-        {
-          ws: workspaceId,
-          token: submissionToken.current,
-          formId: state.formDef.id,
-          payload,
-        },
+      const uploadedAttachmentNames = uploadedFiles.current.map((file) => file.originalName);
+      const transaction = buildSubmissionTransaction(
+        state.formDef.target_table,
+        workspaceId,
+        state.formDef.id,
+        submissionToken.current,
+        payload,
       );
+
+      await db.query(transaction.query, transaction.params);
 
       clearDraft(state.formDef.slug);
       // Reset token for next submission (not reused).
       submissionToken.current = crypto.randomUUID();
       uploadedFiles.current = [];
 
-      dispatch({ type: 'submit-ok', at: new Date() });
+      dispatch({ type: 'submit-ok', at: new Date(), attachments: uploadedAttachmentNames });
     } catch (err) {
       // Clean up any files uploaded before the failed transaction.
       for (const uploaded of uploadedFiles.current) {
@@ -262,14 +294,12 @@ export function IntakeForm({ db, formSlug, workspaceId }: IntakeFormProps) {
       })
       .filter(({ value }) => value);
 
-    const attachmentNames = uploadedFiles.current.map((f) => f.originalName);
-
     return (
       <ConfirmationPage
         formTitle={state.formDef.title}
         submittedAt={state.submittedAt}
         summaryFields={summaryFields}
-        attachmentNames={attachmentNames}
+        attachmentNames={state.submittedAttachments}
         onReset={() => {
           dispatch({ type: 'reset' });
           submissionToken.current = crypto.randomUUID();

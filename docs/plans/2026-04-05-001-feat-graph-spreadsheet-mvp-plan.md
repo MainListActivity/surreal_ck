@@ -15,6 +15,15 @@ Build the full MVP of surreal_ck: a graph-powered collaborative spreadsheet for 
 
 The MVP delivers: real-time multi-user collaboration via a mutations table + LIVE SELECT, a `GRAPH_TRAVERSE` custom async formula, public intake forms with file uploads, an admin sidebar for schema/form management, CSV import with validation, template picker for first-run, and a daily backup script.
 
+## Execution Audit
+
+- Audit date: 2026-04-05
+- Verified complete in repo: Units 0, 1, 2, 3, 4, 7, 8, 10, 13
+- Partially landed / still preview-only or not integrated end-to-end: Units 5, 6, 9, 11, 12
+- Notes:
+  - The current app shell still relies on `src/workbook/mock-data.ts` for workbook/template flows, so the real workbook routing and first-run provisioning flow are not fully wired.
+  - Form toast / row highlight, recent changes, and record-ID UX exist as standalone modules or scaffolding, but are not yet integrated into the live workbook surface end-to-end.
+
 ## Problem Frame
 
 Legal-finance professionals (lawyers, legal ops) handle ownership chains, entity relationships, and client intake using a patchwork of spreadsheets + email. SurrealDB's graph model can make those relationships live and traversable inside a spreadsheet. The wedge is legal finance; the core tech is domain-agnostic. The MVP validates: (1) can graph traversal inside a spreadsheet feel native, and (2) does real-time form intake into a live grid create a meaningful workflow advantage?
@@ -421,7 +430,7 @@ Disconnect detected
 
 ---
 
-- [x] **Unit 5: App Shell + Navigation**
+- [ ] **Unit 5: App Shell + Navigation**
 
 **Goal:** Build the full app shell — top bar, left rail, main canvas, right sidebar — matching the "Workbook View (Main Grid) - surreal_ck style" Stitch screen. Implement routing: login → template picker (new user) or workbook (returning user).
 
@@ -469,7 +478,7 @@ Disconnect detected
 
 ---
 
-- [x] **Unit 6: Template Picker + First-Run Experience**
+- [ ] **Unit 6: Template Picker + First-Run Experience**
 
 **Goal:** Build the template picker, blank workspace guided setup panel, and the SurrealQL provisioning scripts for each template. New users land here before entering the workbook.
 
@@ -610,7 +619,7 @@ Disconnect detected
 
 ---
 
-- [x] **Unit 9: Form Submission Toast + Row Highlight**
+- [ ] **Unit 9: Form Submission Toast + Row Highlight**
 
 **Goal:** When a public form submission arrives via LIVE SELECT, show a toast notification in the lawyer's workbook and highlight the new row in the grid.
 
@@ -681,7 +690,7 @@ Disconnect detected
 
 ---
 
-- [x] **Unit 11: Recent Changes Sidebar**
+- [ ] **Unit 11: Recent Changes Sidebar**
 
 **Goal:** Show a "Recent Changes" panel in the left rail / right sidebar with the last 20 mutations across the workbook — who changed what and when.
 
@@ -713,7 +722,7 @@ Disconnect detected
 
 ---
 
-- [x] **Unit 12: Record ID Interactions (Hover Preview + Relationship Creator + Autocomplete)**
+- [ ] **Unit 12: Record ID Interactions (Hover Preview + Relationship Creator + Autocomplete)**
 
 **Goal:** Three UX enhancements that make record IDs feel native: (1) hover a record ID in a cell → tooltip with entity key fields; (2) right-click two rows → "Create Relationship" context menu; (3) formula autocomplete for `GRAPH_TRAVERSE` record ID argument.
 

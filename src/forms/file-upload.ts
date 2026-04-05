@@ -12,6 +12,21 @@ export interface UploadError {
   message: string;
 }
 
+function formatUploadFailure(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.toLowerCase();
+
+  if (
+    normalized.includes('enospc')
+    || normalized.includes('no space left on device')
+    || normalized.includes('disk full')
+  ) {
+    return 'File upload failed because storage is full. Please retry later or contact support.';
+  }
+
+  return message || 'File upload failed. Please try again.';
+}
+
 /**
  * Sanitizes a filename: strips path separators, null bytes, and dotfiles.
  * UUID-prefixes to ensure bucket key uniqueness.
@@ -63,7 +78,7 @@ export async function uploadFileToBucket(
       mimeType: file.type || 'application/octet-stream',
       sizeBytes: file.size,
     };
-  } catch {
+  } catch (primaryError) {
     // Fallback: base64 approach if ArrayBuffer param is rejected by SDK.
     try {
       const base64 = await fileToBase64(file);
@@ -79,9 +94,13 @@ export async function uploadFileToBucket(
         sizeBytes: file.size,
       };
     } catch (err) {
+      const primaryMessage = formatUploadFailure(primaryError);
       return {
         type: 'upload-failed',
-        message: err instanceof Error ? err.message : 'File upload failed. Please try again.',
+        message:
+          primaryMessage.includes('storage is full')
+            ? primaryMessage
+            : formatUploadFailure(err),
       };
     }
   }

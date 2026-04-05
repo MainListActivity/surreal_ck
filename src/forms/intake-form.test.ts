@@ -109,6 +109,30 @@ describe('uploadFileToBucket', () => {
     const result = await uploadFileToBucket(db, file);
     expect('type' in result && result.type).toBe('upload-failed');
   });
+
+  it('maps disk full failures to a user-friendly message', async () => {
+    const db = {
+      query: vi.fn().mockRejectedValue(new Error('ENOSPC: no space left on device')),
+    };
+
+    vi.spyOn(window, 'FileReader').mockImplementation(() => {
+      const fr = {
+        readAsDataURL: vi.fn(function (this: FileReader) {
+          this.onerror?.({} as unknown as ProgressEvent<FileReader>);
+        }),
+        onload: null,
+        onerror: null,
+      } as unknown as FileReader;
+      return fr;
+    });
+
+    const file = makeFile('disk-full.pdf', 100);
+    const result = await uploadFileToBucket(db, file);
+    expect('type' in result && result.type).toBe('upload-failed');
+    if ('type' in result) {
+      expect(result.message).toContain('storage is full');
+    }
+  });
 });
 
 // ─── deleteOrphanedFile ───────────────────────────────────────────────────────
