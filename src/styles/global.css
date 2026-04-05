@@ -856,3 +856,160 @@ code {
   white-space: nowrap;
   cursor: pointer;
 }
+
+/* ─── Intake form page ───────────────────────────────────────────────────── */
+
+.intake-form-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: var(--space-3xl) var(--space-lg);
+  background: var(--color-paper);
+}
+
+.intake-form-page__card {
+  width: 100%;
+  max-width: 560px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xl);
+}
+
+.intake-form-page__header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.intake-form-page__title {
+  font-family: var(--font-display);
+  font-size: var(--font-size-h1);
+  margin: 0;
+}
+
+.intake-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+}
+
+.intake-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.intake-field__label {
+  font-size: var(--font-size-small);
+  font-family: var(--font-ui);
+  color: var(--color-muted);
+}
+
+.intake-field__required {
+  color: var(--color-error);
+}
+
+.intake-field__input {
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-sm);
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-size: var(--font-size-body);
+  font-family: var(--font-body);
+  width: 100%;
+}
+
+.intake-field__input:focus {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+}
+
+.intake-field__input[aria-invalid="true"] {
+  border-color: var(--color-error);
+}
+
+.intake-field__error {
+  font-size: var(--font-size-small);
+  color: var(--color-error);
+  margin: 0;
+}
+
+.intake-form__error {
+  font-size: var(--font-size-small);
+  color: var(--color-error);
+  padding: var(--space-sm) var(--space-md);
+  background: color-mix(in srgb, var(--color-error) 8%, transparent);
+  border-radius: var(--radius-sm);
+  margin: 0;
+}
+
+.intake-form__submit {
+  align-self: flex-start;
+  min-width: 120px;
+}
+
+/* ─── Confirmation page ──────────────────────────────────────────────────── */
+
+.confirmation-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: var(--space-3xl) var(--space-lg);
+  background: var(--color-paper);
+}
+
+.confirmation-page__card {
+  width: 100%;
+  max-width: 560px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xl);
+}
+
+.confirmation-page__icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--color-primary);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+
+.confirmation-page__title {
+  font-family: var(--font-display);
+  font-size: var(--font-size-h1);
+  margin: 0;
+}
+
+.confirmation-page__timestamp {
+  font-size: var(--font-size-small);
+  color: var(--color-muted);
+  margin: 0;
+}
+
+.confirmation-page__summary {
+  border-top: 1px solid var(--color-parchment-2);
+  padding-top: var(--space-md);
+}
+
+.confirmation-page__attachments {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.confirmation-page__next {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding: var(--space-md);
+  background: var(--color-parchment);
+  border-radius: var(--radius-sm);
+}

@@ -557,7 +557,7 @@ Disconnect detected
 
 ---
 
-- [ ] **Unit 8: Public Intake Form**
+- [x] **Unit 8: Public Intake Form**
 
 **Goal:** Build the public intake form page — a static page with no login required. Submits data directly to SurrealDB via `form_submit` access. Handles file uploads via SurrealDB bucket. Shows a dedicated confirmation state.
 
