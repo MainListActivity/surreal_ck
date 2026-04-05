@@ -610,7 +610,7 @@ Disconnect detected
 
 ---
 
-- [ ] **Unit 9: Form Submission Toast + Row Highlight**
+- [x] **Unit 9: Form Submission Toast + Row Highlight**
 
 **Goal:** When a public form submission arrives via LIVE SELECT, show a toast notification in the lawyer's workbook and highlight the new row in the grid.
 
@@ -639,7 +639,7 @@ Disconnect detected
 
 ---
 
-- [ ] **Unit 10: CSV Import**
+- [x] **Unit 10: CSV Import**
 
 **Goal:** Allow admins/editors to import CSV files into entity tables: upload → column mapping → dry-run preview with validation → commit in 500-row chunks with progress bar.
 
@@ -681,7 +681,7 @@ Disconnect detected
 
 ---
 
-- [ ] **Unit 11: Recent Changes Sidebar**
+- [x] **Unit 11: Recent Changes Sidebar**
 
 **Goal:** Show a "Recent Changes" panel in the left rail / right sidebar with the last 20 mutations across the workbook — who changed what and when.
 
@@ -713,7 +713,7 @@ Disconnect detected
 
 ---
 
-- [ ] **Unit 12: Record ID Interactions (Hover Preview + Relationship Creator + Autocomplete)**
+- [x] **Unit 12: Record ID Interactions (Hover Preview + Relationship Creator + Autocomplete)**
 
 **Goal:** Three UX enhancements that make record IDs feel native: (1) hover a record ID in a cell → tooltip with entity key fields; (2) right-click two rows → "Create Relationship" context menu; (3) formula autocomplete for `GRAPH_TRAVERSE` record ID argument.
 
@@ -744,7 +744,7 @@ Disconnect detected
 
 ---
 
-- [ ] **Unit 13: Backup Script + Deployment**
+- [x] **Unit 13: Backup Script + Deployment**
 
 **Goal:** Production deployment: Docker Compose, schema init, backup cron script with 30-day retention and failure logging, and smoke check runbook.
 

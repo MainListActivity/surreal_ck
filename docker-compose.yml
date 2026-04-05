@@ -12,11 +12,27 @@ services:
       - --pass
       - ${SURREAL_ROOT_PASS:-root}
       - rocksdb:/data/database
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
+    # SurrealDB port is NOT published to the host — nginx proxies it internally.
+    # Only expose it directly for local development (comment out the nginx service below).
     restart: unless-stopped
     volumes:
       - surreal-data:/data
+      - surreal-backups:/data/backups
+
+  nginx:
+    image: nginx:1.25-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./dist:/usr/share/nginx/html:ro
+    depends_on:
+      - surreal
+    restart: unless-stopped
 
 volumes:
   surreal-data:
+  surreal-backups:
