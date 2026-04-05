@@ -1,6 +1,8 @@
 import { useEffect, useReducer, useState } from 'react';
 import type { Surreal } from 'surrealdb';
 
+import { entityTableDDL, validateTableKey, type FieldDef } from '../lib/surreal/ddl';
+
 export interface EntityField {
   key: string;
   label: string;
@@ -67,11 +69,7 @@ const INITIAL_STATE: State = {
   createStep: null,
 };
 
-const RESERVED_TABLE_NAMES = new Set([
-  'workspace', 'workbook', 'workspace_member', 'mutation', 'snapshot',
-  'presence', 'field_type', 'entity_type', 'relation_type', 'form_definition',
-  'intake_submission', 'client_error', 'workbook_file', 'app_user',
-]);
+// Validation is delegated to ddl.ts — see validateTableKey()
 
 export interface EntityTypesPanelProps {
   db: Surreal;
@@ -107,26 +105,22 @@ export function EntityTypesPanel({ db, workspaceId }: EntityTypesPanelProps) {
 
     const tableKey = label.toLowerCase().replace(/[^a-z0-9_]/g, '_');
 
-    if (RESERVED_TABLE_NAMES.has(tableKey)) {
-      dispatch({
-        type: 'create-err',
-        step: 'validation',
-        error: `"${tableKey}" is a reserved table name. Choose a different entity type name.`,
-      });
+    const keyErr = validateTableKey(tableKey);
+    if (keyErr) {
+      dispatch({ type: 'create-err', step: 'validation', error: keyErr });
       return;
     }
 
     dispatch({ type: 'create-start' });
 
     try {
-      // Step 1: DDL — define the table and workspace field.
-      await db.query(
-        `DEFINE TABLE IF NOT EXISTS ${tableKey} SCHEMALESS PERMISSIONS FULL;
-         DEFINE FIELD IF NOT EXISTS workspace ON TABLE ${tableKey} TYPE record<workspace>;
-         DEFINE FIELD IF NOT EXISTS name ON TABLE ${tableKey} TYPE string;
-         DEFINE FIELD IF NOT EXISTS created_at ON TABLE ${tableKey} TYPE datetime VALUE time::now();
-         DEFINE INDEX IF NOT EXISTS ${tableKey}_workspace ON TABLE ${tableKey} COLUMNS workspace`,
-      );
+      // Step 1: DDL — generate and execute standardised table definition
+      // with workspace-scoped owner/member permissions (no PERMISSIONS FULL).
+      const defaultFields: FieldDef[] = [
+        { key: 'name', type: 'text', required: true },
+      ];
+      const ddl = entityTableDDL(tableKey, defaultFields);
+      await db.query(ddl);
 
       // Step 2: Verify the table was created via INFO FOR DB.
       const [info] = await db.query<[Record<string, unknown>]>('INFO FOR DB');

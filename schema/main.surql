@@ -469,35 +469,50 @@ DEFINE ACCESS OVERWRITE madocs ON DATABASE TYPE RECORD WITH JWT URL 'https://o.m
 	IF type::is_array($token.aud) AND $token.aud CONTAINS 'https://auth.maplayer.top' OR $token.aud = 'https://auth.maplayer.top'
 	{
 
-IF !$token.sub {
+    IF !$token.sub {
       THROW 'Missing sub claim';
     };
 
     LET $user_id = type::record('app_user', $token.sub);
+    LET $existing = (SELECT VALUE id FROM ONLY $user_id);
 
-    IF (SELECT VALUE id FROM ONLY $user_id) {
-      RETURN $user_id;
+    IF !$existing {
+      LET $display_name = IF $token.name {
+        <string>$token.name
+      } ELSE IF $token.preferred_username {
+        <string>$token.preferred_username
+      } ELSE IF $token.email {
+        <string>$token.email
+      } ELSE {
+        <string>$token.sub
+      };
+
+      CREATE $user_id CONTENT {
+        display_name: $display_name,
+        email: $token.email,
+        subject: $token.sub,
+        avatar: IF $token.picture { <string>$token.picture } ELSE { NONE },
+        status: 'active',
+        created_at: time::now(),
+        updated_at: time::now()
+      };
     };
 
-    LET $display_name = IF $token.name {
-      <string>$token.name
-    } ELSE IF $token.preferred_username {
-      <string>$token.preferred_username
-    } ELSE IF $token.email {
-      <string>$token.email
-    } ELSE {
-      <string>$token.sub
+    -- Auto-claim: link any workspace_member records that share this user's email
+    -- but do not yet have a member_identifies_user edge pointing to this user.
+    -- Runs with system privileges inside AUTHENTICATE, bypassing row-level permissions.
+    IF $token.email {
+      LET $unclaimed = (
+        SELECT VALUE id FROM workspace_member
+        WHERE email = <string>$token.email
+          AND id NOT IN $user_id<-member_identifies_user<-workspace_member
+      );
+      FOR $member IN $unclaimed {
+        RELATE $member->member_identifies_user->$user_id;
+      };
     };
 
-    RETURN CREATE $user_id CONTENT {
-      display_name: $display_name,
-      email: $token.email,
-        subject:$token.sub,
-      avatar: IF $token.picture { <string>$token.picture } ELSE { NONE },
-      status: 'active',
-      created_at: time::now(),
-      updated_at: time::now()
-    };
+    RETURN $user_id;
 
 }
 ELSE

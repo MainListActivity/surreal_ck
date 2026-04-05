@@ -77,34 +77,83 @@ RELATE relation_type:filed_by_t->relation_from_type->entity_type:company_t;
 RELATE relation_type:filed_by_t->relation_to_type->entity_type:person_t;
 
 -- ─── Dynamic entity tables (DDL, idempotent) ─────────────────────────────────
+-- Permissions follow the standard workspace-scoped owner/member pattern.
+-- Members can read; only the workspace owner can write.
 
-DEFINE TABLE IF NOT EXISTS company SCHEMALESS PERMISSIONS FULL;
+DEFINE TABLE IF NOT EXISTS company SCHEMALESS
+  PERMISSIONS
+    FOR select WHERE
+      workspace IN $auth->owns_workspace->workspace
+      OR workspace IN $auth<-member_identifies_user<-workspace_member<-workspace_has_member<-workspace,
+    FOR create, update, delete WHERE
+      workspace IN $auth->owns_workspace->workspace;
 DEFINE FIELD IF NOT EXISTS workspace ON TABLE company TYPE record<workspace>;
 DEFINE FIELD IF NOT EXISTS name ON TABLE company TYPE string;
 DEFINE FIELD IF NOT EXISTS jurisdiction ON TABLE company TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS status ON TABLE company TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE company TYPE datetime VALUE time::now();
+DEFINE FIELD IF NOT EXISTS updated_at ON TABLE company TYPE datetime VALUE time::now();
 DEFINE INDEX IF NOT EXISTS company_workspace ON TABLE company COLUMNS workspace;
 
-DEFINE TABLE IF NOT EXISTS person SCHEMALESS PERMISSIONS FULL;
+DEFINE TABLE IF NOT EXISTS person SCHEMALESS
+  PERMISSIONS
+    FOR select WHERE
+      workspace IN $auth->owns_workspace->workspace
+      OR workspace IN $auth<-member_identifies_user<-workspace_member<-workspace_has_member<-workspace,
+    FOR create, update, delete WHERE
+      workspace IN $auth->owns_workspace->workspace;
 DEFINE FIELD IF NOT EXISTS workspace ON TABLE person TYPE record<workspace>;
 DEFINE FIELD IF NOT EXISTS name ON TABLE person TYPE string;
 DEFINE FIELD IF NOT EXISTS email ON TABLE person TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS role ON TABLE person TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE person TYPE datetime VALUE time::now();
+DEFINE FIELD IF NOT EXISTS updated_at ON TABLE person TYPE datetime VALUE time::now();
 DEFINE INDEX IF NOT EXISTS person_workspace ON TABLE person COLUMNS workspace;
 
-DEFINE TABLE IF NOT EXISTS trust SCHEMALESS PERMISSIONS FULL;
+DEFINE TABLE IF NOT EXISTS trust SCHEMALESS
+  PERMISSIONS
+    FOR select WHERE
+      workspace IN $auth->owns_workspace->workspace
+      OR workspace IN $auth<-member_identifies_user<-workspace_member<-workspace_has_member<-workspace,
+    FOR create, update, delete WHERE
+      workspace IN $auth->owns_workspace->workspace;
 DEFINE FIELD IF NOT EXISTS workspace ON TABLE trust TYPE record<workspace>;
 DEFINE FIELD IF NOT EXISTS name ON TABLE trust TYPE string;
 DEFINE FIELD IF NOT EXISTS trustee ON TABLE trust TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS settled_at ON TABLE trust TYPE option<datetime>;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE trust TYPE datetime VALUE time::now();
+DEFINE FIELD IF NOT EXISTS updated_at ON TABLE trust TYPE datetime VALUE time::now();
 DEFINE INDEX IF NOT EXISTS trust_workspace ON TABLE trust COLUMNS workspace;
 
-DEFINE TABLE IF NOT EXISTS owns TYPE RELATION IN company OUT company SCHEMALESS PERMISSIONS FULL;
-DEFINE TABLE IF NOT EXISTS controls TYPE RELATION IN company OUT company SCHEMALESS PERMISSIONS FULL;
-DEFINE TABLE IF NOT EXISTS filed_by TYPE RELATION IN company OUT person SCHEMALESS PERMISSIONS FULL;
+DEFINE TABLE IF NOT EXISTS owns TYPE RELATION IN company OUT company SCHEMALESS
+  PERMISSIONS
+    FOR select WHERE
+      in.workspace IN $auth->owns_workspace->workspace
+      OR in.workspace IN $auth<-member_identifies_user<-workspace_member<-workspace_has_member<-workspace,
+    FOR create, update, delete WHERE
+      in.workspace IN $auth->owns_workspace->workspace;
+DEFINE FIELD IF NOT EXISTS workspace ON TABLE owns TYPE record<workspace>;
+DEFINE FIELD IF NOT EXISTS created_at ON TABLE owns TYPE datetime VALUE time::now();
+
+DEFINE TABLE IF NOT EXISTS controls TYPE RELATION IN company OUT company SCHEMALESS
+  PERMISSIONS
+    FOR select WHERE
+      in.workspace IN $auth->owns_workspace->workspace
+      OR in.workspace IN $auth<-member_identifies_user<-workspace_member<-workspace_has_member<-workspace,
+    FOR create, update, delete WHERE
+      in.workspace IN $auth->owns_workspace->workspace;
+DEFINE FIELD IF NOT EXISTS workspace ON TABLE controls TYPE record<workspace>;
+DEFINE FIELD IF NOT EXISTS created_at ON TABLE controls TYPE datetime VALUE time::now();
+
+DEFINE TABLE IF NOT EXISTS filed_by TYPE RELATION IN company OUT person SCHEMALESS
+  PERMISSIONS
+    FOR select WHERE
+      in.workspace IN $auth->owns_workspace->workspace
+      OR in.workspace IN $auth<-member_identifies_user<-workspace_member<-workspace_has_member<-workspace,
+    FOR create, update, delete WHERE
+      in.workspace IN $auth->owns_workspace->workspace;
+DEFINE FIELD IF NOT EXISTS workspace ON TABLE filed_by TYPE record<workspace>;
+DEFINE FIELD IF NOT EXISTS created_at ON TABLE filed_by TYPE datetime VALUE time::now();
 
 -- ─── Form definition ─────────────────────────────────────────────────────────
 
