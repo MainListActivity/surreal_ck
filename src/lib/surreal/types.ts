@@ -110,6 +110,7 @@ export interface AuthPendingLogin {
   state: string;
   codeVerifier: string;
   redirectUri: string;
+  returnTo: string;
   createdAt: number;
 }
 

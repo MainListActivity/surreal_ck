@@ -1,7 +1,7 @@
 import type { LiveMessage, LiveSubscription, Surreal } from 'surrealdb';
 import { Table } from 'surrealdb';
 
-import type { MutationRecord } from '../surreal/types';
+import type { MutationRecord } from '../lib/surreal/types';
 
 export interface CollabMutation {
   workbook: string;

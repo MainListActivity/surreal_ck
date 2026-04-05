@@ -1,12 +1,11 @@
 import { useState } from 'react';
 
-import { authGateway, useAuthSnapshot } from '../surreal/auth';
-import { useConnectionSnapshot } from '../surreal/client';
-import type { ConnectionSnapshot } from '../surreal/types';
+import { useConnectionSnapshot } from '../../lib/surreal/client';
+import type { ConnectionSnapshot } from '../../lib/surreal/types';
 import {
   blankWorkbook,
+  findWorkbookById,
   workspaceSeed,
-  type AppScenario,
   type SidebarPanel,
   type TemplateKey,
 } from './mock-data';
@@ -19,59 +18,36 @@ const panelLabels: Record<SidebarPanel, string> = {
   admin: 'Admin tools',
 };
 
-export interface AppProps {
-  initialScenario?: AppScenario;
+export interface AppShellProps {
+  view: 'template-picker' | 'workbook';
+  activeWorkbookId?: string;
+  activePanel?: SidebarPanel;
+  displayName?: string;
+  onSelectTemplate: (templateKey: TemplateKey) => void;
+  onSelectWorkbook: (workbookId: string) => void;
+  onSelectPanel: (panel: SidebarPanel) => void;
+  onShowTemplates: () => void;
+  onShowAdmin: () => void;
+  onLogout?: () => void;
 }
 
-export function App({ initialScenario = 'resume-workbook' }: AppProps) {
-  const [screen, setScreen] = useState<'template-picker' | 'workbook'>(
-    initialScenario === 'template-picker' ? 'template-picker' : 'workbook',
-  );
+export function AppShell({
+  view,
+  activeWorkbookId = workspaceSeed.workbooks[0]?.id ?? blankWorkbook.id,
+  activePanel = 'graph',
+  displayName = workspaceSeed.userName,
+  onSelectTemplate,
+  onSelectWorkbook,
+  onSelectPanel,
+  onShowTemplates,
+  onShowAdmin,
+  onLogout,
+}: AppShellProps) {
   const [isRailCollapsed, setIsRailCollapsed] = useState(false);
-  const [activeWorkbookId, setActiveWorkbookId] = useState(workspaceSeed.workbooks[0]?.id ?? blankWorkbook.id);
-  const [activePanel, setActivePanel] = useState<SidebarPanel>('graph');
 
-  const activeWorkbook =
-    workspaceSeed.workbooks.find((workbook) => workbook.id === activeWorkbookId) ?? blankWorkbook;
+  const activeWorkbook = findWorkbookById(activeWorkbookId);
   const primaryRow = activeWorkbook.rows[0] ?? blankWorkbook.rows[0];
-  const auth = useAuthSnapshot();
   const connection = useConnectionSnapshot();
-
-  const openWorkbook = (templateKey: TemplateKey) => {
-    if (templateKey === 'blank-workspace') {
-      setActiveWorkbookId(blankWorkbook.id);
-      setActivePanel('setup');
-      setScreen('workbook');
-      return;
-    }
-
-    const nextWorkbook =
-      workspaceSeed.workbooks.find((workbook) => workbook.templateKey === templateKey) ?? workspaceSeed.workbooks[0];
-
-    setActiveWorkbookId(nextWorkbook.id);
-    setActivePanel(templateKey === 'case-management' ? 'recent' : 'graph');
-    setScreen('workbook');
-  };
-
-  if (auth.status === 'checking' || auth.status === 'authorizing') {
-    return <AuthScreen title="Authorizing workspace" body="Completing OIDC login and preparing the workbook session." />;
-  }
-
-  if (!auth.isLoggedIn) {
-    return (
-      <AuthScreen
-        title="Sign in to open the workbook"
-        body="Authentication runs through the local OIDC gateway. The UI only receives session state and user profile data."
-        error={auth.error}
-        actionLabel="Continue with MapLayer"
-        onAction={() => {
-          void authGateway.startLogin().catch(() => undefined);
-        }}
-      />
-    );
-  }
-
-  const displayName = auth.user?.name ?? auth.user?.email ?? auth.user?.sub ?? workspaceSeed.userName;
 
   const isOffline = connection.state === 'reconnecting' || connection.state === 'disconnected';
 
@@ -105,12 +81,10 @@ export function App({ initialScenario = 'resume-workbook' }: AppProps) {
             {workspaceSeed.workbooks.map((workbook) => (
               <button
                 key={workbook.id}
-                className={`rail-button ${screen === 'workbook' && activeWorkbookId === workbook.id ? 'rail-button--active' : ''}`}
+                className={`rail-button ${view === 'workbook' && activeWorkbookId === workbook.id ? 'rail-button--active' : ''}`}
                 type="button"
                 onClick={() => {
-                  setActiveWorkbookId(workbook.id);
-                  setActivePanel(workbook.templateKey === 'case-management' ? 'recent' : 'graph');
-                  setScreen('workbook');
+                  onSelectWorkbook(workbook.id);
                 }}
               >
                 <span>{workbook.name}</span>
@@ -122,23 +96,23 @@ export function App({ initialScenario = 'resume-workbook' }: AppProps) {
 
         <nav className="rail-section" aria-label="Primary">
           <button
-            className={`rail-button ${screen === 'workbook' ? 'rail-button--active' : ''}`}
+            className={`rail-button ${view === 'workbook' ? 'rail-button--active' : ''}`}
             type="button"
-            onClick={() => setScreen('workbook')}
+            onClick={() => onSelectWorkbook(activeWorkbook.id)}
           >
             Workbook
           </button>
           <button
-            className={`rail-button ${screen === 'template-picker' ? 'rail-button--active' : ''}`}
+            className={`rail-button ${view === 'template-picker' ? 'rail-button--active' : ''}`}
             type="button"
-            onClick={() => setScreen('template-picker')}
+            onClick={onShowTemplates}
           >
             Templates
           </button>
-          <button className="rail-button" type="button" onClick={() => setActivePanel('recent')}>
+          <button className="rail-button" type="button" onClick={() => onSelectPanel('recent')}>
             Recent changes
           </button>
-          <button className="rail-button" type="button" onClick={() => setActivePanel('admin')}>
+          <button className="rail-button" type="button" onClick={onShowAdmin}>
             Admin
           </button>
         </nav>
@@ -156,8 +130,8 @@ export function App({ initialScenario = 'resume-workbook' }: AppProps) {
       </aside>
 
       <main className="canvas-shell">
-        {screen === 'template-picker' ? (
-          <TemplatePicker onSelectTemplate={openWorkbook} />
+        {view === 'template-picker' ? (
+          <TemplatePicker onSelectTemplate={onSelectTemplate} />
         ) : (
           <>
             <header className="top-bar">
@@ -181,7 +155,7 @@ export function App({ initialScenario = 'resume-workbook' }: AppProps) {
                   className="ghost-button"
                   type="button"
                   onClick={() => {
-                    void authGateway.logout().catch(() => undefined);
+                    onLogout?.();
                   }}
                 >
                   {displayName}
@@ -197,13 +171,13 @@ export function App({ initialScenario = 'resume-workbook' }: AppProps) {
                     <h3 className="sheet-stage__title">{activeWorkbook.sheetLabel}</h3>
                   </div>
                   <div className="sheet-stage__actions">
-                    <button className="ghost-button" type="button" onClick={() => setActivePanel('record')}>
+                    <button className="ghost-button" type="button" onClick={() => onSelectPanel('record')}>
                       Record detail
                     </button>
-                    <button className="ghost-button" type="button" onClick={() => setActivePanel('graph')}>
+                    <button className="ghost-button" type="button" onClick={() => onSelectPanel('graph')}>
                       Graph results
                     </button>
-                    <button className="ghost-button" type="button" onClick={() => setActivePanel('recent')}>
+                    <button className="ghost-button" type="button" onClick={() => onSelectPanel('recent')}>
                       Recent changes
                     </button>
                   </div>
@@ -230,7 +204,7 @@ export function App({ initialScenario = 'resume-workbook' }: AppProps) {
                       className={`sheet-grid__row sheet-grid__row--interactive sheet-grid__row--${row.status}`}
                       type="button"
                       role="row"
-                      onClick={() => setActivePanel('record')}
+                      onClick={() => onSelectPanel('record')}
                     >
                       <span>{row.entity}</span>
                       <span>{row.jurisdiction}</span>
@@ -255,7 +229,7 @@ export function App({ initialScenario = 'resume-workbook' }: AppProps) {
                         </div>
                         <p>{row.relationship}</p>
                         <p className="mono-cell">{row.id}</p>
-                        <button className="secondary-button secondary-button--full" type="button" onClick={() => setActivePanel('record')}>
+                        <button className="secondary-button secondary-button--full" type="button" onClick={() => onSelectPanel('record')}>
                           Open detail
                         </button>
                       </article>
@@ -314,7 +288,7 @@ function formatConnectionMeta(connection: ConnectionSnapshot) {
     : formatConnectionLabel(connection.state);
 }
 
-function AuthScreen({
+export function AuthScreen({
   title,
   body,
   error,

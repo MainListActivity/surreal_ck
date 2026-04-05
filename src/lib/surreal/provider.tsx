@@ -10,7 +10,7 @@ import {
 } from 'react';
 import { Surreal } from 'surrealdb';
 
-import { authGateway, useAuthSnapshot } from './auth';
+import { authGateway, useAuthSnapshot } from '../../features/auth/auth';
 import {
   authenticateSurrealAccessToken,
   attachConnectionListeners,

@@ -188,3 +188,27 @@ export const blankWorkbook: WorkbookSummary = {
     },
   ],
 };
+
+export function getDefaultWorkbookId(): string {
+  return workspaceSeed.workbooks[0]?.id ?? blankWorkbook.id;
+}
+
+export function findWorkbookById(workbookId: string): WorkbookSummary {
+  return workspaceSeed.workbooks.find((workbook) => workbook.id === workbookId) ?? blankWorkbook;
+}
+
+export function resolveWorkbookForTemplate(templateKey: TemplateKey): WorkbookSummary {
+  if (templateKey === 'blank-workspace') {
+    return blankWorkbook;
+  }
+
+  return workspaceSeed.workbooks.find((workbook) => workbook.templateKey === templateKey) ?? workspaceSeed.workbooks[0] ?? blankWorkbook;
+}
+
+export function getDefaultPanelForTemplate(templateKey: TemplateKey): SidebarPanel {
+  if (templateKey === 'blank-workspace') {
+    return 'setup';
+  }
+
+  return templateKey === 'case-management' ? 'recent' : 'graph';
+}

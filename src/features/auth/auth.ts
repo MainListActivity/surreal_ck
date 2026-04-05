@@ -12,11 +12,12 @@ import type {
   SessionStorageLike,
   TokenEndpointResponse,
   UserProfile,
-} from './types';
+} from '../../lib/surreal/types';
 
 const DEFAULT_ACCESS_REFRESH_LEEWAY_MS = 60_000;
 const TOKEN_STORAGE_KEY = 'surreal_ck.oidc.tokens';
 const LOGIN_STORAGE_KEY = 'surreal_ck.oidc.login';
+const CALLBACK_PATH = '/callback';
 
 type Listener = (snapshot: AuthSnapshot) => void;
 type FetchLike = typeof fetch;
@@ -153,7 +154,7 @@ export function getOidcConfig(
   env: ImportMetaEnv | Record<string, string | undefined> = import.meta.env,
 ): OidcConfig {
   const fallbackRedirectUri =
-    typeof window === 'undefined' ? 'http://localhost:5173' : `${window.location.origin}${window.location.pathname}`;
+    typeof window === 'undefined' ? `http://localhost:5173${CALLBACK_PATH}` : `${window.location.origin}${CALLBACK_PATH}`;
 
   return {
     issuer: env.VITE_OIDC_ISSUER ?? 'https://o.maplayer.top/t/ck',
@@ -199,6 +200,14 @@ function persistPendingLogin(
 
 function clearPendingLogin(storage: SessionStorageLike | null = resolveStorage()): void {
   storage?.removeItem(LOGIN_STORAGE_KEY);
+}
+
+function isOidcCallbackUrl(url: URL = new URL(window.location.href)): boolean {
+  return url.pathname === CALLBACK_PATH;
+}
+
+function getDefaultReturnTo(url: URL = new URL(window.location.href)): string {
+  return url.pathname === CALLBACK_PATH ? '/' : `${url.pathname}${url.search}${url.hash}`;
 }
 
 async function createPkcePair(): Promise<{ verifier: string; challenge: string }> {
@@ -283,17 +292,13 @@ async function refreshAccessToken(
   return buildTokenBundle((await response.json()) as TokenEndpointResponse);
 }
 
-function cleanAuthCallbackUrl(): void {
+function leaveAuthCallback(returnTo = '/'): void {
   if (typeof window === 'undefined') {
     return;
   }
 
-  const url = new URL(window.location.href);
-  url.searchParams.delete('code');
-  url.searchParams.delete('state');
-  url.searchParams.delete('error');
-  url.searchParams.delete('error_description');
-  window.history.replaceState({}, document.title, `${url.pathname}${url.search}${url.hash}`);
+  const nextUrl = new URL(returnTo, window.location.origin);
+  window.history.replaceState({}, document.title, `${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`);
 }
 
 function syncAuthState(bundle: OidcTokenBundle | null): void {
@@ -319,19 +324,19 @@ class OidcAuthGateway {
         return;
       }
 
-      const params = new URLSearchParams(window.location.search);
+      const url = new URL(window.location.href);
+      const params = url.searchParams;
 
-      if (params.get('error')) {
+      if (isOidcCallbackUrl(url) && params.get('error')) {
         authState.set('error', {
           error: params.get('error_description') ?? params.get('error') ?? 'OIDC login failed',
         });
-        cleanAuthCallbackUrl();
         return;
       }
 
-      if (params.get('code') && params.get('state')) {
-        await this.handleCallback(params.get('code') ?? '', params.get('state') ?? '', fetcher);
-        cleanAuthCallbackUrl();
+      if (isOidcCallbackUrl(url) && params.get('code') && params.get('state')) {
+        const returnTo = await this.handleCallback(params.get('code') ?? '', params.get('state') ?? '', fetcher);
+        leaveAuthCallback(returnTo);
         return;
       }
 
@@ -372,6 +377,8 @@ class OidcAuthGateway {
         state,
         codeVerifier: verifier,
         redirectUri: config.redirectUri,
+        returnTo:
+          typeof window === 'undefined' ? '/' : getDefaultReturnTo(new URL(window.location.href)),
         createdAt: Date.now(),
       },
       storage,
@@ -399,7 +406,7 @@ class OidcAuthGateway {
     state: string,
     fetcher: FetchLike = fetch,
     storage: SessionStorageLike | null = resolveStorage(),
-  ): Promise<void> {
+  ): Promise<string> {
     authState.set('authorizing');
 
     const pending = getPendingLogin(storage);
@@ -413,6 +420,7 @@ class OidcAuthGateway {
     persistTokens(bundle, storage);
     clearPendingLogin(storage);
     syncAuthState(bundle);
+    return pending.returnTo || '/';
   }
 
   async validAccessToken(

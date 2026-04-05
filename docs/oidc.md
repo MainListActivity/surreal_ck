@@ -10,14 +10,14 @@
 - Scope: openid profile email
 - 登录流程必须使用 Authorization Code + PKCE(S256)
 
-2. 在服务端/本地网关层实现：
+2. 在SPA实现：
 - start_login(): 生成 code_verifier、code_challenge、state，并拼 authorize URL
 - handle_callback(code, state): 校验 state，向 token endpoint 换取 access_token / refresh_token / id_token
 - 把 tokens 持久化到本地存储
 - valid_access_token(): 返回可用 access token；如果即将过期则优先用 refresh_token 刷新
 - logout(): 清除本地 tokens
 
-3. 不要把 access token 暴露给 Flutter/UI 层，UI 只能拿到 logged_in 状态和用户信息；真正访问 SurrealDB 的动作必须在 Rust/服务端层完成。
+3. access token 在auth中获取，并存储。
 
 4. 在 SurrealDB 连接层实现：
 - connect() 后先 use_ns / use_db

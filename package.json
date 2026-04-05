@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@tanstack/react-query": "^5.96.2",
+    "@tanstack/react-router": "^1.168.10",
     "@univerjs/engine-formula": "0.20.0",
     "@univerjs/preset-sheets-core": "0.20.0",
     "@univerjs/presets": "0.20.0",

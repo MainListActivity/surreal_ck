@@ -1,7 +1,7 @@
 import type { LiveSubscription, Surreal } from 'surrealdb';
 import { Table } from 'surrealdb';
 
-import type { SnapshotRecord } from '../surreal/types';
+import type { SnapshotRecord } from '../lib/surreal/types';
 
 const SNAPSHOT_MUTATION_COUNT = 100;
 const SNAPSHOT_INTERVAL_MS = 10 * 60 * 1_000; // 10 minutes

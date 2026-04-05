@@ -1,6 +1,6 @@
 import type { Surreal } from 'surrealdb';
 
-import type { TemplateKey } from '../workbook/mock-data';
+import type { TemplateKey } from '../features/workbook/mock-data';
 
 export interface ProvisioningResult {
   ok: true;
