@@ -1,0 +1,25 @@
+{
+  "name": "surreal_ck",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "check:univer-versions": "node ./scripts/check-univer-versions.mjs",
+    "postinstall": "npm run check:univer-versions"
+  },
+  "dependencies": {
+    "@univerjs/engine-formula": "0.20.0",
+    "@univerjs/preset-sheets-core": "0.20.0",
+    "@univerjs/presets": "0.20.0",
+    "surrealdb": "2.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.5"
+  }
+}

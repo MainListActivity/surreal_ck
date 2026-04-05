@@ -1,0 +1,22 @@
+services:
+  surreal:
+    image: surrealdb/surrealdb:v3.0.5
+    environment:
+      SURREAL_CAPS_ALLOW_EXPERIMENTAL: files
+    command:
+      - start
+      - --log
+      - info
+      - --user
+      - root
+      - --pass
+      - ${SURREAL_ROOT_PASS:-root}
+      - rocksdb:/data/database
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    volumes:
+      - surreal-data:/data
+
+volumes:
+  surreal-data:

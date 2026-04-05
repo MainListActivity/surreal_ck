@@ -1,2 +1,4 @@
 .idea
 .gstack/
+node_modules/
+dist/

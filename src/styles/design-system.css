@@ -1,0 +1,55 @@
+@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Source+Sans+3:wght@400;500;600;700&family=Geist+Mono:wght@400;500;700&display=swap');
+
+:root {
+  color-scheme: light;
+
+  --color-primary: #174b47;
+  --color-secondary: #a44a2a;
+
+  --color-paper: #fbfaf7;
+  --color-parchment: #f1eee8;
+  --color-parchment-2: #e7e1d5;
+  --color-line: #d8d2c7;
+  --color-line-strong: #b8b0a2;
+  --color-ink: #1a1f1e;
+  --color-muted: #6b706f;
+
+  --color-success: #1f6b52;
+  --color-warning: #b36a1d;
+  --color-error: #a23b32;
+  --color-info: #2e5b7a;
+
+  --font-display: 'Instrument Serif', serif;
+  --font-body: 'Source Sans 3', sans-serif;
+  --font-mono: 'Geist Mono', monospace;
+
+  --font-size-hero: clamp(3rem, 6vw, 5.8rem);
+  --font-size-h1: clamp(2rem, 3vw, 3rem);
+  --font-size-h2: 1.15rem;
+  --font-size-body: 1.05rem;
+  --font-size-small: 0.82rem;
+  --font-size-meta: 0.74rem;
+
+  --space-2xs: 2px;
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-2xl: 48px;
+  --space-3xl: 64px;
+
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 22px;
+  --radius-xl: 30px;
+  --radius-pill: 999px;
+
+  --duration-micro: 100ms;
+  --duration-short: 180ms;
+  --duration-medium: 260ms;
+  --duration-long: 400ms;
+
+  --shadow-subtle: 0 16px 36px rgba(26, 31, 30, 0.08);
+  --max-content-width: 1280px;
+}
