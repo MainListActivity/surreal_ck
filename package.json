@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "packageManager": "pnpm@10.32.1",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
@@ -10,7 +11,7 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "check:univer-versions": "node ./scripts/check-univer-versions.mjs",
-    "postinstall": "npm run check:univer-versions"
+    "postinstall": "pnpm run check:univer-versions"
   },
   "dependencies": {
     "@univerjs/engine-formula": "0.20.0",
