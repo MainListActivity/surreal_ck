@@ -365,7 +365,7 @@ Disconnect detected
 
 ---
 
-- [ ] **Unit 4: GRAPH_TRAVERSE Custom Formula**
+- [x] **Unit 4: GRAPH_TRAVERSE Custom Formula**
 
 **Goal:** Register `GRAPH_TRAVERSE(startNode, relationship, depth)` as an async Univer formula that queries SurrealDB graph edges, returns display labels in the cell, and populates a sidebar panel with the full result list on click.
 
@@ -421,7 +421,7 @@ Disconnect detected
 
 ---
 
-- [ ] **Unit 5: App Shell + Navigation**
+- [x] **Unit 5: App Shell + Navigation**
 
 **Goal:** Build the full app shell — top bar, left rail, main canvas, right sidebar — matching the "Workbook View (Main Grid) - surreal_ck style" Stitch screen. Implement routing: login → template picker (new user) or workbook (returning user).
 

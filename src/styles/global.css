@@ -61,7 +61,7 @@ code {
 
 .canvas-shell {
   display: grid;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: auto 1fr auto;
   min-width: 0;
 }
 
@@ -598,6 +598,37 @@ code {
   margin: var(--space-lg) 0 0;
   overflow: auto;
   padding: var(--space-lg);
+}
+
+.reconnect-banner {
+  align-items: center;
+  background: var(--color-warning);
+  color: var(--color-paper);
+  display: flex;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-small);
+  gap: var(--space-sm);
+  grid-column: 1 / -1;
+  justify-content: center;
+  letter-spacing: 0.06em;
+  padding: var(--space-sm) var(--space-lg);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.reconnect-banner__dot {
+  animation: pulse 1.2s ease-in-out infinite;
+  background: currentColor;
+  border-radius: 50%;
+  display: inline-block;
+  height: 8px;
+  width: 8px;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
 }
 
 @media (max-width: 1180px) {

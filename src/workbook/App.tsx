@@ -73,8 +73,16 @@ export function App({ initialScenario = 'resume-workbook' }: AppProps) {
 
   const displayName = auth.user?.name ?? auth.user?.email ?? auth.user?.sub ?? workspaceSeed.userName;
 
+  const isOffline = connection.state === 'reconnecting' || connection.state === 'disconnected';
+
   return (
     <div className={`app-shell ${isRailCollapsed ? 'app-shell--rail-collapsed' : ''}`}>
+      {isOffline && (
+        <div className="reconnect-banner" role="status" aria-live="polite">
+          <span className="reconnect-banner__dot" aria-hidden="true" />
+          {connection.state === 'reconnecting' ? 'Reconnecting to workspace…' : 'Connection lost — working offline'}
+        </div>
+      )}
       <aside className="left-rail" aria-label="Workbook navigation">
         <div className="left-rail__header">
           <div>
