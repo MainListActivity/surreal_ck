@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
+import { Surreal } from 'surrealdb';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ConnectionSnapshot } from '../../lib/surreal/types';
@@ -14,6 +15,37 @@ vi.mock('../../lib/surreal/client', async (importOriginal) => {
   return {
     ...original,
     useConnectionSnapshot: () => mockUseConnectionSnapshot(),
+  };
+});
+
+// Provide a stub SurrealClient so AppShell can call useSurrealClient() in tests.
+const stubDb = new Surreal();
+vi.mock('../../lib/surreal/provider', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../../lib/surreal/provider')>();
+  return {
+    ...original,
+    useSurrealClient: () => stubDb,
+  };
+});
+
+// Stub useWorkspace so tests don't hit the network.
+vi.mock('./use-workspace', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./use-workspace')>();
+  return {
+    ...original,
+    useWorkspace: () => ({
+      data: {
+        id: 'workspace:harbor',
+        name: 'Harbor Legal Ops',
+        memberCount: 4,
+        workbooks: [
+          { id: 'workbook:legal_entities', name: 'Legal Entity Tracker', template_key: 'legal-entity-tracker', updated_at: null },
+          { id: 'workbook:case_ops',       name: 'Case Management',       template_key: 'case-management',       updated_at: null },
+        ],
+      },
+      isLoading: false,
+      error: null,
+    }),
   };
 });
 

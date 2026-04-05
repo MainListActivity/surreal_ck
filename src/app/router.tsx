@@ -12,12 +12,7 @@ import type { ReactNode } from 'react';
 
 import { authGateway, useAuthSnapshot } from '../features/auth/auth';
 import type { SidebarPanel, TemplateKey } from '../features/workbook/mock-data';
-import {
-  findWorkbookById,
-  getDefaultPanelForTemplate,
-  getDefaultWorkbookId,
-  resolveWorkbookForTemplate,
-} from '../features/workbook/mock-data';
+import { getDefaultPanelForTemplate } from '../features/workbook/mock-data';
 import { AppShell, AuthScreen } from '../features/workbook/app-shell';
 
 function RootLayout() {
@@ -58,8 +53,9 @@ function parsePanelSearch(search: Record<string, unknown>, fallback: SidebarPane
   };
 }
 
+/** Home route — redirect to the workbook list view; let AppShell pick the first workbook from DB. */
 function HomeRoute() {
-  return <Navigate to="/workbooks/$workbookId" params={{ workbookId: getDefaultWorkbookId() }} search={{ panel: 'graph' }} replace />;
+  return <Navigate to="/workbooks" search={{ panel: 'graph' }} replace />;
 }
 
 function CallbackRoute() {
@@ -76,20 +72,15 @@ function TemplatesRoute() {
           view="template-picker"
           displayName={displayName}
           onSelectTemplate={(templateKey) => {
-            const workbook = resolveWorkbookForTemplate(templateKey);
             const panel = getDefaultPanelForTemplate(templateKey);
-            void navigate({
-              to: '/workbooks/$workbookId',
-              params: { workbookId: workbook.id },
-              search: { panel },
-            });
+            // Navigate to /workbooks with the template panel — AppShell loads the real workbook from DB.
+            void navigate({ to: '/workbooks', search: { panel } });
           }}
           onSelectWorkbook={(workbookId) => {
-            const workbook = findWorkbookById(workbookId);
             void navigate({
               to: '/workbooks/$workbookId',
-              params: { workbookId: workbook.id },
-              search: { panel: getDefaultPanelForTemplate(workbook.templateKey) },
+              params: { workbookId },
+              search: { panel: 'graph' },
             });
           }}
           onSelectPanel={() => undefined}
@@ -108,43 +99,72 @@ function TemplatesRoute() {
 
 function AdminRoute() {
   const navigate = useNavigate();
-  const workbookId = getDefaultWorkbookId();
 
   return (
     <RequireAuth>
       {(displayName) => (
         <AppShell
           view="workbook"
-          activeWorkbookId={workbookId}
           activePanel="admin"
           displayName={displayName}
           onSelectTemplate={(templateKey: TemplateKey) => {
-            const workbook = resolveWorkbookForTemplate(templateKey);
-            void navigate({
-              to: '/workbooks/$workbookId',
-              params: { workbookId: workbook.id },
-              search: { panel: getDefaultPanelForTemplate(templateKey) },
-            });
+            const panel = getDefaultPanelForTemplate(templateKey);
+            void navigate({ to: '/workbooks', search: { panel } });
           }}
-          onSelectWorkbook={(nextWorkbookId) => {
-            const workbook = findWorkbookById(nextWorkbookId);
+          onSelectWorkbook={(workbookId) => {
             void navigate({
               to: '/workbooks/$workbookId',
-              params: { workbookId: workbook.id },
-              search: { panel: getDefaultPanelForTemplate(workbook.templateKey) },
+              params: { workbookId },
+              search: { panel: 'graph' },
             });
           }}
           onSelectPanel={(panel) => {
+            void navigate({ to: '/workbooks', search: { panel } });
+          }}
+          onShowTemplates={() => {
+            void navigate({ to: '/templates' });
+          }}
+          onShowAdmin={() => undefined}
+          onLogout={() => {
+            void authGateway.logout().catch(() => undefined);
+          }}
+        />
+      )}
+    </RequireAuth>
+  );
+}
+
+/** /workbooks — no specific ID; AppShell loads from DB and defaults to first workbook. */
+function WorkbooksRoute() {
+  const navigate = useNavigate();
+  const { panel } = useSearch({ from: '/workbooks' });
+
+  return (
+    <RequireAuth>
+      {(displayName) => (
+        <AppShell
+          view="workbook"
+          activePanel={panel}
+          displayName={displayName}
+          onSelectTemplate={(templateKey) => {
+            void navigate({ to: '/workbooks', search: { panel: getDefaultPanelForTemplate(templateKey) } });
+          }}
+          onSelectWorkbook={(workbookId) => {
             void navigate({
               to: '/workbooks/$workbookId',
               params: { workbookId },
               search: { panel },
             });
           }}
+          onSelectPanel={(nextPanel) => {
+            void navigate({ to: '/workbooks', search: { panel: nextPanel } });
+          }}
           onShowTemplates={() => {
             void navigate({ to: '/templates' });
           }}
-          onShowAdmin={() => undefined}
+          onShowAdmin={() => {
+            void navigate({ to: '/admin' });
+          }}
           onLogout={() => {
             void authGateway.logout().catch(() => undefined);
           }}
@@ -161,55 +181,42 @@ function WorkbookRoute() {
 
   return (
     <RequireAuth>
-      {(displayName) => {
-        const workbook = findWorkbookById(workbookId);
-
-        return (
-          <AppShell
-            view="workbook"
-            activeWorkbookId={workbook.id}
-            activePanel={panel}
-            displayName={displayName}
-            onSelectTemplate={(templateKey) => {
-              const nextWorkbook = resolveWorkbookForTemplate(templateKey);
-              void navigate({
-                to: '/workbooks/$workbookId',
-                params: { workbookId: nextWorkbook.id },
-                search: { panel: getDefaultPanelForTemplate(templateKey) },
-              });
-            }}
-            onSelectWorkbook={(nextWorkbookId) => {
-              const nextWorkbook = findWorkbookById(nextWorkbookId);
-              void navigate({
-                to: '/workbooks/$workbookId',
-                params: { workbookId: nextWorkbook.id },
-                search: {
-                  panel:
-                    panel === 'admin'
-                      ? getDefaultPanelForTemplate(nextWorkbook.templateKey)
-                      : panel,
-                },
-              });
-            }}
-            onSelectPanel={(nextPanel) => {
-              void navigate({
-                to: '/workbooks/$workbookId',
-                params: { workbookId: workbook.id },
-                search: { panel: nextPanel },
-              });
-            }}
-            onShowTemplates={() => {
-              void navigate({ to: '/templates' });
-            }}
-            onShowAdmin={() => {
-              void navigate({ to: '/admin' });
-            }}
-            onLogout={() => {
-              void authGateway.logout().catch(() => undefined);
-            }}
-          />
-        );
-      }}
+      {(displayName) => (
+        <AppShell
+          view="workbook"
+          activeWorkbookId={workbookId}
+          activePanel={panel}
+          displayName={displayName}
+          onSelectTemplate={(templateKey) => {
+            void navigate({ to: '/workbooks', search: { panel: getDefaultPanelForTemplate(templateKey) } });
+          }}
+          onSelectWorkbook={(nextWorkbookId) => {
+            void navigate({
+              to: '/workbooks/$workbookId',
+              params: { workbookId: nextWorkbookId },
+              search: {
+                panel: panel === 'admin' ? 'graph' : panel,
+              },
+            });
+          }}
+          onSelectPanel={(nextPanel) => {
+            void navigate({
+              to: '/workbooks/$workbookId',
+              params: { workbookId },
+              search: { panel: nextPanel },
+            });
+          }}
+          onShowTemplates={() => {
+            void navigate({ to: '/templates' });
+          }}
+          onShowAdmin={() => {
+            void navigate({ to: '/admin' });
+          }}
+          onLogout={() => {
+            void authGateway.logout().catch(() => undefined);
+          }}
+        />
+      )}
     </RequireAuth>
   );
 }
@@ -242,6 +249,13 @@ const adminRoute = createRoute({
   component: AdminRoute,
 });
 
+const workbooksRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/workbooks',
+  validateSearch: (search) => parsePanelSearch(search as Record<string, unknown>, 'graph'),
+  component: WorkbooksRoute,
+});
+
 const workbookRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/workbooks/$workbookId',
@@ -249,7 +263,14 @@ const workbookRoute = createRoute({
   component: WorkbookRoute,
 });
 
-const routeTree = rootRoute.addChildren([indexRoute, callbackRoute, templatesRoute, adminRoute, workbookRoute]);
+const routeTree = rootRoute.addChildren([
+  indexRoute,
+  callbackRoute,
+  templatesRoute,
+  adminRoute,
+  workbooksRoute,
+  workbookRoute,
+]);
 
 export const router = createRouter({
   routeTree,

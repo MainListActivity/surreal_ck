@@ -106,7 +106,7 @@ export function RecentChangesPanel({ db, workbookId }: RecentChangesPanelProps) 
              out->mutation_actor_user->app_user[0] AS actor
            FROM workbook_has_mutation
            WHERE in = $wb
-           ORDER BY out.created_at DESC
+           ORDER BY created_at DESC
            LIMIT 20`,
           { wb: workbookId },
         );

@@ -1,14 +1,11 @@
 import { useState } from 'react';
 
 import { useConnectionSnapshot } from '../../lib/surreal/client';
+import { useSurrealClient } from '../../lib/surreal/provider';
 import type { ConnectionSnapshot } from '../../lib/surreal/types';
-import {
-  blankWorkbook,
-  findWorkbookById,
-  workspaceSeed,
-  type SidebarPanel,
-  type TemplateKey,
-} from './mock-data';
+import { RecentChangesPanel } from '../../sidebar/recent-changes';
+import { templateCatalog, type SidebarPanel, type TemplateKey } from './mock-data';
+import { formatUpdatedAt, useWorkspace } from './use-workspace';
 
 const panelLabels: Record<SidebarPanel, string> = {
   record: 'Record detail',
@@ -33,9 +30,9 @@ export interface AppShellProps {
 
 export function AppShell({
   view,
-  activeWorkbookId = workspaceSeed.workbooks[0]?.id ?? blankWorkbook.id,
+  activeWorkbookId,
   activePanel = 'graph',
-  displayName = workspaceSeed.userName,
+  displayName,
   onSelectTemplate,
   onSelectWorkbook,
   onSelectPanel,
@@ -44,12 +41,19 @@ export function AppShell({
   onLogout,
 }: AppShellProps) {
   const [isRailCollapsed, setIsRailCollapsed] = useState(false);
-
-  const activeWorkbook = findWorkbookById(activeWorkbookId);
-  const primaryRow = activeWorkbook.rows[0] ?? blankWorkbook.rows[0];
+  const db = useSurrealClient();
+  const workspace = useWorkspace(db);
   const connection = useConnectionSnapshot();
 
   const isOffline = connection.state === 'reconnecting' || connection.state === 'disconnected';
+
+  const workbooks = workspace.data?.workbooks ?? [];
+  const workspaceName = workspace.data?.name ?? '…';
+  const memberCount = workspace.data?.memberCount ?? 0;
+  const resolvedDisplayName = displayName ?? '…';
+
+  // Determine the active workbook, falling back to the first available.
+  const activeWorkbook = workbooks.find((wb) => wb.id === activeWorkbookId) ?? workbooks[0] ?? null;
 
   return (
     <div className={`app-shell ${isRailCollapsed ? 'app-shell--rail-collapsed' : ''}`}>
@@ -77,18 +81,18 @@ export function AppShell({
 
         <div className="rail-block">
           <p className="eyebrow">Workbook switcher</p>
+          {workspace.isLoading && <p className="sidebar-copy">Loading…</p>}
+          {workspace.error && <p className="sidebar-copy">{workspace.error}</p>}
           <div className="rail-workbook-list">
-            {workspaceSeed.workbooks.map((workbook) => (
+            {workbooks.map((workbook) => (
               <button
                 key={workbook.id}
                 className={`rail-button ${view === 'workbook' && activeWorkbookId === workbook.id ? 'rail-button--active' : ''}`}
                 type="button"
-                onClick={() => {
-                  onSelectWorkbook(workbook.id);
-                }}
+                onClick={() => { onSelectWorkbook(workbook.id); }}
               >
                 <span>{workbook.name}</span>
-                <span className="rail-button__meta">{workbook.updatedAt}</span>
+                <span className="rail-button__meta">{formatUpdatedAt(workbook.updated_at)}</span>
               </button>
             ))}
           </div>
@@ -98,7 +102,7 @@ export function AppShell({
           <button
             className={`rail-button ${view === 'workbook' ? 'rail-button--active' : ''}`}
             type="button"
-            onClick={() => onSelectWorkbook(activeWorkbook.id)}
+            onClick={() => { if (activeWorkbook) onSelectWorkbook(activeWorkbook.id); }}
           >
             Workbook
           </button>
@@ -123,9 +127,6 @@ export function AppShell({
           >
             {formatConnectionLabel(connection.state)}
           </span>
-          <p>
-            Workbook-first scaffolding is live. Univer canvas, collab replay, and Surreal live data plug in next.
-          </p>
         </div>
       </aside>
 
@@ -138,27 +139,29 @@ export function AppShell({
               <div>
                 <p className="eyebrow">Workspace</p>
                 <div className="top-bar__title-row">
-                  <h2>{workspaceSeed.name}</h2>
-                  <span className="top-bar__divider">/</span>
-                  <p className="top-bar__workbook-name">{activeWorkbook.name}</p>
+                  <h2>{workspaceName}</h2>
+                  {activeWorkbook && (
+                    <>
+                      <span className="top-bar__divider">/</span>
+                      <p className="top-bar__workbook-name">{activeWorkbook.name}</p>
+                    </>
+                  )}
                 </div>
               </div>
               <div className="top-bar-meta">
-                <span className={`status-chip ${activeWorkbook.syncStatus === 'RECONNECTING' ? 'status-chip--warning' : ''}`}>
-                  {activeWorkbook.syncStatus}
+                <span className={`status-chip ${connection.state !== 'connected' ? 'status-chip--warning' : ''}`}>
+                  {connection.state === 'connected' ? 'LIVE SYNC' : 'RECONNECTING'}
                 </span>
-                <span className="mono-label">{workspaceSeed.memberCount} members</span>
+                <span className="mono-label">{memberCount} members</span>
                 <button className="secondary-button" type="button">
                   Share & Members
                 </button>
                 <button
                   className="ghost-button"
                   type="button"
-                  onClick={() => {
-                    onLogout?.();
-                  }}
+                  onClick={() => { onLogout?.(); }}
                 >
-                  {displayName}
+                  {resolvedDisplayName}
                 </button>
               </div>
             </header>
@@ -168,7 +171,9 @@ export function AppShell({
                 <div className="sheet-stage__header">
                   <div>
                     <p className="eyebrow">Action sheet</p>
-                    <h3 className="sheet-stage__title">{activeWorkbook.sheetLabel}</h3>
+                    <h3 className="sheet-stage__title">
+                      {activeWorkbook ? `Action Sheet: ${activeWorkbook.name}` : 'Select a workbook'}
+                    </h3>
                   </div>
                   <div className="sheet-stage__actions">
                     <button className="ghost-button" type="button" onClick={() => onSelectPanel('record')}>
@@ -184,62 +189,22 @@ export function AppShell({
                 </div>
 
                 <div className="sheet-toolbar">
-                  <span className="mono-label">Selection: {primaryRow.id}</span>
+                  <span className="mono-label">Selection: {activeWorkbook?.id ?? '—'}</span>
                   <span className="mono-label">Formula aware</span>
                   <span className="mono-label">Surreal: {formatConnectionLabel(connection.state)}</span>
                   <span className="mono-label">Realtime presence</span>
                 </div>
 
-                <section className="sheet-grid" role="table" aria-label="Workbook preview grid">
-                  <div className="sheet-grid__row sheet-grid__row--header" role="row">
-                    <span>Entity</span>
-                    <span>Jurisdiction</span>
-                    <span>Relationship</span>
-                    <span>Formula / Value</span>
-                    <span>Owner</span>
-                  </div>
-                  {activeWorkbook.rows.map((row) => (
-                    <button
-                      key={row.id}
-                      className={`sheet-grid__row sheet-grid__row--interactive sheet-grid__row--${row.status}`}
-                      type="button"
-                      role="row"
-                      onClick={() => onSelectPanel('record')}
-                    >
-                      <span>{row.entity}</span>
-                      <span>{row.jurisdiction}</span>
-                      <span>{row.relationship}</span>
-                      <span className="mono-cell">{row.formula}</span>
-                      <span>{row.owner}</span>
-                    </button>
-                  ))}
-                </section>
-
-                <section className="mobile-record-view" aria-label="Workbook mobile read only list">
-                  <div className="mobile-record-view__header">
-                    <p className="eyebrow">Phone mode</p>
-                    <h3>Read-only record list</h3>
-                  </div>
-                  <div className="mobile-record-cards">
-                    {activeWorkbook.rows.map((row) => (
-                      <article key={row.id} className="mobile-record-card">
-                        <div className="mobile-record-card__row">
-                          <strong>{row.entity}</strong>
-                          <span className={`status-chip status-chip--compact status-chip--${row.status}`}>{row.status}</span>
-                        </div>
-                        <p>{row.relationship}</p>
-                        <p className="mono-cell">{row.id}</p>
-                        <button className="secondary-button secondary-button--full" type="button" onClick={() => onSelectPanel('record')}>
-                          Open detail
-                        </button>
-                      </article>
-                    ))}
-                  </div>
-                </section>
+                <WorkbookGrid db={db} workbook={activeWorkbook} onSelectPanel={onSelectPanel} />
               </div>
 
               <aside className="sidebar-panel" aria-label={panelLabels[activePanel]}>
-                <SidebarPanelContent activePanel={activePanel} workbookName={activeWorkbook.name} />
+                <SidebarPanelContent
+                  db={db}
+                  activePanel={activePanel}
+                  workbookId={activeWorkbook?.id ?? ''}
+                  workbookName={activeWorkbook?.name ?? ''}
+                />
               </aside>
             </section>
 
@@ -251,7 +216,6 @@ export function AppShell({
                 <span className="mono-label">Surreal: {formatConnectionMeta(connection)}</span>
               </div>
               <div className="status-bar__group">
-                <span className="status-chip status-chip--warning">Import preview ready</span>
                 <span className="mono-label">Reconnect queue: 0</span>
                 <span className="mono-label">Warnings: none</span>
               </div>
@@ -263,22 +227,227 @@ export function AppShell({
   );
 }
 
+// ─── Workbook grid (live entity rows from SurrealDB) ──────────────────────────
+
+import { useEffect, useReducer } from 'react';
+import type { Surreal } from 'surrealdb';
+import { templateToEntityTable } from './use-workspace';
+import type { WorkbookSummaryDb } from './use-workspace';
+
+interface EntityRow {
+  id: string;
+  name: string;
+  jurisdiction: string | null;
+  status: string | null;
+}
+
+interface GridState {
+  rows: EntityRow[];
+  isLoading: boolean;
+  error: string | null;
+}
+
+type GridAction =
+  | { type: 'load-start' }
+  | { type: 'load-ok'; rows: EntityRow[] }
+  | { type: 'load-err'; error: string };
+
+function gridReducer(state: GridState, action: GridAction): GridState {
+  switch (action.type) {
+    case 'load-start': return { ...state, isLoading: true, error: null };
+    case 'load-ok':    return { rows: action.rows, isLoading: false, error: null };
+    case 'load-err':   return { ...state, isLoading: false, error: action.error };
+    default:           return state;
+  }
+}
+
+function WorkbookGrid({
+  db,
+  workbook,
+  onSelectPanel,
+}: {
+  db: Surreal;
+  workbook: WorkbookSummaryDb | null;
+  onSelectPanel: (panel: SidebarPanel) => void;
+}) {
+  const [state, dispatch] = useReducer(gridReducer, { rows: [], isLoading: false, error: null });
+
+  useEffect(() => {
+    if (!workbook) return;
+    const table = templateToEntityTable(workbook.template_key);
+    if (!table) return;
+
+    let cancelled = false;
+    dispatch({ type: 'load-start' });
+
+    db.query<[EntityRow[]]>(
+      `SELECT id, name, jurisdiction, status FROM type::table($table) LIMIT 50`,
+      { table },
+    )
+      .then(([rows]) => {
+        if (!cancelled) dispatch({ type: 'load-ok', rows: rows ?? [] });
+      })
+      .catch((err) => {
+        if (!cancelled) dispatch({ type: 'load-err', error: err instanceof Error ? err.message : 'Query failed' });
+      });
+
+    return () => { cancelled = true; };
+  }, [db, workbook?.id, workbook?.template_key]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!workbook) {
+    return (
+      <section className="sheet-grid" role="table" aria-label="Workbook preview grid">
+        <p className="sidebar-copy">No workbook selected.</p>
+      </section>
+    );
+  }
+
+  return (
+    <>
+      <section className="sheet-grid" role="table" aria-label="Workbook preview grid">
+        <div className="sheet-grid__row sheet-grid__row--header" role="row">
+          <span>Entity</span>
+          <span>Jurisdiction</span>
+          <span>Status</span>
+          <span>Record ID</span>
+        </div>
+        {state.isLoading && (
+          <div className="sheet-grid__row" role="row">
+            <span>Loading…</span>
+          </div>
+        )}
+        {state.error && (
+          <div className="sheet-grid__row" role="row">
+            <span style={{ color: 'var(--color-error)' }}>{state.error}</span>
+          </div>
+        )}
+        {!state.isLoading && state.rows.map((row) => (
+          <button
+            key={row.id}
+            className="sheet-grid__row sheet-grid__row--interactive"
+            type="button"
+            role="row"
+            onClick={() => onSelectPanel('record')}
+          >
+            <span>{row.name}</span>
+            <span>{row.jurisdiction ?? '—'}</span>
+            <span>{row.status ?? '—'}</span>
+            <span className="mono-cell">{row.id}</span>
+          </button>
+        ))}
+      </section>
+
+      <section className="mobile-record-view" aria-label="Workbook mobile read only list">
+        <div className="mobile-record-view__header">
+          <p className="eyebrow">Phone mode</p>
+          <h3>Read-only record list</h3>
+        </div>
+        <div className="mobile-record-cards">
+          {state.rows.map((row) => (
+            <article key={row.id} className="mobile-record-card">
+              <div className="mobile-record-card__row">
+                <strong>{row.name}</strong>
+                {row.status && (
+                  <span className="status-chip status-chip--compact">{row.status}</span>
+                )}
+              </div>
+              <p>{row.jurisdiction ?? '—'}</p>
+              <p className="mono-cell">{row.id}</p>
+              <button className="secondary-button secondary-button--full" type="button" onClick={() => onSelectPanel('record')}>
+                Open detail
+              </button>
+            </article>
+          ))}
+        </div>
+      </section>
+    </>
+  );
+}
+
+// ─── Sidebar panels ───────────────────────────────────────────────────────────
+
+function SidebarPanelContent({
+  db,
+  activePanel,
+  workbookId,
+  workbookName,
+}: {
+  db: Surreal;
+  activePanel: SidebarPanel;
+  workbookId: string;
+  workbookName: string;
+}) {
+  if (activePanel === 'record') {
+    return (
+      <div className="sidebar-panel__content">
+        <p className="eyebrow">Record detail</p>
+        <h2>Select a record</h2>
+        <p className="sidebar-copy">
+          Click any row in the grid to view the full record detail here.
+        </p>
+      </div>
+    );
+  }
+
+  if (activePanel === 'recent') {
+    return <RecentChangesPanel db={db} workbookId={workbookId} />;
+  }
+
+  if (activePanel === 'setup') {
+    return (
+      <div className="sidebar-panel__content">
+        <p className="eyebrow">Guided setup</p>
+        <h2>Exactly three first actions</h2>
+        <ol className="sidebar-list sidebar-list--numbered">
+          <li>Create the first entity type</li>
+          <li>Create the first relationship type</li>
+          <li>Create the first intake form</li>
+        </ol>
+        <p className="sidebar-copy">
+          Blank workspaces still open directly into the sheet. The setup panel is attached context, not a detour.
+        </p>
+      </div>
+    );
+  }
+
+  if (activePanel === 'admin') {
+    return (
+      <div className="sidebar-panel__content">
+        <p className="eyebrow">Admin tools</p>
+        <h2>Schema controls stay in the workbook shell</h2>
+        <ul className="sidebar-list sidebar-list--flush">
+          <li>Entity Types</li>
+          <li>Relationship Types</li>
+          <li>Form Builder</li>
+          <li>Workspace Members</li>
+        </ul>
+        <p className="sidebar-copy">Admin work remains a docked panel so users never lose sheet context.</p>
+      </div>
+    );
+  }
+
+  // Default: graph panel
+  return (
+    <div className="sidebar-panel__content">
+      <p className="eyebrow">Graph results</p>
+      <h2>{workbookName}</h2>
+      <p className="sidebar-copy">
+        GRAPH_TRAVERSE displays readable labels in-cell and exposes the full path list here when the selection is
+        graph-aware.
+      </p>
+    </div>
+  );
+}
+
 function formatConnectionLabel(state: ConnectionSnapshot['state']) {
   switch (state) {
-    case 'connected':
-      return 'Surreal connected';
-    case 'connecting':
-      return 'Surreal connecting';
-    case 'reconnecting':
-      return 'Surreal reconnecting';
-    case 'auth-failed':
-      return 'Surreal auth failed';
-    case 'error':
-      return 'Surreal error';
-    case 'disconnected':
-      return 'Surreal offline';
-    default:
-      return 'Surreal idle';
+    case 'connected':    return 'Surreal connected';
+    case 'connecting':   return 'Surreal connecting';
+    case 'reconnecting': return 'Surreal reconnecting';
+    case 'auth-failed':  return 'Surreal auth failed';
+    case 'error':        return 'Surreal error';
+    case 'disconnected': return 'Surreal offline';
+    default:             return 'Surreal idle';
   }
 }
 
@@ -337,7 +506,7 @@ function TemplatePicker({ onSelectTemplate }: { onSelectTemplate: (templateKey: 
       </div>
 
       <div className="template-grid">
-        {workspaceSeed.templates.map((template) => (
+        {templateCatalog.map((template) => (
           <article key={template.key} className="template-card">
             <p className="eyebrow">Template</p>
             <h3>{template.name}</h3>
@@ -363,113 +532,5 @@ function TemplatePicker({ onSelectTemplate }: { onSelectTemplate: (templateKey: 
         ))}
       </div>
     </section>
-  );
-}
-
-function SidebarPanelContent({
-  activePanel,
-  workbookName,
-}: {
-  activePanel: SidebarPanel;
-  workbookName: string;
-}) {
-  if (activePanel === 'record') {
-    return (
-      <div className="sidebar-panel__content">
-        <p className="eyebrow">Record detail</p>
-        <h2>Acme Holdings</h2>
-        <p className="sidebar-copy">
-          Primary entity record for the active row. Hover previews and row-driven detail remain attached to the sheet,
-          not split into a separate page.
-        </p>
-        <dl className="detail-list">
-          <div>
-            <dt>Record ID</dt>
-            <dd className="mono-cell">company:acme-holdings</dd>
-          </div>
-          <div>
-            <dt>Entity type</dt>
-            <dd>Company</dd>
-          </div>
-          <div>
-            <dt>Last update</dt>
-            <dd>2 minutes ago</dd>
-          </div>
-        </dl>
-      </div>
-    );
-  }
-
-  if (activePanel === 'recent') {
-    return (
-      <div className="sidebar-panel__content">
-        <p className="eyebrow">Recent changes</p>
-        <h2>Last 20 mutations</h2>
-        <ul className="sidebar-list sidebar-list--flush">
-          {workspaceSeed.recentChanges.map((change) => (
-            <li key={change.id}>
-              <strong>{change.actor}</strong>
-              <span>{change.action}</span>
-              <span className="mono-label">{change.at}</span>
-            </li>
-          ))}
-        </ul>
-      </div>
-    );
-  }
-
-  if (activePanel === 'setup') {
-    return (
-      <div className="sidebar-panel__content">
-        <p className="eyebrow">Guided setup</p>
-        <h2>Exactly three first actions</h2>
-        <ol className="sidebar-list sidebar-list--numbered">
-          <li>Create the first entity type</li>
-          <li>Create the first relationship type</li>
-          <li>Create the first intake form</li>
-        </ol>
-        <p className="sidebar-copy">
-          Blank workspaces still open directly into the sheet. The setup panel is attached context, not a detour.
-        </p>
-      </div>
-    );
-  }
-
-  if (activePanel === 'admin') {
-    return (
-      <div className="sidebar-panel__content">
-        <p className="eyebrow">Admin tools</p>
-        <h2>Schema controls stay in the workbook shell</h2>
-        <ul className="sidebar-list sidebar-list--flush">
-          <li>Entity Types</li>
-          <li>Relationship Types</li>
-          <li>Form Builder</li>
-          <li>Workspace Members</li>
-        </ul>
-        <p className="sidebar-copy">Admin work remains a docked panel so users never lose sheet context.</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="sidebar-panel__content">
-      <p className="eyebrow">Graph results</p>
-      <h2>{workbookName}</h2>
-      <p className="sidebar-copy">
-        GRAPH_TRAVERSE displays readable labels in-cell and exposes the full path list here when the selection is
-        graph-aware.
-      </p>
-      <ul className="sidebar-list sidebar-list--flush">
-        {workspaceSeed.graphResults.map((result) => (
-          <li key={result.recordId}>
-            <div>
-              <strong>{result.label}</strong>
-              <p className="mono-cell">{result.recordId}</p>
-            </div>
-            <span>{result.entityType}</span>
-          </li>
-        ))}
-      </ul>
-    </div>
   );
 }

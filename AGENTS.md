@@ -26,6 +26,33 @@ Key routing rules:
 - Save progress, checkpoint, resume → invoke checkpoint
 - Code quality, health check → invoke health
 
+## SurrealDB Rules
+
+Any time you write SurrealQL — schema, queries, or permissions — you MUST invoke the `surrealdb` skill FIRST and follow its rules. Key rules to internalize:
+
+### Permissions belong in the schema, never in queries
+
+Row-level security is defined once in `DEFINE TABLE ... PERMISSIONS` and enforced by the database engine. Frontend queries must NOT contain auth-filtering conditions (`WHERE user = $auth`, `WHERE in = $auth`, etc.). A query that leaks permission logic into the client is a security defect: the engine enforces PERMISSIONS regardless, so the client filter is at best redundant and at worst misleading.
+
+Frontend queries only carry **user-driven filter options** (e.g. status, date range, search term) that the user controls from the UI.
+
+### Use graph traversal syntax in PERMISSIONS and queries
+
+SurrealDB's `->` / `<-` operators replace verbose `SELECT VALUE ... FROM edge WHERE in = x` patterns. Always prefer graph traversal:
+
+```surql
+-- ✗ verbose, non-idiomatic
+$auth IN (SELECT VALUE in FROM owns_workspace WHERE out = id)
+
+-- ✓ graph traversal, idiomatic
+id IN $auth->owns_workspace->workspace
+```
+
+Standard access patterns used in this project:
+- Owner check: `id IN $auth->owns_workspace->workspace`
+- Member check: `id IN $auth<-member_identifies_user<-workspace_member<-workspace_has_member<-workspace`
+- Workbook visibility: `id IN $auth->owns_workspace->workspace->workspace_has_workbook->workbook`
+
 ## Design System
 
 Always read DESIGN.md before making any visual or UI decisions.
