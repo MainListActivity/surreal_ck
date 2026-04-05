@@ -1,10 +1,17 @@
 /// <reference types="vite/client" />
 
+import { useSyncExternalStore } from 'react';
 import { Surreal, type Tokens } from 'surrealdb';
 
 import type { ConnectionSnapshot, ConnectionState, EnvironmentConfig } from './types';
 
 const DEFAULT_AUTH_ACCESS = 'lawyer_access';
+const DEFAULT_RECONNECT = {
+  enabled: true,
+  attempts: -1,
+  retryDelay: 1_000,
+  retryDelayMax: 30_000,
+} as const;
 
 type Listener = (snapshot: ConnectionSnapshot) => void;
 
@@ -55,12 +62,44 @@ export const getEnvironmentConfig = (
 const db = new Surreal();
 const attachedClients = new WeakSet<object>();
 
+export type SurrealConnectParams = NonNullable<Parameters<Surreal['connect']>[1]>;
 export type SurrealLike = Pick<
   Surreal,
   'connect' | 'close' | 'signin' | 'authenticate' | 'invalidate' | 'subscribe'
 >;
 
 export const surreal = db;
+
+export function getDefaultConnectParams(
+  env: ImportMetaEnv | Record<string, string | undefined> = import.meta.env,
+  overrides: Partial<SurrealConnectParams> = {},
+): SurrealConnectParams {
+  const config = getEnvironmentConfig(env);
+  const reconnect =
+    overrides.reconnect === undefined
+      ? DEFAULT_RECONNECT
+      : typeof overrides.reconnect === 'object' && overrides.reconnect !== null
+        ? {
+            ...DEFAULT_RECONNECT,
+            ...overrides.reconnect,
+          }
+        : overrides.reconnect;
+
+  return {
+    namespace: config.namespace,
+    database: config.database,
+    ...overrides,
+    reconnect,
+  };
+}
+
+export function useConnectionSnapshot(): ConnectionSnapshot {
+  return useSyncExternalStore(
+    (listener) => connectionState.subscribe(listener),
+    () => connectionState.getSnapshot(),
+    () => connectionState.getSnapshot(),
+  );
+}
 
 export function attachConnectionListeners(client: SurrealLike = db): void {
   if (attachedClients.has(client as object)) {
@@ -101,16 +140,7 @@ export async function connectToSurreal(client: SurrealLike = db): Promise<true> 
   attachConnectionListeners(client);
   connectionState.set('connecting');
 
-  return client.connect(config.surrealUrl, {
-    namespace: config.namespace,
-    database: config.database,
-    reconnect: {
-      enabled: true,
-      attempts: -1,
-      retryDelay: 1_000,
-      retryDelayMax: 30_000,
-    },
-  });
+  return client.connect(config.surrealUrl, getDefaultConnectParams());
 }
 
 export function isTokens(value: unknown): value is Tokens {

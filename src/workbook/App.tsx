@@ -1,5 +1,7 @@
 import { useState } from 'react';
 
+import { useConnectionSnapshot } from '../surreal/client';
+import type { ConnectionSnapshot } from '../surreal/types';
 import {
   blankWorkbook,
   workspaceSeed,
@@ -31,6 +33,7 @@ export function App({ initialScenario = 'resume-workbook' }: AppProps) {
   const activeWorkbook =
     workspaceSeed.workbooks.find((workbook) => workbook.id === activeWorkbookId) ?? blankWorkbook;
   const primaryRow = activeWorkbook.rows[0] ?? blankWorkbook.rows[0];
+  const connection = useConnectionSnapshot();
 
   const openWorkbook = (templateKey: TemplateKey) => {
     if (templateKey === 'blank-workspace') {
@@ -111,7 +114,9 @@ export function App({ initialScenario = 'resume-workbook' }: AppProps) {
         </nav>
 
         <div className="rail-meta">
-          <span className="status-chip">React 19 shell</span>
+          <span className={`status-chip ${connection.state === 'error' ? 'status-chip--warning' : ''}`}>
+            {formatConnectionLabel(connection.state)}
+          </span>
           <p>
             Workbook-first scaffolding is live. Univer canvas, collab replay, and Surreal live data plug in next.
           </p>
@@ -169,7 +174,7 @@ export function App({ initialScenario = 'resume-workbook' }: AppProps) {
                 <div className="sheet-toolbar">
                   <span className="mono-label">Selection: {primaryRow.id}</span>
                   <span className="mono-label">Formula aware</span>
-                  <span className="mono-label">Surreal WSS</span>
+                  <span className="mono-label">Surreal: {formatConnectionLabel(connection.state)}</span>
                   <span className="mono-label">Realtime presence</span>
                 </div>
 
@@ -228,8 +233,10 @@ export function App({ initialScenario = 'resume-workbook' }: AppProps) {
 
             <footer className="status-bar" aria-label="Application status">
               <div className="status-bar__group">
-                <span className="status-chip">Sync stable</span>
-                <span className="mono-label">Last event: {workspaceSeed.recentChanges[0]?.at ?? 'Pending'}</span>
+                <span className={`status-chip ${connection.state === 'connected' ? '' : 'status-chip--warning'}`}>
+                  {connection.state === 'connected' ? 'Sync stable' : 'Sync pending'}
+                </span>
+                <span className="mono-label">Surreal: {formatConnectionMeta(connection)}</span>
               </div>
               <div className="status-bar__group">
                 <span className="status-chip status-chip--warning">Import preview ready</span>
@@ -242,6 +249,29 @@ export function App({ initialScenario = 'resume-workbook' }: AppProps) {
       </main>
     </div>
   );
+}
+
+function formatConnectionLabel(state: ConnectionSnapshot['state']) {
+  switch (state) {
+    case 'connected':
+      return 'Surreal connected';
+    case 'connecting':
+      return 'Surreal connecting';
+    case 'reconnecting':
+      return 'Surreal reconnecting';
+    case 'error':
+      return 'Surreal error';
+    case 'disconnected':
+      return 'Surreal offline';
+    default:
+      return 'Surreal idle';
+  }
+}
+
+function formatConnectionMeta(connection: ConnectionSnapshot) {
+  return connection.detail
+    ? `${formatConnectionLabel(connection.state)} · ${connection.detail}`
+    : formatConnectionLabel(connection.state);
 }
 
 function TemplatePicker({ onSelectTemplate }: { onSelectTemplate: (templateKey: TemplateKey) => void }) {
