@@ -469,7 +469,7 @@ Disconnect detected
 
 ---
 
-- [ ] **Unit 6: Template Picker + First-Run Experience**
+- [x] **Unit 6: Template Picker + First-Run Experience**
 
 **Goal:** Build the template picker, blank workspace guided setup panel, and the SurrealQL provisioning scripts for each template. New users land here before entering the workbook.
 
