@@ -61,6 +61,14 @@ export function AppShell({
   // Determine the active workbook, falling back to the first available.
   const activeWorkbook = workbooks.find((wb) => wb.id === activeWorkbookId) ?? workbooks[0] ?? null;
 
+  // If no workbook ID is in the URL but we have a workbook (e.g. /workbooks with no ID),
+  // redirect to the first workbook so the URL stays canonical and the grid is always shown.
+  useEffect(() => {
+    if (view === 'workbook' && !activeWorkbookId && activeWorkbook) {
+      onSelectWorkbook(activeWorkbook.id);
+    }
+  }, [view, activeWorkbookId, activeWorkbook, onSelectWorkbook]);
+
   // Load sheet records for the active workbook so we can pass them to Univer
   const { sheets, createSheet } = useSheets(db, activeWorkbook?.id ?? null, wsKey);
 
@@ -83,6 +91,7 @@ export function AppShell({
             sheets={sheets}
             createSheet={createSheet}
             onSelectPanel={onSelectPanel}
+            onShowTemplates={onShowTemplates}
           />
         </main>
 
@@ -203,6 +212,7 @@ function UniverGrid({
   sheets,
   createSheet,
   onSelectPanel,
+  onShowTemplates,
 }: {
   db: Surreal;
   workbookId: string | null;
@@ -211,6 +221,7 @@ function UniverGrid({
   sheets: Sheet[];
   createSheet: (opts: CreateSheetOpts) => Promise<Sheet>;
   onSelectPanel?: (panel: SidebarPanel) => void;
+  onShowTemplates?: () => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
@@ -276,7 +287,17 @@ function UniverGrid({
   if (!workbookId) {
     return (
       <div className="univer-container univer-container--empty">
-        <p className="sidebar-copy">No workbook selected.</p>
+        <p className="sidebar-copy">No workbooks yet — create one from a template.</p>
+        {onShowTemplates && (
+          <button
+            className="ghost-button"
+            type="button"
+            onClick={onShowTemplates}
+            style={{ marginTop: 'var(--space-md)' }}
+          >
+            Browse templates
+          </button>
+        )}
       </div>
     );
   }
