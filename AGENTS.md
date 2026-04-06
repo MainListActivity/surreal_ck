@@ -28,7 +28,11 @@ Key routing rules:
 
 ## SurrealDB Rules
 
-Any time you write SurrealQL — schema, queries, or permissions — you MUST invoke the `surrealdb` skill FIRST and follow its rules. Key rules to internalize:
+Any time you write SurrealQL — schema, queries, or permissions — you MUST invoke the `surrealdb` skill FIRST and follow its rules.
+
+Past schema decisions are documented in `docs/solutions/` (organized by category, searchable by `module`, `tags`, `problem_type`). Relevant when designing schema or debugging data model issues.
+
+Key rules to internalize:
 
 ### Permissions belong in the schema, never in queries
 
