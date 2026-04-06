@@ -14,6 +14,7 @@ import { useSheets, type CreateSheetOpts } from './use-sheets';
 import { formatUpdatedAt, useWorkspace } from './use-workspace';
 
 const panelLabels: Record<SidebarPanel, string> = {
+  none: 'No panel',
   record: 'Record detail',
   graph: 'Graph results',
   recent: 'Recent changes',
@@ -37,8 +38,7 @@ export interface AppShellProps {
 export function AppShell({
   view,
   activeWorkbookId,
-  activePanel = 'graph',
-  displayName,
+  activePanel = 'none',
   onSelectTemplate,
   onSelectWorkbook,
   onSelectPanel,
@@ -55,16 +55,61 @@ export function AppShell({
 
   const workbooks = workspace.data?.workbooks ?? [];
   const workspaceName = workspace.data?.name ?? '…';
-  const memberCount = workspace.data?.memberCount ?? 0;
   // Extract ws_key from record ID: "workspace:harbor" → "harbor"
   const wsKey = workspace.data?.id?.split(':')[1] ?? null;
-  const resolvedDisplayName = displayName ?? '…';
 
   // Determine the active workbook, falling back to the first available.
   const activeWorkbook = workbooks.find((wb) => wb.id === activeWorkbookId) ?? workbooks[0] ?? null;
 
   // Load sheet records for the active workbook so we can pass them to Univer
   const { sheets, createSheet } = useSheets(db, activeWorkbook?.id ?? null, wsKey);
+
+  if (view === 'workbook') {
+    return (
+      <div className="workbook-workbench">
+        {isOffline && (
+          <div className="reconnect-banner" role="status" aria-live="polite">
+            <span className="reconnect-banner__dot" aria-hidden="true" />
+            {connection.state === 'reconnecting' ? 'Reconnecting to workspace…' : 'Connection lost — working offline'}
+          </div>
+        )}
+
+        <main className="workbook-workbench__canvas" aria-label="Workbook editor">
+          <UniverGrid
+            db={db}
+            workbookId={activeWorkbook?.id ?? null}
+            workspaceId={workspace.data?.id ?? null}
+            wsKey={wsKey}
+            sheets={sheets}
+            createSheet={createSheet}
+            onSelectPanel={onSelectPanel}
+          />
+        </main>
+
+        {activePanel !== 'none' && (
+          <aside className="workbook-drawer" aria-label={panelLabels[activePanel]}>
+            <div className="workbook-drawer__header">
+              <div>
+                <p className="eyebrow">Workspace tools</p>
+                <h2>{activeWorkbook?.name ?? workspaceName}</h2>
+              </div>
+              <button className="ghost-button ghost-button--icon" type="button" onClick={() => onSelectPanel('none')}>
+                ×
+              </button>
+            </div>
+            <div className="workbook-drawer__body">
+              <SidebarPanelContent
+                db={db}
+                activePanel={activePanel}
+                workbookId={activeWorkbook?.id ?? ''}
+                workbookName={activeWorkbook?.name ?? ''}
+              />
+            </div>
+          </aside>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className={`app-shell ${isRailCollapsed ? 'app-shell--rail-collapsed' : ''}`}>
@@ -98,7 +143,7 @@ export function AppShell({
             {workbooks.map((workbook) => (
               <button
                 key={workbook.id}
-                className={`rail-button ${view === 'workbook' && activeWorkbookId === workbook.id ? 'rail-button--active' : ''}`}
+                className={`rail-button ${activeWorkbookId === workbook.id ? 'rail-button--active' : ''}`}
                 type="button"
                 onClick={() => { onSelectWorkbook(workbook.id); }}
               >
@@ -111,14 +156,14 @@ export function AppShell({
 
         <nav className="rail-section" aria-label="Primary">
           <button
-            className={`rail-button ${view === 'workbook' ? 'rail-button--active' : ''}`}
+            className="rail-button"
             type="button"
             onClick={() => { if (activeWorkbook) onSelectWorkbook(activeWorkbook.id); }}
           >
             Workbook
           </button>
           <button
-            className={`rail-button ${view === 'template-picker' ? 'rail-button--active' : ''}`}
+            className="rail-button rail-button--active"
             type="button"
             onClick={onShowTemplates}
           >
@@ -142,104 +187,7 @@ export function AppShell({
       </aside>
 
       <main className="canvas-shell">
-        {view === 'template-picker' ? (
-          <TemplatePicker onSelectTemplate={onSelectTemplate} />
-        ) : (
-          <>
-            <header className="top-bar">
-              <div>
-                <p className="eyebrow">Workspace</p>
-                <div className="top-bar__title-row">
-                  <h2>{workspaceName}</h2>
-                  {activeWorkbook && (
-                    <>
-                      <span className="top-bar__divider">/</span>
-                      <p className="top-bar__workbook-name">{activeWorkbook.name}</p>
-                    </>
-                  )}
-                </div>
-              </div>
-              <div className="top-bar-meta">
-                <span className={`status-chip ${connection.state !== 'connected' ? 'status-chip--warning' : ''}`}>
-                  {connection.state === 'connected' ? 'LIVE SYNC' : 'RECONNECTING'}
-                </span>
-                <span className="mono-label">{memberCount} members</span>
-                <button className="secondary-button" type="button">
-                  Share & Members
-                </button>
-                <button
-                  className="ghost-button"
-                  type="button"
-                  onClick={() => { onLogout?.(); }}
-                >
-                  {resolvedDisplayName}
-                </button>
-              </div>
-            </header>
-
-            <section className="canvas-content">
-              <div className="sheet-stage" aria-label="Workbook preview">
-                <div className="sheet-stage__header">
-                  <div>
-                    <p className="eyebrow">Action sheet</p>
-                    <h3 className="sheet-stage__title">
-                      {activeWorkbook ? `Action Sheet: ${activeWorkbook.name}` : 'Select a workbook'}
-                    </h3>
-                  </div>
-                  <div className="sheet-stage__actions">
-                    <button className="ghost-button" type="button" onClick={() => onSelectPanel('record')}>
-                      Record detail
-                    </button>
-                    <button className="ghost-button" type="button" onClick={() => onSelectPanel('graph')}>
-                      Graph results
-                    </button>
-                    <button className="ghost-button" type="button" onClick={() => onSelectPanel('recent')}>
-                      Recent changes
-                    </button>
-                  </div>
-                </div>
-
-                <div className="sheet-toolbar">
-                  <span className="mono-label">Selection: {activeWorkbook?.id ?? '—'}</span>
-                  <span className="mono-label">Formula aware</span>
-                  <span className="mono-label">Surreal: {formatConnectionLabel(connection.state)}</span>
-                  <span className="mono-label">Realtime presence</span>
-                </div>
-
-                <UniverGrid
-                  db={db}
-                  workbookId={activeWorkbook?.id ?? null}
-                  workspaceId={workspace.data?.id ?? null}
-                  wsKey={wsKey}
-                  sheets={sheets}
-                  createSheet={createSheet}
-                />
-              </div>
-
-              <aside className="sidebar-panel" aria-label={panelLabels[activePanel]}>
-                <SidebarPanelContent
-                  db={db}
-                  activePanel={activePanel}
-                  workbookId={activeWorkbook?.id ?? ''}
-                  workbookName={activeWorkbook?.name ?? ''}
-                />
-              </aside>
-            </section>
-
-            <footer className="status-bar" aria-label="Application status">
-              <div className="status-bar__group">
-                <span className={`status-chip ${connection.state === 'connected' ? '' : 'status-chip--warning'}`}>
-                  {connection.state === 'connected' ? 'Sync stable' : 'Sync pending'}
-                </span>
-                <span className="mono-label">Surreal: {formatConnectionMeta(connection)}</span>
-              </div>
-              <div className="status-bar__group">
-                <span className="mono-label">Reconnect queue: 0</span>
-                <span className="mono-label">Warnings: none</span>
-              </div>
-            </footer>
-          </>
-        )}
+        <TemplatePicker onSelectTemplate={onSelectTemplate} />
       </main>
     </div>
   );
@@ -254,6 +202,7 @@ function UniverGrid({
   wsKey,
   sheets,
   createSheet,
+  onSelectPanel,
 }: {
   db: Surreal;
   workbookId: string | null;
@@ -261,6 +210,7 @@ function UniverGrid({
   wsKey: string | null;
   sheets: Sheet[];
   createSheet: (opts: CreateSheetOpts) => Promise<Sheet>;
+  onSelectPanel?: (panel: SidebarPanel) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
@@ -291,6 +241,7 @@ function UniverGrid({
       sheets: sheets.length > 0 ? sheets : undefined,
       wsKey: wsKey ?? undefined,
       getSheets: () => sheetsRef.current,
+      onSelectPanel,
       onSheetAdded: async (univerId, label) => {
         try {
           await createSheet({ label, univerId });
@@ -430,12 +381,6 @@ function formatConnectionLabel(state: ConnectionSnapshot['state']) {
     case 'disconnected': return 'Surreal offline';
     default:             return 'Surreal idle';
   }
-}
-
-function formatConnectionMeta(connection: ConnectionSnapshot) {
-  return connection.detail
-    ? `${formatConnectionLabel(connection.state)} · ${connection.detail}`
-    : formatConnectionLabel(connection.state);
 }
 
 export function AuthScreen({

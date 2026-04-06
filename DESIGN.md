@@ -82,7 +82,6 @@
   - desktop: workbook shell with left rail, primary sheet canvas, single contextual sidebar
   - tablet: keep workbook available, reduce density, sidebar becomes slide-over
   - phone: authenticated workbook defaults to record-list/detail reading mode, not raw grid
-- **Max content width:** `1280px` for system previews and non-sheet layouts
 - **Border radius:**
   - sm: `8px`
   - md: `14px`

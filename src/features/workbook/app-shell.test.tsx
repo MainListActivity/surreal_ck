@@ -92,9 +92,9 @@ describe('App shell', () => {
   it('opens the workbook shell by default for workbook mode', () => {
     renderApp();
 
-    expect(screen.getByRole('heading', { name: 'Harbor Legal Ops' })).toBeInTheDocument();
-    // Univer spreadsheet mounts asynchronously; the container element is present immediately
+    expect(screen.getByRole('main', { name: 'Workbook editor' })).toBeInTheDocument();
     expect(screen.getByLabelText('Spreadsheet')).toBeInTheDocument();
+    expect(screen.getByRole('complementary', { name: 'Graph results' })).toBeInTheDocument();
   });
 
   it('routes template selections through the callback prop', () => {
@@ -105,12 +105,12 @@ describe('App shell', () => {
     expect(props.onSelectTemplate).toHaveBeenCalledWith('blank-workspace');
   });
 
-  it('opens the record panel through the callback prop', () => {
+  it('closes the side panel through the callback prop', () => {
     const { props } = renderApp();
 
-    fireEvent.click(screen.getAllByRole('button', { name: 'Record detail' })[0]);
+    fireEvent.click(screen.getByRole('button', { name: '×' }));
 
-    expect(props.onSelectPanel).toHaveBeenCalledWith('record');
+    expect(props.onSelectPanel).toHaveBeenCalledWith('none');
   });
 });
 

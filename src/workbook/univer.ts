@@ -1,7 +1,8 @@
-import type { IWorksheetData } from '@univerjs/core';
+import { LocaleType, type IWorksheetData } from '@univerjs/core';
 import { Table } from 'surrealdb';
 import type { Surreal } from 'surrealdb';
 
+import type { SidebarPanel } from '../features/workbook/mock-data';
 import type { Sheet } from '../lib/surreal/types';
 import { createCollabController, shouldBroadcastCommand } from './collaboration';
 import { startPresenceHeartbeat, watchCoordinator } from './presence';
@@ -23,6 +24,7 @@ export interface UniverBootstrapOptions {
   /** If provided, called on every CommandExecuted to get the current sheet list.
    *  Use this when the sheet list may change after bootstrap (e.g. new tabs added). */
   getSheets?: () => Sheet[];
+  onSelectPanel?: (panel: SidebarPanel) => void;
   onSyncWarning?: (message: string) => void;
   onSnapshotNeeded?: () => void;
 }
@@ -32,6 +34,16 @@ export interface UniverInstance {
   destroy(): void;
   /** Get current workbook data for snapshot serialization. */
   getWorkbookData(): Record<string, unknown>;
+}
+
+function getUniverLocale(): LocaleType {
+  if (typeof navigator === 'undefined') {
+    return LocaleType.EN_US;
+  }
+
+  return navigator.language.toLowerCase().startsWith('zh')
+    ? LocaleType.ZH_CN
+    : LocaleType.EN_US;
 }
 
 /**
@@ -54,14 +66,62 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
 
   const { createUniver } = await import('@univerjs/presets');
   const { UniverSheetsCorePreset } = await import('@univerjs/preset-sheets-core');
+  const [enUS, zhCN] = await Promise.all([
+    import('@univerjs/preset-sheets-core/locales/en-US'),
+    import('@univerjs/preset-sheets-core/locales/zh-CN'),
+  ]);
+  const locale = getUniverLocale();
 
   const { univer, univerAPI } = createUniver({
+    locale,
+    locales: {
+      [LocaleType.EN_US]: enUS.default,
+      [LocaleType.ZH_CN]: zhCN.default,
+    },
     presets: [
       UniverSheetsCorePreset({
         container,
+        formulaBar: true,
+        footer: {
+          sheetBar: true,
+          statisticBar: false,
+          menus: true,
+          zoomSlider: true,
+        },
       }),
     ],
   });
+
+  if (opts.onSelectPanel) {
+    const workspaceTools = univerAPI
+      .createSubmenu({
+        id: 'surreal-ck-workspace-tools',
+        title: 'Workspace',
+      })
+      .addSubmenu(univerAPI.createMenu({
+        id: 'surreal-ck-panel-record',
+        title: 'Record detail',
+        action: () => opts.onSelectPanel?.('record'),
+      }))
+      .addSubmenu(univerAPI.createMenu({
+        id: 'surreal-ck-panel-graph',
+        title: 'Graph results',
+        action: () => opts.onSelectPanel?.('graph'),
+      }))
+      .addSubmenu(univerAPI.createMenu({
+        id: 'surreal-ck-panel-recent',
+        title: 'Recent changes',
+        action: () => opts.onSelectPanel?.('recent'),
+      }))
+      .addSeparator()
+      .addSubmenu(univerAPI.createMenu({
+        id: 'surreal-ck-panel-hide',
+        title: 'Hide side panel',
+        action: () => opts.onSelectPanel?.('none'),
+      }));
+
+    workspaceTools.appendTo('ribbon.start.others');
+  }
 
   // ── Create workbook: use pre-loaded sheets or empty workbook ────────────────
   if (opts.sheets && opts.sheets.length > 0) {

@@ -44,7 +44,7 @@ function RequireAuth({ children }: { children: (displayName: string) => ReactNod
 }
 
 function isSidebarPanel(value: unknown): value is SidebarPanel {
-  return value === 'record' || value === 'graph' || value === 'recent' || value === 'setup' || value === 'admin';
+  return value === 'none' || value === 'record' || value === 'graph' || value === 'recent' || value === 'setup' || value === 'admin';
 }
 
 function parsePanelSearch(search: Record<string, unknown>, fallback: SidebarPanel): { panel: SidebarPanel } {
@@ -55,7 +55,7 @@ function parsePanelSearch(search: Record<string, unknown>, fallback: SidebarPane
 
 /** Home route — redirect to the workbook list view; let AppShell pick the first workbook from DB. */
 function HomeRoute() {
-  return <Navigate to="/workbooks" search={{ panel: 'graph' }} replace />;
+  return <Navigate to="/workbooks" search={{ panel: 'none' }} replace />;
 }
 
 function CallbackRoute() {
@@ -80,7 +80,7 @@ function TemplatesRoute() {
             void navigate({
               to: '/workbooks/$workbookId',
               params: { workbookId },
-              search: { panel: 'graph' },
+              search: { panel: 'none' },
             });
           }}
           onSelectPanel={() => undefined}
@@ -115,7 +115,7 @@ function AdminRoute() {
             void navigate({
               to: '/workbooks/$workbookId',
               params: { workbookId },
-              search: { panel: 'graph' },
+              search: { panel: 'none' },
             });
           }}
           onSelectPanel={(panel) => {
@@ -195,7 +195,7 @@ function WorkbookRoute() {
               to: '/workbooks/$workbookId',
               params: { workbookId: nextWorkbookId },
               search: {
-                panel: panel === 'admin' ? 'graph' : panel,
+                panel: panel === 'admin' ? 'none' : panel,
               },
             });
           }}

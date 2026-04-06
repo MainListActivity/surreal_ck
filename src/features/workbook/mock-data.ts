@@ -1,4 +1,4 @@
-export type SidebarPanel = 'record' | 'graph' | 'recent' | 'setup' | 'admin';
+export type SidebarPanel = 'none' | 'record' | 'graph' | 'recent' | 'setup' | 'admin';
 export type TemplateKey = 'legal-entity-tracker' | 'case-management' | 'blank-workspace';
 export type AppScenario = 'resume-workbook' | 'template-picker';
 
@@ -63,7 +63,7 @@ export const templateCatalog: TemplateSummary[] = [
     accent: 'Owns, controls, filed_by',
     entityTypes: ['Company', 'Person', 'Trust'],
     sampleForm: 'New Client Intake',
-    defaultSidebar: 'graph',
+    defaultSidebar: 'none',
   },
   {
     key: 'case-management',
@@ -72,7 +72,7 @@ export const templateCatalog: TemplateSummary[] = [
     accent: 'assigned_to, filed_in',
     entityTypes: ['Case', 'Client', 'Document'],
     sampleForm: 'Matter Intake',
-    defaultSidebar: 'recent',
+    defaultSidebar: 'none',
   },
   {
     key: 'blank-workspace',
@@ -81,7 +81,7 @@ export const templateCatalog: TemplateSummary[] = [
     accent: 'Guided setup',
     entityTypes: [],
     sampleForm: 'No starter form',
-    defaultSidebar: 'setup',
+    defaultSidebar: 'none',
   },
 ];
 
@@ -206,9 +206,5 @@ export function resolveWorkbookForTemplate(templateKey: TemplateKey): WorkbookSu
 }
 
 export function getDefaultPanelForTemplate(templateKey: TemplateKey): SidebarPanel {
-  if (templateKey === 'blank-workspace') {
-    return 'setup';
-  }
-
-  return templateKey === 'case-management' ? 'recent' : 'graph';
+  return 'none';
 }
