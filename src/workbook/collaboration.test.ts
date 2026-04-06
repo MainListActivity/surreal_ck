@@ -47,15 +47,15 @@ const CLIENT_ID = 'client-abc';
 
 describe('shouldBroadcastCommand', () => {
   it('returns true for whitelisted MUTATION type not from collab', () => {
-    expect(shouldBroadcastCommand('sheet.set-range-values-mutation', 2, false)).toBe(true);
+    expect(shouldBroadcastCommand('sheet.mutation.set-range-style-mutation', 2, false)).toBe(true);
   });
 
   it('returns false for fromCollab=true (infinite loop prevention)', () => {
-    expect(shouldBroadcastCommand('sheet.set-range-values-mutation', 2, true)).toBe(false);
+    expect(shouldBroadcastCommand('sheet.mutation.set-range-style-mutation', 2, true)).toBe(false);
   });
 
   it('returns false for non-MUTATION type (type !== 2)', () => {
-    expect(shouldBroadcastCommand('sheet.set-range-values-mutation', 1, false)).toBe(false);
+    expect(shouldBroadcastCommand('sheet.mutation.set-range-style-mutation', 1, false)).toBe(false);
   });
 
   it('returns false for command not in whitelist', () => {
@@ -64,11 +64,12 @@ describe('shouldBroadcastCommand', () => {
 });
 
 describe('COLLAB_COMMAND_WHITELIST', () => {
-  it('includes common cell value and style commands', () => {
-    expect(COLLAB_COMMAND_WHITELIST.has('sheet.set-range-values-mutation')).toBe(true);
-    expect(COLLAB_COMMAND_WHITELIST.has('sheet.set-range-style-mutation')).toBe(true);
-    expect(COLLAB_COMMAND_WHITELIST.has('sheet.insert-row-mutation')).toBe(true);
-    expect(COLLAB_COMMAND_WHITELIST.has('sheet.remove-col-mutation')).toBe(true);
+  it('includes common style and structural commands (cell values go directly to entity tables)', () => {
+    // Cell value mutations are intentionally excluded — they go to entity tables
+    expect(COLLAB_COMMAND_WHITELIST.has('sheet.mutation.set-range-values-mutation')).toBe(false);
+    expect(COLLAB_COMMAND_WHITELIST.has('sheet.mutation.set-range-style-mutation')).toBe(true);
+    expect(COLLAB_COMMAND_WHITELIST.has('sheet.mutation.insert-row-mutation')).toBe(true);
+    expect(COLLAB_COMMAND_WHITELIST.has('sheet.mutation.remove-col-mutation')).toBe(true);
   });
 });
 
@@ -129,14 +130,14 @@ describe('createCollabController', () => {
       id: 'mutation:1',
       workbook: WORKBOOK_ID,
       workspace: WORKSPACE_ID,
-      command_id: 'sheet.set-range-values-mutation',
+      command_id: 'sheet.mutation.set-range-style-mutation',
       params: { value: 'hello' },
       client_id: 'other-client',
       created_at: new Date().toISOString(),
     });
 
     expect(onRemoteCommand).toHaveBeenCalledWith({
-      command_id: 'sheet.set-range-values-mutation',
+      command_id: 'sheet.mutation.set-range-style-mutation',
       params: { value: 'hello' },
     });
   });
@@ -161,7 +162,7 @@ describe('createCollabController', () => {
       id: 'mutation:1',
       workbook: WORKBOOK_ID,
       workspace: WORKSPACE_ID,
-      command_id: 'sheet.set-range-values-mutation',
+      command_id: 'sheet.mutation.set-range-style-mutation',
       params: { value: 'hello' },
       client_id: CLIENT_ID, // same client — should be suppressed
       created_at: new Date().toISOString(),
@@ -217,8 +218,8 @@ describe('createCollabController', () => {
 
     await controller.start();
 
-    emit('UPDATE', { command_id: 'sheet.set-range-values-mutation', client_id: 'other', params: {} });
-    emit('DELETE', { command_id: 'sheet.set-range-values-mutation', client_id: 'other', params: {} });
+    emit('UPDATE', { command_id: 'sheet.mutation.set-range-style-mutation', client_id: 'other', params: {} });
+    emit('DELETE', { command_id: 'sheet.mutation.set-range-style-mutation', client_id: 'other', params: {} });
 
     expect(onRemoteCommand).not.toHaveBeenCalled();
   });
@@ -234,7 +235,7 @@ describe('createCollabController', () => {
           id: 'mutation:2',
           workbook: WORKBOOK_ID,
           workspace: WORKSPACE_ID,
-          command_id: 'sheet.set-range-values-mutation',
+          command_id: 'sheet.mutation.set-range-style-mutation',
           params: { value: 'missed' },
           client_id: 'other-client',
           created_at: new Date().toISOString(),
@@ -258,7 +259,7 @@ describe('createCollabController', () => {
 
     expect(result).toBe('replay');
     expect(onRemoteCommand).toHaveBeenCalledWith(
-      expect.objectContaining({ command_id: 'sheet.set-range-values-mutation' }),
+      expect.objectContaining({ command_id: 'sheet.mutation.set-range-style-mutation' }),
     );
   });
 

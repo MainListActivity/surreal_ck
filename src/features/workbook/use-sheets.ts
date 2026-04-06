@@ -8,7 +8,7 @@
  * with workspace-scoped permissions. No column definitions are required unless
  * the user later adds typed fields or relations.
  */
-import { useEffect, useReducer, useCallback } from 'react';
+import { useEffect, useReducer, useCallback, useRef } from 'react';
 import type { Surreal } from 'surrealdb';
 
 import { entityTableDDL } from '../../lib/surreal/ddl';
@@ -87,6 +87,10 @@ export function useSheets(
     error: null,
   });
 
+  // Tracks the next available position synchronously to avoid duplicates
+  // when createSheet is called multiple times before state updates settle.
+  const nextPositionRef = useRef(0);
+
   // ── Load sheets ────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!workbookId) return;
@@ -94,27 +98,61 @@ export function useSheets(
 
     dispatch({ type: 'load-start' });
 
-    db.query<[Sheet[]]>(
-      `SELECT * FROM workbook_has_sheet WHERE in = $wb FETCH out`,
-      { wb: workbookId },
-    )
-      .then(([rows]) => {
+    (async () => {
+      try {
+        // Step 1: fetch edge targets without FETCH to avoid unexpanded RecordIds
+        const [edges] = await db.query<[Array<{ out: unknown }>]>(
+          `SELECT out FROM workbook_has_sheet WHERE in = $wb`,
+          { wb: workbookId },
+        );
         if (cancelled) return;
-        // The FETCH out returns nested objects — extract the `out` field.
-        const sheets = (rows ?? []).map((row) => {
-          const out = (row as unknown as { out: Sheet }).out;
-          return { ...out, id: String(out.id), workbook: String(out.workbook) };
-        });
-        dispatch({ type: 'load-ok', sheets });
-      })
-      .catch((err) => {
+
+        const sheetIds = (edges ?? [])
+          .map((e) => e.out)
+          .filter((id) => id != null);
+
+        if (!sheetIds.length) {
+          nextPositionRef.current = 0;
+          dispatch({ type: 'load-ok', sheets: [] });
+          return;
+        }
+
+        // Step 2: load the actual sheet records directly
+        const [sheetRows] = await db.query<[Sheet[]]>(
+          `SELECT * FROM sheet WHERE id IN $ids ORDER BY position ASC`,
+          { ids: sheetIds },
+        );
+        if (cancelled) return;
+
+        const sheets = (sheetRows ?? []).map((s) => ({
+          ...s,
+          id: String(s.id),
+          workbook: String(s.workbook),
+        }));
+
+        // Validation guard: drop records missing required fields
+        const validSheets = sheets.filter(
+          (s): s is Sheet =>
+            typeof s.univer_id === 'string' && s.univer_id.length > 0 &&
+            typeof s.table_name === 'string' && s.table_name.length > 0,
+        );
+        if (validSheets.length !== sheets.length) {
+          console.warn(
+            `[use-sheets] ${sheets.length - validSheets.length} sheet(s) dropped due to missing fields`,
+          );
+        }
+
+        nextPositionRef.current = validSheets.length;
+        dispatch({ type: 'load-ok', sheets: validSheets });
+      } catch (err) {
         if (!cancelled) {
           dispatch({
             type: 'load-err',
             error: err instanceof Error ? err.message : 'Failed to load sheets.',
           });
         }
-      });
+      }
+    })();
 
     return () => { cancelled = true; };
   // db is a stable singleton; workbookId changes on workbook switch
@@ -133,7 +171,7 @@ export function useSheets(
       // 8-char suffix: lowercase hex from random UUID, no hyphens
       const suffix = crypto.randomUUID().replace(/-/g, '').slice(0, 8);
       const tableName = `ent_${wsKey}_${suffix}`;
-      const sheetPosition = position ?? state.sheets.length;
+      const sheetPosition = position ?? nextPositionRef.current++;
 
       // 1. Insert the sheet record
       const [created] = await db.query<[Sheet[]]>(
@@ -175,8 +213,9 @@ export function useSheets(
       dispatch({ type: 'append', sheet: sheetRecord });
       return sheetRecord;
     },
+    // nextPositionRef is a stable ref — not a dep. state.sheets.length removed (F10).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [workbookId, wsKey, state.sheets.length],
+    [workbookId, wsKey],
   );
 
   // ── Rename sheet ──────────────────────────────────────────────────────────

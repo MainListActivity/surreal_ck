@@ -18,21 +18,22 @@ export interface ReplayableCommand {
 // Commands that are safe to replay on remote clients.
 // Extend this set as spike testing confirms additional command types.
 export const COLLAB_COMMAND_WHITELIST = new Set([
-  'sheet.set-range-values-mutation',
-  'sheet.set-worksheet-row-count-mutation',
-  'sheet.set-worksheet-col-count-mutation',
-  'sheet.insert-row-mutation',
-  'sheet.remove-row-mutation',
-  'sheet.insert-col-mutation',
-  'sheet.remove-col-mutation',
-  'sheet.set-range-formatted-values-mutation',
-  'sheet.set-range-formula-mutation',
-  'sheet.set-range-style-mutation',
-  'sheet.set-range-data-validation-mutation',
-  'sheet.merge-range-mutation',
-  'sheet.unmerge-range-mutation',
-  'sheet.move-range-mutation',
-  'sheet.set-cell-comments-mutation',
+  // NOTE: cell value mutations (set-range-values-mutation) are intentionally
+  // excluded — they go directly to entity tables, not the collab mutation log.
+  'sheet.mutation.set-worksheet-row-count-mutation',
+  'sheet.mutation.set-worksheet-col-count-mutation',
+  'sheet.mutation.insert-row-mutation',
+  'sheet.mutation.remove-row-mutation',
+  'sheet.mutation.insert-col-mutation',
+  'sheet.mutation.remove-col-mutation',
+  'sheet.mutation.set-range-formatted-values-mutation',
+  'sheet.mutation.set-range-formula-mutation',
+  'sheet.mutation.set-range-style-mutation',
+  'sheet.mutation.set-range-data-validation-mutation',
+  'sheet.mutation.merge-range-mutation',
+  'sheet.mutation.unmerge-range-mutation',
+  'sheet.mutation.move-range-mutation',
+  'sheet.mutation.set-cell-comments-mutation',
 ]);
 
 // How many mutations or how many seconds before we switch to snapshot sync

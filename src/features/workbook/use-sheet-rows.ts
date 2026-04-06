@@ -85,8 +85,13 @@ export function useSheetRows(
     if (!tableName || !workspaceId) return;
 
     let cancelled = false;
-    let liveQuery: LiveSubscription | null = null;
-    let unsubscribe: (() => void) | null = null;
+
+    // Use a shared mutable object so the cleanup closure can safely access
+    // values that are assigned inside the async load() function.
+    const cleanupRef = {
+      unsubscribe: null as (() => void) | null,
+      liveQuery: null as LiveSubscription | null,
+    };
 
     const normalise = (raw: Record<string, unknown>): EntityRow => ({
       ...raw,
@@ -107,8 +112,8 @@ export function useSheetRows(
         dispatch({ type: 'load-ok', rows: (rows ?? []).map(normalise) });
 
         // Subscribe to live changes
-        liveQuery = await db.live(new Table(tableName));
-        unsubscribe = liveQuery.subscribe((message) => {
+        cleanupRef.liveQuery = await db.live(new Table(tableName));
+        cleanupRef.unsubscribe = cleanupRef.liveQuery.subscribe((message) => {
           const row = normalise(message.value as Record<string, unknown>);
           switch (message.action) {
             case 'CREATE':
@@ -136,7 +141,8 @@ export function useSheetRows(
 
     return () => {
       cancelled = true;
-      unsubscribe?.();
+      cleanupRef.unsubscribe?.();
+      void cleanupRef.liveQuery?.kill().catch(() => undefined);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tableName, workspaceId]);

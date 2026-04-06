@@ -266,6 +266,13 @@ function UniverGrid({
   const [status, setStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  // Keep a ref that always reflects the latest sheets so that the Univer
+  // CommandExecuted handler can find newly-added tabs without re-bootstrapping.
+  const sheetsRef = useRef<Sheet[]>(sheets);
+  useEffect(() => {
+    sheetsRef.current = sheets;
+  }, [sheets]);
+
   useEffect(() => {
     if (!workbookId || !workspaceId || !containerRef.current) return;
 
@@ -283,6 +290,7 @@ function UniverGrid({
       container,
       sheets: sheets.length > 0 ? sheets : undefined,
       wsKey: wsKey ?? undefined,
+      getSheets: () => sheetsRef.current,
       onSheetAdded: async (univerId, label) => {
         try {
           await createSheet({ label, univerId });

@@ -1,4 +1,5 @@
 import type { IWorksheetData } from '@univerjs/core';
+import { Table } from 'surrealdb';
 import type { Surreal } from 'surrealdb';
 
 import type { Sheet } from '../lib/surreal/types';
@@ -19,6 +20,9 @@ export interface UniverBootstrapOptions {
   wsKey?: string;
   /** Called when the user adds a new tab inside Univer. */
   onSheetAdded?: (univerId: string, label: string) => void;
+  /** If provided, called on every CommandExecuted to get the current sheet list.
+   *  Use this when the sheet list may change after bootstrap (e.g. new tabs added). */
+  getSheets?: () => Sheet[];
   onSyncWarning?: (message: string) => void;
   onSnapshotNeeded?: () => void;
 }
@@ -123,7 +127,11 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
   // Map: sheetUniverId → (rowIndex → recordId)
   const rowOrderMap = new Map<string, Map<number, string>>();
 
-  if (opts.sheets && opts.sheets.length > 0) {
+  // F2: Extract hydration into a named function so reconnect can call it too
+  const hydrateEntityTables = async () => {
+    if (!opts.sheets?.length) return;
+    rowOrderMap.clear(); // reset before re-hydrating
+
     for (const sheet of opts.sheets) {
       const [rows] = await db
         .query<[Array<Record<string, unknown>>]>(
@@ -177,7 +185,10 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
         }
       });
     }
-  }
+  };
+
+  // Run hydration at bootstrap
+  await hydrateEntityTables();
 
   // --- Collab controller ---
   let lastMutationTs: string | null = latestSnapshot?.mutation_watermark ?? null;
@@ -220,6 +231,9 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
 
   await collabController.start();
 
+  // F1: Track in-flight INSERT promises to prevent double-INSERT races on rapid edits
+  const pendingInserts = new Map<string, Promise<string>>();
+
   // ── Capture local mutations: cell edits go to entity table; layout/style
   //    mutations go to collab mutation log ────────────────────────────────────
   univerAPI.addEvent(univerAPI.Event.CommandExecuted, (event) => {
@@ -236,14 +250,20 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
       const cellMatrix = (params as Record<string, unknown>).cellValue as
         | Record<string, Record<string, { v?: unknown }>>
         | undefined;
-      const targetSheet = opts.sheets?.find((s) => s.univer_id === subUnitId);
+      const currentSheets = opts.getSheets?.() ?? opts.sheets ?? [];
+      const targetSheet = currentSheets.find((s) => s.univer_id === subUnitId);
       const colDefs = (targetSheet?.column_defs ?? []) as Array<{ key: string; label: string }>;
       const rowMap = rowOrderMap.get(subUnitId);
 
       if (targetSheet && cellMatrix) {
         for (const [rowIdxStr, cols] of Object.entries(cellMatrix)) {
           const rowIdx = parseInt(rowIdxStr, 10);
-          const existingId = rowMap?.get(rowIdx) ?? null;
+
+          // F9: skip header row — row 0 is headers when colDefs are present
+          const headerOffset = colDefs.length > 0 ? 1 : 0;
+          if (rowIdx < headerOffset) continue;
+
+          const pendingKey = `${subUnitId}:${rowIdx}`;
           const fields: Record<string, unknown> = {};
 
           for (const [colIdxStr, cell] of Object.entries(cols)) {
@@ -252,41 +272,72 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
             fields[fieldKey] = cell.v ?? '';
           }
 
-          void db
-            .query(
-              existingId
-                ? `UPDATE $id MERGE $fields SET updated_at = time::now()`
-                : `INSERT INTO type::table($tbl) $fields RETURN id`,
-              existingId
-                ? { id: existingId, fields }
-                : { tbl: targetSheet.table_name, fields: { ...fields, workspace: workspaceId } },
-            )
-            .then((result) => {
-              if (!existingId && result?.[0]) {
-                const firstRow = (result[0] as unknown[])[0];
-                if (firstRow && typeof firstRow === 'object' && 'id' in firstRow) {
-                  const newId = String((firstRow as { id: unknown }).id);
+          const existingId = rowMap?.get(rowIdx) ?? null;
+
+          if (existingId) {
+            // Row already exists in DB — UPDATE
+            void db
+              .query(
+                `UPDATE $id MERGE $fields SET updated_at = time::now()`,
+                { id: existingId, fields },
+              )
+              .catch(() => {
+                onSyncWarning?.('Cell save failed — changes may not be persisted.');
+              });
+          } else if (pendingInserts.has(pendingKey)) {
+            // F1: Race guard — another INSERT is in-flight for this row; chain an UPDATE off it
+            const insertPromise = pendingInserts.get(pendingKey)!;
+            void insertPromise.then((createdId) => {
+              void db
+                .query(
+                  `UPDATE $id MERGE $fields SET updated_at = time::now()`,
+                  { id: createdId, fields },
+                )
+                .catch(() => {
+                  onSyncWarning?.('Cell save failed — changes may not be persisted.');
+                });
+            });
+          } else {
+            // New row — INSERT and record the promise
+            const insertPromise = db
+              .query<[Array<{ id: unknown }>]>(
+                `INSERT INTO type::table($tbl) $fields RETURN id`,
+                { tbl: targetSheet.table_name, fields: { ...fields, workspace: workspaceId } },
+              )
+              .then((result) => {
+                const newId = String(
+                  (result[0]?.[0] as { id?: unknown } | undefined)?.id ?? '',
+                );
+                if (newId) {
                   if (!rowOrderMap.has(subUnitId)) rowOrderMap.set(subUnitId, new Map());
                   rowOrderMap.get(subUnitId)!.set(rowIdx, newId);
                 }
-              }
-            })
-            .catch(() => {
-              onSyncWarning?.('Cell save failed — changes may not be persisted.');
-            });
+                pendingInserts.delete(pendingKey);
+                return newId;
+              })
+              .catch((err: unknown) => {
+                pendingInserts.delete(pendingKey);
+                onSyncWarning?.('Cell save failed — changes may not be persisted.');
+                throw err;
+              });
+            pendingInserts.set(pendingKey, insertPromise);
+          }
         }
       }
       // Do NOT write cell values to collab mutation log
       return;
     }
 
-    // ── New sheet tab created inside Univer ────────────────────────────────
-    if (id === 'sheet.mutation.insert-sheet-mutation') {
+    // ── F7: New sheet tab created inside Univer ────────────────────────────
+    if (id === 'sheet.mutation.insert-sheet-mutation' && !options?.fromCollab) {
       const sheetParams = params as Record<string, unknown>;
-      const unitId = sheetParams.unitId as string | undefined;
-      const name = sheetParams.name as string | undefined;
-      if (unitId && name) {
-        opts.onSheetAdded?.(unitId, name);
+      const sheetData = sheetParams.sheet as Record<string, unknown> | undefined;
+      const newSheetId =
+        (sheetData?.id as string | undefined) ?? (sheetParams.sheetId as string | undefined);
+      const newSheetName =
+        (sheetData?.name as string | undefined) ?? (sheetParams.name as string | undefined);
+      if (newSheetId && newSheetName) {
+        opts.onSheetAdded?.(newSheetId, newSheetName);
       }
       // Fall through so the structural mutation is also broadcast to collab
     }
@@ -320,13 +371,81 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
   // Start snapshot watcher (coordinator role is set by watchCoordinator above)
   await snapshotController.start(false);
 
+  // F6: LIVE SELECT per entity table → sync remote cell edits into Univer ──────
+  const liveCleanups: Array<() => void> = [];
+
+  if (opts.sheets?.length) {
+    for (const sheet of opts.sheets) {
+      const liveQuery = await db.live(new Table(sheet.table_name)).catch(() => null);
+      if (!liveQuery) continue;
+
+      const colDefs = (sheet.column_defs ?? []) as Array<{ key: string; label: string }>;
+
+      const unsub = liveQuery.subscribe((message: {
+        action: string;
+        value: Record<string, unknown>;
+      }) => {
+        if (message.action !== 'UPDATE' && message.action !== 'CREATE') return;
+        const row = message.value;
+        const rowId = String(row.id ?? '');
+        if (!rowId) return;
+
+        const wb = univerAPI.getActiveWorkbook();
+        if (!wb) return;
+        const univerSheet = wb.getSheetBySheetId(sheet.univer_id);
+        if (!univerSheet) return; // not continue — this is inside a callback
+
+        // Find or assign row index from rowOrderMap
+        const sheetRowMap = rowOrderMap.get(sheet.univer_id) ?? new Map<number, string>();
+        let targetRowIdx: number | undefined;
+        for (const [idx, id] of sheetRowMap.entries()) {
+          if (id === rowId) {
+            targetRowIdx = idx;
+            break;
+          }
+        }
+
+        if (targetRowIdx === undefined) {
+          // New row from another client: append at next available row
+          const headerOffset = colDefs.length > 0 ? 1 : 0;
+          targetRowIdx = headerOffset + sheetRowMap.size;
+          sheetRowMap.set(targetRowIdx, rowId);
+          rowOrderMap.set(sheet.univer_id, sheetRowMap);
+        }
+
+        // Write cell values
+        if (colDefs.length > 0) {
+          colDefs.forEach((col, colIdx) => {
+            const val = row[col.key];
+            if (val !== undefined && val !== null) {
+              univerSheet.getRange(targetRowIdx!, colIdx, 1, 1).setValue(String(val));
+            }
+          });
+        } else {
+          const fields = Object.entries(row).filter(
+            ([k]) => !['id', 'workspace', 'created_at', 'updated_at'].includes(k),
+          );
+          fields.forEach(([, val], colIdx) => {
+            if (val !== undefined && val !== null) {
+              univerSheet.getRange(targetRowIdx!, colIdx, 1, 1).setValue(String(val));
+            }
+          });
+        }
+      });
+
+      liveCleanups.push(unsub);
+    }
+  }
+
   // --- Reconnect handler ---
+  // F2: call hydrateEntityTables after reloading snapshot on reconnect
   const handleReconnect = async () => {
     const result = await collabController.handleReconnect(lastMutationTs);
     if (result === 'snapshot') {
       const fresh = await snapshotController.loadLatest().catch(() => null);
       if (fresh?.layout) {
         loadWorkbookData(fresh.layout as Record<string, unknown>);
+        await hydrateEntityTables(); // re-populate cells after snapshot reload
       }
     }
   };
@@ -337,6 +456,7 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
 
   return {
     destroy() {
+      liveCleanups.forEach((cleanup) => cleanup()); // F6: clean up LIVE SELECT subscriptions
       collabController.stop();
       snapshotController.stop();
       stopHeartbeat();
