@@ -244,7 +244,7 @@ DEFINE FIELD IF NOT EXISTS workbook    ON TABLE mutation TYPE record<workbook>;
 -- Univer layout command ID. Only whitelisted layout commands are stored here.
 DEFINE FIELD IF NOT EXISTS command_id  ON TABLE mutation TYPE string;
 -- Exact Univer command params as emitted by onCommandExecuted.
-DEFINE FIELD IF NOT EXISTS params      ON TABLE mutation TYPE object;
+DEFINE FIELD OVERWRITE params      ON TABLE mutation TYPE object FLEXIBLE;
 -- Stable per-tab client identifier (generated once, stored in localStorage).
 DEFINE FIELD IF NOT EXISTS client_id   ON TABLE mutation TYPE string;
 -- Server-assigned. Authoritative timestamp for last-write-wins on layout conflicts.

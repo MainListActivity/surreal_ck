@@ -5,7 +5,6 @@ import type { MutationRecord } from '../lib/surreal/types';
 
 export interface CollabMutation {
   workbook: string;
-  workspace: string;
   command_id: string;
   params: Record<string, unknown>;
   client_id: string;
@@ -65,31 +64,19 @@ export function createCollabController(
   const retryQueue: CollabMutation[] = [];
   const MAX_QUEUE = 500;
 
-  const loadMutation = async (id: string): Promise<MutationRecord | null> => {
-    const [rows] = await db.query<[MutationRecord[]]>(
-      'SELECT * FROM $id LIMIT 1',
-      { id },
-    );
-    return rows?.[0] ?? null;
-  };
-
   const flushRetryQueue = async () => {
     while (retryQueue.length > 0) {
       const item = retryQueue[0];
       try {
         await db.query(
-          `BEGIN TRANSACTION;
-           LET $mutation = CREATE mutation CONTENT {
+          `CREATE mutation CONTENT {
+             workbook: $wb,
              command_id: $cmd,
              params: $params,
              client_id: $cid
-           };
-           RELATE $ws->workspace_has_mutation->$mutation;
-           RELATE $wb->workbook_has_mutation->$mutation;
-           COMMIT TRANSACTION`,
+           }`,
           {
             wb: workbookId,
-            ws: workspaceId,
             cmd: item.command_id,
             params: item.params,
             cid: item.client_id,
@@ -106,18 +93,14 @@ export function createCollabController(
     try {
       await flushRetryQueue();
       await db.query(
-        `BEGIN TRANSACTION;
-         LET $mutation = CREATE mutation CONTENT {
+        `CREATE mutation CONTENT {
+           workbook: $wb,
            command_id: $cmd,
            params: $params,
            client_id: $cid
-         };
-         RELATE $ws->workspace_has_mutation->$mutation;
-         RELATE $wb->workbook_has_mutation->$mutation;
-         COMMIT TRANSACTION`,
+         }`,
         {
           wb: mutation.workbook,
-          ws: mutation.workspace,
           cmd: mutation.command_id,
           params: mutation.params,
           cid: mutation.client_id,
@@ -146,16 +129,14 @@ export function createCollabController(
     if (!COLLAB_COMMAND_WHITELIST.has(record.command_id)) {
       void db
         .query(
-          `BEGIN TRANSACTION;
-           LET $error = CREATE client_error CONTENT {
+          `CREATE client_error CONTENT {
+             workspace: $ws,
+             workbook: $wb,
              client_id: $cid,
              error_code: $code,
              message: $msg,
              meta: $meta
-           };
-           RELATE $ws->workspace_has_client_error->$error;
-           RELATE $wb->workbook_has_client_error->$error;
-           COMMIT TRANSACTION`,
+           }`,
           {
             wb: workbookId,
             ws: workspaceId,
@@ -192,34 +173,18 @@ export function createCollabController(
 
   return {
     async start() {
-      liveQuery = await db.live(new Table('workbook_has_mutation'));
+      liveQuery = await db.live(new Table('mutation'));
       unsubscribeLive = liveQuery.subscribe((message) => {
         if (message.action !== 'CREATE') {
           return;
         }
 
-        if (
-          typeof message.value === 'object'
-          && message.value !== null
-          && 'command_id' in message.value
-          && 'client_id' in message.value
-        ) {
-          liveCallback(message.value as unknown as MutationRecord);
+        const record = message.value as MutationRecord;
+        if (record.workbook !== workbookId) {
           return;
         }
 
-        const edge = message.value as { in?: string; out?: string };
-        if (edge.in !== workbookId || !edge.out) {
-          return;
-        }
-
-        void loadMutation(edge.out)
-          .then((record) => {
-            if (record) {
-              liveCallback(record);
-            }
-          })
-          .catch(() => undefined);
+        liveCallback(record);
       });
     },
 
@@ -246,34 +211,18 @@ export function createCollabController(
       paused = true;
       pendingBuffer.length = 0;
 
-      liveQuery = await db.live(new Table('workbook_has_mutation'));
+      liveQuery = await db.live(new Table('mutation'));
       unsubscribeLive = liveQuery.subscribe((message) => {
         if (message.action !== 'CREATE') {
           return;
         }
 
-        if (
-          typeof message.value === 'object'
-          && message.value !== null
-          && 'command_id' in message.value
-          && 'client_id' in message.value
-        ) {
-          liveCallback(message.value as unknown as MutationRecord);
+        const record = message.value as MutationRecord;
+        if (record.workbook !== workbookId) {
           return;
         }
 
-        const edge = message.value as { in?: string; out?: string };
-        if (edge.in !== workbookId || !edge.out) {
-          return;
-        }
-
-        void loadMutation(edge.out)
-          .then((record) => {
-            if (record) {
-              liveCallback(record);
-            }
-          })
-          .catch(() => undefined);
+        liveCallback(record);
       });
 
       // Gap detection
@@ -288,10 +237,7 @@ export function createCollabController(
 
       const result = await db
         .query<[MutationRecord[]]>(
-          `SELECT VALUE out
-           FROM workbook_has_mutation
-           WHERE in = $wb AND out.created_at > $ts
-           ORDER BY out.created_at ASC`,
+          `SELECT * FROM mutation WHERE workbook = $wb AND created_at > $ts ORDER BY created_at ASC`,
           { wb: workbookId, ts: lastKnownTs },
         )
         .catch(() => [[]] as [MutationRecord[]]);

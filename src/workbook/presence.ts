@@ -16,7 +16,6 @@ const PRESENCE_REFRESH_MS = 20_000;
  */
 export function startPresenceHeartbeat(
   db: Surreal,
-  workspaceId: string,
   workbookId: string,
   clientId: string,
 ): () => void {
@@ -35,16 +34,13 @@ export function startPresenceHeartbeat(
       if (!presenceId) {
         const result = await db.query<[string[]]>(
           `LET $presence = (CREATE presence CONTENT $data RETURN AFTER)[0];
-           RELATE $ws->workspace_has_presence->$presence;
-           RELATE $wb->workbook_has_presence->$presence;
            RETURN $presence.id`,
           {
             data: {
+              workbook: workbookId,
               client_id: clientId,
               expires_at: expiresAt,
             },
-            ws: workspaceId,
-            wb: workbookId,
           },
         );
         presenceId = result[0]?.[0] ?? null;
@@ -73,12 +69,7 @@ export function startPresenceHeartbeat(
     }
 
     if (presenceId) {
-      void db.query(
-        `DELETE workspace_has_presence WHERE out = $id;
-         DELETE workbook_has_presence WHERE out = $id;
-         DELETE $id`,
-        { id: presenceId },
-      ).catch(() => undefined);
+      void db.query(`DELETE $id`, { id: presenceId }).catch(() => undefined);
     }
   };
 }
@@ -98,10 +89,9 @@ export async function watchCoordinator(
   const getLowest = async (): Promise<string | null> => {
     const now = new Date().toISOString();
     const result = await db.query<[PresenceRecord[]]>(
-      `SELECT out.client_id AS client_id
-       FROM workbook_has_presence
-       WHERE in = $wb AND out.expires_at > $now
-       ORDER BY out.client_id ASC
+      `SELECT client_id FROM presence
+       WHERE workbook = $wb AND expires_at > $now
+       ORDER BY client_id ASC
        LIMIT 1`,
       { wb: workbookId, now },
     );

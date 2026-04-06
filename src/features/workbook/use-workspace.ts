@@ -92,7 +92,10 @@ export function useWorkspace(db: Surreal): State {
             id: String(ws.id),
             name: ws.name,
             memberCount: ws.memberCount ?? 0,
-            workbooks: Array.isArray(workbookRows) ? workbookRows : [],
+            // SurrealDB 2.x returns RecordId objects for id fields — coerce to string.
+            workbooks: Array.isArray(workbookRows)
+              ? workbookRows.map((wb) => ({ ...wb, id: String(wb.id) }))
+              : [],
           },
         });
       } catch (err) {
@@ -111,21 +114,25 @@ export function useWorkspace(db: Surreal): State {
   return state;
 }
 
-/**
- * Loads a single workbook row list from SurrealDB.
- * Queries the dynamic entity table inferred from template_key.
- */
 export interface EntityRow {
   id: string;
-  name: string;
-  jurisdiction: string | null;
-  status: string | null;
+  [key: string]: unknown;
 }
 
-export function templateToEntityTable(templateKey: string | null): string | null {
-  if (templateKey === 'legal-entity-tracker') return 'company';
-  if (templateKey === 'case-management') return 'case';
-  return null;
+/**
+ * Maps a template key + workspace key to the primary entity table name.
+ * Table names are derived deterministically: ent_{ws_key}_{entity_key}.
+ * Returns null if the template key is unknown or ws_key is not available.
+ */
+export function templateToEntityTable(wsKey: string | null | undefined, templateKey: string | null | undefined): string | null {
+  if (!wsKey || !templateKey) return null;
+  const primaryEntity: Record<string, string> = {
+    'legal-entity-tracker': 'company',
+    'case-management': 'case',
+  };
+  const entity = primaryEntity[templateKey];
+  if (!entity) return null;
+  return `ent_${wsKey}_${entity}`;
 }
 
 export function formatUpdatedAt(isoString: string | undefined | null): string {

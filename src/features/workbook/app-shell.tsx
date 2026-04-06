@@ -50,6 +50,8 @@ export function AppShell({
   const workbooks = workspace.data?.workbooks ?? [];
   const workspaceName = workspace.data?.name ?? '…';
   const memberCount = workspace.data?.memberCount ?? 0;
+  // Extract ws_key from record ID: "workspace:harbor" → "harbor"
+  const wsKey = workspace.data?.id?.split(':')[1] ?? null;
   const resolvedDisplayName = displayName ?? '…';
 
   // Determine the active workbook, falling back to the first available.
@@ -195,7 +197,7 @@ export function AppShell({
                   <span className="mono-label">Realtime presence</span>
                 </div>
 
-                <WorkbookGrid db={db} workbook={activeWorkbook} onSelectPanel={onSelectPanel} />
+                <WorkbookGrid db={db} workbook={activeWorkbook} wsKey={wsKey} onSelectPanel={onSelectPanel} />
               </div>
 
               <aside className="sidebar-panel" aria-label={panelLabels[activePanel]}>
@@ -264,17 +266,19 @@ function gridReducer(state: GridState, action: GridAction): GridState {
 function WorkbookGrid({
   db,
   workbook,
+  wsKey,
   onSelectPanel,
 }: {
   db: Surreal;
   workbook: WorkbookSummaryDb | null;
+  wsKey: string | null;
   onSelectPanel: (panel: SidebarPanel) => void;
 }) {
   const [state, dispatch] = useReducer(gridReducer, { rows: [], isLoading: false, error: null });
 
   useEffect(() => {
     if (!workbook) return;
-    const table = templateToEntityTable(workbook.template_key);
+    const table = templateToEntityTable(wsKey, workbook.template_key);
     if (!table) return;
 
     let cancelled = false;
@@ -285,7 +289,10 @@ function WorkbookGrid({
       { table },
     )
       .then(([rows]) => {
-        if (!cancelled) dispatch({ type: 'load-ok', rows: rows ?? [] });
+        // SurrealDB 2.x returns RecordId objects for id fields, not plain strings.
+        // Coerce to string here so JSX renders correctly.
+        const normalised = (rows ?? []).map((r) => ({ ...r, id: String(r.id) }));
+        if (!cancelled) dispatch({ type: 'load-ok', rows: normalised });
       })
       .catch((err) => {
         if (!cancelled) dispatch({ type: 'load-err', error: err instanceof Error ? err.message : 'Query failed' });

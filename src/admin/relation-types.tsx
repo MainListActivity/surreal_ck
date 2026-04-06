@@ -1,16 +1,19 @@
 import { useEffect, useReducer, useState } from 'react';
 import type { Surreal } from 'surrealdb';
 
-export interface RelationType {
+import { relationTableDDL, validateTableKey } from '../lib/surreal/ddl';
+
+export interface EdgeCatalogItem {
   id: string;
   key: string;
   label: string;
-  from_entity_type: string;
-  to_entity_type: string;
+  rel_table: string;
+  from_table: string | null;
+  to_table: string | null;
 }
 
 interface State {
-  items: RelationType[];
+  items: EdgeCatalogItem[];
   isLoading: boolean;
   error: string | null;
   isCreating: boolean;
@@ -19,10 +22,10 @@ interface State {
 
 type Action =
   | { type: 'load-start' }
-  | { type: 'load-ok'; items: RelationType[] }
+  | { type: 'load-ok'; items: EdgeCatalogItem[] }
   | { type: 'load-err'; error: string }
   | { type: 'create-start' }
-  | { type: 'create-ok'; item: RelationType }
+  | { type: 'create-ok'; item: EdgeCatalogItem }
   | { type: 'create-err'; error: string }
   | { type: 'delete-ok'; id: string }
   | { type: 'clear-create-error' };
@@ -53,33 +56,27 @@ function reducer(state: State, action: Action): State {
 export interface RelationTypesPanelProps {
   db: Surreal;
   workspaceId: string;
+  wsKey: string; // workspace nanoid used in table name prefix, e.g. "harbor"
 }
 
-export function RelationTypesPanel({ db, workspaceId }: RelationTypesPanelProps) {
+export function RelationTypesPanel({ db, workspaceId, wsKey }: RelationTypesPanelProps) {
   const [state, dispatch] = useReducer(reducer, {
     items: [], isLoading: false, error: null, isCreating: false, createError: null,
   });
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ label: '', fromType: '', toType: '' });
+  const [form, setForm] = useState({ label: '', fromTable: '', toTable: '' });
 
   useEffect(() => {
-    void loadRelationTypes();
+    void loadEdgeCatalog();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId]);
 
-  async function loadRelationTypes() {
+  async function loadEdgeCatalog() {
     dispatch({ type: 'load-start' });
     try {
-      const [rows] = await db.query<[RelationType[]]>(
-        `SELECT
-           out.id AS id,
-           out.key AS key,
-           out.label AS label,
-           out->relation_from_type->entity_type[0].key AS from_entity_type,
-           out->relation_to_type->entity_type[0].key AS to_entity_type
-         FROM workspace_has_relation_type
-         WHERE in = $ws
-         ORDER BY out.label`,
+      const [rows] = await db.query<[EdgeCatalogItem[]]>(
+        `SELECT id, key, label, rel_table, from_table, to_table
+         FROM edge_catalog WHERE workspace = $ws ORDER BY label`,
         { ws: workspaceId },
       );
       dispatch({ type: 'load-ok', items: rows ?? [] });
@@ -90,81 +87,61 @@ export function RelationTypesPanel({ db, workspaceId }: RelationTypesPanelProps)
 
   async function handleCreate() {
     const label = form.label.trim();
-    const fromType = form.fromType.trim();
-    const toType = form.toType.trim();
-    if (!label || !fromType || !toType) return;
+    const fromTable = form.fromTable.trim() || null;
+    const toTable = form.toTable.trim() || null;
+    if (!label) return;
 
     const key = label.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+    const relTable = `rel_${wsKey}_${key}`;
+
+    const keyErr = validateTableKey(relTable);
+    if (keyErr) {
+      dispatch({ type: 'create-err', error: keyErr });
+      return;
+    }
+
     dispatch({ type: 'create-start' });
 
     try {
-      const [fromRows] = await db.query<[Array<{ id: string }> ]>(
-        'SELECT out.id AS id FROM workspace_has_entity_type WHERE in = $ws AND out.key = $key LIMIT 1',
-        { ws: workspaceId, key: fromType },
-      );
-      const [toRows] = await db.query<[Array<{ id: string }> ]>(
-        'SELECT out.id AS id FROM workspace_has_entity_type WHERE in = $ws AND out.key = $key LIMIT 1',
-        { ws: workspaceId, key: toType },
-      );
-      const fromEntityId = fromRows?.[0]?.id;
-      const toEntityId = toRows?.[0]?.id;
-      if (!fromEntityId || !toEntityId) {
-        throw new Error('Both source and target entity types must exist before creating a relationship type.');
-      }
+      // Step 1: DDL — create the physical relation table.
+      await db.query(relationTableDDL(relTable));
 
-      const [created] = await db.query<[RelationType[]]>(
-        `LET $relation = (INSERT INTO relation_type {
-           workspace: $ws,
-           key: $key,
-           label: $label
-         } RETURN AFTER)[0];
-         RELATE $ws->workspace_has_relation_type->$relation;
-         RELATE $relation->relation_from_type->$fromEntity;
-         RELATE $relation->relation_to_type->$toEntity;
-         RETURN {
-           id: $relation.id,
-           key: $relation.key,
-           label: $relation.label,
-           from_entity_type: $fromKey,
-           to_entity_type: $toKey
-         };`,
-        {
-          ws: workspaceId,
-          key,
-          label,
-          fromEntity: fromEntityId,
-          toEntity: toEntityId,
-          fromKey: fromType,
-          toKey: toType,
-        },
+      // Step 2: Register in edge_catalog.
+      const [created] = await db.query<[EdgeCatalogItem[]]>(
+        `INSERT INTO edge_catalog {
+           workspace:  $ws,
+           key:        $key,
+           label:      $label,
+           rel_table:  $rel_table,
+           from_table: $from_table,
+           to_table:   $to_table,
+           edge_props: []
+         } RETURN AFTER`,
+        { ws: workspaceId, key, label, rel_table: relTable, from_table: fromTable, to_table: toTable },
       );
       const item = created?.[0];
-      if (!item) throw new Error('relation_type record not returned');
+      if (!item) throw new Error('edge_catalog record not returned');
 
       dispatch({ type: 'create-ok', item });
-      setForm({ label: '', fromType: '', toType: '' });
+      setForm({ label: '', fromTable: '', toTable: '' });
       setShowForm(false);
     } catch (err) {
       dispatch({ type: 'create-err', error: err instanceof Error ? err.message : String(err) });
     }
   }
 
-  async function handleDelete(item: RelationType) {
+  async function handleDelete(item: EdgeCatalogItem) {
     try {
-      await db.query(
-        `DELETE relation_from_type WHERE in = $id;
-         DELETE relation_to_type WHERE in = $id;
-         DELETE workspace_has_relation_type WHERE in = $ws AND out = $id;
-         DELETE $id`,
-        { id: item.id, ws: workspaceId },
-      );
+      // Remove the catalog record. The physical relation table is left in place
+      // to avoid accidental data loss (same reasoning as entity table deletion).
+      await db.query(`DELETE $id`, { id: item.id });
       dispatch({ type: 'delete-ok', id: item.id });
     } catch {
       // non-fatal
     }
   }
 
-  const formValid = form.label.trim() && form.fromType.trim() && form.toType.trim();
+  const formValid = form.label.trim();
 
   return (
     <section aria-label="Relationship types">
@@ -198,26 +175,26 @@ export function RelationTypesPanel({ db, workspaceId }: RelationTypesPanelProps)
             />
           </label>
           <label className="admin-form-label" htmlFor="rel-from">
-            From entity type
+            From table (optional)
             <input
               id="rel-from"
               className="admin-form-input"
               type="text"
-              placeholder="e.g. company"
-              value={form.fromType}
-              onChange={(e) => setForm((f) => ({ ...f, fromType: e.target.value }))}
+              placeholder={`e.g. ent_${wsKey}_company`}
+              value={form.fromTable}
+              onChange={(e) => setForm((f) => ({ ...f, fromTable: e.target.value }))}
               disabled={state.isCreating}
             />
           </label>
           <label className="admin-form-label" htmlFor="rel-to">
-            To entity type
+            To table (optional)
             <input
               id="rel-to"
               className="admin-form-input"
               type="text"
-              placeholder="e.g. company"
-              value={form.toType}
-              onChange={(e) => setForm((f) => ({ ...f, toType: e.target.value }))}
+              placeholder={`e.g. ent_${wsKey}_company`}
+              value={form.toTable}
+              onChange={(e) => setForm((f) => ({ ...f, toTable: e.target.value }))}
               disabled={state.isCreating}
             />
           </label>
@@ -248,7 +225,10 @@ export function RelationTypesPanel({ db, workspaceId }: RelationTypesPanelProps)
           <li key={item.id} className="admin-list-item">
             <div>
               <strong>{item.label}</strong>
-              <span className="mono-label">{item.from_entity_type} → {item.to_entity_type}</span>
+              <span className="mono-label">
+                {item.from_table ?? 'any'} → {item.to_table ?? 'any'}
+              </span>
+              <span className="mono-label">{item.rel_table}</span>
             </div>
             <button
               className="ghost-button"

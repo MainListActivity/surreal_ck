@@ -13,7 +13,8 @@ export interface FormDefinition {
   id: string;
   title: string;
   slug: string;
-  target_table: string;
+  target_sheet: string;    // sheet record ID
+  target_label: string;   // sheet label for display
   fields: FormField[];
 }
 
@@ -73,15 +74,16 @@ function makeSlug(title: string): string {
 export interface FormBuilderPanelProps {
   db: Surreal;
   workspaceId: string;
+  workbookId: string;
 }
 
-export function FormBuilderPanel({ db, workspaceId }: FormBuilderPanelProps) {
+export function FormBuilderPanel({ db, workspaceId, workbookId }: FormBuilderPanelProps) {
   const [state, dispatch] = useReducer(reducer, {
     items: [], isLoading: false, error: null, isSaving: false, saveError: null,
   });
   const [showForm, setShowForm] = useState(false);
   const [formTitle, setFormTitle] = useState('');
-  const [targetTable, setTargetTable] = useState('');
+  const [targetSheetId, setTargetSheetId] = useState('');
   const [fields, setFields] = useState<FormField[]>([]);
 
   useEffect(() => {
@@ -94,14 +96,15 @@ export function FormBuilderPanel({ db, workspaceId }: FormBuilderPanelProps) {
     try {
       const [rows] = await db.query<[FormDefinition[]]>(
         `SELECT
-           out.id AS id,
-           out.title AS title,
-           out.slug AS slug,
-           out.fields AS fields,
-           out->form_targets_entity_type->entity_type[0].key AS target_table
-         FROM workspace_has_form_definition
-         WHERE in = $ws
-         ORDER BY out.title`,
+           id,
+           title,
+           slug,
+           fields,
+           target_sheet,
+           target_sheet.label AS target_label
+         FROM form_definition
+         WHERE workspace = $ws
+         ORDER BY title`,
         { ws: workspaceId },
       );
       dispatch({ type: 'load-ok', items: rows ?? [] });
@@ -141,48 +144,39 @@ export function FormBuilderPanel({ db, workspaceId }: FormBuilderPanelProps) {
 
   async function handleSave() {
     const title = formTitle.trim();
-    const target = targetTable.trim();
-    if (!title || !target) return;
+    const sheetId = targetSheetId.trim();
+    if (!title || !sheetId) return;
 
     const slug = makeSlug(title);
     dispatch({ type: 'save-start' });
 
     try {
-      const [targetRows] = await db.query<[Array<{ id: string }> ]>(
-        'SELECT out.id AS id FROM workspace_has_entity_type WHERE in = $ws AND out.key = $key LIMIT 1',
-        { ws: workspaceId, key: target },
-      );
-      const targetEntityId = targetRows?.[0]?.id;
-      if (!targetEntityId) {
-        throw new Error('Target entity type must exist before creating a form.');
-      }
-
       const [created] = await db.query<[FormDefinition[]]>(
         `LET $form = (INSERT INTO form_definition {
-           workspace: $ws,
-           title: $title,
-           slug: $slug,
-           fields: $fields,
+           workspace:        $ws,
+           title:            $title,
+           slug:             $slug,
+           target_sheet:     $sheet,
+           fields:           $fields,
            conditional_rules: [],
-           auto_relations: []
+           auto_edges:       []
          } RETURN AFTER)[0];
-         RELATE $ws->workspace_has_form_definition->$form;
-         RELATE $form->form_targets_entity_type->$targetEntity;
          RETURN {
-           id: $form.id,
-           title: $form.title,
-           slug: $form.slug,
-           target_table: $targetKey,
-           fields: $form.fields
+           id:           $form.id,
+           title:        $form.title,
+           slug:         $form.slug,
+           target_sheet: $form.target_sheet,
+           target_label: $form.target_sheet.label,
+           fields:       $form.fields
          };`,
-        { ws: workspaceId, title, slug, targetEntity: targetEntityId, targetKey: target, fields },
+        { ws: workspaceId, title, slug, sheet: sheetId, fields },
       );
       const item = created?.[0];
       if (!item) throw new Error('form_definition record not returned');
 
       dispatch({ type: 'save-ok', item });
       setFormTitle('');
-      setTargetTable('');
+      setTargetSheetId('');
       setFields([]);
       setShowForm(false);
     } catch (err) {
@@ -192,19 +186,14 @@ export function FormBuilderPanel({ db, workspaceId }: FormBuilderPanelProps) {
 
   async function handleDelete(item: FormDefinition) {
     try {
-      await db.query(
-        `DELETE form_targets_entity_type WHERE in = $id;
-         DELETE workspace_has_form_definition WHERE in = $ws AND out = $id;
-         DELETE $id`,
-        { id: item.id, ws: workspaceId },
-      );
+      await db.query(`DELETE $id`, { id: item.id });
       dispatch({ type: 'delete-ok', id: item.id });
     } catch {
       // non-fatal
     }
   }
 
-  const formValid = formTitle.trim() && targetTable.trim();
+  const formValid = formTitle.trim() && targetSheetId.trim();
 
   return (
     <section aria-label="Form builder">
@@ -235,14 +224,14 @@ export function FormBuilderPanel({ db, workspaceId }: FormBuilderPanelProps) {
             />
           </label>
           <label className="admin-form-label" htmlFor="form-target">
-            Target entity table
+            Target sheet (ID)
             <input
               id="form-target"
               className="admin-form-input"
               type="text"
-              placeholder="e.g. company"
-              value={targetTable}
-              onChange={(e) => setTargetTable(e.target.value)}
+              placeholder="sheet:company_harbor"
+              value={targetSheetId}
+              onChange={(e) => setTargetSheetId(e.target.value)}
               disabled={state.isSaving}
             />
           </label>
@@ -320,7 +309,7 @@ export function FormBuilderPanel({ db, workspaceId }: FormBuilderPanelProps) {
           <li key={item.id} className="admin-list-item">
             <div>
               <strong>{item.title}</strong>
-              <span className="mono-label">/{item.slug} → {item.target_table}</span>
+              <span className="mono-label">/{item.slug} → {item.target_label}</span>
               <span className="sidebar-copy">{item.fields.length} field{item.fields.length !== 1 ? 's' : ''}</span>
             </div>
             <button

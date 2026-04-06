@@ -40,8 +40,7 @@ export interface MutationRecord {
 export interface SnapshotRecord {
   id: string;
   workbook?: string;
-  workspace?: string;
-  data: Record<string, unknown>;
+  layout: Record<string, unknown>;
   coordinator_client_id: string;
   mutation_watermark?: string;
   created_at: string;
@@ -52,10 +51,34 @@ export interface FormDefinition {
   workspace?: string;
   title: string;
   slug: string;
-  target_table: string;
+  target_sheet: string;
   fields: Array<Record<string, unknown>>;
   conditional_rules: Array<Record<string, unknown>>;
-  auto_relations: Array<Record<string, unknown>>;
+  auto_edges: Array<Record<string, unknown>>;
+  created_at: string;
+}
+
+export interface Sheet {
+  id: string;
+  workbook: string;
+  univer_id: string;
+  table_name: string;
+  label: string;
+  position: number;
+  column_defs: Array<Record<string, unknown>>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EdgeCatalogEntry {
+  id: string;
+  workspace: string;
+  key: string;
+  label: string;
+  rel_table: string;
+  from_table: string | null;
+  to_table: string | null;
+  edge_props: Array<Record<string, unknown>>;
   created_at: string;
 }
 

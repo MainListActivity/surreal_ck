@@ -1,7 +1,7 @@
 import { useEffect, useReducer, useState } from 'react';
 import type { Surreal } from 'surrealdb';
 
-import { entityTableDDL, validateTableKey, type FieldDef } from '../lib/surreal/ddl';
+import { entityTableDDL, relationTableDDL, validateTableKey, type FieldDef } from '../lib/surreal/ddl';
 
 export interface EntityField {
   key: string;
@@ -11,15 +11,16 @@ export interface EntityField {
   options?: string[];
 }
 
-export interface EntityType {
+// A Sheet is the user-facing concept. Each sheet maps 1:1 to a physical entity table.
+export interface SheetSummary {
   id: string;
-  key: string;
   label: string;
-  fields: EntityField[];
+  table_name: string;
+  column_defs: EntityField[];
 }
 
 interface State {
-  items: EntityType[];
+  items: SheetSummary[];
   isLoading: boolean;
   error: string | null;
   isCreating: boolean;
@@ -29,10 +30,10 @@ interface State {
 
 type Action =
   | { type: 'load-start' }
-  | { type: 'load-ok'; items: EntityType[] }
+  | { type: 'load-ok'; items: SheetSummary[] }
   | { type: 'load-err'; error: string }
   | { type: 'create-start' }
-  | { type: 'create-ok'; item: EntityType }
+  | { type: 'create-ok'; item: SheetSummary }
   | { type: 'create-err'; error: string; step: string }
   | { type: 'delete-ok'; id: string }
   | { type: 'clear-create-error' };
@@ -74,24 +75,27 @@ const INITIAL_STATE: State = {
 export interface EntityTypesPanelProps {
   db: Surreal;
   workspaceId: string;
+  workbookId: string;
+  wsKey: string; // workspace nanoid used in table name prefix, e.g. "harbor"
 }
 
-export function EntityTypesPanel({ db, workspaceId }: EntityTypesPanelProps) {
+export function EntityTypesPanel({ db, workspaceId, workbookId, wsKey }: EntityTypesPanelProps) {
   const [state, dispatch] = useReducer(reducer, INITIAL_STATE);
   const [newLabel, setNewLabel] = useState('');
   const [showForm, setShowForm] = useState(false);
 
   useEffect(() => {
-    void loadEntityTypes();
+    void loadSheets();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceId]);
+  }, [workbookId]);
 
-  async function loadEntityTypes() {
+  async function loadSheets() {
     dispatch({ type: 'load-start' });
     try {
-      const [rows] = await db.query<[EntityType[]]>(
-        'SELECT VALUE out FROM workspace_has_entity_type WHERE in = $ws ORDER BY out.label',
-        { ws: workspaceId },
+      const [rows] = await db.query<[SheetSummary[]]>(
+        `SELECT id, label, table_name, column_defs
+         FROM sheet WHERE workbook = $wb ORDER BY position`,
+        { wb: workbookId },
       );
       dispatch({ type: 'load-ok', items: rows ?? [] });
     } catch (err) {
@@ -103,9 +107,10 @@ export function EntityTypesPanel({ db, workspaceId }: EntityTypesPanelProps) {
     const label = newLabel.trim();
     if (!label) return;
 
-    const tableKey = label.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+    const entityKey = label.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+    const tableName = `ent_${wsKey}_${entityKey}`;
 
-    const keyErr = validateTableKey(tableKey);
+    const keyErr = validateTableKey(tableName);
     if (keyErr) {
       dispatch({ type: 'create-err', step: 'validation', error: keyErr });
       return;
@@ -114,35 +119,28 @@ export function EntityTypesPanel({ db, workspaceId }: EntityTypesPanelProps) {
     dispatch({ type: 'create-start' });
 
     try {
-      // Step 1: DDL — generate and execute standardised table definition
-      // with workspace-scoped owner/member permissions (no PERMISSIONS FULL).
-      const defaultFields: FieldDef[] = [
-        { key: 'name', type: 'text', required: true },
-      ];
-      const ddl = entityTableDDL(tableKey, defaultFields);
-      await db.query(ddl);
+      // Step 1: DDL — create the physical entity table with workspace-scoped permissions.
+      const defaultFields: FieldDef[] = [{ key: 'name', type: 'text', required: true }];
+      await db.query(entityTableDDL(tableName, defaultFields));
 
-      // Step 2: Verify the table was created via INFO FOR DB.
-      const [info] = await db.query<[Record<string, unknown>]>('INFO FOR DB');
-      const tables = info as Record<string, unknown>;
-      if (!tables.tables || !(tableKey in (tables.tables as Record<string, unknown>))) {
-        throw Object.assign(new Error(`Table "${tableKey}" was not found after DDL`), { step: 'ddl-verify' });
-      }
-
-      // Step 3: DML — create the entity_type metadata record.
-      const [created] = await db.query<[EntityType[]]>(
-        `LET $entity = (INSERT INTO entity_type {
-           workspace: $ws,
-           key: $key,
-           label: $label,
-           fields: []
+      // Step 2: Create sheet record + workbook_has_sheet edge in one transaction.
+      const [created] = await db.query<[SheetSummary[]]>(
+        `BEGIN TRANSACTION;
+         LET $sheet = (CREATE sheet CONTENT {
+           workbook:    $wb,
+           univer_id:   rand::ulid(),
+           table_name:  $table_name,
+           label:       $label,
+           position:    (SELECT count() FROM sheet WHERE workbook = $wb)[0].count ?? 0,
+           column_defs: [{ key: "name", label: "Name", field_type: "text", required: true }]
          } RETURN AFTER)[0];
-         RELATE $ws->workspace_has_entity_type->$entity;
-         RETURN $entity;`,
-        { ws: workspaceId, key: tableKey, label: label },
+         RELATE $wb->workbook_has_sheet->$sheet;
+         RETURN $sheet;
+         COMMIT TRANSACTION`,
+        { wb: workbookId, table_name: tableName, label },
       );
       const item = created?.[0];
-      if (!item) throw Object.assign(new Error('entity_type record not returned'), { step: 'dml' });
+      if (!item) throw Object.assign(new Error('sheet record not returned'), { step: 'dml' });
 
       dispatch({ type: 'create-ok', item });
       setNewLabel('');
@@ -157,11 +155,15 @@ export function EntityTypesPanel({ db, workspaceId }: EntityTypesPanelProps) {
     }
   }
 
-  async function handleDelete(item: EntityType) {
+  async function handleDelete(item: SheetSummary) {
     try {
+      // Remove the sheet record and its workbook edge.
+      // The physical entity table (item.table_name) is left in place —
+      // REMOVE TABLE is irreversible and risks data loss if misclicked.
       await db.query(
-        'DELETE workspace_has_entity_type WHERE in = $ws AND out = $id; DELETE $id',
-        { id: item.id, ws: workspaceId },
+        `DELETE workbook_has_sheet WHERE in = $wb AND out = $id;
+         DELETE $id`,
+        { id: item.id, wb: workbookId },
       );
       dispatch({ type: 'delete-ok', id: item.id });
     } catch {
@@ -235,7 +237,7 @@ export function EntityTypesPanel({ db, workspaceId }: EntityTypesPanelProps) {
           <li key={item.id} className="admin-list-item">
             <div>
               <strong>{item.label}</strong>
-              <span className="mono-label">{item.key}</span>
+              <span className="mono-label">{item.table_name}</span>
             </div>
             <button
               className="ghost-button"

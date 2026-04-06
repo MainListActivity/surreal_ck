@@ -22,7 +22,6 @@ export interface SnapshotController {
 export function createSnapshotController(
   db: Surreal,
   workbookId: string,
-  workspaceId: string,
   clientId: string,
   getWorkbookData: () => Record<string, unknown>,
   onSnapshotReceived: (snapshot: SnapshotRecord) => void,
@@ -48,21 +47,19 @@ export function createSnapshotController(
     }
 
     try {
-      // Replay mutations since last snapshot before writing (coordinator correctness)
-      const data = getWorkbookData();
+      // layout contains only Univer presentation state (column widths, styles,
+      // formulas, row_order). Cell values live in entity tables — not here.
+      const layout = getWorkbookData();
       const result = await db.query<[SnapshotRecord[]]>(
-        `LET $snapshot = (CREATE snapshot CONTENT {
-           data: $data,
+        `CREATE snapshot CONTENT {
+           workbook: $wb,
+           layout: $layout,
            coordinator_client_id: $cid,
            mutation_watermark: $wm
-         } RETURN AFTER)[0];
-         RELATE $ws->workspace_has_snapshot->$snapshot;
-         RELATE $wb->workbook_has_snapshot->$snapshot;
-         RETURN $snapshot;`,
+         } RETURN AFTER`,
         {
           wb: workbookId,
-          ws: workspaceId,
-          data,
+          layout,
           cid: clientId,
           wm: new Date().toISOString(),
         },
@@ -96,30 +93,22 @@ export function createSnapshotController(
         startCoordinatorTimers();
       }
 
-      // Subscribe to new snapshots from others
-      liveQuery = await db.live(new Table('workbook_has_snapshot'));
+      // Subscribe to new snapshots from other clients for this workbook.
+      liveQuery = await db.live(new Table('snapshot'));
       unsubscribeLive = liveQuery.subscribe((message) => {
         if (message.action !== 'CREATE') {
           return;
         }
 
-        const edge = message.value as { in?: string; out?: string };
-        if (edge.in !== workbookId || !edge.out) {
+        const snap = message.value as SnapshotRecord;
+        if (snap.workbook !== workbookId) {
           return;
         }
 
-        void loadSnapshot(edge.out)
-          .then((snap) => {
-            if (!snap) {
-              return;
-            }
-
-            if (!lastSnapshotTs || snap.created_at > lastSnapshotTs) {
-              lastSnapshotTs = snap.created_at;
-              onSnapshotReceived(snap);
-            }
-          })
-          .catch(() => undefined);
+        if (!lastSnapshotTs || snap.created_at > lastSnapshotTs) {
+          lastSnapshotTs = snap.created_at;
+          onSnapshotReceived(snap);
+        }
       });
     },
 
@@ -155,11 +144,7 @@ export function createSnapshotController(
     async loadLatest(): Promise<SnapshotRecord | null> {
       const result = await db
         .query<[SnapshotRecord[]]>(
-          `SELECT VALUE out
-           FROM workbook_has_snapshot
-           WHERE in = $wb
-           ORDER BY out.created_at DESC
-           LIMIT 1`,
+          `SELECT * FROM snapshot WHERE workbook = $wb ORDER BY created_at DESC LIMIT 1`,
           { wb: workbookId },
         )
         .catch(() => [[]] as [SnapshotRecord[]]);

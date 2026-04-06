@@ -77,7 +77,7 @@ export async function provisionTemplate(
 
     // Step 2: Create workbook record.
     const [wb] = await db.query<[string[]]>(
-      `LET $workbook = (INSERT INTO workbook { name: $name, template_key: $tk } RETURN AFTER)[0];
+      `LET $workbook = (INSERT INTO workbook { workspace: $ws, name: $name, template_key: $tk } RETURN AFTER)[0];
        RELATE $ws->workspace_has_workbook->$workbook;
        RETURN $workbook.id`,
       { ws: workspaceId, name: TEMPLATE_NAMES[templateKey], tk: templateKey },
@@ -88,9 +88,11 @@ export async function provisionTemplate(
     workbookId = wb[0];
 
     // Step 3: Run the template provisioning script.
-    // Variables $ws and $wb are bound as SurrealDB record references.
+    // $ws, $wb are record references. $ws_key is the workspace nanoid used in
+    // dynamic table name prefixes (e.g. "harbor" → ent_harbor_company).
+    const wsKey = workspaceId.split(':')[1] ?? workspaceId;
     const script = TEMPLATE_SCRIPTS[templateKey];
-    await db.query(script, { ws: workspaceId, wb: workbookId });
+    await db.query(script, { ws: workspaceId, wb: workbookId, ws_key: wsKey });
 
     return { ok: true, workspaceId, workbookId };
   } catch (err) {
@@ -118,13 +120,27 @@ async function compensatingCleanup(
 ): Promise<void> {
   try {
     if (workbookId) {
-      await db.query('DELETE workspace_has_workbook WHERE out = $wb; DELETE $wb', { wb: workbookId });
+      // Remove sheets and their workbook edges, then the workbook itself.
+      await db.query(
+        `DELETE workbook_has_sheet WHERE in = $wb;
+         DELETE sheet WHERE workbook = $wb;
+         DELETE workspace_has_workbook WHERE out = $wb;
+         DELETE $wb`,
+        { wb: workbookId },
+      );
     }
     if (workspaceId) {
-      await db.query('DELETE form_targets_entity_type WHERE in INSIDE (SELECT VALUE out FROM workspace_has_form_definition WHERE in = $ws)', { ws: workspaceId });
-      await db.query('DELETE relation_from_type WHERE in INSIDE (SELECT VALUE out FROM workspace_has_relation_type WHERE in = $ws); DELETE relation_to_type WHERE in INSIDE (SELECT VALUE out FROM workspace_has_relation_type WHERE in = $ws)', { ws: workspaceId });
-      await db.query('DELETE workspace_has_form_definition WHERE in = $ws; DELETE workspace_has_relation_type WHERE in = $ws; DELETE workspace_has_entity_type WHERE in = $ws; DELETE workspace_has_member WHERE in = $ws; DELETE owns_workspace WHERE out = $ws', { ws: workspaceId });
-      await db.query('DELETE entity_type WHERE workspace = $ws; DELETE relation_type WHERE workspace = $ws; DELETE form_definition WHERE workspace = $ws; DELETE workspace_member WHERE workspace = $ws; DELETE $ws', { ws: workspaceId });
+      // Remove workspace-scoped records. Dynamic entity/relation tables (ent_*, rel_*)
+      // are DDL and left in place — they are idempotent to re-create on retry.
+      await db.query(
+        `DELETE edge_catalog WHERE workspace = $ws;
+         DELETE form_definition WHERE workspace = $ws;
+         DELETE workspace_member WHERE workspace = $ws;
+         DELETE workspace_has_member WHERE in = $ws;
+         DELETE owns_workspace WHERE out = $ws;
+         DELETE $ws`,
+        { ws: workspaceId },
+      );
     }
   } catch {
     // Cleanup failure is non-fatal — log to client_error in a fire-and-forget manner.
