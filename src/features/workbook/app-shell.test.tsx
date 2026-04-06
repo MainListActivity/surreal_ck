@@ -28,6 +28,17 @@ vi.mock('../../lib/surreal/provider', async (importOriginal) => {
   };
 });
 
+// Stub useSheets so tests don't hit the network.
+vi.mock('./use-sheets', () => ({
+  useSheets: () => ({
+    sheets: [],
+    isLoading: false,
+    error: null,
+    createSheet: vi.fn().mockResolvedValue({}),
+    renameSheet: vi.fn().mockResolvedValue(undefined),
+  }),
+}));
+
 // Stub useWorkspace so tests don't hit the network.
 vi.mock('./use-workspace', async (importOriginal) => {
   const original = await importOriginal<typeof import('./use-workspace')>();
@@ -82,7 +93,8 @@ describe('App shell', () => {
     renderApp();
 
     expect(screen.getByRole('heading', { name: 'Harbor Legal Ops' })).toBeInTheDocument();
-    expect(screen.getByRole('table', { name: 'Workbook preview grid' })).toBeInTheDocument();
+    // Univer spreadsheet mounts asynchronously; the container element is present immediately
+    expect(screen.getByLabelText('Spreadsheet')).toBeInTheDocument();
   });
 
   it('routes template selections through the callback prop', () => {

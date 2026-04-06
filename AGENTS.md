@@ -26,6 +26,9 @@ Key routing rules:
 - Save progress, checkpoint, resume → invoke checkpoint
 - Code quality, health check → invoke health
 
+## React Rules
+Any time you write React Code — you MUST invoke the `vercel-react-best-practices` skill FIRST and follow its rules.
+
 ## SurrealDB Rules
 
 Any time you write SurrealQL — schema, queries, or permissions — you MUST invoke the `surrealdb` skill FIRST and follow its rules.

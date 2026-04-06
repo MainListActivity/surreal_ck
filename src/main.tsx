@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 
 import { AppProviders } from './app/providers';
 import { AppRouterProvider } from './app/router';
+import '@univerjs/preset-sheets-core/lib/index.css';
 import './styles/design-system.css';
 import './styles/global.css';
 

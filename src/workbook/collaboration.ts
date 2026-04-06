@@ -179,7 +179,7 @@ export function createCollabController(
           return;
         }
 
-        const record = message.value as MutationRecord;
+        const record = message.value as unknown as MutationRecord;
         if (record.workbook !== workbookId) {
           return;
         }
@@ -217,7 +217,7 @@ export function createCollabController(
           return;
         }
 
-        const record = message.value as MutationRecord;
+        const record = message.value as unknown as MutationRecord;
         if (record.workbook !== workbookId) {
           return;
         }

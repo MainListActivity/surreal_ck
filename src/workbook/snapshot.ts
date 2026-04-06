@@ -100,7 +100,7 @@ export function createSnapshotController(
           return;
         }
 
-        const snap = message.value as SnapshotRecord;
+        const snap = message.value as unknown as SnapshotRecord;
         if (snap.workbook !== workbookId) {
           return;
         }

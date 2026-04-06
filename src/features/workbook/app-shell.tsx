@@ -1,10 +1,16 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import type { Surreal } from 'surrealdb';
 
+import { clientId } from '../../lib/client-id';
 import { useConnectionSnapshot } from '../../lib/surreal/client';
 import { useSurrealClient } from '../../lib/surreal/provider';
 import type { ConnectionSnapshot } from '../../lib/surreal/types';
+import type { Sheet } from '../../lib/surreal/types';
 import { RecentChangesPanel } from '../../sidebar/recent-changes';
+import { bootstrapUniver } from '../../workbook/univer';
+import type { UniverInstance } from '../../workbook/univer';
 import { templateCatalog, type SidebarPanel, type TemplateKey } from './mock-data';
+import { useSheets, type CreateSheetOpts } from './use-sheets';
 import { formatUpdatedAt, useWorkspace } from './use-workspace';
 
 const panelLabels: Record<SidebarPanel, string> = {
@@ -56,6 +62,9 @@ export function AppShell({
 
   // Determine the active workbook, falling back to the first available.
   const activeWorkbook = workbooks.find((wb) => wb.id === activeWorkbookId) ?? workbooks[0] ?? null;
+
+  // Load sheet records for the active workbook so we can pass them to Univer
+  const { sheets, createSheet } = useSheets(db, activeWorkbook?.id ?? null, wsKey);
 
   return (
     <div className={`app-shell ${isRailCollapsed ? 'app-shell--rail-collapsed' : ''}`}>
@@ -197,7 +206,14 @@ export function AppShell({
                   <span className="mono-label">Realtime presence</span>
                 </div>
 
-                <WorkbookGrid db={db} workbook={activeWorkbook} wsKey={wsKey} onSelectPanel={onSelectPanel} />
+                <UniverGrid
+                  db={db}
+                  workbookId={activeWorkbook?.id ?? null}
+                  workspaceId={workspace.data?.id ?? null}
+                  wsKey={wsKey}
+                  sheets={sheets}
+                  createSheet={createSheet}
+                />
               </div>
 
               <aside className="sidebar-panel" aria-label={panelLabels[activePanel]}>
@@ -229,145 +245,95 @@ export function AppShell({
   );
 }
 
-// ─── Workbook grid (live entity rows from SurrealDB) ──────────────────────────
+// ─── Univer grid ─────────────────────────────────────────────────────────────
 
-import { useEffect, useReducer } from 'react';
-import type { Surreal } from 'surrealdb';
-import { templateToEntityTable } from './use-workspace';
-import type { WorkbookSummaryDb } from './use-workspace';
-
-interface EntityRow {
-  id: string;
-  name: string;
-  jurisdiction: string | null;
-  status: string | null;
-}
-
-interface GridState {
-  rows: EntityRow[];
-  isLoading: boolean;
-  error: string | null;
-}
-
-type GridAction =
-  | { type: 'load-start' }
-  | { type: 'load-ok'; rows: EntityRow[] }
-  | { type: 'load-err'; error: string };
-
-function gridReducer(state: GridState, action: GridAction): GridState {
-  switch (action.type) {
-    case 'load-start': return { ...state, isLoading: true, error: null };
-    case 'load-ok':    return { rows: action.rows, isLoading: false, error: null };
-    case 'load-err':   return { ...state, isLoading: false, error: action.error };
-    default:           return state;
-  }
-}
-
-function WorkbookGrid({
+function UniverGrid({
   db,
-  workbook,
+  workbookId,
+  workspaceId,
   wsKey,
-  onSelectPanel,
+  sheets,
+  createSheet,
 }: {
   db: Surreal;
-  workbook: WorkbookSummaryDb | null;
+  workbookId: string | null;
+  workspaceId: string | null;
   wsKey: string | null;
-  onSelectPanel: (panel: SidebarPanel) => void;
+  sheets: Sheet[];
+  createSheet: (opts: CreateSheetOpts) => Promise<Sheet>;
 }) {
-  const [state, dispatch] = useReducer(gridReducer, { rows: [], isLoading: false, error: null });
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [status, setStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!workbook) return;
-    const table = templateToEntityTable(wsKey, workbook.template_key);
-    if (!table) return;
+    if (!workbookId || !workspaceId || !containerRef.current) return;
 
+    const container = containerRef.current;
+    let instance: UniverInstance | null = null;
     let cancelled = false;
-    dispatch({ type: 'load-start' });
 
-    db.query<[EntityRow[]]>(
-      `SELECT id, name, jurisdiction, status FROM type::table($table) LIMIT 50`,
-      { table },
-    )
-      .then(([rows]) => {
-        // SurrealDB 2.x returns RecordId objects for id fields, not plain strings.
-        // Coerce to string here so JSX renders correctly.
-        const normalised = (rows ?? []).map((r) => ({ ...r, id: String(r.id) }));
-        if (!cancelled) dispatch({ type: 'load-ok', rows: normalised });
+    setStatus('loading');
+
+    bootstrapUniver({
+      db,
+      workbookId,
+      workspaceId,
+      clientId,
+      container,
+      sheets: sheets.length > 0 ? sheets : undefined,
+      wsKey: wsKey ?? undefined,
+      onSheetAdded: async (univerId, label) => {
+        try {
+          await createSheet({ label, univerId });
+        } catch {
+          // Non-fatal — Univer tab exists but DB record may be missing
+        }
+      },
+    })
+      .then((inst) => {
+        if (cancelled) {
+          inst.destroy();
+          return;
+        }
+        instance = inst;
+        setStatus('ready');
       })
       .catch((err) => {
-        if (!cancelled) dispatch({ type: 'load-err', error: err instanceof Error ? err.message : 'Query failed' });
+        if (cancelled) return;
+        setErrorMsg(err instanceof Error ? err.message : 'Failed to load spreadsheet');
+        setStatus('error');
       });
 
-    return () => { cancelled = true; };
-  }, [db, workbook?.id, workbook?.template_key]); // eslint-disable-line react-hooks/exhaustive-deps
+    return () => {
+      cancelled = true;
+      instance?.destroy();
+    };
+  // workbookId triggers a full remount; other deps (sheets, createSheet, wsKey) are captured
+  // at mount time intentionally — Univer must not re-bootstrap on every sheet load tick.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workbookId, workspaceId]);
 
-  if (!workbook) {
+  if (!workbookId) {
     return (
-      <section className="sheet-grid" role="table" aria-label="Workbook preview grid">
+      <div className="univer-container univer-container--empty">
         <p className="sidebar-copy">No workbook selected.</p>
-      </section>
+      </div>
     );
   }
 
   return (
-    <>
-      <section className="sheet-grid" role="table" aria-label="Workbook preview grid">
-        <div className="sheet-grid__row sheet-grid__row--header" role="row">
-          <span>Entity</span>
-          <span>Jurisdiction</span>
-          <span>Status</span>
-          <span>Record ID</span>
-        </div>
-        {state.isLoading && (
-          <div className="sheet-grid__row" role="row">
-            <span>Loading…</span>
-          </div>
-        )}
-        {state.error && (
-          <div className="sheet-grid__row" role="row">
-            <span style={{ color: 'var(--color-error)' }}>{state.error}</span>
-          </div>
-        )}
-        {!state.isLoading && state.rows.map((row) => (
-          <button
-            key={row.id}
-            className="sheet-grid__row sheet-grid__row--interactive"
-            type="button"
-            role="row"
-            onClick={() => onSelectPanel('record')}
-          >
-            <span>{row.name}</span>
-            <span>{row.jurisdiction ?? '—'}</span>
-            <span>{row.status ?? '—'}</span>
-            <span className="mono-cell">{row.id}</span>
-          </button>
-        ))}
-      </section>
-
-      <section className="mobile-record-view" aria-label="Workbook mobile read only list">
-        <div className="mobile-record-view__header">
-          <p className="eyebrow">Phone mode</p>
-          <h3>Read-only record list</h3>
-        </div>
-        <div className="mobile-record-cards">
-          {state.rows.map((row) => (
-            <article key={row.id} className="mobile-record-card">
-              <div className="mobile-record-card__row">
-                <strong>{row.name}</strong>
-                {row.status && (
-                  <span className="status-chip status-chip--compact">{row.status}</span>
-                )}
-              </div>
-              <p>{row.jurisdiction ?? '—'}</p>
-              <p className="mono-cell">{row.id}</p>
-              <button className="secondary-button secondary-button--full" type="button" onClick={() => onSelectPanel('record')}>
-                Open detail
-              </button>
-            </article>
-          ))}
-        </div>
-      </section>
-    </>
+    <div className="univer-container" aria-label="Spreadsheet">
+      {status === 'loading' && (
+        <p className="sidebar-copy" style={{ padding: 'var(--space-xl)' }}>Loading spreadsheet…</p>
+      )}
+      {status === 'error' && (
+        <p className="sidebar-copy" style={{ padding: 'var(--space-xl)', color: 'var(--color-error)' }}>
+          {errorMsg ?? 'Spreadsheet failed to load.'}
+        </p>
+      )}
+      <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+    </div>
   );
 }
 

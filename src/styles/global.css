@@ -69,6 +69,7 @@ code {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 320px;
   min-height: 0;
+  overflow: hidden;
 }
 
 .top-bar {
@@ -268,10 +269,18 @@ code {
 }
 
 .sheet-stage {
-  display: grid;
-  gap: var(--space-md);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   min-width: 0;
-  padding: var(--space-xl);
+  overflow: hidden;
+}
+
+.univer-container {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
 }
 
 .sheet-stage__header {
