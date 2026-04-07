@@ -14,6 +14,7 @@ import { authGateway, useAuthSnapshot } from '../features/auth/auth';
 import type { SidebarPanel, TemplateKey } from '../features/workbook/mock-data';
 import { getDefaultPanelForTemplate } from '../features/workbook/mock-data';
 import { AppShell, AuthScreen } from '../features/workbook/app-shell';
+import { useConnectionSnapshot } from '../lib/surreal/client';
 
 function RootLayout() {
   return <Outlet />;
@@ -21,17 +22,18 @@ function RootLayout() {
 
 function RequireAuth({ children }: { children: (displayName: string) => ReactNode }) {
   const auth = useAuthSnapshot();
+  const connection = useConnectionSnapshot();
 
   if (auth.status === 'checking' || auth.status === 'authorizing') {
     return <AuthScreen title="Authorizing workspace" body="Completing OIDC login and preparing the workbook session." />;
   }
 
-  if (!auth.isLoggedIn) {
+  if (!auth.isLoggedIn || connection.state === 'auth-failed') {
     return (
       <AuthScreen
         title="Sign in to open the workbook"
         body="Authentication runs fully in the SPA with OIDC Authorization Code + PKCE. The only backend interaction after login is SurrealDB."
-        error={auth.error}
+        error={connection.state === 'auth-failed' ? (connection.detail ?? auth.error) : auth.error}
         actionLabel="Continue with MapLayer"
         onAction={() => {
           void authGateway.startLogin().catch(() => undefined);
