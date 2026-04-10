@@ -61,6 +61,151 @@ code {
   overflow: hidden;
 }
 
+/* ─── Univer header custom-left / custom-right extensions ───────────────── */
+
+.ck-header-left {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+  position: relative;
+}
+
+.ck-header-right {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  padding-right: 4px;
+}
+
+.ck-header-btn {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--color-ink);
+  cursor: pointer;
+  display: flex;
+  font-family: var(--font-body);
+  font-size: 0.82rem;
+  padding: 4px 8px;
+  transition: background 120ms ease-out, border-color 120ms ease-out;
+}
+
+.ck-header-btn:hover {
+  background: var(--color-parchment);
+  border-color: var(--color-line);
+}
+
+.ck-header-btn--icon {
+  color: var(--color-muted);
+  padding: 5px 7px;
+}
+
+.ck-header-btn--icon:hover {
+  color: var(--color-ink);
+}
+
+.ck-header-btn--share {
+  border-color: var(--color-line);
+}
+
+.ck-header-title {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--color-ink);
+  cursor: text;
+  font-family: var(--font-display);
+  font-size: 0.98rem;
+  max-width: 36ch;
+  overflow: hidden;
+  padding: 3px 7px;
+  text-align: left;
+  text-overflow: ellipsis;
+  transition: background 120ms ease-out, border-color 120ms ease-out;
+  white-space: nowrap;
+}
+
+.ck-header-title:hover {
+  background: var(--color-parchment);
+  border-color: var(--color-line);
+}
+
+.ck-header-title__placeholder {
+  color: var(--color-muted);
+}
+
+.ck-header-title-input {
+  background: var(--color-paper);
+  border: 1px solid var(--color-primary);
+  border-radius: 6px;
+  color: var(--color-ink);
+  font-family: var(--font-display);
+  font-size: 0.98rem;
+  max-width: 36ch;
+  outline: none;
+  padding: 3px 7px;
+}
+
+.ck-header-avatar {
+  align-items: center;
+  background: var(--color-primary);
+  border: none;
+  border-radius: 50%;
+  color: var(--color-paper);
+  cursor: pointer;
+  display: flex;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  font-weight: 500;
+  height: 26px;
+  justify-content: center;
+  letter-spacing: 0.04em;
+  width: 26px;
+}
+
+.ck-header-avatar:hover {
+  background: #103b37;
+}
+
+.ck-header-dropdown {
+  background: var(--color-paper);
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(26, 31, 30, 0.12);
+  display: flex;
+  flex-direction: column;
+  left: 0;
+  min-width: 200px;
+  padding: 4px;
+  position: absolute;
+  top: calc(100% + 4px);
+  z-index: 100;
+}
+
+.ck-header-dropdown__item {
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  color: var(--color-ink);
+  cursor: pointer;
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  padding: 7px 10px;
+  text-align: left;
+  transition: background 100ms ease-out;
+}
+
+.ck-header-dropdown__item:hover {
+  background: var(--color-parchment);
+}
+
+.ck-header-dropdown__item--active {
+  background: rgba(23, 75, 71, 0.08);
+  color: var(--color-primary);
+  font-weight: 500;
+}
+
 .workbook-drawer {
   background: rgba(251, 250, 247, 0.98);
   border-left: 1px solid var(--color-line);

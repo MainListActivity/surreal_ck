@@ -13,6 +13,7 @@ import { templateCatalog, type SidebarPanel, type TemplateKey } from './mock-dat
 import { useSheets, type CreateSheetOpts } from './use-sheets';
 import { formatUpdatedAt, useWorkspace } from './use-workspace';
 
+
 const panelLabels: Record<SidebarPanel, string> = {
   none: 'No panel',
   record: 'Record detail',
@@ -39,6 +40,7 @@ export function AppShell({
   view,
   activeWorkbookId,
   activePanel = 'none',
+  displayName,
   onSelectTemplate,
   onSelectWorkbook,
   onSelectPanel,
@@ -90,8 +92,15 @@ export function AppShell({
             wsKey={wsKey}
             sheets={sheets}
             createSheet={createSheet}
+            workbookName={activeWorkbook?.name ?? workspaceName}
+            displayName={displayName}
+            workbooks={workbooks}
+            activeWorkbookId={activeWorkbookId}
+            onSelectWorkbook={onSelectWorkbook}
             onSelectPanel={onSelectPanel}
             onShowTemplates={onShowTemplates}
+            onShowAdmin={onShowAdmin}
+            onLogout={onLogout}
           />
         </main>
 
@@ -211,8 +220,15 @@ function UniverGrid({
   wsKey,
   sheets,
   createSheet,
+  workbookName,
+  displayName,
+  workbooks,
+  activeWorkbookId,
+  onSelectWorkbook,
   onSelectPanel,
   onShowTemplates,
+  onShowAdmin,
+  onLogout,
 }: {
   db: Surreal;
   workbookId: string | null;
@@ -220,8 +236,15 @@ function UniverGrid({
   wsKey: string | null;
   sheets: Sheet[];
   createSheet: (opts: CreateSheetOpts) => Promise<Sheet>;
+  workbookName: string;
+  displayName?: string;
+  workbooks: Array<{ id: string; name: string; updated_at?: string }>;
+  activeWorkbookId?: string;
+  onSelectWorkbook: (id: string) => void;
   onSelectPanel?: (panel: SidebarPanel) => void;
   onShowTemplates?: () => void;
+  onShowAdmin?: () => void;
+  onLogout?: () => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
@@ -252,7 +275,14 @@ function UniverGrid({
       sheets: sheets.length > 0 ? sheets : undefined,
       wsKey: wsKey ?? undefined,
       getSheets: () => sheetsRef.current,
+      workbookName,
+      displayName,
+      workbooks,
+      activeWorkbookId,
+      onSelectWorkbook,
       onSelectPanel,
+      onShowAdmin,
+      onLogout,
       onSheetAdded: async (univerId, label) => {
         try {
           await createSheet({ label, univerId });

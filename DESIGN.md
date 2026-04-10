@@ -1,173 +1,175 @@
 # Design System — surreal_ck
 
 ## Product Context
-- **What this is:** A graph-powered collaborative spreadsheet for legal-finance work. It combines workbook-style data editing, graph traversal, public intake forms, and lightweight admin tooling in one product.
-- **Who it's for:** Lawyers and adjacent professional operators handling ownership chains, entity structures, submissions, and relationship-heavy records.
-- **Space/industry:** Legal tech, legal finance, collaborative data workspaces.
-- **Project type:** Web app / workbook-centered professional tool.
+- **What this is:** A Tencent Docs-compatible legal collaboration product for sensitive bankruptcy creditor workflows.
+- **Who it's for:** Bankruptcy administrator legal teams, legal operators, and assistants who already live inside Tencent Docs and Excel.
+- **Space/industry:** Legal tech, creditor operations, sensitive collaborative data work.
+- **Project type:** Authenticated web app with a document-home page and a spreadsheet editor page.
+
+## Core Design Thesis
+- **Primary goal:** Reduce switching cost to near zero.
+- **Product promise:** Feels immediately familiar to Tencent Docs users, but more trustworthy for sensitive legal work.
+- **Design strategy:** Clone the outer habit, then layer in legal-grade trust.
+- **Wrong direction:** Generic legal dashboard, no-code admin panel, or Airtable/Grist-style productized workspace.
+- **Right direction:** Tencent-native familiarity with quieter hierarchy, stronger control signals, and less consumer casualness.
 
 ## Aesthetic Direction
-- **Direction:** Industrial / utilitarian with editorial restraint.
-- **Decoration level:** Minimal in the app shell, intentional in first-run and confirmation moments.
-- **Mood:** Calm, serious, trustworthy, operational. It should feel like a working instrument, not a startup demo and not a generic no-code SaaS admin.
-- **Reference sites:** [Ironclad](https://ironcladapp.com/), [Airtable](https://www.airtable.com/), [Grist](https://www.getgrist.com/)
-- **Preview artifact:** [/tmp/design-consultation-preview-surreal_ck.html](/tmp/design-consultation-preview-surreal_ck.html)
+- **Direction:** Familiar, calm, document-native, legally trustworthy.
+- **Decoration level:** Very low. This is not a brand showcase and not a productivity toy.
+- **Mood:** Familiar first, serious second, controlled third.
+- **Reference feel:** Tencent Docs mental model, but with less consumer brightness and more professional restraint.
+- **What the user should feel in 5 seconds:** "I know how to use this."
+- **What the user should feel in 30 seconds:** "This version is safer and more deliberate."
 
-## Core Product Posture
-- Workbook-first, not dashboard-first.
-- The spreadsheet is the primary surface.
-- Sidebars are attached tools, not separate mini-products.
-- Trust comes from structure, state clarity, and restraint, not heavy decoration.
-- Avoid generic SaaS energy: no purple gradients, no three-column feature-grid feel inside the app, no decorative icon circles, no inflated border radii everywhere.
+## Product Posture
+- Home page is list-first, not dashboard-first.
+- Editor page is sheet-first, not panel-first.
+- Familiarity beats novelty on the primary path.
+- Specialized legal features appear progressively, not all at once.
+- Trust comes from stability, density, restrained typography, and clear system state.
+- If a UI choice makes the product feel like a new tool, it is probably wrong.
 
 ## Typography
-- **Display/Hero:** `Instrument Serif` — used sparingly for workbook titles, setup milestones, confirmation headings, and other trust-heavy moments.
-- **Body:** `Source Sans 3` — default for labels, forms, panel copy, body text, navigation, and table-adjacent UI.
-- **UI/Labels:** `Source Sans 3`
-- **Data/Tables:** `Geist Mono` — used for record IDs, formulas, sync state, and structured values where precision matters.
-- **Code:** `Geist Mono`
-- **Loading:** Google Fonts
-  - `https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Source+Sans+3:wght@400;500;600;700&family=Geist+Mono:wght@400;500;700&display=swap`
+- **Display / emphasis:** `IBM Plex Serif` — used sparingly for trust-heavy headings, confirmations, and key workspace labels.
+- **Primary UI / body:** `IBM Plex Sans` + `Noto Sans SC`
+- **Data / structured values:** `IBM Plex Mono`
+- **Loading:**
+  - `https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:ital,wght@0,400;0,500;1,400&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap`
+- **Usage rules:**
+  - Use sans for almost all UI
+  - Use serif only to add authority in sparse moments, never for the whole shell
+  - Use mono only where precision matters
 - **Scale:**
-  - hero: `clamp(3rem, 6vw, 5.8rem)`
-  - h1/hub heading: `clamp(2rem, 3vw, 3rem)`
-  - h2/section title: `1.15rem`
-  - body: `1.05rem`
-  - small/meta: `0.74rem - 0.82rem`
+  - app title: `1.5rem - 1.875rem`
+  - section title: `1.125rem`
+  - body: `0.96rem - 1rem`
+  - small/meta: `0.76rem - 0.82rem`
 
 ## Color
-- **Approach:** Restrained. One dependable primary, one deliberate secondary, warm neutrals, semantic colors only where needed.
-- **Primary:** `#174B47` — dependable action and trust color. Use for primary buttons, active state, sync-positive state, and key anchors.
-- **Secondary:** `#A44A2A` — used for relationship emphasis, confirmations, and secondary calls that need gravity without looking like marketing CTA candy.
-- **Neutrals:**
-  - paper: `#FBFAF7`
-  - parchment: `#F1EEE8`
-  - parchment-2: `#E7E1D5`
-  - line: `#D8D2C7`
-  - line-strong: `#B8B0A2`
-  - ink: `#1A1F1E`
-  - muted: `#6B706F`
-- **Semantic:**
-  - success: `#1F6B52`
-  - warning: `#B36A1D`
-  - error: `#A23B32`
-  - info: `#2E5B7A`
-- **Dark mode:** Use the same hierarchy, but reduce contrast spikes and preserve the warm-neutral logic.
-  - paper: `#141817`
-  - parchment: `#1B211F`
-  - parchment-2: `#222A27`
-  - line: `#31403A`
-  - line-strong: `#4A5F57`
-  - ink: `#EDF0EA`
-  - muted: `#A1AAA4`
-  - primary: `#6DB5A7`
-  - secondary: `#DE8A65`
+- **Approach:** Tencent-compatible lightness with legal-grade restraint.
+- **Primary ink:** `#1F2A37`
+- **Primary action:** `#2F6BFF`
+- **Primary action hover:** `#2458D6`
+- **Trust accent:** `#1F5C4C`
+- **Alert / legal caution:** `#A35A1E`
+- **Danger:** `#A63C35`
+- **Surface palette:**
+  - canvas: `#F7F8FA`
+  - panel: `#FFFFFF`
+  - muted-panel: `#F1F4F8`
+  - line: `#D9E0E8`
+  - line-strong: `#B8C3D1`
+  - text: `#1F2A37`
+  - subtext: `#657184`
+- **Status colors:**
+  - secure / controlled: `#1F5C4C`
+  - syncing: `#2F6BFF`
+  - caution: `#A35A1E`
+  - error: `#A63C35`
+- **Dark mode:** defer. Do not design around dark mode for this phase.
+
+## Layout
+- **Home page:** Tencent-like application shell with left navigation, top search, quick create, and dense recent-document table.
+- **Editor page:** top bar + sheet canvas + right dock.
+- **Home page hierarchy:**
+  - first: search, quick create, recent work
+  - second: controlled workspace cues
+  - third: template/admin utilities
+- **Editor page hierarchy:**
+  - first: sheet canvas
+  - second: toolbar and sheet tabs
+  - third: docked workflow tools
+- **Responsive rule:** do not pretend full spreadsheet editing is comfortable on phone.
 
 ## Spacing
 - **Base unit:** `8px`
-- **Density:** Comfortable-compact. This is a workbench, not a sparse marketing site.
+- **Density:** dense but breathable, closer to Tencent Docs than to enterprise admin dashboards
 - **Scale:**
-  - 2xs: `2px`
   - xs: `4px`
   - sm: `8px`
-  - md: `16px`
-  - lg: `24px`
-  - xl: `32px`
-  - 2xl: `48px`
-  - 3xl: `64px`
+  - md: `12px`
+  - lg: `16px`
+  - xl: `24px`
+  - 2xl: `32px`
+  - 3xl: `48px`
 
-## Layout
-- **Approach:** Hybrid. Strict and stable inside the app shell, slightly more composed in first-run/template and public form states.
-- **Grid:**
-  - desktop: workbook shell with left rail, primary sheet canvas, single contextual sidebar
-  - tablet: keep workbook available, reduce density, sidebar becomes slide-over
-  - phone: authenticated workbook defaults to record-list/detail reading mode, not raw grid
+## Shape
 - **Border radius:**
-  - sm: `8px`
-  - md: `14px`
-  - lg: `22px`
-  - xl: `30px`
+  - control: `6px`
+  - panel: `10px`
+  - dock / popover: `12px`
   - pill: `999px`
-- **Surface rules:**
-  - Spreadsheet remains the visual anchor.
-  - Cards only when a thing is actually a contained interaction.
-  - Side panels should feel docked, not floating and ornamental.
-  - Decorative shadows are subtle and removable.
+- **Rule:** do not apply large radius everywhere. This is not bubbly SaaS.
 
 ## Motion
-- **Approach:** Minimal-functional
-- **Easing:**
-  - enter: `ease-out`
-  - exit: `ease-in`
-  - move: `ease-in-out`
-- **Duration:**
-  - micro: `50ms - 100ms`
-  - short: `120ms - 180ms`
-  - medium: `180ms - 260ms`
-  - long: `260ms - 400ms`
-- **Usage:**
-  - hover and focus feedback only when it improves clarity
-  - panel open/close should feel deliberate, not theatrical
-  - no decorative motion in the workbook shell
+- **Approach:** invisible-first.
+- **Use:** hover clarity, route continuity, dock reveal, loading skeleton shimmer.
+- **Avoid:** decorative motion, parallax, floating ornaments, dramatic transitions.
 
-## Workbook Interaction Model
+## Home Page Rules
+- Structure should be instantly legible to a Tencent Docs user.
+- First viewport should be 80% familiarity, 20% trust signaling.
+- Main area should prefer dense tables over decorative cards.
+- Search must feel primary.
+- "Sensitive workspace" or equivalent trust language should be present, but not dominate the page.
+- Empty state must still preserve the same page skeleton and show one clear next action.
 
-### Source Sheets vs Action Sheets
-- **Source sheets** hold system truth. They map closely to actual entities, relations, submissions, and imported records.
-- **Action sheets** are task-oriented operational surfaces built on top of source data so users can review, triage, and complete work quickly.
-
-### Action Sheet Rule
-- A workbook may include both source sheets and action sheets.
-- If a workbook supports a repeatable human workflow, it should usually expose at least one action sheet.
-- Action sheets should still be sheets, not dashboards. They inherit workbook conventions and keep the user inside the spreadsheet mental model.
-
-### Action Sheet Characteristics
-- frozen critical columns
-- clear status-first ordering
-- default filters and sorts
-- row-level quick actions
-- strong link to the right sidebar for detail and next-step actions
-- limited, high-value formulas and computed helper columns
-
-### Default Open Behavior
-- First-time entry into a template workbook: open the action sheet by default.
-- Return visit to an existing workbook: reopen the last viewed sheet.
-- Model-building or admin-heavy workbook: default to a source sheet.
-- Review / triage / operations workbook: default to an action sheet.
+## Editor Page Rules
+- The first 3 seconds should feel like entering a familiar spreadsheet.
+- Sheet remains the unquestioned anchor.
+- Right dock is subordinate to the grid.
+- Specialized legal tools enter through top actions and dock tabs, not by replacing the editor shell.
+- Plugin placeholders must look intentional, not unfinished.
+- History, review, and AI should read as controlled expansions of the same workspace.
 
 ## Responsive & Accessibility
-- Desktop/laptop gets the full workbook experience.
-- Tablet preserves the workbook, but can reduce visible density.
-- Phone keeps public forms fully usable and workbook access read-only by default.
-- Phone workbook view should default to record list / detail reading mode with an explicit link to the original sheet.
+- Desktop is primary.
+- Tablet keeps the spreadsheet, but the right dock becomes overlay or narrower slide-over.
+- Phone:
+  - home page remains usable
+  - public forms remain fully usable
+  - authenticated editor defaults to view-first mode, not full editing parity
 - Minimum touch target: `44px`
-- Keyboard access required for all sidebar actions, template picker actions, and form controls.
-- Color is never the only signal for sync state, warning state, validation state, or submission state.
-- Success, warning, and error banners must be available to assistive technologies via live regions.
+- Full keyboard navigation required for:
+  - home list actions
+  - sheet top actions
+  - dock tabs
+  - form controls
+- Color is never the only signal.
+- Route transitions and reconnect/auth states must keep clear live-region messaging.
 
-## Components & States
-- **Primary button:** deep green fill, paper text, reserved for the single clearest next action.
-- **Secondary button:** soft tinted surface with colored text and border.
-- **Ghost button:** transparent with clear border, used for attached tooling and reversible actions.
-- **Status chip:** mono label, pill shape, restrained fill.
-- **Workbook shell:** left rail + sheet canvas + single contextual sidebar.
-- **Public form confirmation:** dedicated page/state, never a transient toast-only success.
-- **Blank workspace:** empty sheet plus guided setup panel with exactly three first actions.
+## Components
+- **Primary button:** Tencent-like blue fill, compact shape, reserved for the clearest forward action
+- **Secondary button:** light surface with line border
+- **Ghost button:** low-chrome utility control
+- **Recent-file row:** dense, calm, metadata-heavy
+- **Search input:** large enough to dominate the home header without becoming marketing hero UI
+- **Right dock:** clean white panel with thin border and tight header
+- **Status chip:** compact pill, muted by default
+- **Sensitive workspace tag:** subtle trust label, never a screaming warning badge
+
+## Interaction Model
+- Users should move from home to sheet without a visual cliff.
+- Product-specific power appears progressively.
+- Every unfinished feature still needs designed copy, hierarchy, and a clear reason for existing.
+- "Looks broken" is unacceptable.
 
 ## What To Avoid
-- Purple / violet / indigo gradient defaults
-- Generic no-code platform cheerfulness
-- Over-centered layouts inside the app shell
-- Three-column marketing-grid rhythm leaking into workbook UI
-- Thick decorative card chrome around tables
-- Oversized radius on every surface
-- Making phone spreadsheet editing look “supported” when it is really compromised
+- Airtable/Grist-style productized data-workbench visual language as the primary inspiration
+- Generic enterprise admin dashboards
+- Three-column feature-card rhythms inside authenticated pages
+- Purple/indigo startup gradients
+- Overuse of serif typography
+- Oversized radius on every control
+- Decorative icon circles
+- Heavy card chrome around list/table content
+- Turning the home page into a legal portal instead of a familiar document workspace
 
-## Decisions Log
+## Decision Log
 | Date | Decision | Rationale |
 |------|----------|-----------|
-| 2026-04-05 | Established workbook-first design system | The product's value is live work inside a spreadsheet, not a dashboard shell |
-| 2026-04-05 | Chose `Instrument Serif` + `Source Sans 3` + `Geist Mono` | Balances legal-finance trust, operational readability, and data precision |
-| 2026-04-05 | Chose deep green + rust + warm neutral palette | Avoids generic AI SaaS aesthetics and supports a serious professional tone |
-| 2026-04-05 | Defined phone workbook mode as read-only record-list-first | Small screens should preserve continuity without pretending full editing parity |
-| 2026-04-05 | Added action sheet rule inside workbooks | Users need operational sheets for real work, not only raw source tables |
+| 2026-04-10 | Replaced industrial workbook posture with Tencent-compatible familiarity | Product strategy depends on reducing switching cost first |
+| 2026-04-10 | Set home page to 80% familiarity, 20% trust signal | Users should not feel forced to learn a new tool on arrival |
+| 2026-04-10 | Set editor differentiation to progressive reveal | Specialized legal value should appear after users feel oriented |
+| 2026-04-10 | Switched to Plex + Noto typography stack | More document-native and professional than the previous editorial-industrial mix |
+| 2026-04-10 | Reframed color system around Tencent-like blue plus legal trust accent | Needed continuity with user habit while preserving a more controlled tone |

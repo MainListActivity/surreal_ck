@@ -7,6 +7,7 @@ import type { Sheet } from '../lib/surreal/types';
 import { createCollabController, shouldBroadcastCommand } from './collaboration';
 import { startPresenceHeartbeat, watchCoordinator } from './presence';
 import { createSnapshotController } from './snapshot';
+import { mountUniverHeaderExtensions } from './univer-header';
 
 export interface UniverBootstrapOptions {
   db: Surreal;
@@ -27,6 +28,14 @@ export interface UniverBootstrapOptions {
   onSelectPanel?: (panel: SidebarPanel) => void;
   onSyncWarning?: (message: string) => void;
   onSnapshotNeeded?: () => void;
+  /** Header bar extensions */
+  workbookName?: string;
+  displayName?: string;
+  workbooks?: Array<{ id: string; name: string; updated_at?: string }>;
+  activeWorkbookId?: string;
+  onSelectWorkbook?: (id: string) => void;
+  onShowAdmin?: () => void;
+  onLogout?: () => void;
 }
 
 export interface UniverInstance {
@@ -92,6 +101,37 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
     ],
   });
 
+  // ── Header bar extensions (left: sidebar toggle + title; right: share + avatar) ──
+  mountUniverHeaderExtensions(univerAPI, {
+    workbookName: opts.workbookName ?? '',
+    displayName: opts.displayName,
+    workbooks: opts.workbooks ?? [],
+    activeWorkbookId: opts.activeWorkbookId,
+    onSelectWorkbook: opts.onSelectWorkbook,
+    onShowAdmin: opts.onShowAdmin,
+    onLogout: opts.onLogout,
+  });
+
+  // ── Ribbon far-left: workbook switcher (ribbon.start.history) ──────────────
+  if (opts.workbooks && opts.workbooks.length > 0 && opts.onSelectWorkbook) {
+    const workbookSwitcher = univerAPI.createSubmenu({
+      id: 'surreal-ck-workbook-switcher',
+      title: opts.workbookName ?? 'Workbook',
+      tooltip: 'Switch workbook',
+    });
+
+    for (const wb of opts.workbooks) {
+      workbookSwitcher.addSubmenu(univerAPI.createMenu({
+        id: `surreal-ck-workbook-${wb.id}`,
+        title: wb.id === opts.activeWorkbookId ? `✓ ${wb.name}` : wb.name,
+        action: () => opts.onSelectWorkbook?.(wb.id),
+      }));
+    }
+
+    workbookSwitcher.appendTo('ribbon.start.history');
+  }
+
+  // ── Ribbon panel tools (ribbon.start.others) ─────────────────────────────
   if (opts.onSelectPanel) {
     const workspaceTools = univerAPI
       .createSubmenu({
@@ -121,6 +161,42 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
       }));
 
     workspaceTools.appendTo('ribbon.start.others');
+  }
+
+  // ── Ribbon far-right: admin & user (ribbon.others.others) ────────────────
+  {
+    const adminMenu = univerAPI.createSubmenu({
+      id: 'surreal-ck-admin-menu',
+      title: opts.displayName ? `👤 ${opts.displayName}` : 'Account',
+      tooltip: 'Account & admin',
+    });
+
+    if (opts.onShowAdmin) {
+      adminMenu.addSubmenu(univerAPI.createMenu({
+        id: 'surreal-ck-admin-open',
+        title: 'Admin tools',
+        action: () => opts.onShowAdmin?.(),
+      }));
+    }
+
+    adminMenu.addSubmenu(univerAPI.createMenu({
+      id: 'surreal-ck-share',
+      title: 'Copy link',
+      tooltip: 'Copy workbook link to clipboard',
+      action: () => {
+        void navigator.clipboard.writeText(window.location.href).catch(() => undefined);
+      },
+    }));
+
+    if (opts.onLogout) {
+      adminMenu.addSeparator().addSubmenu(univerAPI.createMenu({
+        id: 'surreal-ck-logout',
+        title: 'Sign out',
+        action: () => opts.onLogout?.(),
+      }));
+    }
+
+    adminMenu.appendTo('ribbon.others.others');
   }
 
   // ── Create workbook: use pre-loaded sheets or empty workbook ────────────────
