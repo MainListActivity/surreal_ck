@@ -121,11 +121,16 @@ export function createSnapshotController(
     },
 
     setCoordinator(coordinator: boolean) {
+      const tookOver = coordinator && !isCoordinator;
       isCoordinator = coordinator;
       if (isCoordinator) {
         startCoordinatorTimers();
-        // Write snapshot immediately on takeover after ensuring state is current
-        void writeSnapshot();
+        // Only write snapshot immediately when transitioning from non-coordinator
+        // to coordinator (actual takeover). Skips spurious calls caused by the
+        // presence heartbeat firing UPDATE events every 20s.
+        if (tookOver) {
+          void writeSnapshot();
+        }
       } else {
         stopCoordinatorTimers();
       }

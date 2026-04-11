@@ -355,7 +355,7 @@ export function AppShell({
                       <th>位置</th>
                       <th className="tdocs-table__date-col">
                         最近打开
-                        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true" style={{marginLeft: 4}}>
+                        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true" style={{ marginLeft: 4 }}>
                           <path d="M5 2v6M2 6l3 3 3-3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
                         </svg>
                       </th>
@@ -958,8 +958,11 @@ function UniverGrid({
       cancelled = true;
       instance?.destroy();
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [createSheet, db, sheets, workbookId, workspaceId, wsKey]);
+    // sheets intentionally excluded: after bootstrap, sheet changes are read via
+    // sheetsRef (getSheets callback) — re-mounting Univer on every sheet update
+    // causes duplicate component registration errors in the Univer registry.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [createSheet, workbookId, workspaceId, wsKey]);
 
   return (
     <div className="univer-container" aria-label="Spreadsheet">
