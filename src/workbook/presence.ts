@@ -1,12 +1,12 @@
 import type { LiveMessage, Surreal } from 'surrealdb';
 import { Table } from 'surrealdb';
 
-import { toRecordId } from '../lib/surreal/record-id';
+import { nowDatetime, toDatetime, toRecordId } from '../lib/surreal/record-id';
 
 export interface PresenceRecord {
   id?: string;
   client_id: string;
-  expires_at: string;
+  expires_at: string | Date;
 }
 
 const PRESENCE_TTL_MS = 60_000;
@@ -30,7 +30,7 @@ export function startPresenceHeartbeat(
       return;
     }
 
-    const expiresAt = new Date(Date.now() + PRESENCE_TTL_MS).toISOString();
+    const expiresAt = toDatetime(new Date(Date.now() + PRESENCE_TTL_MS));
 
     try {
       if (!presenceId) {
@@ -39,7 +39,7 @@ export function startPresenceHeartbeat(
            RETURN $presence.id`,
           {
             data: {
-              workbook: workbookId,
+              workbook: toRecordId(workbookId),
               client_id: clientId,
               expires_at: expiresAt,
             },
@@ -89,13 +89,12 @@ export async function watchCoordinator(
   onCoordinatorChange: (isCoordinator: boolean) => void,
 ): Promise<() => void> {
   const getLowest = async (): Promise<string | null> => {
-    const now = new Date().toISOString();
     const result = await db.query<[PresenceRecord[]]>(
       `SELECT client_id FROM presence
        WHERE workbook = $wb AND expires_at > $now
        ORDER BY client_id ASC
        LIMIT 1`,
-      { wb: workbookId, now },
+      { wb: toRecordId(workbookId), now: nowDatetime() },
     );
     return (result[0]?.[0] as PresenceRecord | undefined)?.client_id ?? null;
   };

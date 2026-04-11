@@ -1,6 +1,7 @@
 import type { LiveSubscription, Surreal } from 'surrealdb';
 import { Table } from 'surrealdb';
 
+import { nowDatetime, toRecordId } from '../lib/surreal/record-id';
 import type { SnapshotRecord } from '../lib/surreal/types';
 
 const SNAPSHOT_MUTATION_COUNT = 100;
@@ -58,10 +59,10 @@ export function createSnapshotController(
            mutation_watermark: $wm
          } RETURN AFTER`,
         {
-          wb: workbookId,
+          wb: toRecordId(workbookId),
           layout,
           cid: clientId,
-          wm: new Date().toISOString(),
+          wm: nowDatetime(),
         },
       );
       lastSnapshotTs = (result[0]?.[0] as SnapshotRecord | undefined)?.created_at ?? null;
@@ -145,7 +146,7 @@ export function createSnapshotController(
       const result = await db
         .query<[SnapshotRecord[]]>(
           `SELECT * FROM snapshot WHERE workbook = $wb ORDER BY created_at DESC LIMIT 1`,
-          { wb: workbookId },
+          { wb: toRecordId(workbookId) },
         )
         .catch(() => [[]] as [SnapshotRecord[]]);
 

@@ -1,13 +1,21 @@
-import { RecordId } from "surrealdb";
+import { DateTime, RecordId } from "surrealdb";
 
 export type WorkspaceRole = 'admin' | 'editor' | 'viewer';
 
+export interface AppUser {
+  id: RecordId;
+  subject: string;
+  email: string;
+  display_name?: string;
+  created_at: DateTime;
+  updated_at: DateTime;
+}
 export interface Workspace {
   id: RecordId;
   name: string;
   slug: string;
-  owner?: RecordId;
-  created_at: string;
+  owner?: RecordId<'app_user'>;
+  created_at: DateTime;
 }
 
 export interface Workbook {
@@ -16,8 +24,8 @@ export interface Workbook {
   name: string;
   template_key?: string;
   last_viewed_sheet?: string;
-  created_at: string;
-  updated_at: string;
+  created_at: DateTime;
+  updated_at: DateTime;
 }
 
 export interface WorkspaceMember {
@@ -25,7 +33,7 @@ export interface WorkspaceMember {
   workspace: RecordId<'workspace'>;
   email: string;
   role: WorkspaceRole;
-  invited_at: string;
+  invited_at: DateTime;
 }
 
 export interface MutationRecord {
@@ -36,7 +44,7 @@ export interface MutationRecord {
   params: Record<string, unknown>;
   client_id: string;
   actor?: string;
-  created_at: string;
+  created_at: DateTime;
 }
 
 export interface SnapshotRecord {
@@ -45,7 +53,7 @@ export interface SnapshotRecord {
   layout: Record<string, unknown>;
   coordinator_client_id: string;
   mutation_watermark?: string;
-  created_at: string;
+  created_at: DateTime;
 }
 
 export interface FormDefinition {
@@ -57,7 +65,7 @@ export interface FormDefinition {
   fields: Array<Record<string, unknown>>;
   conditional_rules: Array<Record<string, unknown>>;
   auto_edges: Array<Record<string, unknown>>;
-  created_at: string;
+  created_at: DateTime;
 }
 
 export interface Sheet {
@@ -68,8 +76,8 @@ export interface Sheet {
   label: string;
   position: number;
   column_defs: Array<Record<string, unknown>>;
-  created_at: string;
-  updated_at: string;
+  created_at: DateTime;
+  updated_at: DateTime;
 }
 
 export interface EdgeCatalogEntry {
@@ -81,7 +89,7 @@ export interface EdgeCatalogEntry {
   from_table: string | null;
   to_table: string | null;
   edge_props: Array<Record<string, unknown>>;
-  created_at: string;
+  created_at: DateTime;
 }
 
 export interface ClientErrorRecord {
@@ -92,7 +100,7 @@ export interface ClientErrorRecord {
   error_code: string;
   message: string;
   meta?: Record<string, unknown>;
-  created_at: string;
+  created_at: DateTime;
 }
 
 export interface AuthTokens {

@@ -11,7 +11,7 @@
 import { useEffect, useReducer, useCallback, useRef } from 'react';
 import { Table, type Surreal } from 'surrealdb';
 
-import { toRecordId } from '../../lib/surreal/record-id';
+import { nowDatetime, toRecordId } from '../../lib/surreal/record-id';
 
 import { entityTableDDL } from '../../lib/surreal/ddl';
 import type { Sheet } from '../../lib/surreal/types';
@@ -159,7 +159,7 @@ export function useSheets(
 
       // 1. Insert the sheet record
       const insertedSheet = await db.insert<Sheet>(new Table('sheet'), {
-        workbook: workbookId,
+        workbook: toRecordId(workbookId),
         univer_id: newUniverId,
         table_name: tableName,
         label,
@@ -192,7 +192,7 @@ export function useSheets(
     async (sheetId: string, newLabel: string): Promise<void> => {
       await db.update<Sheet>(toRecordId(sheetId)).merge({
         label: newLabel,
-        updated_at: new Date().toISOString(),
+        updated_at: nowDatetime(),
       });
       dispatch({ type: 'update', sheetId, label: newLabel });
     },

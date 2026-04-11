@@ -1,6 +1,7 @@
 import type { LiveMessage, LiveSubscription, Surreal } from 'surrealdb';
 import { Table } from 'surrealdb';
 
+import { toDatetime, toRecordId } from '../lib/surreal/record-id';
 import type { MutationRecord } from '../lib/surreal/types';
 
 export interface CollabMutation {
@@ -77,7 +78,7 @@ export function createCollabController(
              client_id: $cid
            }`,
           {
-            wb: workbookId,
+            wb: toRecordId(workbookId),
             cmd: item.command_id,
             params: item.params,
             cid: item.client_id,
@@ -101,7 +102,7 @@ export function createCollabController(
            client_id: $cid
          }`,
         {
-          wb: mutation.workbook,
+          wb: toRecordId(mutation.workbook),
           cmd: mutation.command_id,
           params: mutation.params,
           cid: mutation.client_id,
@@ -139,8 +140,8 @@ export function createCollabController(
              meta: $meta
            }`,
           {
-            wb: workbookId,
-            ws: workspaceId,
+            wb: toRecordId(workbookId),
+            ws: toRecordId(workspaceId),
             cid: clientId,
             code: 'unknown_command',
             msg: `Received unknown command_id: ${record.command_id}`,
@@ -239,7 +240,7 @@ export function createCollabController(
       const result = await db
         .query<[MutationRecord[]]>(
           `SELECT * FROM mutation WHERE workbook = $wb AND created_at > $ts ORDER BY created_at ASC`,
-          { wb: workbookId, ts: lastKnownTs },
+          { wb: toRecordId(workbookId), ts: toDatetime(lastKnownTs) },
         )
         .catch(() => [[]] as [MutationRecord[]]);
 

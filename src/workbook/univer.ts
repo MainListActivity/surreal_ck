@@ -3,6 +3,7 @@ import { Table } from 'surrealdb';
 import type { Surreal } from 'surrealdb';
 
 import type { SidebarPanel } from '../features/workbook/mock-data';
+import { toRecordId } from '../lib/surreal/record-id';
 import type { Sheet } from '../lib/surreal/types';
 import { createCollabController, shouldBroadcastCommand } from './collaboration';
 import { startPresenceHeartbeat, watchCoordinator } from './presence';
@@ -495,7 +496,7 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
     void db
       .query(
         `INSERT INTO mutation { workbook: $wb, workspace: $ws, command_id: $cmd, params: $params, client_id: $cid }`,
-        { wb: workbookId, ws: workspaceId, cmd: id, params, cid: clientId },
+        { wb: toRecordId(workbookId), ws: toRecordId(workspaceId), cmd: id, params, cid: clientId },
       )
       .catch(() => undefined);
 
