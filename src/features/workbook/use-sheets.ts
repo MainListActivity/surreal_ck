@@ -11,6 +11,8 @@
 import { useEffect, useReducer, useCallback, useRef } from 'react';
 import type { Surreal } from 'surrealdb';
 
+import { toRecordId } from '../../lib/surreal/record-id';
+
 import { entityTableDDL } from '../../lib/surreal/ddl';
 import type { Sheet } from '../../lib/surreal/types';
 
@@ -199,7 +201,7 @@ export function useSheets(
     async (sheetId: string, newLabel: string): Promise<void> => {
       await db.query(
         `UPDATE $id SET label = $label, updated_at = time::now()`,
-        { id: sheetId, label: newLabel },
+        { id: toRecordId(sheetId), label: newLabel },
       );
       dispatch({ type: 'update', sheetId, label: newLabel });
     },

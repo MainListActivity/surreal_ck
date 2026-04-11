@@ -1,6 +1,8 @@
 import type { LiveMessage, Surreal } from 'surrealdb';
 import { Table } from 'surrealdb';
 
+import { toRecordId } from '../lib/surreal/record-id';
+
 export interface PresenceRecord {
   id?: string;
   client_id: string;
@@ -46,7 +48,7 @@ export function startPresenceHeartbeat(
         presenceId = result[0]?.[0] ?? null;
       } else {
         await db.query(`UPDATE $id SET expires_at = $exp`, {
-          id: presenceId,
+          id: toRecordId(presenceId),
           exp: expiresAt,
         });
       }
@@ -69,7 +71,7 @@ export function startPresenceHeartbeat(
     }
 
     if (presenceId) {
-      void db.query(`DELETE $id`, { id: presenceId }).catch(() => undefined);
+      void db.query(`DELETE $id`, { id: toRecordId(presenceId) }).catch(() => undefined);
     }
   };
 }

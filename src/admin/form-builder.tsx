@@ -1,6 +1,8 @@
 import { useEffect, useReducer, useState } from 'react';
 import type { Surreal } from 'surrealdb';
 
+import { toRecordId } from '../lib/surreal/record-id';
+
 export interface FormField {
   key: string;
   label: string;
@@ -187,7 +189,7 @@ export function FormBuilderPanel({ db, workspaceId, workbookId }: FormBuilderPan
 
   async function handleDelete(item: FormDefinition) {
     try {
-      await db.query(`DELETE $id`, { id: item.id });
+      await db.query(`DELETE $id`, { id: toRecordId(item.id) });
       dispatch({ type: 'delete-ok', id: item.id });
     } catch {
       // non-fatal

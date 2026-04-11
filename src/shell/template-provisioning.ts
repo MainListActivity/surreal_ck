@@ -1,5 +1,7 @@
 import type { Surreal } from 'surrealdb';
 
+import { toRecordId } from '../lib/surreal/record-id';
+
 import type { TemplateKey } from '../features/workbook/mock-data';
 
 export interface ProvisioningResult {
@@ -122,7 +124,7 @@ async function compensatingCleanup(
       await db.query(
         `DELETE sheet WHERE workbook = $wb;
          DELETE $wb`,
-        { wb: workbookId },
+        { wb: toRecordId(workbookId) },
       );
     }
     if (workspaceId) {
@@ -134,7 +136,7 @@ async function compensatingCleanup(
          DELETE pending_workspace_member WHERE workspace = $ws;
          DELETE has_workspace_member WHERE in = $ws;
          DELETE $ws`,
-        { ws: workspaceId },
+        { ws: toRecordId(workspaceId) },
       );
     }
   } catch {

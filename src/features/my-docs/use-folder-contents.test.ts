@@ -14,10 +14,10 @@ describe('useFolderContents', () => {
   it('loads subfolders and workbooks', async () => {
     const query = vi.fn().mockResolvedValueOnce([
       [
-        { folder: { id: 'folder:child-a', workspace: 'workspace:test', name: 'A' } },
-        { folder: { id: 'folder:child-b', workspace: 'workspace:test', name: 'B' } },
+        { id: 'folder:child-a', workspace: 'workspace:test', name: 'A', parent: 'folder:root', position: 0 },
+        { id: 'folder:child-b', workspace: 'workspace:test', name: 'B', parent: 'folder:root', position: 1 },
       ],
-      [{ workbook: { id: 'workbook:1', name: 'Workbook 1', updated_at: '2026-04-11T10:00:00Z' } }],
+      [{ id: 'workbook:1', name: 'Workbook 1', updated_at: '2026-04-11T10:00:00Z' }],
     ] as any);
     const db = createMockDb(query);
 

@@ -1,6 +1,8 @@
 import { useEffect, useReducer, useState } from 'react';
 import type { Surreal } from 'surrealdb';
 
+import { toRecordId } from '../lib/surreal/record-id';
+
 export type MemberRole = 'admin' | 'editor' | 'viewer';
 
 export interface WorkspaceMember {
@@ -143,7 +145,7 @@ export function WorkspaceMembersPanel({ db, workspaceId }: WorkspaceMembersPanel
     try {
       await db.query(
         'UPDATE $id SET role = $role',
-        { id: member.id, role },
+        { id: toRecordId(member.id), role },
       );
       dispatch({ type: 'role-ok', id: member.id, role });
     } catch {
@@ -155,7 +157,7 @@ export function WorkspaceMembersPanel({ db, workspaceId }: WorkspaceMembersPanel
     try {
       await db.query(
         'DELETE has_workspace_member WHERE in = $ws AND out = $id',
-        { ws: workspaceId, id: member.id },
+        { ws: toRecordId(workspaceId), id: toRecordId(member.id) },
       );
       dispatch({ type: 'remove-ok', id: member.id });
     } catch {

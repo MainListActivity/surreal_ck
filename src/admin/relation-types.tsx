@@ -2,6 +2,7 @@ import { useEffect, useReducer, useState } from 'react';
 import type { Surreal } from 'surrealdb';
 
 import { relationTableDDL, validateTableKey } from '../lib/surreal/ddl';
+import { toRecordId } from '../lib/surreal/record-id';
 
 export interface EdgeCatalogItem {
   id: string;
@@ -134,7 +135,7 @@ export function RelationTypesPanel({ db, workspaceId, wsKey }: RelationTypesPane
     try {
       // Remove the catalog record. The physical relation table is left in place
       // to avoid accidental data loss (same reasoning as entity table deletion).
-      await db.query(`DELETE $id`, { id: item.id });
+      await db.query(`DELETE $id`, { id: toRecordId(item.id) });
       dispatch({ type: 'delete-ok', id: item.id });
     } catch {
       // non-fatal

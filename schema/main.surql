@@ -109,7 +109,7 @@ DEFINE INDEX IF NOT EXISTS has_workspace_member_unique ON TABLE has_workspace_me
 -- 归属 workspace 用字段表示（workbook.workspace），无需单独的边。
 -- ═══════════════════════════════════════════════════════════════════════════════
 
-DEFINE TABLE IF NOT EXISTS workbook SCHEMAFULL
+DEFINE TABLE OVERWRITE workbook SCHEMAFULL
   PERMISSIONS
     FOR select WHERE
       workspace.owner = $auth
@@ -122,10 +122,12 @@ DEFINE TABLE IF NOT EXISTS workbook SCHEMAFULL
 DEFINE FIELD IF NOT EXISTS workspace         ON TABLE workbook TYPE record<workspace>;
 DEFINE FIELD IF NOT EXISTS name              ON TABLE workbook TYPE string;
 DEFINE FIELD IF NOT EXISTS template_key      ON TABLE workbook TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS folder            ON TABLE workbook TYPE option<record<folder>>;
 DEFINE FIELD IF NOT EXISTS last_opened_sheet ON TABLE workbook TYPE option<record<sheet>>;
 DEFINE FIELD IF NOT EXISTS created_at        ON TABLE workbook TYPE datetime VALUE time::now();
 DEFINE FIELD IF NOT EXISTS updated_at        ON TABLE workbook TYPE datetime VALUE time::now();
 DEFINE INDEX IF NOT EXISTS workbook_workspace ON TABLE workbook COLUMNS workspace;
+DEFINE INDEX IF NOT EXISTS workbook_folder    ON TABLE workbook COLUMNS folder;
 
 -- ═══════════════════════════════════════════════════════════════════════════════
 -- FOLDER

@@ -1,4 +1,6 @@
-import { RecordId, type Surreal } from 'surrealdb';
+import type { Surreal } from 'surrealdb';
+
+import { toRecordId } from '../../lib/surreal/record-id';
 
 export type FolderMutationResult = { ok: true } | { ok: false; error: string };
 
@@ -20,7 +22,6 @@ interface DeleteFolderOptions {
 
 interface MoveFolderOptions {
   folderId: string;
-  workspaceId: string;
   newParentId?: string | null;
   position?: number;
 }
@@ -38,27 +39,14 @@ const NON_EMPTY_FOLDER_ERROR = '文件夹不为空，请先移除其中的内容
 const CYCLE_ERROR = '不能将文件夹移动到它自己的子文件夹中';
 const DEPTH_ERROR = '文件夹最多支持 8 层';
 
-function toRecordId(value: string): RecordId {
-  const [table, ...rest] = value.split(':');
-  const id = rest.join(':');
-  if (!table || !id) {
-    throw new Error(`Invalid record id: ${value}`);
-  }
-  return new RecordId(table, id);
-}
-
-async function querySingleValue<T>(db: Surreal, sql: string, vars: Record<string, unknown>): Promise<T | null> {
-  const [rows] = await db.query<[T[]]>(sql, vars);
-  const first = rows?.[0];
-  return first ?? null;
-}
 
 async function readParentId(db: Surreal, folderId: string): Promise<string | null> {
-  const [rows] = await db.query<[string[]]>(
-    `SELECT VALUE out FROM folder_parent WHERE in = $id LIMIT 1`,
-    { id: folderId },
+  const [rows] = await db.query<[Array<{ parent: string | null }>]>(
+    `SELECT VALUE parent FROM ONLY $id`,
+    { id: toRecordId(folderId) },
   );
-  return rows?.[0] ? String(rows[0]) : null;
+  const parent = rows?.[0]?.parent ?? null;
+  return parent ? String(parent) : null;
 }
 
 async function computeDepth(db: Surreal, folderId: string): Promise<number> {
@@ -67,9 +55,7 @@ async function computeDepth(db: Surreal, folderId: string): Promise<number> {
 
   while (currentId && depth < 8) {
     currentId = await readParentId(db, currentId);
-    if (currentId) {
-      depth += 1;
-    }
+    if (currentId) depth += 1;
   }
 
   return depth;
@@ -80,9 +66,7 @@ async function wouldCreateCycle(db: Surreal, folderId: string, newParentId: stri
   let hops = 0;
 
   while (currentId && hops < 8) {
-    if (currentId === folderId) {
-      return true;
-    }
+    if (currentId === folderId) return true;
     currentId = await readParentId(db, currentId);
     hops += 1;
   }
@@ -92,41 +76,20 @@ async function wouldCreateCycle(db: Surreal, folderId: string, newParentId: stri
 
 export async function createFolder(db: Surreal, options: CreateFolderOptions): Promise<FolderMutationResult> {
   try {
-    const [createdRows] = await db.query<[Array<{ id: string }>]>(
-      `
-      INSERT INTO folder {
+    await db.query(
+      `INSERT INTO folder {
         workspace: $ws,
-        name: $name
-      }
-      RETURN id
-      `,
-      { ws: toRecordId(options.workspaceId), name: options.name },
+        name:      $name,
+        parent:    $parent,
+        position:  $position
+      }`,
+      {
+        ws:       toRecordId(options.workspaceId),
+        name:     options.name,
+        parent:   options.parentFolderId ? toRecordId(options.parentFolderId) : null,
+        position: options.position ?? 0,
+      },
     );
-
-    const folderId = String(createdRows?.[0]?.id ?? '');
-    if (!folderId) {
-      return { ok: false, error: '创建文件夹失败' };
-    }
-
-    if (options.parentFolderId) {
-      await db.query(
-        `RELATE $child->folder_parent->$parent CONTENT { position: $position }`,
-        {
-          child: toRecordId(folderId),
-          parent: toRecordId(options.parentFolderId),
-          position: options.position ?? 0,
-        },
-      );
-    } else {
-      await db.query(
-        `RELATE $workspace->workspace_has_folder->$folder`,
-        {
-          workspace: toRecordId(options.workspaceId),
-          folder: toRecordId(folderId),
-        },
-      );
-    }
-
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : '创建文件夹失败' };
@@ -136,8 +99,8 @@ export async function createFolder(db: Surreal, options: CreateFolderOptions): P
 export async function renameFolder(db: Surreal, options: RenameFolderOptions): Promise<FolderMutationResult> {
   try {
     await db.query(
-      `UPDATE $folderId SET name = $name, updated_at = time::now()`,
-      { folderId: options.folderId, name: options.name },
+      `UPDATE $id SET name = $name, updated_at = time::now()`,
+      { id: toRecordId(options.folderId), name: options.name },
     );
     return { ok: true };
   } catch (err) {
@@ -147,25 +110,17 @@ export async function renameFolder(db: Surreal, options: RenameFolderOptions): P
 
 export async function deleteFolder(db: Surreal, options: DeleteFolderOptions): Promise<FolderMutationResult> {
   try {
-    const childCount = Number(
-      await querySingleValue<number>(db, `SELECT VALUE count() FROM folder_parent WHERE out = $id GROUP ALL`, { id: options.folderId }) ?? 0,
-    );
-    const workbookCount = Number(
-      await querySingleValue<number>(db, `SELECT VALUE count() FROM folder_has_workbook WHERE in = $id GROUP ALL`, { id: options.folderId }) ?? 0,
+    const [[childCount], [workbookCount]] = await db.query<[[number], [number]]>(
+      `SELECT VALUE count() FROM folder WHERE parent = $id GROUP ALL;
+       SELECT VALUE count() FROM workbook WHERE folder = $id GROUP ALL`,
+      { id: toRecordId(options.folderId) },
     );
 
-    if (childCount > 0 || workbookCount > 0) {
+    if ((childCount ?? 0) > 0 || (workbookCount ?? 0) > 0) {
       return { ok: false, error: NON_EMPTY_FOLDER_ERROR };
     }
 
-    await db.query(
-      `
-      DELETE folder_parent WHERE in = $id OR out = $id;
-      DELETE workspace_has_folder WHERE out = $id;
-      DELETE $id;
-      `,
-      { id: options.folderId },
-    );
+    await db.query(`DELETE $id`, { id: toRecordId(options.folderId) });
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : '删除文件夹失败' };
@@ -185,35 +140,23 @@ export async function moveFolder(db: Surreal, options: MoveFolderOptions): Promi
       }
 
       await db.query(
-        `
-        BEGIN TRANSACTION;
-        DELETE workspace_has_folder WHERE out = $folderId;
-        DELETE folder_parent WHERE in = $folderId;
-        RELATE $folderId->folder_parent->$parent CONTENT { position: $position };
-        COMMIT;
-        `,
+        `UPDATE $id SET parent = $parent, position = $position, updated_at = time::now()`,
         {
-          folderId: toRecordId(options.folderId),
-          parent: toRecordId(options.newParentId),
+          id:       toRecordId(options.folderId),
+          parent:   toRecordId(options.newParentId),
           position: options.position ?? 0,
         },
       );
-      return { ok: true };
+    } else {
+      await db.query(
+        `UPDATE $id SET parent = NONE, position = $position, updated_at = time::now()`,
+        {
+          id:       toRecordId(options.folderId),
+          position: options.position ?? 0,
+        },
+      );
     }
 
-    await db.query(
-      `
-      BEGIN TRANSACTION;
-      DELETE folder_parent WHERE in = $folderId;
-      DELETE workspace_has_folder WHERE out = $folderId;
-      RELATE $workspaceId->workspace_has_folder->$folderId;
-      COMMIT;
-      `,
-      {
-        folderId: toRecordId(options.folderId),
-        workspaceId: toRecordId(options.workspaceId),
-      },
-    );
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : '移动文件夹失败' };
@@ -222,11 +165,13 @@ export async function moveFolder(db: Surreal, options: MoveFolderOptions): Promi
 
 export async function attachWorkbook(db: Surreal, options: AttachWorkbookOptions): Promise<FolderMutationResult> {
   try {
-    await db.query(`DELETE folder_has_workbook WHERE out = $workbookId`, { workbookId: options.workbookId });
-    await db.query(`RELATE $folderId->folder_has_workbook->$workbookId`, {
-      folderId: toRecordId(options.folderId),
-      workbookId: toRecordId(options.workbookId),
-    });
+    await db.query(
+      `UPDATE $workbookId SET folder = $folderId, updated_at = time::now()`,
+      {
+        workbookId: toRecordId(options.workbookId),
+        folderId:   toRecordId(options.folderId),
+      },
+    );
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : '归档工作簿失败' };
@@ -235,9 +180,10 @@ export async function attachWorkbook(db: Surreal, options: AttachWorkbookOptions
 
 export async function detachWorkbook(db: Surreal, options: DetachWorkbookOptions): Promise<FolderMutationResult> {
   try {
-    await db.query(`DELETE folder_has_workbook WHERE out = $workbookId`, {
-      workbookId: options.workbookId,
-    });
+    await db.query(
+      `UPDATE $workbookId SET folder = NONE, updated_at = time::now()`,
+      { workbookId: toRecordId(options.workbookId) },
+    );
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : '移出文件夹失败' };

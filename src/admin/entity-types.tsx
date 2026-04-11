@@ -2,6 +2,7 @@ import { useEffect, useReducer, useState } from 'react';
 import type { Surreal } from 'surrealdb';
 
 import { entityTableDDL, relationTableDDL, validateTableKey, type FieldDef } from '../lib/surreal/ddl';
+import { toRecordId } from '../lib/surreal/record-id';
 
 export interface EntityField {
   key: string;
@@ -160,7 +161,7 @@ export function EntityTypesPanel({ db, workspaceId, workbookId, wsKey }: EntityT
       // REMOVE TABLE 不可逆，误操作风险高。
       await db.query(
         `DELETE $id`,
-        { id: item.id },
+        { id: toRecordId(item.id) },
       );
       dispatch({ type: 'delete-ok', id: item.id });
     } catch {

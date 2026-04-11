@@ -13,17 +13,14 @@ function createMockDb(queryImpl?: ReturnType<typeof vi.fn>) {
 describe('buildFolderTree', () => {
   it('drops nodes deeper than 8 levels', () => {
     const folders = Array.from({ length: 10 }, (_, index) => ({
-      id: `folder:${index + 1}`,
+      id:        `folder:${index + 1}`,
       workspace: 'workspace:test',
-      name: `Folder ${index + 1}`,
-    }));
-    const edges = Array.from({ length: 9 }, (_, index) => ({
-      in: `folder:${index + 2}`,
-      out: `folder:${index + 1}`,
-      position: index,
+      name:      `Folder ${index + 1}`,
+      parent:    index === 0 ? null : `folder:${index}`,
+      position:  index,
     }));
 
-    const tree = buildFolderTree(folders, edges);
+    const tree = buildFolderTree(folders);
 
     let cursor = tree[0];
     let count = 1;
@@ -37,13 +34,10 @@ describe('buildFolderTree', () => {
   });
 
   it('attaches orphaned folders to root', () => {
-    const tree = buildFolderTree(
-      [
-        { id: 'folder:1', workspace: 'workspace:test', name: 'Root' },
-        { id: 'folder:2', workspace: 'workspace:test', name: 'Orphan' },
-      ],
-      [{ in: 'folder:2', out: 'folder:missing', position: 0 }],
-    );
+    const tree = buildFolderTree([
+      { id: 'folder:1', workspace: 'workspace:test', name: 'Root',   parent: null,            position: 0 },
+      { id: 'folder:2', workspace: 'workspace:test', name: 'Orphan', parent: 'folder:missing', position: 0 },
+    ]);
 
     expect(tree).toHaveLength(2);
     expect(tree.map((node) => node.name)).toEqual(['Root', 'Orphan']);
@@ -52,18 +46,14 @@ describe('buildFolderTree', () => {
 
 describe('useDocTree', () => {
   it('loads folders and unfiled workbooks', async () => {
-    const query = vi.fn()
-      .mockResolvedValueOnce([
-        [
-          { id: 'folder:root-a', workspace: 'workspace:test', name: '案件台账' },
-          { id: 'folder:root-b', workspace: 'workspace:test', name: '债权申报' },
-          { id: 'folder:child', workspace: 'workspace:test', name: '子文件夹' },
-        ],
-        [{ id: 'workbook:1', name: '空白工作簿', updated_at: '2026-04-11T10:00:00Z' }],
-      ] as any)
-      .mockResolvedValueOnce([
-        [{ in: 'folder:child', out: 'folder:root-a', position: 0 }],
-      ] as any);
+    const query = vi.fn().mockResolvedValueOnce([
+      [
+        { id: 'folder:root-a', workspace: 'workspace:test', name: '案件台账', parent: null,             position: 0 },
+        { id: 'folder:root-b', workspace: 'workspace:test', name: '债权申报', parent: null,             position: 1 },
+        { id: 'folder:child',  workspace: 'workspace:test', name: '子文件夹', parent: 'folder:root-a', position: 0 },
+      ],
+      [{ id: 'workbook:1', name: '空白工作簿', updated_at: '2026-04-11T10:00:00Z' }],
+    ] as any);
 
     const db = createMockDb(query);
     const { result } = renderHook(() => useDocTree(db, 'workspace:test'));
@@ -100,9 +90,7 @@ describe('useDocTree', () => {
   it('does not update state after unmount', async () => {
     let resolveQuery: ((value: unknown) => void) | undefined;
     const query = vi.fn().mockImplementation(
-      () => new Promise((resolve) => {
-        resolveQuery = resolve;
-      }),
+      () => new Promise((resolve) => { resolveQuery = resolve; }),
     );
     const db = createMockDb(query);
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);

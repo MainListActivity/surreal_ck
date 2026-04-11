@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useReducer } from 'react';
-import type { Surreal } from 'surrealdb';
+import { StringRecordId, type Surreal } from 'surrealdb';
 
 const MAX_FOLDER_DEPTH = 8;
 
@@ -7,6 +7,8 @@ export interface FolderRow {
   id: string;
   workspace: string;
   name: string;
+  parent: string | null;
+  position: number;
   created_at?: string | null;
   updated_at?: string | null;
 }
@@ -15,12 +17,6 @@ export interface WorkbookRef {
   id: string;
   name: string;
   updated_at?: string | null;
-}
-
-interface FolderParentEdge {
-  in: string;
-  out: string;
-  position?: number | null;
 }
 
 export interface FolderNode {
@@ -66,116 +62,77 @@ function normalizeFolderRow(row: FolderRow): FolderRow {
     ...row,
     id: String(row.id),
     workspace: String(row.workspace),
-  };
-}
-
-function normalizeWorkbookRow(row: WorkbookRef): WorkbookRef {
-  return {
-    ...row,
-    id: String(row.id),
-  };
-}
-
-function normalizeEdgeRow(row: FolderParentEdge): FolderParentEdge {
-  return {
-    in: String(row.in),
-    out: String(row.out),
+    parent: row.parent ? String(row.parent) : null,
     position: typeof row.position === 'number' ? row.position : 0,
   };
 }
 
-function buildFolderTree(folderRows: FolderRow[], edgeRows: FolderParentEdge[]): FolderNode[] {
-  const byId = new Map(folderRows.map((folder) => [folder.id, folder]));
-  const childrenByParent = new Map<string, Array<{ id: string; position: number }>>();
-  const childToParent = new Map<string, string>();
+function normalizeWorkbookRow(row: WorkbookRef): WorkbookRef {
+  return { ...row, id: String(row.id) };
+}
 
-  for (const edge of edgeRows) {
-    if (!byId.has(edge.in) || !byId.has(edge.out) || edge.in === edge.out) {
-      continue;
+export function buildFolderTree(folderRows: FolderRow[]): FolderNode[] {
+  const byId = new Map(folderRows.map((f) => [f.id, f]));
+  const childrenByParent = new Map<string, FolderRow[]>();
+
+  for (const folder of folderRows) {
+    if (folder.parent && byId.has(folder.parent)) {
+      const siblings = childrenByParent.get(folder.parent) ?? [];
+      siblings.push(folder);
+      childrenByParent.set(folder.parent, siblings);
     }
-    childToParent.set(edge.in, edge.out);
-    const siblings = childrenByParent.get(edge.out) ?? [];
-    siblings.push({ id: edge.in, position: edge.position ?? 0 });
-    childrenByParent.set(edge.out, siblings);
   }
 
   for (const siblings of childrenByParent.values()) {
     siblings.sort((a, b) => a.position - b.position || a.id.localeCompare(b.id));
   }
 
-  const rootIds = folderRows
-    .filter((folder) => !childToParent.has(folder.id) || !byId.has(childToParent.get(folder.id)!))
-    .map((folder) => folder.id)
-    .sort((a, b) => a.localeCompare(b));
+  const rootFolders = folderRows
+    .filter((f) => !f.parent || !byId.has(f.parent))
+    .sort((a, b) => a.position - b.position || a.id.localeCompare(b.id));
 
-  const buildNode = (folderId: string, depth: number, seen: Set<string>): FolderNode | null => {
-    if (depth >= MAX_FOLDER_DEPTH || seen.has(folderId)) {
-      return null;
-    }
-
-    const row = byId.get(folderId);
-    if (!row) return null;
+  const buildNode = (folder: FolderRow, depth: number, seen: Set<string>): FolderNode | null => {
+    if (depth >= MAX_FOLDER_DEPTH || seen.has(folder.id)) return null;
 
     const nextSeen = new Set(seen);
-    nextSeen.add(folderId);
+    nextSeen.add(folder.id);
 
-    const children = (childrenByParent.get(folderId) ?? [])
-      .map(({ id }) => buildNode(id, depth + 1, nextSeen))
+    const children = (childrenByParent.get(folder.id) ?? [])
+      .map((child) => buildNode(child, depth + 1, nextSeen))
       .filter((node): node is FolderNode => node !== null);
 
-    return {
-      id: row.id,
-      name: row.name,
-      depth,
-      children,
-      workbooks: [],
-    };
+    return { id: folder.id, name: folder.name, depth, children, workbooks: [] };
   };
 
-  return rootIds
-    .map((id) => buildNode(id, 0, new Set()))
+  return rootFolders
+    .map((f) => buildNode(f, 0, new Set()))
     .filter((node): node is FolderNode => node !== null);
 }
 
-async function loadDocTree(db: Surreal, workspaceId: string): Promise<{ folders: FolderNode[]; unfiledWorkbooks: WorkbookRef[] }> {
+async function loadDocTree(
+  db: Surreal,
+  workspaceId: string,
+): Promise<{ folders: FolderNode[]; unfiledWorkbooks: WorkbookRef[] }> {
   const [folderRows, unfiledRows] = await db.query<[FolderRow[], WorkbookRef[]]>(
-    `
-    SELECT id, workspace, name, created_at, updated_at
-    FROM folder
-    WHERE workspace = $wsId
-    ORDER BY created_at ASC;
+    `SELECT id, workspace, name, parent, position, created_at, updated_at
+     FROM folder
+     WHERE workspace = $wsId
+     ORDER BY position ASC, created_at ASC;
 
-    SELECT id, name, updated_at
-    FROM workbook
-    WHERE workspace = $wsId
-      AND id NOT IN (
-        SELECT VALUE out
-        FROM folder_has_workbook
-        WHERE in.workspace = $wsId
-      )
-    ORDER BY updated_at DESC;
-    `,
-    { wsId: workspaceId },
+     SELECT id, name, updated_at
+     FROM workbook
+     WHERE workspace = $wsId AND folder = NONE
+     ORDER BY updated_at DESC;`,
+    { wsId: new StringRecordId(workspaceId) },
   );
 
   const normalizedFolders = (folderRows ?? []).map(normalizeFolderRow);
   const normalizedUnfiled = (unfiledRows ?? []).map(normalizeWorkbookRow);
 
-  if (normalizedFolders.length === 0) {
-    return { folders: [], unfiledWorkbooks: normalizedUnfiled };
-  }
-
-  const [parentRows] = await db.query<[FolderParentEdge[]]>(
-    `
-    SELECT in, out, position
-    FROM folder_parent
-    WHERE in.workspace = $wsId
-    `,
-    { wsId: workspaceId },
-  );
-
-  const folders = buildFolderTree(normalizedFolders, (parentRows ?? []).map(normalizeEdgeRow));
-  return { folders, unfiledWorkbooks: normalizedUnfiled };
+  return {
+    folders: buildFolderTree(normalizedFolders),
+    unfiledWorkbooks: normalizedUnfiled,
+  };
 }
 
 export interface UseDocTreeResult extends State {
@@ -195,47 +152,31 @@ export function useDocTree(db: Surreal, workspaceId: string | null): UseDocTreeR
       dispatch({ type: 'load-ok', folders: [], unfiledWorkbooks: [] });
       return;
     }
-
     dispatch({ type: 'load-start' });
     try {
       const result = await loadDocTree(db, workspaceId);
       dispatch({ type: 'load-ok', ...result });
     } catch (err) {
-      dispatch({
-        type: 'load-err',
-        error: err instanceof Error ? err.message : 'Failed to load document tree.',
-      });
+      dispatch({ type: 'load-err', error: err instanceof Error ? err.message : 'Failed to load document tree.' });
     }
   }, [db, workspaceId]);
 
   useEffect(() => {
     let cancelled = false;
-
     if (!workspaceId) {
       dispatch({ type: 'load-ok', folders: [], unfiledWorkbooks: [] });
       return;
     }
-
     dispatch({ type: 'load-start' });
     void loadDocTree(db, workspaceId)
-      .then((result) => {
-        if (cancelled) return;
-        dispatch({ type: 'load-ok', ...result });
-      })
+      .then((result) => { if (!cancelled) dispatch({ type: 'load-ok', ...result }); })
       .catch((err) => {
-        if (cancelled) return;
-        dispatch({
-          type: 'load-err',
-          error: err instanceof Error ? err.message : 'Failed to load document tree.',
-        });
+        if (!cancelled) dispatch({ type: 'load-err', error: err instanceof Error ? err.message : 'Failed to load document tree.' });
       });
-
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [db, workspaceId]);
 
   return { ...state, refetch };
 }
 
-export { MAX_FOLDER_DEPTH, buildFolderTree };
+export { MAX_FOLDER_DEPTH };

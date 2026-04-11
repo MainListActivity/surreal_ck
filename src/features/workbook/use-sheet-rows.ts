@@ -11,6 +11,8 @@ import { useCallback, useEffect, useReducer } from 'react';
 import type { LiveSubscription, Surreal } from 'surrealdb';
 import { Table } from 'surrealdb';
 
+import { toRecordId } from '../../lib/surreal/record-id';
+
 export interface EntityRow {
   id: string;
   workspace: string;
@@ -156,7 +158,7 @@ export function useSheetRows(
         // UPDATE existing row — merge fields, bump updated_at
         await db.query(
           `UPDATE $id MERGE $fields SET updated_at = time::now()`,
-          { id: rowId, fields },
+          { id: toRecordId(rowId), fields },
         );
         return rowId;
       }
@@ -179,7 +181,7 @@ export function useSheetRows(
   // ── Delete row ────────────────────────────────────────────────────────────
   const deleteRow = useCallback(
     async (rowId: string): Promise<void> => {
-      await db.query(`DELETE $id`, { id: rowId });
+      await db.query(`DELETE $id`, { id: toRecordId(rowId) });
     },
     [db],
   );

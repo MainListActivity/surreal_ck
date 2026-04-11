@@ -3,6 +3,8 @@
  * → select relation type + target → RELATE $source->{edge_type}->{target}
  */
 
+import { toRecordId } from '../lib/surreal/record-id';
+
 export interface RelateParams {
   sourceRecordId: string;
   edgeType: string;
@@ -37,7 +39,7 @@ export async function createRelationship(
   try {
     const [rows] = await db.query<[{ id: string }[]]>(
       `RELATE $source->${edgeType}->$target CONTENT { workspace: $ws } RETURN id`,
-      { source: sourceRecordId, target: targetRecordId, ws: workspaceId },
+      { source: toRecordId(sourceRecordId), target: toRecordId(targetRecordId), ws: toRecordId(workspaceId) },
     );
     const edge = rows?.[0];
     if (!edge?.id) throw new Error('RELATE did not return an edge record.');
