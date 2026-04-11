@@ -1,5 +1,7 @@
 # AGENTS.md
 
+Always output zh_CN.
+
 ## Engineering Guardrails
 
 - Package manager is `pnpm` only. Use `pnpm add`, `pnpm remove`, `pnpm install`, and `pnpm run`.
