@@ -11,7 +11,9 @@
 import { useEffect, useReducer, useCallback, useRef } from 'react';
 import { Table, type Surreal } from 'surrealdb';
 
-import { nowDatetime, toRecordId } from '../../lib/surreal/record-id';
+import { RecordId } from 'surrealdb';
+
+import { nowDateTime, toRecordId } from '../../lib/surreal/record-id';
 
 import { entityTableDDL } from '../../lib/surreal/ddl';
 import type { Sheet } from '../../lib/surreal/types';
@@ -47,7 +49,7 @@ function reducer(state: State, action: Action): State {
       return {
         ...state,
         sheets: state.sheets.map((s) =>
-          s.id === action.sheetId ? { ...s, label: action.label } : s,
+          String(s.id) === action.sheetId ? { ...s, label: action.label } : s,
         ),
       };
     default:
@@ -108,11 +110,7 @@ export function useSheets(
         );
         if (cancelled) return;
 
-        const sheets = (sheetRows ?? []).map((s) => ({
-          ...s,
-          id: String(s.id),
-          workbook: String(s.workbook),
-        }));
+        const sheets = sheetRows ?? [];
 
         // Validation guard: drop records missing required fields
         const validSheets = sheets.filter(
@@ -158,8 +156,9 @@ export function useSheets(
       const sheetPosition = position ?? nextPositionRef.current++;
 
       // 1. Insert the sheet record
+      const workbookRecordId = toRecordId(workbookId);
       const insertedSheet = await db.insert<Sheet>(new Table('sheet'), {
-        workbook: toRecordId(workbookId),
+        workbook: new RecordId<'workbook'>('workbook', workbookRecordId.id),
         univer_id: newUniverId,
         table_name: tableName,
         label,
@@ -169,11 +168,7 @@ export function useSheets(
       const sheet = Array.isArray(insertedSheet) ? insertedSheet[0] : insertedSheet;
       if (!sheet) throw new Error('Sheet INSERT returned no record.');
 
-      const sheetRecord: Sheet = {
-        ...sheet,
-        id: String(sheet.id),
-        workbook: String(sheet.workbook),
-      };
+      const sheetRecord: Sheet = sheet;
 
       // 2. Provision the backing SCHEMALESS entity table (no fields yet)
       const ddl = entityTableDDL(tableName, []);
@@ -192,7 +187,7 @@ export function useSheets(
     async (sheetId: string, newLabel: string): Promise<void> => {
       await db.update<Sheet>(toRecordId(sheetId)).merge({
         label: newLabel,
-        updated_at: nowDatetime(),
+        updated_at: nowDateTime(),
       });
       dispatch({ type: 'update', sheetId, label: newLabel });
     },

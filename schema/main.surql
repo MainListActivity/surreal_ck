@@ -243,7 +243,7 @@ DEFINE TABLE IF NOT EXISTS snapshot SCHEMAFULL
       OR workbook.workspace IN $auth<-has_workspace_member<-workspace,
     FOR update, delete NONE;
 DEFINE FIELD IF NOT EXISTS workbook              ON TABLE snapshot TYPE record<workbook>;
-DEFINE FIELD IF NOT EXISTS layout                ON TABLE snapshot TYPE object;
+DEFINE FIELD OVERWRITE layout                ON TABLE snapshot TYPE object FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS coordinator_client_id ON TABLE snapshot TYPE string;
 DEFINE FIELD IF NOT EXISTS mutation_watermark    ON TABLE snapshot TYPE option<datetime>;
 DEFINE FIELD IF NOT EXISTS created_at            ON TABLE snapshot TYPE datetime VALUE time::now();
@@ -263,7 +263,7 @@ DEFINE FIELD IF NOT EXISTS workbook   ON TABLE presence TYPE record<workbook>;
 DEFINE FIELD IF NOT EXISTS client_id  ON TABLE presence TYPE string;
 DEFINE FIELD IF NOT EXISTS cursor     ON TABLE presence TYPE option<object>;
 DEFINE FIELD IF NOT EXISTS expires_at ON TABLE presence TYPE datetime;
-DEFINE INDEX IF NOT EXISTS presence_client_id ON TABLE presence COLUMNS client_id UNIQUE;
+DEFINE INDEX OVERWRITE presence_client_id ON TABLE presence COLUMNS workbook, client_id UNIQUE;
 DEFINE INDEX IF NOT EXISTS presence_workbook  ON TABLE presence COLUMNS workbook;
 
 -- ═══════════════════════════════════════════════════════════════════════════════

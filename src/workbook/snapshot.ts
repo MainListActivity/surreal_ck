@@ -1,7 +1,7 @@
 import type { LiveSubscription, Surreal } from 'surrealdb';
 import { Table } from 'surrealdb';
 
-import { nowDatetime, toRecordId } from '../lib/surreal/record-id';
+import { nowDateTime, toRecordId } from '../lib/surreal/record-id';
 import type { SnapshotRecord } from '../lib/surreal/types';
 
 const SNAPSHOT_MUTATION_COUNT = 100;
@@ -32,7 +32,7 @@ export function createSnapshotController(
   let snapshotTimer: ReturnType<typeof setInterval> | null = null;
   let liveQuery: LiveSubscription | null = null;
   let unsubscribeLive: (() => void) | null = null;
-  let lastSnapshotTs: string | null = null;
+  let lastSnapshotTs: import('surrealdb').DateTime | null = null;
 
   const loadSnapshot = async (id: string): Promise<SnapshotRecord | null> => {
     const [rows] = await db.query<[SnapshotRecord[]]>(
@@ -62,7 +62,7 @@ export function createSnapshotController(
           wb: toRecordId(workbookId),
           layout,
           cid: clientId,
-          wm: nowDatetime(),
+          wm: nowDateTime(),
         },
       );
       lastSnapshotTs = (result[0]?.[0] as SnapshotRecord | undefined)?.created_at ?? null;
@@ -102,11 +102,11 @@ export function createSnapshotController(
         }
 
         const snap = message.value as unknown as SnapshotRecord;
-        if (snap.workbook !== workbookId) {
+        if (String(snap.workbook) !== workbookId) {
           return;
         }
 
-        if (!lastSnapshotTs || snap.created_at > lastSnapshotTs) {
+        if (!lastSnapshotTs || snap.created_at.toString() > lastSnapshotTs.toString()) {
           lastSnapshotTs = snap.created_at;
           onSnapshotReceived(snap);
         }

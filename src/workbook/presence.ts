@@ -1,7 +1,7 @@
 import type { LiveMessage, Surreal } from 'surrealdb';
 import { Table } from 'surrealdb';
 
-import { nowDatetime, toDatetime, toRecordId } from '../lib/surreal/record-id';
+import { nowDateTime, toDateTime, toRecordId } from '../lib/surreal/record-id';
 
 export interface PresenceRecord {
   id?: string;
@@ -23,38 +23,27 @@ export function startPresenceHeartbeat(
 ): () => void {
   let stopped = false;
   let timerId: ReturnType<typeof setTimeout> | null = null;
-  let presenceId: string | null = null;
 
   const upsert = async () => {
     if (stopped) {
       return;
     }
 
-    const expiresAt = toDatetime(new Date(Date.now() + PRESENCE_TTL_MS));
+    const expiresAt = toDateTime(new Date(Date.now() + PRESENCE_TTL_MS));
 
     try {
-      if (!presenceId) {
-        const result = await db.query<[string[]]>(
-          `LET $presence = (CREATE presence CONTENT $data RETURN AFTER)[0];
-           RETURN $presence.id`,
-          {
-            data: {
-              workbook: toRecordId(workbookId),
-              client_id: clientId,
-              expires_at: expiresAt,
-            },
-          },
-        );
-        presenceId = result[0]?.[0] ?? null;
-      } else {
-        await db.query(`UPDATE $id SET expires_at = $exp`, {
-          id: toRecordId(presenceId),
+      await db.query(
+        `UPSERT presence
+           SET workbook = $wb, client_id = $cid, expires_at = $exp
+           WHERE workbook = $wb AND client_id = $cid`,
+        {
+          wb: toRecordId(workbookId),
+          cid: clientId,
           exp: expiresAt,
-        });
-      }
+        },
+      );
     } catch {
       // Network may be down; retry on next tick
-      presenceId = null;
     }
 
     if (!stopped) {
@@ -70,9 +59,12 @@ export function startPresenceHeartbeat(
       clearTimeout(timerId);
     }
 
-    if (presenceId) {
-      void db.query(`DELETE $id`, { id: toRecordId(presenceId) }).catch(() => undefined);
-    }
+    void db
+      .query(`DELETE presence WHERE workbook = $wb AND client_id = $cid`, {
+        wb: toRecordId(workbookId),
+        cid: clientId,
+      })
+      .catch(() => undefined);
   };
 }
 
@@ -94,7 +86,7 @@ export async function watchCoordinator(
        WHERE workbook = $wb AND expires_at > $now
        ORDER BY client_id ASC
        LIMIT 1`,
-      { wb: toRecordId(workbookId), now: nowDatetime() },
+      { wb: toRecordId(workbookId), now: nowDateTime() },
     );
     return (result[0]?.[0] as PresenceRecord | undefined)?.client_id ?? null;
   };
