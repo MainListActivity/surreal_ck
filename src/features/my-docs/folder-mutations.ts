@@ -1,4 +1,4 @@
-import type { Surreal } from 'surrealdb';
+import { RecordId, type Surreal } from 'surrealdb';
 
 export type FolderMutationResult = { ok: true } | { ok: false; error: string };
 
@@ -38,6 +38,15 @@ const NON_EMPTY_FOLDER_ERROR = '文件夹不为空，请先移除其中的内容
 const CYCLE_ERROR = '不能将文件夹移动到它自己的子文件夹中';
 const DEPTH_ERROR = '文件夹最多支持 8 层';
 
+function toRecordId(value: string): RecordId {
+  const [table, ...rest] = value.split(':');
+  const id = rest.join(':');
+  if (!table || !id) {
+    throw new Error(`Invalid record id: ${value}`);
+  }
+  return new RecordId(table, id);
+}
+
 async function querySingleValue<T>(db: Surreal, sql: string, vars: Record<string, unknown>): Promise<T | null> {
   const [rows] = await db.query<[T[]]>(sql, vars);
   const first = rows?.[0];
@@ -45,7 +54,7 @@ async function querySingleValue<T>(db: Surreal, sql: string, vars: Record<string
 }
 
 async function readParentId(db: Surreal, folderId: string): Promise<string | null> {
-  const [rows] = await db.query<[Array<{ out: string }>]>(
+  const [rows] = await db.query<[string[]]>(
     `SELECT VALUE out FROM folder_parent WHERE in = $id LIMIT 1`,
     { id: folderId },
   );
@@ -91,7 +100,7 @@ export async function createFolder(db: Surreal, options: CreateFolderOptions): P
       }
       RETURN id
       `,
-      { ws: options.workspaceId, name: options.name },
+      { ws: toRecordId(options.workspaceId), name: options.name },
     );
 
     const folderId = String(createdRows?.[0]?.id ?? '');
@@ -102,12 +111,19 @@ export async function createFolder(db: Surreal, options: CreateFolderOptions): P
     if (options.parentFolderId) {
       await db.query(
         `RELATE $child->folder_parent->$parent CONTENT { position: $position }`,
-        { child: folderId, parent: options.parentFolderId, position: options.position ?? 0 },
+        {
+          child: toRecordId(folderId),
+          parent: toRecordId(options.parentFolderId),
+          position: options.position ?? 0,
+        },
       );
     } else {
       await db.query(
         `RELATE $workspace->workspace_has_folder->$folder`,
-        { workspace: options.workspaceId, folder: folderId },
+        {
+          workspace: toRecordId(options.workspaceId),
+          folder: toRecordId(folderId),
+        },
       );
     }
 
@@ -176,7 +192,11 @@ export async function moveFolder(db: Surreal, options: MoveFolderOptions): Promi
         RELATE $folderId->folder_parent->$parent CONTENT { position: $position };
         COMMIT;
         `,
-        { folderId: options.folderId, parent: options.newParentId, position: options.position ?? 0 },
+        {
+          folderId: toRecordId(options.folderId),
+          parent: toRecordId(options.newParentId),
+          position: options.position ?? 0,
+        },
       );
       return { ok: true };
     }
@@ -189,7 +209,10 @@ export async function moveFolder(db: Surreal, options: MoveFolderOptions): Promi
       RELATE $workspaceId->workspace_has_folder->$folderId;
       COMMIT;
       `,
-      { folderId: options.folderId, workspaceId: options.workspaceId },
+      {
+        folderId: toRecordId(options.folderId),
+        workspaceId: toRecordId(options.workspaceId),
+      },
     );
     return { ok: true };
   } catch (err) {
@@ -201,8 +224,8 @@ export async function attachWorkbook(db: Surreal, options: AttachWorkbookOptions
   try {
     await db.query(`DELETE folder_has_workbook WHERE out = $workbookId`, { workbookId: options.workbookId });
     await db.query(`RELATE $folderId->folder_has_workbook->$workbookId`, {
-      folderId: options.folderId,
-      workbookId: options.workbookId,
+      folderId: toRecordId(options.folderId),
+      workbookId: toRecordId(options.workbookId),
     });
     return { ok: true };
   } catch (err) {
