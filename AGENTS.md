@@ -44,6 +44,7 @@ Key rules to internalize:
 
 - 执行语句时不要直接写query，明确insert/update/delete，明确是操作的recordId还是table
 - 数据库的id类型在传递给数据库时，必须用RecordId类型或new StringRecordId(id)包裹。
+- 对于数据库已经定义了的实体对象，应该在代码中统一定义对象类型，不应该在泛型里定义类型
 
 ### Permissions belong in the schema, never in queries
 

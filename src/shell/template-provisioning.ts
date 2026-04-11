@@ -1,4 +1,4 @@
-import { Table, type Surreal } from 'surrealdb';
+import { RecordId, Table, type Surreal } from 'surrealdb';
 
 import { toRecordId } from '../lib/surreal/record-id';
 
@@ -66,12 +66,12 @@ export async function provisionTemplate(
   try {
     // Step 1: Insert workbook into the existing workspace table.
     const insertedWorkbook = await db.insert<{
-      id: string;
-      workspace: string;
+      id: RecordId;
+      workspace: RecordId;
       name: string;
       template_key: string;
     }>(new Table('workbook'), {
-      workspace: workspaceId,
+      workspace: toRecordId(workspaceId),
       name: workbookName,
       template_key: templateKey,
     });
@@ -86,7 +86,7 @@ export async function provisionTemplate(
     // dynamic table name prefixes (e.g. "harbor" → ent_harbor_company).
     const wsKey = workspaceId.split(':')[1] ?? workspaceId;
     const script = TEMPLATE_SCRIPTS[templateKey];
-    await db.query(script, { ws: workspaceId, wb: workbookId, ws_key: wsKey });
+    await db.query(script, { ws: toRecordId(workspaceId), wb: toRecordId(workbookId), ws_key: wsKey });
 
     return { ok: true, workspaceId, workbookId };
   } catch (err) {
@@ -135,11 +135,11 @@ async function compensatingCleanup(
     }
   } catch {
     // Cleanup failure is non-fatal — log to client_error in a fire-and-forget manner.
-      void db
-        .insert(new Table('client_error'), {
-          error_code: 'CLEANUP_FAILED',
-          message: `Compensating cleanup failed for workspace=${workspaceId}`,
-        })
-        .catch(() => undefined);
+    void db
+      .insert(new Table('client_error'), {
+        error_code: 'CLEANUP_FAILED',
+        message: `Compensating cleanup failed for workspace=${workspaceId}`,
+      })
+      .catch(() => undefined);
   }
 }
