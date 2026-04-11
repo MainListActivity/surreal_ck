@@ -90,6 +90,30 @@ DEFINE FIELD IF NOT EXISTS updated_at       ON TABLE workbook TYPE datetime VALU
 DEFINE INDEX IF NOT EXISTS workbook_workspace ON TABLE workbook COLUMNS workspace;
 
 -- ═══════════════════════════════════════════════════════════════════════════════
+-- FOLDER
+-- Hierarchical workspace-scoped folders for the "我的文档" tree.
+-- A folder belongs to exactly one workspace. Parent-child relationships live in
+-- folder_parent; workbook membership lives in folder_has_workbook.
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+DEFINE TABLE IF NOT EXISTS folder SCHEMAFULL
+  PERMISSIONS
+    FOR select WHERE
+      workspace IN $auth->owns_workspace->workspace
+      OR workspace IN $auth<-member_identifies_user<-workspace_member<-workspace_has_member<-workspace,
+    FOR create, update WHERE
+      id IN $auth->owns_workspace->workspace->workspace_has_folder->folder
+      OR workspace IN $auth->owns_workspace->workspace,
+    FOR delete WHERE
+      id IN $auth->owns_workspace->workspace->workspace_has_folder->folder
+      OR workspace IN $auth->owns_workspace->workspace;
+DEFINE FIELD IF NOT EXISTS workspace   ON TABLE folder TYPE record<workspace>;
+DEFINE FIELD IF NOT EXISTS name        ON TABLE folder TYPE string;
+DEFINE FIELD IF NOT EXISTS created_at  ON TABLE folder TYPE datetime VALUE time::now();
+DEFINE FIELD IF NOT EXISTS updated_at  ON TABLE folder TYPE datetime VALUE time::now();
+DEFINE INDEX IF NOT EXISTS folder_workspace ON TABLE folder COLUMNS workspace;
+
+-- ═══════════════════════════════════════════════════════════════════════════════
 -- SHEET
 -- sheet is a first-class entity. One sheet = one dynamic entity table in SurrealDB.
 -- Sheet stores:
@@ -470,6 +494,43 @@ DEFINE TABLE IF NOT EXISTS workbook_has_sheet TYPE RELATION IN workbook OUT shee
       in IN $auth->owns_workspace->workspace->workspace_has_workbook->workbook;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE workbook_has_sheet TYPE datetime VALUE time::now();
 DEFINE INDEX IF NOT EXISTS workbook_has_sheet_unique ON TABLE workbook_has_sheet COLUMNS in, out UNIQUE;
+
+-- workspace_has_folder: workspace → folder.
+DEFINE TABLE IF NOT EXISTS workspace_has_folder TYPE RELATION IN workspace OUT folder SCHEMAFULL
+  PERMISSIONS
+    FOR select WHERE
+      in IN $auth->owns_workspace->workspace
+      OR in IN $auth<-member_identifies_user<-workspace_member<-workspace_has_member<-workspace,
+    FOR create, update, delete WHERE
+      in IN $auth->owns_workspace->workspace
+      AND out.workspace = in;
+DEFINE FIELD IF NOT EXISTS created_at ON TABLE workspace_has_folder TYPE datetime VALUE time::now();
+DEFINE INDEX IF NOT EXISTS workspace_has_folder_unique ON TABLE workspace_has_folder COLUMNS in, out UNIQUE;
+
+-- folder_parent: child folder → parent folder.
+DEFINE TABLE IF NOT EXISTS folder_parent TYPE RELATION IN folder OUT folder SCHEMAFULL
+  PERMISSIONS
+    FOR select WHERE
+      in.workspace IN $auth->owns_workspace->workspace
+      OR in.workspace IN $auth<-member_identifies_user<-workspace_member<-workspace_has_member<-workspace,
+    FOR create, update, delete WHERE
+      in.workspace IN $auth->owns_workspace->workspace
+      AND in.workspace = out.workspace;
+DEFINE FIELD IF NOT EXISTS position   ON TABLE folder_parent TYPE int DEFAULT 0;
+DEFINE FIELD IF NOT EXISTS created_at ON TABLE folder_parent TYPE datetime VALUE time::now();
+DEFINE INDEX IF NOT EXISTS folder_parent_unique_child ON TABLE folder_parent COLUMNS in UNIQUE;
+
+-- folder_has_workbook: folder → workbook.
+DEFINE TABLE IF NOT EXISTS folder_has_workbook TYPE RELATION IN folder OUT workbook SCHEMAFULL
+  PERMISSIONS
+    FOR select WHERE
+      in.workspace IN $auth->owns_workspace->workspace
+      OR in.workspace IN $auth<-member_identifies_user<-workspace_member<-workspace_has_member<-workspace,
+    FOR create, update, delete WHERE
+      in.workspace IN $auth->owns_workspace->workspace
+      AND in.workspace = out.workspace;
+DEFINE FIELD IF NOT EXISTS created_at ON TABLE folder_has_workbook TYPE datetime VALUE time::now();
+DEFINE INDEX IF NOT EXISTS folder_has_workbook_unique_workbook ON TABLE folder_has_workbook COLUMNS out UNIQUE;
 
 -- ═══════════════════════════════════════════════════════════════════════════════
 -- FILE STORAGE BUCKET

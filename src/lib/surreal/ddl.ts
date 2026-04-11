@@ -15,7 +15,8 @@ const RESERVED_TABLE_NAMES = new Set([
   'form_definition', 'intake_submission', 'client_error', 'workbook_file',
   // edge tables
   'owns_workspace', 'workspace_has_workbook', 'workspace_has_member',
-  'member_identifies_user', 'workbook_has_sheet',
+  'member_identifies_user', 'workbook_has_sheet', 'folder',
+  'workspace_has_folder', 'folder_parent', 'folder_has_workbook',
 ]);
 
 // ─── Validation ──────────────────────────────────────────────────────────────

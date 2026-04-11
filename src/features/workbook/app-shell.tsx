@@ -2,6 +2,8 @@ import { startTransition, useDeferredValue, useEffect, useRef, useState } from '
 import type { Surreal } from 'surrealdb';
 
 import { AdminSidebar } from '../../admin/admin-sidebar';
+import { DocTreePanel } from '../my-docs/doc-tree-panel';
+import { FolderContentsPane } from '../my-docs/folder-contents-pane';
 import { clientId } from '../../lib/client-id';
 import { useConnectionSnapshot } from '../../lib/surreal/client';
 import { useSurrealClient } from '../../lib/surreal/provider';
@@ -62,6 +64,8 @@ export function AppShell({
   const [search, setSearch] = useState('');
   const [isCreating, setIsCreating] = useState<TemplateKey | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [activeHomeTab, setActiveHomeTab] = useState<'recent' | 'my-docs'>('recent');
+  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
 
   const isOffline = connection.state === 'reconnecting' || connection.state === 'disconnected';
   const workbooks = workspace.data?.workbooks ?? [];
@@ -153,109 +157,166 @@ export function AppShell({
   return (
     <div className="ck-page ck-page--home">
       <ConnectionBanner connection={connection} />
-      <section className="docs-home" aria-label="Tencent compatible workbook home">
-        <aside className="docs-home__rail" aria-label="Workspace navigation">
-          <div className="docs-home__brand">
-            <p className="eyebrow">债权协作</p>
-            <h1>文档</h1>
-            <p className="sidebar-copy">保持腾讯文档式入口节奏，强化受控与留痕。</p>
+      <div className="tdocs-shell">
+        {/* Top bar */}
+        <header className="tdocs-topbar">
+          <div className="tdocs-topbar__brand">
+            <svg className="tdocs-logo" width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <rect width="8.5" height="8.5" rx="2" fill="#2F6BFF" />
+              <rect x="11.5" width="8.5" height="8.5" rx="2" fill="#2F6BFF" opacity="0.6" />
+              <rect y="11.5" width="8.5" height="8.5" rx="2" fill="#2F6BFF" opacity="0.6" />
+              <rect x="11.5" y="11.5" width="8.5" height="8.5" rx="2" fill="#2F6BFF" opacity="0.3" />
+            </svg>
+            <span className="tdocs-topbar__name">债权文档</span>
           </div>
-
-          <nav className="docs-home__nav">
-            <button className="rail-button rail-button--active" type="button" onClick={onShowHome}>
-              最近打开
-            </button>
-            <button className="rail-button" type="button" onClick={onShowTemplates}>
-              快速新建
-            </button>
-            <button className="rail-button" type="button" onClick={onShowAdmin}>
-              工作区设置
-            </button>
-          </nav>
-
-          <div className="docs-home__trust">
-            <span className="status-chip">{formatConnectionLabel(connection.state)}</span>
-            <p className="sidebar-copy">敏感工作区。所有债权申报、补正和复核动作均留在受控协作空间内。</p>
+          <label className="tdocs-search" aria-label="搜索文档">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <circle cx="7" cy="7" r="5" stroke="currentColor" strokeWidth="1.5" />
+              <path d="m11 11 2.5 2.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+            <input
+              type="search"
+              placeholder="搜索文档、模板、工作区（⌘F）"
+              value={search}
+              onChange={(event) => {
+                startTransition(() => {
+                  setSearch(event.target.value);
+                });
+              }}
+            />
+          </label>
+          <div className="tdocs-topbar__right">
+            <span className="tdocs-connection-chip" data-state={connection.state}>
+              {formatConnectionLabel(connection.state)}
+            </span>
+            {displayName ? (
+              <button className="tdocs-avatar" type="button" aria-label={displayName} title={displayName}>
+                {displayName.slice(0, 1).toUpperCase()}
+              </button>
+            ) : null}
           </div>
-        </aside>
+        </header>
 
-        <main className="docs-home__main">
-          <header className="docs-home__header">
-            <div>
-              <p className="eyebrow">Sensitive workspace</p>
-              <h2>{workspaceName}</h2>
-            </div>
-            <div className="docs-home__header-actions">
-              <label className="docs-search">
-                <span className="sr-only">搜索工作簿</span>
-                <input
-                  aria-label="Search workbooks"
-                  placeholder="搜索工作簿、台账或模板"
-                  type="search"
-                  value={search}
-                  onChange={(event) => {
-                    startTransition(() => {
-                      setSearch(event.target.value);
-                    });
-                  }}
-                />
-              </label>
-              {displayName ? <span className="docs-home__user">{displayName}</span> : null}
-            </div>
-          </header>
-
-          <section className="docs-home__create" aria-label="Quick create">
-            <div>
-              <p className="eyebrow">Quick create</p>
-              <h3>从熟悉的表格入口开始</h3>
-            </div>
-            <div className="docs-home__create-actions">
-              {templateCatalog.map((template) => (
-                <button
-                  key={template.key}
-                  className={`secondary-button docs-home__create-button ${showTemplateGallery ? 'docs-home__create-button--featured' : ''}`}
-                  type="button"
-                  disabled={isCreating !== null}
-                  onClick={() => { void handleCreateWorkbook(template.key); }}
-                >
-                  {isCreating === template.key ? '创建中…' : template.name}
-                </button>
-              ))}
-            </div>
-            {createError ? <p className="intake-form__error" role="alert">{createError}</p> : null}
-          </section>
-
-          {showTemplateGallery && (
-            <section className="docs-home__templates" aria-label="Template gallery">
-              {templateCatalog.map((template) => (
-                <article key={template.key} className="template-card">
-                  <p className="eyebrow">{template.category}</p>
-                  <h3>{template.name}</h3>
-                  <p className="template-card__copy">{template.description}</p>
-                  <dl className="template-card__facts">
-                    <div>
-                      <dt>起始表</dt>
-                      <dd>{template.starterSheets}</dd>
-                    </div>
-                    <div>
-                      <dt>发布入口</dt>
-                      <dd>{template.publishLabel}</dd>
-                    </div>
-                  </dl>
-                </article>
-              ))}
-            </section>
-          )}
-
-          <section className="docs-home__list-section" aria-label="Recent workbooks">
-            <div className="docs-home__list-header">
-              <div>
-                <p className="eyebrow">Recent workbooks</p>
-                <h3>最近使用</h3>
-              </div>
-              <span className="sidebar-copy">{workbooks.length} 个工作簿</span>
+        <div className="tdocs-body">
+          {/* Left rail */}
+          <aside className="tdocs-rail" aria-label="导航">
+            <div className="tdocs-rail__new">
+              <button
+                className="tdocs-new-btn"
+                type="button"
+                disabled={isCreating !== null}
+                onClick={() => { void handleCreateWorkbook('legal-entity-tracker'); }}
+              >
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                  <path d="M7 1v12M1 7h12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                </svg>
+                新建
+              </button>
             </div>
 
+            <nav className="tdocs-rail__nav">
+              <button className="tdocs-rail-item tdocs-rail-item--active" type="button" onClick={onShowHome}>
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <path d="M2 6.5 8 2l6 4.5V14H10v-4H6v4H2z" stroke="currentColor" strokeWidth="1.4" fill="none" strokeLinejoin="round" />
+                </svg>
+                首页
+              </button>
+              <button
+                className={`tdocs-rail-item ${activeHomeTab === 'my-docs' ? 'tdocs-rail-item--active' : ''}`}
+                type="button"
+                onClick={() => {
+                  startTransition(() => {
+                    setActiveHomeTab('my-docs');
+                  });
+                }}
+              >
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <rect x="2" y="2" width="5" height="5" rx="1" stroke="currentColor" strokeWidth="1.4" />
+                  <rect x="9" y="2" width="5" height="5" rx="1" stroke="currentColor" strokeWidth="1.4" />
+                  <rect x="2" y="9" width="5" height="5" rx="1" stroke="currentColor" strokeWidth="1.4" />
+                  <rect x="9" y="9" width="5" height="5" rx="1" stroke="currentColor" strokeWidth="1.4" />
+                </svg>
+                我的文档
+              </button>
+              <button className="tdocs-rail-item" type="button" onClick={onShowAdmin}>
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.4" />
+                  <circle cx="8" cy="8" r="2" stroke="currentColor" strokeWidth="1.4" />
+                  <path d="M8 2v2M8 12v2M2 8h2M12 8h2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                </svg>
+                工作区设置
+              </button>
+              <button className="tdocs-rail-item" type="button">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                  <rect x="2" y="2" width="12" height="12" rx="2" stroke="currentColor" strokeWidth="1.4" />
+                  <path d="M5 8h6M5 5.5h4M5 10.5h3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                </svg>
+                空间
+              </button>
+            </nav>
+
+            {activeHomeTab === 'my-docs' && workspaceId ? (
+              <DocTreePanel
+                db={db}
+                workspaceId={workspaceId}
+                selectedFolderId={selectedFolderId}
+                onSelectFolder={setSelectedFolderId}
+              />
+            ) : null}
+
+            <div className="tdocs-rail__footer">
+              <p className="tdocs-rail__workspace-label">{workspaceName}</p>
+              <p className="tdocs-rail__trust">受控协作空间 · 留痕审计</p>
+            </div>
+          </aside>
+
+          {/* Main content */}
+          <main className="tdocs-main">
+            {/* Tab bar */}
+            <div className="tdocs-tabs" role="tablist">
+              <button
+                className={`tdocs-tab ${activeHomeTab === 'recent' ? 'tdocs-tab--active' : ''}`}
+                role="tab"
+                aria-selected={activeHomeTab === 'recent'}
+                type="button"
+                onClick={() => {
+                  startTransition(() => {
+                    setActiveHomeTab('recent');
+                  });
+                }}
+              >
+                最近
+              </button>
+              <button
+                className={`tdocs-tab ${activeHomeTab === 'my-docs' ? 'tdocs-tab--active' : ''}`}
+                role="tab"
+                aria-selected={activeHomeTab === 'my-docs'}
+                type="button"
+                onClick={() => {
+                  startTransition(() => {
+                    setActiveHomeTab('my-docs');
+                  });
+                }}
+              >
+                我的文档
+              </button>
+              <button className="tdocs-tab" role="tab" aria-selected={false} type="button">收藏</button>
+              <div className="tdocs-tabs__spacer" />
+              <button className="tdocs-tabs__action" type="button">
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                  <path d="M7 1v12M1 7h12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                </svg>
+                显示
+              </button>
+              <button className="tdocs-tabs__action" type="button">
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                  <path d="M1 4h12M1 7h8M1 10h5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                </svg>
+                筛选
+              </button>
+            </div>
+
+            {/* Table */}
             <HomeStateSurface
               connection={connection}
               isLoading={workspace.isLoading}
@@ -264,57 +325,134 @@ export function AppShell({
               onCreateFirst={() => { void handleCreateWorkbook('legal-entity-tracker'); }}
             />
 
-            {!workspace.isLoading && !workspace.error && filteredWorkbooks.length > 0 && (
-              <table className="docs-table">
-                <thead>
-                  <tr>
-                    <th>工作簿</th>
-                    <th>模板</th>
-                    <th>更新时间</th>
-                    <th>动作</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredWorkbooks.map((workbook) => (
-                    <tr key={workbook.id}>
-                      <td>
-                        <button className="docs-table__link" type="button" onClick={() => onSelectWorkbook(workbook.id)}>
-                          {workbook.name}
-                        </button>
-                      </td>
-                      <td>{findTemplate(workbook.template_key as TemplateKey | null | undefined)?.name ?? '自定义工作簿'}</td>
-                      <td>{formatUpdatedAt(workbook.updated_at) || '刚创建'}</td>
-                      <td>
-                        <div className="docs-table__actions">
-                          <button className="ghost-button" type="button" onClick={() => onSelectWorkbook(workbook.id)}>
-                            打开
-                          </button>
-                          {getPublishSlug(workbook.template_key as TemplateKey | null | undefined) ? (
-                            <button
-                              className="ghost-button"
-                              type="button"
-                              onClick={() => {
-                                if (workspaceId) {
-                                  onOpenPublishedForm(
-                                    workspaceId,
-                                    getPublishSlug(workbook.template_key as TemplateKey | null | undefined) as string,
-                                  );
-                                }
-                              }}
-                            >
-                              发布表单
-                            </button>
-                          ) : null}
-                        </div>
-                      </td>
+            {!workspace.isLoading && !workspace.error && activeHomeTab === 'recent' && (
+              <div className="tdocs-table-wrap">
+                <table className="tdocs-table">
+                  <thead>
+                    <tr>
+                      <th className="tdocs-table__name-col">名称</th>
+                      <th>所有者</th>
+                      <th>位置</th>
+                      <th className="tdocs-table__date-col">
+                        最近打开
+                        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true" style={{marginLeft: 4}}>
+                          <path d="M5 2v6M2 6l3 3 3-3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      </th>
+                      <th>大小</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {filteredWorkbooks.length === 0 && search.trim() ? (
+                      <tr>
+                        <td colSpan={5} className="tdocs-table__empty">没有匹配「{search}」的文档</td>
+                      </tr>
+                    ) : null}
+                    {filteredWorkbooks.map((workbook) => {
+                      const template = findTemplate(workbook.template_key as TemplateKey | null | undefined);
+                      const publishSlug = getPublishSlug(workbook.template_key as TemplateKey | null | undefined);
+                      return (
+                        <tr key={workbook.id} className="tdocs-table__row">
+                          <td className="tdocs-table__name-cell">
+                            <span className="tdocs-file-icon tdocs-file-icon--sheet" aria-hidden="true">
+                              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                                <rect x="1" y="1" width="14" height="14" rx="2" fill="#1E6E3A" />
+                                <path d="M4 5h8M4 8h8M4 11h5" stroke="white" strokeWidth="1.2" strokeLinecap="round" />
+                              </svg>
+                            </span>
+                            <button className="tdocs-table__name-btn" type="button" onClick={() => onSelectWorkbook(workbook.id)}>
+                              {workbook.name}
+                            </button>
+                            <div className="tdocs-table__row-actions">
+                              {publishSlug && workspaceId ? (
+                                <button
+                                  className="tdocs-row-action"
+                                  type="button"
+                                  title="发布表单"
+                                  onClick={() => onOpenPublishedForm(workspaceId, publishSlug)}
+                                >
+                                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                                    <path d="M7 1v8M4 6l3 3 3-3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+                                    <path d="M2 10v2h10v-2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                                  </svg>
+                                </button>
+                              ) : null}
+                              <button className="tdocs-row-action" type="button" title="更多操作">
+                                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                                  <circle cx="3" cy="7" r="1.2" fill="currentColor" />
+                                  <circle cx="7" cy="7" r="1.2" fill="currentColor" />
+                                  <circle cx="11" cy="7" r="1.2" fill="currentColor" />
+                                </svg>
+                              </button>
+                            </div>
+                          </td>
+                          <td className="tdocs-table__meta">我</td>
+                          <td className="tdocs-table__meta">{workspaceName}</td>
+                          <td className="tdocs-table__meta">{formatUpdatedAt(workbook.updated_at) || '刚创建'}</td>
+                          <td className="tdocs-table__meta">
+                            <span className="tdocs-template-tag">{template?.name ?? '工作簿'}</span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+
+                {!workspace.isLoading && !workspace.error && filteredWorkbooks.length > 0 && (
+                  <div className="tdocs-create-row">
+                    {templateCatalog.map((template) => (
+                      <button
+                        key={template.key}
+                        className="tdocs-create-chip"
+                        type="button"
+                        disabled={isCreating !== null}
+                        onClick={() => { void handleCreateWorkbook(template.key); }}
+                      >
+                        {isCreating === template.key ? '创建中…' : `+ ${template.name}`}
+                      </button>
+                    ))}
+                    {createError ? <p className="intake-form__error" role="alert">{createError}</p> : null}
+                  </div>
+                )}
+              </div>
             )}
-          </section>
-        </main>
-      </section>
+
+            {!workspace.isLoading && !workspace.error && activeHomeTab === 'my-docs' && workspaceId ? (
+              <FolderContentsPane
+                db={db}
+                workspaceId={workspaceId}
+                selectedFolderId={selectedFolderId}
+                displayName="我"
+                onOpenWorkbook={onSelectWorkbook}
+                onFolderSelect={setSelectedFolderId}
+              />
+            ) : null}
+
+            {showTemplateGallery && (
+              <section className="tdocs-template-gallery" aria-label="模板库">
+                <p className="tdocs-gallery-label">模板库</p>
+                <div className="tdocs-template-grid">
+                  {templateCatalog.map((template) => (
+                    <article key={template.key} className="tdocs-template-card">
+                      <p className="tdocs-template-card__category">{template.category}</p>
+                      <h3>{template.name}</h3>
+                      <p className="tdocs-template-card__copy">{template.description}</p>
+                      <button
+                        className="tdocs-template-card__use"
+                        type="button"
+                        disabled={isCreating !== null}
+                        onClick={() => { void handleCreateWorkbook(template.key); }}
+                      >
+                        {isCreating === template.key ? '创建中…' : '使用此模板'}
+                      </button>
+                    </article>
+                  ))}
+                </div>
+              </section>
+            )}
+          </main>
+        </div>
+      </div>
     </div>
   );
 }

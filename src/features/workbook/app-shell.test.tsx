@@ -5,6 +5,20 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ConnectionSnapshot } from '../../lib/surreal/types';
 import { AppShell } from './app-shell';
 
+const mockDocTreePanel = vi.fn(({ onSelectFolder }: { onSelectFolder: (id: string | null) => void }) => (
+  <div>
+    <p>DocTreePanel</p>
+    <button type="button" onClick={() => onSelectFolder('folder:1')}>选择文件夹</button>
+  </div>
+));
+
+const mockFolderContentsPane = vi.fn(({ onOpenWorkbook }: { onOpenWorkbook: (id: string) => void }) => (
+  <div>
+    <p>FolderContentsPane</p>
+    <button type="button" onClick={() => onOpenWorkbook('workbook:cases')}>打开树中的工作簿</button>
+  </div>
+));
+
 const mockUseConnectionSnapshot = vi.fn((): ConnectionSnapshot => ({
   state: 'connected',
   updatedAt: Date.now(),
@@ -32,6 +46,13 @@ vi.mock('../../shell/template-provisioning', () => ({
     ok: true,
     workspaceId: 'workspace:harbor',
     workbookId: 'workbook:claims',
+  })),
+}));
+
+vi.mock('../../workbook/univer', () => ({
+  bootstrapUniver: vi.fn(async () => ({
+    destroy: vi.fn(),
+    syncSheets: vi.fn(),
   })),
 }));
 
@@ -65,6 +86,14 @@ vi.mock('./use-workspace', async (importOriginal) => {
   };
 });
 
+vi.mock('../my-docs/doc-tree-panel', () => ({
+  DocTreePanel: (props: { onSelectFolder: (id: string | null) => void }) => mockDocTreePanel(props),
+}));
+
+vi.mock('../my-docs/folder-contents-pane', () => ({
+  FolderContentsPane: (props: { onOpenWorkbook: (id: string) => void }) => mockFolderContentsPane(props),
+}));
+
 function renderApp(overrides: Partial<Parameters<typeof AppShell>[0]> = {}) {
   const props: Parameters<typeof AppShell>[0] = {
     view: 'home',
@@ -92,7 +121,7 @@ describe('App shell', () => {
   it('shows the Tencent-compatible home in home mode', () => {
     renderApp();
 
-    expect(screen.getByRole('heading', { name: 'Harbor Legal Ops' })).toBeInTheDocument();
+    expect(screen.getAllByText('Harbor Legal Ops').length).toBeGreaterThan(0);
     expect(screen.getByRole('table')).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: '债权申报总表' }).length).toBeGreaterThan(0);
   });
@@ -108,7 +137,7 @@ describe('App shell', () => {
   it('routes workbook row selections through the callback prop', () => {
     const { props } = renderApp();
 
-    fireEvent.click(screen.getAllByRole('button', { name: '债权申报总表' })[1]);
+    fireEvent.click(screen.getAllByRole('button', { name: '债权申报总表' })[0]);
 
     expect(props.onSelectWorkbook).toHaveBeenCalledWith('workbook:claims');
   });
@@ -119,6 +148,24 @@ describe('App shell', () => {
     fireEvent.click(screen.getAllByRole('button', { name: '发布表单' })[0]);
 
     expect(props.onOpenPublishedForm).toHaveBeenCalledWith('workspace:harbor', 'new-client-intake');
+  });
+
+  it('switches to 我的文档 tab and renders the file tree surface', () => {
+    renderApp();
+
+    fireEvent.click(screen.getByRole('tab', { name: '我的文档' }));
+
+    expect(screen.getByText('DocTreePanel')).toBeInTheDocument();
+    expect(screen.getByText('FolderContentsPane')).toBeInTheDocument();
+  });
+
+  it('opens a workbook from 我的文档 through the callback prop', () => {
+    const { props } = renderApp();
+
+    fireEvent.click(screen.getByRole('tab', { name: '我的文档' }));
+    fireEvent.click(screen.getByRole('button', { name: '打开树中的工作簿' }));
+
+    expect(props.onSelectWorkbook).toHaveBeenCalledWith('workbook:cases');
   });
 });
 
