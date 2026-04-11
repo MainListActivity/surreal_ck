@@ -587,6 +587,21 @@ DEFINE ACCESS OVERWRITE madocs ON DATABASE TYPE RECORD
         };
       };
 
+      -- Auto-provision: create a default workspace on first signin if user has none.
+      LET $has_workspace = (SELECT VALUE id FROM owns_workspace WHERE in = $user_id LIMIT 1);
+      IF array::len($has_workspace) = 0 {
+        LET $display = IF $token.name { <string>$token.name }
+                       ELSE IF $token.preferred_username { <string>$token.preferred_username }
+                       ELSE IF $token.email { <string>$token.email }
+                       ELSE { <string>$token.sub };
+        LET $default_ws = (CREATE workspace CONTENT {
+          name: $display + ' 的空间',
+          slug: 'ws-' + string::slice(<string>$token.sub, 0, 16),
+          created_at: time::now()
+        })[0];
+        RELATE $user_id->owns_workspace->$default_ws;
+      };
+
       RETURN $user_id;
 
     } ELSE {

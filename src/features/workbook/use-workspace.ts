@@ -1,51 +1,92 @@
 import { useEffect, useReducer } from 'react';
 import type { Surreal } from 'surrealdb';
 
+const LAST_WORKSPACE_KEY = 'surreal_ck.last_workspace_id';
+
 export interface WorkbookSummaryDb {
   id: string;
   name: string;
   template_key: string | null;
   created_at?: string | null;
   updated_at: string;
+  workspace: string;
 }
 
 export interface WorkspaceDb {
   id: string;
   name: string;
   memberCount: number;
-  workbooks: WorkbookSummaryDb[];
 }
 
 interface State {
-  data: WorkspaceDb | null;
+  workspaces: WorkspaceDb[];
+  workbooks: WorkbookSummaryDb[];
+  activeWorkspaceId: string | null;
   isLoading: boolean;
   error: string | null;
 }
 
 type Action =
   | { type: 'load-start' }
-  | { type: 'load-ok'; data: WorkspaceDb }
-  | { type: 'load-err'; error: string };
+  | { type: 'load-ok'; workspaces: WorkspaceDb[]; workbooks: WorkbookSummaryDb[]; activeWorkspaceId: string | null }
+  | { type: 'load-err'; error: string }
+  | { type: 'switch-workspace'; workspaceId: string };
+
+function pickActiveWorkspace(workspaces: WorkspaceDb[], preferred: string | null): string | null {
+  if (!workspaces.length) return null;
+  if (preferred && workspaces.some((ws) => ws.id === preferred)) return preferred;
+  return workspaces[0].id;
+}
 
 function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'load-start':
       return { ...state, isLoading: true, error: null };
     case 'load-ok':
-      return { data: action.data, isLoading: false, error: null };
+      return {
+        workspaces: action.workspaces,
+        workbooks: action.workbooks,
+        activeWorkspaceId: action.activeWorkspaceId,
+        isLoading: false,
+        error: null,
+      };
     case 'load-err':
       return { ...state, isLoading: false, error: action.error };
+    case 'switch-workspace': {
+      try {
+        localStorage.setItem(LAST_WORKSPACE_KEY, action.workspaceId);
+      } catch {
+        // ignore storage errors
+      }
+      return { ...state, activeWorkspaceId: action.workspaceId };
+    }
     default:
       return state;
   }
 }
 
+export interface UseWorkspaceResult extends State {
+  /** 当前激活工作空间的完整对象，null 表示无工作空间 */
+  activeWorkspace: WorkspaceDb | null;
+  /** 当前工作空间下的 workbook 列表（已按工作空间过滤） */
+  activeWorkbooks: WorkbookSummaryDb[];
+  /** 切换当前工作空间，并持久化到 localStorage */
+  switchWorkspace: (workspaceId: string) => void;
+}
+
 /**
- * Loads the workspace the current user owns, plus all workbooks linked to it.
- * Falls back to null while loading or on error.
+ * 加载当前用户所有可见工作空间及其 workbook。
+ * PERMISSIONS 在 SurrealDB 层控制可见性，前端不做额外权限过滤。
+ * 通过 localStorage 记忆上次选择的工作空间。
  */
-export function useWorkspace(db: Surreal): State {
-  const [state, dispatch] = useReducer(reducer, { data: null, isLoading: false, error: null });
+export function useWorkspace(db: Surreal): UseWorkspaceResult {
+  const [state, dispatch] = useReducer(reducer, {
+    workspaces: [],
+    workbooks: [],
+    activeWorkspaceId: null,
+    isLoading: false,
+    error: null,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -53,8 +94,7 @@ export function useWorkspace(db: Surreal): State {
     async function load() {
       dispatch({ type: 'load-start' });
       try {
-        // Schema PERMISSIONS enforce visibility — SELECT FROM workspace returns only what
-        // the authenticated user is allowed to see. No client-side auth filtering needed.
+        // 查询所有工作空间（PERMISSIONS 过滤，无需客户端添加 WHERE $auth）
         const results = await db.query<
           [Array<{ id: string; name: string; memberCount: number }>, WorkbookSummaryDb[]]
         >(
@@ -64,16 +104,17 @@ export function useWorkspace(db: Surreal): State {
             name,
             count(<-workspace_has_member) AS memberCount
           FROM workspace
-          LIMIT 1;
+          ORDER BY created_at ASC;
 
           SELECT
             out.id           AS id,
             out.name         AS name,
             out.template_key AS template_key,
             out.updated_at   AS updated_at,
-            out.created_at   AS created_at
+            out.created_at   AS created_at,
+            in              AS workspace
           FROM workspace_has_workbook
-          ORDER BY updated_at DESC, created_at DESC;
+          ORDER BY out.updated_at DESC, out.created_at DESC;
           `,
         );
 
@@ -81,24 +122,30 @@ export function useWorkspace(db: Surreal): State {
 
         const workspaceRows = results[0];
         const workbookRows = results[1];
-        const ws = Array.isArray(workspaceRows) ? workspaceRows[0] : undefined;
-        if (!ws) {
-          dispatch({ type: 'load-err', error: 'No workspace found for this account.' });
-          return;
+
+        const workspaces: WorkspaceDb[] = Array.isArray(workspaceRows)
+          ? workspaceRows.map((ws) => ({
+              id: String(ws.id),
+              name: ws.name,
+              memberCount: ws.memberCount ?? 0,
+            }))
+          : [];
+
+        const workbooks: WorkbookSummaryDb[] = Array.isArray(workbookRows)
+          ? workbookRows.map((wb) => ({ ...wb, id: String(wb.id), workspace: String(wb.workspace) }))
+          : [];
+
+        // 优先使用 localStorage 记忆的工作空间
+        let preferred: string | null = null;
+        try {
+          preferred = localStorage.getItem(LAST_WORKSPACE_KEY);
+        } catch {
+          // ignore
         }
 
-        dispatch({
-          type: 'load-ok',
-          data: {
-            id: String(ws.id),
-            name: ws.name,
-            memberCount: ws.memberCount ?? 0,
-            // SurrealDB 2.x returns RecordId objects for id fields — coerce to string.
-            workbooks: Array.isArray(workbookRows)
-              ? workbookRows.map((wb) => ({ ...wb, id: String(wb.id) }))
-              : [],
-          },
-        });
+        const activeWorkspaceId = pickActiveWorkspace(workspaces, preferred);
+
+        dispatch({ type: 'load-ok', workspaces, workbooks, activeWorkspaceId });
       } catch (err) {
         if (!cancelled) {
           dispatch({ type: 'load-err', error: err instanceof Error ? err.message : 'Failed to load workspace.' });
@@ -108,11 +155,18 @@ export function useWorkspace(db: Surreal): State {
 
     void load();
     return () => { cancelled = true; };
-  // db identity is stable (module-level singleton); no need to re-run on db reference change.
+  // db identity is stable (module-level singleton)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  return state;
+  const activeWorkspace = state.workspaces.find((ws) => ws.id === state.activeWorkspaceId) ?? null;
+  const activeWorkbooks = state.workbooks.filter((wb) => wb.workspace === state.activeWorkspaceId);
+
+  function switchWorkspace(workspaceId: string) {
+    dispatch({ type: 'switch-workspace', workspaceId });
+  }
+
+  return { ...state, activeWorkspace, activeWorkbooks, switchWorkspace };
 }
 
 export interface EntityRow {
@@ -122,8 +176,6 @@ export interface EntityRow {
 
 /**
  * Maps a template key + workspace key to the primary entity table name.
- * Table names are derived deterministically: ent_{ws_key}_{entity_key}.
- * Returns null if the template key is unknown or ws_key is not available.
  */
 export function templateToEntityTable(wsKey: string | null | undefined, templateKey: string | null | undefined): string | null {
   if (!wsKey || !templateKey) return null;

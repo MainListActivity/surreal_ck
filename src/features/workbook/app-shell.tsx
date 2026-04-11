@@ -68,10 +68,10 @@ export function AppShell({
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
 
   const isOffline = connection.state === 'reconnecting' || connection.state === 'disconnected';
-  const workbooks = workspace.data?.workbooks ?? [];
-  const workspaceId = workspace.data?.id ?? null;
+  const workbooks = workspace.activeWorkbooks;
+  const workspaceId = workspace.activeWorkspaceId;
   const wsKey = workspaceId?.split(':')[1] ?? null;
-  const workspaceName = workspace.data?.name ?? '敏感债权协作空间';
+  const workspaceName = workspace.activeWorkspace?.name ?? '我的空间';
   const activeWorkbook = workbooks.find((wb) => wb.id === activeWorkbookId) ?? workbooks[0] ?? null;
   const activeTemplate = findTemplate((activeWorkbook?.template_key as TemplateKey | null | undefined) ?? null);
 
@@ -140,7 +140,7 @@ export function AppShell({
           activePanel={activePanel}
           activeTemplate={activeTemplate}
           isWorkspaceLoading={workspace.isLoading}
-          workspaceError={workspace.error}
+          workspaceError={workspace.error ?? null}
           connection={connection}
           onSelectWorkbook={onSelectWorkbook}
           onSelectPanel={onSelectPanel}
@@ -264,7 +264,20 @@ export function AppShell({
             ) : null}
 
             <div className="tdocs-rail__footer">
-              <p className="tdocs-rail__workspace-label">{workspaceName}</p>
+              {workspace.workspaces.length > 1 ? (
+                <select
+                  className="tdocs-rail__workspace-select"
+                  value={workspaceId ?? ''}
+                  aria-label="切换工作空间"
+                  onChange={(e) => { workspace.switchWorkspace(e.target.value); }}
+                >
+                  {workspace.workspaces.map((ws) => (
+                    <option key={ws.id} value={ws.id}>{ws.name}</option>
+                  ))}
+                </select>
+              ) : (
+                <p className="tdocs-rail__workspace-label">{workspaceName}</p>
+              )}
               <p className="tdocs-rail__trust">受控协作空间 · 留痕审计</p>
             </div>
           </aside>
@@ -319,12 +332,12 @@ export function AppShell({
             <HomeStateSurface
               connection={connection}
               isLoading={workspace.isLoading}
-              error={workspace.error}
+              error={workspace.error ?? null}
               hasWorkbooks={workbooks.length > 0}
               onCreateFirst={() => { void handleCreateWorkbook('legal-entity-tracker'); }}
             />
 
-            {!workspace.isLoading && !workspace.error && activeHomeTab === 'recent' && (
+            {!workspace.isLoading && !workspace.error && activeHomeTab === 'recent' && workspaceId && (
               <div className="tdocs-table-wrap">
                 <table className="tdocs-table">
                   <thead>
@@ -397,7 +410,7 @@ export function AppShell({
                   </tbody>
                 </table>
 
-                {!workspace.isLoading && !workspace.error && filteredWorkbooks.length > 0 && (
+                {!workspace.isLoading && !workspace.error && filteredWorkbooks.length > 0 && workspaceId && (
                   <div className="tdocs-create-row">
                     {templateCatalog.map((template) => (
                       <button

@@ -71,17 +71,20 @@ vi.mock('./use-workspace', async (importOriginal) => {
   return {
     ...original,
     useWorkspace: () => ({
-      data: {
-        id: 'workspace:harbor',
-        name: 'Harbor Legal Ops',
-        memberCount: 4,
-        workbooks: [
-          { id: 'workbook:claims', name: '债权申报总表', template_key: 'legal-entity-tracker', updated_at: null },
-          { id: 'workbook:cases', name: '案件台账', template_key: 'case-management', updated_at: null },
-        ],
-      },
+      workspaces: [{ id: 'workspace:harbor', name: 'Harbor Legal Ops', memberCount: 4 }],
+      workbooks: [
+        { id: 'workbook:claims', name: '债权申报总表', template_key: 'legal-entity-tracker', updated_at: null, workspace: 'workspace:harbor' },
+        { id: 'workbook:cases', name: '案件台账', template_key: 'case-management', updated_at: null, workspace: 'workspace:harbor' },
+      ],
+      activeWorkspaceId: 'workspace:harbor',
+      activeWorkspace: { id: 'workspace:harbor', name: 'Harbor Legal Ops', memberCount: 4 },
+      activeWorkbooks: [
+        { id: 'workbook:claims', name: '债权申报总表', template_key: 'legal-entity-tracker', updated_at: null, workspace: 'workspace:harbor' },
+        { id: 'workbook:cases', name: '案件台账', template_key: 'case-management', updated_at: null, workspace: 'workspace:harbor' },
+      ],
       isLoading: false,
       error: null,
+      switchWorkspace: vi.fn(),
     }),
   };
 });
