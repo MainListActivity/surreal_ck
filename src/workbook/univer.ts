@@ -101,7 +101,7 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
     ],
   });
 
-  // ── Header bar extensions (left: sidebar toggle + title; right: share + avatar) ──
+  // ── Header bar extensions — slots are empty; top bar is owned by React shell ──
   mountUniverHeaderExtensions(univerAPI, {
     workbookName: opts.workbookName ?? '',
     displayName: opts.displayName,

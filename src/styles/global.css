@@ -1434,15 +1434,13 @@ body {
 .docs-home__header h2,
 .docs-home__list-header h3,
 .docs-home__create h3,
-.editor-shell__header h1,
 .workbook-drawer__header h2,
 .sidebar-panel__content h2,
 .state-card h1 {
   margin: 0;
 }
 
-.docs-home__brand h1,
-.editor-shell__header h1 {
+.docs-home__brand h1 {
   font-family: var(--font-display);
   font-size: 1.5rem;
   font-weight: 500;
@@ -1451,8 +1449,6 @@ body {
 .docs-home__nav,
 .docs-home__create-actions,
 .docs-table__actions,
-.editor-shell__actions,
-.editor-shell__dock-tabs,
 .docs-home__header-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1464,8 +1460,6 @@ body {
 .docs-home__create,
 .docs-home__list-section,
 .docs-home__templates,
-.editor-shell__header,
-.editor-shell__subheader,
 .state-card {
   background: var(--color-paper);
   border: 1px solid var(--color-line);
@@ -1533,9 +1527,7 @@ body {
   padding: var(--space-lg);
 }
 
-.docs-home__list-header,
-.editor-shell__header,
-.editor-shell__subheader {
+.docs-home__list-header {
   align-items: center;
   display: flex;
   gap: var(--space-md);
@@ -1580,28 +1572,133 @@ body {
 
 .editor-shell {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
-  gap: var(--space-sm);
+  grid-template-rows: auto minmax(0, 1fr);
   min-height: 100vh;
-  padding: var(--space-md);
 }
 
-.editor-shell__header,
-.editor-shell__subheader {
-  padding: 10px var(--space-lg);
+/* ─── Editor top bar (Tencent Docs-style) ───────────────────────────────── */
+
+.ck-editor-topbar {
+  align-items: center;
+  background: var(--color-paper);
+  border-bottom: 1px solid var(--color-line);
+  display: flex;
+  flex-shrink: 0;
+  gap: var(--space-sm);
+  height: 44px;
+  padding: 0 var(--space-md);
+  position: relative;
 }
 
-.editor-shell__title {
+.ck-editor-topbar__left {
   align-items: center;
   display: flex;
-  gap: var(--space-md);
+  flex: 1;
+  gap: var(--space-xs);
+  min-width: 0;
 }
 
-.editor-shell__meta {
+.ck-editor-topbar__right {
+  align-items: center;
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-md);
+  flex-shrink: 0;
+  gap: var(--space-xs);
 }
+
+.ck-editor-topbar__logo-btn {
+  align-items: center;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  display: flex;
+  flex-shrink: 0;
+  padding: 4px 6px;
+  transition: background var(--duration-short) ease-out;
+}
+
+.ck-editor-topbar__logo-btn:hover {
+  background: var(--color-parchment);
+}
+
+.ck-editor-topbar__switcher {
+  position: relative;
+}
+
+.ck-editor-topbar__switcher-btn {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--color-muted);
+  cursor: pointer;
+  display: flex;
+  padding: 5px 7px;
+  transition: background var(--duration-short) ease-out, border-color var(--duration-short) ease-out;
+}
+
+.ck-editor-topbar__switcher-btn:hover {
+  background: var(--color-parchment);
+  border-color: var(--color-line);
+  color: var(--color-ink);
+}
+
+.ck-editor-autosave {
+  color: var(--color-muted);
+  flex-shrink: 0;
+  font-size: var(--font-size-small);
+  white-space: nowrap;
+}
+
+.ck-editor-autosave[data-state="reconnecting"] {
+  color: var(--color-warning);
+}
+
+.ck-editor-autosave[data-state="disconnected"] {
+  color: var(--color-error);
+}
+
+.ck-editor-topbar__action-btn {
+  background: transparent;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-sm);
+  color: var(--color-ink);
+  cursor: pointer;
+  font-family: var(--font-body);
+  font-size: var(--font-size-small);
+  padding: 4px 10px;
+  transition: background var(--duration-short) ease-out;
+}
+
+.ck-editor-topbar__action-btn:hover {
+  background: var(--color-parchment);
+}
+
+.ck-editor-topbar__icon-btn {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--color-muted);
+  cursor: pointer;
+  display: flex;
+  padding: 5px 7px;
+  transition: background var(--duration-short) ease-out, border-color var(--duration-short) ease-out;
+}
+
+.ck-editor-topbar__icon-btn:hover {
+  background: var(--color-parchment);
+  border-color: var(--color-line);
+  color: var(--color-ink);
+}
+
+.ck-editor-topbar__icon-btn--active {
+  background: color-mix(in srgb, var(--color-primary) 8%, white);
+  border-color: color-mix(in srgb, var(--color-primary) 20%, white);
+  color: var(--color-primary);
+}
+
+/* ─── Editor body / canvas ───────────────────────────────────────────────── */
 
 .editor-shell__body {
   display: grid;
@@ -1611,17 +1708,9 @@ body {
 
 .editor-shell__canvas {
   background: var(--color-paper);
-  border: 1px solid var(--color-line);
-  border-radius: var(--radius-md);
   min-height: 0;
   overflow: hidden;
   position: relative;
-}
-
-.editor-shell__hint {
-  color: var(--color-muted);
-  margin: 0;
-  padding: var(--space-md);
 }
 
 .state-card {
@@ -2686,9 +2775,7 @@ body {
     overflow: auto;
   }
 
-  .docs-home__header,
-  .editor-shell__header,
-  .editor-shell__subheader {
+  .docs-home__header {
     align-items: start;
     flex-direction: column;
   }
@@ -2700,8 +2787,7 @@ body {
 
   .intake-form-page,
   .confirmation-page,
-  .docs-home__main,
-  .editor-shell {
+  .docs-home__main {
     padding: var(--space-lg);
   }
 }

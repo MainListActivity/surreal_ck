@@ -128,7 +128,6 @@ export function AppShell({
   if (view === 'editor') {
     return (
       <div className="ck-page ck-page--editor">
-        <ConnectionBanner connection={connection} />
         <EditorChrome
           db={db}
           displayName={displayName}
@@ -138,17 +137,17 @@ export function AppShell({
           workbooks={workbooks}
           activeWorkbook={activeWorkbook}
           activeWorkbookId={activeWorkbookId}
-      activePanel={activePanel}
-      activeTemplate={activeTemplate}
+          activePanel={activePanel}
+          activeTemplate={activeTemplate}
           isWorkspaceLoading={workspace.isLoading}
           workspaceError={workspace.error}
+          connection={connection}
           onSelectWorkbook={onSelectWorkbook}
           onSelectPanel={onSelectPanel}
           onShowHome={onShowHome}
           onShowAdmin={onShowAdmin}
           onOpenPublishedForm={onOpenPublishedForm}
           onLogout={onLogout}
-          isOffline={isOffline}
         />
       </div>
     );
@@ -470,13 +469,13 @@ function EditorChrome({
   activeTemplate,
   isWorkspaceLoading,
   workspaceError,
+  connection,
   onSelectWorkbook,
   onSelectPanel,
   onShowHome,
   onShowAdmin,
   onOpenPublishedForm,
   onLogout,
-  isOffline,
 }: {
   db: Surreal;
   displayName?: string;
@@ -490,78 +489,163 @@ function EditorChrome({
   activeTemplate: ReturnType<typeof findTemplate>;
   isWorkspaceLoading: boolean;
   workspaceError: string | null;
+  connection: ConnectionSnapshot;
   onSelectWorkbook: (id: string) => void;
   onSelectPanel: (panel: SidebarPanel) => void;
   onShowHome: () => void;
   onShowAdmin: () => void;
   onOpenPublishedForm: (workspaceId: string, formSlug: string) => void;
   onLogout?: () => void;
-  isOffline: boolean;
 }) {
   const { sheets, createSheet, error: sheetsError } = useSheets(db, activeWorkbook?.id ?? null, wsKey);
   const publishSlug = getPublishSlug(activeWorkbook?.template_key as TemplateKey | null | undefined);
+  const [switcherOpen, setSwitcherOpen] = useState(false);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleValue, setTitleValue] = useState(activeWorkbook?.name ?? '');
+
+  // Sync title when workbook changes
+  if (!editingTitle && titleValue !== (activeWorkbook?.name ?? '')) {
+    setTitleValue(activeWorkbook?.name ?? '');
+  }
+
+  const autosaveLabel = connection.state === 'reconnecting'
+    ? '重连中…'
+    : connection.state === 'disconnected'
+      ? '连接中断'
+      : '已自动保存到云端';
 
   return (
     <div className="editor-shell">
-      <header className="editor-shell__header">
-        <div className="editor-shell__title">
-          <button className="ghost-button" type="button" onClick={onShowHome}>
-            返回文档
+      {/* Tencent Docs-style top bar */}
+      <header className="ck-editor-topbar">
+        <div className="ck-editor-topbar__left">
+          {/* Logo */}
+          <button className="ck-editor-topbar__logo-btn" type="button" aria-label="返回文档列表" onClick={onShowHome}>
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <rect width="8.5" height="8.5" rx="2" fill="#2F6BFF" />
+              <rect x="11.5" width="8.5" height="8.5" rx="2" fill="#2F6BFF" opacity="0.6" />
+              <rect y="11.5" width="8.5" height="8.5" rx="2" fill="#2F6BFF" opacity="0.6" />
+              <rect x="11.5" y="11.5" width="8.5" height="8.5" rx="2" fill="#2F6BFF" opacity="0.3" />
+            </svg>
           </button>
-          <div>
-            <p className="eyebrow">债权协作工作簿</p>
-            <h1>{activeWorkbook?.name ?? '工作簿'}</h1>
+
+          {/* Workbook switcher */}
+          <div className="ck-editor-topbar__switcher">
+            <button
+              className="ck-editor-topbar__switcher-btn"
+              type="button"
+              aria-label="切换工作簿"
+              aria-expanded={switcherOpen}
+              onClick={() => setSwitcherOpen((v) => !v)}
+            >
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                <rect x="1" y="2" width="12" height="1.5" rx="0.75" fill="currentColor" />
+                <rect x="1" y="6.25" width="12" height="1.5" rx="0.75" fill="currentColor" />
+                <rect x="1" y="10.5" width="12" height="1.5" rx="0.75" fill="currentColor" />
+              </svg>
+            </button>
+            {switcherOpen && (
+              <div className="ck-header-dropdown">
+                {workbooks.map((wb) => (
+                  <button
+                    key={wb.id}
+                    className={`ck-header-dropdown__item ${wb.id === activeWorkbookId ? 'ck-header-dropdown__item--active' : ''}`}
+                    type="button"
+                    onClick={() => { onSelectWorkbook(wb.id); setSwitcherOpen(false); }}
+                  >
+                    {wb.name}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
+
+          {/* Editable doc title */}
+          {editingTitle ? (
+            <input
+              className="ck-header-title-input"
+              value={titleValue}
+              autoFocus
+              aria-label="工作簿名称"
+              onChange={(e) => setTitleValue(e.target.value)}
+              onBlur={() => setEditingTitle(false)}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === 'Escape') (e.target as HTMLElement).blur(); }}
+            />
+          ) : (
+            <button
+              className="ck-header-title"
+              type="button"
+              aria-label={`工作簿：${titleValue || '未命名'}`}
+              onClick={() => setEditingTitle(true)}
+            >
+              {titleValue || <span className="ck-header-title__placeholder">未命名</span>}
+            </button>
+          )}
+
+          {/* Autosave chip */}
+          <span className="ck-editor-autosave" data-state={connection.state} aria-live="polite">
+            {autosaveLabel}
+          </span>
         </div>
-        <div className="editor-shell__actions">
-          <span className="status-chip">{activeTemplate?.name ?? '工作簿'}</span>
+
+        <div className="ck-editor-topbar__right">
+          {/* Publish form action */}
           {publishSlug && workspaceId ? (
             <button
-              className="primary-button"
+              className="ck-editor-topbar__action-btn"
               type="button"
+              title="发布申报表单"
               onClick={() => onOpenPublishedForm(workspaceId, publishSlug)}
             >
-              发布申报表单
+              发布
             </button>
           ) : null}
-          <button className="secondary-button" type="button" onClick={() => onSelectPanel(activePanel === 'review' ? 'none' : 'review')}>
-            复核面板
+
+          {/* Panel toggle — opens/closes the right dock */}
+          <button
+            className={`ck-editor-topbar__icon-btn ${activePanel !== 'none' ? 'ck-editor-topbar__icon-btn--active' : ''}`}
+            type="button"
+            title={activePanel !== 'none' ? '收起面板' : '展开工具面板'}
+            aria-label={activePanel !== 'none' ? '收起面板' : '展开工具面板'}
+            onClick={() => onSelectPanel(activePanel !== 'none' ? 'none' : 'record')}
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <rect x="2" y="2" width="12" height="12" rx="2" stroke="currentColor" strokeWidth="1.4" />
+              <path d="M10 2v12" stroke="currentColor" strokeWidth="1.4" />
+            </svg>
           </button>
-          <button className="ghost-button" type="button" onClick={() => onSelectPanel(activePanel === 'history' ? 'none' : 'history')}>
-            最近动态
+
+          {/* Share / copy link */}
+          <button
+            className="ck-header-btn ck-header-btn--share"
+            type="button"
+            title="复制链接"
+            onClick={() => { void navigator.clipboard.writeText(window.location.href).catch(() => undefined); }}
+          >
+            <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true" style={{ marginRight: 4 }}>
+              <circle cx="10.5" cy="2" r="1.6" stroke="currentColor" strokeWidth="1.2" />
+              <circle cx="2.5" cy="6.5" r="1.6" stroke="currentColor" strokeWidth="1.2" />
+              <circle cx="10.5" cy="11" r="1.6" stroke="currentColor" strokeWidth="1.2" />
+              <line x1="4" y1="5.7" x2="9" y2="2.8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+              <line x1="4" y1="7.3" x2="9" y2="10.2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+            </svg>
+            分享
           </button>
+
+          {/* Avatar / logout */}
+          {displayName ? (
+            <button
+              className="ck-header-avatar"
+              type="button"
+              title={onLogout ? `${displayName} — 点击退出` : displayName}
+              aria-label={displayName}
+              onClick={onLogout ?? undefined}
+            >
+              {displayName.slice(0, 1).toUpperCase()}
+            </button>
+          ) : null}
         </div>
       </header>
-
-      <div className="editor-shell__subheader">
-        <div className="editor-shell__meta">
-          <span className="sidebar-copy">{workspaceName}</span>
-          <span className="sidebar-copy">工作表优先，专业能力渐进展开</span>
-          {displayName ? <span className="sidebar-copy">当前用户：{displayName}</span> : null}
-        </div>
-        <div className="editor-shell__dock-tabs" role="tablist" aria-label="Right dock tabs">
-          {([
-            ['none', '收起'],
-            ['record', '债权详情'],
-            ['graph', '关联链路'],
-            ['history', '动态'],
-            ['review', '复核'],
-            ['ai', 'AI'],
-            ['admin', '管理'],
-          ] as Array<[SidebarPanel, string]>).map(([panel, label]) => (
-            <button
-              key={panel}
-              className={`ghost-button ${activePanel === panel ? 'ghost-button--active' : ''}`}
-              role="tab"
-              type="button"
-              aria-selected={activePanel === panel}
-              onClick={() => onSelectPanel(activePanel === panel ? 'none' : panel)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      </div>
 
       <div className="editor-shell__body">
         <main className="editor-shell__canvas" aria-label="Workbook editor">
@@ -590,14 +674,13 @@ function EditorChrome({
               onLogout={onLogout}
             />
           )}
-          {isOffline ? <p className="editor-shell__hint">当前处于重连中，表格仍保持可见，恢复后会继续同步。</p> : null}
         </main>
 
         {activePanel !== 'none' && activeWorkbook && (
           <aside className="workbook-drawer" aria-label={panelLabels[activePanel]}>
             <div className="workbook-drawer__header">
               <div>
-                <p className="eyebrow">Workspace tools</p>
+                <p className="eyebrow">{workspaceName}</p>
                 <h2>{panelLabels[activePanel]}</h2>
               </div>
               <button className="ghost-button ghost-button--icon" type="button" onClick={() => onSelectPanel('none')}>

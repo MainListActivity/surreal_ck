@@ -130,27 +130,22 @@ function HeaderRight({ displayName, onLogout }: Pick<UniverHeaderOptions, 'displ
 
 /**
  * Register left and right custom header extensions into Univer's header bar.
- * Uses `registerUIPart` with the `'custom-left'` and `'custom-right'` slots.
+ *
+ * The top bar (title, avatar, autosave) is now owned by the React shell
+ * (EditorChrome → ck-editor-topbar). These slots are intentionally left empty
+ * so Univer's native header area is used only for the menu bar.
  */
 export function mountUniverHeaderExtensions(
   univerAPI: FUniver,
-  opts: UniverHeaderOptions,
+  _opts: UniverHeaderOptions,
 ): void {
   univerAPI.registerUIPart(
     'custom-left' as Parameters<typeof univerAPI.registerUIPart>[0],
-    () => createElement(HeaderLeft, {
-      workbookName: opts.workbookName,
-      workbooks: opts.workbooks,
-      activeWorkbookId: opts.activeWorkbookId,
-      onSelectWorkbook: opts.onSelectWorkbook,
-    }),
+    () => null,
   );
 
   univerAPI.registerUIPart(
     'custom-right' as Parameters<typeof univerAPI.registerUIPart>[0],
-    () => createElement(HeaderRight, {
-      displayName: opts.displayName,
-      onLogout: opts.onLogout,
-    }),
+    () => null,
   );
 }
