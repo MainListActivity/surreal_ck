@@ -140,10 +140,10 @@ export function formatUpdatedAt(isoString: string | undefined | null): string {
   if (!isoString) return '';
   const diff = Date.now() - new Date(isoString).getTime();
   const seconds = Math.floor(diff / 1000);
-  if (seconds < 60) return 'Updated just now';
+  if (seconds < 60) return '刚刚更新';
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `Updated ${minutes}m ago`;
+  if (minutes < 60) return `${minutes} 分钟前更新`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `Updated ${hours}h ago`;
-  return `Updated ${Math.floor(hours / 24)}d ago`;
+  if (hours < 24) return `${hours} 小时前更新`;
+  return `${Math.floor(hours / 24)} 天前更新`;
 }

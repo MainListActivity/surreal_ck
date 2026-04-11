@@ -197,27 +197,27 @@ export function FormBuilderPanel({ db, workspaceId, workbookId }: FormBuilderPan
   const formValid = formTitle.trim() && targetSheetId.trim();
 
   return (
-    <section aria-label="Form builder">
+    <section aria-label="表单构建">
       <div className="admin-section-header">
-        <h3>Form Builder</h3>
+        <h3>表单构建</h3>
         <button
           className="secondary-button"
           type="button"
           onClick={() => { setShowForm(true); dispatch({ type: 'clear-save-error' }); }}
         >
-          New form
+          新建表单
         </button>
       </div>
 
       {showForm && (
         <form className="admin-inline-form" onSubmit={(e) => { e.preventDefault(); void handleSave(); }}>
           <label className="admin-form-label" htmlFor="form-title">
-            Form title
+            表单标题
             <input
               id="form-title"
               className="admin-form-input"
               type="text"
-              placeholder="e.g. New Client Intake"
+              placeholder="例如：新客户入职"
               value={formTitle}
               onChange={(e) => setFormTitle(e.target.value)}
               disabled={state.isSaving}
@@ -225,7 +225,7 @@ export function FormBuilderPanel({ db, workspaceId, workbookId }: FormBuilderPan
             />
           </label>
           <label className="admin-form-label" htmlFor="form-target">
-            Target sheet (ID)
+            目标工作表（ID）
             <input
               id="form-target"
               className="admin-form-input"
@@ -238,7 +238,7 @@ export function FormBuilderPanel({ db, workspaceId, workbookId }: FormBuilderPan
           </label>
 
           <div className="admin-field-list">
-            <p className="eyebrow">Fields</p>
+            <p className="eyebrow">字段</p>
             {fields.map((field, index) => (
               <div
                 key={index}
@@ -252,7 +252,7 @@ export function FormBuilderPanel({ db, workspaceId, workbookId }: FormBuilderPan
                 <input
                   className="admin-form-input admin-form-input--sm"
                   type="text"
-                  placeholder="Label"
+                  placeholder="标签"
                   value={field.label}
                   onChange={(e) => updateField(index, { label: e.target.value, key: makeSlug(e.target.value) || `field_${index + 1}` })}
                 />
@@ -269,41 +269,41 @@ export function FormBuilderPanel({ db, workspaceId, workbookId }: FormBuilderPan
                     checked={field.required}
                     onChange={(e) => updateField(index, { required: e.target.checked })}
                   />
-                  Req
+                  必填
                 </label>
                 <button
                   className="ghost-button"
                   type="button"
-                  aria-label="Remove field"
+                  aria-label="删除字段"
                   onClick={() => removeField(index)}
                 >
                   ×
                 </button>
               </div>
             ))}
-            <button className="ghost-button" type="button" onClick={addField}>+ Add field</button>
+            <button className="ghost-button" type="button" onClick={addField}>+ 添加字段</button>
           </div>
 
           {state.saveError && <p className="admin-form-error" role="alert">{state.saveError}</p>}
 
           <div className="admin-form-actions">
             <button className="primary-button" type="submit" disabled={state.isSaving || !formValid}>
-              {state.isSaving ? 'Saving…' : 'Save form'}
+              {state.isSaving ? '保存中…' : '保存表单'}
             </button>
             <button
               className="ghost-button"
               type="button"
               onClick={() => { setShowForm(false); setFormTitle(''); setTargetSheetId(''); setFields([]); }}
             >
-              Cancel
+              取消
             </button>
           </div>
         </form>
       )}
 
-      {state.isLoading && <p className="sidebar-copy">Loading…</p>}
+      {state.isLoading && <p className="sidebar-copy">加载中…</p>}
       {state.error && <p className="sidebar-copy" style={{ color: 'var(--color-error)' }}>{state.error}</p>}
-      {!state.isLoading && state.items.length === 0 && <p className="sidebar-copy">No forms yet.</p>}
+      {!state.isLoading && state.items.length === 0 && <p className="sidebar-copy">暂无表单。</p>}
 
       <ul className="admin-list" role="list">
         {state.items.map((item) => (
@@ -311,15 +311,15 @@ export function FormBuilderPanel({ db, workspaceId, workbookId }: FormBuilderPan
             <div>
               <strong>{item.title}</strong>
               <span className="mono-label">/{item.slug} → {item.target_label}</span>
-              <span className="sidebar-copy">{item.fields.length} field{item.fields.length !== 1 ? 's' : ''}</span>
+              <span className="sidebar-copy">{item.fields.length} 个字段</span>
             </div>
             <button
               className="ghost-button"
               type="button"
-              aria-label={`Delete ${item.title}`}
+              aria-label={`删除 ${item.title}`}
               onClick={() => void handleDelete(item)}
             >
-              Delete
+              删除
             </button>
           </li>
         ))}

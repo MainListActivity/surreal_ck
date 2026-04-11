@@ -11,19 +11,19 @@ interface MutationRecord {
 }
 
 const COMMAND_LABELS: Record<string, string> = {
-  'sheet.operation.set-range-values': 'Edited cells',
-  'sheet.command.insert-row': 'Inserted row',
-  'sheet.command.delete-row': 'Deleted row',
-  'sheet.command.insert-column': 'Inserted column',
-  'sheet.command.delete-column': 'Deleted column',
-  'sheet.command.merge-cells': 'Merged cells',
-  'sheet.command.unmerge-cells': 'Unmerged cells',
-  'sheet.command.set-border': 'Changed border',
-  'sheet.command.set-style': 'Changed style',
+  'sheet.operation.set-range-values': '编辑单元格',
+  'sheet.command.insert-row': '插入行',
+  'sheet.command.delete-row': '删除行',
+  'sheet.command.insert-column': '插入列',
+  'sheet.command.delete-column': '删除列',
+  'sheet.command.merge-cells': '合并单元格',
+  'sheet.command.unmerge-cells': '取消合并',
+  'sheet.command.set-border': '修改边框',
+  'sheet.command.set-style': '修改样式',
 };
 
 function formatCommandLabel(commandId: string): string {
-  return COMMAND_LABELS[commandId] ?? 'Unknown action';
+  return COMMAND_LABELS[commandId] ?? '未知操作';
 }
 
 function formatActor(record: MutationRecord): string {
@@ -33,12 +33,12 @@ function formatActor(record: MutationRecord): string {
 function formatRelativeTime(isoString: string): string {
   const diff = Date.now() - new Date(isoString).getTime();
   const seconds = Math.floor(diff / 1000);
-  if (seconds < 60) return 'Just now';
+  if (seconds < 60) return '刚刚';
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 60) return `${minutes} 分钟前`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
+  if (hours < 24) return `${hours} 小时前`;
+  return `${Math.floor(hours / 24)} 天前`;
 }
 
 interface State {
@@ -146,17 +146,17 @@ export function RecentChangesPanel({ db, workbookId }: RecentChangesPanelProps) 
 
   return (
     <div className="sidebar-panel__content">
-      <p className="eyebrow">Recent changes</p>
-      <h2>Last 20 mutations</h2>
+      <p className="eyebrow">最近变更</p>
+      <h2>最近 20 条操作</h2>
 
-      {state.isLoading && <p className="sidebar-copy">Loading…</p>}
+      {state.isLoading && <p className="sidebar-copy">加载中…</p>}
       {state.error && (
         <p className="sidebar-copy" style={{ color: 'var(--color-error)' }}>
           {state.error}
         </p>
       )}
       {!state.isLoading && state.items.length === 0 && (
-        <p className="sidebar-copy">No recent changes yet. Edits to this workbook will appear here.</p>
+        <p className="sidebar-copy">暂无最近变更。对此工作簿的编辑将显示在这里。</p>
       )}
 
       <ul className="sidebar-list sidebar-list--flush recent-changes-list" role="list">

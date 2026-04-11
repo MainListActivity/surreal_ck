@@ -172,15 +172,15 @@ export function EntityTypesPanel({ db, workspaceId, workbookId, wsKey }: EntityT
   }
 
   return (
-    <section aria-label="Entity types">
+    <section aria-label="实体类型">
       <div className="admin-section-header">
-        <h3>Entity Types</h3>
+        <h3>实体类型</h3>
         <button
           className="secondary-button"
           type="button"
           onClick={() => { setShowForm(true); dispatch({ type: 'clear-create-error' }); }}
         >
-          Add
+          添加
         </button>
       </div>
 
@@ -190,12 +190,12 @@ export function EntityTypesPanel({ db, workspaceId, workbookId, wsKey }: EntityT
           onSubmit={(e) => { e.preventDefault(); void handleCreate(); }}
         >
           <label className="admin-form-label" htmlFor="entity-label">
-            Entity type name
+            实体类型名称
             <input
               id="entity-label"
               className="admin-form-input"
               type="text"
-              placeholder="e.g. Company"
+              placeholder="例如：公司"
               value={newLabel}
               onChange={(e) => setNewLabel(e.target.value)}
               disabled={state.isCreating}
@@ -205,31 +205,31 @@ export function EntityTypesPanel({ db, workspaceId, workbookId, wsKey }: EntityT
           {state.createError && (
             <p className="admin-form-error" role="alert">
               {state.createStep && state.createStep !== 'validation'
-                ? `Failed at step "${state.createStep}": `
+                ? `步骤"${state.createStep}"失败：`
                 : ''}
               {state.createError}
             </p>
           )}
           <div className="admin-form-actions">
             <button className="primary-button" type="submit" disabled={state.isCreating || !newLabel.trim()}>
-              {state.isCreating ? 'Creating…' : 'Create'}
+              {state.isCreating ? '创建中…' : '创建'}
             </button>
             <button
               className="ghost-button"
               type="button"
               onClick={() => { setShowForm(false); setNewLabel(''); dispatch({ type: 'clear-create-error' }); }}
             >
-              Cancel
+              取消
             </button>
           </div>
         </form>
       )}
 
-      {state.isLoading && <p className="sidebar-copy">Loading…</p>}
+      {state.isLoading && <p className="sidebar-copy">加载中…</p>}
       {state.error && <p className="sidebar-copy" style={{ color: 'var(--color-error)' }}>{state.error}</p>}
 
       {!state.isLoading && state.items.length === 0 && (
-        <p className="sidebar-copy">No entity types yet.</p>
+        <p className="sidebar-copy">暂无实体类型。</p>
       )}
 
       <ul className="admin-list" role="list">
@@ -242,10 +242,10 @@ export function EntityTypesPanel({ db, workspaceId, workbookId, wsKey }: EntityT
             <button
               className="ghost-button"
               type="button"
-              aria-label={`Delete ${item.label}`}
+              aria-label={`删除 ${item.label}`}
               onClick={() => void handleDelete(item)}
             >
-              Delete
+              删除
             </button>
           </li>
         ))}

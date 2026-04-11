@@ -96,7 +96,7 @@ export function FolderContentsPane({
     <section className="tdocs-folder-pane" aria-label="我的文档内容">
       <header className="tdocs-folder-pane__header">
         <div>
-          <p className="tdocs-folder-pane__label">My Cloud Doc</p>
+          <p className="tdocs-folder-pane__label">我的云文档</p>
           <div className="tdocs-folder-pane__breadcrumbs">
             <button type="button" onClick={() => onFolderSelect(null)}>我的文档</button>
             {breadcrumbs.map((folder, index) => (

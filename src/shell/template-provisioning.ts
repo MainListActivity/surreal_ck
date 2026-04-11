@@ -47,9 +47,9 @@ const TEMPLATE_SCRIPTS: Record<TemplateKey, string> = {
 };
 
 const TEMPLATE_NAMES: Record<TemplateKey, string> = {
-  'legal-entity-tracker': 'Legal Entity Tracker',
-  'case-management': 'Case Management',
-  'blank-workspace': 'Blank Workspace',
+  'legal-entity-tracker': '法律实体追踪',
+  'case-management': '案件管理',
+  'blank-workspace': '空白工作簿',
 };
 
 export async function provisionTemplate(

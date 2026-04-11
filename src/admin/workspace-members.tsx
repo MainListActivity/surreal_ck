@@ -58,9 +58,9 @@ function reducer(state: State, action: Action): State {
 }
 
 const ROLE_LABELS: Record<MemberRole, string> = {
-  admin: 'Admin',
-  editor: 'Editor',
-  viewer: 'Viewer',
+  admin: '管理员',
+  editor: '编辑者',
+  viewer: '查看者',
 };
 
 export interface WorkspaceMembersPanelProps {
@@ -166,22 +166,22 @@ export function WorkspaceMembersPanel({ db, workspaceId }: WorkspaceMembersPanel
   }
 
   return (
-    <section aria-label="Workspace members">
+    <section aria-label="工作区成员">
       <div className="admin-section-header">
-        <h3>Workspace Members</h3>
+        <h3>工作区成员</h3>
         <button
           className="secondary-button"
           type="button"
           onClick={() => { setShowForm(true); dispatch({ type: 'clear-invite-error' }); }}
         >
-          Invite
+          邀请
         </button>
       </div>
 
       {showForm && (
         <form className="admin-inline-form" onSubmit={(e) => { e.preventDefault(); void handleInvite(); }}>
           <label className="admin-form-label" htmlFor="invite-email">
-            Email address
+            邮箱地址
             <input
               id="invite-email"
               className="admin-form-input"
@@ -194,7 +194,7 @@ export function WorkspaceMembersPanel({ db, workspaceId }: WorkspaceMembersPanel
             />
           </label>
           <label className="admin-form-label" htmlFor="invite-role">
-            Role
+            角色
             <select
               id="invite-role"
               className="admin-form-input"
@@ -212,22 +212,22 @@ export function WorkspaceMembersPanel({ db, workspaceId }: WorkspaceMembersPanel
           )}
           <div className="admin-form-actions">
             <button className="primary-button" type="submit" disabled={state.isInviting || !inviteEmail.trim()}>
-              {state.isInviting ? 'Inviting…' : 'Send invite'}
+              {state.isInviting ? '邀请中…' : '发送邀请'}
             </button>
             <button
               className="ghost-button"
               type="button"
               onClick={() => { setShowForm(false); setInviteEmail(''); }}
             >
-              Cancel
+              取消
             </button>
           </div>
         </form>
       )}
 
-      {state.isLoading && <p className="sidebar-copy">Loading…</p>}
+      {state.isLoading && <p className="sidebar-copy">加载中…</p>}
       {state.error && <p className="sidebar-copy" style={{ color: 'var(--color-error)' }}>{state.error}</p>}
-      {!state.isLoading && state.items.length === 0 && <p className="sidebar-copy">No members yet.</p>}
+      {!state.isLoading && state.items.length === 0 && <p className="sidebar-copy">暂无成员。</p>}
 
       <ul className="admin-list" role="list">
         {state.items.map((member) => (
@@ -240,7 +240,7 @@ export function WorkspaceMembersPanel({ db, workspaceId }: WorkspaceMembersPanel
                 className="admin-form-input admin-form-input--sm"
                 value={member.role}
                 onChange={(e) => void handleRoleChange(member, e.target.value as MemberRole)}
-                aria-label={`Role for ${member.email}`}
+                aria-label={`${member.email} 的角色`}
               >
                 {(Object.keys(ROLE_LABELS) as MemberRole[]).map((r) => (
                   <option key={r} value={r}>{ROLE_LABELS[r]}</option>
@@ -249,10 +249,10 @@ export function WorkspaceMembersPanel({ db, workspaceId }: WorkspaceMembersPanel
               <button
                 className="ghost-button"
                 type="button"
-                aria-label={`Remove ${member.email}`}
+                aria-label={`移除 ${member.email}`}
                 onClick={() => void handleRemove(member)}
               >
-                Remove
+                移除
               </button>
             </div>
           </li>

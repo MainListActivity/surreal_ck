@@ -20,8 +20,8 @@ export function GraphResultsPanel({
   if (isLoading) {
     return (
       <div className="sidebar-panel__content">
-        <p className="eyebrow">Graph results</p>
-        <p className="sidebar-copy">Traversing graph…</p>
+        <p className="eyebrow">图谱结果</p>
+        <p className="sidebar-copy">正在遍历图谱…</p>
       </div>
     );
   }
@@ -29,7 +29,7 @@ export function GraphResultsPanel({
   if (error) {
     return (
       <div className="sidebar-panel__content">
-        <p className="eyebrow">Graph results</p>
+        <p className="eyebrow">图谱结果</p>
         <p className="sidebar-copy" style={{ color: 'var(--color-error)' }}>
           {error}
         </p>
@@ -40,16 +40,16 @@ export function GraphResultsPanel({
   if (!result || result.items.length === 0) {
     return (
       <div className="sidebar-panel__content">
-        <p className="eyebrow">Graph results</p>
-        <p className="sidebar-copy">No results for this traversal.</p>
+        <p className="eyebrow">图谱结果</p>
+        <p className="sidebar-copy">此次遍历无结果。</p>
       </div>
     );
   }
 
   return (
     <div className="sidebar-panel__content">
-      <p className="eyebrow">Graph results</p>
-      <h2>{result.items.length} node{result.items.length !== 1 ? 's' : ''}</h2>
+      <p className="eyebrow">图谱结果</p>
+      <h2>{result.items.length} 个节点</h2>
       <ul className="sidebar-list sidebar-list--flush graph-results-list" role="list">
         {result.items.map((item) => (
           <GraphResultRow key={item.recordId} item={item} onSelect={onSelectRecord} />

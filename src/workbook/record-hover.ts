@@ -78,7 +78,7 @@ export class RecordHoverManager {
     if (!isSurrealRecordId(cellValue)) return;
     this.timer = setTimeout(async () => {
       const preview = await fetchRecordPreview(this.db, cellValue.trim());
-      this.onPreview(preview ?? { recordId: cellValue, label: 'Record not found', entityType: '', fields: [] });
+      this.onPreview(preview ?? { recordId: cellValue, label: '记录不存在', entityType: '', fields: [] });
     }, 300);
   }
 

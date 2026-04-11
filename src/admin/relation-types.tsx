@@ -144,15 +144,15 @@ export function RelationTypesPanel({ db, workspaceId, wsKey }: RelationTypesPane
   const formValid = form.label.trim();
 
   return (
-    <section aria-label="Relationship types">
+    <section aria-label="关系类型">
       <div className="admin-section-header">
-        <h3>Relationship Types</h3>
+        <h3>关系类型</h3>
         <button
           className="secondary-button"
           type="button"
           onClick={() => { setShowForm(true); dispatch({ type: 'clear-create-error' }); }}
         >
-          Add
+          添加
         </button>
       </div>
 
@@ -162,12 +162,12 @@ export function RelationTypesPanel({ db, workspaceId, wsKey }: RelationTypesPane
           onSubmit={(e) => { e.preventDefault(); void handleCreate(); }}
         >
           <label className="admin-form-label" htmlFor="rel-label">
-            Label
+            标签
             <input
               id="rel-label"
               className="admin-form-input"
               type="text"
-              placeholder="e.g. Owns"
+              placeholder="例如：拥有"
               value={form.label}
               onChange={(e) => setForm((f) => ({ ...f, label: e.target.value }))}
               disabled={state.isCreating}
@@ -175,24 +175,24 @@ export function RelationTypesPanel({ db, workspaceId, wsKey }: RelationTypesPane
             />
           </label>
           <label className="admin-form-label" htmlFor="rel-from">
-            From table (optional)
+            来源表（可选）
             <input
               id="rel-from"
               className="admin-form-input"
               type="text"
-              placeholder={`e.g. ent_${wsKey}_company`}
+              placeholder={`例如：ent_${wsKey}_company`}
               value={form.fromTable}
               onChange={(e) => setForm((f) => ({ ...f, fromTable: e.target.value }))}
               disabled={state.isCreating}
             />
           </label>
           <label className="admin-form-label" htmlFor="rel-to">
-            To table (optional)
+            目标表（可选）
             <input
               id="rel-to"
               className="admin-form-input"
               type="text"
-              placeholder={`e.g. ent_${wsKey}_company`}
+              placeholder={`例如：ent_${wsKey}_company`}
               value={form.toTable}
               onChange={(e) => setForm((f) => ({ ...f, toTable: e.target.value }))}
               disabled={state.isCreating}
@@ -203,22 +203,22 @@ export function RelationTypesPanel({ db, workspaceId, wsKey }: RelationTypesPane
           )}
           <div className="admin-form-actions">
             <button className="primary-button" type="submit" disabled={state.isCreating || !formValid}>
-              {state.isCreating ? 'Creating…' : 'Create'}
+              {state.isCreating ? '创建中…' : '创建'}
             </button>
             <button
               className="ghost-button"
               type="button"
               onClick={() => { setShowForm(false); setForm({ label: '', fromTable: '', toTable: '' }); }}
             >
-              Cancel
+              取消
             </button>
           </div>
         </form>
       )}
 
-      {state.isLoading && <p className="sidebar-copy">Loading…</p>}
+      {state.isLoading && <p className="sidebar-copy">加载中…</p>}
       {state.error && <p className="sidebar-copy" style={{ color: 'var(--color-error)' }}>{state.error}</p>}
-      {!state.isLoading && state.items.length === 0 && <p className="sidebar-copy">No relationship types yet.</p>}
+      {!state.isLoading && state.items.length === 0 && <p className="sidebar-copy">暂无关系类型。</p>}
 
       <ul className="admin-list" role="list">
         {state.items.map((item) => (
@@ -226,17 +226,17 @@ export function RelationTypesPanel({ db, workspaceId, wsKey }: RelationTypesPane
             <div>
               <strong>{item.label}</strong>
               <span className="mono-label">
-                {item.from_table ?? 'any'} → {item.to_table ?? 'any'}
+                {item.from_table ?? '任意'} → {item.to_table ?? '任意'}
               </span>
               <span className="mono-label">{item.rel_table}</span>
             </div>
             <button
               className="ghost-button"
               type="button"
-              aria-label={`Delete ${item.label}`}
+              aria-label={`删除 ${item.label}`}
               onClick={() => void handleDelete(item)}
             >
-              Delete
+              删除
             </button>
           </li>
         ))}

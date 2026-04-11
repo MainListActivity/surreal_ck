@@ -34,8 +34,8 @@ function HeaderLeft({
     createElement('button', {
       className: 'ck-header-btn ck-header-btn--icon',
       type: 'button',
-      title: open ? 'Close workbook list' : 'Switch workbook',
-      'aria-label': open ? 'Close workbook list' : 'Switch workbook',
+      title: open ? '关闭工作簿列表' : '切换工作簿',
+      'aria-label': open ? '关闭工作簿列表' : '切换工作簿',
       onClick: () => setOpen((v) => !v),
     },
       createElement('svg', { width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true },
@@ -66,7 +66,7 @@ function HeaderLeft({
         className: 'ck-header-title-input',
         value: title,
         autoFocus: true,
-        'aria-label': 'Workbook title',
+        'aria-label': '工作簿标题',
         onChange: (e: React.ChangeEvent<HTMLInputElement>) => setTitle(e.target.value),
         onBlur: () => setIsEditing(false),
         onKeyDown: (e: React.KeyboardEvent) => {
@@ -76,10 +76,10 @@ function HeaderLeft({
       : createElement('button', {
         className: 'ck-header-title',
         type: 'button',
-        title: 'Click to rename',
-        'aria-label': `Workbook: ${title}. Click to rename.`,
+        title: '点击重命名',
+        'aria-label': `工作簿：${title}。点击重命名。`,
         onClick: () => setIsEditing(true),
-      }, title || createElement('span', { className: 'ck-header-title__placeholder' }, 'Untitled')),
+      }, title || createElement('span', { className: 'ck-header-title__placeholder' }, '未命名')),
   );
 }
 
@@ -103,8 +103,8 @@ function HeaderRight({ displayName, onLogout }: Pick<UniverHeaderOptions, 'displ
     createElement('button', {
       className: 'ck-header-btn ck-header-btn--share',
       type: 'button',
-      title: 'Copy link to clipboard',
-      'aria-label': 'Share workbook',
+      title: '复制链接到剪贴板',
+      'aria-label': '分享工作簿',
       onClick: handleShare,
     },
       createElement('svg', { width: 14, height: 14, viewBox: '0 0 14 14', fill: 'none', 'aria-hidden': true, style: { marginRight: 5 } },
@@ -114,15 +114,15 @@ function HeaderRight({ displayName, onLogout }: Pick<UniverHeaderOptions, 'displ
         createElement('line', { x1: 4.7, y1: 6.1, x2: 9.3, y2: 3.4, stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round' }),
         createElement('line', { x1: 4.7, y1: 7.9, x2: 9.3, y2: 10.6, stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round' }),
       ),
-      'Share',
+      '分享',
     ),
 
     // Avatar — clicking shows logout if available
     createElement('button', {
       className: 'ck-header-avatar',
       type: 'button',
-      title: onLogout ? `${displayName ?? 'User'} — click to sign out` : (displayName ?? 'User'),
-      'aria-label': displayName ?? 'User',
+      title: onLogout ? `${displayName ?? '用户'} — 点击退出` : (displayName ?? '用户'),
+      'aria-label': displayName ?? '用户',
       onClick: onLogout ?? undefined,
     }, initials),
   );

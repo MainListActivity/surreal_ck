@@ -17,18 +17,18 @@ export function ConfirmationPage({
   attachmentNames,
   onReset,
 }: ConfirmationProps) {
-  const formattedTime = submittedAt.toLocaleString(undefined, {
+  const formattedTime = submittedAt.toLocaleString('zh-CN', {
     dateStyle: 'medium',
     timeStyle: 'short',
   });
 
   return (
-    <main className="confirmation-page" aria-label="Submission confirmed">
+    <main className="confirmation-page" aria-label="提交成功">
       <div className="confirmation-page__card">
         <div className="confirmation-page__icon" aria-hidden="true">✓</div>
-        <p className="eyebrow">Submission received</p>
+        <p className="eyebrow">已收到申报</p>
         <h1 className="confirmation-page__title">{formTitle}</h1>
-        <p className="confirmation-page__timestamp">Submitted {formattedTime}</p>
+        <p className="confirmation-page__timestamp">提交时间：{formattedTime}</p>
 
         {summaryFields.length > 0 && (
           <dl className="detail-list confirmation-page__summary">
@@ -43,7 +43,7 @@ export function ConfirmationPage({
 
         {attachmentNames.length > 0 && (
           <div className="confirmation-page__attachments">
-            <p className="eyebrow">Attachments</p>
+            <p className="eyebrow">附件</p>
             <ul className="sidebar-list sidebar-list--flush">
               {attachmentNames.map((name) => (
                 <li key={name} className="mono-label">{name}</li>
@@ -53,7 +53,7 @@ export function ConfirmationPage({
         )}
 
         <div className="confirmation-page__next">
-          <p className="eyebrow">What happens next</p>
+          <p className="eyebrow">后续流程</p>
           <p className="sidebar-copy">
             申报材料已进入受控工作区。管理人团队会在债权申报总表内继续核对金额、主体和附件，
             如需补正会按照你留下的联系方式继续联系。

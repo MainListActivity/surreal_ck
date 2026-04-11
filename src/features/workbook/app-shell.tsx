@@ -18,13 +18,13 @@ import { useSheets, type CreateSheetOpts } from './use-sheets';
 import { formatUpdatedAt, useWorkspace } from './use-workspace';
 
 const panelLabels: Record<SidebarPanel, string> = {
-  none: 'No panel',
-  record: 'Claim detail',
-  graph: 'Data lineage',
-  history: 'Recent activity',
-  review: 'Review queue',
-  ai: 'AI assistant',
-  admin: 'Admin tools',
+  none: '无面板',
+  record: '债权详情',
+  graph: '数据血缘',
+  history: '最近操作',
+  review: '审核队列',
+  ai: 'AI 助手',
+  admin: '管理工具',
 };
 
 export interface AppShellProps {
@@ -648,7 +648,7 @@ function EditorChrome({
       </header>
 
       <div className="editor-shell__body">
-        <main className="editor-shell__canvas" aria-label="Workbook editor">
+        <main className="editor-shell__canvas" aria-label="工作簿编辑器">
           <EditorStateSurface
             isWorkspaceLoading={isWorkspaceLoading}
             workspaceError={workspaceError}
@@ -913,7 +913,7 @@ function UniverGrid({
           return;
         }
         setStatus('error');
-        setErrorMsg(error instanceof Error ? error.message : 'Failed to load spreadsheet');
+        setErrorMsg(error instanceof Error ? error.message : '加载电子表格失败');
       });
 
     return () => {
@@ -949,7 +949,7 @@ function SidebarPanelContent({
   if (activePanel === 'record') {
     return (
       <div className="sidebar-panel__content">
-        <p className="eyebrow">Claim detail</p>
+        <p className="eyebrow">债权详情</p>
         <h2>债权详情卡片</h2>
         <p className="sidebar-copy">保持表格主视图不变，把单条债权、申报材料和备注集中放在这里查看。</p>
       </div>
@@ -976,7 +976,7 @@ function SidebarPanelContent({
   if (activePanel === 'review') {
     return (
       <div className="sidebar-panel__content">
-        <p className="eyebrow">Review queue</p>
+        <p className="eyebrow">审核队列</p>
         <h2>申报复核</h2>
         <p className="sidebar-copy">MVP 先保留位置和层级，后续会在这里承接核验、驳回、补正与分配流程。</p>
       </div>
@@ -986,7 +986,7 @@ function SidebarPanelContent({
   if (activePanel === 'ai') {
     return (
       <div className="sidebar-panel__content">
-        <p className="eyebrow">AI assistant</p>
+        <p className="eyebrow">AI 助手</p>
         <h2>受控智能辅助</h2>
         <p className="sidebar-copy">AI 能力在本期只作为明确的未来入口出现，不会干扰当前债权协作主路径。</p>
       </div>

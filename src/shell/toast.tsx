@@ -109,7 +109,7 @@ export function watchFormSubmissions(
       liveQuery = await db.live(new Table('intake_submission'));
       liveQuery.subscribe((message: import('surrealdb').LiveMessage) => {
         if (message.action === 'CREATE') {
-          onSubmission('New form submission received');
+          onSubmission('收到新的表单提交');
         }
       });
     } catch {

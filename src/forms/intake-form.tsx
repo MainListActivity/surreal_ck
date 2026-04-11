@@ -288,8 +288,8 @@ export function IntakeForm({ db, formSlug, workspaceId }: IntakeFormProps) {
       dispatch({
         type: 'submit-err',
         error: isDuplicate
-          ? 'Submission already received. Please contact the legal team if you need to update your information.'
-          : 'Submission failed. Please try again.',
+          ? '申报已收到。如需更新信息，请联系法务团队。'
+          : '提交失败，请重试。',
       });
     }
   }
@@ -334,7 +334,7 @@ export function IntakeForm({ db, formSlug, workspaceId }: IntakeFormProps) {
     return (
       <main className="intake-form-page">
         <p className="sidebar-copy" style={{ color: 'var(--color-error)' }}>
-          {state.loadError ?? 'Form not found.'}
+          {state.loadError ?? '未找到表单。'}
         </p>
         <button className="secondary-button" type="button" onClick={() => void loadForm()}>
           重试
@@ -349,7 +349,7 @@ export function IntakeForm({ db, formSlug, workspaceId }: IntakeFormProps) {
     <main className="intake-form-page" aria-label={state.formDef.title}>
       <div className="intake-form-page__card">
         <header className="intake-form-page__header">
-          <p className="eyebrow">Public intake form</p>
+          <p className="eyebrow">公开申报表单</p>
           <h1 className="intake-form-page__title">{state.formDef.title}</h1>
           <p className="sidebar-copy">该表单会直接写入受控工作区，用于债权申报受理、补件和后续复核。</p>
         </header>

@@ -39,7 +39,7 @@ export const templateCatalog: TemplateSummary[] = [
     category: '从空白开始',
     description: '保留腾讯文档式空白表格入口，适合从现有台账迁移后再补结构。',
     defaultWorkbookName: '空白工作簿',
-    starterSheets: 'No starter sheets',
+    starterSheets: '无预置工作表',
     publishLabel: '先配置表单后再发布',
     publishSlug: null,
   },

@@ -46,13 +46,7 @@ export interface UniverInstance {
 }
 
 function getUniverLocale(): LocaleType {
-  if (typeof navigator === 'undefined') {
-    return LocaleType.EN_US;
-  }
-
-  return navigator.language.toLowerCase().startsWith('zh')
-    ? LocaleType.ZH_CN
-    : LocaleType.EN_US;
+  return LocaleType.ZH_CN;
 }
 
 /**
@@ -116,8 +110,8 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
   if (opts.workbooks && opts.workbooks.length > 0 && opts.onSelectWorkbook) {
     const workbookSwitcher = univerAPI.createSubmenu({
       id: 'surreal-ck-workbook-switcher',
-      title: opts.workbookName ?? 'Workbook',
-      tooltip: 'Switch workbook',
+      title: opts.workbookName ?? '工作簿',
+      tooltip: '切换工作簿',
     });
 
     for (const wb of opts.workbooks) {
@@ -136,42 +130,42 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
     const workspaceTools = univerAPI
       .createSubmenu({
         id: 'surreal-ck-workspace-tools',
-        title: 'Workspace',
+        title: '工作区',
       })
       .addSubmenu(univerAPI.createMenu({
         id: 'surreal-ck-panel-record',
-        title: 'Claim detail',
+        title: '债权详情',
         action: () => opts.onSelectPanel?.('record'),
       }))
       .addSubmenu(univerAPI.createMenu({
         id: 'surreal-ck-panel-graph',
-        title: 'Data lineage',
+        title: '数据血缘',
         action: () => opts.onSelectPanel?.('graph'),
       }))
       .addSubmenu(univerAPI.createMenu({
         id: 'surreal-ck-panel-history',
-        title: 'Recent activity',
+        title: '最近操作',
         action: () => opts.onSelectPanel?.('history'),
       }))
       .addSubmenu(univerAPI.createMenu({
         id: 'surreal-ck-panel-review',
-        title: 'Review queue',
+        title: '审核队列',
         action: () => opts.onSelectPanel?.('review'),
       }))
       .addSubmenu(univerAPI.createMenu({
         id: 'surreal-ck-panel-ai',
-        title: 'AI assistant',
+        title: 'AI 助手',
         action: () => opts.onSelectPanel?.('ai'),
       }))
       .addSubmenu(univerAPI.createMenu({
         id: 'surreal-ck-panel-admin',
-        title: 'Admin tools',
+        title: '管理工具',
         action: () => opts.onSelectPanel?.('admin'),
       }))
       .addSeparator()
       .addSubmenu(univerAPI.createMenu({
         id: 'surreal-ck-panel-hide',
-        title: 'Hide side panel',
+        title: '收起侧栏',
         action: () => opts.onSelectPanel?.('none'),
       }));
 
@@ -182,22 +176,22 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
   {
     const adminMenu = univerAPI.createSubmenu({
       id: 'surreal-ck-admin-menu',
-      title: opts.displayName ? `👤 ${opts.displayName}` : 'Account',
-      tooltip: 'Account & admin',
+      title: opts.displayName ? `👤 ${opts.displayName}` : '账户',
+      tooltip: '账户与管理',
     });
 
     if (opts.onShowAdmin) {
       adminMenu.addSubmenu(univerAPI.createMenu({
         id: 'surreal-ck-admin-open',
-        title: 'Admin tools',
+        title: '管理工具',
         action: () => opts.onShowAdmin?.(),
       }));
     }
 
     adminMenu.addSubmenu(univerAPI.createMenu({
       id: 'surreal-ck-share',
-      title: 'Copy link',
-      tooltip: 'Copy workbook link to clipboard',
+      title: '复制链接',
+      tooltip: '复制工作簿链接到剪贴板',
       action: () => {
         void navigator.clipboard.writeText(window.location.href).catch(() => undefined);
       },
@@ -206,7 +200,7 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
     if (opts.onLogout) {
       adminMenu.addSeparator().addSubmenu(univerAPI.createMenu({
         id: 'surreal-ck-logout',
-        title: 'Sign out',
+        title: '退出登录',
         action: () => opts.onLogout?.(),
       }));
     }
