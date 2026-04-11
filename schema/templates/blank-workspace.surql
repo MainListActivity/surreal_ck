@@ -9,5 +9,3 @@
 -- No entity types, relation types, or sample data to provision.
 -- The workbook record is created by the client before calling this script.
 -- This file is intentionally minimal — the blank workspace is empty by design.
-
-SELECT "Blank workspace ready. Open the guided setup panel to create your first entity type." AS message;

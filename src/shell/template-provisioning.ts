@@ -1,6 +1,7 @@
-import { RecordId, Table, type Surreal } from 'surrealdb';
+import { Table, type Surreal } from 'surrealdb';
 
 import { toRecordId } from '../lib/surreal/record-id';
+import type { FormDefinition, Sheet, Workbook } from '../lib/surreal/types';
 
 import type { TemplateKey } from '../features/workbook/mock-data';
 
@@ -49,12 +50,6 @@ const TEMPLATE_SCRIPTS: Record<TemplateKey, string> = {
   'blank-workspace': blankWorkspaceSurql as string,
 };
 
-const TEMPLATE_NAMES: Record<TemplateKey, string> = {
-  'legal-entity-tracker': '法律实体追踪',
-  'case-management': '案件管理',
-  'blank-workspace': '空白工作簿',
-};
-
 export async function provisionTemplate(
   db: Surreal,
   templateKey: TemplateKey,
@@ -65,16 +60,11 @@ export async function provisionTemplate(
 
   try {
     // Step 1: Insert workbook into the existing workspace table.
-    const insertedWorkbook = await db.insert<{
-      id: RecordId;
-      workspace: RecordId;
-      name: string;
-      template_key: string;
-    }>(new Table('workbook'), {
+    const insertedWorkbook = (await db.insert(new Table('workbook'), {
       workspace: toRecordId(workspaceId),
       name: workbookName,
       template_key: templateKey,
-    });
+    })) as Workbook[];
     const workbook = Array.isArray(insertedWorkbook) ? insertedWorkbook[0] : insertedWorkbook;
     if (!workbook?.id) {
       return { ok: false, step: 'workbook-create', message: 'Failed to create workbook record.' };
@@ -114,12 +104,12 @@ async function compensatingCleanup(
 ): Promise<void> {
   try {
     if (workbookId) {
-      const sheets = await db.select<{ id: string; workbook: string }>(new Table('sheet'));
+      const sheets = await db.select<Sheet>(new Table('sheet'));
       const workbookSheetIds = (Array.isArray(sheets) ? sheets : [])
         .filter((sheet) => String(sheet.workbook) === workbookId)
         .map((sheet) => String(sheet.id));
 
-      const forms = await db.select<{ id: string; workspace: string; target_sheet: string }>(new Table('form_definition'));
+      const forms = await db.select<FormDefinition>(new Table('form_definition'));
       const workbookForms = (Array.isArray(forms) ? forms : [])
         .filter((form) => String(form.workspace) === workspaceId && workbookSheetIds.includes(String(form.target_sheet)));
 

@@ -1,16 +1,18 @@
+import { RecordId } from "surrealdb";
+
 export type WorkspaceRole = 'admin' | 'editor' | 'viewer';
 
 export interface Workspace {
-  id: string;
+  id: RecordId;
   name: string;
   slug: string;
-  owner?: string;
+  owner?: RecordId;
   created_at: string;
 }
 
 export interface Workbook {
-  id: string;
-  workspace?: string;
+  id: RecordId;
+  workspace?: RecordId<'workspace'>;
   name: string;
   template_key?: string;
   last_viewed_sheet?: string;
@@ -19,17 +21,17 @@ export interface Workbook {
 }
 
 export interface WorkspaceMember {
-  id: string;
-  workspace: string;
+  id: RecordId;
+  workspace: RecordId<'workspace'>;
   email: string;
   role: WorkspaceRole;
   invited_at: string;
 }
 
 export interface MutationRecord {
-  id: string;
-  workbook?: string;
-  workspace?: string;
+  id: RecordId;
+  workbook?: RecordId<'workbook'>;
+  workspace?: RecordId<'workspace'>;
   command_id: string;
   params: Record<string, unknown>;
   client_id: string;
@@ -38,8 +40,8 @@ export interface MutationRecord {
 }
 
 export interface SnapshotRecord {
-  id: string;
-  workbook?: string;
+  id: RecordId;
+  workbook?: RecordId<'workbook'>;
   layout: Record<string, unknown>;
   coordinator_client_id: string;
   mutation_watermark?: string;
@@ -47,11 +49,11 @@ export interface SnapshotRecord {
 }
 
 export interface FormDefinition {
-  id: string;
-  workspace?: string;
+  id: RecordId;
+  workspace?: RecordId<'workspace'>;
   title: string;
   slug: string;
-  target_sheet: string;
+  target_sheet: RecordId<'sheet'>;
   fields: Array<Record<string, unknown>>;
   conditional_rules: Array<Record<string, unknown>>;
   auto_edges: Array<Record<string, unknown>>;
@@ -59,8 +61,8 @@ export interface FormDefinition {
 }
 
 export interface Sheet {
-  id: string;
-  workbook: string;
+  id: RecordId;
+  workbook: RecordId<'workbook'>;
   univer_id: string;
   table_name: string;
   label: string;
@@ -71,8 +73,8 @@ export interface Sheet {
 }
 
 export interface EdgeCatalogEntry {
-  id: string;
-  workspace: string;
+  id: RecordId;
+  workspace: RecordId<'workspace'>;
   key: string;
   label: string;
   rel_table: string;
@@ -83,9 +85,9 @@ export interface EdgeCatalogEntry {
 }
 
 export interface ClientErrorRecord {
-  id: string;
-  workspace?: string;
-  workbook?: string;
+  id: RecordId;
+  workspace?: RecordId<'workspace'>;
+  workbook?: RecordId<'workbook'>;
   client_id?: string;
   error_code: string;
   message: string;
