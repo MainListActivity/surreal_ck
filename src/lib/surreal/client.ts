@@ -14,6 +14,23 @@ const DEFAULT_RECONNECT = {
 } as const;
 
 type Listener = (snapshot: ConnectionSnapshot) => void;
+type Deferred = {
+  promise: Promise<void>;
+  resolve: () => void;
+  reject: (reason?: unknown) => void;
+};
+type GatedMethodName =
+  | 'query'
+  | 'live'
+  | 'select'
+  | 'create'
+  | 'insert'
+  | 'update'
+  | 'merge'
+  | 'patch'
+  | 'delete'
+  | 'relate'
+  | 'run';
 
 class ConnectionStateStore {
   #snapshot: ConnectionSnapshot = {
@@ -61,6 +78,21 @@ export const getEnvironmentConfig = (
 
 const db = new Surreal();
 const attachedClients = new WeakSet<object>();
+const gatedClients = new WeakSet<object>();
+const authenticationGates = new WeakMap<object, Deferred>();
+const gatedMethodNames: readonly GatedMethodName[] = [
+  'query',
+  'live',
+  'select',
+  'create',
+  'insert',
+  'update',
+  'merge',
+  'patch',
+  'delete',
+  'relate',
+  'run',
+];
 
 export type SurrealConnectParams = NonNullable<Parameters<Surreal['connect']>[1]>;
 export type SurrealLike = Pick<
@@ -124,11 +156,96 @@ export function attachConnectionListeners(client: SurrealLike = db): void {
   });
 
   client.subscribe('auth', (tokens) => {
+    if (tokens) {
+      releaseAuthenticationGate(client);
+    } else {
+      clearAuthenticationGate(client);
+    }
+
     const nextState = tokens ? 'connected' : 'disconnected';
     connectionState.set(nextState);
   });
 
   attachedClients.add(client as object);
+}
+
+function createDeferred(): Deferred {
+  let resolve!: () => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<void>((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+  promise.catch(() => undefined);
+  return { promise, resolve, reject };
+}
+
+export function gateClientRequests(client: SurrealLike = db): void {
+  if (gatedClients.has(client as object)) {
+    return;
+  }
+
+  const methodClient = client as Record<string, unknown>;
+
+  for (const methodName of gatedMethodNames) {
+    const method = methodClient[methodName];
+
+    if (typeof method !== 'function') {
+      continue;
+    }
+
+    const original = method.bind(client);
+    methodClient[methodName] = async (...args: unknown[]) => {
+      const gate = authenticationGates.get(client as object);
+      if (gate) {
+        await gate.promise;
+      }
+
+      return original(...args);
+    };
+  }
+
+  gatedClients.add(client as object);
+}
+
+export function beginAuthenticationGate(client: SurrealLike = db): void {
+  gateClientRequests(client);
+
+  if (authenticationGates.has(client as object)) {
+    return;
+  }
+
+  authenticationGates.set(client as object, createDeferred());
+}
+
+export function releaseAuthenticationGate(client: SurrealLike = db): void {
+  const gate = authenticationGates.get(client as object);
+  if (!gate) {
+    return;
+  }
+
+  gate.resolve();
+  authenticationGates.delete(client as object);
+}
+
+export function rejectAuthenticationGate(error: unknown, client: SurrealLike = db): void {
+  const gate = authenticationGates.get(client as object);
+  if (!gate) {
+    return;
+  }
+
+  gate.reject(error);
+  authenticationGates.delete(client as object);
+}
+
+export function clearAuthenticationGate(client: SurrealLike = db): void {
+  const gate = authenticationGates.get(client as object);
+  if (!gate) {
+    return;
+  }
+
+  gate.resolve();
+  authenticationGates.delete(client as object);
 }
 
 export async function connectToSurreal(client: SurrealLike = db): Promise<true> {
@@ -148,11 +265,15 @@ export async function authenticateSurrealAccessToken(
   accessToken: string,
   client: SurrealLike = db,
 ): Promise<Tokens> {
+  beginAuthenticationGate(client);
+
   try {
     const tokens = await client.authenticate(accessToken);
+    releaseAuthenticationGate(client);
     connectionState.set('connected');
     return tokens;
   } catch (error) {
+    rejectAuthenticationGate(error, client);
     await client.close();
     connectionState.set('auth-failed', error instanceof Error ? error.message : 'Authentication failed');
     throw error;

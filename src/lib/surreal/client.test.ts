@@ -1,9 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { attachConnectionListeners, authenticateSurrealAccessToken, connectionState, connectToSurreal } from './client';
+import {
+  attachConnectionListeners,
+  authenticateSurrealAccessToken,
+  beginAuthenticationGate,
+  connectionState,
+  connectToSurreal,
+  gateClientRequests,
+} from './client';
 
 const createFakeClient = () => {
   const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
+  const query = vi.fn(async (..._args: unknown[]) => [{ ok: true }]);
+  const live = vi.fn(async (..._args: unknown[]) => ({ unsubscribe: vi.fn() }));
 
   const subscribe = vi.fn((event: string, listener: (...args: unknown[]) => void) => {
     const current = listeners.get(event) ?? new Set();
@@ -24,6 +33,9 @@ const createFakeClient = () => {
     authenticate: vi.fn(async () => ({ access: 'renewed-access' })),
     invalidate: vi.fn(async () => undefined),
     close: vi.fn(async () => true as const),
+    query,
+    live,
+    __queryMock: query,
     subscribe,
     emit,
   };
@@ -73,6 +85,40 @@ describe('surreal connection', () => {
 
     expect(client.close).toHaveBeenCalled();
     expect(seen).toContain('auth-failed');
+  });
+
+  it('queues requests until authentication succeeds', async () => {
+    const client = createFakeClient();
+    const queryMock = client.__queryMock;
+
+    gateClientRequests(client);
+    beginAuthenticationGate(client);
+
+    const pendingQuery = client.query('SELECT * FROM test');
+    await Promise.resolve();
+
+    expect(queryMock).not.toHaveBeenCalled();
+
+    await authenticateSurrealAccessToken('my-access-token', client);
+    await pendingQuery;
+
+    expect(queryMock).toHaveBeenCalledWith('SELECT * FROM test');
+  });
+
+  it('rejects queued requests when authentication fails', async () => {
+    const client = createFakeClient();
+    const queryMock = client.__queryMock;
+    client.authenticate.mockRejectedValueOnce(new Error('invalid token'));
+
+    gateClientRequests(client);
+    beginAuthenticationGate(client);
+
+    const pendingQuery = client.query('SELECT * FROM test');
+    await Promise.resolve();
+
+    await expect(authenticateSurrealAccessToken('bad-token', client)).rejects.toThrow('invalid token');
+    await expect(pendingQuery).rejects.toThrow('invalid token');
+    expect(queryMock).not.toHaveBeenCalled();
   });
 
   it('updates connection state from subscribed events', () => {

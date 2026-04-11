@@ -5,6 +5,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useState,
 } from 'react';
@@ -14,9 +15,12 @@ import { authGateway, useAuthSnapshot } from '../../features/auth/auth';
 import {
   authenticateSurrealAccessToken,
   attachConnectionListeners,
+  beginAuthenticationGate,
+  clearAuthenticationGate,
   connectionState,
   getDefaultConnectParams,
   getEnvironmentConfig,
+  rejectAuthenticationGate,
   type SurrealConnectParams,
 } from './client';
 
@@ -52,6 +56,16 @@ export function SurrealProvider({
   const config = getEnvironmentConfig();
   const resolvedEndpoint = endpoint ?? config.surrealUrl;
   const resolvedParams = useMemo(() => getDefaultConnectParams(import.meta.env, params), [params]);
+
+  useLayoutEffect(() => {
+    if (autoConnect && auth.isLoggedIn) {
+      beginAuthenticationGate(instance);
+      return;
+    }
+
+    clearAuthenticationGate(instance);
+  }, [auth.isLoggedIn, autoConnect, instance]);
+
   const {
     mutateAsync: connectMutation,
     isPending,
@@ -64,6 +78,7 @@ export function SurrealProvider({
       const accessToken = await authGateway.validAccessToken();
 
       if (!accessToken) {
+        rejectAuthenticationGate(new Error('Authentication required'), instance);
         connectionState.set('auth-failed', 'Authentication required');
         throw new Error('Authentication required');
       }
