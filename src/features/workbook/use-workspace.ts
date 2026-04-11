@@ -102,6 +102,7 @@ export function useWorkspace(db: Surreal): UseWorkspaceResult {
           SELECT
             id,
             name,
+            created_at AS created_at,
             count(<-workspace_has_member) AS memberCount
           FROM workspace
           ORDER BY created_at ASC;
