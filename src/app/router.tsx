@@ -83,8 +83,8 @@ function WorkbooksRoute() {
           ownerUserId={user.recordId}
           onSelectWorkbook={(workbookId) => {
             void navigate({
-              to: '/workbooks/$workbookId',
-              params: { workbookId },
+              to: '/sheet/$id',
+              params: { id: workbookId },
               search: { panel: 'none' },
             });
           }}
@@ -124,8 +124,8 @@ function TemplatesRoute() {
           showTemplateGallery={true}
           onSelectWorkbook={(workbookId) => {
             void navigate({
-              to: '/workbooks/$workbookId',
-              params: { workbookId },
+              to: '/sheet/$id',
+              params: { id: workbookId },
               search: { panel: 'none' },
             });
           }}
@@ -152,31 +152,31 @@ function TemplatesRoute() {
   );
 }
 
-function WorkbookRoute() {
+function SheetRoute() {
   const navigate = useNavigate();
-  const { workbookId } = workbookRoute.useParams();
-  const { panel } = useSearch({ from: '/workbooks/$workbookId' });
+  const { id } = sheetRoute.useParams();
+  const { panel } = useSearch({ from: '/sheet/$id' });
 
   return (
     <RequireAuth>
       {(user) => (
         <AppShell
           view="editor"
-          activeWorkbookId={workbookId}
+          activeWorkbookId={id}
           activePanel={panel}
           displayName={user.name ?? user.email ?? user.sub}
           ownerUserId={user.recordId}
-          onSelectWorkbook={(nextWorkbookId) => {
+          onSelectWorkbook={(nextId) => {
             void navigate({
-              to: '/workbooks/$workbookId',
-              params: { workbookId: nextWorkbookId },
+              to: '/sheet/$id',
+              params: { id: nextId },
               search: { panel: panel === 'admin' ? 'none' : panel },
             });
           }}
           onSelectPanel={(nextPanel) => {
             void navigate({
-              to: '/workbooks/$workbookId',
-              params: { workbookId },
+              to: '/sheet/$id',
+              params: { id },
               search: { panel: nextPanel },
             });
           }}
@@ -188,8 +188,8 @@ function WorkbookRoute() {
           }}
           onShowAdmin={() => {
             void navigate({
-              to: '/workbooks/$workbookId',
-              params: { workbookId },
+              to: '/sheet/$id',
+              params: { id },
               search: { panel: 'admin' },
             });
           }}
@@ -222,8 +222,8 @@ function AdminRoute() {
           ownerUserId={user.recordId}
           onSelectWorkbook={(workbookId) => {
             void navigate({
-              to: '/workbooks/$workbookId',
-              params: { workbookId },
+              to: '/sheet/$id',
+              params: { id: workbookId },
               search: { panel: 'admin' },
             });
           }}
@@ -289,11 +289,24 @@ const templatesRoute = createRoute({
   component: TemplatesRoute,
 });
 
-const workbookRoute = createRoute({
+const sheetRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/sheet/$id',
+  validateSearch: (search) => parsePanelSearch(search as Record<string, unknown>, 'none'),
+  component: SheetRoute,
+});
+
+// Legacy redirect: /workbooks/$workbookId → /sheet/$id
+function WorkbookLegacyRedirect() {
+  const { workbookId } = workbookLegacyRoute.useParams();
+  return <Navigate to="/sheet/$id" params={{ id: workbookId }} search={{ panel: 'none' }} replace />;
+}
+
+const workbookLegacyRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/workbooks/$workbookId',
   validateSearch: (search) => parsePanelSearch(search as Record<string, unknown>, 'none'),
-  component: WorkbookRoute,
+  component: WorkbookLegacyRedirect,
 });
 
 const adminRoute = createRoute({
@@ -314,7 +327,8 @@ const routeTree = rootRoute.addChildren([
   callbackRoute,
   workbooksRoute,
   templatesRoute,
-  workbookRoute,
+  sheetRoute,
+  workbookLegacyRoute,
   adminRoute,
   publicFormRoute,
 ]);
