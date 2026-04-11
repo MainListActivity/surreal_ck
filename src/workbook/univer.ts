@@ -31,7 +31,7 @@ export interface UniverBootstrapOptions {
   /** Header bar extensions */
   workbookName?: string;
   displayName?: string;
-  workbooks?: Array<{ id: string; name: string; updated_at?: string }>;
+  workbooks?: Array<{ id: string; name: string; updated_at?: string | null }>;
   activeWorkbookId?: string;
   onSelectWorkbook?: (id: string) => void;
   onShowAdmin?: () => void;
@@ -140,18 +140,33 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
       })
       .addSubmenu(univerAPI.createMenu({
         id: 'surreal-ck-panel-record',
-        title: 'Record detail',
+        title: 'Claim detail',
         action: () => opts.onSelectPanel?.('record'),
       }))
       .addSubmenu(univerAPI.createMenu({
         id: 'surreal-ck-panel-graph',
-        title: 'Graph results',
+        title: 'Data lineage',
         action: () => opts.onSelectPanel?.('graph'),
       }))
       .addSubmenu(univerAPI.createMenu({
-        id: 'surreal-ck-panel-recent',
-        title: 'Recent changes',
-        action: () => opts.onSelectPanel?.('recent'),
+        id: 'surreal-ck-panel-history',
+        title: 'Recent activity',
+        action: () => opts.onSelectPanel?.('history'),
+      }))
+      .addSubmenu(univerAPI.createMenu({
+        id: 'surreal-ck-panel-review',
+        title: 'Review queue',
+        action: () => opts.onSelectPanel?.('review'),
+      }))
+      .addSubmenu(univerAPI.createMenu({
+        id: 'surreal-ck-panel-ai',
+        title: 'AI assistant',
+        action: () => opts.onSelectPanel?.('ai'),
+      }))
+      .addSubmenu(univerAPI.createMenu({
+        id: 'surreal-ck-panel-admin',
+        title: 'Admin tools',
+        action: () => opts.onSelectPanel?.('admin'),
       }))
       .addSeparator()
       .addSubmenu(univerAPI.createMenu({

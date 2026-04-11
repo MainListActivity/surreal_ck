@@ -4,7 +4,7 @@ import type { FUniver } from '@univerjs/core/lib/facade';
 export interface UniverHeaderOptions {
   workbookName: string;
   displayName?: string;
-  workbooks: Array<{ id: string; name: string; updated_at?: string }>;
+  workbooks: Array<{ id: string; name: string; updated_at?: string | null }>;
   activeWorkbookId?: string;
   onSelectWorkbook?: (id: string) => void;
   onShowAdmin?: () => void;

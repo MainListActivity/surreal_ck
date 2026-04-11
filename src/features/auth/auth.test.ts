@@ -32,7 +32,7 @@ describe('oidc auth gateway', () => {
   it('only handles code exchange on the callback route and then redirects back', async () => {
     const replaceStateSpy = vi.spyOn(window.history, 'replaceState');
 
-    window.history.replaceState({}, '', '/workspace');
+    window.history.replaceState({}, '', '/workbooks');
     await authGateway.startLogin(window.localStorage, false);
 
     const pendingLogin = JSON.parse(window.localStorage.getItem('surreal_ck.oidc.login') ?? '{}') as {
@@ -62,13 +62,13 @@ describe('oidc auth gateway', () => {
       }),
     );
     expect(getStoredTokens(window.localStorage)?.refreshToken).toBe('refresh-token');
-    expect(replaceStateSpy).toHaveBeenCalledWith({}, document.title, '/workspace');
-    expect(window.location.pathname).toBe('/workspace');
+    expect(replaceStateSpy).toHaveBeenCalledWith({}, document.title, '/workbooks');
+    expect(window.location.pathname).toBe('/workbooks');
   });
 
   it('ignores code params outside the callback route', async () => {
     const fetcher = vi.fn();
-    window.history.replaceState({}, '', '/workspace?code=test-code&state=test-state');
+    window.history.replaceState({}, '', '/workbooks?code=test-code&state=test-state');
 
     await bootstrapAuth(fetcher as typeof fetch);
 

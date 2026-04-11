@@ -1,55 +1,56 @@
-@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Source+Sans+3:wght@400;500;600;700&family=Geist+Mono:wght@400;500;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:ital,wght@0,400;0,500;1,400&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap');
 
 :root {
   color-scheme: light;
 
-  --color-primary: #174b47;
-  --color-secondary: #a44a2a;
+  --color-primary: #2f6bff;
+  --color-primary-hover: #2458d6;
+  --color-trust: #1f5c4c;
+  --color-warning: #a35a1e;
+  --color-error: #a63c35;
+  --color-info: #2f6bff;
 
-  --color-paper: #fbfaf7;
-  --color-parchment: #f1eee8;
-  --color-parchment-2: #e7e1d5;
-  --color-line: #d8d2c7;
-  --color-line-strong: #b8b0a2;
-  --color-ink: #1a1f1e;
-  --color-muted: #6b706f;
+  --color-paper: #ffffff;
+  --color-canvas: #f7f8fa;
+  --color-parchment: #f1f4f8;
+  --color-parchment-2: #e8edf4;
+  --color-line: #d9e0e8;
+  --color-line-strong: #b8c3d1;
+  --color-ink: #1f2a37;
+  --color-muted: #657184;
+  --color-success: #1f5c4c;
 
-  --color-success: #1f6b52;
-  --color-warning: #b36a1d;
-  --color-error: #a23b32;
-  --color-info: #2e5b7a;
+  --font-display: 'IBM Plex Serif', serif;
+  --font-body: 'IBM Plex Sans', 'Noto Sans SC', sans-serif;
+  --font-mono: 'IBM Plex Mono', monospace;
 
-  --font-display: 'Instrument Serif', serif;
-  --font-body: 'Source Sans 3', sans-serif;
-  --font-mono: 'Geist Mono', monospace;
-
-  --font-size-hero: clamp(3rem, 6vw, 5.8rem);
-  --font-size-h1: clamp(2rem, 3vw, 3rem);
-  --font-size-h2: 1.15rem;
-  --font-size-body: 1.05rem;
+  --font-size-hero: clamp(2.4rem, 4vw, 3.4rem);
+  --font-size-h1: 1.75rem;
+  --font-size-h2: 1.125rem;
+  --font-size-body: 1rem;
   --font-size-small: 0.82rem;
-  --font-size-meta: 0.74rem;
+  --font-size-meta: 0.76rem;
 
-  --space-2xs: 2px;
+  --space-2xs: 4px;
   --space-xs: 4px;
   --space-sm: 8px;
-  --space-md: 16px;
-  --space-lg: 24px;
-  --space-xl: 32px;
-  --space-2xl: 48px;
-  --space-3xl: 64px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
+  --space-2xl: 32px;
+  --space-3xl: 48px;
 
-  --radius-sm: 8px;
-  --radius-md: 14px;
-  --radius-lg: 22px;
-  --radius-xl: 30px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 12px;
+  --radius-xl: 12px;
   --radius-pill: 999px;
 
   --duration-micro: 100ms;
-  --duration-short: 180ms;
-  --duration-medium: 260ms;
-  --duration-long: 400ms;
+  --duration-short: 120ms;
+  --duration-medium: 180ms;
+  --duration-long: 280ms;
 
-  --shadow-subtle: 0 16px 36px rgba(26, 31, 30, 0.08);
+  --shadow-subtle: 0 12px 32px rgba(31, 42, 55, 0.08);
   --max-content-width: 1280px;
 }

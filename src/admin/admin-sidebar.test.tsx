@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { EntityType } from './entity-types';
+import type { SheetSummary } from './entity-types';
 import { EntityTypesPanel } from './entity-types';
 import type { WorkspaceMember } from './workspace-members';
 import { WorkspaceMembersPanel } from './workspace-members';
@@ -17,19 +17,21 @@ function createMockDb(overrides: Partial<{ query: ReturnType<typeof vi.fn> }> = 
 }
 
 const WS_ID = 'workspace:test';
+const WB_ID = 'workbook:test';
+const WS_KEY = 'test';
 
 // ─── AdminSidebar — permission gate ──────────────────────────────────────────
 
 describe('AdminSidebar — permission gate', () => {
   it('renders nothing when user is not admin', () => {
     const db = createMockDb();
-    const { container } = render(<AdminSidebar db={db} workspaceId={WS_ID} isAdmin={false} />);
+    const { container } = render(<AdminSidebar db={db} workspaceId={WS_ID} workbookId={WB_ID} wsKey={WS_KEY} isAdmin={false} />);
     expect(container.firstChild).toBeNull();
   });
 
   it('renders admin content when user is admin', () => {
     const db = createMockDb();
-    render(<AdminSidebar db={db} workspaceId={WS_ID} isAdmin={true} />);
+    render(<AdminSidebar db={db} workspaceId={WS_ID} workbookId={WB_ID} wsKey={WS_KEY} isAdmin={true} />);
     expect(screen.getByRole('navigation', { name: 'Admin sections' })).toBeInTheDocument();
   });
 });
@@ -38,13 +40,13 @@ describe('AdminSidebar — permission gate', () => {
 
 describe('EntityTypesPanel', () => {
   it('loads and displays entity types from DB', async () => {
-    const items: EntityType[] = [
-      { id: 'entity_type:1', key: 'company', label: 'Company', fields: [] },
-      { id: 'entity_type:2', key: 'person', label: 'Person', fields: [] },
+    const items: SheetSummary[] = [
+      { id: 'sheet:1', label: 'Company', table_name: 'ent_test_company', column_defs: [] },
+      { id: 'sheet:2', label: 'Person', table_name: 'ent_test_person', column_defs: [] },
     ];
     const db = createMockDb({ query: vi.fn(async () => [items] as any) });
 
-    render(<EntityTypesPanel db={db} workspaceId={WS_ID} />);
+    render(<EntityTypesPanel db={db} workspaceId={WS_ID} workbookId={WB_ID} wsKey={WS_KEY} />);
 
     await waitFor(() => {
       expect(screen.getByText('Company')).toBeInTheDocument();
@@ -54,41 +56,40 @@ describe('EntityTypesPanel', () => {
 
   it('shows empty state when no entity types exist', async () => {
     const db = createMockDb({ query: vi.fn(async () => [[]] as any) });
-    render(<EntityTypesPanel db={db} workspaceId={WS_ID} />);
+    render(<EntityTypesPanel db={db} workspaceId={WS_ID} workbookId={WB_ID} wsKey={WS_KEY} />);
 
     await waitFor(() => {
       expect(screen.getByText(/No entity types yet/)).toBeInTheDocument();
     });
   });
 
-  it('shows error when reserved table name is used', async () => {
+  it('shows validation error when generated table key is too long', async () => {
     const db = createMockDb({ query: vi.fn(async () => [[]] as any) });
-    render(<EntityTypesPanel db={db} workspaceId={WS_ID} />);
+    render(<EntityTypesPanel db={db} workspaceId={WS_ID} workbookId={WB_ID} wsKey={WS_KEY} />);
     await waitFor(() => screen.getByText(/No entity types yet/));
 
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
     const input = screen.getByLabelText('Entity type name');
-    fireEvent.change(input, { target: { value: 'workspace' } });
+    fireEvent.change(input, { target: { value: 'A'.repeat(80) } });
     fireEvent.click(screen.getByRole('button', { name: 'Create' }));
 
     await waitFor(() => {
-      expect(screen.getByRole('alert')).toHaveTextContent(/reserved table name/);
+      expect(screen.getByRole('alert')).toHaveTextContent(/Table key must start/i);
     });
     // DB should not have been called for DDL
     expect(db.query).toHaveBeenCalledTimes(1); // only the initial load
   });
 
   it('creates entity type successfully and updates list', async () => {
-    const newItem: EntityType = { id: 'entity_type:new', key: 'investor', label: 'Investor', fields: [] };
+    const newItem: SheetSummary = { id: 'sheet:new', label: 'Investor', table_name: 'ent_test_investor', column_defs: [] };
 
     const queryMock = vi.fn()
       .mockResolvedValueOnce([[]] as any)             // initial load
       .mockResolvedValueOnce([undefined] as any)      // DDL DEFINE TABLE (no return)
-      .mockResolvedValueOnce([{ tables: { investor: {} } }] as any) // INFO FOR DB
       .mockResolvedValueOnce([[newItem]] as any);     // INSERT entity_type
 
     const db = createMockDb({ query: queryMock });
-    render(<EntityTypesPanel db={db} workspaceId={WS_ID} />);
+    render(<EntityTypesPanel db={db} workspaceId={WS_ID} workbookId={WB_ID} wsKey={WS_KEY} />);
     await waitFor(() => screen.getByText(/No entity types yet/));
 
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
@@ -104,11 +105,10 @@ describe('EntityTypesPanel', () => {
   it('shows DDL verify error when INFO FOR DB does not include new table', async () => {
     const queryMock = vi.fn()
       .mockResolvedValueOnce([[]] as any)         // initial load
-      .mockResolvedValueOnce([undefined] as any)  // DDL
-      .mockResolvedValueOnce([{ tables: {} }] as any); // INFO FOR DB — table missing
+      .mockRejectedValueOnce(new Error('DDL failed'));
 
     const db = createMockDb({ query: queryMock });
-    render(<EntityTypesPanel db={db} workspaceId={WS_ID} />);
+    render(<EntityTypesPanel db={db} workspaceId={WS_ID} workbookId={WB_ID} wsKey={WS_KEY} />);
     await waitFor(() => screen.getByText(/No entity types yet/));
 
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));

@@ -1,38 +1,43 @@
-import { useEffect, useRef, useState } from 'react';
+import { startTransition, useDeferredValue, useEffect, useRef, useState } from 'react';
 import type { Surreal } from 'surrealdb';
 
+import { AdminSidebar } from '../../admin/admin-sidebar';
 import { clientId } from '../../lib/client-id';
 import { useConnectionSnapshot } from '../../lib/surreal/client';
 import { useSurrealClient } from '../../lib/surreal/provider';
-import type { ConnectionSnapshot } from '../../lib/surreal/types';
-import type { Sheet } from '../../lib/surreal/types';
+import type { ConnectionSnapshot, Sheet } from '../../lib/surreal/types';
+import { GraphResultsPanel } from '../../sidebar/graph-results';
 import { RecentChangesPanel } from '../../sidebar/recent-changes';
+import { provisionTemplate } from '../../shell/template-provisioning';
 import { bootstrapUniver } from '../../workbook/univer';
 import type { UniverInstance } from '../../workbook/univer';
-import { templateCatalog, type SidebarPanel, type TemplateKey } from './mock-data';
+import { findTemplate, getPublishSlug, templateCatalog, type SidebarPanel, type TemplateKey } from './mock-data';
 import { useSheets, type CreateSheetOpts } from './use-sheets';
 import { formatUpdatedAt, useWorkspace } from './use-workspace';
 
-
 const panelLabels: Record<SidebarPanel, string> = {
   none: 'No panel',
-  record: 'Record detail',
-  graph: 'Graph results',
-  recent: 'Recent changes',
-  setup: 'Guided setup',
+  record: 'Claim detail',
+  graph: 'Data lineage',
+  history: 'Recent activity',
+  review: 'Review queue',
+  ai: 'AI assistant',
   admin: 'Admin tools',
 };
 
 export interface AppShellProps {
-  view: 'template-picker' | 'workbook';
+  view: 'home' | 'editor';
   activeWorkbookId?: string;
   activePanel?: SidebarPanel;
   displayName?: string;
-  onSelectTemplate: (templateKey: TemplateKey) => void;
+  ownerUserId?: string;
+  showTemplateGallery?: boolean;
   onSelectWorkbook: (workbookId: string) => void;
   onSelectPanel: (panel: SidebarPanel) => void;
+  onShowHome: () => void;
   onShowTemplates: () => void;
   onShowAdmin: () => void;
+  onOpenPublishedForm: (workspaceId: string, formSlug: string) => void;
   onLogout?: () => void;
 }
 
@@ -41,75 +46,421 @@ export function AppShell({
   activeWorkbookId,
   activePanel = 'none',
   displayName,
-  onSelectTemplate,
+  ownerUserId,
+  showTemplateGallery = false,
   onSelectWorkbook,
   onSelectPanel,
+  onShowHome,
   onShowTemplates,
   onShowAdmin,
+  onOpenPublishedForm,
   onLogout,
 }: AppShellProps) {
-  const [isRailCollapsed, setIsRailCollapsed] = useState(false);
   const db = useSurrealClient();
   const workspace = useWorkspace(db);
   const connection = useConnectionSnapshot();
+  const [search, setSearch] = useState('');
+  const [isCreating, setIsCreating] = useState<TemplateKey | null>(null);
+  const [createError, setCreateError] = useState<string | null>(null);
 
   const isOffline = connection.state === 'reconnecting' || connection.state === 'disconnected';
-
   const workbooks = workspace.data?.workbooks ?? [];
-  const workspaceName = workspace.data?.name ?? '…';
-  // Extract ws_key from record ID: "workspace:harbor" → "harbor"
-  const wsKey = workspace.data?.id?.split(':')[1] ?? null;
-
-  // Determine the active workbook, falling back to the first available.
+  const workspaceId = workspace.data?.id ?? null;
+  const wsKey = workspaceId?.split(':')[1] ?? null;
+  const workspaceName = workspace.data?.name ?? '敏感债权协作空间';
   const activeWorkbook = workbooks.find((wb) => wb.id === activeWorkbookId) ?? workbooks[0] ?? null;
+  const activeTemplate = findTemplate((activeWorkbook?.template_key as TemplateKey | null | undefined) ?? null);
 
-  // If no workbook ID is in the URL but we have a workbook (e.g. /workbooks with no ID),
-  // redirect to the first workbook so the URL stays canonical and the grid is always shown.
+  const deferredSearch = useDeferredValue(search.trim().toLowerCase());
+  const filteredWorkbooks = deferredSearch.length === 0
+    ? workbooks
+    : workbooks.filter((workbook) => {
+      const haystack = `${workbook.name} ${workbook.template_key ?? ''}`.toLowerCase();
+      return haystack.includes(deferredSearch);
+    });
+
   useEffect(() => {
-    if (view === 'workbook' && !activeWorkbookId && activeWorkbook) {
+    if (view === 'editor' && !activeWorkbookId && activeWorkbook) {
       onSelectWorkbook(activeWorkbook.id);
     }
   }, [view, activeWorkbookId, activeWorkbook, onSelectWorkbook]);
 
-  // Load sheet records for the active workbook so we can pass them to Univer
-  const { sheets, createSheet } = useSheets(db, activeWorkbook?.id ?? null, wsKey);
+  async function handleCreateWorkbook(templateKey: TemplateKey) {
+    if (!ownerUserId) {
+      setCreateError('当前登录信息未提供工作区所有者标识，无法创建工作簿。');
+      return;
+    }
 
-  if (view === 'workbook') {
+    const template = findTemplate(templateKey);
+    if (!template) {
+      setCreateError('未找到对应的工作簿模板。');
+      return;
+    }
+
+    setCreateError(null);
+    setIsCreating(templateKey);
+
+    const slug = `${templateKey}-${Date.now().toString(36)}`;
+    const result = await provisionTemplate(
+      db,
+      templateKey,
+      `${workspaceName} · ${template.defaultWorkbookName}`,
+      slug,
+      ownerUserId,
+    );
+
+    setIsCreating(null);
+
+    if (!result.ok) {
+      setCreateError(`创建失败：${result.step} · ${result.message}`);
+      return;
+    }
+
+    startTransition(() => {
+      onSelectWorkbook(result.workbookId);
+    });
+  }
+
+  if (view === 'editor') {
     return (
-      <div className="workbook-workbench">
-        {isOffline && (
-          <div className="reconnect-banner" role="status" aria-live="polite">
-            <span className="reconnect-banner__dot" aria-hidden="true" />
-            {connection.state === 'reconnecting' ? 'Reconnecting to workspace…' : 'Connection lost — working offline'}
-          </div>
-        )}
+      <div className="ck-page ck-page--editor">
+        <ConnectionBanner connection={connection} />
+        <EditorChrome
+          db={db}
+          displayName={displayName}
+          workspaceId={workspaceId}
+          wsKey={wsKey}
+          workspaceName={workspaceName}
+          workbooks={workbooks}
+          activeWorkbook={activeWorkbook}
+          activeWorkbookId={activeWorkbookId}
+      activePanel={activePanel}
+      activeTemplate={activeTemplate}
+          isWorkspaceLoading={workspace.isLoading}
+          workspaceError={workspace.error}
+          onSelectWorkbook={onSelectWorkbook}
+          onSelectPanel={onSelectPanel}
+          onShowHome={onShowHome}
+          onShowAdmin={onShowAdmin}
+          onOpenPublishedForm={onOpenPublishedForm}
+          onLogout={onLogout}
+          isOffline={isOffline}
+        />
+      </div>
+    );
+  }
 
-        <main className="workbook-workbench__canvas" aria-label="Workbook editor">
-          <UniverGrid
-            db={db}
-            workbookId={activeWorkbook?.id ?? null}
-            workspaceId={workspace.data?.id ?? null}
-            wsKey={wsKey}
-            sheets={sheets}
-            createSheet={createSheet}
-            workbookName={activeWorkbook?.name ?? workspaceName}
-            displayName={displayName}
-            workbooks={workbooks}
-            activeWorkbookId={activeWorkbookId}
-            onSelectWorkbook={onSelectWorkbook}
-            onSelectPanel={onSelectPanel}
-            onShowTemplates={onShowTemplates}
-            onShowAdmin={onShowAdmin}
-            onLogout={onLogout}
+  return (
+    <div className="ck-page ck-page--home">
+      <ConnectionBanner connection={connection} />
+      <section className="docs-home" aria-label="Tencent compatible workbook home">
+        <aside className="docs-home__rail" aria-label="Workspace navigation">
+          <div className="docs-home__brand">
+            <p className="eyebrow">债权协作</p>
+            <h1>文档</h1>
+            <p className="sidebar-copy">保持腾讯文档式入口节奏，强化受控与留痕。</p>
+          </div>
+
+          <nav className="docs-home__nav">
+            <button className="rail-button rail-button--active" type="button" onClick={onShowHome}>
+              最近打开
+            </button>
+            <button className="rail-button" type="button" onClick={onShowTemplates}>
+              快速新建
+            </button>
+            <button className="rail-button" type="button" onClick={onShowAdmin}>
+              工作区设置
+            </button>
+          </nav>
+
+          <div className="docs-home__trust">
+            <span className="status-chip">{formatConnectionLabel(connection.state)}</span>
+            <p className="sidebar-copy">敏感工作区。所有债权申报、补正和复核动作均留在受控协作空间内。</p>
+          </div>
+        </aside>
+
+        <main className="docs-home__main">
+          <header className="docs-home__header">
+            <div>
+              <p className="eyebrow">Sensitive workspace</p>
+              <h2>{workspaceName}</h2>
+            </div>
+            <div className="docs-home__header-actions">
+              <label className="docs-search">
+                <span className="sr-only">搜索工作簿</span>
+                <input
+                  aria-label="Search workbooks"
+                  placeholder="搜索工作簿、台账或模板"
+                  type="search"
+                  value={search}
+                  onChange={(event) => {
+                    startTransition(() => {
+                      setSearch(event.target.value);
+                    });
+                  }}
+                />
+              </label>
+              {displayName ? <span className="docs-home__user">{displayName}</span> : null}
+            </div>
+          </header>
+
+          <section className="docs-home__create" aria-label="Quick create">
+            <div>
+              <p className="eyebrow">Quick create</p>
+              <h3>从熟悉的表格入口开始</h3>
+            </div>
+            <div className="docs-home__create-actions">
+              {templateCatalog.map((template) => (
+                <button
+                  key={template.key}
+                  className={`secondary-button docs-home__create-button ${showTemplateGallery ? 'docs-home__create-button--featured' : ''}`}
+                  type="button"
+                  disabled={isCreating !== null}
+                  onClick={() => { void handleCreateWorkbook(template.key); }}
+                >
+                  {isCreating === template.key ? '创建中…' : template.name}
+                </button>
+              ))}
+            </div>
+            {createError ? <p className="intake-form__error" role="alert">{createError}</p> : null}
+          </section>
+
+          {showTemplateGallery && (
+            <section className="docs-home__templates" aria-label="Template gallery">
+              {templateCatalog.map((template) => (
+                <article key={template.key} className="template-card">
+                  <p className="eyebrow">{template.category}</p>
+                  <h3>{template.name}</h3>
+                  <p className="template-card__copy">{template.description}</p>
+                  <dl className="template-card__facts">
+                    <div>
+                      <dt>起始表</dt>
+                      <dd>{template.starterSheets}</dd>
+                    </div>
+                    <div>
+                      <dt>发布入口</dt>
+                      <dd>{template.publishLabel}</dd>
+                    </div>
+                  </dl>
+                </article>
+              ))}
+            </section>
+          )}
+
+          <section className="docs-home__list-section" aria-label="Recent workbooks">
+            <div className="docs-home__list-header">
+              <div>
+                <p className="eyebrow">Recent workbooks</p>
+                <h3>最近使用</h3>
+              </div>
+              <span className="sidebar-copy">{workbooks.length} 个工作簿</span>
+            </div>
+
+            <HomeStateSurface
+              connection={connection}
+              isLoading={workspace.isLoading}
+              error={workspace.error}
+              hasWorkbooks={workbooks.length > 0}
+              onCreateFirst={() => { void handleCreateWorkbook('legal-entity-tracker'); }}
+            />
+
+            {!workspace.isLoading && !workspace.error && filteredWorkbooks.length > 0 && (
+              <table className="docs-table">
+                <thead>
+                  <tr>
+                    <th>工作簿</th>
+                    <th>模板</th>
+                    <th>更新时间</th>
+                    <th>动作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredWorkbooks.map((workbook) => (
+                    <tr key={workbook.id}>
+                      <td>
+                        <button className="docs-table__link" type="button" onClick={() => onSelectWorkbook(workbook.id)}>
+                          {workbook.name}
+                        </button>
+                      </td>
+                      <td>{findTemplate(workbook.template_key as TemplateKey | null | undefined)?.name ?? '自定义工作簿'}</td>
+                      <td>{formatUpdatedAt(workbook.updated_at) || '刚创建'}</td>
+                      <td>
+                        <div className="docs-table__actions">
+                          <button className="ghost-button" type="button" onClick={() => onSelectWorkbook(workbook.id)}>
+                            打开
+                          </button>
+                          {getPublishSlug(workbook.template_key as TemplateKey | null | undefined) ? (
+                            <button
+                              className="ghost-button"
+                              type="button"
+                              onClick={() => {
+                                if (workspaceId) {
+                                  onOpenPublishedForm(
+                                    workspaceId,
+                                    getPublishSlug(workbook.template_key as TemplateKey | null | undefined) as string,
+                                  );
+                                }
+                              }}
+                            >
+                              发布表单
+                            </button>
+                          ) : null}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </section>
+        </main>
+      </section>
+    </div>
+  );
+}
+
+function EditorChrome({
+  db,
+  displayName,
+  workspaceId,
+  wsKey,
+  workspaceName,
+  workbooks,
+  activeWorkbook,
+  activeWorkbookId,
+  activePanel,
+  activeTemplate,
+  isWorkspaceLoading,
+  workspaceError,
+  onSelectWorkbook,
+  onSelectPanel,
+  onShowHome,
+  onShowAdmin,
+  onOpenPublishedForm,
+  onLogout,
+  isOffline,
+}: {
+  db: Surreal;
+  displayName?: string;
+  workspaceId: string | null;
+  wsKey: string | null;
+  workspaceName: string;
+  workbooks: Array<{ id: string; name: string; template_key: string | null; updated_at?: string | null }>;
+  activeWorkbook: { id: string; name: string; template_key: string | null } | null;
+  activeWorkbookId?: string;
+  activePanel: SidebarPanel;
+  activeTemplate: ReturnType<typeof findTemplate>;
+  isWorkspaceLoading: boolean;
+  workspaceError: string | null;
+  onSelectWorkbook: (id: string) => void;
+  onSelectPanel: (panel: SidebarPanel) => void;
+  onShowHome: () => void;
+  onShowAdmin: () => void;
+  onOpenPublishedForm: (workspaceId: string, formSlug: string) => void;
+  onLogout?: () => void;
+  isOffline: boolean;
+}) {
+  const { sheets, createSheet, error: sheetsError } = useSheets(db, activeWorkbook?.id ?? null, wsKey);
+  const publishSlug = getPublishSlug(activeWorkbook?.template_key as TemplateKey | null | undefined);
+
+  return (
+    <div className="editor-shell">
+      <header className="editor-shell__header">
+        <div className="editor-shell__title">
+          <button className="ghost-button" type="button" onClick={onShowHome}>
+            返回文档
+          </button>
+          <div>
+            <p className="eyebrow">债权协作工作簿</p>
+            <h1>{activeWorkbook?.name ?? '工作簿'}</h1>
+          </div>
+        </div>
+        <div className="editor-shell__actions">
+          <span className="status-chip">{activeTemplate?.name ?? '工作簿'}</span>
+          {publishSlug && workspaceId ? (
+            <button
+              className="primary-button"
+              type="button"
+              onClick={() => onOpenPublishedForm(workspaceId, publishSlug)}
+            >
+              发布申报表单
+            </button>
+          ) : null}
+          <button className="secondary-button" type="button" onClick={() => onSelectPanel(activePanel === 'review' ? 'none' : 'review')}>
+            复核面板
+          </button>
+          <button className="ghost-button" type="button" onClick={() => onSelectPanel(activePanel === 'history' ? 'none' : 'history')}>
+            最近动态
+          </button>
+        </div>
+      </header>
+
+      <div className="editor-shell__subheader">
+        <div className="editor-shell__meta">
+          <span className="sidebar-copy">{workspaceName}</span>
+          <span className="sidebar-copy">工作表优先，专业能力渐进展开</span>
+          {displayName ? <span className="sidebar-copy">当前用户：{displayName}</span> : null}
+        </div>
+        <div className="editor-shell__dock-tabs" role="tablist" aria-label="Right dock tabs">
+          {([
+            ['none', '收起'],
+            ['record', '债权详情'],
+            ['graph', '关联链路'],
+            ['history', '动态'],
+            ['review', '复核'],
+            ['ai', 'AI'],
+            ['admin', '管理'],
+          ] as Array<[SidebarPanel, string]>).map(([panel, label]) => (
+            <button
+              key={panel}
+              className={`ghost-button ${activePanel === panel ? 'ghost-button--active' : ''}`}
+              role="tab"
+              type="button"
+              aria-selected={activePanel === panel}
+              onClick={() => onSelectPanel(activePanel === panel ? 'none' : panel)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="editor-shell__body">
+        <main className="editor-shell__canvas" aria-label="Workbook editor">
+          <EditorStateSurface
+            isWorkspaceLoading={isWorkspaceLoading}
+            workspaceError={workspaceError}
+            sheetsError={sheetsError}
+            activeWorkbook={activeWorkbook}
+            onShowHome={onShowHome}
           />
+          {!isWorkspaceLoading && !workspaceError && !sheetsError && activeWorkbook && workspaceId && (
+            <UniverGrid
+              db={db}
+              workbookId={activeWorkbook.id}
+              workspaceId={workspaceId}
+              wsKey={wsKey}
+              sheets={sheets}
+              createSheet={createSheet}
+              workbookName={activeWorkbook.name}
+              displayName={displayName}
+              workbooks={workbooks}
+              activeWorkbookId={activeWorkbookId}
+              onSelectWorkbook={onSelectWorkbook}
+              onSelectPanel={onSelectPanel}
+              onShowAdmin={onShowAdmin}
+              onLogout={onLogout}
+            />
+          )}
+          {isOffline ? <p className="editor-shell__hint">当前处于重连中，表格仍保持可见，恢复后会继续同步。</p> : null}
         </main>
 
-        {activePanel !== 'none' && (
+        {activePanel !== 'none' && activeWorkbook && (
           <aside className="workbook-drawer" aria-label={panelLabels[activePanel]}>
             <div className="workbook-drawer__header">
               <div>
                 <p className="eyebrow">Workspace tools</p>
-                <h2>{activeWorkbook?.name ?? workspaceName}</h2>
+                <h2>{panelLabels[activePanel]}</h2>
               </div>
               <button className="ghost-button ghost-button--icon" type="button" onClick={() => onSelectPanel('none')}>
                 ×
@@ -118,100 +469,139 @@ export function AppShell({
             <div className="workbook-drawer__body">
               <SidebarPanelContent
                 db={db}
+                workspaceId={workspaceId}
+                wsKey={wsKey}
                 activePanel={activePanel}
-                workbookId={activeWorkbook?.id ?? ''}
-                workbookName={activeWorkbook?.name ?? ''}
+                workbookId={activeWorkbook.id}
+                workbookName={activeWorkbook.name}
               />
             </div>
           </aside>
         )}
       </div>
-    );
-  }
-
-  return (
-    <div className={`app-shell ${isRailCollapsed ? 'app-shell--rail-collapsed' : ''}`}>
-      {isOffline && (
-        <div className="reconnect-banner" role="status" aria-live="polite">
-          <span className="reconnect-banner__dot" aria-hidden="true" />
-          {connection.state === 'reconnecting' ? 'Reconnecting to workspace…' : 'Connection lost — working offline'}
-        </div>
-      )}
-      <aside className="left-rail" aria-label="Workbook navigation">
-        <div className="left-rail__header">
-          <div>
-            <p className="eyebrow">surreal_ck</p>
-            <h1 className="workbook-title">Graph workbook</h1>
-          </div>
-          <button
-            className="ghost-button ghost-button--icon"
-            type="button"
-            aria-label={isRailCollapsed ? 'Expand navigation rail' : 'Collapse navigation rail'}
-            onClick={() => setIsRailCollapsed((value) => !value)}
-          >
-            {isRailCollapsed ? '→' : '←'}
-          </button>
-        </div>
-
-        <div className="rail-block">
-          <p className="eyebrow">Workbook switcher</p>
-          {workspace.isLoading && <p className="sidebar-copy">Loading…</p>}
-          {workspace.error && <p className="sidebar-copy">{workspace.error}</p>}
-          <div className="rail-workbook-list">
-            {workbooks.map((workbook) => (
-              <button
-                key={workbook.id}
-                className={`rail-button ${activeWorkbookId === workbook.id ? 'rail-button--active' : ''}`}
-                type="button"
-                onClick={() => { onSelectWorkbook(workbook.id); }}
-              >
-                <span>{workbook.name}</span>
-                <span className="rail-button__meta">{formatUpdatedAt(workbook.updated_at)}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <nav className="rail-section" aria-label="Primary">
-          <button
-            className="rail-button"
-            type="button"
-            onClick={() => { if (activeWorkbook) onSelectWorkbook(activeWorkbook.id); }}
-          >
-            Workbook
-          </button>
-          <button
-            className="rail-button rail-button--active"
-            type="button"
-            onClick={onShowTemplates}
-          >
-            Templates
-          </button>
-          <button className="rail-button" type="button" onClick={() => onSelectPanel('recent')}>
-            Recent changes
-          </button>
-          <button className="rail-button" type="button" onClick={onShowAdmin}>
-            Admin
-          </button>
-        </nav>
-
-        <div className="rail-meta">
-          <span
-            className={`status-chip ${connection.state === 'error' || connection.state === 'auth-failed' ? 'status-chip--warning' : ''}`}
-          >
-            {formatConnectionLabel(connection.state)}
-          </span>
-        </div>
-      </aside>
-
-      <main className="canvas-shell">
-        <TemplatePicker onSelectTemplate={onSelectTemplate} />
-      </main>
     </div>
   );
 }
 
-// ─── Univer grid ─────────────────────────────────────────────────────────────
+function ConnectionBanner({ connection }: { connection: ConnectionSnapshot }) {
+  if (connection.state !== 'reconnecting' && connection.state !== 'disconnected') {
+    return null;
+  }
+
+  return (
+    <div className="reconnect-banner" role="status" aria-live="polite">
+      <span className="reconnect-banner__dot" aria-hidden="true" />
+      {connection.state === 'reconnecting' ? '正在重新连接工作区…' : '连接已中断，页面已切换到受控离线提示状态'}
+    </div>
+  );
+}
+
+function HomeStateSurface({
+  connection,
+  isLoading,
+  error,
+  hasWorkbooks,
+  onCreateFirst,
+}: {
+  connection: ConnectionSnapshot;
+  isLoading: boolean;
+  error: string | null;
+  hasWorkbooks: boolean;
+  onCreateFirst: () => void;
+}) {
+  if (isLoading) {
+    return <div className="state-card"><p>正在加载工作区和最近文档…</p></div>;
+  }
+
+  if (connection.state === 'auth-failed') {
+    return <div className="state-card state-card--warning"><p>登录状态失效。请重新进入文档主页后恢复会话。</p></div>;
+  }
+
+  if (error) {
+    return (
+      <div className="state-card state-card--warning">
+        <p>{classifyWorkspaceError(error)}</p>
+      </div>
+    );
+  }
+
+  if (!hasWorkbooks) {
+    return (
+      <div className="state-card">
+        <p>当前工作区还没有任何工作簿，但首页骨架和操作入口已准备好。</p>
+        <button className="primary-button" type="button" onClick={onCreateFirst}>
+          创建第一份债权申报总表
+        </button>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+function EditorStateSurface({
+  isWorkspaceLoading,
+  workspaceError,
+  sheetsError,
+  activeWorkbook,
+  onShowHome,
+}: {
+  isWorkspaceLoading: boolean;
+  workspaceError: string | null;
+  sheetsError: string | null;
+  activeWorkbook: { id: string; name: string } | null;
+  onShowHome: () => void;
+}) {
+  if (isWorkspaceLoading) {
+    return <div className="state-card state-card--floating"><p>正在打开工作簿…</p></div>;
+  }
+
+  if (workspaceError) {
+    return (
+      <div className="state-card state-card--floating state-card--warning">
+        <p>{classifyWorkspaceError(workspaceError)}</p>
+        <button className="secondary-button" type="button" onClick={onShowHome}>
+          返回首页
+        </button>
+      </div>
+    );
+  }
+
+  if (!activeWorkbook) {
+    return (
+      <div className="state-card state-card--floating state-card--warning">
+        <p>该工作簿已被删除或当前账号无权访问，请返回首页重新选择。</p>
+        <button className="secondary-button" type="button" onClick={onShowHome}>
+          返回首页
+        </button>
+      </div>
+    );
+  }
+
+  if (sheetsError) {
+    return (
+      <div className="state-card state-card--floating state-card--warning">
+        <p>工作表加载不完整：{sheetsError}</p>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+function classifyWorkspaceError(error: string): string {
+  const message = error.toLowerCase();
+
+  if (message.includes('permission') || message.includes('forbidden')) {
+    return '你当前没有访问这个工作区的权限，请联系债权协作空间管理员。';
+  }
+
+  if (message.includes('no workspace')) {
+    return '当前账号还未加入任何工作区，请先创建或接受工作区邀请。';
+  }
+
+  return `工作区暂时不可用：${error}`;
+}
 
 function UniverGrid({
   db,
@@ -226,52 +616,50 @@ function UniverGrid({
   activeWorkbookId,
   onSelectWorkbook,
   onSelectPanel,
-  onShowTemplates,
   onShowAdmin,
   onLogout,
 }: {
   db: Surreal;
-  workbookId: string | null;
-  workspaceId: string | null;
+  workbookId: string;
+  workspaceId: string;
   wsKey: string | null;
   sheets: Sheet[];
   createSheet: (opts: CreateSheetOpts) => Promise<Sheet>;
   workbookName: string;
   displayName?: string;
-  workbooks: Array<{ id: string; name: string; updated_at?: string }>;
+  workbooks: Array<{ id: string; name: string; updated_at?: string | null }>;
   activeWorkbookId?: string;
   onSelectWorkbook: (id: string) => void;
   onSelectPanel?: (panel: SidebarPanel) => void;
-  onShowTemplates?: () => void;
   onShowAdmin?: () => void;
   onLogout?: () => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-
-  // Keep a ref that always reflects the latest sheets so that the Univer
-  // CommandExecuted handler can find newly-added tabs without re-bootstrapping.
   const sheetsRef = useRef<Sheet[]>(sheets);
+
   useEffect(() => {
     sheetsRef.current = sheets;
   }, [sheets]);
 
   useEffect(() => {
-    if (!workbookId || !workspaceId || !containerRef.current) return;
+    if (!containerRef.current) {
+      return;
+    }
 
-    const container = containerRef.current;
     let instance: UniverInstance | null = null;
     let cancelled = false;
 
     setStatus('loading');
+    setErrorMsg(null);
 
     bootstrapUniver({
       db,
       workbookId,
       workspaceId,
       clientId,
-      container,
+      container: containerRef.current,
       sheets: sheets.length > 0 ? sheets : undefined,
       wsKey: wsKey ?? undefined,
       getSheets: () => sheetsRef.current,
@@ -287,75 +675,52 @@ function UniverGrid({
         try {
           await createSheet({ label, univerId });
         } catch {
-          // Non-fatal — Univer tab exists but DB record may be missing
+          // Non-fatal: the sheet tab can exist in Univer before the database catches up.
         }
       },
     })
-      .then((inst) => {
+      .then((nextInstance) => {
         if (cancelled) {
-          inst.destroy();
+          nextInstance.destroy();
           return;
         }
-        instance = inst;
+        instance = nextInstance;
         setStatus('ready');
       })
-      .catch((err) => {
-        if (cancelled) return;
-        setErrorMsg(err instanceof Error ? err.message : 'Failed to load spreadsheet');
+      .catch((error) => {
+        if (cancelled) {
+          return;
+        }
         setStatus('error');
+        setErrorMsg(error instanceof Error ? error.message : 'Failed to load spreadsheet');
       });
 
     return () => {
       cancelled = true;
       instance?.destroy();
     };
-  // workbookId triggers a full remount; other deps (sheets, createSheet, wsKey) are captured
-  // at mount time intentionally — Univer must not re-bootstrap on every sheet load tick.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workbookId, workspaceId]);
-
-  if (!workbookId) {
-    return (
-      <div className="univer-container univer-container--empty">
-        <p className="sidebar-copy">No workbooks yet — create one from a template.</p>
-        {onShowTemplates && (
-          <button
-            className="ghost-button"
-            type="button"
-            onClick={onShowTemplates}
-            style={{ marginTop: 'var(--space-md)' }}
-          >
-            Browse templates
-          </button>
-        )}
-      </div>
-    );
-  }
+  }, [activeWorkbookId, createSheet, db, displayName, onLogout, onSelectPanel, onSelectWorkbook, onShowAdmin, sheets, workbookId, workbookName, workspaceId, workbooks, wsKey]);
 
   return (
     <div className="univer-container" aria-label="Spreadsheet">
-      {status === 'loading' && (
-        <p className="sidebar-copy" style={{ padding: 'var(--space-xl)' }}>Loading spreadsheet…</p>
-      )}
-      {status === 'error' && (
-        <p className="sidebar-copy" style={{ padding: 'var(--space-xl)', color: 'var(--color-error)' }}>
-          {errorMsg ?? 'Spreadsheet failed to load.'}
-        </p>
-      )}
+      {status === 'loading' ? <p className="editor-shell__hint">正在载入表格画布…</p> : null}
+      {status === 'error' ? <p className="intake-form__error">{errorMsg ?? '表格加载失败。'}</p> : null}
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
     </div>
   );
 }
 
-// ─── Sidebar panels ───────────────────────────────────────────────────────────
-
 function SidebarPanelContent({
   db,
+  workspaceId,
+  wsKey,
   activePanel,
   workbookId,
   workbookName,
 }: {
   db: Surreal;
+  workspaceId: string | null;
+  wsKey: string | null;
   activePanel: SidebarPanel;
   workbookId: string;
   workbookName: string;
@@ -363,74 +728,66 @@ function SidebarPanelContent({
   if (activePanel === 'record') {
     return (
       <div className="sidebar-panel__content">
-        <p className="eyebrow">Record detail</p>
-        <h2>Select a record</h2>
-        <p className="sidebar-copy">
-          Click any row in the grid to view the full record detail here.
-        </p>
+        <p className="eyebrow">Claim detail</p>
+        <h2>债权详情卡片</h2>
+        <p className="sidebar-copy">保持表格主视图不变，把单条债权、申报材料和备注集中放在这里查看。</p>
       </div>
     );
   }
 
-  if (activePanel === 'recent') {
+  if (activePanel === 'graph') {
+    return (
+      <GraphResultsPanel
+        result={{
+          cellLabel: workbookName,
+          items: [
+            { label: workbookName, recordId: workbookId, entityType: 'Workbook' },
+          ],
+        }}
+      />
+    );
+  }
+
+  if (activePanel === 'history') {
     return <RecentChangesPanel db={db} workbookId={workbookId} />;
   }
 
-  if (activePanel === 'setup') {
+  if (activePanel === 'review') {
     return (
       <div className="sidebar-panel__content">
-        <p className="eyebrow">Guided setup</p>
-        <h2>Exactly three first actions</h2>
-        <ol className="sidebar-list sidebar-list--numbered">
-          <li>Create the first entity type</li>
-          <li>Create the first relationship type</li>
-          <li>Create the first intake form</li>
-        </ol>
-        <p className="sidebar-copy">
-          Blank workspaces still open directly into the sheet. The setup panel is attached context, not a detour.
-        </p>
+        <p className="eyebrow">Review queue</p>
+        <h2>申报复核</h2>
+        <p className="sidebar-copy">MVP 先保留位置和层级，后续会在这里承接核验、驳回、补正与分配流程。</p>
       </div>
     );
   }
 
-  if (activePanel === 'admin') {
+  if (activePanel === 'ai') {
     return (
       <div className="sidebar-panel__content">
-        <p className="eyebrow">Admin tools</p>
-        <h2>Schema controls stay in the workbook shell</h2>
-        <ul className="sidebar-list sidebar-list--flush">
-          <li>Entity Types</li>
-          <li>Relationship Types</li>
-          <li>Form Builder</li>
-          <li>Workspace Members</li>
-        </ul>
-        <p className="sidebar-copy">Admin work remains a docked panel so users never lose sheet context.</p>
+        <p className="eyebrow">AI assistant</p>
+        <h2>受控智能辅助</h2>
+        <p className="sidebar-copy">AI 能力在本期只作为明确的未来入口出现，不会干扰当前债权协作主路径。</p>
       </div>
     );
   }
 
-  // Default: graph panel
-  return (
-    <div className="sidebar-panel__content">
-      <p className="eyebrow">Graph results</p>
-      <h2>{workbookName}</h2>
-      <p className="sidebar-copy">
-        GRAPH_TRAVERSE displays readable labels in-cell and exposes the full path list here when the selection is
-        graph-aware.
-      </p>
-    </div>
-  );
+  if (activePanel === 'admin' && workspaceId && wsKey) {
+    return <AdminSidebar db={db} workspaceId={workspaceId} workbookId={workbookId} wsKey={wsKey} isAdmin={true} />;
+  }
+
+  return null;
 }
 
 function formatConnectionLabel(state: ConnectionSnapshot['state']) {
   switch (state) {
-    case 'connected':    return 'Surreal connected';
-    case 'connecting':   return 'Surreal connecting';
-    case 'reconnecting': return 'Surreal reconnecting';
-    case 'auth-failed':  return 'Surreal auth failed';
-    case 'error':        return 'Surreal error';
-    case 'disconnected': return 'Surreal offline';
-    default:             return 'Surreal idle';
+    case 'connected': return '已连接';
+    case 'connecting': return '连接中';
+    case 'reconnecting': return '重连中';
+    case 'auth-failed': return '登录失效';
+    case 'error': return '连接异常';
+    case 'disconnected': return '离线';
+    default: return '待连接';
   }
 }
 
@@ -448,66 +805,18 @@ export function AuthScreen({
   onAction?: () => void;
 }) {
   return (
-    <main className="canvas-shell">
-      <section className="template-picker" aria-label="Authentication">
-        <div className="template-picker__hero">
-          <div>
-            <p className="eyebrow">Authentication</p>
-            <h2 className="template-picker__title">{title}</h2>
-          </div>
-          <p className="template-picker__copy">{body}</p>
-          {error ? <p className="template-picker__copy">Last error: {error}</p> : null}
-          {actionLabel && onAction ? (
-            <button className="primary-button" type="button" onClick={onAction}>
-              {actionLabel}
-            </button>
-          ) : null}
-        </div>
+    <main className="auth-screen">
+      <section className="state-card state-card--auth" aria-label="Authentication">
+        <p className="eyebrow">Authentication</p>
+        <h1>{title}</h1>
+        <p className="sidebar-copy">{body}</p>
+        {error ? <p className="intake-form__error">最近一次错误：{error}</p> : null}
+        {actionLabel && onAction ? (
+          <button className="primary-button" type="button" onClick={onAction}>
+            {actionLabel}
+          </button>
+        ) : null}
       </section>
     </main>
-  );
-}
-
-function TemplatePicker({ onSelectTemplate }: { onSelectTemplate: (templateKey: TemplateKey) => void }) {
-  return (
-    <section className="template-picker" aria-label="Template picker">
-      <div className="template-picker__hero">
-        <div>
-          <p className="eyebrow">First run</p>
-          <h2 className="template-picker__title">Start in a workbook, not a dashboard.</h2>
-        </div>
-        <p className="template-picker__copy">
-          Choose a template and land directly in a populated sheet. The workbook remains the primary surface from the
-          first minute.
-        </p>
-      </div>
-
-      <div className="template-grid">
-        {templateCatalog.map((template) => (
-          <article key={template.key} className="template-card">
-            <p className="eyebrow">Template</p>
-            <h3>{template.name}</h3>
-            <p className="template-card__copy">{template.description}</p>
-            <dl className="template-card__facts">
-              <div>
-                <dt>Relations</dt>
-                <dd>{template.accent}</dd>
-              </div>
-              <div>
-                <dt>Entities</dt>
-                <dd>{template.entityTypes.length > 0 ? template.entityTypes.join(', ') : 'Defined by admin'}</dd>
-              </div>
-              <div>
-                <dt>Sample form</dt>
-                <dd>{template.sampleForm}</dd>
-              </div>
-            </dl>
-            <button className="primary-button" type="button" onClick={() => onSelectTemplate(template.key)}>
-              Open {template.name}
-            </button>
-          </article>
-        ))}
-      </div>
-    </section>
   );
 }

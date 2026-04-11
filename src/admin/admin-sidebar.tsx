@@ -18,10 +18,12 @@ const SECTION_LABELS: Record<AdminSection, string> = {
 export interface AdminSidebarProps {
   db: Surreal;
   workspaceId: string;
+  workbookId: string;
+  wsKey: string;
   isAdmin: boolean;
 }
 
-export function AdminSidebar({ db, workspaceId, isAdmin }: AdminSidebarProps) {
+export function AdminSidebar({ db, workspaceId, workbookId, wsKey, isAdmin }: AdminSidebarProps) {
   const [activeSection, setActiveSection] = useState<AdminSection>('entity-types');
 
   if (!isAdmin) {
@@ -46,13 +48,13 @@ export function AdminSidebar({ db, workspaceId, isAdmin }: AdminSidebarProps) {
 
       <div className="admin-sidebar__content">
         {activeSection === 'entity-types' && (
-          <EntityTypesPanel db={db} workspaceId={workspaceId} />
+          <EntityTypesPanel db={db} workspaceId={workspaceId} workbookId={workbookId} wsKey={wsKey} />
         )}
         {activeSection === 'relation-types' && (
-          <RelationTypesPanel db={db} workspaceId={workspaceId} />
+          <RelationTypesPanel db={db} workspaceId={workspaceId} wsKey={wsKey} />
         )}
         {activeSection === 'form-builder' && (
-          <FormBuilderPanel db={db} workspaceId={workspaceId} />
+          <FormBuilderPanel db={db} workspaceId={workspaceId} workbookId={workbookId} />
         )}
         {activeSection === 'workspace-members' && (
           <WorkspaceMembersPanel db={db} workspaceId={workspaceId} />

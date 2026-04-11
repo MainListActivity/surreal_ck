@@ -55,14 +55,14 @@ export function ConfirmationPage({
         <div className="confirmation-page__next">
           <p className="eyebrow">What happens next</p>
           <p className="sidebar-copy">
-            Your submission has been received and will be reviewed by the legal team. You will be
-            contacted at the email address you provided if additional information is needed.
+            申报材料已进入受控工作区。管理人团队会在债权申报总表内继续核对金额、主体和附件，
+            如需补正会按照你留下的联系方式继续联系。
           </p>
         </div>
 
         {onReset && (
           <button className="secondary-button" type="button" onClick={onReset}>
-            Submit another
+            再提交一份
           </button>
         )}
       </div>

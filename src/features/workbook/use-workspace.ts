@@ -5,6 +5,7 @@ export interface WorkbookSummaryDb {
   id: string;
   name: string;
   template_key: string | null;
+  created_at?: string | null;
   updated_at: string;
 }
 
@@ -72,7 +73,7 @@ export function useWorkspace(db: Surreal): State {
             out.updated_at   AS updated_at,
             out.created_at   AS created_at
           FROM workspace_has_workbook
-          ORDER BY created_at ASC;
+          ORDER BY updated_at DESC, created_at DESC;
           `,
         );
 

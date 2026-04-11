@@ -11,30 +11,32 @@ import {
 import type { ReactNode } from 'react';
 
 import { authGateway, useAuthSnapshot } from '../features/auth/auth';
-import type { SidebarPanel, TemplateKey } from '../features/workbook/mock-data';
-import { getDefaultPanelForTemplate } from '../features/workbook/mock-data';
 import { AppShell, AuthScreen } from '../features/workbook/app-shell';
+import type { SidebarPanel } from '../features/workbook/mock-data';
+import { IntakeForm } from '../forms/intake-form';
 import { useConnectionSnapshot } from '../lib/surreal/client';
+import { useSurrealClient } from '../lib/surreal/provider';
+import type { UserProfile } from '../lib/surreal/types';
 
 function RootLayout() {
   return <Outlet />;
 }
 
-function RequireAuth({ children }: { children: (displayName: string) => ReactNode }) {
+function RequireAuth({ children }: { children: (user: UserProfile) => ReactNode }) {
   const auth = useAuthSnapshot();
   const connection = useConnectionSnapshot();
 
   if (auth.status === 'checking' || auth.status === 'authorizing') {
-    return <AuthScreen title="Authorizing workspace" body="Completing OIDC login and preparing the workbook session." />;
+    return <AuthScreen title="正在恢复工作区" body="正在完成 OIDC 登录并恢复你上次打开的工作簿。" />;
   }
 
-  if (!auth.isLoggedIn || connection.state === 'auth-failed') {
+  if (!auth.isLoggedIn || !auth.user || connection.state === 'auth-failed') {
     return (
       <AuthScreen
-        title="Sign in to open the workbook"
-        body="Authentication runs fully in the SPA with OIDC Authorization Code + PKCE. The only backend interaction after login is SurrealDB."
+        title="登录后继续处理债权申报工作簿"
+        body="认证在前端完成，恢复后会自动返回上次打开的文档或工作簿。"
         error={connection.state === 'auth-failed' ? (connection.detail ?? auth.error) : auth.error}
-        actionLabel="Continue with MapLayer"
+        actionLabel="继续登录"
         onAction={() => {
           void authGateway.startLogin().catch(() => undefined);
         }}
@@ -42,11 +44,17 @@ function RequireAuth({ children }: { children: (displayName: string) => ReactNod
     );
   }
 
-  return children(auth.user?.name ?? auth.user?.email ?? auth.user?.sub ?? 'Workspace user');
+  return children(auth.user);
 }
 
 function isSidebarPanel(value: unknown): value is SidebarPanel {
-  return value === 'none' || value === 'record' || value === 'graph' || value === 'recent' || value === 'setup' || value === 'admin';
+  return value === 'none'
+    || value === 'record'
+    || value === 'graph'
+    || value === 'history'
+    || value === 'review'
+    || value === 'ai'
+    || value === 'admin';
 }
 
 function parsePanelSearch(search: Record<string, unknown>, fallback: SidebarPanel): { panel: SidebarPanel } {
@@ -55,29 +63,24 @@ function parsePanelSearch(search: Record<string, unknown>, fallback: SidebarPane
   };
 }
 
-/** Home route — redirect to the workbook list view; let AppShell pick the first workbook from DB. */
 function HomeRoute() {
   return <Navigate to="/workbooks" search={{ panel: 'none' }} replace />;
 }
 
 function CallbackRoute() {
-  return <AuthScreen title="Authorizing workspace" body="Completing OIDC callback and restoring the workbook route." />;
+  return <AuthScreen title="正在恢复登录" body="正在处理回调并恢复你的工作区状态。" />;
 }
 
-function TemplatesRoute() {
+function WorkbooksRoute() {
   const navigate = useNavigate();
 
   return (
     <RequireAuth>
-      {(displayName) => (
+      {(user) => (
         <AppShell
-          view="template-picker"
-          displayName={displayName}
-          onSelectTemplate={(templateKey) => {
-            const panel = getDefaultPanelForTemplate(templateKey);
-            // Navigate to /workbooks with the template panel — AppShell loads the real workbook from DB.
-            void navigate({ to: '/workbooks', search: { panel } });
-          }}
+          view="home"
+          displayName={user.name ?? user.email ?? user.sub}
+          ownerUserId={user.recordId}
           onSelectWorkbook={(workbookId) => {
             void navigate({
               to: '/workbooks/$workbookId',
@@ -86,9 +89,18 @@ function TemplatesRoute() {
             });
           }}
           onSelectPanel={() => undefined}
-          onShowTemplates={() => undefined}
+          onShowHome={() => undefined}
+          onShowTemplates={() => {
+            void navigate({ to: '/templates', search: { panel: 'none' } });
+          }}
           onShowAdmin={() => {
-            void navigate({ to: '/admin' });
+            void navigate({ to: '/admin', search: { panel: 'admin' } });
+          }}
+          onOpenPublishedForm={(workspaceId, formSlug) => {
+            void navigate({
+              to: '/public/$workspaceId/forms/$formSlug',
+              params: { workspaceId, formSlug },
+            });
           }}
           onLogout={() => {
             void authGateway.logout().catch(() => undefined);
@@ -99,20 +111,17 @@ function TemplatesRoute() {
   );
 }
 
-function AdminRoute() {
+function TemplatesRoute() {
   const navigate = useNavigate();
 
   return (
     <RequireAuth>
-      {(displayName) => (
+      {(user) => (
         <AppShell
-          view="workbook"
-          activePanel="admin"
-          displayName={displayName}
-          onSelectTemplate={(templateKey: TemplateKey) => {
-            const panel = getDefaultPanelForTemplate(templateKey);
-            void navigate({ to: '/workbooks', search: { panel } });
-          }}
+          view="home"
+          displayName={user.name ?? user.email ?? user.sub}
+          ownerUserId={user.recordId}
+          showTemplateGallery={true}
           onSelectWorkbook={(workbookId) => {
             void navigate({
               to: '/workbooks/$workbookId',
@@ -120,52 +129,19 @@ function AdminRoute() {
               search: { panel: 'none' },
             });
           }}
-          onSelectPanel={(panel) => {
-            void navigate({ to: '/workbooks', search: { panel } });
+          onSelectPanel={() => undefined}
+          onShowHome={() => {
+            void navigate({ to: '/workbooks', search: { panel: 'none' } });
           }}
-          onShowTemplates={() => {
-            void navigate({ to: '/templates' });
-          }}
-          onShowAdmin={() => undefined}
-          onLogout={() => {
-            void authGateway.logout().catch(() => undefined);
-          }}
-        />
-      )}
-    </RequireAuth>
-  );
-}
-
-/** /workbooks — no specific ID; AppShell loads from DB and defaults to first workbook. */
-function WorkbooksRoute() {
-  const navigate = useNavigate();
-  const { panel } = useSearch({ from: '/workbooks' });
-
-  return (
-    <RequireAuth>
-      {(displayName) => (
-        <AppShell
-          view="workbook"
-          activePanel={panel}
-          displayName={displayName}
-          onSelectTemplate={(templateKey) => {
-            void navigate({ to: '/workbooks', search: { panel: getDefaultPanelForTemplate(templateKey) } });
-          }}
-          onSelectWorkbook={(workbookId) => {
-            void navigate({
-              to: '/workbooks/$workbookId',
-              params: { workbookId },
-              search: { panel },
-            });
-          }}
-          onSelectPanel={(nextPanel) => {
-            void navigate({ to: '/workbooks', search: { panel: nextPanel } });
-          }}
-          onShowTemplates={() => {
-            void navigate({ to: '/templates' });
-          }}
+          onShowTemplates={() => undefined}
           onShowAdmin={() => {
-            void navigate({ to: '/admin' });
+            void navigate({ to: '/admin', search: { panel: 'admin' } });
+          }}
+          onOpenPublishedForm={(workspaceId, formSlug) => {
+            void navigate({
+              to: '/public/$workspaceId/forms/$formSlug',
+              params: { workspaceId, formSlug },
+            });
           }}
           onLogout={() => {
             void authGateway.logout().catch(() => undefined);
@@ -183,22 +159,18 @@ function WorkbookRoute() {
 
   return (
     <RequireAuth>
-      {(displayName) => (
+      {(user) => (
         <AppShell
-          view="workbook"
+          view="editor"
           activeWorkbookId={workbookId}
           activePanel={panel}
-          displayName={displayName}
-          onSelectTemplate={(templateKey) => {
-            void navigate({ to: '/workbooks', search: { panel: getDefaultPanelForTemplate(templateKey) } });
-          }}
+          displayName={user.name ?? user.email ?? user.sub}
+          ownerUserId={user.recordId}
           onSelectWorkbook={(nextWorkbookId) => {
             void navigate({
               to: '/workbooks/$workbookId',
               params: { workbookId: nextWorkbookId },
-              search: {
-                panel: panel === 'admin' ? 'none' : panel,
-              },
+              search: { panel: panel === 'admin' ? 'none' : panel },
             });
           }}
           onSelectPanel={(nextPanel) => {
@@ -208,11 +180,24 @@ function WorkbookRoute() {
               search: { panel: nextPanel },
             });
           }}
+          onShowHome={() => {
+            void navigate({ to: '/workbooks', search: { panel: 'none' } });
+          }}
           onShowTemplates={() => {
-            void navigate({ to: '/templates' });
+            void navigate({ to: '/templates', search: { panel: 'none' } });
           }}
           onShowAdmin={() => {
-            void navigate({ to: '/admin' });
+            void navigate({
+              to: '/workbooks/$workbookId',
+              params: { workbookId },
+              search: { panel: 'admin' },
+            });
+          }}
+          onOpenPublishedForm={(workspaceId, formSlug) => {
+            void navigate({
+              to: '/public/$workspaceId/forms/$formSlug',
+              params: { workspaceId, formSlug },
+            });
           }}
           onLogout={() => {
             void authGateway.logout().catch(() => undefined);
@@ -221,6 +206,57 @@ function WorkbookRoute() {
       )}
     </RequireAuth>
   );
+}
+
+function AdminRoute() {
+  const navigate = useNavigate();
+  const { panel } = useSearch({ from: '/admin' });
+
+  return (
+    <RequireAuth>
+      {(user) => (
+        <AppShell
+          view="editor"
+          activePanel={panel}
+          displayName={user.name ?? user.email ?? user.sub}
+          ownerUserId={user.recordId}
+          onSelectWorkbook={(workbookId) => {
+            void navigate({
+              to: '/workbooks/$workbookId',
+              params: { workbookId },
+              search: { panel: 'admin' },
+            });
+          }}
+          onSelectPanel={(nextPanel) => {
+            void navigate({ to: '/admin', search: { panel: nextPanel } });
+          }}
+          onShowHome={() => {
+            void navigate({ to: '/workbooks', search: { panel: 'none' } });
+          }}
+          onShowTemplates={() => {
+            void navigate({ to: '/templates', search: { panel: 'none' } });
+          }}
+          onShowAdmin={() => undefined}
+          onOpenPublishedForm={(workspaceId, formSlug) => {
+            void navigate({
+              to: '/public/$workspaceId/forms/$formSlug',
+              params: { workspaceId, formSlug },
+            });
+          }}
+          onLogout={() => {
+            void authGateway.logout().catch(() => undefined);
+          }}
+        />
+      )}
+    </RequireAuth>
+  );
+}
+
+function PublicFormRoute() {
+  const db = useSurrealClient();
+  const { workspaceId, formSlug } = publicFormRoute.useParams();
+
+  return <IntakeForm db={db} workspaceId={workspaceId} formSlug={formSlug} />;
 }
 
 const rootRoute = createRootRoute({
@@ -239,39 +275,48 @@ const callbackRoute = createRoute({
   component: CallbackRoute,
 });
 
-const templatesRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/templates',
-  component: TemplatesRoute,
-});
-
-const adminRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: '/admin',
-  component: AdminRoute,
-});
-
 const workbooksRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/workbooks',
-  validateSearch: (search) => parsePanelSearch(search as Record<string, unknown>, 'graph'),
+  validateSearch: (search) => parsePanelSearch(search as Record<string, unknown>, 'none'),
   component: WorkbooksRoute,
+});
+
+const templatesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/templates',
+  validateSearch: (search) => parsePanelSearch(search as Record<string, unknown>, 'none'),
+  component: TemplatesRoute,
 });
 
 const workbookRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/workbooks/$workbookId',
-  validateSearch: (search) => parsePanelSearch(search as Record<string, unknown>, 'graph'),
+  validateSearch: (search) => parsePanelSearch(search as Record<string, unknown>, 'none'),
   component: WorkbookRoute,
+});
+
+const adminRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/admin',
+  validateSearch: (search) => parsePanelSearch(search as Record<string, unknown>, 'admin'),
+  component: AdminRoute,
+});
+
+const publicFormRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/public/$workspaceId/forms/$formSlug',
+  component: PublicFormRoute,
 });
 
 const routeTree = rootRoute.addChildren([
   indexRoute,
   callbackRoute,
-  templatesRoute,
-  adminRoute,
   workbooksRoute,
+  templatesRoute,
   workbookRoute,
+  adminRoute,
+  publicFormRoute,
 ]);
 
 export const router = createRouter({

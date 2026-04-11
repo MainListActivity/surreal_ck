@@ -15,6 +15,7 @@ export interface FormDefinition {
   slug: string;
   target_sheet: string;    // sheet record ID
   target_label: string;   // sheet label for display
+  target_table: string;
   fields: FormField[];
 }
 
@@ -292,7 +293,7 @@ export function FormBuilderPanel({ db, workspaceId, workbookId }: FormBuilderPan
             <button
               className="ghost-button"
               type="button"
-              onClick={() => { setShowForm(false); setFormTitle(''); setTargetTable(''); setFields([]); }}
+              onClick={() => { setShowForm(false); setFormTitle(''); setTargetSheetId(''); setFields([]); }}
             >
               Cancel
             </button>

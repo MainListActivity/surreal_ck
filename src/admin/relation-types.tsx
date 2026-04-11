@@ -208,7 +208,7 @@ export function RelationTypesPanel({ db, workspaceId, wsKey }: RelationTypesPane
             <button
               className="ghost-button"
               type="button"
-              onClick={() => { setShowForm(false); setForm({ label: '', fromType: '', toType: '' }); }}
+              onClick={() => { setShowForm(false); setForm({ label: '', fromTable: '', toTable: '' }); }}
             >
               Cancel
             </button>

@@ -325,7 +325,7 @@ export function IntakeForm({ db, formSlug, workspaceId }: IntakeFormProps) {
   if (state.isLoadingForm) {
     return (
       <main className="intake-form-page">
-        <p className="sidebar-copy">Loading form…</p>
+        <p className="sidebar-copy">正在载入债权申报表单…</p>
       </main>
     );
   }
@@ -337,7 +337,7 @@ export function IntakeForm({ db, formSlug, workspaceId }: IntakeFormProps) {
           {state.loadError ?? 'Form not found.'}
         </p>
         <button className="secondary-button" type="button" onClick={() => void loadForm()}>
-          Retry
+          重试
         </button>
       </main>
     );
@@ -349,8 +349,9 @@ export function IntakeForm({ db, formSlug, workspaceId }: IntakeFormProps) {
     <main className="intake-form-page" aria-label={state.formDef.title}>
       <div className="intake-form-page__card">
         <header className="intake-form-page__header">
-          <p className="eyebrow">Intake form</p>
+          <p className="eyebrow">Public intake form</p>
           <h1 className="intake-form-page__title">{state.formDef.title}</h1>
+          <p className="sidebar-copy">该表单会直接写入受控工作区，用于债权申报受理、补件和后续复核。</p>
         </header>
 
         <form className="intake-form" onSubmit={(e) => void handleSubmit(e)} noValidate>
@@ -378,7 +379,7 @@ export function IntakeForm({ db, formSlug, workspaceId }: IntakeFormProps) {
             type="submit"
             disabled={state.isSubmitting}
           >
-            {state.isSubmitting ? 'Submitting…' : 'Submit'}
+            {state.isSubmitting ? '提交中…' : '提交申报'}
           </button>
         </form>
       </div>

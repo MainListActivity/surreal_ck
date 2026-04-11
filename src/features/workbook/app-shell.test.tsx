@@ -18,7 +18,6 @@ vi.mock('../../lib/surreal/client', async (importOriginal) => {
   };
 });
 
-// Provide a stub SurrealClient so AppShell can call useSurrealClient() in tests.
 const stubDb = new Surreal();
 vi.mock('../../lib/surreal/provider', async (importOriginal) => {
   const original = await importOriginal<typeof import('../../lib/surreal/provider')>();
@@ -28,7 +27,14 @@ vi.mock('../../lib/surreal/provider', async (importOriginal) => {
   };
 });
 
-// Stub useSheets so tests don't hit the network.
+vi.mock('../../shell/template-provisioning', () => ({
+  provisionTemplate: vi.fn(async () => ({
+    ok: true,
+    workspaceId: 'workspace:harbor',
+    workbookId: 'workbook:claims',
+  })),
+}));
+
 vi.mock('./use-sheets', () => ({
   useSheets: () => ({
     sheets: [],
@@ -39,7 +45,6 @@ vi.mock('./use-sheets', () => ({
   }),
 }));
 
-// Stub useWorkspace so tests don't hit the network.
 vi.mock('./use-workspace', async (importOriginal) => {
   const original = await importOriginal<typeof import('./use-workspace')>();
   return {
@@ -50,8 +55,8 @@ vi.mock('./use-workspace', async (importOriginal) => {
         name: 'Harbor Legal Ops',
         memberCount: 4,
         workbooks: [
-          { id: 'workbook:legal_entities', name: 'Legal Entity Tracker', template_key: 'legal-entity-tracker', updated_at: null },
-          { id: 'workbook:case_ops',       name: 'Case Management',       template_key: 'case-management',       updated_at: null },
+          { id: 'workbook:claims', name: '债权申报总表', template_key: 'legal-entity-tracker', updated_at: null },
+          { id: 'workbook:cases', name: '案件台账', template_key: 'case-management', updated_at: null },
         ],
       },
       isLoading: false,
@@ -62,15 +67,17 @@ vi.mock('./use-workspace', async (importOriginal) => {
 
 function renderApp(overrides: Partial<Parameters<typeof AppShell>[0]> = {}) {
   const props: Parameters<typeof AppShell>[0] = {
-    view: 'workbook',
-    activeWorkbookId: 'wb-legal-entities',
+    view: 'home',
+    activeWorkbookId: 'workbook:claims',
     activePanel: 'graph',
     displayName: 'Test User',
-    onSelectTemplate: vi.fn(),
+    ownerUserId: 'app_user:test',
     onSelectWorkbook: vi.fn(),
     onSelectPanel: vi.fn(),
+    onShowHome: vi.fn(),
     onShowTemplates: vi.fn(),
     onShowAdmin: vi.fn(),
+    onOpenPublishedForm: vi.fn(),
     onLogout: vi.fn(),
     ...overrides,
   };
@@ -82,35 +89,36 @@ function renderApp(overrides: Partial<Parameters<typeof AppShell>[0]> = {}) {
 }
 
 describe('App shell', () => {
-  it('shows the template picker in template mode', () => {
-    renderApp({ view: 'template-picker' });
+  it('shows the Tencent-compatible home in home mode', () => {
+    renderApp();
 
-    expect(screen.getByRole('heading', { name: 'Start in a workbook, not a dashboard.' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Open Legal Entity Tracker' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Harbor Legal Ops' })).toBeInTheDocument();
+    expect(screen.getByRole('table')).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: '债权申报总表' }).length).toBeGreaterThan(0);
   });
 
-  it('opens the workbook shell by default for workbook mode', () => {
-    renderApp();
+  it('shows the editor shell in editor mode', () => {
+    renderApp({ view: 'editor', activePanel: 'review' });
 
     expect(screen.getByRole('main', { name: 'Workbook editor' })).toBeInTheDocument();
     expect(screen.getByLabelText('Spreadsheet')).toBeInTheDocument();
-    expect(screen.getByRole('complementary', { name: 'Graph results' })).toBeInTheDocument();
+    expect(screen.getByRole('complementary', { name: 'Review queue' })).toBeInTheDocument();
   });
 
-  it('routes template selections through the callback prop', () => {
-    const { props } = renderApp({ view: 'template-picker' });
-
-    fireEvent.click(screen.getByRole('button', { name: 'Open Blank Workspace' }));
-
-    expect(props.onSelectTemplate).toHaveBeenCalledWith('blank-workspace');
-  });
-
-  it('closes the side panel through the callback prop', () => {
+  it('routes workbook row selections through the callback prop', () => {
     const { props } = renderApp();
 
-    fireEvent.click(screen.getByRole('button', { name: '×' }));
+    fireEvent.click(screen.getAllByRole('button', { name: '债权申报总表' })[1]);
 
-    expect(props.onSelectPanel).toHaveBeenCalledWith('none');
+    expect(props.onSelectWorkbook).toHaveBeenCalledWith('workbook:claims');
+  });
+
+  it('opens the published form from the home list', () => {
+    const { props } = renderApp();
+
+    fireEvent.click(screen.getAllByRole('button', { name: '发布表单' })[0]);
+
+    expect(props.onOpenPublishedForm).toHaveBeenCalledWith('workspace:harbor', 'new-client-intake');
   });
 });
 
@@ -119,14 +127,14 @@ describe('App shell — reconnect banner', () => {
     mockUseConnectionSnapshot.mockReturnValueOnce({ state: 'reconnecting', updatedAt: Date.now() });
 
     renderApp();
-    expect(screen.getByRole('status')).toHaveTextContent(/Reconnecting/i);
+    expect(screen.getByRole('status')).toHaveTextContent(/重新连接/i);
   });
 
   it('shows offline banner when disconnected', () => {
     mockUseConnectionSnapshot.mockReturnValueOnce({ state: 'disconnected', updatedAt: Date.now() });
 
     renderApp();
-    expect(screen.getByRole('status')).toHaveTextContent(/Connection lost/i);
+    expect(screen.getByRole('status')).toHaveTextContent(/连接已中断/i);
   });
 
   it('hides reconnect banner when connected', () => {
