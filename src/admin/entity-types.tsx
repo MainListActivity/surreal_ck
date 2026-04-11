@@ -123,7 +123,7 @@ export function EntityTypesPanel({ db, workspaceId, workbookId, wsKey }: EntityT
       const defaultFields: FieldDef[] = [{ key: 'name', type: 'text', required: true }];
       await db.query(entityTableDDL(tableName, defaultFields));
 
-      // Step 2: Create sheet record + workbook_has_sheet edge in one transaction.
+      // Step 2: Create sheet record（sheet.workbook 字段即关联，无需额外的边）
       const [created] = await db.query<[SheetSummary[]]>(
         `BEGIN TRANSACTION;
          LET $sheet = (CREATE sheet CONTENT {
@@ -134,7 +134,6 @@ export function EntityTypesPanel({ db, workspaceId, workbookId, wsKey }: EntityT
            position:    (SELECT count() FROM sheet WHERE workbook = $wb)[0].count ?? 0,
            column_defs: [{ key: "name", label: "Name", field_type: "text", required: true }]
          } RETURN AFTER)[0];
-         RELATE $wb->workbook_has_sheet->$sheet;
          RETURN $sheet;
          COMMIT TRANSACTION`,
         { wb: workbookId, table_name: tableName, label },
@@ -157,13 +156,11 @@ export function EntityTypesPanel({ db, workspaceId, workbookId, wsKey }: EntityT
 
   async function handleDelete(item: SheetSummary) {
     try {
-      // Remove the sheet record and its workbook edge.
-      // The physical entity table (item.table_name) is left in place —
-      // REMOVE TABLE is irreversible and risks data loss if misclicked.
+      // 删除 sheet 记录。物理实体表（item.table_name）保留 —
+      // REMOVE TABLE 不可逆，误操作风险高。
       await db.query(
-        `DELETE workbook_has_sheet WHERE in = $wb AND out = $id;
-         DELETE $id`,
-        { id: item.id, wb: workbookId },
+        `DELETE $id`,
+        { id: item.id },
       );
       dispatch({ type: 'delete-ok', id: item.id });
     } catch {

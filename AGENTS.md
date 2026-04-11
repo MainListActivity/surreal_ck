@@ -39,6 +39,9 @@ Past schema decisions are documented in `docs/solutions/` (organized by category
 
 Key rules to internalize:
 
+只有当关系本身是业务实体（有属性、有生命周期、有双向遍历需求）时才用边；否则用字段。
+系统结构关系（层级归属、所有权）用字段，用户业务关系（公司持股、案件关联）用边。
+
 ### Permissions belong in the schema, never in queries
 
 Row-level security is defined once in `DEFINE TABLE ... PERMISSIONS` and enforced by the database engine. Frontend queries must NOT contain auth-filtering conditions (`WHERE user = $auth`, `WHERE in = $auth`, etc.). A query that leaks permission logic into the client is a security defect: the engine enforces PERMISSIONS regardless, so the client filter is at best redundant and at worst misleading.

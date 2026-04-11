@@ -103,19 +103,19 @@ export function useWorkspace(db: Surreal): UseWorkspaceResult {
             id,
             name,
             created_at AS created_at,
-            count(<-workspace_has_member) AS memberCount
+            count(->has_workspace_member) AS memberCount
           FROM workspace
           ORDER BY created_at ASC;
 
           SELECT
-            out.id           AS id,
-            out.name         AS name,
-            out.template_key AS template_key,
-            out.updated_at   AS updated_at,
-            out.created_at   AS created_at,
-            in              AS workspace
-          FROM workspace_has_workbook
-          ORDER BY out.updated_at DESC, out.created_at DESC;
+            id,
+            name,
+            template_key,
+            updated_at,
+            created_at,
+            workspace
+          FROM workbook
+          ORDER BY updated_at DESC, created_at DESC;
           `,
         );
 

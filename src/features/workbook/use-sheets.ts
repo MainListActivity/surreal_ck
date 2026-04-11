@@ -100,27 +100,9 @@ export function useSheets(
 
     (async () => {
       try {
-        // Step 1: fetch edge targets without FETCH to avoid unexpanded RecordIds
-        const [edges] = await db.query<[Array<{ out: unknown }>]>(
-          `SELECT out FROM workbook_has_sheet WHERE in = $wb`,
-          { wb: workbookId },
-        );
-        if (cancelled) return;
-
-        const sheetIds = (edges ?? [])
-          .map((e) => e.out)
-          .filter((id) => id != null);
-
-        if (!sheetIds.length) {
-          nextPositionRef.current = 0;
-          dispatch({ type: 'load-ok', sheets: [] });
-          return;
-        }
-
-        // Step 2: load the actual sheet records directly
         const [sheetRows] = await db.query<[Sheet[]]>(
-          `SELECT * FROM sheet WHERE id IN $ids ORDER BY position ASC`,
-          { ids: sheetIds },
+          `SELECT * FROM sheet WHERE workbook = $wb ORDER BY position ASC`,
+          { wb: workbookId },
         );
         if (cancelled) return;
 
@@ -200,13 +182,7 @@ export function useSheets(
         workbook: String(sheet.workbook),
       };
 
-      // 2. Link sheet to workbook via edge
-      await db.query(
-        `INSERT INTO workbook_has_sheet { in: $wb, out: $sheet }`,
-        { wb: workbookId, sheet: sheetRecord.id },
-      );
-
-      // 3. Provision the backing SCHEMALESS entity table (no fields yet)
+      // 2. Provision the backing SCHEMALESS entity table (no fields yet)
       const ddl = entityTableDDL(tableName, []);
       await db.query(ddl);
 

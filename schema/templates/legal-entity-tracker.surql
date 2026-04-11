@@ -66,10 +66,7 @@ LET $sheet_trust = (
   } RETURN id
 )[0].id;
 
--- Link sheets to workbook
-RELATE $wb->workbook_has_sheet->$sheet_company;
-RELATE $wb->workbook_has_sheet->$sheet_person;
-RELATE $wb->workbook_has_sheet->$sheet_trust;
+-- sheet.workbook 字段已在 UPSERT 时设置，无需额外的边。
 
 -- ─── 2. Edge catalog ──────────────────────────────────────────────────────────
 
@@ -122,10 +119,10 @@ LET $rel_filed_by = "rel_" + $ws_key + "_filed_by";
 DEFINE TABLE IF NOT EXISTS type::table($tbl_company) SCHEMALESS
   PERMISSIONS
     FOR select WHERE
-      workspace IN $auth->owns_workspace->workspace
-      OR workspace IN $auth<-member_identifies_user<-workspace_member<-workspace_has_member<-workspace,
+      workspace.owner = $auth
+      OR workspace IN $auth<-has_workspace_member<-workspace,
     FOR create, update, delete WHERE
-      workspace IN $auth->owns_workspace->workspace;
+      workspace.owner = $auth;
 DEFINE FIELD IF NOT EXISTS workspace  ON TABLE type::table($tbl_company) TYPE record<workspace>;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE type::table($tbl_company) TYPE datetime VALUE time::now();
 DEFINE FIELD IF NOT EXISTS updated_at ON TABLE type::table($tbl_company) TYPE datetime VALUE time::now();
@@ -135,10 +132,10 @@ DEFINE INDEX IF NOT EXISTS idx_workspace ON TABLE type::table($tbl_company) COLU
 DEFINE TABLE IF NOT EXISTS type::table($tbl_person) SCHEMALESS
   PERMISSIONS
     FOR select WHERE
-      workspace IN $auth->owns_workspace->workspace
-      OR workspace IN $auth<-member_identifies_user<-workspace_member<-workspace_has_member<-workspace,
+      workspace.owner = $auth
+      OR workspace IN $auth<-has_workspace_member<-workspace,
     FOR create, update, delete WHERE
-      workspace IN $auth->owns_workspace->workspace;
+      workspace.owner = $auth;
 DEFINE FIELD IF NOT EXISTS workspace  ON TABLE type::table($tbl_person) TYPE record<workspace>;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE type::table($tbl_person) TYPE datetime VALUE time::now();
 DEFINE FIELD IF NOT EXISTS updated_at ON TABLE type::table($tbl_person) TYPE datetime VALUE time::now();
@@ -148,10 +145,10 @@ DEFINE INDEX IF NOT EXISTS idx_workspace ON TABLE type::table($tbl_person) COLUM
 DEFINE TABLE IF NOT EXISTS type::table($tbl_trust) SCHEMALESS
   PERMISSIONS
     FOR select WHERE
-      workspace IN $auth->owns_workspace->workspace
-      OR workspace IN $auth<-member_identifies_user<-workspace_member<-workspace_has_member<-workspace,
+      workspace.owner = $auth
+      OR workspace IN $auth<-has_workspace_member<-workspace,
     FOR create, update, delete WHERE
-      workspace IN $auth->owns_workspace->workspace;
+      workspace.owner = $auth;
 DEFINE FIELD IF NOT EXISTS workspace  ON TABLE type::table($tbl_trust) TYPE record<workspace>;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE type::table($tbl_trust) TYPE datetime VALUE time::now();
 DEFINE FIELD IF NOT EXISTS updated_at ON TABLE type::table($tbl_trust) TYPE datetime VALUE time::now();
@@ -161,10 +158,10 @@ DEFINE INDEX IF NOT EXISTS idx_workspace ON TABLE type::table($tbl_trust) COLUMN
 DEFINE TABLE IF NOT EXISTS type::table($rel_owns) TYPE RELATION SCHEMALESS
   PERMISSIONS
     FOR select WHERE
-      in.workspace IN $auth->owns_workspace->workspace
-      OR in.workspace IN $auth<-member_identifies_user<-workspace_member<-workspace_has_member<-workspace,
+      in.workspace.owner = $auth
+      OR in.workspace IN $auth<-has_workspace_member<-workspace,
     FOR create, update, delete WHERE
-      in.workspace IN $auth->owns_workspace->workspace
+      in.workspace.owner = $auth
       AND in.workspace = out.workspace;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE type::table($rel_owns) TYPE datetime VALUE time::now();
 
@@ -172,10 +169,10 @@ DEFINE FIELD IF NOT EXISTS created_at ON TABLE type::table($rel_owns) TYPE datet
 DEFINE TABLE IF NOT EXISTS type::table($rel_controls) TYPE RELATION SCHEMALESS
   PERMISSIONS
     FOR select WHERE
-      in.workspace IN $auth->owns_workspace->workspace
-      OR in.workspace IN $auth<-member_identifies_user<-workspace_member<-workspace_has_member<-workspace,
+      in.workspace.owner = $auth
+      OR in.workspace IN $auth<-has_workspace_member<-workspace,
     FOR create, update, delete WHERE
-      in.workspace IN $auth->owns_workspace->workspace
+      in.workspace.owner = $auth
       AND in.workspace = out.workspace;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE type::table($rel_controls) TYPE datetime VALUE time::now();
 
@@ -183,10 +180,10 @@ DEFINE FIELD IF NOT EXISTS created_at ON TABLE type::table($rel_controls) TYPE d
 DEFINE TABLE IF NOT EXISTS type::table($rel_filed_by) TYPE RELATION SCHEMALESS
   PERMISSIONS
     FOR select WHERE
-      in.workspace IN $auth->owns_workspace->workspace
-      OR in.workspace IN $auth<-member_identifies_user<-workspace_member<-workspace_has_member<-workspace,
+      in.workspace.owner = $auth
+      OR in.workspace IN $auth<-has_workspace_member<-workspace,
     FOR create, update, delete WHERE
-      in.workspace IN $auth->owns_workspace->workspace
+      in.workspace.owner = $auth
       AND in.workspace = out.workspace;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE type::table($rel_filed_by) TYPE datetime VALUE time::now();
 

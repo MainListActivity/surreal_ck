@@ -7,7 +7,7 @@
 -- Contents:
 --   1. Demo users
 --   2. Workspace + workbooks + structural edges
---   3. Workspace members + member_identifies_user edges
+--   3. Workspace members (has_workspace_member edges)
 --   4. Legal Entity Tracker workbook: sheets, edge catalog, DDL, form, data
 --   5. Case Management workbook: sheets, edge catalog, DDL, form, data
 --   6. Three demo mutation records
@@ -47,6 +47,7 @@ UPSERT app_user:demo_guest CONTENT {
 -- ─── 2. Workspace + workbooks ─────────────────────────────────────────────────
 
 UPSERT workspace:harbor CONTENT {
+  owner: app_user:`a7edfa07-6852-4f17-aa18-d9ce760041e1`,
   name: "Harbor Legal Ops",
   slug: "harbor-legal-ops"
 };
@@ -63,42 +64,14 @@ UPSERT workbook:case_ops CONTENT {
   template_key: "case-management"
 };
 
-RELATE app_user:`a7edfa07-6852-4f17-aa18-d9ce760041e1`->owns_workspace->workspace:harbor;
-RELATE workspace:harbor->workspace_has_workbook->workbook:legal_entities;
-RELATE workspace:harbor->workspace_has_workbook->workbook:case_ops;
+-- workspace.owner 字段和 workbook.workspace 字段已在 UPSERT 中设置，无需额外的边。
 
--- ─── 3. Workspace members ─────────────────────────────────────────────────────
+-- ─── 3. Workspace members（has_workspace_member 边）────────────────────────────
 
-UPSERT workspace_member:harbor_yc CONTENT {
-  workspace: workspace:harbor,
-  email:     "yc@harbor-legal.example.com",
-  role:      "admin"
-};
-UPSERT workspace_member:harbor_wong CONTENT {
-  workspace: workspace:harbor,
-  email:     "awong@harbor-legal.example.com",
-  role:      "editor"
-};
-UPSERT workspace_member:harbor_rivera CONTENT {
-  workspace: workspace:harbor,
-  email:     "mrivera@harbor-legal.example.com",
-  role:      "editor"
-};
-UPSERT workspace_member:harbor_guest CONTENT {
-  workspace: workspace:harbor,
-  email:     "guest@harbor-legal.example.com",
-  role:      "viewer"
-};
-
-RELATE workspace:harbor->workspace_has_member->workspace_member:harbor_yc;
-RELATE workspace:harbor->workspace_has_member->workspace_member:harbor_wong;
-RELATE workspace:harbor->workspace_has_member->workspace_member:harbor_rivera;
-RELATE workspace:harbor->workspace_has_member->workspace_member:harbor_guest;
-
-RELATE workspace_member:harbor_yc->member_identifies_user->app_user:`a7edfa07-6852-4f17-aa18-d9ce760041e1`;
-RELATE workspace_member:harbor_wong->member_identifies_user->app_user:demo_wong;
-RELATE workspace_member:harbor_rivera->member_identifies_user->app_user:demo_rivera;
-RELATE workspace_member:harbor_guest->member_identifies_user->app_user:demo_guest;
+RELATE workspace:harbor->has_workspace_member->app_user:`a7edfa07-6852-4f17-aa18-d9ce760041e1` CONTENT { role: 'admin',  joined_at: time::now() };
+RELATE workspace:harbor->has_workspace_member->app_user:demo_wong   CONTENT { role: 'editor', joined_at: time::now() };
+RELATE workspace:harbor->has_workspace_member->app_user:demo_rivera CONTENT { role: 'editor', joined_at: time::now() };
+RELATE workspace:harbor->has_workspace_member->app_user:demo_guest  CONTENT { role: 'viewer', joined_at: time::now() };
 
 -- ═══════════════════════════════════════════════════════════════════════════════
 -- 4. LEGAL ENTITY TRACKER WORKBOOK
@@ -146,9 +119,7 @@ UPSERT sheet:trust_harbor CONTENT {
   ]
 };
 
-RELATE workbook:legal_entities->workbook_has_sheet->sheet:company_harbor;
-RELATE workbook:legal_entities->workbook_has_sheet->sheet:person_harbor;
-RELATE workbook:legal_entities->workbook_has_sheet->sheet:trust_harbor;
+-- sheet.workbook 字段已在 UPSERT 中设置，无需 workbook_has_sheet 边。
 
 -- ─── Edge catalog ─────────────────────────────────────────────────────────────
 
@@ -189,10 +160,10 @@ UPSERT edge_catalog:filed_by_harbor CONTENT {
 DEFINE TABLE IF NOT EXISTS ent_harbor_company SCHEMALESS
   PERMISSIONS
     FOR select WHERE
-      workspace IN $auth->owns_workspace->workspace
-      OR workspace IN $auth<-member_identifies_user<-workspace_member<-workspace_has_member<-workspace,
+      workspace IN $auth.id IN (SELECT VALUE owner FROM workspace WHERE id = workspace)
+      OR workspace IN $auth<-has_workspace_member<-workspace,
     FOR create, update, delete WHERE
-      workspace IN $auth->owns_workspace->workspace;
+      workspace IN $auth.id IN (SELECT VALUE owner FROM workspace WHERE id = workspace);
 DEFINE FIELD IF NOT EXISTS workspace  ON TABLE ent_harbor_company TYPE record<workspace>;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE ent_harbor_company TYPE datetime VALUE time::now();
 DEFINE FIELD IF NOT EXISTS updated_at ON TABLE ent_harbor_company TYPE datetime VALUE time::now();
@@ -201,10 +172,10 @@ DEFINE INDEX IF NOT EXISTS ent_harbor_company_ws ON TABLE ent_harbor_company COL
 DEFINE TABLE IF NOT EXISTS ent_harbor_person SCHEMALESS
   PERMISSIONS
     FOR select WHERE
-      workspace IN $auth->owns_workspace->workspace
-      OR workspace IN $auth<-member_identifies_user<-workspace_member<-workspace_has_member<-workspace,
+      workspace IN $auth.id IN (SELECT VALUE owner FROM workspace WHERE id = workspace)
+      OR workspace IN $auth<-has_workspace_member<-workspace,
     FOR create, update, delete WHERE
-      workspace IN $auth->owns_workspace->workspace;
+      workspace IN $auth.id IN (SELECT VALUE owner FROM workspace WHERE id = workspace);
 DEFINE FIELD IF NOT EXISTS workspace  ON TABLE ent_harbor_person TYPE record<workspace>;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE ent_harbor_person TYPE datetime VALUE time::now();
 DEFINE FIELD IF NOT EXISTS updated_at ON TABLE ent_harbor_person TYPE datetime VALUE time::now();
@@ -213,10 +184,10 @@ DEFINE INDEX IF NOT EXISTS ent_harbor_person_ws ON TABLE ent_harbor_person COLUM
 DEFINE TABLE IF NOT EXISTS ent_harbor_trust SCHEMALESS
   PERMISSIONS
     FOR select WHERE
-      workspace IN $auth->owns_workspace->workspace
-      OR workspace IN $auth<-member_identifies_user<-workspace_member<-workspace_has_member<-workspace,
+      workspace IN $auth.id IN (SELECT VALUE owner FROM workspace WHERE id = workspace)
+      OR workspace IN $auth<-has_workspace_member<-workspace,
     FOR create, update, delete WHERE
-      workspace IN $auth->owns_workspace->workspace;
+      workspace IN $auth.id IN (SELECT VALUE owner FROM workspace WHERE id = workspace);
 DEFINE FIELD IF NOT EXISTS workspace  ON TABLE ent_harbor_trust TYPE record<workspace>;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE ent_harbor_trust TYPE datetime VALUE time::now();
 DEFINE FIELD IF NOT EXISTS updated_at ON TABLE ent_harbor_trust TYPE datetime VALUE time::now();
@@ -227,30 +198,30 @@ DEFINE INDEX IF NOT EXISTS ent_harbor_trust_ws ON TABLE ent_harbor_trust COLUMNS
 DEFINE TABLE IF NOT EXISTS rel_harbor_owns TYPE RELATION SCHEMALESS
   PERMISSIONS
     FOR select WHERE
-      in.workspace IN $auth->owns_workspace->workspace
-      OR in.workspace IN $auth<-member_identifies_user<-workspace_member<-workspace_has_member<-workspace,
+      in.workspace IN $auth.id IN (SELECT VALUE owner FROM workspace WHERE id = workspace)
+      OR in.workspace IN $auth<-has_workspace_member<-workspace,
     FOR create, update, delete WHERE
-      in.workspace IN $auth->owns_workspace->workspace
+      in.workspace IN $auth.id IN (SELECT VALUE owner FROM workspace WHERE id = workspace)
       AND in.workspace = out.workspace;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE rel_harbor_owns TYPE datetime VALUE time::now();
 
 DEFINE TABLE IF NOT EXISTS rel_harbor_controls TYPE RELATION SCHEMALESS
   PERMISSIONS
     FOR select WHERE
-      in.workspace IN $auth->owns_workspace->workspace
-      OR in.workspace IN $auth<-member_identifies_user<-workspace_member<-workspace_has_member<-workspace,
+      in.workspace IN $auth.id IN (SELECT VALUE owner FROM workspace WHERE id = workspace)
+      OR in.workspace IN $auth<-has_workspace_member<-workspace,
     FOR create, update, delete WHERE
-      in.workspace IN $auth->owns_workspace->workspace
+      in.workspace IN $auth.id IN (SELECT VALUE owner FROM workspace WHERE id = workspace)
       AND in.workspace = out.workspace;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE rel_harbor_controls TYPE datetime VALUE time::now();
 
 DEFINE TABLE IF NOT EXISTS rel_harbor_filed_by TYPE RELATION SCHEMALESS
   PERMISSIONS
     FOR select WHERE
-      in.workspace IN $auth->owns_workspace->workspace
-      OR in.workspace IN $auth<-member_identifies_user<-workspace_member<-workspace_has_member<-workspace,
+      in.workspace IN $auth.id IN (SELECT VALUE owner FROM workspace WHERE id = workspace)
+      OR in.workspace IN $auth<-has_workspace_member<-workspace,
     FOR create, update, delete WHERE
-      in.workspace IN $auth->owns_workspace->workspace
+      in.workspace IN $auth.id IN (SELECT VALUE owner FROM workspace WHERE id = workspace)
       AND in.workspace = out.workspace;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE rel_harbor_filed_by TYPE datetime VALUE time::now();
 
@@ -346,9 +317,7 @@ UPSERT sheet:document_harbor CONTENT {
   ]
 };
 
-RELATE workbook:case_ops->workbook_has_sheet->sheet:case_harbor;
-RELATE workbook:case_ops->workbook_has_sheet->sheet:client_harbor;
-RELATE workbook:case_ops->workbook_has_sheet->sheet:document_harbor;
+-- sheet.workbook 字段已在 UPSERT 中设置，无需 workbook_has_sheet 边。
 
 -- ─── Edge catalog ─────────────────────────────────────────────────────────────
 
@@ -387,10 +356,10 @@ UPSERT edge_catalog:belongs_to_harbor CONTENT {
 DEFINE TABLE IF NOT EXISTS ent_harbor_case SCHEMALESS
   PERMISSIONS
     FOR select WHERE
-      workspace IN $auth->owns_workspace->workspace
-      OR workspace IN $auth<-member_identifies_user<-workspace_member<-workspace_has_member<-workspace,
+      workspace IN $auth.id IN (SELECT VALUE owner FROM workspace WHERE id = workspace)
+      OR workspace IN $auth<-has_workspace_member<-workspace,
     FOR create, update, delete WHERE
-      workspace IN $auth->owns_workspace->workspace;
+      workspace IN $auth.id IN (SELECT VALUE owner FROM workspace WHERE id = workspace);
 DEFINE FIELD IF NOT EXISTS workspace  ON TABLE ent_harbor_case TYPE record<workspace>;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE ent_harbor_case TYPE datetime VALUE time::now();
 DEFINE FIELD IF NOT EXISTS updated_at ON TABLE ent_harbor_case TYPE datetime VALUE time::now();
@@ -399,10 +368,10 @@ DEFINE INDEX IF NOT EXISTS ent_harbor_case_ws ON TABLE ent_harbor_case COLUMNS w
 DEFINE TABLE IF NOT EXISTS ent_harbor_client SCHEMALESS
   PERMISSIONS
     FOR select WHERE
-      workspace IN $auth->owns_workspace->workspace
-      OR workspace IN $auth<-member_identifies_user<-workspace_member<-workspace_has_member<-workspace,
+      workspace IN $auth.id IN (SELECT VALUE owner FROM workspace WHERE id = workspace)
+      OR workspace IN $auth<-has_workspace_member<-workspace,
     FOR create, update, delete WHERE
-      workspace IN $auth->owns_workspace->workspace;
+      workspace IN $auth.id IN (SELECT VALUE owner FROM workspace WHERE id = workspace);
 DEFINE FIELD IF NOT EXISTS workspace  ON TABLE ent_harbor_client TYPE record<workspace>;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE ent_harbor_client TYPE datetime VALUE time::now();
 DEFINE FIELD IF NOT EXISTS updated_at ON TABLE ent_harbor_client TYPE datetime VALUE time::now();
@@ -411,10 +380,10 @@ DEFINE INDEX IF NOT EXISTS ent_harbor_client_ws ON TABLE ent_harbor_client COLUM
 DEFINE TABLE IF NOT EXISTS ent_harbor_document SCHEMALESS
   PERMISSIONS
     FOR select WHERE
-      workspace IN $auth->owns_workspace->workspace
-      OR workspace IN $auth<-member_identifies_user<-workspace_member<-workspace_has_member<-workspace,
+      workspace IN $auth.id IN (SELECT VALUE owner FROM workspace WHERE id = workspace)
+      OR workspace IN $auth<-has_workspace_member<-workspace,
     FOR create, update, delete WHERE
-      workspace IN $auth->owns_workspace->workspace;
+      workspace IN $auth.id IN (SELECT VALUE owner FROM workspace WHERE id = workspace);
 DEFINE FIELD IF NOT EXISTS workspace  ON TABLE ent_harbor_document TYPE record<workspace>;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE ent_harbor_document TYPE datetime VALUE time::now();
 DEFINE FIELD IF NOT EXISTS updated_at ON TABLE ent_harbor_document TYPE datetime VALUE time::now();
@@ -425,30 +394,30 @@ DEFINE INDEX IF NOT EXISTS ent_harbor_document_ws ON TABLE ent_harbor_document C
 DEFINE TABLE IF NOT EXISTS rel_harbor_assigned_to TYPE RELATION SCHEMALESS
   PERMISSIONS
     FOR select WHERE
-      in.workspace IN $auth->owns_workspace->workspace
-      OR in.workspace IN $auth<-member_identifies_user<-workspace_member<-workspace_has_member<-workspace,
+      in.workspace IN $auth.id IN (SELECT VALUE owner FROM workspace WHERE id = workspace)
+      OR in.workspace IN $auth<-has_workspace_member<-workspace,
     FOR create, update, delete WHERE
-      in.workspace IN $auth->owns_workspace->workspace
+      in.workspace IN $auth.id IN (SELECT VALUE owner FROM workspace WHERE id = workspace)
       AND in.workspace = out.workspace;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE rel_harbor_assigned_to TYPE datetime VALUE time::now();
 
 DEFINE TABLE IF NOT EXISTS rel_harbor_filed_in TYPE RELATION SCHEMALESS
   PERMISSIONS
     FOR select WHERE
-      in.workspace IN $auth->owns_workspace->workspace
-      OR in.workspace IN $auth<-member_identifies_user<-workspace_member<-workspace_has_member<-workspace,
+      in.workspace IN $auth.id IN (SELECT VALUE owner FROM workspace WHERE id = workspace)
+      OR in.workspace IN $auth<-has_workspace_member<-workspace,
     FOR create, update, delete WHERE
-      in.workspace IN $auth->owns_workspace->workspace
+      in.workspace IN $auth.id IN (SELECT VALUE owner FROM workspace WHERE id = workspace)
       AND in.workspace = out.workspace;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE rel_harbor_filed_in TYPE datetime VALUE time::now();
 
 DEFINE TABLE IF NOT EXISTS rel_harbor_belongs_to TYPE RELATION SCHEMALESS
   PERMISSIONS
     FOR select WHERE
-      in.workspace IN $auth->owns_workspace->workspace
-      OR in.workspace IN $auth<-member_identifies_user<-workspace_member<-workspace_has_member<-workspace,
+      in.workspace IN $auth.id IN (SELECT VALUE owner FROM workspace WHERE id = workspace)
+      OR in.workspace IN $auth<-has_workspace_member<-workspace,
     FOR create, update, delete WHERE
-      in.workspace IN $auth->owns_workspace->workspace
+      in.workspace IN $auth.id IN (SELECT VALUE owner FROM workspace WHERE id = workspace)
       AND in.workspace = out.workspace;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE rel_harbor_belongs_to TYPE datetime VALUE time::now();
 

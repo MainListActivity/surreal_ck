@@ -65,8 +65,7 @@ export async function provisionTemplate(
   try {
     // Step 1: Create workspace record.
     const [ws] = await db.query<[string[]]>(
-      `LET $workspace = (INSERT INTO workspace { name: $name, slug: $slug } RETURN AFTER)[0];
-       RELATE $owner->owns_workspace->$workspace;
+      `LET $workspace = (INSERT INTO workspace { owner: $owner, name: $name, slug: $slug } RETURN AFTER)[0];
        RETURN $workspace.id`,
       { name: workspaceName, slug: workspaceSlug, owner: ownerUserId },
     );
@@ -78,7 +77,6 @@ export async function provisionTemplate(
     // Step 2: Create workbook record.
     const [wb] = await db.query<[string[]]>(
       `LET $workbook = (INSERT INTO workbook { workspace: $ws, name: $name, template_key: $tk } RETURN AFTER)[0];
-       RELATE $ws->workspace_has_workbook->$workbook;
        RETURN $workbook.id`,
       { ws: workspaceId, name: TEMPLATE_NAMES[templateKey], tk: templateKey },
     );
@@ -122,9 +120,7 @@ async function compensatingCleanup(
     if (workbookId) {
       // Remove sheets and their workbook edges, then the workbook itself.
       await db.query(
-        `DELETE workbook_has_sheet WHERE in = $wb;
-         DELETE sheet WHERE workbook = $wb;
-         DELETE workspace_has_workbook WHERE out = $wb;
+        `DELETE sheet WHERE workbook = $wb;
          DELETE $wb`,
         { wb: workbookId },
       );
@@ -135,9 +131,8 @@ async function compensatingCleanup(
       await db.query(
         `DELETE edge_catalog WHERE workspace = $ws;
          DELETE form_definition WHERE workspace = $ws;
-         DELETE workspace_member WHERE workspace = $ws;
-         DELETE workspace_has_member WHERE in = $ws;
-         DELETE owns_workspace WHERE out = $ws;
+         DELETE pending_workspace_member WHERE workspace = $ws;
+         DELETE has_workspace_member WHERE in = $ws;
          DELETE $ws`,
         { ws: workspaceId },
       );

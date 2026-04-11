@@ -86,13 +86,13 @@ export function WorkspaceMembersPanel({ db, workspaceId }: WorkspaceMembersPanel
     try {
       const [rows] = await db.query<[WorkspaceMember[]]>(
         `SELECT
-           out.id AS id,
+           id,
            out.email AS email,
-           out.role AS role,
-           out.invited_at AS invited_at
-         FROM workspace_has_member
+           role,
+           joined_at AS invited_at
+         FROM has_workspace_member
          WHERE in = $ws
-         ORDER BY out.invited_at DESC`,
+         ORDER BY joined_at DESC`,
         { ws: workspaceId },
       );
       dispatch({ type: 'load-ok', items: rows ?? [] });
@@ -115,17 +115,15 @@ export function WorkspaceMembersPanel({ db, workspaceId }: WorkspaceMembersPanel
     dispatch({ type: 'invite-start' });
     try {
       const [created] = await db.query<[WorkspaceMember[]]>(
-        `LET $member = (INSERT INTO workspace_member {
+        `INSERT INTO pending_workspace_member {
            workspace: $ws,
            email: $email,
            role: $role
-         } RETURN AFTER)[0];
-         RELATE $ws->workspace_has_member->$member;
-         RETURN $member;`,
+         } RETURN AFTER`,
         { ws: workspaceId, email, role: inviteRole },
       );
       const item = created?.[0];
-      if (!item) throw new Error('workspace_member record not returned');
+      if (!item) throw new Error('pending_workspace_member record not returned');
 
       dispatch({ type: 'invite-ok', item });
       setInviteEmail('');
@@ -156,7 +154,7 @@ export function WorkspaceMembersPanel({ db, workspaceId }: WorkspaceMembersPanel
   async function handleRemove(member: WorkspaceMember) {
     try {
       await db.query(
-        'DELETE workspace_has_member WHERE in = $ws AND out = $id; DELETE $id',
+        'DELETE has_workspace_member WHERE in = $ws AND out = $id',
         { ws: workspaceId, id: member.id },
       );
       dispatch({ type: 'remove-ok', id: member.id });

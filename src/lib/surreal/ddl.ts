@@ -10,13 +10,12 @@
 
 const RESERVED_TABLE_NAMES = new Set([
   // core tables
-  'app_user', 'workspace', 'workbook', 'sheet', 'workspace_member',
+  'app_user', 'workspace', 'workbook', 'sheet', 'folder',
+  'pending_workspace_member',
   'mutation', 'snapshot', 'presence', 'edge_catalog',
   'form_definition', 'intake_submission', 'client_error', 'workbook_file',
   // edge tables
-  'owns_workspace', 'workspace_has_workbook', 'workspace_has_member',
-  'member_identifies_user', 'workbook_has_sheet', 'folder',
-  'workspace_has_folder', 'folder_parent', 'folder_has_workbook',
+  'has_workspace_member',
 ]);
 
 // ─── Validation ──────────────────────────────────────────────────────────────
@@ -43,10 +42,10 @@ export function validateTableKey(key: string): string | null {
 const ENTITY_TABLE_PERMISSIONS = `
   PERMISSIONS
     FOR select WHERE
-      workspace IN $auth->owns_workspace->workspace
-      OR workspace IN $auth<-member_identifies_user<-workspace_member<-workspace_has_member<-workspace,
+      workspace.owner = $auth
+      OR workspace IN $auth<-has_workspace_member<-workspace,
     FOR create, update, delete WHERE
-      workspace IN $auth->owns_workspace->workspace`;
+      workspace.owner = $auth`;
 
 
 // ─── Field type mapping ──────────────────────────────────────────────────────
@@ -135,10 +134,10 @@ export function relationTableDDL(tableKey: string): string {
     `DEFINE TABLE IF NOT EXISTS ${tableKey} TYPE RELATION SCHEMALESS`,
     `  PERMISSIONS`,
     `    FOR select WHERE`,
-    `      in.workspace IN $auth->owns_workspace->workspace`,
-    `      OR in.workspace IN $auth<-member_identifies_user<-workspace_member<-workspace_has_member<-workspace,`,
+    `      in.workspace.owner = $auth`,
+    `      OR in.workspace IN $auth<-has_workspace_member<-workspace,`,
     `    FOR create, update, delete WHERE`,
-    `      in.workspace IN $auth->owns_workspace->workspace`,
+    `      in.workspace.owner = $auth`,
     `      AND in.workspace = out.workspace;`,
     `DEFINE FIELD IF NOT EXISTS created_at ON TABLE ${tableKey} TYPE datetime VALUE time::now();`,
   ].join('\n');
