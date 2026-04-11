@@ -517,7 +517,7 @@ function EditorChrome({
   onOpenPublishedForm: (workspaceId: string, formSlug: string) => void;
   onLogout?: () => void;
 }) {
-  const { sheets, createSheet, error: sheetsError } = useSheets(db, activeWorkbook?.id ?? null, wsKey);
+  const { sheets, isLoading: isSheetsLoading, createSheet, error: sheetsError } = useSheets(db, activeWorkbook?.id ?? null, wsKey);
   const publishSlug = getPublishSlug(activeWorkbook?.template_key as TemplateKey | null | undefined);
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
@@ -670,13 +670,13 @@ function EditorChrome({
       <div className="editor-shell__body">
         <main className="editor-shell__canvas" aria-label="工作簿编辑器">
           <EditorStateSurface
-            isWorkspaceLoading={isWorkspaceLoading}
+            isWorkspaceLoading={isWorkspaceLoading || isSheetsLoading}
             workspaceError={workspaceError}
             sheetsError={sheetsError}
             activeWorkbook={activeWorkbook}
             onShowHome={onShowHome}
           />
-          {!isWorkspaceLoading && !workspaceError && !sheetsError && activeWorkbook && workspaceId && (
+          {!isWorkspaceLoading && !isSheetsLoading && !workspaceError && !sheetsError && activeWorkbook && workspaceId && (
             <UniverGrid
               db={db}
               workbookId={activeWorkbook.id}
@@ -882,10 +882,25 @@ function UniverGrid({
   const [status, setStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const sheetsRef = useRef<Sheet[]>(sheets);
+  // Use refs for header-only props so they don't trigger Univer rebuild
+  const workbooksRef = useRef(workbooks);
+  const activeWorkbookIdRef = useRef(activeWorkbookId);
+  const workbookNameRef = useRef(workbookName);
+  const displayNameRef = useRef(displayName);
+  const onSelectWorkbookRef = useRef(onSelectWorkbook);
+  const onSelectPanelRef = useRef(onSelectPanel);
+  const onShowAdminRef = useRef(onShowAdmin);
+  const onLogoutRef = useRef(onLogout);
 
-  useEffect(() => {
-    sheetsRef.current = sheets;
-  }, [sheets]);
+  useEffect(() => { sheetsRef.current = sheets; }, [sheets]);
+  useEffect(() => { workbooksRef.current = workbooks; }, [workbooks]);
+  useEffect(() => { activeWorkbookIdRef.current = activeWorkbookId; }, [activeWorkbookId]);
+  useEffect(() => { workbookNameRef.current = workbookName; }, [workbookName]);
+  useEffect(() => { displayNameRef.current = displayName; }, [displayName]);
+  useEffect(() => { onSelectWorkbookRef.current = onSelectWorkbook; }, [onSelectWorkbook]);
+  useEffect(() => { onSelectPanelRef.current = onSelectPanel; }, [onSelectPanel]);
+  useEffect(() => { onShowAdminRef.current = onShowAdmin; }, [onShowAdmin]);
+  useEffect(() => { onLogoutRef.current = onLogout; }, [onLogout]);
 
   useEffect(() => {
     if (!containerRef.current) {
@@ -907,14 +922,14 @@ function UniverGrid({
       sheets: sheets.length > 0 ? sheets : undefined,
       wsKey: wsKey ?? undefined,
       getSheets: () => sheetsRef.current,
-      workbookName,
-      displayName,
-      workbooks,
-      activeWorkbookId,
-      onSelectWorkbook,
-      onSelectPanel,
-      onShowAdmin,
-      onLogout,
+      workbookName: workbookNameRef.current,
+      displayName: displayNameRef.current,
+      workbooks: workbooksRef.current,
+      activeWorkbookId: activeWorkbookIdRef.current,
+      onSelectWorkbook: (id) => onSelectWorkbookRef.current(id),
+      onSelectPanel: (panel) => onSelectPanelRef.current?.(panel),
+      onShowAdmin: () => onShowAdminRef.current?.(),
+      onLogout: () => onLogoutRef.current?.(),
       onSheetAdded: async (univerId, label) => {
         try {
           await createSheet({ label, univerId });
@@ -943,7 +958,8 @@ function UniverGrid({
       cancelled = true;
       instance?.destroy();
     };
-  }, [activeWorkbookId, createSheet, db, displayName, onLogout, onSelectPanel, onSelectWorkbook, onShowAdmin, sheets, workbookId, workbookName, workspaceId, workbooks, wsKey]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [createSheet, db, sheets, workbookId, workspaceId, wsKey]);
 
   return (
     <div className="univer-container" aria-label="Spreadsheet">

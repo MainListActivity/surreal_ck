@@ -94,7 +94,7 @@ export function useWorkspace(db: Surreal): UseWorkspaceResult {
     workspaces: [],
     workbooks: [],
     activeWorkspaceId: null,
-    isLoading: false,
+    isLoading: true,
     error: null,
   });
 

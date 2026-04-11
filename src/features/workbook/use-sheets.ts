@@ -85,7 +85,7 @@ export function useSheets(
 ): UseSheetsResult {
   const [state, dispatch] = useReducer(reducer, {
     sheets: [],
-    isLoading: false,
+    isLoading: workbookId !== null,
     error: null,
   });
 
@@ -104,7 +104,7 @@ export function useSheets(
       try {
         const [sheetRows] = await db.query<[Sheet[]]>(
           `SELECT * FROM sheet WHERE workbook = $wb ORDER BY position ASC`,
-          { wb: workbookId },
+          { wb: toRecordId(workbookId) },
         );
         if (cancelled) return;
 
