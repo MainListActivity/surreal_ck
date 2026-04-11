@@ -1,4 +1,4 @@
-import type { Surreal } from 'surrealdb';
+import { Table, type Surreal } from 'surrealdb';
 
 import { toRecordId } from '../lib/surreal/record-id';
 
@@ -17,13 +17,14 @@ export interface ProvisioningError {
 }
 
 /**
- * Provisions a workspace + workbook from a template.
+ * Provisions a workbook inside the current workspace from a template.
  *
  * Strategy (from the plan):
- * 1. Run DDL first (idempotent DEFINE TABLE/FIELD statements) — no transaction needed.
- * 2. Run DML (CREATE/UPSERT/RELATE) in a BEGIN/COMMIT transaction.
- * 3. On any failure, compensating cleanup removes DML records; orphaned DDL is safe
- *    because DEFINE TABLE IF NOT EXISTS is a no-op on retry.
+ * 1. Insert the workbook record into the target workspace.
+ * 2. Run template DDL/DML initialization.
+ * 3. On any failure, compensating cleanup removes the workbook and any sheet/form data
+ *    created for that workbook; orphaned DDL is safe because DEFINE TABLE IF NOT EXISTS
+ *    is a no-op on retry.
  *
  * The SurrealQL scripts live in schema/templates/ and are inlined at build time
  * via Vite's `?raw` import. This keeps the client bundle self-contained with no
@@ -57,37 +58,30 @@ const TEMPLATE_NAMES: Record<TemplateKey, string> = {
 export async function provisionTemplate(
   db: Surreal,
   templateKey: TemplateKey,
-  workspaceName: string,
-  workspaceSlug: string,
-  ownerUserId: string,
+  workspaceId: string,
+  workbookName: string,
 ): Promise<ProvisioningResult | ProvisioningError> {
-  let workspaceId: string | undefined;
   let workbookId: string | undefined;
 
   try {
-    // Step 1: Create workspace record.
-    const [ws] = await db.query<[string[]]>(
-      `LET $workspace = (INSERT INTO workspace { owner: $owner, name: $name, slug: $slug } RETURN AFTER)[0];
-       RETURN $workspace.id`,
-      { name: workspaceName, slug: workspaceSlug, owner: ownerUserId },
-    );
-    if (!ws?.[0]) {
-      return { ok: false, step: 'workspace-create', message: 'Failed to create workspace record.' };
-    }
-    workspaceId = ws[0];
-
-    // Step 2: Create workbook record.
-    const [wb] = await db.query<[string[]]>(
-      `LET $workbook = (INSERT INTO workbook { workspace: $ws, name: $name, template_key: $tk } RETURN AFTER)[0];
-       RETURN $workbook.id`,
-      { ws: workspaceId, name: TEMPLATE_NAMES[templateKey], tk: templateKey },
-    );
-    if (!wb?.[0]) {
+    // Step 1: Insert workbook into the existing workspace table.
+    const insertedWorkbook = await db.insert<{
+      id: string;
+      workspace: string;
+      name: string;
+      template_key: string;
+    }>(new Table('workbook'), {
+      workspace: workspaceId,
+      name: workbookName,
+      template_key: templateKey,
+    });
+    const workbook = Array.isArray(insertedWorkbook) ? insertedWorkbook[0] : insertedWorkbook;
+    if (!workbook?.id) {
       return { ok: false, step: 'workbook-create', message: 'Failed to create workbook record.' };
     }
-    workbookId = wb[0];
+    workbookId = String(workbook.id);
 
-    // Step 3: Run the template provisioning script.
+    // Step 2: Run the template provisioning script.
     // $ws, $wb are record references. $ws_key is the workspace nanoid used in
     // dynamic table name prefixes (e.g. "harbor" → ent_harbor_company).
     const wsKey = workspaceId.split(':')[1] ?? workspaceId;
@@ -115,36 +109,37 @@ export async function provisionTemplate(
  */
 async function compensatingCleanup(
   db: Surreal,
-  workspaceId: string | undefined,
+  workspaceId: string,
   workbookId: string | undefined,
 ): Promise<void> {
   try {
     if (workbookId) {
-      // Remove sheets and their workbook edges, then the workbook itself.
-      await db.query(
-        `DELETE sheet WHERE workbook = $wb;
-         DELETE $wb`,
-        { wb: toRecordId(workbookId) },
-      );
-    }
-    if (workspaceId) {
-      // Remove workspace-scoped records. Dynamic entity/relation tables (ent_*, rel_*)
-      // are DDL and left in place — they are idempotent to re-create on retry.
-      await db.query(
-        `DELETE edge_catalog WHERE workspace = $ws;
-         DELETE form_definition WHERE workspace = $ws;
-         DELETE pending_workspace_member WHERE workspace = $ws;
-         DELETE has_workspace_member WHERE in = $ws;
-         DELETE $ws`,
-        { ws: toRecordId(workspaceId) },
-      );
+      const sheets = await db.select<{ id: string; workbook: string }>(new Table('sheet'));
+      const workbookSheetIds = (Array.isArray(sheets) ? sheets : [])
+        .filter((sheet) => String(sheet.workbook) === workbookId)
+        .map((sheet) => String(sheet.id));
+
+      const forms = await db.select<{ id: string; workspace: string; target_sheet: string }>(new Table('form_definition'));
+      const workbookForms = (Array.isArray(forms) ? forms : [])
+        .filter((form) => String(form.workspace) === workspaceId && workbookSheetIds.includes(String(form.target_sheet)));
+
+      for (const form of workbookForms) {
+        await db.delete(toRecordId(String(form.id)));
+      }
+
+      for (const sheetId of workbookSheetIds) {
+        await db.delete(toRecordId(sheetId));
+      }
+
+      await db.delete(toRecordId(workbookId));
     }
   } catch {
     // Cleanup failure is non-fatal — log to client_error in a fire-and-forget manner.
-    void db
-      .query('CREATE client_error CONTENT { error_code: "CLEANUP_FAILED", message: $msg }', {
-        msg: `Compensating cleanup failed for workspace=${workspaceId ?? 'unknown'}`,
-      })
-      .catch(() => undefined);
+      void db
+        .insert(new Table('client_error'), {
+          error_code: 'CLEANUP_FAILED',
+          message: `Compensating cleanup failed for workspace=${workspaceId}`,
+        })
+        .catch(() => undefined);
   }
 }

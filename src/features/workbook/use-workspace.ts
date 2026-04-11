@@ -30,7 +30,8 @@ type Action =
   | { type: 'load-start' }
   | { type: 'load-ok'; workspaces: WorkspaceDb[]; workbooks: WorkbookSummaryDb[]; activeWorkspaceId: string | null }
   | { type: 'load-err'; error: string }
-  | { type: 'switch-workspace'; workspaceId: string };
+  | { type: 'switch-workspace'; workspaceId: string }
+  | { type: 'append-workbook'; workbook: WorkbookSummaryDb };
 
 function pickActiveWorkspace(workspaces: WorkspaceDb[], preferred: string | null): string | null {
   if (!workspaces.length) return null;
@@ -60,6 +61,11 @@ function reducer(state: State, action: Action): State {
       }
       return { ...state, activeWorkspaceId: action.workspaceId };
     }
+    case 'append-workbook':
+      return {
+        ...state,
+        workbooks: [action.workbook, ...state.workbooks.filter((wb) => wb.id !== action.workbook.id)],
+      };
     default:
       return state;
   }
@@ -72,6 +78,10 @@ export interface UseWorkspaceResult extends State {
   activeWorkbooks: WorkbookSummaryDb[];
   /** 切换当前工作空间，并持久化到 localStorage */
   switchWorkspace: (workspaceId: string) => void;
+  /** 重新从数据库加载工作空间和工作簿 */
+  reload: () => Promise<void>;
+  /** 乐观插入新创建的 workbook，避免路由先跳转但列表尚未刷新 */
+  appendWorkbook: (workbook: WorkbookSummaryDb) => void;
 }
 
 /**
@@ -167,7 +177,60 @@ export function useWorkspace(db: Surreal): UseWorkspaceResult {
     dispatch({ type: 'switch-workspace', workspaceId });
   }
 
-  return { ...state, activeWorkspace, activeWorkbooks, switchWorkspace };
+  async function reload() {
+    dispatch({ type: 'load-start' });
+    try {
+      const results = await db.query<
+        [Array<{ id: string; name: string; memberCount: number }>, WorkbookSummaryDb[]]
+      >(
+        `
+        SELECT
+          id,
+          name,
+          created_at AS created_at,
+          count(->has_workspace_member) AS memberCount
+        FROM workspace
+        ORDER BY created_at ASC;
+
+        SELECT
+          id,
+          name,
+          template_key,
+          updated_at,
+          created_at,
+          workspace
+        FROM workbook
+        ORDER BY updated_at DESC, created_at DESC;
+        `,
+      );
+
+      const workspaceRows = results[0];
+      const workbookRows = results[1];
+
+      const workspaces: WorkspaceDb[] = Array.isArray(workspaceRows)
+        ? workspaceRows.map((ws) => ({
+            id: String(ws.id),
+            name: ws.name,
+            memberCount: ws.memberCount ?? 0,
+          }))
+        : [];
+
+      const workbooks: WorkbookSummaryDb[] = Array.isArray(workbookRows)
+        ? workbookRows.map((wb) => ({ ...wb, id: String(wb.id), workspace: String(wb.workspace) }))
+        : [];
+
+      const activeWorkspaceId = pickActiveWorkspace(workspaces, state.activeWorkspaceId);
+      dispatch({ type: 'load-ok', workspaces, workbooks, activeWorkspaceId });
+    } catch (err) {
+      dispatch({ type: 'load-err', error: err instanceof Error ? err.message : 'Failed to load workspace.' });
+    }
+  }
+
+  function appendWorkbook(workbook: WorkbookSummaryDb) {
+    dispatch({ type: 'append-workbook', workbook });
+  }
+
+  return { ...state, activeWorkspace, activeWorkbooks, switchWorkspace, reload, appendWorkbook };
 }
 
 export interface EntityRow {

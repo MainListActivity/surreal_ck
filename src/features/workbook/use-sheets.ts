@@ -9,7 +9,7 @@
  * the user later adds typed fields or relations.
  */
 import { useEffect, useReducer, useCallback, useRef } from 'react';
-import type { Surreal } from 'surrealdb';
+import { Table, type Surreal } from 'surrealdb';
 
 import { toRecordId } from '../../lib/surreal/record-id';
 
@@ -158,24 +158,15 @@ export function useSheets(
       const sheetPosition = position ?? nextPositionRef.current++;
 
       // 1. Insert the sheet record
-      const [created] = await db.query<[Sheet[]]>(
-        `INSERT INTO sheet {
-           workbook:    $wb,
-           univer_id:   $uid,
-           table_name:  $tbl,
-           label:       $label,
-           position:    $pos,
-           column_defs: []
-         } RETURN AFTER`,
-        {
-          wb: workbookId,
-          uid: newUniverId,
-          tbl: tableName,
-          label,
-          pos: sheetPosition,
-        },
-      );
-      const sheet = created?.[0];
+      const insertedSheet = await db.insert<Sheet>(new Table('sheet'), {
+        workbook: workbookId,
+        univer_id: newUniverId,
+        table_name: tableName,
+        label,
+        position: sheetPosition,
+        column_defs: [],
+      });
+      const sheet = Array.isArray(insertedSheet) ? insertedSheet[0] : insertedSheet;
       if (!sheet) throw new Error('Sheet INSERT returned no record.');
 
       const sheetRecord: Sheet = {
@@ -199,10 +190,10 @@ export function useSheets(
   // ── Rename sheet ──────────────────────────────────────────────────────────
   const renameSheet = useCallback(
     async (sheetId: string, newLabel: string): Promise<void> => {
-      await db.query(
-        `UPDATE $id SET label = $label, updated_at = time::now()`,
-        { id: toRecordId(sheetId), label: newLabel },
-      );
+      await db.update<Sheet>(toRecordId(sheetId)).merge({
+        label: newLabel,
+        updated_at: new Date().toISOString(),
+      });
       dispatch({ type: 'update', sheetId, label: newLabel });
     },
     [db],

@@ -20,18 +20,18 @@ describe('template provisioning', () => {
   it('returns workbook and workspace ids on success', async () => {
     const { provisionTemplate } = await import('./template-provisioning');
     const db = {
+      insert: vi.fn().mockResolvedValue([{ id: 'workbook:claims', workspace: 'workspace:harbor' }]),
       query: vi.fn()
-        .mockResolvedValueOnce([['workspace:harbor']])
-        .mockResolvedValueOnce([['workbook:claims']])
         .mockResolvedValueOnce([[]]),
+      select: vi.fn(),
+      delete: vi.fn(),
     };
 
     const result = await provisionTemplate(
       db as never,
       'legal-entity-tracker',
-      'Harbor',
-      'harbor',
-      'app_user:owner',
+      'workspace:harbor',
+      '债权申报总表',
     );
 
     expect(result).toEqual({
@@ -39,25 +39,34 @@ describe('template provisioning', () => {
       workspaceId: 'workspace:harbor',
       workbookId: 'workbook:claims',
     });
-    expect(db.query).toHaveBeenCalledTimes(3);
+    expect(db.insert).toHaveBeenCalledWith(expect.anything(), {
+      workspace: 'workspace:harbor',
+      name: '债权申报总表',
+      template_key: 'legal-entity-tracker',
+    });
+    expect(db.query).toHaveBeenCalledTimes(1);
   });
 
   it('runs compensating cleanup when the template script fails', async () => {
     const { provisionTemplate } = await import('./template-provisioning');
     const db = {
+      insert: vi.fn()
+        .mockResolvedValueOnce([{ id: 'workbook:claims', workspace: 'workspace:harbor' }])
+        .mockResolvedValueOnce([]),
       query: vi.fn()
-        .mockResolvedValueOnce([['workspace:harbor']])
-        .mockResolvedValueOnce([['workbook:claims']])
         .mockRejectedValueOnce(new Error('template boom'))
-        .mockResolvedValueOnce([[]]),
+        .mockResolvedValueOnce(undefined),
+      select: vi.fn()
+        .mockResolvedValueOnce([{ id: 'sheet:s1', workbook: 'workbook:claims' }])
+        .mockResolvedValueOnce([{ id: 'form:f1', workspace: 'workspace:harbor', target_sheet: 'sheet:s1' }]),
+      delete: vi.fn().mockResolvedValue(undefined),
     };
 
     const result = await provisionTemplate(
       db as never,
       'blank-workspace',
-      'Harbor',
-      'harbor',
-      'app_user:owner',
+      'workspace:harbor',
+      '空白工作簿',
     );
 
     expect(result).toMatchObject({
@@ -65,6 +74,6 @@ describe('template provisioning', () => {
       step: 'template-script',
       message: 'template boom',
     });
-    expect(db.query).toHaveBeenCalledTimes(5);
+    expect(db.delete).toHaveBeenCalledTimes(3);
   });
 });

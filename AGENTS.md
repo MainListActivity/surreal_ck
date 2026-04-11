@@ -42,6 +42,7 @@ Key rules to internalize:
 只有当关系本身是业务实体（有属性、有生命周期、有双向遍历需求）时才用边；否则用字段。
 系统结构关系（层级归属、所有权）用字段，用户业务关系（公司持股、案件关联）用边。
 
+- 执行语句时不要直接写query，明确insert/update/delete，明确是操作的recordId还是table
 - 数据库的id类型在传递给数据库时，必须用RecordId类型或new StringRecordId(id)包裹。
 
 ### Permissions belong in the schema, never in queries

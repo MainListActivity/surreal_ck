@@ -90,8 +90,8 @@ export function AppShell({
   }, [view, activeWorkbookId, activeWorkbook, onSelectWorkbook]);
 
   async function handleCreateWorkbook(templateKey: TemplateKey) {
-    if (!ownerUserId) {
-      setCreateError('当前登录信息未提供工作区所有者标识，无法创建工作簿。');
+    if (!workspaceId) {
+      setCreateError('当前没有可用工作区，无法创建工作簿。');
       return;
     }
 
@@ -104,13 +104,11 @@ export function AppShell({
     setCreateError(null);
     setIsCreating(templateKey);
 
-    const slug = `${templateKey}-${Date.now().toString(36)}`;
     const result = await provisionTemplate(
       db,
       templateKey,
-      `${workspaceName} · ${template.defaultWorkbookName}`,
-      slug,
-      ownerUserId,
+      workspaceId,
+      template.defaultWorkbookName,
     );
 
     setIsCreating(null);
@@ -119,6 +117,14 @@ export function AppShell({
       setCreateError(`创建失败：${result.step} · ${result.message}`);
       return;
     }
+
+    workspace.appendWorkbook({
+      id: result.workbookId,
+      name: template.defaultWorkbookName,
+      template_key: templateKey,
+      updated_at: new Date().toISOString(),
+      workspace: result.workspaceId,
+    });
 
     startTransition(() => {
       onSelectWorkbook(result.workbookId);
@@ -204,13 +210,14 @@ export function AppShell({
                 className="tdocs-new-btn"
                 type="button"
                 disabled={isCreating !== null}
-                onClick={() => { void handleCreateWorkbook('legal-entity-tracker'); }}
+                onClick={() => { void handleCreateWorkbook('blank-workspace'); }}
               >
                 <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
                   <path d="M7 1v12M1 7h12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
                 </svg>
                 新建
               </button>
+              {createError ? <p className="intake-form__error" role="alert">{createError}</p> : null}
             </div>
 
             <nav className="tdocs-rail__nav">
@@ -334,7 +341,8 @@ export function AppShell({
               isLoading={workspace.isLoading}
               error={workspace.error ?? null}
               hasWorkbooks={workbooks.length > 0}
-              onCreateFirst={() => { void handleCreateWorkbook('legal-entity-tracker'); }}
+              createError={createError}
+              onCreateFirst={() => { void handleCreateWorkbook('blank-workspace'); }}
             />
 
             {!workspace.isLoading && !workspace.error && activeHomeTab === 'recent' && workspaceId && (
@@ -423,7 +431,6 @@ export function AppShell({
                         {isCreating === template.key ? '创建中…' : `+ ${template.name}`}
                       </button>
                     ))}
-                    {createError ? <p className="intake-form__error" role="alert">{createError}</p> : null}
                   </div>
                 )}
               </div>
@@ -735,12 +742,14 @@ function HomeStateSurface({
   isLoading,
   error,
   hasWorkbooks,
+  createError,
   onCreateFirst,
 }: {
   connection: ConnectionSnapshot;
   isLoading: boolean;
   error: string | null;
   hasWorkbooks: boolean;
+  createError: string | null;
   onCreateFirst: () => void;
 }) {
   if (isLoading) {
@@ -764,8 +773,9 @@ function HomeStateSurface({
       <div className="state-card">
         <p>当前工作区还没有任何工作簿，但首页骨架和操作入口已准备好。</p>
         <button className="primary-button" type="button" onClick={onCreateFirst}>
-          创建第一份债权申报总表
+          创建第一份空白工作簿
         </button>
+        {createError ? <p className="intake-form__error" role="alert">{createError}</p> : null}
       </div>
     );
   }
@@ -908,8 +918,8 @@ function UniverGrid({
       onSheetAdded: async (univerId, label) => {
         try {
           await createSheet({ label, univerId });
-        } catch {
-          // Non-fatal: the sheet tab can exist in Univer before the database catches up.
+        } catch (error) {
+          setErrorMsg(error instanceof Error ? `创建工作表失败：${error.message}` : '创建工作表失败');
         }
       },
     })

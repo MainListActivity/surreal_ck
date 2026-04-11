@@ -1,9 +1,23 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { Surreal } from 'surrealdb';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ConnectionSnapshot } from '../../lib/surreal/types';
 import { AppShell } from './app-shell';
+
+const { mockProvisionTemplate } = vi.hoisted(() => ({
+  mockProvisionTemplate: vi.fn(async () => ({
+    ok: true,
+    workspaceId: 'workspace:harbor',
+    workbookId: 'workbook:claims-new',
+  })),
+}));
+
+const defaultProvisionTemplateResult = () => ({
+  ok: true,
+  workspaceId: 'workspace:harbor',
+  workbookId: 'workbook:claims-new',
+});
 
 const mockDocTreePanel = vi.fn(({ onSelectFolder }: { onSelectFolder: (id: string | null) => void }) => (
   <div>
@@ -42,11 +56,7 @@ vi.mock('../../lib/surreal/provider', async (importOriginal) => {
 });
 
 vi.mock('../../shell/template-provisioning', () => ({
-  provisionTemplate: vi.fn(async () => ({
-    ok: true,
-    workspaceId: 'workspace:harbor',
-    workbookId: 'workbook:claims',
-  })),
+  provisionTemplate: mockProvisionTemplate,
 }));
 
 vi.mock('../../workbook/univer', () => ({
@@ -85,6 +95,8 @@ vi.mock('./use-workspace', async (importOriginal) => {
       isLoading: false,
       error: null,
       switchWorkspace: vi.fn(),
+      reload: vi.fn(),
+      appendWorkbook: vi.fn(),
     }),
   };
 });
@@ -121,6 +133,37 @@ function renderApp(overrides: Partial<Parameters<typeof AppShell>[0]> = {}) {
 }
 
 describe('App shell', () => {
+  beforeEach(() => {
+    mockProvisionTemplate.mockClear();
+    mockProvisionTemplate.mockImplementation(async () => defaultProvisionTemplateResult());
+  });
+
+  it('creates a blank workbook from the primary 新建 entry', () => {
+    renderApp();
+
+    fireEvent.click(screen.getByRole('button', { name: '新建' }));
+
+    expect(mockProvisionTemplate).toHaveBeenCalledWith(
+      stubDb,
+      'blank-workspace',
+      'workspace:harbor',
+      '空白工作簿',
+    );
+  });
+
+  it('shows create errors next to the primary 新建 entry', async () => {
+    mockProvisionTemplate.mockResolvedValueOnce({
+      ok: false,
+      step: 'workbook-create',
+      message: 'db unavailable',
+    } as any);
+
+    renderApp();
+    fireEvent.click(screen.getByRole('button', { name: '新建' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('创建失败：workbook-create · db unavailable');
+  });
+
   it('shows the Tencent-compatible home in home mode', () => {
     renderApp();
 
@@ -132,9 +175,9 @@ describe('App shell', () => {
   it('shows the editor shell in editor mode', () => {
     renderApp({ view: 'editor', activePanel: 'review' });
 
-    expect(screen.getByRole('main', { name: 'Workbook editor' })).toBeInTheDocument();
+    expect(screen.getByRole('main', { name: '工作簿编辑器' })).toBeInTheDocument();
     expect(screen.getByLabelText('Spreadsheet')).toBeInTheDocument();
-    expect(screen.getByRole('complementary', { name: 'Review queue' })).toBeInTheDocument();
+    expect(screen.getByRole('complementary', { name: '审核队列' })).toBeInTheDocument();
   });
 
   it('routes workbook row selections through the callback prop', () => {
