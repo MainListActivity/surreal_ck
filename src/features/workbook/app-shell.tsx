@@ -907,8 +907,8 @@ function UniverGrid({
       return;
     }
 
+    const controller = new AbortController();
     let instance: UniverInstance | null = null;
-    let cancelled = false;
 
     setStatus('loading');
     setErrorMsg(null);
@@ -919,6 +919,7 @@ function UniverGrid({
       workspaceId,
       clientId,
       container: containerRef.current,
+      signal: controller.signal,
       sheets: sheets.length > 0 ? sheets : undefined,
       wsKey: wsKey ?? undefined,
       getSheets: () => sheetsRef.current,
@@ -939,7 +940,7 @@ function UniverGrid({
       },
     })
       .then((nextInstance) => {
-        if (cancelled) {
+        if (controller.signal.aborted) {
           nextInstance.destroy();
           return;
         }
@@ -947,7 +948,7 @@ function UniverGrid({
         setStatus('ready');
       })
       .catch((error) => {
-        if (cancelled) {
+        if (controller.signal.aborted) {
           return;
         }
         setStatus('error');
@@ -955,14 +956,14 @@ function UniverGrid({
       });
 
     return () => {
-      cancelled = true;
+      controller.abort();
       instance?.destroy();
     };
     // sheets intentionally excluded: after bootstrap, sheet changes are read via
     // sheetsRef (getSheets callback) — re-mounting Univer on every sheet update
     // causes duplicate component registration errors in the Univer registry.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [createSheet, workbookId, workspaceId, wsKey]);
+  }, [createSheet, db, workbookId, workspaceId, wsKey]);
 
   return (
     <div className="univer-container" aria-label="Spreadsheet">

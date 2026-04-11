@@ -16,6 +16,8 @@ export interface UniverBootstrapOptions {
   workspaceId: string;
   clientId: string;
   container: HTMLElement;
+  /** AbortSignal to cancel bootstrap mid-flight (e.g. React StrictMode remount). */
+  signal?: AbortSignal;
   /** Pre-loaded sheet records from SurrealDB. If provided, Univer will be
    *  initialised with these tabs instead of an empty workbook. */
   sheets?: Sheet[];
@@ -64,6 +66,7 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
     workspaceId,
     clientId,
     container,
+    signal,
     onSyncWarning,
     onSnapshotNeeded,
   } = opts;
@@ -74,6 +77,12 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
     import('@univerjs/preset-sheets-core/locales/en-US'),
     import('@univerjs/preset-sheets-core/locales/zh-CN'),
   ]);
+
+  // Check abort after async imports — avoids double-mounting on React StrictMode remount
+  if (signal?.aborted) {
+    throw new DOMException('Bootstrap aborted', 'AbortError');
+  }
+
   const locale = getUniverLocale();
 
   const { univer, univerAPI } = createUniver({
