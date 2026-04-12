@@ -97,6 +97,11 @@ export function useSheets(
   // when createSheet is called multiple times before state updates settle.
   const nextPositionRef = useRef(0);
   const sheetsRef = useRef<Sheet[]>([]);
+  // In-flight dedup: maps univerId → pending Promise<Sheet>.
+  // Prevents a second queueSheetUpsert call (e.g. from Univer's immediate
+  // set-worksheet-name rename after insert-sheet-mutation) from spawning a
+  // second createSheet while the first is still in flight.
+  const pendingUpserts = useRef(new Map<string, Promise<Sheet>>());
 
   useEffect(() => {
     sheetsRef.current = state.sheets;
@@ -225,7 +230,16 @@ export function useSheets(
 
       const existingSheet = sheetsRef.current.find((sheet) => sheet.univer_id === targetUniverId);
       if (!existingSheet) {
-        return createSheet({ label, univerId: targetUniverId, position });
+        // Check if a createSheet call for this univerId is already in flight.
+        // This happens when Univer fires set-worksheet-name immediately after
+        // insert-sheet-mutation — both arrive before the first createSheet resolves.
+        const inflight = pendingUpserts.current.get(targetUniverId);
+        if (inflight) return inflight;
+
+        const promise = createSheet({ label, univerId: targetUniverId, position });
+        pendingUpserts.current.set(targetUniverId, promise);
+        promise.finally(() => pendingUpserts.current.delete(targetUniverId));
+        return promise;
       }
 
       if (existingSheet.label === label) {
