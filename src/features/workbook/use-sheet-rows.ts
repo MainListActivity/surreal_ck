@@ -64,11 +64,12 @@ export interface UseSheetRowsResult {
   isLoading: boolean;
   error: string | null;
   /**
-   * Upsert a row. If rowId is null, a new row is INSERTed.
-   * fields must NOT include id, workspace, created_at, updated_at — those are
-   * managed by the schema.
+   * Upsert a row.
+   * - rowId null + rowIndex: INSERT new row with row_id = rowIndex (幂等，唯一索引冲突时更新)
+   * - rowId string: UPDATE existing row by SurrealDB record id
+   * fields must NOT include id, workspace, row_id, created_at, updated_at.
    */
-  upsertRow: (rowId: string | null, fields: Record<string, unknown>) => Promise<string>;
+  upsertRow: (rowId: string | null, rowIndex: number, fields: Record<string, unknown>) => Promise<string>;
   deleteRow: (rowId: string) => Promise<void>;
 }
 
@@ -151,28 +152,31 @@ export function useSheetRows(
 
   // ── Upsert row ────────────────────────────────────────────────────────────
   const upsertRow = useCallback(
-    async (rowId: string | null, fields: Record<string, unknown>): Promise<string> => {
+    async (rowId: string | null, rowIndex: number, fields: Record<string, unknown>): Promise<string> => {
       if (!tableName || !workspaceId) throw new Error('tableName and workspaceId required.');
 
       if (rowId) {
-        // UPDATE existing row — merge fields, bump updated_at
+        // UPDATE existing row by record id — set each field explicitly
+        const setClause = Object.keys(fields).map((k) => `${k} = $f_${k}`).join(', ');
+        const fieldParams = Object.fromEntries(Object.entries(fields).map(([k, v]) => [`f_${k}`, v]));
         await db.query(
-          `UPDATE $id MERGE $fields SET updated_at = time::now()`,
-          { id: toRecordId(rowId), fields },
+          `UPDATE $id SET updated_at = time::now()${setClause ? `, ${setClause}` : ''}`,
+          { id: toRecordId(rowId), ...fieldParams },
         );
         return rowId;
       }
 
-      // INSERT new row — attach workspace for permission enforcement
+      // UPSERT with deterministic record id: tableName:rowIndex
+      const contentFields = { ...fields, workspace: workspaceId };
+      const fieldEntries = Object.keys(contentFields).map((k) => `${k}: $f_${k}`).join(', ');
+      const fieldParams = Object.fromEntries(Object.entries(contentFields).map(([k, v]) => [`f_${k}`, v]));
+
       const [created] = await db.query<[Array<{ id: unknown }>]>(
-        `INSERT INTO type::table($tbl) $fields RETURN id`,
-        {
-          tbl: tableName,
-          fields: { ...fields, workspace: workspaceId },
-        },
+        `UPSERT type::thing($tbl, $row_id) CONTENT { ${fieldEntries}, updated_at: time::now() } RETURN id`,
+        { tbl: tableName, row_id: rowIndex, ...fieldParams },
       );
       const newId = String(created?.[0]?.id ?? '');
-      if (!newId) throw new Error('Row INSERT returned no id.');
+      if (!newId) throw new Error('Row UPSERT returned no id.');
       return newId;
     },
     [db, tableName, workspaceId],

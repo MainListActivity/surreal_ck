@@ -9,7 +9,7 @@
  * the user later adds typed fields or relations.
  */
 import { useEffect, useReducer, useCallback, useRef } from 'react';
-import { Table, type Surreal } from 'surrealdb';
+import { type Surreal } from 'surrealdb';
 
 import { RecordId } from 'surrealdb';
 
@@ -161,17 +161,29 @@ export function useSheets(
       const tableName = `ent_${wsKey}_${suffix}`;
       const sheetPosition = position ?? nextPositionRef.current++;
 
-      // 1. Insert the sheet record
+      // 1. Insert the sheet record — ON DUPLICATE KEY UPDATE 保证 univer_id 唯一索引冲突时幂等
       const workbookRecordId = toRecordId(workbookId);
-      const insertedSheet = await db.insert<Sheet>(new Table('sheet'), {
-        workbook: new RecordId<'workbook'>('workbook', workbookRecordId.id),
-        univer_id: newUniverId,
-        table_name: tableName,
-        label,
-        position: sheetPosition,
-        column_defs: [],
-      });
-      const sheet = Array.isArray(insertedSheet) ? insertedSheet[0] : insertedSheet;
+      const [rows] = await db.query<[Sheet[]]>(
+        `INSERT INTO sheet {
+          workbook:    $workbook,
+          univer_id:   $univer_id,
+          table_name:  $table_name,
+          label:       $label,
+          position:    $position,
+          column_defs: []
+        } ON DUPLICATE KEY UPDATE
+          label      = $input.label,
+          position   = $input.position,
+          updated_at = time::now()`,
+        {
+          workbook:   new RecordId<'workbook'>('workbook', workbookRecordId.id),
+          univer_id:  newUniverId,
+          table_name: tableName,
+          label,
+          position:   sheetPosition,
+        },
+      );
+      const sheet = rows?.[0];
       if (!sheet) throw new Error('Sheet INSERT returned no record.');
 
       const sheetRecord: Sheet = sheet;

@@ -1,9 +1,9 @@
 import { LocaleType, type IWorksheetData } from '@univerjs/core';
-import { Table } from 'surrealdb';
+import { Table, RecordId } from 'surrealdb';
 import type { Surreal } from 'surrealdb';
 
 import type { SidebarPanel } from '../features/workbook/mock-data';
-import { toRecordId } from '../lib/surreal/record-id';
+import { toRecordId, nowDateTime } from '../lib/surreal/record-id';
 import type { Sheet } from '../lib/surreal/types';
 import { createCollabController, shouldBroadcastCommand } from './collaboration';
 import { startPresenceHeartbeat, watchCoordinator } from './presence';
@@ -410,31 +410,25 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
     const rowMap = rowOrderMap.get(subUnitId);
     const existingId = rowMap?.get(rowIdx) ?? null;
 
-    if (existingId) {
-      void db
-        .query(`UPDATE $id MERGE $fields SET updated_at = time::now()`, { id: existingId, fields })
-        .catch(() => {
+    // Deterministic record id: tableName:rowIdx — id encodes the row position.
+    // All three branches collapse into a single db.upsert() call.
+    const recordId = new RecordId(tableName, `${rowIdx}`);
+    const content = { ...fields, workspace: toRecordId(workspaceId), updated_at: nowDateTime() };
+
+    if (pendingInserts.has(pendingKey)) {
+      // F1: Race guard — another UPSERT is in-flight; chain off it
+      void pendingInserts.get(pendingKey)!.then(() => {
+        void db.upsert(recordId).merge(content).catch(() => {
           onSyncWarning?.('Cell save failed — changes may not be persisted.');
         });
-    } else if (pendingInserts.has(pendingKey)) {
-      // F1: Race guard — another INSERT is in-flight; chain an UPDATE off it
-      void pendingInserts.get(pendingKey)!.then((createdId) => {
-        void db
-          .query(`UPDATE $id MERGE $fields SET updated_at = time::now()`, { id: createdId, fields })
-          .catch(() => {
-            onSyncWarning?.('Cell save failed — changes may not be persisted.');
-          });
       });
     } else {
-      const insertPromise = db
-        .query<[Array<{ id: unknown }>]>(
-          `INSERT INTO type::table($tbl) $fields RETURN id`,
-          { tbl: tableName, fields: { ...fields, workspace: workspaceId } },
-        )
+      const upsertPromise = db
+        .upsert<Record<string, unknown>>(recordId)
+        .merge(content)
         .then((result) => {
-          const newId = String(
-            (result[0]?.[0] as { id?: unknown } | undefined)?.id ?? '',
-          );
+          const record = Array.isArray(result) ? result[0] : result;
+          const newId = String((record as { id?: unknown } | undefined)?.id ?? '');
           if (newId) {
             if (!rowOrderMap.has(subUnitId)) rowOrderMap.set(subUnitId, new Map());
             rowOrderMap.get(subUnitId)!.set(rowIdx, newId);
@@ -447,7 +441,7 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
           onSyncWarning?.('Cell save failed — changes may not be persisted.');
           throw err;
         });
-      pendingInserts.set(pendingKey, insertPromise);
+      pendingInserts.set(pendingKey, upsertPromise);
     }
   }
 
