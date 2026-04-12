@@ -23,8 +23,8 @@ export interface UniverBootstrapOptions {
   sheets?: Sheet[];
   /** Workspace key used for table-name generation (e.g. "harbor"). */
   wsKey?: string;
-  /** Called when the user adds a new tab inside Univer. */
-  onSheetAdded?: (univerId: string, label: string) => void;
+  /** Called when a Univer tab should be created or updated in the database. */
+  onSheetUpsert?: (univerId: string, label: string) => void | Promise<void>;
   /** If provided, called on every CommandExecuted to get the current sheet list.
    *  Use this when the sheet list may change after bootstrap (e.g. new tabs added). */
   getSheets?: () => Sheet[];
@@ -392,6 +392,13 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
   // from the subsequent set-range-values-mutation CommandExecuted event.
   const recentEditKeys = new Set<string>();
 
+  const queueSheetUpsert = (univerId?: string, label?: string) => {
+    if (!univerId || !label) return;
+    void Promise.resolve(opts.onSheetUpsert?.(univerId, label)).catch(() => {
+      onSyncWarning?.('工作表同步失败，数据库中的 sheet 记录可能未更新。');
+    });
+  };
+
   // ── Shared helper: persist a single cell's field map to the entity table ──
   function persistCellFields(
     subUnitId: string,
@@ -536,9 +543,22 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
         (sheetData?.id as string | undefined) ?? (sheetParams.sheetId as string | undefined);
       const newSheetName =
         (sheetData?.name as string | undefined) ?? (sheetParams.name as string | undefined);
-      if (newSheetId && newSheetName) {
-        opts.onSheetAdded?.(newSheetId, newSheetName);
-      }
+      queueSheetUpsert(newSheetId, newSheetName);
+      // Fall through so the structural mutation is also broadcast to collab
+    }
+
+    // Rename sheet tabs by stable Univer sheet id so the DB sheet record
+    // follows the visible tab label after in-editor edits.
+    if (id.includes('set-worksheet-name') && !options?.fromCollab) {
+      const sheetParams = params as Record<string, unknown>;
+      const renamedSheetId =
+        (sheetParams.subUnitId as string | undefined)
+        ?? (sheetParams.sheetId as string | undefined)
+        ?? (sheetParams.id as string | undefined);
+      const renamedSheetName =
+        (sheetParams.name as string | undefined)
+        ?? (sheetParams.title as string | undefined);
+      queueSheetUpsert(renamedSheetId, renamedSheetName);
       // Fall through so the structural mutation is also broadcast to collab
     }
 

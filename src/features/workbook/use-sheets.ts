@@ -64,6 +64,7 @@ export interface UseSheetsResult {
   isLoading: boolean;
   error: string | null;
   createSheet: (opts: CreateSheetOpts) => Promise<Sheet>;
+  upsertSheetByUniverId: (opts: CreateSheetOpts) => Promise<Sheet>;
   renameSheet: (sheetId: string, newLabel: string) => Promise<void>;
 }
 
@@ -94,6 +95,11 @@ export function useSheets(
   // Tracks the next available position synchronously to avoid duplicates
   // when createSheet is called multiple times before state updates settle.
   const nextPositionRef = useRef(0);
+  const sheetsRef = useRef<Sheet[]>([]);
+
+  useEffect(() => {
+    sheetsRef.current = state.sheets;
+  }, [state.sheets]);
 
   // ── Load sheets ────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -194,5 +200,38 @@ export function useSheets(
     [db],
   );
 
-  return { sheets: state.sheets, isLoading: state.isLoading, error: state.error, createSheet, renameSheet };
+  const upsertSheetByUniverId = useCallback(
+    async ({ label, univerId, position }: CreateSheetOpts): Promise<Sheet> => {
+      const targetUniverId = univerId?.trim();
+      if (!targetUniverId) {
+        throw new Error('univerId is required to upsert a sheet.');
+      }
+
+      const existingSheet = sheetsRef.current.find((sheet) => sheet.univer_id === targetUniverId);
+      if (!existingSheet) {
+        return createSheet({ label, univerId: targetUniverId, position });
+      }
+
+      if (existingSheet.label === label) {
+        return existingSheet;
+      }
+
+      await db.update<Sheet>(existingSheet.id).merge({
+        label,
+        updated_at: nowDateTime(),
+      });
+      dispatch({ type: 'update', sheetId: String(existingSheet.id), label });
+      return { ...existingSheet, label };
+    },
+    [createSheet, db],
+  );
+
+  return {
+    sheets: state.sheets,
+    isLoading: state.isLoading,
+    error: state.error,
+    createSheet,
+    upsertSheetByUniverId,
+    renameSheet,
+  };
 }

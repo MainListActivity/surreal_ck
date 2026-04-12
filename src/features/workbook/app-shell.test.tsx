@@ -72,6 +72,7 @@ vi.mock('./use-sheets', () => ({
     isLoading: false,
     error: null,
     createSheet: vi.fn().mockResolvedValue({}),
+    upsertSheetByUniverId: vi.fn().mockResolvedValue({}),
     renameSheet: vi.fn().mockResolvedValue(undefined),
   }),
 }));

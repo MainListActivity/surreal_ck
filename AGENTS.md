@@ -46,6 +46,7 @@ Key rules to internalize:
 - 数据库的id类型在传递给数据库时，必须用RecordId类型或new StringRecordId(id)包裹。
 - 对于数据库已经定义了的实体对象，应该在代码中统一定义对象类型，不应该在泛型里定义类型
 - 使用surrealdb的sdk执行操作，数据库定义是什么类型的字段则在ts中也必须是相应的数据类型，比如schema的field类型是datetime，则ts必须是DateTime类型
+- 带有唯一索引的表在写入数据时，必须使用`ON DUPLICATE KEY UPDATE` 来处理冲突，且不必再查询是否存在后update
 
 ### Permissions belong in the schema, never in queries
 

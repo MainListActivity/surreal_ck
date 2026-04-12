@@ -517,7 +517,13 @@ function EditorChrome({
   onOpenPublishedForm: (workspaceId: string, formSlug: string) => void;
   onLogout?: () => void;
 }) {
-  const { sheets, isLoading: isSheetsLoading, createSheet, error: sheetsError } = useSheets(db, activeWorkbook?.id ?? null, wsKey);
+  const {
+    sheets,
+    isLoading: isSheetsLoading,
+    createSheet,
+    upsertSheetByUniverId,
+    error: sheetsError,
+  } = useSheets(db, activeWorkbook?.id ?? null, wsKey);
   const publishSlug = getPublishSlug(activeWorkbook?.template_key as TemplateKey | null | undefined);
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
@@ -683,7 +689,7 @@ function EditorChrome({
               workspaceId={workspaceId}
               wsKey={wsKey}
               sheets={sheets}
-              createSheet={createSheet}
+              upsertSheet={upsertSheetByUniverId}
               workbookName={activeWorkbook.name}
               displayName={displayName}
               workbooks={workbooks}
@@ -853,7 +859,7 @@ function UniverGrid({
   workspaceId,
   wsKey,
   sheets,
-  createSheet,
+  upsertSheet,
   workbookName,
   displayName,
   workbooks,
@@ -868,7 +874,7 @@ function UniverGrid({
   workspaceId: string;
   wsKey: string | null;
   sheets: Sheet[];
-  createSheet: (opts: CreateSheetOpts) => Promise<Sheet>;
+  upsertSheet: (opts: CreateSheetOpts) => Promise<Sheet>;
   workbookName: string;
   displayName?: string;
   workbooks: Array<{ id: string; name: string; updated_at?: string | null }>;
@@ -931,11 +937,11 @@ function UniverGrid({
       onSelectPanel: (panel) => onSelectPanelRef.current?.(panel),
       onShowAdmin: () => onShowAdminRef.current?.(),
       onLogout: () => onLogoutRef.current?.(),
-      onSheetAdded: async (univerId, label) => {
+      onSheetUpsert: async (univerId, label) => {
         try {
-          await createSheet({ label, univerId });
+          await upsertSheet({ label, univerId });
         } catch (error) {
-          setErrorMsg(error instanceof Error ? `创建工作表失败：${error.message}` : '创建工作表失败');
+          setErrorMsg(error instanceof Error ? `同步工作表失败：${error.message}` : '同步工作表失败');
         }
       },
     })
@@ -963,7 +969,7 @@ function UniverGrid({
     // sheetsRef (getSheets callback) — re-mounting Univer on every sheet update
     // causes duplicate component registration errors in the Univer registry.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [createSheet, db, workbookId, workspaceId, wsKey]);
+  }, [db, upsertSheet, workbookId, workspaceId, wsKey]);
 
   return (
     <div className="univer-container" aria-label="Spreadsheet">
