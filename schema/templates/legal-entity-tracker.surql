@@ -102,92 +102,9 @@ UPSERT edge_catalog:⟨filed_by_⟩ + $ws_key CONTENT {
   edge_props: []
 };
 
--- ─── 3. Dynamic DDL ───────────────────────────────────────────────────────────
--- Entity tables: SCHEMALESS so new columns can be added without DDL.
--- Permissions: workspace members can read; only the owner can write.
--- No `workspace` field on relation tables — permission derives from in.workspace.
--- Cross-workspace RELATE is blocked by: in.workspace = out.workspace in permissions.
-
-LET $tbl_company  = "ent_" + $ws_key + "_company";
-LET $tbl_person   = "ent_" + $ws_key + "_person";
-LET $tbl_trust    = "ent_" + $ws_key + "_trust";
-LET $rel_owns     = "rel_" + $ws_key + "_owns";
-LET $rel_controls = "rel_" + $ws_key + "_controls";
-LET $rel_filed_by = "rel_" + $ws_key + "_filed_by";
-
--- company
-DEFINE TABLE IF NOT EXISTS type::table($tbl_company) SCHEMALESS
-  PERMISSIONS
-    FOR select WHERE
-      workspace.owner = $auth
-      OR workspace IN $auth<-has_workspace_member<-workspace,
-    FOR create, update, delete WHERE
-      workspace.owner = $auth;
-DEFINE FIELD IF NOT EXISTS workspace  ON TABLE type::table($tbl_company) TYPE record<workspace>;
-DEFINE FIELD IF NOT EXISTS created_at ON TABLE type::table($tbl_company) TYPE datetime VALUE time::now();
-DEFINE FIELD IF NOT EXISTS updated_at ON TABLE type::table($tbl_company) TYPE datetime VALUE time::now();
-DEFINE INDEX IF NOT EXISTS idx_workspace ON TABLE type::table($tbl_company) COLUMNS workspace;
-
--- person
-DEFINE TABLE IF NOT EXISTS type::table($tbl_person) SCHEMALESS
-  PERMISSIONS
-    FOR select WHERE
-      workspace.owner = $auth
-      OR workspace IN $auth<-has_workspace_member<-workspace,
-    FOR create, update, delete WHERE
-      workspace.owner = $auth;
-DEFINE FIELD IF NOT EXISTS workspace  ON TABLE type::table($tbl_person) TYPE record<workspace>;
-DEFINE FIELD IF NOT EXISTS created_at ON TABLE type::table($tbl_person) TYPE datetime VALUE time::now();
-DEFINE FIELD IF NOT EXISTS updated_at ON TABLE type::table($tbl_person) TYPE datetime VALUE time::now();
-DEFINE INDEX IF NOT EXISTS idx_workspace ON TABLE type::table($tbl_person) COLUMNS workspace;
-
--- trust
-DEFINE TABLE IF NOT EXISTS type::table($tbl_trust) SCHEMALESS
-  PERMISSIONS
-    FOR select WHERE
-      workspace.owner = $auth
-      OR workspace IN $auth<-has_workspace_member<-workspace,
-    FOR create, update, delete WHERE
-      workspace.owner = $auth;
-DEFINE FIELD IF NOT EXISTS workspace  ON TABLE type::table($tbl_trust) TYPE record<workspace>;
-DEFINE FIELD IF NOT EXISTS created_at ON TABLE type::table($tbl_trust) TYPE datetime VALUE time::now();
-DEFINE FIELD IF NOT EXISTS updated_at ON TABLE type::table($tbl_trust) TYPE datetime VALUE time::now();
-DEFINE INDEX IF NOT EXISTS idx_workspace ON TABLE type::table($tbl_trust) COLUMNS workspace;
-
--- owns (company → company)
-DEFINE TABLE IF NOT EXISTS type::table($rel_owns) TYPE RELATION SCHEMALESS
-  PERMISSIONS
-    FOR select WHERE
-      in.workspace.owner = $auth
-      OR in.workspace IN $auth<-has_workspace_member<-workspace,
-    FOR create, update, delete WHERE
-      in.workspace.owner = $auth
-      AND in.workspace = out.workspace;
-DEFINE FIELD IF NOT EXISTS created_at ON TABLE type::table($rel_owns) TYPE datetime VALUE time::now();
-
--- controls (company → company)
-DEFINE TABLE IF NOT EXISTS type::table($rel_controls) TYPE RELATION SCHEMALESS
-  PERMISSIONS
-    FOR select WHERE
-      in.workspace.owner = $auth
-      OR in.workspace IN $auth<-has_workspace_member<-workspace,
-    FOR create, update, delete WHERE
-      in.workspace.owner = $auth
-      AND in.workspace = out.workspace;
-DEFINE FIELD IF NOT EXISTS created_at ON TABLE type::table($rel_controls) TYPE datetime VALUE time::now();
-
--- filed_by (company → person)
-DEFINE TABLE IF NOT EXISTS type::table($rel_filed_by) TYPE RELATION SCHEMALESS
-  PERMISSIONS
-    FOR select WHERE
-      in.workspace.owner = $auth
-      OR in.workspace IN $auth<-has_workspace_member<-workspace,
-    FOR create, update, delete WHERE
-      in.workspace.owner = $auth
-      AND in.workspace = out.workspace;
-DEFINE FIELD IF NOT EXISTS created_at ON TABLE type::table($rel_filed_by) TYPE datetime VALUE time::now();
-
--- ─── 4. Form definition ───────────────────────────────────────────────────────
+-- ─── 3. Form definition ───────────────────────────────────────────────────────
+-- NOTE: DDL (DEFINE TABLE/FIELD/INDEX) is executed via the proxy service before
+-- this DML script runs. See schema/templates/ddl-provision-legal-entity-tracker.sql.
 
 UPSERT form_definition:⟨new_client_intake_⟩ + $ws_key CONTENT {
   workspace:   $ws,

@@ -1,6 +1,8 @@
 import { Table, type Surreal } from 'surrealdb';
 
 import { toRecordId } from '../lib/surreal/record-id';
+import { execDdlTemplate } from '../lib/surreal/ddl-proxy';
+import { authGateway } from '../features/auth/auth';
 import type { FormDefinition, Sheet, Workbook } from '../lib/surreal/types';
 
 import type { TemplateKey } from '../features/workbook/mock-data';
@@ -50,6 +52,13 @@ const TEMPLATE_SCRIPTS: Record<TemplateKey, string> = {
   'blank-workspace': blankWorkspaceSurql as string,
 };
 
+// Templates that require DDL provisioning via the proxy service before DML runs.
+// Key = TemplateKey, value = ddl-proxy template id (filename without .sql).
+const TEMPLATE_DDL_IDS: Partial<Record<TemplateKey, string>> = {
+  'legal-entity-tracker': 'ddl-provision-legal-entity-tracker',
+  'case-management': 'ddl-provision-case-management',
+};
+
 export async function provisionTemplate(
   db: Surreal,
   templateKey: TemplateKey,
@@ -71,10 +80,20 @@ export async function provisionTemplate(
     }
     workbookId = String(workbook.id);
 
-    // Step 2: Run the template provisioning script.
-    // $ws, $wb are record references. $ws_key is the workspace nanoid used in
-    // dynamic table name prefixes (e.g. "harbor" → ent_harbor_company).
+    // Step 2: Run DDL via proxy service (if this template requires it), then DML.
+    // Record users cannot execute DEFINE statements, so DDL is proxied to a
+    // backend service that holds root-level credentials and runs pre-approved templates.
     const wsKey = workspaceId.split(':')[1] ?? workspaceId;
+
+    const ddlTemplateId = TEMPLATE_DDL_IDS[templateKey];
+    if (ddlTemplateId) {
+      const accessToken = await authGateway.validAccessToken();
+      if (!accessToken) {
+        return { ok: false, step: 'ddl-proxy-auth', message: 'No valid access token for DDL proxy.' };
+      }
+      await execDdlTemplate(accessToken, ddlTemplateId, { ws_key: wsKey });
+    }
+
     const script = TEMPLATE_SCRIPTS[templateKey];
     await db.query(script, { ws: toRecordId(workspaceId), wb: toRecordId(workbookId), ws_key: wsKey });
 

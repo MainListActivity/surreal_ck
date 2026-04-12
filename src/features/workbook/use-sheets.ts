@@ -4,7 +4,7 @@
  * Each Sheet corresponds to one SurrealDB SCHEMALESS entity table:
  *   table_name = "ent_{ws_key}_{random_suffix}"
  *
- * Creating a sheet also runs entityTableDDL() to provision the backing table
+ * Creating a sheet calls the DDL proxy service to provision the backing table
  * with workspace-scoped permissions. No column definitions are required unless
  * the user later adds typed fields or relations.
  */
@@ -15,7 +15,8 @@ import { RecordId } from 'surrealdb';
 
 import { nowDateTime, toRecordId } from '../../lib/surreal/record-id';
 
-import { entityTableDDL } from '../../lib/surreal/ddl';
+import { execDdlTemplate } from '../../lib/surreal/ddl-proxy';
+import { authGateway } from '../auth/auth';
 import type { Sheet } from '../../lib/surreal/types';
 
 export type { Sheet as SheetRecord };
@@ -188,9 +189,12 @@ export function useSheets(
 
       const sheetRecord: Sheet = sheet;
 
-      // 2. Provision the backing SCHEMALESS entity table (no fields yet)
-      const ddl = entityTableDDL(tableName, []);
-      await db.query(ddl);
+      // 2. Provision the backing SCHEMALESS entity table via DDL proxy.
+      // Record users cannot execute DEFINE statements; the proxy service holds
+      // root-level credentials and executes the pre-approved template.
+      const accessToken = await authGateway.validAccessToken();
+      if (!accessToken) throw new Error('No valid access token for DDL proxy.');
+      await execDdlTemplate(accessToken, 'ddl-entity-table', { table_name: tableName });
 
       dispatch({ type: 'append', sheet: sheetRecord });
       return sheetRecord;
