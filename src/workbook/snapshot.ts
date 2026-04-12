@@ -14,6 +14,9 @@ export interface SnapshotController {
   onMutationApplied(): void;
   /** Update coordinator role (e.g., on presence change). */
   setCoordinator(isCoordinator: boolean): void;
+  /** Force an immediate snapshot write regardless of mutation count or timer.
+   *  Use after structural changes like new sheet creation. No-op if not coordinator. */
+  forceSnapshot(): Promise<void>;
   /** Stop all subscriptions and timers. */
   stop(): void;
   /** Load the latest snapshot for this workbook. Returns null if none. */
@@ -118,6 +121,10 @@ export function createSnapshotController(
       if (isCoordinator && mutationCount >= SNAPSHOT_MUTATION_COUNT) {
         void writeSnapshot();
       }
+    },
+
+    async forceSnapshot() {
+      await writeSnapshot();
     },
 
     setCoordinator(coordinator: boolean) {

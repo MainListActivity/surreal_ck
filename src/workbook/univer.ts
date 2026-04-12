@@ -116,25 +116,6 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
     onLogout: opts.onLogout,
   });
 
-  // ── Ribbon far-left: workbook switcher (ribbon.start.history) ──────────────
-  if (opts.workbooks && opts.workbooks.length > 0 && opts.onSelectWorkbook) {
-    const workbookSwitcher = univerAPI.createSubmenu({
-      id: 'surreal-ck-workbook-switcher',
-      title: opts.workbookName ?? '工作簿',
-      tooltip: '切换工作簿',
-    });
-
-    for (const wb of opts.workbooks) {
-      workbookSwitcher.addSubmenu(univerAPI.createMenu({
-        id: `surreal-ck-workbook-${wb.id}`,
-        title: wb.id === opts.activeWorkbookId ? `✓ ${wb.name}` : wb.name,
-        action: () => opts.onSelectWorkbook?.(wb.id),
-      }));
-    }
-
-    workbookSwitcher.appendTo('ribbon.start.history');
-  }
-
   // ── Ribbon panel tools (ribbon.start.others) ─────────────────────────────
   if (opts.onSelectPanel) {
     const workspaceTools = univerAPI
@@ -180,42 +161,6 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
       }));
 
     workspaceTools.appendTo('ribbon.start.others');
-  }
-
-  // ── Ribbon far-right: admin & user (ribbon.others.others) ────────────────
-  {
-    const adminMenu = univerAPI.createSubmenu({
-      id: 'surreal-ck-admin-menu',
-      title: opts.displayName ? `👤 ${opts.displayName}` : '账户',
-      tooltip: '账户与管理',
-    });
-
-    if (opts.onShowAdmin) {
-      adminMenu.addSubmenu(univerAPI.createMenu({
-        id: 'surreal-ck-admin-open',
-        title: '管理工具',
-        action: () => opts.onShowAdmin?.(),
-      }));
-    }
-
-    adminMenu.addSubmenu(univerAPI.createMenu({
-      id: 'surreal-ck-share',
-      title: '复制链接',
-      tooltip: '复制工作簿链接到剪贴板',
-      action: () => {
-        void navigator.clipboard.writeText(window.location.href).catch(() => undefined);
-      },
-    }));
-
-    if (opts.onLogout) {
-      adminMenu.addSeparator().addSubmenu(univerAPI.createMenu({
-        id: 'surreal-ck-logout',
-        title: '退出登录',
-        action: () => opts.onLogout?.(),
-      }));
-    }
-
-    adminMenu.appendTo('ribbon.others.others');
   }
 
   // ── Create workbook: use pre-loaded sheets or empty workbook ────────────────
@@ -394,9 +339,11 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
 
   const queueSheetUpsert = (univerId?: string, label?: string) => {
     if (!univerId || !label) return;
-    void Promise.resolve(opts.onSheetUpsert?.(univerId, label)).catch(() => {
-      onSyncWarning?.('工作表同步失败，数据库中的 sheet 记录可能未更新。');
-    });
+    void Promise.resolve(opts.onSheetUpsert?.(univerId, label))
+      .then(() => snapshotController.forceSnapshot())
+      .catch(() => {
+        onSyncWarning?.('工作表同步失败，数据库中的 sheet 记录可能未更新。');
+      });
   };
 
   // ── Shared helper: persist a single cell's field map to the entity table ──
