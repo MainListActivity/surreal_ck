@@ -388,6 +388,95 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
 
   // F1: Track in-flight INSERT promises to prevent double-INSERT races on rapid edits
   const pendingInserts = new Map<string, Promise<string>>();
+  // Dedupe: track cells already persisted via SheetEditEnded to avoid double-write
+  // from the subsequent set-range-values-mutation CommandExecuted event.
+  const recentEditKeys = new Set<string>();
+
+  // ── Shared helper: persist a single cell's field map to the entity table ──
+  function persistCellFields(
+    subUnitId: string,
+    rowIdx: number,
+    fields: Record<string, unknown>,
+    tableName: string,
+  ) {
+    const pendingKey = `${subUnitId}:${rowIdx}`;
+    const rowMap = rowOrderMap.get(subUnitId);
+    const existingId = rowMap?.get(rowIdx) ?? null;
+
+    if (existingId) {
+      void db
+        .query(`UPDATE $id MERGE $fields SET updated_at = time::now()`, { id: existingId, fields })
+        .catch(() => {
+          onSyncWarning?.('Cell save failed — changes may not be persisted.');
+        });
+    } else if (pendingInserts.has(pendingKey)) {
+      // F1: Race guard — another INSERT is in-flight; chain an UPDATE off it
+      void pendingInserts.get(pendingKey)!.then((createdId) => {
+        void db
+          .query(`UPDATE $id MERGE $fields SET updated_at = time::now()`, { id: createdId, fields })
+          .catch(() => {
+            onSyncWarning?.('Cell save failed — changes may not be persisted.');
+          });
+      });
+    } else {
+      const insertPromise = db
+        .query<[Array<{ id: unknown }>]>(
+          `INSERT INTO type::table($tbl) $fields RETURN id`,
+          { tbl: tableName, fields: { ...fields, workspace: workspaceId } },
+        )
+        .then((result) => {
+          const newId = String(
+            (result[0]?.[0] as { id?: unknown } | undefined)?.id ?? '',
+          );
+          if (newId) {
+            if (!rowOrderMap.has(subUnitId)) rowOrderMap.set(subUnitId, new Map());
+            rowOrderMap.get(subUnitId)!.set(rowIdx, newId);
+          }
+          pendingInserts.delete(pendingKey);
+          return newId;
+        })
+        .catch((err: unknown) => {
+          pendingInserts.delete(pendingKey);
+          onSyncWarning?.('Cell save failed — changes may not be persisted.');
+          throw err;
+        });
+      pendingInserts.set(pendingKey, insertPromise);
+    }
+  }
+
+  // ── SheetEditEnded: fires when the user manually finishes editing a cell ──
+  // This covers the case where Univer routes the edit through rich-text-editing
+  // (doc-level) rather than set-range-values-mutation (sheet-level), so the
+  // CommandExecuted branch below would never fire.
+  univerAPI.addEvent(univerAPI.Event.SheetEditEnded, (event) => {
+    const { worksheet, row, column, isConfirm } = event as {
+      worksheet: { getSheetId(): string; getRange(r: number, c: number, nr: number, nc: number): { getValue(): unknown } };
+      row: number;
+      column: number;
+      isConfirm: boolean;
+    };
+    if (!isConfirm) return;
+
+    const subUnitId = worksheet.getSheetId();
+    const currentSheets = opts.getSheets?.() ?? opts.sheets ?? [];
+    const targetSheet = currentSheets.find((s) => s.univer_id === subUnitId);
+    if (!targetSheet) return;
+
+    const colDefs = (targetSheet.column_defs ?? []) as Array<{ key: string; label: string }>;
+    const headerOffset = colDefs.length > 0 ? 1 : 0;
+    if (row < headerOffset) return;
+
+    // Read the committed value from Univer
+    const cellValue = worksheet.getRange(row, column, 1, 1).getValue();
+    const fieldKey = colDefs[column]?.key ?? `col_${column}`;
+
+    const dedupeKey = `${subUnitId}:${row}:${column}`;
+    recentEditKeys.add(dedupeKey);
+    // Clear dedupe flag after 500 ms — enough time for CommandExecuted to arrive
+    setTimeout(() => recentEditKeys.delete(dedupeKey), 500);
+
+    persistCellFields(subUnitId, row, { [fieldKey]: cellValue ?? '' }, targetSheet.table_name);
+  });
 
   // ── Capture local mutations: cell edits go to entity table; layout/style
   //    mutations go to collab mutation log ────────────────────────────────────
@@ -408,7 +497,6 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
       const currentSheets = opts.getSheets?.() ?? opts.sheets ?? [];
       const targetSheet = currentSheets.find((s) => s.univer_id === subUnitId);
       const colDefs = (targetSheet?.column_defs ?? []) as Array<{ key: string; label: string }>;
-      const rowMap = rowOrderMap.get(subUnitId);
 
       if (targetSheet && cellMatrix) {
         for (const [rowIdxStr, cols] of Object.entries(cellMatrix)) {
@@ -418,65 +506,22 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
           const headerOffset = colDefs.length > 0 ? 1 : 0;
           if (rowIdx < headerOffset) continue;
 
-          const pendingKey = `${subUnitId}:${rowIdx}`;
           const fields: Record<string, unknown> = {};
+          let allDeduped = true;
 
           for (const [colIdxStr, cell] of Object.entries(cols)) {
             const colIdx = parseInt(colIdxStr, 10);
             const fieldKey = colDefs[colIdx]?.key ?? `col_${colIdx}`;
             fields[fieldKey] = cell.v ?? '';
+            if (!recentEditKeys.has(`${subUnitId}:${rowIdx}:${colIdx}`)) {
+              allDeduped = false;
+            }
           }
 
-          const existingId = rowMap?.get(rowIdx) ?? null;
+          // Skip rows where every cell was already persisted by SheetEditEnded
+          if (allDeduped) continue;
 
-          if (existingId) {
-            // Row already exists in DB — UPDATE
-            void db
-              .query(
-                `UPDATE $id MERGE $fields SET updated_at = time::now()`,
-                { id: existingId, fields },
-              )
-              .catch(() => {
-                onSyncWarning?.('Cell save failed — changes may not be persisted.');
-              });
-          } else if (pendingInserts.has(pendingKey)) {
-            // F1: Race guard — another INSERT is in-flight for this row; chain an UPDATE off it
-            const insertPromise = pendingInserts.get(pendingKey)!;
-            void insertPromise.then((createdId) => {
-              void db
-                .query(
-                  `UPDATE $id MERGE $fields SET updated_at = time::now()`,
-                  { id: createdId, fields },
-                )
-                .catch(() => {
-                  onSyncWarning?.('Cell save failed — changes may not be persisted.');
-                });
-            });
-          } else {
-            // New row — INSERT and record the promise
-            const insertPromise = db
-              .query<[Array<{ id: unknown }>]>(
-                `INSERT INTO type::table($tbl) $fields RETURN id`,
-                { tbl: targetSheet.table_name, fields: { ...fields, workspace: workspaceId } },
-              )
-              .then((result) => {
-                const newId = String(
-                  (result[0]?.[0] as { id?: unknown } | undefined)?.id ?? '',
-                );
-                if (newId) {
-                  if (!rowOrderMap.has(subUnitId)) rowOrderMap.set(subUnitId, new Map());
-                  rowOrderMap.get(subUnitId)!.set(rowIdx, newId);
-                }
-                pendingInserts.delete(pendingKey);
-                return newId;
-              })
-              .catch((err: unknown) => {
-                pendingInserts.delete(pendingKey);
-                onSyncWarning?.('Cell save failed — changes may not be persisted.');
-                throw err;
-              });
-            pendingInserts.set(pendingKey, insertPromise);
-          }
+          persistCellFields(subUnitId, rowIdx, fields, targetSheet.table_name);
         }
       }
       // Do NOT write cell values to collab mutation log
