@@ -517,9 +517,182 @@ code {
   background: var(--color-paper);
 }
 
-.univer-container > div {
+.univer-canvas {
   flex: 1;
   min-height: 0;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+
+.univer-canvas--ready {
+  opacity: 1;
+}
+
+/* ── Univer 骨架屏 ─────────────────────────────────────────── */
+
+@keyframes ck-shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position:  400px 0; }
+}
+
+.univer-skeleton {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-paper);
+  z-index: 2;
+  overflow: hidden;
+  opacity: 1;
+  transition: opacity 0.22s ease;
+  pointer-events: all;
+}
+
+.univer-skeleton--hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ── 骨架屏子元素公共光泽 ── */
+.univer-skeleton__toolbar-btn,
+.univer-skeleton__formulabar-cell,
+.univer-skeleton__formulabar-input,
+.univer-skeleton__corner,
+.univer-skeleton__col-head,
+.univer-skeleton__row-head,
+.univer-skeleton__cell,
+.univer-skeleton__tab {
+  background: linear-gradient(
+    90deg,
+    #e8e8e8 25%,
+    #f0f0f0 50%,
+    #e8e8e8 75%
+  );
+  background-size: 800px 100%;
+  animation: ck-shimmer 1.4s infinite linear;
+  border-radius: 2px;
+}
+
+/* toolbar 行 */
+.univer-skeleton__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 36px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--color-line);
+  flex-shrink: 0;
+}
+
+.univer-skeleton__toolbar-btn {
+  width: 26px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.univer-skeleton__toolbar-btn:nth-child(4),
+.univer-skeleton__toolbar-btn:nth-child(8) {
+  margin-right: 8px;
+}
+
+/* 公式栏 */
+.univer-skeleton__formulabar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--color-line);
+  flex-shrink: 0;
+}
+
+.univer-skeleton__formulabar-cell {
+  width: 60px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.univer-skeleton__formulabar-input {
+  flex: 1;
+  height: 16px;
+}
+
+/* 网格 */
+.univer-skeleton__grid {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.univer-skeleton__row {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.univer-skeleton__row--header .univer-skeleton__col-head {
+  height: 24px;
+  border-bottom: 1px solid var(--color-line);
+}
+
+.univer-skeleton__corner {
+  width: 40px;
+  height: 24px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--color-line);
+  border-bottom: 1px solid var(--color-line);
+  border-radius: 0;
+}
+
+.univer-skeleton__col-head {
+  width: 100px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--color-line);
+  margin: 3px 4px;
+  height: 14px;
+}
+
+.univer-skeleton__row-head {
+  width: 40px;
+  flex-shrink: 0;
+  height: 14px;
+  margin: 5px 6px;
+  border-radius: 2px;
+}
+
+.univer-skeleton__cell {
+  width: 100px;
+  flex-shrink: 0;
+  height: 14px;
+  margin: 5px 4px;
+}
+
+/* Sheet tab 栏 */
+.univer-skeleton__tabbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  padding: 0 12px;
+  border-top: 1px solid var(--color-line);
+  flex-shrink: 0;
+}
+
+.univer-skeleton__tab {
+  width: 72px;
+  height: 16px;
+  border-radius: 3px;
+}
+
+.univer-skeleton__tab--active {
+  width: 80px;
+  background: linear-gradient(
+    90deg,
+    #d0d8f0 25%,
+    #dce4f8 50%,
+    #d0d8f0 75%
+  );
+  background-size: 800px 100%;
 }
 
 .sheet-stage__header {

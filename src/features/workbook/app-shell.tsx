@@ -675,6 +675,7 @@ function EditorChrome({
 
       <div className="editor-shell__body">
         <main className="editor-shell__canvas" aria-label="工作簿编辑器">
+          {/* 错误 / 无工作簿状态才显示警告卡片，加载中不再显示文字卡片 */}
           <EditorStateSurface
             isWorkspaceLoading={isWorkspaceLoading || isSheetsLoading}
             workspaceError={workspaceError}
@@ -682,7 +683,8 @@ function EditorChrome({
             activeWorkbook={activeWorkbook}
             onShowHome={onShowHome}
           />
-          {!isWorkspaceLoading && !isSheetsLoading && !workspaceError && !sheetsError && activeWorkbook && workspaceId && (
+          {/* 只要没有错误且 workspaceId 可用就挂载 UniverGrid，内部骨架屏负责加载过渡 */}
+          {!workspaceError && !sheetsError && workspaceId && activeWorkbook && (
             <UniverGrid
               db={db}
               workbookId={activeWorkbook.id}
@@ -699,6 +701,10 @@ function EditorChrome({
               onShowAdmin={onShowAdmin}
               onLogout={onLogout}
             />
+          )}
+          {/* workspace/sheets 仍在加载且还没有可用工作簿时，显示独立骨架屏占位 */}
+          {(isWorkspaceLoading || isSheetsLoading) && !activeWorkbook && (
+            <UniverSkeletonStandalone />
           )}
         </main>
 
@@ -803,7 +809,7 @@ function EditorStateSurface({
   onShowHome: () => void;
 }) {
   if (isWorkspaceLoading) {
-    return <div className="state-card state-card--floating"><p>正在打开工作簿…</p></div>;
+    return null;
   }
 
   if (workspaceError) {
@@ -837,6 +843,42 @@ function EditorStateSurface({
   }
 
   return null;
+}
+
+/**
+ * 独立骨架屏：workspace/sheets 尚未就绪时全屏占位，避免显示文字卡片造成布局跳动。
+ */
+function UniverSkeletonStandalone() {
+  return (
+    <div className="univer-skeleton" aria-hidden="true" style={{ position: 'absolute', inset: 0, zIndex: 2 }}>
+      <div className="univer-skeleton__toolbar">
+        {Array.from({ length: 12 }).map((_, i) => <div key={i} className="univer-skeleton__toolbar-btn" />)}
+      </div>
+      <div className="univer-skeleton__formulabar">
+        <div className="univer-skeleton__formulabar-cell" />
+        <div className="univer-skeleton__formulabar-input" />
+      </div>
+      <div className="univer-skeleton__grid">
+        <div className="univer-skeleton__row univer-skeleton__row--header">
+          <div className="univer-skeleton__corner" />
+          {Array.from({ length: 10 }).map((_, i) => <div key={i} className="univer-skeleton__col-head" />)}
+        </div>
+        {Array.from({ length: 22 }).map((_, row) => (
+          <div key={row} className="univer-skeleton__row">
+            <div className="univer-skeleton__row-head" />
+            {Array.from({ length: 10 }).map((_, col) => (
+              <div key={col} className="univer-skeleton__cell" style={{ opacity: 1 - (row * 0.03 + col * 0.01) }} />
+            ))}
+          </div>
+        ))}
+      </div>
+      <div className="univer-skeleton__tabbar">
+        <div className="univer-skeleton__tab univer-skeleton__tab--active" />
+        <div className="univer-skeleton__tab" />
+        <div className="univer-skeleton__tab" />
+      </div>
+    </div>
+  );
 }
 
 function classifyWorkspaceError(error: string): string {
@@ -887,6 +929,8 @@ function UniverGrid({
   const containerRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // 骨架屏淡出完成后从 DOM 移除，避免残留 DOM 节点
+  const [skeletonMounted, setSkeletonMounted] = useState(true);
   const sheetsRef = useRef<Sheet[]>(sheets);
   // Use refs for header-only props so they don't trigger Univer rebuild
   const workbooksRef = useRef(workbooks);
@@ -918,6 +962,7 @@ function UniverGrid({
 
     setStatus('loading');
     setErrorMsg(null);
+    setSkeletonMounted(true);
 
     bootstrapUniver({
       db,
@@ -973,9 +1018,70 @@ function UniverGrid({
 
   return (
     <div className="univer-container" aria-label="Spreadsheet">
-      {status === 'loading' ? <p className="editor-shell__hint">正在载入表格画布…</p> : null}
-      {status === 'error' ? <p className="intake-form__error">{errorMsg ?? '表格加载失败。'}</p> : null}
-      <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+      {/* 骨架屏：绝对覆盖，ready 后淡出，动画结束后 unmount */}
+      {skeletonMounted && (
+      <div
+        className={`univer-skeleton${status === 'ready' || status === 'error' ? ' univer-skeleton--hidden' : ''}`}
+        aria-hidden="true"
+        onTransitionEnd={() => {
+          if (status === 'ready' || status === 'error') setSkeletonMounted(false);
+        }}
+      >
+        {/* 模拟 toolbar 行 */}
+        <div className="univer-skeleton__toolbar">
+          {Array.from({ length: 12 }).map((_, i) => (
+            <div key={i} className="univer-skeleton__toolbar-btn" />
+          ))}
+        </div>
+        {/* 模拟公式栏 */}
+        <div className="univer-skeleton__formulabar">
+          <div className="univer-skeleton__formulabar-cell" />
+          <div className="univer-skeleton__formulabar-input" />
+        </div>
+        {/* 模拟单元格网格 */}
+        <div className="univer-skeleton__grid">
+          {/* 列头 */}
+          <div className="univer-skeleton__row univer-skeleton__row--header">
+            <div className="univer-skeleton__corner" />
+            {Array.from({ length: 10 }).map((_, i) => (
+              <div key={i} className="univer-skeleton__col-head" />
+            ))}
+          </div>
+          {/* 数据行 */}
+          {Array.from({ length: 22 }).map((_, row) => (
+            <div key={row} className="univer-skeleton__row">
+              <div className="univer-skeleton__row-head" />
+              {Array.from({ length: 10 }).map((_, col) => (
+                <div
+                  key={col}
+                  className="univer-skeleton__cell"
+                  style={{ opacity: 1 - (row * 0.03 + col * 0.01) }}
+                />
+              ))}
+            </div>
+          ))}
+        </div>
+        {/* 模拟底部 sheet tab 栏 */}
+        <div className="univer-skeleton__tabbar">
+          <div className="univer-skeleton__tab univer-skeleton__tab--active" />
+          <div className="univer-skeleton__tab" />
+          <div className="univer-skeleton__tab" />
+        </div>
+      </div>
+      )}
+
+      {status === 'error' ? (
+        <div className="state-card state-card--floating state-card--warning">
+          <p>{errorMsg ?? '表格加载失败。'}</p>
+        </div>
+      ) : null}
+
+      {/* canvas 始终挂载，Univer 在其中初始化；ready 后淡入 */}
+      <div
+        ref={containerRef}
+        className={`univer-canvas${status === 'ready' ? ' univer-canvas--ready' : ''}`}
+        style={{ width: '100%', height: '100%' }}
+      />
     </div>
   );
 }
