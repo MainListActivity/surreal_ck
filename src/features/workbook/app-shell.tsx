@@ -1,3 +1,5 @@
+import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
+import * as Select from '@radix-ui/react-select';
 import { startTransition, useDeferredValue, useEffect, useRef, useState } from 'react';
 import type { Surreal } from 'surrealdb';
 
@@ -272,16 +274,27 @@ export function AppShell({
 
             <div className="tdocs-rail__footer">
               {workspace.workspaces.length > 1 ? (
-                <select
-                  className="tdocs-rail__workspace-select"
-                  value={workspaceId ?? ''}
-                  aria-label="切换工作空间"
-                  onChange={(e) => { workspace.switchWorkspace(e.target.value); }}
-                >
-                  {workspace.workspaces.map((ws) => (
-                    <option key={ws.id} value={ws.id}>{ws.name}</option>
-                  ))}
-                </select>
+                <Select.Root value={workspaceId ?? ''} onValueChange={(val) => { workspace.switchWorkspace(val); }}>
+                  <Select.Trigger className="radix-select-trigger" aria-label="切换工作空间">
+                    <Select.Value />
+                    <Select.Icon className="radix-select-icon">
+                      <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+                        <path d="M2 3.5 5 6.5 8 3.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    </Select.Icon>
+                  </Select.Trigger>
+                  <Select.Portal>
+                    <Select.Content className="radix-select-content" position="popper" sideOffset={4}>
+                      <Select.Viewport>
+                        {workspace.workspaces.map((ws) => (
+                          <Select.Item key={ws.id} value={ws.id} className="radix-select-item">
+                            <Select.ItemText>{ws.name}</Select.ItemText>
+                          </Select.Item>
+                        ))}
+                      </Select.Viewport>
+                    </Select.Content>
+                  </Select.Portal>
+                </Select.Root>
               ) : (
                 <p className="tdocs-rail__workspace-label">{workspaceName}</p>
               )}
@@ -525,7 +538,6 @@ function EditorChrome({
     error: sheetsError,
   } = useSheets(db, activeWorkbook?.id ?? null, wsKey);
   const publishSlug = getPublishSlug(activeWorkbook?.template_key as TemplateKey | null | undefined);
-  const [switcherOpen, setSwitcherOpen] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleValue, setTitleValue] = useState(activeWorkbook?.name ?? '');
 
@@ -557,33 +569,35 @@ function EditorChrome({
 
           {/* Workbook switcher */}
           <div className="ck-editor-topbar__switcher">
-            <button
-              className="ck-editor-topbar__switcher-btn"
-              type="button"
-              aria-label="切换工作簿"
-              aria-expanded={switcherOpen}
-              onClick={() => setSwitcherOpen((v) => !v)}
-            >
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-                <rect x="1" y="2" width="12" height="1.5" rx="0.75" fill="currentColor" />
-                <rect x="1" y="6.25" width="12" height="1.5" rx="0.75" fill="currentColor" />
-                <rect x="1" y="10.5" width="12" height="1.5" rx="0.75" fill="currentColor" />
-              </svg>
-            </button>
-            {switcherOpen && (
-              <div className="ck-header-dropdown">
-                {workbooks.map((wb) => (
-                  <button
-                    key={wb.id}
-                    className={`ck-header-dropdown__item ${wb.id === activeWorkbookId ? 'ck-header-dropdown__item--active' : ''}`}
-                    type="button"
-                    onClick={() => { onSelectWorkbook(wb.id); setSwitcherOpen(false); }}
-                  >
-                    {wb.name}
-                  </button>
-                ))}
-              </div>
-            )}
+            <DropdownMenu.Root>
+              <DropdownMenu.Trigger asChild>
+                <button
+                  className="ck-editor-topbar__switcher-btn"
+                  type="button"
+                  aria-label="切换工作簿"
+                >
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                    <rect x="1" y="2" width="12" height="1.5" rx="0.75" fill="currentColor" />
+                    <rect x="1" y="6.25" width="12" height="1.5" rx="0.75" fill="currentColor" />
+                    <rect x="1" y="10.5" width="12" height="1.5" rx="0.75" fill="currentColor" />
+                  </svg>
+                </button>
+              </DropdownMenu.Trigger>
+              <DropdownMenu.Portal>
+                <DropdownMenu.Content className="radix-dropdown-content" sideOffset={6} align="start">
+                  {workbooks.map((wb) => (
+                    <DropdownMenu.Item
+                      key={wb.id}
+                      className="radix-dropdown-item"
+                      data-active={wb.id === activeWorkbookId ? 'true' : undefined}
+                      onSelect={() => { onSelectWorkbook(wb.id); }}
+                    >
+                      {wb.name}
+                    </DropdownMenu.Item>
+                  ))}
+                </DropdownMenu.Content>
+              </DropdownMenu.Portal>
+            </DropdownMenu.Root>
           </div>
 
           {/* Editable doc title */}
@@ -715,7 +729,7 @@ function EditorChrome({
                 <p className="eyebrow">{workspaceName}</p>
                 <h2>{panelLabels[activePanel]}</h2>
               </div>
-              <button className="ghost-button ghost-button--icon" type="button" onClick={() => onSelectPanel('none')}>
+              <button className="ghost-button ghost-button--icon" type="button" aria-label="关闭面板" onClick={() => onSelectPanel('none')}>
                 ×
               </button>
             </div>

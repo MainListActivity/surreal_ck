@@ -2969,3 +2969,112 @@ body {
     padding: var(--space-lg);
   }
 }
+
+/* ─── Radix UI — Select (workspace switcher) ────────────────────────────── */
+
+.radix-select-trigger {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-sm);
+  color: var(--color-ink);
+  cursor: pointer;
+  display: flex;
+  font-size: var(--font-size-small);
+  font-weight: 500;
+  gap: 6px;
+  justify-content: space-between;
+  outline: none;
+  padding: 5px 8px;
+  width: 100%;
+}
+
+.radix-select-trigger:hover {
+  background: var(--color-parchment);
+}
+
+.radix-select-trigger:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-primary);
+}
+
+.radix-select-trigger[data-placeholder] {
+  color: var(--color-muted);
+}
+
+.radix-select-icon {
+  color: var(--color-muted);
+  flex-shrink: 0;
+}
+
+.radix-select-content {
+  background: var(--color-paper);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-subtle);
+  min-width: var(--radix-select-trigger-width);
+  overflow: hidden;
+  padding: 4px;
+  z-index: 200;
+}
+
+.radix-select-item {
+  border-radius: 5px;
+  color: var(--color-ink);
+  cursor: pointer;
+  font-size: var(--font-size-small);
+  outline: none;
+  padding: 7px 10px;
+  user-select: none;
+}
+
+.radix-select-item[data-highlighted] {
+  background: var(--color-parchment);
+}
+
+.radix-select-item[data-state="checked"] {
+  background: rgba(47, 107, 255, 0.08);
+  color: var(--color-primary);
+  font-weight: 500;
+}
+
+/* ─── Radix UI — DropdownMenu (workbook switcher) ────────────────────────── */
+
+.radix-dropdown-content {
+  background: var(--color-paper);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 8px 24px rgba(26, 31, 30, 0.12);
+  min-width: 200px;
+  overflow: hidden;
+  padding: 4px;
+  z-index: 100;
+}
+
+.radix-dropdown-content[data-state="open"] {
+  animation: dropdownFadeIn var(--duration-short) ease-out;
+}
+
+@keyframes dropdownFadeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.radix-dropdown-item {
+  border-radius: 5px;
+  color: var(--color-ink);
+  cursor: pointer;
+  font-size: 0.9rem;
+  outline: none;
+  padding: 7px 10px;
+  user-select: none;
+}
+
+.radix-dropdown-item[data-highlighted] {
+  background: var(--color-parchment);
+}
+
+.radix-dropdown-item[data-active="true"] {
+  background: rgba(23, 75, 71, 0.08);
+  color: var(--color-primary);
+  font-weight: 500;
+}
