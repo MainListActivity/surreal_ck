@@ -517,6 +517,11 @@ code {
   background: var(--color-paper);
 }
 
+/* 顶部菜单 tab 栏靠左对齐 */
+.univer-container [role="tablist"].univer-justify-center {
+  justify-content: flex-start;
+}
+
 .univer-canvas {
   flex: 1;
   min-height: 0;
