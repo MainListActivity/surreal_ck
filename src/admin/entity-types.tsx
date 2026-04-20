@@ -1,9 +1,9 @@
 import { useEffect, useReducer, useState } from 'react';
-import type { Surreal } from 'surrealdb';
+import type { DbAdapter } from '../lib/surreal/db-adapter';
 
 import { validateTableKey } from '../lib/surreal/ddl';
 import { execDdlTemplate } from '../lib/surreal/ddl-proxy';
-import { authGateway } from '../features/auth/auth';
+
 import { toRecordId } from '../lib/surreal/record-id';
 
 export interface EntityField {
@@ -76,7 +76,7 @@ const INITIAL_STATE: State = {
 // Validation is delegated to ddl.ts — see validateTableKey()
 
 export interface EntityTypesPanelProps {
-  db: Surreal;
+  db: DbAdapter;
   workspaceId: string;
   workbookId: string;
   wsKey: string; // workspace nanoid used in table name prefix, e.g. "harbor"
@@ -122,11 +122,8 @@ export function EntityTypesPanel({ db, workspaceId, workbookId, wsKey }: EntityT
     dispatch({ type: 'create-start' });
 
     try {
-      // Step 1: DDL — provision the physical entity table via proxy service.
-      // Record users cannot execute DEFINE; the proxy holds root-level credentials.
-      const accessToken = await authGateway.validAccessToken();
-      if (!accessToken) throw Object.assign(new Error('No valid access token for DDL proxy.'), { step: 'ddl-auth' });
-      await execDdlTemplate(accessToken, 'ddl-entity-table', { table_name: tableName });
+      // Step 1: DDL — local-first 架构下主进程有 root 权限，直接执行
+      await execDdlTemplate('', 'ddl-entity-table', { table_name: tableName });
 
       // Step 2: Create sheet record（sheet.workbook 字段即关联，无需额外的边）
       const [created] = await db.query<[SheetSummary[]]>(

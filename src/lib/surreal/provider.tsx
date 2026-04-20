@@ -1,155 +1,99 @@
-import { useMutation } from '@tanstack/react-query';
+/**
+ * SurrealProvider（local-first IPC 版本）
+ *
+ * 在 local-first 架构下，数据库连接由 Bun 主进程持有，
+ * React 端通过 IPC 调用数据库操作，不再需要真正的连接管理。
+ *
+ * 保留 Provider 组件和 useSurreal hook 以维持 API 兼容性，
+ * 但内部不再持有 Surreal 实例或连接状态。
+ */
 import {
   createContext,
   type ReactNode,
   useCallback,
   useContext,
-  useEffect,
-  useLayoutEffect,
   useMemo,
-  useState,
-} from 'react';
-import { Surreal } from 'surrealdb';
+} from "react";
 
-import { authGateway, useAuthSnapshot } from '../../features/auth/auth';
 import {
-  authenticateSurrealAccessToken,
-  attachConnectionListeners,
-  beginAuthenticationGate,
-  clearAuthenticationGate,
   connectionState,
-  getDefaultConnectParams,
-  getEnvironmentConfig,
-  rejectAuthenticationGate,
-  type SurrealConnectParams,
-} from './client';
+  dbQuery,
+  dbCreate,
+  dbMerge,
+  dbDelete,
+  dbUpsert,
+  getLocalUser,
+  type ConnectionSnapshot,
+  useConnectionSnapshot,
+} from "./client";
+
+export interface SurrealProviderState {
+  /** IPC 模式下始终为 true（主进程管理连接） */
+  isConnected: boolean;
+  connectionSnapshot: ConnectionSnapshot;
+  /** 兼容旧 API，实际为 no-op */
+  connect: () => Promise<void>;
+  /** 兼容旧 API，实际为 no-op */
+  close: () => Promise<void>;
+  /** 数据库操作（委托给 IPC）*/
+  db: {
+    query: typeof dbQuery;
+    create: typeof dbCreate;
+    merge: typeof dbMerge;
+    delete: typeof dbDelete;
+    upsert: typeof dbUpsert;
+    getLocalUser: typeof getLocalUser;
+  };
+}
 
 export interface SurrealProviderProps {
   children: ReactNode;
-  endpoint?: string;
-  client?: Surreal;
-  params?: Partial<SurrealConnectParams>;
-  autoConnect?: boolean;
 }
 
-export interface SurrealProviderState {
-  client: Surreal;
-  isConnecting: boolean;
-  isSuccess: boolean;
-  isError: boolean;
-  error: unknown;
-  connect: () => Promise<true>;
-  close: () => Promise<true>;
-}
+const SurrealContext = createContext<SurrealProviderState | undefined>(
+  undefined,
+);
 
-const SurrealContext = createContext<SurrealProviderState | undefined>(undefined);
+export function SurrealProvider({ children }: SurrealProviderProps) {
+  const connectionSnapshot = useConnectionSnapshot();
 
-export function SurrealProvider({
-  children,
-  client,
-  endpoint,
-  params,
-  autoConnect = true,
-}: SurrealProviderProps) {
-  const [instance] = useState(() => client ?? new Surreal());
-  const auth = useAuthSnapshot();
-  const config = getEnvironmentConfig();
-  const resolvedEndpoint = endpoint ?? config.surrealUrl;
-  const resolvedParams = useMemo(() => getDefaultConnectParams(import.meta.env, params), [params]);
+  const connect = useCallback(async () => {
+    // no-op：主进程自动管理连接
+  }, []);
 
-  useLayoutEffect(() => {
-    if (autoConnect && auth.isLoggedIn) {
-      beginAuthenticationGate(instance);
-      return;
-    }
-
-    clearAuthenticationGate(instance);
-  }, [auth.isLoggedIn, autoConnect, instance]);
-
-  const {
-    mutateAsync: connectMutation,
-    isPending,
-    isSuccess,
-    isError,
-    error,
-    reset,
-  } = useMutation({
-    mutationFn: async () => {
-      const accessToken = await authGateway.validAccessToken();
-
-      if (!accessToken) {
-        rejectAuthenticationGate(new Error('Authentication required'), instance);
-        connectionState.set('auth-failed', 'Authentication required');
-        throw new Error('Authentication required');
-      }
-
-      attachConnectionListeners(instance);
-      connectionState.set('connecting');
-      await instance.connect(resolvedEndpoint, resolvedParams);
-      await instance.use({
-        namespace: config.namespace,
-        database: config.database,
-      });
-      await authenticateSurrealAccessToken(accessToken, instance);
-      return true as const;
-    },
-  });
-
-  const connect = useCallback(() => connectMutation(), [connectMutation]);
   const close = useCallback(async () => {
-    reset();
-    connectionState.set('disconnected');
-    return instance.close();
-  }, [instance, reset]);
-
-  useEffect(() => {
-    if (!autoConnect) {
-      return;
-    }
-
-    if (!auth.isLoggedIn) {
-      reset();
-      connectionState.set(auth.status === 'error' ? 'auth-failed' : 'disconnected', auth.error);
-      void instance.close().catch(() => undefined);
-      return;
-    }
-
-    void connect().catch(() => undefined);
-  }, [auth.error, auth.isLoggedIn, auth.status, autoConnect, connect, instance, reset]);
-
-  useEffect(
-    () => () => {
-      void close();
-    },
-    [close],
-  );
+    // no-op
+  }, []);
 
   const value = useMemo<SurrealProviderState>(
     () => ({
-      client: instance,
-      isConnecting: isPending,
-      isSuccess,
-      isError,
-      error,
+      isConnected: connectionSnapshot.state === "connected",
+      connectionSnapshot,
       connect,
       close,
+      db: {
+        query: dbQuery,
+        create: dbCreate,
+        merge: dbMerge,
+        delete: dbDelete,
+        upsert: dbUpsert,
+        getLocalUser,
+      },
     }),
-    [connect, close, error, instance, isError, isPending, isSuccess],
+    [connectionSnapshot, connect, close],
   );
 
-  return <SurrealContext.Provider value={value}>{children}</SurrealContext.Provider>;
+  return (
+    <SurrealContext.Provider value={value}>{children}</SurrealContext.Provider>
+  );
 }
 
 export function useSurreal(): SurrealProviderState {
   const context = useContext(SurrealContext);
 
   if (!context) {
-    throw new Error('useSurreal must be used within a SurrealProvider');
+    throw new Error("useSurreal must be used within a SurrealProvider");
   }
 
   return context;
-}
-
-export function useSurrealClient(): Surreal {
-  return useSurreal().client;
 }

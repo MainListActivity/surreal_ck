@@ -1,6 +1,5 @@
 import { LocaleType, type IWorksheetData } from '@univerjs/core';
-import { Table, RecordId } from 'surrealdb';
-import type { Surreal } from 'surrealdb';
+import type { DbAdapter } from '../lib/surreal/db-adapter';
 
 import type { SidebarPanel } from '../features/workbook/mock-data';
 import { toRecordId, nowDateTime } from '../lib/surreal/record-id';
@@ -11,7 +10,7 @@ import { createSnapshotController } from './snapshot';
 import { mountUniverHeaderExtensions } from './univer-header';
 
 export interface UniverBootstrapOptions {
-  db: Surreal;
+  db: DbAdapter;
   workbookId: string;
   workspaceId: string;
   clientId: string;
@@ -358,21 +357,20 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
     const existingId = rowMap?.get(rowIdx) ?? null;
 
     // Deterministic record id: tableName:rowIdx — id encodes the row position.
-    // All three branches collapse into a single db.upsert() call.
-    const recordId = new RecordId(tableName, `${rowIdx}`);
+    // IPC upsert: 传入 recordId 字符串（主进程负责转换为 SurrealDB RecordId 对象）
+    const recordIdStr = `${tableName}:${rowIdx}`;
     const content = { ...fields, workspace: toRecordId(workspaceId), updated_at: nowDateTime() };
 
     if (pendingInserts.has(pendingKey)) {
       // F1: Race guard — another UPSERT is in-flight; chain off it
       void pendingInserts.get(pendingKey)!.then(() => {
-        void db.upsert(recordId).merge(content).catch(() => {
+        void db.merge(recordIdStr, content).catch(() => {
           onSyncWarning?.('Cell save failed — changes may not be persisted.');
         });
       });
     } else {
       const upsertPromise = db
-        .upsert<Record<string, unknown>>(recordId)
-        .merge(content)
+        .merge(recordIdStr, content)
         .then((result) => {
           const record = Array.isArray(result) ? result[0] : result;
           const newId = String((record as { id?: unknown } | undefined)?.id ?? '');
@@ -537,17 +535,12 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
 
   if (opts.sheets?.length) {
     for (const sheet of opts.sheets) {
-      const liveQuery = await db.live(new Table(sheet.table_name)).catch(() => null);
-      if (!liveQuery) continue;
-
       const colDefs = (sheet.column_defs ?? []) as Array<{ key: string; label: string }>;
 
-      const unsub = liveQuery.subscribe((message: {
-        action: string;
-        value: Record<string, unknown>;
-      }) => {
+      // 通过 CHANGEFEED IPC 订阅 entity table 的实时变更（替代原 db.live()）
+      const unsub = db.subscribe<Record<string, unknown>>(sheet.table_name, (message) => {
         if (message.action !== 'UPDATE' && message.action !== 'CREATE') return;
-        const row = message.value;
+        const row = message.record ?? {};
         const rowId = String(row.id ?? '');
         if (!rowId) return;
 
@@ -597,6 +590,8 @@ export async function bootstrapUniver(opts: UniverBootstrapOptions): Promise<Uni
       liveCleanups.push(unsub);
     }
   }
+  // suppress lint warning about liveCleanups being partially unused after refactor
+  void liveCleanups;
 
   // --- Reconnect handler ---
   // F2: call hydrateEntityTables after reloading snapshot on reconnect

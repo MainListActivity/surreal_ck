@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useReducer } from 'react';
-import { StringRecordId, type Surreal } from 'surrealdb';
+import type { DbAdapter } from '../../lib/surreal/db-adapter';
 
 const MAX_FOLDER_DEPTH = 8;
 
@@ -110,7 +110,7 @@ export function buildFolderTree(folderRows: FolderRow[]): FolderNode[] {
 }
 
 async function loadDocTree(
-  db: Surreal,
+  db: DbAdapter,
   workspaceId: string,
 ): Promise<{ folders: FolderNode[]; unfiledWorkbooks: WorkbookRef[] }> {
   const [folderRows, unfiledRows] = await db.query<[FolderRow[], WorkbookRef[]]>(
@@ -123,7 +123,7 @@ async function loadDocTree(
      FROM workbook
      WHERE workspace = $wsId AND folder = NONE
      ORDER BY updated_at DESC;`,
-    { wsId: new StringRecordId(workspaceId) },
+    { wsId: workspaceId },
   );
 
   const normalizedFolders = (folderRows ?? []).map(normalizeFolderRow);
@@ -139,7 +139,7 @@ export interface UseDocTreeResult extends State {
   refetch: () => Promise<void>;
 }
 
-export function useDocTree(db: Surreal, workspaceId: string | null): UseDocTreeResult {
+export function useDocTree(db: DbAdapter, workspaceId: string | null): UseDocTreeResult {
   const [state, dispatch] = useReducer(reducer, {
     folders: [],
     unfiledWorkbooks: [],

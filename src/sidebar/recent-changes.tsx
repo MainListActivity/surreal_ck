@@ -1,6 +1,5 @@
 import { useEffect, useReducer } from 'react';
-import type { LiveMessage, LiveSubscription, Surreal } from 'surrealdb';
-import { Table } from 'surrealdb';
+import type { DbAdapter } from '../lib/surreal/db-adapter';
 
 interface MutationRecord {
   id: string;
@@ -69,7 +68,7 @@ function reducer(state: State, action: Action): State {
 }
 
 export interface RecentChangesPanelProps {
-  db: Surreal;
+  db: DbAdapter;
   workbookId: string;
 }
 
@@ -77,27 +76,20 @@ export function RecentChangesPanel({ db, workbookId }: RecentChangesPanelProps) 
   const [state, dispatch] = useReducer(reducer, { items: [], isLoading: false, error: null });
 
   useEffect(() => {
-    let liveQuery: LiveSubscription | undefined;
-
     async function fetchMutation(mutationId: string): Promise<MutationRecord | null> {
-      const [rows] = await db.query<[MutationRecord[]]>(
-        `SELECT
-           id,
-           command_id,
-           client_id,
-           created_at,
+      const rows = await db.query<MutationRecord[]>(
+        `SELECT id, command_id, client_id, created_at,
            ->mutation_actor_user->app_user[0] AS actor
-         FROM $id
-         LIMIT 1`,
+         FROM $id LIMIT 1`,
         { id: mutationId },
       );
-      return rows?.[0] ?? null;
+      return (Array.isArray(rows) ? rows[0] : null) ?? null;
     }
 
     async function init() {
       dispatch({ type: 'load-start' });
       try {
-        const [rows] = await db.query<[MutationRecord[]]>(
+        const rows = await db.query<MutationRecord[]>(
           `SELECT
              out.id AS id,
              out.command_id AS command_id,
@@ -110,37 +102,26 @@ export function RecentChangesPanel({ db, workbookId }: RecentChangesPanelProps) 
            LIMIT 20`,
           { wb: workbookId },
         );
-        dispatch({ type: 'load-ok', items: rows ?? [] });
-
-        // LIVE SELECT for real-time prepend.
-        liveQuery = await db.live(new Table('workbook_has_mutation'));
-        liveQuery.subscribe((message: LiveMessage) => {
-          if (message.action !== 'CREATE') {
-            return;
-          }
-
-          const edge = message.value as { in?: string; out?: string };
-          if (edge.in !== workbookId || !edge.out) {
-            return;
-          }
-
-          void fetchMutation(edge.out)
-            .then((item) => {
-              if (item) {
-                dispatch({ type: 'prepend', item });
-              }
-            })
-            .catch(() => undefined);
-        });
+        dispatch({ type: 'load-ok', items: Array.isArray(rows) ? rows : [] });
       } catch (err) {
         dispatch({ type: 'load-err', error: err instanceof Error ? err.message : 'Failed to load.' });
       }
     }
 
     void init();
-    return () => {
-      void liveQuery?.kill();
-    };
+
+    // 通过 CHANGEFEED IPC 订阅 workbook_has_mutation 变更
+    const unsub = db.subscribe<{ in?: string; out?: string }>('workbook_has_mutation', (message) => {
+      if (message.action !== 'CREATE' || !message.record) return;
+      const edge = message.record;
+      if (edge.in !== workbookId || !edge.out) return;
+
+      void fetchMutation(edge.out)
+        .then((item) => { if (item) dispatch({ type: 'prepend', item }); })
+        .catch(() => undefined);
+    });
+
+    return () => unsub();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workbookId]);
 

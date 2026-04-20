@@ -1,5 +1,4 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { Surreal } from 'surrealdb';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ConnectionSnapshot } from '../../lib/surreal/types';
@@ -46,14 +45,18 @@ vi.mock('../../lib/surreal/client', async (importOriginal) => {
   };
 });
 
-const stubDb = new Surreal();
-vi.mock('../../lib/surreal/provider', async (importOriginal) => {
-  const original = await importOriginal<typeof import('../../lib/surreal/provider')>();
-  return {
-    ...original,
-    useSurrealClient: () => stubDb,
-  };
-});
+const stubDb = {
+  query: vi.fn().mockResolvedValue([]),
+  create: vi.fn().mockResolvedValue({ id: 'test:1' }),
+  merge: vi.fn().mockResolvedValue({}),
+  delete: vi.fn().mockResolvedValue(undefined),
+  upsert: vi.fn().mockResolvedValue({}),
+  subscribe: vi.fn().mockReturnValue(() => undefined),
+};
+
+vi.mock('../../lib/surreal/db-adapter', () => ({
+  default: stubDb,
+}));
 
 vi.mock('../../shell/template-provisioning', () => ({
   provisionTemplate: mockProvisionTemplate,

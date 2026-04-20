@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import type { Surreal } from 'surrealdb';
+import type { DbAdapter } from '../../lib/surreal/db-adapter';
 
 import { DocTreePanel } from './doc-tree-panel';
 
@@ -21,7 +21,7 @@ vi.mock('./folder-mutations', () => ({
   moveFolder: (...args: unknown[]) => mockMoveFolder(...args),
 }));
 
-const db = {} as Surreal;
+const db = {} as DbAdapter;
 
 function baseTree() {
   return {

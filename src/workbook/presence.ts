@@ -1,6 +1,4 @@
-import type { LiveMessage, Surreal } from 'surrealdb';
-import { Table } from 'surrealdb';
-
+import type { DbAdapter } from '../lib/surreal/db-adapter';
 import { nowDateTime, toDateTime, toRecordId } from '../lib/surreal/record-id';
 
 export interface PresenceRecord {
@@ -12,12 +10,8 @@ export interface PresenceRecord {
 const PRESENCE_TTL_MS = 60_000;
 const PRESENCE_REFRESH_MS = 20_000;
 
-/**
- * Manages a presence heartbeat for the given workbook.
- * Returns a cleanup function that stops the heartbeat and removes the record.
- */
 export function startPresenceHeartbeat(
-  db: Surreal,
+  db: DbAdapter,
   workbookId: string,
   clientId: string,
 ): () => void {
@@ -25,9 +19,7 @@ export function startPresenceHeartbeat(
   let timerId: ReturnType<typeof setTimeout> | null = null;
 
   const upsert = async () => {
-    if (stopped) {
-      return;
-    }
+    if (stopped) return;
 
     const expiresAt = toDateTime(new Date(Date.now() + PRESENCE_TTL_MS));
 
@@ -36,11 +28,7 @@ export function startPresenceHeartbeat(
         `UPSERT presence
            SET workbook = $wb, client_id = $cid, expires_at = $exp
            WHERE workbook = $wb AND client_id = $cid`,
-        {
-          wb: toRecordId(workbookId),
-          cid: clientId,
-          exp: expiresAt,
-        },
+        { wb: toRecordId(workbookId), cid: clientId, exp: expiresAt },
       );
     } catch {
       // Network may be down; retry on next tick
@@ -55,9 +43,7 @@ export function startPresenceHeartbeat(
 
   return () => {
     stopped = true;
-    if (timerId !== null) {
-      clearTimeout(timerId);
-    }
+    if (timerId !== null) clearTimeout(timerId);
 
     void db
       .query(`DELETE presence WHERE workbook = $wb AND client_id = $cid`, {
@@ -68,27 +54,21 @@ export function startPresenceHeartbeat(
   };
 }
 
-/**
- * Watches the presence table for the given workbook and returns the lowest
- * client_id (coordinator) among currently active presences.
- * Calls onCoordinatorChange when the coordinator changes.
- * Returns a cleanup function.
- */
 export async function watchCoordinator(
-  db: Surreal,
+  db: DbAdapter,
   workbookId: string,
   clientId: string,
   onCoordinatorChange: (isCoordinator: boolean) => void,
 ): Promise<() => void> {
   const getLowest = async (): Promise<string | null> => {
-    const result = await db.query<[PresenceRecord[]]>(
+    const rows = await db.query<PresenceRecord[]>(
       `SELECT client_id FROM presence
        WHERE workbook = $wb AND expires_at > $now
        ORDER BY client_id ASC
        LIMIT 1`,
       { wb: toRecordId(workbookId), now: nowDateTime() },
     );
-    return (result[0]?.[0] as PresenceRecord | undefined)?.client_id ?? null;
+    return (Array.isArray(rows) ? rows[0] : null)?.client_id ?? null;
   };
 
   const check = async () => {
@@ -98,15 +78,12 @@ export async function watchCoordinator(
 
   await check();
 
-  const liveQuery = await db.live(new Table('presence'));
-  const unsubscribe = liveQuery.subscribe((message: LiveMessage) => {
+  // 通过 CHANGEFEED IPC 订阅 presence 表变更
+  const unsubscribe = db.subscribe('presence', (message) => {
     if (message.action === 'CREATE' || message.action === 'DELETE' || message.action === 'UPDATE') {
       void check();
     }
   });
 
-  return () => {
-    unsubscribe();
-    void liveQuery.kill().catch(() => undefined);
-  };
+  return unsubscribe;
 }

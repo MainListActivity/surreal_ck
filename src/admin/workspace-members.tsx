@@ -1,5 +1,5 @@
 import { useEffect, useReducer, useState } from 'react';
-import type { Surreal } from 'surrealdb';
+import type { DbAdapter } from '../lib/surreal/db-adapter';
 
 import { toRecordId } from '../lib/surreal/record-id';
 
@@ -66,7 +66,7 @@ const ROLE_LABELS: Record<MemberRole, string> = {
 };
 
 export interface WorkspaceMembersPanelProps {
-  db: Surreal;
+  db: DbAdapter;
   workspaceId: string;
 }
 

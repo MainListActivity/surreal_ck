@@ -1,9 +1,9 @@
 import { useEffect, useReducer, useState } from 'react';
-import type { Surreal } from 'surrealdb';
+import type { DbAdapter } from '../lib/surreal/db-adapter';
 
 import { validateTableKey } from '../lib/surreal/ddl';
 import { execDdlTemplate } from '../lib/surreal/ddl-proxy';
-import { authGateway } from '../features/auth/auth';
+
 import { toRecordId } from '../lib/surreal/record-id';
 
 export interface EdgeCatalogItem {
@@ -57,7 +57,7 @@ function reducer(state: State, action: Action): State {
 }
 
 export interface RelationTypesPanelProps {
-  db: Surreal;
+  db: DbAdapter;
   workspaceId: string;
   wsKey: string; // workspace nanoid used in table name prefix, e.g. "harbor"
 }
@@ -106,11 +106,8 @@ export function RelationTypesPanel({ db, workspaceId, wsKey }: RelationTypesPane
     dispatch({ type: 'create-start' });
 
     try {
-      // Step 1: DDL — provision the physical relation table via proxy service.
-      // Record users cannot execute DEFINE; the proxy holds root-level credentials.
-      const accessToken = await authGateway.validAccessToken();
-      if (!accessToken) throw new Error('No valid access token for DDL proxy.');
-      await execDdlTemplate(accessToken, 'ddl-relation-table', { table_name: relTable });
+      // Step 1: DDL — local-first 架构下主进程有 root 权限，直接执行（no-op execDdlTemplate）
+      await execDdlTemplate('', 'ddl-relation-table', { table_name: relTable });
 
       // Step 2: Register in edge_catalog.
       const [created] = await db.query<[EdgeCatalogItem[]]>(

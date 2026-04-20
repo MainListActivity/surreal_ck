@@ -1,10 +1,13 @@
-import { Table, type Surreal } from 'surrealdb';
-
+/**
+ * Template Provisioning（local-first 版本）
+ *
+ * 移除了 DDL proxy 和 OIDC auth 依赖。
+ * local-first 架构下，Bun 主进程持有 root 权限，
+ * 可直接执行 DEFINE TABLE 等 DDL 操作（通过 IPC dbQuery）。
+ */
+import type { DbAdapter } from '../lib/surreal/db-adapter';
 import { toRecordId } from '../lib/surreal/record-id';
-import { execDdlTemplate } from '../lib/surreal/ddl-proxy';
-import { authGateway } from '../features/auth/auth';
 import type { FormDefinition, Sheet, Workbook } from '../lib/surreal/types';
-
 import type { TemplateKey } from '../features/workbook/mock-data';
 
 export interface ProvisioningResult {
@@ -19,25 +22,9 @@ export interface ProvisioningError {
   message: string;
 }
 
-/**
- * Provisions a workbook inside the current workspace from a template.
- *
- * Strategy (from the plan):
- * 1. Insert the workbook record into the target workspace.
- * 2. Run template DDL/DML initialization.
- * 3. On any failure, compensating cleanup removes the workbook and any sheet/form data
- *    created for that workbook; orphaned DDL is safe because DEFINE TABLE IF NOT EXISTS
- *    is a no-op on retry.
- *
- * The SurrealQL scripts live in schema/templates/ and are inlined at build time
- * via Vite's `?raw` import. This keeps the client bundle self-contained with no
- * separate fetch required.
- */
-
-// Vite raw imports — bundled at build time.
-// The `?raw` suffix tells Vite to import the file as a plain string.
+// SurrealQL 模板脚本通过 Vite ?raw 在构建时内联
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore — Vite raw import, not a TS module
+// @ts-ignore
 import legalEntityTrackerSurql from '../../schema/templates/legal-entity-tracker.surql?raw';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore
@@ -52,15 +39,8 @@ const TEMPLATE_SCRIPTS: Record<TemplateKey, string> = {
   'blank-workspace': blankWorkspaceSurql as string,
 };
 
-// Templates that require DDL provisioning via the proxy service before DML runs.
-// Key = TemplateKey, value = ddl-proxy template id (filename without .sql).
-const TEMPLATE_DDL_IDS: Partial<Record<TemplateKey, string>> = {
-  'legal-entity-tracker': 'ddl-provision-legal-entity-tracker',
-  'case-management': 'ddl-provision-case-management',
-};
-
 export async function provisionTemplate(
-  db: Surreal,
+  db: DbAdapter,
   templateKey: TemplateKey,
   workspaceId: string,
   workbookName: string,
@@ -68,84 +48,62 @@ export async function provisionTemplate(
   let workbookId: string | undefined;
 
   try {
-    // Step 1: Insert workbook into the existing workspace table.
-    const insertedWorkbook = (await db.insert(new Table('workbook'), {
+    // Step 1: 创建 workbook 记录
+    const result = await db.create('workbook', {
       workspace: toRecordId(workspaceId),
       name: workbookName,
       template_key: templateKey,
-    })) as Workbook[];
-    const workbook = Array.isArray(insertedWorkbook) ? insertedWorkbook[0] : insertedWorkbook;
+    });
+    const workbook = result as unknown as Workbook;
     if (!workbook?.id) {
       return { ok: false, step: 'workbook-create', message: 'Failed to create workbook record.' };
     }
     workbookId = String(workbook.id);
 
-    // Step 2: Run DDL via proxy service (if this template requires it), then DML.
-    // Record users cannot execute DEFINE statements, so DDL is proxied to a
-    // backend service that holds root-level credentials and runs pre-approved templates.
+    // Step 2: 执行模板 SurrealQL（local-first 下主进程有 root 权限，DDL 直接执行）
     const wsKey = workspaceId.split(':')[1] ?? workspaceId;
-
-    const ddlTemplateId = TEMPLATE_DDL_IDS[templateKey];
-    if (ddlTemplateId) {
-      const accessToken = await authGateway.validAccessToken();
-      if (!accessToken) {
-        return { ok: false, step: 'ddl-proxy-auth', message: 'No valid access token for DDL proxy.' };
-      }
-      await execDdlTemplate(accessToken, ddlTemplateId, { ws_key: wsKey });
-    }
-
     const script = TEMPLATE_SCRIPTS[templateKey];
-    await db.query(script, { ws: toRecordId(workspaceId), wb: toRecordId(workbookId), ws_key: wsKey });
+    await db.query(script, {
+      ws: toRecordId(workspaceId),
+      wb: toRecordId(workbookId),
+      ws_key: wsKey,
+    });
 
     return { ok: true, workspaceId, workbookId };
   } catch (err) {
-    // Compensating cleanup: remove DML records created before the failure.
-    // DDL (DEFINE TABLE etc.) is idempotent and left in place — safe to retry.
     await compensatingCleanup(db, workspaceId, workbookId);
-
     const message = err instanceof Error ? err.message : String(err);
     return { ok: false, step: 'template-script', message };
   }
 }
 
-/**
- * Removes workspace + workbook records created before a provisioning failure.
- * Entity type records and sample data created by the template script are cascade-
- * deleted when the workspace is removed (via workspace field reference).
- *
- * This is best-effort: if cleanup itself fails, the partial records are orphaned
- * but do not affect other workspaces.
- */
 async function compensatingCleanup(
-  db: Surreal,
+  db: DbAdapter,
   workspaceId: string,
   workbookId: string | undefined,
 ): Promise<void> {
   try {
     if (workbookId) {
-      const sheets = await db.select<Sheet>(new Table('sheet'));
-      const workbookSheetIds = (Array.isArray(sheets) ? sheets : [])
-        .filter((sheet) => String(sheet.workbook) === workbookId)
-        .map((sheet) => String(sheet.id));
+      const sheets = await db.query<Sheet[]>('SELECT * FROM sheet WHERE workbook = $wb', {
+        wb: toRecordId(workbookId),
+      });
+      const workbookSheets = Array.isArray(sheets) ? sheets : [];
 
-      const forms = await db.select<FormDefinition>(new Table('form_definition'));
-      const workbookForms = (Array.isArray(forms) ? forms : [])
-        .filter((form) => String(form.workspace) === workspaceId && workbookSheetIds.includes(String(form.target_sheet)));
+      const forms = await db.query<FormDefinition[]>('SELECT * FROM form_definition WHERE workspace = $ws', {
+        ws: toRecordId(workspaceId),
+      });
+      const workbookSheetIds = workbookSheets.map((s) => String(s.id));
+      const workbookForms = (Array.isArray(forms) ? forms : []).filter((f) =>
+        workbookSheetIds.includes(String(f.target_sheet)),
+      );
 
-      for (const form of workbookForms) {
-        await db.delete(toRecordId(String(form.id)));
-      }
-
-      for (const sheetId of workbookSheetIds) {
-        await db.delete(toRecordId(sheetId));
-      }
-
-      await db.delete(toRecordId(workbookId));
+      for (const form of workbookForms) await db.delete(String(form.id));
+      for (const sheet of workbookSheets) await db.delete(String(sheet.id));
+      await db.delete(workbookId);
     }
   } catch {
-    // Cleanup failure is non-fatal — log to client_error in a fire-and-forget manner.
     void db
-      .insert(new Table('client_error'), {
+      .create('client_error', {
         error_code: 'CLEANUP_FAILED',
         message: `Compensating cleanup failed for workspace=${workspaceId}`,
       })

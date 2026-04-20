@@ -11,12 +11,19 @@ export default defineConfig({
   build: {
     rollupOptions: {
       input: {
-        app: resolve(__dirname, 'index.html'),
-        collabSpike: resolve(__dirname, 'spike/collab-test.html'),
+        // electrobun webview 主入口
+        main: resolve(__dirname, 'views/main/index.html'),
       },
     },
   },
+  resolve: {
+    alias: {
+      // 在 webview 开发时，electrobun/view API 由 views/main/ipc.ts 的 IPC 客户端提供
+      // 构建时 electrobun 会替换这个别名
+    },
+  },
   optimizeDeps: {
-    exclude: ['@surrealdb/wasm'],
+    // electrobun/view 是运行时注入的，排除在 vite 优化之外
+    exclude: ['electrobun'],
   },
 });

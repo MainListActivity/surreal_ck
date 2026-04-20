@@ -1,4 +1,4 @@
-import type { Surreal } from 'surrealdb';
+import type { DbAdapter } from '../../lib/surreal/db-adapter';
 
 import { toRecordId } from '../../lib/surreal/record-id';
 
@@ -40,7 +40,7 @@ const CYCLE_ERROR = '不能将文件夹移动到它自己的子文件夹中';
 const DEPTH_ERROR = '文件夹最多支持 8 层';
 
 
-async function readParentId(db: Surreal, folderId: string): Promise<string | null> {
+async function readParentId(db: DbAdapter, folderId: string): Promise<string | null> {
   const [rows] = await db.query<[Array<{ parent: string | null }>]>(
     `SELECT VALUE parent FROM ONLY $id`,
     { id: toRecordId(folderId) },
@@ -49,7 +49,7 @@ async function readParentId(db: Surreal, folderId: string): Promise<string | nul
   return parent ? String(parent) : null;
 }
 
-async function computeDepth(db: Surreal, folderId: string): Promise<number> {
+async function computeDepth(db: DbAdapter, folderId: string): Promise<number> {
   let currentId: string | null = folderId;
   let depth = 0;
 
@@ -61,7 +61,7 @@ async function computeDepth(db: Surreal, folderId: string): Promise<number> {
   return depth;
 }
 
-async function wouldCreateCycle(db: Surreal, folderId: string, newParentId: string): Promise<boolean> {
+async function wouldCreateCycle(db: DbAdapter, folderId: string, newParentId: string): Promise<boolean> {
   let currentId: string | null = newParentId;
   let hops = 0;
 
@@ -74,7 +74,7 @@ async function wouldCreateCycle(db: Surreal, folderId: string, newParentId: stri
   return false;
 }
 
-export async function createFolder(db: Surreal, options: CreateFolderOptions): Promise<FolderMutationResult> {
+export async function createFolder(db: DbAdapter, options: CreateFolderOptions): Promise<FolderMutationResult> {
   try {
     await db.query(
       `INSERT INTO folder {
@@ -96,7 +96,7 @@ export async function createFolder(db: Surreal, options: CreateFolderOptions): P
   }
 }
 
-export async function renameFolder(db: Surreal, options: RenameFolderOptions): Promise<FolderMutationResult> {
+export async function renameFolder(db: DbAdapter, options: RenameFolderOptions): Promise<FolderMutationResult> {
   try {
     await db.query(
       `UPDATE $id SET name = $name, updated_at = time::now()`,
@@ -108,7 +108,7 @@ export async function renameFolder(db: Surreal, options: RenameFolderOptions): P
   }
 }
 
-export async function deleteFolder(db: Surreal, options: DeleteFolderOptions): Promise<FolderMutationResult> {
+export async function deleteFolder(db: DbAdapter, options: DeleteFolderOptions): Promise<FolderMutationResult> {
   try {
     const [[childCount], [workbookCount]] = await db.query<[[number], [number]]>(
       `SELECT VALUE count() FROM folder WHERE parent = $id GROUP ALL;
@@ -127,7 +127,7 @@ export async function deleteFolder(db: Surreal, options: DeleteFolderOptions): P
   }
 }
 
-export async function moveFolder(db: Surreal, options: MoveFolderOptions): Promise<FolderMutationResult> {
+export async function moveFolder(db: DbAdapter, options: MoveFolderOptions): Promise<FolderMutationResult> {
   try {
     if (options.newParentId) {
       if (await wouldCreateCycle(db, options.folderId, options.newParentId)) {
@@ -163,7 +163,7 @@ export async function moveFolder(db: Surreal, options: MoveFolderOptions): Promi
   }
 }
 
-export async function attachWorkbook(db: Surreal, options: AttachWorkbookOptions): Promise<FolderMutationResult> {
+export async function attachWorkbook(db: DbAdapter, options: AttachWorkbookOptions): Promise<FolderMutationResult> {
   try {
     await db.query(
       `UPDATE $workbookId SET folder = $folderId, updated_at = time::now()`,
@@ -178,7 +178,7 @@ export async function attachWorkbook(db: Surreal, options: AttachWorkbookOptions
   }
 }
 
-export async function detachWorkbook(db: Surreal, options: DetachWorkbookOptions): Promise<FolderMutationResult> {
+export async function detachWorkbook(db: DbAdapter, options: DetachWorkbookOptions): Promise<FolderMutationResult> {
   try {
     await db.query(
       `UPDATE $workbookId SET folder = NONE, updated_at = time::now()`,

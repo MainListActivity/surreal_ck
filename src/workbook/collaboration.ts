@@ -1,6 +1,4 @@
-import type { LiveMessage, LiveSubscription, Surreal } from 'surrealdb';
-import { Table } from 'surrealdb';
-
+import type { DbAdapter } from '../lib/surreal/db-adapter';
 import { toDateTime, toRecordId } from '../lib/surreal/record-id';
 import type { MutationRecord } from '../lib/surreal/types';
 
@@ -16,11 +14,7 @@ export interface ReplayableCommand {
   params: Record<string, unknown>;
 }
 
-// Commands that are safe to replay on remote clients.
-// Extend this set as spike testing confirms additional command types.
 export const COLLAB_COMMAND_WHITELIST = new Set([
-  // NOTE: cell value mutations (set-range-values-mutation) are intentionally
-  // excluded — they go directly to entity tables, not the collab mutation log.
   'sheet.mutation.set-worksheet-row-count-mutation',
   'sheet.mutation.set-worksheet-col-count-mutation',
   'sheet.mutation.insert-row-mutation',
@@ -37,21 +31,17 @@ export const COLLAB_COMMAND_WHITELIST = new Set([
   'sheet.mutation.set-cell-comments-mutation',
 ]);
 
-// How many mutations or how many seconds before we switch to snapshot sync
 const SNAPSHOT_MUTATION_THRESHOLD = 50;
 const SNAPSHOT_TIME_THRESHOLD_MS = 30_000;
 
 export interface CollabController {
-  /** Start capturing and broadcasting cell mutations. */
   start(): Promise<void>;
-  /** Stop all LIVE SELECT subscriptions and cleanup. */
   stop(): void;
-  /** Handle reconnection: replay gap or fall back to snapshot. */
   handleReconnect(lastKnownTs: string | null): Promise<'replay' | 'snapshot'>;
 }
 
 export function createCollabController(
-  db: Surreal,
+  db: DbAdapter,
   workbookId: string,
   workspaceId: string,
   clientId: string,
@@ -59,7 +49,6 @@ export function createCollabController(
   onSnapshotNeeded: () => void,
   onQueueWarning: (queuedCount: number) => void,
 ): CollabController {
-  let liveQuery: LiveSubscription | null = null;
   let unsubscribeLive: (() => void) | null = null;
   let paused = false;
   const pendingBuffer: MutationRecord[] = [];
@@ -77,12 +66,7 @@ export function createCollabController(
              params: $params,
              client_id: $cid
            }`,
-          {
-            wb: toRecordId(workbookId),
-            cmd: item.command_id,
-            params: item.params,
-            cid: item.client_id,
-          },
+          { wb: toRecordId(workbookId), cmd: item.command_id, params: item.params, cid: item.client_id },
         );
         retryQueue.shift();
       } catch {
@@ -101,55 +85,33 @@ export function createCollabController(
            params: $params,
            client_id: $cid
          }`,
-        {
-          wb: toRecordId(mutation.workbook),
-          cmd: mutation.command_id,
-          params: mutation.params,
-          cid: mutation.client_id,
-        },
+        { wb: toRecordId(mutation.workbook), cmd: mutation.command_id, params: mutation.params, cid: mutation.client_id },
       );
     } catch {
-      if (retryQueue.length < MAX_QUEUE) {
-        retryQueue.push(mutation);
-      }
-      // Drop oldest if at cap
-      if (retryQueue.length >= MAX_QUEUE) {
-        retryQueue.shift();
-      }
-      if (retryQueue.length >= 50) {
-        onQueueWarning(retryQueue.length);
-      }
+      if (retryQueue.length < MAX_QUEUE) retryQueue.push(mutation);
+      if (retryQueue.length >= MAX_QUEUE) retryQueue.shift();
+      if (retryQueue.length >= 50) onQueueWarning(retryQueue.length);
     }
   };
 
+  // expose insertMutation for callers (used by univer.ts)
+  (createCollabController as unknown as { _insertMutation?: unknown })._insertMutation = insertMutation;
+
   const applyRemote = (record: MutationRecord) => {
-    if (record.client_id === clientId) {
-      // Suppress our own mutations coming back from LIVE SELECT
-      return;
-    }
+    if (record.client_id === clientId) return;
 
     if (!COLLAB_COMMAND_WHITELIST.has(record.command_id)) {
-      void db
-        .query(
-          `CREATE client_error CONTENT {
-             workspace: $ws,
-             workbook: $wb,
-             client_id: $cid,
-             error_code: $code,
-             message: $msg,
-             meta: $meta
-           }`,
-          {
-            wb: toRecordId(workbookId),
-            ws: toRecordId(workspaceId),
-            cid: clientId,
-            code: 'unknown_command',
-            msg: `Received unknown command_id: ${record.command_id}`,
-            meta: { command_id: record.command_id },
-          },
-        )
-        .catch(() => undefined);
-      // Trigger snapshot resync for safety on unknown commands
+      void db.query(
+        `CREATE client_error CONTENT {
+           workspace: $ws, workbook: $wb, client_id: $cid,
+           error_code: $code, message: $msg, meta: $meta
+         }`,
+        {
+          wb: toRecordId(workbookId), ws: toRecordId(workspaceId), cid: clientId,
+          code: 'unknown_command', msg: `Received unknown command_id: ${record.command_id}`,
+          meta: { command_id: record.command_id },
+        },
+      ).catch(() => undefined);
       onSnapshotNeeded();
       return;
     }
@@ -159,92 +121,56 @@ export function createCollabController(
 
   const drainBuffer = () => {
     paused = false;
-    for (const record of pendingBuffer.splice(0)) {
-      applyRemote(record);
-    }
+    for (const record of pendingBuffer.splice(0)) applyRemote(record);
   };
 
   const liveCallback = (record: MutationRecord) => {
-    if (paused) {
-      pendingBuffer.push(record);
-      return;
-    }
-
+    if (paused) { pendingBuffer.push(record); return; }
     applyRemote(record);
+  };
+
+  const startLive = () => {
+    unsubscribeLive = db.subscribe<MutationRecord>('mutation', (message) => {
+      if (message.action !== 'CREATE' || !message.record) return;
+      const record = message.record;
+      if (String(record.workbook) !== workbookId) return;
+      liveCallback(record);
+    });
+  };
+
+  const stopLive = () => {
+    unsubscribeLive?.();
+    unsubscribeLive = null;
   };
 
   return {
     async start() {
-      liveQuery = await db.live(new Table('mutation'));
-      unsubscribeLive = liveQuery.subscribe((message) => {
-        if (message.action !== 'CREATE') {
-          return;
-        }
-
-        const record = message.value as unknown as MutationRecord;
-        if (String(record.workbook) !== workbookId) {
-          return;
-        }
-
-        liveCallback(record);
-      });
+      startLive();
     },
 
     stop() {
-      unsubscribeLive?.();
-      unsubscribeLive = null;
-
-      if (liveQuery) {
-        void liveQuery.kill().catch(() => undefined);
-        liveQuery = null;
-      }
+      stopLive();
     },
 
     async handleReconnect(lastKnownTs: string | null): Promise<'replay' | 'snapshot'> {
-      // Re-subscribe first, buffering incoming events while we detect the gap
-      unsubscribeLive?.();
-      unsubscribeLive = null;
-
-      if (liveQuery) {
-        void liveQuery.kill().catch(() => undefined);
-        liveQuery = null;
-      }
-
+      stopLive();
       paused = true;
       pendingBuffer.length = 0;
+      startLive();
 
-      liveQuery = await db.live(new Table('mutation'));
-      unsubscribeLive = liveQuery.subscribe((message) => {
-        if (message.action !== 'CREATE') {
-          return;
-        }
-
-        const record = message.value as unknown as MutationRecord;
-        if (String(record.workbook) !== workbookId) {
-          return;
-        }
-
-        liveCallback(record);
-      });
-
-      // Gap detection
-      if (!lastKnownTs) {
-        drainBuffer();
-        return 'snapshot';
-      }
+      if (!lastKnownTs) { drainBuffer(); return 'snapshot'; }
 
       const nowMs = Date.now();
-      const lastTs = new Date(lastKnownTs).getTime();
-      const gapMs = nowMs - lastTs;
+      const gapMs = nowMs - new Date(lastKnownTs).getTime();
 
-      const result = await db
-        .query<[MutationRecord[]]>(
+      const rows = await db
+        .query<MutationRecord[]>(
           `SELECT * FROM mutation WHERE workbook = $wb AND created_at > $ts ORDER BY created_at ASC`,
           { wb: toRecordId(workbookId), ts: toDateTime(lastKnownTs) },
         )
-        .catch(() => [[]] as [MutationRecord[]]);
+        .catch(() => [] as MutationRecord[]);
 
-      const missed = result[0] ?? [];
+      const missed = Array.isArray(rows) ? rows : [];
 
       if (gapMs > SNAPSHOT_TIME_THRESHOLD_MS || missed.length > SNAPSHOT_MUTATION_THRESHOLD) {
         paused = false;
@@ -253,7 +179,6 @@ export function createCollabController(
         return 'snapshot';
       }
 
-      // Replay missed mutations in order
       for (const record of missed) {
         if (record.client_id !== clientId && COLLAB_COMMAND_WHITELIST.has(record.command_id)) {
           onRemoteCommand({ command_id: record.command_id, params: record.params });
@@ -266,12 +191,10 @@ export function createCollabController(
   };
 }
 
-/** Capture handler: call this from the Univer CommandExecuted listener. */
 export function shouldBroadcastCommand(
   commandId: string,
   commandType: number,
   fromCollab: boolean,
 ): boolean {
-  // Only broadcast MUTATION type (type === 2), not from collab replay
   return commandType === 2 && !fromCollab && COLLAB_COMMAND_WHITELIST.has(commandId);
 }

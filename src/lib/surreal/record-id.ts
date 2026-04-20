@@ -1,32 +1,48 @@
-import { DateTime, RecordId } from 'surrealdb';
+/**
+ * RecordId / DateTime 工具（local-first webview 版本）
+ *
+ * webview 端所有 ID 均为纯字符串（"table:id" 格式），
+ * 实际的 RecordId/DateTime 对象转换发生在 Bun 主进程侧（@surrealdb/node）。
+ */
 
 /**
- * 将 "table:id" 格式的字符串转换为 SurrealDB RecordId 对象。
- * 所有向数据库传递 record id 参数时必须使用此函数包裹。
+ * 将 "table:id" 格式字符串验证并原样返回。
+ * 供需要显式标注"这是一个 recordId"的地方使用。
  */
-export function toRecordId(value: string): RecordId {
-  const colonIndex = value.indexOf(':');
+export function toRecordId(value: string): string {
+  const colonIndex = value.indexOf(":");
   if (colonIndex === -1) {
-    throw new Error(`Invalid record id (missing colon): ${value}`);
+    throw new Error(`无效的 record id（缺少冒号）: ${value}`);
   }
   const table = value.slice(0, colonIndex);
   const id = value.slice(colonIndex + 1);
   if (!table || !id) {
-    throw new Error(`Invalid record id: ${value}`);
+    throw new Error(`无效的 record id: ${value}`);
   }
-  return new RecordId(table, id);
+  return value;
 }
 
 /**
- * 将 Date 对象或 ISO 字符串转换为 SurrealDB DateTime 对象。
- * 所有向数据库传递 datetime 字段时必须使用此函数包裹。
+ * 解析 recordId 为 table 和 id 两部分
  */
-export function toDateTime(value: Date | string): DateTime {
-  const date = typeof value === 'string' ? new Date(value) : value;
-  return new DateTime(date);
+export function parseRecordId(recordId: string): { table: string; id: string } {
+  const colonIdx = recordId.indexOf(":");
+  if (colonIdx === -1) throw new Error(`无效的 recordId: ${recordId}`);
+  return {
+    table: recordId.slice(0, colonIdx),
+    id: recordId.slice(colonIdx + 1),
+  };
 }
 
-/** 返回当前时间的 SurrealDB DateTime 对象。 */
-export function nowDateTime(): DateTime {
-  return new DateTime(new Date());
+/**
+ * 将 Date 或 ISO 字符串转为 ISO 8601 字符串（IPC 传输格式）
+ */
+export function toDateTime(value: Date | string): string {
+  const date = typeof value === "string" ? new Date(value) : value;
+  return date.toISOString();
+}
+
+/** 返回当前时间的 ISO 字符串 */
+export function nowDateTime(): string {
+  return new Date().toISOString();
 }

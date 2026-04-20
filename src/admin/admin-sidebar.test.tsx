@@ -6,14 +6,14 @@ import { EntityTypesPanel } from './entity-types';
 import type { WorkspaceMember } from './workspace-members';
 import { WorkspaceMembersPanel } from './workspace-members';
 import { AdminSidebar } from './admin-sidebar';
-import type { Surreal } from 'surrealdb';
+import type { DbAdapter } from '../lib/surreal/db-adapter';
 
 // ─── Mock DB factory ──────────────────────────────────────────────────────────
 
 function createMockDb(overrides: Partial<{ query: ReturnType<typeof vi.fn> }> = {}) {
   return {
     query: overrides.query ?? vi.fn(async () => [[]] as any),
-  } as unknown as Surreal;
+  } as unknown as DbAdapter;
 }
 
 const WS_ID = 'workspace:test';

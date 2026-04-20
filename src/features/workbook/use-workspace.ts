@@ -1,5 +1,5 @@
 import { useEffect, useReducer } from 'react';
-import type { Surreal } from 'surrealdb';
+import type { DbAdapter } from '../../lib/surreal/db-adapter';
 
 const LAST_WORKSPACE_KEY = 'surreal_ck.last_workspace_id';
 
@@ -89,7 +89,7 @@ export interface UseWorkspaceResult extends State {
  * PERMISSIONS 在 SurrealDB 层控制可见性，前端不做额外权限过滤。
  * 通过 localStorage 记忆上次选择的工作空间。
  */
-export function useWorkspace(db: Surreal): UseWorkspaceResult {
+export function useWorkspace(db: DbAdapter): UseWorkspaceResult {
   const [state, dispatch] = useReducer(reducer, {
     workspaces: [],
     workbooks: [],

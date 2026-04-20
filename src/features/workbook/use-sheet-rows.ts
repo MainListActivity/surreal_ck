@@ -1,16 +1,11 @@
 /**
  * Hook for reading and writing rows in a single sheet's entity table.
  *
- * Cell value changes go directly to the SurrealDB entity table — NOT through
- * the collab mutation log. The collab log only captures layout/formula changes.
- *
- * Real-time sync: rows arrive via LIVE SELECT so all connected clients
- * see the same data without polling.
+ * local-first 版本：通过 IPC DbAdapter 订阅 CHANGEFEED 实现实时同步，
+ * 替代原来的 db.live()。
  */
 import { useCallback, useEffect, useReducer } from 'react';
-import type { LiveSubscription, Surreal } from 'surrealdb';
-import { Table } from 'surrealdb';
-
+import type { DbAdapter } from '../../lib/surreal/db-adapter';
 import { toRecordId } from '../../lib/surreal/record-id';
 
 export interface EntityRow {
@@ -57,24 +52,16 @@ function reducer(state: State, action: Action): State {
   }
 }
 
-// ─── Hook ─────────────────────────────────────────────────────────────────────
-
 export interface UseSheetRowsResult {
   rows: EntityRow[];
   isLoading: boolean;
   error: string | null;
-  /**
-   * Upsert a row.
-   * - rowId null + rowIndex: INSERT new row with row_id = rowIndex (幂等，唯一索引冲突时更新)
-   * - rowId string: UPDATE existing row by SurrealDB record id
-   * fields must NOT include id, workspace, row_id, created_at, updated_at.
-   */
   upsertRow: (rowId: string | null, rowIndex: number, fields: Record<string, unknown>) => Promise<string>;
   deleteRow: (rowId: string) => Promise<void>;
 }
 
 export function useSheetRows(
-  db: Surreal,
+  db: DbAdapter,
   tableName: string | null,
   workspaceId: string | null,
 ): UseSheetRowsResult {
@@ -89,13 +76,6 @@ export function useSheetRows(
 
     let cancelled = false;
 
-    // Use a shared mutable object so the cleanup closure can safely access
-    // values that are assigned inside the async load() function.
-    const cleanupRef = {
-      unsubscribe: null as (() => void) | null,
-      liveQuery: null as LiveSubscription | null,
-    };
-
     const normalise = (raw: Record<string, unknown>): EntityRow => ({
       ...raw,
       id: String(raw.id),
@@ -107,29 +87,12 @@ export function useSheetRows(
     const load = async () => {
       dispatch({ type: 'load-start' });
       try {
-        const [rows] = await db.query<[Array<Record<string, unknown>>]>(
+        const rows = await db.query<Array<Record<string, unknown>>>(
           `SELECT * FROM type::table($tbl) ORDER BY created_at ASC`,
           { tbl: tableName },
         );
         if (cancelled) return;
-        dispatch({ type: 'load-ok', rows: (rows ?? []).map(normalise) });
-
-        // Subscribe to live changes
-        cleanupRef.liveQuery = await db.live(new Table(tableName));
-        cleanupRef.unsubscribe = cleanupRef.liveQuery.subscribe((message) => {
-          const row = normalise(message.value as Record<string, unknown>);
-          switch (message.action) {
-            case 'CREATE':
-              dispatch({ type: 'live-create', row });
-              break;
-            case 'UPDATE':
-              dispatch({ type: 'live-update', row });
-              break;
-            case 'DELETE':
-              dispatch({ type: 'live-delete', id: row.id });
-              break;
-          }
-        });
+        dispatch({ type: 'load-ok', rows: (Array.isArray(rows) ? rows : []).map(normalise) });
       } catch (err) {
         if (!cancelled) {
           dispatch({
@@ -142,21 +105,37 @@ export function useSheetRows(
 
     void load();
 
+    // 通过 CHANGEFEED IPC 订阅实时变更
+    const unsub = db.subscribe<Record<string, unknown>>(tableName, (message) => {
+      if (cancelled) return;
+      if (!message.record && message.action !== 'DELETE') return;
+
+      const row = normalise(message.record ?? { id: message.id });
+      switch (message.action) {
+        case 'CREATE':
+          dispatch({ type: 'live-create', row });
+          break;
+        case 'UPDATE':
+          dispatch({ type: 'live-update', row });
+          break;
+        case 'DELETE':
+          dispatch({ type: 'live-delete', id: message.id });
+          break;
+      }
+    });
+
     return () => {
       cancelled = true;
-      cleanupRef.unsubscribe?.();
-      void cleanupRef.liveQuery?.kill().catch(() => undefined);
+      unsub();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tableName, workspaceId]);
 
-  // ── Upsert row ────────────────────────────────────────────────────────────
   const upsertRow = useCallback(
     async (rowId: string | null, rowIndex: number, fields: Record<string, unknown>): Promise<string> => {
       if (!tableName || !workspaceId) throw new Error('tableName and workspaceId required.');
 
       if (rowId) {
-        // UPDATE existing row by record id — set each field explicitly
         const setClause = Object.keys(fields).map((k) => `${k} = $f_${k}`).join(', ');
         const fieldParams = Object.fromEntries(Object.entries(fields).map(([k, v]) => [`f_${k}`, v]));
         await db.query(
@@ -166,23 +145,21 @@ export function useSheetRows(
         return rowId;
       }
 
-      // UPSERT with deterministic record id: tableName:rowIndex
       const contentFields = { ...fields, workspace: workspaceId };
       const fieldEntries = Object.keys(contentFields).map((k) => `${k}: $f_${k}`).join(', ');
       const fieldParams = Object.fromEntries(Object.entries(contentFields).map(([k, v]) => [`f_${k}`, v]));
 
-      const [created] = await db.query<[Array<{ id: unknown }>]>(
+      const created = await db.query<Array<{ id: unknown }>>(
         `UPSERT type::thing($tbl, $row_id) CONTENT { ${fieldEntries}, updated_at: time::now() } RETURN id`,
         { tbl: tableName, row_id: rowIndex, ...fieldParams },
       );
-      const newId = String(created?.[0]?.id ?? '');
+      const newId = String((Array.isArray(created) ? created[0] : created)?.id ?? '');
       if (!newId) throw new Error('Row UPSERT returned no id.');
       return newId;
     },
     [db, tableName, workspaceId],
   );
 
-  // ── Delete row ────────────────────────────────────────────────────────────
   const deleteRow = useCallback(
     async (rowId: string): Promise<void> => {
       await db.query(`DELETE $id`, { id: toRecordId(rowId) });

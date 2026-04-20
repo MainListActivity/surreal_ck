@@ -1,13 +1,13 @@
 import { renderHook, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import type { Surreal } from 'surrealdb';
+import type { DbAdapter } from '../../lib/surreal/db-adapter';
 
 import { buildFolderTree, useDocTree } from './use-doc-tree';
 
 function createMockDb(queryImpl?: ReturnType<typeof vi.fn>) {
   return {
     query: queryImpl ?? vi.fn(),
-  } as unknown as Surreal;
+  } as unknown as DbAdapter;
 }
 
 describe('buildFolderTree', () => {

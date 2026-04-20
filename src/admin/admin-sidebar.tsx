@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { Surreal } from 'surrealdb';
+import type { DbAdapter } from '../lib/surreal/db-adapter';
 
 import { EntityTypesPanel } from './entity-types';
 import { FormBuilderPanel } from './form-builder';
@@ -16,7 +16,7 @@ const SECTION_LABELS: Record<AdminSection, string> = {
 };
 
 export interface AdminSidebarProps {
-  db: Surreal;
+  db: DbAdapter;
   workspaceId: string;
   workbookId: string;
   wsKey: string;

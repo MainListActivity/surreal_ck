@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { KeyboardEvent, MouseEvent } from 'react';
-import type { Surreal } from 'surrealdb';
+import type { DbAdapter } from '../../lib/surreal/db-adapter';
 
 import { createFolder, deleteFolder, moveFolder, renameFolder } from './folder-mutations';
 import type { FolderNode } from './use-doc-tree';
@@ -13,7 +13,7 @@ interface MenuState {
 }
 
 export interface DocTreePanelProps {
-  db: Surreal;
+  db: DbAdapter;
   workspaceId: string;
   selectedFolderId: string | null;
   onSelectFolder: (id: string | null) => void;
@@ -126,7 +126,6 @@ export function DocTreePanel({
   async function handleMove(folderId: string, newParentId: string | null) {
     const result = await moveFolder(db, {
       folderId,
-      workspaceId,
       newParentId,
     });
     if (!result.ok) {

@@ -35,7 +35,7 @@ Any time you write React Code — you MUST invoke the `vercel-react-best-practic
 
 Any time you write SurrealQL — schema, queries, or permissions — you MUST invoke the `surrealdb` skill FIRST and follow its rules.
 
-Past schema decisions are documented in `docs/solutions/` (organized by category, searchable by `module`, `tags`, `problem_type`). Relevant when designing schema or debugging data model issues.
+Past solutions are documented in `docs/solutions/` (organized by category, searchable by `module`, `tags`, `problem_type`; covers schema design, integration issues, tooling APIs, and architecture patterns). Relevant when implementing features, debugging issues, or integrating third-party libraries in documented areas.
 
 Key rules to internalize:
 

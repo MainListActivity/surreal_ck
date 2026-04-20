@@ -1,4 +1,4 @@
-import type { Surreal } from 'surrealdb';
+import type { DbAdapter } from '../lib/surreal/db-adapter';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -82,7 +82,7 @@ function extractTableName(recordId: string): string {
  * Returns either a result object or an error token.
  */
 export async function graphTraverse(
-  db: Surreal,
+  db: DbAdapter,
   startNode: string,
   relationship: string,
   depth: number,
@@ -111,7 +111,7 @@ export async function graphTraverse(
 }
 
 async function runTraversal(
-  db: Surreal,
+  db: DbAdapter,
   startNode: string,
   relationship: string,
   depth: number,

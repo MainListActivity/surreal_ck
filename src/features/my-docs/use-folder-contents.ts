@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useReducer } from 'react';
-import type { Surreal } from 'surrealdb';
+import type { DbAdapter } from '../../lib/surreal/db-adapter';
 
 import { toRecordId } from '../../lib/surreal/record-id';
 import type { FolderRow, WorkbookRef } from './use-doc-tree';
@@ -30,7 +30,7 @@ function reducer(state: State, action: Action): State {
 }
 
 async function loadFolderContents(
-  db: Surreal,
+  db: DbAdapter,
   folderId: string,
 ): Promise<{ subfolders: FolderRow[]; workbooks: WorkbookRef[] }> {
   const [subfolderRows, workbookRows] = await db.query<[FolderRow[], WorkbookRef[]]>(
@@ -66,7 +66,7 @@ export interface UseFolderContentsResult extends State {
   refetch: () => Promise<void>;
 }
 
-export function useFolderContents(db: Surreal, folderId: string | null): UseFolderContentsResult {
+export function useFolderContents(db: DbAdapter, folderId: string | null): UseFolderContentsResult {
   const [state, dispatch] = useReducer(reducer, {
     subfolders: [],
     workbooks: [],

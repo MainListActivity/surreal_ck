@@ -1,5 +1,5 @@
 import { useEffect, useReducer, useState } from 'react';
-import type { Surreal } from 'surrealdb';
+import type { DbAdapter } from '../lib/surreal/db-adapter';
 
 import { toRecordId } from '../lib/surreal/record-id';
 
@@ -75,7 +75,7 @@ function makeSlug(title: string): string {
 }
 
 export interface FormBuilderPanelProps {
-  db: Surreal;
+  db: DbAdapter;
   workspaceId: string;
   workbookId: string;
 }

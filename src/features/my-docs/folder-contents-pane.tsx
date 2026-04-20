@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { MouseEvent } from 'react';
-import type { Surreal } from 'surrealdb';
+import type { DbAdapter } from '../../lib/surreal/db-adapter';
 
 import { detachWorkbook } from './folder-mutations';
 import type { FolderNode } from './use-doc-tree';
@@ -21,7 +21,7 @@ interface MenuState {
 }
 
 export interface FolderContentsPaneProps {
-  db: Surreal;
+  db: DbAdapter;
   workspaceId: string;
   selectedFolderId: string | null;
   displayName?: string;

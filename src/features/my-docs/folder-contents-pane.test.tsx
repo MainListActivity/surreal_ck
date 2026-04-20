@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import type { Surreal } from 'surrealdb';
+import type { DbAdapter } from '../../lib/surreal/db-adapter';
 
 import { FolderContentsPane } from './folder-contents-pane';
 
@@ -20,7 +20,7 @@ vi.mock('./folder-mutations', () => ({
   detachWorkbook: (...args: unknown[]) => mockDetachWorkbook(...args),
 }));
 
-const db = {} as Surreal;
+const db = {} as DbAdapter;
 
 function baseTree() {
   return {

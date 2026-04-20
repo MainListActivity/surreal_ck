@@ -1,40 +1,36 @@
-/// <reference types="vite/client" />
+/**
+ * 数据库访问层（local-first IPC 版本）
+ *
+ * 原来直接调用 surrealdb SDK，现在改为通过 electrobun IPC 调用 Bun 主进程，
+ * 主进程内部使用 @surrealdb/node（surrealkv 存储）执行实际操作。
+ *
+ * 这样 webview 代码永远不直接持有数据库连接，所有 DB 操作走 IPC。
+ */
+import { useSyncExternalStore } from "react";
+import { ipc, onChangefeed, onSyncStatus } from "../../../views/main/ipc";
 
-import { useSyncExternalStore } from 'react';
-import { Surreal, type Tokens } from 'surrealdb';
+// ---- 连接状态模拟（IPC 不需要真正的连接管理，但保留 API 兼容性）----
 
-import type { ConnectionSnapshot, ConnectionState, EnvironmentConfig } from './types';
+export type ConnectionState =
+  | "idle"
+  | "connecting"
+  | "connected"
+  | "disconnected"
+  | "reconnecting"
+  | "error"
+  | "auth-failed";
 
-const DEFAULT_AUTH_ACCESS = 'lawyer_access';
-const DEFAULT_RECONNECT = {
-  enabled: true,
-  attempts: -1,
-  retryDelay: 1_000,
-  retryDelayMax: 30_000,
-} as const;
+export interface ConnectionSnapshot {
+  state: ConnectionState;
+  detail?: string;
+  updatedAt: number;
+}
 
 type Listener = (snapshot: ConnectionSnapshot) => void;
-type Deferred = {
-  promise: Promise<void>;
-  resolve: () => void;
-  reject: (reason?: unknown) => void;
-};
-type GatedMethodName =
-  | 'query'
-  | 'live'
-  | 'select'
-  | 'create'
-  | 'insert'
-  | 'update'
-  | 'merge'
-  | 'patch'
-  | 'delete'
-  | 'relate'
-  | 'run';
 
 class ConnectionStateStore {
   #snapshot: ConnectionSnapshot = {
-    state: 'idle',
+    state: "connected", // IPC 模式下默认视为已连接（主进程管理 DB）
     updatedAt: Date.now(),
   };
 
@@ -47,80 +43,23 @@ class ConnectionStateStore {
   subscribe(listener: Listener): () => void {
     this.#listeners.add(listener);
     listener(this.#snapshot);
-
-    return () => {
-      this.#listeners.delete(listener);
-    };
+    return () => this.#listeners.delete(listener);
   }
 
   set(state: ConnectionState, detail?: string): void {
-    this.#snapshot = {
-      state,
-      detail,
-      updatedAt: Date.now(),
-    };
-
-    for (const listener of this.#listeners) {
-      listener(this.#snapshot);
-    }
+    this.#snapshot = { state, detail, updatedAt: Date.now() };
+    for (const listener of this.#listeners) listener(this.#snapshot);
   }
 }
 
 export const connectionState = new ConnectionStateStore();
-export const getEnvironmentConfig = (
-  env: ImportMetaEnv | Record<string, string | undefined> = import.meta.env,
-): EnvironmentConfig => ({
-  surrealUrl: env.VITE_SURREAL_URL ?? 'wss://cuckoox-06efnpc64psu927c5555v64q5g.aws-usw2.surreal.cloud/rpc',
-  namespace: env.VITE_SURREAL_NS ?? 'main',
-  database: env.VITE_SURREAL_DB ?? 'docs',
-  authAccess: env.VITE_SURREAL_ACCESS ?? DEFAULT_AUTH_ACCESS,
+
+// 订阅主进程同步状态通知，映射到连接状态
+onSyncStatus(({ status, detail }) => {
+  if (status === "syncing") connectionState.set("connecting", detail);
+  else if (status === "error") connectionState.set("error", detail);
+  else connectionState.set("connected");
 });
-
-const db = new Surreal();
-const attachedClients = new WeakSet<object>();
-const gatedClients = new WeakSet<object>();
-const authenticationGates = new WeakMap<object, Deferred>();
-const gatedMethodNames: readonly GatedMethodName[] = [
-  'query',
-  'live',
-  'select',
-  'create',
-  'insert',
-  'update',
-  'merge',
-  'patch',
-  'delete',
-  'relate',
-  'run',
-];
-
-export type SurrealConnectParams = NonNullable<Parameters<Surreal['connect']>[1]>;
-export type SurrealLike = Pick<
-  Surreal,
-  'connect' | 'close' | 'use' | 'authenticate' | 'invalidate' | 'subscribe'
->;
-
-export const surreal = db;
-
-export function getDefaultConnectParams(
-  env: ImportMetaEnv | Record<string, string | undefined> = import.meta.env,
-  overrides: Partial<SurrealConnectParams> = {},
-): SurrealConnectParams {
-  const reconnect =
-    overrides.reconnect === undefined
-      ? DEFAULT_RECONNECT
-      : typeof overrides.reconnect === 'object' && overrides.reconnect !== null
-        ? {
-          ...DEFAULT_RECONNECT,
-          ...overrides.reconnect,
-        }
-        : overrides.reconnect;
-
-  return {
-    ...overrides,
-    reconnect,
-  };
-}
 
 export function useConnectionSnapshot(): ConnectionSnapshot {
   return useSyncExternalStore(
@@ -130,156 +69,43 @@ export function useConnectionSnapshot(): ConnectionSnapshot {
   );
 }
 
-export function attachConnectionListeners(client: SurrealLike = db): void {
-  if (attachedClients.has(client as object)) {
-    return;
-  }
+// ---- 数据库操作 API（委托给 IPC）----
 
-  client.subscribe('connecting', () => {
-    connectionState.set('connecting');
-  });
-
-  client.subscribe('connected', (url) => {
-    connectionState.set('connected', url);
-  });
-
-  client.subscribe('reconnecting', () => {
-    connectionState.set('reconnecting');
-  });
-
-  client.subscribe('disconnected', () => {
-    connectionState.set('disconnected');
-  });
-
-  client.subscribe('error', (error) => {
-    connectionState.set('error', error.message);
-  });
-
-  client.subscribe('auth', (tokens) => {
-    if (tokens) {
-      releaseAuthenticationGate(client);
-    } else {
-      clearAuthenticationGate(client);
-    }
-
-    const nextState = tokens ? 'connected' : 'disconnected';
-    connectionState.set(nextState);
-  });
-
-  attachedClients.add(client as object);
+export async function dbQuery<T = unknown>(
+  sql: string,
+  vars?: Record<string, unknown>,
+): Promise<T> {
+  return ipc.dbQuery<T>({ sql, vars });
 }
 
-function createDeferred(): Deferred {
-  let resolve!: () => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<void>((nextResolve, nextReject) => {
-    resolve = nextResolve;
-    reject = nextReject;
-  });
-  promise.catch(() => undefined);
-  return { promise, resolve, reject };
+export async function dbCreate(
+  table: string,
+  data: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  return ipc.dbCreate({ table, data });
 }
 
-export function gateClientRequests(client: SurrealLike = db): void {
-  if (gatedClients.has(client as object)) {
-    return;
-  }
-
-  const methodClient = client as Record<string, unknown>;
-
-  for (const methodName of gatedMethodNames) {
-    const method = methodClient[methodName];
-
-    if (typeof method !== 'function') {
-      continue;
-    }
-
-    const original = method.bind(client);
-    methodClient[methodName] = async (...args: unknown[]) => {
-      const gate = authenticationGates.get(client as object);
-      if (gate) {
-        await gate.promise;
-      }
-
-      return original(...args);
-    };
-  }
-
-  gatedClients.add(client as object);
+export async function dbMerge(
+  recordId: string,
+  data: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  return ipc.dbMerge({ recordId, data });
 }
 
-export function beginAuthenticationGate(client: SurrealLike = db): void {
-  gateClientRequests(client);
-
-  if (authenticationGates.has(client as object)) {
-    return;
-  }
-
-  authenticationGates.set(client as object, createDeferred());
+export async function dbDelete(recordId: string): Promise<void> {
+  return ipc.dbDelete({ recordId });
 }
 
-export function releaseAuthenticationGate(client: SurrealLike = db): void {
-  const gate = authenticationGates.get(client as object);
-  if (!gate) {
-    return;
-  }
-
-  gate.resolve();
-  authenticationGates.delete(client as object);
+export async function dbUpsert(
+  table: string,
+  data: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  return ipc.dbUpsert({ table, data });
 }
 
-export function rejectAuthenticationGate(error: unknown, client: SurrealLike = db): void {
-  const gate = authenticationGates.get(client as object);
-  if (!gate) {
-    return;
-  }
-
-  gate.reject(error);
-  authenticationGates.delete(client as object);
+export async function getLocalUser(): Promise<{ id: string; name: string }> {
+  return ipc.getLocalUser();
 }
 
-export function clearAuthenticationGate(client: SurrealLike = db): void {
-  const gate = authenticationGates.get(client as object);
-  if (!gate) {
-    return;
-  }
-
-  gate.resolve();
-  authenticationGates.delete(client as object);
-}
-
-export async function connectToSurreal(client: SurrealLike = db): Promise<true> {
-  const config = getEnvironmentConfig();
-
-  attachConnectionListeners(client);
-  connectionState.set('connecting');
-  await client.connect(config.surrealUrl, getDefaultConnectParams());
-  await client.use({
-    namespace: config.namespace,
-    database: config.database,
-  });
-  return true;
-}
-
-export async function authenticateSurrealAccessToken(
-  accessToken: string,
-  client: SurrealLike = db,
-): Promise<Tokens> {
-  beginAuthenticationGate(client);
-
-  try {
-    const tokens = await client.authenticate(accessToken);
-    releaseAuthenticationGate(client);
-    connectionState.set('connected');
-    return tokens;
-  } catch (error) {
-    rejectAuthenticationGate(error, client);
-    await client.close();
-    connectionState.set('auth-failed', error instanceof Error ? error.message : 'Authentication failed');
-    throw error;
-  }
-}
-
-export function isTokens(value: unknown): value is Tokens {
-  return typeof value === 'object' && value !== null && 'access' in value;
-}
+// 重新导出 CHANGEFEED 订阅，供 React hooks 使用
+export { onChangefeed, onSyncStatus };

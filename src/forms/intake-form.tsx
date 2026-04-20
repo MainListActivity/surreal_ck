@@ -1,5 +1,5 @@
 import { useEffect, useReducer, useRef } from 'react';
-import type { Surreal } from 'surrealdb';
+import type { DbAdapter } from '../lib/surreal/db-adapter';
 
 import type { FormDefinition, FormField } from '../admin/form-builder';
 import { ConfirmationPage } from './confirmation';
@@ -160,7 +160,7 @@ function clearDraft(formId: string): void {
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export interface IntakeFormProps {
-  db: Surreal;
+  db: DbAdapter;
   formSlug: string;
   workspaceId: string;
 }

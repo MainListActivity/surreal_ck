@@ -1,14 +1,14 @@
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import * as Select from '@radix-ui/react-select';
 import { startTransition, useDeferredValue, useEffect, useRef, useState } from 'react';
-import type { Surreal } from 'surrealdb';
+import type { DbAdapter } from '../../lib/surreal/db-adapter';
 
 import { AdminSidebar } from '../../admin/admin-sidebar';
 import { DocTreePanel } from '../my-docs/doc-tree-panel';
 import { FolderContentsPane } from '../my-docs/folder-contents-pane';
 import { clientId } from '../../lib/client-id';
 import { useConnectionSnapshot } from '../../lib/surreal/client';
-import { useSurrealClient } from '../../lib/surreal/provider';
+import dbAdapter from '../../lib/surreal/db-adapter';
 import type { ConnectionSnapshot, Sheet } from '../../lib/surreal/types';
 import { GraphResultsPanel } from '../../sidebar/graph-results';
 import { RecentChangesPanel } from '../../sidebar/recent-changes';
@@ -60,7 +60,7 @@ export function AppShell({
   onOpenPublishedForm,
   onLogout,
 }: AppShellProps) {
-  const db = useSurrealClient();
+  const db = dbAdapter;
   const workspace = useWorkspace(db);
   const connection = useConnectionSnapshot();
   const [search, setSearch] = useState('');
@@ -510,7 +510,7 @@ function EditorChrome({
   onOpenPublishedForm,
   onLogout,
 }: {
-  db: Surreal;
+  db: DbAdapter;
   displayName?: string;
   workspaceId: string | null;
   wsKey: string | null;
@@ -925,7 +925,7 @@ function UniverGrid({
   onShowAdmin,
   onLogout,
 }: {
-  db: Surreal;
+  db: DbAdapter;
   workbookId: string;
   workspaceId: string;
   wsKey: string | null;
@@ -1108,7 +1108,7 @@ function SidebarPanelContent({
   workbookId,
   workbookName,
 }: {
-  db: Surreal;
+  db: DbAdapter;
   workspaceId: string | null;
   wsKey: string | null;
   activePanel: SidebarPanel;
