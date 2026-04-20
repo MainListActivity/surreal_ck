@@ -1,14 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../schema/templates/legal-entity-tracker.surql?raw', () => ({
+vi.mock('../../schema/templates/legal-entity-tracker.surql', () => ({
   default: 'SELECT "legal";',
 }));
 
-vi.mock('../../schema/templates/case-management.surql?raw', () => ({
+vi.mock('../../schema/templates/case-management.surql', () => ({
   default: 'SELECT "case";',
 }));
 
-vi.mock('../../schema/templates/blank-workspace.surql?raw', () => ({
+vi.mock('../../schema/templates/blank-workspace.surql', () => ({
   default: 'SELECT "blank";',
 }));
 
@@ -20,11 +20,12 @@ describe('template provisioning', () => {
   it('returns workbook and workspace ids on success', async () => {
     const { provisionTemplate } = await import('./template-provisioning');
     const db = {
-      insert: vi.fn().mockResolvedValue([{ id: 'workbook:claims', workspace: 'workspace:harbor' }]),
-      query: vi.fn()
-        .mockResolvedValueOnce([[]]),
-      select: vi.fn(),
+      create: vi.fn().mockResolvedValue({ id: 'workbook:claims', workspace: 'workspace:harbor' }),
+      query: vi.fn().mockResolvedValueOnce([[]]),
       delete: vi.fn(),
+      merge: vi.fn(),
+      upsert: vi.fn(),
+      subscribe: vi.fn(),
     };
 
     const result = await provisionTemplate(
@@ -39,7 +40,7 @@ describe('template provisioning', () => {
       workspaceId: 'workspace:harbor',
       workbookId: 'workbook:claims',
     });
-    expect(db.insert).toHaveBeenCalledWith(expect.anything(), {
+    expect(db.create).toHaveBeenCalledWith('workbook', {
       workspace: 'workspace:harbor',
       name: '债权申报总表',
       template_key: 'legal-entity-tracker',
@@ -50,16 +51,15 @@ describe('template provisioning', () => {
   it('runs compensating cleanup when the template script fails', async () => {
     const { provisionTemplate } = await import('./template-provisioning');
     const db = {
-      insert: vi.fn()
-        .mockResolvedValueOnce([{ id: 'workbook:claims', workspace: 'workspace:harbor' }])
-        .mockResolvedValueOnce([]),
+      create: vi.fn().mockResolvedValueOnce({ id: 'workbook:claims', workspace: 'workspace:harbor' }),
       query: vi.fn()
         .mockRejectedValueOnce(new Error('template boom'))
-        .mockResolvedValueOnce(undefined),
-      select: vi.fn()
         .mockResolvedValueOnce([{ id: 'sheet:s1', workbook: 'workbook:claims' }])
         .mockResolvedValueOnce([{ id: 'form:f1', workspace: 'workspace:harbor', target_sheet: 'sheet:s1' }]),
       delete: vi.fn().mockResolvedValue(undefined),
+      merge: vi.fn(),
+      upsert: vi.fn(),
+      subscribe: vi.fn(),
     };
 
     const result = await provisionTemplate(

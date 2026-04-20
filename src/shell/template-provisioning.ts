@@ -22,16 +22,10 @@ export interface ProvisioningError {
   message: string;
 }
 
-// SurrealQL 模板脚本通过 Vite ?raw 在构建时内联
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore
-import legalEntityTrackerSurql from '../../schema/templates/legal-entity-tracker.surql?raw';
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore
-import caseManagementSurql from '../../schema/templates/case-management.surql?raw';
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore
-import blankWorkspaceSurql from '../../schema/templates/blank-workspace.surql?raw';
+// 使用 import attributes 以内联文本，兼容 electrobun 的 Bun.build 和 Vite。
+import legalEntityTrackerSurql from '../../schema/templates/legal-entity-tracker.surql' with { type: 'text' };
+import caseManagementSurql from '../../schema/templates/case-management.surql' with { type: 'text' };
+import blankWorkspaceSurql from '../../schema/templates/blank-workspace.surql' with { type: 'text' };
 
 const TEMPLATE_SCRIPTS: Record<TemplateKey, string> = {
   'legal-entity-tracker': legalEntityTrackerSurql as string,
