@@ -9,7 +9,8 @@
     "dev": "concurrently \"vite build --watch --config vite.config.ts\" \"electrobun dev --watch\"",
     "build": "vite build --config vite.config.ts && electrobun build",
     "start": "electrobun run",
-    "test": "bun test src/main"
+    "test": "bun test src/main",
+    "test:db": "bun run scripts/test-db.ts"
   },
   "dependencies": {
     "@mastra/core": "^1.25.0",

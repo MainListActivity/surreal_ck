@@ -1,7 +1,7 @@
 ---
 title: "feat: 搭建 surreal_ck 主框架骨架"
 type: feat
-status: active
+status: completed
 date: 2026-04-22
 ---
 
