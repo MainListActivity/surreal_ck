@@ -13,12 +13,9 @@ export default {
     bun: {
       entrypoint: "src/main/index.ts",
     },
-    views: {
-      mainview: {
-        entrypoint: "src/renderer/main.ts",
-      },
-    },
     copy: {
+      "dist/bun/surrealdb-node.darwin-arm64.node": "bun/surrealdb-node.darwin-arm64.node",
+      "dist/bun/schema": "bun/schema",
       "dist/index.html": "views/mainview/index.html",
       "dist/assets": "views/mainview/assets",
     },
