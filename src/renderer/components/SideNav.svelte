@@ -3,6 +3,7 @@
   import Avatar from "./Avatar.svelte";
   import Icon from "./Icon.svelte";
   import Logo from "./Logo.svelte";
+  import { logout } from "../lib/auth.actions";
 
   let { current, navigate }: { current: ScreenId; navigate: Navigate } = $props();
 
@@ -48,9 +49,11 @@
   </div>
 
   <div class="user">
-    <Avatar name="王晓明" size={30} />
-    <div><strong>王晓明</strong><span>项目经理</span></div>
-    <Icon name="chat" size={15} color="var(--text-3)" />
+    <Avatar name="我" size={30} />
+    <div><strong>已登录</strong><span>组织账号</span></div>
+    <button class="icon-btn logout-btn" title="退出登录" onclick={logout}>
+      <Icon name="logout" size={15} color="var(--text-3)" />
+    </button>
   </div>
 </aside>
 

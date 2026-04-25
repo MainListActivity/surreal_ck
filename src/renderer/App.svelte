@@ -1,15 +1,24 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import SideNav from "./components/SideNav.svelte";
   import AdminScreen from "./screens/AdminScreen.svelte";
   import EditorScreen from "./screens/EditorScreen.svelte";
   import HomeScreen from "./screens/HomeScreen.svelte";
+  import LoginScreen from "./screens/LoginScreen.svelte";
   import MyDocsScreen from "./screens/MyDocsScreen.svelte";
   import PublicFormScreen from "./screens/PublicFormScreen.svelte";
   import StateScreen from "./screens/StateScreen.svelte";
   import TemplatesScreen from "./screens/TemplatesScreen.svelte";
+  import { auth, applyAuthState } from "./lib/auth.svelte";
+  import { rpc } from "./lib/rpc";
   import type { ScreenId } from "./lib/types";
 
   let screen: ScreenId = $state(readInitialScreen());
+
+  onMount(async () => {
+    const state = await rpc.request("getAuthState", {});
+    applyAuthState(state);
+  });
 
   const navScreens = new Set<ScreenId>(["home", "mydocs", "templates", "admin", "state-empty"]);
 
@@ -32,29 +41,33 @@
 </script>
 
 <div class="app-shell">
-  {#if navScreens.has(screen)}
-    <SideNav current={screen} {navigate} />
-  {/if}
-
-  <main class="app-main" class:fullscreen={!navScreens.has(screen)}>
-    {#if screen === "home"}
-      <HomeScreen {navigate} />
-    {:else if screen === "mydocs"}
-      <MyDocsScreen {navigate} />
-    {:else if screen === "editor"}
-      <EditorScreen {navigate} />
-    {:else if screen === "form"}
-      <PublicFormScreen {navigate} />
-    {:else if screen === "form-success"}
-      <PublicFormScreen mode="success" {navigate} />
-    {:else if screen === "templates"}
-      <TemplatesScreen {navigate} />
-    {:else if screen === "admin"}
-      <AdminScreen {navigate} />
-    {:else}
-      <StateScreen kind={screen} {navigate} />
+  {#if !auth.loggedIn}
+    <LoginScreen />
+  {:else}
+    {#if navScreens.has(screen)}
+      <SideNav current={screen} {navigate} />
     {/if}
-  </main>
+
+    <main class="app-main" class:fullscreen={!navScreens.has(screen)}>
+      {#if screen === "home"}
+        <HomeScreen {navigate} />
+      {:else if screen === "mydocs"}
+        <MyDocsScreen {navigate} />
+      {:else if screen === "editor"}
+        <EditorScreen {navigate} />
+      {:else if screen === "form"}
+        <PublicFormScreen {navigate} />
+      {:else if screen === "form-success"}
+        <PublicFormScreen mode="success" {navigate} />
+      {:else if screen === "templates"}
+        <TemplatesScreen {navigate} />
+      {:else if screen === "admin"}
+        <AdminScreen {navigate} />
+      {:else}
+        <StateScreen kind={screen} {navigate} />
+      {/if}
+    </main>
+  {/if}
 </div>
 
 <style>

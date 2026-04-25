@@ -1,16 +1,21 @@
 import { BrowserView, BrowserWindow } from "electrobun/bun";
 import { initDb, getDb } from "./db/index";
 import { initMastra } from "./ai/index";
+import { startOidcLogin } from "./auth/oidc";
+import {
+  loginToSurrealDB,
+  clearSession,
+  getPublicAuthState,
+  ensureValidSession,
+} from "./auth/session";
 import type { AppRPC } from "../shared/rpc.types";
 
 async function main() {
-  // DB init — critical, exit on failure
   await initDb().catch((err) => {
     console.error("[main] DB init failed:", err);
     process.exit(1);
   });
 
-  // Mastra init — non-critical
   try {
     initMastra();
   } catch (err) {
@@ -24,6 +29,33 @@ async function main() {
           const db = getDb();
           const result = await db.query(sql);
           return result as unknown[];
+        },
+
+        getAuthState: async () => {
+          return getPublicAuthState();
+        },
+
+        startLogin: async () => {
+          const db = getDb();
+          try {
+            const tokens = await startOidcLogin();
+            await loginToSurrealDB(db, tokens);
+            const state = getPublicAuthState();
+            rpc.send("authStateChanged", { state });
+            return state;
+          } catch (err) {
+            console.error("[auth] login failed:", err);
+            throw err;
+          }
+        },
+
+        logout: async () => {
+          const db = getDb();
+          clearSession();
+          // 重新以匿名方式连接（重置 SurrealDB 连接的认证状态）
+          await db.invalidate();
+          const state = getPublicAuthState();
+          rpc.send("authStateChanged", { state });
         },
       },
       messages: {
@@ -41,14 +73,13 @@ async function main() {
     rpc,
   });
 
-  win.on("dom-ready", () => {
-    const testRows = [
-      { id: "1", name: "Alice", value: "100" },
-      { id: "2", name: "Bob", value: "200" },
-      { id: "3", name: "Carol", value: "300" },
-    ];
-    rpc.send("pushRows", { rows: testRows });
-    console.log("[main] pushed test rows to WebView");
+  win.on("dom-ready", async () => {
+    // 推送初始认证状态给 WebView
+    const db = getDb();
+    await ensureValidSession(db);
+    const state = getPublicAuthState();
+    rpc.send("authStateChanged", { state });
+    console.log("[main] pushed initial auth state:", state);
   });
 
   console.log("[main] app started");

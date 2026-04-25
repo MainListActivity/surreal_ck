@@ -1,5 +1,6 @@
 import { Electroview } from "electrobun/view";
 import type { AppRPC } from "../../shared/rpc.types";
+import { applyAuthState } from "./auth.svelte";
 
 let _rows: ((rows: { id: string; name: string; value: string }[]) => void) | null = null;
 
@@ -13,6 +14,9 @@ export const rpc = Electroview.defineRPC<AppRPC>({
     messages: {
       pushRows: ({ rows }) => {
         _rows?.(rows);
+      },
+      authStateChanged: ({ state }) => {
+        applyAuthState(state);
       },
     },
   },
