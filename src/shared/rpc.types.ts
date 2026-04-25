@@ -10,6 +10,7 @@ export type AuthState = {
   loggedIn: boolean;
   expiresAt?: number;
   error?: string;
+  offlineMode?: boolean;
 };
 
 export interface AppRPC extends ElectrobunRPCSchema {

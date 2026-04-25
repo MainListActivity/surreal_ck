@@ -353,6 +353,20 @@ DEFINE INDEX IF NOT EXISTS client_error_ts ON TABLE client_error COLUMNS created
 DEFINE BUCKET IF NOT EXISTS spreadsheet_files BACKEND "file:/data/uploads" PERMISSIONS FULL;
 
 -- ═══════════════════════════════════════════════════════════════════════════════
+-- TOKEN STORE
+-- 存储当前用户的 OIDC tokens，用于进程重启后自动恢复登录。
+-- 仅存在于用户专属 DB（NS main / DB u_<hash>），始终使用固定 ID token_store:local。
+-- embedded engine 下 $auth = NONE，PERMISSIONS FULL 语义清晰且无副作用。
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+DEFINE TABLE IF NOT EXISTS token_store SCHEMAFULL
+  PERMISSIONS FULL;
+DEFINE FIELD IF NOT EXISTS access_token  ON TABLE token_store TYPE string;
+DEFINE FIELD IF NOT EXISTS refresh_token ON TABLE token_store TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS expires_at    ON TABLE token_store TYPE datetime;
+DEFINE FIELD IF NOT EXISTS updated_at    ON TABLE token_store TYPE datetime VALUE time::now();
+
+-- ═══════════════════════════════════════════════════════════════════════════════
 -- AUTH ACCESS
 -- JWT 由外部 OIDC 提供方（maplayer.top）签发。
 -- 首次登录时：创建 app_user，自动认领 pending_workspace_member 邀请并写入

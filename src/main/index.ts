@@ -1,5 +1,5 @@
 import { BrowserView, BrowserWindow } from "electrobun/bun";
-import { initDb, getDb } from "./db/index";
+import { initEngine, initUserDb, tryRestoreSession, closeUserDb, getLocalDb, type RestoreResult } from "./db/index";
 import { initMastra } from "./ai/index";
 import { startOidcLogin } from "./auth/oidc";
 import { ensureSingleInstance } from "./single-instance";
@@ -7,15 +7,23 @@ import {
   loginToSurrealDB,
   clearSession,
   getPublicAuthState,
-  ensureValidSession,
 } from "./auth/session";
 import type { AppRPC } from "../shared/rpc.types";
+
+// JWT payload 解码（用于提取 sub）
+function decodeJwtSub(token: string): string {
+  const part = token.split(".")[1];
+  const payload = JSON.parse(Buffer.from(part, "base64url").toString("utf8"));
+  if (!payload.sub) throw new Error("JWT missing sub claim");
+  return payload.sub as string;
+}
 
 async function main() {
   ensureSingleInstance();
 
-  await initDb().catch((err) => {
-    console.error("[main] DB init failed:", err);
+  // 只初始化 embedded engine，不依赖登录状态
+  await initEngine().catch((err) => {
+    console.error("[main] engine init failed:", err);
     process.exit(1);
   });
 
@@ -29,7 +37,8 @@ async function main() {
     handlers: {
       requests: {
         query: async ({ sql }) => {
-          const db = getDb();
+          // getLocalDb() 在未登录时 throw，Electrobun 将 Error 传回 WebView
+          const db = getLocalDb();
           const result = await db.query(sql);
           return result as unknown[];
         },
@@ -39,9 +48,8 @@ async function main() {
         },
 
         logout: async () => {
-          const db = getDb();
           clearSession();
-          await db.invalidate();
+          await closeUserDb();
           const state = getPublicAuthState();
           rpc.send("authStateChanged", { state });
         },
@@ -52,10 +60,11 @@ async function main() {
         },
 
         startLogin: () => {
-          const db = getDb();
           startOidcLogin()
-            .then((tokens) => loginToSurrealDB(db, tokens))
-            .then(() => {
+            .then(async (tokens) => {
+              const sub = decodeJwtSub(tokens.access_token);
+              await initUserDb(sub, tokens);
+              loginToSurrealDB(tokens);
               rpc.send("authStateChanged", { state: getPublicAuthState() });
             })
             .catch((err) => {
@@ -75,12 +84,19 @@ async function main() {
   });
 
   win.on("dom-ready", async () => {
-    // 推送初始认证状态给 WebView
-    const db = getDb();
-    await ensureValidSession(db);
-    const state = getPublicAuthState();
+    const result = await tryRestoreSession();
+
+    if (result.status === "restored") {
+      loginToSurrealDB(result.tokens);
+    }
+
+    const state =
+      result.status === "offline"
+        ? getPublicAuthState({ offlineMode: true })
+        : getPublicAuthState();
+
     rpc.send("authStateChanged", { state });
-    console.log("[main] pushed initial auth state:", state);
+    console.log("[main] pushed initial auth state:", result.status);
   });
 
   console.log("[main] app started");
