@@ -46,6 +46,21 @@ async function loadSchema(db: Surreal): Promise<void> {
   await db.query(schema);
 }
 
+async function loadMetaSchema(meta: NonNullable<typeof _metaSession>): Promise<void> {
+  await meta.query(`
+    DEFINE TABLE IF NOT EXISTS app_meta SCHEMAFULL
+      PERMISSIONS FULL;
+    DEFINE FIELD IF NOT EXISTS last_user_db ON TABLE app_meta TYPE option<string>;
+    DEFINE FIELD IF NOT EXISTS updated_at ON TABLE app_meta TYPE datetime VALUE time::now();
+  `);
+}
+
+function dateTimeToMillis(value: DateTime | Date | string): number {
+  if (value instanceof DateTime) return value.toDate().getTime();
+  if (value instanceof Date) return value.getTime();
+  return new Date(value).getTime();
+}
+
 // ─── 生命周期 API ─────────────────────────────────────────────────────────────
 
 /**
@@ -61,6 +76,7 @@ export async function initEngine(): Promise<void> {
   // _meta session：专用于读写 last_user_db，与用户数据完全隔离
   const meta = await db.newSession();
   await meta.use({ namespace: "main", database: "_meta" });
+  await loadMetaSchema(meta);
 
   _engine = db;
   _metaSession = meta;
@@ -114,7 +130,7 @@ export async function initUserDb(sub: string, tokens: TokenSet): Promise<void> {
 }
 
 export type RestoreResult =
-  | { status: "restored"; tokens: TokenSet }
+  | { status: "restored"; expiresAt: number; tokens?: TokenSet }
   | { status: "offline" }
   | { status: "unauthenticated" };
 
@@ -143,12 +159,20 @@ export async function tryRestoreSession(): Promise<RestoreResult> {
   _userDbName = lastUserDb;
 
   // 读取持久化的 tokens
-  const tokenRows = await db.query<[{ access_token: string; refresh_token?: string; expires_at: Date }[]]>(
+  const tokenRows = await db.query<[{ access_token: string; refresh_token?: string; expires_at: DateTime }[]]>(
     `SELECT access_token, refresh_token, expires_at FROM token_store:local`
   );
   const stored = tokenRows[0]?.[0];
 
   if (!stored?.refresh_token) {
+    const expiresAt = stored?.expires_at ? dateTimeToMillis(stored.expires_at) : 0;
+    const fiveMinutes = 5 * 60 * 1000;
+    if (stored?.access_token && Number.isFinite(expiresAt) && Date.now() < expiresAt - fiveMinutes) {
+      await connectRemote(stored.access_token);
+      console.log("[db] session restored with existing access token");
+      return { status: "restored", expiresAt };
+    }
+
     console.log("[db] no refresh_token in token_store, cannot restore");
     return { status: "offline" };
   }
@@ -157,6 +181,8 @@ export async function tryRestoreSession(): Promise<RestoreResult> {
     const newTokens = await refreshAccessToken(stored.refresh_token);
 
     // 写回新 tokens（rotating refresh token 场景下必须更新）
+    const expiresAt = Date.now() + newTokens.expires_in * 1000;
+
     await db.query(
       `UPSERT token_store:local CONTENT {
         access_token: $access_token,
@@ -165,14 +191,14 @@ export async function tryRestoreSession(): Promise<RestoreResult> {
       }`,
       {
         access_token: newTokens.access_token,
-        refresh_token: newTokens.refresh_token ?? null,
-        expires_at: new Date(Date.now() + newTokens.expires_in * 1000),
+        refresh_token: newTokens.refresh_token ?? stored.refresh_token,
+        expires_at: new DateTime(new Date(expiresAt)),
       }
     );
 
     await connectRemote(newTokens.access_token);
     console.log("[db] session restored");
-    return { status: "restored", tokens: newTokens };
+    return { status: "restored", tokens: newTokens, expiresAt };
   } catch (err) {
     console.warn("[db] token refresh failed, entering offline mode:", err);
     return { status: "offline" };

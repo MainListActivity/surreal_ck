@@ -5,7 +5,7 @@ const CLIENT_ID = "b10df483-1cd4-4beb-8a01-92e8f4b3fdf4";
 const AUTHORIZE_URL = "https://o.maplayer.top/t/ck/authorize";
 const TOKEN_URL = "https://o.maplayer.top/t/ck/token";
 const USERINFO_URL = "https://o.maplayer.top/t/ck/userinfo";
-const SCOPES = "openid profile email";
+const SCOPES = "openid profile email offline_access";
 
 export interface TokenSet {
   access_token: string;

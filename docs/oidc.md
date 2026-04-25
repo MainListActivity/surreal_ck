@@ -35,6 +35,7 @@ This application authenticates users via an OpenID Connect provider.
 - The access token audience is `https://auth.maplayer.top` — validate this in your resource server.
 - Tokens are signed JWTs. Verify signatures using keys from the JWKS endpoint.
 - Use `openid` as the minimum scope. Add `profile`, `email` as needed.
+- Persistent desktop login requires `offline_access` so the token endpoint can return a `refresh_token`.
 
 ## Example Authorization Request
 
@@ -43,7 +44,7 @@ https://o.maplayer.top/t/ck/authorize?
   response_type=code&
   client_id=b10df483-1cd4-4beb-8a01-92e8f4b3fdf4&
   redirect_uri=https://docs.maplayer.top/callback&
-  scope=openid&
+  scope=openid%20profile%20email%20offline_access&
   code_challenge=<BASE64URL_SHA256_OF_VERIFIER>&
   code_challenge_method=S256&
   state=<RANDOM_STATE>

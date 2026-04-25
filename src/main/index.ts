@@ -4,6 +4,7 @@ import { initMastra } from "./ai/index";
 import { startOidcLogin } from "./auth/oidc";
 import { ensureSingleInstance } from "./single-instance";
 import {
+  activateSession,
   loginToSurrealDB,
   clearSession,
   getPublicAuthState,
@@ -87,7 +88,11 @@ async function main() {
     const result = await tryRestoreSession();
 
     if (result.status === "restored") {
-      loginToSurrealDB(result.tokens);
+      if (result.tokens) {
+        loginToSurrealDB(result.tokens);
+      } else {
+        activateSession(result.expiresAt);
+      }
     }
 
     const state =

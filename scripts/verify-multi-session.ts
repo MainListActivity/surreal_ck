@@ -19,6 +19,10 @@ async function main() {
   console.log("[2] metaSession.use(_meta) ok");
 
   // 通过 metaSession 写入
+  await metaSession.query(`
+    DEFINE TABLE IF NOT EXISTS app_meta SCHEMAFULL PERMISSIONS FULL;
+    DEFINE FIELD IF NOT EXISTS last_user_db ON TABLE app_meta TYPE option<string>;
+  `);
   await metaSession.query(`UPSERT app_meta:local SET last_user_db = 'u_testuser123'`);
   console.log("[3] wrote to _meta via metaSession");
 
@@ -73,7 +77,9 @@ DEFINE TABLE IF NOT EXISTS _verify_target SCHEMALESS PERMISSIONS NONE;
 
   // 清理
   await db.use({ namespace: "main", database: "u_testuser123" });
-  await db.query(`REMOVE TABLE _verify_target`);
+  await db.query(`REMOVE TABLE IF EXISTS _verify_target`);
+  await db.use({ namespace: "main", database: "docs" });
+  await db.query(`REMOVE TABLE IF EXISTS _verify_target`);
   await db.use({ namespace: "main", database: "_meta" });
   await db.query(`DELETE app_meta:local`);
 

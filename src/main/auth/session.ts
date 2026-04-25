@@ -11,7 +11,11 @@ let _expiresAt: number | null = null;
  * tokens 的持久化由 initUserDb / tryRestoreSession 负责写入 token_store。
  */
 export function loginToSurrealDB(tokens: TokenSet): void {
-  _expiresAt = Date.now() + tokens.expires_in * 1000;
+  activateSession(Date.now() + tokens.expires_in * 1000);
+}
+
+export function activateSession(expiresAt: number): void {
+  _expiresAt = expiresAt;
   console.log("[auth] session activated");
 }
 
@@ -56,7 +60,7 @@ export async function ensureValidSession(): Promise<boolean> {
       }`,
       {
         access_token: newTokens.access_token,
-        refresh_token: newTokens.refresh_token ?? null,
+        refresh_token: newTokens.refresh_token ?? refreshToken,
         expires_at: new DateTime(new Date(Date.now() + newTokens.expires_in * 1000)),
       }
     );
