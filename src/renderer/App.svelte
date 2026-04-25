@@ -41,32 +41,42 @@
 </script>
 
 <div class="app-shell">
-  {#if !auth.loggedIn}
+  {#if !auth.loggedIn && !auth.offlineMode}
     <LoginScreen />
   {:else}
-    {#if navScreens.has(screen)}
-      <SideNav current={screen} {navigate} />
+    {#if auth.offlineMode}
+      <div class="offline-banner">
+        <span class="offline-icon">⚠</span>
+        离线模式 — 数据同步暂停，当前为只读视图
+        <button class="login-link" onclick={() => { applyAuthState({ loggedIn: false }); }}>重新登录</button>
+      </div>
     {/if}
 
-    <main class="app-main" class:fullscreen={!navScreens.has(screen)}>
-      {#if screen === "home"}
-        <HomeScreen {navigate} />
-      {:else if screen === "mydocs"}
-        <MyDocsScreen {navigate} />
-      {:else if screen === "editor"}
-        <EditorScreen {navigate} />
-      {:else if screen === "form"}
-        <PublicFormScreen {navigate} />
-      {:else if screen === "form-success"}
-        <PublicFormScreen mode="success" {navigate} />
-      {:else if screen === "templates"}
-        <TemplatesScreen {navigate} />
-      {:else if screen === "admin"}
-        <AdminScreen {navigate} />
-      {:else}
-        <StateScreen kind={screen} {navigate} />
+    <div class="app-body">
+      {#if navScreens.has(screen)}
+        <SideNav current={screen} {navigate} />
       {/if}
-    </main>
+
+      <main class="app-main" class:fullscreen={!navScreens.has(screen)}>
+        {#if screen === "home"}
+          <HomeScreen {navigate} />
+        {:else if screen === "mydocs"}
+          <MyDocsScreen {navigate} />
+        {:else if screen === "editor"}
+          <EditorScreen {navigate} />
+        {:else if screen === "form"}
+          <PublicFormScreen {navigate} />
+        {:else if screen === "form-success"}
+          <PublicFormScreen mode="success" {navigate} />
+        {:else if screen === "templates"}
+          <TemplatesScreen {navigate} />
+        {:else if screen === "admin"}
+          <AdminScreen {navigate} />
+        {:else}
+          <StateScreen kind={screen} {navigate} />
+        {/if}
+      </main>
+    </div>
   {/if}
 </div>
 
@@ -188,10 +198,52 @@
 
   .app-shell {
     display: flex;
+    flex-direction: column;
     width: 100%;
     height: 100%;
     overflow: hidden;
     background: var(--bg);
+  }
+
+  .offline-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 16px;
+    background: var(--warning-bg);
+    border-bottom: 1px solid #ffd591;
+    color: var(--warning);
+    font-size: 12px;
+    font-weight: 500;
+    flex-shrink: 0;
+    z-index: 100;
+  }
+
+  .offline-icon {
+    font-size: 13px;
+  }
+
+  .login-link {
+    margin-left: auto;
+    padding: 3px 10px;
+    border: 1px solid var(--warning);
+    border-radius: 5px;
+    background: transparent;
+    color: var(--warning);
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .login-link:hover {
+    background: rgba(255, 125, 0, .08);
+  }
+
+  .app-body {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
   }
 
   .app-main {

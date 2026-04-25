@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { Surreal } from "surrealdb";
 import { RecordId, type Duration } from "surrealdb";
@@ -28,7 +29,19 @@ function stripSchemaHeader(raw: string): string {
 }
 
 async function loadSchema(db: Surreal): Promise<void> {
-  const schemaRaw = await Bun.file(join(import.meta.dir, "../../../schema/main.surql")).text();
+  const schemaPath = [
+    // Electrobun bundle: Contents/Resources/app/bun/schema/main.surql
+    join(import.meta.dir, "schema/main.surql"),
+    // Source/test execution: src/main/db -> schema/main.surql
+    join(import.meta.dir, "../../../schema/main.surql"),
+    join(process.cwd(), "schema/main.surql"),
+  ].find((path) => existsSync(path));
+
+  if (!schemaPath) {
+    throw new Error("[db] schema/main.surql not found");
+  }
+
+  const schemaRaw = await Bun.file(schemaPath).text();
   const schema = stripSchemaHeader(schemaRaw).replace(/DEFINE BUCKET[^;]*;/gs, "");
   await db.query(schema);
 }
