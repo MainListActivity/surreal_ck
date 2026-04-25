@@ -24,6 +24,8 @@ export async function loginToSurrealDB(
   // embedded engine 不支持 authenticate()，必须用 signin + AccessBearerAuth。
   // DEFINE ACCESS madocs TYPE RECORD WITH JWT 接受 key 字段作为 bearer token。
   await db.signin({
+    namespace: "main",
+    database: "docs",
     access: "madocs",
     key: tokens.access_token,
   });

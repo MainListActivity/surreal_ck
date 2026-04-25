@@ -14,7 +14,7 @@ export async function initDb(): Promise<Surreal> {
   });
 
   await db.connect("surrealkv://./data/app.db");
-  await db.use({ namespace: "surreal_ck", database: "main" });
+  await db.use({ namespace: "main", database: "docs" });
 
   const schemaRaw = await Bun.file(join(import.meta.dir, "schema/main.surql")).text();
   // DEFINE BUCKET requires SurrealDB experimental files feature; strip until enabled
