@@ -1,7 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { Surreal } from "surrealdb";
-import { RecordId, type Duration } from "surrealdb";
+import { Surreal, DateTime } from "surrealdb";
 import { createNodeEngines } from "@surrealdb/node";
 import type { TokenSet } from "../auth/oidc";
 import { refreshAccessToken } from "../auth/oidc";
@@ -17,7 +16,8 @@ let _loginInProgress = false;
 // ─── 工具函数 ─────────────────────────────────────────────────────────────────
 
 export function userDbName(sub: string): string {
-  return `u_${Bun.hash(sub).toString(16).padStart(16, "0")}`;
+  // Bun.hash.wyhash() 确定返回 bigint，避免 number | bigint 联合类型的歧义
+  return `u_${Bun.hash.wyhash(sub).toString(16).padStart(16, "0")}`;
 }
 
 /** 从 schema 文件中 strip 掉 OPTION IMPORT + USE 头部，避免执行时切换 DB。
@@ -96,7 +96,7 @@ export async function initUserDb(sub: string, tokens: TokenSet): Promise<void> {
       {
         access_token: tokens.access_token,
         refresh_token: tokens.refresh_token ?? null,
-        expires_at: new Date(Date.now() + tokens.expires_in * 1000),
+        expires_at: new DateTime(new Date(Date.now() + tokens.expires_in * 1000)),
       }
     );
 

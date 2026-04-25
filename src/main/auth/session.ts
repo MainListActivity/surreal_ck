@@ -1,3 +1,4 @@
+import { DateTime } from "surrealdb";
 import type { TokenSet } from "./oidc";
 import { refreshAccessToken } from "./oidc";
 import { getLocalDb } from "../db/index";
@@ -56,7 +57,7 @@ export async function ensureValidSession(): Promise<boolean> {
       {
         access_token: newTokens.access_token,
         refresh_token: newTokens.refresh_token ?? null,
-        expires_at: new Date(Date.now() + newTokens.expires_in * 1000),
+        expires_at: new DateTime(new Date(Date.now() + newTokens.expires_in * 1000)),
       }
     );
 
