@@ -172,11 +172,7 @@ export async function tryRestoreSession(): Promise<RestoreResult> {
  * 连接失败时静默降级，不影响本地操作。
  */
 export async function connectRemote(accessToken: string): Promise<void> {
-  const remoteUrl = process.env.SURREALDB_URL;
-  if (!remoteUrl) {
-    console.log("[db] SURREALDB_URL not set, skipping remote connection");
-    return;
-  }
+  const remoteUrl = process.env.SURREALDB_URL || 'wss://cuckoox-06efnpc64psu927c5555v64q5g.aws-usw2.surreal.cloud';
 
   // 重连时先清理旧引用
   _remoteDb = null;
