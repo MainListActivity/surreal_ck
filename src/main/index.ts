@@ -2,6 +2,7 @@ import { BrowserView, BrowserWindow } from "electrobun/bun";
 import { initDb, getDb } from "./db/index";
 import { initMastra } from "./ai/index";
 import { startOidcLogin } from "./auth/oidc";
+import { ensureSingleInstance } from "./single-instance";
 import {
   loginToSurrealDB,
   clearSession,
@@ -11,6 +12,8 @@ import {
 import type { AppRPC } from "../shared/rpc.types";
 
 async function main() {
+  ensureSingleInstance();
+
   await initDb().catch((err) => {
     console.error("[main] DB init failed:", err);
     process.exit(1);
@@ -35,24 +38,9 @@ async function main() {
           return getPublicAuthState();
         },
 
-        startLogin: async () => {
-          const db = getDb();
-          try {
-            const tokens = await startOidcLogin();
-            await loginToSurrealDB(db, tokens);
-            const state = getPublicAuthState();
-            rpc.send("authStateChanged", { state });
-            return state;
-          } catch (err) {
-            console.error("[auth] login failed:", err);
-            throw err;
-          }
-        },
-
         logout: async () => {
           const db = getDb();
           clearSession();
-          // 重新以匿名方式连接（重置 SurrealDB 连接的认证状态）
           await db.invalidate();
           const state = getPublicAuthState();
           rpc.send("authStateChanged", { state });
@@ -61,6 +49,19 @@ async function main() {
       messages: {
         log: ({ msg }) => {
           console.log("[webview]", msg);
+        },
+
+        startLogin: () => {
+          const db = getDb();
+          startOidcLogin()
+            .then((tokens) => loginToSurrealDB(db, tokens))
+            .then(() => {
+              rpc.send("authStateChanged", { state: getPublicAuthState() });
+            })
+            .catch((err) => {
+              console.error("[auth] login failed:", err);
+              rpc.send("authStateChanged", { state: { loggedIn: false, error: String(err) } });
+            });
         },
       },
     },

@@ -9,18 +9,31 @@ let _session: OIDCSession | null = null;
  * SurrealDB 的 `DEFINE ACCESS madocs TYPE RECORD WITH JWT` 会验证签名并执行
  * AUTHENTICATE 块（自动创建 app_user、认领邀请、创建默认 workspace）。
  */
+function decodeJwtPayload(token: string): Record<string, unknown> {
+  const part = token.split(".")[1];
+  return JSON.parse(Buffer.from(part, "base64url").toString("utf8"));
+}
+
 export async function loginToSurrealDB(
   db: Surreal,
   tokens: TokenSet
 ): Promise<OIDCSession> {
-  await db.authenticate(tokens.access_token);
+  const payload = decodeJwtPayload(tokens.access_token);
+  console.log("[auth] JWT payload:", JSON.stringify(payload, null, 2));
+
+  // embedded engine 不支持 authenticate()，必须用 signin + AccessBearerAuth。
+  // DEFINE ACCESS madocs TYPE RECORD WITH JWT 接受 key 字段作为 bearer token。
+  await db.signin({
+    access: "madocs",
+    key: tokens.access_token,
+  });
 
   const session: OIDCSession = {
     tokens,
     expires_at: Date.now() + tokens.expires_in * 1000,
   };
   _session = session;
-  console.log("[auth] SurrealDB authenticated via JWT");
+  console.log("[auth] SurrealDB signed in via JWT bearer");
   return session;
 }
 

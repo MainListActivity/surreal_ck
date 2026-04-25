@@ -9,6 +9,7 @@ export type RowData = {
 export type AuthState = {
   loggedIn: boolean;
   expiresAt?: number;
+  error?: string;
 };
 
 export interface AppRPC extends ElectrobunRPCSchema {
@@ -16,11 +17,11 @@ export interface AppRPC extends ElectrobunRPCSchema {
     requests: {
       query: { params: { sql: string }; response: unknown[] };
       getAuthState: { params: Record<string, never>; response: AuthState };
-      startLogin: { params: Record<string, never>; response: AuthState };
       logout: { params: Record<string, never>; response: void };
     };
     messages: {
       log: { msg: string };
+      startLogin: Record<string, never>;
     };
   };
   webview: {

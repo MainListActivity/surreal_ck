@@ -1,21 +1,21 @@
 <script lang="ts">
   import { login } from "../lib/auth.actions";
+  import { auth } from "../lib/auth.svelte";
   import Logo from "../components/Logo.svelte";
 
   let loading = $state(false);
-  let error = $state<string | null>(null);
 
-  async function handleLogin() {
+  function handleLogin() {
     loading = true;
-    error = null;
-    try {
-      await login();
-    } catch (err) {
-      error = err instanceof Error ? err.message : "登录失败，请重试";
-    } finally {
+    login();
+  }
+
+  // 主进程推送 authStateChanged 时 auth.error 会变化，结束 loading
+  $effect(() => {
+    if (auth.error !== undefined || auth.loggedIn) {
       loading = false;
     }
-  }
+  });
 </script>
 
 <div class="login-shell">
@@ -27,8 +27,8 @@
     <h1>欢迎使用 SurrealCK</h1>
     <p class="subtitle">法律金融协作平台</p>
 
-    {#if error}
-      <div class="error">{error}</div>
+    {#if auth.error}
+      <div class="error">{auth.error}</div>
     {/if}
 
     <button class="login-btn primary-btn" onclick={handleLogin} disabled={loading}>
