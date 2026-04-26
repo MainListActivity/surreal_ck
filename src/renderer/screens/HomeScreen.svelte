@@ -1,7 +1,8 @@
 <script lang="ts">
   import FileIcon from "../components/FileIcon.svelte";
   import Icon from "../components/Icon.svelte";
-  import { templateColors, workbooks } from "../lib/mock";
+  import { appState } from "../lib/app-state.svelte";
+  import { workbooksStore } from "../lib/workbooks.svelte";
   import type { Navigate } from "../lib/types";
 
   let { navigate }: { navigate: Navigate } = $props();
@@ -9,15 +10,47 @@
   let query = $state("");
   let tab = $state("recent");
   let view = $state<"list" | "grid">("list");
+  let creating = $state(false);
 
-  const filtered = $derived(workbooks.filter((wb) => !query || wb.name.includes(query) || wb.template.includes(query) || wb.modifier.includes(query)));
+  $effect(() => {
+    const ws = appState.workspace;
+    if (ws) {
+      void workbooksStore.loadForWorkspace(ws.id);
+    }
+  });
+
+  const filtered = $derived(workbooksStore.filterByQuery(query));
+
+  async function handleCreateBlank() {
+    const ws = appState.workspace;
+    if (!ws || appState.readOnly) return;
+    creating = true;
+    const wb = await workbooksStore.createBlank(ws.id, "未命名工作簿");
+    creating = false;
+    if (wb) navigate("editor", { workbookId: wb.id });
+  }
+
+  function formatDate(iso?: string): string {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    const now = new Date();
+    const diffMs = now.getTime() - d.getTime();
+    const diffMin = Math.floor(diffMs / 60000);
+    if (diffMin < 1) return "刚刚";
+    if (diffMin < 60) return `${diffMin} 分钟前`;
+    const diffH = Math.floor(diffMin / 60);
+    if (diffH < 24) return `${diffH} 小时前`;
+    const diffD = Math.floor(diffH / 24);
+    if (diffD < 7) return `${diffD} 天前`;
+    return d.toLocaleDateString("zh-CN");
+  }
 </script>
 
 <section class="home">
   <header class="topbar">
     <label class="search" class:active={query}>
       <Icon name="search" size={14} color="var(--text-3)" />
-      <input bind:value={query} placeholder="搜索工作簿、成员..." />
+      <input bind:value={query} placeholder="搜索工作簿..." />
       {#if query}<button onclick={() => (query = "")}>×</button>{/if}
     </label>
     <button class="icon-btn" title="通知"><Icon name="bell" size={16} /></button>
@@ -26,9 +59,21 @@
   <div class="content">
     {#if !query}
       <div class="quick-actions">
-        <button><span><Icon name="plus" size={17} color="var(--primary)" /></span><strong>空白文档</strong><small>从零开始创建</small></button>
-        <button onclick={() => navigate("templates")}><span><Icon name="tag" size={17} color="var(--primary)" /></span><strong>从模板创建</strong><small>债权申报·评估·汇总</small></button>
-        <button><span><Icon name="upload" size={17} color="var(--primary)" /></span><strong>导入文件</strong><small>支持 Excel / CSV</small></button>
+        <button onclick={handleCreateBlank} disabled={creating || appState.readOnly}>
+          <span><Icon name="plus" size={17} color="var(--primary)" /></span>
+          <strong>{creating ? "创建中…" : "空白文档"}</strong>
+          <small>从零开始创建</small>
+        </button>
+        <button onclick={() => navigate("templates")} disabled={appState.readOnly}>
+          <span><Icon name="tag" size={17} color="var(--primary)" /></span>
+          <strong>从模板创建</strong>
+          <small>案件管理·法律实体追踪</small>
+        </button>
+        <button disabled>
+          <span><Icon name="upload" size={17} color="var(--primary)" /></span>
+          <strong>导入文件</strong>
+          <small>敬请期待</small>
+        </button>
       </div>
     {/if}
 
@@ -44,25 +89,32 @@
       </div>
     </div>
 
-    {#if view === "list"}
+    {#if workbooksStore.loading}
+      <div class="state-msg">加载中…</div>
+    {:else if workbooksStore.error}
+      <div class="state-msg error">{workbooksStore.error}</div>
+    {:else if filtered.length === 0}
+      <div class="state-msg">
+        {#if query}没有匹配的工作簿{:else}还没有工作簿，点击上方"空白文档"创建第一个{/if}
+      </div>
+    {:else if view === "list"}
       <div class="workbook-table">
-        <div class="head"><span>名称</span><span>负责人</span><span>最近修改</span><span>模板类型</span></div>
+        <div class="head"><span>名称</span><span>模板类型</span><span>最近修改</span></div>
         {#each filtered as wb}
-          <button class="row" onclick={() => navigate("editor")}>
-            <span class="name"><FileIcon type={wb.fileType} size={24} /><strong>{wb.name}</strong>{#if wb.pinned}<Icon name="pin" size={12} color="var(--text-3)" />{/if}</span>
-            <span>{wb.modifier}</span>
-            <span>{wb.modified}</span>
-            <span><em style={`--tag:${templateColors[wb.template] ?? "var(--text-3)"}`}>{wb.template}</em></span>
+          <button class="row" onclick={() => navigate("editor", { workbookId: wb.id })}>
+            <span class="name"><FileIcon type="excel" size={24} /><strong>{wb.name}</strong></span>
+            <span><em>{wb.templateKey ?? "自定义"}</em></span>
+            <span>{formatDate(wb.updatedAt)}</span>
           </button>
         {/each}
       </div>
     {:else}
       <div class="workbook-grid">
         {#each filtered as wb}
-          <button onclick={() => navigate("editor")}>
-            <FileIcon type={wb.fileType} size={36} />
+          <button onclick={() => navigate("editor", { workbookId: wb.id })}>
+            <FileIcon type="excel" size={36} />
             <strong>{wb.name}</strong>
-            <span>{wb.modified} · {wb.modifier}</span>
+            <span>{formatDate(wb.updatedAt)}</span>
           </button>
         {/each}
       </div>
@@ -155,10 +207,15 @@
     padding: 14px 16px;
   }
 
-  .quick-actions button:hover,
+  .quick-actions button:hover:not(:disabled),
   .workbook-grid button:hover {
     border-color: var(--primary);
     box-shadow: 0 4px 14px rgba(22, 100, 255, .12);
+  }
+
+  .quick-actions button:disabled {
+    opacity: .55;
+    cursor: not-allowed;
   }
 
   .quick-actions span {
@@ -247,7 +304,7 @@
   .head,
   .row {
     display: grid;
-    grid-template-columns: minmax(260px, 1fr) 100px 160px 110px;
+    grid-template-columns: minmax(260px, 1fr) 120px 160px;
     align-items: center;
   }
 
@@ -291,8 +348,8 @@
     display: inline-flex;
     padding: 2px 7px;
     border-radius: 4px;
-    background: color-mix(in srgb, var(--tag) 14%, white);
-    color: var(--tag);
+    background: var(--primary-light);
+    color: var(--primary);
     font-size: 11px;
     font-style: normal;
   }
@@ -310,5 +367,16 @@
     flex-direction: column;
     gap: 8px;
     padding: 16px;
+  }
+
+  .state-msg {
+    padding: 48px 0;
+    color: var(--text-3);
+    font-size: 13px;
+    text-align: center;
+  }
+
+  .state-msg.error {
+    color: var(--error);
   }
 </style>

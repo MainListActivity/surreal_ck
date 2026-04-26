@@ -1,0 +1,244 @@
+import { RecordId, StringRecordId } from "surrealdb";
+import { getLocalDb } from "../db/index";
+import { assertCanWriteWorkspace } from "./context";
+import { ServiceError } from "./errors";
+import { getTemplateDef, listTemplateSummaries, type EntityDef } from "../templates/catalog";
+import { provisionEntityTable, provisionRelationTable } from "./workbooks";
+import type {
+  ListTemplatesResponse,
+  CreateWorkbookFromTemplateRequest,
+  CreateWorkbookFromTemplateResponse,
+  WorkbookSummaryDTO,
+} from "../../shared/rpc.types";
+
+// ─── 列表 ─────────────────────────────────────────────────────────────────────
+
+export function listTemplates(): ListTemplatesResponse {
+  return { templates: listTemplateSummaries() };
+}
+
+// ─── 从模板创建工作簿 ─────────────────────────────────────────────────────────
+
+export async function createWorkbookFromTemplate({
+  workspaceId,
+  templateKey,
+  name,
+}: CreateWorkbookFromTemplateRequest): Promise<CreateWorkbookFromTemplateResponse> {
+  assertCanWriteWorkspace(workspaceId);
+
+  const tpl = getTemplateDef(templateKey);
+  if (!tpl) {
+    throw new ServiceError("VALIDATION_ERROR", `未知模板: ${templateKey}`);
+  }
+
+  const db = getLocalDb();
+  const wsId = new StringRecordId(workspaceId);
+
+  // 生成 workspace key（用于动态表名前缀）
+  const wsRaw = workspaceId.replace(/^workspace:/, "");
+  const wsKey = wsRaw.slice(0, 8);
+
+  // 生成 workbook id
+  const wbKey = Bun.hash.wyhash(`${workspaceId}:wb:${templateKey}:${Date.now()}`).toString(16).padStart(16, "0");
+  const wbId = new RecordId("workbook", wbKey);
+
+  const workbookName = name?.trim() || tpl.name;
+
+  // ── Step 1: DDL provisioning（entity + relation 表）────────────────────────
+  for (const entity of tpl.entities) {
+    const tableName = `ent_${wsKey}_${entity.key}`;
+    await provisionEntityTable(tableName);
+  }
+  for (const rel of tpl.relations) {
+    const tableName = `rel_${wsKey}_${rel.key}`;
+    await provisionRelationTable(tableName);
+  }
+
+  // ── Step 2: 创建 workbook 和 sheet 记录 ────────────────────────────────────
+  const firstEntity = tpl.entities[0];
+  const firstSheetId = makeSheetId(wsKey, firstEntity.key);
+
+  await db.query(
+    `UPSERT $wbId CONTENT {
+      workspace: $ws,
+      name: $name,
+      template_key: $templateKey,
+      last_opened_sheet: $firstSheetId
+    }`,
+    { wbId, ws: wsId, name: workbookName, templateKey, firstSheetId }
+  );
+
+  // 创建每个 sheet 记录
+  for (const entity of tpl.entities) {
+    await upsertSheetRecord(wsKey, wbId, entity);
+  }
+
+  // ── Step 3: edge_catalog ─────────────────────────────────────────────────
+  for (const rel of tpl.relations) {
+    const relId = new RecordId("edge_catalog", `${rel.key}_${wsKey}`);
+    await db.query(
+      `UPSERT $ecId CONTENT {
+        workspace: $ws,
+        key: $key,
+        label: $label,
+        rel_table: $relTable,
+        from_table: $fromTable,
+        to_table: $toTable,
+        edge_props: $edgeProps
+      }`,
+      {
+        ecId: relId,
+        ws: wsId,
+        key: rel.key,
+        label: rel.label,
+        relTable: `rel_${wsKey}_${rel.key}`,
+        fromTable: `ent_${wsKey}_${rel.fromEntityKey}`,
+        toTable: `ent_${wsKey}_${rel.toEntityKey}`,
+        edgeProps: rel.edgeProps ?? [],
+      }
+    );
+  }
+
+  // ── Step 4: 样例数据（仅 hasSampleData 模板）──────────────────────────────
+  if (tpl.hasSampleData) {
+    try {
+      await insertSampleData(templateKey, wsKey, wsId, wbId, db);
+    } catch (err) {
+      // 样例数据失败不阻止模板创建
+      console.warn("[templates] 样例数据插入失败:", err);
+    }
+  }
+
+  // ── 读取最终 workbook ────────────────────────────────────────────────────
+  type WorkbookRow = { id: RecordId; workspace: RecordId; name: string; template_key?: string; updated_at: Date };
+  const wbRows = await db.query<[WorkbookRow[]]>(
+    `SELECT id, workspace, name, template_key, updated_at FROM workbook WHERE id = $wbId`,
+    { wbId }
+  );
+  const wbRow = wbRows[0]?.[0];
+  if (!wbRow) throw new ServiceError("INTERNAL_ERROR", "工作簿创建后读取失败");
+
+  const workbook: WorkbookSummaryDTO = {
+    id: String(wbRow.id),
+    workspaceId: String(wbRow.workspace),
+    name: wbRow.name,
+    templateKey: wbRow.template_key,
+    updatedAt: wbRow.updated_at instanceof Date ? wbRow.updated_at.toISOString() : String(wbRow.updated_at),
+  };
+
+  return { workbook };
+}
+
+// ─── 内部：创建 sheet 记录 ─────────────────────────────────────────────────────
+
+function makeSheetId(wsKey: string, entityKey: string): RecordId {
+  return new RecordId("sheet", `${entityKey}_${wsKey}`);
+}
+
+async function upsertSheetRecord(
+  wsKey: string,
+  wbId: RecordId,
+  entity: EntityDef
+): Promise<void> {
+  const db = getLocalDb();
+  const sheetId = makeSheetId(wsKey, entity.key);
+  const tableName = `ent_${wsKey}_${entity.key}`;
+
+  await db.query(
+    `UPSERT $sheetId CONTENT {
+      workbook: $wbId,
+      univer_id: rand::ulid(),
+      table_name: $tableName,
+      label: $label,
+      position: $position,
+      column_defs: $columnDefs
+    }`,
+    {
+      sheetId,
+      wbId,
+      tableName,
+      label: entity.label,
+      position: entity.position,
+      columnDefs: entity.columnDefs,
+    }
+  );
+}
+
+// ─── 内部：样例数据 ────────────────────────────────────────────────────────────
+
+async function insertSampleData(
+  templateKey: string,
+  wsKey: string,
+  wsId: StringRecordId,
+  wbId: RecordId,
+  db: ReturnType<typeof getLocalDb>
+): Promise<void> {
+  if (templateKey === "case-management") {
+    const tblCase     = `ent_${wsKey}_case`;
+    const tblClient   = `ent_${wsKey}_client`;
+    const tblDocument = `ent_${wsKey}_document`;
+    const relAssigned = `rel_${wsKey}_assigned_to`;
+    const relBelongs  = `rel_${wsKey}_belongs_to`;
+
+    const redwoodRows = await db.query<[{ id: RecordId }[]]>(
+      `CREATE type::table($t) CONTENT { workspace: $ws, name: "Redwood Group", email: "legal@redwood.example.com" } RETURN id`,
+      { t: tblClient, ws: wsId }
+    );
+    const tritonRows = await db.query<[{ id: RecordId }[]]>(
+      `CREATE type::table($t) CONTENT { workspace: $ws, name: "Triton Corp",   email: "counsel@triton.example.com" } RETURN id`,
+      { t: tblClient, ws: wsId }
+    );
+    const case1Rows = await db.query<[{ id: RecordId }[]]>(
+      `CREATE type::table($t) CONTENT { workspace: $ws, title: "Redwood v. Triton",     matter_id: "2026-001", status: "Open",    opened_at: time::now() } RETURN id`,
+      { t: tblCase, ws: wsId }
+    );
+    const case2Rows = await db.query<[{ id: RecordId }[]]>(
+      `CREATE type::table($t) CONTENT { workspace: $ws, title: "Triton v. Harbor LLC",  matter_id: "2026-002", status: "Pending", opened_at: time::now() } RETURN id`,
+      { t: tblCase, ws: wsId }
+    );
+    const motionRows = await db.query<[{ id: RecordId }[]]>(
+      `CREATE type::table($t) CONTENT { workspace: $ws, title: "Motion 42 — Summary Judgment", doc_type: "Motion", filed_at: time::now() } RETURN id`,
+      { t: tblDocument, ws: wsId }
+    );
+
+    const redwood = redwoodRows[0]?.[0]?.id;
+    const triton  = tritonRows[0]?.[0]?.id;
+    const case1   = case1Rows[0]?.[0]?.id;
+    const case2   = case2Rows[0]?.[0]?.id;
+    const motion  = motionRows[0]?.[0]?.id;
+
+    if (redwood && triton && case1 && case2 && motion) {
+      await db.query(
+        `RELATE $case1->type::table($relA)->$redwood;
+         RELATE $case2->type::table($relA)->$triton;
+         RELATE $motion->type::table($relB)->$case1;`,
+        { case1, case2, motion, redwood, triton, relA: relAssigned, relB: relBelongs }
+      );
+    }
+  } else if (templateKey === "legal-entity-tracker") {
+    const tblCompany = `ent_${wsKey}_company`;
+    const tblPerson  = `ent_${wsKey}_person`;
+    const relOwns    = `rel_${wsKey}_owns`;
+    const relControls = `rel_${wsKey}_controls`;
+    const relFiledBy = `rel_${wsKey}_filed_by`;
+
+    const acmeRows  = await db.query<[{ id: RecordId }[]]>(`CREATE type::table($t) CONTENT { workspace: $ws, name: "Acme Holdings", jurisdiction: "Delaware",  status: "Active"  } RETURN id`, { t: tblCompany, ws: wsId });
+    const betaRows  = await db.query<[{ id: RecordId }[]]>(`CREATE type::table($t) CONTENT { workspace: $ws, name: "Beta LLC",      jurisdiction: "Hong Kong", status: "Active"  } RETURN id`, { t: tblCompany, ws: wsId });
+    const gammaRows = await db.query<[{ id: RecordId }[]]>(`CREATE type::table($t) CONTENT { workspace: $ws, name: "Gamma Inc",     jurisdiction: "Singapore", status: "Pending" } RETURN id`, { t: tblCompany, ws: wsId });
+    const chenRows  = await db.query<[{ id: RecordId }[]]>(`CREATE type::table($t) CONTENT { workspace: $ws, name: "Chen Wei",      email: "chen@example.com", role: "Director"  } RETURN id`, { t: tblPerson,  ws: wsId });
+
+    const acme  = acmeRows[0]?.[0]?.id;
+    const beta  = betaRows[0]?.[0]?.id;
+    const gamma = gammaRows[0]?.[0]?.id;
+    const chen  = chenRows[0]?.[0]?.id;
+
+    if (acme && beta && gamma && chen) {
+      await db.query(
+        `RELATE $acme->type::table($relO)->$beta;
+         RELATE $beta->type::table($relC)->$gamma;
+         RELATE $gamma->type::table($relF)->$chen;`,
+        { acme, beta, gamma, chen, relO: relOwns, relC: relControls, relF: relFiledBy }
+      );
+    }
+  }
+}

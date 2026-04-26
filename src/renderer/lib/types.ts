@@ -49,4 +49,12 @@ export type TemplateItem = {
   tags: string[];
 };
 
-export type Navigate = (screen: ScreenId) => void;
+export type RouteState = {
+  screen: ScreenId;
+  workbookId?: string;
+  sheetId?: string;
+  folderId?: string;
+  templateKey?: string;
+};
+
+export type Navigate = (screen: ScreenId, params?: Omit<RouteState, "screen">) => void;

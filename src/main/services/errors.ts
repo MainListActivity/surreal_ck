@@ -6,6 +6,8 @@ const DEFAULT_MESSAGES: Record<AppErrorCode, string> = {
   NOT_IMPLEMENTED: "功能尚未实现",
   BOOTSTRAP_REQUIRED: "用户身份尚未初始化，请重新登录",
   VALIDATION_ERROR: "请求参数无效",
+  NOT_FOUND: "资源不存在",
+  FORBIDDEN: "权限不足",
   INTERNAL_ERROR: "服务内部错误",
 };
 

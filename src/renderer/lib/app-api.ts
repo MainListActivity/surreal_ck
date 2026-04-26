@@ -2,9 +2,16 @@ import { rpc } from "./rpc";
 import type {
   AppBootstrap,
   CreateBlankWorkbookResponse,
+  CreateFolderResponse,
+  CreateWorkbookFromTemplateResponse,
+  DeleteRowsResponse,
+  GetWorkbookDataResponse,
+  ListFoldersResponse,
+  ListTemplatesResponse,
   ListWorkbooksResponse,
   RecordIdString,
   Result,
+  UpsertRowsResponse,
 } from "../../shared/rpc.types";
 
 /** 产品页面唯一的数据入口；不暴露 raw query。 */
@@ -19,5 +26,36 @@ export const appApi = {
 
   createBlankWorkbook(workspaceId: RecordIdString, name: string): Promise<Result<CreateBlankWorkbookResponse>> {
     return rpc.request("createBlankWorkbook", { workspaceId, name });
+  },
+
+  listFolders(workspaceId: RecordIdString): Promise<Result<ListFoldersResponse>> {
+    return rpc.request("listFolders", { workspaceId });
+  },
+
+  createFolder(workspaceId: RecordIdString, name: string, parentId?: RecordIdString): Promise<Result<CreateFolderResponse>> {
+    return rpc.request("createFolder", { workspaceId, name, parentId });
+  },
+
+  listTemplates(): Promise<Result<ListTemplatesResponse>> {
+    return rpc.request("listTemplates", {});
+  },
+
+  createWorkbookFromTemplate(workspaceId: RecordIdString, templateKey: string, name?: string): Promise<Result<CreateWorkbookFromTemplateResponse>> {
+    return rpc.request("createWorkbookFromTemplate", { workspaceId, templateKey, name });
+  },
+
+  getWorkbookData(workbookId: RecordIdString, sheetId?: RecordIdString): Promise<Result<GetWorkbookDataResponse>> {
+    return rpc.request("getWorkbookData", { workbookId, sheetId });
+  },
+
+  upsertRows(
+    sheetId: RecordIdString,
+    rows: Array<{ id?: RecordIdString; values: Record<string, unknown> }>
+  ): Promise<Result<UpsertRowsResponse>> {
+    return rpc.request("upsertRows", { sheetId, rows });
+  },
+
+  deleteRows(sheetId: RecordIdString, ids: RecordIdString[]): Promise<Result<DeleteRowsResponse>> {
+    return rpc.request("deleteRows", { sheetId, ids });
   },
 };

@@ -1,7 +1,7 @@
 ---
 title: "feat: 打通产品核心可用闭环"
 type: feat
-status: active
+status: completed
 date: 2026-04-26
 deepened: 2026-04-26
 ---
@@ -155,7 +155,7 @@ flowchart TB
   U6 --> U7
 ```
 
-- [ ] **Unit 1: 定义产品 RPC 契约与主进程服务骨架**
+- [x] **Unit 1: 定义产品 RPC 契约与主进程服务骨架**
 
 **Goal:** 从通用 `query` 过渡到 typed 产品 API，为后续功能提供稳定边界。
 
@@ -199,7 +199,7 @@ flowchart TB
 
 ---
 
-- [ ] **Unit 2: 本地身份与默认 workspace 引导**
+- [x] **Unit 2: 本地身份与默认 workspace 引导**
 
 **Goal:** 登录或恢复后在用户专属 DB 中创建/更新本地 `app_user` 与默认 `workspace`，让业务页面有真实租户边界。
 
@@ -239,7 +239,7 @@ flowchart TB
 
 ---
 
-- [ ] **Unit 3: 工作簿、文件夹与首页/我的文档数据服务**
+- [x] **Unit 3: 工作簿、文件夹与首页/我的文档数据服务**
 
 **Goal:** 让首页和我的文档展示真实工作簿，并支持创建空白工作簿与基础文件夹浏览。
 
@@ -281,7 +281,7 @@ flowchart TB
 
 ---
 
-- [ ] **Unit 4: 受控模板目录与模板创建工作簿**
+- [x] **Unit 4: 受控模板目录与模板创建工作簿**
 
 **Goal:** 让模板页从真实模板目录创建工作簿，并把模板中的 sheet、动态实体表、关系表和初始数据 provision 到当前 workspace。
 
@@ -330,7 +330,7 @@ flowchart TB
 
 ---
 
-- [ ] **Unit 5: 编辑器真实数据读写闭环**
+- [x] **Unit 5: 编辑器真实数据读写闭环**
 
 **Goal:** 让编辑器基于真实 workbook/sheet/dynamic table 加载列和行，并持久化新增、编辑、粘贴。
 
@@ -379,7 +379,7 @@ flowchart TB
 
 ---
 
-- [ ] **Unit 6: 渲染层状态、导航参数与真实数据替换**
+- [x] **Unit 6: 渲染层状态、导航参数与真实数据替换**
 
 **Goal:** 用 Svelte 5 runes 建立最小应用数据层，把页面从 mock 数据切到真实 RPC。
 
@@ -429,7 +429,7 @@ flowchart TB
 
 ---
 
-- [ ] **Unit 7: 调试入口、权限护栏与可验证状态**
+- [x] **Unit 7: 调试入口、权限护栏与可验证状态**
 
 **Goal:** 防止核心可用闭环被 raw query、离线写入、无提示失败和不可观测状态破坏。
 

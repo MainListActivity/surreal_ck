@@ -2,11 +2,48 @@
   import EmptyState from "../components/EmptyState.svelte";
   import FileIcon from "../components/FileIcon.svelte";
   import Icon from "../components/Icon.svelte";
-  import { templates } from "../lib/mock";
-  import type { Navigate, TemplateItem } from "../lib/types";
+  import { appApi } from "../lib/app-api";
+  import { appState } from "../lib/app-state.svelte";
+  import { workbooksStore } from "../lib/workbooks.svelte";
+  import type { Navigate } from "../lib/types";
+  import type { TemplateSummaryDTO } from "../../../shared/rpc.types";
 
   let { navigate }: { navigate: Navigate } = $props();
-  let selected = $state<TemplateItem | null>(templates[0]);
+
+  let templates = $state<TemplateSummaryDTO[]>([]);
+  let selected = $state<TemplateSummaryDTO | null>(null);
+  let loading = $state(true);
+  let creating = $state(false);
+  let error = $state<string | null>(null);
+
+  $effect(() => {
+    void loadTemplates();
+  });
+
+  async function loadTemplates() {
+    loading = true;
+    const res = await appApi.listTemplates();
+    loading = false;
+    if (res.ok) {
+      templates = res.data.templates;
+      selected = templates[0] ?? null;
+    } else {
+      error = res.message;
+    }
+  }
+
+  async function handleCreate() {
+    if (!selected || !appState.workspace || appState.readOnly) return;
+    creating = true;
+    error = null;
+    const wb = await workbooksStore.createFromTemplate(appState.workspace.id, selected.key);
+    creating = false;
+    if (wb) {
+      navigate("editor", { workbookId: wb.id });
+    } else {
+      error = workbooksStore.error ?? "创建失败";
+    }
+  }
 </script>
 
 <section class="templates">
@@ -15,27 +52,43 @@
       <button class="ghost-btn" onclick={() => navigate("home")}><Icon name="chevronLeft" size={14} />返回首页</button>
       <h1>从模板创建</h1>
     </header>
-    <div class="grid">
-      {#each templates as template}
-        <button class:selected={selected?.id === template.id} onclick={() => (selected = template)}>
-          <FileIcon type="excel" size={32} />
-          <strong>{template.name}</strong>
-          <span>{template.desc}</span>
-          <div>{#each template.tags as tag}<em>{tag}</em>{/each}</div>
-        </button>
-      {/each}
-    </div>
+
+    {#if loading}
+      <div class="state-msg">加载中…</div>
+    {:else if error}
+      <div class="state-msg err">{error}</div>
+    {:else}
+      <div class="grid">
+        {#each templates as template}
+          <button class:selected={selected?.key === template.key} onclick={() => (selected = template)}>
+            <FileIcon type="excel" size={32} />
+            <strong>{template.name}</strong>
+            <span>{template.description}</span>
+            <div>{#each template.tags as tag}<em>{tag}</em>{/each}</div>
+          </button>
+        {/each}
+      </div>
+    {/if}
   </div>
 
   <aside>
     {#if selected}
       <FileIcon type="excel" size={40} />
       <h2>{selected.name}</h2>
-      <p>{selected.desc}</p>
+      <p>{selected.description}</p>
       <hr />
-      <small>适用场景</small>
-      <span>破产重整 · 债务清算 · 资产处置</span>
-      <button class="primary-btn" onclick={() => navigate("editor")}>使用此模板创建</button>
+      <small>标签</small>
+      <span>{selected.tags.join(" · ")}</span>
+      <button
+        class="primary-btn"
+        onclick={handleCreate}
+        disabled={creating || appState.readOnly}
+      >
+        {creating ? "创建中…" : "使用此模板创建"}
+      </button>
+      {#if appState.readOnly}
+        <small class="ro-hint">离线模式，创建不可用</small>
+      {/if}
     {:else}
       <EmptyState icon="tag" title="选择模板" desc="点击左侧模板卡片预览详情" />
     {/if}
@@ -155,5 +208,28 @@
   aside button {
     margin-top: auto;
     padding: 11px 0;
+  }
+
+  aside button:disabled {
+    opacity: .55;
+    cursor: not-allowed;
+  }
+
+  .ro-hint {
+    margin-top: 6px;
+    color: var(--warning);
+    font-size: 11px;
+    text-align: center;
+  }
+
+  .state-msg {
+    padding: 48px 0;
+    color: var(--text-3);
+    font-size: 13px;
+    text-align: center;
+  }
+
+  .state-msg.err {
+    color: var(--error);
   }
 </style>

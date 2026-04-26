@@ -11,8 +11,9 @@
   import StateScreen from "./screens/StateScreen.svelte";
   import TemplatesScreen from "./screens/TemplatesScreen.svelte";
   import { auth, applyAuthState } from "./lib/auth.svelte";
+  import { appState } from "./lib/app-state.svelte";
   import { rpc } from "./lib/rpc";
-  import type { ScreenId } from "./lib/types";
+  import type { RouteState, ScreenId } from "./lib/types";
 
   const navScreens = new Set<ScreenId>(["home", "mydocs", "templates", "admin", "state-empty"]);
   const validStoredScreens = new Set<ScreenId>([
@@ -28,7 +29,7 @@
     "state-noperm",
   ]);
 
-  let screen: ScreenId = $state(readInitialScreen());
+  let route = $state<RouteState>(readInitialRoute());
 
   onMount(() => {
     const onKeydown = (event: KeyboardEvent) => {
@@ -38,27 +39,40 @@
       }
     };
 
-    void rpc.request("getAuthState", {}).then(applyAuthState);
+    void rpc.request("getAuthState", {}).then((authState) => {
+      applyAuthState(authState);
+      // 加载完认证状态后触发 bootstrap
+      void appState.load();
+    });
+
     window.addEventListener("keydown", onKeydown);
     return () => window.removeEventListener("keydown", onKeydown);
   });
 
-  function readInitialScreen(): ScreenId {
+  function readInitialRoute(): RouteState {
     try {
-      const stored = localStorage.getItem("srk_screen") as ScreenId | null;
-      return stored && validStoredScreens.has(stored) ? stored : "home";
+      const raw = localStorage.getItem("srk_route");
+      if (raw) {
+        const parsed = JSON.parse(raw) as RouteState;
+        // editor 页面若无 workbookId 则回退 home
+        if (parsed.screen === "editor" && !parsed.workbookId) {
+          return { screen: "home" };
+        }
+        if (validStoredScreens.has(parsed.screen)) return parsed;
+      }
     } catch {
-      return "home";
+      // ignore
     }
+    return { screen: "home" };
   }
 
-  function navigate(next: ScreenId) {
-    screen = next;
+  function navigate(screen: ScreenId, params?: Omit<RouteState, "screen">) {
+    route = { screen, ...params };
     try {
-      if (next === "admin-console") {
-        localStorage.removeItem("srk_screen");
+      if (screen === "admin-console") {
+        localStorage.removeItem("srk_route");
       } else {
-        localStorage.setItem("srk_screen", next);
+        localStorage.setItem("srk_route", JSON.stringify(route));
       }
     } catch {
       // WebView storage can be unavailable in tests.
@@ -79,29 +93,29 @@
     {/if}
 
     <div class="app-body">
-      {#if navScreens.has(screen)}
-        <SideNav current={screen} {navigate} />
+      {#if navScreens.has(route.screen)}
+        <SideNav current={route.screen} {navigate} />
       {/if}
 
-      <main class="app-main" class:fullscreen={!navScreens.has(screen)}>
-        {#if screen === "home"}
+      <main class="app-main" class:fullscreen={!navScreens.has(route.screen)}>
+        {#if route.screen === "home"}
           <HomeScreen {navigate} />
-        {:else if screen === "mydocs"}
+        {:else if route.screen === "mydocs"}
           <MyDocsScreen {navigate} />
-        {:else if screen === "editor"}
-          <EditorScreen {navigate} />
-        {:else if screen === "form"}
+        {:else if route.screen === "editor"}
+          <EditorScreen {navigate} workbookId={route.workbookId} />
+        {:else if route.screen === "form"}
           <PublicFormScreen {navigate} />
-        {:else if screen === "form-success"}
+        {:else if route.screen === "form-success"}
           <PublicFormScreen mode="success" {navigate} />
-        {:else if screen === "templates"}
+        {:else if route.screen === "templates"}
           <TemplatesScreen {navigate} />
-        {:else if screen === "admin"}
+        {:else if route.screen === "admin"}
           <AdminScreen {navigate} />
-        {:else if screen === "admin-console"}
+        {:else if route.screen === "admin-console"}
           <AdminConsoleScreen {navigate} />
         {:else}
-          <StateScreen kind={screen} {navigate} />
+          <StateScreen kind={route.screen} {navigate} />
         {/if}
       </main>
     </div>

@@ -3,21 +3,43 @@ import type {
   AuthState,
   CreateBlankWorkbookRequest,
   CreateBlankWorkbookResponse,
+  CreateFolderRequest,
+  CreateFolderResponse,
+  CreateWorkbookFromTemplateRequest,
+  CreateWorkbookFromTemplateResponse,
+  DeleteRowsRequest,
+  DeleteRowsResponse,
+  GetWorkbookDataRequest,
+  GetWorkbookDataResponse,
+  ListFoldersRequest,
+  ListFoldersResponse,
+  ListTemplatesResponse,
   ListWorkbooksRequest,
   ListWorkbooksResponse,
   RawQueryRequest,
   RawQueryResponse,
   Result,
+  UpsertRowsRequest,
+  UpsertRowsResponse,
 } from "../../shared/rpc.types";
-import { getServiceContext, setOfflineMode, assertAuthenticated, assertWritable } from "../services/context";
+import { getServiceContext, setOfflineMode, assertAuthenticated } from "../services/context";
 import { withResult, ServiceError } from "../services/errors";
 import { getLocalDb } from "../db/index";
 import { startOidcLogin } from "../auth/oidc";
 import { loginToSurrealDB, clearSession, getPublicAuthState } from "../auth/session";
 import { initUserDb, closeUserDb } from "../db/index";
 import { decodeTokenClaims, bootstrapLocalIdentity } from "../services/identity";
+import { listWorkbooks, createBlankWorkbook } from "../services/workbooks";
+import { listFolders, createFolder } from "../services/folders";
+import { listTemplates, createWorkbookFromTemplate } from "../services/templates";
+import { getWorkbookData, upsertRows, deleteRows } from "../services/editor";
 
 type SendFn = (event: "authStateChanged", payload: { state: AuthState }) => void;
+
+const ADMIN_QUERY_ENABLED =
+  process.env.ADMIN_QUERY === "1" ||
+  process.env.NODE_ENV === "development" ||
+  process.env.BUN_ENV === "development";
 
 /** 创建供 BrowserView.defineRPC handlers 字段消费的处理器对象。 */
 export function createRpcHandlers(send: SendFn) {
@@ -25,6 +47,9 @@ export function createRpcHandlers(send: SendFn) {
     requests: {
       // ── 调试入口（Admin Console 专用）──────────────────────────────────
       query: async ({ sql }: RawQueryRequest): Promise<RawQueryResponse> => {
+        if (!ADMIN_QUERY_ENABLED) {
+          throw new ServiceError("FORBIDDEN", "raw query 仅在开发/管理员模式可用");
+        }
         const db = getLocalDb();
         const result = await db.query(sql);
         return result as unknown[];
@@ -50,11 +75,10 @@ export function createRpcHandlers(send: SendFn) {
           const ctx = getServiceContext();
 
           if (!ctx.isAuthenticated) {
-            const data: AppBootstrap = {
+            return {
               auth: getPublicAuthState(ctx.isOffline ? { offlineMode: true } : undefined),
               readOnly: true,
-            };
-            return data;
+            } satisfies AppBootstrap;
           }
 
           const db = getLocalDb();
@@ -63,19 +87,14 @@ export function createRpcHandlers(send: SendFn) {
           >(`SELECT id, subject, email, name, display_name, avatar FROM app_user LIMIT 1`);
           const userRow = userRows[0]?.[0];
 
-          if (!userRow) {
-            throw new ServiceError("BOOTSTRAP_REQUIRED");
-          }
+          if (!userRow) throw new ServiceError("BOOTSTRAP_REQUIRED");
 
           const wsRows = await db.query<[{ id: unknown; name: string; slug: string }[]]>(
             `SELECT id, name, slug FROM workspace WHERE owner = $userId LIMIT 1`,
             { userId: userRow.id }
           );
           const wsRow = wsRows[0]?.[0];
-
-          if (!wsRow) {
-            throw new ServiceError("BOOTSTRAP_REQUIRED");
-          }
+          if (!wsRow) throw new ServiceError("BOOTSTRAP_REQUIRED");
 
           return {
             auth: getPublicAuthState(ctx.isOffline ? { offlineMode: true } : undefined),
@@ -97,21 +116,49 @@ export function createRpcHandlers(send: SendFn) {
         });
       },
 
-      // 占位：Unit 3+ 实现业务逻辑
-      listWorkbooks: async ({ workspaceId }: ListWorkbooksRequest): Promise<Result<ListWorkbooksResponse>> => {
-        return withResult(async () => {
-          assertCanReadWorkspace(workspaceId);
-          throw new ServiceError("NOT_IMPLEMENTED");
+      listWorkbooks: async (req: ListWorkbooksRequest): Promise<Result<ListWorkbooksResponse>> => {
+        return withResult(() => {
+          assertAuthenticated();
+          return listWorkbooks(req);
         });
       },
 
-      createBlankWorkbook: async ({
-        workspaceId,
-      }: CreateBlankWorkbookRequest): Promise<Result<CreateBlankWorkbookResponse>> => {
-        return withResult(async () => {
-          assertCanWriteWorkspace(workspaceId);
-          throw new ServiceError("NOT_IMPLEMENTED");
+      createBlankWorkbook: async (req: CreateBlankWorkbookRequest): Promise<Result<CreateBlankWorkbookResponse>> => {
+        return withResult(() => createBlankWorkbook(req));
+      },
+
+      listFolders: async (req: ListFoldersRequest): Promise<Result<ListFoldersResponse>> => {
+        return withResult(() => {
+          assertAuthenticated();
+          return listFolders(req);
         });
+      },
+
+      createFolder: async (req: CreateFolderRequest): Promise<Result<CreateFolderResponse>> => {
+        return withResult(() => createFolder(req));
+      },
+
+      listTemplates: async (): Promise<Result<ListTemplatesResponse>> => {
+        return withResult(async () => listTemplates());
+      },
+
+      createWorkbookFromTemplate: async (req: CreateWorkbookFromTemplateRequest): Promise<Result<CreateWorkbookFromTemplateResponse>> => {
+        return withResult(() => createWorkbookFromTemplate(req));
+      },
+
+      getWorkbookData: async (req: GetWorkbookDataRequest): Promise<Result<GetWorkbookDataResponse>> => {
+        return withResult(() => {
+          assertAuthenticated();
+          return getWorkbookData(req);
+        });
+      },
+
+      upsertRows: async (req: UpsertRowsRequest): Promise<Result<UpsertRowsResponse>> => {
+        return withResult(() => upsertRows(req));
+      },
+
+      deleteRows: async (req: DeleteRowsRequest): Promise<Result<DeleteRowsResponse>> => {
+        return withResult(() => deleteRows(req));
       },
     },
 
@@ -137,13 +184,4 @@ export function createRpcHandlers(send: SendFn) {
       },
     },
   };
-}
-
-function assertCanReadWorkspace(_workspaceId: string): void {
-  assertAuthenticated();
-}
-
-function assertCanWriteWorkspace(workspaceId: string): void {
-  assertWritable();
-  assertCanReadWorkspace(workspaceId);
 }

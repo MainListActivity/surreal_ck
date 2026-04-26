@@ -8,7 +8,7 @@
 
   let { navigate }: { navigate: Navigate } = $props();
 
-  let sql = $state("INFO FOR DB;");
+  let sql = $state("SELECT * FROM workspace LIMIT 5;");
   let result = $state<unknown[] | null>(null);
   let error = $state("");
   let loading = $state(false);

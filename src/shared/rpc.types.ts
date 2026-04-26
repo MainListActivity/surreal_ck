@@ -36,6 +36,8 @@ export type AppErrorCode =
   | "NOT_IMPLEMENTED"
   | "BOOTSTRAP_REQUIRED"
   | "VALIDATION_ERROR"
+  | "NOT_FOUND"
+  | "FORBIDDEN"
   | "INTERNAL_ERROR";
 
 export type AppError = {
@@ -101,6 +103,113 @@ export type CreateBlankWorkbookResponse = {
   workbook: WorkbookSummaryDTO;
 };
 
+export type FolderDTO = {
+  id: RecordIdString;
+  workspaceId: RecordIdString;
+  name: string;
+  parentId?: RecordIdString;
+  position: number;
+};
+
+export type ListFoldersRequest = {
+  workspaceId: RecordIdString;
+};
+
+export type ListFoldersResponse = {
+  folders: FolderDTO[];
+};
+
+export type CreateFolderRequest = {
+  workspaceId: RecordIdString;
+  name: string;
+  parentId?: RecordIdString;
+};
+
+export type CreateFolderResponse = {
+  folder: FolderDTO;
+};
+
+// ─── Template DTOs ────────────────────────────────────────────────────────────
+
+export type TemplateSummaryDTO = {
+  key: string;
+  name: string;
+  description: string;
+  tags: string[];
+};
+
+export type ListTemplatesResponse = {
+  templates: TemplateSummaryDTO[];
+};
+
+export type CreateWorkbookFromTemplateRequest = {
+  workspaceId: RecordIdString;
+  templateKey: string;
+  name?: string;
+};
+
+export type CreateWorkbookFromTemplateResponse = {
+  workbook: WorkbookSummaryDTO;
+};
+
+// ─── Editor DTOs ──────────────────────────────────────────────────────────────
+
+export type GridColumnDef = {
+  key: string;
+  label: string;
+  fieldType: string;
+  required?: boolean;
+  options?: string[];
+};
+
+export type GridRow = {
+  id: RecordIdString;
+  values: Record<string, unknown>;
+};
+
+export type SheetSummaryDTO = {
+  id: RecordIdString;
+  workbookId: RecordIdString;
+  univerId: string;
+  tableName: string;
+  label: string;
+  position: number;
+  columnDefs: GridColumnDef[];
+};
+
+export type WorkbookDataDTO = {
+  workbook: WorkbookSummaryDTO;
+  sheets: SheetSummaryDTO[];
+  activeSheetId: RecordIdString;
+  columns: GridColumnDef[];
+  rows: GridRow[];
+};
+
+export type GetWorkbookDataRequest = {
+  workbookId: RecordIdString;
+  sheetId?: RecordIdString;
+};
+
+export type GetWorkbookDataResponse = WorkbookDataDTO;
+
+export type UpsertRowsRequest = {
+  sheetId: RecordIdString;
+  rows: Array<{ id?: RecordIdString; values: Record<string, unknown> }>;
+};
+
+export type UpsertRowsResponse = {
+  upserted: GridRow[];
+};
+
+export type DeleteRowsRequest = {
+  sheetId: RecordIdString;
+  ids: RecordIdString[];
+};
+
+export type DeleteRowsResponse = {
+  deleted: number;
+};
+
 // ─── RPC 契约 ─────────────────────────────────────────────────────────────────
 
 export interface AppRPC extends ElectrobunRPCSchema {
@@ -110,9 +219,15 @@ export interface AppRPC extends ElectrobunRPCSchema {
       getAuthState: { params: Record<string, never>; response: AuthState };
       logout: { params: Record<string, never>; response: void };
       getAppBootstrap: { params: Record<string, never>; response: Result<AppBootstrap> };
-      // 占位：后续 Unit 3+ 实现业务逻辑
       listWorkbooks: { params: ListWorkbooksRequest; response: Result<ListWorkbooksResponse> };
       createBlankWorkbook: { params: CreateBlankWorkbookRequest; response: Result<CreateBlankWorkbookResponse> };
+      listFolders: { params: ListFoldersRequest; response: Result<ListFoldersResponse> };
+      createFolder: { params: CreateFolderRequest; response: Result<CreateFolderResponse> };
+      listTemplates: { params: Record<string, never>; response: Result<ListTemplatesResponse> };
+      createWorkbookFromTemplate: { params: CreateWorkbookFromTemplateRequest; response: Result<CreateWorkbookFromTemplateResponse> };
+      getWorkbookData: { params: GetWorkbookDataRequest; response: Result<GetWorkbookDataResponse> };
+      upsertRows: { params: UpsertRowsRequest; response: Result<UpsertRowsResponse> };
+      deleteRows: { params: DeleteRowsRequest; response: Result<DeleteRowsResponse> };
     };
     messages: {
       log: { msg: string };
