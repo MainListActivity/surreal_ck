@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import SideNav from "./components/SideNav.svelte";
+  import AdminConsoleScreen from "./screens/AdminConsoleScreen.svelte";
   import AdminScreen from "./screens/AdminScreen.svelte";
   import EditorScreen from "./screens/EditorScreen.svelte";
   import HomeScreen from "./screens/HomeScreen.svelte";
@@ -13,18 +14,39 @@
   import { rpc } from "./lib/rpc";
   import type { ScreenId } from "./lib/types";
 
+  const navScreens = new Set<ScreenId>(["home", "mydocs", "templates", "admin", "state-empty"]);
+  const validStoredScreens = new Set<ScreenId>([
+    "home",
+    "mydocs",
+    "editor",
+    "form",
+    "form-success",
+    "templates",
+    "admin",
+    "state-empty",
+    "state-offline",
+    "state-noperm",
+  ]);
+
   let screen: ScreenId = $state(readInitialScreen());
 
-  onMount(async () => {
-    const state = await rpc.request("getAuthState", {});
-    applyAuthState(state);
-  });
+  onMount(() => {
+    const onKeydown = (event: KeyboardEvent) => {
+      if (event.ctrlKey && event.altKey && event.shiftKey && event.key.toLowerCase() === "a") {
+        event.preventDefault();
+        navigate("admin-console");
+      }
+    };
 
-  const navScreens = new Set<ScreenId>(["home", "mydocs", "templates", "admin", "state-empty"]);
+    void rpc.request("getAuthState", {}).then(applyAuthState);
+    window.addEventListener("keydown", onKeydown);
+    return () => window.removeEventListener("keydown", onKeydown);
+  });
 
   function readInitialScreen(): ScreenId {
     try {
-      return (localStorage.getItem("srk_screen") as ScreenId | null) ?? "home";
+      const stored = localStorage.getItem("srk_screen") as ScreenId | null;
+      return stored && validStoredScreens.has(stored) ? stored : "home";
     } catch {
       return "home";
     }
@@ -33,7 +55,11 @@
   function navigate(next: ScreenId) {
     screen = next;
     try {
-      localStorage.setItem("srk_screen", next);
+      if (next === "admin-console") {
+        localStorage.removeItem("srk_screen");
+      } else {
+        localStorage.setItem("srk_screen", next);
+      }
     } catch {
       // WebView storage can be unavailable in tests.
     }
@@ -72,6 +98,8 @@
           <TemplatesScreen {navigate} />
         {:else if screen === "admin"}
           <AdminScreen {navigate} />
+        {:else if screen === "admin-console"}
+          <AdminConsoleScreen {navigate} />
         {:else}
           <StateScreen kind={screen} {navigate} />
         {/if}

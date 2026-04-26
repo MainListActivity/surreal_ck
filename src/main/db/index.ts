@@ -201,15 +201,20 @@ export async function tryRestoreSession(): Promise<RestoreResult> {
   );
   const stored = tokenRows[0]?.[0];
 
-  if (!stored?.refresh_token) {
-    const expiresAt = stored?.expires_at ? dateTimeToMillis(stored.expires_at) : 0;
-    const fiveMinutes = 5 * 60 * 1000;
-    if (stored?.access_token && Number.isFinite(expiresAt) && Date.now() < expiresAt - fiveMinutes) {
-      await connectRemote(stored.access_token);
-      console.log("[db] session restored with existing access token");
-      return { status: "restored", expiresAt };
-    }
+  const expiresAt = stored?.expires_at ? dateTimeToMillis(stored.expires_at) : 0;
+  const fiveMinutes = 5 * 60 * 1000;
+  const accessTokenValid =
+    !!stored?.access_token &&
+    Number.isFinite(expiresAt) &&
+    Date.now() < expiresAt - fiveMinutes;
 
+  if (accessTokenValid) {
+    await connectRemote(stored!.access_token);
+    console.log("[db] session restored with existing access token");
+    return { status: "restored", expiresAt };
+  }
+
+  if (!stored?.refresh_token) {
     console.log("[db] no refresh_token in token_store, cannot restore");
     return { status: "offline" };
   }
@@ -218,7 +223,7 @@ export async function tryRestoreSession(): Promise<RestoreResult> {
     const newTokens = await refreshAccessToken(stored.refresh_token);
 
     // 写回新 tokens（rotating refresh token 场景下必须更新）
-    const expiresAt = Date.now() + newTokens.expires_in * 1000;
+    const newExpiresAt = Date.now() + newTokens.expires_in * 1000;
 
     await db.query(
       `UPSERT token_store:local CONTENT {
@@ -229,13 +234,13 @@ export async function tryRestoreSession(): Promise<RestoreResult> {
       {
         access_token: newTokens.access_token,
         refresh_token: newTokens.refresh_token ?? stored.refresh_token,
-        expires_at: new DateTime(new Date(expiresAt)),
+        expires_at: new DateTime(new Date(newExpiresAt)),
       }
     );
 
     await connectRemote(newTokens.access_token);
     console.log("[db] session restored");
-    return { status: "restored", tokens: newTokens, expiresAt };
+    return { status: "restored", tokens: newTokens, expiresAt: newExpiresAt };
   } catch (err) {
     console.warn("[db] token refresh failed, entering offline mode:", err);
     return { status: "offline" };
