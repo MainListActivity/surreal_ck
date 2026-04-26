@@ -87,8 +87,10 @@ function createEditorStore() {
     if (!state.activeSheetId || !state.columns.length) return;
     const colKeys = new Set(state.columns.map((c) => c.key));
 
-    const patches = source.map((raw, i) => {
-      const existing = state.rows[i];
+    const byId = new Map(state.rows.map((row) => [row.id, row]));
+    const patches = source.map((raw) => {
+      const rawId = typeof raw._id === "string" ? raw._id : undefined;
+      const existing = rawId ? byId.get(rawId) : undefined;
       const values: Record<string, unknown> = {};
       for (const k of colKeys) {
         if (k in raw) values[k] = raw[k];

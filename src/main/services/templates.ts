@@ -24,7 +24,7 @@ export async function createWorkbookFromTemplate({
   templateKey,
   name,
 }: CreateWorkbookFromTemplateRequest): Promise<CreateWorkbookFromTemplateResponse> {
-  assertCanWriteWorkspace(workspaceId);
+  await assertCanWriteWorkspace(workspaceId);
 
   const tpl = getTemplateDef(templateKey);
   if (!tpl) {
@@ -46,17 +46,17 @@ export async function createWorkbookFromTemplate({
 
   // ── Step 1: DDL provisioning（entity + relation 表）────────────────────────
   for (const entity of tpl.entities) {
-    const tableName = `ent_${wsKey}_${entity.key}`;
+    const tableName = entityTableName(wsKey, wbKey, entity.key);
     await provisionEntityTable(tableName);
   }
   for (const rel of tpl.relations) {
-    const tableName = `rel_${wsKey}_${rel.key}`;
+    const tableName = relationTableName(wsKey, wbKey, rel.key);
     await provisionRelationTable(tableName);
   }
 
   // ── Step 2: 创建 workbook 和 sheet 记录 ────────────────────────────────────
   const firstEntity = tpl.entities[0];
-  const firstSheetId = makeSheetId(wsKey, firstEntity.key);
+  const firstSheetId = makeSheetId(wbKey, firstEntity.key);
 
   await db.query(
     `UPSERT $wbId CONTENT {
@@ -70,12 +70,13 @@ export async function createWorkbookFromTemplate({
 
   // 创建每个 sheet 记录
   for (const entity of tpl.entities) {
-    await upsertSheetRecord(wsKey, wbId, entity);
+    await upsertSheetRecord(wsKey, wbKey, wbId, entity);
   }
 
   // ── Step 3: edge_catalog ─────────────────────────────────────────────────
   for (const rel of tpl.relations) {
-    const relId = new RecordId("edge_catalog", `${rel.key}_${wsKey}`);
+    const catalogKey = `${wbKey}_${rel.key}`;
+    const relId = new RecordId("edge_catalog", `${catalogKey}_${wsKey}`);
     await db.query(
       `UPSERT $ecId CONTENT {
         workspace: $ws,
@@ -89,11 +90,11 @@ export async function createWorkbookFromTemplate({
       {
         ecId: relId,
         ws: wsId,
-        key: rel.key,
+        key: catalogKey,
         label: rel.label,
-        relTable: `rel_${wsKey}_${rel.key}`,
-        fromTable: `ent_${wsKey}_${rel.fromEntityKey}`,
-        toTable: `ent_${wsKey}_${rel.toEntityKey}`,
+        relTable: relationTableName(wsKey, wbKey, rel.key),
+        fromTable: entityTableName(wsKey, wbKey, rel.fromEntityKey),
+        toTable: entityTableName(wsKey, wbKey, rel.toEntityKey),
         edgeProps: rel.edgeProps ?? [],
       }
     );
@@ -102,7 +103,7 @@ export async function createWorkbookFromTemplate({
   // ── Step 4: 样例数据（仅 hasSampleData 模板）──────────────────────────────
   if (tpl.hasSampleData) {
     try {
-      await insertSampleData(templateKey, wsKey, wsId, wbId, db);
+      await insertSampleData(templateKey, wsKey, wbKey, wsId, db);
     } catch (err) {
       // 样例数据失败不阻止模板创建
       console.warn("[templates] 样例数据插入失败:", err);
@@ -131,18 +132,27 @@ export async function createWorkbookFromTemplate({
 
 // ─── 内部：创建 sheet 记录 ─────────────────────────────────────────────────────
 
-function makeSheetId(wsKey: string, entityKey: string): RecordId {
-  return new RecordId("sheet", `${entityKey}_${wsKey}`);
+function entityTableName(wsKey: string, wbKey: string, entityKey: string): string {
+  return `ent_${wsKey}_${wbKey.slice(0, 8)}_${entityKey}`;
+}
+
+function relationTableName(wsKey: string, wbKey: string, relKey: string): string {
+  return `rel_${wsKey}_${wbKey.slice(0, 8)}_${relKey}`;
+}
+
+function makeSheetId(wbKey: string, entityKey: string): RecordId {
+  return new RecordId("sheet", `${wbKey}_${entityKey}`);
 }
 
 async function upsertSheetRecord(
   wsKey: string,
+  wbKey: string,
   wbId: RecordId,
   entity: EntityDef
 ): Promise<void> {
   const db = getLocalDb();
-  const sheetId = makeSheetId(wsKey, entity.key);
-  const tableName = `ent_${wsKey}_${entity.key}`;
+  const sheetId = makeSheetId(wbKey, entity.key);
+  const tableName = entityTableName(wsKey, wbKey, entity.key);
 
   await db.query(
     `UPSERT $sheetId CONTENT {
@@ -169,16 +179,16 @@ async function upsertSheetRecord(
 async function insertSampleData(
   templateKey: string,
   wsKey: string,
+  wbKey: string,
   wsId: StringRecordId,
-  wbId: RecordId,
   db: ReturnType<typeof getLocalDb>
 ): Promise<void> {
   if (templateKey === "case-management") {
-    const tblCase     = `ent_${wsKey}_case`;
-    const tblClient   = `ent_${wsKey}_client`;
-    const tblDocument = `ent_${wsKey}_document`;
-    const relAssigned = `rel_${wsKey}_assigned_to`;
-    const relBelongs  = `rel_${wsKey}_belongs_to`;
+    const tblCase     = entityTableName(wsKey, wbKey, "case");
+    const tblClient   = entityTableName(wsKey, wbKey, "client");
+    const tblDocument = entityTableName(wsKey, wbKey, "document");
+    const relAssigned = relationTableName(wsKey, wbKey, "assigned_to");
+    const relBelongs  = relationTableName(wsKey, wbKey, "belongs_to");
 
     const redwoodRows = await db.query<[{ id: RecordId }[]]>(
       `CREATE type::table($t) CONTENT { workspace: $ws, name: "Redwood Group", email: "legal@redwood.example.com" } RETURN id`,
@@ -209,18 +219,18 @@ async function insertSampleData(
 
     if (redwood && triton && case1 && case2 && motion) {
       await db.query(
-        `RELATE $case1->type::table($relA)->$redwood;
-         RELATE $case2->type::table($relA)->$triton;
-         RELATE $motion->type::table($relB)->$case1;`,
-        { case1, case2, motion, redwood, triton, relA: relAssigned, relB: relBelongs }
+        `RELATE $case1->${relAssigned}->$redwood;
+         RELATE $case2->${relAssigned}->$triton;
+         RELATE $motion->${relBelongs}->$case1;`,
+        { case1, case2, motion, redwood, triton }
       );
     }
   } else if (templateKey === "legal-entity-tracker") {
-    const tblCompany = `ent_${wsKey}_company`;
-    const tblPerson  = `ent_${wsKey}_person`;
-    const relOwns    = `rel_${wsKey}_owns`;
-    const relControls = `rel_${wsKey}_controls`;
-    const relFiledBy = `rel_${wsKey}_filed_by`;
+    const tblCompany = entityTableName(wsKey, wbKey, "company");
+    const tblPerson  = entityTableName(wsKey, wbKey, "person");
+    const relOwns    = relationTableName(wsKey, wbKey, "owns");
+    const relControls = relationTableName(wsKey, wbKey, "controls");
+    const relFiledBy = relationTableName(wsKey, wbKey, "filed_by");
 
     const acmeRows  = await db.query<[{ id: RecordId }[]]>(`CREATE type::table($t) CONTENT { workspace: $ws, name: "Acme Holdings", jurisdiction: "Delaware",  status: "Active"  } RETURN id`, { t: tblCompany, ws: wsId });
     const betaRows  = await db.query<[{ id: RecordId }[]]>(`CREATE type::table($t) CONTENT { workspace: $ws, name: "Beta LLC",      jurisdiction: "Hong Kong", status: "Active"  } RETURN id`, { t: tblCompany, ws: wsId });
@@ -234,10 +244,10 @@ async function insertSampleData(
 
     if (acme && beta && gamma && chen) {
       await db.query(
-        `RELATE $acme->type::table($relO)->$beta;
-         RELATE $beta->type::table($relC)->$gamma;
-         RELATE $gamma->type::table($relF)->$chen;`,
-        { acme, beta, gamma, chen, relO: relOwns, relC: relControls, relF: relFiledBy }
+        `RELATE $acme->${relOwns}->$beta;
+         RELATE $beta->${relControls}->$gamma;
+         RELATE $gamma->${relFiledBy}->$chen;`,
+        { acme, beta, gamma, chen }
       );
     }
   }

@@ -21,7 +21,7 @@ type FolderRow = {
 export async function listFolders({
   workspaceId,
 }: ListFoldersRequest): Promise<ListFoldersResponse> {
-  assertCanReadWorkspace(workspaceId);
+  await assertCanReadWorkspace(workspaceId);
 
   const db = getLocalDb();
   const rows = await db.query<[FolderRow[]]>(
@@ -45,7 +45,7 @@ export async function createFolder({
   name,
   parentId,
 }: CreateFolderRequest): Promise<CreateFolderResponse> {
-  assertCanWriteWorkspace(workspaceId);
+  await assertCanWriteWorkspace(workspaceId);
 
   if (!name || !name.trim()) {
     throw new ServiceError("VALIDATION_ERROR", "文件夹名称不能为空");
@@ -53,6 +53,17 @@ export async function createFolder({
 
   const db = getLocalDb();
   const wsId = new StringRecordId(workspaceId);
+
+  const parentRecordId = parentId ? new StringRecordId(parentId) : null;
+  if (parentRecordId) {
+    const parentRows = await db.query<[{ id: RecordId }[]]>(
+      `SELECT id FROM folder WHERE id = $parentId AND workspace = $ws LIMIT 1`,
+      { parentId: parentRecordId, ws: wsId }
+    );
+    if (!parentRows[0]?.[0]) {
+      throw new ServiceError("NOT_FOUND", "父文件夹不存在或不属于当前工作区");
+    }
+  }
 
   // 计算下一个 position
   const posRows = await db.query<[{ max_pos?: number }[]]>(
@@ -64,18 +75,19 @@ export async function createFolder({
   const fKey = Bun.hash.wyhash(`${workspaceId}:folder:${Date.now()}`).toString(16).padStart(16, "0");
   const fId = new RecordId("folder", fKey);
 
+  const parentLine = parentRecordId ? "parent: $parent," : "";
   const newRows = await db.query<[FolderRow[]]>(
     `UPSERT $fId CONTENT {
       workspace: $ws,
       name: $name,
-      parent: $parent,
+      ${parentLine}
       position: $pos
     }`,
     {
       fId,
       ws: wsId,
       name: name.trim(),
-      parent: parentId ? new StringRecordId(parentId) : null,
+      parent: parentRecordId,
       pos: nextPos,
     }
   );

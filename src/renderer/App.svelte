@@ -30,6 +30,20 @@
   ]);
 
   let route = $state<RouteState>(readInitialRoute());
+  let lastBootstrapKey = $state("");
+
+  $effect(() => {
+    const key = `${auth.loggedIn}:${auth.offlineMode ?? false}`;
+    if (auth.loggedIn || auth.offlineMode) {
+      if (key !== lastBootstrapKey) {
+        lastBootstrapKey = key;
+        void appState.load();
+      }
+    } else {
+      lastBootstrapKey = key;
+      appState.reset();
+    }
+  });
 
   onMount(() => {
     const onKeydown = (event: KeyboardEvent) => {
@@ -39,11 +53,7 @@
       }
     };
 
-    void rpc.request("getAuthState", {}).then((authState) => {
-      applyAuthState(authState);
-      // 加载完认证状态后触发 bootstrap
-      void appState.load();
-    });
+    void rpc.request("getAuthState", {}).then(applyAuthState);
 
     window.addEventListener("keydown", onKeydown);
     return () => window.removeEventListener("keydown", onKeydown);

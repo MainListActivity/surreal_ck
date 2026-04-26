@@ -38,8 +38,12 @@ function createWorkbooksStore() {
     }
   }
 
-  async function createBlank(workspaceId: string, name: string): Promise<WorkbookSummaryDTO | null> {
-    const res = await appApi.createBlankWorkbook(workspaceId, name);
+  async function createBlank(
+    workspaceId: string,
+    name: string,
+    folderId?: string | null
+  ): Promise<WorkbookSummaryDTO | null> {
+    const res = await appApi.createBlankWorkbook(workspaceId, name, folderId);
     if (res.ok) {
       state.workbooks = [res.data.workbook, ...state.workbooks];
       return res.data.workbook;

@@ -1,6 +1,6 @@
 import { RecordId, StringRecordId } from "surrealdb";
 import { getLocalDb } from "../db/index";
-import { assertCanReadWorkspace, assertCanWriteWorkspace } from "./context";
+import { assertCanReadWorkspace, assertCanWriteWorkspace, getServiceContext } from "./context";
 import { ServiceError } from "./errors";
 import type {
   GetWorkbookDataRequest,
@@ -62,7 +62,7 @@ export async function getWorkbookData({
   if (!wbRow) throw new ServiceError("NOT_FOUND", "工作簿不存在");
 
   // 授权检查：校验 workspace 访问权限
-  assertCanReadWorkspace(String(wbRow.workspace));
+  await assertCanReadWorkspace(String(wbRow.workspace));
 
   // 读取所有 sheets
   const sheetRows = await db.query<[SheetRow[]]>(
@@ -85,6 +85,17 @@ export async function getWorkbookData({
     activeSheet = sheets.find((s) => String(s.id) === String(wbRow.last_opened_sheet)) ?? sheets[0];
   } else {
     activeSheet = sheets[0];
+  }
+
+  if (!getServiceContext().readOnly && String(wbRow.last_opened_sheet) !== String(activeSheet.id)) {
+    try {
+      await db.query(`UPDATE $wbId SET last_opened_sheet = $sheetId`, {
+        wbId: new StringRecordId(workbookId),
+        sheetId: activeSheet.id,
+      });
+    } catch (err) {
+      console.warn("[editor] 更新 last_opened_sheet 失败:", err);
+    }
   }
 
   // 读取活跃 sheet 的行数据
@@ -112,7 +123,6 @@ export async function getWorkbookData({
     id: String(s.id),
     workbookId: String(s.workbook),
     univerId: s.univer_id,
-    tableName: s.table_name,
     label: s.label,
     position: s.position,
     columnDefs: s.column_defs.map((c) => ({
@@ -156,7 +166,7 @@ export async function upsertRows({
   );
   const wbRow = wbRows[0]?.[0];
   if (!wbRow) throw new ServiceError("NOT_FOUND", "工作簿不存在");
-  assertCanWriteWorkspace(String(wbRow.workspace));
+  await assertCanWriteWorkspace(String(wbRow.workspace));
 
   // 校验 column keys（未定义字段忽略）
   const validKeys = new Set(sheet.column_defs.map((c) => c.key));
@@ -165,6 +175,7 @@ export async function upsertRows({
   if (!/^ent_[a-z0-9_]+$/.test(tableName)) {
     throw new ServiceError("INTERNAL_ERROR", "无效的实体表名");
   }
+  await assertDynamicTableExists(tableName);
 
   const upserted: GridRow[] = [];
 
@@ -176,6 +187,7 @@ export async function upsertRows({
     }
 
     if (rowPatch.id) {
+      assertRowIdBelongsToTable(rowPatch.id, tableName);
       // 更新已有行
       const updated = await db.query<[EntityRow[]]>(
         `UPDATE $rowId MERGE $vals`,
@@ -187,6 +199,7 @@ export async function upsertRows({
       }
     } else {
       // 新增行
+      cleanValues.workspace = wbRow.workspace;
       const created = await db.query<[EntityRow[]]>(
         `CREATE type::table($t) CONTENT $vals`,
         { t: tableName, vals: cleanValues }
@@ -210,7 +223,7 @@ export async function deleteRows({
   const db = getLocalDb();
 
   const sheetRows = await db.query<[SheetRow[]]>(
-    `SELECT workbook FROM sheet WHERE id = $sheetId`,
+    `SELECT workbook, table_name FROM sheet WHERE id = $sheetId`,
     { sheetId: new StringRecordId(sheetId) }
   );
   const sheet = sheetRows[0]?.[0];
@@ -222,10 +235,16 @@ export async function deleteRows({
   );
   const wbRow = wbRows[0]?.[0];
   if (!wbRow) throw new ServiceError("NOT_FOUND", "工作簿不存在");
-  assertCanWriteWorkspace(String(wbRow.workspace));
+  await assertCanWriteWorkspace(String(wbRow.workspace));
+
+  const tableName = sheet.table_name;
+  if (!/^ent_[a-z0-9_]+$/.test(tableName)) {
+    throw new ServiceError("INTERNAL_ERROR", "无效的实体表名");
+  }
 
   let deleted = 0;
   for (const id of ids) {
+    assertRowIdBelongsToTable(id, tableName);
     await db.query(`DELETE $rowId`, { rowId: new StringRecordId(id) });
     deleted++;
   }
@@ -237,20 +256,19 @@ export async function deleteRows({
 
 async function loadEntityRows(sheet: SheetRow): Promise<GridRow[]> {
   const tableName = sheet.table_name;
-  if (!/^ent_[a-z0-9_]+$/.test(tableName)) return [];
+  if (!/^ent_[a-z0-9_]+$/.test(tableName)) {
+    throw new ServiceError("INTERNAL_ERROR", "无效的实体表名");
+  }
 
   const db = getLocalDb();
   const validKeys = new Set(sheet.column_defs.map((c) => c.key));
 
-  try {
-    const result = await db.query<[EntityRow[]]>(
-      `SELECT * FROM type::table($t) LIMIT 5000`,
-      { t: tableName }
-    );
-    return (result[0] ?? []).map((row) => entityRowToDTO(row, validKeys));
-  } catch {
-    return [];
-  }
+  await assertDynamicTableExists(tableName);
+  const result = await db.query<[EntityRow[]]>(
+    `SELECT * FROM type::table($t) LIMIT 5000`,
+    { t: tableName }
+  );
+  return (result[0] ?? []).map((row) => entityRowToDTO(row, validKeys));
 }
 
 function entityRowToDTO(row: EntityRow, validKeys: Set<string>): GridRow {
@@ -260,4 +278,19 @@ function entityRowToDTO(row: EntityRow, validKeys: Set<string>): GridRow {
     if (validKeys.has(k)) values[k] = v;
   }
   return { id: String(row.id), values };
+}
+
+async function assertDynamicTableExists(tableName: string): Promise<void> {
+  const db = getLocalDb();
+  const info = await db.query<[{ tables?: Record<string, unknown> }]>(`INFO FOR DB`);
+  const tables = info[0]?.tables ?? {};
+  if (!Object.prototype.hasOwnProperty.call(tables, tableName)) {
+    throw new ServiceError("NOT_FOUND", `动态实体表不存在: ${tableName}`);
+  }
+}
+
+function assertRowIdBelongsToTable(rowId: string, tableName: string): void {
+  if (!rowId.startsWith(`${tableName}:`)) {
+    throw new ServiceError("NOT_FOUND", "记录不属于当前 Sheet");
+  }
 }

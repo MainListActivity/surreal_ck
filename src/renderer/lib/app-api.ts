@@ -20,12 +20,19 @@ export const appApi = {
     return rpc.request("getAppBootstrap", {});
   },
 
-  listWorkbooks(workspaceId: RecordIdString): Promise<Result<ListWorkbooksResponse>> {
-    return rpc.request("listWorkbooks", { workspaceId });
+  listWorkbooks(
+    workspaceId: RecordIdString,
+    options?: { folderId?: RecordIdString | null; search?: string }
+  ): Promise<Result<ListWorkbooksResponse>> {
+    return rpc.request("listWorkbooks", { workspaceId, ...options });
   },
 
-  createBlankWorkbook(workspaceId: RecordIdString, name: string): Promise<Result<CreateBlankWorkbookResponse>> {
-    return rpc.request("createBlankWorkbook", { workspaceId, name });
+  createBlankWorkbook(
+    workspaceId: RecordIdString,
+    name: string,
+    folderId?: RecordIdString | null
+  ): Promise<Result<CreateBlankWorkbookResponse>> {
+    return rpc.request("createBlankWorkbook", { workspaceId, name, folderId });
   },
 
   listFolders(workspaceId: RecordIdString): Promise<Result<ListFoldersResponse>> {

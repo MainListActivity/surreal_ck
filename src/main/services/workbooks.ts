@@ -26,19 +26,37 @@ type WorkbookRow = {
 
 export async function listWorkbooks({
   workspaceId,
+  folderId,
+  search,
 }: ListWorkbooksRequest): Promise<ListWorkbooksResponse> {
-  assertCanReadWorkspace(workspaceId);
+  await assertCanReadWorkspace(workspaceId);
 
   const db = getLocalDb();
   const wsId = new StringRecordId(workspaceId);
+  const trimmedSearch = search?.trim().toLowerCase() ?? "";
+  const params: Record<string, unknown> = { ws: wsId };
+
+  const where: string[] = ["workspace = $ws"];
+  if (folderId !== undefined) {
+    if (folderId === null) {
+      where.push("folder = NONE");
+    } else {
+      params.folder = new StringRecordId(folderId);
+      where.push("folder = $folder");
+    }
+  }
+  if (trimmedSearch) {
+    params.search = trimmedSearch;
+    where.push("(string::contains(string::lowercase(name), $search) OR string::contains(string::lowercase(template_key ?? ''), $search))");
+  }
 
   const rows = await db.query<[WorkbookRow[]]>(
     `SELECT id, workspace, name, template_key, folder, updated_at
      FROM workbook
-     WHERE workspace = $ws
+     WHERE ${where.join(" AND ")}
      ORDER BY updated_at DESC
      LIMIT 200`,
-    { ws: wsId }
+    params
   );
 
   const workbooks: WorkbookSummaryDTO[] = (rows[0] ?? []).map((row) => ({
@@ -58,8 +76,9 @@ export async function listWorkbooks({
 export async function createBlankWorkbook({
   workspaceId,
   name,
+  folderId,
 }: CreateBlankWorkbookRequest): Promise<CreateBlankWorkbookResponse> {
-  assertCanWriteWorkspace(workspaceId);
+  await assertCanWriteWorkspace(workspaceId);
 
   if (!name || !name.trim()) {
     throw new ServiceError("VALIDATION_ERROR", "工作簿名称不能为空");
@@ -67,6 +86,17 @@ export async function createBlankWorkbook({
 
   const db = getLocalDb();
   const wsId = new StringRecordId(workspaceId);
+  const folderRecordId = folderId ? new StringRecordId(folderId) : null;
+
+  if (folderRecordId) {
+    const folderRows = await db.query<[{ id: RecordId }[]]>(
+      `SELECT id FROM folder WHERE id = $folderId AND workspace = $ws LIMIT 1`,
+      { folderId: folderRecordId, ws: wsId }
+    );
+    if (!folderRows[0]?.[0]) {
+      throw new ServiceError("NOT_FOUND", "文件夹不存在或不属于当前工作区");
+    }
+  }
 
   // 生成稳定的 workbook / sheet id
   const wbKey = Bun.hash.wyhash(`${workspaceId}:wb:${Date.now()}`).toString(16).padStart(16, "0");
@@ -79,16 +109,28 @@ export async function createBlankWorkbook({
   const sheetKey = Bun.hash.wyhash(`${wbKey}:sheet:0`).toString(16).padStart(16, "0");
   const sheetId = new RecordId("sheet", sheetKey);
 
-  await db.query(
-    `BEGIN TRANSACTION;
+  // 先创建动态实体表，避免 workbook/sheet 指向不存在的表。
+  await provisionEntityTable(entityTableName);
 
-    UPSERT $wbId CONTENT {
+  const folderLine = folderRecordId ? "folder: $folder," : "";
+  await db.query(
+    `UPSERT $wbId CONTENT {
       workspace: $ws,
       name: $name,
+      ${folderLine}
       last_opened_sheet: $sheetId
-    };
+    }`,
+    {
+      wbId,
+      sheetId,
+      ws: wsId,
+      name: name.trim(),
+      folder: folderRecordId,
+    }
+  );
 
-    UPSERT $sheetId CONTENT {
+  await db.query(
+    `UPSERT $sheetId CONTENT {
       workbook: $wbId,
       univer_id: rand::ulid(),
       table_name: $tableName,
@@ -99,20 +141,13 @@ export async function createBlankWorkbook({
         { key: "value", label: "值",    field_type: "text", required: false },
         { key: "note",  label: "备注",  field_type: "text", required: false }
       ]
-    };
-
-    COMMIT TRANSACTION;`,
+    }`,
     {
       wbId,
       sheetId,
-      ws: wsId,
-      name: name.trim(),
       tableName: entityTableName,
     }
   );
-
-  // DDL：创建实体表
-  await provisionEntityTable(entityTableName);
 
   // 读取已创建的 workbook
   const wbRows = await db.query<[WorkbookRow[]]>(
@@ -144,11 +179,10 @@ export async function provisionEntityTable(tableName: string): Promise<void> {
   }
   const db = getLocalDb();
   await db.query(
-    `DEFINE TABLE IF NOT EXISTS type::table($t) SCHEMALESS PERMISSIONS FULL;
-     DEFINE FIELD IF NOT EXISTS workspace  ON TABLE type::table($t) TYPE option<record<workspace>>;
-     DEFINE FIELD IF NOT EXISTS created_at ON TABLE type::table($t) TYPE datetime VALUE time::now();
-     DEFINE FIELD IF NOT EXISTS updated_at ON TABLE type::table($t) TYPE datetime VALUE time::now();`,
-    { t: tableName }
+    `DEFINE TABLE IF NOT EXISTS ${tableName} SCHEMALESS PERMISSIONS FULL;
+     DEFINE FIELD IF NOT EXISTS workspace  ON TABLE ${tableName} TYPE option<record<workspace>>;
+     DEFINE FIELD IF NOT EXISTS created_at ON TABLE ${tableName} TYPE datetime VALUE time::now();
+     DEFINE FIELD IF NOT EXISTS updated_at ON TABLE ${tableName} TYPE datetime VALUE time::now();`
   );
 }
 
@@ -158,9 +192,8 @@ export async function provisionRelationTable(tableName: string): Promise<void> {
   }
   const db = getLocalDb();
   await db.query(
-    `DEFINE TABLE IF NOT EXISTS type::table($t) TYPE RELATION SCHEMALESS PERMISSIONS FULL;
-     DEFINE FIELD IF NOT EXISTS created_at ON TABLE type::table($t) TYPE datetime VALUE time::now();`,
-    { t: tableName }
+    `DEFINE TABLE IF NOT EXISTS ${tableName} TYPE RELATION SCHEMALESS PERMISSIONS FULL;
+     DEFINE FIELD IF NOT EXISTS created_at ON TABLE ${tableName} TYPE datetime VALUE time::now();`
   );
 }
 

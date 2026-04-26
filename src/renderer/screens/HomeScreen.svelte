@@ -11,6 +11,7 @@
   let tab = $state("recent");
   let view = $state<"list" | "grid">("list");
   let creating = $state(false);
+  let importStatus = $state("");
 
   $effect(() => {
     const ws = appState.workspace;
@@ -28,6 +29,10 @@
     const wb = await workbooksStore.createBlank(ws.id, "未命名工作簿");
     creating = false;
     if (wb) navigate("editor", { workbookId: wb.id });
+  }
+
+  function handleImportClick() {
+    importStatus = "导入文件功能尚未接入，当前版本请先使用空白文档或模板创建。";
   }
 
   function formatDate(iso?: string): string {
@@ -69,12 +74,15 @@
           <strong>从模板创建</strong>
           <small>案件管理·法律实体追踪</small>
         </button>
-        <button disabled>
+        <button onclick={handleImportClick}>
           <span><Icon name="upload" size={17} color="var(--primary)" /></span>
           <strong>导入文件</strong>
           <small>敬请期待</small>
         </button>
       </div>
+      {#if importStatus}
+        <div class="inline-note">{importStatus}</div>
+      {/if}
     {/if}
 
     <div class="toolbar">
@@ -378,5 +386,11 @@
 
   .state-msg.error {
     color: var(--error);
+  }
+
+  .inline-note {
+    margin: -8px 0 16px;
+    color: var(--text-3);
+    font-size: 12px;
   }
 </style>

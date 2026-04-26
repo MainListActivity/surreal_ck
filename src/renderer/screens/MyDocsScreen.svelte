@@ -30,7 +30,7 @@
   async function handleCreateBlank() {
     const ws = appState.workspace;
     if (!ws || appState.readOnly) return;
-    const wb = await workbooksStore.createBlank(ws.id, "未命名工作簿");
+    const wb = await workbooksStore.createBlank(ws.id, "未命名工作簿", selectedFolderId);
     if (wb) navigate("editor", { workbookId: wb.id });
   }
 

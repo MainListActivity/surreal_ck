@@ -1,3 +1,4 @@
+import { RecordId, StringRecordId } from "surrealdb";
 import { getLocalDb, getRemoteDb } from "../db/index";
 import { getSession } from "../auth/session";
 import { ServiceError } from "./errors";
@@ -51,13 +52,41 @@ export function assertWritable(): void {
   }
 }
 
-/** 断言用户有指定 workspace 的读权限（当前阶段：已认证即可读）。 */
-export function assertCanReadWorkspace(_workspaceId: string): void {
+type CurrentUserRow = { id: RecordId };
+type WorkspaceAccessRow = { id: RecordId };
+
+async function getCurrentUserId(): Promise<RecordId> {
   assertAuthenticated();
+
+  const db = getLocalDb();
+  const rows = await db.query<[CurrentUserRow[]]>(
+    `SELECT id FROM app_user LIMIT 1`
+  );
+  const user = rows[0]?.[0];
+  if (!user) throw new ServiceError("BOOTSTRAP_REQUIRED");
+  return user.id;
 }
 
-/** 断言用户有指定 workspace 的写权限（当前阶段：已认证且可写）。 */
-export function assertCanWriteWorkspace(workspaceId: string): void {
+/** 断言用户有指定 workspace 的读权限。 */
+export async function assertCanReadWorkspace(workspaceId: string): Promise<void> {
+  const userId = await getCurrentUserId();
+  const db = getLocalDb();
+  const rows = await db.query<[WorkspaceAccessRow[]]>(
+    `SELECT id
+     FROM workspace
+     WHERE id = $workspaceId
+       AND (owner = $userId OR id IN $userId<-has_workspace_member<-workspace)
+     LIMIT 1`,
+    { workspaceId: new StringRecordId(workspaceId), userId }
+  );
+
+  if (!rows[0]?.[0]) {
+    throw new ServiceError("NOT_FOUND", "工作区不存在或无权访问");
+  }
+}
+
+/** 断言用户有指定 workspace 的写权限。 */
+export async function assertCanWriteWorkspace(workspaceId: string): Promise<void> {
   assertWritable();
-  assertCanReadWorkspace(workspaceId);
+  await assertCanReadWorkspace(workspaceId);
 }

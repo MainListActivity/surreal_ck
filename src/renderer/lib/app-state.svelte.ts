@@ -40,6 +40,15 @@ function createAppState() {
     }
   }
 
+  function reset() {
+    state.loading = false;
+    state.error = null;
+    state.bootstrap = null;
+    state.user = null;
+    state.workspace = null;
+    state.readOnly = false;
+  }
+
   return {
     get loading() { return state.loading; },
     get error() { return state.error; },
@@ -48,6 +57,7 @@ function createAppState() {
     get workspace() { return state.workspace; },
     get readOnly() { return state.readOnly; },
     load,
+    reset,
   };
 }
 

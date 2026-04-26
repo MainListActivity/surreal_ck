@@ -88,6 +88,8 @@ export type WorkbookSummaryDTO = {
 
 export type ListWorkbooksRequest = {
   workspaceId: RecordIdString;
+  folderId?: RecordIdString | null;
+  search?: string;
 };
 
 export type ListWorkbooksResponse = {
@@ -97,6 +99,7 @@ export type ListWorkbooksResponse = {
 export type CreateBlankWorkbookRequest = {
   workspaceId: RecordIdString;
   name: string;
+  folderId?: RecordIdString | null;
 };
 
 export type CreateBlankWorkbookResponse = {
@@ -171,7 +174,6 @@ export type SheetSummaryDTO = {
   id: RecordIdString;
   workbookId: RecordIdString;
   univerId: string;
-  tableName: string;
   label: string;
   position: number;
   columnDefs: GridColumnDef[];
