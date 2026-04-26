@@ -185,4 +185,12 @@ try {
 // ─── 结果 ─────────────────────────────────────────────────────────────────────
 
 console.log(`\n${passed} passed, ${failed} failed`);
-if (failed > 0) process.exit(1);
+try {
+  rmSync(dbDir, { recursive: true, force: true });
+} catch (e) {
+  console.warn("[cleanup] failed to remove temp DB directory:", e);
+}
+
+// Do not call db.close(): surrealdb-node can segfault under Bun. Force exit so
+// open embedded-engine handles do not keep this verification script alive.
+process.exit(failed > 0 ? 1 : 0);
