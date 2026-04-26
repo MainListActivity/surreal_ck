@@ -25,7 +25,7 @@
 </script>
 
 <section class="public-form">
-  <header><Logo size="sm" /><span>债权申报在线登记</span></header>
+  <header><button class="logo-btn" onclick={() => navigate("home")}><Logo size="sm" /></button><span>债权申报在线登记</span></header>
 
   {#if mode === "success"}
     <div class="success-card">
@@ -96,6 +96,20 @@
     padding: 14px 24px;
     border-bottom: 1px solid var(--border);
     background: var(--surface);
+  }
+
+  .logo-btn {
+    display: flex;
+    align-items: center;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    padding: 4px 6px;
+    cursor: pointer;
+  }
+
+  .logo-btn:hover {
+    background: var(--bg);
   }
 
   header > span {

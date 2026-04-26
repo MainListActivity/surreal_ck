@@ -60,7 +60,7 @@
 <section class="editor">
   <header class="doc-topbar">
     <button class="icon-btn" onclick={() => navigate("home")}><Icon name="chevronLeft" size={17} /></button>
-    <Logo size="sm" />
+    <button class="logo-btn" onclick={() => navigate("home")}><Logo size="sm" /></button>
     <span class="divider"></span>
     <strong class="doc-title">华润置地·破产重整债权申报主表</strong>
     <span class="sync"><Icon name="check" size={13} />已保存</span>
@@ -233,6 +233,20 @@
     height: 48px;
     gap: 8px;
     padding: 0 12px;
+  }
+
+  .logo-btn {
+    display: flex;
+    align-items: center;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    padding: 4px 6px;
+    cursor: pointer;
+  }
+
+  .logo-btn:hover {
+    background: var(--bg);
   }
 
   .toolbar {

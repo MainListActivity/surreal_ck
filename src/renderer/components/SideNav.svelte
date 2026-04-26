@@ -13,7 +13,7 @@
 </script>
 
 <aside class="side-nav">
-  <div class="brand"><Logo /></div>
+  <button class="brand" onclick={() => navigate("home")}><Logo /></button>
 
   <button class="workspace" onclick={() => (workspaceIndex = workspaceIndex === 0 ? 1 : 0)}>
     <span>{workspaces[workspaceIndex]}</span>
@@ -70,8 +70,18 @@
   }
 
   .brand {
+    display: flex;
     padding: 16px 16px 12px;
+    border: 0;
     border-bottom: 1px solid var(--border);
+    border-radius: 0;
+    background: transparent;
+    cursor: pointer;
+    width: 100%;
+  }
+
+  .brand:hover {
+    background: var(--bg);
   }
 
   .workspace,
