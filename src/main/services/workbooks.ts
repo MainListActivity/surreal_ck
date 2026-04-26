@@ -109,6 +109,8 @@ export async function createBlankWorkbook({
   const sheetKey = Bun.hash.wyhash(`${wbKey}:sheet:0`).toString(16).padStart(16, "0");
   const sheetId = new RecordId("sheet", sheetKey);
 
+  await ensureWorkbookMetadataSchema();
+
   // 先创建动态实体表，避免 workbook/sheet 指向不存在的表。
   await provisionEntityTable(entityTableName);
 
@@ -194,6 +196,22 @@ export async function provisionRelationTable(tableName: string): Promise<void> {
   await db.query(
     `DEFINE TABLE IF NOT EXISTS ${tableName} TYPE RELATION SCHEMALESS PERMISSIONS FULL;
      DEFINE FIELD IF NOT EXISTS created_at ON TABLE ${tableName} TYPE datetime VALUE time::now();`
+  );
+}
+
+export async function ensureWorkbookMetadataSchema(): Promise<void> {
+  const db = getLocalDb();
+  await db.query(
+    `REMOVE FIELD IF EXISTS column_defs.* ON TABLE sheet;
+     REMOVE FIELD IF EXISTS edge_props.* ON TABLE edge_catalog;
+     REMOVE FIELD IF EXISTS fields.* ON TABLE form_definition;
+     REMOVE FIELD IF EXISTS conditional_rules.* ON TABLE form_definition;
+     REMOVE FIELD IF EXISTS auto_edges.* ON TABLE form_definition;
+     DEFINE FIELD OVERWRITE column_defs ON TABLE sheet TYPE any DEFAULT [];
+     DEFINE FIELD OVERWRITE edge_props ON TABLE edge_catalog TYPE any DEFAULT [];
+     DEFINE FIELD OVERWRITE fields ON TABLE form_definition TYPE any DEFAULT [];
+     DEFINE FIELD OVERWRITE conditional_rules ON TABLE form_definition TYPE any DEFAULT [];
+     DEFINE FIELD OVERWRITE auto_edges ON TABLE form_definition TYPE any DEFAULT [];`
   );
 }
 

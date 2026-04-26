@@ -174,6 +174,7 @@ DEFINE FIELD IF NOT EXISTS univer_id   ON TABLE sheet TYPE string;
 DEFINE FIELD IF NOT EXISTS table_name  ON TABLE sheet TYPE string;
 DEFINE FIELD IF NOT EXISTS label       ON TABLE sheet TYPE string;
 DEFINE FIELD IF NOT EXISTS position    ON TABLE sheet TYPE int DEFAULT 0;
+REMOVE FIELD IF EXISTS column_defs.* ON TABLE sheet;
 DEFINE FIELD OVERWRITE column_defs ON TABLE sheet TYPE any DEFAULT [];
 DEFINE FIELD IF NOT EXISTS created_at  ON TABLE sheet TYPE datetime VALUE time::now();
 DEFINE FIELD IF NOT EXISTS updated_at  ON TABLE sheet TYPE datetime VALUE time::now();
@@ -200,6 +201,7 @@ DEFINE FIELD IF NOT EXISTS label      ON TABLE edge_catalog TYPE string;
 DEFINE FIELD IF NOT EXISTS rel_table  ON TABLE edge_catalog TYPE string;
 DEFINE FIELD IF NOT EXISTS from_table ON TABLE edge_catalog TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS to_table   ON TABLE edge_catalog TYPE option<string>;
+REMOVE FIELD IF EXISTS edge_props.* ON TABLE edge_catalog;
 DEFINE FIELD OVERWRITE edge_props ON TABLE edge_catalog TYPE any DEFAULT [];
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE edge_catalog TYPE datetime VALUE time::now();
 DEFINE INDEX IF NOT EXISTS edge_catalog_ws_key_unique
@@ -281,6 +283,9 @@ DEFINE FIELD IF NOT EXISTS workspace        ON TABLE form_definition TYPE record
 DEFINE FIELD IF NOT EXISTS title            ON TABLE form_definition TYPE string;
 DEFINE FIELD IF NOT EXISTS slug             ON TABLE form_definition TYPE string;
 DEFINE FIELD IF NOT EXISTS target_sheet     ON TABLE form_definition TYPE record<sheet>;
+REMOVE FIELD IF EXISTS fields.* ON TABLE form_definition;
+REMOVE FIELD IF EXISTS conditional_rules.* ON TABLE form_definition;
+REMOVE FIELD IF EXISTS auto_edges.* ON TABLE form_definition;
 DEFINE FIELD OVERWRITE fields            ON TABLE form_definition TYPE any DEFAULT [];
 DEFINE FIELD OVERWRITE conditional_rules ON TABLE form_definition TYPE any DEFAULT [];
 DEFINE FIELD OVERWRITE auto_edges        ON TABLE form_definition TYPE any DEFAULT [];

@@ -3,7 +3,7 @@ import { getLocalDb } from "../db/index";
 import { assertCanWriteWorkspace } from "./context";
 import { ServiceError } from "./errors";
 import { getTemplateDef, listTemplateSummaries, type EntityDef } from "../templates/catalog";
-import { provisionEntityTable, provisionRelationTable } from "./workbooks";
+import { ensureWorkbookMetadataSchema, provisionEntityTable, provisionRelationTable } from "./workbooks";
 import type {
   ListTemplatesResponse,
   CreateWorkbookFromTemplateRequest,
@@ -43,6 +43,8 @@ export async function createWorkbookFromTemplate({
   const wbId = new RecordId("workbook", wbKey);
 
   const workbookName = name?.trim() || tpl.name;
+
+  await ensureWorkbookMetadataSchema();
 
   // ── Step 1: DDL provisioning（entity + relation 表）────────────────────────
   for (const entity of tpl.entities) {
