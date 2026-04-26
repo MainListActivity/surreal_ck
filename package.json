@@ -10,7 +10,8 @@
     "build": "vite build --config vite.config.ts && electrobun build",
     "start": "electrobun run",
     "test": "bun test src/main",
-    "test:db": "bun run scripts/test-db.ts"
+    "test:db": "bun run scripts/test-db.ts",
+    "test:bootstrap": "bun run scripts/test-app-bootstrap.ts"
   },
   "dependencies": {
     "@mastra/core": "^1.25.0",

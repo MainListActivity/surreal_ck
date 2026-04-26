@@ -167,7 +167,7 @@ export async function initUserDb(sub: string, tokens: TokenSet): Promise<void> {
 }
 
 export type RestoreResult =
-  | { status: "restored"; expiresAt: number; tokens?: TokenSet }
+  | { status: "restored"; expiresAt: number; accessToken: string; tokens?: TokenSet }
   | { status: "offline" }
   | { status: "unauthenticated" };
 
@@ -211,7 +211,7 @@ export async function tryRestoreSession(): Promise<RestoreResult> {
   if (accessTokenValid) {
     await connectRemote(stored!.access_token);
     console.log("[db] session restored with existing access token");
-    return { status: "restored", expiresAt };
+    return { status: "restored", expiresAt, accessToken: stored!.access_token };
   }
 
   if (!stored?.refresh_token) {
@@ -240,7 +240,7 @@ export async function tryRestoreSession(): Promise<RestoreResult> {
 
     await connectRemote(newTokens.access_token);
     console.log("[db] session restored");
-    return { status: "restored", tokens: newTokens, expiresAt: newExpiresAt };
+    return { status: "restored", tokens: newTokens, expiresAt: newExpiresAt, accessToken: newTokens.access_token };
   } catch (err) {
     console.warn("[db] token refresh failed, entering offline mode:", err);
     return { status: "offline" };

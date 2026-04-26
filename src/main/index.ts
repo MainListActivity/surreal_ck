@@ -1,28 +1,16 @@
 import { BrowserView, BrowserWindow } from "electrobun/bun";
-import { initEngine, initUserDb, tryRestoreSession, closeUserDb, getLocalDb, type RestoreResult } from "./db/index";
+import { initEngine, tryRestoreSession } from "./db/index";
 import { initMastra } from "./ai/index";
-import { startOidcLogin } from "./auth/oidc";
 import { ensureSingleInstance } from "./single-instance";
-import {
-  activateSession,
-  loginToSurrealDB,
-  clearSession,
-  getPublicAuthState,
-} from "./auth/session";
+import { activateSession, loginToSurrealDB, getPublicAuthState } from "./auth/session";
+import { setOfflineMode } from "./services/context";
+import { decodeTokenClaims, bootstrapLocalIdentity } from "./services/identity";
+import { createRpcHandlers } from "./rpc/handlers";
 import type { AppRPC } from "../shared/rpc.types";
-
-// JWT payload 解码（用于提取 sub）
-function decodeJwtSub(token: string): string {
-  const part = token.split(".")[1];
-  const payload = JSON.parse(Buffer.from(part, "base64url").toString("utf8"));
-  if (!payload.sub) throw new Error("JWT missing sub claim");
-  return payload.sub as string;
-}
 
 async function main() {
   ensureSingleInstance();
 
-  // 只初始化 embedded engine，不依赖登录状态
   await initEngine().catch((err) => {
     console.error("[main] engine init failed:", err);
     process.exit(1);
@@ -35,46 +23,7 @@ async function main() {
   }
 
   const rpc = BrowserView.defineRPC<AppRPC>({
-    handlers: {
-      requests: {
-        query: async ({ sql }) => {
-          // getLocalDb() 在未登录时 throw，Electrobun 将 Error 传回 WebView
-          const db = getLocalDb();
-          const result = await db.query(sql);
-          return result as unknown[];
-        },
-
-        getAuthState: async () => {
-          return getPublicAuthState();
-        },
-
-        logout: async () => {
-          clearSession();
-          await closeUserDb();
-          const state = getPublicAuthState();
-          rpc.send("authStateChanged", { state });
-        },
-      },
-      messages: {
-        log: ({ msg }) => {
-          console.log("[webview]", msg);
-        },
-
-        startLogin: () => {
-          startOidcLogin()
-            .then(async (tokens) => {
-              const sub = decodeJwtSub(tokens.access_token);
-              await initUserDb(sub, tokens);
-              loginToSurrealDB(tokens);
-              rpc.send("authStateChanged", { state: getPublicAuthState() });
-            })
-            .catch((err) => {
-              console.error("[auth] login failed:", err);
-              rpc.send("authStateChanged", { state: { loggedIn: false, error: String(err) } });
-            });
-        },
-      },
-    },
+    handlers: createRpcHandlers((event, payload) => rpc.send(event, payload)),
   });
 
   const win = new BrowserWindow({
@@ -93,13 +42,20 @@ async function main() {
       } else {
         activateSession(result.expiresAt);
       }
+      // 所有恢复路径都执行 identity bootstrap（幂等，保证 user/workspace 存在）
+      try {
+        const claims = decodeTokenClaims(result.accessToken);
+        await bootstrapLocalIdentity(claims);
+      } catch (err) {
+        console.warn("[main] identity bootstrap failed after restore:", err);
+      }
     }
 
-    const state =
-      result.status === "offline"
-        ? getPublicAuthState({ offlineMode: true })
-        : getPublicAuthState();
+    if (result.status === "offline") {
+      setOfflineMode(true);
+    }
 
+    const state = getPublicAuthState(result.status === "offline" ? { offlineMode: true } : undefined);
     rpc.send("authStateChanged", { state });
     console.log("[main] pushed initial auth state:", result.status);
   });
