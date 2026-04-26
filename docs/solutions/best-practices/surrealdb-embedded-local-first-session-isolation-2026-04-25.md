@@ -54,7 +54,7 @@ tags:
 ### 架构总览
 
 ```
-embedded file (surrealkv://./data/app.db)
+embedded file (surrealkv://<user-data>/data/app.db)
 ├── NS main / DB _meta       ← 存储 last_user_db（冷启动恢复用）
 └── NS main / DB u_<hash>    ← 用户专属：业务数据 + token_store
 
@@ -71,7 +71,7 @@ remote DB（WebSocket，登录后连接，OIDC authenticate）
 
 ```typescript
 const db = new Surreal({ engines: { ...createNodeEngines() } });
-await db.connect("surrealkv://./data/app.db");
+await db.connect(`surrealkv://${dbPath}`);
 
 // meta session：持久存储 last_user_db，与用户数据完全隔离
 const metaSession = await db.newSession();

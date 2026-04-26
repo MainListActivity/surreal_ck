@@ -1,5 +1,6 @@
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { homedir } from "node:os";
 import { Surreal, DateTime } from "surrealdb";
 import { createNodeEngines } from "@surrealdb/node";
 import type { TokenSet } from "../auth/oidc";
@@ -12,6 +13,8 @@ let _metaSession: Awaited<ReturnType<Surreal["newSession"]>> | null = null;
 let _userDbName: string | null = null;
 let _remoteDb: Surreal | null = null;
 let _loginInProgress = false;
+
+const APP_IDENTIFIER = "com.surreal.ck";
 
 // ─── 工具函数 ─────────────────────────────────────────────────────────────────
 
@@ -61,6 +64,38 @@ function dateTimeToMillis(value: DateTime | Date | string): number {
   return new Date(value).getTime();
 }
 
+function appDataRoot(): string {
+  switch (process.platform) {
+    case "darwin":
+      return join(homedir(), "Library", "Application Support");
+    case "win32":
+      return process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local");
+    default:
+      return process.env.XDG_DATA_HOME ?? join(homedir(), ".local", "share");
+  }
+}
+
+function appChannel(): string {
+  try {
+    const raw = readFileSync(join(process.cwd(), "..", "Resources", "version.json"), "utf8");
+    const version = JSON.parse(raw) as { channel?: string };
+    return version.channel ?? "dev";
+  } catch {
+    return "dev";
+  }
+}
+
+function localDbPath(): string {
+  const override = process.env.SURREAL_CK_DB_PATH;
+  if (override) return override;
+
+  return join(appDataRoot(), APP_IDENTIFIER, appChannel(), "data", "app.db");
+}
+
+function surrealKvUrl(path: string): string {
+  return `surrealkv://${path.replaceAll("\\", "/")}`;
+}
+
 // ─── 生命周期 API ─────────────────────────────────────────────────────────────
 
 /**
@@ -71,7 +106,9 @@ export async function initEngine(): Promise<void> {
   if (_engine) return;
 
   const db = new Surreal({ engines: { ...createNodeEngines() } });
-  await db.connect("surrealkv://./data/app.db");
+  const dbPath = localDbPath();
+  mkdirSync(dirname(dbPath), { recursive: true });
+  await db.connect(surrealKvUrl(dbPath));
 
   // _meta session：专用于读写 last_user_db，与用户数据完全隔离
   const meta = await db.newSession();
@@ -80,7 +117,7 @@ export async function initEngine(): Promise<void> {
 
   _engine = db;
   _metaSession = meta;
-  console.log("[db] engine initialized");
+  console.log(`[db] engine initialized: ${dbPath}`);
 }
 
 /**

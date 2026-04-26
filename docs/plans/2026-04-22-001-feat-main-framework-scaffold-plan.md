@@ -94,7 +94,7 @@ connect(url) → signin({ username, password }) → use({ namespace, database })
 - Windows 平台打包配置（WinGet / NSIS installer）
 - LIVE SELECT → RPC 实时推送完整实现（Unit 6 只做静态验证）
 - Mastra agent 具体定义和工具注册
-- SurrealDB 生产环境持久化路径配置（当前用 `surrealkv://./data/app.db`）
+- SurrealDB 生产环境持久化路径配置（当前用用户数据目录下的 `data/app.db`）
 
 ## High-Level Technical Design
 
@@ -198,7 +198,7 @@ pnpm run dev
 
 **Approach:**
 - `src/main/db/index.ts` 导出 `initDb()` async 函数和 `db` 单例
-- 连接 URL：开发环境用 `surrealkv://./data/app.db`（永久存储），路径相对于 CWD
+- 连接 URL：开发环境用用户数据目录下的 `data/app.db`（永久存储），路径不依赖 CWD
 - 启动顺序严格遵守：`connect` → `signin` → `use` → `query(schema)`
 - `schema/main.surql` 通过 `Bun.file("./schema/main.surql").text()` 读取
 - `src/main/index.ts` 调用 `initDb()`，失败时 `console.error` 并 `process.exit(1)`
@@ -211,7 +211,7 @@ pnpm run dev
 
 **Verification:**
 - 主进程启动日志中出现"DB initialized"
-- `data/app.db` 文件在首次运行后被创建
+- 用户数据目录中的 `data/app.db` 文件在首次运行后被创建
 
 ---
 

@@ -102,7 +102,7 @@ date: 2026-04-25
   ▼
 initEngine()
   ├─ new Surreal({ engines: createNodeEngines() })
-  ├─ connect("surrealkv://./data/app.db")
+  ├─ connect("surrealkv://<user-data>/data/app.db")
   └─ metaSession = db.newSession()
        └─ metaSession.use({ ns: "main", db: "_meta" })
 
@@ -330,7 +330,7 @@ closeUserDb()
 ## Documentation / Operational Notes
 
 - 环境变量 `SURREALDB_URL` 控制 remote 连接地址；未设置时 remote 连接不建立（纯离线模式）
-- embedded DB 文件路径 `./data/app.db` 不变，`_meta` 和所有 `u_<hash>` DB 共存于同一 KV 文件
+- embedded DB 文件位于用户数据目录，避免 Electrobun dev 重建 app bundle 时清掉 `./data/app.db`；`_meta` 和所有 `u_<hash>` DB 共存于同一 KV 文件
 - `schema/main.surql` 追加 `token_store` 后，现有 embedded DB 文件需重新执行 schema（`IF NOT EXISTS` 保证幂等）
 
 ## Sources & References
