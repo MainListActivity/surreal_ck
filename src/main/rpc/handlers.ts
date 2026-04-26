@@ -1,4 +1,14 @@
-import type { AppBootstrap, Result, AuthState } from "../../shared/rpc.types";
+import type {
+  AppBootstrap,
+  AuthState,
+  CreateBlankWorkbookRequest,
+  CreateBlankWorkbookResponse,
+  ListWorkbooksRequest,
+  ListWorkbooksResponse,
+  RawQueryRequest,
+  RawQueryResponse,
+  Result,
+} from "../../shared/rpc.types";
 import { getServiceContext, setOfflineMode, assertAuthenticated, assertWritable } from "../services/context";
 import { withResult, ServiceError } from "../services/errors";
 import { getLocalDb } from "../db/index";
@@ -14,7 +24,7 @@ export function createRpcHandlers(send: SendFn) {
   return {
     requests: {
       // ── 调试入口（Admin Console 专用）──────────────────────────────────
-      query: async ({ sql }: { sql: string }) => {
+      query: async ({ sql }: RawQueryRequest): Promise<RawQueryResponse> => {
         const db = getLocalDb();
         const result = await db.query(sql);
         return result as unknown[];
@@ -41,8 +51,8 @@ export function createRpcHandlers(send: SendFn) {
 
           if (!ctx.isAuthenticated) {
             const data: AppBootstrap = {
-              loggedIn: false,
-              ...(ctx.isOffline ? { offlineMode: true } : {}),
+              auth: getPublicAuthState(ctx.isOffline ? { offlineMode: true } : undefined),
+              readOnly: true,
             };
             return data;
           }
@@ -68,8 +78,7 @@ export function createRpcHandlers(send: SendFn) {
           }
 
           return {
-            loggedIn: true,
-            offlineMode: ctx.isOffline,
+            auth: getPublicAuthState(ctx.isOffline ? { offlineMode: true } : undefined),
             readOnly: ctx.readOnly,
             user: {
               id: String(userRow.id),
@@ -89,7 +98,7 @@ export function createRpcHandlers(send: SendFn) {
       },
 
       // 占位：Unit 3+ 实现业务逻辑
-      listWorkbooks: async ({ workspaceId }: { workspaceId: string }): Promise<Result<unknown[]>> => {
+      listWorkbooks: async ({ workspaceId }: ListWorkbooksRequest): Promise<Result<ListWorkbooksResponse>> => {
         return withResult(async () => {
           assertCanReadWorkspace(workspaceId);
           throw new ServiceError("NOT_IMPLEMENTED");
@@ -98,10 +107,7 @@ export function createRpcHandlers(send: SendFn) {
 
       createBlankWorkbook: async ({
         workspaceId,
-      }: {
-        workspaceId: string;
-        name: string;
-      }): Promise<Result<unknown>> => {
+      }: CreateBlankWorkbookRequest): Promise<Result<CreateBlankWorkbookResponse>> => {
         return withResult(async () => {
           assertCanWriteWorkspace(workspaceId);
           throw new ServiceError("NOT_IMPLEMENTED");

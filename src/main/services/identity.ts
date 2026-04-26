@@ -1,7 +1,7 @@
 import { RecordId } from "surrealdb";
 import { getLocalDb } from "../db/index";
 import { ServiceError } from "./errors";
-import type { CurrentUserSummary, WorkspaceSummary } from "../../shared/rpc.types";
+import type { CurrentUserDTO, WorkspaceDTO } from "../../shared/rpc.types";
 
 // ─── Token Claims ─────────────────────────────────────────────────────────────
 
@@ -43,8 +43,8 @@ export function decodeTokenClaims(token: string): TokenClaims {
 // ─── Bootstrap Result ─────────────────────────────────────────────────────────
 
 export type BootstrapResult = {
-  user: CurrentUserSummary;
-  defaultWorkspace: WorkspaceSummary;
+  user: CurrentUserDTO;
+  defaultWorkspace: WorkspaceDTO;
 };
 
 // ─── Identity Bootstrap ───────────────────────────────────────────────────────
@@ -93,7 +93,7 @@ export async function bootstrapLocalIdentity(claims: TokenClaims): Promise<Boots
     throw new ServiceError("INTERNAL_ERROR", "app_user 写入失败");
   }
 
-  const user: CurrentUserSummary = {
+  const user: CurrentUserDTO = {
     id: String(userRow.id),
     subject: userRow.subject,
     email: userRow.email,

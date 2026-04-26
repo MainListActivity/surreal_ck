@@ -1,10 +1,25 @@
 import type { ElectrobunRPCSchema } from "electrobun/bun";
 
-export type RowData = {
+// ─── 传输基础类型 ─────────────────────────────────────────────────────────────
+
+/** SurrealDB record id serialized for transport, e.g. "workspace:abc123". */
+export type RecordIdString = string;
+
+/** ISO-8601 datetime string serialized for transport. */
+export type ISODateTimeString = string;
+
+// Legacy scaffold channel. Do not use for product APIs.
+export type LegacyRowData = {
   id: string;
   name: string;
   value: string;
 };
+
+export type RawQueryRequest = {
+  sql: string;
+};
+
+export type RawQueryResponse = unknown[];
 
 export type AuthState = {
   loggedIn: boolean;
@@ -38,8 +53,8 @@ export type Result<T> = AppOk<T> | AppError;
 
 // ─── 业务 DTO ─────────────────────────────────────────────────────────────────
 
-export type CurrentUserSummary = {
-  id: string;
+export type CurrentUserDTO = {
+  id: RecordIdString;
   subject: string;
   email?: string;
   name?: string;
@@ -47,34 +62,57 @@ export type CurrentUserSummary = {
   avatar?: string;
 };
 
-export type WorkspaceSummary = {
-  id: string;
+export type WorkspaceDTO = {
+  id: RecordIdString;
   name: string;
   slug: string;
 };
 
-export type AppBootstrap =
-  | { loggedIn: false; offlineMode?: boolean }
-  | {
-      loggedIn: true;
-      offlineMode?: boolean;
-      readOnly: boolean;
-      user: CurrentUserSummary;
-      defaultWorkspace: WorkspaceSummary;
-    };
+export type AppBootstrap = {
+  auth: AuthState;
+  readOnly: boolean;
+  user?: CurrentUserDTO;
+  defaultWorkspace?: WorkspaceDTO;
+};
+
+export type WorkbookSummaryDTO = {
+  id: RecordIdString;
+  workspaceId: RecordIdString;
+  name: string;
+  templateKey?: string;
+  folderId?: RecordIdString;
+  updatedAt?: ISODateTimeString;
+};
+
+export type ListWorkbooksRequest = {
+  workspaceId: RecordIdString;
+};
+
+export type ListWorkbooksResponse = {
+  workbooks: WorkbookSummaryDTO[];
+};
+
+export type CreateBlankWorkbookRequest = {
+  workspaceId: RecordIdString;
+  name: string;
+};
+
+export type CreateBlankWorkbookResponse = {
+  workbook: WorkbookSummaryDTO;
+};
 
 // ─── RPC 契约 ─────────────────────────────────────────────────────────────────
 
 export interface AppRPC extends ElectrobunRPCSchema {
   bun: {
     requests: {
-      query: { params: { sql: string }; response: unknown[] };
+      query: { params: RawQueryRequest; response: RawQueryResponse };
       getAuthState: { params: Record<string, never>; response: AuthState };
       logout: { params: Record<string, never>; response: void };
       getAppBootstrap: { params: Record<string, never>; response: Result<AppBootstrap> };
       // 占位：后续 Unit 3+ 实现业务逻辑
-      listWorkbooks: { params: { workspaceId: string }; response: Result<unknown[]> };
-      createBlankWorkbook: { params: { workspaceId: string; name: string }; response: Result<unknown> };
+      listWorkbooks: { params: ListWorkbooksRequest; response: Result<ListWorkbooksResponse> };
+      createBlankWorkbook: { params: CreateBlankWorkbookRequest; response: Result<CreateBlankWorkbookResponse> };
     };
     messages: {
       log: { msg: string };
@@ -84,7 +122,7 @@ export interface AppRPC extends ElectrobunRPCSchema {
   webview: {
     requests: Record<string, never>;
     messages: {
-      pushRows: { rows: RowData[] };
+      pushRows: { rows: LegacyRowData[] };
       authStateChanged: { state: AuthState };
     };
   };

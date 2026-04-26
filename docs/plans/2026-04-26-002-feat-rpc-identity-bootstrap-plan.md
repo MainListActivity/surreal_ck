@@ -47,7 +47,7 @@ origin: docs/plans/2026-04-26-001-feat-functional-core-vertical-slice-plan.md
 ### Relevant Code and Patterns
 
 - `src/main/index.ts` 当前内联 `BrowserView.defineRPC<AppRPC>`，可直接抽离到 `src/main/rpc/handlers.ts`。
-- `src/shared/rpc.types.ts` 当前只有 `RowData`、`AuthState` 和 `query` RPC，需要扩展为产品 DTO 与错误响应类型。
+- `src/shared/rpc.types.ts` 需要区分 legacy scaffold 消息、auth state、raw query 调试入口和产品 DTO，避免后续业务 API 使用 `unknown`。
 - `src/main/db/index.ts` 已有 `initEngine()`、`initUserDb()`、`tryRestoreSession()`、`getLocalDb()`、`closeUserDb()`，是 identity bootstrap 的挂接点。
 - `src/main/auth/session.ts` 当前只保存 `_expiresAt`，需要补充 token claims 的解析/传递边界，但仍应避免重新持久化完整 token 到内存。
 - `schema/main.surql` 的 `DEFINE ACCESS madocs` 已表达 remote auth 后创建 `app_user` 和默认 `workspace` 的语义；本地 embedded 模式需要在主进程服务中显式复刻这段业务结果。
@@ -129,7 +129,7 @@ flowchart TB
 
 **Approach:**
 - 在 `src/shared/rpc.types.ts` 中新增 `AppErrorCode`、`AppError`、`Result<T>` 或等价响应结构。
-- 扩展 bootstrap DTO：`CurrentUserSummary`、`WorkspaceSummary`、`AppBootstrap`。
+- 扩展 bootstrap DTO：`CurrentUserDTO`、`WorkspaceDTO`、`AppBootstrap`，并补充 `RecordIdString` / `ISODateTimeString` 等传输基础类型。
 - 先声明后续产品 request 的类型占位，但业务 handler 可以在 Unit B 中返回 `NOT_IMPLEMENTED`，避免前端后续再改契约。
 - `src/main/services/errors.ts` 负责把未知异常、DB 异常、验证错误映射为稳定 `AppError`。
 - `src/renderer/lib/app-api.ts` 封装 `rpc.request`，提供 `getAppBootstrap` 等方法；组件后续只依赖这个薄 API。
@@ -211,7 +211,7 @@ flowchart TB
 - `tryRestoreSession()` 使用现有 token_store 恢复成功后，也调用 identity bootstrap；如果只有仍有效 access_token，也要能从 access token 解 claims。
 - `bootstrapLocalIdentity(claims)` 创建/更新 `app_user`，再查询 owner workspace；没有时创建默认 workspace。
 - 对有唯一约束的 `app_user.subject`、`workspace.slug` 写入，使用 SurrealDB upsert / duplicate-key 更新语义或集中重试策略。
-- identity 服务返回 `CurrentUserSummary` 和默认 `WorkspaceSummary`，供 context/bootstrap 复用。
+- identity 服务返回 `CurrentUserDTO` 和默认 `WorkspaceDTO`，供 context/bootstrap 复用。
 
 **Patterns to follow:**
 - `schema/main.surql` 中 `DEFINE ACCESS madocs` 的 display name、email、avatar 和默认 workspace 语义。

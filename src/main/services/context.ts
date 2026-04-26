@@ -1,14 +1,14 @@
 import { getLocalDb, getRemoteDb } from "../db/index";
 import { getSession } from "../auth/session";
 import { ServiceError } from "./errors";
-import type { CurrentUserSummary, WorkspaceSummary } from "../../shared/rpc.types";
+import type { RecordIdString, WorkspaceDTO } from "../../shared/rpc.types";
 
 export type ServiceContext = {
   isAuthenticated: boolean;
   isOffline: boolean;
   readOnly: boolean;
-  userId?: string;
-  defaultWorkspace?: WorkspaceSummary;
+  userId?: RecordIdString;
+  defaultWorkspace?: WorkspaceDTO;
 };
 
 let _offlineMode = false;
