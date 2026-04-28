@@ -2,6 +2,7 @@ import { RecordId, StringRecordId } from "surrealdb";
 import { getLocalDb } from "../db/index";
 import { assertCanReadWorkspace, assertCanWriteWorkspace, getServiceContext } from "./context";
 import { ServiceError } from "./errors";
+import { gridColumnToStoredDef, normalizeGridColumnDef, overwriteEntityField, removeEntityField } from "./workbooks";
 import type {
   GetWorkbookDataRequest,
   GetWorkbookDataResponse,
@@ -11,7 +12,11 @@ import type {
   DeleteRowsResponse,
   GridColumnDef,
   GridRow,
+  RenameWorkbookRequest,
+  RenameWorkbookResponse,
   SheetSummaryDTO,
+  UpdateSheetFieldsRequest,
+  UpdateSheetFieldsResponse,
   WorkbookSummaryDTO,
 } from "../../shared/rpc.types";
 
@@ -44,6 +49,8 @@ type SheetRow = {
 };
 
 type EntityRow = Record<string, unknown> & { id: RecordId; workspace?: RecordId };
+
+type StoredColumnDef = SheetRow["column_defs"][number];
 
 // ─── getWorkbookData ──────────────────────────────────────────────────────────
 
@@ -102,13 +109,7 @@ export async function getWorkbookData({
   const rows = await loadEntityRows(activeSheet);
 
   // 映射 column_defs
-  const columns: GridColumnDef[] = activeSheet.column_defs.map((c) => ({
-    key: c.key,
-    label: c.label,
-    fieldType: c.field_type,
-    required: c.required,
-    options: c.options,
-  }));
+  const columns: GridColumnDef[] = activeSheet.column_defs.map(storedColumnToDTO);
 
   const workbook: WorkbookSummaryDTO = {
     id: String(wbRow.id),
@@ -125,13 +126,7 @@ export async function getWorkbookData({
     univerId: s.univer_id,
     label: s.label,
     position: s.position,
-    columnDefs: s.column_defs.map((c) => ({
-      key: c.key,
-      label: c.label,
-      fieldType: c.field_type,
-      required: c.required,
-      options: c.options,
-    })),
+    columnDefs: s.column_defs.map(storedColumnToDTO),
   }));
 
   return {
@@ -170,6 +165,7 @@ export async function upsertRows({
 
   // 校验 column keys（未定义字段忽略）
   const validKeys = new Set(sheet.column_defs.map((c) => c.key));
+  const columnsByKey = new Map(sheet.column_defs.map((c) => [c.key, storedColumnToDTO(c)]));
   const tableName = sheet.table_name;
 
   if (!/^ent_[a-z0-9_]+$/.test(tableName)) {
@@ -183,7 +179,7 @@ export async function upsertRows({
     // 过滤掉 schema 未定义的字段
     const cleanValues: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(rowPatch.values)) {
-      if (validKeys.has(k)) cleanValues[k] = v;
+      if (validKeys.has(k)) cleanValues[k] = coerceCellValue(v, columnsByKey.get(k));
     }
 
     if (rowPatch.id) {
@@ -212,6 +208,108 @@ export async function upsertRows({
   }
 
   return { upserted };
+}
+
+// ─── renameWorkbook ──────────────────────────────────────────────────────────
+
+export async function renameWorkbook({
+  workbookId,
+  name,
+}: RenameWorkbookRequest): Promise<RenameWorkbookResponse> {
+  const trimmed = name.trim();
+  if (!trimmed) {
+    throw new ServiceError("VALIDATION_ERROR", "工作簿名称不能为空");
+  }
+  if (trimmed.length > 120) {
+    throw new ServiceError("VALIDATION_ERROR", "工作簿名称过长");
+  }
+
+  const db = getLocalDb();
+  const wbRows = await db.query<[WorkbookRow[]]>(
+    `SELECT id, workspace, name, template_key, folder, last_opened_sheet, updated_at FROM workbook WHERE id = $wbId`,
+    { wbId: new StringRecordId(workbookId) }
+  );
+  const wbRow = wbRows[0]?.[0];
+  if (!wbRow) throw new ServiceError("NOT_FOUND", "工作簿不存在");
+
+  await assertCanWriteWorkspace(String(wbRow.workspace));
+
+  const updated = await db.query<[WorkbookRow[]]>(
+    `UPDATE $wbId SET name = $name, updated_at = time::now() RETURN id, workspace, name, template_key, folder, updated_at`,
+    { wbId: new StringRecordId(workbookId), name: trimmed }
+  );
+  const row = updated[0]?.[0];
+  if (!row) throw new ServiceError("INTERNAL_ERROR", "工作簿名称更新失败");
+
+  return {
+    workbook: workbookRowToDTO(row),
+  };
+}
+
+// ─── updateSheetFields ───────────────────────────────────────────────────────
+
+export async function updateSheetFields({
+  sheetId,
+  columns,
+}: UpdateSheetFieldsRequest): Promise<UpdateSheetFieldsResponse> {
+  if (columns.length === 0) {
+    throw new ServiceError("VALIDATION_ERROR", "至少保留一个字段");
+  }
+
+  const db = getLocalDb();
+  const sheetRows = await db.query<[SheetRow[]]>(
+    `SELECT id, workbook, univer_id, table_name, label, position, column_defs FROM sheet WHERE id = $sheetId`,
+    { sheetId: new StringRecordId(sheetId) }
+  );
+  const sheet = sheetRows[0]?.[0];
+  if (!sheet) throw new ServiceError("NOT_FOUND", "Sheet 不存在");
+
+  const wbRows = await db.query<[{ workspace: RecordId }[]]>(
+    `SELECT workspace FROM workbook WHERE id = $wbId`,
+    { wbId: new StringRecordId(String(sheet.workbook)) }
+  );
+  const wbRow = wbRows[0]?.[0];
+  if (!wbRow) throw new ServiceError("NOT_FOUND", "工作簿不存在");
+  await assertCanWriteWorkspace(String(wbRow.workspace));
+
+  const tableName = sheet.table_name;
+  if (!/^ent_[a-z0-9_]+$/.test(tableName)) {
+    throw new ServiceError("INTERNAL_ERROR", "无效的实体表名");
+  }
+  await assertDynamicTableExists(tableName);
+
+  const normalized = columns.map(normalizeGridColumnDef);
+  const seen = new Set<string>();
+  for (const column of normalized) {
+    if (seen.has(column.key)) {
+      throw new ServiceError("VALIDATION_ERROR", `字段标识重复: ${column.key}`);
+    }
+    seen.add(column.key);
+  }
+
+  for (const column of normalized) {
+    await overwriteEntityField(tableName, column);
+  }
+
+  const nextKeys = new Set(normalized.map((column) => column.key));
+  for (const existing of sheet.column_defs) {
+    if (!nextKeys.has(existing.key)) {
+      await removeEntityField(tableName, existing.key);
+    }
+  }
+
+  const storedDefs = normalized.map(gridColumnToStoredDef);
+  const updated = await db.query<[SheetRow[]]>(
+    `UPDATE $sheetId SET column_defs = $columnDefs, updated_at = time::now() RETURN id, workbook, univer_id, table_name, label, position, column_defs`,
+    { sheetId: new StringRecordId(sheetId), columnDefs: storedDefs }
+  );
+  const updatedSheet = updated[0]?.[0];
+  if (!updatedSheet) throw new ServiceError("INTERNAL_ERROR", "字段更新失败");
+
+  return {
+    sheet: sheetRowToDTO(updatedSheet),
+    columns: updatedSheet.column_defs.map(storedColumnToDTO),
+  };
 }
 
 // ─── deleteRows ───────────────────────────────────────────────────────────────
@@ -278,6 +376,65 @@ function entityRowToDTO(row: EntityRow, validKeys: Set<string>): GridRow {
     if (validKeys.has(k)) values[k] = v;
   }
   return { id: String(row.id), values };
+}
+
+function storedColumnToDTO(c: StoredColumnDef): GridColumnDef {
+  return {
+    key: c.key,
+    label: c.label,
+    fieldType: c.field_type,
+    required: c.required,
+    options: c.options,
+  };
+}
+
+function sheetRowToDTO(s: SheetRow): SheetSummaryDTO {
+  return {
+    id: String(s.id),
+    workbookId: String(s.workbook),
+    univerId: s.univer_id,
+    label: s.label,
+    position: s.position,
+    columnDefs: s.column_defs.map(storedColumnToDTO),
+  };
+}
+
+function workbookRowToDTO(row: WorkbookRow): WorkbookSummaryDTO {
+  return {
+    id: String(row.id),
+    workspaceId: String(row.workspace),
+    name: row.name,
+    templateKey: row.template_key,
+    folderId: row.folder ? String(row.folder) : undefined,
+    updatedAt: row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at),
+  };
+}
+
+function coerceCellValue(value: unknown, column?: GridColumnDef): unknown {
+  if (!column) return value;
+  if (value === "" || value === undefined) return null;
+
+  switch (column.fieldType) {
+    case "number":
+    case "decimal": {
+      const n = typeof value === "number" ? value : Number(value);
+      return Number.isFinite(n) ? n : value;
+    }
+    case "checkbox":
+      if (typeof value === "boolean") return value;
+      if (typeof value === "string") return value === "true" || value === "1" || value === "是";
+      return Boolean(value);
+    case "date": {
+      if (value instanceof Date) return value;
+      if (typeof value === "string" || typeof value === "number") {
+        const d = new Date(value);
+        return Number.isNaN(d.getTime()) ? value : d;
+      }
+      return value;
+    }
+    default:
+      return value;
+  }
 }
 
 async function assertDynamicTableExists(tableName: string): Promise<void> {

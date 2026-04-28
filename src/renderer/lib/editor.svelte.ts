@@ -82,6 +82,59 @@ function createEditorStore() {
     }
   }
 
+  async function renameWorkbook(name: string): Promise<boolean> {
+    if (!state.data) return false;
+    state.saving = true;
+    state.saveError = null;
+    try {
+      const res = await appApi.renameWorkbook(state.data.workbook.id, name);
+      if (res.ok) {
+        state.data = {
+          ...state.data,
+          workbook: res.data.workbook,
+        };
+        return true;
+      }
+      state.saveError = res.message;
+      return false;
+    } catch (err) {
+      state.saveError = String(err);
+      return false;
+    } finally {
+      state.saving = false;
+    }
+  }
+
+  async function updateFields(columns: GridColumnDef[]): Promise<boolean> {
+    if (!state.activeSheetId || !state.data) return false;
+    state.saving = true;
+    state.saveError = null;
+    try {
+      const res = await appApi.updateSheetFields(state.activeSheetId, columns);
+      if (res.ok) {
+        const sheets = state.data.sheets.map((sheet) => sheet.id === res.data.sheet.id ? res.data.sheet : sheet);
+        state.columns = res.data.columns;
+        state.data = {
+          ...state.data,
+          sheets,
+          columns: res.data.columns,
+        };
+        state.rows = state.rows.map((row) => ({
+          ...row,
+          values: Object.fromEntries(Object.entries(row.values).filter(([key]) => res.data.columns.some((col) => col.key === key))),
+        }));
+        return true;
+      }
+      state.saveError = res.message;
+      return false;
+    } catch (err) {
+      state.saveError = String(err);
+      return false;
+    } finally {
+      state.saving = false;
+    }
+  }
+
   /** 从 Grid 完整 source 数组生成 upsert patches，用于 afterpasteapply / afteredit */
   async function saveFromSource(source: Array<Record<string, unknown>>) {
     if (!state.activeSheetId || !state.columns.length) return;
@@ -125,6 +178,8 @@ function createEditorStore() {
     switchSheet,
     saveRows,
     saveFromSource,
+    renameWorkbook,
+    updateFields,
     reset,
   };
 }

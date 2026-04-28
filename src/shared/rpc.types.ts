@@ -212,6 +212,25 @@ export type DeleteRowsResponse = {
   deleted: number;
 };
 
+export type RenameWorkbookRequest = {
+  workbookId: RecordIdString;
+  name: string;
+};
+
+export type RenameWorkbookResponse = {
+  workbook: WorkbookSummaryDTO;
+};
+
+export type UpdateSheetFieldsRequest = {
+  sheetId: RecordIdString;
+  columns: GridColumnDef[];
+};
+
+export type UpdateSheetFieldsResponse = {
+  sheet: SheetSummaryDTO;
+  columns: GridColumnDef[];
+};
+
 // ─── RPC 契约 ─────────────────────────────────────────────────────────────────
 
 export interface AppRPC extends ElectrobunRPCSchema {
@@ -230,6 +249,8 @@ export interface AppRPC extends ElectrobunRPCSchema {
       getWorkbookData: { params: GetWorkbookDataRequest; response: Result<GetWorkbookDataResponse> };
       upsertRows: { params: UpsertRowsRequest; response: Result<UpsertRowsResponse> };
       deleteRows: { params: DeleteRowsRequest; response: Result<DeleteRowsResponse> };
+      renameWorkbook: { params: RenameWorkbookRequest; response: Result<RenameWorkbookResponse> };
+      updateSheetFields: { params: UpdateSheetFieldsRequest; response: Result<UpdateSheetFieldsResponse> };
     };
     messages: {
       log: { msg: string };

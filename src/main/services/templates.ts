@@ -3,7 +3,7 @@ import { getLocalDb } from "../db/index";
 import { assertCanWriteWorkspace } from "./context";
 import { ServiceError } from "./errors";
 import { getTemplateDef, listTemplateSummaries, type EntityDef } from "../templates/catalog";
-import { ensureWorkbookMetadataSchema, provisionEntityTable, provisionRelationTable } from "./workbooks";
+import { ensureWorkbookMetadataSchema, provisionEntityFields, provisionEntityTable, provisionRelationTable } from "./workbooks";
 import type {
   ListTemplatesResponse,
   CreateWorkbookFromTemplateRequest,
@@ -50,6 +50,13 @@ export async function createWorkbookFromTemplate({
   for (const entity of tpl.entities) {
     const tableName = entityTableName(wsKey, wbKey, entity.key);
     await provisionEntityTable(tableName);
+    await provisionEntityFields(tableName, entity.columnDefs.map((col) => ({
+      key: col.key,
+      label: col.label,
+      fieldType: col.field_type,
+      required: col.required,
+      options: col.options,
+    })));
   }
   for (const rel of tpl.relations) {
     const tableName = relationTableName(wsKey, wbKey, rel.key);

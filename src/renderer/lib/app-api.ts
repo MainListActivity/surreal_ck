@@ -9,8 +9,11 @@ import type {
   ListFoldersResponse,
   ListTemplatesResponse,
   ListWorkbooksResponse,
+  GridColumnDef,
   RecordIdString,
+  RenameWorkbookResponse,
   Result,
+  UpdateSheetFieldsResponse,
   UpsertRowsResponse,
 } from "../../shared/rpc.types";
 
@@ -64,5 +67,13 @@ export const appApi = {
 
   deleteRows(sheetId: RecordIdString, ids: RecordIdString[]): Promise<Result<DeleteRowsResponse>> {
     return rpc.request("deleteRows", { sheetId, ids });
+  },
+
+  renameWorkbook(workbookId: RecordIdString, name: string): Promise<Result<RenameWorkbookResponse>> {
+    return rpc.request("renameWorkbook", { workbookId, name });
+  },
+
+  updateSheetFields(sheetId: RecordIdString, columns: GridColumnDef[]): Promise<Result<UpdateSheetFieldsResponse>> {
+    return rpc.request("updateSheetFields", { sheetId, columns });
   },
 };

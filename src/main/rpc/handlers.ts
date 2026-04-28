@@ -18,7 +18,11 @@ import type {
   ListWorkbooksResponse,
   RawQueryRequest,
   RawQueryResponse,
+  RenameWorkbookRequest,
+  RenameWorkbookResponse,
   Result,
+  UpdateSheetFieldsRequest,
+  UpdateSheetFieldsResponse,
   UpsertRowsRequest,
   UpsertRowsResponse,
 } from "../../shared/rpc.types";
@@ -32,7 +36,7 @@ import { decodeTokenClaims, bootstrapLocalIdentity } from "../services/identity"
 import { listWorkbooks, createBlankWorkbook } from "../services/workbooks";
 import { listFolders, createFolder } from "../services/folders";
 import { listTemplates, createWorkbookFromTemplate } from "../services/templates";
-import { getWorkbookData, upsertRows, deleteRows } from "../services/editor";
+import { getWorkbookData, upsertRows, deleteRows, renameWorkbook, updateSheetFields } from "../services/editor";
 
 type SendFn = (event: "authStateChanged", payload: { state: AuthState }) => void;
 
@@ -159,6 +163,14 @@ export function createRpcHandlers(send: SendFn) {
 
       deleteRows: async (req: DeleteRowsRequest): Promise<Result<DeleteRowsResponse>> => {
         return withResult(() => deleteRows(req));
+      },
+
+      renameWorkbook: async (req: RenameWorkbookRequest): Promise<Result<RenameWorkbookResponse>> => {
+        return withResult(() => renameWorkbook(req));
+      },
+
+      updateSheetFields: async (req: UpdateSheetFieldsRequest): Promise<Result<UpdateSheetFieldsResponse>> => {
+        return withResult(() => updateSheetFields(req));
       },
     },
 

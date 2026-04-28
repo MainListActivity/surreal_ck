@@ -1,4 +1,4 @@
-import type { TemplateSummaryDTO } from "../../../shared/rpc.types";
+import type { TemplateSummaryDTO } from "../../shared/rpc.types";
 
 export type EntityDef = {
   key: string;

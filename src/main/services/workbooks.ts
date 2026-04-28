@@ -8,6 +8,7 @@ import type {
   ListWorkbooksResponse,
   CreateBlankWorkbookRequest,
   CreateBlankWorkbookResponse,
+  GridColumnDef,
   RecordIdString,
 } from "../../shared/rpc.types";
 
@@ -21,6 +22,9 @@ type WorkbookRow = {
   folder?: RecordId;
   updated_at: Date;
 };
+
+const ENTITY_FIELD_NAME = /^[a-z][a-z0-9_]{0,62}$/;
+const RESERVED_ENTITY_FIELDS = new Set(["id", "workspace", "created_at", "updated_at"]);
 
 // ─── 列表 ─────────────────────────────────────────────────────────────────────
 
@@ -113,6 +117,11 @@ export async function createBlankWorkbook({
 
   // 先创建动态实体表，避免 workbook/sheet 指向不存在的表。
   await provisionEntityTable(entityTableName);
+  await provisionEntityFields(entityTableName, [
+    { key: "name",  label: "名称",  fieldType: "text", required: true  },
+    { key: "value", label: "值",    fieldType: "text", required: false },
+    { key: "note",  label: "备注",  fieldType: "text", required: false },
+  ]);
 
   const folderLine = folderRecordId ? "folder: $folder," : "";
   await db.query(
@@ -197,6 +206,114 @@ export async function provisionRelationTable(tableName: string): Promise<void> {
     `DEFINE TABLE IF NOT EXISTS ${tableName} TYPE RELATION SCHEMALESS PERMISSIONS FULL;
      DEFINE FIELD IF NOT EXISTS created_at ON TABLE ${tableName} TYPE datetime VALUE time::now();`
   );
+}
+
+export async function provisionEntityFields(tableName: string, columns: GridColumnDef[]): Promise<void> {
+  for (const column of columns) {
+    await defineEntityField(tableName, column, "if-not-exists");
+  }
+}
+
+export async function overwriteEntityField(tableName: string, column: GridColumnDef): Promise<void> {
+  await defineEntityField(tableName, column, "overwrite");
+}
+
+export async function removeEntityField(tableName: string, key: string): Promise<void> {
+  assertEntityTableName(tableName);
+  assertEntityFieldName(key);
+  const db = getLocalDb();
+  await db.query(`REMOVE FIELD IF EXISTS ${key} ON TABLE ${tableName}`);
+}
+
+export function normalizeGridColumnDef(column: GridColumnDef): GridColumnDef {
+  const key = column.key.trim();
+  assertEntityFieldName(key);
+
+  const label = column.label.trim();
+  if (!label) {
+    throw new ServiceError("VALIDATION_ERROR", "字段名称不能为空");
+  }
+  if (label.length > 80) {
+    throw new ServiceError("VALIDATION_ERROR", "字段名称过长");
+  }
+
+  const fieldType = normalizeFieldType(column.fieldType);
+  const options = fieldType === "single_select"
+    ? [...new Set((column.options ?? []).map((opt) => opt.trim()).filter(Boolean))].slice(0, 80)
+    : undefined;
+
+  return {
+    key,
+    label,
+    fieldType,
+    required: Boolean(column.required),
+    options,
+  };
+}
+
+export function gridColumnToStoredDef(column: GridColumnDef) {
+  return {
+    key: column.key,
+    label: column.label,
+    field_type: column.fieldType,
+    required: column.required,
+    options: column.options,
+  };
+}
+
+function defineEntityField(tableName: string, column: GridColumnDef, mode: "if-not-exists" | "overwrite"): Promise<void> {
+  assertEntityTableName(tableName);
+  const normalized = normalizeGridColumnDef(column);
+  const clause = mode === "overwrite" ? "OVERWRITE" : "IF NOT EXISTS";
+  const surrealType = surrealTypeForField(normalized.fieldType, normalized.required);
+  const db = getLocalDb();
+  return db.query(`DEFINE FIELD ${clause} ${normalized.key} ON TABLE ${tableName} TYPE ${surrealType}`).then(() => undefined);
+}
+
+function surrealTypeForField(fieldType: string, required?: boolean): string {
+  const baseType = (() => {
+    switch (fieldType) {
+      case "text":
+      case "single_select":
+        return "string";
+      case "number":
+      case "decimal":
+        return "number";
+      case "date":
+        return "datetime";
+      case "checkbox":
+        return "bool";
+      default:
+        throw new ServiceError("VALIDATION_ERROR", `不支持的字段类型: ${fieldType}`);
+    }
+  })();
+  return required ? baseType : `option<${baseType}>`;
+}
+
+function normalizeFieldType(fieldType: string): string {
+  switch (fieldType) {
+    case "text":
+    case "single_select":
+    case "number":
+    case "decimal":
+    case "date":
+    case "checkbox":
+      return fieldType;
+    default:
+      throw new ServiceError("VALIDATION_ERROR", `不支持的字段类型: ${fieldType}`);
+  }
+}
+
+function assertEntityTableName(tableName: string): void {
+  if (!/^ent_[a-z0-9_]+$/.test(tableName)) {
+    throw new ServiceError("VALIDATION_ERROR", `无效的实体表名: ${tableName}`);
+  }
+}
+
+function assertEntityFieldName(key: string): void {
+  if (!ENTITY_FIELD_NAME.test(key) || RESERVED_ENTITY_FIELDS.has(key)) {
+    throw new ServiceError("VALIDATION_ERROR", `无效的字段标识: ${key}`);
+  }
 }
 
 export async function ensureWorkbookMetadataSchema(): Promise<void> {
