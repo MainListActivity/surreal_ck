@@ -20,6 +20,9 @@
   let clipboardStatus = $state("支持从 Excel / WPS / Google Sheets 直接复制 TSV 粘贴");
   let showAdd = $state(false);
   let showFields = $state(false);
+  let showShare = $state(false);
+  let showMenu = $state(false);
+  let activeTool = $state<string | null>(null);
   let draft = $state<Record<string, string>>({});
   let titleDraft = $state("");
   let titleFocused = $state(false);
@@ -31,6 +34,13 @@
     { id: "changes", label: "最近变更", icon: "history" },
     { id: "ai", label: "AI 助手", icon: "ai" },
   ];
+  const toolbarActions = [
+    { id: "filter", label: "筛选", icon: "filter" },
+    { id: "sort", label: "排序", icon: "sortDesc" },
+    { id: "hidden", label: "隐藏字段", icon: "eye" },
+    { id: "group", label: "分组", icon: "users" },
+  ];
+  const quickMembers = ["王晓明", "李静"];
 
   $effect(() => {
     if (workbookId) {
@@ -61,6 +71,12 @@
   const selectedRow = $derived(
     selectedRowId ? editorStore.rows.find((r) => r.id === selectedRowId) ?? null : null
   );
+  const titleColumn = $derived(editorStore.columns[0] ?? null);
+  const secondaryColumn = $derived(editorStore.columns[1] ?? null);
+  const statusColumn = $derived(editorStore.columns.find((col) => /status|状态/i.test(col.key) || /状态/.test(col.label)) ?? editorStore.columns.find((col) => col.options?.length));
+  const amountColumn = $derived(editorStore.columns.find((col) => col.fieldType === "number" || col.fieldType === "decimal") ?? null);
+  const dateColumn = $derived(editorStore.columns.find((col) => col.fieldType === "date") ?? null);
+  const selectedCount = $derived(selectedRowId ? 1 : 0);
 
   let gridRef = $state<{
     getWebComponent: () => HTMLElement & {
@@ -73,7 +89,17 @@
 
   onMount(() => {
     const grid = gridRef?.getWebComponent();
-    if (!grid) return;
+    const handleGlobalPointer = (event: MouseEvent) => {
+      const target = event.target;
+      if (target instanceof HTMLElement && target.closest(".menu-wrap")) return;
+      showMenu = false;
+      activeTool = null;
+    };
+
+    document.addEventListener("mousedown", handleGlobalPointer);
+    if (!grid) {
+      return () => document.removeEventListener("mousedown", handleGlobalPointer);
+    }
 
     const beforePaste = (event: Event) => {
       const detail = (event as CustomEvent<{ parsed?: unknown[][] }>).detail;
@@ -101,6 +127,7 @@
     gridCleanup = () => {
       grid.removeEventListener("beforepasteapply", beforePaste);
       grid.removeEventListener("afterpasteapply", afterPaste);
+      document.removeEventListener("mousedown", handleGlobalPointer);
     };
   });
 
@@ -190,6 +217,39 @@
     panelTab = tab;
     panelOpen = true;
   }
+
+  function toggleTool(toolId: string) {
+    activeTool = activeTool === toolId ? null : toolId;
+  }
+
+  function toggleMenu(event: MouseEvent) {
+    event.stopPropagation();
+    showMenu = !showMenu;
+  }
+
+  function openShare(event?: MouseEvent) {
+    event?.stopPropagation();
+    showShare = true;
+  }
+
+  function statusTone(value: unknown): string {
+    const text = String(value ?? "");
+    if (/(通过|完成|已完成|active|open)/i.test(text)) return "success";
+    if (/(审核中|处理中|pending)/i.test(text)) return "info";
+    if (/(退回|拒绝|失败|closed|error)/i.test(text)) return "error";
+    return "warning";
+  }
+
+  function cardAccent(value: unknown): string {
+    return `var(--${statusTone(value)})`;
+  }
+
+  function cardPillStyle(value: unknown): string {
+    const tone = statusTone(value);
+    const bg = `var(--${tone}-bg)`;
+    const fg = `var(--${tone})`;
+    return `--pill-bg:${bg};--pill-color:${fg}`;
+  }
 </script>
 
 <section class="editor">
@@ -212,13 +272,13 @@
         />
       {/if}
     </strong>
-    <span class="sync">
+    <span class="sync" class:error={Boolean(editorStore.saveError)} class:warning={appState.readOnly}>
       {#if editorStore.saving}
-        <Icon name="check" size={13} />保存中…
+        <Icon name="refresh" size={13} />保存中…
       {:else if editorStore.saveError}
-        <span style="color:var(--error)">保存失败</span>
+        <Icon name="alertCircle" size={13} />保存失败
       {:else if appState.readOnly}
-        <span style="color:var(--warning)">只读</span>
+        <Icon name="wifiOff" size={13} />只读
       {:else}
         <Icon name="check" size={13} />已保存
       {/if}
@@ -229,6 +289,25 @@
         <Icon name={tab.icon} size={15} />
       </button>
     {/each}
+    <span class="divider"></span>
+    <button class="share-btn" onclick={openShare}>
+      <Icon name="share" size={13} color="#fff" />分享
+    </button>
+    <div class="member-stack">
+      {#each quickMembers as member}
+        <Avatar name={member} size={28} />
+      {/each}
+    </div>
+    <div class="menu-wrap">
+      <button class="icon-btn" onclick={toggleMenu} title="更多操作"><Icon name="moreH" size={16} /></button>
+      {#if showMenu}
+        <div class="menu-pop">
+          {#each ["导出为 Excel", "打印", "复制链接", "版本历史", "删除工作簿"] as item, index}
+            <button class:index-danger={index === 4} onclick={() => (showMenu = false)}>{item}</button>
+          {/each}
+        </div>
+      {/if}
+    </div>
   </header>
 
   <div class="toolbar">
@@ -238,8 +317,16 @@
       {/each}
     </div>
     <span class="divider"></span>
-    <span class="clipboard-hint">{clipboardStatus}</span>
-    <button class="compact" onclick={openFields} disabled={appState.readOnly || !editorStore.activeSheetId}>
+    {#each toolbarActions as action}
+      <button class="tool-btn" class:active={activeTool === action.id} onclick={(event) => { event.stopPropagation(); toggleTool(action.id); }}>
+        <Icon name={action.icon} size={13} />{action.label}
+      </button>
+    {/each}
+    <div class="toolbar-fill"></div>
+    {#if selectedCount > 0}
+      <span class="selected-hint">已选 {selectedCount} 条</span>
+    {/if}
+    <button class="compact ghost-btn" onclick={openFields} disabled={appState.readOnly || !editorStore.activeSheetId}>
       <Icon name="settings" size={13} />字段
     </button>
     <button
@@ -249,7 +336,14 @@
     >
       <Icon name="plus" size={13} color="#fff" />新增记录
     </button>
+    <button class="compact ghost-btn" disabled={appState.readOnly}>
+      <Icon name="upload" size={13} />导入
+    </button>
   </div>
+
+  {#if activeTool}
+    <div class="toolbar-note">{clipboardStatus}</div>
+  {/if}
 
   <div class="body">
     {#if editorStore.loading}
@@ -284,15 +378,49 @@
       </div>
     {:else if view === "kanban"}
       <div class="kanban">
-        <EmptyState icon="list" title="看板视图" desc="该功能正在建设中" />
+        {#each Array.from(new Set(editorStore.rows.map((row) => String(statusColumn ? row.values[statusColumn.key] ?? "未分类" : "全部")))).slice(0, 4) as status}
+          <section class="kanban-col">
+            <header>
+              <span class="dot" style={`background:${cardAccent(status)}`}></span>
+              <strong>{status}</strong>
+              <span>({editorStore.rows.filter((row) => String(statusColumn ? row.values[statusColumn.key] ?? "未分类" : "全部") === status).length})</span>
+            </header>
+            <div class="kanban-list">
+              {#each editorStore.rows.filter((row) => String(statusColumn ? row.values[statusColumn.key] ?? "未分类" : "全部") === status).slice(0, 40) as row}
+                <button class="kanban-card" onclick={() => { selectedRowId = row.id; openPanel("detail"); }}>
+                  <strong>{String(titleColumn ? row.values[titleColumn.key] ?? "—" : row.id)}</strong>
+                  {#if amountColumn}
+                    <span class="money">¥ {String(row.values[amountColumn.key] ?? "0")}</span>
+                  {/if}
+                  <div class="kanban-meta">
+                    {#if secondaryColumn}<span>{String(row.values[secondaryColumn.key] ?? "")}</span>{/if}
+                    {#if dateColumn}<span>{String(row.values[dateColumn.key] ?? "")}</span>{/if}
+                  </div>
+                </button>
+              {/each}
+            </div>
+          </section>
+        {/each}
       </div>
     {:else}
       <div class="gallery">
         {#each editorStore.rows.slice(0, 80) as row}
-          <button onclick={() => { selectedRowId = row.id; openPanel("detail"); }}>
-            <strong>{String(row.values[editorStore.columns[0]?.key] ?? "—")}</strong>
-            {#if editorStore.columns[1]}
-              <span>{String(row.values[editorStore.columns[1].key] ?? "")}</span>
+          <button class="gallery-card" onclick={() => { selectedRowId = row.id; openPanel("detail"); }}>
+            <span class="gallery-strip" style={`background:${cardAccent(statusColumn ? row.values[statusColumn.key] : "")}`}></span>
+            <strong>{String(titleColumn ? row.values[titleColumn.key] ?? "—" : row.id)}</strong>
+            {#if amountColumn}
+              <span class="money">¥ {String(row.values[amountColumn.key] ?? "0")}</span>
+            {/if}
+            <div class="gallery-tags">
+              {#if statusColumn}
+                <span class="pill" style={cardPillStyle(row.values[statusColumn.key])}>{String(row.values[statusColumn.key] ?? "未分类")}</span>
+              {/if}
+              {#if secondaryColumn}
+                <span>{String(row.values[secondaryColumn.key] ?? "")}</span>
+              {/if}
+            </div>
+            {#if dateColumn}
+              <small>{String(row.values[dateColumn.key] ?? "")}</small>
             {/if}
           </button>
         {/each}
@@ -310,6 +438,12 @@
         <div class="panel-content">
           {#if panelTab === "detail"}
             {#if selectedRow}
+              <div class="panel-hero">
+                <strong>{String(titleColumn ? selectedRow.values[titleColumn.key] ?? "—" : selectedRow.id)}</strong>
+                {#if statusColumn}
+                  <span class="pill" style={cardPillStyle(selectedRow.values[statusColumn.key])}>{String(selectedRow.values[statusColumn.key] ?? "未分类")}</span>
+                {/if}
+              </div>
               {#each editorStore.columns as col}
                 <div class="field-row">
                   <span>{col.label}</span>
@@ -418,6 +552,34 @@
   </div>
 {/if}
 
+{#if showShare}
+  <div class="modal-backdrop" role="presentation" onmousedown={() => (showShare = false)}>
+    <div class="modal share" role="dialog" aria-modal="true" aria-label="分享工作簿" tabindex="-1" onmousedown={(event) => event.stopPropagation()}>
+      <header><strong>分享工作簿</strong><button class="icon-btn" onclick={() => (showShare = false)}><Icon name="x" size={16} /></button></header>
+      <div class="share-body">
+        <label>
+          <span>链接权限</span>
+          <select>
+            <option>工作区成员可编辑</option>
+            <option>工作区成员只读</option>
+            <option>仅指定成员可访问</option>
+          </select>
+        </label>
+        <label>
+          <span>共享链接</span>
+          <div class="share-link">
+            <input value={`surreal_ck://workbook/${workbookId ?? ""}`} readonly />
+            <button class="secondary-btn">复制链接</button>
+          </div>
+        </label>
+      </div>
+      <footer>
+        <button class="secondary-btn" onclick={() => (showShare = false)}>关闭</button>
+      </footer>
+    </div>
+  </div>
+{/if}
+
 <style>
   .editor {
     display: flex;
@@ -462,6 +624,17 @@
     padding: 0 12px;
   }
 
+  .toolbar-note {
+    display: flex;
+    height: 28px;
+    align-items: center;
+    padding: 0 14px;
+    border-bottom: 1px solid var(--border);
+    background: #f7f8fa;
+    color: var(--text-3);
+    font-size: 11px;
+  }
+
   .divider {
     width: 1px;
     height: 20px;
@@ -503,9 +676,77 @@
     font-size: 12px;
   }
 
+  .sync.warning {
+    color: var(--warning);
+  }
+
+  .sync.error {
+    color: var(--error);
+  }
+
   .panel-toggle.active {
     background: var(--primary-light);
     color: var(--primary);
+  }
+
+  .share-btn {
+    display: inline-flex;
+    height: 30px;
+    align-items: center;
+    gap: 6px;
+    padding: 0 14px;
+    border: 0;
+    border-radius: 7px;
+    background: var(--primary);
+    color: #fff;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .member-stack {
+    display: flex;
+    margin-left: 2px;
+  }
+
+  .member-stack :global(.avatar) {
+    margin-left: -6px;
+    border: 2px solid #fff;
+  }
+
+  .menu-wrap {
+    position: relative;
+  }
+
+  .menu-pop {
+    position: absolute;
+    top: 36px;
+    right: 0;
+    z-index: 30;
+    min-width: 156px;
+    padding: 4px 0;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, .12);
+  }
+
+  .menu-pop button {
+    width: 100%;
+    padding: 8px 16px;
+    border: 0;
+    background: transparent;
+    color: var(--text-2);
+    font-size: 13px;
+    text-align: left;
+  }
+
+  .menu-pop button:hover {
+    background: var(--bg);
+  }
+
+  .menu-pop button.index-danger {
+    color: var(--error);
   }
 
   .view-tabs {
@@ -527,6 +768,27 @@
     font-size: 12px;
   }
 
+  .tool-btn.active {
+    border: 1px solid var(--primary);
+    background: var(--primary-light);
+    color: var(--primary);
+  }
+
+  .ghost-btn {
+    border: 1px solid var(--border) !important;
+    background: var(--surface) !important;
+  }
+
+  .toolbar-fill {
+    flex: 1;
+  }
+
+  .selected-hint {
+    margin-right: 8px;
+    color: var(--text-3);
+    font-size: 11px;
+  }
+
   .view-tabs button {
     position: relative;
     height: 40px;
@@ -546,17 +808,6 @@
     height: 2px;
     background: var(--primary);
     content: "";
-  }
-
-  .clipboard-hint {
-    min-width: 180px;
-    flex: 1;
-    overflow: hidden;
-    color: var(--text-3);
-    font-size: 11px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    text-align: right;
   }
 
   .compact {
@@ -601,9 +852,89 @@
     flex: 1;
     overflow: auto;
     background: var(--bg);
+  }
+
+  .kanban {
+    display: flex;
+    gap: 14px;
+    align-items: flex-start;
+    padding: 16px 20px;
+  }
+
+  .kanban-col {
+    width: 240px;
+    flex-shrink: 0;
+  }
+
+  .kanban-col header {
     display: flex;
     align-items: center;
-    justify-content: center;
+    gap: 7px;
+    margin-bottom: 10px;
+  }
+
+  .kanban-col header strong {
+    color: var(--text-1);
+    font-size: 13px;
+  }
+
+  .kanban-col header span:last-child {
+    color: var(--text-3);
+    font-size: 11px;
+  }
+
+  .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .kanban-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .kanban-card {
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
+    text-align: left;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, .05);
+  }
+
+  .kanban-card:hover,
+  .gallery-card:hover {
+    box-shadow: 0 8px 24px rgba(0, 0, 0, .1);
+    transform: translateY(-1px);
+  }
+
+  .kanban-card strong,
+  .gallery-card strong {
+    display: block;
+    margin-bottom: 6px;
+    color: var(--text-1);
+    font-size: 13px;
+    font-weight: 700;
+    line-height: 1.4;
+  }
+
+  .money {
+    display: block;
+    margin-bottom: 8px;
+    color: #0070c0 !important;
+    font-size: 12px !important;
+    font-weight: 600;
+  }
+
+  .kanban-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    color: var(--text-3);
+    font-size: 11px;
   }
 
   .gallery {
@@ -614,25 +945,56 @@
     padding: 20px 24px;
   }
 
-  .gallery button {
+  .gallery-card {
+    position: relative;
     padding: 14px 16px;
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: 12px;
     background: var(--surface);
     text-align: left;
+    overflow: hidden;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, .05);
+    transition: box-shadow .15s ease, transform .15s ease;
   }
 
-  .gallery strong {
-    display: block;
-    color: var(--text-1);
-    font-size: 13px;
+  .gallery-strip {
+    position: absolute;
+    top: 0;
+    right: 0;
+    left: 0;
+    height: 4px;
+  }
+
+  .gallery-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
   }
 
   .gallery span {
     display: inline-flex;
-    margin-top: 6px;
     color: var(--text-2);
     font-size: 12px;
+  }
+
+  .gallery small {
+    display: block;
+    margin-top: 8px;
+    color: var(--text-3);
+    font-size: 11px;
+  }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 7px;
+    border-radius: 20px;
+    background: var(--pill-bg, var(--bg));
+    color: var(--pill-color, var(--text-3));
+    font-size: 10px;
+    font-weight: 600;
   }
 
   .right-panel {
@@ -645,7 +1007,7 @@
   }
 
   .right-panel.open {
-    width: 300px;
+    width: 320px;
     border-left: 1px solid var(--border);
   }
 
@@ -677,6 +1039,22 @@
     height: calc(100% - 43px);
     overflow: auto;
     padding: 14px 16px;
+  }
+
+  .panel-hero {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 14px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .panel-hero strong {
+    color: var(--text-1);
+    font-size: 14px;
+    font-weight: 700;
   }
 
   .field-row {
@@ -751,6 +1129,10 @@
     box-shadow: 0 16px 48px rgba(0, 0, 0, .18);
   }
 
+  .share {
+    width: min(540px, calc(100vw - 32px));
+  }
+
   .fields {
     width: min(760px, calc(100vw - 32px));
   }
@@ -770,6 +1152,26 @@
     max-height: 66vh;
     overflow: auto;
     margin: 18px 20px;
+  }
+
+  .share-body {
+    display: grid;
+    gap: 16px;
+    padding: 18px 20px;
+  }
+
+  .share-body label > span {
+    display: block;
+    margin-bottom: 6px;
+    color: var(--text-2);
+    font-size: 12px;
+    font-weight: 550;
+  }
+
+  .share-link {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
   }
 
   .field-editor {
@@ -869,7 +1271,8 @@
     border-top: 1px solid var(--border);
   }
 
-  .fields footer {
+  .fields footer,
+  .share footer {
     display: flex;
     align-items: center;
     justify-content: flex-end;
