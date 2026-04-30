@@ -31,18 +31,27 @@
 </aside>
 
 <style>
+  /* 右侧详情面板以浮层形式贴在表格主视图右侧，
+     不占用 flex 布局空间，确保表格主视图始终保持原始大小。 */
   .right-panel {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 25;
     width: 0;
-    flex-shrink: 0;
     overflow: hidden;
     border-left: 0;
     background: var(--surface);
     transition: width .2s ease;
+    pointer-events: none;
   }
 
   .right-panel.open {
     width: 320px;
     border-left: 1px solid var(--border);
+    box-shadow: -6px 0 16px rgba(15, 23, 42, .08);
+    pointer-events: auto;
   }
 
   .panel-tabs {

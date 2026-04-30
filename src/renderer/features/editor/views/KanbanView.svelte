@@ -4,7 +4,7 @@
   import { cardAccent } from "../lib/cell-style";
   import { deriveColumns } from "../lib/derived-columns";
 
-  const cols = $derived(deriveColumns(editorStore.columns));
+  const cols = $derived(deriveColumns(editorStore.visibleColumns));
 
   function statusOf(row: { values: Record<string, unknown> }) {
     return String(cols.status ? row.values[cols.status.key] ?? "未分类" : "全部");

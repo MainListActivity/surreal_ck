@@ -4,7 +4,7 @@
   import { cardAccent, cardPillStyle } from "../lib/cell-style";
   import { deriveColumns } from "../lib/derived-columns";
 
-  const cols = $derived(deriveColumns(editorStore.columns));
+  const cols = $derived(deriveColumns(editorStore.visibleColumns));
 
   function selectRow(id: string) {
     editorUi.selectRow(id);

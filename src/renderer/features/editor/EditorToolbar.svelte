@@ -7,9 +7,15 @@
   import { toolRegistry, getTool } from "./registries/tools";
 
   const selectedCount = $derived(editorUi.selectedRowId ? 1 : 0);
-  const activeToolEntry = $derived(
-    editorUi.activeTool ? getTool(editorUi.activeTool) ?? null : null,
-  );
+
+  function badgeFor(toolId: string): number {
+    const vp = editorStore.viewParams;
+    if (toolId === "filter") return vp.filters?.length ?? 0;
+    if (toolId === "sort") return vp.sorts?.length ?? 0;
+    if (toolId === "hidden") return vp.hiddenFields?.length ?? 0;
+    if (toolId === "group") return vp.groupBy ? 1 : 0;
+    return 0;
+  }
 
   async function clickTool(toolId: string, event: MouseEvent) {
     event.stopPropagation();
@@ -32,12 +38,15 @@
   </div>
   <span class="divider"></span>
   {#each toolRegistry as action}
+    {@const badge = badgeFor(action.id)}
     <button
       class="tool-btn"
       class:active={editorUi.activeTool === action.id}
+      class:applied={badge > 0}
       onclick={(event) => clickTool(action.id, event)}
     >
       <Icon name={action.icon} size={13} />{action.label}
+      {#if badge > 0}<span class="badge">{badge}</span>{/if}
     </button>
   {/each}
   <div class="toolbar-fill"></div>
@@ -63,17 +72,6 @@
   </button>
 </div>
 
-{#if activeToolEntry}
-  <div class="toolbar-note">
-    {#if activeToolEntry.panel}
-      {@const ToolPanel = activeToolEntry.panel}
-      <ToolPanel />
-    {:else}
-      {editorUi.clipboardStatus}
-    {/if}
-  </div>
-{/if}
-
 <style>
   .toolbar {
     display: flex;
@@ -84,18 +82,6 @@
     padding: 0 12px;
     border-bottom: 1px solid var(--border);
     background: var(--surface);
-  }
-
-  .toolbar-note {
-    display: flex;
-    height: 28px;
-    flex-shrink: 0;
-    align-items: center;
-    padding: 0 14px;
-    border-bottom: 1px solid var(--border);
-    background: #f7f8fa;
-    color: var(--text-3);
-    font-size: 11px;
   }
 
   .divider {
@@ -148,6 +134,25 @@
     border: 1px solid var(--primary);
     background: var(--primary-light);
     color: var(--primary);
+  }
+
+  .tool-btn.applied {
+    color: var(--primary);
+  }
+
+  .badge {
+    display: inline-flex;
+    min-width: 14px;
+    height: 14px;
+    padding: 0 4px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 7px;
+    background: var(--primary);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 600;
+    margin-left: 2px;
   }
 
   .ghost-btn {

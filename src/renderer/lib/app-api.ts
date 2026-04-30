@@ -15,6 +15,7 @@ import type {
   Result,
   UpdateSheetFieldsResponse,
   UpsertRowsResponse,
+  ViewParams,
 } from "../../shared/rpc.types";
 
 /** 产品页面唯一的数据入口；不暴露 raw query。 */
@@ -54,8 +55,12 @@ export const appApi = {
     return rpc.request("createWorkbookFromTemplate", { workspaceId, templateKey, name });
   },
 
-  getWorkbookData(workbookId: RecordIdString, sheetId?: RecordIdString): Promise<Result<GetWorkbookDataResponse>> {
-    return rpc.request("getWorkbookData", { workbookId, sheetId });
+  getWorkbookData(
+    workbookId: RecordIdString,
+    sheetId?: RecordIdString,
+    viewParams?: ViewParams,
+  ): Promise<Result<GetWorkbookDataResponse>> {
+    return rpc.request("getWorkbookData", { workbookId, sheetId, viewParams });
   },
 
   upsertRows(

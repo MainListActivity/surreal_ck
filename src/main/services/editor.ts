@@ -4,19 +4,22 @@ import { assertCanReadWorkspace, assertCanWriteWorkspace, getServiceContext } fr
 import { ServiceError } from "./errors";
 import { gridColumnToStoredDef, normalizeGridColumnDef, overwriteEntityField, removeEntityField } from "./workbooks";
 import type {
+  FilterClause,
   GetWorkbookDataRequest,
   GetWorkbookDataResponse,
-  UpsertRowsRequest,
-  UpsertRowsResponse,
-  DeleteRowsRequest,
-  DeleteRowsResponse,
   GridColumnDef,
   GridRow,
   RenameWorkbookRequest,
   RenameWorkbookResponse,
   SheetSummaryDTO,
+  SortClause,
   UpdateSheetFieldsRequest,
   UpdateSheetFieldsResponse,
+  UpsertRowsRequest,
+  UpsertRowsResponse,
+  DeleteRowsRequest,
+  DeleteRowsResponse,
+  ViewParams,
   WorkbookSummaryDTO,
 } from "../../shared/rpc.types";
 
@@ -57,6 +60,7 @@ type StoredColumnDef = SheetRow["column_defs"][number];
 export async function getWorkbookData({
   workbookId,
   sheetId,
+  viewParams,
 }: GetWorkbookDataRequest): Promise<GetWorkbookDataResponse> {
   const db = getLocalDb();
 
@@ -106,7 +110,7 @@ export async function getWorkbookData({
   }
 
   // 读取活跃 sheet 的行数据
-  const rows = await loadEntityRows(activeSheet);
+  const rows = await loadEntityRows(activeSheet, viewParams);
 
   // 映射 column_defs
   const columns: GridColumnDef[] = activeSheet.column_defs.map(storedColumnToDTO);
@@ -352,21 +356,112 @@ export async function deleteRows({
 
 // ─── 内部：从实体表加载行 ─────────────────────────────────────────────────────
 
-async function loadEntityRows(sheet: SheetRow): Promise<GridRow[]> {
+async function loadEntityRows(sheet: SheetRow, viewParams?: ViewParams): Promise<GridRow[]> {
   const tableName = sheet.table_name;
   if (!/^ent_[a-z0-9_]+$/.test(tableName)) {
     throw new ServiceError("INTERNAL_ERROR", "无效的实体表名");
   }
 
   const db = getLocalDb();
-  const validKeys = new Set(sheet.column_defs.map((c) => c.key));
+  const columnsByKey = new Map(sheet.column_defs.map((c) => [c.key, c]));
+  const validKeys = new Set(columnsByKey.keys());
 
   await assertDynamicTableExists(tableName);
-  const result = await db.query<[EntityRow[]]>(
-    `SELECT * FROM type::table($t) LIMIT 5000`,
-    { t: tableName }
-  );
+
+  const compiled = compileViewQuery(viewParams, columnsByKey);
+  const sql =
+    `SELECT * FROM type::table($t)` +
+    (compiled.where ? ` WHERE ${compiled.where}` : "") +
+    (compiled.orderBy ? ` ORDER BY ${compiled.orderBy}` : "") +
+    ` LIMIT 5000`;
+
+  const result = await db.query<[EntityRow[]]>(sql, {
+    t: tableName,
+    ...compiled.bindings,
+  });
   return (result[0] ?? []).map((row) => entityRowToDTO(row, validKeys));
+}
+
+// ─── ViewParams → SurrealQL 拼装 ─────────────────────────────────────────────
+
+const FILTER_OP_TO_SQL: Record<FilterClause["op"], { sql: string; needValue: "scalar" | "array" | "none" }> = {
+  eq:           { sql: "=",         needValue: "scalar" },
+  neq:          { sql: "!=",        needValue: "scalar" },
+  gt:           { sql: ">",         needValue: "scalar" },
+  gte:          { sql: ">=",        needValue: "scalar" },
+  lt:           { sql: "<",         needValue: "scalar" },
+  lte:          { sql: "<=",        needValue: "scalar" },
+  contains:     { sql: "CONTAINS",  needValue: "scalar" },
+  not_contains: { sql: "CONTAINSNOT", needValue: "scalar" },
+  in:           { sql: "INSIDE",    needValue: "array"  },
+  is_null:      { sql: "IS NULL",   needValue: "none"   },
+  is_not_null:  { sql: "IS NOT NULL", needValue: "none" },
+};
+
+/**
+ * 将 ViewParams 编译为 WHERE / ORDER BY 片段。
+ *
+ * 字段名走白名单（必须存在于 sheet.column_defs.key），通过校验后直接拼到 SQL 标识符位置；
+ * 用户输入的字面值一律通过 $p0/$p1/... 参数绑定，避免任何注入。
+ */
+function compileViewQuery(
+  viewParams: ViewParams | undefined,
+  columnsByKey: Map<string, StoredColumnDef>,
+): { where: string; orderBy: string; bindings: Record<string, unknown> } {
+  const bindings: Record<string, unknown> = {};
+  let bindIndex = 0;
+  const bind = (value: unknown) => {
+    const name = `p${bindIndex++}`;
+    bindings[name] = value;
+    return `$${name}`;
+  };
+
+  const wherePieces: string[] = [];
+  for (const clause of viewParams?.filters ?? []) {
+    const column = columnsByKey.get(clause.key);
+    if (!column) continue; // 字段已被删除，跳过该条件
+    if (!isSafeIdentifier(clause.key)) continue;
+
+    const opDef = FILTER_OP_TO_SQL[clause.op];
+    if (!opDef) continue;
+
+    if (opDef.needValue === "none") {
+      wherePieces.push(`${clause.key} ${opDef.sql}`);
+      continue;
+    }
+    if (opDef.needValue === "array") {
+      const arr = Array.isArray(clause.value) ? clause.value : [];
+      if (arr.length === 0) continue;
+      wherePieces.push(`${clause.key} ${opDef.sql} ${bind(arr.map((v) => coerceFilterValue(v, column)))}`);
+      continue;
+    }
+    if (clause.value === undefined || clause.value === null || clause.value === "") continue;
+    wherePieces.push(`${clause.key} ${opDef.sql} ${bind(coerceFilterValue(clause.value, column))}`);
+  }
+
+  const filterMode = viewParams?.filterMode === "or" ? " OR " : " AND ";
+  const where = wherePieces.length ? wherePieces.join(filterMode) : "";
+
+  const orderPieces: string[] = [];
+  for (const sort of viewParams?.sorts ?? []) {
+    if (!columnsByKey.has(sort.key)) continue;
+    if (!isSafeIdentifier(sort.key)) continue;
+    const dir = sort.direction === "desc" ? "DESC" : "ASC";
+    orderPieces.push(`${sort.key} ${dir}`);
+  }
+  const orderBy = orderPieces.join(", ");
+
+  return { where, orderBy, bindings };
+}
+
+/** 字段 key 在 schema 中已经被规范化（snake_case），这里二次校验防御。 */
+function isSafeIdentifier(key: string): boolean {
+  return /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(key);
+}
+
+/** 把字面值按列类型做最小转换，复用 cell 的 coerce 规则。 */
+function coerceFilterValue(value: unknown, column: StoredColumnDef): unknown {
+  return coerceCellValue(value, storedColumnToDTO(column));
 }
 
 function entityRowToDTO(row: EntityRow, validKeys: Set<string>): GridRow {

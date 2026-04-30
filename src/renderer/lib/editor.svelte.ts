@@ -1,10 +1,13 @@
 import { appApi } from "./app-api";
 import type {
-  WorkbookDataDTO,
+  FilterClause,
   GridColumnDef,
   GridRow,
-  SheetSummaryDTO,
   RecordIdString,
+  SheetSummaryDTO,
+  SortClause,
+  ViewParams,
+  WorkbookDataDTO,
 } from "../../shared/rpc.types";
 
 type EditorState = {
@@ -16,6 +19,15 @@ type EditorState = {
   activeSheetId: string | null;
   columns: GridColumnDef[];
   rows: GridRow[];
+  viewParams: ViewParams;
+};
+
+const EMPTY_VIEW_PARAMS: ViewParams = {
+  filters: [],
+  filterMode: "and",
+  sorts: [],
+  hiddenFields: [],
+  groupBy: null,
 };
 
 function createEditorStore() {
@@ -28,6 +40,7 @@ function createEditorStore() {
     activeSheetId: null,
     columns: [],
     rows: [],
+    viewParams: { ...EMPTY_VIEW_PARAMS },
   });
 
   async function loadWorkbook(workbookId: string, sheetId?: string) {
@@ -35,7 +48,7 @@ function createEditorStore() {
     state.error = null;
     state.data = null;
     try {
-      const res = await appApi.getWorkbookData(workbookId, sheetId);
+      const res = await appApi.getWorkbookData(workbookId, sheetId, state.viewParams);
       if (res.ok) {
         state.data = res.data;
         state.activeSheetId = res.data.activeSheetId;
@@ -51,9 +64,47 @@ function createEditorStore() {
     }
   }
 
+  /** 仅重新加载行数据，不重置当前 sheet/columns/视图参数。用于查询变更后的局部刷新。 */
+  async function reloadRows() {
+    if (!state.data || !state.activeSheetId) return;
+    state.loading = true;
+    state.error = null;
+    try {
+      const res = await appApi.getWorkbookData(state.data.workbook.id, state.activeSheetId, state.viewParams);
+      if (res.ok) {
+        state.rows = res.data.rows;
+      } else {
+        state.error = res.message;
+      }
+    } catch (err) {
+      state.error = String(err);
+    } finally {
+      state.loading = false;
+    }
+  }
+
   async function switchSheet(sheetId: string) {
     if (!state.data) return;
+    state.viewParams = { ...EMPTY_VIEW_PARAMS };
     await loadWorkbook(state.data.workbook.id, sheetId);
+  }
+
+  async function setFilters(filters: FilterClause[], filterMode: "and" | "or" = state.viewParams.filterMode ?? "and") {
+    state.viewParams = { ...state.viewParams, filters, filterMode };
+    await reloadRows();
+  }
+
+  async function setSorts(sorts: SortClause[]) {
+    state.viewParams = { ...state.viewParams, sorts };
+    await reloadRows();
+  }
+
+  function setHiddenFields(hiddenFields: string[]) {
+    state.viewParams = { ...state.viewParams, hiddenFields };
+  }
+
+  function setGroupBy(groupBy: string | null) {
+    state.viewParams = { ...state.viewParams, groupBy };
   }
 
   async function saveRows(patches: Array<{ id?: RecordIdString; values: Record<string, unknown> }>) {
@@ -161,6 +212,7 @@ function createEditorStore() {
     state.rows = [];
     state.error = null;
     state.saveError = null;
+    state.viewParams = { ...EMPTY_VIEW_PARAMS };
   }
 
   return {
@@ -174,12 +226,23 @@ function createEditorStore() {
     get rows() { return state.rows; },
     get sheets(): SheetSummaryDTO[] { return state.data?.sheets ?? []; },
     get workbookName(): string { return state.data?.workbook.name ?? ""; },
+    get viewParams(): ViewParams { return state.viewParams; },
+    /** 隐藏字段过滤后的可见列；视图组件统一消费此入口 */
+    get visibleColumns(): GridColumnDef[] {
+      const hidden = new Set(state.viewParams.hiddenFields ?? []);
+      return state.columns.filter((col) => !hidden.has(col.key));
+    },
     loadWorkbook,
+    reloadRows,
     switchSheet,
     saveRows,
     saveFromSource,
     renameWorkbook,
     updateFields,
+    setFilters,
+    setSorts,
+    setHiddenFields,
+    setGroupBy,
     reset,
   };
 }

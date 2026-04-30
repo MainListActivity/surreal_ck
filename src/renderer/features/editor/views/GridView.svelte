@@ -6,12 +6,36 @@
   import { editorStore } from "../../../lib/editor.svelte";
   import { editorUi } from "../lib/editor-ui.svelte";
 
+  const groupKey = $derived(editorStore.viewParams.groupBy ?? null);
+
+  /** 分组开启时按分组键插入分组分隔行，方便用户在表格内直接看见分组归属。 */
   const gridSource = $derived(
-    editorStore.rows.map((row) => ({ _id: row.id, ...row.values })),
+    (() => {
+      const rows = editorStore.rows.map((row) => ({ _id: row.id, ...row.values }));
+      if (!groupKey) return rows;
+
+      const sorted = rows.slice().sort((a, b) => {
+        const av = String(a[groupKey] ?? "");
+        const bv = String(b[groupKey] ?? "");
+        return av.localeCompare(bv);
+      });
+
+      const out: Array<Record<string, unknown>> = [];
+      let lastGroup: string | undefined;
+      for (const row of sorted) {
+        const g = String(row[groupKey] ?? "未分组");
+        if (g !== lastGroup) {
+          out.push({ _id: `__group:${g}`, _isGroup: true, [groupKey]: `▸ ${g}` });
+          lastGroup = g;
+        }
+        out.push(row);
+      }
+      return out;
+    })(),
   );
 
   const gridColumns = $derived<ColumnRegular[]>(
-    editorStore.columns.map((col) => ({
+    editorStore.visibleColumns.map((col) => ({
       prop: col.key,
       name: col.label,
       size: 160,
@@ -44,10 +68,10 @@
         editorUi.clipboardStatus = "离线模式，粘贴未保存";
         return;
       }
-      editorUi.clipboardStatus = "粘贴已应用，保存中…";
+      editorUi.clipboardStatus = "粘贴已应用,保存中…";
       const next = await grid.getSource?.();
       if (next?.length) {
-        await editorStore.saveFromSource(next);
+        await editorStore.saveFromSource(next.filter((r) => !r._isGroup));
         editorUi.clipboardStatus = editorStore.saveError
           ? `保存失败: ${editorStore.saveError}`
           : "已保存";
@@ -68,7 +92,7 @@
     if (appState.readOnly) return;
     const next = await gridRef?.getWebComponent()?.getSource?.();
     if (next?.length) {
-      await editorStore.saveFromSource(next);
+      await editorStore.saveFromSource(next.filter((r) => !r._isGroup));
     }
   }
 

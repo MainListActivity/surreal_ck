@@ -165,6 +165,42 @@ export type GridColumnDef = {
   options?: string[];
 };
 
+/** 单个筛选条件。op 决定 value 是否使用、以及如何使用。 */
+export type FilterOp =
+  | "eq"
+  | "neq"
+  | "gt"
+  | "gte"
+  | "lt"
+  | "lte"
+  | "contains"
+  | "not_contains"
+  | "in"
+  | "is_null"
+  | "is_not_null";
+
+export type FilterClause = {
+  key: string;
+  op: FilterOp;
+  /** 对 in：数组；对 contains/eq/...：标量；对 is_null/is_not_null：忽略 */
+  value?: unknown;
+};
+
+export type SortClause = {
+  key: string;
+  direction: "asc" | "desc";
+};
+
+/** Sheet 视图的查询参数。所有过滤/排序在数据库执行；隐藏与分组在前端展示层。 */
+export type ViewParams = {
+  filters?: FilterClause[];
+  /** 多条件 AND/OR；默认 AND */
+  filterMode?: "and" | "or";
+  sorts?: SortClause[];
+  hiddenFields?: string[];
+  groupBy?: string | null;
+};
+
 export type GridRow = {
   id: RecordIdString;
   values: Record<string, unknown>;
@@ -190,6 +226,7 @@ export type WorkbookDataDTO = {
 export type GetWorkbookDataRequest = {
   workbookId: RecordIdString;
   sheetId?: RecordIdString;
+  viewParams?: ViewParams;
 };
 
 export type GetWorkbookDataResponse = WorkbookDataDTO;
