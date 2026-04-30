@@ -3,22 +3,39 @@
   import { appState } from "../../../lib/app-state.svelte";
   import { editorStore } from "../../../lib/editor.svelte";
   import { editorUi } from "../lib/editor-ui.svelte";
+  import RecordForm from "../components/RecordForm.svelte";
+  import { coerceGridFieldValue, validateGridFieldValue } from "../../../../shared/field-schema";
 
-  let draft = $state<Record<string, string>>({});
+  let draft = $state<Record<string, unknown>>({});
+  let fieldErrors = $state<Record<string, string>>({});
+
+  $effect(() => {
+    if (!editorUi.showAdd) return;
+    draft = Object.fromEntries(editorStore.columns.map((col) => [col.key, col.fieldType === "checkbox" ? false : null]));
+    fieldErrors = {};
+  });
 
   function close() {
     editorUi.showAdd = false;
     draft = {};
+    fieldErrors = {};
   }
 
   async function submit() {
     if (appState.readOnly || !editorStore.activeSheetId) return;
     const values: Record<string, unknown> = {};
+    const nextErrors: Record<string, string> = {};
     for (const col of editorStore.columns) {
-      values[col.key] = draft[col.key] ?? "";
+      const coerced = coerceGridFieldValue(draft[col.key], col);
+      const errors = validateGridFieldValue(coerced, col);
+      values[col.key] = coerced;
+      if (errors.length) nextErrors[col.key] = errors[0];
     }
-    await editorStore.saveRows([{ values }]);
-    close();
+    fieldErrors = nextErrors;
+    if (Object.keys(nextErrors).length) return;
+
+    const ok = await editorStore.saveRows([{ values }]);
+    if (ok) close();
   }
 </script>
 
@@ -36,21 +53,12 @@
       <button class="icon-btn" onclick={close}><Icon name="x" size={16} /></button>
     </header>
     <div class="record-form">
-      {#each editorStore.columns as col}
-        <label>
-          <span>{col.label}{#if col.required}<b>*</b>{/if}</span>
-          {#if col.options?.length}
-            <select bind:value={draft[col.key]}>
-              <option value="">请选择</option>
-              {#each col.options as opt}<option>{opt}</option>{/each}
-            </select>
-          {:else}
-            <input bind:value={draft[col.key]} placeholder={col.label} />
-          {/if}
-        </label>
-      {/each}
+      <RecordForm columns={editorStore.columns} values={draft} errors={fieldErrors} />
     </div>
     <footer>
+      {#if editorStore.saveError}
+        <span class="modal-error">{editorStore.saveError}</span>
+      {/if}
       <button class="secondary-btn" onclick={close}>取消</button>
       <button class="primary-btn" onclick={submit}>确认新增</button>
     </footer>
@@ -93,39 +101,19 @@
     margin: 18px 20px;
   }
 
-  .record-form label {
-    display: block;
-  }
-
-  .record-form label > span {
-    display: block;
-    margin-bottom: 6px;
-    color: var(--text-2);
-    font-size: 12px;
-    font-weight: 550;
-  }
-
-  input,
-  select {
-    width: 100%;
-    padding: 8px 12px;
-    border: 1px solid var(--border);
-    border-radius: 7px;
-    outline: none;
-    color: var(--text-1);
-    font-size: 13px;
-  }
-
-  b {
-    color: var(--error);
-  }
-
   .record footer {
     display: flex;
+    align-items: center;
     justify-content: flex-end;
     gap: 8px;
     padding: 12px 20px;
     border-top: 1px solid var(--border);
+  }
+
+  .modal-error {
+    margin-right: auto;
+    color: var(--error);
+    font-size: 12px;
   }
 
   .record footer button {

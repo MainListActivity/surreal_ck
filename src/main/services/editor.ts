@@ -3,6 +3,7 @@ import { getLocalDb } from "../db/index";
 import { assertCanReadWorkspace, assertCanWriteWorkspace, getServiceContext } from "./context";
 import { ServiceError } from "./errors";
 import { gridColumnToStoredDef, normalizeGridColumnDef, overwriteEntityField, removeEntityField } from "./workbooks";
+import { coerceGridFieldValue, validateGridFieldValue } from "../../shared/field-schema";
 import type {
   FilterClause,
   GetWorkbookDataRequest,
@@ -48,6 +49,7 @@ type SheetRow = {
     field_type: string;
     required?: boolean;
     options?: string[];
+    constraints?: GridColumnDef["constraints"];
   }>;
 };
 
@@ -183,7 +185,16 @@ export async function upsertRows({
     // 过滤掉 schema 未定义的字段
     const cleanValues: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(rowPatch.values)) {
-      if (validKeys.has(k)) cleanValues[k] = coerceCellValue(v, columnsByKey.get(k));
+      if (!validKeys.has(k)) continue;
+      const column = columnsByKey.get(k);
+      const coerced = coerceCellValue(v, column);
+      cleanValues[k] = coerced;
+    }
+    for (const column of columnsByKey.values()) {
+      const fieldErrors = validateGridFieldValue(cleanValues[column.key], column);
+      if (fieldErrors.length) {
+        throw new ServiceError("VALIDATION_ERROR", `${column.label}: ${fieldErrors[0]}`);
+      }
     }
 
     if (rowPatch.id) {
@@ -480,6 +491,7 @@ function storedColumnToDTO(c: StoredColumnDef): GridColumnDef {
     fieldType: c.field_type,
     required: c.required,
     options: c.options,
+    constraints: c.constraints,
   };
 }
 
@@ -506,30 +518,7 @@ function workbookRowToDTO(row: WorkbookRow): WorkbookSummaryDTO {
 }
 
 function coerceCellValue(value: unknown, column?: GridColumnDef): unknown {
-  if (!column) return value;
-  if (value === "" || value === undefined) return null;
-
-  switch (column.fieldType) {
-    case "number":
-    case "decimal": {
-      const n = typeof value === "number" ? value : Number(value);
-      return Number.isFinite(n) ? n : value;
-    }
-    case "checkbox":
-      if (typeof value === "boolean") return value;
-      if (typeof value === "string") return value === "true" || value === "1" || value === "是";
-      return Boolean(value);
-    case "date": {
-      if (value instanceof Date) return value;
-      if (typeof value === "string" || typeof value === "number") {
-        const d = new Date(value);
-        return Number.isNaN(d.getTime()) ? value : d;
-      }
-      return value;
-    }
-    default:
-      return value;
-  }
+  return coerceGridFieldValue(value, column);
 }
 
 async function assertDynamicTableExists(tableName: string): Promise<void> {

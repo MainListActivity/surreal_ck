@@ -71,10 +71,8 @@
       editorUi.clipboardStatus = "粘贴已应用,保存中…";
       const next = await grid.getSource?.();
       if (next?.length) {
-        await editorStore.saveFromSource(next.filter((r) => !r._isGroup));
-        editorUi.clipboardStatus = editorStore.saveError
-          ? `保存失败: ${editorStore.saveError}`
-          : "已保存";
+        const ok = await editorStore.saveFromSource(next.filter((r) => !r._isGroup));
+        editorUi.clipboardStatus = ok ? "已保存" : `保存失败: ${editorStore.saveError}`;
       }
     };
 
@@ -92,7 +90,10 @@
     if (appState.readOnly) return;
     const next = await gridRef?.getWebComponent()?.getSource?.();
     if (next?.length) {
-      await editorStore.saveFromSource(next.filter((r) => !r._isGroup));
+      const ok = await editorStore.saveFromSource(next.filter((r) => !r._isGroup));
+      if (!ok && editorStore.saveError) {
+        editorUi.clipboardStatus = `保存失败: ${editorStore.saveError}`;
+      }
     }
   }
 

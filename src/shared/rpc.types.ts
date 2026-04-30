@@ -177,12 +177,23 @@ export type CreateWorkbookFromTemplateResponse = {
 
 // ─── Editor DTOs ──────────────────────────────────────────────────────────────
 
+export type GridFieldConstraints = {
+  minLength?: number;
+  maxLength?: number;
+  min?: number;
+  max?: number;
+  step?: number;
+  minDate?: ISODateTimeString;
+  maxDate?: ISODateTimeString;
+};
+
 export type GridColumnDef = {
   key: string;
   label: string;
   fieldType: string;
   required?: boolean;
   options?: string[];
+  constraints?: GridFieldConstraints;
 };
 
 /** 单个筛选条件。op 决定 value 是否使用、以及如何使用。 */

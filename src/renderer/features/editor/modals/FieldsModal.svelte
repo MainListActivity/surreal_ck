@@ -3,15 +3,29 @@
   import { appState } from "../../../lib/app-state.svelte";
   import { editorStore } from "../../../lib/editor.svelte";
   import { editorUi } from "../lib/editor-ui.svelte";
-  import type { GridColumnDef } from "../../../../shared/rpc.types";
+  import RecordForm from "../components/RecordForm.svelte";
+  import { normalizeGridFieldConstraints } from "../../../../shared/field-schema";
+  import type { GridColumnDef, GridFieldConstraints } from "../../../../shared/rpc.types";
 
-  type FieldDraft = GridColumnDef & { optionsText?: string };
+  type FieldDraft = GridColumnDef & {
+    optionsText?: string;
+    constraints: GridFieldConstraints;
+  };
+  let draftError = $state<string | null>(null);
 
   let fieldDrafts = $state<FieldDraft[]>(
     editorStore.columns.map((col) => ({
       ...col,
       optionsText: col.options?.join("\n") ?? "",
+      constraints: { ...col.constraints },
     })),
+  );
+
+  const previewColumns = $derived(
+    fieldDrafts.map((field) => buildColumn(field, false)),
+  );
+  const previewValues = $derived(
+    Object.fromEntries(previewColumns.map((field) => [field.key, field.fieldType === "checkbox" ? false : null])),
   );
 
   function close() {
@@ -24,7 +38,7 @@
     while (used.has(`field_${i}`)) i++;
     fieldDrafts = [
       ...fieldDrafts,
-      { key: `field_${i}`, label: "新字段", fieldType: "text", required: false, optionsText: "" },
+      { key: `field_${i}`, label: "新字段", fieldType: "text", required: false, optionsText: "", constraints: {} },
     ];
   }
 
@@ -34,15 +48,39 @@
 
   async function save() {
     if (appState.readOnly) return;
-    const columns = fieldDrafts.map(({ optionsText, ...field }) => ({
-      ...field,
-      options:
-        field.fieldType === "single_select"
-          ? (optionsText ?? "").split("\n").map((opt) => opt.trim()).filter(Boolean)
-          : undefined,
-    }));
+    let columns: GridColumnDef[];
+    try {
+      columns = fieldDrafts.map((field) => buildColumn(field, true));
+      draftError = null;
+    } catch (err) {
+      draftError = err instanceof Error ? err.message : String(err);
+      return;
+    }
     const ok = await editorStore.updateFields(columns);
     if (ok) close();
+  }
+
+  function buildColumn(field: FieldDraft, strict: boolean): GridColumnDef {
+    const options = field.fieldType === "single_select"
+      ? (field.optionsText ?? "").split("\n").map((opt) => opt.trim()).filter(Boolean)
+      : undefined;
+
+    let constraints: GridFieldConstraints | undefined;
+    try {
+      constraints = normalizeGridFieldConstraints(field.fieldType, field.constraints);
+    } catch (err) {
+      if (strict) throw err;
+      constraints = undefined;
+    }
+
+    return {
+      key: field.key,
+      label: field.label,
+      fieldType: field.fieldType,
+      required: field.required,
+      options,
+      constraints,
+    };
   }
 </script>
 
@@ -85,10 +123,48 @@
             <input type="checkbox" bind:checked={field.required} />
             <span>必填</span>
           </label>
+          {#if field.fieldType === "text"}
+            <label>
+              <span>最小长度</span>
+              <input type="number" min="0" bind:value={field.constraints.minLength} />
+            </label>
+            <label>
+              <span>最大长度</span>
+              <input type="number" min="0" bind:value={field.constraints.maxLength} />
+            </label>
+          {/if}
           {#if field.fieldType === "single_select"}
             <label class="options-row">
               <span>选项，每行一个</span>
               <textarea bind:value={field.optionsText} rows="3"></textarea>
+            </label>
+            <label>
+              <span>选项最大长度</span>
+              <input type="number" min="0" bind:value={field.constraints.maxLength} />
+            </label>
+          {/if}
+          {#if field.fieldType === "number" || field.fieldType === "decimal"}
+            <label>
+              <span>最小值</span>
+              <input type="number" bind:value={field.constraints.min} />
+            </label>
+            <label>
+              <span>最大值</span>
+              <input type="number" bind:value={field.constraints.max} />
+            </label>
+            <label>
+              <span>步长</span>
+              <input type="number" min="0" step="any" bind:value={field.constraints.step} />
+            </label>
+          {/if}
+          {#if field.fieldType === "date"}
+            <label>
+              <span>最早日期</span>
+              <input type="date" bind:value={field.constraints.minDate} />
+            </label>
+            <label>
+              <span>最晚日期</span>
+              <input type="date" bind:value={field.constraints.maxDate} />
             </label>
           {/if}
           <button
@@ -102,9 +178,18 @@
         </div>
       {/each}
     </div>
+    <section class="preview-panel">
+      <div class="preview-head">
+        <strong>表单预览</strong>
+        <span>预览会按当前字段类型和限制渲染，保存后同样映射到 DDL。</span>
+      </div>
+      <RecordForm columns={previewColumns} values={previewValues} dense={true} disabled={true} />
+    </section>
     <footer>
       {#if editorStore.saveError}
         <span class="modal-error">{editorStore.saveError}</span>
+      {:else if draftError}
+        <span class="modal-error">{draftError}</span>
       {/if}
       <button class="secondary-btn" onclick={addField}>
         <Icon name="plus" size={13} />新增字段
@@ -155,7 +240,7 @@
   .field-card {
     position: relative;
     display: grid;
-    grid-template-columns: minmax(130px, 1.2fr) minmax(120px, 1fr) 128px 76px 32px;
+    grid-template-columns: repeat(4, minmax(0, 1fr)) 76px 32px;
     align-items: end;
     gap: 10px;
     padding: 12px;
@@ -188,6 +273,28 @@
 
   .options-row {
     grid-column: 1 / -2;
+  }
+
+  .preview-panel {
+    border-top: 1px solid var(--border);
+    padding: 16px 20px 18px;
+    background: #fbfcfe;
+  }
+
+  .preview-head {
+    display: grid;
+    gap: 4px;
+    margin-bottom: 12px;
+  }
+
+  .preview-head strong {
+    color: var(--text-1);
+    font-size: 13px;
+  }
+
+  .preview-head span {
+    color: var(--text-3);
+    font-size: 11px;
   }
 
   textarea {

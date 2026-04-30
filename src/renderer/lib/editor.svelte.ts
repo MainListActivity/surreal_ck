@@ -1,4 +1,5 @@
 import { appApi } from "./app-api";
+import { coerceGridFieldValue, validateGridFieldValue } from "../../shared/field-schema";
 import type {
   FilterClause,
   GridColumnDef,
@@ -107,8 +108,13 @@ function createEditorStore() {
     state.viewParams = { ...state.viewParams, groupBy };
   }
 
-  async function saveRows(patches: Array<{ id?: RecordIdString; values: Record<string, unknown> }>) {
-    if (!state.activeSheetId) return;
+  async function saveRows(patches: Array<{ id?: RecordIdString; values: Record<string, unknown> }>): Promise<boolean> {
+    if (!state.activeSheetId) return false;
+    const validationError = validatePatches(patches, state.columns);
+    if (validationError) {
+      state.saveError = validationError;
+      return false;
+    }
     state.saving = true;
     state.saveError = null;
     try {
@@ -123,11 +129,14 @@ function createEditorStore() {
           if (!existingIds.has(r.id)) merged.push(r);
         }
         state.rows = merged;
+        return true;
       } else {
         state.saveError = res.message;
+        return false;
       }
     } catch (err) {
       state.saveError = String(err);
+      return false;
     } finally {
       state.saving = false;
     }
@@ -187,8 +196,8 @@ function createEditorStore() {
   }
 
   /** 从 Grid 完整 source 数组生成 upsert patches，用于 afterpasteapply / afteredit */
-  async function saveFromSource(source: Array<Record<string, unknown>>) {
-    if (!state.activeSheetId || !state.columns.length) return;
+  async function saveFromSource(source: Array<Record<string, unknown>>): Promise<boolean> {
+    if (!state.activeSheetId || !state.columns.length) return false;
     const colKeys = new Set(state.columns.map((c) => c.key));
 
     const byId = new Map(state.rows.map((row) => [row.id, row]));
@@ -202,7 +211,7 @@ function createEditorStore() {
       return { id: existing?.id, values };
     });
 
-    await saveRows(patches);
+    return saveRows(patches);
   }
 
   function reset() {
@@ -248,3 +257,20 @@ function createEditorStore() {
 }
 
 export const editorStore = createEditorStore();
+
+function validatePatches(
+  patches: Array<{ id?: RecordIdString; values: Record<string, unknown> }>,
+  columns: GridColumnDef[],
+): string | null {
+  for (const [rowIndex, patch] of patches.entries()) {
+    for (const column of columns) {
+      const coerced = coerceGridFieldValue(patch.values[column.key], column);
+      const errors = validateGridFieldValue(coerced, column);
+      if (errors.length) {
+        return `第 ${rowIndex + 1} 行「${column.label}」${errors[0]}`;
+      }
+      patch.values[column.key] = coerced;
+    }
+  }
+  return null;
+}

@@ -3,7 +3,9 @@
   import { editorStore } from "../../../lib/editor.svelte";
   import { editorUi } from "../lib/editor-ui.svelte";
   import { cardPillStyle } from "../lib/cell-style";
+  import RecordForm from "../components/RecordForm.svelte";
   import { deriveColumns } from "../lib/derived-columns";
+  import { coerceGridFieldValue, validateGridFieldValue } from "../../../../shared/field-schema";
 
   const cols = $derived(deriveColumns(editorStore.columns));
   const selectedRow = $derived(
@@ -11,6 +13,37 @@
       ? editorStore.rows.find((r) => r.id === editorUi.selectedRowId) ?? null
       : null,
   );
+
+  let draft = $state<Record<string, unknown>>({});
+  let fieldErrors = $state<Record<string, string>>({});
+
+  $effect(() => {
+    draft = Object.fromEntries(
+      editorStore.columns.map((col) => [
+        col.key,
+        selectedRow?.values[col.key] ?? (col.fieldType === "checkbox" ? false : null),
+      ]),
+    );
+    fieldErrors = {};
+  });
+
+  async function submit() {
+    const values: Record<string, unknown> = {};
+    const nextErrors: Record<string, string> = {};
+    for (const col of editorStore.columns) {
+      const coerced = coerceGridFieldValue(draft[col.key], col);
+      const errors = validateGridFieldValue(coerced, col);
+      values[col.key] = coerced;
+      if (errors.length) nextErrors[col.key] = errors[0];
+    }
+    fieldErrors = nextErrors;
+    if (Object.keys(nextErrors).length) return;
+
+    const ok = await editorStore.saveRows([{ id: selectedRow?.id, values }]);
+    if (ok && !selectedRow) {
+      draft = Object.fromEntries(editorStore.columns.map((col) => [col.key, col.fieldType === "checkbox" ? false : null]));
+    }
+  }
 </script>
 
 {#if selectedRow}
@@ -24,14 +57,29 @@
       </span>
     {/if}
   </div>
-  {#each editorStore.columns as col}
-    <div class="field-row">
-      <span>{col.label}</span>
-      <strong>{String(selectedRow.values[col.key] ?? "—")}</strong>
-    </div>
-  {/each}
+  <RecordForm columns={editorStore.columns} values={draft} errors={fieldErrors} dense={true} />
+  <div class="panel-actions">
+    {#if editorStore.saveError}
+      <span class="panel-error">{editorStore.saveError}</span>
+    {/if}
+    <button class="primary-btn" onclick={submit} disabled={editorStore.saving}>保存当前记录</button>
+  </div>
 {:else}
-  <EmptyState icon="info" title="请选择一行" desc="点击表格单元格后在此查看详情" />
+  <div class="preview-head">
+    <strong>DDL 表单预览</strong>
+    <span>字段类型、必填和限制会直接映射到输入控件</span>
+  </div>
+  {#if editorStore.columns.length}
+    <RecordForm columns={editorStore.columns} values={draft} errors={fieldErrors} dense={true} />
+    <div class="panel-actions">
+      {#if editorStore.saveError}
+        <span class="panel-error">{editorStore.saveError}</span>
+      {/if}
+      <button class="primary-btn" onclick={submit} disabled={editorStore.saving}>按表单新增记录</button>
+    </div>
+  {:else}
+    <EmptyState icon="info" title="请选择一行" desc="当前 Sheet 还没有可预览的字段" />
+  {/if}
 {/if}
 
 <style>
@@ -51,27 +99,6 @@
     font-weight: 700;
   }
 
-  .field-row {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 10px;
-    font-size: 12px;
-    line-height: 1.6;
-  }
-
-  .field-row span {
-    width: 80px;
-    flex-shrink: 0;
-    color: var(--text-3);
-    font-size: 11px;
-  }
-
-  .field-row strong {
-    color: var(--text-1);
-    font-weight: 500;
-    word-break: break-all;
-  }
-
   .pill {
     display: inline-flex;
     align-items: center;
@@ -82,5 +109,40 @@
     color: var(--pill-color, var(--text-3));
     font-size: 10px;
     font-weight: 600;
+  }
+
+  .preview-head {
+    display: grid;
+    gap: 4px;
+    margin-bottom: 14px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .preview-head strong {
+    color: var(--text-1);
+    font-size: 14px;
+  }
+
+  .preview-head span {
+    color: var(--text-3);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  .panel-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+  }
+
+  .panel-error {
+    margin-right: auto;
+    color: var(--error);
+    font-size: 12px;
   }
 </style>

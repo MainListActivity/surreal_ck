@@ -13,6 +13,7 @@ import type {
   MoveWorkbookResponse,
   RecordIdString,
 } from "../../shared/rpc.types";
+import { normalizeGridFieldConstraints } from "../../shared/field-schema";
 
 // ─── 内部行类型 ───────────────────────────────────────────────────────────────
 
@@ -299,6 +300,7 @@ export function normalizeGridColumnDef(column: GridColumnDef): GridColumnDef {
   const options = fieldType === "single_select"
     ? [...new Set((column.options ?? []).map((opt) => opt.trim()).filter(Boolean))].slice(0, 80)
     : undefined;
+  const constraints = normalizeGridFieldConstraints(fieldType, column.constraints);
 
   return {
     key,
@@ -306,6 +308,7 @@ export function normalizeGridColumnDef(column: GridColumnDef): GridColumnDef {
     fieldType,
     required: Boolean(column.required),
     options,
+    constraints,
   };
 }
 
@@ -316,6 +319,7 @@ export function gridColumnToStoredDef(column: GridColumnDef) {
     field_type: column.fieldType,
     required: column.required,
     options: column.options,
+    constraints: column.constraints,
   };
 }
 
@@ -324,8 +328,11 @@ function defineEntityField(tableName: string, column: GridColumnDef, mode: "if-n
   const normalized = normalizeGridColumnDef(column);
   const clause = mode === "overwrite" ? "OVERWRITE" : "IF NOT EXISTS";
   const surrealType = surrealTypeForField(normalized.fieldType, normalized.required);
+  const assertClause = surrealAssertForField(normalized);
   const db = getLocalDb();
-  return db.query(`DEFINE FIELD ${clause} ${normalized.key} ON TABLE ${tableName} TYPE ${surrealType}`).then(() => undefined);
+  return db.query(
+    `DEFINE FIELD ${clause} ${normalized.key} ON TABLE ${tableName} TYPE ${surrealType}${assertClause}`,
+  ).then(() => undefined);
 }
 
 function surrealTypeForField(fieldType: string, required?: boolean): string {
@@ -360,6 +367,58 @@ function normalizeFieldType(fieldType: string): string {
     default:
       throw new ServiceError("VALIDATION_ERROR", `不支持的字段类型: ${fieldType}`);
   }
+}
+
+function surrealAssertForField(column: GridColumnDef): string {
+  const rules: string[] = [];
+  const constraints = column.constraints;
+
+  if (column.fieldType === "single_select" && column.options?.length) {
+    const options = column.options.map((option) => JSON.stringify(option)).join(", ");
+    rules.push(`$value INSIDE [${options}]`);
+  }
+
+  if (column.fieldType === "text") {
+    if (constraints?.minLength !== undefined) {
+      rules.push(`string::len($value) >= ${constraints.minLength}`);
+    }
+    if (constraints?.maxLength !== undefined) {
+      rules.push(`string::len($value) <= ${constraints.maxLength}`);
+    }
+  }
+
+  if (column.fieldType === "single_select" && constraints?.maxLength !== undefined) {
+    rules.push(`string::len($value) <= ${constraints.maxLength}`);
+  }
+
+  if (column.fieldType === "number" || column.fieldType === "decimal") {
+    if (column.fieldType === "number") {
+      rules.push(`math::floor($value) = $value`);
+    }
+    if (constraints?.min !== undefined) {
+      rules.push(`$value >= ${constraints.min}`);
+    }
+    if (constraints?.max !== undefined) {
+      rules.push(`$value <= ${constraints.max}`);
+    }
+    if (constraints?.step !== undefined) {
+      const base = constraints.min ?? 0;
+      rules.push(`math::floor((($value - ${base}) / ${constraints.step})) = (($value - ${base}) / ${constraints.step})`);
+    }
+  }
+
+  if (column.fieldType === "date") {
+    if (constraints?.minDate) {
+      rules.push(`$value >= d'${constraints.minDate}'`);
+    }
+    if (constraints?.maxDate) {
+      rules.push(`$value <= d'${constraints.maxDate}'`);
+    }
+  }
+
+  if (!rules.length) return "";
+  const body = rules.join(" AND ");
+  return column.required ? ` ASSERT ${body}` : ` ASSERT $value = NONE OR (${body})`;
 }
 
 function assertEntityTableName(tableName: string): void {
