@@ -5,56 +5,26 @@
   import { members } from "../lib/mock";
   import type { Navigate } from "../lib/types";
 
-  let { navigate }: { navigate: Navigate } = $props();
-  let tab = $state("members");
-
-  const tabs = [
-    { id: "members", icon: "users", label: "成员管理" },
-    { id: "entities", icon: "tag", label: "实体类型" },
-    { id: "relations", icon: "network", label: "关系类型" },
-    { id: "forms", icon: "globe", label: "表单配置" },
-  ];
+  let { navigate: _navigate }: { navigate: Navigate } = $props();
 </script>
 
 <section class="admin">
   <aside>
     <div class="title">工作区设置</div>
-    {#each tabs as item}
-      <button class:selected={tab === item.id} onclick={() => (tab = item.id)}><Icon name={item.icon} size={15} />{item.label}</button>
-    {/each}
+    <button class="selected"><Icon name="users" size={15} />成员管理</button>
   </aside>
 
   <div class="main">
-    {#if tab === "members"}
-      <header><h2>成员管理</h2><button class="primary-btn"><Icon name="plus" size={13} color="#fff" />邀请成员</button></header>
-      {#each members as member}
-        <div class="member">
-          <Avatar name={member.name} size={36} />
-          <div><strong>{member.name}</strong><span>{member.email}</span></div>
-          <Badge value={member.status} />
-          <select value={member.role}><option>管理员</option><option>编辑</option><option>查看</option></select>
-          <button class="icon-btn"><Icon name="moreH" size={15} /></button>
-        </div>
-      {/each}
-    {:else if tab === "forms"}
-      <header><h2>表单配置</h2><button class="primary-btn"><Icon name="plus" size={13} color="#fff" />新建表单</button></header>
-      {#each ["债权申报登记表", "资料补充收集表"] as form, index}
-        <div class="form-row">
-          <span><Icon name="globe" size={17} color="var(--primary)" /></span>
-          <div><strong>{form}</strong><small>已发布 · 累计提交 {index === 0 ? 47 : 12} 份</small></div>
-          <button class="secondary-btn" onclick={() => navigate("form")}>查看表单</button>
-          <button class="secondary-btn">复制链接</button>
-        </div>
-      {/each}
-    {:else}
-      <h2>{tab === "entities" ? "实体类型" : "关系类型"}</h2>
-      <div class="chips">
-        {#each (tab === "entities" ? ["自然人债权人", "企业债权人", "担保方", "关联方", "资产"] : ["债权-债务", "担保", "股权持有", "实际控制", "关联交易"]) as item}
-          <button><Icon name={tab === "entities" ? "tag" : "link"} size={13} />{item}<Icon name="edit" size={12} /></button>
-        {/each}
-        <button class="dashed"><Icon name="plus" size={13} />添加{tab === "entities" ? "类型" : "关系"}</button>
+    <header><h2>成员管理</h2><button class="primary-btn"><Icon name="plus" size={13} color="#fff" />邀请成员</button></header>
+    {#each members as member}
+      <div class="member">
+        <Avatar name={member.name} size={36} />
+        <div><strong>{member.name}</strong><span>{member.email}</span></div>
+        <Badge value={member.status} />
+        <select value={member.role}><option>管理员</option><option>编辑</option><option>查看</option></select>
+        <button class="icon-btn"><Icon name="moreH" size={15} /></button>
       </div>
-    {/if}
+    {/each}
   </div>
 </section>
 
@@ -119,13 +89,9 @@
   }
 
   h2 {
-    margin: 0 0 20px;
+    margin: 0;
     color: var(--text-1);
     font-size: 16px;
-  }
-
-  header h2 {
-    margin: 0;
   }
 
   header button {
@@ -140,15 +106,13 @@
     border-bottom: 1px solid var(--border);
   }
 
-  .member div:nth-child(2),
-  .form-row div {
+  .member div:nth-child(2) {
     min-width: 0;
     flex: 1;
   }
 
   strong,
-  .member span,
-  small {
+  .member span {
     display: block;
   }
 
@@ -157,8 +121,7 @@
     font-size: 13px;
   }
 
-  .member span,
-  small {
+  .member span {
     color: var(--text-3);
     font-size: 11px;
   }
@@ -170,53 +133,5 @@
     background: var(--surface);
     color: var(--text-2);
     font-size: 12px;
-  }
-
-  .form-row {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    margin-bottom: 10px;
-    padding: 14px 16px;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    background: var(--surface);
-  }
-
-  .form-row > span {
-    display: grid;
-    width: 36px;
-    height: 36px;
-    place-items: center;
-    border-radius: 8px;
-    background: var(--primary-light);
-  }
-
-  .form-row button {
-    padding: 6px 12px;
-    font-size: 12px;
-  }
-
-  .chips {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-  }
-
-  .chips button {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 14px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--surface);
-    color: var(--text-2);
-    font-size: 13px;
-  }
-
-  .chips .dashed {
-    border-style: dashed;
-    color: var(--text-3);
   }
 </style>

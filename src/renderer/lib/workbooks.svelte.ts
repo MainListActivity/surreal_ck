@@ -62,6 +62,20 @@ function createWorkbooksStore() {
     return null;
   }
 
+  async function createFolder(
+    workspaceId: string,
+    name: string,
+    parentId?: string
+  ): Promise<FolderDTO | null> {
+    const res = await appApi.createFolder(workspaceId, name, parentId);
+    if (res.ok) {
+      state.folders = [...state.folders, res.data.folder];
+      return res.data.folder;
+    }
+    state.error = res.message;
+    return null;
+  }
+
   function filterByQuery(query: string): WorkbookSummaryDTO[] {
     if (!query) return state.workbooks;
     const q = query.toLowerCase();
@@ -85,6 +99,7 @@ function createWorkbooksStore() {
     loadForWorkspace,
     createBlank,
     createFromTemplate,
+    createFolder,
     filterByQuery,
     filterByFolder,
   };
