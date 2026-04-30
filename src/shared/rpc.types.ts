@@ -132,6 +132,26 @@ export type CreateFolderResponse = {
   folder: FolderDTO;
 };
 
+export type MoveFolderRequest = {
+  folderId: RecordIdString;
+  /** 新的父目录 id；null 表示移到根目录 */
+  parentId: RecordIdString | null;
+};
+
+export type MoveFolderResponse = {
+  folder: FolderDTO;
+};
+
+export type MoveWorkbookRequest = {
+  workbookId: RecordIdString;
+  /** 新的目录 id；null 表示移出目录（未分类） */
+  folderId: RecordIdString | null;
+};
+
+export type MoveWorkbookResponse = {
+  workbook: WorkbookSummaryDTO;
+};
+
 // ─── Template DTOs ────────────────────────────────────────────────────────────
 
 export type TemplateSummaryDTO = {
@@ -281,6 +301,8 @@ export interface AppRPC extends ElectrobunRPCSchema {
       createBlankWorkbook: { params: CreateBlankWorkbookRequest; response: Result<CreateBlankWorkbookResponse> };
       listFolders: { params: ListFoldersRequest; response: Result<ListFoldersResponse> };
       createFolder: { params: CreateFolderRequest; response: Result<CreateFolderResponse> };
+      moveFolder: { params: MoveFolderRequest; response: Result<MoveFolderResponse> };
+      moveWorkbook: { params: MoveWorkbookRequest; response: Result<MoveWorkbookResponse> };
       listTemplates: { params: Record<string, never>; response: Result<ListTemplatesResponse> };
       createWorkbookFromTemplate: { params: CreateWorkbookFromTemplateRequest; response: Result<CreateWorkbookFromTemplateResponse> };
       getWorkbookData: { params: GetWorkbookDataRequest; response: Result<GetWorkbookDataResponse> };

@@ -10,6 +10,8 @@ import type {
   ListTemplatesResponse,
   ListWorkbooksResponse,
   GridColumnDef,
+  MoveFolderResponse,
+  MoveWorkbookResponse,
   RecordIdString,
   RenameWorkbookResponse,
   Result,
@@ -45,6 +47,14 @@ export const appApi = {
 
   createFolder(workspaceId: RecordIdString, name: string, parentId?: RecordIdString): Promise<Result<CreateFolderResponse>> {
     return rpc.request("createFolder", { workspaceId, name, parentId });
+  },
+
+  moveFolder(folderId: RecordIdString, parentId: RecordIdString | null): Promise<Result<MoveFolderResponse>> {
+    return rpc.request("moveFolder", { folderId, parentId });
+  },
+
+  moveWorkbook(workbookId: RecordIdString, folderId: RecordIdString | null): Promise<Result<MoveWorkbookResponse>> {
+    return rpc.request("moveWorkbook", { workbookId, folderId });
   },
 
   listTemplates(): Promise<Result<ListTemplatesResponse>> {

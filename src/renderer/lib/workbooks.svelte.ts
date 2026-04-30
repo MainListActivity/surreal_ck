@@ -76,6 +76,49 @@ function createWorkbooksStore() {
     return null;
   }
 
+  /** 检查 candidate 是否是 folderId 的后代（含自身），用于阻止把目录移到自己的子树里。 */
+  function isDescendantOrSelf(candidateId: string, folderId: string): boolean {
+    if (candidateId === folderId) return true;
+    let cursor: string | undefined = candidateId;
+    const visited = new Set<string>();
+    while (cursor && !visited.has(cursor)) {
+      visited.add(cursor);
+      const node = state.folders.find((f) => f.id === cursor);
+      if (!node) return false;
+      if (node.parentId === folderId) return true;
+      cursor = node.parentId;
+    }
+    return false;
+  }
+
+  async function moveFolder(folderId: string, parentId: string | null): Promise<boolean> {
+    if (parentId && isDescendantOrSelf(parentId, folderId)) {
+      state.error = "不能将目录移动到自己的子目录下";
+      return false;
+    }
+    const res = await appApi.moveFolder(folderId, parentId);
+    if (res.ok) {
+      state.folders = state.folders.map((f) =>
+        f.id === folderId ? res.data.folder : f
+      );
+      return true;
+    }
+    state.error = res.message;
+    return false;
+  }
+
+  async function moveWorkbook(workbookId: string, folderId: string | null): Promise<boolean> {
+    const res = await appApi.moveWorkbook(workbookId, folderId);
+    if (res.ok) {
+      state.workbooks = state.workbooks.map((wb) =>
+        wb.id === workbookId ? res.data.workbook : wb
+      );
+      return true;
+    }
+    state.error = res.message;
+    return false;
+  }
+
   function filterByQuery(query: string): WorkbookSummaryDTO[] {
     if (!query) return state.workbooks;
     const q = query.toLowerCase();
@@ -100,6 +143,8 @@ function createWorkbooksStore() {
     createBlank,
     createFromTemplate,
     createFolder,
+    moveFolder,
+    moveWorkbook,
     filterByQuery,
     filterByFolder,
   };

@@ -16,6 +16,10 @@ import type {
   ListTemplatesResponse,
   ListWorkbooksRequest,
   ListWorkbooksResponse,
+  MoveFolderRequest,
+  MoveFolderResponse,
+  MoveWorkbookRequest,
+  MoveWorkbookResponse,
   RawQueryRequest,
   RawQueryResponse,
   RenameWorkbookRequest,
@@ -33,8 +37,8 @@ import { startOidcLogin } from "../auth/oidc";
 import { loginToSurrealDB, clearSession, getPublicAuthState } from "../auth/session";
 import { initUserDb, closeUserDb } from "../db/index";
 import { decodeTokenClaims, bootstrapLocalIdentity } from "../services/identity";
-import { listWorkbooks, createBlankWorkbook } from "../services/workbooks";
-import { listFolders, createFolder } from "../services/folders";
+import { listWorkbooks, createBlankWorkbook, moveWorkbook } from "../services/workbooks";
+import { listFolders, createFolder, moveFolder } from "../services/folders";
 import { listTemplates, createWorkbookFromTemplate } from "../services/templates";
 import { getWorkbookData, upsertRows, deleteRows, renameWorkbook, updateSheetFields } from "../services/editor";
 
@@ -140,6 +144,14 @@ export function createRpcHandlers(send: SendFn) {
 
       createFolder: async (req: CreateFolderRequest): Promise<Result<CreateFolderResponse>> => {
         return withResult(() => createFolder(req));
+      },
+
+      moveFolder: async (req: MoveFolderRequest): Promise<Result<MoveFolderResponse>> => {
+        return withResult(() => moveFolder(req));
+      },
+
+      moveWorkbook: async (req: MoveWorkbookRequest): Promise<Result<MoveWorkbookResponse>> => {
+        return withResult(() => moveWorkbook(req));
       },
 
       listTemplates: async (): Promise<Result<ListTemplatesResponse>> => {

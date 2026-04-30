@@ -6,7 +6,7 @@
   import { logout } from "../lib/auth.actions";
   import { appState } from "../lib/app-state.svelte";
   import { workbooksStore } from "../lib/workbooks.svelte";
-  import type { FolderDTO } from "../../shared/rpc.types";
+  import type { FolderDTO, WorkbookSummaryDTO } from "../../shared/rpc.types";
 
   let { current, navigate }: { current: ScreenId; navigate: Navigate } = $props();
 
@@ -16,10 +16,18 @@
 
   /** 展开的文件夹 id 集合 */
   let expandedFolders = $state<Record<string, boolean>>({});
-  /** 当前正在新建子目录的父节点 id；null 表示在根节点（“我的文档”）下新建 */
+  /** 当前正在新建子目录的父节点 id；null 表示在根节点（"我的文档"）下新建；undefined 表示未在新建状态 */
   let creatingUnder = $state<string | null | undefined>(undefined);
   let newFolderName = $state("");
   let creating = $state(false);
+
+  /**
+   * 拖拽对象：folder 表示拖目录，workbook 表示拖文件。
+   * dragOverId 表示当前被悬停的目标节点 id（"__root__" 表示拖到我的文档根）。
+   */
+  type DragPayload = { kind: "folder" | "workbook"; id: string };
+  let dragging = $state<DragPayload | null>(null);
+  let dragOverId = $state<string | null>(null);
 
   $effect(() => {
     const ws = appState.workspace;
@@ -38,6 +46,13 @@
       .filter((f) => f.parentId === parentId)
       .slice()
       .sort((a, b) => a.position - b.position);
+  }
+
+  function workbooksIn(folderId: string): WorkbookSummaryDTO[] {
+    return workbooksStore.workbooks
+      .filter((wb) => wb.folderId === folderId)
+      .slice()
+      .sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
   }
 
   function toggleFolder(id: string) {
@@ -87,6 +102,108 @@
   function focusOnMount(node: HTMLInputElement) {
     node.focus();
   }
+
+  // ─── 拖拽处理 ────────────────────────────────────────────────────────────────
+
+  function onDragStart(event: DragEvent, payload: DragPayload) {
+    if (appState.readOnly) {
+      event.preventDefault();
+      return;
+    }
+    dragging = payload;
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = "move";
+      // 必须设置数据，否则 Firefox 不触发 drag
+      event.dataTransfer.setData("text/plain", `${payload.kind}:${payload.id}`);
+    }
+  }
+
+  function onDragEnd() {
+    dragging = null;
+    dragOverId = null;
+  }
+
+  /** 拖到目录上是否合法 */
+  function canDropOnFolder(folderId: string): boolean {
+    if (!dragging) return false;
+    if (dragging.kind === "folder") {
+      // 不能拖到自身或自身后代
+      if (dragging.id === folderId) return false;
+      let cursor: string | undefined = folderId;
+      const visited = new Set<string>();
+      while (cursor && !visited.has(cursor)) {
+        visited.add(cursor);
+        const node = workbooksStore.folders.find((f) => f.id === cursor);
+        if (!node) return false;
+        if (node.id === dragging.id) return false;
+        cursor = node.parentId;
+      }
+      return true;
+    }
+    // workbook：只要不已在该目录下即合法
+    const wb = workbooksStore.workbooks.find((w) => w.id === dragging.id);
+    return !wb || wb.folderId !== folderId;
+  }
+
+  /** 拖到根上是否合法（"我的文档"根 = 把 parent/folder 置空） */
+  function canDropOnRoot(): boolean {
+    if (!dragging) return false;
+    if (dragging.kind === "folder") {
+      const node = workbooksStore.folders.find((f) => f.id === dragging.id);
+      return !!node && !!node.parentId;
+    }
+    const wb = workbooksStore.workbooks.find((w) => w.id === dragging.id);
+    return !!wb && !!wb.folderId;
+  }
+
+  function onFolderDragOver(event: DragEvent, folderId: string) {
+    if (!canDropOnFolder(folderId)) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    dragOverId = folderId;
+  }
+
+  function onFolderDragLeave(folderId: string) {
+    if (dragOverId === folderId) dragOverId = null;
+  }
+
+  async function onFolderDrop(event: DragEvent, folderId: string) {
+    if (!dragging || !canDropOnFolder(folderId)) return;
+    event.preventDefault();
+    const payload = dragging;
+    dragging = null;
+    dragOverId = null;
+    if (payload.kind === "folder") {
+      await workbooksStore.moveFolder(payload.id, folderId);
+    } else {
+      await workbooksStore.moveWorkbook(payload.id, folderId);
+    }
+    expandedFolders = { ...expandedFolders, [folderId]: true };
+  }
+
+  function onRootDragOver(event: DragEvent) {
+    if (!canDropOnRoot()) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    dragOverId = "__root__";
+  }
+
+  function onRootDragLeave() {
+    if (dragOverId === "__root__") dragOverId = null;
+  }
+
+  async function onRootDrop(event: DragEvent) {
+    if (!dragging || !canDropOnRoot()) return;
+    event.preventDefault();
+    const payload = dragging;
+    dragging = null;
+    dragOverId = null;
+    if (payload.kind === "folder") {
+      await workbooksStore.moveFolder(payload.id, null);
+    } else {
+      await workbooksStore.moveWorkbook(payload.id, null);
+    }
+  }
 </script>
 
 <aside class="side-nav">
@@ -103,15 +220,29 @@
 
   {#snippet folderNode(folder: FolderDTO, depth: number)}
     {@const kids = childrenOf(folder.id)}
+    {@const files = workbooksIn(folder.id)}
+    {@const hasChildren = kids.length > 0 || files.length > 0}
     {@const expanded = !!expandedFolders[folder.id]}
+    {@const isDropTarget = dragOverId === folder.id && canDropOnFolder(folder.id)}
     <div class="tree-item">
-      <div class="tree-row" style="padding-left: {depth * 14 + 8}px">
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="tree-row"
+        class:drop-target={isDropTarget}
+        style="padding-left: {depth * 14 + 8}px"
+        ondragover={(e) => onFolderDragOver(e, folder.id)}
+        ondragleave={() => onFolderDragLeave(folder.id)}
+        ondrop={(e) => onFolderDrop(e, folder.id)}
+      >
         <button
           type="button"
           class="row-main"
+          draggable={!appState.readOnly}
+          ondragstart={(e) => onDragStart(e, { kind: "folder", id: folder.id })}
+          ondragend={onDragEnd}
           onclick={() => { toggleFolder(folder.id); navigate("mydocs", { folderId: folder.id }); }}
         >
-          <span class="caret" class:invisible={kids.length === 0}>
+          <span class="caret" class:invisible={!hasChildren}>
             <Icon name={expanded ? "chevronDown" : "chevronRight"} size={11} />
           </span>
           <Icon name={expanded ? "folderOpen" : "folder"} size={14} />
@@ -130,6 +261,9 @@
         {#each kids as child (child.id)}
           {@render folderNode(child, depth + 1)}
         {/each}
+        {#each files as wb (wb.id)}
+          {@render fileRow(wb, depth + 1)}
+        {/each}
         {#if creatingUnder === folder.id}
           <div class="new-input-row" style="padding-left: {(depth + 1) * 14 + 22}px">
             <Icon name="folder" size={13} />
@@ -147,13 +281,39 @@
     </div>
   {/snippet}
 
+  {#snippet fileRow(wb: WorkbookSummaryDTO, depth: number)}
+    {@const isDragging = dragging?.kind === "workbook" && dragging.id === wb.id}
+    <button
+      type="button"
+      class="file-row"
+      class:dragging={isDragging}
+      style="padding-left: {depth * 14 + 22}px"
+      title={wb.name}
+      draggable={!appState.readOnly}
+      ondragstart={(e) => onDragStart(e, { kind: "workbook", id: wb.id })}
+      ondragend={onDragEnd}
+      onclick={() => navigate("editor", { workbookId: wb.id })}
+    >
+      <Icon name="file" size={13} color="var(--text-3)" />
+      <span class="label">{wb.name}</span>
+    </button>
+  {/snippet}
+
   <nav>
     <button class:active={current === "home"} onclick={() => navigate("home")}>
       <Icon name="home" size={16} />首页
     </button>
 
     <div class="docs-root">
-      <div class="docs-root-row" class:active={current === "mydocs"}>
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="docs-root-row"
+        class:active={current === "mydocs"}
+        class:drop-target={dragOverId === "__root__" && canDropOnRoot()}
+        ondragover={onRootDragOver}
+        ondragleave={onRootDragLeave}
+        ondrop={onRootDrop}
+      >
         <button
           type="button"
           class="docs-root-btn"
@@ -190,6 +350,10 @@
 
           {#each rootFolders as folder (folder.id)}
             {@render folderNode(folder, 0)}
+          {/each}
+
+          {#each workbooksStore.workbooks.filter((w) => !w.folderId) as wb (wb.id)}
+            {@render fileRow(wb, 0)}
           {/each}
 
           {#if creatingUnder === null}
@@ -351,6 +515,12 @@
     font-weight: 650;
   }
 
+  .docs-root-row.drop-target {
+    outline: 2px dashed var(--primary);
+    outline-offset: -2px;
+    background: var(--primary-light);
+  }
+
   .docs-root-btn {
     display: flex;
     flex: 1;
@@ -417,6 +587,12 @@
     background: var(--bg);
   }
 
+  .tree-row.drop-target {
+    outline: 2px dashed var(--primary);
+    outline-offset: -2px;
+    background: var(--primary-light);
+  }
+
   .row-main {
     display: flex;
     flex: 1;
@@ -432,6 +608,11 @@
     font-size: 12px;
     text-align: left;
     overflow: hidden;
+    cursor: grab;
+  }
+
+  .row-main:active {
+    cursor: grabbing;
   }
 
   .row-main > .caret {
@@ -484,6 +665,41 @@
 
   .root-add {
     margin-left: 0;
+  }
+
+  .file-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 5px 7px 5px 22px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-2);
+    font-size: 12px;
+    text-align: left;
+    overflow: hidden;
+    cursor: grab;
+  }
+
+  .file-row:hover {
+    background: var(--bg);
+  }
+
+  .file-row:active {
+    cursor: grabbing;
+  }
+
+  .file-row.dragging {
+    opacity: .4;
+  }
+
+  .file-row .label {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .new-input-row {

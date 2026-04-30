@@ -9,6 +9,8 @@ import type {
   CreateBlankWorkbookRequest,
   CreateBlankWorkbookResponse,
   GridColumnDef,
+  MoveWorkbookRequest,
+  MoveWorkbookResponse,
   RecordIdString,
 } from "../../shared/rpc.types";
 
@@ -178,6 +180,62 @@ export async function createBlankWorkbook({
       templateKey: wbRow.template_key,
       folderId: wbRow.folder ? String(wbRow.folder) : undefined,
       updatedAt: wbRow.updated_at instanceof Date ? wbRow.updated_at.toISOString() : String(wbRow.updated_at),
+    },
+  };
+}
+
+// ─── 移动 workbook 到目录 ─────────────────────────────────────────────────────
+
+export async function moveWorkbook({
+  workbookId,
+  folderId,
+}: MoveWorkbookRequest): Promise<MoveWorkbookResponse> {
+  const db = getLocalDb();
+  const wbId = new StringRecordId(workbookId);
+
+  const currentRows = await db.query<[WorkbookRow[]]>(
+    `SELECT id, workspace, name, template_key, folder, updated_at FROM workbook WHERE id = $wbId LIMIT 1`,
+    { wbId }
+  );
+  const current = currentRows[0]?.[0];
+  if (!current) {
+    throw new ServiceError("NOT_FOUND", "工作簿不存在");
+  }
+
+  const workspaceId = String(current.workspace);
+  await assertCanWriteWorkspace(workspaceId);
+
+  let folderRecordId: StringRecordId | null = null;
+  if (folderId) {
+    folderRecordId = new StringRecordId(folderId);
+    const folderRows = await db.query<[{ id: RecordId; workspace: RecordId }[]]>(
+      `SELECT id, workspace FROM folder WHERE id = $folderId LIMIT 1`,
+      { folderId: folderRecordId }
+    );
+    const folder = folderRows[0]?.[0];
+    if (!folder) {
+      throw new ServiceError("NOT_FOUND", "目标目录不存在");
+    }
+    if (String(folder.workspace) !== workspaceId) {
+      throw new ServiceError("VALIDATION_ERROR", "不能跨工作区移动工作簿");
+    }
+  }
+
+  const updated = await db.query<[WorkbookRow[]]>(
+    `UPDATE $wbId SET folder = $folder`,
+    { wbId, folder: folderRecordId }
+  );
+  const row = updated[0]?.[0];
+  if (!row) throw new ServiceError("INTERNAL_ERROR", "工作簿移动失败");
+
+  return {
+    workbook: {
+      id: String(row.id),
+      workspaceId: String(row.workspace),
+      name: row.name,
+      templateKey: row.template_key,
+      folderId: row.folder ? String(row.folder) : undefined,
+      updatedAt: row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at),
     },
   };
 }
