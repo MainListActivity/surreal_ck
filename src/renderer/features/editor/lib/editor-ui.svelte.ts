@@ -1,6 +1,6 @@
 import type { RecordIdString } from "../../../../shared/rpc.types";
 
-export type ViewId = "grid" | "kanban" | "gallery";
+export type ViewId = "grid" | "kanban" | "gallery" | "form";
 export type PanelId = "detail" | "changes" | "ai";
 
 type EditorUiState = {
@@ -9,7 +9,13 @@ type EditorUiState = {
   panelTab: PanelId;
   activeTool: string | null;
   showAdd: boolean;
-  showFields: boolean;
+  editingFieldKey: string | null;
+  fieldMenu: {
+    open: boolean;
+    fieldKey: string | null;
+    x: number;
+    y: number;
+  };
   showShare: boolean;
   showMenu: boolean;
   selectedRowId: RecordIdString | null;
@@ -23,7 +29,13 @@ function createEditorUi() {
     panelTab: "detail",
     activeTool: null,
     showAdd: false,
-    showFields: false,
+    editingFieldKey: null,
+    fieldMenu: {
+      open: false,
+      fieldKey: null,
+      x: 0,
+      y: 0,
+    },
     showShare: false,
     showMenu: false,
     selectedRowId: null,
@@ -41,8 +53,9 @@ function createEditorUi() {
     set activeTool(v) { state.activeTool = v; },
     get showAdd() { return state.showAdd; },
     set showAdd(v) { state.showAdd = v; },
-    get showFields() { return state.showFields; },
-    set showFields(v) { state.showFields = v; },
+    get editingFieldKey() { return state.editingFieldKey; },
+    set editingFieldKey(v) { state.editingFieldKey = v; },
+    get fieldMenu() { return state.fieldMenu; },
     get showShare() { return state.showShare; },
     set showShare(v) { state.showShare = v; },
     get showMenu() { return state.showMenu; },
@@ -66,9 +79,23 @@ function createEditorUi() {
     toggleTool(toolId: string) {
       state.activeTool = state.activeTool === toolId ? null : toolId;
     },
+    openFieldMenu(fieldKey: string, x: number, y: number) {
+      state.fieldMenu = { open: true, fieldKey, x, y };
+    },
+    closeFieldMenu() {
+      state.fieldMenu = { open: false, fieldKey: null, x: 0, y: 0 };
+    },
+    openFieldEditor(fieldKey: string) {
+      state.editingFieldKey = fieldKey;
+      this.closeFieldMenu();
+    },
+    closeFieldEditor() {
+      state.editingFieldKey = null;
+    },
     closeAllPopups() {
       state.showMenu = false;
       state.activeTool = null;
+      this.closeFieldMenu();
     },
     selectRow(id: RecordIdString | null) {
       state.selectedRowId = id;

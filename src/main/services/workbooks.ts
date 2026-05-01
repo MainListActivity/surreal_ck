@@ -27,7 +27,7 @@ type WorkbookRow = {
 };
 
 const ENTITY_FIELD_NAME = /^[a-z][a-z0-9_]{0,62}$/;
-const RESERVED_ENTITY_FIELDS = new Set(["id", "workspace", "created_at", "updated_at"]);
+const RESERVED_ENTITY_FIELDS = new Set(["id", "workspace", "created_by", "created_at", "updated_at"]);
 
 // ─── 列表 ─────────────────────────────────────────────────────────────────────
 
@@ -251,6 +251,7 @@ export async function provisionEntityTable(tableName: string): Promise<void> {
   await db.query(
     `DEFINE TABLE IF NOT EXISTS ${tableName} SCHEMALESS PERMISSIONS FULL;
      DEFINE FIELD IF NOT EXISTS workspace  ON TABLE ${tableName} TYPE option<record<workspace>>;
+     DEFINE FIELD IF NOT EXISTS created_by ON TABLE ${tableName} TYPE option<record<app_user>>;
      DEFINE FIELD IF NOT EXISTS created_at ON TABLE ${tableName} TYPE datetime VALUE time::now();
      DEFINE FIELD IF NOT EXISTS updated_at ON TABLE ${tableName} TYPE datetime VALUE time::now();`
   );

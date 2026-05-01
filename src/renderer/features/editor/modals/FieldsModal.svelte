@@ -3,60 +3,73 @@
   import { appState } from "../../../lib/app-state.svelte";
   import { editorStore } from "../../../lib/editor.svelte";
   import { editorUi } from "../lib/editor-ui.svelte";
-  import RecordForm from "../components/RecordForm.svelte";
   import { normalizeGridFieldConstraints } from "../../../../shared/field-schema";
   import type { GridColumnDef, GridFieldConstraints } from "../../../../shared/rpc.types";
+
+  let { fieldKey }: { fieldKey: string } = $props();
 
   type FieldDraft = GridColumnDef & {
     optionsText?: string;
     constraints: GridFieldConstraints;
   };
+
+  const fieldTypeOptions = [
+    { value: "text", label: "文本" },
+    { value: "single_select", label: "单选" },
+    { value: "number", label: "数字" },
+    { value: "decimal", label: "金额/小数" },
+    { value: "date", label: "日期" },
+    { value: "checkbox", label: "勾选" },
+  ] as const;
+
   let draftError = $state<string | null>(null);
+  let fieldDraft = $state<FieldDraft | null>(null);
 
-  let fieldDrafts = $state<FieldDraft[]>(
-    editorStore.columns.map((col) => ({
-      ...col,
-      optionsText: col.options?.join("\n") ?? "",
-      constraints: { ...col.constraints },
-    })),
-  );
+  $effect(() => {
+    const source = editorStore.columns.find((col) => col.key === fieldKey);
+    if (!source) {
+      editorUi.closeFieldEditor();
+      return;
+    }
 
-  const previewColumns = $derived(
-    fieldDrafts.map((field) => buildColumn(field, false)),
-  );
-  const previewValues = $derived(
-    Object.fromEntries(previewColumns.map((field) => [field.key, field.fieldType === "checkbox" ? false : null])),
-  );
+    fieldDraft = {
+      ...source,
+      optionsText: source.options?.join("\n") ?? "",
+      constraints: { ...source.constraints },
+    };
+    draftError = null;
+  });
 
   function close() {
-    editorUi.showFields = false;
-  }
-
-  function addField() {
-    const used = new Set(fieldDrafts.map((field) => field.key));
-    let i = fieldDrafts.length + 1;
-    while (used.has(`field_${i}`)) i++;
-    fieldDrafts = [
-      ...fieldDrafts,
-      { key: `field_${i}`, label: "新字段", fieldType: "text", required: false, optionsText: "", constraints: {} },
-    ];
-  }
-
-  function removeField(index: number) {
-    fieldDrafts = fieldDrafts.filter((_, i) => i !== index);
+    editorUi.closeFieldEditor();
   }
 
   async function save() {
-    if (appState.readOnly) return;
-    let columns: GridColumnDef[];
+    if (appState.readOnly || !fieldDraft) return;
+
+    let updatedField: GridColumnDef;
     try {
-      columns = fieldDrafts.map((field) => buildColumn(field, true));
+      updatedField = buildColumn(fieldDraft, true);
       draftError = null;
     } catch (err) {
       draftError = err instanceof Error ? err.message : String(err);
       return;
     }
-    const ok = await editorStore.updateFields(columns);
+
+    const nextColumns = editorStore.columns.map((column) => column.key === fieldKey ? updatedField : column);
+    const ok = await editorStore.updateFields(nextColumns);
+    if (ok) close();
+  }
+
+  async function removeField() {
+    if (appState.readOnly) return;
+    if (editorStore.columns.length <= 1) {
+      draftError = "至少保留一个字段";
+      return;
+    }
+
+    const nextColumns = editorStore.columns.filter((column) => column.key !== fieldKey);
+    const ok = await editorStore.updateFields(nextColumns);
     if (ok) close();
   }
 
@@ -82,120 +95,157 @@
       constraints,
     };
   }
+
+  function getFieldTypeLabel(fieldType: GridColumnDef["fieldType"]) {
+    return fieldTypeOptions.find((option) => option.value === fieldType)?.label ?? fieldType;
+  }
+
+  function hasRules(field: FieldDraft) {
+    return field.fieldType !== "checkbox";
+  }
 </script>
 
 <div class="modal-backdrop" role="presentation" onmousedown={close}>
   <div
-    class="modal fields"
+    class="modal field-modal"
     role="dialog"
     aria-modal="true"
     aria-label="字段设置"
     tabindex="-1"
     onmousedown={(event) => event.stopPropagation()}
   >
-    <header>
-      <strong>字段设置</strong>
-      <button class="icon-btn" onclick={close}><Icon name="x" size={16} /></button>
-    </header>
-    <div class="field-editor">
-      {#each fieldDrafts as field, index}
-        <div class="field-card">
-          <label>
+    {#if fieldDraft}
+      <header>
+        <div class="header-copy">
+          <strong>字段设置</strong>
+          <span>只编辑当前字段，后续可在同一入口扩展关联、权限与更多字段能力。</span>
+        </div>
+        <button class="icon-btn" onclick={close}><Icon name="x" size={16} /></button>
+      </header>
+
+      <div class="field-card">
+        <div class="field-head">
+          <div class="field-title">
+            <span class="field-index">当前字段</span>
+            <strong>{fieldDraft.label || "未命名字段"}</strong>
+            <div class="field-badges">
+              <span class="type-badge">{getFieldTypeLabel(fieldDraft.fieldType)}</span>
+              {#if fieldDraft.required}
+                <span class="required-badge">必填</span>
+              {/if}
+            </div>
+          </div>
+          <button
+            class="danger-link"
+            onclick={removeField}
+            disabled={editorStore.columns.length <= 1 || editorStore.saving}
+          >
+            删除字段
+          </button>
+        </div>
+
+        <div class="field-grid base-grid">
+          <label class="span-2">
             <span>字段名</span>
-            <input bind:value={field.label} placeholder="显示名称" />
+            <input bind:value={fieldDraft.label} placeholder="显示名称" />
           </label>
-          <label>
+          <label class="span-2">
             <span>标识</span>
-            <input bind:value={field.key} placeholder="field_key" />
+            <input bind:value={fieldDraft.key} placeholder="field_key" />
           </label>
           <label>
             <span>类型</span>
-            <select bind:value={field.fieldType}>
-              <option value="text">文本</option>
-              <option value="single_select">单选</option>
-              <option value="number">数字</option>
-              <option value="decimal">金额/小数</option>
-              <option value="date">日期</option>
-              <option value="checkbox">勾选</option>
+            <select bind:value={fieldDraft.fieldType}>
+              {#each fieldTypeOptions as option}
+                <option value={option.value}>{option.label}</option>
+              {/each}
             </select>
           </label>
-          <label class="required-row">
-            <input type="checkbox" bind:checked={field.required} />
-            <span>必填</span>
-          </label>
-          {#if field.fieldType === "text"}
-            <label>
-              <span>最小长度</span>
-              <input type="number" min="0" bind:value={field.constraints.minLength} />
+          <div class="toggle-card">
+            <span>校验</span>
+            <label class="switch-row">
+              <input type="checkbox" bind:checked={fieldDraft.required} />
+              <span>必填字段</span>
             </label>
-            <label>
-              <span>最大长度</span>
-              <input type="number" min="0" bind:value={field.constraints.maxLength} />
-            </label>
-          {/if}
-          {#if field.fieldType === "single_select"}
-            <label class="options-row">
-              <span>选项，每行一个</span>
-              <textarea bind:value={field.optionsText} rows="3"></textarea>
-            </label>
-            <label>
-              <span>选项最大长度</span>
-              <input type="number" min="0" bind:value={field.constraints.maxLength} />
-            </label>
-          {/if}
-          {#if field.fieldType === "number" || field.fieldType === "decimal"}
-            <label>
-              <span>最小值</span>
-              <input type="number" bind:value={field.constraints.min} />
-            </label>
-            <label>
-              <span>最大值</span>
-              <input type="number" bind:value={field.constraints.max} />
-            </label>
-            <label>
-              <span>步长</span>
-              <input type="number" min="0" step="any" bind:value={field.constraints.step} />
-            </label>
-          {/if}
-          {#if field.fieldType === "date"}
-            <label>
-              <span>最早日期</span>
-              <input type="date" bind:value={field.constraints.minDate} />
-            </label>
-            <label>
-              <span>最晚日期</span>
-              <input type="date" bind:value={field.constraints.maxDate} />
-            </label>
-          {/if}
-          <button
-            class="icon-btn danger"
-            title="删除字段"
-            onclick={() => removeField(index)}
-            disabled={fieldDrafts.length <= 1}
-          >
-            <Icon name="trash" size={14} />
-          </button>
+          </div>
         </div>
-      {/each}
-    </div>
-    <section class="preview-panel">
-      <div class="preview-head">
-        <strong>表单预览</strong>
-        <span>预览会按当前字段类型和限制渲染，保存后同样映射到 DDL。</span>
+
+        {#if hasRules(fieldDraft)}
+          <div class="constraints">
+            <div class="section-head">
+              <strong>字段约束</strong>
+              <span>按当前字段类型配置输入边界，保证录入数据更稳定。</span>
+            </div>
+
+            {#if fieldDraft.fieldType === "text"}
+              <div class="field-grid rule-grid">
+                <label>
+                  <span>最小长度</span>
+                  <input type="number" min="0" bind:value={fieldDraft.constraints.minLength} />
+                </label>
+                <label>
+                  <span>最大长度</span>
+                  <input type="number" min="0" bind:value={fieldDraft.constraints.maxLength} />
+                </label>
+              </div>
+            {/if}
+
+            {#if fieldDraft.fieldType === "single_select"}
+              <div class="field-grid rule-grid">
+                <label class="span-2">
+                  <span>选项列表</span>
+                  <textarea bind:value={fieldDraft.optionsText} rows="4" placeholder={"待处理\n处理中\n已完成"}></textarea>
+                </label>
+                <label>
+                  <span>选项最大长度</span>
+                  <input type="number" min="0" bind:value={fieldDraft.constraints.maxLength} />
+                </label>
+              </div>
+            {/if}
+
+            {#if fieldDraft.fieldType === "number" || fieldDraft.fieldType === "decimal"}
+              <div class="field-grid rule-grid">
+                <label>
+                  <span>最小值</span>
+                  <input type="number" bind:value={fieldDraft.constraints.min} />
+                </label>
+                <label>
+                  <span>最大值</span>
+                  <input type="number" bind:value={fieldDraft.constraints.max} />
+                </label>
+                <label>
+                  <span>步长</span>
+                  <input type="number" min="0" step="any" bind:value={fieldDraft.constraints.step} />
+                </label>
+              </div>
+            {/if}
+
+            {#if fieldDraft.fieldType === "date"}
+              <div class="field-grid rule-grid">
+                <label>
+                  <span>最早日期</span>
+                  <input type="date" bind:value={fieldDraft.constraints.minDate} />
+                </label>
+                <label>
+                  <span>最晚日期</span>
+                  <input type="date" bind:value={fieldDraft.constraints.maxDate} />
+                </label>
+              </div>
+            {/if}
+          </div>
+        {/if}
       </div>
-      <RecordForm columns={previewColumns} values={previewValues} dense={true} disabled={true} />
-    </section>
-    <footer>
-      {#if editorStore.saveError}
-        <span class="modal-error">{editorStore.saveError}</span>
-      {:else if draftError}
-        <span class="modal-error">{draftError}</span>
-      {/if}
-      <button class="secondary-btn" onclick={addField}>
-        <Icon name="plus" size={13} />新增字段
-      </button>
-      <button class="primary-btn" onclick={save} disabled={editorStore.saving}>保存字段</button>
-    </footer>
+
+      <footer>
+        {#if editorStore.saveError}
+          <span class="modal-error">{editorStore.saveError}</span>
+        {:else if draftError}
+          <span class="modal-error">{draftError}</span>
+        {/if}
+        <button class="secondary-btn" onclick={close}>取消</button>
+        <button class="primary-btn" onclick={save} disabled={editorStore.saving}>保存字段</button>
+      </footer>
+    {/if}
   </div>
 </div>
 
@@ -206,136 +256,283 @@
     inset: 0;
     display: grid;
     place-items: center;
-    background: rgba(0, 0, 0, .32);
+    background: rgba(15, 23, 42, .22);
+    backdrop-filter: blur(4px);
   }
 
   .modal {
+    width: min(720px, calc(100vw - 32px));
     max-height: 90vh;
     overflow: hidden;
-    border-radius: 14px;
+    border-radius: 16px;
     background: var(--surface);
-    box-shadow: 0 16px 48px rgba(0, 0, 0, .18);
-  }
-
-  .fields {
-    width: min(760px, calc(100vw - 32px));
+    box-shadow: 0 24px 60px rgba(15, 23, 42, .18);
   }
 
   .modal header {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
-    padding: 18px 20px 14px;
+    gap: 16px;
+    padding: 18px 20px 16px;
     border-bottom: 1px solid var(--border);
   }
 
-  .field-editor {
+  .header-copy {
     display: grid;
-    gap: 10px;
-    max-height: 62vh;
-    overflow: auto;
-    padding: 16px 20px;
+    gap: 4px;
+  }
+
+  .header-copy strong {
+    color: var(--text-1);
+    font-size: 16px;
+  }
+
+  .header-copy span {
+    color: var(--text-3);
+    font-size: 12px;
+    line-height: 1.5;
   }
 
   .field-card {
-    position: relative;
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr)) 76px 32px;
-    align-items: end;
-    gap: 10px;
-    padding: 12px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--bg);
+    gap: 16px;
+    padding: 18px 20px;
   }
 
-  .field-card label > span {
-    display: block;
-    margin-bottom: 6px;
+  .field-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+  }
+
+  .field-title {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .field-index {
     color: var(--text-3);
     font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .04em;
+    text-transform: uppercase;
   }
 
-  .required-row {
+  .field-title strong {
+    color: var(--text-1);
+    font-size: 15px;
+    line-height: 1.3;
+  }
+
+  .field-badges {
     display: flex;
-    height: 34px;
-    align-items: center;
+    flex-wrap: wrap;
     gap: 6px;
   }
 
-  .required-row input {
-    width: auto;
+  .type-badge,
+  .required-badge {
+    display: inline-flex;
+    align-items: center;
+    height: 24px;
+    padding: 0 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
   }
 
-  .required-row span {
+  .type-badge {
+    background: #eef3ff;
+    color: #3156b8;
+  }
+
+  .required-badge {
+    background: #fff4e8;
+    color: #b86a1d;
+  }
+
+  .danger-link {
+    display: inline-flex;
+    align-items: center;
+    height: 32px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: 8px;
+    background: #fff1f0;
+    color: var(--error);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .danger-link:disabled {
+    opacity: .45;
+    cursor: not-allowed;
+  }
+
+  .field-grid {
+    display: grid;
+    gap: 12px;
+  }
+
+  .base-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .rule-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .span-2 {
+    grid-column: span 2;
+  }
+
+  label,
+  .toggle-card {
+    display: grid;
+    gap: 6px;
+  }
+
+  label > span,
+  .toggle-card > span {
+    color: var(--text-3);
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .toggle-card {
+    align-content: start;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--soft);
+  }
+
+  .switch-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 22px;
+    color: var(--text-1);
+    font-size: 13px;
+  }
+
+  .switch-row input {
+    width: 16px;
+    height: 16px;
     margin: 0;
   }
 
-  .options-row {
-    grid-column: 1 / -2;
+  .constraints {
+    display: grid;
+    gap: 12px;
+    padding: 14px;
+    border: 1px solid #edf1f6;
+    border-radius: 12px;
+    background: #fafbfd;
   }
 
-  .preview-panel {
-    border-top: 1px solid var(--border);
-    padding: 16px 20px 18px;
-    background: #fbfcfe;
-  }
-
-  .preview-head {
+  .section-head {
     display: grid;
     gap: 4px;
-    margin-bottom: 12px;
   }
 
-  .preview-head strong {
+  .section-head strong {
     color: var(--text-1);
     font-size: 13px;
   }
 
-  .preview-head span {
+  .section-head span {
     color: var(--text-3);
     font-size: 11px;
-  }
-
-  textarea {
-    width: 100%;
-    resize: vertical;
-    padding: 8px 12px;
-    border: 1px solid var(--border);
-    border-radius: 7px;
-    outline: none;
-    color: var(--text-1);
-    font-size: 13px;
-    font-family: inherit;
+    line-height: 1.5;
   }
 
   input,
   select {
     width: 100%;
-    padding: 8px 12px;
+    height: 40px;
+    padding: 0 12px;
     border: 1px solid var(--border);
-    border-radius: 7px;
+    border-radius: 10px;
     outline: none;
     color: var(--text-1);
     font-size: 13px;
+    background: var(--surface);
   }
 
-  .danger {
-    color: var(--error);
+  textarea {
+    width: 100%;
+    min-height: 96px;
+    resize: vertical;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    outline: none;
+    color: var(--text-1);
+    font-size: 13px;
+    font-family: inherit;
+    background: var(--surface);
   }
 
-  .fields footer {
+  input:focus,
+  select:focus,
+  textarea:focus {
+    border-color: #8db3ff;
+    box-shadow: 0 0 0 3px rgba(22, 100, 255, .12);
+  }
+
+  footer {
     display: flex;
     align-items: center;
     justify-content: flex-end;
     gap: 8px;
-    padding: 12px 20px;
+    padding: 12px 20px 18px;
     border-top: 1px solid var(--border);
+  }
+
+  footer :global(.secondary-btn),
+  footer :global(.primary-btn) {
+    height: 36px;
+    padding: 0 18px;
   }
 
   .modal-error {
     margin-right: auto;
     color: var(--error);
     font-size: 12px;
+  }
+
+  @media (max-width: 720px) {
+    .field-head,
+    footer {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
+    .base-grid,
+    .rule-grid {
+      grid-template-columns: 1fr 1fr;
+    }
+  }
+
+  @media (max-width: 560px) {
+    .modal header,
+    .field-card,
+    footer {
+      padding-left: 16px;
+      padding-right: 16px;
+    }
+
+    .base-grid,
+    .rule-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .span-2 {
+      grid-column: auto;
+    }
   }
 </style>

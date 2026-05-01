@@ -2,6 +2,7 @@
   import { onDestroy, onMount } from "svelte";
   import type { ColumnRegular } from "@revolist/svelte-datagrid";
   import { RevoGrid } from "@revolist/svelte-datagrid";
+  import Icon from "../../../components/Icon.svelte";
   import { appState } from "../../../lib/app-state.svelte";
   import { editorStore } from "../../../lib/editor.svelte";
   import { editorUi } from "../lib/editor-ui.svelte";
@@ -54,6 +55,7 @@
   onMount(() => {
     const grid = gridRef?.getWebComponent();
     if (!grid) return;
+    const headerRoot = grid.shadowRoot;
 
     const beforePaste = (event: Event) => {
       const detail = (event as CustomEvent<{ parsed?: unknown[][] }>).detail;
@@ -76,11 +78,37 @@
       }
     };
 
+    const onHeaderContextMenu = (event: Event) => {
+      const mouseEvent = event as MouseEvent;
+      const path = typeof mouseEvent.composedPath === "function" ? mouseEvent.composedPath() : [];
+
+      const headerCell = path.find((node) => node instanceof HTMLElement && node.classList.contains("rgHeaderCell"));
+      if (!(headerCell instanceof HTMLElement)) return;
+
+      const isResizeHandle = path.some((node) => node instanceof HTMLElement && node.classList.contains("resizable"));
+      if (isResizeHandle) return;
+
+      const rawIndex = headerCell.getAttribute("data-rgCol");
+      const index = rawIndex ? Number(rawIndex) : Number.NaN;
+      if (!Number.isInteger(index)) return;
+
+      const column = editorStore.visibleColumns[index];
+      if (!column) return;
+
+      mouseEvent.preventDefault();
+      mouseEvent.stopPropagation();
+      editorUi.openFieldMenu(column.key, mouseEvent.clientX, mouseEvent.clientY);
+    };
+
     grid.addEventListener("beforepasteapply", beforePaste);
     grid.addEventListener("afterpasteapply", afterPaste);
+    grid.addEventListener("contextmenu", onHeaderContextMenu, true);
+    headerRoot?.addEventListener("contextmenu", onHeaderContextMenu, true);
     cleanup = () => {
       grid.removeEventListener("beforepasteapply", beforePaste);
       grid.removeEventListener("afterpasteapply", afterPaste);
+      grid.removeEventListener("contextmenu", onHeaderContextMenu, true);
+      headerRoot?.removeEventListener("contextmenu", onHeaderContextMenu, true);
     };
   });
 
@@ -104,6 +132,20 @@
     editorUi.selectRow(
       typeof rowIndex === "number" ? (editorStore.rows[rowIndex]?.id ?? null) : null,
     );
+  }
+
+  function openFieldEditor() {
+    if (!editorUi.fieldMenu.fieldKey) return;
+    editorUi.openFieldEditor(editorUi.fieldMenu.fieldKey);
+  }
+
+  function hideField() {
+    const fieldKey = editorUi.fieldMenu.fieldKey;
+    if (!fieldKey) return;
+    const hidden = new Set(editorStore.viewParams.hiddenFields ?? []);
+    hidden.add(fieldKey);
+    editorStore.setHiddenFields(Array.from(hidden));
+    editorUi.closeFieldMenu();
   }
 </script>
 
@@ -129,6 +171,30 @@
   />
 </div>
 
+{#if editorUi.fieldMenu.open && editorUi.fieldMenu.fieldKey}
+  <div
+    class="field-menu"
+    role="menu"
+    aria-label="字段菜单"
+    tabindex="-1"
+    style={`left:${editorUi.fieldMenu.x}px; top:${editorUi.fieldMenu.y}px;`}
+    onmousedown={(event) => event.stopPropagation()}
+  >
+    <div class="field-menu-head">
+      <strong>{editorStore.columns.find((col) => col.key === editorUi.fieldMenu.fieldKey)?.label ?? "字段"}</strong>
+      <span>{editorUi.fieldMenu.fieldKey}</span>
+    </div>
+    <button class="menu-item" role="menuitem" onclick={openFieldEditor}>
+      <span>字段设置</span>
+      <Icon name="settings" size={13} />
+    </button>
+    <button class="menu-item" role="menuitem" onclick={hideField}>
+      <span>隐藏字段</span>
+      <Icon name="eye" size={13} />
+    </button>
+  </div>
+{/if}
+
 <style>
   .grid-wrap {
     min-width: 0;
@@ -152,5 +218,56 @@
   :global(revo-grid .rgCell),
   :global(revo-grid .rgHeaderCell) {
     font-size: 12px;
+  }
+
+  .field-menu {
+    position: fixed;
+    z-index: 60;
+    display: grid;
+    min-width: 188px;
+    padding: 8px;
+    border: 1px solid #dfe4ee;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, .98);
+    box-shadow: 0 18px 42px rgba(15, 23, 42, .16);
+    backdrop-filter: blur(12px);
+  }
+
+  .field-menu-head {
+    display: grid;
+    gap: 3px;
+    padding: 4px 6px 8px;
+    border-bottom: 1px solid #edf1f6;
+    margin-bottom: 4px;
+  }
+
+  .field-menu-head strong {
+    color: var(--text-1);
+    font-size: 13px;
+    line-height: 1.3;
+  }
+
+  .field-menu-head span {
+    color: var(--text-3);
+    font-size: 11px;
+  }
+
+  .menu-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 34px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text-2);
+    font-size: 12px;
+    text-align: left;
+  }
+
+  .menu-item:hover {
+    background: #f5f8ff;
+    color: var(--primary);
   }
 </style>

@@ -19,6 +19,7 @@ DEFINE TABLE IF NOT EXISTS $tbl_company SCHEMALESS
     FOR create, update, delete WHERE
       workspace.owner = $auth;
 DEFINE FIELD IF NOT EXISTS workspace  ON TABLE $tbl_company TYPE record<workspace>;
+DEFINE FIELD IF NOT EXISTS created_by ON TABLE $tbl_company TYPE option<record<app_user>>;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE $tbl_company TYPE datetime VALUE time::now();
 DEFINE FIELD IF NOT EXISTS updated_at ON TABLE $tbl_company TYPE datetime VALUE time::now();
 DEFINE INDEX IF NOT EXISTS idx_workspace ON TABLE $tbl_company COLUMNS workspace;
@@ -31,6 +32,7 @@ DEFINE TABLE IF NOT EXISTS $tbl_person SCHEMALESS
     FOR create, update, delete WHERE
       workspace.owner = $auth;
 DEFINE FIELD IF NOT EXISTS workspace  ON TABLE $tbl_person TYPE record<workspace>;
+DEFINE FIELD IF NOT EXISTS created_by ON TABLE $tbl_person TYPE option<record<app_user>>;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE $tbl_person TYPE datetime VALUE time::now();
 DEFINE FIELD IF NOT EXISTS updated_at ON TABLE $tbl_person TYPE datetime VALUE time::now();
 DEFINE INDEX IF NOT EXISTS idx_workspace ON TABLE $tbl_person COLUMNS workspace;
@@ -43,6 +45,7 @@ DEFINE TABLE IF NOT EXISTS $tbl_trust SCHEMALESS
     FOR create, update, delete WHERE
       workspace.owner = $auth;
 DEFINE FIELD IF NOT EXISTS workspace  ON TABLE $tbl_trust TYPE record<workspace>;
+DEFINE FIELD IF NOT EXISTS created_by ON TABLE $tbl_trust TYPE option<record<app_user>>;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE $tbl_trust TYPE datetime VALUE time::now();
 DEFINE FIELD IF NOT EXISTS updated_at ON TABLE $tbl_trust TYPE datetime VALUE time::now();
 DEFINE INDEX IF NOT EXISTS idx_workspace ON TABLE $tbl_trust COLUMNS workspace;

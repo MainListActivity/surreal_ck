@@ -55,7 +55,7 @@ export function assertWritable(): void {
 type CurrentUserRow = { id: RecordId };
 type WorkspaceAccessRow = { id: RecordId };
 
-async function getCurrentUserId(): Promise<RecordId> {
+export async function getCurrentUserRecordId(): Promise<RecordId> {
   assertAuthenticated();
 
   const db = getLocalDb();
@@ -69,7 +69,7 @@ async function getCurrentUserId(): Promise<RecordId> {
 
 /** 断言用户有指定 workspace 的读权限。 */
 export async function assertCanReadWorkspace(workspaceId: string): Promise<void> {
-  const userId = await getCurrentUserId();
+  const userId = await getCurrentUserRecordId();
   const db = getLocalDb();
   const rows = await db.query<[WorkspaceAccessRow[]]>(
     `SELECT id

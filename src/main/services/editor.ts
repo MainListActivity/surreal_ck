@@ -1,6 +1,6 @@
 import { RecordId, StringRecordId } from "surrealdb";
 import { getLocalDb } from "../db/index";
-import { assertCanReadWorkspace, assertCanWriteWorkspace, getServiceContext } from "./context";
+import { assertCanReadWorkspace, assertCanWriteWorkspace, getCurrentUserRecordId, getServiceContext } from "./context";
 import { ServiceError } from "./errors";
 import { gridColumnToStoredDef, normalizeGridColumnDef, overwriteEntityField, removeEntityField } from "./workbooks";
 import { coerceGridFieldValue, validateGridFieldValue } from "../../shared/field-schema";
@@ -178,6 +178,8 @@ export async function upsertRows({
     throw new ServiceError("INTERNAL_ERROR", "无效的实体表名");
   }
   await assertDynamicTableExists(tableName);
+  await ensureEntityAuditFields(tableName);
+  const currentUserId = await getCurrentUserRecordId();
 
   const upserted: GridRow[] = [];
 
@@ -200,9 +202,10 @@ export async function upsertRows({
     if (rowPatch.id) {
       assertRowIdBelongsToTable(rowPatch.id, tableName);
       // 更新已有行
+      const updateValues = { ...cleanValues, updated_at: new Date() };
       const updated = await db.query<[EntityRow[]]>(
         `UPDATE $rowId MERGE $vals`,
-        { rowId: new StringRecordId(rowPatch.id), vals: cleanValues }
+        { rowId: new StringRecordId(rowPatch.id), vals: updateValues }
       );
       const r = updated[0]?.[0];
       if (r) {
@@ -211,6 +214,7 @@ export async function upsertRows({
     } else {
       // 新增行
       cleanValues.workspace = wbRow.workspace;
+      cleanValues.created_by = currentUserId;
       const created = await db.query<[EntityRow[]]>(
         `CREATE type::table($t) CONTENT $vals`,
         { t: tableName, vals: cleanValues }
@@ -478,7 +482,7 @@ function coerceFilterValue(value: unknown, column: StoredColumnDef): unknown {
 function entityRowToDTO(row: EntityRow, validKeys: Set<string>): GridRow {
   const values: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(row)) {
-    if (k === "id" || k === "workspace" || k === "created_at" || k === "updated_at") continue;
+    if (k === "id" || k === "workspace" || k === "created_by" || k === "created_at" || k === "updated_at") continue;
     if (validKeys.has(k)) values[k] = v;
   }
   return { id: String(row.id), values };
@@ -528,6 +532,19 @@ async function assertDynamicTableExists(tableName: string): Promise<void> {
   if (!Object.prototype.hasOwnProperty.call(tables, tableName)) {
     throw new ServiceError("NOT_FOUND", `动态实体表不存在: ${tableName}`);
   }
+}
+
+async function ensureEntityAuditFields(tableName: string): Promise<void> {
+  if (!/^ent_[a-z0-9_]+$/.test(tableName)) {
+    throw new ServiceError("INTERNAL_ERROR", "无效的实体表名");
+  }
+  const db = getLocalDb();
+  await db.query(
+    `DEFINE FIELD IF NOT EXISTS workspace  ON TABLE ${tableName} TYPE option<record<workspace>>;
+     DEFINE FIELD IF NOT EXISTS created_by ON TABLE ${tableName} TYPE option<record<app_user>>;
+     DEFINE FIELD IF NOT EXISTS created_at ON TABLE ${tableName} TYPE datetime VALUE time::now();
+     DEFINE FIELD IF NOT EXISTS updated_at ON TABLE ${tableName} TYPE datetime VALUE time::now();`
+  );
 }
 
 function assertRowIdBelongsToTable(rowId: string, tableName: string): void {

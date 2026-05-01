@@ -53,13 +53,7 @@
   {#if selectedCount > 0}
     <span class="selected-hint">已选 {selectedCount} 条</span>
   {/if}
-  <button
-    class="compact ghost-btn"
-    onclick={() => (editorUi.showFields = true)}
-    disabled={appState.readOnly || !editorStore.activeSheetId}
-  >
-    <Icon name="settings" size={13} />字段
-  </button>
+  <span class="header-hint">右键字段名可配置字段</span>
   <button
     class="primary-btn compact"
     onclick={() => (editorUi.showAdd = true)}
@@ -165,6 +159,12 @@
   }
 
   .selected-hint {
+    margin-right: 8px;
+    color: var(--text-3);
+    font-size: 11px;
+  }
+
+  .header-hint {
     margin-right: 8px;
     color: var(--text-3);
     font-size: 11px;

@@ -28,6 +28,7 @@
   });
 
   async function submit() {
+    if (!selectedRow) return;
     const values: Record<string, unknown> = {};
     const nextErrors: Record<string, string> = {};
     for (const col of editorStore.columns) {
@@ -39,10 +40,7 @@
     fieldErrors = nextErrors;
     if (Object.keys(nextErrors).length) return;
 
-    const ok = await editorStore.saveRows([{ id: selectedRow?.id, values }]);
-    if (ok && !selectedRow) {
-      draft = Object.fromEntries(editorStore.columns.map((col) => [col.key, col.fieldType === "checkbox" ? false : null]));
-    }
+    await editorStore.saveRows([{ id: selectedRow.id, values }]);
   }
 </script>
 
@@ -65,21 +63,11 @@
     <button class="primary-btn" onclick={submit} disabled={editorStore.saving}>保存当前记录</button>
   </div>
 {:else}
-  <div class="preview-head">
-    <strong>DDL 表单预览</strong>
-    <span>字段类型、必填和限制会直接映射到输入控件</span>
-  </div>
-  {#if editorStore.columns.length}
-    <RecordForm columns={editorStore.columns} values={draft} errors={fieldErrors} dense={true} />
-    <div class="panel-actions">
-      {#if editorStore.saveError}
-        <span class="panel-error">{editorStore.saveError}</span>
-      {/if}
-      <button class="primary-btn" onclick={submit} disabled={editorStore.saving}>按表单新增记录</button>
-    </div>
-  {:else}
-    <EmptyState icon="info" title="请选择一行" desc="当前 Sheet 还没有可预览的字段" />
-  {/if}
+  <EmptyState
+    icon="info"
+    title="未选择记录"
+    desc="在表格 / 看板 / 画廊视图中选中一行查看详情，或切换到「表单视图」新增记录"
+  />
 {/if}
 
 <style>
@@ -109,25 +97,6 @@
     color: var(--pill-color, var(--text-3));
     font-size: 10px;
     font-weight: 600;
-  }
-
-  .preview-head {
-    display: grid;
-    gap: 4px;
-    margin-bottom: 14px;
-    padding-bottom: 12px;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .preview-head strong {
-    color: var(--text-1);
-    font-size: 14px;
-  }
-
-  .preview-head span {
-    color: var(--text-3);
-    font-size: 11px;
-    line-height: 1.5;
   }
 
   .panel-actions {

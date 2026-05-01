@@ -31,7 +31,7 @@
 
   function handleGlobalPointer(event: MouseEvent) {
     const target = event.target;
-    if (target instanceof HTMLElement && target.closest(".menu-wrap, .tool-overlay, .tool-btn")) return;
+    if (target instanceof HTMLElement && target.closest(".menu-wrap, .tool-overlay, .tool-btn, .field-menu, .field-modal")) return;
     editorUi.closeAllPopups();
   }
 
@@ -85,8 +85,8 @@
   <AddRecordModal />
 {/if}
 
-{#if editorUi.showFields}
-  <FieldsModal />
+{#if editorUi.editingFieldKey}
+  <FieldsModal fieldKey={editorUi.editingFieldKey} />
 {/if}
 
 {#if editorUi.showShare}

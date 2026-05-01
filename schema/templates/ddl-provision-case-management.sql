@@ -19,6 +19,7 @@ DEFINE TABLE IF NOT EXISTS $tbl_case SCHEMALESS
     FOR create, update, delete WHERE
       workspace.owner = $auth;
 DEFINE FIELD IF NOT EXISTS workspace  ON TABLE $tbl_case TYPE record<workspace>;
+DEFINE FIELD IF NOT EXISTS created_by ON TABLE $tbl_case TYPE option<record<app_user>>;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE $tbl_case TYPE datetime VALUE time::now();
 DEFINE FIELD IF NOT EXISTS updated_at ON TABLE $tbl_case TYPE datetime VALUE time::now();
 DEFINE INDEX IF NOT EXISTS idx_workspace ON TABLE $tbl_case COLUMNS workspace;
@@ -31,6 +32,7 @@ DEFINE TABLE IF NOT EXISTS $tbl_client SCHEMALESS
     FOR create, update, delete WHERE
       workspace.owner = $auth;
 DEFINE FIELD IF NOT EXISTS workspace  ON TABLE $tbl_client TYPE record<workspace>;
+DEFINE FIELD IF NOT EXISTS created_by ON TABLE $tbl_client TYPE option<record<app_user>>;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE $tbl_client TYPE datetime VALUE time::now();
 DEFINE FIELD IF NOT EXISTS updated_at ON TABLE $tbl_client TYPE datetime VALUE time::now();
 DEFINE INDEX IF NOT EXISTS idx_workspace ON TABLE $tbl_client COLUMNS workspace;
@@ -43,6 +45,7 @@ DEFINE TABLE IF NOT EXISTS $tbl_document SCHEMALESS
     FOR create, update, delete WHERE
       workspace.owner = $auth;
 DEFINE FIELD IF NOT EXISTS workspace  ON TABLE $tbl_document TYPE record<workspace>;
+DEFINE FIELD IF NOT EXISTS created_by ON TABLE $tbl_document TYPE option<record<app_user>>;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE $tbl_document TYPE datetime VALUE time::now();
 DEFINE FIELD IF NOT EXISTS updated_at ON TABLE $tbl_document TYPE datetime VALUE time::now();
 DEFINE INDEX IF NOT EXISTS idx_workspace ON TABLE $tbl_document COLUMNS workspace;
