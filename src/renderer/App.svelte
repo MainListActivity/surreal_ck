@@ -13,6 +13,9 @@
   import { auth, applyAuthState } from "./lib/auth.svelte";
   import { appState } from "./lib/app-state.svelte";
   import { rpc } from "./lib/rpc";
+  import { editorStore } from "./lib/editor.svelte";
+  import { editorUi } from "./features/editor/lib/editor-ui.svelte";
+  import LeaveDraftModal from "./features/editor/modals/LeaveDraftModal.svelte";
   import type { RouteState, ScreenId } from "./lib/types";
 
   const navScreens = new Set<ScreenId>(["home", "mydocs", "templates", "admin", "state-empty"]);
@@ -53,10 +56,22 @@
       }
     };
 
+    // 关闭窗口/刷新前若仍有未保存草稿，触发原生确认
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (route.screen === "editor" && editorStore.pendingDraftCount > 0) {
+        event.preventDefault();
+        event.returnValue = "";
+      }
+    };
+
     void rpc.request("getAuthState", {}).then(applyAuthState);
 
     window.addEventListener("keydown", onKeydown);
-    return () => window.removeEventListener("keydown", onKeydown);
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      window.removeEventListener("keydown", onKeydown);
+      window.removeEventListener("beforeunload", onBeforeUnload);
+    };
   });
 
   function readInitialRoute(): RouteState {
@@ -76,17 +91,43 @@
     return { screen: "home" };
   }
 
-  function navigate(screen: ScreenId, params?: Omit<RouteState, "screen">) {
-    route = { screen, ...params };
+  function commitNavigate(next: RouteState) {
+    route = next;
     try {
-      if (screen === "admin-console") {
+      if (next.screen === "admin-console") {
         localStorage.removeItem("srk_route");
       } else {
-        localStorage.setItem("srk_route", JSON.stringify(route));
+        localStorage.setItem("srk_route", JSON.stringify(next));
       }
     } catch {
       // WebView storage can be unavailable in tests.
     }
+  }
+
+  /**
+   * 集中拦截：从 editor 出去（换 screen / 换 workbookId）且当前有未保存的 draft 行时，
+   * 弹出确认弹窗，用户选择放弃后才真的导航。所有调用 navigate 的入口（topbar、SideNav、键盘快捷键等）
+   * 自动获得保护，无需各自重复实现。
+   */
+  function navigate(screen: ScreenId, params?: Omit<RouteState, "screen">) {
+    const next: RouteState = { screen, ...params };
+    const leavingWorkbook =
+      route.screen === "editor" &&
+      (next.screen !== "editor" || next.workbookId !== route.workbookId);
+
+    if (leavingWorkbook && editorStore.pendingDraftCount > 0) {
+      const draftCount = editorStore.pendingDraftCount;
+      editorUi.askLeaveConfirm(draftCount, async () => {
+        const saved = await editorStore.commitValidDrafts();
+        if (!saved) return;
+        editorStore.discardAllDrafts();
+        editorUi.closeLeaveConfirm();
+        commitNavigate(next);
+      });
+      return;
+    }
+
+    commitNavigate(next);
   }
 </script>
 
@@ -129,6 +170,10 @@
         {/if}
       </main>
     </div>
+  {/if}
+
+  {#if editorUi.leaveConfirm.open}
+    <LeaveDraftModal />
   {/if}
 </div>
 

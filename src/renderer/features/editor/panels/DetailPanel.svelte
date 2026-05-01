@@ -1,6 +1,6 @@
 <script lang="ts">
   import EmptyState from "../../../components/EmptyState.svelte";
-  import { editorStore } from "../../../lib/editor.svelte";
+  import { editorStore, isDraftRowId } from "../../../lib/editor.svelte";
   import { editorUi } from "../lib/editor-ui.svelte";
   import { cardPillStyle } from "../lib/cell-style";
   import RecordForm from "../components/RecordForm.svelte";
@@ -40,7 +40,14 @@
     fieldErrors = nextErrors;
     if (Object.keys(nextErrors).length) return;
 
-    await editorStore.saveRows([{ id: selectedRow.id, values }]);
+    if (isDraftRowId(selectedRow.id)) {
+      const result = await editorStore.commitDraftEdit(selectedRow.id, values);
+      if (result.promoted && result.newId) {
+        editorUi.selectRow(result.newId);
+      }
+    } else {
+      await editorStore.saveRows([{ id: selectedRow.id, values }]);
+    }
   }
 </script>
 

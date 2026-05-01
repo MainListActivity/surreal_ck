@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from "svelte";
+  import { onMount, onDestroy, untrack } from "svelte";
   import EmptyState from "../components/EmptyState.svelte";
   import { editorStore } from "../lib/editor.svelte";
   import type { Navigate } from "../lib/types";
@@ -22,16 +22,19 @@
   );
 
   $effect(() => {
-    if (workbookId) {
-      void editorStore.loadWorkbook(workbookId);
-    } else {
-      editorStore.reset();
-    }
+    const id = workbookId;
+    untrack(() => {
+      if (id) {
+        void editorStore.loadWorkbook(id);
+      } else {
+        editorStore.reset();
+      }
+    });
   });
 
   function handleGlobalPointer(event: MouseEvent) {
     const target = event.target;
-    if (target instanceof HTMLElement && target.closest(".menu-wrap, .tool-overlay, .tool-btn, .field-menu, .field-modal")) return;
+    if (target instanceof HTMLElement && target.closest(".menu-wrap, .tool-overlay, .tool-btn, .field-menu, .field-modal, .row-menu")) return;
     editorUi.closeAllPopups();
   }
 

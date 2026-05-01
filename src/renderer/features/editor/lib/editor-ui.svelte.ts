@@ -20,6 +20,14 @@ type EditorUiState = {
   showMenu: boolean;
   selectedRowId: RecordIdString | null;
   clipboardStatus: string;
+  /**
+   * 离开工作簿前的草稿确认弹窗。confirm = 用户选择放弃 draft 后真正要执行的导航/动作。
+   */
+  leaveConfirm: {
+    open: boolean;
+    draftCount: number;
+    confirm: (() => void | Promise<void>) | null;
+  };
 };
 
 function createEditorUi() {
@@ -40,6 +48,7 @@ function createEditorUi() {
     showMenu: false,
     selectedRowId: null,
     clipboardStatus: "支持从 Excel / WPS / Google Sheets 直接复制 TSV 粘贴",
+    leaveConfirm: { open: false, draftCount: 0, confirm: null },
   });
 
   return {
@@ -99,6 +108,13 @@ function createEditorUi() {
     },
     selectRow(id: RecordIdString | null) {
       state.selectedRowId = id;
+    },
+    get leaveConfirm() { return state.leaveConfirm; },
+    askLeaveConfirm(draftCount: number, confirm: () => void | Promise<void>) {
+      state.leaveConfirm = { open: true, draftCount, confirm };
+    },
+    closeLeaveConfirm() {
+      state.leaveConfirm = { open: false, draftCount: 0, confirm: null };
     },
   };
 }

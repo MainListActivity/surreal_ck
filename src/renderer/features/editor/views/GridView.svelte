@@ -6,6 +6,25 @@
   import { appState } from "../../../lib/app-state.svelte";
   import { editorStore } from "../../../lib/editor.svelte";
   import { editorUi } from "../lib/editor-ui.svelte";
+  import type { RecordIdString } from "../../../../shared/rpc.types";
+
+  type RowMenuState = {
+    open: boolean;
+    rowId: RecordIdString | null;
+    x: number;
+    y: number;
+    insertAboveCount: number;
+    insertBelowCount: number;
+  };
+
+  let rowMenu = $state<RowMenuState>({
+    open: false,
+    rowId: null,
+    x: 0,
+    y: 0,
+    insertAboveCount: 1,
+    insertBelowCount: 1,
+  });
 
   const groupKey = $derived(editorStore.viewParams.groupBy ?? null);
 
@@ -78,37 +97,51 @@
       }
     };
 
-    const onHeaderContextMenu = (event: Event) => {
+    const onContextMenu = (event: Event) => {
       const mouseEvent = event as MouseEvent;
       const path = typeof mouseEvent.composedPath === "function" ? mouseEvent.composedPath() : [];
 
       const headerCell = path.find((node) => node instanceof HTMLElement && node.classList.contains("rgHeaderCell"));
-      if (!(headerCell instanceof HTMLElement)) return;
+      if (headerCell instanceof HTMLElement) {
+        const isResizeHandle = path.some((node) => node instanceof HTMLElement && node.classList.contains("resizable"));
+        if (isResizeHandle) return;
+        const rawIndex = headerCell.getAttribute("data-rgCol");
+        const index = rawIndex ? Number(rawIndex) : Number.NaN;
+        if (!Number.isInteger(index)) return;
+        const column = editorStore.visibleColumns[index];
+        if (!column) return;
+        mouseEvent.preventDefault();
+        mouseEvent.stopPropagation();
+        editorUi.openFieldMenu(column.key, mouseEvent.clientX, mouseEvent.clientY);
+        return;
+      }
 
-      const isResizeHandle = path.some((node) => node instanceof HTMLElement && node.classList.contains("resizable"));
-      if (isResizeHandle) return;
-
-      const rawIndex = headerCell.getAttribute("data-rgCol");
-      const index = rawIndex ? Number(rawIndex) : Number.NaN;
-      if (!Number.isInteger(index)) return;
-
-      const column = editorStore.visibleColumns[index];
-      if (!column) return;
-
-      mouseEvent.preventDefault();
-      mouseEvent.stopPropagation();
-      editorUi.openFieldMenu(column.key, mouseEvent.clientX, mouseEvent.clientY);
+      const dataCell = path.find((node) => node instanceof HTMLElement && node.classList.contains("rgCell"));
+      if (dataCell instanceof HTMLElement) {
+        const rawRow = dataCell.getAttribute("data-rgRow");
+        const rowIndex = rawRow ? Number(rawRow) : Number.NaN;
+        if (!Number.isInteger(rowIndex)) return;
+        const sourceRow = gridSource[rowIndex];
+        if (!sourceRow || sourceRow._isGroup) return;
+        const rowId = typeof sourceRow._id === "string" ? sourceRow._id : null;
+        if (!rowId) return;
+        mouseEvent.preventDefault();
+        mouseEvent.stopPropagation();
+        openRowMenu(rowId, mouseEvent.clientX, mouseEvent.clientY);
+      }
     };
 
     grid.addEventListener("beforepasteapply", beforePaste);
     grid.addEventListener("afterpasteapply", afterPaste);
-    grid.addEventListener("contextmenu", onHeaderContextMenu, true);
-    headerRoot?.addEventListener("contextmenu", onHeaderContextMenu, true);
+    grid.addEventListener("contextmenu", onContextMenu, true);
+    headerRoot?.addEventListener("contextmenu", onContextMenu, true);
+    document.addEventListener("mousedown", onRowMenuBackdrop, true);
     cleanup = () => {
       grid.removeEventListener("beforepasteapply", beforePaste);
       grid.removeEventListener("afterpasteapply", afterPaste);
-      grid.removeEventListener("contextmenu", onHeaderContextMenu, true);
-      headerRoot?.removeEventListener("contextmenu", onHeaderContextMenu, true);
+      grid.removeEventListener("contextmenu", onContextMenu, true);
+      headerRoot?.removeEventListener("contextmenu", onContextMenu, true);
+      document.removeEventListener("mousedown", onRowMenuBackdrop, true);
     };
   });
 
@@ -147,6 +180,62 @@
     editorStore.setHiddenFields(Array.from(hidden));
     editorUi.closeFieldMenu();
   }
+
+  function openRowMenu(rowId: RecordIdString, x: number, y: number) {
+    editorUi.selectRow(rowId);
+    rowMenu = {
+      open: true,
+      rowId,
+      x,
+      y,
+      insertAboveCount: 1,
+      insertBelowCount: 1,
+    };
+  }
+
+  function closeRowMenu() {
+    rowMenu = { ...rowMenu, open: false, rowId: null };
+  }
+
+  function onRowMenuBackdrop(event: MouseEvent) {
+    const target = event.target;
+    if (target instanceof HTMLElement && target.closest(".row-menu")) return;
+    if (rowMenu.open) closeRowMenu();
+  }
+
+  function expandRecord() {
+    if (!rowMenu.rowId) return;
+    editorUi.selectRow(rowMenu.rowId);
+    editorUi.openPanel("detail");
+    closeRowMenu();
+  }
+
+  function duplicateRecord() {
+    if (appState.readOnly || !rowMenu.rowId) return;
+    const targetId = rowMenu.rowId;
+    closeRowMenu();
+    editorStore.duplicateRowAsDraft(targetId);
+  }
+
+  function insertRows(direction: "above" | "below") {
+    if (appState.readOnly || !rowMenu.rowId) return;
+    const count = direction === "above" ? rowMenu.insertAboveCount : rowMenu.insertBelowCount;
+    const targetId = rowMenu.rowId;
+    closeRowMenu();
+    editorStore.insertBlankRows(targetId, count, direction);
+  }
+
+  async function deleteRecord() {
+    if (appState.readOnly || !rowMenu.rowId) return;
+    const targetId = rowMenu.rowId;
+    closeRowMenu();
+    await editorStore.deleteRowIds([targetId]);
+  }
+
+  function appendRowAtEnd() {
+    if (appState.readOnly) return;
+    editorStore.insertBlankRows(null, 1, "end");
+  }
 </script>
 
 <div class="grid-wrap">
@@ -169,7 +258,85 @@
     on:afterfocus={handleFocus}
     on:afteredit={handleAfterEdit}
   />
+  <button
+    type="button"
+    class="row-add"
+    onclick={appendRowAtEnd}
+    disabled={appState.readOnly || !editorStore.activeSheetId}
+    aria-label="新增一行"
+  >
+    <Icon name="plus" size={14} />
+  </button>
 </div>
+
+{#if rowMenu.open && rowMenu.rowId}
+  <div
+    class="row-menu"
+    role="menu"
+    aria-label="行操作菜单"
+    tabindex="-1"
+    style={`left:${rowMenu.x}px; top:${rowMenu.y}px;`}
+    onmousedown={(event) => event.stopPropagation()}
+  >
+    <button class="menu-item" role="menuitem" onclick={expandRecord}>
+      <Icon name="externalLink" size={13} />
+      <span>展开记录</span>
+    </button>
+    <div class="menu-sep"></div>
+    <button class="menu-item" role="menuitem" onclick={duplicateRecord} disabled={appState.readOnly}>
+      <Icon name="copy" size={13} />
+      <span>创建副本</span>
+    </button>
+    <div class="menu-row" role="menuitem">
+      <Icon name="arrowUp" size={13} />
+      <span>在上方插入</span>
+      <input
+        type="number"
+        min="1"
+        max="200"
+        bind:value={rowMenu.insertAboveCount}
+        onclick={(e) => e.stopPropagation()}
+        disabled={appState.readOnly}
+      />
+      <span class="muted">行</span>
+      <button
+        type="button"
+        class="menu-row-go"
+        onclick={() => insertRows("above")}
+        disabled={appState.readOnly}
+      >确定</button>
+    </div>
+    <div class="menu-row" role="menuitem">
+      <Icon name="arrowDown" size={13} />
+      <span>在下方插入</span>
+      <input
+        type="number"
+        min="1"
+        max="200"
+        bind:value={rowMenu.insertBelowCount}
+        onclick={(e) => e.stopPropagation()}
+        disabled={appState.readOnly}
+      />
+      <span class="muted">行</span>
+      <button
+        type="button"
+        class="menu-row-go"
+        onclick={() => insertRows("below")}
+        disabled={appState.readOnly}
+      >确定</button>
+    </div>
+    <div class="menu-sep"></div>
+    <button class="menu-item" role="menuitem" disabled>
+      <Icon name="link" size={13} />
+      <span>获取分享链接</span>
+    </button>
+    <div class="menu-sep"></div>
+    <button class="menu-item danger" role="menuitem" onclick={deleteRecord} disabled={appState.readOnly}>
+      <Icon name="trash" size={13} />
+      <span>删除记录</span>
+    </button>
+  </div>
+{/if}
 
 {#if editorUi.fieldMenu.open && editorUi.fieldMenu.fieldKey}
   <div
@@ -197,10 +364,39 @@
 
 <style>
   .grid-wrap {
+    position: relative;
+    display: flex;
     min-width: 0;
     flex: 1;
+    flex-direction: column;
     overflow: hidden;
     background: #fafbfc;
+  }
+
+  .row-add {
+    display: flex;
+    height: 32px;
+    width: 100%;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 6px;
+    padding: 0 14px;
+    border: 0;
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-3);
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .row-add:hover {
+    background: #f5f8ff;
+    color: var(--primary);
+  }
+
+  .row-add:disabled {
+    opacity: .5;
+    cursor: not-allowed;
   }
 
   :global(revo-grid) {
@@ -269,5 +465,117 @@
   .menu-item:hover {
     background: #f5f8ff;
     color: var(--primary);
+  }
+
+  .row-menu {
+    position: fixed;
+    z-index: 60;
+    display: grid;
+    min-width: 220px;
+    padding: 6px;
+    border: 1px solid #dfe4ee;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, .98);
+    box-shadow: 0 18px 42px rgba(15, 23, 42, .16);
+    backdrop-filter: blur(12px);
+  }
+
+  .row-menu .menu-item {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 8px;
+    height: 32px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text-2);
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .row-menu .menu-item:hover:not(:disabled) {
+    background: #f5f8ff;
+    color: var(--primary);
+  }
+
+  .row-menu .menu-item:disabled {
+    opacity: .55;
+    cursor: not-allowed;
+  }
+
+  .row-menu .menu-item.danger {
+    color: var(--error, #e54848);
+  }
+
+  .row-menu .menu-item.danger:hover:not(:disabled) {
+    background: #fff0f0;
+    color: var(--error, #e54848);
+  }
+
+  .row-menu .menu-sep {
+    height: 1px;
+    margin: 4px 6px;
+    background: #edf1f6;
+  }
+
+  .row-menu .menu-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 32px;
+    padding: 0 10px;
+    border-radius: 8px;
+    color: var(--text-2);
+    font-size: 12px;
+  }
+
+  .row-menu .menu-row:hover {
+    background: #f5f8ff;
+  }
+
+  .row-menu .menu-row > span {
+    flex-shrink: 0;
+  }
+
+  .row-menu .menu-row .muted {
+    color: var(--text-3);
+  }
+
+  .row-menu .menu-row input {
+    width: 48px;
+    height: 22px;
+    padding: 0 6px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text-1);
+    font-size: 12px;
+    text-align: center;
+    margin-left: auto;
+  }
+
+  .row-menu .menu-row .menu-row-go {
+    height: 22px;
+    padding: 0 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text-2);
+    font-size: 11px;
+    cursor: pointer;
+  }
+
+  .row-menu .menu-row .menu-row-go:hover:not(:disabled) {
+    border-color: var(--primary);
+    color: var(--primary);
+  }
+
+  .row-menu .menu-row .menu-row-go:disabled,
+  .row-menu .menu-row input:disabled {
+    opacity: .55;
+    cursor: not-allowed;
   }
 </style>

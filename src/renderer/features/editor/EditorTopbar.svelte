@@ -95,6 +95,12 @@
       <Icon name="check" size={13} />已保存
     {/if}
   </span>
+  {#if editorStore.pendingDraftCount > 0}
+    <span class="draft-hint" title="这些草稿仅存在于内存中，待必填字段填齐后会自动保存">
+      <Icon name="alertCircle" size={12} />
+      {editorStore.pendingDraftCount} 条未保存草稿
+    </span>
+  {/if}
   <span class="divider"></span>
   {#each panelRegistry as tab}
     <button
@@ -208,6 +214,19 @@
 
   .sync.error {
     color: var(--error);
+  }
+
+  .draft-hint {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 22px;
+    padding: 0 8px;
+    border-radius: 11px;
+    background: var(--warning-bg);
+    color: var(--warning);
+    font-size: 11px;
+    font-weight: 600;
   }
 
   .panel-toggle.active {
