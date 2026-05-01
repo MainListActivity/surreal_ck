@@ -283,13 +283,25 @@ DEFINE FIELD IF NOT EXISTS workspace        ON TABLE form_definition TYPE record
 DEFINE FIELD IF NOT EXISTS title            ON TABLE form_definition TYPE string;
 DEFINE FIELD IF NOT EXISTS slug             ON TABLE form_definition TYPE string;
 DEFINE FIELD IF NOT EXISTS target_sheet     ON TABLE form_definition TYPE record<sheet>;
+-- 表单封面图片 URL（可选，用于填写表单时展示头图）
+DEFINE FIELD IF NOT EXISTS cover_url        ON TABLE form_definition TYPE option<string>;
+-- 表单详细说明（富文本/纯文本，渲染在表单顶部，向填写人展示填写须知）
+DEFINE FIELD IF NOT EXISTS description      ON TABLE form_definition TYPE option<string>;
 REMOVE FIELD IF EXISTS fields.* ON TABLE form_definition;
 REMOVE FIELD IF EXISTS conditional_rules.* ON TABLE form_definition;
 REMOVE FIELD IF EXISTS auto_edges.* ON TABLE form_definition;
+REMOVE FIELD IF EXISTS field_order.* ON TABLE form_definition;
+-- fields[]: 表单字段配置项 { key, label, field_type, required, included, position }
+--   required=true 的字段强制 included=true，前端不可移除
+--   included=false 表示该非必填字段未加入表单（数据表存在但未被表单展示）
+--   position 决定字段渲染顺序（数字越小越靠前）
 DEFINE FIELD OVERWRITE fields            ON TABLE form_definition TYPE any DEFAULT [];
+-- field_order[]: 仅记录 key 的顺序数组，可作为 fields[].position 之外的更轻量排序来源
+DEFINE FIELD OVERWRITE field_order       ON TABLE form_definition TYPE any DEFAULT [];
 DEFINE FIELD OVERWRITE conditional_rules ON TABLE form_definition TYPE any DEFAULT [];
 DEFINE FIELD OVERWRITE auto_edges        ON TABLE form_definition TYPE any DEFAULT [];
 DEFINE FIELD IF NOT EXISTS created_at       ON TABLE form_definition TYPE datetime VALUE time::now();
+DEFINE FIELD IF NOT EXISTS updated_at       ON TABLE form_definition TYPE datetime VALUE time::now();
 DEFINE INDEX IF NOT EXISTS form_definition_workspace_slug_unique
   ON TABLE form_definition COLUMNS workspace, slug UNIQUE;
 

@@ -440,13 +440,18 @@ export async function ensureWorkbookMetadataSchema(): Promise<void> {
     `REMOVE FIELD IF EXISTS column_defs.* ON TABLE sheet;
      REMOVE FIELD IF EXISTS edge_props.* ON TABLE edge_catalog;
      REMOVE FIELD IF EXISTS fields.* ON TABLE form_definition;
+     REMOVE FIELD IF EXISTS field_order.* ON TABLE form_definition;
      REMOVE FIELD IF EXISTS conditional_rules.* ON TABLE form_definition;
      REMOVE FIELD IF EXISTS auto_edges.* ON TABLE form_definition;
      DEFINE FIELD OVERWRITE column_defs ON TABLE sheet TYPE any DEFAULT [];
      DEFINE FIELD OVERWRITE edge_props ON TABLE edge_catalog TYPE any DEFAULT [];
-     DEFINE FIELD OVERWRITE fields ON TABLE form_definition TYPE any DEFAULT [];
+     DEFINE FIELD IF NOT EXISTS cover_url   ON TABLE form_definition TYPE option<string>;
+     DEFINE FIELD IF NOT EXISTS description ON TABLE form_definition TYPE option<string>;
+     DEFINE FIELD IF NOT EXISTS updated_at  ON TABLE form_definition TYPE datetime VALUE time::now();
+     DEFINE FIELD OVERWRITE fields            ON TABLE form_definition TYPE any DEFAULT [];
+     DEFINE FIELD OVERWRITE field_order       ON TABLE form_definition TYPE any DEFAULT [];
      DEFINE FIELD OVERWRITE conditional_rules ON TABLE form_definition TYPE any DEFAULT [];
-     DEFINE FIELD OVERWRITE auto_edges ON TABLE form_definition TYPE any DEFAULT [];`
+     DEFINE FIELD OVERWRITE auto_edges        ON TABLE form_definition TYPE any DEFAULT [];`
   );
 }
 
