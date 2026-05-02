@@ -58,14 +58,18 @@
         }
       }
 
+      coerceDateValue(input: unknown): Date | null {
+        if (input instanceof Date) return Number.isNaN(input.getTime()) ? null : input;
+        if (typeof input === "string" || typeof input === "number") {
+          const next = new Date(input);
+          return Number.isNaN(next.getTime()) ? null : next;
+        }
+        return null;
+      }
+
       render(h: (tag: string, props?: Record<string, unknown>) => unknown, extra: { model?: Record<string, unknown> } = {}) {
-        const initial = extra?.model?.[column.key];
-        this.currentValue = initial instanceof Date
-          ? initial
-          : typeof initial === "string" || typeof initial === "number"
-            ? new Date(initial)
-            : null;
-        if (this.currentValue && Number.isNaN(this.currentValue.getTime())) this.currentValue = null;
+        const initial = this.editCell?.val ?? extra?.model?.[column.key];
+        this.currentValue = this.coerceDateValue(initial);
         return h("div", {
           class: "grid-date-editor-host",
           ref: (el: HTMLDivElement | null) => { this.host = el; },
