@@ -2,7 +2,7 @@
   import { onDestroy, onMount } from "svelte";
   import type { ColumnRegular } from "@revolist/svelte-datagrid";
   import { RevoGrid } from "@revolist/svelte-datagrid";
-  import type { BeforeSaveDataDetails, CellTemplateProp, ColumnTemplateProp, RowHeaders } from "@revolist/revogrid";
+  import type { CellTemplateProp, RowHeaders } from "@revolist/revogrid";
   import Icon from "../../../components/Icon.svelte";
   import { appState } from "../../../lib/app-state.svelte";
   import { editorStore } from "../../../lib/editor.svelte";
@@ -29,55 +29,14 @@
 
   const groupKey = $derived(editorStore.viewParams.groupBy ?? null);
 
-  const ADD_FIELD_PROP = "__grid_add_field__";
-  const ADD_ROW_ID = "__grid_add_row__";
-
   type GridSourceRow = Record<string, unknown> & {
     _id: string;
     _isGroup?: boolean;
-    _isAddRow?: boolean;
     _rowNumber?: number | null;
   };
 
-  function isAddFieldProp(prop: unknown): boolean {
-    return prop === ADD_FIELD_PROP;
-  }
-
   function isGridRecordRow(row: GridSourceRow | undefined): boolean {
-    return !!row && !row._isGroup && !row._isAddRow;
-  }
-
-  function isAddRow(row: GridSourceRow | undefined): boolean {
-    return !!row?._isAddRow;
-  }
-
-  function createPlusPill(
-    h: (tag: string, props?: Record<string, unknown> | null, ...children: unknown[]) => unknown,
-    label: string,
-  ) {
-    return h(
-      "div",
-      {
-        "data-grid-action": label,
-        style: {
-          display: "inline-flex",
-          alignItems: "center",
-          justifyContent: "center",
-          width: "20px",
-          height: "20px",
-          border: "1px solid #cfd6e4",
-          borderRadius: "999px",
-          color: "#5b6477",
-          fontSize: "14px",
-          fontWeight: "600",
-          lineHeight: "1",
-          background: "#ffffff",
-          boxSizing: "border-box",
-          pointerEvents: "none",
-        },
-      },
-      "+",
-    );
+    return !!row && !row._isGroup;
   }
 
   const rowHeaderColumn = $derived<RowHeaders>({
@@ -88,9 +47,6 @@
     columnTemplate: () => "",
     cellTemplate: (h, props: CellTemplateProp) => {
       const row = props.model as GridSourceRow;
-      if (isAddRow(row)) {
-        return createPlusPill(h, "append-row");
-      }
       if (row?._isGroup) return "";
       return String(row?._rowNumber ?? props.rowIndex + 1);
     },
@@ -127,52 +83,30 @@
         }
       }
 
-      if (editorStore.activeSheetId) {
-        out.push({ _id: ADD_ROW_ID, _isAddRow: true, _rowNumber: null });
-      }
       return out;
     })(),
   );
 
+  const GRID_COLUMN_WIDTH = 160;
+  const GRID_ROW_HEADER_WIDTH = 56;
+  const GRID_HEADER_HEIGHT = 45;
+  const GRID_ROW_HEIGHT = 36;
+  const ADD_FIELD_WIDTH = 56;
+  const ADD_ROW_HEIGHT = 52;
+
   const gridColumns = $derived<ColumnRegular[]>(
-    [
-      ...editorStore.visibleColumns.map((col) => ({
-        prop: col.key,
-        name: col.label,
-        size: 160,
-        readonly: ({ model }: BeforeSaveDataDetails) => !!(model as GridSourceRow)?._isAddRow,
-      })),
-      ...(editorStore.activeSheetId
-        ? [{
-            prop: ADD_FIELD_PROP,
-            name: "",
-            size: 42,
-            minSize: 42,
-            maxSize: 42,
-            readonly: true,
-            sortable: false,
-            resize: false,
-            columnProperties: () => ({
-              style: {
-                padding: "0",
-                justifyContent: "center",
-                cursor: appState.readOnly ? "not-allowed" : "pointer",
-              },
-            }),
-            columnTemplate: (
-              h: (tag: string, props?: Record<string, unknown> | null, ...children: unknown[]) => unknown,
-              _props: ColumnTemplateProp,
-            ) => createPlusPill(h, "append-field"),
-            cellProperties: ({ model }: BeforeSaveDataDetails) => ({
-              style: {
-                cursor:
-                  appState.readOnly || (model as GridSourceRow)?._isAddRow ? "default" : "pointer",
-              },
-            }),
-            cellTemplate: () => "",
-          }]
-        : []),
-    ],
+    editorStore.visibleColumns.map((col) => ({
+      prop: col.key,
+      name: col.label,
+      size: GRID_COLUMN_WIDTH,
+    })),
+  );
+
+  const visibleGridRows = $derived(Math.max(gridSource.length, 8));
+  const gridViewportWidth = $derived(GRID_ROW_HEADER_WIDTH + editorStore.visibleColumns.length * GRID_COLUMN_WIDTH + 1);
+  const gridViewportHeight = $derived(GRID_HEADER_HEIGHT + visibleGridRows * GRID_ROW_HEIGHT + 1);
+  const tableStyle = $derived(
+    `--grid-width:${gridViewportWidth}px; --grid-height:${gridViewportHeight}px; --add-field-width:${ADD_FIELD_WIDTH}px; --add-row-height:${ADD_ROW_HEIGHT}px;`,
   );
 
   let gridRef = $state<{
@@ -220,7 +154,6 @@
         const rawIndex = headerCell.getAttribute("data-rgCol");
         const index = rawIndex ? Number(rawIndex) : Number.NaN;
         if (!Number.isInteger(index)) return;
-        if (index === gridColumns.length - 1) return;
         const column = editorStore.visibleColumns[index];
         if (!column) return;
         mouseEvent.preventDefault();
@@ -236,9 +169,6 @@
         if (!Number.isInteger(rowIndex)) return;
         const sourceRow = gridSource[rowIndex];
         if (!isGridRecordRow(sourceRow)) return;
-        const rawCol = dataCell.getAttribute("data-rgCol");
-        const colIndex = rawCol ? Number(rawCol) : Number.NaN;
-        if (Number.isInteger(colIndex) && isAddFieldProp(gridColumns[colIndex]?.prop)) return;
         const rowId = typeof sourceRow._id === "string" ? sourceRow._id : null;
         if (!rowId) return;
         mouseEvent.preventDefault();
@@ -247,63 +177,14 @@
       }
     };
 
-    const onGridClick = (event: Event) => {
-      const mouseEvent = event as MouseEvent;
-      const path = typeof mouseEvent.composedPath === "function" ? mouseEvent.composedPath() : [];
-      const headerCell = path.find((node) => node instanceof HTMLElement && node.classList.contains("rgHeaderCell"));
-      if (headerCell instanceof HTMLElement) {
-        const rawIndex = headerCell.getAttribute("data-rgCol");
-        const index = rawIndex ? Number(rawIndex) : Number.NaN;
-        if (Number.isInteger(index) && isAddFieldProp(gridColumns[index]?.prop)) {
-          mouseEvent.preventDefault();
-          mouseEvent.stopPropagation();
-          void appendField();
-          return;
-        }
-      }
-
-      const cell = path.find((node) => node instanceof HTMLElement && node.classList.contains("rgCell"));
-      if (!(cell instanceof HTMLElement)) return;
-
-      const rawRow = cell.getAttribute("data-rgRow");
-      const rowIndex = rawRow ? Number(rawRow) : Number.NaN;
-      const row = Number.isInteger(rowIndex) ? gridSource[rowIndex] : undefined;
-      if (isAddRow(row)) {
-        mouseEvent.preventDefault();
-        mouseEvent.stopPropagation();
-        appendRowAtEnd();
-        return;
-      }
-
-      const rawCol = cell.getAttribute("data-rgCol");
-      const colIndex = rawCol ? Number(rawCol) : Number.NaN;
-      if (Number.isInteger(colIndex) && isAddFieldProp(gridColumns[colIndex]?.prop)) {
-        mouseEvent.preventDefault();
-        mouseEvent.stopPropagation();
-        void appendField();
-      }
-    };
-
-    const beforeEditStart = (event: Event) => {
-      const detail = (event as CustomEvent<BeforeSaveDataDetails>).detail;
-      const row = gridSource[detail.rowIndex];
-      if (isAddRow(row) || isAddFieldProp(detail.prop)) {
-        event.preventDefault();
-      }
-    };
-
     grid.addEventListener("beforepasteapply", beforePaste);
     grid.addEventListener("afterpasteapply", afterPaste);
-    grid.addEventListener("beforeeditstart", beforeEditStart);
-    grid.addEventListener("click", onGridClick, true);
     grid.addEventListener("contextmenu", onContextMenu, true);
     document.addEventListener("mousedown", onRowMenuBackdrop, true);
 
     cleanup = () => {
       grid.removeEventListener("beforepasteapply", beforePaste);
       grid.removeEventListener("afterpasteapply", afterPaste);
-      grid.removeEventListener("beforeeditstart", beforeEditStart);
-      grid.removeEventListener("click", onGridClick, true);
       grid.removeEventListener("contextmenu", onContextMenu, true);
       document.removeEventListener("mousedown", onRowMenuBackdrop, true);
     };
@@ -396,7 +277,7 @@
   }
 
   function appendRowAtEnd() {
-    if (appState.readOnly) return;
+    if (appState.readOnly || !editorStore.activeSheetId) return;
     editorStore.insertBlankRows(null, 1, "end");
   }
 
@@ -407,29 +288,55 @@
 </script>
 
 <div class="grid-wrap">
-  <div class="grid-card">
-    <RevoGrid
-      bind:this={gridRef}
-      source={gridSource}
-      columns={gridColumns}
-      theme="compact"
-      rowHeaders={rowHeaderColumn}
-      range={true}
-      resize={true}
-      useClipboard={true}
-      canFocus={true}
-      rowSize={36}
-      frameSize={35}
-      stretch="none"
-      hideAttribution={true}
-      applyOnClose={true}
-      readonly={appState.readOnly}
-      style="height: 100%; width: 100%;"
-      on:afterfocus={handleFocus}
-      on:afteredit={handleAfterEdit}
-    />
+  <section class="grid-shell" aria-label="表格视图">
+    <div class="grid-table" style={tableStyle}>
+      <div class="grid-card">
+        <RevoGrid
+          bind:this={gridRef}
+          source={gridSource}
+          columns={gridColumns}
+          theme="compact"
+          rowHeaders={rowHeaderColumn}
+          range={true}
+          resize={true}
+          useClipboard={true}
+          canFocus={true}
+          rowSize={36}
+          frameSize={35}
+          stretch="none"
+          disableVirtualX={true}
+          disableVirtualY={true}
+          hideAttribution={true}
+          applyOnClose={true}
+          readonly={appState.readOnly}
+          style="height: 100%; width: 100%;"
+          on:afterfocus={handleFocus}
+          on:afteredit={handleAfterEdit}
+        />
+      </div>
+      <button
+        type="button"
+        class="add-field-rail"
+        aria-label="添加一列"
+        title="添加一列"
+        onclick={appendField}
+        disabled={appState.readOnly || !editorStore.activeSheetId || editorStore.saving}
+      >
+        <Icon name="plus" size={16} />
+      </button>
+      <button
+        type="button"
+        class="grid-footer"
+        aria-label="添加一行"
+        title="添加一行"
+        onclick={appendRowAtEnd}
+        disabled={appState.readOnly || !editorStore.activeSheetId}
+      >
+        <span class="footer-add-icon">+</span>
+      </button>
+    </div>
+  </section>
   </div>
-</div>
 
 {#if rowMenu.open && rowMenu.rowId}
   <div
@@ -532,25 +439,125 @@
   .grid-wrap {
     position: relative;
     display: flex;
+    align-items: stretch;
+    justify-content: flex-start;
     min-width: 0;
     flex: 1;
     flex-direction: column;
-    overflow: hidden;
-    padding: 12px 16px 16px;
+    overflow: auto;
+    padding: 18px 22px;
     background: #f4f6f9;
   }
 
-  /* 表格主体卡片：白底圆角加细边，让数据区域从灰色背景中突出。 */
+  .grid-shell {
+    display: block;
+    min-width: 0;
+    width: max-content;
+    min-height: max-content;
+  }
+
+  .grid-table {
+    display: grid;
+    width: calc(var(--grid-width) + var(--add-field-width));
+    grid-template-columns: var(--grid-width) var(--add-field-width);
+    grid-template-rows: var(--grid-height) var(--add-row-height);
+    align-items: start;
+  }
+
   .grid-card {
     display: flex;
-    flex: 1;
+    width: var(--grid-width);
+    height: var(--grid-height);
     min-height: 0;
     flex-direction: column;
     overflow: hidden;
     border: 1px solid var(--border);
-    border-radius: 12px;
+    border-radius: 6px 0 0 0;
     background: var(--surface);
     box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
+  }
+
+  .add-field-rail {
+    display: inline-flex;
+    width: var(--add-field-width);
+    height: var(--grid-height);
+    align-items: flex-start;
+    justify-content: center;
+    padding-top: 14px;
+    border: 1px solid var(--border);
+    border-left: 0;
+    border-radius: 0 8px 8px 0;
+    background: #fff;
+    color: #7b8494;
+    cursor: pointer;
+    transition: background .16s ease, color .16s ease, box-shadow .16s ease;
+  }
+
+  .add-field-rail:hover:not(:disabled) {
+    background: #eef5ff;
+    color: var(--primary);
+    box-shadow: inset 0 0 0 1px rgba(37, 99, 235, .08);
+  }
+
+  .add-field-rail:disabled {
+    opacity: .5;
+    cursor: not-allowed;
+  }
+
+  .grid-footer {
+    display: flex;
+    width: var(--grid-width);
+    height: var(--add-row-height);
+    align-items: center;
+    justify-content: flex-start;
+    padding: 0 0 0 28px;
+    border: 1px solid var(--border);
+    border-top: 0;
+    border-radius: 0 0 8px 8px;
+    background: #fff;
+    color: var(--text-3);
+    cursor: pointer;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, .03);
+    transition: background .16s ease, color .16s ease, box-shadow .16s ease;
+  }
+
+  .grid-footer:hover:not(:disabled) {
+    background: #eef5ff;
+    color: var(--primary);
+    box-shadow: inset 0 0 0 1px rgba(37, 99, 235, .08);
+  }
+
+  .grid-footer:disabled {
+    opacity: .5;
+    cursor: not-allowed;
+  }
+
+  .footer-add-icon {
+    display: inline-flex;
+    width: 26px;
+    height: 26px;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid #c9d1de;
+    border-radius: 999px;
+    background: #fff;
+    color: currentColor;
+    font-size: 16px;
+    line-height: 1;
+  }
+
+  :global(.grid-card revo-grid) {
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  :global(.grid-card revo-grid revogr-scroll-virtual.vertical),
+  :global(.grid-card revo-grid revogr-scroll-virtual.horizontal) {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
   }
 
   :global(revo-grid) {

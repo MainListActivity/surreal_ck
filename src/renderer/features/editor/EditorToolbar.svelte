@@ -1,6 +1,5 @@
 <script lang="ts">
   import Icon from "../../components/Icon.svelte";
-  import { appState } from "../../lib/app-state.svelte";
   import { editorStore } from "../../lib/editor.svelte";
   import { editorUi } from "./lib/editor-ui.svelte";
   import { viewRegistry } from "./registries/views";
@@ -26,11 +25,6 @@
     }
     editorUi.toggleTool(toolId);
   }
-
-  function appendRow() {
-    if (appState.readOnly || !editorStore.activeSheetId) return;
-    editorStore.insertBlankRows(null, 1, "end");
-  }
 </script>
 
 <div class="toolbar">
@@ -42,13 +36,6 @@
     {/each}
   </div>
   <span class="divider"></span>
-  <button
-    class="tool-btn add-row-btn"
-    onclick={appendRow}
-    disabled={appState.readOnly || !editorStore.activeSheetId}
-  >
-    <Icon name="plus" size={13} color="var(--primary)" />添加一行
-  </button>
   {#each toolRegistry as action}
     {@const badge = badgeFor(action.id)}
     <button
@@ -129,16 +116,6 @@
     border: 1px solid var(--primary);
     background: var(--primary-light);
     color: var(--primary);
-  }
-
-  .tool-btn.add-row-btn {
-    color: var(--primary);
-    font-weight: 500;
-  }
-
-  .tool-btn.add-row-btn:disabled {
-    opacity: .55;
-    cursor: not-allowed;
   }
 
   .tool-btn.applied {
