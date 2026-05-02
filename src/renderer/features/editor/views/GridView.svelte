@@ -1,9 +1,8 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
-  import type { ColumnRegular } from "@revolist/svelte-datagrid";
+  import type { ColumnRegular, RevoGridCustomEvent } from "@revolist/svelte-datagrid";
   import { RevoGrid } from "@revolist/svelte-datagrid";
   import type { CellTemplateProp, RowHeaders } from "@revolist/revogrid";
-  import Icon from "../../../components/Icon.svelte";
   import { appState } from "../../../lib/app-state.svelte";
   import { editorStore } from "../../../lib/editor.svelte";
   import { editorUi } from "../lib/editor-ui.svelte";
@@ -94,20 +93,59 @@
   const ADD_FIELD_WIDTH = 56;
   const ADD_ROW_HEIGHT = 52;
 
+  let columnWidths = $state<Record<string, number>>({});
+
+  const addFieldColumn = $derived<ColumnRegular>({
+    prop: "__add_field__",
+    name: "",
+    size: ADD_FIELD_WIDTH,
+    minSize: ADD_FIELD_WIDTH,
+    maxSize: ADD_FIELD_WIDTH,
+    pin: "colPinEnd",
+    readonly: true,
+    sortable: false,
+    filter: false,
+    cellTemplate: () => "",
+    columnTemplate: (h) =>
+      h(
+        "button",
+        {
+          class: {
+            "grid-add-field-header": true,
+          },
+          type: "button",
+          title: "添加一列",
+          disabled: appState.readOnly || !editorStore.activeSheetId || editorStore.saving,
+          onClick: (event: MouseEvent) => {
+            event.preventDefault();
+            event.stopPropagation();
+            void appendField();
+          },
+        },
+        h("span", { class: { "grid-add-field-header__icon": true }, "aria-hidden": "true" }, "+"),
+      ),
+  });
+
   const gridColumns = $derived<ColumnRegular[]>(
-    editorStore.visibleColumns.map((col) => ({
-      prop: col.key,
-      name: col.label,
-      size: GRID_COLUMN_WIDTH,
-    })),
+    [
+      ...editorStore.visibleColumns.map((col) => ({
+        prop: col.key,
+        name: col.label,
+        size: columnWidths[col.key] ?? GRID_COLUMN_WIDTH,
+      })),
+      addFieldColumn,
+    ] satisfies ColumnRegular[],
   );
 
   const visibleGridRows = $derived(Math.max(gridSource.length, 8));
-  const gridViewportWidth = $derived(GRID_ROW_HEADER_WIDTH + editorStore.visibleColumns.length * GRID_COLUMN_WIDTH + 1);
-  const gridViewportHeight = $derived(GRID_HEADER_HEIGHT + visibleGridRows * GRID_ROW_HEIGHT + 1);
-  const tableStyle = $derived(
-    `--grid-width:${gridViewportWidth}px; --grid-height:${gridViewportHeight}px; --add-field-width:${ADD_FIELD_WIDTH}px; --add-row-height:${ADD_ROW_HEIGHT}px;`,
+  const gridViewportWidth = $derived(
+    GRID_ROW_HEADER_WIDTH +
+      editorStore.visibleColumns.reduce((sum, col) => sum + (columnWidths[col.key] ?? GRID_COLUMN_WIDTH), 0) +
+      ADD_FIELD_WIDTH +
+      1,
   );
+  const gridViewportHeight = $derived(GRID_HEADER_HEIGHT + visibleGridRows * GRID_ROW_HEIGHT + 1);
+  const tableStyle = $derived(`--grid-width:${gridViewportWidth}px; --grid-height:${gridViewportHeight}px; --add-row-height:${ADD_ROW_HEIGHT}px;`);
 
   let gridRef = $state<{
     getWebComponent: () => HTMLElement & {
@@ -285,6 +323,26 @@
     if (appState.readOnly || !editorStore.activeSheetId) return;
     await editorStore.addField();
   }
+
+  function handleAfterColumnResize(event: RevoGridCustomEvent<{ [index: number]: ColumnRegular }>) {
+    const resizedColumns = Object.values(event.detail ?? {});
+    if (!resizedColumns.length) return;
+
+    const next = { ...columnWidths };
+    let changed = false;
+
+    for (const column of resizedColumns) {
+      if (typeof column.prop !== "string" || column.prop === addFieldColumn.prop) continue;
+      if (typeof column.size !== "number") continue;
+      if (next[column.prop] === column.size) continue;
+      next[column.prop] = column.size;
+      changed = true;
+    }
+
+    if (changed) {
+      columnWidths = next;
+    }
+  }
 </script>
 
 <div class="grid-wrap">
@@ -312,18 +370,9 @@
           style="height: 100%; width: 100%;"
           on:afterfocus={handleFocus}
           on:afteredit={handleAfterEdit}
+          on:aftercolumnresize={handleAfterColumnResize}
         />
       </div>
-      <button
-        type="button"
-        class="add-field-rail"
-        aria-label="添加一列"
-        title="添加一列"
-        onclick={appendField}
-        disabled={appState.readOnly || !editorStore.activeSheetId || editorStore.saving}
-      >
-        <Icon name="plus" size={16} />
-      </button>
       <button
         type="button"
         class="grid-footer"
@@ -458,8 +507,9 @@
 
   .grid-table {
     display: grid;
-    width: calc(var(--grid-width) + var(--add-field-width));
-    grid-template-columns: var(--grid-width) var(--add-field-width);
+    width: var(--grid-width);
+    min-width: var(--grid-width);
+    grid-template-columns: var(--grid-width);
     grid-template-rows: var(--grid-height) var(--add-row-height);
     align-items: start;
   }
@@ -472,36 +522,9 @@
     flex-direction: column;
     overflow: hidden;
     border: 1px solid var(--border);
-    border-radius: 6px 0 0 0;
+    border-radius: 8px 8px 0 0;
     background: var(--surface);
     box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
-  }
-
-  .add-field-rail {
-    display: inline-flex;
-    width: var(--add-field-width);
-    height: var(--grid-height);
-    align-items: flex-start;
-    justify-content: center;
-    padding-top: 14px;
-    border: 1px solid var(--border);
-    border-left: 0;
-    border-radius: 0 8px 8px 0;
-    background: #fff;
-    color: #7b8494;
-    cursor: pointer;
-    transition: background .16s ease, color .16s ease, box-shadow .16s ease;
-  }
-
-  .add-field-rail:hover:not(:disabled) {
-    background: #eef5ff;
-    color: var(--primary);
-    box-shadow: inset 0 0 0 1px rgba(37, 99, 235, .08);
-  }
-
-  .add-field-rail:disabled {
-    opacity: .5;
-    cursor: not-allowed;
   }
 
   .grid-footer {
@@ -575,6 +598,40 @@
   :global(revo-grid .rgCell),
   :global(revo-grid .rgHeaderCell) {
     font-size: 12px;
+  }
+
+  :global(revo-grid .grid-add-field-header) {
+    display: inline-flex;
+    width: 100%;
+    height: 100%;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    background: transparent;
+    color: #7b8494;
+    cursor: pointer;
+    transition: background .16s ease, color .16s ease;
+  }
+
+  :global(revo-grid .grid-add-field-header:hover:not(:disabled)) {
+    background: #eef5ff;
+    color: var(--primary);
+  }
+
+  :global(revo-grid .grid-add-field-header:disabled) {
+    opacity: .5;
+    cursor: not-allowed;
+  }
+
+  :global(revo-grid .grid-add-field-header__icon) {
+    display: inline-flex;
+    width: 24px;
+    height: 24px;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+    line-height: 1;
+    font-weight: 300;
   }
 
   .field-menu {
