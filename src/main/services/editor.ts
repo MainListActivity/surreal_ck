@@ -1,5 +1,6 @@
 import { RecordId, StringRecordId } from "surrealdb";
 import { getLocalDb } from "../db/index";
+import { mapNullsToSurrealNone, omitNullishSurrealFields } from "../db/surreal-values";
 import { assertCanReadWorkspace, assertCanWriteWorkspace, getCurrentUserRecordId, getServiceContext } from "./context";
 import { ServiceError } from "./errors";
 import { gridColumnToStoredDef, normalizeGridColumnDef, overwriteEntityField, removeEntityField } from "./workbooks";
@@ -202,7 +203,7 @@ export async function upsertRows({
     if (rowPatch.id) {
       assertRowIdBelongsToTable(rowPatch.id, tableName);
       // 更新已有行
-      const updateValues = { ...cleanValues, updated_at: new Date() };
+      const updateValues = mapNullsToSurrealNone({ ...cleanValues, updated_at: new Date() });
       const updated = await db.query<[EntityRow[]]>(
         `UPDATE $rowId MERGE $vals`,
         { rowId: new StringRecordId(rowPatch.id), vals: updateValues }
@@ -213,11 +214,12 @@ export async function upsertRows({
       }
     } else {
       // 新增行
-      cleanValues.workspace = wbRow.workspace;
-      cleanValues.created_by = currentUserId;
+      const createValues = omitNullishInsertValues(cleanValues);
+      createValues.workspace = wbRow.workspace;
+      createValues.created_by = currentUserId;
       const created = await db.query<[EntityRow[]]>(
         `CREATE type::table($t) CONTENT $vals`,
-        { t: tableName, vals: cleanValues }
+        { t: tableName, vals: createValues }
       );
       const r = created[0]?.[0];
       if (r) {
@@ -227,6 +229,10 @@ export async function upsertRows({
   }
 
   return { upserted };
+}
+
+export function omitNullishInsertValues(values: Record<string, unknown>): Record<string, unknown> {
+  return omitNullishSurrealFields(values);
 }
 
 // ─── renameWorkbook ──────────────────────────────────────────────────────────

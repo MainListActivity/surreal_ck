@@ -1,5 +1,6 @@
 import { RecordId, StringRecordId } from "surrealdb";
 import { getLocalDb } from "../db/index";
+import { mapNullToSurrealNone } from "../db/surreal-values";
 import { assertCanReadWorkspace, assertCanWriteWorkspace } from "./context";
 import { ServiceError } from "./errors";
 import type {
@@ -167,7 +168,7 @@ export async function moveFolder({
 
   const updated = await db.query<[FolderRow[]]>(
     `UPDATE $fId SET parent = $parent`,
-    { fId, parent: parentRecordId }
+    { fId, parent: mapNullToSurrealNone(parentRecordId) }
   );
   const row = updated[0]?.[0];
   if (!row) throw new ServiceError("INTERNAL_ERROR", "目录移动失败");

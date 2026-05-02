@@ -5,6 +5,7 @@ import { Surreal, DateTime } from "surrealdb";
 import { createNodeEngines } from "@surrealdb/node";
 import type { TokenSet } from "../auth/oidc";
 import { refreshAccessToken } from "../auth/oidc";
+import { omitNullishSurrealFields } from "./surreal-values";
 
 // ─── 状态 ────────────────────────────────────────────────────────────────────
 
@@ -141,15 +142,13 @@ export async function initUserDb(sub: string, tokens: TokenSet): Promise<void> {
 
     // 持久化 tokens
     await db.query(
-      `UPSERT token_store:local CONTENT {
-        access_token: $access_token,
-        refresh_token: $refresh_token,
-        expires_at: $expires_at
-      }`,
+      `UPSERT token_store:local CONTENT $content`,
       {
-        access_token: tokens.access_token,
-        refresh_token: tokens.refresh_token ?? null,
-        expires_at: new DateTime(new Date(Date.now() + tokens.expires_in * 1000)),
+        content: omitNullishSurrealFields({
+          access_token: tokens.access_token,
+          refresh_token: tokens.refresh_token,
+          expires_at: new DateTime(new Date(Date.now() + tokens.expires_in * 1000)),
+        }),
       }
     );
 
@@ -226,15 +225,13 @@ export async function tryRestoreSession(): Promise<RestoreResult> {
     const newExpiresAt = Date.now() + newTokens.expires_in * 1000;
 
     await db.query(
-      `UPSERT token_store:local CONTENT {
-        access_token: $access_token,
-        refresh_token: $refresh_token,
-        expires_at: $expires_at
-      }`,
+      `UPSERT token_store:local CONTENT $content`,
       {
-        access_token: newTokens.access_token,
-        refresh_token: newTokens.refresh_token ?? stored.refresh_token,
-        expires_at: new DateTime(new Date(newExpiresAt)),
+        content: omitNullishSurrealFields({
+          access_token: newTokens.access_token,
+          refresh_token: newTokens.refresh_token ?? stored.refresh_token,
+          expires_at: new DateTime(new Date(newExpiresAt)),
+        }),
       }
     );
 

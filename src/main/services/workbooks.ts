@@ -1,5 +1,6 @@
 import { RecordId, StringRecordId } from "surrealdb";
 import { getLocalDb } from "../db/index";
+import { mapNullToSurrealNone } from "../db/surreal-values";
 import { assertCanReadWorkspace, assertCanWriteWorkspace } from "./context";
 import { ServiceError } from "./errors";
 import type {
@@ -224,7 +225,7 @@ export async function moveWorkbook({
 
   const updated = await db.query<[WorkbookRow[]]>(
     `UPDATE $wbId SET folder = $folder`,
-    { wbId, folder: folderRecordId }
+    { wbId, folder: mapNullToSurrealNone(folderRecordId) }
   );
   const row = updated[0]?.[0];
   if (!row) throw new ServiceError("INTERNAL_ERROR", "工作簿移动失败");

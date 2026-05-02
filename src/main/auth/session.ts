@@ -2,6 +2,7 @@ import { DateTime } from "surrealdb";
 import type { TokenSet } from "./oidc";
 import { refreshAccessToken } from "./oidc";
 import { getLocalDb } from "../db/index";
+import { omitNullishSurrealFields } from "../db/surreal-values";
 
 // 内存层只存过期时间，用于快速判断是否需要刷新，避免每次都查 DB
 let _expiresAt: number | null = null;
@@ -53,15 +54,13 @@ export async function ensureValidSession(): Promise<boolean> {
     // 写回 token_store（rotating refresh token 必须更新）
     const db = getLocalDb();
     await db.query(
-      `UPSERT token_store:local CONTENT {
-        access_token: $access_token,
-        refresh_token: $refresh_token,
-        expires_at: $expires_at
-      }`,
+      `UPSERT token_store:local CONTENT $content`,
       {
-        access_token: newTokens.access_token,
-        refresh_token: newTokens.refresh_token ?? refreshToken,
-        expires_at: new DateTime(new Date(Date.now() + newTokens.expires_in * 1000)),
+        content: omitNullishSurrealFields({
+          access_token: newTokens.access_token,
+          refresh_token: newTokens.refresh_token ?? refreshToken,
+          expires_at: new DateTime(new Date(Date.now() + newTokens.expires_in * 1000)),
+        }),
       }
     );
 
