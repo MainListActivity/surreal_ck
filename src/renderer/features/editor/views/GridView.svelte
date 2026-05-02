@@ -288,7 +288,13 @@
       <Icon name="copy" size={13} />
       <span>创建副本</span>
     </button>
-    <div class="menu-row" role="menuitem">
+    <button
+      type="button"
+      class="menu-row"
+      role="menuitem"
+      onclick={() => insertRows("above")}
+      disabled={appState.readOnly}
+    >
       <Icon name="arrowUp" size={13} />
       <span>在上方插入</span>
       <input
@@ -297,17 +303,19 @@
         max="200"
         bind:value={rowMenu.insertAboveCount}
         onclick={(e) => e.stopPropagation()}
+        onkeydown={(e) => e.stopPropagation()}
+        onmousedown={(e) => e.stopPropagation()}
         disabled={appState.readOnly}
       />
       <span class="muted">行</span>
-      <button
-        type="button"
-        class="menu-row-go"
-        onclick={() => insertRows("above")}
-        disabled={appState.readOnly}
-      >确定</button>
-    </div>
-    <div class="menu-row" role="menuitem">
+    </button>
+    <button
+      type="button"
+      class="menu-row"
+      role="menuitem"
+      onclick={() => insertRows("below")}
+      disabled={appState.readOnly}
+    >
       <Icon name="arrowDown" size={13} />
       <span>在下方插入</span>
       <input
@@ -316,16 +324,12 @@
         max="200"
         bind:value={rowMenu.insertBelowCount}
         onclick={(e) => e.stopPropagation()}
+        onkeydown={(e) => e.stopPropagation()}
+        onmousedown={(e) => e.stopPropagation()}
         disabled={appState.readOnly}
       />
       <span class="muted">行</span>
-      <button
-        type="button"
-        class="menu-row-go"
-        onclick={() => insertRows("below")}
-        disabled={appState.readOnly}
-      >确定</button>
-    </div>
+    </button>
     <div class="menu-sep"></div>
     <button class="menu-item" role="menuitem" disabled>
       <Icon name="link" size={13} />
@@ -526,14 +530,19 @@
     display: flex;
     align-items: center;
     gap: 6px;
+    width: 100%;
     height: 32px;
     padding: 0 10px;
+    border: none;
     border-radius: 8px;
+    background: transparent;
     color: var(--text-2);
     font-size: 12px;
+    text-align: left;
+    cursor: pointer;
   }
 
-  .row-menu .menu-row:hover {
+  .row-menu .menu-row:hover:not(:disabled) {
     background: #f5f8ff;
   }
 
@@ -546,7 +555,7 @@
   }
 
   .row-menu .menu-row input {
-    width: 48px;
+    width: 56px;
     height: 22px;
     padding: 0 6px;
     border: 1px solid var(--border);
@@ -556,25 +565,10 @@
     font-size: 12px;
     text-align: center;
     margin-left: auto;
+    cursor: text;
   }
 
-  .row-menu .menu-row .menu-row-go {
-    height: 22px;
-    padding: 0 8px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--surface);
-    color: var(--text-2);
-    font-size: 11px;
-    cursor: pointer;
-  }
-
-  .row-menu .menu-row .menu-row-go:hover:not(:disabled) {
-    border-color: var(--primary);
-    color: var(--primary);
-  }
-
-  .row-menu .menu-row .menu-row-go:disabled,
+  .row-menu .menu-row:disabled,
   .row-menu .menu-row input:disabled {
     opacity: .55;
     cursor: not-allowed;
