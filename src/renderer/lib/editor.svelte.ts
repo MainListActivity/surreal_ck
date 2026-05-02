@@ -216,6 +216,60 @@ function createEditorStore() {
     }
   }
 
+  /** 在列尾追加一个默认文本字段；key/label 自动避免与已有列冲突。 */
+  async function addField(): Promise<boolean> {
+    if (!state.activeSheetId) return false;
+    const existingKeys = new Set(state.columns.map((col) => col.key));
+    const existingLabels = new Set(state.columns.map((col) => col.label));
+    let i = state.columns.length + 1;
+    let key = `field_${i}`;
+    while (existingKeys.has(key)) {
+      i += 1;
+      key = `field_${i}`;
+    }
+    let labelIndex = state.columns.length + 1;
+    let label = `字段${labelIndex}`;
+    while (existingLabels.has(label)) {
+      labelIndex += 1;
+      label = `字段${labelIndex}`;
+    }
+    const next: GridColumnDef[] = [
+      ...state.columns,
+      { key, label, fieldType: "text", required: false },
+    ];
+    return updateFields(next);
+  }
+
+  async function removeFieldByKey(key: string): Promise<boolean> {
+    if (state.columns.length <= 1) {
+      state.saveError = "至少保留一个字段";
+      return false;
+    }
+    const next = state.columns.filter((col) => col.key !== key);
+    if (next.length === state.columns.length) return false;
+    return updateFields(next);
+  }
+
+  /** 按给定 key 顺序重排列；忽略不存在的 key，缺失的 key 维持原顺序追加于末尾。 */
+  async function reorderFields(orderedKeys: string[]): Promise<boolean> {
+    const byKey = new Map(state.columns.map((col) => [col.key, col]));
+    const next: GridColumnDef[] = [];
+    const seen = new Set<string>();
+    for (const key of orderedKeys) {
+      const col = byKey.get(key);
+      if (!col || seen.has(key)) continue;
+      next.push(col);
+      seen.add(key);
+    }
+    for (const col of state.columns) {
+      if (!seen.has(col.key)) next.push(col);
+    }
+    if (next.length !== state.columns.length) return false;
+    const sameOrder = next.every((col, idx) => col.key === state.columns[idx].key);
+    if (sameOrder) return true;
+    return updateFields(next);
+  }
+
   async function updateFields(columns: GridColumnDef[]): Promise<boolean> {
     if (!state.activeSheetId || !state.data) return false;
     state.saving = true;
@@ -549,6 +603,9 @@ function createEditorStore() {
     saveFromSource,
     renameWorkbook,
     updateFields,
+    addField,
+    removeFieldByKey,
+    reorderFields,
     setFilters,
     setSorts,
     setHiddenFields,

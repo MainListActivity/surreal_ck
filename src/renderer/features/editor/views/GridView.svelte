@@ -236,38 +236,58 @@
     if (appState.readOnly) return;
     editorStore.insertBlankRows(null, 1, "end");
   }
+
+  async function appendField() {
+    if (appState.readOnly || !editorStore.activeSheetId) return;
+    await editorStore.addField();
+  }
 </script>
 
 <div class="grid-wrap">
-  <RevoGrid
-    bind:this={gridRef}
-    source={gridSource}
-    columns={gridColumns}
-    theme="compact"
-    rowHeaders={true}
-    range={true}
-    resize={true}
-    useClipboard={true}
-    canFocus={true}
-    rowSize={36}
-    frameSize={35}
-    stretch="none"
-    hideAttribution={true}
-    applyOnClose={true}
-    readonly={appState.readOnly}
-    style="height: 100%; width: 100%;"
-    on:afterfocus={handleFocus}
-    on:afteredit={handleAfterEdit}
-  />
-  <button
-    type="button"
-    class="row-add"
-    onclick={appendRowAtEnd}
-    disabled={appState.readOnly || !editorStore.activeSheetId}
-    aria-label="新增一行"
-  >
-    <Icon name="plus" size={14} />
-  </button>
+  <div class="grid-card">
+    <div class="grid-scroll">
+      <div class="grid-inner">
+        <RevoGrid
+          bind:this={gridRef}
+          source={gridSource}
+          columns={gridColumns}
+          theme="compact"
+          rowHeaders={true}
+          range={true}
+          resize={true}
+          useClipboard={true}
+          canFocus={true}
+          rowSize={36}
+          frameSize={35}
+          stretch="none"
+          hideAttribution={true}
+          applyOnClose={true}
+          readonly={appState.readOnly}
+          style="height: 100%; width: 100%;"
+          on:afterfocus={handleFocus}
+          on:afteredit={handleAfterEdit}
+        />
+        <button
+          type="button"
+          class="field-add"
+          onclick={appendField}
+          disabled={appState.readOnly || !editorStore.activeSheetId || editorStore.saving}
+          aria-label="添加字段"
+        >
+          <Icon name="plus" size={14} />
+        </button>
+      </div>
+      <button
+        type="button"
+        class="row-add"
+        onclick={appendRowAtEnd}
+        disabled={appState.readOnly || !editorStore.activeSheetId}
+        aria-label="新增一行"
+      >
+        <Icon name="plus" size={14} />
+      </button>
+    </div>
+  </div>
 </div>
 
 {#if rowMenu.open && rowMenu.rowId}
@@ -375,17 +395,71 @@
     flex: 1;
     flex-direction: column;
     overflow: hidden;
-    background: #fafbfc;
+    padding: 12px 16px 16px;
+    background: #f4f6f9;
+  }
+
+  /* 表格主体卡片：白底圆角加细边，让数据区域从灰色背景中突出。 */
+  .grid-card {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface);
+    box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
+  }
+
+  /* 卡片内的滚动容器：纵向放表格主体 + 行尾“+”，横向跟随 RevoGrid 自己滚动。 */
+  .grid-scroll {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* 表格主体行（RevoGrid + 列尾“+”）：水平排布，列尾按钮紧贴最后一列。 */
+  .grid-inner {
+    position: relative;
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    align-items: stretch;
+  }
+
+  .field-add {
+    display: flex;
+    width: 36px;
+    align-items: flex-start;
+    justify-content: center;
+    padding-top: 8px;
+    border: 0;
+    border-left: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-3);
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .field-add:hover:not(:disabled) {
+    background: #f5f8ff;
+    color: var(--primary);
+  }
+
+  .field-add:disabled {
+    opacity: .45;
+    cursor: not-allowed;
   }
 
   .row-add {
     display: flex;
     height: 32px;
-    width: 100%;
+    width: 36px;
     align-items: center;
-    justify-content: flex-start;
-    gap: 6px;
-    padding: 0 14px;
+    justify-content: center;
     border: 0;
     border-top: 1px solid var(--border);
     background: var(--surface);

@@ -12,7 +12,7 @@
     const vp = editorStore.viewParams;
     if (toolId === "filter") return vp.filters?.length ?? 0;
     if (toolId === "sort") return vp.sorts?.length ?? 0;
-    if (toolId === "hidden") return vp.hiddenFields?.length ?? 0;
+    if (toolId === "fields") return vp.hiddenFields?.length ?? 0;
     if (toolId === "group") return vp.groupBy ? 1 : 0;
     return 0;
   }
@@ -26,6 +26,11 @@
     }
     editorUi.toggleTool(toolId);
   }
+
+  function appendRow() {
+    if (appState.readOnly || !editorStore.activeSheetId) return;
+    editorStore.insertBlankRows(null, 1, "end");
+  }
 </script>
 
 <div class="toolbar">
@@ -37,6 +42,13 @@
     {/each}
   </div>
   <span class="divider"></span>
+  <button
+    class="tool-btn add-row-btn"
+    onclick={appendRow}
+    disabled={appState.readOnly || !editorStore.activeSheetId}
+  >
+    <Icon name="plus" size={13} color="var(--primary)" />添加一行
+  </button>
   {#each toolRegistry as action}
     {@const badge = badgeFor(action.id)}
     <button
@@ -53,17 +65,6 @@
   {#if selectedCount > 0}
     <span class="selected-hint">已选 {selectedCount} 条</span>
   {/if}
-  <span class="header-hint">右键字段名可配置字段</span>
-  <button
-    class="primary-btn compact"
-    onclick={() => (editorUi.showAdd = true)}
-    disabled={appState.readOnly || !editorStore.activeSheetId}
-  >
-    <Icon name="plus" size={13} color="#fff" />新增记录
-  </button>
-  <button class="compact ghost-btn" disabled={appState.readOnly}>
-    <Icon name="upload" size={13} />导入
-  </button>
 </div>
 
 <style>
@@ -130,6 +131,16 @@
     color: var(--primary);
   }
 
+  .tool-btn.add-row-btn {
+    color: var(--primary);
+    font-weight: 500;
+  }
+
+  .tool-btn.add-row-btn:disabled {
+    opacity: .55;
+    cursor: not-allowed;
+  }
+
   .tool-btn.applied {
     color: var(--primary);
   }
@@ -164,18 +175,7 @@
     font-size: 11px;
   }
 
-  .header-hint {
-    margin-right: 8px;
-    color: var(--text-3);
-    font-size: 11px;
-  }
-
-  .compact {
-    height: 28px;
-    padding: 0 12px;
-  }
-
-  .compact:disabled {
+  .tool-btn:disabled {
     opacity: .55;
     cursor: not-allowed;
   }
