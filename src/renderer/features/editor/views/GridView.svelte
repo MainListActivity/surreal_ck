@@ -2,6 +2,7 @@
   import { onDestroy, onMount } from "svelte";
   import type { ColumnRegular } from "@revolist/svelte-datagrid";
   import { RevoGrid } from "@revolist/svelte-datagrid";
+  import type { BeforeSaveDataDetails, CellTemplateProp, ColumnTemplateProp, RowHeaders } from "@revolist/revogrid";
   import Icon from "../../../components/Icon.svelte";
   import { appState } from "../../../lib/app-state.svelte";
   import { editorStore } from "../../../lib/editor.svelte";
@@ -28,38 +29,150 @@
 
   const groupKey = $derived(editorStore.viewParams.groupBy ?? null);
 
+  const ADD_FIELD_PROP = "__grid_add_field__";
+  const ADD_ROW_ID = "__grid_add_row__";
+
+  type GridSourceRow = Record<string, unknown> & {
+    _id: string;
+    _isGroup?: boolean;
+    _isAddRow?: boolean;
+    _rowNumber?: number | null;
+  };
+
+  function isAddFieldProp(prop: unknown): boolean {
+    return prop === ADD_FIELD_PROP;
+  }
+
+  function isGridRecordRow(row: GridSourceRow | undefined): boolean {
+    return !!row && !row._isGroup && !row._isAddRow;
+  }
+
+  function isAddRow(row: GridSourceRow | undefined): boolean {
+    return !!row?._isAddRow;
+  }
+
+  function createPlusPill(
+    h: (tag: string, props?: Record<string, unknown> | null, ...children: unknown[]) => unknown,
+    label: string,
+  ) {
+    return h(
+      "div",
+      {
+        "data-grid-action": label,
+        style: {
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: "20px",
+          height: "20px",
+          border: "1px solid #cfd6e4",
+          borderRadius: "999px",
+          color: "#5b6477",
+          fontSize: "14px",
+          fontWeight: "600",
+          lineHeight: "1",
+          background: "#ffffff",
+          boxSizing: "border-box",
+          pointerEvents: "none",
+        },
+      },
+      "+",
+    );
+  }
+
+  const rowHeaderColumn = $derived<RowHeaders>({
+    size: 56,
+    readonly: true,
+    sortable: false,
+    resizable: false,
+    columnTemplate: () => "",
+    cellTemplate: (h, props: CellTemplateProp) => {
+      const row = props.model as GridSourceRow;
+      if (isAddRow(row)) {
+        return createPlusPill(h, "append-row");
+      }
+      if (row?._isGroup) return "";
+      return String(row?._rowNumber ?? props.rowIndex + 1);
+    },
+  });
+
   /** 分组开启时按分组键插入分组分隔行，方便用户在表格内直接看见分组归属。 */
-  const gridSource = $derived(
+  const gridSource = $derived<GridSourceRow[]>(
     (() => {
-      const rows = editorStore.rows.map((row) => ({ _id: row.id, ...row.values }));
-      if (!groupKey) return rows;
+      const rows = editorStore.rows.map((row) => ({ _id: row.id, ...row.values })) as GridSourceRow[];
+      const out: GridSourceRow[] = [];
+      let rowNumber = 0;
 
-      const sorted = rows.slice().sort((a, b) => {
-        const av = String(a[groupKey] ?? "");
-        const bv = String(b[groupKey] ?? "");
-        return av.localeCompare(bv);
-      });
-
-      const out: Array<Record<string, unknown>> = [];
-      let lastGroup: string | undefined;
-      for (const row of sorted) {
-        const g = String(row[groupKey] ?? "未分组");
-        if (g !== lastGroup) {
-          out.push({ _id: `__group:${g}`, _isGroup: true, [groupKey]: `▸ ${g}` });
-          lastGroup = g;
+      if (!groupKey) {
+        for (const row of rows) {
+          rowNumber += 1;
+          out.push({ ...row, _rowNumber: rowNumber });
         }
-        out.push(row);
+      } else {
+        const sorted = rows.slice().sort((a, b) => {
+          const av = String(a[groupKey] ?? "");
+          const bv = String(b[groupKey] ?? "");
+          return av.localeCompare(bv);
+        });
+
+        let lastGroup: string | undefined;
+        for (const row of sorted) {
+          const g = String(row[groupKey] ?? "未分组");
+          if (g !== lastGroup) {
+            out.push({ _id: `__group:${g}`, _isGroup: true, _rowNumber: null, [groupKey]: `▸ ${g}` });
+            lastGroup = g;
+          }
+          rowNumber += 1;
+          out.push({ ...row, _rowNumber: rowNumber });
+        }
+      }
+
+      if (editorStore.activeSheetId) {
+        out.push({ _id: ADD_ROW_ID, _isAddRow: true, _rowNumber: null });
       }
       return out;
     })(),
   );
 
   const gridColumns = $derived<ColumnRegular[]>(
-    editorStore.visibleColumns.map((col) => ({
-      prop: col.key,
-      name: col.label,
-      size: 160,
-    })),
+    [
+      ...editorStore.visibleColumns.map((col) => ({
+        prop: col.key,
+        name: col.label,
+        size: 160,
+        readonly: ({ model }: BeforeSaveDataDetails) => !!(model as GridSourceRow)?._isAddRow,
+      })),
+      ...(editorStore.activeSheetId
+        ? [{
+            prop: ADD_FIELD_PROP,
+            name: "",
+            size: 42,
+            minSize: 42,
+            maxSize: 42,
+            readonly: true,
+            sortable: false,
+            resize: false,
+            columnProperties: () => ({
+              style: {
+                padding: "0",
+                justifyContent: "center",
+                cursor: appState.readOnly ? "not-allowed" : "pointer",
+              },
+            }),
+            columnTemplate: (
+              h: (tag: string, props?: Record<string, unknown> | null, ...children: unknown[]) => unknown,
+              _props: ColumnTemplateProp,
+            ) => createPlusPill(h, "append-field"),
+            cellProperties: ({ model }: BeforeSaveDataDetails) => ({
+              style: {
+                cursor:
+                  appState.readOnly || (model as GridSourceRow)?._isAddRow ? "default" : "pointer",
+              },
+            }),
+            cellTemplate: () => "",
+          }]
+        : []),
+    ],
   );
 
   let gridRef = $state<{
@@ -74,7 +187,6 @@
   onMount(() => {
     const grid = gridRef?.getWebComponent();
     if (!grid) return;
-    const headerRoot = grid.shadowRoot;
 
     const beforePaste = (event: Event) => {
       const detail = (event as CustomEvent<{ parsed?: unknown[][] }>).detail;
@@ -108,6 +220,7 @@
         const rawIndex = headerCell.getAttribute("data-rgCol");
         const index = rawIndex ? Number(rawIndex) : Number.NaN;
         if (!Number.isInteger(index)) return;
+        if (index === gridColumns.length - 1) return;
         const column = editorStore.visibleColumns[index];
         if (!column) return;
         mouseEvent.preventDefault();
@@ -122,7 +235,10 @@
         const rowIndex = rawRow ? Number(rawRow) : Number.NaN;
         if (!Number.isInteger(rowIndex)) return;
         const sourceRow = gridSource[rowIndex];
-        if (!sourceRow || sourceRow._isGroup) return;
+        if (!isGridRecordRow(sourceRow)) return;
+        const rawCol = dataCell.getAttribute("data-rgCol");
+        const colIndex = rawCol ? Number(rawCol) : Number.NaN;
+        if (Number.isInteger(colIndex) && isAddFieldProp(gridColumns[colIndex]?.prop)) return;
         const rowId = typeof sourceRow._id === "string" ? sourceRow._id : null;
         if (!rowId) return;
         mouseEvent.preventDefault();
@@ -131,16 +247,64 @@
       }
     };
 
+    const onGridClick = (event: Event) => {
+      const mouseEvent = event as MouseEvent;
+      const path = typeof mouseEvent.composedPath === "function" ? mouseEvent.composedPath() : [];
+      const headerCell = path.find((node) => node instanceof HTMLElement && node.classList.contains("rgHeaderCell"));
+      if (headerCell instanceof HTMLElement) {
+        const rawIndex = headerCell.getAttribute("data-rgCol");
+        const index = rawIndex ? Number(rawIndex) : Number.NaN;
+        if (Number.isInteger(index) && isAddFieldProp(gridColumns[index]?.prop)) {
+          mouseEvent.preventDefault();
+          mouseEvent.stopPropagation();
+          void appendField();
+          return;
+        }
+      }
+
+      const cell = path.find((node) => node instanceof HTMLElement && node.classList.contains("rgCell"));
+      if (!(cell instanceof HTMLElement)) return;
+
+      const rawRow = cell.getAttribute("data-rgRow");
+      const rowIndex = rawRow ? Number(rawRow) : Number.NaN;
+      const row = Number.isInteger(rowIndex) ? gridSource[rowIndex] : undefined;
+      if (isAddRow(row)) {
+        mouseEvent.preventDefault();
+        mouseEvent.stopPropagation();
+        appendRowAtEnd();
+        return;
+      }
+
+      const rawCol = cell.getAttribute("data-rgCol");
+      const colIndex = rawCol ? Number(rawCol) : Number.NaN;
+      if (Number.isInteger(colIndex) && isAddFieldProp(gridColumns[colIndex]?.prop)) {
+        mouseEvent.preventDefault();
+        mouseEvent.stopPropagation();
+        void appendField();
+      }
+    };
+
+    const beforeEditStart = (event: Event) => {
+      const detail = (event as CustomEvent<BeforeSaveDataDetails>).detail;
+      const row = gridSource[detail.rowIndex];
+      if (isAddRow(row) || isAddFieldProp(detail.prop)) {
+        event.preventDefault();
+      }
+    };
+
     grid.addEventListener("beforepasteapply", beforePaste);
     grid.addEventListener("afterpasteapply", afterPaste);
+    grid.addEventListener("beforeeditstart", beforeEditStart);
+    grid.addEventListener("click", onGridClick, true);
     grid.addEventListener("contextmenu", onContextMenu, true);
-    headerRoot?.addEventListener("contextmenu", onContextMenu, true);
     document.addEventListener("mousedown", onRowMenuBackdrop, true);
+
     cleanup = () => {
       grid.removeEventListener("beforepasteapply", beforePaste);
       grid.removeEventListener("afterpasteapply", afterPaste);
+      grid.removeEventListener("beforeeditstart", beforeEditStart);
+      grid.removeEventListener("click", onGridClick, true);
       grid.removeEventListener("contextmenu", onContextMenu, true);
-      headerRoot?.removeEventListener("contextmenu", onContextMenu, true);
       document.removeEventListener("mousedown", onRowMenuBackdrop, true);
     };
   });
@@ -162,9 +326,8 @@
     const grid = gridRef?.getWebComponent();
     const focused = await grid?.getFocused?.();
     const rowIndex = focused?.y;
-    editorUi.selectRow(
-      typeof rowIndex === "number" ? (editorStore.rows[rowIndex]?.id ?? null) : null,
-    );
+    const sourceRow = typeof rowIndex === "number" ? gridSource[rowIndex] : undefined;
+    editorUi.selectRow(isGridRecordRow(sourceRow) ? (sourceRow._id as RecordIdString) : null);
   }
 
   function openFieldEditor() {
@@ -245,48 +408,26 @@
 
 <div class="grid-wrap">
   <div class="grid-card">
-    <div class="grid-scroll">
-      <div class="grid-inner">
-        <RevoGrid
-          bind:this={gridRef}
-          source={gridSource}
-          columns={gridColumns}
-          theme="compact"
-          rowHeaders={true}
-          range={true}
-          resize={true}
-          useClipboard={true}
-          canFocus={true}
-          rowSize={36}
-          frameSize={35}
-          stretch="none"
-          hideAttribution={true}
-          applyOnClose={true}
-          readonly={appState.readOnly}
-          style="height: 100%; width: 100%;"
-          on:afterfocus={handleFocus}
-          on:afteredit={handleAfterEdit}
-        />
-        <button
-          type="button"
-          class="field-add"
-          onclick={appendField}
-          disabled={appState.readOnly || !editorStore.activeSheetId || editorStore.saving}
-          aria-label="添加字段"
-        >
-          <Icon name="plus" size={14} />
-        </button>
-      </div>
-      <button
-        type="button"
-        class="row-add"
-        onclick={appendRowAtEnd}
-        disabled={appState.readOnly || !editorStore.activeSheetId}
-        aria-label="新增一行"
-      >
-        <Icon name="plus" size={14} />
-      </button>
-    </div>
+    <RevoGrid
+      bind:this={gridRef}
+      source={gridSource}
+      columns={gridColumns}
+      theme="compact"
+      rowHeaders={rowHeaderColumn}
+      range={true}
+      resize={true}
+      useClipboard={true}
+      canFocus={true}
+      rowSize={36}
+      frameSize={35}
+      stretch="none"
+      hideAttribution={true}
+      applyOnClose={true}
+      readonly={appState.readOnly}
+      style="height: 100%; width: 100%;"
+      on:afterfocus={handleFocus}
+      on:afteredit={handleAfterEdit}
+    />
   </div>
 </div>
 
@@ -410,72 +551,6 @@
     border-radius: 12px;
     background: var(--surface);
     box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
-  }
-
-  /* 卡片内的滚动容器：纵向放表格主体 + 行尾“+”，横向跟随 RevoGrid 自己滚动。 */
-  .grid-scroll {
-    display: flex;
-    flex: 1;
-    min-height: 0;
-    flex-direction: column;
-    overflow: hidden;
-  }
-
-  /* 表格主体行（RevoGrid + 列尾“+”）：水平排布，列尾按钮紧贴最后一列。 */
-  .grid-inner {
-    position: relative;
-    display: flex;
-    flex: 1;
-    min-height: 0;
-    align-items: stretch;
-  }
-
-  .field-add {
-    display: flex;
-    width: 36px;
-    align-items: flex-start;
-    justify-content: center;
-    padding-top: 8px;
-    border: 0;
-    border-left: 1px solid var(--border);
-    background: var(--surface);
-    color: var(--text-3);
-    cursor: pointer;
-    flex-shrink: 0;
-  }
-
-  .field-add:hover:not(:disabled) {
-    background: #f5f8ff;
-    color: var(--primary);
-  }
-
-  .field-add:disabled {
-    opacity: .45;
-    cursor: not-allowed;
-  }
-
-  .row-add {
-    display: flex;
-    height: 32px;
-    width: 36px;
-    align-items: center;
-    justify-content: center;
-    border: 0;
-    border-top: 1px solid var(--border);
-    background: var(--surface);
-    color: var(--text-3);
-    cursor: pointer;
-    flex-shrink: 0;
-  }
-
-  .row-add:hover {
-    background: #f5f8ff;
-    color: var(--primary);
-  }
-
-  .row-add:disabled {
-    opacity: .5;
-    cursor: not-allowed;
   }
 
   :global(revo-grid) {
