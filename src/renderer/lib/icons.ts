@@ -11,6 +11,7 @@ export const ICON_PATHS: Record<string, string[]> = {
   chevronDown: ["M6 9l6 6 6-6"],
   chevronLeft: ["M15 18l-6-6 6-6"],
   chevronRight: ["M9 18l6-6-6-6"],
+  chevronUp: ["M18 15l-6-6-6 6"],
   clock: ["M12 2a10 10 0 100 20A10 10 0 0012 2z", "M12 6v6l4 2"],
   copy: ["M20 9H11a2 2 0 00-2 2v9a2 2 0 002 2h9a2 2 0 002-2v-9a2 2 0 00-2-2z", "M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"],
   docText: ["M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z", "M14 2v6h6", "M16 13H8", "M16 17H8", "M10 9H8"],

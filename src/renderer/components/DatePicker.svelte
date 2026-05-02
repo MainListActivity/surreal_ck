@@ -9,7 +9,7 @@
   } from "../../shared/date-format";
 
   /**
-   * 自建日期选择器：触发按钮 + 浮层月历 + 可选时间行。
+   * 自建日期选择器：触发按钮 + 浮层月历 + 可选时分秒滚轮。
    *
    * - value: 当前日期，支持 Date / ISO 字符串 / null
    * - onChange: 用户选定/清空时回调；选定传 Date，清空传 null
@@ -55,6 +55,7 @@
   let timeHour = $state(0);
   let timeMinute = $state(0);
   let timeSecond = $state(0);
+  let draftDate = $state<Date | null>(null);
   /** 月历内键盘焦点；选中态/今天作为初始焦点。 */
   let focusedDate = $state<Date | null>(null);
   /** popover 当前展示的层级：天 / 月 / 年。 */
@@ -66,11 +67,32 @@
   let popoverEl = $state<HTMLDivElement | null>(null);
   let popoverPos = $state<{ left: number; top: number; width: number }>({ left: 0, top: 0, width: 280 });
 
-  /** 把 popover 节点搬到 document.body，避免被 ancestor 的 overflow:hidden 裁掉。 */
+  /**
+   * 把 popover 节点搬到 document.body，避免被 ancestor 的 overflow:hidden 裁掉。
+   *
+   * 关键：作为 RevoGrid cell editor 使用时，popover portal 后不再是 grid 子节点。
+   * RevoGrid 在 body 上监听 mouseup，用 composedPath().includes(grid) 判断是否点击在外，
+   * 外则 clearFocus → 关闭 editor → 销毁 DatePicker。RevoGrid 注释提到："To keep your
+   * elements from losing focus use mouseup/touchend e.preventDefault();"。
+   *
+   * 因此在 popover 的 mouseup / touchend 上 preventDefault，让 RevoGrid 跳过 clearFocus。
+   * 不 stopPropagation：Svelte 5 的事件委托同时在 mount target 和 document 上注册
+   * （见 svelte/src/internal/client/render.js），portal 后 popover 仍在 document 之下，
+   * 事件需冒泡到 document 才能触发 onclick / oninput 等 attribute handler。
+   *
+   * mousedown 不 preventDefault，让 input / button 能正常聚焦。
+   */
   function portal(node: HTMLElement) {
+    const preventDefault = (event: Event) => {
+      event.preventDefault();
+    };
     document.body.appendChild(node);
+    node.addEventListener("mouseup", preventDefault);
+    node.addEventListener("touchend", preventDefault);
     return {
       destroy() {
+        node.removeEventListener("mouseup", preventDefault);
+        node.removeEventListener("touchend", preventDefault);
         if (node.parentNode === document.body) document.body.removeChild(node);
       },
     };
@@ -80,7 +102,7 @@
 
   /** 基于 trigger / 父单元格的位置计算 popover 的 left/top（fixed 坐标系）。 */
   function computePopoverPosition() {
-    const POPOVER_W = 280;
+    const POPOVER_W = hasTime ? 520 : 296;
     const MARGIN = 4;
     const anchor = openOnMount ? mountAnchorEl : triggerEl;
     if (!anchor) return;
@@ -88,7 +110,7 @@
 
     let left = rect.left;
     let top = rect.bottom + MARGIN;
-    const popH = popoverEl?.offsetHeight ?? 340;
+    const popH = popoverEl?.offsetHeight ?? 360;
 
     if (left + POPOVER_W > window.innerWidth - 8) {
       left = Math.max(8, window.innerWidth - POPOVER_W - 8);
@@ -107,6 +129,9 @@
     timeHour = date ? d.getHours() : 0;
     timeMinute = date ? d.getMinutes() : 0;
     timeSecond = date ? d.getSeconds() : 0;
+    draftDate = date
+      ? new Date(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds())
+      : null;
     focusedDate = date ? new Date(d.getFullYear(), d.getMonth(), d.getDate()) : startOfDay(new Date());
     yearPageStart = Math.floor(viewYear / 12) * 12;
     viewMode = "days";
@@ -284,7 +309,7 @@
           date,
           inMonth: date.getMonth() === viewMonth,
           isToday: sameDay(date, today),
-          isSelected: !!currentDate && sameDay(date, currentDate),
+          isSelected: !!draftDate && sameDay(date, draftDate),
           isFocused: !!focusedDate && sameDay(date, focusedDate),
           disabled: outOfRange(date),
         });
@@ -299,6 +324,12 @@
 
   function sameDay(a: Date, b: Date): boolean {
     return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  }
+
+  function sameDateTime(a: Date | null, b: Date | null): boolean {
+    if (a === b) return true;
+    if (!a || !b) return false;
+    return a.getTime() === b.getTime();
   }
 
   function outOfRange(d: Date): boolean {
@@ -366,29 +397,33 @@
       hasTime ? timeMinute : 0,
       hasTime ? timeSecond : 0,
     );
+    draftDate = next;
+    focusedDate = startOfDay(cell.date);
+    viewYear = cell.date.getFullYear();
+    viewMonth = cell.date.getMonth();
+    if (hasTime) return;
     onChange(next);
     if (!hasTime) closePopover();
   }
 
-  function commitTime() {
-    if (!currentDate) {
-      // 用户先调时间再选日期；先以今天落地
-      const today = new Date();
-      const next = new Date(today.getFullYear(), today.getMonth(), today.getDate(), timeHour, timeMinute, timeSecond);
-      if (!outOfRange(next)) onChange(next);
-      return;
-    }
+  function updateDraftTime() {
+    const base = draftDate ?? currentDate ?? new Date();
     const next = new Date(
-      currentDate.getFullYear(),
-      currentDate.getMonth(),
-      currentDate.getDate(),
+      base.getFullYear(),
+      base.getMonth(),
+      base.getDate(),
       timeHour, timeMinute, timeSecond,
     );
-    onChange(next);
+    if (outOfRange(next)) return;
+    draftDate = next;
   }
 
-  function clampHour(v: number) { return Math.max(0, Math.min(23, Number.isFinite(v) ? Math.floor(v) : 0)); }
-  function clampMinSec(v: number) { return Math.max(0, Math.min(59, Number.isFinite(v) ? Math.floor(v) : 0)); }
+  function setTimePart(part: "h" | "m" | "s", value: number) {
+    if (part === "h") timeHour = ((value % 24) + 24) % 24;
+    else if (part === "m") timeMinute = ((value % 60) + 60) % 60;
+    else timeSecond = ((value % 60) + 60) % 60;
+    updateDraftTime();
+  }
 
   function setToday() {
     const now = new Date();
@@ -396,6 +431,14 @@
       ? now
       : new Date(now.getFullYear(), now.getMonth(), now.getDate());
     if (outOfRange(next)) return;
+    draftDate = next;
+    timeHour = next.getHours();
+    timeMinute = next.getMinutes();
+    timeSecond = next.getSeconds();
+    focusedDate = startOfDay(next);
+    viewYear = next.getFullYear();
+    viewMonth = next.getMonth();
+    if (hasTime) return;
     onChange(next);
     if (!hasTime) closePopover();
   }
@@ -406,11 +449,15 @@
   }
 
   function confirmAndClose() {
+    if (!sameDateTime(draftDate, currentDate)) onChange(draftDate);
     closePopover();
   }
 
   const monthLabel = $derived(`${viewYear} 年 ${String(viewMonth + 1).padStart(2, "0")} 月`);
   const weekdayLabels = ["日", "一", "二", "三", "四", "五", "六"];
+  const timePreview = $derived(
+    `${String(timeHour).padStart(2, "0")}:${String(timeMinute).padStart(2, "0")}:${String(timeSecond).padStart(2, "0")}`,
+  );
 
   const headerLabel = $derived.by(() => {
     if (viewMode === "days") return monthLabel;
@@ -448,128 +495,121 @@
     style:top="{popoverPos.top}px"
     style:width="{popoverPos.width}px"
     use:portal
-    onmousedown={(event) => event.stopPropagation()}
   >
-    <div class="dp-head">
-      {#if viewMode === "days"}
-        <button type="button" class="dp-nav" onclick={gotoPrevYear} aria-label="上一年">«</button>
-        <button type="button" class="dp-nav" onclick={gotoPrevMonth} aria-label="上个月">
-          <Icon name="chevronLeft" size={14} />
-        </button>
-      {:else if viewMode === "months"}
-        <button type="button" class="dp-nav" onclick={gotoPrevYear} aria-label="上一年">
-          <Icon name="chevronLeft" size={14} />
-        </button>
-      {:else}
-        <button type="button" class="dp-nav" onclick={gotoPrevYearPage} aria-label="上一组">
-          <Icon name="chevronLeft" size={14} />
-        </button>
-      {/if}
+    <div class="dp-body">
+      <div class="dp-cal">
+        <div class="dp-head">
+          {#if viewMode === "days"}
+            <button type="button" class="dp-nav" onclick={gotoPrevYear} aria-label="上一年">«</button>
+            <button type="button" class="dp-nav" onclick={gotoPrevMonth} aria-label="上个月">
+              <Icon name="chevronLeft" size={14} />
+            </button>
+          {:else if viewMode === "months"}
+            <button type="button" class="dp-nav" onclick={gotoPrevYear} aria-label="上一年">
+              <Icon name="chevronLeft" size={14} />
+            </button>
+          {:else}
+            <button type="button" class="dp-nav" onclick={gotoPrevYearPage} aria-label="上一组">
+              <Icon name="chevronLeft" size={14} />
+            </button>
+          {/if}
 
-      <button
-        type="button"
-        class="dp-title"
-        onclick={cycleViewMode}
-        disabled={viewMode === "years"}
-        aria-label="切换视图"
-      >{headerLabel}</button>
+          <button
+            type="button"
+            class="dp-title"
+            onclick={cycleViewMode}
+            disabled={viewMode === "years"}
+            aria-label="切换视图"
+          >{headerLabel}</button>
 
-      {#if viewMode === "days"}
-        <button type="button" class="dp-nav" onclick={gotoNextMonth} aria-label="下个月">
-          <Icon name="chevronRight" size={14} />
-        </button>
-        <button type="button" class="dp-nav" onclick={gotoNextYear} aria-label="下一年">»</button>
-      {:else if viewMode === "months"}
-        <button type="button" class="dp-nav" onclick={gotoNextYear} aria-label="下一年">
-          <Icon name="chevronRight" size={14} />
-        </button>
-      {:else}
-        <button type="button" class="dp-nav" onclick={gotoNextYearPage} aria-label="下一组">
-          <Icon name="chevronRight" size={14} />
-        </button>
+          {#if viewMode === "days"}
+            <button type="button" class="dp-nav" onclick={gotoNextMonth} aria-label="下个月">
+              <Icon name="chevronRight" size={14} />
+            </button>
+            <button type="button" class="dp-nav" onclick={gotoNextYear} aria-label="下一年">»</button>
+          {:else if viewMode === "months"}
+            <button type="button" class="dp-nav" onclick={gotoNextYear} aria-label="下一年">
+              <Icon name="chevronRight" size={14} />
+            </button>
+          {:else}
+            <button type="button" class="dp-nav" onclick={gotoNextYearPage} aria-label="下一组">
+              <Icon name="chevronRight" size={14} />
+            </button>
+          {/if}
+        </div>
+
+        {#if viewMode === "days"}
+          <div class="dp-weekdays">
+            {#each weekdayLabels as w}<span>{w}</span>{/each}
+          </div>
+          <div class="dp-grid">
+            {#each calendarCells as cell}
+              <button
+                type="button"
+                class="dp-day"
+                class:dp-day-out={!cell.inMonth}
+                class:dp-day-today={cell.isToday}
+                class:dp-day-selected={cell.isSelected}
+                class:dp-day-focused={cell.isFocused}
+                disabled={cell.disabled}
+                onclick={() => pickDay(cell)}
+              >
+                {cell.date.getDate()}
+              </button>
+            {/each}
+          </div>
+        {:else if viewMode === "months"}
+          <div class="dp-month-grid">
+            {#each monthNames as label, idx}
+              <button
+                type="button"
+                class="dp-month-cell"
+                class:dp-month-selected={draftDate && draftDate.getFullYear() === viewYear && draftDate.getMonth() === idx}
+                disabled={monthDisabled(viewYear, idx)}
+                onclick={() => pickMonth(idx)}
+              >{label}</button>
+            {/each}
+          </div>
+        {:else}
+          <div class="dp-month-grid">
+            {#each Array.from({ length: 12 }, (_, i) => yearPageStart + i) as year}
+              <button
+                type="button"
+                class="dp-month-cell"
+                class:dp-month-selected={draftDate && draftDate.getFullYear() === year}
+                disabled={yearDisabled(year)}
+                onclick={() => pickYear(year)}
+              >{year}</button>
+            {/each}
+          </div>
+        {/if}
+      </div>
+
+      {#if hasTime && viewMode === "days"}
+        <div class="dp-time-panel" role="group" aria-label="时间选择">
+          <div class="dp-time-header">
+            <div class="dp-time-heading">
+              <span class="dp-time-heading-icon">
+                <Icon name="clock" size={12} />
+              </span>
+              <div class="dp-time-heading-copy">
+                <span class="dp-time-heading-title">时间</span>
+                <span class="dp-time-heading-subtitle">滚轮、键盘或点击微调</span>
+              </div>
+            </div>
+            <span class="dp-time-badge">{timePreview}</span>
+          </div>
+          <div class="dp-time-cols">
+            {@render timeColumn({ value: timeHour, max: 23, label: "时", onChange: (v) => setTimePart("h", v) })}
+            {@render timeColumn({ value: timeMinute, max: 59, label: "分", onChange: (v) => setTimePart("m", v) })}
+            {@render timeColumn({ value: timeSecond, max: 59, label: "秒", onChange: (v) => setTimePart("s", v) })}
+          </div>
+        </div>
       {/if}
     </div>
 
-    {#if viewMode === "days"}
-      <div class="dp-weekdays">
-        {#each weekdayLabels as w}<span>{w}</span>{/each}
-      </div>
-      <div class="dp-grid">
-        {#each calendarCells as cell}
-          <button
-            type="button"
-            class="dp-day"
-            class:dp-day-out={!cell.inMonth}
-            class:dp-day-today={cell.isToday}
-            class:dp-day-selected={cell.isSelected}
-            class:dp-day-focused={cell.isFocused}
-            disabled={cell.disabled}
-            onclick={() => pickDay(cell)}
-          >
-            {cell.date.getDate()}
-          </button>
-        {/each}
-      </div>
-    {:else if viewMode === "months"}
-      <div class="dp-month-grid">
-        {#each monthNames as label, idx}
-          <button
-            type="button"
-            class="dp-month-cell"
-            class:dp-month-selected={currentDate && currentDate.getFullYear() === viewYear && currentDate.getMonth() === idx}
-            disabled={monthDisabled(viewYear, idx)}
-            onclick={() => pickMonth(idx)}
-          >{label}</button>
-        {/each}
-      </div>
-    {:else}
-      <div class="dp-month-grid">
-        {#each Array.from({ length: 12 }, (_, i) => yearPageStart + i) as year}
-          <button
-            type="button"
-            class="dp-month-cell"
-            class:dp-month-selected={currentDate && currentDate.getFullYear() === year}
-            disabled={yearDisabled(year)}
-            onclick={() => pickYear(year)}
-          >{year}</button>
-        {/each}
-      </div>
-    {/if}
-
-    {#if hasTime}
-      <div class="dp-time">
-        <Icon name="clock" size={13} />
-        <input
-          type="number"
-          min="0"
-          max="23"
-          value={timeHour}
-          oninput={(e) => { timeHour = clampHour(Number(e.currentTarget.value)); commitTime(); }}
-          aria-label="小时"
-        />
-        <span>:</span>
-        <input
-          type="number"
-          min="0"
-          max="59"
-          value={timeMinute}
-          oninput={(e) => { timeMinute = clampMinSec(Number(e.currentTarget.value)); commitTime(); }}
-          aria-label="分钟"
-        />
-        <span>:</span>
-        <input
-          type="number"
-          min="0"
-          max="59"
-          value={timeSecond}
-          oninput={(e) => { timeSecond = clampMinSec(Number(e.currentTarget.value)); commitTime(); }}
-          aria-label="秒"
-        />
-      </div>
-    {/if}
-
     <div class="dp-foot">
-      <button type="button" class="dp-link" onclick={setToday}>此刻</button>
+      <button type="button" class="dp-link" onclick={setToday}>{hasTime ? "此刻" : "今天"}</button>
       <button type="button" class="dp-link" onclick={clearValue}>清空</button>
       <span class="dp-spacer"></span>
       <button type="button" class="dp-confirm" onclick={confirmAndClose}>确定</button>
@@ -577,20 +617,68 @@
   </div>
 {/if}
 
+{#snippet timeColumn({ value, max, label, onChange }: { value: number; max: number; label: string; onChange: (v: number) => void })}
+  <div class="dp-tc">
+    <div class="dp-tc-label">{label}</div>
+    <div class="dp-tc-stepper">
+      <button
+        type="button"
+        class="dp-tc-step"
+        aria-label="增加{label}"
+        onclick={() => onChange(value + 1)}
+      >
+        <Icon name="chevronUp" size={12} />
+      </button>
+      <input
+        class="dp-tc-input"
+        type="text"
+        inputmode="numeric"
+        value={String(value).padStart(2, "0")}
+        onwheel={(e) => {
+          e.preventDefault();
+          onChange(value + (e.deltaY < 0 ? 1 : -1));
+        }}
+        onfocus={(e) => e.currentTarget.select()}
+        ondblclick={() => confirmAndClose()}
+        onkeydown={(e) => {
+          if (e.key === "ArrowUp") { e.preventDefault(); onChange(value + 1); }
+          else if (e.key === "ArrowDown") { e.preventDefault(); onChange(value - 1); }
+          else if (e.key === "Enter") { e.preventDefault(); confirmAndClose(); }
+        }}
+        oninput={(e) => {
+          const raw = e.currentTarget.value.replace(/\D/g, "").slice(-2);
+          const n = raw === "" ? 0 : Number(raw);
+          if (Number.isFinite(n)) onChange(Math.min(max, Math.max(0, n)));
+        }}
+        aria-label={label}
+      />
+      <button
+        type="button"
+        class="dp-tc-step"
+        aria-label="减少{label}"
+        onclick={() => onChange(value - 1)}
+      >
+        <Icon name="chevronDown" size={12} />
+      </button>
+    </div>
+  </div>
+{/snippet}
+
 <style>
   .dp-trigger {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    height: 36px;
-    padding: 0 12px;
+    gap: 8px;
+    height: 38px;
+    padding: 0 13px;
     border: 1px solid var(--border);
-    border-radius: 6px;
-    background: #fbfbfc;
+    border-radius: 10px;
+    background: linear-gradient(180deg, #fcfdff 0%, #f6f8fc 100%);
     color: var(--text-3);
     font-size: 13px;
     cursor: pointer;
-    transition: border-color .14s ease, background .14s ease, color .14s ease;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
+    transition: border-color .14s ease, background .14s ease, color .14s ease, box-shadow .14s ease, transform .14s ease;
   }
 
   .dp-trigger.full-width {
@@ -603,8 +691,9 @@
   }
 
   .dp-trigger:hover:not(:disabled) {
-    border-color: #b9c6e0;
-    background: var(--surface);
+    border-color: #bfd0f7;
+    background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+    box-shadow: 0 8px 18px rgba(22, 100, 255, .08);
   }
 
   .dp-trigger:disabled {
@@ -623,11 +712,15 @@
   .dp-popover {
     position: fixed;
     z-index: 200;
-    padding: 10px;
-    border: 1px solid #dfe4ee;
-    border-radius: 12px;
-    background: #fff;
-    box-shadow: 0 18px 42px rgba(15, 23, 42, .16);
+    box-sizing: border-box;
+    padding: 14px;
+    border: 1px solid rgba(187, 199, 220, .72);
+    border-radius: 20px;
+    background:
+      radial-gradient(circle at top left, rgba(22, 100, 255, .09), transparent 34%),
+      linear-gradient(180deg, rgba(255, 255, 255, .98) 0%, rgba(249, 251, 255, .98) 100%);
+    backdrop-filter: blur(18px);
+    box-shadow: 0 26px 60px rgba(15, 23, 42, .16);
   }
 
   .dp-mount-anchor {
@@ -637,28 +730,45 @@
     pointer-events: none;
   }
 
+  .dp-body {
+    display: grid;
+    grid-template-columns: minmax(252px, 1fr);
+    gap: 14px;
+    align-items: stretch;
+  }
+
+  .dp-body:has(.dp-time-panel) {
+    grid-template-columns: minmax(252px, 1fr) 176px;
+  }
+
+  .dp-cal {
+    min-width: 0;
+  }
+
   .dp-head {
     display: flex;
     align-items: center;
-    gap: 4px;
-    margin-bottom: 8px;
+    gap: 6px;
+    margin-bottom: 12px;
   }
 
   .dp-title {
     flex: 1;
-    height: 26px;
+    min-height: 40px;
     border: 0;
-    border-radius: 6px;
-    background: transparent;
+    border-radius: 12px;
+    background: linear-gradient(180deg, rgba(244, 247, 255, .95) 0%, rgba(236, 242, 255, .92) 100%);
     color: var(--text-1);
     font-size: 13px;
-    font-weight: 600;
+    font-weight: 700;
+    line-height: 1.25;
     cursor: pointer;
-    transition: background .12s ease;
+    letter-spacing: .02em;
+    transition: background .12s ease, color .12s ease, transform .12s ease;
   }
 
   .dp-title:hover:not(:disabled) {
-    background: #f5f8ff;
+    background: linear-gradient(180deg, #edf3ff 0%, #e5edff 100%);
     color: var(--primary);
   }
 
@@ -668,57 +778,64 @@
 
   .dp-nav {
     display: inline-flex;
-    width: 26px;
-    height: 26px;
+    width: 32px;
+    height: 32px;
     align-items: center;
     justify-content: center;
-    border: 0;
-    border-radius: 6px;
-    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, .72);
     color: var(--text-2);
     font-size: 13px;
     cursor: pointer;
+    transition: background .12s ease, color .12s ease, border-color .12s ease, transform .12s ease;
   }
 
   .dp-nav:hover {
-    background: #f5f8ff;
+    border-color: rgba(22, 100, 255, .12);
+    background: #f2f6ff;
     color: var(--primary);
+    transform: translateY(-1px);
   }
 
   .dp-weekdays {
     display: grid;
     grid-template-columns: repeat(7, 1fr);
-    margin-bottom: 4px;
+    margin-bottom: 8px;
     color: var(--text-3);
     font-size: 11px;
+    font-weight: 600;
     text-align: center;
   }
 
   .dp-weekdays span {
-    height: 22px;
-    line-height: 22px;
+    height: 24px;
+    line-height: 24px;
   }
 
   .dp-grid {
     display: grid;
     grid-template-columns: repeat(7, 1fr);
-    gap: 2px;
+    gap: 4px;
   }
 
   .dp-day {
-    height: 30px;
+    position: relative;
+    height: 36px;
     border: 0;
-    border-radius: 6px;
+    border-radius: 10px;
     background: transparent;
     color: var(--text-1);
-    font-size: 12px;
+    font-size: 13px;
+    font-weight: 500;
     cursor: pointer;
-    transition: background .12s ease, color .12s ease;
+    transition: background .12s ease, color .12s ease, transform .12s ease, box-shadow .12s ease;
   }
 
   .dp-day:hover:not(:disabled):not(.dp-day-selected) {
-    background: #f0f5ff;
+    background: #edf3ff;
     color: var(--primary);
+    transform: translateY(-1px);
   }
 
   .dp-day:disabled {
@@ -731,43 +848,48 @@
   }
 
   .dp-day-today {
-    box-shadow: inset 0 0 0 1px var(--primary);
+    box-shadow: inset 0 0 0 1px rgba(22, 100, 255, .4);
+    background: rgba(22, 100, 255, .06);
   }
 
   .dp-day-selected {
-    background: var(--primary);
+    background: linear-gradient(180deg, #2f7bff 0%, #1664ff 100%);
     color: #fff;
+    box-shadow: 0 10px 18px rgba(22, 100, 255, .22);
   }
 
   .dp-day-focused:not(.dp-day-selected) {
-    box-shadow: inset 0 0 0 2px var(--primary);
-    background: #f0f5ff;
+    box-shadow: inset 0 0 0 2px rgba(22, 100, 255, .4);
+    background: #f4f7ff;
   }
 
   .dp-day-focused.dp-day-selected {
-    box-shadow: 0 0 0 2px var(--primary-light);
+    box-shadow: 0 0 0 3px rgba(22, 100, 255, .18), 0 10px 18px rgba(22, 100, 255, .22);
   }
 
   .dp-month-grid {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 6px;
+    gap: 8px;
   }
 
   .dp-month-cell {
-    height: 44px;
-    border: 0;
-    border-radius: 8px;
-    background: #f7f8fa;
+    height: 46px;
+    border: 1px solid transparent;
+    border-radius: 12px;
+    background: linear-gradient(180deg, #f8faff 0%, #f2f5fb 100%);
     color: var(--text-1);
     font-size: 13px;
+    font-weight: 600;
     cursor: pointer;
-    transition: background .12s ease, color .12s ease;
+    transition: background .12s ease, color .12s ease, border-color .12s ease, transform .12s ease, box-shadow .12s ease;
   }
 
   .dp-month-cell:hover:not(:disabled):not(.dp-month-selected) {
-    background: #f0f5ff;
+    border-color: rgba(22, 100, 255, .14);
+    background: #edf3ff;
     color: var(--primary);
+    transform: translateY(-1px);
   }
 
   .dp-month-cell:disabled {
@@ -776,48 +898,178 @@
   }
 
   .dp-month-selected {
-    background: var(--primary);
+    background: linear-gradient(180deg, #2f7bff 0%, #1664ff 100%);
     color: #fff;
+    box-shadow: 0 10px 18px rgba(22, 100, 255, .18);
   }
 
-  .dp-time {
+  /* 时分秒选择器 */
+  .dp-time-panel {
+    display: flex;
+    flex-direction: column;
+    width: 176px;
+    min-width: 176px;
+    padding: 12px;
+    border: 1px solid rgba(216, 225, 240, .9);
+    border-radius: 18px;
+    background:
+      linear-gradient(180deg, rgba(245, 248, 255, .96) 0%, rgba(238, 243, 252, .96) 100%);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .85);
+  }
+
+  .dp-time-header {
+    display: grid;
+    gap: 10px;
+    margin-bottom: 12px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid rgba(208, 217, 234, .7);
+  }
+
+  .dp-time-heading {
     display: flex;
     align-items: center;
-    gap: 4px;
-    margin-top: 10px;
-    padding: 8px 10px;
-    border: 1px solid #edf1f6;
-    border-radius: 8px;
-    background: #fafbfd;
-    color: var(--text-2);
-    font-size: 12px;
+    gap: 8px;
+    min-width: 0;
   }
 
-  .dp-time input {
-    width: 44px;
+  .dp-time-heading-icon {
+    display: inline-flex;
+    width: 26px;
     height: 26px;
-    padding: 0 6px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--surface);
+    align-items: center;
+    justify-content: center;
+    border-radius: 9px;
+    background: rgba(22, 100, 255, .1);
+    color: var(--primary);
+  }
+
+  .dp-time-heading-copy {
+    display: grid;
+    min-width: 0;
+  }
+
+  .dp-time-heading-title {
     color: var(--text-1);
     font-size: 12px;
-    text-align: center;
+    font-weight: 700;
   }
 
-  .dp-time input:focus {
+  .dp-time-heading-subtitle {
+    color: var(--text-3);
+    font-size: 10px;
+    line-height: 1.4;
+  }
+
+  .dp-time-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 38px;
+    border-radius: 12px;
+    background: linear-gradient(180deg, #ffffff 0%, #f4f7ff 100%);
+    color: var(--primary);
+    font-size: 18px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: .03em;
+    box-shadow: inset 0 0 0 1px rgba(22, 100, 255, .08);
+  }
+
+  .dp-time-cols {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    flex: 1;
+  }
+
+  .dp-tc {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-width: 0;
+    padding: 8px 6px 6px;
+    border-radius: 14px;
+    background: rgba(255, 255, 255, .55);
+    box-shadow: inset 0 0 0 1px rgba(223, 230, 241, .88);
+  }
+
+  .dp-tc-label {
+    font-size: 11px;
+    color: var(--text-2);
+    font-weight: 600;
+    margin-bottom: 8px;
+  }
+
+  .dp-tc-stepper {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .dp-tc-step {
+    width: 100%;
+    height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, .66);
+    color: var(--text-3);
+    cursor: pointer;
+    transition: background .12s ease, color .12s ease, transform .12s ease;
+  }
+
+  .dp-tc-step:hover {
+    background: #e8efff;
+    color: var(--primary);
+    transform: translateY(-1px);
+  }
+
+  .dp-tc-input {
+    width: 100%;
+    min-width: 0;
+    height: 40px;
+    padding: 0;
+    border: 1px solid rgba(210, 220, 236, .9);
+    border-radius: 12px;
+    background: linear-gradient(180deg, #ffffff 0%, #f8faff 100%);
+    color: var(--text-1);
+    font-size: 18px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+    letter-spacing: .02em;
+    transition: border-color .12s ease, box-shadow .12s ease, background .12s ease, transform .12s ease;
+  }
+
+  @supports not selector(:has(*)) {
+    .dp-body {
+      display: flex;
+    }
+
+    .dp-cal {
+      flex: 1;
+    }
+  }
+
+  .dp-tc-input:focus {
     border-color: var(--primary);
     outline: none;
-    box-shadow: 0 0 0 3px var(--primary-light);
+    background: #fff;
+    box-shadow: 0 0 0 3px rgba(22, 100, 255, .12), 0 8px 18px rgba(22, 100, 255, .08);
   }
 
   .dp-foot {
     display: flex;
     align-items: center;
-    margin-top: 10px;
-    padding-top: 10px;
-    border-top: 1px solid #edf1f6;
-    gap: 6px;
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid rgba(219, 227, 238, .9);
+    gap: 8px;
   }
 
   .dp-link {
@@ -825,13 +1077,15 @@
     background: transparent;
     color: var(--text-3);
     font-size: 12px;
-    padding: 4px 6px;
+    font-weight: 600;
+    padding: 6px 8px;
     cursor: pointer;
-    border-radius: 6px;
+    border-radius: 8px;
+    transition: background .12s ease, color .12s ease;
   }
 
   .dp-link:hover {
-    background: #f5f8ff;
+    background: #edf3ff;
     color: var(--primary);
   }
 
@@ -840,18 +1094,22 @@
   }
 
   .dp-confirm {
-    height: 28px;
-    padding: 0 14px;
+    height: 34px;
+    padding: 0 18px;
     border: 0;
-    border-radius: 6px;
-    background: var(--primary);
+    border-radius: 10px;
+    background: linear-gradient(180deg, #2f7bff 0%, #1664ff 100%);
     color: #fff;
     font-size: 12px;
-    font-weight: 600;
+    font-weight: 700;
+    box-shadow: 0 12px 22px rgba(22, 100, 255, .2);
     cursor: pointer;
+    transition: transform .12s ease, box-shadow .12s ease, filter .12s ease;
   }
 
   .dp-confirm:hover {
-    background: #1a4ed8;
+    filter: brightness(.98);
+    transform: translateY(-1px);
+    box-shadow: 0 14px 24px rgba(22, 100, 255, .24);
   }
 </style>
