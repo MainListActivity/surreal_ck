@@ -3,14 +3,25 @@ import { getLocalDb } from "../db/index";
 import { mapNullsToSurrealNone, omitNullishSurrealFields } from "../db/surreal-values";
 import { assertCanReadWorkspace, assertCanWriteWorkspace, getCurrentUserRecordId, getServiceContext } from "./context";
 import { ServiceError } from "./errors";
-import { gridColumnToStoredDef, normalizeGridColumnDef, overwriteEntityField, removeEntityField } from "./workbooks";
+import {
+  gridColumnToStoredDef,
+  normalizeGridColumnDef,
+  overwriteEntityField,
+  provisionEntityFields,
+  provisionEntityTable,
+  removeEntityField,
+} from "./workbooks";
 import { coerceGridFieldValue, validateGridFieldValue } from "../../shared/field-schema";
 import type {
+  CreateSheetRequest,
+  CreateSheetResponse,
   FilterClause,
   GetWorkbookDataRequest,
   GetWorkbookDataResponse,
   GridColumnDef,
   GridRow,
+  RenameSheetRequest,
+  RenameSheetResponse,
   RenameWorkbookRequest,
   RenameWorkbookResponse,
   SheetSummaryDTO,
@@ -342,6 +353,151 @@ export async function updateSheetFields({
     sheet: sheetRowToDTO(updatedSheet),
     columns: updatedSheet.column_defs.map(storedColumnToDTO),
   };
+}
+
+// ─── createSheet ──────────────────────────────────────────────────────────────
+
+const DEFAULT_NEW_SHEET_COLUMNS: GridColumnDef[] = [
+  { key: "name",  label: "名称", fieldType: "text", required: true  },
+  { key: "value", label: "值",   fieldType: "text", required: false },
+  { key: "note",  label: "备注", fieldType: "text", required: false },
+];
+
+export async function createSheet({
+  workbookId,
+  label,
+}: CreateSheetRequest): Promise<CreateSheetResponse> {
+  const db = getLocalDb();
+
+  const wbRows = await db.query<[WorkbookRow[]]>(
+    `SELECT id, workspace, name, template_key, folder, last_opened_sheet, updated_at FROM workbook WHERE id = $wbId`,
+    { wbId: new StringRecordId(workbookId) }
+  );
+  const wbRow = wbRows[0]?.[0];
+  if (!wbRow) throw new ServiceError("NOT_FOUND", "工作簿不存在");
+
+  await assertCanWriteWorkspace(String(wbRow.workspace));
+
+  // 读取已有 sheets 用于推导新 label / position
+  const sheetRows = await db.query<[Pick<SheetRow, "id" | "label" | "position">[]]>(
+    `SELECT id, label, position FROM sheet WHERE workbook = $wbId ORDER BY position`,
+    { wbId: new StringRecordId(workbookId) }
+  );
+  const sheets = sheetRows[0] ?? [];
+
+  const trimmedLabel = label?.trim();
+  let finalLabel: string;
+  if (trimmedLabel) {
+    if (trimmedLabel.length > 80) {
+      throw new ServiceError("VALIDATION_ERROR", "Sheet 名称过长");
+    }
+    if (sheets.some((s) => s.label === trimmedLabel)) {
+      throw new ServiceError("VALIDATION_ERROR", "Sheet 名称已存在");
+    }
+    finalLabel = trimmedLabel;
+  } else {
+    const existingLabels = new Set(sheets.map((s) => s.label));
+    let i = sheets.length + 1;
+    let candidate = `Sheet ${i}`;
+    while (existingLabels.has(candidate)) {
+      i += 1;
+      candidate = `Sheet ${i}`;
+    }
+    finalLabel = candidate;
+  }
+
+  const nextPosition = sheets.reduce((max, s) => Math.max(max, s.position ?? 0), -1) + 1;
+
+  const wbKey = String(wbRow.id).replace(/^workbook:/, "");
+  const wsKey = String(wbRow.workspace).replace(/^workspace:/, "").slice(0, 8);
+  const sheetKey = Bun.hash.wyhash(`${wbKey}:sheet:${nextPosition}:${Date.now()}`)
+    .toString(16)
+    .padStart(16, "0");
+  const tableName = `ent_${wsKey}_${wbKey.slice(0, 8)}_${sheetKey.slice(0, 8)}`;
+  const sheetId = new RecordId("sheet", sheetKey);
+
+  await provisionEntityTable(tableName);
+  await provisionEntityFields(tableName, DEFAULT_NEW_SHEET_COLUMNS);
+
+  const storedDefs = DEFAULT_NEW_SHEET_COLUMNS.map(gridColumnToStoredDef);
+  const created = await db.query<[SheetRow[]]>(
+    `UPSERT $sheetId CONTENT {
+      workbook: $wbId,
+      univer_id: rand::ulid(),
+      table_name: $tableName,
+      label: $label,
+      position: $position,
+      column_defs: $columnDefs
+    } RETURN id, workbook, univer_id, table_name, label, position, column_defs`,
+    {
+      sheetId,
+      wbId: new StringRecordId(workbookId),
+      tableName,
+      label: finalLabel,
+      position: nextPosition,
+      columnDefs: storedDefs,
+    }
+  );
+  const createdSheet = created[0]?.[0];
+  if (!createdSheet) throw new ServiceError("INTERNAL_ERROR", "Sheet 创建失败");
+
+  return { sheet: sheetRowToDTO(createdSheet) };
+}
+
+// ─── renameSheet ──────────────────────────────────────────────────────────────
+
+export async function renameSheet({
+  sheetId,
+  label,
+}: RenameSheetRequest): Promise<RenameSheetResponse> {
+  const trimmed = label.trim();
+  if (!trimmed) {
+    throw new ServiceError("VALIDATION_ERROR", "Sheet 名称不能为空");
+  }
+  if (trimmed.length > 80) {
+    throw new ServiceError("VALIDATION_ERROR", "Sheet 名称过长");
+  }
+
+  const db = getLocalDb();
+  const sheetRows = await db.query<[SheetRow[]]>(
+    `SELECT id, workbook, univer_id, table_name, label, position, column_defs FROM sheet WHERE id = $sheetId`,
+    { sheetId: new StringRecordId(sheetId) }
+  );
+  const sheet = sheetRows[0]?.[0];
+  if (!sheet) throw new ServiceError("NOT_FOUND", "Sheet 不存在");
+
+  const wbRows = await db.query<[{ workspace: RecordId }[]]>(
+    `SELECT workspace FROM workbook WHERE id = $wbId`,
+    { wbId: new StringRecordId(String(sheet.workbook)) }
+  );
+  const wbRow = wbRows[0]?.[0];
+  if (!wbRow) throw new ServiceError("NOT_FOUND", "工作簿不存在");
+  await assertCanWriteWorkspace(String(wbRow.workspace));
+
+  if (trimmed === sheet.label) {
+    return { sheet: sheetRowToDTO(sheet) };
+  }
+
+  const dupRows = await db.query<[{ id: RecordId }[]]>(
+    `SELECT id FROM sheet WHERE workbook = $wbId AND label = $label AND id != $sheetId LIMIT 1`,
+    {
+      wbId: sheet.workbook,
+      label: trimmed,
+      sheetId: new StringRecordId(sheetId),
+    }
+  );
+  if (dupRows[0]?.[0]) {
+    throw new ServiceError("VALIDATION_ERROR", "Sheet 名称已存在");
+  }
+
+  const updated = await db.query<[SheetRow[]]>(
+    `UPDATE $sheetId SET label = $label, updated_at = time::now() RETURN id, workbook, univer_id, table_name, label, position, column_defs`,
+    { sheetId: new StringRecordId(sheetId), label: trimmed }
+  );
+  const updatedSheet = updated[0]?.[0];
+  if (!updatedSheet) throw new ServiceError("INTERNAL_ERROR", "Sheet 重命名失败");
+
+  return { sheet: sheetRowToDTO(updatedSheet) };
 }
 
 // ─── deleteRows ───────────────────────────────────────────────────────────────

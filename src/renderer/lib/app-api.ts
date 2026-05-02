@@ -3,6 +3,7 @@ import type {
   AppBootstrap,
   CreateBlankWorkbookResponse,
   CreateFolderResponse,
+  CreateSheetResponse,
   CreateWorkbookFromTemplateResponse,
   DeleteRowsResponse,
   GetWorkbookDataResponse,
@@ -13,6 +14,7 @@ import type {
   MoveFolderResponse,
   MoveWorkbookResponse,
   RecordIdString,
+  RenameSheetResponse,
   RenameWorkbookResponse,
   Result,
   UpdateSheetFieldsResponse,
@@ -90,5 +92,13 @@ export const appApi = {
 
   updateSheetFields(sheetId: RecordIdString, columns: GridColumnDef[]): Promise<Result<UpdateSheetFieldsResponse>> {
     return rpc.request("updateSheetFields", { sheetId, columns });
+  },
+
+  createSheet(workbookId: RecordIdString, label?: string): Promise<Result<CreateSheetResponse>> {
+    return rpc.request("createSheet", { workbookId, label });
+  },
+
+  renameSheet(sheetId: RecordIdString, label: string): Promise<Result<RenameSheetResponse>> {
+    return rpc.request("renameSheet", { sheetId, label });
   },
 };

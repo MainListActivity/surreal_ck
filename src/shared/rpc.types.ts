@@ -301,6 +301,25 @@ export type UpdateSheetFieldsResponse = {
   columns: GridColumnDef[];
 };
 
+export type CreateSheetRequest = {
+  workbookId: RecordIdString;
+  /** 可选：用户指定的 sheet 名称，缺省时后端按 "Sheet N" 自动生成 */
+  label?: string;
+};
+
+export type CreateSheetResponse = {
+  sheet: SheetSummaryDTO;
+};
+
+export type RenameSheetRequest = {
+  sheetId: RecordIdString;
+  label: string;
+};
+
+export type RenameSheetResponse = {
+  sheet: SheetSummaryDTO;
+};
+
 // ─── RPC 契约 ─────────────────────────────────────────────────────────────────
 
 export interface AppRPC extends ElectrobunRPCSchema {
@@ -323,6 +342,8 @@ export interface AppRPC extends ElectrobunRPCSchema {
       deleteRows: { params: DeleteRowsRequest; response: Result<DeleteRowsResponse> };
       renameWorkbook: { params: RenameWorkbookRequest; response: Result<RenameWorkbookResponse> };
       updateSheetFields: { params: UpdateSheetFieldsRequest; response: Result<UpdateSheetFieldsResponse> };
+      createSheet: { params: CreateSheetRequest; response: Result<CreateSheetResponse> };
+      renameSheet: { params: RenameSheetRequest; response: Result<RenameSheetResponse> };
     };
     messages: {
       log: { msg: string };

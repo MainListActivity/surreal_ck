@@ -193,6 +193,61 @@ function createEditorStore() {
     }
   }
 
+  async function addSheet(label?: string): Promise<boolean> {
+    if (!state.data) return false;
+    state.saving = true;
+    state.saveError = null;
+    try {
+      const res = await appApi.createSheet(state.data.workbook.id, label);
+      if (!res.ok) {
+        state.saveError = res.message;
+        return false;
+      }
+      const newSheet = res.data.sheet;
+      state.data = {
+        ...state.data,
+        sheets: [...state.data.sheets, newSheet],
+      };
+      // 自动切换到新建的 sheet
+      await switchSheet(newSheet.id);
+      return true;
+    } catch (err) {
+      state.saveError = String(err);
+      return false;
+    } finally {
+      state.saving = false;
+    }
+  }
+
+  async function renameSheet(sheetId: string, label: string): Promise<boolean> {
+    if (!state.data) return false;
+    const trimmed = label.trim();
+    if (!trimmed) return false;
+    const target = state.data.sheets.find((s) => s.id === sheetId);
+    if (!target) return false;
+    if (target.label === trimmed) return true;
+    state.saving = true;
+    state.saveError = null;
+    try {
+      const res = await appApi.renameSheet(sheetId, trimmed);
+      if (!res.ok) {
+        state.saveError = res.message;
+        return false;
+      }
+      const updated = res.data.sheet;
+      state.data = {
+        ...state.data,
+        sheets: state.data.sheets.map((s) => (s.id === updated.id ? updated : s)),
+      };
+      return true;
+    } catch (err) {
+      state.saveError = String(err);
+      return false;
+    } finally {
+      state.saving = false;
+    }
+  }
+
   async function renameWorkbook(name: string): Promise<boolean> {
     if (!state.data) return false;
     state.saving = true;
@@ -594,6 +649,8 @@ function createEditorStore() {
     loadWorkbook,
     reloadRows,
     switchSheet,
+    addSheet,
+    renameSheet,
     saveRows,
     deleteRowIds,
     insertBlankRows,
