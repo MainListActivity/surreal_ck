@@ -182,6 +182,22 @@
       }
     };
 
+    const onCellMouseDown = (event: Event) => {
+      const mouseEvent = event as MouseEvent;
+      if (mouseEvent.button !== 0) return; // 仅左键单击
+      const path = typeof mouseEvent.composedPath === "function" ? mouseEvent.composedPath() : [];
+      const dataCell = path.find((node) => node instanceof HTMLElement && node.classList.contains("rgCell"));
+      if (!(dataCell instanceof HTMLElement)) return;
+      const rawRow = dataCell.getAttribute("data-rgRow");
+      const rowIndex = rawRow ? Number(rawRow) : Number.NaN;
+      if (!Number.isInteger(rowIndex)) return;
+      const sourceRow = gridSource[rowIndex];
+      if (!isGridRecordRow(sourceRow)) return;
+      const rowId = typeof sourceRow._id === "string" ? sourceRow._id : null;
+      if (!rowId) return;
+      editorUi.selectRow(rowId as RecordIdString);
+    };
+
     const onContextMenu = (event: Event) => {
       const mouseEvent = event as MouseEvent;
       const path = typeof mouseEvent.composedPath === "function" ? mouseEvent.composedPath() : [];
@@ -219,12 +235,14 @@
     grid.addEventListener("beforepasteapply", beforePaste);
     grid.addEventListener("afterpasteapply", afterPaste);
     grid.addEventListener("contextmenu", onContextMenu, true);
+    grid.addEventListener("mousedown", onCellMouseDown, true);
     document.addEventListener("mousedown", onRowMenuBackdrop, true);
 
     cleanup = () => {
       grid.removeEventListener("beforepasteapply", beforePaste);
       grid.removeEventListener("afterpasteapply", afterPaste);
       grid.removeEventListener("contextmenu", onContextMenu, true);
+      grid.removeEventListener("mousedown", onCellMouseDown, true);
       document.removeEventListener("mousedown", onRowMenuBackdrop, true);
     };
   });
@@ -247,7 +265,9 @@
     const focused = await grid?.getFocused?.();
     const rowIndex = focused?.y;
     const sourceRow = typeof rowIndex === "number" ? gridSource[rowIndex] : undefined;
-    editorUi.selectRow(isGridRecordRow(sourceRow) ? (sourceRow._id as RecordIdString) : null);
+    if (isGridRecordRow(sourceRow)) {
+      editorUi.selectRow(sourceRow._id as RecordIdString);
+    }
   }
 
   function openFieldEditor() {

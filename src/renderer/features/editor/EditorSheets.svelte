@@ -1,8 +1,15 @@
 <script lang="ts">
   import Icon from "../../components/Icon.svelte";
   import { editorStore } from "../../lib/editor.svelte";
+  import { editorUi } from "./lib/editor-ui.svelte";
 
   let { onAddSheet }: { onAddSheet?: () => void | Promise<void> } = $props();
+
+  async function gotoSheet(sheetId: string) {
+    if (editorStore.activeSheetId === sheetId) return;
+    editorUi.selectRow(null);
+    await editorStore.switchSheet(sheetId);
+  }
 </script>
 
 <footer class="sheets">
@@ -12,7 +19,7 @@
   {#each editorStore.sheets as sheet}
     <button
       class:active={editorStore.activeSheetId === sheet.id}
-      onclick={() => void editorStore.switchSheet(sheet.id)}
+      onclick={() => void gotoSheet(sheet.id)}
     >
       {sheet.label}
     </button>
