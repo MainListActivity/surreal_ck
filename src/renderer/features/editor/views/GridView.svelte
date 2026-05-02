@@ -1,13 +1,78 @@
 <script lang="ts">
-  import { onDestroy, onMount } from "svelte";
+  import { mount, onDestroy, onMount, unmount } from "svelte";
   import type { ColumnRegular, RevoGridCustomEvent } from "@revolist/svelte-datagrid";
   import { RevoGrid } from "@revolist/svelte-datagrid";
   import type { CellTemplateProp, RowHeaders } from "@revolist/revogrid";
   import Icon from "../../../components/Icon.svelte";
+  import DatePicker from "../../../components/DatePicker.svelte";
   import { appState } from "../../../lib/app-state.svelte";
   import { editorStore } from "../../../lib/editor.svelte";
   import { editorUi } from "../lib/editor-ui.svelte";
-  import type { RecordIdString } from "../../../../shared/rpc.types";
+  import type { GridColumnDef, RecordIdString } from "../../../../shared/rpc.types";
+  import { formatDateValue } from "../../../../shared/date-format";
+
+  /** RevoGrid 日期单元格编辑器：在单元格内挂载 DatePicker 组件并自动展开。 */
+  function createDateEditor(column: GridColumnDef) {
+    return class DateEditor {
+      host: HTMLDivElement | null = null;
+      app: ReturnType<typeof mount> | null = null;
+      currentValue: Date | null = null;
+      save: (value: unknown, preventFocus?: boolean) => void;
+      close: (focusNext?: boolean) => void;
+
+      constructor(
+        _col: unknown,
+        save: (value: unknown, preventFocus?: boolean) => void,
+        close: (focusNext?: boolean) => void,
+      ) {
+        this.save = save;
+        this.close = close;
+      }
+
+      componentDidRender() {
+        if (!this.host || this.app) return;
+        this.app = mount(DatePicker, {
+          target: this.host,
+          props: {
+            value: this.currentValue,
+            dateFormat: column.dateFormat,
+            minDate: column.constraints?.minDate,
+            maxDate: column.constraints?.maxDate,
+            openOnMount: true,
+            ariaLabel: column.label,
+            onChange: (next: Date | null) => {
+              this.currentValue = next;
+              this.save(next, true);
+            },
+            onClose: () => {
+              this.close(true);
+            },
+          },
+        });
+      }
+
+      beforeDisconnect() {
+        if (this.app) {
+          unmount(this.app);
+          this.app = null;
+        }
+      }
+
+      render(h: (tag: string, props?: Record<string, unknown>) => unknown, extra: { model?: Record<string, unknown> } = {}) {
+        const initial = extra?.model?.[column.key];
+        this.currentValue = initial instanceof Date
+          ? initial
+          : typeof initial === "string" || typeof initial === "number"
+            ? new Date(initial)
+            : null;
+        if (this.currentValue && Number.isNaN(this.currentValue.getTime())) this.currentValue = null;
+        return h("div", {
+          class: "grid-date-editor-host",
+          ref: (el: HTMLDivElement | null) => { this.host = el; },
+        });
+      }
+    };
+  }
 
   type RowMenuState = {
     open: boolean;
@@ -129,11 +194,18 @@
 
   const gridColumns = $derived<ColumnRegular[]>(
     [
-      ...editorStore.visibleColumns.map((col) => ({
-        prop: col.key,
-        name: col.label,
-        size: columnWidths[col.key] ?? GRID_COLUMN_WIDTH,
-      })),
+      ...editorStore.visibleColumns.map((col) => {
+        const base: ColumnRegular = {
+          prop: col.key,
+          name: col.label,
+          size: columnWidths[col.key] ?? GRID_COLUMN_WIDTH,
+        };
+        if (col.fieldType === "date") {
+          base.cellTemplate = (h, props: CellTemplateProp) => formatDateValue(props.model?.[col.key], col.dateFormat);
+          base.editor = createDateEditor(col) as unknown as ColumnRegular["editor"];
+        }
+        return base;
+      }),
       addFieldColumn,
     ] satisfies ColumnRegular[],
   );
@@ -619,6 +691,14 @@
   :global(revo-grid .rgCell),
   :global(revo-grid .rgHeaderCell) {
     font-size: 12px;
+  }
+
+  :global(revo-grid .grid-date-editor-host) {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    background: var(--surface);
+    box-shadow: inset 0 0 0 2px var(--primary);
   }
 
   :global(revo-grid .grid-add-field-header) {

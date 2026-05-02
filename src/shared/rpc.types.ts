@@ -194,6 +194,8 @@ export type GridColumnDef = {
   required?: boolean;
   options?: string[];
   constraints?: GridFieldConstraints;
+  /** 仅 fieldType === "date" 有效；dayjs 格式串，例如 "YYYY-MM-DD HH:mm:ss"。 */
+  dateFormat?: string;
 };
 
 /** 单个筛选条件。op 决定 value 是否使用、以及如何使用。 */

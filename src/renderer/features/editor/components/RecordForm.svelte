@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { normalizeDateInputValue, summarizeGridField } from "../../../../shared/field-schema";
+  import { summarizeGridField } from "../../../../shared/field-schema";
+  import DatePicker from "../../../components/DatePicker.svelte";
   import type { GridColumnDef } from "../../../../shared/rpc.types";
 
   let {
@@ -24,8 +25,8 @@
     values[key] = value === "" ? null : Number(value);
   }
 
-  function updateDate(key: string, value: string) {
-    values[key] = value === "" ? null : value;
+  function updateDate(col: GridColumnDef, next: Date | null) {
+    values[col.key] = next;
   }
 
   function updateCheckbox(key: string, checked: boolean) {
@@ -99,13 +100,15 @@
           <i>{Boolean(values[col.key]) ? "是" : "否"}</i>
         </span>
       {:else if col.fieldType === "date"}
-        <input
-          type="date"
-          value={normalizeDateInputValue(values[col.key])}
-          min={col.constraints?.minDate?.slice(0, 10)}
-          max={col.constraints?.maxDate?.slice(0, 10)}
+        <DatePicker
+          value={values[col.key] as Date | string | null}
+          dateFormat={col.dateFormat}
+          minDate={col.constraints?.minDate}
+          maxDate={col.constraints?.maxDate}
           disabled={disabled}
-          onchange={(event) => updateDate(col.key, event.currentTarget.value)}
+          fullWidth
+          ariaLabel={col.label}
+          onChange={(next) => updateDate(col, next)}
         />
       {:else if col.fieldType === "number" || col.fieldType === "decimal"}
         <input

@@ -4,6 +4,7 @@ export const ICON_PATHS: Record<string, string[]> = {
   arrowDown: ["M12 5v14", "M19 12l-7 7-7-7"],
   arrowUp: ["M12 19V5", "M5 12l7-7 7 7"],
   bell: ["M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9", "M13.73 21a2 2 0 01-3.46 0"],
+  calendar: ["M19 4H5a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2V6a2 2 0 00-2-2z", "M16 2v4", "M8 2v4", "M3 10h18"],
   chat: ["M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"],
   check: ["M20 6L9 17l-5-5"],
   checkCircle: ["M22 11.08V12a10 10 0 11-5.93-9.14", "M22 4L12 14.01l-3-3"],

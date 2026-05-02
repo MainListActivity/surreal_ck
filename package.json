@@ -17,6 +17,7 @@
   "dependencies": {
     "@mastra/core": "^1.25.0",
     "@surrealdb/node": "^3.0.3",
+    "dayjs": "^1.11.20",
     "electrobun": "^1.16.0",
     "surrealdb": "^2.0.3"
   },

@@ -1,4 +1,4 @@
-import { RecordId, StringRecordId } from "surrealdb";
+import { DateTime, RecordId, StringRecordId } from "surrealdb";
 import { getLocalDb } from "../db/index";
 import { mapNullsToSurrealNone, omitNullishSurrealFields } from "../db/surreal-values";
 import { assertCanReadWorkspace, assertCanWriteWorkspace, getCurrentUserRecordId, getServiceContext } from "./context";
@@ -51,6 +51,7 @@ type SheetRow = {
     required?: boolean;
     options?: string[];
     constraints?: GridColumnDef["constraints"];
+    date_format?: string;
   }>;
 };
 
@@ -199,11 +200,17 @@ export async function upsertRows({
         throw new ServiceError("VALIDATION_ERROR", `${column.label}: ${fieldErrors[0]}`);
       }
     }
+    // 校验通过后把 date 字段包装成 SurrealDB DateTime（ns 精度），写库后再用
+    for (const column of columnsByKey.values()) {
+      if (column.fieldType !== "date") continue;
+      const v = cleanValues[column.key];
+      if (v instanceof Date) cleanValues[column.key] = new DateTime(v);
+    }
 
     if (rowPatch.id) {
       assertRowIdBelongsToTable(rowPatch.id, tableName);
       // 更新已有行
-      const updateValues = mapNullsToSurrealNone({ ...cleanValues, updated_at: new Date() });
+      const updateValues = mapNullsToSurrealNone({ ...cleanValues, updated_at: new DateTime() });
       const updated = await db.query<[EntityRow[]]>(
         `UPDATE $rowId MERGE $vals`,
         { rowId: new StringRecordId(rowPatch.id), vals: updateValues }
@@ -480,18 +487,30 @@ function isSafeIdentifier(key: string): boolean {
   return /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(key);
 }
 
-/** 把字面值按列类型做最小转换，复用 cell 的 coerce 规则。 */
+/** 把字面值按列类型做最小转换，复用 cell 的 coerce 规则；date 字段额外包装为 DateTime 以匹配 SurrealQL datetime。 */
 function coerceFilterValue(value: unknown, column: StoredColumnDef): unknown {
-  return coerceCellValue(value, storedColumnToDTO(column));
+  const coerced = coerceCellValue(value, storedColumnToDTO(column));
+  if (column.field_type === "date" && coerced instanceof Date) {
+    return new DateTime(coerced);
+  }
+  return coerced;
 }
 
 function entityRowToDTO(row: EntityRow, validKeys: Set<string>): GridRow {
   const values: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(row)) {
     if (k === "id" || k === "workspace" || k === "created_by" || k === "created_at" || k === "updated_at") continue;
-    if (validKeys.has(k)) values[k] = v;
+    if (validKeys.has(k)) values[k] = jsonifyDbValue(v);
   }
   return { id: String(row.id), values };
+}
+
+/** 把 SurrealDB sdk 反序列化出来的 DateTime / Date / RecordId 转成 RPC 安全的标量，避免 JSON.stringify 丢精度。 */
+function jsonifyDbValue(value: unknown): unknown {
+  if (value instanceof DateTime) return value.toISOString();
+  if (value instanceof Date) return value.toISOString();
+  if (value instanceof RecordId) return String(value);
+  return value;
 }
 
 function storedColumnToDTO(c: StoredColumnDef): GridColumnDef {
@@ -502,6 +521,7 @@ function storedColumnToDTO(c: StoredColumnDef): GridColumnDef {
     required: c.required,
     options: c.options,
     constraints: c.constraints,
+    dateFormat: c.date_format,
   };
 }
 

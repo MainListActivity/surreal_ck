@@ -4,6 +4,12 @@
   import { editorStore } from "../../../lib/editor.svelte";
   import { editorUi } from "../lib/editor-ui.svelte";
   import { normalizeGridFieldConstraints } from "../../../../shared/field-schema";
+  import {
+    DATE_FORMAT_PRESETS,
+    DEFAULT_DATE_FORMAT,
+    formatDateValue,
+  } from "../../../../shared/date-format";
+  import DatePicker from "../../../components/DatePicker.svelte";
   import type { GridColumnDef, GridFieldConstraints } from "../../../../shared/rpc.types";
 
   let { fieldKey }: { fieldKey: string } = $props();
@@ -24,6 +30,7 @@
 
   let draftError = $state<string | null>(null);
   let fieldDraft = $state<FieldDraft | null>(null);
+  let dateFormatMode = $state<"preset" | "custom">("preset");
 
   $effect(() => {
     const source = editorStore.columns.find((col) => col.key === fieldKey);
@@ -32,13 +39,33 @@
       return;
     }
 
+    const dateFormat = source.dateFormat?.trim() || DEFAULT_DATE_FORMAT;
+    const isPreset = DATE_FORMAT_PRESETS.some((preset) => preset.value === dateFormat);
+
     fieldDraft = {
       ...source,
       optionsText: source.options?.join("\n") ?? "",
       constraints: { ...source.constraints },
+      dateFormat,
     };
+    dateFormatMode = isPreset ? "preset" : "custom";
     draftError = null;
   });
+
+  function selectDateFormatPreset(value: string) {
+    if (!fieldDraft) return;
+    if (value === "__custom__") {
+      dateFormatMode = "custom";
+      return;
+    }
+    dateFormatMode = "preset";
+    fieldDraft.dateFormat = value;
+  }
+
+  function updateDateConstraint(target: "minDate" | "maxDate", next: Date | null) {
+    if (!fieldDraft) return;
+    fieldDraft.constraints[target] = next ? next.toISOString() : undefined;
+  }
 
   function close() {
     editorUi.closeFieldEditor();
@@ -93,6 +120,7 @@
       required: field.required,
       options,
       constraints,
+      dateFormat: field.fieldType === "date" ? (field.dateFormat?.trim() || DEFAULT_DATE_FORMAT) : undefined,
     };
   }
 
@@ -222,13 +250,50 @@
 
             {#if fieldDraft.fieldType === "date"}
               <div class="field-grid rule-grid">
+                <label class="span-2">
+                  <span>显示格式</span>
+                  <select
+                    value={dateFormatMode === "custom" ? "__custom__" : fieldDraft.dateFormat}
+                    onchange={(event) => selectDateFormatPreset(event.currentTarget.value)}
+                  >
+                    {#each DATE_FORMAT_PRESETS as preset}
+                      <option value={preset.value}>{preset.label} ({preset.value})</option>
+                    {/each}
+                    <option value="__custom__">自定义…</option>
+                  </select>
+                </label>
+                {#if dateFormatMode === "custom"}
+                  <label class="span-2">
+                    <span>自定义格式</span>
+                    <input
+                      type="text"
+                      placeholder="YYYY-MM-DD HH:mm:ss"
+                      bind:value={fieldDraft.dateFormat}
+                    />
+                    <small class="hint">
+                      预览：{formatDateValue(new Date(), fieldDraft.dateFormat) || "格式无效"}
+                    </small>
+                  </label>
+                {/if}
                 <label>
                   <span>最早日期</span>
-                  <input type="date" bind:value={fieldDraft.constraints.minDate} />
+                  <DatePicker
+                    value={fieldDraft.constraints.minDate}
+                    dateFormat={fieldDraft.dateFormat}
+                    fullWidth
+                    placeholder="不限"
+                    onChange={(next) => updateDateConstraint("minDate", next)}
+                  />
                 </label>
                 <label>
                   <span>最晚日期</span>
-                  <input type="date" bind:value={fieldDraft.constraints.maxDate} />
+                  <DatePicker
+                    value={fieldDraft.constraints.maxDate}
+                    dateFormat={fieldDraft.dateFormat}
+                    fullWidth
+                    placeholder="不限"
+                    onChange={(next) => updateDateConstraint("maxDate", next)}
+                  />
                 </label>
               </div>
             {/if}
@@ -503,6 +568,14 @@
     margin-right: auto;
     color: var(--error);
     font-size: 12px;
+  }
+
+  .hint {
+    display: block;
+    margin-top: 6px;
+    color: var(--text-3);
+    font-size: 11px;
+    line-height: 1.5;
   }
 
   @media (max-width: 720px) {

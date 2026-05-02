@@ -303,6 +303,7 @@ export function normalizeGridColumnDef(column: GridColumnDef): GridColumnDef {
     ? [...new Set((column.options ?? []).map((opt) => opt.trim()).filter(Boolean))].slice(0, 80)
     : undefined;
   const constraints = normalizeGridFieldConstraints(fieldType, column.constraints);
+  const dateFormat = fieldType === "date" ? normalizeDateFormat(column.dateFormat) : undefined;
 
   return {
     key,
@@ -311,7 +312,18 @@ export function normalizeGridColumnDef(column: GridColumnDef): GridColumnDef {
     required: Boolean(column.required),
     options,
     constraints,
+    dateFormat,
   };
+}
+
+function normalizeDateFormat(format: string | undefined | null): string | undefined {
+  if (format === undefined || format === null) return undefined;
+  const trimmed = format.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.length > 64) {
+    throw new ServiceError("VALIDATION_ERROR", "日期格式过长");
+  }
+  return trimmed;
 }
 
 export function gridColumnToStoredDef(column: GridColumnDef) {
@@ -322,6 +334,7 @@ export function gridColumnToStoredDef(column: GridColumnDef) {
     required: column.required,
     options: column.options,
     constraints: column.constraints,
+    date_format: column.dateFormat,
   };
 }
 
