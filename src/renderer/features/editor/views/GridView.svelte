@@ -3,6 +3,7 @@
   import type { ColumnRegular, RevoGridCustomEvent } from "@revolist/svelte-datagrid";
   import { RevoGrid } from "@revolist/svelte-datagrid";
   import type { CellTemplateProp, RowHeaders } from "@revolist/revogrid";
+  import Icon from "../../../components/Icon.svelte";
   import { appState } from "../../../lib/app-state.svelte";
   import { editorStore } from "../../../lib/editor.svelte";
   import { editorUi } from "../lib/editor-ui.svelte";

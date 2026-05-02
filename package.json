@@ -6,7 +6,7 @@
   "type": "module",
   "packageManager": "pnpm@10.32.1",
   "scripts": {
-    "dev": "vite build --config vite.config.ts && electrobun dev --watch",
+    "dev": "vite build && electrobun dev --watch",
     "build": "vite build --config vite.config.ts && electrobun build",
     "icon:generate": "node scripts/generate-app-icons.mjs",
     "start": "electrobun run",
