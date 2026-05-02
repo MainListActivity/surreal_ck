@@ -6,10 +6,12 @@ import { activateSession, loginToSurrealDB, getPublicAuthState } from "./auth/se
 import { setOfflineMode } from "./services/context";
 import { decodeTokenClaims, bootstrapLocalIdentity } from "./services/identity";
 import { createRpcHandlers } from "./rpc/handlers";
+import { installApplicationMenu } from "./app-menu";
 import type { AppRPC } from "../shared/rpc.types";
 
 async function main() {
   ensureSingleInstance();
+  installApplicationMenu();
 
   await initEngine().catch((err) => {
     console.error("[main] engine init failed:", err);
