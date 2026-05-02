@@ -55,9 +55,50 @@
   let timeHour = $state(0);
   let timeMinute = $state(0);
   let timeSecond = $state(0);
+  /** 月历内键盘焦点；选中态/今天作为初始焦点。 */
+  let focusedDate = $state<Date | null>(null);
+  /** popover 当前展示的层级：天 / 月 / 年。 */
+  let viewMode = $state<"days" | "months" | "years">("days");
+  /** 年视图分页起始（每页 12 年）。 */
+  let yearPageStart = $state(Math.floor(new Date().getFullYear() / 12) * 12);
 
   let triggerEl = $state<HTMLButtonElement | null>(null);
   let popoverEl = $state<HTMLDivElement | null>(null);
+  let popoverPos = $state<{ left: number; top: number; width: number }>({ left: 0, top: 0, width: 280 });
+
+  /** 把 popover 节点搬到 document.body，避免被 ancestor 的 overflow:hidden 裁掉。 */
+  function portal(node: HTMLElement) {
+    document.body.appendChild(node);
+    return {
+      destroy() {
+        if (node.parentNode === document.body) document.body.removeChild(node);
+      },
+    };
+  }
+
+  let mountAnchorEl = $state<HTMLSpanElement | null>(null);
+
+  /** 基于 trigger / 父单元格的位置计算 popover 的 left/top（fixed 坐标系）。 */
+  function computePopoverPosition() {
+    const POPOVER_W = 280;
+    const MARGIN = 4;
+    const anchor = openOnMount ? mountAnchorEl : triggerEl;
+    if (!anchor) return;
+    const rect = anchor.getBoundingClientRect();
+
+    let left = rect.left;
+    let top = rect.bottom + MARGIN;
+    const popH = popoverEl?.offsetHeight ?? 340;
+
+    if (left + POPOVER_W > window.innerWidth - 8) {
+      left = Math.max(8, window.innerWidth - POPOVER_W - 8);
+    }
+    if (top + popH > window.innerHeight - 8 && rect.top - popH - MARGIN > 8) {
+      top = rect.top - popH - MARGIN;
+    }
+
+    popoverPos = { left, top, width: POPOVER_W };
+  }
 
   function syncStateFrom(date: Date | null) {
     const d = date ?? new Date();
@@ -66,6 +107,9 @@
     timeHour = date ? d.getHours() : 0;
     timeMinute = date ? d.getMinutes() : 0;
     timeSecond = date ? d.getSeconds() : 0;
+    focusedDate = date ? new Date(d.getFullYear(), d.getMonth(), d.getDate()) : startOfDay(new Date());
+    yearPageStart = Math.floor(viewYear / 12) * 12;
+    viewMode = "days";
   }
 
   // openOnMount 模式：挂载即打开
@@ -102,9 +146,84 @@
 
   function onDocumentKeydown(event: KeyboardEvent) {
     if (!open) return;
+    // 让 input/select 自己处理输入；只在 popover 容器或月历单元格上触发导航
+    const target = event.target as HTMLElement | null;
+    const inEditableField = target?.closest("input, textarea, select");
+
     if (event.key === "Escape") {
       event.preventDefault();
       closePopover();
+      return;
+    }
+    if (inEditableField) return;
+
+    if (event.key === "Enter") {
+      if (viewMode === "months") {
+        event.preventDefault();
+        viewMode = "days";
+        return;
+      }
+      if (viewMode === "years") {
+        event.preventDefault();
+        viewMode = "months";
+        return;
+      }
+      if (focusedDate) {
+        event.preventDefault();
+        const cell: DayCell = {
+          date: focusedDate,
+          inMonth: focusedDate.getMonth() === viewMonth,
+          isToday: false,
+          isSelected: false,
+          isFocused: false,
+          disabled: outOfRange(focusedDate),
+        };
+        pickDay(cell);
+        return;
+      }
+    }
+
+    if (viewMode === "months") {
+      if (event.key === "ArrowLeft") { event.preventDefault(); gotoPrevYear(); return; }
+      if (event.key === "ArrowRight") { event.preventDefault(); gotoNextYear(); return; }
+      return;
+    }
+    if (viewMode === "years") {
+      if (event.key === "ArrowLeft") { event.preventDefault(); gotoPrevYearPage(); return; }
+      if (event.key === "ArrowRight") { event.preventDefault(); gotoNextYearPage(); return; }
+      return;
+    }
+
+    const step = (() => {
+      switch (event.key) {
+        case "ArrowLeft": return -1;
+        case "ArrowRight": return 1;
+        case "ArrowUp": return -7;
+        case "ArrowDown": return 7;
+        case "PageUp": return event.shiftKey ? -365 : -30;
+        case "PageDown": return event.shiftKey ? 365 : 30;
+        case "Home": return "weekStart" as const;
+        case "End": return "weekEnd" as const;
+        default: return null;
+      }
+    })();
+    if (step === null) return;
+
+    event.preventDefault();
+    const base = focusedDate ?? startOfDay(new Date());
+    let next: Date;
+    if (step === "weekStart") {
+      next = new Date(base.getFullYear(), base.getMonth(), base.getDate() - base.getDay());
+    } else if (step === "weekEnd") {
+      next = new Date(base.getFullYear(), base.getMonth(), base.getDate() + (6 - base.getDay()));
+    } else {
+      next = new Date(base.getFullYear(), base.getMonth(), base.getDate() + step);
+    }
+    focusedDate = next;
+    // 视图随焦点切月
+    if (next.getFullYear() !== viewYear || next.getMonth() !== viewMonth) {
+      viewYear = next.getFullYear();
+      viewMonth = next.getMonth();
     }
   }
 
@@ -115,6 +234,24 @@
     return () => {
       document.removeEventListener("mousedown", onDocumentMouseDown, true);
       document.removeEventListener("keydown", onDocumentKeydown, true);
+    };
+  });
+
+  /** popover 打开后立刻测量定位；窗口 resize / 任意祖先 scroll 时重测。 */
+  $effect(() => {
+    if (!open) return;
+    queueMicrotask(() => {
+      computePopoverPosition();
+      popoverEl?.focus();
+    });
+    const raf = requestAnimationFrame(computePopoverPosition);
+    const onReposition = () => computePopoverPosition();
+    window.addEventListener("resize", onReposition);
+    window.addEventListener("scroll", onReposition, true);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", onReposition);
+      window.removeEventListener("scroll", onReposition, true);
     };
   });
 
@@ -129,6 +266,7 @@
     inMonth: boolean;
     isToday: boolean;
     isSelected: boolean;
+    isFocused: boolean;
     disabled: boolean;
   };
 
@@ -147,6 +285,7 @@
           inMonth: date.getMonth() === viewMonth,
           isToday: sameDay(date, today),
           isSelected: !!currentDate && sameDay(date, currentDate),
+          isFocused: !!focusedDate && sameDay(date, focusedDate),
           disabled: outOfRange(date),
         });
       }
@@ -177,6 +316,45 @@
   }
   function gotoPrevYear() { viewYear -= 1; }
   function gotoNextYear() { viewYear += 1; }
+
+  /** 标题被点击：days → months → years 逐级展开。 */
+  function cycleViewMode() {
+    if (viewMode === "days") viewMode = "months";
+    else if (viewMode === "months") {
+      yearPageStart = Math.floor(viewYear / 12) * 12;
+      viewMode = "years";
+    }
+  }
+
+  function pickMonth(month: number) {
+    viewMonth = month;
+    viewMode = "days";
+  }
+
+  function pickYear(year: number) {
+    viewYear = year;
+    viewMode = "months";
+  }
+
+  function gotoPrevYearPage() { yearPageStart -= 12; }
+  function gotoNextYearPage() { yearPageStart += 12; }
+
+  const monthNames = ["1 月", "2 月", "3 月", "4 月", "5 月", "6 月", "7 月", "8 月", "9 月", "10 月", "11 月", "12 月"];
+
+  /** 检查整月是否被边界完全禁用。 */
+  function monthDisabled(year: number, month: number): boolean {
+    const lastDay = new Date(year, month + 1, 0);
+    const firstDay = new Date(year, month, 1);
+    if (maxBoundary && firstDay > maxBoundary) return true;
+    if (minBoundary && lastDay < startOfDay(minBoundary)) return true;
+    return false;
+  }
+
+  function yearDisabled(year: number): boolean {
+    if (maxBoundary && new Date(year, 0, 1) > maxBoundary) return true;
+    if (minBoundary && new Date(year, 11, 31) < startOfDay(minBoundary)) return true;
+    return false;
+  }
 
   function pickDay(cell: DayCell) {
     if (cell.disabled) return;
@@ -233,6 +411,12 @@
 
   const monthLabel = $derived(`${viewYear} 年 ${String(viewMonth + 1).padStart(2, "0")} 月`);
   const weekdayLabels = ["日", "一", "二", "三", "四", "五", "六"];
+
+  const headerLabel = $derived.by(() => {
+    if (viewMode === "days") return monthLabel;
+    if (viewMode === "months") return `${viewYear} 年`;
+    return `${yearPageStart} - ${yearPageStart + 11}`;
+  });
 </script>
 
 {#if !openOnMount}
@@ -249,49 +433,108 @@
     <Icon name="calendar" size={14} />
     <span class="dp-trigger-text">{displayText || placeholder}</span>
   </button>
+{:else}
+  <span class="dp-mount-anchor" bind:this={mountAnchorEl} aria-hidden="true"></span>
 {/if}
 
 {#if open}
   <div
     class="dp-popover"
-    class:dp-popover-inline={openOnMount}
     bind:this={popoverEl}
     role="dialog"
     tabindex="-1"
     aria-label="日期选择"
+    style:left="{popoverPos.left}px"
+    style:top="{popoverPos.top}px"
+    style:width="{popoverPos.width}px"
+    use:portal
     onmousedown={(event) => event.stopPropagation()}
   >
     <div class="dp-head">
-      <button type="button" class="dp-nav" onclick={gotoPrevYear} aria-label="上一年">«</button>
-      <button type="button" class="dp-nav" onclick={gotoPrevMonth} aria-label="上个月">
-        <Icon name="chevronLeft" size={14} />
-      </button>
-      <div class="dp-title">{monthLabel}</div>
-      <button type="button" class="dp-nav" onclick={gotoNextMonth} aria-label="下个月">
-        <Icon name="chevronRight" size={14} />
-      </button>
-      <button type="button" class="dp-nav" onclick={gotoNextYear} aria-label="下一年">»</button>
-    </div>
-
-    <div class="dp-weekdays">
-      {#each weekdayLabels as w}<span>{w}</span>{/each}
-    </div>
-
-    <div class="dp-grid">
-      {#each calendarCells as cell}
-        <button
-          type="button"
-          class="dp-day"
-          class:dp-day-out={!cell.inMonth}
-          class:dp-day-today={cell.isToday}
-          class:dp-day-selected={cell.isSelected}
-          disabled={cell.disabled}
-          onclick={() => pickDay(cell)}
-        >
-          {cell.date.getDate()}
+      {#if viewMode === "days"}
+        <button type="button" class="dp-nav" onclick={gotoPrevYear} aria-label="上一年">«</button>
+        <button type="button" class="dp-nav" onclick={gotoPrevMonth} aria-label="上个月">
+          <Icon name="chevronLeft" size={14} />
         </button>
-      {/each}
+      {:else if viewMode === "months"}
+        <button type="button" class="dp-nav" onclick={gotoPrevYear} aria-label="上一年">
+          <Icon name="chevronLeft" size={14} />
+        </button>
+      {:else}
+        <button type="button" class="dp-nav" onclick={gotoPrevYearPage} aria-label="上一组">
+          <Icon name="chevronLeft" size={14} />
+        </button>
+      {/if}
+
+      <button
+        type="button"
+        class="dp-title"
+        onclick={cycleViewMode}
+        disabled={viewMode === "years"}
+        aria-label="切换视图"
+      >{headerLabel}</button>
+
+      {#if viewMode === "days"}
+        <button type="button" class="dp-nav" onclick={gotoNextMonth} aria-label="下个月">
+          <Icon name="chevronRight" size={14} />
+        </button>
+        <button type="button" class="dp-nav" onclick={gotoNextYear} aria-label="下一年">»</button>
+      {:else if viewMode === "months"}
+        <button type="button" class="dp-nav" onclick={gotoNextYear} aria-label="下一年">
+          <Icon name="chevronRight" size={14} />
+        </button>
+      {:else}
+        <button type="button" class="dp-nav" onclick={gotoNextYearPage} aria-label="下一组">
+          <Icon name="chevronRight" size={14} />
+        </button>
+      {/if}
     </div>
+
+    {#if viewMode === "days"}
+      <div class="dp-weekdays">
+        {#each weekdayLabels as w}<span>{w}</span>{/each}
+      </div>
+      <div class="dp-grid">
+        {#each calendarCells as cell}
+          <button
+            type="button"
+            class="dp-day"
+            class:dp-day-out={!cell.inMonth}
+            class:dp-day-today={cell.isToday}
+            class:dp-day-selected={cell.isSelected}
+            class:dp-day-focused={cell.isFocused}
+            disabled={cell.disabled}
+            onclick={() => pickDay(cell)}
+          >
+            {cell.date.getDate()}
+          </button>
+        {/each}
+      </div>
+    {:else if viewMode === "months"}
+      <div class="dp-month-grid">
+        {#each monthNames as label, idx}
+          <button
+            type="button"
+            class="dp-month-cell"
+            class:dp-month-selected={currentDate && currentDate.getFullYear() === viewYear && currentDate.getMonth() === idx}
+            disabled={monthDisabled(viewYear, idx)}
+            onclick={() => pickMonth(idx)}
+          >{label}</button>
+        {/each}
+      </div>
+    {:else}
+      <div class="dp-month-grid">
+        {#each Array.from({ length: 12 }, (_, i) => yearPageStart + i) as year}
+          <button
+            type="button"
+            class="dp-month-cell"
+            class:dp-month-selected={currentDate && currentDate.getFullYear() === year}
+            disabled={yearDisabled(year)}
+            onclick={() => pickYear(year)}
+          >{year}</button>
+        {/each}
+      </div>
+    {/if}
 
     {#if hasTime}
       <div class="dp-time">
@@ -378,10 +621,8 @@
   }
 
   .dp-popover {
-    position: absolute;
+    position: fixed;
     z-index: 200;
-    margin-top: 4px;
-    width: 280px;
     padding: 10px;
     border: 1px solid #dfe4ee;
     border-radius: 12px;
@@ -389,9 +630,11 @@
     box-shadow: 0 18px 42px rgba(15, 23, 42, .16);
   }
 
-  .dp-popover-inline {
-    position: relative;
-    margin: 0;
+  .dp-mount-anchor {
+    display: inline-block;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
   }
 
   .dp-head {
@@ -403,10 +646,24 @@
 
   .dp-title {
     flex: 1;
-    text-align: center;
+    height: 26px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
     color: var(--text-1);
     font-size: 13px;
     font-weight: 600;
+    cursor: pointer;
+    transition: background .12s ease;
+  }
+
+  .dp-title:hover:not(:disabled) {
+    background: #f5f8ff;
+    color: var(--primary);
+  }
+
+  .dp-title:disabled {
+    cursor: default;
   }
 
   .dp-nav {
@@ -478,6 +735,47 @@
   }
 
   .dp-day-selected {
+    background: var(--primary);
+    color: #fff;
+  }
+
+  .dp-day-focused:not(.dp-day-selected) {
+    box-shadow: inset 0 0 0 2px var(--primary);
+    background: #f0f5ff;
+  }
+
+  .dp-day-focused.dp-day-selected {
+    box-shadow: 0 0 0 2px var(--primary-light);
+  }
+
+  .dp-month-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+  }
+
+  .dp-month-cell {
+    height: 44px;
+    border: 0;
+    border-radius: 8px;
+    background: #f7f8fa;
+    color: var(--text-1);
+    font-size: 13px;
+    cursor: pointer;
+    transition: background .12s ease, color .12s ease;
+  }
+
+  .dp-month-cell:hover:not(:disabled):not(.dp-month-selected) {
+    background: #f0f5ff;
+    color: var(--primary);
+  }
+
+  .dp-month-cell:disabled {
+    color: #c8cfdb;
+    cursor: not-allowed;
+  }
+
+  .dp-month-selected {
     background: var(--primary);
     color: #fff;
   }
