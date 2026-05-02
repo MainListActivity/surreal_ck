@@ -253,6 +253,7 @@
     frameSize={35}
     stretch="none"
     hideAttribution={true}
+    applyOnClose={true}
     readonly={appState.readOnly}
     style="height: 100%; width: 100%;"
     on:afterfocus={handleFocus}
