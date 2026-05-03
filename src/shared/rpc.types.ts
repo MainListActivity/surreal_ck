@@ -196,6 +196,14 @@ export type GridColumnDef = {
   constraints?: GridFieldConstraints;
   /** 仅 fieldType === "date" 有效；dayjs 格式串，例如 "YYYY-MM-DD HH:mm:ss"。 */
   dateFormat?: string;
+  /** 仅 fieldType === "reference" 有效。目标表名：app_user 或 ent_xxx。建表后不可更换。 */
+  referenceTable?: string;
+  /** 仅 fieldType === "reference" 且目标为 sheet 时有意义；缓存目标 sheet.id 以便 UI 反查。 */
+  referenceSheetId?: RecordIdString;
+  /** 仅 fieldType === "reference" 有效。允许多选；默认为 false。 */
+  referenceMultiple?: boolean;
+  /** 仅 fieldType === "reference" 有效。展示用字段 key；缺省回退到 name → display_name → email → id。 */
+  referenceDisplayKey?: string;
 };
 
 /** 单个筛选条件。op 决定 value 是否使用、以及如何使用。 */
@@ -320,6 +328,71 @@ export type RenameSheetResponse = {
   sheet: SheetSummaryDTO;
 };
 
+// ─── Reference DTOs ──────────────────────────────────────────────────────────
+
+/** 一条被引用记录在 UI 中的展示快照（单元格徽章 / 悬停浮窗 / 详情侧栏共用）。 */
+export type ReferenceTargetPreview = {
+  id: RecordIdString;
+  /** "app_user" 或 "ent_xxx"。 */
+  table: string;
+  /** 仅当 table 是 ent_* 时存在。 */
+  workspaceId?: RecordIdString;
+  workspaceName?: string;
+  workbookId?: RecordIdString;
+  workbookName?: string;
+  sheetId?: RecordIdString;
+  sheetName?: string;
+  /** 单元格主显示文本，例如 "name 字段值" 或 "Sheet 名 / 主键 id"。 */
+  primaryLabel: string;
+  /** 当被引用记录已被删除时为 true，UI 渲染为「已删除的记录」。 */
+  missing?: boolean;
+  /** 浮窗用前 4–6 个字段值；不展示 id / workspace / created_* / updated_* 等系统字段。 */
+  preview: Array<{ key: string; label: string; value: unknown }>;
+};
+
+export type ResolveReferencesRequest = {
+  ids: RecordIdString[];
+};
+
+export type ResolveReferencesResponse = {
+  items: ReferenceTargetPreview[];
+};
+
+export type ReferenceTargetOption = {
+  /** 目标表名。 */
+  table: string;
+  /** UI 用的显示名，例如 "工作簿名 / Sheet 名" 或 "系统：用户"。 */
+  label: string;
+  /** 仅当 table 是 ent_* 时存在；用于 UI 树状分组与缓存。 */
+  workspaceId?: RecordIdString;
+  workspaceName?: string;
+  workbookId?: RecordIdString;
+  workbookName?: string;
+  sheetId?: RecordIdString;
+  sheetName?: string;
+  /** 列出可用作展示字段的列：[{key,label,fieldType}] */
+  displayKeys: Array<{ key: string; label: string; fieldType: string }>;
+};
+
+export type ListReferenceTargetsResponse = {
+  /** 当前用户可访问的所有 sheet + 系统对象。允许跨 workspace。 */
+  targets: ReferenceTargetOption[];
+};
+
+export type SearchReferenceCandidatesRequest = {
+  /** 目标表名：app_user 或 ent_*。 */
+  table: string;
+  /** 模糊匹配关键词；空串表示返回前 N 条。 */
+  query?: string;
+  /** 用于决定按哪个字段拼 primaryLabel；缺省回退到 name / display_name / email / id。 */
+  displayKey?: string;
+  limit?: number;
+};
+
+export type SearchReferenceCandidatesResponse = {
+  items: ReferenceTargetPreview[];
+};
+
 // ─── RPC 契约 ─────────────────────────────────────────────────────────────────
 
 export interface AppRPC extends ElectrobunRPCSchema {
@@ -344,6 +417,9 @@ export interface AppRPC extends ElectrobunRPCSchema {
       updateSheetFields: { params: UpdateSheetFieldsRequest; response: Result<UpdateSheetFieldsResponse> };
       createSheet: { params: CreateSheetRequest; response: Result<CreateSheetResponse> };
       renameSheet: { params: RenameSheetRequest; response: Result<RenameSheetResponse> };
+      resolveReferences: { params: ResolveReferencesRequest; response: Result<ResolveReferencesResponse> };
+      listReferenceTargets: { params: Record<string, never>; response: Result<ListReferenceTargetsResponse> };
+      searchReferenceCandidates: { params: SearchReferenceCandidatesRequest; response: Result<SearchReferenceCandidatesResponse> };
     };
     messages: {
       log: { msg: string };

@@ -27,6 +27,14 @@ type EditorUiState = {
   selectedRowId: RecordIdString | null;
   clipboardStatus: string;
   /**
+   * 引用记录详情侧栏。点击单元格内的引用徽章 / 详情面板里 reference 字段值时打开。
+   * 与本工作簿当前选中行无关；展示的是被引用记录的只读快照。
+   */
+  referencePanel: {
+    open: boolean;
+    targetId: RecordIdString | null;
+  };
+  /**
    * 离开工作簿前的草稿确认弹窗。confirm = 用户选择放弃 draft 后真正要执行的导航/动作。
    */
   leaveConfirm: {
@@ -55,6 +63,7 @@ function createEditorUi() {
     showMenu: false,
     selectedRowId: null,
     clipboardStatus: "支持从 Excel / WPS / Google Sheets 直接复制 TSV 粘贴",
+    referencePanel: { open: false, targetId: null },
     leaveConfirm: { open: false, draftCount: 0, confirm: null },
   });
 
@@ -131,6 +140,13 @@ function createEditorUi() {
     },
     closeLeaveConfirm() {
       state.leaveConfirm = { open: false, draftCount: 0, confirm: null };
+    },
+    get referencePanel() { return state.referencePanel; },
+    openReferencePanel(targetId: RecordIdString) {
+      state.referencePanel = { open: true, targetId };
+    },
+    closeReferencePanel() {
+      state.referencePanel = { open: false, targetId: null };
     },
   };
 }

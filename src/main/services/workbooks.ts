@@ -305,6 +305,17 @@ export function normalizeGridColumnDef(column: GridColumnDef): GridColumnDef {
   const constraints = normalizeGridFieldConstraints(fieldType, column.constraints);
   const dateFormat = fieldType === "date" ? normalizeDateFormat(column.dateFormat) : undefined;
 
+  let referenceTable: string | undefined;
+  let referenceSheetId: RecordIdString | undefined;
+  let referenceMultiple: boolean | undefined;
+  let referenceDisplayKey: string | undefined;
+  if (fieldType === "reference") {
+    referenceTable = normalizeReferenceTable(column.referenceTable);
+    referenceSheetId = column.referenceSheetId?.trim() || undefined;
+    referenceMultiple = Boolean(column.referenceMultiple);
+    referenceDisplayKey = normalizeReferenceDisplayKey(column.referenceDisplayKey);
+  }
+
   return {
     key,
     label,
@@ -313,6 +324,10 @@ export function normalizeGridColumnDef(column: GridColumnDef): GridColumnDef {
     options,
     constraints,
     dateFormat,
+    referenceTable,
+    referenceSheetId,
+    referenceMultiple,
+    referenceDisplayKey,
   };
 }
 
@@ -326,6 +341,29 @@ function normalizeDateFormat(format: string | undefined | null): string | undefi
   return trimmed;
 }
 
+const REFERENCE_SYSTEM_TABLES = new Set(["app_user"]);
+const REFERENCE_ENTITY_TABLE = /^ent_[a-z0-9_]+$/;
+
+export function normalizeReferenceTable(value: unknown): string {
+  if (typeof value !== "string" || !value) {
+    throw new ServiceError("VALIDATION_ERROR", "引用字段必须配置目标表");
+  }
+  const trimmed = value.trim();
+  if (REFERENCE_SYSTEM_TABLES.has(trimmed)) return trimmed;
+  if (REFERENCE_ENTITY_TABLE.test(trimmed)) return trimmed;
+  throw new ServiceError("VALIDATION_ERROR", `非法的引用目标表: ${trimmed}`);
+}
+
+function normalizeReferenceDisplayKey(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  const trimmed = String(value).trim();
+  if (!trimmed) return undefined;
+  if (!/^[a-z][a-z0-9_]{0,62}$/.test(trimmed)) {
+    throw new ServiceError("VALIDATION_ERROR", `非法的展示字段: ${trimmed}`);
+  }
+  return trimmed;
+}
+
 export function gridColumnToStoredDef(column: GridColumnDef) {
   return {
     key: column.key,
@@ -335,6 +373,10 @@ export function gridColumnToStoredDef(column: GridColumnDef) {
     options: column.options,
     constraints: column.constraints,
     date_format: column.dateFormat,
+    reference_table: column.referenceTable,
+    reference_sheet_id: column.referenceSheetId,
+    reference_multiple: column.referenceMultiple,
+    reference_display_key: column.referenceDisplayKey,
   };
 }
 
@@ -342,7 +384,7 @@ function defineEntityField(tableName: string, column: GridColumnDef, mode: "if-n
   assertEntityTableName(tableName);
   const normalized = normalizeGridColumnDef(column);
   const clause = mode === "overwrite" ? "OVERWRITE" : "IF NOT EXISTS";
-  const surrealType = surrealTypeForField(normalized.fieldType, normalized.required);
+  const surrealType = surrealTypeForField(normalized);
   const assertClause = surrealAssertForField(normalized);
   const db = getLocalDb();
   return db.query(
@@ -350,9 +392,10 @@ function defineEntityField(tableName: string, column: GridColumnDef, mode: "if-n
   ).then(() => undefined);
 }
 
-function surrealTypeForField(fieldType: string, required?: boolean): string {
+function surrealTypeForField(column: GridColumnDef): string {
+  const required = column.required;
   const baseType = (() => {
-    switch (fieldType) {
+    switch (column.fieldType) {
       case "text":
       case "single_select":
         return "string";
@@ -363,8 +406,13 @@ function surrealTypeForField(fieldType: string, required?: boolean): string {
         return "datetime";
       case "checkbox":
         return "bool";
+      case "reference": {
+        const target = normalizeReferenceTable(column.referenceTable);
+        const recordType = `record<${target}>`;
+        return column.referenceMultiple ? `array<${recordType}>` : recordType;
+      }
       default:
-        throw new ServiceError("VALIDATION_ERROR", `不支持的字段类型: ${fieldType}`);
+        throw new ServiceError("VALIDATION_ERROR", `不支持的字段类型: ${column.fieldType}`);
     }
   })();
   return required ? baseType : `option<${baseType}>`;
@@ -378,6 +426,7 @@ function normalizeFieldType(fieldType: string): string {
     case "decimal":
     case "date":
     case "checkbox":
+    case "reference":
       return fieldType;
     default:
       throw new ServiceError("VALIDATION_ERROR", `不支持的字段类型: ${fieldType}`);

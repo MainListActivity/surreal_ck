@@ -28,7 +28,12 @@ import type {
   RenameSheetResponse,
   RenameWorkbookRequest,
   RenameWorkbookResponse,
+  ResolveReferencesRequest,
+  ResolveReferencesResponse,
   Result,
+  ListReferenceTargetsResponse,
+  SearchReferenceCandidatesRequest,
+  SearchReferenceCandidatesResponse,
   UpdateSheetFieldsRequest,
   UpdateSheetFieldsResponse,
   UpsertRowsRequest,
@@ -45,6 +50,7 @@ import { listWorkbooks, createBlankWorkbook, moveWorkbook } from "../services/wo
 import { listFolders, createFolder, moveFolder } from "../services/folders";
 import { listTemplates, createWorkbookFromTemplate } from "../services/templates";
 import { getWorkbookData, upsertRows, deleteRows, renameWorkbook, updateSheetFields, createSheet, renameSheet } from "../services/editor";
+import { listReferenceTargets, resolveReferences, searchReferenceCandidates } from "../services/references";
 
 type SendFn = (event: "authStateChanged", payload: { state: AuthState }) => void;
 
@@ -195,6 +201,27 @@ export function createRpcHandlers(send: SendFn) {
 
       renameSheet: async (req: RenameSheetRequest): Promise<Result<RenameSheetResponse>> => {
         return withResult(() => renameSheet(req));
+      },
+
+      resolveReferences: async (req: ResolveReferencesRequest): Promise<Result<ResolveReferencesResponse>> => {
+        return withResult(() => {
+          assertAuthenticated();
+          return resolveReferences(req);
+        });
+      },
+
+      listReferenceTargets: async (): Promise<Result<ListReferenceTargetsResponse>> => {
+        return withResult(() => {
+          assertAuthenticated();
+          return listReferenceTargets();
+        });
+      },
+
+      searchReferenceCandidates: async (req: SearchReferenceCandidatesRequest): Promise<Result<SearchReferenceCandidatesResponse>> => {
+        return withResult(() => {
+          assertAuthenticated();
+          return searchReferenceCandidates(req);
+        });
       },
     },
 

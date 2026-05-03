@@ -11,12 +11,15 @@ import type {
   ListTemplatesResponse,
   ListWorkbooksResponse,
   GridColumnDef,
+  ListReferenceTargetsResponse,
   MoveFolderResponse,
   MoveWorkbookResponse,
   RecordIdString,
   RenameSheetResponse,
   RenameWorkbookResponse,
+  ResolveReferencesResponse,
   Result,
+  SearchReferenceCandidatesResponse,
   UpdateSheetFieldsResponse,
   UpsertRowsResponse,
   ViewParams,
@@ -100,5 +103,20 @@ export const appApi = {
 
   renameSheet(sheetId: RecordIdString, label: string): Promise<Result<RenameSheetResponse>> {
     return rpc.request("renameSheet", { sheetId, label });
+  },
+
+  resolveReferences(ids: RecordIdString[]): Promise<Result<ResolveReferencesResponse>> {
+    return rpc.request("resolveReferences", { ids });
+  },
+
+  listReferenceTargets(): Promise<Result<ListReferenceTargetsResponse>> {
+    return rpc.request("listReferenceTargets", {});
+  },
+
+  searchReferenceCandidates(
+    table: string,
+    options?: { query?: string; displayKey?: string; limit?: number },
+  ): Promise<Result<SearchReferenceCandidatesResponse>> {
+    return rpc.request("searchReferenceCandidates", { table, ...options });
   },
 };

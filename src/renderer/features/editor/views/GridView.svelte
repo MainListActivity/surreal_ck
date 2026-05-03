@@ -5,9 +5,12 @@
   import type { CellTemplateProp, RowHeaders } from "@revolist/revogrid";
   import Icon from "../../../components/Icon.svelte";
   import DatePicker from "../../../components/DatePicker.svelte";
+  import RecordPicker from "../../../components/RecordPicker.svelte";
+  import ReferenceCell from "../components/ReferenceCell.svelte";
   import { appState } from "../../../lib/app-state.svelte";
   import { editorStore } from "../../../lib/editor.svelte";
   import { editorUi } from "../lib/editor-ui.svelte";
+  import { referenceCache, collectReferenceIdsFromValues } from "../../../lib/reference-cache.svelte";
   import { getFieldTypeIconPaths, getFieldTypeMeta } from "../lib/field-type-meta";
   import type { GridColumnDef, RecordIdString } from "../../../../shared/rpc.types";
   import { formatDateValue } from "../../../../shared/date-format";
@@ -77,6 +80,88 @@
         });
       }
     };
+  }
+
+  /** RevoGrid 引用单元格编辑器：在单元格内挂载 RecordPicker 组件并自动展开。 */
+  function createReferenceEditor(column: GridColumnDef) {
+    return class ReferenceEditor {
+      host: HTMLDivElement | null = null;
+      app: ReturnType<typeof mount> | null = null;
+      currentValue: RecordIdString | RecordIdString[] | null = null;
+      save: (value: unknown, preventFocus?: boolean) => void;
+      close: (focusNext?: boolean) => void;
+
+      constructor(
+        _col: unknown,
+        save: (value: unknown, preventFocus?: boolean) => void,
+        close: (focusNext?: boolean) => void,
+      ) {
+        this.save = save;
+        this.close = close;
+      }
+
+      coerceValue(input: unknown): RecordIdString | RecordIdString[] | null {
+        if (input == null || input === "") return null;
+        if (Array.isArray(input)) {
+          const ids = input.filter((v): v is string => typeof v === "string" && v.length > 0);
+          return column.referenceMultiple
+            ? (ids.length ? ids : null)
+            : (ids[0] ?? null);
+        }
+        if (typeof input === "string") return column.referenceMultiple ? [input] : input;
+        return null;
+      }
+
+      componentDidRender() {
+        if (!this.host || this.app) return;
+        if (!column.referenceTable) {
+          // 字段未配置目标表，直接关闭，避免渲染 RecordPicker。
+          this.close(true);
+          return;
+        }
+        this.app = mount(RecordPicker, {
+          target: this.host,
+          props: {
+            value: this.currentValue,
+            table: column.referenceTable,
+            displayKey: column.referenceDisplayKey,
+            multiple: Boolean(column.referenceMultiple),
+            openOnMount: true,
+            fullWidth: true,
+            ariaLabel: column.label,
+            onChange: (next: RecordIdString | RecordIdString[] | null) => {
+              this.currentValue = next;
+              this.save(next, true);
+            },
+            onClose: () => {
+              this.close(true);
+            },
+          },
+        });
+      }
+
+      beforeDisconnect() {
+        if (this.app) {
+          unmount(this.app);
+          this.app = null;
+        }
+      }
+
+      render(h: (tag: string, props?: Record<string, unknown>) => unknown, extra: { model?: Record<string, unknown> } = {}) {
+        const initial = this.editCell?.val ?? extra?.model?.[column.key];
+        this.currentValue = this.coerceValue(initial);
+        return h("div", {
+          class: "grid-reference-editor-host",
+          ref: (el: HTMLDivElement | null) => { this.host = el; },
+        });
+      }
+    };
+  }
+
+  /** 在单元格 DOM 内挂载 ReferenceCell 组件。RevoGrid 的 cellTemplate 支持函数式 vnode + ref 回调。 */
+  function mountReferenceCellInto(host: HTMLElement, ids: RecordIdString[]): () => void {
+    const app = mount(ReferenceCell, { target: host, props: { ids } });
+    return () => unmount(app);
   }
 
   type RowMenuState = {
@@ -157,6 +242,18 @@
     })(),
   );
 
+  // 行/列变化时预热引用缓存，避免单元格渲染时一个一个发请求。
+  $effect(() => {
+    const refCols = editorStore.columns.filter((c) => c.fieldType === "reference");
+    if (!refCols.length) return;
+    const keys = refCols.map((c) => c.key);
+    const allIds: RecordIdString[] = [];
+    for (const row of editorStore.rows) {
+      allIds.push(...collectReferenceIdsFromValues(row.values, keys));
+    }
+    if (allIds.length) referenceCache.ensure(allIds);
+  });
+
   const GRID_COLUMN_WIDTH = 160;
   const GRID_ROW_HEADER_WIDTH = 56;
   const GRID_HEADER_HEIGHT = 45;
@@ -232,6 +329,30 @@
         if (col.fieldType === "date") {
           base.cellTemplate = (h, props: CellTemplateProp) => formatDateValue(props.model?.[col.key], col.dateFormat);
           base.editor = createDateEditor(col) as unknown as ColumnRegular["editor"];
+        }
+        if (col.fieldType === "reference") {
+          base.cellTemplate = (h, props: CellTemplateProp) => {
+            const raw = props.model?.[col.key];
+            const ids: RecordIdString[] = Array.isArray(raw)
+              ? raw.filter((v): v is string => typeof v === "string")
+              : typeof raw === "string" && raw
+                ? [raw]
+                : [];
+            if (!ids.length) return "";
+            // 通过 ref 在挂载后把 Svelte 组件挂进 host 元素。
+            return h("div", {
+              class: { "grid-reference-cell-host": true },
+              ref: (el: HTMLElement | null) => {
+                if (!el) return;
+                if ((el as HTMLElement & { __refDispose?: () => void }).__refDispose) {
+                  (el as HTMLElement & { __refDispose?: () => void }).__refDispose!();
+                }
+                (el as HTMLElement & { __refDispose?: () => void }).__refDispose =
+                  mountReferenceCellInto(el, ids);
+              },
+            });
+          };
+          base.editor = createReferenceEditor(col) as unknown as ColumnRegular["editor"];
         }
         return base;
       }),
@@ -749,6 +870,25 @@
     height: 100%;
     background: var(--surface);
     box-shadow: inset 0 0 0 2px var(--primary);
+  }
+
+  :global(revo-grid .grid-reference-editor-host) {
+    position: relative;
+    display: flex;
+    align-items: center;
+    width: 100%;
+    height: 100%;
+    padding: 0 4px;
+    background: var(--surface);
+    box-shadow: inset 0 0 0 2px var(--primary);
+  }
+
+  :global(revo-grid .grid-reference-cell-host) {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
   }
 
   :global(revo-grid .grid-add-field-header) {

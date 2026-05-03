@@ -51,11 +51,27 @@ export function normalizeGridFieldConstraints(
     }
     case "checkbox":
       break;
+    case "reference":
+      break;
     default:
       throw new Error(`不支持的字段类型: ${fieldType}`);
   }
 
   return Object.keys(next).length ? next : undefined;
+}
+
+const RECORD_ID_PATTERN = /^[a-z_][a-z0-9_]*:[A-Za-z0-9_⟨⟩]+$/;
+
+export function isRecordIdString(value: unknown): value is string {
+  return typeof value === "string" && RECORD_ID_PATTERN.test(value);
+}
+
+/** 校验 RecordId 字符串属于指定目标表（app_user 或 ent_xxx）。 */
+export function recordIdBelongsToTable(value: unknown, table: string): boolean {
+  if (typeof value !== "string") return false;
+  const colon = value.indexOf(":");
+  if (colon <= 0) return false;
+  return value.slice(0, colon) === table;
 }
 
 export function coerceGridFieldValue(value: unknown, column?: GridColumnDef): unknown {
@@ -84,6 +100,27 @@ export function coerceGridFieldValue(value: unknown, column?: GridColumnDef): un
       }
       return value;
     }
+    case "reference": {
+      // 多选：把 array 项规整为字符串数组并去重；空数组返回 null。
+      if (column.referenceMultiple) {
+        if (!Array.isArray(value)) {
+          if (typeof value === "string" && value.length) return [value];
+          return null;
+        }
+        const ids = Array.from(new Set(
+          value
+            .map((v) => (typeof v === "string" ? v : v == null ? "" : String(v)))
+            .filter((s) => s.length > 0),
+        ));
+        return ids.length ? ids : null;
+      }
+      // 单选：标准化为字符串；空数组退化为 null。
+      if (Array.isArray(value)) {
+        const first = value.find((v) => typeof v === "string" && v.length > 0);
+        return typeof first === "string" ? first : null;
+      }
+      return typeof value === "string" ? value : String(value);
+    }
     default:
       return typeof value === "string" ? value : String(value);
   }
@@ -92,7 +129,11 @@ export function coerceGridFieldValue(value: unknown, column?: GridColumnDef): un
 export function validateGridFieldValue(value: unknown, column: GridColumnDef): string[] {
   const errors: string[] = [];
   const constraints = normalizeGridFieldConstraints(column.fieldType, column.constraints);
-  const empty = value === undefined || value === null || value === "";
+  const empty =
+    value === undefined ||
+    value === null ||
+    value === "" ||
+    (column.fieldType === "reference" && Array.isArray(value) && value.length === 0);
 
   if (empty) {
     if (column.required) errors.push("必填");
@@ -163,6 +204,27 @@ export function validateGridFieldValue(value: unknown, column: GridColumnDef): s
     case "checkbox":
       if (typeof value !== "boolean") errors.push("必须是布尔值");
       break;
+    case "reference": {
+      const target = column.referenceTable;
+      if (!target) {
+        errors.push("引用字段未配置目标表");
+        break;
+      }
+      const ids = column.referenceMultiple
+        ? (Array.isArray(value) ? value : [value])
+        : [value];
+      for (const id of ids) {
+        if (!isRecordIdString(id)) {
+          errors.push("引用值不是合法 RecordId");
+          break;
+        }
+        if (!recordIdBelongsToTable(id, target)) {
+          errors.push(`引用值必须属于 ${target}`);
+          break;
+        }
+      }
+      break;
+    }
     default:
       errors.push(`不支持的字段类型: ${column.fieldType}`);
   }
@@ -201,6 +263,9 @@ export function summarizeGridField(column: GridColumnDef): string[] {
       break;
     case "checkbox":
       summary.push("是 / 否");
+      break;
+    case "reference":
+      summary.push(column.referenceMultiple ? "多选引用" : "单引用");
       break;
   }
 

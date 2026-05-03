@@ -1,8 +1,9 @@
 <script lang="ts">
   import { summarizeGridField } from "../../../../shared/field-schema";
   import DatePicker from "../../../components/DatePicker.svelte";
+  import RecordPicker from "../../../components/RecordPicker.svelte";
   import SelectMenu from "../../../components/SelectMenu.svelte";
-  import type { GridColumnDef } from "../../../../shared/rpc.types";
+  import type { GridColumnDef, RecordIdString } from "../../../../shared/rpc.types";
 
   let {
     columns,
@@ -34,6 +35,10 @@
     values[key] = checked;
   }
 
+  function updateReference(col: GridColumnDef, next: RecordIdString | RecordIdString[] | null) {
+    values[col.key] = next;
+  }
+
   function isLongText(col: GridColumnDef) {
     return col.fieldType === "text"
       && ((col.constraints?.maxLength ?? 0) > 120 || /note|desc|remark|memo|备注|说明|描述/.test(`${col.key}${col.label}`));
@@ -47,6 +52,7 @@
       case "decimal": return "小数";
       case "date": return "日期";
       case "checkbox": return "勾选";
+      case "reference": return "引用";
       default: return fieldType;
     }
   }
@@ -108,6 +114,21 @@
           ariaLabel={col.label}
           onChange={(next) => updateDate(col, next)}
         />
+      {:else if col.fieldType === "reference"}
+        {#if col.referenceTable}
+          <RecordPicker
+            value={values[col.key] as RecordIdString | RecordIdString[] | null}
+            table={col.referenceTable}
+            displayKey={col.referenceDisplayKey}
+            multiple={Boolean(col.referenceMultiple)}
+            disabled={disabled}
+            fullWidth
+            ariaLabel={col.label}
+            onChange={(next) => updateReference(col, next)}
+          />
+        {:else}
+          <span class="muted-hint">未配置目标表</span>
+        {/if}
       {:else if col.fieldType === "number" || col.fieldType === "decimal"}
         <input
           type="number"
@@ -284,5 +305,12 @@
 
   b {
     color: var(--error);
+  }
+
+  .muted-hint {
+    display: inline-block;
+    padding: 8px 0;
+    color: var(--text-3);
+    font-size: 12px;
   }
 </style>

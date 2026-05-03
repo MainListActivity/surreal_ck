@@ -12,6 +12,7 @@ const FIELD_TYPE_META: Record<string, FieldTypeMeta> = {
   decimal: { icon: "coins", label: "金额/小数" },
   date: { icon: "calendar", label: "日期" },
   checkbox: { icon: "checkSquare", label: "勾选" },
+  reference: { icon: "link", label: "引用" },
 };
 
 const FALLBACK_META: FieldTypeMeta = { icon: "docText", label: "字段" };

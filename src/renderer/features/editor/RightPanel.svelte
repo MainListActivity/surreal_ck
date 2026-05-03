@@ -2,8 +2,10 @@
   import Icon from "../../components/Icon.svelte";
   import { editorUi } from "./lib/editor-ui.svelte";
   import { panelRegistry, getPanel } from "./registries/panels";
+  import ReferencePanel from "./panels/ReferencePanel.svelte";
 
   const current = $derived(getPanel(editorUi.panelTab));
+  const showReferencePanel = $derived(editorUi.referencePanel.open && !!editorUi.referencePanel.targetId);
 </script>
 
 <aside class="right-panel" class:open={editorUi.panelOpen}>
@@ -11,8 +13,8 @@
     <div class="panel-tabs">
       {#each panelRegistry as tab}
         <button
-          class:active={editorUi.panelTab === tab.id}
-          onclick={() => (editorUi.panelTab = tab.id)}
+          class:active={editorUi.panelTab === tab.id && !showReferencePanel}
+          onclick={() => { editorUi.panelTab = tab.id; editorUi.closeReferencePanel(); }}
         >
           {tab.label}
         </button>
@@ -22,7 +24,9 @@
       </button>
     </div>
     <div class="panel-content">
-      {#if current}
+      {#if showReferencePanel}
+        <ReferencePanel />
+      {:else if current}
         {@const PanelComponent = current.component}
         <PanelComponent />
       {/if}

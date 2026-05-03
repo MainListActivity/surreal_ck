@@ -62,3 +62,56 @@ describe("coerceGridFieldValue", () => {
     expect(date).toBeInstanceOf(Date);
   });
 });
+
+describe("reference 字段", () => {
+  const singleColumn: GridColumnDef = {
+    key: "owner",
+    label: "负责人",
+    fieldType: "reference",
+    referenceTable: "app_user",
+    referenceMultiple: false,
+  };
+
+  const multiColumn: GridColumnDef = {
+    key: "linked_cases",
+    label: "关联案件",
+    fieldType: "reference",
+    referenceTable: "ent_abc12345_def67890_ghi23456",
+    referenceMultiple: true,
+  };
+
+  test("单选 reference 校验目标表归属", () => {
+    expect(validateGridFieldValue("ent_abc:zzz", singleColumn)).toContain("引用值必须属于 app_user");
+    expect(validateGridFieldValue("not_a_record_id", singleColumn)).toContain("引用值不是合法 RecordId");
+    expect(validateGridFieldValue("app_user:abc12345", singleColumn)).toHaveLength(0);
+  });
+
+  test("多选 reference 校验数组里每个元素", () => {
+    expect(
+      validateGridFieldValue([
+        "ent_abc12345_def67890_ghi23456:row1",
+        "app_user:wrongtable",
+      ], multiColumn),
+    ).toContain("引用值必须属于 ent_abc12345_def67890_ghi23456");
+    expect(
+      validateGridFieldValue([
+        "ent_abc12345_def67890_ghi23456:row1",
+        "ent_abc12345_def67890_ghi23456:row2",
+      ], multiColumn),
+    ).toHaveLength(0);
+  });
+
+  test("多选 coerce 把空数组规整为 null，去重保留原顺序", () => {
+    expect(coerceGridFieldValue([], multiColumn)).toBeNull();
+    expect(coerceGridFieldValue(["a:1", "a:1", "a:2"], multiColumn)).toEqual(["a:1", "a:2"]);
+  });
+
+  test("单选 coerce 把数组退化为首个非空字符串", () => {
+    expect(coerceGridFieldValue(["app_user:abc"], singleColumn)).toBe("app_user:abc");
+  });
+
+  test("required 时空数组算空", () => {
+    const required: GridColumnDef = { ...multiColumn, required: true };
+    expect(validateGridFieldValue([], required)).toContain("必填");
+  });
+});

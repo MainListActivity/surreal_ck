@@ -12,7 +12,8 @@
     formatDateValue,
   } from "../../../../shared/date-format";
   import DatePicker from "../../../components/DatePicker.svelte";
-  import type { GridColumnDef, GridFieldConstraints } from "../../../../shared/rpc.types";
+  import { appApi } from "../../../lib/app-api";
+  import type { GridColumnDef, GridFieldConstraints, ReferenceTargetOption } from "../../../../shared/rpc.types";
 
   let { fieldKey }: { fieldKey: string } = $props();
 
@@ -28,6 +29,7 @@
     { value: "decimal", label: "金额/小数", icon: "coins" },
     { value: "date", label: "日期", icon: "calendar" },
     { value: "checkbox", label: "勾选", icon: "checkSquare" },
+    { value: "reference", label: "引用", icon: "link" },
   ] as const;
 
   const dateFormatOptions = [
@@ -41,6 +43,33 @@
   let draftError = $state<string | null>(null);
   let fieldDraft = $state<FieldDraft | null>(null);
   let dateFormatMode = $state<"preset" | "custom">("preset");
+  let referenceTargets = $state<ReferenceTargetOption[]>([]);
+  let referenceTargetsLoaded = $state(false);
+  /** 用户在原字段就是 reference 时不允许换目标表，避免破坏已写入数据。 */
+  const referenceTargetLocked = $derived<boolean>(
+    !!editorStore.columns.find((col) => col.key === fieldKey && col.fieldType === "reference" && col.referenceTable),
+  );
+
+  async function loadReferenceTargetsIfNeeded() {
+    if (referenceTargetsLoaded) return;
+    const res = await appApi.listReferenceTargets();
+    if (res.ok) {
+      referenceTargets = res.data.targets;
+      referenceTargetsLoaded = true;
+    }
+  }
+
+  $effect(() => {
+    if (fieldDraft?.fieldType === "reference") {
+      void loadReferenceTargetsIfNeeded();
+    }
+  });
+
+  const selectedReferenceTarget = $derived<ReferenceTargetOption | undefined>(
+    fieldDraft?.referenceTable
+      ? referenceTargets.find((t) => t.table === fieldDraft.referenceTable)
+      : undefined,
+  );
 
   $effect(() => {
     const source = editorStore.columns.find((col) => col.key === fieldKey);
@@ -131,7 +160,23 @@
       options,
       constraints,
       dateFormat: field.fieldType === "date" ? (field.dateFormat?.trim() || DEFAULT_DATE_FORMAT) : undefined,
+      referenceTable: field.fieldType === "reference" ? field.referenceTable : undefined,
+      referenceSheetId: field.fieldType === "reference" ? field.referenceSheetId : undefined,
+      referenceMultiple: field.fieldType === "reference" ? field.referenceMultiple : undefined,
+      referenceDisplayKey: field.fieldType === "reference" ? field.referenceDisplayKey : undefined,
     };
+  }
+
+  function selectReferenceTarget(table: string) {
+    if (!fieldDraft) return;
+    const target = referenceTargets.find((t) => t.table === table);
+    fieldDraft.referenceTable = target?.table;
+    fieldDraft.referenceSheetId = target?.sheetId;
+    // 切换目标表时，若原 displayKey 在新目标里不存在则清掉。
+    if (target && fieldDraft.referenceDisplayKey
+        && !target.displayKeys.some((k) => k.key === fieldDraft.referenceDisplayKey)) {
+      fieldDraft.referenceDisplayKey = undefined;
+    }
   }
 
   function getFieldTypeLabel(fieldType: GridColumnDef["fieldType"]) {
@@ -140,6 +185,10 @@
 
   function hasRules(field: FieldDraft) {
     return field.fieldType !== "checkbox";
+  }
+
+  function targetGroupLabel(target: ReferenceTargetOption): string {
+    return target.workbookName ? `${target.workbookName} · ${target.sheetName ?? ""}` : "系统对象";
   }
 </script>
 
@@ -259,6 +308,62 @@
                   <span>步长</span>
                   <input type="number" min="0" step="any" bind:value={fieldDraft.constraints.step} />
                 </label>
+              </div>
+            {/if}
+
+            {#if fieldDraft.fieldType === "reference"}
+              <div class="field-grid rule-grid">
+                <label class="span-2">
+                  <span>引用目标</span>
+                  {#if referenceTargetLocked}
+                    <input type="text" disabled value={selectedReferenceTarget?.label ?? fieldDraft.referenceTable ?? ""} />
+                    <small class="hint">已建字段不可更换目标表，避免破坏已写入的引用数据。</small>
+                  {:else}
+                    <SelectMenu
+                      value={fieldDraft.referenceTable ?? ""}
+                      options={[
+                        { value: "", label: "请选择目标" },
+                        ...referenceTargets.map((t) => ({
+                          value: t.table,
+                          label: `${targetGroupLabel(t)} → ${t.label}`,
+                        })),
+                      ]}
+                      ariaLabel="引用目标"
+                      onChange={selectReferenceTarget}
+                    />
+                    {#if !referenceTargetsLoaded}
+                      <small class="hint">加载可引用目标…</small>
+                    {/if}
+                  {/if}
+                </label>
+                {#if selectedReferenceTarget}
+                  <label>
+                    <span>展示字段</span>
+                    <SelectMenu
+                      value={fieldDraft.referenceDisplayKey ?? ""}
+                      options={[
+                        { value: "", label: "默认（name / 显示名 / 主键）" },
+                        ...selectedReferenceTarget.displayKeys.map((k) => ({
+                          value: k.key,
+                          label: `${k.label}（${k.key}）`,
+                        })),
+                      ]}
+                      ariaLabel="展示字段"
+                      onChange={(next) => (fieldDraft.referenceDisplayKey = next || undefined)}
+                    />
+                  </label>
+                {/if}
+                <div class="toggle-card">
+                  <span>多值</span>
+                  <label class="switch-row">
+                    <input
+                      type="checkbox"
+                      bind:checked={fieldDraft.referenceMultiple}
+                      disabled={referenceTargetLocked}
+                    />
+                    <span>允许选择多条记录</span>
+                  </label>
+                </div>
               </div>
             {/if}
 

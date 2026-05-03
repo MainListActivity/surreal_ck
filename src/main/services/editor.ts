@@ -63,6 +63,10 @@ type SheetRow = {
     options?: string[];
     constraints?: GridColumnDef["constraints"];
     date_format?: string;
+    reference_table?: string;
+    reference_sheet_id?: string;
+    reference_multiple?: boolean;
+    reference_display_key?: string;
   }>;
 };
 
@@ -216,6 +220,17 @@ export async function upsertRows({
       if (column.fieldType !== "date") continue;
       const v = cleanValues[column.key];
       if (v instanceof Date) cleanValues[column.key] = new DateTime(v);
+    }
+    // reference 字段：字符串包装成 StringRecordId；数组每项各自包装。
+    for (const column of columnsByKey.values()) {
+      if (column.fieldType !== "reference") continue;
+      const v = cleanValues[column.key];
+      if (v == null) continue;
+      if (Array.isArray(v)) {
+        cleanValues[column.key] = v.map((item) => typeof item === "string" ? new StringRecordId(item) : item);
+      } else if (typeof v === "string") {
+        cleanValues[column.key] = new StringRecordId(v);
+      }
     }
 
     if (rowPatch.id) {
@@ -666,6 +681,7 @@ function jsonifyDbValue(value: unknown): unknown {
   if (value instanceof DateTime) return value.toISOString();
   if (value instanceof Date) return value.toISOString();
   if (value instanceof RecordId) return String(value);
+  if (Array.isArray(value)) return value.map(jsonifyDbValue);
   return value;
 }
 
@@ -678,6 +694,10 @@ function storedColumnToDTO(c: StoredColumnDef): GridColumnDef {
     options: c.options,
     constraints: c.constraints,
     dateFormat: c.date_format,
+    referenceTable: c.reference_table,
+    referenceSheetId: c.reference_sheet_id,
+    referenceMultiple: c.reference_multiple,
+    referenceDisplayKey: c.reference_display_key,
   };
 }
 
