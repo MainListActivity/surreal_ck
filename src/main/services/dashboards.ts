@@ -27,6 +27,8 @@ import type {
   RefreshDashboardViewRequest,
   RefreshDashboardViewResponse,
   RecordIdString,
+  RenameDashboardPageRequest,
+  RenameDashboardPageResponse,
   SaveDashboardPageLayoutRequest,
   SaveDashboardPageLayoutResponse,
   UpdateDashboardViewRequest,
@@ -163,6 +165,32 @@ export async function getDashboardPage({
     views: views.filter((item): item is DashboardViewDTO => Boolean(item)),
     caches: caches.filter((item): item is DashboardCacheDTO => Boolean(item)),
   };
+}
+
+export async function renameDashboardPage({
+  pageId,
+  title,
+}: RenameDashboardPageRequest): Promise<RenameDashboardPageResponse> {
+  const trimmed = title.trim();
+  if (!trimmed) throw new ServiceError("VALIDATION_ERROR", "仪表盘名称不能为空");
+  const current = await loadDashboardPage(pageId);
+  await assertCanWriteWorkspace(current.workspaceId);
+  if (current.title === trimmed) return { page: current };
+
+  const db = getLocalDb();
+  const slug = slugify(trimmed, recordKey(pageId).slice(0, 6));
+  const updated = await db.query<[DashboardPageRow[]]>(
+    `UPDATE $pageId SET title = $title, slug = $slug, updated_at = time::now()
+     RETURN id, workspace, workbook, title, slug, description, widgets, updated_at`,
+    {
+      pageId: new StringRecordId(pageId),
+      title: trimmed,
+      slug,
+    },
+  );
+  const row = updated[0]?.[0];
+  if (!row) throw new ServiceError("INTERNAL_ERROR", "重命名仪表盘失败");
+  return { page: pageRowToDTO(row) };
 }
 
 export async function saveDashboardPageLayout({

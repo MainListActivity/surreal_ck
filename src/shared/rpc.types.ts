@@ -592,6 +592,15 @@ export type CreateDashboardPageResponse = {
   page: DashboardPageDTO;
 };
 
+export type RenameDashboardPageRequest = {
+  pageId: RecordIdString;
+  title: string;
+};
+
+export type RenameDashboardPageResponse = {
+  page: DashboardPageDTO;
+};
+
 export type SaveDashboardPageLayoutRequest = {
   pageId: RecordIdString;
   widgets: DashboardWidgetLayoutDTO[];
@@ -681,6 +690,7 @@ export interface AppRPC extends ElectrobunRPCSchema {
       listDashboardPages: { params: ListDashboardPagesRequest; response: Result<ListDashboardPagesResponse> };
       getDashboardPage: { params: GetDashboardPageRequest; response: Result<GetDashboardPageResponse> };
       createDashboardPage: { params: CreateDashboardPageRequest; response: Result<CreateDashboardPageResponse> };
+      renameDashboardPage: { params: RenameDashboardPageRequest; response: Result<RenameDashboardPageResponse> };
       saveDashboardPageLayout: { params: SaveDashboardPageLayoutRequest; response: Result<SaveDashboardPageLayoutResponse> };
       listDashboardViews: { params: ListDashboardViewsRequest; response: Result<ListDashboardViewsResponse> };
       createDashboardView: { params: CreateDashboardViewRequest; response: Result<CreateDashboardViewResponse> };

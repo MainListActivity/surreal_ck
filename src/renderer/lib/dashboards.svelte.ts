@@ -96,12 +96,22 @@ function createDashboardsStore() {
     }
   }
 
-  async function createPage(title: string) {
-    if (!state.workspaceId) return null;
+  async function createPage(
+    title: string,
+    options?: { workspaceId?: string; workbookId?: string | null },
+  ) {
+    const workspaceId = options?.workspaceId ?? state.workspaceId;
+    if (!workspaceId) {
+      state.error = "尚未加载工作区，无法创建仪表盘";
+      return null;
+    }
+    const workbookId = options && "workbookId" in options ? options.workbookId : state.workbookId;
+    if (!state.workspaceId) state.workspaceId = workspaceId;
+    if (workbookId !== undefined && state.workbookId !== workbookId) state.workbookId = workbookId ?? null;
     state.saving = true;
     state.error = null;
     try {
-      const res = await appApi.createDashboardPage(state.workspaceId, state.workbookId ?? undefined, title);
+      const res = await appApi.createDashboardPage(workspaceId, workbookId ?? undefined, title);
       if (!res.ok) {
         state.error = res.message;
         return null;
@@ -112,6 +122,33 @@ function createDashboardsStore() {
     } catch (err) {
       state.error = String(err);
       return null;
+    } finally {
+      state.saving = false;
+    }
+  }
+
+  async function renamePage(pageId: string, title: string): Promise<boolean> {
+    const trimmed = title.trim();
+    if (!trimmed) return false;
+    const target = state.pages.find((page) => page.id === pageId);
+    if (target && target.title === trimmed) return true;
+    state.saving = true;
+    state.error = null;
+    try {
+      const res = await appApi.renameDashboardPage(pageId, trimmed);
+      if (!res.ok) {
+        state.error = res.message;
+        return false;
+      }
+      const updated = res.data.page;
+      state.pages = state.pages.map((page) => (page.id === updated.id ? { ...page, title: updated.title, slug: updated.slug, updatedAt: updated.updatedAt } : page));
+      if (state.activePage && state.activePage.id === updated.id) {
+        state.activePage = { ...state.activePage, title: updated.title, slug: updated.slug, updatedAt: updated.updatedAt };
+      }
+      return true;
+    } catch (err) {
+      state.error = String(err);
+      return false;
     } finally {
       state.saving = false;
     }
@@ -240,6 +277,7 @@ function createDashboardsStore() {
     },
     loadPage,
     createPage,
+    renamePage,
     previewView,
     createViewAndAttach,
     refreshPage,

@@ -27,6 +27,7 @@ import type {
   RecordIdString,
   RefreshDashboardPageResponse,
   RefreshDashboardViewResponse,
+  RenameDashboardPageResponse,
   RenameSheetResponse,
   RenameWorkbookResponse,
   ResolveReferencesResponse,
@@ -149,6 +150,10 @@ export const appApi = {
     description?: string,
   ): Promise<Result<CreateDashboardPageResponse>> {
     return rpc.request("createDashboardPage", { workspaceId, workbookId, title, description });
+  },
+
+  renameDashboardPage(pageId: RecordIdString, title: string): Promise<Result<RenameDashboardPageResponse>> {
+    return rpc.request("renameDashboardPage", { pageId, title });
   },
 
   saveDashboardPageLayout(

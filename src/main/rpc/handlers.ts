@@ -38,6 +38,8 @@ import type {
   RefreshDashboardPageResponse,
   RefreshDashboardViewRequest,
   RefreshDashboardViewResponse,
+  RenameDashboardPageRequest,
+  RenameDashboardPageResponse,
   RenameSheetRequest,
   RenameSheetResponse,
   RenameWorkbookRequest,
@@ -80,6 +82,7 @@ import {
   previewDashboardDraft,
   refreshDashboardPage,
   refreshDashboardView,
+  renameDashboardPage,
   saveDashboardPageLayout,
   updateDashboardView,
 } from "../services/dashboards";
@@ -272,6 +275,10 @@ export function createRpcHandlers(send: SendFn) {
 
       createDashboardPage: async (req: CreateDashboardPageRequest): Promise<Result<CreateDashboardPageResponse>> => {
         return withResult(() => createDashboardPage(req));
+      },
+
+      renameDashboardPage: async (req: RenameDashboardPageRequest): Promise<Result<RenameDashboardPageResponse>> => {
+        return withResult(() => renameDashboardPage(req));
       },
 
       saveDashboardPageLayout: async (req: SaveDashboardPageLayoutRequest): Promise<Result<SaveDashboardPageLayoutResponse>> => {
