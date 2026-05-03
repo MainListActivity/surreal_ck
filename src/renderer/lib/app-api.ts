@@ -2,11 +2,21 @@ import { rpc } from "./rpc";
 import type {
   AppBootstrap,
   CreateBlankWorkbookResponse,
+  CreateDashboardPageResponse,
+  CreateDashboardViewResponse,
   CreateFolderResponse,
   CreateSheetResponse,
   CreateWorkbookFromTemplateResponse,
+  DashboardPageSummaryDTO,
+  DashboardPreviewResponse,
+  DashboardViewDraftDTO,
+  DashboardViewSummaryDTO,
+  DashboardWidgetLayoutDTO,
   DeleteRowsResponse,
+  GetDashboardPageResponse,
   GetWorkbookDataResponse,
+  ListDashboardPagesResponse,
+  ListDashboardViewsResponse,
   ListFoldersResponse,
   ListTemplatesResponse,
   ListWorkbooksResponse,
@@ -15,12 +25,16 @@ import type {
   MoveFolderResponse,
   MoveWorkbookResponse,
   RecordIdString,
+  RefreshDashboardPageResponse,
+  RefreshDashboardViewResponse,
   RenameSheetResponse,
   RenameWorkbookResponse,
   ResolveReferencesResponse,
   Result,
+  SaveDashboardPageLayoutResponse,
   SearchReferenceCandidatesResponse,
   UpdateSheetFieldsResponse,
+  UpdateDashboardViewResponse,
   UpsertRowsResponse,
   ViewParams,
 } from "../../shared/rpc.types";
@@ -118,5 +132,52 @@ export const appApi = {
     options?: { query?: string; displayKey?: string; limit?: number },
   ): Promise<Result<SearchReferenceCandidatesResponse>> {
     return rpc.request("searchReferenceCandidates", { table, ...options });
+  },
+
+  listDashboardPages(workspaceId: RecordIdString): Promise<Result<ListDashboardPagesResponse>> {
+    return rpc.request("listDashboardPages", { workspaceId });
+  },
+
+  getDashboardPage(pageId: RecordIdString): Promise<Result<GetDashboardPageResponse>> {
+    return rpc.request("getDashboardPage", { pageId });
+  },
+
+  createDashboardPage(
+    workspaceId: RecordIdString,
+    title: string,
+    description?: string,
+  ): Promise<Result<CreateDashboardPageResponse>> {
+    return rpc.request("createDashboardPage", { workspaceId, title, description });
+  },
+
+  saveDashboardPageLayout(
+    pageId: RecordIdString,
+    widgets: DashboardWidgetLayoutDTO[],
+  ): Promise<Result<SaveDashboardPageLayoutResponse>> {
+    return rpc.request("saveDashboardPageLayout", { pageId, widgets });
+  },
+
+  listDashboardViews(workspaceId: RecordIdString): Promise<Result<ListDashboardViewsResponse>> {
+    return rpc.request("listDashboardViews", { workspaceId });
+  },
+
+  createDashboardView(draft: DashboardViewDraftDTO): Promise<Result<CreateDashboardViewResponse>> {
+    return rpc.request("createDashboardView", { draft });
+  },
+
+  updateDashboardView(viewId: RecordIdString, draft: DashboardViewDraftDTO): Promise<Result<UpdateDashboardViewResponse>> {
+    return rpc.request("updateDashboardView", { viewId, draft });
+  },
+
+  previewDashboardView(draft: DashboardViewDraftDTO): Promise<Result<DashboardPreviewResponse>> {
+    return rpc.request("previewDashboardView", { draft });
+  },
+
+  refreshDashboardView(viewId: RecordIdString): Promise<Result<RefreshDashboardViewResponse>> {
+    return rpc.request("refreshDashboardView", { viewId });
+  },
+
+  refreshDashboardPage(pageId: RecordIdString): Promise<Result<RefreshDashboardPageResponse>> {
+    return rpc.request("refreshDashboardPage", { pageId });
   },
 };

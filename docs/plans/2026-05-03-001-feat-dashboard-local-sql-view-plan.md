@@ -1,7 +1,7 @@
 ---
 title: "feat: 本地 SQL 仪表盘与 Mastra 视图注册"
 type: feat
-status: active
+status: completed
 date: 2026-05-03
 ---
 

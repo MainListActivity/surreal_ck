@@ -3,6 +3,7 @@
   import SideNav from "./components/SideNav.svelte";
   import AdminConsoleScreen from "./screens/AdminConsoleScreen.svelte";
   import AdminScreen from "./screens/AdminScreen.svelte";
+  import DashboardScreen from "./screens/DashboardScreen.svelte";
   import EditorScreen from "./screens/EditorScreen.svelte";
   import HomeScreen from "./screens/HomeScreen.svelte";
   import LoginScreen from "./screens/LoginScreen.svelte";
@@ -18,10 +19,11 @@
   import LeaveDraftModal from "./features/editor/modals/LeaveDraftModal.svelte";
   import type { RouteState, ScreenId } from "./lib/types";
 
-  const navScreens = new Set<ScreenId>(["home", "mydocs", "templates", "admin", "state-empty"]);
+  const navScreens = new Set<ScreenId>(["home", "mydocs", "dashboard", "templates", "admin", "state-empty"]);
   const validStoredScreens = new Set<ScreenId>([
     "home",
     "mydocs",
+    "dashboard",
     "editor",
     "form",
     "form-success",
@@ -153,6 +155,8 @@
           <HomeScreen {navigate} />
         {:else if route.screen === "mydocs"}
           <MyDocsScreen {navigate} />
+        {:else if route.screen === "dashboard"}
+          <DashboardScreen {navigate} pageId={route.dashboardPageId} />
         {:else if route.screen === "editor"}
           <EditorScreen {navigate} workbookId={route.workbookId} />
         {:else if route.screen === "form"}

@@ -3,6 +3,10 @@ import type {
   AuthState,
   CreateBlankWorkbookRequest,
   CreateBlankWorkbookResponse,
+  CreateDashboardPageRequest,
+  CreateDashboardPageResponse,
+  CreateDashboardViewRequest,
+  CreateDashboardViewResponse,
   CreateFolderRequest,
   CreateFolderResponse,
   CreateSheetRequest,
@@ -11,8 +15,14 @@ import type {
   CreateWorkbookFromTemplateResponse,
   DeleteRowsRequest,
   DeleteRowsResponse,
+  GetDashboardPageRequest,
+  GetDashboardPageResponse,
   GetWorkbookDataRequest,
   GetWorkbookDataResponse,
+  ListDashboardPagesRequest,
+  ListDashboardPagesResponse,
+  ListDashboardViewsRequest,
+  ListDashboardViewsResponse,
   ListFoldersRequest,
   ListFoldersResponse,
   ListTemplatesResponse,
@@ -24,6 +34,10 @@ import type {
   MoveWorkbookResponse,
   RawQueryRequest,
   RawQueryResponse,
+  RefreshDashboardPageRequest,
+  RefreshDashboardPageResponse,
+  RefreshDashboardViewRequest,
+  RefreshDashboardViewResponse,
   RenameSheetRequest,
   RenameSheetResponse,
   RenameWorkbookRequest,
@@ -32,8 +46,14 @@ import type {
   ResolveReferencesResponse,
   Result,
   ListReferenceTargetsResponse,
+  SaveDashboardPageLayoutRequest,
+  SaveDashboardPageLayoutResponse,
   SearchReferenceCandidatesRequest,
   SearchReferenceCandidatesResponse,
+  PreviewDashboardViewRequest,
+  PreviewDashboardViewResponse,
+  UpdateDashboardViewRequest,
+  UpdateDashboardViewResponse,
   UpdateSheetFieldsRequest,
   UpdateSheetFieldsResponse,
   UpsertRowsRequest,
@@ -51,6 +71,18 @@ import { listFolders, createFolder, moveFolder } from "../services/folders";
 import { listTemplates, createWorkbookFromTemplate } from "../services/templates";
 import { getWorkbookData, upsertRows, deleteRows, renameWorkbook, updateSheetFields, createSheet, renameSheet } from "../services/editor";
 import { listReferenceTargets, resolveReferences, searchReferenceCandidates } from "../services/references";
+import {
+  createDashboardPage,
+  createDashboardView,
+  getDashboardPage,
+  listDashboardPages,
+  listDashboardViews,
+  previewDashboardDraft,
+  refreshDashboardPage,
+  refreshDashboardView,
+  saveDashboardPageLayout,
+  updateDashboardView,
+} from "../services/dashboards";
 
 type SendFn = (event: "authStateChanged", payload: { state: AuthState }) => void;
 
@@ -222,6 +254,55 @@ export function createRpcHandlers(send: SendFn) {
           assertAuthenticated();
           return searchReferenceCandidates(req);
         });
+      },
+
+      listDashboardPages: async (req: ListDashboardPagesRequest): Promise<Result<ListDashboardPagesResponse>> => {
+        return withResult(() => {
+          assertAuthenticated();
+          return listDashboardPages(req);
+        });
+      },
+
+      getDashboardPage: async (req: GetDashboardPageRequest): Promise<Result<GetDashboardPageResponse>> => {
+        return withResult(() => {
+          assertAuthenticated();
+          return getDashboardPage(req);
+        });
+      },
+
+      createDashboardPage: async (req: CreateDashboardPageRequest): Promise<Result<CreateDashboardPageResponse>> => {
+        return withResult(() => createDashboardPage(req));
+      },
+
+      saveDashboardPageLayout: async (req: SaveDashboardPageLayoutRequest): Promise<Result<SaveDashboardPageLayoutResponse>> => {
+        return withResult(() => saveDashboardPageLayout(req));
+      },
+
+      listDashboardViews: async (req: ListDashboardViewsRequest): Promise<Result<ListDashboardViewsResponse>> => {
+        return withResult(() => {
+          assertAuthenticated();
+          return listDashboardViews(req);
+        });
+      },
+
+      createDashboardView: async (req: CreateDashboardViewRequest): Promise<Result<CreateDashboardViewResponse>> => {
+        return withResult(() => createDashboardView(req));
+      },
+
+      updateDashboardView: async (req: UpdateDashboardViewRequest): Promise<Result<UpdateDashboardViewResponse>> => {
+        return withResult(() => updateDashboardView(req));
+      },
+
+      previewDashboardView: async (req: PreviewDashboardViewRequest): Promise<Result<PreviewDashboardViewResponse>> => {
+        return withResult(() => previewDashboardDraft(req.draft));
+      },
+
+      refreshDashboardView: async (req: RefreshDashboardViewRequest): Promise<Result<RefreshDashboardViewResponse>> => {
+        return withResult(() => refreshDashboardView(req));
+      },
+
+      refreshDashboardPage: async (req: RefreshDashboardPageRequest): Promise<Result<RefreshDashboardPageResponse>> => {
+        return withResult(() => refreshDashboardPage(req));
       },
     },
 

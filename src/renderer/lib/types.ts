@@ -1,6 +1,7 @@
 export type ScreenId =
   | "home"
   | "mydocs"
+  | "dashboard"
   | "editor"
   | "form"
   | "form-success"
@@ -51,6 +52,7 @@ export type TemplateItem = {
 
 export type RouteState = {
   screen: ScreenId;
+  dashboardPageId?: string;
   workbookId?: string;
   sheetId?: string;
   folderId?: string;

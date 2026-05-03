@@ -393,6 +393,253 @@ export type SearchReferenceCandidatesResponse = {
   items: ReferenceTargetPreview[];
 };
 
+// ─── Dashboard DTOs ──────────────────────────────────────────────────────────
+
+export type DashboardQueryMode = "preset" | "builder" | "sql";
+export type DashboardViewType = "kpi" | "table" | "bar" | "line";
+export type DashboardResultContract = "single_value" | "category_breakdown" | "time_series" | "table_rows";
+export type DashboardViewStatus = "draft" | "active" | "invalid";
+export type DashboardCacheStatus = "ok" | "error" | "stale" | "running";
+export type DashboardRefreshPolicy = "manual" | "on_open_if_stale" | "interval";
+
+export type DashboardWidgetLayoutDTO = {
+  id: string;
+  viewId: RecordIdString;
+  titleOverride?: string;
+  grid: { x: number; y: number; w: number; h: number };
+  displayOverride?: Record<string, unknown>;
+  refreshPolicyOverride?: "inherit" | DashboardRefreshPolicy;
+};
+
+export type DashboardPageSummaryDTO = {
+  id: RecordIdString;
+  workspaceId: RecordIdString;
+  title: string;
+  slug: string;
+  description?: string;
+  updatedAt?: ISODateTimeString;
+};
+
+export type DashboardPageDTO = DashboardPageSummaryDTO & {
+  widgets: DashboardWidgetLayoutDTO[];
+};
+
+export type DashboardBuilderMetricOp =
+  | "count"
+  | "count_distinct"
+  | "sum"
+  | "avg"
+  | "min"
+  | "max";
+
+export type DashboardBuilderFilterOp =
+  | "eq"
+  | "neq"
+  | "gt"
+  | "gte"
+  | "lt"
+  | "lte"
+  | "contains"
+  | "in"
+  | "is_null"
+  | "is_not_null";
+
+export type DashboardBuilderSpec = {
+  sourceTables: string[];
+  baseTable: string;
+  metric: {
+    op: DashboardBuilderMetricOp;
+    field?: string;
+  };
+  dimensions?: Array<{
+    field: string;
+    bucket?: "day" | "week" | "month" | "year";
+  }>;
+  filters?: Array<{
+    field: string;
+    op: DashboardBuilderFilterOp;
+    value?: unknown;
+  }>;
+  sort?: {
+    field: string;
+    direction: "asc" | "desc";
+  };
+  limit?: number;
+};
+
+export type DashboardViewSummaryDTO = {
+  id: RecordIdString;
+  workspaceId: RecordIdString;
+  title: string;
+  slug: string;
+  description?: string;
+  queryMode: DashboardQueryMode;
+  viewType: DashboardViewType;
+  resultContract: DashboardResultContract;
+  status: DashboardViewStatus;
+  updatedAt?: ISODateTimeString;
+  lastRunAt?: ISODateTimeString;
+};
+
+export type DashboardViewDTO = DashboardViewSummaryDTO & {
+  compiledSql: string;
+  builderSpec?: DashboardBuilderSpec;
+  displaySpec?: Record<string, unknown>;
+  sourceTables: string[];
+  dependencies: string[];
+  version: number;
+  createdBy?: RecordIdString;
+};
+
+export type DashboardSingleValueResult = {
+  value: number | string | boolean | null;
+  label?: string;
+  unit?: string;
+  delta?: number | null;
+};
+
+export type DashboardCategoryBreakdownResult = {
+  rows: Array<{ key: string; label: string; value: number }>;
+};
+
+export type DashboardTimeSeriesResult = {
+  rows: Array<{ x: string; y: number; series?: string }>;
+};
+
+export type DashboardTableRowsResult = {
+  columns: Array<{ key: string; label: string }>;
+  rows: Array<Record<string, unknown>>;
+};
+
+export type DashboardNormalizedResult =
+  | DashboardSingleValueResult
+  | DashboardCategoryBreakdownResult
+  | DashboardTimeSeriesResult
+  | DashboardTableRowsResult;
+
+export type DashboardCacheDTO = {
+  viewId: RecordIdString;
+  status: DashboardCacheStatus;
+  rowsCount: number;
+  durationMs: number;
+  executedAt?: ISODateTimeString;
+  sqlHash: string;
+  result?: DashboardNormalizedResult;
+  resultMeta?: Record<string, unknown>;
+  errorDetail?: unknown;
+};
+
+export type DashboardViewDraftDTO = {
+  workspaceId: RecordIdString;
+  title: string;
+  slug?: string;
+  description?: string;
+  queryMode: DashboardQueryMode;
+  viewType: DashboardViewType;
+  resultContract: DashboardResultContract;
+  compiledSql?: string;
+  builderSpec?: DashboardBuilderSpec;
+  displaySpec?: Record<string, unknown>;
+  status?: DashboardViewStatus;
+};
+
+export type DashboardPreviewResponse = {
+  sql: string;
+  sourceTables: string[];
+  dependencies: string[];
+  durationMs: number;
+  rowsCount: number;
+  result: DashboardNormalizedResult;
+  resultMeta: Record<string, unknown>;
+  sqlHash: string;
+};
+
+export type ListDashboardPagesRequest = {
+  workspaceId: RecordIdString;
+};
+
+export type ListDashboardPagesResponse = {
+  pages: DashboardPageSummaryDTO[];
+};
+
+export type GetDashboardPageRequest = {
+  pageId: RecordIdString;
+};
+
+export type GetDashboardPageResponse = {
+  page: DashboardPageDTO;
+  views: DashboardViewDTO[];
+  caches: DashboardCacheDTO[];
+};
+
+export type CreateDashboardPageRequest = {
+  workspaceId: RecordIdString;
+  title: string;
+  description?: string;
+};
+
+export type CreateDashboardPageResponse = {
+  page: DashboardPageDTO;
+};
+
+export type SaveDashboardPageLayoutRequest = {
+  pageId: RecordIdString;
+  widgets: DashboardWidgetLayoutDTO[];
+};
+
+export type SaveDashboardPageLayoutResponse = {
+  page: DashboardPageDTO;
+};
+
+export type ListDashboardViewsRequest = {
+  workspaceId: RecordIdString;
+};
+
+export type ListDashboardViewsResponse = {
+  views: DashboardViewSummaryDTO[];
+};
+
+export type CreateDashboardViewRequest = {
+  draft: DashboardViewDraftDTO;
+};
+
+export type CreateDashboardViewResponse = {
+  view: DashboardViewDTO;
+  cache?: DashboardCacheDTO;
+};
+
+export type UpdateDashboardViewRequest = {
+  viewId: RecordIdString;
+  draft: DashboardViewDraftDTO;
+};
+
+export type UpdateDashboardViewResponse = {
+  view: DashboardViewDTO;
+  cache?: DashboardCacheDTO;
+};
+
+export type PreviewDashboardViewRequest = {
+  draft: DashboardViewDraftDTO;
+};
+
+export type PreviewDashboardViewResponse = DashboardPreviewResponse;
+
+export type RefreshDashboardViewRequest = {
+  viewId: RecordIdString;
+};
+
+export type RefreshDashboardViewResponse = {
+  cache: DashboardCacheDTO;
+};
+
+export type RefreshDashboardPageRequest = {
+  pageId: RecordIdString;
+};
+
+export type RefreshDashboardPageResponse = {
+  caches: DashboardCacheDTO[];
+};
+
 // ─── RPC 契约 ─────────────────────────────────────────────────────────────────
 
 export interface AppRPC extends ElectrobunRPCSchema {
@@ -420,6 +667,16 @@ export interface AppRPC extends ElectrobunRPCSchema {
       resolveReferences: { params: ResolveReferencesRequest; response: Result<ResolveReferencesResponse> };
       listReferenceTargets: { params: Record<string, never>; response: Result<ListReferenceTargetsResponse> };
       searchReferenceCandidates: { params: SearchReferenceCandidatesRequest; response: Result<SearchReferenceCandidatesResponse> };
+      listDashboardPages: { params: ListDashboardPagesRequest; response: Result<ListDashboardPagesResponse> };
+      getDashboardPage: { params: GetDashboardPageRequest; response: Result<GetDashboardPageResponse> };
+      createDashboardPage: { params: CreateDashboardPageRequest; response: Result<CreateDashboardPageResponse> };
+      saveDashboardPageLayout: { params: SaveDashboardPageLayoutRequest; response: Result<SaveDashboardPageLayoutResponse> };
+      listDashboardViews: { params: ListDashboardViewsRequest; response: Result<ListDashboardViewsResponse> };
+      createDashboardView: { params: CreateDashboardViewRequest; response: Result<CreateDashboardViewResponse> };
+      updateDashboardView: { params: UpdateDashboardViewRequest; response: Result<UpdateDashboardViewResponse> };
+      previewDashboardView: { params: PreviewDashboardViewRequest; response: Result<PreviewDashboardViewResponse> };
+      refreshDashboardView: { params: RefreshDashboardViewRequest; response: Result<RefreshDashboardViewResponse> };
+      refreshDashboardPage: { params: RefreshDashboardPageRequest; response: Result<RefreshDashboardPageResponse> };
     };
     messages: {
       log: { msg: string };

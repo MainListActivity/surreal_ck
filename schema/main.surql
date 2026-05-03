@@ -210,6 +210,116 @@ DEFINE INDEX IF NOT EXISTS edge_catalog_ws_rel_table_unique
   ON TABLE edge_catalog COLUMNS workspace, rel_table UNIQUE;
 
 -- ═══════════════════════════════════════════════════════════════════════════════
+-- DASHBOARD
+-- 工作区级仪表盘页面与统计视图定义。
+-- page 负责布局；view 负责只读统计 SQL / builder spec；cache 负责最近一次执行结果。
+-- 布局属于系统结构关系，用字段数组表示，不单独建 relation。
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+DEFINE TABLE IF NOT EXISTS dashboard_page SCHEMAFULL
+  PERMISSIONS
+    FOR select WHERE
+      workspace.owner = $auth
+      OR workspace IN $auth<-has_workspace_member<-workspace,
+    FOR create, update, delete WHERE
+      workspace.owner = $auth;
+DEFINE FIELD IF NOT EXISTS workspace   ON TABLE dashboard_page TYPE record<workspace>;
+DEFINE FIELD IF NOT EXISTS title       ON TABLE dashboard_page TYPE string;
+DEFINE FIELD IF NOT EXISTS slug        ON TABLE dashboard_page TYPE string;
+DEFINE FIELD IF NOT EXISTS description ON TABLE dashboard_page TYPE option<string>;
+REMOVE FIELD IF EXISTS widgets.* ON TABLE dashboard_page;
+DEFINE FIELD OVERWRITE widgets         ON TABLE dashboard_page TYPE any DEFAULT [];
+DEFINE FIELD IF NOT EXISTS created_at  ON TABLE dashboard_page TYPE datetime VALUE time::now();
+DEFINE FIELD IF NOT EXISTS updated_at  ON TABLE dashboard_page TYPE datetime VALUE time::now();
+DEFINE INDEX IF NOT EXISTS dashboard_page_ws_slug_unique
+  ON TABLE dashboard_page COLUMNS workspace, slug UNIQUE;
+DEFINE INDEX IF NOT EXISTS dashboard_page_workspace
+  ON TABLE dashboard_page COLUMNS workspace;
+
+DEFINE TABLE IF NOT EXISTS dashboard_view SCHEMAFULL
+  PERMISSIONS
+    FOR select WHERE
+      workspace.owner = $auth
+      OR workspace IN $auth<-has_workspace_member<-workspace,
+    FOR create, update, delete WHERE
+      workspace.owner = $auth;
+DEFINE FIELD IF NOT EXISTS workspace       ON TABLE dashboard_view TYPE record<workspace>;
+DEFINE FIELD IF NOT EXISTS title           ON TABLE dashboard_view TYPE string;
+DEFINE FIELD IF NOT EXISTS slug            ON TABLE dashboard_view TYPE string;
+DEFINE FIELD IF NOT EXISTS description     ON TABLE dashboard_view TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS query_mode      ON TABLE dashboard_view TYPE string
+  ASSERT $value INSIDE ["preset", "builder", "sql"];
+DEFINE FIELD IF NOT EXISTS view_type       ON TABLE dashboard_view TYPE string
+  ASSERT $value INSIDE ["kpi", "table", "bar", "line"];
+DEFINE FIELD IF NOT EXISTS result_contract ON TABLE dashboard_view TYPE string
+  ASSERT $value INSIDE ["single_value", "category_breakdown", "time_series", "table_rows"];
+DEFINE FIELD IF NOT EXISTS compiled_sql    ON TABLE dashboard_view TYPE string;
+DEFINE FIELD IF NOT EXISTS status          ON TABLE dashboard_view TYPE string
+  ASSERT $value INSIDE ["draft", "active", "invalid"];
+DEFINE FIELD IF NOT EXISTS version         ON TABLE dashboard_view TYPE int DEFAULT 1;
+DEFINE FIELD IF NOT EXISTS created_by      ON TABLE dashboard_view TYPE option<record<app_user>>;
+DEFINE FIELD IF NOT EXISTS last_run_at     ON TABLE dashboard_view TYPE option<datetime>;
+REMOVE FIELD IF EXISTS builder_spec.* ON TABLE dashboard_view;
+REMOVE FIELD IF EXISTS display_spec.* ON TABLE dashboard_view;
+REMOVE FIELD IF EXISTS source_tables.* ON TABLE dashboard_view;
+REMOVE FIELD IF EXISTS dependencies.* ON TABLE dashboard_view;
+DEFINE FIELD OVERWRITE builder_spec        ON TABLE dashboard_view TYPE any DEFAULT {};
+DEFINE FIELD OVERWRITE display_spec        ON TABLE dashboard_view TYPE any DEFAULT {};
+DEFINE FIELD OVERWRITE source_tables       ON TABLE dashboard_view TYPE any DEFAULT [];
+DEFINE FIELD OVERWRITE dependencies        ON TABLE dashboard_view TYPE any DEFAULT [];
+DEFINE FIELD IF NOT EXISTS created_at      ON TABLE dashboard_view TYPE datetime VALUE time::now();
+DEFINE FIELD IF NOT EXISTS updated_at      ON TABLE dashboard_view TYPE datetime VALUE time::now();
+DEFINE INDEX IF NOT EXISTS dashboard_view_ws_slug_unique
+  ON TABLE dashboard_view COLUMNS workspace, slug UNIQUE;
+DEFINE INDEX IF NOT EXISTS dashboard_view_workspace_status
+  ON TABLE dashboard_view COLUMNS workspace, status;
+DEFINE INDEX IF NOT EXISTS dashboard_view_workspace
+  ON TABLE dashboard_view COLUMNS workspace;
+
+DEFINE TABLE IF NOT EXISTS dashboard_result_cache SCHEMAFULL
+  PERMISSIONS
+    FOR select WHERE
+      view.workspace.owner = $auth
+      OR view.workspace IN $auth<-has_workspace_member<-workspace,
+    FOR create, update, delete WHERE
+      view.workspace.owner = $auth;
+DEFINE FIELD IF NOT EXISTS view         ON TABLE dashboard_result_cache TYPE record<dashboard_view>;
+DEFINE FIELD IF NOT EXISTS status       ON TABLE dashboard_result_cache TYPE string
+  ASSERT $value INSIDE ["ok", "error", "stale", "running"];
+DEFINE FIELD IF NOT EXISTS rows_count   ON TABLE dashboard_result_cache TYPE int DEFAULT 0;
+DEFINE FIELD IF NOT EXISTS duration_ms  ON TABLE dashboard_result_cache TYPE int DEFAULT 0;
+DEFINE FIELD IF NOT EXISTS sql_hash     ON TABLE dashboard_result_cache TYPE string;
+DEFINE FIELD IF NOT EXISTS executed_at  ON TABLE dashboard_result_cache TYPE datetime VALUE time::now();
+REMOVE FIELD IF EXISTS result_json.* ON TABLE dashboard_result_cache;
+REMOVE FIELD IF EXISTS result_meta.* ON TABLE dashboard_result_cache;
+REMOVE FIELD IF EXISTS error_detail.* ON TABLE dashboard_result_cache;
+DEFINE FIELD OVERWRITE result_json    ON TABLE dashboard_result_cache TYPE any DEFAULT null;
+DEFINE FIELD OVERWRITE result_meta    ON TABLE dashboard_result_cache TYPE any DEFAULT {};
+DEFINE FIELD OVERWRITE error_detail   ON TABLE dashboard_result_cache TYPE any DEFAULT null;
+DEFINE INDEX IF NOT EXISTS dashboard_result_cache_view_unique
+  ON TABLE dashboard_result_cache COLUMNS view UNIQUE;
+
+DEFINE TABLE IF NOT EXISTS dashboard_run_log SCHEMALESS
+  PERMISSIONS
+    FOR select WHERE
+      view.workspace.owner = $auth
+      OR view.workspace IN $auth<-has_workspace_member<-workspace,
+    FOR create WHERE
+      view.workspace.owner = $auth,
+    FOR update, delete NONE;
+DEFINE FIELD IF NOT EXISTS view         ON TABLE dashboard_run_log TYPE record<dashboard_view>;
+DEFINE FIELD IF NOT EXISTS status       ON TABLE dashboard_run_log TYPE string;
+DEFINE FIELD IF NOT EXISTS duration_ms  ON TABLE dashboard_run_log TYPE int DEFAULT 0;
+DEFINE FIELD IF NOT EXISTS sql_hash     ON TABLE dashboard_run_log TYPE string;
+DEFINE FIELD IF NOT EXISTS executed_at  ON TABLE dashboard_run_log TYPE datetime VALUE time::now();
+REMOVE FIELD IF EXISTS result_meta.* ON TABLE dashboard_run_log;
+REMOVE FIELD IF EXISTS error_detail.* ON TABLE dashboard_run_log;
+DEFINE FIELD OVERWRITE result_meta    ON TABLE dashboard_run_log TYPE any DEFAULT {};
+DEFINE FIELD OVERWRITE error_detail   ON TABLE dashboard_run_log TYPE any DEFAULT null;
+DEFINE INDEX IF NOT EXISTS dashboard_run_log_view_ts
+  ON TABLE dashboard_run_log COLUMNS view, executed_at;
+
+-- ═══════════════════════════════════════════════════════════════════════════════
 -- COLLABORATION: MUTATION + SNAPSHOT
 --
 -- 业务数据（实体行）存储在动态实体表中，是 cell 值的唯一来源。

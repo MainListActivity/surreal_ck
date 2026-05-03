@@ -304,6 +304,10 @@
       <Icon name="home" size={16} />首页
     </button>
 
+    <button class:active={current === "dashboard"} onclick={() => navigate("dashboard")}>
+      <Icon name="coins" size={16} />仪表盘
+    </button>
+
     <div class="docs-root">
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div

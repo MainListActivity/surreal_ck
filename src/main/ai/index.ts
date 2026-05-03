@@ -1,4 +1,9 @@
 import { Mastra } from "@mastra/core";
+export {
+  listDashboardGenerationTargets,
+  previewGeneratedDashboardView,
+  saveGeneratedDashboardView,
+} from "../services/dashboard-mastra";
 
 let _mastra: Mastra | null = null;
 
