@@ -89,12 +89,12 @@ export async function listDashboardPages({
   await assertWorkbookScope(workspaceId, workbookId);
   const db = getLocalDb();
   const sql = workbookId
-    ? `SELECT id, workspace, workbook, title, slug, description, updated_at
+    ? `SELECT id, workspace, workbook, title, slug, description, created_at, updated_at
        FROM dashboard_page
        WHERE workspace = $workspaceId
          AND workbook = $workbookId
        ORDER BY updated_at DESC, created_at DESC`
-    : `SELECT id, workspace, workbook, title, slug, description, updated_at
+    : `SELECT id, workspace, workbook, title, slug, description, created_at, updated_at
        FROM dashboard_page
        WHERE workspace = $workspaceId
          AND (workbook = NONE OR workbook = NULL)
@@ -136,10 +136,10 @@ export async function createDashboardPage({
     {
       pageId,
       workspaceId: new StringRecordId(workspaceId),
-      workbookId: workbookId ? new StringRecordId(workbookId) : null,
+      workbookId: workbookId ? new StringRecordId(workbookId) : undefined,
       title: trimmed,
       slug,
-      description: description?.trim() || null,
+      description: description?.trim(),
     },
   );
 

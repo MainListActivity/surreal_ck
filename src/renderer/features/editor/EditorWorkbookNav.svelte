@@ -109,28 +109,18 @@
   }
 </script>
 
-<aside
-  class="workbook-nav"
-  class:collapsed
-  role={collapsed ? "button" : undefined}
-  tabindex={collapsed ? 0 : undefined}
-  aria-label={collapsed ? "展开侧栏" : undefined}
-  title={collapsed ? "点击展开侧栏" : undefined}
-  onclick={collapsed ? toggleCollapsed : undefined}
-  onkeydown={collapsed
-    ? (event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          toggleCollapsed();
-        }
-      }
-    : undefined}
->
+<aside class="workbook-nav" class:collapsed>
   {#if collapsed}
-    <div class="collapsed-stack">
+    <button
+      type="button"
+      class="collapsed-trigger"
+      title="点击展开侧栏"
+      aria-label="展开侧栏"
+      onclick={toggleCollapsed}
+    >
       <Icon name="chevronRight" size={16} />
       <span class="collapsed-hint">展开</span>
-    </div>
+    </button>
   {:else}
     <div class="nav-header">
       <span class="nav-header-title">侧栏</span>
@@ -258,32 +248,34 @@
 
   .workbook-nav.collapsed {
     width: 36px;
-    padding: 12px 4px;
+    padding: 0;
+    align-items: stretch;
+    gap: 0;
+  }
+
+  .collapsed-trigger {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
     align-items: center;
+    justify-content: flex-start;
     gap: 8px;
+    padding: 16px 0;
+    width: 100%;
+    border: 0;
+    background: transparent;
+    color: var(--text-3);
     cursor: pointer;
   }
 
-  .workbook-nav.collapsed:hover {
-    background: linear-gradient(180deg, #f3f6ff 0%, #eef0f5 100%);
+  .collapsed-trigger:hover {
+    background: rgba(22, 100, 255, .06);
+    color: var(--primary);
   }
 
-  .workbook-nav.collapsed:focus-visible {
+  .collapsed-trigger:focus-visible {
     outline: 2px solid var(--primary);
     outline-offset: -2px;
-  }
-
-  .collapsed-stack {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 6px;
-    color: var(--text-3);
-    pointer-events: none;
-  }
-
-  .workbook-nav.collapsed:hover .collapsed-stack {
-    color: var(--primary);
   }
 
   .collapsed-hint {
@@ -399,37 +391,5 @@
 
   .empty-hint.error {
     color: #d4380d;
-  }
-
-  .collapse-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 4px;
-    padding: 6px 8px;
-    border: 1px dashed var(--border);
-    border-radius: 8px;
-    background: transparent;
-    color: var(--text-3);
-    font-size: 12px;
-    cursor: pointer;
-    margin-top: auto;
-  }
-
-  .collapse-btn:hover {
-    color: var(--text-1);
-    background: rgba(22, 100, 255, .06);
-    border-color: var(--primary);
-  }
-
-  .collapsed-btn {
-    width: 28px;
-    height: 28px;
-    padding: 0;
-    margin-top: 0;
-  }
-
-  .footer-btn {
-    align-self: stretch;
   }
 </style>
