@@ -1,6 +1,7 @@
 <script lang="ts">
   import { summarizeGridField } from "../../../../shared/field-schema";
   import DatePicker from "../../../components/DatePicker.svelte";
+  import SelectMenu from "../../../components/SelectMenu.svelte";
   import type { GridColumnDef } from "../../../../shared/rpc.types";
 
   let {
@@ -78,16 +79,13 @@
             {/each}
           </div>
         {:else}
-          <select
+          <SelectMenu
             value={String(values[col.key] ?? "")}
             disabled={disabled}
-            onchange={(event) => updateText(col.key, event.currentTarget.value)}
-          >
-            <option value="">请选择</option>
-            {#each col.options ?? [] as opt}
-              <option value={opt}>{opt}</option>
-            {/each}
-          </select>
+            options={[{ value: "", label: "请选择" }, ...(col.options ?? []).map((opt) => ({ value: opt, label: opt }))]}
+            ariaLabel={col.label}
+            onChange={(next) => updateText(col.key, next)}
+          />
         {/if}
       {:else if col.fieldType === "checkbox"}
         <span class="switch-row">
@@ -192,7 +190,6 @@
   }
 
   input,
-  select,
   textarea {
     width: 100%;
     padding: 10px 12px;
@@ -211,7 +208,6 @@
   }
 
   input:focus,
-  select:focus,
   textarea:focus {
     border-color: var(--primary);
     background: var(--surface);

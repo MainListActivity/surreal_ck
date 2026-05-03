@@ -2,10 +2,18 @@
   import Avatar from "../components/Avatar.svelte";
   import Badge from "../components/Badge.svelte";
   import Icon from "../components/Icon.svelte";
+  import SelectMenu from "../components/SelectMenu.svelte";
   import { members } from "../lib/mock";
   import type { Navigate } from "../lib/types";
 
   let { navigate: _navigate }: { navigate: Navigate } = $props();
+  let roles = $state(Object.fromEntries(members.map((member) => [member.email, member.role])));
+
+  const roleOptions = [
+    { value: "管理员", label: "管理员" },
+    { value: "编辑", label: "编辑" },
+    { value: "查看", label: "查看" },
+  ];
 </script>
 
 <section class="admin">
@@ -21,7 +29,15 @@
         <Avatar name={member.name} size={36} />
         <div><strong>{member.name}</strong><span>{member.email}</span></div>
         <Badge value={member.status} />
-        <select value={member.role}><option>管理员</option><option>编辑</option><option>查看</option></select>
+        <div class="role-select">
+          <SelectMenu
+            compact
+            value={roles[member.email] ?? member.role}
+            options={roleOptions}
+            ariaLabel="成员角色"
+            onChange={(next) => (roles[member.email] = next)}
+          />
+        </div>
         <button class="icon-btn"><Icon name="moreH" size={15} /></button>
       </div>
     {/each}
@@ -126,12 +142,7 @@
     font-size: 11px;
   }
 
-  select {
-    padding: 5px 8px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--surface);
-    color: var(--text-2);
-    font-size: 12px;
+  .role-select {
+    width: 108px;
   }
 </style>

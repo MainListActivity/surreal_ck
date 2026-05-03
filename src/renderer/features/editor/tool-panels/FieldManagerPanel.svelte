@@ -3,33 +3,13 @@
   import { appState } from "../../../lib/app-state.svelte";
   import { editorStore } from "../../../lib/editor.svelte";
   import { editorUi } from "../lib/editor-ui.svelte";
-  import type { GridColumnDef } from "../../../../shared/rpc.types";
+  import { getFieldTypeMeta } from "../lib/field-type-meta";
 
   const hidden = $derived(new Set(editorStore.viewParams.hiddenFields ?? []));
 
   let dragKey = $state<string | null>(null);
   let dragOverKey = $state<string | null>(null);
   let menuKey = $state<string | null>(null);
-
-  /** 字段类型 → 列头小图标（text=A 文本、single_select=▾、number/decimal=#、date=日历、checkbox=√）。 */
-  function fieldTypeBadge(col: GridColumnDef): { kind: "char"; char: string } | { kind: "icon"; name: string } {
-    switch (col.fieldType) {
-      case "text":
-        return { kind: "char", char: "A" };
-      case "single_select":
-        return { kind: "icon", name: "chevronDown" };
-      case "number":
-        return { kind: "char", char: "#" };
-      case "decimal":
-        return { kind: "char", char: "$" };
-      case "date":
-        return { kind: "icon", name: "clock" };
-      case "checkbox":
-        return { kind: "icon", name: "check" };
-      default:
-        return { kind: "char", char: "?" };
-    }
-  }
 
   function toggleVisibility(key: string) {
     const next = new Set(hidden);
@@ -106,7 +86,7 @@
 
   <div class="list" role="list">
     {#each editorStore.columns as col (col.key)}
-      {@const badge = fieldTypeBadge(col)}
+      {@const meta = getFieldTypeMeta(col.fieldType)}
       <div
         class="row"
         role="listitem"
@@ -123,12 +103,8 @@
           <span></span><span></span>
           <span></span><span></span>
         </span>
-        <span class="type-badge">
-          {#if badge.kind === "char"}
-            <span class="type-char">{badge.char}</span>
-          {:else}
-            <Icon name={badge.name} size={12} />
-          {/if}
+        <span class="type-badge" title={meta.label}>
+          <Icon name={meta.icon} size={14} />
         </span>
         <span class="label">{col.label}</span>
         <button
@@ -261,16 +237,8 @@
     height: 18px;
     align-items: center;
     justify-content: center;
-    color: var(--text-2);
+    color: #7b8494;
     flex-shrink: 0;
-  }
-
-  .type-char {
-    font-family: ui-serif, "Times New Roman", serif;
-    font-size: 13px;
-    font-weight: 600;
-    line-height: 1;
-    color: var(--text-2);
   }
 
   .label {

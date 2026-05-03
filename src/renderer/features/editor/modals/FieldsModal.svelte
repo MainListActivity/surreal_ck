@@ -1,8 +1,10 @@
 <script lang="ts">
   import Icon from "../../../components/Icon.svelte";
+  import SelectMenu from "../../../components/SelectMenu.svelte";
   import { appState } from "../../../lib/app-state.svelte";
   import { editorStore } from "../../../lib/editor.svelte";
   import { editorUi } from "../lib/editor-ui.svelte";
+  import { getFieldTypeMeta } from "../lib/field-type-meta";
   import { normalizeGridFieldConstraints } from "../../../../shared/field-schema";
   import {
     DATE_FORMAT_PRESETS,
@@ -20,13 +22,21 @@
   };
 
   const fieldTypeOptions = [
-    { value: "text", label: "文本" },
-    { value: "single_select", label: "单选" },
-    { value: "number", label: "数字" },
-    { value: "decimal", label: "金额/小数" },
-    { value: "date", label: "日期" },
-    { value: "checkbox", label: "勾选" },
+    { value: "text", label: "文本", icon: "textType" },
+    { value: "single_select", label: "单选", icon: "list" },
+    { value: "number", label: "数字", icon: "hash" },
+    { value: "decimal", label: "金额/小数", icon: "coins" },
+    { value: "date", label: "日期", icon: "calendar" },
+    { value: "checkbox", label: "勾选", icon: "checkSquare" },
   ] as const;
+
+  const dateFormatOptions = [
+    ...DATE_FORMAT_PRESETS.map((preset) => ({
+      value: preset.value,
+      label: `${preset.label} (${preset.value})`,
+    })),
+    { value: "__custom__", label: "自定义…" },
+  ];
 
   let draftError = $state<string | null>(null);
   let fieldDraft = $state<FieldDraft | null>(null);
@@ -157,7 +167,10 @@
             <span class="field-index">当前字段</span>
             <strong>{fieldDraft.label || "未命名字段"}</strong>
             <div class="field-badges">
-              <span class="type-badge">{getFieldTypeLabel(fieldDraft.fieldType)}</span>
+              <span class="type-badge">
+                <Icon name={getFieldTypeMeta(fieldDraft.fieldType).icon} size={12} />
+                {getFieldTypeLabel(fieldDraft.fieldType)}
+              </span>
               {#if fieldDraft.required}
                 <span class="required-badge">必填</span>
               {/if}
@@ -183,11 +196,12 @@
           </label>
           <label>
             <span>类型</span>
-            <select bind:value={fieldDraft.fieldType}>
-              {#each fieldTypeOptions as option}
-                <option value={option.value}>{option.label}</option>
-              {/each}
-            </select>
+            <SelectMenu
+              value={fieldDraft.fieldType}
+              options={fieldTypeOptions}
+              ariaLabel="字段类型"
+              onChange={(next) => (fieldDraft.fieldType = next as GridColumnDef["fieldType"])}
+            />
           </label>
           <div class="toggle-card">
             <span>校验</span>
@@ -252,15 +266,12 @@
               <div class="field-grid rule-grid">
                 <label class="span-2">
                   <span>显示格式</span>
-                  <select
+                  <SelectMenu
                     value={dateFormatMode === "custom" ? "__custom__" : fieldDraft.dateFormat}
-                    onchange={(event) => selectDateFormatPreset(event.currentTarget.value)}
-                  >
-                    {#each DATE_FORMAT_PRESETS as preset}
-                      <option value={preset.value}>{preset.label} ({preset.value})</option>
-                    {/each}
-                    <option value="__custom__">自定义…</option>
-                  </select>
+                    options={dateFormatOptions}
+                    ariaLabel="日期显示格式"
+                    onChange={selectDateFormatPreset}
+                  />
                 </label>
                 {#if dateFormatMode === "custom"}
                   <label class="span-2">
@@ -328,7 +339,7 @@
   .modal {
     width: min(720px, calc(100vw - 32px));
     max-height: 90vh;
-    overflow: hidden;
+    overflow: visible;
     border-radius: 16px;
     background: var(--surface);
     box-shadow: 0 24px 60px rgba(15, 23, 42, .18);
@@ -363,6 +374,8 @@
     display: grid;
     gap: 16px;
     padding: 18px 20px;
+    max-height: calc(90vh - 150px);
+    overflow: auto;
   }
 
   .field-head {
@@ -402,6 +415,7 @@
   .required-badge {
     display: inline-flex;
     align-items: center;
+    gap: 4px;
     height: 24px;
     padding: 0 10px;
     border-radius: 999px;
@@ -515,8 +529,7 @@
     line-height: 1.5;
   }
 
-  input,
-  select {
+  input {
     width: 100%;
     height: 40px;
     padding: 0 12px;
@@ -543,7 +556,6 @@
   }
 
   input:focus,
-  select:focus,
   textarea:focus {
     border-color: #8db3ff;
     box-shadow: 0 0 0 3px rgba(22, 100, 255, .12);

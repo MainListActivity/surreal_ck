@@ -1,8 +1,16 @@
 <script lang="ts">
   import Icon from "../../../components/Icon.svelte";
+  import SelectMenu from "../../../components/SelectMenu.svelte";
   import { editorUi } from "../lib/editor-ui.svelte";
 
   let { workbookId }: { workbookId?: string } = $props();
+  let permission = $state("member_edit");
+
+  const permissionOptions = [
+    { value: "member_edit", label: "工作区成员可编辑" },
+    { value: "member_read", label: "工作区成员只读" },
+    { value: "invite_only", label: "仅指定成员可访问" },
+  ];
 
   function close() {
     editorUi.showShare = false;
@@ -25,11 +33,7 @@
     <div class="share-body">
       <label>
         <span>链接权限</span>
-        <select>
-          <option>工作区成员可编辑</option>
-          <option>工作区成员只读</option>
-          <option>仅指定成员可访问</option>
-        </select>
+        <SelectMenu value={permission} options={permissionOptions} ariaLabel="链接权限" onChange={(next) => (permission = next)} />
       </label>
       <label>
         <span>共享链接</span>
@@ -95,8 +99,7 @@
     gap: 10px;
   }
 
-  input,
-  select {
+  input {
     width: 100%;
     padding: 8px 12px;
     border: 1px solid var(--border);

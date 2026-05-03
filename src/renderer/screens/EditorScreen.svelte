@@ -15,11 +15,24 @@
   import { getTool } from "../features/editor/registries/tools";
 
   let { navigate, workbookId }: { navigate: Navigate; workbookId?: string } = $props();
+  let viewportWidth = $state(1440);
 
   const currentView = $derived(getView(editorUi.view));
   const activeToolEntry = $derived(
     editorUi.activeTool ? getTool(editorUi.activeTool) ?? null : null,
   );
+  const toolOverlayStyle = $derived.by(() => {
+    const anchor = editorUi.activeToolAnchor;
+    const tool = activeToolEntry;
+    if (!anchor || !tool) return "";
+
+    const panelWidth = Math.min(tool.panelWidth ?? 360, viewportWidth - 24);
+    const left = Math.max(12, Math.min(anchor.left, viewportWidth - panelWidth - 12));
+    const top = anchor.top + anchor.height + 8;
+    const minWidth = Math.max(anchor.width, Math.min(panelWidth, 240));
+
+    return `left:${Math.round(left)}px;top:${Math.round(top)}px;width:${Math.round(panelWidth)}px;min-width:${Math.round(minWidth)}px;`;
+  });
 
   $effect(() => {
     const id = workbookId;
@@ -34,11 +47,26 @@
 
   function handleGlobalPointer(event: MouseEvent) {
     const target = event.target;
-    if (target instanceof HTMLElement && target.closest(".menu-wrap, .tool-overlay, .tool-btn, .field-menu, .field-modal, .row-menu")) return;
+    if (
+      target instanceof HTMLElement
+      && target.closest(".menu-wrap, .tool-overlay, .tool-btn, .field-menu, .field-modal, .row-menu, .select-menu, .select-trigger")
+    ) return;
     editorUi.closeAllPopups();
   }
 
-  onMount(() => document.addEventListener("mousedown", handleGlobalPointer));
+  onMount(() => {
+    viewportWidth = window.innerWidth;
+    const handleResize = () => {
+      viewportWidth = window.innerWidth;
+    };
+    document.addEventListener("mousedown", handleGlobalPointer);
+    window.addEventListener("resize", handleResize);
+    return () => {
+      document.removeEventListener("mousedown", handleGlobalPointer);
+      window.removeEventListener("resize", handleResize);
+    };
+  });
+
   onDestroy(() => document.removeEventListener("mousedown", handleGlobalPointer));
 </script>
 
@@ -67,6 +95,7 @@
         class="tool-overlay"
         class:has-panel={!!activeToolEntry.panel}
         role="presentation"
+        style={toolOverlayStyle}
         onmousedown={(event) => event.stopPropagation()}
       >
         {#if activeToolEntry.panel}
@@ -121,19 +150,18 @@
     overflow: hidden;
   }
 
-  /* 工具栏面板（筛选/排序/隐藏字段/分组）以浮层形式贴在表格主视图顶部，
-     不占用 flex 布局空间，确保表格主视图始终保持原始大小。 */
   .tool-overlay {
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
+    position: fixed;
     z-index: 20;
-    max-height: 320px;
+    max-height: min(420px, calc(100vh - 120px));
     overflow: auto;
-    border-bottom: 1px solid var(--border);
-    background: var(--surface);
-    box-shadow: 0 6px 16px rgba(15, 23, 42, .08);
+    border: 1px solid rgba(219, 226, 236, .95);
+    border-radius: 18px;
+    background: rgba(255, 255, 255, .98);
+    box-shadow:
+      0 24px 48px rgba(15, 23, 42, .14),
+      0 8px 20px rgba(15, 23, 42, .08);
+    backdrop-filter: blur(16px);
   }
 
   .tool-overlay:not(.has-panel) {
@@ -143,7 +171,8 @@
     align-items: center;
     padding: 0 14px;
     background: #f7f8fa;
-    box-shadow: none;
+    border-radius: 10px;
+    box-shadow: 0 8px 18px rgba(15, 23, 42, .08);
   }
 
   .tool-overlay-text {

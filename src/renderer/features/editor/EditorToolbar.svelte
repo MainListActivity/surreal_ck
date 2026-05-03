@@ -23,7 +23,14 @@
       await tool.command();
       return;
     }
-    editorUi.toggleTool(toolId);
+    const target = event.currentTarget;
+    const rect = target instanceof HTMLElement ? target.getBoundingClientRect() : null;
+    editorUi.toggleTool(
+      toolId,
+      rect
+        ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height }
+        : undefined,
+    );
   }
 </script>
 

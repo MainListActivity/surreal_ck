@@ -8,6 +8,7 @@
   import { appState } from "../../../lib/app-state.svelte";
   import { editorStore } from "../../../lib/editor.svelte";
   import { editorUi } from "../lib/editor-ui.svelte";
+  import { getFieldTypeIconPaths, getFieldTypeMeta } from "../lib/field-type-meta";
   import type { GridColumnDef, RecordIdString } from "../../../../shared/rpc.types";
   import { formatDateValue } from "../../../../shared/date-format";
 
@@ -199,10 +200,34 @@
   const gridColumns = $derived<ColumnRegular[]>(
     [
       ...editorStore.visibleColumns.map((col) => {
+        const meta = getFieldTypeMeta(col.fieldType);
+        const iconPaths = getFieldTypeIconPaths(col.fieldType);
         const base: ColumnRegular = {
           prop: col.key,
           name: col.label,
           size: columnWidths[col.key] ?? GRID_COLUMN_WIDTH,
+          columnTemplate: (h) =>
+            h(
+              "span",
+              { class: { "grid-header-cell": true }, title: `${col.label}（${meta.label}）` },
+              h(
+                "svg",
+                {
+                  class: { "grid-header-cell__icon": true },
+                  width: 14,
+                  height: 14,
+                  viewBox: "0 0 24 24",
+                  fill: "none",
+                  stroke: "currentColor",
+                  "stroke-width": 1.8,
+                  "stroke-linecap": "round",
+                  "stroke-linejoin": "round",
+                  "aria-hidden": "true",
+                },
+                iconPaths.map((d) => h("path", { d })),
+              ),
+              h("span", { class: { "grid-header-cell__label": true } }, col.label),
+            ),
         };
         if (col.fieldType === "date") {
           base.cellTemplate = (h, props: CellTemplateProp) => formatDateValue(props.model?.[col.key], col.dateFormat);
@@ -695,6 +720,27 @@
   :global(revo-grid .rgCell),
   :global(revo-grid .rgHeaderCell) {
     font-size: 12px;
+  }
+
+  :global(revo-grid .grid-header-cell) {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  :global(revo-grid .grid-header-cell__icon) {
+    flex: 0 0 auto;
+    color: #7b8494;
+  }
+
+  :global(revo-grid .grid-header-cell__label) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-2);
   }
 
   :global(revo-grid .grid-date-editor-host) {

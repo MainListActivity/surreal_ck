@@ -8,6 +8,12 @@ type EditorUiState = {
   panelOpen: boolean;
   panelTab: PanelId;
   activeTool: string | null;
+  activeToolAnchor: {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  } | null;
   showAdd: boolean;
   editingFieldKey: string | null;
   fieldMenu: {
@@ -36,6 +42,7 @@ function createEditorUi() {
     panelOpen: false,
     panelTab: "detail",
     activeTool: null,
+    activeToolAnchor: null,
     showAdd: false,
     editingFieldKey: null,
     fieldMenu: {
@@ -60,6 +67,8 @@ function createEditorUi() {
     set panelTab(v) { state.panelTab = v; },
     get activeTool() { return state.activeTool; },
     set activeTool(v) { state.activeTool = v; },
+    get activeToolAnchor() { return state.activeToolAnchor; },
+    set activeToolAnchor(v) { state.activeToolAnchor = v; },
     get showAdd() { return state.showAdd; },
     set showAdd(v) { state.showAdd = v; },
     get editingFieldKey() { return state.editingFieldKey; },
@@ -85,8 +94,14 @@ function createEditorUi() {
         this.openPanel(tab);
       }
     },
-    toggleTool(toolId: string) {
-      state.activeTool = state.activeTool === toolId ? null : toolId;
+    toggleTool(toolId: string, anchor?: { left: number; top: number; width: number; height: number }) {
+      if (state.activeTool === toolId) {
+        state.activeTool = null;
+        state.activeToolAnchor = null;
+        return;
+      }
+      state.activeTool = toolId;
+      state.activeToolAnchor = anchor ?? null;
     },
     openFieldMenu(fieldKey: string, x: number, y: number) {
       state.fieldMenu = { open: true, fieldKey, x, y };
@@ -104,6 +119,7 @@ function createEditorUi() {
     closeAllPopups() {
       state.showMenu = false;
       state.activeTool = null;
+      state.activeToolAnchor = null;
       this.closeFieldMenu();
     },
     selectRow(id: RecordIdString | null) {

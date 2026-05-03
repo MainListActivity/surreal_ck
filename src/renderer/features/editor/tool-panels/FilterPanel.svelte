@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from "../../../components/Icon.svelte";
+  import SelectMenu from "../../../components/SelectMenu.svelte";
   import { editorStore } from "../../../lib/editor.svelte";
   import type { FilterClause, FilterOp, GridColumnDef } from "../../../../shared/rpc.types";
 
@@ -24,6 +25,9 @@
     { op: "is_null", label: "为空" },
     { op: "is_not_null", label: "不为空" },
   ];
+
+  const fieldOptions = $derived(editorStore.columns.map((col) => ({ value: col.key, label: col.label })));
+  const filterOpOptions = opOptions.map((opt) => ({ value: opt.op, label: opt.label }));
 
   function defaultKey(): string {
     return editorStore.columns[0]?.key ?? "";
@@ -85,29 +89,37 @@
     {@const col = editorStore.columns.find((c) => c.key === draft.key)}
     {@const valueKind = needValue(draft.op)}
     <div class="row">
-      <select bind:value={draft.key}>
-        {#each editorStore.columns as col}
-          <option value={col.key}>{col.label}</option>
-        {/each}
-      </select>
-      <select bind:value={draft.op}>
-        {#each opOptions as opt}
-          <option value={opt.op}>{opt.label}</option>
-        {/each}
-      </select>
+      <SelectMenu
+        compact
+        value={draft.key}
+        options={fieldOptions}
+        ariaLabel="筛选字段"
+        onChange={(next) => (draft.key = next)}
+      />
+      <SelectMenu
+        compact
+        value={draft.op}
+        options={filterOpOptions}
+        ariaLabel="筛选条件"
+        onChange={(next) => (draft.op = next as FilterOp)}
+      />
       {#if valueKind === "scalar"}
         {#if col?.fieldType === "single_select"}
-          <select bind:value={draft.value}>
-            <option value="">—</option>
-            {#each col.options ?? [] as opt}
-              <option value={opt}>{opt}</option>
-            {/each}
-          </select>
+          <SelectMenu
+            compact
+            value={String(draft.value ?? "")}
+            options={[{ value: "", label: "—" }, ...(col.options ?? []).map((opt) => ({ value: opt, label: opt }))]}
+            ariaLabel="筛选值"
+            onChange={(next) => (draft.value = next)}
+          />
         {:else if col?.fieldType === "checkbox"}
-          <select bind:value={draft.value}>
-            <option value="true">是</option>
-            <option value="false">否</option>
-          </select>
+          <SelectMenu
+            compact
+            value={String(draft.value ?? "true")}
+            options={[{ value: "true", label: "是" }, { value: "false", label: "否" }]}
+            ariaLabel="勾选值"
+            onChange={(next) => (draft.value = next)}
+          />
         {:else}
           <input type={inputTypeFor(col)} bind:value={draft.value} placeholder="值" />
         {/if}
@@ -178,7 +190,6 @@
     gap: 8px;
   }
 
-  select,
   input {
     height: 28px;
     padding: 0 8px;

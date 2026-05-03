@@ -1,6 +1,7 @@
 <script lang="ts">
   import Icon from "../components/Icon.svelte";
   import Logo from "../components/Logo.svelte";
+  import SelectMenu from "../components/SelectMenu.svelte";
   import type { Navigate } from "../lib/types";
 
   let { navigate, mode = "form" }: { navigate: Navigate; mode?: "form" | "success" } = $props();
@@ -54,10 +55,19 @@
             <label>
               <span>{field[1]}{#if field[3]}<b>*</b>{/if}</span>
               {#if field[0] === "type"}
-                <select value={values.type ?? ""} onchange={(event) => setValue("type", event.currentTarget.value)}>
-                  <option value="" disabled>请选择债权类型</option>
-                  <option>普通债权</option><option>有担保债权</option><option>职工债权</option><option>工程款债权</option><option>税务债权</option>
-                </select>
+                <SelectMenu
+                  value={values.type ?? ""}
+                  options={[
+                    { value: "", label: "请选择债权类型", disabled: true },
+                    { value: "普通债权", label: "普通债权" },
+                    { value: "有担保债权", label: "有担保债权" },
+                    { value: "职工债权", label: "职工债权" },
+                    { value: "工程款债权", label: "工程款债权" },
+                    { value: "税务债权", label: "税务债权" },
+                  ]}
+                  ariaLabel="债权类型"
+                  onChange={(next) => setValue("type", next)}
+                />
               {:else if field[0] === "note"}
                 <textarea value={values.note ?? ""} placeholder={String(field[2])} oninput={(event) => setValue("note", event.currentTarget.value)}></textarea>
               {:else}
@@ -181,7 +191,6 @@
   }
 
   input,
-  select,
   textarea {
     width: 100%;
     padding: 8px 12px;
@@ -193,7 +202,6 @@
   }
 
   input:focus,
-  select:focus,
   textarea:focus {
     border-color: var(--primary);
   }

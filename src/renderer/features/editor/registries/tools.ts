@@ -15,15 +15,16 @@ export type ToolRegistration = {
   id: string;
   label: string;
   icon: string;
+  panelWidth?: number;
   panel?: Component;
   command?: () => void | Promise<void>;
 };
 
 export const toolRegistry: ToolRegistration[] = [
-  { id: "fields", label: "字段管理", icon: "spreadsheet", panel: FieldManagerPanel },
-  { id: "filter", label: "筛选", icon: "filter", panel: FilterPanel },
-  { id: "group", label: "分组", icon: "users", panel: GroupPanel },
-  { id: "sort", label: "排序", icon: "sortDesc", panel: SortPanel },
+  { id: "fields", label: "字段管理", icon: "spreadsheet", panel: FieldManagerPanel, panelWidth: 360 },
+  { id: "filter", label: "筛选", icon: "filter", panel: FilterPanel, panelWidth: 640 },
+  { id: "group", label: "分组", icon: "users", panel: GroupPanel, panelWidth: 420 },
+  { id: "sort", label: "排序", icon: "sortDesc", panel: SortPanel, panelWidth: 520 },
 ];
 
 export function getTool(id: string): ToolRegistration | undefined {

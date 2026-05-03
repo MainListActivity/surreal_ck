@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from "../../../components/Icon.svelte";
+  import SelectMenu from "../../../components/SelectMenu.svelte";
   import { editorStore } from "../../../lib/editor.svelte";
   import type { SortClause } from "../../../../shared/rpc.types";
 
@@ -9,6 +10,12 @@
   let drafts = $state<SortDraft[]>(
     (editorStore.viewParams.sorts ?? []).map((s) => ({ ...s, id: nextId++ })),
   );
+
+  const fieldOptions = $derived(editorStore.columns.map((col) => ({ value: col.key, label: col.label })));
+  const directionOptions = [
+    { value: "asc", label: "升序" },
+    { value: "desc", label: "降序" },
+  ];
 
   function defaultKey(): string {
     return editorStore.columns[0]?.key ?? "";
@@ -59,15 +66,20 @@
   {#each drafts as draft, index (draft.id)}
     <div class="row">
       <span class="rank">{index + 1}</span>
-      <select bind:value={draft.key}>
-        {#each editorStore.columns as col}
-          <option value={col.key}>{col.label}</option>
-        {/each}
-      </select>
-      <select bind:value={draft.direction}>
-        <option value="asc">升序</option>
-        <option value="desc">降序</option>
-      </select>
+      <SelectMenu
+        compact
+        value={draft.key}
+        options={fieldOptions}
+        ariaLabel="排序字段"
+        onChange={(next) => (draft.key = next)}
+      />
+      <SelectMenu
+        compact
+        value={draft.direction}
+        options={directionOptions}
+        ariaLabel="排序方向"
+        onChange={(next) => (draft.direction = next as "asc" | "desc")}
+      />
       <button class="icon-btn" onclick={() => moveUp(index)} disabled={index === 0} title="上移">↑</button>
       <button class="icon-btn" onclick={() => moveDown(index)} disabled={index === drafts.length - 1} title="下移">↓</button>
       <button class="icon-btn" onclick={() => removeClause(draft.id)} title="删除">
@@ -119,17 +131,6 @@
     color: var(--text-3);
     font-size: 11px;
     text-align: center;
-  }
-
-  select {
-    height: 28px;
-    padding: 0 8px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--surface);
-    color: var(--text-1);
-    font-size: 12px;
-    outline: none;
   }
 
   .icon-btn {
