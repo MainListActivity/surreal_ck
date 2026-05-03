@@ -5,11 +5,13 @@
   let {
     title,
     subtitle = "",
+    onEdit,
     onRemove,
     children,
   }: {
     title: string;
     subtitle?: string;
+    onEdit?: () => void;
     onRemove?: () => void;
     children?: Snippet;
   } = $props();
@@ -23,11 +25,18 @@
         <span>{subtitle}</span>
       {/if}
     </div>
-    {#if onRemove}
-      <button class="ghost" title="移除组件" onclick={onRemove}>
-        <Icon name="trash" size={14} />
-      </button>
-    {/if}
+    <div class="actions">
+      {#if onEdit}
+        <button class="ghost" title="编辑视图" onclick={onEdit}>
+          <Icon name="edit" size={14} />
+        </button>
+      {/if}
+      {#if onRemove}
+        <button class="ghost" title="移除组件" onclick={onRemove}>
+          <Icon name="trash" size={14} />
+        </button>
+      {/if}
+    </div>
   </header>
   <div class="frame-body">
     {@render children?.()}
@@ -70,6 +79,11 @@
     min-height: 0;
     flex: 1;
     padding: 16px 18px 18px;
+  }
+
+  .actions {
+    display: flex;
+    gap: 4px;
   }
 
   .ghost {

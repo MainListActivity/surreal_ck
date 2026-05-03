@@ -7,45 +7,33 @@
   import { dashboardsStore } from "../lib/dashboards.svelte";
   import { appApi } from "../lib/app-api";
   import type {
-    DashboardResultContract,
+    DashboardViewDTO,
     DashboardViewDraftDTO,
-    DashboardViewType,
     DashboardWidgetLayoutDTO,
     ReferenceTargetOption,
   } from "../../shared/rpc.types";
-  import { dashboardBuilderTemplates } from "../features/dashboard/registries/builder-templates";
   import { getDashboardWidget } from "../features/dashboard/registries/widgets";
   import DashboardWidgetFrame from "../features/dashboard/DashboardWidgetFrame.svelte";
+  import DashboardViewBuilder from "../features/dashboard/DashboardViewBuilder.svelte";
 
   let { navigate, pageId }: { navigate: Navigate; pageId?: string } = $props();
 
-  let showCreator = $state(false);
-  let templateId = $state("record_count");
-  let title = $state("");
-  let baseTable = $state("workbook");
-  let dimensionField = $state("template_key");
-  let sortField = $state("updated_at");
-  let limit = $state(10);
-  let sql = $state("SELECT id, name, updated_at FROM workbook ORDER BY updated_at DESC LIMIT 10");
-  let viewType = $state<DashboardViewType>("table");
-  let resultContract = $state<DashboardResultContract>("table_rows");
+  type DrawerState = { mode: "create" } | { mode: "edit"; view: DashboardViewDTO };
+
+  let drawer = $state<DrawerState | null>(null);
   let tableTargets = $state<ReferenceTargetOption[]>([]);
 
-  const systemTargets = [
+  const systemTargets: ReferenceTargetOption[] = [
     { table: "workspace", label: "系统：工作区", displayKeys: [] },
     { table: "workbook", label: "系统：工作簿", displayKeys: [] },
     { table: "sheet", label: "系统：Sheet", displayKeys: [] },
     { table: "folder", label: "系统：目录", displayKeys: [] },
     { table: "app_user", label: "系统：用户", displayKeys: [] },
-  ] satisfies ReferenceTargetOption[];
+  ];
 
-  const allTargets = $derived([
-    ...systemTargets,
-    ...tableTargets.filter((target) => !systemTargets.some((system) => system.table === target.table)),
-  ]);
-
-  const activeTemplate = $derived(
-    dashboardBuilderTemplates.find((item) => item.id === templateId) ?? dashboardBuilderTemplates[0],
+  const tableOptions = $derived(
+    [...systemTargets, ...tableTargets.filter((t) => !systemTargets.some((s) => s.table === t.table))]
+      .map((opt) => ({ table: opt.table, label: opt.label })),
   );
 
   $effect(() => {
@@ -66,18 +54,19 @@
     }
   }
 
-  function openCreator() {
-    title = "";
-    dimensionField = "template_key";
-    sortField = "updated_at";
-    limit = 10;
-    sql = "SELECT id, name, updated_at FROM workbook ORDER BY updated_at DESC LIMIT 10";
-    baseTable = "workbook";
-    templateId = "record_count";
-    viewType = "table";
-    resultContract = "table_rows";
+  function openCreate() {
     dashboardsStore.clearPreview();
-    showCreator = true;
+    drawer = { mode: "create" };
+  }
+
+  function openEdit(view: DashboardViewDTO) {
+    dashboardsStore.clearPreview();
+    drawer = { mode: "edit", view };
+  }
+
+  function closeDrawer() {
+    drawer = null;
+    dashboardsStore.clearPreview();
   }
 
   async function createPage() {
@@ -90,80 +79,29 @@
     navigate("dashboard", { dashboardPageId: nextPageId });
   }
 
-  function buildDraft(): DashboardViewDraftDTO {
-    const workspaceId = appState.workspace?.id;
-    if (!workspaceId) {
-      throw new Error("workspace not ready");
-    }
-
-    switch (activeTemplate.kind) {
-      case "record_count":
-        return {
-          workspaceId,
-          title: title.trim() || `${baseTable} 记录总数`,
-          queryMode: "builder",
-          viewType: "kpi",
-          resultContract: "single_value",
-          builderSpec: {
-            sourceTables: [baseTable],
-            baseTable,
-            metric: { op: "count" },
-          },
-        };
-      case "group_count":
-        return {
-          workspaceId,
-          title: title.trim() || `${baseTable} 分类统计`,
-          queryMode: "builder",
-          viewType: "bar",
-          resultContract: "category_breakdown",
-          builderSpec: {
-            sourceTables: [baseTable],
-            baseTable,
-            metric: { op: "count" },
-            dimensions: [{ field: dimensionField.trim() || "template_key" }],
-            limit,
-          },
-        };
-      case "latest_rows":
-        return {
-          workspaceId,
-          title: title.trim() || `${baseTable} 最近记录`,
-          queryMode: "sql",
-          viewType: "table",
-          resultContract: "table_rows",
-          compiledSql: `SELECT id, * FROM ${baseTable} ORDER BY ${sortField.trim() || "updated_at"} DESC LIMIT ${limit}`,
-        };
-      case "advanced_sql":
-      default:
-        return {
-          workspaceId,
-          title: title.trim() || "高级 SQL 视图",
-          queryMode: "sql",
-          viewType,
-          resultContract,
-          compiledSql: sql.trim(),
-        };
-    }
-  }
-
-  async function previewCurrentDraft() {
-    await dashboardsStore.previewView(buildDraft());
-  }
-
-  async function saveCurrentDraft() {
+  async function handleSubmit(draft: DashboardViewDraftDTO) {
     const page = dashboardsStore.activePage;
-    if (!page) return;
+    if (!page || !drawer) return;
+
+    if (drawer.mode === "edit") {
+      const updated = await dashboardsStore.updateView(drawer.view.id, draft);
+      if (updated) closeDrawer();
+      return;
+    }
+
     const index = page.widgets.length;
     const widget: Omit<DashboardWidgetLayoutDTO, "viewId"> = {
       id: `widget_${Date.now().toString(36)}`,
-      titleOverride: title.trim() || undefined,
-      grid: { x: (index % 2) * 6, y: Math.floor(index / 2) * 2, w: 6, h: activeTemplate.kind === "record_count" ? 1 : 2 },
+      titleOverride: draft.title.trim() || undefined,
+      grid: {
+        x: (index % 2) * 6,
+        y: Math.floor(index / 2) * 2,
+        w: 6,
+        h: draft.viewType === "kpi" ? 1 : 2,
+      },
     };
-    const created = await dashboardsStore.createViewAndAttach(buildDraft(), widget);
-    if (created) {
-      showCreator = false;
-    }
+    const created = await dashboardsStore.createViewAndAttach(draft, widget);
+    if (created) closeDrawer();
   }
 
   async function removeWidget(widgetId: string) {
@@ -208,7 +146,7 @@
         <button class="secondary-btn" onclick={() => dashboardsStore.refreshPage()}>
           <Icon name="refresh" size={14} />刷新
         </button>
-        <button class="primary-btn" onclick={openCreator}>
+        <button class="primary-btn" onclick={openCreate}>
           <Icon name="plus" size={14} color="#fff" />添加视图
         </button>
       </div>
@@ -224,8 +162,8 @@
       </div>
     {:else if dashboardsStore.activePage.widgets.length === 0}
       <div class="empty-board">
-        <EmptyState icon="coins" title="添加首个视图" desc="从记录总数、分类计数或高级 SQL 开始。" />
-        <button class="primary-btn" onclick={openCreator}>
+        <EmptyState icon="coins" title="添加首个视图" desc="从 Builder 选图表类型，或切到 SQL 直接写。" />
+        <button class="primary-btn" onclick={openCreate}>
           <Icon name="plus" size={14} color="#fff" />添加视图
         </button>
       </div>
@@ -243,6 +181,7 @@
               <DashboardWidgetFrame
                 title={widget.titleOverride || view.title}
                 subtitle={cache?.executedAt ? `更新于 ${new Date(cache.executedAt).toLocaleString("zh-CN")}` : "尚未刷新"}
+                onEdit={() => openEdit(view)}
                 onRemove={() => removeWidget(widget.id)}
               >
                 {#if registration}
@@ -259,101 +198,24 @@
     {/if}
   </div>
 
-  {#if showCreator}
+  {#if drawer && appState.workspace?.id}
     <aside class="creator">
       <div class="creator-head">
-        <strong>添加视图</strong>
-        <button class="ghost-btn" onclick={() => (showCreator = false)}>
+        <strong>{drawer.mode === "edit" ? "编辑视图" : "添加视图"}</strong>
+        <button class="ghost-btn" onclick={closeDrawer}>
           <Icon name="x" size={14} />
         </button>
       </div>
-
-      <label>
-        <span>模板</span>
-        <select bind:value={templateId}>
-          {#each dashboardBuilderTemplates as template}
-            <option value={template.id}>{template.label}</option>
-          {/each}
-        </select>
-      </label>
-
-      <label>
-        <span>标题</span>
-        <input bind:value={title} placeholder="例如：工作簿总数" />
-      </label>
-
-      <label>
-        <span>数据表</span>
-        <select bind:value={baseTable}>
-          {#each allTargets as target}
-            <option value={target.table}>{target.label}</option>
-          {/each}
-        </select>
-      </label>
-
-      {#if activeTemplate.kind === "group_count"}
-        <label>
-          <span>分组字段</span>
-          <input bind:value={dimensionField} placeholder="例如：template_key" />
-        </label>
-      {/if}
-
-      {#if activeTemplate.kind === "latest_rows"}
-        <label>
-          <span>排序字段</span>
-          <input bind:value={sortField} placeholder="例如：updated_at" />
-        </label>
-      {/if}
-
-      {#if activeTemplate.kind === "group_count" || activeTemplate.kind === "latest_rows"}
-        <label>
-          <span>LIMIT</span>
-          <input type="number" min="1" max="100" bind:value={limit} />
-        </label>
-      {/if}
-
-      {#if activeTemplate.kind === "advanced_sql"}
-        <label>
-          <span>视图类型</span>
-          <select bind:value={viewType}>
-            <option value="table">表格</option>
-            <option value="kpi">KPI</option>
-            <option value="bar">柱图</option>
-            <option value="line">折线</option>
-          </select>
-        </label>
-
-        <label>
-          <span>结果契约</span>
-          <select bind:value={resultContract}>
-            <option value="table_rows">table_rows</option>
-            <option value="single_value">single_value</option>
-            <option value="category_breakdown">category_breakdown</option>
-            <option value="time_series">time_series</option>
-          </select>
-        </label>
-
-        <label class="full">
-          <span>SQL</span>
-          <textarea bind:value={sql} spellcheck="false"></textarea>
-        </label>
-      {/if}
-
-      <div class="creator-actions">
-        <button class="secondary-btn" onclick={previewCurrentDraft} disabled={dashboardsStore.saving}>
-          <Icon name="eye" size={14} />预览
-        </button>
-        <button class="primary-btn" onclick={saveCurrentDraft} disabled={dashboardsStore.saving}>
-          <Icon name="check" size={14} color="#fff" />保存
-        </button>
+      <div class="creator-body">
+        <DashboardViewBuilder
+          workspaceId={appState.workspace.id}
+          {tableOptions}
+          initialView={drawer.mode === "edit" ? drawer.view : undefined}
+          onSubmit={handleSubmit}
+          onCancel={closeDrawer}
+          saving={dashboardsStore.saving}
+        />
       </div>
-
-      {#if dashboardsStore.preview}
-        <div class="preview-box">
-          <strong>预览成功</strong>
-          <span>{dashboardsStore.preview.sql}</span>
-        </div>
-      {/if}
     </aside>
   {/if}
 </section>
@@ -384,8 +246,7 @@
   .side-head,
   .toolbar,
   .creator-head,
-  .toolbar-actions,
-  .creator-actions {
+  .toolbar-actions {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -471,54 +332,23 @@
 
   .creator {
     display: flex;
-    width: 360px;
+    width: 720px;
     flex-shrink: 0;
     flex-direction: column;
-    gap: 14px;
-    padding: 18px;
     border-left: 1px solid rgba(229, 230, 235, .85);
-    background: rgba(255, 255, 255, .95);
+    background: rgba(255, 255, 255, .98);
     backdrop-filter: blur(16px);
   }
 
-  label {
+  .creator-head {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .creator-body {
     display: flex;
-    flex-direction: column;
-    gap: 8px;
-    color: var(--text-2);
-    font-size: 12px;
-  }
-
-  input,
-  select,
-  textarea {
-    width: 100%;
-    padding: 10px 12px;
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    background: #fff;
-    color: var(--text-1);
-    font: inherit;
-  }
-
-  textarea {
-    min-height: 180px;
-    resize: vertical;
-  }
-
-  .preview-box {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding: 12px;
-    border-radius: 12px;
-    background: rgba(0, 180, 42, .08);
-    color: var(--text-2);
-    font-size: 12px;
-  }
-
-  .preview-box span {
-    word-break: break-word;
+    min-height: 0;
+    flex: 1;
   }
 
   .state,
@@ -536,5 +366,20 @@
   .empty-board {
     flex-direction: column;
     gap: 14px;
+  }
+
+  @media (max-width: 1280px) {
+    .creator {
+      width: 560px;
+    }
+  }
+
+  @media (max-width: 1080px) {
+    .creator {
+      width: 100%;
+      position: absolute;
+      inset: 0;
+      z-index: 30;
+    }
   }
 </style>

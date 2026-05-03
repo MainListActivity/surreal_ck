@@ -20,6 +20,7 @@ import type {
   ListFoldersResponse,
   ListTemplatesResponse,
   ListWorkbooksResponse,
+  GetTableSchemaResponse,
   GridColumnDef,
   ListReferenceTargetsResponse,
   MoveFolderResponse,
@@ -133,6 +134,10 @@ export const appApi = {
     options?: { query?: string; displayKey?: string; limit?: number },
   ): Promise<Result<SearchReferenceCandidatesResponse>> {
     return rpc.request("searchReferenceCandidates", { table, ...options });
+  },
+
+  getTableSchema(table: string): Promise<Result<GetTableSchemaResponse>> {
+    return rpc.request("getTableSchema", { table });
   },
 
   listDashboardPages(workspaceId: RecordIdString, workbookId?: RecordIdString): Promise<Result<ListDashboardPagesResponse>> {

@@ -210,6 +210,29 @@ function createDashboardsStore() {
     }
   }
 
+  async function updateView(viewId: string, draft: DashboardViewDraftDTO): Promise<DashboardViewDTO | null> {
+    state.saving = true;
+    state.error = null;
+    try {
+      const res = await appApi.updateDashboardView(viewId, draft);
+      if (!res.ok) {
+        state.error = res.message;
+        return null;
+      }
+      state.viewsById = { ...state.viewsById, [res.data.view.id]: res.data.view };
+      if (res.data.cache) {
+        state.cachesByViewId = { ...state.cachesByViewId, [res.data.cache.viewId]: res.data.cache };
+      }
+      state.preview = null;
+      return res.data.view;
+    } catch (err) {
+      state.error = String(err);
+      return null;
+    } finally {
+      state.saving = false;
+    }
+  }
+
   async function refreshPage() {
     if (!state.activePageId) return;
     state.loading = true;
@@ -280,6 +303,7 @@ function createDashboardsStore() {
     renamePage,
     previewView,
     createViewAndAttach,
+    updateView,
     refreshPage,
     removeWidget,
     clearPreview,

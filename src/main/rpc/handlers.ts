@@ -47,6 +47,8 @@ import type {
   ResolveReferencesRequest,
   ResolveReferencesResponse,
   Result,
+  GetTableSchemaRequest,
+  GetTableSchemaResponse,
   ListReferenceTargetsResponse,
   SaveDashboardPageLayoutRequest,
   SaveDashboardPageLayoutResponse,
@@ -73,6 +75,7 @@ import { listFolders, createFolder, moveFolder } from "../services/folders";
 import { listTemplates, createWorkbookFromTemplate } from "../services/templates";
 import { getWorkbookData, upsertRows, deleteRows, renameWorkbook, updateSheetFields, createSheet, renameSheet } from "../services/editor";
 import { listReferenceTargets, resolveReferences, searchReferenceCandidates } from "../services/references";
+import { getTableSchema } from "../services/table-schema";
 import {
   createDashboardPage,
   createDashboardView,
@@ -256,6 +259,13 @@ export function createRpcHandlers(send: SendFn) {
         return withResult(() => {
           assertAuthenticated();
           return searchReferenceCandidates(req);
+        });
+      },
+
+      getTableSchema: async (req: GetTableSchemaRequest): Promise<Result<GetTableSchemaResponse>> => {
+        return withResult(() => {
+          assertAuthenticated();
+          return getTableSchema(req);
         });
       },
 
