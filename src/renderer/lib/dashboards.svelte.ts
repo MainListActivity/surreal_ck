@@ -14,6 +14,7 @@ type DashboardState = {
   saving: boolean;
   error: string | null;
   workspaceId: string | null;
+  workbookId: string | null;
   pages: DashboardPageSummaryDTO[];
   activePageId: string | null;
   activePage: DashboardPageDTO | null;
@@ -28,6 +29,7 @@ function createDashboardsStore() {
     saving: false,
     error: null,
     workspaceId: null,
+    workbookId: null,
     pages: [],
     activePageId: null,
     activePage: null,
@@ -36,21 +38,22 @@ function createDashboardsStore() {
     preview: null,
   });
 
-  async function loadForWorkspace(workspaceId: string, requestedPageId?: string) {
+  async function load(workspaceId: string, workbookId?: string, requestedPageId?: string, ensurePage = true) {
     if (!workspaceId) return;
     state.workspaceId = workspaceId;
+    state.workbookId = workbookId ?? null;
     state.loading = true;
     state.error = null;
     try {
-      const pagesRes = await appApi.listDashboardPages(workspaceId);
+      const pagesRes = await appApi.listDashboardPages(workspaceId, workbookId);
       if (!pagesRes.ok) {
         state.error = pagesRes.message;
         return;
       }
 
       let pages = pagesRes.data.pages;
-      if (pages.length === 0) {
-        const created = await appApi.createDashboardPage(workspaceId, "概览");
+      if (ensurePage && pages.length === 0) {
+        const created = await appApi.createDashboardPage(workspaceId, workbookId, "概览");
         if (!created.ok) {
           state.error = created.message;
           return;
@@ -98,7 +101,7 @@ function createDashboardsStore() {
     state.saving = true;
     state.error = null;
     try {
-      const res = await appApi.createDashboardPage(state.workspaceId, title);
+      const res = await appApi.createDashboardPage(state.workspaceId, state.workbookId ?? undefined, title);
       if (!res.ok) {
         state.error = res.message;
         return null;
@@ -220,6 +223,7 @@ function createDashboardsStore() {
     get loading() { return state.loading; },
     get saving() { return state.saving; },
     get error() { return state.error; },
+    get workbookId() { return state.workbookId; },
     get pages() { return state.pages; },
     get activePageId() { return state.activePageId; },
     get activePage() { return state.activePage; },
@@ -227,7 +231,13 @@ function createDashboardsStore() {
     get views() { return Object.values(state.viewsById); },
     get viewsById() { return state.viewsById; },
     get cachesByViewId() { return state.cachesByViewId; },
-    loadForWorkspace,
+    load,
+    loadForWorkspace(workspaceId: string, requestedPageId?: string) {
+      return load(workspaceId, undefined, requestedPageId, true);
+    },
+    loadForWorkbook(workspaceId: string, workbookId: string, requestedPageId?: string, ensurePage = false) {
+      return load(workspaceId, workbookId, requestedPageId, ensurePage);
+    },
     loadPage,
     createPage,
     previewView,

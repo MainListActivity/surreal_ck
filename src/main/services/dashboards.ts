@@ -36,6 +36,7 @@ import type {
 type DashboardPageRow = {
   id: RecordId;
   workspace: RecordId;
+  workbook?: RecordId;
   title: string;
   slug: string;
   description?: string;
@@ -46,6 +47,7 @@ type DashboardPageRow = {
 type DashboardViewRow = {
   id: RecordId;
   workspace: RecordId;
+  workbook?: RecordId;
   title: string;
   slug: string;
   description?: string;
@@ -79,25 +81,39 @@ type DashboardCacheRow = {
 
 export async function listDashboardPages({
   workspaceId,
+  workbookId,
 }: ListDashboardPagesRequest): Promise<ListDashboardPagesResponse> {
   await assertCanReadWorkspace(workspaceId);
+  await assertWorkbookScope(workspaceId, workbookId);
   const db = getLocalDb();
+  const sql = workbookId
+    ? `SELECT id, workspace, workbook, title, slug, description, updated_at
+       FROM dashboard_page
+       WHERE workspace = $workspaceId
+         AND workbook = $workbookId
+       ORDER BY updated_at DESC, created_at DESC`
+    : `SELECT id, workspace, workbook, title, slug, description, updated_at
+       FROM dashboard_page
+       WHERE workspace = $workspaceId
+         AND (workbook = NONE OR workbook = NULL)
+       ORDER BY updated_at DESC, created_at DESC`;
   const rows = await db.query<[DashboardPageRow[]]>(
-    `SELECT id, workspace, title, slug, description, updated_at
-     FROM dashboard_page
-     WHERE workspace = $workspaceId
-     ORDER BY updated_at DESC, created_at DESC`,
-    { workspaceId: new StringRecordId(workspaceId) },
+    sql,
+    workbookId
+      ? { workspaceId: new StringRecordId(workspaceId), workbookId: new StringRecordId(workbookId) }
+      : { workspaceId: new StringRecordId(workspaceId) },
   );
   return { pages: (rows[0] ?? []).map(pageRowToSummaryDTO) };
 }
 
 export async function createDashboardPage({
   workspaceId,
+  workbookId,
   title,
   description,
 }: CreateDashboardPageRequest): Promise<CreateDashboardPageResponse> {
   await assertCanWriteWorkspace(workspaceId);
+  await assertWorkbookScope(workspaceId, workbookId);
   const trimmed = title.trim();
   if (!trimmed) throw new ServiceError("VALIDATION_ERROR", "仪表盘名称不能为空");
 
@@ -108,6 +124,7 @@ export async function createDashboardPage({
   await db.query(
     `UPSERT $pageId CONTENT {
       workspace: $workspaceId,
+      workbook: $workbookId,
       title: $title,
       slug: $slug,
       description: $description,
@@ -117,6 +134,7 @@ export async function createDashboardPage({
     {
       pageId,
       workspaceId: new StringRecordId(workspaceId),
+      workbookId: workbookId ? new StringRecordId(workbookId) : null,
       title: trimmed,
       slug,
       description: description?.trim() || null,
@@ -124,7 +142,7 @@ export async function createDashboardPage({
   );
 
   const rows = await db.query<[DashboardPageRow[]]>(
-    `SELECT id, workspace, title, slug, description, widgets, updated_at FROM dashboard_page WHERE id = $pageId LIMIT 1`,
+    `SELECT id, workspace, workbook, title, slug, description, widgets, updated_at FROM dashboard_page WHERE id = $pageId LIMIT 1`,
     { pageId },
   );
   const row = rows[0]?.[0];
@@ -158,13 +176,13 @@ export async function saveDashboardPageLayout({
     if (!widget.id || !widget.viewId) {
       throw new ServiceError("VALIDATION_ERROR", "无效的 widget 定义");
     }
-    await ensureDashboardViewExists(widget.viewId, page.workspaceId);
+    await ensureDashboardViewExists(widget.viewId, page.workspaceId, page.workbookId);
   }
 
   const db = getLocalDb();
   const updated = await db.query<[DashboardPageRow[]]>(
     `UPDATE $pageId SET widgets = $widgets, updated_at = time::now()
-     RETURN id, workspace, title, slug, description, widgets, updated_at`,
+     RETURN id, workspace, workbook, title, slug, description, widgets, updated_at`,
     {
       pageId: new StringRecordId(pageId),
       widgets,
@@ -177,17 +195,31 @@ export async function saveDashboardPageLayout({
 
 export async function listDashboardViews({
   workspaceId,
+  workbookId,
 }: ListDashboardViewsRequest): Promise<ListDashboardViewsResponse> {
   await assertCanReadWorkspace(workspaceId);
+  await assertWorkbookScope(workspaceId, workbookId);
   const db = getLocalDb();
+  const sql = workbookId
+    ? `SELECT id, workspace, workbook, title, slug, description, query_mode, view_type, result_contract,
+              compiled_sql, status, version, created_by, source_tables, dependencies,
+              builder_spec, display_spec, last_run_at, updated_at
+       FROM dashboard_view
+       WHERE workspace = $workspaceId
+         AND workbook = $workbookId
+       ORDER BY updated_at DESC, created_at DESC`
+    : `SELECT id, workspace, workbook, title, slug, description, query_mode, view_type, result_contract,
+              compiled_sql, status, version, created_by, source_tables, dependencies,
+              builder_spec, display_spec, last_run_at, updated_at
+       FROM dashboard_view
+       WHERE workspace = $workspaceId
+         AND (workbook = NONE OR workbook = NULL)
+       ORDER BY updated_at DESC, created_at DESC`;
   const rows = await db.query<[DashboardViewRow[]]>(
-    `SELECT id, workspace, title, slug, description, query_mode, view_type, result_contract,
-            compiled_sql, status, version, created_by, source_tables, dependencies,
-            builder_spec, display_spec, last_run_at, updated_at
-     FROM dashboard_view
-     WHERE workspace = $workspaceId
-     ORDER BY updated_at DESC, created_at DESC`,
-    { workspaceId: new StringRecordId(workspaceId) },
+    sql,
+    workbookId
+      ? { workspaceId: new StringRecordId(workspaceId), workbookId: new StringRecordId(workbookId) }
+      : { workspaceId: new StringRecordId(workspaceId) },
   );
   return { views: (rows[0] ?? []).map(viewRowToSummaryDTO) };
 }
@@ -196,6 +228,7 @@ export async function createDashboardView({
   draft,
 }: CreateDashboardViewRequest): Promise<CreateDashboardViewResponse> {
   await assertCanWriteWorkspace(draft.workspaceId);
+  await assertWorkbookScope(draft.workspaceId, draft.workbookId);
   const preview = await previewDraft(draft);
   const db = getLocalDb();
   const viewKey = randomHex(`dashboard_view:${draft.workspaceId}:${draft.title}`);
@@ -206,6 +239,7 @@ export async function createDashboardView({
   await db.query(
     `UPSERT $viewId CONTENT {
       workspace: $workspaceId,
+      workbook: $workbookId,
       title: $title,
       slug: $slug,
       description: $description,
@@ -226,6 +260,7 @@ export async function createDashboardView({
     {
       viewId,
       workspaceId: new StringRecordId(draft.workspaceId),
+      workbookId: draft.workbookId ? new StringRecordId(draft.workbookId) : null,
       title: normalized.title,
       slug: normalized.slug,
       description: normalized.description,
@@ -255,6 +290,7 @@ export async function updateDashboardView({
   await assertCanWriteWorkspace(current.workspaceId);
   const mergedDraft: DashboardViewDraftDTO = {
     workspaceId: current.workspaceId,
+    workbookId: draft.workbookId ?? current.workbookId,
     title: draft.title || current.title,
     slug: draft.slug || current.slug,
     description: draft.description ?? current.description,
@@ -275,6 +311,7 @@ export async function updateDashboardView({
       title = $title,
       slug = $slug,
       description = $description,
+      workbook = $workbookId,
       query_mode = $queryMode,
       view_type = $viewType,
       result_contract = $resultContract,
@@ -292,6 +329,7 @@ export async function updateDashboardView({
       title: normalized.title,
       slug: normalized.slug,
       description: normalized.description,
+      workbookId: normalized.workbookId ? new StringRecordId(normalized.workbookId) : null,
       queryMode: normalized.queryMode,
       viewType: normalized.viewType,
       resultContract: normalized.resultContract,
@@ -342,6 +380,7 @@ export async function previewDashboardDraft(
   draft: DashboardViewDraftDTO,
 ): Promise<DashboardPreviewResponse> {
   await assertCanReadWorkspace(draft.workspaceId);
+  await assertWorkbookScope(draft.workspaceId, draft.workbookId);
   return previewDraft(draft);
 }
 
@@ -399,7 +438,7 @@ async function upsertDashboardCache(viewId: string, preview: DashboardPreviewRes
 async function loadDashboardPage(pageId: string): Promise<DashboardPageDTO> {
   const db = getLocalDb();
   const rows = await db.query<[DashboardPageRow[]]>(
-    `SELECT id, workspace, title, slug, description, widgets, updated_at
+    `SELECT id, workspace, workbook, title, slug, description, widgets, updated_at
      FROM dashboard_page
      WHERE id = $pageId
      LIMIT 1`,
@@ -413,7 +452,7 @@ async function loadDashboardPage(pageId: string): Promise<DashboardPageDTO> {
 async function loadDashboardView(viewId: string): Promise<DashboardViewDTO | null> {
   const db = getLocalDb();
   const rows = await db.query<[DashboardViewRow[]]>(
-    `SELECT id, workspace, title, slug, description, query_mode, view_type, result_contract,
+    `SELECT id, workspace, workbook, title, slug, description, query_mode, view_type, result_contract,
             compiled_sql, status, version, created_by, source_tables, dependencies,
             builder_spec, display_spec, last_run_at, updated_at
      FROM dashboard_view
@@ -431,10 +470,27 @@ async function mustLoadDashboardView(viewId: string): Promise<DashboardViewDTO> 
   return row;
 }
 
-async function ensureDashboardViewExists(viewId: string, workspaceId: string): Promise<void> {
+async function ensureDashboardViewExists(viewId: string, workspaceId: string, workbookId?: string): Promise<void> {
   const view = await mustLoadDashboardView(viewId);
   if (view.workspaceId !== workspaceId) {
     throw new ServiceError("VALIDATION_ERROR", "不能跨工作区引用仪表盘视图");
+  }
+  if ((view.workbookId ?? undefined) !== (workbookId ?? undefined)) {
+    throw new ServiceError("VALIDATION_ERROR", "不能跨工作簿引用仪表盘视图");
+  }
+}
+
+async function assertWorkbookScope(workspaceId: string, workbookId?: string): Promise<void> {
+  if (!workbookId) return;
+  const db = getLocalDb();
+  const rows = await db.query<[{ id: RecordId; workspace: RecordId }[]]>(
+    `SELECT id, workspace FROM workbook WHERE id = $workbookId LIMIT 1`,
+    { workbookId: new StringRecordId(workbookId) },
+  );
+  const workbook = rows[0]?.[0];
+  if (!workbook) throw new ServiceError("NOT_FOUND", "工作簿不存在");
+  if (String(workbook.workspace) !== workspaceId) {
+    throw new ServiceError("VALIDATION_ERROR", "仪表盘工作簿与工作区不匹配");
   }
 }
 
@@ -493,6 +549,7 @@ function pageRowToSummaryDTO(row: DashboardPageRow): DashboardPageSummaryDTO {
   return {
     id: String(row.id),
     workspaceId: String(row.workspace),
+    workbookId: row.workbook ? String(row.workbook) : undefined,
     title: row.title,
     slug: row.slug,
     description: row.description,
@@ -511,6 +568,7 @@ function viewRowToSummaryDTO(row: DashboardViewRow): DashboardViewSummaryDTO {
   return {
     id: String(row.id),
     workspaceId: String(row.workspace),
+    workbookId: row.workbook ? String(row.workbook) : undefined,
     title: row.title,
     slug: row.slug,
     description: row.description,

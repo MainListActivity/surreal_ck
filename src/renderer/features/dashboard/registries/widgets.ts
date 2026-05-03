@@ -4,6 +4,8 @@ import KpiWidget from "../widgets/KpiWidget.svelte";
 import TableWidget from "../widgets/TableWidget.svelte";
 import CategoryBarWidget from "../widgets/CategoryBarWidget.svelte";
 import TimeSeriesWidget from "../widgets/TimeSeriesWidget.svelte";
+import PieWidget from "../widgets/PieWidget.svelte";
+import AreaWidget from "../widgets/AreaWidget.svelte";
 
 export type DashboardWidgetRegistration = {
   viewType: DashboardViewType;
@@ -15,6 +17,8 @@ export const dashboardWidgetRegistry: DashboardWidgetRegistration[] = [
   { viewType: "table", component: TableWidget },
   { viewType: "bar", component: CategoryBarWidget },
   { viewType: "line", component: TimeSeriesWidget },
+  { viewType: "pie", component: PieWidget },
+  { viewType: "area", component: AreaWidget },
 ];
 
 export function getDashboardWidget(viewType: DashboardViewType): DashboardWidgetRegistration | undefined {

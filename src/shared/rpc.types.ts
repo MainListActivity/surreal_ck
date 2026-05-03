@@ -251,6 +251,7 @@ export type SheetSummaryDTO = {
   id: RecordIdString;
   workbookId: RecordIdString;
   univerId: string;
+  tableName: string;
   label: string;
   position: number;
   columnDefs: GridColumnDef[];
@@ -396,8 +397,12 @@ export type SearchReferenceCandidatesResponse = {
 // ─── Dashboard DTOs ──────────────────────────────────────────────────────────
 
 export type DashboardQueryMode = "preset" | "builder" | "sql";
-export type DashboardViewType = "kpi" | "table" | "bar" | "line";
-export type DashboardResultContract = "single_value" | "category_breakdown" | "time_series" | "table_rows";
+export type DashboardViewType = "kpi" | "table" | "bar" | "line" | "pie" | "area";
+export type DashboardResultContract =
+  | "single_value"
+  | "category_breakdown"
+  | "time_series"
+  | "table_rows";
 export type DashboardViewStatus = "draft" | "active" | "invalid";
 export type DashboardCacheStatus = "ok" | "error" | "stale" | "running";
 export type DashboardRefreshPolicy = "manual" | "on_open_if_stale" | "interval";
@@ -414,6 +419,7 @@ export type DashboardWidgetLayoutDTO = {
 export type DashboardPageSummaryDTO = {
   id: RecordIdString;
   workspaceId: RecordIdString;
+  workbookId?: RecordIdString;
   title: string;
   slug: string;
   description?: string;
@@ -470,6 +476,7 @@ export type DashboardBuilderSpec = {
 export type DashboardViewSummaryDTO = {
   id: RecordIdString;
   workspaceId: RecordIdString;
+  workbookId?: RecordIdString;
   title: string;
   slug: string;
   description?: string;
@@ -531,6 +538,7 @@ export type DashboardCacheDTO = {
 
 export type DashboardViewDraftDTO = {
   workspaceId: RecordIdString;
+  workbookId?: RecordIdString;
   title: string;
   slug?: string;
   description?: string;
@@ -556,6 +564,7 @@ export type DashboardPreviewResponse = {
 
 export type ListDashboardPagesRequest = {
   workspaceId: RecordIdString;
+  workbookId?: RecordIdString;
 };
 
 export type ListDashboardPagesResponse = {
@@ -574,6 +583,7 @@ export type GetDashboardPageResponse = {
 
 export type CreateDashboardPageRequest = {
   workspaceId: RecordIdString;
+  workbookId?: RecordIdString;
   title: string;
   description?: string;
 };
@@ -593,6 +603,7 @@ export type SaveDashboardPageLayoutResponse = {
 
 export type ListDashboardViewsRequest = {
   workspaceId: RecordIdString;
+  workbookId?: RecordIdString;
 };
 
 export type ListDashboardViewsResponse = {

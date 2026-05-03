@@ -19,6 +19,7 @@
     "@surrealdb/node": "^3.0.3",
     "dayjs": "^1.11.20",
     "electrobun": "^1.16.0",
+    "layerchart": "2.0.0-next.62",
     "surrealdb": "^2.0.3"
   },
   "devDependencies": {

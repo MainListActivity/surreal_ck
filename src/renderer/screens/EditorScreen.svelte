@@ -1,11 +1,13 @@
 <script lang="ts">
   import { onMount, onDestroy, untrack } from "svelte";
   import EmptyState from "../components/EmptyState.svelte";
+  import WorkbookDashboardScreen from "../features/dashboard/WorkbookDashboardScreen.svelte";
+  import EditorWorkbookNav from "../features/editor/EditorWorkbookNav.svelte";
   import { editorStore } from "../lib/editor.svelte";
+  import { dashboardsStore } from "../lib/dashboards.svelte";
   import type { Navigate } from "../lib/types";
   import EditorTopbar from "../features/editor/EditorTopbar.svelte";
   import EditorToolbar from "../features/editor/EditorToolbar.svelte";
-  import EditorSheets from "../features/editor/EditorSheets.svelte";
   import RightPanel from "../features/editor/RightPanel.svelte";
   import AddRecordModal from "../features/editor/modals/AddRecordModal.svelte";
   import FieldsModal from "../features/editor/modals/FieldsModal.svelte";
@@ -38,10 +40,20 @@
     const id = workbookId;
     untrack(() => {
       if (id) {
+        editorUi.pageKind = "sheet";
+        editorUi.dashboardPageId = null;
         void editorStore.loadWorkbook(id);
       } else {
         editorStore.reset();
       }
+    });
+  });
+
+  $effect(() => {
+    const workbook = editorStore.data?.workbook;
+    if (!workbook?.id) return;
+    untrack(() => {
+      void dashboardsStore.loadForWorkbook(workbook.workspaceId, workbook.id, editorUi.dashboardPageId ?? undefined, false);
     });
   });
 
@@ -72,9 +84,9 @@
 
 <section class="editor">
   <EditorTopbar {navigate} />
-  <EditorToolbar />
 
   <div class="body">
+    <EditorWorkbookNav />
     <div class="main-view">
       {#if editorStore.loading}
         <div class="body-state">加载工作簿数据…</div>
@@ -84,9 +96,14 @@
         <div class="body-state">
           <EmptyState icon="grid" title="无数据" desc="工作簿不包含任何 Sheet" />
         </div>
-      {:else if currentView}
+      {:else if editorUi.pageKind === "dashboard"}
+        <WorkbookDashboardScreen />
+      {:else}
+        <EditorToolbar />
+        {#if currentView}
         {@const ViewComponent = currentView.component}
-        <ViewComponent />
+          <ViewComponent />
+        {/if}
       {/if}
     </div>
 
@@ -109,8 +126,6 @@
 
     <RightPanel />
   </div>
-
-  <EditorSheets />
 </section>
 
 {#if editorUi.showAdd}
@@ -145,6 +160,7 @@
   .main-view {
     display: flex;
     flex: 1;
+    flex-direction: column;
     min-width: 0;
     min-height: 0;
     overflow: hidden;

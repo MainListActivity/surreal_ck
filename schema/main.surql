@@ -211,7 +211,7 @@ DEFINE INDEX IF NOT EXISTS edge_catalog_ws_rel_table_unique
 
 -- ═══════════════════════════════════════════════════════════════════════════════
 -- DASHBOARD
--- 工作区级仪表盘页面与统计视图定义。
+-- 工作区 / 工作簿仪表盘页面与统计视图定义。
 -- page 负责布局；view 负责只读统计 SQL / builder spec；cache 负责最近一次执行结果。
 -- 布局属于系统结构关系，用字段数组表示，不单独建 relation。
 -- ═══════════════════════════════════════════════════════════════════════════════
@@ -224,6 +224,7 @@ DEFINE TABLE IF NOT EXISTS dashboard_page SCHEMAFULL
     FOR create, update, delete WHERE
       workspace.owner = $auth;
 DEFINE FIELD IF NOT EXISTS workspace   ON TABLE dashboard_page TYPE record<workspace>;
+DEFINE FIELD IF NOT EXISTS workbook    ON TABLE dashboard_page TYPE option<record<workbook>>;
 DEFINE FIELD IF NOT EXISTS title       ON TABLE dashboard_page TYPE string;
 DEFINE FIELD IF NOT EXISTS slug        ON TABLE dashboard_page TYPE string;
 DEFINE FIELD IF NOT EXISTS description ON TABLE dashboard_page TYPE option<string>;
@@ -232,9 +233,11 @@ DEFINE FIELD OVERWRITE widgets         ON TABLE dashboard_page TYPE any DEFAULT 
 DEFINE FIELD IF NOT EXISTS created_at  ON TABLE dashboard_page TYPE datetime VALUE time::now();
 DEFINE FIELD IF NOT EXISTS updated_at  ON TABLE dashboard_page TYPE datetime VALUE time::now();
 DEFINE INDEX IF NOT EXISTS dashboard_page_ws_slug_unique
-  ON TABLE dashboard_page COLUMNS workspace, slug UNIQUE;
+  ON TABLE dashboard_page COLUMNS workspace, workbook, slug UNIQUE;
 DEFINE INDEX IF NOT EXISTS dashboard_page_workspace
   ON TABLE dashboard_page COLUMNS workspace;
+DEFINE INDEX IF NOT EXISTS dashboard_page_workbook
+  ON TABLE dashboard_page COLUMNS workbook;
 
 DEFINE TABLE IF NOT EXISTS dashboard_view SCHEMAFULL
   PERMISSIONS
@@ -244,13 +247,14 @@ DEFINE TABLE IF NOT EXISTS dashboard_view SCHEMAFULL
     FOR create, update, delete WHERE
       workspace.owner = $auth;
 DEFINE FIELD IF NOT EXISTS workspace       ON TABLE dashboard_view TYPE record<workspace>;
+DEFINE FIELD IF NOT EXISTS workbook        ON TABLE dashboard_view TYPE option<record<workbook>>;
 DEFINE FIELD IF NOT EXISTS title           ON TABLE dashboard_view TYPE string;
 DEFINE FIELD IF NOT EXISTS slug            ON TABLE dashboard_view TYPE string;
 DEFINE FIELD IF NOT EXISTS description     ON TABLE dashboard_view TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS query_mode      ON TABLE dashboard_view TYPE string
   ASSERT $value INSIDE ["preset", "builder", "sql"];
 DEFINE FIELD IF NOT EXISTS view_type       ON TABLE dashboard_view TYPE string
-  ASSERT $value INSIDE ["kpi", "table", "bar", "line"];
+  ASSERT $value INSIDE ["kpi", "table", "bar", "line", "pie", "area"];
 DEFINE FIELD IF NOT EXISTS result_contract ON TABLE dashboard_view TYPE string
   ASSERT $value INSIDE ["single_value", "category_breakdown", "time_series", "table_rows"];
 DEFINE FIELD IF NOT EXISTS compiled_sql    ON TABLE dashboard_view TYPE string;
@@ -270,11 +274,13 @@ DEFINE FIELD OVERWRITE dependencies        ON TABLE dashboard_view TYPE any DEFA
 DEFINE FIELD IF NOT EXISTS created_at      ON TABLE dashboard_view TYPE datetime VALUE time::now();
 DEFINE FIELD IF NOT EXISTS updated_at      ON TABLE dashboard_view TYPE datetime VALUE time::now();
 DEFINE INDEX IF NOT EXISTS dashboard_view_ws_slug_unique
-  ON TABLE dashboard_view COLUMNS workspace, slug UNIQUE;
+  ON TABLE dashboard_view COLUMNS workspace, workbook, slug UNIQUE;
 DEFINE INDEX IF NOT EXISTS dashboard_view_workspace_status
   ON TABLE dashboard_view COLUMNS workspace, status;
 DEFINE INDEX IF NOT EXISTS dashboard_view_workspace
   ON TABLE dashboard_view COLUMNS workspace;
+DEFINE INDEX IF NOT EXISTS dashboard_view_workbook
+  ON TABLE dashboard_view COLUMNS workbook;
 
 DEFINE TABLE IF NOT EXISTS dashboard_result_cache SCHEMAFULL
   PERMISSIONS

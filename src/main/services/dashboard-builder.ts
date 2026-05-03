@@ -69,8 +69,9 @@ export function compileDashboardBuilder(spec: DashboardBuilderSpec): CompiledBui
 
   if (dimension?.bucket) {
     const bucketSql = compileBucketExpr(dimension.field, dimension.bucket);
+    const metricSql = compileMetricExpr(spec.metric);
     return {
-      sql: `SELECT ${bucketSql} AS x, count() AS y FROM ${spec.baseTable}${where} GROUP BY x ORDER BY x ASC LIMIT ${limit}`,
+      sql: `SELECT ${bucketSql} AS x, ${metricSql} AS y FROM ${spec.baseTable}${where} GROUP BY x ORDER BY x ASC LIMIT ${limit}`,
       sourceTables: [...spec.sourceTables],
       dependencies,
       resultContract: "time_series",
@@ -80,8 +81,9 @@ export function compileDashboardBuilder(spec: DashboardBuilderSpec): CompiledBui
   }
 
   if (dimension) {
+    const metricSql = compileMetricExpr(spec.metric);
     return {
-      sql: `SELECT ${dimension.field} AS key, string::concat(${dimension.field} ?? '') AS label, count() AS value FROM ${spec.baseTable}${where} GROUP BY ${dimension.field} ORDER BY value DESC LIMIT ${limit}`,
+      sql: `SELECT ${dimension.field} AS key, string::concat(${dimension.field} ?? '') AS label, ${metricSql} AS value FROM ${spec.baseTable}${where} GROUP BY ${dimension.field} ORDER BY value DESC LIMIT ${limit}`,
       sourceTables: [...spec.sourceTables],
       dependencies,
       resultContract: "category_breakdown",
@@ -180,6 +182,23 @@ function compileAggregate(op: DashboardBuilderSpec["metric"]["op"], field: strin
       return `math::max(${field})`;
     default:
       throw new ServiceError("VALIDATION_ERROR", `暂不支持的指标类型: ${op}`);
+  }
+}
+
+function compileMetricExpr(metric: DashboardBuilderSpec["metric"]): string {
+  switch (metric.op) {
+    case "count":
+      return "count()";
+    case "count_distinct":
+      if (!metric.field) {
+        throw new ServiceError("VALIDATION_ERROR", "去重计数需要字段");
+      }
+      return `count(array::distinct(array::group(${metric.field})))`;
+    default:
+      if (!metric.field) {
+        throw new ServiceError("VALIDATION_ERROR", "当前统计方式需要选择字段");
+      }
+      return compileAggregate(metric.op, metric.field);
   }
 }
 

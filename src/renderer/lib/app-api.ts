@@ -134,8 +134,8 @@ export const appApi = {
     return rpc.request("searchReferenceCandidates", { table, ...options });
   },
 
-  listDashboardPages(workspaceId: RecordIdString): Promise<Result<ListDashboardPagesResponse>> {
-    return rpc.request("listDashboardPages", { workspaceId });
+  listDashboardPages(workspaceId: RecordIdString, workbookId?: RecordIdString): Promise<Result<ListDashboardPagesResponse>> {
+    return rpc.request("listDashboardPages", { workspaceId, workbookId });
   },
 
   getDashboardPage(pageId: RecordIdString): Promise<Result<GetDashboardPageResponse>> {
@@ -144,10 +144,11 @@ export const appApi = {
 
   createDashboardPage(
     workspaceId: RecordIdString,
+    workbookId: RecordIdString | undefined,
     title: string,
     description?: string,
   ): Promise<Result<CreateDashboardPageResponse>> {
-    return rpc.request("createDashboardPage", { workspaceId, title, description });
+    return rpc.request("createDashboardPage", { workspaceId, workbookId, title, description });
   },
 
   saveDashboardPageLayout(
@@ -157,8 +158,8 @@ export const appApi = {
     return rpc.request("saveDashboardPageLayout", { pageId, widgets });
   },
 
-  listDashboardViews(workspaceId: RecordIdString): Promise<Result<ListDashboardViewsResponse>> {
-    return rpc.request("listDashboardViews", { workspaceId });
+  listDashboardViews(workspaceId: RecordIdString, workbookId?: RecordIdString): Promise<Result<ListDashboardViewsResponse>> {
+    return rpc.request("listDashboardViews", { workspaceId, workbookId });
   },
 
   createDashboardView(draft: DashboardViewDraftDTO): Promise<Result<CreateDashboardViewResponse>> {

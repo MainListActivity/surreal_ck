@@ -2,8 +2,11 @@ import type { RecordIdString } from "../../../../shared/rpc.types";
 
 export type ViewId = "grid" | "kanban" | "gallery" | "form";
 export type PanelId = "detail" | "changes" | "ai";
+export type EditorPageKind = "sheet" | "dashboard";
 
 type EditorUiState = {
+  pageKind: EditorPageKind;
+  dashboardPageId: RecordIdString | null;
   view: ViewId;
   panelOpen: boolean;
   panelTab: PanelId;
@@ -46,6 +49,8 @@ type EditorUiState = {
 
 function createEditorUi() {
   let state = $state<EditorUiState>({
+    pageKind: "sheet",
+    dashboardPageId: null,
     view: "grid",
     panelOpen: false,
     panelTab: "detail",
@@ -68,6 +73,10 @@ function createEditorUi() {
   });
 
   return {
+    get pageKind() { return state.pageKind; },
+    set pageKind(v) { state.pageKind = v; },
+    get dashboardPageId() { return state.dashboardPageId; },
+    set dashboardPageId(v) { state.dashboardPageId = v; },
     get view() { return state.view; },
     set view(v) { state.view = v; },
     get panelOpen() { return state.panelOpen; },

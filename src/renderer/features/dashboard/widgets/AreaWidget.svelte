@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { LineChart } from "layerchart";
+  import { AreaChart } from "layerchart";
   import type { DashboardCacheDTO, DashboardViewDTO } from "../../../../shared/rpc.types";
 
   type ChartRow = { x: string; y: number; series?: string };
@@ -15,7 +15,7 @@
 
 {#if rows.length > 0}
   <div class="chart-wrap">
-    <LineChart
+    <AreaChart
       data={rows}
       x="x"
       y="y"
@@ -24,7 +24,6 @@
       yDomain={[0, null]}
       yNice={true}
       grid={true}
-      points={true}
       tooltipContext={true}
       height={240}
     />
