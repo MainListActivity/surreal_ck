@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
+  buildGridFieldDraft,
+  buildSurrealFieldSchema,
+  commitGridFieldDraft,
   coerceGridFieldValue,
   normalizeGridFieldConstraints,
   validateGridFieldValue,
@@ -15,6 +18,52 @@ describe("normalizeGridFieldConstraints", () => {
   test("日期约束会标准化为 ISO 字符串", () => {
     const constraints = normalizeGridFieldConstraints("date", { minDate: "2026-04-01" });
     expect(constraints?.minDate).toBe("2026-04-01T00:00:00.000Z");
+  });
+});
+
+describe("字段定义 Module", () => {
+  test("字段草稿提交会复用字段定义 normalization", () => {
+    const draft = buildGridFieldDraft({
+      key: " status ",
+      label: " 状态 ",
+      fieldType: "single_select",
+      required: true,
+      options: ["Open"],
+      constraints: { maxLength: 20 },
+    });
+    draft.optionsText = "Open\nOpen\nClosed\n";
+
+    expect(commitGridFieldDraft(draft)).toMatchObject({
+      key: "status",
+      label: "状态",
+      fieldType: "single_select",
+      required: true,
+      options: ["Open", "Closed"],
+      constraints: { maxLength: 20 },
+    });
+  });
+
+  test("SurrealQL 字段 schema 由共享字段定义生成", () => {
+    expect(buildSurrealFieldSchema({
+      key: "owner",
+      label: "负责人",
+      fieldType: "reference",
+      required: false,
+      referenceTable: "app_user",
+      referenceMultiple: true,
+    })).toEqual({
+      fieldName: "owner",
+      type: "option<array<record<app_user>>>",
+      assert: "",
+    });
+
+    expect(buildSurrealFieldSchema({
+      key: "qty",
+      label: "数量",
+      fieldType: "number",
+      required: true,
+      constraints: { min: 0, step: 2 },
+    }).assert).toContain("math::floor($value) = $value");
   });
 });
 

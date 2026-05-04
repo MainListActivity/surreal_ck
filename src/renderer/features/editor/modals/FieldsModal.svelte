@@ -5,7 +5,12 @@
   import { editorStore } from "../../../lib/editor.svelte";
   import { editorUi } from "../lib/editor-ui.svelte";
   import { getFieldTypeMeta } from "../lib/field-type-meta";
-  import { normalizeGridFieldConstraints } from "../../../../shared/field-schema";
+  import {
+    buildGridFieldDraft,
+    commitGridFieldDraft,
+    GRID_FIELD_TYPE_OPTIONS,
+  } from "../../../../shared/field-schema";
+  import type { GridFieldDraft } from "../../../../shared/field-schema";
   import {
     DATE_FORMAT_PRESETS,
     DEFAULT_DATE_FORMAT,
@@ -13,24 +18,11 @@
   } from "../../../../shared/date-format";
   import DatePicker from "../../../components/DatePicker.svelte";
   import { appApi } from "../../../lib/app-api";
-  import type { GridColumnDef, GridFieldConstraints, ReferenceTargetOption } from "../../../../shared/rpc.types";
+  import type { GridColumnDef, ReferenceTargetOption } from "../../../../shared/rpc.types";
 
   let { fieldKey }: { fieldKey: string } = $props();
 
-  type FieldDraft = GridColumnDef & {
-    optionsText?: string;
-    constraints: GridFieldConstraints;
-  };
-
-  const fieldTypeOptions = [
-    { value: "text", label: "文本", icon: "textType" },
-    { value: "single_select", label: "单选", icon: "list" },
-    { value: "number", label: "数字", icon: "hash" },
-    { value: "decimal", label: "金额/小数", icon: "coins" },
-    { value: "date", label: "日期", icon: "calendar" },
-    { value: "checkbox", label: "勾选", icon: "checkSquare" },
-    { value: "reference", label: "引用", icon: "link" },
-  ] as const;
+  const fieldTypeOptions = GRID_FIELD_TYPE_OPTIONS;
 
   const dateFormatOptions = [
     ...DATE_FORMAT_PRESETS.map((preset) => ({
@@ -41,7 +33,7 @@
   ];
 
   let draftError = $state<string | null>(null);
-  let fieldDraft = $state<FieldDraft | null>(null);
+  let fieldDraft = $state<GridFieldDraft | null>(null);
   let dateFormatMode = $state<"preset" | "custom">("preset");
   let referenceTargets = $state<ReferenceTargetOption[]>([]);
   let referenceTargetsLoaded = $state(false);
@@ -81,12 +73,7 @@
     const dateFormat = source.dateFormat?.trim() || DEFAULT_DATE_FORMAT;
     const isPreset = DATE_FORMAT_PRESETS.some((preset) => preset.value === dateFormat);
 
-    fieldDraft = {
-      ...source,
-      optionsText: source.options?.join("\n") ?? "",
-      constraints: { ...source.constraints },
-      dateFormat,
-    };
+    fieldDraft = buildGridFieldDraft(source);
     dateFormatMode = isPreset ? "preset" : "custom";
     draftError = null;
   });
@@ -115,7 +102,7 @@
 
     let updatedField: GridColumnDef;
     try {
-      updatedField = buildColumn(fieldDraft, true);
+      updatedField = commitGridFieldDraft(fieldDraft, true);
       draftError = null;
     } catch (err) {
       draftError = err instanceof Error ? err.message : String(err);
@@ -139,34 +126,6 @@
     if (ok) close();
   }
 
-  function buildColumn(field: FieldDraft, strict: boolean): GridColumnDef {
-    const options = field.fieldType === "single_select"
-      ? (field.optionsText ?? "").split("\n").map((opt) => opt.trim()).filter(Boolean)
-      : undefined;
-
-    let constraints: GridFieldConstraints | undefined;
-    try {
-      constraints = normalizeGridFieldConstraints(field.fieldType, field.constraints);
-    } catch (err) {
-      if (strict) throw err;
-      constraints = undefined;
-    }
-
-    return {
-      key: field.key,
-      label: field.label,
-      fieldType: field.fieldType,
-      required: field.required,
-      options,
-      constraints,
-      dateFormat: field.fieldType === "date" ? (field.dateFormat?.trim() || DEFAULT_DATE_FORMAT) : undefined,
-      referenceTable: field.fieldType === "reference" ? field.referenceTable : undefined,
-      referenceSheetId: field.fieldType === "reference" ? field.referenceSheetId : undefined,
-      referenceMultiple: field.fieldType === "reference" ? field.referenceMultiple : undefined,
-      referenceDisplayKey: field.fieldType === "reference" ? field.referenceDisplayKey : undefined,
-    };
-  }
-
   function selectReferenceTarget(table: string) {
     if (!fieldDraft) return;
     const target = referenceTargets.find((t) => t.table === table);
@@ -183,7 +142,7 @@
     return fieldTypeOptions.find((option) => option.value === fieldType)?.label ?? fieldType;
   }
 
-  function hasRules(field: FieldDraft) {
+  function hasRules(field: GridFieldDraft) {
     return field.fieldType !== "checkbox";
   }
 

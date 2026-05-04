@@ -9,13 +9,11 @@ import type {
   ListWorkbooksResponse,
   CreateBlankWorkbookRequest,
   CreateBlankWorkbookResponse,
-  GridColumnDef,
   MoveWorkbookRequest,
   MoveWorkbookResponse,
   RecordIdString,
 } from "../../shared/rpc.types";
 import {
-  gridColumnToStoredDef,
   provisionEntityFields,
   provisionEntityTable,
 } from "./data-table-runtime";

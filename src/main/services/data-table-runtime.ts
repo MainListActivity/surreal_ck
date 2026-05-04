@@ -2,7 +2,15 @@ import { DateTime, RecordId, StringRecordId } from "surrealdb";
 import { getLocalDb } from "../db/index";
 import { mapNullsToSurrealNone, omitNullishSurrealFields } from "../db/surreal-values";
 import { ServiceError } from "./errors";
-import { coerceGridFieldValue, normalizeGridFieldConstraints, validateGridFieldValue } from "../../shared/field-schema";
+import {
+  buildSurrealFieldSchema,
+  coerceGridFieldValue,
+  gridColumnToStoredDef,
+  normalizeGridColumnDef as normalizeSharedGridColumnDef,
+  storedColumnToDTO,
+  validateGridFieldValue,
+} from "../../shared/field-schema";
+import type { StoredGridFieldDef } from "../../shared/field-schema";
 import type {
   FilterClause,
   GridColumnDef,
@@ -13,19 +21,12 @@ import type {
   ViewParams,
 } from "../../shared/rpc.types";
 
-export type StoredColumnDef = {
-  key: string;
-  label: string;
-  field_type: string;
-  required?: boolean;
-  options?: string[];
-  constraints?: GridColumnDef["constraints"];
-  date_format?: string;
-  reference_table?: string;
-  reference_sheet_id?: string;
-  reference_multiple?: boolean;
-  reference_display_key?: string;
+export {
+  gridColumnToStoredDef,
+  storedColumnToDTO,
 };
+
+export type StoredColumnDef = StoredGridFieldDef;
 
 export type DataTableSheetRow = {
   id: RecordId;
@@ -38,7 +39,6 @@ export type DataTableSheetRow = {
 };
 
 type EntityRow = Record<string, unknown> & { id: RecordId; workspace?: RecordId };
-
 const ENTITY_FIELD_NAME = /^[a-z][a-z0-9_]{0,62}$/;
 const RESERVED_ENTITY_FIELDS = new Set(["id", "workspace", "created_by", "created_at", "updated_at"]);
 
@@ -195,76 +195,12 @@ export async function createEntityRows(
 }
 
 export function normalizeGridColumnDef(column: GridColumnDef): GridColumnDef {
-  const key = column.key.trim();
-  assertEntityFieldName(key);
-
-  const label = column.label.trim();
-  if (!label) throw new ServiceError("VALIDATION_ERROR", "字段名称不能为空");
-  if (label.length > 80) throw new ServiceError("VALIDATION_ERROR", "字段名称过长");
-
-  const fieldType = normalizeFieldType(column.fieldType);
-  const options = fieldType === "single_select"
-    ? [...new Set((column.options ?? []).map((opt) => opt.trim()).filter(Boolean))].slice(0, 80)
-    : undefined;
-  const constraints = normalizeGridFieldConstraints(fieldType, column.constraints);
-  const dateFormat = fieldType === "date" ? normalizeDateFormat(column.dateFormat) : undefined;
-
-  let referenceTable: string | undefined;
-  let referenceSheetId: RecordIdString | undefined;
-  let referenceMultiple: boolean | undefined;
-  let referenceDisplayKey: string | undefined;
-  if (fieldType === "reference") {
-    referenceTable = normalizeReferenceTable(column.referenceTable);
-    referenceSheetId = column.referenceSheetId?.trim() || undefined;
-    referenceMultiple = Boolean(column.referenceMultiple);
-    referenceDisplayKey = normalizeReferenceDisplayKey(column.referenceDisplayKey);
+  try {
+    return normalizeSharedGridColumnDef(column);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new ServiceError("VALIDATION_ERROR", message);
   }
-
-  return {
-    key,
-    label,
-    fieldType,
-    required: Boolean(column.required),
-    options,
-    constraints,
-    dateFormat,
-    referenceTable,
-    referenceSheetId,
-    referenceMultiple,
-    referenceDisplayKey,
-  };
-}
-
-export function gridColumnToStoredDef(column: GridColumnDef): StoredColumnDef {
-  return {
-    key: column.key,
-    label: column.label,
-    field_type: column.fieldType,
-    required: column.required,
-    options: column.options,
-    constraints: column.constraints,
-    date_format: column.dateFormat,
-    reference_table: column.referenceTable,
-    reference_sheet_id: column.referenceSheetId,
-    reference_multiple: column.referenceMultiple,
-    reference_display_key: column.referenceDisplayKey,
-  };
-}
-
-export function storedColumnToDTO(column: StoredColumnDef): GridColumnDef {
-  return {
-    key: column.key,
-    label: column.label,
-    fieldType: column.field_type,
-    required: column.required,
-    options: column.options,
-    constraints: column.constraints,
-    dateFormat: column.date_format,
-    referenceTable: column.reference_table,
-    referenceSheetId: column.reference_sheet_id,
-    referenceMultiple: column.reference_multiple,
-    referenceDisplayKey: column.reference_display_key,
-  };
 }
 
 export function sheetRowToDTO(sheet: DataTableSheetRow): SheetSummaryDTO {
@@ -345,73 +281,18 @@ function encodeGridValues(
 
 function defineEntityField(tableName: string, column: GridColumnDef, mode: "if-not-exists" | "overwrite"): Promise<void> {
   assertEntityTableName(tableName);
-  const normalized = normalizeGridColumnDef(column);
+  let schema;
+  try {
+    schema = buildSurrealFieldSchema(column);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new ServiceError("VALIDATION_ERROR", message);
+  }
   const clause = mode === "overwrite" ? "OVERWRITE" : "IF NOT EXISTS";
-  const surrealType = surrealTypeForField(normalized);
-  const assertClause = surrealAssertForField(normalized);
   const db = getLocalDb();
   return db.query(
-    `DEFINE FIELD ${clause} ${normalized.key} ON TABLE ${tableName} TYPE ${surrealType}${assertClause}`,
+    `DEFINE FIELD ${clause} ${schema.fieldName} ON TABLE ${tableName} TYPE ${schema.type}${schema.assert}`,
   ).then(() => undefined);
-}
-
-function surrealTypeForField(column: GridColumnDef): string {
-  const baseType = (() => {
-    switch (column.fieldType) {
-      case "text":
-      case "single_select":
-        return "string";
-      case "number":
-      case "decimal":
-        return "number";
-      case "date":
-        return "datetime";
-      case "checkbox":
-        return "bool";
-      case "reference": {
-        const target = normalizeReferenceTable(column.referenceTable);
-        const recordType = `record<${target}>`;
-        return column.referenceMultiple ? `array<${recordType}>` : recordType;
-      }
-      default:
-        throw new ServiceError("VALIDATION_ERROR", `不支持的字段类型: ${column.fieldType}`);
-    }
-  })();
-  return column.required ? baseType : `option<${baseType}>`;
-}
-
-function surrealAssertForField(column: GridColumnDef): string {
-  const rules: string[] = [];
-  const constraints = column.constraints;
-
-  if (column.fieldType === "single_select" && column.options?.length) {
-    const options = column.options.map((option) => JSON.stringify(option)).join(", ");
-    rules.push(`$value INSIDE [${options}]`);
-  }
-  if (column.fieldType === "text") {
-    if (constraints?.minLength !== undefined) rules.push(`string::len($value) >= ${constraints.minLength}`);
-    if (constraints?.maxLength !== undefined) rules.push(`string::len($value) <= ${constraints.maxLength}`);
-  }
-  if (column.fieldType === "single_select" && constraints?.maxLength !== undefined) {
-    rules.push(`string::len($value) <= ${constraints.maxLength}`);
-  }
-  if (column.fieldType === "number" || column.fieldType === "decimal") {
-    if (column.fieldType === "number") rules.push(`math::floor($value) = $value`);
-    if (constraints?.min !== undefined) rules.push(`$value >= ${constraints.min}`);
-    if (constraints?.max !== undefined) rules.push(`$value <= ${constraints.max}`);
-    if (constraints?.step !== undefined) {
-      const base = constraints.min ?? 0;
-      rules.push(`math::floor((($value - ${base}) / ${constraints.step})) = (($value - ${base}) / ${constraints.step})`);
-    }
-  }
-  if (column.fieldType === "date") {
-    if (constraints?.minDate) rules.push(`$value >= d'${constraints.minDate}'`);
-    if (constraints?.maxDate) rules.push(`$value <= d'${constraints.maxDate}'`);
-  }
-
-  if (!rules.length) return "";
-  const body = rules.join(" AND ");
-  return column.required ? ` ASSERT ${body}` : ` ASSERT $value = NONE OR (${body})`;
 }
 
 const FILTER_OP_TO_SQL: Record<FilterClause["op"], { sql: string; needValue: "scalar" | "array" | "none" }> = {
@@ -511,58 +392,12 @@ async function ensureEntityAuditFields(tableName: string): Promise<void> {
   );
 }
 
-function normalizeDateFormat(format: string | undefined | null): string | undefined {
-  if (format === undefined || format === null) return undefined;
-  const trimmed = format.trim();
-  if (!trimmed) return undefined;
-  if (trimmed.length > 64) throw new ServiceError("VALIDATION_ERROR", "日期格式过长");
-  return trimmed;
-}
-
-const REFERENCE_SYSTEM_TABLES = new Set(["app_user"]);
-const REFERENCE_ENTITY_TABLE = /^ent_[a-z0-9_]+$/;
-
-export function normalizeReferenceTable(value: unknown): string {
-  if (typeof value !== "string" || !value) {
-    throw new ServiceError("VALIDATION_ERROR", "引用字段必须配置目标表");
-  }
-  const trimmed = value.trim();
-  if (REFERENCE_SYSTEM_TABLES.has(trimmed)) return trimmed;
-  if (REFERENCE_ENTITY_TABLE.test(trimmed)) return trimmed;
-  throw new ServiceError("VALIDATION_ERROR", `非法的引用目标表: ${trimmed}`);
-}
-
-function normalizeReferenceDisplayKey(value: unknown): string | undefined {
-  if (value === undefined || value === null) return undefined;
-  const trimmed = String(value).trim();
-  if (!trimmed) return undefined;
-  if (!/^[a-z][a-z0-9_]{0,62}$/.test(trimmed)) {
-    throw new ServiceError("VALIDATION_ERROR", `非法的展示字段: ${trimmed}`);
-  }
-  return trimmed;
-}
-
-function normalizeFieldType(fieldType: string): string {
-  switch (fieldType) {
-    case "text":
-    case "single_select":
-    case "number":
-    case "decimal":
-    case "date":
-    case "checkbox":
-    case "reference":
-      return fieldType;
-    default:
-      throw new ServiceError("VALIDATION_ERROR", `不支持的字段类型: ${fieldType}`);
-  }
+function isSafeIdentifier(key: string): boolean {
+  return /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(key);
 }
 
 function assertEntityFieldName(key: string): void {
   if (!ENTITY_FIELD_NAME.test(key) || RESERVED_ENTITY_FIELDS.has(key)) {
     throw new ServiceError("VALIDATION_ERROR", `无效的字段标识: ${key}`);
   }
-}
-
-function isSafeIdentifier(key: string): boolean {
-  return /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(key);
 }
