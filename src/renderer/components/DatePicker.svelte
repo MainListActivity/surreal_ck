@@ -66,6 +66,7 @@
   let triggerEl = $state<HTMLButtonElement | null>(null);
   let popoverEl = $state<HTMLDivElement | null>(null);
   let popoverPos = $state<{ left: number; top: number; width: number }>({ left: 0, top: 0, width: 280 });
+  let wasOpen = false;
 
   /**
    * 把 popover 节点搬到 document.body，避免被 ancestor 的 overflow:hidden 裁掉。
@@ -140,14 +141,14 @@
   // openOnMount 模式：挂载即打开
   $effect(() => {
     if (openOnMount && !open) {
-      syncStateFrom(currentDate);
       open = true;
     }
   });
 
-  // 打开时把视图同步到当前值
+  // 仅在打开瞬间把视图同步到当前值；打开后的月份/年份导航不能被重置。
   $effect(() => {
-    if (open) syncStateFrom(currentDate);
+    if (open && !wasOpen) syncStateFrom(currentDate);
+    wasOpen = open;
   });
 
   function openPopover() {
