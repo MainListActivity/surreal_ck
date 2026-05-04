@@ -1,9 +1,10 @@
-import { RecordId, StringRecordId } from "surrealdb";
+import { DateTime, RecordId, StringRecordId } from "surrealdb";
 import { getLocalDb } from "../db/index";
 import { assertCanWriteWorkspace } from "./context";
 import { ServiceError } from "./errors";
 import { getTemplateDef, listTemplateSummaries, type EntityDef } from "../templates/catalog";
-import { ensureWorkbookMetadataSchema, provisionEntityFields, provisionEntityTable, provisionRelationTable } from "./workbooks";
+import { createEntityRows, provisionEntityFields, provisionEntityTable, provisionRelationTable } from "./data-table-runtime";
+import { ensureWorkbookMetadataSchema } from "./workbooks";
 import type {
   ListTemplatesResponse,
   CreateWorkbookFromTemplateRequest,
@@ -199,32 +200,17 @@ async function insertSampleData(
     const relAssigned = relationTableName(wsKey, wbKey, "assigned_to");
     const relBelongs  = relationTableName(wsKey, wbKey, "belongs_to");
 
-    const redwoodRows = await db.query<[{ id: RecordId }[]]>(
-      `CREATE type::table($t) CONTENT { workspace: $ws, name: "Redwood Group", email: "legal@redwood.example.com" } RETURN id`,
-      { t: tblClient, ws: wsId }
-    );
-    const tritonRows = await db.query<[{ id: RecordId }[]]>(
-      `CREATE type::table($t) CONTENT { workspace: $ws, name: "Triton Corp",   email: "counsel@triton.example.com" } RETURN id`,
-      { t: tblClient, ws: wsId }
-    );
-    const case1Rows = await db.query<[{ id: RecordId }[]]>(
-      `CREATE type::table($t) CONTENT { workspace: $ws, title: "Redwood v. Triton",     matter_id: "2026-001", status: "Open",    opened_at: time::now() } RETURN id`,
-      { t: tblCase, ws: wsId }
-    );
-    const case2Rows = await db.query<[{ id: RecordId }[]]>(
-      `CREATE type::table($t) CONTENT { workspace: $ws, title: "Triton v. Harbor LLC",  matter_id: "2026-002", status: "Pending", opened_at: time::now() } RETURN id`,
-      { t: tblCase, ws: wsId }
-    );
-    const motionRows = await db.query<[{ id: RecordId }[]]>(
-      `CREATE type::table($t) CONTENT { workspace: $ws, title: "Motion 42 — Summary Judgment", doc_type: "Motion", filed_at: time::now() } RETURN id`,
-      { t: tblDocument, ws: wsId }
-    );
-
-    const redwood = redwoodRows[0]?.[0]?.id;
-    const triton  = tritonRows[0]?.[0]?.id;
-    const case1   = case1Rows[0]?.[0]?.id;
-    const case2   = case2Rows[0]?.[0]?.id;
-    const motion  = motionRows[0]?.[0]?.id;
+    const [redwood, triton] = await createEntityRows(tblClient, [
+      { workspace: wsId, name: "Redwood Group", email: "legal@redwood.example.com" },
+      { workspace: wsId, name: "Triton Corp", email: "counsel@triton.example.com" },
+    ]);
+    const [case1, case2] = await createEntityRows(tblCase, [
+      { workspace: wsId, title: "Redwood v. Triton", matter_id: "2026-001", status: "Open", opened_at: new DateTime() },
+      { workspace: wsId, title: "Triton v. Harbor LLC", matter_id: "2026-002", status: "Pending", opened_at: new DateTime() },
+    ]);
+    const [motion] = await createEntityRows(tblDocument, [
+      { workspace: wsId, title: "Motion 42 — Summary Judgment", doc_type: "Motion", filed_at: new DateTime() },
+    ]);
 
     if (redwood && triton && case1 && case2 && motion) {
       await db.query(
@@ -241,15 +227,14 @@ async function insertSampleData(
     const relControls = relationTableName(wsKey, wbKey, "controls");
     const relFiledBy = relationTableName(wsKey, wbKey, "filed_by");
 
-    const acmeRows  = await db.query<[{ id: RecordId }[]]>(`CREATE type::table($t) CONTENT { workspace: $ws, name: "Acme Holdings", jurisdiction: "Delaware",  status: "Active"  } RETURN id`, { t: tblCompany, ws: wsId });
-    const betaRows  = await db.query<[{ id: RecordId }[]]>(`CREATE type::table($t) CONTENT { workspace: $ws, name: "Beta LLC",      jurisdiction: "Hong Kong", status: "Active"  } RETURN id`, { t: tblCompany, ws: wsId });
-    const gammaRows = await db.query<[{ id: RecordId }[]]>(`CREATE type::table($t) CONTENT { workspace: $ws, name: "Gamma Inc",     jurisdiction: "Singapore", status: "Pending" } RETURN id`, { t: tblCompany, ws: wsId });
-    const chenRows  = await db.query<[{ id: RecordId }[]]>(`CREATE type::table($t) CONTENT { workspace: $ws, name: "Chen Wei",      email: "chen@example.com", role: "Director"  } RETURN id`, { t: tblPerson,  ws: wsId });
-
-    const acme  = acmeRows[0]?.[0]?.id;
-    const beta  = betaRows[0]?.[0]?.id;
-    const gamma = gammaRows[0]?.[0]?.id;
-    const chen  = chenRows[0]?.[0]?.id;
+    const [acme, beta, gamma] = await createEntityRows(tblCompany, [
+      { workspace: wsId, name: "Acme Holdings", jurisdiction: "Delaware", status: "Active" },
+      { workspace: wsId, name: "Beta LLC", jurisdiction: "Hong Kong", status: "Active" },
+      { workspace: wsId, name: "Gamma Inc", jurisdiction: "Singapore", status: "Pending" },
+    ]);
+    const [chen] = await createEntityRows(tblPerson, [
+      { workspace: wsId, name: "Chen Wei", email: "chen@example.com", role: "Director" },
+    ]);
 
     if (acme && beta && gamma && chen) {
       await db.query(

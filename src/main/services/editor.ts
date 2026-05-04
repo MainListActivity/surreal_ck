@@ -1,40 +1,41 @@
-import { DateTime, RecordId, StringRecordId } from "surrealdb";
+import { RecordId, StringRecordId } from "surrealdb";
 import { getLocalDb } from "../db/index";
-import { mapNullsToSurrealNone, omitNullishSurrealFields } from "../db/surreal-values";
 import { assertCanReadWorkspace, assertCanWriteWorkspace, getCurrentUserRecordId, getServiceContext } from "./context";
 import { ServiceError } from "./errors";
 import {
+  createDataTableRuntime,
   gridColumnToStoredDef,
+  assertDynamicTableExists,
   normalizeGridColumnDef,
   overwriteEntityField,
   provisionEntityFields,
   provisionEntityTable,
   removeEntityField,
-} from "./workbooks";
-import { coerceGridFieldValue, validateGridFieldValue } from "../../shared/field-schema";
+  sheetRowToDTO,
+  storedColumnToDTO,
+  type DataTableSheetRow,
+} from "./data-table-runtime";
 import type {
   CreateSheetRequest,
   CreateSheetResponse,
-  FilterClause,
   GetWorkbookDataRequest,
   GetWorkbookDataResponse,
   GridColumnDef,
-  GridRow,
   RenameSheetRequest,
   RenameSheetResponse,
   RenameWorkbookRequest,
   RenameWorkbookResponse,
   SheetSummaryDTO,
-  SortClause,
   UpdateSheetFieldsRequest,
   UpdateSheetFieldsResponse,
   UpsertRowsRequest,
   UpsertRowsResponse,
   DeleteRowsRequest,
   DeleteRowsResponse,
-  ViewParams,
   WorkbookSummaryDTO,
 } from "../../shared/rpc.types";
+
+export { omitNullishInsertValues } from "./data-table-runtime";
 
 // ─── 内部行类型 ───────────────────────────────────────────────────────────────
 
@@ -48,31 +49,7 @@ type WorkbookRow = {
   updated_at: Date;
 };
 
-type SheetRow = {
-  id: RecordId;
-  workbook: RecordId;
-  univer_id: string;
-  table_name: string;
-  label: string;
-  position: number;
-  column_defs: Array<{
-    key: string;
-    label: string;
-    field_type: string;
-    required?: boolean;
-    options?: string[];
-    constraints?: GridColumnDef["constraints"];
-    date_format?: string;
-    reference_table?: string;
-    reference_sheet_id?: string;
-    reference_multiple?: boolean;
-    reference_display_key?: string;
-  }>;
-};
-
-type EntityRow = Record<string, unknown> & { id: RecordId; workspace?: RecordId };
-
-type StoredColumnDef = SheetRow["column_defs"][number];
+type SheetRow = DataTableSheetRow;
 
 // ─── getWorkbookData ──────────────────────────────────────────────────────────
 
@@ -129,7 +106,7 @@ export async function getWorkbookData({
   }
 
   // 读取活跃 sheet 的行数据
-  const rows = await loadEntityRows(activeSheet, viewParams);
+  const rows = await createDataTableRuntime(activeSheet).queryRows(viewParams);
 
   // 映射 column_defs
   const columns: GridColumnDef[] = activeSheet.column_defs.map(storedColumnToDTO);
@@ -187,86 +164,10 @@ export async function upsertRows({
   if (!wbRow) throw new ServiceError("NOT_FOUND", "工作簿不存在");
   await assertCanWriteWorkspace(String(wbRow.workspace));
 
-  // 校验 column keys（未定义字段忽略）
-  const validKeys = new Set(sheet.column_defs.map((c) => c.key));
-  const columnsByKey = new Map(sheet.column_defs.map((c) => [c.key, storedColumnToDTO(c)]));
-  const tableName = sheet.table_name;
-
-  if (!/^ent_[a-z0-9_]+$/.test(tableName)) {
-    throw new ServiceError("INTERNAL_ERROR", "无效的实体表名");
-  }
-  await assertDynamicTableExists(tableName);
-  await ensureEntityAuditFields(tableName);
   const currentUserId = await getCurrentUserRecordId();
-
-  const upserted: GridRow[] = [];
-
-  for (const rowPatch of rows) {
-    // 过滤掉 schema 未定义的字段
-    const cleanValues: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(rowPatch.values)) {
-      if (!validKeys.has(k)) continue;
-      const column = columnsByKey.get(k);
-      const coerced = coerceCellValue(v, column);
-      cleanValues[k] = coerced;
-    }
-    for (const column of columnsByKey.values()) {
-      const fieldErrors = validateGridFieldValue(cleanValues[column.key], column);
-      if (fieldErrors.length) {
-        throw new ServiceError("VALIDATION_ERROR", `${column.label}: ${fieldErrors[0]}`);
-      }
-    }
-    // 校验通过后把 date 字段包装成 SurrealDB DateTime（ns 精度），写库后再用
-    for (const column of columnsByKey.values()) {
-      if (column.fieldType !== "date") continue;
-      const v = cleanValues[column.key];
-      if (v instanceof Date) cleanValues[column.key] = new DateTime(v);
-    }
-    // reference 字段：字符串包装成 StringRecordId；数组每项各自包装。
-    for (const column of columnsByKey.values()) {
-      if (column.fieldType !== "reference") continue;
-      const v = cleanValues[column.key];
-      if (v == null) continue;
-      if (Array.isArray(v)) {
-        cleanValues[column.key] = v.map((item) => typeof item === "string" ? new StringRecordId(item) : item);
-      } else if (typeof v === "string") {
-        cleanValues[column.key] = new StringRecordId(v);
-      }
-    }
-
-    if (rowPatch.id) {
-      assertRowIdBelongsToTable(rowPatch.id, tableName);
-      // 更新已有行
-      const updateValues = mapNullsToSurrealNone({ ...cleanValues, updated_at: new DateTime() });
-      const updated = await db.query<[EntityRow[]]>(
-        `UPDATE $rowId MERGE $vals`,
-        { rowId: new StringRecordId(rowPatch.id), vals: updateValues }
-      );
-      const r = updated[0]?.[0];
-      if (r) {
-        upserted.push(entityRowToDTO(r, validKeys));
-      }
-    } else {
-      // 新增行
-      const createValues = omitNullishInsertValues(cleanValues);
-      createValues.workspace = wbRow.workspace;
-      createValues.created_by = currentUserId;
-      const created = await db.query<[EntityRow[]]>(
-        `CREATE type::table($t) CONTENT $vals`,
-        { t: tableName, vals: createValues }
-      );
-      const r = created[0]?.[0];
-      if (r) {
-        upserted.push(entityRowToDTO(r, validKeys));
-      }
-    }
-  }
+  const upserted = await createDataTableRuntime(sheet).updateRows(rows, wbRow.workspace, currentUserId);
 
   return { upserted };
-}
-
-export function omitNullishInsertValues(values: Record<string, unknown>): Record<string, unknown> {
-  return omitNullishSurrealFields(values);
 }
 
 // ─── renameWorkbook ──────────────────────────────────────────────────────────
@@ -539,179 +440,9 @@ export async function deleteRows({
   if (!wbRow) throw new ServiceError("NOT_FOUND", "工作簿不存在");
   await assertCanWriteWorkspace(String(wbRow.workspace));
 
-  const tableName = sheet.table_name;
-  if (!/^ent_[a-z0-9_]+$/.test(tableName)) {
-    throw new ServiceError("INTERNAL_ERROR", "无效的实体表名");
-  }
-
-  let deleted = 0;
-  for (const id of ids) {
-    assertRowIdBelongsToTable(id, tableName);
-    await db.query(`DELETE $rowId`, { rowId: new StringRecordId(id) });
-    deleted++;
-  }
+  const deleted = await createDataTableRuntime(sheet).deleteRows(ids);
 
   return { deleted };
-}
-
-// ─── 内部：从实体表加载行 ─────────────────────────────────────────────────────
-
-async function loadEntityRows(sheet: SheetRow, viewParams?: ViewParams): Promise<GridRow[]> {
-  const tableName = sheet.table_name;
-  if (!/^ent_[a-z0-9_]+$/.test(tableName)) {
-    throw new ServiceError("INTERNAL_ERROR", "无效的实体表名");
-  }
-
-  const db = getLocalDb();
-  const columnsByKey = new Map(sheet.column_defs.map((c) => [c.key, c]));
-  const validKeys = new Set(columnsByKey.keys());
-
-  await assertDynamicTableExists(tableName);
-
-  const compiled = compileViewQuery(viewParams, columnsByKey);
-  const sql =
-    `SELECT * FROM type::table($t)` +
-    (compiled.where ? ` WHERE ${compiled.where}` : "") +
-    (compiled.orderBy ? ` ORDER BY ${compiled.orderBy}` : "") +
-    ` LIMIT 5000`;
-
-  const result = await db.query<[EntityRow[]]>(sql, {
-    t: tableName,
-    ...compiled.bindings,
-  });
-  return (result[0] ?? []).map((row) => entityRowToDTO(row, validKeys));
-}
-
-// ─── ViewParams → SurrealQL 拼装 ─────────────────────────────────────────────
-
-const FILTER_OP_TO_SQL: Record<FilterClause["op"], { sql: string; needValue: "scalar" | "array" | "none" }> = {
-  eq:           { sql: "=",         needValue: "scalar" },
-  neq:          { sql: "!=",        needValue: "scalar" },
-  gt:           { sql: ">",         needValue: "scalar" },
-  gte:          { sql: ">=",        needValue: "scalar" },
-  lt:           { sql: "<",         needValue: "scalar" },
-  lte:          { sql: "<=",        needValue: "scalar" },
-  contains:     { sql: "CONTAINS",  needValue: "scalar" },
-  not_contains: { sql: "CONTAINSNOT", needValue: "scalar" },
-  in:           { sql: "INSIDE",    needValue: "array"  },
-  is_null:      { sql: "IS NULL",   needValue: "none"   },
-  is_not_null:  { sql: "IS NOT NULL", needValue: "none" },
-};
-
-/**
- * 将 ViewParams 编译为 WHERE / ORDER BY 片段。
- *
- * 字段名走白名单（必须存在于 sheet.column_defs.key），通过校验后直接拼到 SQL 标识符位置；
- * 用户输入的字面值一律通过 $p0/$p1/... 参数绑定，避免任何注入。
- */
-function compileViewQuery(
-  viewParams: ViewParams | undefined,
-  columnsByKey: Map<string, StoredColumnDef>,
-): { where: string; orderBy: string; bindings: Record<string, unknown> } {
-  const bindings: Record<string, unknown> = {};
-  let bindIndex = 0;
-  const bind = (value: unknown) => {
-    const name = `p${bindIndex++}`;
-    bindings[name] = value;
-    return `$${name}`;
-  };
-
-  const wherePieces: string[] = [];
-  for (const clause of viewParams?.filters ?? []) {
-    const column = columnsByKey.get(clause.key);
-    if (!column) continue; // 字段已被删除，跳过该条件
-    if (!isSafeIdentifier(clause.key)) continue;
-
-    const opDef = FILTER_OP_TO_SQL[clause.op];
-    if (!opDef) continue;
-
-    if (opDef.needValue === "none") {
-      wherePieces.push(`${clause.key} ${opDef.sql}`);
-      continue;
-    }
-    if (opDef.needValue === "array") {
-      const arr = Array.isArray(clause.value) ? clause.value : [];
-      if (arr.length === 0) continue;
-      wherePieces.push(`${clause.key} ${opDef.sql} ${bind(arr.map((v) => coerceFilterValue(v, column)))}`);
-      continue;
-    }
-    if (clause.value === undefined || clause.value === null || clause.value === "") continue;
-    wherePieces.push(`${clause.key} ${opDef.sql} ${bind(coerceFilterValue(clause.value, column))}`);
-  }
-
-  const filterMode = viewParams?.filterMode === "or" ? " OR " : " AND ";
-  const where = wherePieces.length ? wherePieces.join(filterMode) : "";
-
-  const orderPieces: string[] = [];
-  for (const sort of viewParams?.sorts ?? []) {
-    if (!columnsByKey.has(sort.key)) continue;
-    if (!isSafeIdentifier(sort.key)) continue;
-    const dir = sort.direction === "desc" ? "DESC" : "ASC";
-    orderPieces.push(`${sort.key} ${dir}`);
-  }
-  const orderBy = orderPieces.join(", ");
-
-  return { where, orderBy, bindings };
-}
-
-/** 字段 key 在 schema 中已经被规范化（snake_case），这里二次校验防御。 */
-function isSafeIdentifier(key: string): boolean {
-  return /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(key);
-}
-
-/** 把字面值按列类型做最小转换，复用 cell 的 coerce 规则；date 字段额外包装为 DateTime 以匹配 SurrealQL datetime。 */
-function coerceFilterValue(value: unknown, column: StoredColumnDef): unknown {
-  const coerced = coerceCellValue(value, storedColumnToDTO(column));
-  if (column.field_type === "date" && coerced instanceof Date) {
-    return new DateTime(coerced);
-  }
-  return coerced;
-}
-
-function entityRowToDTO(row: EntityRow, validKeys: Set<string>): GridRow {
-  const values: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(row)) {
-    if (k === "id" || k === "workspace" || k === "created_by" || k === "created_at" || k === "updated_at") continue;
-    if (validKeys.has(k)) values[k] = jsonifyDbValue(v);
-  }
-  return { id: String(row.id), values };
-}
-
-/** 把 SurrealDB sdk 反序列化出来的 DateTime / Date / RecordId 转成 RPC 安全的标量，避免 JSON.stringify 丢精度。 */
-function jsonifyDbValue(value: unknown): unknown {
-  if (value instanceof DateTime) return value.toISOString();
-  if (value instanceof Date) return value.toISOString();
-  if (value instanceof RecordId) return String(value);
-  if (Array.isArray(value)) return value.map(jsonifyDbValue);
-  return value;
-}
-
-function storedColumnToDTO(c: StoredColumnDef): GridColumnDef {
-  return {
-    key: c.key,
-    label: c.label,
-    fieldType: c.field_type,
-    required: c.required,
-    options: c.options,
-    constraints: c.constraints,
-    dateFormat: c.date_format,
-    referenceTable: c.reference_table,
-    referenceSheetId: c.reference_sheet_id,
-    referenceMultiple: c.reference_multiple,
-    referenceDisplayKey: c.reference_display_key,
-  };
-}
-
-function sheetRowToDTO(s: SheetRow): SheetSummaryDTO {
-  return {
-    id: String(s.id),
-    workbookId: String(s.workbook),
-    univerId: s.univer_id,
-    tableName: s.table_name,
-    label: s.label,
-    position: s.position,
-    columnDefs: s.column_defs.map(storedColumnToDTO),
-  };
 }
 
 function workbookRowToDTO(row: WorkbookRow): WorkbookSummaryDTO {
@@ -723,36 +454,4 @@ function workbookRowToDTO(row: WorkbookRow): WorkbookSummaryDTO {
     folderId: row.folder ? String(row.folder) : undefined,
     updatedAt: row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at),
   };
-}
-
-function coerceCellValue(value: unknown, column?: GridColumnDef): unknown {
-  return coerceGridFieldValue(value, column);
-}
-
-async function assertDynamicTableExists(tableName: string): Promise<void> {
-  const db = getLocalDb();
-  const info = await db.query<[{ tables?: Record<string, unknown> }]>(`INFO FOR DB`);
-  const tables = info[0]?.tables ?? {};
-  if (!Object.prototype.hasOwnProperty.call(tables, tableName)) {
-    throw new ServiceError("NOT_FOUND", `动态实体表不存在: ${tableName}`);
-  }
-}
-
-async function ensureEntityAuditFields(tableName: string): Promise<void> {
-  if (!/^ent_[a-z0-9_]+$/.test(tableName)) {
-    throw new ServiceError("INTERNAL_ERROR", "无效的实体表名");
-  }
-  const db = getLocalDb();
-  await db.query(
-    `DEFINE FIELD IF NOT EXISTS workspace  ON TABLE ${tableName} TYPE option<record<workspace>>;
-     DEFINE FIELD IF NOT EXISTS created_by ON TABLE ${tableName} TYPE option<record<app_user>>;
-     DEFINE FIELD IF NOT EXISTS created_at ON TABLE ${tableName} TYPE datetime VALUE time::now();
-     DEFINE FIELD IF NOT EXISTS updated_at ON TABLE ${tableName} TYPE datetime VALUE time::now();`
-  );
-}
-
-function assertRowIdBelongsToTable(rowId: string, tableName: string): void {
-  if (!rowId.startsWith(`${tableName}:`)) {
-    throw new ServiceError("NOT_FOUND", "记录不属于当前 Sheet");
-  }
 }
