@@ -1,4 +1,5 @@
 import { appApi } from "./app-api";
+import { isDraftRowId, recordDrafts } from "./record-drafts";
 import { coerceGridFieldValue, validateGridFieldValue } from "../../shared/field-schema";
 import type {
   FilterClause,
@@ -33,17 +34,7 @@ const EMPTY_VIEW_PARAMS: ViewParams = {
   groupBy: null,
 };
 
-const DRAFT_PREFIX = "__draft:";
-let draftSeq = 0;
-function nextDraftId(): string {
-  draftSeq += 1;
-  return `${DRAFT_PREFIX}${Date.now().toString(36)}-${draftSeq}`;
-}
-
-/** 临时行（draft）只存在于内存中，未持久化到数据库；等所有必填字段填齐才会晋升为真实行。 */
-export function isDraftRowId(id: string | RecordIdString | null | undefined): boolean {
-  return typeof id === "string" && id.startsWith(DRAFT_PREFIX);
-}
+export { isDraftRowId } from "./record-drafts";
 
 function createEditorStore() {
   let state = $state<EditorState>({
@@ -61,22 +52,7 @@ function createEditorStore() {
 
   /** 把 state.rows 中持久化部分写回（不动 drafts），用于在持久化操作后保持 rows 一致。 */
   function syncDraftBucket() {
-    const sheetId = state.activeSheetId;
-    if (!sheetId) return;
-    const drafts = state.rows.filter((r) => isDraftRowId(r.id));
-    if (drafts.length) {
-      state.draftsBySheet = { ...state.draftsBySheet, [sheetId]: drafts };
-    } else if (state.draftsBySheet[sheetId]) {
-      const next = { ...state.draftsBySheet };
-      delete next[sheetId];
-      state.draftsBySheet = next;
-    }
-  }
-
-  /** 取出指定 sheet 的 drafts（不再存于 bucket 内的副本，使用前请考虑去重）。 */
-  function getDraftsForSheet(sheetId: string | null): GridRow[] {
-    if (!sheetId) return [];
-    return state.draftsBySheet[sheetId] ?? [];
+    state.draftsBySheet = recordDrafts.syncBucket(state.activeSheetId, state.rows, state.draftsBySheet);
   }
 
   function getColumnsForSheet(sheetId: string): GridColumnDef[] {
@@ -99,8 +75,7 @@ function createEditorStore() {
         state.data = res.data;
         state.activeSheetId = res.data.activeSheetId;
         state.columns = res.data.columns;
-        const drafts = getDraftsForSheet(res.data.activeSheetId);
-        state.rows = drafts.length ? [...res.data.rows, ...drafts] : res.data.rows;
+        state.rows = recordDrafts.rowsWithDrafts(res.data.activeSheetId, res.data.rows, state.draftsBySheet);
       } else {
         state.error = res.message;
       }
@@ -120,8 +95,7 @@ function createEditorStore() {
     try {
       const res = await appApi.getWorkbookData(state.data.workbook.id, state.activeSheetId, state.viewParams);
       if (res.ok) {
-        const drafts = getDraftsForSheet(state.activeSheetId);
-        state.rows = drafts.length ? [...res.data.rows, ...drafts] : res.data.rows;
+        state.rows = recordDrafts.rowsWithDrafts(state.activeSheetId, res.data.rows, state.draftsBySheet);
       } else {
         state.error = res.message;
       }
@@ -362,9 +336,9 @@ function createEditorStore() {
     const persisted = ids.filter((id) => !isDraftRowId(id)) as RecordIdString[];
 
     if (drafts.length) {
-      const removed = new Set(drafts);
-      state.rows = state.rows.filter((row) => !removed.has(row.id));
-      syncDraftBucket();
+      const next = recordDrafts.discardIds(state.activeSheetId, state.rows, state.draftsBySheet, drafts);
+      state.rows = next.rows;
+      state.draftsBySheet = next.draftsBySheet;
     }
 
     if (!persisted.length) return true;
@@ -388,12 +362,6 @@ function createEditorStore() {
     }
   }
 
-  function buildBlankValues(): Record<string, unknown> {
-    return Object.fromEntries(
-      state.columns.map((col) => [col.key, col.fieldType === "checkbox" ? false : null]),
-    );
-  }
-
   /**
    * 在指定行上方/下方插入 N 行临时（draft）记录。
    * 这些行只存内存，不写库；用户编辑过程中若所有必填字段填齐，会自动晋升为真实行。
@@ -403,50 +371,33 @@ function createEditorStore() {
     count: number,
     position: "above" | "below" | "end",
   ): boolean {
-    if (!state.activeSheetId) return false;
-    const safeCount = Math.max(1, Math.floor(count));
-    const drafts: GridRow[] = Array.from({ length: safeCount }, () => ({
-      id: nextDraftId() as RecordIdString,
-      values: buildBlankValues(),
-    }));
-
-    if (position === "end" || !targetRowId) {
-      state.rows = [...state.rows, ...drafts];
-      syncDraftBucket();
-      return true;
-    }
-
-    const idx = state.rows.findIndex((r) => r.id === targetRowId);
-    if (idx === -1) {
-      state.rows = [...state.rows, ...drafts];
-      syncDraftBucket();
-      return true;
-    }
-    const insertAt = position === "above" ? idx : idx + 1;
-    const next = state.rows.slice();
-    next.splice(insertAt, 0, ...drafts);
-    state.rows = next;
-    syncDraftBucket();
+    const next = recordDrafts.insert(
+      state.activeSheetId,
+      state.rows,
+      state.draftsBySheet,
+      state.columns,
+      targetRowId,
+      count,
+      position,
+    );
+    if (!next) return false;
+    state.rows = next.rows;
+    state.draftsBySheet = next.draftsBySheet;
     return true;
   }
 
   /** 复制源行（持久化或 draft）为一个新的 draft，插入到源行下方。不直接写库。 */
   function duplicateRowAsDraft(sourceRowId: RecordIdString | string): boolean {
-    if (!state.activeSheetId) return false;
-    const idx = state.rows.findIndex((r) => r.id === sourceRowId);
-    if (idx === -1) return false;
-    const source = state.rows[idx];
-    const values = Object.fromEntries(
-      state.columns.map((col) => [
-        col.key,
-        source.values[col.key] ?? (col.fieldType === "checkbox" ? false : null),
-      ]),
+    const next = recordDrafts.duplicate(
+      state.activeSheetId,
+      state.rows,
+      state.draftsBySheet,
+      state.columns,
+      sourceRowId,
     );
-    const draft: GridRow = { id: nextDraftId() as RecordIdString, values };
-    const next = state.rows.slice();
-    next.splice(idx + 1, 0, draft);
-    state.rows = next;
-    syncDraftBucket();
+    if (!next) return false;
+    state.rows = next.rows;
+    state.draftsBySheet = next.draftsBySheet;
     return true;
   }
 
@@ -460,15 +411,10 @@ function createEditorStore() {
     draftId: string,
     values: Record<string, unknown>,
   ): Promise<{ promoted: boolean; newId?: RecordIdString }> {
-    if (!state.activeSheetId) return { promoted: false };
-    const idx = state.rows.findIndex((r) => r.id === draftId);
-    if (idx === -1) return { promoted: false };
-
-    // 先更新内存 draft（无论是否能晋升，编辑结果都要保留在 UI 上）
-    const next = state.rows.slice();
-    next[idx] = { ...next[idx], values: { ...values } };
-    state.rows = next;
-    syncDraftBucket();
+    const merged = recordDrafts.merge(state.activeSheetId, state.rows, state.draftsBySheet, draftId, values);
+    if (!merged) return { promoted: false };
+    state.rows = merged.rows;
+    state.draftsBySheet = merged.draftsBySheet;
 
     const probe = [{ values: { ...values } }];
     const validationError = validatePatches(probe, state.columns);
@@ -487,11 +433,9 @@ function createEditorStore() {
       }
       const promoted = res.data.upserted[0];
       if (!promoted) return { promoted: false };
-      const after = state.rows.slice();
-      const at = after.findIndex((r) => r.id === draftId);
-      if (at !== -1) after[at] = promoted;
-      state.rows = after;
-      syncDraftBucket();
+      const next = recordDrafts.promote(state.activeSheetId, state.rows, state.draftsBySheet, draftId, promoted);
+      state.rows = next.rows;
+      state.draftsBySheet = next.draftsBySheet;
       return { promoted: true, newId: promoted.id };
     } catch (err) {
       state.saveError = String(err);
@@ -506,53 +450,26 @@ function createEditorStore() {
    * 不完整的继续留作 draft，随后由 discardAllDrafts 丢弃。
    */
   async function commitValidDrafts(): Promise<boolean> {
-    const sheetEntries = Object.entries(state.draftsBySheet);
-    if (!sheetEntries.length || !state.columns.length) return true;
+    if (!recordDrafts.count(state.draftsBySheet) || !state.columns.length) return true;
 
-    let ok = true;
     state.saving = true;
     state.saveError = null;
     try {
-      for (const [sheetId, drafts] of sheetEntries) {
-        const columns = getColumnsForSheet(sheetId);
-        if (!columns.length) continue;
-
-        const validDrafts: Array<{ draftId: string; values: Record<string, unknown> }> = [];
-
-        for (const draft of drafts) {
-          if (!isDraftRowId(draft.id)) continue;
-          const patch = [{ values: { ...draft.values } }];
-          if (validatePatches(patch, columns)) continue;
-          validDrafts.push({ draftId: draft.id, values: patch[0].values });
-        }
-
-        if (!validDrafts.length) continue;
-
-        const res = await appApi.upsertRows(sheetId, validDrafts.map((draft) => ({ values: draft.values })));
-        if (!res.ok) {
-          state.saveError = res.message;
-          ok = false;
-          continue;
-        }
-
-        const promotedByDraftId = new Map(
-          validDrafts.map((draft, index) => [draft.draftId, res.data.upserted[index]]),
-        );
-
-        if (sheetId === state.activeSheetId) {
-          state.rows = state.rows.map((row) => promotedByDraftId.get(row.id) ?? row);
-        }
-
-        const remainingDrafts = drafts.filter((draft) => !promotedByDraftId.has(draft.id));
-        if (remainingDrafts.length) {
-          state.draftsBySheet = { ...state.draftsBySheet, [sheetId]: remainingDrafts };
-        } else {
-          const next = { ...state.draftsBySheet };
-          delete next[sheetId];
-          state.draftsBySheet = next;
-        }
-      }
-      return ok;
+      const result = await recordDrafts.commitValid({
+        draftsBySheet: state.draftsBySheet,
+        activeSheetId: state.activeSheetId,
+        rows: state.rows,
+        getColumnsForSheet,
+        validate: validatePatches,
+        persist: async (sheetId, patches) => {
+          const res = await appApi.upsertRows(sheetId, patches);
+          return res.ok ? { ok: true, rows: res.data.upserted } : { ok: false, message: res.message };
+        },
+      });
+      state.rows = result.rows;
+      state.draftsBySheet = result.draftsBySheet;
+      state.saveError = result.error;
+      return result.ok;
     } catch (err) {
       state.saveError = String(err);
       return false;
@@ -571,31 +488,7 @@ function createEditorStore() {
    */
   async function saveFromSource(source: Array<Record<string, unknown>>): Promise<boolean> {
     if (!state.activeSheetId || !state.columns.length) return false;
-    const colKeys = state.columns.map((c) => c.key);
-    const byId = new Map(state.rows.map((row) => [row.id, row]));
-
-    const persistedPatches: Array<{ id: RecordIdString; values: Record<string, unknown> }> = [];
-    const draftEdits: Array<{ draftId: string; values: Record<string, unknown> }> = [];
-
-    for (const raw of source) {
-      const rawId = typeof raw._id === "string" ? raw._id : undefined;
-      if (!rawId) continue;
-      const existing = byId.get(rawId);
-      if (!existing) continue;
-
-      const values: Record<string, unknown> = {};
-      for (const k of colKeys) values[k] = k in raw ? raw[k] : existing.values[k];
-
-      // diff：只处理真正发生变化的行
-      const changed = colKeys.some((k) => !shallowEqual(values[k], existing.values[k]));
-      if (!changed) continue;
-
-      if (isDraftRowId(rawId)) {
-        draftEdits.push({ draftId: rawId, values });
-      } else {
-        persistedPatches.push({ id: existing.id, values });
-      }
-    }
+    const { persistedPatches, draftEdits } = recordDrafts.diffSource(source, state.rows, state.columns);
 
     let ok = true;
     if (persistedPatches.length) {
@@ -620,8 +513,9 @@ function createEditorStore() {
   }
 
   function discardAllDrafts() {
-    state.draftsBySheet = {};
-    state.rows = state.rows.filter((r) => !isDraftRowId(r.id));
+    const next = recordDrafts.discardAll(state.rows);
+    state.rows = next.rows;
+    state.draftsBySheet = next.draftsBySheet;
   }
 
   return {
@@ -644,7 +538,7 @@ function createEditorStore() {
     },
     /** 整个工作簿内（所有 sheet）尚未持久化的草稿行数。 */
     get pendingDraftCount(): number {
-      return Object.values(state.draftsBySheet).reduce((sum, list) => sum + list.length, 0);
+      return recordDrafts.count(state.draftsBySheet);
     },
     loadWorkbook,
     reloadRows,
@@ -689,19 +583,4 @@ function validatePatches(
     }
   }
   return null;
-}
-
-/** 浅比较：处理 null/undefined/原始值；Date 比 getTime；其它对象按 JSON。 */
-function shallowEqual(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  if (a == null || b == null) return a == null && b == null;
-  if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime();
-  if (typeof a === "object" || typeof b === "object") {
-    try {
-      return JSON.stringify(a) === JSON.stringify(b);
-    } catch {
-      return false;
-    }
-  }
-  return false;
 }
