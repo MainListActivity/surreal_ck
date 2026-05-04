@@ -1,20 +1,14 @@
 <script lang="ts">
   import { editorStore } from "../../../lib/editor.svelte";
-  import { editorUi } from "../lib/editor-ui.svelte";
   import { cardAccent, cardPillStyle } from "../lib/cell-style";
-  import { deriveColumns } from "../lib/derived-columns";
 
-  const cols = $derived(deriveColumns(editorStore.visibleColumns));
-
-  function selectRow(id: string) {
-    editorUi.selectRow(id);
-    editorUi.openPanel("detail");
-  }
+  const tableView = $derived(editorStore.tableViewAdapter);
+  const cols = $derived(tableView.renderers);
 </script>
 
 <div class="gallery">
-  {#each editorStore.rows.slice(0, 80) as row}
-    <button class="gallery-card" onclick={() => selectRow(row.id)}>
+  {#each tableView.visibleRows.slice(0, 80) as row}
+    <button class="gallery-card" onclick={() => tableView.actions.openRecord(row.id)}>
       <span
         class="gallery-strip"
         style={`background:${cardAccent(cols.status ? row.values[cols.status.key] : "")}`}

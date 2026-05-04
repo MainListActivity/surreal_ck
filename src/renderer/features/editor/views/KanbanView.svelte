@@ -1,26 +1,20 @@
 <script lang="ts">
   import { editorStore } from "../../../lib/editor.svelte";
-  import { editorUi } from "../lib/editor-ui.svelte";
   import { cardAccent } from "../lib/cell-style";
-  import { deriveColumns } from "../lib/derived-columns";
 
-  const cols = $derived(deriveColumns(editorStore.visibleColumns));
+  const tableView = $derived(editorStore.tableViewAdapter);
+  const cols = $derived(tableView.renderers);
 
   function statusOf(row: { values: Record<string, unknown> }) {
     return String(cols.status ? row.values[cols.status.key] ?? "未分类" : "全部");
   }
 
   const groups = $derived(
-    Array.from(new Set(editorStore.rows.map(statusOf))).slice(0, 4),
+    Array.from(new Set(tableView.visibleRows.map(statusOf))).slice(0, 4),
   );
 
   function rowsOf(status: string) {
-    return editorStore.rows.filter((row) => statusOf(row) === status).slice(0, 40);
-  }
-
-  function selectRow(id: string) {
-    editorUi.selectRow(id);
-    editorUi.openPanel("detail");
+    return tableView.visibleRows.filter((row) => statusOf(row) === status).slice(0, 40);
   }
 </script>
 
@@ -30,11 +24,11 @@
       <header>
         <span class="dot" style={`background:${cardAccent(status)}`}></span>
         <strong>{status}</strong>
-        <span>({editorStore.rows.filter((row) => statusOf(row) === status).length})</span>
+        <span>({tableView.visibleRows.filter((row) => statusOf(row) === status).length})</span>
       </header>
       <div class="kanban-list">
         {#each rowsOf(status) as row}
-          <button class="kanban-card" onclick={() => selectRow(row.id)}>
+          <button class="kanban-card" onclick={() => tableView.actions.openRecord(row.id)}>
             <strong>{String(cols.title ? row.values[cols.title.key] ?? "—" : row.id)}</strong>
             {#if cols.amount}
               <span class="money">¥ {String(row.values[cols.amount.key] ?? "0")}</span>

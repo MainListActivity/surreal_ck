@@ -5,7 +5,6 @@
   import { editorStore } from "../../../lib/editor.svelte";
   import { editorUi } from "../lib/editor-ui.svelte";
   import RecordForm from "../components/RecordForm.svelte";
-  import { coerceGridFieldValue, validateGridFieldValue } from "../../../../shared/field-schema";
   import type { GridColumnDef } from "../../../../shared/rpc.types";
 
   type FormMode = "edit" | "fill";
@@ -27,17 +26,14 @@
   // 拖拽中的字段 key（用于编辑模式下重排）
   let draggingKey = $state<string | null>(null);
   let dragOverKey = $state<string | null>(null);
-
-  function emptyDraftFor(cols: GridColumnDef[]) {
-    return Object.fromEntries(cols.map((col) => [col.key, col.fieldType === "checkbox" ? false : null]));
-  }
+  const tableView = $derived(editorStore.tableViewAdapter);
 
   // sheet 切换时重置草稿；不动 fieldOrder（保留每个 sheet 的字段编排）
   $effect(() => {
     const sid = editorStore.activeSheetId;
     if (sid !== lastSheetId) {
       lastSheetId = sid;
-      draft = emptyDraftFor(editorStore.columns);
+      draft = tableView.emptyValues();
       fieldErrors = {};
     }
   });
@@ -48,7 +44,7 @@
   // 字段总顺序：必填字段（按 columns 原顺序） + 用户加入的非必填字段（按 optionalOrder）
   // 自动剔除已不存在的列
   const fieldOrder = $derived.by(() => {
-    const cols = editorStore.columns;
+    const cols = tableView.visibleColumns;
     const validKeys = new Set(cols.map((c) => c.key));
     const required = cols.filter((c) => c.required).map((c) => c.key);
     const optional = optionalOrder.filter((k) => validKeys.has(k) && !required.includes(k));
@@ -57,12 +53,12 @@
 
   const includedColumns = $derived(
     fieldOrder
-      .map((key) => editorStore.columns.find((c) => c.key === key))
+      .map((key) => tableView.getColumn(key))
       .filter((c): c is GridColumnDef => Boolean(c)),
   );
 
   const availableColumns = $derived(
-    editorStore.columns.filter((c) => !c.required && !fieldOrder.includes(c.key)),
+    tableView.visibleColumns.filter((c) => !c.required && !fieldOrder.includes(c.key)),
   );
 
   function setOptionalOrder(next: string[]) {
@@ -70,14 +66,14 @@
   }
 
   function addField(key: string) {
-    const col = editorStore.columns.find((c) => c.key === key);
+    const col = tableView.getColumn(key);
     if (!col || col.required) return;
     if (optionalOrder.includes(key)) return;
     setOptionalOrder([...optionalOrder, key]);
   }
 
   function removeField(key: string) {
-    const col = editorStore.columns.find((c) => c.key === key);
+    const col = tableView.getColumn(key);
     if (!col || col.required) return;
     setOptionalOrder(optionalOrder.filter((k) => k !== key));
   }
@@ -134,7 +130,7 @@
   }
 
   function reset() {
-    draft = emptyDraftFor(editorStore.columns);
+    draft = tableView.emptyValues();
     fieldErrors = {};
   }
 
@@ -143,15 +139,15 @@
     const values: Record<string, unknown> = {};
     const nextErrors: Record<string, string> = {};
     for (const col of includedColumns) {
-      const coerced = coerceGridFieldValue(draft[col.key], col);
-      const errors = validateGridFieldValue(coerced, col);
+      const coerced = tableView.coerceValue(col, draft[col.key]);
+      const error = tableView.validateValue(col, coerced);
       values[col.key] = coerced;
-      if (errors.length) nextErrors[col.key] = errors[0];
+      if (error) nextErrors[col.key] = error;
     }
     fieldErrors = nextErrors;
     if (Object.keys(nextErrors).length) return;
 
-    const ok = await editorStore.saveRows([{ values }]);
+    const ok = await tableView.actions.saveRows([{ values }]);
     if (ok) {
       reset();
       lastSavedAt = new Date().toLocaleTimeString();
@@ -188,7 +184,7 @@
           </button>
         {/each}
       </div>
-    {:else if editorStore.columns.length}
+    {:else if tableView.visibleColumns.length}
       <div class="all-added">所有非必填字段都已添加至表单</div>
     {:else}
       <div class="all-added">暂无可用字段</div>

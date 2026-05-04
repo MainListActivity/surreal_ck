@@ -1,5 +1,7 @@
 import { appApi } from "./app-api";
+import { referenceCache, collectReferenceIdsFromValues } from "./reference-cache.svelte";
 import { isDraftRowId, recordDrafts } from "./record-drafts";
+import { editorUi } from "../features/editor/lib/editor-ui.svelte";
 import { coerceGridFieldValue, validateGridFieldValue } from "../../shared/field-schema";
 import type {
   FilterClause,
@@ -11,6 +13,39 @@ import type {
   ViewParams,
   WorkbookDataDTO,
 } from "../../shared/rpc.types";
+
+export type TableViewRow = GridRow & {
+  rowNumber: number;
+};
+
+export type TableViewCardRenderers = {
+  title: GridColumnDef | null;
+  secondary: GridColumnDef | null;
+  status: GridColumnDef | null;
+  amount: GridColumnDef | null;
+  date: GridColumnDef | null;
+};
+
+export type TableViewActions = {
+  selectRow: (id: RecordIdString | null) => void;
+  openRecord: (id: RecordIdString) => void;
+  saveRows: (patches: Array<{ id?: RecordIdString; values: Record<string, unknown> }>) => Promise<boolean>;
+  saveFromSource: (source: Array<Record<string, unknown>>) => Promise<boolean>;
+  deleteRows: (ids: Array<RecordIdString | string>) => Promise<boolean>;
+  insertBlankRows: (targetRowId: RecordIdString | string | null, count: number, position: "above" | "below" | "end") => boolean;
+  duplicateRowAsDraft: (sourceRowId: RecordIdString | string) => boolean;
+};
+
+export type TableViewAdapter = {
+  visibleRows: TableViewRow[];
+  visibleColumns: GridColumnDef[];
+  renderers: TableViewCardRenderers;
+  actions: TableViewActions;
+  getColumn: (key: string | null | undefined) => GridColumnDef | null;
+  coerceValue: (column: GridColumnDef, value: unknown) => unknown;
+  validateValue: (column: GridColumnDef, value: unknown) => string | null;
+  emptyValues: (columns?: GridColumnDef[]) => Record<string, unknown>;
+};
 
 type EditorState = {
   loading: boolean;
@@ -411,7 +446,9 @@ function createEditorStore() {
     draftId: string,
     values: Record<string, unknown>,
   ): Promise<{ promoted: boolean; newId?: RecordIdString }> {
-    const merged = recordDrafts.merge(state.activeSheetId, state.rows, state.draftsBySheet, draftId, values);
+    const sheetId = state.activeSheetId;
+    if (!sheetId) return { promoted: false };
+    const merged = recordDrafts.merge(sheetId, state.rows, state.draftsBySheet, draftId, values);
     if (!merged) return { promoted: false };
     state.rows = merged.rows;
     state.draftsBySheet = merged.draftsBySheet;
@@ -426,14 +463,14 @@ function createEditorStore() {
     state.saving = true;
     state.saveError = null;
     try {
-      const res = await appApi.upsertRows(state.activeSheetId, probe);
+      const res = await appApi.upsertRows(sheetId, probe);
       if (!res.ok) {
         state.saveError = res.message;
         return { promoted: false };
       }
       const promoted = res.data.upserted[0];
       if (!promoted) return { promoted: false };
-      const next = recordDrafts.promote(state.activeSheetId, state.rows, state.draftsBySheet, draftId, promoted);
+      const next = recordDrafts.promote(sheetId, state.rows, state.draftsBySheet, draftId, promoted);
       state.rows = next.rows;
       state.draftsBySheet = next.draftsBySheet;
       return { promoted: true, newId: promoted.id };
@@ -518,6 +555,83 @@ function createEditorStore() {
     state.draftsBySheet = next.draftsBySheet;
   }
 
+  function getVisibleColumns(): GridColumnDef[] {
+    const hidden = new Set(state.viewParams.hiddenFields ?? []);
+    return state.columns.filter((col) => !hidden.has(col.key));
+  }
+
+  function getVisibleRows(): TableViewRow[] {
+    return state.rows.map((row, index) => ({ ...row, rowNumber: index + 1 }));
+  }
+
+  function deriveRenderers(columns: GridColumnDef[]): TableViewCardRenderers {
+    return {
+      title: columns[0] ?? null,
+      secondary: columns[1] ?? null,
+      status:
+        columns.find((col) => /status|状态/i.test(col.key) || /状态/.test(col.label)) ??
+        columns.find((col) => col.options?.length) ??
+        null,
+      amount: columns.find((col) => col.fieldType === "number" || col.fieldType === "decimal") ?? null,
+      date: columns.find((col) => col.fieldType === "date") ?? null,
+    };
+  }
+
+  function getColumn(key: string | null | undefined): GridColumnDef | null {
+    if (!key) return null;
+    return state.columns.find((col) => col.key === key) ?? null;
+  }
+
+  function coerceValue(column: GridColumnDef, value: unknown) {
+    return coerceGridFieldValue(value, column);
+  }
+
+  function validateValue(column: GridColumnDef, value: unknown): string | null {
+    return validateGridFieldValue(value, column)[0] ?? null;
+  }
+
+  function emptyValues(columns: GridColumnDef[] = state.columns) {
+    return Object.fromEntries(columns.map((col) => [col.key, col.fieldType === "checkbox" ? false : null]));
+  }
+
+  function preheatReferences(rows: TableViewRow[], columns: GridColumnDef[]) {
+    const refCols = columns.filter((c) => c.fieldType === "reference");
+    if (!refCols.length) return;
+    const keys = refCols.map((c) => c.key);
+    const allIds: RecordIdString[] = [];
+    for (const row of rows) {
+      allIds.push(...collectReferenceIdsFromValues(row.values, keys));
+    }
+    if (allIds.length) referenceCache.ensure(allIds);
+  }
+
+  function createTableViewAdapter(): TableViewAdapter {
+    const visibleRows = getVisibleRows();
+    const visibleColumns = getVisibleColumns();
+    preheatReferences(visibleRows, visibleColumns);
+    return {
+      visibleRows,
+      visibleColumns,
+      renderers: deriveRenderers(visibleColumns),
+      actions: {
+        selectRow: (id) => editorUi.selectRow(id),
+        openRecord: (id) => {
+          editorUi.selectRow(id);
+          editorUi.openPanel("detail");
+        },
+        saveRows,
+        saveFromSource,
+        deleteRows: deleteRowIds,
+        insertBlankRows,
+        duplicateRowAsDraft,
+      },
+      getColumn,
+      coerceValue,
+      validateValue,
+      emptyValues,
+    };
+  }
+
   return {
     get loading() { return state.loading; },
     get saving() { return state.saving; },
@@ -532,10 +646,9 @@ function createEditorStore() {
     get workbookName(): string { return state.data?.workbook.name ?? ""; },
     get viewParams(): ViewParams { return state.viewParams; },
     /** 隐藏字段过滤后的可见列；视图组件统一消费此入口 */
-    get visibleColumns(): GridColumnDef[] {
-      const hidden = new Set(state.viewParams.hiddenFields ?? []);
-      return state.columns.filter((col) => !hidden.has(col.key));
-    },
+    get visibleColumns(): GridColumnDef[] { return getVisibleColumns(); },
+    /** 表视图 Adapter seam：表视图只消费标准化行、列、动作和展示选择。 */
+    get tableViewAdapter(): TableViewAdapter { return createTableViewAdapter(); },
     /** 整个工作簿内（所有 sheet）尚未持久化的草稿行数。 */
     get pendingDraftCount(): number {
       return recordDrafts.count(state.draftsBySheet);

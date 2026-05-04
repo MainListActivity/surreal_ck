@@ -10,7 +10,6 @@
   import { appState } from "../../../lib/app-state.svelte";
   import { editorStore } from "../../../lib/editor.svelte";
   import { editorUi } from "../lib/editor-ui.svelte";
-  import { referenceCache, collectReferenceIdsFromValues } from "../../../lib/reference-cache.svelte";
   import { getFieldTypeIconPaths, getFieldTypeMeta } from "../lib/field-type-meta";
   import type { GridColumnDef, RecordIdString } from "../../../../shared/rpc.types";
   import { formatDateValue } from "../../../../shared/date-format";
@@ -182,6 +181,7 @@
     insertBelowCount: 1,
   });
 
+  const tableView = $derived(editorStore.tableViewAdapter);
   const groupKey = $derived(editorStore.viewParams.groupBy ?? null);
 
   type GridSourceRow = Record<string, unknown> & {
@@ -210,7 +210,7 @@
   /** 分组开启时按分组键插入分组分隔行，方便用户在表格内直接看见分组归属。 */
   const gridSource = $derived<GridSourceRow[]>(
     (() => {
-      const rows = editorStore.rows.map((row) => ({ _id: row.id, ...row.values })) as GridSourceRow[];
+      const rows = tableView.visibleRows.map((row) => ({ _id: row.id, ...row.values })) as GridSourceRow[];
       const out: GridSourceRow[] = [];
       let rowNumber = 0;
 
@@ -241,18 +241,6 @@
       return out;
     })(),
   );
-
-  // 行/列变化时预热引用缓存，避免单元格渲染时一个一个发请求。
-  $effect(() => {
-    const refCols = editorStore.columns.filter((c) => c.fieldType === "reference");
-    if (!refCols.length) return;
-    const keys = refCols.map((c) => c.key);
-    const allIds: RecordIdString[] = [];
-    for (const row of editorStore.rows) {
-      allIds.push(...collectReferenceIdsFromValues(row.values, keys));
-    }
-    if (allIds.length) referenceCache.ensure(allIds);
-  });
 
   const GRID_COLUMN_WIDTH = 160;
   const GRID_ROW_HEADER_WIDTH = 56;
@@ -296,7 +284,7 @@
 
   const gridColumns = $derived<ColumnRegular[]>(
     [
-      ...editorStore.visibleColumns.map((col) => {
+      ...tableView.visibleColumns.map((col) => {
         const meta = getFieldTypeMeta(col.fieldType);
         const iconPaths = getFieldTypeIconPaths(col.fieldType);
         const base: ColumnRegular = {
@@ -363,7 +351,7 @@
   const visibleGridRows = $derived(Math.max(gridSource.length, 8));
   const gridViewportWidth = $derived(
     GRID_ROW_HEADER_WIDTH +
-      editorStore.visibleColumns.reduce((sum, col) => sum + (columnWidths[col.key] ?? GRID_COLUMN_WIDTH), 0) +
+      tableView.visibleColumns.reduce((sum, col) => sum + (columnWidths[col.key] ?? GRID_COLUMN_WIDTH), 0) +
       ADD_FIELD_WIDTH +
       1,
   );
@@ -399,7 +387,7 @@
       editorUi.clipboardStatus = "粘贴已应用,保存中…";
       const next = await grid.getSource?.();
       if (next?.length) {
-        const ok = await editorStore.saveFromSource(next.filter((r) => !r._isGroup));
+        const ok = await tableView.actions.saveFromSource(next.filter((r) => !r._isGroup));
         editorUi.clipboardStatus = ok ? "已保存" : `保存失败: ${editorStore.saveError}`;
       }
     };
@@ -417,7 +405,7 @@
       if (!isGridRecordRow(sourceRow)) return;
       const rowId = typeof sourceRow._id === "string" ? sourceRow._id : null;
       if (!rowId) return;
-      editorUi.selectRow(rowId as RecordIdString);
+      tableView.actions.selectRow(rowId as RecordIdString);
     };
 
     const onContextMenu = (event: Event) => {
@@ -431,7 +419,7 @@
         const rawIndex = headerCell.getAttribute("data-rgCol");
         const index = rawIndex ? Number(rawIndex) : Number.NaN;
         if (!Number.isInteger(index)) return;
-        const column = editorStore.visibleColumns[index];
+        const column = tableView.visibleColumns[index];
         if (!column) return;
         mouseEvent.preventDefault();
         mouseEvent.stopPropagation();
@@ -475,7 +463,7 @@
     if (appState.readOnly) return;
     const next = await gridRef?.getWebComponent()?.getSource?.();
     if (next?.length) {
-      const ok = await editorStore.saveFromSource(next.filter((r) => !r._isGroup));
+      const ok = await tableView.actions.saveFromSource(next.filter((r) => !r._isGroup));
       if (!ok && editorStore.saveError) {
         editorUi.clipboardStatus = `保存失败: ${editorStore.saveError}`;
       }
@@ -488,7 +476,7 @@
     const rowIndex = focused?.y;
     const sourceRow = typeof rowIndex === "number" ? gridSource[rowIndex] : undefined;
     if (isGridRecordRow(sourceRow)) {
-      editorUi.selectRow(sourceRow._id as RecordIdString);
+      tableView.actions.selectRow(sourceRow._id as RecordIdString);
     }
   }
 
@@ -507,7 +495,7 @@
   }
 
   function openRowMenu(rowId: RecordIdString, x: number, y: number) {
-    editorUi.selectRow(rowId);
+    tableView.actions.selectRow(rowId);
     rowMenu = {
       open: true,
       rowId,
@@ -530,8 +518,7 @@
 
   function expandRecord() {
     if (!rowMenu.rowId) return;
-    editorUi.selectRow(rowMenu.rowId);
-    editorUi.openPanel("detail");
+    tableView.actions.openRecord(rowMenu.rowId);
     closeRowMenu();
   }
 
@@ -539,7 +526,7 @@
     if (appState.readOnly || !rowMenu.rowId) return;
     const targetId = rowMenu.rowId;
     closeRowMenu();
-    editorStore.duplicateRowAsDraft(targetId);
+    tableView.actions.duplicateRowAsDraft(targetId);
   }
 
   function insertRows(direction: "above" | "below") {
@@ -547,19 +534,19 @@
     const count = direction === "above" ? rowMenu.insertAboveCount : rowMenu.insertBelowCount;
     const targetId = rowMenu.rowId;
     closeRowMenu();
-    editorStore.insertBlankRows(targetId, count, direction);
+    tableView.actions.insertBlankRows(targetId, count, direction);
   }
 
   async function deleteRecord() {
     if (appState.readOnly || !rowMenu.rowId) return;
     const targetId = rowMenu.rowId;
     closeRowMenu();
-    await editorStore.deleteRowIds([targetId]);
+    await tableView.actions.deleteRows([targetId]);
   }
 
   function appendRowAtEnd() {
     if (appState.readOnly || !editorStore.activeSheetId) return;
-    editorStore.insertBlankRows(null, 1, "end");
+    tableView.actions.insertBlankRows(null, 1, "end");
   }
 
   async function appendField() {
@@ -713,7 +700,7 @@
     onmousedown={(event) => event.stopPropagation()}
   >
     <div class="field-menu-head">
-      <strong>{editorStore.columns.find((col) => col.key === editorUi.fieldMenu.fieldKey)?.label ?? "字段"}</strong>
+      <strong>{tableView.getColumn(editorUi.fieldMenu.fieldKey)?.label ?? "字段"}</strong>
       <span>{editorUi.fieldMenu.fieldKey}</span>
     </div>
     <button class="menu-item" role="menuitem" onclick={openFieldEditor}>
