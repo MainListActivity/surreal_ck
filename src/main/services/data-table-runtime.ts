@@ -1,4 +1,25 @@
-import { DateTime, RecordId, StringRecordId } from "surrealdb";
+import {
+  and,
+  BoundQuery,
+  contains,
+  DateTime,
+  eq,
+  expr,
+  gt,
+  gte,
+  inside,
+  lt,
+  lte,
+  ne,
+  not,
+  or,
+  raw,
+  RecordId,
+  StringRecordId,
+  Table,
+  type Expr,
+  type ExprLike,
+} from "surrealdb";
 import { getLocalDb } from "../db/index";
 import { mapNullsToSurrealNone, omitNullishSurrealFields } from "../db/surreal-values";
 import { ServiceError } from "./errors";
@@ -64,18 +85,8 @@ export class DataTableRuntime {
 
     await assertDynamicTableExists(this.tableName);
 
-    const compiled = compileViewQuery(viewParams, columnsByKey);
-    const sql =
-      `SELECT * FROM type::table($t)` +
-      (compiled.where ? ` WHERE ${compiled.where}` : "") +
-      (compiled.orderBy ? ` ORDER BY ${compiled.orderBy}` : "") +
-      ` LIMIT 5000`;
-
-    const db = getLocalDb();
-    const result = await db.query<[EntityRow[]]>(sql, {
-      t: this.tableName,
-      ...compiled.bindings,
-    });
+    const compiled = compileSelectOnly(this.tableName, viewParams, columnsByKey);
+    const result = await getLocalDb().query<[EntityRow[]]>(compiled);
     return (result[0] ?? []).map((row) => entityRowToDTO(row, validKeys));
   }
 
@@ -97,21 +108,18 @@ export class DataTableRuntime {
       if (rowPatch.id) {
         assertRowIdBelongsToTable(rowPatch.id, this.tableName);
         const updateValues = mapNullsToSurrealNone({ ...cleanValues, updated_at: new DateTime() });
-        const updated = await getLocalDb().query<[EntityRow[]]>(
-          `UPDATE $rowId MERGE $vals`,
-          { rowId: new StringRecordId(rowPatch.id), vals: updateValues },
-        );
-        const row = updated[0]?.[0];
+        const row = await getLocalDb()
+          .update<EntityRow>(new StringRecordId(rowPatch.id))
+          .merge(updateValues);
         if (row) upserted.push(entityRowToDTO(row, validKeys));
       } else {
         const createValues = omitNullishInsertValues(cleanValues);
         createValues.workspace = workspace;
         createValues.created_by = currentUserId;
-        const created = await getLocalDb().query<[EntityRow[]]>(
-          `CREATE type::table($t) CONTENT $vals`,
-          { t: this.tableName, vals: createValues },
-        );
-        const row = created[0]?.[0];
+        const created = await getLocalDb()
+          .create<EntityRow>(new Table(this.tableName))
+          .content(createValues);
+        const row = Array.isArray(created) ? created[0] : created;
         if (row) upserted.push(entityRowToDTO(row, validKeys));
       }
     }
@@ -124,7 +132,7 @@ export class DataTableRuntime {
     let deleted = 0;
     for (const id of ids) {
       assertRowIdBelongsToTable(id, this.tableName);
-      await getLocalDb().query(`DELETE $rowId`, { rowId: new StringRecordId(id) });
+      await getLocalDb().delete(new StringRecordId(id));
       deleted += 1;
     }
     return deleted;
@@ -184,12 +192,11 @@ export async function createEntityRows(
 
   const createdIds: RecordId[] = [];
   for (const values of rows) {
-    const created = await getLocalDb().query<[{ id: RecordId }[]]>(
-      `CREATE type::table($t) CONTENT $vals RETURN id`,
-      { t: tableName, vals: omitNullishInsertValues(values) },
-    );
-    const id = created[0]?.[0]?.id;
-    if (id) createdIds.push(id);
+    const created = await getLocalDb()
+      .create<{ id: RecordId }>(new Table(tableName))
+      .content(omitNullishInsertValues(values));
+    const row = Array.isArray(created) ? created[0] : created;
+    if (row?.id) createdIds.push(row.id);
   }
   return createdIds;
 }
@@ -295,65 +302,79 @@ function defineEntityField(tableName: string, column: GridColumnDef, mode: "if-n
   ).then(() => undefined);
 }
 
-const FILTER_OP_TO_SQL: Record<FilterClause["op"], { sql: string; needValue: "scalar" | "array" | "none" }> = {
-  eq: { sql: "=", needValue: "scalar" },
-  neq: { sql: "!=", needValue: "scalar" },
-  gt: { sql: ">", needValue: "scalar" },
-  gte: { sql: ">=", needValue: "scalar" },
-  lt: { sql: "<", needValue: "scalar" },
-  lte: { sql: "<=", needValue: "scalar" },
-  contains: { sql: "CONTAINS", needValue: "scalar" },
-  not_contains: { sql: "CONTAINSNOT", needValue: "scalar" },
-  in: { sql: "INSIDE", needValue: "array" },
-  is_null: { sql: "IS NULL", needValue: "none" },
-  is_not_null: { sql: "IS NOT NULL", needValue: "none" },
-};
-
-function compileViewQuery(
+/**
+ * 编译数据表读路径查询。函数体永远以 `SELECT * FROM type::table($t)` 开头,
+ * 物理上只能产生 SELECT 语句 —— 这是出路 3 的"受控字符串"边界。
+ * WHERE 子句委托 SDK 表达式工具构造,bindings 由 SDK 自动管理。
+ */
+export function compileSelectOnly(
+  tableName: string,
   viewParams: ViewParams | undefined,
   columnsByKey: Map<string, StoredColumnDef>,
-): { where: string; orderBy: string; bindings: Record<string, unknown> } {
-  const bindings: Record<string, unknown> = {};
-  let bindIndex = 0;
-  const bind = (value: unknown) => {
-    const name = `p${bindIndex++}`;
-    bindings[name] = value;
-    return `$${name}`;
-  };
-
-  const wherePieces: string[] = [];
+): BoundQuery {
+  const filterExprs: Expr[] = [];
   for (const clause of viewParams?.filters ?? []) {
     const column = columnsByKey.get(clause.key);
     if (!column || !isSafeIdentifier(clause.key)) continue;
-
-    const opDef = FILTER_OP_TO_SQL[clause.op];
-    if (!opDef) continue;
-
-    if (opDef.needValue === "none") {
-      wherePieces.push(`${clause.key} ${opDef.sql}`);
-      continue;
-    }
-    if (opDef.needValue === "array") {
-      const arr = Array.isArray(clause.value) ? clause.value : [];
-      if (arr.length === 0) continue;
-      wherePieces.push(`${clause.key} ${opDef.sql} ${bind(arr.map((v) => coerceFilterValue(v, column)))}`);
-      continue;
-    }
-    if (clause.value === undefined || clause.value === null || clause.value === "") continue;
-    wherePieces.push(`${clause.key} ${opDef.sql} ${bind(coerceFilterValue(clause.value, column))}`);
+    const built = filterClauseToExpr(clause, column);
+    if (built) filterExprs.push(built);
   }
 
-  const filterMode = viewParams?.filterMode === "or" ? " OR " : " AND ";
-  const where = wherePieces.length ? wherePieces.join(filterMode) : "";
+  const combine = viewParams?.filterMode === "or" ? or : and;
+  const whereExpr: ExprLike = filterExprs.length ? combine(...filterExprs) : null;
 
-  const orderPieces: string[] = [];
-  for (const sort of viewParams?.sorts ?? []) {
+  const query = new BoundQuery(`SELECT * FROM type::table($t)`, { t: tableName });
+  if (whereExpr) {
+    query.append(` WHERE `).append(expr(whereExpr));
+  }
+
+  const orderBy = compileOrderBy(viewParams?.sorts, columnsByKey);
+  if (orderBy) query.append(` ORDER BY ${orderBy}`);
+
+  query.append(` LIMIT 5000`);
+  return query;
+}
+
+function filterClauseToExpr(clause: FilterClause, column: StoredColumnDef): Expr | null {
+  switch (clause.op) {
+    case "is_null":
+      return raw(`${clause.key} IS NULL`);
+    case "is_not_null":
+      return raw(`${clause.key} IS NOT NULL`);
+    case "in": {
+      const arr = Array.isArray(clause.value) ? clause.value : [];
+      if (arr.length === 0) return null;
+      return inside(clause.key, arr.map((v) => coerceFilterValue(v, column)));
+    }
+    default: {
+      if (clause.value === undefined || clause.value === null || clause.value === "") return null;
+      const value = coerceFilterValue(clause.value, column);
+      switch (clause.op) {
+        case "eq": return eq(clause.key, value);
+        case "neq": return ne(clause.key, value);
+        case "gt": return gt(clause.key, value);
+        case "gte": return gte(clause.key, value);
+        case "lt": return lt(clause.key, value);
+        case "lte": return lte(clause.key, value);
+        case "contains": return contains(clause.key, value);
+        case "not_contains": return not(contains(clause.key, value));
+      }
+    }
+  }
+  return null;
+}
+
+function compileOrderBy(
+  sorts: SortClause[] | undefined,
+  columnsByKey: Map<string, StoredColumnDef>,
+): string {
+  const pieces: string[] = [];
+  for (const sort of sorts ?? []) {
     if (!columnsByKey.has(sort.key) || !isSafeIdentifier(sort.key)) continue;
     const dir = sort.direction === "desc" ? "DESC" : "ASC";
-    orderPieces.push(`${sort.key} ${dir}`);
+    pieces.push(`${sort.key} ${dir}`);
   }
-
-  return { where, orderBy: orderPieces.join(", "), bindings };
+  return pieces.join(", ");
 }
 
 function coerceFilterValue(value: unknown, column: StoredColumnDef): unknown {
@@ -368,17 +389,9 @@ function entityRowToDTO(row: EntityRow, validKeys: Set<string>): GridRow {
   const values: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(row)) {
     if (key === "id" || key === "workspace" || key === "created_by" || key === "created_at" || key === "updated_at") continue;
-    if (validKeys.has(key)) values[key] = jsonifyDbValue(value);
+    if (validKeys.has(key)) values[key] = value;
   }
   return { id: String(row.id), values };
-}
-
-function jsonifyDbValue(value: unknown): unknown {
-  if (value instanceof DateTime) return value.toISOString();
-  if (value instanceof Date) return value.toISOString();
-  if (value instanceof RecordId) return String(value);
-  if (Array.isArray(value)) return value.map(jsonifyDbValue);
-  return value;
 }
 
 async function ensureEntityAuditFields(tableName: string): Promise<void> {

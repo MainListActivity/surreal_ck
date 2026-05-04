@@ -1,4 +1,3 @@
-import { RecordId, DateTime } from "surrealdb";
 import { getLocalDb } from "../db/index";
 import type {
   DashboardCacheDTO,
@@ -8,7 +7,12 @@ import type {
 } from "../../shared/rpc.types";
 import { ServiceError } from "./errors";
 
-const BANNED_KEYWORDS = [
+/**
+ * 真正可能改数据的 SurrealQL 关键字。SurrealDB 通过登录身份的 PERMISSIONS 控制
+ * 用户能改什么——这里的检测目的不是隔绝权限,而是在用户手写 SQL 时提示
+ * "你这条 SQL 可能会改自己的数据"。
+ */
+const MUTATION_KEYWORDS = [
   "DEFINE",
   "REMOVE",
   "CREATE",
@@ -17,15 +21,25 @@ const BANNED_KEYWORDS = [
   "DELETE",
   "RELATE",
   "INSERT",
-  "LIVE",
-  "USE",
-  "LET",
-  "BEGIN",
-  "COMMIT",
-  "CANCEL",
 ];
 
-export function validateReadOnlyDashboardSql(sql: string, contract: DashboardResultContract): string {
+/** 检测 SQL 中是否含有可能改数据的关键字。返回命中关键字数组(可能为空)。 */
+export function assessSqlMutationRisk(sql: string): { keywords: string[] } {
+  const scrubbed = scrubSql(sql);
+  const hits: string[] = [];
+  for (const keyword of MUTATION_KEYWORDS) {
+    const pattern = new RegExp(`\\b${keyword}\\b`, "i");
+    if (pattern.test(scrubbed)) hits.push(keyword);
+  }
+  return { keywords: hits };
+}
+
+/**
+ * 仪表盘 SQL 的硬性参数验证:必须非空、必须单条、必须 SELECT/RETURN 开头、
+ * 当结果契约要求 LIMIT 时必须带 LIMIT。这些是"输入形态合法性",
+ * 与 mutation 风险无关——用户哪怕确认风险也无法绕过。
+ */
+export function validateDashboardSqlShape(sql: string, contract: DashboardResultContract): string {
   const trimmed = sql.trim().replace(/;+$/g, "");
   if (!trimmed) throw new ServiceError("VALIDATION_ERROR", "SQL 不能为空");
 
@@ -34,13 +48,7 @@ export function validateReadOnlyDashboardSql(sql: string, contract: DashboardRes
     throw new ServiceError("VALIDATION_ERROR", "仅允许单条 SQL 语句");
   }
   if (!/^(SELECT|RETURN)\b/i.test(trimmed)) {
-    throw new ServiceError("VALIDATION_ERROR", "仪表盘仅支持只读 SELECT/RETURN 语句");
-  }
-  for (const keyword of BANNED_KEYWORDS) {
-    const pattern = new RegExp(`\\b${keyword}\\b`, "i");
-    if (pattern.test(scrubbed)) {
-      throw new ServiceError("VALIDATION_ERROR", `仪表盘 SQL 不允许包含 ${keyword}`);
-    }
+    throw new ServiceError("VALIDATION_ERROR", "仪表盘 SQL 必须以 SELECT 或 RETURN 开头");
   }
   if (requiresLimit(contract) && !/\bLIMIT\b/i.test(scrubbed)) {
     throw new ServiceError("VALIDATION_ERROR", "当前结果类型要求 SQL 显式带 LIMIT");
@@ -64,8 +72,18 @@ export async function runDashboardPreview(
   sql: string,
   contract: DashboardResultContract,
   displaySpec: Record<string, unknown> = {},
+  options: { confirmRisk?: boolean } = {},
 ): Promise<DashboardPreviewResponse> {
-  const normalizedSql = validateReadOnlyDashboardSql(sql, contract);
+  const normalizedSql = validateDashboardSqlShape(sql, contract);
+  if (!options.confirmRisk) {
+    const risk = assessSqlMutationRisk(normalizedSql);
+    if (risk.keywords.length) {
+      throw new ServiceError(
+        "SQL_MUTATION_WARNING",
+        `SQL 中包含可能修改数据的关键字: ${risk.keywords.join(", ")}`,
+      );
+    }
+  }
   const db = getLocalDb();
   const started = performance.now();
   const raw = await db.query<unknown[]>(normalizedSql);
@@ -108,7 +126,7 @@ export function normalizeDashboardResult(
   contract: DashboardResultContract,
   displaySpec: Record<string, unknown> = {},
 ): DashboardNormalizedResult {
-  const rows = extractRows(raw).map((row) => jsonifyValue(row)) as Array<Record<string, unknown>>;
+  const rows = extractRows(raw);
   switch (contract) {
     case "single_value": {
       const row = rows[0] ?? {};
@@ -168,17 +186,6 @@ function extractRows(raw: unknown[]): Array<Record<string, unknown>> {
     }
   }
   return [];
-}
-
-function jsonifyValue(value: unknown): unknown {
-  if (value instanceof DateTime) return value.toISOString();
-  if (value instanceof Date) return value.toISOString();
-  if (value instanceof RecordId) return String(value);
-  if (Array.isArray(value)) return value.map((item) => jsonifyValue(item));
-  if (value && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, jsonifyValue(item)]));
-  }
-  return value;
 }
 
 function firstScalarValue(row: Record<string, unknown>): unknown {

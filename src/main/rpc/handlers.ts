@@ -311,7 +311,7 @@ export function createRpcHandlers(send: SendFn) {
       },
 
       previewDashboardView: async (req: PreviewDashboardViewRequest): Promise<Result<PreviewDashboardViewResponse>> => {
-        return withResult(() => previewDashboardDraft(req.draft));
+        return withResult(() => previewDashboardDraft(req.draft, { confirmRisk: req.confirmRisk }));
       },
 
       refreshDashboardView: async (req: RefreshDashboardViewRequest): Promise<Result<RefreshDashboardViewResponse>> => {

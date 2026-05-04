@@ -9,6 +9,7 @@ const DEFAULT_MESSAGES: Record<AppErrorCode, string> = {
   NOT_FOUND: "资源不存在",
   FORBIDDEN: "权限不足",
   INTERNAL_ERROR: "服务内部错误",
+  SQL_MUTATION_WARNING: "SQL 中包含可能修改数据的语句，请确认后继续",
 };
 
 export class ServiceError extends Error {

@@ -254,10 +254,11 @@ export async function listDashboardViews({
 
 export async function createDashboardView({
   draft,
+  confirmRisk,
 }: CreateDashboardViewRequest): Promise<CreateDashboardViewResponse> {
   await assertCanWriteWorkspace(draft.workspaceId);
   await assertWorkbookScope(draft.workspaceId, draft.workbookId);
-  const preview = await previewDraft(draft);
+  const preview = await previewDraft(draft, { confirmRisk });
   const db = getLocalDb();
   const viewKey = randomHex(`dashboard_view:${draft.workspaceId}:${draft.title}`);
   const viewId = new RecordId("dashboard_view", viewKey);
@@ -313,6 +314,7 @@ export async function createDashboardView({
 export async function updateDashboardView({
   viewId,
   draft,
+  confirmRisk,
 }: UpdateDashboardViewRequest): Promise<UpdateDashboardViewResponse> {
   const current = await mustLoadDashboardView(viewId);
   await assertCanWriteWorkspace(current.workspaceId);
@@ -330,7 +332,7 @@ export async function updateDashboardView({
     displaySpec: draft.displaySpec ?? current.displaySpec,
     status: draft.status ?? current.status,
   };
-  const preview = await previewDraft(mergedDraft);
+  const preview = await previewDraft(mergedDraft, { confirmRisk });
   const normalized = normalizeDraft(mergedDraft, preview);
 
   const db = getLocalDb();
@@ -380,7 +382,13 @@ export async function refreshDashboardView({
 }: RefreshDashboardViewRequest): Promise<RefreshDashboardViewResponse> {
   const view = await mustLoadDashboardView(viewId);
   await assertCanReadWorkspace(view.workspaceId);
-  const preview = await runDashboardPreview(view.compiledSql, view.resultContract, view.displaySpec ?? {});
+  // 已落库的 compiledSql 在 create/update 时已经过 confirmRisk;刷新不再二次询问
+  const preview = await runDashboardPreview(
+    view.compiledSql,
+    view.resultContract,
+    view.displaySpec ?? {},
+    { confirmRisk: true },
+  );
   const cache = await upsertDashboardCache(viewId, preview);
   const db = getLocalDb();
   await db.query(
@@ -406,13 +414,17 @@ export async function refreshDashboardPage({
 
 export async function previewDashboardDraft(
   draft: DashboardViewDraftDTO,
+  options: { confirmRisk?: boolean } = {},
 ): Promise<DashboardPreviewResponse> {
   await assertCanReadWorkspace(draft.workspaceId);
   await assertWorkbookScope(draft.workspaceId, draft.workbookId);
-  return previewDraft(draft);
+  return previewDraft(draft, options);
 }
 
-async function previewDraft(draft: DashboardViewDraftDTO): Promise<DashboardPreviewResponse> {
+async function previewDraft(
+  draft: DashboardViewDraftDTO,
+  options: { confirmRisk?: boolean } = {},
+): Promise<DashboardPreviewResponse> {
   if (!draft.title?.trim()) throw new ServiceError("VALIDATION_ERROR", "视图名称不能为空");
 
   if (draft.queryMode === "builder") {
@@ -420,15 +432,21 @@ async function previewDraft(draft: DashboardViewDraftDTO): Promise<DashboardPrev
       throw new ServiceError("VALIDATION_ERROR", "Builder 模式缺少配置");
     }
     const compiled = compileDashboardBuilder(draft.builderSpec);
-    return runDashboardPreview(compiled.sql, compiled.resultContract, {
-      ...(compiled.displaySpec ?? {}),
-      ...(draft.displaySpec ?? {}),
-    });
+    return runDashboardPreview(
+      compiled.sql,
+      compiled.resultContract,
+      {
+        ...(compiled.displaySpec ?? {}),
+        ...(draft.displaySpec ?? {}),
+      },
+      // builder 编译产生的 SQL 不包含写操作,无需用户确认风险
+      { confirmRisk: true },
+    );
   }
 
   const compiledSql = draft.compiledSql?.trim();
   if (!compiledSql) throw new ServiceError("VALIDATION_ERROR", "SQL 不能为空");
-  return runDashboardPreview(compiledSql, draft.resultContract, draft.displaySpec ?? {});
+  return runDashboardPreview(compiledSql, draft.resultContract, draft.displaySpec ?? {}, options);
 }
 
 async function upsertDashboardCache(viewId: string, preview: DashboardPreviewResponse): Promise<DashboardCacheDTO> {

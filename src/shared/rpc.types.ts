@@ -38,7 +38,8 @@ export type AppErrorCode =
   | "VALIDATION_ERROR"
   | "NOT_FOUND"
   | "FORBIDDEN"
-  | "INTERNAL_ERROR";
+  | "INTERNAL_ERROR"
+  | "SQL_MUTATION_WARNING";
 
 export type AppError = {
   ok: false;
@@ -648,6 +649,7 @@ export type ListDashboardViewsResponse = {
 
 export type CreateDashboardViewRequest = {
   draft: DashboardViewDraftDTO;
+  confirmRisk?: boolean;
 };
 
 export type CreateDashboardViewResponse = {
@@ -658,6 +660,7 @@ export type CreateDashboardViewResponse = {
 export type UpdateDashboardViewRequest = {
   viewId: RecordIdString;
   draft: DashboardViewDraftDTO;
+  confirmRisk?: boolean;
 };
 
 export type UpdateDashboardViewResponse = {
@@ -667,6 +670,7 @@ export type UpdateDashboardViewResponse = {
 
 export type PreviewDashboardViewRequest = {
   draft: DashboardViewDraftDTO;
+  confirmRisk?: boolean;
 };
 
 export type PreviewDashboardViewResponse = DashboardPreviewResponse;
