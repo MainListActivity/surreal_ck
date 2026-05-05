@@ -431,7 +431,7 @@ DEFINE TABLE IF NOT EXISTS intake_submission SCHEMALESS
 DEFINE FIELD IF NOT EXISTS workspace      ON TABLE intake_submission TYPE record<workspace>;
 DEFINE FIELD IF NOT EXISTS form           ON TABLE intake_submission TYPE record<form_definition>;
 DEFINE FIELD IF NOT EXISTS created_record ON TABLE intake_submission TYPE option<string>;
-DEFINE FIELD IF NOT EXISTS payload        ON TABLE intake_submission TYPE object;
+DEFINE FIELD OVERWRITE payload        ON TABLE intake_submission TYPE object;
 DEFINE FIELD IF NOT EXISTS unverified     ON TABLE intake_submission TYPE bool DEFAULT false;
 DEFINE FIELD IF NOT EXISTS created_at     ON TABLE intake_submission TYPE datetime VALUE time::now();
 DEFINE INDEX IF NOT EXISTS intake_submission_workspace ON TABLE intake_submission COLUMNS workspace;
@@ -501,7 +501,7 @@ DEFINE FIELD IF NOT EXISTS updated_at    ON TABLE token_store TYPE datetime VALU
 
 -- ═══════════════════════════════════════════════════════════════════════════════
 -- APP SETTINGS
--- 通用设置表。敏感设置仅保存 secret_ref，实际 secret 存 OS Keychain / Credential Store。
+-- 通用设置表。当前本地 AI 设置按产品要求允许在 value 中明文保存 API Key。
 -- ═══════════════════════════════════════════════════════════════════════════════
 
 DEFINE TABLE IF NOT EXISTS app_setting SCHEMAFULL
@@ -510,7 +510,7 @@ DEFINE FIELD IF NOT EXISTS key          ON TABLE app_setting TYPE string;
 DEFINE FIELD IF NOT EXISTS scope        ON TABLE app_setting TYPE string ASSERT $value INSIDE ["user", "workspace", "workbook"];
 DEFINE FIELD IF NOT EXISTS workspace    ON TABLE app_setting TYPE option<record<workspace>>;
 DEFINE FIELD IF NOT EXISTS workbook     ON TABLE app_setting TYPE option<record<workbook>>;
-DEFINE FIELD IF NOT EXISTS value        ON TABLE app_setting TYPE object;
+DEFINE FIELD OVERWRITE value        ON TABLE app_setting TYPE object FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS sensitive    ON TABLE app_setting TYPE bool DEFAULT false;
 DEFINE FIELD IF NOT EXISTS encrypted    ON TABLE app_setting TYPE bool DEFAULT false;
 DEFINE FIELD IF NOT EXISTS secret_ref   ON TABLE app_setting TYPE option<string>;
@@ -550,7 +550,7 @@ DEFINE FIELD IF NOT EXISTS thread_id   ON TABLE mastra_memory_message TYPE strin
 DEFINE FIELD IF NOT EXISTS resource_id ON TABLE mastra_memory_message TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS role        ON TABLE mastra_memory_message TYPE string;
 DEFINE FIELD IF NOT EXISTS type        ON TABLE mastra_memory_message TYPE string;
-DEFINE FIELD IF NOT EXISTS content     ON TABLE mastra_memory_message TYPE object;
+DEFINE FIELD OVERWRITE content     ON TABLE mastra_memory_message TYPE object FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS created_at  ON TABLE mastra_memory_message TYPE datetime VALUE time::now();
 DEFINE FIELD IF NOT EXISTS updated_at  ON TABLE mastra_memory_message TYPE datetime VALUE time::now();
 DEFINE INDEX IF NOT EXISTS mastra_memory_message_unique ON TABLE mastra_memory_message COLUMNS message_id UNIQUE;

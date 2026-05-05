@@ -59,6 +59,7 @@ export const appApi = {
       provider: "openai" | "anthropic" | "google" | "custom";
       model: string;
       baseUrl?: string;
+      apiFormat: "openai-compatible" | "openai-responses" | "anthropic";
       apiKey?: string;
       clearApiKey?: boolean;
     };

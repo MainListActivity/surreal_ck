@@ -5,7 +5,7 @@
   import { appApi } from "../lib/app-api";
   import { appState } from "../lib/app-state.svelte";
   import type { Navigate } from "../lib/types";
-  import type { AiProvider } from "../../shared/rpc.types";
+  import type { AiApiFormat, AiProvider } from "../../shared/rpc.types";
 
   let { navigate: _navigate }: { navigate: Navigate } = $props();
 
@@ -14,8 +14,8 @@
   let aiProvider = $state<AiProvider>("openai");
   let aiModel = $state("gpt-5.4");
   let aiBaseUrl = $state("");
+  let aiApiFormat = $state<AiApiFormat>("openai-compatible");
   let aiApiKey = $state("");
-  let aiSecretConfigured = $state(false);
   let clearAiApiKey = $state(false);
   let savedSnapshot = $state("");
   let loading = $state(true);
@@ -31,7 +31,8 @@
     aiProvider,
     aiModel: aiModel.trim(),
     aiBaseUrl: aiBaseUrl.trim(),
-    aiApiKey: aiApiKey.trim() ? "__new__" : "",
+    aiApiFormat,
+    aiApiKey,
     clearAiApiKey,
   }));
   const dirty = $derived(savedSnapshot !== currentSnapshot);
@@ -47,6 +48,26 @@
     { value: "google", label: "Google" },
     { value: "custom", label: "自定义" },
   ];
+  const apiFormatOptions: Array<{ value: AiApiFormat; label: string; hint: string }> = [
+    {
+      value: "openai-compatible",
+      label: "OpenAI Chat Completions",
+      hint: "Base URL 填到版本级别，例如 https://api.openai.com/v1；请求会走 /chat/completions。",
+    },
+    {
+      value: "openai-responses",
+      label: "OpenAI Responses",
+      hint: "Base URL 填到版本级别，例如 https://api.openai.com/v1；请求会走 /responses。",
+    },
+    {
+      value: "anthropic",
+      label: "Anthropic Messages",
+      hint: "Base URL 填到 Anthropic API 根级别，例如 https://api.anthropic.com/v1 或供应商给出的 /anthropic/v1。",
+    },
+  ];
+  const selectedApiFormat = $derived(
+    apiFormatOptions.find((option) => option.value === aiApiFormat) ?? apiFormatOptions[0]
+  );
 
   onMount(() => {
     void loadSettings();
@@ -66,8 +87,8 @@
       aiProvider = result.data.ai.provider;
       aiModel = result.data.ai.model;
       aiBaseUrl = result.data.ai.baseUrl ?? "";
-      aiApiKey = "";
-      aiSecretConfigured = result.data.ai.secretConfigured;
+      aiApiFormat = result.data.ai.apiFormat;
+      aiApiKey = result.data.ai.apiKey ?? "";
       clearAiApiKey = false;
       savedSnapshot = currentSnapshot;
     } catch (err) {
@@ -89,7 +110,8 @@
           provider: aiProvider,
           model: aiModel.trim(),
           baseUrl: aiBaseUrl.trim() || undefined,
-          apiKey: aiApiKey.trim() || undefined,
+          apiFormat: aiApiFormat,
+          apiKey: aiApiKey,
           clearApiKey: clearAiApiKey,
         },
       });
@@ -102,8 +124,8 @@
       aiProvider = result.data.ai.provider;
       aiModel = result.data.ai.model;
       aiBaseUrl = result.data.ai.baseUrl ?? "";
-      aiApiKey = "";
-      aiSecretConfigured = result.data.ai.secretConfigured;
+      aiApiFormat = result.data.ai.apiFormat;
+      aiApiKey = result.data.ai.apiKey ?? "";
       clearAiApiKey = false;
       savedSnapshot = currentSnapshot;
       savedAt = new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
@@ -154,7 +176,7 @@
       <div class="section-head">
         <div>
           <h3>AI 模型</h3>
-          <p>配置默认模型和第三方 API Key。密钥会写入系统 Keychain，设置表只保存安全引用。</p>
+          <p>配置默认模型和第三方 API Key。API Key 会按明文写入本机 SurrealDB 设置表。</p>
         </div>
         <span class="status" class:dirty>{dirty ? "未保存" : "已同步"}</span>
       </div>
@@ -175,20 +197,30 @@
         </label>
 
         <label class="field">
+          <span>接口格式</span>
+          <select bind:value={aiApiFormat} disabled={loading || saving}>
+            {#each apiFormatOptions as option}
+              <option value={option.value}>{option.label}</option>
+            {/each}
+          </select>
+        </label>
+
+        <label class="field">
           <span>Base URL</span>
-          <input bind:value={aiBaseUrl} placeholder="默认服务地址" disabled={loading || saving} />
+          <input bind:value={aiBaseUrl} placeholder="https://api.openai.com/v1" disabled={loading || saving} />
+          <small>{selectedApiFormat.hint}</small>
         </label>
 
         <label class="field secret-field">
           <span>API Key</span>
           <div class="secret-input">
             <input
-              type="password"
+              type="text"
               bind:value={aiApiKey}
-              placeholder={aiSecretConfigured && !clearAiApiKey ? "已配置，留空表示不修改" : "粘贴 API Key"}
+              placeholder="粘贴 API Key；会明文保存在 SurrealDB"
               disabled={loading || saving || clearAiApiKey}
             />
-            {#if aiSecretConfigured && !clearAiApiKey}
+            {#if aiApiKey && !clearAiApiKey}
               <button type="button" class="secondary-btn clear-secret" onclick={markClearAiApiKey} disabled={loading || saving}>
                 清除
               </button>
@@ -202,10 +234,8 @@
         <span>
           {#if clearAiApiKey}
             保存后会删除当前 API Key。
-          {:else if aiSecretConfigured}
-            API Key 已保存在系统 Keychain；输入新值会覆盖原密钥。
           {:else}
-            API Key 明文只会传给主进程写入 Keychain，不会写入 app_setting。
+            API Key 会直接保存在 app_setting.value.apiKey；Base URL 统一填写到 API 版本级别，不要填 /chat/completions、/responses 或 /messages。
           {/if}
         </span>
       </div>
@@ -445,6 +475,12 @@
     color: var(--text-2);
     font-size: 12px;
     font-weight: 650;
+  }
+
+  .field small {
+    color: var(--text-3);
+    font-size: 11px;
+    line-height: 1.45;
   }
 
   .field input,

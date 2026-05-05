@@ -83,11 +83,14 @@ export type ObservabilitySettingsDTO = {
 };
 
 export type AiProvider = "openai" | "anthropic" | "google" | "custom";
+export type AiApiFormat = "openai-compatible" | "openai-responses" | "anthropic";
 
 export type AiSettingsDTO = {
   provider: AiProvider;
   model: string;
   baseUrl?: string;
+  apiFormat: AiApiFormat;
+  apiKey?: string;
   secretConfigured: boolean;
 };
 
@@ -95,6 +98,7 @@ export type SaveAiSettingsDTO = {
   provider: AiProvider;
   model: string;
   baseUrl?: string;
+  apiFormat: AiApiFormat;
   apiKey?: string;
   clearApiKey?: boolean;
 };

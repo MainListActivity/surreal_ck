@@ -1,8 +1,9 @@
 import { RecordId } from "surrealdb";
 import { getLocalDb } from "../db/index";
-import { createKeychainSecretRef, deleteSecret, writeSecret } from "./secret-store";
 
 export type SettingScope = "user" | "workspace" | "workbook";
+export type AiProvider = "openai" | "anthropic" | "google" | "custom";
+export type AiApiFormat = "openai-compatible" | "openai-responses" | "anthropic";
 
 export type AppSetting<TValue extends Record<string, unknown> = Record<string, unknown>> = {
   key: string;
@@ -20,9 +21,11 @@ export type ObservabilitySettings = {
 };
 
 export type AiSettings = {
-  provider: "openai" | "anthropic" | "google" | "custom";
+  provider: AiProvider;
   model: string;
   baseUrl?: string;
+  apiFormat: AiApiFormat;
+  apiKey?: string;
   secretConfigured: boolean;
 };
 
@@ -35,6 +38,7 @@ const DEFAULT_OBSERVABILITY_RETENTION_DAYS = 30;
 const DEFAULT_AI_SETTINGS: AiSettings = {
   provider: "openai",
   model: "gpt-5.4",
+  apiFormat: "openai-compatible",
   secretConfigured: false,
 };
 
@@ -61,10 +65,6 @@ export async function getAppSetting<TValue extends Record<string, unknown>>(
 export async function saveAppSetting<TValue extends Record<string, unknown>>(
   setting: Omit<AppSetting<TValue>, "created_at" | "updated_at">
 ): Promise<AppSetting<TValue>> {
-  if (setting.sensitive && !setting.secret_ref) {
-    throw new Error("[settings] sensitive settings must use an OS secret_ref");
-  }
-
   const db = getLocalDb();
   const rows = await db.query<[AppSetting<TValue>[]]>(
     `UPSERT $id CONTENT {
@@ -131,6 +131,8 @@ export async function getAiSettings(): Promise<AiSettings> {
     provider?: string;
     model?: string;
     baseUrl?: string;
+    apiFormat?: string;
+    apiKey?: string;
   }>("ai.provider");
   const provider = normalizeAiProvider(setting?.value?.provider);
   const model = typeof setting?.value?.model === "string" && setting.value.model.trim()
@@ -139,12 +141,16 @@ export async function getAiSettings(): Promise<AiSettings> {
   const baseUrl = typeof setting?.value?.baseUrl === "string" && setting.value.baseUrl.trim()
     ? setting.value.baseUrl.trim()
     : undefined;
+  const apiFormat = normalizeAiApiFormat(setting?.value?.apiFormat);
+  const apiKey = typeof setting?.value?.apiKey === "string" ? setting.value.apiKey : undefined;
 
   return {
     provider,
     model,
     baseUrl,
-    secretConfigured: !!setting?.secret_ref?.trim(),
+    apiFormat,
+    apiKey,
+    secretConfigured: !!apiKey?.trim(),
   };
 }
 
@@ -153,25 +159,17 @@ export async function saveAiSettings(settings: SaveAiSettings): Promise<AiSettin
     provider?: string;
     model?: string;
     baseUrl?: string;
+    apiFormat?: string;
+    apiKey?: string;
   }>("ai.provider");
   const provider = normalizeAiProvider(settings.provider);
   const model = settings.model.trim();
   const baseUrl = settings.baseUrl?.trim() || undefined;
-  const apiKey = settings.apiKey?.trim();
-  let secretRef = existing?.secret_ref?.trim() || undefined;
+  const apiFormat = normalizeAiApiFormat(settings.apiFormat);
+  const apiKey = settings.clearApiKey ? undefined : settings.apiKey ?? existing?.value?.apiKey;
 
   if (!model) {
     throw new Error("[settings] AI model is required");
-  }
-
-  if (settings.clearApiKey) {
-    deleteSecret(secretRef);
-    secretRef = undefined;
-  } else if (apiKey) {
-    const nextRef = createKeychainSecretRef();
-    writeSecret(nextRef, apiKey);
-    deleteSecret(secretRef);
-    secretRef = nextRef;
   }
 
   await saveAppSetting({
@@ -180,18 +178,21 @@ export async function saveAiSettings(settings: SaveAiSettings): Promise<AiSettin
     value: {
       provider,
       model,
+      apiFormat,
       ...(baseUrl ? { baseUrl } : {}),
+      ...(apiKey ? { apiKey } : {}),
     },
-    sensitive: !!secretRef,
+    sensitive: !!apiKey?.trim(),
     encrypted: false,
-    secret_ref: secretRef,
   });
 
   return {
     provider,
     model,
     baseUrl,
-    secretConfigured: !!secretRef,
+    apiFormat,
+    apiKey,
+    secretConfigured: !!apiKey?.trim(),
   };
 }
 
@@ -202,4 +203,9 @@ export function observabilityExpiry(retentionDays: number): Date {
 function normalizeAiProvider(value: unknown): AiSettings["provider"] {
   if (value === "anthropic" || value === "google" || value === "custom") return value;
   return "openai";
+}
+
+function normalizeAiApiFormat(value: unknown): AiApiFormat {
+  if (value === "openai-responses" || value === "anthropic") return value;
+  return "openai-compatible";
 }

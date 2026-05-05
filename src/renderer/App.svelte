@@ -5,6 +5,7 @@
   import AdminScreen from "./screens/AdminScreen.svelte";
   import DashboardScreen from "./screens/DashboardScreen.svelte";
   import EditorScreen from "./screens/EditorScreen.svelte";
+  import GlobalAiLauncher from "./components/GlobalAiLauncher.svelte";
   import HomeScreen from "./screens/HomeScreen.svelte";
   import LoginScreen from "./screens/LoginScreen.svelte";
   import MyDocsScreen from "./screens/MyDocsScreen.svelte";
@@ -178,6 +179,8 @@
         {/if}
       </main>
     </div>
+
+    <GlobalAiLauncher {route} {navigate} />
   {/if}
 
   {#if editorUi.leaveConfirm.open}
