@@ -15,12 +15,17 @@
     "test:bootstrap": "bun run scripts/test-app-bootstrap.ts"
   },
   "dependencies": {
-    "@mastra/core": "^1.25.0",
+    "@mastra/core": "^1.32.0",
+    "@mastra/loggers": "^1.1.1",
+    "@mastra/memory": "^1.17.5",
+    "@mastra/observability": "^1.11.1",
     "@surrealdb/node": "^3.0.3",
     "dayjs": "^1.11.20",
     "electrobun": "^1.16.0",
     "layerchart": "2.0.0-next.62",
-    "surrealdb": "^2.0.3"
+    "mastra": "^1.8.0",
+    "surrealdb": "^2.0.3",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@revolist/svelte-datagrid": "^4.21.3",

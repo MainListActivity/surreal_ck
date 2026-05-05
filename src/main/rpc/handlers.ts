@@ -69,6 +69,7 @@ import { getLocalDb } from "../db/index";
 import { startOidcLogin } from "../auth/oidc";
 import { loginToSurrealDB, clearSession, getPublicAuthState } from "../auth/session";
 import { initUserDb, closeUserDb } from "../db/index";
+import { initMastraForCurrentUser, resetMastra } from "../ai/index";
 import { decodeTokenClaims, bootstrapLocalIdentity } from "../services/identity";
 import { listWorkbooks, createBlankWorkbook, moveWorkbook } from "../services/workbooks";
 import { listFolders, createFolder, moveFolder } from "../services/folders";
@@ -117,6 +118,7 @@ export function createRpcHandlers(send: SendFn) {
       },
 
       logout: async (): Promise<void> => {
+        resetMastra();
         clearSession();
         setOfflineMode(false);
         await closeUserDb();
@@ -335,6 +337,7 @@ export function createRpcHandlers(send: SendFn) {
             await initUserDb(claims.sub, tokens);
             await bootstrapLocalIdentity(claims);
             loginToSurrealDB(tokens);
+            initMastraForCurrentUser();
             setOfflineMode(false);
             send("authStateChanged", { state: getPublicAuthState() });
           })

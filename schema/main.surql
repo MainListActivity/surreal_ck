@@ -500,6 +500,130 @@ DEFINE FIELD IF NOT EXISTS expires_at    ON TABLE token_store TYPE datetime;
 DEFINE FIELD IF NOT EXISTS updated_at    ON TABLE token_store TYPE datetime VALUE time::now();
 
 -- ═══════════════════════════════════════════════════════════════════════════════
+-- APP SETTINGS
+-- 通用设置表。敏感设置仅保存 secret_ref，实际 secret 存 OS Keychain / Credential Store。
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+DEFINE TABLE IF NOT EXISTS app_setting SCHEMAFULL
+  PERMISSIONS FULL;
+DEFINE FIELD IF NOT EXISTS key          ON TABLE app_setting TYPE string;
+DEFINE FIELD IF NOT EXISTS scope        ON TABLE app_setting TYPE string ASSERT $value INSIDE ["user", "workspace", "workbook"];
+DEFINE FIELD IF NOT EXISTS workspace    ON TABLE app_setting TYPE option<record<workspace>>;
+DEFINE FIELD IF NOT EXISTS workbook     ON TABLE app_setting TYPE option<record<workbook>>;
+DEFINE FIELD IF NOT EXISTS value        ON TABLE app_setting TYPE object;
+DEFINE FIELD IF NOT EXISTS sensitive    ON TABLE app_setting TYPE bool DEFAULT false;
+DEFINE FIELD IF NOT EXISTS encrypted    ON TABLE app_setting TYPE bool DEFAULT false;
+DEFINE FIELD IF NOT EXISTS secret_ref   ON TABLE app_setting TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS created_at   ON TABLE app_setting TYPE datetime VALUE time::now();
+DEFINE FIELD IF NOT EXISTS updated_at   ON TABLE app_setting TYPE datetime VALUE time::now();
+DEFINE INDEX IF NOT EXISTS app_setting_key_unique ON TABLE app_setting COLUMNS key UNIQUE;
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- MASTRA MEMORY
+-- 对齐 Mastra MemoryStorage contract。业务 RAG 不复用这些表。
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+DEFINE TABLE IF NOT EXISTS mastra_memory_resource SCHEMAFULL
+  PERMISSIONS FULL;
+DEFINE FIELD IF NOT EXISTS resource_id    ON TABLE mastra_memory_resource TYPE string;
+DEFINE FIELD IF NOT EXISTS working_memory ON TABLE mastra_memory_resource TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS metadata       ON TABLE mastra_memory_resource TYPE option<object>;
+DEFINE FIELD IF NOT EXISTS created_at     ON TABLE mastra_memory_resource TYPE datetime VALUE time::now();
+DEFINE FIELD IF NOT EXISTS updated_at     ON TABLE mastra_memory_resource TYPE datetime VALUE time::now();
+DEFINE INDEX IF NOT EXISTS mastra_memory_resource_unique ON TABLE mastra_memory_resource COLUMNS resource_id UNIQUE;
+
+DEFINE TABLE IF NOT EXISTS mastra_memory_thread SCHEMAFULL
+  PERMISSIONS FULL;
+DEFINE FIELD IF NOT EXISTS thread_id   ON TABLE mastra_memory_thread TYPE string;
+DEFINE FIELD IF NOT EXISTS resource_id ON TABLE mastra_memory_thread TYPE string;
+DEFINE FIELD IF NOT EXISTS title       ON TABLE mastra_memory_thread TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS metadata    ON TABLE mastra_memory_thread TYPE option<object>;
+DEFINE FIELD IF NOT EXISTS created_at  ON TABLE mastra_memory_thread TYPE datetime VALUE time::now();
+DEFINE FIELD IF NOT EXISTS updated_at  ON TABLE mastra_memory_thread TYPE datetime VALUE time::now();
+DEFINE INDEX IF NOT EXISTS mastra_memory_thread_unique ON TABLE mastra_memory_thread COLUMNS thread_id UNIQUE;
+DEFINE INDEX IF NOT EXISTS mastra_memory_thread_resource ON TABLE mastra_memory_thread COLUMNS resource_id, updated_at;
+
+DEFINE TABLE IF NOT EXISTS mastra_memory_message SCHEMAFULL
+  PERMISSIONS FULL;
+DEFINE FIELD IF NOT EXISTS message_id  ON TABLE mastra_memory_message TYPE string;
+DEFINE FIELD IF NOT EXISTS thread_id   ON TABLE mastra_memory_message TYPE string;
+DEFINE FIELD IF NOT EXISTS resource_id ON TABLE mastra_memory_message TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS role        ON TABLE mastra_memory_message TYPE string;
+DEFINE FIELD IF NOT EXISTS type        ON TABLE mastra_memory_message TYPE string;
+DEFINE FIELD IF NOT EXISTS content     ON TABLE mastra_memory_message TYPE object;
+DEFINE FIELD IF NOT EXISTS created_at  ON TABLE mastra_memory_message TYPE datetime VALUE time::now();
+DEFINE FIELD IF NOT EXISTS updated_at  ON TABLE mastra_memory_message TYPE datetime VALUE time::now();
+DEFINE INDEX IF NOT EXISTS mastra_memory_message_unique ON TABLE mastra_memory_message COLUMNS message_id UNIQUE;
+DEFINE INDEX IF NOT EXISTS mastra_memory_message_thread ON TABLE mastra_memory_message COLUMNS thread_id, created_at;
+DEFINE INDEX IF NOT EXISTS mastra_memory_message_resource ON TABLE mastra_memory_message COLUMNS resource_id, created_at;
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- MASTRA OBSERVABILITY
+-- Trace/span 优先。默认写入 expires_at = now + app_setting observability.retention.days（默认 30）。
+-- DDL event 在写入时顺手清理过期记录；不是 memory TTL。
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+DEFINE TABLE IF NOT EXISTS mastra_observability_span SCHEMALESS
+  PERMISSIONS FULL;
+DEFINE FIELD IF NOT EXISTS traceId      ON TABLE mastra_observability_span TYPE string;
+DEFINE FIELD IF NOT EXISTS spanId       ON TABLE mastra_observability_span TYPE string;
+DEFINE FIELD IF NOT EXISTS parentSpanId ON TABLE mastra_observability_span TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS name         ON TABLE mastra_observability_span TYPE string;
+DEFINE FIELD IF NOT EXISTS spanType     ON TABLE mastra_observability_span TYPE string;
+DEFINE FIELD IF NOT EXISTS isEvent      ON TABLE mastra_observability_span TYPE bool;
+DEFINE FIELD IF NOT EXISTS startedAt    ON TABLE mastra_observability_span TYPE datetime;
+DEFINE FIELD IF NOT EXISTS endedAt      ON TABLE mastra_observability_span TYPE option<datetime>;
+DEFINE FIELD IF NOT EXISTS createdAt    ON TABLE mastra_observability_span TYPE datetime VALUE time::now();
+DEFINE FIELD IF NOT EXISTS updatedAt    ON TABLE mastra_observability_span TYPE option<datetime>;
+DEFINE FIELD IF NOT EXISTS expires_at   ON TABLE mastra_observability_span TYPE datetime;
+DEFINE FIELD IF NOT EXISTS user_id      ON TABLE mastra_observability_span TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS resource_id  ON TABLE mastra_observability_span TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS thread_id    ON TABLE mastra_observability_span TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS agent_id     ON TABLE mastra_observability_span TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS workflow_id  ON TABLE mastra_observability_span TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS workbook_id  ON TABLE mastra_observability_span TYPE option<string>;
+DEFINE INDEX IF NOT EXISTS mastra_observability_span_unique ON TABLE mastra_observability_span COLUMNS traceId, spanId UNIQUE;
+DEFINE INDEX IF NOT EXISTS mastra_observability_span_trace ON TABLE mastra_observability_span COLUMNS traceId, startedAt;
+DEFINE INDEX IF NOT EXISTS mastra_observability_span_expiry ON TABLE mastra_observability_span COLUMNS expires_at;
+DEFINE EVENT OVERWRITE mastra_observability_span_cleanup ON TABLE mastra_observability_span
+  WHEN $event = "CREATE" OR $event = "UPDATE"
+  THEN {
+    DELETE mastra_observability_span WHERE expires_at < time::now();
+  };
+
+DEFINE TABLE IF NOT EXISTS mastra_observability_event_raw SCHEMALESS
+  PERMISSIONS FULL;
+DEFINE FIELD IF NOT EXISTS kind       ON TABLE mastra_observability_event_raw TYPE string;
+DEFINE FIELD IF NOT EXISTS payload    ON TABLE mastra_observability_event_raw TYPE any;
+DEFINE FIELD IF NOT EXISTS created_at ON TABLE mastra_observability_event_raw TYPE datetime VALUE time::now();
+DEFINE FIELD IF NOT EXISTS expires_at ON TABLE mastra_observability_event_raw TYPE datetime;
+DEFINE INDEX IF NOT EXISTS mastra_observability_event_raw_expiry ON TABLE mastra_observability_event_raw COLUMNS expires_at;
+DEFINE EVENT OVERWRITE mastra_observability_event_raw_cleanup ON TABLE mastra_observability_event_raw
+  WHEN $event = "CREATE" OR $event = "UPDATE"
+  THEN {
+    DELETE mastra_observability_event_raw WHERE expires_at < time::now();
+  };
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- WORKBOOK RAG RESERVATION
+-- record-first 知识索引预留；embedding/indexer/retriever 后续阶段实现。
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+DEFINE TABLE IF NOT EXISTS workbook_knowledge_item SCHEMAFULL
+  PERMISSIONS FULL;
+DEFINE FIELD IF NOT EXISTS workbook    ON TABLE workbook_knowledge_item TYPE record<workbook>;
+DEFINE FIELD IF NOT EXISTS sheet       ON TABLE workbook_knowledge_item TYPE option<record<sheet>>;
+DEFINE FIELD IF NOT EXISTS source_id   ON TABLE workbook_knowledge_item TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS source_type ON TABLE workbook_knowledge_item TYPE string ASSERT $value INSIDE ["record", "record_chunk", "schema", "dashboard"];
+DEFINE FIELD IF NOT EXISTS source_hash ON TABLE workbook_knowledge_item TYPE string;
+DEFINE FIELD IF NOT EXISTS title       ON TABLE workbook_knowledge_item TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS text        ON TABLE workbook_knowledge_item TYPE string;
+DEFINE FIELD IF NOT EXISTS metadata    ON TABLE workbook_knowledge_item TYPE option<object>;
+DEFINE FIELD IF NOT EXISTS created_at  ON TABLE workbook_knowledge_item TYPE datetime VALUE time::now();
+DEFINE FIELD IF NOT EXISTS updated_at  ON TABLE workbook_knowledge_item TYPE datetime VALUE time::now();
+DEFINE INDEX IF NOT EXISTS workbook_knowledge_item_source ON TABLE workbook_knowledge_item COLUMNS workbook, source_type, source_id;
+
+-- ═══════════════════════════════════════════════════════════════════════════════
 -- AUTH ACCESS
 -- JWT 由外部 OIDC 提供方（maplayer.top）签发。
 -- 首次登录时：创建 app_user，自动认领 pending_workspace_member 邀请并写入

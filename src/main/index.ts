@@ -1,6 +1,6 @@
 import { BrowserView, BrowserWindow } from "electrobun/bun";
 import { initEngine, tryRestoreSession } from "./db/index";
-import { initMastra } from "./ai/index";
+import { initMastraForCurrentUser } from "./ai/index";
 import { ensureSingleInstance } from "./single-instance";
 import { activateSession, loginToSurrealDB, getPublicAuthState } from "./auth/session";
 import { setOfflineMode } from "./services/context";
@@ -17,12 +17,6 @@ async function main() {
     console.error("[main] engine init failed:", err);
     process.exit(1);
   });
-
-  try {
-    initMastra();
-  } catch (err) {
-    console.warn("[main] Mastra init warning:", err);
-  }
 
   const rpc = BrowserView.defineRPC<AppRPC>({
     handlers: createRpcHandlers((event, payload) => rpc.send(event, payload)),
@@ -48,8 +42,9 @@ async function main() {
       try {
         const claims = decodeTokenClaims(result.accessToken);
         await bootstrapLocalIdentity(claims);
+        initMastraForCurrentUser();
       } catch (err) {
-        console.warn("[main] identity bootstrap failed after restore:", err);
+        console.warn("[main] post-restore bootstrap failed:", err);
       }
     }
 
