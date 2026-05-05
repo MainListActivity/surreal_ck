@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { buildAiContextSnapshot } from "../../shared/ai-context";
+  import { editorUi } from "../features/editor/lib/editor-ui.svelte";
+  import { editorStore } from "../lib/editor.svelte";
   import Icon from "./Icon.svelte";
   import type { Navigate, RouteState } from "../lib/types";
 
@@ -13,16 +16,15 @@
   let open = $state(false);
   let prompt = $state("");
 
-  const contextLabel = $derived(labelForRoute(route));
-
-  function labelForRoute(current: RouteState): string {
-    if (current.screen === "dashboard") return "当前在仪表盘";
-    if (current.screen === "editor") return "当前在表格工作簿";
-    if (current.screen === "mydocs") return "当前在我的文档";
-    if (current.screen === "settings") return "当前在设置";
-    if (current.screen === "templates") return "当前在模板中心";
-    return "当前在应用首页";
-  }
+  const currentSheet = $derived(editorStore.sheets.find((sheet) => sheet.id === editorStore.activeSheetId) ?? null);
+  const contextSnapshot = $derived(buildAiContextSnapshot({
+    route,
+    workbook: editorStore.data ? { id: editorStore.data.workbook.id, name: editorStore.data.workbook.name } : null,
+    sheet: currentSheet ? { id: currentSheet.id, label: currentSheet.label, tableName: currentSheet.tableName } : null,
+    selectedRowId: editorUi.selectedRowId,
+    rows: editorStore.rows,
+    visibleColumns: editorStore.visibleColumns,
+  }));
 
   function useExample(next: string) {
     prompt = next;
@@ -34,7 +36,7 @@
     <header>
       <div>
         <strong>AI 助手</strong>
-        <span>{contextLabel}</span>
+        <span>{contextSnapshot.contextHint}</span>
       </div>
       <button class="icon-btn" aria-label="关闭 AI 助手" onclick={() => (open = false)}>
         <Icon name="x" size={16} />
