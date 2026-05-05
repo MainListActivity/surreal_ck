@@ -34,6 +34,21 @@ export type AiContextSnapshot = {
   contextHint: string;
 };
 
+export type AiChatMessage = {
+  id: string;
+  role: "user";
+  content: string;
+  createdAt: string;
+  context: AiContextSnapshot;
+};
+
+export type CreateAiUserMessageInput = {
+  prompt: string;
+  context: AiContextSnapshot;
+  id?: string;
+  createdAt?: string;
+};
+
 export type BuildAiContextSnapshotInput = {
   route: AiRouteContext;
   workbook?: NonNullable<AiWorkbookContext> | null;
@@ -54,6 +69,18 @@ export function buildAiContextSnapshot(input: BuildAiContextSnapshotInput): AiCo
     sheet,
     selectedRow,
     contextHint: buildContextHint(input.route, workbook, sheet, selectedRow),
+  };
+}
+
+export function createAiUserMessage(input: CreateAiUserMessageInput): AiChatMessage | null {
+  const content = input.prompt.trim();
+  if (!content) return null;
+  return {
+    id: input.id ?? crypto.randomUUID(),
+    role: "user",
+    content,
+    createdAt: input.createdAt ?? new Date().toISOString(),
+    context: cloneSnapshotValue(input.context) as AiContextSnapshot,
   };
 }
 

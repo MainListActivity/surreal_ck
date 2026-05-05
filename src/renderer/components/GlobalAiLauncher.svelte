@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { buildAiContextSnapshot } from "../../shared/ai-context";
+  import { buildAiContextSnapshot, createAiUserMessage } from "../../shared/ai-context";
   import { editorUi } from "../features/editor/lib/editor-ui.svelte";
   import { editorStore } from "../lib/editor.svelte";
   import Icon from "./Icon.svelte";
+  import type { AiChatMessage } from "../../shared/ai-context";
   import type { Navigate, RouteState } from "../lib/types";
 
   let {
@@ -15,6 +16,7 @@
 
   let open = $state(false);
   let prompt = $state("");
+  let messages = $state<AiChatMessage[]>([]);
 
   const currentSheet = $derived(editorStore.sheets.find((sheet) => sheet.id === editorStore.activeSheetId) ?? null);
   const contextSnapshot = $derived(buildAiContextSnapshot({
@@ -28,6 +30,13 @@
 
   function useExample(next: string) {
     prompt = next;
+  }
+
+  function sendPrompt() {
+    const message = createAiUserMessage({ prompt, context: contextSnapshot });
+    if (!message) return;
+    messages = [...messages, message];
+    prompt = "";
   }
 </script>
 
@@ -59,14 +68,28 @@
     </div>
 
     <div class="conversation">
-      <div class="empty">
-        <Icon name="chat" size={22} />
-        <strong>先从导航、查找、统计开始</strong>
-        <span>后续这里会接入 Mastra agent，用受控工具访问 SurrealDB、仪表盘和表格数据。</span>
-      </div>
+      {#if messages.length}
+        <div class="message-list">
+          {#each messages as message (message.id)}
+            <article class="message">
+              <div class="message-meta">
+                <span>你</span>
+                <small>{message.context.contextHint}</small>
+              </div>
+              <p>{message.content}</p>
+            </article>
+          {/each}
+        </div>
+      {:else}
+        <div class="empty">
+          <Icon name="chat" size={22} />
+          <strong>先从导航、查找、统计开始</strong>
+          <span>后续这里会接入 Mastra agent，用受控工具访问 SurrealDB、仪表盘和表格数据。</span>
+        </div>
+      {/if}
     </div>
 
-    <form class="composer" onsubmit={(event) => event.preventDefault()}>
+    <form class="composer" onsubmit={(event) => { event.preventDefault(); sendPrompt(); }}>
       <textarea bind:value={prompt} rows="3" placeholder="例如：帮我找到某某债权，或按案件状态统计确认金额"></textarea>
       <button class="primary-btn" disabled={!prompt.trim()}>
         <Icon name="send" size={15} color="#fff" />
@@ -182,6 +205,53 @@
     justify-content: center;
     padding: 20px;
     overflow: auto;
+  }
+
+  .message-list {
+    display: grid;
+    align-self: stretch;
+    width: 100%;
+    gap: 10px;
+  }
+
+  .message {
+    display: grid;
+    justify-self: end;
+    width: min(100%, 320px);
+    gap: 6px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--primary-light);
+  }
+
+  .message-meta {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .message-meta span {
+    color: var(--text-1);
+    font-size: 12px;
+    font-weight: 650;
+  }
+
+  .message-meta small {
+    overflow: hidden;
+    color: var(--text-3);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .message p {
+    margin: 0;
+    color: var(--text-1);
+    font-size: 13px;
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
   }
 
   .empty {
