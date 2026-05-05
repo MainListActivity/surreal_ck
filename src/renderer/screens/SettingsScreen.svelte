@@ -5,11 +5,17 @@
   import { appApi } from "../lib/app-api";
   import { appState } from "../lib/app-state.svelte";
   import type { Navigate } from "../lib/types";
+  import type { AiProvider } from "../../shared/rpc.types";
 
   let { navigate: _navigate }: { navigate: Navigate } = $props();
 
   let retentionDays = $state(30);
   let draftRetentionDays = $state("30");
+  let aiProvider = $state<AiProvider>("openai");
+  let aiModel = $state("gpt-5.4");
+  let aiBaseUrl = $state("");
+  let aiSecretRef = $state("");
+  let savedSnapshot = $state("");
   let loading = $state(true);
   let saving = $state(false);
   let error = $state<string | null>(null);
@@ -18,11 +24,26 @@
   const userName = $derived(appState.user?.displayName || appState.user?.name || "未命名用户");
   const userEmail = $derived(appState.user?.email || "未绑定邮箱");
   const workspaceName = $derived(appState.workspace?.name || "默认工作区");
-  const dirty = $derived(String(retentionDays) !== draftRetentionDays.trim());
+  const currentSnapshot = $derived(JSON.stringify({
+    retentionDays: draftRetentionDays.trim(),
+    aiProvider,
+    aiModel: aiModel.trim(),
+    aiBaseUrl: aiBaseUrl.trim(),
+    aiSecretRef: aiSecretRef.trim(),
+  }));
+  const dirty = $derived(savedSnapshot !== currentSnapshot);
   const parsedRetention = $derived(Number.parseInt(draftRetentionDays, 10));
   const invalidRetention = $derived(
     !Number.isFinite(parsedRetention) || parsedRetention < 1 || parsedRetention > 3650
   );
+  const invalidAi = $derived(!aiModel.trim());
+
+  const providerOptions: Array<{ value: AiProvider; label: string }> = [
+    { value: "openai", label: "OpenAI" },
+    { value: "anthropic", label: "Anthropic" },
+    { value: "google", label: "Google" },
+    { value: "custom", label: "自定义" },
+  ];
 
   onMount(() => {
     void loadSettings();
@@ -39,6 +60,11 @@
       }
       retentionDays = result.data.observability.retentionDays;
       draftRetentionDays = String(retentionDays);
+      aiProvider = result.data.ai.provider;
+      aiModel = result.data.ai.model;
+      aiBaseUrl = result.data.ai.baseUrl ?? "";
+      aiSecretRef = result.data.ai.secretRef ?? "";
+      savedSnapshot = currentSnapshot;
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
     } finally {
@@ -47,24 +73,43 @@
   }
 
   async function saveSettings() {
-    if (invalidRetention || saving) return;
+    if (invalidRetention || invalidAi || saving) return;
     saving = true;
     error = null;
     savedAt = null;
     try {
-      const result = await appApi.saveSettings(parsedRetention);
+      const result = await appApi.saveSettings({
+        retentionDays: parsedRetention,
+        ai: {
+          provider: aiProvider,
+          model: aiModel.trim(),
+          baseUrl: aiBaseUrl.trim() || undefined,
+          secretRef: aiSecretRef.trim() || undefined,
+          secretConfigured: !!aiSecretRef.trim(),
+        },
+      });
       if (!result.ok) {
         error = result.message;
         return;
       }
       retentionDays = result.data.observability.retentionDays;
       draftRetentionDays = String(retentionDays);
+      aiProvider = result.data.ai.provider;
+      aiModel = result.data.ai.model;
+      aiBaseUrl = result.data.ai.baseUrl ?? "";
+      aiSecretRef = result.data.ai.secretRef ?? "";
+      savedSnapshot = currentSnapshot;
       savedAt = new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
     } finally {
       saving = false;
     }
+  }
+
+  function resetDraft() {
+    draftRetentionDays = String(retentionDays);
+    void loadSettings();
   }
 </script>
 
@@ -96,6 +141,47 @@
     <div class="section">
       <div class="section-head">
         <div>
+          <h3>AI 模型</h3>
+          <p>配置默认模型和密钥引用。密钥明文必须存放在系统凭据存储中，这里只保存引用名。</p>
+        </div>
+        <span class="status" class:dirty>{dirty ? "未保存" : "已同步"}</span>
+      </div>
+
+      <div class="setting-grid">
+        <label class="field">
+          <span>服务商</span>
+          <select bind:value={aiProvider} disabled={loading || saving}>
+            {#each providerOptions as option}
+              <option value={option.value}>{option.label}</option>
+            {/each}
+          </select>
+        </label>
+
+        <label class="field">
+          <span>模型</span>
+          <input bind:value={aiModel} placeholder="provider/model 或模型名" disabled={loading || saving} />
+        </label>
+
+        <label class="field">
+          <span>Base URL</span>
+          <input bind:value={aiBaseUrl} placeholder="默认服务地址" disabled={loading || saving} />
+        </label>
+
+        <label class="field">
+          <span>Secret Ref</span>
+          <input bind:value={aiSecretRef} placeholder="例如 keychain:surreal-ck/openai" disabled={loading || saving} />
+        </label>
+      </div>
+
+      <div class="secret-note">
+        <Icon name="lock" size={14} />
+        <span>这里不会保存 API Key 明文；运行时只应通过 secret_ref 到 OS Keychain / Credential Store 取密钥。</span>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-head">
+        <div>
           <h3>观测数据</h3>
           <p>控制 Mastra traces、事件和调试数据在本机数据库中的保留时间。</p>
         </div>
@@ -119,6 +205,8 @@
 
       {#if invalidRetention}
         <div class="message error"><Icon name="alertCircle" size={14} />请输入 1 到 3650 之间的整数。</div>
+      {:else if invalidAi}
+        <div class="message error"><Icon name="alertCircle" size={14} />AI 模型不能为空。</div>
       {:else if error}
         <div class="message error"><Icon name="alertCircle" size={14} />{error}</div>
       {:else if savedAt}
@@ -126,10 +214,10 @@
       {/if}
 
       <div class="actions">
-        <button class="secondary-btn" onclick={() => (draftRetentionDays = String(retentionDays))} disabled={!dirty || saving}>
+        <button class="secondary-btn" onclick={resetDraft} disabled={!dirty || saving}>
           撤销
         </button>
-        <button class="primary-btn" onclick={saveSettings} disabled={!dirty || invalidRetention || loading || saving}>
+        <button class="primary-btn" onclick={saveSettings} disabled={!dirty || invalidRetention || invalidAi || loading || saving}>
           <Icon name="check" size={14} color="#fff" />{saving ? "保存中" : "保存设置"}
         </button>
       </div>
@@ -245,6 +333,7 @@
 
   .section {
     padding: 18px;
+    margin-bottom: 14px;
   }
 
   .section-head {
@@ -306,6 +395,56 @@
     outline: none;
   }
 
+  .setting-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+    padding-top: 18px;
+  }
+
+  .field {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 7px;
+  }
+
+  .field span {
+    color: var(--text-2);
+    font-size: 12px;
+    font-weight: 650;
+  }
+
+  .field input,
+  .field select {
+    width: 100%;
+    min-width: 0;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--surface);
+    color: var(--text-1);
+    outline: none;
+  }
+
+  .field input:focus,
+  .field select:focus {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px var(--primary-light);
+  }
+
+  .secret-note {
+    display: flex;
+    align-items: flex-start;
+    gap: 7px;
+    margin-top: 14px;
+    padding: 9px 10px;
+    border-radius: 7px;
+    background: var(--soft);
+    color: var(--text-2);
+    font-size: 12px;
+  }
+
   .setting-row input:focus {
     border-color: var(--primary);
     box-shadow: 0 0 0 3px var(--primary-light);
@@ -365,6 +504,10 @@
 
     .setting-row input {
       width: 100%;
+    }
+
+    .setting-grid {
+      grid-template-columns: 1fr;
     }
   }
 </style>

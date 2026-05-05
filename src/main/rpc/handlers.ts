@@ -92,7 +92,7 @@ import {
   saveDashboardPageLayout,
   updateDashboardView,
 } from "../services/dashboards";
-import { getObservabilitySettings, saveObservabilitySettings } from "../services/settings";
+import { getAiSettings, getObservabilitySettings, saveAiSettings, saveObservabilitySettings } from "../services/settings";
 
 type SendFn = (event: "authStateChanged", payload: { state: AuthState }) => void;
 
@@ -181,6 +181,7 @@ export function createRpcHandlers(send: SendFn) {
         return withResult(async () => {
           assertAuthenticated();
           return {
+            ai: await getAiSettings(),
             observability: await getObservabilitySettings(),
           };
         });
@@ -190,6 +191,7 @@ export function createRpcHandlers(send: SendFn) {
         return withResult(async () => {
           assertAuthenticated();
           return {
+            ai: await saveAiSettings(req.ai),
             observability: await saveObservabilitySettings(req.observability),
           };
         });

@@ -18,7 +18,20 @@ export type ObservabilitySettings = {
   retentionDays: number;
 };
 
+export type AiSettings = {
+  provider: "openai" | "anthropic" | "google" | "custom";
+  model: string;
+  baseUrl?: string;
+  secretRef?: string;
+  secretConfigured: boolean;
+};
+
 const DEFAULT_OBSERVABILITY_RETENTION_DAYS = 30;
+const DEFAULT_AI_SETTINGS: AiSettings = {
+  provider: "openai",
+  model: "gpt-5.4",
+  secretConfigured: false,
+};
 
 function settingId(key: string): RecordId {
   const normalized = key.replace(/[^a-zA-Z0-9_:-]/g, "_");
@@ -108,6 +121,67 @@ export async function saveObservabilitySettings(
   return { retentionDays };
 }
 
+export async function getAiSettings(): Promise<AiSettings> {
+  const setting = await getAppSetting<{
+    provider?: string;
+    model?: string;
+    baseUrl?: string;
+  }>("ai.provider");
+  const provider = normalizeAiProvider(setting?.value?.provider);
+  const model = typeof setting?.value?.model === "string" && setting.value.model.trim()
+    ? setting.value.model.trim()
+    : DEFAULT_AI_SETTINGS.model;
+  const baseUrl = typeof setting?.value?.baseUrl === "string" && setting.value.baseUrl.trim()
+    ? setting.value.baseUrl.trim()
+    : undefined;
+  const secretRef = setting?.secret_ref?.trim() || undefined;
+
+  return {
+    provider,
+    model,
+    baseUrl,
+    secretRef,
+    secretConfigured: !!secretRef,
+  };
+}
+
+export async function saveAiSettings(settings: AiSettings): Promise<AiSettings> {
+  const provider = normalizeAiProvider(settings.provider);
+  const model = settings.model.trim();
+  const baseUrl = settings.baseUrl?.trim() || undefined;
+  const secretRef = settings.secretRef?.trim() || undefined;
+
+  if (!model) {
+    throw new Error("[settings] AI model is required");
+  }
+
+  await saveAppSetting({
+    key: "ai.provider",
+    scope: "user",
+    value: {
+      provider,
+      model,
+      ...(baseUrl ? { baseUrl } : {}),
+    },
+    sensitive: !!secretRef,
+    encrypted: false,
+    secret_ref: secretRef,
+  });
+
+  return {
+    provider,
+    model,
+    baseUrl,
+    secretRef,
+    secretConfigured: !!secretRef,
+  };
+}
+
 export function observabilityExpiry(retentionDays: number): Date {
   return new Date(Date.now() + retentionDays * 24 * 60 * 60 * 1000);
+}
+
+function normalizeAiProvider(value: unknown): AiSettings["provider"] {
+  if (value === "anthropic" || value === "google" || value === "custom") return value;
+  return "openai";
 }

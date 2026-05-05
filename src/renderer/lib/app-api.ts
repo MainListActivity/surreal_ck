@@ -53,8 +53,20 @@ export const appApi = {
     return rpc.request("getSettings", {});
   },
 
-  saveSettings(retentionDays: number): Promise<Result<SaveSettingsResponse>> {
-    return rpc.request("saveSettings", { observability: { retentionDays } });
+  saveSettings(settings: {
+    retentionDays: number;
+    ai: {
+      provider: "openai" | "anthropic" | "google" | "custom";
+      model: string;
+      baseUrl?: string;
+      secretRef?: string;
+      secretConfigured: boolean;
+    };
+  }): Promise<Result<SaveSettingsResponse>> {
+    return rpc.request("saveSettings", {
+      ai: settings.ai,
+      observability: { retentionDays: settings.retentionDays },
+    });
   },
 
   listWorkbooks(

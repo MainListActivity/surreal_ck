@@ -82,12 +82,24 @@ export type ObservabilitySettingsDTO = {
   retentionDays: number;
 };
 
+export type AiProvider = "openai" | "anthropic" | "google" | "custom";
+
+export type AiSettingsDTO = {
+  provider: AiProvider;
+  model: string;
+  baseUrl?: string;
+  secretRef?: string;
+  secretConfigured: boolean;
+};
+
 export type GetSettingsResponse = {
   observability: ObservabilitySettingsDTO;
+  ai: AiSettingsDTO;
 };
 
 export type SaveSettingsRequest = {
   observability: ObservabilitySettingsDTO;
+  ai: AiSettingsDTO;
 };
 
 export type SaveSettingsResponse = GetSettingsResponse;
