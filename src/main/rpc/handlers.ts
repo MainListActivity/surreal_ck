@@ -52,6 +52,8 @@ import type {
   ListReferenceTargetsResponse,
   SaveDashboardPageLayoutRequest,
   SaveDashboardPageLayoutResponse,
+  SaveSettingsRequest,
+  SaveSettingsResponse,
   SearchReferenceCandidatesRequest,
   SearchReferenceCandidatesResponse,
   PreviewDashboardViewRequest,
@@ -90,6 +92,7 @@ import {
   saveDashboardPageLayout,
   updateDashboardView,
 } from "../services/dashboards";
+import { getObservabilitySettings, saveObservabilitySettings } from "../services/settings";
 
 type SendFn = (event: "authStateChanged", payload: { state: AuthState }) => void;
 
@@ -171,6 +174,24 @@ export function createRpcHandlers(send: SendFn) {
               slug: wsRow.slug,
             },
           } satisfies AppBootstrap;
+        });
+      },
+
+      getSettings: async (): Promise<Result<SaveSettingsResponse>> => {
+        return withResult(async () => {
+          assertAuthenticated();
+          return {
+            observability: await getObservabilitySettings(),
+          };
+        });
+      },
+
+      saveSettings: async (req: SaveSettingsRequest): Promise<Result<SaveSettingsResponse>> => {
+        return withResult(async () => {
+          assertAuthenticated();
+          return {
+            observability: await saveObservabilitySettings(req.observability),
+          };
         });
       },
 

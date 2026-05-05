@@ -89,6 +89,25 @@ export async function getObservabilitySettings(): Promise<ObservabilitySettings>
   };
 }
 
+export async function saveObservabilitySettings(
+  settings: ObservabilitySettings
+): Promise<ObservabilitySettings> {
+  const retentionDays = Math.floor(settings.retentionDays);
+  if (!Number.isFinite(retentionDays) || retentionDays < 1 || retentionDays > 3650) {
+    throw new Error("[settings] observability retention must be between 1 and 3650 days");
+  }
+
+  await saveAppSetting({
+    key: "observability.retention",
+    scope: "user",
+    value: { days: retentionDays },
+    sensitive: false,
+    encrypted: false,
+  });
+
+  return { retentionDays };
+}
+
 export function observabilityExpiry(retentionDays: number): Date {
   return new Date(Date.now() + retentionDays * 24 * 60 * 60 * 1000);
 }

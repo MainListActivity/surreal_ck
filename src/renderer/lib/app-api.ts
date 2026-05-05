@@ -14,6 +14,7 @@ import type {
   DashboardWidgetLayoutDTO,
   DeleteRowsResponse,
   GetDashboardPageResponse,
+  GetSettingsResponse,
   GetWorkbookDataResponse,
   ListDashboardPagesResponse,
   ListDashboardViewsResponse,
@@ -34,6 +35,7 @@ import type {
   ResolveReferencesResponse,
   Result,
   SaveDashboardPageLayoutResponse,
+  SaveSettingsResponse,
   SearchReferenceCandidatesResponse,
   UpdateSheetFieldsResponse,
   UpdateDashboardViewResponse,
@@ -45,6 +47,14 @@ import type {
 export const appApi = {
   getAppBootstrap(): Promise<Result<AppBootstrap>> {
     return rpc.request("getAppBootstrap", {});
+  },
+
+  getSettings(): Promise<Result<GetSettingsResponse>> {
+    return rpc.request("getSettings", {});
+  },
+
+  saveSettings(retentionDays: number): Promise<Result<SaveSettingsResponse>> {
+    return rpc.request("saveSettings", { observability: { retentionDays } });
   },
 
   listWorkbooks(

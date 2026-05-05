@@ -204,6 +204,9 @@
       await workbooksStore.moveWorkbook(payload.id, null);
     }
   }
+
+  const userName = $derived(appState.user?.displayName || appState.user?.name || appState.user?.email || "我");
+  const userMeta = $derived(appState.user?.email || "组织账号");
 </script>
 
 <aside class="side-nav">
@@ -383,9 +386,11 @@
     <button><Icon name="trash" size={16} />回收站</button>
   </div>
 
-  <div class="user">
-    <Avatar name="我" size={30} />
-    <div><strong>已登录</strong><span>组织账号</span></div>
+  <div class="user" class:active={current === "settings"}>
+    <button class="user-main" title="打开个人设置" onclick={() => navigate("settings")}>
+      <Avatar name={userName} size={30} />
+      <div><strong>{userName}</strong><span>{userMeta}</span></div>
+    </button>
     <button class="icon-btn logout-btn" title="退出登录" onclick={logout}>
       <Icon name="logout" size={15} color="var(--text-3)" />
     </button>
@@ -739,29 +744,50 @@
     display: flex;
     align-items: center;
     gap: 9px;
-    padding: 12px 14px;
+    padding: 10px 12px;
     border-top: 1px solid var(--border);
   }
 
-  .user div {
+  .user.active {
+    background: var(--primary-light);
+  }
+
+  .user-main {
+    display: flex;
+    min-width: 0;
+    flex: 1;
+    align-items: center;
+    gap: 9px;
+    padding: 2px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    text-align: left;
+  }
+
+  .user-main:hover {
+    background: var(--bg);
+  }
+
+  .user-main div {
     min-width: 0;
     flex: 1;
   }
 
-  .user strong,
-  .user span {
+  .user-main strong,
+  .user-main span {
     display: block;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .user strong {
+  .user-main strong {
     color: var(--text-1);
     font-size: 12px;
   }
 
-  .user span {
+  .user-main span {
     color: var(--text-3);
     font-size: 11px;
   }

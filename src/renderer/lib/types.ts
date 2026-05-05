@@ -7,6 +7,7 @@ export type ScreenId =
   | "form-success"
   | "templates"
   | "admin"
+  | "settings"
   | "admin-console"
   | "state-empty"
   | "state-offline"

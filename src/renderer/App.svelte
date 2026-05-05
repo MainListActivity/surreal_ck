@@ -9,6 +9,7 @@
   import LoginScreen from "./screens/LoginScreen.svelte";
   import MyDocsScreen from "./screens/MyDocsScreen.svelte";
   import PublicFormScreen from "./screens/PublicFormScreen.svelte";
+  import SettingsScreen from "./screens/SettingsScreen.svelte";
   import StateScreen from "./screens/StateScreen.svelte";
   import TemplatesScreen from "./screens/TemplatesScreen.svelte";
   import { auth, applyAuthState } from "./lib/auth.svelte";
@@ -19,7 +20,7 @@
   import LeaveDraftModal from "./features/editor/modals/LeaveDraftModal.svelte";
   import type { RouteState, ScreenId } from "./lib/types";
 
-  const navScreens = new Set<ScreenId>(["home", "mydocs", "dashboard", "templates", "admin", "state-empty"]);
+  const navScreens = new Set<ScreenId>(["home", "mydocs", "dashboard", "templates", "admin", "settings", "state-empty"]);
   const validStoredScreens = new Set<ScreenId>([
     "home",
     "mydocs",
@@ -29,6 +30,7 @@
     "form-success",
     "templates",
     "admin",
+    "settings",
     "state-empty",
     "state-offline",
     "state-noperm",
@@ -167,6 +169,8 @@
           <TemplatesScreen {navigate} />
         {:else if route.screen === "admin"}
           <AdminScreen {navigate} />
+        {:else if route.screen === "settings"}
+          <SettingsScreen {navigate} />
         {:else if route.screen === "admin-console"}
           <AdminConsoleScreen {navigate} />
         {:else}
