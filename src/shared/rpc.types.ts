@@ -88,8 +88,15 @@ export type AiSettingsDTO = {
   provider: AiProvider;
   model: string;
   baseUrl?: string;
-  secretRef?: string;
   secretConfigured: boolean;
+};
+
+export type SaveAiSettingsDTO = {
+  provider: AiProvider;
+  model: string;
+  baseUrl?: string;
+  apiKey?: string;
+  clearApiKey?: boolean;
 };
 
 export type GetSettingsResponse = {
@@ -99,7 +106,7 @@ export type GetSettingsResponse = {
 
 export type SaveSettingsRequest = {
   observability: ObservabilitySettingsDTO;
-  ai: AiSettingsDTO;
+  ai: SaveAiSettingsDTO;
 };
 
 export type SaveSettingsResponse = GetSettingsResponse;

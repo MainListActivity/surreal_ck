@@ -59,8 +59,8 @@ export const appApi = {
       provider: "openai" | "anthropic" | "google" | "custom";
       model: string;
       baseUrl?: string;
-      secretRef?: string;
-      secretConfigured: boolean;
+      apiKey?: string;
+      clearApiKey?: boolean;
     };
   }): Promise<Result<SaveSettingsResponse>> {
     return rpc.request("saveSettings", {

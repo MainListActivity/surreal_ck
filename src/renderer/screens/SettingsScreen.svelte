@@ -14,7 +14,9 @@
   let aiProvider = $state<AiProvider>("openai");
   let aiModel = $state("gpt-5.4");
   let aiBaseUrl = $state("");
-  let aiSecretRef = $state("");
+  let aiApiKey = $state("");
+  let aiSecretConfigured = $state(false);
+  let clearAiApiKey = $state(false);
   let savedSnapshot = $state("");
   let loading = $state(true);
   let saving = $state(false);
@@ -29,7 +31,8 @@
     aiProvider,
     aiModel: aiModel.trim(),
     aiBaseUrl: aiBaseUrl.trim(),
-    aiSecretRef: aiSecretRef.trim(),
+    aiApiKey: aiApiKey.trim() ? "__new__" : "",
+    clearAiApiKey,
   }));
   const dirty = $derived(savedSnapshot !== currentSnapshot);
   const parsedRetention = $derived(Number.parseInt(draftRetentionDays, 10));
@@ -63,7 +66,9 @@
       aiProvider = result.data.ai.provider;
       aiModel = result.data.ai.model;
       aiBaseUrl = result.data.ai.baseUrl ?? "";
-      aiSecretRef = result.data.ai.secretRef ?? "";
+      aiApiKey = "";
+      aiSecretConfigured = result.data.ai.secretConfigured;
+      clearAiApiKey = false;
       savedSnapshot = currentSnapshot;
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
@@ -84,8 +89,8 @@
           provider: aiProvider,
           model: aiModel.trim(),
           baseUrl: aiBaseUrl.trim() || undefined,
-          secretRef: aiSecretRef.trim() || undefined,
-          secretConfigured: !!aiSecretRef.trim(),
+          apiKey: aiApiKey.trim() || undefined,
+          clearApiKey: clearAiApiKey,
         },
       });
       if (!result.ok) {
@@ -97,7 +102,9 @@
       aiProvider = result.data.ai.provider;
       aiModel = result.data.ai.model;
       aiBaseUrl = result.data.ai.baseUrl ?? "";
-      aiSecretRef = result.data.ai.secretRef ?? "";
+      aiApiKey = "";
+      aiSecretConfigured = result.data.ai.secretConfigured;
+      clearAiApiKey = false;
       savedSnapshot = currentSnapshot;
       savedAt = new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
     } catch (err) {
@@ -110,6 +117,11 @@
   function resetDraft() {
     draftRetentionDays = String(retentionDays);
     void loadSettings();
+  }
+
+  function markClearAiApiKey() {
+    aiApiKey = "";
+    clearAiApiKey = true;
   }
 </script>
 
@@ -142,7 +154,7 @@
       <div class="section-head">
         <div>
           <h3>AI 模型</h3>
-          <p>配置默认模型和密钥引用。密钥明文必须存放在系统凭据存储中，这里只保存引用名。</p>
+          <p>配置默认模型和第三方 API Key。密钥会写入系统 Keychain，设置表只保存安全引用。</p>
         </div>
         <span class="status" class:dirty>{dirty ? "未保存" : "已同步"}</span>
       </div>
@@ -167,15 +179,35 @@
           <input bind:value={aiBaseUrl} placeholder="默认服务地址" disabled={loading || saving} />
         </label>
 
-        <label class="field">
-          <span>Secret Ref</span>
-          <input bind:value={aiSecretRef} placeholder="例如 keychain:surreal-ck/openai" disabled={loading || saving} />
+        <label class="field secret-field">
+          <span>API Key</span>
+          <div class="secret-input">
+            <input
+              type="password"
+              bind:value={aiApiKey}
+              placeholder={aiSecretConfigured && !clearAiApiKey ? "已配置，留空表示不修改" : "粘贴 API Key"}
+              disabled={loading || saving || clearAiApiKey}
+            />
+            {#if aiSecretConfigured && !clearAiApiKey}
+              <button type="button" class="secondary-btn clear-secret" onclick={markClearAiApiKey} disabled={loading || saving}>
+                清除
+              </button>
+            {/if}
+          </div>
         </label>
       </div>
 
       <div class="secret-note">
         <Icon name="lock" size={14} />
-        <span>这里不会保存 API Key 明文；运行时只应通过 secret_ref 到 OS Keychain / Credential Store 取密钥。</span>
+        <span>
+          {#if clearAiApiKey}
+            保存后会删除当前 API Key。
+          {:else if aiSecretConfigured}
+            API Key 已保存在系统 Keychain；输入新值会覆盖原密钥。
+          {:else}
+            API Key 明文只会传给主进程写入 Keychain，不会写入 app_setting。
+          {/if}
+        </span>
       </div>
     </div>
 
@@ -425,6 +457,24 @@
     background: var(--surface);
     color: var(--text-1);
     outline: none;
+  }
+
+  .secret-field {
+    grid-column: 1 / -1;
+  }
+
+  .secret-input {
+    display: flex;
+    gap: 8px;
+  }
+
+  .secret-input input {
+    flex: 1;
+  }
+
+  .clear-secret {
+    flex-shrink: 0;
+    padding: 8px 12px;
   }
 
   .field input:focus,

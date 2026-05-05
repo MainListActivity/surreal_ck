@@ -1,5 +1,6 @@
 import { RecordId } from "surrealdb";
 import { getLocalDb } from "../db/index";
+import { createKeychainSecretRef, deleteSecret, writeSecret } from "./secret-store";
 
 export type SettingScope = "user" | "workspace" | "workbook";
 
@@ -22,8 +23,12 @@ export type AiSettings = {
   provider: "openai" | "anthropic" | "google" | "custom";
   model: string;
   baseUrl?: string;
-  secretRef?: string;
   secretConfigured: boolean;
+};
+
+export type SaveAiSettings = Omit<AiSettings, "secretConfigured"> & {
+  apiKey?: string;
+  clearApiKey?: boolean;
 };
 
 const DEFAULT_OBSERVABILITY_RETENTION_DAYS = 30;
@@ -134,25 +139,39 @@ export async function getAiSettings(): Promise<AiSettings> {
   const baseUrl = typeof setting?.value?.baseUrl === "string" && setting.value.baseUrl.trim()
     ? setting.value.baseUrl.trim()
     : undefined;
-  const secretRef = setting?.secret_ref?.trim() || undefined;
 
   return {
     provider,
     model,
     baseUrl,
-    secretRef,
-    secretConfigured: !!secretRef,
+    secretConfigured: !!setting?.secret_ref?.trim(),
   };
 }
 
-export async function saveAiSettings(settings: AiSettings): Promise<AiSettings> {
+export async function saveAiSettings(settings: SaveAiSettings): Promise<AiSettings> {
+  const existing = await getAppSetting<{
+    provider?: string;
+    model?: string;
+    baseUrl?: string;
+  }>("ai.provider");
   const provider = normalizeAiProvider(settings.provider);
   const model = settings.model.trim();
   const baseUrl = settings.baseUrl?.trim() || undefined;
-  const secretRef = settings.secretRef?.trim() || undefined;
+  const apiKey = settings.apiKey?.trim();
+  let secretRef = existing?.secret_ref?.trim() || undefined;
 
   if (!model) {
     throw new Error("[settings] AI model is required");
+  }
+
+  if (settings.clearApiKey) {
+    deleteSecret(secretRef);
+    secretRef = undefined;
+  } else if (apiKey) {
+    const nextRef = createKeychainSecretRef();
+    writeSecret(nextRef, apiKey);
+    deleteSecret(secretRef);
+    secretRef = nextRef;
   }
 
   await saveAppSetting({
@@ -172,7 +191,6 @@ export async function saveAiSettings(settings: AiSettings): Promise<AiSettings> 
     provider,
     model,
     baseUrl,
-    secretRef,
     secretConfigured: !!secretRef,
   };
 }
