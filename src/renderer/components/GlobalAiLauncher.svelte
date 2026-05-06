@@ -3,6 +3,7 @@
   import { editorUi } from "../features/editor/lib/editor-ui.svelte";
   import { appApi } from "../lib/app-api";
   import { editorStore } from "../lib/editor.svelte";
+  import { subscribeAiChunks } from "../lib/rpc";
   import Icon from "./Icon.svelte";
   import type { AiChatMessage } from "../../shared/ai-context";
   import type { Navigate, RouteState } from "../lib/types";
@@ -35,20 +36,55 @@
     prompt = next;
   }
 
+  function patchMessage(id: string, patch: Partial<AiChatMessage>) {
+    messages = messages.map((m) => (m.id === id ? { ...m, ...patch } : m));
+  }
+
   async function sendPrompt() {
     const message = createAiUserMessage({ prompt, context: contextSnapshot });
     if (!message) return;
-    messages = [...messages, message];
+
+    const streamId = crypto.randomUUID();
+    const placeholderId = crypto.randomUUID();
+    const placeholder: AiChatMessage = {
+      id: placeholderId,
+      role: "assistant",
+      content: "",
+      createdAt: new Date().toISOString(),
+      context: message.context,
+    };
+
+    messages = [...messages, message, placeholder];
     prompt = "";
     sending = true;
     sendError = null;
-    const res = await appApi.sendAiMessage(message);
-    if (res.ok) {
-      messages = [...messages, res.data.message];
-    } else {
-      sendError = res.message;
+
+    const unsubscribe = subscribeAiChunks(streamId, (event) => {
+      if (event.type === "delta") {
+        const current = messages.find((m) => m.id === placeholderId);
+        if (!current) return;
+        patchMessage(placeholderId, { content: current.content + event.text });
+      } else if (event.type === "error") {
+        sendError = event.message;
+      }
+    });
+
+    try {
+      const res = await appApi.sendAiMessage(message, streamId);
+      if (res.ok) {
+        patchMessage(placeholderId, {
+          id: res.data.message.id,
+          content: res.data.message.content,
+          createdAt: res.data.message.createdAt,
+        });
+      } else {
+        sendError = res.message;
+        messages = messages.filter((m) => m.id !== placeholderId);
+      }
+    } finally {
+      unsubscribe();
+      sending = false;
     }
-    sending = false;
   }
 </script>
 
@@ -88,7 +124,11 @@
                 <span>{message.role === "assistant" ? "AI 助手" : "你"}</span>
                 <small>{message.context.contextHint}</small>
               </div>
-              <p>{message.content}</p>
+              {#if message.role === "assistant" && !message.content && sending}
+                <p class="typing"><span></span><span></span><span></span></p>
+              {:else}
+                <p>{message.content}</p>
+              {/if}
             </article>
           {/each}
         </div>
@@ -272,6 +312,29 @@
     line-height: 1.6;
     overflow-wrap: anywhere;
     white-space: pre-wrap;
+  }
+
+  .typing {
+    display: inline-flex;
+    gap: 4px;
+    align-items: center;
+    height: 18px;
+  }
+
+  .typing span {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--text-3);
+    animation: ai-typing 1.1s infinite ease-in-out;
+  }
+
+  .typing span:nth-child(2) { animation-delay: .15s; }
+  .typing span:nth-child(3) { animation-delay: .3s; }
+
+  @keyframes ai-typing {
+    0%, 60%, 100% { opacity: .3; transform: translateY(0); }
+    30% { opacity: 1; transform: translateY(-2px); }
   }
 
   .empty {

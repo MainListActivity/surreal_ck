@@ -1,4 +1,5 @@
 import type {
+  AiMessageChunkEvent,
   AppBootstrap,
   AuthState,
   CreateBlankWorkbookRequest,
@@ -103,7 +104,10 @@ import {
 } from "../services/settings";
 import { sendAiMessage } from "../services/ai-chat";
 
-type SendFn = (event: "authStateChanged", payload: { state: AuthState }) => void;
+type SendFn = {
+  (event: "authStateChanged", payload: { state: AuthState }): void;
+  (event: "aiMessageChunk", payload: AiMessageChunkEvent): void;
+};
 
 const ADMIN_QUERY_ENABLED =
   process.env.ADMIN_QUERY === "1" ||
@@ -207,7 +211,7 @@ export function createRpcHandlers(send: SendFn) {
       },
 
       sendAiMessage: async (req: SendAiMessageRequest): Promise<Result<SendAiMessageResponse>> => {
-        return withResult(() => sendAiMessage(req));
+        return withResult(() => sendAiMessage(req, (event) => send("aiMessageChunk", event)));
       },
 
       listWorkbooks: async (req: ListWorkbooksRequest): Promise<Result<ListWorkbooksResponse>> => {
