@@ -1,5 +1,6 @@
 import { RecordId } from "surrealdb";
 import { getLocalDb } from "../db/index";
+import type { AiSettingsDTO } from "../../shared/rpc.types";
 
 export type SettingScope = "user" | "workspace" | "workbook";
 export type AiProvider = "openai" | "anthropic" | "google" | "custom";
@@ -11,7 +12,6 @@ export type AppSetting<TValue extends Record<string, unknown> = Record<string, u
   value: TValue;
   sensitive: boolean;
   encrypted: boolean;
-  secret_ref?: string;
   created_at?: Date;
   updated_at?: Date;
 };
@@ -52,7 +52,7 @@ export async function getAppSetting<TValue extends Record<string, unknown>>(
 ): Promise<AppSetting<TValue> | null> {
   const db = getLocalDb();
   const rows = await db.query<[AppSetting<TValue>[]]>(
-    `SELECT key, scope, value, sensitive, encrypted, secret_ref, created_at, updated_at
+    `SELECT key, scope, value, sensitive, encrypted, created_at, updated_at
      FROM app_setting
      WHERE id = $id
      LIMIT 1`,
@@ -73,7 +73,6 @@ export async function saveAppSetting<TValue extends Record<string, unknown>>(
        value: $value,
        sensitive: $sensitive,
        encrypted: $encrypted,
-       secret_ref: $secretRef,
        updated_at: time::now()
      }
      RETURN AFTER`,
@@ -84,7 +83,6 @@ export async function saveAppSetting<TValue extends Record<string, unknown>>(
       value: setting.value,
       sensitive: setting.sensitive,
       encrypted: setting.encrypted,
-      secretRef: setting.secret_ref ?? null,
     }
   );
 
@@ -193,6 +191,16 @@ export async function saveAiSettings(settings: SaveAiSettings): Promise<AiSettin
     apiFormat,
     apiKey,
     secretConfigured: !!apiKey?.trim(),
+  };
+}
+
+export function toAiSettingsDTO(settings: AiSettings): AiSettingsDTO {
+  return {
+    provider: settings.provider,
+    model: settings.model,
+    ...(settings.baseUrl ? { baseUrl: settings.baseUrl } : {}),
+    apiFormat: settings.apiFormat,
+    secretConfigured: settings.secretConfigured,
   };
 }
 

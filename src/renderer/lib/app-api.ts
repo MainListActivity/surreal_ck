@@ -37,11 +37,13 @@ import type {
   SaveDashboardPageLayoutResponse,
   SaveSettingsResponse,
   SearchReferenceCandidatesResponse,
+  SendAiMessageResponse,
   UpdateSheetFieldsResponse,
   UpdateDashboardViewResponse,
   UpsertRowsResponse,
   ViewParams,
 } from "../../shared/rpc.types";
+import type { AiChatMessage } from "../../shared/ai-context";
 
 /** 产品页面唯一的数据入口；不暴露 raw query。 */
 export const appApi = {
@@ -68,6 +70,10 @@ export const appApi = {
       ai: settings.ai,
       observability: { retentionDays: settings.retentionDays },
     });
+  },
+
+  sendAiMessage(message: AiChatMessage): Promise<Result<SendAiMessageResponse>> {
+    return rpc.request("sendAiMessage", { message });
   },
 
   listWorkbooks(

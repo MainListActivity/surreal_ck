@@ -36,7 +36,7 @@ export type AiContextSnapshot = {
 
 export type AiChatMessage = {
   id: string;
-  role: "user";
+  role: "user" | "assistant";
   content: string;
   createdAt: string;
   context: AiContextSnapshot;

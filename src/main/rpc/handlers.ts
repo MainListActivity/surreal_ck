@@ -56,6 +56,8 @@ import type {
   SaveSettingsResponse,
   SearchReferenceCandidatesRequest,
   SearchReferenceCandidatesResponse,
+  SendAiMessageRequest,
+  SendAiMessageResponse,
   PreviewDashboardViewRequest,
   PreviewDashboardViewResponse,
   UpdateDashboardViewRequest,
@@ -92,7 +94,14 @@ import {
   saveDashboardPageLayout,
   updateDashboardView,
 } from "../services/dashboards";
-import { getAiSettings, getObservabilitySettings, saveAiSettings, saveObservabilitySettings } from "../services/settings";
+import {
+  getAiSettings,
+  getObservabilitySettings,
+  saveAiSettings,
+  saveObservabilitySettings,
+  toAiSettingsDTO,
+} from "../services/settings";
+import { sendAiMessage } from "../services/ai-chat";
 
 type SendFn = (event: "authStateChanged", payload: { state: AuthState }) => void;
 
@@ -181,7 +190,7 @@ export function createRpcHandlers(send: SendFn) {
         return withResult(async () => {
           assertAuthenticated();
           return {
-            ai: await getAiSettings(),
+            ai: toAiSettingsDTO(await getAiSettings()),
             observability: await getObservabilitySettings(),
           };
         });
@@ -191,10 +200,14 @@ export function createRpcHandlers(send: SendFn) {
         return withResult(async () => {
           assertAuthenticated();
           return {
-            ai: await saveAiSettings(req.ai),
+            ai: toAiSettingsDTO(await saveAiSettings(req.ai)),
             observability: await saveObservabilitySettings(req.observability),
           };
         });
+      },
+
+      sendAiMessage: async (req: SendAiMessageRequest): Promise<Result<SendAiMessageResponse>> => {
+        return withResult(() => sendAiMessage(req));
       },
 
       listWorkbooks: async (req: ListWorkbooksRequest): Promise<Result<ListWorkbooksResponse>> => {

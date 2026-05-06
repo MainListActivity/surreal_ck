@@ -16,6 +16,7 @@
   let aiBaseUrl = $state("");
   let aiApiFormat = $state<AiApiFormat>("openai-compatible");
   let aiApiKey = $state("");
+  let aiSecretConfigured = $state(false);
   let clearAiApiKey = $state(false);
   let savedSnapshot = $state("");
   let loading = $state(true);
@@ -33,6 +34,7 @@
     aiBaseUrl: aiBaseUrl.trim(),
     aiApiFormat,
     aiApiKey,
+    aiSecretConfigured,
     clearAiApiKey,
   }));
   const dirty = $derived(savedSnapshot !== currentSnapshot);
@@ -88,7 +90,8 @@
       aiModel = result.data.ai.model;
       aiBaseUrl = result.data.ai.baseUrl ?? "";
       aiApiFormat = result.data.ai.apiFormat;
-      aiApiKey = result.data.ai.apiKey ?? "";
+      aiApiKey = "";
+      aiSecretConfigured = result.data.ai.secretConfigured;
       clearAiApiKey = false;
       savedSnapshot = currentSnapshot;
     } catch (err) {
@@ -125,7 +128,8 @@
       aiModel = result.data.ai.model;
       aiBaseUrl = result.data.ai.baseUrl ?? "";
       aiApiFormat = result.data.ai.apiFormat;
-      aiApiKey = result.data.ai.apiKey ?? "";
+      aiApiKey = "";
+      aiSecretConfigured = result.data.ai.secretConfigured;
       clearAiApiKey = false;
       savedSnapshot = currentSnapshot;
       savedAt = new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
@@ -144,6 +148,7 @@
   function markClearAiApiKey() {
     aiApiKey = "";
     clearAiApiKey = true;
+    aiSecretConfigured = false;
   }
 </script>
 
@@ -217,10 +222,10 @@
             <input
               type="text"
               bind:value={aiApiKey}
-              placeholder="粘贴 API Key；会明文保存在 SurrealDB"
+              placeholder={aiSecretConfigured ? "已保存 API Key；留空将继续保留" : "粘贴 API Key"}
               disabled={loading || saving || clearAiApiKey}
             />
-            {#if aiApiKey && !clearAiApiKey}
+            {#if (aiApiKey || aiSecretConfigured) && !clearAiApiKey}
               <button type="button" class="secondary-btn clear-secret" onclick={markClearAiApiKey} disabled={loading || saving}>
                 清除
               </button>
@@ -235,7 +240,7 @@
           {#if clearAiApiKey}
             保存后会删除当前 API Key。
           {:else}
-            API Key 会直接保存在 app_setting.value.apiKey；Base URL 统一填写到 API 版本级别，不要填 /chat/completions、/responses 或 /messages。
+            {aiSecretConfigured ? "已保存 API Key。出于安全原因，密钥明文不会回显到界面。" : "API Key 只会提交到主进程保存，不会从设置接口回显。"} Base URL 统一填写到 API 版本级别，不要填 /chat/completions、/responses 或 /messages。
           {/if}
         </span>
       </div>

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { buildAiContextSnapshot, createAiUserMessage } from "../../shared/ai-context";
   import { editorUi } from "../features/editor/lib/editor-ui.svelte";
+  import { appApi } from "../lib/app-api";
   import { editorStore } from "../lib/editor.svelte";
   import Icon from "./Icon.svelte";
   import type { AiChatMessage } from "../../shared/ai-context";
@@ -17,6 +18,8 @@
   let open = $state(false);
   let prompt = $state("");
   let messages = $state<AiChatMessage[]>([]);
+  let sending = $state(false);
+  let sendError = $state<string | null>(null);
 
   const currentSheet = $derived(editorStore.sheets.find((sheet) => sheet.id === editorStore.activeSheetId) ?? null);
   const contextSnapshot = $derived(buildAiContextSnapshot({
@@ -32,11 +35,20 @@
     prompt = next;
   }
 
-  function sendPrompt() {
+  async function sendPrompt() {
     const message = createAiUserMessage({ prompt, context: contextSnapshot });
     if (!message) return;
     messages = [...messages, message];
     prompt = "";
+    sending = true;
+    sendError = null;
+    const res = await appApi.sendAiMessage(message);
+    if (res.ok) {
+      messages = [...messages, res.data.message];
+    } else {
+      sendError = res.message;
+    }
+    sending = false;
   }
 </script>
 
@@ -71,9 +83,9 @@
       {#if messages.length}
         <div class="message-list">
           {#each messages as message (message.id)}
-            <article class="message">
+            <article class="message" class:assistant-message={message.role === "assistant"}>
               <div class="message-meta">
-                <span>你</span>
+                <span>{message.role === "assistant" ? "AI 助手" : "你"}</span>
                 <small>{message.context.contextHint}</small>
               </div>
               <p>{message.content}</p>
@@ -90,10 +102,13 @@
     </div>
 
     <form class="composer" onsubmit={(event) => { event.preventDefault(); sendPrompt(); }}>
+      {#if sendError}
+        <p class="send-error">{sendError}</p>
+      {/if}
       <textarea bind:value={prompt} rows="3" placeholder="例如：帮我找到某某债权，或按案件状态统计确认金额"></textarea>
-      <button class="primary-btn" disabled={!prompt.trim()}>
+      <button class="primary-btn" disabled={!prompt.trim() || sending}>
         <Icon name="send" size={15} color="#fff" />
-        发送
+        {sending ? "发送中" : "发送"}
       </button>
     </form>
   </aside>
@@ -225,6 +240,11 @@
     background: var(--primary-light);
   }
 
+  .assistant-message {
+    justify-self: start;
+    background: var(--surface);
+  }
+
   .message-meta {
     display: grid;
     gap: 2px;
@@ -280,6 +300,13 @@
     padding: 14px 16px 16px;
     border-top: 1px solid var(--border);
     background: var(--surface);
+  }
+
+  .send-error {
+    margin: 0;
+    color: var(--danger, #c2410c);
+    font-size: 12px;
+    line-height: 1.5;
   }
 
   textarea {

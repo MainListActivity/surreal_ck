@@ -513,7 +513,6 @@ DEFINE FIELD IF NOT EXISTS workbook     ON TABLE app_setting TYPE option<record<
 DEFINE FIELD OVERWRITE value        ON TABLE app_setting TYPE object FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS sensitive    ON TABLE app_setting TYPE bool DEFAULT false;
 DEFINE FIELD IF NOT EXISTS encrypted    ON TABLE app_setting TYPE bool DEFAULT false;
-DEFINE FIELD IF NOT EXISTS secret_ref   ON TABLE app_setting TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS created_at   ON TABLE app_setting TYPE datetime VALUE time::now();
 DEFINE FIELD IF NOT EXISTS updated_at   ON TABLE app_setting TYPE datetime VALUE time::now();
 DEFINE INDEX IF NOT EXISTS app_setting_key_unique ON TABLE app_setting COLUMNS key UNIQUE;

@@ -1,4 +1,5 @@
 import type { ElectrobunRPCSchema } from "electrobun/bun";
+import type { AiChatMessage } from "./ai-context";
 
 // ─── 传输基础类型 ─────────────────────────────────────────────────────────────
 
@@ -90,7 +91,6 @@ export type AiSettingsDTO = {
   model: string;
   baseUrl?: string;
   apiFormat: AiApiFormat;
-  apiKey?: string;
   secretConfigured: boolean;
 };
 
@@ -114,6 +114,27 @@ export type SaveSettingsRequest = {
 };
 
 export type SaveSettingsResponse = GetSettingsResponse;
+
+export type SendAiMessageRequest = {
+  message: AiChatMessage;
+  /** 由前端生成的本次流式会话 id；后续 aiMessageChunk 通过该 id 回填到 placeholder 消息上。 */
+  streamId: string;
+};
+
+export type SendAiMessageResponse = {
+  message: AiChatMessage;
+  toolCalls: Array<{
+    toolName: string;
+    args?: unknown;
+    result?: unknown;
+  }>;
+};
+
+/** 主进程推送给 webview 的流式增量；与 SendAiMessageRequest.streamId 配对。 */
+export type AiMessageChunkEvent =
+  | { streamId: string; type: "delta"; text: string }
+  | { streamId: string; type: "error"; message: string }
+  | { streamId: string; type: "done" };
 
 export type WorkbookSummaryDTO = {
   id: RecordIdString;
@@ -739,6 +760,7 @@ export interface AppRPC extends ElectrobunRPCSchema {
       getAppBootstrap: { params: Record<string, never>; response: Result<AppBootstrap> };
       getSettings: { params: Record<string, never>; response: Result<GetSettingsResponse> };
       saveSettings: { params: SaveSettingsRequest; response: Result<SaveSettingsResponse> };
+      sendAiMessage: { params: SendAiMessageRequest; response: Result<SendAiMessageResponse> };
       listWorkbooks: { params: ListWorkbooksRequest; response: Result<ListWorkbooksResponse> };
       createBlankWorkbook: { params: CreateBlankWorkbookRequest; response: Result<CreateBlankWorkbookResponse> };
       listFolders: { params: ListFoldersRequest; response: Result<ListFoldersResponse> };
@@ -780,6 +802,7 @@ export interface AppRPC extends ElectrobunRPCSchema {
     messages: {
       pushRows: { rows: LegacyRowData[] };
       authStateChanged: { state: AuthState };
+      aiMessageChunk: AiMessageChunkEvent;
     };
   };
 }
