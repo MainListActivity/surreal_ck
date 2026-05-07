@@ -7,6 +7,7 @@ export const WORKSPACE_AGENT_ID = "workspaceAgent";
 export function createWorkspaceAgent(settings: AiSettings): Agent {
   return new Agent({
     name: "Workspace Agent",
+    id: WORKSPACE_AGENT_ID,
     instructions: `你是 Surreal CK 的工作区 AI 助手。
 始终使用简体中文回答。
 你会收到当前路由、工作簿、数据表和选中记录上下文。只基于用户提供的上下文和可用工具作答。
@@ -35,6 +36,7 @@ function splitModel(provider: string, model: string): { providerId: string; mode
 }
 
 export const workspaceAgent = new Agent({
+  id: WORKSPACE_AGENT_ID,
   name: "Workspace Agent",
   instructions: `你是 Surreal CK 的工作区 AI 助手。
 始终使用简体中文回答。
