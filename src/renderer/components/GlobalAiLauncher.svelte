@@ -123,7 +123,9 @@
     <header>
       <div>
         <strong>AI 助手</strong>
-        <span>{contextSnapshot.contextHint}</span>
+        {#if contextSnapshot.workbook}
+          <span>{contextSnapshot.contextHint}</span>
+        {/if}
       </div>
       <button class="icon-btn" aria-label="关闭 AI 助手" onclick={() => appState.setAiDrawerOpen(false)}>
         <Icon name="x" size={16} />
@@ -184,25 +186,32 @@
   </aside>
 {/if}
 
-<button class="ai-launcher" aria-label="打开 AI 助手" title="AI 助手" onclick={() => appState.toggleAiDrawer()}>
-  <Icon name="ai" size={20} color="#fff" />
-</button>
+{#if !appState.aiDrawerOpen}
+  <button class="ai-launcher" aria-label="打开 AI 助手" title="AI 助手" onclick={() => appState.toggleAiDrawer()}>
+    <Icon name="ai" size={18} color="#fff" />
+    <span>AI</span>
+  </button>
+{/if}
 
 <style>
   .ai-launcher {
     position: fixed;
-    right: 22px;
-    bottom: 22px;
+    top: 18px;
+    right: 18px;
     z-index: 80;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 44px;
-    height: 44px;
+    gap: 7px;
+    height: 36px;
+    padding: 0 12px;
     border: 0;
     border-radius: 8px;
     background: var(--primary);
-    box-shadow: 0 10px 24px rgba(22, 100, 255, .26);
+    color: #fff;
+    font-size: 13px;
+    font-weight: 650;
+    box-shadow: 0 8px 18px rgba(22, 100, 255, .22);
   }
 
   .ai-launcher:hover {
@@ -432,8 +441,10 @@
 
   @media (max-width: 640px) {
     .ai-launcher {
-      right: 16px;
-      bottom: 16px;
+      top: 12px;
+      right: 12px;
+      height: 34px;
+      padding: 0 10px;
     }
 
     .quick-actions {

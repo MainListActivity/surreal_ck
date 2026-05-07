@@ -1,5 +1,5 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: done
+Label: done
 
 # AI-002 — AI 上下文快照：工作簿 / Sheet / 行选中联动
 
@@ -35,14 +35,14 @@ Label: ready-for-agent
 
 ## Acceptance criteria
 
-- [ ] 未选中工作簿时，AI 抽屉顶部不显示上下文提示区
-- [ ] 进入工作簿选中 Sheet 时，提示区显示 `工作簿名 / Sheet 名`
-- [ ] 在 GridView 中选中某行后，提示区更新为 `Sheet 名 / name‖code‖recordId` 格式
-- [ ] 切换 Sheet 后提示区立即更新，不残留前一个 Sheet 信息
-- [ ] 取消行选中后，提示区退回到 `工作簿名 / Sheet 名` 格式
-- [ ] 发送消息时，RPC payload 中包含完整结构化上下文对象
-- [ ] 无行选中时，payload 中 `selectedRow` 字段缺失（不为 null/空对象）
-- [ ] 单元测试覆盖：workbook-only、sheet-selected、row-selected、no-selection 四种快照状态
+- [x] 未选中工作簿时，AI 抽屉顶部不显示上下文提示区
+- [x] 进入工作簿选中 Sheet 时，提示区显示 `工作簿名 / Sheet 名`
+- [x] 在 GridView 中选中某行后，提示区更新为 `Sheet 名 / name‖code‖recordId` 格式
+- [x] 切换 Sheet 后提示区立即更新，不残留前一个 Sheet 信息
+- [x] 取消行选中后，提示区退回到 `工作簿名 / Sheet 名` 格式
+- [x] 发送消息时，RPC payload 中包含完整结构化上下文对象
+- [x] 无行选中时，payload 中 `selectedRow` 字段缺失（不为 null/空对象）
+- [x] 单元测试覆盖：workbook-only、sheet-selected、row-selected、no-selection 四种快照状态
 
 ## Blocked by
 

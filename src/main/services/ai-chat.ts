@@ -1,6 +1,7 @@
 import { Agent } from "@mastra/core/agent";
 import { ModelRouterLanguageModel } from "@mastra/core/llm";
 import type { AiChatMessage } from "../../shared/ai-context";
+import { serializeContextForAi } from "../../shared/ai-context";
 import type {
   AiMessageChunkEvent,
   SendAiMessageRequest,
@@ -118,6 +119,6 @@ function buildPrompt(message: AiChatMessage): string {
     `用户问题：${message.content}`,
     "",
     "当前上下文快照：",
-    JSON.stringify(message.context, null, 2),
+    JSON.stringify(serializeContextForAi(message.context), null, 2),
   ].join("\n");
 }

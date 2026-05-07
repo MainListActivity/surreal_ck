@@ -72,6 +72,20 @@ export function buildAiContextSnapshot(input: BuildAiContextSnapshotInput): AiCo
   };
 }
 
+export type AiContextForAi = Omit<AiContextSnapshot, "contextHint" | "workbook" | "sheet" | "selectedRow"> & {
+  workbook?: NonNullable<AiWorkbookContext>;
+  sheet?: NonNullable<AiSheetContext>;
+  selectedRow?: NonNullable<AiSelectedRowContext>;
+};
+
+export function serializeContextForAi(snapshot: AiContextSnapshot): AiContextForAi {
+  const result: AiContextForAi = { route: snapshot.route };
+  if (snapshot.workbook) result.workbook = snapshot.workbook;
+  if (snapshot.sheet) result.sheet = snapshot.sheet;
+  if (snapshot.selectedRow) result.selectedRow = snapshot.selectedRow;
+  return result;
+}
+
 export function createAiUserMessage(input: CreateAiUserMessageInput): AiChatMessage | null {
   const content = input.prompt.trim();
   if (!content) return null;

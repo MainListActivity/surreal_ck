@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildAiContextSnapshot } from "../../shared/ai-context";
+import { buildAiContextSnapshot, serializeContextForAi } from "../../shared/ai-context";
 
 describe("buildAiContextSnapshot", () => {
   test("没有工作簿上下文时只提交当前路由", () => {
@@ -12,6 +12,18 @@ describe("buildAiContextSnapshot", () => {
     expect(snapshot.sheet).toBeNull();
     expect(snapshot.selectedRow).toBeNull();
     expect(snapshot.contextHint).toBe("当前在应用首页");
+  });
+
+  test("进入工作簿但未选中 Sheet 时，workbook 不为 null，sheet 为 null，contextHint 反映路由", () => {
+    const snapshot = buildAiContextSnapshot({
+      route: { screen: "editor", workbookId: "workbook:case" },
+      workbook: { id: "workbook:case", name: "债权工作簿" },
+    });
+
+    expect(snapshot.workbook).toEqual({ id: "workbook:case", name: "债权工作簿" });
+    expect(snapshot.sheet).toBeNull();
+    expect(snapshot.selectedRow).toBeNull();
+    expect(snapshot.contextHint).toBe("当前在表格工作簿");
   });
 
   test("选中数据表时提交工作簿和数据表上下文，不携带记录上下文", () => {
@@ -117,6 +129,37 @@ describe("buildAiContextSnapshot", () => {
     expect(snapshot.selectedRow?.visibleValues).toEqual({
       name: "张三",
       attachment: { fileName: "claim.pdf" },
+    });
+  });
+});
+
+describe("serializeContextForAi", () => {
+  test("无行选中时，序列化结果不含 selectedRow 字段", () => {
+    const snapshot = buildAiContextSnapshot({
+      route: { screen: "editor", workbookId: "workbook:case" },
+      workbook: { id: "workbook:case", name: "债权工作簿" },
+      sheet: { id: "sheet:claims", label: "债权申报表", tableName: "ent_claim" },
+    });
+
+    const serialized = serializeContextForAi(snapshot);
+    expect(Object.keys(serialized)).not.toContain("selectedRow");
+  });
+
+  test("有行选中时，序列化结果包含 selectedRow 字段", () => {
+    const snapshot = buildAiContextSnapshot({
+      route: { screen: "editor", workbookId: "workbook:case" },
+      workbook: { id: "workbook:case", name: "债权工作簿" },
+      sheet: { id: "sheet:claims", label: "债权申报表", tableName: "ent_claim" },
+      selectedRowId: "ent_claim:abc",
+      rows: [{ id: "ent_claim:abc", values: { name: "张三" } }],
+      visibleColumns: [{ key: "name", label: "姓名", fieldType: "text" }],
+    });
+
+    const serialized = serializeContextForAi(snapshot);
+    expect(serialized.selectedRow).toEqual({
+      id: "ent_claim:abc",
+      label: "张三 || ent_claim:abc",
+      visibleValues: { name: "张三" },
     });
   });
 });
