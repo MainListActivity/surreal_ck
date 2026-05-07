@@ -3,6 +3,7 @@ import type { AiChatMessage } from "../../shared/ai-context";
 import { serializeContextForAi } from "../../shared/ai-context";
 import type {
   AiMessageChunkEvent,
+  AiToolCallRecord,
   SendAiMessageRequest,
   SendAiMessageResponse,
 } from "../../shared/rpc.types";
@@ -66,11 +67,28 @@ async function streamAiMessage(
 ): Promise<void> {
   const { streamId } = req;
   let aggregated = "";
+  const collectedToolCalls: AiToolCallRecord[] = [];
 
   try {
-    const stream = await agent.stream(buildPrompt(req.message), {
+    const historyMessages = buildHistoryMessages(req.history ?? []);
+    const currentMessage = { role: "user" as const, content: buildPrompt(req.message) };
+    const allMessages = [...historyMessages, currentMessage];
+
+    const stream = await agent.stream(allMessages, {
       maxSteps: 4,
       providerOptions: { openai: { stream: true } },
+      onStepFinish: ({ toolCalls, toolResults }) => {
+        if (!toolResults?.length) return;
+        for (const tr of toolResults as Array<{ toolCallId: string; toolName: string; args?: unknown; result: unknown }>) {
+          const call = (toolCalls as Array<{ toolCallId: string; args?: unknown }>)
+            ?.find((tc) => tc.toolCallId === tr.toolCallId);
+          collectedToolCalls.push({
+            toolName: tr.toolName,
+            args: call?.args ?? tr.args,
+            result: tr.result,
+          });
+        }
+      },
     });
 
     for await (const delta of stream.textStream) {
@@ -83,6 +101,7 @@ async function streamAiMessage(
     pushChunk?.({
       streamId,
       type: "done",
+      toolCalls: collectedToolCalls,
       message: {
         id: crypto.randomUUID(),
         role: "assistant",
@@ -95,6 +114,15 @@ async function streamAiMessage(
     const message = err instanceof Error ? err.message : String(err);
     pushChunk?.({ streamId, type: "error", message });
   }
+}
+
+type CoreMessage = { role: "user" | "assistant"; content: string };
+
+export function buildHistoryMessages(history: AiChatMessage[]): CoreMessage[] {
+  return history.map((msg) => ({
+    role: msg.role,
+    content: msg.role === "user" ? buildPrompt(msg) : msg.content,
+  }));
 }
 
 function buildPrompt(message: AiChatMessage): string {

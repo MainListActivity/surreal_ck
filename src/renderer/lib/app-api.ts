@@ -72,8 +72,8 @@ export const appApi = {
     });
   },
 
-  sendAiMessage(message: AiChatMessage, streamId: string): Promise<Result<SendAiMessageResponse>> {
-    return rpc.request("sendAiMessage", { message, streamId });
+  sendAiMessage(message: AiChatMessage, streamId: string, history?: AiChatMessage[]): Promise<Result<SendAiMessageResponse>> {
+    return rpc.request("sendAiMessage", { message, streamId, history });
   },
 
   listWorkbooks(

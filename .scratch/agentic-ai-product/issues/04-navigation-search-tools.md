@@ -1,5 +1,5 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: done
+Label: done
 
 # AI-004 — 导航与资源搜索 Mastra tools
 

@@ -7,7 +7,8 @@
   import { subscribeAiChunks } from "../lib/rpc";
   import Icon from "./Icon.svelte";
   import type { AiChatMessage } from "../../shared/ai-context";
-  import type { Navigate, RouteState } from "../lib/types";
+  import type { AiToolCallRecord } from "../../shared/rpc.types";
+  import type { Navigate, RouteState, ScreenId } from "../lib/types";
 
   let {
     route,
@@ -17,10 +18,52 @@
     navigate: Navigate;
   } = $props();
 
+  type NavigationIntentType =
+    | { type: "navigate"; route: string }
+    | { type: "open-workbook"; workbookId: string; label: string }
+    | { type: "open-dashboard"; dashboardId: string; label: string }
+    | { type: "open-record"; workbookId: string; sheetId: string; recordId: string; label: string }
+    | { type: "ambiguous"; candidates: { label: string; id: string }[] };
+
+  type PendingIntent = {
+    messageId: string;
+    intent: NavigationIntentType;
+    dismissed: boolean;
+  };
+
   let prompt = $state("");
   let messages = $state<AiChatMessage[]>([]);
   let sending = $state(false);
   let sendError = $state<string | null>(null);
+  let pendingIntents = $state<PendingIntent[]>([]);
+
+  function extractNavigationIntent(toolCalls: AiToolCallRecord[]): NavigationIntentType | null {
+    const navTools = ["navigateTool", "searchWorkbookTool", "searchDashboardTool", "searchRecordTool"];
+    for (const tc of toolCalls) {
+      if (!navTools.includes(tc.toolName)) continue;
+      const result = tc.result as { intent?: NavigationIntentType } | undefined;
+      if (result?.intent) return result.intent;
+    }
+    return null;
+  }
+
+  function executeNavigationIntent(intent: NavigationIntentType) {
+    if (intent.type === "navigate") {
+      navigate(intent.route as ScreenId);
+    } else if (intent.type === "open-workbook") {
+      navigate("editor", { workbookId: intent.workbookId });
+    } else if (intent.type === "open-dashboard") {
+      navigate("dashboard", { dashboardPageId: intent.dashboardId });
+    } else if (intent.type === "open-record") {
+      navigate("editor", { workbookId: intent.workbookId, sheetId: intent.sheetId });
+    }
+  }
+
+  function dismissIntent(messageId: string) {
+    pendingIntents = pendingIntents.map((p) =>
+      p.messageId === messageId ? { ...p, dismissed: true } : p,
+    );
+  }
 
   const currentSheet = $derived(editorStore.sheets.find((sheet) => sheet.id === editorStore.activeSheetId) ?? null);
   const contextSnapshot = $derived(buildAiContextSnapshot({
@@ -63,6 +106,7 @@
       context: message.context,
     };
 
+    const history = messages.filter((m) => m.role === "user" || m.role === "assistant").slice();
     messages = [...messages, message, placeholder];
     prompt = "";
     sending = true;
@@ -80,14 +124,19 @@
         sending = false;
         unsubscribe();
       } else if (event.type === "done") {
+        const finalMessageId = event.message.id;
         replaceOrAppendAssistantMessage(placeholderId, event.message);
+        const intent = extractNavigationIntent(event.toolCalls ?? []);
+        if (intent) {
+          pendingIntents = [...pendingIntents, { messageId: finalMessageId, intent, dismissed: false }];
+        }
         sending = false;
         unsubscribe();
       }
     });
 
     try {
-      const res = await appApi.sendAiMessage(message, streamId);
+      const res = await appApi.sendAiMessage(message, streamId, history);
       if (res.ok && res.data.message.content) {
         replaceOrAppendAssistantMessage(placeholderId, {
           id: res.data.message.id,
@@ -162,6 +211,46 @@
                 <p>{message.content}</p>
               {/if}
             </article>
+
+            {#each pendingIntents.filter((p) => p.messageId === message.id && !p.dismissed) as pending (pending.messageId)}
+              <div class="intent-card">
+                {#if pending.intent.type === "navigate"}
+                  <span class="intent-label">跳转到：{pending.intent.route}</span>
+                  <div class="intent-actions">
+                    <button class="confirm-btn" onclick={() => { executeNavigationIntent(pending.intent); dismissIntent(pending.messageId); }}>跳转</button>
+                    <button class="dismiss-btn" onclick={() => dismissIntent(pending.messageId)}>忽略</button>
+                  </div>
+                {:else if pending.intent.type === "open-workbook"}
+                  <span class="intent-label">打开工作簿：{pending.intent.label}</span>
+                  <div class="intent-actions">
+                    <button class="confirm-btn" onclick={() => { executeNavigationIntent(pending.intent); dismissIntent(pending.messageId); }}>打开</button>
+                    <button class="dismiss-btn" onclick={() => dismissIntent(pending.messageId)}>忽略</button>
+                  </div>
+                {:else if pending.intent.type === "open-dashboard"}
+                  <span class="intent-label">打开仪表盘：{pending.intent.label}</span>
+                  <div class="intent-actions">
+                    <button class="confirm-btn" onclick={() => { executeNavigationIntent(pending.intent); dismissIntent(pending.messageId); }}>打开</button>
+                    <button class="dismiss-btn" onclick={() => dismissIntent(pending.messageId)}>忽略</button>
+                  </div>
+                {:else if pending.intent.type === "open-record"}
+                  <span class="intent-label">定位记录：{pending.intent.label}</span>
+                  <div class="intent-actions">
+                    <button class="confirm-btn" onclick={() => { executeNavigationIntent(pending.intent); dismissIntent(pending.messageId); }}>定位</button>
+                    <button class="dismiss-btn" onclick={() => dismissIntent(pending.messageId)}>忽略</button>
+                  </div>
+                {:else if pending.intent.type === "ambiguous"}
+                  <span class="intent-label">找到 {pending.intent.candidates.length} 条匹配结果，请选择：</span>
+                  <div class="intent-candidates">
+                    {#each pending.intent.candidates as candidate (candidate.id)}
+                      <button class="candidate-btn" onclick={() => { navigate("editor", { workbookId: candidate.id }); dismissIntent(pending.messageId); }}>
+                        {candidate.label}
+                      </button>
+                    {/each}
+                  </div>
+                  <button class="dismiss-btn" onclick={() => dismissIntent(pending.messageId)}>关闭</button>
+                {/if}
+              </div>
+            {/each}
           {/each}
         </div>
       {:else}
@@ -463,5 +552,76 @@
       border: 1px solid var(--border);
       border-radius: 8px;
     }
+  }
+
+  .intent-card {
+    display: grid;
+    gap: 8px;
+    padding: 10px 12px;
+    border: 1px solid var(--primary);
+    border-radius: 8px;
+    background: var(--primary-light, rgba(22, 100, 255, .06));
+  }
+
+  .intent-label {
+    color: var(--text-1);
+    font-size: 12px;
+    font-weight: 550;
+  }
+
+  .intent-actions {
+    display: flex;
+    gap: 6px;
+  }
+
+  .intent-candidates {
+    display: grid;
+    gap: 4px;
+  }
+
+  .candidate-btn {
+    width: 100%;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text-1);
+    font-size: 12px;
+    text-align: left;
+  }
+
+  .candidate-btn:hover {
+    border-color: var(--primary);
+    background: var(--primary-light, rgba(22, 100, 255, .06));
+  }
+
+  .confirm-btn {
+    height: 28px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: 6px;
+    background: var(--primary);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 550;
+  }
+
+  .confirm-btn:hover {
+    background: var(--primary-hover);
+  }
+
+  .dismiss-btn {
+    height: 28px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-3);
+    font-size: 12px;
+  }
+
+  .dismiss-btn:hover {
+    color: var(--text-1);
+    border-color: var(--text-3);
   }
 </style>

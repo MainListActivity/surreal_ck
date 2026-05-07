@@ -120,6 +120,8 @@ export type SendAiMessageRequest = {
   message: AiChatMessage;
   /** 由前端生成的本次流式会话 id；后续 aiMessageChunk 通过该 id 回填到 placeholder 消息上。 */
   streamId: string;
+  /** 本次对话的历史消息（不含当前 message），用于给 agent 提供多轮上下文。 */
+  history?: AiChatMessage[];
 };
 
 export type SendAiMessageResponse = {
@@ -165,6 +167,7 @@ const AiChatMessageSchema = z.object({
 export const SendAiMessageRequestSchema = z.object({
   message: AiChatMessageSchema,
   streamId: z.string(),
+  history: z.array(AiChatMessageSchema).optional(),
 });
 
 export const SendAiMessageResponseSchema = z.object({
@@ -246,11 +249,17 @@ export const ExecuteAiActionResponseSchema = z.object({
   message: z.string().optional(),
 });
 
+export type AiToolCallRecord = {
+  toolName: string;
+  args?: unknown;
+  result?: unknown;
+};
+
 /** 主进程推送给 webview 的流式增量；与 SendAiMessageRequest.streamId 配对。 */
 export type AiMessageChunkEvent =
   | { streamId: string; type: "delta"; text: string }
   | { streamId: string; type: "error"; message: string }
-  | { streamId: string; type: "done"; message: AiChatMessage };
+  | { streamId: string; type: "done"; message: AiChatMessage; toolCalls: AiToolCallRecord[] };
 
 export type WorkbookSummaryDTO = {
   id: RecordIdString;
