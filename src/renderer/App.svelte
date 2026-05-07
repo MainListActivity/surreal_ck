@@ -148,7 +148,7 @@
       </div>
     {/if}
 
-    <div class="app-body">
+    <div class="app-body" class:ai-panel-open={appState.aiDrawerOpen}>
       {#if navScreens.has(route.screen)}
         <SideNav current={route.screen} {navigate} />
       {/if}
@@ -178,9 +178,9 @@
           <StateScreen kind={route.screen} {navigate} />
         {/if}
       </main>
-    </div>
 
-    <GlobalAiLauncher {route} {navigate} />
+      <GlobalAiLauncher {route} {navigate} />
+    </div>
   {/if}
 
   {#if editorUi.leaveConfirm.open}

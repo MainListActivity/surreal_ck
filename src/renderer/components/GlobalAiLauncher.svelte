@@ -210,18 +210,17 @@
   }
 
   .ai-sidecar {
-    position: fixed;
-    top: 14px;
-    right: 14px;
-    bottom: 14px;
-    z-index: 90;
+    position: relative;
+    z-index: 30;
     display: flex;
     flex-direction: column;
-    width: min(420px, calc(100vw - 28px));
-    border: 1px solid var(--border);
-    border-radius: 8px;
+    width: min(420px, 34vw);
+    height: 100%;
+    min-width: 360px;
+    flex: 0 0 auto;
+    border-left: 1px solid var(--border);
     background: var(--surface);
-    box-shadow: 0 12px 32px rgba(15, 23, 42, .18);
+    box-shadow: -10px 0 24px rgba(15, 23, 42, .08);
   }
 
   header {
@@ -442,9 +441,16 @@
     }
 
     .ai-sidecar {
+      position: fixed;
+      top: 12px;
       left: 12px;
       right: 12px;
+      bottom: 12px;
       width: auto;
+      min-width: 0;
+      height: auto;
+      border: 1px solid var(--border);
+      border-radius: 8px;
     }
   }
 </style>
