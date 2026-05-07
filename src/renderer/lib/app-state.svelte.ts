@@ -8,6 +8,7 @@ type AppState = {
   user: CurrentUserDTO | null;
   workspace: WorkspaceDTO | null;
   readOnly: boolean;
+  aiDrawerOpen: boolean;
 };
 
 function createAppState() {
@@ -18,6 +19,7 @@ function createAppState() {
     user: null,
     workspace: null,
     readOnly: false,
+    aiDrawerOpen: false,
   });
 
   async function load() {
@@ -47,6 +49,15 @@ function createAppState() {
     state.user = null;
     state.workspace = null;
     state.readOnly = false;
+    state.aiDrawerOpen = false;
+  }
+
+  function toggleAiDrawer() {
+    state.aiDrawerOpen = !state.aiDrawerOpen;
+  }
+
+  function setAiDrawerOpen(open: boolean) {
+    state.aiDrawerOpen = open;
   }
 
   return {
@@ -56,8 +67,11 @@ function createAppState() {
     get user() { return state.user; },
     get workspace() { return state.workspace; },
     get readOnly() { return state.readOnly; },
+    get aiDrawerOpen() { return state.aiDrawerOpen; },
     load,
     reset,
+    toggleAiDrawer,
+    setAiDrawerOpen,
   };
 }
 

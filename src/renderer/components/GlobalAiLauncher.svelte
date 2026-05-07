@@ -2,6 +2,7 @@
   import { buildAiContextSnapshot, createAiUserMessage } from "../../shared/ai-context";
   import { editorUi } from "../features/editor/lib/editor-ui.svelte";
   import { appApi } from "../lib/app-api";
+  import { appState } from "../lib/app-state.svelte";
   import { editorStore } from "../lib/editor.svelte";
   import { subscribeAiChunks } from "../lib/rpc";
   import Icon from "./Icon.svelte";
@@ -16,7 +17,6 @@
     navigate: Navigate;
   } = $props();
 
-  let open = $state(false);
   let prompt = $state("");
   let messages = $state<AiChatMessage[]>([]);
   let sending = $state(false);
@@ -118,14 +118,14 @@
   }
 </script>
 
-{#if open}
+{#if appState.aiDrawerOpen}
   <aside class="ai-sidecar" aria-label="AI 助手">
     <header>
       <div>
         <strong>AI 助手</strong>
         <span>{contextSnapshot.contextHint}</span>
       </div>
-      <button class="icon-btn" aria-label="关闭 AI 助手" onclick={() => (open = false)}>
+      <button class="icon-btn" aria-label="关闭 AI 助手" onclick={() => appState.setAiDrawerOpen(false)}>
         <Icon name="x" size={16} />
       </button>
     </header>
@@ -184,7 +184,7 @@
   </aside>
 {/if}
 
-<button class="ai-launcher" aria-label="打开 AI 助手" title="AI 助手" onclick={() => (open = true)}>
+<button class="ai-launcher" aria-label="打开 AI 助手" title="AI 助手" onclick={() => appState.toggleAiDrawer()}>
   <Icon name="ai" size={20} color="#fff" />
 </button>
 
