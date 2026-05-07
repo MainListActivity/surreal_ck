@@ -134,7 +134,7 @@ export type SendAiMessageResponse = {
 export type AiMessageChunkEvent =
   | { streamId: string; type: "delta"; text: string }
   | { streamId: string; type: "error"; message: string }
-  | { streamId: string; type: "done" };
+  | { streamId: string; type: "done"; message: AiChatMessage };
 
 export type WorkbookSummaryDTO = {
   id: RecordIdString;

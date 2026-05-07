@@ -40,6 +40,15 @@
     messages = messages.map((m) => (m.id === id ? { ...m, ...patch } : m));
   }
 
+  function replaceOrAppendAssistantMessage(placeholderId: string, message: AiChatMessage) {
+    const found = messages.some((m) => m.id === placeholderId);
+    if (found) {
+      patchMessage(placeholderId, message);
+    } else {
+      messages = [...messages, message];
+    }
+  }
+
   async function sendPrompt() {
     const message = createAiUserMessage({ prompt, context: contextSnapshot });
     if (!message) return;
@@ -58,32 +67,53 @@
     prompt = "";
     sending = true;
     sendError = null;
+    let streamedText = "";
 
     const unsubscribe = subscribeAiChunks(streamId, (event) => {
       if (event.type === "delta") {
+        streamedText += event.text;
         const current = messages.find((m) => m.id === placeholderId);
         if (!current) return;
         patchMessage(placeholderId, { content: current.content + event.text });
       } else if (event.type === "error") {
         sendError = event.message;
+        sending = false;
+        unsubscribe();
+      } else if (event.type === "done") {
+        replaceOrAppendAssistantMessage(placeholderId, event.message);
+        sending = false;
+        unsubscribe();
       }
     });
 
     try {
       const res = await appApi.sendAiMessage(message, streamId);
-      if (res.ok) {
-        patchMessage(placeholderId, {
+      if (res.ok && res.data.message.content) {
+        replaceOrAppendAssistantMessage(placeholderId, {
           id: res.data.message.id,
           content: res.data.message.content,
+          role: res.data.message.role,
           createdAt: res.data.message.createdAt,
+          context: res.data.message.context,
         });
-      } else {
+      } else if (!res.ok && streamedText) {
+        patchMessage(placeholderId, { content: streamedText });
+        sendError = res.message;
+        sending = false;
+        unsubscribe();
+      } else if (!res.ok) {
         sendError = res.message;
         messages = messages.filter((m) => m.id !== placeholderId);
+        sending = false;
+        unsubscribe();
       }
-    } finally {
-      unsubscribe();
+    } catch (err) {
+      sendError = err instanceof Error ? err.message : String(err);
+      if (!streamedText) {
+        messages = messages.filter((m) => m.id !== placeholderId);
+      }
       sending = false;
+      unsubscribe();
     }
   }
 </script>

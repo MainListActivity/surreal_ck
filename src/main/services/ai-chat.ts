@@ -30,10 +30,10 @@ export async function sendAiMessage(
     id: WORKSPACE_AGENT_KEY,
     name: "Workspace Agent",
     instructions: [
-      "你是 Surreal CK 的工作区 AI 助手。",
-      "始终使用简体中文回答。",
-      "你会收到当前路由、工作簿、数据表和选中记录上下文。只基于用户提供的上下文和可用工具作答。",
-      "当前阶段不能直接修改数据；涉及导航、仪表盘创建或记录更新时，先说明建议和需要用户确认的下一步。",
+      `你是 Surreal CK 的工作区 AI 助手。
+      始终使用简体中文回答。
+      你会收到当前路由、工作簿、数据表和选中记录上下文。只基于用户提供的上下文和可用工具作答。
+      当前阶段不能直接修改数据；涉及导航、仪表盘创建或记录更新时，先说明建议和需要用户确认的下一步。`,
     ],
     model: new ModelRouterLanguageModel(buildModelConfig(settings)),
   });
@@ -42,35 +42,56 @@ export async function sendAiMessage(
     mastra.addAgent(agent, WORKSPACE_AGENT_KEY);
   }
 
-  const { streamId } = req;
-  const stream = await agent.stream(buildPrompt(req.message), { maxSteps: 4 });
-
-  let aggregated = "";
-  try {
-    for await (const delta of stream.textStream) {
-      if (!delta) continue;
-      aggregated += delta;
-      pushChunk?.({ streamId, type: "delta", text: delta });
-    }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    pushChunk?.({ streamId, type: "error", message });
-    throw new ServiceError("INTERNAL_ERROR", message);
-  }
-
-  const finalText = aggregated || (await stream.text) || "我没有生成有效回复。";
-  pushChunk?.({ streamId, type: "done" });
+  void streamAiMessage(req, agent, pushChunk);
 
   return {
     message: {
       id: crypto.randomUUID(),
       role: "assistant",
-      content: finalText,
+      content: "",
       createdAt: new Date().toISOString(),
       context: req.message.context,
     },
     toolCalls: [],
   };
+}
+
+async function streamAiMessage(
+  req: SendAiMessageRequest,
+  agent: Agent,
+  pushChunk?: AiChunkSender,
+): Promise<void> {
+  const { streamId } = req;
+  let aggregated = "";
+
+  try {
+    const stream = await agent.stream(buildPrompt(req.message), {
+      maxSteps: 4,
+      providerOptions: { openai: { stream: true } },
+    });
+
+    for await (const delta of stream.textStream) {
+      if (!delta) continue;
+      aggregated += delta;
+      pushChunk?.({ streamId, type: "delta", text: delta });
+    }
+
+    const finalText = aggregated || (await stream.text) || "我没有生成有效回复。";
+    pushChunk?.({
+      streamId,
+      type: "done",
+      message: {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content: finalText,
+        createdAt: new Date().toISOString(),
+        context: req.message.context,
+      },
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    pushChunk?.({ streamId, type: "error", message });
+  }
 }
 
 function buildModelConfig(settings: Awaited<ReturnType<typeof getAiSettings>>) {
