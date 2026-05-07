@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type { ElectrobunRPCSchema } from "electrobun/bun";
 import type { AiChatMessage } from "./ai-context";
 
@@ -129,6 +130,121 @@ export type SendAiMessageResponse = {
     result?: unknown;
   }>;
 };
+
+// ─── AI RPC Zod Schemas ──────────────────────────────────────────────────────
+
+const AiRouteContextSchema = z.object({
+  screen: z.string(),
+  dashboardPageId: z.string().optional(),
+  workbookId: z.string().optional(),
+  sheetId: z.string().optional(),
+  folderId: z.string().optional(),
+  templateKey: z.string().optional(),
+});
+
+const AiWorkbookContextSchema = z.object({ id: z.string(), name: z.string() }).nullable();
+const AiSheetContextSchema = z.object({ id: z.string(), label: z.string(), tableName: z.string() }).nullable();
+const AiSelectedRowContextSchema = z.object({ id: z.string(), label: z.string(), visibleValues: z.record(z.unknown()) }).nullable();
+
+const AiContextSnapshotSchema = z.object({
+  route: AiRouteContextSchema,
+  workbook: AiWorkbookContextSchema,
+  sheet: AiSheetContextSchema,
+  selectedRow: AiSelectedRowContextSchema,
+  contextHint: z.string(),
+});
+
+const AiChatMessageSchema = z.object({
+  id: z.string(),
+  role: z.enum(["user", "assistant"]),
+  content: z.string(),
+  createdAt: z.string(),
+  context: AiContextSnapshotSchema,
+});
+
+export const SendAiMessageRequestSchema = z.object({
+  message: AiChatMessageSchema,
+  streamId: z.string(),
+});
+
+export const SendAiMessageResponseSchema = z.object({
+  message: AiChatMessageSchema,
+  toolCalls: z.array(
+    z.object({
+      toolName: z.string(),
+      args: z.unknown().optional(),
+      result: z.unknown().optional(),
+    }),
+  ),
+});
+
+// ─── AI executeAction 类型定义 + Zod Schema ───────────────────────────────────
+
+export type NavigationIntent = {
+  type: "navigate";
+  screen: string;
+  workbookId?: string;
+  sheetId?: string;
+  dashboardPageId?: string;
+};
+
+export type DashboardDraftIntent = {
+  type: "dashboardDraft";
+  draft: Record<string, unknown>;
+};
+
+export type RowPatchProposal = {
+  type: "rowPatch";
+  sheetId: string;
+  rowId: string;
+  patch: Record<string, unknown>;
+};
+
+export type AiStructuredIntent = NavigationIntent | DashboardDraftIntent | RowPatchProposal;
+
+export type ExecuteAiActionRequest = {
+  intent: AiStructuredIntent;
+};
+
+export type ExecuteAiActionResponse = {
+  ok: boolean;
+  message?: string;
+};
+
+const NavigationIntentSchema = z.object({
+  type: z.literal("navigate"),
+  screen: z.string(),
+  workbookId: z.string().optional(),
+  sheetId: z.string().optional(),
+  dashboardPageId: z.string().optional(),
+});
+
+const DashboardDraftIntentSchema = z.object({
+  type: z.literal("dashboardDraft"),
+  draft: z.record(z.unknown()),
+});
+
+const RowPatchProposalSchema = z.object({
+  type: z.literal("rowPatch"),
+  sheetId: z.string(),
+  rowId: z.string(),
+  patch: z.record(z.unknown()),
+});
+
+export const AiStructuredIntentSchema = z.discriminatedUnion("type", [
+  NavigationIntentSchema,
+  DashboardDraftIntentSchema,
+  RowPatchProposalSchema,
+]);
+
+export const ExecuteAiActionRequestSchema = z.object({
+  intent: AiStructuredIntentSchema,
+});
+
+export const ExecuteAiActionResponseSchema = z.object({
+  ok: z.boolean(),
+  message: z.string().optional(),
+});
 
 /** 主进程推送给 webview 的流式增量；与 SendAiMessageRequest.streamId 配对。 */
 export type AiMessageChunkEvent =

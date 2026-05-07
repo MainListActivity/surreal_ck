@@ -1,5 +1,4 @@
-import { Agent } from "@mastra/core/agent";
-import { ModelRouterLanguageModel } from "@mastra/core/llm";
+import type { Agent } from "@mastra/core/agent";
 import type { AiChatMessage } from "../../shared/ai-context";
 import { serializeContextForAi } from "../../shared/ai-context";
 import type {
@@ -7,14 +6,26 @@ import type {
   SendAiMessageRequest,
   SendAiMessageResponse,
 } from "../../shared/rpc.types";
+import { createWorkspaceAgent, WORKSPACE_AGENT_ID } from "../ai/mastra/agents/workspace-agent";
 import { initMastraForCurrentUser } from "../ai/index";
 import { assertAuthenticated } from "./context";
-import { ServiceError } from "./errors";
 import { getAiSettings } from "./settings";
 
-const WORKSPACE_AGENT_KEY = "workspaceAgent";
-
 export type AiChunkSender = (event: AiMessageChunkEvent) => void;
+
+export function buildDegradedResponse(
+  req: Pick<SendAiMessageRequest, "streamId" | "message">,
+  content: string,
+): SendAiMessageResponse {
+  const message: SendAiMessageResponse["message"] = {
+    id: crypto.randomUUID(),
+    role: "assistant",
+    content,
+    createdAt: new Date().toISOString(),
+    context: req.message.context,
+  };
+  return { message, toolCalls: [] };
+}
 
 export async function sendAiMessage(
   req: SendAiMessageRequest,
@@ -23,25 +34,16 @@ export async function sendAiMessage(
   assertAuthenticated();
   const settings = await getAiSettings();
   if (!settings.secretConfigured || !settings.apiKey?.trim()) {
-    throw new ServiceError("VALIDATION_ERROR", "请先在设置中配置 AI API Key");
+    const res = buildDegradedResponse(req, "请先在设置中配置 AI API Key，才能使用 AI 功能。");
+    pushChunk?.({ streamId: req.streamId, type: "done", message: res.message });
+    return res;
   }
 
   const mastra = initMastraForCurrentUser();
-  const agent = new Agent({
-    id: WORKSPACE_AGENT_KEY,
-    name: "Workspace Agent",
-    instructions: [
-      `你是 Surreal CK 的工作区 AI 助手。
-      始终使用简体中文回答。
-      你会收到当前路由、工作簿、数据表和选中记录上下文。只基于用户提供的上下文和可用工具作答。
-      当前阶段不能直接修改数据；涉及导航、仪表盘创建或记录更新时，先说明建议和需要用户确认的下一步。`,
-    ],
-    model: new ModelRouterLanguageModel(buildModelConfig(settings)),
-  });
-
-  if (!mastra.listAgents()[WORKSPACE_AGENT_KEY]) {
-    mastra.addAgent(agent, WORKSPACE_AGENT_KEY);
+  if (!mastra.listAgents()[WORKSPACE_AGENT_ID]) {
+    mastra.addAgent(createWorkspaceAgent(settings), WORKSPACE_AGENT_ID);
   }
+  const agent = mastra.getAgent(WORKSPACE_AGENT_ID);
 
   void streamAiMessage(req, agent, pushChunk);
 
@@ -93,25 +95,6 @@ async function streamAiMessage(
     const message = err instanceof Error ? err.message : String(err);
     pushChunk?.({ streamId, type: "error", message });
   }
-}
-
-function buildModelConfig(settings: Awaited<ReturnType<typeof getAiSettings>>) {
-  const { providerId, modelId } = splitModel(settings.provider, settings.model);
-  return {
-    providerId,
-    modelId,
-    ...(settings.baseUrl ? { url: settings.baseUrl } : {}),
-    apiKey: settings.apiKey,
-  };
-}
-
-function splitModel(provider: string, model: string): { providerId: string; modelId: string } {
-  const trimmed = model.trim();
-  if (trimmed.includes("/")) {
-    const [providerId, ...modelParts] = trimmed.split("/");
-    return { providerId, modelId: modelParts.join("/") };
-  }
-  return { providerId: provider, modelId: trimmed };
 }
 
 function buildPrompt(message: AiChatMessage): string {
