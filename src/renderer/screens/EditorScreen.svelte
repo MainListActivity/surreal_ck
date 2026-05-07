@@ -45,6 +45,7 @@
         void editorStore.loadWorkbook(id);
       } else {
         editorStore.reset();
+        editorUi.selectRow(null);
       }
     });
   });

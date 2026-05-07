@@ -127,9 +127,16 @@
         if (!saved) return;
         editorStore.discardAllDrafts();
         editorUi.closeLeaveConfirm();
+        editorStore.reset();
+        editorUi.selectRow(null);
         commitNavigate(next);
       });
       return;
+    }
+
+    if (leavingWorkbook) {
+      editorStore.reset();
+      editorUi.selectRow(null);
     }
 
     commitNavigate(next);
