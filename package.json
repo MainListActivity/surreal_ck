@@ -23,6 +23,7 @@
     "dayjs": "^1.11.20",
     "electrobun": "^1.16.0",
     "layerchart": "2.0.0-next.62",
+    "marked": "^18.0.3",
     "mastra": "^1.8.0",
     "surrealdb": "^2.0.3",
     "zod": "^4.3.6"

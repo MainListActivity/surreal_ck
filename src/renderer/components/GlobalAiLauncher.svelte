@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { marked } from "marked";
   import { buildAiContextSnapshot, createAiUserMessage } from "../../shared/ai-context";
   import { editorUi } from "../features/editor/lib/editor-ui.svelte";
   import { appApi } from "../lib/app-api";
@@ -6,6 +7,12 @@
   import { editorStore } from "../lib/editor.svelte";
   import { subscribeAiChunks } from "../lib/rpc";
   import Icon from "./Icon.svelte";
+
+  marked.setOptions({ breaks: true });
+
+  function renderMarkdown(text: string): string {
+    return marked.parse(text) as string;
+  }
   import type { AiChatMessage } from "../../shared/ai-context";
   import type { AiToolCallRecord, AppNavigationIntent, ToolNavigationIntent } from "../../shared/rpc.types";
   import type { Navigate, RouteState, ScreenId } from "../lib/types";
@@ -83,9 +90,9 @@
     prompt = next;
   }
 
-  function contextTags(message: AiChatMessage): string[] {
+  function contextTags(context = contextSnapshot): string[] {
     const tags: string[] = [];
-    const { route, workbook, sheet, selectedRow } = message.context;
+    const { route, workbook, sheet, selectedRow } = context;
     tags.push(labelForScreen(route.screen));
     if (workbook?.name) tags.push(workbook.name);
     if (sheet?.label) tags.push(sheet.label);
@@ -229,15 +236,12 @@
         <div class="message-list">
           {#each messages as message (message.id)}
             <article class="message" class:user-message={message.role === "user"} class:assistant-message={message.role === "assistant"}>
-              <div class="message-tags" aria-label="消息上下文">
-                {#each contextTags(message) as tag}
-                  <span title={tag}>{tag}</span>
-                {/each}
-              </div>
               {#if message.role === "assistant" && !message.content && sending}
                 <p class="typing"><span></span><span></span><span></span></p>
+              {:else if message.role === "assistant"}
+                <div class="md-content">{@html renderMarkdown(message.content)}</div>
               {:else}
-                <p>{message.content}</p>
+                <p class="user-text">{message.content}</p>
               {/if}
             </article>
 
@@ -295,6 +299,11 @@
       {#if sendError}
         <p class="send-error">{sendError}</p>
       {/if}
+      <div class="composer-context" aria-label="当前上下文">
+        {#each contextTags() as tag}
+          <span title={tag}>{tag}</span>
+        {/each}
+      </div>
       <textarea bind:value={prompt} rows="3" placeholder="例如：帮我找到某某债权，或按案件状态统计确认金额"></textarea>
       <button class="primary-btn" disabled={!prompt.trim() || sending}>
         <Icon name="send" size={15} color="#fff" />
@@ -403,7 +412,7 @@
   .message {
     display: grid;
     width: min(100%, 360px);
-    gap: 8px;
+    gap: 0;
     padding: 12px 14px;
     border: 1px solid rgba(203, 213, 225, .9);
     border-radius: 8px;
@@ -422,14 +431,14 @@
     border-left: 3px solid var(--primary);
   }
 
-  .message-tags {
+  .composer-context {
     display: flex;
     flex-wrap: wrap;
     gap: 5px;
     min-width: 0;
   }
 
-  .message-tags span {
+  .composer-context span {
     max-width: 100%;
     overflow: hidden;
     padding: 2px 7px;
@@ -443,13 +452,119 @@
     white-space: nowrap;
   }
 
-  .message p {
+  .user-text {
     margin: 0;
     color: var(--text-1);
     font-size: 13.5px;
     line-height: 1.65;
     overflow-wrap: anywhere;
     white-space: pre-wrap;
+  }
+
+  .md-content {
+    color: var(--text-1);
+    font-size: 13.5px;
+    line-height: 1.65;
+    overflow-wrap: anywhere;
+    min-width: 0;
+  }
+
+  .md-content :global(p) {
+    margin: 0 0 0.6em;
+  }
+
+  .md-content :global(p:last-child) {
+    margin-bottom: 0;
+  }
+
+  .md-content :global(h1),
+  .md-content :global(h2),
+  .md-content :global(h3),
+  .md-content :global(h4) {
+    margin: 0.8em 0 0.3em;
+    font-weight: 650;
+    line-height: 1.3;
+  }
+
+  .md-content :global(h1) { font-size: 15px; }
+  .md-content :global(h2) { font-size: 14px; }
+  .md-content :global(h3) { font-size: 13.5px; }
+
+  .md-content :global(ul),
+  .md-content :global(ol) {
+    margin: 0.4em 0;
+    padding-left: 1.4em;
+  }
+
+  .md-content :global(li) {
+    margin-bottom: 0.2em;
+  }
+
+  .md-content :global(code) {
+    padding: 0.1em 0.4em;
+    border-radius: 4px;
+    background: rgba(15, 23, 42, .07);
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+  }
+
+  .md-content :global(pre) {
+    margin: 0.5em 0;
+    padding: 10px 12px;
+    border-radius: 6px;
+    background: rgba(15, 23, 42, .06);
+    overflow-x: auto;
+  }
+
+  .md-content :global(pre code) {
+    padding: 0;
+    background: transparent;
+    font-size: 12px;
+  }
+
+  .md-content :global(blockquote) {
+    margin: 0.5em 0;
+    padding: 0 0 0 10px;
+    border-left: 3px solid var(--border);
+    color: var(--text-3);
+  }
+
+  .md-content :global(hr) {
+    margin: 0.7em 0;
+    border: none;
+    border-top: 1px solid var(--border);
+  }
+
+  .md-content :global(a) {
+    color: var(--primary);
+    text-decoration: none;
+  }
+
+  .md-content :global(a:hover) {
+    text-decoration: underline;
+  }
+
+  .md-content :global(strong) {
+    font-weight: 650;
+  }
+
+  .md-content :global(table) {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+    margin: 0.5em 0;
+  }
+
+  .md-content :global(th),
+  .md-content :global(td) {
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    text-align: left;
+  }
+
+  .md-content :global(th) {
+    background: rgba(15, 23, 42, .04);
+    font-weight: 600;
   }
 
   .typing {
