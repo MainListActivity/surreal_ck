@@ -7,7 +7,7 @@
   import { subscribeAiChunks } from "../lib/rpc";
   import Icon from "./Icon.svelte";
   import type { AiChatMessage } from "../../shared/ai-context";
-  import type { AiToolCallRecord } from "../../shared/rpc.types";
+  import type { AiToolCallRecord, AppNavigationIntent, ToolNavigationIntent } from "../../shared/rpc.types";
   import type { Navigate, RouteState, ScreenId } from "../lib/types";
 
   let {
@@ -18,16 +18,9 @@
     navigate: Navigate;
   } = $props();
 
-  type NavigationIntentType =
-    | { type: "navigate"; route: string }
-    | { type: "open-workbook"; workbookId: string; label: string }
-    | { type: "open-dashboard"; dashboardId: string; label: string }
-    | { type: "open-record"; workbookId: string; sheetId: string; recordId: string; label: string }
-    | { type: "ambiguous"; candidates: { label: string; id: string }[] };
-
   type PendingIntent = {
     messageId: string;
-    intent: NavigationIntentType;
+    intent: ToolNavigationIntent;
     dismissed: boolean;
   };
 
@@ -37,26 +30,37 @@
   let sendError = $state<string | null>(null);
   let pendingIntents = $state<PendingIntent[]>([]);
 
-  function extractNavigationIntent(toolCalls: AiToolCallRecord[]): NavigationIntentType | null {
+  function extractNavigationIntent(toolCalls: AiToolCallRecord[]): ToolNavigationIntent | null {
     const navTools = ["navigateTool", "searchWorkbookTool", "searchDashboardTool", "searchRecordTool"];
     for (const tc of toolCalls) {
       if (!navTools.includes(tc.toolName)) continue;
-      const result = tc.result as { intent?: NavigationIntentType } | undefined;
+      const result = tc.result as { intent?: ToolNavigationIntent } | undefined;
       if (result?.intent) return result.intent;
     }
     return null;
   }
 
-  function executeNavigationIntent(intent: NavigationIntentType) {
-    if (intent.type === "navigate") {
-      navigate(intent.route as ScreenId);
-    } else if (intent.type === "open-workbook") {
-      navigate("editor", { workbookId: intent.workbookId });
-    } else if (intent.type === "open-dashboard") {
-      navigate("dashboard", { dashboardPageId: intent.dashboardId });
-    } else if (intent.type === "open-record") {
-      navigate("editor", { workbookId: intent.workbookId, sheetId: intent.sheetId });
+  function navigateFromAiAction(action: AppNavigationIntent) {
+    navigate(action.screen as ScreenId, {
+      workbookId: action.workbookId,
+      sheetId: action.sheetId,
+      dashboardPageId: action.dashboardPageId,
+    });
+  }
+
+  async function executeNavigationIntent(intent: ToolNavigationIntent) {
+    const res = await appApi.executeAiAction(intent);
+    if (!res.ok) {
+      sendError = res.message;
+      return false;
     }
+    if (res.data.navigation) navigateFromAiAction(res.data.navigation);
+    return true;
+  }
+
+  async function confirmNavigationIntent(intent: ToolNavigationIntent, messageId: string) {
+    const executed = await executeNavigationIntent(intent);
+    if (executed) dismissIntent(messageId);
   }
 
   function dismissIntent(messageId: string) {
@@ -77,6 +81,32 @@
 
   function useExample(next: string) {
     prompt = next;
+  }
+
+  function contextTags(message: AiChatMessage): string[] {
+    const tags: string[] = [];
+    const { route, workbook, sheet, selectedRow } = message.context;
+    tags.push(labelForScreen(route.screen));
+    if (workbook?.name) tags.push(workbook.name);
+    if (sheet?.label) tags.push(sheet.label);
+    if (selectedRow?.label) tags.push(selectedRow.label);
+    return tags;
+  }
+
+  function labelForScreen(screen: string): string {
+    const labels: Record<string, string> = {
+      home: "首页",
+      dashboard: "仪表盘",
+      editor: "表格",
+      mydocs: "我的文档",
+      settings: "设置",
+      templates: "模板",
+      admin: "管理",
+      "admin-console": "控制台",
+      form: "表单",
+      "form-success": "表单",
+    };
+    return labels[screen] ?? "应用";
   }
 
   function patchMessage(id: string, patch: Partial<AiChatMessage>) {
@@ -171,10 +201,8 @@
   <aside class="ai-sidecar" aria-label="AI 助手">
     <header>
       <div>
-        <strong>AI 助手</strong>
-        {#if contextSnapshot.workbook}
-          <span>{contextSnapshot.contextHint}</span>
-        {/if}
+        <strong>AI</strong>
+        <span>让数据、表格和仪表盘保持在同一段上下文里</span>
       </div>
       <button class="icon-btn" aria-label="关闭 AI 助手" onclick={() => appState.setAiDrawerOpen(false)}>
         <Icon name="x" size={16} />
@@ -200,10 +228,11 @@
       {#if messages.length}
         <div class="message-list">
           {#each messages as message (message.id)}
-            <article class="message" class:assistant-message={message.role === "assistant"}>
-              <div class="message-meta">
-                <span>{message.role === "assistant" ? "AI 助手" : "你"}</span>
-                <small>{message.context.contextHint}</small>
+            <article class="message" class:user-message={message.role === "user"} class:assistant-message={message.role === "assistant"}>
+              <div class="message-tags" aria-label="消息上下文">
+                {#each contextTags(message) as tag}
+                  <span title={tag}>{tag}</span>
+                {/each}
               </div>
               {#if message.role === "assistant" && !message.content && sending}
                 <p class="typing"><span></span><span></span><span></span></p>
@@ -217,32 +246,32 @@
                 {#if pending.intent.type === "navigate"}
                   <span class="intent-label">跳转到：{pending.intent.route}</span>
                   <div class="intent-actions">
-                    <button class="confirm-btn" onclick={() => { executeNavigationIntent(pending.intent); dismissIntent(pending.messageId); }}>跳转</button>
+                    <button class="confirm-btn" onclick={() => { void confirmNavigationIntent(pending.intent, pending.messageId); }}>跳转</button>
                     <button class="dismiss-btn" onclick={() => dismissIntent(pending.messageId)}>忽略</button>
                   </div>
                 {:else if pending.intent.type === "open-workbook"}
                   <span class="intent-label">打开工作簿：{pending.intent.label}</span>
                   <div class="intent-actions">
-                    <button class="confirm-btn" onclick={() => { executeNavigationIntent(pending.intent); dismissIntent(pending.messageId); }}>打开</button>
+                    <button class="confirm-btn" onclick={() => { void confirmNavigationIntent(pending.intent, pending.messageId); }}>打开</button>
                     <button class="dismiss-btn" onclick={() => dismissIntent(pending.messageId)}>忽略</button>
                   </div>
                 {:else if pending.intent.type === "open-dashboard"}
                   <span class="intent-label">打开仪表盘：{pending.intent.label}</span>
                   <div class="intent-actions">
-                    <button class="confirm-btn" onclick={() => { executeNavigationIntent(pending.intent); dismissIntent(pending.messageId); }}>打开</button>
+                    <button class="confirm-btn" onclick={() => { void confirmNavigationIntent(pending.intent, pending.messageId); }}>打开</button>
                     <button class="dismiss-btn" onclick={() => dismissIntent(pending.messageId)}>忽略</button>
                   </div>
                 {:else if pending.intent.type === "open-record"}
                   <span class="intent-label">定位记录：{pending.intent.label}</span>
                   <div class="intent-actions">
-                    <button class="confirm-btn" onclick={() => { executeNavigationIntent(pending.intent); dismissIntent(pending.messageId); }}>定位</button>
+                    <button class="confirm-btn" onclick={() => { void confirmNavigationIntent(pending.intent, pending.messageId); }}>定位</button>
                     <button class="dismiss-btn" onclick={() => dismissIntent(pending.messageId)}>忽略</button>
                   </div>
                 {:else if pending.intent.type === "ambiguous"}
                   <span class="intent-label">找到 {pending.intent.candidates.length} 条匹配结果，请选择：</span>
                   <div class="intent-candidates">
                     {#each pending.intent.candidates as candidate (candidate.id)}
-                      <button class="candidate-btn" onclick={() => { navigate("editor", { workbookId: candidate.id }); dismissIntent(pending.messageId); }}>
+                      <button class="candidate-btn" onclick={() => { void confirmNavigationIntent({ type: "open-workbook", workbookId: candidate.id, label: candidate.label }, pending.messageId); }}>
                         {candidate.label}
                       </button>
                     {/each}
@@ -255,9 +284,9 @@
         </div>
       {:else}
         <div class="empty">
-          <Icon name="chat" size={22} />
-          <strong>先从导航、查找、统计开始</strong>
-          <span>后续这里会接入 Mastra agent，用受控工具访问 SurrealDB、仪表盘和表格数据。</span>
+          <span class="empty-icon"><Icon name="ai" size={22} /></span>
+          <strong>从当前页面开始</strong>
+          <span>可直接查找工作簿、定位记录、创建统计，AI 会带上页面上下文。</span>
         </div>
       {/if}
     </div>
@@ -275,38 +304,8 @@
   </aside>
 {/if}
 
-{#if !appState.aiDrawerOpen}
-  <button class="ai-launcher" aria-label="打开 AI 助手" title="AI 助手" onclick={() => appState.toggleAiDrawer()}>
-    <Icon name="ai" size={18} color="#fff" />
-    <span>AI</span>
-  </button>
-{/if}
 
 <style>
-  .ai-launcher {
-    position: fixed;
-    top: 18px;
-    right: 18px;
-    z-index: 80;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 7px;
-    height: 36px;
-    padding: 0 12px;
-    border: 0;
-    border-radius: 8px;
-    background: var(--primary);
-    color: #fff;
-    font-size: 13px;
-    font-weight: 650;
-    box-shadow: 0 8px 18px rgba(22, 100, 255, .22);
-  }
-
-  .ai-launcher:hover {
-    background: var(--primary-hover);
-  }
-
   .ai-sidecar {
     position: relative;
     z-index: 30;
@@ -317,15 +316,16 @@
     min-width: 360px;
     flex: 0 0 auto;
     border-left: 1px solid var(--border);
-    background: var(--surface);
-    box-shadow: -10px 0 24px rgba(15, 23, 42, .08);
+    background:
+      linear-gradient(180deg, rgba(248, 250, 252, .96), var(--surface) 220px),
+      var(--surface);
   }
 
   header {
     display: flex;
     align-items: center;
     gap: 12px;
-    padding: 16px;
+    padding: 18px 20px 16px;
     border-bottom: 1px solid var(--border);
   }
 
@@ -337,12 +337,14 @@
 
   header strong {
     color: var(--text-1);
-    font-size: 15px;
+    font-size: 16px;
+    letter-spacing: 0;
   }
 
   header span {
     color: var(--text-3);
     font-size: 12px;
+    line-height: 1.5;
   }
 
   header .icon-btn {
@@ -353,7 +355,7 @@
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 8px;
-    padding: 12px 16px;
+    padding: 12px 20px;
     border-bottom: 1px solid var(--border);
   }
 
@@ -363,7 +365,7 @@
     justify-content: center;
     gap: 6px;
     min-width: 0;
-    height: 34px;
+    height: 36px;
     padding: 0 8px;
     border: 1px solid var(--border);
     border-radius: 7px;
@@ -372,6 +374,7 @@
     font-size: 12px;
     font-weight: 550;
     white-space: nowrap;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
   }
 
   .quick-actions button:hover {
@@ -383,51 +386,59 @@
     display: flex;
     flex: 1;
     min-height: 0;
-    align-items: center;
-    justify-content: center;
-    padding: 20px;
+    align-items: stretch;
+    justify-content: stretch;
+    padding: 18px 20px;
     overflow: auto;
   }
 
   .message-list {
     display: grid;
     align-self: stretch;
+    align-content: start;
     width: 100%;
-    gap: 10px;
+    gap: 14px;
   }
 
   .message {
     display: grid;
-    justify-self: end;
-    width: min(100%, 320px);
-    gap: 6px;
-    padding: 10px 12px;
-    border: 1px solid var(--border);
+    width: min(100%, 360px);
+    gap: 8px;
+    padding: 12px 14px;
+    border: 1px solid rgba(203, 213, 225, .9);
     border-radius: 8px;
-    background: var(--primary-light);
+    box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
+  }
+
+  .user-message {
+    justify-self: end;
+    background: #eef4ff;
+    border-color: #d7e4ff;
   }
 
   .assistant-message {
     justify-self: start;
     background: var(--surface);
+    border-left: 3px solid var(--primary);
   }
 
-  .message-meta {
-    display: grid;
-    gap: 2px;
+  .message-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
     min-width: 0;
   }
 
-  .message-meta span {
-    color: var(--text-1);
-    font-size: 12px;
-    font-weight: 650;
-  }
-
-  .message-meta small {
+  .message-tags span {
+    max-width: 100%;
     overflow: hidden;
-    color: var(--text-3);
+    padding: 2px 7px;
+    border: 1px solid rgba(148, 163, 184, .28);
+    border-radius: 999px;
+    background: rgba(248, 250, 252, .78);
+    color: #64748b;
     font-size: 11px;
+    line-height: 1.45;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -435,8 +446,8 @@
   .message p {
     margin: 0;
     color: var(--text-1);
-    font-size: 13px;
-    line-height: 1.6;
+    font-size: 13.5px;
+    line-height: 1.65;
     overflow-wrap: anywhere;
     white-space: pre-wrap;
   }
@@ -467,10 +478,22 @@
   .empty {
     display: grid;
     max-width: 280px;
+    margin: auto;
     justify-items: center;
-    gap: 8px;
+    gap: 10px;
     color: var(--text-3);
     text-align: center;
+  }
+
+  .empty-icon {
+    display: inline-grid;
+    width: 42px;
+    height: 42px;
+    place-items: center;
+    border: 1px solid #dbeafe;
+    border-radius: 8px;
+    background: #eff6ff;
+    color: var(--primary);
   }
 
   .empty strong {
@@ -487,7 +510,7 @@
   .composer {
     display: grid;
     gap: 10px;
-    padding: 14px 16px 16px;
+    padding: 14px 20px 18px;
     border-top: 1px solid var(--border);
     background: var(--surface);
   }
@@ -501,15 +524,16 @@
 
   textarea {
     width: 100%;
-    min-height: 78px;
+    min-height: 92px;
     resize: none;
     border: 1px solid var(--border);
-    border-radius: 7px;
-    padding: 10px 11px;
+    border-radius: 8px;
+    padding: 12px 13px;
     color: var(--text-1);
     font-size: 13px;
     line-height: 1.5;
     outline: none;
+    box-shadow: inset 0 1px 2px rgba(15, 23, 42, .03);
   }
 
   textarea:focus {
@@ -518,9 +542,9 @@
   }
 
   .composer .primary-btn {
-    height: 34px;
+    height: 36px;
     justify-self: end;
-    padding: 0 14px;
+    padding: 0 16px;
   }
 
   .composer .primary-btn:disabled {
@@ -529,13 +553,6 @@
   }
 
   @media (max-width: 640px) {
-    .ai-launcher {
-      top: 12px;
-      right: 12px;
-      height: 34px;
-      padding: 0 10px;
-    }
-
     .quick-actions {
       grid-template-columns: 1fr;
     }
@@ -557,6 +574,7 @@
   .intent-card {
     display: grid;
     gap: 8px;
+    width: min(100%, 360px);
     padding: 10px 12px;
     border: 1px solid var(--primary);
     border-radius: 8px;

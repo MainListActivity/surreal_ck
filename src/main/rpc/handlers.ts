@@ -16,6 +16,8 @@ import type {
   CreateWorkbookFromTemplateResponse,
   DeleteRowsRequest,
   DeleteRowsResponse,
+  ExecuteAiActionRequest,
+  ExecuteAiActionResponse,
   GetDashboardPageRequest,
   GetDashboardPageResponse,
   GetWorkbookDataRequest,
@@ -103,6 +105,7 @@ import {
   toAiSettingsDTO,
 } from "../services/settings";
 import { sendAiMessage } from "../services/ai-chat";
+import { executeAiAction } from "../services/ai-actions";
 
 type SendFn = {
   (event: "authStateChanged", payload: { state: AuthState }): void;
@@ -212,6 +215,10 @@ export function createRpcHandlers(send: SendFn) {
 
       sendAiMessage: async (req: SendAiMessageRequest): Promise<Result<SendAiMessageResponse>> => {
         return withResult(() => sendAiMessage(req, (event) => send("aiMessageChunk", event)));
+      },
+
+      executeAiAction: async (req: ExecuteAiActionRequest): Promise<Result<ExecuteAiActionResponse>> => {
+        return withResult(() => executeAiAction(req));
       },
 
       listWorkbooks: async (req: ListWorkbooksRequest): Promise<Result<ListWorkbooksResponse>> => {

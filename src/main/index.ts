@@ -26,6 +26,7 @@ async function main() {
     title: "SurrealCK",
     url: "views://mainview/index.html",
     frame: { width: 1280, height: 800, x: 100, y: 100 },
+    titleBarStyle: "hiddenInset",
     rpc,
   });
 

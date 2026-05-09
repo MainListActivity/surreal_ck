@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { SendAiMessageRequestSchema, SendAiMessageResponseSchema } from "../../shared/rpc.types";
+import { ExecuteAiActionRequestSchema, SendAiMessageRequestSchema, SendAiMessageResponseSchema } from "../../shared/rpc.types";
 import { buildHistoryMessages } from "./ai-chat";
 
 // ─── 切片 1：Zod schema 解析 ──────────────────────────────────────────────────
@@ -74,6 +74,23 @@ describe("ai.chat Zod schema 解析", () => {
   });
 });
 
+// ─── executeAiAction schema ──────────────────────────────────────────────────
+
+describe("executeAiAction Zod schema 解析", () => {
+  test("接受 searchWorkbook 返回的 open-workbook 导航意图", () => {
+    const input = {
+      intent: {
+        type: "open-workbook",
+        workbookId: "workbook:case",
+        label: "债权工作簿",
+      },
+    };
+
+    const result = ExecuteAiActionRequestSchema.safeParse(input);
+    expect(result.success).toBe(true);
+  });
+});
+
 // ─── buildHistoryMessages ─────────────────────────────────────────────────────
 
 describe("buildHistoryMessages", () => {
@@ -118,4 +135,3 @@ describe("buildHistoryMessages", () => {
     expect(result[2].role).toBe("user");
   });
 });
-

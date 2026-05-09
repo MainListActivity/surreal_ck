@@ -13,6 +13,7 @@ import type {
   DashboardViewSummaryDTO,
   DashboardWidgetLayoutDTO,
   DeleteRowsResponse,
+  ExecuteAiActionResponse,
   GetDashboardPageResponse,
   GetSettingsResponse,
   GetWorkbookDataResponse,
@@ -38,6 +39,7 @@ import type {
   SaveSettingsResponse,
   SearchReferenceCandidatesResponse,
   SendAiMessageResponse,
+  ToolNavigationIntent,
   UpdateSheetFieldsResponse,
   UpdateDashboardViewResponse,
   UpsertRowsResponse,
@@ -74,6 +76,10 @@ export const appApi = {
 
   sendAiMessage(message: AiChatMessage, streamId: string, history?: AiChatMessage[]): Promise<Result<SendAiMessageResponse>> {
     return rpc.request("sendAiMessage", { message, streamId, history });
+  },
+
+  executeAiAction(intent: ToolNavigationIntent): Promise<Result<ExecuteAiActionResponse>> {
+    return rpc.request("executeAiAction", { intent });
   },
 
   listWorkbooks(

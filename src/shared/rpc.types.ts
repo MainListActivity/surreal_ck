@@ -183,13 +183,20 @@ export const SendAiMessageResponseSchema = z.object({
 
 // ─── AI executeAction 类型定义 + Zod Schema ───────────────────────────────────
 
-export type NavigationIntent = {
+export type AppNavigationIntent = {
   type: "navigate";
   screen: string;
   workbookId?: string;
   sheetId?: string;
   dashboardPageId?: string;
 };
+
+export type ToolNavigationIntent =
+  | { type: "navigate"; route: string }
+  | { type: "open-workbook"; workbookId: string; label?: string }
+  | { type: "open-dashboard"; dashboardId: string; label?: string }
+  | { type: "open-record"; workbookId: string; sheetId: string; recordId: string; label?: string }
+  | { type: "ambiguous"; candidates: { label: string; id: string }[] };
 
 export type DashboardDraftIntent = {
   type: "dashboardDraft";
@@ -203,7 +210,7 @@ export type RowPatchProposal = {
   patch: Record<string, unknown>;
 };
 
-export type AiStructuredIntent = NavigationIntent | DashboardDraftIntent | RowPatchProposal;
+export type AiStructuredIntent = AppNavigationIntent | ToolNavigationIntent | DashboardDraftIntent | RowPatchProposal;
 
 export type ExecuteAiActionRequest = {
   intent: AiStructuredIntent;
@@ -212,15 +219,44 @@ export type ExecuteAiActionRequest = {
 export type ExecuteAiActionResponse = {
   ok: boolean;
   message?: string;
+  navigation?: AppNavigationIntent;
 };
 
-const NavigationIntentSchema = z.object({
+const AppNavigationIntentSchema = z.object({
   type: z.literal("navigate"),
   screen: z.string(),
   workbookId: z.string().optional(),
   sheetId: z.string().optional(),
   dashboardPageId: z.string().optional(),
 });
+
+const ToolNavigationIntentSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("navigate"),
+    route: z.string(),
+  }),
+  z.object({
+    type: z.literal("open-workbook"),
+    workbookId: z.string(),
+    label: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal("open-dashboard"),
+    dashboardId: z.string(),
+    label: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal("open-record"),
+    workbookId: z.string(),
+    sheetId: z.string(),
+    recordId: z.string(),
+    label: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal("ambiguous"),
+    candidates: z.array(z.object({ label: z.string(), id: z.string() })),
+  }),
+]);
 
 const DashboardDraftIntentSchema = z.object({
   type: z.literal("dashboardDraft"),
@@ -234,8 +270,9 @@ const RowPatchProposalSchema = z.object({
   patch: z.record(z.unknown()),
 });
 
-export const AiStructuredIntentSchema = z.discriminatedUnion("type", [
-  NavigationIntentSchema,
+export const AiStructuredIntentSchema = z.union([
+  AppNavigationIntentSchema,
+  ...ToolNavigationIntentSchema.options,
   DashboardDraftIntentSchema,
   RowPatchProposalSchema,
 ]);
@@ -247,6 +284,7 @@ export const ExecuteAiActionRequestSchema = z.object({
 export const ExecuteAiActionResponseSchema = z.object({
   ok: z.boolean(),
   message: z.string().optional(),
+  navigation: AppNavigationIntentSchema.optional(),
 });
 
 export type AiToolCallRecord = {
@@ -886,6 +924,7 @@ export interface AppRPC extends ElectrobunRPCSchema {
       getSettings: { params: Record<string, never>; response: Result<GetSettingsResponse> };
       saveSettings: { params: SaveSettingsRequest; response: Result<SaveSettingsResponse> };
       sendAiMessage: { params: SendAiMessageRequest; response: Result<SendAiMessageResponse> };
+      executeAiAction: { params: ExecuteAiActionRequest; response: Result<ExecuteAiActionResponse> };
       listWorkbooks: { params: ListWorkbooksRequest; response: Result<ListWorkbooksResponse> };
       createBlankWorkbook: { params: CreateBlankWorkbookRequest; response: Result<CreateBlankWorkbookResponse> };
       listFolders: { params: ListFoldersRequest; response: Result<ListFoldersResponse> };

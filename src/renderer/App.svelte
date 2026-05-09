@@ -6,6 +6,7 @@
   import DashboardScreen from "./screens/DashboardScreen.svelte";
   import EditorScreen from "./screens/EditorScreen.svelte";
   import GlobalAiLauncher from "./components/GlobalAiLauncher.svelte";
+  import Icon from "./components/Icon.svelte";
   import HomeScreen from "./screens/HomeScreen.svelte";
   import LoginScreen from "./screens/LoginScreen.svelte";
   import MyDocsScreen from "./screens/MyDocsScreen.svelte";
@@ -144,6 +145,21 @@
 </script>
 
 <div class="app-shell">
+  <header class="global-titlebar">
+    <div class="titlebar-drag"></div>
+    {#if auth.loggedIn || auth.offlineMode}
+      <button
+        class="ai-titlebar-btn"
+        class:active={appState.aiDrawerOpen}
+        aria-label="AI 助手"
+        onclick={() => appState.toggleAiDrawer()}
+      >
+        <Icon name="ai" size={14} color="currentColor" />
+        <span>AI</span>
+      </button>
+    {/if}
+  </header>
+
   {#if !auth.loggedIn && !auth.offlineMode}
     <LoginScreen />
   {:else}
@@ -318,6 +334,54 @@
     height: 100%;
     overflow: hidden;
     background: var(--bg);
+  }
+
+  .global-titlebar {
+    display: flex;
+    align-items: center;
+    height: 38px;
+    flex-shrink: 0;
+    padding-left: 72px;
+    padding-right: 12px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    /* 允许拖动窗口 */
+    -webkit-app-region: drag;
+    user-select: none;
+  }
+
+  .titlebar-drag {
+    flex: 1;
+    height: 100%;
+    -webkit-app-region: drag;
+  }
+
+  .ai-titlebar-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 26px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 7px;
+    background: var(--primary);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 650;
+    cursor: pointer;
+    /* 按钮需要可点击，不能被 drag region 吃掉 */
+    -webkit-app-region: no-drag;
+    box-shadow: 0 2px 8px rgba(22, 100, 255, .25);
+    transition: background 0.15s;
+  }
+
+  .ai-titlebar-btn:hover {
+    background: var(--primary-hover);
+  }
+
+  .ai-titlebar-btn.active {
+    background: var(--primary-hover);
+    box-shadow: 0 0 0 2px rgba(22, 100, 255, .3);
   }
 
   .offline-banner {
