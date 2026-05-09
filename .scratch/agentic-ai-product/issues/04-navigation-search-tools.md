@@ -45,3 +45,10 @@ type NavigationIntent =
 ## Blocked by
 
 - `.scratch/agentic-ai-product/issues/03-ai-chat-rpc-mastra-agent.md`
+
+## Migration note (added during PRD revision)
+
+本 issue 已 done，但其代码挂载点会在后续演进：
+- 4 个 nav tool 文件本身（`src/main/ai/mastra/tools/navigation-tools.ts`）保持不动
+- 其挂载点从 `workspaceAgent` 迁移到 `navigationAgent`：issue 03 临时建立 `navigation-agent.ts` 端到端跑通；issue 011 把 `workspaceAgent` 删除并把 4 个 nav tool 永久挂载在 `navigationAgent` 上
+- 不需要回滚或重做本 issue，只是后续 issue 会修改 tool 的 agent 挂载位置

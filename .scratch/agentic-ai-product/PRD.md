@@ -80,7 +80,13 @@ AI 入口不应以模态遮罩阻塞主应用。长期形态应是一个可独�
 - Derive selected-row primary and secondary labels from stable business fields when available, preferring display/name fields, then code/number fields, then id.
 - Include a structured context object with every AI chat message. The object should carry route, workspace, workbook, sheet, selected row id, selected row label, and selected row visible values when available.
 - Do not rely on the visible context hint as the source of truth. The visible hint is for user confirmation; the submitted context object is the canonical AI input.
-- Build a Mastra workspace agent as the central orchestrator for user instructions.
+- Build a Mastra router workflow as the central orchestrator. The workflow first runs a lightweight LLM classifier that splits the user request into an ordered list of `{ category, taskText }` sub-tasks, then dispatches each sub-task to the matching domain-specific sub-agent (navigation / dashboard / claim-analysis / chitchat).
+- Split AI capabilities across four sub-agents along domain lines, not chart-type or per-action lines. Each sub-agent owns a narrow tool set and a focused system prompt so its behavior stays predictable and token-efficient.
+- Keep workflow orchestration shallow: the router workflow only sequences cross-agent steps; sub-agents continue to use ordinary tool-calling internally and do not nest sub-workflows.
+- Support compound user intents in V1 by executing the router's planned sub-tasks serially. Steps share a workflow-scoped context object that only carries confirmed outputs (resolved record id, schema summary, etc.), never raw intermediate tool traces, so downstream sub-agents are not polluted by upstream noise.
+- Stream progress hints to the renderer as soon as the router finishes classification and again at each sub-agent boundary, so the user perceives the multi-step flow even though it adds an extra LLM round-trip.
+- Confirm before write, never before read. Read-only sub-tasks (search, schema inspection, related-record lookup, row analysis) chain without user interaction; write-side actions (navigation, dashboard save, row patch) always emit a structured intent and require explicit `ai.executeAction` confirmation.
+- When a navigation/search step returns ambiguous candidates, the workflow suspends, the candidates are pushed to the renderer for selection, and the workflow resumes once the user picks one. Resumed workflows must reach the same final outcome as if the choice had been made up front.
 - Register domain-specific tools for navigation, resource search, schema inspection, dashboard generation, and record analysis.
 - Keep AI tools behind main-process services. The renderer sends user messages and receives structured responses; it does not receive secrets or execute database queries directly.
 - Represent executable AI results as structured intents: navigation intent, search result selection, dashboard draft, record analysis, and row patch proposal.
@@ -92,6 +98,7 @@ AI 入口不应以模态遮罩阻塞主应用。长期形态应是一个可独�
 - Keep row analysis read-only until the user explicitly accepts proposed field updates.
 - Ensure row patch application uses the normal row upsert service so field constraints, RecordId serialization, and DateTime conversion remain centralized.
 - Store AI conversation and tool observability through Mastra storage and the existing observability setup where practical.
+- Persist workflow run snapshots through a SurrealDB-backed implementation of Mastra's `WorkflowsStorage` domain, so suspended workflows (e.g. waiting for ambiguous candidate selection) survive across the user closing and reopening the AI drawer.
 - Avoid putting permission filters into generated frontend queries. Data access must continue to be enforced by schema permissions and main-process service boundaries.
 - Keep the first UI iteration intentionally lightweight: launcher, drawer, quick actions, prompt composer, and explicit placeholders for upcoming backend integration.
 
@@ -122,12 +129,15 @@ AI 入口不应以模态遮罩阻塞主应用。长期形态应是一个可独�
 
 ## Further Notes
 
-The core architectural rule is that AI should compose existing product capabilities rather than bypass them. Mastra should decide which tool to call, but the tools themselves should be narrow, typed, permission-aware, and backed by the same services used by manual workflows.
+The core architectural rule is that AI should compose existing product capabilities rather than bypass them. The router workflow decides which sub-agent handles each sub-task; each sub-agent decides which tool to call within its narrow domain; the tools themselves remain narrow, typed, permission-aware, and backed by the same services used by manual workflows.
 
 The highest-value rollout order is:
 
 1. Global AI sidecar and context plumbing.
-2. Navigation and resource search.
-3. AI dashboard draft generation using preview-before-save.
-4. Current-row claim analysis and patch proposals.
-5. Auditing, observability, and richer confirmation UX.
+2. Workflow run persistence (`SurrealWorkflowsStorage`) — required before any multi-step or suspendable agent flow is built.
+3. AI chat RPC contract with streaming progress channel; a temporary single NavigationAgent proves end-to-end plumbing.
+4. Router workflow + four sub-agents (navigation / dashboard / claim-analysis / chitchat); migration of navigation tools off the legacy single agent.
+5. AI dashboard draft generation using preview-before-save (mounted on DashboardAgent).
+6. Current-row claim analysis and patch proposals (mounted on ClaimAnalysisAgent).
+7. Compound-intent serial execution with ambiguous-candidate suspend/resume.
+8. Auditing, observability, and richer confirmation UX.

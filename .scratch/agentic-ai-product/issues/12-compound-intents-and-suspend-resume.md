@@ -1,0 +1,99 @@
+Status: ready-for-agent
+Label: ready-for-agent
+
+# AI-012 — 复合意图串行 + ambiguous 暂停/恢复 + 写操作前确认
+
+## Parent
+
+`.scratch/agentic-ai-product/PRD.md`
+
+## What to build
+
+在 issue 011 的 router workflow 骨架上，把 V1 真正的串行执行模型补完：
+
+1. **复合意图串行**：Router 产出 `Plan` 中包含多个子任务时，按序执行，前一步的已确认产出通过 **共享 context** 传给下一步
+2. **ambiguous 暂停/恢复**：navigation/search 类子 agent 返回 `ambiguous` 候选时，workflow 暂停并通过 RPC 把候选推送到 AI 抽屉，用户选择后 workflow 从断点恢复
+3. **写操作前确认**：所有 "写侧" 意图（`navigate` / `dashboard-save` / `row-patch`）必须以结构化意图返回前端，由 `ai.executeAction` 二次调用确认后才落地；workflow 在写操作步骤同样进入暂停态等待确认
+
+### 暂停/恢复协议
+
+**暂停触发条件**：
+- 子 agent 返回 `ambiguous` 候选意图
+- 子 agent 完成读操作但下一步是写操作（需要用户确认才能继续，或就是 plan 的最后一步）
+
+**暂停时 workflow 通过 SurrealWorkflowsStorage 持久化**（依赖 issue 010）：
+- runId（持久化主键）
+- 当前 plan 与 currentStepIndex
+- 共享 context 当前快照
+- 暂停原因（`ambiguous` / `await-write-confirm`）
+- 推给前端的待确认 payload（候选列表 / 意图）
+
+**恢复时**：
+- 前端通过新 RPC `ai.resumeWorkflow({ runId, decision })` 触达
+- workflow 把 `decision` 写进共享 context（如 `confirmed.resolvedRecord = chosenCandidate`），从 currentStepIndex 继续
+- 写操作确认通过 `ai.executeAction` 触发，主进程在执行写动作的同时把 workflow 标记为完成
+
+### RPC 合约扩展（追加到 `src/shared/rpc.types.ts`）
+
+```ts
+// 新增：ambiguous 候选推送（流式或 polling）
+type WorkflowSuspendedEvent =
+  | { kind: "ambiguous-candidates"; runId: string; candidates: { id: string; label: string }[] }
+  | { kind: "await-write-confirm"; runId: string; intent: NavigationIntent | DashboardDraftIntent | RowPatchProposal };
+
+// 新增：恢复 workflow
+ai.resumeWorkflow: {
+  input: { runId: string; decision:
+    | { kind: "candidate-chosen"; candidateId: string }
+    | { kind: "candidate-cancelled" }
+    | { kind: "write-confirmed" }
+    | { kind: "write-rejected" }
+  };
+  output: { resumed: boolean };
+}
+```
+
+### 共享 context 写入纪律强化
+
+011 已经声明 confirmed 字段只携带已确认产出。012 进一步约束：
+- ambiguous 暂停后用户选择的候选，写入 confirmed.resolvedRecord 之前必须经过 zod schema 校验
+- 跨步骤数据流必须通过 confirmed 字段，不允许子 agent A 直接读子 agent B 的 tool call 历史
+
+### 复合意图样本场景
+
+> 用户："帮我找张三的债权，然后做个统计图"
+
+1. Router 输出 `[{ navigation, "找张三的债权" }, { dashboard, "为张三的债权做统计图" }]`
+2. NavigationAgent 调用 `searchRecord` → 找到 5 个张三 → 返回 `ambiguous`
+3. workflow 暂停，推 5 个候选给前端
+4. 用户选 `claim:abc123`
+5. workflow 恢复，confirmed.resolvedRecord = `{ id: "claim:abc123", label: "张三 / ZQ-2026-001" }`
+6. DashboardAgent 拿到 taskText + shared.confirmed.resolvedRecord，调用 `inspectSchema` → `generateDashboardDraft` → 返回 `dashboard-draft` 意图
+7. workflow 暂停（写操作前确认），推草稿给前端
+8. 用户点 "保存到仪表盘"，`ai.executeAction` 触发主进程保存，workflow 标记完成
+
+## Acceptance criteria
+
+- [ ] Router workflow 支持长度 ≥ 2 的 plan 串行执行
+- [ ] navigation 类子 agent 返回 ambiguous 时 workflow 进入暂停态
+- [ ] 暂停态被持久化到 SurrealWorkflowsStorage（runId 可在 listWorkflowRuns 中找到，status = suspended）
+- [ ] 进程重启后通过 runId 仍能 resume（用集成测试模拟重启）
+- [ ] `ai.resumeWorkflow` RPC 实现，candidate-chosen 后 workflow 继续到下一步
+- [ ] candidate-cancelled / write-rejected 后 workflow 标记为已取消，不执行后续步骤
+- [ ] 所有写操作（navigate / dashboard-save / row-patch）都通过 `ai.executeAction` 二次确认
+- [ ] 共享 context 校验：confirmed.resolvedRecord 写入前经过 zod 校验
+- [ ] 集成测试：复合意图样本场景（搜索张三 → 选候选 → 生成图表 → 保存）端到端跑通
+- [ ] 集成测试：用户在 ambiguous 暂停态下关闭抽屉、重启进程后，候选仍可恢复并选择
+- [ ] 单元测试：confirmed 字段只暴露声明的已确认产出，不暴露 tool call 中间结果
+
+## Blocked by
+
+- `.scratch/agentic-ai-product/issues/10-workflow-run-persistence.md`
+- `.scratch/agentic-ai-product/issues/11-router-workflow-and-sub-agents.md`
+
+## Notes
+
+- 暂停态推送给前端的通道可以复用 issue 03 的流式进度通道（同一个 RPC stream 上多种事件类型）
+- ambiguous 候选超过 20 条时只推前 20 条，并附 `truncated: true`，让用户回到 AI 输入区精化关键词
+- 写操作确认 UI 复用 issue 04/05/06 已设计的确认卡片（候选列表 / 草稿预览卡 / 字段提案卡），不重新设计
+- workflow run 完成（无论成功/取消）后通过 `deleteWorkflowRunById` 清理快照，避免暂停态表无限增长

@@ -45,4 +45,10 @@ type DashboardDraftIntent = {
 
 ## Blocked by
 
-- `.scratch/agentic-ai-product/issues/03-ai-chat-rpc-mastra-agent.md`
+- `.scratch/agentic-ai-product/issues/11-router-workflow-and-sub-agents.md`
+
+## Mounting note (added during PRD revision)
+
+本 issue 的 `inspectSchema` 和 `generateDashboardDraft` 两个 tool 必须挂载在 issue 011 创建的 `dashboardAgent` 上，**不挂载在 navigationAgent 或任何统一 agent 上**。子 agent 拆分纪律：DashboardAgent 的 system prompt 只描述 schema inspection + draft generation 两类能力，不引入导航或行分析的领域知识。
+
+所以本 issue 的实现顺序变为：011 完成 → 本 issue 在 dashboardAgent 上挂 tool → 端到端测试。

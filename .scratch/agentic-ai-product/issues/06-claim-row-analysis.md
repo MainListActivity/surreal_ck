@@ -51,4 +51,12 @@ type RowPatchProposal = {
 
 ## Blocked by
 
-- `.scratch/agentic-ai-product/issues/03-ai-chat-rpc-mastra-agent.md`
+- `.scratch/agentic-ai-product/issues/11-router-workflow-and-sub-agents.md`
+
+## Mounting note (added during PRD revision)
+
+本 issue 的 `analyzeClaimRow` 和 `fetchRelatedRecords` 两个 tool 必须挂载在 issue 011 创建的 `claimAnalysisAgent` 上，**不挂载在 navigationAgent / dashboardAgent 或任何统一 agent 上**。子 agent 拆分纪律：ClaimAnalysisAgent 的 system prompt 只描述当前行字段补全 + 关联记录查询两类能力，不引入导航、仪表盘或闲聊的领域知识。
+
+所以本 issue 的实现顺序变为：011 完成 → 本 issue 在 claimAnalysisAgent 上挂 tool → 端到端测试。
+
+写入路径仍然走 `ai.executeAction`（写操作前确认），由 issue 012 的暂停/恢复机制保证 RowPatchProposal 在用户确认前不落地。
