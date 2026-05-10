@@ -1,19 +1,21 @@
+import type { Mastra } from "@mastra/core";
+import { RequestContext } from "@mastra/core/request-context";
 import type { AiContextSnapshot } from "../../../../shared/ai-context";
 import type { AiMessageChunkEvent, AiProgressEvent } from "../../../../shared/rpc.types";
-import { classifyTask, type RouterCategory, type RouterLlmCaller } from "./router-classifier";
-import { runRouterDispatch, type SubAgentExecutors } from "./router-workflow";
+import type { RouterLlmCaller } from "./router-classifier";
+import {
+  ROUTER_RUNTIME_KEY,
+  ROUTER_WORKFLOW_ID,
+  type RouterRuntime,
+  type SubAgentExecutors,
+} from "./router-workflow";
 
 export type RouterChatStreamPusher = (event: AiMessageChunkEvent) => void;
 export type RouterChatProgressPusher = (event: AiProgressEvent) => void;
 
-const CATEGORY_TO_AGENT_NAME: Record<RouterCategory, string> = {
-  navigation: "navigationAgent",
-  dashboard: "dashboardAgent",
-  "claim-analysis": "claimAnalysisAgent",
-  chitchat: "chitchatAgent",
-};
-
 export type RunRouterChatInput = {
+  /** Mastra 实例：必须已通过 new Mastra({ workflows: { routerWorkflow } }) 注册了 router workflow */
+  mastra: Mastra;
   text: string;
   userContext: AiContextSnapshot;
   executors: SubAgentExecutors;
@@ -21,7 +23,7 @@ export type RunRouterChatInput = {
   streamId: string;
   pushChunk: RouterChatStreamPusher;
   pushProgress?: RouterChatProgressPusher;
-  /** 可选：override runId（默认自动生成） */
+  /** 业务侧 runId（用于 progress 事件关联到 SendAiMessageResponse.runId） */
   runId?: string;
 };
 
@@ -31,57 +33,34 @@ export type RunRouterChatResult = {
 };
 
 export async function runRouterChat(input: RunRouterChatInput): Promise<RunRouterChatResult> {
-  const runId = input.runId ?? crypto.randomUUID();
-  const { streamId, pushChunk, pushProgress } = input;
+  const businessRunId = input.runId ?? crypto.randomUUID();
 
-  pushProgress?.({ kind: "routing", runId });
-  const plan = await classifyTask({ text: input.text, llmCaller: input.llmCaller });
-
-  // 包装 executors：在调度前推 agent-step；在 executor 完成后把 deltas 转发到 streamId 上。
-  const wrapped: SubAgentExecutors = {
-    navigation: makeWrapped("navigation", input.executors.navigation),
-    dashboard: makeWrapped("dashboard", input.executors.dashboard),
-    "claim-analysis": makeWrapped("claim-analysis", input.executors["claim-analysis"]),
-    chitchat: makeWrapped("chitchat", input.executors.chitchat),
+  const runtime: RouterRuntime = {
+    userContext: input.userContext,
+    executors: input.executors,
+    llmCaller: input.llmCaller,
+    streamId: input.streamId,
+    runId: businessRunId,
+    pushChunk: input.pushChunk,
+    pushProgress: input.pushProgress,
   };
-  function makeWrapped(category: RouterCategory, real: SubAgentExecutors[RouterCategory]) {
-    return async (args: Parameters<SubAgentExecutors[RouterCategory]>[0]) => {
-      pushProgress?.({
-        kind: "agent-step",
-        runId,
-        agentName: CATEGORY_TO_AGENT_NAME[category],
-        taskText: args.taskText,
-      });
-      const out = await real(args);
-      const deltas = out.deltas ?? (out.text ? [out.text] : []);
-      for (const d of deltas) {
-        if (!d) continue;
-        pushChunk({ streamId, type: "delta", text: d });
-      }
-      return out;
-    };
+
+  const requestContext = new RequestContext();
+  requestContext.set(ROUTER_RUNTIME_KEY, runtime);
+
+  const workflow = input.mastra.getWorkflow(ROUTER_WORKFLOW_ID);
+  const run = await workflow.createRun();
+  const result = await run.start({
+    inputData: { text: input.text },
+    requestContext,
+  });
+
+  if (result.status === "failed") {
+    throw result.error instanceof Error ? result.error : new Error(String(result.error ?? "router workflow failed"));
+  }
+  if (result.status !== "success") {
+    throw new Error(`router workflow ended with status="${result.status}"`);
   }
 
-  const dispatched = await runRouterDispatch({
-    plan,
-    shared: { userContext: input.userContext, confirmed: {} },
-    executors: wrapped,
-  });
-
-  const finalText = dispatched.steps.map((s) => s.text).filter(Boolean).join("\n\n");
-
-  pushChunk({
-    streamId,
-    type: "done",
-    toolCalls: [],
-    message: {
-      id: crypto.randomUUID(),
-      role: "assistant",
-      content: finalText || "我没有生成有效回复。",
-      createdAt: new Date().toISOString(),
-      context: input.userContext,
-    },
-  });
-
-  return { runId, finalText };
+  return { runId: businessRunId, finalText: result.result.finalText };
 }

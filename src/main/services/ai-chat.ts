@@ -1,4 +1,5 @@
 import type { Agent } from "@mastra/core/agent";
+import type { Mastra } from "@mastra/core";
 import type { AiChatMessage } from "../../shared/ai-context";
 import { serializeContextForAi } from "../../shared/ai-context";
 import type {
@@ -84,7 +85,7 @@ export async function sendAiMessage(
 
   const llmCaller: RouterLlmCaller = makeRouterLlmCaller(chitchatAgent);
 
-  void runRouterChatGuarded(req, runId, executors, llmCaller, pushChunk, pushProgress);
+  void runRouterChatGuarded(req, runId, mastra, executors, llmCaller, pushChunk, pushProgress);
 
   return {
     message: {
@@ -102,6 +103,7 @@ export async function sendAiMessage(
 async function runRouterChatGuarded(
   req: SendAiMessageRequest,
   runId: string,
+  mastra: Mastra,
   executors: SubAgentExecutors,
   llmCaller: RouterLlmCaller,
   pushChunk?: AiChunkSender,
@@ -109,6 +111,7 @@ async function runRouterChatGuarded(
 ): Promise<void> {
   try {
     await runRouterChat({
+      mastra,
       text: buildPrompt(req.message),
       userContext: req.message.context,
       executors,

@@ -2,7 +2,9 @@ import { Mastra } from "@mastra/core";
 import { PinoLogger } from "@mastra/loggers";
 import { Observability, DefaultExporter, SensitiveDataFilter } from "@mastra/observability";
 import { SurrealMastraStore } from "./mastra/storage/surreal-store";
+import { createRouterWorkflow, ROUTER_WORKFLOW_ID } from "./mastra/workflows/router-workflow";
 export { createNavigationAgent, NAVIGATION_AGENT_ID } from "./mastra/agents/navigation-agent";
+export { ROUTER_WORKFLOW_ID } from "./mastra/workflows/router-workflow";
 export {
   listDashboardGenerationTargets,
   previewGeneratedDashboardView,
@@ -16,6 +18,9 @@ export function initMastraForCurrentUser(): Mastra {
 
   _mastra = new Mastra({
     storage: new SurrealMastraStore(),
+    workflows: {
+      [ROUTER_WORKFLOW_ID]: createRouterWorkflow(),
+    },
     logger: new PinoLogger({
       name: "Mastra",
       level: "info",

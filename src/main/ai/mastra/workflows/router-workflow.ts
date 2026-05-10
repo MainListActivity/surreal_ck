@@ -1,9 +1,11 @@
 import { createStep, createWorkflow } from "@mastra/core/workflows";
 import { z } from "zod";
 import type { AiContextSnapshot } from "../../../../shared/ai-context";
+import type { AiMessageChunkEvent, AiProgressEvent } from "../../../../shared/rpc.types";
 import { classifyTask, type RouterCategory, type RouterLlmCaller, type RouterPlan } from "./router-classifier";
 
 export const ROUTER_WORKFLOW_ID = "routerWorkflow";
+export const ROUTER_RUNTIME_KEY = "routerRuntime";
 
 // ─── 共享 context 协议 ────────────────────────────────────────────────────────
 
@@ -133,11 +135,35 @@ const RouterWorkflowOutputSchema = z.object({
   finalText: z.string(),
 });
 
+const CATEGORY_TO_AGENT_NAME: Record<RouterCategory, string> = {
+  navigation: "navigationAgent",
+  dashboard: "dashboardAgent",
+  "claim-analysis": "claimAnalysisAgent",
+  chitchat: "chitchatAgent",
+};
+
+/**
+ * RouterRuntime 是 step.execute 通过 RequestContext 取到的运行时上下文。
+ * 由调用方（router-chat / ai-chat）每次启动 workflow 时构造并注入，让
+ * workflow 实例本身保持无状态、可静态注册到 new Mastra({ workflows })。
+ */
+export type RouterRuntime = {
+  userContext: AiContextSnapshot;
+  executors: SubAgentExecutors;
+  llmCaller: RouterLlmCaller;
+  streamId: string;
+  /** runId：调用方 RPC 已经分配的 runId；这里仅用于推 progress 事件，不影响 Mastra 内部 run id */
+  runId: string;
+  pushChunk?: (e: AiMessageChunkEvent) => void;
+  pushProgress?: (e: AiProgressEvent) => void;
+};
+
 /**
  * createRouterWorkflow 返回一个 Mastra workflow。
  * V1 单步包整个 routeAndDispatch；issue 012 会按子 agent 拆成多个 step 以支持 ambiguous suspend/resume。
  *
- * executors / llmCaller / userContext 通过 requestContext 注入，让 workflow 实例本身可复用。
+ * 运行时（executors / llmCaller / userContext / streamId / runId / 推送回调）通过 RequestContext
+ * 注入，workflow 实例本身可复用，并由 Mastra 引擎驱动 storage 写入 mastra_workflow_run。
  */
 export function createRouterWorkflow() {
   const dispatchStep = createStep({
@@ -145,17 +171,66 @@ export function createRouterWorkflow() {
     inputSchema: RouterWorkflowInputSchema,
     outputSchema: RouterWorkflowOutputSchema,
     execute: async ({ inputData, requestContext }) => {
-      const ctx = (requestContext ?? {}) as Partial<RouterWorkflowContext>;
-      assertRouterWorkflowContext(ctx);
-      const result = await routeAndDispatch({
-        text: inputData.text,
-        shared: { userContext: ctx.userContext, confirmed: {} },
-        executors: ctx.executors,
-        llmCaller: ctx.llmCaller,
+      const runtime = requestContext.get(ROUTER_RUNTIME_KEY) as RouterRuntime | undefined;
+      if (!runtime) {
+        throw new Error(
+          `router-workflow: RequestContext 缺少 "${ROUTER_RUNTIME_KEY}"，需调用方通过 createRunAsync().start({ requestContext }) 注入`,
+        );
+      }
+
+      const { streamId, runId, executors, llmCaller, pushChunk, pushProgress } = runtime;
+
+      pushProgress?.({ kind: "routing", runId });
+      const plan = await classifyTask({ text: inputData.text, llmCaller });
+
+      const wrapped: SubAgentExecutors = {
+        navigation: makeWrapped("navigation", executors.navigation),
+        dashboard: makeWrapped("dashboard", executors.dashboard),
+        "claim-analysis": makeWrapped("claim-analysis", executors["claim-analysis"]),
+        chitchat: makeWrapped("chitchat", executors.chitchat),
+      };
+      function makeWrapped(category: RouterCategory, real: SubAgentExecutor): SubAgentExecutor {
+        return async (args) => {
+          pushProgress?.({
+            kind: "agent-step",
+            runId,
+            agentName: CATEGORY_TO_AGENT_NAME[category],
+            taskText: args.taskText,
+          });
+          const out = await real(args);
+          const deltas = out.deltas ?? (out.text ? [out.text] : []);
+          for (const d of deltas) {
+            if (!d) continue;
+            pushChunk?.({ streamId, type: "delta", text: d });
+          }
+          return out;
+        };
+      }
+
+      const dispatched = await runRouterDispatch({
+        plan,
+        shared: { userContext: runtime.userContext, confirmed: {} },
+        executors: wrapped,
       });
+
+      const finalText = dispatched.steps.map((s) => s.text).filter(Boolean).join("\n\n");
+
+      pushChunk?.({
+        streamId,
+        type: "done",
+        toolCalls: [],
+        message: {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: finalText || "我没有生成有效回复。",
+          createdAt: new Date().toISOString(),
+          context: runtime.userContext,
+        },
+      });
+
       return {
-        steps: result.steps,
-        finalText: result.steps.map((s) => s.text).filter(Boolean).join("\n\n"),
+        steps: dispatched.steps,
+        finalText,
       };
     },
   });
@@ -167,16 +242,4 @@ export function createRouterWorkflow() {
   })
     .then(dispatchStep)
     .commit();
-}
-
-export type RouterWorkflowContext = {
-  userContext: AiContextSnapshot;
-  executors: SubAgentExecutors;
-  llmCaller: RouterLlmCaller;
-};
-
-function assertRouterWorkflowContext(ctx: Partial<RouterWorkflowContext>): asserts ctx is RouterWorkflowContext {
-  if (!ctx.userContext || !ctx.executors || !ctx.llmCaller) {
-    throw new Error("router-workflow: requestContext 缺少 userContext/executors/llmCaller");
-  }
 }

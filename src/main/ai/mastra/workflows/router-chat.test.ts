@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { Mastra } from "@mastra/core";
+import { InMemoryStore } from "@mastra/core/storage";
 import { runRouterChat, type RouterChatStreamPusher } from "./router-chat";
-import type { SubAgentExecutor, SubAgentExecutors } from "./router-workflow";
+import { createRouterWorkflow, ROUTER_WORKFLOW_ID, type SubAgentExecutor, type SubAgentExecutors } from "./router-workflow";
 import type { RouterLlmCaller } from "./router-classifier";
 import type { AiContextSnapshot } from "../../../../shared/ai-context";
 
@@ -29,8 +31,16 @@ function makeExecutors(overrides: Partial<SubAgentExecutors> = {}): SubAgentExec
   };
 }
 
+function makeMastra() {
+  return new Mastra({
+    storage: new InMemoryStore(),
+    workflows: { [ROUTER_WORKFLOW_ID]: createRouterWorkflow() },
+  });
+}
+
 describe("runRouterChat 端到端", () => {
   test("单意图 navigation：聚合 streamId 上的 delta，并最后给一个 done", async () => {
+    const mastra = makeMastra();
     const llm: RouterLlmCaller = async () =>
       `[{"category":"navigation","taskText":"打开工作簿"}]`;
     const executors = makeExecutors({
@@ -43,6 +53,7 @@ describe("runRouterChat 端到端", () => {
     };
 
     const result = await runRouterChat({
+      mastra,
       text: "打开工作簿",
       userContext: ctx,
       executors,
@@ -54,9 +65,11 @@ describe("runRouterChat 端到端", () => {
     expect(events.filter((e) => e.type === "delta").map((e) => e.text)).toEqual(["已", "找到", "工作簿"]);
     expect(events.find((e) => e.type === "done")?.finalText).toBe("已找到工作簿");
     expect(result.runId).toBeDefined();
+    expect(result.finalText).toBe("已找到工作簿");
   });
 
   test("LLM 解析失败时仍能跑完 chitchat fallback 并 done", async () => {
+    const mastra = makeMastra();
     const llm: RouterLlmCaller = async () => "garbage";
     const executors = makeExecutors({
       chitchat: streamingExecutor(["你好～"]),
@@ -67,6 +80,7 @@ describe("runRouterChat 端到端", () => {
     };
 
     await runRouterChat({
+      mastra,
       text: "在吗",
       userContext: ctx,
       executors,
@@ -79,6 +93,7 @@ describe("runRouterChat 端到端", () => {
   });
 
   test("两步 plan：deltas 按步骤顺序串起来", async () => {
+    const mastra = makeMastra();
     const llm: RouterLlmCaller = async () =>
       `[{"category":"navigation","taskText":"a"},{"category":"chitchat","taskText":"b"}]`;
     const executors = makeExecutors({
@@ -91,6 +106,7 @@ describe("runRouterChat 端到端", () => {
     };
 
     await runRouterChat({
+      mastra,
       text: "复合任务",
       userContext: ctx,
       executors,
@@ -103,6 +119,7 @@ describe("runRouterChat 端到端", () => {
   });
 
   test("progress：开始时推 routing，每步前推 agent-step，runId 一致", async () => {
+    const mastra = makeMastra();
     const llm: RouterLlmCaller = async () =>
       `[{"category":"navigation","taskText":"a"},{"category":"chitchat","taskText":"b"}]`;
     const executors = makeExecutors({
@@ -112,6 +129,7 @@ describe("runRouterChat 端到端", () => {
     const progressEvents: Array<{ kind: string; runId: string; agentName?: string }> = [];
 
     await runRouterChat({
+      mastra,
       text: "复合任务",
       userContext: ctx,
       executors,
@@ -127,5 +145,31 @@ describe("runRouterChat 端到端", () => {
     expect(agentSteps.map((e) => e.agentName)).toEqual(["navigationAgent", "chitchatAgent"]);
     const runIds = new Set(progressEvents.map((e) => e.runId));
     expect(runIds.size).toBe(1);
+  });
+
+  test("Mastra storage 收到 workflow run 快照（验证走的是真正的 workflow 引擎）", async () => {
+    const storage = new InMemoryStore();
+    const mastra = new Mastra({
+      storage,
+      workflows: { [ROUTER_WORKFLOW_ID]: createRouterWorkflow() },
+    });
+    const llm: RouterLlmCaller = async () =>
+      `[{"category":"chitchat","taskText":"hi"}]`;
+    const executors = makeExecutors({ chitchat: streamingExecutor(["你好"]) });
+
+    await runRouterChat({
+      mastra,
+      text: "hi",
+      userContext: ctx,
+      executors,
+      llmCaller: llm,
+      streamId: "s5",
+      pushChunk: () => {},
+    });
+
+    const workflowsStore = await storage.getStore("workflows");
+    expect(workflowsStore).toBeDefined();
+    const runs = await workflowsStore!.listWorkflowRuns({ workflowName: ROUTER_WORKFLOW_ID });
+    expect(runs.runs.length).toBeGreaterThan(0);
   });
 });
