@@ -2,6 +2,7 @@ import { Agent } from "@mastra/core/agent";
 import { ModelRouterLanguageModel } from "@mastra/core/llm";
 import type { AiSettings } from "../../../services/settings";
 import { navigateTool, searchWorkbookTool, searchDashboardTool, searchRecordTool } from "../tools/navigation-tools";
+import { buildModelConfig } from "./model-config";
 
 export const NAVIGATION_AGENT_ID = "navigationAgent";
 
@@ -31,25 +32,6 @@ export function createNavigationAgent(settings: AiSettings): Agent {
     model: new ModelRouterLanguageModel(buildModelConfig(settings)),
     tools: NAVIGATION_TOOLS,
   });
-}
-
-function buildModelConfig(settings: AiSettings) {
-  const { providerId, modelId } = splitModel(settings.provider, settings.model);
-  return {
-    providerId,
-    modelId,
-    ...(settings.baseUrl ? { url: settings.baseUrl } : {}),
-    apiKey: settings.apiKey,
-  };
-}
-
-function splitModel(provider: string, model: string): { providerId: string; modelId: string } {
-  const trimmed = model.trim();
-  if (trimmed.includes("/")) {
-    const [providerId, ...modelParts] = trimmed.split("/");
-    return { providerId, modelId: modelParts.join("/") };
-  }
-  return { providerId: provider, modelId: trimmed };
 }
 
 export const navigationAgent = new Agent({

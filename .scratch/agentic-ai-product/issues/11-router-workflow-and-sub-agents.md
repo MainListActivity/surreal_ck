@@ -1,5 +1,5 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: done
+Label: done
 
 # AI-011 — Router workflow + 4 个领域子 agent 拆分
 
@@ -68,16 +68,16 @@ type SubAgentInput = {
 
 ## Acceptance criteria
 
-- [ ] `src/main/ai/mastra/workflows/router-workflow.ts` 新建，使用 Mastra `createWorkflow` API
-- [ ] `src/main/ai/mastra/agents/` 下新增 `navigation-agent.ts` / `dashboard-agent.ts` / `claim-analysis-agent.ts` / `chitchat-agent.ts`
-- [ ] `workspace-agent.ts` 中的 `workspaceAgent` 实例和 `WORKSPACE_AGENT_ID` 被删除（文件可改名或保留为空 stub）
-- [ ] `src/main/ai/index.ts` 导出新的 router workflow 入口，移除 `createWorkspaceAgent` / `WORKSPACE_AGENT_ID`
-- [ ] `ai.chat` RPC（issue 03 临时实现）改为调用 router workflow 入口而非单 agent
-- [ ] navigation-tools.ts 中 4 个 tool 仍能正常工作，挂载在 NavigationAgent 上
-- [ ] 单元测试：Router 分类器面对 "打开工作簿 X" / "做个统计图" / "分析这条记录" / "你好" 四类输入产出正确 category
-- [ ] 单元测试：Router 输出 JSON 解析失败时降级为单步 chitchat
-- [ ] 集成测试：单意图 navigation 流程端到端跑通（用户消息 → router → NavigationAgent → 返回 NavigationIntent）
-- [ ] 共享 context 测试：子 agent 完成后 confirmed 字段只包含已声明的已确认产出，不包含 tool call 中间结果
+- [x] `src/main/ai/mastra/workflows/router-workflow.ts` 新建，使用 Mastra `createWorkflow` API
+- [x] `src/main/ai/mastra/agents/` 下新增 `navigation-agent.ts` / `dashboard-agent.ts` / `claim-analysis-agent.ts` / `chitchat-agent.ts`
+- [x] `workspace-agent.ts` 中的 `workspaceAgent` 实例和 `WORKSPACE_AGENT_ID` 被删除（文件可改名或保留为空 stub）
+- [x] `src/main/ai/index.ts` 导出新的 router workflow 入口，移除 `createWorkspaceAgent` / `WORKSPACE_AGENT_ID`
+- [x] `ai.chat` RPC（issue 03 临时实现）改为调用 router workflow 入口而非单 agent
+- [x] navigation-tools.ts 中 4 个 tool 仍能正常工作，挂载在 NavigationAgent 上
+- [x] 单元测试：Router 分类器面对 "打开工作簿 X" / "做个统计图" / "分析这条记录" / "你好" 四类输入产出正确 category
+- [x] 单元测试：Router 输出 JSON 解析失败时降级为单步 chitchat
+- [x] 集成测试：单意图 navigation 流程端到端跑通（用户消息 → router → NavigationAgent → 返回 NavigationIntent）
+- [x] 共享 context 测试：子 agent 完成后 confirmed 字段只包含已声明的已确认产出，不包含 tool call 中间结果
 
 ## Blocked by
 

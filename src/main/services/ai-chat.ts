@@ -8,10 +8,17 @@ import type {
   SendAiMessageResponse,
 } from "../../shared/rpc.types";
 import { createNavigationAgent, NAVIGATION_AGENT_ID } from "../ai/mastra/agents/navigation-agent";
+import { CHITCHAT_AGENT_ID, createChitchatAgent } from "../ai/mastra/agents/chitchat-agent";
+import { DASHBOARD_AGENT_ID, createDashboardAgent } from "../ai/mastra/agents/dashboard-agent";
+import { CLAIM_ANALYSIS_AGENT_ID, createClaimAnalysisAgent } from "../ai/mastra/agents/claim-analysis-agent";
 import { initMastraForCurrentUser } from "../ai/index";
 import { assertAuthenticated } from "./context";
 import { getAiSettings } from "./settings";
-import { buildToolCallProgressEvents, type AiProgressSender } from "./ai-progress";
+import { type AiProgressSender } from "./ai-progress";
+import { runRouterChat } from "../ai/mastra/workflows/router-chat";
+import type { SubAgentExecutors } from "../ai/mastra/workflows/router-workflow";
+import { makeAgentExecutor } from "../ai/mastra/workflows/agent-executor";
+import type { RouterLlmCaller } from "../ai/mastra/workflows/router-classifier";
 
 export type AiChunkSender = (event: AiMessageChunkEvent) => void;
 
@@ -46,10 +53,38 @@ export async function sendAiMessage(
   if (!mastra.listAgents()[NAVIGATION_AGENT_ID]) {
     mastra.addAgent(createNavigationAgent(settings), NAVIGATION_AGENT_ID);
   }
-  const agent = mastra.getAgent(NAVIGATION_AGENT_ID);
+  if (!mastra.listAgents()[DASHBOARD_AGENT_ID]) {
+    mastra.addAgent(createDashboardAgent(settings), DASHBOARD_AGENT_ID);
+  }
+  if (!mastra.listAgents()[CLAIM_ANALYSIS_AGENT_ID]) {
+    mastra.addAgent(createClaimAnalysisAgent(settings), CLAIM_ANALYSIS_AGENT_ID);
+  }
+  if (!mastra.listAgents()[CHITCHAT_AGENT_ID]) {
+    mastra.addAgent(createChitchatAgent(settings), CHITCHAT_AGENT_ID);
+  }
+
+  const navigationAgent = mastra.getAgent(NAVIGATION_AGENT_ID);
+  const dashboardAgent = mastra.getAgent(DASHBOARD_AGENT_ID);
+  const claimAnalysisAgent = mastra.getAgent(CLAIM_ANALYSIS_AGENT_ID);
+  const chitchatAgent = mastra.getAgent(CHITCHAT_AGENT_ID);
 
   const runId = crypto.randomUUID();
-  void streamAiMessage(req, agent, runId, pushChunk, pushProgress);
+  const collectedToolCalls: AiToolCallRecord[] = [];
+  const onToolCall = (call: AiToolCallRecord) => {
+    collectedToolCalls.push(call);
+    pushProgress?.({ kind: "tool-call", runId, toolId: call.toolName });
+  };
+
+  const executors: SubAgentExecutors = {
+    navigation: makeAgentExecutor(navigationAgent, { onToolCall }),
+    dashboard: makeAgentExecutor(dashboardAgent, { onToolCall }),
+    "claim-analysis": makeAgentExecutor(claimAnalysisAgent, { onToolCall }),
+    chitchat: makeAgentExecutor(chitchatAgent, { onToolCall }),
+  };
+
+  const llmCaller: RouterLlmCaller = makeRouterLlmCaller(chitchatAgent);
+
+  void runRouterChatGuarded(req, runId, executors, llmCaller, pushChunk, pushProgress);
 
   return {
     message: {
@@ -64,68 +99,38 @@ export async function sendAiMessage(
   };
 }
 
-async function streamAiMessage(
+async function runRouterChatGuarded(
   req: SendAiMessageRequest,
-  agent: Agent,
   runId: string,
+  executors: SubAgentExecutors,
+  llmCaller: RouterLlmCaller,
   pushChunk?: AiChunkSender,
   pushProgress?: AiProgressSender,
 ): Promise<void> {
-  const { streamId } = req;
-  let aggregated = "";
-  const collectedToolCalls: AiToolCallRecord[] = [];
-
   try {
-    const historyMessages = buildHistoryMessages(req.history ?? []);
-    const currentMessage = { role: "user" as const, content: buildPrompt(req.message) };
-    const allMessages = [...historyMessages, currentMessage];
-
-    const stream = await agent.stream(allMessages, {
-      maxSteps: 4,
-      providerOptions: { openai: { stream: true } },
-      onStepFinish: ({ toolCalls, toolResults }) => {
-        if (!toolResults?.length) return;
-        const stepResults = toolResults as Array<{ toolCallId: string; toolName: string; args?: unknown; result: unknown }>;
-        for (const tr of stepResults) {
-          const call = (toolCalls as Array<{ toolCallId: string; args?: unknown }>)
-            ?.find((tc) => tc.toolCallId === tr.toolCallId);
-          collectedToolCalls.push({
-            toolName: tr.toolName,
-            args: call?.args ?? tr.args,
-            result: tr.result,
-          });
-        }
-        if (pushProgress) {
-          for (const event of buildToolCallProgressEvents(runId, { toolResults: stepResults })) {
-            pushProgress(event);
-          }
-        }
-      },
-    });
-
-    for await (const delta of stream.textStream) {
-      if (!delta) continue;
-      aggregated += delta;
-      pushChunk?.({ streamId, type: "delta", text: delta });
-    }
-
-    const finalText = aggregated || (await stream.text) || "我没有生成有效回复。";
-    pushChunk?.({
-      streamId,
-      type: "done",
-      toolCalls: collectedToolCalls,
-      message: {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: finalText,
-        createdAt: new Date().toISOString(),
-        context: req.message.context,
-      },
+    await runRouterChat({
+      text: buildPrompt(req.message),
+      userContext: req.message.context,
+      executors,
+      llmCaller,
+      streamId: req.streamId,
+      runId,
+      pushChunk: (e) => pushChunk?.(e),
+      pushProgress: (e) => pushProgress?.(e),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    pushChunk?.({ streamId, type: "error", message });
+    pushChunk?.({ streamId: req.streamId, type: "error", message });
   }
+}
+
+/** 用一个 agent（无工具的 chitchat 是稳妥选择）做轻量分类调用：generate 一次取最终文本即可。 */
+export function makeRouterLlmCaller(agent: Agent): RouterLlmCaller {
+  return async (prompt) => {
+    const res = await agent.generate([{ role: "user", content: prompt }]);
+    const text = (res as { text?: string }).text;
+    return typeof text === "string" ? text : "";
+  };
 }
 
 type CoreMessage = { role: "user" | "assistant"; content: string };
