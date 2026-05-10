@@ -4,6 +4,7 @@ import type { AiContextSnapshot } from "../../../../shared/ai-context";
 import type {
   AiMessageChunkEvent,
   AiProgressEvent,
+  AiToolCallRecord,
   WorkflowSuspendedEvent,
 } from "../../../../shared/rpc.types";
 import type { RouterLlmCaller } from "./router-classifier";
@@ -29,6 +30,7 @@ export type RunRouterChatInput = {
   pushChunk: RouterChatStreamPusher;
   pushProgress?: RouterChatProgressPusher;
   onSuspend?: RouterChatSuspendPusher;
+  toolCalls?: AiToolCallRecord[];
   /** 业务侧 runId（用于 progress 事件关联到 SendAiMessageResponse.runId）。
    *  传入时也作为 Mastra 的 runId，便于 ai.resumeWorkflow 用同一 id 接续。 */
   runId?: string;
@@ -52,6 +54,7 @@ export async function runRouterChat(input: RunRouterChatInput): Promise<RunRoute
     pushChunk: input.pushChunk,
     pushProgress: input.pushProgress,
     onSuspend: input.onSuspend,
+    toolCalls: input.toolCalls,
   };
 
   const requestContext = new RequestContext();

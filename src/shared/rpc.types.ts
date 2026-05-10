@@ -148,7 +148,7 @@ const AiRouteContextSchema = z.object({
 
 const AiWorkbookContextSchema = z.object({ id: z.string(), name: z.string() }).nullable();
 const AiSheetContextSchema = z.object({ id: z.string(), label: z.string(), tableName: z.string() }).nullable();
-const AiSelectedRowContextSchema = z.object({ id: z.string(), label: z.string(), visibleValues: z.record(z.unknown()) }).nullable();
+const AiSelectedRowContextSchema = z.object({ id: z.string(), label: z.string(), visibleValues: z.record(z.string(), z.unknown()) }).nullable();
 
 const AiContextSnapshotSchema = z.object({
   route: AiRouteContextSchema,
@@ -202,6 +202,16 @@ export type ToolNavigationIntent =
   | { type: "ambiguous"; candidates: { label: string; id: string }[] };
 
 export type DashboardDraftIntent = {
+  type: "dashboard-draft";
+  title: string;
+  description: string;
+  widgetSpec: DashboardBuilderSpec;
+  draft: DashboardViewDraftDTO;
+  explanation: string;
+  preview?: DashboardPreviewResponse;
+};
+
+export type LegacyDashboardDraftIntent = {
   type: "dashboardDraft";
   draft: Record<string, unknown>;
 };
@@ -213,7 +223,7 @@ export type RowPatchProposal = {
   patch: Record<string, unknown>;
 };
 
-export type AiStructuredIntent = AppNavigationIntent | ToolNavigationIntent | DashboardDraftIntent | RowPatchProposal;
+export type AiStructuredIntent = AppNavigationIntent | ToolNavigationIntent | DashboardDraftIntent | LegacyDashboardDraftIntent | RowPatchProposal;
 
 export type ExecuteAiActionRequest = {
   intent: AiStructuredIntent;
@@ -264,22 +274,73 @@ const ToolNavigationIntentSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
+const DashboardBuilderMetricSchema = z.object({
+  op: z.enum(["count", "count_distinct", "sum", "avg", "min", "max"]),
+  field: z.string().optional(),
+});
+
+const DashboardBuilderSpecSchema = z.object({
+  sourceTables: z.array(z.string()),
+  baseTable: z.string(),
+  metric: DashboardBuilderMetricSchema,
+  dimensions: z.array(z.object({
+    field: z.string(),
+    bucket: z.enum(["day", "week", "month", "year"]).optional(),
+  })).optional(),
+  filters: z.array(z.object({
+    field: z.string(),
+    op: z.enum(["eq", "neq", "gt", "gte", "lt", "lte", "contains", "in", "is_null", "is_not_null"]),
+    value: z.unknown().optional(),
+  })).optional(),
+  sort: z.object({
+    field: z.string(),
+    direction: z.enum(["asc", "desc"]),
+  }).optional(),
+  limit: z.number().optional(),
+});
+
+const DashboardViewDraftSchema = z.object({
+  workspaceId: z.string(),
+  workbookId: z.string().optional(),
+  title: z.string(),
+  slug: z.string().optional(),
+  description: z.string().optional(),
+  queryMode: z.enum(["preset", "builder", "sql"]),
+  viewType: z.enum(["kpi", "table", "bar", "line", "pie", "area"]),
+  resultContract: z.enum(["single_value", "category_breakdown", "time_series", "table_rows"]),
+  compiledSql: z.string().optional(),
+  builderSpec: DashboardBuilderSpecSchema.optional(),
+  displaySpec: z.record(z.string(), z.unknown()).optional(),
+  status: z.enum(["draft", "active", "invalid"]).optional(),
+});
+
 const DashboardDraftIntentSchema = z.object({
+  type: z.literal("dashboard-draft"),
+  title: z.string(),
+  description: z.string(),
+  widgetSpec: DashboardBuilderSpecSchema,
+  draft: DashboardViewDraftSchema,
+  explanation: z.string(),
+  preview: z.unknown().optional(),
+});
+
+const LegacyDashboardDraftIntentSchema = z.object({
   type: z.literal("dashboardDraft"),
-  draft: z.record(z.unknown()),
+  draft: z.record(z.string(), z.unknown()),
 });
 
 const RowPatchProposalSchema = z.object({
   type: z.literal("rowPatch"),
   sheetId: z.string(),
   rowId: z.string(),
-  patch: z.record(z.unknown()),
+  patch: z.record(z.string(), z.unknown()),
 });
 
 export const AiStructuredIntentSchema = z.union([
   AppNavigationIntentSchema,
   ...ToolNavigationIntentSchema.options,
   DashboardDraftIntentSchema,
+  LegacyDashboardDraftIntentSchema,
   RowPatchProposalSchema,
 ]);
 

@@ -1,9 +1,15 @@
 import type { AiChatMessage } from "../../shared/ai-context";
-import type { AiMessageChunkEvent, AiToolCallRecord, ToolNavigationIntent } from "../../shared/rpc.types";
+import type {
+  AiMessageChunkEvent,
+  AiStructuredIntent,
+  AiToolCallRecord,
+  DashboardDraftIntent,
+  ToolNavigationIntent,
+} from "../../shared/rpc.types";
 
 export type PendingIntent = {
   messageId: string;
-  intent: ToolNavigationIntent;
+  intent: ToolNavigationIntent | DashboardDraftIntent;
   dismissed: boolean;
 };
 
@@ -16,11 +22,20 @@ export type AiStreamState = {
 };
 
 export function extractNavigationIntent(toolCalls: AiToolCallRecord[]): ToolNavigationIntent | null {
-  const navTools = ["navigateTool", "searchWorkbookTool", "searchDashboardTool", "searchRecordTool"];
+  const navTools = ["navigate", "searchWorkbook", "searchDashboard", "searchRecord", "navigateTool", "searchWorkbookTool", "searchDashboardTool", "searchRecordTool"];
   for (const tc of toolCalls) {
     if (!navTools.includes(tc.toolName)) continue;
     const result = tc.result as { intent?: ToolNavigationIntent } | undefined;
     if (result?.intent) return result.intent;
+  }
+  return null;
+}
+
+export function extractDashboardDraftIntent(toolCalls: AiToolCallRecord[]): DashboardDraftIntent | null {
+  for (const tc of toolCalls) {
+    if (tc.toolName !== "generateDashboardDraft") continue;
+    const result = tc.result as { intent?: AiStructuredIntent } | undefined;
+    if (result?.intent?.type === "dashboard-draft") return result.intent;
   }
   return null;
 }
@@ -61,7 +76,7 @@ export function applyAiChunkToMessages(
   }
 
   const finalMessageId = event.message.id;
-  const intent = extractNavigationIntent(event.toolCalls ?? []);
+  const intent = extractDashboardDraftIntent(event.toolCalls ?? []) ?? extractNavigationIntent(event.toolCalls ?? []);
   return {
     ...state,
     sending: false,

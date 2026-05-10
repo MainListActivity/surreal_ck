@@ -11,7 +11,8 @@ describe("navigate tool", () => {
 
   test("返回 navigate 意图", async () => {
     const { navigateTool } = await import("./navigation-tools");
-    const result = await navigateTool.execute({ route: "dashboard" });
+    const execute = navigateTool.execute as unknown as (input: { route: "dashboard" }) => Promise<{ intent: { type: string; route: string } }>;
+    const result = await execute({ route: "dashboard" });
     expect(result.intent.type).toBe("navigate");
     expect((result.intent as { type: string; route: string }).route).toBe("dashboard");
   });

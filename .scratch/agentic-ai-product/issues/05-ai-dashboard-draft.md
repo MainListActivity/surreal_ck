@@ -1,5 +1,5 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: done
+Label: done
 
 # AI-005 — AI 仪表盘草稿生成：预览前确认再保存
 
@@ -35,13 +35,13 @@ type DashboardDraftIntent = {
 
 ## Acceptance criteria
 
-- [ ] 用户描述"按月统计债权申报金额趋势"，AI 返回含 widgetSpec 的草稿意图
-- [ ] 抽屉显示草稿预览卡片，包含 explanation 文字说明
-- [ ] 预览卡片复用已有 widget 渲染组件（TimeSeriesWidget 等）
-- [ ] 用户确认保存后，仪表盘出现在仪表盘列表中
-- [ ] raw SQL 草稿经过 `dashboard-query` 验证，不通过则返回错误提示而非保存
-- [ ] AI 生成的仪表盘与手动创建的仪表盘在产品行为上一致（可编辑、可删除）
-- [ ] 仪表盘生成适配器服务测试：验证 builder spec 到 widget 渲染的转换正确性
+- [x] 用户描述"按月统计债权申报金额趋势"，AI 返回含 widgetSpec 的草稿意图
+- [x] 抽屉显示草稿预览卡片，包含 explanation 文字说明
+- [x] 预览卡片复用已有 widget 渲染组件（TimeSeriesWidget 等）
+- [x] 用户确认保存后，仪表盘出现在仪表盘列表中
+- [x] raw SQL 草稿经过 `dashboard-query` 验证，不通过则返回错误提示而非保存
+- [x] AI 生成的仪表盘与手动创建的仪表盘在产品行为上一致（可编辑、可删除）
+- [x] 仪表盘生成适配器服务测试：验证 builder spec 到 widget 渲染的转换正确性
 
 ## Blocked by
 

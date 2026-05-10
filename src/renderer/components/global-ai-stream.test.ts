@@ -54,4 +54,57 @@ describe("applyAiChunkToMessages", () => {
     expect(next.messages).toEqual([placeholder]);
     expect(next.sendError).toBe("连接中断");
   });
+
+  test("done 事件携带 dashboard-draft tool result 时加入待确认意图", () => {
+    const placeholder: AiChatMessage = {
+      id: "placeholder",
+      role: "assistant",
+      content: "",
+      createdAt: "2026-05-10T00:00:00.000Z",
+      context: { route: { screen: "dashboard" } },
+    };
+    const finalMessage: AiChatMessage = { ...placeholder, id: "assistant-1", content: "已生成草稿。" };
+
+    const next = applyAiChunkToMessages(baseState([placeholder]), "placeholder", {
+      streamId: "stream-1",
+      type: "done",
+      message: finalMessage,
+      toolCalls: [
+        {
+          toolName: "generateDashboardDraft",
+          result: {
+            intent: {
+              type: "dashboard-draft",
+              title: "债权申报金额月趋势",
+              description: "按月统计债权申报金额趋势",
+              explanation: "按月汇总申报金额。",
+              widgetSpec: {
+                sourceTables: ["ent_claim"],
+                baseTable: "ent_claim",
+                metric: { op: "sum", field: "declared_amount" },
+                dimensions: [{ field: "submitted_at", bucket: "month" }],
+              },
+              draft: {
+                workspaceId: "workspace:demo",
+                title: "债权申报金额月趋势",
+                queryMode: "builder",
+                viewType: "line",
+                resultContract: "time_series",
+                builderSpec: {
+                  sourceTables: ["ent_claim"],
+                  baseTable: "ent_claim",
+                  metric: { op: "sum", field: "declared_amount" },
+                  dimensions: [{ field: "submitted_at", bucket: "month" }],
+                },
+              },
+            },
+          },
+        },
+      ],
+    });
+
+    expect(next.pendingIntents).toHaveLength(1);
+    expect(next.pendingIntents[0].messageId).toBe("assistant-1");
+    expect(next.pendingIntents[0].intent.type).toBe("dashboard-draft");
+  });
 });

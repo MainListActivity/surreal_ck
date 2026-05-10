@@ -9,7 +9,7 @@ const fakeSettings: AiSettings = {
   secretConfigured: true,
 };
 
-describe("dashboard agent 占位", () => {
+describe("dashboard agent", () => {
   test("createDashboardAgent 工厂存在并返回 Agent", async () => {
     const mod = await import("./dashboard-agent");
     expect(typeof mod.createDashboardAgent).toBe("function");
@@ -18,9 +18,9 @@ describe("dashboard agent 占位", () => {
     expect(typeof agent.generate).toBe("function");
   });
 
-  test("dashboard agent 当前 tool 列表为空（issue 05 后续注册）", async () => {
+  test("dashboard agent 注册 schema 检查与草稿生成工具", async () => {
     const { DASHBOARD_TOOLS } = await import("./dashboard-agent");
-    expect(Object.keys(DASHBOARD_TOOLS)).toEqual([]);
+    expect(Object.keys(DASHBOARD_TOOLS).sort()).toEqual(["generateDashboardDraft", "inspectSchema"]);
   });
 
   test("dashboard system prompt 不包含其它领域关键字", async () => {

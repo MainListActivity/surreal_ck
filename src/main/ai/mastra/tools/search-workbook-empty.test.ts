@@ -22,10 +22,17 @@ mock.module("../../../services/workbooks", () => ({
   listWorkbooks: async () => ({ workbooks: [] }),
 }));
 
+type SearchWorkbookResult = {
+  intent:
+    | { type: "ambiguous"; candidates: { label: string; id: string }[] }
+    | { type: "open-workbook"; workbookId: string; label: string };
+};
+
 describe("searchWorkbook tool — 无结果降级", () => {
   test("工作簿不存在时返回空 ambiguous 候选", async () => {
     const { searchWorkbookTool } = await import("./navigation-tools");
-    const result = await searchWorkbookTool.execute({ query: "不存在的工作簿" });
+    const execute = searchWorkbookTool.execute as unknown as (input: { query: string }) => Promise<SearchWorkbookResult>;
+    const result = await execute({ query: "不存在的工作簿" });
     expect(result.intent.type).toBe("ambiguous");
     expect((result.intent as { type: string; candidates: unknown[] }).candidates).toHaveLength(0);
   });
@@ -40,7 +47,8 @@ describe("searchWorkbook tool — 无结果降级", () => {
       }),
     }));
     const { searchWorkbookTool } = await import("./navigation-tools");
-    const result = await searchWorkbookTool.execute({ query: "债权台账" });
+    const execute = searchWorkbookTool.execute as unknown as (input: { query: string }) => Promise<SearchWorkbookResult>;
+    const result = await execute({ query: "债权台账" });
     expect(result.intent.type).toBe("ambiguous");
     expect((result.intent as { type: string; candidates: { label: string; id: string }[] }).candidates).toHaveLength(2);
   });
@@ -52,7 +60,8 @@ describe("searchWorkbook tool — 无结果降级", () => {
       }),
     }));
     const { searchWorkbookTool } = await import("./navigation-tools");
-    const result = await searchWorkbookTool.execute({ query: "合同管理" });
+    const execute = searchWorkbookTool.execute as unknown as (input: { query: string }) => Promise<SearchWorkbookResult>;
+    const result = await execute({ query: "合同管理" });
     expect(result.intent.type).toBe("open-workbook");
     expect((result.intent as { type: string; workbookId: string }).workbookId).toBe("workbook:1");
   });

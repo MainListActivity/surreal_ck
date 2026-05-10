@@ -49,6 +49,7 @@ export const rpc = Electroview.defineRPC<AppRPC>({
       aiProgress: (event) => {
         aiProgressSubscribers.get(event.runId)?.(event);
       },
+      aiSuspended: () => {},
     },
   },
 });

@@ -39,6 +39,7 @@ import type {
   SaveSettingsResponse,
   SearchReferenceCandidatesResponse,
   SendAiMessageResponse,
+  AiStructuredIntent,
   ToolNavigationIntent,
   UpdateSheetFieldsResponse,
   UpdateDashboardViewResponse,
@@ -78,7 +79,7 @@ export const appApi = {
     return rpc.request("sendAiMessage", { message, streamId, history });
   },
 
-  executeAiAction(intent: ToolNavigationIntent): Promise<Result<ExecuteAiActionResponse>> {
+  executeAiAction(intent: ToolNavigationIntent | AiStructuredIntent): Promise<Result<ExecuteAiActionResponse>> {
     return rpc.request("executeAiAction", { intent });
   },
 

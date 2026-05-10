@@ -4,6 +4,7 @@ import type { AiContextSnapshot } from "../../../../shared/ai-context";
 import type {
   AiMessageChunkEvent,
   AiProgressEvent,
+  AiToolCallRecord,
   AiStructuredIntent,
   CandidateOption,
   ResolvedRecord,
@@ -233,6 +234,7 @@ export type RouterRuntime = {
   pushProgress?: (e: AiProgressEvent) => void;
   /** 暂停时主进程把 payload 推给 webview。 */
   onSuspend?: (event: WorkflowSuspendedEvent) => void;
+  toolCalls?: AiToolCallRecord[];
 };
 
 function getRuntime(requestContext: { get(key: string): unknown }): RouterRuntime {
@@ -418,7 +420,6 @@ export function createRouterWorkflow() {
       runtime.pushChunk?.({
         streamId: runtime.streamId,
         type: "done",
-        toolCalls: [],
         message: {
           id: crypto.randomUUID(),
           role: "assistant" as const,
@@ -426,6 +427,7 @@ export function createRouterWorkflow() {
           createdAt: new Date().toISOString(),
           context: runtime.userContext,
         },
+        toolCalls: runtime.toolCalls ?? [],
       });
       return { steps: state.steps, finalText };
     },

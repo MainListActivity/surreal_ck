@@ -8,6 +8,7 @@
   import { subscribeAiChunks, subscribeAiProgress } from "../lib/rpc";
   import { applyAiChunkToMessages, type PendingIntent } from "./global-ai-stream";
   import { progressEventToHint } from "./ai-progress-label";
+  import { getDashboardWidget } from "../features/dashboard/registries/widgets";
   import Icon from "./Icon.svelte";
 
   marked.setOptions({ breaks: true });
@@ -16,7 +17,13 @@
     return marked.parse(text) as string;
   }
   import type { AiChatMessage } from "../../shared/ai-context";
-  import type { AppNavigationIntent, ToolNavigationIntent } from "../../shared/rpc.types";
+  import type {
+    AppNavigationIntent,
+    DashboardCacheDTO,
+    DashboardDraftIntent,
+    DashboardViewDTO,
+    ToolNavigationIntent,
+  } from "../../shared/rpc.types";
   import type { Navigate, RouteState, ScreenId } from "../lib/types";
 
   let {
@@ -33,6 +40,7 @@
   let sendError = $state<string | null>(null);
   let pendingIntents = $state<PendingIntent[]>([]);
   let progressHint = $state<string | null>(null);
+  let savingIntentId = $state<string | null>(null);
 
   function navigateFromAiAction(action: AppNavigationIntent) {
     navigate(action.screen as ScreenId, {
@@ -55,6 +63,24 @@
   async function confirmNavigationIntent(intent: ToolNavigationIntent, messageId: string) {
     const executed = await executeNavigationIntent(intent);
     if (executed) dismissIntent(messageId);
+  }
+
+  async function confirmDashboardDraftIntent(intent: DashboardDraftIntent, messageId: string) {
+    savingIntentId = messageId;
+    sendError = null;
+    try {
+      const res = await appApi.executeAiAction(intent);
+      if (!res.ok) {
+        sendError = res.message;
+        return;
+      }
+      if (res.data.navigation) navigateFromAiAction(res.data.navigation);
+      dismissIntent(messageId);
+    } catch (err) {
+      sendError = err instanceof Error ? err.message : String(err);
+    } finally {
+      savingIntentId = null;
+    }
   }
 
   function dismissIntent(messageId: string) {
@@ -203,6 +229,40 @@
       unsubscribeProgress?.();
     }
   }
+
+  function previewFromDraftIntent(intent: DashboardDraftIntent): { view: DashboardViewDTO; cache?: DashboardCacheDTO } {
+    const draft = intent.draft;
+    return {
+      view: {
+        id: "__ai_draft__",
+        workspaceId: draft.workspaceId,
+        workbookId: draft.workbookId,
+        title: intent.title,
+        slug: "ai-draft",
+        description: intent.description,
+        queryMode: draft.queryMode,
+        viewType: draft.viewType,
+        resultContract: draft.resultContract,
+        status: "draft",
+        compiledSql: intent.preview?.sql ?? draft.compiledSql ?? "",
+        builderSpec: draft.builderSpec,
+        displaySpec: draft.displaySpec ?? {},
+        sourceTables: intent.preview?.sourceTables ?? draft.builderSpec?.sourceTables ?? [],
+        dependencies: intent.preview?.dependencies ?? draft.builderSpec?.sourceTables ?? [],
+        version: 0,
+      },
+      cache: intent.preview ? {
+        viewId: "__ai_draft__",
+        status: "ok",
+        rowsCount: intent.preview.rowsCount,
+        durationMs: intent.preview.durationMs,
+        executedAt: new Date().toISOString(),
+        sqlHash: intent.preview.sqlHash,
+        result: intent.preview.result,
+        resultMeta: intent.preview.resultMeta,
+      } : undefined,
+    };
+  }
 </script>
 
 {#if appState.aiDrawerOpen}
@@ -286,6 +346,31 @@
                     {/each}
                   </div>
                   <button class="dismiss-btn" onclick={() => dismissIntent(pending.messageId)}>关闭</button>
+                {:else if pending.intent.type === "dashboard-draft"}
+                  {@const preview = previewFromDraftIntent(pending.intent)}
+                  {@const registration = getDashboardWidget(preview.view.viewType)}
+                  <div class="draft-head">
+                    <span class="intent-label">{pending.intent.title}</span>
+                    <p>{pending.intent.explanation}</p>
+                  </div>
+                  <div class="draft-preview">
+                    {#if pending.intent.preview && registration}
+                      {@const WidgetComponent = registration.component}
+                      <WidgetComponent view={preview.view} cache={preview.cache} />
+                    {:else}
+                      <div class="draft-spec">
+                        <strong>{preview.view.viewType}</strong>
+                        <span>{pending.intent.widgetSpec.baseTable}</span>
+                        <code>{JSON.stringify(pending.intent.widgetSpec.metric)}</code>
+                      </div>
+                    {/if}
+                  </div>
+                  <div class="intent-actions">
+                    <button class="confirm-btn" disabled={savingIntentId === pending.messageId} onclick={() => { void confirmDashboardDraftIntent(pending.intent, pending.messageId); }}>
+                      {savingIntentId === pending.messageId ? "保存中" : "保存到仪表盘"}
+                    </button>
+                    <button class="dismiss-btn" onclick={() => dismissIntent(pending.messageId)}>忽略</button>
+                  </div>
                 {/if}
               </div>
             {/each}
@@ -708,6 +793,41 @@
     border: 1px solid var(--primary);
     border-radius: 8px;
     background: var(--primary-light, rgba(22, 100, 255, .06));
+  }
+
+  .draft-head {
+    display: grid;
+    gap: 6px;
+  }
+
+  .draft-head p {
+    margin: 0;
+    color: var(--text-3);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+
+  .draft-preview {
+    min-height: 180px;
+    max-height: 260px;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px;
+    background: #fff;
+  }
+
+  .draft-spec {
+    display: grid;
+    gap: 8px;
+    color: var(--text-2);
+    font-size: 12px;
+  }
+
+  .draft-spec code {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    color: var(--text-3);
   }
 
   .intent-label {

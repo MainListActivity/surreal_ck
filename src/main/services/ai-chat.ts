@@ -88,7 +88,7 @@ export async function sendAiMessage(
 
   const llmCaller: RouterLlmCaller = makeRouterLlmCaller(chitchatAgent);
 
-  void runRouterChatGuarded(req, runId, mastra, executors, llmCaller, pushChunk, pushProgress, onSuspend);
+  void runRouterChatGuarded(req, runId, mastra, executors, llmCaller, collectedToolCalls, pushChunk, pushProgress, onSuspend);
 
   return {
     message: {
@@ -109,6 +109,7 @@ async function runRouterChatGuarded(
   mastra: Mastra,
   executors: SubAgentExecutors,
   llmCaller: RouterLlmCaller,
+  collectedToolCalls: AiToolCallRecord[],
   pushChunk?: AiChunkSender,
   pushProgress?: AiProgressSender,
   onSuspend?: AiSuspendSender,
@@ -125,6 +126,7 @@ async function runRouterChatGuarded(
       pushChunk: (e) => pushChunk?.(e),
       pushProgress: (e) => pushProgress?.(e),
       onSuspend: (e) => onSuspend?.(e),
+      toolCalls: collectedToolCalls,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
