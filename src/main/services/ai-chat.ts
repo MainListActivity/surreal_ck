@@ -7,6 +7,7 @@ import type {
   AiToolCallRecord,
   SendAiMessageRequest,
   SendAiMessageResponse,
+  WorkflowSuspendedEvent,
 } from "../../shared/rpc.types";
 import { createNavigationAgent, NAVIGATION_AGENT_ID } from "../ai/mastra/agents/navigation-agent";
 import { CHITCHAT_AGENT_ID, createChitchatAgent } from "../ai/mastra/agents/chitchat-agent";
@@ -22,6 +23,7 @@ import { makeAgentExecutor } from "../ai/mastra/workflows/agent-executor";
 import type { RouterLlmCaller } from "../ai/mastra/workflows/router-classifier";
 
 export type AiChunkSender = (event: AiMessageChunkEvent) => void;
+export type AiSuspendSender = (event: WorkflowSuspendedEvent) => void;
 
 export function buildDegradedResponse(
   req: Pick<SendAiMessageRequest, "streamId" | "message">,
@@ -41,6 +43,7 @@ export async function sendAiMessage(
   req: SendAiMessageRequest,
   pushChunk?: AiChunkSender,
   pushProgress?: AiProgressSender,
+  onSuspend?: AiSuspendSender,
 ): Promise<SendAiMessageResponse> {
   assertAuthenticated();
   const settings = await getAiSettings();
@@ -85,7 +88,7 @@ export async function sendAiMessage(
 
   const llmCaller: RouterLlmCaller = makeRouterLlmCaller(chitchatAgent);
 
-  void runRouterChatGuarded(req, runId, mastra, executors, llmCaller, pushChunk, pushProgress);
+  void runRouterChatGuarded(req, runId, mastra, executors, llmCaller, pushChunk, pushProgress, onSuspend);
 
   return {
     message: {
@@ -108,6 +111,7 @@ async function runRouterChatGuarded(
   llmCaller: RouterLlmCaller,
   pushChunk?: AiChunkSender,
   pushProgress?: AiProgressSender,
+  onSuspend?: AiSuspendSender,
 ): Promise<void> {
   try {
     await runRouterChat({
@@ -120,6 +124,7 @@ async function runRouterChatGuarded(
       runId,
       pushChunk: (e) => pushChunk?.(e),
       pushProgress: (e) => pushProgress?.(e),
+      onSuspend: (e) => onSuspend?.(e),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

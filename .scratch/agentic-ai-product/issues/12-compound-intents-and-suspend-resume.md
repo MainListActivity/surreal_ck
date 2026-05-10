@@ -1,5 +1,5 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: done
+Label: done
 
 # AI-012 — 复合意图串行 + ambiguous 暂停/恢复 + 写操作前确认
 
@@ -74,17 +74,17 @@ ai.resumeWorkflow: {
 
 ## Acceptance criteria
 
-- [ ] Router workflow 支持长度 ≥ 2 的 plan 串行执行
-- [ ] navigation 类子 agent 返回 ambiguous 时 workflow 进入暂停态
-- [ ] 暂停态被持久化到 SurrealWorkflowsStorage（runId 可在 listWorkflowRuns 中找到，status = suspended）
-- [ ] 进程重启后通过 runId 仍能 resume（用集成测试模拟重启）
-- [ ] `ai.resumeWorkflow` RPC 实现，candidate-chosen 后 workflow 继续到下一步
-- [ ] candidate-cancelled / write-rejected 后 workflow 标记为已取消，不执行后续步骤
-- [ ] 所有写操作（navigate / dashboard-save / row-patch）都通过 `ai.executeAction` 二次确认
-- [ ] 共享 context 校验：confirmed.resolvedRecord 写入前经过 zod 校验
-- [ ] 集成测试：复合意图样本场景（搜索张三 → 选候选 → 生成图表 → 保存）端到端跑通
-- [ ] 集成测试：用户在 ambiguous 暂停态下关闭抽屉、重启进程后，候选仍可恢复并选择
-- [ ] 单元测试：confirmed 字段只暴露声明的已确认产出，不暴露 tool call 中间结果
+- [x] Router workflow 支持长度 ≥ 2 的 plan 串行执行
+- [x] navigation 类子 agent 返回 ambiguous 时 workflow 进入暂停态
+- [x] 暂停态被持久化到 SurrealWorkflowsStorage（runId 可在 listWorkflowRuns 中找到，status = suspended）
+- [x] 进程重启后通过 runId 仍能 resume（用集成测试模拟重启）
+- [x] `ai.resumeWorkflow` RPC 实现，candidate-chosen 后 workflow 继续到下一步
+- [x] candidate-cancelled / write-rejected 后 workflow 标记为已取消，不执行后续步骤
+- [x] 所有写操作（navigate / dashboard-save / row-patch）都通过 `ai.executeAction` 二次确认
+- [x] 共享 context 校验：confirmed.resolvedRecord 写入前经过 zod 校验
+- [x] 集成测试：复合意图样本场景（搜索张三 → 选候选 → 生成图表 → 保存）端到端跑通
+- [x] 集成测试：用户在 ambiguous 暂停态下关闭抽屉、重启进程后，候选仍可恢复并选择
+- [x] 单元测试：confirmed 字段只暴露声明的已确认产出，不暴露 tool call 中间结果
 
 ## Blocked by
 

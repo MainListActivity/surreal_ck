@@ -217,6 +217,9 @@ export type AiStructuredIntent = AppNavigationIntent | ToolNavigationIntent | Da
 
 export type ExecuteAiActionRequest = {
   intent: AiStructuredIntent;
+  /** 写操作时附带，便于 ai.executeAction 在写动作成功后清理对应 workflow run 快照（issue 012）。 */
+  runId?: string;
+  workflowName?: string;
 };
 
 export type ExecuteAiActionResponse = {
@@ -282,6 +285,8 @@ export const AiStructuredIntentSchema = z.union([
 
 export const ExecuteAiActionRequestSchema = z.object({
   intent: AiStructuredIntentSchema,
+  runId: z.string().optional(),
+  workflowName: z.string().optional(),
 });
 
 export const ExecuteAiActionResponseSchema = z.object({
@@ -325,6 +330,64 @@ export const AiProgressEventSchema = z.discriminatedUnion("kind", [
   }),
   z.object({ kind: z.literal("tool-call"), runId: z.string(), toolId: z.string() }),
 ]);
+
+// ─── Workflow suspend / resume（issue 012） ──────────────────────────────────
+//
+// router workflow 在 ambiguous 候选 / 写操作前需要暂停等待用户决策。
+// 暂停时主进程通过 webview.messages.aiSuspended 把 payload 推给 AI 抽屉；
+// 用户选择后通过 ai.resumeAiWorkflow request 触达，主进程拉起对应 run.resume()。
+
+export const ResolvedRecordSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+});
+export type ResolvedRecord = z.infer<typeof ResolvedRecordSchema>;
+
+export type CandidateOption = { id: string; label: string };
+
+const CandidateOptionSchema = z.object({ id: z.string().min(1), label: z.string().min(1) });
+
+const AmbiguousCandidatesEventSchema = z.object({
+  kind: z.literal("ambiguous-candidates"),
+  runId: z.string(),
+  candidates: z.array(CandidateOptionSchema),
+  truncated: z.boolean().optional(),
+});
+
+const AwaitWriteConfirmEventSchema = z.object({
+  kind: z.literal("await-write-confirm"),
+  runId: z.string(),
+  intent: AiStructuredIntentSchema,
+});
+
+export const WorkflowSuspendedEventSchema = z.discriminatedUnion("kind", [
+  AmbiguousCandidatesEventSchema,
+  AwaitWriteConfirmEventSchema,
+]);
+export type WorkflowSuspendedEvent = z.infer<typeof WorkflowSuspendedEventSchema>;
+
+const ResumeDecisionSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("candidate-chosen"), candidateId: z.string().min(1) }),
+  z.object({ kind: z.literal("candidate-cancelled") }),
+  z.object({ kind: z.literal("write-confirmed") }),
+  z.object({ kind: z.literal("write-rejected") }),
+]);
+export type ResumeDecision = z.infer<typeof ResumeDecisionSchema>;
+
+export const ResumeAiWorkflowRequestSchema = z.object({
+  runId: z.string().min(1),
+  decision: ResumeDecisionSchema,
+  /** 可选：默认 routerWorkflow */
+  workflowName: z.string().optional(),
+});
+export type ResumeAiWorkflowRequest = z.infer<typeof ResumeAiWorkflowRequestSchema>;
+
+export type ResumeAiWorkflowResponse = {
+  resumed: boolean;
+  /** 若 resume 完成（success 或再次 suspended）则附带最终文本；用户取消时 resumed=false。 */
+  finalText?: string;
+  status: "success" | "suspended" | "cancelled";
+};
 
 export type WorkbookSummaryDTO = {
   id: RecordIdString;
@@ -951,6 +1014,7 @@ export interface AppRPC extends ElectrobunRPCSchema {
       getSettings: { params: Record<string, never>; response: Result<GetSettingsResponse> };
       saveSettings: { params: SaveSettingsRequest; response: Result<SaveSettingsResponse> };
       sendAiMessage: { params: SendAiMessageRequest; response: Result<SendAiMessageResponse> };
+      resumeAiWorkflow: { params: ResumeAiWorkflowRequest; response: Result<ResumeAiWorkflowResponse> };
       executeAiAction: { params: ExecuteAiActionRequest; response: Result<ExecuteAiActionResponse> };
       listWorkbooks: { params: ListWorkbooksRequest; response: Result<ListWorkbooksResponse> };
       createBlankWorkbook: { params: CreateBlankWorkbookRequest; response: Result<CreateBlankWorkbookResponse> };
@@ -995,6 +1059,7 @@ export interface AppRPC extends ElectrobunRPCSchema {
       authStateChanged: { state: AuthState };
       aiMessageChunk: AiMessageChunkEvent;
       aiProgress: AiProgressEvent;
+      aiSuspended: WorkflowSuspendedEvent;
     };
   };
 }

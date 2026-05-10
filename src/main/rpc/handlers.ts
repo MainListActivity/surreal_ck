@@ -50,7 +50,10 @@ import type {
   RenameWorkbookResponse,
   ResolveReferencesRequest,
   ResolveReferencesResponse,
+  ResumeAiWorkflowRequest,
+  ResumeAiWorkflowResponse,
   Result,
+  WorkflowSuspendedEvent,
   GetTableSchemaRequest,
   GetTableSchemaResponse,
   ListReferenceTargetsResponse,
@@ -106,12 +109,14 @@ import {
   toAiSettingsDTO,
 } from "../services/settings";
 import { sendAiMessage } from "../services/ai-chat";
+import { resumeAiWorkflowFromRpc } from "../services/ai-resume-rpc";
 import { executeAiAction } from "../services/ai-actions";
 
 type SendFn = {
   (event: "authStateChanged", payload: { state: AuthState }): void;
   (event: "aiMessageChunk", payload: AiMessageChunkEvent): void;
   (event: "aiProgress", payload: AiProgressEvent): void;
+  (event: "aiSuspended", payload: WorkflowSuspendedEvent): void;
 };
 
 const ADMIN_QUERY_ENABLED =
@@ -221,7 +226,18 @@ export function createRpcHandlers(send: SendFn) {
             req,
             (event) => send("aiMessageChunk", event),
             (event) => send("aiProgress", event),
+            (event) => send("aiSuspended", event),
           ),
+        );
+      },
+
+      resumeAiWorkflow: async (req: ResumeAiWorkflowRequest): Promise<Result<ResumeAiWorkflowResponse>> => {
+        return withResult(() =>
+          resumeAiWorkflowFromRpc(req, {
+            pushChunk: (event) => send("aiMessageChunk", event),
+            pushProgress: (event) => send("aiProgress", event),
+            onSuspend: (event) => send("aiSuspended", event),
+          }),
         );
       },
 

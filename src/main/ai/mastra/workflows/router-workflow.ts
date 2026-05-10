@@ -1,16 +1,26 @@
 import { createStep, createWorkflow } from "@mastra/core/workflows";
 import { z } from "zod";
 import type { AiContextSnapshot } from "../../../../shared/ai-context";
-import type { AiMessageChunkEvent, AiProgressEvent } from "../../../../shared/rpc.types";
+import type {
+  AiMessageChunkEvent,
+  AiProgressEvent,
+  AiStructuredIntent,
+  CandidateOption,
+  ResolvedRecord,
+  ResumeDecision,
+  WorkflowSuspendedEvent,
+} from "../../../../shared/rpc.types";
+import { ResolvedRecordSchema } from "../../../../shared/rpc.types";
 import { classifyTask, type RouterCategory, type RouterLlmCaller, type RouterPlan } from "./router-classifier";
 
 export const ROUTER_WORKFLOW_ID = "routerWorkflow";
 export const ROUTER_RUNTIME_KEY = "routerRuntime";
+export const AMBIGUOUS_CANDIDATES_LIMIT = 20;
 
 // ─── 共享 context 协议 ────────────────────────────────────────────────────────
 
 export type SharedConfirmed = {
-  resolvedRecord?: { id: string; label: string };
+  resolvedRecord?: ResolvedRecord;
   schemaSummary?: { tables: string[]; fieldsByTable: Record<string, string[]> };
 };
 
@@ -25,13 +35,23 @@ export type SharedWorkflowContext = {
 
 // ─── 子 agent 执行器接口 ───────────────────────────────────────────────────────
 
+export type AmbiguousSuspend = {
+  kind: "ambiguous";
+  candidates: CandidateOption[];
+};
+
+export type AwaitWriteConfirmSuspend = {
+  kind: "await-write-confirm";
+  intent: AiStructuredIntent;
+};
+
+export type SubAgentSuspendSignal = AmbiguousSuspend | AwaitWriteConfirmSuspend;
+
 export type SubAgentInput = {
   taskText: string;
   shared: SharedWorkflowContext;
   /**
-   * 可选：流式 delta 实时回调。executor 一旦收到 LLM textStream 的 chunk 就调用，
-   * 让上层 router-workflow 当场把 delta 推给 streamId，而不是等 executor 整体结束才补播。
-   * 非流式 executor 可以忽略本回调，由 router-workflow 退化为读取返回值里的 `deltas` / `text`。
+   * 流式 delta 实时回调；非流式 executor 可忽略。
    */
   onDelta?: (delta: string) => void;
 };
@@ -39,15 +59,20 @@ export type SubAgentInput = {
 export type SubAgentOutput = {
   text: string;
   confirmed: SharedConfirmed;
-  /** 可选：子 agent 内部的流式片段。runRouterChat 会按顺序往同一 streamId 推 delta；不提供时退化为整段 text 一次性 done。 */
+  /** 可选：流式片段。 */
   deltas?: string[];
+  /**
+   * 可选：要求 workflow 在该步骤暂停。
+   * - ambiguous：搜索结果有多个候选，需要用户选择
+   * - await-write-confirm：本步是写操作，需要前端确认
+   */
+  suspend?: SubAgentSuspendSignal;
 };
 
 export type SubAgentExecutor = (input: SubAgentInput) => Promise<SubAgentOutput>;
-
 export type SubAgentExecutors = Record<RouterCategory, SubAgentExecutor>;
 
-// ─── 调度器（router workflow 的纯逻辑核心，便于单测） ──────────────────────────
+// ─── 调度器：保留供 011 测试用的纯函数版本（不带 suspend） ────────────────────
 
 export type RouterDispatchInput = {
   plan: RouterPlan;
@@ -68,8 +93,6 @@ export type RouterDispatchResult = {
 
 export async function runRouterDispatch(input: RouterDispatchInput): Promise<RouterDispatchResult> {
   const { plan, executors } = input;
-
-  // userContext 深拷贝，避免子 agent 修改原快照影响后续步骤或调用方
   const frozenUserContext = JSON.parse(JSON.stringify(input.shared.userContext)) as AiContextSnapshot;
   const shared: SharedWorkflowContext = {
     userContext: frozenUserContext,
@@ -81,27 +104,27 @@ export async function runRouterDispatch(input: RouterDispatchInput): Promise<Rou
     const executor = executors[item.category];
     const out = await executor({
       taskText: item.taskText,
-      // 给子 agent 的是一个引用：它能读到 confirmed，但不应改 userContext
       shared: { userContext: shared.userContext, confirmed: shared.confirmed },
     });
-    // 只合并白名单内的 confirmed 字段，其它字段不进 shared.confirmed
-    for (const key of CONFIRMED_KEYS) {
-      const v = out.confirmed[key];
-      if (v !== undefined) {
-        // @ts-expect-error 索引签名在白名单约束下安全
-        shared.confirmed[key] = v;
-      }
-    }
+    mergeConfirmed(shared.confirmed, out.confirmed);
     steps.push({ category: item.category, taskText: item.taskText, text: out.text });
   }
 
-  // 把 userContext 回写为深拷贝快照（防止 executor 改了引用对外可见）
   shared.userContext = JSON.parse(JSON.stringify(frozenUserContext)) as AiContextSnapshot;
-
   return { steps, shared };
 }
 
-// ─── 端到端入口：用户消息 → 分类 → 调度 ───────────────────────────────────────
+function mergeConfirmed(target: SharedConfirmed, source: SharedConfirmed): void {
+  for (const key of CONFIRMED_KEYS) {
+    const v = source[key];
+    if (v !== undefined) {
+      // @ts-expect-error 索引签名在白名单约束下安全
+      target[key] = v;
+    }
+  }
+}
+
+// ─── routeAndDispatch（非 suspend 链路） ─────────────────────────────────────
 
 export type RouteAndDispatchInput = {
   text: string;
@@ -124,13 +147,43 @@ export async function routeAndDispatch(input: RouteAndDispatchInput): Promise<Ro
   return { ...dispatched, plan };
 }
 
-// ─── Mastra createWorkflow 包装 ──────────────────────────────────────────────
+// ─── Mastra createWorkflow 包装（含 suspend/resume） ─────────────────────────
+
+const RouterCategoryEnum = z.enum(["navigation", "dashboard", "claim-analysis", "chitchat"]);
 
 const RouterStepResultSchema = z.object({
-  category: z.enum(["navigation", "dashboard", "claim-analysis", "chitchat"]),
+  category: RouterCategoryEnum,
   taskText: z.string(),
   text: z.string(),
 });
+
+const RouterPlanItemSchema = z.object({ category: RouterCategoryEnum, taskText: z.string() });
+
+const SharedConfirmedSchema = z.object({
+  resolvedRecord: ResolvedRecordSchema.optional(),
+  schemaSummary: z
+    .object({
+      tables: z.array(z.string()),
+      fieldsByTable: z.record(z.string(), z.array(z.string())),
+    })
+    .optional(),
+});
+
+const RouterStateSchema = z.object({
+  plan: z.array(RouterPlanItemSchema).default([]),
+  cursor: z.number().int().nonnegative().default(0),
+  confirmed: SharedConfirmedSchema.default({}),
+  steps: z.array(RouterStepResultSchema).default([]),
+  cancelled: z.boolean().default(false),
+});
+/** 运行时已被 schema default 兜底的状态形状（去除可选）。 */
+type RouterState = {
+  plan: { category: RouterCategory; taskText: string }[];
+  cursor: number;
+  confirmed: SharedConfirmed;
+  steps: RouterStepResult[];
+  cancelled: boolean;
+};
 
 const RouterWorkflowInputSchema = z.object({
   text: z.string(),
@@ -141,6 +194,27 @@ const RouterWorkflowOutputSchema = z.object({
   finalText: z.string(),
 });
 
+const ResumeDecisionSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("candidate-chosen"), candidateId: z.string().min(1) }),
+  z.object({ kind: z.literal("candidate-cancelled") }),
+  z.object({ kind: z.literal("write-confirmed") }),
+  z.object({ kind: z.literal("write-rejected") }),
+]);
+
+const SuspendPayloadSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("ambiguous"),
+    /** 留存完整候选（可能 > 20）以便 resolve 时按 candidateId 还原 label */
+    candidates: z.array(z.object({ id: z.string(), label: z.string() })),
+    truncated: z.boolean().optional(),
+  }),
+  z.object({
+    kind: z.literal("await-write-confirm"),
+    /** 用 unknown 容纳 AiStructuredIntent；运行时由 caller 校验 */
+    intent: z.unknown(),
+  }),
+]);
+
 const CATEGORY_TO_AGENT_NAME: Record<RouterCategory, string> = {
   navigation: "navigationAgent",
   dashboard: "dashboardAgent",
@@ -148,110 +222,212 @@ const CATEGORY_TO_AGENT_NAME: Record<RouterCategory, string> = {
   chitchat: "chitchatAgent",
 };
 
-/**
- * RouterRuntime 是 step.execute 通过 RequestContext 取到的运行时上下文。
- * 由调用方（router-chat / ai-chat）每次启动 workflow 时构造并注入，让
- * workflow 实例本身保持无状态、可静态注册到 new Mastra({ workflows })。
- */
 export type RouterRuntime = {
   userContext: AiContextSnapshot;
   executors: SubAgentExecutors;
   llmCaller: RouterLlmCaller;
   streamId: string;
-  /** runId：调用方 RPC 已经分配的 runId；这里仅用于推 progress 事件，不影响 Mastra 内部 run id */
+  /** 业务侧 runId（可与 Mastra runId 不同）。 */
   runId: string;
   pushChunk?: (e: AiMessageChunkEvent) => void;
   pushProgress?: (e: AiProgressEvent) => void;
+  /** 暂停时主进程把 payload 推给 webview。 */
+  onSuspend?: (event: WorkflowSuspendedEvent) => void;
 };
 
-/**
- * createRouterWorkflow 返回一个 Mastra workflow。
- * V1 单步包整个 routeAndDispatch；issue 012 会按子 agent 拆成多个 step 以支持 ambiguous suspend/resume。
- *
- * 运行时（executors / llmCaller / userContext / streamId / runId / 推送回调）通过 RequestContext
- * 注入，workflow 实例本身可复用，并由 Mastra 引擎驱动 storage 写入 mastra_workflow_run。
- */
+function getRuntime(requestContext: { get(key: string): unknown }): RouterRuntime {
+  const runtime = requestContext.get(ROUTER_RUNTIME_KEY) as RouterRuntime | undefined;
+  if (!runtime) {
+    throw new Error(
+      `router-workflow: RequestContext 缺少 "${ROUTER_RUNTIME_KEY}"`,
+    );
+  }
+  return runtime;
+}
+
 export function createRouterWorkflow() {
-  const dispatchStep = createStep({
-    id: "route-and-dispatch",
+  // ── classifyStep：text → { plan }
+  const classifyStep = createStep({
+    id: "classify",
     inputSchema: RouterWorkflowInputSchema,
-    outputSchema: RouterWorkflowOutputSchema,
-    execute: async ({ inputData, requestContext }) => {
-      const runtime = requestContext.get(ROUTER_RUNTIME_KEY) as RouterRuntime | undefined;
-      if (!runtime) {
-        throw new Error(
-          `router-workflow: RequestContext 缺少 "${ROUTER_RUNTIME_KEY}"，需调用方通过 createRunAsync().start({ requestContext }) 注入`,
-        );
-      }
-
-      const { streamId, runId, executors, llmCaller, pushChunk, pushProgress } = runtime;
-
-      pushProgress?.({ kind: "routing", runId });
-      const plan = await classifyTask({ text: inputData.text, llmCaller });
-
-      const wrapped: SubAgentExecutors = {
-        navigation: makeWrapped("navigation", executors.navigation),
-        dashboard: makeWrapped("dashboard", executors.dashboard),
-        "claim-analysis": makeWrapped("claim-analysis", executors["claim-analysis"]),
-        chitchat: makeWrapped("chitchat", executors.chitchat),
-      };
-      function makeWrapped(category: RouterCategory, real: SubAgentExecutor): SubAgentExecutor {
-        return async (args) => {
-          pushProgress?.({
-            kind: "agent-step",
-            runId,
-            agentName: CATEGORY_TO_AGENT_NAME[category],
-            taskText: args.taskText,
-          });
-
-          // 注入 onDelta 让 executor 在收到 LLM stream chunk 的瞬间直接推 delta，
-          // 而不是等 executor 整体结束再补播。streamedAny 用于区分流式 / 非流式 executor。
-          let streamedAny = false;
-          const onDelta = (d: string) => {
-            if (!d) return;
-            streamedAny = true;
-            pushChunk?.({ streamId, type: "delta", text: d });
-          };
-
-          const out = await real({ ...args, onDelta });
-
-          // 非流式 executor（没用 onDelta 的，例如纯函数测试桩）：用返回值里的 deltas/text 一次性补播
-          if (!streamedAny) {
-            const deltas = out.deltas ?? (out.text ? [out.text] : []);
-            for (const d of deltas) {
-              if (!d) continue;
-              pushChunk?.({ streamId, type: "delta", text: d });
-            }
-          }
-          return out;
-        };
-      }
-
-      const dispatched = await runRouterDispatch({
+    outputSchema: z.object({ plan: z.array(RouterPlanItemSchema) }),
+    stateSchema: RouterStateSchema,
+    execute: async ({ inputData, requestContext, setState }) => {
+      const runtime = getRuntime(requestContext);
+      runtime.pushProgress?.({ kind: "routing", runId: runtime.runId });
+      const plan = await classifyTask({ text: inputData.text, llmCaller: runtime.llmCaller });
+      await setState({
         plan,
-        shared: { userContext: runtime.userContext, confirmed: {} },
-        executors: wrapped,
+        cursor: 0,
+        confirmed: {},
+        steps: [],
+        cancelled: false,
+      });
+      return { plan };
+    },
+  });
+
+  // ── executeStep：dountil 循环体；每次处理 plan[cursor]
+  const executeStep = createStep({
+    id: "execute-one",
+    inputSchema: z.object({ plan: z.array(RouterPlanItemSchema) }),
+    outputSchema: z.object({ plan: z.array(RouterPlanItemSchema) }),
+    stateSchema: RouterStateSchema,
+    resumeSchema: z.object({ decision: ResumeDecisionSchema }),
+    suspendSchema: SuspendPayloadSchema,
+    execute: async (ctx) => {
+      const { inputData, requestContext, setState, resumeData, suspendData, suspend } = ctx;
+      const state = ctx.state as RouterState;
+      const runtime = getRuntime(requestContext);
+
+      // —— Resume 分支：消化用户决策 ——
+      if (resumeData) {
+        const decision = resumeData.decision as ResumeDecision;
+        const sus = suspendData as z.infer<typeof SuspendPayloadSchema> | undefined;
+
+        let nextConfirmed: SharedConfirmed = { ...state.confirmed };
+        let cancelled = false;
+
+        if (decision.kind === "candidate-cancelled" || decision.kind === "write-rejected") {
+          cancelled = true;
+        } else if (decision.kind === "candidate-chosen" && sus?.kind === "ambiguous") {
+          const chosen = sus.candidates.find((c) => c.id === decision.candidateId);
+          const parsed = chosen ? ResolvedRecordSchema.safeParse(chosen) : null;
+          if (parsed?.success) {
+            nextConfirmed = { ...nextConfirmed, resolvedRecord: parsed.data };
+          } else {
+            cancelled = true;
+          }
+        }
+        // write-confirmed：不写入 confirmed（写动作由 ai.executeAction 在 RPC 层做）
+
+        // 写入第 cursor 步的结果记录（如果不是取消）
+        const cursor = state.cursor;
+        const planItem = state.plan[cursor];
+        const newSteps = cancelled
+          ? state.steps
+          : [
+              ...state.steps,
+              {
+                category: planItem!.category,
+                taskText: planItem!.taskText,
+                text: cancelled ? "" : "(已确认)",
+              },
+            ];
+
+        await setState({
+          ...state,
+          confirmed: nextConfirmed,
+          steps: newSteps,
+          cursor: cursor + 1,
+          cancelled,
+        });
+        return { plan: inputData.plan };
+      }
+
+      // —— 正常分支：跑下一步 executor ——
+      const cursor = state.cursor;
+      const planItem = state.plan[cursor];
+      if (!planItem) {
+        return { plan: inputData.plan };
+      }
+
+      runtime.pushProgress?.({
+        kind: "agent-step",
+        runId: runtime.runId,
+        agentName: CATEGORY_TO_AGENT_NAME[planItem.category],
+        taskText: planItem.taskText,
       });
 
-      const finalText = dispatched.steps.map((s) => s.text).filter(Boolean).join("\n\n");
+      const executor = runtime.executors[planItem.category];
+      const onDelta = (d: string) => {
+        if (!d) return;
+        runtime.pushChunk?.({ streamId: runtime.streamId, type: "delta", text: d });
+      };
 
-      pushChunk?.({
-        streamId,
+      const out = await executor({
+        taskText: planItem.taskText,
+        shared: {
+          userContext: runtime.userContext,
+          confirmed: state.confirmed,
+        },
+        onDelta,
+      });
+
+      // 非流式 executor 的 deltas 补播
+      if (!out.deltas?.length && out.text) {
+        // text 已通过返回值带回，这里不重复推
+      } else if (out.deltas?.length) {
+        for (const d of out.deltas) {
+          if (d) runtime.pushChunk?.({ streamId: runtime.streamId, type: "delta", text: d });
+        }
+      }
+
+      if (out.suspend) {
+        if (out.suspend.kind === "ambiguous") {
+          const all = out.suspend.candidates;
+          const exposed = all.slice(0, AMBIGUOUS_CANDIDATES_LIMIT);
+          const truncated = all.length > AMBIGUOUS_CANDIDATES_LIMIT;
+          runtime.onSuspend?.({
+            kind: "ambiguous-candidates",
+            runId: runtime.runId,
+            candidates: exposed,
+            truncated,
+          });
+          await suspend({ kind: "ambiguous", candidates: all, truncated });
+          return { plan: inputData.plan };
+        }
+        if (out.suspend.kind === "await-write-confirm") {
+          runtime.onSuspend?.({
+            kind: "await-write-confirm",
+            runId: runtime.runId,
+            intent: out.suspend.intent,
+          });
+          await suspend({ kind: "await-write-confirm", intent: out.suspend.intent });
+          return { plan: inputData.plan };
+        }
+      }
+
+      // 非 suspend 的子 agent：合并 confirmed 后推进 cursor
+      const merged: SharedConfirmed = { ...state.confirmed };
+      mergeConfirmed(merged, out.confirmed);
+      await setState({
+        ...state,
+        confirmed: merged,
+        steps: [
+          ...state.steps,
+          { category: planItem.category, taskText: planItem.taskText, text: out.text },
+        ],
+        cursor: cursor + 1,
+      });
+      return { plan: inputData.plan };
+    },
+  });
+
+  // ── finalizeStep：聚合最终输出
+  const finalizeStep = createStep({
+    id: "finalize",
+    inputSchema: z.object({ plan: z.array(RouterPlanItemSchema) }),
+    outputSchema: RouterWorkflowOutputSchema,
+    stateSchema: RouterStateSchema,
+    execute: async (ctx) => {
+      const { requestContext } = ctx;
+      const state = ctx.state as RouterState;
+      const runtime = getRuntime(requestContext);
+      const finalText = state.steps.map((s) => s.text).filter(Boolean).join("\n\n");
+      runtime.pushChunk?.({
+        streamId: runtime.streamId,
         type: "done",
         toolCalls: [],
         message: {
           id: crypto.randomUUID(),
-          role: "assistant",
+          role: "assistant" as const,
           content: finalText || "我没有生成有效回复。",
           createdAt: new Date().toISOString(),
           context: runtime.userContext,
         },
       });
-
-      return {
-        steps: dispatched.steps,
-        finalText,
-      };
+      return { steps: state.steps, finalText };
     },
   });
 
@@ -259,7 +435,13 @@ export function createRouterWorkflow() {
     id: ROUTER_WORKFLOW_ID,
     inputSchema: RouterWorkflowInputSchema,
     outputSchema: RouterWorkflowOutputSchema,
+    stateSchema: RouterStateSchema,
   })
-    .then(dispatchStep)
+    .then(classifyStep)
+    .dountil(executeStep, async (ctx) => {
+      const state = (ctx as unknown as { state: RouterState }).state;
+      return state.cancelled || state.cursor >= state.plan.length;
+    })
+    .then(finalizeStep)
     .commit();
 }
