@@ -1,5 +1,5 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: done
+Label: done
 
 # AI-010 — Workflow run 持久化：SurrealWorkflowsStorage
 
@@ -37,14 +37,14 @@ Label: ready-for-agent
 
 ## Acceptance criteria
 
-- [ ] `SurrealWorkflowsStorage` 实现 `WorkflowsStorage` 全部 8 个 abstract 方法
-- [ ] `SurrealMastraStore.stores` 包含 `workflows` 字段
-- [ ] 启动时执行的 schema 初始化包含 `mastra_workflow_run` 表定义
-- [ ] 单元测试：persistWorkflowSnapshot → loadWorkflowSnapshot 往返一致
-- [ ] 单元测试：listWorkflowRuns 支持按 workflowName 过滤
-- [ ] 单元测试：deleteWorkflowRunById 删除后 loadWorkflowSnapshot 返回 null
-- [ ] 集成测试：模拟一个 2 步的 mock workflow，第 1 步暂停后另起进程 resume 能继续到第 2 步
-- [ ] 写入失败被 catch 并降级，不抛到 workflow 引擎层
+- [x] `SurrealWorkflowsStorage` 实现 `WorkflowsStorage` 全部 8 个 abstract 方法
+- [x] `SurrealMastraStore.stores` 包含 `workflows` 字段
+- [x] 启动时执行的 schema 初始化包含 `mastra_workflow_run` 表定义
+- [x] 单元测试：persistWorkflowSnapshot → loadWorkflowSnapshot 往返一致
+- [x] 单元测试：listWorkflowRuns 支持按 workflowName 过滤
+- [x] 单元测试：deleteWorkflowRunById 删除后 loadWorkflowSnapshot 返回 null
+- [x] 集成测试：模拟一个 2 步的 mock workflow，第 1 步暂停后另起进程 resume 能继续到第 2 步
+- [x] 写入失败被 catch 并降级，不抛到 workflow 引擎层
 
 ## Blocked by
 

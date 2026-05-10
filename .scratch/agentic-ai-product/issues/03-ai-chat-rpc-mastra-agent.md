@@ -1,5 +1,5 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: done
+Label: done
 
 # AI-003 — AI Chat RPC 合约 + 流式进度通道 + 临时 NavigationAgent 端到端贯通
 
@@ -40,16 +40,16 @@ Label: ready-for-agent
 
 ## Acceptance criteria
 
-- [ ] `rpc.types.ts` 中 `ai.chat`、`ai.executeAction`、`ai.progressStream` 类型定义完整，含 Zod schema 验证
-- [ ] `ai.chat` 返回值含 `runId` 字段
-- [ ] 发送消息后，AI 抽屉消息列表显示 agent 返回的文本和（若有）结构化意图卡片
-- [ ] AI 抽屉订阅 progressStream 并能在 tool 调用期间展示进度文本
-- [ ] Renderer 代码中不出现 API key 或模型密钥
-- [ ] 无 API key 配置时，`ai.chat` 返回降级响应而非抛出未捕获异常
-- [ ] `src/main/ai/mastra/agents/navigation-agent.ts` 创建完毕，挂载 issue 04 的 4 个 nav tool
-- [ ] Mastra 初始化使用完整 SurrealMastraStore（含 workflows 域）
-- [ ] `src/main/ai/index.ts` 导出 navigationAgent 工厂；不再导出 `createWorkspaceAgent` / `WORKSPACE_AGENT_ID`
-- [ ] RPC 序列化测试：验证 `ai.chat` 入参和返回值的 Zod 解析正确性
+- [x] `rpc.types.ts` 中 `ai.chat`、`ai.executeAction`、`ai.progressStream` 类型定义完整，含 Zod schema 验证
+- [x] `ai.chat` 返回值含 `runId` 字段
+- [x] 发送消息后，AI 抽屉消息列表显示 agent 返回的文本和（若有）结构化意图卡片
+- [x] AI 抽屉订阅 progressStream 并能在 tool 调用期间展示进度文本
+- [x] Renderer 代码中不出现 API key 或模型密钥
+- [x] 无 API key 配置时，`ai.chat` 返回降级响应而非抛出未捕获异常
+- [x] `src/main/ai/mastra/agents/navigation-agent.ts` 创建完毕，挂载 issue 04 的 4 个 nav tool
+- [x] Mastra 初始化使用完整 SurrealMastraStore（含 workflows 域）
+- [x] `src/main/ai/index.ts` 导出 navigationAgent 工厂；不再导出 `createWorkspaceAgent` / `WORKSPACE_AGENT_ID`
+- [x] RPC 序列化测试：验证 `ai.chat` 入参和返回值的 Zod 解析正确性
 
 ## Blocked by
 
