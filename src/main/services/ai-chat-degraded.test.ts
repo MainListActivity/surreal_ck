@@ -34,4 +34,10 @@ describe("buildDegradedResponse（无 API key 降级路径）", () => {
     const result = buildDegradedResponse(req, "需要配置 API Key");
     expect(result.message.context).toEqual(context);
   });
+
+  test("降级响应也必须返回 runId（issue 011/012 resume 接口）", () => {
+    const result = buildDegradedResponse(req, "需要配置 API Key");
+    expect(typeof result.runId).toBe("string");
+    expect(result.runId.length).toBeGreaterThan(0);
+  });
 });

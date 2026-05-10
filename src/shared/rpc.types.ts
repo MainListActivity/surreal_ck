@@ -131,6 +131,8 @@ export type SendAiMessageResponse = {
     args?: unknown;
     result?: unknown;
   }>;
+  /** 本次 agent 运行的稳定 id；issue 011/012 resume 时使用。 */
+  runId: string;
 };
 
 // ─── AI RPC Zod Schemas ──────────────────────────────────────────────────────
@@ -179,6 +181,7 @@ export const SendAiMessageResponseSchema = z.object({
       result: z.unknown().optional(),
     }),
   ),
+  runId: z.string(),
 });
 
 // ─── AI executeAction 类型定义 + Zod Schema ───────────────────────────────────
@@ -298,6 +301,30 @@ export type AiMessageChunkEvent =
   | { streamId: string; type: "delta"; text: string }
   | { streamId: string; type: "error"; message: string }
   | { streamId: string; type: "done"; message: AiChatMessage; toolCalls: AiToolCallRecord[] };
+
+// ─── ai.progressStream 进度事件 ──────────────────────────────────────────────
+//
+// 主进程在 agent 执行过程中向 renderer 推送的进度事件。所有事件以 runId 关联到
+// 一次 ai.chat 调用的 SendAiMessageResponse.runId。
+//
+// V1（issue 003）只发 "tool-call"；"routing" / "agent-step" 是为 Router workflow
+// （issue 011 / 012）预留的事件 kind，schema 必须前向兼容。
+
+export type AiProgressEvent =
+  | { kind: "routing"; runId: string }
+  | { kind: "agent-step"; runId: string; agentName: string; taskText: string }
+  | { kind: "tool-call"; runId: string; toolId: string };
+
+export const AiProgressEventSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("routing"), runId: z.string() }),
+  z.object({
+    kind: z.literal("agent-step"),
+    runId: z.string(),
+    agentName: z.string(),
+    taskText: z.string(),
+  }),
+  z.object({ kind: z.literal("tool-call"), runId: z.string(), toolId: z.string() }),
+]);
 
 export type WorkbookSummaryDTO = {
   id: RecordIdString;
@@ -967,6 +994,7 @@ export interface AppRPC extends ElectrobunRPCSchema {
       pushRows: { rows: LegacyRowData[] };
       authStateChanged: { state: AuthState };
       aiMessageChunk: AiMessageChunkEvent;
+      aiProgress: AiProgressEvent;
     };
   };
 }

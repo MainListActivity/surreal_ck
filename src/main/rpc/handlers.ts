@@ -1,5 +1,6 @@
 import type {
   AiMessageChunkEvent,
+  AiProgressEvent,
   AppBootstrap,
   AuthState,
   CreateBlankWorkbookRequest,
@@ -110,6 +111,7 @@ import { executeAiAction } from "../services/ai-actions";
 type SendFn = {
   (event: "authStateChanged", payload: { state: AuthState }): void;
   (event: "aiMessageChunk", payload: AiMessageChunkEvent): void;
+  (event: "aiProgress", payload: AiProgressEvent): void;
 };
 
 const ADMIN_QUERY_ENABLED =
@@ -214,7 +216,13 @@ export function createRpcHandlers(send: SendFn) {
       },
 
       sendAiMessage: async (req: SendAiMessageRequest): Promise<Result<SendAiMessageResponse>> => {
-        return withResult(() => sendAiMessage(req, (event) => send("aiMessageChunk", event)));
+        return withResult(() =>
+          sendAiMessage(
+            req,
+            (event) => send("aiMessageChunk", event),
+            (event) => send("aiProgress", event),
+          ),
+        );
       },
 
       executeAiAction: async (req: ExecuteAiActionRequest): Promise<Result<ExecuteAiActionResponse>> => {

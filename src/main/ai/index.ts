@@ -2,7 +2,7 @@ import { Mastra } from "@mastra/core";
 import { PinoLogger } from "@mastra/loggers";
 import { Observability, DefaultExporter, SensitiveDataFilter } from "@mastra/observability";
 import { SurrealMastraStore } from "./mastra/storage/surreal-store";
-export { createWorkspaceAgent, WORKSPACE_AGENT_ID } from "./mastra/agents/workspace-agent";
+export { createNavigationAgent, NAVIGATION_AGENT_ID } from "./mastra/agents/navigation-agent";
 export {
   listDashboardGenerationTargets,
   previewGeneratedDashboardView,

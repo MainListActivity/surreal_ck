@@ -5,8 +5,9 @@
   import { appApi } from "../lib/app-api";
   import { appState } from "../lib/app-state.svelte";
   import { editorStore } from "../lib/editor.svelte";
-  import { subscribeAiChunks } from "../lib/rpc";
+  import { subscribeAiChunks, subscribeAiProgress } from "../lib/rpc";
   import { applyAiChunkToMessages, type PendingIntent } from "./global-ai-stream";
+  import { progressEventToHint } from "./ai-progress-label";
   import Icon from "./Icon.svelte";
 
   marked.setOptions({ breaks: true });
@@ -31,6 +32,7 @@
   let sending = $state(false);
   let sendError = $state<string | null>(null);
   let pendingIntents = $state<PendingIntent[]>([]);
+  let progressHint = $state<string | null>(null);
 
   function navigateFromAiAction(action: AppNavigationIntent) {
     navigate(action.screen as ScreenId, {
@@ -120,7 +122,9 @@
     prompt = "";
     sending = true;
     sendError = null;
+    progressHint = null;
     let streamedText = "";
+    let unsubscribeProgress: (() => void) | null = null;
 
     const unsubscribe = subscribeAiChunks(streamId, (event) => {
       const next = applyAiChunkToMessages(
@@ -134,12 +138,19 @@
       sendError = next.sendError;
       streamedText = next.streamedText;
       if (event.type === "error" || event.type === "done") {
+        progressHint = null;
         unsubscribe();
+        unsubscribeProgress?.();
       }
     });
 
     try {
       const res = await appApi.sendAiMessage(message, streamId, history);
+      if (res.ok) {
+        unsubscribeProgress = subscribeAiProgress(res.data.runId, (event) => {
+          progressHint = progressEventToHint(event);
+        });
+      }
       if (res.ok && res.data.message.content) {
         const next = applyAiChunkToMessages(
           { messages, pendingIntents, sending, sendError, streamedText },
@@ -168,12 +179,16 @@
         );
         sendError = res.message;
         sending = false;
+        progressHint = null;
         unsubscribe();
+        unsubscribeProgress?.();
       } else if (!res.ok) {
         sendError = res.message;
         messages = messages.filter((m) => m.id !== placeholderId);
         sending = false;
+        progressHint = null;
         unsubscribe();
+        unsubscribeProgress?.();
       } else if (!streamedText && !sending) {
         messages = messages.filter((m) => m.id !== placeholderId || m.content);
       }
@@ -183,7 +198,9 @@
         messages = messages.filter((m) => m.id !== placeholderId);
       }
       sending = false;
+      progressHint = null;
       unsubscribe();
+      unsubscribeProgress?.();
     }
   }
 </script>
@@ -214,6 +231,10 @@
         创建图表
       </button>
     </div>
+
+    {#if progressHint}
+      <div class="progress-hint" aria-live="polite">{progressHint}</div>
+    {/if}
 
     <div class="conversation">
       {#if messages.length}
@@ -383,6 +404,15 @@
     justify-content: stretch;
     padding: 18px 20px;
     overflow: auto;
+  }
+
+  .progress-hint {
+    padding: 6px 20px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(22, 100, 255, .04);
+    color: var(--primary);
+    font-size: 12px;
+    line-height: 1.5;
   }
 
   .message-list {

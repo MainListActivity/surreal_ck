@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { ExecuteAiActionRequestSchema, SendAiMessageRequestSchema, SendAiMessageResponseSchema } from "../../shared/rpc.types";
+import {
+  AiProgressEventSchema,
+  ExecuteAiActionRequestSchema,
+  SendAiMessageRequestSchema,
+  SendAiMessageResponseSchema,
+} from "../../shared/rpc.types";
 import { buildHistoryMessages } from "./ai-chat";
 
 // ─── 切片 1：Zod schema 解析 ──────────────────────────────────────────────────
@@ -46,15 +51,26 @@ describe("ai.chat Zod schema 解析", () => {
     const output = {
       message: { ...validMessage, role: "assistant" },
       toolCalls: [],
+      runId: "run_abc",
     };
     const result = SendAiMessageResponseSchema.safeParse(output);
     expect(result.success).toBe(true);
+  });
+
+  test("SendAiMessageResponseSchema 必须包含 runId（issue 011/012 resume 用）", () => {
+    const output = {
+      message: { ...validMessage, role: "assistant" },
+      toolCalls: [],
+    };
+    const result = SendAiMessageResponseSchema.safeParse(output);
+    expect(result.success).toBe(false);
   });
 
   test("SendAiMessageResponseSchema 解析带 toolCalls 的返回值", () => {
     const output = {
       message: { ...validMessage, role: "assistant" },
       toolCalls: [{ toolName: "navigate", args: { screen: "dashboard" }, result: null }],
+      runId: "run_xyz",
     };
     const result = SendAiMessageResponseSchema.safeParse(output);
     expect(result.success).toBe(true);
@@ -71,6 +87,35 @@ describe("ai.chat Zod schema 解析", () => {
     };
     const result = SendAiMessageRequestSchema.safeParse(input);
     expect(result.success).toBe(true);
+  });
+});
+
+// ─── ai.progressStream schema ────────────────────────────────────────────────
+
+describe("AiProgressEventSchema 解析", () => {
+  test("接受 tool-call 事件", () => {
+    const event = { kind: "tool-call", runId: "run_1", toolId: "searchWorkbook" };
+    expect(AiProgressEventSchema.safeParse(event).success).toBe(true);
+  });
+
+  test("接受 routing 事件（issue 011/012 预留）", () => {
+    const event = { kind: "routing", runId: "run_1" };
+    expect(AiProgressEventSchema.safeParse(event).success).toBe(true);
+  });
+
+  test("接受 agent-step 事件（issue 011/012 预留）", () => {
+    const event = { kind: "agent-step", runId: "run_1", agentName: "navigationAgent", taskText: "查找工作簿" };
+    expect(AiProgressEventSchema.safeParse(event).success).toBe(true);
+  });
+
+  test("拒绝缺少 runId 的事件", () => {
+    const event = { kind: "tool-call", toolId: "searchWorkbook" };
+    expect(AiProgressEventSchema.safeParse(event).success).toBe(false);
+  });
+
+  test("拒绝未知 kind", () => {
+    const event = { kind: "unknown", runId: "run_1" };
+    expect(AiProgressEventSchema.safeParse(event).success).toBe(false);
   });
 });
 
