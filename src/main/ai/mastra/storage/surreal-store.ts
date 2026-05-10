@@ -1,14 +1,20 @@
 import { MastraCompositeStore } from "@mastra/core/storage";
 import { MemoryStorage } from "@mastra/core/storage";
 import { ObservabilityStorage } from "@mastra/core/storage";
+import { WorkflowsStorage } from "@mastra/core/storage";
 import type { MastraDBMessage, StorageThreadType } from "@mastra/core/memory";
+import type { StepResult, WorkflowRunState } from "@mastra/core/workflows";
 import type {
   StorageListMessagesByResourceIdInput,
   StorageListMessagesInput,
   StorageListMessagesOutput,
   StorageListThreadsInput,
   StorageListThreadsOutput,
+  StorageListWorkflowRunsInput,
   StorageResourceType,
+  UpdateWorkflowStateOptions,
+  WorkflowRun,
+  WorkflowRuns,
 } from "@mastra/core/storage";
 import type {
   BatchCreateSpansArgs,
@@ -100,6 +106,17 @@ type SpanRow = SpanRecord & {
   expires_at?: Date;
 };
 
+type WorkflowRunRow = {
+  id: RecordId;
+  workflow_name: string;
+  run_id: string;
+  resource_id?: string;
+  snapshot: WorkflowRunState | string;
+  status: string;
+  created_at: Date;
+  updated_at: Date;
+};
+
 function rid(table: string, id: string): RecordId {
   const normalized = id.replace(/[^a-zA-Z0-9_:-]/g, "_");
   return new RecordId(table, normalized);
@@ -180,6 +197,25 @@ function lightSpan(span: SpanRecord) {
   };
 }
 
+function cloneJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function parseWorkflowSnapshot(snapshot: WorkflowRunRow["snapshot"]): WorkflowRunState {
+  return typeof snapshot === "string" ? JSON.parse(snapshot) as WorkflowRunState : cloneJson(snapshot);
+}
+
+function toWorkflowRun(row: WorkflowRunRow): WorkflowRun {
+  return {
+    workflowName: row.workflow_name,
+    runId: row.run_id,
+    resourceId: row.resource_id,
+    snapshot: parseWorkflowSnapshot(row.snapshot),
+    createdAt: normalizeDate(row.created_at),
+    updatedAt: normalizeDate(row.updated_at),
+  };
+}
+
 function pagination(page = 0, perPage: number | false | undefined = 100, total = 0): {
   total: number;
   page: number;
@@ -194,6 +230,200 @@ function pagination(page = 0, perPage: number | false | undefined = 100, total =
     perPage: normalized,
     hasMore: normalized !== false && (page + 1) * size < total,
   };
+}
+
+export class SurrealWorkflowsStorage extends WorkflowsStorage {
+  supportsConcurrentUpdates(): boolean {
+    return false;
+  }
+
+  async dangerouslyClearAll(): Promise<void> {
+    await getLocalDb().query(`DELETE mastra_workflow_run;`);
+  }
+
+  async updateWorkflowResults({
+    workflowName,
+    runId,
+    stepId,
+    result,
+    requestContext,
+  }: {
+    workflowName: string;
+    runId: string;
+    stepId: string;
+    result: StepResult<any, any, any, any>;
+    requestContext: Record<string, any>;
+  }): Promise<Record<string, StepResult<any, any, any, any>>> {
+    const snapshot = await this.loadWorkflowSnapshot({ workflowName, runId });
+    if (!snapshot) return {};
+
+    const existingResult = snapshot.context[stepId];
+    if (
+      existingResult &&
+      "output" in existingResult &&
+      Array.isArray(existingResult.output) &&
+      result &&
+      typeof result === "object" &&
+      "output" in result &&
+      Array.isArray(result.output)
+    ) {
+      const mergedOutput = [...existingResult.output];
+      for (let i = 0; i < Math.max(existingResult.output.length, result.output.length); i += 1) {
+        if (i < result.output.length && result.output[i] !== null) mergedOutput[i] = result.output[i];
+      }
+      snapshot.context[stepId] = { ...existingResult, ...result, output: mergedOutput };
+    } else {
+      snapshot.context[stepId] = result;
+    }
+    snapshot.requestContext = { ...snapshot.requestContext, ...requestContext };
+    await this.persistWorkflowSnapshot({ workflowName, runId, snapshot, updatedAt: new Date() });
+    return cloneJson(snapshot.context as Record<string, StepResult<any, any, any, any>>);
+  }
+
+  async updateWorkflowState({
+    workflowName,
+    runId,
+    opts,
+  }: {
+    workflowName: string;
+    runId: string;
+    opts: UpdateWorkflowStateOptions;
+  }): Promise<WorkflowRunState | undefined> {
+    const snapshot = await this.loadWorkflowSnapshot({ workflowName, runId });
+    if (!snapshot) return undefined;
+    const next = { ...snapshot, ...opts };
+    await this.persistWorkflowSnapshot({ workflowName, runId, snapshot: next, updatedAt: new Date() });
+    return next;
+  }
+
+  async persistWorkflowSnapshot({
+    workflowName,
+    runId,
+    resourceId,
+    snapshot,
+    createdAt,
+    updatedAt,
+  }: {
+    workflowName: string;
+    runId: string;
+    resourceId?: string;
+    snapshot: WorkflowRunState;
+    createdAt?: Date;
+    updatedAt?: Date;
+  }): Promise<void> {
+    try {
+      const existing = await this.getWorkflowRunById({ workflowName, runId });
+      const now = new Date();
+      await getLocalDb().query(
+        `INSERT INTO mastra_workflow_run $content
+         ON DUPLICATE KEY UPDATE
+           resource_id = $input.resource_id,
+           snapshot = $input.snapshot,
+           status = $input.status,
+           updated_at = $input.updated_at`,
+        {
+          content: {
+            workflow_name: workflowName,
+            run_id: runId,
+            resource_id: resourceId,
+            snapshot,
+            status: snapshot.status,
+            created_at: createdAt ?? existing?.createdAt ?? now,
+            updated_at: updatedAt ?? now,
+          },
+        }
+      );
+    } catch (err) {
+      console.warn("[mastra] failed to persist workflow snapshot; degraded to in-memory workflow state:", err);
+    }
+  }
+
+  async loadWorkflowSnapshot({ workflowName, runId }: { workflowName: string; runId: string }): Promise<WorkflowRunState | null> {
+    try {
+      const rows = await getLocalDb().query<[WorkflowRunRow[]]>(
+        `SELECT * FROM mastra_workflow_run WHERE workflow_name = $workflowName AND run_id = $runId LIMIT 1`,
+        { workflowName, runId }
+      );
+      const row = rows[0]?.[0];
+      return row?.snapshot ? parseWorkflowSnapshot(row.snapshot) : null;
+    } catch (err) {
+      console.warn("[mastra] failed to load workflow snapshot; degraded to in-memory workflow state:", err);
+      return null;
+    }
+  }
+
+  async listWorkflowRuns(args: StorageListWorkflowRunsInput = {}): Promise<WorkflowRuns> {
+    if (args.page !== undefined && args.page < 0) throw new Error("page must be >= 0");
+    try {
+      const where = ["true"];
+      const params: Record<string, unknown> = {};
+
+      if (args.workflowName) {
+        where.push("workflow_name = $workflowName");
+        params.workflowName = args.workflowName;
+      }
+      if (args.fromDate) {
+        where.push("created_at >= $fromDate");
+        params.fromDate = args.fromDate;
+      }
+      if (args.toDate) {
+        where.push("created_at <= $toDate");
+        params.toDate = args.toDate;
+      }
+      if (args.resourceId) {
+        where.push("resource_id = $resourceId");
+        params.resourceId = args.resourceId;
+      }
+      if (args.status) {
+        where.push("status = $status");
+        params.status = args.status;
+      }
+
+      const usePagination = args.perPage !== undefined && args.page !== undefined;
+      const perPage = args.perPage === false ? Number.MAX_SAFE_INTEGER : args.perPage;
+      let query = `SELECT * FROM mastra_workflow_run WHERE ${where.join(" AND ")} ORDER BY created_at DESC`;
+      if (usePagination) {
+        params.start = args.page! * perPage!;
+        params.limit = perPage;
+        query += ` START $start LIMIT $limit`;
+      }
+      query += `;
+       SELECT count() AS total FROM mastra_workflow_run WHERE ${where.join(" AND ")} GROUP ALL;`;
+
+      const rows = await getLocalDb().query<[WorkflowRunRow[], { total?: number }[]]>(query, params);
+      const runs = (rows[0] ?? []).map(toWorkflowRun);
+      return { runs, total: rows[1]?.[0]?.total ?? runs.length };
+    } catch (err) {
+      console.warn("[mastra] failed to list workflow runs; degraded to in-memory workflow state:", err);
+      return { runs: [], total: 0 };
+    }
+  }
+
+  async getWorkflowRunById({ runId, workflowName }: { runId: string; workflowName?: string }): Promise<WorkflowRun | null> {
+    try {
+      const where = workflowName ? "workflow_name = $workflowName AND run_id = $runId" : "run_id = $runId";
+      const rows = await getLocalDb().query<[WorkflowRunRow[]]>(
+        `SELECT * FROM mastra_workflow_run WHERE ${where} LIMIT 1`,
+        { workflowName, runId }
+      );
+      const row = rows[0]?.[0];
+      return row ? toWorkflowRun(row) : null;
+    } catch (err) {
+      console.warn("[mastra] failed to get workflow run; degraded to in-memory workflow state:", err);
+      return null;
+    }
+  }
+
+  async deleteWorkflowRunById({ workflowName, runId }: { workflowName: string; runId: string }): Promise<void> {
+    try {
+      await getLocalDb().query(
+        `DELETE mastra_workflow_run WHERE workflow_name = $workflowName AND run_id = $runId`,
+        { workflowName, runId }
+      );
+    } catch (err) {
+      console.warn("[mastra] failed to delete workflow run; degraded to in-memory workflow state:", err);
+    }
+  }
 }
 
 export class SurrealMemoryStorage extends MemoryStorage {
@@ -657,6 +887,7 @@ export class SurrealObservabilityStorage extends ObservabilityStorage {
 export class SurrealMastraStore extends MastraCompositeStore {
   stores = {
     memory: new SurrealMemoryStorage(),
+    workflows: new SurrealWorkflowsStorage(),
     observability: new SurrealObservabilityStorage(),
   };
 

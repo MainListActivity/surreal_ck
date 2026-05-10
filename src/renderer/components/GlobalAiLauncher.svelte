@@ -6,6 +6,7 @@
   import { appState } from "../lib/app-state.svelte";
   import { editorStore } from "../lib/editor.svelte";
   import { subscribeAiChunks } from "../lib/rpc";
+  import { applyAiChunkToMessages, type PendingIntent } from "./global-ai-stream";
   import Icon from "./Icon.svelte";
 
   marked.setOptions({ breaks: true });
@@ -14,7 +15,7 @@
     return marked.parse(text) as string;
   }
   import type { AiChatMessage } from "../../shared/ai-context";
-  import type { AiToolCallRecord, AppNavigationIntent, ToolNavigationIntent } from "../../shared/rpc.types";
+  import type { AppNavigationIntent, ToolNavigationIntent } from "../../shared/rpc.types";
   import type { Navigate, RouteState, ScreenId } from "../lib/types";
 
   let {
@@ -25,27 +26,11 @@
     navigate: Navigate;
   } = $props();
 
-  type PendingIntent = {
-    messageId: string;
-    intent: ToolNavigationIntent;
-    dismissed: boolean;
-  };
-
   let prompt = $state("");
   let messages = $state<AiChatMessage[]>([]);
   let sending = $state(false);
   let sendError = $state<string | null>(null);
   let pendingIntents = $state<PendingIntent[]>([]);
-
-  function extractNavigationIntent(toolCalls: AiToolCallRecord[]): ToolNavigationIntent | null {
-    const navTools = ["navigateTool", "searchWorkbookTool", "searchDashboardTool", "searchRecordTool"];
-    for (const tc of toolCalls) {
-      if (!navTools.includes(tc.toolName)) continue;
-      const result = tc.result as { intent?: ToolNavigationIntent } | undefined;
-      if (result?.intent) return result.intent;
-    }
-    return null;
-  }
 
   function navigateFromAiAction(action: AppNavigationIntent) {
     navigate(action.screen as ScreenId, {
@@ -116,19 +101,6 @@
     return labels[screen] ?? "应用";
   }
 
-  function patchMessage(id: string, patch: Partial<AiChatMessage>) {
-    messages = messages.map((m) => (m.id === id ? { ...m, ...patch } : m));
-  }
-
-  function replaceOrAppendAssistantMessage(placeholderId: string, message: AiChatMessage) {
-    const found = messages.some((m) => m.id === placeholderId);
-    if (found) {
-      patchMessage(placeholderId, message);
-    } else {
-      messages = [...messages, message];
-    }
-  }
-
   async function sendPrompt() {
     const message = createAiUserMessage({ prompt, context: contextSnapshot });
     if (!message) return;
@@ -151,23 +123,17 @@
     let streamedText = "";
 
     const unsubscribe = subscribeAiChunks(streamId, (event) => {
-      if (event.type === "delta") {
-        streamedText += event.text;
-        const current = messages.find((m) => m.id === placeholderId);
-        if (!current) return;
-        patchMessage(placeholderId, { content: current.content + event.text });
-      } else if (event.type === "error") {
-        sendError = event.message;
-        sending = false;
-        unsubscribe();
-      } else if (event.type === "done") {
-        const finalMessageId = event.message.id;
-        replaceOrAppendAssistantMessage(placeholderId, event.message);
-        const intent = extractNavigationIntent(event.toolCalls ?? []);
-        if (intent) {
-          pendingIntents = [...pendingIntents, { messageId: finalMessageId, intent, dismissed: false }];
-        }
-        sending = false;
+      const next = applyAiChunkToMessages(
+        { messages, pendingIntents, sending, sendError, streamedText },
+        placeholderId,
+        event,
+      );
+      messages = next.messages;
+      pendingIntents = next.pendingIntents;
+      sending = next.sending;
+      sendError = next.sendError;
+      streamedText = next.streamedText;
+      if (event.type === "error" || event.type === "done") {
         unsubscribe();
       }
     });
@@ -175,15 +141,31 @@
     try {
       const res = await appApi.sendAiMessage(message, streamId, history);
       if (res.ok && res.data.message.content) {
-        replaceOrAppendAssistantMessage(placeholderId, {
-          id: res.data.message.id,
-          content: res.data.message.content,
-          role: res.data.message.role,
-          createdAt: res.data.message.createdAt,
-          context: res.data.message.context,
-        });
+        const next = applyAiChunkToMessages(
+          { messages, pendingIntents, sending, sendError, streamedText },
+          placeholderId,
+          {
+            streamId,
+            type: "done",
+            toolCalls: res.data.toolCalls,
+            message: {
+              id: res.data.message.id,
+              content: res.data.message.content,
+              role: res.data.message.role,
+              createdAt: res.data.message.createdAt,
+              context: res.data.message.context,
+            },
+          },
+        );
+        messages = next.messages;
+        pendingIntents = next.pendingIntents;
+        sending = next.sending;
+        sendError = next.sendError;
+        streamedText = next.streamedText;
       } else if (!res.ok && streamedText) {
-        patchMessage(placeholderId, { content: streamedText });
+        messages = messages.map((m) =>
+          m.id === placeholderId ? { ...m, content: streamedText } : m,
+        );
         sendError = res.message;
         sending = false;
         unsubscribe();
@@ -192,6 +174,8 @@
         messages = messages.filter((m) => m.id !== placeholderId);
         sending = false;
         unsubscribe();
+      } else if (!streamedText && !sending) {
+        messages = messages.filter((m) => m.id !== placeholderId || m.content);
       }
     } catch (err) {
       sendError = err instanceof Error ? err.message : String(err);

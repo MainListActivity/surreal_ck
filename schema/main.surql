@@ -557,6 +557,24 @@ DEFINE INDEX IF NOT EXISTS mastra_memory_message_thread ON TABLE mastra_memory_m
 DEFINE INDEX IF NOT EXISTS mastra_memory_message_resource ON TABLE mastra_memory_message COLUMNS resource_id, created_at;
 
 -- ═══════════════════════════════════════════════════════════════════════════════
+-- MASTRA WORKFLOWS
+-- Router workflow 运行快照持久化，用于 workflow 暂停态跨进程恢复。
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+DEFINE TABLE IF NOT EXISTS mastra_workflow_run SCHEMAFULL
+  PERMISSIONS FULL;
+DEFINE FIELD IF NOT EXISTS workflow_name ON TABLE mastra_workflow_run TYPE string;
+DEFINE FIELD IF NOT EXISTS run_id        ON TABLE mastra_workflow_run TYPE string;
+DEFINE FIELD IF NOT EXISTS resource_id   ON TABLE mastra_workflow_run TYPE option<string>;
+DEFINE FIELD OVERWRITE snapshot      ON TABLE mastra_workflow_run TYPE object FLEXIBLE;
+DEFINE FIELD IF NOT EXISTS status        ON TABLE mastra_workflow_run TYPE string;
+DEFINE FIELD IF NOT EXISTS created_at    ON TABLE mastra_workflow_run TYPE datetime VALUE time::now();
+DEFINE FIELD IF NOT EXISTS updated_at    ON TABLE mastra_workflow_run TYPE datetime VALUE time::now();
+DEFINE INDEX IF NOT EXISTS mastra_workflow_run_unique ON TABLE mastra_workflow_run COLUMNS workflow_name, run_id UNIQUE;
+DEFINE INDEX IF NOT EXISTS mastra_workflow_run_workflow ON TABLE mastra_workflow_run COLUMNS workflow_name, created_at;
+DEFINE INDEX IF NOT EXISTS mastra_workflow_run_resource ON TABLE mastra_workflow_run COLUMNS resource_id, created_at;
+
+-- ═══════════════════════════════════════════════════════════════════════════════
 -- MASTRA OBSERVABILITY
 -- Trace/span 优先。默认写入 expires_at = now + app_setting observability.retention.days（默认 30）。
 -- DDL event 在写入时顺手清理过期记录；不是 memory TTL。
