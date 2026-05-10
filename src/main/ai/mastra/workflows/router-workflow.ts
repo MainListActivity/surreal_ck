@@ -160,6 +160,25 @@ const RouterStepResultSchema = z.object({
 
 const RouterPlanItemSchema = z.object({ category: RouterCategoryEnum, taskText: z.string() });
 
+const AiContextSnapshotStateSchema = z.object({
+  route: z.object({
+    screen: z.string(),
+    dashboardPageId: z.string().optional(),
+    workbookId: z.string().optional(),
+    sheetId: z.string().optional(),
+    folderId: z.string().optional(),
+    templateKey: z.string().optional(),
+  }),
+  workbook: z.object({ id: z.string(), name: z.string() }).nullable(),
+  sheet: z.object({ id: z.string(), label: z.string(), tableName: z.string() }).nullable(),
+  selectedRow: z.object({
+    id: z.string(),
+    label: z.string(),
+    visibleValues: z.record(z.string(), z.unknown()),
+  }).nullable(),
+  contextHint: z.string(),
+});
+
 const SharedConfirmedSchema = z.object({
   resolvedRecord: ResolvedRecordSchema.optional(),
   schemaSummary: z
@@ -176,6 +195,7 @@ const RouterStateSchema = z.object({
   confirmed: SharedConfirmedSchema.default({}),
   steps: z.array(RouterStepResultSchema).default([]),
   cancelled: z.boolean().default(false),
+  userContext: AiContextSnapshotStateSchema.optional(),
 });
 /** 运行时已被 schema default 兜底的状态形状（去除可选）。 */
 type RouterState = {
@@ -184,6 +204,7 @@ type RouterState = {
   confirmed: SharedConfirmed;
   steps: RouterStepResult[];
   cancelled: boolean;
+  userContext?: AiContextSnapshot;
 };
 
 const RouterWorkflowInputSchema = z.object({
@@ -264,6 +285,7 @@ export function createRouterWorkflow() {
         confirmed: {},
         steps: [],
         cancelled: false,
+        userContext: runtime.userContext,
       });
       return { plan };
     },
@@ -342,6 +364,7 @@ export function createRouterWorkflow() {
       });
 
       const executor = runtime.executors[planItem.category];
+      const userContext = state.userContext ?? runtime.userContext;
       const onDelta = (d: string) => {
         if (!d) return;
         runtime.pushChunk?.({ streamId: runtime.streamId, type: "delta", text: d });
@@ -350,7 +373,7 @@ export function createRouterWorkflow() {
       const out = await executor({
         taskText: planItem.taskText,
         shared: {
-          userContext: runtime.userContext,
+          userContext,
           confirmed: state.confirmed,
         },
         onDelta,
@@ -366,6 +389,14 @@ export function createRouterWorkflow() {
       }
 
       if (out.suspend) {
+        const confirmedAtSuspend: SharedConfirmed = { ...state.confirmed };
+        mergeConfirmed(confirmedAtSuspend, out.confirmed);
+        await setState({
+          ...state,
+          confirmed: confirmedAtSuspend,
+          userContext,
+        });
+
         if (out.suspend.kind === "ambiguous") {
           const all = out.suspend.candidates;
           const exposed = all.slice(0, AMBIGUOUS_CANDIDATES_LIMIT);
@@ -396,6 +427,7 @@ export function createRouterWorkflow() {
       await setState({
         ...state,
         confirmed: merged,
+        userContext,
         steps: [
           ...state.steps,
           { category: planItem.category, taskText: planItem.taskText, text: out.text },
@@ -416,6 +448,7 @@ export function createRouterWorkflow() {
       const { requestContext } = ctx;
       const state = ctx.state as RouterState;
       const runtime = getRuntime(requestContext);
+      const userContext = state.userContext ?? runtime.userContext;
       const finalText = state.steps.map((s) => s.text).filter(Boolean).join("\n\n");
       runtime.pushChunk?.({
         streamId: runtime.streamId,
@@ -425,7 +458,7 @@ export function createRouterWorkflow() {
           role: "assistant" as const,
           content: finalText || "我没有生成有效回复。",
           createdAt: new Date().toISOString(),
-          context: runtime.userContext,
+          context: userContext,
         },
         toolCalls: runtime.toolCalls ?? [],
       });

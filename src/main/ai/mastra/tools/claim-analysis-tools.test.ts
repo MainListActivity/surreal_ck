@@ -25,7 +25,13 @@ describe("analyzeClaimRow tool", () => {
       intent: {
         type: "row-patch-proposal";
         recordId: string;
-        proposals: Array<{ field: string; currentValue: unknown; suggestedValue: unknown }>;
+        proposals: Array<{
+          field: string;
+          currentValue: unknown;
+          suggestedValue: unknown;
+          basis: string;
+          confidence: "high" | "medium" | "low";
+        }>;
       };
     }>;
 

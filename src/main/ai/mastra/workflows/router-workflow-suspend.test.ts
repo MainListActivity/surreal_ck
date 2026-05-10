@@ -340,4 +340,49 @@ describe("router workflow suspend & resume", () => {
     expect(r2.status).toBe("success");
     expect(seen).toEqual([{ resolvedRecord: { id: "claim:abc", label: "张三 / ZQ-1" } }]);
   });
+
+  test("跨进程 resume 后继续使用暂停前持久化的用户上下文", async () => {
+    const originalContext: AiContextSnapshot = {
+      route: { screen: "editor", workbookId: "workbook:demo", sheetId: "sheet:claims" },
+      workbook: { id: "workbook:demo", name: "债权工作簿" },
+      sheet: { id: "sheet:claims", label: "债权申报表", tableName: "ent_claim" },
+      selectedRow: { id: "ent_claim:abc", label: "张三 / ZQ-1", visibleValues: { name: "张三" } },
+      contextHint: "债权申报表 / 张三 / ZQ-1",
+    };
+    const llm: RouterLlmCaller = async () =>
+      `[{"category":"navigation","taskText":"a"},{"category":"dashboard","taskText":"b"}]`;
+    const seenContexts: AiContextSnapshot[] = [];
+    const executors: SubAgentExecutors = {
+      navigation: async () => ({
+        text: "",
+        confirmed: {},
+        suspend: { kind: "ambiguous", candidates: [{ id: "claim:abc", label: "张三 / ZQ-1" }] },
+      }),
+      dashboard: async ({ shared }) => {
+        seenContexts.push(shared.userContext);
+        return { text: "ok", confirmed: {} };
+      },
+      "claim-analysis": async () => ({ text: "", confirmed: {} }),
+      chitchat: async () => ({ text: "", confirmed: {} }),
+    };
+
+    const mastraA = buildMastra();
+    const runA = await mastraA.getWorkflow(ROUTER_WORKFLOW_ID).createRun();
+    const rcA = new RequestContext();
+    rcA.set(ROUTER_RUNTIME_KEY, makeRuntime({ executors, llmCaller: llm, userContext: originalContext }));
+    const r1 = await runA.start({ inputData: { text: "..." }, requestContext: rcA });
+    expect(r1.status).toBe("suspended");
+
+    const mastraB = buildMastra();
+    const runB = await mastraB.getWorkflow(ROUTER_WORKFLOW_ID).createRun({ runId: runA.runId });
+    const rcB = new RequestContext();
+    rcB.set(ROUTER_RUNTIME_KEY, makeRuntime({ executors, llmCaller: llm, runId: runA.runId, userContext: emptyContext }));
+    const r2 = await runB.resume({
+      resumeData: { decision: { kind: "candidate-chosen", candidateId: "claim:abc" } },
+      requestContext: rcB,
+    });
+
+    expect(r2.status).toBe("success");
+    expect(seenContexts).toEqual([originalContext]);
+  });
 });

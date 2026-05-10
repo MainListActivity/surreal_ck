@@ -21,6 +21,7 @@ import { runRouterChat } from "../ai/mastra/workflows/router-chat";
 import type { SubAgentExecutors } from "../ai/mastra/workflows/router-workflow";
 import { makeAgentExecutor } from "../ai/mastra/workflows/agent-executor";
 import type { RouterLlmCaller } from "../ai/mastra/workflows/router-classifier";
+import { recordAiToolCall } from "./audit";
 
 export type AiChunkSender = (event: AiMessageChunkEvent) => void;
 export type AiSuspendSender = (event: WorkflowSuspendedEvent) => void;
@@ -77,6 +78,7 @@ export async function sendAiMessage(
   const onToolCall = (call: AiToolCallRecord) => {
     collectedToolCalls.push(call);
     pushProgress?.({ kind: "tool-call", runId, toolId: call.toolName });
+    void recordAiToolCall({ sessionId: runId, ...call });
   };
 
   const executors: SubAgentExecutors = {

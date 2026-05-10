@@ -1,5 +1,5 @@
 import { Electroview } from "electrobun/view";
-import type { AiMessageChunkEvent, AiProgressEvent, AppRPC } from "../../shared/rpc.types";
+import type { AiMessageChunkEvent, AiProgressEvent, AppRPC, WorkflowSuspendedEvent } from "../../shared/rpc.types";
 import { applyAuthState } from "./auth.svelte";
 
 let _rows: ((rows: { id: string; name: string; value: string }[]) => void) | null = null;
@@ -10,6 +10,7 @@ export function onPushRows(cb: (rows: { id: string; name: string; value: string 
 
 const aiChunkSubscribers = new Map<string, (event: AiMessageChunkEvent) => void>();
 const aiProgressSubscribers = new Map<string, (event: AiProgressEvent) => void>();
+const aiSuspendedSubscribers = new Map<string, (event: WorkflowSuspendedEvent) => void>();
 
 /** 订阅指定 streamId 的 AI 流式增量；返回取消订阅函数。 */
 export function subscribeAiChunks(
@@ -33,6 +34,17 @@ export function subscribeAiProgress(
   };
 }
 
+/** 订阅指定 runId 的 workflow 暂停事件（ambiguous / await-write-confirm）。 */
+export function subscribeAiSuspended(
+  runId: string,
+  handler: (event: WorkflowSuspendedEvent) => void,
+): () => void {
+  aiSuspendedSubscribers.set(runId, handler);
+  return () => {
+    aiSuspendedSubscribers.delete(runId);
+  };
+}
+
 export const rpc = Electroview.defineRPC<AppRPC>({
   handlers: {
     requests: {},
@@ -49,7 +61,9 @@ export const rpc = Electroview.defineRPC<AppRPC>({
       aiProgress: (event) => {
         aiProgressSubscribers.get(event.runId)?.(event);
       },
-      aiSuspended: () => {},
+      aiSuspended: (event) => {
+        aiSuspendedSubscribers.get(event.runId)?.(event);
+      },
     },
   },
 });

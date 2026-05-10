@@ -436,34 +436,43 @@ export class SurrealMemoryStorage extends MemoryStorage {
   }
 
   async getThreadById({ threadId }: { threadId: string }): Promise<StorageThreadType | null> {
-    const rows = await getLocalDb().query<[ThreadRow[]]>(
-      `SELECT * FROM mastra_memory_thread WHERE thread_id = $threadId LIMIT 1`,
-      { threadId }
-    );
-    const row = rows[0]?.[0];
-    return row ? toThread(row) : null;
+    try {
+      const rows = await getLocalDb().query<[ThreadRow[]]>(
+        `SELECT * FROM mastra_memory_thread WHERE thread_id = $threadId LIMIT 1`,
+        { threadId }
+      );
+      const row = rows[0]?.[0];
+      return row ? toThread(row) : null;
+    } catch (err) {
+      console.warn("[mastra] failed to load memory thread; skipped persisted history:", err);
+      return null;
+    }
   }
 
   async saveThread({ thread }: { thread: StorageThreadType }): Promise<StorageThreadType> {
-    await getLocalDb().query(
-      `UPSERT $id CONTENT {
-        thread_id: $threadId,
-        resource_id: $resourceId,
-        title: $title,
-        metadata: $metadata,
-        created_at: $createdAt,
-        updated_at: $updatedAt
-      }`,
-      {
-        id: rid("mastra_memory_thread", thread.id),
-        threadId: thread.id,
-        resourceId: thread.resourceId,
-        title: thread.title ?? null,
-        metadata: thread.metadata ?? {},
-        createdAt: thread.createdAt ?? new Date(),
-        updatedAt: thread.updatedAt ?? new Date(),
-      }
-    );
+    try {
+      await getLocalDb().query(
+        `UPSERT $id CONTENT {
+          thread_id: $threadId,
+          resource_id: $resourceId,
+          title: $title,
+          metadata: $metadata,
+          created_at: $createdAt,
+          updated_at: $updatedAt
+        }`,
+        {
+          id: rid("mastra_memory_thread", thread.id),
+          threadId: thread.id,
+          resourceId: thread.resourceId,
+          title: thread.title ?? null,
+          metadata: thread.metadata ?? {},
+          createdAt: thread.createdAt ?? new Date(),
+          updatedAt: thread.updatedAt ?? new Date(),
+        }
+      );
+    } catch (err) {
+      console.warn("[mastra] failed to save memory thread; skipped persisted history:", err);
+    }
     return thread;
   }
 
@@ -538,51 +547,65 @@ export class SurrealMemoryStorage extends MemoryStorage {
       params.endDate = args.filter.dateRange.end;
     }
 
-    const rows = await getLocalDb().query<[MessageRow[], { total?: number }[]]>(
-      `SELECT * FROM mastra_memory_message
-       WHERE ${where.join(" AND ")}
-       ORDER BY created_at ${direction}
-       START $start LIMIT $limit;
-       SELECT count() AS total FROM mastra_memory_message WHERE ${where.join(" AND ")} GROUP ALL;`,
-      params
-    );
-    const messages = (rows[0] ?? []).map(toMessage);
-    const total = rows[1]?.[0]?.total ?? messages.length;
-    return { messages, ...pagination(page, perPage, total) };
+    try {
+      const rows = await getLocalDb().query<[MessageRow[], { total?: number }[]]>(
+        `SELECT * FROM mastra_memory_message
+         WHERE ${where.join(" AND ")}
+         ORDER BY created_at ${direction}
+         START $start LIMIT $limit;
+         SELECT count() AS total FROM mastra_memory_message WHERE ${where.join(" AND ")} GROUP ALL;`,
+        params
+      );
+      const messages = (rows[0] ?? []).map(toMessage);
+      const total = rows[1]?.[0]?.total ?? messages.length;
+      return { messages, ...pagination(page, perPage, total) };
+    } catch (err) {
+      console.warn("[mastra] failed to list memory messages; skipped persisted history:", err);
+      return { messages: [], ...pagination(page, perPage, 0) };
+    }
   }
 
   async listMessagesById({ messageIds }: { messageIds: string[] }): Promise<{ messages: MastraDBMessage[] }> {
-    const rows = await getLocalDb().query<[MessageRow[]]>(
-      `SELECT * FROM mastra_memory_message WHERE message_id IN $messageIds ORDER BY created_at ASC`,
-      { messageIds }
-    );
-    return { messages: (rows[0] ?? []).map(toMessage) };
+    try {
+      const rows = await getLocalDb().query<[MessageRow[]]>(
+        `SELECT * FROM mastra_memory_message WHERE message_id IN $messageIds ORDER BY created_at ASC`,
+        { messageIds }
+      );
+      return { messages: (rows[0] ?? []).map(toMessage) };
+    } catch (err) {
+      console.warn("[mastra] failed to list memory messages by id; skipped persisted history:", err);
+      return { messages: [] };
+    }
   }
 
   async saveMessages(args: { messages: MastraDBMessage[] }): Promise<{ messages: MastraDBMessage[] }> {
     for (const message of args.messages) {
-      await getLocalDb().query(
-        `UPSERT $id CONTENT {
-          message_id: $messageId,
-          thread_id: $threadId,
-          resource_id: $resourceId,
-          role: $role,
-          type: $type,
-          content: $content,
-          created_at: $createdAt,
-          updated_at: time::now()
-        }`,
-        {
-          id: rid("mastra_memory_message", message.id),
-          messageId: message.id,
-          threadId: message.threadId ?? "",
-          resourceId: message.resourceId ?? null,
-          role: (message as { role?: string }).role ?? "user",
-          type: (message as { type?: string }).type ?? "text",
-          content: message,
-          createdAt: message.createdAt ?? new Date(),
-        }
-      );
+      try {
+        await getLocalDb().query(
+          `UPSERT $id CONTENT {
+            message_id: $messageId,
+            thread_id: $threadId,
+            resource_id: $resourceId,
+            role: $role,
+            type: $type,
+            content: $content,
+            created_at: $createdAt,
+            updated_at: time::now()
+          }`,
+          {
+            id: rid("mastra_memory_message", message.id),
+            messageId: message.id,
+            threadId: message.threadId ?? "",
+            resourceId: message.resourceId ?? null,
+            role: (message as { role?: string }).role ?? "user",
+            type: (message as { type?: string }).type ?? "text",
+            content: message,
+            createdAt: message.createdAt ?? new Date(),
+          }
+        );
+      } catch (err) {
+        console.warn("[mastra] failed to save memory message; skipped persisted history:", err);
+      }
     }
     return { messages: args.messages };
   }

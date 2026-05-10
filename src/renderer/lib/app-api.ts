@@ -39,6 +39,8 @@ import type {
   SaveSettingsResponse,
   SearchReferenceCandidatesResponse,
   SendAiMessageResponse,
+  ResumeAiWorkflowResponse,
+  ResumeDecision,
   AiStructuredIntent,
   ToolNavigationIntent,
   UpdateSheetFieldsResponse,
@@ -79,8 +81,15 @@ export const appApi = {
     return rpc.request("sendAiMessage", { message, streamId, history });
   },
 
-  executeAiAction(intent: ToolNavigationIntent | AiStructuredIntent): Promise<Result<ExecuteAiActionResponse>> {
-    return rpc.request("executeAiAction", { intent });
+  resumeAiWorkflow(runId: string, decision: ResumeDecision): Promise<Result<ResumeAiWorkflowResponse>> {
+    return rpc.request("resumeAiWorkflow", { runId, decision });
+  },
+
+  executeAiAction(
+    intent: ToolNavigationIntent | AiStructuredIntent,
+    options?: { runId?: string; workflowName?: string },
+  ): Promise<Result<ExecuteAiActionResponse>> {
+    return rpc.request("executeAiAction", { intent, ...options });
   },
 
   listWorkbooks(

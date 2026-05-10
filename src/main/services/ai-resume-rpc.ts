@@ -4,6 +4,7 @@ import type {
   ResumeAiWorkflowRequest,
   ResumeAiWorkflowResponse,
   WorkflowSuspendedEvent,
+  AiToolCallRecord,
 } from "../../shared/rpc.types";
 import { initMastraForCurrentUser } from "../ai/index";
 import {
@@ -27,6 +28,7 @@ import type { SubAgentExecutors } from "../ai/mastra/workflows/router-workflow";
 import { ROUTER_WORKFLOW_ID } from "../ai/mastra/workflows/router-workflow";
 import { resumeAiWorkflow } from "./ai-resume";
 import { makeRouterLlmCaller } from "./ai-chat";
+import { recordAiToolCall } from "./audit";
 import { assertAuthenticated } from "./context";
 import { getAiSettings } from "./settings";
 
@@ -61,12 +63,16 @@ export async function resumeAiWorkflowFromRpc(
   const dashboardAgent = mastra.getAgent(DASHBOARD_AGENT_ID);
   const claimAnalysisAgent = mastra.getAgent(CLAIM_ANALYSIS_AGENT_ID);
   const chitchatAgent = mastra.getAgent(CHITCHAT_AGENT_ID);
+  const onToolCall = (call: AiToolCallRecord) => {
+    senders.pushProgress?.({ kind: "tool-call", runId: req.runId, toolId: call.toolName });
+    void recordAiToolCall({ sessionId: req.runId, ...call });
+  };
 
   const executors: SubAgentExecutors = {
-    navigation: makeAgentExecutor(navigationAgent),
-    dashboard: makeAgentExecutor(dashboardAgent),
-    "claim-analysis": makeAgentExecutor(claimAnalysisAgent),
-    chitchat: makeAgentExecutor(chitchatAgent),
+    navigation: makeAgentExecutor(navigationAgent, { onToolCall }),
+    dashboard: makeAgentExecutor(dashboardAgent, { onToolCall }),
+    "claim-analysis": makeAgentExecutor(claimAnalysisAgent, { onToolCall }),
+    chitchat: makeAgentExecutor(chitchatAgent, { onToolCall }),
   };
 
   // resume 时无完整 userContext 快照（已经写进 storage 的 state 里），用空快照占位

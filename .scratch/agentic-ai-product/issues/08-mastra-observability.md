@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 Label: ready-for-agent
 
 # AI-008 — Mastra 可观测性：存储 + tool call 日志
@@ -25,11 +25,11 @@ Label: ready-for-agent
 
 ## Acceptance criteria
 
-- [ ] `surreal-store.ts` 实现 Mastra storage 接口，thread 和 message 写入 SurrealDB
-- [ ] 重启应用后，对话历史可从 SurrealDB 恢复（Mastra 内部消费，不需要 UI 展示）
-- [ ] 每次 tool 调用在 audit 表中产生一条记录（tool 名称、意图类型、时间戳）
-- [ ] audit 记录不包含 API key 或完整 prompt 文本
-- [ ] 存储失败不阻断正常 AI 对话流程（降级：跳过写入，打印日志）
+- [x] `surreal-store.ts` 实现 Mastra storage 接口，thread 和 message 写入 SurrealDB
+- [x] 重启应用后，对话历史可从 SurrealDB 恢复（Mastra 内部消费，不需要 UI 展示）
+- [x] 每次 tool 调用在 audit 表中产生一条记录（tool 名称、意图类型、时间戳）
+- [x] audit 记录不包含 API key 或完整 prompt 文本
+- [x] 存储失败不阻断正常 AI 对话流程（降级：跳过写入，打印日志）
 
 ## Blocked by
 

@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import type { AiChatMessage } from "../../shared/ai-context";
-import { applyAiChunkToMessages, buildRowPatchIntentFromProposal, type AiStreamState } from "./global-ai-stream";
+import {
+  applyAiChunkToMessages,
+  applyAiSuspendedToMessages,
+  buildRowPatchIntentFromProposal,
+  type AiStreamState,
+} from "./global-ai-stream";
 
 function baseState(messages: AiChatMessage[]): AiStreamState {
   return {
@@ -148,6 +153,36 @@ describe("applyAiChunkToMessages", () => {
     expect(next.pendingIntents).toHaveLength(1);
     expect(next.pendingIntents[0].messageId).toBe("assistant-claim");
     expect(next.pendingIntents[0].intent.type).toBe("row-patch-proposal");
+  });
+});
+
+describe("applyAiSuspendedToMessages", () => {
+  test("ambiguous 暂停事件加入待选择意图并结束发送态", () => {
+    const placeholder: AiChatMessage = {
+      id: "placeholder",
+      role: "assistant",
+      content: "",
+      createdAt: "2026-05-10T00:00:00.000Z",
+      context: { route: { screen: "editor" } },
+    };
+
+    const next = applyAiSuspendedToMessages(baseState([placeholder]), "placeholder", {
+      kind: "ambiguous-candidates",
+      runId: "run-1",
+      candidates: [{ id: "ent_claim:abc", label: "张三 / ZQ-1" }],
+    });
+
+    expect(next.sending).toBe(false);
+    expect(next.messages[0].content).toBe("找到多个候选，请先选择一个结果。");
+    expect(next.pendingIntents).toEqual([
+      {
+        messageId: "placeholder",
+        intent: { type: "ambiguous", candidates: [{ id: "ent_claim:abc", label: "张三 / ZQ-1" }] },
+        dismissed: false,
+        runId: "run-1",
+        suspendKind: "ambiguous-candidates",
+      },
+    ]);
   });
 });
 

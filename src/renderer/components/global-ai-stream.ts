@@ -7,12 +7,15 @@ import type {
   RowPatchIntent,
   RowPatchProposal,
   ToolNavigationIntent,
+  WorkflowSuspendedEvent,
 } from "../../shared/rpc.types";
 
 export type PendingIntent = {
   messageId: string;
   intent: ToolNavigationIntent | DashboardDraftIntent | RowPatchProposal;
   dismissed: boolean;
+  runId?: string;
+  suspendKind?: WorkflowSuspendedEvent["kind"];
 };
 
 export type AiStreamState = {
@@ -117,4 +120,56 @@ export function applyAiChunkToMessages(
       ? [...state.pendingIntents, { messageId: finalMessageId, intent, dismissed: false }]
       : state.pendingIntents,
   };
+}
+
+export function applyAiSuspendedToMessages(
+  state: AiStreamState,
+  placeholderId: string,
+  event: WorkflowSuspendedEvent,
+): AiStreamState {
+  const intent = intentFromSuspendedEvent(event);
+  const fallback = event.kind === "ambiguous-candidates"
+    ? "找到多个候选，请先选择一个结果。"
+    : "已准备好待确认操作，请确认后继续。";
+
+  return {
+    ...state,
+    sending: false,
+    messages: state.messages.map((m) =>
+      m.id === placeholderId && !m.content.trim() ? { ...m, content: fallback } : m,
+    ),
+    pendingIntents: intent
+      ? [
+          ...state.pendingIntents,
+          {
+            messageId: placeholderId,
+            intent,
+            dismissed: false,
+            runId: event.runId,
+            suspendKind: event.kind,
+          },
+        ]
+      : state.pendingIntents,
+  };
+}
+
+function intentFromSuspendedEvent(
+  event: WorkflowSuspendedEvent,
+): ToolNavigationIntent | DashboardDraftIntent | RowPatchProposal | null {
+  if (event.kind === "ambiguous-candidates") {
+    return { type: "ambiguous", candidates: event.candidates };
+  }
+  if (event.intent.type === "dashboard-draft" || event.intent.type === "row-patch-proposal") {
+    return event.intent;
+  }
+  if (
+    event.intent.type === "navigate"
+    || event.intent.type === "open-workbook"
+    || event.intent.type === "open-dashboard"
+    || event.intent.type === "open-record"
+    || event.intent.type === "ambiguous"
+  ) {
+    return event.intent;
+  }
+  return null;
 }

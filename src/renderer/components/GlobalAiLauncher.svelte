@@ -5,8 +5,13 @@
   import { appApi } from "../lib/app-api";
   import { appState } from "../lib/app-state.svelte";
   import { editorStore } from "../lib/editor.svelte";
-  import { subscribeAiChunks, subscribeAiProgress } from "../lib/rpc";
-  import { applyAiChunkToMessages, buildRowPatchIntentFromProposal, type PendingIntent } from "./global-ai-stream";
+  import { subscribeAiChunks, subscribeAiProgress, subscribeAiSuspended } from "../lib/rpc";
+  import {
+    applyAiChunkToMessages,
+    applyAiSuspendedToMessages,
+    buildRowPatchIntentFromProposal,
+    type PendingIntent,
+  } from "./global-ai-stream";
   import { progressEventToHint } from "./ai-progress-label";
   import { getDashboardWidget } from "../features/dashboard/registries/widgets";
   import Icon from "./Icon.svelte";
@@ -22,8 +27,11 @@
     DashboardCacheDTO,
     DashboardDraftIntent,
     DashboardViewDTO,
+    ResumeDecision,
     RowPatchProposal,
     ToolNavigationIntent,
+    AiMessageChunkEvent,
+    WorkflowSuspendedEvent,
   } from "../../shared/rpc.types";
   import type { Navigate, RouteState, ScreenId } from "../lib/types";
 
@@ -52,8 +60,34 @@
     });
   }
 
-  async function executeNavigationIntent(intent: ToolNavigationIntent) {
-    const res = await appApi.executeAiAction(intent);
+  function applyChunkEvent(placeholderId: string, event: AiMessageChunkEvent, streamedText: string): string {
+    const next = applyAiChunkToMessages(
+      { messages, pendingIntents, sending, sendError, streamedText },
+      placeholderId,
+      event,
+    );
+    messages = next.messages;
+    pendingIntents = next.pendingIntents;
+    sending = next.sending;
+    sendError = next.sendError;
+    return next.streamedText;
+  }
+
+  function applySuspendedEvent(placeholderId: string, event: WorkflowSuspendedEvent, streamedText: string): string {
+    const next = applyAiSuspendedToMessages(
+      { messages, pendingIntents, sending, sendError, streamedText },
+      placeholderId,
+      event,
+    );
+    messages = next.messages;
+    pendingIntents = next.pendingIntents;
+    sending = next.sending;
+    sendError = next.sendError;
+    return next.streamedText;
+  }
+
+  async function executeNavigationIntent(intent: ToolNavigationIntent, runId?: string) {
+    const res = await appApi.executeAiAction(intent, runId ? { runId } : undefined);
     if (!res.ok) {
       sendError = res.message;
       return false;
@@ -62,22 +96,22 @@
     return true;
   }
 
-  async function confirmNavigationIntent(intent: ToolNavigationIntent, messageId: string) {
-    const executed = await executeNavigationIntent(intent);
-    if (executed) dismissIntent(messageId);
+  async function confirmNavigationIntent(intent: ToolNavigationIntent, messageId: string, runId?: string) {
+    const executed = await executeNavigationIntent(intent, runId);
+    if (executed) dismissIntent(messageId, { skipResume: true });
   }
 
-  async function confirmDashboardDraftIntent(intent: DashboardDraftIntent, messageId: string) {
+  async function confirmDashboardDraftIntent(intent: DashboardDraftIntent, messageId: string, runId?: string) {
     savingIntentId = messageId;
     sendError = null;
     try {
-      const res = await appApi.executeAiAction(intent);
+      const res = await appApi.executeAiAction(intent, runId ? { runId } : undefined);
       if (!res.ok) {
         sendError = res.message;
         return;
       }
       if (res.data.navigation) navigateFromAiAction(res.data.navigation);
-      dismissIntent(messageId);
+      dismissIntent(messageId, { skipResume: true });
     } catch (err) {
       sendError = err instanceof Error ? err.message : String(err);
     } finally {
@@ -85,7 +119,7 @@
     }
   }
 
-  async function confirmRowPatchProposalIntent(intent: RowPatchProposal, messageId: string) {
+  async function confirmRowPatchProposalIntent(intent: RowPatchProposal, messageId: string, runId?: string) {
     const accepted = acceptedFieldsForRowPatch(messageId, intent);
     if (!accepted.size) {
       dismissIntent(messageId);
@@ -95,12 +129,15 @@
     savingIntentId = messageId;
     sendError = null;
     try {
-      const res = await appApi.executeAiAction(buildRowPatchIntentFromProposal(intent, accepted));
+      const res = await appApi.executeAiAction(
+        buildRowPatchIntentFromProposal(intent, accepted),
+        runId ? { runId } : undefined,
+      );
       if (!res.ok) {
         sendError = res.message;
         return;
       }
-      dismissIntent(messageId);
+      dismissIntent(messageId, { skipResume: true });
     } catch (err) {
       sendError = err instanceof Error ? err.message : String(err);
     } finally {
@@ -108,10 +145,104 @@
     }
   }
 
-  function dismissIntent(messageId: string) {
+  function dismissIntent(messageId: string, options: { skipResume?: boolean } = {}) {
+    const pending = pendingIntents.find((p) => p.messageId === messageId && !p.dismissed);
+    if (!options.skipResume && pending?.runId && pending.suspendKind) {
+      const decision: ResumeDecision = pending.suspendKind === "ambiguous-candidates"
+        ? { kind: "candidate-cancelled" }
+        : { kind: "write-rejected" };
+      void appApi.resumeAiWorkflow(pending.runId, decision);
+    }
     pendingIntents = pendingIntents.map((p) =>
       p.messageId === messageId ? { ...p, dismissed: true } : p,
     );
+  }
+
+  async function chooseAmbiguousCandidate(pending: PendingIntent, candidateId: string) {
+    if (!pending.runId || pending.suspendKind !== "ambiguous-candidates") {
+      const candidate = pending.intent.type === "ambiguous"
+        ? pending.intent.candidates.find((item) => item.id === candidateId)
+        : null;
+      if (candidate) {
+        await confirmNavigationIntent({ type: "open-workbook", workbookId: candidate.id, label: candidate.label }, pending.messageId);
+      }
+      return;
+    }
+
+    dismissIntent(pending.messageId, { skipResume: true });
+    await resumeSuspendedIntent(pending.messageId, pending.runId, {
+      kind: "candidate-chosen",
+      candidateId,
+    });
+  }
+
+  async function resumeSuspendedIntent(messageId: string, runId: string, decision: ResumeDecision) {
+    const streamId = `resume-${runId}`;
+    let streamedText = "";
+    sending = true;
+    sendError = null;
+    progressHint = null;
+
+    let unsubscribeChunk: (() => void) | null = null;
+    let unsubscribeProgress: (() => void) | null = null;
+    let unsubscribeSuspended: (() => void) | null = null;
+    const cleanup = () => {
+      unsubscribeChunk?.();
+      unsubscribeProgress?.();
+      unsubscribeSuspended?.();
+    };
+
+    unsubscribeChunk = subscribeAiChunks(streamId, (event) => {
+      streamedText = applyChunkEvent(messageId, event, streamedText);
+      if (event.type === "error" || event.type === "done") {
+        progressHint = null;
+        cleanup();
+      }
+    });
+    unsubscribeProgress = subscribeAiProgress(runId, (event) => {
+      progressHint = progressEventToHint(event);
+    });
+    unsubscribeSuspended = subscribeAiSuspended(runId, (event) => {
+      streamedText = applySuspendedEvent(messageId, event, streamedText);
+      progressHint = null;
+      cleanup();
+    });
+
+    try {
+      const res = await appApi.resumeAiWorkflow(runId, decision);
+      if (!res.ok) {
+        sendError = res.message;
+        sending = false;
+        cleanup();
+        return;
+      }
+      if (res.data.status === "cancelled") {
+        sending = false;
+        progressHint = null;
+        cleanup();
+        return;
+      }
+      if (res.data.status === "success" && res.data.finalText && !streamedText) {
+        streamedText = applyChunkEvent(messageId, {
+          streamId,
+          type: "done",
+          toolCalls: [],
+          message: {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: res.data.finalText,
+            createdAt: new Date().toISOString(),
+            context: contextSnapshot,
+          },
+        }, streamedText);
+        cleanup();
+      }
+    } catch (err) {
+      sendError = err instanceof Error ? err.message : String(err);
+      sending = false;
+      progressHint = null;
+      cleanup();
+    }
   }
 
   function acceptedFieldsForRowPatch(messageId: string, intent: RowPatchProposal): Set<string> {
@@ -208,22 +339,15 @@
     progressHint = null;
     let streamedText = "";
     let unsubscribeProgress: (() => void) | null = null;
+    let unsubscribeSuspended: (() => void) | null = null;
 
     const unsubscribe = subscribeAiChunks(streamId, (event) => {
-      const next = applyAiChunkToMessages(
-        { messages, pendingIntents, sending, sendError, streamedText },
-        placeholderId,
-        event,
-      );
-      messages = next.messages;
-      pendingIntents = next.pendingIntents;
-      sending = next.sending;
-      sendError = next.sendError;
-      streamedText = next.streamedText;
+      streamedText = applyChunkEvent(placeholderId, event, streamedText);
       if (event.type === "error" || event.type === "done") {
         progressHint = null;
         unsubscribe();
         unsubscribeProgress?.();
+        unsubscribeSuspended?.();
       }
     });
 
@@ -233,29 +357,27 @@
         unsubscribeProgress = subscribeAiProgress(res.data.runId, (event) => {
           progressHint = progressEventToHint(event);
         });
+        unsubscribeSuspended = subscribeAiSuspended(res.data.runId, (event) => {
+          streamedText = applySuspendedEvent(placeholderId, event, streamedText);
+          progressHint = null;
+          unsubscribe();
+          unsubscribeProgress?.();
+          unsubscribeSuspended?.();
+        });
       }
       if (res.ok && res.data.message.content) {
-        const next = applyAiChunkToMessages(
-          { messages, pendingIntents, sending, sendError, streamedText },
-          placeholderId,
-          {
-            streamId,
-            type: "done",
-            toolCalls: res.data.toolCalls,
-            message: {
-              id: res.data.message.id,
-              content: res.data.message.content,
-              role: res.data.message.role,
-              createdAt: res.data.message.createdAt,
-              context: res.data.message.context,
-            },
+        streamedText = applyChunkEvent(placeholderId, {
+          streamId,
+          type: "done",
+          toolCalls: res.data.toolCalls,
+          message: {
+            id: res.data.message.id,
+            content: res.data.message.content,
+            role: res.data.message.role,
+            createdAt: res.data.message.createdAt,
+            context: res.data.message.context,
           },
-        );
-        messages = next.messages;
-        pendingIntents = next.pendingIntents;
-        sending = next.sending;
-        sendError = next.sendError;
-        streamedText = next.streamedText;
+        }, streamedText);
       } else if (!res.ok && streamedText) {
         messages = messages.map((m) =>
           m.id === placeholderId ? { ...m, content: streamedText } : m,
@@ -265,6 +387,7 @@
         progressHint = null;
         unsubscribe();
         unsubscribeProgress?.();
+        unsubscribeSuspended?.();
       } else if (!res.ok) {
         sendError = res.message;
         messages = messages.filter((m) => m.id !== placeholderId);
@@ -272,6 +395,7 @@
         progressHint = null;
         unsubscribe();
         unsubscribeProgress?.();
+        unsubscribeSuspended?.();
       } else if (!streamedText && !sending) {
         messages = messages.filter((m) => m.id !== placeholderId || m.content);
       }
@@ -284,6 +408,7 @@
       progressHint = null;
       unsubscribe();
       unsubscribeProgress?.();
+      unsubscribeSuspended?.();
     }
   }
 
@@ -372,32 +497,32 @@
                 {#if pending.intent.type === "navigate"}
                   <span class="intent-label">跳转到：{pending.intent.route}</span>
                   <div class="intent-actions">
-                    <button class="confirm-btn" onclick={() => { void confirmNavigationIntent(pending.intent, pending.messageId); }}>跳转</button>
+                    <button class="confirm-btn" onclick={() => { void confirmNavigationIntent(pending.intent, pending.messageId, pending.runId); }}>跳转</button>
                     <button class="dismiss-btn" onclick={() => dismissIntent(pending.messageId)}>忽略</button>
                   </div>
                 {:else if pending.intent.type === "open-workbook"}
                   <span class="intent-label">打开工作簿：{pending.intent.label}</span>
                   <div class="intent-actions">
-                    <button class="confirm-btn" onclick={() => { void confirmNavigationIntent(pending.intent, pending.messageId); }}>打开</button>
+                    <button class="confirm-btn" onclick={() => { void confirmNavigationIntent(pending.intent, pending.messageId, pending.runId); }}>打开</button>
                     <button class="dismiss-btn" onclick={() => dismissIntent(pending.messageId)}>忽略</button>
                   </div>
                 {:else if pending.intent.type === "open-dashboard"}
                   <span class="intent-label">打开仪表盘：{pending.intent.label}</span>
                   <div class="intent-actions">
-                    <button class="confirm-btn" onclick={() => { void confirmNavigationIntent(pending.intent, pending.messageId); }}>打开</button>
+                    <button class="confirm-btn" onclick={() => { void confirmNavigationIntent(pending.intent, pending.messageId, pending.runId); }}>打开</button>
                     <button class="dismiss-btn" onclick={() => dismissIntent(pending.messageId)}>忽略</button>
                   </div>
                 {:else if pending.intent.type === "open-record"}
                   <span class="intent-label">定位记录：{pending.intent.label}</span>
                   <div class="intent-actions">
-                    <button class="confirm-btn" onclick={() => { void confirmNavigationIntent(pending.intent, pending.messageId); }}>定位</button>
+                    <button class="confirm-btn" onclick={() => { void confirmNavigationIntent(pending.intent, pending.messageId, pending.runId); }}>定位</button>
                     <button class="dismiss-btn" onclick={() => dismissIntent(pending.messageId)}>忽略</button>
                   </div>
                 {:else if pending.intent.type === "ambiguous"}
                   <span class="intent-label">找到 {pending.intent.candidates.length} 条匹配结果，请选择：</span>
                   <div class="intent-candidates">
                     {#each pending.intent.candidates as candidate (candidate.id)}
-                      <button class="candidate-btn" onclick={() => { void confirmNavigationIntent({ type: "open-workbook", workbookId: candidate.id, label: candidate.label }, pending.messageId); }}>
+                      <button class="candidate-btn" onclick={() => { void chooseAmbiguousCandidate(pending, candidate.id); }}>
                         {candidate.label}
                       </button>
                     {/each}
@@ -431,7 +556,7 @@
                     {/each}
                   </div>
                   <div class="intent-actions">
-                    <button class="confirm-btn" disabled={savingIntentId === pending.messageId || !acceptedFields.size} onclick={() => { void confirmRowPatchProposalIntent(pending.intent, pending.messageId); }}>
+                    <button class="confirm-btn" disabled={savingIntentId === pending.messageId || !acceptedFields.size} onclick={() => { void confirmRowPatchProposalIntent(pending.intent, pending.messageId, pending.runId); }}>
                       {savingIntentId === pending.messageId ? "写入中" : "确认写入"}
                     </button>
                     <button class="dismiss-btn" onclick={() => dismissIntent(pending.messageId)}>全部忽略</button>
@@ -456,7 +581,7 @@
                     {/if}
                   </div>
                   <div class="intent-actions">
-                    <button class="confirm-btn" disabled={savingIntentId === pending.messageId} onclick={() => { void confirmDashboardDraftIntent(pending.intent, pending.messageId); }}>
+                    <button class="confirm-btn" disabled={savingIntentId === pending.messageId} onclick={() => { void confirmDashboardDraftIntent(pending.intent, pending.messageId, pending.runId); }}>
                       {savingIntentId === pending.messageId ? "保存中" : "保存到仪表盘"}
                     </button>
                     <button class="dismiss-btn" onclick={() => dismissIntent(pending.messageId)}>忽略</button>
