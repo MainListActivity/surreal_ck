@@ -37,9 +37,9 @@ describe("claim-analysis agent 占位", () => {
     expect(typeof mod.CLAIM_ANALYSIS_AGENT_ID).toBe("string");
   });
 
-  test("claim-analysis agent 当前 tool 列表为空", async () => {
+  test("claim-analysis agent 注册债权行分析工具", async () => {
     const { CLAIM_ANALYSIS_TOOLS } = await import("./claim-analysis-agent");
-    expect(Object.keys(CLAIM_ANALYSIS_TOOLS)).toEqual([]);
+    expect(Object.keys(CLAIM_ANALYSIS_TOOLS).sort()).toEqual(["analyzeClaimRow", "fetchRelatedRecords"]);
   });
 });
 

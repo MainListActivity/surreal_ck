@@ -217,13 +217,26 @@ export type LegacyDashboardDraftIntent = {
 };
 
 export type RowPatchProposal = {
+  type: "row-patch-proposal";
+  sheetId: string;
+  recordId: string;
+  proposals: Array<{
+    field: string;
+    currentValue: unknown;
+    suggestedValue: unknown;
+    basis: string;
+    confidence: "high" | "medium" | "low";
+  }>;
+};
+
+export type RowPatchIntent = {
   type: "rowPatch";
   sheetId: string;
   rowId: string;
   patch: Record<string, unknown>;
 };
 
-export type AiStructuredIntent = AppNavigationIntent | ToolNavigationIntent | DashboardDraftIntent | LegacyDashboardDraftIntent | RowPatchProposal;
+export type AiStructuredIntent = AppNavigationIntent | ToolNavigationIntent | DashboardDraftIntent | LegacyDashboardDraftIntent | RowPatchProposal | RowPatchIntent;
 
 export type ExecuteAiActionRequest = {
   intent: AiStructuredIntent;
@@ -330,6 +343,19 @@ const LegacyDashboardDraftIntentSchema = z.object({
 });
 
 const RowPatchProposalSchema = z.object({
+  type: z.literal("row-patch-proposal"),
+  sheetId: z.string(),
+  recordId: z.string(),
+  proposals: z.array(z.object({
+    field: z.string(),
+    currentValue: z.unknown(),
+    suggestedValue: z.unknown(),
+    basis: z.string(),
+    confidence: z.enum(["high", "medium", "low"]),
+  })),
+});
+
+const RowPatchIntentSchema = z.object({
   type: z.literal("rowPatch"),
   sheetId: z.string(),
   rowId: z.string(),
@@ -342,6 +368,7 @@ export const AiStructuredIntentSchema = z.union([
   DashboardDraftIntentSchema,
   LegacyDashboardDraftIntentSchema,
   RowPatchProposalSchema,
+  RowPatchIntentSchema,
 ]);
 
 export const ExecuteAiActionRequestSchema = z.object({

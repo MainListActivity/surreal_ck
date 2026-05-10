@@ -16,7 +16,7 @@ mock.module("../ai/index", () => ({
   }),
 }));
 
-import { executeAiAction } from "./ai-actions";
+import { applyRowPatchIntent, executeAiAction } from "./ai-actions";
 
 describe("executeAiAction", () => {
   beforeEach(() => {
@@ -64,5 +64,67 @@ describe("executeAiAction", () => {
     });
     expect(r.ok).toBe(false);
     expect(deletes).toEqual([]);
+  });
+
+  test("rowPatch 写动作成功且携带 runId 时清理 workflow run", async () => {
+    const rowUpserts: Array<{ sheetId: string; rows: Array<{ id?: string; values: Record<string, unknown> }> }> = [];
+    const result = await executeAiAction({
+      intent: {
+        type: "rowPatch",
+        sheetId: "sheet:claims",
+        rowId: "ent_claim:abc",
+        patch: {
+          creditor_name: "张三",
+          claim_amount: 1200,
+        },
+      },
+      runId: "run-row-patch",
+    }, {
+      upsertRows: async (req) => {
+        rowUpserts.push(req);
+        return { upserted: req.rows.map((row) => ({ id: row.id ?? "ent_claim:new", values: row.values })) };
+      },
+    });
+
+    expect(result).toEqual({ ok: true, message: "记录已更新。" });
+    expect(rowUpserts.length).toBe(1);
+    expect(deletes).toEqual([{ workflowName: "routerWorkflow", runId: "run-row-patch" }]);
+  });
+});
+
+describe("applyRowPatchIntent", () => {
+  test("通过 upsertRows 只写入已确认字段", async () => {
+    const rowUpserts: Array<{ sheetId: string; rows: Array<{ id?: string; values: Record<string, unknown> }> }> = [];
+
+    await applyRowPatchIntent(
+      {
+        type: "rowPatch",
+        sheetId: "sheet:claims",
+        rowId: "ent_claim:abc",
+        patch: {
+          creditor_name: "张三",
+          claim_amount: 1200,
+        },
+      },
+      async (req) => {
+        rowUpserts.push(req);
+        return { upserted: req.rows.map((row) => ({ id: row.id ?? "ent_claim:new", values: row.values })) };
+      },
+    );
+
+    expect(rowUpserts).toEqual([
+      {
+        sheetId: "sheet:claims",
+        rows: [
+          {
+            id: "ent_claim:abc",
+            values: {
+              creditor_name: "张三",
+              claim_amount: 1200,
+            },
+          },
+        ],
+      },
+    ]);
   });
 });

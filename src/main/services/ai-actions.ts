@@ -4,6 +4,9 @@ import type {
   DashboardWidgetLayoutDTO,
   ExecuteAiActionRequest,
   ExecuteAiActionResponse,
+  RowPatchIntent,
+  UpsertRowsRequest,
+  UpsertRowsResponse,
 } from "../../shared/rpc.types";
 import { initMastraForCurrentUser } from "../ai/index";
 import { ROUTER_WORKFLOW_ID } from "../ai/mastra/workflows/router-workflow";
@@ -14,8 +17,13 @@ import {
   listDashboardPages,
   saveDashboardPageLayout,
 } from "./dashboards";
+import { upsertRows as defaultUpsertRows } from "./editor";
 
-export async function executeAiAction(req: ExecuteAiActionRequest): Promise<ExecuteAiActionResponse> {
+export type ExecuteAiActionDeps = {
+  upsertRows?: (req: UpsertRowsRequest) => Promise<UpsertRowsResponse>;
+};
+
+export async function executeAiAction(req: ExecuteAiActionRequest, deps: ExecuteAiActionDeps = {}): Promise<ExecuteAiActionResponse> {
   const navigation = toNavigation(req.intent);
   if (navigation) {
     await tryDeleteWorkflowRun(req);
@@ -37,7 +45,23 @@ export async function executeAiAction(req: ExecuteAiActionRequest): Promise<Exec
     };
   }
 
+  if (req.intent.type === "rowPatch") {
+    await applyRowPatchIntent(req.intent, deps.upsertRows ?? defaultUpsertRows);
+    await tryDeleteWorkflowRun(req);
+    return { ok: true, message: "记录已更新。" };
+  }
+
   return { ok: false, message: "暂不支持执行该 AI 动作。" };
+}
+
+export async function applyRowPatchIntent(
+  intent: RowPatchIntent,
+  upsertRows: (req: UpsertRowsRequest) => Promise<UpsertRowsResponse> = defaultUpsertRows,
+): Promise<UpsertRowsResponse> {
+  return upsertRows({
+    sheetId: intent.sheetId,
+    rows: [{ id: intent.rowId, values: intent.patch }],
+  });
 }
 
 async function saveDashboardDraftIntent(intent: DashboardDraftIntent): Promise<{ pageId: string }> {

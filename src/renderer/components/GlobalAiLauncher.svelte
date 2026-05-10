@@ -6,7 +6,7 @@
   import { appState } from "../lib/app-state.svelte";
   import { editorStore } from "../lib/editor.svelte";
   import { subscribeAiChunks, subscribeAiProgress } from "../lib/rpc";
-  import { applyAiChunkToMessages, type PendingIntent } from "./global-ai-stream";
+  import { applyAiChunkToMessages, buildRowPatchIntentFromProposal, type PendingIntent } from "./global-ai-stream";
   import { progressEventToHint } from "./ai-progress-label";
   import { getDashboardWidget } from "../features/dashboard/registries/widgets";
   import Icon from "./Icon.svelte";
@@ -22,6 +22,7 @@
     DashboardCacheDTO,
     DashboardDraftIntent,
     DashboardViewDTO,
+    RowPatchProposal,
     ToolNavigationIntent,
   } from "../../shared/rpc.types";
   import type { Navigate, RouteState, ScreenId } from "../lib/types";
@@ -41,6 +42,7 @@
   let pendingIntents = $state<PendingIntent[]>([]);
   let progressHint = $state<string | null>(null);
   let savingIntentId = $state<string | null>(null);
+  let acceptedRowPatchFields = $state<Record<string, string[]>>({});
 
   function navigateFromAiAction(action: AppNavigationIntent) {
     navigate(action.screen as ScreenId, {
@@ -83,10 +85,65 @@
     }
   }
 
+  async function confirmRowPatchProposalIntent(intent: RowPatchProposal, messageId: string) {
+    const accepted = acceptedFieldsForRowPatch(messageId, intent);
+    if (!accepted.size) {
+      dismissIntent(messageId);
+      return;
+    }
+
+    savingIntentId = messageId;
+    sendError = null;
+    try {
+      const res = await appApi.executeAiAction(buildRowPatchIntentFromProposal(intent, accepted));
+      if (!res.ok) {
+        sendError = res.message;
+        return;
+      }
+      dismissIntent(messageId);
+    } catch (err) {
+      sendError = err instanceof Error ? err.message : String(err);
+    } finally {
+      savingIntentId = null;
+    }
+  }
+
   function dismissIntent(messageId: string) {
     pendingIntents = pendingIntents.map((p) =>
       p.messageId === messageId ? { ...p, dismissed: true } : p,
     );
+  }
+
+  function acceptedFieldsForRowPatch(messageId: string, intent: RowPatchProposal): Set<string> {
+    return new Set(acceptedRowPatchFields[messageId] ?? intent.proposals.map((item) => item.field));
+  }
+
+  function isRowPatchFieldAccepted(messageId: string, intent: RowPatchProposal, field: string): boolean {
+    return acceptedFieldsForRowPatch(messageId, intent).has(field);
+  }
+
+  function setRowPatchFieldAccepted(messageId: string, intent: RowPatchProposal, field: string, accepted: boolean) {
+    const next = acceptedFieldsForRowPatch(messageId, intent);
+    if (accepted) next.add(field);
+    else next.delete(field);
+    acceptedRowPatchFields = { ...acceptedRowPatchFields, [messageId]: Array.from(next) };
+  }
+
+  function formatPatchValue(value: unknown): string {
+    if (value === null || value === undefined || value === "") return "空";
+    if (typeof value === "string") return value;
+    if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") return String(value);
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+
+  function confidenceLabel(confidence: RowPatchProposal["proposals"][number]["confidence"]): string {
+    if (confidence === "high") return "高";
+    if (confidence === "medium") return "中";
+    return "低";
   }
 
   const currentSheet = $derived(editorStore.sheets.find((sheet) => sheet.id === editorStore.activeSheetId) ?? null);
@@ -346,6 +403,39 @@
                     {/each}
                   </div>
                   <button class="dismiss-btn" onclick={() => dismissIntent(pending.messageId)}>关闭</button>
+                {:else if pending.intent.type === "row-patch-proposal"}
+                  {@const acceptedFields = acceptedFieldsForRowPatch(pending.messageId, pending.intent)}
+                  <div class="draft-head">
+                    <span class="intent-label">字段补全提案</span>
+                    <p>{pending.intent.proposals.length} 个建议字段，确认后写入当前记录。</p>
+                  </div>
+                  <div class="row-patch-list">
+                    {#each pending.intent.proposals as proposal (proposal.field)}
+                      {@const accepted = isRowPatchFieldAccepted(pending.messageId, pending.intent, proposal.field)}
+                      <section class="row-patch-item" class:ignored={!accepted} data-confidence={proposal.confidence}>
+                        <div class="row-patch-top">
+                          <strong>{proposal.field}</strong>
+                          <span class="confidence" data-confidence={proposal.confidence}>{confidenceLabel(proposal.confidence)}</span>
+                        </div>
+                        <div class="patch-values">
+                          <span>{formatPatchValue(proposal.currentValue)}</span>
+                          <Icon name="arrowRight" size={13} />
+                          <span>{formatPatchValue(proposal.suggestedValue)}</span>
+                        </div>
+                        <p>{proposal.basis}</p>
+                        <div class="field-choice">
+                          <button class:active={accepted} onclick={() => setRowPatchFieldAccepted(pending.messageId, pending.intent, proposal.field, true)}>接受</button>
+                          <button class:active={!accepted} onclick={() => setRowPatchFieldAccepted(pending.messageId, pending.intent, proposal.field, false)}>忽略</button>
+                        </div>
+                      </section>
+                    {/each}
+                  </div>
+                  <div class="intent-actions">
+                    <button class="confirm-btn" disabled={savingIntentId === pending.messageId || !acceptedFields.size} onclick={() => { void confirmRowPatchProposalIntent(pending.intent, pending.messageId); }}>
+                      {savingIntentId === pending.messageId ? "写入中" : "确认写入"}
+                    </button>
+                    <button class="dismiss-btn" onclick={() => dismissIntent(pending.messageId)}>全部忽略</button>
+                  </div>
                 {:else if pending.intent.type === "dashboard-draft"}
                   {@const preview = previewFromDraftIntent(pending.intent)}
                   {@const registration = getDashboardWidget(preview.view.viewType)}
@@ -830,6 +920,110 @@
     color: var(--text-3);
   }
 
+  .row-patch-list {
+    display: grid;
+    gap: 8px;
+  }
+
+  .row-patch-item {
+    display: grid;
+    gap: 7px;
+    padding: 9px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: #fff;
+  }
+
+  .row-patch-item.ignored {
+    opacity: .62;
+  }
+
+  .row-patch-top,
+  .patch-values,
+  .field-choice {
+    display: flex;
+    align-items: center;
+  }
+
+  .row-patch-top {
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .row-patch-top strong {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text-1);
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .confidence {
+    flex: 0 0 auto;
+    padding: 2px 6px;
+    border-radius: 6px;
+    background: #ecfdf5;
+    color: #047857;
+    font-size: 11px;
+  }
+
+  .confidence[data-confidence="medium"] {
+    background: #fffbeb;
+    color: #b45309;
+  }
+
+  .confidence[data-confidence="low"] {
+    background: #fef2f2;
+    color: #b91c1c;
+  }
+
+  .patch-values {
+    gap: 6px;
+    color: var(--text-2);
+    font-size: 12px;
+  }
+
+  .patch-values span {
+    min-width: 0;
+    max-width: 130px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .patch-values span:last-child {
+    color: var(--text-1);
+    font-weight: 550;
+  }
+
+  .row-patch-item p {
+    margin: 0;
+    color: var(--text-3);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+
+  .field-choice {
+    gap: 4px;
+  }
+
+  .field-choice button {
+    height: 26px;
+    padding: 0 9px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: #fff;
+    color: var(--text-3);
+    font-size: 12px;
+  }
+
+  .field-choice button.active {
+    border-color: var(--primary);
+    background: var(--primary-light, rgba(22, 100, 255, .06));
+    color: var(--primary);
+  }
+
   .intent-label {
     color: var(--text-1);
     font-size: 12px;
@@ -875,6 +1069,11 @@
 
   .confirm-btn:hover {
     background: var(--primary-hover);
+  }
+
+  .confirm-btn:disabled {
+    cursor: not-allowed;
+    opacity: .55;
   }
 
   .dismiss-btn {

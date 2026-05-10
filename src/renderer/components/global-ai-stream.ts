@@ -4,12 +4,14 @@ import type {
   AiStructuredIntent,
   AiToolCallRecord,
   DashboardDraftIntent,
+  RowPatchIntent,
+  RowPatchProposal,
   ToolNavigationIntent,
 } from "../../shared/rpc.types";
 
 export type PendingIntent = {
   messageId: string;
-  intent: ToolNavigationIntent | DashboardDraftIntent;
+  intent: ToolNavigationIntent | DashboardDraftIntent | RowPatchProposal;
   dismissed: boolean;
 };
 
@@ -38,6 +40,33 @@ export function extractDashboardDraftIntent(toolCalls: AiToolCallRecord[]): Dash
     if (result?.intent?.type === "dashboard-draft") return result.intent;
   }
   return null;
+}
+
+export function extractRowPatchProposalIntent(toolCalls: AiToolCallRecord[]): RowPatchProposal | null {
+  for (const tc of toolCalls) {
+    if (tc.toolName !== "analyzeClaimRow") continue;
+    const result = tc.result as { intent?: AiStructuredIntent } | undefined;
+    if (result?.intent?.type === "row-patch-proposal") return result.intent;
+  }
+  return null;
+}
+
+export function buildRowPatchIntentFromProposal(
+  proposal: RowPatchProposal,
+  acceptedFields: Set<string>,
+): RowPatchIntent {
+  const patch: Record<string, unknown> = {};
+  for (const item of proposal.proposals) {
+    if (acceptedFields.has(item.field)) {
+      patch[item.field] = item.suggestedValue;
+    }
+  }
+  return {
+    type: "rowPatch",
+    sheetId: proposal.sheetId,
+    rowId: proposal.recordId,
+    patch,
+  };
 }
 
 export function replaceOrAppendAssistantMessage(
@@ -76,7 +105,10 @@ export function applyAiChunkToMessages(
   }
 
   const finalMessageId = event.message.id;
-  const intent = extractDashboardDraftIntent(event.toolCalls ?? []) ?? extractNavigationIntent(event.toolCalls ?? []);
+  const intent =
+    extractRowPatchProposalIntent(event.toolCalls ?? [])
+    ?? extractDashboardDraftIntent(event.toolCalls ?? [])
+    ?? extractNavigationIntent(event.toolCalls ?? []);
   return {
     ...state,
     sending: false,

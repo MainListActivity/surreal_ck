@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AiChatMessage } from "../../shared/ai-context";
-import { applyAiChunkToMessages, type AiStreamState } from "./global-ai-stream";
+import { applyAiChunkToMessages, buildRowPatchIntentFromProposal, type AiStreamState } from "./global-ai-stream";
 
 function baseState(messages: AiChatMessage[]): AiStreamState {
   return {
@@ -106,5 +106,83 @@ describe("applyAiChunkToMessages", () => {
     expect(next.pendingIntents).toHaveLength(1);
     expect(next.pendingIntents[0].messageId).toBe("assistant-1");
     expect(next.pendingIntents[0].intent.type).toBe("dashboard-draft");
+  });
+
+  test("done 事件携带 row-patch-proposal tool result 时加入待确认意图", () => {
+    const placeholder: AiChatMessage = {
+      id: "placeholder",
+      role: "assistant",
+      content: "",
+      createdAt: "2026-05-10T00:00:00.000Z",
+      context: { route: { screen: "editor" } },
+    };
+    const finalMessage: AiChatMessage = { ...placeholder, id: "assistant-claim", content: "已生成补全建议。" };
+
+    const next = applyAiChunkToMessages(baseState([placeholder]), "placeholder", {
+      streamId: "stream-1",
+      type: "done",
+      message: finalMessage,
+      toolCalls: [
+        {
+          toolName: "analyzeClaimRow",
+          result: {
+            intent: {
+              type: "row-patch-proposal",
+              sheetId: "sheet:claims",
+              recordId: "ent_claim:abc",
+              proposals: [
+                {
+                  field: "creditor_name",
+                  currentValue: "",
+                  suggestedValue: "张三",
+                  basis: "申请书抬头",
+                  confidence: "high",
+                },
+              ],
+            },
+          },
+        },
+      ],
+    });
+
+    expect(next.pendingIntents).toHaveLength(1);
+    expect(next.pendingIntents[0].messageId).toBe("assistant-claim");
+    expect(next.pendingIntents[0].intent.type).toBe("row-patch-proposal");
+  });
+});
+
+describe("buildRowPatchIntentFromProposal", () => {
+  test("只把已接受字段转换为 rowPatch 写入意图", () => {
+    const intent = buildRowPatchIntentFromProposal(
+      {
+        type: "row-patch-proposal",
+        sheetId: "sheet:claims",
+        recordId: "ent_claim:abc",
+        proposals: [
+          {
+            field: "creditor_name",
+            currentValue: "",
+            suggestedValue: "张三",
+            basis: "申请书抬头",
+            confidence: "high",
+          },
+          {
+            field: "claim_amount",
+            currentValue: 1000,
+            suggestedValue: 1200,
+            basis: "明细合计",
+            confidence: "medium",
+          },
+        ],
+      },
+      new Set(["claim_amount"]),
+    );
+
+    expect(intent).toEqual({
+      type: "rowPatch",
+      sheetId: "sheet:claims",
+      rowId: "ent_claim:abc",
+      patch: { claim_amount: 1200 },
+    });
   });
 });
