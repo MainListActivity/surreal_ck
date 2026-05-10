@@ -28,6 +28,12 @@ export type SharedWorkflowContext = {
 export type SubAgentInput = {
   taskText: string;
   shared: SharedWorkflowContext;
+  /**
+   * 可选：流式 delta 实时回调。executor 一旦收到 LLM textStream 的 chunk 就调用，
+   * 让上层 router-workflow 当场把 delta 推给 streamId，而不是等 executor 整体结束才补播。
+   * 非流式 executor 可以忽略本回调，由 router-workflow 退化为读取返回值里的 `deltas` / `text`。
+   */
+  onDelta?: (delta: string) => void;
 };
 
 export type SubAgentOutput = {
@@ -197,11 +203,25 @@ export function createRouterWorkflow() {
             agentName: CATEGORY_TO_AGENT_NAME[category],
             taskText: args.taskText,
           });
-          const out = await real(args);
-          const deltas = out.deltas ?? (out.text ? [out.text] : []);
-          for (const d of deltas) {
-            if (!d) continue;
+
+          // 注入 onDelta 让 executor 在收到 LLM stream chunk 的瞬间直接推 delta，
+          // 而不是等 executor 整体结束再补播。streamedAny 用于区分流式 / 非流式 executor。
+          let streamedAny = false;
+          const onDelta = (d: string) => {
+            if (!d) return;
+            streamedAny = true;
             pushChunk?.({ streamId, type: "delta", text: d });
+          };
+
+          const out = await real({ ...args, onDelta });
+
+          // 非流式 executor（没用 onDelta 的，例如纯函数测试桩）：用返回值里的 deltas/text 一次性补播
+          if (!streamedAny) {
+            const deltas = out.deltas ?? (out.text ? [out.text] : []);
+            for (const d of deltas) {
+              if (!d) continue;
+              pushChunk?.({ streamId, type: "delta", text: d });
+            }
           }
           return out;
         };

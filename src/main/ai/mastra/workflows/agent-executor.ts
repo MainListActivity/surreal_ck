@@ -16,7 +16,7 @@ export type AgentExecutorOptions = {
  * - 通过 textStream 收集 deltas，让 router-chat 转推到统一 streamId 上
  */
 export function makeAgentExecutor(agent: Agent, options: AgentExecutorOptions = {}): SubAgentExecutor {
-  return async ({ taskText, shared }) => {
+  return async ({ taskText, shared, onDelta }) => {
     const prompt = [
       `子任务：${taskText}`,
       "",
@@ -49,6 +49,7 @@ export function makeAgentExecutor(agent: Agent, options: AgentExecutorOptions = 
             });
           }
         },
+        providerOptions: { openai: { stream: true } },
       },
     );
 
@@ -58,6 +59,7 @@ export function makeAgentExecutor(agent: Agent, options: AgentExecutorOptions = 
       if (!delta) continue;
       deltas.push(delta);
       aggregated += delta;
+      onDelta?.(delta);
     }
     const text = aggregated || (await stream.text) || "";
     return { text, confirmed: {}, deltas };
