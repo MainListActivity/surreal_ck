@@ -18,6 +18,15 @@
   let aiApiKey = $state("");
   let aiSecretConfigured = $state(false);
   let clearAiApiKey = $state(false);
+  let embeddingProvider = $state<AiProvider>("openai");
+  let embeddingModel = $state("text-embedding-3-small");
+  let embeddingBaseUrl = $state("");
+  let embeddingApiFormat = $state<AiApiFormat>("openai-compatible");
+  let embeddingDimensions = $state("1536");
+  let embeddingVersion = $state("v1");
+  let embeddingApiKey = $state("");
+  let embeddingSecretConfigured = $state(false);
+  let clearEmbeddingApiKey = $state(false);
   let savedSnapshot = $state("");
   let loading = $state(true);
   let saving = $state(false);
@@ -36,6 +45,15 @@
     aiApiKey,
     aiSecretConfigured,
     clearAiApiKey,
+    embeddingProvider,
+    embeddingModel: embeddingModel.trim(),
+    embeddingBaseUrl: embeddingBaseUrl.trim(),
+    embeddingApiFormat,
+    embeddingDimensions: embeddingDimensions.trim(),
+    embeddingVersion: embeddingVersion.trim(),
+    embeddingApiKey,
+    embeddingSecretConfigured,
+    clearEmbeddingApiKey,
   }));
   const dirty = $derived(savedSnapshot !== currentSnapshot);
   const parsedRetention = $derived(Number.parseInt(draftRetentionDays, 10));
@@ -43,6 +61,13 @@
     !Number.isFinite(parsedRetention) || parsedRetention < 1 || parsedRetention > 3650
   );
   const invalidAi = $derived(!aiModel.trim());
+  const parsedEmbeddingDimensions = $derived(Number.parseInt(embeddingDimensions, 10));
+  const invalidEmbeddingDimensions = $derived(
+    !Number.isFinite(parsedEmbeddingDimensions) || parsedEmbeddingDimensions < 1 || parsedEmbeddingDimensions > 8192
+  );
+  const invalidEmbedding = $derived(
+    !embeddingModel.trim() || !embeddingVersion.trim() || invalidEmbeddingDimensions || embeddingApiFormat === "anthropic"
+  );
 
   const providerOptions: Array<{ value: AiProvider; label: string }> = [
     { value: "openai", label: "OpenAI" },
@@ -70,6 +95,21 @@
   const selectedApiFormat = $derived(
     apiFormatOptions.find((option) => option.value === aiApiFormat) ?? apiFormatOptions[0]
   );
+  const embeddingApiFormatOptions: Array<{ value: AiApiFormat; label: string; hint: string }> = [
+    {
+      value: "openai-compatible",
+      label: "OpenAI Embeddings",
+      hint: "Base URL 填到版本级别，例如 https://api.openai.com/v1；请求会走 /embeddings。",
+    },
+    {
+      value: "openai-responses",
+      label: "OpenAI Embeddings (Responses 兼容)",
+      hint: "用于同时走 Responses 接口的兼容供应商；请求仍走 /embeddings。",
+    },
+  ];
+  const selectedEmbeddingApiFormat = $derived(
+    embeddingApiFormatOptions.find((option) => option.value === embeddingApiFormat) ?? embeddingApiFormatOptions[0]
+  );
 
   onMount(() => {
     void loadSettings();
@@ -93,6 +133,15 @@
       aiApiKey = "";
       aiSecretConfigured = result.data.ai.secretConfigured;
       clearAiApiKey = false;
+      embeddingProvider = result.data.embedding.provider;
+      embeddingModel = result.data.embedding.model;
+      embeddingBaseUrl = result.data.embedding.baseUrl ?? "";
+      embeddingApiFormat = result.data.embedding.apiFormat === "anthropic" ? "openai-compatible" : result.data.embedding.apiFormat;
+      embeddingDimensions = String(result.data.embedding.dimensions);
+      embeddingVersion = result.data.embedding.version;
+      embeddingApiKey = "";
+      embeddingSecretConfigured = result.data.embedding.secretConfigured;
+      clearEmbeddingApiKey = false;
       savedSnapshot = currentSnapshot;
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
@@ -102,7 +151,7 @@
   }
 
   async function saveSettings() {
-    if (invalidRetention || invalidAi || saving) return;
+    if (invalidRetention || invalidAi || invalidEmbedding || saving) return;
     saving = true;
     error = null;
     savedAt = null;
@@ -114,8 +163,24 @@
           model: aiModel.trim(),
           baseUrl: aiBaseUrl.trim() || undefined,
           apiFormat: aiApiFormat,
-          apiKey: aiApiKey,
-          clearApiKey: clearAiApiKey,
+          ...(clearAiApiKey
+            ? { clearApiKey: true }
+            : aiApiKey.trim()
+              ? { apiKey: aiApiKey }
+              : {}),
+        },
+        embedding: {
+          provider: embeddingProvider,
+          model: embeddingModel.trim(),
+          baseUrl: embeddingBaseUrl.trim() || undefined,
+          apiFormat: embeddingApiFormat,
+          dimensions: parsedEmbeddingDimensions,
+          version: embeddingVersion.trim(),
+          ...(clearEmbeddingApiKey
+            ? { clearApiKey: true }
+            : embeddingApiKey.trim()
+              ? { apiKey: embeddingApiKey }
+              : {}),
         },
       });
       if (!result.ok) {
@@ -131,6 +196,15 @@
       aiApiKey = "";
       aiSecretConfigured = result.data.ai.secretConfigured;
       clearAiApiKey = false;
+      embeddingProvider = result.data.embedding.provider;
+      embeddingModel = result.data.embedding.model;
+      embeddingBaseUrl = result.data.embedding.baseUrl ?? "";
+      embeddingApiFormat = result.data.embedding.apiFormat === "anthropic" ? "openai-compatible" : result.data.embedding.apiFormat;
+      embeddingDimensions = String(result.data.embedding.dimensions);
+      embeddingVersion = result.data.embedding.version;
+      embeddingApiKey = "";
+      embeddingSecretConfigured = result.data.embedding.secretConfigured;
+      clearEmbeddingApiKey = false;
       savedSnapshot = currentSnapshot;
       savedAt = new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
     } catch (err) {
@@ -149,6 +223,12 @@
     aiApiKey = "";
     clearAiApiKey = true;
     aiSecretConfigured = false;
+  }
+
+  function markClearEmbeddingApiKey() {
+    embeddingApiKey = "";
+    clearEmbeddingApiKey = true;
+    embeddingSecretConfigured = false;
   }
 </script>
 
@@ -249,6 +329,94 @@
     <div class="section">
       <div class="section-head">
         <div>
+          <h3>向量模型 (Embedding)</h3>
+          <p>资源检索的语义索引使用独立的 embedding 模型；与对话模型分离，避免对话供应商的限制影响语义搜索。修改模型、维度或版本会让旧资源进入重新索引状态。</p>
+        </div>
+        <span class="status" class:dirty>{dirty ? "未保存" : "已同步"}</span>
+      </div>
+
+      <div class="setting-grid">
+        <label class="field">
+          <span>服务商</span>
+          <select bind:value={embeddingProvider} disabled={loading || saving}>
+            {#each providerOptions as option}
+              <option value={option.value}>{option.label}</option>
+            {/each}
+          </select>
+        </label>
+
+        <label class="field">
+          <span>模型</span>
+          <input bind:value={embeddingModel} placeholder="例如 text-embedding-3-small" disabled={loading || saving} />
+        </label>
+
+        <label class="field">
+          <span>接口格式</span>
+          <select bind:value={embeddingApiFormat} disabled={loading || saving}>
+            {#each embeddingApiFormatOptions as option}
+              <option value={option.value}>{option.label}</option>
+            {/each}
+          </select>
+        </label>
+
+        <label class="field">
+          <span>Base URL</span>
+          <input bind:value={embeddingBaseUrl} placeholder="https://api.openai.com/v1" disabled={loading || saving} />
+          <small>{selectedEmbeddingApiFormat.hint}</small>
+        </label>
+
+        <label class="field">
+          <span>向量维度</span>
+          <input
+            type="number"
+            min="1"
+            max="8192"
+            step="1"
+            bind:value={embeddingDimensions}
+            disabled={loading || saving}
+          />
+          <small>必须与所选模型实际输出维度一致；不一致会被主进程拒绝。</small>
+        </label>
+
+        <label class="field">
+          <span>Profile 版本</span>
+          <input bind:value={embeddingVersion} placeholder="v1" disabled={loading || saving} />
+          <small>用于隔离不同 provider/模型/维度的向量。变更后旧 embedding 会被标记为 stale，需要重建。</small>
+        </label>
+
+        <label class="field secret-field">
+          <span>API Key</span>
+          <div class="secret-input">
+            <input
+              type="text"
+              bind:value={embeddingApiKey}
+              placeholder={embeddingSecretConfigured ? "已保存 API Key；留空将继续保留" : "粘贴 API Key"}
+              disabled={loading || saving || clearEmbeddingApiKey}
+            />
+            {#if (embeddingApiKey || embeddingSecretConfigured) && !clearEmbeddingApiKey}
+              <button type="button" class="secondary-btn clear-secret" onclick={markClearEmbeddingApiKey} disabled={loading || saving}>
+                清除
+              </button>
+            {/if}
+          </div>
+        </label>
+      </div>
+
+      <div class="secret-note">
+        <Icon name="lock" size={14} />
+        <span>
+          {#if clearEmbeddingApiKey}
+            保存后会删除当前 embedding API Key；未配置 Key 时资源仍可保存，但只能用关键词检索。
+          {:else}
+            {embeddingSecretConfigured ? "已保存 embedding API Key。出于安全原因，密钥明文不会回显到界面。" : "未配置 API Key 时仍可保存资源，但语义检索会处于 disabled 状态。"}
+          {/if}
+        </span>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-head">
+        <div>
           <h3>观测数据</h3>
           <p>控制 Mastra traces、事件和调试数据在本机数据库中的保留时间。</p>
         </div>
@@ -274,6 +442,12 @@
         <div class="message error"><Icon name="alertCircle" size={14} />请输入 1 到 3650 之间的整数。</div>
       {:else if invalidAi}
         <div class="message error"><Icon name="alertCircle" size={14} />AI 模型不能为空。</div>
+      {:else if !embeddingModel.trim()}
+        <div class="message error"><Icon name="alertCircle" size={14} />向量模型不能为空。</div>
+      {:else if invalidEmbeddingDimensions}
+        <div class="message error"><Icon name="alertCircle" size={14} />向量维度需为 1 到 8192 之间的整数。</div>
+      {:else if !embeddingVersion.trim()}
+        <div class="message error"><Icon name="alertCircle" size={14} />Profile 版本不能为空。</div>
       {:else if error}
         <div class="message error"><Icon name="alertCircle" size={14} />{error}</div>
       {:else if savedAt}
@@ -284,7 +458,7 @@
         <button class="secondary-btn" onclick={resetDraft} disabled={!dirty || saving}>
           撤销
         </button>
-        <button class="primary-btn" onclick={saveSettings} disabled={!dirty || invalidRetention || invalidAi || loading || saving}>
+        <button class="primary-btn" onclick={saveSettings} disabled={!dirty || invalidRetention || invalidAi || invalidEmbedding || loading || saving}>
           <Icon name="check" size={14} color="#fff" />{saving ? "保存中" : "保存设置"}
         </button>
       </div>

@@ -191,7 +191,8 @@ export async function saveAiSettings(settings: SaveAiSettings): Promise<AiSettin
   const model = settings.model.trim();
   const baseUrl = settings.baseUrl?.trim() || undefined;
   const apiFormat = normalizeAiApiFormat(settings.apiFormat);
-  const apiKey = settings.clearApiKey ? undefined : settings.apiKey ?? existing?.value?.apiKey;
+  const incomingApiKey = settings.apiKey?.trim() ? settings.apiKey : undefined;
+  const apiKey = settings.clearApiKey ? undefined : incomingApiKey ?? existing?.value?.apiKey;
 
   if (!model) {
     throw new Error("[settings] AI model is required");
@@ -277,7 +278,8 @@ export async function saveEmbeddingSettings(settings: SaveEmbeddingSettings): Pr
   const version = settings.version.trim();
   const baseUrl = settings.baseUrl?.trim() || undefined;
   const apiFormat = normalizeAiApiFormat(settings.apiFormat);
-  const apiKey = settings.clearApiKey ? undefined : settings.apiKey ?? existing?.value?.apiKey;
+  const incomingApiKey = settings.apiKey?.trim() ? settings.apiKey : undefined;
+  const apiKey = settings.clearApiKey ? undefined : incomingApiKey ?? existing?.value?.apiKey;
 
   if (!model) {
     throw new Error("[settings] embedding model is required");

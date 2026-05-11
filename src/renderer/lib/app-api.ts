@@ -90,9 +90,20 @@ export const appApi = {
       apiKey?: string;
       clearApiKey?: boolean;
     };
+    embedding?: {
+      provider: "openai" | "anthropic" | "google" | "custom";
+      model: string;
+      dimensions: number;
+      version: string;
+      baseUrl?: string;
+      apiFormat: "openai-compatible" | "openai-responses" | "anthropic";
+      apiKey?: string;
+      clearApiKey?: boolean;
+    };
   }): Promise<Result<SaveSettingsResponse>> {
     return rpc.request("saveSettings", {
       ai: settings.ai,
+      ...(settings.embedding ? { embedding: settings.embedding } : {}),
       observability: { retentionDays: settings.retentionDays },
     });
   },
