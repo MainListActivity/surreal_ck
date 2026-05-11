@@ -10,9 +10,32 @@ import { installApplicationMenu } from "./app-menu";
 import { configureResearchWindowRpcFactory } from "./services/research-window";
 import type { AppRPC } from "../shared/rpc.types";
 
-function createAppRpc() {
+type WindowControlTarget = {
+  isMaximized(): boolean;
+  maximize(): void;
+  unmaximize(): void;
+};
+
+function createWindowControls(getWindow?: () => WindowControlTarget | null) {
+  return {
+    toggleWindowMaximized() {
+      const win = getWindow?.();
+      if (!win) return;
+      if (win.isMaximized()) {
+        win.unmaximize();
+      } else {
+        win.maximize();
+      }
+    },
+  };
+}
+
+function createAppRpc(getWindow?: () => WindowControlTarget | null) {
   const rpc = BrowserView.defineRPC<AppRPC>({
-    handlers: createRpcHandlers((event, payload) => rpc.send(event, payload)),
+    handlers: createRpcHandlers(
+      (event, payload) => rpc.send(event, payload),
+      createWindowControls(getWindow),
+    ),
   });
   return rpc;
 }
@@ -26,7 +49,8 @@ async function main() {
     process.exit(1);
   });
 
-  const rpc = createAppRpc();
+  let mainWindow: WindowControlTarget | null = null;
+  const rpc = createAppRpc(() => mainWindow);
   configureResearchWindowRpcFactory(createAppRpc);
 
   const win = new BrowserWindow({
@@ -36,6 +60,7 @@ async function main() {
     titleBarStyle: "hiddenInset",
     rpc,
   });
+  mainWindow = win;
 
   win.on("dom-ready", async () => {
     const result = await tryRestoreSession();

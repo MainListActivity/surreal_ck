@@ -1453,6 +1453,7 @@ export interface AppRPC extends ElectrobunRPCSchema {
       query: { params: RawQueryRequest; response: RawQueryResponse };
       getAuthState: { params: Record<string, never>; response: AuthState };
       logout: { params: Record<string, never>; response: void };
+      toggleWindowMaximized: { params: Record<string, never>; response: void };
       getAppBootstrap: { params: Record<string, never>; response: Result<AppBootstrap> };
       getSettings: { params: Record<string, never>; response: Result<GetSettingsResponse> };
       saveSettings: { params: SaveSettingsRequest; response: Result<SaveSettingsResponse> };

@@ -153,13 +153,17 @@ type SendFn = {
   (event: "aiSuspended", payload: WorkflowSuspendedEvent): void;
 };
 
+export type WindowControlDeps = {
+  toggleWindowMaximized(): void;
+};
+
 const ADMIN_QUERY_ENABLED =
   process.env.ADMIN_QUERY === "1" ||
   process.env.NODE_ENV === "development" ||
   process.env.BUN_ENV === "development";
 
 /** 创建供 BrowserView.defineRPC handlers 字段消费的处理器对象。 */
-export function createRpcHandlers(send: SendFn) {
+export function createRpcHandlers(send: SendFn, windowControls?: WindowControlDeps) {
   return {
     requests: {
       // ── 调试入口（Admin Console 专用）──────────────────────────────────
@@ -184,6 +188,10 @@ export function createRpcHandlers(send: SendFn) {
         await closeUserDb();
         const state = getPublicAuthState();
         send("authStateChanged", { state });
+      },
+
+      toggleWindowMaximized: async (): Promise<void> => {
+        windowControls?.toggleWindowMaximized();
       },
 
       // ── 产品 API ───────────────────────────────────────────────────────

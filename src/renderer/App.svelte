@@ -100,6 +100,16 @@
     event.preventDefault();
   }
 
+  function handleTitlebarDoubleClick(event: MouseEvent) {
+    if (isTitlebarNoDragTarget(event.target)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    window.getSelection()?.removeAllRanges();
+    void rpc.request("toggleWindowMaximized", {}).catch((err) => {
+      console.warn("[titlebar] toggle window maximized failed:", err);
+    });
+  }
+
   function commitNavigate(next: RouteState) {
     route = next;
     try {
@@ -148,6 +158,7 @@
     class="global-titlebar electrobun-webkit-app-region-drag"
     role="presentation"
     onmousedown={handleTitlebarMouseDown}
+    ondblclick={handleTitlebarDoubleClick}
     onselectstart={preventTitlebarTextSelection}
     ondragstart={preventTitlebarTextSelection}
   >

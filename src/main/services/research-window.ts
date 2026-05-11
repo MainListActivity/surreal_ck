@@ -21,9 +21,21 @@ export type ResearchWindowRpc = {
   setTransport(transport: unknown): void;
 };
 
-let researchWindowRpcFactory: (() => ResearchWindowRpc) | null = null;
+export type ResearchWindowControlTarget = {
+  isMaximized(): boolean;
+  maximize(): void;
+  unmaximize(): void;
+};
 
-export function configureResearchWindowRpcFactory(factory: () => ResearchWindowRpc): void {
+type ResearchBrowserWindow = ResearchWindowControlTarget & {
+  webview: {
+    executeJavascript(script: string): void;
+  };
+};
+
+let researchWindowRpcFactory: ((getWindow?: () => ResearchWindowControlTarget | null) => ResearchWindowRpc) | null = null;
+
+export function configureResearchWindowRpcFactory(factory: (getWindow?: () => ResearchWindowControlTarget | null) => ResearchWindowRpc): void {
   researchWindowRpcFactory = factory;
 }
 
@@ -92,12 +104,15 @@ async function openElectrobunResearchWindow(params: ResearchWindowParams): Promi
     );
   }
 
-  const win = new BrowserWindow({
+  let win: ResearchBrowserWindow | null = null;
+  const rpc = researchWindowRpcFactory?.(() => win);
+
+  win = new BrowserWindow({
     title: "资源检索",
     url: "views://mainview/index.html",
     frame: { width: 1180, height: 780, x: 140, y: 120 },
     titleBarStyle: "hiddenInset",
-    rpc: researchWindowRpcFactory?.(),
+    rpc,
   });
 
   // 如果主窗口脚本注入在某些平台上晚于新窗口首屏，这里在研究窗口自身
