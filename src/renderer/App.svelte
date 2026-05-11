@@ -84,6 +84,22 @@
     };
   });
 
+  function isTitlebarNoDragTarget(target: EventTarget | null) {
+    return target instanceof HTMLElement
+      && Boolean(target.closest(".electrobun-webkit-app-region-no-drag"));
+  }
+
+  function handleTitlebarMouseDown(event: MouseEvent) {
+    if (isTitlebarNoDragTarget(event.target)) return;
+    window.getSelection()?.removeAllRanges();
+    event.preventDefault();
+  }
+
+  function preventTitlebarTextSelection(event: Event) {
+    if (isTitlebarNoDragTarget(event.target)) return;
+    event.preventDefault();
+  }
+
   function commitNavigate(next: RouteState) {
     route = next;
     try {
@@ -128,11 +144,17 @@
 </script>
 
 <div class="app-shell">
-  <header class="global-titlebar">
-    <div class="titlebar-drag"></div>
+  <header
+    class="global-titlebar electrobun-webkit-app-region-drag"
+    role="presentation"
+    onmousedown={handleTitlebarMouseDown}
+    onselectstart={preventTitlebarTextSelection}
+    ondragstart={preventTitlebarTextSelection}
+  >
+    <div class="titlebar-drag electrobun-webkit-app-region-drag"></div>
     {#if auth.loggedIn || auth.offlineMode}
       <button
-        class="ai-titlebar-btn"
+        class="ai-titlebar-btn electrobun-webkit-app-region-no-drag"
         class:active={appState.aiDrawerOpen}
         aria-label="AI 助手"
         onclick={() => appState.toggleAiDrawer()}
@@ -336,6 +358,7 @@
     border-bottom: 1px solid var(--border);
     /* 允许拖动窗口 */
     -webkit-app-region: drag;
+    -webkit-user-select: none;
     user-select: none;
   }
 
@@ -343,6 +366,8 @@
     flex: 1;
     height: 100%;
     -webkit-app-region: drag;
+    -webkit-user-select: none;
+    user-select: none;
   }
 
   .ai-titlebar-btn {
@@ -360,6 +385,8 @@
     cursor: pointer;
     /* 按钮需要可点击，不能被 drag region 吃掉 */
     -webkit-app-region: no-drag;
+    user-select: none;
+    -webkit-user-select: none;
     box-shadow: 0 2px 8px rgba(22, 100, 255, .25);
     transition: background 0.15s;
   }
