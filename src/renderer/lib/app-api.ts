@@ -48,6 +48,8 @@ import type {
   ResumeAiWorkflowResponse,
   ResumeDecision,
   AiStructuredIntent,
+  CancelAiWorkflowRequest,
+  CancelAiWorkflowResponse,
   CancelResearchSessionRequest,
   CompleteResearchSessionRequest,
   ToolNavigationIntent,
@@ -106,6 +108,10 @@ export const appApi = {
 
   resumeAiWorkflow(runId: string, decision: ResumeDecision): Promise<Result<ResumeAiWorkflowResponse>> {
     return rpc.request("resumeAiWorkflow", { runId, decision });
+  },
+
+  cancelAiWorkflow(req: CancelAiWorkflowRequest): Promise<Result<CancelAiWorkflowResponse>> {
+    return rpc.request("cancelAiWorkflow", req);
   },
 
   executeAiAction(

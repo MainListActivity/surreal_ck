@@ -1,8 +1,10 @@
 import type {
+  AiRunCancelledEvent,
   OpenResearchWindowRequest,
   OpenResearchWindowResponse,
   ResearchSessionResponse,
 } from "../../shared/rpc.types";
+import { cancelAiWorkflowRun } from "./ai-cancel";
 import { ServiceError } from "./errors";
 import { getResearchSession } from "./resources";
 
@@ -34,9 +36,16 @@ type ResearchBrowserWindow = ResearchWindowControlTarget & {
 };
 
 let researchWindowRpcFactory: ((getWindow?: () => ResearchWindowControlTarget | null) => ResearchWindowRpc) | null = null;
+let aiRunCancelledNotifier: ((event: AiRunCancelledEvent) => void | Promise<void>) | null = null;
 
 export function configureResearchWindowRpcFactory(factory: (getWindow?: () => ResearchWindowControlTarget | null) => ResearchWindowRpc): void {
   researchWindowRpcFactory = factory;
+}
+
+export function configureResearchWindowAiRunCancelledNotifier(
+  notifier: (event: AiRunCancelledEvent) => void | Promise<void>,
+): void {
+  aiRunCancelledNotifier = notifier;
 }
 
 export function isAllowedResearchUrl(value: string | undefined): boolean {
@@ -115,6 +124,12 @@ async function openElectrobunResearchWindow(params: ResearchWindowParams): Promi
     rpc,
   });
 
+  win.on("close", () => {
+    void cancelResearchSessionForClosedWindow(params.sessionId).catch((err) => {
+      console.warn("[research-window] close cancellation failed:", err);
+    });
+  });
+
   // 如果主窗口脚本注入在某些平台上晚于新窗口首屏，这里在研究窗口自身
   // 再写入一次并刷新，让 App 的同步 route 初始化能稳定读到 research 参数。
   setTimeout(() => {
@@ -122,4 +137,29 @@ async function openElectrobunResearchWindow(params: ResearchWindowParams): Promi
       `localStorage.setItem(${JSON.stringify(storageKey)}, ${escapedPayload}); window.location.reload();`
     );
   }, 100);
+}
+
+export async function cancelResearchSessionForClosedWindow(
+  sessionId: string | undefined,
+  deps: {
+    cancelAiWorkflowRun(req: { runId: string; sessionId: string; reason: "research-window-closed" }): Promise<{ event: AiRunCancelledEvent }>;
+    getResearchSession(req: { sessionId: string }): Promise<ResearchSessionResponse>;
+    notify(event: AiRunCancelledEvent): void | Promise<void>;
+  } = {
+    cancelAiWorkflowRun,
+    getResearchSession,
+    notify: async (event) => aiRunCancelledNotifier?.(event),
+  },
+): Promise<AiRunCancelledEvent | null> {
+  if (!sessionId) return null;
+  const { session } = await deps.getResearchSession({ sessionId });
+  if (session.status !== "open" || !session.originatingRunId) return null;
+
+  const result = await deps.cancelAiWorkflowRun({
+    runId: session.originatingRunId,
+    sessionId,
+    reason: "research-window-closed",
+  });
+  await deps.notify(result.event);
+  return result.event;
 }

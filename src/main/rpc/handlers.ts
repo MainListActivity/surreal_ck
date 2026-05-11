@@ -1,8 +1,11 @@
 import type {
   AiMessageChunkEvent,
   AiProgressEvent,
+  AiRunCancelledEvent,
   AppBootstrap,
   AuthState,
+  CancelAiWorkflowRequest,
+  CancelAiWorkflowResponse,
   CancelResearchSessionRequest,
   CompleteResearchSessionRequest,
   CreateBlankWorkbookRequest,
@@ -143,6 +146,7 @@ import {
 } from "../services/settings";
 import { sendAiMessage } from "../services/ai-chat";
 import { resumeAiWorkflowFromRpc } from "../services/ai-resume-rpc";
+import { cancelAiWorkflow } from "../services/ai-cancel";
 import { executeAiAction } from "../services/ai-actions";
 import { createResourceDraftFromEvidence } from "../ai/mastra/agents/resource-agent";
 
@@ -151,6 +155,7 @@ type SendFn = {
   (event: "aiMessageChunk", payload: AiMessageChunkEvent): void;
   (event: "aiProgress", payload: AiProgressEvent): void;
   (event: "aiSuspended", payload: WorkflowSuspendedEvent): void;
+  (event: "aiRunCancelled", payload: AiRunCancelledEvent): void;
 };
 
 export type WindowControlDeps = {
@@ -286,6 +291,14 @@ export function createRpcHandlers(send: SendFn, windowControls?: WindowControlDe
             onSuspend: (event) => send("aiSuspended", event),
           }),
         );
+      },
+
+      cancelAiWorkflow: async (req: CancelAiWorkflowRequest): Promise<Result<CancelAiWorkflowResponse>> => {
+        return withResult(async () => {
+          const res = await cancelAiWorkflow(req);
+          send("aiRunCancelled", res.event);
+          return res;
+        });
       },
 
       executeAiAction: async (req: ExecuteAiActionRequest): Promise<Result<ExecuteAiActionResponse>> => {

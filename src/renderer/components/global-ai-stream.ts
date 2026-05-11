@@ -1,9 +1,11 @@
 import type { AiChatMessage } from "../../shared/ai-context";
 import type {
   AiMessageChunkEvent,
+  AiRunCancelledEvent,
   AiStructuredIntent,
   AiToolCallRecord,
   DashboardDraftIntent,
+  OpenResearchWindowRequest,
   RowPatchIntent,
   RowPatchProposal,
   ToolNavigationIntent,
@@ -24,6 +26,12 @@ export type AiStreamState = {
   sending: boolean;
   sendError: string | null;
   streamedText: string;
+};
+
+export type ActiveAiRun = {
+  runId: string;
+  messageId: string;
+  sessionId?: string;
 };
 
 export function extractNavigationIntent(toolCalls: AiToolCallRecord[]): ToolNavigationIntent | null {
@@ -69,6 +77,35 @@ export function buildRowPatchIntentFromProposal(
     sheetId: proposal.sheetId,
     rowId: proposal.recordId,
     patch,
+  };
+}
+
+export function researchWindowRequestFromSuspendedEvent(
+  event: WorkflowSuspendedEvent,
+): OpenResearchWindowRequest | null {
+  if (event.kind !== "manual-research") return null;
+  return { sessionId: event.sessionId };
+}
+
+export function applyAiRunCancelledToMessages(
+  state: AiStreamState,
+  activeRun: ActiveAiRun | null,
+  event: AiRunCancelledEvent,
+): AiStreamState {
+  if (!activeRun || activeRun.runId !== event.runId) return state;
+  return {
+    ...state,
+    sending: false,
+    sendError: null,
+    streamedText: "",
+    messages: state.messages.map((message) =>
+      message.id === activeRun.messageId
+        ? { ...message, content: event.message }
+        : message,
+    ),
+    pendingIntents: state.pendingIntents.map((intent) =>
+      intent.runId === event.runId ? { ...intent, dismissed: true } : intent,
+    ),
   };
 }
 

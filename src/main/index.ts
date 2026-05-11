@@ -7,8 +7,11 @@ import { setOfflineMode } from "./services/context";
 import { decodeTokenClaims, bootstrapLocalIdentity } from "./services/identity";
 import { createRpcHandlers } from "./rpc/handlers";
 import { installApplicationMenu } from "./app-menu";
-import { configureResearchWindowRpcFactory } from "./services/research-window";
-import type { AppRPC } from "../shared/rpc.types";
+import {
+  configureResearchWindowAiRunCancelledNotifier,
+  configureResearchWindowRpcFactory,
+} from "./services/research-window";
+import type { AiRunCancelledEvent, AppRPC } from "../shared/rpc.types";
 
 type WindowControlTarget = {
   isMaximized(): boolean;
@@ -40,6 +43,12 @@ function createAppRpc(getWindow?: () => WindowControlTarget | null) {
   return rpc;
 }
 
+function broadcastAiRunCancelled(event: AiRunCancelledEvent) {
+  for (const view of BrowserView.getAll()) {
+    view.rpc?.send?.("aiRunCancelled", event);
+  }
+}
+
 async function main() {
   ensureSingleInstance();
   installApplicationMenu();
@@ -52,6 +61,7 @@ async function main() {
   let mainWindow: WindowControlTarget | null = null;
   const rpc = createAppRpc(() => mainWindow);
   configureResearchWindowRpcFactory(createAppRpc);
+  configureResearchWindowAiRunCancelledNotifier(broadcastAiRunCancelled);
 
   const win = new BrowserWindow({
     title: "SurrealCK",

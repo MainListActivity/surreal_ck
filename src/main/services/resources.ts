@@ -4,6 +4,7 @@ import { DateTime, RecordId, StringRecordId, Table } from "surrealdb";
 import { getLocalDb } from "../db/index";
 import { omitNullishSurrealFields } from "../db/surreal-values";
 import { assertCanReadWorkspace, assertCanWriteWorkspace, getCurrentUserRecordId } from "./context";
+import { generateEmbeddingVector } from "./embedding-client";
 import { ServiceError } from "./errors";
 import { getEmbeddingSettings, saveEmbeddingSettings } from "./settings";
 
@@ -801,12 +802,16 @@ export function createResourceService(deps: ResourceServiceDeps) {
   return api;
 }
 
-export function saveResource(req: SaveResourceRequest): Promise<SaveResourceResponse> {
-  return createDefaultResourceService().saveResource(req);
+export async function saveResource(req: SaveResourceRequest): Promise<SaveResourceResponse> {
+  const result = await createDefaultResourceService().saveResource(req);
+  queueDefaultResourceEmbedding(result.resource.id);
+  return result;
 }
 
-export function saveResearchResource(req: SaveResearchResourceRequest): Promise<SaveResourceResponse> {
-  return createDefaultResourceService().saveResearchResource(req);
+export async function saveResearchResource(req: SaveResearchResourceRequest): Promise<SaveResourceResponse> {
+  const result = await createDefaultResourceService().saveResearchResource(req);
+  queueDefaultResourceEmbedding(result.resource.id);
+  return result;
 }
 
 export function getResourceDetail(req: GetResourceDetailRequest): Promise<ResourceDetailResponse> {
@@ -814,7 +819,7 @@ export function getResourceDetail(req: GetResourceDetailRequest): Promise<Resour
 }
 
 export function searchResources(req: SearchResourcesRequest): Promise<SearchResourcesResponse> {
-  return createDefaultResourceService().searchResources(req);
+  return createDefaultResourceService({ searchEmbedding: true }).searchResources(req);
 }
 
 export function createResearchSession(req: CreateResearchSessionRequest): Promise<ResearchSessionResponse> {
@@ -841,11 +846,15 @@ export function updateEmbeddingProfile(req: UpdateEmbeddingProfileRequest): Prom
   return createDefaultResourceService().updateEmbeddingProfile(req);
 }
 
-export function retryResourceEmbedding(req: RetryResourceEmbeddingRequest): Promise<RetryResourceEmbeddingResponse> {
-  return createDefaultResourceService().retryResourceEmbedding(req);
+export async function retryResourceEmbedding(req: RetryResourceEmbeddingRequest): Promise<RetryResourceEmbeddingResponse> {
+  const result = await createDefaultResourceService().retryResourceEmbedding(req);
+  queueDefaultResourceEmbedding(req.resourceId);
+  return result;
 }
 
-function createDefaultResourceService(): ReturnType<typeof createResourceService> {
+function createDefaultResourceService(
+  options: { searchEmbedding?: boolean } = {},
+): ReturnType<typeof createResourceService> {
   return createResourceService({
     repository: new SurrealResourceRepository(),
     assertCanReadWorkspace,
@@ -875,7 +884,68 @@ function createDefaultResourceService(): ReturnType<typeof createResourceService
         apiKey: current.apiKey,
       });
     },
+    generateSearchEmbedding: options.searchEmbedding
+      ? async ({ text }) => generateEmbeddingVector(await getEmbeddingSettings(), text)
+      : undefined,
   });
+}
+
+function queueDefaultResourceEmbedding(resourceId: string): void {
+  void indexDefaultResourceEmbedding(resourceId).catch(() => undefined);
+}
+
+async function indexDefaultResourceEmbedding(resourceId: string): Promise<void> {
+  const settings = await getEmbeddingSettings();
+  if (!settings.secretConfigured) return;
+
+  const repository = new SurrealResourceRepository();
+  const row = await repository.findResourceById(resourceId);
+  if (!row) return;
+
+  const profile: ResourceEmbeddingProfile = {
+    provider: settings.provider,
+    model: settings.model,
+    dimensions: settings.dimensions,
+    version: settings.version,
+  };
+  const timestamp = new Date();
+  const embeddingText = buildResourceEmbeddingText(row);
+  const embeddingTextHash = stableHash(embeddingText);
+  const pendingRow = await repository.upsertResourceEmbedding({
+    workspace: row.workspace,
+    resource: row.id,
+    ...embeddingProfileToRowFields(profile),
+    embedding_text_hash: embeddingTextHash,
+    vector: undefined,
+    status: "pending",
+    error_summary: undefined,
+    indexed_at: undefined,
+    created_at: timestamp,
+    updated_at: timestamp,
+  });
+
+  try {
+    const vector = await generateEmbeddingVector(settings, embeddingText);
+    const indexedAt = new Date();
+    await repository.upsertResourceEmbedding({
+      ...pendingRow,
+      vector,
+      status: "indexed",
+      error_summary: undefined,
+      indexed_at: indexedAt,
+      updated_at: indexedAt,
+    });
+  } catch (error) {
+    const failedAt = new Date();
+    await repository.upsertResourceEmbedding({
+      ...pendingRow,
+      vector: undefined,
+      status: "failed",
+      error_summary: summarizeEmbeddingError(error),
+      indexed_at: undefined,
+      updated_at: failedAt,
+    });
+  }
 }
 
 async function ensureInitialEmbeddingState(

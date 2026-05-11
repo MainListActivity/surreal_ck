@@ -5,11 +5,14 @@
   import { appApi } from "../lib/app-api";
   import { appState } from "../lib/app-state.svelte";
   import { editorStore } from "../lib/editor.svelte";
-  import { subscribeAiChunks, subscribeAiProgress, subscribeAiSuspended } from "../lib/rpc";
+  import { subscribeAiChunks, subscribeAiProgress, subscribeAiRunCancelled, subscribeAiSuspended } from "../lib/rpc";
   import {
     applyAiChunkToMessages,
+    applyAiRunCancelledToMessages,
     applyAiSuspendedToMessages,
     buildRowPatchIntentFromProposal,
+    researchWindowRequestFromSuspendedEvent,
+    type ActiveAiRun,
     type PendingIntent,
   } from "./global-ai-stream";
   import {
@@ -37,6 +40,7 @@
     RowPatchProposal,
     ToolNavigationIntent,
     AiMessageChunkEvent,
+    AiRunCancelledEvent,
     WorkflowSuspendedEvent,
   } from "../../shared/rpc.types";
   import type { Navigate, RouteState, ScreenId } from "../lib/types";
@@ -60,6 +64,10 @@
   let selectedResourceCandidateIds = $state<Record<string, string[]>>({});
   let composerMode = $state<AiComposerMode>("chat");
   let composerMenuOpen = $state(false);
+  let activeRun = $state<ActiveAiRun | null>(null);
+  let cancellingRun = $state(false);
+  let cleanupActiveStream: (() => void) | null = null;
+  let unsubscribeActiveRunCancelled: (() => void) | null = null;
   const activeComposerMode = $derived(composerModeView(composerMode));
 
   function navigateFromAiAction(action: AppNavigationIntent) {
@@ -80,9 +88,6 @@
     pendingIntents = next.pendingIntents;
     sending = next.sending;
     sendError = next.sendError;
-    if (event.kind === "manual-research") {
-      void appApi.openResearchWindow({ sessionId: event.sessionId });
-    }
     return next.streamedText;
   }
 
@@ -99,6 +104,67 @@
     return next.streamedText;
   }
 
+  function handleRunCancelled(event: AiRunCancelledEvent) {
+    cleanupActiveStream?.();
+    cleanupActiveStream = null;
+    const next = applyAiRunCancelledToMessages(
+      { messages, pendingIntents, sending, sendError, streamedText: "" },
+      activeRun,
+      event,
+    );
+    messages = next.messages;
+    pendingIntents = next.pendingIntents;
+    sending = next.sending;
+    sendError = next.sendError;
+    progressHint = null;
+    clearActiveRun();
+  }
+
+  function registerActiveRun(run: ActiveAiRun) {
+    unsubscribeActiveRunCancelled?.();
+    activeRun = run;
+    cancellingRun = false;
+    unsubscribeActiveRunCancelled = subscribeAiRunCancelled(run.runId, handleRunCancelled);
+  }
+
+  function updateActiveResearchSession(event: WorkflowSuspendedEvent) {
+    if (event.kind !== "manual-research" || !activeRun || activeRun.runId !== event.runId) return;
+    activeRun = { ...activeRun, sessionId: event.sessionId };
+  }
+
+  function clearActiveRun(runId?: string) {
+    if (runId && activeRun?.runId !== runId) return;
+    activeRun = null;
+    cancellingRun = false;
+    unsubscribeActiveRunCancelled?.();
+    unsubscribeActiveRunCancelled = null;
+  }
+
+  async function terminateActiveRun() {
+    if (!activeRun || cancellingRun) return;
+    const run = activeRun;
+    cancellingRun = true;
+    composerMenuOpen = false;
+    const res = await appApi.cancelAiWorkflow({
+      runId: run.runId,
+      sessionId: run.sessionId,
+      reason: "user-cancelled",
+    });
+    if (!res.ok) {
+      sendError = res.message;
+      cancellingRun = false;
+      return;
+    }
+    handleRunCancelled(res.data.event);
+  }
+
+  async function openResearchWindowForSuspendedEvent(event: WorkflowSuspendedEvent) {
+    const req = researchWindowRequestFromSuspendedEvent(event);
+    if (!req) return;
+    const res = await appApi.openResearchWindow(req);
+    if (!res.ok) sendError = res.message;
+  }
+
   async function executeNavigationIntent(intent: ToolNavigationIntent, runId?: string) {
     const res = await appApi.executeAiAction(intent, runId ? { runId } : undefined);
     if (!res.ok) {
@@ -111,7 +177,10 @@
 
   async function confirmNavigationIntent(intent: ToolNavigationIntent, messageId: string, runId?: string) {
     const executed = await executeNavigationIntent(intent, runId);
-    if (executed) dismissIntent(messageId, { skipResume: true });
+    if (executed) {
+      dismissIntent(messageId, { skipResume: true });
+      if (runId) clearActiveRun(runId);
+    }
   }
 
   async function confirmDashboardDraftIntent(intent: DashboardDraftIntent, messageId: string, runId?: string) {
@@ -125,6 +194,7 @@
       }
       if (res.data.navigation) navigateFromAiAction(res.data.navigation);
       dismissIntent(messageId, { skipResume: true });
+      if (runId) clearActiveRun(runId);
     } catch (err) {
       sendError = err instanceof Error ? err.message : String(err);
     } finally {
@@ -151,6 +221,7 @@
         return;
       }
       dismissIntent(messageId, { skipResume: true });
+      if (runId) clearActiveRun(runId);
     } catch (err) {
       sendError = err instanceof Error ? err.message : String(err);
     } finally {
@@ -164,7 +235,7 @@
       const decision: ResumeDecision = pending.suspendKind === "await-write-confirm"
         ? { kind: "write-rejected" }
         : { kind: "candidate-cancelled" };
-      void appApi.resumeAiWorkflow(pending.runId, decision);
+      void appApi.resumeAiWorkflow(pending.runId, decision).finally(() => clearActiveRun(pending.runId));
     }
     pendingIntents = pendingIntents.map((p) =>
       p.messageId === messageId ? { ...p, dismissed: true } : p,
@@ -251,6 +322,7 @@
       if (event.type === "error" || event.type === "done") {
         progressHint = null;
         cleanup();
+        clearActiveRun(runId);
       }
     });
     unsubscribeProgress = subscribeAiProgress(runId, (event) => {
@@ -258,6 +330,8 @@
     });
     unsubscribeSuspended = subscribeAiSuspended(runId, (event) => {
       streamedText = applySuspendedEvent(messageId, event, streamedText);
+      updateActiveResearchSession(event);
+      void openResearchWindowForSuspendedEvent(event);
       progressHint = null;
       cleanup();
     });
@@ -274,6 +348,7 @@
         sending = false;
         progressHint = null;
         cleanup();
+        clearActiveRun(runId);
         return;
       }
       if (res.data.status === "success" && res.data.finalText && !streamedText) {
@@ -290,12 +365,14 @@
           },
         }, streamedText);
         cleanup();
+        clearActiveRun(runId);
       }
     } catch (err) {
       sendError = err instanceof Error ? err.message : String(err);
       sending = false;
       progressHint = null;
       cleanup();
+      clearActiveRun(runId);
     }
   }
 
@@ -372,6 +449,7 @@
   }
 
   async function sendPrompt() {
+    if (activeRun) return;
     const message = createAiUserMessage({ prompt, context: contextSnapshot });
     if (!message) return;
 
@@ -396,29 +474,40 @@
     let streamedText = "";
     let unsubscribeProgress: (() => void) | null = null;
     let unsubscribeSuspended: (() => void) | null = null;
+    let responseRunId: string | null = null;
 
     const unsubscribe = subscribeAiChunks(streamId, (event) => {
       streamedText = applyChunkEvent(placeholderId, event, streamedText);
       if (event.type === "error" || event.type === "done") {
         progressHint = null;
-        unsubscribe();
-        unsubscribeProgress?.();
-        unsubscribeSuspended?.();
+        cleanupActiveStream?.();
+        cleanupActiveStream = null;
+        if (responseRunId) clearActiveRun(responseRunId);
       }
     });
+    cleanupActiveStream = () => {
+      unsubscribe();
+      unsubscribeProgress?.();
+      unsubscribeSuspended?.();
+    };
 
     try {
       const res = await appApi.sendAiMessage(message, streamId, history, sendOptions);
       if (res.ok) {
+        responseRunId = res.data.runId;
+        if (!res.data.message.content && sending) {
+          registerActiveRun({ runId: res.data.runId, messageId: placeholderId });
+        }
         unsubscribeProgress = subscribeAiProgress(res.data.runId, (event) => {
           progressHint = progressEventToHint(event);
         });
         unsubscribeSuspended = subscribeAiSuspended(res.data.runId, (event) => {
           streamedText = applySuspendedEvent(placeholderId, event, streamedText);
+          updateActiveResearchSession(event);
+          void openResearchWindowForSuspendedEvent(event);
           progressHint = null;
-          unsubscribe();
-          unsubscribeProgress?.();
-          unsubscribeSuspended?.();
+          cleanupActiveStream?.();
+          cleanupActiveStream = null;
         });
       }
       if (res.ok && res.data.message.content) {
@@ -434,6 +523,7 @@
             context: res.data.message.context,
           },
         }, streamedText);
+        if (responseRunId) clearActiveRun(responseRunId);
       } else if (!res.ok && streamedText) {
         messages = messages.map((m) =>
           m.id === placeholderId ? { ...m, content: streamedText } : m,
@@ -441,17 +531,17 @@
         sendError = res.message;
         sending = false;
         progressHint = null;
-        unsubscribe();
-        unsubscribeProgress?.();
-        unsubscribeSuspended?.();
+        cleanupActiveStream?.();
+        cleanupActiveStream = null;
+        if (responseRunId) clearActiveRun(responseRunId);
       } else if (!res.ok) {
         sendError = res.message;
         messages = messages.filter((m) => m.id !== placeholderId);
         sending = false;
         progressHint = null;
-        unsubscribe();
-        unsubscribeProgress?.();
-        unsubscribeSuspended?.();
+        cleanupActiveStream?.();
+        cleanupActiveStream = null;
+        if (responseRunId) clearActiveRun(responseRunId);
       } else if (!streamedText && !sending) {
         messages = messages.filter((m) => m.id !== placeholderId || m.content);
       }
@@ -462,9 +552,9 @@
       }
       sending = false;
       progressHint = null;
-      unsubscribe();
-      unsubscribeProgress?.();
-      unsubscribeSuspended?.();
+      cleanupActiveStream?.();
+      cleanupActiveStream = null;
+      if (responseRunId) clearActiveRun(responseRunId);
     }
   }
 
@@ -695,8 +785,19 @@
       </div>
       <textarea bind:value={prompt} rows="3" placeholder="例如：帮我找到某某债权，或按案件状态统计确认金额"></textarea>
       <div class="composer-actions">
+        {#if activeRun}
+          <button
+            type="button"
+            class="cancel-run-btn"
+            disabled={cancellingRun}
+            onclick={() => { void terminateActiveRun(); }}
+          >
+            <Icon name="x" size={14} />
+            {cancellingRun ? "终止中" : "终止"}
+          </button>
+        {/if}
         <div class="send-split">
-          <button class="primary-btn composer-send-btn" disabled={!prompt.trim() || sending}>
+          <button class="primary-btn composer-send-btn" disabled={!prompt.trim() || sending || !!activeRun}>
             <Icon name={activeComposerMode.icon} size={15} color="#fff" />
             {sending ? (composerMode === "resource-search" ? "搜索中" : "发送中") : activeComposerMode.label}
           </button>
@@ -705,7 +806,7 @@
             class="send-mode-toggle"
             aria-label="切换发送模式"
             aria-expanded={composerMenuOpen}
-            disabled={sending}
+            disabled={sending || !!activeRun}
             onclick={() => (composerMenuOpen = !composerMenuOpen)}
           >
             <Icon name="chevronDown" size={14} />
@@ -1085,7 +1186,28 @@
 
   .composer-actions {
     display: flex;
+    gap: 8px;
     justify-content: flex-end;
+  }
+
+  .cancel-run-btn {
+    display: inline-flex;
+    height: 36px;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 0 12px;
+    border: 1px solid #fecaca;
+    border-radius: 7px;
+    background: #fff5f5;
+    color: #b91c1c;
+    font-size: 12px;
+    font-weight: 650;
+  }
+
+  .cancel-run-btn:disabled {
+    cursor: not-allowed;
+    opacity: .55;
   }
 
   .send-split {

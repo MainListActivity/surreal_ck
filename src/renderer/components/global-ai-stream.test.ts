@@ -2,8 +2,10 @@ import { describe, expect, test } from "bun:test";
 import type { AiChatMessage } from "../../shared/ai-context";
 import {
   applyAiChunkToMessages,
+  applyAiRunCancelledToMessages,
   applyAiSuspendedToMessages,
   buildRowPatchIntentFromProposal,
+  researchWindowRequestFromSuspendedEvent,
   type AiStreamState,
 } from "./global-ai-stream";
 
@@ -247,6 +249,84 @@ describe("applyAiSuspendedToMessages", () => {
 
     expect(next.messages[0].content).toBe("已打开人工检索窗口，请在检索完成后返回。");
     expect(next.pendingIntents).toEqual([]);
+  });
+
+  test("manual-research 暂停事件生成打开人工检索窗口请求", () => {
+    expect(researchWindowRequestFromSuspendedEvent({
+      kind: "manual-research",
+      runId: "run-1",
+      sessionId: "research_session:s1",
+      workspaceId: "workspace:demo",
+      query: "查找合同解除案例",
+      resourceType: "generic_note",
+    })).toEqual({ sessionId: "research_session:s1" });
+    expect(researchWindowRequestFromSuspendedEvent({
+      kind: "resource-candidates",
+      runId: "run-1",
+      candidates: [],
+    })).toBeNull();
+  });
+});
+
+describe("applyAiRunCancelledToMessages", () => {
+  test("研究窗口关闭后把当前运行中的消息改为已终止并清理暂停意图", () => {
+    const placeholder: AiChatMessage = {
+      id: "placeholder",
+      role: "assistant",
+      content: "已打开人工检索窗口，请在检索完成后返回。",
+      createdAt: "2026-05-10T00:00:00.000Z",
+      context: { route: { screen: "editor" } },
+    };
+    const state: AiStreamState = {
+      messages: [placeholder],
+      pendingIntents: [{
+        messageId: "placeholder",
+        intent: { type: "ambiguous", candidates: [] },
+        dismissed: false,
+        runId: "run-1",
+        suspendKind: "resource-candidates",
+      }],
+      sending: true,
+      sendError: "旧错误",
+      streamedText: "部分输出",
+    };
+
+    const next = applyAiRunCancelledToMessages(state, {
+      runId: "run-1",
+      messageId: "placeholder",
+      sessionId: "research_session:s1",
+    }, {
+      runId: "run-1",
+      sessionId: "research_session:s1",
+      reason: "research-window-closed",
+      message: "人工检索窗口已关闭，本次资源搜索已终止。",
+    });
+
+    expect(next.sending).toBe(false);
+    expect(next.sendError).toBeNull();
+    expect(next.streamedText).toBe("");
+    expect(next.messages[0].content).toBe("人工检索窗口已关闭，本次资源搜索已终止。");
+    expect(next.pendingIntents[0].dismissed).toBe(true);
+  });
+
+  test("非当前 run 的取消事件不会改写消息", () => {
+    const placeholder: AiChatMessage = {
+      id: "placeholder",
+      role: "assistant",
+      content: "处理中",
+      createdAt: "2026-05-10T00:00:00.000Z",
+      context: { route: { screen: "editor" } },
+    };
+    const state = baseState([placeholder]);
+
+    expect(applyAiRunCancelledToMessages(state, {
+      runId: "run-1",
+      messageId: "placeholder",
+    }, {
+      runId: "run-2",
+      reason: "user-cancelled",
+      message: "本次 AI 操作已终止。",
+    })).toBe(state);
   });
 });
 

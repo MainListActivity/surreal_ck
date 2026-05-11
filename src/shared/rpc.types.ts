@@ -523,6 +523,20 @@ export const AiProgressEventSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("tool-call"), runId: z.string(), toolId: z.string() }),
 ]);
 
+export type AiRunCancelledEvent = {
+  runId: string;
+  sessionId?: string;
+  reason: "user-cancelled" | "research-window-closed";
+  message: string;
+};
+
+export const AiRunCancelledEventSchema = z.object({
+  runId: z.string().min(1),
+  sessionId: z.string().min(1).optional(),
+  reason: z.enum(["user-cancelled", "research-window-closed"]),
+  message: z.string().min(1),
+});
+
 // ─── Workflow suspend / resume（issue 012） ──────────────────────────────────
 //
 // router workflow 在 ambiguous 候选 / 写操作前需要暂停等待用户决策。
@@ -614,6 +628,18 @@ export type ResumeAiWorkflowResponse = {
   /** 若 resume 完成（success 或再次 suspended）则附带最终文本；用户取消时 resumed=false。 */
   finalText?: string;
   status: "success" | "suspended" | "cancelled";
+};
+
+export const CancelAiWorkflowRequestSchema = z.object({
+  runId: z.string().min(1),
+  sessionId: z.string().min(1).optional(),
+  reason: z.enum(["user-cancelled", "research-window-closed"]).optional(),
+});
+export type CancelAiWorkflowRequest = z.infer<typeof CancelAiWorkflowRequestSchema>;
+
+export type CancelAiWorkflowResponse = {
+  cancelled: boolean;
+  event: AiRunCancelledEvent;
 };
 
 export type WorkbookSummaryDTO = {
@@ -1462,6 +1488,7 @@ export interface AppRPC extends ElectrobunRPCSchema {
       saveSettings: { params: SaveSettingsRequest; response: Result<SaveSettingsResponse> };
       sendAiMessage: { params: SendAiMessageRequest; response: Result<SendAiMessageResponse> };
       resumeAiWorkflow: { params: ResumeAiWorkflowRequest; response: Result<ResumeAiWorkflowResponse> };
+      cancelAiWorkflow: { params: CancelAiWorkflowRequest; response: Result<CancelAiWorkflowResponse> };
       executeAiAction: { params: ExecuteAiActionRequest; response: Result<ExecuteAiActionResponse> };
       listWorkbooks: { params: ListWorkbooksRequest; response: Result<ListWorkbooksResponse> };
       createBlankWorkbook: { params: CreateBlankWorkbookRequest; response: Result<CreateBlankWorkbookResponse> };
@@ -1518,6 +1545,7 @@ export interface AppRPC extends ElectrobunRPCSchema {
       aiMessageChunk: AiMessageChunkEvent;
       aiProgress: AiProgressEvent;
       aiSuspended: WorkflowSuspendedEvent;
+      aiRunCancelled: AiRunCancelledEvent;
     };
   };
 }

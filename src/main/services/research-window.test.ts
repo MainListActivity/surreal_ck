@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  cancelResearchSessionForClosedWindow,
   createResearchWindowService,
   isAllowedResearchUrl,
   type ResearchWindowParams,
@@ -71,5 +72,80 @@ describe("research window shell", () => {
 
     expect(opened).toEqual([{ resourceType: "generic_note" }]);
     expect(result).toEqual({ opened: true });
+  });
+
+  test("关闭手工检索窗口会取消 open session 并通知对应 AI run", async () => {
+    const cancelledRuns: Array<{ runId: string; sessionId: string; reason: string }> = [];
+    const notified: unknown[] = [];
+
+    const event = await cancelResearchSessionForClosedWindow("research_session:s1", {
+      getResearchSession: async () => ({
+        session: {
+          id: "research_session:s1",
+          workspaceId: "workspace:demo",
+          originatingRunId: "run-1",
+          query: "查找合同解除案例",
+          context: {},
+          resourceType: "generic_note",
+          status: "open",
+          resourceIds: [],
+          createdBy: "app_user:u1",
+          createdAt: "2026-05-11T08:00:00.000Z",
+          updatedAt: "2026-05-11T08:00:00.000Z",
+        },
+      }),
+      cancelAiWorkflowRun: async (req) => {
+        cancelledRuns.push(req);
+        return {
+          event: {
+            runId: req.runId,
+            sessionId: req.sessionId,
+            reason: req.reason,
+            message: "人工检索窗口已关闭，本次资源搜索已终止。",
+          },
+        };
+      },
+      notify: async (payload) => {
+        notified.push(payload);
+      },
+    });
+
+    expect(cancelledRuns).toEqual([{
+      runId: "run-1",
+      sessionId: "research_session:s1",
+      reason: "research-window-closed",
+    }]);
+    expect(notified).toEqual([event]);
+  });
+
+  test("关闭已完成的手工检索窗口不会取消 AI run", async () => {
+    const cancelledRuns: unknown[] = [];
+    const event = await cancelResearchSessionForClosedWindow("research_session:s1", {
+      getResearchSession: async () => ({
+        session: {
+          id: "research_session:s1",
+          workspaceId: "workspace:demo",
+          originatingRunId: "run-1",
+          query: "查找合同解除案例",
+          context: {},
+          resourceType: "generic_note",
+          status: "completed",
+          resourceIds: [],
+          createdBy: "app_user:u1",
+          createdAt: "2026-05-11T08:00:00.000Z",
+          updatedAt: "2026-05-11T08:00:00.000Z",
+        },
+      }),
+      cancelAiWorkflowRun: async (req) => {
+        cancelledRuns.push(req);
+        throw new Error("不应取消已完成 session");
+      },
+      notify: async () => {
+        throw new Error("不应通知");
+      },
+    });
+
+    expect(event).toBeNull();
+    expect(cancelledRuns).toEqual([]);
   });
 });
