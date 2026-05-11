@@ -42,7 +42,16 @@ import type {
   ResumeAiWorkflowResponse,
   ResumeDecision,
   AiStructuredIntent,
+  CancelResearchSessionRequest,
+  CompleteResearchSessionRequest,
   ToolNavigationIntent,
+  CreateResearchSessionRequest,
+  GetResearchSessionRequest,
+  GetResourceDetailRequest,
+  ResearchSessionResponse,
+  ResourceDetailResponse,
+  SaveResourceRequest,
+  SaveResourceResponse,
   UpdateSheetFieldsResponse,
   UpdateDashboardViewResponse,
   UpsertRowsResponse,
@@ -183,6 +192,30 @@ export const appApi = {
 
   getTableSchema(table: string): Promise<Result<GetTableSchemaResponse>> {
     return rpc.request("getTableSchema", { table });
+  },
+
+  saveResource(req: SaveResourceRequest): Promise<Result<SaveResourceResponse>> {
+    return rpc.request("saveResource", req);
+  },
+
+  getResourceDetail(req: GetResourceDetailRequest): Promise<Result<ResourceDetailResponse>> {
+    return rpc.request("getResourceDetail", req);
+  },
+
+  createResearchSession(req: CreateResearchSessionRequest): Promise<Result<ResearchSessionResponse>> {
+    return rpc.request("createResearchSession", req);
+  },
+
+  getResearchSession(req: GetResearchSessionRequest): Promise<Result<ResearchSessionResponse>> {
+    return rpc.request("getResearchSession", req);
+  },
+
+  completeResearchSession(req: CompleteResearchSessionRequest): Promise<Result<ResearchSessionResponse>> {
+    return rpc.request("completeResearchSession", req);
+  },
+
+  cancelResearchSession(req: CancelResearchSessionRequest): Promise<Result<ResearchSessionResponse>> {
+    return rpc.request("cancelResearchSession", req);
   },
 
   listDashboardPages(workspaceId: RecordIdString, workbookId?: RecordIdString): Promise<Result<ListDashboardPagesResponse>> {

@@ -459,6 +459,85 @@ DEFINE FIELD IF NOT EXISTS created_at    ON TABLE workbook_file TYPE datetime VA
 DEFINE INDEX IF NOT EXISTS workbook_file_workspace ON TABLE workbook_file COLUMNS workspace;
 
 -- ═══════════════════════════════════════════════════════════════════════════════
+-- RESOURCE RETRIEVAL
+-- Workspace 级共享资源库。resource_item 保存用户确认的主数据；
+-- research_session 是人工检索闭环的业务会话，不暴露 workflow run id 作为主 handle。
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+DEFINE TABLE IF NOT EXISTS research_session SCHEMAFULL
+  PERMISSIONS
+    FOR select WHERE
+      workspace.owner = $auth
+      OR workspace IN $auth<-has_workspace_member<-workspace,
+    FOR create, update WHERE
+      workspace.owner = $auth
+      OR workspace IN $auth<-has_workspace_member<-workspace,
+    FOR delete WHERE workspace.owner = $auth;
+DEFINE FIELD IF NOT EXISTS workspace          ON TABLE research_session TYPE record<workspace>;
+DEFINE FIELD IF NOT EXISTS originating_run_id ON TABLE research_session TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS query              ON TABLE research_session TYPE string;
+DEFINE FIELD OVERWRITE context                ON TABLE research_session TYPE object FLEXIBLE;
+DEFINE FIELD IF NOT EXISTS resource_type      ON TABLE research_session TYPE string;
+DEFINE FIELD IF NOT EXISTS status             ON TABLE research_session TYPE string
+  ASSERT $value INSIDE ["open", "completed", "cancelled"];
+REMOVE FIELD IF EXISTS created_resources.* ON TABLE research_session;
+DEFINE FIELD OVERWRITE created_resources      ON TABLE research_session TYPE any DEFAULT [];
+DEFINE FIELD IF NOT EXISTS created_by         ON TABLE research_session TYPE record<app_user>;
+DEFINE FIELD IF NOT EXISTS created_at         ON TABLE research_session TYPE datetime VALUE time::now();
+DEFINE FIELD IF NOT EXISTS updated_at         ON TABLE research_session TYPE datetime VALUE time::now();
+DEFINE FIELD IF NOT EXISTS completed_at       ON TABLE research_session TYPE option<datetime>;
+DEFINE FIELD IF NOT EXISTS cancelled_at       ON TABLE research_session TYPE option<datetime>;
+DEFINE INDEX IF NOT EXISTS research_session_workspace_status
+  ON TABLE research_session COLUMNS workspace, status;
+DEFINE INDEX IF NOT EXISTS research_session_originating_run
+  ON TABLE research_session COLUMNS originating_run_id;
+
+DEFINE TABLE IF NOT EXISTS resource_item SCHEMAFULL
+  PERMISSIONS
+    FOR select WHERE
+      workspace.owner = $auth
+      OR workspace IN $auth<-has_workspace_member<-workspace,
+    FOR create, update WHERE
+      workspace.owner = $auth
+      OR workspace IN $auth<-has_workspace_member<-workspace,
+    FOR delete WHERE workspace.owner = $auth;
+DEFINE FIELD IF NOT EXISTS workspace        ON TABLE resource_item TYPE record<workspace>;
+DEFINE FIELD IF NOT EXISTS resource_type    ON TABLE resource_item TYPE string;
+DEFINE FIELD IF NOT EXISTS title            ON TABLE resource_item TYPE string;
+DEFINE FIELD IF NOT EXISTS summary          ON TABLE resource_item TYPE string;
+DEFINE FIELD IF NOT EXISTS source_url       ON TABLE resource_item TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS source_title     ON TABLE resource_item TYPE option<string>;
+REMOVE FIELD IF EXISTS evidence.* ON TABLE resource_item;
+REMOVE FIELD IF EXISTS tags.* ON TABLE resource_item;
+REMOVE FIELD IF EXISTS structured_payload.* ON TABLE resource_item;
+DEFINE FIELD OVERWRITE evidence             ON TABLE resource_item TYPE any DEFAULT [];
+DEFINE FIELD OVERWRITE tags                 ON TABLE resource_item TYPE any DEFAULT [];
+DEFINE FIELD OVERWRITE structured_payload   ON TABLE resource_item TYPE object FLEXIBLE DEFAULT {};
+DEFINE FIELD IF NOT EXISTS quality          ON TABLE resource_item TYPE string
+  ASSERT $value INSIDE ["user-confirmed", "ai-draft", "imported", "deprecated"];
+DEFINE FIELD IF NOT EXISTS confidence       ON TABLE resource_item TYPE option<number>;
+DEFINE FIELD IF NOT EXISTS source_trust     ON TABLE resource_item TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS content_hash     ON TABLE resource_item TYPE string;
+DEFINE FIELD IF NOT EXISTS evidence_hash    ON TABLE resource_item TYPE string;
+DEFINE FIELD IF NOT EXISTS source_hash      ON TABLE resource_item TYPE string;
+DEFINE FIELD IF NOT EXISTS research_session ON TABLE resource_item TYPE option<record<research_session>>;
+DEFINE FIELD IF NOT EXISTS created_by       ON TABLE resource_item TYPE record<app_user>;
+DEFINE FIELD IF NOT EXISTS created_at       ON TABLE resource_item TYPE datetime VALUE time::now();
+DEFINE FIELD IF NOT EXISTS updated_at       ON TABLE resource_item TYPE datetime VALUE time::now();
+DEFINE INDEX IF NOT EXISTS resource_item_workspace
+  ON TABLE resource_item COLUMNS workspace;
+DEFINE INDEX IF NOT EXISTS resource_item_workspace_type
+  ON TABLE resource_item COLUMNS workspace, resource_type;
+DEFINE INDEX IF NOT EXISTS resource_item_content_hash
+  ON TABLE resource_item COLUMNS workspace, content_hash;
+DEFINE INDEX IF NOT EXISTS resource_item_evidence_hash
+  ON TABLE resource_item COLUMNS workspace, evidence_hash;
+DEFINE INDEX IF NOT EXISTS resource_item_source_hash
+  ON TABLE resource_item COLUMNS workspace, source_hash;
+DEFINE INDEX IF NOT EXISTS resource_item_research_session
+  ON TABLE resource_item COLUMNS research_session;
+
+-- ═══════════════════════════════════════════════════════════════════════════════
 -- OBSERVABILITY
 -- ═══════════════════════════════════════════════════════════════════════════════
 

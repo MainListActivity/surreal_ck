@@ -3,6 +3,8 @@ import type {
   AiProgressEvent,
   AppBootstrap,
   AuthState,
+  CancelResearchSessionRequest,
+  CompleteResearchSessionRequest,
   CreateBlankWorkbookRequest,
   CreateBlankWorkbookResponse,
   CreateDashboardPageRequest,
@@ -11,6 +13,7 @@ import type {
   CreateDashboardViewResponse,
   CreateFolderRequest,
   CreateFolderResponse,
+  CreateResearchSessionRequest,
   CreateSheetRequest,
   CreateSheetResponse,
   CreateWorkbookFromTemplateRequest,
@@ -21,6 +24,8 @@ import type {
   ExecuteAiActionResponse,
   GetDashboardPageRequest,
   GetDashboardPageResponse,
+  GetResearchSessionRequest,
+  GetResourceDetailRequest,
   GetWorkbookDataRequest,
   GetWorkbookDataResponse,
   ListDashboardPagesRequest,
@@ -52,7 +57,11 @@ import type {
   ResolveReferencesResponse,
   ResumeAiWorkflowRequest,
   ResumeAiWorkflowResponse,
+  ResearchSessionResponse,
+  ResourceDetailResponse,
   Result,
+  SaveResourceRequest,
+  SaveResourceResponse,
   WorkflowSuspendedEvent,
   GetTableSchemaRequest,
   GetTableSchemaResponse,
@@ -101,6 +110,14 @@ import {
   saveDashboardPageLayout,
   updateDashboardView,
 } from "../services/dashboards";
+import {
+  cancelResearchSession,
+  completeResearchSession,
+  createResearchSession,
+  getResearchSession,
+  getResourceDetail,
+  saveResource,
+} from "../services/resources";
 import {
   getAiSettings,
   getObservabilitySettings,
@@ -340,6 +357,30 @@ export function createRpcHandlers(send: SendFn) {
           assertAuthenticated();
           return getTableSchema(req);
         });
+      },
+
+      saveResource: async (req: SaveResourceRequest): Promise<Result<SaveResourceResponse>> => {
+        return withResult(() => saveResource(req));
+      },
+
+      getResourceDetail: async (req: GetResourceDetailRequest): Promise<Result<ResourceDetailResponse>> => {
+        return withResult(() => getResourceDetail(req));
+      },
+
+      createResearchSession: async (req: CreateResearchSessionRequest): Promise<Result<ResearchSessionResponse>> => {
+        return withResult(() => createResearchSession(req));
+      },
+
+      getResearchSession: async (req: GetResearchSessionRequest): Promise<Result<ResearchSessionResponse>> => {
+        return withResult(() => getResearchSession(req));
+      },
+
+      completeResearchSession: async (req: CompleteResearchSessionRequest): Promise<Result<ResearchSessionResponse>> => {
+        return withResult(() => completeResearchSession(req));
+      },
+
+      cancelResearchSession: async (req: CancelResearchSessionRequest): Promise<Result<ResearchSessionResponse>> => {
+        return withResult(() => cancelResearchSession(req));
       },
 
       listDashboardPages: async (req: ListDashboardPagesRequest): Promise<Result<ListDashboardPagesResponse>> => {

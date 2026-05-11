@@ -821,6 +821,121 @@ export type GetTableSchemaResponse = {
   fields: TableSchemaField[];
 };
 
+// ─── Resource retrieval DTOs ────────────────────────────────────────────────
+
+export type ResourceQuality = "user-confirmed" | "ai-draft" | "imported" | "deprecated";
+export type ResearchSessionStatus = "open" | "completed" | "cancelled";
+
+export type ResourceEvidenceDTO = {
+  text: string;
+  sourceUrl?: string;
+  sourceTitle?: string;
+  capturedAt: ISODateTimeString;
+  order: number;
+};
+
+export type ResourceDuplicateHashesDTO = {
+  content: string;
+  evidence: string;
+  source: string;
+};
+
+export type ResourceDTO = {
+  id: RecordIdString;
+  workspaceId: RecordIdString;
+  resourceType: string;
+  title: string;
+  summary: string;
+  sourceUrl?: string;
+  sourceTitle?: string;
+  evidence: ResourceEvidenceDTO[];
+  tags: string[];
+  structuredPayload: Record<string, unknown>;
+  quality: ResourceQuality;
+  confidence?: number;
+  sourceTrust?: string;
+  duplicateHashes: ResourceDuplicateHashesDTO;
+  researchSessionId?: RecordIdString;
+  createdBy: RecordIdString;
+  createdAt: ISODateTimeString;
+  updatedAt: ISODateTimeString;
+};
+
+export type ResearchSessionDTO = {
+  id: RecordIdString;
+  workspaceId: RecordIdString;
+  originatingRunId?: string;
+  query: string;
+  context: Record<string, unknown>;
+  resourceType: string;
+  status: ResearchSessionStatus;
+  resourceIds: RecordIdString[];
+  createdBy: RecordIdString;
+  createdAt: ISODateTimeString;
+  updatedAt: ISODateTimeString;
+  completedAt?: ISODateTimeString;
+  cancelledAt?: ISODateTimeString;
+};
+
+export type SaveResourceRequest = {
+  workspaceId: RecordIdString;
+  resourceType: string;
+  title: string;
+  summary: string;
+  sourceUrl?: string;
+  sourceTitle?: string;
+  evidence: ResourceEvidenceDTO[];
+  tags?: string[];
+  structuredPayload?: Record<string, unknown>;
+  quality: ResourceQuality;
+  confidence?: number;
+  sourceTrust?: string;
+  researchSessionId?: RecordIdString;
+};
+
+export type SaveResourceResponse = {
+  resource: ResourceDTO;
+};
+
+export type GetResourceDetailRequest = {
+  resourceId: RecordIdString;
+};
+
+export type ResourceDetailResponse = {
+  resource: ResourceDTO;
+  session?: {
+    id: RecordIdString;
+    status: ResearchSessionStatus;
+    query: string;
+    resourceIds: RecordIdString[];
+  };
+};
+
+export type CreateResearchSessionRequest = {
+  workspaceId: RecordIdString;
+  query: string;
+  context?: Record<string, unknown>;
+  resourceType: string;
+  originatingRunId?: string;
+};
+
+export type GetResearchSessionRequest = {
+  sessionId: RecordIdString;
+};
+
+export type CompleteResearchSessionRequest = {
+  sessionId: RecordIdString;
+  resourceIds?: RecordIdString[];
+};
+
+export type CancelResearchSessionRequest = {
+  sessionId: RecordIdString;
+};
+
+export type ResearchSessionResponse = {
+  session: ResearchSessionDTO;
+};
+
 // ─── Dashboard DTOs ──────────────────────────────────────────────────────────
 
 export type DashboardQueryMode = "preset" | "builder" | "sql";
@@ -1123,6 +1238,12 @@ export interface AppRPC extends ElectrobunRPCSchema {
       listReferenceTargets: { params: Record<string, never>; response: Result<ListReferenceTargetsResponse> };
       searchReferenceCandidates: { params: SearchReferenceCandidatesRequest; response: Result<SearchReferenceCandidatesResponse> };
       getTableSchema: { params: GetTableSchemaRequest; response: Result<GetTableSchemaResponse> };
+      saveResource: { params: SaveResourceRequest; response: Result<SaveResourceResponse> };
+      getResourceDetail: { params: GetResourceDetailRequest; response: Result<ResourceDetailResponse> };
+      createResearchSession: { params: CreateResearchSessionRequest; response: Result<ResearchSessionResponse> };
+      getResearchSession: { params: GetResearchSessionRequest; response: Result<ResearchSessionResponse> };
+      completeResearchSession: { params: CompleteResearchSessionRequest; response: Result<ResearchSessionResponse> };
+      cancelResearchSession: { params: CancelResearchSessionRequest; response: Result<ResearchSessionResponse> };
       listDashboardPages: { params: ListDashboardPagesRequest; response: Result<ListDashboardPagesResponse> };
       getDashboardPage: { params: GetDashboardPageRequest; response: Result<GetDashboardPageResponse> };
       createDashboardPage: { params: CreateDashboardPageRequest; response: Result<CreateDashboardPageResponse> };
