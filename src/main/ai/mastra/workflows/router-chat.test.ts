@@ -92,6 +92,41 @@ describe("runRouterChat 端到端", () => {
     expect(events).toEqual(["你好～"]);
   });
 
+  test("指定资源搜索计划时跳过 LLM 分类并确定性进入 ResourceAgent", async () => {
+    const mastra = makeMastra();
+    let llmCalled = false;
+    const llm: RouterLlmCaller = async () => {
+      llmCalled = true;
+      return `[{"category":"chitchat","taskText":"不应执行"}]`;
+    };
+    const seenTaskTexts: string[] = [];
+    const executors = makeExecutors({
+      "resource-retrieval": async ({ taskText }) => {
+        seenTaskTexts.push(taskText);
+        return { text: "资源答案", confirmed: {} };
+      },
+      chitchat: async () => ({ text: "错误路径", confirmed: {} }),
+    });
+    const doneMessages: string[] = [];
+
+    await runRouterChat({
+      mastra,
+      text: "帮我找合同解除相关资料",
+      userContext: ctx,
+      executors,
+      llmCaller: llm,
+      streamId: "s-resource",
+      pushChunk: (e) => {
+        if (e.type === "done") doneMessages.push(e.message.content);
+      },
+      planOverride: [{ category: "resource-retrieval", taskText: "帮我找合同解除相关资料" }],
+    });
+
+    expect(llmCalled).toBe(false);
+    expect(seenTaskTexts).toEqual(["帮我找合同解除相关资料"]);
+    expect(doneMessages).toEqual(["资源答案"]);
+  });
+
   test("两步 plan：deltas 按步骤顺序串起来", async () => {
     const mastra = makeMastra();
     const llm: RouterLlmCaller = async () =>

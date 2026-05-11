@@ -12,6 +12,12 @@
     buildRowPatchIntentFromProposal,
     type PendingIntent,
   } from "./global-ai-stream";
+  import {
+    buildComposerSendOptions,
+    composerModeView,
+    selectComposerMode,
+    type AiComposerMode,
+  } from "./global-ai-composer";
   import { progressEventToHint } from "./ai-progress-label";
   import { getDashboardWidget } from "../features/dashboard/registries/widgets";
   import Icon from "./Icon.svelte";
@@ -52,6 +58,9 @@
   let savingIntentId = $state<string | null>(null);
   let acceptedRowPatchFields = $state<Record<string, string[]>>({});
   let selectedResourceCandidateIds = $state<Record<string, string[]>>({});
+  let composerMode = $state<AiComposerMode>("chat");
+  let composerMenuOpen = $state(false);
+  const activeComposerMode = $derived(composerModeView(composerMode));
 
   function navigateFromAiAction(action: AppNavigationIntent) {
     navigate(action.screen as ScreenId, {
@@ -214,10 +223,11 @@
     });
   }
 
-  async function openProactiveResearch() {
-    sendError = null;
-    const res = await appApi.openResearchWindow({ resourceType: "generic_note" });
-    if (!res.ok) sendError = res.message;
+  function setComposerMode(mode: AiComposerMode) {
+    const next = selectComposerMode({ prompt, mode: composerMode }, mode);
+    prompt = next.prompt;
+    composerMode = next.mode;
+    composerMenuOpen = false;
   }
 
   async function resumeSuspendedIntent(messageId: string, runId: string, decision: ResumeDecision) {
@@ -376,8 +386,10 @@
     };
 
     const history = messages.filter((m) => m.role === "user" || m.role === "assistant").slice();
+    const sendOptions = buildComposerSendOptions(composerMode);
     messages = [...messages, message, placeholder];
     prompt = "";
+    composerMenuOpen = false;
     sending = true;
     sendError = null;
     progressHint = null;
@@ -396,7 +408,7 @@
     });
 
     try {
-      const res = await appApi.sendAiMessage(message, streamId, history);
+      const res = await appApi.sendAiMessage(message, streamId, history, sendOptions);
       if (res.ok) {
         unsubscribeProgress = subscribeAiProgress(res.data.runId, (event) => {
           progressHint = progressEventToHint(event);
@@ -499,9 +511,6 @@
         <span>让数据、表格和仪表盘保持在同一段上下文里</span>
       </div>
       <div class="header-actions">
-        <button class="icon-btn" aria-label="主动补库" title="主动补库" onclick={() => { void openProactiveResearch(); }}>
-          <Icon name="search" size={15} />
-        </button>
         <button class="icon-btn" aria-label="关闭 AI 助手" onclick={() => appState.setAiDrawerOpen(false)}>
           <Icon name="x" size={16} />
         </button>
@@ -685,10 +694,36 @@
         {/each}
       </div>
       <textarea bind:value={prompt} rows="3" placeholder="例如：帮我找到某某债权，或按案件状态统计确认金额"></textarea>
-      <button class="primary-btn" disabled={!prompt.trim() || sending}>
-        <Icon name="send" size={15} color="#fff" />
-        {sending ? "发送中" : "发送"}
-      </button>
+      <div class="composer-actions">
+        <div class="send-split">
+          <button class="primary-btn composer-send-btn" disabled={!prompt.trim() || sending}>
+            <Icon name={activeComposerMode.icon} size={15} color="#fff" />
+            {sending ? (composerMode === "resource-search" ? "搜索中" : "发送中") : activeComposerMode.label}
+          </button>
+          <button
+            type="button"
+            class="send-mode-toggle"
+            aria-label="切换发送模式"
+            aria-expanded={composerMenuOpen}
+            disabled={sending}
+            onclick={() => (composerMenuOpen = !composerMenuOpen)}
+          >
+            <Icon name="chevronDown" size={14} />
+          </button>
+          {#if composerMenuOpen}
+            <div class="send-mode-menu" role="menu">
+              <button type="button" role="menuitem" class:active={composerMode === "chat"} onclick={() => setComposerMode("chat")}>
+                <Icon name="send" size={14} />
+                发送消息
+              </button>
+              <button type="button" role="menuitem" class:active={composerMode === "resource-search"} onclick={() => setComposerMode("resource-search")}>
+                <Icon name="search" size={14} />
+                搜索资源
+              </button>
+            </div>
+          {/if}
+        </div>
+      </div>
     </form>
   </aside>
 {/if}
@@ -1048,13 +1083,83 @@
     box-shadow: 0 0 0 3px rgba(22, 100, 255, .08);
   }
 
-  .composer .primary-btn {
-    height: 36px;
-    justify-self: end;
-    padding: 0 16px;
+  .composer-actions {
+    display: flex;
+    justify-content: flex-end;
   }
 
-  .composer .primary-btn:disabled {
+  .send-split {
+    position: relative;
+    display: inline-grid;
+    grid-template-columns: auto 34px;
+    align-items: stretch;
+  }
+
+  .composer .composer-send-btn {
+    height: 36px;
+    min-width: 112px;
+    padding: 0 14px;
+    border-radius: 7px 0 0 7px;
+  }
+
+  .send-mode-toggle {
+    display: inline-grid;
+    height: 36px;
+    place-items: center;
+    border: 0;
+    border-left: 1px solid rgba(255, 255, 255, .32);
+    border-radius: 0 7px 7px 0;
+    background: var(--primary);
+    color: #fff;
+  }
+
+  .send-mode-toggle:hover {
+    background: var(--primary-hover);
+  }
+
+  .send-mode-toggle:disabled {
+    cursor: not-allowed;
+    opacity: .45;
+  }
+
+  .send-mode-menu {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 8px);
+    z-index: 2;
+    display: grid;
+    min-width: 142px;
+    gap: 4px;
+    padding: 6px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    box-shadow: 0 12px 28px rgba(15, 23, 42, .14);
+  }
+
+  .send-mode-menu button {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 8px;
+    height: 30px;
+    padding: 0 9px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-2);
+    font-size: 12px;
+    font-weight: 550;
+    white-space: nowrap;
+  }
+
+  .send-mode-menu button:hover,
+  .send-mode-menu button.active {
+    background: var(--primary-light);
+    color: var(--primary);
+  }
+
+  .composer .composer-send-btn:disabled {
     cursor: not-allowed;
     opacity: .45;
   }

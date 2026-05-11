@@ -143,6 +143,8 @@ export type SendAiMessageRequest = {
   message: AiChatMessage;
   /** 由前端生成的本次流式会话 id；后续 aiMessageChunk 通过该 id 回填到 placeholder 消息上。 */
   streamId: string;
+  /** AI 输入区的显式提交模式；resource-search 会确定性进入资源检索子 agent。 */
+  composerMode?: "chat" | "resource-search";
   /** 本次对话的历史消息（不含当前 message），用于给 agent 提供多轮上下文。 */
   history?: AiChatMessage[];
 };
@@ -192,6 +194,7 @@ const AiChatMessageSchema = z.object({
 export const SendAiMessageRequestSchema = z.object({
   message: AiChatMessageSchema,
   streamId: z.string(),
+  composerMode: z.enum(["chat", "resource-search"]).optional(),
   history: z.array(AiChatMessageSchema).optional(),
 });
 

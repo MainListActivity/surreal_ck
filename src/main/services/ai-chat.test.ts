@@ -5,7 +5,7 @@ import {
   SendAiMessageRequestSchema,
   SendAiMessageResponseSchema,
 } from "../../shared/rpc.types";
-import { buildHistoryMessages } from "./ai-chat";
+import { buildHistoryMessages, buildPlanOverrideForComposerMode } from "./ai-chat";
 
 // ─── 切片 1：Zod schema 解析 ──────────────────────────────────────────────────
 
@@ -87,6 +87,17 @@ describe("ai.chat Zod schema 解析", () => {
     };
     const result = SendAiMessageRequestSchema.safeParse(input);
     expect(result.success).toBe(true);
+  });
+
+  test("SendAiMessageRequestSchema 接受资源搜索 composer mode", () => {
+    const input = {
+      message: { ...validMessage, content: "查找合同解除相关资料" },
+      streamId: "stream-resource",
+      composerMode: "resource-search",
+    };
+    const result = SendAiMessageRequestSchema.safeParse(input);
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.composerMode).toBe("resource-search");
   });
 });
 
@@ -178,5 +189,40 @@ describe("buildHistoryMessages", () => {
     expect(result[0].role).toBe("user");
     expect(result[1].role).toBe("assistant");
     expect(result[2].role).toBe("user");
+  });
+});
+
+describe("buildPlanOverrideForComposerMode", () => {
+  const validContext = {
+    route: { screen: "editor" },
+    workbook: null,
+    sheet: null,
+    selectedRow: null,
+    contextHint: "当前在表格工作簿",
+  };
+
+  const validMessage = {
+    id: "msg-resource",
+    role: "user" as const,
+    content: "查找合同解除相关资料",
+    createdAt: new Date().toISOString(),
+    context: validContext,
+  };
+
+  test("资源搜索模式生成单步 resource-retrieval 计划", () => {
+    expect(buildPlanOverrideForComposerMode({
+      message: validMessage,
+      streamId: "stream-resource",
+      composerMode: "resource-search",
+    })).toEqual([
+      { category: "resource-retrieval", taskText: "查找合同解除相关资料" },
+    ]);
+  });
+
+  test("普通发送模式不覆盖 Router 分类", () => {
+    expect(buildPlanOverrideForComposerMode({
+      message: validMessage,
+      streamId: "stream-chat",
+    })).toBeUndefined();
   });
 });

@@ -44,6 +44,7 @@ import type {
   SaveSettingsResponse,
   SearchReferenceCandidatesResponse,
   SendAiMessageResponse,
+  SendAiMessageRequest,
   ResumeAiWorkflowResponse,
   ResumeDecision,
   AiStructuredIntent,
@@ -94,8 +95,13 @@ export const appApi = {
     });
   },
 
-  sendAiMessage(message: AiChatMessage, streamId: string, history?: AiChatMessage[]): Promise<Result<SendAiMessageResponse>> {
-    return rpc.request("sendAiMessage", { message, streamId, history });
+  sendAiMessage(
+    message: AiChatMessage,
+    streamId: string,
+    history?: AiChatMessage[],
+    options: Pick<SendAiMessageRequest, "composerMode"> = {},
+  ): Promise<Result<SendAiMessageResponse>> {
+    return rpc.request("sendAiMessage", { message, streamId, history, ...options });
   },
 
   resumeAiWorkflow(runId: string, decision: ResumeDecision): Promise<Result<ResumeAiWorkflowResponse>> {

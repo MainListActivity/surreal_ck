@@ -15,6 +15,7 @@ import {
   type RouterRuntime,
   type SubAgentExecutors,
 } from "./router-workflow";
+import type { RouterPlan } from "./router-classifier";
 
 export type RouterChatStreamPusher = (event: AiMessageChunkEvent) => void;
 export type RouterChatProgressPusher = (event: AiProgressEvent) => void;
@@ -27,6 +28,7 @@ export type RunRouterChatInput = {
   userContext: AiContextSnapshot;
   executors: SubAgentExecutors;
   llmCaller: RouterLlmCaller;
+  planOverride?: RouterPlan;
   streamId: string;
   pushChunk: RouterChatStreamPusher;
   pushProgress?: RouterChatProgressPusher;
@@ -55,6 +57,7 @@ export async function runRouterChat(input: RunRouterChatInput): Promise<RunRoute
     userContext: input.userContext,
     executors: input.executors,
     llmCaller: input.llmCaller,
+    planOverride: input.planOverride,
     streamId: input.streamId,
     runId: businessRunId,
     pushChunk: input.pushChunk,

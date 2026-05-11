@@ -307,6 +307,7 @@ export type RouterRuntime = {
   userContext: AiContextSnapshot;
   executors: SubAgentExecutors;
   llmCaller: RouterLlmCaller;
+  planOverride?: RouterPlan;
   streamId: string;
   /** 业务侧 runId（可与 Mastra runId 不同）。 */
   runId: string;
@@ -342,7 +343,7 @@ export function createRouterWorkflow() {
     execute: async ({ inputData, requestContext, setState }) => {
       const runtime = getRuntime(requestContext);
       runtime.pushProgress?.({ kind: "routing", runId: runtime.runId });
-      const plan = await classifyTask({ text: inputData.text, llmCaller: runtime.llmCaller });
+      const plan = runtime.planOverride ?? await classifyTask({ text: inputData.text, llmCaller: runtime.llmCaller });
       await setState({
         plan,
         cursor: 0,

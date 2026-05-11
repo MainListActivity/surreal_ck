@@ -27,7 +27,7 @@ import { type AiProgressSender } from "./ai-progress";
 import { runRouterChat } from "../ai/mastra/workflows/router-chat";
 import type { SubAgentExecutors } from "../ai/mastra/workflows/router-workflow";
 import { makeAgentExecutor } from "../ai/mastra/workflows/agent-executor";
-import type { RouterLlmCaller } from "../ai/mastra/workflows/router-classifier";
+import type { RouterLlmCaller, RouterPlan } from "../ai/mastra/workflows/router-classifier";
 import { recordAiToolCall } from "./audit";
 
 export type AiChunkSender = (event: AiMessageChunkEvent) => void;
@@ -116,6 +116,11 @@ export async function sendAiMessage(
   };
 }
 
+export function buildPlanOverrideForComposerMode(req: SendAiMessageRequest): RouterPlan | undefined {
+  if (req.composerMode !== "resource-search") return undefined;
+  return [{ category: "resource-retrieval", taskText: req.message.content.trim() }];
+}
+
 async function runRouterChatGuarded(
   req: SendAiMessageRequest,
   runId: string,
@@ -134,6 +139,7 @@ async function runRouterChatGuarded(
       userContext: req.message.context,
       executors,
       llmCaller,
+      planOverride: buildPlanOverrideForComposerMode(req),
       streamId: req.streamId,
       runId,
       pushChunk: (e) => pushChunk?.(e),
