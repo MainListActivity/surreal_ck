@@ -4,6 +4,7 @@ import { Observability, DefaultExporter, SensitiveDataFilter } from "@mastra/obs
 import { SurrealMastraStore } from "./mastra/storage/surreal-store";
 import { createRouterWorkflow, ROUTER_WORKFLOW_ID } from "./mastra/workflows/router-workflow";
 export { createNavigationAgent, NAVIGATION_AGENT_ID } from "./mastra/agents/navigation-agent";
+export { createResourceAgent, RESOURCE_AGENT_ID } from "./mastra/agents/resource-agent";
 export { ROUTER_WORKFLOW_ID } from "./mastra/workflows/router-workflow";
 export {
   listDashboardGenerationTargets,

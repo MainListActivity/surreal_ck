@@ -158,6 +158,131 @@ describe("router workflow suspend & resume", () => {
     expect(events).toEqual([{ truncated: true, count: 20 }]);
   });
 
+  test("resource-candidates 支持多选 resourceIds resume 并生成 citation answer", async () => {
+    const llm: RouterLlmCaller = async () =>
+      `[{"category":"resource-retrieval","taskText":"查找合同解除案例"}]`;
+    const events: Array<{ kind: string; count: number }> = [];
+    const seenResourceIds: string[][] = [];
+    const executors: SubAgentExecutors = {
+      navigation: async () => ({ text: "", confirmed: {} }),
+      dashboard: async () => ({ text: "", confirmed: {} }),
+      "claim-analysis": async () => ({ text: "", confirmed: {} }),
+      "resource-retrieval": async () => ({
+        text: "",
+        confirmed: {},
+        suspend: {
+          kind: "resource-candidates",
+          candidates: [
+            { id: "resource_item:r1", label: "资料 A", summary: "A", score: 0.4 },
+            { id: "resource_item:r2", label: "资料 B", summary: "B", score: 0.3 },
+          ],
+        },
+      }),
+      chitchat: async () => ({ text: "", confirmed: {} }),
+    };
+
+    const mastra = buildMastra();
+    const wf = mastra.getWorkflow(ROUTER_WORKFLOW_ID);
+    const run = await wf.createRun();
+    const rc = new RequestContext();
+    rc.set(ROUTER_RUNTIME_KEY, makeRuntime({
+      executors,
+      llmCaller: llm,
+      onSuspend: (event) => {
+        if (event.kind === "resource-candidates") {
+          events.push({ kind: event.kind, count: event.candidates.length });
+        }
+      },
+      answerResourceSelection: async ({ resourceIds }) => {
+        seenResourceIds.push(resourceIds);
+        return {
+          text: "已基于所选资源回答 [1][2]",
+          citations: [
+            { index: 1, resourceId: "resource_item:r1", title: "资料 A" },
+            { index: 2, resourceId: "resource_item:r2", title: "资料 B" },
+          ],
+        };
+      },
+    }));
+
+    const first = await run.start({ inputData: { text: "查找合同解除案例" }, requestContext: rc });
+    expect(first.status).toBe("suspended");
+    expect(events).toEqual([{ kind: "resource-candidates", count: 2 }]);
+
+    const rc2 = new RequestContext();
+    rc2.set(ROUTER_RUNTIME_KEY, makeRuntime({
+      executors,
+      llmCaller: llm,
+      answerResourceSelection: async ({ resourceIds }) => {
+        seenResourceIds.push(resourceIds);
+        return {
+          text: "已基于所选资源回答 [1][2]",
+          citations: [
+            { index: 1, resourceId: "resource_item:r1", title: "资料 A" },
+            { index: 2, resourceId: "resource_item:r2", title: "资料 B" },
+          ],
+        };
+      },
+    }));
+    const resumed = await run.resume({
+      resumeData: {
+        decision: {
+          kind: "resource-candidates-chosen",
+          resourceIds: ["resource_item:r1", "resource_item:r2"],
+        },
+      },
+      requestContext: rc2,
+    });
+
+    expect(resumed.status).toBe("success");
+    if (resumed.status === "success") {
+      expect(resumed.result.finalText).toContain("[1][2]");
+    }
+    expect(seenResourceIds).toEqual([["resource_item:r1", "resource_item:r2"]]);
+  });
+
+  test("manual-research suspend 通过 onSuspend 暴露 sessionId", async () => {
+    const llm: RouterLlmCaller = async () =>
+      `[{"category":"resource-retrieval","taskText":"查找合同解除案例"}]`;
+    const events: Array<{ sessionId: string; query: string }> = [];
+    const executors: SubAgentExecutors = {
+      navigation: async () => ({ text: "", confirmed: {} }),
+      dashboard: async () => ({ text: "", confirmed: {} }),
+      "claim-analysis": async () => ({ text: "", confirmed: {} }),
+      "resource-retrieval": async () => ({
+        text: "",
+        confirmed: {},
+        suspend: {
+          kind: "manual-research",
+          sessionId: "research_session:s1",
+          workspaceId: "workspace:demo",
+          query: "查找合同解除案例",
+          resourceType: "generic_note",
+        },
+      }),
+      chitchat: async () => ({ text: "", confirmed: {} }),
+    };
+
+    const mastra = buildMastra();
+    const wf = mastra.getWorkflow(ROUTER_WORKFLOW_ID);
+    const run = await wf.createRun();
+    const rc = new RequestContext();
+    rc.set(ROUTER_RUNTIME_KEY, makeRuntime({
+      executors,
+      llmCaller: llm,
+      onSuspend: (event) => {
+        if (event.kind === "manual-research") {
+          events.push({ sessionId: event.sessionId, query: event.query });
+        }
+      },
+    }));
+
+    const result = await run.start({ inputData: { text: "查找合同解除案例" }, requestContext: rc });
+
+    expect(result.status).toBe("suspended");
+    expect(events).toEqual([{ sessionId: "research_session:s1", query: "查找合同解除案例" }]);
+  });
+
   test("resume candidate-chosen 后第二步 executor 看到 confirmed.resolvedRecord", async () => {
     const llm: RouterLlmCaller = async () =>
       `[{"category":"navigation","taskText":"找张三"},{"category":"dashboard","taskText":"对张三做统计"}]`;

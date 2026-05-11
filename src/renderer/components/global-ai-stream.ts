@@ -130,6 +130,10 @@ export function applyAiSuspendedToMessages(
   const intent = intentFromSuspendedEvent(event);
   const fallback = event.kind === "ambiguous-candidates"
     ? "找到多个候选，请先选择一个结果。"
+    : event.kind === "resource-candidates"
+      ? "找到可能相关的资源，请选择要用于回答的资料。"
+      : event.kind === "manual-research"
+        ? "已打开人工检索窗口，请在检索完成后返回。"
     : "已准备好待确认操作，请确认后继续。";
 
   return {
@@ -158,6 +162,12 @@ function intentFromSuspendedEvent(
 ): ToolNavigationIntent | DashboardDraftIntent | RowPatchProposal | null {
   if (event.kind === "ambiguous-candidates") {
     return { type: "ambiguous", candidates: event.candidates };
+  }
+  if (event.kind === "resource-candidates") {
+    return { type: "ambiguous", candidates: event.candidates };
+  }
+  if (event.kind === "manual-research") {
+    return null;
   }
   if (event.intent.type === "dashboard-draft" || event.intent.type === "row-patch-proposal") {
     return event.intent;

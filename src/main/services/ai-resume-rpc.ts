@@ -23,6 +23,12 @@ import {
   NAVIGATION_AGENT_ID,
   createNavigationAgent,
 } from "../ai/mastra/agents/navigation-agent";
+import {
+  RESOURCE_AGENT_ID,
+  answerSelectedResourceIds,
+  createResourceAgent,
+  makeResourceRetrievalExecutor,
+} from "../ai/mastra/agents/resource-agent";
 import { makeAgentExecutor } from "../ai/mastra/workflows/agent-executor";
 import type { SubAgentExecutors } from "../ai/mastra/workflows/router-workflow";
 import { ROUTER_WORKFLOW_ID } from "../ai/mastra/workflows/router-workflow";
@@ -30,6 +36,7 @@ import { resumeAiWorkflow } from "./ai-resume";
 import { makeRouterLlmCaller } from "./ai-chat";
 import { recordAiToolCall } from "./audit";
 import { assertAuthenticated } from "./context";
+import { createResearchSession } from "./resources";
 import { getAiSettings } from "./settings";
 
 export type ResumeRpcSenders = {
@@ -55,6 +62,9 @@ export async function resumeAiWorkflowFromRpc(
   if (!mastra.listAgents()[CLAIM_ANALYSIS_AGENT_ID]) {
     mastra.addAgent(createClaimAnalysisAgent(settings), CLAIM_ANALYSIS_AGENT_ID);
   }
+  if (!mastra.listAgents()[RESOURCE_AGENT_ID]) {
+    mastra.addAgent(createResourceAgent(settings), RESOURCE_AGENT_ID);
+  }
   if (!mastra.listAgents()[CHITCHAT_AGENT_ID]) {
     mastra.addAgent(createChitchatAgent(settings), CHITCHAT_AGENT_ID);
   }
@@ -72,6 +82,7 @@ export async function resumeAiWorkflowFromRpc(
     navigation: makeAgentExecutor(navigationAgent, { onToolCall }),
     dashboard: makeAgentExecutor(dashboardAgent, { onToolCall }),
     "claim-analysis": makeAgentExecutor(claimAnalysisAgent, { onToolCall }),
+    "resource-retrieval": makeResourceRetrievalExecutor({ createResearchSession }),
     chitchat: makeAgentExecutor(chitchatAgent, { onToolCall }),
   };
 
@@ -96,5 +107,9 @@ export async function resumeAiWorkflowFromRpc(
     pushChunk: senders.pushChunk,
     pushProgress: senders.pushProgress,
     onSuspend: senders.onSuspend,
+    answerResourceSelection: ({ resourceIds, taskText }) => answerSelectedResourceIds({
+      question: taskText,
+      resourceIds,
+    }),
   });
 }

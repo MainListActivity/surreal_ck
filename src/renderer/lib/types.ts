@@ -9,6 +9,7 @@ export type ScreenId =
   | "admin"
   | "settings"
   | "admin-console"
+  | "research"
   | "state-empty"
   | "state-offline"
   | "state-noperm";
@@ -58,6 +59,8 @@ export type RouteState = {
   sheetId?: string;
   folderId?: string;
   templateKey?: string;
+  researchSessionId?: string;
+  resourceType?: string;
 };
 
 export type Navigate = (screen: ScreenId, params?: Omit<RouteState, "screen">) => void;

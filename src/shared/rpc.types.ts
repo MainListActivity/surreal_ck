@@ -222,7 +222,14 @@ export type ToolNavigationIntent =
   | { type: "open-workbook"; workbookId: string; label?: string }
   | { type: "open-dashboard"; dashboardId: string; label?: string }
   | { type: "open-record"; workbookId: string; sheetId: string; recordId: string; label?: string }
-  | { type: "ambiguous"; candidates: { label: string; id: string }[] };
+  | { type: "ambiguous"; candidates: {
+    label: string;
+    id: string;
+    summary?: string;
+    score?: number;
+    resourceType?: string;
+    sourceUrl?: string;
+  }[] };
 
 export type DashboardDraftIntent = {
   type: "dashboard-draft";
@@ -259,7 +266,32 @@ export type RowPatchIntent = {
   patch: Record<string, unknown>;
 };
 
-export type AiStructuredIntent = AppNavigationIntent | ToolNavigationIntent | DashboardDraftIntent | LegacyDashboardDraftIntent | RowPatchProposal | RowPatchIntent;
+export type ResourceCitationDTO = {
+  index: number;
+  resourceId: RecordIdString;
+  title: string;
+  sourceUrl?: string;
+  evidence?: Array<{
+    order: number;
+    text: string;
+  }>;
+};
+
+export type ResourceDraftIntent = {
+  type: "resource-draft";
+  draft: SaveResourceRequest;
+  explanation?: string;
+  citations?: ResourceCitationDTO[];
+};
+
+export type AiStructuredIntent =
+  | AppNavigationIntent
+  | ToolNavigationIntent
+  | DashboardDraftIntent
+  | LegacyDashboardDraftIntent
+  | RowPatchProposal
+  | RowPatchIntent
+  | ResourceDraftIntent;
 
 export type ExecuteAiActionRequest = {
   intent: AiStructuredIntent;
@@ -306,7 +338,14 @@ const ToolNavigationIntentSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("ambiguous"),
-    candidates: z.array(z.object({ label: z.string(), id: z.string() })),
+    candidates: z.array(z.object({
+      label: z.string(),
+      id: z.string(),
+      summary: z.string().optional(),
+      score: z.number().optional(),
+      resourceType: z.string().optional(),
+      sourceUrl: z.string().optional(),
+    })),
   }),
 ]);
 
@@ -385,6 +424,44 @@ const RowPatchIntentSchema = z.object({
   patch: z.record(z.string(), z.unknown()),
 });
 
+const ResourceCitationSchema = z.object({
+  index: z.number().int().positive(),
+  resourceId: z.string(),
+  title: z.string(),
+  sourceUrl: z.string().optional(),
+  evidence: z.array(z.object({
+    order: z.number().int().nonnegative(),
+    text: z.string(),
+  })).optional(),
+});
+
+const ResourceDraftIntentSchema = z.object({
+  type: z.literal("resource-draft"),
+  draft: z.object({
+    workspaceId: z.string(),
+    resourceType: z.string(),
+    title: z.string(),
+    summary: z.string(),
+    sourceUrl: z.string().optional(),
+    sourceTitle: z.string().optional(),
+    evidence: z.array(z.object({
+      text: z.string(),
+      sourceUrl: z.string().optional(),
+      sourceTitle: z.string().optional(),
+      capturedAt: z.string(),
+      order: z.number().int().nonnegative(),
+    })),
+    tags: z.array(z.string()).optional(),
+    structuredPayload: z.record(z.string(), z.unknown()).optional(),
+    quality: z.enum(["user-confirmed", "ai-draft", "imported", "deprecated"]),
+    confidence: z.number().optional(),
+    sourceTrust: z.string().optional(),
+    researchSessionId: z.string().optional(),
+  }),
+  explanation: z.string().optional(),
+  citations: z.array(ResourceCitationSchema).optional(),
+});
+
 export const AiStructuredIntentSchema = z.union([
   AppNavigationIntentSchema,
   ...ToolNavigationIntentSchema.options,
@@ -392,6 +469,7 @@ export const AiStructuredIntentSchema = z.union([
   LegacyDashboardDraftIntentSchema,
   RowPatchProposalSchema,
   RowPatchIntentSchema,
+  ResourceDraftIntentSchema,
 ]);
 
 export const ExecuteAiActionRequestSchema = z.object({
@@ -454,15 +532,45 @@ export const ResolvedRecordSchema = z.object({
 });
 export type ResolvedRecord = z.infer<typeof ResolvedRecordSchema>;
 
-export type CandidateOption = { id: string; label: string };
+export type CandidateOption = {
+  id: string;
+  label: string;
+  summary?: string;
+  score?: number;
+  resourceType?: string;
+  sourceUrl?: string;
+};
 
-const CandidateOptionSchema = z.object({ id: z.string().min(1), label: z.string().min(1) });
+const CandidateOptionSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  summary: z.string().optional(),
+  score: z.number().optional(),
+  resourceType: z.string().optional(),
+  sourceUrl: z.string().optional(),
+});
 
 const AmbiguousCandidatesEventSchema = z.object({
   kind: z.literal("ambiguous-candidates"),
   runId: z.string(),
   candidates: z.array(CandidateOptionSchema),
   truncated: z.boolean().optional(),
+});
+
+const ResourceCandidatesEventSchema = z.object({
+  kind: z.literal("resource-candidates"),
+  runId: z.string(),
+  candidates: z.array(CandidateOptionSchema),
+  truncated: z.boolean().optional(),
+});
+
+const ManualResearchEventSchema = z.object({
+  kind: z.literal("manual-research"),
+  runId: z.string(),
+  sessionId: z.string(),
+  workspaceId: z.string(),
+  query: z.string(),
+  resourceType: z.string(),
 });
 
 const AwaitWriteConfirmEventSchema = z.object({
@@ -473,6 +581,8 @@ const AwaitWriteConfirmEventSchema = z.object({
 
 export const WorkflowSuspendedEventSchema = z.discriminatedUnion("kind", [
   AmbiguousCandidatesEventSchema,
+  ResourceCandidatesEventSchema,
+  ManualResearchEventSchema,
   AwaitWriteConfirmEventSchema,
 ]);
 export type WorkflowSuspendedEvent = z.infer<typeof WorkflowSuspendedEventSchema>;
@@ -482,6 +592,9 @@ const ResumeDecisionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("candidate-cancelled") }),
   z.object({ kind: z.literal("write-confirmed") }),
   z.object({ kind: z.literal("write-rejected") }),
+  z.object({ kind: z.literal("resource-candidates-chosen"), resourceIds: z.array(z.string().min(1)).min(1) }),
+  z.object({ kind: z.literal("resource-candidates-manual-research") }),
+  z.object({ kind: z.literal("manual-research-completed"), resourceIds: z.array(z.string().min(1)).min(1) }),
 ]);
 export type ResumeDecision = z.infer<typeof ResumeDecisionSchema>;
 
@@ -935,6 +1048,14 @@ export type SaveResourceResponse = {
   resource: ResourceDTO;
 };
 
+export type SaveResearchResourceRequest = Omit<
+  SaveResourceRequest,
+  "workspaceId" | "resourceType" | "researchSessionId"
+> & {
+  sessionId: RecordIdString;
+  resourceType?: string;
+};
+
 export type GetResourceDetailRequest = {
   resourceId: RecordIdString;
 };
@@ -947,6 +1068,56 @@ export type ResourceDetailResponse = {
     query: string;
     resourceIds: RecordIdString[];
   };
+};
+
+export type ResourceSearchContext = {
+  selectedRow?: {
+    id?: string;
+    label?: string;
+    visibleValues?: Record<string, unknown>;
+  } | Record<string, unknown>;
+  document?: {
+    title?: string;
+    text?: string;
+  } | string;
+  manualText?: string;
+};
+
+export type ResourceSearchFilters = {
+  tags?: string[];
+  sourceDomain?: string;
+  dateFrom?: ISODateTimeString;
+  dateTo?: ISODateTimeString;
+};
+
+export type ResourceSearchStatus = "hit" | "candidates" | "miss";
+export type ResourceSearchIndexStatus = "ready" | "index-disabled" | "index-pending" | "index-error";
+
+export type SearchResourcesRequest = {
+  workspaceId: RecordIdString;
+  query: string;
+  context?: ResourceSearchContext;
+  resourceType?: string;
+  filters?: ResourceSearchFilters;
+  limit?: number;
+  answerThreshold?: number;
+  candidateThreshold?: number;
+};
+
+export type ResourceSearchResultDTO = {
+  resource: ResourceDTO;
+  score: number;
+  vectorScore: number;
+  keywordScore: number;
+  qualityScore: number;
+  recencyScore: number;
+};
+
+export type SearchResourcesResponse = {
+  status: ResourceSearchStatus;
+  indexStatus: ResourceSearchIndexStatus;
+  queryText: string;
+  results: ResourceSearchResultDTO[];
 };
 
 export type CreateResearchSessionRequest = {
@@ -980,6 +1151,29 @@ export type RetryResourceEmbeddingResponse = {
 
 export type ResearchSessionResponse = {
   session: ResearchSessionDTO;
+};
+
+export type OpenResearchWindowRequest = {
+  sessionId?: RecordIdString;
+  initialUrl?: string;
+  resourceType?: string;
+};
+
+export type OpenResearchWindowResponse = {
+  opened: boolean;
+  session?: ResearchSessionDTO;
+};
+
+export type GenerateResourceDraftRequest = {
+  workspaceId: RecordIdString;
+  resourceType: string;
+  evidence: ResourceEvidenceDTO[];
+  title?: string;
+  summary?: string;
+};
+
+export type GenerateResourceDraftResponse = {
+  draft: SaveResourceRequest;
 };
 
 // ─── Dashboard DTOs ──────────────────────────────────────────────────────────
@@ -1285,12 +1479,16 @@ export interface AppRPC extends ElectrobunRPCSchema {
       searchReferenceCandidates: { params: SearchReferenceCandidatesRequest; response: Result<SearchReferenceCandidatesResponse> };
       getTableSchema: { params: GetTableSchemaRequest; response: Result<GetTableSchemaResponse> };
       saveResource: { params: SaveResourceRequest; response: Result<SaveResourceResponse> };
+      saveResearchResource: { params: SaveResearchResourceRequest; response: Result<SaveResourceResponse> };
       getResourceDetail: { params: GetResourceDetailRequest; response: Result<ResourceDetailResponse> };
+      searchResources: { params: SearchResourcesRequest; response: Result<SearchResourcesResponse> };
       createResearchSession: { params: CreateResearchSessionRequest; response: Result<ResearchSessionResponse> };
       getResearchSession: { params: GetResearchSessionRequest; response: Result<ResearchSessionResponse> };
       completeResearchSession: { params: CompleteResearchSessionRequest; response: Result<ResearchSessionResponse> };
       cancelResearchSession: { params: CancelResearchSessionRequest; response: Result<ResearchSessionResponse> };
       retryResourceEmbedding: { params: RetryResourceEmbeddingRequest; response: Result<RetryResourceEmbeddingResponse> };
+      openResearchWindow: { params: OpenResearchWindowRequest; response: Result<OpenResearchWindowResponse> };
+      generateResourceDraft: { params: GenerateResourceDraftRequest; response: Result<GenerateResourceDraftResponse> };
       listDashboardPages: { params: ListDashboardPagesRequest; response: Result<ListDashboardPagesResponse> };
       getDashboardPage: { params: GetDashboardPageRequest; response: Result<GetDashboardPageResponse> };
       createDashboardPage: { params: CreateDashboardPageRequest; response: Result<CreateDashboardPageResponse> };

@@ -3,6 +3,7 @@ import { RecordId } from "surrealdb";
 import {
   createEmbeddingProfileKey,
   createResourceService,
+  listResourceTypeDefinitions,
   type ResourceRepository,
   type ResourceRow,
   type ResourceEmbeddingRow,
@@ -26,6 +27,10 @@ class MemoryResourceRepository implements ResourceRepository {
 
   async findResourceById(resourceId: string): Promise<ResourceRow | null> {
     return this.resources.get(resourceId) ?? null;
+  }
+
+  async listResourcesByWorkspace(workspaceId: string): Promise<ResourceRow[]> {
+    return [...this.resources.values()].filter((row) => String(row.workspace) === workspaceId);
   }
 
   async upsertResourceEmbedding(input: Omit<ResourceEmbeddingRow, "id">): Promise<ResourceEmbeddingRow> {
@@ -485,6 +490,39 @@ describe("资源主数据闭环", () => {
     });
   });
 
+  test("saveResearchResource 专用入口可在一个 open session 保存多个资源且不等待 indexed", async () => {
+    const { service } = createTestService(new MemoryResourceRepository(), {
+      getActiveEmbeddingProfile: async () => EMBEDDING_PROFILE,
+    });
+    const createdSession = await service.createResearchSession({
+      workspaceId: "workspace:demo",
+      query: "查找相似案例",
+      resourceType: "generic_note",
+    });
+
+    const first = await service.saveResearchResource({
+      sessionId: createdSession.session.id,
+      title: "案例 A",
+      summary: "A 摘要",
+      evidence: [],
+      structuredPayload: {},
+      quality: "user-confirmed",
+    });
+    const second = await service.saveResearchResource({
+      sessionId: createdSession.session.id,
+      title: "案例 B",
+      summary: "B 摘要",
+      evidence: [],
+      structuredPayload: {},
+      quality: "user-confirmed",
+    });
+    const completed = await service.completeResearchSession({ sessionId: createdSession.session.id });
+
+    expect(first.resource.embedding.status).toBe("pending");
+    expect(second.resource.embedding.status).toBe("pending");
+    expect(completed.session.resourceIds).toEqual([first.resource.id, second.resource.id]);
+  });
+
   test("可取消 open research session", async () => {
     const { service } = createTestService();
     const created = await service.createResearchSession({
@@ -524,6 +562,141 @@ describe("资源主数据闭环", () => {
       structuredPayload: { legalCaseId: "x" },
       quality: "user-confirmed",
     })).rejects.toBeInstanceOf(ServiceError);
+  });
+
+  test("web_article 要求来源、来源标题和至少一段证据，但允许网页元数据缺失", async () => {
+    const { service } = createTestService();
+
+    const saved = await service.saveResource({
+      workspaceId: "workspace:demo",
+      resourceType: "web_article",
+      title: "网页资料",
+      summary: "网页资料摘要",
+      sourceUrl: "https://example.com/article",
+      sourceTitle: "Example Article",
+      evidence: [
+        {
+          text: "网页正文中的关键证据。",
+          sourceUrl: "https://example.com/article",
+          sourceTitle: "Example Article",
+          capturedAt: "2026-05-11T07:59:00.000Z",
+          order: 0,
+        },
+      ],
+      structuredPayload: {},
+      quality: "user-confirmed",
+    });
+
+    expect(saved.resource).toMatchObject({
+      resourceType: "web_article",
+      sourceUrl: "https://example.com/article",
+      sourceTitle: "Example Article",
+      structuredPayload: {},
+    });
+
+    await expect(service.saveResource({
+      workspaceId: "workspace:demo",
+      resourceType: "web_article",
+      title: "缺少来源",
+      summary: "网页资料摘要",
+      sourceTitle: "Example Article",
+      evidence: [
+        {
+          text: "网页正文中的关键证据。",
+          capturedAt: "2026-05-11T07:59:00.000Z",
+          order: 0,
+        },
+      ],
+      structuredPayload: {},
+      quality: "user-confirmed",
+    })).rejects.toThrow("web_article 必须包含有效 sourceUrl");
+
+    await expect(service.saveResource({
+      workspaceId: "workspace:demo",
+      resourceType: "web_article",
+      title: "缺少证据",
+      summary: "网页资料摘要",
+      sourceUrl: "https://example.com/article",
+      sourceTitle: "Example Article",
+      evidence: [],
+      structuredPayload: {},
+      quality: "user-confirmed",
+    })).rejects.toThrow("web_article 至少需要一段证据");
+  });
+
+  test("web_article 接受 author、publishedAt、siteName 且拒绝未声明 payload 字段", async () => {
+    const { service } = createTestService();
+
+    const saved = await service.saveResource({
+      workspaceId: "workspace:demo",
+      resourceType: "web_article",
+      title: "带元数据网页",
+      summary: "网页资料摘要",
+      sourceUrl: "https://example.com/article",
+      sourceTitle: "Example Article",
+      evidence: [
+        {
+          text: "网页正文中的关键证据。",
+          sourceUrl: "https://example.com/article",
+          sourceTitle: "Example Article",
+          capturedAt: "2026-05-11T07:59:00.000Z",
+          order: 0,
+        },
+      ],
+      structuredPayload: {
+        author: "Researcher",
+        publishedAt: "2026-05-01T00:00:00.000Z",
+        siteName: "Example",
+      },
+      quality: "user-confirmed",
+    });
+
+    expect(saved.resource.structuredPayload).toEqual({
+      author: "Researcher",
+      publishedAt: "2026-05-01T00:00:00.000Z",
+      siteName: "Example",
+    });
+
+    await expect(service.saveResource({
+      workspaceId: "workspace:demo",
+      resourceType: "web_article",
+      title: "非法 payload",
+      summary: "网页资料摘要",
+      sourceUrl: "https://example.com/article",
+      sourceTitle: "Example Article",
+      evidence: [
+        {
+          text: "网页正文中的关键证据。",
+          sourceUrl: "https://example.com/article",
+          sourceTitle: "Example Article",
+          capturedAt: "2026-05-11T07:59:00.000Z",
+          order: 0,
+        },
+      ],
+      structuredPayload: { legalCaseId: "reserved" },
+      quality: "user-confirmed",
+    })).rejects.toThrow("资源结构化 payload 不符合类型约束");
+  });
+
+  test("legal resource type 仅预留定义，不影响 V1 可保存类型", async () => {
+    const { service } = createTestService();
+
+    expect(listResourceTypeDefinitions()).toEqual([
+      { type: "generic_note", status: "active" },
+      { type: "web_article", status: "active" },
+      { type: "legal_case", status: "reserved" },
+      { type: "legal_article", status: "reserved" },
+    ]);
+
+    await expect(service.saveResource({
+      workspaceId: "workspace:demo",
+      resourceType: "legal_case",
+      title: "预留法律案例",
+      summary: "本 slice 不应允许保存。",
+      evidence: [],
+      structuredPayload: {},
+      quality: "user-confirmed",
+    })).rejects.toThrow("资源类型 legal_case 已预留但尚未启用");
   });
 
   test("重复资源不会被阻止且 duplicate hash 保持稳定", async () => {
@@ -572,5 +745,211 @@ describe("资源主数据闭环", () => {
 
     await expect(reader.getResourceDetail({ resourceId: saved.resource.id }))
       .rejects.toBeInstanceOf(ServiceError);
+  });
+
+  test("searchResources 用关键词 contains 检索标题、摘要、标签和证据，并在无 embedding 配置时标记 index-disabled", async () => {
+    const { service } = createTestService();
+    const first = await service.saveResource({
+      workspaceId: "workspace:demo",
+      resourceType: "generic_note",
+      title: "相似案例检索策略",
+      summary: "围绕合同解除争议整理裁判要旨。",
+      evidence: [
+        {
+          text: "法院认为解除通知到达后产生效力。",
+          capturedAt: "2026-05-11T07:58:00.000Z",
+          order: 0,
+        },
+      ],
+      tags: ["合同解除"],
+      structuredPayload: {},
+      quality: "user-confirmed",
+    });
+    await service.saveResource({
+      workspaceId: "workspace:demo",
+      resourceType: "generic_note",
+      title: "无关资料",
+      summary: "讲述仪表盘布局。",
+      evidence: [],
+      structuredPayload: {},
+      quality: "user-confirmed",
+    });
+
+    const result = await service.searchResources({
+      workspaceId: "workspace:demo",
+      query: "合同解除 裁判要旨",
+      resourceType: "generic_note",
+      limit: 5,
+      answerThreshold: 0.2,
+      candidateThreshold: 0.05,
+    });
+
+    expect(result.status).toBe("hit");
+    expect(result.indexStatus).toBe("index-disabled");
+    expect(result.results.map((item) => item.resource.id)).toEqual([first.resource.id]);
+    expect(result.results[0]?.keywordScore).toBeGreaterThan(0);
+    expect(result.results[0]?.vectorScore).toBe(0);
+  });
+
+  test("searchResources 用当前 profile 的服务层 cosine 向量分排序", async () => {
+    const { service } = createTestService(new MemoryResourceRepository(), {
+      getActiveEmbeddingProfile: async () => EMBEDDING_PROFILE,
+      generateEmbedding: async ({ resource }: { resource: ResourceRow }) => (
+        resource.title.includes("高相关") ? [1, 0, 0] : [0, 1, 0]
+      ),
+      generateSearchEmbedding: async () => [1, 0, 0],
+    });
+    const low = await service.saveResource({
+      workspaceId: "workspace:demo",
+      resourceType: "generic_note",
+      title: "低相关资源",
+      summary: "语义距离较远。",
+      evidence: [],
+      structuredPayload: {},
+      quality: "user-confirmed",
+    });
+    const high = await service.saveResource({
+      workspaceId: "workspace:demo",
+      resourceType: "generic_note",
+      title: "高相关资源",
+      summary: "语义距离最近。",
+      evidence: [],
+      structuredPayload: {},
+      quality: "user-confirmed",
+    });
+
+    const result = await service.searchResources({
+      workspaceId: "workspace:demo",
+      query: "完全不同的自然语言问题",
+      resourceType: "generic_note",
+      limit: 2,
+      answerThreshold: 0.5,
+      candidateThreshold: 0.1,
+    });
+
+    expect(result.status).toBe("hit");
+    expect(result.indexStatus).toBe("ready");
+    expect(result.results.map((item) => item.resource.id)).toEqual([high.resource.id, low.resource.id]);
+    expect(result.results[0]?.vectorScore).toBeGreaterThan(result.results[1]?.vectorScore ?? 0);
+    expect(result.results[0]?.keywordScore).toBe(0);
+  });
+
+  test("searchResources 支持 context、filters、limit，并按阈值返回 candidates 或 miss", async () => {
+    let currentTime = new Date("2026-01-01T08:00:00.000Z");
+    const { service } = createTestService(new MemoryResourceRepository(), {
+      now: () => currentTime,
+    });
+    await service.saveResource({
+      workspaceId: "workspace:demo",
+      resourceType: "generic_note",
+      title: "早期资料",
+      summary: "违约责任资料，但来源和日期不满足过滤。",
+      sourceUrl: "https://old.example.com/a",
+      evidence: [],
+      tags: ["合同"],
+      structuredPayload: {},
+      quality: "user-confirmed",
+    });
+    currentTime = new Date("2026-05-11T08:00:00.000Z");
+    const kept = await service.saveResource({
+      workspaceId: "workspace:demo",
+      resourceType: "generic_note",
+      title: "合同违约责任检索",
+      summary: "使用选中行上下文补足查询。",
+      sourceUrl: "https://law.example.com/case",
+      evidence: [],
+      tags: ["合同", "案例"],
+      structuredPayload: {},
+      quality: "user-confirmed",
+    });
+    await service.saveResource({
+      workspaceId: "workspace:demo",
+      resourceType: "generic_note",
+      title: "不同标签资料",
+      summary: "违约责任但标签不满足过滤。",
+      sourceUrl: "https://law.example.com/other",
+      evidence: [],
+      tags: ["行政"],
+      structuredPayload: {},
+      quality: "user-confirmed",
+    });
+
+    const candidates = await service.searchResources({
+      workspaceId: "workspace:demo",
+      query: "争议焦点",
+      context: {
+        selectedRow: {
+          id: "case:1",
+          label: "案件 A",
+          visibleValues: { issue: "合同违约责任" },
+        },
+      },
+      resourceType: "generic_note",
+      filters: {
+        tags: ["合同", "案例"],
+        sourceDomain: "law.example.com",
+        dateFrom: "2026-05-01T00:00:00.000Z",
+      },
+      limit: 1,
+      answerThreshold: 0.95,
+      candidateThreshold: 0.1,
+    });
+    const miss = await service.searchResources({
+      workspaceId: "workspace:demo",
+      query: "完全不存在的关键词",
+      resourceType: "generic_note",
+      candidateThreshold: 0.1,
+    });
+
+    expect(candidates.status).toBe("candidates");
+    expect(candidates.results.map((item) => item.resource.id)).toEqual([kept.resource.id]);
+    expect(candidates.queryText).toContain("合同违约责任");
+    expect(miss.status).toBe("miss");
+    expect(miss.results).toEqual([]);
+  });
+
+  test("searchResources 区分 pending 和 failed 索引不可用状态", async () => {
+    const pending = createTestService(new MemoryResourceRepository(), {
+      getActiveEmbeddingProfile: async () => EMBEDDING_PROFILE,
+    });
+    await pending.service.saveResource({
+      workspaceId: "workspace:demo",
+      resourceType: "generic_note",
+      title: "待索引合同资源",
+      summary: "已经保存但还没有向量。",
+      evidence: [],
+      structuredPayload: {},
+      quality: "user-confirmed",
+    });
+
+    const failed = createTestService(new MemoryResourceRepository(), {
+      getActiveEmbeddingProfile: async () => EMBEDDING_PROFILE,
+      generateEmbedding: async () => {
+        throw new Error("embedding offline");
+      },
+    });
+    await failed.service.saveResource({
+      workspaceId: "workspace:demo",
+      resourceType: "generic_note",
+      title: "索引失败合同资源",
+      summary: "向量生成失败但资源存在。",
+      evidence: [],
+      structuredPayload: {},
+      quality: "user-confirmed",
+    });
+
+    const pendingResult = await pending.service.searchResources({
+      workspaceId: "workspace:demo",
+      query: "合同",
+      resourceType: "generic_note",
+    });
+    const failedResult = await failed.service.searchResources({
+      workspaceId: "workspace:demo",
+      query: "合同",
+      resourceType: "generic_note",
+    });
+
+    expect(pendingResult.indexStatus).toBe("index-pending");
+    expect(failedResult.indexStatus).toBe("index-error");
   });
 });

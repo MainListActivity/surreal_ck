@@ -1,5 +1,5 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: done
+Label: done
 
 # RR-010 — Web article 类型与未来 legal 预留
 
@@ -15,14 +15,14 @@ Label: ready-for-agent
 
 ## Acceptance criteria
 
-- [ ] resource type registry 支持 `web_article` schema。
-- [ ] `web_article` 必填 title、summary、sourceUrl、sourceTitle 和 evidence。
-- [ ] `web_article` 可选 author、publishedAt、siteName 等网页元数据。
-- [ ] ResourceAgent 草稿生成能把证据篮映射为 `web_article` 草稿字段。
-- [ ] 手动保存 `web_article` 时字段校验错误可被用户理解并修正。
-- [ ] registry 预留 `legal_case` 和 `legal_article` 的扩展接口，但不实现法律检索 UI。
-- [ ] citations 和 structuredPayload 结构能承载未来 legal resource 的来源和结构化信息。
-- [ ] 测试覆盖 `web_article` 有效/无效 payload、草稿字段映射、可选字段缺失和 legal 类型预留不影响 V1 类型。
+- [x] resource type registry 支持 `web_article` schema。
+- [x] `web_article` 必填 title、summary、sourceUrl、sourceTitle 和 evidence。
+- [x] `web_article` 可选 author、publishedAt、siteName 等网页元数据。
+- [x] ResourceAgent 草稿生成能把证据篮映射为 `web_article` 草稿字段。
+- [x] 手动保存 `web_article` 时字段校验错误可被用户理解并修正。
+- [x] registry 预留 `legal_case` 和 `legal_article` 的扩展接口，但不实现法律检索 UI。
+- [x] citations 和 structuredPayload 结构能承载未来 legal resource 的来源和结构化信息。
+- [x] 测试覆盖 `web_article` 有效/无效 payload、草稿字段映射、可选字段缺失和 legal 类型预留不影响 V1 类型。
 
 ## Blocked by
 

@@ -1,5 +1,5 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: done
+Label: done
 
 # RR-007 — 证据篮与资源草稿
 
@@ -15,16 +15,15 @@ Label: ready-for-agent
 
 ## Acceptance criteria
 
-- [ ] “加入证据”优先从外部 WebView 读取当前选中文本。
-- [ ] 选区读取失败或为空时，UI 提供手动粘贴证据入口。
-- [ ] 证据篮支持多段证据、删除、顺序展示和来源信息展示。
-- [ ] 每段证据保存 text、sourceUrl、sourceTitle、capturedAt 和 order。
-- [ ] ResourceAgent 可根据证据篮生成 resource draft，不直接保存资源。
-- [ ] 草稿包含 resourceType、title、summary、source、evidence 和 structuredPayload。
-- [ ] 草稿生成失败时保留证据篮，并允许用户手动填写必填字段。
-- [ ] 测试覆盖证据篮 add/delete/order、粘贴回退、草稿生成成功、草稿生成失败后的手填状态。
+- [x] “加入证据”优先从外部 WebView 读取当前选中文本。
+- [x] 选区读取失败或为空时，UI 提供手动粘贴证据入口。
+- [x] 证据篮支持多段证据、删除、顺序展示和来源信息展示。
+- [x] 每段证据保存 text、sourceUrl、sourceTitle、capturedAt 和 order。
+- [x] ResourceAgent 可根据证据篮生成 resource draft，不直接保存资源。
+- [x] 草稿包含 resourceType、title、summary、source、evidence 和 structuredPayload。
+- [x] 草稿生成失败时保留证据篮，并允许用户手动填写必填字段。
+- [x] 测试覆盖证据篮 add/delete/order、粘贴回退、草稿生成成功、草稿生成失败后的手填状态。
 
 ## Blocked by
 
 - `.scratch/resource-retrieval/issues/06-research-session-window-shell.md`
-

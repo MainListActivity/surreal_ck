@@ -13,8 +13,15 @@ import { createNavigationAgent, NAVIGATION_AGENT_ID } from "../ai/mastra/agents/
 import { CHITCHAT_AGENT_ID, createChitchatAgent } from "../ai/mastra/agents/chitchat-agent";
 import { DASHBOARD_AGENT_ID, createDashboardAgent } from "../ai/mastra/agents/dashboard-agent";
 import { CLAIM_ANALYSIS_AGENT_ID, createClaimAnalysisAgent } from "../ai/mastra/agents/claim-analysis-agent";
+import {
+  RESOURCE_AGENT_ID,
+  answerSelectedResourceIds,
+  createResourceAgent,
+  makeResourceRetrievalExecutor,
+} from "../ai/mastra/agents/resource-agent";
 import { initMastraForCurrentUser } from "../ai/index";
 import { assertAuthenticated } from "./context";
+import { createResearchSession } from "./resources";
 import { getAiSettings } from "./settings";
 import { type AiProgressSender } from "./ai-progress";
 import { runRouterChat } from "../ai/mastra/workflows/router-chat";
@@ -64,6 +71,9 @@ export async function sendAiMessage(
   if (!mastra.listAgents()[CLAIM_ANALYSIS_AGENT_ID]) {
     mastra.addAgent(createClaimAnalysisAgent(settings), CLAIM_ANALYSIS_AGENT_ID);
   }
+  if (!mastra.listAgents()[RESOURCE_AGENT_ID]) {
+    mastra.addAgent(createResourceAgent(settings), RESOURCE_AGENT_ID);
+  }
   if (!mastra.listAgents()[CHITCHAT_AGENT_ID]) {
     mastra.addAgent(createChitchatAgent(settings), CHITCHAT_AGENT_ID);
   }
@@ -85,6 +95,7 @@ export async function sendAiMessage(
     navigation: makeAgentExecutor(navigationAgent, { onToolCall }),
     dashboard: makeAgentExecutor(dashboardAgent, { onToolCall }),
     "claim-analysis": makeAgentExecutor(claimAnalysisAgent, { onToolCall }),
+    "resource-retrieval": makeResourceRetrievalExecutor({ createResearchSession }),
     chitchat: makeAgentExecutor(chitchatAgent, { onToolCall }),
   };
 
@@ -129,6 +140,10 @@ async function runRouterChatGuarded(
       pushProgress: (e) => pushProgress?.(e),
       onSuspend: (e) => onSuspend?.(e),
       toolCalls: collectedToolCalls,
+      answerResourceSelection: ({ resourceIds, taskText }) => answerSelectedResourceIds({
+        question: taskText,
+        resourceIds,
+      }),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

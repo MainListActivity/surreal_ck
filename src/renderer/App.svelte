@@ -11,6 +11,7 @@
   import LoginScreen from "./screens/LoginScreen.svelte";
   import MyDocsScreen from "./screens/MyDocsScreen.svelte";
   import PublicFormScreen from "./screens/PublicFormScreen.svelte";
+  import ResearchWindowScreen from "./screens/ResearchWindowScreen.svelte";
   import SettingsScreen from "./screens/SettingsScreen.svelte";
   import StateScreen from "./screens/StateScreen.svelte";
   import TemplatesScreen from "./screens/TemplatesScreen.svelte";
@@ -33,6 +34,7 @@
     "templates",
     "admin",
     "settings",
+    "research",
     "state-empty",
     "state-offline",
     "state-noperm",
@@ -81,6 +83,9 @@
   });
 
   function readInitialRoute(): RouteState {
+    const researchRoute = readResearchWindowRoute();
+    if (researchRoute) return researchRoute;
+
     try {
       const raw = localStorage.getItem("srk_route");
       if (raw) {
@@ -97,10 +102,25 @@
     return { screen: "home" };
   }
 
+  function readResearchWindowRoute(): RouteState | null {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("mode") !== "research") return null;
+      const researchSessionId = params.get("sessionId");
+      return {
+        screen: "research",
+        researchSessionId: researchSessionId ?? undefined,
+        resourceType: params.get("resourceType") ?? "generic_note",
+      };
+    } catch {
+      return null;
+    }
+  }
+
   function commitNavigate(next: RouteState) {
     route = next;
     try {
-      if (next.screen === "admin-console") {
+      if (next.screen === "admin-console" || next.screen === "research") {
         localStorage.removeItem("srk_route");
       } else {
         localStorage.setItem("srk_route", JSON.stringify(next));
@@ -197,6 +217,12 @@
           <SettingsScreen {navigate} />
         {:else if route.screen === "admin-console"}
           <AdminConsoleScreen {navigate} />
+        {:else if route.screen === "research"}
+          <ResearchWindowScreen
+            sessionId={route.researchSessionId}
+            initialResourceType={route.resourceType ?? "generic_note"}
+            initialUrl={new URLSearchParams(window.location.search).get("url") ?? ""}
+          />
         {:else}
           <StateScreen kind={route.screen} {navigate} />
         {/if}

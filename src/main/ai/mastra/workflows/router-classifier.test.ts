@@ -24,6 +24,12 @@ describe("router classifier 单意图分类", () => {
     expect(plan).toEqual([{ category: "claim-analysis", taskText: "分析这条记录" }]);
   });
 
+  test("'查找已有资料' 走 resource-retrieval 类目", async () => {
+    const llm = fakeLlm(`[{"category":"resource-retrieval","taskText":"查找已有资料"}]`);
+    const plan = await classifyTask({ text: "查找已有资料", llmCaller: llm });
+    expect(plan).toEqual([{ category: "resource-retrieval", taskText: "查找已有资料" }]);
+  });
+
   test("'你好' 走 chitchat 类目", async () => {
     const llm = fakeLlm(`[{"category":"chitchat","taskText":"你好"}]`);
     const plan = await classifyTask({ text: "你好", llmCaller: llm });

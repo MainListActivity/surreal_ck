@@ -4,6 +4,7 @@ import type { AiContextSnapshot } from "../../shared/ai-context";
 import type {
   AiMessageChunkEvent,
   AiProgressEvent,
+  ResourceCitationDTO,
   ResumeAiWorkflowResponse,
   ResumeDecision,
   WorkflowSuspendedEvent,
@@ -28,6 +29,11 @@ export type ResumeAiWorkflowInput = {
   pushChunk?: (event: AiMessageChunkEvent) => void;
   pushProgress?: (event: AiProgressEvent) => void;
   onSuspend?: (event: WorkflowSuspendedEvent) => void;
+  answerResourceSelection?: (input: {
+    resourceIds: string[];
+    taskText: string;
+    userContext: AiContextSnapshot;
+  }) => Promise<{ text: string; citations?: ResourceCitationDTO[] }>;
 };
 
 export async function resumeAiWorkflow(input: ResumeAiWorkflowInput): Promise<ResumeAiWorkflowResponse> {
@@ -55,6 +61,7 @@ export async function resumeAiWorkflow(input: ResumeAiWorkflowInput): Promise<Re
     pushChunk: input.pushChunk,
     pushProgress: input.pushProgress,
     onSuspend: input.onSuspend,
+    answerResourceSelection: input.answerResourceSelection,
   };
   requestContext.set(ROUTER_RUNTIME_KEY, runtime);
 

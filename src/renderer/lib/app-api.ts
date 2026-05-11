@@ -16,6 +16,8 @@ import type {
   ExecuteAiActionResponse,
   GetDashboardPageResponse,
   GetSettingsResponse,
+  GenerateResourceDraftRequest,
+  GenerateResourceDraftResponse,
   GetWorkbookDataResponse,
   ListDashboardPagesResponse,
   ListDashboardViewsResponse,
@@ -27,6 +29,8 @@ import type {
   ListReferenceTargetsResponse,
   MoveFolderResponse,
   MoveWorkbookResponse,
+  OpenResearchWindowRequest,
+  OpenResearchWindowResponse,
   RecordIdString,
   RefreshDashboardPageResponse,
   RefreshDashboardViewResponse,
@@ -53,6 +57,9 @@ import type {
   ResourceDetailResponse,
   SaveResourceRequest,
   SaveResourceResponse,
+  SaveResearchResourceRequest,
+  SearchResourcesRequest,
+  SearchResourcesResponse,
   UpdateSheetFieldsResponse,
   UpdateDashboardViewResponse,
   UpsertRowsResponse,
@@ -199,12 +206,20 @@ export const appApi = {
     return rpc.request("saveResource", req);
   },
 
+  saveResearchResource(req: SaveResearchResourceRequest): Promise<Result<SaveResourceResponse>> {
+    return rpc.request("saveResearchResource", req);
+  },
+
   retryResourceEmbedding(resourceId: RecordIdString): Promise<Result<RetryResourceEmbeddingResponse>> {
     return rpc.request("retryResourceEmbedding", { resourceId });
   },
 
   getResourceDetail(req: GetResourceDetailRequest): Promise<Result<ResourceDetailResponse>> {
     return rpc.request("getResourceDetail", req);
+  },
+
+  searchResources(req: SearchResourcesRequest): Promise<Result<SearchResourcesResponse>> {
+    return rpc.request("searchResources", req);
   },
 
   createResearchSession(req: CreateResearchSessionRequest): Promise<Result<ResearchSessionResponse>> {
@@ -221,6 +236,14 @@ export const appApi = {
 
   cancelResearchSession(req: CancelResearchSessionRequest): Promise<Result<ResearchSessionResponse>> {
     return rpc.request("cancelResearchSession", req);
+  },
+
+  openResearchWindow(req: OpenResearchWindowRequest): Promise<Result<OpenResearchWindowResponse>> {
+    return rpc.request("openResearchWindow", req);
+  },
+
+  generateResourceDraft(req: GenerateResourceDraftRequest): Promise<Result<GenerateResourceDraftResponse>> {
+    return rpc.request("generateResourceDraft", req);
   },
 
   listDashboardPages(workspaceId: RecordIdString, workbookId?: RecordIdString): Promise<Result<ListDashboardPagesResponse>> {

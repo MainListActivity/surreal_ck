@@ -51,3 +51,23 @@ describe("chitchat agent", () => {
     expect(Object.keys(mod.CHITCHAT_TOOLS)).toEqual([]);
   });
 });
+
+describe("resource agent", () => {
+  test("createResourceAgent 工厂存在并返回 Agent", async () => {
+    const mod = await import("./resource-agent");
+    expect(typeof mod.createResourceAgent).toBe("function");
+    expect(typeof mod.RESOURCE_AGENT_ID).toBe("string");
+    const agent = mod.createResourceAgent(fakeSettings);
+    expect(typeof agent.generate).toBe("function");
+  });
+
+  test("resource agent 只注册只读/草稿工具，不直接保存资源", async () => {
+    const { RESOURCE_TOOLS } = await import("./resource-agent");
+    expect(Object.keys(RESOURCE_TOOLS).sort()).toEqual([
+      "createResourceDraftIntent",
+      "getResourceDetail",
+      "searchResources",
+    ]);
+    expect(Object.keys(RESOURCE_TOOLS)).not.toContain("saveResource");
+  });
+});

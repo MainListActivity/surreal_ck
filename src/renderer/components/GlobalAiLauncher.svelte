@@ -51,6 +51,7 @@
   let progressHint = $state<string | null>(null);
   let savingIntentId = $state<string | null>(null);
   let acceptedRowPatchFields = $state<Record<string, string[]>>({});
+  let selectedResourceCandidateIds = $state<Record<string, string[]>>({});
 
   function navigateFromAiAction(action: AppNavigationIntent) {
     navigate(action.screen as ScreenId, {
@@ -70,6 +71,9 @@
     pendingIntents = next.pendingIntents;
     sending = next.sending;
     sendError = next.sendError;
+    if (event.kind === "manual-research") {
+      void appApi.openResearchWindow({ sessionId: event.sessionId });
+    }
     return next.streamedText;
   }
 
@@ -148,9 +152,9 @@
   function dismissIntent(messageId: string, options: { skipResume?: boolean } = {}) {
     const pending = pendingIntents.find((p) => p.messageId === messageId && !p.dismissed);
     if (!options.skipResume && pending?.runId && pending.suspendKind) {
-      const decision: ResumeDecision = pending.suspendKind === "ambiguous-candidates"
-        ? { kind: "candidate-cancelled" }
-        : { kind: "write-rejected" };
+      const decision: ResumeDecision = pending.suspendKind === "await-write-confirm"
+        ? { kind: "write-rejected" }
+        : { kind: "candidate-cancelled" };
       void appApi.resumeAiWorkflow(pending.runId, decision);
     }
     pendingIntents = pendingIntents.map((p) =>
@@ -174,6 +178,46 @@
       kind: "candidate-chosen",
       candidateId,
     });
+  }
+
+  function resourceSelectionFor(messageId: string): Set<string> {
+    return new Set(selectedResourceCandidateIds[messageId] ?? []);
+  }
+
+  function isResourceCandidateSelected(messageId: string, candidateId: string): boolean {
+    return resourceSelectionFor(messageId).has(candidateId);
+  }
+
+  function toggleResourceCandidate(messageId: string, candidateId: string) {
+    const next = resourceSelectionFor(messageId);
+    if (next.has(candidateId)) next.delete(candidateId);
+    else next.add(candidateId);
+    selectedResourceCandidateIds = { ...selectedResourceCandidateIds, [messageId]: Array.from(next) };
+  }
+
+  async function answerWithSelectedResources(pending: PendingIntent) {
+    if (!pending.runId || pending.suspendKind !== "resource-candidates") return;
+    const resourceIds = Array.from(resourceSelectionFor(pending.messageId));
+    if (!resourceIds.length) return;
+    dismissIntent(pending.messageId, { skipResume: true });
+    await resumeSuspendedIntent(pending.messageId, pending.runId, {
+      kind: "resource-candidates-chosen",
+      resourceIds,
+    });
+  }
+
+  async function continueResourceResearch(pending: PendingIntent) {
+    if (!pending.runId || pending.suspendKind !== "resource-candidates") return;
+    dismissIntent(pending.messageId, { skipResume: true });
+    await resumeSuspendedIntent(pending.messageId, pending.runId, {
+      kind: "resource-candidates-manual-research",
+    });
+  }
+
+  async function openProactiveResearch() {
+    sendError = null;
+    const res = await appApi.openResearchWindow({ resourceType: "generic_note" });
+    if (!res.ok) sendError = res.message;
   }
 
   async function resumeSuspendedIntent(messageId: string, runId: string, decision: ResumeDecision) {
@@ -450,13 +494,18 @@
 {#if appState.aiDrawerOpen}
   <aside class="ai-sidecar" aria-label="AI 助手">
     <header>
-      <div>
+      <div class="header-copy">
         <strong>AI</strong>
         <span>让数据、表格和仪表盘保持在同一段上下文里</span>
       </div>
-      <button class="icon-btn" aria-label="关闭 AI 助手" onclick={() => appState.setAiDrawerOpen(false)}>
-        <Icon name="x" size={16} />
-      </button>
+      <div class="header-actions">
+        <button class="icon-btn" aria-label="主动补库" title="主动补库" onclick={() => { void openProactiveResearch(); }}>
+          <Icon name="search" size={15} />
+        </button>
+        <button class="icon-btn" aria-label="关闭 AI 助手" onclick={() => appState.setAiDrawerOpen(false)}>
+          <Icon name="x" size={16} />
+        </button>
+      </div>
     </header>
 
     <div class="quick-actions">
@@ -519,15 +568,41 @@
                     <button class="dismiss-btn" onclick={() => dismissIntent(pending.messageId)}>忽略</button>
                   </div>
                 {:else if pending.intent.type === "ambiguous"}
-                  <span class="intent-label">找到 {pending.intent.candidates.length} 条匹配结果，请选择：</span>
-                  <div class="intent-candidates">
-                    {#each pending.intent.candidates as candidate (candidate.id)}
-                      <button class="candidate-btn" onclick={() => { void chooseAmbiguousCandidate(pending, candidate.id); }}>
-                        {candidate.label}
-                      </button>
-                    {/each}
-                  </div>
-                  <button class="dismiss-btn" onclick={() => dismissIntent(pending.messageId)}>关闭</button>
+                  {#if pending.suspendKind === "resource-candidates"}
+                    {@const selectedResources = resourceSelectionFor(pending.messageId)}
+                    <span class="intent-label">找到 {pending.intent.candidates.length} 条可能相关资源</span>
+                    <div class="intent-candidates resource-candidates">
+                      {#each pending.intent.candidates as candidate (candidate.id)}
+                        {@const selected = isResourceCandidateSelected(pending.messageId, candidate.id)}
+                        <button class="resource-candidate-btn" class:selected onclick={() => toggleResourceCandidate(pending.messageId, candidate.id)}>
+                          <span class="resource-candidate-check">{#if selected}<Icon name="check" size={12} />{/if}</span>
+                          <span class="resource-candidate-main">
+                            <strong>{candidate.label}</strong>
+                            {#if candidate.summary}<span>{candidate.summary}</span>{/if}
+                            <small>
+                              {#if candidate.score !== undefined}{Math.round(candidate.score * 100)} 分{/if}
+                              {#if candidate.resourceType} · {candidate.resourceType}{/if}
+                            </small>
+                          </span>
+                        </button>
+                      {/each}
+                    </div>
+                    <div class="intent-actions">
+                      <button class="confirm-btn" disabled={!selectedResources.size} onclick={() => { void answerWithSelectedResources(pending); }}>用选中资源回答</button>
+                      <button class="secondary-btn" onclick={() => { void continueResourceResearch(pending); }}>继续人工检索</button>
+                      <button class="dismiss-btn" onclick={() => dismissIntent(pending.messageId)}>关闭</button>
+                    </div>
+                  {:else}
+                    <span class="intent-label">找到 {pending.intent.candidates.length} 条匹配结果，请选择：</span>
+                    <div class="intent-candidates">
+                      {#each pending.intent.candidates as candidate (candidate.id)}
+                        <button class="candidate-btn" onclick={() => { void chooseAmbiguousCandidate(pending, candidate.id); }}>
+                          {candidate.label}
+                        </button>
+                      {/each}
+                    </div>
+                    <button class="dismiss-btn" onclick={() => dismissIntent(pending.messageId)}>关闭</button>
+                  {/if}
                 {:else if pending.intent.type === "row-patch-proposal"}
                   {@const acceptedFields = acceptedFieldsForRowPatch(pending.messageId, pending.intent)}
                   <div class="draft-head">
@@ -643,7 +718,7 @@
     border-bottom: 1px solid var(--border);
   }
 
-  header div {
+  .header-copy {
     display: grid;
     gap: 3px;
     min-width: 0;
@@ -661,8 +736,11 @@
     line-height: 1.5;
   }
 
-  header .icon-btn {
+  .header-actions {
     margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
   }
 
   .quick-actions {
@@ -1181,6 +1259,67 @@
     background: var(--primary-light, rgba(22, 100, 255, .06));
   }
 
+  .resource-candidates {
+    gap: 6px;
+  }
+
+  .resource-candidate-btn {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr);
+    gap: 8px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text-1);
+    text-align: left;
+  }
+
+  .resource-candidate-btn.selected {
+    border-color: var(--primary);
+    background: var(--primary-light, rgba(22, 100, 255, .06));
+  }
+
+  .resource-candidate-check {
+    width: 18px;
+    height: 18px;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--primary);
+  }
+
+  .resource-candidate-btn.selected .resource-candidate-check {
+    border-color: var(--primary);
+    background: #fff;
+  }
+
+  .resource-candidate-main {
+    min-width: 0;
+    display: grid;
+    gap: 3px;
+  }
+
+  .resource-candidate-main strong,
+  .resource-candidate-main span,
+  .resource-candidate-main small {
+    overflow-wrap: anywhere;
+  }
+
+  .resource-candidate-main strong {
+    font-size: 12px;
+    font-weight: 650;
+  }
+
+  .resource-candidate-main span,
+  .resource-candidate-main small {
+    color: var(--text-3);
+    font-size: 11px;
+    line-height: 1.35;
+  }
+
   .confirm-btn {
     height: 28px;
     padding: 0 12px;
@@ -1199,6 +1338,22 @@
   .confirm-btn:disabled {
     cursor: not-allowed;
     opacity: .55;
+  }
+
+  .secondary-btn {
+    height: 28px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text-1);
+    font-size: 12px;
+    font-weight: 550;
+  }
+
+  .secondary-btn:hover {
+    border-color: var(--primary);
+    color: var(--primary);
   }
 
   .dismiss-btn {

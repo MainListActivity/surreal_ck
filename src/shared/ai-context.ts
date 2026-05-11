@@ -1,4 +1,4 @@
-import type { GridColumnDef, GridRow, RecordIdString } from "./rpc.types";
+import type { GridColumnDef, GridRow, RecordIdString, ResourceCitationDTO } from "./rpc.types";
 
 export type AiRouteContext = {
   screen: string;
@@ -40,6 +40,7 @@ export type AiChatMessage = {
   content: string;
   createdAt: string;
   context: AiContextSnapshot;
+  citations?: ResourceCitationDTO[];
 };
 
 export type CreateAiUserMessageInput = {

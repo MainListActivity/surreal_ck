@@ -184,6 +184,70 @@ describe("applyAiSuspendedToMessages", () => {
       },
     ]);
   });
+
+  test("resource-candidates 暂停事件保留资源候选详情", () => {
+    const placeholder: AiChatMessage = {
+      id: "placeholder",
+      role: "assistant",
+      content: "",
+      createdAt: "2026-05-10T00:00:00.000Z",
+      context: { route: { screen: "editor" } },
+    };
+
+    const next = applyAiSuspendedToMessages(baseState([placeholder]), "placeholder", {
+      kind: "resource-candidates",
+      runId: "run-1",
+      candidates: [{
+        id: "resource_item:r1",
+        label: "资料 A",
+        summary: "摘要 A",
+        score: 0.42,
+        resourceType: "generic_note",
+        sourceUrl: "https://example.com/a",
+      }],
+    });
+
+    expect(next.messages[0].content).toBe("找到可能相关的资源，请选择要用于回答的资料。");
+    expect(next.pendingIntents[0]).toEqual({
+      messageId: "placeholder",
+      intent: {
+        type: "ambiguous",
+        candidates: [{
+          id: "resource_item:r1",
+          label: "资料 A",
+          summary: "摘要 A",
+          score: 0.42,
+          resourceType: "generic_note",
+          sourceUrl: "https://example.com/a",
+        }],
+      },
+      dismissed: false,
+      runId: "run-1",
+      suspendKind: "resource-candidates",
+    });
+  });
+
+  test("manual-research 暂停事件只更新消息，不创建确认意图", () => {
+    const placeholder: AiChatMessage = {
+      id: "placeholder",
+      role: "assistant",
+      content: "",
+      createdAt: "2026-05-10T00:00:00.000Z",
+      context: { route: { screen: "editor" } },
+    };
+
+    const next = applyAiSuspendedToMessages(baseState([placeholder]), "placeholder", {
+      kind: "manual-research",
+      runId: "run-1",
+      sessionId: "research_session:s1",
+      workspaceId: "workspace:demo",
+      query: "查找合同解除案例",
+      resourceType: "generic_note",
+    });
+
+    expect(next.messages[0].content).toBe("已打开人工检索窗口，请在检索完成后返回。");
+    expect(next.pendingIntents).toEqual([]);
+  });
 });
 
 describe("buildRowPatchIntentFromProposal", () => {

@@ -24,6 +24,8 @@ import type {
   ExecuteAiActionResponse,
   GetDashboardPageRequest,
   GetDashboardPageResponse,
+  GenerateResourceDraftRequest,
+  GenerateResourceDraftResponse,
   GetResearchSessionRequest,
   GetResourceDetailRequest,
   GetWorkbookDataRequest,
@@ -41,6 +43,8 @@ import type {
   MoveFolderResponse,
   MoveWorkbookRequest,
   MoveWorkbookResponse,
+  OpenResearchWindowRequest,
+  OpenResearchWindowResponse,
   RawQueryRequest,
   RawQueryResponse,
   RefreshDashboardPageRequest,
@@ -70,8 +74,11 @@ import type {
   ListReferenceTargetsResponse,
   SaveDashboardPageLayoutRequest,
   SaveDashboardPageLayoutResponse,
+  SaveResearchResourceRequest,
   SaveSettingsRequest,
   SaveSettingsResponse,
+  SearchResourcesRequest,
+  SearchResourcesResponse,
   SearchReferenceCandidatesRequest,
   SearchReferenceCandidatesResponse,
   SendAiMessageRequest,
@@ -119,8 +126,11 @@ import {
   getResearchSession,
   getResourceDetail,
   retryResourceEmbedding,
+  saveResearchResource,
   saveResource,
+  searchResources,
 } from "../services/resources";
+import { openResearchWindow } from "../services/research-window";
 import {
   getAiSettings,
   getEmbeddingSettings,
@@ -134,6 +144,7 @@ import {
 import { sendAiMessage } from "../services/ai-chat";
 import { resumeAiWorkflowFromRpc } from "../services/ai-resume-rpc";
 import { executeAiAction } from "../services/ai-actions";
+import { createResourceDraftFromEvidence } from "../ai/mastra/agents/resource-agent";
 
 type SendFn = {
   (event: "authStateChanged", payload: { state: AuthState }): void;
@@ -374,8 +385,16 @@ export function createRpcHandlers(send: SendFn) {
         return withResult(() => saveResource(req));
       },
 
+      saveResearchResource: async (req: SaveResearchResourceRequest): Promise<Result<SaveResourceResponse>> => {
+        return withResult(() => saveResearchResource(req));
+      },
+
       getResourceDetail: async (req: GetResourceDetailRequest): Promise<Result<ResourceDetailResponse>> => {
         return withResult(() => getResourceDetail(req));
+      },
+
+      searchResources: async (req: SearchResourcesRequest): Promise<Result<SearchResourcesResponse>> => {
+        return withResult(() => searchResources(req));
       },
 
       createResearchSession: async (req: CreateResearchSessionRequest): Promise<Result<ResearchSessionResponse>> => {
@@ -396,6 +415,14 @@ export function createRpcHandlers(send: SendFn) {
 
       retryResourceEmbedding: async (req: RetryResourceEmbeddingRequest): Promise<Result<RetryResourceEmbeddingResponse>> => {
         return withResult(() => retryResourceEmbedding(req));
+      },
+
+      openResearchWindow: async (req: OpenResearchWindowRequest): Promise<Result<OpenResearchWindowResponse>> => {
+        return withResult(() => openResearchWindow(req));
+      },
+
+      generateResourceDraft: async (req: GenerateResourceDraftRequest): Promise<Result<GenerateResourceDraftResponse>> => {
+        return withResult(async () => ({ draft: createResourceDraftFromEvidence(req) }));
       },
 
       listDashboardPages: async (req: ListDashboardPagesRequest): Promise<Result<ListDashboardPagesResponse>> => {

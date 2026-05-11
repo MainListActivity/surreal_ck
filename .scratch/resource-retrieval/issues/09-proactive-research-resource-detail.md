@@ -1,5 +1,5 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: done
+Label: done
 
 # RR-009 — 主动补库与最小资源详情
 
@@ -15,16 +15,15 @@ Label: ready-for-agent
 
 ## Acceptance criteria
 
-- [ ] 用户可从明确入口主动打开检索窗口，且不需要 researchSessionId。
-- [ ] 主动补库默认 `generic_note`，并允许切换到已注册 resourceType。
-- [ ] 主动保存资源不触发 workflow resume。
-- [ ] 主动保存仍走同一资源校验、hash、quality 和 embedding 状态逻辑。
-- [ ] 最小资源详情弹层展示标题、摘要、来源、证据、structuredPayload JSON 和 embedding 状态。
-- [ ] embedding failed/stale 时详情弹层提供资源级重试索引动作。
-- [ ] 候选卡或保存结果能打开资源详情弹层。
-- [ ] 测试覆盖无 session 保存、resourceType 切换、详情弹层状态和 retry indexing action。
+- [x] 用户可从明确入口主动打开检索窗口，且不需要 researchSessionId。
+- [x] 主动补库默认 `generic_note`，并允许切换到已注册 resourceType。
+- [x] 主动保存资源不触发 workflow resume。
+- [x] 主动保存仍走同一资源校验、hash、quality 和 embedding 状态逻辑。
+- [x] 最小资源详情弹层展示标题、摘要、来源、证据、structuredPayload JSON 和 embedding 状态。
+- [x] embedding failed/stale 时详情弹层提供资源级重试索引动作。
+- [x] 候选卡或保存结果能打开资源详情弹层。
+- [x] 测试覆盖无 session 保存、resourceType 切换、详情弹层状态和 retry indexing action。
 
 ## Blocked by
 
 - `.scratch/resource-retrieval/issues/08-save-multiple-resources-finish-research.md`
-

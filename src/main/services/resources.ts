@@ -170,6 +170,14 @@ export type SaveResourceResponse = {
   resource: ResourceDTO;
 };
 
+export type SaveResearchResourceRequest = Omit<
+  SaveResourceRequest,
+  "workspaceId" | "resourceType" | "researchSessionId"
+> & {
+  sessionId: string;
+  resourceType?: string;
+};
+
 export type GetResourceDetailRequest = {
   resourceId: string;
 };
@@ -182,6 +190,56 @@ export type ResourceDetailResponse = {
     query: string;
     resourceIds: string[];
   };
+};
+
+export type ResourceSearchContext = {
+  selectedRow?: {
+    id?: string;
+    label?: string;
+    visibleValues?: Record<string, unknown>;
+  } | Record<string, unknown>;
+  document?: {
+    title?: string;
+    text?: string;
+  } | string;
+  manualText?: string;
+};
+
+export type ResourceSearchFilters = {
+  tags?: string[];
+  sourceDomain?: string;
+  dateFrom?: string;
+  dateTo?: string;
+};
+
+export type ResourceSearchStatus = "hit" | "candidates" | "miss";
+export type ResourceSearchIndexStatus = "ready" | "index-disabled" | "index-pending" | "index-error";
+
+export type SearchResourcesRequest = {
+  workspaceId: string;
+  query: string;
+  context?: ResourceSearchContext;
+  resourceType?: string;
+  filters?: ResourceSearchFilters;
+  limit?: number;
+  answerThreshold?: number;
+  candidateThreshold?: number;
+};
+
+export type ResourceSearchResult = {
+  resource: ResourceDTO;
+  score: number;
+  vectorScore: number;
+  keywordScore: number;
+  qualityScore: number;
+  recencyScore: number;
+};
+
+export type SearchResourcesResponse = {
+  status: ResourceSearchStatus;
+  indexStatus: ResourceSearchIndexStatus;
+  queryText: string;
+  results: ResourceSearchResult[];
 };
 
 export type SearchResourceEmbeddingsRequest = {
@@ -245,6 +303,7 @@ export type CancelResearchSessionRequest = {
 export type ResourceRepository = {
   createResource(input: Omit<ResourceRow, "id">): Promise<ResourceRow>;
   findResourceById(resourceId: string): Promise<ResourceRow | null>;
+  listResourcesByWorkspace(workspaceId: string): Promise<ResourceRow[]>;
   upsertResourceEmbedding(input: Omit<ResourceEmbeddingRow, "id">): Promise<ResourceEmbeddingRow>;
   findResourceEmbeddingsByResource(resourceId: string): Promise<ResourceEmbeddingRow[]>;
   listIndexedResourceEmbeddings(workspaceId: string, profileKey: string): Promise<ResourceEmbeddingRow[]>;
@@ -293,6 +352,11 @@ export class SurrealResourceRepository implements ResourceRepository {
       { resourceId: new StringRecordId(resourceId) },
     );
     return rows[0]?.[0] ?? null;
+  }
+
+  async listResourcesByWorkspace(workspaceId: string): Promise<ResourceRow[]> {
+    const rows = await this.db.select<ResourceRow>(new Table("resource_item"));
+    return rows.filter((row) => String(row.workspace) === workspaceId);
   }
 
   async upsertResourceEmbedding(input: Omit<ResourceEmbeddingRow, "id">): Promise<ResourceEmbeddingRow> {
@@ -432,6 +496,10 @@ type ResourceServiceDeps = {
     text: string;
     embeddingTextHash: string;
   }): Promise<number[]>;
+  generateSearchEmbedding?(input: {
+    profile: ResourceEmbeddingProfile;
+    text: string;
+  }): Promise<number[]>;
   now?: () => Date;
 };
 
@@ -445,7 +513,7 @@ const EvidenceSchema = z.object({
 
 const ResourceQualitySchema = z.enum(["user-confirmed", "ai-draft", "imported", "deprecated"]);
 
-const ResourceTypeRegistry = {
+const ActiveResourceTypeRegistry = {
   generic_note: z.object({}).strict(),
   web_article: z.object({
     author: z.string().trim().min(1).optional(),
@@ -454,10 +522,24 @@ const ResourceTypeRegistry = {
   }).strict(),
 } satisfies Record<string, z.ZodType<Record<string, unknown>>>;
 
+const RESERVED_RESOURCE_TYPES = ["legal_case", "legal_article"] as const;
+
+export type ResourceTypeDefinition = {
+  type: string;
+  status: "active" | "reserved";
+};
+
+export function listResourceTypeDefinitions(): ResourceTypeDefinition[] {
+  return [
+    ...Object.keys(ActiveResourceTypeRegistry).map((type) => ({ type, status: "active" as const })),
+    ...RESERVED_RESOURCE_TYPES.map((type) => ({ type, status: "reserved" as const })),
+  ];
+}
+
 export function createResourceService(deps: ResourceServiceDeps) {
   const now = deps.now ?? (() => new Date());
 
-  return {
+  const api = {
     async saveResource(req: SaveResourceRequest): Promise<SaveResourceResponse> {
       await deps.assertCanWriteWorkspace(req.workspaceId);
       const currentUserId = await deps.getCurrentUserRecordId();
@@ -502,6 +584,20 @@ export function createResourceService(deps: ResourceServiceDeps) {
       return { resource: resourceRowToDTO(row, embedding) };
     },
 
+    async saveResearchResource(req: SaveResearchResourceRequest): Promise<SaveResourceResponse> {
+      const session = await deps.repository.findResearchSessionById(req.sessionId);
+      if (!session) throw new ServiceError("NOT_FOUND", "检索会话不存在");
+      if (session.status !== "open") {
+        throw new ServiceError("VALIDATION_ERROR", "只能向 open 状态的检索会话保存资源");
+      }
+      return api.saveResource({
+        ...req,
+        workspaceId: String(session.workspace),
+        resourceType: req.resourceType?.trim() || session.resource_type,
+        researchSessionId: req.sessionId,
+      });
+    },
+
     async getResourceDetail(req: GetResourceDetailRequest): Promise<ResourceDetailResponse> {
       const row = await deps.repository.findResourceById(req.resourceId);
       if (!row) throw new ServiceError("NOT_FOUND", "资源不存在");
@@ -517,6 +613,55 @@ export function createResourceService(deps: ResourceServiceDeps) {
         resource,
         session: session ? researchSessionRowToSummary(session) : undefined,
       };
+    },
+
+    async searchResources(req: SearchResourcesRequest): Promise<SearchResourcesResponse> {
+      await deps.assertCanReadWorkspace(req.workspaceId);
+      const queryText = buildSearchText(req);
+      if (!queryText) throw new ServiceError("VALIDATION_ERROR", "检索 query 不能为空");
+      if (req.resourceType) validateResourceType(req.resourceType.trim());
+
+      const rows = (await deps.repository.listResourcesByWorkspace(req.workspaceId))
+        .filter((row) => !req.resourceType || row.resource_type === req.resourceType.trim())
+        .filter((row) => resourceMatchesFilters(row, req.filters));
+      const profile = await deps.getActiveEmbeddingProfile?.(req.workspaceId) ?? null;
+      const vectorSearch = await buildVectorScoreMap(deps, {
+        workspaceId: req.workspaceId,
+        queryText,
+        rows,
+        profile,
+      });
+      const scoredRows = await Promise.all(rows.map(async (row) => {
+        const keywordScore = scoreKeyword(row, queryText);
+        const vectorScore = vectorSearch.scores.get(String(row.id)) ?? 0;
+        const qualityScore = scoreQuality(row.quality);
+        const recencyScore = scoreRecency(row.created_at, now());
+        const score = combineResourceScores({ vectorScore, keywordScore, qualityScore, recencyScore });
+        return {
+          resource: resourceRowToDTO(row, await resolveResourceEmbeddingState(deps, row)),
+          score,
+          vectorScore,
+          keywordScore,
+          qualityScore,
+          recencyScore,
+        };
+      }));
+
+      const limit = clampPositiveInteger(req.limit, 10);
+      const results = scoredRows
+        .filter((item) => item.keywordScore > 0 || vectorSearch.scores.has(item.resource.id))
+        .sort((left, right) => right.score - left.score)
+        .slice(0, limit);
+      const bestScore = results[0]?.score ?? 0;
+      const answerThreshold = req.answerThreshold ?? 0.72;
+      const candidateThreshold = req.candidateThreshold ?? 0.25;
+      const status: ResourceSearchStatus = bestScore >= answerThreshold
+        ? "hit"
+        : bestScore >= candidateThreshold
+          ? "candidates"
+          : "miss";
+
+      return { status, indexStatus: vectorSearch.indexStatus, queryText, results };
     },
 
     async searchResourceEmbeddings(req: SearchResourceEmbeddingsRequest): Promise<SearchResourceEmbeddingsResponse> {
@@ -653,14 +798,23 @@ export function createResourceService(deps: ResourceServiceDeps) {
       return { session: researchSessionRowToDTO(updated) };
     },
   };
+  return api;
 }
 
 export function saveResource(req: SaveResourceRequest): Promise<SaveResourceResponse> {
   return createDefaultResourceService().saveResource(req);
 }
 
+export function saveResearchResource(req: SaveResearchResourceRequest): Promise<SaveResourceResponse> {
+  return createDefaultResourceService().saveResearchResource(req);
+}
+
 export function getResourceDetail(req: GetResourceDetailRequest): Promise<ResourceDetailResponse> {
   return createDefaultResourceService().getResourceDetail(req);
+}
+
+export function searchResources(req: SearchResourcesRequest): Promise<SearchResourcesResponse> {
+  return createDefaultResourceService().searchResources(req);
 }
 
 export function createResearchSession(req: CreateResearchSessionRequest): Promise<ResearchSessionResponse> {
@@ -843,6 +997,175 @@ function buildResourceEmbeddingText(row: ResourceRow): string {
   ].filter(Boolean).join("\n");
 }
 
+async function buildVectorScoreMap(
+  deps: ResourceServiceDeps,
+  input: {
+    workspaceId: string;
+    queryText: string;
+    rows: ResourceRow[];
+    profile: ResourceEmbeddingProfile | null;
+  },
+): Promise<{ indexStatus: ResourceSearchIndexStatus; scores: Map<string, number> }> {
+  if (!input.profile) return { indexStatus: "index-disabled", scores: new Map() };
+  if (!deps.generateSearchEmbedding) {
+    return { indexStatus: await inferUnavailableIndexStatus(deps, input.rows, input.profile), scores: new Map() };
+  }
+
+  try {
+    const queryVector = await deps.generateSearchEmbedding({
+      profile: input.profile,
+      text: input.queryText,
+    });
+    const profileKey = createEmbeddingProfileKey(input.profile);
+    const embeddings = await deps.repository.listIndexedResourceEmbeddings(input.workspaceId, profileKey);
+    const scores = new Map<string, number>();
+    for (const embedding of embeddings) {
+      if (!embedding.vector?.length) continue;
+      scores.set(String(embedding.resource), cosineSimilarity(queryVector, embedding.vector));
+    }
+    return {
+      indexStatus: scores.size > 0 ? "ready" : await inferUnavailableIndexStatus(deps, input.rows, input.profile),
+      scores,
+    };
+  } catch {
+    return { indexStatus: "index-error", scores: new Map() };
+  }
+}
+
+async function inferUnavailableIndexStatus(
+  deps: ResourceServiceDeps,
+  rows: ResourceRow[],
+  profile: ResourceEmbeddingProfile,
+): Promise<ResourceSearchIndexStatus> {
+  const embeddings = (await Promise.all(rows.map((row) => findEmbeddingForProfile(deps, row, profile))))
+    .filter((row): row is ResourceEmbeddingRow => Boolean(row));
+  if (embeddings.some((row) => row.status === "failed")) return "index-error";
+  return "index-pending";
+}
+
+function buildSearchText(req: Pick<SearchResourcesRequest, "query" | "context">): string {
+  return [
+    req.query,
+    contextValueToText(req.context?.selectedRow),
+    contextValueToText(req.context?.document),
+    req.context?.manualText,
+  ]
+    .filter((item): item is string => Boolean(item?.trim()))
+    .join("\n")
+    .trim();
+}
+
+function contextValueToText(value: unknown): string {
+  if (!value) return "";
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(contextValueToText).filter(Boolean).join("\n");
+  if (typeof value === "object") {
+    return Object.values(value as Record<string, unknown>)
+      .map(contextValueToText)
+      .filter(Boolean)
+      .join("\n");
+  }
+  return String(value);
+}
+
+function scoreKeyword(row: ResourceRow, queryText: string): number {
+  const haystack = normalizeSearchText([
+    row.title,
+    row.summary,
+    row.source_title,
+    row.tags.join(" "),
+    ...row.evidence.map((item) => item.text),
+  ].filter(Boolean).join("\n"));
+  const terms = tokenizeSearchText(queryText);
+  if (terms.length === 0) return 0;
+
+  let matches = 0;
+  for (const term of terms) {
+    if (haystack.includes(term)) matches += 1;
+  }
+  return matches / terms.length;
+}
+
+function tokenizeSearchText(text: string): string[] {
+  const normalized = normalizeSearchText(text);
+  const parts = normalized
+    .split(/[\s,，。；;、]+/u)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return [...new Set(parts.length > 0 ? parts : [normalized].filter(Boolean))];
+}
+
+function normalizeSearchText(text: string): string {
+  return text.trim().toLowerCase();
+}
+
+function scoreQuality(quality: ResourceQuality): number {
+  switch (quality) {
+    case "user-confirmed":
+      return 1;
+    case "imported":
+      return 0.72;
+    case "ai-draft":
+      return 0.58;
+    case "deprecated":
+      return 0.12;
+  }
+}
+
+function scoreRecency(createdAt: Date | DateTime | string, reference: Date): number {
+  const created = createdAt instanceof DateTime ? createdAt.toDate() : new Date(createdAt);
+  const ageMs = Math.max(0, reference.getTime() - created.getTime());
+  const ageDays = ageMs / 86_400_000;
+  return 1 / (1 + ageDays / 180);
+}
+
+function combineResourceScores(input: {
+  vectorScore: number;
+  keywordScore: number;
+  qualityScore: number;
+  recencyScore: number;
+}): number {
+  return (
+    input.vectorScore * 0.45 +
+    input.keywordScore * 0.35 +
+    input.qualityScore * 0.12 +
+    input.recencyScore * 0.08
+  );
+}
+
+function resourceMatchesFilters(row: ResourceRow, filters: ResourceSearchFilters | undefined): boolean {
+  if (!filters) return true;
+  if (filters.tags?.length) {
+    const rowTags = new Set(row.tags.map((tag) => tag.toLowerCase()));
+    const wantedTags = filters.tags.map((tag) => tag.trim().toLowerCase()).filter(Boolean);
+    if (wantedTags.length > 0 && !wantedTags.every((tag) => rowTags.has(tag))) return false;
+  }
+  if (filters.sourceDomain) {
+    const domain = sourceDomain(row.source_url);
+    if (domain !== filters.sourceDomain.trim().toLowerCase()) return false;
+  }
+  if (filters.dateFrom || filters.dateTo) {
+    const created = new Date(row.created_at instanceof DateTime ? row.created_at.toDate() : row.created_at);
+    if (filters.dateFrom && created < new Date(filters.dateFrom)) return false;
+    if (filters.dateTo && created > new Date(filters.dateTo)) return false;
+  }
+  return true;
+}
+
+function sourceDomain(sourceUrl: string | undefined): string | undefined {
+  if (!sourceUrl) return undefined;
+  try {
+    return new URL(sourceUrl).hostname.toLowerCase();
+  } catch {
+    return undefined;
+  }
+}
+
+function clampPositiveInteger(value: number | undefined, fallback: number): number {
+  if (!Number.isInteger(value) || (value ?? 0) <= 0) return fallback;
+  return value as number;
+}
+
 function summarizeEmbeddingError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   const trimmed = message.trim();
@@ -896,7 +1219,7 @@ function normalizeSaveResourceRequest(req: SaveResourceRequest): Required<
     throw new ServiceError("VALIDATION_ERROR", "资源质量不符合约束");
   }
 
-  return {
+  const normalized = {
     ...req,
     workspaceId: req.workspaceId,
     resourceType,
@@ -909,6 +1232,8 @@ function normalizeSaveResourceRequest(req: SaveResourceRequest): Required<
     structuredPayload,
     quality: qualityParsed.data,
   };
+  validateResourceTypeRequiredFields(normalized);
+  return normalized;
 }
 
 function validateStructuredPayload(resourceType: string, payload: Record<string, unknown>): Record<string, unknown> {
@@ -922,11 +1247,39 @@ function validateStructuredPayload(resourceType: string, payload: Record<string,
 }
 
 function validateResourceType(resourceType: string): z.ZodType<Record<string, unknown>> {
-  const schema = ResourceTypeRegistry[resourceType as keyof typeof ResourceTypeRegistry];
+  const schema = ActiveResourceTypeRegistry[resourceType as keyof typeof ActiveResourceTypeRegistry];
   if (!schema) {
+    if ((RESERVED_RESOURCE_TYPES as readonly string[]).includes(resourceType)) {
+      throw new ServiceError("VALIDATION_ERROR", `资源类型 ${resourceType} 已预留但尚未启用`);
+    }
     throw new ServiceError("VALIDATION_ERROR", `未知资源类型: ${resourceType}`);
   }
   return schema;
+}
+
+function validateResourceTypeRequiredFields(input: Pick<
+  SaveResourceRequest,
+  "resourceType" | "sourceUrl" | "sourceTitle" | "evidence"
+>): void {
+  if (input.resourceType !== "web_article") return;
+  if (!input.sourceUrl || !isHttpUrl(input.sourceUrl)) {
+    throw new ServiceError("VALIDATION_ERROR", "web_article 必须包含有效 sourceUrl");
+  }
+  if (!input.sourceTitle?.trim()) {
+    throw new ServiceError("VALIDATION_ERROR", "web_article 必须包含 sourceTitle");
+  }
+  if (!input.evidence.length) {
+    throw new ServiceError("VALIDATION_ERROR", "web_article 至少需要一段证据");
+  }
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 function requiredTrimmed(value: string, message: string): string {

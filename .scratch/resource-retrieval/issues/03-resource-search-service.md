@@ -1,5 +1,5 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: done
+Label: done
 
 # RR-003 — 资源检索服务
 
@@ -15,18 +15,17 @@ Label: ready-for-agent
 
 ## Acceptance criteria
 
-- [ ] `searchResources` 支持 query、context、resourceType、tags/sourceDomain/date filters 和 limit。
-- [ ] context 支持 selected-row、document、manual text 这类输入，并由服务层统一转换为检索文本。
-- [ ] V1 关键词检索使用 contains，覆盖标题、摘要、标签和证据文本，并返回 keywordScore。
-- [ ] V1 向量检索通过可替换的 vector index 接口在服务层计算 cosine similarity。
-- [ ] 混合排序结合 vectorScore、keywordScore、qualityScore 和 recencyScore。
-- [ ] 返回结果区分 hit/candidates/miss，以及 index-disabled/index-pending/index-error。
-- [ ] 使用 answerThreshold 和 candidateThreshold 做两级阈值分段。
-- [ ] filters 不泄露权限逻辑，只表达用户驱动的资源筛选。
-- [ ] 测试覆盖关键词命中、向量排序、混合排序、阈值分段、过滤条件、空索引和不同索引状态。
+- [x] `searchResources` 支持 query、context、resourceType、tags/sourceDomain/date filters 和 limit。
+- [x] context 支持 selected-row、document、manual text 这类输入，并由服务层统一转换为检索文本。
+- [x] V1 关键词检索使用 contains，覆盖标题、摘要、标签和证据文本，并返回 keywordScore。
+- [x] V1 向量检索通过可替换的 vector index 接口在服务层计算 cosine similarity。
+- [x] 混合排序结合 vectorScore、keywordScore、qualityScore 和 recencyScore。
+- [x] 返回结果区分 hit/candidates/miss，以及 index-disabled/index-pending/index-error。
+- [x] 使用 answerThreshold 和 candidateThreshold 做两级阈值分段。
+- [x] filters 不泄露权限逻辑，只表达用户驱动的资源筛选。
+- [x] 测试覆盖关键词命中、向量排序、混合排序、阈值分段、过滤条件、空索引和不同索引状态。
 
 ## Blocked by
 
 - `.scratch/resource-retrieval/issues/01-resource-main-data.md`
 - `.scratch/resource-retrieval/issues/02-embedding-profile-index-state.md`
-

@@ -4,6 +4,7 @@ import type { AiContextSnapshot } from "../../../../shared/ai-context";
 import type {
   AiMessageChunkEvent,
   AiProgressEvent,
+  ResourceCitationDTO,
   AiToolCallRecord,
   AiStructuredIntent,
   CandidateOption,
@@ -46,11 +47,29 @@ export type AwaitWriteConfirmSuspend = {
   intent: AiStructuredIntent;
 };
 
-export type SubAgentSuspendSignal = AmbiguousSuspend | AwaitWriteConfirmSuspend;
+export type ResourceCandidatesSuspend = {
+  kind: "resource-candidates";
+  candidates: CandidateOption[];
+};
+
+export type ManualResearchSuspend = {
+  kind: "manual-research";
+  sessionId: string;
+  workspaceId: string;
+  query: string;
+  resourceType: string;
+};
+
+export type SubAgentSuspendSignal =
+  | AmbiguousSuspend
+  | ResourceCandidatesSuspend
+  | ManualResearchSuspend
+  | AwaitWriteConfirmSuspend;
 
 export type SubAgentInput = {
   taskText: string;
   shared: SharedWorkflowContext;
+  runId?: string;
   /**
    * 流式 delta 实时回调；非流式 executor 可忽略。
    */
@@ -60,6 +79,7 @@ export type SubAgentInput = {
 export type SubAgentOutput = {
   text: string;
   confirmed: SharedConfirmed;
+  citations?: ResourceCitationDTO[];
   /** 可选：流式片段。 */
   deltas?: string[];
   /**
@@ -71,7 +91,9 @@ export type SubAgentOutput = {
 };
 
 export type SubAgentExecutor = (input: SubAgentInput) => Promise<SubAgentOutput>;
-export type SubAgentExecutors = Record<RouterCategory, SubAgentExecutor>;
+export type SubAgentExecutors =
+  Record<Exclude<RouterCategory, "resource-retrieval">, SubAgentExecutor> &
+  Partial<Record<"resource-retrieval", SubAgentExecutor>>;
 
 // ─── 调度器：保留供 011 测试用的纯函数版本（不带 suspend） ────────────────────
 
@@ -85,6 +107,7 @@ export type RouterStepResult = {
   category: RouterCategory;
   taskText: string;
   text: string;
+  citations?: ResourceCitationDTO[];
 };
 
 export type RouterDispatchResult = {
@@ -103,12 +126,15 @@ export async function runRouterDispatch(input: RouterDispatchInput): Promise<Rou
   const steps: RouterStepResult[] = [];
   for (const item of plan) {
     const executor = executors[item.category];
+    if (!executor) {
+      throw new Error(`router-workflow: 缺少 ${item.category} executor`);
+    }
     const out = await executor({
       taskText: item.taskText,
       shared: { userContext: shared.userContext, confirmed: shared.confirmed },
     });
     mergeConfirmed(shared.confirmed, out.confirmed);
-    steps.push({ category: item.category, taskText: item.taskText, text: out.text });
+    steps.push({ category: item.category, taskText: item.taskText, text: out.text, citations: out.citations });
   }
 
   shared.userContext = JSON.parse(JSON.stringify(frozenUserContext)) as AiContextSnapshot;
@@ -150,12 +176,22 @@ export async function routeAndDispatch(input: RouteAndDispatchInput): Promise<Ro
 
 // ─── Mastra createWorkflow 包装（含 suspend/resume） ─────────────────────────
 
-const RouterCategoryEnum = z.enum(["navigation", "dashboard", "claim-analysis", "chitchat"]);
+const RouterCategoryEnum = z.enum(["navigation", "dashboard", "claim-analysis", "resource-retrieval", "chitchat"]);
 
 const RouterStepResultSchema = z.object({
   category: RouterCategoryEnum,
   taskText: z.string(),
   text: z.string(),
+  citations: z.array(z.object({
+    index: z.number(),
+    resourceId: z.string(),
+    title: z.string(),
+    sourceUrl: z.string().optional(),
+    evidence: z.array(z.object({
+      order: z.number(),
+      text: z.string(),
+    })).optional(),
+  })).optional(),
 });
 
 const RouterPlanItemSchema = z.object({ category: RouterCategoryEnum, taskText: z.string() });
@@ -221,6 +257,9 @@ const ResumeDecisionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("candidate-cancelled") }),
   z.object({ kind: z.literal("write-confirmed") }),
   z.object({ kind: z.literal("write-rejected") }),
+  z.object({ kind: z.literal("resource-candidates-chosen"), resourceIds: z.array(z.string().min(1)).min(1) }),
+  z.object({ kind: z.literal("resource-candidates-manual-research") }),
+  z.object({ kind: z.literal("manual-research-completed"), resourceIds: z.array(z.string().min(1)).min(1) }),
 ]);
 
 const SuspendPayloadSchema = z.discriminatedUnion("kind", [
@@ -229,6 +268,25 @@ const SuspendPayloadSchema = z.discriminatedUnion("kind", [
     /** 留存完整候选（可能 > 20）以便 resolve 时按 candidateId 还原 label */
     candidates: z.array(z.object({ id: z.string(), label: z.string() })),
     truncated: z.boolean().optional(),
+  }),
+  z.object({
+    kind: z.literal("resource-candidates"),
+    candidates: z.array(z.object({
+      id: z.string(),
+      label: z.string(),
+      summary: z.string().optional(),
+      score: z.number().optional(),
+      resourceType: z.string().optional(),
+      sourceUrl: z.string().optional(),
+    })),
+    truncated: z.boolean().optional(),
+  }),
+  z.object({
+    kind: z.literal("manual-research"),
+    sessionId: z.string(),
+    workspaceId: z.string(),
+    query: z.string(),
+    resourceType: z.string(),
   }),
   z.object({
     kind: z.literal("await-write-confirm"),
@@ -241,6 +299,7 @@ const CATEGORY_TO_AGENT_NAME: Record<RouterCategory, string> = {
   navigation: "navigationAgent",
   dashboard: "dashboardAgent",
   "claim-analysis": "claimAnalysisAgent",
+  "resource-retrieval": "resourceAgent",
   chitchat: "chitchatAgent",
 };
 
@@ -256,6 +315,11 @@ export type RouterRuntime = {
   /** 暂停时主进程把 payload 推给 webview。 */
   onSuspend?: (event: WorkflowSuspendedEvent) => void;
   toolCalls?: AiToolCallRecord[];
+  answerResourceSelection?: (input: {
+    resourceIds: string[];
+    taskText: string;
+    userContext: AiContextSnapshot;
+  }) => Promise<{ text: string; citations?: ResourceCitationDTO[] }>;
 };
 
 function getRuntime(requestContext: { get(key: string): unknown }): RouterRuntime {
@@ -311,6 +375,7 @@ export function createRouterWorkflow() {
 
         let nextConfirmed: SharedConfirmed = { ...state.confirmed };
         let cancelled = false;
+        let resumedStep: RouterStepResult | null = null;
 
         if (decision.kind === "candidate-cancelled" || decision.kind === "write-rejected") {
           cancelled = true;
@@ -322,6 +387,42 @@ export function createRouterWorkflow() {
           } else {
             cancelled = true;
           }
+        } else if (decision.kind === "resource-candidates-chosen" && sus?.kind === "resource-candidates") {
+          const cursor = state.cursor;
+          const planItem = state.plan[cursor];
+          const answer = await runtime.answerResourceSelection?.({
+            resourceIds: decision.resourceIds,
+            taskText: planItem?.taskText ?? "",
+            userContext: state.userContext ?? runtime.userContext,
+          });
+          resumedStep = {
+            category: planItem!.category,
+            taskText: planItem!.taskText,
+            text: answer?.text ?? "已选择资源，但当前运行时未配置资源回答生成器。",
+            citations: answer?.citations,
+          };
+        } else if (decision.kind === "resource-candidates-manual-research" && sus?.kind === "resource-candidates") {
+          const cursor = state.cursor;
+          const planItem = state.plan[cursor];
+          resumedStep = {
+            category: planItem!.category,
+            taskText: planItem!.taskText,
+            text: "已转入人工检索流程。",
+          };
+        } else if (decision.kind === "manual-research-completed" && sus?.kind === "manual-research") {
+          const cursor = state.cursor;
+          const planItem = state.plan[cursor];
+          const answer = await runtime.answerResourceSelection?.({
+            resourceIds: decision.resourceIds,
+            taskText: planItem?.taskText ?? sus.query,
+            userContext: state.userContext ?? runtime.userContext,
+          });
+          resumedStep = {
+            category: planItem!.category,
+            taskText: planItem!.taskText,
+            text: answer?.text ?? "已完成人工检索，但当前运行时未配置资源回答生成器。",
+            citations: answer?.citations,
+          };
         }
         // write-confirmed：不写入 confirmed（写动作由 ai.executeAction 在 RPC 层做）
 
@@ -330,6 +431,8 @@ export function createRouterWorkflow() {
         const planItem = state.plan[cursor];
         const newSteps = cancelled
           ? state.steps
+          : resumedStep
+            ? [...state.steps, resumedStep]
           : [
               ...state.steps,
               {
@@ -364,6 +467,9 @@ export function createRouterWorkflow() {
       });
 
       const executor = runtime.executors[planItem.category];
+      if (!executor) {
+        throw new Error(`router-workflow: 缺少 ${planItem.category} executor`);
+      }
       const userContext = state.userContext ?? runtime.userContext;
       const onDelta = (d: string) => {
         if (!d) return;
@@ -376,6 +482,7 @@ export function createRouterWorkflow() {
           userContext,
           confirmed: state.confirmed,
         },
+        runId: runtime.runId,
         onDelta,
       });
 
@@ -410,6 +517,37 @@ export function createRouterWorkflow() {
           await suspend({ kind: "ambiguous", candidates: all, truncated });
           return { plan: inputData.plan };
         }
+        if (out.suspend.kind === "resource-candidates") {
+          const all = out.suspend.candidates;
+          const exposed = all.slice(0, AMBIGUOUS_CANDIDATES_LIMIT);
+          const truncated = all.length > AMBIGUOUS_CANDIDATES_LIMIT;
+          runtime.onSuspend?.({
+            kind: "resource-candidates",
+            runId: runtime.runId,
+            candidates: exposed,
+            truncated,
+          });
+          await suspend({ kind: "resource-candidates", candidates: all, truncated });
+          return { plan: inputData.plan };
+        }
+        if (out.suspend.kind === "manual-research") {
+          runtime.onSuspend?.({
+            kind: "manual-research",
+            runId: runtime.runId,
+            sessionId: out.suspend.sessionId,
+            workspaceId: out.suspend.workspaceId,
+            query: out.suspend.query,
+            resourceType: out.suspend.resourceType,
+          });
+          await suspend({
+            kind: "manual-research",
+            sessionId: out.suspend.sessionId,
+            workspaceId: out.suspend.workspaceId,
+            query: out.suspend.query,
+            resourceType: out.suspend.resourceType,
+          });
+          return { plan: inputData.plan };
+        }
         if (out.suspend.kind === "await-write-confirm") {
           runtime.onSuspend?.({
             kind: "await-write-confirm",
@@ -430,7 +568,7 @@ export function createRouterWorkflow() {
         userContext,
         steps: [
           ...state.steps,
-          { category: planItem.category, taskText: planItem.taskText, text: out.text },
+          { category: planItem.category, taskText: planItem.taskText, text: out.text, citations: out.citations },
         ],
         cursor: cursor + 1,
       });
@@ -450,6 +588,7 @@ export function createRouterWorkflow() {
       const runtime = getRuntime(requestContext);
       const userContext = state.userContext ?? runtime.userContext;
       const finalText = state.steps.map((s) => s.text).filter(Boolean).join("\n\n");
+      const citations = state.steps.flatMap((s) => s.citations ?? []);
       runtime.pushChunk?.({
         streamId: runtime.streamId,
         type: "done",
@@ -459,6 +598,7 @@ export function createRouterWorkflow() {
           content: finalText || "我没有生成有效回复。",
           createdAt: new Date().toISOString(),
           context: userContext,
+          citations: citations.length ? citations : undefined,
         },
         toolCalls: runtime.toolCalls ?? [],
       });

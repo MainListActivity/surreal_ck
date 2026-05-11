@@ -1,5 +1,5 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: done
+Label: done
 
 # RR-005 — 候选多选与 workflow resume
 
@@ -15,16 +15,15 @@ Label: ready-for-agent
 
 ## Acceptance criteria
 
-- [ ] 资源候选卡支持多选，选择状态在 UI 中清晰可见。
-- [ ] “用选中资源回答”在至少选中一个资源后可用，并 resume workflow。
-- [ ] resume payload 只传 resourceIds，不传完整资源对象。
-- [ ] workflow resume 后从资源库回查资源并生成回答。
-- [ ] 回答保留 `[1]` 文本引用和结构化 citations。
-- [ ] “继续人工检索”不使用候选回答，而进入 manual research 分支。
-- [ ] 用户关闭候选卡时 workflow 可取消或保持明确状态，不产生隐式写入。
-- [ ] 测试覆盖候选多选状态、resume resourceIds、回查资源回答、继续人工检索分支和取消分支。
+- [x] 资源候选卡支持多选，选择状态在 UI 中清晰可见。
+- [x] “用选中资源回答”在至少选中一个资源后可用，并 resume workflow。
+- [x] resume payload 只传 resourceIds，不传完整资源对象。
+- [x] workflow resume 后从资源库回查资源并生成回答。
+- [x] 回答保留 `[1]` 文本引用和结构化 citations。
+- [x] “继续人工检索”不使用候选回答，而进入 manual research 分支。
+- [x] 用户关闭候选卡时 workflow 可取消或保持明确状态，不产生隐式写入。
+- [x] 测试覆盖候选多选状态、resume resourceIds、回查资源回答、继续人工检索分支和取消分支。
 
 ## Blocked by
 
 - `.scratch/resource-retrieval/issues/04-resource-agent-readonly-citations.md`
-
