@@ -41,7 +41,10 @@ export type AppErrorCode =
   | "NOT_FOUND"
   | "FORBIDDEN"
   | "INTERNAL_ERROR"
-  | "SQL_MUTATION_WARNING";
+  | "SQL_MUTATION_WARNING"
+  | "OFFLINE_DDL_FORBIDDEN"
+  | "REMOTE_DDL_FAILED"
+  | "TEMPLATE_REJECTED";
 
 export type AppError = {
   ok: false;
@@ -78,6 +81,41 @@ export type AppBootstrap = {
   readOnly: boolean;
   user?: CurrentUserDTO;
   defaultWorkspace?: WorkspaceDTO;
+};
+
+export type SyncStatusDTO = {
+  online: boolean;
+  sessionId: string;
+  pendingCount: number;
+  deadLetterCount: number;
+  lastLocalCursorAt?: ISODateTimeString;
+  lastRemoteCursorAt?: ISODateTimeString;
+  incompatibleSchema: boolean;
+  localChangefeedStale: boolean;
+  lastError?: string;
+};
+
+export type SyncDeadLetterDTO = {
+  id: string;
+  targetTable: string;
+  targetId: string;
+  versionstamp: string;
+  op: string;
+  errorMessage: string;
+  createdAt?: ISODateTimeString;
+};
+
+export type ListDeadLettersRequest = {
+  limit?: number;
+  offset?: number;
+};
+
+export type ListDeadLettersResponse = {
+  items: SyncDeadLetterDTO[];
+};
+
+export type DeadLetterIdRequest = {
+  id: string;
 };
 
 export type ObservabilitySettingsDTO = {
@@ -1484,6 +1522,10 @@ export interface AppRPC extends ElectrobunRPCSchema {
       logout: { params: Record<string, never>; response: void };
       toggleWindowMaximized: { params: Record<string, never>; response: void };
       getAppBootstrap: { params: Record<string, never>; response: Result<AppBootstrap> };
+      getSyncStatus: { params: Record<string, never>; response: Result<SyncStatusDTO> };
+      listDeadLetters: { params: ListDeadLettersRequest; response: Result<ListDeadLettersResponse> };
+      discardDeadLetter: { params: DeadLetterIdRequest; response: Result<void> };
+      forceReapplyDeadLetter: { params: DeadLetterIdRequest; response: Result<void> };
       getSettings: { params: Record<string, never>; response: Result<GetSettingsResponse> };
       saveSettings: { params: SaveSettingsRequest; response: Result<SaveSettingsResponse> };
       sendAiMessage: { params: SendAiMessageRequest; response: Result<SendAiMessageResponse> };

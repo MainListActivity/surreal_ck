@@ -6,6 +6,10 @@ import { createNodeEngines } from "@surrealdb/node";
 import type { TokenSet } from "../auth/oidc";
 import { refreshAccessToken } from "../auth/oidc";
 import { omitNullishSurrealFields } from "./surreal-values";
+import { setOfflineMode } from "../services/offline-state";
+import { defineCurrentSessionParam } from "../sync/session";
+import { checkRemoteSchemaVersion } from "../sync/schema-version";
+import { startSyncWorkers, stopSyncWorkers } from "../sync/manager";
 
 // ─── 状态 ────────────────────────────────────────────────────────────────────
 
@@ -139,6 +143,7 @@ export async function initUserDb(sub: string, tokens: TokenSet): Promise<void> {
 
     await db.use({ namespace: "main", database: dbName });
     await loadSchema(db);
+    await defineCurrentSessionParam(db);
 
     // 持久化 tokens
     await db.query(
@@ -192,6 +197,7 @@ export async function tryRestoreSession(): Promise<RestoreResult> {
   const db = getEngine();
   await db.use({ namespace: "main", database: lastUserDb });
   await loadSchema(db);
+  await defineCurrentSessionParam(db);
   _userDbName = lastUserDb;
 
   // 读取持久化的 tokens
@@ -215,6 +221,7 @@ export async function tryRestoreSession(): Promise<RestoreResult> {
 
   if (!stored?.refresh_token) {
     console.log("[db] no refresh_token in token_store, cannot restore");
+    setOfflineMode(true);
     return { status: "offline" };
   }
 
@@ -240,6 +247,7 @@ export async function tryRestoreSession(): Promise<RestoreResult> {
     return { status: "restored", tokens: newTokens, expiresAt: newExpiresAt, accessToken: newTokens.access_token };
   } catch (err) {
     console.warn("[db] token refresh failed, entering offline mode:", err);
+    setOfflineMode(true);
     return { status: "offline" };
   }
 }
@@ -253,6 +261,7 @@ export async function connectRemote(accessToken: string): Promise<void> {
   const remoteUrl = process.env.SURREALDB_URL || 'wss://cuckoox-06efnpc64psu927c5555v64q5g.aws-usw2.surreal.cloud';
 
   // 重连时先清理旧引用
+  stopSyncWorkers();
   _remoteDb = null;
 
   try {
@@ -264,10 +273,20 @@ export async function connectRemote(accessToken: string): Promise<void> {
     });
     await remote.authenticate(accessToken);
     _remoteDb = remote;
+    setOfflineMode(false);
+    const compatible = await checkRemoteSchemaVersion(remote);
+    if (compatible) {
+      await startSyncWorkers({
+        localDb: () => getLocalDb(),
+        remoteDb: () => getRemoteDb(),
+        isOnline: () => getRemoteDb() !== null,
+      });
+    }
     console.log(`[db] remote connected: ${remoteUrl}`);
   } catch (err) {
     console.warn("[db] remote connection failed (degraded to local-only):", err);
     _remoteDb = null;
+    setOfflineMode(true);
   }
 }
 
@@ -277,6 +296,7 @@ export async function connectRemote(accessToken: string): Promise<void> {
  * remote 只置 null，不调用 close()（避免 surrealdb-node + Bun 的 segfault）。
  */
 export async function closeUserDb(): Promise<void> {
+  stopSyncWorkers();
   _remoteDb = null;
 
   if (_userDbName) {

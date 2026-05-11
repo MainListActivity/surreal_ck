@@ -206,12 +206,19 @@ function intentFromSuspendedEvent(
   if (event.kind === "manual-research") {
     return null;
   }
-  if (event.intent.type === "dashboard-draft" || event.intent.type === "row-patch-proposal") {
-    return event.intent;
+  if (event.intent.type === "dashboard-draft") {
+    return event.intent as DashboardDraftIntent;
+  }
+  if (event.intent.type === "row-patch-proposal") {
+    return event.intent as RowPatchProposal;
+  }
+  if (event.intent.type === "navigate") {
+    return "route" in event.intent
+      ? event.intent
+      : { type: "navigate", route: event.intent.screen };
   }
   if (
-    event.intent.type === "navigate"
-    || event.intent.type === "open-workbook"
+    event.intent.type === "open-workbook"
     || event.intent.type === "open-dashboard"
     || event.intent.type === "open-record"
     || event.intent.type === "ambiguous"

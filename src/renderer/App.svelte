@@ -14,6 +14,7 @@
   import ResearchWindowScreen from "./screens/ResearchWindowScreen.svelte";
   import SettingsScreen from "./screens/SettingsScreen.svelte";
   import StateScreen from "./screens/StateScreen.svelte";
+  import SyncStatusBar from "./components/SyncStatusBar.svelte";
   import TemplatesScreen from "./screens/TemplatesScreen.svelte";
   import { auth, applyAuthState } from "./lib/auth.svelte";
   import { appState } from "./lib/app-state.svelte";
@@ -164,6 +165,7 @@
   >
     <div class="titlebar-drag electrobun-webkit-app-region-drag"></div>
     {#if auth.loggedIn || auth.offlineMode}
+      <SyncStatusBar />
       <button
         class="ai-titlebar-btn electrobun-webkit-app-region-no-drag"
         class:active={appState.aiDrawerOpen}
@@ -182,7 +184,7 @@
     {#if auth.offlineMode}
       <div class="offline-banner">
         <span class="offline-icon">⚠</span>
-        离线模式 — 数据同步暂停，当前为只读视图
+        离线模式 — 数据写入会暂存在本地
         <button class="login-link" onclick={() => { applyAuthState({ loggedIn: false }); }}>重新登录</button>
       </div>
     {/if}

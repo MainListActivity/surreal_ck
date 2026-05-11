@@ -17,6 +17,7 @@ import type {
   CreateFolderRequest,
   CreateFolderResponse,
   CreateResearchSessionRequest,
+  DeadLetterIdRequest,
   CreateSheetRequest,
   CreateSheetResponse,
   CreateWorkbookFromTemplateRequest,
@@ -37,6 +38,8 @@ import type {
   ListDashboardPagesResponse,
   ListDashboardViewsRequest,
   ListDashboardViewsResponse,
+  ListDeadLettersRequest,
+  ListDeadLettersResponse,
   ListFoldersRequest,
   ListFoldersResponse,
   ListTemplatesResponse,
@@ -86,6 +89,7 @@ import type {
   SearchReferenceCandidatesResponse,
   SendAiMessageRequest,
   SendAiMessageResponse,
+  SyncStatusDTO,
   PreviewDashboardViewRequest,
   PreviewDashboardViewResponse,
   UpdateDashboardViewRequest,
@@ -100,7 +104,7 @@ import { withResult, ServiceError } from "../services/errors";
 import { getLocalDb } from "../db/index";
 import { startOidcLogin } from "../auth/oidc";
 import { loginToSurrealDB, clearSession, getPublicAuthState } from "../auth/session";
-import { initUserDb, closeUserDb } from "../db/index";
+import { initUserDb, closeUserDb, connectRemote } from "../db/index";
 import { initMastraForCurrentUser, resetMastra } from "../ai/index";
 import { decodeTokenClaims, bootstrapLocalIdentity } from "../services/identity";
 import { listWorkbooks, createBlankWorkbook, moveWorkbook } from "../services/workbooks";
@@ -148,6 +152,7 @@ import { sendAiMessage } from "../services/ai-chat";
 import { resumeAiWorkflowFromRpc } from "../services/ai-resume-rpc";
 import { cancelAiWorkflow } from "../services/ai-cancel";
 import { executeAiAction } from "../services/ai-actions";
+import { discardSyncDeadLetter, forceReapplySyncDeadLetter, getSyncStatus, listDeadLetters } from "../services/sync-state";
 import { createResourceDraftFromEvidence } from "../ai/mastra/agents/resource-agent";
 
 type SendFn = {
@@ -245,6 +250,22 @@ export function createRpcHandlers(send: SendFn, windowControls?: WindowControlDe
             },
           } satisfies AppBootstrap;
         });
+      },
+
+      getSyncStatus: async (): Promise<Result<SyncStatusDTO>> => {
+        return withResult(() => getSyncStatus());
+      },
+
+      listDeadLetters: async (req: ListDeadLettersRequest): Promise<Result<ListDeadLettersResponse>> => {
+        return withResult(() => listDeadLetters(req));
+      },
+
+      discardDeadLetter: async (req: DeadLetterIdRequest): Promise<Result<void>> => {
+        return withResult(() => discardSyncDeadLetter(req.id));
+      },
+
+      forceReapplyDeadLetter: async (req: DeadLetterIdRequest): Promise<Result<void>> => {
+        return withResult(() => forceReapplySyncDeadLetter(req.id));
       },
 
       getSettings: async (): Promise<Result<SaveSettingsResponse>> => {
@@ -511,9 +532,9 @@ export function createRpcHandlers(send: SendFn, windowControls?: WindowControlDe
             const claims = decodeTokenClaims(tokens.access_token);
             await initUserDb(claims.sub, tokens);
             await bootstrapLocalIdentity(claims);
+            await connectRemote(tokens.access_token);
             loginToSurrealDB(tokens);
             initMastraForCurrentUser();
-            setOfflineMode(false);
             send("authStateChanged", { state: getPublicAuthState() });
           })
           .catch((err) => {

@@ -19,6 +19,16 @@ function baseState(messages: AiChatMessage[]): AiStreamState {
   };
 }
 
+function messageContext(screen: string): AiChatMessage["context"] {
+  return {
+    route: { screen },
+    workbook: null,
+    sheet: null,
+    selectedRow: null,
+    contextHint: screen,
+  };
+}
+
 describe("applyAiChunkToMessages", () => {
   test("流式错误且没有任何 delta 时移除空白 assistant placeholder", () => {
     const placeholder: AiChatMessage = {
@@ -26,7 +36,7 @@ describe("applyAiChunkToMessages", () => {
       role: "assistant",
       content: "",
       createdAt: "2026-05-10T00:00:00.000Z",
-      context: { route: { screen: "editor" } },
+      context: messageContext("editor"),
     };
 
     const next = applyAiChunkToMessages(baseState([placeholder]), "placeholder", {
@@ -46,7 +56,7 @@ describe("applyAiChunkToMessages", () => {
       role: "assistant",
       content: "已经生成的内容",
       createdAt: "2026-05-10T00:00:00.000Z",
-      context: { route: { screen: "editor" } },
+      context: messageContext("editor"),
     };
 
     const state = baseState([placeholder]);
@@ -68,7 +78,7 @@ describe("applyAiChunkToMessages", () => {
       role: "assistant",
       content: "",
       createdAt: "2026-05-10T00:00:00.000Z",
-      context: { route: { screen: "dashboard" } },
+      context: messageContext("dashboard"),
     };
     const finalMessage: AiChatMessage = { ...placeholder, id: "assistant-1", content: "已生成草稿。" };
 
@@ -121,7 +131,7 @@ describe("applyAiChunkToMessages", () => {
       role: "assistant",
       content: "",
       createdAt: "2026-05-10T00:00:00.000Z",
-      context: { route: { screen: "editor" } },
+      context: messageContext("editor"),
     };
     const finalMessage: AiChatMessage = { ...placeholder, id: "assistant-claim", content: "已生成补全建议。" };
 
@@ -165,7 +175,7 @@ describe("applyAiSuspendedToMessages", () => {
       role: "assistant",
       content: "",
       createdAt: "2026-05-10T00:00:00.000Z",
-      context: { route: { screen: "editor" } },
+      context: messageContext("editor"),
     };
 
     const next = applyAiSuspendedToMessages(baseState([placeholder]), "placeholder", {
@@ -193,7 +203,7 @@ describe("applyAiSuspendedToMessages", () => {
       role: "assistant",
       content: "",
       createdAt: "2026-05-10T00:00:00.000Z",
-      context: { route: { screen: "editor" } },
+      context: messageContext("editor"),
     };
 
     const next = applyAiSuspendedToMessages(baseState([placeholder]), "placeholder", {
@@ -235,7 +245,7 @@ describe("applyAiSuspendedToMessages", () => {
       role: "assistant",
       content: "",
       createdAt: "2026-05-10T00:00:00.000Z",
-      context: { route: { screen: "editor" } },
+      context: messageContext("editor"),
     };
 
     const next = applyAiSuspendedToMessages(baseState([placeholder]), "placeholder", {
@@ -275,7 +285,7 @@ describe("applyAiRunCancelledToMessages", () => {
       role: "assistant",
       content: "已打开人工检索窗口，请在检索完成后返回。",
       createdAt: "2026-05-10T00:00:00.000Z",
-      context: { route: { screen: "editor" } },
+      context: messageContext("editor"),
     };
     const state: AiStreamState = {
       messages: [placeholder],
@@ -315,7 +325,7 @@ describe("applyAiRunCancelledToMessages", () => {
       role: "assistant",
       content: "处理中",
       createdAt: "2026-05-10T00:00:00.000Z",
-      context: { route: { screen: "editor" } },
+      context: messageContext("editor"),
     };
     const state = baseState([placeholder]);
 

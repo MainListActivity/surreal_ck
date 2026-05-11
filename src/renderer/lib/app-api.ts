@@ -26,6 +26,7 @@ import type {
   ListWorkbooksResponse,
   GetTableSchemaResponse,
   GridColumnDef,
+  ListDeadLettersResponse,
   ListReferenceTargetsResponse,
   MoveFolderResponse,
   MoveWorkbookResponse,
@@ -39,6 +40,7 @@ import type {
   RenameWorkbookResponse,
   ResolveReferencesResponse,
   Result,
+  SyncStatusDTO,
   RetryResourceEmbeddingResponse,
   SaveDashboardPageLayoutResponse,
   SaveSettingsResponse,
@@ -74,6 +76,22 @@ import type { AiChatMessage } from "../../shared/ai-context";
 export const appApi = {
   getAppBootstrap(): Promise<Result<AppBootstrap>> {
     return rpc.request("getAppBootstrap", {});
+  },
+
+  getSyncStatus(): Promise<Result<SyncStatusDTO>> {
+    return rpc.request("getSyncStatus", {});
+  },
+
+  listDeadLetters(options: { limit?: number; offset?: number } = {}): Promise<Result<ListDeadLettersResponse>> {
+    return rpc.request("listDeadLetters", options);
+  },
+
+  discardDeadLetter(id: string): Promise<Result<void>> {
+    return rpc.request("discardDeadLetter", { id });
+  },
+
+  forceReapplyDeadLetter(id: string): Promise<Result<void>> {
+    return rpc.request("forceReapplyDeadLetter", { id });
   },
 
   getSettings(): Promise<Result<GetSettingsResponse>> {

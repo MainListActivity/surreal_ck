@@ -27,7 +27,7 @@ export async function cancelAiWorkflowRun(
   const session = req.sessionId
     ? (await deps.getResearchSession({ sessionId: req.sessionId })).session
     : null;
-  const runId = req.runId || session?.originatingRunId;
+  const runId = req.runId;
 
   if (session?.status === "open") {
     await deps.cancelResearchSession({ sessionId: session.id });

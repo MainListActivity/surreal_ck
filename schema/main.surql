@@ -4,12 +4,26 @@ DEFINE NAMESPACE IF NOT EXISTS main;
 USE NS main DB docs;
 
 -- ═══════════════════════════════════════════════════════════════════════════════
+-- SYNC SCHEMA VERSION
+-- 远端 source-of-truth schema 版本。登录用户可读，只有 root/execTemplate 可写。
+-- 本地也加载此表以便同一份 schema 可用于 embedded localdb。
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+DEFINE TABLE IF NOT EXISTS schema_version SCHEMAFULL
+  PERMISSIONS
+    FOR select WHERE $auth != NONE,
+    FOR create, update, delete NONE;
+DEFINE FIELD IF NOT EXISTS version    ON TABLE schema_version TYPE int;
+DEFINE FIELD IF NOT EXISTS updated_at ON TABLE schema_version TYPE datetime VALUE time::now();
+UPSERT schema_version:current CONTENT { version: 1, updated_at: time::now() };
+
+-- ═══════════════════════════════════════════════════════════════════════════════
 -- USERS
 -- ═══════════════════════════════════════════════════════════════════════════════
 
 -- app_user 在首次 JWT 登录时自动创建（见 DEFINE ACCESS）。
 -- 用户只能读取和更新自己的记录，不允许自行创建。
-DEFINE TABLE IF NOT EXISTS app_user SCHEMAFULL
+DEFINE TABLE IF NOT EXISTS app_user SCHEMAFULL CHANGEFEED 7d
   PERMISSIONS
     FOR select, update WHERE id = $auth,
     FOR create, delete NONE;
@@ -35,7 +49,7 @@ DEFINE INDEX IF NOT EXISTS app_user_subject_unique ON TABLE app_user COLUMNS sub
 --   member: id IN $auth<-has_workspace_member<-workspace
 -- ═══════════════════════════════════════════════════════════════════════════════
 
-DEFINE TABLE IF NOT EXISTS workspace SCHEMAFULL
+DEFINE TABLE IF NOT EXISTS workspace SCHEMAFULL CHANGEFEED 7d
   PERMISSIONS
     FOR select WHERE
       owner = $auth
@@ -61,7 +75,7 @@ DEFINE INDEX IF NOT EXISTS workspace_owner       ON TABLE workspace COLUMNS owne
 --   用普通表表达其独立生命周期（可撤销、可重发、可过期）。
 -- ═══════════════════════════════════════════════════════════════════════════════
 
-DEFINE TABLE IF NOT EXISTS pending_workspace_member SCHEMAFULL
+DEFINE TABLE IF NOT EXISTS pending_workspace_member SCHEMAFULL CHANGEFEED 7d
   PERMISSIONS
     FOR select WHERE
       workspace.owner = $auth
@@ -91,7 +105,7 @@ DEFINE INDEX IF NOT EXISTS pending_member_ws_email_unique
 --   user 所在的 workspace：$auth<-has_workspace_member<-workspace
 -- ═══════════════════════════════════════════════════════════════════════════════
 
-DEFINE TABLE IF NOT EXISTS has_workspace_member TYPE RELATION IN workspace OUT app_user SCHEMAFULL
+DEFINE TABLE IF NOT EXISTS has_workspace_member TYPE RELATION IN workspace OUT app_user SCHEMAFULL CHANGEFEED 7d
   PERMISSIONS
     FOR select WHERE
       in.owner = $auth
@@ -109,7 +123,7 @@ DEFINE INDEX IF NOT EXISTS has_workspace_member_unique ON TABLE has_workspace_me
 -- 归属 workspace 用字段表示（workbook.workspace），无需单独的边。
 -- ═══════════════════════════════════════════════════════════════════════════════
 
-DEFINE TABLE OVERWRITE workbook SCHEMAFULL
+DEFINE TABLE OVERWRITE workbook SCHEMAFULL CHANGEFEED 7d
   PERMISSIONS
     FOR select WHERE
       workspace.owner = $auth
@@ -136,7 +150,7 @@ DEFINE INDEX IF NOT EXISTS workbook_folder    ON TABLE workbook COLUMNS folder;
 -- workbook 归属文件夹用 workbook.folder 字段表示。
 -- ═══════════════════════════════════════════════════════════════════════════════
 
-DEFINE TABLE IF NOT EXISTS folder SCHEMAFULL
+DEFINE TABLE IF NOT EXISTS folder SCHEMAFULL CHANGEFEED 7d
   PERMISSIONS
     FOR select WHERE
       workspace.owner = $auth
@@ -159,7 +173,7 @@ DEFINE INDEX IF NOT EXISTS folder_parent    ON TABLE folder COLUMNS parent;
 -- sheet 是列定义的唯一来源（column_defs）。
 -- ═══════════════════════════════════════════════════════════════════════════════
 
-DEFINE TABLE IF NOT EXISTS sheet SCHEMAFULL
+DEFINE TABLE IF NOT EXISTS sheet SCHEMAFULL CHANGEFEED 7d
   PERMISSIONS
     FOR select WHERE
       workbook.workspace.owner = $auth
@@ -188,7 +202,7 @@ DEFINE INDEX IF NOT EXISTS sheet_workbook   ON TABLE sheet COLUMNS workbook;
 -- workspace 级别的关系类型注册表。每行代表一种可在本 workspace 使用的边类型。
 -- ═══════════════════════════════════════════════════════════════════════════════
 
-DEFINE TABLE IF NOT EXISTS edge_catalog SCHEMAFULL
+DEFINE TABLE IF NOT EXISTS edge_catalog SCHEMAFULL CHANGEFEED 7d
   PERMISSIONS
     FOR select WHERE
       workspace.owner = $auth
@@ -216,7 +230,7 @@ DEFINE INDEX IF NOT EXISTS edge_catalog_ws_rel_table_unique
 -- 布局属于系统结构关系，用字段数组表示，不单独建 relation。
 -- ═══════════════════════════════════════════════════════════════════════════════
 
-DEFINE TABLE IF NOT EXISTS dashboard_page SCHEMAFULL
+DEFINE TABLE IF NOT EXISTS dashboard_page SCHEMAFULL CHANGEFEED 7d
   PERMISSIONS
     FOR select WHERE
       workspace.owner = $auth
@@ -239,7 +253,7 @@ DEFINE INDEX IF NOT EXISTS dashboard_page_workspace
 DEFINE INDEX IF NOT EXISTS dashboard_page_workbook
   ON TABLE dashboard_page COLUMNS workbook;
 
-DEFINE TABLE IF NOT EXISTS dashboard_view SCHEMAFULL
+DEFINE TABLE IF NOT EXISTS dashboard_view SCHEMAFULL CHANGEFEED 7d
   PERMISSIONS
     FOR select WHERE
       workspace.owner = $auth
@@ -335,7 +349,7 @@ DEFINE INDEX IF NOT EXISTS dashboard_run_log_view_ts
 -- snapshot：workbook 完整布局状态的周期性快照（不含 cell 值）。
 -- ═══════════════════════════════════════════════════════════════════════════════
 
-DEFINE TABLE IF NOT EXISTS mutation SCHEMAFULL
+DEFINE TABLE IF NOT EXISTS mutation SCHEMAFULL CHANGEFEED 7d
   PERMISSIONS
     FOR select WHERE
       workbook.workspace.owner = $auth
@@ -351,7 +365,7 @@ DEFINE FIELD IF NOT EXISTS client_id  ON TABLE mutation TYPE string;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE mutation TYPE datetime VALUE time::now();
 DEFINE INDEX IF NOT EXISTS mutation_workbook_ts ON TABLE mutation COLUMNS workbook, created_at;
 
-DEFINE TABLE IF NOT EXISTS snapshot SCHEMAFULL
+DEFINE TABLE IF NOT EXISTS snapshot SCHEMAFULL CHANGEFEED 7d
   PERMISSIONS
     FOR select WHERE
       workbook.workspace.owner = $auth
@@ -371,7 +385,7 @@ DEFINE INDEX IF NOT EXISTS snapshot_workbook_ts  ON TABLE snapshot COLUMNS workb
 -- PRESENCE
 -- ═══════════════════════════════════════════════════════════════════════════════
 
-DEFINE TABLE IF NOT EXISTS presence SCHEMALESS
+DEFINE TABLE IF NOT EXISTS presence SCHEMALESS CHANGEFEED 7d
   PERMISSIONS
     FOR select WHERE
       workbook.workspace.owner = $auth
@@ -388,7 +402,7 @@ DEFINE INDEX IF NOT EXISTS presence_workbook  ON TABLE presence COLUMNS workbook
 -- INTAKE FORMS
 -- ═══════════════════════════════════════════════════════════════════════════════
 
-DEFINE TABLE IF NOT EXISTS form_definition SCHEMAFULL
+DEFINE TABLE IF NOT EXISTS form_definition SCHEMAFULL CHANGEFEED 7d
   PERMISSIONS
     FOR select WHERE
       workspace.owner = $auth
@@ -421,7 +435,7 @@ DEFINE FIELD IF NOT EXISTS updated_at       ON TABLE form_definition TYPE dateti
 DEFINE INDEX IF NOT EXISTS form_definition_workspace_slug_unique
   ON TABLE form_definition COLUMNS workspace, slug UNIQUE;
 
-DEFINE TABLE IF NOT EXISTS intake_submission SCHEMALESS
+DEFINE TABLE IF NOT EXISTS intake_submission SCHEMALESS CHANGEFEED 7d
   PERMISSIONS
     FOR select WHERE
       workspace.owner = $auth
@@ -440,7 +454,7 @@ DEFINE INDEX IF NOT EXISTS intake_submission_workspace ON TABLE intake_submissio
 -- FILES
 -- ═══════════════════════════════════════════════════════════════════════════════
 
-DEFINE TABLE IF NOT EXISTS workbook_file SCHEMAFULL
+DEFINE TABLE IF NOT EXISTS workbook_file SCHEMAFULL CHANGEFEED 7d
   PERMISSIONS
     FOR select WHERE
       workspace.owner = $auth
@@ -464,7 +478,7 @@ DEFINE INDEX IF NOT EXISTS workbook_file_workspace ON TABLE workbook_file COLUMN
 -- research_session 是人工检索闭环的业务会话，不暴露 workflow run id 作为主 handle。
 -- ═══════════════════════════════════════════════════════════════════════════════
 
-DEFINE TABLE IF NOT EXISTS research_session SCHEMAFULL
+DEFINE TABLE IF NOT EXISTS research_session SCHEMAFULL CHANGEFEED 7d
   PERMISSIONS
     FOR select WHERE
       workspace.owner = $auth
@@ -492,7 +506,7 @@ DEFINE INDEX IF NOT EXISTS research_session_workspace_status
 DEFINE INDEX IF NOT EXISTS research_session_originating_run
   ON TABLE research_session COLUMNS originating_run_id;
 
-DEFINE TABLE IF NOT EXISTS resource_item SCHEMAFULL
+DEFINE TABLE IF NOT EXISTS resource_item SCHEMAFULL CHANGEFEED 7d
   PERMISSIONS
     FOR select WHERE
       workspace.owner = $auth
@@ -537,7 +551,7 @@ DEFINE INDEX IF NOT EXISTS resource_item_source_hash
 DEFINE INDEX IF NOT EXISTS resource_item_research_session
   ON TABLE resource_item COLUMNS research_session;
 
-DEFINE TABLE IF NOT EXISTS resource_embedding SCHEMAFULL
+DEFINE TABLE IF NOT EXISTS resource_embedding SCHEMAFULL CHANGEFEED 7d
   PERMISSIONS
     FOR select WHERE
       workspace.owner = $auth
@@ -574,7 +588,7 @@ DEFINE INDEX IF NOT EXISTS resource_embedding_resource
 -- OBSERVABILITY
 -- ═══════════════════════════════════════════════════════════════════════════════
 
-DEFINE TABLE IF NOT EXISTS client_error SCHEMALESS
+DEFINE TABLE IF NOT EXISTS client_error SCHEMALESS CHANGEFEED 7d
   PERMISSIONS
     FOR select WHERE
       workspace.owner = $auth
@@ -590,6 +604,112 @@ DEFINE FIELD IF NOT EXISTS stack      ON TABLE client_error TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS meta       ON TABLE client_error TYPE option<object>;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE client_error TYPE datetime VALUE time::now();
 DEFINE INDEX IF NOT EXISTS client_error_ts ON TABLE client_error COLUMNS created_at;
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- SYNC ORIGIN SESSION
+-- 所有同步表带 _origin_session_id。普通业务写入由 EVENT 注入本机 session；
+-- worker apply 远端变更时显式写 remote:<versionstamp>，EVENT 不覆盖。
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE app_user TYPE option<string>;
+DEFINE EVENT OVERWRITE app_user_origin_session ON TABLE app_user
+  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
+  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
+
+DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE workspace TYPE option<string>;
+DEFINE EVENT OVERWRITE workspace_origin_session ON TABLE workspace
+  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
+  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
+
+DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE pending_workspace_member TYPE option<string>;
+DEFINE EVENT OVERWRITE pending_workspace_member_origin_session ON TABLE pending_workspace_member
+  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
+  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
+
+DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE has_workspace_member TYPE option<string>;
+DEFINE EVENT OVERWRITE has_workspace_member_origin_session ON TABLE has_workspace_member
+  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
+  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
+
+DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE workbook TYPE option<string>;
+DEFINE EVENT OVERWRITE workbook_origin_session ON TABLE workbook
+  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
+  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
+
+DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE folder TYPE option<string>;
+DEFINE EVENT OVERWRITE folder_origin_session ON TABLE folder
+  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
+  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
+
+DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE sheet TYPE option<string>;
+DEFINE EVENT OVERWRITE sheet_origin_session ON TABLE sheet
+  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
+  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
+
+DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE edge_catalog TYPE option<string>;
+DEFINE EVENT OVERWRITE edge_catalog_origin_session ON TABLE edge_catalog
+  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
+  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
+
+DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE dashboard_page TYPE option<string>;
+DEFINE EVENT OVERWRITE dashboard_page_origin_session ON TABLE dashboard_page
+  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
+  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
+
+DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE dashboard_view TYPE option<string>;
+DEFINE EVENT OVERWRITE dashboard_view_origin_session ON TABLE dashboard_view
+  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
+  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
+
+DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE mutation TYPE option<string>;
+DEFINE EVENT OVERWRITE mutation_origin_session ON TABLE mutation
+  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
+  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
+
+DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE snapshot TYPE option<string>;
+DEFINE EVENT OVERWRITE snapshot_origin_session ON TABLE snapshot
+  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
+  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
+
+DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE presence TYPE option<string>;
+DEFINE EVENT OVERWRITE presence_origin_session ON TABLE presence
+  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
+  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
+
+DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE form_definition TYPE option<string>;
+DEFINE EVENT OVERWRITE form_definition_origin_session ON TABLE form_definition
+  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
+  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
+
+DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE intake_submission TYPE option<string>;
+DEFINE EVENT OVERWRITE intake_submission_origin_session ON TABLE intake_submission
+  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
+  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
+
+DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE workbook_file TYPE option<string>;
+DEFINE EVENT OVERWRITE workbook_file_origin_session ON TABLE workbook_file
+  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
+  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
+
+DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE research_session TYPE option<string>;
+DEFINE EVENT OVERWRITE research_session_origin_session ON TABLE research_session
+  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
+  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
+
+DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE resource_item TYPE option<string>;
+DEFINE EVENT OVERWRITE resource_item_origin_session ON TABLE resource_item
+  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
+  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
+
+DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE resource_embedding TYPE option<string>;
+DEFINE EVENT OVERWRITE resource_embedding_origin_session ON TABLE resource_embedding
+  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
+  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
+
+DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE client_error TYPE option<string>;
+DEFINE EVENT OVERWRITE client_error_origin_session ON TABLE client_error
+  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
+  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
 
 -- ═══════════════════════════════════════════════════════════════════════════════
 -- FILE STORAGE BUCKET
@@ -612,11 +732,39 @@ DEFINE FIELD IF NOT EXISTS expires_at    ON TABLE token_store TYPE datetime;
 DEFINE FIELD IF NOT EXISTS updated_at    ON TABLE token_store TYPE datetime VALUE time::now();
 
 -- ═══════════════════════════════════════════════════════════════════════════════
+-- SYNC LOCAL META
+-- 仅本地表，绝不进入 SYNC_SCOPE，绝不加 CHANGEFEED / _origin_session_id。
+-- sync_cursor 记录每张同步表两个方向的 versionstamp。
+-- sync_dead_letter 记录语义拒绝后跳过的同步条目。
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+DEFINE TABLE IF NOT EXISTS sync_cursor SCHEMAFULL
+  PERMISSIONS FULL;
+DEFINE FIELD IF NOT EXISTS direction    ON TABLE sync_cursor TYPE string
+  ASSERT $value INSIDE ["local_to_remote", "remote_to_local"];
+DEFINE FIELD IF NOT EXISTS target_table ON TABLE sync_cursor TYPE string;
+DEFINE FIELD IF NOT EXISTS versionstamp ON TABLE sync_cursor TYPE string;
+DEFINE FIELD IF NOT EXISTS updated_at   ON TABLE sync_cursor TYPE datetime VALUE time::now();
+DEFINE INDEX IF NOT EXISTS sync_cursor_direction_table_unique
+  ON TABLE sync_cursor COLUMNS direction, target_table UNIQUE;
+
+DEFINE TABLE IF NOT EXISTS sync_dead_letter SCHEMAFULL
+  PERMISSIONS FULL;
+DEFINE FIELD IF NOT EXISTS target_table  ON TABLE sync_dead_letter TYPE string;
+DEFINE FIELD IF NOT EXISTS target_id     ON TABLE sync_dead_letter TYPE string;
+DEFINE FIELD IF NOT EXISTS versionstamp  ON TABLE sync_dead_letter TYPE string;
+DEFINE FIELD IF NOT EXISTS op            ON TABLE sync_dead_letter TYPE string;
+DEFINE FIELD IF NOT EXISTS error_message ON TABLE sync_dead_letter TYPE string;
+DEFINE FIELD IF NOT EXISTS created_at    ON TABLE sync_dead_letter TYPE datetime VALUE time::now();
+DEFINE INDEX IF NOT EXISTS sync_dead_letter_target
+  ON TABLE sync_dead_letter COLUMNS target_table, target_id;
+
+-- ═══════════════════════════════════════════════════════════════════════════════
 -- APP SETTINGS
 -- 通用设置表。当前本地 AI 设置按产品要求允许在 value 中明文保存 API Key。
 -- ═══════════════════════════════════════════════════════════════════════════════
 
-DEFINE TABLE IF NOT EXISTS app_setting SCHEMAFULL
+DEFINE TABLE IF NOT EXISTS app_setting SCHEMAFULL CHANGEFEED 7d
   PERMISSIONS FULL;
 DEFINE FIELD IF NOT EXISTS key          ON TABLE app_setting TYPE string;
 DEFINE FIELD IF NOT EXISTS scope        ON TABLE app_setting TYPE string ASSERT $value INSIDE ["user", "workspace", "workbook"];
@@ -628,6 +776,10 @@ DEFINE FIELD IF NOT EXISTS encrypted    ON TABLE app_setting TYPE bool DEFAULT f
 DEFINE FIELD IF NOT EXISTS created_at   ON TABLE app_setting TYPE datetime VALUE time::now();
 DEFINE FIELD IF NOT EXISTS updated_at   ON TABLE app_setting TYPE datetime VALUE time::now();
 DEFINE INDEX IF NOT EXISTS app_setting_key_unique ON TABLE app_setting COLUMNS key UNIQUE;
+DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE app_setting TYPE option<string>;
+DEFINE EVENT OVERWRITE app_setting_origin_session ON TABLE app_setting
+  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
+  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
 
 -- ═══════════════════════════════════════════════════════════════════════════════
 -- MASTRA MEMORY

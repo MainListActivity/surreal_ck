@@ -3,6 +3,7 @@ import { getLocalDb, getRemoteDb } from "../db/index";
 import { getSession } from "../auth/session";
 import { ServiceError } from "./errors";
 import type { RecordIdString, WorkspaceDTO } from "../../shared/rpc.types";
+import { getOfflineMode, setOfflineMode } from "./offline-state";
 
 export type ServiceContext = {
   isAuthenticated: boolean;
@@ -12,22 +13,14 @@ export type ServiceContext = {
   defaultWorkspace?: WorkspaceDTO;
 };
 
-let _offlineMode = false;
-
-export function setOfflineMode(offline: boolean): void {
-  _offlineMode = offline;
-}
-
-export function getOfflineMode(): boolean {
-  return _offlineMode;
-}
+export { getOfflineMode, setOfflineMode };
 
 /** 返回当前服务上下文；不会抛出，调用方根据 isAuthenticated 决定是否继续。 */
 export function getServiceContext(): ServiceContext {
   const session = getSession();
   const isAuthenticated = session !== null;
-  const isOffline = _offlineMode;
-  const readOnly = isOffline;
+  const isOffline = getOfflineMode();
+  const readOnly = false;
 
   if (!isAuthenticated) {
     return { isAuthenticated: false, isOffline, readOnly: true };
@@ -47,9 +40,6 @@ export function assertAuthenticated(): void {
 /** 断言当前处于可写状态，否则抛出 ServiceError。 */
 export function assertWritable(): void {
   assertAuthenticated();
-  if (_offlineMode) {
-    throw new ServiceError("OFFLINE_READ_ONLY");
-  }
 }
 
 type CurrentUserRow = { id: RecordId };

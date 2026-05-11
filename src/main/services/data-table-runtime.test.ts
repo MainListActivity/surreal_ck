@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { RecordId } from "surrealdb";
 import {
   assertRowIdBelongsToTable,
+  buildEntityFieldDdl,
+  buildEntityTableDdl,
   compileSelectOnly,
   createDataTableRuntime,
   gridColumnToStoredDef,
@@ -12,6 +14,25 @@ import {
 import type { GridColumnDef, ViewParams } from "../../shared/rpc.types";
 
 describe("数据表运行时字段定义", () => {
+  test("动态实体表 DDL 带同步元字段和 CHANGEFEED", () => {
+    const ddl = buildEntityTableDdl("ent_contract");
+    expect(ddl).toContain("DEFINE TABLE IF NOT EXISTS ent_contract SCHEMALESS CHANGEFEED 7d PERMISSIONS FULL");
+    expect(ddl).toContain("DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE ent_contract TYPE option<string>");
+    expect(ddl).toContain("DEFINE EVENT OVERWRITE ent_contract_origin_session");
+  });
+
+  test("动态字段 DDL 可选择 IF NOT EXISTS 或 OVERWRITE", () => {
+    const column: GridColumnDef = {
+      key: "title",
+      label: "标题",
+      fieldType: "text",
+    };
+    expect(buildEntityFieldDdl("ent_contract", column, "if-not-exists"))
+      .toContain("DEFINE FIELD IF NOT EXISTS title ON TABLE ent_contract TYPE option<string>");
+    expect(buildEntityFieldDdl("ent_contract", column, "overwrite"))
+      .toContain("DEFINE FIELD OVERWRITE title ON TABLE ent_contract TYPE option<string>");
+  });
+
   test("字段定义会标准化为存储形态", () => {
     const column: GridColumnDef = {
       key: " status ",

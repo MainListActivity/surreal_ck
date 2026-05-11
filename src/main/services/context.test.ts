@@ -42,12 +42,12 @@ describe("getServiceContext", () => {
     expect(ctx.isOffline).toBe(false);
   });
 
-  test("已登录但 offline 时返回 readOnly:true", () => {
+  test("已登录但 offline 时仍允许本地写入", () => {
     _mockSession = { expiresAt: Date.now() + 3600_000 };
     setOfflineMode(true);
     const ctx = getServiceContext();
     expect(ctx.isAuthenticated).toBe(true);
-    expect(ctx.readOnly).toBe(true);
+    expect(ctx.readOnly).toBe(false);
     expect(ctx.isOffline).toBe(true);
   });
 });
@@ -80,16 +80,10 @@ describe("assertWritable", () => {
     }
   });
 
-  test("已登录但 offline 时抛出 OFFLINE_READ_ONLY ServiceError", () => {
+  test("已登录但 offline 时不抛出，本地写入等待同步", () => {
     _mockSession = { expiresAt: Date.now() + 3600_000 };
     setOfflineMode(true);
-    try {
-      assertWritable();
-      throw new Error("should have thrown");
-    } catch (e) {
-      expect(e).toBeInstanceOf(ServiceError);
-      expect((e as ServiceError).code).toBe("OFFLINE_READ_ONLY");
-    }
+    expect(() => assertWritable()).not.toThrow();
   });
 
   test("已登录且在线时不抛出", () => {

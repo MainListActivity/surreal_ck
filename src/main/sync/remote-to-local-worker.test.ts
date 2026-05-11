@@ -1,0 +1,61 @@
+import { describe, expect, test } from "bun:test";
+import { RemoteToLocalWorker } from "./remote-to-local-worker";
+import type { SyncDb } from "./types";
+
+class FakeDb implements SyncDb {
+  queries: Array<{ sql: string; bindings?: Record<string, unknown> }> = [];
+  constructor(private readonly handler: (sql: string, bindings?: Record<string, unknown>) => unknown = () => []) {}
+
+  async query<T = unknown>(sql: string, bindings?: Record<string, unknown>): Promise<T> {
+    this.queries.push({ sql, bindings });
+    return this.handler(sql, bindings) as T;
+  }
+}
+
+describe("远端到本地同步 worker", () => {
+  test("远端 workspace 更新会 apply 到本地并推进 remote cursor", async () => {
+    const remote = new FakeDb((sql) => {
+      if (sql.includes("SHOW CHANGES")) {
+        return [[{
+          versionstamp: "rvs1",
+          update: { id: "workspace:ws1", name: "远端名称" },
+          dirtyFields: ["name"],
+        }]];
+      }
+      return [[]];
+    });
+    const local = new FakeDb();
+
+    const worker = new RemoteToLocalWorker({
+      localDb: local,
+      remoteDb: remote,
+      tables: ["workspace"],
+      isOnline: () => true,
+    });
+
+    const result = await worker.runOnce();
+
+    expect(result.pulled).toBe(1);
+    expect(local.queries.some((query) => query.sql.includes("UPDATE $record MERGE $content"))).toBe(true);
+    expect(local.queries.find((query) => query.sql.includes("UPDATE $record"))?.bindings?.content)
+      .toMatchObject({ name: "远端名称", _origin_session_id: "remote:rvs1" });
+    expect(local.queries.some((query) => query.sql.includes("UPSERT $id"))).toBe(true);
+  });
+
+  test("离线时不查询远端", async () => {
+    const remote = new FakeDb();
+    const local = new FakeDb();
+    const worker = new RemoteToLocalWorker({
+      localDb: local,
+      remoteDb: remote,
+      tables: ["workspace"],
+      isOnline: () => false,
+    });
+
+    const result = await worker.runOnce();
+
+    expect(result.pulled).toBe(0);
+    expect(remote.queries).toHaveLength(0);
+    expect(local.queries).toHaveLength(0);
+  });
+});

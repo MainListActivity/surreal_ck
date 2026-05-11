@@ -10,6 +10,9 @@ const DEFAULT_MESSAGES: Record<AppErrorCode, string> = {
   FORBIDDEN: "权限不足",
   INTERNAL_ERROR: "服务内部错误",
   SQL_MUTATION_WARNING: "SQL 中包含可能修改数据的语句，请确认后继续",
+  OFFLINE_DDL_FORBIDDEN: "当前离线，无法修改表结构",
+  REMOTE_DDL_FAILED: "远端表结构更新失败",
+  TEMPLATE_REJECTED: "远端模板拒绝了表结构更新",
 };
 
 export class ServiceError extends Error {

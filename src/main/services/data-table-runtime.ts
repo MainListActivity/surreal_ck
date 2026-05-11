@@ -22,7 +22,9 @@ import {
 } from "surrealdb";
 import { getLocalDb } from "../db/index";
 import { mapNullsToSurrealNone, omitNullishSurrealFields } from "../db/surreal-values";
+import { execTemplate } from "../sync/exec-template";
 import { ServiceError } from "./errors";
+import { getServiceContext } from "./context";
 import {
   buildSurrealFieldSchema,
   coerceGridFieldValue,
@@ -145,25 +147,20 @@ export function createDataTableRuntime(sheet: DataTableSheetRow): DataTableRunti
 
 export async function provisionEntityTable(tableName: string): Promise<void> {
   assertEntityTableName(tableName);
+  await assertDdlOnline();
+  await execTemplate("ent.create", { table_name: tableName });
   const db = getLocalDb();
-  await db.query(
-    `DEFINE TABLE IF NOT EXISTS ${tableName} SCHEMALESS PERMISSIONS FULL;
-     DEFINE FIELD IF NOT EXISTS workspace  ON TABLE ${tableName} TYPE option<record<workspace>>;
-     DEFINE FIELD IF NOT EXISTS created_by ON TABLE ${tableName} TYPE option<record<app_user>>;
-     DEFINE FIELD IF NOT EXISTS created_at ON TABLE ${tableName} TYPE datetime VALUE time::now();
-     DEFINE FIELD IF NOT EXISTS updated_at ON TABLE ${tableName} TYPE datetime VALUE time::now();`,
-  );
+  await db.query(buildEntityTableDdl(tableName));
 }
 
 export async function provisionRelationTable(tableName: string): Promise<void> {
   if (!/^rel_[a-z0-9_]+$/.test(tableName)) {
     throw new ServiceError("VALIDATION_ERROR", `无效的关系表名: ${tableName}`);
   }
+  await assertDdlOnline();
+  await execTemplate("rel.create", { table_name: tableName });
   const db = getLocalDb();
-  await db.query(
-    `DEFINE TABLE IF NOT EXISTS ${tableName} TYPE RELATION SCHEMALESS PERMISSIONS FULL;
-     DEFINE FIELD IF NOT EXISTS created_at ON TABLE ${tableName} TYPE datetime VALUE time::now();`,
-  );
+  await db.query(buildRelationTableDdl(tableName));
 }
 
 export async function provisionEntityFields(tableName: string, columns: GridColumnDef[]): Promise<void> {
@@ -179,6 +176,8 @@ export async function overwriteEntityField(tableName: string, column: GridColumn
 export async function removeEntityField(tableName: string, key: string): Promise<void> {
   assertEntityTableName(tableName);
   assertEntityFieldName(key);
+  await assertDdlOnline();
+  await execTemplate("ent.field-remove", { table_name: tableName, field_name: key });
   const db = getLocalDb();
   await db.query(`REMOVE FIELD IF EXISTS ${key} ON TABLE ${tableName}`);
 }
@@ -286,7 +285,39 @@ function encodeGridValues(
   return cleanValues;
 }
 
-function defineEntityField(tableName: string, column: GridColumnDef, mode: "if-not-exists" | "overwrite"): Promise<void> {
+export function buildEntityTableDdl(tableName: string): string {
+  assertEntityTableName(tableName);
+  return `DEFINE TABLE IF NOT EXISTS ${tableName} SCHEMALESS CHANGEFEED 7d PERMISSIONS FULL;
+     DEFINE FIELD IF NOT EXISTS workspace  ON TABLE ${tableName} TYPE option<record<workspace>>;
+     DEFINE FIELD IF NOT EXISTS created_by ON TABLE ${tableName} TYPE option<record<app_user>>;
+     DEFINE FIELD IF NOT EXISTS created_at ON TABLE ${tableName} TYPE datetime VALUE time::now();
+     DEFINE FIELD IF NOT EXISTS updated_at ON TABLE ${tableName} TYPE datetime VALUE time::now();
+     ${buildOriginSessionDdl(tableName)}`;
+}
+
+export function buildRelationTableDdl(tableName: string): string {
+  if (!/^rel_[a-z0-9_]+$/.test(tableName)) {
+    throw new ServiceError("VALIDATION_ERROR", `无效的关系表名: ${tableName}`);
+  }
+  return `DEFINE TABLE IF NOT EXISTS ${tableName} TYPE RELATION SCHEMALESS CHANGEFEED 7d PERMISSIONS FULL;
+     DEFINE FIELD IF NOT EXISTS created_at ON TABLE ${tableName} TYPE datetime VALUE time::now();
+     ${buildOriginSessionDdl(tableName)}`;
+}
+
+export function buildOriginSessionDdl(tableName: string): string {
+  return `DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE ${tableName} TYPE option<string>;
+     DEFINE EVENT OVERWRITE ${tableName}_origin_session ON TABLE ${tableName}
+       WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
+       THEN {
+         UPDATE $after.id SET _origin_session_id = $current_session_id;
+       };`;
+}
+
+export function buildEntityFieldDdl(
+  tableName: string,
+  column: GridColumnDef,
+  mode: "if-not-exists" | "overwrite",
+): string {
   assertEntityTableName(tableName);
   let schema;
   try {
@@ -296,10 +327,34 @@ function defineEntityField(tableName: string, column: GridColumnDef, mode: "if-n
     throw new ServiceError("VALIDATION_ERROR", message);
   }
   const clause = mode === "overwrite" ? "OVERWRITE" : "IF NOT EXISTS";
+  return `DEFINE FIELD ${clause} ${schema.fieldName} ON TABLE ${tableName} TYPE ${schema.type}${schema.assert}`;
+}
+
+async function defineEntityField(tableName: string, column: GridColumnDef, mode: "if-not-exists" | "overwrite"): Promise<void> {
+  assertEntityTableName(tableName);
+  let schema;
+  try {
+    schema = buildSurrealFieldSchema(column);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new ServiceError("VALIDATION_ERROR", message);
+  }
+  const templateId = mode === "overwrite" ? "ent.field-overwrite" : "ent.field-add";
+  await assertDdlOnline();
+  await execTemplate(templateId, {
+    table_name: tableName,
+    field_name: schema.fieldName,
+    field_type: schema.type,
+    ...(schema.assert ? { field_assert: schema.assert.trim() } : {}),
+  });
   const db = getLocalDb();
-  return db.query(
-    `DEFINE FIELD ${clause} ${schema.fieldName} ON TABLE ${tableName} TYPE ${schema.type}${schema.assert}`,
-  ).then(() => undefined);
+  return db.query(buildEntityFieldDdl(tableName, column, mode)).then(() => undefined);
+}
+
+async function assertDdlOnline(): Promise<void> {
+  if (getServiceContext().isOffline) {
+    throw new ServiceError("OFFLINE_DDL_FORBIDDEN", "当前离线，无法修改表结构");
+  }
 }
 
 /**

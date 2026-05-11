@@ -31,6 +31,7 @@ export type ResearchWindowControlTarget = {
 };
 
 type ResearchBrowserWindow = ResearchWindowControlTarget & {
+  on(event: "close", handler: () => void): void;
   webview: {
     executeJavascript(script: string): void;
   };

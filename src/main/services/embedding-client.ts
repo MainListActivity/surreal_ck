@@ -1,7 +1,7 @@
 import type { EmbeddingSettings } from "./settings";
 import { ServiceError } from "./errors";
 
-export type EmbeddingFetch = typeof fetch;
+export type EmbeddingFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 export async function generateEmbeddingVector(
   settings: EmbeddingSettings,
