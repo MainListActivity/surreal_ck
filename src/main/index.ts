@@ -7,7 +7,15 @@ import { setOfflineMode } from "./services/context";
 import { decodeTokenClaims, bootstrapLocalIdentity } from "./services/identity";
 import { createRpcHandlers } from "./rpc/handlers";
 import { installApplicationMenu } from "./app-menu";
+import { configureResearchWindowRpcFactory } from "./services/research-window";
 import type { AppRPC } from "../shared/rpc.types";
+
+function createAppRpc() {
+  const rpc = BrowserView.defineRPC<AppRPC>({
+    handlers: createRpcHandlers((event, payload) => rpc.send(event, payload)),
+  });
+  return rpc;
+}
 
 async function main() {
   ensureSingleInstance();
@@ -18,9 +26,8 @@ async function main() {
     process.exit(1);
   });
 
-  const rpc = BrowserView.defineRPC<AppRPC>({
-    handlers: createRpcHandlers((event, payload) => rpc.send(event, payload)),
-  });
+  const rpc = createAppRpc();
+  configureResearchWindowRpcFactory(createAppRpc);
 
   const win = new BrowserWindow({
     title: "SurrealCK",

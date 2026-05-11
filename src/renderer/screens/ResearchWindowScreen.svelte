@@ -363,9 +363,17 @@
         sandbox="allow-forms allow-scripts allow-popups allow-top-navigation-by-user-activation"
       ></iframe>
     {:else}
-      <div class="empty">
-        <Icon name="externalLink" size={28} />
-        <span>输入 http/https URL 开始检索</span>
+      <div class="search-portal">
+        <div class="portal-mark">
+          <Icon name="search" size={28} />
+          <strong>资源检索</strong>
+        </div>
+        <form class="portal-url" onsubmit={(event) => { event.preventDefault(); navigateExternal(); }}>
+          <Icon name="externalLink" size={18} />
+          <input bind:value={urlInput} placeholder="输入或粘贴 http/https URL" />
+          <button>打开</button>
+        </form>
+        <span>从可信窗口收集证据并保存为工作区资源</span>
       </div>
     {/if}
   </section>
@@ -632,13 +640,60 @@
     background: #fff;
   }
 
-  .empty {
+  .search-portal {
     height: 100%;
     display: grid;
-    place-items: center;
     align-content: center;
-    gap: 10px;
+    justify-items: center;
+    gap: 20px;
+    padding: 32px;
     color: var(--text-3);
+    font-size: 13px;
+    background:
+      radial-gradient(circle at 50% 38%, rgba(22, 100, 255, .07), transparent 280px),
+      #fff;
+  }
+
+  .portal-mark {
+    display: grid;
+    justify-items: center;
+    gap: 12px;
+    color: var(--primary);
+  }
+
+  .portal-mark strong {
+    color: var(--text-1);
+    font-size: 24px;
+    font-weight: 650;
+    letter-spacing: 0;
+  }
+
+  .portal-url {
+    width: min(680px, 100%);
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    min-height: 52px;
+    padding: 7px 8px 7px 16px;
+    border: 1px solid rgba(203, 213, 225, .9);
+    border-radius: 999px;
+    background: #fff;
+    box-shadow: 0 10px 32px rgba(15, 23, 42, .12);
+  }
+
+  .portal-url input {
+    height: 38px;
+    border: 0;
+    padding: 0;
+    font-size: 15px;
+    outline: none;
+  }
+
+  .portal-url button {
+    min-width: 74px;
+    height: 38px;
+    border-radius: 999px;
     font-size: 13px;
   }
 

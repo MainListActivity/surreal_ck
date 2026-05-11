@@ -61,6 +61,7 @@ export type RouteState = {
   templateKey?: string;
   researchSessionId?: string;
   resourceType?: string;
+  initialUrl?: string;
 };
 
 export type Navigate = (screen: ScreenId, params?: Omit<RouteState, "screen">) => void;

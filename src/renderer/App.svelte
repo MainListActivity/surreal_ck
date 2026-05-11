@@ -17,6 +17,7 @@
   import TemplatesScreen from "./screens/TemplatesScreen.svelte";
   import { auth, applyAuthState } from "./lib/auth.svelte";
   import { appState } from "./lib/app-state.svelte";
+  import { persistRoute, readInitialRoute as readInitialAppRoute, shouldShowLoginGate } from "./lib/app-routing";
   import { rpc } from "./lib/rpc";
   import { editorStore } from "./lib/editor.svelte";
   import { editorUi } from "./features/editor/lib/editor-ui.svelte";
@@ -40,8 +41,9 @@
     "state-noperm",
   ]);
 
-  let route = $state<RouteState>(readInitialRoute());
+  let route = $state<RouteState>(readInitialAppRoute(localStorage, validStoredScreens));
   let lastBootstrapKey = $state("");
+  const showLoginGate = $derived(shouldShowLoginGate(route, auth));
 
   $effect(() => {
     const key = `${auth.loggedIn}:${auth.offlineMode ?? false}`;
@@ -82,49 +84,10 @@
     };
   });
 
-  function readInitialRoute(): RouteState {
-    const researchRoute = readResearchWindowRoute();
-    if (researchRoute) return researchRoute;
-
-    try {
-      const raw = localStorage.getItem("srk_route");
-      if (raw) {
-        const parsed = JSON.parse(raw) as RouteState;
-        // editor 页面若无 workbookId 则回退 home
-        if (parsed.screen === "editor" && !parsed.workbookId) {
-          return { screen: "home" };
-        }
-        if (validStoredScreens.has(parsed.screen)) return parsed;
-      }
-    } catch {
-      // ignore
-    }
-    return { screen: "home" };
-  }
-
-  function readResearchWindowRoute(): RouteState | null {
-    try {
-      const params = new URLSearchParams(window.location.search);
-      if (params.get("mode") !== "research") return null;
-      const researchSessionId = params.get("sessionId");
-      return {
-        screen: "research",
-        researchSessionId: researchSessionId ?? undefined,
-        resourceType: params.get("resourceType") ?? "generic_note",
-      };
-    } catch {
-      return null;
-    }
-  }
-
   function commitNavigate(next: RouteState) {
     route = next;
     try {
-      if (next.screen === "admin-console" || next.screen === "research") {
-        localStorage.removeItem("srk_route");
-      } else {
-        localStorage.setItem("srk_route", JSON.stringify(next));
-      }
+      persistRoute(localStorage, next);
     } catch {
       // WebView storage can be unavailable in tests.
     }
@@ -180,7 +143,7 @@
     {/if}
   </header>
 
-  {#if !auth.loggedIn && !auth.offlineMode}
+  {#if showLoginGate}
     <LoginScreen />
   {:else}
     {#if auth.offlineMode}
@@ -221,7 +184,7 @@
           <ResearchWindowScreen
             sessionId={route.researchSessionId}
             initialResourceType={route.resourceType ?? "generic_note"}
-            initialUrl={new URLSearchParams(window.location.search).get("url") ?? ""}
+            initialUrl={route.initialUrl ?? ""}
           />
         {:else}
           <StateScreen kind={route.screen} {navigate} />

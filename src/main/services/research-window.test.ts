@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   createResearchWindowService,
   isAllowedResearchUrl,
+  type ResearchWindowParams,
 } from "./research-window";
 
 describe("research window shell", () => {
@@ -13,8 +14,8 @@ describe("research window shell", () => {
     expect(isAllowedResearchUrl("javascript:alert(1)")).toBe(false);
   });
 
-  test("openResearchWindow 根据 sessionId 打开可信壳 URL 并返回 session 状态", async () => {
-    const opened: string[] = [];
+  test("openResearchWindow 根据 sessionId 传递正确参数并返回 session 状态", async () => {
+    const opened: ResearchWindowParams[] = [];
     const service = createResearchWindowService({
       getResearchSession: async ({ sessionId }) => ({
         session: {
@@ -30,8 +31,8 @@ describe("research window shell", () => {
           updatedAt: "2026-05-11T08:00:00.000Z",
         },
       }),
-      openWindow: async (url) => {
-        opened.push(url);
+      openWindow: async (params) => {
+        opened.push(params);
       },
     });
 
@@ -41,7 +42,11 @@ describe("research window shell", () => {
     });
 
     expect(opened).toEqual([
-      "views://mainview/index.html?mode=research&sessionId=research_session%3As1&url=https%3A%2F%2Fexample.com%2Fsearch%3Fq%3Dcase",
+      {
+        sessionId: "research_session:s1",
+        resourceType: "generic_note",
+        initialUrl: "https://example.com/search?q=case",
+      },
     ]);
     expect(result.session).toMatchObject({
       id: "research_session:s1",
@@ -52,19 +57,19 @@ describe("research window shell", () => {
   });
 
   test("openResearchWindow 支持无 session 的主动补库窗口", async () => {
-    const opened: string[] = [];
+    const opened: ResearchWindowParams[] = [];
     const service = createResearchWindowService({
       getResearchSession: async () => {
         throw new Error("proactive mode should not load session");
       },
-      openWindow: async (url) => {
-        opened.push(url);
+      openWindow: async (params) => {
+        opened.push(params);
       },
     });
 
     const result = await service.openResearchWindow({ resourceType: "generic_note" });
 
-    expect(opened).toEqual(["views://mainview/index.html?mode=research&resourceType=generic_note"]);
+    expect(opened).toEqual([{ resourceType: "generic_note" }]);
     expect(result).toEqual({ opened: true });
   });
 });
