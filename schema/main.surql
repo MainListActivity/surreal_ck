@@ -537,6 +537,39 @@ DEFINE INDEX IF NOT EXISTS resource_item_source_hash
 DEFINE INDEX IF NOT EXISTS resource_item_research_session
   ON TABLE resource_item COLUMNS research_session;
 
+DEFINE TABLE IF NOT EXISTS resource_embedding SCHEMAFULL
+  PERMISSIONS
+    FOR select WHERE
+      workspace.owner = $auth
+      OR workspace IN $auth<-has_workspace_member<-workspace,
+    FOR create, update WHERE
+      workspace.owner = $auth
+      OR workspace IN $auth<-has_workspace_member<-workspace,
+    FOR delete WHERE workspace.owner = $auth;
+DEFINE FIELD IF NOT EXISTS workspace           ON TABLE resource_embedding TYPE record<workspace>;
+DEFINE FIELD IF NOT EXISTS resource            ON TABLE resource_embedding TYPE record<resource_item>;
+DEFINE FIELD IF NOT EXISTS profile_key         ON TABLE resource_embedding TYPE string;
+DEFINE FIELD IF NOT EXISTS provider            ON TABLE resource_embedding TYPE string;
+DEFINE FIELD IF NOT EXISTS model               ON TABLE resource_embedding TYPE string;
+DEFINE FIELD IF NOT EXISTS dimensions          ON TABLE resource_embedding TYPE int
+  ASSERT $value > 0;
+DEFINE FIELD IF NOT EXISTS profile_version     ON TABLE resource_embedding TYPE string;
+DEFINE FIELD IF NOT EXISTS embedding_text_hash ON TABLE resource_embedding TYPE string;
+REMOVE FIELD IF EXISTS vector.* ON TABLE resource_embedding;
+DEFINE FIELD OVERWRITE vector                  ON TABLE resource_embedding TYPE any DEFAULT [];
+DEFINE FIELD IF NOT EXISTS status              ON TABLE resource_embedding TYPE string
+  ASSERT $value INSIDE ["disabled", "pending", "indexed", "failed", "stale"];
+DEFINE FIELD IF NOT EXISTS error_summary       ON TABLE resource_embedding TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS indexed_at          ON TABLE resource_embedding TYPE option<datetime>;
+DEFINE FIELD IF NOT EXISTS created_at          ON TABLE resource_embedding TYPE datetime VALUE time::now();
+DEFINE FIELD IF NOT EXISTS updated_at          ON TABLE resource_embedding TYPE datetime VALUE time::now();
+DEFINE INDEX IF NOT EXISTS resource_embedding_resource_profile_unique
+  ON TABLE resource_embedding COLUMNS resource, profile_key UNIQUE;
+DEFINE INDEX IF NOT EXISTS resource_embedding_workspace_profile_status
+  ON TABLE resource_embedding COLUMNS workspace, profile_key, status;
+DEFINE INDEX IF NOT EXISTS resource_embedding_resource
+  ON TABLE resource_embedding COLUMNS resource;
+
 -- ═══════════════════════════════════════════════════════════════════════════════
 -- OBSERVABILITY
 -- ═══════════════════════════════════════════════════════════════════════════════

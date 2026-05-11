@@ -35,6 +35,7 @@ import type {
   RenameWorkbookResponse,
   ResolveReferencesResponse,
   Result,
+  RetryResourceEmbeddingResponse,
   SaveDashboardPageLayoutResponse,
   SaveSettingsResponse,
   SearchReferenceCandidatesResponse,
@@ -196,6 +197,10 @@ export const appApi = {
 
   saveResource(req: SaveResourceRequest): Promise<Result<SaveResourceResponse>> {
     return rpc.request("saveResource", req);
+  },
+
+  retryResourceEmbedding(resourceId: RecordIdString): Promise<Result<RetryResourceEmbeddingResponse>> {
+    return rpc.request("retryResourceEmbedding", { resourceId });
   },
 
   getResourceDetail(req: GetResourceDetailRequest): Promise<Result<ResourceDetailResponse>> {

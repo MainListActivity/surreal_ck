@@ -5,6 +5,7 @@ import { getLocalDb } from "../db/index";
 import { omitNullishSurrealFields } from "../db/surreal-values";
 import { assertCanReadWorkspace, assertCanWriteWorkspace, getCurrentUserRecordId } from "./context";
 import { ServiceError } from "./errors";
+import { getEmbeddingSettings, saveEmbeddingSettings } from "./settings";
 
 type RecordRef = RecordId | StringRecordId | string;
 
@@ -81,6 +82,52 @@ export type ResearchSessionDTO = {
   cancelledAt?: string;
 };
 
+export type ResourceEmbeddingStatus = "disabled" | "pending" | "indexed" | "failed" | "stale";
+
+export type ResourceEmbeddingDTO = {
+  status: ResourceEmbeddingStatus;
+  profileKey?: string;
+  provider?: string;
+  model?: string;
+  dimensions?: number;
+  version?: string;
+  errorSummary?: string;
+  indexedAt?: string;
+  updatedAt?: string;
+};
+
+export type ResourceEmbeddingProfile = {
+  provider: string;
+  model: string;
+  dimensions: number;
+  version: string;
+};
+
+export function createEmbeddingProfileKey(profile: ResourceEmbeddingProfile): string {
+  const provider = encodeURIComponent(profile.provider.trim().toLowerCase());
+  const model = encodeURIComponent(profile.model.trim());
+  const version = encodeURIComponent(profile.version.trim());
+  return `provider=${provider}|model=${model}|dimensions=${profile.dimensions}|version=${version}`;
+}
+
+export type ResourceEmbeddingRow = {
+  id: RecordRef;
+  workspace: RecordRef;
+  resource: RecordRef;
+  profile_key: string;
+  provider: string;
+  model: string;
+  dimensions: number;
+  profile_version: string;
+  embedding_text_hash: string;
+  vector?: number[];
+  status: ResourceEmbeddingStatus;
+  error_summary?: string;
+  indexed_at?: Date | string;
+  created_at: Date | string;
+  updated_at: Date | string;
+};
+
 export type ResourceDTO = {
   id: string;
   workspaceId: string;
@@ -96,6 +143,7 @@ export type ResourceDTO = {
   confidence?: number;
   sourceTrust?: string;
   duplicateHashes: ResourceDuplicateHashes;
+  embedding: ResourceEmbeddingDTO;
   researchSessionId?: string;
   createdBy: string;
   createdAt: string;
@@ -136,6 +184,39 @@ export type ResourceDetailResponse = {
   };
 };
 
+export type SearchResourceEmbeddingsRequest = {
+  workspaceId: string;
+  profile: ResourceEmbeddingProfile;
+  vector: number[];
+  limit?: number;
+};
+
+export type SearchResourceEmbeddingsResponse = {
+  matches: Array<{
+    resourceId: string;
+    profileKey: string;
+    score: number;
+  }>;
+};
+
+export type UpdateEmbeddingProfileRequest = {
+  workspaceId: string;
+  profile: ResourceEmbeddingProfile;
+};
+
+export type UpdateEmbeddingProfileResponse = {
+  profile: ResourceEmbeddingDTO;
+  staleCount: number;
+};
+
+export type RetryResourceEmbeddingRequest = {
+  resourceId: string;
+};
+
+export type RetryResourceEmbeddingResponse = {
+  embedding: ResourceEmbeddingDTO;
+};
+
 export type CreateResearchSessionRequest = {
   workspaceId: string;
   query: string;
@@ -164,6 +245,10 @@ export type CancelResearchSessionRequest = {
 export type ResourceRepository = {
   createResource(input: Omit<ResourceRow, "id">): Promise<ResourceRow>;
   findResourceById(resourceId: string): Promise<ResourceRow | null>;
+  upsertResourceEmbedding(input: Omit<ResourceEmbeddingRow, "id">): Promise<ResourceEmbeddingRow>;
+  findResourceEmbeddingsByResource(resourceId: string): Promise<ResourceEmbeddingRow[]>;
+  listIndexedResourceEmbeddings(workspaceId: string, profileKey: string): Promise<ResourceEmbeddingRow[]>;
+  markResourceEmbeddingsStaleForWorkspace(workspaceId: string, activeProfileKey: string, updatedAt: Date): Promise<number>;
   createResearchSession(input: Omit<ResearchSessionRow, "id">): Promise<ResearchSessionRow>;
   findResearchSessionById(sessionId: string): Promise<ResearchSessionRow | null>;
   updateResearchSession(
@@ -208,6 +293,77 @@ export class SurrealResourceRepository implements ResourceRepository {
       { resourceId: new StringRecordId(resourceId) },
     );
     return rows[0]?.[0] ?? null;
+  }
+
+  async upsertResourceEmbedding(input: Omit<ResourceEmbeddingRow, "id">): Promise<ResourceEmbeddingRow> {
+    const id = new RecordId("resource_embedding", stableHash({
+      resource: String(input.resource),
+      profileKey: input.profile_key,
+    }));
+    const rows = await this.db.query<[ResourceEmbeddingRow[]]>(
+      `UPSERT $id CONTENT $content RETURN AFTER`,
+      {
+        id,
+        content: omitNullishSurrealFields({
+          workspace: toRecordId(input.workspace),
+          resource: toRecordId(input.resource),
+          profile_key: input.profile_key,
+          provider: input.provider,
+          model: input.model,
+          dimensions: input.dimensions,
+          profile_version: input.profile_version,
+          embedding_text_hash: input.embedding_text_hash,
+          vector: input.vector,
+          status: input.status,
+          error_summary: input.error_summary,
+          indexed_at: input.indexed_at ? toDateTime(input.indexed_at) : undefined,
+          created_at: toDateTime(input.created_at),
+          updated_at: toDateTime(input.updated_at),
+        }),
+      },
+    );
+    return requireRow(rows[0], "资源 embedding 状态写入后读取失败");
+  }
+
+  async findResourceEmbeddingsByResource(resourceId: string): Promise<ResourceEmbeddingRow[]> {
+    const rows = await this.db.query<[ResourceEmbeddingRow[]]>(
+      `SELECT * FROM resource_embedding WHERE resource = $resourceId`,
+      { resourceId: new StringRecordId(resourceId) },
+    );
+    return rows[0] ?? [];
+  }
+
+  async listIndexedResourceEmbeddings(workspaceId: string, profileKey: string): Promise<ResourceEmbeddingRow[]> {
+    const rows = await this.db.query<[ResourceEmbeddingRow[]]>(
+      `SELECT * FROM resource_embedding
+       WHERE workspace = $workspaceId
+         AND profile_key = $profileKey
+         AND status = "indexed"`,
+      { workspaceId: new StringRecordId(workspaceId), profileKey },
+    );
+    return rows[0] ?? [];
+  }
+
+  async markResourceEmbeddingsStaleForWorkspace(
+    workspaceId: string,
+    activeProfileKey: string,
+    updatedAt: Date,
+  ): Promise<number> {
+    const rows = await this.db.query<[ResourceEmbeddingRow[]]>(
+      `UPDATE resource_embedding
+       SET status = "stale",
+           updated_at = $updatedAt
+       WHERE workspace = $workspaceId
+         AND profile_key != $activeProfileKey
+         AND status INSIDE ["pending", "indexed", "failed"]
+       RETURN AFTER`,
+      {
+        workspaceId: new StringRecordId(workspaceId),
+        activeProfileKey,
+        updatedAt: toDateTime(updatedAt),
+      },
+    );
+    return rows[0]?.length ?? 0;
   }
 
   async createResearchSession(input: Omit<ResearchSessionRow, "id">): Promise<ResearchSessionRow> {
@@ -268,6 +424,14 @@ type ResourceServiceDeps = {
   assertCanReadWorkspace(workspaceId: string): Promise<void>;
   assertCanWriteWorkspace(workspaceId: string): Promise<void>;
   getCurrentUserRecordId(): Promise<RecordRef>;
+  getActiveEmbeddingProfile?(workspaceId: string): Promise<ResourceEmbeddingProfile | null>;
+  saveActiveEmbeddingProfile?(workspaceId: string, profile: ResourceEmbeddingProfile): Promise<void>;
+  generateEmbedding?(input: {
+    profile: ResourceEmbeddingProfile;
+    resource: ResourceRow;
+    text: string;
+    embeddingTextHash: string;
+  }): Promise<number[]>;
   now?: () => Date;
 };
 
@@ -333,7 +497,9 @@ export function createResourceService(deps: ResourceServiceDeps) {
         });
       }
 
-      return { resource: resourceRowToDTO(row) };
+      const embedding = await ensureInitialEmbeddingState(deps, row, timestamp);
+
+      return { resource: resourceRowToDTO(row, embedding) };
     },
 
     async getResourceDetail(req: GetResourceDetailRequest): Promise<ResourceDetailResponse> {
@@ -341,7 +507,8 @@ export function createResourceService(deps: ResourceServiceDeps) {
       if (!row) throw new ServiceError("NOT_FOUND", "资源不存在");
 
       await deps.assertCanReadWorkspace(String(row.workspace));
-      const resource = resourceRowToDTO(row);
+      const embedding = await resolveResourceEmbeddingState(deps, row);
+      const resource = resourceRowToDTO(row, embedding);
       const session = resource.researchSessionId
         ? await deps.repository.findResearchSessionById(resource.researchSessionId)
         : null;
@@ -350,6 +517,71 @@ export function createResourceService(deps: ResourceServiceDeps) {
         resource,
         session: session ? researchSessionRowToSummary(session) : undefined,
       };
+    },
+
+    async searchResourceEmbeddings(req: SearchResourceEmbeddingsRequest): Promise<SearchResourceEmbeddingsResponse> {
+      await deps.assertCanReadWorkspace(req.workspaceId);
+      const profileKey = createEmbeddingProfileKey(req.profile);
+      const rows = await deps.repository.listIndexedResourceEmbeddings(req.workspaceId, profileKey);
+      const matches = rows
+        .filter((row) => row.vector && row.vector.length > 0)
+        .map((row) => ({
+          resourceId: String(row.resource),
+          profileKey: row.profile_key,
+          score: cosineSimilarity(req.vector, row.vector ?? []),
+        }))
+        .sort((left, right) => right.score - left.score)
+        .slice(0, req.limit ?? 10);
+
+      return { matches };
+    },
+
+    async updateEmbeddingProfile(req: UpdateEmbeddingProfileRequest): Promise<UpdateEmbeddingProfileResponse> {
+      await deps.assertCanWriteWorkspace(req.workspaceId);
+      validateEmbeddingProfile(req.profile);
+      await deps.saveActiveEmbeddingProfile?.(req.workspaceId, req.profile);
+      const timestamp = now();
+      const profileKey = createEmbeddingProfileKey(req.profile);
+      const staleCount = await deps.repository.markResourceEmbeddingsStaleForWorkspace(
+        req.workspaceId,
+        profileKey,
+        timestamp,
+      );
+
+      return {
+        profile: {
+          status: "pending",
+          ...embeddingProfileToDTOFields(req.profile),
+          updatedAt: timestamp.toISOString(),
+        },
+        staleCount,
+      };
+    },
+
+    async retryResourceEmbedding(req: RetryResourceEmbeddingRequest): Promise<RetryResourceEmbeddingResponse> {
+      const row = await deps.repository.findResourceById(req.resourceId);
+      if (!row) throw new ServiceError("NOT_FOUND", "资源不存在");
+
+      await deps.assertCanWriteWorkspace(String(row.workspace));
+      const profile = await deps.getActiveEmbeddingProfile?.(String(row.workspace)) ?? null;
+      if (!profile) return { embedding: { status: "disabled" } };
+
+      const timestamp = now();
+      const embeddingText = buildResourceEmbeddingText(row);
+      const embeddingRow = await deps.repository.upsertResourceEmbedding({
+        workspace: row.workspace,
+        resource: row.id,
+        ...embeddingProfileToRowFields(profile),
+        embedding_text_hash: stableHash(embeddingText),
+        vector: undefined,
+        status: "pending",
+        error_summary: undefined,
+        indexed_at: undefined,
+        created_at: timestamp,
+        updated_at: timestamp,
+      });
+
+      return { embedding: embeddingRowToDTO(embeddingRow) };
     },
 
     async createResearchSession(req: CreateResearchSessionRequest): Promise<ResearchSessionResponse> {
@@ -447,13 +679,191 @@ export function cancelResearchSession(req: CancelResearchSessionRequest): Promis
   return createDefaultResourceService().cancelResearchSession(req);
 }
 
+export function searchResourceEmbeddings(req: SearchResourceEmbeddingsRequest): Promise<SearchResourceEmbeddingsResponse> {
+  return createDefaultResourceService().searchResourceEmbeddings(req);
+}
+
+export function updateEmbeddingProfile(req: UpdateEmbeddingProfileRequest): Promise<UpdateEmbeddingProfileResponse> {
+  return createDefaultResourceService().updateEmbeddingProfile(req);
+}
+
+export function retryResourceEmbedding(req: RetryResourceEmbeddingRequest): Promise<RetryResourceEmbeddingResponse> {
+  return createDefaultResourceService().retryResourceEmbedding(req);
+}
+
 function createDefaultResourceService(): ReturnType<typeof createResourceService> {
   return createResourceService({
     repository: new SurrealResourceRepository(),
     assertCanReadWorkspace,
     assertCanWriteWorkspace,
     getCurrentUserRecordId,
+    getActiveEmbeddingProfile: async () => {
+      const settings = await getEmbeddingSettings();
+      if (!settings.secretConfigured) return null;
+      return {
+        provider: settings.provider,
+        model: settings.model,
+        dimensions: settings.dimensions,
+        version: settings.version,
+      };
+    },
+    saveActiveEmbeddingProfile: async (_workspaceId, profile) => {
+      const current = await getEmbeddingSettings();
+      await saveEmbeddingSettings({
+        provider: profile.provider === "anthropic" || profile.provider === "google" || profile.provider === "custom"
+          ? profile.provider
+          : "openai",
+        model: profile.model,
+        dimensions: profile.dimensions,
+        version: profile.version,
+        baseUrl: current.baseUrl,
+        apiFormat: current.apiFormat,
+        apiKey: current.apiKey,
+      });
+    },
   });
+}
+
+async function ensureInitialEmbeddingState(
+  deps: ResourceServiceDeps,
+  row: ResourceRow,
+  timestamp: Date,
+): Promise<ResourceEmbeddingDTO> {
+  const profile = await deps.getActiveEmbeddingProfile?.(String(row.workspace)) ?? null;
+  if (!profile) return { status: "disabled" };
+
+  const existing = await findEmbeddingForProfile(deps, row, profile);
+  if (existing) return embeddingRowToDTO(existing);
+
+  const embeddingText = buildResourceEmbeddingText(row);
+  const embeddingTextHash = stableHash(embeddingText);
+  const embeddingRow = await deps.repository.upsertResourceEmbedding({
+    workspace: row.workspace,
+    resource: row.id,
+    ...embeddingProfileToRowFields(profile),
+    embedding_text_hash: embeddingTextHash,
+    status: "pending",
+    created_at: timestamp,
+    updated_at: timestamp,
+  });
+  if (!deps.generateEmbedding) return embeddingRowToDTO(embeddingRow);
+
+  try {
+    const vector = await deps.generateEmbedding({
+      profile,
+      resource: row,
+      text: embeddingText,
+      embeddingTextHash,
+    });
+    const indexedRow = await deps.repository.upsertResourceEmbedding({
+      ...embeddingRow,
+      vector,
+      status: "indexed",
+      error_summary: undefined,
+      indexed_at: timestamp,
+      updated_at: timestamp,
+    });
+    return embeddingRowToDTO(indexedRow);
+  } catch (error) {
+    const failedRow = await deps.repository.upsertResourceEmbedding({
+      ...embeddingRow,
+      status: "failed",
+      error_summary: summarizeEmbeddingError(error),
+      indexed_at: undefined,
+      updated_at: timestamp,
+    });
+    return embeddingRowToDTO(failedRow);
+  }
+}
+
+async function resolveResourceEmbeddingState(
+  deps: ResourceServiceDeps,
+  row: ResourceRow,
+): Promise<ResourceEmbeddingDTO> {
+  const profile = await deps.getActiveEmbeddingProfile?.(String(row.workspace)) ?? null;
+  if (!profile) return { status: "disabled" };
+
+  const existing = await findEmbeddingForProfile(deps, row, profile);
+  if (existing) return embeddingRowToDTO(existing);
+  return {
+    status: "pending",
+    ...embeddingProfileToDTOFields(profile),
+  };
+}
+
+async function findEmbeddingForProfile(
+  deps: Pick<ResourceServiceDeps, "repository">,
+  row: ResourceRow,
+  profile: ResourceEmbeddingProfile,
+): Promise<ResourceEmbeddingRow | null> {
+  const profileKey = createEmbeddingProfileKey(profile);
+  const embeddings = await deps.repository.findResourceEmbeddingsByResource(String(row.id));
+  return embeddings.find((embedding) => embedding.profile_key === profileKey) ?? null;
+}
+
+function embeddingProfileToRowFields(profile: ResourceEmbeddingProfile): Pick<
+  ResourceEmbeddingRow,
+  "profile_key" | "provider" | "model" | "dimensions" | "profile_version"
+> {
+  return {
+    profile_key: createEmbeddingProfileKey(profile),
+    provider: profile.provider,
+    model: profile.model,
+    dimensions: profile.dimensions,
+    profile_version: profile.version,
+  };
+}
+
+function embeddingProfileToDTOFields(profile: ResourceEmbeddingProfile): Omit<ResourceEmbeddingDTO, "status"> {
+  return {
+    profileKey: createEmbeddingProfileKey(profile),
+    provider: profile.provider,
+    model: profile.model,
+    dimensions: profile.dimensions,
+    version: profile.version,
+  };
+}
+
+function validateEmbeddingProfile(profile: ResourceEmbeddingProfile): void {
+  if (!profile.provider.trim()) throw new ServiceError("VALIDATION_ERROR", "embedding provider 不能为空");
+  if (!profile.model.trim()) throw new ServiceError("VALIDATION_ERROR", "embedding model 不能为空");
+  if (!Number.isInteger(profile.dimensions) || profile.dimensions <= 0) {
+    throw new ServiceError("VALIDATION_ERROR", "embedding dimensions 必须是正整数");
+  }
+  if (!profile.version.trim()) throw new ServiceError("VALIDATION_ERROR", "embedding profile version 不能为空");
+}
+
+function buildResourceEmbeddingText(row: ResourceRow): string {
+  return [
+    row.title,
+    row.summary,
+    row.source_title,
+    row.tags.join("\n"),
+    ...row.evidence.map((item) => item.text),
+  ].filter(Boolean).join("\n");
+}
+
+function summarizeEmbeddingError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const trimmed = message.trim();
+  return trimmed ? trimmed.slice(0, 500) : "embedding 生成失败";
+}
+
+function cosineSimilarity(left: number[], right: number[]): number {
+  const length = Math.min(left.length, right.length);
+  if (length === 0) return 0;
+  let dot = 0;
+  let leftMagnitude = 0;
+  let rightMagnitude = 0;
+  for (let index = 0; index < length; index += 1) {
+    const leftValue = left[index] ?? 0;
+    const rightValue = right[index] ?? 0;
+    dot += leftValue * rightValue;
+    leftMagnitude += leftValue * leftValue;
+    rightMagnitude += rightValue * rightValue;
+  }
+  if (leftMagnitude === 0 || rightMagnitude === 0) return 0;
+  return dot / (Math.sqrt(leftMagnitude) * Math.sqrt(rightMagnitude));
 }
 
 async function loadOpenSessionForWrite(
@@ -576,7 +986,21 @@ function stableStringify(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function resourceRowToDTO(row: ResourceRow): ResourceDTO {
+function embeddingRowToDTO(row: ResourceEmbeddingRow): ResourceEmbeddingDTO {
+  return {
+    status: row.status,
+    profileKey: row.profile_key,
+    provider: row.provider,
+    model: row.model,
+    dimensions: row.dimensions,
+    version: row.profile_version,
+    errorSummary: row.error_summary,
+    indexedAt: row.indexed_at ? toIso(row.indexed_at) : undefined,
+    updatedAt: toIso(row.updated_at),
+  };
+}
+
+function resourceRowToDTO(row: ResourceRow, embedding: ResourceEmbeddingDTO = { status: "disabled" }): ResourceDTO {
   return {
     id: String(row.id),
     workspaceId: String(row.workspace),
@@ -596,6 +1020,7 @@ function resourceRowToDTO(row: ResourceRow): ResourceDTO {
       evidence: row.evidence_hash,
       source: row.source_hash,
     },
+    embedding,
     researchSessionId: row.research_session ? String(row.research_session) : undefined,
     createdBy: String(row.created_by),
     createdAt: toIso(row.created_at),

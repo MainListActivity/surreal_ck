@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { RecordId } from "surrealdb";
 import {
+  createEmbeddingProfileKey,
   createResourceService,
   type ResourceRepository,
   type ResourceRow,
+  type ResourceEmbeddingRow,
+  type ResourceEmbeddingProfile,
   type ResearchSessionRow,
 } from "./resources";
 import { ServiceError } from "./errors";
@@ -13,6 +16,7 @@ class MemoryResourceRepository implements ResourceRepository {
   private sessionSeq = 0;
   readonly resources = new Map<string, ResourceRow>();
   readonly sessions = new Map<string, ResearchSessionRow>();
+  readonly embeddings = new Map<string, ResourceEmbeddingRow>();
 
   async createResource(input: Omit<ResourceRow, "id">): Promise<ResourceRow> {
     const row = { id: new RecordId("resource_item", `r${++this.resourceSeq}`), ...input };
@@ -22,6 +26,48 @@ class MemoryResourceRepository implements ResourceRepository {
 
   async findResourceById(resourceId: string): Promise<ResourceRow | null> {
     return this.resources.get(resourceId) ?? null;
+  }
+
+  async upsertResourceEmbedding(input: Omit<ResourceEmbeddingRow, "id">): Promise<ResourceEmbeddingRow> {
+    const key = `${String(input.resource)}|${input.profile_key}`;
+    const current = this.embeddings.get(key);
+    const row = current
+      ? { ...current, ...input }
+      : { id: new RecordId("resource_embedding", `e${this.embeddings.size + 1}`), ...input };
+    this.embeddings.set(key, row);
+    return row;
+  }
+
+  async findResourceEmbeddingsByResource(resourceId: string): Promise<ResourceEmbeddingRow[]> {
+    return [...this.embeddings.values()].filter((row) => String(row.resource) === resourceId);
+  }
+
+  async listIndexedResourceEmbeddings(workspaceId: string, profileKey: string): Promise<ResourceEmbeddingRow[]> {
+    return [...this.embeddings.values()].filter((row) =>
+      String(row.workspace) === workspaceId &&
+      row.profile_key === profileKey &&
+      row.status === "indexed"
+    );
+  }
+
+  async markResourceEmbeddingsStaleForWorkspace(
+    workspaceId: string,
+    activeProfileKey: string,
+    updatedAt: Date,
+  ): Promise<number> {
+    let count = 0;
+    for (const [key, row] of this.embeddings) {
+      if (
+        String(row.workspace) !== workspaceId ||
+        row.profile_key === activeProfileKey ||
+        !["pending", "indexed", "failed"].includes(row.status)
+      ) {
+        continue;
+      }
+      this.embeddings.set(key, { ...row, status: "stale", updated_at: updatedAt });
+      count += 1;
+    }
+    return count;
   }
 
   async createResearchSession(input: Omit<ResearchSessionRow, "id">): Promise<ResearchSessionRow> {
@@ -43,7 +89,7 @@ class MemoryResourceRepository implements ResourceRepository {
   }
 }
 
-function createTestService(repo = new MemoryResourceRepository()) {
+function createTestService(repo = new MemoryResourceRepository(), overrides: Record<string, unknown> = {}) {
   const canRead: string[] = [];
   const canWrite: string[] = [];
   const service = createResourceService({
@@ -56,6 +102,7 @@ function createTestService(repo = new MemoryResourceRepository()) {
     },
     getCurrentUserRecordId: async () => new RecordId("app_user", "u1"),
     now: () => new Date("2026-05-11T08:00:00.000Z"),
+    ...overrides,
   });
   return { service, repo, canRead, canWrite };
 }
@@ -73,7 +120,36 @@ function createRejectingReadService(repo = new MemoryResourceRepository()) {
   return { service, repo };
 }
 
+const EMBEDDING_PROFILE: ResourceEmbeddingProfile = {
+  provider: "openai",
+  model: "text-embedding-3-small",
+  dimensions: 3,
+  version: "2026-05-11",
+};
+
+const ALTERNATE_EMBEDDING_PROFILE: ResourceEmbeddingProfile = {
+  provider: "openai",
+  model: "text-embedding-3-large",
+  dimensions: 3,
+  version: "2026-05-11",
+};
+
 describe("资源主数据闭环", () => {
+  test("embedding profile key 稳定区分 provider、model、dimensions 和版本", () => {
+    const profile = {
+      provider: "openai",
+      model: "text-embedding-3-small",
+      dimensions: 1536,
+      version: "2026-05-11",
+    };
+
+    expect(createEmbeddingProfileKey(profile)).toBe(createEmbeddingProfileKey({ ...profile }));
+    expect(createEmbeddingProfileKey({ ...profile, provider: "custom" })).not.toBe(createEmbeddingProfileKey(profile));
+    expect(createEmbeddingProfileKey({ ...profile, model: "text-embedding-3-large" })).not.toBe(createEmbeddingProfileKey(profile));
+    expect(createEmbeddingProfileKey({ ...profile, dimensions: 3072 })).not.toBe(createEmbeddingProfileKey(profile));
+    expect(createEmbeddingProfileKey({ ...profile, version: "2026-05-12" })).not.toBe(createEmbeddingProfileKey(profile));
+  });
+
   test("保存 generic_note 后可读取最小资源详情", async () => {
     const { service, canRead, canWrite } = createTestService();
 
@@ -117,6 +193,223 @@ describe("资源主数据闭环", () => {
     expect(detail.session).toBeUndefined();
     expect(canWrite).toEqual(["workspace:demo"]);
     expect(canRead).toEqual(["workspace:demo"]);
+  });
+
+  test("没有 embedding 配置时资源保存成功并暴露 disabled 状态", async () => {
+    const { service } = createTestService();
+
+    const saved = await service.saveResource({
+      workspaceId: "workspace:demo",
+      resourceType: "generic_note",
+      title: "无需索引也能保存",
+      summary: "embedding 未配置不应阻断资源主数据保存。",
+      evidence: [],
+      structuredPayload: {},
+      quality: "user-confirmed",
+    });
+    const detail = await service.getResourceDetail({ resourceId: saved.resource.id });
+
+    expect(saved.resource.embedding).toEqual({ status: "disabled" });
+    expect(detail.resource.embedding).toEqual({ status: "disabled" });
+  });
+
+  test("配置 embedding profile 后资源保存创建独立 pending 索引状态", async () => {
+    const profileKey = createEmbeddingProfileKey(EMBEDDING_PROFILE);
+    const { service, repo } = createTestService(new MemoryResourceRepository(), {
+      getActiveEmbeddingProfile: async () => EMBEDDING_PROFILE,
+    });
+
+    const saved = await service.saveResource({
+      workspaceId: "workspace:demo",
+      resourceType: "generic_note",
+      title: "待索引资料",
+      summary: "有 profile 时保存后进入 pending 索引状态。",
+      evidence: [],
+      structuredPayload: {},
+      quality: "user-confirmed",
+    });
+    const detail = await service.getResourceDetail({ resourceId: saved.resource.id });
+
+    expect(saved.resource.embedding).toMatchObject({
+      status: "pending",
+      profileKey,
+      provider: EMBEDDING_PROFILE.provider,
+      model: EMBEDDING_PROFILE.model,
+      dimensions: EMBEDDING_PROFILE.dimensions,
+      version: EMBEDDING_PROFILE.version,
+    });
+    expect(detail.resource.embedding).toEqual(saved.resource.embedding);
+    expect(repo.resources.has(saved.resource.id)).toBe(true);
+    expect(repo.embeddings.size).toBe(1);
+  });
+
+  test("embedding 生成成功后同一 profile 的索引状态变为 indexed", async () => {
+    const profileKey = createEmbeddingProfileKey(EMBEDDING_PROFILE);
+    const { service, repo } = createTestService(new MemoryResourceRepository(), {
+      getActiveEmbeddingProfile: async () => EMBEDDING_PROFILE,
+      generateEmbedding: async () => [0.1, 0.2, 0.3],
+    });
+
+    const saved = await service.saveResource({
+      workspaceId: "workspace:demo",
+      resourceType: "generic_note",
+      title: "成功索引资料",
+      summary: "生成向量后状态应为 indexed。",
+      evidence: [],
+      structuredPayload: {},
+      quality: "user-confirmed",
+    });
+    const embeddingRows = [...repo.embeddings.values()];
+
+    expect(saved.resource.embedding).toMatchObject({
+      status: "indexed",
+      profileKey,
+      indexedAt: "2026-05-11T08:00:00.000Z",
+    });
+    expect(embeddingRows).toHaveLength(1);
+    expect(embeddingRows[0]).toMatchObject({
+      resource: new RecordId("resource_item", "r1"),
+      profile_key: profileKey,
+      status: "indexed",
+      vector: [0.1, 0.2, 0.3],
+    });
+  });
+
+  test("embedding 生成失败时记录 failed 状态且不回滚资源主数据", async () => {
+    const { service, repo } = createTestService(new MemoryResourceRepository(), {
+      getActiveEmbeddingProfile: async () => EMBEDDING_PROFILE,
+      generateEmbedding: async () => {
+        throw new Error("provider quota exceeded");
+      },
+    });
+
+    const saved = await service.saveResource({
+      workspaceId: "workspace:demo",
+      resourceType: "generic_note",
+      title: "索引失败资料",
+      summary: "embedding 失败不应影响资源主数据。",
+      evidence: [],
+      structuredPayload: {},
+      quality: "user-confirmed",
+    });
+    const detail = await service.getResourceDetail({ resourceId: saved.resource.id });
+
+    expect(repo.resources.has(saved.resource.id)).toBe(true);
+    expect(saved.resource.embedding).toMatchObject({
+      status: "failed",
+      errorSummary: "provider quota exceeded",
+    });
+    expect(detail.resource.embedding).toEqual(saved.resource.embedding);
+  });
+
+  test("向量检索只使用同一 embedding profile 的 indexed 向量", async () => {
+    let activeProfile = EMBEDDING_PROFILE;
+    const { service } = createTestService(new MemoryResourceRepository(), {
+      getActiveEmbeddingProfile: async () => activeProfile,
+      generateEmbedding: async ({ profile }: { profile: ResourceEmbeddingProfile }) => (
+        profile.model === EMBEDDING_PROFILE.model ? [1, 0, 0] : [0, 1, 0]
+      ),
+    });
+
+    const first = await service.saveResource({
+      workspaceId: "workspace:demo",
+      resourceType: "generic_note",
+      title: "small profile 资源",
+      summary: "应出现在 small profile 检索中。",
+      evidence: [],
+      structuredPayload: {},
+      quality: "user-confirmed",
+    });
+    activeProfile = ALTERNATE_EMBEDDING_PROFILE;
+    await service.saveResource({
+      workspaceId: "workspace:demo",
+      resourceType: "generic_note",
+      title: "large profile 资源",
+      summary: "不能混入 small profile 检索。",
+      evidence: [],
+      structuredPayload: {},
+      quality: "user-confirmed",
+    });
+
+    const result = await service.searchResourceEmbeddings({
+      workspaceId: "workspace:demo",
+      profile: EMBEDDING_PROFILE,
+      vector: [1, 0, 0],
+      limit: 10,
+    });
+
+    expect(result.matches.map((match) => match.resourceId)).toEqual([first.resource.id]);
+    expect(result.matches.every((match) => match.profileKey === createEmbeddingProfileKey(EMBEDDING_PROFILE))).toBe(true);
+  });
+
+  test("profile 变更后旧 embedding 标记 stale，资源级 retry 在当前 profile 下进入 pending", async () => {
+    let activeProfile = EMBEDDING_PROFILE;
+    const repo = new MemoryResourceRepository();
+    const { service } = createTestService(repo, {
+      getActiveEmbeddingProfile: async () => activeProfile,
+      saveActiveEmbeddingProfile: async (_workspaceId: string, profile: ResourceEmbeddingProfile) => {
+        activeProfile = profile;
+      },
+      generateEmbedding: async () => [1, 0, 0],
+    });
+
+    const saved = await service.saveResource({
+      workspaceId: "workspace:demo",
+      resourceType: "generic_note",
+      title: "需要重算的资料",
+      summary: "profile 变更后旧向量应 stale。",
+      evidence: [],
+      structuredPayload: {},
+      quality: "user-confirmed",
+    });
+
+    const changed = await service.updateEmbeddingProfile({
+      workspaceId: "workspace:demo",
+      profile: ALTERNATE_EMBEDDING_PROFILE,
+    });
+    const retry = await service.retryResourceEmbedding({ resourceId: saved.resource.id });
+    const rows = [...repo.embeddings.values()];
+
+    expect(changed.staleCount).toBe(1);
+    expect(rows.find((row) => row.profile_key === createEmbeddingProfileKey(EMBEDDING_PROFILE))?.status).toBe("stale");
+    expect(retry.embedding).toMatchObject({
+      status: "pending",
+      profileKey: createEmbeddingProfileKey(ALTERNATE_EMBEDDING_PROFILE),
+    });
+    expect(rows.find((row) => row.profile_key === createEmbeddingProfileKey(ALTERNATE_EMBEDDING_PROFILE))?.status).toBe("pending");
+  });
+
+  test("资源级 retry 会把 failed 索引状态重新置为 pending", async () => {
+    const repo = new MemoryResourceRepository();
+    const { service } = createTestService(repo, {
+      getActiveEmbeddingProfile: async () => EMBEDDING_PROFILE,
+      generateEmbedding: async () => {
+        throw new Error("temporary outage");
+      },
+    });
+    const saved = await service.saveResource({
+      workspaceId: "workspace:demo",
+      resourceType: "generic_note",
+      title: "失败后重试资料",
+      summary: "retry 应清理 failed 错误状态。",
+      evidence: [],
+      structuredPayload: {},
+      quality: "user-confirmed",
+    });
+
+    const retry = await service.retryResourceEmbedding({ resourceId: saved.resource.id });
+    const row = [...repo.embeddings.values()][0];
+
+    expect(saved.resource.embedding.status).toBe("failed");
+    expect(retry.embedding).toMatchObject({
+      status: "pending",
+      errorSummary: undefined,
+    });
+    expect(row).toMatchObject({
+      status: "pending",
+      error_summary: undefined,
+      vector: undefined,
+    });
   });
 
   test("可创建并读取 open research session", async () => {

@@ -55,6 +55,8 @@ import type {
   RenameWorkbookResponse,
   ResolveReferencesRequest,
   ResolveReferencesResponse,
+  RetryResourceEmbeddingRequest,
+  RetryResourceEmbeddingResponse,
   ResumeAiWorkflowRequest,
   ResumeAiWorkflowResponse,
   ResearchSessionResponse,
@@ -116,14 +118,18 @@ import {
   createResearchSession,
   getResearchSession,
   getResourceDetail,
+  retryResourceEmbedding,
   saveResource,
 } from "../services/resources";
 import {
   getAiSettings,
+  getEmbeddingSettings,
   getObservabilitySettings,
   saveAiSettings,
+  saveEmbeddingSettings,
   saveObservabilitySettings,
   toAiSettingsDTO,
+  toEmbeddingSettingsDTO,
 } from "../services/settings";
 import { sendAiMessage } from "../services/ai-chat";
 import { resumeAiWorkflowFromRpc } from "../services/ai-resume-rpc";
@@ -222,6 +228,7 @@ export function createRpcHandlers(send: SendFn) {
           assertAuthenticated();
           return {
             ai: toAiSettingsDTO(await getAiSettings()),
+            embedding: toEmbeddingSettingsDTO(await getEmbeddingSettings()),
             observability: await getObservabilitySettings(),
           };
         });
@@ -230,8 +237,12 @@ export function createRpcHandlers(send: SendFn) {
       saveSettings: async (req: SaveSettingsRequest): Promise<Result<SaveSettingsResponse>> => {
         return withResult(async () => {
           assertAuthenticated();
+          const embedding = req.embedding
+            ? await saveEmbeddingSettings(req.embedding)
+            : await getEmbeddingSettings();
           return {
             ai: toAiSettingsDTO(await saveAiSettings(req.ai)),
+            embedding: toEmbeddingSettingsDTO(embedding),
             observability: await saveObservabilitySettings(req.observability),
           };
         });
@@ -381,6 +392,10 @@ export function createRpcHandlers(send: SendFn) {
 
       cancelResearchSession: async (req: CancelResearchSessionRequest): Promise<Result<ResearchSessionResponse>> => {
         return withResult(() => cancelResearchSession(req));
+      },
+
+      retryResourceEmbedding: async (req: RetryResourceEmbeddingRequest): Promise<Result<RetryResourceEmbeddingResponse>> => {
+        return withResult(() => retryResourceEmbedding(req));
       },
 
       listDashboardPages: async (req: ListDashboardPagesRequest): Promise<Result<ListDashboardPagesResponse>> => {

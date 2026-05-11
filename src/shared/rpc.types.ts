@@ -95,6 +95,16 @@ export type AiSettingsDTO = {
   secretConfigured: boolean;
 };
 
+export type EmbeddingSettingsDTO = {
+  provider: AiProvider;
+  model: string;
+  dimensions: number;
+  version: string;
+  baseUrl?: string;
+  apiFormat: AiApiFormat;
+  secretConfigured: boolean;
+};
+
 export type SaveAiSettingsDTO = {
   provider: AiProvider;
   model: string;
@@ -104,14 +114,27 @@ export type SaveAiSettingsDTO = {
   clearApiKey?: boolean;
 };
 
+export type SaveEmbeddingSettingsDTO = {
+  provider: AiProvider;
+  model: string;
+  dimensions: number;
+  version: string;
+  baseUrl?: string;
+  apiFormat: AiApiFormat;
+  apiKey?: string;
+  clearApiKey?: boolean;
+};
+
 export type GetSettingsResponse = {
   observability: ObservabilitySettingsDTO;
   ai: AiSettingsDTO;
+  embedding: EmbeddingSettingsDTO;
 };
 
 export type SaveSettingsRequest = {
   observability: ObservabilitySettingsDTO;
   ai: SaveAiSettingsDTO;
+  embedding?: SaveEmbeddingSettingsDTO;
 };
 
 export type SaveSettingsResponse = GetSettingsResponse;
@@ -840,6 +863,20 @@ export type ResourceDuplicateHashesDTO = {
   source: string;
 };
 
+export type ResourceEmbeddingStatus = "disabled" | "pending" | "indexed" | "failed" | "stale";
+
+export type ResourceEmbeddingDTO = {
+  status: ResourceEmbeddingStatus;
+  profileKey?: string;
+  provider?: string;
+  model?: string;
+  dimensions?: number;
+  version?: string;
+  errorSummary?: string;
+  indexedAt?: ISODateTimeString;
+  updatedAt?: ISODateTimeString;
+};
+
 export type ResourceDTO = {
   id: RecordIdString;
   workspaceId: RecordIdString;
@@ -855,6 +892,7 @@ export type ResourceDTO = {
   confidence?: number;
   sourceTrust?: string;
   duplicateHashes: ResourceDuplicateHashesDTO;
+  embedding: ResourceEmbeddingDTO;
   researchSessionId?: RecordIdString;
   createdBy: RecordIdString;
   createdAt: ISODateTimeString;
@@ -930,6 +968,14 @@ export type CompleteResearchSessionRequest = {
 
 export type CancelResearchSessionRequest = {
   sessionId: RecordIdString;
+};
+
+export type RetryResourceEmbeddingRequest = {
+  resourceId: RecordIdString;
+};
+
+export type RetryResourceEmbeddingResponse = {
+  embedding: ResourceEmbeddingDTO;
 };
 
 export type ResearchSessionResponse = {
@@ -1244,6 +1290,7 @@ export interface AppRPC extends ElectrobunRPCSchema {
       getResearchSession: { params: GetResearchSessionRequest; response: Result<ResearchSessionResponse> };
       completeResearchSession: { params: CompleteResearchSessionRequest; response: Result<ResearchSessionResponse> };
       cancelResearchSession: { params: CancelResearchSessionRequest; response: Result<ResearchSessionResponse> };
+      retryResourceEmbedding: { params: RetryResourceEmbeddingRequest; response: Result<RetryResourceEmbeddingResponse> };
       listDashboardPages: { params: ListDashboardPagesRequest; response: Result<ListDashboardPagesResponse> };
       getDashboardPage: { params: GetDashboardPageRequest; response: Result<GetDashboardPageResponse> };
       createDashboardPage: { params: CreateDashboardPageRequest; response: Result<CreateDashboardPageResponse> };
