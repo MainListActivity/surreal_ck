@@ -1,5 +1,5 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: done
+Label: done
 
 # RR-002 — Embedding profile 与索引状态
 
@@ -15,15 +15,15 @@ Label: ready-for-agent
 
 ## Acceptance criteria
 
-- [ ] embedding provider/model/dimensions 配置独立于聊天模型设置。
-- [ ] embedding profile key 能稳定区分 provider、model、dimensions 和版本。
-- [ ] resource embedding 与 resource item 分开保存，且同一资源可按不同 profile 表达索引状态。
-- [ ] 不同 profile 的向量不会被混用于同一次相似度检索。
-- [ ] embedding 未配置时，资源保存成功并暴露 disabled 状态。
-- [ ] embedding 生成失败时记录 failed 状态和错误摘要，资源主数据不回滚。
-- [ ] profile 变更后旧 embedding 被标记为 stale 或进入待重算状态。
-- [ ] 支持资源级 retry indexing 请求，把失败或 stale 状态重新置为待处理。
-- [ ] 测试覆盖 profile key、disabled、pending/indexed/failed、profile 隔离、stale 标记和 retry 状态转换。
+- [x] embedding provider/model/dimensions 配置独立于聊天模型设置。
+- [x] embedding profile key 能稳定区分 provider、model、dimensions 和版本。
+- [x] resource embedding 与 resource item 分开保存，且同一资源可按不同 profile 表达索引状态。
+- [x] 不同 profile 的向量不会被混用于同一次相似度检索。
+- [x] embedding 未配置时，资源保存成功并暴露 disabled 状态。
+- [x] embedding 生成失败时记录 failed 状态和错误摘要，资源主数据不回滚。
+- [x] profile 变更后旧 embedding 被标记为 stale 或进入待重算状态。
+- [x] 支持资源级 retry indexing 请求，把失败或 stale 状态重新置为待处理。
+- [x] 测试覆盖 profile key、disabled、pending/indexed/failed、profile 隔离、stale 标记和 retry 状态转换。
 
 ## Blocked by
 
