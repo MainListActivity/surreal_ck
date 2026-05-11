@@ -7,9 +7,11 @@ import {
 } from "./research-window";
 
 describe("research window shell", () => {
-  test("V1 只允许 http/https 导航", () => {
+  test("只允许 http/https URL 和标准裸域名导航", () => {
     expect(isAllowedResearchUrl("https://example.com/a")).toBe(true);
     expect(isAllowedResearchUrl("http://example.com/a")).toBe(true);
+    expect(isAllowedResearchUrl("example.com")).toBe(true);
+    expect(isAllowedResearchUrl("example")).toBe(false);
     expect(isAllowedResearchUrl("file:///tmp/a.html")).toBe(false);
     expect(isAllowedResearchUrl("views://mainview/index.html")).toBe(false);
     expect(isAllowedResearchUrl("javascript:alert(1)")).toBe(false);
@@ -55,6 +57,22 @@ describe("research window shell", () => {
       resourceType: "generic_note",
       status: "open",
     });
+  });
+
+  test("openResearchWindow 会把裸域名 initialUrl 归一化为 https URL", async () => {
+    const opened: ResearchWindowParams[] = [];
+    const service = createResearchWindowService({
+      getResearchSession: async () => {
+        throw new Error("proactive mode should not load session");
+      },
+      openWindow: async (params) => {
+        opened.push(params);
+      },
+    });
+
+    await service.openResearchWindow({ resourceType: "web_article", initialUrl: "example.com" });
+
+    expect(opened).toEqual([{ resourceType: "web_article", initialUrl: "https://example.com/" }]);
   });
 
   test("openResearchWindow 支持无 session 的主动补库窗口", async () => {

@@ -6,6 +6,13 @@
   import { canRetryResourceEmbedding, formatStructuredPayload, resourceDetailSourceLabel } from "../lib/resource-detail-state";
   import { addEvidenceSnippet, removeEvidenceSnippet } from "../lib/research-evidence";
   import Icon from "../components/Icon.svelte";
+  import {
+    DEFAULT_RESEARCH_SEARCH_ENGINE,
+    RESEARCH_SEARCH_ENGINES,
+    normalizeResearchVisitUrl,
+    resolveResearchNavigation,
+    type ResearchSearchEngineId,
+  } from "../../shared/research-url";
 
   let {
     sessionId,
@@ -35,11 +42,12 @@
   let detailLoading = $state(false);
   let detailError = $state<string | null>(null);
   let retryingEmbedding = $state(false);
+  let searchEngine = $state<ResearchSearchEngineId>(DEFAULT_RESEARCH_SEARCH_ENGINE);
 
   onMount(() => {
     resourceType = initialResourceType;
     urlInput = initialUrl;
-    activeUrl = isAllowedUrl(initialUrl) ? initialUrl : "";
+    activeUrl = normalizeResearchVisitUrl(initialUrl) ?? "";
     void loadSession();
   });
 
@@ -58,24 +66,14 @@
     resourceType = session.resourceType;
   }
 
-  function isAllowedUrl(value: string): boolean {
-    if (!value.trim()) return false;
-    try {
-      const url = new URL(value);
-      return url.protocol === "http:" || url.protocol === "https:";
-    } catch {
-      return false;
-    }
-  }
-
   function navigateExternal() {
-    const next = urlInput.trim();
-    if (!isAllowedUrl(next)) {
-      error = "只能打开 http/https URL。";
+    const target = resolveResearchNavigation(urlInput, searchEngine);
+    if (!target) {
+      error = "请输入域名、URL 或搜索关键词。";
       return;
     }
     error = null;
-    activeUrl = next;
+    activeUrl = target.url;
   }
 
   function sourceTitleForActiveUrl(): string | undefined {
@@ -88,7 +86,7 @@
   }
 
   function sourceUrlForResource(): string | undefined {
-    return evidence[0]?.sourceUrl ?? (isAllowedUrl(activeUrl) ? activeUrl : undefined);
+    return evidence[0]?.sourceUrl ?? (normalizeResearchVisitUrl(activeUrl) ? activeUrl : undefined);
   }
 
   function sourceTitleForResource(): string | undefined {
@@ -298,7 +296,12 @@
       </label>
     {/if}
     <div class="url-bar">
-      <input bind:value={urlInput} placeholder="https://example.com" onkeydown={(event) => { if (event.key === "Enter") navigateExternal(); }} />
+      <select class="engine-select" bind:value={searchEngine} aria-label="搜索引擎">
+        {#each RESEARCH_SEARCH_ENGINES as engine}
+          <option value={engine.id}>{engine.label}</option>
+        {/each}
+      </select>
+      <input bind:value={urlInput} placeholder="URL、域名或搜索词" onkeydown={(event) => { if (event.key === "Enter") navigateExternal(); }} />
       <button onclick={navigateExternal}>打开</button>
     </div>
     {#if error}<p class="error">{error}</p>{/if}
@@ -369,8 +372,12 @@
           <strong>资源检索</strong>
         </div>
         <form class="portal-url" onsubmit={(event) => { event.preventDefault(); navigateExternal(); }}>
-          <Icon name="externalLink" size={18} />
-          <input bind:value={urlInput} placeholder="输入或粘贴 http/https URL" />
+          <select class="engine-select" bind:value={searchEngine} aria-label="搜索引擎">
+            {#each RESEARCH_SEARCH_ENGINES as engine}
+              <option value={engine.id}>{engine.label}</option>
+            {/each}
+          </select>
+          <input bind:value={urlInput} placeholder="输入 URL、域名或搜索词" />
           <button>打开</button>
         </form>
         <span>从可信窗口收集证据并保存为工作区资源</span>
@@ -499,7 +506,7 @@
 
   .url-bar {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: auto minmax(0, 1fr) auto;
     gap: 8px;
   }
 
@@ -519,6 +526,11 @@
     border-radius: 6px;
     background: var(--surface);
     font-size: 12px;
+  }
+
+  .engine-select {
+    width: 82px;
+    color: var(--text-2);
   }
 
   .resource-type-select {
@@ -687,6 +699,18 @@
     border: 0;
     padding: 0;
     font-size: 15px;
+    outline: none;
+  }
+
+  .portal-url .engine-select {
+    width: 96px;
+    height: 38px;
+    padding: 0 10px 0 0;
+    border: 0;
+    border-right: 1px solid var(--border);
+    border-radius: 0;
+    background: #fff;
+    font-size: 13px;
     outline: none;
   }
 

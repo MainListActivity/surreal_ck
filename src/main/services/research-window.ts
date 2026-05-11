@@ -4,6 +4,7 @@ import type {
   OpenResearchWindowResponse,
   ResearchSessionResponse,
 } from "../../shared/rpc.types";
+import { normalizeResearchVisitUrl } from "../../shared/research-url";
 import { cancelAiWorkflowRun } from "./ai-cancel";
 import { ServiceError } from "./errors";
 import { getResearchSession } from "./resources";
@@ -50,25 +51,21 @@ export function configureResearchWindowAiRunCancelledNotifier(
 
 export function isAllowedResearchUrl(value: string | undefined): boolean {
   if (!value?.trim()) return true;
-  try {
-    const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:";
-  } catch {
-    return false;
-  }
+  return normalizeResearchVisitUrl(value) !== null;
 }
 
 export function createResearchWindowService(deps: ResearchWindowServiceDeps) {
   return {
     async openResearchWindow(req: OpenResearchWindowRequest): Promise<OpenResearchWindowResponse> {
-      if (!isAllowedResearchUrl(req.initialUrl)) {
-        throw new ServiceError("VALIDATION_ERROR", "检索窗口只允许打开 http/https URL");
+      const initialUrl = normalizeResearchVisitUrl(req.initialUrl) ?? undefined;
+      if (req.initialUrl?.trim() && !initialUrl) {
+        throw new ServiceError("VALIDATION_ERROR", "检索窗口只允许打开 http/https URL 或标准域名");
       }
 
       if (!req.sessionId) {
         await deps.openWindow({
           resourceType: req.resourceType?.trim() || "generic_note",
-          initialUrl: req.initialUrl?.trim(),
+          initialUrl,
         });
         return { opened: true };
       }
@@ -80,7 +77,7 @@ export function createResearchWindowService(deps: ResearchWindowServiceDeps) {
       await deps.openWindow({
         sessionId: req.sessionId,
         resourceType: session.resourceType,
-        initialUrl: req.initialUrl?.trim(),
+        initialUrl,
       });
       return { opened: true, session };
     },
