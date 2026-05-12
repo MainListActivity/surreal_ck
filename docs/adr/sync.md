@@ -1,175 +1,382 @@
-# ADR: localdb 与 remote SurrealDB 之间的同步方案
+# ADR: remote 权威写侧与本地结构影子库 / 投影数据区架构
 
 - **Status**: Accepted
-- **Date**: 2026-05-11
-- **Scope**: `src/main/db`、`schema/main.surql`、所有 RPC mutation handlers、DDL 入口（data-table-runtime 等）
+- **Date**: 2026-05-12
+- **Scope**: `src/main/db`、`src/main/sync`、`src/main/services`、`schema/main.surql`、资源检索/RAG、动态表 DDL 与本地投影恢复
 
 ## Context
 
-应用使用两个 SurrealDB 实例：
+应用同时使用两个 SurrealDB 实例：
 
-- **本地（localdb）**：`@surrealdb/node` embedded，SurrealKV 后端，路径按用户分库（`u_<hash>`）。embedded 以 root 权限运行，`$auth = NONE`，schema PERMISSIONS 形同摆设。
-- **远端（remote）**：SurrealDB Cloud (`wss://cuckoox-….aws-usw2.surreal.cloud`)，OIDC JWT 鉴权，PERMISSIONS 真正生效。namespace `main`、database `docs`。
+- **本地（localdb）**：`@surrealdb/node` embedded，承担桌面端低延迟读取、RAG 检索和设备私有状态。
+- **远端（remote）**：SurrealDB Cloud，OIDC JWT 鉴权，承担多设备/多成员共享真相。
 
-需要回答的核心问题：
+上一版同步 ADR 假定：
 
-1. 谁是 source of truth？
-2. 写入怎么走？读出怎么走？
-3. 多设备/多成员协作下的冲突处理？
-4. 离线下的写入暂存与恢复？
-5. ent_* 动态实体表的 DDL 怎么同步？
-6. 哪些表上云、哪些表纯本地？
+- record user 可以对远端执行 `SHOW CHANGES FOR TABLE ...`
+- record user 可以用 `INFO FOR DB` 枚举远端动态表
+- remote→local 可以靠 changefeed cursor、补偿查询和 tombstone 协议保证收敛
 
-约束：
+这个前提已经被实测推翻：
 
-- 远端 record 用户**没有 DEFINE 权限**。所有远端 DDL 必须经由代理接口 `POST https://auth.maplayer.top/api/db/execTemplate { id, params }` 执行预定义模板。
-- 用户必须先 OIDC 登录拿到 JWT 才能与应用交互。
-- 业务上既存在单机使用，也存在 workspace 多成员共同编辑同一份业务数据。
+- record user 对共享业务表执行普通 `SELECT` 可用
+- `LIVE SELECT` 可用
+- `SHOW CHANGES FOR TABLE ...` 会被远端 IAM 拒绝
+- `INFO FOR DB` 这类管理向 introspection 也不能作为 remote 同步依赖
+
+因此，原先基于 remote changefeed replay 的设计不能成立。
+
+同时，产品已经明确分成两类共享数据：
+
+1. **协作热数据**：`workspace / workbook / sheet / edge_catalog` 及 `ent_* / rel_*` 等工作簿主数据，要求 remote 为唯一权威写侧。
+2. **共享资源库**：`resource_item / resource_embedding`，也属于共享真相，但读取更偏本地 RAG 和检索投影。
+
+另有一类明确不共享的本地私有数据：
+
+- `research_session`
+- token / app meta / Mastra memory / observability
+- 含 secret 的本地设置
+
+这个 ADR 需要回答：
+
+1. 共享真相放在哪一侧
+2. 本地还保留什么，哪些是影子，哪些是投影
+3. remote→local 在没有 `SHOW CHANGES` 的前提下如何收敛
+4. 动态表和 embedding profile 如何在现有 IAM 约束下落地
+5. 离线时哪些能力还能写，哪些必须停
 
 ## Decision
 
 ### 1. 拓扑
 
-- **远端 = source of truth**；本地 = 可工作的离线缓存 + 设备私有数据（token、AI memory、observability、查询缓存）。
-- 写入冲突时远端赢。
-- 多设备协作以远端为唯一可信副本，本地保证离线可用与低延迟读。
+- **remote 是所有共享状态的唯一权威写侧**
+- **local 不是第二真相，而是派生状态**
 
-### 2. 同步原语
+本地状态分成三层：
 
-**用 SurrealDB 的 CHANGEFEED + SHOW CHANGES，双向对称**，不解析 SQL、不拦截业务代码：
+1. **结构影子库**
+   - 保存 remote 共享结构元数据的本地 shadow
+   - 主要包括：`workspace`、`app_user`、`has_workspace_member`、`pending_workspace_member`、`workbook`、`folder`、`sheet`、`edge_catalog` 以及其他需要本地解释动态表结构的共享元数据
 
-- 本地表全部带 `CHANGEFEED 7d`。
-- 远端同步表全部带 `CHANGEFEED 7d`（由 maintainer 通过 execTemplate 部署 schema 时声明）。
-- 后台两个 worker：
-  - **本地 → 远端**：500ms 轮询，空闲 5s。`SHOW CHANGES FOR TABLE xxx SINCE $local_cursor`。
-  - **远端 → 本地**：2s 轮询，空闲 5s。`SHOW CHANGES FOR TABLE xxx SINCE $remote_cursor`。
-- 不使用 LIVE SELECT。
+2. **投影数据区**
+   - 保存本地读取、查询、RAG、低延迟 UI 所需的共享数据投影
+   - 主要包括：`ent_*`、`rel_*`、`resource_item`、`resource_embedding` 以及其他需要本地查询的共享读模型
 
-### 3. echo 防护
+3. **本地私有区**
+   - 只属于当前设备/当前用户，不进入共享同步
+   - 包括：`research_session`、token、`app_meta`、Mastra memory、observability、含 secret 的设置等
 
-所有同步表加 `_origin_session_id TYPE string`：
+除本地私有区外，**结构影子库和投影数据区都定义为可丢弃、可重建的派生状态**。
 
-- 进程启动时生成本机 sessionId（ULID）。
-- 本地用户写入通过 `DEFINE PARAM $current_session_id` + 表级 `DEFINE EVENT` 自动注入；业务代码不必显式赋值。
-- 同步 worker 把远端变更 apply 到本地时，显式写 `_origin_session_id = 'remote:<远端 versionstamp>'`（apply 路径走 raw query 并禁用 EVENT 默认值）。
-- 本地 → 远端 worker 读 `SHOW CHANGES` 时跳过 `_origin_session_id` 以 `remote:` 开头的变更。
+### 2. 共享写模型
 
-> 验证项：SurrealDB 当前版本中 `DEFINE PARAM` 是否跨 session 持久；EVENT 中读取 PARAM 的方式；CHANGEFEED 中 `_origin_session_id` 字段变更是否会进流。落地实现前需要写一个最小可行 demo 验证。
+共享写操作统一采用 **remote-first** 语义。
 
-### 4. 冲突解决
+#### 2.1 remote-first 的共享写范围
 
-- 多用户改同一记录：**字段级 MERGE**，后到者只覆盖自己改过的字段。同字段并发仍是 LWW。
-- worker apply 远端变更到本地前，**检查本地是否有同 recordId 的未推送 changefeed 项**，有则仅 merge 不冲突字段（保留本地未推送的修改）。
-- outbox 中同 recordId 多次连续修改自然由 SurrealDB CHANGEFEED 聚合，worker 取最后状态 push 即可（无需自建 outbox 表）。
+- 结构元数据：`workspace / workbook / sheet / edge_catalog`
+- 工作簿主数据：`ent_* / rel_*`
+- 共享资源库：`resource_item / resource_embedding`
+- 工作区级 embedding canonical profile
+- 其他共享固定表，默认沿用 remote-first，除非显式声明为本地私有
 
-### 5. id 与时钟
+#### 2.2 local-only 的写范围
 
-- 所有同步表的 id 使用客户端 ULID。
-- `updated_at` 保留 `VALUE time::now()`（远端服务器时钟）。
-- cursor 用 `versionstamp` 而不是 `updated_at`，避免应用层做时钟一致性。
+- `research_session`
+- 其他设备私有数据
 
-### 6. 同步范围
+#### 2.3 self-write 可见性
 
-**同步表**（remote ↔ local）：
+对 remote-first 的共享写：
 
-- workspace, app_user, has_workspace_member, pending_workspace_member
-- workbook, folder, sheet, edge_catalog
-- mutation, snapshot, presence
-- ent_* 动态实体表, rel_* 关系表
-- dashboard_page, dashboard_view
-- form_definition, intake_submission, workbook_file
-- research_session, resource_item, resource_embedding
-- client_error
-- app_setting（仅 sensitive = false 的行；推送前过滤）
+- **remote 写成功后**，同一个 RPC 内同步更新本地结构影子库或投影数据区
+- **remote 写失败时**，本地不落共享业务变更
+- **remote 成功但本地 apply 失败时**，RPC 返回错误，并把本地标记成需要修复/重建的 dirty projection 状态
 
-**仅本地**：
+高层读路径始终优先读本地，不做“同类数据有时读 remote、有时读 local”的混合语义。
 
-- token_store, app_meta
-- mastra_memory_resource, mastra_memory_thread, mastra_memory_message
-- mastra_workflow_run
-- mastra_observability_span, mastra_observability_event_raw
-- dashboard_result_cache, dashboard_run_log
-- sync_cursor, sync_dead_letter
-- app_setting（sensitive = true）
+### 3. 本地高层读模型
 
-新增同步表必须显式声明 `syncScope`，默认 fail-closed（不同步）。
+以下高层读路径统一读本地结构影子库和投影数据区：
 
-### 7. DDL
+- 编辑器、引用预览、动态表 schema 读取
+- 仪表盘查询、AI 上下文快照
+- 共享资源库详情、关键词检索、向量检索
 
-- 所有远端 DDL 走 `POST https://auth.maplayer.top/api/db/execTemplate { id, params }`。
-- 模板文件以仓库 `templates/<template-id>.sql` 命名，maintainer 部署到代理服务。
-- 流程：用户在 UI 触发 schema 编辑 → 客户端调 execTemplate → 成功后本地 DEFINE → UI 反馈。
-- 离线时禁用 schema 编辑按钮，提示"需联网"。
-- 已知需要的模板（初版清单，按需扩充）：
-  - `app.schema-upgrade-v<n>`：远端基础 schema 升级
-  - `workbook.create`、`sheet.create`
-  - `ent.create`、`ent.field-add`、`ent.field-overwrite`、`ent.field-remove`
-  - `rel.create`、`rel.field-add`
-- 新增 `schema_version` 远端表（所有人可读、root 可写），客户端启动读取版本，不匹配时强制本地-only 模式 + 提示客户端升级。
+remote 在读路径上的职责只有两个：
 
-### 8. 失败处理
+1. 共享写的权威提交点
+2. 本地重建和增量回放来源
 
-- **网络/5xx**：cursor 不前进，下次轮询继续；指数退避 1s / 4s / 16s / 1min / 5min / 30min，无上限。
-- **远端语义拒绝**（PERMISSIONS / FK / schema mismatch）：
-  - 记录到本地表 `sync_dead_letter`（保留原始 versionstamp、record、错误信息）。
-  - cursor 跳过该条。
-  - 主动从远端 `SELECT * FROM record:id` 把权威状态回拉覆盖本地，避免长期发散。
-- DDL execTemplate 失败：客户端 UI 报错，本地不变更，**不入 dead-letter**（DDL 没有"重试"语义，由用户决定下一步）。
+### 4. remote→local 收敛模型
 
-### 9. 离线策略
+放弃以下机制：
 
-- 启动时 `tryRestoreSession` 失败 → 进 offlineMode → worker 暂停 → 业务读写仍走本地。
-- 本地 CHANGEFEED 7 天保留期。如果离线超 7 天，启动时本地 cursor 滞后于本地 changefeed 起点 → 不阻塞应用，但状态栏强提示"本地有未推送变更，请上云后检查"，并保留信息供用户决定是否手动修复。
-- 远端 cursor 超 7 天 → 强制全量重建本地同步表：清空、`SELECT *` 从远端逐张表拉、重置 remote_cursor。
+- remote `SHOW CHANGES`
+- remote cursor
+- 补偿 `SELECT ... WHERE updated_at > cursor`
+- tombstone 协议
 
-### 10. UI 状态
+改成两段式：
 
-应用顶部状态栏：
+#### 4.1 启动 / 重连 / 唤醒：全量重建
 
-- 在线 / 离线
-- 待推送变更数（来自 `SHOW CHANGES SINCE $local_cursor LIMIT 100` 的 count）
-- dead-letter 数（点击进入错误列表，提供"忽略"和"以远端覆盖本地"两个操作）
+在以下时机，对结构影子库和投影数据区执行重建：
 
-## Schema 变更清单（落地需要做的）
+- 应用启动
+- 远端连接恢复
+- 机器唤醒或长时间挂起后恢复
+- 本地被标记为 dirty projection
+- 手动触发重建
 
-1. `schema/main.surql`：
-   - 同步表全部加 `CHANGEFEED 7d`
-   - 同步表全部加 `_origin_session_id TYPE string` 字段
-   - 同步表全部加 `DEFINE EVENT` 自动注入 `_origin_session_id`
-   - 新增 `schema_version`、`sync_cursor`、`sync_dead_letter` 表（前者远端，后两者仅本地）
-2. `src/main/db/index.ts`：
-   - 启动时 `DEFINE PARAM OVERWRITE $current_session_id VALUE "<ulid>"`
-   - 新增 `applyRemoteChange(...)` 入口（绕过默认 EVENT、显式写 `_origin_session_id`）
-3. `src/main/sync/`（新模块）：
-   - `local-to-remote-worker.ts`
-   - `remote-to-local-worker.ts`
-   - `dead-letter.ts`
-   - `cursor.ts`
-4. `src/main/services/data-table-runtime.ts`：DDL 路径改为先调 execTemplate → 再本地 DEFINE
-5. `templates/`：新建模板目录，按上面清单准备文件
-6. `src/main/services/sync-state.ts`：暴露 sync 状态供 RPC 推到 WebView 状态栏
+重建语义：
+
+- 清空对应本地派生状态
+- 从 remote 按表全量 `SELECT *`
+- 先恢复结构影子库，再按结构元数据恢复投影数据区
+
+#### 4.2 在线稳态：只靠 `LIVE SELECT`
+
+重建完成并在线后：
+
+- 对固定共享表建立 `LIVE SELECT`
+- 对动态表集合建立 `LIVE SELECT`
+- 增量 create / update / delete 仅靠 `LIVE` 推送驱动本地 apply
+
+如果 `LIVE` 断开、订阅集失配或本地状态可疑，不做 cursor 补偿，而是直接回到 **全量重建**。
+
+### 5. 动态结构真相与动态表枚举
+
+动态结构的权威真相不在 DDL introspection，而在共享业务元数据。
+
+#### 5.1 `ent_*`
+
+- 权威定义：`sheet.table_name + sheet.column_defs`
+- 本地 `ent_*` DDL 仅由这份 metadata 派生
+
+#### 5.2 `rel_*`
+
+- 权威定义：`edge_catalog.rel_table + edge_props + from_table + to_table`
+- 本地 `rel_*` DDL 仅由这份 metadata 派生
+
+#### 5.3 remote 动态表枚举
+
+remote 侧**永远不再使用** `INFO FOR DB` 枚举动态表。
+
+动态表集合正式定义为：
+
+- `ent_*` 集合 = 当前用户可见 `sheet.table_name`
+- `rel_*` 集合 = 当前用户可见 `edge_catalog.rel_table`
+
+#### 5.4 订阅集热更新
+
+`sheet` 或 `edge_catalog` 的 `LIVE` 事件改变动态表注册表时：
+
+- **新增表**：对该表做一次单表全量拉取，然后开始 `LIVE`
+- **移除表**：停止该表 `LIVE`，并清掉本地对应投影
+- **未变化表**：保留现有订阅，不做全局重建
+
+### 6. 结构变更与 DDL
+
+共享结构变更一律 remote-first。
+
+- 远端 DDL 继续走 `execTemplate`
+- 本地动态表 DDL 不是独立真相，只是 metadata 的派生执行结果
+
+因此：
+
+- `createSheet`
+- `createWorkbookFromTemplate`
+- `updateSheetFields`
+- 动态关系类型创建/变更
+
+都必须先让 remote 结构真相成立，再在同 RPC 内更新本地结构影子库和本地派生 DDL。
+
+### 7. 共享资源库
+
+#### 7.1 共享与私有边界
+
+- `research_session` 是本地私有检索过程，不进入 remote 共享
+- `saveResearchResource` 是一次**发布到共享资源库**的动作
+- remote 共享 `resource_item` 载荷不再携带本地 `research_session` 引用
+- 检索过程关联、发布状态、发布失败原因等仅对当前设备有意义的伴随信息，保留在本地私有区
+
+#### 7.2 `resource_item`
+
+- `resource_item` 是 remote-first 的共享资源主数据
+- 本地创建时预分配最终 ID，remote 和 local 共用同一 ID
+- 当前版本保留“允许重复”语义，不基于 duplicate hash 做跨设备自动去重
+- 第一版不提供通用内容编辑 API；共享资源库只定义发布和弃用两类主路径
+
+第一版共享资源库不做物理删除，走：
+
+- 创建
+- 查询
+- 标记 `quality = "deprecated"`
+
+即共享资源库采用 **append + deprecate** 语义。
+
+#### 7.3 `resource_embedding`
+
+- `resource_embedding` 是 remote-first 的共享索引资产
+- 本地保留它的投影，用于 RAG、检索和低延迟读取
+
+资源发布时，如果工作区已经配置 canonical embedding profile：
+
+- 同一次 remote 写操作里，立即对 `(resource, profile_key)` UPSERT 一条 `resource_embedding(status="pending")`
+- 同一个 RPC 内同步更新本地 `resource_embedding` 投影
+
+共享状态机统一为：
+
+- `disabled`：工作区尚未配置 canonical embedding profile
+- `pending`：工作区已定义 profile，但该资源的当前 profile 向量还未完成
+- `indexed`：向量已生成
+- `failed`：共享索引失败
+- `stale`：旧 profile 下的过期向量
+
+`failed` 只保留安全的粗粒度状态和可公开的短摘要；原始 provider 错误、credential 细节和本地调试信息不进入共享表。
+
+### 8. 工作区级 canonical embedding profile
+
+不复用 `app_setting`。
+
+新增专用 remote 表：`workspace_embedding_profile`。
+
+原因：
+
+- `app_setting` 当前主键和唯一索引只按 `key`，无法表达“一工作区一份 canonical profile”
+- `app_setting` 也不适合承载这个级别的权限和约束
+
+`workspace_embedding_profile` 的共享字段包括：
+
+- `provider`
+- `model`
+- `dimensions`
+- `version`
+- `baseUrl`
+- `apiFormat`
+
+权限：
+
+- **读**：工作区成员可读
+- **写**：先做 workspace owner only
+
+secret 不放进这张表：
+
+- API key / credential 仍然是用户私有能力
+- 共享的是向量空间定义，不是执行者凭据
+
+### 9. profile 变更与索引重建
+
+canonical profile 变更采用 **立即生效 + 异步重建**：
+
+1. 新 profile 立即成为当前工作区唯一有效的向量空间
+2. 旧 `resource_embedding` 统一标记为 `stale`
+3. 对该工作区下所有 `resource_item`，按新的 `profile_key` 批量 UPSERT `resource_embedding(status="pending")`
+4. 志愿索引器逐步把它们推进到 `indexed` 或 `failed`
+
+检索期间允许退化：
+
+- 没有 query embedding 能力的成员只能做关键词检索
+- 尚未重建完成时，向量检索可临时处于 `pending / error / keyword-only`
+
+### 10. 志愿索引器模型
+
+第一版不引入独立后端索引服务。
+
+任何在线成员客户端，只要：
+
+- 持有私有 credential
+- 并且配置与当前工作区 canonical profile 兼容
+
+就可以作为志愿索引器，把 `pending` 的共享 `resource_embedding` 推进到 `indexed` 或 `failed`。
+
+第一版不做分布式租约/claim：
+
+- 允许多个客户端偶发同时处理同一条 `pending`
+- 依靠 `(resource, profile_key)` 的稳定 ID 和 UPSERT 幂等收敛
+- 代价是偶发重复调用 embedding API，但不破坏正确性
+
+待索引恢复靠客户端周期性和事件性 sweep：
+
+- 启动
+- 重连
+- profile 变更后
+- 发布资源后
+- 定期扫描 remote `pending`
+
+### 11. 离线能力矩阵
+
+离线时，不再使用单一“全局 readOnly”语义，而是按能力矩阵区分：
+
+- `research_session`：**本地可写**
+- `ent_* / rel_*`：**offline 禁写**
+- `resource_item / resource_embedding`：**offline 禁写**
+- `workspace / workbook / sheet / edge_catalog` 及其他共享结构元数据：**offline 禁写**
+- 远端 DDL / schema 编辑：**offline 禁写**
+
+因此，离线时唯一还能继续产生新业务状态的共享相关领域，只剩**本地私有检索过程**。
+
+### 12. 本地修复与恢复
+
+本地结构影子库和投影数据区既然是派生状态，就不再尝试维护复杂的增量补偿协议。
+
+修复主路径统一为：
+
+- 标记 dirty
+- 停止受影响订阅
+- 执行全量重建
+- 重新建立 `LIVE` 订阅
+
+这适用于：
+
+- `LIVE` 断开后的状态不确定
+- 本地 apply 失败
+- schema/metadata 漂移
+- profile 全量切换后的索引重建
 
 ## Consequences
 
-**好处**
+### 好处
 
-- 业务代码（RPC handlers、Mastra tools、services）完全不需要改写入路径。
-- 同步层用 SurrealDB 原生能力，不解析 SQL、不维护手写 outbox。
-- 双向对称模型让调试和推理简单。
-- 字段级 MERGE 让多成员协作下的并发编辑不互相 clobber。
-- DDL 经过代理服务，远端安全（用户不能任意 DEFINE / REMOVE）。
+- 直接绕开 record user 无法执行 `SHOW CHANGES` 和 remote introspection 的 IAM 限制
+- 不再维护 remote cursor、补偿查询和 tombstone 协议，架构明显收敛
+- shared write / local read model 的边界清楚
+- 动态表结构真相回到业务 metadata，不再依赖 DDL introspection
+- 共享资源库与本地检索过程的边界清楚
+- 本地派生状态既然可重建，漂移修复和版本迁移会更简单
 
-**代价/风险**
+### 代价
 
-- `_origin_session_id` 机制依赖 SurrealDB 的 PARAM + EVENT + CHANGEFEED 组合行为，落地前必须 demo 验证；如不可行需要回退到"显式两种入口"模型（即 worker 维护 applied versionstamp 短缓存）。
-- 轮询模型固有延迟（写入 ~500ms 内别人可见、读取 ~2s 内反映远端）；产品上接受。
-- 离线 schema 编辑被禁用是产品体验取舍。
-- 模板清单的维护成本：每次新加一类 schema 演化需要 maintainer 发布模板。
+- `ent_* / rel_* / resource_item` 等共享域离线不可写
+- 启动、重连、唤醒后的重建会带来额外延迟和流量
+- `resource_embedding` 依赖志愿索引器，第一版没有中心化索引服务
+- 没有私有 credential 的成员无法做 query embedding，只能关键词检索
+- 第一版允许偶发重复索引计算，用成本换实现简化
 
-**未决（落地阶段再敲）**
+## Implementation Direction
 
-- `DEFINE PARAM` 在 `@surrealdb/node` 的 session/connection 生命周期里如何持久。
-- EVENT 中读取 PARAM 的语法验证。
-- CHANGEFEED 中 `_origin_session_id` 自身的变更如果也被记录，会不会自循环触发。
-- workspace 退出 / 被踢出场景下，本地"前 workspace 数据"的清理时机（应在 remote→local worker 看到 has_workspace_member 删除时触发本地清理）。
-- 大批量首次同步（新设备登录）的进度可视化与可中断性。
+1. 重写 `src/main/sync/`：
+   - 删掉对 remote `SHOW CHANGES`、remote cursor、tombstone 的依赖
+   - 改成“重建 + LIVE”模型
+2. 为本地状态引入明确分层：
+   - 结构影子库
+   - 投影数据区
+   - 本地私有区
+3. 新增 `workspace_embedding_profile`，并把 embedding canonical profile 从用户本地设置中拆出来
+4. 重写资源服务：
+   - `research_session` 保持本地私有
+   - `saveResearchResource` 直接发布到 remote 共享资源库
+   - 资源发布时显式创建 remote `resource_embedding(status="pending")`
+5. 把 `context` 从单一 `readOnly` 布尔值演进为能力矩阵
+6. 把动态表重建和订阅集维护改成 metadata 驱动
+
+## Rejected
+
+以下方案在当前约束下被放弃：
+
+- remote `SHOW CHANGES` + cursor 双向对称同步
+- `updated_at` 补偿查询 + tombstone 协议
+- remote `INFO FOR DB` 动态表枚举
+- `resource_embedding` 继续绑定用户本地 profile，而不是 workspace canonical profile
+- 共享资源库离线先写、本地待发布
