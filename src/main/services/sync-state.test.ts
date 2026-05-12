@@ -1,17 +1,24 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
-import type { SyncDb } from "../sync/types";
+import type { SyncDb, SyncQuery } from "../sync/types";
+
+function normalizeQuery(sql: SyncQuery, bindings?: Record<string, unknown>) {
+  if (typeof sql === "string") return { sql, bindings };
+  return { sql: sql.query, bindings: sql.bindings };
+}
 
 class FakeDb implements SyncDb {
   queries: Array<{ sql: string; bindings?: Record<string, unknown> }> = [];
 
-  async query<T = unknown>(sql: string, bindings?: Record<string, unknown>): Promise<T> {
-    this.queries.push({ sql, bindings });
+  async query<T = unknown>(query: SyncQuery, bindings?: Record<string, unknown>): Promise<T> {
+    const normalized = normalizeQuery(query, bindings);
+    this.queries.push(normalized);
+    const sql = normalized.sql;
 
     if (sql.includes("INFO FOR DB")) {
       return [{ tables: { workspace: {}, token_store: {} } }] as T;
     }
     if (sql.includes("SELECT versionstamp")) {
-      return [[{ versionstamp: "vs0" }]] as T;
+      return [[{ versionstamp: "0" }]] as T;
     }
     if (sql.includes("SHOW CHANGES FOR TABLE workspace")) {
       return [[

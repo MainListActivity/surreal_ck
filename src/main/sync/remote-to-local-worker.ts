@@ -1,5 +1,5 @@
 import { applyRemoteChange } from "./apply-remote-change";
-import { extractDirtyContent, isRemoteEcho, normalizeChangefeedRows, showChangesSql } from "./changefeed";
+import { extractDirtyContent, isRemoteEcho, normalizeChangefeedRows, showChangesQuery } from "./changefeed";
 import { advanceCursor, getCursor } from "./cursor";
 import type { SyncChange, SyncRunResult, SyncWorkerOptions } from "./types";
 
@@ -7,7 +7,7 @@ export class RemoteToLocalWorker {
   private running = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(private readonly options: SyncWorkerOptions) {}
+  constructor(private readonly options: SyncWorkerOptions) { }
 
   start(intervalMs = 2000): void {
     if (this.running) return;
@@ -34,7 +34,10 @@ export class RemoteToLocalWorker {
 
     for (const table of this.options.tables) {
       const cursor = await getCursor(this.options.localDb, "remote_to_local", table);
-      const raw = await this.options.remoteDb.query(showChangesSql(table), { cursor });
+      const raw = await this.options.remoteDb.query(showChangesQuery(table, cursor)).catch((err) => {
+        console.warn(`[sync] remote-to-local worker failed:[${table}], cursor:[${cursor}]:`, err);
+        return [];
+      });
       const changes = normalizeChangefeedRows(table, raw);
       result.pulled += changes.length;
 
@@ -59,7 +62,7 @@ export class RemoteToLocalWorker {
     if (change.op !== "update") return new Set();
 
     const cursor = await getCursor(this.options.localDb, "local_to_remote", change.table);
-    const raw = await this.options.localDb.query(showChangesSql(change.table), { cursor });
+    const raw = await this.options.localDb.query(showChangesQuery(change.table, cursor));
     const pendingChanges = normalizeChangefeedRows(change.table, raw);
     const fields = new Set<string>();
 

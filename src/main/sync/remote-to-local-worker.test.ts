@@ -1,14 +1,20 @@
 import { describe, expect, test } from "bun:test";
 import { RemoteToLocalWorker } from "./remote-to-local-worker";
-import type { SyncDb } from "./types";
+import type { SyncDb, SyncQuery } from "./types";
+
+function normalizeQuery(sql: SyncQuery, bindings?: Record<string, unknown>) {
+  if (typeof sql === "string") return { sql, bindings };
+  return { sql: sql.query, bindings: sql.bindings };
+}
 
 class FakeDb implements SyncDb {
   queries: Array<{ sql: string; bindings?: Record<string, unknown> }> = [];
   constructor(private readonly handler: (sql: string, bindings?: Record<string, unknown>) => unknown = () => []) {}
 
-  async query<T = unknown>(sql: string, bindings?: Record<string, unknown>): Promise<T> {
-    this.queries.push({ sql, bindings });
-    return this.handler(sql, bindings) as T;
+  async query<T = unknown>(sql: SyncQuery, bindings?: Record<string, unknown>): Promise<T> {
+    const normalized = normalizeQuery(sql, bindings);
+    this.queries.push(normalized);
+    return this.handler(normalized.sql, normalized.bindings) as T;
   }
 }
 
@@ -55,7 +61,7 @@ describe("远端到本地同步 worker", () => {
     });
     const local = new FakeDb((sql, bindings) => {
       if (sql.includes("SELECT versionstamp") && String(bindings?.id).includes("local_to_remote__workspace")) {
-        return [[{ versionstamp: "lvs0" }]];
+        return [[{ versionstamp: "100" }]];
       }
       if (sql.includes("SHOW CHANGES")) {
         return [[{

@@ -1,14 +1,20 @@
 import { describe, expect, test } from "bun:test";
 import { checkCursorHealthAndRebuild } from "./cursor-health";
-import type { SyncDb } from "./types";
+import type { SyncDb, SyncQuery } from "./types";
+
+function normalizeQuery(sql: SyncQuery, bindings?: Record<string, unknown>) {
+  if (typeof sql === "string") return { sql, bindings };
+  return { sql: sql.query, bindings: sql.bindings };
+}
 
 class FakeDb implements SyncDb {
   queries: Array<{ sql: string; bindings?: Record<string, unknown> }> = [];
   constructor(private readonly handler: (sql: string, bindings?: Record<string, unknown>) => unknown = () => []) {}
 
-  async query<T = unknown>(sql: string, bindings?: Record<string, unknown>): Promise<T> {
-    this.queries.push({ sql, bindings });
-    return this.handler(sql, bindings) as T;
+  async query<T = unknown>(sql: SyncQuery, bindings?: Record<string, unknown>): Promise<T> {
+    const normalized = normalizeQuery(sql, bindings);
+    this.queries.push(normalized);
+    return this.handler(normalized.sql, normalized.bindings) as T;
   }
 }
 
@@ -16,10 +22,10 @@ describe("cursor 健康检查", () => {
   test("健康检查使用 sync_cursor 保存的 versionstamp", async () => {
     const local = new FakeDb((sql, bindings) => {
       if (sql.includes("SELECT versionstamp") && String(bindings?.id).includes("local_to_remote__workspace")) {
-        return [[{ versionstamp: "local-vs9" }]];
+        return [[{ versionstamp: "9" }]];
       }
       if (sql.includes("SELECT versionstamp") && String(bindings?.id).includes("remote_to_local__workspace")) {
-        return [[{ versionstamp: "remote-vs8" }]];
+        return [[{ versionstamp: "8" }]];
       }
       return [[]];
     });
@@ -32,10 +38,10 @@ describe("cursor 健康检查", () => {
     });
 
     expect(local.queries.some((query) =>
-      query.sql.includes("SHOW CHANGES") && query.bindings?.cursor === "local-vs9",
+      query.sql.includes("SHOW CHANGES") && query.sql.includes("SINCE 9") && Object.keys(query.bindings ?? {}).length === 0,
     )).toBe(true);
     expect(remote.queries.some((query) =>
-      query.sql.includes("SHOW CHANGES") && query.bindings?.cursor === "remote-vs8",
+      query.sql.includes("SHOW CHANGES") && query.sql.includes("SINCE 8") && Object.keys(query.bindings ?? {}).length === 0,
     )).toBe(true);
   });
 

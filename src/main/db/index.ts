@@ -284,7 +284,7 @@ export async function connectRemote(accessToken: string): Promise<void> {
     }
     console.log(`[db] remote connected: ${remoteUrl}`);
   } catch (err) {
-    console.warn("[db] remote connection failed (degraded to local-only):", err);
+    console.warn(`[db] remote connection failed (degraded to local-only):`, err);
     _remoteDb = null;
     setOfflineMode(true);
   }

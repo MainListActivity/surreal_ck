@@ -1,4 +1,4 @@
-import { extractDirtyContent, isRemoteEcho, normalizeChangefeedRows, showChangesSql } from "./changefeed";
+import { extractDirtyContent, isRemoteEcho, normalizeChangefeedRows, showChangesQuery } from "./changefeed";
 import { advanceCursor, getCursor } from "./cursor";
 import { recordDeadLetter, reconcileFromRemote } from "./dead-letter";
 import { classifySyncError } from "./error-classify";
@@ -38,7 +38,7 @@ export class LocalToRemoteWorker {
 
     for (const table of this.options.tables) {
       const cursor = await getCursor(this.options.localDb, "local_to_remote", table);
-      const raw = await this.options.localDb.query(showChangesSql(table), { cursor });
+      const raw = await this.options.localDb.query(showChangesQuery(table, cursor));
       const changes = normalizeChangefeedRows(table, raw);
       result.pulled += changes.length;
 

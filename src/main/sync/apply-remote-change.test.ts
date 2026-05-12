@@ -1,11 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import { applyRemoteChange } from "./apply-remote-change";
-import type { SyncChange, SyncDb } from "./types";
+import type { SyncChange, SyncDb, SyncQuery } from "./types";
+
+function normalizeQuery(sql: SyncQuery, bindings?: Record<string, unknown>) {
+  if (typeof sql === "string") return { sql, bindings };
+  return { sql: sql.query, bindings: sql.bindings };
+}
 
 class FakeDb implements SyncDb {
   queries: Array<{ sql: string; bindings?: Record<string, unknown> }> = [];
-  async query<T = unknown>(sql: string, bindings?: Record<string, unknown>): Promise<T> {
-    this.queries.push({ sql, bindings });
+  async query<T = unknown>(sql: SyncQuery, bindings?: Record<string, unknown>): Promise<T> {
+    const normalized = normalizeQuery(sql, bindings);
+    this.queries.push(normalized);
     return [] as T;
   }
 }

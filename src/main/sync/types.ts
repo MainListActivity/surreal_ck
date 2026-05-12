@@ -1,5 +1,9 @@
+import type { BoundQuery } from "surrealdb";
+
+export type SyncQuery = string | BoundQuery;
+
 export type SyncDb = {
-  query<T = unknown>(sql: string, bindings?: Record<string, unknown>): Promise<T>;
+  query<T = unknown>(sql: SyncQuery, bindings?: Record<string, unknown>): Promise<T>;
 };
 
 export type SyncDirection = "local_to_remote" | "remote_to_local";

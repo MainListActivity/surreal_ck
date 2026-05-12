@@ -1,3 +1,4 @@
+import { escapeIdent, raw, surql, type BoundQuery } from "surrealdb";
 import type { SyncChange, SyncOperation } from "./types";
 
 const SYSTEM_FIELDS = new Set(["id", "_origin_session_id", "in", "out"]);
@@ -8,9 +9,16 @@ export function assertSafeTableName(table: string): void {
   }
 }
 
-export function showChangesSql(table: string): string {
+export function showChangesQuery(table: string, cursor: string): BoundQuery {
   assertSafeTableName(table);
-  return `SHOW CHANGES FOR TABLE ${table} SINCE $cursor LIMIT 100`;
+  assertSafeChangefeedCursor(cursor);
+  return surql`SHOW CHANGES FOR TABLE ${raw(escapeIdent(table))} SINCE ${raw(cursor)} LIMIT 100`;
+}
+
+export function assertSafeChangefeedCursor(cursor: string): void {
+  if (!/^(0|[1-9][0-9]*)$/.test(cursor)) {
+    throw new Error(`[sync] unsafe changefeed cursor: ${cursor}`);
+  }
 }
 
 export function normalizeChangefeedRows(table: string, result: unknown): SyncChange[] {

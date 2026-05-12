@@ -1,5 +1,5 @@
 import { getLocalDb, getRemoteDb } from "../db/index";
-import { isRemoteEcho, normalizeChangefeedRows, showChangesSql } from "../sync/changefeed";
+import { isRemoteEcho, normalizeChangefeedRows, showChangesQuery } from "../sync/changefeed";
 import { getCursor } from "../sync/cursor";
 import { discardDeadLetter, forceReapplyDeadLetter, listDeadLetters as listDeadLettersFromDb } from "../sync/dead-letter";
 import { shouldSyncRow } from "../sync/scope";
@@ -62,7 +62,7 @@ async function countPendingChanges(db: SyncDb): Promise<number> {
 
   for (const table of tables) {
     const cursor = await getCursor(db, "local_to_remote", table);
-    const raw = await db.query(showChangesSql(table), { cursor });
+    const raw = await db.query(showChangesQuery(table, cursor));
     const changes = normalizeChangefeedRows(table, raw);
     total += changes.filter((change) =>
       !isRemoteEcho(change) && shouldSyncRow(table, change.content),
