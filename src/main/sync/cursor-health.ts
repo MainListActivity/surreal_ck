@@ -1,5 +1,6 @@
 import { applyRemoteChange } from "./apply-remote-change";
 import { showChangesSql } from "./changefeed";
+import { getCursor } from "./cursor";
 import { markLocalChangefeedStale } from "./status";
 import type { SyncDb } from "./types";
 
@@ -19,8 +20,9 @@ export async function checkCursorHealthAndRebuild(options: CursorHealthOptions):
   let rebuilt = false;
 
   for (const table of options.tables) {
+    const localCursor = await getCursor(options.localDb, "local_to_remote", table);
     try {
-      await options.localDb.query(showChangesSql(table), { cursor: "0" });
+      await options.localDb.query(showChangesSql(table), { cursor: localCursor });
     } catch (err) {
       if (isCursorTooOld(err)) {
         localChangefeedStale = true;
@@ -30,8 +32,9 @@ export async function checkCursorHealthAndRebuild(options: CursorHealthOptions):
       }
     }
 
+    const remoteCursor = await getCursor(options.localDb, "remote_to_local", table);
     try {
-      await options.remoteDb.query(showChangesSql(table), { cursor: "0" });
+      await options.remoteDb.query(showChangesSql(table), { cursor: remoteCursor });
     } catch (err) {
       if (!isCursorTooOld(err)) throw err;
       await rebuildTableFromRemote(options.localDb, options.remoteDb, table);

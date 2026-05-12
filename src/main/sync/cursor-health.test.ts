@@ -13,6 +13,32 @@ class FakeDb implements SyncDb {
 }
 
 describe("cursor 健康检查", () => {
+  test("健康检查使用 sync_cursor 保存的 versionstamp", async () => {
+    const local = new FakeDb((sql, bindings) => {
+      if (sql.includes("SELECT versionstamp") && String(bindings?.id).includes("local_to_remote__workspace")) {
+        return [[{ versionstamp: "local-vs9" }]];
+      }
+      if (sql.includes("SELECT versionstamp") && String(bindings?.id).includes("remote_to_local__workspace")) {
+        return [[{ versionstamp: "remote-vs8" }]];
+      }
+      return [[]];
+    });
+    const remote = new FakeDb();
+
+    await checkCursorHealthAndRebuild({
+      localDb: local,
+      remoteDb: remote,
+      tables: ["workspace"],
+    });
+
+    expect(local.queries.some((query) =>
+      query.sql.includes("SHOW CHANGES") && query.bindings?.cursor === "local-vs9",
+    )).toBe(true);
+    expect(remote.queries.some((query) =>
+      query.sql.includes("SHOW CHANGES") && query.bindings?.cursor === "remote-vs8",
+    )).toBe(true);
+  });
+
   test("本地 cursor too old 标记 stale 但不抛错", async () => {
     const local = new FakeDb((sql) => {
       if (sql.includes("SHOW CHANGES")) throw new Error("cursor too old");

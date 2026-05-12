@@ -1,7 +1,12 @@
 import { getLocalDb, getRemoteDb } from "../db/index";
+import { isRemoteEcho, normalizeChangefeedRows, showChangesSql } from "../sync/changefeed";
+import { getCursor } from "../sync/cursor";
 import { discardDeadLetter, forceReapplyDeadLetter, listDeadLetters as listDeadLettersFromDb } from "../sync/dead-letter";
+import { shouldSyncRow } from "../sync/scope";
 import { getLocalSessionId } from "../sync/session";
 import { getSyncRuntimeState } from "../sync/status";
+import { enumerateSyncTables } from "../sync/tables";
+import type { SyncDb } from "../sync/types";
 import { getOfflineMode } from "./offline-state";
 import type {
   ListDeadLettersRequest,
@@ -51,11 +56,20 @@ export async function forceReapplySyncDeadLetter(id: string): Promise<void> {
   await forceReapplyDeadLetter(getLocalDb(), remote, id);
 }
 
-async function countPendingChanges(db: { query<T = unknown>(sql: string, bindings?: Record<string, unknown>): Promise<T> }): Promise<number> {
-  const rows = await db.query<[CountRow[]]>(
-    `SELECT count() AS count FROM sync_cursor WHERE direction = 'local_to_remote'`,
-  );
-  return Number(rows[0]?.[0]?.count ?? 0);
+async function countPendingChanges(db: SyncDb): Promise<number> {
+  const tables = await enumerateSyncTables(db);
+  let total = 0;
+
+  for (const table of tables) {
+    const cursor = await getCursor(db, "local_to_remote", table);
+    const raw = await db.query(showChangesSql(table), { cursor });
+    const changes = normalizeChangefeedRows(table, raw);
+    total += changes.filter((change) =>
+      !isRemoteEcho(change) && shouldSyncRow(table, change.content),
+    ).length;
+  }
+
+  return total;
 }
 
 async function countDeadLetters(db: { query<T = unknown>(sql: string, bindings?: Record<string, unknown>): Promise<T> }): Promise<number> {

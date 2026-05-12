@@ -1,7 +1,7 @@
 import { applyRemoteChange } from "./apply-remote-change";
-import { normalizeChangefeedRows, showChangesSql } from "./changefeed";
+import { extractDirtyContent, isRemoteEcho, normalizeChangefeedRows, showChangesSql } from "./changefeed";
 import { advanceCursor, getCursor } from "./cursor";
-import type { SyncRunResult, SyncWorkerOptions } from "./types";
+import type { SyncChange, SyncRunResult, SyncWorkerOptions } from "./types";
 
 export class RemoteToLocalWorker {
   private running = false;
@@ -40,7 +40,10 @@ export class RemoteToLocalWorker {
 
       for (const change of changes) {
         try {
-          await applyRemoteChange(this.options.localDb, change);
+          const pendingFields = await this.pendingLocalFields(change);
+          await applyRemoteChange(this.options.localDb, change, {
+            pendingLocalFields: async () => pendingFields,
+          });
           await advanceCursor(this.options.localDb, "remote_to_local", table, change.versionstamp);
         } catch {
           result.failed += 1;
@@ -50,5 +53,23 @@ export class RemoteToLocalWorker {
     }
 
     return result;
+  }
+
+  private async pendingLocalFields(change: SyncChange): Promise<Set<string>> {
+    if (change.op !== "update") return new Set();
+
+    const cursor = await getCursor(this.options.localDb, "local_to_remote", change.table);
+    const raw = await this.options.localDb.query(showChangesSql(change.table), { cursor });
+    const pendingChanges = normalizeChangefeedRows(change.table, raw);
+    const fields = new Set<string>();
+
+    for (const pending of pendingChanges) {
+      if (pending.recordId !== change.recordId || isRemoteEcho(pending)) continue;
+      for (const field of Object.keys(extractDirtyContent(pending))) {
+        fields.add(field);
+      }
+    }
+
+    return fields;
   }
 }
