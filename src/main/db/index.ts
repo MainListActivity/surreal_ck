@@ -10,6 +10,8 @@ import { setOfflineMode } from "../services/offline-state";
 import { defineCurrentSessionParam } from "../sync/session";
 import { checkRemoteSchemaVersion } from "../sync/schema-version";
 import { startSyncWorkers, stopSyncWorkers } from "../sync/manager";
+import { setSyncLastError } from "../sync/status";
+import { connectRemoteWithRuntime } from "./remote-connection";
 
 // ─── 状态 ────────────────────────────────────────────────────────────────────
 
@@ -260,34 +262,31 @@ export async function tryRestoreSession(): Promise<RestoreResult> {
 export async function connectRemote(accessToken: string): Promise<void> {
   const remoteUrl = process.env.SURREALDB_URL || 'wss://cuckoox-06efnpc64psu927c5555v64q5g.aws-usw2.surreal.cloud';
 
-  // 重连时先清理旧引用
-  stopSyncWorkers();
-  _remoteDb = null;
-
-  try {
-    const remote = new Surreal();
-    await remote.connect(remoteUrl);
-    await remote.use({
-      namespace: process.env.SURREALDB_NS ?? "main",
-      database: process.env.SURREALDB_DB ?? "docs",
-    });
-    await remote.authenticate(accessToken);
-    _remoteDb = remote;
-    setOfflineMode(false);
-    const compatible = await checkRemoteSchemaVersion(remote);
-    if (compatible) {
-      await startSyncWorkers({
-        localDb: () => getLocalDb(),
-        remoteDb: () => getRemoteDb(),
-        isOnline: () => getRemoteDb() !== null,
-      });
-    }
-    console.log(`[db] remote connected: ${remoteUrl}`);
-  } catch (err) {
-    console.warn(`[db] remote connection failed (degraded to local-only):`, err);
-    _remoteDb = null;
-    setOfflineMode(true);
-  }
+  await connectRemoteWithRuntime<Surreal>(accessToken, {
+    remoteUrl,
+    namespace: process.env.SURREALDB_NS ?? "main",
+    database: process.env.SURREALDB_DB ?? "docs",
+  }, {
+    createRemote: () => new Surreal(),
+    stopSyncWorkers,
+    setRemoteDb: (remote) => {
+      _remoteDb = remote;
+    },
+    getRemoteDb: () => getRemoteDb(),
+    getLocalDb: () => getLocalDb(),
+    setOfflineMode,
+    setSyncLastError,
+    checkRemoteSchemaVersion,
+    startSyncWorkers,
+    log: (message) => console.log(message),
+    warn: (message, err) => {
+      if (err === undefined) {
+        console.warn(message);
+        return;
+      }
+      console.warn(message, err);
+    },
+  });
 }
 
 /**

@@ -2,6 +2,7 @@ import { applyRemoteChange } from "./apply-remote-change";
 import { showChangesQuery } from "./changefeed";
 import { getCursor } from "./cursor";
 import { markLocalChangefeedStale } from "./status";
+import { wrapSyncOperationError } from "./operation-error";
 import type { SyncDb } from "./types";
 
 export type CursorHealthOptions = {
@@ -21,6 +22,8 @@ export async function checkCursorHealthAndRebuild(options: CursorHealthOptions):
 
   for (const table of options.tables) {
     const localCursor = await getCursor(options.localDb, "local_to_remote", table);
+    const localHealthOperation =
+      `local changefeed health check table=${table} cursor=${localCursor} query="SHOW CHANGES FOR TABLE ${table} SINCE ${localCursor}"`;
     try {
       await options.localDb.query(showChangesQuery(table, localCursor));
     } catch (err) {
@@ -28,15 +31,17 @@ export async function checkCursorHealthAndRebuild(options: CursorHealthOptions):
         localChangefeedStale = true;
         markLocalChangefeedStale(true);
       } else {
-        throw err;
+        throw wrapSyncOperationError(localHealthOperation, err);
       }
     }
 
     const remoteCursor = await getCursor(options.localDb, "remote_to_local", table);
+    const remoteHealthOperation =
+      `remote changefeed health check table=${table} cursor=${remoteCursor} query="SHOW CHANGES FOR TABLE ${table} SINCE ${remoteCursor}"`;
     try {
       await options.remoteDb.query(showChangesQuery(table, remoteCursor));
     } catch (err) {
-      if (!isCursorTooOld(err)) throw err;
+      if (!isCursorTooOld(err)) throw wrapSyncOperationError(remoteHealthOperation, err);
       await rebuildTableFromRemote(options.localDb, options.remoteDb, table);
       rebuilt = true;
     }
@@ -46,11 +51,27 @@ export async function checkCursorHealthAndRebuild(options: CursorHealthOptions):
 }
 
 async function rebuildTableFromRemote(localDb: SyncDb, remoteDb: SyncDb, table: string): Promise<void> {
-  await localDb.query(`DELETE FROM type::table($table)`, { table });
-  const rows = await remoteDb.query<[Array<Record<string, unknown>>]>(
-    `SELECT * FROM type::table($table)`,
-    { table },
-  );
+  try {
+    await localDb.query(`DELETE FROM type::table($table)`, { table });
+  } catch (err) {
+    throw wrapSyncOperationError(
+      `local table rebuild clear table=${table} query="DELETE FROM type::table($table)" bindings.table=${table}`,
+      err,
+    );
+  }
+
+  let rows: [Array<Record<string, unknown>>];
+  try {
+    rows = await remoteDb.query<[Array<Record<string, unknown>>]>(
+      `SELECT * FROM type::table($table)`,
+      { table },
+    );
+  } catch (err) {
+    throw wrapSyncOperationError(
+      `remote table rebuild fetch table=${table} query="SELECT * FROM type::table($table)" bindings.table=${table}`,
+      err,
+    );
+  }
   for (const row of rows[0] ?? []) {
     if (!row.id) continue;
     await applyRemoteChange(localDb, {

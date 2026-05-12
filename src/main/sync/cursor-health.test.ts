@@ -82,4 +82,33 @@ describe("cursor 健康检查", () => {
     expect(local.queries.some((query) => query.sql.includes("DELETE FROM type::table($table)"))).toBe(true);
     expect(local.queries.some((query) => query.sql.includes("UPSERT $record CONTENT $content"))).toBe(true);
   });
+
+  test("远端 SHOW CHANGES 权限不足时错误包含具体操作", async () => {
+    const local = new FakeDb((sql, bindings) => {
+      if (sql.includes("SELECT versionstamp") && String(bindings?.id).includes("local_to_remote__workspace")) {
+        return [[{ versionstamp: "9" }]];
+      }
+      if (sql.includes("SELECT versionstamp") && String(bindings?.id).includes("remote_to_local__workspace")) {
+        return [[{ versionstamp: "8" }]];
+      }
+      return [[]];
+    });
+    const remote = new FakeDb((sql) => {
+      if (sql.includes("SHOW CHANGES")) {
+        throw Object.assign(
+          new Error("IAM error: Not enough permissions to perform this action"),
+          { kind: "NotAllowed", code: 0 },
+        );
+      }
+      return [[]];
+    });
+
+    await expect(checkCursorHealthAndRebuild({
+      localDb: local,
+      remoteDb: remote,
+      tables: ["workspace"],
+    })).rejects.toThrow(
+      `remote changefeed health check table=workspace cursor=8 query="SHOW CHANGES FOR TABLE workspace SINCE 8": IAM error: Not enough permissions to perform this action`,
+    );
+  });
 });
