@@ -92,6 +92,24 @@ describe("assertWritable", () => {
   });
 });
 
+describe("assertCanPerformSharedWrite", () => {
+  test("离线时拒绝 shared write 并解释原因", async () => {
+    _mockSession = { expiresAt: Date.now() + 3600_000 };
+    setOfflineMode(true);
+    const { assertCanPerformSharedWrite } = await import("./context");
+    await expect(assertCanPerformSharedWrite("write_entity_data")).rejects.toMatchObject({
+      code: "VALIDATION_ERROR",
+    });
+  });
+
+  test("离线时 research_session 本地写仍允许", async () => {
+    _mockSession = { expiresAt: Date.now() + 3600_000 };
+    setOfflineMode(true);
+    const { assertCanPerformSharedWrite } = await import("./context");
+    await expect(assertCanPerformSharedWrite("write_research_session")).resolves.toBeUndefined();
+  });
+});
+
 describe("setOfflineMode", () => {
   test("可以切换离线状态", () => {
     expect(getOfflineMode()).toBe(false);

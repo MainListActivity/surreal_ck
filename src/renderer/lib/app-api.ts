@@ -41,6 +41,7 @@ import type {
   ResolveReferencesResponse,
   Result,
   SyncStatusDTO,
+  SyncStatusV2DTO,
   RetryResourceEmbeddingResponse,
   SaveDashboardPageLayoutResponse,
   SaveSettingsResponse,
@@ -80,6 +81,14 @@ export const appApi = {
 
   getSyncStatus(): Promise<Result<SyncStatusDTO>> {
     return rpc.request("getSyncStatus", {});
+  },
+
+  getSyncStatusV2(): Promise<Result<SyncStatusV2DTO>> {
+    return rpc.request("getSyncStatusV2", {});
+  },
+
+  triggerSyncRebuild(): Promise<Result<SyncStatusV2DTO>> {
+    return rpc.request("triggerSyncRebuild", {});
   },
 
   listDeadLetters(options: { limit?: number; offset?: number } = {}): Promise<Result<ListDeadLettersResponse>> {

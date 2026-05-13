@@ -1,5 +1,5 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: done
+Label: done
 
 # SYNCV2-003 — `sheet` 驱动的 `ent_*` 投影 tracer
 
@@ -15,12 +15,12 @@ Label: ready-for-agent
 
 ## Acceptance criteria
 
-- [ ] 当用户可见的 `sheet` 声明了一张 `ent_*` 表时，系统会按其 metadata 重建本地投影并恢复数据。
-- [ ] 至少一条现有实体数据读路径继续从本地 `ent_*` 投影读取，且读到的是重建后的数据。
-- [ ] 对应 `sheet` metadata 变更后，投影结构和订阅集会按 metadata 更新，不依赖 remote DDL introspection。
-- [ ] 订阅集变化按差量处理：新增表做单表全量 + 起 `LIVE`，移除表停 `LIVE` + 清本地投影，**未变化表保留现有订阅，不触发全局重建**。
-- [ ] 大 `ent_*` 表（万行级）重建不阻塞主进程 RPC：重建期间高层读路径仍可响应，重建以分批或流式方式落地。
-- [ ] 回归测试覆盖 metadata 驱动的建表/重建、在线增量、订阅集差量热刷新和大表重建期间的读可用性。
+- [x] 当用户可见的 `sheet` 声明了一张 `ent_*` 表时，系统会按其 metadata 重建本地投影并恢复数据。
+- [x] 至少一条现有实体数据读路径继续从本地 `ent_*` 投影读取，且读到的是重建后的数据。
+- [x] 对应 `sheet` metadata 变更后，投影结构和订阅集会按 metadata 更新，不依赖 remote DDL introspection。
+- [x] 订阅集变化按差量处理：新增表做单表全量 + 起 `LIVE`，移除表停 `LIVE` + 清本地投影，**未变化表保留现有订阅，不触发全局重建**。
+- [x] 大 `ent_*` 表（万行级）重建不阻塞主进程 RPC：重建期间高层读路径仍可响应，重建以分批或流式方式落地。
+- [x] 回归测试覆盖 metadata 驱动的建表/重建、在线增量、订阅集差量热刷新和大表重建期间的读可用性。
 
 ## Blocked by
 

@@ -1,12 +1,17 @@
 export type SyncRuntimeState = {
   incompatibleSchema: boolean;
   localChangefeedStale: boolean;
+  dirtyStructureShadow: boolean;
+  rebuildInProgress: boolean;
+  lastRebuildAt?: string;
   lastError?: string;
 };
 
 const state: SyncRuntimeState = {
   incompatibleSchema: false,
   localChangefeedStale: false,
+  dirtyStructureShadow: false,
+  rebuildInProgress: false,
 };
 
 export function getSyncRuntimeState(): SyncRuntimeState {
@@ -21,6 +26,18 @@ export function markLocalChangefeedStale(value: boolean): void {
   state.localChangefeedStale = value;
 }
 
+export function markDirtyStructureShadow(value: boolean): void {
+  state.dirtyStructureShadow = value;
+}
+
+export function markRebuildInProgress(value: boolean): void {
+  state.rebuildInProgress = value;
+}
+
+export function markLastRebuildAt(timestamp: string | undefined): void {
+  state.lastRebuildAt = timestamp;
+}
+
 export function setSyncLastError(message: string | undefined): void {
   state.lastError = message;
 }
@@ -28,5 +45,8 @@ export function setSyncLastError(message: string | undefined): void {
 export function resetSyncRuntimeStateForTests(): void {
   state.incompatibleSchema = false;
   state.localChangefeedStale = false;
+  state.dirtyStructureShadow = false;
+  state.rebuildInProgress = false;
+  state.lastRebuildAt = undefined;
   state.lastError = undefined;
 }

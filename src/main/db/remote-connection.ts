@@ -16,7 +16,7 @@ export type RemoteConnectionOptions = {
 
 export type RemoteConnectionRuntime<TRemote extends RemoteConnection> = {
   createRemote(): TRemote;
-  stopSyncWorkers(): void;
+  stopSyncWorkers(): void | Promise<void>;
   setRemoteDb(remote: TRemote | null): void;
   getRemoteDb(): SyncDb | null;
   getLocalDb(): SyncDb;

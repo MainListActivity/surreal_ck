@@ -1,5 +1,5 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: done
+Label: done
 
 # SYNCV2-006 — 共享资源发布 tracer：`research_session` → `resource_item`
 
@@ -15,10 +15,10 @@ Label: ready-for-agent
 
 ## Acceptance criteria
 
-- [ ] `saveResearchResource` 成功后，shared `resource_item` 已在 remote 成立，且本机本地资源投影在同一 RPC 内立即可见。
-- [ ] shared `resource_item` 载荷不再包含本地私有 `research_session` 引用。
-- [ ] `research_session` 仍可在本地维护“我创建了哪些共享资源”的过程信息，而不要求把会话本身上云。
-- [ ] 回归测试覆盖 remote-first 发布、自写后本地立即可见，以及 shared/private 载荷分离。
+- [x] `saveResearchResource` 成功后，shared `resource_item` 已在 remote 成立，且本机本地资源投影在同一 RPC 内立即可见。
+- [x] shared `resource_item` 载荷不再包含本地私有 `research_session` 引用。
+- [x] `research_session` 仍可在本地维护“我创建了哪些共享资源”的过程信息，而不要求把会话本身上云。
+- [x] 回归测试覆盖 remote-first 发布、自写后本地立即可见，以及 shared/private 载荷分离。
 
 ## Blocked by
 

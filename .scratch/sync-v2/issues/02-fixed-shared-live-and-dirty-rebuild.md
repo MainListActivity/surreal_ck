@@ -1,5 +1,5 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: done
+Label: done
 
 # SYNCV2-002 — 固定共享表 LIVE 增量与 dirty rebuild
 
@@ -15,10 +15,10 @@ Label: ready-for-agent
 
 ## Acceptance criteria
 
-- [ ] 固定共享表在线时会建立 `LIVE SELECT`，remote 的 create/update/delete 能增量反映到本地影子。
-- [ ] `LIVE` 断开、订阅失效或本地 apply 失败时，会把对应影子状态标记为 dirty，而不是继续假装同步正常。
-- [ ] 连接恢复后，dirty 影子会触发一次重建并回到健康状态。
-- [ ] 回归测试覆盖 remote 增量回放、dirty 标记和“恢复后重建”的收敛路径。
+- [x] 固定共享表在线时会建立 `LIVE SELECT`，remote 的 create/update/delete 能增量反映到本地影子。
+- [x] `LIVE` 断开、订阅失效或本地 apply 失败时，会把对应影子状态标记为 dirty，而不是继续假装同步正常。
+- [x] 连接恢复后，dirty 影子会触发一次重建并回到健康状态。
+- [x] 回归测试覆盖 remote 增量回放、dirty 标记和“恢复后重建”的收敛路径。
 
 ## Blocked by
 

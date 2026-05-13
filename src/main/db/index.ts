@@ -295,7 +295,7 @@ export async function connectRemote(accessToken: string): Promise<void> {
  * remote 只置 null，不调用 close()（避免 surrealdb-node + Bun 的 segfault）。
  */
 export async function closeUserDb(): Promise<void> {
-  stopSyncWorkers();
+  await stopSyncWorkers();
   _remoteDb = null;
 
   if (_userDbName) {

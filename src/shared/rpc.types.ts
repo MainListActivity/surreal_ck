@@ -76,9 +76,27 @@ export type WorkspaceDTO = {
   slug: string;
 };
 
+export type CapabilityKey =
+  | "write_research_session"
+  | "write_entity_data"
+  | "write_relation_data"
+  | "publish_shared_resource"
+  | "advance_shared_embedding"
+  | "write_shared_structure_ddl";
+
+export type CapabilityBlockedReason = "not-authenticated" | "offline";
+
+export type CapabilityState =
+  | { allowed: true }
+  | { allowed: false; blockedBy: CapabilityBlockedReason };
+
+export type CapabilityMatrixDTO = Record<CapabilityKey, CapabilityState>;
+
 export type AppBootstrap = {
   auth: AuthState;
+  /** @deprecated 改用 capabilities 判定具体写能力。前端已迁移后可移除。 */
   readOnly: boolean;
+  capabilities: CapabilityMatrixDTO;
   user?: CurrentUserDTO;
   defaultWorkspace?: WorkspaceDTO;
 };
@@ -92,6 +110,19 @@ export type SyncStatusDTO = {
   lastRemoteCursorAt?: ISODateTimeString;
   incompatibleSchema: boolean;
   localChangefeedStale: boolean;
+  lastError?: string;
+};
+
+/**
+ * 同步状态 v2 — 反映 "重建 + LIVE" 架构下的本地派生状态健康。
+ * 取代旧 cursor/dead-letter 主状态模型（参见 ADR sync §4 / §12）。
+ */
+export type SyncStatusV2DTO = {
+  online: boolean;
+  rebuildInProgress: boolean;
+  dirtyStructureShadow: boolean;
+  incompatibleSchema: boolean;
+  lastRebuildAt?: ISODateTimeString;
   lastError?: string;
 };
 
@@ -1523,6 +1554,8 @@ export interface AppRPC extends ElectrobunRPCSchema {
       toggleWindowMaximized: { params: Record<string, never>; response: void };
       getAppBootstrap: { params: Record<string, never>; response: Result<AppBootstrap> };
       getSyncStatus: { params: Record<string, never>; response: Result<SyncStatusDTO> };
+      getSyncStatusV2: { params: Record<string, never>; response: Result<SyncStatusV2DTO> };
+      triggerSyncRebuild: { params: Record<string, never>; response: Result<SyncStatusV2DTO> };
       listDeadLetters: { params: ListDeadLettersRequest; response: Result<ListDeadLettersResponse> };
       discardDeadLetter: { params: DeadLetterIdRequest; response: Result<void> };
       forceReapplyDeadLetter: { params: DeadLetterIdRequest; response: Result<void> };

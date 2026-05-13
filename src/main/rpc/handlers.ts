@@ -90,6 +90,7 @@ import type {
   SendAiMessageRequest,
   SendAiMessageResponse,
   SyncStatusDTO,
+  SyncStatusV2DTO,
   PreviewDashboardViewRequest,
   PreviewDashboardViewResponse,
   UpdateDashboardViewRequest,
@@ -153,6 +154,7 @@ import { resumeAiWorkflowFromRpc } from "../services/ai-resume-rpc";
 import { cancelAiWorkflow } from "../services/ai-cancel";
 import { executeAiAction } from "../services/ai-actions";
 import { discardSyncDeadLetter, forceReapplySyncDeadLetter, getSyncStatus, listDeadLetters } from "../services/sync-state";
+import { getSyncStatusV2, triggerSyncRebuild } from "../services/sync-state-v2";
 import { createResourceDraftFromEvidence } from "../ai/mastra/agents/resource-agent";
 
 type SendFn = {
@@ -214,6 +216,7 @@ export function createRpcHandlers(send: SendFn, windowControls?: WindowControlDe
             return {
               auth: getPublicAuthState(ctx.isOffline ? { offlineMode: true } : undefined),
               readOnly: true,
+              capabilities: ctx.capabilities,
             } satisfies AppBootstrap;
           }
 
@@ -235,6 +238,7 @@ export function createRpcHandlers(send: SendFn, windowControls?: WindowControlDe
           return {
             auth: getPublicAuthState(ctx.isOffline ? { offlineMode: true } : undefined),
             readOnly: ctx.readOnly,
+            capabilities: ctx.capabilities,
             user: {
               id: String(userRow.id),
               subject: userRow.subject,
@@ -254,6 +258,14 @@ export function createRpcHandlers(send: SendFn, windowControls?: WindowControlDe
 
       getSyncStatus: async (): Promise<Result<SyncStatusDTO>> => {
         return withResult(() => getSyncStatus());
+      },
+
+      getSyncStatusV2: async (): Promise<Result<SyncStatusV2DTO>> => {
+        return withResult(async () => getSyncStatusV2());
+      },
+
+      triggerSyncRebuild: async (): Promise<Result<SyncStatusV2DTO>> => {
+        return withResult(() => triggerSyncRebuild());
       },
 
       listDeadLetters: async (req: ListDeadLettersRequest): Promise<Result<ListDeadLettersResponse>> => {

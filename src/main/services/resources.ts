@@ -302,7 +302,7 @@ export type CancelResearchSessionRequest = {
 };
 
 export type ResourceRepository = {
-  createResource(input: Omit<ResourceRow, "id">): Promise<ResourceRow>;
+  createResource(input: Omit<ResourceRow, "id" | "research_session">): Promise<ResourceRow>;
   findResourceById(resourceId: string): Promise<ResourceRow | null>;
   listResourcesByWorkspace(workspaceId: string): Promise<ResourceRow[]>;
   upsertResourceEmbedding(input: Omit<ResourceEmbeddingRow, "id">): Promise<ResourceEmbeddingRow>;
@@ -315,12 +315,15 @@ export type ResourceRepository = {
     sessionId: string,
     patch: Partial<Omit<ResearchSessionRow, "id">>,
   ): Promise<ResearchSessionRow | null>;
+  // 本地私有伴随：把 shared resource_item 与 research_session 的关联保存在本地，不进入 remote payload
+  linkResourceToResearchSession(resourceId: string, sessionId: string): Promise<void>;
+  findResearchSessionIdByResource(resourceId: string): Promise<string | null>;
 };
 
 export class SurrealResourceRepository implements ResourceRepository {
   constructor(private readonly db = getLocalDb()) {}
 
-  async createResource(input: Omit<ResourceRow, "id">): Promise<ResourceRow> {
+  async createResource(input: Omit<ResourceRow, "id" | "research_session">): Promise<ResourceRow> {
     const created = await this.db
       .create<ResourceRow>(new Table("resource_item"))
       .content(omitNullishSurrealFields({
@@ -339,12 +342,31 @@ export class SurrealResourceRepository implements ResourceRepository {
         content_hash: input.content_hash,
         evidence_hash: input.evidence_hash,
         source_hash: input.source_hash,
-        research_session: input.research_session ? toRecordId(input.research_session) : undefined,
         created_by: toRecordId(input.created_by),
         created_at: toDateTime(input.created_at),
         updated_at: toDateTime(input.updated_at),
       }));
     return requireRow(created, "资源创建后读取失败");
+  }
+
+  async linkResourceToResearchSession(resourceId: string, sessionId: string): Promise<void> {
+    await this.db.query(
+      `UPSERT $linkId CONTENT { resource: $resource, session: $session, updated_at: time::now() }`,
+      {
+        linkId: new RecordId("local_resource_session_link", stableHash({ resource: resourceId })),
+        resource: new StringRecordId(resourceId),
+        session: new StringRecordId(sessionId),
+      },
+    );
+  }
+
+  async findResearchSessionIdByResource(resourceId: string): Promise<string | null> {
+    const rows = await this.db.query<[Array<{ session: RecordRef }>]>(
+      `SELECT session FROM local_resource_session_link WHERE resource = $resource LIMIT 1`,
+      { resource: new StringRecordId(resourceId) },
+    );
+    const row = rows[0]?.[0];
+    return row?.session ? String(row.session) : null;
   }
 
   async findResourceById(resourceId: string): Promise<ResourceRow | null> {
@@ -567,11 +589,17 @@ export function createResourceService(deps: ResourceServiceDeps) {
         content_hash: hashes.content,
         evidence_hash: hashes.evidence,
         source_hash: hashes.source,
-        research_session: normalized.researchSessionId,
         created_by: currentUserId,
         created_at: timestamp,
         updated_at: timestamp,
       });
+
+      if (normalized.researchSessionId) {
+        await deps.repository.linkResourceToResearchSession(
+          String(row.id),
+          normalized.researchSessionId,
+        );
+      }
 
       if (session) {
         await deps.repository.updateResearchSession(String(session.id), {
@@ -582,7 +610,7 @@ export function createResourceService(deps: ResourceServiceDeps) {
 
       const embedding = await ensureInitialEmbeddingState(deps, row, timestamp);
 
-      return { resource: resourceRowToDTO(row, embedding) };
+      return { resource: resourceRowToDTO(row, embedding, normalized.researchSessionId) };
     },
 
     async saveResearchResource(req: SaveResearchResourceRequest): Promise<SaveResourceResponse> {
@@ -605,7 +633,10 @@ export function createResourceService(deps: ResourceServiceDeps) {
 
       await deps.assertCanReadWorkspace(String(row.workspace));
       const embedding = await resolveResourceEmbeddingState(deps, row);
-      const resource = resourceRowToDTO(row, embedding);
+      const linkedSessionId = await deps.repository.findResearchSessionIdByResource(
+        String(row.id),
+      );
+      const resource = resourceRowToDTO(row, embedding, linkedSessionId ?? undefined);
       const session = resource.researchSessionId
         ? await deps.repository.findResearchSessionById(resource.researchSessionId)
         : null;
@@ -1423,7 +1454,11 @@ function embeddingRowToDTO(row: ResourceEmbeddingRow): ResourceEmbeddingDTO {
   };
 }
 
-function resourceRowToDTO(row: ResourceRow, embedding: ResourceEmbeddingDTO = { status: "disabled" }): ResourceDTO {
+function resourceRowToDTO(
+  row: ResourceRow,
+  embedding: ResourceEmbeddingDTO = { status: "disabled" },
+  researchSessionId?: string,
+): ResourceDTO {
   return {
     id: String(row.id),
     workspaceId: String(row.workspace),
@@ -1444,7 +1479,7 @@ function resourceRowToDTO(row: ResourceRow, embedding: ResourceEmbeddingDTO = { 
       source: row.source_hash,
     },
     embedding,
-    researchSessionId: row.research_session ? String(row.research_session) : undefined,
+    researchSessionId: researchSessionId ?? (row.research_session ? String(row.research_session) : undefined),
     createdBy: String(row.created_by),
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),

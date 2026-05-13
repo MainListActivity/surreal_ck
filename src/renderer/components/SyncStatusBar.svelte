@@ -1,16 +1,15 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { appApi } from "../lib/app-api";
-  import type { SyncDeadLetterDTO, SyncStatusDTO } from "../../shared/rpc.types";
+  import type { SyncStatusV2DTO } from "../../shared/rpc.types";
 
-  let status = $state<SyncStatusDTO | null>(null);
-  let letters = $state<SyncDeadLetterDTO[]>([]);
+  let status = $state<SyncStatusV2DTO | null>(null);
   let open = $state(false);
-  let loading = $state(false);
+  let rebuilding = $state(false);
   let error = $state<string | null>(null);
 
-  const label = $derived(getStatusLabel(status));
-  const tone = $derived(getStatusTone(status));
+  const label = $derived(getStatusLabel(status, rebuilding));
+  const tone = $derived(getStatusTone(status, rebuilding));
 
   onMount(() => {
     let disposed = false;
@@ -18,7 +17,7 @@
 
     async function tick() {
       if (disposed) return;
-      const result = await appApi.getSyncStatus();
+      const result = await appApi.getSyncStatusV2();
       if (result.ok) status = result.data;
     }
 
@@ -30,57 +29,52 @@
     };
   });
 
-  async function loadLetters() {
-    loading = true;
+  function togglePanel() {
+    open = !open;
     error = null;
-    const result = await appApi.listDeadLetters({ limit: 100, offset: 0 });
+  }
+
+  async function rebuild() {
+    if (rebuilding) return;
+    rebuilding = true;
+    error = null;
+    const result = await appApi.triggerSyncRebuild();
     if (result.ok) {
-      letters = result.data.items;
+      status = result.data;
     } else {
       error = result.message;
     }
-    loading = false;
+    rebuilding = false;
   }
 
-  async function togglePanel() {
-    open = !open;
-    if (open) await loadLetters();
-  }
-
-  async function forceReapply(id: string) {
-    const result = await appApi.forceReapplyDeadLetter(id);
-    if (!result.ok) {
-      error = result.message;
-      return;
-    }
-    await loadLetters();
-  }
-
-  async function discard(id: string) {
-    if (!confirm("忽略后本地记录可能继续与远端不一致，确认忽略？")) return;
-    const result = await appApi.discardDeadLetter(id);
-    if (!result.ok) {
-      error = result.message;
-      return;
-    }
-    await loadLetters();
-  }
-
-  function getStatusLabel(value: SyncStatusDTO | null): string {
+  function getStatusLabel(value: SyncStatusV2DTO | null, isRebuilding: boolean): string {
     if (!value) return "同步状态";
+    if (isRebuilding || value.rebuildInProgress) return "重建中";
     if (value.incompatibleSchema) return "需更新客户端";
-    if (value.localChangefeedStale) return "本地有未推送变更";
     if (!value.online) return "离线模式";
-    if (value.deadLetterCount > 0) return `${value.deadLetterCount} 条未同步`;
-    if (value.pendingCount > 0) return `同步中（${value.pendingCount}）`;
+    if (value.dirtyStructureShadow) return "本地需重建";
     return "已同步";
   }
 
-  function getStatusTone(value: SyncStatusDTO | null): "ok" | "warn" | "error" | "muted" {
+  function getStatusTone(
+    value: SyncStatusV2DTO | null,
+    isRebuilding: boolean,
+  ): "ok" | "warn" | "error" | "muted" {
     if (!value) return "muted";
-    if (value.incompatibleSchema || value.localChangefeedStale) return "error";
-    if (!value.online || value.deadLetterCount > 0 || value.pendingCount > 0) return "warn";
+    if (isRebuilding || value.rebuildInProgress) return "warn";
+    if (value.incompatibleSchema) return "error";
+    if (value.dirtyStructureShadow) return "warn";
+    if (!value.online) return "warn";
     return "ok";
+  }
+
+  function formatRebuildAt(value: string | undefined): string {
+    if (!value) return "尚未重建";
+    try {
+      return new Date(value).toLocaleString();
+    } catch {
+      return value;
+    }
   }
 </script>
 
@@ -103,39 +97,35 @@
     <div class="sync-popover">
       <div class="sync-popover-header">
         <strong>同步详情</strong>
-        <button class="ghost-btn small" type="button" onclick={loadLetters}>刷新</button>
+        <button
+          class="primary-btn small"
+          type="button"
+          disabled={rebuilding || status?.rebuildInProgress || !status?.online}
+          onclick={rebuild}
+        >
+          {rebuilding || status?.rebuildInProgress ? "重建中…" : "重建本地派生状态"}
+        </button>
       </div>
 
       {#if error}
         <div class="sync-error">{error}</div>
       {/if}
-
-      <div class="sync-meta">
-        <span>待推送 {status?.pendingCount ?? 0}</span>
-        <span>未同步 {status?.deadLetterCount ?? 0}</span>
-      </div>
-
-      {#if loading}
-        <div class="empty">加载中</div>
-      {:else if letters.length === 0}
-        <div class="empty">暂无未同步条目</div>
-      {:else}
-        <div class="letter-list">
-          {#each letters as item}
-            <div class="letter-row">
-              <div class="letter-main">
-                <strong>{item.targetTable}</strong>
-                <span>{item.targetId}</span>
-                <small>{item.errorMessage}</small>
-              </div>
-              <div class="letter-actions">
-                <button class="secondary-btn small" type="button" onclick={() => forceReapply(item.id)}>远端覆盖</button>
-                <button class="ghost-btn small" type="button" onclick={() => discard(item.id)}>忽略</button>
-              </div>
-            </div>
-          {/each}
-        </div>
+      {#if status?.lastError && !error}
+        <div class="sync-error">{status.lastError}</div>
       {/if}
+
+      <dl class="sync-meta-grid">
+        <dt>远端连通</dt>
+        <dd>{status?.online ? "在线" : "离线"}</dd>
+        <dt>本地结构影子</dt>
+        <dd>{status?.dirtyStructureShadow ? "需重建（dirty）" : "健康"}</dd>
+        <dt>客户端 schema</dt>
+        <dd>{status?.incompatibleSchema ? "版本不兼容" : "兼容"}</dd>
+        <dt>当前是否重建</dt>
+        <dd>{status?.rebuildInProgress ? "是" : "否"}</dd>
+        <dt>最近重建时间</dt>
+        <dd>{formatRebuildAt(status?.lastRebuildAt)}</dd>
+      </dl>
     </div>
   {/if}
 </div>
@@ -188,26 +178,13 @@
     box-shadow: 0 12px 36px rgba(0, 0, 0, .16);
   }
 
-  .sync-popover-header,
-  .sync-meta,
-  .letter-row,
-  .letter-actions {
+  .sync-popover-header {
     display: flex;
     align-items: center;
-  }
-
-  .sync-popover-header {
     justify-content: space-between;
     margin-bottom: 10px;
     color: var(--text-1);
     font-size: 13px;
-  }
-
-  .sync-meta {
-    gap: 10px;
-    margin-bottom: 10px;
-    color: var(--text-3);
-    font-size: 12px;
   }
 
   .sync-error {
@@ -219,45 +196,22 @@
     font-size: 12px;
   }
 
-  .empty {
-    padding: 20px 0;
-    color: var(--text-3);
-    text-align: center;
-    font-size: 12px;
-  }
-
-  .letter-list {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .letter-row {
-    justify-content: space-between;
-    gap: 12px;
-    padding: 9px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-  }
-
-  .letter-main {
+  .sync-meta-grid {
     display: grid;
-    min-width: 0;
-    gap: 3px;
+    grid-template-columns: max-content 1fr;
+    gap: 6px 12px;
+    margin: 0;
+    color: var(--text-2);
     font-size: 12px;
   }
 
-  .letter-main span,
-  .letter-main small {
-    overflow: hidden;
+  .sync-meta-grid dt {
     color: var(--text-3);
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
-  .letter-actions {
-    flex-shrink: 0;
-    gap: 6px;
+  .sync-meta-grid dd {
+    margin: 0;
+    color: var(--text-1);
   }
 
   .small {

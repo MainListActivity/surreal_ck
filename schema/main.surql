@@ -534,7 +534,8 @@ DEFINE FIELD IF NOT EXISTS source_trust     ON TABLE resource_item TYPE option<s
 DEFINE FIELD IF NOT EXISTS content_hash     ON TABLE resource_item TYPE string;
 DEFINE FIELD IF NOT EXISTS evidence_hash    ON TABLE resource_item TYPE string;
 DEFINE FIELD IF NOT EXISTS source_hash      ON TABLE resource_item TYPE string;
-DEFINE FIELD IF NOT EXISTS research_session ON TABLE resource_item TYPE option<record<research_session>>;
+REMOVE INDEX IF EXISTS resource_item_research_session ON TABLE resource_item;
+REMOVE FIELD IF EXISTS research_session ON TABLE resource_item;
 DEFINE FIELD IF NOT EXISTS created_by       ON TABLE resource_item TYPE record<app_user>;
 DEFINE FIELD IF NOT EXISTS created_at       ON TABLE resource_item TYPE datetime VALUE time::now();
 DEFINE FIELD IF NOT EXISTS updated_at       ON TABLE resource_item TYPE datetime VALUE time::now();
@@ -548,8 +549,15 @@ DEFINE INDEX IF NOT EXISTS resource_item_evidence_hash
   ON TABLE resource_item COLUMNS workspace, evidence_hash;
 DEFINE INDEX IF NOT EXISTS resource_item_source_hash
   ON TABLE resource_item COLUMNS workspace, source_hash;
-DEFINE INDEX IF NOT EXISTS resource_item_research_session
-  ON TABLE resource_item COLUMNS research_session;
+
+-- 本地私有伴随表：保存 shared resource_item ↔ 本地 research_session 的关联，
+-- 不进入 remote 共享 payload（参见 ADR sync §7.1）。
+DEFINE TABLE IF NOT EXISTS local_resource_session_link SCHEMAFULL PERMISSIONS FULL;
+DEFINE FIELD IF NOT EXISTS resource   ON TABLE local_resource_session_link TYPE record<resource_item>;
+DEFINE FIELD IF NOT EXISTS session    ON TABLE local_resource_session_link TYPE record<research_session>;
+DEFINE FIELD IF NOT EXISTS updated_at ON TABLE local_resource_session_link TYPE datetime VALUE time::now();
+DEFINE INDEX IF NOT EXISTS local_resource_session_link_resource
+  ON TABLE local_resource_session_link COLUMNS resource;
 
 DEFINE TABLE IF NOT EXISTS resource_embedding SCHEMAFULL CHANGEFEED 7d
   PERMISSIONS

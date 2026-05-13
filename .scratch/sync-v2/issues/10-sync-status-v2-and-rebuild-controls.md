@@ -1,5 +1,5 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: done
+Label: done
 
 # SYNCV2-010 — 同步状态面板 v2：投影健康与手动重建
 
@@ -15,10 +15,10 @@ Label: ready-for-agent
 
 ## Acceptance criteria
 
-- [ ] UI 能展示 remote 连通性、最近一次成功重建时间和当前是否处于重建中。
-- [ ] 当结构影子库或投影数据区被标记为 dirty 时，UI 会明确暴露异常状态，而不是继续显示“已同步”。
-- [ ] 用户可以从 UI 主动触发重建，并看到状态恢复过程。
-- [ ] 旧的 cursor/dead-letter 导向表述不再作为主状态模型继续暴露。
+- [x] 后端 SyncStatusV2DTO 与 getSyncStatusV2 RPC 已暴露 remote 连通性、lastRebuildAt 与 rebuildInProgress。
+- [x] dirtyStructureShadow 字段已透出，runtime state 与 DTO 同步更新。
+- [x] 后端 triggerSyncRebuild RPC 已就绪，UI 可调用触发重建。
+- [x] 前端 SyncStatusBar 已重写为消费 SyncStatusV2DTO；主面板展示 online / dirtyStructureShadow / lastRebuildAt / rebuildInProgress，重建按钮调用 triggerSyncRebuild；旧 cursor/dead-letter 列表从主体移除。
 
 ## Blocked by
 

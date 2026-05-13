@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { startSyncWorkers, stopSyncWorkers } from "./manager";
-import type { SyncDb, SyncQuery } from "./types";
+import { FIXED_STRUCTURE_SHADOW_TABLES } from "./structure-shadow";
+import type { LiveHandler, LiveSource, SyncDb, SyncQuery } from "./types";
 
 function normalizeQuery(sql: SyncQuery, bindings?: Record<string, unknown>) {
   if (typeof sql === "string") return { sql, bindings };
@@ -34,9 +35,20 @@ class FakeDb implements SyncDb {
   }
 }
 
+class FakeLiveSource implements LiveSource {
+  subscribed: string[] = [];
+  async subscribe(table: string, _handler: LiveHandler): Promise<() => void> {
+    this.subscribed.push(table);
+    return () => {};
+  }
+}
+
 describe("sync manager", () => {
   beforeEach(() => {
     stopSyncWorkers();
+  });
+  afterEach(async () => {
+    await stopSyncWorkers();
   });
 
   test("在线启动时重建固定共享结构影子库且不访问 remote changefeed", async () => {
@@ -55,5 +67,20 @@ describe("sync manager", () => {
     expect(remote.queries.some((query) => query.sql.includes("SELECT * FROM type::table($table)"))).toBe(true);
     expect(remote.queries.some((query) => query.sql.includes("SHOW CHANGES"))).toBe(false);
     expect(local.queries.some((query) => query.sql.includes("UPSERT $record CONTENT $content"))).toBe(true);
+  });
+
+  test("启动后会对所有固定共享表建立 LIVE 订阅", async () => {
+    const local = new FakeDb();
+    const remote = new FakeDb();
+    const live = new FakeLiveSource();
+
+    await startSyncWorkers({
+      localDb: () => local,
+      remoteDb: () => remote,
+      liveSource: () => live,
+      isOnline: () => true,
+    });
+
+    expect(live.subscribed).toEqual([...FIXED_STRUCTURE_SHADOW_TABLES]);
   });
 });

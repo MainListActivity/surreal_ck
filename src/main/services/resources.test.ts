@@ -18,11 +18,20 @@ class MemoryResourceRepository implements ResourceRepository {
   readonly resources = new Map<string, ResourceRow>();
   readonly sessions = new Map<string, ResearchSessionRow>();
   readonly embeddings = new Map<string, ResourceEmbeddingRow>();
+  readonly resourceSessionLinks = new Map<string, string>();
 
-  async createResource(input: Omit<ResourceRow, "id">): Promise<ResourceRow> {
-    const row = { id: new RecordId("resource_item", `r${++this.resourceSeq}`), ...input };
+  async createResource(input: Omit<ResourceRow, "id" | "research_session">): Promise<ResourceRow> {
+    const row: ResourceRow = { id: new RecordId("resource_item", `r${++this.resourceSeq}`), ...input };
     this.resources.set(String(row.id), row);
     return row;
+  }
+
+  async linkResourceToResearchSession(resourceId: string, sessionId: string): Promise<void> {
+    this.resourceSessionLinks.set(resourceId, sessionId);
+  }
+
+  async findResearchSessionIdByResource(resourceId: string): Promise<string | null> {
+    return this.resourceSessionLinks.get(resourceId) ?? null;
   }
 
   async findResourceById(resourceId: string): Promise<ResourceRow | null> {
@@ -445,6 +454,33 @@ describe("资源主数据闭环", () => {
     });
     expect(canWrite).toEqual(["workspace:demo"]);
     expect(canRead).toEqual(["workspace:demo"]);
+  });
+
+  test("shared resource_item 载荷不再携带 research_session 引用", async () => {
+    const { service, repo } = createTestService();
+
+    const createdSession = await service.createResearchSession({
+      workspaceId: "workspace:demo",
+      query: "查找相似案例",
+      resourceType: "generic_note",
+    });
+
+    const saved = await service.saveResource({
+      workspaceId: "workspace:demo",
+      researchSessionId: createdSession.session.id,
+      resourceType: "generic_note",
+      title: "案例 A",
+      summary: "摘要",
+      evidence: [],
+      structuredPayload: {},
+      quality: "user-confirmed",
+    });
+
+    const sharedRow = repo.resources.get(saved.resource.id);
+    expect(sharedRow?.research_session).toBeUndefined();
+    // 本地伴随关联仍然可读
+    const detail = await service.getResourceDetail({ resourceId: saved.resource.id });
+    expect(detail.session?.id).toBe(createdSession.session.id);
   });
 
   test("保存到 research session 的资源会被关联并可完成会话", async () => {
