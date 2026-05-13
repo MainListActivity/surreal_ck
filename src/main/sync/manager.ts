@@ -1,7 +1,4 @@
-import { LocalToRemoteWorker } from "./local-to-remote-worker";
-import { RemoteToLocalWorker } from "./remote-to-local-worker";
-import { checkCursorHealthAndRebuild } from "./cursor-health";
-import { enumerateSyncTables } from "./tables";
+import { rebuildFixedSharedStructureShadow } from "./structure-shadow";
 import type { SyncDb } from "./types";
 
 export type SyncManagerDeps = {
@@ -10,37 +7,25 @@ export type SyncManagerDeps = {
   isOnline: () => boolean;
 };
 
-let localToRemoteWorker: LocalToRemoteWorker | null = null;
-let remoteToLocalWorker: RemoteToLocalWorker | null = null;
+let syncStarted = false;
 
 export async function startSyncWorkers(deps: SyncManagerDeps): Promise<void> {
-  if (localToRemoteWorker || remoteToLocalWorker) return;
+  if (syncStarted) return;
 
   const remote = deps.remoteDb();
   if (!remote || !deps.isOnline()) return;
 
-  const tables = await enumerateSyncTables(deps.localDb());
-  await checkCursorHealthAndRebuild({ localDb: deps.localDb(), remoteDb: remote, tables });
-  const options = {
+  await rebuildFixedSharedStructureShadow({
     localDb: deps.localDb(),
     remoteDb: remote,
-    tables,
-    isOnline: deps.isOnline,
-  };
-
-  localToRemoteWorker = new LocalToRemoteWorker(options);
-  remoteToLocalWorker = new RemoteToLocalWorker(options);
-  localToRemoteWorker.start();
-  remoteToLocalWorker.start();
+  });
+  syncStarted = true;
 }
 
 export function stopSyncWorkers(): void {
-  localToRemoteWorker?.stop();
-  remoteToLocalWorker?.stop();
-  localToRemoteWorker = null;
-  remoteToLocalWorker = null;
+  syncStarted = false;
 }
 
 export function syncWorkersRunningForTests(): boolean {
-  return localToRemoteWorker !== null || remoteToLocalWorker !== null;
+  return syncStarted;
 }
