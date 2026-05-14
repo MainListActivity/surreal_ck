@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import {
   markDirtyStructureShadow,
+  markDirtyProjectionData,
   markLastRebuildAt,
   markRebuildInProgress,
   resetSyncRuntimeStateForTests,
@@ -18,13 +19,15 @@ describe("getSyncStatusV2", () => {
     expect(status.online).toBe(true);
     expect(status.rebuildInProgress).toBe(false);
     expect(status.dirtyStructureShadow).toBe(false);
+    expect(status.dirtyProjectionData).toBe(false);
     expect(status.incompatibleSchema).toBe(false);
     expect(status.lastRebuildAt).toBeUndefined();
     expect(status.lastError).toBeUndefined();
   });
 
-  test("反映 dirty / rebuildInProgress / lastRebuildAt / lastError", () => {
+  test("反映结构影子库 dirty / 投影数据区 dirty / rebuildInProgress / lastRebuildAt / lastError", () => {
     markDirtyStructureShadow(true);
+    markDirtyProjectionData(true);
     markRebuildInProgress(true);
     markLastRebuildAt("2026-05-13T10:00:00.000Z");
     setSyncLastError("boom");
@@ -34,6 +37,7 @@ describe("getSyncStatusV2", () => {
       online: false,
       rebuildInProgress: true,
       dirtyStructureShadow: true,
+      dirtyProjectionData: true,
       incompatibleSchema: false,
       lastRebuildAt: "2026-05-13T10:00:00.000Z",
       lastError: "boom",

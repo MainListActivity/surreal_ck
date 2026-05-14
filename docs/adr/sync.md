@@ -359,6 +359,8 @@ canonical profile 变更采用 **立即生效 + 异步重建**：
 1. 重写 `src/main/sync/`：
    - 删掉对 remote `SHOW CHANGES`、remote cursor、tombstone 的依赖
    - 改成“重建 + LIVE”模型
+   - 公共 RPC 只暴露 `getSyncStatusV2`、`triggerSyncRebuild`、`reconnectRemote`
+   - 同步健康只表达 remote 连通、结构影子库 dirty、投影数据区 dirty、重建中和最近重建时间
 2. 为本地状态引入明确分层：
    - 结构影子库
    - 投影数据区

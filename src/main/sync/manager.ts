@@ -8,6 +8,7 @@ import {
 } from "./rel-projection";
 import {
   markLastRebuildAt,
+  markDirtyProjectionData,
   markRebuildInProgress,
 } from "./status";
 import {
@@ -60,6 +61,7 @@ export async function startSyncWorkers(deps: SyncManagerDeps): Promise<void> {
       remoteDb: remote,
       liveSource: live,
     });
+    markDirtyProjectionData(false);
   }
 
   await recoverDirtyStructureShadow({

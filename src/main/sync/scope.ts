@@ -45,8 +45,6 @@ export const LOCAL_ONLY_TABLES = [
   "mastra_observability_event_raw",
   "dashboard_result_cache",
   "dashboard_run_log",
-  "sync_cursor",
-  "sync_dead_letter",
 ] as const;
 
 export function getSyncScopeEntry(table: string): SyncScopeEntry | null {

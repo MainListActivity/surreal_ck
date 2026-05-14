@@ -12,7 +12,6 @@ describe("同步范围", () => {
     expect(isInSyncScope("ent_contract")).toBe(true);
     expect(isInSyncScope("rel_owns_share")).toBe(true);
 
-    expect(isInSyncScope("sync_cursor")).toBe(false);
     expect(isInSyncScope("token_store")).toBe(false);
     expect(isInSyncScope("wrong_contract")).toBe(false);
     expect(isInSyncScope("new_table")).toBe(false);
@@ -28,7 +27,6 @@ describe("同步范围", () => {
     for (const table of LOCAL_ONLY_TABLES) {
       expect(isInSyncScope(table)).toBe(false);
     }
-    expect(SYNC_SCOPE.some((entry) => entry.table === "sync_cursor")).toBe(false);
-    expect(SYNC_SCOPE.some((entry) => entry.table === "sync_dead_letter")).toBe(false);
+    expect(SYNC_SCOPE.some((entry) => LOCAL_ONLY_TABLES.some((table) => table === entry.table))).toBe(false);
   });
 });

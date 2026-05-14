@@ -1,6 +1,6 @@
 import { StringRecordId } from "surrealdb";
-import { assertSafeTableName } from "./changefeed";
-import { markDirtyStructureShadow } from "./status";
+import { markDirtyProjectionData } from "./status";
+import { assertSafeTableName } from "./table-name";
 import type { LiveMessage, LiveSource, SyncDb } from "./types";
 
 export type RebuildEntProjectionsOptions = {
@@ -85,7 +85,7 @@ export async function refreshEntProjectionSubscriptions(
 async function applyLiveEntMessage(localDb: SyncDb, message: LiveMessage): Promise<void> {
   try {
     if (message.action === "KILLED") {
-      markDirtyStructureShadow(true);
+      markDirtyProjectionData(true);
       return;
     }
     const recordId = String(message.recordId);
@@ -101,7 +101,7 @@ async function applyLiveEntMessage(localDb: SyncDb, message: LiveMessage): Promi
       await localDb.query("DELETE $record", { record: new StringRecordId(recordId) });
     }
   } catch {
-    markDirtyStructureShadow(true);
+    markDirtyProjectionData(true);
   }
 }
 

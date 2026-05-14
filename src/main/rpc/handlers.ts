@@ -17,7 +17,6 @@ import type {
   CreateFolderRequest,
   CreateFolderResponse,
   CreateResearchSessionRequest,
-  DeadLetterIdRequest,
   CreateSheetRequest,
   CreateSheetResponse,
   CreateWorkbookFromTemplateRequest,
@@ -38,8 +37,6 @@ import type {
   ListDashboardPagesResponse,
   ListDashboardViewsRequest,
   ListDashboardViewsResponse,
-  ListDeadLettersRequest,
-  ListDeadLettersResponse,
   ListFoldersRequest,
   ListFoldersResponse,
   ListTemplatesResponse,
@@ -89,7 +86,6 @@ import type {
   SearchReferenceCandidatesResponse,
   SendAiMessageRequest,
   SendAiMessageResponse,
-  SyncStatusDTO,
   SyncStatusV2DTO,
   ReconnectRemoteResponse,
   PreviewDashboardViewRequest,
@@ -154,7 +150,6 @@ import { sendAiMessage } from "../services/ai-chat";
 import { resumeAiWorkflowFromRpc } from "../services/ai-resume-rpc";
 import { cancelAiWorkflow } from "../services/ai-cancel";
 import { executeAiAction } from "../services/ai-actions";
-import { discardSyncDeadLetter, forceReapplySyncDeadLetter, getSyncStatus, listDeadLetters } from "../services/sync-state";
 import { getSyncStatusV2, triggerSyncRebuild } from "../services/sync-state-v2";
 import { reconnectNow } from "../services/reconnect-scheduler";
 import { createResourceDraftFromEvidence } from "../ai/mastra/agents/resource-agent";
@@ -256,10 +251,6 @@ export function createRpcHandlers(send: SendFn, windowControls?: WindowControlDe
         });
       },
 
-      getSyncStatus: async (): Promise<Result<SyncStatusDTO>> => {
-        return withResult(() => getSyncStatus());
-      },
-
       getSyncStatusV2: async (): Promise<Result<SyncStatusV2DTO>> => {
         return withResult(async () => getSyncStatusV2());
       },
@@ -292,18 +283,6 @@ export function createRpcHandlers(send: SendFn, windowControls?: WindowControlDe
             sync,
           } satisfies ReconnectRemoteResponse;
         });
-      },
-
-      listDeadLetters: async (req: ListDeadLettersRequest): Promise<Result<ListDeadLettersResponse>> => {
-        return withResult(() => listDeadLetters(req));
-      },
-
-      discardDeadLetter: async (req: DeadLetterIdRequest): Promise<Result<void>> => {
-        return withResult(() => discardSyncDeadLetter(req.id));
-      },
-
-      forceReapplyDeadLetter: async (req: DeadLetterIdRequest): Promise<Result<void>> => {
-        return withResult(() => forceReapplySyncDeadLetter(req.id));
       },
 
       getSettings: async (): Promise<Result<SaveSettingsResponse>> => {

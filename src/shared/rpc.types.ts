@@ -92,26 +92,15 @@ export type AppBootstrap = {
   defaultWorkspace?: WorkspaceDTO;
 };
 
-export type SyncStatusDTO = {
-  online: boolean;
-  sessionId: string;
-  pendingCount: number;
-  deadLetterCount: number;
-  lastLocalCursorAt?: ISODateTimeString;
-  lastRemoteCursorAt?: ISODateTimeString;
-  incompatibleSchema: boolean;
-  localChangefeedStale: boolean;
-  lastError?: string;
-};
-
 /**
  * 同步状态 v2 — 反映 "重建 + LIVE" 架构下的本地派生状态健康。
- * 取代旧 cursor/dead-letter 主状态模型（参见 ADR sync §4 / §12）。
+ * 取代旧双向 replay 主状态模型（参见 ADR sync §4 / §12）。
  */
 export type SyncStatusV2DTO = {
   online: boolean;
   rebuildInProgress: boolean;
   dirtyStructureShadow: boolean;
+  dirtyProjectionData: boolean;
   incompatibleSchema: boolean;
   lastRebuildAt?: ISODateTimeString;
   lastError?: string;
@@ -127,29 +116,6 @@ export type ReconnectRemoteResponse = {
   status: "reconnected" | "offline" | "needs-relogin";
   message?: string;
   sync: SyncStatusV2DTO;
-};
-
-export type SyncDeadLetterDTO = {
-  id: string;
-  targetTable: string;
-  targetId: string;
-  versionstamp: string;
-  op: string;
-  errorMessage: string;
-  createdAt?: ISODateTimeString;
-};
-
-export type ListDeadLettersRequest = {
-  limit?: number;
-  offset?: number;
-};
-
-export type ListDeadLettersResponse = {
-  items: SyncDeadLetterDTO[];
-};
-
-export type DeadLetterIdRequest = {
-  id: string;
 };
 
 export type ObservabilitySettingsDTO = {
@@ -1556,13 +1522,9 @@ export interface AppRPC extends ElectrobunRPCSchema {
       logout: { params: Record<string, never>; response: void };
       toggleWindowMaximized: { params: Record<string, never>; response: void };
       getAppBootstrap: { params: Record<string, never>; response: Result<AppBootstrap> };
-      getSyncStatus: { params: Record<string, never>; response: Result<SyncStatusDTO> };
       getSyncStatusV2: { params: Record<string, never>; response: Result<SyncStatusV2DTO> };
       triggerSyncRebuild: { params: Record<string, never>; response: Result<SyncStatusV2DTO> };
       reconnectRemote: { params: Record<string, never>; response: Result<ReconnectRemoteResponse> };
-      listDeadLetters: { params: ListDeadLettersRequest; response: Result<ListDeadLettersResponse> };
-      discardDeadLetter: { params: DeadLetterIdRequest; response: Result<void> };
-      forceReapplyDeadLetter: { params: DeadLetterIdRequest; response: Result<void> };
       getSettings: { params: Record<string, never>; response: Result<GetSettingsResponse> };
       saveSettings: { params: SaveSettingsRequest; response: Result<SaveSettingsResponse> };
       sendAiMessage: { params: SendAiMessageRequest; response: Result<SendAiMessageResponse> };

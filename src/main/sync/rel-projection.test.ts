@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
+  rebuildRelProjections,
   refreshRelProjectionSubscriptions,
   stopRelProjectionSubscriptions,
 } from "./rel-projection";
@@ -104,6 +105,34 @@ describe("rel_* metadata-driven 投影", () => {
     expect(live.subscribeCalls).toEqual(["rel_ws1_a"]);
     expect(local.rows("rel_ws1_a").map((r) => r.id)).toEqual(["rel_ws1_a:r1"]);
     expect(local.rows("rel_ws1_a")[0]?.workspace).toBe("workspace:ws1");
+  });
+
+  test("按 edge_catalog 全量重建 rel_* 投影", async () => {
+    const local = new FakeDb();
+    const remote = new FakeDb();
+    local.rowsByTable.edge_catalog = [
+      { rel_table: "rel_ws1_a", workspace: "workspace:ws1" },
+    ];
+    local.rowsByTable.rel_ws1_a = [
+      { id: "rel_ws1_a:stale", workspace: "workspace:ws1" },
+      { id: "rel_ws1_a:other", workspace: "workspace:other" },
+    ];
+    remote.rowsByTable.rel_ws1_a = [
+      { id: "rel_ws1_a:r1", in: "ent_x:1", out: "ent_y:1", workspace: "workspace:ws1" },
+    ];
+
+    await rebuildRelProjections({ localDb: local, remoteDb: remote });
+
+    expect(local.rows("rel_ws1_a")).toEqual([
+      { id: "rel_ws1_a:other", workspace: "workspace:other" },
+      {
+        id: "rel_ws1_a:r1",
+        in: "ent_x:1",
+        out: "ent_y:1",
+        workspace: "workspace:ws1",
+        _origin_session_id: "remote:projection-rebuild",
+      },
+    ]);
   });
 
   test("移除 edge_catalog 行时停止 LIVE 并按 workspace 清本地 rel_*", async () => {

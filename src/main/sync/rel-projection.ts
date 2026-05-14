@@ -1,12 +1,17 @@
 import { StringRecordId } from "surrealdb";
-import { assertSafeTableName } from "./changefeed";
-import { markDirtyStructureShadow } from "./status";
+import { markDirtyProjectionData } from "./status";
+import { assertSafeTableName } from "./table-name";
 import type { LiveMessage, LiveSource, SyncDb } from "./types";
 
 export type RefreshRelProjectionSubscriptionsOptions = {
   localDb: SyncDb;
   remoteDb: SyncDb;
   liveSource: LiveSource;
+};
+
+export type RebuildRelProjectionsOptions = {
+  localDb: SyncDb;
+  remoteDb: SyncDb;
 };
 
 type EdgeCatalogMeta = {
@@ -23,6 +28,27 @@ type Subscription = {
 };
 
 let subscriptions = new Map<string, Subscription>();
+
+export async function rebuildRelProjections(
+  options: RebuildRelProjectionsOptions,
+): Promise<{ tables: Array<{ table: string; rows: number }> }> {
+  const catalog = await loadEdgeCatalogMeta(options.localDb);
+  const tables: Array<{ table: string; rows: number }> = [];
+  for (const meta of catalog) {
+    const table = meta.rel_table;
+    if (!REL_TABLE.test(table)) continue;
+    assertSafeTableName(table);
+    const rows = await fetchRemoteRows(options.remoteDb, table);
+    await clearLocalTableForWorkspace(options.localDb, table, String(meta.workspace));
+    for (const row of rows) {
+      const recordId = row.id;
+      if (recordId === undefined || recordId === null) continue;
+      await upsertLocalRow(options.localDb, String(recordId), row);
+    }
+    tables.push({ table, rows: rows.length });
+  }
+  return { tables };
+}
 
 export async function refreshRelProjectionSubscriptions(
   options: RefreshRelProjectionSubscriptionsOptions,
@@ -113,7 +139,7 @@ async function upsertLocalRow(
 async function applyLiveRelMessage(localDb: SyncDb, message: LiveMessage): Promise<void> {
   try {
     if (message.action === "KILLED") {
-      markDirtyStructureShadow(true);
+      markDirtyProjectionData(true);
       return;
     }
     const recordId = String(message.recordId);
@@ -129,6 +155,6 @@ async function applyLiveRelMessage(localDb: SyncDb, message: LiveMessage): Promi
       await localDb.query("DELETE $record", { record: new StringRecordId(recordId) });
     }
   } catch {
-    markDirtyStructureShadow(true);
+    markDirtyProjectionData(true);
   }
 }

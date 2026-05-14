@@ -4,7 +4,7 @@ import {
   refreshEntProjectionSubscriptions,
   stopEntProjectionSubscriptions,
 } from "./ent-projection";
-import { resetSyncRuntimeStateForTests } from "./status";
+import { getSyncRuntimeState, resetSyncRuntimeStateForTests } from "./status";
 import type { LiveHandler, LiveMessage, LiveSource, SyncDb, SyncQuery } from "./types";
 
 function normalizeQuery(sql: SyncQuery, bindings?: Record<string, unknown>) {
@@ -182,5 +182,24 @@ describe("ent_* metadata-driven 投影", () => {
     const secondPhase = local.queries.slice(localQueryCountAfterFirst);
     const wroteEnt = secondPhase.some((q) => q.sql.includes("DELETE FROM type::table($table)") || q.sql.includes("UPSERT $record"));
     expect(wroteEnt).toBe(false);
+  });
+
+  test("ent_* LIVE 断开时标记投影数据区 dirty，而不是结构影子库 dirty", async () => {
+    const local = new FakeDb();
+    const remote = new FakeDb();
+    const live = new FakeLiveSource();
+    local.rowsByTable.sheet = [{ table_name: "ent_ws1_a", column_defs: [] }];
+
+    await refreshEntProjectionSubscriptions({ localDb: local, remoteDb: remote, liveSource: live });
+    await live.emit("ent_ws1_a", {
+      action: "KILLED",
+      recordId: "ent_ws1_a:any",
+      value: {},
+    });
+
+    expect(getSyncRuntimeState()).toMatchObject({
+      dirtyProjectionData: true,
+      dirtyStructureShadow: false,
+    });
   });
 });

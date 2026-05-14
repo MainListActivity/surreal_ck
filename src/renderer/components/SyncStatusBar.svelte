@@ -109,7 +109,7 @@
     if (value.needsRelogin) return "需重新登录";
     if (isReconnecting || value.reconnecting) return "重连中…";
     if (!value.online) return "离线模式";
-    if (value.dirtyStructureShadow) return "本地需重建";
+    if (value.dirtyStructureShadow || value.dirtyProjectionData) return "本地需重建";
     return "已同步";
   }
 
@@ -122,7 +122,7 @@
     if (isRebuilding || value.rebuildInProgress) return "warn";
     if (value.incompatibleSchema || value.needsRelogin) return "error";
     if (isReconnecting || value.reconnecting) return "warn";
-    if (value.dirtyStructureShadow) return "warn";
+    if (value.dirtyStructureShadow || value.dirtyProjectionData) return "warn";
     if (!value.online) return "warn";
     return "ok";
   }
@@ -201,6 +201,8 @@
         </dd>
         <dt>本地结构影子</dt>
         <dd>{status?.dirtyStructureShadow ? "需重建（dirty）" : "健康"}</dd>
+        <dt>投影数据区</dt>
+        <dd>{status?.dirtyProjectionData ? "需重建（dirty）" : "健康"}</dd>
         <dt>客户端 schema</dt>
         <dd>{status?.incompatibleSchema ? "版本不兼容" : "兼容"}</dd>
         <dt>当前是否重建</dt>

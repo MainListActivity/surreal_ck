@@ -1,6 +1,6 @@
 import { StringRecordId } from "surrealdb";
-import { assertSafeTableName } from "./changefeed";
 import { wrapSyncOperationError } from "./operation-error";
+import { assertSafeTableName } from "./table-name";
 import type { SyncDb } from "./types";
 
 export const FIXED_STRUCTURE_SHADOW_TABLES = [

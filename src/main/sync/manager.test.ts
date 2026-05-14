@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { startSyncWorkers, stopSyncWorkers } from "./manager";
+import {
+  getSyncRuntimeState,
+  markDirtyProjectionData,
+  resetSyncRuntimeStateForTests,
+} from "./status";
 import { FIXED_STRUCTURE_SHADOW_TABLES } from "./structure-shadow";
 import type { LiveHandler, LiveSource, SyncDb, SyncQuery } from "./types";
 
@@ -27,10 +32,6 @@ class FakeDb implements SyncDb {
     if (normalized.sql.includes("SELECT versionstamp")) {
       return [[]] as T;
     }
-    if (normalized.sql.includes("SHOW CHANGES")) {
-      return [[]] as T;
-    }
-
     return [[]] as T;
   }
 }
@@ -45,13 +46,14 @@ class FakeLiveSource implements LiveSource {
 
 describe("sync manager", () => {
   beforeEach(() => {
+    resetSyncRuntimeStateForTests();
     stopSyncWorkers();
   });
   afterEach(async () => {
     await stopSyncWorkers();
   });
 
-  test("在线启动时重建固定共享结构影子库且不访问 remote changefeed", async () => {
+  test("在线启动时重建固定共享结构影子库", async () => {
     const local = new FakeDb();
     const remote = new FakeDb({
       app_user: [{ id: "app_user:u1", subject: "sub-1" }],
@@ -65,7 +67,7 @@ describe("sync manager", () => {
     });
 
     expect(remote.queries.some((query) => query.sql.includes("SELECT * FROM type::table($table)"))).toBe(true);
-    expect(remote.queries.some((query) => query.sql.includes("SHOW CHANGES"))).toBe(false);
+    expect(remote.queries.every((query) => query.sql.includes("SELECT * FROM type::table($table)"))).toBe(true);
     expect(local.queries.some((query) => query.sql.includes("UPSERT $record CONTENT $content"))).toBe(true);
   });
 
@@ -82,5 +84,21 @@ describe("sync manager", () => {
     });
 
     expect(live.subscribed).toEqual([...FIXED_STRUCTURE_SHADOW_TABLES]);
+  });
+
+  test("启动时刷新投影订阅成功后清除投影数据区 dirty", async () => {
+    const local = new FakeDb();
+    const remote = new FakeDb();
+    const live = new FakeLiveSource();
+    markDirtyProjectionData(true);
+
+    await startSyncWorkers({
+      localDb: () => local,
+      remoteDb: () => remote,
+      liveSource: () => live,
+      isOnline: () => true,
+    });
+
+    expect(getSyncRuntimeState().dirtyProjectionData).toBe(false);
   });
 });

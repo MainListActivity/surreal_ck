@@ -62,7 +62,7 @@ function createRuntime(warnings: string[], logs: string[]) {
       startSyncWorkersCalls += 1;
       throw Object.assign(
         new Error(
-          `remote changefeed health check table=workspace cursor=0 query="SHOW CHANGES FOR TABLE workspace SINCE 0": IAM error: Not enough permissions to perform this action`,
+          `fixed structure shadow rebuild remote fetch table=workspace query="SELECT * FROM type::table($table)" bindings.table=workspace: IAM error: Not enough permissions to perform this action`,
         ),
         { kind: "NotAllowed", code: 0 },
       );
@@ -87,7 +87,7 @@ describe("connectRemoteWithRuntime", () => {
     failAuthenticate = false;
   });
 
-  test("同步 worker 因远端 IAM 权限不足无法启动时，仍保留已认证远端连接", async () => {
+  test("同步重建因远端 IAM 权限不足无法启动时，仍保留已认证远端连接", async () => {
     const warnings: string[] = [];
     const logs: string[] = [];
 
@@ -105,11 +105,11 @@ describe("connectRemoteWithRuntime", () => {
     expect(startSyncWorkersCalls).toBe(1);
     expect(stopSyncWorkersCalls).toBe(1);
     expect(syncLastError).toBe(
-      `remote changefeed health check table=workspace cursor=0 query="SHOW CHANGES FOR TABLE workspace SINCE 0": IAM error: Not enough permissions to perform this action`,
+      `fixed structure shadow rebuild remote fetch table=workspace query="SELECT * FROM type::table($table)" bindings.table=workspace: IAM error: Not enough permissions to perform this action`,
     );
     expect(logs).toContain("[db] remote connected: wss://example.invalid");
     expect(warnings).toContain(
-      `[sync] remote sync disabled: remote changefeed health check table=workspace cursor=0 query="SHOW CHANGES FOR TABLE workspace SINCE 0": IAM error: Not enough permissions to perform this action`,
+      `[sync] remote sync disabled: fixed structure shadow rebuild remote fetch table=workspace query="SELECT * FROM type::table($table)" bindings.table=workspace: IAM error: Not enough permissions to perform this action`,
     );
     expect(warnings).not.toContain("[db] remote connection failed (degraded to local-only):");
   });
