@@ -91,6 +91,7 @@ import type {
   SendAiMessageResponse,
   SyncStatusDTO,
   SyncStatusV2DTO,
+  ReconnectRemoteResponse,
   PreviewDashboardViewRequest,
   PreviewDashboardViewResponse,
   UpdateDashboardViewRequest,
@@ -155,6 +156,7 @@ import { cancelAiWorkflow } from "../services/ai-cancel";
 import { executeAiAction } from "../services/ai-actions";
 import { discardSyncDeadLetter, forceReapplySyncDeadLetter, getSyncStatus, listDeadLetters } from "../services/sync-state";
 import { getSyncStatusV2, triggerSyncRebuild } from "../services/sync-state-v2";
+import { reconnectNow } from "../services/reconnect-scheduler";
 import { createResourceDraftFromEvidence } from "../ai/mastra/agents/resource-agent";
 
 type SendFn = {
@@ -266,6 +268,32 @@ export function createRpcHandlers(send: SendFn, windowControls?: WindowControlDe
 
       triggerSyncRebuild: async (): Promise<Result<SyncStatusV2DTO>> => {
         return withResult(() => triggerSyncRebuild());
+      },
+
+      reconnectRemote: async (): Promise<Result<ReconnectRemoteResponse>> => {
+        return withResult(async () => {
+          // 调度器立即触发一次重连（内部已调用 reconnectRemote 服务）；
+          // 失败时会自动 schedule 下一次退避；needs-relogin 则停止。
+          await reconnectNow();
+          const sync = getSyncStatusV2();
+          if (sync.online) {
+            const state = getPublicAuthState();
+            send("authStateChanged", { state });
+            return { status: "reconnected", sync } satisfies ReconnectRemoteResponse;
+          }
+          if (sync.needsRelogin) {
+            return {
+              status: "needs-relogin",
+              message: sync.lastError ?? "refresh_token 已失效，请重新登录",
+              sync,
+            } satisfies ReconnectRemoteResponse;
+          }
+          return {
+            status: "offline",
+            message: sync.lastError ?? "远端连接失败",
+            sync,
+          } satisfies ReconnectRemoteResponse;
+        });
       },
 
       listDeadLetters: async (req: ListDeadLettersRequest): Promise<Result<ListDeadLettersResponse>> => {

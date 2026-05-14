@@ -12,6 +12,8 @@ import { checkRemoteSchemaVersion } from "../sync/schema-version";
 import { startSyncWorkers, stopSyncWorkers } from "../sync/manager";
 import { setSyncLastError } from "../sync/status";
 import { connectRemoteWithRuntime } from "./remote-connection";
+import { syncErrorLogDetails } from "../sync/operation-error";
+import { reportConnected, scheduleReconnect, stopReconnect } from "../services/reconnect-scheduler";
 
 // ─── 状态 ────────────────────────────────────────────────────────────────────
 
@@ -224,6 +226,7 @@ export async function tryRestoreSession(): Promise<RestoreResult> {
   if (!stored?.refresh_token) {
     console.log("[db] no refresh_token in token_store, cannot restore");
     setOfflineMode(true);
+    scheduleReconnect();
     return { status: "offline" };
   }
 
@@ -250,6 +253,7 @@ export async function tryRestoreSession(): Promise<RestoreResult> {
   } catch (err) {
     console.warn("[db] token refresh failed, entering offline mode:", err);
     setOfflineMode(true);
+    scheduleReconnect();
     return { status: "offline" };
   }
 }
@@ -284,9 +288,15 @@ export async function connectRemote(accessToken: string): Promise<void> {
         console.warn(message);
         return;
       }
-      console.warn(message, err);
+      console.warn(`${message}\n${syncErrorLogDetails(err)}`);
     },
   });
+
+  if (_remoteDb) {
+    reportConnected();
+  } else {
+    scheduleReconnect();
+  }
 }
 
 /**
@@ -295,6 +305,7 @@ export async function connectRemote(accessToken: string): Promise<void> {
  * remote 只置 null，不调用 close()（避免 surrealdb-node + Bun 的 segfault）。
  */
 export async function closeUserDb(): Promise<void> {
+  stopReconnect();
   await stopSyncWorkers();
   _remoteDb = null;
 

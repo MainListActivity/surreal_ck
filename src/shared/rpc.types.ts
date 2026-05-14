@@ -124,6 +124,18 @@ export type SyncStatusV2DTO = {
   incompatibleSchema: boolean;
   lastRebuildAt?: ISODateTimeString;
   lastError?: string;
+  /** refresh_token 已失效，自动重连已停止，需用户重新登录。 */
+  needsRelogin?: boolean;
+  /** 主进程正在执行一次 reconnect。 */
+  reconnecting?: boolean;
+  /** 下一次自动重连的绝对时间（ms since epoch）。未排程时缺省。 */
+  nextRetryAt?: number;
+};
+
+export type ReconnectRemoteResponse = {
+  status: "reconnected" | "offline" | "needs-relogin";
+  message?: string;
+  sync: SyncStatusV2DTO;
 };
 
 export type SyncDeadLetterDTO = {
@@ -1556,6 +1568,7 @@ export interface AppRPC extends ElectrobunRPCSchema {
       getSyncStatus: { params: Record<string, never>; response: Result<SyncStatusDTO> };
       getSyncStatusV2: { params: Record<string, never>; response: Result<SyncStatusV2DTO> };
       triggerSyncRebuild: { params: Record<string, never>; response: Result<SyncStatusV2DTO> };
+      reconnectRemote: { params: Record<string, never>; response: Result<ReconnectRemoteResponse> };
       listDeadLetters: { params: ListDeadLettersRequest; response: Result<ListDeadLettersResponse> };
       discardDeadLetter: { params: DeadLetterIdRequest; response: Result<void> };
       forceReapplyDeadLetter: { params: DeadLetterIdRequest; response: Result<void> };

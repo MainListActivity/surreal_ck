@@ -9,6 +9,8 @@ import {
   markRebuildInProgress,
 } from "../sync/status";
 import { getOfflineMode } from "./offline-state";
+import { getNeedsRelogin, getReconnecting } from "./reconnect";
+import { getNextRetryAt } from "./reconnect-scheduler";
 import type { SyncStatusV2DTO } from "../../shared/rpc.types";
 
 export type GetSyncStatusV2Options = {
@@ -20,6 +22,9 @@ export function getSyncStatusV2(options: GetSyncStatusV2Options = {}): SyncStatu
   const isOnline = options.isOnline
     ? options.isOnline()
     : !getOfflineMode() && getRemoteDb() !== null && !runtime.incompatibleSchema;
+  const needsRelogin = getNeedsRelogin();
+  const reconnecting = getReconnecting();
+  const nextRetryAt = getNextRetryAt();
 
   return {
     online: isOnline,
@@ -28,6 +33,9 @@ export function getSyncStatusV2(options: GetSyncStatusV2Options = {}): SyncStatu
     incompatibleSchema: runtime.incompatibleSchema,
     ...(runtime.lastRebuildAt ? { lastRebuildAt: runtime.lastRebuildAt } : {}),
     ...(runtime.lastError ? { lastError: runtime.lastError } : {}),
+    ...(needsRelogin ? { needsRelogin: true } : {}),
+    ...(reconnecting ? { reconnecting: true } : {}),
+    ...(nextRetryAt !== null ? { nextRetryAt } : {}),
   };
 }
 

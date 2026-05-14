@@ -42,6 +42,7 @@ import type {
   Result,
   SyncStatusDTO,
   SyncStatusV2DTO,
+  ReconnectRemoteResponse,
   RetryResourceEmbeddingResponse,
   SaveDashboardPageLayoutResponse,
   SaveSettingsResponse,
@@ -89,6 +90,10 @@ export const appApi = {
 
   triggerSyncRebuild(): Promise<Result<SyncStatusV2DTO>> {
     return rpc.request("triggerSyncRebuild", {});
+  },
+
+  reconnectRemote(): Promise<Result<ReconnectRemoteResponse>> {
+    return rpc.request("reconnectRemote", {});
   },
 
   listDeadLetters(options: { limit?: number; offset?: number } = {}): Promise<Result<ListDeadLettersResponse>> {
