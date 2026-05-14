@@ -7,7 +7,7 @@ import type { TokenSet } from "../auth/oidc";
 import { refreshAccessToken } from "../auth/oidc";
 import { omitNullishSurrealFields } from "./surreal-values";
 import { setOfflineMode } from "../services/offline-state";
-import { defineCurrentSessionParam } from "../sync/session";
+import { defineCurrentSessionParam, defineLocalOriginSessionFields } from "../sync/session";
 import { checkRemoteSchemaVersion } from "../sync/schema-version";
 import { startSyncWorkers, stopSyncWorkers } from "../sync/manager";
 import { setSyncLastError } from "../sync/status";
@@ -148,6 +148,7 @@ export async function initUserDb(sub: string, tokens: TokenSet): Promise<void> {
     await db.use({ namespace: "main", database: dbName });
     await loadSchema(db);
     await defineCurrentSessionParam(db);
+    await defineLocalOriginSessionFields(db);
 
     // 持久化 tokens
     await db.query(
@@ -202,6 +203,7 @@ export async function tryRestoreSession(): Promise<RestoreResult> {
   await db.use({ namespace: "main", database: lastUserDb });
   await loadSchema(db);
   await defineCurrentSessionParam(db);
+  await defineLocalOriginSessionFields(db);
   _userDbName = lastUserDb;
 
   // 读取持久化的 tokens

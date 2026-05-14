@@ -17,8 +17,9 @@ describe("数据表运行时字段定义", () => {
   test("动态实体表 DDL 带同步元字段和 CHANGEFEED", () => {
     const ddl = buildEntityTableDdl("ent_contract");
     expect(ddl).toContain("DEFINE TABLE IF NOT EXISTS ent_contract SCHEMALESS CHANGEFEED 7d PERMISSIONS FULL");
-    expect(ddl).toContain("DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE ent_contract TYPE option<string>");
-    expect(ddl).toContain("DEFINE EVENT OVERWRITE ent_contract_origin_session");
+    expect(ddl).toContain("DEFINE FIELD OVERWRITE _origin_session_id ON TABLE ent_contract TYPE option<string>");
+    expect(ddl).toContain("DEFAULT ALWAYS ($current_session_id ?? NONE)");
+    expect(ddl).toContain("REMOVE EVENT IF EXISTS ent_contract_origin_session ON TABLE ent_contract");
   });
 
   test("动态字段 DDL 可选择 IF NOT EXISTS 或 OVERWRITE", () => {

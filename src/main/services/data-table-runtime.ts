@@ -305,12 +305,9 @@ export function buildRelationTableDdl(tableName: string): string {
 }
 
 export function buildOriginSessionDdl(tableName: string): string {
-  return `DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE ${tableName} TYPE option<string>;
-     DEFINE EVENT OVERWRITE ${tableName}_origin_session ON TABLE ${tableName}
-       WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
-       THEN {
-         UPDATE $after.id SET _origin_session_id = $current_session_id;
-       };`;
+  return `DEFINE FIELD OVERWRITE _origin_session_id ON TABLE ${tableName} TYPE option<string>
+       DEFAULT ALWAYS ($current_session_id ?? NONE);
+     REMOVE EVENT IF EXISTS ${tableName}_origin_session ON TABLE ${tableName};`;
 }
 
 export function buildEntityFieldDdl(

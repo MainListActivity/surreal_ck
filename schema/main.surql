@@ -615,109 +615,49 @@ DEFINE INDEX IF NOT EXISTS client_error_ts ON TABLE client_error COLUMNS created
 
 -- ═══════════════════════════════════════════════════════════════════════════════
 -- SYNC ORIGIN SESSION
--- 所有同步表带 _origin_session_id。普通业务写入由 EVENT 注入本机 session；
--- worker apply 远端变更时显式写 remote:<versionstamp>，EVENT 不覆盖。
+-- 所有同步表带 _origin_session_id。远端只需要字段；本地 session 注入由主进程
+-- 在 embedded localdb 上额外执行 overlay DDL。
 -- ═══════════════════════════════════════════════════════════════════════════════
 
 DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE app_user TYPE option<string>;
-DEFINE EVENT OVERWRITE app_user_origin_session ON TABLE app_user
-  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
-  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
 
 DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE workspace TYPE option<string>;
-DEFINE EVENT OVERWRITE workspace_origin_session ON TABLE workspace
-  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
-  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
 
 DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE pending_workspace_member TYPE option<string>;
-DEFINE EVENT OVERWRITE pending_workspace_member_origin_session ON TABLE pending_workspace_member
-  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
-  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
 
 DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE has_workspace_member TYPE option<string>;
-DEFINE EVENT OVERWRITE has_workspace_member_origin_session ON TABLE has_workspace_member
-  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
-  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
 
 DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE workbook TYPE option<string>;
-DEFINE EVENT OVERWRITE workbook_origin_session ON TABLE workbook
-  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
-  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
 
 DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE folder TYPE option<string>;
-DEFINE EVENT OVERWRITE folder_origin_session ON TABLE folder
-  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
-  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
 
 DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE sheet TYPE option<string>;
-DEFINE EVENT OVERWRITE sheet_origin_session ON TABLE sheet
-  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
-  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
 
 DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE edge_catalog TYPE option<string>;
-DEFINE EVENT OVERWRITE edge_catalog_origin_session ON TABLE edge_catalog
-  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
-  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
 
 DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE dashboard_page TYPE option<string>;
-DEFINE EVENT OVERWRITE dashboard_page_origin_session ON TABLE dashboard_page
-  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
-  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
 
 DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE dashboard_view TYPE option<string>;
-DEFINE EVENT OVERWRITE dashboard_view_origin_session ON TABLE dashboard_view
-  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
-  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
 
 DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE mutation TYPE option<string>;
-DEFINE EVENT OVERWRITE mutation_origin_session ON TABLE mutation
-  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
-  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
 
 DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE snapshot TYPE option<string>;
-DEFINE EVENT OVERWRITE snapshot_origin_session ON TABLE snapshot
-  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
-  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
 
 DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE presence TYPE option<string>;
-DEFINE EVENT OVERWRITE presence_origin_session ON TABLE presence
-  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
-  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
 
 DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE form_definition TYPE option<string>;
-DEFINE EVENT OVERWRITE form_definition_origin_session ON TABLE form_definition
-  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
-  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
 
 DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE intake_submission TYPE option<string>;
-DEFINE EVENT OVERWRITE intake_submission_origin_session ON TABLE intake_submission
-  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
-  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
 
 DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE workbook_file TYPE option<string>;
-DEFINE EVENT OVERWRITE workbook_file_origin_session ON TABLE workbook_file
-  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
-  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
 
 DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE research_session TYPE option<string>;
-DEFINE EVENT OVERWRITE research_session_origin_session ON TABLE research_session
-  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
-  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
 
 DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE resource_item TYPE option<string>;
-DEFINE EVENT OVERWRITE resource_item_origin_session ON TABLE resource_item
-  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
-  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
 
 DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE resource_embedding TYPE option<string>;
-DEFINE EVENT OVERWRITE resource_embedding_origin_session ON TABLE resource_embedding
-  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
-  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
 
 DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE client_error TYPE option<string>;
-DEFINE EVENT OVERWRITE client_error_origin_session ON TABLE client_error
-  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
-  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
 
 -- ═══════════════════════════════════════════════════════════════════════════════
 -- AUTH ACCESS
@@ -855,9 +795,6 @@ DEFINE FIELD IF NOT EXISTS created_at   ON TABLE app_setting TYPE datetime VALUE
 DEFINE FIELD IF NOT EXISTS updated_at   ON TABLE app_setting TYPE datetime VALUE time::now();
 DEFINE INDEX IF NOT EXISTS app_setting_key_unique ON TABLE app_setting COLUMNS key UNIQUE;
 DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE app_setting TYPE option<string>;
-DEFINE EVENT OVERWRITE app_setting_origin_session ON TABLE app_setting
-  WHEN ($event = "CREATE" OR $event = "UPDATE") AND $after._origin_session_id = NONE
-  THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
 
 -- ═══════════════════════════════════════════════════════════════════════════════
 -- MASTRA MEMORY

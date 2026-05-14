@@ -9,8 +9,8 @@ describe("同步 schema 回归", () => {
   test("固定同步表带 CHANGEFEED 和 _origin_session_id", () => {
     for (const { table } of SYNC_SCOPE) {
       expect(schema).toMatch(new RegExp(`DEFINE TABLE[^;]+${table}[^;]+CHANGEFEED 7d`, "s"));
-      expect(schema).toContain(`DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE ${table}`);
-      expect(schema).toContain(`DEFINE EVENT OVERWRITE ${table}_origin_session`);
+      expect(schema).toContain(`DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE ${table} TYPE option<string>`);
+      expect(schema).not.toContain(`DEFINE EVENT OVERWRITE ${table}_origin_session`);
     }
   });
 
