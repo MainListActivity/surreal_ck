@@ -6,7 +6,7 @@ import { Surreal } from "surrealdb";
 const AUTH_DOC_PATH = join(import.meta.dir, "../../../.idea/surrealdb-auth.md");
 const REMOTE_URL =
   process.env.SURREALDB_URL ??
-  "wss://cuckoox-06efnpc64psu927c5555v64q5g.aws-usw2.surreal.cloud";
+  "wss://data.maplayer.top";
 const EXPECTED_NAMESPACE = process.env.SURREALDB_NS ?? "main";
 const EXPECTED_DATABASE = process.env.SURREALDB_DB ?? "docs";
 const EXPECTED_ACCESS = process.env.SURREALDB_ACCESS ?? "madocs";

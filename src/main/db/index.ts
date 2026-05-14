@@ -260,7 +260,7 @@ export async function tryRestoreSession(): Promise<RestoreResult> {
  * 连接失败时静默降级，不影响本地操作。
  */
 export async function connectRemote(accessToken: string): Promise<void> {
-  const remoteUrl = process.env.SURREALDB_URL || 'wss://cuckoox-06efnpc64psu927c5555v64q5g.aws-usw2.surreal.cloud';
+  const remoteUrl = process.env.SURREALDB_URL || 'wss://data.maplayer.top';
 
   await connectRemoteWithRuntime<Surreal>(accessToken, {
     remoteUrl,

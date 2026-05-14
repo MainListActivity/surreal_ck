@@ -61,15 +61,19 @@ export async function bootstrapLocalIdentity(claims: TokenClaims): Promise<Boots
 
   const db = getLocalDb();
 
-  // 生成稳定的 user record id（sub 的哈希，与 userDbName 保持一致的派生策略）
-  const userIdHex = Bun.hash.wyhash(claims.sub).toString(16).padStart(16, "0");
-  const userId = new RecordId("app_user", userIdHex);
-
   // 计算 display_name：preferred_username > name > email > sub 前缀
   const displayName =
     claims.preferred_username ?? claims.name ?? claims.email?.split("@")[0] ?? claims.sub.slice(0, 8);
 
-  // UPSERT app_user（ON DUPLICATE KEY UPDATE 语义：subject 索引唯一）
+  // user record id 与远程 DEFINE ACCESS 保持一致：直接用 sub 作为 id。
+  // 兼容旧本地数据：若 subject 已被其他 id 占用（早期 wyhash 派生策略），
+  // 复用该 id 而不是创建新 record，避免 app_user_subject_unique 冲突。
+  const existingBySubject = await db.query<[{ id: RecordId }[]]>(
+    `SELECT id FROM app_user WHERE subject = $subject LIMIT 1`,
+    { subject: claims.sub }
+  );
+  const userId = existingBySubject[0]?.[0]?.id ?? new RecordId("app_user", claims.sub);
+
   const userRows = await db.query<[{ id: RecordId; subject: string; email?: string; name?: string; display_name?: string; avatar?: string }[]]>(
     `UPSERT $userId CONTENT {
       subject: $subject,
@@ -117,7 +121,7 @@ export async function bootstrapLocalIdentity(claims: TokenClaims): Promise<Boots
       .replace(/-+/g, "-")
       .replace(/^-|-$/g, "")
       .slice(0, 20);
-    const suffix = userIdHex.slice(0, 6);
+    const suffix = Bun.hash.wyhash(claims.sub).toString(16).padStart(16, "0").slice(0, 6);
     const slug = `${slugBase || "workspace"}-${suffix}`;
 
     const wsId = new RecordId("workspace", Bun.hash.wyhash(`${claims.sub}:default`).toString(16).padStart(16, "0"));
