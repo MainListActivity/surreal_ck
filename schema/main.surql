@@ -720,10 +720,80 @@ DEFINE EVENT OVERWRITE client_error_origin_session ON TABLE client_error
   THEN { UPDATE $after.id SET _origin_session_id = $current_session_id; };
 
 -- ═══════════════════════════════════════════════════════════════════════════════
--- FILE STORAGE BUCKET
+-- AUTH ACCESS
+-- JWT 由外部 OIDC 提供方（maplayer.top）签发。
+-- 首次登录时：创建 app_user，自动认领 pending_workspace_member 邀请并写入
+-- has_workspace_member 边，自动为无 workspace 的用户创建默认 workspace。
 -- ═══════════════════════════════════════════════════════════════════════════════
 
-DEFINE BUCKET IF NOT EXISTS spreadsheet_files BACKEND "file:/data/uploads" PERMISSIONS FULL;
+DEFINE ACCESS OVERWRITE madocs ON DATABASE TYPE RECORD
+  WITH JWT URL 'https://o.maplayer.top/t/ck/jwks.json'
+  AUTHENTICATE {
+
+    IF type::is_array($token.aud) AND $token.aud CONTAINS 'https://auth.maplayer.top'
+      OR $token.aud = 'https://auth.maplayer.top'
+    {
+      IF !$token.sub { THROW 'Missing sub claim' };
+
+      LET $user_id  = type::record('app_user', $token.sub);
+      LET $existing = (SELECT VALUE id FROM ONLY $user_id);
+
+      IF !$existing {
+        LET $display_name =
+          IF $token.name               { <string>$token.name               }
+          ELSE IF $token.preferred_username { <string>$token.preferred_username }
+          ELSE IF $token['https://surrealdb.com/email']         { <string>$token['https://surrealdb.com/email']              }
+          ELSE                         { <string>$token.sub                };
+
+        CREATE $user_id CONTENT {
+          display_name: $display_name,
+          email:        $token['https://surrealdb.com/email'],
+          subject:      $token.sub,
+          avatar:       IF $token.picture { <string>$token.picture } ELSE { NONE },
+          created_at:   time::now(),
+          updated_at:   time::now()
+        };
+      };
+
+      -- 自动认领：将匹配邮箱的 pending_workspace_member 转换为正式 has_workspace_member 边。
+      -- 在 AUTHENTICATE 块内以系统权限运行，绕过行级权限。
+      IF $token['https://surrealdb.com/email'] {
+        LET $pending = (
+          SELECT id, workspace, role FROM pending_workspace_member
+          WHERE email = <string>$token['https://surrealdb.com/email']
+        );
+        FOR $inv IN $pending {
+          LET $ws = $inv.workspace;
+          RELATE $ws->has_workspace_member->$user_id CONTENT {
+            role:      $inv.role,
+            joined_at: time::now()
+          };
+          DELETE $inv.id;
+        };
+      };
+
+      -- 自动创建默认 workspace（首次登录且无 workspace 时）。
+      LET $has_workspace = (SELECT VALUE id FROM workspace WHERE owner = $user_id LIMIT 1);
+      IF array::len($has_workspace) = 0 {
+        LET $display = IF $token.name { <string>$token.name }
+                       ELSE IF $token.preferred_username { <string>$token.preferred_username }
+                       ELSE IF $token['https://surrealdb.com/email'] { <string>$token['https://surrealdb.com/email'] }
+                       ELSE { <string>$token.sub };
+        CREATE workspace CONTENT {
+          owner:      $user_id,
+          name:       $display + ' 的空间',
+          slug:       'ws-' + string::slice(<string>$token.sub, 0, 16),
+          created_at: time::now()
+        };
+      };
+
+      RETURN $user_id;
+
+    } ELSE {
+      THROW 'not allowed'
+    }
+
+  } DURATION FOR TOKEN 1h, FOR SESSION NONE;
 
 -- ═══════════════════════════════════════════════════════════════════════════════
 -- TOKEN STORE
@@ -911,79 +981,3 @@ DEFINE FIELD IF NOT EXISTS metadata    ON TABLE workbook_knowledge_item TYPE opt
 DEFINE FIELD IF NOT EXISTS created_at  ON TABLE workbook_knowledge_item TYPE datetime VALUE time::now();
 DEFINE FIELD IF NOT EXISTS updated_at  ON TABLE workbook_knowledge_item TYPE datetime VALUE time::now();
 DEFINE INDEX IF NOT EXISTS workbook_knowledge_item_source ON TABLE workbook_knowledge_item COLUMNS workbook, source_type, source_id;
-
--- ═══════════════════════════════════════════════════════════════════════════════
--- AUTH ACCESS
--- JWT 由外部 OIDC 提供方（maplayer.top）签发。
--- 首次登录时：创建 app_user，自动认领 pending_workspace_member 邀请并写入
--- has_workspace_member 边，自动为无 workspace 的用户创建默认 workspace。
--- ═══════════════════════════════════════════════════════════════════════════════
-
-DEFINE ACCESS OVERWRITE madocs ON DATABASE TYPE RECORD
-  WITH JWT URL 'https://o.maplayer.top/t/ck/jwks.json'
-  AUTHENTICATE {
-
-    IF type::is_array($token.aud) AND $token.aud CONTAINS 'https://auth.maplayer.top'
-      OR $token.aud = 'https://auth.maplayer.top'
-    {
-      IF !$token.sub { THROW 'Missing sub claim' };
-
-      LET $user_id  = type::record('app_user', $token.sub);
-      LET $existing = (SELECT VALUE id FROM ONLY $user_id);
-
-      IF !$existing {
-        LET $display_name =
-          IF $token.name               { <string>$token.name               }
-          ELSE IF $token.preferred_username { <string>$token.preferred_username }
-          ELSE IF $token['https://surrealdb.com/email']         { <string>$token['https://surrealdb.com/email']              }
-          ELSE                         { <string>$token.sub                };
-
-        CREATE $user_id CONTENT {
-          display_name: $display_name,
-          email:        $token['https://surrealdb.com/email'],
-          subject:      $token.sub,
-          avatar:       IF $token.picture { <string>$token.picture } ELSE { NONE },
-          created_at:   time::now(),
-          updated_at:   time::now()
-        };
-      };
-
-      -- 自动认领：将匹配邮箱的 pending_workspace_member 转换为正式 has_workspace_member 边。
-      -- 在 AUTHENTICATE 块内以系统权限运行，绕过行级权限。
-      IF $token['https://surrealdb.com/email'] {
-        LET $pending = (
-          SELECT id, workspace, role FROM pending_workspace_member
-          WHERE email = <string>$token['https://surrealdb.com/email']
-        );
-        FOR $inv IN $pending {
-          LET $ws = $inv.workspace;
-          RELATE $ws->has_workspace_member->$user_id CONTENT {
-            role:      $inv.role,
-            joined_at: time::now()
-          };
-          DELETE $inv.id;
-        };
-      };
-
-      -- 自动创建默认 workspace（首次登录且无 workspace 时）。
-      LET $has_workspace = (SELECT VALUE id FROM workspace WHERE owner = $user_id LIMIT 1);
-      IF array::len($has_workspace) = 0 {
-        LET $display = IF $token.name { <string>$token.name }
-                       ELSE IF $token.preferred_username { <string>$token.preferred_username }
-                       ELSE IF $token['https://surrealdb.com/email'] { <string>$token['https://surrealdb.com/email'] }
-                       ELSE { <string>$token.sub };
-        CREATE workspace CONTENT {
-          owner:      $user_id,
-          name:       $display + ' 的空间',
-          slug:       'ws-' + string::slice(<string>$token.sub, 0, 16),
-          created_at: time::now()
-        };
-      };
-
-      RETURN $user_id;
-
-    } ELSE {
-      THROW 'not allowed'
-    }
-
-  } DURATION FOR TOKEN 1h, FOR SESSION NONE;
