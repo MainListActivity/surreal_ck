@@ -1,4 +1,10 @@
 import { appApi } from "./app-api";
+import {
+  createBlockedCapabilityMatrix,
+  isCapabilityAllowed,
+  type CapabilityKey,
+  type CapabilityMatrix,
+} from "../../shared/capabilities";
 import type { AppBootstrap, WorkspaceDTO, CurrentUserDTO } from "../../shared/rpc.types";
 
 type AppState = {
@@ -7,7 +13,7 @@ type AppState = {
   bootstrap: AppBootstrap | null;
   user: CurrentUserDTO | null;
   workspace: WorkspaceDTO | null;
-  readOnly: boolean;
+  capabilities: CapabilityMatrix;
   aiDrawerOpen: boolean;
 };
 
@@ -18,7 +24,7 @@ function createAppState() {
     bootstrap: null,
     user: null,
     workspace: null,
-    readOnly: false,
+    capabilities: createBlockedCapabilityMatrix("not-authenticated"),
     aiDrawerOpen: false,
   });
 
@@ -31,7 +37,7 @@ function createAppState() {
         state.bootstrap = result.data;
         state.user = result.data.user ?? null;
         state.workspace = result.data.defaultWorkspace ?? null;
-        state.readOnly = result.data.readOnly;
+        state.capabilities = result.data.capabilities;
       } else {
         state.error = result.message;
       }
@@ -48,7 +54,7 @@ function createAppState() {
     state.bootstrap = null;
     state.user = null;
     state.workspace = null;
-    state.readOnly = false;
+    state.capabilities = createBlockedCapabilityMatrix("not-authenticated");
     state.aiDrawerOpen = false;
   }
 
@@ -66,8 +72,11 @@ function createAppState() {
     get bootstrap() { return state.bootstrap; },
     get user() { return state.user; },
     get workspace() { return state.workspace; },
-    get readOnly() { return state.readOnly; },
+    get capabilities() { return state.capabilities; },
     get aiDrawerOpen() { return state.aiDrawerOpen; },
+    canPerform(capability: CapabilityKey) {
+      return isCapabilityAllowed(state.capabilities, capability);
+    },
     load,
     reset,
     toggleAiDrawer,

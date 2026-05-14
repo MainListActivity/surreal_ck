@@ -1,7 +1,7 @@
 import { RecordId, StringRecordId } from "surrealdb";
 import { getLocalDb } from "../db/index";
 import { mapNullToSurrealNone } from "../db/surreal-values";
-import { assertCanReadWorkspace, assertCanWriteWorkspace } from "./context";
+import { assertCanPerformSharedWrite, assertCanReadWorkspace } from "./context";
 import { ServiceError } from "./errors";
 import type {
   WorkbookSummaryDTO,
@@ -85,7 +85,7 @@ export async function createBlankWorkbook({
   name,
   folderId,
 }: CreateBlankWorkbookRequest): Promise<CreateBlankWorkbookResponse> {
-  await assertCanWriteWorkspace(workspaceId);
+  await assertCanPerformSharedWrite("write_shared_structure_ddl", workspaceId);
 
   if (!name || !name.trim()) {
     throw new ServiceError("VALIDATION_ERROR", "工作簿名称不能为空");
@@ -204,7 +204,7 @@ export async function moveWorkbook({
   }
 
   const workspaceId = String(current.workspace);
-  await assertCanWriteWorkspace(workspaceId);
+  await assertCanPerformSharedWrite("write_shared_structure_ddl", workspaceId);
 
   let folderRecordId: StringRecordId | null = null;
   if (folderId) {

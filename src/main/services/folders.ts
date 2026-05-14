@@ -1,7 +1,7 @@
 import { RecordId, StringRecordId } from "surrealdb";
 import { getLocalDb } from "../db/index";
 import { mapNullToSurrealNone } from "../db/surreal-values";
-import { assertCanReadWorkspace, assertCanWriteWorkspace } from "./context";
+import { assertCanPerformSharedWrite, assertCanReadWorkspace } from "./context";
 import { ServiceError } from "./errors";
 import type {
   FolderDTO,
@@ -48,7 +48,7 @@ export async function createFolder({
   name,
   parentId,
 }: CreateFolderRequest): Promise<CreateFolderResponse> {
-  await assertCanWriteWorkspace(workspaceId);
+  await assertCanPerformSharedWrite("write_shared_structure_ddl", workspaceId);
 
   if (!name || !name.trim()) {
     throw new ServiceError("VALIDATION_ERROR", "文件夹名称不能为空");
@@ -126,7 +126,7 @@ export async function moveFolder({
   }
 
   const workspaceId = String(current.workspace);
-  await assertCanWriteWorkspace(workspaceId);
+  await assertCanPerformSharedWrite("write_shared_structure_ddl", workspaceId);
 
   if (parentId && parentId === folderId) {
     throw new ServiceError("VALIDATION_ERROR", "不能将目录移动到自身下");

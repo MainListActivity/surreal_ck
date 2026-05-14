@@ -13,6 +13,7 @@
 
   let titleDraft = $state("");
   let titleFocused = $state(false);
+  const canWriteSharedStructure = $derived(appState.canPerform("write_shared_structure_ddl"));
 
   $effect(() => {
     if (!titleFocused) titleDraft = editorStore.workbookName;
@@ -24,7 +25,7 @@
   async function saveTitle() {
     titleFocused = false;
     const next = titleDraft.trim();
-    if (!next || next === editorStore.workbookName || appState.readOnly) {
+    if (!next || next === editorStore.workbookName || !canWriteSharedStructure) {
       titleDraft = editorStore.workbookName;
       return;
     }
@@ -71,7 +72,7 @@
     {:else}
       <input
         value={titleDraft}
-        readonly={appState.readOnly}
+        readonly={!canWriteSharedStructure}
         aria-label="工作簿名称"
         oninput={(event) => (titleDraft = event.currentTarget.value)}
         onfocus={() => (titleFocused = true)}
@@ -83,13 +84,13 @@
   <span
     class="sync"
     class:error={Boolean(editorStore.saveError)}
-    class:warning={appState.readOnly}
+    class:warning={!canWriteSharedStructure}
   >
     {#if editorStore.saving}
       <Icon name="refresh" size={13} />保存中…
     {:else if editorStore.saveError}
       <Icon name="alertCircle" size={13} />保存失败
-    {:else if appState.readOnly}
+    {:else if !canWriteSharedStructure}
       <Icon name="wifiOff" size={13} />只读
     {:else}
       <Icon name="check" size={13} />已保存

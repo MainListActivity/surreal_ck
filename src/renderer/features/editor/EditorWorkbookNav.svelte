@@ -10,6 +10,7 @@
   /** 当前正在重命名的项标识：sheet:<id> 或 dashboard:<id>。 */
   let editingKey = $state<string | null>(null);
   let editingValue = $state("");
+  const canWriteSharedStructure = $derived(appState.canPerform("write_shared_structure_ddl"));
 
   async function openSheet(sheetId: string) {
     if (editingKey) return;
@@ -22,7 +23,7 @@
   }
 
   async function createSheet() {
-    if (appState.readOnly || editorStore.saving) return;
+    if (!canWriteSharedStructure || editorStore.saving) return;
     editorUi.pageKind = "sheet";
     editorUi.dashboardPageId = null;
     await editorStore.addSheet();
@@ -38,7 +39,7 @@
   }
 
   async function createDashboard() {
-    if (appState.readOnly || dashboardsStore.saving) return;
+    if (!canWriteSharedStructure || dashboardsStore.saving) return;
     const workbook = editorStore.data?.workbook;
     if (!workbook) return;
     const created = await dashboardsStore.createPage(`仪表盘 ${dashboardsStore.pages.length + 1}`, {
@@ -56,7 +57,7 @@
   async function startEdit(key: string, currentLabel: string, event: Event) {
     event.preventDefault();
     event.stopPropagation();
-    if (appState.readOnly) return;
+    if (!canWriteSharedStructure) return;
     editingKey = key;
     editingValue = currentLabel;
     await tick();
@@ -133,7 +134,7 @@
       <div class="section-head">
         <span>智能表</span>
         <div class="head-actions">
-          <button class="icon-btn" title="新建智能表" disabled={appState.readOnly || editorStore.saving} onclick={createSheet}>
+          <button class="icon-btn" title="新建智能表" disabled={!canWriteSharedStructure || editorStore.saving} onclick={createSheet}>
             <Icon name="plus" size={14} />
           </button>
         </div>
@@ -180,7 +181,7 @@
       <div class="section-head">
         <span>仪表盘</span>
         <div class="head-actions">
-          <button class="icon-btn" title="新建仪表盘" disabled={appState.readOnly || dashboardsStore.saving || !editorStore.data?.workbook} onclick={createDashboard}>
+          <button class="icon-btn" title="新建仪表盘" disabled={!canWriteSharedStructure || dashboardsStore.saving || !editorStore.data?.workbook} onclick={createDashboard}>
             <Icon name="plus" size={14} />
           </button>
         </div>

@@ -217,7 +217,6 @@ export function createRpcHandlers(send: SendFn, windowControls?: WindowControlDe
           if (!ctx.isAuthenticated) {
             return {
               auth: getPublicAuthState(ctx.isOffline ? { offlineMode: true } : undefined),
-              readOnly: true,
               capabilities: ctx.capabilities,
             } satisfies AppBootstrap;
           }
@@ -239,7 +238,6 @@ export function createRpcHandlers(send: SendFn, windowControls?: WindowControlDe
 
           return {
             auth: getPublicAuthState(ctx.isOffline ? { offlineMode: true } : undefined),
-            readOnly: ctx.readOnly,
             capabilities: ctx.capabilities,
             user: {
               id: String(userRow.id),

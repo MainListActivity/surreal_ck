@@ -1,6 +1,6 @@
 import { RecordId, StringRecordId } from "surrealdb";
 import { getLocalDb } from "../db/index";
-import { assertCanReadWorkspace, assertCanWriteWorkspace, getCurrentUserRecordId } from "./context";
+import { assertCanPerformSharedWrite, assertCanReadWorkspace, getCurrentUserRecordId } from "./context";
 import { ServiceError } from "./errors";
 import { compileDashboardBuilder } from "./dashboard-builder";
 import { runDashboardPreview, toDashboardCacheDTO } from "./dashboard-query";
@@ -114,7 +114,7 @@ export async function createDashboardPage({
   title,
   description,
 }: CreateDashboardPageRequest): Promise<CreateDashboardPageResponse> {
-  await assertCanWriteWorkspace(workspaceId);
+  await assertCanPerformSharedWrite("write_shared_structure_ddl", workspaceId);
   await assertWorkbookScope(workspaceId, workbookId);
   const trimmed = title.trim();
   if (!trimmed) throw new ServiceError("VALIDATION_ERROR", "仪表盘名称不能为空");
@@ -174,7 +174,7 @@ export async function renameDashboardPage({
   const trimmed = title.trim();
   if (!trimmed) throw new ServiceError("VALIDATION_ERROR", "仪表盘名称不能为空");
   const current = await loadDashboardPage(pageId);
-  await assertCanWriteWorkspace(current.workspaceId);
+  await assertCanPerformSharedWrite("write_shared_structure_ddl", current.workspaceId);
   if (current.title === trimmed) return { page: current };
 
   const db = getLocalDb();
@@ -198,7 +198,7 @@ export async function saveDashboardPageLayout({
   widgets,
 }: SaveDashboardPageLayoutRequest): Promise<SaveDashboardPageLayoutResponse> {
   const page = await loadDashboardPage(pageId);
-  await assertCanWriteWorkspace(page.workspaceId);
+  await assertCanPerformSharedWrite("write_shared_structure_ddl", page.workspaceId);
 
   for (const widget of widgets) {
     if (!widget.id || !widget.viewId) {
@@ -256,7 +256,7 @@ export async function createDashboardView({
   draft,
   confirmRisk,
 }: CreateDashboardViewRequest): Promise<CreateDashboardViewResponse> {
-  await assertCanWriteWorkspace(draft.workspaceId);
+  await assertCanPerformSharedWrite("write_shared_structure_ddl", draft.workspaceId);
   await assertWorkbookScope(draft.workspaceId, draft.workbookId);
   const preview = await previewDraft(draft, { confirmRisk });
   const db = getLocalDb();
@@ -317,7 +317,7 @@ export async function updateDashboardView({
   confirmRisk,
 }: UpdateDashboardViewRequest): Promise<UpdateDashboardViewResponse> {
   const current = await mustLoadDashboardView(viewId);
-  await assertCanWriteWorkspace(current.workspaceId);
+  await assertCanPerformSharedWrite("write_shared_structure_ddl", current.workspaceId);
   const mergedDraft: DashboardViewDraftDTO = {
     workspaceId: current.workspaceId,
     workbookId: draft.workbookId ?? current.workbookId,
@@ -381,7 +381,7 @@ export async function refreshDashboardView({
   viewId,
 }: RefreshDashboardViewRequest): Promise<RefreshDashboardViewResponse> {
   const view = await mustLoadDashboardView(viewId);
-  await assertCanReadWorkspace(view.workspaceId);
+  await assertCanPerformSharedWrite("write_shared_structure_ddl", view.workspaceId);
   // 已落库的 compiledSql 在 create/update 时已经过 confirmRisk;刷新不再二次询问
   const preview = await runDashboardPreview(
     view.compiledSql,

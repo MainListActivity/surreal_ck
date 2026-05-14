@@ -8,6 +8,7 @@
   let renamingId = $state<string | null>(null);
   let renameDraft = $state("");
   let renameInputEl = $state<HTMLInputElement | null>(null);
+  const canWriteSharedStructure = $derived(appState.canPerform("write_shared_structure_ddl"));
 
   async function gotoSheet(sheetId: string) {
     if (renamingId) return;
@@ -17,7 +18,7 @@
   }
 
   async function startRename(sheetId: string, currentLabel: string) {
-    if (appState.readOnly) return;
+    if (!canWriteSharedStructure) return;
     renamingId = sheetId;
     renameDraft = currentLabel;
     await tick();
@@ -50,7 +51,7 @@
   }
 
   async function handleAddSheet() {
-    if (appState.readOnly || editorStore.saving) return;
+    if (!canWriteSharedStructure || editorStore.saving) return;
     await editorStore.addSheet();
   }
 </script>
@@ -58,7 +59,7 @@
 <footer class="sheets">
   <button
     title="新增 Sheet"
-    disabled={appState.readOnly || editorStore.saving}
+    disabled={!canWriteSharedStructure || editorStore.saving}
     onclick={handleAddSheet}
   >
     <Icon name="plus" size={14} />
@@ -80,7 +81,7 @@
         class:active={editorStore.activeSheetId === sheet.id}
         onclick={() => void gotoSheet(sheet.id)}
         ondblclick={() => void startRename(sheet.id, sheet.label)}
-        title={appState.readOnly ? sheet.label : `${sheet.label}（双击重命名）`}
+        title={!canWriteSharedStructure ? sheet.label : `${sheet.label}（双击重命名）`}
       >
         {sheet.label}
       </button>

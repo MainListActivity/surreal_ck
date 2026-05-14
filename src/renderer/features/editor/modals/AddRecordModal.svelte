@@ -8,6 +8,7 @@
 
   let draft = $state<Record<string, unknown>>({});
   let fieldErrors = $state<Record<string, string>>({});
+  const canWriteEntityData = $derived(appState.canPerform("write_entity_data"));
 
   $effect(() => {
     if (!editorUi.showAdd) return;
@@ -22,7 +23,7 @@
   }
 
   async function submit() {
-    if (appState.readOnly || !editorStore.activeSheetId) return;
+    if (!canWriteEntityData || !editorStore.activeSheetId) return;
     const values: Record<string, unknown> = {};
     const nextErrors: Record<string, string> = {};
     for (const col of editorStore.columns) {
@@ -60,7 +61,7 @@
         <span class="modal-error">{editorStore.saveError}</span>
       {/if}
       <button class="secondary-btn" onclick={close}>取消</button>
-      <button class="primary-btn" onclick={submit}>确认新增</button>
+      <button class="primary-btn" onclick={submit} disabled={!canWriteEntityData}>确认新增</button>
     </footer>
   </div>
 </div>

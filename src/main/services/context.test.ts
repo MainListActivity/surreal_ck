@@ -28,27 +28,34 @@ beforeEach(() => {
 });
 
 describe("getServiceContext", () => {
-  test("未登录时返回 isAuthenticated:false 且 readOnly:true", () => {
+  test("未登录时返回 isAuthenticated:false 且所有 capability 被 not-authenticated 阻塞", () => {
     const ctx = getServiceContext();
     expect(ctx.isAuthenticated).toBe(false);
-    expect(ctx.readOnly).toBe(true);
+    expect(ctx.capabilities.write_entity_data).toEqual({
+      allowed: false,
+      blockedBy: "not-authenticated",
+    });
   });
 
-  test("已登录且在线时返回 isAuthenticated:true, readOnly:false", () => {
+  test("已登录且在线时返回 isAuthenticated:true 且共享写可用", () => {
     _mockSession = { expiresAt: Date.now() + 3600_000 };
     const ctx = getServiceContext();
     expect(ctx.isAuthenticated).toBe(true);
-    expect(ctx.readOnly).toBe(false);
     expect(ctx.isOffline).toBe(false);
+    expect(ctx.capabilities.write_entity_data).toEqual({ allowed: true });
   });
 
-  test("已登录但 offline 时仍允许本地写入", () => {
+  test("已登录但 offline 时只允许本地私有检索过程写入", () => {
     _mockSession = { expiresAt: Date.now() + 3600_000 };
     setOfflineMode(true);
     const ctx = getServiceContext();
     expect(ctx.isAuthenticated).toBe(true);
-    expect(ctx.readOnly).toBe(false);
     expect(ctx.isOffline).toBe(true);
+    expect(ctx.capabilities.write_research_session).toEqual({ allowed: true });
+    expect(ctx.capabilities.write_entity_data).toEqual({
+      allowed: false,
+      blockedBy: "offline",
+    });
   });
 });
 
@@ -89,24 +96,6 @@ describe("assertWritable", () => {
   test("已登录且在线时不抛出", () => {
     _mockSession = { expiresAt: Date.now() + 3600_000 };
     expect(() => assertWritable()).not.toThrow();
-  });
-});
-
-describe("assertCanPerformSharedWrite", () => {
-  test("离线时拒绝 shared write 并解释原因", async () => {
-    _mockSession = { expiresAt: Date.now() + 3600_000 };
-    setOfflineMode(true);
-    const { assertCanPerformSharedWrite } = await import("./context");
-    await expect(assertCanPerformSharedWrite("write_entity_data")).rejects.toMatchObject({
-      code: "VALIDATION_ERROR",
-    });
-  });
-
-  test("离线时 research_session 本地写仍允许", async () => {
-    _mockSession = { expiresAt: Date.now() + 3600_000 };
-    setOfflineMode(true);
-    const { assertCanPerformSharedWrite } = await import("./context");
-    await expect(assertCanPerformSharedWrite("write_research_session")).resolves.toBeUndefined();
   });
 });
 

@@ -183,6 +183,8 @@
 
   const tableView = $derived(editorStore.tableViewAdapter);
   const groupKey = $derived(editorStore.viewParams.groupBy ?? null);
+  const canWriteEntityData = $derived(appState.canPerform("write_entity_data"));
+  const canWriteSharedStructure = $derived(appState.canPerform("write_shared_structure_ddl"));
 
   type GridSourceRow = Record<string, unknown> & {
     _id: string;
@@ -271,7 +273,7 @@
           },
           type: "button",
           title: "添加一列",
-          disabled: appState.readOnly || !editorStore.activeSheetId || editorStore.saving,
+          disabled: !canWriteSharedStructure || !editorStore.activeSheetId || editorStore.saving,
           onClick: (event: MouseEvent) => {
             event.preventDefault();
             event.stopPropagation();
@@ -380,8 +382,8 @@
     };
 
     const afterPaste = async () => {
-      if (appState.readOnly) {
-        editorUi.clipboardStatus = "离线模式，粘贴未保存";
+      if (!canWriteEntityData) {
+        editorUi.clipboardStatus = "当前不可写，粘贴未保存";
         return;
       }
       editorUi.clipboardStatus = "粘贴已应用,保存中…";
@@ -460,7 +462,7 @@
   onDestroy(() => cleanup?.());
 
   async function handleAfterEdit() {
-    if (appState.readOnly) return;
+    if (!canWriteEntityData) return;
     const next = await gridRef?.getWebComponent()?.getSource?.();
     if (next?.length) {
       const ok = await tableView.actions.saveFromSource(next.filter((r) => !r._isGroup));
@@ -523,14 +525,14 @@
   }
 
   function duplicateRecord() {
-    if (appState.readOnly || !rowMenu.rowId) return;
+    if (!canWriteEntityData || !rowMenu.rowId) return;
     const targetId = rowMenu.rowId;
     closeRowMenu();
     tableView.actions.duplicateRowAsDraft(targetId);
   }
 
   function insertRows(direction: "above" | "below") {
-    if (appState.readOnly || !rowMenu.rowId) return;
+    if (!canWriteEntityData || !rowMenu.rowId) return;
     const count = direction === "above" ? rowMenu.insertAboveCount : rowMenu.insertBelowCount;
     const targetId = rowMenu.rowId;
     closeRowMenu();
@@ -538,19 +540,19 @@
   }
 
   async function deleteRecord() {
-    if (appState.readOnly || !rowMenu.rowId) return;
+    if (!canWriteEntityData || !rowMenu.rowId) return;
     const targetId = rowMenu.rowId;
     closeRowMenu();
     await tableView.actions.deleteRows([targetId]);
   }
 
   function appendRowAtEnd() {
-    if (appState.readOnly || !editorStore.activeSheetId) return;
+    if (!canWriteEntityData || !editorStore.activeSheetId) return;
     tableView.actions.insertBlankRows(null, 1, "end");
   }
 
   async function appendField() {
-    if (appState.readOnly || !editorStore.activeSheetId) return;
+    if (!canWriteSharedStructure || !editorStore.activeSheetId) return;
     await editorStore.addField();
   }
 
@@ -596,7 +598,7 @@
           disableVirtualY={true}
           hideAttribution={true}
           applyOnClose={true}
-          readonly={appState.readOnly}
+          readonly={!canWriteEntityData}
           style="height: 100%; width: 100%;"
           on:afterfocus={handleFocus}
           on:afteredit={handleAfterEdit}
@@ -609,7 +611,7 @@
         aria-label="添加一行"
         title="添加一行"
         onclick={appendRowAtEnd}
-        disabled={appState.readOnly || !editorStore.activeSheetId}
+        disabled={!canWriteEntityData || !editorStore.activeSheetId}
       >
         <span class="footer-add-icon">+</span>
       </button>
@@ -631,7 +633,7 @@
       <span>展开记录</span>
     </button>
     <div class="menu-sep"></div>
-    <button class="menu-item" role="menuitem" onclick={duplicateRecord} disabled={appState.readOnly}>
+    <button class="menu-item" role="menuitem" onclick={duplicateRecord} disabled={!canWriteEntityData}>
       <Icon name="copy" size={13} />
       <span>创建副本</span>
     </button>
@@ -640,7 +642,7 @@
       class="menu-row"
       role="menuitem"
       onclick={() => insertRows("above")}
-      disabled={appState.readOnly}
+      disabled={!canWriteEntityData}
     >
       <Icon name="arrowUp" size={13} />
       <span>在上方插入</span>
@@ -652,7 +654,7 @@
         onclick={(e) => e.stopPropagation()}
         onkeydown={(e) => e.stopPropagation()}
         onmousedown={(e) => e.stopPropagation()}
-        disabled={appState.readOnly}
+        disabled={!canWriteEntityData}
       />
       <span class="muted">行</span>
     </button>
@@ -661,7 +663,7 @@
       class="menu-row"
       role="menuitem"
       onclick={() => insertRows("below")}
-      disabled={appState.readOnly}
+      disabled={!canWriteEntityData}
     >
       <Icon name="arrowDown" size={13} />
       <span>在下方插入</span>
@@ -673,7 +675,7 @@
         onclick={(e) => e.stopPropagation()}
         onkeydown={(e) => e.stopPropagation()}
         onmousedown={(e) => e.stopPropagation()}
-        disabled={appState.readOnly}
+        disabled={!canWriteEntityData}
       />
       <span class="muted">行</span>
     </button>
@@ -683,7 +685,7 @@
       <span>获取分享链接</span>
     </button>
     <div class="menu-sep"></div>
-    <button class="menu-item danger" role="menuitem" onclick={deleteRecord} disabled={appState.readOnly}>
+    <button class="menu-item danger" role="menuitem" onclick={deleteRecord} disabled={!canWriteEntityData}>
       <Icon name="trash" size={13} />
       <span>删除记录</span>
     </button>

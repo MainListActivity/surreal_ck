@@ -25,6 +25,7 @@ import { mapNullsToSurrealNone, omitNullishSurrealFields } from "../db/surreal-v
 import { execTemplate } from "../sync/exec-template";
 import { ServiceError } from "./errors";
 import { getServiceContext } from "./context";
+import { assertCapabilityAllowed } from "./capabilities";
 import {
   buildSurrealFieldSchema,
   coerceGridFieldValue,
@@ -349,9 +350,7 @@ async function defineEntityField(tableName: string, column: GridColumnDef, mode:
 }
 
 async function assertDdlOnline(): Promise<void> {
-  if (getServiceContext().isOffline) {
-    throw new ServiceError("OFFLINE_DDL_FORBIDDEN", "当前离线，无法修改表结构");
-  }
+  assertCapabilityAllowed(getServiceContext().capabilities, "write_shared_structure_ddl");
 }
 
 /**

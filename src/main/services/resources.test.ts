@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { RecordId } from "surrealdb";
+import type { CapabilityKey } from "./capabilities";
 import {
   createEmbeddingProfileKey,
   createResourceService,
@@ -105,20 +106,20 @@ class MemoryResourceRepository implements ResourceRepository {
 
 function createTestService(repo = new MemoryResourceRepository(), overrides: Record<string, unknown> = {}) {
   const canRead: string[] = [];
-  const canWrite: string[] = [];
+  const canPerform: Array<{ capability: CapabilityKey; workspaceId?: string }> = [];
   const service = createResourceService({
     repository: repo,
     assertCanReadWorkspace: async (workspaceId) => {
       canRead.push(workspaceId);
     },
-    assertCanWriteWorkspace: async (workspaceId) => {
-      canWrite.push(workspaceId);
+    assertCanPerformWrite: async (capability, workspaceId) => {
+      canPerform.push({ capability, workspaceId });
     },
     getCurrentUserRecordId: async () => new RecordId("app_user", "u1"),
     now: () => new Date("2026-05-11T08:00:00.000Z"),
     ...overrides,
   });
-  return { service, repo, canRead, canWrite };
+  return { service, repo, canRead, canPerform };
 }
 
 function createRejectingReadService(repo = new MemoryResourceRepository()) {
@@ -127,11 +128,25 @@ function createRejectingReadService(repo = new MemoryResourceRepository()) {
     assertCanReadWorkspace: async (workspaceId) => {
       throw new ServiceError("NOT_FOUND", `blocked ${workspaceId}`);
     },
-    assertCanWriteWorkspace: async () => undefined,
+    assertCanPerformWrite: async () => undefined,
     getCurrentUserRecordId: async () => new RecordId("app_user", "u1"),
     now: () => new Date("2026-05-11T08:00:00.000Z"),
   });
   return { service, repo };
+}
+
+function createCapabilityOnlyService(repo = new MemoryResourceRepository()) {
+  const canPerform: Array<{ capability: CapabilityKey; workspaceId?: string }> = [];
+  const service = createResourceService({
+    repository: repo,
+    assertCanReadWorkspace: async () => undefined,
+    assertCanPerformWrite: async (capability: CapabilityKey, workspaceId?: string) => {
+      canPerform.push({ capability, workspaceId });
+    },
+    getCurrentUserRecordId: async () => new RecordId("app_user", "u1"),
+    now: () => new Date("2026-05-11T08:00:00.000Z"),
+  });
+  return { service, repo, canPerform };
 }
 
 const EMBEDDING_PROFILE: ResourceEmbeddingProfile = {
@@ -165,7 +180,7 @@ describe("资源主数据闭环", () => {
   });
 
   test("保存 generic_note 后可读取最小资源详情", async () => {
-    const { service, canRead, canWrite } = createTestService();
+    const { service, canRead, canPerform } = createTestService();
 
     const saved = await service.saveResource({
       workspaceId: "workspace:demo",
@@ -205,8 +220,28 @@ describe("资源主数据闭环", () => {
     expect(detail.resource.duplicateHashes.evidence).toHaveLength(64);
     expect(detail.resource.duplicateHashes.source).toHaveLength(64);
     expect(detail.session).toBeUndefined();
-    expect(canWrite).toEqual(["workspace:demo"]);
+    expect(canPerform).toEqual([
+      { capability: "publish_shared_resource", workspaceId: "workspace:demo" },
+    ]);
     expect(canRead).toEqual(["workspace:demo"]);
+  });
+
+  test("保存共享资源必须通过 publish_shared_resource 能力 seam", async () => {
+    const { service, canPerform } = createCapabilityOnlyService();
+
+    await service.saveResource({
+      workspaceId: "workspace:demo",
+      resourceType: "generic_note",
+      title: "相似案件检索策略",
+      summary: "保存共享资源前先检查能力矩阵。",
+      evidence: [],
+      structuredPayload: {},
+      quality: "user-confirmed",
+    });
+
+    expect(canPerform).toEqual([
+      { capability: "publish_shared_resource", workspaceId: "workspace:demo" },
+    ]);
   });
 
   test("没有 embedding 配置时资源保存成功并暴露 disabled 状态", async () => {
@@ -427,7 +462,7 @@ describe("资源主数据闭环", () => {
   });
 
   test("可创建并读取 open research session", async () => {
-    const { service, canRead, canWrite } = createTestService();
+    const { service, canRead, canPerform } = createTestService();
 
     const created = await service.createResearchSession({
       workspaceId: "workspace:demo",
@@ -452,7 +487,9 @@ describe("资源主数据闭环", () => {
       createdAt: "2026-05-11T08:00:00.000Z",
       updatedAt: "2026-05-11T08:00:00.000Z",
     });
-    expect(canWrite).toEqual(["workspace:demo"]);
+    expect(canPerform).toEqual([
+      { capability: "write_research_session", workspaceId: "workspace:demo" },
+    ]);
     expect(canRead).toEqual(["workspace:demo"]);
   });
 

@@ -3,7 +3,8 @@ import { z } from "zod";
 import { DateTime, RecordId, StringRecordId, Table } from "surrealdb";
 import { getLocalDb } from "../db/index";
 import { omitNullishSurrealFields } from "../db/surreal-values";
-import { assertCanReadWorkspace, assertCanWriteWorkspace, getCurrentUserRecordId } from "./context";
+import { assertCanReadWorkspace, assertCanPerformSharedWrite, getCurrentUserRecordId } from "./context";
+import type { CapabilityKey } from "./capabilities";
 import { generateEmbeddingVector } from "./embedding-client";
 import { ServiceError } from "./errors";
 import { getEmbeddingSettings, saveEmbeddingSettings } from "./settings";
@@ -509,7 +510,7 @@ export class SurrealResourceRepository implements ResourceRepository {
 type ResourceServiceDeps = {
   repository: ResourceRepository;
   assertCanReadWorkspace(workspaceId: string): Promise<void>;
-  assertCanWriteWorkspace(workspaceId: string): Promise<void>;
+  assertCanPerformWrite(capability: CapabilityKey, workspaceId?: string): Promise<void>;
   getCurrentUserRecordId(): Promise<RecordRef>;
   getActiveEmbeddingProfile?(workspaceId: string): Promise<ResourceEmbeddingProfile | null>;
   saveActiveEmbeddingProfile?(workspaceId: string, profile: ResourceEmbeddingProfile): Promise<void>;
@@ -564,12 +565,15 @@ export function createResourceService(deps: ResourceServiceDeps) {
 
   const api = {
     async saveResource(req: SaveResourceRequest): Promise<SaveResourceResponse> {
-      await deps.assertCanWriteWorkspace(req.workspaceId);
+      await deps.assertCanPerformWrite("publish_shared_resource", req.workspaceId);
       const currentUserId = await deps.getCurrentUserRecordId();
       const normalized = normalizeSaveResourceRequest(req);
       const session = normalized.researchSessionId
         ? await loadOpenSessionForWrite(deps, normalized.researchSessionId, normalized.workspaceId)
         : null;
+      if (session) {
+        await deps.assertCanPerformWrite("write_research_session", normalized.workspaceId);
+      }
       const timestamp = now();
       const hashes = createDuplicateHashes(normalized);
 
@@ -714,7 +718,7 @@ export function createResourceService(deps: ResourceServiceDeps) {
     },
 
     async updateEmbeddingProfile(req: UpdateEmbeddingProfileRequest): Promise<UpdateEmbeddingProfileResponse> {
-      await deps.assertCanWriteWorkspace(req.workspaceId);
+      await deps.assertCanPerformWrite("advance_shared_embedding", req.workspaceId);
       validateEmbeddingProfile(req.profile);
       await deps.saveActiveEmbeddingProfile?.(req.workspaceId, req.profile);
       const timestamp = now();
@@ -739,7 +743,7 @@ export function createResourceService(deps: ResourceServiceDeps) {
       const row = await deps.repository.findResourceById(req.resourceId);
       if (!row) throw new ServiceError("NOT_FOUND", "资源不存在");
 
-      await deps.assertCanWriteWorkspace(String(row.workspace));
+      await deps.assertCanPerformWrite("advance_shared_embedding", String(row.workspace));
       const profile = await deps.getActiveEmbeddingProfile?.(String(row.workspace)) ?? null;
       if (!profile) return { embedding: { status: "disabled" } };
 
@@ -762,7 +766,7 @@ export function createResourceService(deps: ResourceServiceDeps) {
     },
 
     async createResearchSession(req: CreateResearchSessionRequest): Promise<ResearchSessionResponse> {
-      await deps.assertCanWriteWorkspace(req.workspaceId);
+      await deps.assertCanPerformWrite("write_research_session", req.workspaceId);
       const currentUserId = await deps.getCurrentUserRecordId();
       validateResourceType(req.resourceType.trim());
       const timestamp = now();
@@ -795,7 +799,7 @@ export function createResourceService(deps: ResourceServiceDeps) {
       const row = await deps.repository.findResearchSessionById(req.sessionId);
       if (!row) throw new ServiceError("NOT_FOUND", "检索会话不存在");
 
-      await deps.assertCanWriteWorkspace(String(row.workspace));
+      await deps.assertCanPerformWrite("write_research_session", String(row.workspace));
       if (row.status !== "open") {
         throw new ServiceError("VALIDATION_ERROR", "只能完成 open 状态的检索会话");
       }
@@ -815,7 +819,7 @@ export function createResourceService(deps: ResourceServiceDeps) {
       const row = await deps.repository.findResearchSessionById(req.sessionId);
       if (!row) throw new ServiceError("NOT_FOUND", "检索会话不存在");
 
-      await deps.assertCanWriteWorkspace(String(row.workspace));
+      await deps.assertCanPerformWrite("write_research_session", String(row.workspace));
       if (row.status !== "open") {
         throw new ServiceError("VALIDATION_ERROR", "只能取消 open 状态的检索会话");
       }
@@ -889,7 +893,7 @@ function createDefaultResourceService(
   return createResourceService({
     repository: new SurrealResourceRepository(),
     assertCanReadWorkspace,
-    assertCanWriteWorkspace,
+    assertCanPerformWrite: assertCanPerformSharedWrite,
     getCurrentUserRecordId,
     getActiveEmbeddingProfile: async () => {
       const settings = await getEmbeddingSettings();
@@ -932,6 +936,8 @@ async function indexDefaultResourceEmbedding(resourceId: string): Promise<void> 
   const repository = new SurrealResourceRepository();
   const row = await repository.findResourceById(resourceId);
   if (!row) return;
+
+  await assertCanPerformSharedWrite("advance_shared_embedding", String(row.workspace));
 
   const profile: ResourceEmbeddingProfile = {
     provider: settings.provider,
@@ -989,6 +995,8 @@ async function ensureInitialEmbeddingState(
 
   const existing = await findEmbeddingForProfile(deps, row, profile);
   if (existing) return embeddingRowToDTO(existing);
+
+  await deps.assertCanPerformWrite("advance_shared_embedding", String(row.workspace));
 
   const embeddingText = buildResourceEmbeddingText(row);
   const embeddingTextHash = stableHash(embeddingText);

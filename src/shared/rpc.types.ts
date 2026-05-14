@@ -1,6 +1,13 @@
 import { z } from "zod";
 import type { ElectrobunRPCSchema } from "electrobun/bun";
 import type { AiChatMessage } from "./ai-context";
+import type { CapabilityMatrix } from "./capabilities";
+
+export type {
+  CapabilityBlockedReason,
+  CapabilityKey,
+  CapabilityState,
+} from "./capabilities";
 
 // ─── 传输基础类型 ─────────────────────────────────────────────────────────────
 
@@ -76,26 +83,10 @@ export type WorkspaceDTO = {
   slug: string;
 };
 
-export type CapabilityKey =
-  | "write_research_session"
-  | "write_entity_data"
-  | "write_relation_data"
-  | "publish_shared_resource"
-  | "advance_shared_embedding"
-  | "write_shared_structure_ddl";
-
-export type CapabilityBlockedReason = "not-authenticated" | "offline";
-
-export type CapabilityState =
-  | { allowed: true }
-  | { allowed: false; blockedBy: CapabilityBlockedReason };
-
-export type CapabilityMatrixDTO = Record<CapabilityKey, CapabilityState>;
+export type CapabilityMatrixDTO = CapabilityMatrix;
 
 export type AppBootstrap = {
   auth: AuthState;
-  /** @deprecated 改用 capabilities 判定具体写能力。前端已迁移后可移除。 */
-  readOnly: boolean;
   capabilities: CapabilityMatrixDTO;
   user?: CurrentUserDTO;
   defaultWorkspace?: WorkspaceDTO;

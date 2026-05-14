@@ -1,6 +1,6 @@
 import { DateTime, RecordId, StringRecordId } from "surrealdb";
 import { getLocalDb } from "../db/index";
-import { assertCanWriteWorkspace } from "./context";
+import { assertCanPerformSharedWrite } from "./context";
 import { ServiceError } from "./errors";
 import { getTemplateDef, listTemplateSummaries, type EntityDef } from "../templates/catalog";
 import { createEntityRows, provisionEntityFields, provisionEntityTable, provisionRelationTable } from "./data-table-runtime";
@@ -25,7 +25,7 @@ export async function createWorkbookFromTemplate({
   templateKey,
   name,
 }: CreateWorkbookFromTemplateRequest): Promise<CreateWorkbookFromTemplateResponse> {
-  await assertCanWriteWorkspace(workspaceId);
+  await assertCanPerformSharedWrite("write_shared_structure_ddl", workspaceId);
 
   const tpl = getTemplateDef(templateKey);
   if (!tpl) {
@@ -200,6 +200,7 @@ async function insertSampleData(
     const relAssigned = relationTableName(wsKey, wbKey, "assigned_to");
     const relBelongs  = relationTableName(wsKey, wbKey, "belongs_to");
 
+    await assertCanPerformSharedWrite("write_entity_data", String(wsId));
     const [redwood, triton] = await createEntityRows(tblClient, [
       { workspace: wsId, name: "Redwood Group", email: "legal@redwood.example.com" },
       { workspace: wsId, name: "Triton Corp", email: "counsel@triton.example.com" },
@@ -213,6 +214,7 @@ async function insertSampleData(
     ]);
 
     if (redwood && triton && case1 && case2 && motion) {
+      await assertCanPerformSharedWrite("write_relation_data", String(wsId));
       await db.query(
         `RELATE $case1->${relAssigned}->$redwood;
          RELATE $case2->${relAssigned}->$triton;
@@ -227,6 +229,7 @@ async function insertSampleData(
     const relControls = relationTableName(wsKey, wbKey, "controls");
     const relFiledBy = relationTableName(wsKey, wbKey, "filed_by");
 
+    await assertCanPerformSharedWrite("write_entity_data", String(wsId));
     const [acme, beta, gamma] = await createEntityRows(tblCompany, [
       { workspace: wsId, name: "Acme Holdings", jurisdiction: "Delaware", status: "Active" },
       { workspace: wsId, name: "Beta LLC", jurisdiction: "Hong Kong", status: "Active" },
@@ -237,6 +240,7 @@ async function insertSampleData(
     ]);
 
     if (acme && beta && gamma && chen) {
+      await assertCanPerformSharedWrite("write_relation_data", String(wsId));
       await db.query(
         `RELATE $acme->${relOwns}->$beta;
          RELATE $beta->${relControls}->$gamma;

@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 import type { SyncDb, SyncQuery } from "../sync/types";
 
+let mockSession: { expiresAt: number } | null = null;
+
 function normalizeQuery(sql: SyncQuery, bindings?: Record<string, unknown>) {
   if (typeof sql === "string") return { sql, bindings };
   return { sql: sql.query, bindings: sql.bindings };
@@ -14,6 +16,14 @@ class FakeDb implements SyncDb {
   async query<T = unknown>(query: SyncQuery, bindings?: Record<string, unknown>): Promise<T> {
     const normalized = normalizeQuery(query, bindings);
     this.queries.push(normalized);
+
+    if (normalized.sql.includes("FROM app_user")) {
+      return [[{ id: "app_user:u1" }]] as T;
+    }
+
+    if (normalized.sql.includes("FROM workspace")) {
+      return [[{ id: "workspace:ws1" }]] as T;
+    }
 
     if (normalized.sql.includes("FROM workbook")) {
       return [this.workbookRows] as T;
@@ -31,15 +41,17 @@ mock.module("../db/index", () => ({
   getRemoteDb: () => remoteDb,
 }));
 
-mock.module("./context", () => ({
-  assertCanReadWorkspace: async () => {},
-  assertCanWriteWorkspace: async () => {},
+mock.module("../auth/session", () => ({
+  getSession: () => mockSession,
+  getPublicAuthState: () =>
+    mockSession ? { loggedIn: true, expiresAt: mockSession.expiresAt } : { loggedIn: false },
 }));
 
 import { listWorkbooks } from "./workbooks";
 
 describe("工作簿读路径", () => {
   beforeEach(() => {
+    mockSession = { expiresAt: Date.now() + 3600_000 };
     localDb = new FakeDb();
     remoteDb = new FakeDb();
   });

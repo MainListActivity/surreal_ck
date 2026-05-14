@@ -20,6 +20,7 @@
   let creatingUnder = $state<string | null | undefined>(undefined);
   let newFolderName = $state("");
   let creating = $state(false);
+  const canWriteSharedStructure = $derived(appState.canPerform("write_shared_structure_ddl"));
 
   /**
    * 拖拽对象：folder 表示拖目录，workbook 表示拖文件。
@@ -61,6 +62,7 @@
 
   function startCreate(parentId: string | null, event: MouseEvent) {
     event.stopPropagation();
+    if (!canWriteSharedStructure) return;
     creatingUnder = parentId;
     newFolderName = "";
     if (parentId) {
@@ -78,7 +80,7 @@
   async function submitCreate() {
     const ws = appState.workspace;
     const name = newFolderName.trim();
-    if (!ws || !name || creating) return;
+    if (!ws || !name || creating || !canWriteSharedStructure) return;
     creating = true;
     const parentId = creatingUnder ?? undefined;
     const folder = await workbooksStore.createFolder(ws.id, name, parentId);
@@ -106,7 +108,7 @@
   // ─── 拖拽处理 ────────────────────────────────────────────────────────────────
 
   function onDragStart(event: DragEvent, payload: DragPayload) {
-    if (appState.readOnly) {
+    if (!canWriteSharedStructure) {
       event.preventDefault();
       return;
     }
@@ -240,7 +242,7 @@
         <button
           type="button"
           class="row-main"
-          draggable={!appState.readOnly}
+          draggable={canWriteSharedStructure}
           ondragstart={(e) => onDragStart(e, { kind: "folder", id: folder.id })}
           ondragend={onDragEnd}
           onclick={() => { toggleFolder(folder.id); navigate("mydocs", { folderId: folder.id }); }}
@@ -255,6 +257,7 @@
           type="button"
           class="add-sub"
           title="新建子目录"
+          disabled={!canWriteSharedStructure}
           onclick={(e) => startCreate(folder.id, e)}
         >
           <Icon name="plus" size={11} />
@@ -292,7 +295,7 @@
       class:dragging={isDragging}
       style="padding-left: {depth * 14 + 22}px"
       title={wb.name}
-      draggable={!appState.readOnly}
+      draggable={canWriteSharedStructure}
       ondragstart={(e) => onDragStart(e, { kind: "workbook", id: wb.id })}
       ondragend={onDragEnd}
       onclick={() => navigate("editor", { workbookId: wb.id })}
@@ -333,6 +336,7 @@
           type="button"
           class="add-sub root-add"
           title="新建目录"
+          disabled={!canWriteSharedStructure}
           onclick={(e) => startCreate(null, e)}
         >
           <Icon name="plus" size={12} />

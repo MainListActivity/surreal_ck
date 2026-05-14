@@ -12,6 +12,7 @@
   let view = $state<"list" | "grid">("list");
   let creating = $state(false);
   let importStatus = $state("");
+  const canWriteSharedStructure = $derived(appState.canPerform("write_shared_structure_ddl"));
 
   $effect(() => {
     const ws = appState.workspace;
@@ -24,7 +25,7 @@
 
   async function handleCreateBlank() {
     const ws = appState.workspace;
-    if (!ws || appState.readOnly) return;
+    if (!ws || !canWriteSharedStructure) return;
     creating = true;
     const wb = await workbooksStore.createBlank(ws.id, "未命名工作簿");
     creating = false;
@@ -64,12 +65,12 @@
   <div class="content">
     {#if !query}
       <div class="quick-actions">
-        <button onclick={handleCreateBlank} disabled={creating || appState.readOnly}>
+        <button onclick={handleCreateBlank} disabled={creating || !canWriteSharedStructure}>
           <span><Icon name="plus" size={17} color="var(--primary)" /></span>
           <strong>{creating ? "创建中…" : "空白文档"}</strong>
           <small>从零开始创建</small>
         </button>
-        <button onclick={() => navigate("templates")} disabled={appState.readOnly}>
+        <button onclick={() => navigate("templates")} disabled={!canWriteSharedStructure}>
           <span><Icon name="tag" size={17} color="var(--primary)" /></span>
           <strong>从模板创建</strong>
           <small>案件管理·法律实体追踪</small>

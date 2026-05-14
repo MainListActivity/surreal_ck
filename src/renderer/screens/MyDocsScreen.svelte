@@ -9,6 +9,7 @@
 
   let selectedFolderId = $state<string | null>(null);
   let open = $state<Record<string, boolean>>({});
+  const canWriteSharedStructure = $derived(appState.canPerform("write_shared_structure_ddl"));
 
   $effect(() => {
     const ws = appState.workspace;
@@ -29,7 +30,7 @@
 
   async function handleCreateBlank() {
     const ws = appState.workspace;
-    if (!ws || appState.readOnly) return;
+    if (!ws || !canWriteSharedStructure) return;
     const wb = await workbooksStore.createBlank(ws.id, "未命名工作簿", selectedFolderId);
     if (wb) navigate("editor", { workbookId: wb.id });
   }
@@ -66,7 +67,7 @@
   <div class="main">
     <header>
       <h2>{selectedFolderName()}</h2>
-      <button class="primary-btn" onclick={handleCreateBlank} disabled={appState.readOnly}>
+      <button class="primary-btn" onclick={handleCreateBlank} disabled={!canWriteSharedStructure}>
         <Icon name="plus" size={13} color="#fff" />新建工作簿
       </button>
     </header>

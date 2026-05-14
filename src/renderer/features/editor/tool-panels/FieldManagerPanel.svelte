@@ -10,6 +10,7 @@
   let dragKey = $state<string | null>(null);
   let dragOverKey = $state<string | null>(null);
   let menuKey = $state<string | null>(null);
+  const canWriteSharedStructure = $derived(appState.canPerform("write_shared_structure_ddl"));
 
   function toggleVisibility(key: string) {
     const next = new Set(hidden);
@@ -34,16 +35,20 @@
 
   async function deleteField(key: string) {
     closeMenu();
-    if (appState.readOnly) return;
+    if (!canWriteSharedStructure) return;
     await editorStore.removeFieldByKey(key);
   }
 
   async function addField() {
-    if (appState.readOnly) return;
+    if (!canWriteSharedStructure) return;
     await editorStore.addField();
   }
 
   function onDragStart(event: DragEvent, key: string) {
+    if (!canWriteSharedStructure) {
+      event.preventDefault();
+      return;
+    }
     dragKey = key;
     if (event.dataTransfer) {
       event.dataTransfer.effectAllowed = "move";
@@ -60,6 +65,7 @@
 
   async function onDrop(event: DragEvent, targetKey: string) {
     event.preventDefault();
+    if (!canWriteSharedStructure) return;
     const src = dragKey;
     dragKey = null;
     dragOverKey = null;
@@ -92,7 +98,7 @@
         role="listitem"
         class:dragging={dragKey === col.key}
         class:drag-over={dragOverKey === col.key && dragKey !== col.key}
-        draggable={!appState.readOnly}
+        draggable={canWriteSharedStructure}
         ondragstart={(event) => onDragStart(event, col.key)}
         ondragover={(event) => onDragOver(event, col.key)}
         ondrop={(event) => onDrop(event, col.key)}
@@ -135,7 +141,7 @@
               class="row-menu-item danger"
               role="menuitem"
               onclick={() => deleteField(col.key)}
-              disabled={appState.readOnly || editorStore.columns.length <= 1}
+              disabled={!canWriteSharedStructure || editorStore.columns.length <= 1}
             >
               删除
             </button>
@@ -149,7 +155,7 @@
     type="button"
     class="add-row"
     onclick={addField}
-    disabled={appState.readOnly || !editorStore.activeSheetId || editorStore.saving}
+    disabled={!canWriteSharedStructure || !editorStore.activeSheetId || editorStore.saving}
   >
     <Icon name="plus" size={14} />
     <span>添加字段</span>

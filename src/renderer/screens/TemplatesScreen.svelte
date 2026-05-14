@@ -15,6 +15,7 @@
   let loading = $state(true);
   let creating = $state(false);
   let error = $state<string | null>(null);
+  const canWriteSharedStructure = $derived(appState.canPerform("write_shared_structure_ddl"));
 
   $effect(() => {
     void loadTemplates();
@@ -33,7 +34,7 @@
   }
 
   async function handleCreate() {
-    if (!selected || !appState.workspace || appState.readOnly) return;
+    if (!selected || !appState.workspace || !canWriteSharedStructure) return;
     creating = true;
     error = null;
     const wb = await workbooksStore.createFromTemplate(appState.workspace.id, selected.key);
@@ -82,11 +83,11 @@
       <button
         class="primary-btn"
         onclick={handleCreate}
-        disabled={creating || appState.readOnly}
+        disabled={creating || !canWriteSharedStructure}
       >
         {creating ? "创建中…" : "使用此模板创建"}
       </button>
-      {#if appState.readOnly}
+      {#if !canWriteSharedStructure}
         <small class="ro-hint">离线模式，创建不可用</small>
       {/if}
     {:else}

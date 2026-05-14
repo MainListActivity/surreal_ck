@@ -4,11 +4,21 @@ mock.module("../../../services/context", () => ({
   assertAuthenticated: () => {},
   assertWritable: () => {},
   getOfflineMode: () => false,
-  getServiceContext: () => ({ isAuthenticated: true, isOffline: false, readOnly: false }),
+  getServiceContext: () => ({
+    isAuthenticated: true,
+    isOffline: false,
+    capabilities: {
+      write_research_session: { allowed: true },
+      write_entity_data: { allowed: true },
+      write_relation_data: { allowed: true },
+      publish_shared_resource: { allowed: true },
+      advance_shared_embedding: { allowed: true },
+      write_shared_structure_ddl: { allowed: true },
+    },
+  }),
   setOfflineMode: () => {},
   getCurrentUserRecordId: async () => ({ tb: "app_user", id: "test" }),
   assertCanReadWorkspace: async () => {},
-  assertCanWriteWorkspace: async () => {},
 }));
 
 mock.module("../../../db/index", () => ({

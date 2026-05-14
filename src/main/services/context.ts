@@ -4,13 +4,16 @@ import { getSession } from "../auth/session";
 import { ServiceError } from "./errors";
 import type { RecordIdString, WorkspaceDTO } from "../../shared/rpc.types";
 import { getOfflineMode, setOfflineMode } from "./offline-state";
-import { computeCapabilityMatrix, type CapabilityMatrix } from "./capabilities";
+import {
+  assertCapabilityAllowed,
+  computeCapabilityMatrix,
+  type CapabilityKey,
+  type CapabilityMatrix,
+} from "./capabilities";
 
 export type ServiceContext = {
   isAuthenticated: boolean;
   isOffline: boolean;
-  /** @deprecated 改用 capabilities.write_* 判定具体写能力。保留以避免一次性破坏调用方。 */
-  readOnly: boolean;
   capabilities: CapabilityMatrix;
   userId?: RecordIdString;
   defaultWorkspace?: WorkspaceDTO;
@@ -26,10 +29,10 @@ export function getServiceContext(): ServiceContext {
   const capabilities = computeCapabilityMatrix({ isAuthenticated, isOffline });
 
   if (!isAuthenticated) {
-    return { isAuthenticated: false, isOffline, readOnly: true, capabilities };
+    return { isAuthenticated: false, isOffline, capabilities };
   }
 
-  return { isAuthenticated: true, isOffline, readOnly: false, capabilities };
+  return { isAuthenticated: true, isOffline, capabilities };
 }
 
 /** 断言当前用户已认证，否则抛出 ServiceError。 */
@@ -79,7 +82,7 @@ export async function assertCanReadWorkspace(workspaceId: string): Promise<void>
 }
 
 /** 断言用户有指定 workspace 的写权限。 */
-export async function assertCanWriteWorkspace(workspaceId: string): Promise<void> {
+async function assertCanWriteWorkspace(workspaceId: string): Promise<void> {
   assertWritable();
   await assertCanReadWorkspace(workspaceId);
 }
@@ -89,16 +92,14 @@ export async function assertCanWriteWorkspace(workspaceId: string): Promise<void
  * 离线时所有共享写都会被 capability matrix 显式拒绝。
  */
 export async function assertCanPerformSharedWrite(
-  capability: import("./capabilities").CapabilityKey,
+  capability: CapabilityKey,
   workspaceId?: string,
 ): Promise<void> {
   const ctx = getServiceContext();
-  const state = ctx.capabilities[capability];
-  if (!state.allowed) {
-    throw new ServiceError(
-      "VALIDATION_ERROR",
-      `当前能力 ${capability} 已被禁用：${state.blockedBy}`,
-    );
+  assertCapabilityAllowed(ctx.capabilities, capability);
+  if (workspaceId) {
+    await assertCanWriteWorkspace(workspaceId);
+  } else {
+    assertAuthenticated();
   }
-  if (workspaceId) await assertCanWriteWorkspace(workspaceId);
 }

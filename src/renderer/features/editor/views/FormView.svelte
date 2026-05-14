@@ -17,6 +17,7 @@
   // 表单封面 / 详细说明（草稿态，待持久化到 form_definition.cover_url / description）
   let cover = $state<string>("");
   let description = $state<string>("");
+  const canWriteEntityData = $derived(appState.canPerform("write_entity_data"));
 
   // 用户主动加入表单的非必填字段顺序（必填字段不进这个数组，强制由 $derived 拼接）
   // 用 sheetId 作为 key 隔离不同 sheet 的字段顺序
@@ -135,7 +136,7 @@
   }
 
   async function submit() {
-    if (appState.readOnly || !editorStore.activeSheetId) return;
+    if (!canWriteEntityData || !editorStore.activeSheetId) return;
     const values: Record<string, unknown> = {};
     const nextErrors: Record<string, string> = {};
     for (const col of includedColumns) {
@@ -276,7 +277,7 @@
               columns={includedColumns}
               values={draft}
               errors={fieldErrors}
-              disabled={appState.readOnly}
+              disabled={!canWriteEntityData}
               dense
             />
           {/if}
@@ -296,7 +297,7 @@
           <button
             class="primary-btn"
             onclick={submit}
-            disabled={appState.readOnly || editorStore.saving || !includedColumns.length}
+            disabled={!canWriteEntityData || editorStore.saving || !includedColumns.length}
           >
             提交记录
           </button>

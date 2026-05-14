@@ -37,6 +37,7 @@
   let dateFormatMode = $state<"preset" | "custom">("preset");
   let referenceTargets = $state<ReferenceTargetOption[]>([]);
   let referenceTargetsLoaded = $state(false);
+  const canWriteSharedStructure = $derived(appState.canPerform("write_shared_structure_ddl"));
   /** 用户在原字段就是 reference 时不允许换目标表，避免破坏已写入数据。 */
   const referenceTargetLocked = $derived<boolean>(
     !!editorStore.columns.find((col) => col.key === fieldKey && col.fieldType === "reference" && col.referenceTable),
@@ -98,7 +99,7 @@
   }
 
   async function save() {
-    if (appState.readOnly || !fieldDraft) return;
+    if (!canWriteSharedStructure || !fieldDraft) return;
 
     let updatedField: GridColumnDef;
     try {
@@ -115,7 +116,7 @@
   }
 
   async function removeField() {
-    if (appState.readOnly) return;
+    if (!canWriteSharedStructure) return;
     if (editorStore.columns.length <= 1) {
       draftError = "至少保留一个字段";
       return;
@@ -187,7 +188,7 @@
           <button
             class="danger-link"
             onclick={removeField}
-            disabled={editorStore.columns.length <= 1 || editorStore.saving}
+            disabled={!canWriteSharedStructure || editorStore.columns.length <= 1 || editorStore.saving}
           >
             删除字段
           </button>
@@ -383,7 +384,7 @@
           <span class="modal-error">{draftError}</span>
         {/if}
         <button class="secondary-btn" onclick={close}>取消</button>
-        <button class="primary-btn" onclick={save} disabled={editorStore.saving}>保存字段</button>
+        <button class="primary-btn" onclick={save} disabled={!canWriteSharedStructure || editorStore.saving}>保存字段</button>
       </footer>
     {/if}
   </div>

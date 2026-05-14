@@ -1,6 +1,7 @@
 import { RecordId, StringRecordId } from "surrealdb";
 import { getLocalDb } from "../db/index";
-import { assertCanReadWorkspace, assertCanWriteWorkspace, getCurrentUserRecordId, getServiceContext } from "./context";
+import { assertCanPerformSharedWrite, assertCanReadWorkspace, getCurrentUserRecordId, getServiceContext } from "./context";
+import { isCapabilityAllowed } from "./capabilities";
 import { ServiceError } from "./errors";
 import {
   createDataTableRuntime,
@@ -94,7 +95,11 @@ export async function getWorkbookData({
     activeSheet = sheets[0];
   }
 
-  if (!getServiceContext().readOnly && String(wbRow.last_opened_sheet) !== String(activeSheet.id)) {
+  const ctx = getServiceContext();
+  if (
+    isCapabilityAllowed(ctx.capabilities, "write_shared_structure_ddl") &&
+    String(wbRow.last_opened_sheet) !== String(activeSheet.id)
+  ) {
     try {
       await db.query(`UPDATE $wbId SET last_opened_sheet = $sheetId`, {
         wbId: new StringRecordId(workbookId),
@@ -162,7 +167,7 @@ export async function upsertRows({
   );
   const wbRow = wbRows[0]?.[0];
   if (!wbRow) throw new ServiceError("NOT_FOUND", "工作簿不存在");
-  await assertCanWriteWorkspace(String(wbRow.workspace));
+  await assertCanPerformSharedWrite("write_entity_data", String(wbRow.workspace));
 
   const currentUserId = await getCurrentUserRecordId();
   const upserted = await createDataTableRuntime(sheet).updateRows(rows, wbRow.workspace, currentUserId);
@@ -192,7 +197,7 @@ export async function renameWorkbook({
   const wbRow = wbRows[0]?.[0];
   if (!wbRow) throw new ServiceError("NOT_FOUND", "工作簿不存在");
 
-  await assertCanWriteWorkspace(String(wbRow.workspace));
+  await assertCanPerformSharedWrite("write_shared_structure_ddl", String(wbRow.workspace));
 
   const updated = await db.query<[WorkbookRow[]]>(
     `UPDATE $wbId SET name = $name, updated_at = time::now() RETURN id, workspace, name, template_key, folder, updated_at`,
@@ -230,7 +235,7 @@ export async function updateSheetFields({
   );
   const wbRow = wbRows[0]?.[0];
   if (!wbRow) throw new ServiceError("NOT_FOUND", "工作簿不存在");
-  await assertCanWriteWorkspace(String(wbRow.workspace));
+  await assertCanPerformSharedWrite("write_shared_structure_ddl", String(wbRow.workspace));
 
   const tableName = sheet.table_name;
   if (!/^ent_[a-z0-9_]+$/.test(tableName)) {
@@ -293,7 +298,7 @@ export async function createSheet({
   const wbRow = wbRows[0]?.[0];
   if (!wbRow) throw new ServiceError("NOT_FOUND", "工作簿不存在");
 
-  await assertCanWriteWorkspace(String(wbRow.workspace));
+  await assertCanPerformSharedWrite("write_shared_structure_ddl", String(wbRow.workspace));
 
   // 读取已有 sheets 用于推导新 label / position
   const sheetRows = await db.query<[Pick<SheetRow, "id" | "label" | "position">[]]>(
@@ -389,7 +394,7 @@ export async function renameSheet({
   );
   const wbRow = wbRows[0]?.[0];
   if (!wbRow) throw new ServiceError("NOT_FOUND", "工作簿不存在");
-  await assertCanWriteWorkspace(String(wbRow.workspace));
+  await assertCanPerformSharedWrite("write_shared_structure_ddl", String(wbRow.workspace));
 
   if (trimmed === sheet.label) {
     return { sheet: sheetRowToDTO(sheet) };
@@ -438,7 +443,7 @@ export async function deleteRows({
   );
   const wbRow = wbRows[0]?.[0];
   if (!wbRow) throw new ServiceError("NOT_FOUND", "工作簿不存在");
-  await assertCanWriteWorkspace(String(wbRow.workspace));
+  await assertCanPerformSharedWrite("write_entity_data", String(wbRow.workspace));
 
   const deleted = await createDataTableRuntime(sheet).deleteRows(ids);
 
