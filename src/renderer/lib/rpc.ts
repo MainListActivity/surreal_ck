@@ -63,6 +63,10 @@ export function subscribeAiRunCancelled(
 }
 
 export const rpc = Electroview.defineRPC<AppRPC>({
+  // Electrobun 默认 1000ms，但创建工作簿/字段会触发多次远端
+  // execTemplate (HTTPS 往返)，单次耗时常 > 1s。Infinity 关掉客户端层
+  // 超时，错误兜底由 services 层的 withResult/Result 协议负责。
+  maxRequestTime: Infinity,
   handlers: {
     requests: {},
     messages: {

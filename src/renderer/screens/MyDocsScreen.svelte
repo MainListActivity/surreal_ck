@@ -31,8 +31,12 @@
   async function handleCreateBlank() {
     const ws = appState.workspace;
     if (!ws || !canWriteSharedStructure) return;
-    const wb = await workbooksStore.createBlank(ws.id, "未命名工作簿", selectedFolderId);
-    if (wb) navigate("editor", { workbookId: wb.id });
+    try {
+      const wb = await workbooksStore.createBlank(ws.id, "未命名工作簿", selectedFolderId);
+      if (wb) navigate("editor", { workbookId: wb.id });
+    } catch {
+      // 错误已写入 workbooksStore.state.error，由 UI 显示
+    }
   }
 
   function formatDate(iso?: string): string {

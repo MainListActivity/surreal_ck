@@ -43,23 +43,33 @@ function createWorkbooksStore() {
     name: string,
     folderId?: string | null
   ): Promise<WorkbookSummaryDTO | null> {
-    const res = await appApi.createBlankWorkbook(workspaceId, name, folderId);
-    if (res.ok) {
-      state.workbooks = [res.data.workbook, ...state.workbooks];
-      return res.data.workbook;
+    try {
+      const res = await appApi.createBlankWorkbook(workspaceId, name, folderId);
+      if (res.ok) {
+        state.workbooks = [res.data.workbook, ...state.workbooks];
+        return res.data.workbook;
+      }
+      state.error = res.message;
+      return null;
+    } catch (err) {
+      state.error = err instanceof Error ? err.message : String(err);
+      return null;
     }
-    state.error = res.message;
-    return null;
   }
 
   async function createFromTemplate(workspaceId: string, templateKey: string, name?: string): Promise<WorkbookSummaryDTO | null> {
-    const res = await appApi.createWorkbookFromTemplate(workspaceId, templateKey, name);
-    if (res.ok) {
-      state.workbooks = [res.data.workbook, ...state.workbooks];
-      return res.data.workbook;
+    try {
+      const res = await appApi.createWorkbookFromTemplate(workspaceId, templateKey, name);
+      if (res.ok) {
+        state.workbooks = [res.data.workbook, ...state.workbooks];
+        return res.data.workbook;
+      }
+      state.error = res.message;
+      return null;
+    } catch (err) {
+      state.error = err instanceof Error ? err.message : String(err);
+      return null;
     }
-    state.error = res.message;
-    return null;
   }
 
   async function createFolder(

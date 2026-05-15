@@ -37,12 +37,15 @@
     if (!selected || !appState.workspace || !canWriteSharedStructure) return;
     creating = true;
     error = null;
-    const wb = await workbooksStore.createFromTemplate(appState.workspace.id, selected.key);
-    creating = false;
-    if (wb) {
-      navigate("editor", { workbookId: wb.id });
-    } else {
-      error = workbooksStore.error ?? "创建失败";
+    try {
+      const wb = await workbooksStore.createFromTemplate(appState.workspace.id, selected.key);
+      if (wb) {
+        navigate("editor", { workbookId: wb.id });
+      } else {
+        error = workbooksStore.error ?? "创建失败";
+      }
+    } finally {
+      creating = false;
     }
   }
 </script>

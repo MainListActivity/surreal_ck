@@ -27,9 +27,12 @@
     const ws = appState.workspace;
     if (!ws || !canWriteSharedStructure) return;
     creating = true;
-    const wb = await workbooksStore.createBlank(ws.id, "未命名工作簿");
-    creating = false;
-    if (wb) navigate("editor", { workbookId: wb.id });
+    try {
+      const wb = await workbooksStore.createBlank(ws.id, "未命名工作簿");
+      if (wb) navigate("editor", { workbookId: wb.id });
+    } finally {
+      creating = false;
+    }
   }
 
   function handleImportClick() {
