@@ -2,6 +2,8 @@
 
 这些文件是 `POST https://auth.maplayer.top/api/db/execTemplate` 的模板源。客户端只提交 `{ id, params }`，远端代理负责校验参数、替换标识符、以 root 权限执行模板。
 
+必要限制，新增加的模板名称必须符合正则表达式: `/^[a-zA-Z0-9_\-\.]+$/`.
+
 维护流程：
 
 1. 修改本目录 SQL。

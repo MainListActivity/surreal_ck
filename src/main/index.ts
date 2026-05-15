@@ -7,6 +7,7 @@ import { setOfflineMode } from "./services/context";
 import { decodeTokenClaims, bootstrapLocalIdentity } from "./services/identity";
 import { createRpcHandlers } from "./rpc/handlers";
 import { installApplicationMenu } from "./app-menu";
+import { installHttpFailureLogger } from "./logging/http-failure-logger";
 import {
   configureResearchWindowAiRunCancelledNotifier,
   configureResearchWindowRpcFactory,
@@ -50,6 +51,7 @@ function broadcastAiRunCancelled(event: AiRunCancelledEvent) {
 }
 
 async function main() {
+  installHttpFailureLogger();
   ensureSingleInstance();
   installApplicationMenu();
 
