@@ -1,9 +1,22 @@
 import type { SyncManagerDeps } from "../sync/manager";
 import { syncErrorMessage } from "../sync/operation-error";
 import type { SyncDb } from "../sync/types";
+import { isRemoteConnectionReady } from "./remote-health";
+
+type RemoteConnectOptions = {
+  reconnect?: boolean | Partial<{
+    enabled: boolean;
+    attempts: number;
+    retryDelay: number;
+    retryDelayMax: number;
+    retryDelayMultiplier: number;
+    retryDelayJitter: number;
+    catch: (error: Error) => boolean;
+  }>;
+};
 
 export type RemoteConnection = SyncDb & {
-  connect(url: string): Promise<unknown>;
+  connect(url: string, options?: RemoteConnectOptions): Promise<unknown>;
   use(input: { namespace: string; database: string }): Promise<unknown>;
   authenticate(token: string): Promise<unknown>;
 };
@@ -46,7 +59,7 @@ export async function connectRemoteWithRuntime<TRemote extends RemoteConnection>
   let remote: TRemote;
   try {
     remote = runtime.createRemote();
-    await remote.connect(options.remoteUrl);
+    await remote.connect(options.remoteUrl, { reconnect: false });
     await remote.use({
       namespace: options.namespace,
       database: options.database,
@@ -76,7 +89,7 @@ export async function connectRemoteWithRuntime<TRemote extends RemoteConnection>
     await runtime.startSyncWorkers({
       localDb: runtime.getLocalDb,
       remoteDb: runtime.getRemoteDb,
-      isOnline: () => runtime.getRemoteDb() !== null,
+      isOnline: () => isRemoteConnectionReady(runtime.getRemoteDb()),
     });
   } catch (err) {
     const message = syncErrorMessage(err);

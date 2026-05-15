@@ -25,9 +25,9 @@ export const SYNC_SCOPE = [
   { table: "form_definition", scope: "remote" },
   { table: "intake_submission", scope: "remote" },
   { table: "workbook_file", scope: "remote" },
-  { table: "research_session", scope: "remote" },
   { table: "resource_item", scope: "remote" },
   { table: "resource_embedding", scope: "remote" },
+  { table: "workspace_embedding_profile", scope: "remote" },
   { table: "client_error", scope: "remote" },
   { table: "app_setting", scope: "user-scoped", rowFilter: appSettingFilter },
 ] satisfies SyncScopeEntry[];
@@ -45,6 +45,8 @@ export const LOCAL_ONLY_TABLES = [
   "mastra_observability_event_raw",
   "dashboard_result_cache",
   "dashboard_run_log",
+  "research_session",
+  "local_resource_session_link",
 ] as const;
 
 export function getSyncScopeEntry(table: string): SyncScopeEntry | null {

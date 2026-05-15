@@ -10,10 +10,15 @@ import { setOfflineMode } from "../services/offline-state";
 import { defineCurrentSessionParam, defineLocalOriginSessionFields } from "../sync/session";
 import { checkRemoteSchemaVersion } from "../sync/schema-version";
 import { startSyncWorkers, stopSyncWorkers } from "../sync/manager";
-import { setSyncLastError } from "../sync/status";
+import {
+  markDirtyProjectionData,
+  markDirtyStructureShadow,
+  setSyncLastError,
+} from "../sync/status";
 import { connectRemoteWithRuntime } from "./remote-connection";
-import { syncErrorLogDetails } from "../sync/operation-error";
+import { syncErrorLogDetails, syncErrorMessage } from "../sync/operation-error";
 import { reportConnected, scheduleReconnect, stopReconnect } from "../services/reconnect-scheduler";
+import { isConnectionUnavailableError, isRemoteConnectionReady } from "./remote-health";
 
 // ─── 状态 ────────────────────────────────────────────────────────────────────
 
@@ -21,6 +26,7 @@ let _engine: Surreal | null = null;
 let _metaSession: Awaited<ReturnType<Surreal["newSession"]>> | null = null;
 let _userDbName: string | null = null;
 let _remoteDb: Surreal | null = null;
+let _remoteEventUnsubscribers: Array<() => void> = [];
 let _loginInProgress = false;
 
 const APP_IDENTIFIER = "com.surreal.ck";
@@ -103,6 +109,67 @@ function localDbPath(): string {
 
 function surrealKvUrl(path: string): string {
   return `surrealkv://${path.replaceAll("\\", "/")}`;
+}
+
+function clearRemoteEventSubscriptions(): void {
+  for (const unsubscribe of _remoteEventUnsubscribers) unsubscribe();
+  _remoteEventUnsubscribers = [];
+}
+
+function setRemoteDbReference(remote: Surreal | null): void {
+  if (remote === null) clearRemoteEventSubscriptions();
+  _remoteDb = remote;
+}
+
+function installRemoteConnectionWatchers(remote: Surreal): void {
+  clearRemoteEventSubscriptions();
+  _remoteEventUnsubscribers = [
+    remote.subscribe("disconnected", () => {
+      void handleRemoteConnectionLost(remote, "远端连接已断开，正在自动重连");
+    }),
+    remote.subscribe("error", (err) => {
+      if (_remoteDb !== remote) return;
+      if (isConnectionUnavailableError(err)) {
+        void handleRemoteConnectionLost(remote, "远端连接已断开，正在自动重连");
+        return;
+      }
+      setSyncLastError(syncErrorMessage(err));
+    }),
+  ];
+}
+
+async function handleRemoteConnectionLost(remote: Surreal, message: string): Promise<void> {
+  if (_remoteDb !== remote) return;
+
+  setRemoteDbReference(null);
+  setOfflineMode(true);
+  setSyncLastError(message);
+  markDirtyStructureShadow(true);
+  markDirtyProjectionData(true);
+
+  try {
+    await stopSyncWorkers();
+  } catch (err) {
+    console.warn(`[sync] failed to stop workers after remote disconnect:\n${syncErrorLogDetails(err)}`);
+  }
+
+  scheduleReconnect();
+}
+
+export async function handleRemoteQueryFailure(remote: Surreal, err: unknown): Promise<boolean> {
+  if (!isConnectionUnavailableError(err)) return false;
+
+  if (_remoteDb === remote) {
+    await handleRemoteConnectionLost(remote, "远端连接已断开，正在自动重连");
+  } else if (!_remoteDb) {
+    setOfflineMode(true);
+    setSyncLastError("远端连接已断开，正在自动重连");
+    markDirtyStructureShadow(true);
+    markDirtyProjectionData(true);
+    scheduleReconnect();
+  }
+
+  return true;
 }
 
 // ─── 生命周期 API ─────────────────────────────────────────────────────────────
@@ -273,10 +340,14 @@ export async function connectRemote(accessToken: string): Promise<void> {
     namespace: process.env.SURREALDB_NS ?? "main",
     database: process.env.SURREALDB_DB ?? "docs",
   }, {
-    createRemote: () => new Surreal(),
+    createRemote: () => {
+      const remote = new Surreal();
+      installRemoteConnectionWatchers(remote);
+      return remote;
+    },
     stopSyncWorkers,
     setRemoteDb: (remote) => {
-      _remoteDb = remote;
+      setRemoteDbReference(remote);
     },
     getRemoteDb: () => getRemoteDb(),
     getLocalDb: () => getLocalDb(),
@@ -294,7 +365,7 @@ export async function connectRemote(accessToken: string): Promise<void> {
     },
   });
 
-  if (_remoteDb) {
+  if (getRemoteDb()) {
     reportConnected();
   } else {
     scheduleReconnect();
@@ -309,7 +380,7 @@ export async function connectRemote(accessToken: string): Promise<void> {
 export async function closeUserDb(): Promise<void> {
   stopReconnect();
   await stopSyncWorkers();
-  _remoteDb = null;
+  setRemoteDbReference(null);
 
   if (_userDbName) {
     try {
@@ -353,5 +424,5 @@ export function getLocalDb(): Surreal {
 
 /** 返回 remote DB 实例，未连接时返回 null。 */
 export function getRemoteDb(): Surreal | null {
-  return _remoteDb;
+  return isRemoteConnectionReady(_remoteDb) ? _remoteDb : null;
 }

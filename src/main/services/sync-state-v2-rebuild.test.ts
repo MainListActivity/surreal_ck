@@ -60,10 +60,16 @@ class FakeDb implements SyncDb {
 
 let local = new FakeDb();
 let remote: FakeDb | null = new FakeDb();
+let handledRemoteQueryFailures: unknown[] = [];
 
 mock.module("../db/index", () => ({
   getLocalDb: () => local,
   getRemoteDb: () => remote,
+  handleRemoteQueryFailure: async (_remote: SyncDb, err: unknown) => {
+    handledRemoteQueryFailures.push(err);
+    remote = null;
+    return true;
+  },
 }));
 
 import {
@@ -78,6 +84,7 @@ describe("triggerSyncRebuild", () => {
   beforeEach(() => {
     local = new FakeDb();
     remote = new FakeDb();
+    handledRemoteQueryFailures = [];
     resetSyncRuntimeStateForTests();
   });
 
@@ -116,5 +123,23 @@ describe("triggerSyncRebuild", () => {
         _origin_session_id: "remote:projection-rebuild",
       },
     ]);
+  });
+
+  test("远端连接断开时返回离线状态而不是抛出原始 SurrealDB SQL 错误", async () => {
+    const disconnected = new Error(
+      `fixed structure shadow rebuild remote fetch table=app_user query="SELECT * FROM type::table($table)" bindings.table=app_user: You must be connected to a SurrealDB instance before performing this operation`,
+    );
+    remote!.query = async <T = unknown>(): Promise<T> => {
+      throw disconnected;
+    };
+
+    const status = await triggerSyncRebuild();
+
+    expect(status.online).toBe(false);
+    expect(status.rebuildInProgress).toBe(false);
+    expect(handledRemoteQueryFailures).toHaveLength(1);
+    expect(String((handledRemoteQueryFailures[0] as Error).message)).toContain(
+      "You must be connected to a SurrealDB instance before performing this operation",
+    );
   });
 });

@@ -29,4 +29,17 @@ describe("同步范围", () => {
     }
     expect(SYNC_SCOPE.some((entry) => LOCAL_ONLY_TABLES.some((table) => table === entry.table))).toBe(false);
   });
+
+  test("共享资源库同步范围符合 ADR 的 remote/local 边界", () => {
+    expect(getScope("resource_item")).toBe("remote");
+    expect(getScope("resource_embedding")).toBe("remote");
+    expect(getScope("workspace_embedding_profile")).toBe("remote");
+
+    expect(isInSyncScope("research_session")).toBe(false);
+    expect(isInSyncScope("local_resource_session_link")).toBe(false);
+  });
 });
+
+function getScope(table: string): string | null {
+  return SYNC_SCOPE.find((entry) => entry.table === table)?.scope ?? null;
+}

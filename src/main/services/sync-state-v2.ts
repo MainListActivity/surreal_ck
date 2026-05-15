@@ -1,4 +1,4 @@
-import { getLocalDb, getRemoteDb } from "../db/index";
+import { getLocalDb, getRemoteDb, handleRemoteQueryFailure } from "../db/index";
 import { rebuildEntProjections } from "../sync/ent-projection";
 import { rebuildRelProjections } from "../sync/rel-projection";
 import { recoverDirtyStructureShadow } from "../sync/structure-live";
@@ -46,6 +46,7 @@ export async function triggerSyncRebuild(): Promise<SyncStatusV2DTO> {
   const remote = getRemoteDb();
   if (!remote) throw new Error("[sync] remote db is not connected");
   const local = getLocalDb();
+  let handledRemoteDisconnect = false;
   markRebuildInProgress(true);
   try {
     await rebuildFixedSharedStructureShadow({ localDb: local, remoteDb: remote });
@@ -54,9 +55,13 @@ export async function triggerSyncRebuild(): Promise<SyncStatusV2DTO> {
     markDirtyStructureShadow(false);
     markDirtyProjectionData(false);
     markLastRebuildAt(new Date().toISOString());
+  } catch (err) {
+    handledRemoteDisconnect = await handleRemoteQueryFailure(remote, err);
+    if (!handledRemoteDisconnect) throw err;
   } finally {
     markRebuildInProgress(false);
   }
+  if (handledRemoteDisconnect) return getSyncStatusV2();
   // 上面成功完成后，再尝试 recover dirty（若仍存在）
   await recoverDirtyStructureShadow({ localDb: local, remoteDb: remote });
   return getSyncStatusV2();

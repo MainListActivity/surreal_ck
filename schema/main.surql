@@ -474,19 +474,12 @@ DEFINE INDEX IF NOT EXISTS workbook_file_workspace ON TABLE workbook_file COLUMN
 
 -- ═══════════════════════════════════════════════════════════════════════════════
 -- RESOURCE RETRIEVAL
--- Workspace 级共享资源库。resource_item 保存用户确认的主数据；
--- research_session 是人工检索闭环的业务会话，不暴露 workflow run id 作为主 handle。
+-- Workspace 级共享资源库。resource_item / resource_embedding / workspace_embedding_profile
+-- 是 remote-first 共享真相；research_session 是本地私有检索过程。
 -- ═══════════════════════════════════════════════════════════════════════════════
 
-DEFINE TABLE IF NOT EXISTS research_session SCHEMAFULL CHANGEFEED 7d
-  PERMISSIONS
-    FOR select WHERE
-      workspace.owner = $auth
-      OR workspace IN $auth<-has_workspace_member<-workspace,
-    FOR create, update WHERE
-      workspace.owner = $auth
-      OR workspace IN $auth<-has_workspace_member<-workspace,
-    FOR delete WHERE workspace.owner = $auth;
+DEFINE TABLE IF NOT EXISTS research_session SCHEMAFULL
+  PERMISSIONS FULL;
 DEFINE FIELD IF NOT EXISTS workspace          ON TABLE research_session TYPE record<workspace>;
 DEFINE FIELD IF NOT EXISTS originating_run_id ON TABLE research_session TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS query              ON TABLE research_session TYPE string;
@@ -592,6 +585,28 @@ DEFINE INDEX IF NOT EXISTS resource_embedding_workspace_profile_status
 DEFINE INDEX IF NOT EXISTS resource_embedding_resource
   ON TABLE resource_embedding COLUMNS resource;
 
+DEFINE TABLE IF NOT EXISTS workspace_embedding_profile SCHEMAFULL CHANGEFEED 7d
+  PERMISSIONS
+    FOR select WHERE
+      workspace.owner = $auth
+      OR workspace IN $auth<-has_workspace_member<-workspace,
+    FOR create, update WHERE
+      workspace.owner = $auth,
+    FOR delete WHERE workspace.owner = $auth;
+DEFINE FIELD IF NOT EXISTS workspace   ON TABLE workspace_embedding_profile TYPE record<workspace>;
+DEFINE FIELD IF NOT EXISTS provider    ON TABLE workspace_embedding_profile TYPE string;
+DEFINE FIELD IF NOT EXISTS model       ON TABLE workspace_embedding_profile TYPE string;
+DEFINE FIELD IF NOT EXISTS dimensions  ON TABLE workspace_embedding_profile TYPE int
+  ASSERT $value > 0;
+DEFINE FIELD IF NOT EXISTS version     ON TABLE workspace_embedding_profile TYPE string;
+DEFINE FIELD IF NOT EXISTS base_url    ON TABLE workspace_embedding_profile TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS api_format  ON TABLE workspace_embedding_profile TYPE option<string>
+  ASSERT $value = NONE OR $value INSIDE ["openai-compatible", "openai-responses", "anthropic"];
+DEFINE FIELD IF NOT EXISTS created_at  ON TABLE workspace_embedding_profile TYPE datetime VALUE time::now();
+DEFINE FIELD IF NOT EXISTS updated_at  ON TABLE workspace_embedding_profile TYPE datetime VALUE time::now();
+DEFINE INDEX IF NOT EXISTS workspace_embedding_profile_workspace_unique
+  ON TABLE workspace_embedding_profile COLUMNS workspace UNIQUE;
+
 -- ═══════════════════════════════════════════════════════════════════════════════
 -- OBSERVABILITY
 -- ═══════════════════════════════════════════════════════════════════════════════
@@ -651,11 +666,11 @@ DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE intake_submission TYPE op
 
 DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE workbook_file TYPE option<string>;
 
-DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE research_session TYPE option<string>;
-
 DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE resource_item TYPE option<string>;
 
 DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE resource_embedding TYPE option<string>;
+
+DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE workspace_embedding_profile TYPE option<string>;
 
 DEFINE FIELD IF NOT EXISTS _origin_session_id ON TABLE client_error TYPE option<string>;
 

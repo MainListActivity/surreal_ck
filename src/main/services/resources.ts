@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { z } from "zod";
 import { DateTime, RecordId, StringRecordId, Table } from "surrealdb";
 import { getLocalDb } from "../db/index";
 import { omitNullishSurrealFields } from "../db/surreal-values";
@@ -7,7 +6,41 @@ import { assertCanReadWorkspace, assertCanPerformSharedWrite, getCurrentUserReco
 import type { CapabilityKey } from "./capabilities";
 import { generateEmbeddingVector } from "./embedding-client";
 import { ServiceError } from "./errors";
-import { getEmbeddingSettings, saveEmbeddingSettings } from "./settings";
+import { getEmbeddingSettings, type AiApiFormat, type AiProvider, type EmbeddingSettings } from "./settings";
+import {
+  buildVectorScoreMap,
+  embeddingProfileToDTOFields,
+  ensureInitialEmbeddingState,
+  indexResourceEmbedding,
+  prepareWorkspaceEmbeddingProfileChange,
+  resolveResourceEmbeddingState,
+  retryResourceEmbeddingState,
+} from "./resource-indexing";
+import {
+  createEmbeddingProfileKey,
+  normalizeEmbeddingProfile,
+  SurrealWorkspaceEmbeddingProfileRepository,
+  workspaceEmbeddingProfileRowToProfile,
+  type ResourceEmbeddingProfile,
+} from "./workspace-embedding-profiles";
+import {
+  linkPublishedResourceToOpenSession,
+  loadOpenResearchSessionForResource,
+  researchSessionSummary,
+} from "./research-sessions";
+import {
+  buildResourceSearchText,
+  rankResourceSearchRows,
+} from "./resource-search";
+import {
+  prepareSharedResourceDraft,
+  validateResourceType,
+} from "./shared-resource-library";
+
+export { createEmbeddingProfileKey } from "./workspace-embedding-profiles";
+export type { ResourceEmbeddingProfile } from "./workspace-embedding-profiles";
+export { listResourceTypeDefinitions } from "./shared-resource-library";
+export type { ResourceTypeDefinition } from "./shared-resource-library";
 
 type RecordRef = RecordId | StringRecordId | string;
 
@@ -97,20 +130,6 @@ export type ResourceEmbeddingDTO = {
   indexedAt?: string;
   updatedAt?: string;
 };
-
-export type ResourceEmbeddingProfile = {
-  provider: string;
-  model: string;
-  dimensions: number;
-  version: string;
-};
-
-export function createEmbeddingProfileKey(profile: ResourceEmbeddingProfile): string {
-  const provider = encodeURIComponent(profile.provider.trim().toLowerCase());
-  const model = encodeURIComponent(profile.model.trim());
-  const version = encodeURIComponent(profile.version.trim());
-  return `provider=${provider}|model=${model}|dimensions=${profile.dimensions}|version=${version}`;
-}
 
 export type ResourceEmbeddingRow = {
   id: RecordRef;
@@ -527,39 +546,6 @@ type ResourceServiceDeps = {
   now?: () => Date;
 };
 
-const EvidenceSchema = z.object({
-  text: z.string().trim().min(1),
-  sourceUrl: z.string().trim().url().optional(),
-  sourceTitle: z.string().trim().min(1).optional(),
-  capturedAt: z.string().datetime(),
-  order: z.number().int().nonnegative(),
-});
-
-const ResourceQualitySchema = z.enum(["user-confirmed", "ai-draft", "imported", "deprecated"]);
-
-const ActiveResourceTypeRegistry = {
-  generic_note: z.object({}).strict(),
-  web_article: z.object({
-    author: z.string().trim().min(1).optional(),
-    publishedAt: z.string().datetime().optional(),
-    siteName: z.string().trim().min(1).optional(),
-  }).strict(),
-} satisfies Record<string, z.ZodType<Record<string, unknown>>>;
-
-const RESERVED_RESOURCE_TYPES = ["legal_case", "legal_article"] as const;
-
-export type ResourceTypeDefinition = {
-  type: string;
-  status: "active" | "reserved";
-};
-
-export function listResourceTypeDefinitions(): ResourceTypeDefinition[] {
-  return [
-    ...Object.keys(ActiveResourceTypeRegistry).map((type) => ({ type, status: "active" as const })),
-    ...RESERVED_RESOURCE_TYPES.map((type) => ({ type, status: "reserved" as const })),
-  ];
-}
-
 export function createResourceService(deps: ResourceServiceDeps) {
   const now = deps.now ?? (() => new Date());
 
@@ -567,15 +553,14 @@ export function createResourceService(deps: ResourceServiceDeps) {
     async saveResource(req: SaveResourceRequest): Promise<SaveResourceResponse> {
       await deps.assertCanPerformWrite("publish_shared_resource", req.workspaceId);
       const currentUserId = await deps.getCurrentUserRecordId();
-      const normalized = normalizeSaveResourceRequest(req);
+      const { normalized, duplicateHashes } = prepareSharedResourceDraft(req);
       const session = normalized.researchSessionId
-        ? await loadOpenSessionForWrite(deps, normalized.researchSessionId, normalized.workspaceId)
+        ? await loadOpenResearchSessionForResource(deps.repository, normalized.researchSessionId, normalized.workspaceId)
         : null;
       if (session) {
         await deps.assertCanPerformWrite("write_research_session", normalized.workspaceId);
       }
       const timestamp = now();
-      const hashes = createDuplicateHashes(normalized);
 
       const row = await deps.repository.createResource({
         workspace: normalized.workspaceId,
@@ -590,25 +575,19 @@ export function createResourceService(deps: ResourceServiceDeps) {
         quality: normalized.quality,
         confidence: normalized.confidence,
         source_trust: normalized.sourceTrust,
-        content_hash: hashes.content,
-        evidence_hash: hashes.evidence,
-        source_hash: hashes.source,
+        content_hash: duplicateHashes.content,
+        evidence_hash: duplicateHashes.evidence,
+        source_hash: duplicateHashes.source,
         created_by: currentUserId,
         created_at: timestamp,
         updated_at: timestamp,
       });
 
-      if (normalized.researchSessionId) {
-        await deps.repository.linkResourceToResearchSession(
-          String(row.id),
-          normalized.researchSessionId,
-        );
-      }
-
       if (session) {
-        await deps.repository.updateResearchSession(String(session.id), {
-          created_resources: uniqueRecordRefs([...session.created_resources, row.id]),
-          updated_at: timestamp,
+        await linkPublishedResourceToOpenSession(deps.repository, {
+          session,
+          resourceId: row.id,
+          timestamp,
         });
       }
 
@@ -647,19 +626,18 @@ export function createResourceService(deps: ResourceServiceDeps) {
 
       return {
         resource,
-        session: session ? researchSessionRowToSummary(session) : undefined,
+        session: session ? researchSessionSummary(session) : undefined,
       };
     },
 
     async searchResources(req: SearchResourcesRequest): Promise<SearchResourcesResponse> {
       await deps.assertCanReadWorkspace(req.workspaceId);
-      const queryText = buildSearchText(req);
+      const queryText = buildResourceSearchText(req);
       if (!queryText) throw new ServiceError("VALIDATION_ERROR", "检索 query 不能为空");
       if (req.resourceType) validateResourceType(req.resourceType.trim());
 
       const rows = (await deps.repository.listResourcesByWorkspace(req.workspaceId))
-        .filter((row) => !req.resourceType || row.resource_type === req.resourceType.trim())
-        .filter((row) => resourceMatchesFilters(row, req.filters));
+        .filter((row) => !req.resourceType || row.resource_type === req.resourceType.trim());
       const profile = await deps.getActiveEmbeddingProfile?.(req.workspaceId) ?? null;
       const vectorSearch = await buildVectorScoreMap(deps, {
         workspaceId: req.workspaceId,
@@ -667,37 +645,26 @@ export function createResourceService(deps: ResourceServiceDeps) {
         rows,
         profile,
       });
-      const scoredRows = await Promise.all(rows.map(async (row) => {
-        const keywordScore = scoreKeyword(row, queryText);
-        const vectorScore = vectorSearch.scores.get(String(row.id)) ?? 0;
-        const qualityScore = scoreQuality(row.quality);
-        const recencyScore = scoreRecency(row.created_at, now());
-        const score = combineResourceScores({ vectorScore, keywordScore, qualityScore, recencyScore });
-        return {
-          resource: resourceRowToDTO(row, await resolveResourceEmbeddingState(deps, row)),
-          score,
-          vectorScore,
-          keywordScore,
-          qualityScore,
-          recencyScore,
-        };
-      }));
+      const ranked = rankResourceSearchRows({
+        rows,
+        queryText,
+        vectorScores: vectorSearch.scores,
+        filters: req.filters,
+        now: now(),
+        limit: req.limit,
+        answerThreshold: req.answerThreshold,
+        candidateThreshold: req.candidateThreshold,
+      });
+      const results = await Promise.all(ranked.results.map(async (item) => ({
+        resource: resourceRowToDTO(item.row, await resolveResourceEmbeddingState(deps, item.row)),
+        score: item.score,
+        vectorScore: item.vectorScore,
+        keywordScore: item.keywordScore,
+        qualityScore: item.qualityScore,
+        recencyScore: item.recencyScore,
+      })));
 
-      const limit = clampPositiveInteger(req.limit, 10);
-      const results = scoredRows
-        .filter((item) => item.keywordScore > 0 || vectorSearch.scores.has(item.resource.id))
-        .sort((left, right) => right.score - left.score)
-        .slice(0, limit);
-      const bestScore = results[0]?.score ?? 0;
-      const answerThreshold = req.answerThreshold ?? 0.72;
-      const candidateThreshold = req.candidateThreshold ?? 0.25;
-      const status: ResourceSearchStatus = bestScore >= answerThreshold
-        ? "hit"
-        : bestScore >= candidateThreshold
-          ? "candidates"
-          : "miss";
-
-      return { status, indexStatus: vectorSearch.indexStatus, queryText, results };
+      return { status: ranked.status, indexStatus: vectorSearch.indexStatus, queryText, results };
     },
 
     async searchResourceEmbeddings(req: SearchResourceEmbeddingsRequest): Promise<SearchResourceEmbeddingsResponse> {
@@ -719,20 +686,20 @@ export function createResourceService(deps: ResourceServiceDeps) {
 
     async updateEmbeddingProfile(req: UpdateEmbeddingProfileRequest): Promise<UpdateEmbeddingProfileResponse> {
       await deps.assertCanPerformWrite("advance_shared_embedding", req.workspaceId);
-      validateEmbeddingProfile(req.profile);
-      await deps.saveActiveEmbeddingProfile?.(req.workspaceId, req.profile);
+      const profile = normalizeEmbeddingProfile(req.profile);
+      await deps.saveActiveEmbeddingProfile?.(req.workspaceId, profile);
       const timestamp = now();
-      const profileKey = createEmbeddingProfileKey(req.profile);
-      const staleCount = await deps.repository.markResourceEmbeddingsStaleForWorkspace(
-        req.workspaceId,
-        profileKey,
+      const { staleCount } = await prepareWorkspaceEmbeddingProfileChange({
+        repository: deps.repository,
+        workspaceId: req.workspaceId,
+        profile,
         timestamp,
-      );
+      });
 
       return {
         profile: {
           status: "pending",
-          ...embeddingProfileToDTOFields(req.profile),
+          ...embeddingProfileToDTOFields(profile),
           updatedAt: timestamp.toISOString(),
         },
         staleCount,
@@ -744,25 +711,9 @@ export function createResourceService(deps: ResourceServiceDeps) {
       if (!row) throw new ServiceError("NOT_FOUND", "资源不存在");
 
       await deps.assertCanPerformWrite("advance_shared_embedding", String(row.workspace));
-      const profile = await deps.getActiveEmbeddingProfile?.(String(row.workspace)) ?? null;
-      if (!profile) return { embedding: { status: "disabled" } };
+      const embedding = await retryResourceEmbeddingState(deps, row, now());
 
-      const timestamp = now();
-      const embeddingText = buildResourceEmbeddingText(row);
-      const embeddingRow = await deps.repository.upsertResourceEmbedding({
-        workspace: row.workspace,
-        resource: row.id,
-        ...embeddingProfileToRowFields(profile),
-        embedding_text_hash: stableHash(embeddingText),
-        vector: undefined,
-        status: "pending",
-        error_summary: undefined,
-        indexed_at: undefined,
-        created_at: timestamp,
-        updated_at: timestamp,
-      });
-
-      return { embedding: embeddingRowToDTO(embeddingRow) };
+      return { embedding };
     },
 
     async createResearchSession(req: CreateResearchSessionRequest): Promise<ResearchSessionResponse> {
@@ -890,37 +841,25 @@ export async function retryResourceEmbedding(req: RetryResourceEmbeddingRequest)
 function createDefaultResourceService(
   options: { searchEmbedding?: boolean } = {},
 ): ReturnType<typeof createResourceService> {
+  const embeddingProfileRepository = new SurrealWorkspaceEmbeddingProfileRepository();
   return createResourceService({
     repository: new SurrealResourceRepository(),
     assertCanReadWorkspace,
     assertCanPerformWrite: assertCanPerformSharedWrite,
     getCurrentUserRecordId,
-    getActiveEmbeddingProfile: async () => {
-      const settings = await getEmbeddingSettings();
-      if (!settings.secretConfigured) return null;
-      return {
-        provider: settings.provider,
-        model: settings.model,
-        dimensions: settings.dimensions,
-        version: settings.version,
-      };
+    getActiveEmbeddingProfile: async (workspaceId) => {
+      const row = await embeddingProfileRepository.findByWorkspace(workspaceId);
+      return row ? workspaceEmbeddingProfileRowToProfile(row) : null;
     },
-    saveActiveEmbeddingProfile: async (_workspaceId, profile) => {
-      const current = await getEmbeddingSettings();
-      await saveEmbeddingSettings({
-        provider: profile.provider === "anthropic" || profile.provider === "google" || profile.provider === "custom"
-          ? profile.provider
-          : "openai",
-        model: profile.model,
-        dimensions: profile.dimensions,
-        version: profile.version,
-        baseUrl: current.baseUrl,
-        apiFormat: current.apiFormat,
-        apiKey: current.apiKey,
-      });
+    saveActiveEmbeddingProfile: async (workspaceId, profile) => {
+      await embeddingProfileRepository.saveForWorkspace(workspaceId, profile, new Date());
     },
     generateSearchEmbedding: options.searchEmbedding
-      ? async ({ text }) => generateEmbeddingVector(await getEmbeddingSettings(), text)
+      ? async ({ profile, text }) => {
+        const settings = await getCompatibleEmbeddingSettings(profile);
+        if (!settings) throw new ServiceError("VALIDATION_ERROR", "当前设备没有兼容的 embedding credential");
+        return generateEmbeddingVector(settings, text);
+      }
       : undefined,
   });
 }
@@ -930,355 +869,57 @@ function queueDefaultResourceEmbedding(resourceId: string): void {
 }
 
 async function indexDefaultResourceEmbedding(resourceId: string): Promise<void> {
-  const settings = await getEmbeddingSettings();
-  if (!settings.secretConfigured) return;
-
   const repository = new SurrealResourceRepository();
   const row = await repository.findResourceById(resourceId);
   if (!row) return;
 
   await assertCanPerformSharedWrite("advance_shared_embedding", String(row.workspace));
 
-  const profile: ResourceEmbeddingProfile = {
-    provider: settings.provider,
-    model: settings.model,
-    dimensions: settings.dimensions,
-    version: settings.version,
-  };
-  const timestamp = new Date();
-  const embeddingText = buildResourceEmbeddingText(row);
-  const embeddingTextHash = stableHash(embeddingText);
-  const pendingRow = await repository.upsertResourceEmbedding({
-    workspace: row.workspace,
-    resource: row.id,
-    ...embeddingProfileToRowFields(profile),
-    embedding_text_hash: embeddingTextHash,
-    vector: undefined,
-    status: "pending",
-    error_summary: undefined,
-    indexed_at: undefined,
-    created_at: timestamp,
-    updated_at: timestamp,
+  const profileRepository = new SurrealWorkspaceEmbeddingProfileRepository();
+  const profileRow = await profileRepository.findByWorkspace(String(row.workspace));
+  if (!profileRow) return;
+  const profile = workspaceEmbeddingProfileRowToProfile(profileRow);
+  const settings = await getCompatibleEmbeddingSettings(profile);
+  if (!settings) return;
+
+  await indexResourceEmbedding({
+    repository,
+    row,
+    profile,
+    timestamp: new Date(),
+    generateEmbedding: (text) => generateEmbeddingVector(settings, text),
   });
-
-  try {
-    const vector = await generateEmbeddingVector(settings, embeddingText);
-    const indexedAt = new Date();
-    await repository.upsertResourceEmbedding({
-      ...pendingRow,
-      vector,
-      status: "indexed",
-      error_summary: undefined,
-      indexed_at: indexedAt,
-      updated_at: indexedAt,
-    });
-  } catch (error) {
-    const failedAt = new Date();
-    await repository.upsertResourceEmbedding({
-      ...pendingRow,
-      vector: undefined,
-      status: "failed",
-      error_summary: summarizeEmbeddingError(error),
-      indexed_at: undefined,
-      updated_at: failedAt,
-    });
-  }
 }
 
-async function ensureInitialEmbeddingState(
-  deps: ResourceServiceDeps,
-  row: ResourceRow,
-  timestamp: Date,
-): Promise<ResourceEmbeddingDTO> {
-  const profile = await deps.getActiveEmbeddingProfile?.(String(row.workspace)) ?? null;
-  if (!profile) return { status: "disabled" };
-
-  const existing = await findEmbeddingForProfile(deps, row, profile);
-  if (existing) return embeddingRowToDTO(existing);
-
-  await deps.assertCanPerformWrite("advance_shared_embedding", String(row.workspace));
-
-  const embeddingText = buildResourceEmbeddingText(row);
-  const embeddingTextHash = stableHash(embeddingText);
-  const embeddingRow = await deps.repository.upsertResourceEmbedding({
-    workspace: row.workspace,
-    resource: row.id,
-    ...embeddingProfileToRowFields(profile),
-    embedding_text_hash: embeddingTextHash,
-    status: "pending",
-    created_at: timestamp,
-    updated_at: timestamp,
-  });
-  if (!deps.generateEmbedding) return embeddingRowToDTO(embeddingRow);
-
-  try {
-    const vector = await deps.generateEmbedding({
-      profile,
-      resource: row,
-      text: embeddingText,
-      embeddingTextHash,
-    });
-    const indexedRow = await deps.repository.upsertResourceEmbedding({
-      ...embeddingRow,
-      vector,
-      status: "indexed",
-      error_summary: undefined,
-      indexed_at: timestamp,
-      updated_at: timestamp,
-    });
-    return embeddingRowToDTO(indexedRow);
-  } catch (error) {
-    const failedRow = await deps.repository.upsertResourceEmbedding({
-      ...embeddingRow,
-      status: "failed",
-      error_summary: summarizeEmbeddingError(error),
-      indexed_at: undefined,
-      updated_at: timestamp,
-    });
-    return embeddingRowToDTO(failedRow);
-  }
-}
-
-async function resolveResourceEmbeddingState(
-  deps: ResourceServiceDeps,
-  row: ResourceRow,
-): Promise<ResourceEmbeddingDTO> {
-  const profile = await deps.getActiveEmbeddingProfile?.(String(row.workspace)) ?? null;
-  if (!profile) return { status: "disabled" };
-
-  const existing = await findEmbeddingForProfile(deps, row, profile);
-  if (existing) return embeddingRowToDTO(existing);
-  return {
-    status: "pending",
-    ...embeddingProfileToDTOFields(profile),
-  };
-}
-
-async function findEmbeddingForProfile(
-  deps: Pick<ResourceServiceDeps, "repository">,
-  row: ResourceRow,
+async function getCompatibleEmbeddingSettings(
   profile: ResourceEmbeddingProfile,
-): Promise<ResourceEmbeddingRow | null> {
-  const profileKey = createEmbeddingProfileKey(profile);
-  const embeddings = await deps.repository.findResourceEmbeddingsByResource(String(row.id));
-  return embeddings.find((embedding) => embedding.profile_key === profileKey) ?? null;
-}
+): Promise<EmbeddingSettings | null> {
+  const settings = await getEmbeddingSettings();
+  if (!settings.secretConfigured || !settings.apiKey?.trim()) return null;
 
-function embeddingProfileToRowFields(profile: ResourceEmbeddingProfile): Pick<
-  ResourceEmbeddingRow,
-  "profile_key" | "provider" | "model" | "dimensions" | "profile_version"
-> {
-  return {
-    profile_key: createEmbeddingProfileKey(profile),
-    provider: profile.provider,
-    model: profile.model,
-    dimensions: profile.dimensions,
-    profile_version: profile.version,
-  };
-}
+  const provider = normalizeSettingsProvider(profile.provider);
+  if (settings.provider !== provider) return null;
 
-function embeddingProfileToDTOFields(profile: ResourceEmbeddingProfile): Omit<ResourceEmbeddingDTO, "status"> {
   return {
-    profileKey: createEmbeddingProfileKey(profile),
-    provider: profile.provider,
+    provider,
     model: profile.model,
     dimensions: profile.dimensions,
     version: profile.version,
+    baseUrl: profile.baseUrl ?? settings.baseUrl,
+    apiFormat: normalizeSettingsApiFormat(profile.apiFormat ?? settings.apiFormat),
+    apiKey: settings.apiKey,
+    secretConfigured: true,
   };
 }
 
-function validateEmbeddingProfile(profile: ResourceEmbeddingProfile): void {
-  if (!profile.provider.trim()) throw new ServiceError("VALIDATION_ERROR", "embedding provider 不能为空");
-  if (!profile.model.trim()) throw new ServiceError("VALIDATION_ERROR", "embedding model 不能为空");
-  if (!Number.isInteger(profile.dimensions) || profile.dimensions <= 0) {
-    throw new ServiceError("VALIDATION_ERROR", "embedding dimensions 必须是正整数");
-  }
-  if (!profile.version.trim()) throw new ServiceError("VALIDATION_ERROR", "embedding profile version 不能为空");
+function normalizeSettingsProvider(provider: string): AiProvider {
+  if (provider === "anthropic" || provider === "google" || provider === "custom") return provider;
+  return "openai";
 }
 
-function buildResourceEmbeddingText(row: ResourceRow): string {
-  return [
-    row.title,
-    row.summary,
-    row.source_title,
-    row.tags.join("\n"),
-    ...row.evidence.map((item) => item.text),
-  ].filter(Boolean).join("\n");
-}
-
-async function buildVectorScoreMap(
-  deps: ResourceServiceDeps,
-  input: {
-    workspaceId: string;
-    queryText: string;
-    rows: ResourceRow[];
-    profile: ResourceEmbeddingProfile | null;
-  },
-): Promise<{ indexStatus: ResourceSearchIndexStatus; scores: Map<string, number> }> {
-  if (!input.profile) return { indexStatus: "index-disabled", scores: new Map() };
-  if (!deps.generateSearchEmbedding) {
-    return { indexStatus: await inferUnavailableIndexStatus(deps, input.rows, input.profile), scores: new Map() };
-  }
-
-  try {
-    const queryVector = await deps.generateSearchEmbedding({
-      profile: input.profile,
-      text: input.queryText,
-    });
-    const profileKey = createEmbeddingProfileKey(input.profile);
-    const embeddings = await deps.repository.listIndexedResourceEmbeddings(input.workspaceId, profileKey);
-    const scores = new Map<string, number>();
-    for (const embedding of embeddings) {
-      if (!embedding.vector?.length) continue;
-      scores.set(String(embedding.resource), cosineSimilarity(queryVector, embedding.vector));
-    }
-    return {
-      indexStatus: scores.size > 0 ? "ready" : await inferUnavailableIndexStatus(deps, input.rows, input.profile),
-      scores,
-    };
-  } catch {
-    return { indexStatus: "index-error", scores: new Map() };
-  }
-}
-
-async function inferUnavailableIndexStatus(
-  deps: ResourceServiceDeps,
-  rows: ResourceRow[],
-  profile: ResourceEmbeddingProfile,
-): Promise<ResourceSearchIndexStatus> {
-  const embeddings = (await Promise.all(rows.map((row) => findEmbeddingForProfile(deps, row, profile))))
-    .filter((row): row is ResourceEmbeddingRow => Boolean(row));
-  if (embeddings.some((row) => row.status === "failed")) return "index-error";
-  return "index-pending";
-}
-
-function buildSearchText(req: Pick<SearchResourcesRequest, "query" | "context">): string {
-  return [
-    req.query,
-    contextValueToText(req.context?.selectedRow),
-    contextValueToText(req.context?.document),
-    req.context?.manualText,
-  ]
-    .filter((item): item is string => Boolean(item?.trim()))
-    .join("\n")
-    .trim();
-}
-
-function contextValueToText(value: unknown): string {
-  if (!value) return "";
-  if (typeof value === "string") return value;
-  if (Array.isArray(value)) return value.map(contextValueToText).filter(Boolean).join("\n");
-  if (typeof value === "object") {
-    return Object.values(value as Record<string, unknown>)
-      .map(contextValueToText)
-      .filter(Boolean)
-      .join("\n");
-  }
-  return String(value);
-}
-
-function scoreKeyword(row: ResourceRow, queryText: string): number {
-  const haystack = normalizeSearchText([
-    row.title,
-    row.summary,
-    row.source_title,
-    row.tags.join(" "),
-    ...row.evidence.map((item) => item.text),
-  ].filter(Boolean).join("\n"));
-  const terms = tokenizeSearchText(queryText);
-  if (terms.length === 0) return 0;
-
-  let matches = 0;
-  for (const term of terms) {
-    if (haystack.includes(term)) matches += 1;
-  }
-  return matches / terms.length;
-}
-
-function tokenizeSearchText(text: string): string[] {
-  const normalized = normalizeSearchText(text);
-  const parts = normalized
-    .split(/[\s,，。；;、]+/u)
-    .map((part) => part.trim())
-    .filter(Boolean);
-  return [...new Set(parts.length > 0 ? parts : [normalized].filter(Boolean))];
-}
-
-function normalizeSearchText(text: string): string {
-  return text.trim().toLowerCase();
-}
-
-function scoreQuality(quality: ResourceQuality): number {
-  switch (quality) {
-    case "user-confirmed":
-      return 1;
-    case "imported":
-      return 0.72;
-    case "ai-draft":
-      return 0.58;
-    case "deprecated":
-      return 0.12;
-  }
-}
-
-function scoreRecency(createdAt: Date | DateTime | string, reference: Date): number {
-  const created = createdAt instanceof DateTime ? createdAt.toDate() : new Date(createdAt);
-  const ageMs = Math.max(0, reference.getTime() - created.getTime());
-  const ageDays = ageMs / 86_400_000;
-  return 1 / (1 + ageDays / 180);
-}
-
-function combineResourceScores(input: {
-  vectorScore: number;
-  keywordScore: number;
-  qualityScore: number;
-  recencyScore: number;
-}): number {
-  return (
-    input.vectorScore * 0.45 +
-    input.keywordScore * 0.35 +
-    input.qualityScore * 0.12 +
-    input.recencyScore * 0.08
-  );
-}
-
-function resourceMatchesFilters(row: ResourceRow, filters: ResourceSearchFilters | undefined): boolean {
-  if (!filters) return true;
-  if (filters.tags?.length) {
-    const rowTags = new Set(row.tags.map((tag) => tag.toLowerCase()));
-    const wantedTags = filters.tags.map((tag) => tag.trim().toLowerCase()).filter(Boolean);
-    if (wantedTags.length > 0 && !wantedTags.every((tag) => rowTags.has(tag))) return false;
-  }
-  if (filters.sourceDomain) {
-    const domain = sourceDomain(row.source_url);
-    if (domain !== filters.sourceDomain.trim().toLowerCase()) return false;
-  }
-  if (filters.dateFrom || filters.dateTo) {
-    const created = new Date(row.created_at instanceof DateTime ? row.created_at.toDate() : row.created_at);
-    if (filters.dateFrom && created < new Date(filters.dateFrom)) return false;
-    if (filters.dateTo && created > new Date(filters.dateTo)) return false;
-  }
-  return true;
-}
-
-function sourceDomain(sourceUrl: string | undefined): string | undefined {
-  if (!sourceUrl) return undefined;
-  try {
-    return new URL(sourceUrl).hostname.toLowerCase();
-  } catch {
-    return undefined;
-  }
-}
-
-function clampPositiveInteger(value: number | undefined, fallback: number): number {
-  if (!Number.isInteger(value) || (value ?? 0) <= 0) return fallback;
-  return value as number;
-}
-
-function summarizeEmbeddingError(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  const trimmed = message.trim();
-  return trimmed ? trimmed.slice(0, 500) : "embedding 生成失败";
+function normalizeSettingsApiFormat(apiFormat: string | undefined): AiApiFormat {
+  if (apiFormat === "openai-responses" || apiFormat === "anthropic") return apiFormat;
+  return "openai-compatible";
 }
 
 function cosineSimilarity(left: number[], right: number[]): number {
@@ -1298,99 +939,6 @@ function cosineSimilarity(left: number[], right: number[]): number {
   return dot / (Math.sqrt(leftMagnitude) * Math.sqrt(rightMagnitude));
 }
 
-async function loadOpenSessionForWrite(
-  deps: Pick<ResourceServiceDeps, "repository">,
-  sessionId: string,
-  workspaceId: string,
-): Promise<ResearchSessionRow> {
-  const session = await deps.repository.findResearchSessionById(sessionId);
-  if (!session) throw new ServiceError("NOT_FOUND", "检索会话不存在");
-  if (String(session.workspace) !== workspaceId) {
-    throw new ServiceError("VALIDATION_ERROR", "资源与检索会话不属于同一工作区");
-  }
-  if (session.status !== "open") {
-    throw new ServiceError("VALIDATION_ERROR", "只能向 open 状态的检索会话保存资源");
-  }
-  return session;
-}
-
-function normalizeSaveResourceRequest(req: SaveResourceRequest): Required<
-  Pick<SaveResourceRequest, "workspaceId" | "resourceType" | "title" | "summary" | "evidence" | "tags" | "structuredPayload" | "quality">
-> & Omit<SaveResourceRequest, "workspaceId" | "resourceType" | "title" | "summary" | "evidence" | "tags" | "structuredPayload" | "quality"> {
-  const resourceType = req.resourceType.trim();
-  const structuredPayload = validateStructuredPayload(resourceType, req.structuredPayload ?? {});
-  const evidenceParsed = z.array(EvidenceSchema).safeParse(req.evidence);
-  if (!evidenceParsed.success) {
-    throw new ServiceError("VALIDATION_ERROR", "证据段不符合资源保存要求");
-  }
-  const qualityParsed = ResourceQualitySchema.safeParse(req.quality);
-  if (!qualityParsed.success) {
-    throw new ServiceError("VALIDATION_ERROR", "资源质量不符合约束");
-  }
-
-  const normalized = {
-    ...req,
-    workspaceId: req.workspaceId,
-    resourceType,
-    title: requiredTrimmed(req.title, "标题不能为空"),
-    summary: requiredTrimmed(req.summary, "摘要不能为空"),
-    sourceUrl: optionalTrimmed(req.sourceUrl),
-    sourceTitle: optionalTrimmed(req.sourceTitle),
-    evidence: evidenceParsed.data,
-    tags: [...new Set((req.tags ?? []).map((tag) => tag.trim()).filter(Boolean))],
-    structuredPayload,
-    quality: qualityParsed.data,
-  };
-  validateResourceTypeRequiredFields(normalized);
-  return normalized;
-}
-
-function validateStructuredPayload(resourceType: string, payload: Record<string, unknown>): Record<string, unknown> {
-  const schema = validateResourceType(resourceType);
-
-  const parsed = schema.safeParse(payload);
-  if (!parsed.success) {
-    throw new ServiceError("VALIDATION_ERROR", "资源结构化 payload 不符合类型约束");
-  }
-  return parsed.data;
-}
-
-function validateResourceType(resourceType: string): z.ZodType<Record<string, unknown>> {
-  const schema = ActiveResourceTypeRegistry[resourceType as keyof typeof ActiveResourceTypeRegistry];
-  if (!schema) {
-    if ((RESERVED_RESOURCE_TYPES as readonly string[]).includes(resourceType)) {
-      throw new ServiceError("VALIDATION_ERROR", `资源类型 ${resourceType} 已预留但尚未启用`);
-    }
-    throw new ServiceError("VALIDATION_ERROR", `未知资源类型: ${resourceType}`);
-  }
-  return schema;
-}
-
-function validateResourceTypeRequiredFields(input: Pick<
-  SaveResourceRequest,
-  "resourceType" | "sourceUrl" | "sourceTitle" | "evidence"
->): void {
-  if (input.resourceType !== "web_article") return;
-  if (!input.sourceUrl || !isHttpUrl(input.sourceUrl)) {
-    throw new ServiceError("VALIDATION_ERROR", "web_article 必须包含有效 sourceUrl");
-  }
-  if (!input.sourceTitle?.trim()) {
-    throw new ServiceError("VALIDATION_ERROR", "web_article 必须包含 sourceTitle");
-  }
-  if (!input.evidence.length) {
-    throw new ServiceError("VALIDATION_ERROR", "web_article 至少需要一段证据");
-  }
-}
-
-function isHttpUrl(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
 function requiredTrimmed(value: string, message: string): string {
   const trimmed = value.trim();
   if (!trimmed) throw new ServiceError("VALIDATION_ERROR", message);
@@ -1400,36 +948,6 @@ function requiredTrimmed(value: string, message: string): string {
 function optionalTrimmed(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
-}
-
-function createDuplicateHashes(input: {
-  resourceType: string;
-  title: string;
-  summary: string;
-  sourceUrl?: string;
-  sourceTitle?: string;
-  evidence: ResourceEvidence[];
-  tags: string[];
-  structuredPayload: Record<string, unknown>;
-}): ResourceDuplicateHashes {
-  return {
-    content: stableHash({
-      resourceType: input.resourceType,
-      title: input.title,
-      summary: input.summary,
-      tags: input.tags,
-      structuredPayload: input.structuredPayload,
-    }),
-    evidence: stableHash(input.evidence.map((item) => ({
-      text: item.text,
-      sourceUrl: item.sourceUrl,
-      sourceTitle: item.sourceTitle,
-    }))),
-    source: stableHash({
-      sourceUrl: input.sourceUrl,
-      sourceTitle: input.sourceTitle,
-    }),
-  };
 }
 
 function stableHash(value: unknown): string {
@@ -1446,20 +964,6 @@ function stableStringify(value: unknown): string {
       .join(",")}}`;
   }
   return JSON.stringify(value);
-}
-
-function embeddingRowToDTO(row: ResourceEmbeddingRow): ResourceEmbeddingDTO {
-  return {
-    status: row.status,
-    profileKey: row.profile_key,
-    provider: row.provider,
-    model: row.model,
-    dimensions: row.dimensions,
-    version: row.profile_version,
-    errorSummary: row.error_summary,
-    indexedAt: row.indexed_at ? toIso(row.indexed_at) : undefined,
-    updatedAt: toIso(row.updated_at),
-  };
 }
 
 function resourceRowToDTO(
@@ -1491,15 +995,6 @@ function resourceRowToDTO(
     createdBy: String(row.created_by),
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),
-  };
-}
-
-function researchSessionRowToSummary(row: ResearchSessionRow): NonNullable<ResourceDetailResponse["session"]> {
-  return {
-    id: String(row.id),
-    status: row.status,
-    query: row.query,
-    resourceIds: row.created_resources.map(String),
   };
 }
 

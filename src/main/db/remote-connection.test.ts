@@ -14,8 +14,10 @@ class FakeRemote implements RemoteConnection {
   connected = false;
   authenticated = false;
   used?: { namespace: string; database: string };
+  connectOptions?: unknown;
 
-  async connect(): Promise<void> {
+  async connect(_url?: string, options?: unknown): Promise<void> {
+    this.connectOptions = options;
     if (failConnect) throw new Error("network unavailable");
     this.connected = true;
   }
@@ -99,6 +101,7 @@ describe("connectRemoteWithRuntime", () => {
 
     const remote = remoteDb as FakeRemote;
     expect(remote.connected).toBe(true);
+    expect(remote.connectOptions).toEqual({ reconnect: false });
     expect(remote.authenticated).toBe(true);
     expect(remote.used).toEqual({ namespace: "main", database: "docs" });
     expect(offlineMode).toBe(false);
