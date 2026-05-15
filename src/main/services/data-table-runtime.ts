@@ -22,7 +22,7 @@ import {
 } from "surrealdb";
 import { getLocalDb } from "../db/index";
 import { mapNullsToSurrealNone, omitNullishSurrealFields } from "../db/surreal-values";
-import { execTemplate } from "../sync/exec-template";
+import { EXEC_TEMPLATE_IDS, execTemplate } from "../sync/exec-template";
 import { ServiceError } from "./errors";
 import { getServiceContext } from "./context";
 import { assertCapabilityAllowed } from "./capabilities";
@@ -339,7 +339,7 @@ export namespace DataTableRuntime {
 export async function provisionEntityTable(tableName: string): Promise<void> {
   assertEntityTableName(tableName);
   await assertDdlOnline();
-  await execTemplate("ent.create", { table_name: tableName });
+  await execTemplate(EXEC_TEMPLATE_IDS.entityTable, { table_name: tableName });
   const db = getLocalDb();
   await db.query(buildEntityTableDdl(tableName));
 }
@@ -349,7 +349,7 @@ export async function provisionRelationTable(tableName: string): Promise<void> {
     throw new ServiceError("VALIDATION_ERROR", `无效的关系表名: ${tableName}`);
   }
   await assertDdlOnline();
-  await execTemplate("rel.create", { table_name: tableName });
+  await execTemplate(EXEC_TEMPLATE_IDS.relationTable, { table_name: tableName });
   const db = getLocalDb();
   await db.query(buildRelationTableDdl(tableName));
 }
@@ -368,7 +368,7 @@ export async function removeEntityField(tableName: string, key: string): Promise
   assertEntityTableName(tableName);
   assertEntityFieldName(key);
   await assertDdlOnline();
-  await execTemplate("ent.field-remove", { table_name: tableName, field_name: key });
+  await execTemplate(EXEC_TEMPLATE_IDS.entityFieldRemove, { table_name: tableName, field_name: key });
   const db = getLocalDb();
   await db.query(`REMOVE FIELD IF EXISTS ${key} ON TABLE ${tableName}`);
 }
@@ -550,13 +550,15 @@ async function defineEntityField(tableName: string, column: GridColumnDef, mode:
     const message = err instanceof Error ? err.message : String(err);
     throw new ServiceError("VALIDATION_ERROR", message);
   }
-  const templateId = mode === "overwrite" ? "ent.field-overwrite" : "ent.field-add";
+  const templateId = mode === "overwrite"
+    ? EXEC_TEMPLATE_IDS.entityFieldOverwrite
+    : EXEC_TEMPLATE_IDS.entityFieldAdd;
   await assertDdlOnline();
   await execTemplate(templateId, {
     table_name: tableName,
     field_name: schema.fieldName,
     field_type: schema.type,
-    ...(schema.assert ? { field_assert: schema.assert.trim() } : {}),
+    field_assert: schema.assert.trim(),
   });
   const db = getLocalDb();
   return db.query(buildEntityFieldDdl(tableName, column, mode)).then(() => undefined);

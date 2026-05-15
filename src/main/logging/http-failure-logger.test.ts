@@ -29,7 +29,7 @@ describe("HTTP failure logger", () => {
           "content-type": "application/json",
         },
         body: JSON.stringify({
-          id: "ent.create",
+          id: "ddl-entity-table",
           params: { table_name: "ent_workspace_ws1_workbook_wb1_main" },
           apiKey: "request-secret",
         }),
@@ -46,7 +46,7 @@ describe("HTTP failure logger", () => {
     expect(logs[0]?.payload.method).toBe("POST");
     expect(logs[0]?.payload.request.headers.authorization).toBe("[redacted]");
     expect(logs[0]?.payload.request.body).toEqual({
-      id: "ent.create",
+      id: "ddl-entity-table",
       params: { table_name: "ent_workspace_ws1_workbook_wb1_main" },
       apiKey: "[redacted]",
     });

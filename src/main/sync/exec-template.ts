@@ -5,6 +5,14 @@ const EXEC_TEMPLATE_URL = "https://auth.maplayer.top/api/db/execTemplate";
 
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
+export const EXEC_TEMPLATE_IDS = {
+  entityTable: "ddl-entity-table",
+  relationTable: "ddl-relation-table",
+  entityFieldAdd: "ddl-entity-field-add",
+  entityFieldOverwrite: "ddl-entity-field-overwrite",
+  entityFieldRemove: "ddl-entity-field-remove",
+} as const;
+
 export type ExecTemplateDeps = {
   accessToken?: () => Promise<string>;
   fetch?: FetchLike;

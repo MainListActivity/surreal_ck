@@ -77,6 +77,13 @@ mock.module("../auth/session", () => ({
 }));
 
 mock.module("../sync/exec-template", () => ({
+  EXEC_TEMPLATE_IDS: {
+    entityTable: "ddl-entity-table",
+    relationTable: "ddl-relation-table",
+    entityFieldAdd: "ddl-entity-field-add",
+    entityFieldOverwrite: "ddl-entity-field-overwrite",
+    entityFieldRemove: "ddl-entity-field-remove",
+  },
   execTemplate: async () => undefined,
 }));
 
