@@ -1,9 +1,9 @@
 import { getLocalDb } from "../db/index";
+import { DataTableRuntime } from "./data-table-runtime";
 import { ServiceError } from "./errors";
 import type {
   GetTableSchemaRequest,
   GetTableSchemaResponse,
-  GridColumnDef,
   TableSchemaField,
 } from "../../shared/rpc.types";
 
@@ -77,45 +77,14 @@ export async function getTableSchema(
   throw new ServiceError("NOT_FOUND", `未知的表: ${trimmed}`);
 }
 
-// ─── 业务表：从 sheet.column_defs 读 ────────────────────────────────────────
-
-type StoredColumnDef = {
-  key: string;
-  label: string;
-  field_type: string;
-  required?: boolean;
-  reference_table?: string;
-};
-
-type SheetColumnRow = {
-  table_name: string;
-  column_defs: StoredColumnDef[];
-};
+// ─── 业务表：委托给数据表运行时 ─────────────────────────────────────────────
 
 async function loadEntityFields(table: string): Promise<TableSchemaField[]> {
-  const db = getLocalDb();
-  const rows = await db.query<[SheetColumnRow[]]>(
-    `SELECT table_name, column_defs FROM sheet WHERE table_name = $t LIMIT 1`,
-    { t: table },
-  );
-  const sheet = rows[0]?.[0];
-  if (!sheet) {
+  const runtime = await DataTableRuntime.loadByTableName(table);
+  if (!runtime) {
     throw new ServiceError("NOT_FOUND", `Sheet 未找到或无权访问: ${table}`);
   }
-  const userFields: TableSchemaField[] = (sheet.column_defs ?? []).map((col) => ({
-    key: col.key,
-    label: col.label || col.key,
-    fieldType: col.field_type,
-    nullable: col.required === false,
-    referenceTable: col.reference_table,
-  }));
-  // 业务表都有 workspace / created_by / created_at / updated_at 审计字段。
-  return [
-    ...userFields,
-    { key: "id", label: "记录 ID", fieldType: "text", nullable: false },
-    { key: "created_at", label: "创建时间", fieldType: "date", nullable: false },
-    { key: "updated_at", label: "更新时间", fieldType: "date", nullable: false },
-  ];
+  return runtime.schemaFields();
 }
 
 // ─── 系统表：从 INFO FOR TABLE 解析 DDL 字符串 ─────────────────────────────

@@ -3,7 +3,14 @@ import { getLocalDb } from "../db/index";
 import { assertCanPerformSharedWrite } from "./context";
 import { ServiceError } from "./errors";
 import { getTemplateDef, listTemplateSummaries, type EntityDef } from "../templates/catalog";
-import { createEntityRows, provisionEntityFields, provisionEntityTable, provisionRelationTable } from "./data-table-runtime";
+import {
+  createEntityRows,
+  generateEntityTableName,
+  generateRelationTableName,
+  provisionEntityFields,
+  provisionEntityTable,
+  provisionRelationTable,
+} from "./data-table-runtime";
 import { ensureWorkbookMetadataSchema } from "./workbooks";
 import type {
   ListTemplatesResponse,
@@ -35,10 +42,6 @@ export async function createWorkbookFromTemplate({
   const db = getLocalDb();
   const wsId = new StringRecordId(workspaceId);
 
-  // 生成 workspace key（用于动态表名前缀）
-  const wsRaw = workspaceId.replace(/^workspace:/, "");
-  const wsKey = wsRaw.slice(0, 8);
-
   // 生成 workbook id
   const wbKey = Bun.hash.wyhash(`${workspaceId}:wb:${templateKey}:${Date.now()}`).toString(16).padStart(16, "0");
   const wbId = new RecordId("workbook", wbKey);
@@ -47,11 +50,15 @@ export async function createWorkbookFromTemplate({
 
   await ensureWorkbookMetadataSchema();
 
+  const entTable = (entityKey: string) =>
+    generateEntityTableName({ workspaceId, workbookId: String(wbId), suffix: entityKey });
+  const relTable = (relKey: string) =>
+    generateRelationTableName({ workspaceId, workbookId: String(wbId), suffix: relKey });
+
   // ── Step 1: DDL provisioning（entity + relation 表）────────────────────────
   for (const entity of tpl.entities) {
-    const tableName = entityTableName(wsKey, wbKey, entity.key);
-    await provisionEntityTable(tableName);
-    await provisionEntityFields(tableName, entity.columnDefs.map((col) => ({
+    await provisionEntityTable(entTable(entity.key));
+    await provisionEntityFields(entTable(entity.key), entity.columnDefs.map((col) => ({
       key: col.key,
       label: col.label,
       fieldType: col.field_type,
@@ -60,8 +67,7 @@ export async function createWorkbookFromTemplate({
     })));
   }
   for (const rel of tpl.relations) {
-    const tableName = relationTableName(wsKey, wbKey, rel.key);
-    await provisionRelationTable(tableName);
+    await provisionRelationTable(relTable(rel.key));
   }
 
   // ── Step 2: 创建 workbook 和 sheet 记录 ────────────────────────────────────
@@ -80,10 +86,12 @@ export async function createWorkbookFromTemplate({
 
   // 创建每个 sheet 记录
   for (const entity of tpl.entities) {
-    await upsertSheetRecord(wsKey, wbKey, wbId, entity);
+    await upsertSheetRecord(wbId, workspaceId, entity);
   }
 
   // ── Step 3: edge_catalog ─────────────────────────────────────────────────
+  const wsRaw = workspaceId.replace(/^workspace:/, "");
+  const wsKey = wsRaw.slice(0, 8);
   for (const rel of tpl.relations) {
     const catalogKey = `${wbKey}_${rel.key}`;
     const relId = new RecordId("edge_catalog", `${catalogKey}_${wsKey}`);
@@ -102,9 +110,9 @@ export async function createWorkbookFromTemplate({
         ws: wsId,
         key: catalogKey,
         label: rel.label,
-        relTable: relationTableName(wsKey, wbKey, rel.key),
-        fromTable: entityTableName(wsKey, wbKey, rel.fromEntityKey),
-        toTable: entityTableName(wsKey, wbKey, rel.toEntityKey),
+        relTable: relTable(rel.key),
+        fromTable: entTable(rel.fromEntityKey),
+        toTable: entTable(rel.toEntityKey),
         edgeProps: rel.edgeProps ?? [],
       }
     );
@@ -113,7 +121,7 @@ export async function createWorkbookFromTemplate({
   // ── Step 4: 样例数据（仅 hasSampleData 模板）──────────────────────────────
   if (tpl.hasSampleData) {
     try {
-      await insertSampleData(templateKey, wsKey, wbKey, wsId, db);
+      await insertSampleData(templateKey, workspaceId, String(wbId), wsId, db);
     } catch (err) {
       // 样例数据失败不阻止模板创建
       console.warn("[templates] 样例数据插入失败:", err);
@@ -142,27 +150,23 @@ export async function createWorkbookFromTemplate({
 
 // ─── 内部：创建 sheet 记录 ─────────────────────────────────────────────────────
 
-function entityTableName(wsKey: string, wbKey: string, entityKey: string): string {
-  return `ent_${wsKey}_${wbKey.slice(0, 8)}_${entityKey}`;
-}
-
-function relationTableName(wsKey: string, wbKey: string, relKey: string): string {
-  return `rel_${wsKey}_${wbKey.slice(0, 8)}_${relKey}`;
-}
-
 function makeSheetId(wbKey: string, entityKey: string): RecordId {
   return new RecordId("sheet", `${wbKey}_${entityKey}`);
 }
 
 async function upsertSheetRecord(
-  wsKey: string,
-  wbKey: string,
   wbId: RecordId,
+  workspaceId: string,
   entity: EntityDef
 ): Promise<void> {
   const db = getLocalDb();
+  const wbKey = String(wbId).replace(/^workbook:/, "");
   const sheetId = makeSheetId(wbKey, entity.key);
-  const tableName = entityTableName(wsKey, wbKey, entity.key);
+  const tableName = generateEntityTableName({
+    workspaceId,
+    workbookId: String(wbId),
+    suffix: entity.key,
+  });
 
   await db.query(
     `UPSERT $sheetId CONTENT {
@@ -188,17 +192,22 @@ async function upsertSheetRecord(
 
 async function insertSampleData(
   templateKey: string,
-  wsKey: string,
-  wbKey: string,
+  workspaceId: string,
+  workbookId: string,
   wsId: StringRecordId,
   db: ReturnType<typeof getLocalDb>
 ): Promise<void> {
+  const entTable = (entityKey: string) =>
+    generateEntityTableName({ workspaceId, workbookId, suffix: entityKey });
+  const relTable = (relKey: string) =>
+    generateRelationTableName({ workspaceId, workbookId, suffix: relKey });
+
   if (templateKey === "case-management") {
-    const tblCase     = entityTableName(wsKey, wbKey, "case");
-    const tblClient   = entityTableName(wsKey, wbKey, "client");
-    const tblDocument = entityTableName(wsKey, wbKey, "document");
-    const relAssigned = relationTableName(wsKey, wbKey, "assigned_to");
-    const relBelongs  = relationTableName(wsKey, wbKey, "belongs_to");
+    const tblCase     = entTable("case");
+    const tblClient   = entTable("client");
+    const tblDocument = entTable("document");
+    const relAssigned = relTable("assigned_to");
+    const relBelongs  = relTable("belongs_to");
 
     await assertCanPerformSharedWrite("write_entity_data", String(wsId));
     const [redwood, triton] = await createEntityRows(tblClient, [
@@ -223,11 +232,11 @@ async function insertSampleData(
       );
     }
   } else if (templateKey === "legal-entity-tracker") {
-    const tblCompany = entityTableName(wsKey, wbKey, "company");
-    const tblPerson  = entityTableName(wsKey, wbKey, "person");
-    const relOwns    = relationTableName(wsKey, wbKey, "owns");
-    const relControls = relationTableName(wsKey, wbKey, "controls");
-    const relFiledBy = relationTableName(wsKey, wbKey, "filed_by");
+    const tblCompany = entTable("company");
+    const tblPerson  = entTable("person");
+    const relOwns    = relTable("owns");
+    const relControls = relTable("controls");
+    const relFiledBy = relTable("filed_by");
 
     await assertCanPerformSharedWrite("write_entity_data", String(wsId));
     const [acme, beta, gamma] = await createEntityRows(tblCompany, [

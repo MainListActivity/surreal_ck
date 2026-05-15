@@ -40,8 +40,10 @@ import type {
   GridColumnDef,
   GridRow,
   RecordIdString,
+  ReferenceTargetPreview,
   SheetSummaryDTO,
   SortClause,
+  TableSchemaField,
   ViewParams,
 } from "../../shared/rpc.types";
 
@@ -62,16 +64,25 @@ export type DataTableSheetRow = {
   column_defs: StoredColumnDef[];
 };
 
+export type DataTableContext = {
+  workspaceId?: string;
+  workspaceName?: string;
+  workbookId?: string;
+  workbookName?: string;
+};
+
 type EntityRow = Record<string, unknown> & { id: RecordId; workspace?: RecordId };
 const ENTITY_FIELD_NAME = /^[a-z][a-z0-9_]{0,62}$/;
 const RESERVED_ENTITY_FIELDS = new Set(["id", "workspace", "created_by", "created_at", "updated_at"]);
 
 export class DataTableRuntime {
   readonly sheet: DataTableSheetRow;
+  readonly context: DataTableContext;
 
-  constructor(sheet: DataTableSheetRow) {
+  constructor(sheet: DataTableSheetRow, context: DataTableContext = {}) {
     assertEntityTableName(sheet.table_name);
     this.sheet = sheet;
+    this.context = context;
   }
 
   get tableName(): string {
@@ -80,6 +91,69 @@ export class DataTableRuntime {
 
   get columns(): GridColumnDef[] {
     return this.sheet.column_defs.map(storedColumnToDTO);
+  }
+
+  buildEntityPreview(
+    rowId: RecordIdString,
+    row: Record<string, unknown>,
+    opts?: { forceDisplayKey?: string },
+  ): ReferenceTargetPreview {
+    const displayKey = opts?.forceDisplayKey ?? this.defaultDisplayKey();
+    const primaryLabel = this.formatPrimaryLabel(row, displayKey, rowId);
+    const preview: ReferenceTargetPreview["preview"] = [];
+    for (const col of this.sheet.column_defs) {
+      if (preview.length >= 5) break;
+      const v = row[col.key];
+      if (v === undefined || v === null || v === "") continue;
+      preview.push({ key: col.key, label: col.label, value: jsonifyValue(v) });
+    }
+    return {
+      id: rowId,
+      table: this.tableName,
+      workspaceId: this.context.workspaceId,
+      workspaceName: this.context.workspaceName,
+      workbookId: this.context.workbookId,
+      workbookName: this.context.workbookName,
+      sheetId: String(this.sheet.id),
+      sheetName: this.sheet.label,
+      primaryLabel,
+      preview,
+    };
+  }
+
+  private defaultDisplayKey(): string | undefined {
+    const keys = this.sheet.column_defs.map((c) => c.key);
+    if (keys.includes("name")) return "name";
+    return keys[0];
+  }
+
+  private formatPrimaryLabel(
+    row: Record<string, unknown>,
+    displayKey: string | undefined,
+    rowId: RecordIdString,
+  ): string {
+    const raw = displayKey ? row[displayKey] : undefined;
+    const value = raw == null || raw === "" ? rowId : String(jsonifyValue(raw));
+    const prefix = this.context.workbookName
+      ? `${this.context.workbookName} / ${this.sheet.label}`
+      : this.sheet.label;
+    return `${prefix} / ${value}`;
+  }
+
+  schemaFields(): TableSchemaField[] {
+    const userFields: TableSchemaField[] = this.sheet.column_defs.map((col) => ({
+      key: col.key,
+      label: col.label || col.key,
+      fieldType: col.field_type,
+      nullable: col.required !== true,
+      referenceTable: col.reference_table,
+    }));
+    return [
+      ...userFields,
+      { key: "id", label: "记录 ID", fieldType: "text", nullable: false },
+      { key: "created_at", label: "创建时间", fieldType: "date", nullable: false },
+      { key: "updated_at", label: "更新时间", fieldType: "date", nullable: false },
+    ];
   }
 
   async queryRows(viewParams?: ViewParams): Promise<GridRow[]> {
@@ -130,6 +204,45 @@ export class DataTableRuntime {
     return upserted;
   }
 
+  async applyColumnUpdate(columns: GridColumnDef[]): Promise<{ sheet: DataTableSheetRow; columns: GridColumnDef[] }> {
+    if (columns.length === 0) {
+      throw new ServiceError("VALIDATION_ERROR", "至少保留一个字段");
+    }
+    await assertDynamicTableExists(this.tableName);
+
+    const normalized = columns.map(normalizeGridColumnDef);
+    const seen = new Set<string>();
+    for (const column of normalized) {
+      if (seen.has(column.key)) {
+        throw new ServiceError("VALIDATION_ERROR", `字段标识重复: ${column.key}`);
+      }
+      seen.add(column.key);
+    }
+
+    for (const column of normalized) {
+      await overwriteEntityField(this.tableName, column);
+    }
+
+    const nextKeys = new Set(normalized.map((column) => column.key));
+    for (const existing of this.sheet.column_defs) {
+      if (!nextKeys.has(existing.key)) {
+        await removeEntityField(this.tableName, existing.key);
+      }
+    }
+
+    const storedDefs = normalized.map(gridColumnToStoredDef);
+    const updated = await getLocalDb().query<[DataTableSheetRow[]]>(
+      `UPDATE $sheetId SET column_defs = $columnDefs, updated_at = time::now() RETURN id, workbook, univer_id, table_name, label, position, column_defs`,
+      { sheetId: this.sheet.id, columnDefs: storedDefs },
+    );
+    const updatedSheet = updated[0]?.[0];
+    if (!updatedSheet) throw new ServiceError("INTERNAL_ERROR", "字段更新失败");
+    return {
+      sheet: updatedSheet,
+      columns: updatedSheet.column_defs.map(storedColumnToDTO),
+    };
+  }
+
   async deleteRows(ids: RecordIdString[]): Promise<number> {
     await assertDynamicTableExists(this.tableName);
     let deleted = 0;
@@ -144,6 +257,83 @@ export class DataTableRuntime {
 
 export function createDataTableRuntime(sheet: DataTableSheetRow): DataTableRuntime {
   return new DataTableRuntime(sheet);
+}
+
+export type ReferenceTargetItem = {
+  runtime: DataTableRuntime;
+  workspaceId?: string;
+  workspaceName?: string;
+  workbookId: string;
+  workbookName?: string;
+  sheetId: string;
+  sheetLabel: string;
+};
+
+const ENTITY_TABLE_REGEX = /^ent_[a-z0-9_]+$/;
+
+export function isEntityTableName(tableName: string): boolean {
+  return ENTITY_TABLE_REGEX.test(tableName);
+}
+
+type SheetWithContextRow = DataTableSheetRow & {
+  workbook_name?: string;
+  workspace_id?: RecordId;
+  workspace_name?: string;
+};
+
+function rowToContext(row: SheetWithContextRow): DataTableContext {
+  return {
+    workspaceId: row.workspace_id ? String(row.workspace_id) : undefined,
+    workspaceName: row.workspace_name,
+    workbookId: String(row.workbook),
+    workbookName: row.workbook_name,
+  };
+}
+
+export namespace DataTableRuntime {
+  export async function loadByTableName(tableName: string): Promise<DataTableRuntime | null> {
+    assertEntityTableName(tableName);
+    const db = getLocalDb();
+    const rows = await db.query<[SheetWithContextRow[]]>(
+      `SELECT
+         id, workbook, univer_id, table_name, label, position, column_defs,
+         workbook.name AS workbook_name,
+         workbook.workspace AS workspace_id,
+         workbook.workspace.name AS workspace_name
+       FROM sheet WHERE table_name = $t LIMIT 1`,
+      { t: tableName },
+    );
+    const row = rows[0]?.[0];
+    if (!row) return null;
+    return new DataTableRuntime(row, rowToContext(row));
+  }
+
+  export async function listAllForReference(): Promise<ReferenceTargetItem[]> {
+    const db = getLocalDb();
+    const rows = await db.query<[SheetWithContextRow[]]>(
+      `SELECT
+         id, workbook, univer_id, table_name, label, position, column_defs,
+         workbook.name AS workbook_name,
+         workbook.workspace AS workspace_id,
+         workbook.workspace.name AS workspace_name
+       FROM sheet ORDER BY workbook, position`,
+    );
+    const list = rows[0] ?? [];
+    return list
+      .filter((row) => ENTITY_TABLE_REGEX.test(row.table_name))
+      .map((row) => {
+        const context = rowToContext(row);
+        return {
+          runtime: new DataTableRuntime(row, context),
+          workspaceId: context.workspaceId,
+          workspaceName: context.workspaceName,
+          workbookId: context.workbookId!,
+          workbookName: context.workbookName,
+          sheetId: String(row.id),
+          sheetLabel: row.label,
+        };
+      });
+  }
 }
 
 export async function provisionEntityTable(tableName: string): Promise<void> {
@@ -230,6 +420,29 @@ export function assertEntityTableName(tableName: string): void {
   if (!/^ent_[a-z0-9_]+$/.test(tableName)) {
     throw new ServiceError("VALIDATION_ERROR", `无效的实体表名: ${tableName}`);
   }
+}
+
+export type DynamicTableNameInput = {
+  workspaceId: string;
+  workbookId: string;
+  suffix?: string;
+};
+
+function wsKeyPart(workspaceId: string): string {
+  return workspaceId.replace(/^workspace:/, "").slice(0, 8);
+}
+
+function wbKeyPart(workbookId: string): string {
+  return workbookId.replace(/^workbook:/, "").slice(0, 8);
+}
+
+export function generateEntityTableName(input: DynamicTableNameInput): string {
+  const base = `ent_${wsKeyPart(input.workspaceId)}_${wbKeyPart(input.workbookId)}`;
+  return input.suffix ? `${base}_${input.suffix}` : base;
+}
+
+export function generateRelationTableName(input: DynamicTableNameInput & { suffix: string }): string {
+  return `rel_${wsKeyPart(input.workspaceId)}_${wbKeyPart(input.workbookId)}_${input.suffix}`;
 }
 
 export function assertRowIdBelongsToTable(rowId: string, tableName: string): void {
@@ -464,4 +677,14 @@ function assertEntityFieldName(key: string): void {
   if (!ENTITY_FIELD_NAME.test(key) || RESERVED_ENTITY_FIELDS.has(key)) {
     throw new ServiceError("VALIDATION_ERROR", `无效的字段标识: ${key}`);
   }
+}
+
+function jsonifyValue(value: unknown): unknown {
+  if (value instanceof Date) return value.toISOString();
+  if (value instanceof RecordId) return String(value);
+  if (Array.isArray(value)) return value.map(jsonifyValue);
+  if (value && typeof value === "object" && "toISOString" in value && typeof (value as { toISOString: unknown }).toISOString === "function") {
+    return (value as { toISOString: () => string }).toISOString();
+  }
+  return value;
 }

@@ -5,13 +5,10 @@ import { isCapabilityAllowed } from "./capabilities";
 import { ServiceError } from "./errors";
 import {
   createDataTableRuntime,
+  generateEntityTableName,
   gridColumnToStoredDef,
-  assertDynamicTableExists,
-  normalizeGridColumnDef,
-  overwriteEntityField,
   provisionEntityFields,
   provisionEntityTable,
-  removeEntityField,
   sheetRowToDTO,
   storedColumnToDTO,
   type DataTableSheetRow,
@@ -35,8 +32,6 @@ import type {
   DeleteRowsResponse,
   WorkbookSummaryDTO,
 } from "../../shared/rpc.types";
-
-export { omitNullishInsertValues } from "./data-table-runtime";
 
 // ─── 内部行类型 ───────────────────────────────────────────────────────────────
 
@@ -237,43 +232,10 @@ export async function updateSheetFields({
   if (!wbRow) throw new ServiceError("NOT_FOUND", "工作簿不存在");
   await assertCanPerformSharedWrite("write_shared_structure_ddl", String(wbRow.workspace));
 
-  const tableName = sheet.table_name;
-  if (!/^ent_[a-z0-9_]+$/.test(tableName)) {
-    throw new ServiceError("INTERNAL_ERROR", "无效的实体表名");
-  }
-  await assertDynamicTableExists(tableName);
-
-  const normalized = columns.map(normalizeGridColumnDef);
-  const seen = new Set<string>();
-  for (const column of normalized) {
-    if (seen.has(column.key)) {
-      throw new ServiceError("VALIDATION_ERROR", `字段标识重复: ${column.key}`);
-    }
-    seen.add(column.key);
-  }
-
-  for (const column of normalized) {
-    await overwriteEntityField(tableName, column);
-  }
-
-  const nextKeys = new Set(normalized.map((column) => column.key));
-  for (const existing of sheet.column_defs) {
-    if (!nextKeys.has(existing.key)) {
-      await removeEntityField(tableName, existing.key);
-    }
-  }
-
-  const storedDefs = normalized.map(gridColumnToStoredDef);
-  const updated = await db.query<[SheetRow[]]>(
-    `UPDATE $sheetId SET column_defs = $columnDefs, updated_at = time::now() RETURN id, workbook, univer_id, table_name, label, position, column_defs`,
-    { sheetId: new StringRecordId(sheetId), columnDefs: storedDefs }
-  );
-  const updatedSheet = updated[0]?.[0];
-  if (!updatedSheet) throw new ServiceError("INTERNAL_ERROR", "字段更新失败");
-
+  const result = await createDataTableRuntime(sheet).applyColumnUpdate(columns);
   return {
-    sheet: sheetRowToDTO(updatedSheet),
-    columns: updatedSheet.column_defs.map(storedColumnToDTO),
+    sheet: sheetRowToDTO(result.sheet),
+    columns: result.columns,
   };
 }
 
@@ -331,11 +293,14 @@ export async function createSheet({
   const nextPosition = sheets.reduce((max, s) => Math.max(max, s.position ?? 0), -1) + 1;
 
   const wbKey = String(wbRow.id).replace(/^workbook:/, "");
-  const wsKey = String(wbRow.workspace).replace(/^workspace:/, "").slice(0, 8);
   const sheetKey = Bun.hash.wyhash(`${wbKey}:sheet:${nextPosition}:${Date.now()}`)
     .toString(16)
     .padStart(16, "0");
-  const tableName = `ent_${wsKey}_${wbKey.slice(0, 8)}_${sheetKey.slice(0, 8)}`;
+  const tableName = generateEntityTableName({
+    workspaceId: String(wbRow.workspace),
+    workbookId: String(wbRow.id),
+    suffix: sheetKey.slice(0, 8),
+  });
   const sheetId = new RecordId("sheet", sheetKey);
 
   await provisionEntityTable(tableName);

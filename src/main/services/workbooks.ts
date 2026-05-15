@@ -14,6 +14,7 @@ import type {
   RecordIdString,
 } from "../../shared/rpc.types";
 import {
+  generateEntityTableName,
   provisionEntityFields,
   provisionEntityTable,
 } from "./data-table-runtime";
@@ -110,8 +111,10 @@ export async function createBlankWorkbook({
   const wbId = new RecordId("workbook", wbKey);
 
   // 动态实体表名：ent_<wbKey>_main（workbook 粒度，非 workspace 粒度的 blank 工作簿）
-  const wsKey = workspaceId.replace(/^workspace:/, "").slice(0, 8);
-  const entityTableName = `ent_${wsKey}_${wbKey.slice(0, 8)}`;
+  const entityTableName = generateEntityTableName({
+    workspaceId,
+    workbookId: String(wbId),
+  });
 
   const sheetKey = Bun.hash.wyhash(`${wbKey}:sheet:0`).toString(16).padStart(16, "0");
   const sheetId = new RecordId("sheet", sheetKey);

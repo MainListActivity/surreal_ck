@@ -6,6 +6,8 @@ import {
   buildEntityTableDdl,
   compileSelectOnly,
   createDataTableRuntime,
+  generateEntityTableName,
+  generateRelationTableName,
   gridColumnToStoredDef,
   normalizeGridColumnDef,
   omitNullishInsertValues,
@@ -108,6 +110,102 @@ describe("数据表运行时记录入口", () => {
       position: 0,
       column_defs: [],
     })).toThrow("无效的实体表名");
+  });
+});
+
+describe("数据表运行时 schemaFields", () => {
+  function makeRuntime(columnDefs: StoredColumnDef[]) {
+    return createDataTableRuntime({
+      id: new RecordId("sheet", "s1"),
+      workbook: new RecordId("workbook", "wb1"),
+      univer_id: "u1",
+      table_name: "ent_demo",
+      label: "Demo",
+      position: 0,
+      column_defs: columnDefs,
+    });
+  }
+
+  test("用户字段映射为 fieldType + nullable 形态", () => {
+    const runtime = makeRuntime([
+      { key: "title", label: "标题", field_type: "text", required: true },
+      { key: "owner", label: "负责人", field_type: "reference", reference_table: "app_user" },
+    ]);
+    const fields = runtime.schemaFields();
+    expect(fields).toContainEqual({ key: "title", label: "标题", fieldType: "text", nullable: false });
+    expect(fields).toContainEqual({ key: "owner", label: "负责人", fieldType: "reference", nullable: true, referenceTable: "app_user" });
+  });
+
+  test("schemaFields 追加 id/created_at/updated_at 审计字段", () => {
+    const runtime = makeRuntime([
+      { key: "title", label: "标题", field_type: "text" },
+    ]);
+    const fields = runtime.schemaFields();
+    const keys = fields.map((f) => f.key);
+    expect(keys).toEqual(["title", "id", "created_at", "updated_at"]);
+  });
+
+  test("label 为空时回退到 key", () => {
+    const runtime = makeRuntime([
+      { key: "k1", label: "", field_type: "text" },
+    ]);
+    const fields = runtime.schemaFields();
+    expect(fields[0]).toMatchObject({ key: "k1", label: "k1" });
+  });
+});
+
+describe("数据表运行时表名生成", () => {
+  test("实体表名格式 ent_<ws8>_<wb8> 不带 suffix 时省略尾段", () => {
+    const name = generateEntityTableName({
+      workspaceId: "workspace:0123456789abcdef",
+      workbookId: "workbook:fedcba9876543210ffff",
+    });
+    expect(name).toBe("ent_01234567_fedcba98");
+  });
+
+  test("实体表名 ent_<ws8>_<wb8>_<suffix> 接受任意 entityKey 风格 suffix", () => {
+    const name = generateEntityTableName({
+      workspaceId: "workspace:0123456789abcdef",
+      workbookId: "workbook:fedcba9876543210ffff",
+      suffix: "case",
+    });
+    expect(name).toBe("ent_01234567_fedcba98_case");
+  });
+
+  test("实体表名 suffix 也接受 hash 切片", () => {
+    const name = generateEntityTableName({
+      workspaceId: "workspace:0123456789abcdef",
+      workbookId: "workbook:fedcba9876543210ffff",
+      suffix: "abcd1234",
+    });
+    expect(name).toBe("ent_01234567_fedcba98_abcd1234");
+  });
+
+  test("关系表名 rel_<ws8>_<wb8>_<key> 始终带 suffix", () => {
+    const name = generateRelationTableName({
+      workspaceId: "workspace:0123456789abcdef",
+      workbookId: "workbook:fedcba9876543210ffff",
+      suffix: "assigned_to",
+    });
+    expect(name).toBe("rel_01234567_fedcba98_assigned_to");
+  });
+
+  test("生成的实体表名通过 assertEntityTableName", () => {
+    const name = generateEntityTableName({
+      workspaceId: "workspace:ws1",
+      workbookId: "workbook:wb1",
+      suffix: "main",
+    });
+    expect(name).toMatch(/^ent_[a-z0-9_]+$/);
+  });
+
+  test("生成的关系表名通过运行时关系表正则", () => {
+    const name = generateRelationTableName({
+      workspaceId: "workspace:ws1",
+      workbookId: "workbook:wb1",
+      suffix: "owns",
+    });
+    expect(name).toMatch(/^rel_[a-z0-9_]+$/);
   });
 });
 

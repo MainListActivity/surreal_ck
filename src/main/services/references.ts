@@ -1,8 +1,8 @@
 import { RecordId, StringRecordId } from "surrealdb";
 import { getLocalDb } from "../db/index";
 import { ServiceError } from "./errors";
+import { DataTableRuntime } from "./data-table-runtime";
 import type {
-  GridColumnDef,
   ListReferenceTargetsResponse,
   RecordIdString,
   ReferenceTargetOption,
@@ -17,8 +17,6 @@ const REFERENCE_SYSTEM_TABLES = new Set(["app_user"]);
 const REFERENCE_ENTITY_TABLE = /^ent_[a-z0-9_]+$/;
 const SAFE_FIELD_KEY = /^[a-z][a-z0-9_]{0,62}$/;
 
-const PREVIEW_FIELD_LIMIT = 5;
-
 function assertReferenceTable(table: string): void {
   if (REFERENCE_SYSTEM_TABLES.has(table)) return;
   if (REFERENCE_ENTITY_TABLE.test(table)) return;
@@ -30,39 +28,6 @@ function assertSafeFieldKey(key: string): void {
     throw new ServiceError("VALIDATION_ERROR", `非法的字段标识: ${key}`);
   }
 }
-
-type StoredColumnDef = {
-  key: string;
-  label: string;
-  field_type: string;
-  required?: boolean;
-  options?: string[];
-  constraints?: GridColumnDef["constraints"];
-  date_format?: string;
-  reference_table?: string;
-  reference_sheet_id?: string;
-  reference_multiple?: boolean;
-  reference_display_key?: string;
-};
-
-type SheetMetaRow = {
-  id: RecordId;
-  workbook: RecordId;
-  table_name: string;
-  label: string;
-  column_defs: StoredColumnDef[];
-};
-
-type WorkbookMetaRow = {
-  id: RecordId;
-  workspace: RecordId;
-  name: string;
-};
-
-type WorkspaceMetaRow = {
-  id: RecordId;
-  name: string;
-};
 
 type AppUserRow = {
   id: RecordId;
@@ -101,9 +66,7 @@ export async function resolveReferences(
     byTable.get(table)!.add(id);
   }
 
-  const sheetMetaCache = new Map<string, SheetMetaRow | null>();
-  const workbookMetaCache = new Map<string, WorkbookMetaRow | null>();
-  const workspaceMetaCache = new Map<string, WorkspaceMetaRow | null>();
+  const runtimeCache = new Map<string, DataTableRuntime | null>();
 
   for (const [table, idSet] of byTable) {
     if (table === "app_user") {
@@ -115,30 +78,27 @@ export async function resolveReferences(
       continue;
     }
 
-    // ent_* 表：先取 sheet/workbook/workspace 元数据；再取实体行。
-    const sheetMeta = await loadSheetMetaByTable(table, sheetMetaCache);
-    const workbookMeta = sheetMeta
-      ? await loadWorkbookMeta(String(sheetMeta.workbook), workbookMetaCache)
-      : null;
-    const workspaceMeta = workbookMeta
-      ? await loadWorkspaceMeta(String(workbookMeta.workspace), workspaceMetaCache)
-      : null;
+    let runtime = runtimeCache.get(table);
+    if (runtime === undefined) {
+      runtime = await DataTableRuntime.loadByTableName(table);
+      runtimeCache.set(table, runtime);
+    }
 
     const rows = await fetchEntityRows(table, Array.from(idSet));
     for (const id of idSet) {
       const row = rows.get(id);
-      if (!row || !sheetMeta) {
-        items.push(missingPreview(id, table, {
-          workbookId: workbookMeta ? String(workbookMeta.id) : undefined,
-          workbookName: workbookMeta?.name,
-          sheetId: sheetMeta ? String(sheetMeta.id) : undefined,
-          sheetName: sheetMeta?.label,
-          workspaceId: workspaceMeta ? String(workspaceMeta.id) : undefined,
-          workspaceName: workspaceMeta?.name,
-        }));
+      if (!row || !runtime) {
+        items.push(missingPreview(id, table, runtime ? {
+          workbookId: runtime.context.workbookId,
+          workbookName: runtime.context.workbookName,
+          sheetId: String(runtime.sheet.id),
+          sheetName: runtime.sheet.label,
+          workspaceId: runtime.context.workspaceId,
+          workspaceName: runtime.context.workspaceName,
+        } : {}));
         continue;
       }
-      items.push(entityRowToPreview(id, row, sheetMeta, workbookMeta, workspaceMeta));
+      items.push(runtime.buildEntityPreview(id, row));
     }
   }
 
@@ -148,7 +108,6 @@ export async function resolveReferences(
 // ─── listReferenceTargets ────────────────────────────────────────────────────
 
 export async function listReferenceTargets(): Promise<ListReferenceTargetsResponse> {
-  const db = getLocalDb();
   const targets: ReferenceTargetOption[] = [];
 
   // 系统对象：app_user
@@ -162,30 +121,20 @@ export async function listReferenceTargets(): Promise<ListReferenceTargetsRespon
     ],
   });
 
-  // 用户可见的所有 sheet（PERMISSIONS 已经把 workspace 范围限制好了）。
-  const sheetRows = await db.query<[SheetMetaRow[]]>(
-    `SELECT id, workbook, table_name, label, column_defs FROM sheet ORDER BY workbook, position`,
-  );
-  const wsCache = new Map<string, WorkspaceMetaRow | null>();
-  const wbCache = new Map<string, WorkbookMetaRow | null>();
-
-  for (const sheet of sheetRows[0] ?? []) {
-    const wbMeta = await loadWorkbookMeta(String(sheet.workbook), wbCache);
-    if (!wbMeta) continue;
-    const wsMeta = await loadWorkspaceMeta(String(wbMeta.workspace), wsCache);
-    if (!wsMeta) continue;
-
-    const labelParts = [wsMeta.name, wbMeta.name, sheet.label].filter(Boolean);
+  const items = await DataTableRuntime.listAllForReference();
+  for (const item of items) {
+    if (!item.workspaceName) continue;
+    const labelParts = [item.workspaceName, item.workbookName, item.sheetLabel].filter(Boolean);
     targets.push({
-      table: sheet.table_name,
+      table: item.runtime.tableName,
       label: labelParts.join(" / "),
-      workspaceId: String(wsMeta.id),
-      workspaceName: wsMeta.name,
-      workbookId: String(wbMeta.id),
-      workbookName: wbMeta.name,
-      sheetId: String(sheet.id),
-      sheetName: sheet.label,
-      displayKeys: (sheet.column_defs ?? []).map((c) => ({
+      workspaceId: item.workspaceId,
+      workspaceName: item.workspaceName,
+      workbookId: item.workbookId,
+      workbookName: item.workbookName,
+      sheetId: item.sheetId,
+      sheetName: item.sheetLabel,
+      displayKeys: item.runtime.sheet.column_defs.map((c) => ({
         key: c.key,
         label: c.label,
         fieldType: c.field_type,
@@ -210,20 +159,15 @@ export async function searchReferenceCandidates(
     return { items };
   }
 
-  const sheetMeta = await loadSheetMetaByTable(table, new Map());
-  const wbMeta = sheetMeta
-    ? await loadWorkbookMeta(String(sheetMeta.workbook), new Map())
-    : null;
-  const wsMeta = wbMeta
-    ? await loadWorkspaceMeta(String(wbMeta.workspace), new Map())
-    : null;
-  if (!sheetMeta) {
+  const runtime = await DataTableRuntime.loadByTableName(table);
+  if (!runtime) {
     throw new ServiceError("NOT_FOUND", "目标 Sheet 不存在或无权访问");
   }
 
   const effectiveDisplayKey = displayKey
     ? (assertSafeFieldKey(displayKey), displayKey)
-    : pickDefaultDisplayKey(sheetMeta);
+    : runtime.sheet.column_defs.find((c) => c.key === "name")?.key
+      ?? runtime.sheet.column_defs[0]?.key;
 
   const db = getLocalDb();
   let sql = `SELECT * FROM type::table($t)`;
@@ -238,56 +182,9 @@ export async function searchReferenceCandidates(
   const rows = rowsResult[0] ?? [];
 
   const items = rows.map((row) =>
-    entityRowToPreview(String(row.id), row, sheetMeta, wbMeta, wsMeta, effectiveDisplayKey),
+    runtime.buildEntityPreview(String(row.id), row, effectiveDisplayKey ? { forceDisplayKey: effectiveDisplayKey } : undefined),
   );
   return { items };
-}
-
-// ─── 内部：sheet/workbook/workspace 元数据 ──────────────────────────────────
-
-async function loadSheetMetaByTable(
-  table: string,
-  cache: Map<string, SheetMetaRow | null>,
-): Promise<SheetMetaRow | null> {
-  if (cache.has(table)) return cache.get(table) ?? null;
-  const db = getLocalDb();
-  const rows = await db.query<[SheetMetaRow[]]>(
-    `SELECT id, workbook, table_name, label, column_defs FROM sheet WHERE table_name = $t LIMIT 1`,
-    { t: table },
-  );
-  const sheet = rows[0]?.[0] ?? null;
-  cache.set(table, sheet);
-  return sheet;
-}
-
-async function loadWorkbookMeta(
-  workbookId: string,
-  cache: Map<string, WorkbookMetaRow | null>,
-): Promise<WorkbookMetaRow | null> {
-  if (cache.has(workbookId)) return cache.get(workbookId) ?? null;
-  const db = getLocalDb();
-  const rows = await db.query<[WorkbookMetaRow[]]>(
-    `SELECT id, workspace, name FROM workbook WHERE id = $wbId LIMIT 1`,
-    { wbId: new StringRecordId(workbookId) },
-  );
-  const wb = rows[0]?.[0] ?? null;
-  cache.set(workbookId, wb);
-  return wb;
-}
-
-async function loadWorkspaceMeta(
-  workspaceId: string,
-  cache: Map<string, WorkspaceMetaRow | null>,
-): Promise<WorkspaceMetaRow | null> {
-  if (cache.has(workspaceId)) return cache.get(workspaceId) ?? null;
-  const db = getLocalDb();
-  const rows = await db.query<[WorkspaceMetaRow[]]>(
-    `SELECT id, name FROM workspace WHERE id = $wsId LIMIT 1`,
-    { wsId: new StringRecordId(workspaceId) },
-  );
-  const ws = rows[0]?.[0] ?? null;
-  cache.set(workspaceId, ws);
-  return ws;
 }
 
 // ─── 内部：批量读 RecordId ──────────────────────────────────────────────────
@@ -350,39 +247,6 @@ function appUserRowToPreview(id: RecordIdString, row: AppUserRow): ReferenceTarg
   };
 }
 
-function entityRowToPreview(
-  id: RecordIdString,
-  row: EntityRow,
-  sheet: SheetMetaRow,
-  workbook: WorkbookMetaRow | null,
-  workspace: WorkspaceMetaRow | null,
-  forceDisplayKey?: string,
-): ReferenceTargetPreview {
-  const displayKey = forceDisplayKey ?? pickDefaultDisplayKey(sheet);
-  const primaryLabel = formatPrimaryLabel(row, displayKey, id, workbook?.name, sheet.label);
-
-  const preview: ReferenceTargetPreview["preview"] = [];
-  for (const col of sheet.column_defs ?? []) {
-    if (preview.length >= PREVIEW_FIELD_LIMIT) break;
-    const v = row[col.key];
-    if (v === undefined || v === null || v === "") continue;
-    preview.push({ key: col.key, label: col.label, value: jsonifyValue(v) });
-  }
-
-  return {
-    id,
-    table: sheet.table_name,
-    workspaceId: workspace ? String(workspace.id) : undefined,
-    workspaceName: workspace?.name,
-    workbookId: workbook ? String(workbook.id) : undefined,
-    workbookName: workbook?.name,
-    sheetId: String(sheet.id),
-    sheetName: sheet.label,
-    primaryLabel,
-    preview,
-  };
-}
-
 function missingPreview(
   id: RecordIdString,
   table: string,
@@ -396,34 +260,4 @@ function missingPreview(
     missing: true,
     preview: [],
   };
-}
-
-function pickDefaultDisplayKey(sheet: SheetMetaRow): string | undefined {
-  const keys = (sheet.column_defs ?? []).map((c) => c.key);
-  if (keys.includes("name")) return "name";
-  return keys[0];
-}
-
-function formatPrimaryLabel(
-  row: EntityRow,
-  displayKey: string | undefined,
-  id: RecordIdString,
-  workbookName: string | undefined,
-  sheetName: string,
-): string {
-  const raw = displayKey ? row[displayKey] : undefined;
-  const value = raw == null || raw === "" ? id : String(jsonifyValue(raw));
-  const prefix = workbookName ? `${workbookName} / ${sheetName}` : sheetName;
-  return `${prefix} / ${value}`;
-}
-
-function jsonifyValue(value: unknown): unknown {
-  if (value instanceof Date) return value.toISOString();
-  if (value instanceof RecordId) return String(value);
-  if (Array.isArray(value)) return value.map(jsonifyValue);
-  // SurrealDB 的 DateTime 对象序列化在跨进程边界可能掉精度，这里只走 toISOString 兜底
-  if (value && typeof value === "object" && "toISOString" in value && typeof (value as { toISOString: unknown }).toISOString === "function") {
-    return (value as { toISOString: () => string }).toISOString();
-  }
-  return value;
 }
