@@ -5,8 +5,32 @@
 ## Language
 
 **工作区**:
-用户可感知的协作空间，也是工作簿、仪表盘和其他资源的归属边界。
+用户可感知的协作空间，也是工作簿、仪表盘和其他资源的归属边界。在底层架构上**直接对应一个独立的 SurrealDB database**（参见 [`docs/adr/workspace-as-database.md`](./docs/adr/workspace-as-database.md)）；跨工作区隔离由 db 边界天然保证。
 _Avoid_: 租户, Tenant（当表达用户空间时）
+
+**workspace database**:
+某个 **工作区** 在 SurrealDB 中对应的物理 database（命名 `ws_<slug>`）。承载该工作区全部业务表 + 协作表 + user 表。**只在涉及底层映射时使用**（如 ADR、迁移文档、运维讨论）。
+_Avoid_: 工作区库（产品层不暴露此词）
+
+**system database**:
+SurrealDB namespace `main` 下的特殊 database `_system`，承载 **工作区** 索引与跨工作区邀请态（`pending_workspace_member`）。**不存储任何用户业务数据**。
+_Avoid_: 系统库（仅 ADR / 运维语境使用）
+
+**工作区管理员**:
+某个 workspace database 中 `user` 表内 `kind='human' AND is_admin=true` 的 **用户**。登录走该 db 的 `admin` access（TYPE JWT），SurrealDB 引擎层授予 db owner 级能力，可执行 DDL（建表 / 加字段 / 定义 access 等）。每个工作区至少有一个管理员（创建者默认是）。
+_Avoid_: Owner（语义重叠时优先使用 **工作区管理员**；workspace.owner_subject 字段仅作底层标识）
+
+**普通成员**:
+某个 workspace database 中 `user` 表内 `kind='human' AND is_admin=false` 的 **用户**。登录走该 db 的 `participant` access（TYPE RECORD），SurrealDB 引擎层拒绝任何 DDL；DML 受 PERMISSIONS 约束。同一真人在不同工作区可能分别是 **工作区管理员** 或 **普通成员**。
+_Avoid_: Editor / Viewer（这是早期方案的细分角色名；当前模型只有"是不是管理员"二态）, 访客
+
+**用户**:
+某个 workspace database 中 `user` 表的一条记录。三种身份共表：**工作区管理员**、**普通成员**、**虚拟员工**，分别走 db 上 `admin` / `participant` / `employee` 三条 access 登录，DB 引擎层硬隔离 DDL 能力。**同一真人在不同工作区是多条独立用户记录**。
+_Avoid_: 账号（强调"在哪个工作区"语境时使用 **用户**）
+
+**OIDC 身份**:
+真人通过外部 IdP 登录拿到的 OIDC JWT 中的 `sub`（subject）。是真人的全局唯一标识，但不是数据库记录——数据库记录是各 workspace database 内 `user` 表中以该 subject 为字段的行。
+_Avoid_: 全局用户（避免暗示数据库里存了全局 user 表）
 
 **工作簿（Workbook）**:
 用户在工作区内创建和持有的一级数据容器，包含一个或多个数据表及其表视图。
@@ -92,6 +116,50 @@ _Avoid_: 阻塞，挂起（当指代正式持久化暂停时）
 Router 分类完成和每个子 agent 步骤切换时，从主进程向 AI 抽屉推送的进度提示通道。用于掩盖多步串行带来的延迟。
 _Avoid_: 进度条（当表达跨步骤语义提示时）
 
+**虚拟办公室**:
+工作区内由虚拟员工组成的、自治推进工作区目标的协作子系统，对应 `docs/adr/virtual-office.md`。它与 **Router workflow** 并列，前者覆盖"用户主动发问—同步应答"，虚拟办公室覆盖"长期目标—被动推进"。
+_Avoid_: AI 团队, Agent 群（当表达正式子系统时）
+
+**虚拟员工**:
+某个 workspace database 内 `user` 表中 `kind='virtual'` 的一等 **用户**，挂载一个 **岗位**。通过 SurrealDB `DEFINE ACCESS employee TYPE RECORD` 由 db 自身管理登录，**Office dispatcher** 每次 **执行窗口** 前 SIGNIN 一次拿短期 token，不持有长期凭证。
+_Avoid_: Bot, 机器人, Worker, Agent（当表达带身份的协作主体时）
+
+**岗位**:
+持久化保存的执行配置，定义 **虚拟员工** 的 system prompt、可调用 tool 集合、心跳节拍、默认上级岗位。落在 `office_role` 表里，可在不发版的情况下增删。
+_Avoid_: 角色（当表达 PERMISSIONS 中的 role 字段时）, 职位（仅作 UI 文案别名）
+
+**上级**:
+某个 **虚拟员工** 的 `virtual_profile.supervisor` 指向的另一条 `user` 记录，可以是另一个 **虚拟员工** 或一名 **工作区管理员**，负责按节拍检查下属任务进度并发出 **派单** 或 **用户通知请求**。
+_Avoid_: 领导, Boss（仅作 UI 文案别名）
+
+**派单**:
+落在 `office_task` 表中的一条待办记录，由 assigner 创建并指向 assignee。它是层级协作的基本单位，**虚拟员工** 通过 LIVE SELECT 订阅"派给自己的 open 任务"。
+_Avoid_: 任务（在领域语境内必须用 **派单**，避免与 Mastra workflow step 混用）, Ticket
+
+**汇报**:
+`office_report` 表中的一条记录，由下属在阶段性产出或被检查时写入，指向 task 与上级。**汇报** 不修改 **派单** 状态，仅描述进度。
+_Avoid_: 报告（仅作 UI 文案别名）, Status update
+
+**办公室消息**:
+`office_message` 表中的一条记录，是 **虚拟员工** 之间、以及未来真人 ↔ **虚拟员工** 之间的通用通信通道。聊天功能上线后直接复用此表。
+_Avoid_: Chat message（在领域语境内统一叫办公室消息）
+
+**用户通知请求**:
+`user_notification` 表中的一条记录，由 **虚拟员工** 在需要真人介入（打电话、寄函件、做线下决策）时写入，附 `requested_action` 字段。用户处理完后写 `resolution` 闭环。
+_Avoid_: 通知, Alert（仅作 UI 文案别名）
+
+**Office dispatcher**:
+主进程中负责"被触发后拉起一次 **虚拟员工** 执行窗口"的调度组件。监听 `office_task` / `office_message` / `user_notification` 的 LIVE SELECT、并按 `office_role.heartbeat_interval` 触发心跳。它**不是** Router workflow 的一部分。
+_Avoid_: Daemon, 后台进程（当强调短窗口而非常驻时）
+
+**执行窗口**:
+Office dispatcher 一次拉起 **虚拟员工** 后，员工在退出前能执行的有限 Mastra workflow step 区间。窗口内步数有硬上限，超过则任务自动标 stalled。
+_Avoid_: 会话（避免与聊天会话混淆）
+
+**心跳**:
+Office dispatcher 按 `office_role.heartbeat_interval` 周期性拉起的 **执行窗口**，用于让 **虚拟员工** 主动检查自己持有的未结 **派单** 或下属进度。
+_Avoid_: 轮询（仅描述底层实现时使用）
+
 ## Relationships
 
 - 一个 **工作区** 包含多个 **工作簿**
@@ -119,6 +187,21 @@ _Avoid_: 进度条（当表达跨步骤语义提示时）
 - 一个 **Router workflow** 运行内的跨步骤数据通过 **共享 context** 传递
 - 一个 **workflow 暂停态** 由 **Router workflow** 在等待用户选择候选或确认写操作时进入
 - **流式进度通道** 由 **Router workflow** 推送，AI 抽屉消费
+- 一个 **工作区** 拥有一个 **虚拟办公室**（一对一）
+- 一个 **虚拟办公室** 内有多个 **虚拟员工**
+- 一个 **虚拟员工** 隶属于一个 **工作区** 并挂载一个 **岗位**
+- 一个 **虚拟员工** 至多有一个 **上级**（可以是另一个 **虚拟员工** 或一名 **工作区管理员**）
+- 一个 **岗位** 可以被多个 **虚拟员工** 同时挂载
+- 一个 **派单** 由一个 assigner（**虚拟员工** 或真人）创建，指向一个 assignee 和一个 **工作区**
+- 一个 **派单** 可以有零或一个 parent 派单（用于上级"催 X"的子任务）
+- 一个 **汇报** 由下属 **虚拟员工** 写给 **上级**，可选引用一条 **派单**
+- 一个 **办公室消息** 同时承载 **虚拟员工** 与未来真人参与者之间的通信
+- 一个 **用户通知请求** 由 **虚拟员工** 发出，指向 **工作区** 的 owner，期待真人完成 `requested_action` 后回写 `resolution`
+- **Office dispatcher** 通过 LIVE SELECT 与 **心跳** 触发 **执行窗口**
+- 一个 **执行窗口** 内 **虚拟员工** 的步数受 `office_role.heartbeat_interval` 与硬上限约束
+- 一个 **工作区** 一一对应一个 **workspace database**
+- 一个 **system database** 全局唯一，承载所有 **工作区** 的索引和邀请
+- 一个 **用户** 必属于某个 **workspace database**；同一 **OIDC 身份** 在多个工作区中是多条独立 **用户** 记录
 
 ## Flagged ambiguities
 
@@ -144,6 +227,21 @@ _Avoid_: 进度条（当表达跨步骤语义提示时）
 - "Workspace agent" 不再作为正式术语；已定稿：AI 顶层调度由 **Router workflow** 承担，原 `workspaceAgent` 实现将在 issue 011 删除并迁移其挂载的导航 tool。
 - "全量 context" 不进入 AI 编排术语；已定稿：跨步骤数据流统一叫 **共享 context**，且强制只携带已确认产出，不携带中间 tool trace。
 - "暂停" 与 "挂起" 不可混用；已定稿：AI 流程暂停状态正式叫 **workflow 暂停态**，必须可持久化并跨重启恢复。
+- "虚拟员工" 与 "Bot/Agent" 不可混用；已定稿：**虚拟员工** 是 `app_user.kind='virtual'` 的一等身份，Bot/Agent 不进入领域规范词。
+- "岗位" 与 "角色" 不可混用；已定稿：**岗位** 指 `office_role` 表中的执行配置，"角色"仅保留给 PERMISSIONS 中 `has_workspace_member.role` 字段（admin / editor / viewer / bot）。
+- "派单" 与 "任务" 不可混用；已定稿：业务层协作单位统一叫 **派单**，"任务"在仓库内仅指 Mastra workflow step 或本仓库的 TODOS.md 条目。
+- "Office dispatcher" 与 "Router workflow" 不可混用；已定稿：前者覆盖被动推进的自治协作，后者覆盖主动发问的同步应答；二者并列，共享 tool bundle 与 WorkflowsStorage 但不共享入口。
+- "执行窗口" 与 "会话" 不可混用；已定稿：**执行窗口** 是 dispatcher 一次拉起员工的有限步数区间，不是聊天会话。
+- "用户通知请求" 与 "通知" 不可混用；已定稿：领域规范词使用 **用户通知请求**，"通知"仅作 UI 文案别名。
+- "用户" 与 "OIDC 身份" 不可混用；已定稿：**用户** 是 workspace database 内的记录，**OIDC 身份** 是外部 IdP 的 subject；同一 OIDC 身份在多个工作区是多条 **用户** 记录。
+- "工作区 owner / Owner" 与 **工作区管理员** 不可混用；已定稿：领域规范词使用 **工作区管理员**（对应 `user.is_admin = true`），`workspace.owner_subject` 仅是 `_system` 中的底层标识字段。
+- "数据库" 与 **workspace database** / **system database** 不可混用；已定稿：在涉及底层映射时使用专名，业务交流仍用 **工作区**；不要把 SurrealDB 的 namespace / database 概念暴露到产品文案。
+- "service JWT" 不进入领域词汇；已定稿：架构上不存在该概念，所有写入都以 **用户**（含 **虚拟员工**）会话身份执行；后端唯一长期凭证是 SurrealDB root，仅 execTemplate 用。
+- "成员" 与 **普通成员** 不可混用；已定稿：领域规范词使用 **普通成员**（对应 `participant` access）；"成员"作为旧称仅在底层 schema 字段或历史 ADR 中保留。
+- "角色" 在本仓库已有两种含义，必须按上下文分清：
+  - **岗位**（`office_role` 表，仅 **虚拟员工** 挂载）。
+  - **身份类别**（管理员 / 普通成员 / 虚拟员工，落在 `user.kind` + `user.is_admin` + access 选择上）。
+  绝不再用泛指"角色"称呼这两者。
 
 ## Example dialogue
 

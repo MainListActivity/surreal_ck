@@ -1,8 +1,13 @@
 # ADR: remote 权威写侧与本地结构影子库 / 投影数据区架构
 
-- **Status**: Accepted
+- **Status**: Superseded by [`web-only-pivot.md`](./web-only-pivot.md) (2026-05-16)
 - **Date**: 2026-05-12
 - **Scope**: `src/main/db`、`src/main/sync`、`src/main/services`、`schema/main.surql`、资源检索/RAG、动态表 DDL 与本地投影恢复
+
+> **Superseded note (2026-05-16)**：本 ADR 的所有"双 SurrealDB 同步"前提已被 [`web-only-pivot.md`](./web-only-pivot.md) 推翻。
+> 新形态下只有一个 SurrealDB Cloud 实例，前端浏览器和后端 Bun server 都直连它；不再有本地嵌入式 DB、结构影子库、投影数据区、changefeed 收敛、execTemplate 签发等任何同步层概念。
+> 本 ADR 保留作为决策史，**不要再据此开工**。`.scratch/sync-v2/**` 同期 Cancelled。
+
 
 ## Context
 
