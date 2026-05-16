@@ -94,24 +94,6 @@ namespace: main
                   updated_at:   time::now()
                 };
               };
-
-              -- 自动认领：将匹配邮箱的 pending_workspace_member 转换为正式 has_workspace_member 边。
-              -- 在 AUTHENTICATE 块内以系统权限运行，绕过行级权限。
-              IF $token['https://surrealdb.com/email'] {
-                LET $pending = (
-                  SELECT id, workspace, role FROM pending_workspace_member
-                  WHERE email = <string>$token['https://surrealdb.com/email']
-                );
-                FOR $inv IN $pending {
-                  LET $ws = $inv.workspace;
-                  RELATE $ws->has_workspace_member->$user_id CONTENT {
-                    role:      $inv.role,
-                    joined_at: time::now()
-                  };
-                  DELETE $inv.id;
-                };
-              };
-
               RETURN $user_id;
 
             } ELSE {
