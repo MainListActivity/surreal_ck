@@ -66,7 +66,7 @@ namespace: main
       │     -- is_admin=true 的真人才能登录"，DDL 自服务因此安全且不依赖代码层校验。
       │
       │── 
-        DEFINE ACCESS OVERWRITE madocs ON DATABASE TYPE RECORD
+        DEFINE ACCESS OVERWRITE participant ON DATABASE TYPE RECORD
           WITH JWT URL 'https://o.maplayer.top/t/ck/jwks.json'
           AUTHENTICATE {
 
@@ -75,7 +75,7 @@ namespace: main
             {
               IF !$token.sub { THROW 'Missing sub claim' };
 
-              LET $user_id  = type::record('app_user', $token.sub);
+              LET $user_id  = type::record('user', $token.sub);
               LET $existing = (SELECT VALUE id FROM ONLY $user_id);
 
               IF !$existing {
@@ -109,21 +109,6 @@ namespace: main
                     joined_at: time::now()
                   };
                   DELETE $inv.id;
-                };
-              };
-
-              -- 自动创建默认 workspace（首次登录且无 workspace 时）。
-              LET $has_workspace = (SELECT VALUE id FROM workspace WHERE owner = $user_id LIMIT 1);
-              IF array::len($has_workspace) = 0 {
-                LET $display = IF $token.name { <string>$token.name }
-                              ELSE IF $token.preferred_username { <string>$token.preferred_username }
-                              ELSE IF $token['https://surrealdb.com/email'] { <string>$token['https://surrealdb.com/email'] }
-                              ELSE { <string>$token.sub };
-                CREATE workspace CONTENT {
-                  owner:      $user_id,
-                  name:       $display + ' 的空间',
-                  slug:       'ws-' + string::slice(<string>$token.sub, 0, 16),
-                  created_at: time::now()
                 };
               };
 
