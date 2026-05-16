@@ -12,8 +12,9 @@ Label: needs-triage
 前两稿先后是 "员工独立 JWT 签发" 和 "service JWT 配置"，都已被 [`workspace-as-database.md`](../../../docs/adr/workspace-as-database.md) 简化掉。本 issue 改为：
 
 - 提供 admin-only 的 HTTP endpoint：在指定 workspace database 内 INSERT 一条 `kind='virtual'` 的 user 记录 + 写一条 `employee_credential`。
-- 后端用 admin 的 JWT 透传执行大部分写入（无需 service JWT），符合"DDL/DML 走用户会话"原则。
-- 仅 `employee_credential` 表的写入需要 root（该表对所有 access PERMISSIONS NONE，参见 issue 01）。
+- 后端用 admin 的 OIDC JWT 透传执行 user 表写入（符合"DDL/DML 走用户会话"原则）。
+- 仅 `employee_credential` 表的写入和 `_system.workspace` 索引读取需要 root；前者因为 PERMISSIONS NONE，后者因为 _system 无 access。
+- secret 同步装入 dispatcher 进程内缓存，供后续 SIGNIN 复用；不再从 DB 反复读取。
 
 ## What to build
 
@@ -28,18 +29,26 @@ Label: needs-triage
 处理：
 
 1. 从 Authorization header 取用户 OIDC JWT，verify。
-2. 后端查 `_system.workspace` 拿到该 slug 对应的 `db_name`。
+2. 后端用 root 查 `_system.workspace WHERE slug = ?` 拿到 `db_name`。
 3. 用 OIDC JWT 调 `SIGNIN { ac: 'admin', ns: 'main', db: <db_name>, token: <oidc-jwt> }`；若 AUTHENTICATE 抛错（用户不在该 workspace、或非管理员），直接 403——**不需要应用层兜底校验 is_admin**，DB 引擎已保证。
 4. 生成 `subject = urn:virtual:<uuid>` + `secret = randomBase64(32)`。
 5. 以 admin 会话：`INSERT user { subject, kind: 'virtual', display_name, virtual_profile: { role: office_role:<key>, status: 'active' } }` → `newId`。
 6. 以 root 会话（仅本步）：`INSERT employee_credential { employee: newId, secret }`。
-7. 返回 `{ employeeId: newId }`。
+7. 把 secret 加进 dispatcher 进程内缓存（键：`<db_name>:<newId>`），dispatcher 后续 SIGNIN 直接读缓存（详见 [`virtual-office.md`](../../../docs/adr/virtual-office.md) §1 SIGNIN 流程）。
+8. 返回 `{ employeeId: newId }`。
 
-**为什么 6 必须走 root**：`employee_credential` 表 PERMISSIONS NONE，admin 都看不到；secret 仅作 SIGNIN 校验材料，永不出 DB。本 endpoint 是 root 调用面最小化的实现（只一行 INSERT，无副作用）。
+**为什么 6 必须走 root**：`employee_credential` 表 PERMISSIONS NONE，admin 也写不了。secret 仅作 SIGNIN 校验材料，永不出 DB。
+
+**为什么 SIGNIN 时不会再次需要读 secret**：dispatcher 在进程内缓存了所有员工的 secret（启动时 + 本 endpoint 写入时同步装入），SIGNIN 直接提供 secret 给 SurrealDB 内部 SIGNIN query 校验——SIGNIN query 自身能读 PERMISSIONS NONE 表完成比对。
 
 ### HTTP endpoint `POST /api/workspaces/:slug/employees/:id/retire`
 
-同样 admin-only：把 `virtual_profile.status` 改为 `'retired'`，dispatcher 下次心跳跳过；可选地把 `employee_credential.secret` 清空以彻底锁死 SIGNIN。
+同样 admin-only：
+
+1. admin SIGNIN 校验身份
+2. admin 会话 UPDATE `user.virtual_profile.status = 'retired'`
+3. root 会话 UPDATE `employee_credential SET secret = '__retired_' + rand::uuid() WHERE employee = :id`（清空 secret 等于换密码，已签发的 1h token 到期后无法续约；当前进行中的 token 不主动 revoke，MVP 接受这一延迟）
+4. 从 dispatcher 进程内缓存中移除该员工的 secret + 关闭对应 LIVE 连接
 
 ### HTTP endpoint `POST /api/workspaces/:slug/employees/:id/pause` / `/resume`
 
@@ -51,12 +60,12 @@ Label: needs-triage
 
 ## Acceptance criteria
 
-- [ ] admin 调 `POST /api/workspaces/:slug/employees` → user 表多出一条 `kind='virtual'` 记录 + employee_credential 表多出一条
+- [ ] admin 调 `POST /api/workspaces/:slug/employees` → user 表多出一条 `kind='virtual'` 记录 + employee_credential 表多出一条 + dispatcher 缓存装入 secret
 - [ ] 非 admin（participant）调同 endpoint 返回 403：SIGNIN 走 admin access 时 AUTHENTICATE 抛错，后端捕获即拒
 - [ ] 跨 workspace 调（用户不属于该 slug 对应的 ws db）返回 403（admin access AUTHENTICATE 找不到 user 记录）
-- [ ] retire 后，员工记录 `status='retired'`；employee_credential.secret 被清空（管理员可通过 endpoint 触发，后端走 root 清空）
+- [ ] retire 后：`status='retired'` + secret 被改成无意义值 + dispatcher 缓存移除 + 对应 LIVE 连接关闭
 - [ ] 重新 provision 同名员工不冲突（subject 用 uuid 保证唯一）
-- [ ] root 凭证仅在第 6 步（INSERT employee_credential）使用；其余步骤都走 admin 会话
+- [ ] root 凭证仅在第 6 步（INSERT employee_credential）和第 2 步（_system 查 workspace 索引）使用；其余步骤都走 admin 会话
 
 ## Blocked by
 

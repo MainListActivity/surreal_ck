@@ -46,19 +46,35 @@ Label: needs-triage
   - `POST /api/workspaces/:slug/employees/:id/pause` / `/resume` / `/retire`
 - 后端 endpoint 内部按调用者身份调相应 access SIGNIN（先 `admin` 失败再 `participant`），再透传写入。"暂停 / 退休"endpoint 仅 admin 能成功：admin SIGNIN 通过后写 `user.virtual_profile.status`；participant SIGNIN 通过的会话 PERMISSIONS 拒绝。
 
-### 后端 `POST /api/sessions`（统一登录 / 选 access）
+### 后端 `GET /api/sessions/bootstrap`（拉取用户能进的所有 workspace）
 
-issue 09 同时提供这个共享 endpoint（issue 03 / 10 / 11 都复用）：
+用户登录后首次调用一次：
+
+1. OIDC verify。
+2. 后端用 root 查 `_system.user_workspace_index WHERE subject = $sub`，得 `[{ workspace, role }]`。
+3. JOIN `_system.workspace` 拿 `{ slug, name, db_name }`。
+4. 返回前端 `[{ slug, name, role }]`——前端用此渲染 workspace 切换器。
+
+### 后端 `POST /api/sessions`（进入某个 workspace）
 
 入参：`{ workspaceSlug, oidcToken }`。流程：
 
-1. OIDC verify token。
-2. 查 `_system.workspace` 拿到 `db_name`。
-3. 先尝试 `SIGNIN { ac: 'admin', ns: 'main', db: <db_name>, token: <oidcToken> }`：
-   - 成功：返回 `{ access: 'admin', token: <surreal-jwt-1h> }`，缓存在 session。
-4. 否则尝试 `SIGNIN { ac: 'participant', ns: 'main', db: <db_name>, subject: $token.sub }`：
-   - 成功：返回 `{ access: 'participant', token: <surreal-jwt-1h> }`。
-5. 都失败：401。
+1. OIDC verify。
+2. 后端用 root 查 `_system.workspace WHERE slug = ?` 拿到 `db_name`。
+3. 后端用 root 查 `_system.user_workspace_index WHERE subject = $sub AND workspace = ?` 拿到 `role`。
+4. 按 role 选 access：
+   - `role='admin'`：`SIGNIN { ac: 'admin', ns: 'main', db: <db_name>, token: <oidcToken> }`
+   - `role='participant'`：`SIGNIN { ac: 'participant', ns: 'main', db: <db_name>, token: <oidcToken> }`
+5. 倒查表无记录但用户带了**邀请链接**（前端在 body 里附 `inviteFor: <slug>`）：进入邀请认领闭环：
+   a. 尝试 `SIGNIN { ac: 'participant', ... }` —— participant access 内 AUTHENTICATE 自动 CREATE user 记录。
+   b. SIGNIN 成功后后端用 root 在 ws db 内 SELECT `pending_workspace_member WHERE email = <token.email>`：
+      - 命中则 RELATE `workspace_singleton:default->has_workspace_member->$auth CONTENT { role }` + DELETE pending
+      - 未命中则 retract（DELETE 刚才 CREATE 的 user 记录，因为没认领到任何东西）—— SurrealDB user 表 PERMISSIONS 中 delete=NONE，所以 root 兜底
+   c. root 写 `_system.user_workspace_index { subject, workspace, role }`
+   d. 返回 session token
+6. 倒查表无记录且无邀请：401。
+
+返回 `{ access: 'admin' | 'participant', token: <surreal-jwt-1h>, durationSec }`。
 
 ## Acceptance criteria
 
@@ -67,7 +83,11 @@ issue 09 同时提供这个共享 endpoint（issue 03 / 10 / 11 都复用）：
 - [ ] admin 点"重派"调后端 endpoint → task 改成 open → dispatcher（该员工 LIVE 命中）再次拉起
 - [ ] 非 admin 用户（participant access 通道）调"暂停 / 退休"endpoint 返回 403（admin SIGNIN AUTHENTICATE 失败 → 后端拒绝）；前端按 `/api/sessions` 返回的 `access` 字段隐藏按钮
 - [ ] 切换 workspace 时后端 WS 端点关闭对应 LIVE 订阅（防连接泄漏）
-- [ ] `/api/sessions` 对管理员返回 `{ access: 'admin' }`，对普通成员返回 `{ access: 'participant' }`，对非该 workspace 用户返回 401
+- [ ] `/api/sessions/bootstrap` 返回当前用户能进入的所有 workspace 列表（来源：_system.user_workspace_index）
+- [ ] `/api/sessions` 对管理员返回 `{ access: 'admin' }`，对普通成员返回 `{ access: 'participant' }`
+- [ ] 对非该 workspace 用户且无邀请返回 401
+- [ ] 对有邀请的用户：首次 `/api/sessions { inviteFor }` 后 user 表多一条 + has_workspace_member 多一条 + pending 表少一条 + _system.user_workspace_index 多一行
+- [ ] 已被邀请的用户重复发起认领（pending 已删）走普通路径，不会重复 RELATE
 
 ## Blocked by
 

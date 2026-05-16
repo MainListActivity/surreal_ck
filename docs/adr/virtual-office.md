@@ -66,18 +66,23 @@ DEFINE FIELD virtual_profile.supervisor     ON TABLE user TYPE option<record<use
 DEFINE FIELD virtual_profile.status         ON TABLE user TYPE option<string>
   ASSERT $value = NONE OR $value INSIDE ['active', 'paused', 'retired'];
 DEFINE FIELD virtual_profile.last_active_at ON TABLE user TYPE option<datetime>;
-DEFINE FIELD virtual_profile.signin_secret  ON TABLE user TYPE option<string>;  -- SIGNIN 校验用，仅自己可读
 ```
+
+`signin_secret` 不在 user 表上——它在独立的 `employee_credential` 表（PERMISSIONS NONE，对所有 access 不可见，仅 SIGNIN query 与 root 可读，详见 issue 01）。
 
 **SIGNIN 流程**：
 
-1. 后端 dispatcher 决定要拉起员工 X 的执行窗口。
-2. 后端用 root 凭证读 `employee_credential WHERE employee = X` 拿到 secret（secret 表对所有 access 都 PERMISSIONS NONE，只 root 可读）。
-3. 后端以 `SIGNIN { ac: 'employee', ns: 'main', db: '<ws db name>', subject: X.subject, secret }` 拿到 1h token。
-4. 用该 token 在执行窗口期间写入 office_*；归因 `$auth = X` 由 SurrealDB engine 自动保证。
-5. 窗口结束扔掉 token。
+1. 员工**创建时**（issue 03 endpoint），后端生成 secret 并：
+   - 写 `employee_credential { employee, secret }`（root 写入，因为该表 PERMISSIONS NONE）。
+   - 把 secret 缓存到后端进程内（按 ws_db × employee_id 索引），用于后续 SIGNIN。
+2. 后端 dispatcher 决定要拉起员工 X 的执行窗口时，直接从缓存取 secret + 员工 subject。
+3. 调 `SIGNIN { ac: 'employee', ns: 'main', db: '<ws db name>', subject: X.subject, secret }`。
+   - employee access 的 SIGNIN query 内部 SELECT employee_credential 校验 secret——SIGNIN 是 db 级特权脚本，**可读 PERMISSIONS NONE 的表**（实测验证）。
+4. 拿到 1h token 在执行窗口期间写入 office_*；归因 `$auth = X` 由 SurrealDB engine 自动保证。
+5. 窗口结束扔掉 token；secret 仍在缓存里，下次复用。
+6. 后端进程重启时缓存丢失——重启时遍历 `_system.workspace` 后用 root 重新读取所有 employee_credential 装载缓存。
 
-**后端因此不持有任何长期员工凭证**——所有员工 token 都是按需 SIGNIN、按需丢弃。secret 本身是长期的，但只 root 可读且永不出 DB。
+**后端因此不持有任何长期员工 token**——所有员工 token 都是按需 SIGNIN、按需丢弃。secret 本身是长期的，永不出 SurrealDB（除了进程内缓存）。
 
 ### 2. 虚拟办公室的协作四张表（在每个 workspace db 内）
 
@@ -209,9 +214,9 @@ DEFINE INDEX office_role_key_unique ON office_role COLUMNS key UNIQUE;
 
 ### 负面 / 待权衡
 
-- **`virtual_profile.signin_secret` 字段**：这是员工的"密码"，必须只允许员工自己 + admin 可读。需要在 `user` 表 PERMISSIONS 上额外约束（或拆到关联表）。详见 §1 备注。
 - **每员工一条 SurrealDB 连接**：MVP 数千员工内 OK；上万要重新设计。
-- **SurrealDB root 凭证**：dispatcher 启动时枚举 workspace + 取员工 secret 时使用。是后端唯一长期凭证，必须严守。
+- **SurrealDB root 凭证**：后端唯一长期凭证；用于 _system 倒查、execTemplate、写 employee_credential、邀请认领等场景。必须严守。
+- **employee_credential 缓存**：后端进程内保存所有员工 secret，重启时遍历 _system.workspace 重新装载——属于"启动 N 秒"开销，MVP 可接受。
 - **dispatcher 必须跨所有 workspace 的所有员工**：单实例瓶颈。多 workspace + 多员工 + 多 LIVE 订阅在 MVP 后期可能要早做容量测试。
 - **审计与归因**：所有写都有正确的 `$auth` 字段，但 `office_message.from = $auth` 这种约束意味着虚拟员工冒名顶替不可能；好处。
 - **schema seed 一致性**：所有 ws db 的 office_* schema 必须保持版本一致；schema 升级需要遍历所有 ws db 跑迁移（见 [`workspace-as-database.md`](./workspace-as-database.md) §Negative）。
@@ -236,8 +241,7 @@ DEFINE INDEX office_role_key_unique ON office_role COLUMNS key UNIQUE;
 
 ## Open Questions
 
-1. **`virtual_profile.signin_secret` 的 PERMISSIONS 设计**：放在主 user 表里需要部分字段权限；或拆到独立 `employee_credential` 表（仅 admin + dispatcher root 可读）。倾向后者，更干净。
-2. **MVP 岗位最小集合**：单一"通才"岗位先跑通通路，还是直接上"项目经理 + 数据分析师 + 表单专员"三岗？倾向单岗 tracer 先。
-3. **用户回执时机**：用户 resolve 一条通知后，后端是立即拉起发起方员工窗口（用员工 token 建 LIVE 已订阅 user_notification 变更，自然命中），还是显式 trigger？倾向 LIVE 自然命中即可。
-4. **office_message 写权限**：未来真人聊天功能上线时直接放开 `create WHERE from = $auth`——本 ADR 已经这样写。
-5. **多 workspace 的 dispatcher 启动顺序**：MVP 数十 workspace 内串行枚举即可；上百时需要并行 + 进度上报。
+1. **MVP 岗位最小集合**：单一"通才"岗位先跑通通路，还是直接上"项目经理 + 数据分析师 + 表单专员"三岗？倾向单岗 tracer 先。
+2. **用户回执时机**：用户 resolve 一条通知后，后端是立即拉起发起方员工窗口（用员工 token 建 LIVE 已订阅 user_notification 变更，自然命中），还是显式 trigger？倾向 LIVE 自然命中即可。
+3. **office_message 写权限**：未来真人聊天功能上线时直接放开 `create WHERE from = $auth`——本 ADR 已经这样写。
+4. **多 workspace 的 dispatcher 启动顺序**：MVP 数十 workspace 内串行枚举即可；上百时需要并行 + 进度上报。

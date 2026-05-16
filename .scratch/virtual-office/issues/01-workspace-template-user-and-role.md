@@ -1,7 +1,7 @@
 Status: needs-triage
 Label: needs-triage
 
-# VO-01 — workspace-template 内 user 表、office_role、employee_credential 与三条 ACCESS
+# VO-01 — workspace-template 内 user / 邀请 / office_role / employee_credential 与三条 ACCESS；_system 倒查表
 
 ## Parent
 
@@ -9,35 +9,55 @@ Label: needs-triage
 
 ## What to build
 
-在 `create_workspace` execTemplate 的 seed 步骤中，加入：
+两部分：
 
-1. 三条 `DEFINE ACCESS`（`admin` / `participant` / `employee`）。
-2. `user` 表完整定义（含 `kind` / `is_admin` / `virtual_profile`）。
-3. `office_role` 表完整定义。
-4. `employee_credential` 表完整定义（仅 root 可见）。
+### A. `_system` database schema（一次性 seed）
 
-这些 schema 会随每个新建的 workspace database 一并 seed。
+由 web-only-pivot 阶段的"初始化 SurrealDB"步骤创建一次。**无 access** —— 仅 root 凭证可访问。
 
-### 1. 三条 ACCESS
+```surql
+USE NS main DB _system;
 
-详细 SurrealQL 见 [`workspace-as-database.md`](../../../docs/adr/workspace-as-database.md) §1。本 issue 落地三个 access 的完整 DEFINE，必须满足：
+DEFINE TABLE workspace SCHEMAFULL;
+DEFINE FIELD db_name        ON workspace TYPE string;
+DEFINE FIELD slug           ON workspace TYPE string;
+DEFINE FIELD name           ON workspace TYPE string;
+DEFINE FIELD owner_subject  ON workspace TYPE string;
+DEFINE FIELD created_at     ON workspace TYPE datetime VALUE time::now();
+DEFINE INDEX workspace_db_name_unique ON workspace COLUMNS db_name UNIQUE;
+DEFINE INDEX workspace_slug_unique    ON workspace COLUMNS slug UNIQUE;
 
-- `admin` (TYPE JWT)：AUTHENTICATE 中拒绝 `kind != 'human'` 或 `is_admin != true`。
-- `participant` (TYPE RECORD)：SIGNIN 中要求 `kind = 'human' AND is_admin = false`。
-- `employee` (TYPE RECORD)：SIGNIN 中校验 `kind='virtual' AND virtual_profile.status='active'` 且 secret 与 `employee_credential.secret` 一致。
+DEFINE TABLE user_workspace_index SCHEMAFULL;
+DEFINE FIELD subject       ON user_workspace_index TYPE string;
+DEFINE FIELD workspace     ON user_workspace_index TYPE record<workspace>;
+DEFINE FIELD role          ON user_workspace_index TYPE string
+  ASSERT $value INSIDE ['admin', 'participant'];
+DEFINE FIELD joined_at     ON user_workspace_index TYPE datetime VALUE time::now();
+DEFINE FIELD last_seen_at  ON user_workspace_index TYPE option<datetime>;
+DEFINE INDEX uwi_subject     ON user_workspace_index COLUMNS subject;
+DEFINE INDEX uwi_unique      ON user_workspace_index COLUMNS subject, workspace UNIQUE;
+```
 
-### 2. user 表（在每个 ws db 内）
+### B. Workspace database 模板 schema（每次 create_workspace execTemplate 全量 seed）
+
+#### B.1 三条 ACCESS
+
+完整 SurrealQL 在 [`workspace-as-database.md`](../../../docs/adr/workspace-as-database.md) §1。本 issue 必须落地：
+
+- `DEFINE ACCESS admin ON DATABASE TYPE JWT URL <oidc-jwks>` + AUTHENTICATE 拒非 admin
+- `DEFINE ACCESS participant ON DATABASE TYPE RECORD WITH JWT URL <oidc-jwks>` + AUTHENTICATE 校验 aud/sub、首次自动 `CREATE user` 兜底
+- `DEFINE ACCESS employee ON DATABASE TYPE RECORD SIGNIN { ... }` + secret 校验内联 SELECT employee_credential
+
+JWKS URL 草稿用 `https://o.maplayer.top/t/ck/jwks.json`（与正在实测的一致），正式上线前回填。
+
+#### B.2 `user` 表
 
 ```surql
 DEFINE TABLE user SCHEMAFULL CHANGEFEED 7d
   PERMISSIONS
-    -- 同 ws db 任何登录用户都能看花名册
     FOR select WHERE $auth != NONE,
-    -- 用户更新自己的常规字段；管理员可改任何人
     FOR update WHERE id = $auth OR $auth.is_admin = true,
-    -- 创建只允许管理员
-    FOR create WHERE $auth.is_admin = true,
-    -- 不允许 delete（用 virtual_profile.status='retired' 软删）
+    FOR create WHERE $auth.is_admin = true OR $auth = NONE,   -- 留 NONE 给 participant AUTHENTICATE 内自动建用
     FOR delete NONE;
 
 DEFINE FIELD subject       ON user TYPE string;        -- 真人：OIDC sub；虚拟员工：urn:virtual:<uuid>
@@ -54,10 +74,48 @@ DEFINE FIELD virtual_profile.status        ON user TYPE option<string>
   ASSERT $value = NONE OR $value INSIDE ['active', 'paused', 'retired'];
 DEFINE FIELD virtual_profile.last_active_at ON user TYPE option<datetime>;
 DEFINE FIELD created_at    ON user TYPE datetime VALUE time::now();
+DEFINE FIELD updated_at    ON user TYPE datetime VALUE time::now();
 DEFINE INDEX user_subject_unique ON user COLUMNS subject UNIQUE;
 ```
 
-### 3. office_role 表
+**关键**：`create` PERMISSIONS 中加 `$auth = NONE`，让 participant access 在 AUTHENTICATE 内的兜底 CREATE 能跑过——此时还没建立 user record id，`$auth` 是 NONE。
+
+#### B.3 `pending_workspace_member` 表（管理员发出的待认领邀请）
+
+```surql
+DEFINE TABLE pending_workspace_member SCHEMAFULL CHANGEFEED 7d
+  PERMISSIONS
+    FOR select WHERE $auth.is_admin = true OR email = $auth.email,
+    FOR create, update, delete WHERE $auth.is_admin = true;
+DEFINE FIELD email      ON pending_workspace_member TYPE string ASSERT string::is_email($value);
+DEFINE FIELD role       ON pending_workspace_member TYPE string
+  ASSERT $value INSIDE ['admin', 'participant'];
+DEFINE FIELD invited_at ON pending_workspace_member TYPE datetime VALUE time::now();
+DEFINE FIELD invited_by ON pending_workspace_member TYPE option<record<user>>;
+DEFINE INDEX pending_email_unique ON pending_workspace_member COLUMNS email UNIQUE;
+```
+
+#### B.4 `has_workspace_member` 表（已认领成员关系）
+
+```surql
+DEFINE TABLE workspace_singleton SCHEMAFULL;  -- 用于做 RELATE 的"出端"占位
+DEFINE FIELD created_at ON workspace_singleton TYPE datetime VALUE time::now();
+-- execTemplate seed 时 CREATE workspace_singleton:default;
+
+DEFINE TABLE has_workspace_member TYPE RELATION
+  IN workspace_singleton OUT user SCHEMAFULL CHANGEFEED 7d
+  PERMISSIONS
+    FOR select WHERE $auth != NONE,
+    FOR create, update, delete WHERE $auth.is_admin = true OR $auth = NONE;  -- NONE 给认领闭环用 root
+DEFINE FIELD role      ON has_workspace_member TYPE string
+  ASSERT $value INSIDE ['admin', 'participant'];
+DEFINE FIELD joined_at ON has_workspace_member TYPE datetime VALUE time::now();
+DEFINE INDEX hwm_unique ON has_workspace_member COLUMNS in, out UNIQUE;
+```
+
+**为什么需要 has_workspace_member 边**：邀请认领后留痕；admin endpoint 上"踢人"也是删这条边而不是删 user 记录（virtual_profile.status='retired' 是单独的软删）。
+
+#### B.5 `office_role` 表
 
 ```surql
 DEFINE TABLE office_role SCHEMAFULL CHANGEFEED 7d
@@ -75,35 +133,32 @@ DEFINE FIELD created_at         ON office_role TYPE datetime VALUE time::now();
 DEFINE INDEX office_role_key_unique ON office_role COLUMNS key UNIQUE;
 ```
 
-无 `workspace` 字段——本 db 内的所有记录都属于本 workspace。
-
-### 4. employee_credential 表（员工 SIGNIN secret）
-
-**所有 access 都看不到这张表**——只 root 可读。secret 通过 `DEFINE ACCESS employee` 的 SIGNIN query 内部消化（参见 §1）；从 db 外面看不到 secret 是哪条记录。
+#### B.6 `employee_credential` 表
 
 ```surql
 DEFINE TABLE employee_credential SCHEMAFULL
-  PERMISSIONS NONE;       -- admin / participant / employee 都看不到
-DEFINE FIELD employee  ON employee_credential TYPE record<user>;
-DEFINE FIELD secret    ON employee_credential TYPE string;
+  PERMISSIONS NONE;       -- 所有 access 都看不到；仅 root + SIGNIN 内 SELECT 可读
+DEFINE FIELD employee   ON employee_credential TYPE record<user>;
+DEFINE FIELD secret     ON employee_credential TYPE string;
 DEFINE FIELD created_at ON employee_credential TYPE datetime VALUE time::now();
 DEFINE FIELD rotated_at ON employee_credential TYPE option<datetime>;
 DEFINE INDEX employee_credential_unique ON employee_credential COLUMNS employee UNIQUE;
 ```
 
-但 RECORD access 的 SIGNIN query 是 SurrealQL，**它对表的可见性需要单独确认**：
-- 若 SIGNIN 中 SELECT employee_credential 受 PERMISSIONS NONE 阻挡，则把这张表的 select PERMISSIONS 放开给"特殊 system 视角"——具体写法 issue 阶段实测。备选：用 root 内部表（`_credential_*`）或在 SIGNIN 中通过 `$session` 注入 root 上下文。
-- 最坏情况退路：把 secret 字段放回 user 表，并对 user 表做字段级 PERMISSIONS（仅 root 可读 secret 字段）。
+**SIGNIN 内可读已通过实测验证**——SIGNIN 是 db 级特权脚本，绕过 PERMISSIONS NONE。前一稿"最坏退路"作废。
 
 ## Acceptance criteria
 
-- [ ] `create_workspace` execTemplate 在新建 ws db 时，3 条 ACCESS + 3 张表 schema 全部 seed 成功
-- [ ] 真人 owner 在新建 workspace 后自动出现于 user 表，`is_admin=true, kind='human'`
+- [ ] 在干净 ns/db 上初始化 _system 后，`workspace` 与 `user_workspace_index` 两张表落地；无 access 暴露给真人
+- [ ] `create_workspace` execTemplate 在新建 ws db 时：3 条 ACCESS + 6 张业务表（user / pending_workspace_member / has_workspace_member / office_role / employee_credential / workspace_singleton）全部 seed 成功
+- [ ] 真人 owner 在新建 workspace 后自动出现于 user 表，`is_admin=true, kind='human'`；_system.user_workspace_index 自动多一行 `{ subject, role: 'admin' }`
 - [ ] 管理员（admin access）SIGNIN 成功后，能 `DEFINE TABLE foo SCHEMAFULL` 成功（验证 DDL 自服务）
-- [ ] 普通成员（participant access）SIGNIN 成功后，`DEFINE TABLE foo` 被 SurrealDB 引擎直接拒绝（不依赖 PERMISSIONS）
-- [ ] 普通成员尝试 INSERT office_role 或 user 被 PERMISSIONS 拒绝
+- [ ] 普通成员（participant access）SIGNIN：
+  - 首次成功 → user 表多一条 `kind='human', is_admin=false` 记录
+  - `DEFINE TABLE foo` 被 SurrealDB 引擎直接拒绝（不依赖 PERMISSIONS）
+  - INSERT office_role 被 PERMISSIONS 拒绝
 - [ ] 用错的 secret 走 employee access SIGNIN 失败
-- [ ] employee_credential 表对三类 access 全部不可见（SELECT 返 0 或 PERMISSIONS 报错）
+- [ ] 用对的 secret 走 employee access SIGNIN 成功，会话内 SELECT employee_credential 仍然为空（PERMISSIONS NONE 对 RECORD access 生效）
 - [ ] CONTEXT.md 中 **用户** / **虚拟员工** / **工作区管理员** / **普通成员** 四个术语对齐本 issue 的 schema
 
 ## Blocked by
@@ -112,9 +167,10 @@ DEFINE INDEX employee_credential_unique ON employee_credential COLUMNS employee 
 
 ## Notes
 
-- 三条 access 的 SurrealQL 字面值会随 OIDC provider 选定（issue 阶段）回填 JWKS URL。
+- 三条 access 的 SurrealQL 字面值会随 OIDC provider 选定（issue 阶段）回填 JWKS URL；当前草稿用 `https://o.maplayer.top/t/ck/jwks.json`。
 - 本 issue 不创建任何 `office_role` 记录；岗位 seed 由 issue 06/07/08 各自带初始数据。
 - `employee_credential` 拆为独立表的理由：避免在 user 表上做 per-field PERMISSIONS（SurrealDB 支持但显著增加心智复杂度）。
 - 真人不需要 `employee_credential` 记录。
 - 本 schema 是"workspace 模板"的一部分；任何业务表 schema 升级都要走 schema migration runner（遍历所有 ws db）。
 - **db 名约定**：由系统自动生成 `ws_<nanoid12>`（不允许用户输入 slug 进入 db 名）；slug 仅在 `_system.workspace.slug` 字段中作为 URL 展示用。
+- **邀请认领闭环**：管理员 INSERT pending → 被邀请人首次 participant SIGNIN（自动建 user）→ 后端 endpoint 在认领闭环里 RELATE has_workspace_member + DELETE pending + 写 _system.user_workspace_index（详见 issue 09 §sessions endpoint）。
