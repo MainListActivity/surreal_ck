@@ -9,7 +9,7 @@
 
 ## 一句话
 
-在 `server/` 工作区里把 **Hono on Bun** 拉起来：HTTP + WS、OIDC verify 中间件、一条 SurrealDB root 连接到 `_system`、`/health` endpoint、Dockerfile、环境变量约定。**不引入任何业务 endpoint**——簇 C/D 在此骨架上叠加。
+在 `server/` 工作区里把 **Hono on Bun** 拉起来：HTTP + WS、OIDC verify 中间件、内部 hook 鉴权中间件、一条 SurrealDB root 连接到 `_system`、`/health` endpoint、Dockerfile、环境变量约定。**不引入任何业务 endpoint**——簇 C/D 在此骨架上叠加。
 
 ## 当前不解决
 
@@ -26,8 +26,8 @@
 
 - `pnpm --filter @surreal-ck/server dev` 起 Hono on Bun，监听 `0.0.0.0:8080`。
 - `GET /health` 返回 `{ status: 'ok' | 'degraded', surrealdb: 'up' | 'down' }`。
-- OIDC 中间件 `requireOidc()` 可用：**仅给 Mastra `/api/chat*` 等"调用者身份必须验证"endpoint 用**。绝大多数路由不需要（前端直连 SurrealDB 不经过后端）。
-- IdP webhook 鉴权中间件 `requireIdpWebhook()` 可用：HMAC 共享密钥校验，给 `/api/internal/*` endpoint 用。
+- OIDC 中间件 `requireOidc()` 可用：给 Mastra `/api/chat*` 与 Workspace Scope Module 用户入口用。
+- 内部 hook 鉴权中间件 `requireInternalHook()` 可用：HMAC / bearer 共享密钥校验，给 IdP default-scope hook 等 `/api/internal/*` endpoint 用。
 - 一个进程级 SurrealDB root 连接管理器：启动时连 `_system`，断线退避重连；其它代码通过 `getRootConnection()` 拿。
 - `Dockerfile` 多阶段构建出单镜像（Bun + 静态资源占位）。
 - 环境变量约定写入 `.env.example`。
@@ -43,10 +43,10 @@
 | # | 名称 | 主体 | 依赖 |
 |---|---|---|---|
 | 01 | Hono app 骨架 + Bun.serve | server/src/index.ts + 基础中间件链 + /health | wp-restructure 全部 |
-| 02 | OIDC verify middleware（仅给 Mastra） | requireOidc()，JWKS fetch + cache + jose 校验；shared 内放 `SessionUser` DTO | 01 |
+| 02 | OIDC verify middleware | requireOidc()，JWKS fetch + cache + jose 校验；shared 内放 `SessionUser` DTO | 01 |
 | 03 | SurrealDB root 连接管理器 | server/src/db/root-connection.ts；启动连接 + 断线重连 + getRootConnection() | 01 |
 | 04 | /health 接 SurrealDB 探活 | /health 调 root 连接 ping，5s 超时；degraded 状态 | 03 |
-| 05 | IdP webhook 鉴权中间件 | requireIdpWebhook() HMAC + IDP_WEBHOOK_SECRET env | 01 |
+| 05 | internal hook 鉴权中间件 | requireInternalHook() HMAC / bearer + IDP_HOOK_SECRET env | 01 |
 | 06 | Dockerfile + .env.example + 启动文档 | 多阶段镜像 + 环境变量清单 + README 启动说明 | 04, 05 |
 
 ## 验收 KPI

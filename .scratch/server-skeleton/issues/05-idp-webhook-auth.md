@@ -1,7 +1,7 @@
 Status: needs-triage
 Label: needs-triage
 
-# WP-B-05 — IdP webhook 鉴权中间件
+# WP-B-05 — internal hook 鉴权中间件
 
 ## Parent
 
@@ -10,28 +10,31 @@ Label: needs-triage
 ## What to build
 
 ```
-server/src/middleware/idp-webhook-auth.ts
+server/src/middleware/internal-hook-auth.ts
 ```
 
-`requireIdpWebhook()` 中间件：
+`requireInternalHook()` 中间件用于 IdP default-scope hook 等机器到机器入口。
 
-1. 取 header `X-IdP-Signature`（具体 header 名以 IdP 选型而定，可放 env）。
-2. 取 raw body。
-3. 用 `IDP_WEBHOOK_SECRET` env 算 `HMAC-SHA256(body, secret)`，与 header 值常量时间比较（防 timing attack）。
-4. 不匹配 → 401，错误码 `webhook-signature-invalid`。
-5. 匹配 → 通过，把 raw body 解 JSON 后塞 `c.var.webhookPayload`。
+MVP 支持 bearer secret：
+
+1. 取 `Authorization: Bearer <token>`。
+2. 与 `IDP_HOOK_SECRET` 常量时间比较。
+3. 不匹配 → 401，错误码 `internal-hook-auth-invalid`。
+4. 匹配 → 通过。
+
+如果最终 IdP 选型只支持 HMAC webhook 签名，本中间件可以在 issue 阶段扩展 raw body HMAC 校验；但 Interface 名称保持 `requireInternalHook()`，避免把实现细节暴露给 route。
 
 env 新增：
 
-- `IDP_WEBHOOK_SECRET`（高熵随机串；与 IdP 端共享）
+- `IDP_HOOK_SECRET`（高熵随机串；与 IdP 登录 hook 配置共享）
 
 ## Acceptance criteria
 
-- [ ] 正确签名的 webhook → 通过，payload 解出。
-- [ ] 缺 signature → 401。
-- [ ] 错误签名 → 401。
-- [ ] 篡改 body 一个字符（保持签名） → 401。
-- [ ] 中间件**不依赖**正文 JSON 结构，仅校验签名；payload 内容由 endpoint 自行 zod 校验。
+- [ ] 正确 bearer secret → 通过。
+- [ ] 缺 Authorization → 401。
+- [ ] 错误 secret → 401。
+- [ ] 失败请求不把 header/body 写入日志。
+- [ ] 中间件不解析业务 payload；payload 内容由 endpoint 自行 zod 校验。
 
 ## Blocked by
 
@@ -39,6 +42,5 @@ env 新增：
 
 ## Notes
 
-- MVP 共享密钥 HMAC 即可；上线前升级到 mTLS（更难伪造但配置复杂）。
-- header 名与签名算法跟 IdP 选型；如果选定的 IdP 用 `Webhook-Signature` v1 标准（如 Standard Webhooks），按其规范实现。
-- 失败的请求**不**把 body 写入日志（防泄漏）。
+- 这个中间件不是普通用户 OIDC 校验；它只保护 IdP → 应用的 hook。
+- 上线前若 IdP 支持 mTLS，可在网关层加 mTLS，本中间件仍保留应用层密钥校验。

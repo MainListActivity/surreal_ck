@@ -24,14 +24,14 @@
 
 - 簇 A 完成（server/legacy 就位）
 - 簇 B 完成（Hono / OIDC / root 连接）
-- 簇 C 完成（用户能登录、能 sessions 进入 workspace）
+- 簇 C 完成（用户能登录，token scope 已指向当前 workspace）
 
 ## 完成定义
 
 - `server/ai/mastra/` 目录下 router-workflow / 子 agent / tool 全部就位；`server/legacy/ai/mastra/` 被删空。
 - 所有 tool 内部的 SurrealDB 调用改为接收"workspace session token"——拒绝硬编码 root 或 service 凭证。
 - `WorkflowsStorage` 迁到 `_system.workflow_run` 表（schema 在簇 C-02 之外单独加，因为 Router workflow 与 virtual-office 共享）。
-- HTTP `POST /api/workspaces/:slug/ai/chat`（接收用户消息）+ WS `/api/workspaces/:slug/ai/stream`（流式回 chunk / progress / suspend）就位。
+- HTTP `POST /api/chat`（接收用户消息）+ WS `/api/chat/stream`（流式回 chunk / progress / suspend）就位。
 - 前端在簇 D2 接入即可端到端跑通 Router workflow。
 
 ## 风险
@@ -47,8 +47,8 @@
 | 01 | 文件搬运 + import 更新 | server/legacy/ai/mastra → server/ai/mastra；shared/ai-context.ts 等共享类型挪到 shared/src/ | wp-restructure 全部 |
 | 02 | WorkflowsStorage 落 _system | 新增 workflow_run 表 schema + Mastra storage adapter | C-02 |
 | 03 | Tool 鉴权重写 | 所有 tool 接收 `surrealSession`（一条已 SIGNIN 的 SurrealDB 连接）而非全局连接；删除任何 root 引用 | 01 |
-| 04 | Hono endpoint：/api/workspaces/:slug/ai/chat | 接收 `{ message, contextSnapshot? }`；后端按 slug + 调用者 token SIGNIN ws db → 拉起 Router workflow run | 02, 03, C-04 |
-| 05 | Hono WS endpoint：/api/workspaces/:slug/ai/stream | LIVE 转发 progress / chunk / suspend / done 事件；resume 路径走 HTTP `POST .../ai/runs/:runId/resume` | 04 |
+| 04 | Hono endpoint：/api/chat | 接收 `{ message, contextSnapshot? }`；后端按调用者 token scope SIGNIN ws db → 拉起 Router workflow run | 02, 03, C-03 |
+| 05 | Hono WS endpoint：/api/chat/stream | 推送 progress / chunk / suspend / done 事件；resume 路径走 HTTP `POST /api/chat/runs/:runId/resume` | 04 |
 | 06 | 删 server/legacy/ai/mastra | 物理删除原目录；确认 import 全部已迁 | 01-05 |
 
 ## 验收 KPI

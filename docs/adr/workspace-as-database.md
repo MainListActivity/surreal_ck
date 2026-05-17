@@ -1,42 +1,53 @@
-# ADR: workspace 映射为独立 SurrealDB database，DDL/DML 走用户会话直接执行
+# ADR: workspace 映射为独立 SurrealDB database，Workspace Scope Module 管理进入范围
 
 - **Status**: Accepted
 - **Date**: 2026-05-16
-- **Scope**: `schema/`、`server/`、所有跨 workspace / 跨 db 操作、SurrealDB Access 配置
+- **Scope**: `schema/`、`server/`、`shared/sql/**`、所有跨 workspace / 跨 db 操作、SurrealDB Access 配置
 - **Companions**:
   - [`web-only-pivot.md`](./web-only-pivot.md)（部署形态）
+  - [`frontend-direct-connect.md`](./frontend-direct-connect.md)（2026-05-17 决定：前端直连 SurrealDB，Workspace Scope Module 管理 token scope）
   - [`virtual-office.md`](./virtual-office.md)（业务能力）
-  - [`frontend-direct-connect.md`](./frontend-direct-connect.md)（2026-05-17 决定：前端直连 SurrealDB + IdP 接管身份分发；本 ADR 已据此大幅简化）
 
-> **2026-05-17 update**：随 [`frontend-direct-connect.md`](./frontend-direct-connect.md) 接受，本 ADR 中的下列概念被废除或大幅简化：
-> - **execTemplate 整体废除**：workspace 创建由浏览器在拿到 NS-admin token 后直接执行 `DEFINE DATABASE` + DEFINE ACCESS × 3 + seed 表。
-> - **sessions / members 等后端 endpoint 整体废除**：浏览器以 IdP 颁发的 token 直接 signin SurrealDB；管理员浏览器内直接 INSERT/UPDATE/DELETE user 表加 / 删成员。
-> - **`_system.user_workspace_index` 降格为 IdP 同步缓存**：workspace 列表的权威在 IdP，倒查表只供后端 dispatcher 索引 / 兜底。
-> - **AUTHENTICATE 大幅化简**：身份（is_admin、当前 db、role）由 IdP token claim 直接给出，AUTHENTICATE 不再"按 subject / email 查 user 表 + 回填"。
-> - 新增 **NS 级 admin access**：让 NS-admin token 持有者能跨 db 执行 `DEFINE DATABASE`。
->
-> 本 ADR 已就地修订；旧版可在 git log 中追溯。
+> **2026-05-17 update**：IdP 不再被视为 workspace 列表和成员关系权威。IdP 只负责签发 OIDC token，并根据本应用请求设置 `https://surrealdb.com/db` 与 `https://surrealdb.com/ac` claims。workspace 列表、最近一次登录 workspace、workspace 创建和成员索引由本应用的 **Workspace Scope Module** 维护。
 
 ## Context
 
-[`web-only-pivot.md`](./web-only-pivot.md) 接受了"Web 前端 + 单容器 Bun server + SurrealDB（同机房内网）"形态。
+[`web-only-pivot.md`](./web-only-pivot.md) 接受了"Web 前端 + Bun server + SurrealDB 公网 WSS"形态。
 
-之前若干稿仍假定**单一 SurrealDB database** 承载全部 workspace 的数据，依赖：
+之前若干稿仍假定单一 SurrealDB database 承载全部 workspace 的数据，依赖：
 
-- 在每张表上写复杂的 PERMISSIONS 来跨 workspace 隔离（`workspace.owner = $auth OR workspace IN $auth<-has_workspace_member<-workspace`）。
-- 后端持有一个长期 service JWT 代所有用户写动态表。
-- 用户的 DDL 操作（建表、加字段）必须由后端 root 权限的 execTemplate 中转。
+- 在每张表上写复杂 PERMISSIONS 来跨 workspace 隔离。
+- 后端持有长期 service JWT 代所有用户写动态表。
+- workspace 创建和用户 DDL 操作都必须由后端 root 模板中转。
 
 这套做法在新部署形态下被几个事实持续推翻：
 
-1. **每 workspace 一个 db 是 SurrealDB 自然提供的隔离单元**——一旦走这条路，跨 workspace 隔离不再需要在 PERMISSIONS 里手写，db 边界天然保证。
-2. **SurrealDB 的 RECORD access + AUTHENTICATE query 已经能精确表达"哪些用户能登录、能登录后是什么权限"**。把 admin/普通成员/虚拟员工都放在 db 内 user 表里、用字段 + AUTHENTICATE 区分，比"全局表 + 复杂 PERMISSIONS"清楚得多。
-3. **DDL 自服务**——既然每个 workspace 是自己的 db，让管理员的 JWT 直接拥有 DDL 能力是最直白的；不再需要 root execTemplate 中转 90% 的 schema 变更。
-4. **service JWT 概念不再必要**——所有写都以"用户身份"执行，归因天然在 `$auth`，不需要在表字段里手工标 `from_*`。
+1. **每 workspace 一个 database 是 SurrealDB 自然提供的隔离单元**。跨 workspace 隔离不再需要在每张业务表里表达。
+2. **SurrealDB access 能表达 admin / participant / employee 三类执行能力**。DDL 与 DML 能力应由 DB 引擎硬隔离。
+3. **业务数据读写应该以真实用户会话执行**。写入归因天然在 `$auth`，不需要 service JWT 和 `from_*` 代写字段。
+4. **workspace scope 是本应用业务，不是 IdP 业务**。IdP 只签 token；本应用决定用户能进入哪个 workspace、以什么 access 进入。
 
 ## Decision
 
-### 1. 拓扑
+### 1. Topology
+
+SurrealDB namespace `main` 下有：
+
+| Database | 职责 |
+|---|---|
+| `_system` | root-only system database，承载 `workspace`、`user_workspace_index`、系统迁移版本、workflow snapshot 等跨 workspace 元数据。 |
+| `ws_<id12>` | 每个 **工作区** 一个 workspace database，承载该工作区全部业务表、协作表、`user` 表和 access 定义。 |
+
+### 2. Token scope claim
+
+真人 OIDC token 中必须有两个 SurrealDB scope claim：
+
+| Claim | 含义 |
+|---|---|
+| `https://surrealdb.com/db` | 当前 workspace database，例如 `ws_a1b2c3d4e5f6`。 |
+| `https://surrealdb.com/ac` | 当前 access，MVP 为 `admin` 或 `participant`。 |
+
+浏览器用这两个 claim 选择 SurrealDB access：
 
 ```
 namespace: main
@@ -154,200 +165,156 @@ namespace: main
             -- （SIGNIN 是定义在 db 级的特权脚本，实测可读 PERMISSIONS NONE 表）。
 ```
 
-### 2. 用户身份与 access 选择
+### 3. 三类 workspace 身份
 
-三类身份在 DB 引擎层做硬隔离：
-
-| 身份 | user 表记录 | 走的 access | DB 引擎能力 | $auth |
+| 身份 | user 表记录 | 走的 access | DB 引擎能力 | 谁持 token |
 |---|---|---|---|---|
-| **NS-admin**（仅创建 workspace 用）| 无 user 表记录（NS 级身份）| `admin` ON NAMESPACE (TYPE JWT) | DEFINE DATABASE + 跨 db DDL | `$token.sub` |
-| **工作区管理员** | `kind='human', is_admin=true` | `admin` ON DATABASE (TYPE JWT) | DDL + DML | user 记录 |
-| **普通成员** | `kind='human', is_admin=false` | `participant` ON DATABASE (TYPE RECORD WITH JWT) | 仅 DML（DDL 被引擎拒） | user 记录 |
-| **虚拟员工** | `kind='virtual'` | `employee` ON DATABASE (TYPE RECORD) | 仅 DML（DDL 被引擎拒） | user 记录 |
+| **工作区管理员** | `kind='human', is_admin=true` | `admin` ON DATABASE (TYPE JWT) | DDL + DML | 浏览器 |
+| **普通成员** | `kind='human', is_admin=false` | `participant` ON DATABASE (TYPE RECORD WITH JWT) | 仅 DML | 浏览器 |
+| **虚拟员工** | `kind='virtual'` | `employee` ON DATABASE (TYPE RECORD) | 仅 DML | dispatcher 用员工 secret SIGNIN |
 
-关键性质：
+不再存在 NS-admin token。workspace 创建由后端 Workspace Scope Module 用 root 完成，浏览器不持跨 db DDL 能力。
 
-- **DDL 权限的硬隔离落在 SurrealDB 引擎层**：JWT access 用户默认 db owner 级，RECORD access 用户被引擎硬拒任何 DDL。
-- **三类身份共用一张 user 表**，PERMISSIONS / FK / `$auth` 都不需要 union 不同表。
-- **登录流程由 IdP 主导**——参见 §2.2。
-- **同一真人在不同 workspace 中可以是不同身份**：A 工作区是管理员，B 工作区是普通成员。IdP 在颁发 token 时根据用户选中的 workspace 设置 `current_db` + `role` claim；ws db 内 user.is_admin 由 AUTHENTICATE 按 claim 同步。
-- **虚拟员工的 SIGNIN 由 dispatcher 负责**：详见 [`virtual-office.md`](./virtual-office.md) §1。
+### 4. `_system` database 职责
 
-### 2.2 IdP 主导的登录与切换流程
+`_system` root-only，真人和虚拟员工都没有 access。它承载：
 
-```
-1. 浏览器跳 IdP（OIDC Auth Code + PKCE，不经过后端）
-2. 用户在 IdP 选择当前 workspace（IdP 维护"用户能进哪些 workspace"）
-3. IdP 颁发 OIDC token，含 claim：
-   { sub, email, name?, current_db: 'ws_xxx', role: 'admin' | 'participant', ns_admin?: true }
-4. 浏览器拿 token：
-   db.signin({ ac: 'admin' | 'participant', ns: 'main', db: token.current_db, token })
-5. SurrealDB AUTHENTICATE 校验 token.current_db 与 token.role 后，确保本 db user 表有该真人记录
-6. 后续所有读 / 写 / LIVE 直接走该 SurrealDB 连接
-```
+| 表 | 用途 |
+|---|---|
+| `workspace` | workspace 索引：`slug`、`db_name`、`name`、`owner_subject`、状态与时间戳。 |
+| `user_workspace_index` | 本应用维护的 subject/email → workspace 映射，含 access、显示信息、最近选择时间。 |
+| `_system_schema_version` | `_system` 自身迁移版本。 |
+| `workflow_run` | Mastra workflow snapshot / metadata（由 D1 落地）。 |
 
-**切换 workspace**：浏览器调 IdP silent refresh / switch endpoint（待定）→ 拿含新 `current_db` claim 的新 token → 重新 signin。
+`user_workspace_index` 是应用权威索引，不是 IdP 同步缓存。它由 workspace 创建、成员管理和 reconciler 共同维护，用于：
 
-**新建 workspace**：参见 §4。
+- IdP 登录 hook 选择默认 token scope。
+- 前端登录后列出可进入 workspace。
+- Workspace Scope Module 验证切换目标。
+- dispatcher 启动时枚举要服务的 workspace。
 
-### 2.3 成员管理（浏览器内直接做）
+建议字段：
 
-管理员浏览器以 admin access signin ws db 后：
+| 字段 | 含义 |
+|---|---|
+| `subject` | OIDC subject。 |
+| `email` | 显示和首次认领辅助，不作为唯一权威。 |
+| `workspace` | 指向 `_system.workspace`。 |
+| `db_name` | 冗余 workspace database 名，便于 scope 输出。 |
+| `role` | `admin` 或 `participant`，映射到 SurrealDB access。 |
+| `joined_at` | 加入时间。 |
+| `last_selected_at` | 用户最近一次进入 / 切换到该 workspace 的时间。 |
+| `last_seen_at` | 本应用观察到该 subject 最近活跃时间。 |
+| `disabled_at` | 被移除或禁用时填写；登录和列表过滤掉。 |
 
-- **添加成员**：`INSERT user CONTENT { email, kind: 'human', is_admin: false, subject: NONE, last_seen_at: NONE }`；同时调 IdP "add member to workspace" endpoint（IdP 自家流程）。**不再有后端 endpoint**。
-- **移除成员**：`DELETE user:<id>` + 调 IdP "remove member"。
-- **切换 admin 状态**：`UPDATE user:<id> SET is_admin = ?` + 调 IdP "change member role"。
-- **被添加成员首次登录**：用户登录 IdP → IdP 在 token 中带 current_db + role → SurrealDB AUTHENTICATE 看到 user 表有该 email 但 subject=NONE → 走"首次登录建 user / 补 subject"分支（详见 §1 AUTHENTICATE 草稿）。
-- **从未登录的成员**：`user.last_seen_at = NONE`，UI 中渲染"从未登录"。
+### 5. Workspace Scope Module
 
-**关键**：所有"添加 / 移除 / 改 role"操作必须**先同步到 IdP，再操作 SurrealDB**——否则 token claim 与 db 状态不一致。如果对原子性要求严格，倾向"IdP 操作 → IdP webhook 触发后端 → 后端用 root 操作 SurrealDB"模式（待定，见 Open Questions）。
+后端提供一个深 Module，隐藏 `_system` 查询、workspace db user 校验、IdP scope 更新、workspace 创建补偿等 Implementation。它的 Interface 只暴露：
 
-### 2.1 workspace database 命名
+- 列出当前 OIDC subject 可进入的 workspace。
+- 切换 workspace：校验 membership，更新 `last_selected_at`，调用 IdP Token Scope Adapter。
+- 给 IdP 登录 hook 返回默认 scope。
+- 创建 workspace：root 建 db、应用模板、写 owner、写 `_system` 索引、切 token scope。
 
-db 名形如 `ws_<id12>`，其中 `<id12>` 由系统自动生成（建议 12 字符 base32 / nanoid，去除易混淆字符）。**用户输入的 slug 仅用于 URL 展示和 _system.workspace.slug 字段**，不进入 db 名。
+删除这个 Module 后，复杂度会重新散落到前端、IdP hook、workspace 创建流程和 dispatcher，因此它是有 Depth 的 Module。
 
-理由：
+### 6. 登录与切换
 
-- 杜绝 slug 注入 SQL 风险。
-- 避免 slug 改名时 db 名跟随（db rename 在 SurrealDB 是一个重操作）。
-- 不暴露内部命名给用户。
+登录时，IdP 调本应用 default-scope hook。本应用按 subject 查 `user_workspace_index`：
 
-`_system.workspace.db_name` 记录系统生成的 db 名；前端永远引用 slug，后端自己查映射。
+1. 优先选择 `last_selected_at` 最新且未 disabled 的 workspace。
+2. 如果没有最近选择，选择第一个 active workspace。
+3. 如果没有任何可进入 workspace，拒绝登录。
 
-### 3. _system database 的职责
+切换时，前端调本应用 `POST /api/session/switch-workspace`。后端必须验证：
 
-`_system` 只承载两张表：
+- 当前 OIDC subject 存在于 `_system.user_workspace_index` 且未 disabled。
+- 目标 workspace database 中也有对应 human `user` 记录，或能按 email/subject 完成一致性修复。
+- 得出的 access 与 workspace 内 `user.is_admin` 一致。
 
-- `workspace` 索引（slug ↔ db_name，全局唯一）
-- `user_workspace_index` 倒查表（email / OIDC sub → 可进入的 ws db）
+验证通过后，后端更新 `last_selected_at`，再调用 IdP Token Scope Adapter 更新 `https://surrealdb.com/db` 与 `https://surrealdb.com/ac`。
 
-**不放**到 `_system`：
+### 7. Workspace 创建
 
-- 用户主表（用户在每个 workspace db 里独立存）
-- 任何业务数据
-- 任何邀请态（架构内不存在邀请，管理员直接预创建成员记录）
-- schema_version（每个 ws db 自己版本化）
+workspace 创建由后端完成：
 
-**关键**：`_system` 上**没有 access**——它对真人和虚拟员工完全不可见。只有后端持有 SurrealDB root 凭证才能读写它。这把"系统元数据"与"业务数据"在 SurrealDB 层面就分开了：业务 db 即便整个被攻破，也看不到其他 workspace 的存在。表本身不需要写 PERMISSIONS，因为只有 root 可访问。
+1. 验证当前 OIDC subject 有创建 workspace 权限。
+2. 生成 `db_name = ws_<id12>`；用户输入的 slug 只用于 URL 和 `_system.workspace.slug`。
+3. root 创建 workspace database。
+4. 应用 `shared/sql/workspace-template/` 全量模板。
+5. 创建 owner user：`kind='human', is_admin=true`。
+6. 写 `_system.workspace` 与 `_system.user_workspace_index`。
+7. 调用 IdP Token Scope Adapter，把用户 scope 切到新 workspace 的 `admin` access。
 
-### 4. workspace 创建：浏览器直接 DDL，IdP 颁发 NS-admin token
+失败补偿集中在 Workspace Scope Module：模板失败则删除刚创建的 db；IdP scope 更新失败则返回可重试错误，避免前端散落补偿逻辑。
 
-**execTemplate 已废除**。新流程（详见 [`frontend-direct-connect.md`](./frontend-direct-connect.md) §4）：
+### 8. 成员管理
 
-```
-1. 浏览器调 IdP "create workspace" endpoint（IdP 自家流程，含计费 / slug 校验 / 唯一性）
-   入参：{ workspaceName, workspaceSlug }
-2. IdP 内部：
-   - 决定 db_name = 'ws_' + nanoid(12)
-   - 给该用户颁发一个**临时 NS-admin token**：
-     { sub, email, ns_admin: true, current_db: <db_name>, role: 'admin' }
-3. 浏览器拿新 token：
-   a. db.signin({ ac: 'admin', ns: 'main', token })          ← NS 级 signin
-   b. DEFINE DATABASE <db_name>
-   c. db.use({ ns: 'main', db: <db_name> })
-   d. 应用 shared/sql/workspace-template/*.surql 全部脚本：
-        - DEFINE ACCESS admin / participant / employee
-        - 业务表 schema（含 user / office_role / employee_credential / 其它）
-   e. db.signin({ ac: 'admin', ns: 'main', db: <db_name>, token })  ← 切到 db 级 admin
-   f. INSERT user CONTENT { email, subject, kind: 'human', is_admin: true, last_seen_at: time::now() }
-4. 浏览器调后端 webhook `POST /api/internal/workspace-created`（携带 IdP 签的证明 token）
-   后端用 root 同步 _system.workspace + _system.user_workspace_index
-   （或：IdP 直接 webhook 通知后端，浏览器不参与）
-```
+MVP 成员模型仍然是"管理员直接预创建成员记录"：
 
-**workspace 模板 SQL 文件**：`shared/sql/workspace-template/001-access.surql` / `002-tables-core.surql` / `003-tables-office.surql`——由前端 bundle 进自己代码并执行；同时被后端 dispatcher 用于 schema migration runner（仍需要遍历所有 ws db 应用增量；详见 §6）。
+- workspace database 内 `user` 表是该 workspace 的成员事实表。
+- `_system.user_workspace_index` 是跨 workspace 登录 / 列表索引。
+- 成员新增、移除、role 变更必须同时维护二者。
 
-**NS-admin token 的 `ns_admin=true` claim 只在创建那一刻被 IdP 临时塞入**——避免误操作面扩大。日常 token 不带这个 claim。
+具体 UI 可以让浏览器以 admin access 写 workspace `user` 表，但 `_system.user_workspace_index` 只能由后端 root 维护。因此成员管理需要一个后续 issue 明确：要么所有成员管理走 Workspace Scope Module endpoint，要么前端写 user 后调用后端同步索引；不能只改一边。
 
-**回滚**：浏览器在 DDL 任一步失败时，可调 `REMOVE DATABASE <db_name>`（NS-admin 权限可执行）。但更稳的方式是让 IdP webhook 不到位时不在 _system 创建索引——前端的 db 残留由 reconciler 在下次启动检测并清理。
+### 9. 后端连接管理
 
-### 5. 后续所有 DDL/DML 浏览器直连执行
+- 一条 root 连接到 `_system`：schema 初始化、workspace 索引、default scope、dispatcher 枚举。
+- 按需 root 连接到 workspace db：workspace 创建、模板迁移、`employee_credential` 写入。
+- Mastra chat：后端用调用者 OIDC token 按 token scope SIGNIN，workflow 结束后丢弃。
+- Office dispatcher：每个执行窗口用 employee secret SIGNIN。
+- 日常业务数据读写：浏览器直连 SurrealDB。
 
-- **浏览器直连 SurrealDB**——读 / 写 / LIVE / 管理员 DDL 全在浏览器内做。
-- **管理员**：走 `admin` access；可直接 `DEFINE TABLE` / `DEFINE FIELD` / INSERT user 等。
-- **普通成员**：走 `participant` access；DB 引擎层拒任何 DDL；DML 受 PERMISSIONS 约束。
-- **虚拟员工**：走 `employee` access（仅在 dispatcher 内）；同样无 DDL；DML 受 PERMISSIONS 约束；归因 `$auth = user 记录`。
-- **后端不参与日常 SurrealDB 读写**——只在 Mastra workflow、Office dispatcher、root 维护路径中介入。
+### 10. service JWT 概念取消
 
-### 6. 跨 workspace 查询的处理
+架构内只有：
 
-**用户登录路径无需查任何"跨 workspace 索引"**——IdP 是权威，token claim 内含 `current_db`。
+- 浏览器真人会话。
+- dispatcher employee 会话。
+- root 维护路径。
 
-如果将来需要做"我所有 workspace 的活动汇总"等跨 db 报表：
-
-- 用 NS-admin 临时 token + 跨 db SELECT；或
-- 在 `_system.user_workspace_index`（IdP 同步过来）上做后端 fan-out。
-
-MVP 不做这种报表。
-
-### 7. 后端连接管理
-
-- **一条 root 连接到 `_system`**：仅用于启动期 schema 初始化、IdP 同步钩子写入、dispatcher 启动遍历。
-- **按需 root 连接到 ws db**：仅 `employee_credential` 写入等少数场景。
-- **每个虚拟员工的 SIGNIN 会话**：dispatcher 在执行窗口期间持有，用员工 secret SIGNIN。
-- **前端 Mastra chat 调用**：后端用调用者透传 OIDC token 走对应 access SIGNIN 一次，跑完 workflow 后丢弃。
-- **不再有"后端代用户做 DML"的连接池**——前端直连消除了这类用途。
-
-### 8. service JWT 概念取消
-
-之前几稿中的 `service JWT` 整体不再存在。所有 SurrealDB 写入要么是真人浏览器会话、要么是虚拟员工 RECORD access 会话（dispatcher 内）、要么是 root 维护路径。后端**唯一**长期凭证是 SurrealDB root（仅来自环境变量），用于：
-
-- 启动期 `_system` schema 初始化
-- ws db 内 PERMISSIONS NONE 表写入（`employee_credential` 创建）
-- 接收 IdP 同步钩子，写 `_system.workspace` + `_system.user_workspace_index`
-- dispatcher 启动遍历 `_system.workspace` 拿活跃 db 列表
-- dispatcher 读 `employee_credential.secret` 给 employee SIGNIN
+不存在 service JWT，也不存在长期员工 token。所有业务写入归因都走 `$auth`。
 
 ## Consequences
 
 ### 正面
 
-- **隔离天然**：跨 workspace 隔离由 db 边界保证，不靠手写 PERMISSIONS。
-- **PERMISSIONS 大幅简化**：每张业务表只需要表达"我对这条记录的具体角色"，不需要嵌套 workspace 归属判断。
-- **DDL 自服务真正落地**：管理员浏览器内直接改自己 workspace 的 schema，零后端。
-- **审计天然**：每条记录的 changefeed `$auth` 字段就是真实操作者，无需在字段里手工归因。
-- **service JWT 攻击面消失**。
-- **虚拟员工身份原生**：SurrealDB RECORD access 直接表达。
-- **后端瘦身**：sessions / members / workspaces / LIVE 转发等代理 endpoint 整体废除。
-- **新业务查询零后端发版**：前端写 surql，DB engine 把关。
+- **隔离天然**：跨 workspace 隔离由 database 边界保证。
+- **IdP Interface 变窄**：只负责签发 / 更新 token scope。
+- **workspace scope Locality 高**：默认 workspace、切换、创建、最近选择、scope 更新集中在一个 Module。
+- **浏览器不持跨 db DDL 能力**：workspace 创建更容易补偿和审计。
+- **新业务查询零后端发版**：前端写 SurrealQL，DB engine 把关。
 
 ### 负面 / 必须正面解决
 
-- **SurrealDB 公网暴露**：是新攻击面（详见 [`frontend-direct-connect.md`](./frontend-direct-connect.md) Consequences）。必须配置 query timeout、connection limit、rate limit；TLS 证书运维。
-- **IdP 依赖加深**：IdP 不可用 = 用户不能登录 / 切换 / 创建 workspace。
-- **IdP ↔ 后端同步通道未定**：见 Open Questions。MVP 接受 webhook + 兜底 reconciler 模式。
-- **db 数量增长**：SurrealDB 对单 namespace 内 db 数量上限待实测；数千内 OK，上万需 sharding。
-- **schema 变更分发**：业务表升级时所有 ws db 都要跑迁移；前端 / 后端各自有迁移 runner（前端用于自己新建 db，后端用于既有 db 批量增量）。
-- **跨 db 报表**：MVP 不做；用 NS-admin token + 跨 db SELECT 或后端 fan-out。
-- **root 凭证持有面**：仅用于 _system 维护 + employee_credential + IdP 钩子；必须独立监控连接审计。
-- **一个真人在多个 workspace 中是多条 user 记录**：display_name 同步问题。MVP 接受。
-- **倒查表漂移**：_system.user_workspace_index 是 IdP 同步缓存，丢消息时 dispatcher 找不到 ws；reconciler 启动期 pull IdP 全量兜底。
+- **`user_workspace_index` 维护必须严谨**：否则登录 hook、workspace 列表和 dispatcher 枚举会漂移。
+- **成员管理需要明确写路径**：不能只写 workspace `user` 表而忘记 `_system`。
+- **IdP scope 更新失败需要重试策略**。
+- **SurrealDB 公网暴露**：必须配置 query timeout、connection limit、rate limit、TLS 和 WAF。
+- **跨 db 报表**：MVP 不做；未来由后端 fan-out 或专门索引表实现。
 
 ## Alternatives Considered
 
-### A. 单 db + 复杂 PERMISSIONS（之前几稿）
+### A. 单 db + 复杂 PERMISSIONS
 
-抛弃。理由：PERMISSIONS 嵌套深、跨 workspace 隔离全靠人工写表达式、service JWT 攻击面大、DDL 必须中转。
+抛弃。PERMISSIONS 嵌套深、跨 workspace 隔离全靠人工表达式、service JWT 攻击面大。
 
-### B. 每 workspace 一个 namespace（而不是 db）
+### B. IdP 作为 workspace 权威
 
-抛弃。理由：namespace 在 SurrealDB 中更接近"租户隔离"，但 namespace 之间无法共享任何东西；本架构虽然 `_system` 内东西很少，仍需要 root 跨 db 倒查与认领，namespace 模型让 `_system` 和 ws_* 之间彻底无法跨。db 模型在同 namespace 下更易管理。
+抛弃。workspace 列表、成员关系和最近选择是本应用业务；IdP 只应该签 token scope。
 
-### C. 用户表全局存在 _system
+### C. 浏览器 NS-admin 创建 workspace
 
-抛弃。理由：违背"db 是隔离单元"的核心原则；任何 workspace 内的 PERMISSIONS 想引用 user 都必须跨 db；且用户在不同 workspace 中可能有不同 display_name / role / 偏好，全局表反而造成数据耦合。
+抛弃。它把跨 db DDL 能力暴露给浏览器，且失败补偿分散。
 
-### D. 虚拟员工用每员工一把长期 JWT（早期稿）
+### D. 每 workspace 一个 namespace
 
-抛弃。RECORD access + 短期 SIGNIN 替代之，无长期凭证保管负担。
+抛弃。namespace 之间管理和跨 workspace 索引更重；同 namespace 多 database 已足够表达本架构隔离。
 
 ## Open Questions
 
-1. **IdP ↔ 后端同步通道**：见 [`frontend-direct-connect.md`](./frontend-direct-connect.md) Open Questions §1。
-2. **IdP token claim schema**：见 [`frontend-direct-connect.md`](./frontend-direct-connect.md) Open Questions §2。
-3. **IdP 切换 workspace endpoint 形态**：见 [`frontend-direct-connect.md`](./frontend-direct-connect.md) Open Questions §3。
-4. **schema 迁移 runner**：前端在创建新 db 时自然就用最新模板；既有 db 升级由后端启动期遍历 `_system.workspace` 跑增量 .surql。两套 runner 共享 `shared/sql/workspace-template/`。
-5. **OIDC provider 选择**：当前 ADR 草稿用 `https://o.maplayer.top/t/ck/jwks.json`（实测验证用）；正式上线前需要确认。
-6. **drop database**（退休 workspace）：MVP 不提供，仅"归档"标记；真正 drop 留待数据合规章节正式立项。
-7. **role 切换的 token 滞后**：用户从 participant 被提升为 admin 后，已签发 token 在 DURATION（1h）内仍按旧 role；MVP 接受，高敏环境可缩短 DURATION 或加 IdP 主动撤销。
-8. **NS-admin token 的最小化暴露**：IdP 仅在 create-workspace 那一次颁发带 `ns_admin=true` claim 的临时 token；日常 token 不带。需要 IdP 支持"按需 step-up token"。
+1. **成员管理写路径**：全走后端 endpoint，还是前端写 workspace `user` 后调用后端同步 `_system`，待 issue 固化。
+2. **IdP scope adapter 细节**：取决于 IdP 选型。
+3. **workspace 创建权限**：应用 entitlement、付费计划还是 IdP claim，待产品策略定。
+4. **role 变更 token 滞后**：用户 role 改变后，已签发 token 在 DURATION 内可能仍旧；MVP 通过切换 / refresh 解决，高敏场景再加撤销能力。

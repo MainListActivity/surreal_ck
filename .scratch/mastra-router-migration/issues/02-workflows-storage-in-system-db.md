@@ -41,7 +41,7 @@ server/ai/mastra/storage/surreal-workflows-storage.ts
 
 ## Acceptance criteria
 
-- [ ] workflow_run 表在所有 _system 已 seed 的环境上自动出现（schema_version 升到 2）。
+- [ ] workflow_run 表在所有 _system 已 seed 的环境上自动出现（_system_schema_version 升到 2）。
 - [ ] Mastra workflow run 启动后能在 workflow_run 表里看到一行，status='running'。
 - [ ] suspend 后 status='suspended'，state 字段包含可读 JSON。
 - [ ] resume 后从 state 恢复，status 回到 'running'。

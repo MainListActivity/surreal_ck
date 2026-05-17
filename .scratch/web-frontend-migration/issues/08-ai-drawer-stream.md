@@ -11,8 +11,8 @@ Label: needs-triage
 
 把 `web/legacy/` 中既有 AI 抽屉 UI 搬到 `web/src/components/AiDrawer.svelte` + 关联子组件，并把所有 Electrobun RPC 替换为：
 
-- 发消息：`api.api.chat.$post({ json: { message, contextSnapshot? } })` 拿 `{ runId, streamUrl }`。
-- 监听：用 `lib/ws.ts` 连 `streamUrl`（指向后端 `/api/chat/stream?runId=...`），渲染 progress / chunk / suspend / done 事件。
+- 发消息：`api.api.chat.$post({ json: { message, contextSnapshot? } })` 拿 `{ runId, streamUrl, streamToken }`。
+- 监听：用 `lib/ws.ts` 连 `streamUrl`（指向后端 `/api/chat/stream?runId=...`），并用 header / subprotocol 携带 `streamToken`，渲染 progress / chunk / suspend / done 事件。
 - suspend 用户决策：UI 弹候选选择 → 调 `POST /api/chat/runs/:runId/resume { decision }`。
 
 UI 行为保持与既有抽屉一致（流式 markdown、候选选择卡、tool call trace）。

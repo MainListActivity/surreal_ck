@@ -1,7 +1,7 @@
 Status: needs-triage
 Label: needs-triage
 
-# WP-B-05 — Dockerfile + .env.example + 启动文档
+# WP-B-06 — Dockerfile + .env.example + 启动文档
 
 ## Parent
 
@@ -25,7 +25,7 @@ Label: needs-triage
 PORT=8080
 NODE_ENV=development
 
-# SurrealDB（内网）
+# SurrealDB（dev compose 用内网；prod 用公网 WSS）
 SURREAL_URL=ws://surrealdb:8000/rpc
 SURREAL_NS=main
 SURREAL_ROOT_USER=root
@@ -35,6 +35,11 @@ SURREAL_ROOT_PASS=change_me
 OIDC_ISSUER=https://o.maplayer.top/t/ck
 OIDC_JWKS_URL=https://o.maplayer.top/t/ck/jwks.json
 OIDC_AUDIENCE=https://auth.maplayer.top
+
+# IdP token scope adapter / hook
+IDP_SCOPE_API_URL=https://o.maplayer.top/t/ck/scope
+IDP_SCOPE_API_TOKEN=change_me
+IDP_HOOK_SECRET=change_me
 ```
 
 ### docker-compose.yml（仓库根，开发用）

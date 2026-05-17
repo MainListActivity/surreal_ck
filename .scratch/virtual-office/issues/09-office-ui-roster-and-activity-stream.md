@@ -14,7 +14,7 @@ Label: needs-triage
 ### 1. 花名册（左栏，两个 tab）
 
 - **虚拟员工**：`db.live('user', q => q.where('kind', '=', 'virtual'))`；每条显示岗位 label、上级、`virtual_profile.last_active_at`。
-  操作：暂停 / 恢复 → admin 直接 `db.update(user, { virtual_profile: { status: ... } })`；退休 → 调后端 `/api/internal/employee-retired`（dispatcher 需要同步关 LIVE + 清缓存，参见 virtual-office issue 03/04）。
+  操作：暂停 / 恢复 / 退休 → 调后端 `POST /api/workspaces/:slug/employees/:id/pause|resume|retire`（dispatcher 需要同步关 LIVE + 清缓存，参见 virtual-office issue 03/04）。
 - **真人成员**：`db.live('user', q => q.where('kind', '=', 'human'))`；显示 display_name / email / is_admin 徽章 / `last_seen_at`（NONE → "从未登录"）。
   操作（仅 admin 可见）：添加成员（输入 email + 是否管理员）→ 同时 `db.create('user', ...)` 与调 IdP add-member endpoint；移除成员 → `db.delete(user)` + IdP；切换 admin → `db.update(user, ...)` + IdP。
 
@@ -39,7 +39,7 @@ Label: needs-triage
 
 - Svelte 5 + `getSurreal()`（web-frontend-migration issue 03 提供）。
 - 所有读 / 写 / LIVE 直连 SurrealDB，**无后端 endpoint**。
-- 仅"退休员工"调后端 `/api/internal/employee-retired`，因为 dispatcher 需要同步清缓存 + 关闭对应 LIVE 会话；这个内部 endpoint 由本仓库 virtual-office issue 03/04 提供。
+- 仅"暂停 / 恢复 / 退休员工"调后端 employee provisioning endpoint，因为 dispatcher 需要同步清缓存 + 关闭对应 LIVE 会话；这个 endpoint 由 virtual-office issue 03 提供。
 - 切换 workspace 时旧 LIVE 订阅由组件 onDestroy 自动 kill；新连接由 `enterWorkspace` 重新建立。
 
 ## Acceptance criteria

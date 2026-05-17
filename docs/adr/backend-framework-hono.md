@@ -9,7 +9,7 @@
   - [`virtual-office.md`](./virtual-office.md)（业务能力）
   - [`frontend-direct-connect.md`](./frontend-direct-connect.md)（前端直连 SurrealDB 后，后端职责急剧瘦身）
 
-> **2026-05-17 update**：随 [`frontend-direct-connect.md`](./frontend-direct-connect.md) 接受，后端职责急剧瘦身——sessions / members / workspaces / LIVE 转发等代理 endpoint 整体废除。Hono 仍然适合，但承载的 route 数量比原稿少一截：仅 Mastra chat / dispatcher 控制面 / IdP webhook + root 维护路径。本 ADR 已就地修订。
+> **2026-05-17 update**：随 [`frontend-direct-connect.md`](./frontend-direct-connect.md) 接受，后端职责急剧瘦身——业务数据 CRUD / LIVE 转发代理 endpoint 整体废除。Hono 仍然适合，但后端仍保留 Workspace Scope Module：workspace 列表、切换、创建、IdP default-scope hook。这些 endpoint 只管理 token scope 和 workspace lifecycle，不代理工作簿 / 数据表 / 办公室业务数据。
 
 ## Context
 
@@ -21,7 +21,7 @@
 2. **WebSocket 支持良好**——Mastra workflow 的流式进度推送（`POST /api/chat` + `WS /api/chat/stream`）需要 WS upgrade。注意：自从 [`frontend-direct-connect.md`](./frontend-direct-connect.md) 接受后，后端**不再做 SurrealDB LIVE 转发**——浏览器直接订阅 SurrealDB LIVE；WS 在后端仅用于 Mastra workflow 流式输出。
 3. **不引入 ORM**——schema/PERMISSIONS/access 都在 SurrealQL 里，TS 层只走 `surrealdb.js`。
 4. **支持长期常驻进程状态**——dispatcher、employee_credential 缓存。排除 serverless / edge runtime。
-5. **OIDC verify 简单**——仅用于 `/api/chat` 等 Mastra endpoint 鉴权；能直接挂 JWKS URL 校验。
+5. **OIDC verify 简单**——用于 `/api/chat` 与 Workspace Scope Module 的用户入口；能直接挂 JWKS URL 校验。
 6. **代码量 MVP 必须小**——一个人维护。
 
 软偏好：TS 类型推导友好；文档清晰、活跃维护；不锁定到某厂云。
@@ -90,14 +90,14 @@
 
 ### E. tRPC
 
-不选。它是 RPC 协议而非 HTTP 框架，需要附在 HTTP 框架上用。本仓库需要原生 WS LIVE 转发 + 标准 HTTP endpoint（部分路径需要 curl 调试），单 tRPC 表达力不够。后续若想加 tRPC 做"管理面板内部接口"可以叠在 Hono 上（`@trpc/server` 适配 Hono），与本 ADR 不冲突。
+不选。它是 RPC 协议而非 HTTP 框架，需要附在 HTTP 框架上用。本仓库需要原生 WS 流式输出 + 标准 HTTP endpoint（部分路径需要 curl 调试），单 tRPC 表达力不够。后续若想加 tRPC 做"管理面板内部接口"可以叠在 Hono 上（`@trpc/server` 适配 Hono），与本 ADR 不冲突。
 
 ## Consequences
 
 ### 正面
 
 - 后端入口代码极短：`new Hono().use(...).route(...).fire()`。
-- WS LIVE 转发与 HTTP endpoint 在同一路由表，心智一致。
+- WS 流式输出与 HTTP endpoint 在同一路由表，心智一致。
 - Mastra 示例与 Bun 社区资源最多，AI 协作友好。
 - 未来若要把无状态 endpoint 抽到边缘运行时，Hono 直接迁移。
 
@@ -108,24 +108,26 @@
 
 ## Endpoint inventory（MVP 后端 endpoint 全集）
 
-收到 [`frontend-direct-connect.md`](./frontend-direct-connect.md) 影响后，后端 endpoint 列表如下：
+收到 [`frontend-direct-connect.md`](./frontend-direct-connect.md) 影响后，MVP 后端 endpoint 列表如下：
 
 | Path | 用途 |
 |---|---|
 | `GET  /health` | 健康检查（K8s liveness） |
+| `GET  /api/session/workspaces` | Workspace Scope Module：列出当前 subject 可进入的 workspace。 |
+| `POST /api/session/switch-workspace` | Workspace Scope Module：验证 membership，更新最近选择，调用 IdP scope adapter。 |
+| `POST /api/workspaces` | Workspace Scope Module：root 创建 workspace database、应用模板、写 owner 和 `_system` 索引。 |
+| `POST /api/workspaces/:slug/employees` | Virtual Office：管理员创建虚拟员工，root 仅写 `employee_credential`。 |
+| `POST /api/workspaces/:slug/employees/:id/retire` | Virtual Office：退休员工，清 dispatcher 缓存与员工 secret。 |
 | `POST /api/chat` | Mastra Router workflow 入口（流式回写） |
 | `WS   /api/chat/stream` | Mastra workflow 流式 progress / chunk / suspend / done |
 | `POST /api/chat/runs/:runId/resume` | suspend 决策后恢复 |
-| `POST /api/internal/workspace-created` | IdP webhook：同步 `_system.workspace` + `user_workspace_index` |
-| `POST /api/internal/membership-changed` | IdP webhook：同步用户身份变更（加 / 删 / role 改） |
-| `POST /api/internal/employee-provisioned` | dispatcher 内部入口：写 `employee_credential`（root） |
-| `POST /api/internal/employee-retired` | dispatcher 内部入口：清 secret + 关闭 LIVE 会话 |
+| `GET  /api/internal/idp/default-scope` | IdP 登录 hook：按本应用 `_system.user_workspace_index` 返回默认 db/ac scope。 |
 
-`/api/internal/*` 必须验证调用源（IdP 共享密钥或 mTLS），与外部 endpoint 隔离。**没有** `/api/sessions/*`、`/api/workspaces/*`、`/api/.../office/*` 等代理 endpoint——它们都被前端直连或 IdP 取代。
+`/api/internal/*` 必须验证调用源（IdP 共享密钥、mTLS 或专用 bearer token），与外部 endpoint 隔离。**没有**工作簿 / 数据表 / office_* LIVE 转发等业务代理 endpoint；这些都由前端直连 SurrealDB 完成。
 
 ## Open Questions
 
 1. **HTTP 错误归一格式**：与前端约定 `{ error: { code, message } }` 还是 Hono 默认 problem+json？下放到 server-skeleton issue 阶段。
 2. **CORS 策略**：前端域与后端域分离（前端 app.example.com，后端 api.example.com，SurrealDB db.example.com）则必须配 CORS 白名单。issue 阶段定。
-3. **IdP webhook 鉴权**：用共享密钥还是 mTLS？取决于 IdP 选型。
+3. **IdP default-scope hook 鉴权**：用共享密钥、mTLS 还是专用 bearer token，取决于 IdP 选型。
 4. **WS 流式 RunBus**：MVP 一 runId 一连接即可；多 tab 多端同时订阅同 run 的需求超 MVP 范围。

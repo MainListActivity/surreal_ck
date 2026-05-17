@@ -1,7 +1,7 @@
 Status: needs-triage
 Label: needs-triage
 
-# WP-D2-04 — API client（仅 Mastra endpoint）
+# WP-D2-04 — API client（Workspace Scope + Mastra）
 
 ## Parent
 
@@ -10,7 +10,7 @@ Label: needs-triage
 ## What to build
 
 ```
-web/src/lib/api.ts          -- Hono client，仅对接 /api/chat* 等少数后端 endpoint
+web/src/lib/api.ts          -- Hono client，对接 Workspace Scope Module + /api/chat*
 web/src/lib/ws.ts           -- WS 客户端封装（重连、心跳、JSON line 协议）
 ```
 
@@ -33,17 +33,20 @@ export const api = hc<AppType>(import.meta.env.VITE_API_BASE_URL, {
 
 ws.ts 接受 `{ path, params, onMessage, onClose }`，返回 `{ close() }`；25s 心跳 ping。
 
-**本 issue 只对接 Mastra**：
+**本 issue 对接的后端 endpoint**：
 
+- `GET /api/session/workspaces`
+- `POST /api/session/switch-workspace`
+- `POST /api/workspaces`
 - `POST /api/chat`
 - `WS  /api/chat/stream`
 - `POST /api/chat/runs/:runId/resume`
 
-其它"业务 endpoint"（之前在原稿里的 sessions / members / workspaces 等）**已被 SurrealDB 直连取代**——前端直接用 `getSurreal()`（issue 03），不走本文件。
+其它业务数据 endpoint（工作簿 / 数据表 / office_* CRUD / LIVE）不存在——前端直接用 `getSurreal()`（issue 03）。
 
 ## Acceptance criteria
 
-- [ ] `api.api.chat.$post({ json: { message } })` 调通，类型推导出 `{ runId, streamUrl }`。
+- [ ] `api.api.chat.$post({ json: { message } })` 调通，类型推导出 `{ runId, streamUrl, streamToken }`。
 - [ ] 受保护 endpoint 自动带 Authorization。
 - [ ] 401 时 api.ts 抛 `OidcExpiredError`，由上层路由触发 silent refresh / 重登。
 - [ ] WS 客户端能连后端 chat stream endpoint，断网重连最多 5 次。
@@ -52,5 +55,5 @@ ws.ts 接受 `{ path, params, onMessage, onClose }`，返回 `{ close() }`；25s
 ## Notes
 
 - 不引入 trpc、不引入 react-query / svelte-query；MVP 用 svelte 5 runes 足够。
-- 本 issue 的 client 仅服务于 Mastra；任何业务读写都走 `lib/surreal.ts`（issue 03）。
+- 本 issue 的 client 服务于 Workspace Scope Module 与 Mastra；任何业务读写都走 `lib/surreal.ts`（issue 03）。
 - WS 心跳 25s ping 防中间设备断连；断连时由 ws.ts 触发 onClose 让上层决定重连。

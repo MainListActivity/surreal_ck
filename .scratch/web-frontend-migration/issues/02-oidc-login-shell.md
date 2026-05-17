@@ -27,17 +27,15 @@ web/src/lib/auth.ts                  -- token store / silent refresh / logout / 
 6. logout：清 sessionStorage + 跳 IdP logout endpoint。
 7. **不经过后端**——OIDC code/token exchange 是浏览器直连 IdP。
 
-token claim 形态（与 IdP 选型对齐，参见 [`frontend-direct-connect.md`](../../../docs/adr/frontend-direct-connect.md) Open Question §2）：
+token claim 形态（与 [`frontend-direct-connect.md`](../../../docs/adr/frontend-direct-connect.md) 对齐）：
 
 ```ts
 {
   sub: string;
   email: string;
   name?: string;
-  current_db: string;          // 当前选中的 workspace 对应 db
-  role: 'admin' | 'participant';
-  ns_admin?: boolean;          // 仅 create-workspace 那一刻临时为 true
-  available_workspaces?: Array<{ slug, name, db_name, role }>;   // 用于 switcher 列表
+  'https://surrealdb.com/db': string;  // 当前 workspace database
+  'https://surrealdb.com/ac': 'admin' | 'participant';
 }
 ```
 
@@ -51,14 +49,14 @@ env：
 ## Acceptance criteria
 
 - [ ] 无痕窗口访问根 URL → 重定向 IdP → 登录 → 回到首页 + token / claims 存好。
-- [ ] `getClaims().current_db` 是有效 ws db name。
+- [ ] `getClaims()['https://surrealdb.com/db']` 是有效 ws db name。
 - [ ] token 过期前 silent refresh 不闪屏；失败 → 跳 login。
 - [ ] logout 后回到 login 页；sessionStorage 清空。
 - [ ] 错误 state / 无 code 等异常情况显示明确错误页。
-- [ ] **整个流程不调任何后端 endpoint**（浏览器直连 IdP）。
+- [ ] OIDC code/token exchange 不调后端；workspace 列表 / 切换由后续 issue 调 Workspace Scope Module。
 
 ## Notes
 
-- 选 SPA OIDC：后端无 session 表，token 是 SurrealDB access 的直接输入。MVP 接受 sessionStorage 风险（同源 + IdP 控权 + DEFINE ACCESS 兜底，威胁面较小）。
+- 选 SPA OIDC：token 是 SurrealDB access 的直接输入。MVP 接受 sessionStorage 风险，但必须配合 CSP、markdown sanitize 和第三方脚本约束。
 - 长期可改成"后端 set httpOnly cookie + 中间件 verify"，但要求引入后端会话管理——超出当前 ADR 范围。
-- `available_workspaces` 是否塞在 token 里待 IdP 选型敲定；如果太大则改用单独的 IdP query endpoint，前端拉一次缓存。
+- token 不塞 workspace 列表；列表来自 `/api/session/workspaces`。

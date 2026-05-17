@@ -1,7 +1,7 @@
 Status: needs-triage
 Label: needs-triage
 
-# WP-C-05 — _system reconciler（IdP webhook 丢消息兜底）
+# WP-C-05 — _system reconciler（workspace index 漂移校对）
 
 ## Parent
 
@@ -13,36 +13,38 @@ Label: needs-triage
 server/src/db/reconciler.ts
 ```
 
-启动期 + 每小时心跳跑一次。流程：
+启动期 + 每小时心跳跑一次。IdP 不再是 workspace 权威；reconciler 校对的是 `_system.user_workspace_index` 与各 workspace database 内 `user` 表之间的一致性。
 
-1. 用 IdP API（详见 ADR Open Questions 的 IdP 选型）pull 一份 `{ workspaces[], memberships[] }` 全量快照。
-2. 与 `_system.workspace` + `_system.user_workspace_index` 对比。
+流程：
+
+1. root 查 `_system.workspace`，得到所有 active workspace。
+2. 对每个 workspace db：
+   - root 读取该 db 的 human `user` 记录（subject/email/is_admin/disabled 状态）。
+   - 与 `_system.user_workspace_index` 中该 workspace 的 rows 对比。
 3. 漂移分类：
-   - IdP 有、_system 没有 → INSERT（webhook 丢了创建通知）。
-   - _system 有、IdP 没有 → DELETE（webhook 丢了删除通知，或 IdP 端被清理）。
-   - 两边都有但 role 不一致 → 以 IdP 为权威 UPDATE _system。
-4. 所有操作 root 会话；带详细日志（drift kind + dbName + subject）。
+   - ws db user 有、_system 没有 → 记录 drift；若 subject 已存在且状态明确，可自动补 index。
+   - _system 有、ws db user 没有 → 标记 index disabled 或记录 drift（MVP 倾向只告警，避免误删）。
+   - 两边都有但 role 不一致 → 以 ws db user.is_admin 为准修复 index role。
+4. 输出日志汇总：workspace 数、user 数、drift 数、修复数。
 
 env 新增：
 
 - `RECONCILE_INTERVAL_SEC`（默认 3600）
-- `IDP_ADMIN_API_URL`、`IDP_ADMIN_TOKEN`（用于 pull 全量；与 webhook 互补）
 
 ## Acceptance criteria
 
-- [ ] 启动时跑一次：正常情况 0 漂移，日志一行总结 `reconciled M workspaces, K memberships, 0 drift`。
-- [ ] 故意让 issue 03 的 webhook 跳过一次 → 下次 reconciler 把丢失的 _system 行补回。
-- [ ] _system 多出一条 IdP 不存在的 workspace → 启动时被 DELETE，日志告警。
-- [ ] IdP API 不可达 → reconciler 失败但 server 仍启动（reconciler 不阻塞 boot；下次心跳重试）。
+- [ ] 启动时跑一次：正常情况 0 漂移，日志一行总结。
+- [ ] 手工删除一条 `_system.user_workspace_index` → reconciler 发现并补回 / 记录 drift。
+- [ ] 手工把 index role 改错 → reconciler 按 ws db user.is_admin 修复。
+- [ ] 某个 workspace db 不可达 → reconciler 失败但 server 仍启动（reconciler 不阻塞 boot；下次心跳重试）。
 - [ ] 心跳间隔可由 env 配置。
 
 ## Blocked by
 
-- `.scratch/workspace-as-db/issues/03-idp-webhook-endpoint.md`
+- `.scratch/workspace-as-db/issues/03-workspace-scope-module.md`
 
 ## Notes
 
-- 与 issue 03 互补：webhook 是热路径（实时但可能丢），reconciler 是冷路径（兜底但有延迟）。两者都用 root 写 _system。
-- IdP API 协议待定（ADR Open Question）；本 issue 假设 IdP 提供 `GET /admin/workspaces` + `GET /admin/memberships` 类似 endpoint。
-- 不在本 issue 做"漂移历史归档"（写一张 drift_log 表）；如果未来要审计可加。
-- **不再校对 ws db.user 表**——该表由前端 admin 直接维护 + IdP 同步驱动；权威在 IdP，_system 只是缓存。
+- 本 issue 不调用 IdP admin API；IdP 只签 token scope。
+- 成员管理的主写路径后续要明确；reconciler 是兜底，不是热路径。
+- 不在本 issue 做 drift 历史归档；未来若需要审计可加 `workspace_index_drift_log`。

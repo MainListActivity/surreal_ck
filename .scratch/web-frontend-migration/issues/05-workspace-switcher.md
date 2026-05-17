@@ -1,7 +1,7 @@
 Status: needs-triage
 Label: needs-triage
 
-# WP-D2-05 — Workspace 切换器（驱动 IdP silent refresh）
+# WP-D2-05 — Workspace 切换器（Workspace Scope Module）
 
 ## Parent
 
@@ -11,46 +11,49 @@ Label: needs-triage
 
 ```
 web/src/components/WorkspaceSwitcher.svelte
-web/src/lib/switch-workspace.ts          -- 调 IdP silent refresh + 重新 signin
+web/src/lib/switch-workspace.ts          -- 调 /api/session/switch-workspace + 重新 signin
 ```
 
-`workspace-store.ts` 已在 issue 03 实现；本 issue 只补 `switchWorkspace(slug)` 函数。
+`workspace-store.ts` 已在 issue 03 实现；本 issue 补 workspace 列表加载与 `switchWorkspace(slug)`。
 
 ### 行为
 
-1. 首页加载时从 OIDC claims 拿 `available_workspaces`（issue 02 解析），渲染 dropdown。
-2. URL 形如 `/w/:slug/*` 时从 path 取 slug；否则用 sessionStorage 最近一次 slug；都没有则用 token.current_db 默认。
+1. 首页加载时调 `GET /api/session/workspaces`，渲染 dropdown。
+2. 当前 workspace 由 token scope 中 `https://surrealdb.com/db` 与列表中的 `dbName` 匹配得出。
 3. 选中 slug 后：
-   a. 调 IdP "switch workspace" endpoint（silent iframe / fetch + PKCE，参数 `target_workspace=<slug>`）。
-   b. 拿到新 token（含新 `current_db` claim）→ 存 sessionStorage。
-   c. 调 `enterWorkspace(newToken)`（issue 03 暴露的）→ 新 db 连接建立，旧的关闭。
-   d. URL 更新到 `/w/<slug>`，UI 重渲染。
-4. "新建 workspace" 按钮 → 启 issue 06 流程。
-5. workspace-store 暴露 `connectionState`，UI 在 "connecting / open / closed" 时分别渲染。
+   a. 调 `POST /api/session/switch-workspace { workspaceSlug: slug }`。
+   b. 后端更新 IdP token scope 后返回 `{ refreshRequired: true }`。
+   c. 前端调用 `refresh()` silent refresh，拿到新 token。
+   d. 调 `enterWorkspace(newToken)` → 新 db 连接建立，旧连接关闭。
+   e. URL 更新到 `/w/<slug>`，UI 重渲染。
+4. "新建 workspace"按钮 → 启 issue 06 流程。
+5. workspace-store 暴露 `connectionState`，UI 在 connecting / open / closed 时分别渲染。
 
-UI：顶栏右上角 dropdown，列所有 available_workspaces + 当前选中高亮 + "新建 workspace" 按钮（仅 `can_create_workspace=true` 的用户可见）。
+UI：顶栏右上角 dropdown，列 `/api/session/workspaces` 返回的 workspace + 当前选中高亮 + "新建 workspace"按钮（是否显示由后端返回的 capability 或 token claim 决定）。
 
 ### 不再做
 
-- ❌ 调 `/api/sessions/bootstrap`（后端没有这个 endpoint；workspace 列表来自 IdP token）
-- ❌ 调 `/api/sessions`（同上；signin 直接走 surrealdb-js）
-- ❌ 后端 token 续期（IdP silent refresh 取代）
+- ❌ 从 token 的 `available_workspaces` 读列表。
+- ❌ 直接调用 IdP switch endpoint。
+- ❌ 用 sessionStorage 自行决定默认 workspace；默认 workspace 由 IdP 登录 hook + Workspace Scope Module 决定。
 
 ## Acceptance criteria
 
-- [ ] 首次登录 + 0 workspace 用户被带到"新建 workspace"引导页（issue 06）。
-- [ ] 有 N workspace → 顶栏 dropdown 显示，选中触发 IdP refresh → 新 db 连接 → URL 同步。
-- [ ] 刷新页面后保留上次 workspace（sessionStorage 暂存最后 slug，启动时优先用）。
-- [ ] OIDC token 临到期前 5 分钟自动 silent refresh（issue 02 已实现）；连带 SurrealDB 重新 signin。
+- [ ] 有 N workspace → 顶栏 dropdown 显示 N 条，当前 token scope 对应项高亮。
+- [ ] 选中另一个 workspace → `/api/session/switch-workspace` 被调用，silent refresh 后 SurrealDB 重连到新 db。
+- [ ] 用户尝试切到无权限 workspace → 后端 403，旧连接保持不变。
+- [ ] OIDC token 临到期前 silent refresh 后，SurrealDB 重新 signin。
 - [ ] 切换 workspace 时旧 SurrealDB 连接被 close；新连接 LIVE 订阅与旧的不冲突。
-- [ ] 非 `can_create_workspace` 用户看不到"新建"按钮。
+- [ ] 有创建权限的用户看到"新建 workspace"按钮；无权限用户看不到。
 
 ## Blocked by
 
 - `.scratch/web-frontend-migration/issues/02-oidc-login-shell.md`
 - `.scratch/web-frontend-migration/issues/03-surrealdb-direct-client.md`
+- `.scratch/web-frontend-migration/issues/04-api-client.md`
+- `.scratch/workspace-as-db/issues/03-workspace-scope-module.md`
 
 ## Notes
 
-- IdP 切换 endpoint 的具体形态待选型；本 issue 用占位接口名。
 - 不用 router 库；URL 解析手写 `/^\/w\/([^/]+)/` 即可，MVP 路由极少。
+- 列表数据是应用权威，不来自 IdP。

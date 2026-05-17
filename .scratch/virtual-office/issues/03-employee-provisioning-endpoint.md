@@ -77,4 +77,4 @@ Label: needs-triage
 - **无 service JWT**：架构内不存在该概念。root 仅在第 6 步（INSERT employee_credential）使用——这是 root 调用面最小化的设计。
 - 不在本 issue 创建任何 `office_role` 记录；岗位 seed 由 issue 06/07/08 各自带初始数据，本 endpoint 只接受已存在的 `office_role.key`。
 - `employee_credential.secret` 是员工的"密码"，永不出 DB。在 DEFINE ACCESS employee 的 SIGNIN query 中校验（详见 [`virtual-office.md`](../../../docs/adr/virtual-office.md) §1）。
-- "按身份选 access"的统一登录流程实现见 issue 09 的后端 `/api/sessions` endpoint；本 issue 假设它就绪并复用。
+- "按 token scope / slug 解析 workspace" 的能力复用 Workspace Scope Module；本 issue 不重新实现 workspace lookup。

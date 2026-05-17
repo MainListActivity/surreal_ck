@@ -1,7 +1,7 @@
 Status: needs-triage
 Label: needs-triage
 
-# WP-D2-01 — Vite 5 + Svelte 5 web 构建链
+# WP-D2-01 — Vite 8 + Svelte 5 web 构建链
 
 ## Parent
 

@@ -35,6 +35,6 @@ Label: needs-triage
 
 ## Notes
 
-- 既有 RevoGrid 配置原样搬即可；Web Component 在 Vite 5 中的 polyfill 问题若出现单独立 issue。
+- 既有 RevoGrid 配置原样搬即可；Web Component 在 Vite 8 中的 polyfill 问题若出现单独立 issue。
 - LIVE 订阅在组件 onMount 启、onDestroy 关，防泄漏。
 - 大量数据滚动加载用 SurrealDB `LIMIT` + `START`；切忌一次性 SELECT 整表。

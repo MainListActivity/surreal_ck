@@ -36,7 +36,7 @@ export type SessionUser = {
 };
 ```
 
-`server/src/app.ts` 顶部不挂 requireOidc——**仅在 Mastra `/api/chat*` 等"必须知道调用者身份"的 endpoint 上挂**。绝大多数请求（前端读写 SurrealDB / IdP webhook / health）不经过本中间件。
+`server/src/app.ts` 顶部不挂 requireOidc——在 Mastra `/api/chat*` 与 Workspace Scope Module 的用户入口上挂。前端业务读写 SurrealDB、IdP default-scope hook、health 不经过本中间件。
 
 env 新增：
 

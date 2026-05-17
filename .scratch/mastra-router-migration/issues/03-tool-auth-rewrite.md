@@ -13,7 +13,7 @@ Label: needs-triage
 
 1. Mastra tool 接口扩展：每个 tool 的 execute 接收 `{ context: ToolExecutionContext }`，把 `context.surrealSession` 作为 SurrealDB 调用入口。
 2. Router workflow 的 dispatcher 在拉起每个 sub agent 前注入 `surrealSession`：
-   - 该 session 是用调用者 OIDC token 走 admin 或 participant access SIGNIN 得到的（IdP token claim 决定 access 类型，参见 [`workspace-as-database.md`](../../../docs/adr/workspace-as-database.md) §2）。
+   - 该 session 是用调用者 OIDC token 走 admin 或 participant access SIGNIN 得到的（`https://surrealdb.com/db` / `https://surrealdb.com/ac` token scope 决定目标 db 与 access，参见 [`workspace-as-database.md`](../../../docs/adr/workspace-as-database.md)）。
    - 通过 Mastra runtime context（参考 mastra skill）传递给 tool。
    - workflow run 结束后该 session 被丢弃；下次调用重新 SIGNIN。
 3. 把现有 tool 内任何 `import { db } from '@/main/db'` 之类的硬编码替换为 `context.surrealSession`。

@@ -26,7 +26,7 @@ A. wp-restructure          (仓库重组)
        ↓
 B. server-skeleton         (Hono on Bun 骨架 + OIDC + root 连接)
        ↓
-C. workspace-as-db         (_system + ws db 模板 + sessions / members endpoints)
+C. workspace-as-db         (_system + ws db 模板 + Workspace Scope Module)
        ↓
 D1. mastra-router-migration (Router workflow 迁入后端，用调用者 session 跑)
 D2. web-frontend-migration  (Svelte 5 前端迁入，接 Hono HTTP/WS)
@@ -52,19 +52,19 @@ Hono on Bun 起服务、OIDC verify 中间件、SurrealDB root 连接管理、/h
 
 依据：`.scratch/workspace-as-db/PRD.md`
 
-`_system` schema 自动 seed、workspace 模板 SQL 文件、`create_workspace` execTemplate、sessions / members endpoint、schema migration runner、reconciler。7 个 issue。
+`_system` schema 自动 seed、workspace 模板 SQL 文件、Workspace Scope Module（workspace 列表 / 切换 / IdP default-scope hook）、workspace create lifecycle、schema migration runner、reconciler。6 个 issue。
 
 ### 簇 D1 — Router workflow 迁入后端
 
 依据：`.scratch/mastra-router-migration/PRD.md`
 
-把现有 Mastra Router workflow + 子 agent + tool 物理迁入 `server/ai/mastra/`，所有 tool 改为接收调用者 session token；WorkflowsStorage 落 `_system`；暴露 `POST /api/workspaces/:slug/ai/chat` + `WS /api/workspaces/:slug/ai/stream`。6 个 issue。
+把现有 Mastra Router workflow + 子 agent + tool 物理迁入 `server/ai/mastra/`，所有 tool 改为接收调用者 session token；WorkflowsStorage 落 `_system`；暴露 `POST /api/chat` + `WS /api/chat/stream`。6 个 issue。
 
 ### 簇 D2 — 前端迁移
 
 依据：`.scratch/web-frontend-migration/PRD.md`
 
-把 `src/renderer` 搬到 `web/`，标准 Vite 5 构建，OIDC 登录壳，workspace 切换器，AI 抽屉接 D1 endpoint。7 个 issue。
+把 `src/renderer` 搬到 `web/`，标准 Vite 8 构建，OIDC 登录壳，workspace 切换器接 Workspace Scope Module，AI 抽屉接 D1 endpoint。9 个 issue。
 
 ### 簇 E — 虚拟办公室
 
@@ -103,7 +103,7 @@ Hono on Bun 起服务、OIDC verify 中间件、SurrealDB root 连接管理、/h
 
 - 优先级：P1 / pre-launch
 - 状态：Not started
-- 原因：自部署 SurrealDB（同机房内网）已经把数据控制权收回，但仍需在国内法律实体下完成数据本地化部署的工程项 + 法务审阅。
+- 原因：自部署 / 托管 SurrealDB 都必须明确数据控制权；仍需在国内法律实体下完成数据本地化部署的工程项 + 法务审阅。
 - 范围：法律案件数据是否属重要数据 / 国内数据中心选址 / 法务合同条款。
 - 建议：单独立项 ADR + 法务咨询。
 
@@ -111,15 +111,15 @@ Hono on Bun 起服务、OIDC verify 中间件、SurrealDB root 连接管理、/h
 
 - 优先级：High
 - 状态：Not started
-- 原因：后端唯一长期凭证；仅 `create_workspace` execTemplate 使用，但泄露等于全部 workspace 可破。
+- 原因：后端唯一长期凭证；仅 `_system`、workspace lifecycle、schema migration、employee_credential 等维护路径使用，但泄露等于全部 workspace 可破。
 - 范围：环境变量管理 + 不写日志 + 文档化轮换流程；后续考虑短期 token 或密钥管理服务。
 
 ### OIDC 接入与 DEFINE ACCESS 配置
 
 - 优先级：High
 - 状态：Not started
-- 原因：所有用户登录与 `DEFINE ACCESS member ON DATABASE TYPE JWT URL ...` 都依赖一个稳定的 IdP。
-- 范围：选定 OIDC provider（自部署 Keycloak / 商用 IdP）、JWKS URL、AUTHENTICATE query 模板、跨 workspace AUTHENTICATE 行为单测。
+- 原因：所有用户登录与 SurrealDB access 都依赖一个稳定的 IdP，且 IdP 需要支持本应用的 default-scope hook / token scope update。
+- 范围：选定 OIDC provider（自部署 Keycloak / 商用 IdP）、JWKS URL、AUTHENTICATE query 模板、`https://surrealdb.com/db` / `https://surrealdb.com/ac` claims、Workspace Scope Module 集成单测。
 
 ### Schema 迁移 runner
 

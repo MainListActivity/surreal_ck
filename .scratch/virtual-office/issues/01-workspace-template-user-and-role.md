@@ -1,7 +1,7 @@
 Status: needs-triage
 Label: needs-triage
 
-# VO-01 — workspace-template 内 user / office_role / employee_credential 与三条 ACCESS；_system 倒查表
+# VO-01 — workspace-template 内 user / office_role / employee_credential 与三条 ACCESS
 
 ## Parent
 
@@ -9,11 +9,11 @@ Label: needs-triage
 
 ## What to build
 
-两部分：
+本 issue 已被 WP-C-01 / WP-C-02 吸收为 workspace template 的一部分。这里保留虚拟办公室需要的 `user` / `office_role` / `employee_credential` 细节，执行时应落到 `shared/sql/workspace-template/`，而不是单独的 execTemplate。
 
 ### A. `_system` database schema（一次性 seed）
 
-由 web-only-pivot 阶段的"初始化 SurrealDB"步骤创建一次。**无 access** —— 仅 root 凭证可访问。
+由 WP-C-01 负责。**无 access** —— 仅 root 凭证可访问。`user_workspace_index` 现在是应用维护的 workspace scope 索引，需包含 `last_selected_at` / `disabled_at` 等字段；不是 IdP 同步缓存。
 
 ```surql
 USE NS main DB _system;
@@ -39,11 +39,11 @@ DEFINE INDEX uwi_subject        ON user_workspace_index COLUMNS subject;
 DEFINE INDEX uwi_email_ws_unique ON user_workspace_index COLUMNS email, workspace UNIQUE;
 ```
 
-### B. Workspace database 模板 schema（每次 create_workspace execTemplate 全量 seed）
+### B. Workspace database 模板 schema（Workspace Scope Module 创建时全量 seed）
 
 #### B.1 三条 ACCESS
 
-完整 SurrealQL 在 [`workspace-as-database.md`](../../../docs/adr/workspace-as-database.md) §1。本 issue 必须落地：
+完整 access 约定见 [`workspace-as-database.md`](../../../docs/adr/workspace-as-database.md)。本 issue 必须落地：
 
 - `DEFINE ACCESS admin ON DATABASE TYPE JWT URL <oidc-jwks>` —— AUTHENTICATE 中按 subject 先查、未命中按 email 回填、要求 `is_admin = true`、更新 `last_seen_at`。
 - `DEFINE ACCESS participant ON DATABASE TYPE RECORD WITH JWT URL <oidc-jwks>` —— AUTHENTICATE 同上但要求 `is_admin = false`。**不再自动 CREATE user**——找不到记录就 THROW。
@@ -122,7 +122,7 @@ DEFINE INDEX employee_credential_unique ON employee_credential COLUMNS employee 
 ## Acceptance criteria
 
 - [ ] 在干净 ns/db 上初始化 _system 后，`workspace` 与 `user_workspace_index` 两张表落地；无 access 暴露给真人
-- [ ] `create_workspace` execTemplate 在新建 ws db 时：3 条 ACCESS + 3 张业务表（user / office_role / employee_credential）全部 seed 成功
+- [ ] WP-C-06 创建 ws db 时：3 条 ACCESS + 3 张业务表（user / office_role / employee_credential）全部 seed 成功
 - [ ] 真人 owner 在新建 workspace 后自动出现于 user 表，`is_admin=true, kind='human'`，email/subject 都填好；_system.user_workspace_index 多一行
 - [ ] 管理员（admin access）SIGNIN：
   - 用真 OIDC token + 已存在的 user → 成功，`last_seen_at` 被更新
@@ -138,7 +138,8 @@ DEFINE INDEX employee_credential_unique ON employee_credential COLUMNS employee 
 
 ## Blocked by
 
-- 必须先有 [`workspace-as-database.md`](../../../docs/adr/workspace-as-database.md) 的 `create_workspace` execTemplate 框架（属于 web-only-pivot 阶段，不在本 PRD 范围）
+- `.scratch/workspace-as-db/issues/02-workspace-template-sql.md`
+- `.scratch/workspace-as-db/issues/06-workspace-create-lifecycle.md`
 
 ## Notes
 
@@ -148,4 +149,4 @@ DEFINE INDEX employee_credential_unique ON employee_credential COLUMNS employee 
 - 真人不需要 `employee_credential` 记录。
 - 本 schema 是"workspace 模板"的一部分；任何业务表 schema 升级都要走 schema migration runner（遍历所有 ws db）。
 - **db 名约定**：由系统自动生成 `ws_<nanoid12>`（不允许用户输入 slug 进入 db 名）；slug 仅在 `_system.workspace.slug` 字段中作为 URL 展示用。
-- **成员添加路径**：管理员调 `POST /api/workspaces/:slug/members { email, isAdmin?, displayName? }`，详见 issue 09。无邀请闭环。
+- **成员添加路径**：必须同时维护 workspace `user` 表与 `_system.user_workspace_index`；具体由后续成员管理 issue 固化。无邀请闭环。

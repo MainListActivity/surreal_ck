@@ -14,7 +14,7 @@
 
 新的部署 + 身份模型已由两份姊妹 ADR 锁定：
 
-- 单容器 Bun server + 自部署 SurrealDB（同机房内网），前端不直连 DB，参见 [`web-only-pivot.md`](./web-only-pivot.md)。
+- 单容器 Bun server + SurrealDB 公网 WSS；前端业务数据默认直连 SurrealDB，参见 [`web-only-pivot.md`](./web-only-pivot.md) 与 [`frontend-direct-connect.md`](./frontend-direct-connect.md)。
 - 每 workspace 一个 SurrealDB database，用户与虚拟员工都以 record 身份存在于该 db 内的 `user` 表，参见 [`workspace-as-database.md`](./workspace-as-database.md)。
 
 本 ADR 在这两份 ADR 给的拓扑与身份基础上回答：
@@ -29,7 +29,7 @@
 
 ### 1. 虚拟员工的存在形式与登录方式
 
-每个 workspace database 在 `create_workspace` execTemplate 中已经 DEFINE 好三条 access（详见 [`workspace-as-database.md`](./workspace-as-database.md) §1）：
+每个 workspace database 在 Workspace Scope Module 创建 workspace 时应用 `shared/sql/workspace-template/`，其中已经 DEFINE 好三条 access（详见 [`workspace-as-database.md`](./workspace-as-database.md)）：
 
 | access | TYPE | 给谁用 | DB 引擎能力 |
 |---|---|---|---|
@@ -87,7 +87,7 @@ DEFINE FIELD virtual_profile.last_active_at ON TABLE user TYPE option<datetime>;
 
 ### 2. 虚拟办公室的协作四张表（在每个 workspace db 内）
 
-每个 workspace db 在创建时由 execTemplate seed 这四张表。归因字段直接用 `record<user>` 引用本 db 的 user 表，PERMISSIONS 因此天然简单。
+每个 workspace db 在创建时由 Workspace Scope Module 应用 workspace template seed 这四张表。归因字段直接用 `record<user>` 引用本 db 的 user 表，PERMISSIONS 因此天然简单。
 
 | 表 | 含义 | 关键字段 |
 |---|---|---|
@@ -199,7 +199,7 @@ DEFINE INDEX office_role_key_unique ON office_role COLUMNS key UNIQUE;
   - 管理员"重派 / 取消 / 暂停员工"等操作也由浏览器以 admin access 直接 UPDATE。
 - **通知抽屉**：合并到 AI 抽屉，作为 inbox tab。浏览器直接 LIVE SELECT `user_notification WHERE to_user = $auth AND resolved_at = NONE`；resolve 也是浏览器 UPDATE。
 - **AI 抽屉**：Router workflow 入口，调后端 `/api/chat` + WS `/api/chat/stream`。与办公室视图正交。
-- **退休员工 / 改员工 secret 等**：调后端 `/api/internal/employee-retired` 等内部 endpoint（dispatcher 需要同步清缓存 + 关 LIVE 会话），不能让浏览器直接改 `employee_credential`（该表 PERMISSIONS NONE）。
+- **退休员工 / 改员工 secret 等**：调后端 `POST /api/workspaces/:slug/employees/:id/retire` 等员工管理 endpoint（dispatcher 需要同步清缓存 + 关 LIVE 会话），不能让浏览器直接改 `employee_credential`（该表 PERMISSIONS NONE）。
 
 ## Consequences
 
@@ -209,16 +209,16 @@ DEFINE INDEX office_role_key_unique ON office_role COLUMNS key UNIQUE;
 - 虚拟员工 7×24 在线，独立于用户设备生命周期。
 - **比前几稿都更简单**：
   - 没有 service JWT。
-  - 没有 root execTemplate 链路签发员工 JWT——员工 SIGNIN 走 SurrealDB 原生 RECORD access。
+  - 没有长期员工 JWT——员工 SIGNIN 走 SurrealDB 原生 RECORD access。
   - 跨 workspace 隔离由 db 边界天然保证。
   - PERMISSIONS 不再有 workspace 嵌套子查询。
-- 部署：Bun server + 自部署 SurrealDB（同机房内网），运维面清晰。
+- 部署：Bun server + SurrealDB 公网 WSS，运维面清晰。
 - 升级路径明确（Inngest / leader 锁），业务表稳定。
 
 ### 负面 / 待权衡
 
 - **每员工一条 SurrealDB 连接**：MVP 数千员工内 OK；上万要重新设计。
-- **SurrealDB root 凭证**：后端唯一长期凭证；用于 _system 倒查、execTemplate、写 employee_credential、邀请认领等场景。必须严守。
+- **SurrealDB root 凭证**：后端唯一长期凭证；用于 _system 倒查、workspace lifecycle、写 employee_credential 等场景。必须严守。
 - **employee_credential 缓存**：后端进程内保存所有员工 secret，重启时遍历 _system.workspace 重新装载——属于"启动 N 秒"开销，MVP 可接受。
 - **dispatcher 必须跨所有 workspace 的所有员工**：单实例瓶颈。多 workspace + 多员工 + 多 LIVE 订阅在 MVP 后期可能要早做容量测试。
 - **审计与归因**：所有写都有正确的 `$auth` 字段，但 `office_message.from = $auth` 这种约束意味着虚拟员工冒名顶替不可能；好处。

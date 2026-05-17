@@ -23,15 +23,17 @@ let db: Surreal | null = null;
 
 export async function connectSurreal(token: OidcToken): Promise<Surreal> {
   if (db) { await db.close(); }
+  const dbName = token.claims['https://surrealdb.com/db'];
+  const access = token.claims['https://surrealdb.com/ac'];
   db = new Surreal();
   await db.connect(import.meta.env.VITE_SURREAL_URL);
   await db.signin({
-    ac: token.role === 'admin' ? 'admin' : 'participant',
+    ac: access,
     ns: 'main',
-    db: token.current_db,
+    db: dbName,
     token: token.raw,
   });
-  await db.use({ ns: 'main', db: token.current_db });
+  await db.use({ ns: 'main', db: dbName });
   return db;
 }
 
@@ -59,7 +61,7 @@ export const currentWorkspace = $state<{
 export const currentUser = $state<SessionUser | null>(null);
 
 export async function enterWorkspace(token: OidcToken) {
-  currentWorkspace = { ... };           // 由 token claim 填
+  currentWorkspace = { ... };           // 由 token scope + /api/session/workspaces 填
   currentUser = { ... };                // 由 token claim 填
   await connectSurreal(token);
 }

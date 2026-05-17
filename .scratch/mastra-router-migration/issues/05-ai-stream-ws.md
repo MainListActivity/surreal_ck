@@ -1,7 +1,7 @@
 Status: needs-triage
 Label: needs-triage
 
-# WP-D1-05 — Hono WS endpoint：/api/workspaces/:slug/ai/stream
+# WP-D1-05 — Hono WS endpoint：/api/chat/stream
 
 ## Parent
 
@@ -15,12 +15,13 @@ Label: needs-triage
 server/src/routes/ai-stream.ts
 ```
 
-WS URL：`/api/workspaces/:slug/ai/stream?runId=<uuid>`。
+WS URL：`/api/chat/stream?runId=<uuid>`。
 
 握手：
 
-1. 客户端通过 query 或 header 带 OIDC token + runId。
-2. 服务端 requireOidc → 按 slug + token SIGNIN → 校验该 runId 的 owner_subject 与调用者匹配（防别人监听别人的 run）。
+1. 客户端带 runId；鉴权优先使用 `POST /api/chat` 返回的短期 stream token，MVP 可退化为 Authorization header。
+2. 服务端校验 runId 的 owner_subject 与调用者匹配（防别人监听别人的 run）。
+3. 不允许把 OIDC token 放在 WebSocket query string，避免代理 / 日志泄漏。
 
 转发协议（一类一条 JSON 行）：
 

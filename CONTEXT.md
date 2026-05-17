@@ -9,24 +9,24 @@
 _Avoid_: 租户, Tenant（当表达用户空间时）
 
 **workspace database**:
-某个 **工作区** 在 SurrealDB 中对应的物理 database（命名 `ws_<slug>`）。承载该工作区全部业务表 + 协作表 + user 表。**只在涉及底层映射时使用**（如 ADR、迁移文档、运维讨论）。
+某个 **工作区** 在 SurrealDB 中对应的物理 database（命名 `ws_<id12>`）。承载该工作区全部业务表 + 协作表 + user 表。**只在涉及底层映射时使用**（如 ADR、迁移文档、运维讨论）。
 _Avoid_: 工作区库（产品层不暴露此词）
 
 **system database**:
-SurrealDB namespace `main` 下的特殊 database `_system`，**极简且无 access**：仅承载 `workspace` 索引（slug ↔ db_name）与 `user_workspace_index` 倒查表（email / OIDC subject → 可进入的 ws db 列表与 role 缓存）。仅后端 root 凭证可访问；用户和 **虚拟员工** 都看不到它。
+SurrealDB namespace `main` 下的特殊 database `_system`，**无 access**：承载 `workspace` 索引（slug ↔ db_name）、`user_workspace_index` 倒查表（email / OIDC subject → 可进入的 ws db 列表与 role / 最近选择）、系统迁移版本与少量跨 workspace 运行态。仅后端 root 凭证可访问；用户和 **虚拟员工** 都看不到它。
 _Avoid_: 系统库（仅 ADR / 运维语境使用）
 
 **user_workspace_index**:
-`_system` database 中的倒查表（**IdP 同步缓存**），按 subject / email 索引出"该真人能进入哪些 **workspace database** + 在每个里是什么身份（admin / participant）"。**权威在 IdP**——本表仅供后端 dispatcher 索引 / reconciler 校对，**不参与用户登录裁决**（用户身份由 IdP token claim 直接给出）。写入触发器：IdP webhook（issue WP-C-03）+ 启动期 reconciler（issue WP-C-05）。
+`_system` database 中由本应用维护的倒查表，按 subject / email 索引出"该真人能进入哪些 **workspace database** + 在每个里是什么身份（admin / participant）+ 最近一次选择时间"。它是 **Workspace Scope Module**、IdP 登录 hook、workspace 列表和 Office dispatcher 的查询入口；不是 IdP 同步缓存。
 _Avoid_: 全局成员表，跨工作区用户表
 
 **IdP**:
-外部 OpenID Connect Identity Provider，**身份与 workspace 分发的权威**。颁发的 OIDC token claim 中带 `current_db` / `role` / `ns_admin?` 等业务字段；切换 workspace = 调 IdP 重发 token；workspace 列表权威源在 IdP。本仓库的 `_system.user_workspace_index` 只是 IdP 推送过来的缓存。具体选型与 webhook 协议待定（见 ADR Open Questions）。
-_Avoid_: 身份服务（在涉及"谁是权威 / 谁颁发 token"语境时使用 **IdP**）
+外部 OpenID Connect Identity Provider，负责真人登录与 OIDC token 签发。IdP 不维护 workspace 列表、不决定成员关系、不创建 workspace；它只根据本应用的 **Workspace Scope Module** 输出，在 token 中设置 SurrealDB 需要的 `https://surrealdb.com/db` 与 `https://surrealdb.com/ac` claims。
+_Avoid_: workspace 权威, 成员系统
 
-**NS-admin token**:
-IdP 在用户"创建 workspace"那一刻临时颁发的特殊 OIDC token，claim 中带 `ns_admin: true`。浏览器拿它走 NS 级 `admin` access SIGNIN，可执行 `DEFINE DATABASE` 与跨 db DDL。日常 token **不**带此 claim——降低误操作面。
-_Avoid_: 超级管理员 token（避免给人"长期身份"暗示——它只是临时 step-up token）
+**Workspace Scope Module**:
+Bun server 内管理"真人当前能进入哪个 workspace、以什么 access 进入"的后端 Module。它读取 / 维护 `_system.workspace` 与 `user_workspace_index`，提供 workspace 列表、切换 workspace、IdP 登录 hook 默认 scope、workspace 创建 lifecycle，并调用 IdP scope adapter 更新 token claims。它不代理工作簿 / 数据表 / office_* 业务读写。
+_Avoid_: session 代理, workspace CRUD 代理（当表达业务数据代理时）
 
 **工作区管理员**:
 某个 workspace database 中 `user` 表内 `kind='human' AND is_admin=true` 的 **用户**。登录走该 db 的 `admin` access（TYPE JWT），SurrealDB 引擎层授予 db owner 级能力，可执行 DDL（建表 / 加字段 / 定义 access 等）。每个工作区至少有一个管理员（创建者默认是）。
@@ -213,6 +213,8 @@ _Avoid_: 轮询（仅描述底层实现时使用）
 - 一个 **执行窗口** 内 **虚拟员工** 的步数受 `office_role.heartbeat_interval` 与硬上限约束
 - 一个 **工作区** 一一对应一个 **workspace database**
 - 一个 **system database** 全局唯一，承载所有 **工作区** 的索引和 **user_workspace_index** 倒查表（无邀请相关表）
+- **Workspace Scope Module** 读取 / 维护 **system database** 中的 **user_workspace_index**，并调用 **IdP** 更新 token scope
+- **IdP** 只签发 OIDC token；token scope 的 workspace 选择由 **Workspace Scope Module** 决定
 - 一个 **用户** 必属于某个 **workspace database**；同一 **OIDC 身份** 在多个工作区中是多条独立 **用户** 记录
 
 ## Flagged ambiguities
@@ -248,16 +250,17 @@ _Avoid_: 轮询（仅描述底层实现时使用）
 - "用户" 与 "OIDC 身份" 不可混用；已定稿：**用户** 是 workspace database 内的记录，**OIDC 身份** 是外部 IdP 的 subject；同一 OIDC 身份在多个工作区是多条 **用户** 记录。
 - "工作区 owner / Owner" 与 **工作区管理员** 不可混用；已定稿：领域规范词使用 **工作区管理员**（对应 `user.is_admin = true`），`workspace.owner_subject` 仅是 `_system` 中的底层标识字段。
 - "数据库" 与 **workspace database** / **system database** 不可混用；已定稿：在涉及底层映射时使用专名，业务交流仍用 **工作区**；不要把 SurrealDB 的 namespace / database 概念暴露到产品文案。
-- "service JWT" 不进入领域词汇；已定稿：架构上不存在该概念，所有写入都以 **用户**（含 **虚拟员工**）会话身份执行；后端唯一长期凭证是 SurrealDB root，仅 execTemplate 用。
+- "service JWT" 不进入领域词汇；已定稿：架构上不存在该概念，所有业务写入都以 **用户**（含 **虚拟员工**）会话身份执行；后端唯一长期凭证是 SurrealDB root，仅用于 `_system`、workspace lifecycle、schema migration、`employee_credential` 等维护路径。
 - "成员" 与 **普通成员** 不可混用；已定稿：领域规范词使用 **普通成员**（对应 `participant` access）；"成员"作为旧称仅在底层 schema 字段或历史 ADR 中保留。
 - "角色" 在本仓库已有两种含义，必须按上下文分清：
   - **岗位**（`office_role` 表，仅 **虚拟员工** 挂载）。
   - **身份类别**（管理员 / 普通成员 / 虚拟员工，落在 `user.kind` + `user.is_admin` + access 选择上）。
   绝不再用泛指"角色"称呼这两者。
 - "_system 承载邀请" 的措辞已废止；已定稿：架构内**无邀请机制**——`pending_workspace_member` / `has_workspace_member` 等表全部移除；管理员直接预创建 user 记录（输入 email），被预创建人首次 OIDC 登录由 AUTHENTICATE 回填 `subject` 与 `last_seen_at`；`_system` 只放 `workspace` 索引 + `user_workspace_index` 倒查表，且无 access。
-- "前端不直连 SurrealDB" 的旧措辞（2026-05-16 短暂确立）已被 2026-05-17 推翻；已定稿：**前端默认直连 SurrealDB**（公网 WSS + TLS），用 IdP 颁发的 OIDC token 走对应 access SIGNIN；后端**只**承载 Mastra、Office dispatcher、IdP webhook 同步、root 维护。`_system` 永远只由 root 凭证访问，前端永不接触。详见 [`docs/adr/frontend-direct-connect.md`](./docs/adr/frontend-direct-connect.md)。
-- "execTemplate / create_workspace 后端 endpoint" 措辞已废止；已定稿：workspace 创建由 IdP 颁发临时 NS-admin token + 浏览器自己执行 `DEFINE DATABASE` + 应用 `shared/sql/workspace-template/` 模板完成。后端通过 IdP webhook 异步获悉新 workspace 并同步 `_system`。
-- "sessions / members / workspaces 后端 endpoint" 措辞已废止；已定稿：身份分发的权威在 **IdP**——OIDC token 中携带 `current_db` / `role` claim；管理员浏览器内直接 INSERT/UPDATE/DELETE `user` 表加 / 删成员（PERMISSIONS 兜底）；同时调 IdP 同步成员变更；`_system.user_workspace_index` 退化为 IdP 同步缓存。
+- "前端不直连 SurrealDB" 的旧措辞（2026-05-16 短暂确立）已被 2026-05-17 推翻；已定稿：**前端默认直连 SurrealDB**（公网 WSS + TLS），用 IdP 颁发的 OIDC token 走对应 access SIGNIN；后端承载 Mastra、Office dispatcher、Workspace Scope Module 与 root 维护。`_system` 永远只由 root 凭证访问，前端永不接触。详见 [`docs/adr/frontend-direct-connect.md`](./docs/adr/frontend-direct-connect.md)。
+- "NS-admin token / 浏览器创建 workspace" 措辞已废止；已定稿：workspace 创建由后端 **Workspace Scope Module** 用 root 完成（建 database、应用 `shared/sql/workspace-template/`、写 owner、写 `_system`），浏览器不持跨 db DDL 能力。
+- "IdP 是 workspace 权威" 的旧措辞已废止；已定稿：workspace 列表、最近选择、成员索引与 workspace 创建都由本应用维护，**IdP** 只负责登录与 token scope 签发。scope claim 使用 `https://surrealdb.com/db` 与 `https://surrealdb.com/ac`。
+- "sessions / workspaces endpoint 全部废除" 的旧措辞已废止；已定稿：后端保留 **Workspace Scope Module** endpoint（workspace 列表、切换、创建、IdP default-scope hook），但不代理工作簿 / 数据表 / office_* 业务数据 CRUD 或 LIVE。
 
 ## Example dialogue
 

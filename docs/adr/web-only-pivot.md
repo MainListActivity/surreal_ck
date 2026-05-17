@@ -39,31 +39,36 @@ Electrobun 1.x (桌面壳)
 ### 1. 新拓扑（三角，浏览器分别直连 SurrealDB 与后端）
 
 ```
-Browser (Svelte 5 + RevoGrid + surrealdb-js)
+Browser (Svelte 5 + RevoGrid + surrealdb browser SDK)
    │
-   ├── OIDC Auth Code + PKCE ───► IdP（外部，身份与 workspace 列表权威）
+   ├── OIDC Auth Code + PKCE ───► IdP（外部，只负责登录与 token scope 签发）
+   │    登录 hook 从 Bun server 获取默认 workspace scope
    │
-   ├── WSS（surrealdb-js）──────► SurrealDB（公网 WSS + TLS）
-   │    用 IdP 颁发的 OIDC token signin admin / participant
+   ├── WSS（surrealdb browser SDK）──────► SurrealDB（公网 WSS + TLS）
+   │    用 token 中的 https://surrealdb.com/db / ac claims signin
    │    所有读 / 写 / LIVE SELECT 直接走这条连接
    │
    └── HTTPS / WSS ─────────────► Bun server (Hono)
+                                   ├─ Workspace Scope Module
+                                   │  ├─ GET/POST /api/session/*
+                                   │  ├─ POST /api/workspaces（创建 workspace）
+                                   │  └─ GET /api/internal/idp/default-scope
                                    ├─ POST /api/chat（Mastra）
                                    ├─ WS  /api/chat/stream
                                    ├─ Office dispatcher（进程内，无 endpoint）
-                                   └─ root 路径：_system schema、employee_credential、IdP 同步钩子
+                                   └─ root 路径：_system schema、workspace lifecycle、employee_credential
 ```
 
 - **前端**：浏览器原生，**默认直连 SurrealDB**（详见 [`frontend-direct-connect.md`](./frontend-direct-connect.md)）。读 / 写 / LIVE 订阅 / 管理员 DDL 全部走浏览器内 surrealdb-js。
-- **后端（Bun server）**：单容器单副本 MVP。只承载"必须在后端跑"的少数职责：Mastra（LLM key 在后端）、Office dispatcher（员工 secret 在后端）、root 操作（_system schema 启动 / employee_credential 写入 / IdP 同步钩子）。**不再有 sessions / members / workspaces / LIVE 转发等代理 endpoint**。
+- **后端（Bun server）**：单容器单副本 MVP。只承载"必须在后端跑"的少数职责：Workspace Scope Module（workspace 列表、切换、创建、IdP default scope hook）、Mastra（LLM key 在后端）、Office dispatcher（员工 secret 在后端）、root 操作（_system schema 启动 / workspace lifecycle / employee_credential 写入）。**不再有业务数据 CRUD / LIVE 转发代理 endpoint**。
 - **数据库**：SurrealDB **自部署或托管，公网 WSS + TLS**（可选 IP 白名单 + WAF）。MVP 接受公网；不再要求与后端同机房内网。
-- **IdP**：身份与 workspace 列表的权威——OIDC token 中携带 `current_db` / `role` / `ns_admin?` claim；切换 workspace 走 IdP 重签。
+- **IdP**：只负责 OIDC 登录与 token scope 签发。workspace 列表、最近一次 workspace、成员关系和 workspace 创建都由本应用维护；IdP token 中只需要 `https://surrealdb.com/db` 与 `https://surrealdb.com/ac` claims。
 
 ### 1.1 身份与权限（详见 [`workspace-as-database.md`](./workspace-as-database.md) + [`frontend-direct-connect.md`](./frontend-direct-connect.md)）
 
 - 用户登录走 OIDC（浏览器内 SPA Auth Code + PKCE，**不经过后端**）。
-- 浏览器拿 OIDC token 直接 `db.signin({ ac: 'admin' | 'participant', ns, db, token })`。
-- 不存在"service JWT"。后端持有的 SurrealDB root 凭证仅用于：启动期 `_system` schema 初始化 + 写 `employee_credential` + 接收 IdP 同步钩子。
+- 浏览器拿 OIDC token 直接按 `https://surrealdb.com/db` / `https://surrealdb.com/ac` claims `db.signin({ ac, ns, db, token })`。
+- 不存在"service JWT"。后端持有的 SurrealDB root 凭证仅用于：启动期 `_system` schema 初始化 + workspace 创建 / 迁移 + 写 `employee_credential`。
 - 虚拟员工是 workspace database 内 `user` 表中 `kind='virtual'` 的 record；通过 `DEFINE ACCESS employee ON DATABASE TYPE RECORD` 由 SurrealDB 自身管理。**dispatcher 在后端**每次执行窗口前用 employee secret SIGNIN 一次，拿短期 token 用完即弃。
 
 ### 2. 弃用清单
@@ -111,8 +116,9 @@ Browser (Svelte 5 + RevoGrid + surrealdb-js)
     - `PORT`（默认 8080）
     - `SURREAL_URL`（如生产 `wss://db.example.com/rpc`）
     - `SURREAL_NS`（默认 `main`）
-    - `SURREAL_ROOT_USER` / `SURREAL_ROOT_PASS`（仅 `_system` 写入、employee_credential 写入、IdP 同步钩子用）
+    - `SURREAL_ROOT_USER` / `SURREAL_ROOT_PASS`（仅 `_system` 写入、workspace lifecycle、employee_credential 写入用）
     - `OIDC_ISSUER` / `OIDC_JWKS_URL` / `OIDC_AUDIENCE`（验 `/api/chat` 等后端 endpoint 的 token）
+    - `IDP_SCOPE_API_URL` / `IDP_SCOPE_API_TOKEN`（Workspace Scope Module 调 IdP 更新 token scope）
     - `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` 等模型 key
   - 前端：
     - `VITE_SURREAL_URL`（如 `wss://db.example.com/rpc`）
@@ -139,7 +145,7 @@ Browser (Svelte 5 + RevoGrid + surrealdb-js)
 - **后端服务终于成为现实**：服务发布、监控、密钥轮换、灰度都要做。但比"自造同步层"或"全权代理 endpoint"低风险——后端只剩 Mastra + dispatcher 两件正事。
 - **SurrealDB 公网暴露**：是新攻击面。必须开 query timeout / connection limit / rate limit；TLS 证书运维；可选 IP 白名单或 WAF。DEFINE ACCESS + PERMISSIONS 是真正安全边界。
 - **IdP 依赖加深**：IdP 不可用 = 用户不能登录 / 不能切 workspace / 不能新建 workspace。MVP 接受单 IdP。
-- **SurrealDB root 凭证**：仍是后端唯一长期凭证；用于启动期 _system schema、employee_credential 写入、IdP 同步钩子。环境变量注入 + 不写日志 + 文档化轮换。
+- **SurrealDB root 凭证**：仍是后端唯一长期凭证；用于启动期 _system schema、workspace lifecycle、employee_credential 写入。环境变量注入 + 不写日志 + 文档化轮换。
 - **中国法律数据合规**：自部署可控；上线前完成境内部署可行性验证（P1 / pre-launch）。
 - **本地优先体验丢失**：离线编辑不再支持。本产品定位下不构成实际损失（用户离线时虚拟员工仍在服务器上工作）。
 

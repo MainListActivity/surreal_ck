@@ -45,26 +45,30 @@ Key routing rules:
 ```
 Browser (Svelte 5 + RevoGrid + surrealdb-js + oidc-client-ts)
    │
-   ├── OIDC Auth Code + PKCE ─────► IdP（外部，身份与 workspace 列表权威）
-   │     ↑ token claim 含 current_db / role / ns_admin?
+   ├── OIDC Auth Code + PKCE ─────► IdP（外部，只负责登录与 token scope 签发）
+   │     ↑ token claim 含 https://surrealdb.com/db / https://surrealdb.com/ac
+   │     ↑ 登录 hook 从 Bun server 获取默认 workspace scope
    │
    ├── WSS（surrealdb-js）─────────► SurrealDB（公网 WSS + TLS）
-   │     ├ NS-admin access：DEFINE DATABASE（仅创建 workspace 那一刻）
    │     ├ admin access：DDL + DML
    │     ├ participant access：DML（DB 引擎拒 DDL）
    │     └ 所有 SELECT / LIVE / INSERT / UPDATE 直接走这条连接
    │
    └── HTTPS / WSS ───────────────► Bun server (Hono)
+                                    ├── Workspace Scope Module
+                                    │   ├── GET/POST /api/session/*
+                                    │   ├── POST /api/workspaces（创建 workspace）
+                                    │   └── GET /api/internal/idp/default-scope
                                     ├── POST /api/chat（Mastra Router workflow，LLM key 必须在后端）
                                     ├── WS  /api/chat/stream（workflow 流式输出）
                                     ├── Office dispatcher（进程内服务；用员工 secret SIGNIN ws db）
-                                    └── POST /api/internal/*（IdP webhook 同步 _system；root 操作）
+                                    └── POST /api/internal/*（IdP hook / dispatcher 内部入口；root 操作）
                                        SurrealDB root 连接：
-                                       • _system schema 启动 / IdP 同步 / dispatcher 启动遍历
+                                       • _system schema 启动 / workspace lifecycle / dispatcher 启动遍历
                                        • employee_credential 写入
 ```
 
-**没有了**：sessions / members / workspaces 创建 endpoint、LIVE 转发 endpoint、后端 OIDC 中转——都被浏览器直连或 IdP 取代。
+**没有了**：工作簿 / 数据表 / office_* 业务 CRUD 代理 endpoint、LIVE 转发 endpoint、后端 OIDC 中转。后端保留 Workspace Scope Module 处理 workspace 列表、切换、创建和 IdP default scope。
 
 ### 各层选型理由
 
@@ -76,7 +80,7 @@ Browser (Svelte 5 + RevoGrid + surrealdb-js + oidc-client-ts)
 | 前端构建 | Vite 8 | 标准 SPA，无 SSR；dev 代理 `/api`、`/ws` 到 Bun server |
 | 前端 ↔ SurrealDB | WSS（surrealdb-js 浏览器 SDK） | 浏览器直连，读 / 写 / LIVE / DDL（admin）全在浏览器 |
 | 前端 ↔ 后端 | HTTPS + WS（Hono RPC client） | 仅 Mastra `/api/chat*` 等少数 endpoint；端到端类型走 `hono/client` |
-| 前端 ↔ IdP | OIDC Auth Code + PKCE（oidc-client-ts） | 浏览器直接走，不经过后端；token 中带 current_db / role |
+| 前端 ↔ IdP | OIDC Auth Code + PKCE（oidc-client-ts） | 浏览器直接走登录；token scope 由后端 Workspace Scope Module 决定 |
 | 后端运行时 | Bun | 统一 TS 运行时，承载 Mastra + Hono + SurrealDB SDK |
 | 后端框架 | Hono | Bun 事实标准、WS 一等支持、中间件精简、不锁运行时（详见 ADR） |
 | OIDC 校验 | jose + JWKS（5min cache） | 后端不维护 session 表，OIDC token 透传到 SurrealDB |
@@ -97,13 +101,12 @@ Browser (Svelte 5 + RevoGrid + surrealdb-js + oidc-client-ts)
 **身份模型（不可违背）**
 
 - 用户**默认直连 SurrealDB**——读 / 写 / LIVE / 管理员 DDL 全在浏览器内做。
-- 后端唯一长期凭证是 SurrealDB **root**（环境变量），仅用于：启动期 `_system` schema、`employee_credential` 写入、接收 IdP webhook 同步 `_system`、dispatcher 启动遍历。
-- 真人会话 = 浏览器用 IdP 颁发的 OIDC token `db.signin` 到 ws db 的 `admin` 或 `participant` access。
-- NS-admin 会话 = 仅 create-workspace 那一刻临时 token，浏览器在 NS 级 `admin` access signin 后 `DEFINE DATABASE`。
+- 后端唯一长期凭证是 SurrealDB **root**（环境变量），仅用于：启动期 `_system` schema、workspace lifecycle、schema migration、`employee_credential` 写入、dispatcher 启动遍历。
+- 真人会话 = 浏览器用 IdP 颁发的 OIDC token 中 `https://surrealdb.com/db` / `https://surrealdb.com/ac` scope `db.signin` 到 ws db 的 `admin` 或 `participant` access。
 - 虚拟员工会话 = dispatcher 用员工 secret SIGNIN 到 ws db 的 `employee` access。
-- IdP 是 workspace 列表与切换的权威；后端 `_system.user_workspace_index` 是 IdP 同步缓存。
+- IdP 只负责登录与 token scope 签发；workspace 列表、最近选择、成员索引和 workspace 创建由后端 Workspace Scope Module 维护。
 - **架构内不存在 service JWT 概念**。所有写入归因走 `$auth`，不要在表字段里手工标 `from_*`。
-- **execTemplate 概念已废除**。workspace 创建 = IdP 颁发 NS-admin token + 浏览器 DEFINE DATABASE。
+- **NS-admin / execTemplate 概念已废除**。workspace 创建 = 后端 Workspace Scope Module 用 root 建库、应用模板、写 `_system`，再调用 IdP scope adapter。
 
 ## SurrealDB Rules
 
@@ -143,12 +146,11 @@ Row-level security is defined once in `DEFINE TABLE ... PERMISSIONS` and enforce
 
 | 身份 | 走的 access | DB 引擎能力 | 谁持 token |
 |---|---|---|---|
-| **NS-admin**（仅 create-workspace 临时） | `admin` ON NAMESPACE (TYPE JWT) | DEFINE DATABASE + 跨 db DDL | 浏览器（IdP 颁发临时 token） |
 | **工作区管理员**（`user.kind='human' AND is_admin=true`） | `admin` ON DATABASE (TYPE JWT) | DDL + DML | 浏览器 |
 | **普通成员**（`user.kind='human' AND is_admin=false`） | `participant` ON DATABASE (TYPE RECORD WITH JWT) | 仅 DML（DDL 被引擎硬拒） | 浏览器 |
 | **虚拟员工**（`user.kind='virtual'`） | `employee` ON DATABASE (TYPE RECORD) | 仅 DML（DDL 被引擎硬拒） | dispatcher（后端进程内）用员工 secret SIGNIN |
 
-完整 access SurrealQL 与 AUTHENTICATE 脚本见 [`docs/adr/workspace-as-database.md`](./docs/adr/workspace-as-database.md) §1。
+access 与 token scope 约定见 [`docs/adr/workspace-as-database.md`](./docs/adr/workspace-as-database.md)。
 
 ## CRITICAL: Load `mastra` skill
 
@@ -167,24 +169,25 @@ This is a **Web app**：Svelte 5 前端 + Hono on Bun 后端 + 自部署 Surreal
 | `server/`                    | 后端 workspace（Hono on Bun） |
 | `server/src/index.ts`        | 进程启动（init root 连接 / ensure system schema / migrate workspaces / Bun.serve） |
 | `server/src/app.ts`          | Hono app 装配 + 全局中间件 |
-| `server/src/middleware/`     | OIDC verify（仅 Mastra 用）、IdP webhook HMAC、日志、错误归一 |
+| `server/src/middleware/`     | OIDC verify、internal hook auth、日志、错误归一 |
 | `server/src/db/`             | SurrealDB root 连接管理、_system schema 初始化、迁移 runner、reconciler |
-| `server/src/routes/`         | HTTP / WS endpoints：仅 `/api/chat*`（Mastra）+ `/api/internal/*`（IdP webhook + dispatcher 内部入口）+ `/health` |
+| `server/src/routes/`         | HTTP / WS endpoints：`/api/session/*` + `/api/workspaces`（Workspace Scope Module）、`/api/chat*`（Mastra）、`/api/internal/*`（IdP hook + dispatcher 内部入口）、`/health` |
+| `server/src/workspaces/`     | Workspace Scope Module：workspace 列表、切换、创建、IdP scope adapter、default-scope hook |
 | `server/ai/mastra/`          | Router workflow + 子 agent + tool（迁自 `src/main/ai/mastra/`） |
 | `server/ai/mastra/agents`    | 子 agent 定义（navigation / dashboard / claim-analysis / resource-retrieval / chitchat） |
 | `server/ai/mastra/workflows` | Router workflow 与未来 employee workflow |
 | `server/ai/mastra/tools`     | 所有 tool；调用 SurrealDB 时必须用 `context.surrealSession`，禁止 root / service |
 | `server/ai/mastra/storage`   | `WorkflowsStorage` adapter，落 `_system.workflow_run` |
 | `server/ai/office/`          | 虚拟办公室 dispatcher、employee runtime、tool bundles（待 virtual-office 簇开工） |
-| `web/`                       | 前端 workspace（Svelte 5 + Vite 5） |
+| `web/`                       | 前端 workspace（Svelte 5 + Vite 8） |
 | `web/src/`                   | 业务 UI |
-| `web/src/lib/api.ts`         | Hono RPC client；仅对接 Mastra `/api/chat*` |
+| `web/src/lib/api.ts`         | Hono RPC client；对接 Workspace Scope Module 与 Mastra `/api/chat*` |
 | `web/src/lib/ws.ts`          | WS 客户端封装（仅 Mastra stream） |
 | `web/src/lib/auth.ts`        | OIDC SPA 登录壳（oidc-client-ts）+ silent refresh + claim 解析 |
-| `web/src/lib/surreal.ts`     | 浏览器 surrealdb-js 直连封装；按 IdP token signin admin / participant |
+| `web/src/lib/surreal.ts`     | 浏览器 surrealdb-js 直连封装；按 token 中 surreal db/ac scope signin admin / participant |
 | `web/src/lib/workspace-store.ts` | 当前 workspace + db 连接状态（$state runes） |
-| `web/src/lib/switch-workspace.ts` | 调 IdP silent refresh 切 workspace + 重新 signin |
-| `web/src/lib/create-workspace.ts` | 拿 NS-admin token + DEFINE DATABASE + 应用模板 |
+| `web/src/lib/switch-workspace.ts` | 调 `/api/session/switch-workspace` + silent refresh + 重新 signin |
+| `web/src/lib/create-workspace.ts` | 调 `/api/workspaces` 创建 workspace + silent refresh + 进入新 workspace |
 | `web/src/routes/auth/`       | login / callback 页 |
 | `web/src/components/`        | RevoGrid 包装、AI 抽屉、Workspace 切换器、办公室 UI |
 | `shared/`                    | 前后端共享类型 / DTO（含 `router-workflow.types.ts`、`ai-context.ts`） |
@@ -212,16 +215,15 @@ This is a **Web app**：Svelte 5 前端 + Hono on Bun 后端 + 自部署 Surreal
 
 - `PORT`（默认 8080）
 - `SURREAL_URL`（如 `wss://db.example.com/rpc`） / `SURREAL_NS=main` / `SURREAL_ROOT_USER` / `SURREAL_ROOT_PASS`
-- `OIDC_ISSUER` / `OIDC_JWKS_URL` / `OIDC_AUDIENCE`（仅 Mastra endpoint 验 token 用）
-- `IDP_WEBHOOK_SECRET`（IdP webhook HMAC 校验）
-- `IDP_ADMIN_API_URL` / `IDP_ADMIN_TOKEN`（reconciler 拉 IdP 全量用）
+- `OIDC_ISSUER` / `OIDC_JWKS_URL` / `OIDC_AUDIENCE`（Mastra 与 Workspace Scope Module 验 token 用）
+- `IDP_SCOPE_API_URL` / `IDP_SCOPE_API_TOKEN`（Workspace Scope Module 调 IdP 更新 token scope）
+- `IDP_HOOK_SECRET`（IdP default-scope hook 鉴权，如 IdP 选型需要）
 - `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` 等模型 provider key
 
 前端构建需要：
 
 - `VITE_SURREAL_URL`（如 `wss://db.example.com/rpc`）
 - `VITE_OIDC_ISSUER` / `VITE_OIDC_CLIENT_ID` / `VITE_OIDC_REDIRECT_URI` / `VITE_OIDC_AUDIENCE`
-- `VITE_OIDC_JWKS_URL`（前端创建新 db 时占位替换模板 SQL）
 - `VITE_API_BASE_URL`（Bun server 的对外地址）
 
 ## Boundaries
@@ -231,16 +233,16 @@ This is a **Web app**：Svelte 5 前端 + Hono on Bun 后端 + 自部署 Surreal
 - Load the `mastra` skill before any Mastra-related work
 - 新 agent / tool / workflow / scorer 在 `server/ai/mastra/index.ts` 中注册
 - 新业务 schema 增量以 `.surql` 文件追加到 `shared/sql/workspace-template/`，文件名带版本号——**前后端共享同一份**
-- 业务读写 / LIVE 默认前端直连 SurrealDB（用 `getSurreal()`）；后端**只**承载 Mastra、Office dispatcher、IdP webhook、root 维护
+- 业务读写 / LIVE 默认前端直连 SurrealDB（用 `getSurreal()`）；后端承载 Workspace Scope Module、Mastra、Office dispatcher、root 维护
 - 写 SurrealQL 时用 graph traversal（`->` / `<-`），不要再用 `SELECT VALUE ... FROM edge WHERE in = ...`
 - 后端 Mastra tool 调用 SurrealDB 时必须用 `context.surrealSession`（调用者会话），不要用 root 或全局连接
-- 任何"管理员能做的事"优先让浏览器直接 SurrealQL 完成（PERMISSIONS 兜底），不要给后端加 endpoint
+- 工作簿 / 数据表 / office_* 等业务操作优先让浏览器直接 SurrealQL 完成（PERMISSIONS 兜底）；workspace 列表、切换、创建、成员索引这类 scope / lifecycle 操作走 Workspace Scope Module
 
 ### Never do
 
 - 不引入 service JWT / 长期员工 token / 任何"代写"模式——只有：浏览器直连会话、dispatcher employee SIGNIN、root 维护
-- 不在后端加 sessions / members / workspaces 创建 / LIVE 转发等代理 endpoint——已被前端直连或 IdP 取代
-- 不写 execTemplate——concept 已废除，workspace 创建走 IdP + 浏览器 DDL
+- 不在后端加工作簿 / 数据表 / office_* CRUD 或 LIVE 转发代理 endpoint——业务数据已由前端直连 SurrealDB
+- 不引入 NS-admin token，不让浏览器跨 db DDL 创建 workspace；workspace 创建走 Workspace Scope Module
 - 不在 endpoint 代码里手写"`if (!user.is_admin) throw 403`"做 DDL 守卫——access 类型已硬隔离 DDL
 - 不在 PERMISSIONS / query 里写 `workspace IN $auth<-...->workspace` 之类的嵌套——跨 workspace 隔离由 db 边界保证
 - 不修改 `node_modules` 或 SurrealDB 数据目录

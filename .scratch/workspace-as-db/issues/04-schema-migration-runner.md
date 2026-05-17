@@ -1,7 +1,7 @@
 Status: needs-triage
 Label: needs-triage
 
-# WP-C-04 — schema migration runner（既有 db 增量；前端创建新 db 时自带最新模板）
+# WP-C-04 — schema migration runner（既有 db 增量）
 
 ## Parent
 
@@ -40,10 +40,11 @@ const server = Bun.serve(...);
 - [ ] 中间某个 ws db 跑挂 → 启动失败，但已成功迁的 db 不回滚（用户可观测 "M/N 成功"日志）。
 - [ ] N=0 时（无 workspace）migrateAllWorkspaces 立即返回，不报错。
 - [ ] 启动时只用 root 连接做迁移，不消耗任何 user / employee SIGNIN。
+- [ ] 与 WP-C-06 创建 workspace 复用同一个 `loadTemplateScripts()`。
 
 ## Notes
 
 - 这是"启动期 fail-fast"模型；上百 workspace 时启动会变慢，但 MVP 接受（参见 ADR Open Questions）。
 - 失败 ws db 的告警 / 修复留给运维流程，本 issue 不实现。
 - 模板每次升级都必须保持 schema 向后兼容（不允许 DROP COLUMN 影响在线业务），策略由业务侧把关。
-- **新建的 db 不需要走本 runner**——前端在 DEFINE DATABASE 后立即应用最新模板，schema_version 直接到 latest。本 runner 仅处理"曾经创建过、但模板已升级"的既有 db。
+- **新建的 db 不需要走本 runner**——WP-C-06 在创建时立即应用最新模板，schema_version 直接到 latest。本 runner 仅处理"曾经创建过、但模板已升级"的既有 db。

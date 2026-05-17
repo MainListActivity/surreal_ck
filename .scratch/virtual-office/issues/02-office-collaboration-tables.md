@@ -9,7 +9,7 @@ Label: needs-triage
 
 ## What to build
 
-在 `create_workspace` execTemplate 的 seed 步骤中，加入 4 张 **虚拟办公室** 协作表，全部 SCHEMAFULL + CHANGEFEED 7d。
+在 `shared/sql/workspace-template/` 的虚拟办公室增量中，加入 4 张 **虚拟办公室** 协作表，全部 SCHEMAFULL + CHANGEFEED 7d。WP-C-06 创建 workspace 与 WP-C-04 迁移既有 workspace 都会应用该增量。
 
 **关键简化**：所有归属判断由 ws db 边界天然提供（参见 [`workspace-as-database.md`](../../../docs/adr/workspace-as-database.md)）；PERMISSIONS 只表达"在本 workspace 内的具体角色约束"，不再有 `workspace IN $auth<-has_workspace_member<-workspace` 这种嵌套。
 
@@ -104,7 +104,7 @@ DEFINE INDEX user_notification_to_open ON user_notification COLUMNS to_user, res
 
 ## Acceptance criteria
 
-- [ ] `create_workspace` execTemplate 落库后，四张表 schema 全部就位
+- [ ] WP-C-06 创建 workspace 后，四张表 schema 全部就位
 - [ ] PERMISSIONS 单测：
   - 真人 admin 能 INSERT `office_task { assigner: self }`，但不能 INSERT `assigner=别人`
   - 虚拟员工以 employee access SIGNIN 后，能 INSERT `office_message { from: self }` + `user_notification { from_employee: self }`

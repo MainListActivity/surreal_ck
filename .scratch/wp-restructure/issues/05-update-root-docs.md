@@ -12,7 +12,7 @@ Label: needs-triage
 - 根 `README.md`：写"如何起项目"的最小说明（暂时只到 `pnpm install` + `pnpm -r run typecheck`）。
 - `AGENTS.md`（即 `CLAUDE.md`）技术栈章节重写——把 Electrobun / 嵌入式 SurrealDB 的描述替换为：
   - Bun server (Hono)
-  - 自部署 SurrealDB（同机房内网）
+  - 自部署 / 托管 SurrealDB（公网 WSS + TLS；dev compose 可走内网）
   - Web 前端（Svelte 5 + RevoGrid）
   - pnpm workspaces 三层（server / web / shared）
 - `AGENTS.md` "Project Structure" 表格更新：`src/main/ai/mastra/**` → `server/legacy/ai/mastra/**`（在簇 D1 完成迁入后再改一次到 `server/ai/mastra/**`）。
