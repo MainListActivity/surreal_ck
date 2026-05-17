@@ -1,7 +1,7 @@
 Status: needs-triage
 Label: needs-triage
 
-# VO-11 — 创建工作区 + 说目标 → 自动开岗
+# VO-11 — 创建工作区 + 说目标 → 自动开岗（前端 + IdP，无 execTemplate）
 
 ## Parent
 
@@ -13,23 +13,33 @@ Label: needs-triage
 
 ### 流程
 
-1. 既有"新建 workspace"对话框新增一栏 "目标"（多行 textarea）
-2. 同时引导（可跳过）"导入数据"——若导入则进入既有 import 流程
-3. 提交后前端调一个聚合 endpoint `POST /api/workspaces/with-office`：
-   - 后端用 root 凭证调 `create_workspace` execTemplate，建新 ws db + seed schema + 把调用者作为首个 admin user 写入 + 在 `_system.workspace` 写索引（含 `goal` 字段）
-   - 后端切换到调用者 JWT，SIGNIN 到新 ws db；以 admin 身份：
-     - INSERT `office_role` 三条（manager / analyst / form-officer）
-     - 调三次内部员工 provisioning（复用 issue 03 的核心逻辑，不走 HTTP）：每次 INSERT 一条 user + employee_credential
-     - INSERT 第一条 `office_task { assigner: self (admin), assignee: manager, goal: 'workspace 目标如下：<goal>。请规划下一步。' }`
-   - dispatcher 在下一次启动或下一个心跳/LIVE 命中时把这三个员工纳入管理（或者后端在 endpoint 末尾调一个内部 `dispatcher.refreshWorkspace(slug)`）
-4. 前端跳转到办公室页（Web 路由），通过后端 WS LIVE 转发让用户看到员工陆续上岗、第一条 message 写出
+1. 既有"新建 workspace"对话框新增一栏 "目标"（多行 textarea）。
+2. 同时引导（可跳过）"导入数据"——若导入则进入既有 import 流程。
+3. 提交后浏览器：
+   a. 调 IdP create-workspace（input 含 `workspaceName`, `workspaceSlug`, `goal`）；IdP 内部把 `goal` 透传给后端（webhook 或 IdP 自己存）。
+   b. 拿到 NS-admin token → 走 web-frontend-migration issue 06 流程：DEFINE DATABASE + 应用模板 + INSERT owner user。
+   c. silent refresh 换"日常 admin token" → enterWorkspace。
+   d. 浏览器以 admin access：
+      - `INSERT office_role` 三条（manager / analyst / form-officer）。
+      - 调后端 `/api/internal/employee-provisioned` 三次（dispatcher 写 employee_credential + 同步缓存）。该 endpoint 内部用 root + admin 协作完成"INSERT user kind=virtual + INSERT employee_credential"。
+      - `INSERT office_task { assigner: self, assignee: manager, goal: '<目标>，请规划下一步' }`。
+   e. dispatcher LIVE 命中该 task → 自然拉起第一次执行窗口；浏览器办公室页 LIVE 订阅看到员工陆续上岗 + 第一条 message。
+4. 前端跳转到办公室页（Web 路由），通过浏览器直连 LIVE 看实时进展。
 
 ### Schema 增量
 
-在 `_system` db 的 `workspace` 索引表上：
+`goal` 字段加在 IdP 端（IdP 保管 workspace 元数据）或 ws db 的某张配置表（待 IdP 选型定）。本 issue 草案放后者：
+
+在 workspace template 增量 `004-tables-vo.surql` 新增 `workspace_meta` 单例表：
 
 ```surql
-DEFINE FIELD IF NOT EXISTS goal ON TABLE workspace TYPE option<string>;
+DEFINE TABLE workspace_meta SCHEMAFULL
+  PERMISSIONS
+    FOR select WHERE $auth != NONE,
+    FOR update WHERE $auth.is_admin = true;
+DEFINE FIELD goal ON workspace_meta TYPE option<string>;
+DEFINE FIELD created_at ON workspace_meta TYPE datetime VALUE time::now();
+-- 实际只 CREATE workspace_meta:default 一条记录
 ```
 
 ### 文案
@@ -40,10 +50,11 @@ DEFINE FIELD IF NOT EXISTS goal ON TABLE workspace TYPE option<string>;
 
 ## Acceptance criteria
 
-- [ ] 创建工作区 + 填目标 + 跳过导入 → 30s 内办公室页面出现 3 个员工 + ≥1 条 office_message
-- [ ] 同上 + 导入 .xlsx → 5 分钟内出现 ≥1 条 `office_report`（项目经理或数据分析师写的）
-- [ ] 不填目标也能创建工作区（保持兼容），只是不自动 seed 员工
-- [ ] 创建失败（任一员工签发失败）时整体回滚：workspace 不留半成品员工记录
+- [ ] 创建工作区 + 填目标 + 跳过导入 → 30s 内办公室页面出现 3 个员工 + ≥1 条 office_message。
+- [ ] 同上 + 导入 .xlsx → 5 分钟内出现 ≥1 条 `office_report`（项目经理或数据分析师写的）。
+- [ ] 不填目标也能创建工作区（保持兼容），只是不自动 seed 员工。
+- [ ] 创建失败（DEFINE DATABASE 或 INSERT 失败）→ 浏览器 `REMOVE DATABASE` 回滚 + 通知 IdP 撤销；workspace 不残留。
+- [ ] dispatcher 在新员工出现后 ≤30s 内开始处理第一条 task。
 
 ## Blocked by
 
@@ -51,9 +62,10 @@ DEFINE FIELD IF NOT EXISTS goal ON TABLE workspace TYPE option<string>;
 - `.scratch/virtual-office/issues/07-data-analyst-role-bundle.md`
 - `.scratch/virtual-office/issues/08-form-officer-role-bundle.md`
 - `.scratch/virtual-office/issues/09-office-ui-roster-and-activity-stream.md`
+- `.scratch/web-frontend-migration/issues/06-create-workspace-flow.md`
 
 ## Notes
 
-- 这是产品 hero flow——验收时建议把 demo 录屏作为产物归档到 `.scratch/virtual-office/demo/`。
-- 创建失败回滚：聚合 endpoint 在任一员工创建失败时把已创建的员工标 `virtual_profile.status='retired'`、workspace 保留；ws db 本身不删（drop database 是 root 操作，MVP 不暴露）。错误信息一并返回前端供用户重试。
-- `dispatcher.refreshWorkspace(slug)` 是 dispatcher 暴露给后端业务代码的内部入口，让"新建 workspace + seed 员工"后立即把这些员工纳入管理；具体实现在 issue 04 范围。
+- 这是产品 hero flow——验收时建议把 demo 录屏归档到 `.scratch/virtual-office/demo/`。
+- "调后端 `/api/internal/employee-provisioned`"是因为 `employee_credential` 表 PERMISSIONS NONE，admin 也写不了，必须 root；后端在该 endpoint 内部用 root 写 secret + dispatcher 缓存。
+- 创建失败回滚由浏览器主导（已拿 NS-admin token，可 `REMOVE DATABASE`），IdP 端需要"撤销" endpoint 配合。

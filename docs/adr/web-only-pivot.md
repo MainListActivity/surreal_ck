@@ -6,6 +6,7 @@
 - **Companions**:
   - [`virtual-office.md`](./virtual-office.md)（同期改写为 Web-only 版本）
   - [`workspace-as-database.md`](./workspace-as-database.md)（workspace ↔ database 映射 + 用户身份模型）
+  - [`frontend-direct-connect.md`](./frontend-direct-connect.md)（2026-05-17 决定：前端直连 SurrealDB + IdP 接管身份分发）
 
 ## Context
 
@@ -35,30 +36,35 @@ Electrobun 1.x (桌面壳)
 
 **正式弃用"本地 app + 嵌入式 SurrealDB"形态，转向"Web 前端 + 单容器 Bun server + SurrealDB Cloud"**。
 
-### 1. 新拓扑
+### 1. 新拓扑（三角，浏览器分别直连 SurrealDB 与后端）
 
 ```
-Browser (Svelte 5 + RevoGrid)        ← 公网
+Browser (Svelte 5 + RevoGrid + surrealdb-js)
    │
-   │ HTTP / WS  (业务 API + LIVE 转发)
-   ▼
-Bun server                            ← 内网
+   ├── OIDC Auth Code + PKCE ───► IdP（外部，身份与 workspace 列表权威）
    │
-   │ 内网地址 + 用户 OIDC JWT 透传
-   ▼
-SurrealDB                             ← 内网（与 Bun server 同机房）
+   ├── WSS（surrealdb-js）──────► SurrealDB（公网 WSS + TLS）
+   │    用 IdP 颁发的 OIDC token signin admin / participant
+   │    所有读 / 写 / LIVE SELECT 直接走这条连接
+   │
+   └── HTTPS / WSS ─────────────► Bun server (Hono)
+                                   ├─ POST /api/chat（Mastra）
+                                   ├─ WS  /api/chat/stream
+                                   ├─ Office dispatcher（进程内，无 endpoint）
+                                   └─ root 路径：_system schema、employee_credential、IdP 同步钩子
 ```
 
-- **前端**：浏览器原生，**不直连 SurrealDB**——SurrealDB 不暴露公网。所有数据交互（读、写、LIVE 订阅）都通过 Bun server 中转。
-- **后端**：单 Bun 进程（单容器 / 单副本 MVP），承载 Router workflow、Office dispatcher、虚拟员工执行、HTTP API、WS LIVE 转发。后端不持有数据库；通过内网用户名/密码（root，仅 execTemplate 用）+ 用户透传 JWT 访问 SurrealDB。
-- **数据库**：SurrealDB（自部署，与 Bun server 同机房内网），唯一权威。
+- **前端**：浏览器原生，**默认直连 SurrealDB**（详见 [`frontend-direct-connect.md`](./frontend-direct-connect.md)）。读 / 写 / LIVE 订阅 / 管理员 DDL 全部走浏览器内 surrealdb-js。
+- **后端（Bun server）**：单容器单副本 MVP。只承载"必须在后端跑"的少数职责：Mastra（LLM key 在后端）、Office dispatcher（员工 secret 在后端）、root 操作（_system schema 启动 / employee_credential 写入 / IdP 同步钩子）。**不再有 sessions / members / workspaces / LIVE 转发等代理 endpoint**。
+- **数据库**：SurrealDB **自部署或托管，公网 WSS + TLS**（可选 IP 白名单 + WAF）。MVP 接受公网；不再要求与后端同机房内网。
+- **IdP**：身份与 workspace 列表的权威——OIDC token 中携带 `current_db` / `role` / `ns_admin?` claim；切换 workspace 走 IdP 重签。
 
-### 1.1 身份与权限（详见 [`workspace-as-database.md`](./workspace-as-database.md)）
+### 1.1 身份与权限（详见 [`workspace-as-database.md`](./workspace-as-database.md) + [`frontend-direct-connect.md`](./frontend-direct-connect.md)）
 
-- 用户登录走 OIDC，浏览器拿到 JWT 后只发给 Bun server。
-- Bun server 以"用户透传"方式连 SurrealDB——每个 workspace 是独立 database，用户的 JWT 直接是该 db 的合法 user（`DEFINE ACCESS member ON DATABASE TYPE JWT URL <jwks>`）。
-- 不存在"service JWT"。后端唯一持有的长期凭证是 SurrealDB root 凭证（环境变量），仅在 execTemplate 创建新 workspace database 时使用。
-- 虚拟员工是 workspace database 内 `user` 表中 `kind='virtual'` 的 record；通过 `DEFINE ACCESS employee ON DATABASE TYPE RECORD` 由 SurrealDB 自身管理。后端每次执行窗口前 SIGNIN 一次，拿短期 token 用完即弃。
+- 用户登录走 OIDC（浏览器内 SPA Auth Code + PKCE，**不经过后端**）。
+- 浏览器拿 OIDC token 直接 `db.signin({ ac: 'admin' | 'participant', ns, db, token })`。
+- 不存在"service JWT"。后端持有的 SurrealDB root 凭证仅用于：启动期 `_system` schema 初始化 + 写 `employee_credential` + 接收 IdP 同步钩子。
+- 虚拟员工是 workspace database 内 `user` 表中 `kind='virtual'` 的 record；通过 `DEFINE ACCESS employee ON DATABASE TYPE RECORD` 由 SurrealDB 自身管理。**dispatcher 在后端**每次执行窗口前用 employee secret SIGNIN 一次，拿短期 token 用完即弃。
 
 ### 2. 弃用清单
 
@@ -97,15 +103,21 @@ SurrealDB                             ← 内网（与 Bun server 同机房）
 
 ### 5. 部署
 
-- 同一机房内两个容器：**Bun server** + **SurrealDB**（自部署），走内网通信，SurrealDB 不暴露公网。
-- 也可同 docker-compose 单机起 MVP；线上分两台。
-- MVP 后端 `replicas=1, concurrency=1`。
+- **Bun server**：单容器单副本 MVP，部署到任何能跑 Bun 的平台（Fly.io / Railway / Render / 自部署 VPS）。
+- **SurrealDB**：自部署或托管均可，**公网 WSS + TLS**；可选 IP 白名单 / Cloudflare WAF。MVP 不要求与后端同机房。
+- 开发：docker-compose 起 `server` + `surrealdb` 两服务即可；surrealdb 在本地走 `ws://`。
 - 环境变量：
-  - `SURREAL_URL`（内网地址）
-  - `SURREAL_NS`（默认 `main`）
-  - `SURREAL_ROOT_USER` / `SURREAL_ROOT_PASS`（仅 execTemplate 用，不参与日常请求）
-  - `OIDC_ISSUER` / `OIDC_JWKS_URL`
-  - `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` 等
+  - 后端：
+    - `PORT`（默认 8080）
+    - `SURREAL_URL`（如生产 `wss://db.example.com/rpc`）
+    - `SURREAL_NS`（默认 `main`）
+    - `SURREAL_ROOT_USER` / `SURREAL_ROOT_PASS`（仅 `_system` 写入、employee_credential 写入、IdP 同步钩子用）
+    - `OIDC_ISSUER` / `OIDC_JWKS_URL` / `OIDC_AUDIENCE`（验 `/api/chat` 等后端 endpoint 的 token）
+    - `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` 等模型 key
+  - 前端：
+    - `VITE_SURREAL_URL`（如 `wss://db.example.com/rpc`）
+    - `VITE_OIDC_ISSUER` / `VITE_OIDC_CLIENT_ID` / `VITE_OIDC_REDIRECT_URI` / `VITE_OIDC_AUDIENCE`
+    - `VITE_API_BASE_URL`（Bun server 的对外地址）
 
 ### 6. 桌面端长期定位
 
@@ -124,11 +136,12 @@ SurrealDB                             ← 内网（与 Bun server 同机房）
 
 ### 负面 / 必须正面解决
 
-- **后端服务终于成为现实**：服务发布、监控、密钥轮换、灰度都要做。但这些是已知熟练领域，比"自造同步层"低风险。
-- **SurrealDB 自部署 + 同机房内网**：消除了"前端直连 SurrealDB Cloud"的公网攻击面，但引入了"自己运维一台 SurrealDB"的运维项；备份、升级、故障恢复需要文档化。
-- **SurrealDB root 凭证**：是后端唯一长期凭证，仅 execTemplate 用。环境变量注入 + 不写日志 + 文档化轮换流程；详见 [`workspace-as-database.md`](./workspace-as-database.md) §4。
-- **中国法律数据合规**：自部署后境内合规问题缓解。仍需在国内法律实体下完成数据本地化部署的工程项；从"上 SurrealDB Cloud"假设下的 launch-blocker 降回 P1 / pre-launch。
-- **本地优先体验丢失**：离线编辑不再支持。本产品定位下不构成实际损失（用户离线时虚拟员工仍在内网服务器上工作）。
+- **后端服务终于成为现实**：服务发布、监控、密钥轮换、灰度都要做。但比"自造同步层"或"全权代理 endpoint"低风险——后端只剩 Mastra + dispatcher 两件正事。
+- **SurrealDB 公网暴露**：是新攻击面。必须开 query timeout / connection limit / rate limit；TLS 证书运维；可选 IP 白名单或 WAF。DEFINE ACCESS + PERMISSIONS 是真正安全边界。
+- **IdP 依赖加深**：IdP 不可用 = 用户不能登录 / 不能切 workspace / 不能新建 workspace。MVP 接受单 IdP。
+- **SurrealDB root 凭证**：仍是后端唯一长期凭证；用于启动期 _system schema、employee_credential 写入、IdP 同步钩子。环境变量注入 + 不写日志 + 文档化轮换。
+- **中国法律数据合规**：自部署可控；上线前完成境内部署可行性验证（P1 / pre-launch）。
+- **本地优先体验丢失**：离线编辑不再支持。本产品定位下不构成实际损失（用户离线时虚拟员工仍在服务器上工作）。
 
 ## Migration plan（高层）
 

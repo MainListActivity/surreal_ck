@@ -110,7 +110,7 @@ DEFINE INDEX user_notification_to_open ON user_notification COLUMNS to_user, res
   - 虚拟员工以 employee access SIGNIN 后，能 INSERT `office_message { from: self }` + `user_notification { from_employee: self }`
   - 真人（无论 is_admin）不能 INSERT `user_notification`（因为 `$auth.kind = 'human'`）
   - 非该 ws db 的 user（即跨 workspace 的用户）连这个 db 都 SIGNIN 失败（access AUTHENTICATE 拒绝），自然看不到任何记录
-- [ ] LIVE SELECT 烟雾测试：浏览器（通过后端 WS 转发）能订阅 `LIVE SELECT * FROM office_task WHERE assignee = $auth AND status = 'open'`，新建任务时立即收到事件
+- [ ] LIVE SELECT 烟雾测试：浏览器**直接** `db.live(...)` 订阅 `office_task WHERE assignee = $auth AND status = 'open'`，新建任务时立即收到事件（参见 `docs/adr/frontend-direct-connect.md`）
 - [ ] 真人 admin 能在 UI 上 update / delete 任意 office_task（兜底）
 
 ## Blocked by

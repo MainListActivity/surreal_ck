@@ -11,30 +11,66 @@
 - 本文只列"下一批要做"和"暂缓原因"，不要复制 issue 的完整验收清单。
 - 每次完成一个 issue 后，同步更新本文的"当前主线"和"下一批候选"。
 
-## 当前主线：虚拟办公室 + Web pivot + workspace-as-database
+## 当前主线：Web pivot 实现路线（5 个需求簇 + 虚拟办公室）
 
-依据（按依赖顺序）：
+总体形态依据：
 - [`docs/adr/web-only-pivot.md`](./docs/adr/web-only-pivot.md)（部署形态）
 - [`docs/adr/workspace-as-database.md`](./docs/adr/workspace-as-database.md)（workspace ↔ database 映射 + 用户身份）
+- [`docs/adr/backend-framework-hono.md`](./docs/adr/backend-framework-hono.md)（后端框架）
 - [`docs/adr/virtual-office.md`](./docs/adr/virtual-office.md)（业务能力）
-- `.scratch/virtual-office/PRD.md`
 
-2026-05-16 决策：**弃用 Electrobun + 本地嵌入式 SurrealDB**，转向 **Web 前端 + 单容器 Bun server + 自部署 SurrealDB（同机房内网）**。每个工作区映射为一个 SurrealDB database；用户与虚拟员工都以 record 身份存在于该 db 内的 `user` 表。同步 v2 主线 Cancelled。**架构内不存在 service JWT 概念**——后端唯一长期凭证是 SurrealDB root，仅 `create_workspace` execTemplate 使用。
+实现拆为 5 个需求簇，按严格顺序解锁：
 
-### 第一阶段：架构脚手架（未拆 issue，待进一步指示前不要开工）
+```
+A. wp-restructure          (仓库重组)
+       ↓
+B. server-skeleton         (Hono on Bun 骨架 + OIDC + root 连接)
+       ↓
+C. workspace-as-db         (_system + ws db 模板 + sessions / members endpoints)
+       ↓
+D1. mastra-router-migration (Router workflow 迁入后端，用调用者 session 跑)
+D2. web-frontend-migration  (Svelte 5 前端迁入，接 Hono HTTP/WS)
+       ↓
+E. virtual-office          (虚拟员工、岗位、办公室 UI ……)
+```
 
-1. 新建 `server/` 顶层目录与 pnpm workspace；从 `src/main/ai/**` 迁出 Mastra Router workflow + 子 agent + tool。
-2. 新建 `web/` 顶层目录；从 `src/renderer/**` 迁出 Svelte 5 UI；把原 Electrobun RPC 调用替换为 HTTP / WS（不再直连 SurrealDB）。
-3. 部署自托管 SurrealDB（同机房内网），建立 `main` namespace + `_system` database，落 `_system` 的 `workspace` / `pending_workspace_member` 索引表 + `DEFINE ACCESS member`（OIDC）。
-4. 实现 `create_workspace` execTemplate（root 权限）：新建 ws db + DEFINE ACCESS member + DEFINE ACCESS employee + seed 全部业务表 schema + 写 owner 进 user 表。
-5. 单 Dockerfile + 部署到内网（Bun server 容器 + SurrealDB 容器）。
-6. Electrobun 构建从 CI 中关闭；`electrobun.config.ts` 留档但停止维护。
+D1 / D2 可在 C 完成后并行；E 必须 D1 + D2 都完成。
 
-### 第二阶段：虚拟办公室
+### 簇 A — 仓库重组
+
+依据：`.scratch/wp-restructure/PRD.md`
+
+把仓库拆成 pnpm workspaces（server / web / shared），把 `src/main` `src/renderer` `src/shared` 搬到 legacy 目录，Electrobun 退役。5 个 issue。
+
+### 簇 B — 后端骨架
+
+依据：`.scratch/server-skeleton/PRD.md`
+
+Hono on Bun 起服务、OIDC verify 中间件、SurrealDB root 连接管理、/health、Dockerfile。5 个 issue。
+
+### 簇 C — workspace-as-database 身份层
+
+依据：`.scratch/workspace-as-db/PRD.md`
+
+`_system` schema 自动 seed、workspace 模板 SQL 文件、`create_workspace` execTemplate、sessions / members endpoint、schema migration runner、reconciler。7 个 issue。
+
+### 簇 D1 — Router workflow 迁入后端
+
+依据：`.scratch/mastra-router-migration/PRD.md`
+
+把现有 Mastra Router workflow + 子 agent + tool 物理迁入 `server/ai/mastra/`，所有 tool 改为接收调用者 session token；WorkflowsStorage 落 `_system`；暴露 `POST /api/workspaces/:slug/ai/chat` + `WS /api/workspaces/:slug/ai/stream`。6 个 issue。
+
+### 簇 D2 — 前端迁移
+
+依据：`.scratch/web-frontend-migration/PRD.md`
+
+把 `src/renderer` 搬到 `web/`，标准 Vite 5 构建，OIDC 登录壳，workspace 切换器，AI 抽屉接 D1 endpoint。7 个 issue。
+
+### 簇 E — 虚拟办公室
 
 依据：`.scratch/virtual-office/PRD.md`
 
-按 tracer 顺序立项，issue 编号见 PRD 路线图。第一阶段架构迁移完成前不开工。
+11 个 issue，按 PRD 路线图。D1 + D2 完成后才能开工。
 
 ## 已 Cancelled / Superseded
 

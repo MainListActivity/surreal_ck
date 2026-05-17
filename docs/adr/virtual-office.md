@@ -6,6 +6,7 @@
 - **Companions**:
   - [`web-only-pivot.md`](./web-only-pivot.md)（部署形态）
   - [`workspace-as-database.md`](./workspace-as-database.md)（workspace ↔ database 映射 + 用户身份）
+  - [`frontend-direct-connect.md`](./frontend-direct-connect.md)（前端直连 SurrealDB：办公室 UI 直接 LIVE 订阅，dispatcher 仍后端）
 
 ## Context
 
@@ -194,9 +195,11 @@ DEFINE INDEX office_role_key_unique ON office_role COLUMNS key UNIQUE;
 ### 8. UI 表面（仅契约，不在本 ADR 实现）
 
 - **办公室视图**：workspace 级页面，左花名册 + 中活动流（消息/汇报）+ 右任务看板。
-  - 数据来源：浏览器 → Bun server WS endpoint → 后端代用户 token 在 ws db 上 LIVE SELECT → WS 转发给浏览器。
-- **通知抽屉**：合并到 AI 抽屉，作为 inbox tab。
-- **AI 抽屉**：Router workflow 入口，与办公室视图正交。
+  - 数据来源：**浏览器直接 LIVE SELECT** ws db 的 `user` / `office_message` / `office_report` / `office_task` 表（admin 或 participant access）。**后端不参与**——参见 [`frontend-direct-connect.md`](./frontend-direct-connect.md)。
+  - 管理员"重派 / 取消 / 暂停员工"等操作也由浏览器以 admin access 直接 UPDATE。
+- **通知抽屉**：合并到 AI 抽屉，作为 inbox tab。浏览器直接 LIVE SELECT `user_notification WHERE to_user = $auth AND resolved_at = NONE`；resolve 也是浏览器 UPDATE。
+- **AI 抽屉**：Router workflow 入口，调后端 `/api/chat` + WS `/api/chat/stream`。与办公室视图正交。
+- **退休员工 / 改员工 secret 等**：调后端 `/api/internal/employee-retired` 等内部 endpoint（dispatcher 需要同步清缓存 + 关 LIVE 会话），不能让浏览器直接改 `employee_credential`（该表 PERMISSIONS NONE）。
 
 ## Consequences
 

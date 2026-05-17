@@ -15,20 +15,15 @@ Label: needs-triage
 
 AI 抽屉新增 "通知" tab，与现有 "对话" tab 并列：
 
-- 后端 WS endpoint 转发 `LIVE SELECT * FROM user_notification WHERE to_user = $auth AND resolved_at = NONE`
-- 列表卡片：severity 色带、from_employee avatar、body、`requested_action`
+- 浏览器**直接** `db.live('user_notification', q => q.where('to_user', '=', $auth).where('resolved_at', 'IS', NONE))`。
+- 列表卡片：severity 色带、from_employee avatar、body、`requested_action`。
 - 卡片底部三按钮：
-  - **已完成**：弹小输入框收 `resolution` 文本 → 调后端 endpoint
-  - **稍后再说**：把卡片折叠到底部，不写库
-  - **打开任务**：若 notification 关联了 task，跳转到办公室页对应卡片
+  - **已完成**：弹小输入框收 `resolution` 文本 → 浏览器 `db.update(notification, { resolution, resolved_at: new Date() })`。PERMISSIONS 校验 `to_user = $auth` 或 `is_admin`。
+  - **稍后再说**：把卡片折叠到底部，不写库。
+  - **打开任务**：若 notification 关联了 task，跳转到办公室页对应卡片。
+- 写完 resolution 后**不需要显式触发 dispatcher**——发起方员工的 LIVE 订阅（`from_employee = $auth AND resolved_at != NONE`）自然命中下一次执行窗口。
 
-### 后端 HTTP endpoint
-
-- `POST /api/workspaces/:slug/office/notifications/:id/resolve` body: `{ resolution }`：
-  1. 用调用者 OIDC JWT SIGNIN 到 `ws_<slug>` db；access AUTHENTICATE 自动校验工作区成员身份
-  2. UPDATE `user_notification` 写入 `resolution + resolved_at`；PERMISSIONS 自动校验 `to_user = $auth` 或 `is_admin`
-  3. 不需要显式触发 dispatcher——发起方员工的 LIVE 订阅（`from_employee = $auth AND resolved_at != NONE`）会自然命中下一次执行窗口
-- 不需要 `dismiss` endpoint——折叠是前端纯 UI 状态。
+**不再有后端 `/notifications/:id/resolve` endpoint**——所有 inbox 操作都是浏览器直连 SurrealDB。
 
 ### 后续连锁反应
 

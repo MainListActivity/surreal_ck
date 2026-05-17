@@ -17,8 +17,16 @@ SurrealDB namespace `main` 下的特殊 database `_system`，**极简且无 acce
 _Avoid_: 系统库（仅 ADR / 运维语境使用）
 
 **user_workspace_index**:
-`_system` database 中的倒查表，按 email（或 OIDC subject）索引出"该真人能进入哪些 **workspace database** + 在每个里是什么身份（admin / participant）"。后端登录路径与 workspace 切换器都依赖它，**不**作为权威——权威仍是各 ws db 内 `user.is_admin`。倒查表的写入由"管理员添加成员"endpoint 和"create_workspace"execTemplate 触发；首次登录时由后端补齐 subject 字段；可能漂移，靠 reconciler 校对。
+`_system` database 中的倒查表（**IdP 同步缓存**），按 subject / email 索引出"该真人能进入哪些 **workspace database** + 在每个里是什么身份（admin / participant）"。**权威在 IdP**——本表仅供后端 dispatcher 索引 / reconciler 校对，**不参与用户登录裁决**（用户身份由 IdP token claim 直接给出）。写入触发器：IdP webhook（issue WP-C-03）+ 启动期 reconciler（issue WP-C-05）。
 _Avoid_: 全局成员表，跨工作区用户表
+
+**IdP**:
+外部 OpenID Connect Identity Provider，**身份与 workspace 分发的权威**。颁发的 OIDC token claim 中带 `current_db` / `role` / `ns_admin?` 等业务字段；切换 workspace = 调 IdP 重发 token；workspace 列表权威源在 IdP。本仓库的 `_system.user_workspace_index` 只是 IdP 推送过来的缓存。具体选型与 webhook 协议待定（见 ADR Open Questions）。
+_Avoid_: 身份服务（在涉及"谁是权威 / 谁颁发 token"语境时使用 **IdP**）
+
+**NS-admin token**:
+IdP 在用户"创建 workspace"那一刻临时颁发的特殊 OIDC token，claim 中带 `ns_admin: true`。浏览器拿它走 NS 级 `admin` access SIGNIN，可执行 `DEFINE DATABASE` 与跨 db DDL。日常 token **不**带此 claim——降低误操作面。
+_Avoid_: 超级管理员 token（避免给人"长期身份"暗示——它只是临时 step-up token）
 
 **工作区管理员**:
 某个 workspace database 中 `user` 表内 `kind='human' AND is_admin=true` 的 **用户**。登录走该 db 的 `admin` access（TYPE JWT），SurrealDB 引擎层授予 db owner 级能力，可执行 DDL（建表 / 加字段 / 定义 access 等）。每个工作区至少有一个管理员（创建者默认是）。
@@ -247,7 +255,9 @@ _Avoid_: 轮询（仅描述底层实现时使用）
   - **身份类别**（管理员 / 普通成员 / 虚拟员工，落在 `user.kind` + `user.is_admin` + access 选择上）。
   绝不再用泛指"角色"称呼这两者。
 - "_system 承载邀请" 的措辞已废止；已定稿：架构内**无邀请机制**——`pending_workspace_member` / `has_workspace_member` 等表全部移除；管理员直接预创建 user 记录（输入 email），被预创建人首次 OIDC 登录由 AUTHENTICATE 回填 `subject` 与 `last_seen_at`；`_system` 只放 `workspace` 索引 + `user_workspace_index` 倒查表，且无 access。
-- "前端直连 SurrealDB" 已正式废止；已定稿：浏览器只与后端 HTTP/WS 通信，后端按 access 透传 SurrealDB；_system 永远只由 root 凭证访问。
+- "前端不直连 SurrealDB" 的旧措辞（2026-05-16 短暂确立）已被 2026-05-17 推翻；已定稿：**前端默认直连 SurrealDB**（公网 WSS + TLS），用 IdP 颁发的 OIDC token 走对应 access SIGNIN；后端**只**承载 Mastra、Office dispatcher、IdP webhook 同步、root 维护。`_system` 永远只由 root 凭证访问，前端永不接触。详见 [`docs/adr/frontend-direct-connect.md`](./docs/adr/frontend-direct-connect.md)。
+- "execTemplate / create_workspace 后端 endpoint" 措辞已废止；已定稿：workspace 创建由 IdP 颁发临时 NS-admin token + 浏览器自己执行 `DEFINE DATABASE` + 应用 `shared/sql/workspace-template/` 模板完成。后端通过 IdP webhook 异步获悉新 workspace 并同步 `_system`。
+- "sessions / members / workspaces 后端 endpoint" 措辞已废止；已定稿：身份分发的权威在 **IdP**——OIDC token 中携带 `current_db` / `role` claim；管理员浏览器内直接 INSERT/UPDATE/DELETE `user` 表加 / 删成员（PERMISSIONS 兜底）；同时调 IdP 同步成员变更；`_system.user_workspace_index` 退化为 IdP 同步缓存。
 
 ## Example dialogue
 
