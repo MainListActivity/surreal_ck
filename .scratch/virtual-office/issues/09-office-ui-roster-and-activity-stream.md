@@ -13,9 +13,10 @@ Label: needs-triage
 
 ### 1. 花名册（左栏）
 
-- 列出本 workspace 所有 `app_user.kind='virtual'`
-- 每个员工显示：岗位 label、上级、最近一次 `virtual_profile.last_active_at`
-- 操作：暂停 / 恢复 / 退休（调用 issue 03 的 RPC）
+两个 tab：
+
+- **虚拟员工**：列出本 workspace 所有 `user WHERE kind='virtual'`；每个员工显示：岗位 label、上级、最近一次 `virtual_profile.last_active_at`；操作：暂停 / 恢复 / 退休（调用 issue 03 endpoint）。
+- **真人成员**：列出本 workspace 所有 `user WHERE kind='human'`；每条显示：display_name、email、is_admin 徽章、`last_seen_at`（NONE 时渲染"从未登录"，否则显示相对时间）。管理员看到的额外操作：添加成员（输入 email + 是否管理员） / 移除成员 / 切换 admin 状态。
 
 ### 2. 活动流（中栏）
 
@@ -61,20 +62,36 @@ Label: needs-triage
 
 1. OIDC verify。
 2. 后端用 root 查 `_system.workspace WHERE slug = ?` 拿到 `db_name`。
-3. 后端用 root 查 `_system.user_workspace_index WHERE subject = $sub AND workspace = ?` 拿到 `role`。
-4. 按 role 选 access：
+3. 后端用 root 查 `_system.user_workspace_index WHERE workspace = ? AND (subject = $token.sub OR email = $token.email)` 拿到 `role`。
+4. 找不到 → 401（用户不在该 workspace 的成员列表里，必须由管理员先添加）。
+5. 按 role 选 access：
    - `role='admin'`：`SIGNIN { ac: 'admin', ns: 'main', db: <db_name>, token: <oidcToken> }`
    - `role='participant'`：`SIGNIN { ac: 'participant', ns: 'main', db: <db_name>, token: <oidcToken> }`
-5. 倒查表无记录但用户带了**邀请链接**（前端在 body 里附 `inviteFor: <slug>`）：进入邀请认领闭环：
-   a. 尝试 `SIGNIN { ac: 'participant', ... }` —— participant access 内 AUTHENTICATE 自动 CREATE user 记录。
-   b. SIGNIN 成功后后端用 root 在 ws db 内 SELECT `pending_workspace_member WHERE email = <token.email>`：
-      - 命中则 RELATE `workspace_singleton:default->has_workspace_member->$auth CONTENT { role }` + DELETE pending
-      - 未命中则 retract（DELETE 刚才 CREATE 的 user 记录，因为没认领到任何东西）—— SurrealDB user 表 PERMISSIONS 中 delete=NONE，所以 root 兜底
-   c. root 写 `_system.user_workspace_index { subject, workspace, role }`
-   d. 返回 session token
-6. 倒查表无记录且无邀请：401。
+6. SIGNIN 内 AUTHENTICATE 会在首次登录时回填 ws db.user.subject + last_seen_at。
+7. SIGNIN 成功后，若 _system.user_workspace_index 该行 subject 还是 NONE，后端用 root 把它补齐。
+8. 返回 `{ access: 'admin' | 'participant', token: <surreal-jwt-1h>, durationSec }`。
 
-返回 `{ access: 'admin' | 'participant', token: <surreal-jwt-1h>, durationSec }`。
+### 后端 `POST /api/workspaces/:slug/members`（管理员添加成员）
+
+入参：`{ email, isAdmin?, displayName? }`。流程：
+
+1. 调用者必须以 admin SIGNIN 成功。
+2. admin 会话 `INSERT user { email, is_admin: ?, display_name?, kind: 'human', subject: NONE, last_seen_at: NONE }`。
+3. root 会话 `INSERT _system.user_workspace_index { email, subject: NONE, workspace: <id>, role: isAdmin ? 'admin' : 'participant' }`。
+4. 返回 `{ userId }`。
+
+### 后端 `DELETE /api/workspaces/:slug/members/:id`（管理员移除成员）
+
+1. admin SIGNIN。
+2. admin 会话 `DELETE user:<id>`。
+3. root 会话 `DELETE _system.user_workspace_index WHERE workspace = ? AND email = ?`。
+
+### 后端 `PATCH /api/workspaces/:slug/members/:id`（管理员切换 admin 状态）
+
+1. admin SIGNIN。
+2. admin 会话 `UPDATE user:<id> SET is_admin = ?`。
+3. root 会话 `UPDATE _system.user_workspace_index SET role = ? WHERE workspace = ? AND email = ?`。
+4. 已签发的旧 token 在 DURATION（1h）内仍按旧 role 生效，符合 ADR Open Question §4 的约定。
 
 ## Acceptance criteria
 
@@ -83,11 +100,15 @@ Label: needs-triage
 - [ ] admin 点"重派"调后端 endpoint → task 改成 open → dispatcher（该员工 LIVE 命中）再次拉起
 - [ ] 非 admin 用户（participant access 通道）调"暂停 / 退休"endpoint 返回 403（admin SIGNIN AUTHENTICATE 失败 → 后端拒绝）；前端按 `/api/sessions` 返回的 `access` 字段隐藏按钮
 - [ ] 切换 workspace 时后端 WS 端点关闭对应 LIVE 订阅（防连接泄漏）
-- [ ] `/api/sessions/bootstrap` 返回当前用户能进入的所有 workspace 列表（来源：_system.user_workspace_index）
+- [ ] `/api/sessions/bootstrap` 返回当前用户能进入的所有 workspace 列表（来源：_system.user_workspace_index，按 email OR subject 命中）
 - [ ] `/api/sessions` 对管理员返回 `{ access: 'admin' }`，对普通成员返回 `{ access: 'participant' }`
-- [ ] 对非该 workspace 用户且无邀请返回 401
-- [ ] 对有邀请的用户：首次 `/api/sessions { inviteFor }` 后 user 表多一条 + has_workspace_member 多一条 + pending 表少一条 + _system.user_workspace_index 多一行
-- [ ] 已被邀请的用户重复发起认领（pending 已删）走普通路径，不会重复 RELATE
+- [ ] 对非该 workspace 成员（_system.user_workspace_index 无对应 email/subject）返回 401
+- [ ] 首次登录的成员：SIGNIN 后 ws db.user.subject 与 last_seen_at 被 AUTHENTICATE 回填；_system.user_workspace_index 该行 subject 被后端补齐
+- [ ] 第二次登录走 subject 命中路径，速度更快，无副作用
+- [ ] admin 调 `POST /api/workspaces/:slug/members { email }` → ws db.user 与 _system.user_workspace_index 都新增一条；该用户尚未登录时 `last_seen_at = NONE`
+- [ ] admin 调 `DELETE /api/workspaces/:slug/members/:id` → 两处都被删
+- [ ] admin 调 `PATCH /api/workspaces/:slug/members/:id { isAdmin }` → 两处都被改；旧 token 在 DURATION 内仍按旧 role
+- [ ] 花名册"真人成员"tab 能区分"从未登录"（last_seen_at = NONE）和"上次于 XXX"
 
 ## Blocked by
 

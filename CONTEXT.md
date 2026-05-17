@@ -13,11 +13,11 @@ _Avoid_: 租户, Tenant（当表达用户空间时）
 _Avoid_: 工作区库（产品层不暴露此词）
 
 **system database**:
-SurrealDB namespace `main` 下的特殊 database `_system`，**极简且无 access**：仅承载 `workspace` 索引（slug ↔ db_name）与 `user_workspace_index` 倒查表（OIDC subject → 可进入的 ws db 列表与 role 缓存）。仅后端 root 凭证可访问；用户和 **虚拟员工** 都看不到它。
+SurrealDB namespace `main` 下的特殊 database `_system`，**极简且无 access**：仅承载 `workspace` 索引（slug ↔ db_name）与 `user_workspace_index` 倒查表（email / OIDC subject → 可进入的 ws db 列表与 role 缓存）。仅后端 root 凭证可访问；用户和 **虚拟员工** 都看不到它。
 _Avoid_: 系统库（仅 ADR / 运维语境使用）
 
 **user_workspace_index**:
-`_system` database 中的倒查表，按 OIDC subject 索引出"该真人能进入哪些 **workspace database** + 在每个里是什么身份（admin / participant）"。后端登录路径与 workspace 切换器都依赖它，**不**作为权威——权威仍是各 ws db 内 `user.is_admin`。倒查表由后端在 ws db 写完后追加一次 root 写入，可能漂移，靠 reconciler 校对。
+`_system` database 中的倒查表，按 email（或 OIDC subject）索引出"该真人能进入哪些 **workspace database** + 在每个里是什么身份（admin / participant）"。后端登录路径与 workspace 切换器都依赖它，**不**作为权威——权威仍是各 ws db 内 `user.is_admin`。倒查表的写入由"管理员添加成员"endpoint 和"create_workspace"execTemplate 触发；首次登录时由后端补齐 subject 字段；可能漂移，靠 reconciler 校对。
 _Avoid_: 全局成员表，跨工作区用户表
 
 **工作区管理员**:
@@ -25,7 +25,7 @@ _Avoid_: 全局成员表，跨工作区用户表
 _Avoid_: Owner（语义重叠时优先使用 **工作区管理员**；workspace.owner_subject 字段仅作底层标识）
 
 **普通成员**:
-某个 workspace database 中 `user` 表内 `kind='human' AND is_admin=false` 的 **用户**。登录走该 db 的 `participant` access（TYPE RECORD），SurrealDB 引擎层拒绝任何 DDL；DML 受 PERMISSIONS 约束。同一真人在不同工作区可能分别是 **工作区管理员** 或 **普通成员**。
+某个 workspace database 中 `user` 表内 `kind='human' AND is_admin=false` 的 **用户**。登录走该 db 的 `participant` access（TYPE RECORD），SurrealDB 引擎层拒绝任何 DDL；DML 受 PERMISSIONS 约束。**必须由 工作区管理员 先预创建 user 记录（输入 email）**，被预创建用户首次 OIDC 登录时 AUTHENTICATE 内回填 `subject` 与 `last_seen_at`；架构内无邀请闭环。同一真人在不同工作区可能分别是 **工作区管理员** 或 **普通成员**。
 _Avoid_: Editor / Viewer（这是早期方案的细分角色名；当前模型只有"是不是管理员"二态）, 访客
 
 **用户**:
@@ -204,7 +204,7 @@ _Avoid_: 轮询（仅描述底层实现时使用）
 - **Office dispatcher** 通过 LIVE SELECT 与 **心跳** 触发 **执行窗口**
 - 一个 **执行窗口** 内 **虚拟员工** 的步数受 `office_role.heartbeat_interval` 与硬上限约束
 - 一个 **工作区** 一一对应一个 **workspace database**
-- 一个 **system database** 全局唯一，承载所有 **工作区** 的索引和 **user_workspace_index** 倒查表（邀请态 `pending_workspace_member` 落在各 ws db 内）
+- 一个 **system database** 全局唯一，承载所有 **工作区** 的索引和 **user_workspace_index** 倒查表（无邀请相关表）
 - 一个 **用户** 必属于某个 **workspace database**；同一 **OIDC 身份** 在多个工作区中是多条独立 **用户** 记录
 
 ## Flagged ambiguities
@@ -246,7 +246,7 @@ _Avoid_: 轮询（仅描述底层实现时使用）
   - **岗位**（`office_role` 表，仅 **虚拟员工** 挂载）。
   - **身份类别**（管理员 / 普通成员 / 虚拟员工，落在 `user.kind` + `user.is_admin` + access 选择上）。
   绝不再用泛指"角色"称呼这两者。
-- "_system 承载邀请" 的措辞已废止；已定稿：`pending_workspace_member` / `has_workspace_member` 都落在各 **workspace database** 内；`_system` 只放 `workspace` 索引 + `user_workspace_index` 倒查表，且无 access。
+- "_system 承载邀请" 的措辞已废止；已定稿：架构内**无邀请机制**——`pending_workspace_member` / `has_workspace_member` 等表全部移除；管理员直接预创建 user 记录（输入 email），被预创建人首次 OIDC 登录由 AUTHENTICATE 回填 `subject` 与 `last_seen_at`；`_system` 只放 `workspace` 索引 + `user_workspace_index` 倒查表，且无 access。
 - "前端直连 SurrealDB" 已正式废止；已定稿：浏览器只与后端 HTTP/WS 通信，后端按 access 透传 SurrealDB；_system 永远只由 root 凭证访问。
 
 ## Example dialogue
