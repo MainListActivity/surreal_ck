@@ -150,7 +150,9 @@ IdP 不维护 workspace 列表，不决定成员关系，不执行 workspace 创
 
 **保留**：
 
-- Workspace Scope Module：session workspaces、switch workspace、workspace create、IdP default-scope hook。
+- Workspace Scope Module：session workspaces、switch workspace、workspace create、成员管理（add / remove / role 变更）、员工 lifecycle（create / retire）、IdP default-scope hook。
+  - 成员管理与员工 lifecycle 都需要"原子同写 `_system` 与目标 ws db"，因此归在同一个深 Module，不是业务数据代理。
+  - 员工 `employee_credential` 写入只能由 root 完成（PERMISSIONS NONE），dispatcher 缓存随 lifecycle endpoint 同步刷新。
 - `POST /api/chat` + `WS /api/chat/stream`：LLM key 必须在后端。
 - Office dispatcher：进程内服务，用员工 secret SIGNIN。
 - root 维护路径：`_system` schema、workspace lifecycle、`employee_credential` 写入、dispatcher 启动遍历。
@@ -205,7 +207,15 @@ dispatcher 仍在 Bun server 进程内，用 root 读 `employee_credential` → 
 
 ## Open Questions
 
-1. **IdP scope adapter 具体协议**：HTTP endpoint、管理 token、返回值和失败码待 IdP 选型后落地。
-2. **登录 hook 鉴权**：`GET /api/internal/idp/default-scope` 使用 HMAC、mTLS 还是 IdP 专用 bearer token，取决于 IdP 能力。
-3. **成员管理路径**：管理员新增 / 删除成员时，如何同时写 workspace `user` 表与 `_system.user_workspace_index`，需要单独 issue 固化。
+1. **IdP scope adapter 具体协议**：IdP 已选定 `o.maplayer.top/t/ck`（见 [`../oidc.md`](../oidc.md)），它提供专门的 scope 更新 API。具体 endpoint URL、管理 token、请求 / 返回 body、失败码待簇 C issue 03 实测回填。
+2. **登录 hook 鉴权**：`GET /api/internal/idp/default-scope` 由 `o.maplayer.top/t/ck` 的登录流程回调；鉴权方式（HMAC / 专用 bearer token）待簇 C issue 03 按 IdP 实际能力回填。
+3. ~~**成员管理路径**：管理员新增 / 删除成员时，如何同时写 workspace `user` 表与 `_system.user_workspace_index`，需要单独 issue 固化。~~ **已决定**（2026-05-18）：归 Workspace Scope Module（见 §6 保留清单），后端 root 原子同写两边。前端不直接写 ws db `user` 表的 human 行；浏览器若以 admin 直接 INSERT user，reconciler 会在下一轮校对中拉回 `_system.user_workspace_index`，但**不是**推荐路径。
 4. **创建 workspace 权限**：用应用内 entitlement 还是 IdP claim（如 `can_create_workspace`）作为 UI 显示和后端校验依据，待产品策略定。
+
+## P1 待补 ADR（公网形态遗留盲区，不阻塞簇 C / D，部署或扩容前必须补）
+
+这几个盲区在 2026-05-20 评审中识别，决定推迟到 P1：
+
+1. **SurrealDB 网络加固**（`surrealdb-network-hardening.md`）：公网 WSS 暴露后的 nginx / Cloudflare 前置、token DURATION 上限、admin token 短窗口（防 XSS 后任意 DDL）、LIVE 并发上限、CSP / markdown sanitize。**上线前必须有。**
+2. **Schema 迁移多 workspace 策略**（`schema-migration-strategy.md`）：启动期遍历 N 个 ws db 跑迁移的串行 / 跳过失败 / 异步重试策略，`status='provisioning'` 期间的访问处理，失败留痕（`_system.workspace.last_migration_error`）。**workspace 数量上规模前必须有。**
+3. **单实例 dispatcher 容量边界**（`single-instance-budget.md`）：MVP 单容器 dispatcher 的 workspace × employee × LIVE 连接容量上限、启动时序、中断恢复语义、何时该上 leader lock。**员工数上规模前必须有。**

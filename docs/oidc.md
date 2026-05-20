@@ -37,6 +37,22 @@ This application authenticates users via an OpenID Connect provider.
 - Use `openid` as the minimum scope. Add `profile`, `email` as needed.
 - Persistent desktop login requires `offline_access` so the token endpoint can return a `refresh_token`.
 
+## Workspace Token Scope（本应用专用）
+
+本应用要求 token 中携带两个标准 SurrealDB scope claim，SurrealDB 的 `DEFINE ACCESS` AUTHENTICATE 据此把会话约束到某个 workspace database：
+
+| Claim | 含义 |
+|---|---|
+| `https://surrealdb.com/db` | 当前 workspace database 名，例如 `ws_a1b2c3d4e5f6`。 |
+| `https://surrealdb.com/ac` | 当前 SurrealDB access 名，MVP 为 `admin` 或 `participant`。 |
+
+这两个 claim 的取值由**本应用**（后端 Workspace Scope Module）决定，不是用户登录时固定的：
+
+- **登录默认 scope**：IdP 登录流程回调本应用 `GET /api/internal/idp/default-scope`，本应用按 subject 查 `_system.user_workspace_index` 返回默认 `{ db, ac }`，IdP 据此签发首个 token。
+- **切换 / 创建 workspace**：本应用调用 IdP 的 **scope 更新 API** 改写该 subject 下次 token 的 `db` / `ac`，前端再 silent refresh 拿到新 scope 的 token，重新 `db.signin`。
+
+> **TODO（簇 C issue 03 回填）**：IdP scope 更新 API 与 default-scope hook 的具体 endpoint URL、鉴权方式（管理 token / HMAC）、请求与返回 body、失败码。架构决策见 [`adr/frontend-direct-connect.md`](./adr/frontend-direct-connect.md) §3。
+
 ## Example Authorization Request
 
 ```

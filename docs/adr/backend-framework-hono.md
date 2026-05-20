@@ -116,8 +116,11 @@
 | `GET  /api/session/workspaces` | Workspace Scope Module：列出当前 subject 可进入的 workspace。 |
 | `POST /api/session/switch-workspace` | Workspace Scope Module：验证 membership，更新最近选择，调用 IdP scope adapter。 |
 | `POST /api/workspaces` | Workspace Scope Module：root 创建 workspace database、应用模板、写 owner 和 `_system` 索引。 |
-| `POST /api/workspaces/:slug/employees` | Virtual Office：管理员创建虚拟员工，root 仅写 `employee_credential`。 |
-| `POST /api/workspaces/:slug/employees/:id/retire` | Virtual Office：退休员工，清 dispatcher 缓存与员工 secret。 |
+| `POST /api/workspaces/:slug/members` | Workspace Scope Module：邀请 / 添加成员；原子同写 ws db `user` + `_system.user_workspace_index`。 |
+| `PATCH /api/workspaces/:slug/members/:userId` | Workspace Scope Module：成员 role 变更（admin / participant）。 |
+| `DELETE /api/workspaces/:slug/members/:userId` | Workspace Scope Module：写 `disabled_at` 软移除。 |
+| `POST /api/workspaces/:slug/employees` | Workspace Scope Module（员工 lifecycle）：管理员创建虚拟员工，root 写 `employee_credential` + dispatcher 缓存刷新。 |
+| `POST /api/workspaces/:slug/employees/:id/retire` | Workspace Scope Module（员工 lifecycle）：退休员工，清 dispatcher 缓存与员工 secret。 |
 | `POST /api/chat` | Mastra Router workflow 入口（流式回写） |
 | `WS   /api/chat/stream` | Mastra workflow 流式 progress / chunk / suspend / done |
 | `POST /api/chat/runs/:runId/resume` | suspend 决策后恢复 |
@@ -125,9 +128,16 @@
 
 `/api/internal/*` 必须验证调用源（IdP 共享密钥、mTLS 或专用 bearer token），与外部 endpoint 隔离。**没有**工作簿 / 数据表 / office_* LIVE 转发等业务代理 endpoint；这些都由前端直连 SurrealDB 完成。
 
+### OIDC verify 中间件对 token claim 的处理
+
+后端 `requireOidc()` 中间件**只**验证 token 签名 + `iss` + `aud` + `exp`，并提取 `sub` / `email` 等基础 claim。**不约束** `https://surrealdb.com/db` / `https://surrealdb.com/ac` 这两个 scope claim——它们只是给 SurrealDB AUTHENTICATE 用的，对后端 endpoint 无意义。
+
+- `POST /api/session/switch-workspace`、`GET /api/session/workspaces`、成员管理、员工 lifecycle 等 Workspace Scope Module endpoint **必须忽略** scope claim：否则用户被当前 token 的 db scope 卡住，无法切换或操作其它 workspace。
+- `POST /api/chat`：同样只信 `sub`；Mastra tool 内部用调用者 OIDC token `db.signin` 到 token scope 所指 db，是 Mastra 而非中间件的责任。
+
 ## Open Questions
 
 1. **HTTP 错误归一格式**：与前端约定 `{ error: { code, message } }` 还是 Hono 默认 problem+json？下放到 server-skeleton issue 阶段。
 2. **CORS 策略**：前端域与后端域分离（前端 app.example.com，后端 api.example.com，SurrealDB db.example.com）则必须配 CORS 白名单。issue 阶段定。
-3. **IdP default-scope hook 鉴权**：用共享密钥、mTLS 还是专用 bearer token，取决于 IdP 选型。
+3. **IdP default-scope hook 鉴权**：IdP 已选定 `o.maplayer.top/t/ck`（见 [`../oidc.md`](../oidc.md)）；hook 鉴权方式（共享密钥 / 专用 bearer token）待簇 C issue 03 按 IdP 实际能力回填。
 4. **WS 流式 RunBus**：MVP 一 runId 一连接即可；多 tab 多端同时订阅同 run 的需求超 MVP 范围。

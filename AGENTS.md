@@ -177,7 +177,7 @@ This is a **Web app**：Svelte 5 前端 + Hono on Bun 后端 + 自部署 Surreal
 | `server/ai/mastra/agents`    | 子 agent 定义（navigation / dashboard / claim-analysis / resource-retrieval / chitchat） |
 | `server/ai/mastra/workflows` | Router workflow 与未来 employee workflow |
 | `server/ai/mastra/tools`     | 所有 tool；调用 SurrealDB 时必须用 `context.surrealSession`，禁止 root / service |
-| `server/ai/mastra/storage`   | `WorkflowsStorage` adapter，落 `_system.workflow_run` |
+| `server/ai/mastra/storage`   | `WorkflowsStorage` adapter，落各 workspace db 内 `workflow_run`（不放 `_system`，保持 db 边界隔离） |
 | `server/ai/office/`          | 虚拟办公室 dispatcher、employee runtime、tool bundles（待 virtual-office 簇开工） |
 | `web/`                       | 前端 workspace（Svelte 5 + Vite 8） |
 | `web/src/`                   | 业务 UI |

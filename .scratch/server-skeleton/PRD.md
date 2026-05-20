@@ -27,6 +27,7 @@
 - `pnpm --filter @surreal-ck/server dev` 起 Hono on Bun，监听 `0.0.0.0:8080`。
 - `GET /health` 返回 `{ status: 'ok' | 'degraded', surrealdb: 'up' | 'down' }`。
 - OIDC 中间件 `requireOidc()` 可用：给 Mastra `/api/chat*` 与 Workspace Scope Module 用户入口用。
+  - 中间件**只**校验 `iss` / `aud` / `exp` / 签名并提取 `sub` 等基础 claim；**忽略** `https://surrealdb.com/db` / `https://surrealdb.com/ac` scope claim（详见 `backend-framework-hono.md` "OIDC verify 中间件对 token claim 的处理"小节）。
 - 内部 hook 鉴权中间件 `requireInternalHook()` 可用：HMAC / bearer 共享密钥校验，给 IdP default-scope hook 等 `/api/internal/*` endpoint 用。
 - 一个进程级 SurrealDB root 连接管理器：启动时连 `_system`，断线退避重连；其它代码通过 `getRootConnection()` 拿。
 - `Dockerfile` 多阶段构建出单镜像（Bun + 静态资源占位）。

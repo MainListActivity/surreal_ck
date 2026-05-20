@@ -119,7 +119,7 @@ DEFINE TABLE office_task SCHEMAFULL CHANGEFEED 7d
 
 dispatcher 启动时：
 
-1. 用 root 凭证连 `_system`，SELECT `workspace`，得到所有活跃 workspace 列表。
+1. 用 root 凭证连 `_system`，`SELECT * FROM workspace WHERE status = 'active'`——`provisioning` / `failed` / `archived` 的 workspace 全部跳过。
 2. 对每个 workspace：
    - 用 root 凭证 SELECT 该 db 的 active 虚拟员工列表（一次性），缓存内存。
    - 对每个员工 SIGNIN 一次（拿一个 1h token），用该 token 建立一条 LIVE 订阅连接。一个员工一连接，订阅：
@@ -164,7 +164,7 @@ DEFINE INDEX office_role_key_unique ON office_role COLUMNS key UNIQUE;
 二者共享：
 
 - 同一份 tool bundle registry。
-- 同一份 Mastra `WorkflowsStorage`（建议放在 `_system` db 的 `workflow_run` 表，跨 workspace；workspace 字段标归属，PERMISSIONS 限本人/本 workspace 成员）。
+- 同一份 Mastra `WorkflowsStorage` adapter 实现。snapshot 落在**所属 workspace db 内**的 `workflow_run` 表（**不**放 `_system`——跨 workspace 混存会破坏 db 边界隔离，且浏览器无法以 participant/admin 读自己的 run history）。PERMISSIONS 限本人/管理员可见；归属天然由 db 边界保证，不需要 workspace 字段。
 - 同一份 `SharedConfirmed` 语义。
 
 二者不共享入口与生命周期，且使用不同的 SurrealDB 会话：
