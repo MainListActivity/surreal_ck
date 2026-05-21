@@ -36,3 +36,4 @@ GET /health → 200 {
 
 - 不要在 /health 做"重连尝试" —— 重连由 root-connection 管理器自己做；本 endpoint 只读状态。
 - 若未来 dispatcher 是 launch-critical，可在 health 里增加 `dispatcher: 'running' | 'stopped'` 字段（簇 virtual-office 04 增量加）。
+- 2026-05-21 TDD audit：新增 `server/src/app.test.ts` 覆盖 DB 未连接时 `/health` 返回 200/degraded 且无需 OIDC。DB 在线的 `ok/up` 仍依赖 root connection hardening 或 compose 集成测试补齐。

@@ -57,3 +57,4 @@ env 新增：
 - 直接用 `jose` 不用 `hono/jwt`：后者需要硬编码 secret，不支持 JWKS URL 自动校验。
 - 5 分钟 cache TTL 与 [`backend-framework-hono.md`](../../../docs/adr/backend-framework-hono.md) 一致。
 - iss / aud 校验是防"另一个 IdP 签的同 sub 也能进来"，必须开。
+- 2026-05-21 TDD audit：新增 `server/src/middleware/oidc.test.ts`，用本地 fake JWKS + jose 签发 token 覆盖 missing bearer、valid token、JWKS cache reuse、expired、bad signature、bad audience，并修正 middleware 让 expired/audience 错误码可区分。

@@ -63,3 +63,4 @@ export type ApiError = { error: { code: string; message: string; details?: unkno
 - `Bun.serve({ port, fetch: app.fetch })` 是最简写法；不引入 `@hono/node-server`。
 - WS 升级在簇 D1 才需要，本 issue 不引入。
 - env 暂时只校验 `PORT`（默认 8080）；其他变量随后面 issue 增量加入。
+- 2026-05-21 TDD audit：新增 `server/src/app.test.ts`，覆盖 public `/health` 在未连接 DB 时仍 200/degraded、以及 Hono error body 不向客户端暴露 stack。

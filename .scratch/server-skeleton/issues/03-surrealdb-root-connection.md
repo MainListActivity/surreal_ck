@@ -56,3 +56,4 @@ process.on('SIGTERM', async () => { server.stop(); await closeRootConnection(); 
 - 进程内仅一条 root 连接；其它 SIGNIN 会话（用户 token / employee secret）由各自代码持有，互不混用。
 - 重连退避不必无限——10s 上限循环够；外部监控负责"超 N 次失败时告警"，本 issue 不实现告警。
 - 写 _system 的并发由 SurrealDB 自身事务保证；本管理器不在应用层加锁。
+- 2026-05-21 TDD audit：当前实现可以手工验证不可达启动、退避和 SIGTERM，但自动化覆盖还不完整。若后续要求严格 TDD，应单独拆一个 hardening slice，把 root connection manager 改成可注入 Surreal client factory/timer，覆盖 online、disconnect、recovery、credential redaction；不要在普通 unit test 里靠真实不可达端口 sleep。

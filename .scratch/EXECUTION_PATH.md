@@ -14,6 +14,7 @@ This repository is in the middle of the web-only pivot. The execution path below
 - Business data reads/writes default to browser direct SurrealDB. Allowed backend exceptions are Workspace Scope Module, Mastra `/api/chat*`, resource save confirmation SSE, Office dispatcher, and root maintenance paths.
 - Mastra implementation work must load the `mastra` skill first.
 - SurrealQL implementation work must follow the project SurrealDB rules. If the `surrealdb` skill is unavailable, the agent should state that and verify against existing ADR/schema patterns before writing schema.
+- Implementation work must use the local `tdd` skill: one public-interface behavior test, then the minimum implementation, then the next behavior. Do not write broad horizontal test suites ahead of implementation.
 
 ## Scheduling rule
 
@@ -38,6 +39,7 @@ Run sequentially:
 Gate:
 
 - `pnpm install` succeeds at repo root.
+- `pnpm test` runs the current workspace tests; legacy tests must not be pulled into new workspace gates until that legacy area is actively migrated.
 - Workspaces are visible to pnpm.
 - Legacy code has moved, not been deleted.
 - `electrobun.config.ts` and Electrobun CI/build paths are gone or explicitly inert.
@@ -60,11 +62,14 @@ Run after Phase 1.
 
 Gate:
 
+- `pnpm test` passes for `shared` and new `server/src` tests.
 - `pnpm --filter @surreal-ck/server dev` starts.
 - `GET /health` returns `ok` with db and `degraded` when db is unavailable.
 - Protected routes without token return 401.
 - Middleware tests use fake JWKS / fake tokens, not real IdP.
 - Root credentials never appear in logs.
+- Strict TDD coverage exists for Hono error shape, public `/health` degraded behavior, OIDC missing/valid/expired/bad-signature/bad-audience behavior, JWKS cache reuse, and internal hook bearer auth.
+- Root connection online/disconnect/recovery coverage should be added as a separate hardening slice using a fake Surreal client factory or a compose-backed integration script; do not block workspace schema work on brittle sleeps against an unavailable port.
 
 Parallelism:
 
@@ -243,17 +248,19 @@ Before editing:
 3. Confirm the issue belongs to the current phase and dependencies are already merged or present.
 4. If the issue writes Mastra code, load `mastra` skill first.
 5. If the issue writes schema or SurrealQL, follow SurrealDB rules and verify against existing schema patterns.
+6. Load/use the `tdd` skill and name the first observable behavior before editing production code.
 
 During implementation:
 
 - Keep the issue's write scope narrow.
 - Prefer integration tests that prove the user-visible boundary: HTTP status, SSE/WS event shape, db rows, permissions, and browser state.
+- Use vertical tracer bullets: add one failing behavior test, make it pass, then continue. Avoid "write all tests, then all code".
 - Do not add application-level permission filters where schema permissions already enforce access.
 - Do not use root for business writes.
 
 Before handoff:
 
 - Run the smallest meaningful checks for the touched workspace.
+- Run `pnpm test` when touching shared/server public behavior, and include the focused package test command in the handoff.
 - Update the issue with any changed assumptions.
 - If a downstream issue's dependency is now satisfied, note that explicitly in the final response.
-

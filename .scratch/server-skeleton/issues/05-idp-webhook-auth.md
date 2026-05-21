@@ -44,3 +44,4 @@ env 新增：
 
 - 这个中间件不是普通用户 OIDC 校验；它只保护 IdP → 应用的 hook。
 - 上线前若 IdP 支持 mTLS，可在网关层加 mTLS，本中间件仍保留应用层密钥校验。
+- 2026-05-21 TDD audit：新增 `server/src/middleware/internal-hook-auth.test.ts`，通过 Hono public route 覆盖正确 bearer、缺失 bearer、错误 bearer，并断言失败日志不包含 header/body secret。
