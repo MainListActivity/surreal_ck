@@ -61,6 +61,7 @@ Browser (Svelte 5 + RevoGrid + surrealdb-js + oidc-client-ts)
                                     │   └── GET /api/internal/idp/default-scope
                                     ├── POST /api/chat（Mastra Router workflow，LLM key 必须在后端）
                                     ├── WS  /api/chat/stream（workflow 流式输出）
+                                    ├── POST /api/resources/research/save（资源检索保存确认 SSE；后端向量化并用调用者 session 入库）
                                     ├── Office dispatcher（进程内服务；用员工 secret SIGNIN ws db）
                                     └── POST /api/internal/*（IdP hook / dispatcher 内部入口；root 操作）
                                        SurrealDB root 连接：
@@ -68,7 +69,7 @@ Browser (Svelte 5 + RevoGrid + surrealdb-js + oidc-client-ts)
                                        • employee_credential 写入
 ```
 
-**没有了**：工作簿 / 数据表 / office_* 业务 CRUD 代理 endpoint、LIVE 转发 endpoint、后端 OIDC 中转。后端保留 Workspace Scope Module 处理 workspace 列表、切换、创建和 IdP default scope。
+**没有了**：工作簿 / 数据表 / office_* 业务 CRUD 代理 endpoint、LIVE 转发 endpoint、后端 OIDC 中转。后端保留 Workspace Scope Module 处理 workspace 列表、切换、创建和 IdP default scope；资源检索保存确认是窄 SSE 动作 endpoint，因为 embedding provider key 必须在后端。
 
 ### 各层选型理由
 
@@ -79,7 +80,7 @@ Browser (Svelte 5 + RevoGrid + surrealdb-js + oidc-client-ts)
 | Excel 导入 | SheetJS (xlsx 社区版) | 解析 .xlsx 后写入数据表 |
 | 前端构建 | Vite 8 | 标准 SPA，无 SSR；dev 代理 `/api`、`/ws` 到 Bun server |
 | 前端 ↔ SurrealDB | WSS（surrealdb-js 浏览器 SDK） | 浏览器直连，读 / 写 / LIVE / DDL（admin）全在浏览器 |
-| 前端 ↔ 后端 | HTTPS + WS（Hono RPC client） | 仅 Mastra `/api/chat*` 等少数 endpoint；端到端类型走 `hono/client` |
+| 前端 ↔ 后端 | HTTPS + WS（Hono RPC client） | Mastra `/api/chat*`、Workspace Scope Module、资源保存确认 SSE 等少数 endpoint；端到端类型走 `hono/client` |
 | 前端 ↔ IdP | OIDC Auth Code + PKCE（oidc-client-ts） | 浏览器直接走登录；token scope 由后端 Workspace Scope Module 决定 |
 | 后端运行时 | Bun | 统一 TS 运行时，承载 Mastra + Hono + SurrealDB SDK |
 | 后端框架 | Hono | Bun 事实标准、WS 一等支持、中间件精简、不锁运行时（详见 ADR） |
@@ -171,7 +172,7 @@ This is a **Web app**：Svelte 5 前端 + Hono on Bun 后端 + 自部署 Surreal
 | `server/src/app.ts`          | Hono app 装配 + 全局中间件 |
 | `server/src/middleware/`     | OIDC verify、internal hook auth、日志、错误归一 |
 | `server/src/db/`             | SurrealDB root 连接管理、_system schema 初始化、迁移 runner、reconciler |
-| `server/src/routes/`         | HTTP / WS endpoints：`/api/session/*` + `/api/workspaces`（Workspace Scope Module）、`/api/chat*`（Mastra）、`/api/internal/*`（IdP hook + dispatcher 内部入口）、`/health` |
+| `server/src/routes/`         | HTTP / WS endpoints：`/api/session/*` + `/api/workspaces`（Workspace Scope Module）、`/api/chat*`（Mastra）、`/api/resources/research/save`（资源保存确认 SSE）、`/api/internal/*`（IdP hook + dispatcher 内部入口）、`/health` |
 | `server/src/workspaces/`     | Workspace Scope Module：workspace 列表、切换、创建、IdP scope adapter、default-scope hook |
 | `server/ai/mastra/`          | Router workflow + 子 agent + tool（迁自 `src/main/ai/mastra/`） |
 | `server/ai/mastra/agents`    | 子 agent 定义（navigation / dashboard / claim-analysis / resource-retrieval / chitchat） |
@@ -181,7 +182,7 @@ This is a **Web app**：Svelte 5 前端 + Hono on Bun 后端 + 自部署 Surreal
 | `server/ai/office/`          | 虚拟办公室 dispatcher、employee runtime、tool bundles（待 virtual-office 簇开工） |
 | `web/`                       | 前端 workspace（Svelte 5 + Vite 8） |
 | `web/src/`                   | 业务 UI |
-| `web/src/lib/api.ts`         | Hono RPC client；对接 Workspace Scope Module 与 Mastra `/api/chat*` |
+| `web/src/lib/api.ts`         | Hono RPC client；对接 Workspace Scope Module、Mastra `/api/chat*`、资源保存确认 SSE |
 | `web/src/lib/ws.ts`          | WS 客户端封装（仅 Mastra stream） |
 | `web/src/lib/auth.ts`        | OIDC SPA 登录壳（oidc-client-ts）+ silent refresh + claim 解析 |
 | `web/src/lib/surreal.ts`     | 浏览器 surrealdb-js 直连封装；按 token 中 surreal db/ac scope signin admin / participant |
@@ -233,7 +234,7 @@ This is a **Web app**：Svelte 5 前端 + Hono on Bun 后端 + 自部署 Surreal
 - Load the `mastra` skill before any Mastra-related work
 - 新 agent / tool / workflow / scorer 在 `server/ai/mastra/index.ts` 中注册
 - 新业务 schema 增量以 `.surql` 文件追加到 `shared/sql/workspace-template/`，文件名带版本号——**前后端共享同一份**
-- 业务读写 / LIVE 默认前端直连 SurrealDB（用 `getSurreal()`）；后端承载 Workspace Scope Module、Mastra、Office dispatcher、root 维护
+- 业务读写 / LIVE 默认前端直连 SurrealDB（用 `getSurreal()`）；后端承载 Workspace Scope Module、Mastra、资源保存确认 SSE、Office dispatcher、root 维护
 - 写 SurrealQL 时用 graph traversal（`->` / `<-`），不要再用 `SELECT VALUE ... FROM edge WHERE in = ...`
 - 后端 Mastra tool 调用 SurrealDB 时必须用 `context.surrealSession`（调用者会话），不要用 root 或全局连接
 - 工作簿 / 数据表 / office_* 等业务操作优先让浏览器直接 SurrealQL 完成（PERMISSIONS 兜底）；workspace 列表、切换、创建、成员索引这类 scope / lifecycle 操作走 Workspace Scope Module

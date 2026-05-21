@@ -53,6 +53,7 @@ Browser (Svelte 5 + RevoGrid + surrealdb browser SDK)
                                     │   ├─ 创建 workspace（root 建 db + 应用模板）
                                     │   └─ 登录 hook 默认 scope
                                     ├─ POST /api/chat + WS /api/chat/stream
+                                    ├─ POST /api/resources/research/save（SSE 保存进度）
                                     ├─ Office dispatcher（内部，无 endpoint）
                                     └─ root 路径：_system schema、employee_credential、workspace lifecycle
 ```
@@ -154,6 +155,7 @@ IdP 不维护 workspace 列表，不决定成员关系，不执行 workspace 创
   - 成员管理与员工 lifecycle 都需要"原子同写 `_system` 与目标 ws db"，因此归在同一个深 Module，不是业务数据代理。
   - 员工 `employee_credential` 写入只能由 root 完成（PERMISSIONS NONE），dispatcher 缓存随 lifecycle endpoint 同步刷新。
 - `POST /api/chat` + `WS /api/chat/stream`：LLM key 必须在后端。
+- `POST /api/resources/research/save`：资源检索人工补库的用户确认保存动作，返回 SSE 进度。它是窄动作 endpoint，因为 embedding provider key 在后端；写资源与 embedding 时仍使用调用者 workspace session，不提供通用业务 CRUD、embedding enqueue 或 retry/reindex。
 - Office dispatcher：进程内服务，用员工 secret SIGNIN。
 - root 维护路径：`_system` schema、workspace lifecycle、`employee_credential` 写入、dispatcher 启动遍历。
 

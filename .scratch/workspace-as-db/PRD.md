@@ -32,6 +32,9 @@
 - Workspace Scope Module 就位：
   - `GET /api/session/workspaces`
   - `POST /api/session/switch-workspace`
+  - `POST /api/workspaces/:slug/members`
+  - `PATCH /api/workspaces/:slug/members/:userId`
+  - `DELETE /api/workspaces/:slug/members/:userId`
   - `GET /api/internal/idp/default-scope`
   - IdP Token Scope Adapter（更新 `https://surrealdb.com/db` / `https://surrealdb.com/ac`）
 - `POST /api/workspaces` 创建 workspace：root 建 db、应用模板、创建 owner user、写 `_system` 索引、调用 IdP scope adapter。
@@ -49,7 +52,7 @@
 ## 风险
 
 - **IdP scope adapter 失败**：workspace 已创建但 token scope 没切成功时，前端需要明确提示并允许重试切换。
-- **成员索引漂移**：workspace db `user` 与 `_system.user_workspace_index` 必须同步维护；成员管理路径需要后续 issue 固化。
+- **成员索引漂移**：workspace db `user` 与 `_system.user_workspace_index` 必须同步维护；成员管理主写路径固定为 Workspace Scope Module 后端 endpoint，reconciler 只做兜底修复。
 - **workspace 创建补偿**：模板执行失败要删除刚创建的 db；删除失败要有日志和手工修复指引。
 - **前后端共享模板**：创建新 db 与迁移既有 db 必须使用同一套 `shared/sql/workspace-template/`。
 
@@ -63,6 +66,7 @@
 | 04 | schema migration runner | 启动期遍历 _system.workspace，对每个 ws db 应用未应用的增量 .surql | 02 |
 | 05 | reconciler | 启动时 + 每小时校对 _system index 与 workspace db user 表；漂移写日志 / 安全修复 | 03 |
 | 06 | workspace create lifecycle | `POST /api/workspaces`：root 建 db、应用模板、写 owner 和 _system、切 token scope | 02, 03 |
+| 07 | member management endpoints | `POST/PATCH/DELETE /api/workspaces/:slug/members*`：管理员预创建 / 软移除 / role 变更，root 原子同写 ws db `user` 与 `_system.user_workspace_index` | 03, 06 |
 
 ## 验收 KPI
 
@@ -70,4 +74,5 @@
 - 登录 hook 模拟请求 → 对已有 subject 返回最近选择的 `{ db, ac }`；无 workspace 返回拒绝登录。
 - `POST /api/session/switch-workspace` 对无权限 workspace 返回 403，对有权限 workspace 更新 `last_selected_at` 并调用 IdP scope adapter。
 - `POST /api/workspaces` 成功后新 db 有模板 schema、owner user、_system 索引，并且 token scope 切到新 workspace。
+- `POST/PATCH/DELETE /api/workspaces/:slug/members*` 能保持 workspace db `user` 与 `_system.user_workspace_index` 一致；移除成员只写 `disabled_at`，不删除历史归因所需的 user record。
 - 在 shared/sql 加 `004-foo.surql` → 重启后所有 ws db 都跑到新版本。

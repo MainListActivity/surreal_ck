@@ -3,6 +3,10 @@ Label: done
 
 # RR-009 — 主动补库与最小资源详情
 
+## 2026-05-21 post-pivot note
+
+本 issue 中的"主动打开检索窗口"在 Web-only V1 中改为打开应用内 research route/panel。主动补库和最小资源详情契约保留；embedding retry / reindex UI 不进入 V1，失败保存由用户在 panel 中再次点击保存。
+
 ## Parent
 
 `.scratch/resource-retrieval/PRD.md`

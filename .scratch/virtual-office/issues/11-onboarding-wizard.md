@@ -9,7 +9,7 @@ Label: needs-triage
 
 ## What to build
 
-把整个产品 pitch 兑现：**用户只要"创建 workspace + 导入数据 + 写目标"，剩下都不用管**。
+把整个产品 pitch 兑现到安全 tracer：**用户只要"创建 workspace + 导入数据 + 写目标"，系统自动开岗并产出第一轮结构方案 / 汇报**。需要建表 DDL 时，用发出指令者的当前 workspace session 执行；没有 active session 时留下待确认意图。
 
 ### 流程
 
@@ -50,7 +50,7 @@ DEFINE FIELD created_at ON workspace_meta TYPE datetime VALUE time::now();
 ## Acceptance criteria
 
 - [ ] 创建工作区 + 填目标 + 跳过导入 → 30s 内办公室页面出现 3 个员工 + ≥1 条 office_message。
-- [ ] 同上 + 导入 .xlsx → 5 分钟内出现 ≥1 条 `office_report`（项目经理或数据分析师写的）。
+- [ ] 同上 + 导入 .xlsx → 5 分钟内出现 ≥1 条 `office_report`（项目经理或数据分析师写的），内容包含结构方案、DDL 执行结果，或缺少 active admin session 时的待确认事项。
 - [ ] 不填目标也能创建工作区（保持兼容），只是不自动 seed 员工。
 - [ ] 创建失败由 `/api/workspaces` 返回明确错误；浏览器不执行 `REMOVE DATABASE`，后端负责补偿。
 - [ ] dispatcher 在新员工出现后 ≤30s 内开始处理第一条 task。

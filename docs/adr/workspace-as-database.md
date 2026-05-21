@@ -35,7 +35,7 @@ SurrealDB namespace `main` 下有：
 
 | Database | 职责 |
 |---|---|
-| `_system` | root-only system database，承载 `workspace`、`user_workspace_index`、系统迁移版本、workflow snapshot 等跨 workspace 元数据。 |
+| `_system` | root-only system database，承载 `workspace`、`user_workspace_index`、系统迁移版本等跨 workspace 元数据。 |
 | `ws_<id12>` | 每个 **工作区** 一个 workspace database，承载该工作区全部业务表、协作表、`user` 表和 access 定义。 |
 
 ### 2. Token scope claim
@@ -190,6 +190,8 @@ namespace: main
 | **虚拟员工** | `kind='virtual'` | `employee` ON DATABASE (TYPE RECORD) | 仅 DML | dispatcher 用员工 secret SIGNIN |
 
 不再存在 NS-admin token。workspace 创建由后端 Workspace Scope Module 用 root 完成，浏览器不持跨 db DDL 能力。
+
+AI / 虚拟员工发起的 DDL 不改变上表能力划分：虚拟员工仍不能直接 DDL。DDL 的权限来自发出指令的真人用户，必须使用该用户当前 workspace session 执行；如果发起人不是工作区管理员，SurrealDB admin access 会拒绝。后端不得用 root、service JWT 或员工 session 代写业务 DDL。
 
 ### 4. `_system` database 职责
 

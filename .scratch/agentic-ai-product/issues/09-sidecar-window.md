@@ -1,7 +1,11 @@
-Status: ready-for-human
-Label: ready-for-human
+Status: wontfix
+Label: wontfix
 
 # AI-009 — Sidecar 窗口：Electrobun 第二窗口磁吸 AI 面板
+
+## 2026-05-21 关闭原因
+
+`docs/adr/web-only-pivot.md` 已明确取消 Electrobun sidecar 窗口方向。本 issue 作为历史调研记录保留，不再进入当前实现路线。AI 面板后续以 Web app 内 drawer/panel 形态推进；未来如需要桌面壳，也应包装同一 Web 域名，而不是恢复 Electrobun 多窗口。
 
 ## Parent
 

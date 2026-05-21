@@ -3,6 +3,10 @@ Label: done
 
 # AI-010 — Workflow run 持久化：SurrealWorkflowsStorage
 
+## 2026-05-21 post-pivot note
+
+本 issue 是 web-only pivot 前的历史实现记录。当前有效路线见 `.scratch/mastra-router-migration/issues/02-workflows-storage-in-workspace-db.md`：`WorkflowsStorage` snapshot 落所属 workspace database 的 `workflow_run` 表，不使用旧 `src/main/**` 路径，也不把 run 混放到 `_system` 或旧 `mastra_workflow_run` 方案中。
+
 ## Parent
 
 `.scratch/agentic-ai-product/PRD.md`

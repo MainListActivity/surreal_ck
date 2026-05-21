@@ -6,11 +6,11 @@
 - [`docs/adr/web-only-pivot.md`](../../docs/adr/web-only-pivot.md)
 - [`docs/adr/workspace-as-database.md`](../../docs/adr/workspace-as-database.md)
 - [`docs/adr/backend-framework-hono.md`](../../docs/adr/backend-framework-hono.md)
-- 既有 `.scratch/agentic-ai-product/PRD.md` 仍是事实，但执行环境从 Electrobun 主进程改为 Bun server
+- 既有 `.scratch/agentic-ai-product/PRD.md` 只保留产品语义作为事实；其中 Electrobun 主进程 / renderer RPC / sidecar 相关执行形态已被 web-only-pivot 废弃
 
 ## 一句话
 
-把现有 `server/legacy/ai/mastra/**`（即原 `src/main/ai/mastra/**`）的 Router workflow + 子 agent + tool **物理上**搬到 `server/ai/mastra/**`，并把所有数据库 / 上下文 / RPC 调用改为"用调用者的 SurrealDB session token 跑"，对外暴露 Hono `/api/chat` HTTP endpoint + `/api/chat/stream` WS endpoint。**不改变** Router workflow 的内部行为或 prompt。
+把现有 `server/legacy/ai/mastra/**`（即原 `src/main/ai/mastra/**`）的 Router workflow + 子 agent + tool **物理上**搬到 `server/ai/mastra/**`，并把所有数据库 / 上下文 / Electrobun RPC 调用改为"用调用者的 SurrealDB session token 跑 + Hono HTTP/WS 传输"，对外暴露 Hono `/api/chat` HTTP endpoint + `/api/chat/stream` WS endpoint。**不改变** Router workflow 的业务行为或 prompt。
 
 **注意**：本簇**不**做"SurrealDB LIVE → WS 转发"——前端直接订阅 SurrealDB LIVE（参见 [`frontend-direct-connect.md`](../../docs/adr/frontend-direct-connect.md)）。本簇的 WS endpoint **仅**用于推送 Mastra workflow 自身的 progress / chunk / suspend / done 事件。
 
@@ -30,7 +30,7 @@
 
 - `server/ai/mastra/` 目录下 router-workflow / 子 agent / tool 全部就位；`server/legacy/ai/mastra/` 被删空。
 - 所有 tool 内部的 SurrealDB 调用改为接收"workspace session token"——拒绝硬编码 root 或 service 凭证。
-- `WorkflowsStorage` 迁到 `_system.workflow_run` 表（schema 在簇 C-02 之外单独加，因为 Router workflow 与 virtual-office 共享）。
+- `WorkflowsStorage` 迁到所属 workspace database 内的 `workflow_run` 表；schema 作为 `shared/sql/workspace-template/` 增量分发，Router workflow 与 virtual-office 共享同一个 adapter 实现但按各自会话写入。
 - HTTP `POST /api/chat`（接收用户消息）+ WS `/api/chat/stream`（流式回 chunk / progress / suspend）就位。
 - 前端在簇 D2 接入即可端到端跑通 Router workflow。
 
@@ -45,7 +45,7 @@
 | # | 名称 | 主体 | 依赖 |
 |---|---|---|---|
 | 01 | 文件搬运 + import 更新 | server/legacy/ai/mastra → server/ai/mastra；shared/ai-context.ts 等共享类型挪到 shared/src/ | wp-restructure 全部 |
-| 02 | WorkflowsStorage 落 _system | 新增 workflow_run 表 schema + Mastra storage adapter | C-02 |
+| 02 | WorkflowsStorage 落 workspace db | 新增 workspace-template `workflow_run` schema + Mastra storage adapter | C-02 |
 | 03 | Tool 鉴权重写 | 所有 tool 接收 `surrealSession`（一条已 SIGNIN 的 SurrealDB 连接）而非全局连接；删除任何 root 引用 | 01 |
 | 04 | Hono endpoint：/api/chat | 接收 `{ message, contextSnapshot? }`；后端按调用者 token scope SIGNIN ws db → 拉起 Router workflow run | 02, 03, C-03 |
 | 05 | Hono WS endpoint：/api/chat/stream | 推送 progress / chunk / suspend / done 事件；resume 路径走 HTTP `POST /api/chat/runs/:runId/resume` | 04 |
@@ -55,5 +55,5 @@
 
 - 用户在 web 抽屉（簇 D2 接入后）发"打开工作簿 X" → Router workflow 在后端跑 → 流式返回 → 前端看到结果。
 - 任何 tool 调用的 SurrealDB 操作在 changefeed 中都能追溯到调用者真人 `$auth`，**没有 root 写入**。
-- WorkflowsStorage 在 _system.workflow_run 表中可见，重启后未完成 run 能 resume。
+- WorkflowsStorage 在当前 workspace database 的 `workflow_run` 表中可见，重启后未完成 run 能 resume。
 - `server/legacy/ai/mastra` 目录被清空。

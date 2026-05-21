@@ -16,6 +16,8 @@ Category: enhancement
 
 当前实现已经具备 ResourceAgent、`resource-retrieval` router category、资源候选暂停、人工检索 session 和主动补库窗口。这个 follow-up 只调整 AI 抽屉的入口语义和交互位置，不重做资源检索底座。
 
+2026-05-21 post-pivot：这里的"窗口"在 Web-only V1 中指应用内 research route/panel，不再指 Electrobun 独立窗口或外部 WebView。
+
 ## Agent Brief
 
 **Category:** enhancement

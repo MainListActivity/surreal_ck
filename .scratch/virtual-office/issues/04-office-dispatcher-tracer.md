@@ -13,9 +13,9 @@ Label: needs-triage
 
 ### 启动流程
 
-1. 用 SurrealDB root 凭证连 `_system`，`SELECT * FROM workspace`，拿到所有 workspace 列表（`{ slug, db_name }`）。
+1. 用 SurrealDB root 凭证连 `_system`，查询 `status = 'active'` 的 workspace，拿到所有 workspace 列表（`{ slug, db_name }`）。
 2. 对每个 workspace：
-   a. 用 root 凭证 USE `ws_<slug>` db，`SELECT * FROM user WHERE kind='virtual' AND virtual_profile.status='active'`。
+   a. 用 root 凭证 USE 该 workspace 的 `db_name`，`SELECT * FROM user WHERE kind='virtual' AND virtual_profile.status='active'`。
    b. 对每个员工：
       - `SELECT secret FROM employee_credential WHERE employee = <empId>`（root 可读）。
       - 关闭 root 连接，新建一条到该 db 的连接，`SIGNIN { ac: 'employee', ns, db, subject: emp.subject, secret }`，拿到 1h JWT。
@@ -59,15 +59,15 @@ server/ai/office/
 - [ ] 一个 ws db 中 seed 一个 echo 员工后，Bun server 启动 1 分钟内能在 office_message 表里看到 self 发的至少 1 条消息（心跳触发）
 - [ ] admin 给 echo 员工写一条 task（通过 issue 03 endpoint），dispatcher ≤2s 内拉起窗口
 - [ ] dispatcher 同时管理 2 个 ws db 时，员工写入归因严格按各自 db 隔离（不可能写到别的 ws db 表里）
-- [ ] Bun server 重启后无重复执行：未结 workflow run 通过 `WorkflowsStorage`（在 `_system.workflow_run`）恢复或丢弃
+- [ ] Bun server 重启后无重复执行：未结 workflow run 通过 `WorkflowsStorage`（在所属 workspace database 的 `workflow_run` 表）恢复或丢弃
 - [ ] 关停时所有员工连接 close 干净
-- [ ] **没有任何 SurrealDB 写入使用 root 或 service 身份**（只用员工 SIGNIN 的 token）；root 只在启动枚举 + 取 secret + workflow_run 持久化路径中使用
+- [ ] **没有任何业务 SurrealDB 写入使用 root 或 service 身份**（只用员工 SIGNIN 的 token）；root 只在启动枚举 + 取 secret 等维护路径中使用，workflow_run 持久化也走员工会话
 
 ## Blocked by
 
 - `.scratch/virtual-office/issues/02-office-collaboration-tables.md`
 - `.scratch/virtual-office/issues/03-employee-provisioning-endpoint.md`
-- `.scratch/agentic-ai-product/issues/10-workflow-run-persistence.md`（`WorkflowsStorage` 实例需迁移到 `_system.workflow_run` 表）
+- `.scratch/mastra-router-migration/issues/02-workflows-storage-in-workspace-db.md`（`WorkflowsStorage` 实例需迁移到 workspace database 内的 `workflow_run` 表）
 
 ## Notes
 

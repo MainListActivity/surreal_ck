@@ -61,7 +61,7 @@ _Avoid_: 工作簿（当表达已创建资源时）
 _Avoid_: Sheet, 智能表, 页签, 子页面
 
 **数据表运行时**:
-主进程内负责把一个数据表映射到真实 SurrealDB 表的执行 Module，集中处理动态表校验、字段 DDL、记录编解码和记录查询/写入。
+负责把一个数据表映射到真实 SurrealDB 表的执行 Module，集中处理动态表校验、字段 DDL、记录编解码和记录查询/写入。DDL 调用必须使用当前 **授权发起人** 的 workspace session。
 _Avoid_: 仓库, Repository, Service（当表达这个完整执行语义时）
 
 **字段**:
@@ -125,7 +125,7 @@ _Avoid_: 全量上下文（当强调只携带确认产出时）
 _Avoid_: 阻塞，挂起（当指代正式持久化暂停时）
 
 **流式进度通道**:
-Router 分类完成和每个子 agent 步骤切换时，从主进程向 AI 抽屉推送的进度提示通道。用于掩盖多步串行带来的延迟。
+Router 分类完成和每个子 agent 步骤切换时，从 Bun server 向 AI 抽屉推送的进度提示通道。用于掩盖多步串行带来的延迟。
 _Avoid_: 进度条（当表达跨步骤语义提示时）
 
 **虚拟办公室**:
@@ -160,8 +160,12 @@ _Avoid_: Chat message（在领域语境内统一叫办公室消息）
 `user_notification` 表中的一条记录，由 **虚拟员工** 在需要真人介入（打电话、寄函件、做线下决策）时写入，附 `requested_action` 字段。用户处理完后写 `resolution` 闭环。
 _Avoid_: 通知, Alert（仅作 UI 文案别名）
 
+**授权发起人**:
+发出某个 AI 修改指令的真人 **用户**。当 AI / **虚拟员工** 提议执行 DDL（建 **数据表**、定义 **字段** 等）时，权限来自 **授权发起人** 的当前 workspace session，而不是 **虚拟员工**、root 或 service JWT。若没有可用的真人 session，AI 只能产出待确认意图或 **用户通知请求**，等待真人回来后用自己的 session 执行。
+_Avoid_: 代写用户, service user, 权限委托 token
+
 **Office dispatcher**:
-主进程中负责"被触发后拉起一次 **虚拟员工** 执行窗口"的调度组件。监听 `office_task` / `office_message` / `user_notification` 的 LIVE SELECT、并按 `office_role.heartbeat_interval` 触发心跳。它**不是** Router workflow 的一部分。
+Bun server 进程中负责"被触发后拉起一次 **虚拟员工** 执行窗口"的调度组件。监听 `office_task` / `office_message` / `user_notification` 的 LIVE SELECT、并按 `office_role.heartbeat_interval` 触发心跳。它**不是** Router workflow 的一部分。
 _Avoid_: Daemon, 后台进程（当强调短窗口而非常驻时）
 
 **执行窗口**:
@@ -209,6 +213,7 @@ _Avoid_: 轮询（仅描述底层实现时使用）
 - 一个 **汇报** 由下属 **虚拟员工** 写给 **上级**，可选引用一条 **派单**
 - 一个 **办公室消息** 同时承载 **虚拟员工** 与未来真人参与者之间的通信
 - 一个 **用户通知请求** 由 **虚拟员工** 发出，指向 **工作区** 的 owner，期待真人完成 `requested_action` 后回写 `resolution`
+- 一个 DDL 修改意图必须有一个 **授权发起人**；实际 DDL 用该真人当前 workspace session 执行
 - **Office dispatcher** 通过 LIVE SELECT 与 **心跳** 触发 **执行窗口**
 - 一个 **执行窗口** 内 **虚拟员工** 的步数受 `office_role.heartbeat_interval` 与硬上限约束
 - 一个 **工作区** 一一对应一个 **workspace database**
@@ -241,8 +246,8 @@ _Avoid_: 轮询（仅描述底层实现时使用）
 - "Workspace agent" 不再作为正式术语；已定稿：AI 顶层调度由 **Router workflow** 承担，原 `workspaceAgent` 实现将在 issue 011 删除并迁移其挂载的导航 tool。
 - "全量 context" 不进入 AI 编排术语；已定稿：跨步骤数据流统一叫 **共享 context**，且强制只携带已确认产出，不携带中间 tool trace。
 - "暂停" 与 "挂起" 不可混用；已定稿：AI 流程暂停状态正式叫 **workflow 暂停态**，必须可持久化并跨重启恢复。
-- "虚拟员工" 与 "Bot/Agent" 不可混用；已定稿：**虚拟员工** 是 `app_user.kind='virtual'` 的一等身份，Bot/Agent 不进入领域规范词。
-- "岗位" 与 "角色" 不可混用；已定稿：**岗位** 指 `office_role` 表中的执行配置，"角色"仅保留给 PERMISSIONS 中 `has_workspace_member.role` 字段（admin / editor / viewer / bot）。
+- "虚拟员工" 与 "Bot/Agent" 不可混用；已定稿：**虚拟员工** 是 workspace database 内 `user.kind='virtual'` 的一等身份，Bot/Agent 不进入领域规范词。
+- "岗位" 与 "角色" 不可混用；已定稿：**岗位** 指 `office_role` 表中的执行配置，"角色"不再作为领域规范词使用；身份类别统一说 **工作区管理员** / **普通成员** / **虚拟员工**。
 - "派单" 与 "任务" 不可混用；已定稿：业务层协作单位统一叫 **派单**，"任务"在仓库内仅指 Mastra workflow step 或本仓库的 TODOS.md 条目。
 - "Office dispatcher" 与 "Router workflow" 不可混用；已定稿：前者覆盖被动推进的自治协作，后者覆盖主动发问的同步应答；二者并列，共享 tool bundle 与 WorkflowsStorage 但不共享入口。
 - "执行窗口" 与 "会话" 不可混用；已定稿：**执行窗口** 是 dispatcher 一次拉起员工的有限步数区间，不是聊天会话。

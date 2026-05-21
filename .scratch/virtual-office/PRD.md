@@ -10,7 +10,7 @@
 
 ## 一句话
 
-用户在 **工作区** 内导入数据并写下目标，**虚拟办公室** 中由 **岗位** 驱动的 **虚拟员工** 在云端 7×24 自治推进：清洗数据建表 → 设计并发布表单 → 跟进填写情况 → 在必要时通过 **用户通知请求** 让真人打电话或寄函件 → 持续向 **上级** **汇报**。用户出门旅行只需打开浏览器看进展。
+用户在 **工作区** 内导入数据并写下目标，**虚拟办公室** 中由 **岗位** 驱动的 **虚拟员工** 在云端 7×24 自治推进：清洗数据并起草结构方案 → 需要 DDL 时由发出指令的真人 session 确认执行 → 设计并发布表单 → 跟进填写情况 → 在必要时通过 **用户通知请求** 让真人打电话或寄函件 → 持续向 **上级** **汇报**。用户出门旅行只需打开浏览器看进展。
 
 ## 当前不解决
 
@@ -36,7 +36,7 @@
 
 1. 用户在浏览器中创建 **工作区**，导入 .xlsx，写一段目标说明（"我要做 2026 财年北方区客户回访"）。
 2. 后端自动在该 **工作区** 创建一组 **虚拟员工**（MVP：单一"项目经理"通才；后续按岗位拆分）。
-3. **项目经理** 收到 workspace 创建事件 → dispatcher 拉起 **执行窗口** → 分析数据 → 派单给 **数据分析师**（如果已开岗）或自己继续完成 → 建 **数据表** → 设计表单 → 发表单。
+3. **项目经理** 收到 workspace 创建事件 → dispatcher 拉起 **执行窗口** → 分析数据 → 派单给 **数据分析师**（如果已开岗）或自己继续完成 → 产出 **数据表** 结构方案 / 草稿 → 需要 DDL 时交给发出指令的真人 session 确认执行 → 设计表单 → 发表单。
 4. 用户关电脑出门旅行。表单陆续被填写，**虚拟员工** 在 **心跳** 中检查填写率、识别异常。
 5. 出现需要真人介入的情况，**虚拟员工** 写一条 **用户通知请求**。用户在手机浏览器中看到通知 → 处理后回写 resolution。
 6. 整个过程中下属周期性向 **上级** 写 **汇报**，**上级** 周期性派新 **派单** 或升级 **用户通知请求**。
@@ -53,12 +53,20 @@
 | 既有系统 | 关系 |
 |---|---|
 | Router workflow | 并列，不嵌套。Router 处理"用户主动发问"；本 PRD 处理"长期目标自动推进"。二者在 Bun server 进程内共享 tool registry，但使用不同的 SurrealDB 会话身份。 |
-| Mastra `WorkflowsStorage` | 共享。建议落在 `_system` 的 `workflow_run` 表，按 workspace 字段标归属。 |
+| Mastra `WorkflowsStorage` | 共享同一 adapter 实现。snapshot 落在所属 workspace database 内的 `workflow_run` 表；归属由 db 边界表达，不放 `_system`。 |
 | 同步 v2 | **已取消**（见 [`web-only-pivot.md`](../../docs/adr/web-only-pivot.md)）。 |
 | `app_user` 全局表 | **已废弃**。改为每个 workspace database 内一张 `user` 表。**虚拟员工** = `user.kind='virtual'`。详见 [`workspace-as-database.md`](../../docs/adr/workspace-as-database.md)。 |
 | `has_workspace_member` 边 | **已废弃**。成员关系由"该 db 内有没有这条 user 记录"+"是否 admin"天然表达。 |
 | 既有 4 个子 agent tool（navigation / dashboard / claim-analysis / resource-retrieval） | 复用。被组装进 `tool_bundle` 后挂载给对应 **岗位**。 |
 | Electrobun 桌面端 | 整体取消。 |
+
+### DDL 授权规则
+
+- **虚拟员工** 的 employee access 仍然只有 DML，不能直接 DDL。
+- AI / **虚拟员工** 发起的建 **数据表**、定义 **字段**、调整 schema 等 DDL，必须使用发出指令的真人当前 workspace session 执行。
+- 发出指令者如果不是 **工作区管理员**，DDL 会被 SurrealDB 引擎拒绝；AI 不做应用层越权兜底。
+- 后端不保存真人长期 token，不用 root 或 service JWT 代写业务 DDL。
+- 后台 **执行窗口** 没有可用真人 session 时，只能生成待确认意图或 **用户通知请求**，等待真人回来确认。
 
 ## 主要风险
 
@@ -81,7 +89,7 @@
 | 04 | office dispatcher tracer | dispatcher 骨架 + 一个 echo 岗位 + 跨 workspace 枚举 + 员工 SIGNIN + LIVE SELECT + 心跳 | 02, 03 |
 | 05 | budget & loop guard | 每窗口步数硬上限 + daily_token_budget + 任务深度上限（计数表在每个 ws db 内） | 04 |
 | 06 | project-manager role bundle | MVP 岗位"项目经理"：派单、汇报、用户通知请求三件套 tool | 04 |
-| 07 | data-analyst role bundle | 调用既有 dashboard / claim-analysis tool 完成"建数据表 + 仪表盘草稿" | 06 |
+| 07 | data-analyst role bundle | 调用既有 dashboard / claim-analysis tool 完成"数据表结构方案 + 授权发起人 session 执行 DDL + 仪表盘草稿" | 06 |
 | 08 | form-officer role bundle | 创建/发布表单 + 跟进填写率（依赖既有 forms 模块的 tool 暴露） | 06 |
 | 09 | office UI: roster + activity stream | workspace 级"办公室"页面（Web 路由）：员工花名册、消息流、任务看板，浏览器直连 SurrealDB LIVE | 04, 06 |
 | 10 | user_notification inbox | Web 抽屉新增 inbox tab；resolution 浏览器直连 SurrealDB 闭环 | 02, 09 |

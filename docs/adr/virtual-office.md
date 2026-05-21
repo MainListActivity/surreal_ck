@@ -172,6 +172,17 @@ DEFINE INDEX office_role_key_unique ON office_role COLUMNS key UNIQUE;
 - Router workflow：用真人 OIDC token 直接连用户当前所在 workspace db 执行。
 - Dispatcher：用员工 token 连员工所在 workspace db 执行。
 
+### 5.1 AI 发起 DDL 的授权规则
+
+**虚拟员工不获得 DDL 能力。** 当虚拟员工或 Router workflow 需要建 **数据表**、定义 **字段**、调整 schema 等 DDL 操作时，实际执行权限来自发出指令的真人用户：
+
+1. AI 先产出结构化 DDL 意图（例如"创建 customer_visit 数据表，字段为 ..."）。
+2. Web 前端展示确认 UI；或 Router workflow 在当前请求中已持有调用者 workspace session。
+3. 用户确认后，用发出指令者的当前 workspace session 执行 DDL。若该 session 不是 `admin` access，数据库引擎拒绝。
+4. 若 Office dispatcher 在后台执行窗口中没有可用的真人 session，只能写 **用户通知请求** 或返回待确认意图，等待真人回来后用自己的 session 执行。
+
+这条规则避免引入 service JWT、root 代写或员工 DDL，同时满足"权限由发出指令的人赋予"。
+
 ### 6. 失败、重启、单例、死循环
 
 - **重启**：Bun server 进程重启后 dispatcher 从 `_system` 重新枚举 workspace + 员工 + SIGNIN + LIVE 订阅；所有未结 task 仍在各自 ws db，下一次事件或心跳就会自然恢复。

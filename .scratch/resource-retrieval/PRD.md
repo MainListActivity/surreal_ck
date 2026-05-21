@@ -1,7 +1,13 @@
-Status: done
-Label: done
+Status: ready-for-agent
+Label: ready-for-agent
 
 # PRD: 通用资源检索底座
+
+## 2026-05-21 架构兼容说明
+
+本 PRD 中的资源主数据、ResourceAgent、候选暂停/恢复、citation、embedding profile、resource type registry 等领域设计仍可复用。
+
+但独立 Electrobun 检索窗口、可信本地壳、外部 WebView、主进程 RPC 等执行形态属于 web-only pivot 前的方案，不能作为当前实施计划继续开工。Web-only V1 的人工检索界面已定为应用内 route/panel + 手动粘贴证据，不嵌入第三方页面；资源保存已定为用户确认后的后端 SSE 保存动作，后端在同一动作内完成向量化和入库，不单独提供 embedding enqueue / retry endpoint。
 
 ## Problem Statement
 
@@ -11,9 +17,9 @@ Label: done
 
 ## Solution
 
-构建一个 workspace 级共享的通用资源检索底座。用户或 agent 发起资源检索时，系统先用资源库做关键词和向量混合检索；高置信命中可直接回答，中置信命中展示候选并允许多选，低置信或未命中时 workflow 暂停并打开独立检索窗口，让用户在应用内外部 WebView 中手动检索网页资料。
+构建一个 workspace 级共享的通用资源检索底座。用户或 agent 发起资源检索时，系统先用资源库做关键词和向量混合检索；高置信命中可直接回答，中置信命中展示候选并允许多选，低置信或未命中时 workflow 暂停并进入 Web app 内人工检索 / 补库 route 或 panel。
 
-检索窗口使用可信壳包裹外部 WebView。第三方网页没有主进程 RPC 权限；可信壳负责导航、证据篮、AI 草稿生成、保存资源和完成检索。用户在网页中选中证据文本，点击加入证据；同一会话可保存多个资源，最后完成检索并恢复原 workflow。保存资源时先写入资源主数据，再异步生成 embedding。当前回答可直接使用新保存资源主数据，不等待 embedding 完成。
+人工检索 / 补库表面负责证据篮、AI 草稿生成、保存资源和完成检索。V1 不嵌入第三方网页，不读取外部页面 selection；用户在普通浏览器环境中查资料，并把证据文本、来源 URL、来源标题手动粘贴进可信 panel。用户显式确认保存后，前端调用资源保存专用 SSE 动作；后端用调用者当前 workspace session 校验并写入 SurrealDB，在同一动作中生成 embedding、写入 resource item / resource embedding、更新 research session，并把进度推回页面。同一 research session 可保存多个资源，最后完成检索并恢复原 workflow。向量化或入库失败时，本次保存失败，不进入 retry 队列；UI 保留草稿和证据篮，让用户再次点击保存。
 
 资源主数据采用通用基座加 typed payload：公共字段固定，`resourceType` 选择具体资源类型，`structuredPayload` 由 resource type registry 校验。第一版内置 `generic_note` 和 `web_article`，预留 `legal_case` 和 `legal_article`。回答使用文本 `[1]` 引用，同时返回结构化 citations，供 UI 渲染来源卡片和未来法律案例卡片。
 
@@ -24,15 +30,15 @@ Label: done
 3. As a workspace user, I want medium-confidence resource matches to appear as selectable candidates, so that I can decide what is relevant.
 4. As a workspace user, I want to select multiple resource candidates, so that an answer can synthesize several sources.
 5. As a workspace user, I want to continue manual research from a weak candidate list, so that incomplete matches do not block me.
-6. As a workspace user, I want AI to open a research window when resources are missing, so that I can fill the knowledge gap without leaving the app.
-7. As a workspace user, I want to open the research window proactively, so that I can add resources even when no AI workflow is running.
+6. As a workspace user, I want AI to open a research panel when resources are missing, so that I can fill the knowledge gap without leaving the app.
+7. As a workspace user, I want to open the research panel proactively, so that I can add resources even when no AI workflow is running.
 8. As a workspace user, I want proactive research to default to a generic resource type, so that I can save ordinary notes quickly.
 9. As a workspace user, I want to change the resource type before saving, so that structured payloads match the source.
-10. As a researcher, I want the research window to show an external webpage and a trusted recording panel, so that I can gather evidence and save results in one place.
-11. As a researcher, I want external pages to have no database or AI RPC permissions, so that untrusted sites cannot access local data.
-12. As a researcher, I want the research window to allow only http and https URLs in the first version, so that app-internal and local-file schemes are not exposed.
-13. As a researcher, I want to select text on a page and add it to an evidence basket, so that the saved resource is grounded in explicit evidence.
-14. As a researcher, I want selection capture to fall back to manual paste when automatic selection reading fails, so that I can still record evidence on difficult pages.
+10. As a researcher, I want the research panel to show the query, context, evidence basket, and resource draft, so that I can gather evidence and save results in one trusted place.
+11. As a researcher, I want third-party pages to stay outside the app in V1, so that untrusted sites cannot access workspace data, SurrealDB credentials, or AI endpoints.
+12. As a researcher, I want source URL fields to accept only http and https URLs in V1, so that app-internal and local-file schemes are not saved as web sources.
+13. As a researcher, I want to paste evidence text into an evidence basket, so that the saved resource is grounded in explicit user-confirmed evidence.
+14. As a researcher, I want manual paste to be the default V1 evidence path, so that difficult pages do not depend on automatic selection reading.
 15. As a researcher, I want to collect multiple evidence snippets from the same page, so that one resource can be supported by several passages.
 16. As a researcher, I want each evidence snippet to keep source URL, source title, capture time, and order, so that later review can audit where it came from.
 17. As a researcher, I want AI to generate a resource draft from the evidence basket, so that I do not have to write summaries from scratch.
@@ -47,23 +53,23 @@ Label: done
 26. As a workspace user, I want duplicate-like resources to be detected by hashes without blocking save, so that repeated evidence can be reviewed later without losing context.
 27. As a workspace user, I want resource quality to distinguish user-confirmed, AI-draft, imported, and deprecated resources, so that ranking and review can prefer trusted content.
 28. As a workspace user, I want resource details to show title, summary, evidence, source, payload, and embedding status, so that I can audit saved resources.
-29. As a workspace user, I want to retry embedding for a failed resource, so that indexing problems can be fixed without recreating resources.
+29. As a workspace user, I want a failed resource save to keep my draft and evidence in the panel, so that I can click save again after fixing the problem or waiting for the provider to recover.
 30. As a workspace user, I want resources to remain saveable when embedding is not configured, so that knowledge capture is not blocked by model setup.
-31. As a workspace user, I want search results to distinguish semantic miss from disabled, pending, or failed indexes, so that AI chooses the correct next action.
+31. As a workspace user, I want search results to distinguish semantic miss from disabled or unavailable vector search, so that AI chooses the correct next action.
 32. As an administrator, I want embedding settings to be separate from chat model settings, so that chat provider limitations do not break semantic search.
 33. As an administrator, I want embedding profile changes to avoid mixing incompatible vectors, so that similarity ranking remains valid.
-34. As an administrator, I want old embeddings to be marked for reindexing after profile changes, so that resources can be refreshed safely.
+34. As an administrator, I want old embeddings from incompatible profiles to be ignored after profile changes, so that vectors from different profiles are not mixed in ranking.
 35. As a developer, I want resource types registered with schemas, so that typed payloads do not become uncontrolled JSON.
 36. As a developer, I want unknown resource types to fall back to generic public fields or explicit custom handling, so that the base API stays stable.
 37. As a developer, I want search to accept query, context, resource type, filters, and limit, so that upper-level features can reuse one retrieval interface.
 38. As a developer, I want search context to support selected row, document, and manual text inputs, so that future legal-case search can build richer retrieval profiles.
 39. As a developer, I want search ranking to combine vector score, keyword score, quality, and recency, so that results are not ordered by vector similarity alone.
 40. As a developer, I want rankers to be extensible by resource type, so that `legal_case` can later use cause of action, issue overlap, and legal article overlap.
-41. As a developer, I want resource embeddings stored separately from resource items, so that multiple profiles and reindexing can be modeled cleanly.
+41. As a developer, I want resource embeddings stored separately from resource items, so that profile isolation and future reindexing can be modeled cleanly.
 42. As a developer, I want the first vector index implementation to compute cosine similarity in the service layer, so that the end-to-end flow can ship before database vector indexing is finalized.
 43. As a developer, I want a replaceable vector index interface, so that SurrealDB vector indexing can be adopted later without changing agent and UI contracts.
 44. As a developer, I want resource creation in ordinary AI chat to require a `resource-draft` confirmation intent, so that agents cannot silently pollute the resource library.
-45. As a developer, I want research-window saves to use a dedicated save RPC, so that explicit user saves do not get tangled with AI action confirmation state.
+45. As a developer, I want research-panel saves to use a dedicated SSE confirmation action, so that explicit user saves can stream validation, embedding, persistence, and session-update progress without becoming a generic CRUD proxy.
 46. As a developer, I want manual research tied to a durable research session id, so that workflow run ids are not exposed as the main business handle.
 47. As a developer, I want research sessions persisted, so that suspended workflows and open research tasks survive app restart.
 48. As a developer, I want workflow resume payloads to carry resource ids only, so that the workflow can re-read canonical resource records from the database.
@@ -76,16 +82,16 @@ Label: done
 - Treat resource retrieval as a reusable bottom layer. Similar-case search and legal article annotation are later features built on top of the base.
 - Add a new router category for resource retrieval and a ResourceAgent. ResourceAgent owns resource search, resource draft generation, citation answer generation, and read-only resource lookup.
 - ResourceAgent must not directly write resources during ordinary chat. In chat it returns a `resource-draft` structured intent that reuses the existing write-confirmation path.
-- The research window save flow is a separate explicit user action. It uses a dedicated save RPC and does not call the generic AI action executor.
+- The research save flow is a separate explicit user action. Web-only V1 uses a dedicated SSE confirmation action; it is not a generic business CRUD proxy and it is not a separate embedding enqueue endpoint.
 - The first version delivers an end-to-end loop: search resources, select candidates or open manual research, collect evidence, generate draft, save resources, finish research, resume workflow, answer with citations.
 - Resource storage uses a main resource item record plus a separate embedding record. Evidence snippets are embedded in the resource item in V1; they can be split later if resource-level editing or per-evidence indexing requires it.
 - Resource item public fields include workspace, resource type, title, summary, source URL, source title, evidence snippets, tags, structured payload, quality, optional confidence, optional source trust, duplicate hashes, created by, created at, and updated at.
-- Resource embedding records are keyed by resource and embedding profile. They store workspace, profile key, embedding text hash, vector, status, error details, indexed timestamp, and updated timestamp.
+- Resource embedding records are keyed by resource and embedding profile. They store workspace, profile key, embedding text hash, vector, status, indexed timestamp, and updated timestamp. V1 does not persist retry/error workflow state for failed saves.
 - A research session is a persisted business entity. It records workspace, originating run id, query, context, resource type, status, created resources, created by, created at, and completed/cancelled timestamps.
 - Research sessions use statuses `open`, `completed`, and `cancelled`.
 - One research session may save multiple resources. The user explicitly finishes the session, and workflow resume receives resource ids.
 - Workflow resume payloads carry resource ids only. The workflow re-reads canonical resources from storage before answering.
-- The current answer can use newly saved resources even when their embeddings are still pending.
+- The current answer can use newly saved resources once the SSE save action succeeds. There is no persisted V1 embedding-pending queue.
 - Resource library visibility is workspace-only in V1. Private resources are intentionally out of scope.
 - Resource types use a registry with schemas. V1 includes `generic_note` and `web_article`; `legal_case` and `legal_article` are reserved for later iteration.
 - The `web_article` type requires title, summary, source URL, source title, and evidence. Author, published date, and site name are optional.
@@ -96,12 +102,12 @@ Label: done
 - Embedding text for a resource is generated from question or query, conclusion or summary, evidence summary, source title, and tags.
 - Embedding settings are separate from chat model settings. Chat providers and embedding providers may have different models, dimensions, APIs, and availability.
 - Embedding profiles isolate provider, model, dimensions, and version. Vectors from different profiles must not be mixed in the same similarity search.
-- When embedding profile changes, old resource embeddings become stale and enter a reindex path rather than being used with the new profile.
+- When embedding profile changes, old resource embeddings are ignored for the active profile rather than being mixed into search. V1 does not provide a reindex endpoint; users can resave resources when regeneration is needed.
 - Resource save is allowed when embedding is not configured. Such resources are marked with disabled embedding state and can still be found by keyword search.
-- Embedding generation is asynchronous. Resource save writes the resource first, then enqueues or starts embedding generation.
-- Embedding failure marks the resource/index state as failed and supports resource-level retry.
-- V1 shows resource-level embedding status and retry. A global embedding queue page is out of scope.
-- Search distinguishes true miss from disabled, pending, and failed index states. These states drive different workflow behavior.
+- Embedding generation happens inside the user-confirmed SSE save action. The backend streams progress while it validates, generates embeddings, writes the resource, writes the embedding, and updates the research session.
+- Embedding or persistence failure fails the save action. V1 does not create an embedding retry job, resource-level retry action, or separate reindex endpoint; the UI keeps the draft so the user can click save again.
+- V1 shows resource-level embedding status for saved resources, but not retry controls. A global embedding queue page is out of scope.
+- Search distinguishes true miss from disabled or unavailable vector index states. These states drive different workflow behavior.
 - V1 keyword search uses simple contains over title, summary, tags, and evidence text. The API still exposes keyword score so a better keyword engine can replace it later.
 - V1 vector search computes cosine similarity in application service code behind a replaceable vector index interface. The interface may later be backed by SurrealDB vector indexing.
 - Ranking combines vector score, keyword score, quality score, and recency score. Resource-type-specific rankers are reserved through a registry hook.
@@ -109,15 +115,14 @@ Label: done
 - Candidate selection supports multiple resources. Candidate cards support using selected resources or continuing manual research.
 - Answers use inline `[1]` style citations and a structured citations array.
 - Structured citations include citation index, resource id, title, source URL, and evidence snippet references when available.
-- The research window is an independent Electrobun window containing a trusted local shell and an external WebView.
-- External pages do not receive main-process RPC access. Recording, AI draft generation, saving, and finishing research live in the trusted shell.
-- V1 only allows `http` and `https` navigation in the research window. Workspace allowlist and denylist are reserved for later.
-- Evidence capture first attempts controlled selection extraction from the external WebView. If this fails, the user can paste evidence manually.
+- The pre-pivot independent Electrobun research window is cancelled. Web-only V1 research surface is application route/panel + manual paste evidence, tracked by `RR-012`.
+- V1 does not embed third-party pages. External sites stay in the user's normal browser context and never receive application data, SurrealDB credentials, or AI/server privileges.
+- Manual paste is the only V1 evidence capture path. Selection capture, iframe integration, browser extensions, and WebView automation require later design.
 - Evidence snippets store text, source URL, source title, captured time, and order in V1. Locator fields are reserved for later.
-- AI draft generation in the research window is handled by ResourceAgent from the evidence basket. If generation fails, the user can manually fill required fields and save.
+- AI draft generation in the research panel is handled by ResourceAgent from the evidence basket. If generation fails, the user can manually fill required fields and save.
 - Proactive research is supported without a workflow session. In that case resources are saved and indexed, but no workflow is resumed.
-- AI-triggered manual research uses a persisted research session id. The research window should not use workflow run id as the primary business identifier.
-- The minimum resource detail UI is in scope: title, summary, evidence, source, structured payload JSON, embedding status, and retry.
+- AI-triggered manual research uses a persisted research session id. The research panel should not use workflow run id as the primary business identifier.
+- The minimum resource detail UI is in scope: title, summary, evidence, source, structured payload JSON, and embedding status.
 - Full resource library management, private resources, cross-page evidence baskets, legal-case extraction, and legal-article annotation are outside the V1 base.
 
 ## Testing Decisions
@@ -126,13 +131,14 @@ Label: done
 - Tests should avoid asserting private prompt wording or LLM prose.
 - ResourceStore tests cover creating resources, reading resources by id, saving multiple resources in one research session, completing/cancelling sessions, duplicate hash persistence, and workspace scoping.
 - ResourceTypeRegistry tests cover valid and invalid `generic_note` and `web_article` payloads and unknown type behavior.
-- ResourceSearchService tests cover keyword contains search, vector score combination, quality and recency scoring, threshold banding, filters, disabled/pending/failed index statuses, and multi-resource candidate output.
+- ResourceSearchService tests cover keyword contains search, vector score combination, quality and recency scoring, threshold banding, filters, disabled/unavailable vector index statuses, and multi-resource candidate output.
 - ResourceVectorIndex tests cover cosine similarity ordering, profile isolation, empty index behavior, and replaceable interface behavior with deterministic vectors.
-- EmbeddingProfileService tests cover separate embedding settings, profile key generation, disabled state, stale profile handling, pending/indexed/failed status transitions, and retry requests.
+- EmbeddingProfileService tests cover separate embedding settings, profile key generation, disabled state, profile isolation, indexed state, and incompatible-profile exclusion.
+- SSE save-action tests cover progress events, caller-session writes, embedding success, resource + embedding persistence, research-session `createdResourceIds` update, and failure preserving the draft without creating retry jobs.
 - ResourceAgent tool tests cover search output shape, resource candidate suspend intent shape, manual research suspend intent shape, resource draft intent shape, and citation answer output shape.
 - Workflow tests cover high-confidence direct answer, middle-confidence multi-select candidates, continuing manual research from candidates, low-confidence manual research session creation, resume with resource ids, and cancellation.
-- Renderer/state tests cover evidence basket add/delete/order, paste fallback path, candidate multi-select state, finish-research button readiness, resource detail modal state, and embedding retry action state.
-- Real external WebView automation is not required for V1 AFK completion. A manual smoke checklist should cover navigation, selection capture, paste fallback, draft generation, save, finish, and resumed answer.
+- Renderer/state tests cover evidence basket add/delete/order, manual paste path, candidate multi-select state, SSE save progress, failed-save draft preservation, finish-research button readiness, and resource detail modal state.
+- Real external WebView automation is out of scope for Web-only V1. A manual smoke checklist should cover evidence paste, draft generation, save, finish, and resumed answer.
 - Existing prior art includes AI context tests, router workflow tests, workflow suspend/resume tests, RPC serialization tests, settings tests, dashboard builder tests, and data-table runtime tests.
 
 ## Out of Scope
@@ -144,9 +150,12 @@ Label: done
 - Workspace domain allowlist/denylist UI.
 - Full resource library management page.
 - Global embedding queue administration page.
+- Standalone embedding enqueue / retry / reindex endpoint in V1.
+- Resource-level embedding retry UI in V1.
 - Production-grade BM25, Chinese segmentation, or advanced full-text indexing.
 - SurrealDB-native vector index implementation, unless it can be swapped in behind the interface without changing the feature scope.
-- External browser automation outside the app-contained WebView.
+- External browser automation outside the approved Web-only research surface.
+- Embedding third-party webpages inside the app in V1.
 - Injecting recording buttons or privileged scripts into third-party webpages.
 - Autonomous resource creation by agents without user confirmation.
 - Importing bulk document corpora.
@@ -156,4 +165,4 @@ Label: done
 
 The base feature should be designed so that `legal_case` can become a typed resource later without changing the search and workflow contracts. A legal-case iteration can add a payload schema with court, docket number, judgment date, cause of action, facts, holding, cited legal articles, and type-specific ranking based on issue and article overlap.
 
-The most important architectural rule is that resource capture and resource search are separate. Search tools do not open windows or block waiting for users; workflow orchestration decides when to suspend and when to open a manual research session. Resource save persists canonical data first; embedding is a derived index and should never be the reason a confirmed user save is lost.
+The most important architectural rule is that resource capture and resource search are separate. Search tools do not open windows or block waiting for users; workflow orchestration decides when to suspend and when to open a manual research session. Resource save is a confirmed user action that runs as one SSE operation: validate draft, generate embedding, persist canonical data and vector data, update the research session, then notify the page. If that operation fails, the page keeps the draft and the user may save again; V1 does not maintain a separate retry queue.

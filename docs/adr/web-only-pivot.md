@@ -55,12 +55,13 @@ Browser (Svelte 5 + RevoGrid + surrealdb browser SDK)
                                    │  └─ GET /api/internal/idp/default-scope
                                    ├─ POST /api/chat（Mastra）
                                    ├─ WS  /api/chat/stream
+                                   ├─ POST /api/resources/research/save（资源保存 SSE）
                                    ├─ Office dispatcher（进程内，无 endpoint）
                                    └─ root 路径：_system schema、workspace lifecycle、employee_credential
 ```
 
 - **前端**：浏览器原生，**默认直连 SurrealDB**（详见 [`frontend-direct-connect.md`](./frontend-direct-connect.md)）。读 / 写 / LIVE 订阅 / 管理员 DDL 全部走浏览器内 surrealdb-js。
-- **后端（Bun server）**：单容器单副本 MVP。只承载"必须在后端跑"的少数职责：Workspace Scope Module（workspace 列表、切换、创建、IdP default scope hook）、Mastra（LLM key 在后端）、Office dispatcher（员工 secret 在后端）、root 操作（_system schema 启动 / workspace lifecycle / employee_credential 写入）。**不再有业务数据 CRUD / LIVE 转发代理 endpoint**。
+- **后端（Bun server）**：单容器单副本 MVP。只承载"必须在后端跑"的少数职责：Workspace Scope Module（workspace 列表、切换、创建、IdP default scope hook）、Mastra（LLM key 在后端）、资源保存 SSE（embedding provider key 在后端；用户确认后用调用者 workspace session 写入资源与 embedding）、Office dispatcher（员工 secret 在后端）、root 操作（_system schema 启动 / workspace lifecycle / employee_credential 写入）。**不再有业务数据 CRUD / LIVE 转发代理 endpoint**。
 - **数据库**：SurrealDB **自部署或托管，公网 WSS + TLS**（可选 IP 白名单 + WAF）。MVP 接受公网；不再要求与后端同机房内网。
 - **IdP**：只负责 OIDC 登录与 token scope 签发。workspace 列表、最近一次 workspace、成员关系和 workspace 创建都由本应用维护；IdP token 中只需要 `https://surrealdb.com/db` 与 `https://surrealdb.com/ac` claims。
 

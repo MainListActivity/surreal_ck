@@ -3,6 +3,10 @@ Label: done
 
 # RR-004 — ResourceAgent 只读检索与引用回答
 
+## 2026-05-21 post-pivot note
+
+Web-only V1 不再暴露 embedding pending / retry / error 队列状态。ResourceAgent 仍需解释 embedding disabled / unavailable，避免把向量检索不可用误判成资源库真实 miss。
+
 ## Parent
 
 `.scratch/resource-retrieval/PRD.md`

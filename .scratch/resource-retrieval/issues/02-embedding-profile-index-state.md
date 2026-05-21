@@ -3,6 +3,10 @@ Label: done
 
 # RR-002 — Embedding profile 与索引状态
 
+## 2026-05-21 post-pivot note
+
+本 issue 的 pending / failed / stale / retry 状态机是 pre-pivot 设计。Web-only V1 已在 `RR-012` 改为用户确认后的 SSE 保存动作：后端在同一动作内生成 embedding 并入库；向量化失败则本次保存失败，UI 保留草稿让用户再次点击保存。V1 不提供单独 embedding enqueue、retry indexing 或 reindex endpoint。
+
 ## Parent
 
 `.scratch/resource-retrieval/PRD.md`
@@ -28,4 +32,3 @@ Label: done
 ## Blocked by
 
 - `.scratch/resource-retrieval/issues/01-resource-main-data.md`
-

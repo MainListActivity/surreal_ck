@@ -3,6 +3,10 @@ Label: done
 
 # RR-006 — 人工检索 session 与独立检索窗口壳
 
+## 2026-05-21 post-pivot note
+
+本 issue 记录的是 pre-pivot Electrobun 实现闭环。当前 web-only 架构不再接受"主进程打开独立检索窗口 + 外部 WebView + 本地壳 RPC"作为实施路径。Web-only V1 已在 `RR-012` 定为应用内 route/panel + 手动粘贴证据，不嵌入第三方网页。
+
 ## Parent
 
 `.scratch/resource-retrieval/PRD.md`

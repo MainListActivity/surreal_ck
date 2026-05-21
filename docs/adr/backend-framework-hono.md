@@ -124,9 +124,10 @@
 | `POST /api/chat` | Mastra Router workflow 入口（流式回写） |
 | `WS   /api/chat/stream` | Mastra workflow 流式 progress / chunk / suspend / done |
 | `POST /api/chat/runs/:runId/resume` | suspend 决策后恢复 |
+| `POST /api/resources/research/save` | 资源检索人工补库的用户确认保存动作；返回 SSE 进度，后端在同一动作内完成向量化并用调用者 workspace session 写入资源与 embedding。 |
 | `GET  /api/internal/idp/default-scope` | IdP 登录 hook：按本应用 `_system.user_workspace_index` 返回默认 db/ac scope。 |
 
-`/api/internal/*` 必须验证调用源（IdP 共享密钥、mTLS 或专用 bearer token），与外部 endpoint 隔离。**没有**工作簿 / 数据表 / office_* LIVE 转发等业务代理 endpoint；这些都由前端直连 SurrealDB 完成。
+`/api/internal/*` 必须验证调用源（IdP 共享密钥、mTLS 或专用 bearer token），与外部 endpoint 隔离。**没有**工作簿 / 数据表 / office_* LIVE 转发等业务代理 endpoint；这些都由前端直连 SurrealDB 完成。资源保存 SSE 是用户确认后的窄动作 endpoint，存在原因是 embedding provider key 必须留在后端，且它不提供通用资源 CRUD、embedding enqueue 或 retry/reindex 能力。
 
 ### OIDC verify 中间件对 token claim 的处理
 
@@ -134,6 +135,7 @@
 
 - `POST /api/session/switch-workspace`、`GET /api/session/workspaces`、成员管理、员工 lifecycle 等 Workspace Scope Module endpoint **必须忽略** scope claim：否则用户被当前 token 的 db scope 卡住，无法切换或操作其它 workspace。
 - `POST /api/chat`：同样只信 `sub`；Mastra tool 内部用调用者 OIDC token `db.signin` 到 token scope 所指 db，是 Mastra 而非中间件的责任。
+- `POST /api/resources/research/save`：同样只信 `sub` 做 HTTP 鉴权；资源与 embedding 写入必须使用调用者当前 workspace session，不能使用 root、service JWT 或员工 session 代写。SSE 只回保存进度与错误，不承担 LIVE 转发职责。
 
 ## Open Questions
 

@@ -3,6 +3,10 @@ Label: done
 
 # RR-008 — 检索窗口保存多个资源并完成检索
 
+## 2026-05-21 post-pivot note
+
+本 issue 的"检索窗口专用 RPC"属于 pre-pivot 实现语境。Web-only V1 的人工检索表面已定为应用内 route/panel + 手动粘贴证据。资源保存由用户确认后的后端 SSE 动作完成：后端用调用者 workspace session 在同一动作中完成向量化、resource item / embedding 入库、research session 更新和进度通知。V1 不提供单独 embedding enqueue / retry endpoint。
+
 ## Parent
 
 `.scratch/resource-retrieval/PRD.md`

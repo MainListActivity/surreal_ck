@@ -3,6 +3,10 @@ Label: done
 
 # RR-003 — 资源检索服务
 
+## 2026-05-21 post-pivot note
+
+本 issue 中的 `index-pending` / `index-error` 返回状态来自旧的异步 embedding 队列设计。Web-only V1 不维护 embedding queue / retry 状态；检索服务只需要区分可用向量检索、embedding disabled / unavailable，以及真实 miss。历史 acceptance 保留为已完成记录，不作为 V1 新实现要求。
+
 ## Parent
 
 `.scratch/resource-retrieval/PRD.md`

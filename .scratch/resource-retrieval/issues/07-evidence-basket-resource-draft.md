@@ -3,6 +3,10 @@ Label: done
 
 # RR-007 — 证据篮与资源草稿
 
+## 2026-05-21 post-pivot note
+
+本 issue 的外部 WebView 选区读取属于 pre-pivot 实现语境。Web-only V1 已在 `RR-012` 定为应用内 route/panel + 手动粘贴证据；证据篮和 ResourceAgent 草稿生成契约保留，但 V1 不读取外部页面 selection。
+
 ## Parent
 
 `.scratch/resource-retrieval/PRD.md`
