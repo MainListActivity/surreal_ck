@@ -1,7 +1,11 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: needs-triage
+Label: needs-triage
 
 # AI-006 — 债权行分析：字段补全提案 + 确认写入
+
+## 2026-05-21 post-pivot note
+
+本 issue 的产品语义仍成立，但执行路径是 web-only pivot 前的旧写法，不能按 `src/main/**`、`ai.executeAction`、"主进程调用 row upsert 服务"直接交给 agent。当前有效路线应改为：ClaimAnalysisAgent 在 `server/ai/mastra/**` 生成 `RowPatchProposal`；Web AI drawer 展示逐字段确认；用户确认后用当前 workspace session 走浏览器直连 SurrealDB，或仅在确有服务器专属能力时走明确窄 endpoint。落地前需要按 `.scratch/mastra-router-migration/` 与 `.scratch/web-frontend-migration/` 重写执行边界。
 
 ## Parent
 

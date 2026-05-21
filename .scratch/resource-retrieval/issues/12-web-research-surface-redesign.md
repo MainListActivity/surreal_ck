@@ -48,10 +48,21 @@ Category: enhancement
 - [x] 明确 V1 不嵌入第三方网页，证据采集只走手动粘贴。
 - [ ] route/panel 支持 query/context/resourceType 展示、证据篮、草稿编辑、保存资源和完成检索。
 - [ ] 证据篮支持手动粘贴文本、source URL、source title，并记录 capturedAt 和 order。
+- [ ] SSE 保存动作依次推送 `validating` / `embedding` / `persisting` / `session-updated` / `done`，失败时推送 `error` 并保留前端草稿。
+- [ ] 后端保存使用调用者 workspace session 写 resource item、resource embedding 与 research session，不使用 root / service JWT / employee session。
+- [ ] 没有新增通用 resource CRUD endpoint、embedding enqueue endpoint、retry endpoint 或 resource-level reindex UI。
 - [x] 明确 resource item、research session、createdResourceIds 的写入路径：用户确认后由后端 SSE 保存动作使用调用者 workspace session 写入。
 - [x] 明确 embedding enqueue / retry 的执行身份和 endpoint 边界：V1 不存在单独 enqueue / retry endpoint，向量化在确认保存动作内完成。
 - [x] 更新 `.scratch/resource-retrieval/PRD.md` 中的实施决策和相关 issue 引用。
 - [x] Web 前端迁移计划能接入资源搜索 composer mode，不依赖 pre-pivot 检索窗口。
+
+## Test Plan
+
+- Unit: validate resource draft payload, evidence metadata normalization, http/https source URL validation, and disabled embedding behavior.
+- Server integration: call the SSE save action with a fake embedding provider and fake caller workspace session; assert ordered events, resource + embedding persistence, `createdResourceIds` update, and no root writes on business tables.
+- Failure integration: make embedding fail; assert SSE `error`, no retry/enqueue row or endpoint call, and no partially saved resource unless the implementation explicitly documents an atomic boundary.
+- Frontend component/state: paste evidence, edit draft, start save, render progress, render failed-save state, preserve draft/evidence, and allow clicking save again.
+- Static/API: assert route registry contains only the dedicated SSE save endpoint and does not expose generic resource CRUD, embedding enqueue, retry, or reindex endpoints.
 
 ## Blocked by
 

@@ -1,7 +1,11 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: needs-triage
+Label: needs-triage
 
 # AI-007 — AI 上下文快照测试套件
+
+## 2026-05-21 post-pivot note
+
+测试目标仍合理，但路径与运行环境已变化：`src/shared/ai-context.ts` 应迁到 `shared/src/ai-context.ts`，上下文快照构建逻辑由 Web 前端状态和 `/api/chat*` DTO 使用，不再依赖 Electrobun renderer / main process。落地前需要先确认 D1/D2 迁移后的实际模块边界，再把本 issue 改写为 shared DTO 单测 + Web context-store 测试。
 
 ## Parent
 
