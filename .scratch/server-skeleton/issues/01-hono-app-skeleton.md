@@ -1,5 +1,5 @@
-Status: needs-triage
-Label: needs-triage
+Status: done
+Label: done
 
 # WP-B-01 — Hono app 骨架 + Bun.serve
 
@@ -52,11 +52,11 @@ export type ApiError = { error: { code: string; message: string; details?: unkno
 
 ## Acceptance criteria
 
-- [ ] `pnpm --filter @surreal-ck/server dev` 启动后监听 `0.0.0.0:8080`。
-- [ ] `curl http://localhost:8080/health` 返回 `{ "status": "ok" }`。
-- [ ] 抛出未捕获异常时返回 500 + `{ error: { code: 'internal', message: ... } }`，不暴露 stack 给客户端但日志中有完整 stack。
-- [ ] 启动日志一行包含 host、port、env name。
-- [ ] 缺失关键环境变量时 zod 报错并立即 exit 非 0。
+- [x] `pnpm --filter @surreal-ck/server dev` 启动后监听 `0.0.0.0:8080`。
+- [x] `curl http://localhost:8080/health` 返回 `{ "status": "ok" }`。
+- [x] 抛出未捕获异常时返回 500 + `{ error: { code: 'internal', message: ... } }`，不暴露 stack 给客户端但日志中有完整 stack。
+- [x] 启动日志一行包含 host、port、env name。
+- [x] 缺失关键环境变量时 zod 报错并立即 exit 非 0。
 
 ## Notes
 

@@ -1,5 +1,5 @@
-Status: needs-triage
-Label: needs-triage
+Status: done
+Label: done
 
 # WP-B-04 — /health 接 SurrealDB 探活
 
@@ -27,10 +27,10 @@ GET /health → 200 {
 
 ## Acceptance criteria
 
-- [ ] SurrealDB 在线时 `{ status: 'ok', surrealdb: 'up', ... }`。
-- [ ] SurrealDB 不可达时 `{ status: 'degraded', surrealdb: 'down', ... }`，HTTP 仍 200。
-- [ ] 响应延迟 < 100ms（SurrealDB 在线时）。
-- [ ] /health endpoint 无需 OIDC，任何调用方可访问。
+- [x] SurrealDB 在线时 `{ status: 'ok', surrealdb: 'up', ... }`。
+- [x] SurrealDB 不可达时 `{ status: 'degraded', surrealdb: 'down', ... }`，HTTP 仍 200。
+- [x] 响应延迟 < 100ms（SurrealDB 在线时）。
+- [x] /health endpoint 无需 OIDC，任何调用方可访问。
 
 ## Notes
 

@@ -1,0 +1,19 @@
+services:
+  surrealdb:
+    image: surrealdb/surrealdb:latest
+    command: start --user root --pass root memory
+    ports:
+      - "8000:8000"
+
+  server:
+    build: .
+    depends_on:
+      - surrealdb
+    env_file:
+      - .env.example
+    environment:
+      SURREAL_URL: ws://surrealdb:8000/rpc
+      SURREAL_ROOT_USER: root
+      SURREAL_ROOT_PASS: root
+    ports:
+      - "8080:8080"

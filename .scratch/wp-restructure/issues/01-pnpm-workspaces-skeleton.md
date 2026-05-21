@@ -1,5 +1,5 @@
-Status: needs-triage
-Label: needs-triage
+Status: done
+Label: done
 
 # WP-A-01 — pnpm workspaces 骨架
 
@@ -32,10 +32,10 @@ packages:
 
 ## Acceptance criteria
 
-- [ ] `pnpm install` 0 错误。
-- [ ] `pnpm ls --recursive` 列出三个 workspace。
-- [ ] `pnpm-lock.yaml` 重新生成（diff 内容大但变化合理）。
-- [ ] 顶层不再保留业务依赖（只剩 typescript / vitest / @types 等开发期工具，且这些会在簇 A-03 重新分发到各 workspace）。
+- [x] `pnpm install` 0 错误。
+- [x] `pnpm ls --recursive` 列出三个 workspace。
+- [x] `pnpm-lock.yaml` 重新生成（diff 内容大但变化合理）。
+- [x] 顶层不再保留业务依赖（只剩 typescript / vitest / @types 等开发期工具，且这些会在簇 A-03 重新分发到各 workspace）。
 
 ## Notes
 

@@ -1,0 +1,24 @@
+{
+  "name": "@surreal-ck/web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@revolist/svelte-datagrid": "^4.21.3",
+    "@surreal-ck/shared": "workspace:*",
+    "dayjs": "^1.11.20",
+    "layerchart": "2.0.0-next.62",
+    "marked": "^18.0.3",
+    "surrealdb": "^2.0.3",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^7.0.0",
+    "@types/three": "^0.184.0",
+    "svelte": "^5.0.0",
+    "vite": "^8.0.9",
+    "vite-plugin-static-copy": "^4.1.0"
+  }
+}

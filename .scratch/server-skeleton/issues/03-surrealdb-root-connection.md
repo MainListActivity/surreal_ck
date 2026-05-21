@@ -1,5 +1,5 @@
-Status: needs-triage
-Label: needs-triage
+Status: done
+Label: done
 
 # WP-B-03 — SurrealDB root 连接管理器
 
@@ -45,11 +45,11 @@ process.on('SIGTERM', async () => { server.stop(); await closeRootConnection(); 
 
 ## Acceptance criteria
 
-- [ ] 启动时 SurrealDB 可达 → `isRootConnected() === true`。
-- [ ] SurrealDB 不可达 → 启动**不**直接 exit，而是 `isRootConnected() === false` + 持续退避重连；日志每次重连尝试都记录。
-- [ ] SurrealDB 中途断开 → `isRootConnected()` 切 false；恢复后回 true，无需重启。
-- [ ] SIGTERM 时优雅关闭，不出未捕获 Promise rejection。
-- [ ] 根连接 SIGNIN 凭据**不**写入日志（即使在 DEBUG 级别）。
+- [x] 启动时 SurrealDB 可达 → `isRootConnected() === true`。
+- [x] SurrealDB 不可达 → 启动**不**直接 exit，而是 `isRootConnected() === false` + 持续退避重连；日志每次重连尝试都记录。
+- [x] SurrealDB 中途断开 → `isRootConnected()` 切 false；恢复后回 true，无需重启。
+- [x] SIGTERM 时优雅关闭，不出未捕获 Promise rejection。
+- [x] 根连接 SIGNIN 凭据**不**写入日志（即使在 DEBUG 级别）。
 
 ## Notes
 

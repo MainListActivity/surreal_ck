@@ -1,5 +1,5 @@
-Status: needs-triage
-Label: needs-triage
+Status: done
+Label: done
 
 # WP-A-02 — 旧代码迁入 legacy 目录
 
@@ -23,12 +23,13 @@ src/shared/**    → shared/src/**
 
 ## Acceptance criteria
 
-- [ ] `src/main/` `src/renderer/` `src/shared/` 三目录消失，对应内容出现在新位置。
-- [ ] `git log --follow server/legacy/<某文件>` 能看到原 `src/main/<同名文件>` 的提交历史。
-- [ ] 根 `vite.config.ts` 暂时原样挪到 `web/vite.config.ts`（不修复，让 web dev server 暂时跑不起来）。
-- [ ] `scripts/` 内容如有引用 src/ 路径的，**先不改**，记录到本 issue Notes，留给 A-04 处理。
+- [x] `src/main/` `src/renderer/` `src/shared/` 三目录消失，对应内容出现在新位置。
+- [x] `git log --follow server/legacy/<某文件>` 能看到原 `src/main/<同名文件>` 的提交历史。
+- [x] 根 `vite.config.ts` 暂时原样挪到 `web/vite.config.ts`（不修复，让 web dev server 暂时跑不起来）。
+- [x] `scripts/` 内容如有引用 src/ 路径的，**先不改**，记录到本 issue Notes，留给 A-04 处理。
 
 ## Notes
 
 - 选 legacy 而不是直接放到 `server/src` / `web/src` 的理由：让"这是历史代码，待迁"的状态在文件系统层面可见；簇 B/C/D 会按需把它们提到正确层级。
 - 移动后 `git status` 应该全是 R（rename），不应该有大量 D + A。
+- 2026-05-21：`scripts/filter-surrealdb-timestamp-stderr.ts` 仍引用旧 `src/main/logging/native-stderr-filter`，但根 scripts 已不再调用旧 Electrobun/test pipeline；后续若恢复 legacy 测试脚本，应改到 `server/legacy/logging/native-stderr-filter` 或随迁移删除。

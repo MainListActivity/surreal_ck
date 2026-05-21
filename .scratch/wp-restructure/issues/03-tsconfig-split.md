@@ -1,5 +1,5 @@
-Status: needs-triage
-Label: needs-triage
+Status: done
+Label: done
 
 # WP-A-03 — tsconfig 拆分
 
@@ -21,9 +21,9 @@ Label: needs-triage
 
 ## Acceptance criteria
 
-- [ ] `pnpm -r run typecheck` 跑通（legacy 内 known errors 允许，但不能因 path 别名解析失败而挂）。
-- [ ] `import { X } from '@surreal-ck/shared'` 在 server 与 web 中 IDE 跳转到 `shared/src/index.ts`。
-- [ ] IDE（VSCode / IntelliJ）打开仓库时三 workspace 类型推导正常。
+- [x] `pnpm -r run typecheck` 跑通（legacy 内 known errors 允许，但不能因 path 别名解析失败而挂）。
+- [x] `import { X } from '@surreal-ck/shared'` 在 server 与 web 中 IDE 跳转到 `shared/src/index.ts`。
+- [x] IDE（VSCode / IntelliJ）打开仓库时三 workspace 类型推导正常。
 
 ## Notes
 

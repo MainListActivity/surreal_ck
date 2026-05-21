@@ -2,11 +2,12 @@
 .gstack/
 node_modules/
 dist/
+build/
+data/
+.build/
+.vite/
 *.tsbuildinfo
 .env
 .DS_Store
-build/
-.vite/
-data/
 .claude
 .agents

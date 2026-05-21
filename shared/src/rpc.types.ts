@@ -1,7 +1,10 @@
 import { z } from "zod";
-import type { ElectrobunRPCSchema } from "electrobun/bun";
 import type { AiChatMessage } from "./ai-context";
 import type { CapabilityMatrix } from "./capabilities";
+
+// Legacy desktop RPC shape placeholder. Web-only code should not add new
+// Electrobun contracts, but historical DTOs still reference AppRPC.
+type LegacyRPCSchema = Record<string, unknown>;
 
 export type {
   CapabilityBlockedReason,
@@ -1514,7 +1517,7 @@ export type RefreshDashboardPageResponse = {
 
 // ─── RPC 契约 ─────────────────────────────────────────────────────────────────
 
-export interface AppRPC extends ElectrobunRPCSchema {
+export interface AppRPC extends LegacyRPCSchema {
   bun: {
     requests: {
       query: { params: RawQueryRequest; response: RawQueryResponse };

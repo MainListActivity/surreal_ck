@@ -1,0 +1,12 @@
+node_modules
+**/node_modules
+.git
+.idea
+.gstack
+.env
+dist
+build
+data
+.build
+.vite
+*.tsbuildinfo

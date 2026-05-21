@@ -1,5 +1,5 @@
-Status: needs-triage
-Label: needs-triage
+Status: done
+Label: done
 
 # WP-B-02 — OIDC verify middleware
 
@@ -46,11 +46,11 @@ env 新增：
 
 ## Acceptance criteria
 
-- [ ] 不携带 Authorization 调受保护 endpoint → 401。
-- [ ] 携带过期 / 签名错误 / aud 不匹配的 token → 401，错误码可区分。
-- [ ] 正确 token → 通过，`c.var.user.subject === payload.sub`。
-- [ ] JWKS 在 5 分钟窗口内只 fetch 一次（用 nock / msw 验证或对 issuer fake URL 计数）。
-- [ ] OIDC 失败的请求**不**把 token 内容写入日志。
+- [x] 不携带 Authorization 调受保护 endpoint → 401。
+- [x] 携带过期 / 签名错误 / aud 不匹配的 token → 401，错误码可区分。
+- [x] 正确 token → 通过，`c.var.user.subject === payload.sub`。
+- [x] JWKS 在 5 分钟窗口内只 fetch 一次（用 nock / msw 验证或对 issuer fake URL 计数）。
+- [x] OIDC 失败的请求**不**把 token 内容写入日志。
 
 ## Notes
 

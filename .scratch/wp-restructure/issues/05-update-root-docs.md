@@ -1,5 +1,5 @@
-Status: needs-triage
-Label: needs-triage
+Status: done
+Label: done
 
 # WP-A-05 — 根 README / AGENTS.md 更新
 
@@ -19,9 +19,9 @@ Label: needs-triage
 
 ## Acceptance criteria
 
-- [ ] 读者 follow 根 README 能成功 install 并 typecheck。
-- [ ] AGENTS.md 中不再有"Electrobun"或"surrealdb-node embedded"的有效引用。
-- [ ] 引用的 ADR 路径全部有效（点开能跳）。
+- [x] 读者 follow 根 README 能成功 install 并 typecheck。
+- [x] AGENTS.md 中不再有"Electrobun"或"surrealdb-node embedded"的有效引用。
+- [x] 引用的 ADR 路径全部有效（点开能跳）。
 
 ## Notes
 

@@ -1,5 +1,5 @@
-Status: needs-triage
-Label: needs-triage
+Status: done
+Label: done
 
 # WP-B-05 — internal hook 鉴权中间件
 
@@ -30,11 +30,11 @@ env 新增：
 
 ## Acceptance criteria
 
-- [ ] 正确 bearer secret → 通过。
-- [ ] 缺 Authorization → 401。
-- [ ] 错误 secret → 401。
-- [ ] 失败请求不把 header/body 写入日志。
-- [ ] 中间件不解析业务 payload；payload 内容由 endpoint 自行 zod 校验。
+- [x] 正确 bearer secret → 通过。
+- [x] 缺 Authorization → 401。
+- [x] 错误 secret → 401。
+- [x] 失败请求不把 header/body 写入日志。
+- [x] 中间件不解析业务 payload；payload 内容由 endpoint 自行 zod 校验。
 
 ## Blocked by
 

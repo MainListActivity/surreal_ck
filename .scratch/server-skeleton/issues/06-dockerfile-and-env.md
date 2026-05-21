@@ -1,5 +1,5 @@
-Status: needs-triage
-Label: needs-triage
+Status: ready-for-human
+Label: ready-for-human
 
 # WP-B-06 — Dockerfile + .env.example + 启动文档
 
@@ -58,8 +58,12 @@ IDP_HOOK_SECRET=change_me
 
 - [ ] `docker build .` 成功，镜像 < 200MB。
 - [ ] `docker compose up` 后 `curl localhost:8080/health` 返回 `{ status: 'ok' }`。
-- [ ] `.env.example` 不含任何真实 secret / 占位 secret 看就知道是占位。
-- [ ] `server/README.md` 三句话能让新人跑起来。
+- [x] `.env.example` 不含任何真实 secret / 占位 secret 看就知道是占位。
+- [x] `server/README.md` 三句话能让新人跑起来。
+
+## 2026-05-21 implementation note
+
+Dockerfile、`.env.example`、`docker-compose.yml`、`server/README.md` 已落地。当前本机没有可用 Docker daemon：`docker` CLI 不存在，`podman` CLI 存在但 VM/socket 未启动，因此 Docker build / compose 验收需要在有容器运行时的机器上补测。
 
 ## Notes
 
