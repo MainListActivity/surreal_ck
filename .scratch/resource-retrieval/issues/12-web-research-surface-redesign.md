@@ -68,6 +68,10 @@ Category: enhancement
 
 None.
 
+## Scheduling note
+
+This issue is spec-ready, but it should be implemented after the web-only spine exists: Hono routes + OIDC middleware + caller workspace SurrealDB session creation on the server, and Web route/panel + API/SSE client infrastructure on the frontend. If resource schema/contracts from the historical resource issues have not yet been ported into `shared/sql/workspace-template` and the new server/web packages, create a small prerequisite issue before implementing this one.
+
 ## Agent Brief
 
 Implement the Web-only V1 resource research surface as an application route/panel. Evidence input is manual paste only. On save, call a dedicated user-confirmed SSE action that validates the draft, generates embeddings with server-held provider keys, writes the resource item and embedding record into the current workspace database using the caller's workspace session, updates the research session `createdResourceIds`, and streams progress back to the panel. Do not add a generic CRUD proxy, an embedding enqueue endpoint, a retry endpoint, or a resource-level reindex UI. On failure, return an SSE error event and leave the draft/evidence in the panel so the user can press save again.
