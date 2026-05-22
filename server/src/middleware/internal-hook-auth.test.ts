@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { Hono } from "hono";
 import { handleError } from "./error";
 import { requireInternalHook } from "./internal-hook-auth";
+import { env } from "../env";
 
 function createHookApp(): Hono {
   const app = new Hono();
@@ -23,7 +24,7 @@ describe("internal hook auth", () => {
     const response = await app.fetch(
       new Request("http://localhost/internal/default-scope", {
         method: "POST",
-        headers: { authorization: "Bearer test-hook-secret" },
+        headers: { authorization: `Bearer ${env.IDP_HOOK_SECRET}` },
       }),
     );
 

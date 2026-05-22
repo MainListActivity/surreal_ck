@@ -193,4 +193,83 @@ describe("session workspace switch", () => {
     });
     expect(adapterCalled).toBe(false);
   });
+
+  test("returns 409 workspace-user-drift when target db is drifted", async () => {
+    let adapterCalled = false;
+    const app = createApp({
+      requireUser: () => useTestUser,
+      idpTokenScopeAdapter: {
+        async updateUserScope() {
+          adapterCalled = true;
+        },
+      },
+      workspaceScope: {
+        async getDefaultScope() {
+          return { kind: "login-denied", reason: "no-workspace" };
+        },
+        async listWorkspaces() {
+          return [];
+        },
+        async switchWorkspace() {
+          return { kind: "drift" };
+        },
+      },
+    });
+
+    const response = await app.fetch(
+      new Request("http://localhost/api/session/switch-workspace", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ workspaceSlug: "drifted-ws" }),
+      }),
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      error: { code: "workspace-user-drift" },
+    });
+    expect(adapterCalled).toBe(false);
+  });
+
+  test("security audit: drift and forbidden errors do not leak token or secrets in logs", async () => {
+    const logs: unknown[] = [];
+    const originalConsoleError = console.error;
+    console.error = (...args: unknown[]) => {
+      logs.push(args);
+    };
+
+    try {
+      const app = createApp({
+        requireUser: () => useTestUser,
+        workspaceScope: {
+          async getDefaultScope() {
+            return { kind: "login-denied", reason: "no-workspace" };
+          },
+          async listWorkspaces() {
+            return [];
+          },
+          async switchWorkspace() {
+            return { kind: "drift" };
+          },
+        },
+      });
+
+      const response = await app.fetch(
+        new Request("http://localhost/api/session/switch-workspace", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: "Bearer sensitive-user-token-abc",
+          },
+          body: JSON.stringify({ workspaceSlug: "drifted-ws" }),
+        }),
+      );
+
+      expect(response.status).toBe(409);
+      const logText = JSON.stringify(logs);
+      expect(logText).not.toContain("sensitive-user-token-abc");
+    } finally {
+      console.error = originalConsoleError;
+    }
+  });
 });

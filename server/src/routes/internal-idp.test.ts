@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createApp } from "../app";
 import type { WorkspaceScopeModule } from "../workspaces/workspace-scope";
+import { env } from "../env";
 
 function createWorkspaceScopeStub(result: Awaited<ReturnType<WorkspaceScopeModule["getDefaultScope"]>>): WorkspaceScopeModule {
   return {
@@ -27,7 +28,7 @@ describe("IdP default scope hook", () => {
 
     const response = await app.fetch(
       new Request("http://localhost/api/internal/idp/default-scope?subject=user-123", {
-        headers: { authorization: "Bearer test-hook-secret" },
+        headers: { authorization: `Bearer ${env.IDP_HOOK_SECRET}` },
       }),
     );
 
@@ -45,7 +46,7 @@ describe("IdP default scope hook", () => {
 
     const response = await app.fetch(
       new Request("http://localhost/api/internal/idp/default-scope?subject=user-404", {
-        headers: { authorization: "Bearer test-hook-secret" },
+        headers: { authorization: `Bearer ${env.IDP_HOOK_SECRET}` },
       }),
     );
 

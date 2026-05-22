@@ -46,10 +46,22 @@ async function signToken(
     .sign(overrides.useWrongKey ? wrongPrivateKey : privateKey);
 }
 
+import { overrideEnv } from "../env";
+
+let originalEnv: any;
+
 describe("OIDC middleware", () => {
   const originalError = console.error;
 
   beforeAll(async () => {
+    const { env: currentEnv } = await import("../env");
+    originalEnv = { ...currentEnv };
+    overrideEnv({
+      OIDC_ISSUER: issuer,
+      OIDC_AUDIENCE: audience,
+      OIDC_JWKS_URL: `http://127.0.0.1:${jwksPort}/jwks`,
+    });
+
     const keyPair = await generateKeyPair("RS256", { extractable: true });
     const wrongKeyPair = await generateKeyPair("RS256", { extractable: true });
     privateKey = keyPair.privateKey;
@@ -76,6 +88,9 @@ describe("OIDC middleware", () => {
 
   afterAll(() => {
     jwksServer.stop(true);
+    if (originalEnv) {
+      overrideEnv(originalEnv);
+    }
   });
 
   afterEach(() => {

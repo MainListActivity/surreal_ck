@@ -1,10 +1,10 @@
 import { jwtVerify } from "jose";
 import type { SessionUser } from "@surreal-ck/shared";
 import { env } from "../env";
-import { jwks } from "./jwks";
+import { getJwks } from "./jwks";
 
 export async function verifyOidcToken(token: string): Promise<SessionUser> {
-  const { payload } = await jwtVerify(token, jwks, {
+  const { payload } = await jwtVerify(token, getJwks(), {
     issuer: env.OIDC_ISSUER,
     audience: env.OIDC_AUDIENCE,
   });

@@ -40,6 +40,10 @@ export function createSessionRoutes(
       throw new HttpError(403, "workspace-forbidden", "Workspace is not accessible");
     }
 
+    if (result.kind === "drift") {
+      throw new HttpError(409, "workspace-user-drift", "Workspace user drift detected");
+    }
+
     await idpTokenScopeAdapter.updateUserScope(c.var.user.subject, result.scope);
 
     return c.json({ ok: true, refreshRequired: true });

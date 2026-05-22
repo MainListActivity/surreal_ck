@@ -35,4 +35,8 @@ export function loadEnv(input: NodeJS.ProcessEnv = process.env): ServerEnv {
   throw new Error("Invalid server environment configuration");
 }
 
-export const env = loadEnv();
+export let env = loadEnv();
+
+export function overrideEnv(updates: Partial<ServerEnv>) {
+  env = { ...env, ...updates };
+}

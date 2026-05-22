@@ -41,6 +41,9 @@ export type SwitchWorkspaceResult =
     }
   | {
       kind: "forbidden";
+    }
+  | {
+      kind: "drift";
     };
 
 export interface WorkspaceScopeModule {
@@ -59,6 +62,7 @@ type WorkspaceIndexRow = {
   role?: unknown;
   last_selected_at?: unknown;
   joined_at?: unknown;
+  email?: unknown;
   workspace?: {
     slug?: unknown;
     name?: unknown;
@@ -170,7 +174,7 @@ export function createWorkspaceScopeModule(db?: Queryable): WorkspaceScopeModule
       const result = input.dbName
         ? await client.query(
             `
-              SELECT id, db_name, role, last_selected_at, joined_at, workspace
+              SELECT id, db_name, role, last_selected_at, joined_at, workspace, email
               FROM user_workspace_index
               WHERE subject = $subject AND disabled_at = NONE AND db_name = $dbName
               FETCH workspace;
@@ -179,7 +183,7 @@ export function createWorkspaceScopeModule(db?: Queryable): WorkspaceScopeModule
           )
         : await client.query(
             `
-              SELECT id, db_name, role, last_selected_at, joined_at, workspace
+              SELECT id, db_name, role, last_selected_at, joined_at, workspace, email
               FROM user_workspace_index
               WHERE subject = $subject
                 AND disabled_at = NONE
@@ -197,6 +201,87 @@ export function createWorkspaceScopeModule(db?: Queryable): WorkspaceScopeModule
       const scope = rowToScope(row);
       if (!scope) {
         return { kind: "forbidden" };
+      }
+
+      // Connect to the target workspace database
+      let targetClient: Queryable;
+      let shouldCloseTarget = false;
+      if (db) {
+        targetClient = db;
+        await (targetClient as any).use({ namespace: "main", database: scope.db });
+      } else {
+        const { Surreal } = await import("surrealdb");
+        const { env } = await import("../env");
+        const tmp = new Surreal();
+        await tmp.connect(env.SURREAL_URL, { reconnect: false });
+        await tmp.signin({
+          username: env.SURREAL_ROOT_USER,
+          password: env.SURREAL_ROOT_PASS,
+        });
+        await tmp.use({ namespace: env.SURREAL_NS, database: scope.db });
+        targetClient = tmp;
+        shouldCloseTarget = true;
+      }
+
+      try {
+        // Query human users matching current subject or email
+        const userQueryResult = await targetClient.query(
+          `SELECT id, subject, email, is_admin FROM user WHERE kind = 'human' AND (subject = $subject OR email = $email);`,
+          { subject: input.subject, email: row.email }
+        );
+
+        const workspaceUsers = Array.isArray(userQueryResult) ? userQueryResult[0] : [];
+        if (!Array.isArray(workspaceUsers)) {
+          return { kind: "drift" };
+        }
+
+        // Scenario A: Exact subject match
+        const exactMatch = workspaceUsers.find((u: any) => u.subject === input.subject);
+
+        if (exactMatch) {
+          const correctedRole = exactMatch.is_admin === true ? "admin" : "participant";
+          if (row.role !== correctedRole) {
+            await client.query("UPDATE $membership SET role = $role;", {
+              membership: row.id,
+              role: correctedRole,
+            });
+            scope.ac = correctedRole;
+          }
+        } else {
+          // Scenario B: Match by email and bind subject (if subject is empty)
+          const bindableMatch = workspaceUsers.find(
+            (u: any) => u.email === row.email && (u.subject === null || u.subject === undefined || u.subject === "")
+          );
+
+          if (bindableMatch) {
+            // Bind subject in target db
+            await targetClient.query("UPDATE $user SET subject = $subject;", {
+              user: bindableMatch.id,
+              subject: input.subject,
+            });
+
+            // Adjust role if needed
+            const correctedRole = bindableMatch.is_admin === true ? "admin" : "participant";
+            if (row.role !== correctedRole) {
+              await client.query("UPDATE $membership SET role = $role;", {
+                membership: row.id,
+                role: correctedRole,
+              });
+              scope.ac = correctedRole;
+            }
+          } else {
+            // Scenario C: No user matches, or matches by email but already has a different subject bound
+            return { kind: "drift" };
+          }
+        }
+      } finally {
+        if (shouldCloseTarget && targetClient) {
+          try {
+            await (targetClient as any).close();
+          } catch {
+            // Ignore close error
+          }
+        }
       }
 
       await client.query("UPDATE $membership SET last_selected_at = time::now();", {
