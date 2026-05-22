@@ -1,5 +1,5 @@
-Status: needs-triage
-Label: needs-triage
+Status: ready-for-agent
+Label: ready-for-agent
 
 # WP-C-03 — Workspace Scope Module
 
@@ -101,8 +101,8 @@ IdP 登录 hook 调用，用于给即将签发的 token 决定默认 SurrealDB s
 - [ ] 有 3 个 workspace 的用户调用 `/api/session/workspaces` → 返回 3 条，最近选择在最前。
 - [ ] 用户切到自己无权限的 workspace → 403，IdP adapter 未被调用。
 - [ ] 用户切到有权限 workspace → `last_selected_at` 更新，IdP adapter 收到正确 `{ db, ac }`。
-- [ ] IdP default-scope hook 对无 workspace 用户返回 login-denied，前端不会进入应用。
-- [ ] IdP default-scope hook 对有 workspace 用户返回最近选择的 db/ac。
+- [x] IdP default-scope hook 对无 workspace 用户返回 login-denied，前端不会进入应用。
+- [x] IdP default-scope hook 对有 workspace 用户返回最近选择的 db/ac。
 - [ ] 所有失败路径都不把 OIDC token 或 IdP admin token 写入日志。
 
 ## Blocked by
@@ -115,3 +115,24 @@ IdP 登录 hook 调用，用于给即将签发的 token 决定默认 SurrealDB s
 - 本 issue 不实现 workspace 创建；见 WP-C-06。
 - 本 issue 不实现成员管理 UI；但必须把 index 校验和漂移错误码设计好，给后续成员管理 issue 使用。
 - IdP 选型未定时，先实现内存 / fake adapter，方便前端和集成测试跑通。
+
+## 2026-05-22 TDD slice: IdP default-scope hook
+
+已完成最小垂直切片：
+
+- 新增 `server/src/workspaces/workspace-scope.ts`，提供 `WorkspaceScopeModule.getDefaultScope()`，从 `_system.user_workspace_index` 读取 subject 可进入的 active workspace，并按 `last_selected_at DESC` 选择默认 scope。
+- 新增 `server/src/routes/internal-idp.ts`，挂载 `GET /api/internal/idp/default-scope`，使用 `requireInternalHook()` 保护，不使用普通 OIDC。
+- `createApp()` 支持注入 `workspaceScope`，测试可走 public HTTP route，不依赖真实 IdP 或真实 root 连接。
+
+TDD 覆盖：
+
+- `server/src/routes/internal-idp.test.ts`：有 workspace 返回 `{ db, ac }`；无 active workspace 返回 403 `login-denied`。
+- 本地 SurrealDB 3.0.5 内存实例验证：`workspace:archived` 即使 `last_selected_at` 最新也会被过滤；返回最近的 active workspace `ws_recent/admin`。
+
+Remaining:
+
+- `GET /api/session/workspaces`
+- `POST /api/session/switch-workspace`
+- `IdpTokenScopeAdapter.updateUserScope()`
+- switch-workspace 对 workspace db `user` 表的一致性校验与漂移错误码
+- 失败路径 token / IdP admin token 日志红action专项测试
