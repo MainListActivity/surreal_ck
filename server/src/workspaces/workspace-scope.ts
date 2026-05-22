@@ -20,8 +20,17 @@ export type DefaultScopeInput = {
   email?: string;
 };
 
+export type WorkspaceListItem = {
+  slug: string;
+  name: string;
+  dbName: string;
+  role: "admin" | "participant";
+  lastSelectedAt: string | null;
+};
+
 export interface WorkspaceScopeModule {
   getDefaultScope(input: DefaultScopeInput): Promise<DefaultScopeResult>;
+  listWorkspaces(input: { subject: string }): Promise<WorkspaceListItem[]>;
 }
 
 type Queryable = {
@@ -34,6 +43,8 @@ type WorkspaceIndexRow = {
   last_selected_at?: unknown;
   joined_at?: unknown;
   workspace?: {
+    slug?: unknown;
+    name?: unknown;
     status?: unknown;
   };
 };
@@ -62,6 +73,42 @@ function rowToScope(row: WorkspaceIndexRow): SurrealTokenScope | null {
   };
 }
 
+function dateTimeString(value: unknown): string | null {
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? null : new Date(parsed).toISOString();
+  }
+  if (typeof value === "object" && value !== null && typeof Reflect.get(value, "toString") === "function") {
+    const stringValue = String(value);
+    const parsed = Date.parse(stringValue);
+    return Number.isNaN(parsed) ? null : new Date(parsed).toISOString();
+  }
+  return null;
+}
+
+function rowToWorkspaceListItem(row: WorkspaceIndexRow): WorkspaceListItem | null {
+  const scope = rowToScope(row);
+  if (!scope) return null;
+  if (row.workspace?.status !== "active") return null;
+  if (typeof row.workspace.slug !== "string") return null;
+  if (typeof row.workspace.name !== "string") return null;
+
+  return {
+    slug: row.workspace.slug,
+    name: row.workspace.name,
+    dbName: scope.db,
+    role: scope.ac,
+    lastSelectedAt: dateTimeString(row.last_selected_at),
+  };
+}
+
+function sortWorkspaceRows(left: WorkspaceIndexRow, right: WorkspaceIndexRow): number {
+  const selectedDiff = timestamp(right.last_selected_at) - timestamp(left.last_selected_at);
+  if (selectedDiff !== 0) return selectedDiff;
+  return timestamp(left.joined_at) - timestamp(right.joined_at);
+}
+
 export function createWorkspaceScopeModule(db?: Queryable): WorkspaceScopeModule {
   return {
     async getDefaultScope(input) {
@@ -77,15 +124,28 @@ export function createWorkspaceScopeModule(db?: Queryable): WorkspaceScopeModule
 
       const scope = rowsFromQueryResult(result)
         .filter((row) => row.workspace?.status === "active")
-        .sort((left, right) => {
-          const selectedDiff = timestamp(right.last_selected_at) - timestamp(left.last_selected_at);
-          if (selectedDiff !== 0) return selectedDiff;
-          return timestamp(left.joined_at) - timestamp(right.joined_at);
-        })
+        .sort(sortWorkspaceRows)
         .map(rowToScope)
         .find((candidate): candidate is SurrealTokenScope => candidate !== null);
 
       return scope ? { kind: "scope", scope } : { kind: "login-denied", reason: "no-workspace" };
+    },
+
+    async listWorkspaces(input) {
+      const result = await (db ?? getRootConnection()).query(
+        `
+          SELECT db_name, role, last_selected_at, joined_at, workspace
+          FROM user_workspace_index
+          WHERE subject = $subject AND disabled_at = NONE
+          FETCH workspace;
+        `,
+        { subject: input.subject },
+      );
+
+      return rowsFromQueryResult(result)
+        .sort(sortWorkspaceRows)
+        .map(rowToWorkspaceListItem)
+        .filter((item): item is WorkspaceListItem => item !== null);
     },
   };
 }

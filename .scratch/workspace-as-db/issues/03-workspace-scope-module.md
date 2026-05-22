@@ -98,7 +98,7 @@ IdP 登录 hook 调用，用于给即将签发的 token 决定默认 SurrealDB s
 
 ## Acceptance criteria
 
-- [ ] 有 3 个 workspace 的用户调用 `/api/session/workspaces` → 返回 3 条，最近选择在最前。
+- [x] 有 3 个 workspace 的用户调用 `/api/session/workspaces` → 返回 3 条，最近选择在最前。
 - [ ] 用户切到自己无权限的 workspace → 403，IdP adapter 未被调用。
 - [ ] 用户切到有权限 workspace → `last_selected_at` 更新，IdP adapter 收到正确 `{ db, ac }`。
 - [x] IdP default-scope hook 对无 workspace 用户返回 login-denied，前端不会进入应用。
@@ -131,8 +131,20 @@ TDD 覆盖：
 
 Remaining:
 
-- `GET /api/session/workspaces`
 - `POST /api/session/switch-workspace`
 - `IdpTokenScopeAdapter.updateUserScope()`
 - switch-workspace 对 workspace db `user` 表的一致性校验与漂移错误码
 - 失败路径 token / IdP admin token 日志红action专项测试
+
+## 2026-05-22 TDD slice: session workspace list
+
+已完成 `GET /api/session/workspaces` 垂直切片：
+
+- 新增 `server/src/routes/session.ts`，挂载 `GET /api/session/workspaces`，生产默认使用 `requireOidc()`，测试可注入 `requireUser`。
+- `WorkspaceScopeModule` 新增 `listWorkspaces({ subject })`，从 `_system.user_workspace_index` 读取当前 subject 的 active / non-disabled workspace，返回 `{ slug, name, dbName, role, lastSelectedAt }`。
+- `createApp()` 挂载 session route。
+
+TDD 覆盖：
+
+- `server/src/routes/session.test.ts`：已认证用户可获得最近选择在前的 workspace 列表；未带 OIDC token 返回 401 且不触发 workspace 查询。
+- 本地 SurrealDB 3.0.5 内存实例验证：archived workspace 和 disabled membership 会被过滤，返回 `ws_recent/admin`、`ws_older/participant` 且顺序正确。
