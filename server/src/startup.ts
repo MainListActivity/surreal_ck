@@ -2,6 +2,7 @@ import { createApp } from "./app";
 import { env } from "./env";
 import { closeRootConnection, initRootConnection } from "./db/root-connection";
 import { ensureSystemSchema } from "./db/system-schema";
+import { migrateAllWorkspaces } from "./db/migration-runner";
 
 type AppLike = {
   fetch: ReturnType<typeof createApp>["fetch"];
@@ -17,6 +18,7 @@ export type StartServerDeps = {
   envName?: string;
   initRootConnection?: () => Promise<void>;
   ensureSystemSchema?: () => Promise<unknown>;
+  migrateAllWorkspaces?: () => Promise<unknown>;
   createApp?: () => AppLike;
   serve?: (options: { hostname: string; port: number; fetch: AppLike["fetch"] }) => ServerHandle;
   closeRootConnection?: () => Promise<void>;
@@ -33,6 +35,7 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
   const envName = deps.envName ?? env.NODE_ENV;
   const initRoot = deps.initRootConnection ?? initRootConnection;
   const ensureSchema = deps.ensureSystemSchema ?? ensureSystemSchema;
+  const migrateWorkspaces = deps.migrateAllWorkspaces ?? migrateAllWorkspaces;
   const makeApp = deps.createApp ?? createApp;
   const serve =
     deps.serve ??
@@ -42,6 +45,7 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
 
   await initRoot();
   await ensureSchema();
+  await migrateWorkspaces();
 
   const app = makeApp();
   const server = serve({
