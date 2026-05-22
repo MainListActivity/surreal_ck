@@ -28,9 +28,25 @@ export type WorkspaceListItem = {
   lastSelectedAt: string | null;
 };
 
+export type SwitchWorkspaceInput = {
+  subject: string;
+  workspaceSlug?: string;
+  dbName?: string;
+};
+
+export type SwitchWorkspaceResult =
+  | {
+      kind: "switched";
+      scope: SurrealTokenScope;
+    }
+  | {
+      kind: "forbidden";
+    };
+
 export interface WorkspaceScopeModule {
   getDefaultScope(input: DefaultScopeInput): Promise<DefaultScopeResult>;
   listWorkspaces(input: { subject: string }): Promise<WorkspaceListItem[]>;
+  switchWorkspace(input: SwitchWorkspaceInput): Promise<SwitchWorkspaceResult>;
 }
 
 type Queryable = {
@@ -38,6 +54,7 @@ type Queryable = {
 };
 
 type WorkspaceIndexRow = {
+  id?: unknown;
   db_name?: unknown;
   role?: unknown;
   last_selected_at?: unknown;
@@ -146,6 +163,47 @@ export function createWorkspaceScopeModule(db?: Queryable): WorkspaceScopeModule
         .sort(sortWorkspaceRows)
         .map(rowToWorkspaceListItem)
         .filter((item): item is WorkspaceListItem => item !== null);
+    },
+
+    async switchWorkspace(input) {
+      const client = db ?? getRootConnection();
+      const result = input.dbName
+        ? await client.query(
+            `
+              SELECT id, db_name, role, last_selected_at, joined_at, workspace
+              FROM user_workspace_index
+              WHERE subject = $subject AND disabled_at = NONE AND db_name = $dbName
+              FETCH workspace;
+            `,
+            { subject: input.subject, dbName: input.dbName },
+          )
+        : await client.query(
+            `
+              SELECT id, db_name, role, last_selected_at, joined_at, workspace
+              FROM user_workspace_index
+              WHERE subject = $subject
+                AND disabled_at = NONE
+                AND workspace IN (SELECT VALUE id FROM workspace WHERE slug = $workspaceSlug)
+              FETCH workspace;
+            `,
+            { subject: input.subject, workspaceSlug: input.workspaceSlug },
+          );
+
+      const row = rowsFromQueryResult(result).find((candidate) => rowToScope(candidate) !== null);
+      if (!row || row.workspace?.status !== "active") {
+        return { kind: "forbidden" };
+      }
+
+      const scope = rowToScope(row);
+      if (!scope) {
+        return { kind: "forbidden" };
+      }
+
+      await client.query("UPDATE $membership SET last_selected_at = time::now();", {
+        membership: row.id,
+      });
+
+      return { kind: "switched", scope };
     },
   };
 }

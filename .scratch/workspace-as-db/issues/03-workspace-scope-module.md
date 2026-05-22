@@ -99,8 +99,8 @@ IdP 登录 hook 调用，用于给即将签发的 token 决定默认 SurrealDB s
 ## Acceptance criteria
 
 - [x] 有 3 个 workspace 的用户调用 `/api/session/workspaces` → 返回 3 条，最近选择在最前。
-- [ ] 用户切到自己无权限的 workspace → 403，IdP adapter 未被调用。
-- [ ] 用户切到有权限 workspace → `last_selected_at` 更新，IdP adapter 收到正确 `{ db, ac }`。
+- [x] 用户切到自己无权限的 workspace → 403，IdP adapter 未被调用。
+- [x] 用户切到有权限 workspace → `last_selected_at` 更新，IdP adapter 收到正确 `{ db, ac }`。
 - [x] IdP default-scope hook 对无 workspace 用户返回 login-denied，前端不会进入应用。
 - [x] IdP default-scope hook 对有 workspace 用户返回最近选择的 db/ac。
 - [ ] 所有失败路径都不把 OIDC token 或 IdP admin token 写入日志。
@@ -131,10 +131,8 @@ TDD 覆盖：
 
 Remaining:
 
-- `POST /api/session/switch-workspace`
-- `IdpTokenScopeAdapter.updateUserScope()`
 - switch-workspace 对 workspace db `user` 表的一致性校验与漂移错误码
-- 失败路径 token / IdP admin token 日志红action专项测试
+- 失败路径 token / IdP admin token 日志 redaction 专项测试
 
 ## 2026-05-22 TDD slice: session workspace list
 
@@ -148,3 +146,22 @@ TDD 覆盖：
 
 - `server/src/routes/session.test.ts`：已认证用户可获得最近选择在前的 workspace 列表；未带 OIDC token 返回 401 且不触发 workspace 查询。
 - 本地 SurrealDB 3.0.5 内存实例验证：archived workspace 和 disabled membership 会被过滤，返回 `ws_recent/admin`、`ws_older/participant` 且顺序正确。
+
+## 2026-05-22 TDD slice: session workspace switch
+
+已完成 `POST /api/session/switch-workspace` 最小垂直切片：
+
+- 新增 `server/src/workspaces/idp-scope-adapter.ts`，封装 IdP scope update，将 `{ db, ac }` 映射到 `https://surrealdb.com/db` / `https://surrealdb.com/ac` claims。
+- `WorkspaceScopeModule` 新增 `switchWorkspace({ subject, workspaceSlug?, dbName? })`：只允许切到 `_system.user_workspace_index` 中当前 subject 的 active workspace，并更新 `last_selected_at`。
+- `server/src/routes/session.ts` 挂载 `POST /api/session/switch-workspace`：无目标返回 400，无权限返回 403；成功时调用 IdP adapter 并返回 `{ ok: true, refreshRequired: true }`。
+- `createApp()` 支持注入 fake `IdpTokenScopeAdapter`，让 route 测试不依赖真实 IdP。
+
+TDD 覆盖：
+
+- `server/src/routes/session.test.ts`：可访问 workspace 成功切换并调用 IdP adapter；不可访问 workspace 返回 403 且不调用 adapter。
+- 本地 SurrealDB 3.0.5 内存实例验证：切到 active workspace 会返回 `ws_recent/admin` 并写入 `last_selected_at`；切到 archived workspace 返回 forbidden。
+
+Remaining:
+
+- switch-workspace 对目标 workspace db `user` 表的一致性校验与漂移错误码。
+- 失败路径 token / IdP admin token 日志 redaction 专项测试。

@@ -7,6 +7,12 @@ function createWorkspaceScopeStub(result: Awaited<ReturnType<WorkspaceScopeModul
     async getDefaultScope() {
       return result;
     },
+    async listWorkspaces() {
+      return [];
+    },
+    async switchWorkspace() {
+      return { kind: "forbidden" };
+    },
   };
 }
 
