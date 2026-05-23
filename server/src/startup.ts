@@ -3,6 +3,7 @@ import { env } from "./env";
 import { closeRootConnection, initRootConnection } from "./db/root-connection";
 import { ensureSystemSchema } from "./db/system-schema";
 import { migrateAllWorkspaces } from "./db/migration-runner";
+import { startReconcileLoop, type ReconcileLoopHandle } from "./db/reconciler";
 
 type AppLike = {
   fetch: ReturnType<typeof createApp>["fetch"];
@@ -21,6 +22,7 @@ export type StartServerDeps = {
   migrateAllWorkspaces?: () => Promise<unknown>;
   createApp?: () => AppLike;
   serve?: (options: { hostname: string; port: number; fetch: AppLike["fetch"] }) => ServerHandle;
+  startReconcileLoop?: () => ReconcileLoopHandle;
   closeRootConnection?: () => Promise<void>;
 };
 
@@ -41,6 +43,7 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
     deps.serve ??
     ((options: { hostname: string; port: number; fetch: AppLike["fetch"] }) =>
       Bun.serve(options as Parameters<typeof Bun.serve>[0]));
+  const startReconcile = deps.startReconcileLoop ?? startReconcileLoop;
   const closeRoot = deps.closeRootConnection ?? closeRootConnection;
 
   await initRoot();
@@ -56,11 +59,22 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
 
   console.info("[server] listening", { host, port, env: envName });
 
+  // 校对心跳不阻塞 boot：启动失败只告警，server 照常对外服务（下次重启再试）。
+  let reconcileLoop: ReconcileLoopHandle | undefined;
+  try {
+    reconcileLoop = startReconcile();
+  } catch (cause) {
+    console.error("[server] failed to start reconcile heartbeat; continuing without it", {
+      message: cause instanceof Error ? cause.message : String(cause),
+    });
+  }
+
   return {
     server,
     async shutdown(signal: string): Promise<void> {
       console.info("[server] shutting down", { signal });
       server.stop();
+      reconcileLoop?.stop();
       await closeRoot();
     },
   };

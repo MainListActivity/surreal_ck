@@ -17,6 +17,8 @@ const EnvSchema = z.object({
   IDP_HOOK_SECRET: z.string().min(8),
   IDP_SCOPE_API_URL: z.string().url().optional(),
   IDP_SCOPE_API_TOKEN: z.string().optional(),
+
+  RECONCILE_INTERVAL_SEC: z.coerce.number().int().positive().default(3600),
 });
 
 export type ServerEnv = z.infer<typeof EnvSchema>;
