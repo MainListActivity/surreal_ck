@@ -111,7 +111,7 @@ Browser (Svelte 5 + RevoGrid + surrealdb-js + oidc-client-ts)
 
 ## SurrealDB Rules
 
-Any time you write SurrealQL — schema, queries, or permissions — you MUST invoke the `surrealdb` skill FIRST and follow its rules.
+Any time you write SurrealQL — schema, queries, or permissions — you MUST invoke the `surrealql` skill FIRST and follow its rules.
 
 Past solutions are documented in `docs/solutions/` (organized by category, searchable by `module`, `tags`, `problem_type`; covers schema design, integration issues, tooling APIs, and architecture patterns). Relevant when implementing features, debugging issues, or integrating third-party libraries in documented areas.
 
