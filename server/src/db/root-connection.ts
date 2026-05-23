@@ -1,5 +1,6 @@
 import { Surreal } from "surrealdb";
 import { env } from "../env";
+import { createRootSessionPool } from "./root-session-pool";
 
 let rootConnection: Surreal | null = null;
 let connected = false;
@@ -9,6 +10,11 @@ let closing = false;
 
 const BACKOFF_MS = [1000, 2000, 5000, 10000] as const;
 const CONNECT_TIMEOUT_MS = 3000;
+const rootSessionPool = createRootSessionPool({
+  async newSession() {
+    return getRootConnection().newSession();
+  },
+});
 
 function nextDelayMs(): number {
   return BACKOFF_MS[Math.min(reconnectAttempts, BACKOFF_MS.length - 1)];
@@ -60,6 +66,16 @@ async function connectRootOnce(): Promise<void> {
       ),
     ]);
 
+    const previousConnection = rootConnection;
+    await rootSessionPool.closeAll();
+    if (previousConnection && previousConnection !== db) {
+      try {
+        await previousConnection.close();
+      } catch {
+        // Ignore cleanup errors for a stale connection after reconnect.
+      }
+    }
+
     rootConnection = db;
     connected = true;
     reconnectAttempts = 0;
@@ -89,6 +105,10 @@ export function getRootConnection(): Surreal {
     throw new Error("SurrealDB root connection is not initialized");
   }
   return rootConnection;
+}
+
+export async function getRootDatabaseSession(database: string, namespace = env.SURREAL_NS) {
+  return rootSessionPool.get(database, namespace);
 }
 
 export function isRootConnected(): boolean {
@@ -125,6 +145,8 @@ export async function closeRootConnection(): Promise<void> {
   const db = rootConnection;
   rootConnection = null;
   connected = false;
+
+  await rootSessionPool.closeAll();
 
   if (db) {
     await db.close();

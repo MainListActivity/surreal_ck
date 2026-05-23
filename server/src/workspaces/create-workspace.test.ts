@@ -1,39 +1,90 @@
 import { describe, expect, test } from "bun:test";
 import type { WorkspaceTemplateScript } from "@surreal-ck/shared/workspace-template";
-import { createWorkspaceCreator, type CreateWorkspaceClient } from "./create-workspace";
+import { createWorkspaceCreator, type CreateWorkspaceClient, type CreateWorkspaceSessionFactory } from "./create-workspace";
 import type { IdpTokenScopeAdapter } from "./idp-scope-adapter";
 import type { SurrealTokenScope } from "./workspace-scope";
 
 class FakeDb implements CreateWorkspaceClient {
-  readonly queries: Array<{ sql: string; params?: Record<string, unknown>; database: string }> = [];
-  readonly useCalls: Array<{ namespace: string; database: string }> = [];
-  currentDatabase = "_system";
-
-  // slug 已存在的集合（命中则 workspace 查询返回一行）
-  existingSlugs = new Set<string>();
-  // 让指定库的某条查询抛错，用于补偿路径
-  failOn?: { database: string; match: string };
-
-  async use(scope: { namespace: string; database: string }): Promise<void> {
-    this.useCalls.push(scope);
-    this.currentDatabase = scope.database;
-  }
+  constructor(
+    readonly database: string,
+    private readonly state: FakeDbState,
+  ) {}
 
   async query(sql: string, params?: Record<string, unknown>): Promise<any[]> {
-    this.queries.push({ sql, params, database: this.currentDatabase });
+    this.state.queries.push({ sql, params, database: this.database });
     const normalized = sql.trim().replace(/\s+/g, " ");
 
-    if (this.failOn && this.currentDatabase === this.failOn.database && normalized.includes(this.failOn.match)) {
+    if (this.state.failOn && this.database === this.state.failOn.database && normalized.includes(this.state.failOn.match)) {
       throw new Error("simulated query failure");
     }
 
     if (normalized.includes("FROM workspace WHERE slug")) {
       const slug = params?.slug;
-      return [this.existingSlugs.has(slug as string) ? [{ id: "workspace:existing" }] : []];
+      return [this.state.existingSlugs.has(slug as string) ? [{ id: "workspace:existing" }] : []];
+    }
+
+    if (normalized.includes("DEFINE DATABASE")) {
+      const dbName = readDbNameFromDdl(normalized, "DEFINE DATABASE");
+      if (dbName && this.state.physicalDbNames.has(dbName)) {
+        throw new Error(`Database ${dbName} already exists`);
+      }
+      if (dbName) this.state.physicalDbNames.add(dbName);
+    }
+
+    if (normalized.includes("REMOVE DATABASE")) {
+      const dbName = readDbNameFromDdl(normalized, "REMOVE DATABASE");
+      if (dbName) this.state.physicalDbNames.delete(dbName);
+    }
+
+    if (this.database === "_system" && normalized.includes("BEGIN TRANSACTION")) {
+      const slug = params?.slug as string | undefined;
+      const dbName = params?.dbName as string | undefined;
+      if (slug && this.state.existingSlugs.has(slug)) {
+        throw new Error("workspace-slug-conflict");
+      }
+      if (dbName && this.state.existingDbNames.has(dbName)) {
+        throw new Error("workspace-db-conflict");
+      }
+      if (slug) this.state.existingSlugs.add(slug);
+      if (dbName) this.state.existingDbNames.add(dbName);
+      this.state.systemWorkspaces.push({ slug: slug ?? "", dbName: dbName ?? "" });
     }
 
     return [[]];
   }
+}
+
+type FakeDbState = {
+  queries: Array<{ sql: string; params?: Record<string, unknown>; database: string }>;
+  requestedSessions: string[];
+  existingSlugs: Set<string>;
+  existingDbNames: Set<string>;
+  physicalDbNames: Set<string>;
+  systemWorkspaces: Array<{ slug: string; dbName: string }>;
+  failOn?: { database: string; match: string };
+};
+
+function createFakeDbState(): FakeDbState {
+  return {
+    queries: [],
+    requestedSessions: [],
+    existingSlugs: new Set(),
+    existingDbNames: new Set(),
+    physicalDbNames: new Set(),
+    systemWorkspaces: [],
+  };
+}
+
+function fakeSessionFactory(state: FakeDbState): CreateWorkspaceSessionFactory {
+  return async (database) => {
+    state.requestedSessions.push(database);
+    return new FakeDb(database, state);
+  };
+}
+
+function readDbNameFromDdl(sql: string, prefix: "DEFINE DATABASE" | "REMOVE DATABASE"): string | null {
+  const tail = sql.slice(sql.indexOf(prefix) + prefix.length).trim();
+  return tail.match(/^([a-zA-Z0-9_]+)/)?.[1] ?? null;
 }
 
 function recordingIdpAdapter(): { adapter: IdpTokenScopeAdapter; calls: Array<{ subject: string; scope: SurrealTokenScope }> } {
@@ -51,15 +102,16 @@ function recordingIdpAdapter(): { adapter: IdpTokenScopeAdapter; calls: Array<{ 
 const templateScripts: WorkspaceTemplateScript[] = [
   { version: 1, name: "001-access.surql", sql: "DEFINE ACCESS admin ON DATABASE TYPE JWT URL 'x';" },
   { version: 2, name: "002-tables-core.surql", sql: "DEFINE TABLE user SCHEMAFULL;" },
+  { version: 3, name: "003-tables-office.surql", sql: "DEFINE TABLE office_role SCHEMAFULL;" },
 ];
 
 describe("createWorkspace lifecycle", () => {
   test("provisions db, applies template, seeds owner user and _system index, then updates IdP scope", async () => {
-    const db = new FakeDb();
+    const db = createFakeDbState();
     const { adapter, calls } = recordingIdpAdapter();
 
     const creator = createWorkspaceCreator({
-      db,
+      getDbSession: fakeSessionFactory(db),
       idpTokenScopeAdapter: adapter,
       loadTemplateScripts: async () => templateScripts,
       generateId: () => "abcdef123456",
@@ -80,38 +132,44 @@ describe("createWorkspace lifecycle", () => {
       refreshRequired: true,
     });
 
-    // 1. root 建库
     const defineDb = db.queries.find((q) => q.sql.includes("DEFINE DATABASE") && q.sql.includes("ws_abcdef123456"));
     expect(defineDb).toBeDefined();
+    expect(defineDb?.sql).not.toContain("IF NOT EXISTS");
 
-    // 2. 模板在新库内被应用
     const templateApplied = db.queries.filter((q) => q.database === "ws_abcdef123456" && q.sql.includes("DEFINE"));
-    expect(templateApplied.length).toBeGreaterThanOrEqual(2);
+    expect(templateApplied.length).toBeGreaterThanOrEqual(3);
+    const versionWrite = db.queries.find(
+      (q) => q.database === "ws_abcdef123456" && q.sql.includes("UPSERT schema_version:current"),
+    );
+    expect(versionWrite?.params?.version).toBe(3);
 
-    // 3. owner user 写入新库，human + is_admin=true
     const ownerInsert = db.queries.find((q) => q.database === "ws_abcdef123456" && q.sql.includes("user") && q.sql.includes("INSERT"));
     expect(ownerInsert).toBeDefined();
     expect(ownerInsert?.params?.subject).toBe("user-123");
     expect(ownerInsert?.params?.email).toBe("ada@example.test");
 
-    // 4. _system.workspace 与 user_workspace_index 双写
-    const workspaceRow = db.queries.find((q) => q.database === "_system" && q.sql.includes("workspace") && q.sql.includes("CONTENT"));
-    expect(workspaceRow).toBeDefined();
-    const indexRow = db.queries.find((q) => q.database === "_system" && q.sql.includes("user_workspace_index"));
-    expect(indexRow).toBeDefined();
-    expect(indexRow?.params?.role).toBe("admin");
+    const systemWrite = db.queries.find(
+      (q) =>
+        q.database === "_system" &&
+        q.sql.includes("BEGIN TRANSACTION") &&
+        q.sql.includes("CREATE ONLY workspace") &&
+        q.sql.includes("user_workspace_index"),
+    );
+    expect(systemWrite).toBeDefined();
+    expect(systemWrite?.params?.role).toBe("admin");
 
-    // 5. IdP adapter 被调用一次，指向新库 admin scope
     expect(calls).toEqual([{ subject: "user-123", scope: { db: "ws_abcdef123456", ac: "admin" } }]);
+    expect(db.requestedSessions).toContain("_system");
+    expect(db.requestedSessions).toContain("ws_abcdef123456");
   });
 
   test("returns slug-conflict and never creates a database when slug already exists", async () => {
-    const db = new FakeDb();
+    const db = createFakeDbState();
     db.existingSlugs.add("acme");
     const { adapter, calls } = recordingIdpAdapter();
 
     const creator = createWorkspaceCreator({
-      db,
+      getDbSession: fakeSessionFactory(db),
       idpTokenScopeAdapter: adapter,
       loadTemplateScripts: async () => templateScripts,
       generateId: () => "abcdef123456",
@@ -131,13 +189,12 @@ describe("createWorkspace lifecycle", () => {
   });
 
   test("drops the freshly-created database and throws when template application fails", async () => {
-    const db = new FakeDb();
-    // 模板 SQL 在新库内执行时失败
+    const db = createFakeDbState();
     db.failOn = { database: "ws_abcdef123456", match: "DEFINE TABLE user" };
     const { adapter, calls } = recordingIdpAdapter();
 
     const creator = createWorkspaceCreator({
-      db,
+      getDbSession: fakeSessionFactory(db),
       idpTokenScopeAdapter: adapter,
       loadTemplateScripts: async () => templateScripts,
       generateId: () => "abcdef123456",
@@ -153,17 +210,76 @@ describe("createWorkspace lifecycle", () => {
       }),
     ).rejects.toThrow(/template apply failed/);
 
-    // 补偿：REMOVE DATABASE 在 _system 上执行
     const dropQuery = db.queries.find((q) => q.sql.includes("REMOVE DATABASE") && q.sql.includes("ws_abcdef123456"));
     expect(dropQuery).toBeDefined();
     expect(dropQuery?.database).toBe("_system");
-    // 不写 _system.workspace，不调 IdP
-    expect(db.queries.find((q) => q.sql.includes("CREATE workspace"))).toBeUndefined();
+    expect(db.queries.find((q) => q.sql.includes("CREATE ONLY workspace"))).toBeUndefined();
+    expect(calls).toEqual([]);
+  });
+
+  test("does not drop a pre-existing physical database when generated db name collides", async () => {
+    const db = createFakeDbState();
+    db.physicalDbNames.add("ws_abcdef123456");
+    const { adapter, calls } = recordingIdpAdapter();
+    const ids = ["abcdef123456", "fedcba654321"];
+
+    const creator = createWorkspaceCreator({
+      getDbSession: fakeSessionFactory(db),
+      idpTokenScopeAdapter: adapter,
+      loadTemplateScripts: async () => templateScripts,
+      generateId: () => ids.shift() ?? "unused",
+      namespace: "main",
+    });
+
+    const result = await creator.createWorkspace({
+      subject: "user-123",
+      email: "ada@example.test",
+      name: "Acme Legal",
+      slug: "acme",
+    });
+
+    expect(result).toEqual({
+      kind: "created",
+      slug: "acme",
+      dbName: "ws_fedcba654321",
+      refreshRequired: true,
+    });
+    expect(
+      db.queries.find((q) => q.sql.includes("REMOVE DATABASE") && q.sql.includes("ws_abcdef123456")),
+    ).toBeUndefined();
+    expect(calls).toEqual([{ subject: "user-123", scope: { db: "ws_fedcba654321", ac: "admin" } }]);
+  });
+
+  test("rolls back _system workspace and drops the new database when membership index write fails", async () => {
+    const db = createFakeDbState();
+    db.failOn = { database: "_system", match: "user_workspace_index" };
+    const { adapter, calls } = recordingIdpAdapter();
+
+    const creator = createWorkspaceCreator({
+      getDbSession: fakeSessionFactory(db),
+      idpTokenScopeAdapter: adapter,
+      loadTemplateScripts: async () => templateScripts,
+      generateId: () => "abcdef123456",
+      namespace: "main",
+    });
+
+    await expect(
+      creator.createWorkspace({
+        subject: "user-123",
+        email: "ada@example.test",
+        name: "Acme Legal",
+        slug: "acme",
+      }),
+    ).rejects.toThrow(/_system write failed/);
+
+    expect(db.systemWorkspaces).toEqual([]);
+    const dropQuery = db.queries.find((q) => q.sql.includes("REMOVE DATABASE") && q.sql.includes("ws_abcdef123456"));
+    expect(dropQuery).toBeDefined();
     expect(calls).toEqual([]);
   });
 
   test("returns scope-update-failed and keeps the database when IdP scope update fails", async () => {
-    const db = new FakeDb();
+    const db = createFakeDbState();
     const failingAdapter: IdpTokenScopeAdapter = {
       async updateUserScope() {
         throw new Error("idp unreachable");
@@ -171,7 +287,7 @@ describe("createWorkspace lifecycle", () => {
     };
 
     const creator = createWorkspaceCreator({
-      db,
+      getDbSession: fakeSessionFactory(db),
       idpTokenScopeAdapter: failingAdapter,
       loadTemplateScripts: async () => templateScripts,
       generateId: () => "abcdef123456",
@@ -186,8 +302,7 @@ describe("createWorkspace lifecycle", () => {
     });
 
     expect(result).toEqual({ kind: "scope-update-failed", slug: "acme", dbName: "ws_abcdef123456" });
-    // db 与 _system 记录保留，不补偿删除
-    expect(db.queries.find((q) => q.sql.includes("CREATE workspace"))).toBeDefined();
+    expect(db.queries.find((q) => q.sql.includes("CREATE ONLY workspace"))).toBeDefined();
     expect(db.queries.find((q) => q.sql.includes("REMOVE DATABASE"))).toBeUndefined();
   });
 });

@@ -7,12 +7,17 @@ import type { CreateWorkspaceInput, CreateWorkspaceResult, WorkspaceCreator } fr
 const testUser = {
   subject: "user-123",
   email: "ada@example.test",
-  raw: {},
+  raw: { can_create_workspace: true },
   rawToken: "test-token",
 };
 
 const useTestUser: MiddlewareHandler<AppBindings> = async (c, next) => {
   c.set("user", testUser);
+  await next();
+};
+
+const useUserWithoutCreateGrant: MiddlewareHandler<AppBindings> = async (c, next) => {
+  c.set("user", { ...testUser, raw: {} });
   await next();
 };
 
@@ -52,6 +57,28 @@ describe("POST /api/workspaces", () => {
 
     expect(response.status).toBe(401);
     expect(await response.json()).toMatchObject({ error: { code: "oidc-missing" } });
+    expect(calls).toEqual([]);
+  });
+
+  test("rejects callers without the create-workspace grant before provisioning", async () => {
+    const { creator, calls } = stubCreator(() => ({
+      kind: "created",
+      slug: "acme",
+      dbName: "ws_x",
+      refreshRequired: true,
+    }));
+    const app = createApp({ requireUser: () => useUserWithoutCreateGrant, workspaceCreator: creator });
+
+    const response = await app.fetch(
+      new Request("http://localhost/api/workspaces", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "Acme", slug: "acme" }),
+      }),
+    );
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error: { code: "workspace-create-forbidden" } });
     expect(calls).toEqual([]);
   });
 

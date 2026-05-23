@@ -1,11 +1,21 @@
 import { Hono } from "hono";
 import type { MiddlewareHandler } from "hono";
+import type { SessionUser } from "@surreal-ck/shared";
 import type { AppBindings } from "../hono-types";
 import { HttpError } from "../http-error";
 import { requireOidc } from "../middleware/oidc";
 import type { WorkspaceCreator } from "../workspaces/create-workspace";
 
 const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
+
+function canCreateWorkspace(user: SessionUser): boolean {
+  const raw = user.raw;
+  if (raw.can_create_workspace === true) return true;
+  if (raw["https://surreal-ck.com/can_create_workspace"] === true) return true;
+
+  const scope = raw.scope;
+  return typeof scope === "string" && scope.split(/\s+/).includes("workspace:create");
+}
 
 export function createWorkspaceRoutes(
   workspaceCreator: WorkspaceCreator,
@@ -23,6 +33,9 @@ export function createWorkspaceRoutes(
     }
     if (!SLUG_PATTERN.test(slug)) {
       throw new HttpError(400, "workspace-slug-invalid", "slug must be 1-40 lowercase alphanumeric or hyphen characters");
+    }
+    if (!canCreateWorkspace(c.var.user)) {
+      throw new HttpError(403, "workspace-create-forbidden", "Workspace creation is not allowed for this user");
     }
 
     const result = await workspaceCreator.createWorkspace({
