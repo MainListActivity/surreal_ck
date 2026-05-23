@@ -1,5 +1,5 @@
-Status: needs-triage
-Label: needs-triage
+Status: done
+Label: done
 
 # WP-C-06 — workspace create lifecycle endpoint
 
@@ -48,12 +48,20 @@ HTTP endpoint：`POST /api/workspaces`
 
 ## Acceptance criteria
 
-- [ ] 成功创建后，SurrealDB 中存在新 workspace database，模板表齐全。
-- [ ] `_system.workspace` 与 `_system.user_workspace_index` 都有对应行。
-- [ ] owner user 在新 workspace db 内存在，且 `is_admin=true`。
-- [ ] IdP adapter 被调用一次，参数为新 db + admin access。
-- [ ] 模板中途失败时，新 db 被删除或至少有明确日志标识需人工清理。
-- [ ] slug 重复返回 409，不创建 db。
+- [x] 成功创建后，SurrealDB 中存在新 workspace database，模板表齐全。
+- [x] `_system.workspace` 与 `_system.user_workspace_index` 都有对应行。
+- [x] owner user 在新 workspace db 内存在，且 `is_admin=true`。
+- [x] IdP adapter 被调用一次，参数为新 db + admin access。
+- [x] 模板中途失败时，新 db 被删除或至少有明确日志标识需人工清理。
+- [x] slug 重复返回 409，不创建 db。
+
+## Implementation notes (2026-05-23)
+
+- `server/src/workspaces/create-workspace.ts`：`createWorkspaceCreator` deep module，承担 slug 预检 → root 建库 → 应用模板 → owner user（`ON DUPLICATE KEY UPDATE`）→ `_system` 双写 → IdP scope。root 连接延迟到调用时解析，与 scope module / idp adapter 一致。
+- `server/src/routes/workspaces.ts`：`POST /api/workspaces`，`requireOidc` 后由调用者 subject/email 驱动；slug 在 route 层归一小写并按 `^[a-z0-9](-?[a-z0-9])*$`（≤40）校验，重复 → 409，IdP 失败 → 502 `scope-update-failed`。
+- 补偿：模板或 `_system` 写入失败回滚 `REMOVE DATABASE`；IdP scope 失败保留 db 返回 `scope-update-failed`，前端可重试 switch-workspace。
+- 测试：`create-workspace.test.ts`（4 行为）+ `routes/workspaces.test.ts`（4 行为），用可注入 FakeDb（`use()` 切库）与录制式 IdP adapter，不依赖真实 SurrealDB。`pnpm --filter @surreal-ck/server run test` 46 pass / typecheck 通过。
+- 下游解锁：`WP-C-07`（成员管理 endpoints）的 `Blocked by` 之一是本 issue，现已满足。
 
 ## Blocked by
 
