@@ -31,12 +31,18 @@ Category: enhancement
 
 ## Acceptance criteria
 
-- [ ] admin 调 `POST /api/workspaces/:slug/members` 后，目标 workspace db 有 human `user` 记录，`_system.user_workspace_index` 有对应 active row。
-- [ ] participant 或非目标 workspace 成员调成员管理 endpoint 返回 403，且两边都不写入。
-- [ ] role 变更同时更新 workspace db `user.is_admin` 与 `_system.user_workspace_index.role`。
-- [ ] delete/移除只写禁用字段；历史 office_* / workflow_run /业务记录的 user 引用不悬空。
-- [ ] `GET /api/session/workspaces` 和 IdP default-scope hook 会过滤 disabled row。
-- [ ] 失败路径不记录 OIDC token、IdP 管理 token、SurrealDB root credential。
+- [x] admin 调 `POST /api/workspaces/:slug/members` 后，目标 workspace db 有 human `user` 记录，`_system.user_workspace_index` 有对应 active row。
+- [x] participant 或非目标 workspace 成员调成员管理 endpoint 返回 403，且两边都不写入。
+- [x] role 变更同时更新 workspace db `user.is_admin` 与 `_system.user_workspace_index.role`。
+- [x] delete/移除只写禁用字段；历史 office_* / workflow_run /业务记录的 user 引用不悬空。
+- [x] `GET /api/session/workspaces` 和 IdP default-scope hook 会过滤 disabled row。
+- [x] 失败路径不记录 OIDC token、IdP 管理 token、SurrealDB root credential。
+
+## Implementation notes (2026-05-23)
+
+- 预创建成员 index 行 `subject` 写 `NONE`（NONE 不参与 `(subject, workspace)` 唯一索引约束），首次登录由 `switch-workspace` 按 email 绑定回填。为此把 `user_workspace_index.subject` 改为 `option<string>`（`shared/sql/system/002-member-index-subject-optional.surql`）。
+- 调用者 admin 校验源 = 目标 ws db `user.is_admin`（DDL 权限真相源），而非 `_system` 索引 role。
+- 实现：`server/src/workspaces/member-manager.ts`（root 同写两边）+ `server/src/routes/members.ts`（requireOidc + 错误码映射），装配进 `createApp`。
 
 ## Blocked by
 

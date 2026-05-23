@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { RecordId, StringRecordId } from "surrealdb";
 import { reconcileWorkspaceIndex, startReconcileLoop } from "./reconciler";
 
 type IndexRow = {
-  id: string;
+  id: string | RecordId | StringRecordId;
   subject: string;
   email?: string;
   dbName: string;
@@ -19,7 +20,7 @@ type UserRow = {
 };
 
 type WorkspaceFixture = {
-  id: string;
+  id: string | RecordId | StringRecordId;
   dbName: string;
   status: string;
   users: UserRow[];
@@ -134,7 +135,7 @@ describe("workspace index reconciler", () => {
     const db = new FakeReconcileClient(
       [
         {
-          id: "workspace:alpha",
+          id: new RecordId("workspace", "alpha"),
           dbName: "ws_alpha",
           status: "active",
           users: [{ id: "user:orphan", subject: "sub-orphan", email: "orphan@x.test", isAdmin: false }],
@@ -161,7 +162,8 @@ describe("workspace index reconciler", () => {
       dbName: "ws_alpha",
       role: "participant",
     });
-    expect(String(repair.params?.workspace)).toBe("workspace:alpha");
+    expect(repair.params?.workspace).toBeInstanceOf(StringRecordId);
+    expect((repair.params?.workspace as StringRecordId).toString()).toBe("workspace:alpha");
   });
 
   test("fixes the index role to match workspace user.is_admin authority", async () => {
@@ -176,7 +178,7 @@ describe("workspace index reconciler", () => {
         },
       ],
       // _system 里却记成 participant → role 漂移
-      [{ id: "user_workspace_index:i1", subject: "sub-a1", email: "a1@x.test", dbName: "ws_alpha", role: "participant" }],
+      [{ id: new RecordId("user_workspace_index", "i1"), subject: "sub-a1", email: "a1@x.test", dbName: "ws_alpha", role: "participant" }],
     );
 
     const result = await reconcileWorkspaceIndex(db, { namespace: "main" });
@@ -188,7 +190,8 @@ describe("workspace index reconciler", () => {
     const repair = db.mutations[0]!;
     expect(repair.sql).toContain("UPDATE");
     expect(repair.sql).toContain("role");
-    expect(String(repair.params?.membership)).toBe("user_workspace_index:i1");
+    expect(repair.params?.membership).toBeInstanceOf(StringRecordId);
+    expect((repair.params?.membership as StringRecordId).toString()).toBe("user_workspace_index:i1");
     expect(repair.params?.role).toBe("admin");
   });
 

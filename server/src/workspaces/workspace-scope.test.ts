@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { DateTime } from "surrealdb";
 import { createWorkspaceScopeModule, type Queryable } from "./workspace-scope";
 
 class FakeDb implements Queryable {
@@ -198,5 +199,53 @@ describe("WorkspaceScopeModule.switchWorkspace consistency & drift", () => {
     expect(result).toEqual({
       kind: "drift",
     });
+  });
+});
+
+describe("WorkspaceScopeModule disabled member filtering", () => {
+  test("listWorkspaces filters out disabled index rows at the query level", async () => {
+    const db = new FakeDb();
+    const module = createWorkspaceScopeModule(db);
+
+    await module.listWorkspaces({ subject: "user-123" });
+
+    const indexQuery = db.queries.find((q) => q.sql.includes("FROM user_workspace_index"));
+    expect(indexQuery?.sql).toContain("disabled_at = NONE");
+  });
+
+  test("listWorkspaces serializes SurrealDB DateTime values through SDK helpers", async () => {
+    const db = new FakeDb();
+    db.indexRows = [
+      {
+        db_name: "ws_older",
+        role: "participant",
+        last_selected_at: new DateTime("2026-05-22T01:00:00.000Z"),
+        joined_at: new DateTime("2026-05-20T01:00:00.000Z"),
+        workspace: { status: "active", slug: "older", name: "Older" },
+      },
+      {
+        db_name: "ws_newer",
+        role: "admin",
+        last_selected_at: new DateTime("2026-05-23T01:00:00.000Z"),
+        joined_at: new DateTime("2026-05-21T01:00:00.000Z"),
+        workspace: { status: "active", slug: "newer", name: "Newer" },
+      },
+    ];
+    const module = createWorkspaceScopeModule(db);
+
+    const items = await module.listWorkspaces({ subject: "user-123" });
+
+    expect(items.map((item) => item.slug)).toEqual(["newer", "older"]);
+    expect(items[0]?.lastSelectedAt).toBe("2026-05-23T01:00:00.000Z");
+  });
+
+  test("getDefaultScope filters out disabled index rows at the query level", async () => {
+    const db = new FakeDb();
+    const module = createWorkspaceScopeModule(db);
+
+    await module.getDefaultScope({ subject: "user-123" });
+
+    const indexQuery = db.queries.find((q) => q.sql.includes("FROM user_workspace_index"));
+    expect(indexQuery?.sql).toContain("disabled_at = NONE");
   });
 });

@@ -1,5 +1,7 @@
+import type { StringRecordId } from "surrealdb";
 import { env } from "../env";
 import { getRootConnection } from "./root-connection";
+import { toStringRecordId } from "./surreal-values";
 
 export type ReconcileClient = {
   use(scope: { namespace: string; database: string }): Promise<unknown>;
@@ -20,10 +22,10 @@ export type ReconcileResult = {
 
 const SYSTEM_DATABASE = "_system";
 
-type WorkspaceRow = { id: unknown; dbName: string };
+type WorkspaceRow = { id: StringRecordId; dbName: string };
 
 type IndexRow = {
-  id: unknown;
+  id: StringRecordId;
   subject: string;
   email: string | null;
   role: "admin" | "participant";
@@ -95,7 +97,9 @@ function readWorkspaces(result: unknown): WorkspaceRow[] {
       if (typeof row !== "object" || row === null) return null;
       const dbName = Reflect.get(row, "db_name");
       if (typeof dbName !== "string") return null;
-      return { id: Reflect.get(row, "id"), dbName };
+      const id = toStringRecordId(Reflect.get(row, "id"));
+      if (!id) return null;
+      return { id, dbName };
     })
     .filter((row): row is WorkspaceRow => row !== null);
 }
@@ -108,8 +112,10 @@ function readIndexRows(result: unknown): IndexRow[] {
       if (role !== "admin" && role !== "participant") return null;
       const subject = Reflect.get(row, "subject");
       const email = Reflect.get(row, "email");
+      const id = toStringRecordId(Reflect.get(row, "id"));
+      if (!id) return null;
       return {
-        id: Reflect.get(row, "id"),
+        id,
         subject: typeof subject === "string" ? subject : "",
         email: typeof email === "string" ? email : null,
         role,

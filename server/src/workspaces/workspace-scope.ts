@@ -1,4 +1,5 @@
 import { getRootConnection } from "../db/root-connection";
+import { dateTimeTimestamp, toIsoDateTimeString } from "../db/surreal-values";
 
 export type SurrealTokenScope = {
   db: string;
@@ -76,12 +77,7 @@ function rowsFromQueryResult(result: unknown): WorkspaceIndexRow[] {
 }
 
 function timestamp(value: unknown): number {
-  if (value instanceof Date) return value.getTime();
-  if (typeof value === "string") {
-    const parsed = Date.parse(value);
-    return Number.isNaN(parsed) ? 0 : parsed;
-  }
-  return 0;
+  return dateTimeTimestamp(value);
 }
 
 function rowToScope(row: WorkspaceIndexRow): SurrealTokenScope | null {
@@ -92,20 +88,6 @@ function rowToScope(row: WorkspaceIndexRow): SurrealTokenScope | null {
     db: row.db_name,
     ac: row.role,
   };
-}
-
-function dateTimeString(value: unknown): string | null {
-  if (value instanceof Date) return value.toISOString();
-  if (typeof value === "string") {
-    const parsed = Date.parse(value);
-    return Number.isNaN(parsed) ? null : new Date(parsed).toISOString();
-  }
-  if (typeof value === "object" && value !== null && typeof Reflect.get(value, "toString") === "function") {
-    const stringValue = String(value);
-    const parsed = Date.parse(stringValue);
-    return Number.isNaN(parsed) ? null : new Date(parsed).toISOString();
-  }
-  return null;
 }
 
 function rowToWorkspaceListItem(row: WorkspaceIndexRow): WorkspaceListItem | null {
@@ -120,7 +102,7 @@ function rowToWorkspaceListItem(row: WorkspaceIndexRow): WorkspaceListItem | nul
     name: row.workspace.name,
     dbName: scope.db,
     role: scope.ac,
-    lastSelectedAt: dateTimeString(row.last_selected_at),
+    lastSelectedAt: toIsoDateTimeString(row.last_selected_at),
   };
 }
 
