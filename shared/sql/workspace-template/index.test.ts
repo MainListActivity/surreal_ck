@@ -5,20 +5,44 @@ describe("workspace template scripts", () => {
   test("loads workspace template scripts in version order from the shared template directory", async () => {
     const scripts = await loadTemplateScripts();
 
-    expect(WORKSPACE_TEMPLATE_VERSION).toBe(5);
-    expect(scripts.map((script) => script.version)).toEqual([1, 2, 3, 4, 5]);
+    expect(WORKSPACE_TEMPLATE_VERSION).toBe(6);
+    expect(scripts.map((script) => script.version)).toEqual([1, 2, 3, 4, 5, 6]);
     expect(scripts.map((script) => script.name)).toEqual([
       "001-access.surql",
       "002-tables-core.surql",
       "003-tables-office.surql",
       "004-workflow-run.surql",
       "005-mastra-runtime-storage.surql",
+      "006-tables-grid.surql",
     ]);
     expect(scripts[0]?.sql).toContain("DEFINE ACCESS admin");
     expect(scripts[1]?.sql).toContain("DEFINE TABLE IF NOT EXISTS user");
     expect(scripts[2]?.sql).toContain("DEFINE TABLE IF NOT EXISTS employee_credential");
     expect(scripts[3]?.sql).toContain("DEFINE TABLE IF NOT EXISTS workflow_run");
     expect(scripts[4]?.sql).toContain("DEFINE TABLE IF NOT EXISTS memory_thread");
+    expect(scripts[5]?.sql).toContain("DEFINE TABLE IF NOT EXISTS workbook");
+  });
+
+  test("grid 业务表归属 workspace database：无 workspace 字段，PERMISSIONS 只表达本 workspace 角色", async () => {
+    const scripts = await loadTemplateScripts();
+    const grid = scripts.find((script) => script.name === "006-tables-grid.surql");
+
+    expect(grid).toBeDefined();
+    const sql = grid!.sql;
+    // workbook / sheet / dashboard_page 三张表都在
+    expect(sql).toContain("DEFINE TABLE IF NOT EXISTS workbook");
+    expect(sql).toContain("DEFINE TABLE IF NOT EXISTS sheet");
+    expect(sql).toContain("DEFINE TABLE IF NOT EXISTS dashboard_page");
+    // 隔离靠 db 边界：不带 workspace 字段，也不写跨 workspace 的嵌套子查询
+    expect(sql).not.toMatch(/DEFINE FIELD IF NOT EXISTS workspace ON TABLE workbook/);
+    expect(sql).not.toMatch(/<-has_workspace_member<-workspace/);
+    // 同 workspace 任何登录用户可见
+    expect(sql).toContain("FOR select WHERE $auth != NONE");
+    // DDL 由 access 类型卡死，写操作交给管理员（builder/导入），普通成员不建表
+    expect(sql).toMatch(/FOR create, update, delete WHERE \$auth\.is_admin = true/);
+    // searchRecord 需要 sheet 的 table_name / column_defs
+    expect(sql).toContain("DEFINE FIELD IF NOT EXISTS table_name ON TABLE sheet");
+    expect(sql).toContain("DEFINE FIELD IF NOT EXISTS column_defs ON TABLE sheet");
   });
 
   test("workflow_run 表归属 workspace database：无 workspace 字段，owner_user 默认归因到当前会话", async () => {

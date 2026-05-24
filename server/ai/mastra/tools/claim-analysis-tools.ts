@@ -1,11 +1,17 @@
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
+import { StringRecordId, type Surreal } from "surrealdb";
 import type { GridColumnDef } from "@surreal-ck/shared";
-
-const LEGACY_EDITOR_MODULE: string = "../../../legacy/services/editor";
-const LEGACY_REFERENCES_MODULE: string = "../../../legacy/services/references";
+import { getSurrealSession, type ToolRequestContext } from "./tool-session";
 
 const SYSTEM_FIELDS = new Set(["id", "workspace", "created_by", "created_at", "updated_at"]);
+
+/** SurrealDB SDK query() 返回「每条语句结果」数组；取第一条语句行集。 */
+function firstStatementRows<T>(queryResult: unknown): T[] {
+  if (!Array.isArray(queryResult)) return [];
+  const first = queryResult[0];
+  return Array.isArray(first) ? (first as T[]) : [];
+}
 
 const ConfidenceSchema = z.enum(["high", "medium", "low"]);
 
@@ -64,50 +70,56 @@ type ClaimRowContextInput = {
   fields?: GridColumnDef[];
 };
 
-type WorkbookData = {
-  rows: Array<{ id: string; values: Record<string, unknown> }>;
-  columns: GridColumnDef[];
-};
-
-async function getLegacyWorkbookData(input: {
-  workbookId: string;
-  sheetId: string;
-}): Promise<WorkbookData> {
-  const { getWorkbookData } = await import(LEGACY_EDITOR_MODULE) as {
-    getWorkbookData(args: { workbookId: string; sheetId: string }): Promise<WorkbookData>;
-  };
-  return getWorkbookData(input);
-}
-
-async function resolveLegacyReferences(input: { ids: string[] }): Promise<{ items: unknown[] }> {
-  const { resolveReferences } = await import(LEGACY_REFERENCES_MODULE) as {
-    resolveReferences(args: { ids: string[] }): Promise<{ items: unknown[] }>;
-  };
-  return resolveReferences(input);
-}
-
-export async function resolveClaimRowContext(input: ClaimRowContextInput): Promise<{
-  values: Record<string, unknown>;
-  fields: GridColumnDef[];
-}> {
+/**
+ * 读取当前债权行的 values + 字段定义。
+ * - 调用方已传 values+fields 时纯返回，不碰 DB；
+ * - 否则用调用者 session 读 sheet.column_defs（字段定义）和真实数据表里的当前记录。
+ */
+export async function resolveClaimRowContext(
+  input: ClaimRowContextInput,
+  session?: Surreal,
+): Promise<{ values: Record<string, unknown>; fields: GridColumnDef[] }> {
   if (input.values && input.fields) {
     return { values: input.values, fields: input.fields };
   }
 
-  if (!input.workbookId) {
-    throw new Error("analyzeClaimRow 需要 workbookId 才能读取当前记录和字段定义");
+  if (!session) {
+    throw new Error("analyzeClaimRow 需要调用者 session 才能读取当前记录和字段定义");
   }
 
-  const data = await getLegacyWorkbookData({ workbookId: input.workbookId, sheetId: input.sheetId });
-  const row = data.rows.find((item) => item.id === input.recordId);
+  const sheetResult = await session.query(
+    `SELECT table_name, column_defs FROM $sheet LIMIT 1`,
+    { sheet: new StringRecordId(input.sheetId) },
+  );
+  const sheetRow = firstStatementRows<{ table_name: string; column_defs: GridColumnDef[] }>(sheetResult)[0];
+  if (!sheetRow) {
+    throw new Error(`找不到数据表定义: ${input.sheetId}`);
+  }
+
+  const recordResult = await session.query(`SELECT * FROM $record LIMIT 1`, {
+    record: new StringRecordId(input.recordId),
+  });
+  const row = firstStatementRows<Record<string, unknown>>(recordResult)[0];
   if (!row) {
     throw new Error(`当前数据表中找不到记录: ${input.recordId}`);
   }
 
   return {
-    values: row.values,
-    fields: data.columns,
+    values: input.values ?? row,
+    fields: input.fields ?? sheetRow.column_defs ?? [],
   };
+}
+
+/** 用调用者 session 读关联记录预览。 */
+async function resolveReferencesViaSession(
+  session: Surreal,
+  ids: string[],
+): Promise<{ items: unknown[] }> {
+  if (ids.length === 0) return { items: [] };
+  const result = await session.query(`SELECT * FROM $ids`, {
+    ids: ids.map((id) => new StringRecordId(id)),
+  });
+  return { items: firstStatementRows<unknown>(result) };
 }
 
 export function buildRowPatchProposal(input: {
@@ -153,9 +165,11 @@ export const analyzeClaimRowTool = createTool({
   ].join(" "),
   inputSchema: AnalyzeClaimRowInputSchema,
   outputSchema: RowPatchProposalIntentSchema,
-  execute: async (input) => {
+  execute: async (input, ctx) => {
     const parsed = input as z.infer<typeof AnalyzeClaimRowInputSchema>;
-    const context = await resolveClaimRowContext(parsed);
+    // values+fields 已齐时不需要 session；否则取调用者 session 读取
+    const session = (parsed.values && parsed.fields) ? undefined : getSurrealSession(ctx as ToolRequestContext);
+    const context = await resolveClaimRowContext(parsed, session);
     return {
       intent: buildRowPatchProposal({
         sheetId: parsed.sheetId,
@@ -183,7 +197,8 @@ export const fetchRelatedRecordsTool = createTool({
     fields: z.array(GridColumnDefSchema).optional(),
   }),
   outputSchema: FetchRelatedRecordsOutputSchema,
-  execute: async ({ workbookId, sheetId, recordId, values, fields }) => {
+  execute: async ({ workbookId, sheetId, recordId, values, fields }, ctx) => {
+    const db = getSurrealSession(ctx as ToolRequestContext);
     const context = sheetId && recordId
       ? await resolveClaimRowContext({
           workbookId,
@@ -191,10 +206,10 @@ export const fetchRelatedRecordsTool = createTool({
           recordId,
           values,
           fields: fields as GridColumnDef[] | undefined,
-        })
+        }, db)
       : { values: values ?? {}, fields: (fields ?? []) as GridColumnDef[] };
     const ids = collectReferenceIds(context.values, context.fields);
-    return resolveLegacyReferences({ ids });
+    return resolveReferencesViaSession(db, ids);
   },
 });
 

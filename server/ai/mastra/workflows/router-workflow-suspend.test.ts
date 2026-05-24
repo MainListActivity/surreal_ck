@@ -79,6 +79,8 @@ function buildMastra() {
 function makeRuntime(overrides: Partial<RouterRuntime>): RouterRuntime {
   return {
     userContext: emptyContext,
+    // 这些 suspend/resume 用例用自定义 executor，不真正跑 tool，session 仅占位。
+    surrealSession: { query: async () => [] } as never,
     executors: overrides.executors!,
     llmCaller: overrides.llmCaller!,
     streamId: "stream-1",

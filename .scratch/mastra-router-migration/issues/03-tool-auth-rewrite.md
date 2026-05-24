@@ -28,12 +28,30 @@ Label: needs-triage
 
 ## Acceptance criteria
 
-- [ ] 所有 tool 通过 typecheck，且 grep 看不到任何 root / service 凭证使用。
-- [ ] 单测覆盖：navigation `searchWorkbook` 用 participant session SELECT workbook 表，PERMISSIONS 拒绝看 admin-only 表（之前用 root 不会触发，现在必须正确）。
-- [ ] changefeed 验证：用 admin OIDC 登录，让 Router workflow 跑一遍 dashboard draft → workspace.workbook 表的写入归因到 `$auth = 该 admin user`，不是任何 service。
+- [x] 所有 tool 通过 typecheck，且 grep 看不到任何 root / service 凭证使用。
+  - server + shared `tsc --noEmit` 均 0 error；`ai/mastra/tools/*.ts` grep 无 `getLocalDb`/`getRemoteDb`/`getRootConnection`/service JWT，无 `legacy/` import。
+- [x] 单测覆盖：navigation `searchWorkbook` 用调用者 session SELECT workbook 表（之前用 root，现在走注入 session）。
+  - `navigation-tools-session.test.ts`：唯一匹配 → open-workbook；多匹配 → ambiguous；缺 session → 抛错（不退回 root）。
+  - ⚠️ **未做**：真实 participant vs admin-only 表的 PERMISSIONS 拒绝是 DB 引擎行为，需 live SurrealDB 集成测试；本轮以假 session + 抛错替身覆盖到「session 缺失即抛」「query 抛 PERMISSIONS 即向上抛」。留到有 DB 的集成测试簇。
+- [ ] changefeed 验证：用 admin OIDC 登录，让 Router workflow 跑一遍 dashboard draft → 写入归因到 `$auth = 该 admin user`，不是任何 service。
+  - ⚠️ **未做**：需 live SurrealDB + 真实 OIDC token。session 透传管道已就位（`RouterRuntime.surrealSession` → `executeStep` → `agent.stream({ requestContext })` → tool `getSurrealSession`），归因正确性等集成测试验证。
 - [ ] 任何 tool 抛 SurrealDB PERMISSIONS 拒绝 → Router workflow 不崩，把错误转给 chitchat agent 兜底。
+  - ⚠️ **本轮未做，刻意推迟**（见下 Notes）。本轮只交付「tool 层正确抛错、不吞」；workflow 层的 chitchat 兜底是独立的编排行为改动。
+
+## 本轮（D1-03）实际交付
+
+- `RouterRuntime` 新增 `surrealSession: Surreal`；`router-chat` 的 `RunRouterChatInput` 同步要求该字段。
+- `tool-session.ts`：`getSurrealSession(ctx)` 从 `ctx.requestContext.get(ROUTER_RUNTIME_KEY).surrealSession` 取调用者会话；缺失即抛，**无 root/service 兜底**。
+- `navigation-tools` / `dashboard-tools` / `claim-analysis-tools` / `resource-tools` 全部去掉 `legacy/db`、`legacy/services` 耦合：
+  - DB 读写改走 `getSurrealSession`（navigation 三个搜索、inspectSchema 读 sheet、analyzeClaimRow/fetchRelatedRecords 读 record/reference）。
+  - 纯 intent 构造（generateDashboardDraft 无 preview、createResourceDraftIntent）不碰 session/DB。
+  - 资源向量检索 / dashboard preview 等**新 template 尚未定稿的 schema**：取到 session 后明确抛 TODO，**不退回 root/legacy**。
+- `agent-executor` 把 `surrealSession` 经新建 `RequestContext`（`ROUTER_RUNTIME_KEY`）透传给 `agent.stream`，tool 才拿得到。
+- 新增 workspace-template 增量 `006-tables-grid.surql`（workbook/sheet/dashboard_page）：去掉 `workspace` 字段，隔离靠 db 边界，PERMISSIONS 只表达本 workspace 角色；`surreal validate` 通过。
 
 ## Notes
 
 - 这是 web pivot 的"最后一公里"——pivot ADR 承诺所有写入都以用户身份执行，此 issue 强制兑现。
 - 测试时要覆盖 admin 与 participant 两种 session 类型，防止某些 tool 默认假设 admin。
+- **验收 #4（chitchat 兜底）刻意推迟**：今天 tool 抛错 → executor 抛 → `executeStep` 抛 → run failed → `runRouterChat` 抛（即 workflow 会"崩"）。要做到"不崩、转 chitchat"需在 `executeStep` 捕获 executor 异常并降级走 `runtime.executors.chitchat`——这是 Router workflow **dispatch 编排的行为改动**，与本 issue 的"鉴权重写"是不同关注点，且 D1 PRD 要求"不改变 Router workflow 业务行为"。**后续单独 issue 处理**（建议：决定 catch 范围是仅 PERMISSIONS 类还是所有 executor 异常；catch 时务必把原始错误记 progress/log，不静默吞）。
+- 同理 #2「真实 PERMISSIONS 拒绝」、#3「changefeed 归因」依赖 live SurrealDB，留到集成测试簇；本轮的单测是替身版本，session 透传管道与抛错语义已就位。

@@ -1,14 +1,18 @@
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
-import type {
-  DashboardViewDraftDTO,
-  PreviewDashboardViewResponse,
-  ReferenceTargetOption,
-} from "@surreal-ck/shared";
+import { getSurrealSession, type ToolRequestContext } from "./tool-session";
+import { createDashboardDraftIntent, type DashboardDraftSchema as DraftSchema } from "./dashboard-draft";
 
-const LEGACY_DASHBOARD_DRAFT_MODULE: string = "../../../legacy/services/dashboard-draft";
-const LEGACY_DASHBOARD_MASTRA_MODULE: string = "../../../legacy/services/dashboard-mastra";
-const LEGACY_TABLE_SCHEMA_MODULE: string = "../../../legacy/services/table-schema";
+/** SurrealDB SDK query() 返回「每条语句结果」数组；取第一条语句行集。 */
+function firstStatementRows<T>(queryResult: unknown): T[] {
+  if (!Array.isArray(queryResult)) return [];
+  const first = queryResult[0];
+  return Array.isArray(first) ? (first as T[]) : [];
+}
+
+/** dashboard 预览要跑 builder→SurrealQL 的链路，依赖尚未定稿的查询执行器；定稿前明确抛 TODO，不退回 root/legacy。 */
+const DASHBOARD_PREVIEW_TODO =
+  "TODO: dashboard 预览（builder→SurrealQL 执行）在 web pivot 后尚未定稿，includePreview 暂不可用（不退回 root/legacy 连接）";
 
 const TableSchemaFieldSchema = z.object({
   key: z.string(),
@@ -17,87 +21,6 @@ const TableSchemaFieldSchema = z.object({
   nullable: z.boolean().optional(),
   referenceTable: z.string().optional(),
 });
-
-type DashboardDraftSchema = {
-  table: string;
-  label?: string;
-  fields: Array<z.infer<typeof TableSchemaFieldSchema>>;
-};
-
-type DashboardBuilderSpec = {
-  sourceTables: string[];
-  baseTable: string;
-  metric: {
-    op: "count" | "count_distinct" | "sum" | "avg" | "min" | "max";
-    field?: string;
-  };
-  dimensions?: Array<{
-    field: string;
-    bucket?: "day" | "week" | "month" | "year";
-  }>;
-  filters?: Array<{
-    field: string;
-    op: "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "contains" | "in" | "is_null" | "is_not_null";
-    value?: unknown;
-  }>;
-  sort?: {
-    field: string;
-    direction: "asc" | "desc";
-  };
-  limit?: number;
-};
-
-type DashboardDraftIntent = {
-  type: "dashboard-draft";
-  title: string;
-  description: string;
-  widgetSpec: DashboardBuilderSpec;
-  draft: DashboardViewDraftDTO;
-  explanation: string;
-  preview?: unknown;
-};
-
-async function listLegacyDashboardGenerationTargets(): Promise<ReferenceTargetOption[]> {
-  const { listDashboardGenerationTargets } = await import(LEGACY_DASHBOARD_MASTRA_MODULE) as {
-    listDashboardGenerationTargets(): Promise<ReferenceTargetOption[]>;
-  };
-  return listDashboardGenerationTargets();
-}
-
-async function previewLegacyGeneratedDashboardView(
-  draft: DashboardViewDraftDTO,
-): Promise<PreviewDashboardViewResponse> {
-  const { previewGeneratedDashboardView } = await import(LEGACY_DASHBOARD_MASTRA_MODULE) as {
-    previewGeneratedDashboardView(input: DashboardViewDraftDTO): Promise<PreviewDashboardViewResponse>;
-  };
-  return previewGeneratedDashboardView(draft);
-}
-
-async function getLegacyTableSchema(table: string): Promise<{
-  fields: Array<z.infer<typeof TableSchemaFieldSchema>>;
-}> {
-  const { getTableSchema } = await import(LEGACY_TABLE_SCHEMA_MODULE) as {
-    getTableSchema(input: { table: string }): Promise<{ fields: Array<z.infer<typeof TableSchemaFieldSchema>> }>;
-  };
-  return getTableSchema({ table });
-}
-
-async function createLegacyDashboardDraftIntent(input: {
-  description: string;
-  workspaceId: string;
-  workbookId?: string;
-  schemas: DashboardDraftSchema[];
-}): Promise<DashboardDraftIntent> {
-  const { createDashboardDraftIntent } = await import(LEGACY_DASHBOARD_DRAFT_MODULE) as {
-    createDashboardDraftIntent(args: {
-      description: string;
-      workspaceId: string;
-      workbookId?: string;
-      schemas: DashboardDraftSchema[];
-    }): DashboardDraftIntent;
-  };
-  return createDashboardDraftIntent(input);
-}
 
 const InspectSchemaOutputSchema = z.object({
   tables: z.array(z.object({
@@ -118,19 +41,26 @@ export const inspectSchemaTool = createTool({
     tables: z.array(z.string()).optional().describe("可选：只检查指定表名；为空则读取可用业务表。"),
   }),
   outputSchema: InspectSchemaOutputSchema,
-  execute: async ({ tables }) => {
-    const targets = await listLegacyDashboardGenerationTargets();
-    const targetTables = tables?.length
-      ? targets.filter((target) => tables.includes(target.table))
-      : targets;
+  execute: async ({ tables }, ctx) => {
+    const db = getSurrealSession(ctx as ToolRequestContext);
+    // 每个 sheet 背后是一张真实业务数据表：table_name 是表名，column_defs 是列定义。
+    const result = await db.query(
+      `SELECT label, table_name, column_defs FROM sheet ORDER BY label`,
+    );
+    const sheets = firstStatementRows<{
+      label: string;
+      table_name: string;
+      column_defs: Array<z.infer<typeof TableSchemaFieldSchema>>;
+    }>(result);
 
-    const inspected = await Promise.all(targetTables.map(async (target) => {
-      const schema = await getLegacyTableSchema(target.table);
-      return {
-        table: target.table,
-        label: target.label,
-        fields: schema.fields,
-      };
+    const filtered = tables?.length
+      ? sheets.filter((sheet) => tables.includes(sheet.table_name))
+      : sheets;
+
+    const inspected = filtered.map((sheet) => ({
+      table: sheet.table_name,
+      label: sheet.label,
+      fields: sheet.column_defs ?? [],
     }));
 
     return {
@@ -206,16 +136,16 @@ export const generateDashboardDraftTool = createTool({
   }),
   outputSchema: DashboardDraftOutputSchema,
   execute: async ({ description, workspaceId, workbookId, schemas, includePreview }) => {
-    const intent = await createLegacyDashboardDraftIntent({
+    if (includePreview) {
+      throw new Error(DASHBOARD_PREVIEW_TODO);
+    }
+
+    const intent = createDashboardDraftIntent({
       description,
       workspaceId,
       workbookId,
-      schemas: schemas as DashboardDraftSchema[],
+      schemas: schemas as DraftSchema[],
     });
-
-    if (includePreview) {
-      intent.preview = await previewLegacyGeneratedDashboardView(intent.draft);
-    }
 
     return {
       intent: {

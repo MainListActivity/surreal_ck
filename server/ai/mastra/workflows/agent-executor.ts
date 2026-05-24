@@ -1,8 +1,9 @@
 import type { Agent } from "@mastra/core/agent";
+import { RequestContext } from "@mastra/core/request-context";
 import { z } from "zod";
 import type { AiStructuredIntent, AiToolCallRecord } from "@surreal-ck/shared";
 import { serializeContextForAi } from "@surreal-ck/shared";
-import type { SharedConfirmed, SubAgentExecutor, SubAgentSuspendSignal } from "./router-workflow";
+import { ROUTER_RUNTIME_KEY, type SharedConfirmed, type SubAgentExecutor, type SubAgentSuspendSignal } from "./router-workflow";
 
 export type AgentExecutorOptions = {
   /** 调用 agent 时透传给 stream() 的最大步数。默认 4。 */
@@ -22,7 +23,7 @@ const SchemaSummarySchema = z.object({
  * - 通过 textStream 收集 deltas，让 router-chat 转推到统一 streamId 上
  */
 export function makeAgentExecutor(agent: Agent, options: AgentExecutorOptions = {}): SubAgentExecutor {
-  return async ({ taskText, shared, onDelta }) => {
+  return async ({ taskText, shared, surrealSession, onDelta }) => {
     const prompt = [
       `子任务：${taskText}`,
       "",
@@ -33,10 +34,15 @@ export function makeAgentExecutor(agent: Agent, options: AgentExecutorOptions = 
       JSON.stringify(shared.confirmed, null, 2),
     ].join("\n");
 
+    // 把调用者 session 经 RequestContext 透传给 agent 的 tool（tool 用 ROUTER_RUNTIME_KEY 取）。
+    const requestContext = new RequestContext();
+    requestContext.set(ROUTER_RUNTIME_KEY, { surrealSession });
+
     const observedToolCalls: AiToolCallRecord[] = [];
     const stream = await agent.stream(
       [{ role: "user", content: prompt }],
       {
+        requestContext,
         maxSteps: options.maxSteps ?? 4,
         onStepFinish: ({ toolCalls, toolResults }) => {
           if (!toolResults?.length) return;

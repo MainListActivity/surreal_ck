@@ -1,64 +1,13 @@
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
+import { StringRecordId } from "surrealdb";
+import { getSurrealSession, type ToolRequestContext } from "./tool-session";
 
-const LEGACY_DB_MODULE: string = "../../../legacy/db/index";
-const LEGACY_CONTEXT_MODULE: string = "../../../legacy/services/context";
-const LEGACY_WORKBOOKS_MODULE: string = "../../../legacy/services/workbooks";
-const LEGACY_DASHBOARDS_MODULE: string = "../../../legacy/services/dashboards";
-
-type LegacyDb = {
-  query<T>(sql: string, params?: Record<string, unknown>): Promise<T>;
-};
-
-type WorkbookSummary = {
-  id: string;
-  name: string;
-};
-
-type DashboardPageSummary = {
-  id: string;
-  title: string;
-};
-
-// ─── 共享：获取当前用户的默认 workspace id ─────────────────────────────────────
-
-async function getDefaultWorkspaceId(): Promise<string | null> {
-  const [{ getCurrentUserRecordId }, { getLocalDb }] = await Promise.all([
-    import(LEGACY_CONTEXT_MODULE) as Promise<{ getCurrentUserRecordId(): Promise<unknown> }>,
-    import(LEGACY_DB_MODULE) as Promise<{ getLocalDb(): LegacyDb }>,
-  ]);
-  const userId = await getCurrentUserRecordId();
-  const db = getLocalDb();
-  const rows = await db.query<[{ id: unknown }[]]>(
-    `SELECT id FROM workspace WHERE owner = $userId LIMIT 1`,
-    { userId },
-  );
-  const row = rows[0]?.[0];
-  return row ? String(row.id) : null;
-}
-
-async function listLegacyWorkbooks(input: {
-  workspaceId: string;
-  search: string;
-}): Promise<{ workbooks: WorkbookSummary[] }> {
-  const { listWorkbooks } = await import(LEGACY_WORKBOOKS_MODULE) as {
-    listWorkbooks(args: { workspaceId: string; search?: string }): Promise<{ workbooks: WorkbookSummary[] }>;
-  };
-  return listWorkbooks({ workspaceId: input.workspaceId, search: input.search });
-}
-
-async function listLegacyDashboardPages(input: {
-  workspaceId: string;
-}): Promise<{ pages: DashboardPageSummary[] }> {
-  const { listDashboardPages } = await import(LEGACY_DASHBOARDS_MODULE) as {
-    listDashboardPages(args: { workspaceId: string }): Promise<{ pages: DashboardPageSummary[] }>;
-  };
-  return listDashboardPages(input);
-}
-
-async function getLegacyDb(): Promise<LegacyDb> {
-  const { getLocalDb } = await import(LEGACY_DB_MODULE) as { getLocalDb(): LegacyDb };
-  return getLocalDb();
+/** SurrealDB SDK 的 query 返回「每条语句结果」的数组；取第一条语句的行集。 */
+function firstStatementRows<T>(queryResult: unknown): T[] {
+  if (!Array.isArray(queryResult)) return [];
+  const first = queryResult[0];
+  return Array.isArray(first) ? (first as T[]) : [];
 }
 
 // ─── navigate tool ────────────────────────────────────────────────────────────
@@ -108,19 +57,22 @@ export const searchWorkbookTool = createTool({
     query: z.string().describe("搜索关键词"),
   }),
   outputSchema: SearchWorkbookOutputSchema,
-  execute: async ({ query }) => {
-    const workspaceId = await getDefaultWorkspaceId();
-    if (!workspaceId) {
-      return { intent: { type: "ambiguous" as const, candidates: [] } };
-    }
-
-    const { workbooks } = await listLegacyWorkbooks({ workspaceId, search: query });
+  execute: async ({ query }, ctx) => {
+    const db = getSurrealSession(ctx as ToolRequestContext);
+    const q = query.trim().toLowerCase();
+    const result = await db.query(
+      `SELECT id, name FROM workbook
+       WHERE $q = "" OR string::lowercase(name) CONTAINS $q
+       ORDER BY name LIMIT 20`,
+      { q },
+    );
+    const workbooks = firstStatementRows<{ id: unknown; name: string }>(result);
 
     if (workbooks.length === 1) {
       return {
         intent: {
           type: "open-workbook" as const,
-          workbookId: workbooks[0].id,
+          workbookId: String(workbooks[0].id),
           label: workbooks[0].name,
         },
       };
@@ -129,7 +81,7 @@ export const searchWorkbookTool = createTool({
     return {
       intent: {
         type: "ambiguous" as const,
-        candidates: workbooks.map((wb) => ({ label: wb.name, id: wb.id })),
+        candidates: workbooks.map((wb) => ({ label: wb.name, id: String(wb.id) })),
       },
     };
   },
@@ -154,24 +106,23 @@ export const searchDashboardTool = createTool({
     query: z.string().describe("搜索关键词"),
   }),
   outputSchema: SearchDashboardOutputSchema,
-  execute: async ({ query }) => {
-    const workspaceId = await getDefaultWorkspaceId();
-    if (!workspaceId) {
-      return { intent: { type: "ambiguous" as const, candidates: [] } };
-    }
+  execute: async ({ query }, ctx) => {
+    const db = getSurrealSession(ctx as ToolRequestContext);
+    const q = query.trim().toLowerCase();
+    const result = await db.query(
+      `SELECT id, title FROM dashboard_page
+       WHERE $q = "" OR string::lowercase(title) CONTAINS $q
+       ORDER BY title LIMIT 20`,
+      { q },
+    );
+    const pages = firstStatementRows<{ id: unknown; title: string }>(result);
 
-    const { pages } = await listLegacyDashboardPages({ workspaceId });
-    const lowerQuery = query.trim().toLowerCase();
-    const matched = lowerQuery
-      ? pages.filter((p) => p.title.toLowerCase().includes(lowerQuery))
-      : pages;
-
-    if (matched.length === 1) {
+    if (pages.length === 1) {
       return {
         intent: {
           type: "open-dashboard" as const,
-          dashboardId: matched[0].id,
-          label: matched[0].title,
+          dashboardId: String(pages[0].id),
+          label: pages[0].title,
         },
       };
     }
@@ -179,7 +130,7 @@ export const searchDashboardTool = createTool({
     return {
       intent: {
         type: "ambiguous" as const,
-        candidates: matched.map((p) => ({ label: p.title, id: p.id })),
+        candidates: pages.map((p) => ({ label: p.title, id: String(p.id) })),
       },
     };
   },
@@ -209,14 +160,14 @@ export const searchRecordTool = createTool({
     fieldKey: z.string().optional().describe("要搜索的字段 key；缺省时在所有文本字段中搜索"),
   }),
   outputSchema: SearchRecordOutputSchema,
-  execute: async ({ sheetId, workbookId, query, fieldKey }) => {
-    const db = await getLegacyDb();
+  execute: async ({ sheetId, workbookId, query, fieldKey }, ctx) => {
+    const db = getSurrealSession(ctx as ToolRequestContext);
 
-    const sheetRows = await db.query<[{ id: unknown; table_name: string; column_defs: unknown[] }[]]>(
-      `SELECT id, table_name, column_defs FROM sheet WHERE id = $sheetId LIMIT 1`,
-      { sheetId: { tb: "sheet", id: sheetId.replace(/^sheet:/, "") } },
+    const sheetResult = await db.query(
+      `SELECT id, table_name, column_defs FROM $sheet LIMIT 1`,
+      { sheet: new StringRecordId(sheetId) },
     );
-    const sheetRow = sheetRows[0]?.[0];
+    const sheetRow = firstStatementRows<{ id: unknown; table_name: string; column_defs: unknown[] }>(sheetResult)[0];
     if (!sheetRow) {
       return { intent: { type: "ambiguous" as const, candidates: [] } };
     }
@@ -228,12 +179,12 @@ export const searchRecordTool = createTool({
       ? `string::contains(string::lowercase(string(${ fieldKey })), $q)`
       : `string::contains(string::lowercase(string(name ?? display_name ?? id)), $q)`;
 
-    const rows = await db.query<[{ id: unknown; name?: string; display_name?: string }[]]>(
-      `SELECT id, name, display_name FROM ${tableName} WHERE ${filterClause} LIMIT 20`,
-      { q: lowerQuery },
+    const recordResult = await db.query(
+      `SELECT id, name, display_name FROM type::table($table) WHERE ${filterClause} LIMIT 20`,
+      { table: tableName, q: lowerQuery },
     );
 
-    const matched = rows[0] ?? [];
+    const matched = firstStatementRows<{ id: unknown; name?: string; display_name?: string }>(recordResult);
     const candidates = matched.map((r) => ({
       label: String(r.name ?? r.display_name ?? r.id),
       id: String(r.id),

@@ -1,5 +1,6 @@
 import { createStep, createWorkflow } from "@mastra/core/workflows";
 import { z } from "zod";
+import type { Surreal } from "surrealdb";
 import type { AiContextSnapshot } from "@surreal-ck/shared";
 import type {
   AiMessageChunkEvent,
@@ -70,6 +71,11 @@ export type SubAgentInput = {
   taskText: string;
   shared: SharedWorkflowContext;
   runId?: string;
+  /**
+   * 调用者 SurrealDB 会话。executor 经 RequestContext 透传给 agent 的 tool，
+   * tool 全部用这条连接跑 SurrealQL（写入归因落 $auth）。
+   */
+  surrealSession?: Surreal;
   /**
    * 流式 delta 实时回调；非流式 executor 可忽略。
    */
@@ -305,6 +311,11 @@ const CATEGORY_TO_AGENT_NAME: Record<RouterCategory, string> = {
 
 export type RouterRuntime = {
   userContext: AiContextSnapshot;
+  /**
+   * 调用者的 SurrealDB 会话（已用其 OIDC token 走 admin/participant access SIGNIN 到当前 workspace db）。
+   * 所有 tool 经 RequestContext 取这条连接跑 SurrealQL，写入归因落到 $auth；workflow run 结束即丢弃。
+   */
+  surrealSession: Surreal;
   executors: SubAgentExecutors;
   llmCaller: RouterLlmCaller;
   planOverride?: RouterPlan;
@@ -484,6 +495,7 @@ export function createRouterWorkflow() {
           confirmed: state.confirmed,
         },
         runId: runtime.runId,
+        surrealSession: runtime.surrealSession,
         onDelta,
       });
 

@@ -14,6 +14,9 @@ const ctx: AiContextSnapshot = {
   contextHint: "",
 };
 
+// 这些端到端测试用 planOverride / 自定义 executor，不真正跑 tool，因此 session 仅需占位。
+const fakeSession = { query: async () => [] } as never;
+
 function streamingExecutor(chunks: string[]): SubAgentExecutor {
   return async ({ taskText: _taskText, shared: _shared }) => {
     return { text: chunks.join(""), confirmed: {}, deltas: chunks };
@@ -56,6 +59,7 @@ describe("runRouterChat 端到端", () => {
       mastra,
       text: "打开工作簿",
       userContext: ctx,
+      surrealSession: fakeSession,
       executors,
       llmCaller: llm,
       streamId: "s1",
@@ -83,6 +87,7 @@ describe("runRouterChat 端到端", () => {
       mastra,
       text: "在吗",
       userContext: ctx,
+      surrealSession: fakeSession,
       executors,
       llmCaller: llm,
       streamId: "s2",
@@ -113,6 +118,7 @@ describe("runRouterChat 端到端", () => {
       mastra,
       text: "帮我找合同解除相关资料",
       userContext: ctx,
+      surrealSession: fakeSession,
       executors,
       llmCaller: llm,
       streamId: "s-resource",
@@ -144,6 +150,7 @@ describe("runRouterChat 端到端", () => {
       mastra,
       text: "复合任务",
       userContext: ctx,
+      surrealSession: fakeSession,
       executors,
       llmCaller: llm,
       streamId: "s3",
@@ -167,6 +174,7 @@ describe("runRouterChat 端到端", () => {
       mastra,
       text: "复合任务",
       userContext: ctx,
+      surrealSession: fakeSession,
       executors,
       llmCaller: llm,
       streamId: "s4",
@@ -196,6 +204,7 @@ describe("runRouterChat 端到端", () => {
       mastra,
       text: "hi",
       userContext: ctx,
+      surrealSession: fakeSession,
       executors,
       llmCaller: llm,
       streamId: "s5",

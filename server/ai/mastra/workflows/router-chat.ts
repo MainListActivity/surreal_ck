@@ -1,5 +1,6 @@
 import type { Mastra } from "@mastra/core";
 import { RequestContext } from "@mastra/core/request-context";
+import type { Surreal } from "surrealdb";
 import type { AiContextSnapshot } from "@surreal-ck/shared";
 import type {
   AiMessageChunkEvent,
@@ -26,6 +27,8 @@ export type RunRouterChatInput = {
   mastra: Mastra;
   text: string;
   userContext: AiContextSnapshot;
+  /** 调用者 SurrealDB 会话：用其 OIDC token 走 admin/participant access SIGNIN 得到，贯穿整个 run 的 tool 调用。 */
+  surrealSession: Surreal;
   executors: SubAgentExecutors;
   llmCaller: RouterLlmCaller;
   planOverride?: RouterPlan;
@@ -55,6 +58,7 @@ export async function runRouterChat(input: RunRouterChatInput): Promise<RunRoute
 
   const runtime: RouterRuntime = {
     userContext: input.userContext,
+    surrealSession: input.surrealSession,
     executors: input.executors,
     llmCaller: input.llmCaller,
     planOverride: input.planOverride,

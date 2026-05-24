@@ -1,17 +1,14 @@
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
-import type { SearchResourcesRequest } from "../agents/resource-agent";
+import { getSurrealSession, type ToolRequestContext } from "./tool-session";
 
-const LEGACY_RESOURCES_MODULE: string = "../../../legacy/services/resources";
-
-type LegacyResourcesModule = {
-  searchResources(req: SearchResourcesRequest): Promise<Record<string, unknown>>;
-  getResourceDetail(req: { resourceId: string }): Promise<Record<string, unknown>>;
-};
-
-async function loadLegacyResources(): Promise<LegacyResourcesModule> {
-  return await import(LEGACY_RESOURCES_MODULE) as LegacyResourcesModule;
-}
+/**
+ * 资源检索 / 详情读取依赖 workspace 内的资源库 + 向量检索 schema，这些表在 web pivot 后的
+ * workspace-template 里尚未定稿（embedding provider key 还得在后端，走 /api/resources/research/save）。
+ * 在 schema 定稿前，这两个 tool 取到调用者 session 后明确抛 TODO，绝不退回 legacy 全局连接 / root。
+ */
+const RESOURCE_SCHEMA_TODO =
+  "TODO: 资源库 / 向量检索 schema 在 web pivot 后尚未定稿，searchResources / getResourceDetail 暂不可用（不退回 root/legacy 连接）";
 
 const EvidenceInputSchema = z.object({
   text: z.string().trim().min(1),
@@ -51,9 +48,10 @@ export const searchResourcesTool = createTool({
     candidateThreshold: z.number().optional(),
   }),
   outputSchema: z.record(z.string(), z.unknown()),
-  execute: async (input) => {
-    const { searchResources } = await loadLegacyResources();
-    return searchResources(input as SearchResourcesRequest);
+  execute: async (_input, ctx) => {
+    // 先确保调用者 session 存在（兑现「所有 DB 访问都以调用者身份」），再因 schema 未定稿抛 TODO
+    getSurrealSession(ctx as ToolRequestContext);
+    throw new Error(RESOURCE_SCHEMA_TODO);
   },
 });
 
@@ -64,9 +62,9 @@ export const getResourceDetailTool = createTool({
     resourceId: z.string(),
   }),
   outputSchema: z.record(z.string(), z.unknown()),
-  execute: async ({ resourceId }) => {
-    const { getResourceDetail } = await loadLegacyResources();
-    return getResourceDetail({ resourceId });
+  execute: async (_input, ctx) => {
+    getSurrealSession(ctx as ToolRequestContext);
+    throw new Error(RESOURCE_SCHEMA_TODO);
   },
 });
 
