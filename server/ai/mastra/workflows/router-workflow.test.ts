@@ -6,7 +6,7 @@ import {
   type SharedWorkflowContext,
 } from "./router-workflow";
 import type { RouterLlmCaller, RouterPlan } from "./router-classifier";
-import type { AiContextSnapshot } from "../../../../shared/ai-context";
+import type { AiContextSnapshot } from "@surreal-ck/shared";
 
 const emptyContext: AiContextSnapshot = {
   route: { screen: "home" },

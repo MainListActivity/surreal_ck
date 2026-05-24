@@ -1,8 +1,9 @@
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
-import type { GridColumnDef } from "../../../../shared/rpc.types";
-import { getWorkbookData } from "../../../services/editor";
-import { resolveReferences } from "../../../services/references";
+import type { GridColumnDef } from "@surreal-ck/shared";
+
+const LEGACY_EDITOR_MODULE: string = "../../../legacy/services/editor";
+const LEGACY_REFERENCES_MODULE: string = "../../../legacy/services/references";
 
 const SYSTEM_FIELDS = new Set(["id", "workspace", "created_by", "created_at", "updated_at"]);
 
@@ -63,6 +64,28 @@ type ClaimRowContextInput = {
   fields?: GridColumnDef[];
 };
 
+type WorkbookData = {
+  rows: Array<{ id: string; values: Record<string, unknown> }>;
+  columns: GridColumnDef[];
+};
+
+async function getLegacyWorkbookData(input: {
+  workbookId: string;
+  sheetId: string;
+}): Promise<WorkbookData> {
+  const { getWorkbookData } = await import(LEGACY_EDITOR_MODULE) as {
+    getWorkbookData(args: { workbookId: string; sheetId: string }): Promise<WorkbookData>;
+  };
+  return getWorkbookData(input);
+}
+
+async function resolveLegacyReferences(input: { ids: string[] }): Promise<{ items: unknown[] }> {
+  const { resolveReferences } = await import(LEGACY_REFERENCES_MODULE) as {
+    resolveReferences(args: { ids: string[] }): Promise<{ items: unknown[] }>;
+  };
+  return resolveReferences(input);
+}
+
 export async function resolveClaimRowContext(input: ClaimRowContextInput): Promise<{
   values: Record<string, unknown>;
   fields: GridColumnDef[];
@@ -75,7 +98,7 @@ export async function resolveClaimRowContext(input: ClaimRowContextInput): Promi
     throw new Error("analyzeClaimRow 需要 workbookId 才能读取当前记录和字段定义");
   }
 
-  const data = await getWorkbookData({ workbookId: input.workbookId, sheetId: input.sheetId });
+  const data = await getLegacyWorkbookData({ workbookId: input.workbookId, sheetId: input.sheetId });
   const row = data.rows.find((item) => item.id === input.recordId);
   if (!row) {
     throw new Error(`当前数据表中找不到记录: ${input.recordId}`);
@@ -171,7 +194,7 @@ export const fetchRelatedRecordsTool = createTool({
         })
       : { values: values ?? {}, fields: (fields ?? []) as GridColumnDef[] };
     const ids = collectReferenceIds(context.values, context.fields);
-    return resolveReferences({ ids });
+    return resolveLegacyReferences({ ids });
   },
 });
 

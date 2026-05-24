@@ -1,13 +1,32 @@
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
-import { getLocalDb } from "../../../db/index";
-import { getCurrentUserRecordId } from "../../../services/context";
-import { listWorkbooks } from "../../../services/workbooks";
-import { listDashboardPages } from "../../../services/dashboards";
+
+const LEGACY_DB_MODULE: string = "../../../legacy/db/index";
+const LEGACY_CONTEXT_MODULE: string = "../../../legacy/services/context";
+const LEGACY_WORKBOOKS_MODULE: string = "../../../legacy/services/workbooks";
+const LEGACY_DASHBOARDS_MODULE: string = "../../../legacy/services/dashboards";
+
+type LegacyDb = {
+  query<T>(sql: string, params?: Record<string, unknown>): Promise<T>;
+};
+
+type WorkbookSummary = {
+  id: string;
+  name: string;
+};
+
+type DashboardPageSummary = {
+  id: string;
+  title: string;
+};
 
 // ─── 共享：获取当前用户的默认 workspace id ─────────────────────────────────────
 
 async function getDefaultWorkspaceId(): Promise<string | null> {
+  const [{ getCurrentUserRecordId }, { getLocalDb }] = await Promise.all([
+    import(LEGACY_CONTEXT_MODULE) as Promise<{ getCurrentUserRecordId(): Promise<unknown> }>,
+    import(LEGACY_DB_MODULE) as Promise<{ getLocalDb(): LegacyDb }>,
+  ]);
   const userId = await getCurrentUserRecordId();
   const db = getLocalDb();
   const rows = await db.query<[{ id: unknown }[]]>(
@@ -16,6 +35,30 @@ async function getDefaultWorkspaceId(): Promise<string | null> {
   );
   const row = rows[0]?.[0];
   return row ? String(row.id) : null;
+}
+
+async function listLegacyWorkbooks(input: {
+  workspaceId: string;
+  search: string;
+}): Promise<{ workbooks: WorkbookSummary[] }> {
+  const { listWorkbooks } = await import(LEGACY_WORKBOOKS_MODULE) as {
+    listWorkbooks(args: { workspaceId: string; search?: string }): Promise<{ workbooks: WorkbookSummary[] }>;
+  };
+  return listWorkbooks({ workspaceId: input.workspaceId, search: input.search });
+}
+
+async function listLegacyDashboardPages(input: {
+  workspaceId: string;
+}): Promise<{ pages: DashboardPageSummary[] }> {
+  const { listDashboardPages } = await import(LEGACY_DASHBOARDS_MODULE) as {
+    listDashboardPages(args: { workspaceId: string }): Promise<{ pages: DashboardPageSummary[] }>;
+  };
+  return listDashboardPages(input);
+}
+
+async function getLegacyDb(): Promise<LegacyDb> {
+  const { getLocalDb } = await import(LEGACY_DB_MODULE) as { getLocalDb(): LegacyDb };
+  return getLocalDb();
 }
 
 // ─── navigate tool ────────────────────────────────────────────────────────────
@@ -71,7 +114,7 @@ export const searchWorkbookTool = createTool({
       return { intent: { type: "ambiguous" as const, candidates: [] } };
     }
 
-    const { workbooks } = await listWorkbooks({ workspaceId, search: query });
+    const { workbooks } = await listLegacyWorkbooks({ workspaceId, search: query });
 
     if (workbooks.length === 1) {
       return {
@@ -117,7 +160,7 @@ export const searchDashboardTool = createTool({
       return { intent: { type: "ambiguous" as const, candidates: [] } };
     }
 
-    const { pages } = await listDashboardPages({ workspaceId });
+    const { pages } = await listLegacyDashboardPages({ workspaceId });
     const lowerQuery = query.trim().toLowerCase();
     const matched = lowerQuery
       ? pages.filter((p) => p.title.toLowerCase().includes(lowerQuery))
@@ -167,7 +210,7 @@ export const searchRecordTool = createTool({
   }),
   outputSchema: SearchRecordOutputSchema,
   execute: async ({ sheetId, workbookId, query, fieldKey }) => {
-    const db = getLocalDb();
+    const db = await getLegacyDb();
 
     const sheetRows = await db.query<[{ id: unknown; table_name: string; column_defs: unknown[] }[]]>(
       `SELECT id, table_name, column_defs FROM sheet WHERE id = $sheetId LIMIT 1`,

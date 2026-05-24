@@ -1,7 +1,7 @@
 import type { Agent } from "@mastra/core/agent";
 import { z } from "zod";
-import type { AiStructuredIntent, AiToolCallRecord } from "../../../../shared/rpc.types";
-import { serializeContextForAi } from "../../../../shared/ai-context";
+import type { AiStructuredIntent, AiToolCallRecord } from "@surreal-ck/shared";
+import { serializeContextForAi } from "@surreal-ck/shared";
 import type { SharedConfirmed, SubAgentExecutor, SubAgentSuspendSignal } from "./router-workflow";
 
 export type AgentExecutorOptions = {

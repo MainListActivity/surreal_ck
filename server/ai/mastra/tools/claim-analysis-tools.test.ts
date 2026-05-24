@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { GridColumnDef } from "../../../../shared/rpc.types";
+import type { GridColumnDef } from "@surreal-ck/shared";
 
 const fields: GridColumnDef[] = [
   { key: "creditor_name", label: "债权人", fieldType: "text" },

@@ -1,10 +1,17 @@
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
-import {
-  getResourceDetail,
-  searchResources,
-  type SearchResourcesRequest,
-} from "../../../services/resources";
+import type { SearchResourcesRequest } from "../agents/resource-agent";
+
+const LEGACY_RESOURCES_MODULE: string = "../../../legacy/services/resources";
+
+type LegacyResourcesModule = {
+  searchResources(req: SearchResourcesRequest): Promise<Record<string, unknown>>;
+  getResourceDetail(req: { resourceId: string }): Promise<Record<string, unknown>>;
+};
+
+async function loadLegacyResources(): Promise<LegacyResourcesModule> {
+  return await import(LEGACY_RESOURCES_MODULE) as LegacyResourcesModule;
+}
 
 const EvidenceInputSchema = z.object({
   text: z.string().trim().min(1),
@@ -44,7 +51,10 @@ export const searchResourcesTool = createTool({
     candidateThreshold: z.number().optional(),
   }),
   outputSchema: z.record(z.string(), z.unknown()),
-  execute: async (input) => searchResources(input as SearchResourcesRequest),
+  execute: async (input) => {
+    const { searchResources } = await loadLegacyResources();
+    return searchResources(input as SearchResourcesRequest);
+  },
 });
 
 export const getResourceDetailTool = createTool({
@@ -54,7 +64,10 @@ export const getResourceDetailTool = createTool({
     resourceId: z.string(),
   }),
   outputSchema: z.record(z.string(), z.unknown()),
-  execute: async ({ resourceId }) => getResourceDetail({ resourceId }),
+  execute: async ({ resourceId }) => {
+    const { getResourceDetail } = await loadLegacyResources();
+    return getResourceDetail({ resourceId });
+  },
 });
 
 export const createResourceDraftIntentTool = createTool({

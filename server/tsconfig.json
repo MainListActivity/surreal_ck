@@ -16,6 +16,6 @@
       "@surreal-ck/shared/*": ["../shared/src/*"]
     }
   },
-  "include": ["src/**/*.ts"],
+  "include": ["src/**/*.ts", "ai/**/*.ts"],
   "exclude": ["node_modules", "legacy", "**/*.test.ts"]
 }

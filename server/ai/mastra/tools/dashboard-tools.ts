@@ -1,9 +1,14 @@
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
-import type { DashboardDraftSchema } from "../../../services/dashboard-draft";
-import { createDashboardDraftIntent } from "../../../services/dashboard-draft";
-import { listDashboardGenerationTargets, previewGeneratedDashboardView } from "../../../services/dashboard-mastra";
-import { getTableSchema } from "../../../services/table-schema";
+import type {
+  DashboardViewDraftDTO,
+  PreviewDashboardViewResponse,
+  ReferenceTargetOption,
+} from "@surreal-ck/shared";
+
+const LEGACY_DASHBOARD_DRAFT_MODULE: string = "../../../legacy/services/dashboard-draft";
+const LEGACY_DASHBOARD_MASTRA_MODULE: string = "../../../legacy/services/dashboard-mastra";
+const LEGACY_TABLE_SCHEMA_MODULE: string = "../../../legacy/services/table-schema";
 
 const TableSchemaFieldSchema = z.object({
   key: z.string(),
@@ -12,6 +17,87 @@ const TableSchemaFieldSchema = z.object({
   nullable: z.boolean().optional(),
   referenceTable: z.string().optional(),
 });
+
+type DashboardDraftSchema = {
+  table: string;
+  label?: string;
+  fields: Array<z.infer<typeof TableSchemaFieldSchema>>;
+};
+
+type DashboardBuilderSpec = {
+  sourceTables: string[];
+  baseTable: string;
+  metric: {
+    op: "count" | "count_distinct" | "sum" | "avg" | "min" | "max";
+    field?: string;
+  };
+  dimensions?: Array<{
+    field: string;
+    bucket?: "day" | "week" | "month" | "year";
+  }>;
+  filters?: Array<{
+    field: string;
+    op: "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "contains" | "in" | "is_null" | "is_not_null";
+    value?: unknown;
+  }>;
+  sort?: {
+    field: string;
+    direction: "asc" | "desc";
+  };
+  limit?: number;
+};
+
+type DashboardDraftIntent = {
+  type: "dashboard-draft";
+  title: string;
+  description: string;
+  widgetSpec: DashboardBuilderSpec;
+  draft: DashboardViewDraftDTO;
+  explanation: string;
+  preview?: unknown;
+};
+
+async function listLegacyDashboardGenerationTargets(): Promise<ReferenceTargetOption[]> {
+  const { listDashboardGenerationTargets } = await import(LEGACY_DASHBOARD_MASTRA_MODULE) as {
+    listDashboardGenerationTargets(): Promise<ReferenceTargetOption[]>;
+  };
+  return listDashboardGenerationTargets();
+}
+
+async function previewLegacyGeneratedDashboardView(
+  draft: DashboardViewDraftDTO,
+): Promise<PreviewDashboardViewResponse> {
+  const { previewGeneratedDashboardView } = await import(LEGACY_DASHBOARD_MASTRA_MODULE) as {
+    previewGeneratedDashboardView(input: DashboardViewDraftDTO): Promise<PreviewDashboardViewResponse>;
+  };
+  return previewGeneratedDashboardView(draft);
+}
+
+async function getLegacyTableSchema(table: string): Promise<{
+  fields: Array<z.infer<typeof TableSchemaFieldSchema>>;
+}> {
+  const { getTableSchema } = await import(LEGACY_TABLE_SCHEMA_MODULE) as {
+    getTableSchema(input: { table: string }): Promise<{ fields: Array<z.infer<typeof TableSchemaFieldSchema>> }>;
+  };
+  return getTableSchema({ table });
+}
+
+async function createLegacyDashboardDraftIntent(input: {
+  description: string;
+  workspaceId: string;
+  workbookId?: string;
+  schemas: DashboardDraftSchema[];
+}): Promise<DashboardDraftIntent> {
+  const { createDashboardDraftIntent } = await import(LEGACY_DASHBOARD_DRAFT_MODULE) as {
+    createDashboardDraftIntent(args: {
+      description: string;
+      workspaceId: string;
+      workbookId?: string;
+      schemas: DashboardDraftSchema[];
+    }): DashboardDraftIntent;
+  };
+  return createDashboardDraftIntent(input);
+}
 
 const InspectSchemaOutputSchema = z.object({
   tables: z.array(z.object({
@@ -33,13 +119,13 @@ export const inspectSchemaTool = createTool({
   }),
   outputSchema: InspectSchemaOutputSchema,
   execute: async ({ tables }) => {
-    const targets = await listDashboardGenerationTargets();
+    const targets = await listLegacyDashboardGenerationTargets();
     const targetTables = tables?.length
       ? targets.filter((target) => tables.includes(target.table))
       : targets;
 
     const inspected = await Promise.all(targetTables.map(async (target) => {
-      const schema = await getTableSchema({ table: target.table });
+      const schema = await getLegacyTableSchema(target.table);
       return {
         table: target.table,
         label: target.label,
@@ -120,7 +206,7 @@ export const generateDashboardDraftTool = createTool({
   }),
   outputSchema: DashboardDraftOutputSchema,
   execute: async ({ description, workspaceId, workbookId, schemas, includePreview }) => {
-    const intent = createDashboardDraftIntent({
+    const intent = await createLegacyDashboardDraftIntent({
       description,
       workspaceId,
       workbookId,
@@ -128,7 +214,7 @@ export const generateDashboardDraftTool = createTool({
     });
 
     if (includePreview) {
-      intent.preview = await previewGeneratedDashboardView(intent.draft);
+      intent.preview = await previewLegacyGeneratedDashboardView(intent.draft);
     }
 
     return {

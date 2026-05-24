@@ -19,6 +19,7 @@ export type SurrealSessionResolver = () => Surreal;
 type WorkflowRunRow = {
   run_id: string;
   workflow_name: string;
+  resource_id?: string;
   kind: string;
   state: WorkflowRunState | string;
   status: string;
@@ -46,6 +47,7 @@ function toWorkflowRun(row: WorkflowRunRow): WorkflowRun {
   return {
     workflowName: row.workflow_name,
     runId: row.run_id,
+    resourceId: row.resource_id,
     snapshot: parseState(row.state),
     createdAt: normalizeDate(row.created_at),
     updatedAt: normalizeDate(row.updated_at),
@@ -77,6 +79,7 @@ export class SurrealWorkflowsStorage extends WorkflowsStorage {
   async persistWorkflowSnapshot({
     workflowName,
     runId,
+    resourceId,
     snapshot,
   }: {
     workflowName: string;
@@ -93,6 +96,7 @@ export class SurrealWorkflowsStorage extends WorkflowsStorage {
         `INSERT INTO workflow_run $content
          ON DUPLICATE KEY UPDATE
            workflow_name = $input.workflow_name,
+           resource_id = $input.resource_id,
            kind = $input.kind,
            state = $input.state,
            status = $input.status,
@@ -101,6 +105,7 @@ export class SurrealWorkflowsStorage extends WorkflowsStorage {
           content: {
             run_id: runId,
             workflow_name: workflowName,
+            resource_id: resourceId ?? null,
             kind: resolveKind(workflowName),
             state: snapshot,
             status: snapshot.status,
@@ -201,6 +206,10 @@ export class SurrealWorkflowsStorage extends WorkflowsStorage {
       if (args.status) {
         where.push("status = $status");
         params.status = args.status;
+      }
+      if (args.resourceId) {
+        where.push("resource_id = $resourceId");
+        params.resourceId = args.resourceId;
       }
       if (args.fromDate) {
         where.push("created_at >= $fromDate");

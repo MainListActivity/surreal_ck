@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { AiSettings } from "../../../services/settings";
+import type { AiSettings } from "./model-config";
 
 const fakeSettings: AiSettings = {
   provider: "openai",

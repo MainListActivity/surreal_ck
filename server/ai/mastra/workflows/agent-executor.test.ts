@@ -3,7 +3,7 @@ import {
   deriveConfirmedFromToolCalls,
   deriveSuspendSignalFromToolCalls,
 } from "./agent-executor";
-import type { AiToolCallRecord } from "../../../../shared/rpc.types";
+import type { AiToolCallRecord } from "@surreal-ck/shared";
 
 describe("agent executor tool result translation", () => {
   test("ambiguous tool intent becomes a workflow suspend signal", () => {

@@ -1,30 +1,129 @@
 import { Agent } from "@mastra/core/agent";
 import { ModelRouterLanguageModel } from "@mastra/core/llm";
-import type { AiContextSnapshot } from "../../../../shared/ai-context";
-import type { ResourceCitationDTO } from "../../../../shared/rpc.types";
-import { getLocalDb } from "../../../db/index";
-import { getCurrentUserRecordId } from "../../../services/context";
-import {
-  getResourceDetail as defaultGetResourceDetail,
-  searchResources as defaultSearchResources,
-  type CreateResearchSessionRequest,
-  type ResearchSessionResponse,
-  type GetResourceDetailRequest,
-  type ResourceDetailResponse,
-  type ResourceDTO,
-  type ResourceEvidence,
-  type SaveResourceRequest,
-  type SearchResourcesRequest,
-  type SearchResourcesResponse,
-} from "../../../services/resources";
-import type { AiSettings } from "../../../services/settings";
+import type { AiContextSnapshot } from "@surreal-ck/shared";
+import type { ResourceCitationDTO } from "@surreal-ck/shared";
 import type { SubAgentExecutor, SubAgentOutput } from "../workflows/router-workflow";
 import { RESOURCE_TOOLS } from "../tools/resource-tools";
-import { buildModelConfig } from "./model-config";
+import { buildModelConfig, type AiSettings } from "./model-config";
 
 export { RESOURCE_TOOLS } from "../tools/resource-tools";
 
 export const RESOURCE_AGENT_ID = "resourceAgent";
+
+const LEGACY_DB_MODULE: string = "../../../legacy/db/index";
+const LEGACY_CONTEXT_MODULE: string = "../../../legacy/services/context";
+const LEGACY_RESOURCES_MODULE: string = "../../../legacy/services/resources";
+
+type LegacyDb = {
+  query<T>(sql: string, params?: Record<string, unknown>): Promise<T>;
+};
+
+export type ResourceEvidence = {
+  text: string;
+  sourceUrl?: string;
+  sourceTitle?: string;
+  capturedAt: string;
+  order: number;
+};
+
+export type ResourceDTO = {
+  id: string;
+  workspaceId: string;
+  resourceType: string;
+  title: string;
+  summary: string;
+  sourceUrl?: string;
+  sourceTitle?: string;
+  evidence: ResourceEvidence[];
+  structuredPayload?: Record<string, unknown>;
+  [key: string]: unknown;
+};
+
+export type SearchResourcesRequest = {
+  workspaceId: string;
+  query: string;
+  context?: {
+    selectedRow?: AiContextSnapshot["selectedRow"];
+    document?: { title?: string; text?: string } | string;
+    manualText?: string;
+  };
+  resourceType?: string;
+  filters?: Record<string, unknown>;
+  limit?: number;
+  answerThreshold?: number;
+  candidateThreshold?: number;
+};
+
+export type SearchResourcesResponse = {
+  status: "hit" | "candidates" | "miss";
+  indexStatus: "ready" | "index-disabled" | "index-pending" | "index-error";
+  queryText: string;
+  results: Array<{
+    resource: ResourceDTO;
+    score: number;
+    vectorScore?: number;
+    keywordScore?: number;
+    qualityScore?: number;
+    recencyScore?: number;
+  }>;
+};
+
+export type CreateResearchSessionRequest = {
+  workspaceId: string;
+  query: string;
+  context?: Record<string, unknown>;
+  resourceType: string;
+  originatingRunId?: string;
+};
+
+export type ResearchSessionResponse = {
+  session: {
+    id: string;
+    workspaceId: string;
+    query: string;
+    resourceType: string;
+    [key: string]: unknown;
+  };
+};
+
+export type GetResourceDetailRequest = {
+  resourceId: string;
+};
+
+export type ResourceDetailResponse = {
+  resource: ResourceDTO;
+};
+
+export type SaveResourceRequest = {
+  workspaceId: string;
+  resourceType: string;
+  title: string;
+  summary: string;
+  sourceUrl?: string;
+  sourceTitle?: string;
+  evidence: ResourceEvidence[];
+  structuredPayload: Record<string, unknown>;
+  quality: "ai-draft";
+};
+
+type LegacyResourcesModule = {
+  searchResources(req: SearchResourcesRequest): Promise<SearchResourcesResponse>;
+  getResourceDetail(req: GetResourceDetailRequest): Promise<Pick<ResourceDetailResponse, "resource">>;
+};
+
+async function loadLegacyResources(): Promise<LegacyResourcesModule> {
+  return await import(LEGACY_RESOURCES_MODULE) as LegacyResourcesModule;
+}
+
+async function defaultSearchResources(req: SearchResourcesRequest): Promise<SearchResourcesResponse> {
+  const { searchResources } = await loadLegacyResources();
+  return searchResources(req);
+}
+
+async function defaultGetResourceDetail(req: GetResourceDetailRequest): Promise<Pick<ResourceDetailResponse, "resource">> {
+  const { getResourceDetail } = await loadLegacyResources();
+  return getResourceDetail(req);
+}
 
 export const RESOURCE_INSTRUCTIONS = `你是 Surreal CK 的资源检索 AI 助手。
 始终使用简体中文回答。
@@ -244,6 +343,10 @@ function describeResourceSearchMiss(indexStatus: SearchResourcesResponse["indexS
 }
 
 async function getDefaultWorkspaceId(): Promise<string> {
+  const [{ getCurrentUserRecordId }, { getLocalDb }] = await Promise.all([
+    import(LEGACY_CONTEXT_MODULE) as Promise<{ getCurrentUserRecordId(): Promise<unknown> }>,
+    import(LEGACY_DB_MODULE) as Promise<{ getLocalDb(): LegacyDb }>,
+  ]);
   const userId = await getCurrentUserRecordId();
   const db = getLocalDb();
   const rows = await db.query<[{ id: unknown }[]]>(

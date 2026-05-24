@@ -1,6 +1,6 @@
 import { describe, expect, test, mock } from "bun:test";
 
-mock.module("../../../services/context", () => ({
+mock.module("../../../legacy/services/context", () => ({
   assertAuthenticated: () => {},
   assertWritable: () => {},
   getOfflineMode: () => false,
@@ -21,14 +21,14 @@ mock.module("../../../services/context", () => ({
   assertCanReadWorkspace: async () => {},
 }));
 
-mock.module("../../../db/index", () => ({
+mock.module("../../../legacy/db/index", () => ({
   getLocalDb: () => ({
     query: async () => [[{ id: "workspace:test" }]],
   }),
   getRemoteDb: () => null,
 }));
 
-mock.module("../../../services/workbooks", () => ({
+mock.module("../../../legacy/services/workbooks", () => ({
   listWorkbooks: async () => ({ workbooks: [] }),
 }));
 
@@ -48,7 +48,7 @@ describe("searchWorkbook tool — 无结果降级", () => {
   });
 
   test("找到多个工作簿时返回 ambiguous 候选列表", async () => {
-    mock.module("../../../services/workbooks", () => ({
+    mock.module("../../../legacy/services/workbooks", () => ({
       listWorkbooks: async () => ({
         workbooks: [
           { id: "workbook:1", name: "债权台账A", workspaceId: "workspace:test" },
@@ -64,7 +64,7 @@ describe("searchWorkbook tool — 无结果降级", () => {
   });
 
   test("找到唯一工作簿时返回 open-workbook 意图", async () => {
-    mock.module("../../../services/workbooks", () => ({
+    mock.module("../../../legacy/services/workbooks", () => ({
       listWorkbooks: async () => ({
         workbooks: [{ id: "workbook:1", name: "合同管理", workspaceId: "workspace:test" }],
       }),

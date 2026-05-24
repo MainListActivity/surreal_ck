@@ -1,6 +1,6 @@
 import { createStep, createWorkflow } from "@mastra/core/workflows";
 import { z } from "zod";
-import type { AiContextSnapshot } from "../../../../shared/ai-context";
+import type { AiContextSnapshot } from "@surreal-ck/shared";
 import type {
   AiMessageChunkEvent,
   AiProgressEvent,
@@ -11,8 +11,8 @@ import type {
   ResolvedRecord,
   ResumeDecision,
   WorkflowSuspendedEvent,
-} from "../../../../shared/rpc.types";
-import { ResolvedRecordSchema } from "../../../../shared/rpc.types";
+} from "@surreal-ck/shared";
+import { ResolvedRecordSchema } from "@surreal-ck/shared";
 import { classifyTask, type RouterCategory, type RouterLlmCaller, type RouterPlan } from "./router-classifier";
 
 export const ROUTER_WORKFLOW_ID = "routerWorkflow";

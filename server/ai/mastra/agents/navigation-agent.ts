@@ -1,8 +1,7 @@
 import { Agent } from "@mastra/core/agent";
 import { ModelRouterLanguageModel } from "@mastra/core/llm";
-import type { AiSettings } from "../../../services/settings";
 import { navigateTool, searchWorkbookTool, searchDashboardTool, searchRecordTool } from "../tools/navigation-tools";
-import { buildModelConfig } from "./model-config";
+import { buildModelConfig, type AiSettings } from "./model-config";
 
 export const NAVIGATION_AGENT_ID = "navigationAgent";
 

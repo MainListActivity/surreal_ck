@@ -1,8 +1,7 @@
 import { Agent } from "@mastra/core/agent";
 import { ModelRouterLanguageModel } from "@mastra/core/llm";
-import type { AiSettings } from "../../../services/settings";
 import { DASHBOARD_TOOLS } from "../tools/dashboard-tools";
-import { buildModelConfig } from "./model-config";
+import { buildModelConfig, type AiSettings } from "./model-config";
 
 export { DASHBOARD_TOOLS } from "../tools/dashboard-tools";
 

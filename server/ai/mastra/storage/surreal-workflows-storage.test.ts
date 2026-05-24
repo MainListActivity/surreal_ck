@@ -5,6 +5,7 @@ import { SurrealWorkflowsStorage } from "./surreal-workflows-storage";
 type Row = {
   run_id: string;
   workflow_name: string;
+  resource_id?: string | null;
   kind: string;
   state: WorkflowRunState;
   status: string;
@@ -29,6 +30,7 @@ function fakeSession(rows: Map<string, Row>, opts: { failWrites?: boolean } = {}
         rows.set(content.run_id, {
           run_id: content.run_id,
           workflow_name: content.workflow_name ?? existing?.workflow_name ?? "",
+          resource_id: content.resource_id ?? existing?.resource_id ?? null,
           kind: content.kind ?? existing?.kind ?? "router",
           state: content.state ?? existing?.state ?? ({} as WorkflowRunState),
           status: content.status ?? existing?.status ?? "running",
@@ -46,6 +48,7 @@ function fakeSession(rows: Map<string, Row>, opts: { failWrites?: boolean } = {}
         let all = Array.from(rows.values());
         if (params?.workflowName) all = all.filter((r) => r.workflow_name === params.workflowName);
         if (params?.status) all = all.filter((r) => r.status === params.status);
+        if (params?.resourceId) all = all.filter((r) => r.resource_id === params.resourceId);
         all.sort((a, b) => b.created_at.getTime() - a.created_at.getTime());
         if (sql.includes("count()")) return [all, [{ total: all.length }]];
         return [all, [{ total: all.length }]];
@@ -131,6 +134,29 @@ describe("SurrealWorkflowsStorage（绑定调用者 surrealSession）", () => {
     const result = await storage.listWorkflowRuns({ workflowName: "router" });
     expect(result.total).toBe(1);
     expect(result.runs.map((r) => r.runId)).toEqual(["router-run"]);
+  });
+
+  test("resourceId 会写入、回读，并可用于 listWorkflowRuns 过滤", async () => {
+    const state = snapshot("run-resource");
+    await storage.persistWorkflowSnapshot({
+      workflowName: "router",
+      runId: "run-resource",
+      resourceId: "memory_resource:abc",
+      snapshot: state,
+    });
+    await storage.persistWorkflowSnapshot({
+      workflowName: "router",
+      runId: "run-other",
+      resourceId: "memory_resource:def",
+      snapshot: snapshot("run-other"),
+    });
+
+    const loaded = await storage.getWorkflowRunById({ workflowName: "router", runId: "run-resource" });
+    expect(loaded?.resourceId).toBe("memory_resource:abc");
+
+    const result = await storage.listWorkflowRuns({ workflowName: "router", resourceId: "memory_resource:abc" });
+    expect(result.total).toBe(1);
+    expect(result.runs.map((r) => r.runId)).toEqual(["run-resource"]);
   });
 
   test("resume 语义：updateWorkflowState 把 status 从 suspended 改回 running", async () => {

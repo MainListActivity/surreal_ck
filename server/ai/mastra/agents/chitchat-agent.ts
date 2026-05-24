@@ -1,7 +1,6 @@
 import { Agent } from "@mastra/core/agent";
 import { ModelRouterLanguageModel } from "@mastra/core/llm";
-import type { AiSettings } from "../../../services/settings";
-import { buildModelConfig } from "./model-config";
+import { buildModelConfig, type AiSettings } from "./model-config";
 
 export const CHITCHAT_AGENT_ID = "chitchatAgent";
 

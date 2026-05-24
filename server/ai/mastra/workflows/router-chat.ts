@@ -1,13 +1,13 @@
 import type { Mastra } from "@mastra/core";
 import { RequestContext } from "@mastra/core/request-context";
-import type { AiContextSnapshot } from "../../../../shared/ai-context";
+import type { AiContextSnapshot } from "@surreal-ck/shared";
 import type {
   AiMessageChunkEvent,
   AiProgressEvent,
   ResourceCitationDTO,
   AiToolCallRecord,
   WorkflowSuspendedEvent,
-} from "../../../../shared/rpc.types";
+} from "@surreal-ck/shared";
 import type { RouterLlmCaller } from "./router-classifier";
 import {
   ROUTER_RUNTIME_KEY,

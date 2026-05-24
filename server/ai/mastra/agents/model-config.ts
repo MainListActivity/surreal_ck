@@ -1,4 +1,10 @@
-import type { AiSettings } from "../../../services/settings";
+export type AiSettings = {
+  provider: string;
+  model: string;
+  apiKey?: string;
+  baseUrl?: string;
+  [key: string]: unknown;
+};
 
 export function buildModelConfig(settings: AiSettings) {
   const { providerId, modelId } = splitModel(settings.provider, settings.model);

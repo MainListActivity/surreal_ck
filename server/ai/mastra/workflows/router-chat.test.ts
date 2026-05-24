@@ -4,7 +4,7 @@ import { InMemoryStore } from "@mastra/core/storage";
 import { runRouterChat, type RouterChatStreamPusher } from "./router-chat";
 import { createRouterWorkflow, ROUTER_WORKFLOW_ID, type SubAgentExecutor, type SubAgentExecutors } from "./router-workflow";
 import type { RouterLlmCaller } from "./router-classifier";
-import type { AiContextSnapshot } from "../../../../shared/ai-context";
+import type { AiContextSnapshot } from "@surreal-ck/shared";
 
 const ctx: AiContextSnapshot = {
   route: { screen: "home" },

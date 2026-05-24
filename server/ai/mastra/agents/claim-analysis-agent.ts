@@ -1,8 +1,7 @@
 import { Agent } from "@mastra/core/agent";
 import { ModelRouterLanguageModel } from "@mastra/core/llm";
-import type { AiSettings } from "../../../services/settings";
 import { CLAIM_ANALYSIS_TOOLS } from "../tools/claim-analysis-tools";
-import { buildModelConfig } from "./model-config";
+import { buildModelConfig, type AiSettings } from "./model-config";
 
 export const CLAIM_ANALYSIS_AGENT_ID = "claimAnalysisAgent";
 

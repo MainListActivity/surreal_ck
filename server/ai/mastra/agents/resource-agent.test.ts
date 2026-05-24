@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import type { AiContextSnapshot } from "../../../../shared/ai-context";
-import type { ResourceDTO } from "../../../services/resources";
+import type { AiContextSnapshot } from "@surreal-ck/shared";
+import type { ResourceDTO } from "./resource-agent";
 import {
   answerSelectedResourceIds,
   createResourceCitationAnswer,
