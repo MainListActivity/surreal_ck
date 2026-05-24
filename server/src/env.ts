@@ -19,6 +19,8 @@ const EnvSchema = z.object({
   IDP_SCOPE_API_TOKEN: z.string().optional(),
 
   RECONCILE_INTERVAL_SEC: z.coerce.number().int().positive().default(3600),
+
+  MASTRA_OBSERVABILITY_RETENTION_DAYS: z.coerce.number().int().positive().max(3650).default(30),
 });
 
 export type ServerEnv = z.infer<typeof EnvSchema>;

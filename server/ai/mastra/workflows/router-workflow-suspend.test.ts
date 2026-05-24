@@ -1,46 +1,52 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import type { WorkflowRunState } from "@mastra/core/workflows";
 
 // 共享一个 in-memory storage：跨进程重启场景里，第二个 mastra 实例也复用同一份 workflowRows。
 type WorkflowRow = {
-  workflow_name: string;
   run_id: string;
-  resource_id?: string;
-  snapshot: WorkflowRunState;
+  workflow_name: string;
+  kind: string;
+  state: WorkflowRunState;
   status: string;
-  created_at: Date;
-  updated_at: Date;
 };
 
 const workflowRows = new Map<string, WorkflowRow>();
-function workflowKey(workflowName: string, runId: string): string {
-  return `${workflowName}:${runId}`;
-}
 
-mock.module("../../../db/index", () => ({
-  getLocalDb: () => ({
-    query: async (sql: string, params?: Record<string, unknown>) => {
-      if (sql.includes("INSERT INTO mastra_workflow_run")) {
-        const content = params?.content as WorkflowRow;
-        workflowRows.set(workflowKey(content.workflow_name, content.run_id), content);
-        return [[]];
-      }
-      if (sql.includes("SELECT * FROM mastra_workflow_run") && sql.includes("workflow_name = $workflowName") && sql.includes("run_id = $runId")) {
-        const row = workflowRows.get(workflowKey(String(params?.workflowName), String(params?.runId)));
-        return [[...(row ? [row] : [])]];
-      }
-      if (sql.includes("SELECT * FROM mastra_workflow_run") && sql.includes("ORDER BY created_at DESC")) {
-        const rows = Array.from(workflowRows.values());
-        return [rows, [{ total: rows.length }]];
-      }
-      if (sql.includes("DELETE mastra_workflow_run") && sql.includes("workflow_name = $workflowName") && sql.includes("run_id = $runId")) {
-        workflowRows.delete(workflowKey(String(params?.workflowName), String(params?.runId)));
-        return [[]];
+// 模拟已 SIGNIN 到当前 workspace database 的调用者会话，按 run_id 主键读写 workflow_run 表。
+// 取代已退役的 getLocalDb：storage 通过注入的 resolver 拿这个会话，不再有全局 / root 连接。
+const fakeSession = {
+  query: async (sql: string, params?: Record<string, unknown>) => {
+    if (sql.includes("INSERT INTO workflow_run") || sql.includes("UPSERT") || sql.includes("UPDATE workflow_run")) {
+      const content = params?.content as Partial<WorkflowRow> | undefined;
+      if (content?.run_id) {
+        const existing = workflowRows.get(content.run_id);
+        workflowRows.set(content.run_id, {
+          run_id: content.run_id,
+          workflow_name: content.workflow_name ?? existing?.workflow_name ?? "",
+          kind: content.kind ?? existing?.kind ?? "router",
+          state: content.state ?? existing?.state ?? ({} as WorkflowRunState),
+          status: content.status ?? existing?.status ?? "running",
+        });
       }
       return [[]];
-    },
-  }),
-}));
+    }
+    if (sql.includes("SELECT") && sql.includes("FROM workflow_run") && sql.includes("run_id = $runId")) {
+      const row = workflowRows.get(String(params?.runId));
+      const matchesName = !params?.workflowName || row?.workflow_name === params?.workflowName;
+      return [row && matchesName ? [row] : []];
+    }
+    if (sql.includes("SELECT") && sql.includes("FROM workflow_run")) {
+      const rows = Array.from(workflowRows.values());
+      return [rows, [{ total: rows.length }]];
+    }
+    if (sql.includes("DELETE workflow_run") && sql.includes("run_id = $runId")) {
+      workflowRows.delete(String(params?.runId));
+      return [[]];
+    }
+    return [[]];
+  },
+};
+const getSession = () => fakeSession as never;
 
 import { Mastra } from "@mastra/core";
 import { RequestContext } from "@mastra/core/request-context";
@@ -65,7 +71,7 @@ const emptyContext: AiContextSnapshot = {
 
 function buildMastra() {
   return new Mastra({
-    storage: new SurrealMastraStore(),
+    storage: new SurrealMastraStore(getSession),
     workflows: { [ROUTER_WORKFLOW_ID]: createRouterWorkflow() },
   });
 }
@@ -116,7 +122,7 @@ describe("router workflow suspend & resume", () => {
 
     expect(result.status).toBe("suspended");
     // storage 中能看到该 run，状态为 suspended
-    const stored = await new SurrealMastraStore().stores.workflows.getWorkflowRunById({
+    const stored = await new SurrealMastraStore(getSession).stores.workflows.getWorkflowRunById({
       workflowName: ROUTER_WORKFLOW_ID,
       runId: run.runId,
     });

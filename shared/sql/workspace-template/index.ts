@@ -14,6 +14,7 @@ const TEMPLATE_FILES = [
   { version: 1, name: "001-access.surql" },
   { version: 2, name: "002-tables-core.surql" },
   { version: 3, name: "003-tables-office.surql" },
+  { version: 4, name: "004-workflow-run.surql" },
 ] as const;
 
 export const WORKSPACE_TEMPLATE_VERSION = TEMPLATE_FILES.at(-1)?.version ?? 0;

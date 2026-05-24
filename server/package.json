@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@mastra/core": "^1.36.0",
     "@surreal-ck/shared": "workspace:*",
     "hono": "^4.12.14",
     "jose": "^6.1.3",
