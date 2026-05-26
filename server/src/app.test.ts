@@ -70,6 +70,24 @@ describe("Hono app", () => {
   });
 });
 
+describe("createApp WS 接线", () => {
+  test("返回 { app, websocket }：websocket handler 供 Bun.serve 用", () => {
+    const built = createApp({ requireUser: () => useTestUser });
+    // 旧用法：createApp() 直接当 Hono 用（fetch / request 可用）——保持兼容
+    expect(typeof built.fetch).toBe("function");
+    // 新增：暴露 Bun websocket handler（open/message/close）
+    expect(built.websocket).toBeDefined();
+    expect(typeof built.websocket.open).toBe("function");
+  });
+
+  test("/api/chat/stream 已挂载：缺 runId/streamToken 时不是 404", async () => {
+    const built = createApp({ requireUser: () => useTestUser });
+    // 非 WS 的普通 GET：upgrade 失败会落到 426/426-like，但绝不能是 404（路由未挂）
+    const res = await built.request("/api/chat/stream");
+    expect(res.status).not.toBe(404);
+  });
+});
+
 describe("HTTP error handling", () => {
   const originalError = console.error;
 

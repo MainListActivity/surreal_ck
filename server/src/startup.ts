@@ -7,6 +7,8 @@ import { startReconcileLoop, type ReconcileLoopHandle } from "./db/reconciler";
 
 type AppLike = {
   fetch: ReturnType<typeof createApp>["fetch"];
+  /** Bun WS handler（createApp 挂载）；透传给 Bun.serve 才能升级 /api/chat/stream。 */
+  websocket?: ReturnType<typeof createApp>["websocket"];
 };
 
 type ServerHandle = {
@@ -21,7 +23,12 @@ export type StartServerDeps = {
   ensureSystemSchema?: () => Promise<unknown>;
   migrateAllWorkspaces?: () => Promise<unknown>;
   createApp?: () => AppLike;
-  serve?: (options: { hostname: string; port: number; fetch: AppLike["fetch"] }) => ServerHandle;
+  serve?: (options: {
+    hostname: string;
+    port: number;
+    fetch: AppLike["fetch"];
+    websocket?: AppLike["websocket"];
+  }) => ServerHandle;
   startReconcileLoop?: () => ReconcileLoopHandle;
   closeRootConnection?: () => Promise<void>;
 };
@@ -55,6 +62,7 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
     hostname: host,
     port,
     fetch: app.fetch,
+    websocket: app.websocket,
   });
 
   console.info("[server] listening", { host, port, env: envName });

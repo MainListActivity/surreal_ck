@@ -683,6 +683,30 @@ export type CancelAiWorkflowResponse = {
   event: AiRunCancelledEvent;
 };
 
+// ─── /api/chat/stream WS 转发协议（issue D1-05） ─────────────────────────────
+//
+// POST /api/chat 启动 router workflow 后，客户端连 `/api/chat/stream?runId=&streamToken=`
+// 监听这一类事件。**仅** workflow 自身的运行过程（routing / agent 步骤 / LLM 吐字 /
+// suspend 决策 / 终态），不转发 SurrealDB LIVE——数据行变更由浏览器直连 SurrealDB 的
+// LIVE SELECT 订阅。每条事件一行 JSON。
+//
+// progress：复用 AiProgressEvent（routing / agent-step / tool-call）。
+// chunk：LLM 流式增量文本。
+// suspend：复用 WorkflowSuspendedEvent（候选 / 写确认等待用户决策）。
+// done / error：终态，服务端随后关闭 WS（后台 workflow 不受影响）。
+// ping：服务端保活心跳，客户端可忽略。
+
+export type ChatStreamEvent =
+  | { kind: "progress"; runId: string; progress: AiProgressEvent }
+  | { kind: "chunk"; runId: string; text: string }
+  | { kind: "suspend"; runId: string; payload: WorkflowSuspendedEvent }
+  | { kind: "done"; runId: string; message: AiChatMessage; toolCalls: AiToolCallRecord[] }
+  | { kind: "error"; runId: string; code: string; message: string }
+  | { kind: "ping"; runId: string };
+
+/** done / error 之后 RunBus 仍保留事件供迟到订阅重放的窗口。 */
+export const CHAT_STREAM_TERMINAL_RETENTION_MS = 60_000;
+
 export type WorkbookSummaryDTO = {
   id: RecordIdString;
   workspaceId: RecordIdString;

@@ -210,4 +210,26 @@ describe("server startup", () => {
 
     expect(calls).toEqual(["init-root", "ensure-system-schema"]);
   });
+
+  test("把 app 的 websocket handler 透传给 Bun.serve（WS endpoint 才能升级）", async () => {
+    const wsHandler = { open() {}, close() {}, message() {} };
+    let servedWebSocket: unknown;
+
+    await startServer({
+      host: "127.0.0.1",
+      port: 18080,
+      envName: "test",
+      initRootConnection: async () => {},
+      ensureSystemSchema: async () => {},
+      migrateAllWorkspaces: async () => ({ total: 0, migrated: [] }),
+      createApp: () => ({ fetch: () => new Response("ok"), websocket: wsHandler }),
+      serve: (options: { websocket?: unknown }) => {
+        servedWebSocket = options.websocket;
+        return { stop: () => {} };
+      },
+      closeRootConnection: async () => {},
+    });
+
+    expect(servedWebSocket).toBe(wsHandler);
+  });
 });
