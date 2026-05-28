@@ -23,6 +23,9 @@ export default defineConfig({
       },
     },
   },
+  optimizeDeps: {
+    entries: ["index.html"],
+  },
   build: {
     target: "esnext",
     emptyOutDir: true,

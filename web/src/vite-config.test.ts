@@ -30,4 +30,8 @@ describe("D2-01 vite.config SPA 骨架", () => {
   test("build.outDir 落在 web/dist", () => {
     expect(config.build?.outDir ?? "dist").toBe("dist");
   });
+
+  test("dev dependency scan 只从新 SPA 入口开始，避免扫到 web/legacy", () => {
+    expect(config.optimizeDeps?.entries).toEqual(["index.html"]);
+  });
 });
