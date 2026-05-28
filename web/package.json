@@ -3,7 +3,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.json && svelte-check --tsconfig ./tsconfig.json",
+    "test": "bun test ./src"
   },
   "dependencies": {
     "@revolist/svelte-datagrid": "^4.21.3",
@@ -18,6 +22,7 @@
     "@sveltejs/vite-plugin-svelte": "^7.0.0",
     "@types/three": "^0.184.0",
     "svelte": "^5.0.0",
+    "svelte-check": "^4.4.8",
     "vite": "^8.0.9",
     "vite-plugin-static-copy": "^4.1.0"
   }
