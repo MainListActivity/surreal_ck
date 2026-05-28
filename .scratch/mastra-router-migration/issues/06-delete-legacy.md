@@ -1,5 +1,5 @@
-Status: needs-triage
-Label: needs-triage
+Status: done
+Label: done
 
 # WP-D1-06 — 删 server/legacy/ai/mastra
 
@@ -16,11 +16,18 @@ Label: needs-triage
 
 ## Acceptance criteria
 
-- [ ] `server/legacy/ai/mastra/` 不存在。
-- [ ] `server/ai/mastra/**` 是唯一 Mastra 代码位置。
-- [ ] typecheck 全绿。
-- [ ] 既有测试（`*.test.ts`）全部能跑（即便部分需要 update import 路径）。
-- [ ] AGENTS.md "Project Structure" 表反映现状。
+- [x] `server/legacy/ai/mastra/` 不存在。
+- [x] `server/ai/mastra/**` 是唯一 Mastra 代码位置。
+- [x] typecheck 全绿。
+- [x] 既有测试（`*.test.ts`）全部能跑（即便部分需要 update import 路径）。
+- [x] AGENTS.md "Project Structure" 表反映现状。
+
+## 落地记录（2026-05-28）
+
+- 物理删除：`server/legacy/ai/`（含已为空的 `mastra/` 子目录与孤儿 `navigation-agent.test.ts`）。
+- 新增卫兵测试 `server/src/legacy-retired.test.ts`：断言上述路径都不存在，防回归。
+- 验收：`pnpm --filter @surreal-ck/server typecheck` 0 错误；`pnpm --filter @surreal-ck/server test` 116 pass / 0 fail。
+- `server/tsconfig.json` 的 `exclude: ["legacy", ...]` 保留——`server/legacy/` 其余子目录（auth / db / rpc / services / sync / templates / logging）仍在，由后续簇负责；D1 自己不再依赖任何"legacy known errors"豁免。
 
 ## Notes
 
