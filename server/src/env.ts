@@ -21,6 +21,12 @@ const EnvSchema = z.object({
   RECONCILE_INTERVAL_SEC: z.coerce.number().int().positive().default(3600),
 
   MASTRA_OBSERVABILITY_RETENTION_DAYS: z.coerce.number().int().positive().max(3650).default(30),
+
+  // AI 模型 provider / model / key（生产装配 AiChatService 用；三个齐备才接线，否则 /api/chat 返回 501）。
+  AI_PROVIDER: z.string().min(1).optional(),
+  AI_MODEL: z.string().min(1).optional(),
+  AI_API_KEY: z.string().min(1).optional(),
+  AI_BASE_URL: z.string().url().optional(),
 });
 
 export type ServerEnv = z.infer<typeof EnvSchema>;

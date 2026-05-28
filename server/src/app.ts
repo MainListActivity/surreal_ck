@@ -4,6 +4,9 @@ import { requestLogger } from "./middleware/logger";
 import { healthRoutes } from "./routes/health";
 import { createAiChatRoutes, type AiChatService, type CallerSessionFactory } from "./routes/ai-chat";
 import { createAiStreamRoutes } from "./routes/ai-stream";
+import { createAiChatService } from "./ai/chat-service";
+import { createMastraRunner } from "./ai/assemble-mastra";
+import { env } from "./env";
 import { createInternalIdpRoutes } from "./routes/internal-idp";
 import { createMemberRoutes } from "./routes/members";
 import { createSessionRoutes } from "./routes/session";
@@ -40,6 +43,23 @@ export type AppWithWebSocket = Hono<AppBindings> & {
   websocket: ReturnType<typeof createAiStreamRoutes>["websocket"];
 };
 
+/**
+ * 生产 AI 自动装配：env 中 AI_PROVIDER / AI_MODEL / AI_API_KEY 三者齐备才接线（生产部署默认走这条）。
+ * 任何一项缺失 → 返回 undefined，调用方落到 NOT_WIRED_AI_SERVICE 的 501，部署可观测、不静默。
+ */
+function buildAutoAiChatService(runBus: RunBus): AiChatService | undefined {
+  if (!env.AI_PROVIDER || !env.AI_MODEL || !env.AI_API_KEY) return undefined;
+  const { runner, resumer } = createMastraRunner({
+    settings: {
+      provider: env.AI_PROVIDER,
+      model: env.AI_MODEL,
+      apiKey: env.AI_API_KEY,
+      baseUrl: env.AI_BASE_URL,
+    },
+  });
+  return createAiChatService({ runBus, runner, resumer });
+}
+
 /** 默认 AI 服务：AI 装配未接线时让 /api/chat 明确返回 501，而不是 404 / 静默 500。 */
 const NOT_WIRED_AI_SERVICE: AiChatService = {
   async startChat() {
@@ -60,6 +80,8 @@ export function createApp(options: AppOptions = {}): AppWithWebSocket {
   const runRegistry = options.runRegistry ?? createRunRegistry();
   const runBus = options.runBus ?? createRunBus();
   const aiStream = createAiStreamRoutes({ registry: runRegistry, bus: runBus });
+  // 生产 AI 自动装配：env 三件齐备才接线，否则保留 D1-04 的 501 not-wired 兜底。
+  const autoAiChatService = options.aiChatService ?? buildAutoAiChatService(runBus);
 
   app.use("*", requestLogger);
   app.onError(handleError);
@@ -71,7 +93,7 @@ export function createApp(options: AppOptions = {}): AppWithWebSocket {
   app.route(
     "/",
     createAiChatRoutes({
-      service: options.aiChatService ?? NOT_WIRED_AI_SERVICE,
+      service: autoAiChatService ?? NOT_WIRED_AI_SERVICE,
       createCallerSession: options.createCallerSession ?? ((rawToken) => createCallerSession(rawToken)),
       registry: runRegistry,
       requireUser: options.requireUser,

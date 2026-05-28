@@ -70,6 +70,27 @@ describe("Hono app", () => {
   });
 });
 
+describe("createApp AI 自动装配", () => {
+  test("env 提供 AI provider/model/apiKey → /api/chat 不再返回 501（生产 AiChatService 自动装配）", async () => {
+    const { overrideEnv } = await import("./env");
+    overrideEnv({ AI_PROVIDER: "openai", AI_MODEL: "gpt-4o-mini", AI_API_KEY: "sk-test" });
+    try {
+      const app = createApp({
+        requireUser: () => useTestUser,
+        createCallerSession: async () => ({}) as unknown as Surreal,
+      });
+      const res = await app.request("/api/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ message: "hi" }),
+      });
+      expect(res.status).not.toBe(501);
+    } finally {
+      overrideEnv({ AI_PROVIDER: undefined, AI_MODEL: undefined, AI_API_KEY: undefined });
+    }
+  });
+});
+
 describe("createApp WS 接线", () => {
   test("返回 { app, websocket }：websocket handler 供 Bun.serve 用", () => {
     const built = createApp({ requireUser: () => useTestUser });
