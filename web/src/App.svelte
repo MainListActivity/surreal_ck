@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import LoginRoute from "./routes/auth/login.svelte";
   import CallbackRoute from "./routes/auth/callback.svelte";
+  import WorkspaceSwitcher from "./components/WorkspaceSwitcher.svelte";
   import { getSession, isAuthenticated, logout, refresh, requireAuthenticatedRoute } from "./lib/auth";
 
   type RouteKind = "home" | "login" | "callback";
@@ -68,7 +69,10 @@
         <p class="eyebrow">surreal-ck</p>
         <h1>工作区</h1>
       </div>
-      <button type="button" onclick={handleLogout}>退出</button>
+      <div class="header-actions">
+        <WorkspaceSwitcher />
+        <button type="button" onclick={handleLogout}>退出</button>
+      </div>
     </header>
 
     <section class="workspace-summary">
@@ -118,6 +122,12 @@
     gap: 1rem;
     border-bottom: 1px solid #d9dee7;
     padding-bottom: 1rem;
+  }
+
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
   }
 
   .eyebrow {

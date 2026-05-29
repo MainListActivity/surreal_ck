@@ -38,9 +38,11 @@ export type AppOptions = {
   runBus?: RunBus;
 };
 
+type AiStreamWebSocket = ReturnType<typeof createAiStreamRoutes>["websocket"];
+
 /** createApp 返回的 Hono 实例上额外挂载的 Bun WS handler；startup 把它透传给 Bun.serve。 */
 export type AppWithWebSocket = Hono<AppBindings> & {
-  websocket: ReturnType<typeof createAiStreamRoutes>["websocket"];
+  websocket: AiStreamWebSocket;
 };
 
 /**
@@ -70,39 +72,52 @@ const NOT_WIRED_AI_SERVICE: AiChatService = {
   },
 };
 
-export function createApp(options: AppOptions = {}): AppWithWebSocket {
-  const app = new Hono<AppBindings>();
+/**
+ * 装配所有路由，返回链式 .route() 推导出的 Hono（**保留** 每条子路由 schema）。
+ * 一旦改回逐条 in-place `app.route(...)` 调用或给返回值标 `: Hono<AppBindings>`，
+ * schema 会被丢弃、hc<AppType> 的 path 退化为 unknown。AppType 从这里推导。
+ */
+function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiStreamRoutes>) {
   const workspaceScope = options.workspaceScope ?? createWorkspaceScopeModule();
   const idpTokenScopeAdapter = options.idpTokenScopeAdapter ?? createIdpTokenScopeAdapter();
   const workspaceCreator = options.workspaceCreator ?? createWorkspaceCreator({ idpTokenScopeAdapter });
   const memberManager = options.memberManager ?? createMemberManager();
+  const runRegistry = options.runRegistry ?? createRunRegistry();
+  const runBus = options.runBus ?? createRunBus();
+  const autoAiChatService = options.aiChatService ?? buildAutoAiChatService(runBus);
+
+  const base = new Hono<AppBindings>();
+  base.use("*", requestLogger);
+  base.onError(handleError);
+
+  return base
+    .route("/", healthRoutes)
+    .route("/", createInternalIdpRoutes(workspaceScope))
+    .route("/", createSessionRoutes(workspaceScope, idpTokenScopeAdapter, options.requireUser))
+    .route("/", createWorkspaceRoutes(workspaceCreator, options.requireUser))
+    .route("/", createMemberRoutes(memberManager, options.requireUser))
+    .route(
+      "/",
+      createAiChatRoutes({
+        service: autoAiChatService ?? NOT_WIRED_AI_SERVICE,
+        createCallerSession: options.createCallerSession ?? ((rawToken) => createCallerSession(rawToken)),
+        registry: runRegistry,
+        requireUser: options.requireUser,
+      }),
+    )
+    .route("/", aiStream.routes);
+}
+
+/** 端到端类型来源：route schema 完整的 Hono，供 web 端 hc<AppType> 推导。 */
+export type AppType = ReturnType<typeof buildRoutes>;
+
+export function createApp(options: AppOptions = {}): AppWithWebSocket {
   // /api/chat（注册 run）与 /api/chat/stream（按 streamToken 订阅）必须共用同一注册表与总线。
   const runRegistry = options.runRegistry ?? createRunRegistry();
   const runBus = options.runBus ?? createRunBus();
   const aiStream = createAiStreamRoutes({ registry: runRegistry, bus: runBus });
-  // 生产 AI 自动装配：env 三件齐备才接线，否则保留 D1-04 的 501 not-wired 兜底。
-  const autoAiChatService = options.aiChatService ?? buildAutoAiChatService(runBus);
-
-  app.use("*", requestLogger);
-  app.onError(handleError);
-  app.route("/", healthRoutes);
-  app.route("/", createInternalIdpRoutes(workspaceScope));
-  app.route("/", createSessionRoutes(workspaceScope, idpTokenScopeAdapter, options.requireUser));
-  app.route("/", createWorkspaceRoutes(workspaceCreator, options.requireUser));
-  app.route("/", createMemberRoutes(memberManager, options.requireUser));
-  app.route(
-    "/",
-    createAiChatRoutes({
-      service: autoAiChatService ?? NOT_WIRED_AI_SERVICE,
-      createCallerSession: options.createCallerSession ?? ((rawToken) => createCallerSession(rawToken)),
-      registry: runRegistry,
-      requireUser: options.requireUser,
-    }),
-  );
-  app.route("/", aiStream.routes);
+  const app = buildRoutes({ ...options, runRegistry, runBus }, aiStream);
 
   // 把 Bun WS handler 挂到 app 上，startup 透传给 Bun.serve；不改变 app 的 fetch/request 用法。
-  return Object.assign(app, { websocket: aiStream.websocket });
+  return Object.assign(app, { websocket: aiStream.websocket }) as unknown as AppWithWebSocket;
 }
-
-export type AppType = ReturnType<typeof createApp>;

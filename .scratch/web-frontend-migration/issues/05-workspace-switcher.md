@@ -1,5 +1,5 @@
-Status: needs-triage
-Label: needs-triage
+Status: done
+Label: done
 
 # WP-D2-05 — Workspace 切换器（Workspace Scope Module）
 
