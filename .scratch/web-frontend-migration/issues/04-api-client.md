@@ -1,4 +1,4 @@
-Status: needs-triage
+Status: done
 Label: needs-triage
 
 # WP-D2-04 — API client（Workspace Scope + Mastra）
@@ -46,11 +46,18 @@ ws.ts 接受 `{ path, params, onMessage, onClose }`，返回 `{ close() }`；25s
 
 ## Acceptance criteria
 
-- [ ] `api.api.chat.$post({ json: { message } })` 调通，类型推导出 `{ runId, streamUrl, streamToken }`。
-- [ ] 受保护 endpoint 自动带 Authorization。
-- [ ] 401 时 api.ts 抛 `OidcExpiredError`，由上层路由触发 silent refresh / 重登。
-- [ ] WS 客户端能连后端 chat stream endpoint，断网重连最多 5 次。
-- [ ] `/health` 等不带 Auth 的 endpoint 不带 header（通过约定或 endpoint 白名单）。
+- [x] `api.api.chat.$post({ json: { message } })` 调通，类型推导出 `{ runId, streamUrl, streamToken }`。
+- [x] 受保护 endpoint 自动带 Authorization。
+- [x] 401 时 api.ts 抛 `OidcExpiredError`，由上层路由触发 silent refresh / 重登。
+- [x] WS 客户端能连后端 chat stream endpoint，断网重连最多 5 次。
+- [x] `/health` 等不带 Auth 的 endpoint 不带 header（通过约定或 endpoint 白名单）。
+
+## 实现说明（D2-04 完工）
+
+- `web/src/lib/api.ts`：`createApiClient({ baseUrl, getToken, fetch })` 包 `hc<AppType>`；authedFetch 注入 Authorization（公开前缀白名单 `/health`），401 抛 `OidcExpiredError`。默认导出 `api`。
+- `web/src/lib/ws.ts`：`connectWs({ url, params, onMessage, onClose, socketFactory, timers })`；JSON-line 解析、25s ping、指数退避重连最多 5 次、主动 close 不重连/不回调。WsSocket/WsTimers 切面便于注入 fake 单测。
+- 端到端类型：server `exports['./app-type']` 指向 emit 出的 `dist/server/src/app.d.ts`（`tsconfig.build.json` + `build:types`）；shared 同样 emit `dist/sql/workspace-template/index.d.ts` 避免把 Bun-runtime 源拖进 web typecheck。web tsconfig path alias 指向这些 `.d.ts`；`web typecheck` 经 `build:upstream-types` 先 emit。
+- 测试：`web/src/lib/api.test.ts`（3）+ `web/src/lib/ws.test.ts`（5），全绿；`vite build` 验证 type-only import 被擦除、web 无 server 运行时依赖。
 
 ## Notes
 

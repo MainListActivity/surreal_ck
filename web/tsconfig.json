@@ -13,7 +13,9 @@
     "baseUrl": ".",
     "paths": {
       "@surreal-ck/shared": ["../shared/src/index.ts"],
-      "@surreal-ck/shared/*": ["../shared/src/*"]
+      "@surreal-ck/shared/workspace-template": ["../shared/dist/sql/workspace-template/index.d.ts"],
+      "@surreal-ck/shared/*": ["../shared/src/*"],
+      "@surreal-ck/server/app-type": ["../server/dist/server/src/app.d.ts"]
     }
   },
   "include": ["src/**/*.ts", "src/**/*.svelte"],

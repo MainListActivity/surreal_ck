@@ -52,12 +52,18 @@ importers:
       '@revolist/svelte-datagrid':
         specifier: ^4.21.3
         version: 4.21.4
+      '@surreal-ck/server':
+        specifier: workspace:*
+        version: link:../server
       '@surreal-ck/shared':
         specifier: workspace:*
         version: link:../shared
       dayjs:
         specifier: ^1.11.20
         version: 1.11.20
+      hono:
+        specifier: ^4.12.14
+        version: 4.12.14
       layerchart:
         specifier: 2.0.0-next.62
         version: 2.0.0-next.62(svelte@5.55.4)(zod@4.3.6)
