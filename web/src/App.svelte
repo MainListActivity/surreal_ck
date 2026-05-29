@@ -3,6 +3,7 @@
   import LoginRoute from "./routes/auth/login.svelte";
   import CallbackRoute from "./routes/auth/callback.svelte";
   import WorkspaceSwitcher from "./components/WorkspaceSwitcher.svelte";
+  import CreateWorkspaceDialog from "./components/CreateWorkspaceDialog.svelte";
   import { getSession, isAuthenticated, logout, refresh, requireAuthenticatedRoute } from "./lib/auth";
 
   type RouteKind = "home" | "login" | "callback";
@@ -12,6 +13,7 @@
   let route = $state<RouteKind>("home");
   let ready = $state(false);
   let session = $state(getSession());
+  let showCreate = $state(false);
 
   function currentPath(): string {
     return `${window.location.pathname}${window.location.search}${window.location.hash}`;
@@ -70,10 +72,17 @@
         <h1>工作区</h1>
       </div>
       <div class="header-actions">
-        <WorkspaceSwitcher />
+        <WorkspaceSwitcher oncreate={() => (showCreate = true)} />
         <button type="button" onclick={handleLogout}>退出</button>
       </div>
     </header>
+
+    {#if showCreate}
+      <CreateWorkspaceDialog
+        onclose={() => (showCreate = false)}
+        oncreated={syncSession}
+      />
+    {/if}
 
     <section class="workspace-summary">
       <h2>当前会话</h2>

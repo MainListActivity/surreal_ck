@@ -1,5 +1,5 @@
-Status: needs-triage
-Label: needs-triage
+Status: done
+Label: done
 
 # WP-D2-06 — 新建 workspace 流程（Workspace Scope Module）
 
