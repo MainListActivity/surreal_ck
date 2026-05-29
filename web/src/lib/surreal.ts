@@ -1,7 +1,5 @@
 import { Surreal } from "surrealdb";
 
-export type SurrealAccess = "admin" | "participant";
-
 export type ConnectionStatus =
   | "disconnected"
   | "connecting"
@@ -13,7 +11,6 @@ export type SurrealConnectInput = {
   rawToken: string;
   namespace: string;
   dbName: string;
-  access: SurrealAccess;
 };
 
 /**

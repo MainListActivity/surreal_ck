@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import LoginRoute from "./routes/auth/login.svelte";
   import CallbackRoute from "./routes/auth/callback.svelte";
-  import { getClaims, isAuthenticated, logout, refresh, requireAuthenticatedRoute } from "./lib/auth";
+  import { getSession, isAuthenticated, logout, refresh, requireAuthenticatedRoute } from "./lib/auth";
 
   type RouteKind = "home" | "login" | "callback";
 
@@ -10,7 +10,7 @@
 
   let route = $state<RouteKind>("home");
   let ready = $state(false);
-  let claims = $state(getClaims());
+  let session = $state(getSession());
 
   function currentPath(): string {
     return `${window.location.pathname}${window.location.search}${window.location.hash}`;
@@ -22,13 +22,13 @@
     return "home";
   }
 
-  function syncClaims(): void {
-    claims = getClaims();
+  function syncSession(): void {
+    session = getSession();
   }
 
   async function refreshSession(): Promise<void> {
     await refresh();
-    syncClaims();
+    syncSession();
   }
 
   async function handleLogout(): Promise<void> {
@@ -46,7 +46,7 @@
     if (!requireAuthenticatedRoute(currentPath())) return;
 
     ready = true;
-    syncClaims();
+    syncSession();
     void refreshSession();
 
     const refreshTimer = window.setInterval(() => {
@@ -73,23 +73,19 @@
 
     <section class="workspace-summary">
       <h2>当前会话</h2>
-      {#if claims}
+      {#if session}
         <dl>
           <div>
-            <dt>用户</dt>
-            <dd>{claims.name ?? claims.email}</dd>
+            <dt>状态</dt>
+            <dd>已登录</dd>
           </div>
           <div>
-            <dt>Workspace DB</dt>
-            <dd>{claims["https://surrealdb.com/db"]}</dd>
-          </div>
-          <div>
-            <dt>Access</dt>
-            <dd>{claims["https://surrealdb.com/ac"]}</dd>
+            <dt>Token 过期时间</dt>
+            <dd>{new Date(session.expiresAt * 1000).toLocaleString()}</dd>
           </div>
         </dl>
       {:else}
-        <p>会话 claims 尚未就绪。</p>
+        <p>会话尚未就绪。</p>
       {/if}
     </section>
   </main>

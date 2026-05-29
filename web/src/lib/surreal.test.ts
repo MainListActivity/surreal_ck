@@ -51,7 +51,6 @@ const input: SurrealConnectInput = {
   rawToken: "raw.jwt.token",
   namespace: "main",
   dbName: "ws_a1b2c3d4e5f6",
-  access: "admin",
 };
 
 describe("SurrealDB 浏览器直连客户端", () => {
@@ -90,7 +89,7 @@ describe("SurrealDB 浏览器直连客户端", () => {
       return originalConnect(url, opts);
     };
 
-    const next = await client.connectSurreal({ ...input, dbName: "ws_999", access: "participant" });
+    const next = await client.connectSurreal({ ...input, dbName: "ws_999" });
 
     expect(order).toEqual(["close-old", "connect-new"]);
     expect(next).toBe(second.conn);

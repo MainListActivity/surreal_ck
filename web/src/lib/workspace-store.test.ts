@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import type { AuthClaims } from "./auth";
 import type { SurrealConn, SurrealConnectInput } from "./surreal";
 import { createWorkspaceState } from "./workspace-store";
 
@@ -37,12 +36,15 @@ function fakeConn() {
   };
 }
 
-const claims: AuthClaims = {
-  sub: "user:ada",
-  email: "ada@example.test",
-  name: "Ada",
-  "https://surrealdb.com/db": "ws_a1b2c3d4e5f6",
-  "https://surrealdb.com/ac": "participant",
+const workspaceInput = {
+  rawToken: "raw.jwt",
+  dbName: "ws_a1b2c3d4e5f6",
+  role: "participant",
+  user: {
+    subject: "user:ada",
+    email: "ada@example.test",
+    name: "Ada",
+  },
 };
 
 function setup() {
@@ -60,10 +62,10 @@ function setup() {
 }
 
 describe("workspace 状态层", () => {
-  test("enterWorkspace 从 claims + raw token 派生 currentUser/currentWorkspace 并连库", async () => {
+  test("enterWorkspace 用 scope module 输入 + raw token 连库", async () => {
     const { state, connectInputs } = setup();
 
-    await state.enterWorkspace({ rawToken: "raw.jwt", claims });
+    await state.enterWorkspace(workspaceInput);
 
     expect(connectInputs).toEqual([
       {
@@ -71,7 +73,6 @@ describe("workspace 状态层", () => {
         rawToken: "raw.jwt",
         namespace: "main",
         dbName: "ws_a1b2c3d4e5f6",
-        access: "participant",
       },
     ]);
     expect(state.currentUser).toEqual({
@@ -89,7 +90,7 @@ describe("workspace 状态层", () => {
   test("断线时 connectionState 变 closed，恢复后回 open", async () => {
     const { state, fake } = setup();
 
-    await state.enterWorkspace({ rawToken: "raw.jwt", claims });
+    await state.enterWorkspace(workspaceInput);
     expect(state.connectionState).toBe("open");
 
     fake.emit("disconnected");
@@ -112,7 +113,7 @@ describe("workspace 状态层", () => {
       onChange: (snap) => snapshots.push(snap.connectionState),
     });
 
-    await state.enterWorkspace({ rawToken: "raw.jwt", claims });
+    await state.enterWorkspace(workspaceInput);
     fake.emit("disconnected");
     fake.emit("connected", "ws://localhost:8000/rpc");
 

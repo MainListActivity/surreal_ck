@@ -1,14 +1,9 @@
 import { UserManager, WebStorageStateStore } from "oidc-client-ts";
 import type { SigninRedirectArgs, User } from "oidc-client-ts";
 
-export type AuthAccess = "admin" | "participant";
-
-export type AuthClaims = {
-  sub: string;
-  email: string;
-  name?: string;
-  "https://surrealdb.com/db": string;
-  "https://surrealdb.com/ac": AuthAccess;
+export type AuthSession = {
+  accessToken: string;
+  expiresAt: number;
 };
 
 type AuthClientOptions = {
@@ -21,7 +16,7 @@ type AuthClientOptions = {
 
 export type AuthClient = {
   getToken(): string | null;
-  getClaims(): AuthClaims | null;
+  getSession(): AuthSession | null;
   isAuthenticated(): boolean;
   handleCallback(currentUrl?: string): Promise<AuthCallbackResult>;
   refresh(): Promise<string | null>;
@@ -37,6 +32,7 @@ export type AuthCallbackResult =
 type AuthUser = {
   access_token?: string;
   id_token?: string;
+  expires_in?: number;
   expires_at?: number;
   profile?: unknown;
   state?: unknown;
@@ -50,9 +46,9 @@ type AuthUserManager = {
 };
 
 const ACCESS_TOKEN_KEY = "oidc.access_token";
-const ID_TOKEN_KEY = "oidc.id_token";
 const EXP_KEY = "oidc.exp";
-const CLAIMS_KEY = "oidc.claims";
+const LEGACY_ID_TOKEN_KEY = "oidc.id_token";
+const LEGACY_CLAIMS_KEY = "oidc.claims";
 const REFRESH_SKEW_MS = 5 * 60 * 1000;
 
 type ViteEnv = Partial<{
@@ -66,17 +62,6 @@ let browserManager: UserManager | undefined;
 
 function browserStorage(): Storage | undefined {
   return typeof window === "undefined" ? undefined : window.sessionStorage;
-}
-
-function readJson<T>(storage: Storage | undefined, key: string): T | null {
-  const raw = storage?.getItem(key);
-  if (!raw) return null;
-
-  try {
-    return JSON.parse(raw) as T;
-  } catch {
-    return null;
-  }
 }
 
 function currentHref(): string {
@@ -123,7 +108,7 @@ function createBrowserUserManager(): UserManager | undefined {
     silent_redirect_uri: redirectUri,
     post_logout_redirect_uri: browserOrigin(),
     automaticSilentRenew: false,
-    includeIdTokenInSilentRenew: true,
+    includeIdTokenInSilentRenew: false,
     extraQueryParams: { audience },
     userStore: new WebStorageStateStore({ store: window.sessionStorage }),
   });
@@ -141,22 +126,59 @@ function isAuthRoute(path: string): boolean {
 
 function clearStoredSession(storage: Storage | undefined): void {
   storage?.removeItem(ACCESS_TOKEN_KEY);
-  storage?.removeItem(ID_TOKEN_KEY);
   storage?.removeItem(EXP_KEY);
-  storage?.removeItem(CLAIMS_KEY);
+  storage?.removeItem(LEGACY_ID_TOKEN_KEY);
+  storage?.removeItem(LEGACY_CLAIMS_KEY);
 }
 
-function isClaims(value: unknown): value is AuthClaims {
-  if (!value || typeof value !== "object") return false;
-  const claims = value as Partial<AuthClaims>;
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object") return null;
+  return value as Record<string, unknown>;
+}
 
-  return (
-    typeof claims.sub === "string" &&
-    typeof claims.email === "string" &&
-    typeof claims["https://surrealdb.com/db"] === "string" &&
-    (claims["https://surrealdb.com/ac"] === "admin" ||
-      claims["https://surrealdb.com/ac"] === "participant")
-  );
+function decodeBase64UrlJson(value: string): unknown {
+  const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
+  const binary = globalThis.atob(padded);
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+}
+
+function decodeJwtPayload(token: string | undefined): Record<string, unknown> | null {
+  const payload = token?.split(".")[1];
+  if (!payload) return null;
+
+  try {
+    return objectRecord(decodeBase64UrlJson(payload));
+  } catch {
+    return null;
+  }
+}
+
+function resolveExpiresAt(user: AuthUser, now: () => Date): number | null {
+  if (typeof user.expires_at === "number" && Number.isFinite(user.expires_at)) return user.expires_at;
+  if (typeof user.expires_in === "number" && Number.isFinite(user.expires_in)) {
+    return Math.floor(now().getTime() / 1000) + user.expires_in;
+  }
+
+  const tokenExp = decodeJwtPayload(user.access_token)?.exp;
+  return typeof tokenExp === "number" && Number.isFinite(tokenExp) ? tokenExp : null;
+}
+
+function sessionProblem(user: AuthUser, now: () => Date): string | null {
+  const missing: string[] = [];
+  if (!user.access_token) missing.push("access_token");
+  if (resolveExpiresAt(user, now) === null) missing.push("expires_at/expires_in");
+
+  return missing.length === 0 ? null : `missing ${missing.join(", ")}`;
+}
+
+function readStoredSession(storage: Storage | undefined): AuthSession | null {
+  const accessToken = storage?.getItem(ACCESS_TOKEN_KEY);
+  const expiresAt = Number(storage?.getItem(EXP_KEY));
+  if (!accessToken || !Number.isFinite(expiresAt)) return null;
+
+  return { accessToken, expiresAt };
 }
 
 function returnToFromState(state: unknown): string {
@@ -169,16 +191,17 @@ function callbackErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function persistUser(storage: Storage | undefined, user: AuthUser): string | null {
-  if (!user.access_token || !user.expires_at || !isClaims(user.profile)) {
+function persistUser(storage: Storage | undefined, user: AuthUser, now: () => Date): string | null {
+  const expiresAt = resolveExpiresAt(user, now);
+  if (!user.access_token || !expiresAt) {
     clearStoredSession(storage);
     return null;
   }
 
   storage?.setItem(ACCESS_TOKEN_KEY, user.access_token);
-  if (user.id_token) storage?.setItem(ID_TOKEN_KEY, user.id_token);
-  storage?.setItem(EXP_KEY, String(user.expires_at));
-  storage?.setItem(CLAIMS_KEY, JSON.stringify(user.profile));
+  storage?.setItem(EXP_KEY, String(expiresAt));
+  storage?.removeItem(LEGACY_ID_TOKEN_KEY);
+  storage?.removeItem(LEGACY_CLAIMS_KEY);
 
   return user.access_token;
 }
@@ -195,17 +218,16 @@ export function createAuthClient(options: AuthClientOptions = {}): AuthClient {
   }
 
   function isCurrentAuthenticated(): boolean {
-    const token = storage?.getItem(ACCESS_TOKEN_KEY);
-    const exp = Number(storage?.getItem(EXP_KEY));
-    return Boolean(token && Number.isFinite(exp) && exp * 1000 > now().getTime());
+    const session = readStoredSession(storage);
+    return Boolean(session && session.expiresAt * 1000 > now().getTime());
   }
 
   return {
     getToken() {
       return storage?.getItem(ACCESS_TOKEN_KEY) ?? null;
     },
-    getClaims() {
-      return readJson<AuthClaims>(storage, CLAIMS_KEY);
+    getSession() {
+      return readStoredSession(storage);
     },
     isAuthenticated() {
       return isCurrentAuthenticated();
@@ -236,8 +258,14 @@ export function createAuthClient(options: AuthClientOptions = {}): AuthClient {
 
       try {
         const user = (await userManager.signinRedirectCallback(currentUrl)) as User;
-        const accessToken = persistUser(storage, user);
-        if (!accessToken) return { ok: false, error: "OIDC callback did not return a complete session" };
+        const accessToken = persistUser(storage, user, now);
+        if (!accessToken) {
+          const problem = sessionProblem(user, now);
+          return {
+            ok: false,
+            error: `OIDC callback did not return a complete session${problem ? `: ${problem}` : ""}`,
+          };
+        }
 
         return { ok: true, returnTo: returnToFromState(user.state) };
       } catch (error) {
@@ -261,7 +289,7 @@ export function createAuthClient(options: AuthClientOptions = {}): AuthClient {
 
       try {
         const user = await userManager.signinSilent();
-        const accessToken = user ? persistUser(storage, user) : null;
+        const accessToken = user ? persistUser(storage, user, now) : null;
         if (accessToken) return accessToken;
 
         clearStoredSession(storage);
@@ -295,8 +323,8 @@ export function getToken(): string | null {
   return defaultAuth.getToken();
 }
 
-export function getClaims(): AuthClaims | null {
-  return defaultAuth.getClaims();
+export function getSession(): AuthSession | null {
+  return defaultAuth.getSession();
 }
 
 export function isAuthenticated(): boolean {

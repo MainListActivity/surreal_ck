@@ -1,11 +1,10 @@
-import type { AuthClaims } from "./auth";
-import type { SurrealAccess, SurrealConn, SurrealConnectInput } from "./surreal";
+import type { SurrealConn, SurrealConnectInput } from "./surreal";
 
 export type ConnectionState = "open" | "closing" | "closed";
 
 export type CurrentUser = {
-  subject: string;
-  email: string;
+  subject?: string;
+  email?: string;
   name?: string;
 };
 
@@ -14,12 +13,16 @@ export type CurrentWorkspace = {
   slug?: string;
   name?: string;
   dbName: string;
-  role: SurrealAccess;
+  role?: string;
 };
 
 export type EnterWorkspaceInput = {
   rawToken: string;
-  claims: AuthClaims;
+  dbName: string;
+  user?: CurrentUser;
+  role?: string;
+  slug?: string;
+  name?: string;
 };
 
 export type WorkspaceSnapshot = {
@@ -42,21 +45,6 @@ export type WorkspaceState = {
   readonly connectionState: ConnectionState;
   enterWorkspace(input: EnterWorkspaceInput): Promise<void>;
 };
-
-function userFromClaims(claims: AuthClaims): CurrentUser {
-  return {
-    subject: claims.sub,
-    email: claims.email,
-    ...(claims.name === undefined ? {} : { name: claims.name }),
-  };
-}
-
-function workspaceFromClaims(claims: AuthClaims): CurrentWorkspace {
-  return {
-    dbName: claims["https://surrealdb.com/db"],
-    role: claims["https://surrealdb.com/ac"],
-  };
-}
 
 export function createWorkspaceState(options: WorkspaceStateOptions): WorkspaceState {
   let currentUser: CurrentUser | null = null;
@@ -92,18 +80,22 @@ export function createWorkspaceState(options: WorkspaceStateOptions): WorkspaceS
     get connectionState() {
       return connectionState;
     },
-    async enterWorkspace({ rawToken, claims }) {
-      const workspace = workspaceFromClaims(claims);
+    async enterWorkspace(input) {
+      const workspace: CurrentWorkspace = {
+        dbName: input.dbName,
+        ...(input.role === undefined ? {} : { role: input.role }),
+        ...(input.slug === undefined ? {} : { slug: input.slug }),
+        ...(input.name === undefined ? {} : { name: input.name }),
+      };
       const conn = await options.connect({
         url: options.surrealUrl,
-        rawToken,
+        rawToken: input.rawToken,
         namespace: options.namespace,
         dbName: workspace.dbName,
-        access: workspace.role,
       });
       trackConnection(conn);
 
-      currentUser = userFromClaims(claims);
+      currentUser = input.user ?? null;
       currentWorkspace = workspace;
       setConnectionState("open");
     },

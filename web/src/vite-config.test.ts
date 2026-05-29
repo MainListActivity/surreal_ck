@@ -12,6 +12,10 @@ describe("D2-01 vite.config SPA 骨架", () => {
     expect(config.base ?? "/").toBe("/");
   });
 
+  test("读取仓库根 .env，承接根级 VITE_OIDC_* 配置", () => {
+    expect(config.envDir).toBe("..");
+  });
+
   test("dev server 把 /api 代理到本地后端 8080", () => {
     const proxy = config.server?.proxy as Record<string, ProxyEntry> | undefined;
     expect(proxy).toBeDefined();

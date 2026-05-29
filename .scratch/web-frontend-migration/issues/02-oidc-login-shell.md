@@ -12,7 +12,7 @@ Label: done
 ```
 web/src/routes/auth/login.svelte     -- 触发 OIDC redirect
 web/src/routes/auth/callback.svelte  -- 处理回调
-web/src/lib/auth.ts                  -- token store / silent refresh / logout / claim parse
+web/src/lib/auth.ts                  -- token store / silent refresh / logout
 ```
 
 依赖：`oidc-client-ts`（SPA Auth Code + PKCE，标准实现）。
@@ -21,23 +21,15 @@ web/src/lib/auth.ts                  -- token store / silent refresh / logout / 
 
 1. 未登录用户访问任何路由 → 重定向到 `/auth/login`。
 2. login 页：构造 IdP authorize URL（state + PKCE），跳转。
-3. callback 页：拿到 code，换 token，存 sessionStorage（key: `oidc.access_token` / `oidc.id_token` / `oidc.exp` / `oidc.claims`）。
-4. `auth.ts` 暴露 `getToken()`、`getClaims()`、`refresh()`、`logout()`、`isAuthenticated()`。
+3. callback 页：拿到 code，换 token，只存浏览器会话所需字段（key: `oidc.access_token` / `oidc.exp`）。
+4. `auth.ts` 暴露 `getToken()`、`getSession()`、`refresh()`、`logout()`、`isAuthenticated()`。
 5. token 临到期 5 分钟内自动 silent refresh；失败则跳 login。
 6. logout：清 sessionStorage + 跳 IdP logout endpoint。
 7. **不经过后端**——OIDC code/token exchange 是浏览器直连 IdP。
 
-token claim 形态（与 [`frontend-direct-connect.md`](../../../docs/adr/frontend-direct-connect.md) 对齐）：
-
-```ts
-{
-  sub: string;
-  email: string;
-  name?: string;
-  'https://surrealdb.com/db': string;  // 当前 workspace database
-  'https://surrealdb.com/ac': 'admin' | 'participant';
-}
-```
+前端不把 OIDC profile / id_token / access token claim 当作 callback 完整性条件。`access_token`
+是 SurrealDB auth 的直接输入；`email`、workspace db、access 由 Workspace Scope Module /
+SurrealDB access 后续获取或校验。
 
 env：
 
@@ -48,8 +40,8 @@ env：
 
 ## Acceptance criteria
 
-- [~] 无痕窗口访问根 URL → 重定向 IdP → 登录 → 回到首页 + token / claims 存好。 _（代码路径已落，未现场跑真实 IdP 登录）_
-- [x] `getClaims()['https://surrealdb.com/db']` 是有效 ws db name。 _（`AuthClaims` 与 runtime guard 要求该 claim 是 string）_
+- [~] 无痕窗口访问根 URL → 重定向 IdP → 登录 → 回到首页 + access token / 过期时间存好。 _（代码路径已落，未现场跑真实 IdP 登录）_
+- [x] callback 不要求 `email` / `https://surrealdb.com/db` / `https://surrealdb.com/ac`，也不从 `id_token` 补全浏览器 session。
 - [x] token 过期前 silent refresh 不闪屏；失败 → 跳 login。
 - [x] logout 后回到 login 页；sessionStorage 清空。 _（本 issue 清 sessionStorage + 交给 IdP `signoutRedirect`；实际回跳依赖 IdP 配置）_
 - [x] 错误 state / 无 code 等异常情况显示明确错误页。
@@ -64,12 +56,12 @@ env：
 ## 落地记录（2026-05-28）
 
 - 新增依赖 `oidc-client-ts@^3.5.0`，只落在 `@surreal-ck/web` workspace。
-- 新增 `web/src/lib/auth.ts`：统一封装 OIDC SPA client、`sessionStorage` key（`oidc.access_token` / `oidc.id_token` / `oidc.exp` / `oidc.claims`）、claim runtime guard、`getToken()` / `getClaims()` / `isAuthenticated()` / `refresh()` / `logout()` / `login()` / `handleCallback()` / `requireAuthenticatedRoute()`。
+- 新增 `web/src/lib/auth.ts`：统一封装 OIDC SPA client、`sessionStorage` key（`oidc.access_token` / `oidc.exp`）、`getToken()` / `getSession()` / `isAuthenticated()` / `refresh()` / `logout()` / `login()` / `handleCallback()` / `requireAuthenticatedRoute()`。
 - 新增 `web/src/routes/auth/login.svelte` 与 `web/src/routes/auth/callback.svelte`：login 页触发 `signinRedirect`；callback 页处理 code/state、成功后回 `returnTo`，失败时显示明确错误。
-- 更新 `web/src/App.svelte`：普通 Vite SPA 内做最小路由分发，业务路由未登录跳 `/auth/login?returnTo=...`；已登录首页显示当前 token claims 中的 workspace db/access；每分钟调用 `refresh()`，5 分钟窗口内 silent renew。
+- 更新 `web/src/App.svelte`：普通 Vite SPA 内做最小路由分发，业务路由未登录跳 `/auth/login?returnTo=...`；已登录首页只显示浏览器 session 状态；每分钟调用 `refresh()`，5 分钟窗口内 silent renew。
 - 更新 `web/src/env.d.ts`：声明 `VITE_OIDC_ISSUER` / `VITE_OIDC_CLIENT_ID` / `VITE_OIDC_REDIRECT_URI` / `VITE_OIDC_AUDIENCE`。
 - 更新 `web/vite.config.ts`：`optimizeDeps.entries = ["index.html"]`，避免 dev server 预构建扫描 `web/legacy` 里的旧 Electrobun import。
-- TDD：新增 `web/src/lib/auth.test.ts`，覆盖 session 恢复、callback 持久化、callback 缺 code/state、5 分钟 silent refresh、refresh 失败/空用户跳 login、logout 清理、业务路由 guard、login redirect state。
+- TDD：新增 `web/src/lib/auth.test.ts`，覆盖 session 恢复、callback 持久化、callback 不要求 email/db/ac、callback 不读 id_token、callback 缺 code/state、5 分钟 silent refresh、refresh 失败/空用户跳 login、logout 清理、业务路由 guard、login redirect state。
 - 验收命令：
   - `pnpm --filter @surreal-ck/web test`：15 pass（含 Vite legacy scan 回归）。
   - `pnpm --filter @surreal-ck/web typecheck`：tsc + svelte-check 0 error / 0 warning。
