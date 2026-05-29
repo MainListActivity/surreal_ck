@@ -1,0 +1,31 @@
+import type { Component } from "svelte";
+import FilterPanel from "../tool-panels/FilterPanel.svelte";
+import SortPanel from "../tool-panels/SortPanel.svelte";
+import GroupPanel from "../tool-panels/GroupPanel.svelte";
+
+/**
+ * 工具栏按钮注册表。
+ *
+ * 每个工具可挂 `panel`（toolbar 下方展开 UI）或 `command`（直接执行动作）。
+ * 筛选 / 排序 / 分组都通过 ViewParams 转译为 SurrealQL（参数化 + 列白名单），由数据库执行。
+ *
+ * 字段管理（fields）面板属簇 D2-07g，待该簇接入后再注册。
+ */
+export type ToolRegistration = {
+  id: string;
+  label: string;
+  icon: string;
+  panelWidth?: number;
+  panel?: Component;
+  command?: () => void | Promise<void>;
+};
+
+export const toolRegistry: ToolRegistration[] = [
+  { id: "filter", label: "筛选", icon: "filter", panel: FilterPanel, panelWidth: 640 },
+  { id: "group", label: "分组", icon: "users", panel: GroupPanel, panelWidth: 420 },
+  { id: "sort", label: "排序", icon: "sortDesc", panel: SortPanel, panelWidth: 520 },
+];
+
+export function getTool(id: string): ToolRegistration | undefined {
+  return toolRegistry.find((t) => t.id === id);
+}

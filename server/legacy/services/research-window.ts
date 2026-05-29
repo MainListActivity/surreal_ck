@@ -88,53 +88,12 @@ export function createResearchWindowService(deps: ResearchWindowServiceDeps) {
 export function openResearchWindow(req: OpenResearchWindowRequest): Promise<OpenResearchWindowResponse> {
   return createResearchWindowService({
     getResearchSession,
-    openWindow: openElectrobunResearchWindow,
+    openWindow: openRetiredResearchWindow,
   }).openResearchWindow(req);
 }
 
-async function openElectrobunResearchWindow(params: ResearchWindowParams): Promise<void> {
-  const { BrowserView, BrowserWindow } = await import("electrobun/bun");
-
-  // Electrobun 的 views:// URL scheme handler 用 absoluteString 提取路径，
-  // 无法处理 query string 或 hash fragment（会把参数当文件名的一部分去查找）。
-  // 解决方案：用纯净 URL 加载窗口，通过主 webview 的 localStorage 传递初始化参数，
-  // 两个 webview 共享同一 partition（persist:default），localStorage 跨 webview 可见。
-  const payload = JSON.stringify({ mode: "research", ...params });
-  const storageKey = "__research_window_params";
-  const escapedPayload = JSON.stringify(payload); // double-encode for JS string literal
-
-  // 先通过主窗口 webview 把参数写入共享 localStorage，研究窗口加载后读取
-  const mainViews = BrowserView.getAll();
-  if (mainViews.length > 0) {
-    mainViews[0].executeJavascript(
-      `localStorage.setItem(${JSON.stringify(storageKey)}, ${escapedPayload});`
-    );
-  }
-
-  let win: ResearchBrowserWindow | null = null;
-  const rpc = researchWindowRpcFactory?.(() => win);
-
-  win = new BrowserWindow({
-    title: "资源检索",
-    url: "views://mainview/index.html",
-    frame: { width: 1180, height: 780, x: 140, y: 120 },
-    titleBarStyle: "hiddenInset",
-    rpc,
-  });
-
-  win.on("close", () => {
-    void cancelResearchSessionForClosedWindow(params.sessionId).catch((err) => {
-      console.warn("[research-window] close cancellation failed:", err);
-    });
-  });
-
-  // 如果主窗口脚本注入在某些平台上晚于新窗口首屏，这里在研究窗口自身
-  // 再写入一次并刷新，让 App 的同步 route 初始化能稳定读到 research 参数。
-  setTimeout(() => {
-    win.webview.executeJavascript(
-      `localStorage.setItem(${JSON.stringify(storageKey)}, ${escapedPayload}); window.location.reload();`
-    );
-  }, 100);
+async function openRetiredResearchWindow(_params: ResearchWindowParams): Promise<void> {
+  throw new ServiceError("NOT_IMPLEMENTED", "旧桌面检索窗口已退役，请使用 Web 资源检索入口");
 }
 
 export async function cancelResearchSessionForClosedWindow(

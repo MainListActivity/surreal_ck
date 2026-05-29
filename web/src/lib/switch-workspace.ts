@@ -24,6 +24,13 @@ export type SwitchResult =
   | { ok: true; noop?: boolean }
   | { ok: false; reason: "forbidden" | "refresh-failed" | "error"; message?: string };
 
+/** 页面加载/刷新后建立直连的结果；ok 时带最终进入的 slug。 */
+export type BootstrapResult =
+  | { ok: true; slug: string }
+  // 没有任何可用 workspace；canCreate 决定是引导创建还是提示联系管理员邀请。
+  | { ok: false; reason: "none"; canCreate: boolean }
+  | { ok: false; reason: "forbidden" | "refresh-failed" | "error"; message?: string };
+
 /** 后端 `POST /api/session/switch-workspace` 的正常返回。 */
 export type SwitchResponse = { ok: boolean; refreshRequired: boolean };
 
@@ -42,6 +49,11 @@ export type SwitchDeps = {
 export type WorkspaceSwitcher = {
   loadWorkspaces(): Promise<LoadWorkspacesResult>;
   switchWorkspace(slug: string): Promise<SwitchResult>;
+  /**
+   * 页面加载/刷新后，按 URL slug（或 token 当前 db / 首个 workspace）建立 SurrealDB 直连。
+   * switchWorkspace 在「已在目标」时短路不连库，故进入页面必须走这里把连接拉起来。
+   */
+  bootstrapWorkspace(slug?: string): Promise<BootstrapResult>;
 };
 
 const SURREAL_DB_CLAIM = "https://surrealdb.com/db";
@@ -91,7 +103,7 @@ function errorStatus(error: unknown): number | null {
 }
 
 export function createWorkspaceSwitcher(deps: SwitchDeps): WorkspaceSwitcher {
-  return {
+  const switcher: WorkspaceSwitcher = {
     async loadWorkspaces() {
       const token = deps.getToken();
       const workspaces = await deps.listWorkspaces();
@@ -140,5 +152,46 @@ export function createWorkspaceSwitcher(deps: SwitchDeps): WorkspaceSwitcher {
       deps.navigate(`/w/${target.slug}`);
       return { ok: true };
     },
+
+    async bootstrapWorkspace(slug) {
+      const workspaces = await deps.listWorkspaces();
+      // 空列表：不是错误，可能是新账号。canCreate 来自 token claim（与列表无关），
+      // 让 UI 决定是引导创建还是提示联系管理员邀请。
+      if (workspaces.length === 0) {
+        return { ok: false, reason: "none", canCreate: canCreateWorkspace(deps.getToken()) };
+      }
+
+      const currentDb = currentDbFromToken(deps.getToken());
+
+      // 目标优先级：URL slug → token 当前 db 对应 → 首个 workspace。
+      let target: WorkspaceListItem | undefined;
+      if (slug) {
+        target = workspaces.find((ws) => ws.slug === slug);
+        if (!target) return { ok: false, reason: "forbidden" };
+      } else {
+        target =
+          (currentDb ? workspaces.find((ws) => ws.dbName === currentDb) : undefined) ??
+          workspaces[0];
+      }
+
+      // token 已 scope 到目标 db：直接用现有 token 连库（switchWorkspace 此时会短路不连）。
+      if (currentDb === target.dbName) {
+        await deps.enterWorkspace({
+          rawToken: deps.getToken() ?? "",
+          dbName: target.dbName,
+          role: target.role,
+          slug: target.slug,
+          name: target.name,
+        });
+        return { ok: true, slug: target.slug };
+      }
+
+      // 否则走完整 switch（POST switch → refresh → enter）。
+      const result = await switcher.switchWorkspace(target.slug);
+      if (result.ok) return { ok: true, slug: target.slug };
+      return { ok: false, reason: result.reason, message: result.message };
+    },
   };
+
+  return switcher;
 }

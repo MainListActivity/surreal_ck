@@ -3,6 +3,7 @@ import { getToken, refresh } from "./auth";
 import { enterWorkspace } from "./workspace-store.svelte";
 import {
   createWorkspaceSwitcher,
+  type BootstrapResult,
   type LoadWorkspacesResult,
   type SwitchResponse,
   type SwitchResult,
@@ -47,4 +48,8 @@ export function loadWorkspaces(): Promise<LoadWorkspacesResult> {
 
 export function switchWorkspace(slug: string): Promise<SwitchResult> {
   return switcher.switchWorkspace(slug);
+}
+
+export function bootstrapWorkspace(slug?: string): Promise<BootstrapResult> {
+  return switcher.bootstrapWorkspace(slug);
 }

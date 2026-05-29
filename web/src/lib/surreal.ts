@@ -32,6 +32,8 @@ export type SurrealWriter = {
     table: string,
     data: Record<string, unknown>,
   ): Promise<T>;
+  /** 删除单条记录；`id` 是 RecordId 字符串，内部包成 StringRecordId。 */
+  deleteRecord(id: string): Promise<unknown>;
 };
 
 /**
@@ -61,6 +63,7 @@ export type SurrealConn = SurrealWriter & {
 type RawWriter = {
   update(id: unknown): { merge(patch: Record<string, unknown>): Promise<unknown> };
   create(what: unknown): { content(data: Record<string, unknown>): Promise<unknown> };
+  delete(id: unknown): Promise<unknown>;
 };
 
 type RawTransaction = RawWriter & {
@@ -77,6 +80,7 @@ type RawDriver = {
 function createWriter(raw: RawWriter): SurrealWriter {
   const rawUpdate = raw.update;
   const rawCreate = raw.create;
+  const rawDelete = raw.delete;
   return {
     async updateRecord<T = Record<string, unknown>>(
       id: string,
@@ -89,6 +93,9 @@ function createWriter(raw: RawWriter): SurrealWriter {
       data: Record<string, unknown>,
     ): Promise<T> {
       return (await rawCreate.call(raw, new Table(table)).content(data)) as T;
+    },
+    async deleteRecord(id: string): Promise<unknown> {
+      return await rawDelete.call(raw, new StringRecordId(id));
     },
   };
 }
@@ -119,6 +126,7 @@ export function createBrowserConn(raw: RawDriver): SurrealConn {
     },
     updateRecord: writer.updateRecord,
     createRecord: writer.createRecord,
+    deleteRecord: writer.deleteRecord,
     async transaction<T>(run: (tx: SurrealWriter) => Promise<T>): Promise<T> {
       const tx = await rawBeginTransaction.call(raw);
       try {

@@ -177,3 +177,94 @@ describe("switchWorkspace", () => {
     expect(calls.enter).toHaveLength(0);
   });
 });
+
+describe("bootstrapWorkspace — 页面加载/刷新后建立直连", () => {
+  test("URL slug 即当前 token db：直接用现有 token enter（不 switch/refresh/navigate）", async () => {
+    const { switcher, calls } = setup();
+
+    const result = await switcher.bootstrapWorkspace("alpha");
+
+    expect(result.ok).toBe(true);
+    expect(result.slug).toBe("alpha");
+    expect(calls.switch).toHaveLength(0);
+    expect(calls.refresh).toBe(0);
+    expect(calls.enter).toHaveLength(1);
+    expect(calls.enter[0]).toMatchObject({ dbName: "ws_alpha", role: "admin", slug: "alpha", name: "Alpha" });
+    expect(calls.navigate).toHaveLength(0);
+  });
+
+  test("URL slug 与 token db 不同：走 switchWorkspace 全流程", async () => {
+    const { switcher, calls } = setup();
+
+    const result = await switcher.bootstrapWorkspace("beta");
+
+    expect(result.ok).toBe(true);
+    expect(result.slug).toBe("beta");
+    expect(calls.switch).toEqual([{ workspaceSlug: "beta" }]);
+    expect(calls.refresh).toBe(1);
+    expect(calls.enter).toHaveLength(1);
+  });
+
+  test("无 slug：用 token 当前 db 对应 workspace 建立直连", async () => {
+    const { switcher, calls } = setup();
+
+    const result = await switcher.bootstrapWorkspace();
+
+    expect(result.ok).toBe(true);
+    expect(result.slug).toBe("alpha");
+    expect(calls.enter).toHaveLength(1);
+    expect(calls.enter[0]).toMatchObject({ dbName: "ws_alpha", slug: "alpha" });
+  });
+
+  test("无 slug 且 token 无 db claim：落到首个 workspace 并 switch", async () => {
+    const { switcher, calls } = setup({
+      getToken: () => jwt({ sub: "u" }),
+    });
+
+    const result = await switcher.bootstrapWorkspace();
+
+    expect(result.ok).toBe(true);
+    expect(result.slug).toBe("alpha");
+    expect(calls.switch).toEqual([{ workspaceSlug: "alpha" }]);
+  });
+
+  test("列表为空且 token 无创建权限：none + canCreate=false，不 enter", async () => {
+    const { switcher, calls } = setup({
+      listWorkspaces: async () => [],
+      getToken: () => jwt({ sub: "u" }),
+    });
+
+    const result = await switcher.bootstrapWorkspace("alpha");
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toBe("none");
+    if (result.reason !== "none") throw new Error("unreachable");
+    expect(result.canCreate).toBe(false);
+    expect(calls.enter).toHaveLength(0);
+  });
+
+  test("列表为空但 token 可创建：none + canCreate=true（引导创建首个 workspace）", async () => {
+    const { switcher } = setup({
+      listWorkspaces: async () => [],
+      getToken: () => jwt({ can_create_workspace: true }),
+    });
+
+    const result = await switcher.bootstrapWorkspace();
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.reason).toBe("none");
+    if (result.reason !== "none") throw new Error("unreachable");
+    expect(result.canCreate).toBe(true);
+  });
+
+  test("URL slug 不在权威列表：forbidden", async () => {
+    const { switcher } = setup();
+
+    const result = await switcher.bootstrapWorkspace("ghost");
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe("forbidden");
+  });
+});

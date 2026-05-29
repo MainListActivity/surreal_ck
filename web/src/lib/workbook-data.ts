@@ -163,6 +163,28 @@ async function writePatch(
 }
 
 /**
+ * 直连删除若干行：每个 id 走 `deleteRecord`（DELETE by RecordId），放在一个事务里，
+ * 任一删除失败整体回滚并返回 ok:false。权限由表 PERMISSIONS 兜底——普通成员若无 delete
+ * 权限会被引擎拒绝，错误经 {@link describeWriteError} 翻译。空列表直接返回成功，不开事务。
+ */
+export async function deleteRows(
+  conn: SurrealConn,
+  ids: Array<RecordIdString | string>,
+): Promise<SaveResult> {
+  if (!ids.length) return { ok: true };
+  try {
+    await conn.transaction(async (tx) => {
+      for (const id of ids) {
+        await tx.deleteRecord(String(id));
+      }
+    });
+  } catch (err) {
+    return { ok: false, message: describeWriteError(err) };
+  }
+  return { ok: true };
+}
+
+/**
  * 管理员在浏览器直接给业务表加一列 = `DEFINE FIELD`（DDL）。
  * 字段的 type / ASSERT 由前后端共享的 {@link buildSurrealFieldSchema} 生成，
  * 保证浏览器侧建列与后端模板口径一致。
@@ -193,7 +215,7 @@ export async function defineField(
 }
 
 /** 把 SurrealDB 引擎错误翻译成 UI 可读提示；权限不足是普通成员尝试 DDL 的典型路径。 */
-function describeWriteError(err: unknown): string {
+export function describeWriteError(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
   if (/permission|not allowed|IAM/i.test(message)) {
     return "没有权限执行该操作（仅工作区管理员可修改表结构）";

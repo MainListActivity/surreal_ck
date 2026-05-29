@@ -26,7 +26,7 @@ web/src/lib/switch-workspace.ts          -- 调 /api/session/switch-workspace + 
    c. 前端调用 `refresh()` silent refresh，拿到新 token。
    d. 调 `enterWorkspace(newToken)` → 新 db 连接建立，旧连接关闭。
    e. URL 更新到 `/w/<slug>`，UI 重渲染。
-4. "新建 workspace"按钮 → 启 issue 06 流程。
+4. "新建 workspace"按钮 → 由 issue 05a 补齐下拉菜单入口，并启动 issue 06 流程。
 5. workspace-store 暴露 `connectionState`，UI 在 connecting / open / closed 时分别渲染。
 
 UI：顶栏右上角 dropdown，列 `/api/session/workspaces` 返回的 workspace + 当前选中高亮 + "新建 workspace"按钮（是否显示由后端返回的 capability 或 token claim 决定）。

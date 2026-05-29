@@ -1,4 +1,3 @@
-import { Electroview } from "electrobun/view";
 import type {
   AiMessageChunkEvent,
   AiProgressEvent,
@@ -62,34 +61,29 @@ export function subscribeAiRunCancelled(
   };
 }
 
-export const rpc = Electroview.defineRPC<AppRPC>({
-  // Electrobun 默认 1000ms，但创建工作簿/字段会触发多次远端
-  // execTemplate (HTTPS 往返)，单次耗时常 > 1s。Infinity 关掉客户端层
-  // 超时，错误兜底由 services 层的 withResult/Result 协议负责。
-  maxRequestTime: Infinity,
-  handlers: {
-    requests: {},
-    messages: {
-      pushRows: ({ rows }) => {
-        _rows?.(rows);
-      },
-      authStateChanged: ({ state }) => {
-        applyAuthState(state);
-      },
-      aiMessageChunk: (event) => {
-        aiChunkSubscribers.get(event.streamId)?.(event);
-      },
-      aiProgress: (event) => {
-        aiProgressSubscribers.get(event.runId)?.(event);
-      },
-      aiSuspended: (event) => {
-        aiSuspendedSubscribers.get(event.runId)?.(event);
-      },
-      aiRunCancelled: (event) => {
-        aiRunCancelledSubscribers.get(event.runId)?.(event);
-      },
-    },
+export const rpc = {
+  async request(): Promise<never> {
+    throw new Error("legacy desktop RPC has retired");
   },
-});
+  send(event: keyof AppRPC["messages"], payload: unknown): void {
+    if (event === "pushRows") {
+      _rows?.((payload as { rows: { id: string; name: string; value: string }[] }).rows);
+    } else if (event === "authStateChanged") {
+      applyAuthState((payload as { state: Parameters<typeof applyAuthState>[0] }).state);
+    } else if (event === "aiMessageChunk") {
+      const next = payload as AiMessageChunkEvent;
+      aiChunkSubscribers.get(next.streamId)?.(next);
+    } else if (event === "aiProgress") {
+      const next = payload as AiProgressEvent;
+      aiProgressSubscribers.get(next.runId)?.(next);
+    } else if (event === "aiSuspended") {
+      const next = payload as WorkflowSuspendedEvent;
+      aiSuspendedSubscribers.get(next.runId)?.(next);
+    } else if (event === "aiRunCancelled") {
+      const next = payload as AiRunCancelledEvent;
+      aiRunCancelledSubscribers.get(next.runId)?.(next);
+    }
+  },
+};
 
-export const view = new Electroview({ rpc });
+export const view = { rpc };

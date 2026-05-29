@@ -87,7 +87,7 @@
 
   function isTitlebarNoDragTarget(target: EventTarget | null) {
     return target instanceof HTMLElement
-      && Boolean(target.closest(".electrobun-webkit-app-region-no-drag"));
+      && Boolean(target.closest(".desktop-webkit-app-region-no-drag"));
   }
 
   function handleTitlebarMouseDown(event: MouseEvent) {
@@ -156,18 +156,18 @@
 
 <div class="app-shell">
   <header
-    class="global-titlebar electrobun-webkit-app-region-drag"
+    class="global-titlebar desktop-webkit-app-region-drag"
     role="presentation"
     onmousedown={handleTitlebarMouseDown}
     ondblclick={handleTitlebarDoubleClick}
     onselectstart={preventTitlebarTextSelection}
     ondragstart={preventTitlebarTextSelection}
   >
-    <div class="titlebar-drag electrobun-webkit-app-region-drag"></div>
+    <div class="titlebar-drag desktop-webkit-app-region-drag"></div>
     {#if auth.loggedIn || auth.offlineMode}
       <SyncStatusBar />
       <button
-        class="ai-titlebar-btn electrobun-webkit-app-region-no-drag"
+        class="ai-titlebar-btn desktop-webkit-app-region-no-drag"
         class:active={appState.aiDrawerOpen}
         aria-label="AI 助手"
         onclick={() => appState.toggleAiDrawer()}

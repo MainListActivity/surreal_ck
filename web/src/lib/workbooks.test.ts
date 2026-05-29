@@ -1,0 +1,164 @@
+import { describe, expect, test } from "bun:test";
+import type { SurrealConn } from "./surreal";
+import {
+  createWorkbooksStore,
+  filterWorkbooksByQuery,
+  type WorkbookRow,
+} from "./workbooks";
+
+type Recorder = {
+  queries: Array<{ sql: string; bindings: unknown }>;
+  creates: Array<{ table: string; data: Record<string, unknown> }>;
+  updates: Array<{ id: string; patch: Record<string, unknown> }>;
+};
+
+/** fake conn：SELECT FROM workbook 返回注入的列表；createRecord 给新 workbook 一个真实 id。 */
+function setup(opts: {
+  workbooks?: Array<Record<string, unknown>>;
+  createThrows?: unknown;
+  updateThrows?: unknown;
+} = {}) {
+  const rec: Recorder = { queries: [], creates: [], updates: [] };
+  const rows = opts.workbooks ?? [];
+  let createSeq = 0;
+
+  const conn = {
+    status: "connected",
+    connect: async () => true,
+    use: async () => ({}),
+    close: async () => true,
+    subscribe: () => () => {},
+    query: (async (sql: string, bindings?: Record<string, unknown>) => {
+      rec.queries.push({ sql, bindings });
+      return rows;
+    }) as SurrealConn["query"],
+    liveTable: (async () => () => {}) as SurrealConn["liveTable"],
+    updateRecord: (async (id: string, patch: Record<string, unknown>) => {
+      if (opts.updateThrows) throw opts.updateThrows;
+      rec.updates.push({ id, patch });
+      return { id, ...patch };
+    }) as SurrealConn["updateRecord"],
+    createRecord: (async (table: string, data: Record<string, unknown>) => {
+      if (opts.createThrows) throw opts.createThrows;
+      rec.creates.push({ table, data });
+      createSeq += 1;
+      return { id: `${table}:new${createSeq}`, ...data };
+    }) as SurrealConn["createRecord"],
+    deleteRecord: (async () => ({})) as SurrealConn["deleteRecord"],
+    transaction: (async (run: (tx: SurrealConn) => Promise<unknown>) => run(conn)) as SurrealConn["transaction"],
+  } as SurrealConn;
+
+  const store = createWorkbooksStore({ getConn: () => conn });
+  return { store, conn, rec };
+}
+
+const sampleRows = [
+  { id: "workbook:wb1", name: "案件台账", template_key: "claims", updated_at: "2026-05-20" },
+  { id: "workbook:wb2", name: "财务汇总", updated_at: "2026-05-19" },
+];
+
+describe("load — 直连读 workbook 列表", () => {
+  test("SELECT FROM workbook 按 updated_at 倒序，记录裁成 WorkbookRow", async () => {
+    const { store, rec } = setup({ workbooks: sampleRows });
+
+    await store.load();
+
+    expect(rec.queries[0].sql).toMatch(/FROM workbook/i);
+    expect(rec.queries[0].sql).toMatch(/ORDER BY updated_at DESC/i);
+    expect(store.loading).toBe(false);
+    expect(store.error).toBeNull();
+    expect(store.workbooks).toEqual([
+      { id: "workbook:wb1", name: "案件台账", templateKey: "claims", updatedAt: "2026-05-20" },
+      { id: "workbook:wb2", name: "财务汇总", templateKey: undefined, updatedAt: "2026-05-19" },
+    ]);
+  });
+
+  test("查询抛错 → error 落到 state，workbooks 不变", async () => {
+    const { store } = setup({ workbooks: sampleRows });
+    await store.load();
+    // 把 conn.query 换成抛错的，再 load 一次
+    const broken = createWorkbooksStore({
+      getConn: () =>
+        ({
+          query: async () => {
+            throw new Error("boom");
+          },
+        }) as unknown as SurrealConn,
+    });
+    await broken.load();
+    expect(broken.error).not.toBeNull();
+    expect(broken.workbooks).toEqual([]);
+  });
+});
+
+describe("createBlank — 管理员建空白 workbook", () => {
+  test("走 createRecord 并把新 workbook 插到列表头", async () => {
+    const { store, rec } = setup({ workbooks: [...sampleRows] });
+    await store.load();
+
+    const created = await store.createBlank("新工作簿");
+
+    expect(rec.creates).toEqual([{ table: "workbook", data: { name: "新工作簿" } }]);
+    expect(created?.id).toBe("workbook:new1");
+    expect(store.workbooks[0]).toEqual({
+      id: "workbook:new1",
+      name: "新工作簿",
+      templateKey: undefined,
+      updatedAt: undefined,
+    });
+  });
+
+  test("无权限（participant 尝试建表）→ 返回 null 且 error 是中文提示", async () => {
+    const { store } = setup({ createThrows: new Error("IAM error: Not allowed to create") });
+    await store.load();
+
+    const created = await store.createBlank("新工作簿");
+
+    expect(created).toBeNull();
+    expect(store.error).toContain("没有权限");
+  });
+});
+
+describe("rename — 改 workbook 名", () => {
+  test("走 updateRecord 并就地更新列表项", async () => {
+    const { store, rec } = setup({ workbooks: [...sampleRows] });
+    await store.load();
+
+    const ok = await store.rename("workbook:wb2", "财务总表");
+
+    expect(ok).toBe(true);
+    expect(rec.updates).toEqual([{ id: "workbook:wb2", patch: { name: "财务总表" } }]);
+    expect(store.workbooks.find((w) => w.id === "workbook:wb2")?.name).toBe("财务总表");
+  });
+
+  test("无权限 → 返回 false 且 error 是中文提示", async () => {
+    const { store } = setup({
+      workbooks: [...sampleRows],
+      updateThrows: new Error("permission denied"),
+    });
+    await store.load();
+
+    const ok = await store.rename("workbook:wb2", "财务总表");
+
+    expect(ok).toBe(false);
+    expect(store.error).toContain("没有权限");
+  });
+});
+
+describe("filterWorkbooksByQuery — 纯过滤", () => {
+  const list: WorkbookRow[] = [
+    { id: "workbook:wb1", name: "案件台账", templateKey: "claims" },
+    { id: "workbook:wb2", name: "财务汇总" },
+  ];
+
+  test("空 query 返回全部", () => {
+    expect(filterWorkbooksByQuery(list, "")).toEqual(list);
+  });
+
+  test("按 name 或 templateKey 大小写不敏感匹配", () => {
+    expect(filterWorkbooksByQuery(list, "案件").map((w) => w.id)).toEqual(["workbook:wb1"]);
+    expect(filterWorkbooksByQuery(list, "CLAIMS").map((w) => w.id)).toEqual(["workbook:wb1"]);
+    expect(filterWorkbooksByQuery(list, "汇总").map((w) => w.id)).toEqual(["workbook:wb2"]);
+    expect(filterWorkbooksByQuery(list, "xyz")).toEqual([]);
+  });
+});

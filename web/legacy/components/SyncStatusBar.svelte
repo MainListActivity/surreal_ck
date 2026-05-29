@@ -137,7 +137,7 @@
   }
 </script>
 
-<div class="sync-status electrobun-webkit-app-region-no-drag">
+<div class="sync-status desktop-webkit-app-region-no-drag">
   <button
     class:tone-ok={tone === "ok"}
     class:tone-warn={tone === "warn"}

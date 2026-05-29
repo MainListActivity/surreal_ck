@@ -6,7 +6,7 @@ Label: needs-triage
 > 进度（2026-05-29）：**直连数据层已 TDD 完工**（`web/src/lib/workbook-data.ts` +
 > `SurrealConn` 扩 query/liveTable/updateRecord/createRecord）。
 >
-> 本 issue 现作为 **umbrella**：组件层已拆成 07a–07h 八个 sub-issue（见下）。
+> 本 issue 现作为 **umbrella**：组件层已拆成 07a–07i 九个 sub-issue（见下）。
 > 全部 sub-issue 收口后本 umbrella 的验收项自然达成，届时关闭本 issue。
 > Dashboard（看板/图表）整套**不在本簇**，拆到独立簇
 > `.scratch/web-dashboard-migration/`（依赖本簇跑通）。
@@ -23,9 +23,11 @@ Label: needs-triage
 > | 07f | 工具条面板 Filter / Sort / Group（驱动 viewParams） | 07a, 07c |
 > | 07g | 字段管理（defineField）+ 记录详情/表单/弹窗 | 07a, 07c, 07e |
 > | 07h | EditorScreen 装配 + 路由 `/w/:slug/wb/...` + electrobun 清零 | 07b–07g |
+> | 07i | Workspace 首页 + 页面入口保底（`/w/:slug` + legacy 页面/按钮 inventory） | 05, 06, 07h |
 >
 > seam 策略：07a 把组件唯一依赖的中心 store 重写到 `workbook-data.ts`，公共面
 > 与 legacy 对齐，后续 07b–07g 每个组件几乎只改 import 路径，迁移平滑。
+> 07i 是 D2-09 删除 `web/legacy/` 前的页面入口安全阀，保证首页和可见按钮不丢。
 
 ## Parent
 

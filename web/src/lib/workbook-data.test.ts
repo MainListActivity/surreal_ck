@@ -5,6 +5,7 @@ import type { LiveMessage } from "./surreal";
 import {
   buildSelect,
   defineField,
+  deleteRows,
   loadSheet,
   saveCells,
   subscribeLive,
@@ -24,6 +25,7 @@ function fakeConn(over: Partial<SurrealConn> = {}): SurrealConn {
     liveTable: async () => () => {},
     updateRecord: async (_id, patch) => patch,
     createRecord: async (_table, data) => data,
+    deleteRecord: async () => ({}),
     transaction: async (run) => run(conn),
     ...over,
   } as SurrealConn;
@@ -231,6 +233,61 @@ describe("saveCells — 直连 UPDATE / CREATE，按列 coerce + validate", () =
     expect(wrote).toBe(false);
     expect(openedTransaction).toBe(false);
     if (!result.ok) expect(result.message).toContain("amount");
+  });
+});
+
+describe("deleteRows — 直连 DELETE by RecordId，事务内批量", () => {
+  test("每个 id 走 deleteRecord，一个事务里执行", async () => {
+    const deleted: string[] = [];
+    let committed = false;
+    const conn = fakeConn({
+      transaction: async (run) => {
+        const result = await run({
+          updateRecord: async (_id, patch) => patch,
+          createRecord: async (_table, data) => data,
+          deleteRecord: (async (id: string) => {
+            deleted.push(id);
+            return {};
+          }) as SurrealConn["deleteRecord"],
+        });
+        committed = true;
+        return result;
+      },
+    });
+
+    const result = await deleteRows(conn,["ent_claim:a", "ent_claim:b"]);
+
+    expect(result.ok).toBe(true);
+    expect(deleted).toEqual(["ent_claim:a", "ent_claim:b"]);
+    expect(committed).toBe(true);
+  });
+
+  test("空 id 列表：不开事务，直接 ok", async () => {
+    let openedTransaction = false;
+    const conn = fakeConn({
+      transaction: (async (run) => {
+        openedTransaction = true;
+        return run(conn);
+      }) as SurrealConn["transaction"],
+    });
+
+    const result = await deleteRows(conn,[]);
+
+    expect(result.ok).toBe(true);
+    expect(openedTransaction).toBe(false);
+  });
+
+  test("权限不足：引擎拒绝 → 经 describeWriteError 翻译成中文", async () => {
+    const conn = fakeConn({
+      deleteRecord: (async () => {
+        throw new Error("IAM error: Not enough permissions to perform this action");
+      }) as SurrealConn["deleteRecord"],
+    });
+
+    const result = await deleteRows(conn,["ent_claim:a"]);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("权限");
   });
 });
 

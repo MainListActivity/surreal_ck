@@ -229,6 +229,22 @@ describe("浏览器 adapter 的 query / liveTable 透传", () => {
     expect(created).toEqual({ id: "ent_x:new", a: 1 });
   });
 
+  test("deleteRecord 用 StringRecordId 包裹 id 并删除", async () => {
+    const calls: unknown[] = [];
+    const rawDriver = {
+      async delete(id: unknown) {
+        calls.push(id);
+        return { id: "ent_x:1" };
+      },
+    };
+
+    const conn = createBrowserConn(rawDriver as never);
+    await conn.deleteRecord("ent_x:1");
+
+    expect(calls).toHaveLength(1);
+    expect(String(calls[0])).toBe("ent_x:1");
+  });
+
   test("transaction 用 SDK transaction writer 执行写入，成功后 commit", async () => {
     const calls: Array<{ id: unknown; patch: unknown }> = [];
     let committed = false;

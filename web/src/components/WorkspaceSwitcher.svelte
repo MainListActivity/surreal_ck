@@ -1,18 +1,28 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import CreateWorkspaceDialog from "./CreateWorkspaceDialog.svelte";
   import { getConnectionState } from "../lib/workspace-store.svelte";
   import { loadWorkspaces, switchWorkspace } from "../lib/switch-workspace.svelte";
+  import { createCreateEntryController } from "../lib/create-entry";
   import type { WorkspaceListItem } from "../lib/switch-workspace";
 
-  /** 点击「新建 workspace」时触发 issue 06 流程；由父组件提供。 */
+  // 05a：创建入口收敛进切换器内部（Note 34/35）。oncreate 退化为可选「已创建」通知，
+  // 不再承担「打开对话框」职责——无论谁挂 WorkspaceSwitcher，创建逻辑只有一份。
   let { oncreate }: { oncreate?: () => void } = $props();
 
   let workspaces = $state<WorkspaceListItem[]>([]);
   let currentDbName = $state<string | null>(null);
   let canCreate = $state(false);
   let open = $state(false);
+  let dialogOpen = $state(false);
   let switching = $state<string | null>(null);
   let error = $state<string | null>(null);
+
+  const createEntry = createCreateEntryController({
+    canCreate: () => canCreate,
+    reload: () => reload(),
+    onCreated: () => oncreate?.(),
+  });
 
   const connectionState = $derived(getConnectionState());
 
@@ -53,8 +63,23 @@
   }
 
   function startCreate(): void {
-    open = false;
-    oncreate?.();
+    const next = createEntry.openDialog({ dropdownOpen: open, dialogOpen });
+    open = next.dropdownOpen;
+    dialogOpen = next.dialogOpen;
+  }
+
+  function cancelCreate(): void {
+    const next = createEntry.closeDialog();
+    open = next.dropdownOpen;
+    dialogOpen = next.dialogOpen;
+  }
+
+  async function onCreated(): Promise<void> {
+    // 创建对话框内部已完成 POST /api/workspaces → refresh → enterWorkspace → URL 落 /w/:slug；
+    // 这里只负责关对话框 + reload 列表（新 workspace 出现并标记为当前）+ 通知外部。
+    const next = await createEntry.handleCreated();
+    open = next.dropdownOpen;
+    dialogOpen = next.dialogOpen;
   }
 
   onMount(() => {
@@ -102,7 +127,7 @@
         <li class="empty">暂无可用工作区</li>
       {/if}
 
-      {#if canCreate}
+      {#if createEntry.showEntry()}
         <li class="create">
           <button type="button" class="item create-item" onclick={startCreate}>
             ＋ 新建工作区
@@ -114,6 +139,10 @@
 
   {#if error}
     <p class="error" role="alert">{error}</p>
+  {/if}
+
+  {#if dialogOpen}
+    <CreateWorkspaceDialog onclose={cancelCreate} oncreated={() => void onCreated()} />
   {/if}
 </div>
 

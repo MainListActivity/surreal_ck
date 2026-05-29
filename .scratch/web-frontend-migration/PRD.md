@@ -51,7 +51,8 @@
 | 04 | API client（Hono RPC） | web/src/lib/api.ts，对接 Workspace Scope Module + /api/chat | 01 |
 | 05 | Workspace 切换器 | 顶栏 dropdown 调 `/api/session/workspaces`；切换调 `/api/session/switch-workspace` + silent refresh + 重新 signin | 02, 03, 04 |
 | 06 | 新建 workspace 流程 | 调 `/api/workspaces` → 后端建库和切 scope → 前端 silent refresh 进入新 workspace | 04, 05, C-06 |
-| 07 | Workbook 主界面迁入（umbrella） | 数据层已 TDD 完工（`web/src/lib/workbook-data.ts`）；组件层拆 07a–07h | 03 |
+| 05a | Workspace 下拉菜单的新建入口 | dropdown 内“新建工作区” → 创建对话框 → 成功后刷新列表并进入新 workspace | 05, 06 |
+| 07 | Workbook 主界面迁入（umbrella） | 数据层已 TDD 完工（`web/src/lib/workbook-data.ts`）；组件层拆 07a–07i | 03 |
 | 07a | editorStore 重写到直连数据层（seam） | `editor-store.svelte.ts` 接 workbook-data + deleteRows + drafts 搬迁 | 07 数据层 |
 | 07b | editorUi/纯逻辑 + Workbook/Sheet 导航 | editor-ui/registries 搬迁 + workbooks store 直连 | 07a |
 | 07c | Grid 外壳 + GridView | RevoGrid + Vite worker + 渲染/编辑/LIVE 主路径 | 07a |
@@ -60,8 +61,9 @@
 | 07f | 工具条面板 Filter/Sort/Group | 驱动 viewParams | 07a, 07c |
 | 07g | 字段管理 + 记录详情/表单/弹窗 | defineField + DetailPanel/RecordForm/modals | 07a, 07c, 07e |
 | 07h | EditorScreen 装配 + 路由 + electrobun 清零 | 组装 + `/w/:slug/wb/...` 路由 | 07b–07g |
+| 07i | Workspace 首页 + 页面入口保底 | `/w/:slug` 首页、workbook 列表、legacy 页面/按钮 inventory 与占位 | 05a, 07h |
 | 08 | AI 抽屉接 chat/stream | 抽屉 UI 调 /api/chat + 连 /api/chat/stream WS + 渲染 progress/chunk/suspend | 04, D1-04, D1-05 |
-| 09 | 删 web/legacy | 删除原 src/renderer 残留 | 01-08（含 07a–07h） |
+| 09 | 删 web/legacy | 删除原 src/renderer 残留 | 01-08（含 07a–07i） |
 
 > Dashboard（看板/图表）整套从 07 拆出为独立簇 `.scratch/web-dashboard-migration/`（簇 D3），依赖本簇 07 跑通；07h 里 EditorScreen 的 dashboard 入口先留 stub。
 
