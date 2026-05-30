@@ -8,6 +8,7 @@ class FakeDb implements Queryable {
 
   indexRows: any[] = [];
   workspaceUserRows: Record<string, any[]> = {};
+  systemAdminRowCount = 0;
 
   async use(scope: { namespace: string; database: string }): Promise<void> {
     this.useCalls.push(scope);
@@ -17,6 +18,10 @@ class FakeDb implements Queryable {
     this.queries.push({ sql, params });
 
     const normalizedSql = sql.trim().replace(/\s+/g, " ");
+
+    if (normalizedSql.includes("FROM system_admin")) {
+      return [this.systemAdminRowCount > 0 ? ["system_admin:1"] : []];
+    }
 
     if (normalizedSql.includes("FROM user_workspace_index")) {
       return [this.indexRows];
@@ -233,10 +238,29 @@ describe("WorkspaceScopeModule disabled member filtering", () => {
     ];
     const module = createWorkspaceScopeModule(db);
 
-    const items = await module.listWorkspaces({ subject: "user-123" });
+    const { workspaces } = await module.listWorkspaces({ subject: "user-123" });
 
-    expect(items.map((item) => item.slug)).toEqual(["newer", "older"]);
-    expect(items[0]?.lastSelectedAt).toBe("2026-05-23T01:00:00.000Z");
+    expect(workspaces.map((item) => item.slug)).toEqual(["newer", "older"]);
+    expect(workspaces[0]?.lastSelectedAt).toBe("2026-05-23T01:00:00.000Z");
+  });
+
+  test("listWorkspaces returns canCreate=true when system_admin has any row", async () => {
+    const db = new FakeDb();
+    db.systemAdminRowCount = 1;
+    const module = createWorkspaceScopeModule(db);
+
+    const { canCreate } = await module.listWorkspaces({ subject: "not-in-system-admin" });
+
+    expect(canCreate).toBe(true);
+  });
+
+  test("listWorkspaces returns canCreate=false when system_admin is empty", async () => {
+    const db = new FakeDb();
+    const module = createWorkspaceScopeModule(db);
+
+    const { canCreate } = await module.listWorkspaces({ subject: "user-123" });
+
+    expect(canCreate).toBe(false);
   });
 
   test("getDefaultScope filters out disabled index rows at the query level", async () => {
@@ -247,5 +271,63 @@ describe("WorkspaceScopeModule disabled member filtering", () => {
 
     const indexQuery = db.queries.find((q) => q.sql.includes("FROM user_workspace_index"));
     expect(indexQuery?.sql).toContain("disabled_at = NONE");
+  });
+});
+
+describe("WorkspaceScopeModule.getDefaultScope system-admin creation switch", () => {
+  test("user with a workspace and empty system_admin: returns ws scope, canCreateWorkspace=false", async () => {
+    const db = new FakeDb();
+    db.indexRows = [
+      { db_name: "ws_abc", role: "participant", workspace: { status: "active" } },
+    ];
+    const module = createWorkspaceScopeModule(db);
+
+    const result = await module.getDefaultScope({ subject: "user-123" });
+
+    expect(result).toEqual({
+      kind: "scope",
+      scope: { db: "ws_abc", ac: "participant" },
+      canCreateWorkspace: false,
+    });
+  });
+
+  test("user with a workspace and non-empty system_admin: returns ws scope, canCreateWorkspace=true", async () => {
+    const db = new FakeDb();
+    db.systemAdminRowCount = 1;
+    db.indexRows = [
+      { db_name: "ws_abc", role: "admin", workspace: { status: "active" } },
+    ];
+    const module = createWorkspaceScopeModule(db);
+
+    const result = await module.getDefaultScope({ subject: "user-123" });
+
+    expect(result).toEqual({
+      kind: "scope",
+      scope: { db: "ws_abc", ac: "admin" },
+      canCreateWorkspace: true,
+    });
+  });
+
+  test("user with no workspace and non-empty system_admin: falls back to _system admin scope", async () => {
+    const db = new FakeDb();
+    db.systemAdminRowCount = 1;
+    const module = createWorkspaceScopeModule(db);
+
+    const result = await module.getDefaultScope({ subject: "not-in-system-admin" });
+
+    expect(result).toEqual({
+      kind: "scope",
+      scope: { db: "_system", ac: "admin" },
+      canCreateWorkspace: true,
+    });
+  });
+
+  test("user with no workspace and empty system_admin: login-denied", async () => {
+    const db = new FakeDb();
+    const module = createWorkspaceScopeModule(db);
+
+    const result = await module.getDefaultScope({ subject: "user-123" });
+
+    expect(result).toEqual({ kind: "login-denied", reason: "no-workspace" });
   });
 });

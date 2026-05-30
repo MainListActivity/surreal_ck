@@ -1,6 +1,6 @@
 # workspace-as-database 身份层 PRD（簇 C）
 
-更新时间：2026-05-17
+更新时间：2026-05-30
 
 依据：
 - [`docs/adr/workspace-as-database.md`](../../docs/adr/workspace-as-database.md)
@@ -37,7 +37,8 @@
   - `DELETE /api/workspaces/:slug/members/:userId`
   - `GET /api/internal/idp/default-scope`
   - IdP Token Scope Adapter（更新 `https://surrealdb.com/db` / `https://surrealdb.com/ac`）
-- `POST /api/workspaces` 创建 workspace：root 建 db、应用模板、创建 owner user、写 `_system` 索引、调用 IdP scope adapter。
+- `_system.system_admin` 作为创建 workspace 的部署级开关：表内只要有任意一行，`/api/session/workspaces` 返回 `canCreate=true`，IdP default-scope hook 返回 `can_create_workspace=true`，`POST /api/workspaces` 允许当前登录用户创建 workspace；表为空则禁止创建。
+- `POST /api/workspaces` 创建 workspace：后端以 Workspace Scope Module 的 `canCreate` 为权威校验，root 建 db、应用模板、创建 owner user、写 `_system` 索引、调用 IdP scope adapter。
 - 启动期 schema migration runner：遍历 `_system.workspace`，对每个 ws db 应用 `shared/sql/workspace-template/` 中未应用的增量。
 - Reconciler：校对 `_system.user_workspace_index` 与 workspace db `user` 表是否漂移，输出日志或修复可安全修复项。
 
@@ -67,12 +68,13 @@
 | 05 | reconciler | 启动时 + 每小时校对 _system index 与 workspace db user 表；漂移写日志 / 安全修复 | 03 |
 | 06 | workspace create lifecycle | `POST /api/workspaces`：root 建 db、应用模板、写 owner 和 _system、切 token scope | 02, 03 |
 | 07 | member management endpoints | `POST/PATCH/DELETE /api/workspaces/:slug/members*`：管理员预创建 / 软移除 / role 变更，root 原子同写 ws db `user` 与 `_system.user_workspace_index` | 03, 06 |
+| 08 | system_admin 创建能力开关 | `_system.system_admin` 表、启动 seed、default-scope hook capability、`POST /api/workspaces` 后端校验口径对齐 | 03, 06 |
 
 ## 验收 KPI
 
 - 后端启动 → _system 三类表落地，重复启动幂等。
-- 登录 hook 模拟请求 → 对已有 subject 返回最近选择的 `{ db, ac }`；无 workspace 返回拒绝登录。
+- 登录 hook 模拟请求 → 对已有 subject 返回最近选择的 `{ db, ac }`；`system_admin` 非空时额外返回 `can_create_workspace=true`，无 workspace 用户回落到 `{ db: "_system", ac: "admin" }` 以便创建 workspace；`system_admin` 为空且无 workspace 时返回拒绝登录。
 - `POST /api/session/switch-workspace` 对无权限 workspace 返回 403，对有权限 workspace 更新 `last_selected_at` 并调用 IdP scope adapter。
-- `POST /api/workspaces` 成功后新 db 有模板 schema、owner user、_system 索引，并且 token scope 切到新 workspace。
+- `POST /api/workspaces` 在 `system_admin` 非空时不依赖 token claim 也可成功创建；新 db 有模板 schema、owner user、_system 索引，并且 token scope 切到新 workspace。
 - `POST/PATCH/DELETE /api/workspaces/:slug/members*` 能保持 workspace db `user` 与 `_system.user_workspace_index` 一致；移除成员只写 `disabled_at`，不删除历史归因所需的 user record。
 - 在 shared/sql 加 `004-foo.surql` → 重启后所有 ws db 都跑到新版本。

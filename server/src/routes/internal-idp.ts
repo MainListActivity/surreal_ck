@@ -24,7 +24,13 @@ export function createInternalIdpRoutes(workspaceScope: WorkspaceScopeModule): H
       throw new HttpError(403, "login-denied", "No active workspace for subject");
     }
 
-    return c.json(result.scope);
+    // 扁平对象：字段名与 IdP 端各 hook-claim 的 hookField 约定一致
+    // （db / ac / can_create_workspace）。一次登录一次 hook，多个 claim 复用本对象。
+    return c.json({
+      db: result.scope.db,
+      ac: result.scope.ac,
+      can_create_workspace: result.canCreateWorkspace,
+    });
   });
 
   return routes;

@@ -15,6 +15,9 @@ describe("server startup", () => {
       ensureSystemSchema: async () => {
         calls.push("ensure-system-schema");
       },
+      seedSystemAdmins: async () => {
+        calls.push("seed-admins");
+      },
       migrateAllWorkspaces: async () => {
         calls.push("migrate-workspaces");
         return { total: 0, migrated: [] };
@@ -32,7 +35,7 @@ describe("server startup", () => {
       },
     });
 
-    expect(calls).toEqual(["init-root", "ensure-system-schema", "migrate-workspaces", "create-app", "listen"]);
+    expect(calls).toEqual(["init-root", "ensure-system-schema", "seed-admins", "migrate-workspaces", "create-app", "listen"]);
   });
 
   test("starts the reconcile heartbeat after the server is listening", async () => {
@@ -47,6 +50,9 @@ describe("server startup", () => {
       },
       ensureSystemSchema: async () => {
         calls.push("ensure-system-schema");
+      },
+      seedSystemAdmins: async () => {
+        calls.push("seed-admins");
       },
       migrateAllWorkspaces: async () => {
         calls.push("migrate-workspaces");
@@ -73,6 +79,7 @@ describe("server startup", () => {
     expect(calls).toEqual([
       "init-root",
       "ensure-system-schema",
+      "seed-admins",
       "migrate-workspaces",
       "create-app",
       "listen",
@@ -84,6 +91,7 @@ describe("server startup", () => {
     expect(calls).toEqual([
       "init-root",
       "ensure-system-schema",
+      "seed-admins",
       "migrate-workspaces",
       "create-app",
       "listen",
@@ -106,6 +114,9 @@ describe("server startup", () => {
       },
       ensureSystemSchema: async () => {
         calls.push("ensure-system-schema");
+      },
+      seedSystemAdmins: async () => {
+        calls.push("seed-admins");
       },
       migrateAllWorkspaces: async () => {
         calls.push("migrate-workspaces");
@@ -133,6 +144,7 @@ describe("server startup", () => {
     expect(calls).toEqual([
       "init-root",
       "ensure-system-schema",
+      "seed-admins",
       "migrate-workspaces",
       "create-app",
       "listen",
@@ -158,6 +170,9 @@ describe("server startup", () => {
         ensureSystemSchema: async () => {
           calls.push("ensure-system-schema");
         },
+        seedSystemAdmins: async () => {
+          calls.push("seed-admins");
+        },
         migrateAllWorkspaces: async () => {
           calls.push("migrate-workspaces");
           throw new Error("workspace migration failed on ws_broken (0/1 migrated before failure)");
@@ -176,7 +191,7 @@ describe("server startup", () => {
       }),
     ).rejects.toThrow("workspace migration failed");
 
-    expect(calls).toEqual(["init-root", "ensure-system-schema", "migrate-workspaces"]);
+    expect(calls).toEqual(["init-root", "ensure-system-schema", "seed-admins", "migrate-workspaces"]);
   });
 
   test("does not listen when system schema seed fails", async () => {
@@ -221,6 +236,7 @@ describe("server startup", () => {
       envName: "test",
       initRootConnection: async () => {},
       ensureSystemSchema: async () => {},
+      seedSystemAdmins: async () => {},
       migrateAllWorkspaces: async () => ({ total: 0, migrated: [] }),
       createApp: () => ({ fetch: () => new Response("ok"), websocket: wsHandler }),
       serve: (options: { websocket?: unknown }) => {

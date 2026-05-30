@@ -12,11 +12,18 @@ export type WorkspaceListItem = {
   lastSelectedAt: string | null;
 };
 
+/** 后端 `GET /api/session/workspaces` 的返回：列表 + 是否可建库。 */
+export type ListWorkspacesResponse = {
+  workspaces: WorkspaceListItem[];
+  /** `_system.system_admin` 表非空时为 true；是否可建库由后端判定。 */
+  canCreate: boolean;
+};
+
 export type LoadWorkspacesResult = {
   workspaces: WorkspaceListItem[];
   /** token scope 中 `https://surrealdb.com/db` 对应的当前 db；用于高亮当前项。 */
   currentDbName: string | null;
-  /** 是否显示「新建 workspace」按钮，由 token claim 决定。 */
+  /** 是否显示「新建 workspace」按钮，权威来自后端 `canCreate`。 */
   canCreate: boolean;
 };
 
@@ -38,7 +45,7 @@ export type SwitchResponse = { ok: boolean; refreshRequired: boolean };
  * switch-workspace 的全部外部依赖；注入以便单测，默认绑定到模块级单例。
  */
 export type SwitchDeps = {
-  listWorkspaces(): Promise<WorkspaceListItem[]>;
+  listWorkspaces(): Promise<ListWorkspacesResponse>;
   requestSwitch(workspaceSlug: string): Promise<SwitchResponse>;
   refresh(): Promise<string | null>;
   enterWorkspace(input: EnterWorkspaceInput): Promise<void>;
@@ -57,7 +64,6 @@ export type WorkspaceSwitcher = {
 };
 
 const SURREAL_DB_CLAIM = "https://surrealdb.com/db";
-const NS_CREATE_CLAIM = "https://surreal-ck.com/can_create_workspace";
 
 function decodeBase64UrlJson(value: string): unknown {
   const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
@@ -84,16 +90,6 @@ export function currentDbFromToken(token: string | null): string | null {
   return typeof claim === "string" ? claim : null;
 }
 
-/** 与后端 `routes/workspaces.ts:canCreateWorkspace` 保持同一判定口径。 */
-export function canCreateWorkspace(token: string | null): boolean {
-  const raw = decodeJwtPayload(token);
-  if (!raw) return false;
-  if (raw.can_create_workspace === true) return true;
-  if (raw[NS_CREATE_CLAIM] === true) return true;
-  const scope = raw.scope;
-  return typeof scope === "string" && scope.split(/\s+/).includes("workspace:create");
-}
-
 function errorStatus(error: unknown): number | null {
   if (error && typeof error === "object" && "status" in error) {
     const status = (error as { status?: unknown }).status;
@@ -105,17 +101,16 @@ function errorStatus(error: unknown): number | null {
 export function createWorkspaceSwitcher(deps: SwitchDeps): WorkspaceSwitcher {
   const switcher: WorkspaceSwitcher = {
     async loadWorkspaces() {
-      const token = deps.getToken();
-      const workspaces = await deps.listWorkspaces();
+      const { workspaces, canCreate } = await deps.listWorkspaces();
       return {
         workspaces,
-        currentDbName: currentDbFromToken(token),
-        canCreate: canCreateWorkspace(token),
+        currentDbName: currentDbFromToken(deps.getToken()),
+        canCreate,
       };
     },
 
     async switchWorkspace(slug) {
-      const workspaces = await deps.listWorkspaces();
+      const { workspaces } = await deps.listWorkspaces();
       const target = workspaces.find((ws) => ws.slug === slug);
       // 不在权威列表里 = 无权访问，直接拒绝，不打后端。
       if (!target) return { ok: false, reason: "forbidden" };
@@ -154,11 +149,11 @@ export function createWorkspaceSwitcher(deps: SwitchDeps): WorkspaceSwitcher {
     },
 
     async bootstrapWorkspace(slug) {
-      const workspaces = await deps.listWorkspaces();
-      // 空列表：不是错误，可能是新账号。canCreate 来自 token claim（与列表无关），
+      const { workspaces, canCreate } = await deps.listWorkspaces();
+      // 空列表：不是错误，可能是新账号。canCreate 权威来自后端 Workspace Scope Module，
       // 让 UI 决定是引导创建还是提示联系管理员邀请。
       if (workspaces.length === 0) {
-        return { ok: false, reason: "none", canCreate: canCreateWorkspace(deps.getToken()) };
+        return { ok: false, reason: "none", canCreate };
       }
 
       const currentDb = currentDbFromToken(deps.getToken());

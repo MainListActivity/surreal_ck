@@ -18,11 +18,12 @@ function createWorkspaceScopeStub(result: Awaited<ReturnType<WorkspaceScopeModul
 }
 
 describe("IdP default scope hook", () => {
-  test("returns a SurrealDB token scope for an existing workspace member", async () => {
+  test("returns a flat SurrealDB token scope for an existing workspace member", async () => {
     const app = createApp({
       workspaceScope: createWorkspaceScopeStub({
         kind: "scope",
         scope: { db: "ws_recent", ac: "admin" },
+        canCreateWorkspace: false,
       }),
     });
 
@@ -33,7 +34,34 @@ describe("IdP default scope hook", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ db: "ws_recent", ac: "admin" });
+    expect(await response.json()).toEqual({
+      db: "ws_recent",
+      ac: "admin",
+      can_create_workspace: false,
+    });
+  });
+
+  test("flat scope carries can_create_workspace=true for a system admin", async () => {
+    const app = createApp({
+      workspaceScope: createWorkspaceScopeStub({
+        kind: "scope",
+        scope: { db: "_system", ac: "admin" },
+        canCreateWorkspace: true,
+      }),
+    });
+
+    const response = await app.fetch(
+      new Request("http://localhost/api/internal/idp/default-scope?subject=admin-1", {
+        headers: { authorization: `Bearer ${env.IDP_HOOK_SECRET}` },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      db: "_system",
+      ac: "admin",
+      can_create_workspace: true,
+    });
   });
 
   test("returns login-denied when the subject has no active workspace", async () => {

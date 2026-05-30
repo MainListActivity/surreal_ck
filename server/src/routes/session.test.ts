@@ -35,35 +35,39 @@ describe("session workspace list", () => {
   test("returns current user's active workspaces in most-recent-first order", async () => {
     const app = createApp({
       requireUser: () => useTestUser,
-      workspaceScope: createWorkspaceScopeStub([
-        {
-          slug: "recent",
-          name: "Recent workspace",
-          dbName: "ws_recent",
-          role: "admin",
-          lastSelectedAt: "2026-05-20T00:00:00.000Z",
-        },
-        {
-          slug: "older",
-          name: "Older workspace",
-          dbName: "ws_older",
-          role: "participant",
-          lastSelectedAt: "2026-05-10T00:00:00.000Z",
-        },
-        {
-          slug: "never",
-          name: "Never selected",
-          dbName: "ws_never",
-          role: "participant",
-          lastSelectedAt: null,
-        },
-      ]),
+      workspaceScope: createWorkspaceScopeStub({
+        canCreate: false,
+        workspaces: [
+          {
+            slug: "recent",
+            name: "Recent workspace",
+            dbName: "ws_recent",
+            role: "admin",
+            lastSelectedAt: "2026-05-20T00:00:00.000Z",
+          },
+          {
+            slug: "older",
+            name: "Older workspace",
+            dbName: "ws_older",
+            role: "participant",
+            lastSelectedAt: "2026-05-10T00:00:00.000Z",
+          },
+          {
+            slug: "never",
+            name: "Never selected",
+            dbName: "ws_never",
+            role: "participant",
+            lastSelectedAt: null,
+          },
+        ],
+      }),
     });
 
     const response = await app.fetch(new Request("http://localhost/api/session/workspaces"));
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
+      canCreate: false,
       workspaces: [
         {
           slug: "recent",
@@ -90,6 +94,18 @@ describe("session workspace list", () => {
     });
   });
 
+  test("passes through canCreate=true from the workspace scope module", async () => {
+    const app = createApp({
+      requireUser: () => useTestUser,
+      workspaceScope: createWorkspaceScopeStub({ canCreate: true, workspaces: [] }),
+    });
+
+    const response = await app.fetch(new Request("http://localhost/api/session/workspaces"));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ canCreate: true, workspaces: [] });
+  });
+
   test("requires OIDC before listing workspaces", async () => {
     let listCalled = false;
     const app = createApp({
@@ -99,7 +115,7 @@ describe("session workspace list", () => {
         },
         async listWorkspaces() {
           listCalled = true;
-          return [];
+          return { workspaces: [], canCreate: false };
         },
         async switchWorkspace() {
           return { kind: "forbidden" };
@@ -134,7 +150,7 @@ describe("session workspace switch", () => {
           return { kind: "login-denied", reason: "no-workspace" };
         },
         async listWorkspaces() {
-          return [];
+          return { workspaces: [], canCreate: false };
         },
         async switchWorkspace(input) {
           switchInput = input;
@@ -171,7 +187,7 @@ describe("session workspace switch", () => {
           return { kind: "login-denied", reason: "no-workspace" };
         },
         async listWorkspaces() {
-          return [];
+          return { workspaces: [], canCreate: false };
         },
         async switchWorkspace() {
           return { kind: "forbidden" };
@@ -208,7 +224,7 @@ describe("session workspace switch", () => {
           return { kind: "login-denied", reason: "no-workspace" };
         },
         async listWorkspaces() {
-          return [];
+          return { workspaces: [], canCreate: false };
         },
         async switchWorkspace() {
           return { kind: "drift" };
@@ -246,7 +262,7 @@ describe("session workspace switch", () => {
             return { kind: "login-denied", reason: "no-workspace" };
           },
           async listWorkspaces() {
-            return [];
+            return { workspaces: [], canCreate: false };
           },
           async switchWorkspace() {
             return { kind: "drift" };

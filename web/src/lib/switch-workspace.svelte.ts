@@ -4,10 +4,10 @@ import { enterWorkspace } from "./workspace-store.svelte";
 import {
   createWorkspaceSwitcher,
   type BootstrapResult,
+  type ListWorkspacesResponse,
   type LoadWorkspacesResult,
   type SwitchResponse,
   type SwitchResult,
-  type WorkspaceListItem,
 } from "./switch-workspace";
 
 /**
@@ -22,8 +22,7 @@ function browserNavigate(url: string): void {
 const switcher = createWorkspaceSwitcher({
   listWorkspaces: async () => {
     const res = await api.api.session.workspaces.$get();
-    const data = (await res.json()) as { workspaces: WorkspaceListItem[] };
-    return data.workspaces;
+    return (await res.json()) as ListWorkspacesResponse;
   },
   requestSwitch: async (workspaceSlug) => {
     const res = await api.api.session["switch-workspace"].$post({

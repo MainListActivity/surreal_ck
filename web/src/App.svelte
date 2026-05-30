@@ -18,7 +18,7 @@
   // "empty" = 账号还没有任何 workspace（区别于真正的连接错误），由 NoWorkspaceScreen 接管。
   let wsState = $state<"idle" | "connecting" | "ready" | "error" | "empty">("idle");
   let wsError = $state<string | null>(null);
-  // 空状态下是否允许创建（来自 token claim）。
+  // 空状态下是否允许创建（来自后端 listWorkspaces 的 canCreate）。
   let wsCanCreate = $state(false);
   // 上一次已 bootstrap 的 slug；slug 不变就不重复连库。
   let bootstrappedSlug = $state<string | null>(null);

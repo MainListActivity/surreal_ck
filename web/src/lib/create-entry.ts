@@ -6,7 +6,7 @@
  * 这样无论谁挂 WorkspaceSwitcher（SideNav / 未来顶栏），创建逻辑只有一份。
  */
 export type CreateEntryDeps = {
-  /** 是否有创建 workspace 权限（来自 token claim，经 loadWorkspaces 暴露）。 */
+  /** 是否有创建 workspace 权限（来自后端 listWorkspaces 返回的 canCreate）。 */
   canCreate: () => boolean;
   /** 创建成功后重载 workspace 列表（使新 workspace 出现并标记为当前）。 */
   reload: () => Promise<void>;

@@ -3,21 +3,17 @@ import type { MiddlewareHandler } from "hono";
 import { createApp } from "../app";
 import type { AppBindings } from "../hono-types";
 import type { CreateWorkspaceInput, CreateWorkspaceResult, WorkspaceCreator } from "../workspaces/create-workspace";
+import type { WorkspaceScopeModule } from "../workspaces/workspace-scope";
 
 const testUser = {
   subject: "user-123",
   email: "ada@example.test",
-  raw: { can_create_workspace: true },
+  raw: {},
   rawToken: "test-token",
 };
 
 const useTestUser: MiddlewareHandler<AppBindings> = async (c, next) => {
   c.set("user", testUser);
-  await next();
-};
-
-const useUserWithoutCreateGrant: MiddlewareHandler<AppBindings> = async (c, next) => {
-  c.set("user", { ...testUser, raw: {} });
   await next();
 };
 
@@ -32,6 +28,20 @@ function stubCreator(
         calls.push(input);
         return handler(input);
       },
+    },
+  };
+}
+
+function stubWorkspaceScope(canCreate: boolean): WorkspaceScopeModule {
+  return {
+    async getDefaultScope() {
+      return { kind: "login-denied", reason: "no-workspace" };
+    },
+    async listWorkspaces() {
+      return { workspaces: [], canCreate };
+    },
+    async switchWorkspace() {
+      return { kind: "forbidden" };
     },
   };
 }
@@ -60,14 +70,18 @@ describe("POST /api/workspaces", () => {
     expect(calls).toEqual([]);
   });
 
-  test("rejects callers without the create-workspace grant before provisioning", async () => {
+  test("rejects callers when system_admin is empty before provisioning", async () => {
     const { creator, calls } = stubCreator(() => ({
       kind: "created",
       slug: "acme",
       dbName: "ws_x",
       refreshRequired: true,
     }));
-    const app = createApp({ requireUser: () => useUserWithoutCreateGrant, workspaceCreator: creator });
+    const app = createApp({
+      requireUser: () => useTestUser,
+      workspaceCreator: creator,
+      workspaceScope: stubWorkspaceScope(false),
+    });
 
     const response = await app.fetch(
       new Request("http://localhost/api/workspaces", {
@@ -82,7 +96,7 @@ describe("POST /api/workspaces", () => {
     expect(calls).toEqual([]);
   });
 
-  test("creates a workspace from the caller's OIDC identity and returns refresh-required", async () => {
+  test("creates a workspace without a token grant when system_admin has data", async () => {
     const { creator, calls } = stubCreator((input) => ({
       kind: "created",
       slug: input.slug,
@@ -90,7 +104,11 @@ describe("POST /api/workspaces", () => {
       refreshRequired: true,
     }));
 
-    const app = createApp({ requireUser: () => useTestUser, workspaceCreator: creator });
+    const app = createApp({
+      requireUser: () => useTestUser,
+      workspaceCreator: creator,
+      workspaceScope: stubWorkspaceScope(true),
+    });
 
     const response = await app.fetch(
       new Request("http://localhost/api/workspaces", {
@@ -113,7 +131,11 @@ describe("POST /api/workspaces", () => {
 
   test("returns 409 when the slug already exists", async () => {
     const { creator } = stubCreator(() => ({ kind: "slug-conflict" }));
-    const app = createApp({ requireUser: () => useTestUser, workspaceCreator: creator });
+    const app = createApp({
+      requireUser: () => useTestUser,
+      workspaceCreator: creator,
+      workspaceScope: stubWorkspaceScope(true),
+    });
 
     const response = await app.fetch(
       new Request("http://localhost/api/workspaces", {
@@ -133,7 +155,11 @@ describe("POST /api/workspaces", () => {
       slug: "acme",
       dbName: "ws_abcdef123456",
     }));
-    const app = createApp({ requireUser: () => useTestUser, workspaceCreator: creator });
+    const app = createApp({
+      requireUser: () => useTestUser,
+      workspaceCreator: creator,
+      workspaceScope: stubWorkspaceScope(true),
+    });
 
     const response = await app.fetch(
       new Request("http://localhost/api/workspaces", {

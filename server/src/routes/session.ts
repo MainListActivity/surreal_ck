@@ -15,11 +15,11 @@ export function createSessionRoutes(
 ) {
   return new Hono<AppBindings>()
     .get("/api/session/workspaces", requireUser(), async (c) => {
-      const workspaces = await workspaceScope.listWorkspaces({
+      const { workspaces, canCreate } = await workspaceScope.listWorkspaces({
         subject: c.var.user.subject,
       });
 
-      return c.json({ workspaces });
+      return c.json({ workspaces, canCreate });
     })
     .post("/api/session/switch-workspace", requireUser(), async (c) => {
       const body = await c.req.json().catch(() => null);

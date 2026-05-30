@@ -29,7 +29,7 @@
   - 用 `surrealdb` 浏览器 SDK `db.signin({ ac, ns, db, token })` 直连 SurrealDB
   - 进入某 workspace 看到工作簿主界面（RevoGrid 表格直接从 SurrealDB SELECT / LIVE）
   - 切换 workspace：调用 `/api/session/switch-workspace` → IdP scope 更新 → silent refresh → 重新 signin
-  - 管理员可点"新建 workspace" → 调 `/api/workspaces` → 后端创建 db + 切 scope → silent refresh 进入新 workspace
+  - 后端返回 `canCreate=true` 的用户可点"新建 workspace" → 调 `/api/workspaces` → 后端创建 db + 切 scope → silent refresh 进入新 workspace
   - 打开 AI 抽屉，发消息，看到 Router workflow 流式响应（调后端 /api/chat）
 - `web/legacy/` 被删空。
 

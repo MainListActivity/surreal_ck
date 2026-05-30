@@ -2,6 +2,7 @@ import { createApp } from "./app";
 import { env } from "./env";
 import { closeRootConnection, initRootConnection } from "./db/root-connection";
 import { ensureSystemSchema } from "./db/system-schema";
+import { seedSystemAdmins } from "./db/system-admin-seed";
 import { migrateAllWorkspaces } from "./db/migration-runner";
 import { startReconcileLoop, type ReconcileLoopHandle } from "./db/reconciler";
 
@@ -21,6 +22,7 @@ export type StartServerDeps = {
   envName?: string;
   initRootConnection?: () => Promise<void>;
   ensureSystemSchema?: () => Promise<unknown>;
+  seedSystemAdmins?: () => Promise<unknown>;
   migrateAllWorkspaces?: () => Promise<unknown>;
   createApp?: () => AppLike;
   serve?: (options: {
@@ -44,6 +46,7 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
   const envName = deps.envName ?? env.NODE_ENV;
   const initRoot = deps.initRootConnection ?? initRootConnection;
   const ensureSchema = deps.ensureSystemSchema ?? ensureSystemSchema;
+  const seedAdmins = deps.seedSystemAdmins ?? seedSystemAdmins;
   const migrateWorkspaces = deps.migrateAllWorkspaces ?? migrateAllWorkspaces;
   const makeApp = deps.createApp ?? createApp;
   const serve =
@@ -55,6 +58,7 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
 
   await initRoot();
   await ensureSchema();
+  await seedAdmins();
   await migrateWorkspaces();
 
   const app = makeApp();

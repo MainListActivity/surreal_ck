@@ -46,4 +46,4 @@ web/src/components/CreateWorkspaceDialog.svelte
 ## Notes
 
 - `loadTemplateScripts()` 由后端使用；前端不 bundle `.surql` 模板。
-- 是否显示"新建 workspace"由 `/api/session/workspaces` 返回的 capability 或 token claim 控制；真正安全闸门在 `POST /api/workspaces`。
+- 是否显示"新建 workspace"只由 `/api/session/workspaces` 返回的 `canCreate` capability 控制；真正安全闸门在 `POST /api/workspaces`，且同样以后端 Workspace Scope Module 的 `canCreate` 为权威。

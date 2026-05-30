@@ -30,7 +30,7 @@ HTTP endpoint：`POST /api/workspaces`
 ## Flow
 
 1. `requireOidc()` 解析当前 subject / email。
-2. 校验用户是否有创建 workspace 权限（MVP 可先用配置 allowlist 或 token claim，后续接计费 / entitlement）。
+2. 通过 Workspace Scope Module 校验创建能力：`_system.system_admin` 表内只要有任意一行即允许当前登录用户创建 workspace；表为空则拒绝。
 3. 生成 `db_name = ws_<id12>`；slug 只用于 URL，不进入 db 名。
 4. root 创建 workspace database。
 5. 应用 `shared/sql/workspace-template/` 当前所有模板。
@@ -62,6 +62,11 @@ HTTP endpoint：`POST /api/workspaces`
 - 补偿：模板或 `_system` 写入失败回滚 `REMOVE DATABASE`；IdP scope 失败保留 db 返回 `scope-update-failed`，前端可重试 switch-workspace。
 - 测试：`create-workspace.test.ts`（4 行为）+ `routes/workspaces.test.ts`（4 行为），用可注入 FakeDb（`use()` 切库）与录制式 IdP adapter，不依赖真实 SurrealDB。`pnpm --filter @surreal-ck/server run test` 46 pass / typecheck 通过。
 - 下游解锁：`WP-C-07`（成员管理 endpoints）的 `Blocked by` 之一是本 issue，现已满足。
+
+## Correction notes (2026-05-30)
+
+- `POST /api/workspaces` 的权限闸门不再读取 `can_create_workspace` token claim 或 `workspace:create` scope；后端调用 Workspace Scope Module 的 `canCreate` 结果作为唯一权威。
+- 当前 MVP 口径：`_system.system_admin` 非空即允许登录用户创建 workspace；为空则 `403 workspace-create-forbidden` 且不进入 provisioning。
 
 ## Blocked by
 

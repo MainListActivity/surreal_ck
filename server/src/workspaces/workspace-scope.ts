@@ -1,15 +1,21 @@
 import { getRootConnection } from "../db/root-connection";
 import { dateTimeTimestamp, toIsoDateTimeString } from "../db/surreal-values";
+import { env } from "../env";
 
 export type SurrealTokenScope = {
   db: string;
   ac: "admin" | "participant";
 };
 
+/** `_system` 库名；无 workspace 但可创建时登录此库承接首个 workspace 创建。 */
+export const SYSTEM_DATABASE = "_system";
+
 export type DefaultScopeResult =
   | {
       kind: "scope";
       scope: SurrealTokenScope;
+      /** `_system.system_admin` 表是否已有任意行。 */
+      canCreateWorkspace: boolean;
     }
   | {
       kind: "login-denied";
@@ -47,15 +53,29 @@ export type SwitchWorkspaceResult =
       kind: "drift";
     };
 
+export type ListWorkspacesResult = {
+  workspaces: WorkspaceListItem[];
+  /** `_system.system_admin` 表是否已有任意行；有行即允许创建 workspace。 */
+  canCreate: boolean;
+};
+
 export interface WorkspaceScopeModule {
   getDefaultScope(input: DefaultScopeInput): Promise<DefaultScopeResult>;
-  listWorkspaces(input: { subject: string }): Promise<WorkspaceListItem[]>;
+  listWorkspaces(input: { subject: string }): Promise<ListWorkspacesResult>;
   switchWorkspace(input: SwitchWorkspaceInput): Promise<SwitchWorkspaceResult>;
 }
 
 type Queryable = {
   query(sql: string, params?: Record<string, unknown>): Promise<unknown>;
+  use(scope: { namespace: string; database: string }): Promise<unknown>;
 };
+
+/** 查 `_system.system_admin` 是否已有任意行。调用方需已 use 到 _system。 */
+async function hasSystemAdminRows(db: Queryable): Promise<boolean> {
+  const result = await db.query("SELECT VALUE id FROM system_admin LIMIT 1;");
+  const rows = Array.isArray(result) ? result[0] : undefined;
+  return Array.isArray(rows) && rows.length > 0;
+}
 
 type WorkspaceIndexRow = {
   id?: unknown;
@@ -115,7 +135,10 @@ function sortWorkspaceRows(left: WorkspaceIndexRow, right: WorkspaceIndexRow): n
 export function createWorkspaceScopeModule(db?: Queryable): WorkspaceScopeModule {
   return {
     async getDefaultScope(input) {
-      const result = await (db ?? getRootConnection()).query(
+      const client = db ?? getRootConnection();
+      await client.use({ namespace: env.SURREAL_NS, database: SYSTEM_DATABASE });
+
+      const result = await client.query(
         `
           SELECT db_name, role, last_selected_at, joined_at, workspace
           FROM user_workspace_index
@@ -131,11 +154,30 @@ export function createWorkspaceScopeModule(db?: Queryable): WorkspaceScopeModule
         .map(rowToScope)
         .find((candidate): candidate is SurrealTokenScope => candidate !== null);
 
-      return scope ? { kind: "scope", scope } : { kind: "login-denied", reason: "no-workspace" };
+      const canCreateWorkspace = await hasSystemAdminRows(client);
+
+      if (scope) {
+        return { kind: "scope", scope, canCreateWorkspace };
+      }
+
+      // system_admin 表有任意行时，允许无 workspace 的登录用户进入 _system，
+      // 再通过后端 POST /api/workspaces 创建首个/后续 workspace。
+      if (canCreateWorkspace) {
+        return {
+          kind: "scope",
+          scope: { db: SYSTEM_DATABASE, ac: "admin" },
+          canCreateWorkspace: true,
+        };
+      }
+
+      return { kind: "login-denied", reason: "no-workspace" };
     },
 
     async listWorkspaces(input) {
-      const result = await (db ?? getRootConnection()).query(
+      const client = db ?? getRootConnection();
+      await client.use({ namespace: env.SURREAL_NS, database: SYSTEM_DATABASE });
+
+      const result = await client.query(
         `
           SELECT db_name, role, last_selected_at, joined_at, workspace
           FROM user_workspace_index
@@ -145,10 +187,14 @@ export function createWorkspaceScopeModule(db?: Queryable): WorkspaceScopeModule
         { subject: input.subject },
       );
 
-      return rowsFromQueryResult(result)
+      const workspaces = rowsFromQueryResult(result)
         .sort(sortWorkspaceRows)
         .map(rowToWorkspaceListItem)
         .filter((item): item is WorkspaceListItem => item !== null);
+
+      const canCreate = await hasSystemAdminRows(client);
+
+      return { workspaces, canCreate };
     },
 
     async switchWorkspace(input) {

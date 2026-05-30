@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import {
-  canCreateWorkspace,
   createWorkspaceSwitcher,
   currentDbFromToken,
   type SwitchDeps,
@@ -36,7 +35,7 @@ function setup(overrides: Partial<SwitchDeps> & { switchResponses?: SwitchRespon
 
   const deps: SwitchDeps = {
     listWorkspaces:
-      overrides.listWorkspaces ?? (async () => workspaces),
+      overrides.listWorkspaces ?? (async () => ({ workspaces, canCreate: false })),
     requestSwitch:
       overrides.requestSwitch ??
       (async (workspaceSlug) => {
@@ -78,25 +77,6 @@ describe("currentDbFromToken", () => {
   });
 });
 
-describe("canCreateWorkspace", () => {
-  test("can_create_workspace=true 可建", () => {
-    expect(canCreateWorkspace(jwt({ can_create_workspace: true }))).toBe(true);
-  });
-
-  test("命名空间 claim 可建", () => {
-    expect(canCreateWorkspace(jwt({ "https://surreal-ck.com/can_create_workspace": true }))).toBe(true);
-  });
-
-  test("scope 含 workspace:create 可建", () => {
-    expect(canCreateWorkspace(jwt({ scope: "openid workspace:create email" }))).toBe(true);
-  });
-
-  test("无任何信号不可建", () => {
-    expect(canCreateWorkspace(jwt({ scope: "openid email" }))).toBe(false);
-    expect(canCreateWorkspace(null)).toBe(false);
-  });
-});
-
 describe("loadWorkspaces", () => {
   test("返回列表，并标记 token 当前 db 对应项为 current", async () => {
     const { switcher } = setup();
@@ -105,6 +85,15 @@ describe("loadWorkspaces", () => {
     expect(result.workspaces).toEqual(workspaces);
     expect(result.currentDbName).toBe("ws_alpha");
     expect(result.canCreate).toBe(false);
+  });
+
+  test("canCreate 来自后端 listWorkspaces 响应，而非 token claim", async () => {
+    const { switcher } = setup({
+      listWorkspaces: async () => ({ workspaces, canCreate: true }),
+    });
+    const result = await switcher.loadWorkspaces();
+
+    expect(result.canCreate).toBe(true);
   });
 });
 
@@ -228,10 +217,9 @@ describe("bootstrapWorkspace — 页面加载/刷新后建立直连", () => {
     expect(calls.switch).toEqual([{ workspaceSlug: "alpha" }]);
   });
 
-  test("列表为空且 token 无创建权限：none + canCreate=false，不 enter", async () => {
+  test("列表为空且非 system admin：none + canCreate=false，不 enter", async () => {
     const { switcher, calls } = setup({
-      listWorkspaces: async () => [],
-      getToken: () => jwt({ sub: "u" }),
+      listWorkspaces: async () => ({ workspaces: [], canCreate: false }),
     });
 
     const result = await switcher.bootstrapWorkspace("alpha");
@@ -244,10 +232,9 @@ describe("bootstrapWorkspace — 页面加载/刷新后建立直连", () => {
     expect(calls.enter).toHaveLength(0);
   });
 
-  test("列表为空但 token 可创建：none + canCreate=true（引导创建首个 workspace）", async () => {
+  test("列表为空但 system admin：none + canCreate=true（引导创建首个 workspace）", async () => {
     const { switcher } = setup({
-      listWorkspaces: async () => [],
-      getToken: () => jwt({ can_create_workspace: true }),
+      listWorkspaces: async () => ({ workspaces: [], canCreate: true }),
     });
 
     const result = await switcher.bootstrapWorkspace();

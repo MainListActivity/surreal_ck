@@ -94,7 +94,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     .route("/", healthRoutes)
     .route("/", createInternalIdpRoutes(workspaceScope))
     .route("/", createSessionRoutes(workspaceScope, idpTokenScopeAdapter, options.requireUser))
-    .route("/", createWorkspaceRoutes(workspaceCreator, options.requireUser))
+    .route("/", createWorkspaceRoutes(workspaceCreator, workspaceScope, options.requireUser))
     .route("/", createMemberRoutes(memberManager, options.requireUser))
     .route(
       "/",
