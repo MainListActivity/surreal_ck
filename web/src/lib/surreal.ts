@@ -165,6 +165,15 @@ export function createSurrealClient(options: SurrealClientOptions = {}): Surreal
 
   return {
     async connectSurreal(input) {
+      // Fail fast with an actionable message: when VITE_SURREAL_URL is missing,
+      // input.url is undefined/"" and surrealdb's parseEndpoint throws an opaque
+      // "Cannot read properties of undefined (reading 'href')" deep in its driver.
+      if (!input.url) {
+        throw new Error(
+          "SurrealDB 连接地址为空：请配置 VITE_SURREAL_URL（仓库根 .env，见 .env.example）。",
+        );
+      }
+
       // Close the previous connection first so two connections never hold
       // overlapping LIVE subscriptions during a workspace switch.
       if (db) await db.close();

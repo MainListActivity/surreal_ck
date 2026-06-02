@@ -114,6 +114,25 @@ describe("SurrealDB 浏览器直连客户端", () => {
     expect(second.connectCalls[0].opts).toMatchObject({ database: "ws_999" });
   });
 
+  test("url 为空（VITE_SURREAL_URL 缺失）时抛可诊断错误且不调 factory", async () => {
+    let factoryCalled = false;
+    const client = createSurrealClient({
+      factory: () => {
+        factoryCalled = true;
+        return fakeSurreal().conn;
+      },
+    });
+
+    await expect(
+      client.connectSurreal({ ...input, url: "" }),
+    ).rejects.toThrow("VITE_SURREAL_URL");
+    await expect(
+      client.connectSurreal({ ...input, url: undefined as unknown as string }),
+    ).rejects.toThrow("VITE_SURREAL_URL");
+    expect(factoryCalled).toBe(false);
+    expect(() => client.getSurreal()).toThrow("Surreal not connected");
+  });
+
   test("未连接时 getSurreal 抛错；closeSurreal 后又抛错且旧连接被 close", async () => {
     const fake = fakeSurreal();
     const client = createSurrealClient({ factory: () => fake.conn });

@@ -8,7 +8,7 @@
     }
   },
   "scripts": {
-    "dev": "bun run --env-file=../.env --watch src/index.ts",
+    "dev": "bun run --idleTimeout=5 --env-file=../.env --watch src/index.ts",
     "start": "bun run --env-file=../.env src/index.ts",
     "build:types": "tsc -p tsconfig.build.json",
     "test": "bun test ./src/*.test.ts ./src/**/*.test.ts ./ai/**/*.test.ts --preload ./test/setup-env.ts",
