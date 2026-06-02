@@ -11,13 +11,13 @@ function jwt(payload: Record<string, unknown>): string {
 }
 
 type CreateOutcome =
-  | { kind: "ok"; status: 200; body: { slug: string; dbName: string; refreshRequired: boolean } }
+  | { kind: "ok"; status: 200; body: { slug: string; dbName: string; accessToken: string; expiresIn: number | null } }
   | { kind: "error"; status: number; code: string; details?: { slug: string; dbName: string } };
 
 function setup(overrides: Partial<CreateDeps> & { outcome?: CreateOutcome } = {}) {
   const calls = {
     create: [] as Array<{ name: string; slug: string }>,
-    refresh: 0,
+    storeToken: [] as Array<{ accessToken: string; expiresIn?: number | null }>,
     enter: [] as Array<{ rawToken: string; dbName: string; role?: string; slug?: string; name?: string }>,
     navigate: [] as string[],
   };
@@ -26,7 +26,7 @@ function setup(overrides: Partial<CreateDeps> & { outcome?: CreateOutcome } = {}
     overrides.outcome ?? {
       kind: "ok",
       status: 200,
-      body: { slug: "gamma", dbName: "ws_gamma", refreshRequired: true },
+      body: { slug: "gamma", dbName: "ws_gamma", accessToken: jwt({ "https://surrealdb.com/db": "ws_gamma" }), expiresIn: 3600 },
     };
 
   const deps: CreateDeps = {
@@ -40,11 +40,11 @@ function setup(overrides: Partial<CreateDeps> & { outcome?: CreateOutcome } = {}
         err.details = outcome.details;
         throw err;
       }),
-    refresh:
-      overrides.refresh ??
-      (async () => {
-        calls.refresh += 1;
-        return jwt({ "https://surrealdb.com/db": "ws_gamma" });
+    storeAccessToken:
+      overrides.storeAccessToken ??
+      ((accessToken, expiresIn) => {
+        calls.storeToken.push({ accessToken, expiresIn });
+        return accessToken;
       }),
     enterWorkspace:
       overrides.enterWorkspace ??
@@ -58,16 +58,16 @@ function setup(overrides: Partial<CreateDeps> & { outcome?: CreateOutcome } = {}
 }
 
 describe("createWorkspace", () => {
-  test("成功路径：POST create → refresh → enterWorkspace 新 db（admin） → URL 跳转 /w/<slug>", async () => {
+  test("成功路径：POST create → storeAccessToken → enterWorkspace 新 db（admin） → URL 跳转 /w/<slug>", async () => {
     const { creator, calls } = setup();
 
     const result = await creator.createWorkspace({ name: "Gamma", slug: "gamma" });
 
     expect(result).toEqual({ ok: true });
     expect(calls.create).toEqual([{ name: "Gamma", slug: "gamma" }]);
-    expect(calls.refresh).toBe(1);
+    expect(calls.storeToken).toHaveLength(1);
     expect(calls.enter).toHaveLength(1);
-    // 创建者是 owner，必然 admin；用 refresh 后的新 token 连后端返回的新库
+    // 创建者是 owner，必然 admin；用后端返回的新 token 连后端返回的新库
     expect(calls.enter[0]).toMatchObject({
       dbName: "ws_gamma",
       role: "admin",
@@ -77,7 +77,7 @@ describe("createWorkspace", () => {
     expect(calls.navigate).toEqual(["/w/gamma"]);
   });
 
-  test("409 slug 冲突：返回 slug-conflict，不 refresh / enter / navigate", async () => {
+  test("409 slug 冲突：返回 slug-conflict，不 storeAccessToken / enter / navigate", async () => {
     const { creator, calls } = setup({
       outcome: { kind: "error", status: 409, code: "workspace-slug-conflict" },
     });
@@ -85,12 +85,12 @@ describe("createWorkspace", () => {
     const result = await creator.createWorkspace({ name: "Gamma", slug: "gamma" });
 
     expect(result).toEqual({ ok: false, reason: "slug-conflict" });
-    expect(calls.refresh).toBe(0);
+    expect(calls.storeToken).toHaveLength(0);
     expect(calls.enter).toHaveLength(0);
     expect(calls.navigate).toHaveLength(0);
   });
 
-  test("502 scope-update-failed：workspace 已建，返回 slug/dbName 供 UI 重试进入，不 refresh / enter", async () => {
+  test("502 scope-update-failed：workspace 已建，返回 slug/dbName 供 UI 重试进入，不 store token / enter", async () => {
     const { creator, calls } = setup({
       outcome: {
         kind: "error",
@@ -108,13 +108,13 @@ describe("createWorkspace", () => {
       slug: "gamma",
       dbName: "ws_gamma",
     });
-    expect(calls.refresh).toBe(0);
+    expect(calls.storeToken).toHaveLength(0);
     expect(calls.enter).toHaveLength(0);
     expect(calls.navigate).toHaveLength(0);
   });
 
-  test("refresh 返回 null（会话失效）：返回 refresh-failed，不 enter / navigate", async () => {
-    const { creator, calls } = setup({ refresh: async () => null });
+  test("storeAccessToken 返回 null（token 响应无效）：返回 refresh-failed，不 enter / navigate", async () => {
+    const { creator, calls } = setup({ storeAccessToken: () => null });
 
     const result = await creator.createWorkspace({ name: "Gamma", slug: "gamma" });
 
@@ -123,7 +123,7 @@ describe("createWorkspace", () => {
     expect(calls.navigate).toHaveLength(0);
   });
 
-  test("403 forbidden：返回 forbidden，不 refresh / enter", async () => {
+  test("403 forbidden：返回 forbidden，不 store token / enter", async () => {
     const { creator, calls } = setup({
       outcome: { kind: "error", status: 403, code: "workspace-create-forbidden" },
     });
@@ -131,11 +131,11 @@ describe("createWorkspace", () => {
     const result = await creator.createWorkspace({ name: "Gamma", slug: "gamma" });
 
     expect(result).toEqual({ ok: false, reason: "forbidden" });
-    expect(calls.refresh).toBe(0);
+    expect(calls.storeToken).toHaveLength(0);
     expect(calls.enter).toHaveLength(0);
   });
 
-  test("其它错误（500）：返回 error 并带 message，不 refresh / enter", async () => {
+  test("其它错误（500）：返回 error 并带 message，不 store token / enter", async () => {
     const { creator, calls } = setup({
       outcome: { kind: "error", status: 500, code: "internal" },
     });
@@ -144,7 +144,7 @@ describe("createWorkspace", () => {
 
     expect(result.ok).toBe(false);
     expect(result).toMatchObject({ reason: "error", message: "internal" });
-    expect(calls.refresh).toBe(0);
+    expect(calls.storeToken).toHaveLength(0);
     expect(calls.enter).toHaveLength(0);
   });
 });

@@ -1,5 +1,5 @@
 import { api } from "./api";
-import { getToken, refresh } from "./auth";
+import { getToken, storeAccessToken } from "./auth";
 import { enterWorkspace } from "./workspace-store.svelte";
 import {
   createWorkspaceSwitcher,
@@ -35,7 +35,7 @@ const switcher = createWorkspaceSwitcher({
     }
     return (await res.json()) as SwitchResponse;
   },
-  refresh,
+  storeAccessToken,
   enterWorkspace,
   getToken,
   navigate: browserNavigate,

@@ -12,7 +12,12 @@ const BACKOFF_MS = [1000, 2000, 5000, 10000] as const;
 const CONNECT_TIMEOUT_MS = 3000;
 const rootSessionPool = createRootSessionPool({
   async newSession() {
-    return getRootConnection().newSession();
+    const session = await getRootConnection().newSession();
+    await session.signin({
+      username: env.SURREAL_ROOT_USER,
+      password: env.SURREAL_ROOT_PASS,
+    });
+    return session;
   },
 });
 

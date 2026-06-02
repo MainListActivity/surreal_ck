@@ -188,8 +188,8 @@ This is a **Web app**：Svelte 5 前端 + Hono on Bun 后端 + 自部署 Surreal
 | `web/src/lib/auth.ts`        | OIDC SPA 登录壳（oidc-client-ts）+ silent refresh + claim 解析 |
 | `web/src/lib/surreal.ts`     | 浏览器 surrealdb-js 直连封装；按 token 中 surreal db/ac scope signin admin / participant |
 | `web/src/lib/workspace-store.ts` | 当前 workspace + db 连接状态（$state runes） |
-| `web/src/lib/switch-workspace.ts` | 调 `/api/session/switch-workspace` + silent refresh + 重新 signin |
-| `web/src/lib/create-workspace.ts` | 调 `/api/workspaces` 创建 workspace + silent refresh + 进入新 workspace |
+| `web/src/lib/switch-workspace.ts` | 调 `/api/session/switch-workspace`，保存后端返回的新 access token 后重新 signin |
+| `web/src/lib/create-workspace.ts` | 调 `/api/workspaces` 创建 workspace，保存后端返回的新 access token 后进入新 workspace |
 | `web/src/routes/auth/`       | login / callback 页 |
 | `web/src/components/`        | RevoGrid 包装、AI 抽屉、Workspace 切换器、办公室 UI |
 | `shared/`                    | 前后端共享类型 / DTO（含 `router-workflow.types.ts`、`ai-context.ts`） |
@@ -218,7 +218,8 @@ This is a **Web app**：Svelte 5 前端 + Hono on Bun 后端 + 自部署 Surreal
 - `PORT`（默认 8080）
 - `SURREAL_URL`（如 `wss://db.example.com/rpc`） / `SURREAL_NS=main` / `SURREAL_ROOT_USER` / `SURREAL_ROOT_PASS`
 - `OIDC_ISSUER` / `OIDC_JWKS_URL` / `OIDC_AUDIENCE`（Mastra 与 Workspace Scope Module 验 token 用）
-- `IDP_SCOPE_API_URL` / `IDP_SCOPE_API_TOKEN`（Workspace Scope Module 调 IdP 更新 token scope）
+- `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` / `OIDC_TOKEN_ENDPOINT` / `OIDC_TOKEN_AUTH_METHOD`（后端 confidential client 代理 OIDC code 换 token 与 scope exchange；auth method 默认 `client_secret_basic`，需和 IdP 客户端配置一致）
+- `IDP_SCOPE_API_URL`（Workspace Scope Module 调 IdP scope exchange，返回带新 scope 的 access token）
 - `IDP_HOOK_SECRET`（IdP default-scope hook 鉴权，如 IdP 选型需要）
 - `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` 等模型 provider key
 

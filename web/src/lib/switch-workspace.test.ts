@@ -23,12 +23,12 @@ type SwitchResponse = { status: number; body: unknown };
 function setup(overrides: Partial<SwitchDeps> & { switchResponses?: SwitchResponse[] } = {}) {
   const calls = {
     switch: [] as Array<{ workspaceSlug: string }>,
-    refresh: 0,
+    storeToken: [] as Array<{ accessToken: string; expiresIn?: number | null }>,
     enter: [] as Array<{ rawToken: string; dbName: string; role?: string; slug?: string; name?: string }>,
     navigate: [] as string[],
   };
 
-  const switchResponses = overrides.switchResponses ?? [{ status: 200, body: { ok: true, refreshRequired: true } }];
+  const switchResponses = overrides.switchResponses ?? [{ status: 200, body: { ok: true, accessToken: jwt({ "https://surrealdb.com/db": "ws_beta" }), expiresIn: 3600 } }];
   let switchIdx = 0;
 
   let token = overrides.getToken?.() ?? jwt({ "https://surrealdb.com/db": "ws_alpha" });
@@ -41,17 +41,17 @@ function setup(overrides: Partial<SwitchDeps> & { switchResponses?: SwitchRespon
       (async (workspaceSlug) => {
         calls.switch.push({ workspaceSlug });
         const res = switchResponses[Math.min(switchIdx++, switchResponses.length - 1)];
-        if (res.status === 200) return { ok: true, refreshRequired: true };
+        if (res.status === 200) return res.body as { ok: boolean; accessToken: string; expiresIn: number | null };
         const err = new Error(`HTTP ${res.status}`) as Error & { status: number };
         err.status = res.status;
         throw err;
       }),
-    refresh:
-      overrides.refresh ??
-      (async () => {
-        calls.refresh += 1;
-        token = jwt({ "https://surrealdb.com/db": "ws_beta" });
-        return token;
+    storeAccessToken:
+      overrides.storeAccessToken ??
+      ((accessToken, expiresIn) => {
+        calls.storeToken.push({ accessToken, expiresIn });
+        token = accessToken;
+        return accessToken;
       }),
     enterWorkspace:
       overrides.enterWorkspace ??
@@ -98,16 +98,16 @@ describe("loadWorkspaces", () => {
 });
 
 describe("switchWorkspace", () => {
-  test("成功路径：POST switch → refresh → enterWorkspace 新 db → URL 更新 /w/<slug>", async () => {
+  test("成功路径：POST switch → storeAccessToken → enterWorkspace 新 db → URL 更新 /w/<slug>", async () => {
     const { switcher, calls } = setup();
 
     const result = await switcher.switchWorkspace("beta");
 
     expect(result.ok).toBe(true);
     expect(calls.switch).toEqual([{ workspaceSlug: "beta" }]);
-    expect(calls.refresh).toBe(1);
+    expect(calls.storeToken).toHaveLength(1);
     expect(calls.enter).toHaveLength(1);
-    // refresh 后新 token 的 db 是 ws_beta，用新 token 连新库
+    // 后端返回的新 token 的 db 是 ws_beta，用新 token 连新库
     expect(calls.enter[0]).toMatchObject({
       dbName: "ws_beta",
       role: "participant",
@@ -117,7 +117,7 @@ describe("switchWorkspace", () => {
     expect(calls.navigate).toEqual(["/w/beta"]);
   });
 
-  test("已在目标 workspace 时短路：不调 switch / refresh / enter", async () => {
+  test("已在目标 workspace 时短路：不调 switch / storeAccessToken / enter", async () => {
     const { switcher, calls } = setup();
     // token 当前 db 已是 ws_alpha
     const result = await switcher.switchWorkspace("alpha");
@@ -125,11 +125,11 @@ describe("switchWorkspace", () => {
     expect(result.ok).toBe(true);
     expect(result.noop).toBe(true);
     expect(calls.switch).toHaveLength(0);
-    expect(calls.refresh).toBe(0);
+    expect(calls.storeToken).toHaveLength(0);
     expect(calls.enter).toHaveLength(0);
   });
 
-  test("后端 403：不 refresh、不 enter，旧连接保持，结果含 forbidden", async () => {
+  test("后端 403：不 storeAccessToken、不 enter，旧连接保持，结果含 forbidden", async () => {
     const { switcher, calls } = setup({
       switchResponses: [{ status: 403, body: { error: "workspace-forbidden" } }],
     });
@@ -139,7 +139,7 @@ describe("switchWorkspace", () => {
     expect(result.ok).toBe(false);
     expect(result.reason).toBe("forbidden");
     expect(calls.switch).toEqual([{ workspaceSlug: "beta" }]);
-    expect(calls.refresh).toBe(0);
+    expect(calls.storeToken).toHaveLength(0);
     expect(calls.enter).toHaveLength(0);
     expect(calls.navigate).toHaveLength(0);
   });
@@ -154,9 +154,9 @@ describe("switchWorkspace", () => {
     expect(calls.switch).toHaveLength(0);
   });
 
-  test("refresh 返回 null（会话失效）：不 enter，结果含 refresh-failed", async () => {
+  test("storeAccessToken 返回 null（token 响应无效）：不 enter，结果含 refresh-failed", async () => {
     const { switcher, calls } = setup({
-      refresh: async () => null,
+      storeAccessToken: () => null,
     });
 
     const result = await switcher.switchWorkspace("beta");
@@ -176,7 +176,7 @@ describe("bootstrapWorkspace — 页面加载/刷新后建立直连", () => {
     expect(result.ok).toBe(true);
     expect(result.slug).toBe("alpha");
     expect(calls.switch).toHaveLength(0);
-    expect(calls.refresh).toBe(0);
+    expect(calls.storeToken).toHaveLength(0);
     expect(calls.enter).toHaveLength(1);
     expect(calls.enter[0]).toMatchObject({ dbName: "ws_alpha", role: "admin", slug: "alpha", name: "Alpha" });
     expect(calls.navigate).toHaveLength(0);
@@ -190,7 +190,7 @@ describe("bootstrapWorkspace — 页面加载/刷新后建立直连", () => {
     expect(result.ok).toBe(true);
     expect(result.slug).toBe("beta");
     expect(calls.switch).toEqual([{ workspaceSlug: "beta" }]);
-    expect(calls.refresh).toBe(1);
+    expect(calls.storeToken).toHaveLength(1);
     expect(calls.enter).toHaveLength(1);
   });
 

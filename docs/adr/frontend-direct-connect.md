@@ -118,8 +118,8 @@ IdP 不维护 workspace 列表，不决定成员关系，不执行 workspace 创
 3. 前端调 `POST /api/session/switch-workspace`
 4. 后端验证该 subject 在目标 workspace 中有 user 记录 / index 行，得出 access
 5. 后端更新 `_system.user_workspace_index.last_selected_at`
-6. 后端调用 IdP Token Scope Adapter 更新 token scope
-7. 前端 silent refresh / reload token
+6. 后端用 confidential client 调 IdP Token Scope Adapter，以当前 access token 换取目标 scope 的新 access token
+7. 前端保存后端返回的新 access token
 8. 前端关闭旧 SurrealDB 连接，按新 token scope 重新 signin
 ```
 
@@ -134,8 +134,8 @@ IdP 不维护 workspace 列表，不决定成员关系，不执行 workspace 创
 4. 后端应用 `shared/sql/workspace-template/` 模板
 5. 后端创建 owner user（human, is_admin=true）
 6. 后端写 `_system.workspace` + `_system.user_workspace_index`
-7. 后端调用 IdP Token Scope Adapter，把用户 scope 切到新 workspace 的 admin access
-8. 前端 silent refresh，直连新 workspace database
+7. 后端调用 IdP Token Scope Adapter，返回带新 workspace admin access 的 access token
+8. 前端保存新 access token，直连新 workspace database
 ```
 
 创建失败由后端在同一个 lifecycle Module 内补偿：模板失败则删除刚创建的 db；IdP scope 更新失败则保留 workspace 但返回明确错误，前端可重试切换。

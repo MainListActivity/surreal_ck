@@ -44,8 +44,21 @@ export function createSessionRoutes(
         throw new HttpError(409, "workspace-user-drift", "Workspace user drift detected");
       }
 
-      await idpTokenScopeAdapter.updateUserScope(c.var.user.subject, result.scope);
+      let scopeToken;
+      try {
+        scopeToken = await idpTokenScopeAdapter.updateUserScope({
+          subjectToken: c.var.user.rawToken,
+          scope: result.scope,
+        });
+      } catch(e) {
+          console.log(e)
+        throw new HttpError(502, "idp-scope-exchange-failed", "IdP token scope exchange failed", e);
+      }
 
-      return c.json({ ok: true, refreshRequired: true });
+      return c.json({
+        ok: true,
+        accessToken: scopeToken.accessToken,
+        expiresIn: scopeToken.expiresIn,
+      });
     });
 }

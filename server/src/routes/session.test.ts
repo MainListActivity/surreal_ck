@@ -136,10 +136,11 @@ describe("session workspace list", () => {
 describe("session workspace switch", () => {
   test("switches to an accessible workspace and asks IdP to update the token scope", async () => {
     let switchInput: unknown;
-    const adapterCalls: Array<{ subject: string; scope: SurrealTokenScope }> = [];
+    const adapterCalls: Array<{ subjectToken: string; scope: SurrealTokenScope }> = [];
     const idpTokenScopeAdapter: IdpTokenScopeAdapter = {
-      async updateUserScope(subject, scope) {
-        adapterCalls.push({ subject, scope });
+      async updateUserScope(input) {
+        adapterCalls.push(input);
+        return { accessToken: "scoped-token", expiresIn: 3600 };
       },
     };
     const app = createApp({
@@ -168,9 +169,15 @@ describe("session workspace switch", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ ok: true, refreshRequired: true });
+    expect(await response.json()).toEqual({
+      ok: true,
+      accessToken: "scoped-token",
+      expiresIn: 3600,
+    });
     expect(switchInput).toEqual({ subject: "user-123", workspaceSlug: "recent" });
-    expect(adapterCalls).toEqual([{ subject: "user-123", scope: { db: "ws_recent", ac: "admin" } }]);
+    expect(adapterCalls).toEqual([
+      { subjectToken: "test-token", scope: { db: "ws_recent", ac: "admin" } },
+    ]);
   });
 
   test("rejects inaccessible workspace switches without calling IdP", async () => {
@@ -180,6 +187,7 @@ describe("session workspace switch", () => {
       idpTokenScopeAdapter: {
         async updateUserScope() {
           adapterCalled = true;
+          return { accessToken: "unused", expiresIn: null };
         },
       },
       workspaceScope: {
@@ -217,6 +225,7 @@ describe("session workspace switch", () => {
       idpTokenScopeAdapter: {
         async updateUserScope() {
           adapterCalled = true;
+          return { accessToken: "unused", expiresIn: null };
         },
       },
       workspaceScope: {

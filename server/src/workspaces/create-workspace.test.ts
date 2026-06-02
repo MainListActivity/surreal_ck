@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import type { WorkspaceTemplateScript } from "@surreal-ck/shared/workspace-template";
 import { createWorkspaceCreator, type CreateWorkspaceClient, type CreateWorkspaceSessionFactory } from "./create-workspace";
+import { closeRootConnection, getRootConnection, initRootConnection } from "../db/root-connection";
+import { ensureSystemSchema } from "../db/system-schema";
+import { env, overrideEnv } from "../env";
 import type { IdpTokenScopeAdapter } from "./idp-scope-adapter";
 import type { SurrealTokenScope } from "./workspace-scope";
 
@@ -87,13 +90,14 @@ function readDbNameFromDdl(sql: string, prefix: "DEFINE DATABASE" | "REMOVE DATA
   return tail.match(/^([a-zA-Z0-9_]+)/)?.[1] ?? null;
 }
 
-function recordingIdpAdapter(): { adapter: IdpTokenScopeAdapter; calls: Array<{ subject: string; scope: SurrealTokenScope }> } {
-  const calls: Array<{ subject: string; scope: SurrealTokenScope }> = [];
+function recordingIdpAdapter(): { adapter: IdpTokenScopeAdapter; calls: Array<{ subjectToken: string; scope: SurrealTokenScope }> } {
+  const calls: Array<{ subjectToken: string; scope: SurrealTokenScope }> = [];
   return {
     calls,
     adapter: {
-      async updateUserScope(subject, scope) {
-        calls.push({ subject, scope });
+      async updateUserScope(input) {
+        calls.push(input);
+        return { accessToken: "scoped-token", expiresIn: 3600 };
       },
     },
   };
@@ -104,6 +108,31 @@ const templateScripts: WorkspaceTemplateScript[] = [
   { version: 2, name: "002-tables-core.surql", sql: "DEFINE TABLE user SCHEMAFULL;" },
   { version: 3, name: "003-tables-office.surql", sql: "DEFINE TABLE office_role SCHEMAFULL;" },
 ];
+
+const localSurrealTest = test.skipIf(process.env.RUN_LOCAL_SURREALDB_TESTS !== "1");
+
+function localSurrealConfig() {
+  return {
+    url: process.env.LOCAL_SURREAL_URL ?? "ws://127.0.0.1:8000/rpc",
+    namespace: process.env.LOCAL_SURREAL_NS ?? "main",
+    username: process.env.LOCAL_SURREAL_ROOT_USER ?? "root",
+    password: process.env.LOCAL_SURREAL_ROOT_PASS ?? "root",
+  };
+}
+
+async function withTimeout<T>(work: Promise<T>, label: string, timeoutMs = 5_000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 describe("createWorkspace lifecycle", () => {
   test("provisions db, applies template, seeds owner user and _system index, then updates IdP scope", async () => {
@@ -120,6 +149,7 @@ describe("createWorkspace lifecycle", () => {
 
     const result = await creator.createWorkspace({
       subject: "user-123",
+      subjectToken: "subject-token",
       email: "ada@example.test",
       name: "Acme Legal",
       slug: "acme",
@@ -129,7 +159,8 @@ describe("createWorkspace lifecycle", () => {
       kind: "created",
       slug: "acme",
       dbName: "ws_abcdef123456",
-      refreshRequired: true,
+      accessToken: "scoped-token",
+      expiresIn: 3600,
     });
 
     const defineDb = db.queries.find((q) => q.sql.includes("DEFINE DATABASE") && q.sql.includes("ws_abcdef123456"));
@@ -158,7 +189,7 @@ describe("createWorkspace lifecycle", () => {
     expect(systemWrite).toBeDefined();
     expect(systemWrite?.params?.role).toBe("admin");
 
-    expect(calls).toEqual([{ subject: "user-123", scope: { db: "ws_abcdef123456", ac: "admin" } }]);
+    expect(calls).toEqual([{ subjectToken: "subject-token", scope: { db: "ws_abcdef123456", ac: "admin" } }]);
     expect(db.requestedSessions).toContain("_system");
     expect(db.requestedSessions).toContain("ws_abcdef123456");
   });
@@ -178,6 +209,7 @@ describe("createWorkspace lifecycle", () => {
 
     const result = await creator.createWorkspace({
       subject: "user-123",
+      subjectToken: "subject-token",
       email: "ada@example.test",
       name: "Acme Legal",
       slug: "acme",
@@ -204,6 +236,7 @@ describe("createWorkspace lifecycle", () => {
     await expect(
       creator.createWorkspace({
         subject: "user-123",
+        subjectToken: "subject-token",
         email: "ada@example.test",
         name: "Acme Legal",
         slug: "acme",
@@ -233,6 +266,7 @@ describe("createWorkspace lifecycle", () => {
 
     const result = await creator.createWorkspace({
       subject: "user-123",
+      subjectToken: "subject-token",
       email: "ada@example.test",
       name: "Acme Legal",
       slug: "acme",
@@ -242,12 +276,13 @@ describe("createWorkspace lifecycle", () => {
       kind: "created",
       slug: "acme",
       dbName: "ws_fedcba654321",
-      refreshRequired: true,
+      accessToken: "scoped-token",
+      expiresIn: 3600,
     });
     expect(
       db.queries.find((q) => q.sql.includes("REMOVE DATABASE") && q.sql.includes("ws_abcdef123456")),
     ).toBeUndefined();
-    expect(calls).toEqual([{ subject: "user-123", scope: { db: "ws_fedcba654321", ac: "admin" } }]);
+    expect(calls).toEqual([{ subjectToken: "subject-token", scope: { db: "ws_fedcba654321", ac: "admin" } }]);
   });
 
   test("rolls back _system workspace and drops the new database when membership index write fails", async () => {
@@ -266,6 +301,7 @@ describe("createWorkspace lifecycle", () => {
     await expect(
       creator.createWorkspace({
         subject: "user-123",
+        subjectToken: "subject-token",
         email: "ada@example.test",
         name: "Acme Legal",
         slug: "acme",
@@ -296,6 +332,7 @@ describe("createWorkspace lifecycle", () => {
 
     const result = await creator.createWorkspace({
       subject: "user-123",
+      subjectToken: "subject-token",
       email: "ada@example.test",
       name: "Acme Legal",
       slug: "acme",
@@ -305,4 +342,84 @@ describe("createWorkspace lifecycle", () => {
     expect(db.queries.find((q) => q.sql.includes("CREATE ONLY workspace"))).toBeDefined();
     expect(db.queries.find((q) => q.sql.includes("REMOVE DATABASE"))).toBeUndefined();
   });
+});
+
+describe("createWorkspace lifecycle against local SurrealDB", () => {
+  localSurrealTest(
+    "defines a workspace database from the _system session",
+    async () => {
+      const config = localSurrealConfig();
+      const previousEnv = { ...env };
+      const id = Date.now().toString(36);
+      const dbName = `ws_codex_${id}`;
+      const slug = `codex-${id}`;
+
+      try {
+        overrideEnv({
+          SURREAL_URL: config.url,
+          SURREAL_NS: config.namespace,
+          SURREAL_ROOT_USER: config.username,
+          SURREAL_ROOT_PASS: config.password,
+        });
+        await withTimeout(initRootConnection(), "connect local SurrealDB");
+        await withTimeout(
+          ensureSystemSchema(getRootConnection(), { namespace: config.namespace }),
+          "ensure _system schema",
+        );
+
+        const creator = createWorkspaceCreator({
+          idpTokenScopeAdapter: {
+            async updateUserScope() {
+              // The local integration test only verifies SurrealDB lifecycle behavior.
+              return { accessToken: "scoped-token", expiresIn: 3600 };
+            },
+          },
+          loadTemplateScripts: async () => [],
+          generateId: () => dbName.slice("ws_".length),
+          namespace: config.namespace,
+        });
+
+        const result = await creator.createWorkspace({
+          subject: `user-${id}`,
+          subjectToken: "subject-token",
+          email: `user-${id}@example.test`,
+          name: "Codex Local SurrealDB Probe",
+          slug,
+        });
+
+        expect(result).toEqual({
+          kind: "created",
+          slug,
+          dbName,
+          accessToken: "scoped-token",
+          expiresIn: 3600,
+        });
+
+        const root = getRootConnection();
+        await root.use({ namespace: config.namespace, database: dbName });
+        const [currentDb] = await withTimeout(
+          root.query<[string]>("RETURN $dbName;", { dbName }),
+          "read created database",
+        );
+        expect(currentDb).toBe(dbName);
+      } finally {
+        try {
+          const root = getRootConnection();
+          await root.use({ namespace: config.namespace, database: "_system" }).catch(() => undefined);
+          await root
+            .query("DELETE workspace WHERE db_name = $dbName; DELETE user_workspace_index WHERE db_name = $dbName;", {
+              dbName,
+            })
+            .catch(() => undefined);
+          await root.query(`REMOVE DATABASE ${dbName};`).catch(() => undefined);
+        } catch {
+          // The connection may not have initialized if the opt-in local service is unavailable.
+        }
+
+        await closeRootConnection();
+        overrideEnv(previousEnv);
+      }
+    },
+    15_000,
+  );
 });

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createAuthClient } from "./auth";
+import { createAuthClient, createOidcUserManagerSettings } from "./auth";
 
 function memoryStorage(seed: Record<string, string> = {}): Storage {
   const values = new Map(Object.entries(seed));
@@ -33,6 +33,25 @@ function unsignedJwt(payload: Record<string, unknown>): string {
 }
 
 describe("OIDC SPA auth client", () => {
+  test("OIDC token endpoint points at the backend confidential proxy", () => {
+    const settings = createOidcUserManagerSettings({
+      env: {
+        VITE_API_BASE_URL: "https://api.example.test",
+        VITE_OIDC_AUDIENCE: "https://auth.example.test",
+        VITE_OIDC_CLIENT_ID: "web-client",
+        VITE_OIDC_ISSUER: "https://idp.example.test",
+        VITE_OIDC_REDIRECT_URI: "https://app.example.test/auth/callback",
+      },
+      origin: "https://app.example.test",
+      storage: memoryStorage(),
+    });
+
+    expect(settings?.metadataSeed).toMatchObject({
+      token_endpoint: "https://api.example.test/api/auth/token",
+    });
+    expect(settings?.client_secret).toBeUndefined();
+  });
+
   test("从 sessionStorage 恢复 access token 和过期时间", () => {
     const auth = createAuthClient({
       storage: memoryStorage({
@@ -47,6 +66,30 @@ describe("OIDC SPA auth client", () => {
     expect(auth.getToken()).toBe("access-token");
     expect(auth.getSession()).toEqual({ accessToken: "access-token", expiresAt: 1893456000 });
     expect(auth.isAuthenticated()).toBe(true);
+  });
+
+  test("storeAccessToken 持久化后端 scope exchange 返回的新 access token", () => {
+    const storage = memoryStorage({
+      "oidc.access_token": "old-access-token",
+      "oidc.exp": "1893456000",
+      "oidc.id_token": "legacy-id-token",
+      "oidc.claims": JSON.stringify({ email: "legacy@example.test" }),
+    });
+    const auth = createAuthClient({
+      storage,
+      now: () => new Date("2026-05-28T00:00:00Z"),
+    });
+
+    const token = unsignedJwt({
+      exp: Date.parse("2026-05-28T01:00:00Z") / 1000,
+      "https://surrealdb.com/db": "ws_beta",
+    });
+
+    expect(auth.storeAccessToken(token, null)).toBe(token);
+    expect(storage.getItem("oidc.access_token")).toBe(token);
+    expect(storage.getItem("oidc.exp")).toBe(String(Date.parse("2026-05-28T01:00:00Z") / 1000));
+    expect(storage.getItem("oidc.id_token")).toBeNull();
+    expect(storage.getItem("oidc.claims")).toBeNull();
   });
 
   test("callback 成功后只持久化 access token 和过期时间", async () => {

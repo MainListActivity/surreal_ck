@@ -119,7 +119,8 @@ Browser (Svelte 5 + RevoGrid + surrealdb browser SDK)
     - `SURREAL_NS`（默认 `main`）
     - `SURREAL_ROOT_USER` / `SURREAL_ROOT_PASS`（仅 `_system` 写入、workspace lifecycle、employee_credential 写入用）
     - `OIDC_ISSUER` / `OIDC_JWKS_URL` / `OIDC_AUDIENCE`（验 `/api/chat` 等后端 endpoint 的 token）
-    - `IDP_SCOPE_API_URL` / `IDP_SCOPE_API_TOKEN`（Workspace Scope Module 调 IdP 更新 token scope）
+    - `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` / `OIDC_TOKEN_ENDPOINT` / `OIDC_TOKEN_AUTH_METHOD`（后端 confidential client 代理 OIDC code 换 token 与 scope exchange；auth method 默认 `client_secret_basic`，需和 IdP 客户端配置一致）
+    - `IDP_SCOPE_API_URL`（Workspace Scope Module 调 IdP scope exchange，返回带新 scope 的 access token）
     - `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` 等模型 key
   - 前端：
     - `VITE_SURREAL_URL`（如 `wss://db.example.com/rpc`）

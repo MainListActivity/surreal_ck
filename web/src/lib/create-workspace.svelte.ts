@@ -1,5 +1,5 @@
 import { api } from "./api";
-import { refresh } from "./auth";
+import { storeAccessToken } from "./auth";
 import { enterWorkspace } from "./workspace-store.svelte";
 import {
   createWorkspaceCreator,
@@ -37,7 +37,7 @@ const creator = createWorkspaceCreator({
     }
     return (await res.json()) as CreateResponse;
   },
-  refresh,
+  storeAccessToken,
   enterWorkspace,
   navigate: browserNavigate,
 });

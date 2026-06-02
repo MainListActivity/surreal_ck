@@ -39,7 +39,11 @@ export type BootstrapResult =
   | { ok: false; reason: "forbidden" | "refresh-failed" | "error"; message?: string };
 
 /** 后端 `POST /api/session/switch-workspace` 的正常返回。 */
-export type SwitchResponse = { ok: boolean; refreshRequired: boolean };
+export type SwitchResponse = {
+  ok: boolean;
+  accessToken: string;
+  expiresIn: number | null;
+};
 
 /**
  * switch-workspace 的全部外部依赖；注入以便单测，默认绑定到模块级单例。
@@ -47,7 +51,7 @@ export type SwitchResponse = { ok: boolean; refreshRequired: boolean };
 export type SwitchDeps = {
   listWorkspaces(): Promise<ListWorkspacesResponse>;
   requestSwitch(workspaceSlug: string): Promise<SwitchResponse>;
-  refresh(): Promise<string | null>;
+  storeAccessToken(accessToken: string, expiresIn?: number | null): string | null;
   enterWorkspace(input: EnterWorkspaceInput): Promise<void>;
   getToken(): string | null;
   navigate(url: string): void;
@@ -115,13 +119,14 @@ export function createWorkspaceSwitcher(deps: SwitchDeps): WorkspaceSwitcher {
       // 不在权威列表里 = 无权访问，直接拒绝，不打后端。
       if (!target) return { ok: false, reason: "forbidden" };
 
-      // 已经在目标 workspace：短路，避免无谓的 switch / refresh / 重连。
+      // 已经在目标 workspace：短路，避免无谓的 switch / 换 token / 重连。
       if (currentDbFromToken(deps.getToken()) === target.dbName) {
         return { ok: true, noop: true };
       }
 
+      let switched: SwitchResponse;
       try {
-        await deps.requestSwitch(slug);
+        switched = await deps.requestSwitch(slug);
       } catch (error) {
         if (errorStatus(error) === 403) return { ok: false, reason: "forbidden" };
         return {
@@ -131,8 +136,8 @@ export function createWorkspaceSwitcher(deps: SwitchDeps): WorkspaceSwitcher {
         };
       }
 
-      // 后端已更新 IdP token scope；silent refresh 拿到带新 db scope 的 token。
-      const newToken = await deps.refresh();
+      // 后端已通过 confidential client 调 IdP /scope，返回带新 db/ac claims 的 access token。
+      const newToken = deps.storeAccessToken(switched.accessToken, switched.expiresIn);
       if (!newToken) return { ok: false, reason: "refresh-failed" };
 
       // 用新 token 连新库，旧连接由 enterWorkspace → connectSurreal 关闭。
@@ -181,7 +186,7 @@ export function createWorkspaceSwitcher(deps: SwitchDeps): WorkspaceSwitcher {
         return { ok: true, slug: target.slug };
       }
 
-      // 否则走完整 switch（POST switch → refresh → enter）。
+      // 否则走完整 switch（POST switch → store token → enter）。
       const result = await switcher.switchWorkspace(target.slug);
       if (result.ok) return { ok: true, slug: target.slug };
       return { ok: false, reason: result.reason, message: result.message };

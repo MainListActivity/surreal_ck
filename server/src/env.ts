@@ -13,10 +13,13 @@ const EnvSchema = z.object({
   OIDC_ISSUER: z.string().url(),
   OIDC_JWKS_URL: z.string().url(),
   OIDC_AUDIENCE: z.string().min(1),
+  OIDC_CLIENT_ID: z.string().min(1).optional(),
+  OIDC_CLIENT_SECRET: z.string().min(1).optional(),
+  OIDC_TOKEN_ENDPOINT: z.string().url().optional(),
+  OIDC_TOKEN_AUTH_METHOD: z.enum(["client_secret_basic", "client_secret_post"]).default("client_secret_basic"),
 
   IDP_HOOK_SECRET: z.string().min(8),
   IDP_SCOPE_API_URL: z.string().url().optional(),
-  IDP_SCOPE_API_TOKEN: z.string().optional(),
 
   // 逗号分隔的 OIDC subject 列表；启动时 upsert 进 _system.system_admin。
   // 当前 MVP 中该表非空即开启创建 workspace 能力，不做逐 subject 授权。

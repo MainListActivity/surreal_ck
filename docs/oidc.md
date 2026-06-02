@@ -1,4 +1,4 @@
-# OIDC SPA Client Integration
+# OIDC Web Client Integration
 
 ## Identity Provider
 
@@ -17,7 +17,7 @@ This application authenticates users via an OpenID Connect provider.
 | Grant Type | `authorization_code` |
 | Response Type | `code` |
 | PKCE | Required (S256) |
-| Token Auth | None (public client) |
+| Token Auth | Confidential client via Bun server |
 | Audience | `https://auth.maplayer.top` |
 
 ## Endpoints
@@ -25,17 +25,23 @@ This application authenticates users via an OpenID Connect provider.
 | Endpoint | URL |
 |---|---|
 | Authorization | `https://o.maplayer.top/t/ck/authorize` |
-| Token | `https://o.maplayer.top/t/ck/token` |
+| Browser token exchange | `/api/auth/token` |
+| Upstream IdP Token | `https://o.maplayer.top/t/ck/token` |
 | UserInfo | `https://o.maplayer.top/t/ck/userinfo` |
 
 ## Integration Notes
 
-- This is a **public SPA client** — no client secret is used.
+- This is a **Web confidential client**. The browser still performs the authorization redirect/callback flow, but token exchange calls this application's `/api/auth/token` endpoint.
+- `client_secret` is server-only (`OIDC_CLIENT_SECRET`) and must never appear in `VITE_*`, frontend bundles, URLs, logs, or browser storage.
+- `/api/auth/token` forwards the authorization code exchange to the IdP token endpoint with the server-side confidential client credentials, then returns the IdP `access_token` to the browser.
+- `OIDC_TOKEN_AUTH_METHOD` defaults to `client_secret_basic`; set it to `client_secret_post` only when the IdP client is configured that way.
+- The browser continues to use that `access_token` as the application API bearer token and the SurrealDB `db.signin` token.
+- `refresh_token` is not returned to the browser by `/api/auth/token`.
 - **PKCE is mandatory.** Generate a `code_verifier`, derive a SHA-256 `code_challenge`, and include `code_challenge_method=S256` in the authorize request.
 - The access token audience is `https://auth.maplayer.top` — validate this in your resource server.
 - Tokens are signed JWTs. Verify signatures using keys from the JWKS endpoint.
 - Use `openid` as the minimum scope. Add `profile`, `email` as needed.
-- Persistent desktop login requires `offline_access` so the token endpoint can return a `refresh_token`.
+- `offline_access` may be requested only if the backend is prepared to retain refresh capability server-side.
 
 ## Workspace Token Scope（本应用专用）
 
@@ -49,9 +55,23 @@ This application authenticates users via an OpenID Connect provider.
 这两个 claim 的取值由**本应用**（后端 Workspace Scope Module）决定，不是用户登录时固定的：
 
 - **登录默认 scope**：IdP 登录流程回调本应用 `GET /api/internal/idp/default-scope`，本应用按 subject 查 `_system.user_workspace_index` 返回默认 `{ db, ac }`，IdP 据此签发首个 token。
-- **切换 / 创建 workspace**：本应用调用 IdP 的 **scope 更新 API** 改写该 subject 下次 token 的 `db` / `ac`，前端再 silent refresh 拿到新 scope 的 token，重新 `db.signin`。
+- **切换 / 创建 workspace**：本应用后端用 server-only `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` 调 IdP `IDP_SCOPE_API_URL`，提交当前用户 `subject_token` 与目标 `db` / `ac` claims。IdP 立即返回带新 scope 的 `access_token`，前端保存该 token 后重新 `db.signin`。
 
-> **TODO（簇 C issue 03 回填）**：IdP scope 更新 API 与 default-scope hook 的具体 endpoint URL、鉴权方式（管理 token / HMAC）、请求与返回 body、失败码。架构决策见 [`adr/frontend-direct-connect.md`](./adr/frontend-direct-connect.md) §3。
+Scope exchange 请求由 Bun server 发出，浏览器永远不接触 `OIDC_CLIENT_SECRET`：
+
+```http
+POST https://o.maplayer.top/t/ck/scope
+Authorization: Basic base64(OIDC_CLIENT_ID:OIDC_CLIENT_SECRET)
+Content-Type: application/json
+
+{
+  "subject_token": "<CURRENT_USER_ACCESS_TOKEN>",
+  "claims": {
+    "https://surrealdb.com/db": "ws_a1b2c3d4e5f6",
+    "https://surrealdb.com/ac": "admin"
+  }
+}
+```
 
 ## Example Authorization Request
 
@@ -69,7 +89,7 @@ https://o.maplayer.top/t/ck/authorize?
 ## Example Token Exchange
 
 ```bash
-curl -X POST https://o.maplayer.top/t/ck/token \
+curl -X POST https://docs.maplayer.top/api/auth/token \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "grant_type=authorization_code" \
   -d "code=<AUTH_CODE>" \
@@ -77,3 +97,5 @@ curl -X POST https://o.maplayer.top/t/ck/token \
   -d "client_id=b10df483-1cd4-4beb-8a01-92e8f4b3fdf4" \
   -d "code_verifier=<CODE_VERIFIER>"
 ```
+
+The Bun server forwards this request to `OIDC_TOKEN_ENDPOINT` with `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET`, using `OIDC_TOKEN_AUTH_METHOD` for client authentication.

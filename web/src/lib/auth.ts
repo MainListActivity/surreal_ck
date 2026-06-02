@@ -1,5 +1,5 @@
 import { UserManager, WebStorageStateStore } from "oidc-client-ts";
-import type { SigninRedirectArgs, User } from "oidc-client-ts";
+import type { SigninRedirectArgs, User, UserManagerSettings } from "oidc-client-ts";
 
 export type AuthSession = {
   accessToken: string;
@@ -20,6 +20,7 @@ export type AuthClient = {
   isAuthenticated(): boolean;
   handleCallback(currentUrl?: string): Promise<AuthCallbackResult>;
   refresh(): Promise<string | null>;
+  storeAccessToken(accessToken: string, expiresIn?: number | null): string | null;
   logout(): Promise<void>;
   requireAuthenticatedRoute(path?: string): boolean;
   login(returnTo?: string): Promise<void>;
@@ -52,6 +53,7 @@ const LEGACY_CLAIMS_KEY = "oidc.claims";
 const REFRESH_SKEW_MS = 5 * 60 * 1000;
 
 type ViteEnv = Partial<{
+  VITE_API_BASE_URL: string;
   VITE_OIDC_ISSUER: string;
   VITE_OIDC_CLIENT_ID: string;
   VITE_OIDC_REDIRECT_URI: string;
@@ -87,11 +89,20 @@ function browserOrigin(): string {
   return window.location.origin;
 }
 
-function createBrowserUserManager(): UserManager | undefined {
-  if (typeof window === "undefined") return undefined;
-  if (browserManager) return browserManager;
+function apiBaseUrl(env: ViteEnv, origin: string): string {
+  const base = env.VITE_API_BASE_URL?.trim();
+  return base && base !== "/" ? base.replace(/\/+$/, "") : origin;
+}
 
-  const env = viteEnv();
+export function createOidcUserManagerSettings({
+  env,
+  origin,
+  storage,
+}: {
+  env: ViteEnv;
+  origin: string;
+  storage: Storage;
+}): UserManagerSettings | undefined {
   const authority = env.VITE_OIDC_ISSUER;
   const clientId = env.VITE_OIDC_CLIENT_ID;
   const redirectUri = env.VITE_OIDC_REDIRECT_URI;
@@ -99,19 +110,37 @@ function createBrowserUserManager(): UserManager | undefined {
 
   if (!authority || !clientId || !redirectUri || !audience) return undefined;
 
-  browserManager = new UserManager({
+  return {
     authority,
     client_id: clientId,
     redirect_uri: redirectUri,
     response_type: "code",
     scope: "openid profile email offline_access",
     silent_redirect_uri: redirectUri,
-    post_logout_redirect_uri: browserOrigin(),
+    post_logout_redirect_uri: origin,
     automaticSilentRenew: false,
     includeIdTokenInSilentRenew: false,
+    metadataSeed: {
+      token_endpoint: `${apiBaseUrl(env, origin)}/api/auth/token`,
+    },
     extraQueryParams: { audience },
-    userStore: new WebStorageStateStore({ store: window.sessionStorage }),
+    userStore: new WebStorageStateStore({ store: storage }),
+  };
+}
+
+function createBrowserUserManager(): UserManager | undefined {
+  if (typeof window === "undefined") return undefined;
+  if (browserManager) return browserManager;
+
+  const env = viteEnv();
+  const settings = createOidcUserManagerSettings({
+    env,
+    origin: browserOrigin(),
+    storage: window.sessionStorage,
   });
+  if (!settings) return undefined;
+
+  browserManager = new UserManager(settings);
 
   return browserManager;
 }
@@ -192,8 +221,13 @@ function callbackErrorMessage(error: unknown): string {
 }
 
 function persistUser(storage: Storage | undefined, user: AuthUser, now: () => Date): string | null {
+  if (!user.access_token) {
+    clearStoredSession(storage);
+    return null;
+  }
+
   const expiresAt = resolveExpiresAt(user, now);
-  if (!user.access_token || !expiresAt) {
+  if (!expiresAt) {
     clearStoredSession(storage);
     return null;
   }
@@ -204,6 +238,33 @@ function persistUser(storage: Storage | undefined, user: AuthUser, now: () => Da
   storage?.removeItem(LEGACY_CLAIMS_KEY);
 
   return user.access_token;
+}
+
+function persistAccessToken(
+  storage: Storage | undefined,
+  accessToken: string,
+  now: () => Date,
+  expiresIn?: number | null,
+): string | null {
+  const tokenExp = decodeJwtPayload(accessToken)?.exp;
+  const expiresAt =
+    typeof expiresIn === "number" && Number.isFinite(expiresIn)
+      ? Math.floor(now().getTime() / 1000) + expiresIn
+      : typeof tokenExp === "number" && Number.isFinite(tokenExp)
+        ? tokenExp
+        : null;
+
+  if (!expiresAt) {
+    clearStoredSession(storage);
+    return null;
+  }
+
+  storage?.setItem(ACCESS_TOKEN_KEY, accessToken);
+  storage?.setItem(EXP_KEY, String(expiresAt));
+  storage?.removeItem(LEGACY_ID_TOKEN_KEY);
+  storage?.removeItem(LEGACY_CLAIMS_KEY);
+
+  return accessToken;
 }
 
 export function createAuthClient(options: AuthClientOptions = {}): AuthClient {
@@ -301,6 +362,9 @@ export function createAuthClient(options: AuthClientOptions = {}): AuthClient {
         return null;
       }
     },
+    storeAccessToken(accessToken, expiresIn) {
+      return persistAccessToken(storage, accessToken, now, expiresIn);
+    },
     async logout() {
       clearStoredSession(storage);
       if (userManager?.signoutRedirect) await userManager.signoutRedirect();
@@ -337,6 +401,10 @@ export function handleCallback(currentUrl?: string): Promise<AuthCallbackResult>
 
 export function refresh(): Promise<string | null> {
   return defaultAuth.refresh();
+}
+
+export function storeAccessToken(accessToken: string, expiresIn?: number | null): string | null {
+  return defaultAuth.storeAccessToken(accessToken, expiresIn);
 }
 
 export function logout(): Promise<void> {

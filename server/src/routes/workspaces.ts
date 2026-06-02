@@ -34,6 +34,7 @@ export function createWorkspaceRoutes(
 
     const result = await workspaceCreator.createWorkspace({
       subject: c.var.user.subject,
+      subjectToken: c.var.user.rawToken,
       email: c.var.user.email ?? "",
       name,
       slug,
@@ -53,7 +54,8 @@ export function createWorkspaceRoutes(
     return c.json({
       slug: result.slug,
       dbName: result.dbName,
-      refreshRequired: result.refreshRequired,
+      accessToken: result.accessToken,
+      expiresIn: result.expiresIn,
     });
   });
 }

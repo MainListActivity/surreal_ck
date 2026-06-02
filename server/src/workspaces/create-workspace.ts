@@ -15,6 +15,7 @@ export type CreateWorkspaceSessionFactory = (database: string, namespace: string
 
 export type CreateWorkspaceInput = {
   subject: string;
+  subjectToken: string;
   email: string;
   name: string;
   slug: string;
@@ -25,7 +26,8 @@ export type CreateWorkspaceResult =
       kind: "created";
       slug: string;
       dbName: string;
-      refreshRequired: true;
+      accessToken: string;
+      expiresIn: number | null;
     }
   | {
       kind: "slug-conflict";
@@ -196,12 +198,20 @@ async function tryCreateWorkspace({
 
   // IdP scope 更新失败不删库，允许前端重试 switch-workspace。
   try {
-    await idpTokenScopeAdapter.updateUserScope(input.subject, { db: dbName, ac: "admin" });
+    const scopeToken = await idpTokenScopeAdapter.updateUserScope({
+      subjectToken: input.subjectToken,
+      scope: { db: dbName, ac: "admin" },
+    });
+    return {
+      kind: "created",
+      slug: input.slug,
+      dbName,
+      accessToken: scopeToken.accessToken,
+      expiresIn: scopeToken.expiresIn,
+    };
   } catch {
     return { kind: "scope-update-failed", slug: input.slug, dbName };
   }
-
-  return { kind: "created", slug: input.slug, dbName, refreshRequired: true };
 }
 
 async function createSystemWorkspaceIndex(

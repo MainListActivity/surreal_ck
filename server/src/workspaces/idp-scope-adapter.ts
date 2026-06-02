@@ -1,25 +1,33 @@
 import { env } from "../env";
 import type { SurrealTokenScope } from "./workspace-scope";
 
+export type IdpScopeTokenResult = {
+  accessToken: string;
+  expiresIn: number | null;
+};
+
 export interface IdpTokenScopeAdapter {
-  updateUserScope(subject: string, scope: SurrealTokenScope): Promise<void>;
+  updateUserScope(input: {
+    subjectToken: string;
+    scope: SurrealTokenScope;
+  }): Promise<IdpScopeTokenResult>;
 }
 
 export function createIdpTokenScopeAdapter(): IdpTokenScopeAdapter {
   return {
-    async updateUserScope(subject, scope) {
-      if (!env.IDP_SCOPE_API_URL || !env.IDP_SCOPE_API_TOKEN) {
+    async updateUserScope({ subjectToken, scope }) {
+      if (!env.IDP_SCOPE_API_URL || !env.OIDC_CLIENT_ID || !env.OIDC_CLIENT_SECRET) {
         throw new Error("IdP scope adapter is not configured");
       }
 
       const response = await fetch(env.IDP_SCOPE_API_URL, {
         method: "POST",
         headers: {
-          authorization: `Bearer ${env.IDP_SCOPE_API_TOKEN}`,
+          authorization: `Basic ${btoa(`${env.OIDC_CLIENT_ID}:${env.OIDC_CLIENT_SECRET}`)}`,
           "content-type": "application/json",
         },
         body: JSON.stringify({
-          subject,
+          subject_token: subjectToken,
           claims: {
             "https://surrealdb.com/db": scope.db,
             "https://surrealdb.com/ac": scope.ac,
@@ -27,9 +35,21 @@ export function createIdpTokenScopeAdapter(): IdpTokenScopeAdapter {
         }),
       });
 
+      const body = await response.json().catch(() => null);
+
       if (!response.ok) {
         throw new Error(`IdP scope update failed with ${response.status}`);
       }
+
+      if (!body || typeof body !== "object" || typeof (body as { access_token?: unknown }).access_token !== "string") {
+        throw new Error("IdP scope update did not return an access token");
+      }
+
+      const expiresIn = (body as { expires_in?: unknown }).expires_in;
+      return {
+        accessToken: (body as { access_token: string }).access_token,
+        expiresIn: typeof expiresIn === "number" && Number.isFinite(expiresIn) ? expiresIn : null,
+      };
     },
   };
 }

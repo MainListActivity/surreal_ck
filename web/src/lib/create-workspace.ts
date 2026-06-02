@@ -10,7 +10,8 @@ export type CreateWorkspaceInput = {
 export type CreateResponse = {
   slug: string;
   dbName: string;
-  refreshRequired: boolean;
+  accessToken: string;
+  expiresIn: number | null;
 };
 
 export type CreateResult =
@@ -24,7 +25,7 @@ export type CreateResult =
  */
 export type CreateDeps = {
   requestCreate(input: CreateWorkspaceInput): Promise<CreateResponse>;
-  refresh(): Promise<string | null>;
+  storeAccessToken(accessToken: string, expiresIn?: number | null): string | null;
   enterWorkspace(input: EnterWorkspaceInput): Promise<void>;
   navigate(url: string): void;
 };
@@ -78,8 +79,8 @@ export function createWorkspaceCreator(deps: CreateDeps): WorkspaceCreator {
         };
       }
 
-      // 后端已建库 + 应用模板 + 更新 IdP token scope；silent refresh 拿带新 db scope 的 token。
-      const newToken = await deps.refresh();
+      // 后端已建库 + 应用模板，并通过 confidential client 换发带新 db scope 的 token。
+      const newToken = deps.storeAccessToken(created.accessToken, created.expiresIn);
       if (!newToken) return { ok: false, reason: "refresh-failed" };
 
       // 创建者是 owner，必然是该 workspace 的 admin。

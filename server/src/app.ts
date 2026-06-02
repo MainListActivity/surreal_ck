@@ -11,6 +11,7 @@ import { createInternalIdpRoutes } from "./routes/internal-idp";
 import { createMemberRoutes } from "./routes/members";
 import { createSessionRoutes } from "./routes/session";
 import { createWorkspaceRoutes } from "./routes/workspaces";
+import { createAuthRoutes, createOidcTokenExchangeFromEnv, type OidcTokenExchangeOptions } from "./routes/auth";
 import { createRunRegistry, type RunRegistry } from "./ai/run-registry";
 import { createRunBus, type RunBus } from "./ai/run-bus";
 import { createCallerSession } from "./ai/caller-session";
@@ -27,6 +28,7 @@ export type AppOptions = {
   idpTokenScopeAdapter?: IdpTokenScopeAdapter;
   workspaceCreator?: WorkspaceCreator;
   memberManager?: MemberManager;
+  oidcTokenExchange?: OidcTokenExchangeOptions;
   requireUser?: () => MiddlewareHandler<AppBindings>;
   /** Mastra router workflow 启动 / 续跑服务。未注入时 /api/chat 返回 501（AI 装配在后续簇接线）。 */
   aiChatService?: AiChatService;
@@ -92,6 +94,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
 
   return base
     .route("/", healthRoutes)
+    .route("/", createAuthRoutes(options.oidcTokenExchange ?? createOidcTokenExchangeFromEnv()))
     .route("/", createInternalIdpRoutes(workspaceScope))
     .route("/", createSessionRoutes(workspaceScope, idpTokenScopeAdapter, options.requireUser))
     .route("/", createWorkspaceRoutes(workspaceCreator, workspaceScope, options.requireUser))

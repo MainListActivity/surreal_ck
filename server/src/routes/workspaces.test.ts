@@ -52,7 +52,8 @@ describe("POST /api/workspaces", () => {
       kind: "created",
       slug: "acme",
       dbName: "ws_x",
-      refreshRequired: true,
+      accessToken: "scoped-token",
+      expiresIn: 3600,
     }));
 
     const app = createApp({ workspaceCreator: creator });
@@ -75,7 +76,8 @@ describe("POST /api/workspaces", () => {
       kind: "created",
       slug: "acme",
       dbName: "ws_x",
-      refreshRequired: true,
+      accessToken: "scoped-token",
+      expiresIn: 3600,
     }));
     const app = createApp({
       requireUser: () => useTestUser,
@@ -101,7 +103,8 @@ describe("POST /api/workspaces", () => {
       kind: "created",
       slug: input.slug,
       dbName: "ws_abcdef123456",
-      refreshRequired: true,
+      accessToken: "scoped-token",
+      expiresIn: 3600,
     }));
 
     const app = createApp({
@@ -122,10 +125,17 @@ describe("POST /api/workspaces", () => {
     expect(await response.json()).toEqual({
       slug: "acme",
       dbName: "ws_abcdef123456",
-      refreshRequired: true,
+      accessToken: "scoped-token",
+      expiresIn: 3600,
     });
     expect(calls).toEqual([
-      { subject: "user-123", email: "ada@example.test", name: "Acme Legal", slug: "acme" },
+      {
+        subject: "user-123",
+        subjectToken: "test-token",
+        email: "ada@example.test",
+        name: "Acme Legal",
+        slug: "acme",
+      },
     ]);
   });
 
