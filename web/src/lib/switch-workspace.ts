@@ -128,6 +128,7 @@ export function createWorkspaceSwitcher(deps: SwitchDeps): WorkspaceSwitcher {
       try {
         switched = await deps.requestSwitch(slug);
       } catch (error) {
+        if (errorStatus(error) === 401) return { ok: false, reason: "refresh-failed" };
         if (errorStatus(error) === 403) return { ok: false, reason: "forbidden" };
         return {
           ok: false,

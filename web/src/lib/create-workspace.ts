@@ -64,6 +64,7 @@ export function createWorkspaceCreator(deps: CreateDeps): WorkspaceCreator {
       try {
         created = await deps.requestCreate(input);
       } catch (error) {
+        if (errorStatus(error) === 401) return { ok: false, reason: "refresh-failed" };
         if (errorStatus(error) === 403) return { ok: false, reason: "forbidden" };
         if (errorStatus(error) === 409) return { ok: false, reason: "slug-conflict" };
         if (errorStatus(error) === 502) {

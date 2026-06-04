@@ -1,5 +1,6 @@
 import { Surreal } from "surrealdb";
 import { env } from "../env";
+import { instrumentSurrealQuery } from "./query-logging";
 import { createRootSessionPool } from "./root-session-pool";
 
 let rootConnection: Surreal | null = null;
@@ -13,11 +14,12 @@ const CONNECT_TIMEOUT_MS = 3000;
 const rootSessionPool = createRootSessionPool({
   async newSession() {
     const session = await getRootConnection().newSession();
-    await session.signin({
+    const loggedSession = instrumentSurrealQuery(session, { source: "server:root-session" });
+    await loggedSession.signin({
       username: env.SURREAL_ROOT_USER,
       password: env.SURREAL_ROOT_PASS,
     });
-    return session;
+    return loggedSession;
   },
 });
 
@@ -81,7 +83,10 @@ async function connectRootOnce(): Promise<void> {
       }
     }
 
-    rootConnection = db;
+    rootConnection = instrumentSurrealQuery(db, {
+      source: "server:root",
+      initialScope: { namespace: env.SURREAL_NS, database: "_system" },
+    });
     connected = true;
     reconnectAttempts = 0;
     console.info("[surrealdb] root connected", { url: env.SURREAL_URL, namespace: env.SURREAL_NS });

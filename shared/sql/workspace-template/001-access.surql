@@ -1,30 +1,45 @@
 DEFINE ACCESS OVERWRITE admin ON DATABASE TYPE JWT URL "<__OIDC_JWKS_URL__>"
   AUTHENTICATE {
-      -- UPSERT 按唯一索引插入或更新
-      RETURN UPSERT user CONTENT {
-        subject: $token.sub,
-        email: $token.email,
-        display_name: $token.name ?? $token.email ?? $token.sub,
-        kind: "human",
-        is_admin: true,
-        last_seen_at: time::now()
-      } where subject=$token.sub;
-    };
+      LET $existing = (
+          SELECT VALUE id
+          FROM ONLY user
+          WHERE subject = $token.sub
+      );
+      IF $existing {  !
+          LET $display_name = $token["https://surrealdb.com/email"];
+
+          CREATE user CONTENT {
+              subject: $token.sub,
+              email: $token["https://surrealdb.com/email"],
+              display_name: $token["https://surrealdb.com/email"],
+              kind: "human",
+              is_admin: true,
+              last_seen_at: time::now(),
+          };
+      };
+  };
 
 DEFINE ACCESS OVERWRITE participant ON DATABASE TYPE RECORD
   WITH JWT URL "<__OIDC_JWKS_URL__>"
-AUTHENTICATE {
-    -- UPSERT 按唯一索引插入或更新
-    LET $u = UPSERT user:{$token.sub} CONTENT {
-      subject: $token.sub,
-      email: $token.email,
-      display_name: $token.name ?? $token.email ?? $token.sub,
-      kind: "human",
-      is_admin: false,
-      last_seen_at: time::now()
-    };
-    RETURN $u[0];
-  };
+  AUTHENTICATE {
+      LET $existing = (
+          SELECT VALUE id
+          FROM ONLY user
+          WHERE subject = $token.sub
+      );
+      IF $existing {  !
+          LET $display_name = $token["https://surrealdb.com/email"];
+
+          CREATE user CONTENT {
+              subject: $token.sub,
+              email: $token["https://surrealdb.com/email"],
+              display_name: $token["https://surrealdb.com/email"],
+              kind: "human",
+              is_admin: false,
+              last_seen_at: time::now(),
+          };
+      };
+  }
   DURATION FOR TOKEN 1h, FOR SESSION NONE;
 
 DEFINE ACCESS employee ON DATABASE TYPE RECORD

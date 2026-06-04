@@ -144,6 +144,20 @@ describe("switchWorkspace", () => {
     expect(calls.navigate).toHaveLength(0);
   });
 
+  test("后端 401：返回 refresh-failed，不 storeAccessToken、不 enter", async () => {
+    const { switcher, calls } = setup({
+      switchResponses: [{ status: 401, body: { error: "oidc-expired" } }],
+    });
+
+    const result = await switcher.switchWorkspace("beta");
+
+    expect(result).toEqual({ ok: false, reason: "refresh-failed" });
+    expect(calls.switch).toEqual([{ workspaceSlug: "beta" }]);
+    expect(calls.storeToken).toHaveLength(0);
+    expect(calls.enter).toHaveLength(0);
+    expect(calls.navigate).toHaveLength(0);
+  });
+
   test("未知 slug（不在列表）：直接返回 forbidden，不打后端", async () => {
     const { switcher, calls } = setup();
 

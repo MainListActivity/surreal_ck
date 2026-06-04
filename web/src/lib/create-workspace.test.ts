@@ -135,6 +135,18 @@ describe("createWorkspace", () => {
     expect(calls.enter).toHaveLength(0);
   });
 
+  test("401 会话过期：返回 refresh-failed，不 store token / enter", async () => {
+    const { creator, calls } = setup({
+      outcome: { kind: "error", status: 401, code: "oidc-expired" },
+    });
+
+    const result = await creator.createWorkspace({ name: "Gamma", slug: "gamma" });
+
+    expect(result).toEqual({ ok: false, reason: "refresh-failed" });
+    expect(calls.storeToken).toHaveLength(0);
+    expect(calls.enter).toHaveLength(0);
+  });
+
   test("其它错误（500）：返回 error 并带 message，不 store token / enter", async () => {
     const { creator, calls } = setup({
       outcome: { kind: "error", status: 500, code: "internal" },

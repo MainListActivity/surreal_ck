@@ -1,5 +1,5 @@
-import { api } from "./api";
-import { storeAccessToken } from "./auth";
+import { api, OidcExpiredError } from "./api";
+import { refresh, storeAccessToken } from "./auth";
 import { enterWorkspace } from "./workspace-store.svelte";
 import {
   createWorkspaceCreator,
@@ -17,6 +17,11 @@ function browserNavigate(url: string): void {
   if (typeof window !== "undefined") window.history.pushState({}, "", url);
 }
 
+async function ensureFreshSession(): Promise<void> {
+  const token = await refresh();
+  if (!token) throw new OidcExpiredError(401);
+}
+
 /** 后端错误体 `{ error: { code, message, details? } }`；details 可能带 { slug, dbName }。 */
 type ApiErrorBody = {
   error?: { code?: string; message?: string; details?: unknown };
@@ -24,6 +29,7 @@ type ApiErrorBody = {
 
 const creator = createWorkspaceCreator({
   requestCreate: async (input): Promise<CreateResponse> => {
+    await ensureFreshSession();
     const res = await api.api.workspaces.$post({ json: input });
     if (!res.ok) {
       const body = (await res.json().catch(() => null)) as ApiErrorBody | null;

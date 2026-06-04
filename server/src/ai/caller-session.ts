@@ -1,4 +1,5 @@
 import { Surreal } from "surrealdb";
+import { instrumentSurrealQuery } from "../db/query-logging";
 
 export type CreateCallerSessionOptions = {
   /** SurrealDB RPC 地址；默认取 env.SURREAL_URL。 */
@@ -26,5 +27,5 @@ export async function createCallerSession(
 
   await db.connect(url, { reconnect: false });
   await db.authenticate(rawToken);
-  return db;
+  return instrumentSurrealQuery(db, { source: "server:caller-session" });
 }

@@ -37,6 +37,7 @@ export type WorkspaceListItem = {
 
 export type SwitchWorkspaceInput = {
   subject: string;
+  email?: string;
   workspaceSlug?: string;
   dbName?: string;
 };
@@ -61,7 +62,7 @@ export type ListWorkspacesResult = {
 
 export interface WorkspaceScopeModule {
   getDefaultScope(input: DefaultScopeInput): Promise<DefaultScopeResult>;
-  listWorkspaces(input: { subject: string }): Promise<ListWorkspacesResult>;
+  listWorkspaces(input: { subject: string; email?: string }): Promise<ListWorkspacesResult>;
   switchWorkspace(input: SwitchWorkspaceInput): Promise<SwitchWorkspaceResult>;
 }
 
@@ -79,6 +80,7 @@ async function hasSystemAdminRows(db: Queryable): Promise<boolean> {
 
 type WorkspaceIndexRow = {
   id?: unknown;
+  subject?: unknown;
   db_name?: unknown;
   role?: unknown;
   last_selected_at?: unknown;
@@ -132,20 +134,43 @@ function sortWorkspaceRows(left: WorkspaceIndexRow, right: WorkspaceIndexRow): n
   return timestamp(left.joined_at) - timestamp(right.joined_at);
 }
 
+function identityFilter(input: { subject: string; email?: string }): {
+  sql: string;
+  params: { subject: string; email?: string };
+} {
+  const email = input.email?.trim();
+  if (!email) {
+    return {
+      sql: "subject = $subject",
+      params: { subject: input.subject },
+    };
+  }
+
+  return {
+    sql: "(subject = $subject OR (subject = NONE AND email = $email))",
+    params: { subject: input.subject, email },
+  };
+}
+
+function needsSubjectBind(row: WorkspaceIndexRow, subject: string): boolean {
+  return row.subject !== subject;
+}
+
 export function createWorkspaceScopeModule(db?: Queryable): WorkspaceScopeModule {
   return {
     async getDefaultScope(input) {
       const client = db ?? getRootConnection();
       await client.use({ namespace: env.SURREAL_NS, database: SYSTEM_DATABASE });
+      const identity = identityFilter(input);
 
       const result = await client.query(
         `
           SELECT db_name, role, last_selected_at, joined_at, workspace
           FROM user_workspace_index
-          WHERE subject = $subject AND disabled_at = NONE
+          WHERE ${identity.sql} AND disabled_at = NONE
           FETCH workspace;
         `,
-        { subject: input.subject },
+        identity.params,
       );
 
       const scope = rowsFromQueryResult(result)
@@ -176,15 +201,16 @@ export function createWorkspaceScopeModule(db?: Queryable): WorkspaceScopeModule
     async listWorkspaces(input) {
       const client = db ?? getRootConnection();
       await client.use({ namespace: env.SURREAL_NS, database: SYSTEM_DATABASE });
+      const identity = identityFilter(input);
 
       const result = await client.query(
         `
           SELECT db_name, role, last_selected_at, joined_at, workspace
           FROM user_workspace_index
-          WHERE subject = $subject AND disabled_at = NONE
+          WHERE ${identity.sql} AND disabled_at = NONE
           FETCH workspace;
         `,
-        { subject: input.subject },
+        identity.params,
       );
 
       const workspaces = rowsFromQueryResult(result)
@@ -199,31 +225,37 @@ export function createWorkspaceScopeModule(db?: Queryable): WorkspaceScopeModule
 
     async switchWorkspace(input) {
       const client = db ?? getRootConnection();
+      await client.use({ namespace: env.SURREAL_NS, database: SYSTEM_DATABASE });
+      const identity = identityFilter(input);
       const result = input.dbName
         ? await client.query(
             `
-              SELECT id, db_name, role, last_selected_at, joined_at, workspace, email
+              SELECT id, subject, db_name, role, last_selected_at, joined_at, workspace, email
               FROM user_workspace_index
-              WHERE subject = $subject AND disabled_at = NONE AND db_name = $dbName
+              WHERE ${identity.sql} AND disabled_at = NONE AND db_name = $dbName
               FETCH workspace;
             `,
-            { subject: input.subject, dbName: input.dbName },
+            { ...identity.params, dbName: input.dbName },
           )
         : await client.query(
             `
-              SELECT id, db_name, role, last_selected_at, joined_at, workspace, email
+              SELECT id, subject, db_name, role, last_selected_at, joined_at, workspace, email
               FROM user_workspace_index
-              WHERE subject = $subject
+              WHERE ${identity.sql}
                 AND disabled_at = NONE
                 AND workspace IN (SELECT VALUE id FROM workspace WHERE slug = $workspaceSlug)
               FETCH workspace;
             `,
-            { subject: input.subject, workspaceSlug: input.workspaceSlug },
+            { ...identity.params, workspaceSlug: input.workspaceSlug },
           );
 
       const row = rowsFromQueryResult(result).find((candidate) => rowToScope(candidate) !== null);
       if (!row || row.workspace?.status !== "active") {
         return { kind: "forbidden" };
+      }
+      const membership = row.id;
+      if (membership === undefined || membership === null) {
+        return { kind: "drift" };
       }
 
       const scope = rowToScope(row);
@@ -251,11 +283,13 @@ export function createWorkspaceScopeModule(db?: Queryable): WorkspaceScopeModule
         shouldCloseTarget = true;
       }
 
+      let correctedRole: "admin" | "participant" | null = null;
+
       try {
         // Query human users matching current subject or email
         const userQueryResult = await targetClient.query(
           `SELECT id, subject, email, is_admin FROM user WHERE kind = 'human' AND (subject = $subject OR email = $email);`,
-          { subject: input.subject, email: row.email }
+          { subject: input.subject, email: row.email },
         );
 
         const workspaceUsers = Array.isArray(userQueryResult) ? userQueryResult[0] : [];
@@ -267,18 +301,11 @@ export function createWorkspaceScopeModule(db?: Queryable): WorkspaceScopeModule
         const exactMatch = workspaceUsers.find((u: any) => u.subject === input.subject);
 
         if (exactMatch) {
-          const correctedRole = exactMatch.is_admin === true ? "admin" : "participant";
-          if (row.role !== correctedRole) {
-            await client.query("UPDATE $membership SET role = $role;", {
-              membership: row.id,
-              role: correctedRole,
-            });
-            scope.ac = correctedRole;
-          }
+          correctedRole = exactMatch.is_admin === true ? "admin" : "participant";
         } else {
           // Scenario B: Match by email and bind subject (if subject is empty)
           const bindableMatch = workspaceUsers.find(
-            (u: any) => u.email === row.email && (u.subject === null || u.subject === undefined || u.subject === "")
+            (u: any) => u.email === row.email && (u.subject === null || u.subject === undefined || u.subject === ""),
           );
 
           if (bindableMatch) {
@@ -289,14 +316,7 @@ export function createWorkspaceScopeModule(db?: Queryable): WorkspaceScopeModule
             });
 
             // Adjust role if needed
-            const correctedRole = bindableMatch.is_admin === true ? "admin" : "participant";
-            if (row.role !== correctedRole) {
-              await client.query("UPDATE $membership SET role = $role;", {
-                membership: row.id,
-                role: correctedRole,
-              });
-              scope.ac = correctedRole;
-            }
+            correctedRole = bindableMatch.is_admin === true ? "admin" : "participant";
           } else {
             // Scenario C: No user matches, or matches by email but already has a different subject bound
             return { kind: "drift" };
@@ -312,8 +332,27 @@ export function createWorkspaceScopeModule(db?: Queryable): WorkspaceScopeModule
         }
       }
 
+      if (db) {
+        await client.use({ namespace: env.SURREAL_NS, database: SYSTEM_DATABASE });
+      }
+
+      if (needsSubjectBind(row, input.subject)) {
+        await client.query("UPDATE $membership SET subject = $subject;", {
+          membership,
+          subject: input.subject,
+        });
+      }
+
+      if (correctedRole && row.role !== correctedRole) {
+        await client.query("UPDATE $membership SET role = $role;", {
+          membership,
+          role: correctedRole,
+        });
+        scope.ac = correctedRole;
+      }
+
       await client.query("UPDATE $membership SET last_selected_at = time::now();", {
-        membership: row.id,
+        membership,
       });
 
       return { kind: "switched", scope };

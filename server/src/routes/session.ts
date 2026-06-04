@@ -17,6 +17,7 @@ export function createSessionRoutes(
     .get("/api/session/workspaces", requireUser(), async (c) => {
       const { workspaces, canCreate } = await workspaceScope.listWorkspaces({
         subject: c.var.user.subject,
+        email: c.var.user.email,
       });
 
       return c.json({ workspaces, canCreate });
@@ -32,6 +33,7 @@ export function createSessionRoutes(
 
       const result = await workspaceScope.switchWorkspace({
         subject: c.var.user.subject,
+        email: c.var.user.email,
         ...(workspaceSlug ? { workspaceSlug } : {}),
         ...(dbName ? { dbName } : {}),
       });

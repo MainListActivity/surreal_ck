@@ -37,6 +37,50 @@ class FakeDb implements Queryable {
   }
 }
 
+class FilteringFakeDb extends FakeDb {
+  override async query(sql: string, params?: Record<string, unknown>): Promise<any[]> {
+    this.queries.push({ sql, params });
+
+    const normalizedSql = sql.trim().replace(/\s+/g, " ");
+
+    if (normalizedSql.includes("FROM system_admin")) {
+      return [this.systemAdminRowCount > 0 ? ["system_admin:1"] : []];
+    }
+
+    if (normalizedSql.includes("FROM user_workspace_index")) {
+      const subject = params?.subject;
+      const email = params?.email;
+      const dbName = params?.dbName;
+      const workspaceSlug = params?.workspaceSlug;
+
+      return [
+        this.indexRows.filter((row) => {
+          const subjectMatches = row.subject === subject;
+          const pendingEmailMatches =
+            normalizedSql.includes("email = $email") &&
+            (row.subject === null || row.subject === undefined || row.subject === "") &&
+            row.email === email;
+          const identityMatches = subjectMatches || pendingEmailMatches;
+          const dbMatches = dbName === undefined || row.db_name === dbName;
+          const slugMatches = workspaceSlug === undefined || row.workspace?.slug === workspaceSlug;
+          const enabled = row.disabled_at === null || row.disabled_at === undefined;
+          return identityMatches && dbMatches && slugMatches && enabled;
+        }),
+      ];
+    }
+
+    if (normalizedSql.includes("FROM user WHERE kind = 'human'")) {
+      const currentDb = this.useCalls[this.useCalls.length - 1]?.database ?? "ws_unknown";
+      const subject = params?.subject;
+      const email = params?.email;
+      const users = this.workspaceUserRows[currentDb] ?? [];
+      return [users.filter((row) => row.subject === subject || row.email === email)];
+    }
+
+    return [[]];
+  }
+}
+
 describe("WorkspaceScopeModule.switchWorkspace consistency & drift", () => {
   test("Scenario A: successful switch when user exists in target db and role aligns", async () => {
     const db = new FakeDb();
@@ -151,6 +195,55 @@ describe("WorkspaceScopeModule.switchWorkspace consistency & drift", () => {
     expect(subjectUpdateQuery?.params?.subject).toBe("user-123");
   });
 
+  test("Scenario B: finds pending index rows by email and binds the _system subject", async () => {
+    const db = new FilteringFakeDb();
+    db.indexRows = [
+      {
+        id: "user_workspace_index:1",
+        subject: null,
+        db_name: "ws_abc",
+        role: "participant",
+        workspace: { status: "active", slug: "abc", name: "ABC" },
+        email: "ada@example.test",
+      },
+    ];
+    db.workspaceUserRows["ws_abc"] = [
+      {
+        id: "user:1",
+        subject: null,
+        email: "ada@example.test",
+        is_admin: false,
+      },
+    ];
+
+    const module = createWorkspaceScopeModule(db);
+    const result = await module.switchWorkspace({
+      subject: "user-123",
+      email: "ada@example.test",
+      workspaceSlug: "abc",
+    });
+
+    expect(result).toEqual({
+      kind: "switched",
+      scope: { db: "ws_abc", ac: "participant" },
+    });
+
+    expect(db.useCalls.map((call) => call.database)).toEqual(["_system", "ws_abc", "_system"]);
+    expect(
+      db.queries.some(
+        (query) => query.sql.includes("UPDATE $user SET subject = $subject") && query.params?.user === "user:1",
+      ),
+    ).toBe(true);
+    expect(
+      db.queries.some(
+        (query) =>
+          query.sql.includes("UPDATE $membership SET subject = $subject") &&
+          query.params?.membership === "user_workspace_index:1" &&
+          query.params?.subject === "user-123",
+      ),
+    ).toBe(true);
+  });
+
   test("Scenario C: drift conflict (409) when user is not in target db user table", async () => {
     const db = new FakeDb();
     db.indexRows = [
@@ -261,6 +354,60 @@ describe("WorkspaceScopeModule disabled member filtering", () => {
     const { canCreate } = await module.listWorkspaces({ subject: "user-123" });
 
     expect(canCreate).toBe(false);
+  });
+
+  test("listWorkspaces includes pending invitation rows matched by email", async () => {
+    const db = new FilteringFakeDb();
+    db.indexRows = [
+      {
+        subject: null,
+        db_name: "ws_invited",
+        role: "participant",
+        email: "ada@example.test",
+        workspace: { status: "active", slug: "invited", name: "Invited" },
+      },
+    ];
+    const module = createWorkspaceScopeModule(db);
+
+    const { workspaces } = await module.listWorkspaces({
+      subject: "user-123",
+      email: "ada@example.test",
+    });
+
+    expect(workspaces).toEqual([
+      {
+        slug: "invited",
+        name: "Invited",
+        dbName: "ws_invited",
+        role: "participant",
+        lastSelectedAt: null,
+      },
+    ]);
+  });
+
+  test("getDefaultScope can select a pending invitation row matched by email", async () => {
+    const db = new FilteringFakeDb();
+    db.indexRows = [
+      {
+        subject: null,
+        db_name: "ws_invited",
+        role: "participant",
+        email: "ada@example.test",
+        workspace: { status: "active", slug: "invited", name: "Invited" },
+      },
+    ];
+    const module = createWorkspaceScopeModule(db);
+
+    const result = await module.getDefaultScope({
+      subject: "user-123",
+      email: "ada@example.test",
+    });
+
+    expect(result).toEqual({
+      kind: "scope",
+      scope: { db: "ws_invited", ac: "participant" },
+      canCreateWorkspace: false,
+    });
   });
 
   test("getDefaultScope filters out disabled index rows at the query level", async () => {

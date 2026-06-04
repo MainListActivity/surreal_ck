@@ -1,3 +1,9 @@
+import {
+  createSurrealQueryLogger,
+  shouldLogSurrealQueries,
+  type SurrealQueryLogger,
+  type SurrealQueryLogScope,
+} from "@surreal-ck/shared/surreal-query-log";
 import { StringRecordId, Surreal, Table } from "surrealdb";
 
 export type ConnectionStatus =
@@ -77,7 +83,33 @@ type RawDriver = {
   beginTransaction(): Promise<RawTransaction>;
 } & RawWriter;
 
-function createWriter(raw: RawWriter): SurrealWriter {
+type BrowserQueryLogOptions = {
+  enabled?: boolean;
+  logger?: Pick<Console, "info" | "warn">;
+};
+
+type BrowserQueryLogController = {
+  setQueryLogScope(scope: SurrealQueryLogScope): void;
+};
+
+function browserQueryLogDefaultEnabled(): boolean {
+  const env = (import.meta as ImportMeta & { env?: Partial<ImportMetaEnv> }).env;
+  return shouldLogSurrealQueries(env?.VITE_SURREAL_LOG_QUERIES, env?.DEV === true);
+}
+
+function createBrowserQueryLogger(
+  options: BrowserQueryLogOptions,
+  getScope: () => SurrealQueryLogScope | undefined,
+): SurrealQueryLogger {
+  return createSurrealQueryLogger({
+    enabled: options.enabled ?? browserQueryLogDefaultEnabled(),
+    source: "browser",
+    getScope,
+    logger: options.logger,
+  });
+}
+
+function createWriter(raw: RawWriter, queryLogger: SurrealQueryLogger): SurrealWriter {
   const rawUpdate = raw.update;
   const rawCreate = raw.create;
   const rawDelete = raw.delete;
@@ -86,16 +118,22 @@ function createWriter(raw: RawWriter): SurrealWriter {
       id: string,
       patch: Record<string, unknown>,
     ): Promise<T> {
-      return (await rawUpdate.call(raw, new StringRecordId(id)).merge(patch)) as T;
+      return await queryLogger("UPDATE $id MERGE $patch", { id, patch }, async () => {
+        return (await rawUpdate.call(raw, new StringRecordId(id)).merge(patch)) as T;
+      });
     },
     async createRecord<T = Record<string, unknown>>(
       table: string,
       data: Record<string, unknown>,
     ): Promise<T> {
-      return (await rawCreate.call(raw, new Table(table)).content(data)) as T;
+      return await queryLogger("CREATE type::table($table) CONTENT $data", { table, data }, async () => {
+        return (await rawCreate.call(raw, new Table(table)).content(data)) as T;
+      });
     },
     async deleteRecord(id: string): Promise<unknown> {
-      return await rawDelete.call(raw, new StringRecordId(id));
+      return await queryLogger("DELETE $id", { id }, async () => {
+        return await rawDelete.call(raw, new StringRecordId(id));
+      });
     },
   };
 }
@@ -104,25 +142,34 @@ function createWriter(raw: RawWriter): SurrealWriter {
  * 把官方 `Surreal` 实例适配成本模块的窄 {@link SurrealConn}：
  * `query().collect()` 取首个结果集；`live()` 返回订阅对象后再转交回调。
  */
-export function createBrowserConn(raw: RawDriver): SurrealConn {
+export function createBrowserConn(raw: RawDriver, logOptions: BrowserQueryLogOptions = {}): SurrealConn {
   // 捕获原始链式方法后再扩展：conn 与 raw 是同一对象，若覆盖后再调用
   // raw.query 会命中新 query（自指），故先取出原实现引用。
   const rawQuery = raw.query;
   const rawLive = raw.live;
   const rawBeginTransaction = raw.beginTransaction;
   const conn = raw as unknown as SurrealConn;
-  const writer = createWriter(raw);
+  let logScope: SurrealQueryLogScope | undefined;
+  const queryLogger = createBrowserQueryLogger(logOptions, () => logScope);
+  const writer = createWriter(raw, queryLogger);
   return Object.assign(conn, {
+    setQueryLogScope(scope: SurrealQueryLogScope): void {
+      logScope = { ...scope };
+    },
     async query<T = unknown>(sql: string, bindings?: Record<string, unknown>): Promise<T[]> {
-      const collected = await rawQuery.call(raw, sql, bindings).collect();
-      return (collected[0] ?? []) as T[];
+      return await queryLogger(sql, bindings, async () => {
+        const collected = await rawQuery.call(raw, sql, bindings).collect();
+        return (collected[0] ?? []) as T[];
+      });
     },
     async liveTable<T extends Record<string, unknown> = Record<string, unknown>>(
       table: string,
       onMessage: (message: LiveMessage & { value: T }) => void,
     ): Promise<() => void> {
-      const subscription = await rawLive.call(raw, new Table(table));
-      return subscription.subscribe(onMessage as (message: LiveMessage) => void);
+      return await queryLogger("LIVE SELECT * FROM type::table($table)", { table }, async () => {
+        const subscription = await rawLive.call(raw, new Table(table));
+        return subscription.subscribe(onMessage as (message: LiveMessage) => void);
+      });
     },
     updateRecord: writer.updateRecord,
     createRecord: writer.createRecord,
@@ -130,7 +177,7 @@ export function createBrowserConn(raw: RawDriver): SurrealConn {
     async transaction<T>(run: (tx: SurrealWriter) => Promise<T>): Promise<T> {
       const tx = await rawBeginTransaction.call(raw);
       try {
-        const result = await run(createWriter(tx));
+        const result = await run(createWriter(tx, queryLogger));
         await tx.commit();
         return result;
       } catch (err) {
@@ -184,6 +231,10 @@ export function createSurrealClient(options: SurrealClientOptions = {}): Surreal
         namespace: input.namespace,
         database: input.dbName,
         authentication: input.rawToken,
+      });
+      (next as SurrealConn & Partial<BrowserQueryLogController>).setQueryLogScope?.({
+        namespace: input.namespace,
+        database: input.dbName,
       });
       db = next;
       return next;

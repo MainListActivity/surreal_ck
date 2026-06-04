@@ -174,7 +174,11 @@ describe("session workspace switch", () => {
       accessToken: "scoped-token",
       expiresIn: 3600,
     });
-    expect(switchInput).toEqual({ subject: "user-123", workspaceSlug: "recent" });
+    expect(switchInput).toEqual({
+      subject: "user-123",
+      email: "ada@example.test",
+      workspaceSlug: "recent",
+    });
     expect(adapterCalls).toEqual([
       { subjectToken: "test-token", scope: { db: "ws_recent", ac: "admin" } },
     ]);

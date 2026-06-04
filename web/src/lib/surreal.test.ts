@@ -172,6 +172,34 @@ describe("浏览器 adapter 的 query / liveTable 透传", () => {
     expect(result).toBe(rows);
   });
 
+  test("query 日志开启时打印 SurrealQL 与 bindings", async () => {
+    const infos: unknown[] = [];
+    const rawDriver = {
+      query() {
+        return {
+          collect: async () => [[{ id: "ent_x:1" }]],
+        };
+      },
+    };
+
+    const conn = createBrowserConn(rawDriver as never, {
+      enabled: true,
+      logger: { info: (...args) => infos.push(args), warn: () => undefined },
+    });
+    await conn.query("SELECT *\nFROM ent_x WHERE id = $id", { id: "ent_x:1" });
+
+    expect(infos).toHaveLength(1);
+    expect(infos[0]).toEqual([
+      "[surrealdb:query]",
+      expect.objectContaining({
+        source: "browser",
+        scope: undefined,
+        sql: "SELECT * FROM ent_x WHERE id = $id",
+        params: { id: "ent_x:1" },
+      }),
+    ]);
+  });
+
   test("liveTable 用 Table 包裹表名并等待订阅对象，回调收到 action/value", async () => {
     const subscriptions: unknown[] = [];
     let captured: ((msg: { action: string; value: Record<string, unknown> }) => void) | null = null;

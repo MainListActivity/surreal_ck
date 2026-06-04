@@ -27,7 +27,10 @@ export function createWorkspaceRoutes(
     if (!SLUG_PATTERN.test(slug)) {
       throw new HttpError(400, "workspace-slug-invalid", "slug must be 1-40 lowercase alphanumeric or hyphen characters");
     }
-    const { canCreate } = await workspaceScope.listWorkspaces({ subject: c.var.user.subject });
+    const { canCreate } = await workspaceScope.listWorkspaces({
+      subject: c.var.user.subject,
+      email: c.var.user.email,
+    });
     if (!canCreate) {
       throw new HttpError(403, "workspace-create-forbidden", "Workspace creation is not allowed for this user");
     }

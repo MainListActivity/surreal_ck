@@ -45,8 +45,8 @@
     navigateTo(editorPath(slug, workbookId));
   }
 
-  async function refreshSession(): Promise<void> {
-    await refresh();
+  async function refreshSession(): Promise<string | null> {
+    return refresh();
   }
 
   /** 按当前路由建立 / 复用 workspace 直连；home 落地后跳到具体 /w/:slug。 */
@@ -61,7 +61,14 @@
 
     wsState = "connecting";
     wsError = null;
-    const result = await bootstrapWorkspace(slug);
+    let result;
+    try {
+      result = await bootstrapWorkspace(slug);
+    } catch (error) {
+      wsState = "error";
+      wsError = error instanceof Error ? error.message : "工作区连接失败。";
+      return;
+    }
     if (!result.ok) {
       // 账号无任何 workspace 不是连接错误：交给 NoWorkspaceScreen 引导创建 / 提示邀请。
       if (result.reason === "none") {
@@ -105,8 +112,11 @@
     if (!requireAuthenticatedRoute(currentPath())) return;
 
     ready = true;
-    void refreshSession();
-    void ensureWorkspace();
+    void (async () => {
+      const token = await refreshSession();
+      if (!token) return;
+      await ensureWorkspace();
+    })();
 
     const handlePopState = () => {
       syncRoute();

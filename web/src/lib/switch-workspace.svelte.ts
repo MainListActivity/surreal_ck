@@ -1,5 +1,5 @@
-import { api } from "./api";
-import { getToken, storeAccessToken } from "./auth";
+import { api, OidcExpiredError } from "./api";
+import { getToken, refresh, storeAccessToken } from "./auth";
 import { enterWorkspace } from "./workspace-store.svelte";
 import {
   createWorkspaceSwitcher,
@@ -19,12 +19,19 @@ function browserNavigate(url: string): void {
   if (typeof window !== "undefined") window.history.pushState({}, "", url);
 }
 
+async function ensureFreshSession(): Promise<void> {
+  const token = await refresh();
+  if (!token) throw new OidcExpiredError(401);
+}
+
 const switcher = createWorkspaceSwitcher({
   listWorkspaces: async () => {
+    await ensureFreshSession();
     const res = await api.api.session.workspaces.$get();
     return (await res.json()) as ListWorkspacesResponse;
   },
   requestSwitch: async (workspaceSlug) => {
+    await ensureFreshSession();
     const res = await api.api.session["switch-workspace"].$post({
       json: { workspaceSlug },
     });

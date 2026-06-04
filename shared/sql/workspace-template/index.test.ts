@@ -15,7 +15,7 @@ describe("workspace template scripts", () => {
       "005-mastra-runtime-storage.surql",
       "006-tables-grid.surql",
     ]);
-    expect(scripts[0]?.sql).toContain("DEFINE ACCESS admin");
+    expect(scripts[0]?.sql).toContain("DEFINE ACCESS OVERWRITE admin");
     expect(scripts[1]?.sql).toContain("DEFINE TABLE IF NOT EXISTS user");
     expect(scripts[2]?.sql).toContain("DEFINE TABLE IF NOT EXISTS employee_credential");
     expect(scripts[3]?.sql).toContain("DEFINE TABLE IF NOT EXISTS workflow_run");
