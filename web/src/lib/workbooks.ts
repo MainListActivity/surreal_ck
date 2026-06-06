@@ -1,4 +1,5 @@
-import type { RecordIdString } from "@surreal-ck/shared/rpc.types";
+import { buildSurrealFieldSchema, gridColumnToStoredDef } from "@surreal-ck/shared/field-schema";
+import type { GridColumnDef, RecordIdString } from "@surreal-ck/shared/rpc.types";
 import type { SurrealConn } from "./surreal";
 import { describeWriteError } from "./workbook-data";
 
@@ -39,6 +40,78 @@ function recordToWorkbook(rec: Record<string, unknown>): WorkbookRow {
     name: typeof rec.name === "string" ? rec.name : "",
     templateKey: typeof rec.template_key === "string" ? rec.template_key : undefined,
     updatedAt: typeof rec.updated_at === "string" ? rec.updated_at : undefined,
+  };
+}
+
+/** 新建空白工作簿的默认列：仅一个必填文本 name 列。用户后续自行 addField 扩展。 */
+const DEFAULT_BLANK_COLUMN: GridColumnDef = {
+  key: "name",
+  label: "名称",
+  fieldType: "text",
+  required: true,
+};
+
+/**
+ * 16 位 hex 随机 key，用于 workbook / sheet 的 RecordId 以及推导实体表名。
+ * 浏览器侧没有 Bun.hash，用 crypto 随机数即可——不需要确定性，只要唯一且是合法 record id。
+ */
+function randomKey(): string {
+  const bytes = new Uint8Array(8);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * 由 workbook key 推导实体表名 `ent_<wbKey>_main`。
+ * 新模型下跨 workspace 隔离靠 db 边界，表名不再带 workspace 前缀（对比 legacy
+ * generateEntityTableName 的 `ent_<wsKey>_<wbKey>`）；唯一性由 wbKey 保证。
+ */
+export function entityTableNameForWorkbook(wbKey: string): string {
+  return `ent_${wbKey}_main`;
+}
+
+/**
+ * 把「建实体表 DDL + 建 workbook + 建 sheet」拼成单条多语句 SurrealQL，外包
+ * `BEGIN/COMMIT` 保证三步原子：任一步失败整体回滚，绝不留下指向不存在表的孤儿 sheet。
+ *
+ * - 实体表沿用 006-tables-grid 的 `SCHEMALESS CHANGEFEED 7d` 形态 + created_at/updated_at
+ *   系统字段；业务列由 {@link buildSurrealFieldSchema} 生成（与 defineField / 后端模板同口径）。
+ *   不带 workspace 字段（db 边界隔离）。
+ * - workbook / sheet 用 JS 预生成的 key 显式建 RecordId，使表名能在建表前先算出来。
+ * - 表名 / 字段名来自受控来源（randomKey + 固定列定义），不接受用户输入，无注入面；
+ *   name / label 等用户值走 $bindings。
+ * - 末句 `RETURN`（事务外）回读新 workbook，供调用方裁成 WorkbookRow。
+ */
+export function buildCreateWorkbookTransaction(
+  name: string,
+  column: GridColumnDef = DEFAULT_BLANK_COLUMN,
+): { sql: string; bindings: Record<string, unknown>; workbookId: RecordIdString } {
+  const wbKey = randomKey();
+  const sheetKey = randomKey();
+  const tableName = entityTableNameForWorkbook(wbKey);
+  const wbId = `workbook:${wbKey}`;
+  const sheetId = `sheet:${sheetKey}`;
+
+  const fieldSchema = buildSurrealFieldSchema(column);
+
+  const sql = `BEGIN TRANSACTION;
+DEFINE TABLE IF NOT EXISTS ${tableName} SCHEMALESS CHANGEFEED 7d;
+DEFINE FIELD IF NOT EXISTS created_at ON TABLE ${tableName} TYPE datetime VALUE time::now() READONLY;
+DEFINE FIELD IF NOT EXISTS updated_at ON TABLE ${tableName} TYPE datetime VALUE time::now();
+DEFINE FIELD IF NOT EXISTS ${fieldSchema.fieldName} ON TABLE ${tableName} TYPE ${fieldSchema.type}${fieldSchema.assert};
+CREATE ${wbId} CONTENT { name: $name, last_opened_sheet: ${sheetId} };
+CREATE ${sheetId} CONTENT { workbook: ${wbId}, label: $label, table_name: $tableName, column_defs: $columnDefs };
+COMMIT TRANSACTION;`;
+
+  return {
+    sql,
+    bindings: {
+      name,
+      label: "Sheet 1",
+      tableName,
+      columnDefs: [gridColumnToStoredDef(column)],
+    },
+    workbookId: wbId as RecordIdString,
   };
 }
 
@@ -87,21 +160,28 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
     }
   }
 
+  /**
+   * 建空白工作簿 = 一次事务内建实体表（DDL）+ workbook + 一张默认 sheet，
+   * 三者原子（{@link buildCreateWorkbookTransaction}）。新工作簿打开即可用，
+   * 不会出现「workbook 已建但无 sheet / sheet 指向不存在表」的中间态。
+   * DDL/写权限由 access 类型卡死，participant 触发的权限错误翻成中文提示。
+   */
   async function createBlank(name: string): Promise<WorkbookRow | null> {
     state.error = null;
+    const { sql, bindings, workbookId } = buildCreateWorkbookTransaction(name);
     try {
-      const created = await deps
-        .getConn()
-        .createRecord<{ id: unknown } & Record<string, unknown>>("workbook", { name });
-      const workbook = recordToWorkbook(created);
-      state.workbooks = [workbook, ...state.workbooks];
-      emit();
-      return workbook;
+      await deps.getConn().query(sql, bindings);
     } catch (err) {
       state.error = describeWriteError(err);
       emit();
       return null;
     }
+    // 事务成功 = workbook/sheet/实体表都已落库。id 与名字 JS 侧已知，无需回读拼一行
+    //（updated_at 由列表下次 load 时补全），避免依赖多语句事务的返回值索引。
+    const workbook: WorkbookRow = { id: workbookId, name };
+    state.workbooks = [workbook, ...state.workbooks];
+    emit();
+    return workbook;
   }
 
   async function rename(id: RecordIdString | string, name: string): Promise<boolean> {

@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import type { SurrealConn } from "./surreal";
 import {
+  buildCreateWorkbookTransaction,
   createWorkbooksStore,
+  entityTableNameForWorkbook,
   filterWorkbooksByQuery,
   type WorkbookRow,
 } from "./workbooks";
@@ -30,6 +32,8 @@ function setup(opts: {
     subscribe: () => () => {},
     query: (async (sql: string, bindings?: Record<string, unknown>) => {
       rec.queries.push({ sql, bindings });
+      // createBlank 走多语句事务（BEGIN TRANSACTION）；用 createThrows 模拟引擎拒绝。
+      if (/BEGIN TRANSACTION/i.test(sql) && opts.createThrows) throw opts.createThrows;
       return rows;
     }) as SurrealConn["query"],
     liveTable: (async () => () => {}) as SurrealConn["liveTable"],
@@ -92,20 +96,33 @@ describe("load — 直连读 workbook 列表", () => {
 });
 
 describe("createBlank — 管理员建空白 workbook", () => {
-  test("走 createRecord 并把新 workbook 插到列表头", async () => {
+  test("走单条事务（建实体表+workbook+sheet）并把新 workbook 插到列表头", async () => {
     const { store, rec } = setup({ workbooks: [...sampleRows] });
     await store.load();
 
     const created = await store.createBlank("新工作簿");
 
-    expect(rec.creates).toEqual([{ table: "workbook", data: { name: "新工作簿" } }]);
-    expect(created?.id).toBe("workbook:new1");
-    expect(store.workbooks[0]).toEqual({
-      id: "workbook:new1",
-      name: "新工作簿",
-      templateKey: undefined,
-      updatedAt: undefined,
-    });
+    // 不再走 createRecord，而是一条 BEGIN/COMMIT 事务
+    expect(rec.creates).toEqual([]);
+    const txQuery = rec.queries.find((q) => /BEGIN TRANSACTION/i.test(q.sql));
+    expect(txQuery).toBeDefined();
+    const sql = txQuery!.sql;
+    // DDL：建实体表 + 默认 name 列，都在同一事务里
+    expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS ent_[0-9a-f]+_main SCHEMALESS/);
+    expect(sql).toMatch(/DEFINE FIELD IF NOT EXISTS name ON TABLE ent_[0-9a-f]+_main TYPE string/);
+    // workbook + sheet 两条 CREATE
+    expect(sql).toMatch(/CREATE workbook:[0-9a-f]+ CONTENT/);
+    expect(sql).toMatch(/CREATE sheet:[0-9a-f]+ CONTENT/);
+    expect(sql).toMatch(/COMMIT TRANSACTION/);
+    // sheet 指向新建的实体表，列定义带默认 name 列
+    const b = txQuery!.bindings as Record<string, unknown>;
+    expect(String(b.tableName)).toMatch(/^ent_[0-9a-f]+_main$/);
+    expect(b.columnDefs).toEqual([
+      { key: "name", label: "名称", field_type: "text", required: true },
+    ]);
+
+    expect(created?.id).toMatch(/^workbook:[0-9a-f]+$/);
+    expect(store.workbooks[0]).toEqual({ id: created!.id, name: "新工作簿" });
   });
 
   test("无权限（participant 尝试建表）→ 返回 null 且 error 是中文提示", async () => {
@@ -116,6 +133,27 @@ describe("createBlank — 管理员建空白 workbook", () => {
 
     expect(created).toBeNull();
     expect(store.error).toContain("没有权限");
+  });
+});
+
+describe("buildCreateWorkbookTransaction — 纯 SurrealQL 构造", () => {
+  test("表名 / workbook id / sheet 三者 key 一致且引用闭环", () => {
+    const { sql, bindings, workbookId } = buildCreateWorkbookTransaction("台账");
+    const wbKey = workbookId.replace("workbook:", "");
+    expect(bindings.tableName).toBe(entityTableNameForWorkbook(wbKey));
+    expect(bindings.name).toBe("台账");
+    expect(bindings.label).toBe("Sheet 1");
+    // sheet CONTENT 里 workbook 指回同一个 workbook id
+    expect(sql).toContain(`workbook: ${workbookId}`);
+    // workbook last_opened_sheet 指向 sheet id
+    expect(sql).toMatch(/last_opened_sheet: sheet:[0-9a-f]+/);
+  });
+
+  test("用户输入只进 bindings，不拼进 SQL 文本（防注入）", () => {
+    const { sql, bindings } = buildCreateWorkbookTransaction("'; DROP TABLE workbook; --");
+    expect(sql).not.toContain("DROP TABLE workbook");
+    expect(bindings.name).toBe("'; DROP TABLE workbook; --");
+    expect(sql).toContain("name: $name");
   });
 });
 
