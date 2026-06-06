@@ -22,13 +22,14 @@ describe("surreal query logging", () => {
     );
   });
 
-  test("logs successful query details with params and duration", async () => {
+  test("does not log successful query details", async () => {
     const infos: unknown[] = [];
+    const warns: unknown[] = [];
     const logger = createSurrealQueryLogger({
       enabled: true,
       source: "test",
       getScope: () => ({ namespace: "main", database: "ws_demo" }),
-      logger: { info: (...args) => infos.push(args), warn: () => undefined },
+      logger: { info: (...args) => infos.push(args), warn: (...args) => warns.push(args) },
       now: (() => {
         const values = [100, 112];
         return () => values.shift() ?? 112;
@@ -38,18 +39,8 @@ describe("surreal query logging", () => {
     const result = await logger("SELECT *\nFROM user WHERE id = $id", { id: "user:1" }, async () => ["ok"]);
 
     expect(result).toEqual(["ok"]);
-    expect(infos).toEqual([
-      [
-        "[surrealdb:query]",
-        {
-          source: "test",
-          scope: { namespace: "main", database: "ws_demo" },
-          sql: "SELECT * FROM user WHERE id = $id",
-          params: { id: "user:1" },
-          durationMs: 12,
-        },
-      ],
-    ]);
+    expect(infos).toEqual([]);
+    expect(warns).toEqual([]);
   });
 
   test("logs failed query details then rethrows", async () => {
@@ -79,9 +70,70 @@ describe("surreal query logging", () => {
           sql: "RETURN $x",
           params: { x: 1 },
           durationMs: 5,
+          response: { status: "THROWN" },
           error: "boom",
         },
       ],
     ]);
+  });
+
+  test("logs a returned error response once and keeps the original result", async () => {
+    const warns: unknown[] = [];
+    const logger = createSurrealQueryLogger({
+      enabled: true,
+      source: "test",
+      logger: { info: () => undefined, warn: (...args) => warns.push(args) },
+      now: (() => {
+        const values = [10, 19];
+        return () => values.shift() ?? 19;
+      })(),
+    });
+    const response = [
+      { status: "OK", time: "1ms", result: [] },
+      { status: "ERR", time: "2ms", result: "Table not found: missing_table" },
+    ];
+
+    const result = await logger(
+      "SELECT * FROM missing_table; SELECT * FROM ok_table;",
+      undefined,
+      async () => response,
+    );
+
+    expect(result).toBe(response);
+    expect(warns).toEqual([
+      [
+        "[surrealdb:query:error]",
+        {
+          source: "test",
+          scope: undefined,
+          sql: "SELECT * FROM missing_table; SELECT * FROM ok_table;",
+          params: {},
+          durationMs: 9,
+          response: {
+            status: "ERR",
+            statements: [
+              { index: 0, status: "OK" },
+              { index: 1, status: "ERR", error: "Table not found: missing_table" },
+            ],
+          },
+          error: "Table not found: missing_table",
+        },
+      ],
+    ]);
+  });
+
+  test("does not treat ordinary row status fields as query response status", async () => {
+    const warns: unknown[] = [];
+    const logger = createSurrealQueryLogger({
+      enabled: true,
+      source: "test",
+      logger: { info: () => undefined, warn: (...args) => warns.push(args) },
+    });
+
+    await logger("SELECT status, result FROM job", undefined, async () => [
+      { status: "ERR", result: "user-owned field" },
+    ]);
+
+    expect(warns).toEqual([]);
   });
 });

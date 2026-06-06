@@ -17,7 +17,7 @@ class FakeSurreal {
 }
 
 describe("instrumentSurrealQuery", () => {
-  test("uses console info/warn for enabled server query logging", async () => {
+  test("only warns once for enabled server query logging failures", async () => {
     const originalInfo = console.info;
     const originalWarn = console.warn;
     const infos: unknown[] = [];
@@ -44,16 +44,7 @@ describe("instrumentSurrealQuery", () => {
       console.warn = originalWarn;
     }
 
-    expect(infos).toHaveLength(1);
-    expect(infos[0]).toEqual([
-      "[surrealdb:query]",
-      expect.objectContaining({
-        source: "test-server",
-        scope: { namespace: "main", database: "ws_demo" },
-        sql: "SELECT * FROM user WHERE id = $id",
-        params: { id: "user:1" },
-      }),
-    ]);
+    expect(infos).toEqual([]);
     expect(warns).toHaveLength(1);
     expect(warns[0]).toEqual([
       "[surrealdb:query:error]",
@@ -62,6 +53,7 @@ describe("instrumentSurrealQuery", () => {
         scope: { namespace: "main", database: "ws_demo" },
         sql: "THROW 'nope';",
         params: { reason: "nope" },
+        response: { status: "THROWN" },
         error: "query failed",
       }),
     ]);

@@ -172,8 +172,9 @@ describe("浏览器 adapter 的 query / liveTable 透传", () => {
     expect(result).toBe(rows);
   });
 
-  test("query 日志开启时打印 SurrealQL 与 bindings", async () => {
+  test("query 日志开启时成功查询不打印日志", async () => {
     const infos: unknown[] = [];
+    const warns: unknown[] = [];
     const rawDriver = {
       query() {
         return {
@@ -184,18 +185,45 @@ describe("浏览器 adapter 的 query / liveTable 透传", () => {
 
     const conn = createBrowserConn(rawDriver as never, {
       enabled: true,
-      logger: { info: (...args) => infos.push(args), warn: () => undefined },
+      logger: { info: (...args) => infos.push(args), warn: (...args) => warns.push(args) },
     });
     await conn.query("SELECT *\nFROM ent_x WHERE id = $id", { id: "ent_x:1" });
 
-    expect(infos).toHaveLength(1);
-    expect(infos[0]).toEqual([
-      "[surrealdb:query]",
+    expect(infos).toEqual([]);
+    expect(warns).toEqual([]);
+  });
+
+  test("query 日志开启时失败查询只打印一条错误日志", async () => {
+    const warns: unknown[] = [];
+    const rawDriver = {
+      query() {
+        return {
+          collect: async () => {
+            throw new Error("permission denied");
+          },
+        };
+      },
+    };
+
+    const conn = createBrowserConn(rawDriver as never, {
+      enabled: true,
+      logger: { info: () => undefined, warn: (...args) => warns.push(args) },
+    });
+
+    await expect(conn.query("SELECT *\nFROM ent_x WHERE id = $id", { id: "ent_x:1" })).rejects.toThrow(
+      "permission denied",
+    );
+
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toEqual([
+      "[surrealdb:query:error]",
       expect.objectContaining({
         source: "browser",
         scope: undefined,
         sql: "SELECT * FROM ent_x WHERE id = $id",
         params: { id: "ent_x:1" },
+        response: { status: "THROWN" },
+        error: "permission denied",
       }),
     ]);
   });
