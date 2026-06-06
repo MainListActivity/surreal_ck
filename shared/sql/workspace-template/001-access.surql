@@ -5,7 +5,7 @@ DEFINE ACCESS OVERWRITE admin ON DATABASE TYPE JWT URL "<__OIDC_JWKS_URL__>"
           FROM ONLY user
           WHERE subject = $token.sub
       );
-      IF $existing {  !
+      IF !$existing {
           LET $display_name = $token["https://surrealdb.com/email"];
 
           CREATE user CONTENT {
@@ -27,7 +27,7 @@ DEFINE ACCESS OVERWRITE participant ON DATABASE TYPE RECORD
           FROM ONLY user
           WHERE subject = $token.sub
       );
-      IF $existing {  !
+      IF !$existing {
           LET $display_name = $token["https://surrealdb.com/email"];
 
           CREATE user CONTENT {
