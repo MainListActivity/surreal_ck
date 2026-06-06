@@ -35,6 +35,9 @@ function fakeSurreal(overrides: Partial<SurrealConn> = {}) {
     query() {
       return Promise.resolve([]);
     },
+    queryRaw() {
+      return Promise.resolve([]);
+    },
     liveTable() {
       return Promise.resolve(() => {});
     },
@@ -170,6 +173,26 @@ describe("浏览器 adapter 的 query / liveTable 透传", () => {
 
     expect(calls).toEqual([{ sql: "SELECT * FROM ent_x WHERE a = $a", bindings: { a: 1 } }]);
     expect(result).toBe(rows);
+  });
+
+  test("queryRaw 返回所有语句结果", async () => {
+    const calls: string[] = [];
+    const firstRows = [{ id: "workbook:1" }];
+    const info = { tables: { workbook: "DEFINE TABLE workbook" } };
+    const rawDriver = {
+      query(sql: string) {
+        calls.push(sql);
+        return {
+          collect: async () => [firstRows, info],
+        };
+      },
+    };
+
+    const conn = createBrowserConn(rawDriver as never);
+    const result = await conn.queryRaw("SELECT * FROM workbook LIMIT 1; INFO FOR DB;");
+
+    expect(calls).toEqual(["SELECT * FROM workbook LIMIT 1; INFO FOR DB;"]);
+    expect(result).toEqual([firstRows, info]);
   });
 
   test("query 日志开启时成功查询不打印日志", async () => {

@@ -56,6 +56,8 @@ export type SurrealConn = SurrealWriter & {
   subscribe(event: string, listener: (...payload: unknown[]) => void): () => void;
   /** 执行 SurrealQL，返回**首个**语句的结果集。参数化绑定防注入。 */
   query<T = unknown>(sql: string, bindings?: Record<string, unknown>): Promise<T[]>;
+  /** 执行原始 SurrealQL，返回每条语句的结果；仅供管理员 SQL 控制台使用。 */
+  queryRaw(sql: string): Promise<unknown[]>;
   /** 订阅整张表的 LIVE 变更；返回取消订阅函数。 */
   liveTable<T extends Record<string, unknown> = Record<string, unknown>>(
     table: string,
@@ -160,6 +162,11 @@ export function createBrowserConn(raw: RawDriver, logOptions: BrowserQueryLogOpt
       return await queryLogger(sql, bindings, async () => {
         const collected = await rawQuery.call(raw, sql, bindings).collect();
         return (collected[0] ?? []) as T[];
+      });
+    },
+    async queryRaw(sql: string): Promise<unknown[]> {
+      return await queryLogger(sql, undefined, async () => {
+        return await rawQuery.call(raw, sql).collect();
       });
     },
     async liveTable<T extends Record<string, unknown> = Record<string, unknown>>(

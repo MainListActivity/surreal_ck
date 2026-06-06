@@ -26,6 +26,11 @@ describe("parseRoute", () => {
       page: "dashboard",
     });
     expect(parseRoute("/w/acme/admin")).toEqual({ kind: "workspace", slug: "acme", page: "admin" });
+    expect(parseRoute("/w/acme/admin-console")).toEqual({
+      kind: "workspace",
+      slug: "acme",
+      page: "admin-console",
+    });
     expect(parseRoute("/w/acme/settings")).toEqual({
       kind: "workspace",
       slug: "acme",
@@ -113,6 +118,7 @@ describe("workspacePath", () => {
 
   test("子页面拼接", () => {
     expect(workspacePath("acme", "docs")).toBe("/w/acme/docs");
+    expect(workspacePath("acme", "admin-console")).toBe("/w/acme/admin-console");
     expect(workspacePath("acme", "settings")).toBe("/w/acme/settings");
   });
 

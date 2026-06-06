@@ -5,7 +5,10 @@
   import WorkspaceSwitcher from "./WorkspaceSwitcher.svelte";
   import { logout } from "../lib/auth";
   import { getCurrentUser } from "../lib/workspace-store.svelte";
-  import { canWriteSharedStructure as canWriteSharedStructureFn } from "../lib/permissions.svelte";
+  import {
+    canWriteSharedStructure as canWriteSharedStructureFn,
+    isWorkspaceAdmin as isWorkspaceAdminFn,
+  } from "../lib/permissions.svelte";
   import type { WorkspacePage } from "../lib/route";
 
   // 新架构 SideNav：保留 legacy 全部可见入口（首页 / 仪表盘 / 我的文档 / 工作区设置 /
@@ -24,6 +27,7 @@
   } = $props();
 
   const canWriteSharedStructure = $derived(canWriteSharedStructureFn());
+  const canOpenAdminConsole = $derived(isWorkspaceAdminFn());
   const user = $derived(getCurrentUser());
   const userName = $derived(user?.name || user?.email || "我");
   const userMeta = $derived(user?.email || "组织账号");
@@ -67,6 +71,14 @@
   <div class="bottom-nav">
     <button class:active={page === "admin"} onclick={() => go("admin")}>
       <Icon name="settings" size={16} />工作区设置
+    </button>
+    <button
+      class:active={page === "admin-console"}
+      disabled={!canOpenAdminConsole}
+      title={canOpenAdminConsole ? "SQL 控制台" : "需要管理员权限"}
+      onclick={() => go("admin-console")}
+    >
+      <Icon name="hash" size={16} />SQL 控制台
     </button>
     <button class:active={page === "trash"} onclick={() => go("trash")}>
       <Icon name="trash" size={16} />回收站
@@ -161,8 +173,13 @@
   }
 
   nav button:hover,
-  .bottom-nav button:hover {
+  .bottom-nav button:hover:not(:disabled) {
     background: var(--bg);
+  }
+
+  .bottom-nav button:disabled {
+    cursor: not-allowed;
+    opacity: .52;
   }
 
   button.active {

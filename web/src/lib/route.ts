@@ -8,7 +8,7 @@
  * - `/auth/login`                                  → login
  * - `/auth/callback`                               → callback
  * - `/w/:slug`                                     → workspace（首页 shell）
- * - `/w/:slug/{docs|templates|dashboard|admin|settings|trash}` → workspace 子页面
+ * - `/w/:slug/{docs|templates|dashboard|admin|admin-console|settings|trash}` → workspace 子页面
  * - `/w/:slug/wb/:workbookId`                      → editor（默认 sheet）
  * - `/w/:slug/wb/:workbookId/sheet/:sheetId`       → editor（指定 sheet）
  * - `/form` / `/form-success`                      → 公开表单占位页
@@ -20,6 +20,7 @@ export type WorkspacePage =
   | "templates"
   | "dashboard"
   | "admin"
+  | "admin-console"
   | "settings"
   | "trash";
 
@@ -38,6 +39,7 @@ const WORKSPACE_PAGES: readonly WorkspacePage[] = [
   "templates",
   "dashboard",
   "admin",
+  "admin-console",
   "settings",
   "trash",
 ];

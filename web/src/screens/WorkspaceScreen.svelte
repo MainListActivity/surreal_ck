@@ -1,9 +1,13 @@
 <script lang="ts">
   import SideNav from "../components/SideNav.svelte";
+  import AdminConsoleScreen from "./AdminConsoleScreen.svelte";
   import HomeScreen from "./HomeScreen.svelte";
   import PlaceholderScreen from "./PlaceholderScreen.svelte";
   import { workbooksStore } from "../lib/workbooks.svelte";
-  import { canWriteSharedStructure as canWriteSharedStructureFn } from "../lib/permissions.svelte";
+  import {
+    canWriteSharedStructure as canWriteSharedStructureFn,
+    isWorkspaceAdmin as isWorkspaceAdminFn,
+  } from "../lib/permissions.svelte";
   import type { WorkspacePage } from "../lib/route";
 
   // workspace 首页 shell：左侧 SideNav + 右侧按 page 切换内容。
@@ -22,6 +26,7 @@
   } = $props();
 
   const canWriteSharedStructure = $derived(canWriteSharedStructureFn());
+  const canOpenAdminConsole = $derived(isWorkspaceAdminFn());
 
   function goHome() {
     onnavigate?.("home");
@@ -80,6 +85,18 @@
         actionLabel="返回首页"
         onaction={goHome}
       />
+    {:else if page === "admin-console"}
+      {#if canOpenAdminConsole}
+        <AdminConsoleScreen />
+      {:else}
+        <PlaceholderScreen
+          icon="lock"
+          title="需要管理员权限"
+          desc="SQL 控制台只对当前 workspace 的管理员开放。"
+          actionLabel="返回首页"
+          onaction={goHome}
+        />
+      {/if}
     {:else if page === "settings"}
       <PlaceholderScreen
         icon="settings"
