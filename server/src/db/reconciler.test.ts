@@ -195,6 +195,40 @@ describe("workspace index reconciler", () => {
     expect(repair.params?.role).toBe("admin");
   });
 
+  test("repairs a stale index subject matched by workspace user email", async () => {
+    const db = new FakeReconcileClient(
+      [
+        {
+          id: "workspace:alpha",
+          dbName: "ws_alpha",
+          status: "active",
+          users: [{ id: "user:a1", subject: "current-sub", email: "a1@x.test", isAdmin: false }],
+        },
+      ],
+      [
+        {
+          id: new RecordId("user_workspace_index", "i1"),
+          subject: "stale-sub",
+          email: "a1@x.test",
+          dbName: "ws_alpha",
+          role: "participant",
+        },
+      ],
+    );
+
+    const result = await reconcileWorkspaceIndex(db, { namespace: "main" });
+
+    expect(result.drift).toBe(1);
+    expect(result.repaired).toBe(1);
+
+    expect(db.mutations).toHaveLength(1);
+    const repair = db.mutations[0]!;
+    expect(repair.sql).toContain("UPDATE");
+    expect(repair.sql).toContain("subject");
+    expect((repair.params?.membership as StringRecordId).toString()).toBe("user_workspace_index:i1");
+    expect(repair.params?.subject).toBe("current-sub");
+  });
+
   test("flags an orphan index row without deleting it when no workspace user matches", async () => {
     const db = new FakeReconcileClient(
       [

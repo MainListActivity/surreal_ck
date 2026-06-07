@@ -40,6 +40,7 @@ type UserRow = {
 
 type DriftAction =
   | { kind: "add-index"; user: UserRow }
+  | { kind: "bind-subject"; index: IndexRow; subject: string }
   | { kind: "fix-role"; index: IndexRow; role: "admin" | "participant" }
   | { kind: "flag-orphan-index"; index: IndexRow };
 
@@ -48,11 +49,11 @@ function roleFor(user: UserRow): "admin" | "participant" {
 }
 
 function matchIndexForUser(user: UserRow, indexRows: IndexRow[]): IndexRow | undefined {
-  return indexRows.find(
-    (row) =>
-      (user.subject !== null && row.subject === user.subject) ||
-      (user.email !== null && row.email === user.email),
-  );
+  const subjectMatch =
+    user.subject === null ? undefined : indexRows.find((row) => row.subject === user.subject);
+  if (subjectMatch) return subjectMatch;
+  if (user.email === null) return undefined;
+  return indexRows.find((row) => row.email === user.email);
 }
 
 /**
@@ -71,6 +72,9 @@ export function classifyWorkspaceDrift(indexRows: IndexRow[], userRows: UserRow[
       continue;
     }
     matchedIndexIds.add(index.id);
+    if (user.subject !== null && index.subject !== user.subject) {
+      actions.push({ kind: "bind-subject", index, subject: user.subject });
+    }
     const role = roleFor(user);
     if (index.role !== role) {
       actions.push({ kind: "fix-role", index, role });
@@ -170,6 +174,16 @@ async function applyDriftActions(
       );
       repaired += 1;
       console.warn("[reconcile] re-added missing index", { dbName: workspace.dbName, subject: action.user.subject });
+    } else if (action.kind === "bind-subject") {
+      await db.query("UPDATE $membership SET subject = $subject;", {
+        membership: action.index.id,
+        subject: action.subject,
+      });
+      repaired += 1;
+      console.warn("[reconcile] fixed index subject", {
+        dbName: workspace.dbName,
+        subject: action.subject,
+      });
     } else if (action.kind === "fix-role") {
       await db.query("UPDATE $membership SET role = $role;", {
         membership: action.index.id,
