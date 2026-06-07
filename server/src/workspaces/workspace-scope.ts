@@ -1,4 +1,4 @@
-import { getRootConnection } from "../db/root-connection";
+import { getRootDatabaseSession } from "../db/root-connection";
 import { dateTimeTimestamp, toIsoDateTimeString } from "../db/surreal-values";
 import { env } from "../env";
 
@@ -70,6 +70,27 @@ type Queryable = {
   query(sql: string, params?: Record<string, unknown>): Promise<unknown>;
   use(scope: { namespace: string; database: string }): Promise<unknown>;
 };
+
+export type WorkspaceScopeSessionFactory = (database: string, namespace: string) => Promise<Queryable>;
+
+export type WorkspaceScopeModuleOptions = {
+  db?: Queryable;
+  getDbSession?: WorkspaceScopeSessionFactory;
+  namespace?: string;
+};
+
+async function defaultGetDbSession(database: string, namespace: string): Promise<Queryable> {
+  return getRootDatabaseSession(database, namespace);
+}
+
+async function useInjectedDb(db: Queryable, namespace: string, database: string): Promise<Queryable> {
+  await db.use({ namespace, database });
+  return db;
+}
+
+function isWorkspaceScopeModuleOptions(input: Queryable | WorkspaceScopeModuleOptions): input is WorkspaceScopeModuleOptions {
+  return !("query" in input);
+}
 
 /** 查 `_system.system_admin` 是否已有任意行。调用方需已 use 到 _system。 */
 async function hasSystemAdminRows(db: Queryable): Promise<boolean> {
@@ -156,11 +177,17 @@ function needsSubjectBind(row: WorkspaceIndexRow, subject: string): boolean {
   return row.subject !== subject;
 }
 
-export function createWorkspaceScopeModule(db?: Queryable): WorkspaceScopeModule {
+export function createWorkspaceScopeModule(input?: Queryable | WorkspaceScopeModuleOptions): WorkspaceScopeModule {
+  const options = input && isWorkspaceScopeModuleOptions(input) ? input : { db: input };
+  const db = options.db;
+  const namespace = options.namespace ?? env.SURREAL_NS;
+  const getDbSession = options.getDbSession ?? defaultGetDbSession;
+  const getSystemDb = () =>
+    db ? useInjectedDb(db, namespace, SYSTEM_DATABASE) : getDbSession(SYSTEM_DATABASE, namespace);
+
   return {
     async getDefaultScope(input) {
-      const client = db ?? getRootConnection();
-      await client.use({ namespace: env.SURREAL_NS, database: SYSTEM_DATABASE });
+      const client = await getSystemDb();
       const identity = identityFilter(input);
 
       const result = await client.query(
@@ -199,7 +226,7 @@ export function createWorkspaceScopeModule(db?: Queryable): WorkspaceScopeModule
     },
 
     async listWorkspaces(input) {
-      const client = db ?? getRootConnection();
+      const client = await getSystemDb();
       const identity = identityFilter(input);
 
       const result = await client.query(
@@ -223,8 +250,7 @@ export function createWorkspaceScopeModule(db?: Queryable): WorkspaceScopeModule
     },
 
     async switchWorkspace(input) {
-      const client = db ?? getRootConnection();
-      await client.use({ namespace: env.SURREAL_NS, database: SYSTEM_DATABASE });
+      const client = await getSystemDb();
       const identity = identityFilter(input);
       const result = input.dbName
         ? await client.query(
@@ -262,25 +288,9 @@ export function createWorkspaceScopeModule(db?: Queryable): WorkspaceScopeModule
         return { kind: "forbidden" };
       }
 
-      // Connect to the target workspace database
-      let targetClient: Queryable;
-      let shouldCloseTarget = false;
-      if (db) {
-        targetClient = db;
-        await (targetClient as any).use({ namespace: "main", database: scope.db });
-      } else {
-        const { Surreal } = await import("surrealdb");
-        const { env } = await import("../env");
-        const tmp = new Surreal();
-        await tmp.connect(env.SURREAL_URL, { reconnect: false });
-        await tmp.signin({
-          username: env.SURREAL_ROOT_USER,
-          password: env.SURREAL_ROOT_PASS,
-        });
-        await tmp.use({ namespace: env.SURREAL_NS, database: scope.db });
-        targetClient = tmp;
-        shouldCloseTarget = true;
-      }
+      const targetClient = db
+        ? await useInjectedDb(db, namespace, scope.db)
+        : await getDbSession(scope.db, namespace);
 
       let correctedRole: "admin" | "participant" | null = null;
 
@@ -322,17 +332,9 @@ export function createWorkspaceScopeModule(db?: Queryable): WorkspaceScopeModule
           }
         }
       } finally {
-        if (shouldCloseTarget && targetClient) {
-          try {
-            await (targetClient as any).close();
-          } catch {
-            // Ignore close error
-          }
+        if (db) {
+          await useInjectedDb(client, namespace, SYSTEM_DATABASE);
         }
-      }
-
-      if (db) {
-        await client.use({ namespace: env.SURREAL_NS, database: SYSTEM_DATABASE });
       }
 
       if (needsSubjectBind(row, input.subject)) {

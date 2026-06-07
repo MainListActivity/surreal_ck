@@ -81,6 +81,37 @@ class FilteringFakeDb extends FakeDb {
   }
 }
 
+class ScopedFakeDb extends FakeDb {
+  currentDatabase: string;
+  rowsByDatabase: Record<string, any[]> = {};
+
+  constructor(initialDatabase: string) {
+    super();
+    this.currentDatabase = initialDatabase;
+  }
+
+  override async use(scope: { namespace: string; database: string }): Promise<void> {
+    await super.use(scope);
+    this.currentDatabase = scope.database;
+  }
+
+  override async query(sql: string, params?: Record<string, unknown>): Promise<any[]> {
+    this.queries.push({ sql, params });
+
+    const normalizedSql = sql.trim().replace(/\s+/g, " ");
+
+    if (normalizedSql.includes("FROM system_admin")) {
+      return [this.currentDatabase === "_system" && this.systemAdminRowCount > 0 ? ["system_admin:1"] : []];
+    }
+
+    if (normalizedSql.includes("FROM user_workspace_index")) {
+      return [this.rowsByDatabase[this.currentDatabase] ?? []];
+    }
+
+    return [[]];
+  }
+}
+
 describe("WorkspaceScopeModule.switchWorkspace consistency & drift", () => {
   test("Scenario A: successful switch when user exists in target db and role aligns", async () => {
     const db = new FakeDb();
@@ -301,6 +332,31 @@ describe("WorkspaceScopeModule.switchWorkspace consistency & drift", () => {
 });
 
 describe("WorkspaceScopeModule disabled member filtering", () => {
+  test("listWorkspaces reselects _system before reading the workspace index", async () => {
+    const db = new ScopedFakeDb("ws_previous");
+    db.rowsByDatabase._system = [
+      {
+        db_name: "ws_abc",
+        role: "participant",
+        workspace: { status: "active", slug: "abc", name: "ABC" },
+      },
+    ];
+    const module = createWorkspaceScopeModule(db);
+
+    const { workspaces } = await module.listWorkspaces({ subject: "user-123" });
+
+    expect(db.useCalls.at(-1)).toEqual({ namespace: "main", database: "_system" });
+    expect(workspaces).toEqual([
+      {
+        slug: "abc",
+        name: "ABC",
+        dbName: "ws_abc",
+        role: "participant",
+        lastSelectedAt: null,
+      },
+    ]);
+  });
+
   test("listWorkspaces filters out disabled index rows at the query level", async () => {
     const db = new FakeDb();
     const module = createWorkspaceScopeModule(db);
