@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { RecordId, StringRecordId } from "surrealdb";
 import type { GridColumnDef, ViewParams } from "@surreal-ck/shared/rpc.types";
 import type { SurrealConn } from "./surreal";
 import type { LiveMessage } from "./surreal";
@@ -136,6 +137,89 @@ describe("loadSheet — 直连 SELECT 并映射成 GridRow", () => {
     expect(rows).toEqual([
       { id: "ent_claim:abc", values: { name: "张三", amount: 100, status: "新" } },
     ]);
+  });
+});
+
+describe("record 字段（引用）边界：内存 string，交给 SDK 才包成 RecordId", () => {
+  const refColumns: GridColumnDef[] = [
+    { key: "name", label: "名称", fieldType: "text" },
+    { key: "owner", label: "负责人", fieldType: "reference", referenceTable: "app_user" },
+    { key: "parties", label: "当事人", fieldType: "reference", referenceTable: "ent_p", referenceMultiple: true },
+  ];
+  const refSheet: SheetRef = { tableName: "ent_claim", columns: refColumns };
+
+  test("buildSelect：reference 列过滤值绑定成 RecordId，普通列仍是 string", () => {
+    const view: ViewParams = {
+      filters: [
+        { key: "owner", op: "eq", value: "app_user:u1" },
+        { key: "name", op: "eq", value: "app_user:notId" },
+      ],
+    };
+    const built = buildSelect("ent_claim", view, refColumns, { limit: 50, start: 0 });
+    expect(built.sql).toBe(
+      "SELECT * FROM type::table($tb) WHERE owner = $f0 AND name = $f1 LIMIT 50 START 0",
+    );
+    expect(built.bindings.f0).toBeInstanceOf(StringRecordId);
+    expect(String(built.bindings.f0)).toBe("app_user:u1");
+    // 普通文本列即便值长得像 record id 也不包（它不是 record 字段）。
+    expect(built.bindings.f1).toBe("app_user:notId");
+  });
+
+  test("buildSelect：reference 列 IN 过滤逐项包成 RecordId", () => {
+    const view: ViewParams = { filters: [{ key: "parties", op: "in", value: ["ent_p:1", "ent_p:2"] }] };
+    const built = buildSelect("ent_claim", view, refColumns, { limit: 50, start: 0 });
+    const ids = built.bindings.f0 as unknown[];
+    expect(ids).toBeArray();
+    for (const id of ids) expect(id).toBeInstanceOf(StringRecordId);
+    expect(ids.map(String)).toEqual(["ent_p:1", "ent_p:2"]);
+  });
+
+  test("saveCells：reference 写入值包成 RecordId（单值 + 多值数组）", async () => {
+    const creates: Array<{ table: string; data: Record<string, unknown> }> = [];
+    const conn = fakeConn({
+      createRecord: (async (table: string, data: Record<string, unknown>) => {
+        creates.push({ table, data });
+        return { id: "ent_claim:new", ...data };
+      }) as SurrealConn["createRecord"],
+    });
+
+    const result = await saveCells(conn, refSheet, [
+      { values: { name: "案件A", owner: "app_user:u1", parties: ["ent_p:1", "ent_p:2"] } },
+    ]);
+
+    expect(result.ok).toBe(true);
+    const data = creates[0].data;
+    expect(data.name).toBe("案件A"); // 文本列原样
+    expect(data.owner).toBeInstanceOf(StringRecordId);
+    expect(String(data.owner)).toBe("app_user:u1");
+    const parties = data.parties as unknown[];
+    for (const p of parties) expect(p).toBeInstanceOf(StringRecordId);
+    expect(parties.map(String)).toEqual(["ent_p:1", "ent_p:2"]);
+  });
+
+  test("loadSheet：SDK 读回的 RecordId 实例规整回 string 进内存", async () => {
+    const conn = fakeConn({
+      query: (async () => [
+        {
+          id: new RecordId("ent_claim", "abc"),
+          name: "案件A",
+          owner: new RecordId("app_user", "u1"),
+          parties: [new RecordId("ent_p", "pa"), new RecordId("ent_p", "pb")],
+        },
+      ]) as SurrealConn["query"],
+    });
+
+    const rows = await loadSheet(conn, refSheet, {}, { limit: 100, start: 0 });
+
+    expect(rows).toEqual([
+      {
+        id: "ent_claim:abc",
+        values: { name: "案件A", owner: "app_user:u1", parties: ["ent_p:pa", "ent_p:pb"] },
+      },
+    ]);
+    // 严格断言：内存里没有残留 RecordId 实例。
+    expect(typeof rows[0].values.owner).toBe("string");
+    expect((rows[0].values.parties as unknown[]).every((p) => typeof p === "string")).toBe(true);
   });
 });
 

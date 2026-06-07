@@ -10,6 +10,7 @@ import type {
   RecordIdString,
   ViewParams,
 } from "@surreal-ck/shared/rpc.types";
+import { asBindable, recordValueToString, toRecordFieldValue } from "./record-id";
 import type { SurrealConn, SurrealWriter } from "./surreal";
 
 /** 写入结果：要么成功，要么带一条人类可读的错误（用于 UI 直接展示）。 */
@@ -65,12 +66,13 @@ export function buildSelect(
   page: Pagination,
 ): BuiltQuery {
   const known = new Set(columns.map((c) => c.key));
+  const columnByKey = new Map(columns.map((c) => [c.key, c]));
   const bindings: Record<string, unknown> = { tb: tableName };
 
   const conditions: string[] = [];
   for (const clause of view.filters ?? []) {
     if (!known.has(clause.key)) continue;
-    const piece = filterToSql(clause, conditions.length, bindings);
+    const piece = filterToSql(clause, conditions.length, bindings, columnByKey.get(clause.key));
     if (piece) conditions.push(piece);
   }
 
@@ -91,6 +93,32 @@ export function buildSelect(
 
 /** entity 行上由 schema 维护、不属于业务列的系统字段，映射 GridRow 时剔除。 */
 const SYSTEM_FIELDS = new Set(["id", "workspace", "created_by", "created_at", "updated_at"]);
+
+/**
+ * 单个字段值的写入边界规整：reference 列写进 `record<table>` 字段，coerce 后是 RecordId
+ * 字符串——交给 SDK 前包成 RecordId，否则引擎按 string 类型拒绝写入；非 reference 列原样返回。
+ */
+export function wrapRecordField(value: unknown, column: GridColumnDef): unknown {
+  return column.fieldType === "reference" ? toRecordFieldValue(value) : value;
+}
+
+/**
+ * 整行写入前的字段规整：逐列把 reference 值包成 RecordId（其余原样）。
+ * 给绕过 {@link saveCells} 的直连写入路径（如 draft 晋升 createRecord）复用，
+ * 保证「写 record 字段须用 RecordId」这条规则只有一处实现、不再各写各的。
+ */
+export function prepareRecordFields(
+  values: Record<string, unknown>,
+  columns: GridColumnDef[],
+): Record<string, unknown> {
+  const columnByKey = new Map(columns.map((c) => [c.key, c]));
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(values)) {
+    const column = columnByKey.get(key);
+    out[key] = column ? wrapRecordField(value, column) : value;
+  }
+  return out;
+}
 
 /**
  * 直连 SurrealDB 加载一个 sheet 的行：把 {@link buildSelect} 编译出的查询交给
@@ -133,7 +161,7 @@ export async function saveCells(
       if (errors.length) {
         return { ok: false, message: `${key}：${errors.join("；")}` };
       }
-      coerced[key] = value;
+      coerced[key] = wrapRecordField(value, column);
     }
     prepared.push({ ...(patch.id ? { id: patch.id } : {}), values: coerced });
   }
@@ -257,7 +285,8 @@ function rowToGridRow(record: Record<string, unknown>, known: Set<string>): Grid
   const values: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(record)) {
     if (SYSTEM_FIELDS.has(key)) continue;
-    if (known.has(key)) values[key] = value;
+    // record 字段（引用）SDK 读回为 RecordId 实例——规整回 string，与网格内存模型一致。
+    if (known.has(key)) values[key] = recordValueToString(value);
   }
   return { id: String(record.id), values };
 }
@@ -266,21 +295,24 @@ function filterToSql(
   clause: FilterClause,
   index: number,
   bindings: Record<string, unknown>,
+  column?: GridColumnDef,
 ): string | null {
   if (clause.op === "is_null") return `${clause.key} IS NULL`;
   if (clause.op === "is_not_null") return `${clause.key} IS NOT NULL`;
 
+  // reference 列是 record 字段，过滤值须包成 RecordId 才能与之相等比较。
+  const isReference = column?.fieldType === "reference";
   const param = `f${index}`;
   if (clause.op === "in") {
     const arr = Array.isArray(clause.value) ? clause.value : [];
     if (arr.length === 0) return null;
-    bindings[param] = arr;
+    bindings[param] = isReference ? arr.map(asBindable) : arr;
     return `${clause.key} INSIDE $${param}`;
   }
 
   if (clause.value === undefined || clause.value === null || clause.value === "") return null;
   const comparator = COMPARATORS[clause.op];
   if (!comparator) return null;
-  bindings[param] = clause.value;
+  bindings[param] = isReference ? asBindable(clause.value) : clause.value;
   return `${clause.key} ${comparator} $${param}`;
 }

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { StringRecordId } from "surrealdb";
 import type { GridColumnDef } from "@surreal-ck/shared/rpc.types";
 import type { SurrealConn, LiveMessage } from "./surreal";
 import { createEditorStore, type EditorSnapshot } from "./editor-store";
@@ -90,7 +91,11 @@ describe("loadWorkbook — 直连读 sheet 列表 + 首个 sheet 的行", () => 
     await store.loadWorkbook("workbook:wb1");
 
     expect(rec.queries[0].sql).toMatch(/FROM sheet/);
-    expect(rec.queries[0].bindings).toEqual({ wb: "workbook:wb1" });
+    // workbook 是 record 字段：绑定须是 RecordId（StringRecordId），不能是裸 string，
+    // 否则 `WHERE workbook = $wb` 与 record 比较永远不相等、查不到 sheet。
+    const wb = (rec.queries[0].bindings as { wb: unknown }).wb;
+    expect(wb).toBeInstanceOf(StringRecordId);
+    expect(String(wb)).toBe("workbook:wb1");
     expect(store.activeSheetId).toBe("sheet:s1");
     expect(store.columns.map((c) => c.key)).toEqual(["name", "amount"]);
     expect(store.rows).toEqual([{ id: "ent_claim:a", values: { name: "张三", amount: 100 } }]);

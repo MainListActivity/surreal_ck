@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { StringRecordId } from "surrealdb";
 import type { SurrealConn } from "./surreal";
 import {
   collectReferenceIdsFromValues,
@@ -22,9 +23,13 @@ function setup(byTable: Record<string, Array<Record<string, unknown>>>) {
       calls.push({ sql, bindings });
       const tb = bindings?.tb as string | undefined;
       const rows = tb ? byTable[tb] ?? [] : [];
-      // WHERE id INSIDE $ids：在 fake 里按 $ids 过滤
-      const ids = bindings?.ids as string[] | undefined;
-      if (ids) return rows.filter((r) => ids.includes(String(r.id)));
+      // WHERE id INSIDE $ids：$ids 现在是 RecordId（StringRecordId）数组——
+      // fake 里按其 string 形态过滤，模拟引擎对 record 字段的相等比较。
+      const ids = bindings?.ids as Array<{ toString(): string }> | undefined;
+      if (ids) {
+        const wanted = new Set(ids.map((id) => String(id)));
+        return rows.filter((r) => wanted.has(String(r.id)));
+      }
       return rows;
     }) as SurrealConn["query"],
     liveTable: (async () => () => {}) as SurrealConn["liveTable"],
@@ -70,7 +75,10 @@ describe("resolveReferences — 直连按表分组解析展示值", () => {
     for (const c of calls) {
       expect(c.sql).toMatch(/FROM type::table\(\$tb\)/);
       expect(c.sql).toMatch(/WHERE id INSIDE \$ids/);
-      expect((c.bindings as { ids: string[] }).ids).toBeArray();
+      // id 是 record 字段：$ids 须是 RecordId 数组，不能是裸 string，否则 INSIDE 比较查不到。
+      const ids = (c.bindings as { ids: unknown[] }).ids;
+      expect(ids).toBeArray();
+      for (const id of ids) expect(id).toBeInstanceOf(StringRecordId);
     }
     const byId = new Map(items.map((i) => [i.id, i]));
     expect(byId.get("app_user:u1")?.primaryLabel).toBe("张三");

@@ -12,8 +12,16 @@ import type {
   SortClause,
   ViewParams,
 } from "@surreal-ck/shared/rpc.types";
+import { recordValueToString, toRecordId } from "./record-id";
 import type { SurrealConn } from "./surreal";
-import { deleteRows as deleteRowsDirect, loadSheet, saveCells, subscribeLive, type SheetRef } from "./workbook-data";
+import {
+  deleteRows as deleteRowsDirect,
+  loadSheet,
+  prepareRecordFields,
+  saveCells,
+  subscribeLive,
+  type SheetRef,
+} from "./workbook-data";
 import { isDraftRowId, recordDrafts } from "./record-drafts";
 
 export { isDraftRowId } from "./record-drafts";
@@ -399,9 +407,10 @@ export function createEditorStore(deps: EditorDeps) {
     emit();
     try {
       const conn = deps.getConn();
+      // 绕过 saveCells 的直连写入也要把 reference 列包成 RecordId（复用同一处规则）。
       const created = await conn.createRecord<{ id: unknown } & Record<string, unknown>>(
         ref.tableName,
-        probe[0].values,
+        prepareRecordFields(probe[0].values, state.columns),
       );
       const promotedRow = recordRowToGrid(created, state.columns);
       const next = recordDrafts.promote(state.activeSheetId, state.rows, state.draftsBySheet, draftId, promotedRow);
@@ -526,9 +535,10 @@ const SYSTEM_FIELDS = new Set(["id", "workspace", "created_by", "created_at", "u
 
 /** 读 workbook 下所有 sheet 记录，按 table_name + column_defs 派生展示元数据。 */
 async function fetchSheets(conn: SurrealConn, workbookId: string): Promise<SheetMeta[]> {
+  // workbook 是 record 字段，与 string 比较永远不相等——绑定时包成 RecordId。
   const records = await conn.query<Record<string, unknown>>(
     "SELECT * FROM sheet WHERE workbook = $wb ORDER BY created_at ASC",
-    { wb: workbookId },
+    { wb: toRecordId(workbookId) },
   );
   return records.map((rec) => ({
     id: String(rec.id) as RecordIdString,
@@ -544,7 +554,8 @@ function recordRowToGrid(record: Record<string, unknown>, columns: GridColumnDef
   const values: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(record)) {
     if (SYSTEM_FIELDS.has(key)) continue;
-    if (known.has(key)) values[key] = value;
+    // record 字段（引用）SDK 读回为 RecordId 实例——规整回 string，与网格内存模型一致。
+    if (known.has(key)) values[key] = recordValueToString(value);
   }
   return { id: String(record.id) as RecordIdString, values };
 }

@@ -1,5 +1,8 @@
 import type { RecordIdString, ReferenceTargetPreview } from "@surreal-ck/shared/rpc.types";
+import { isLikelyRecordId, toRecordId } from "./record-id";
 import type { SurrealConn } from "./surreal";
+
+export { isLikelyRecordId };
 
 /**
  * 引用字段直连解析（替代 legacy 的后端 `appApi.resolveReferences`）。
@@ -14,11 +17,6 @@ import type { SurrealConn } from "./surreal";
 
 /** displayKey 回退链：显式 displayKey（若有）→ name → display_name → email → id。 */
 const DISPLAY_KEY_FALLBACK = ["name", "display_name", "email"] as const;
-
-export function isLikelyRecordId(value: string): boolean {
-  const colon = value.indexOf(":");
-  return colon > 0 && colon < value.length - 1;
-}
 
 function tableOf(id: string): string {
   return id.slice(0, id.indexOf(":"));
@@ -100,9 +98,10 @@ export async function resolveReferences(
   for (const [tb, tbIds] of byTable) {
     const displayKey = displayKeyByTable[tb];
     const projection = displayProjection(displayKey).join(", ");
+    // id 是 record 字段，与 string 数组比较永远不相等——逐项包成 RecordId 再绑定。
     const records = await conn.query<Record<string, unknown>>(
       `SELECT ${projection} FROM type::table($tb) WHERE id INSIDE $ids`,
-      { tb, ids: tbIds },
+      { tb, ids: tbIds.map(toRecordId) },
     );
     const found = new Map(records.map((r) => [String(r.id), r]));
     for (const id of tbIds) {

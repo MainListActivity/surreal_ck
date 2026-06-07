@@ -18,9 +18,25 @@ export type RootSessionPoolOptions = {
 };
 
 const DEFAULT_MAX_SESSIONS = 20;
+const ROOT_SESSION_POOL_DEBUG_PREFIX = "[DEBUG-root-session-pool]";
 
 function sessionKey(namespace: string, database: string): string {
   return `${namespace}/${database}`;
+}
+
+function debugRootSessionPool(event: string, payload: Record<string, unknown>): void {
+  console.info(ROOT_SESSION_POOL_DEBUG_PREFIX, event, payload);
+}
+
+function warnRootSessionPool(event: string, payload: Record<string, unknown>): void {
+  console.warn(ROOT_SESSION_POOL_DEBUG_PREFIX, event, payload);
+}
+
+function errorForLog(error: unknown): Record<string, unknown> {
+  return {
+    message: error instanceof Error ? error.message : String(error),
+    stack: error instanceof Error ? error.stack : undefined,
+  };
 }
 
 export function createRootSessionPool<TSession extends RootDatabaseSession>(
@@ -37,10 +53,13 @@ export function createRootSessionPool<TSession extends RootDatabaseSession>(
 
       const [key, sessionPromise] = oldest;
       sessions.delete(key);
+      debugRootSessionPool("evict:start", { key, size: sessions.size, maxSessions });
       try {
         const session = await sessionPromise;
         await session.closeSession();
+        debugRootSessionPool("evict:closed", { key, size: sessions.size, maxSessions });
       } catch {
+        warnRootSessionPool("evict:close-failed", { key, size: sessions.size, maxSessions });
         // Eviction must not fail the request that made room in the pool.
       }
     }
@@ -53,12 +72,17 @@ export function createRootSessionPool<TSession extends RootDatabaseSession>(
       if (existing) {
         sessions.delete(key);
         sessions.set(key, existing);
+        debugRootSessionPool("get:hit", { key, namespace, database, size: sessions.size });
         return existing;
       }
 
+      debugRootSessionPool("get:miss", { key, namespace, database, size: sessions.size });
       const creating = (async () => {
+        debugRootSessionPool("create:start", { key, namespace, database, size: sessions.size });
         const session = await source.newSession();
+        debugRootSessionPool("create:session-ready", { key, namespace, database, size: sessions.size });
         await session.use({ namespace, database });
+        debugRootSessionPool("create:use-ready", { key, namespace, database, size: sessions.size });
         return session;
       })();
 
@@ -66,17 +90,26 @@ export function createRootSessionPool<TSession extends RootDatabaseSession>(
       try {
         const session = await creating;
         await evictIfNeeded();
+        debugRootSessionPool("get:ready", { key, namespace, database, size: sessions.size });
         return session;
       } catch (error) {
         if (sessions.get(key) === creating) {
           sessions.delete(key);
         }
+        warnRootSessionPool("get:failed", {
+          key,
+          namespace,
+          database,
+          size: sessions.size,
+          ...errorForLog(error),
+        });
         throw error;
       }
     },
 
     async closeAll() {
       const pending = [...sessions.values()];
+      debugRootSessionPool("close-all:start", { count: pending.length });
       sessions.clear();
       await Promise.all(
         pending.map(async (sessionPromise) => {
@@ -88,6 +121,7 @@ export function createRootSessionPool<TSession extends RootDatabaseSession>(
           }
         }),
       );
+      debugRootSessionPool("close-all:done", { count: pending.length });
     },
 
     size() {
