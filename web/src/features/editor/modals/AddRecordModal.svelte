@@ -1,5 +1,5 @@
 <script lang="ts">
-  import Icon from "../../../components/Icon.svelte";
+  import * as Dialog from "$lib/components/ui/dialog/index.js";
   import { canWriteEntityData as canWriteEntityDataFn } from "../../../lib/permissions.svelte";
   import { editorStore } from "../../../lib/editor-store.svelte";
   import { editorUi } from "../lib/editor-ui.svelte";
@@ -10,16 +10,25 @@
   let fieldErrors = $state<Record<string, string>>({});
   const canWriteEntityData = $derived(canWriteEntityDataFn());
 
+  // 可见性由 editorUi.showAdd 单向驱动到本地 open；用户关闭（Escape / 外点 / 关闭按钮）
+  // 通过 onOpenChange 回流到 store，焦点陷阱 / scroll-lock / aria 交给 bits-ui Dialog。
+  let open = $state(false);
+  $effect(() => {
+    open = editorUi.showAdd;
+  });
+
   $effect(() => {
     if (!editorUi.showAdd) return;
     draft = Object.fromEntries(editorStore.columns.map((col) => [col.key, col.fieldType === "checkbox" ? false : null]));
     fieldErrors = {};
   });
 
-  function close() {
-    editorUi.showAdd = false;
-    draft = {};
-    fieldErrors = {};
+  function handleOpenChange(next: boolean) {
+    editorUi.showAdd = next;
+    if (!next) {
+      draft = {};
+      fieldErrors = {};
+    }
   }
 
   async function submit() {
@@ -36,23 +45,15 @@
     if (Object.keys(nextErrors).length) return;
 
     const ok = await editorStore.saveRows([{ values }]);
-    if (ok) close();
+    if (ok) editorUi.showAdd = false;
   }
 </script>
 
-<div class="modal-backdrop" role="presentation" onmousedown={close}>
-  <div
-    class="modal record"
-    role="dialog"
-    aria-modal="true"
-    aria-label="新增记录"
-    tabindex="-1"
-    onmousedown={(event) => event.stopPropagation()}
-  >
-    <header>
-      <strong>新增记录</strong>
-      <button class="icon-btn" onclick={close}><Icon name="x" size={16} /></button>
-    </header>
+<Dialog.Root bind:open onOpenChange={handleOpenChange}>
+  <Dialog.Content class="record">
+    <Dialog.Header>
+      <Dialog.Title>新增记录</Dialog.Title>
+    </Dialog.Header>
     <div class="record-form">
       <RecordForm columns={editorStore.columns} values={draft} errors={fieldErrors} />
     </div>
@@ -60,37 +61,16 @@
       {#if editorStore.saveError}
         <span class="modal-error">{editorStore.saveError}</span>
       {/if}
-      <button class="secondary-btn" onclick={close}>取消</button>
+      <button class="secondary-btn" onclick={() => (editorUi.showAdd = false)}>取消</button>
       <button class="primary-btn" onclick={submit} disabled={!canWriteEntityData}>确认新增</button>
     </footer>
-  </div>
-</div>
+  </Dialog.Content>
+</Dialog.Root>
 
 <style>
-  .modal-backdrop {
-    position: fixed;
-    z-index: 100;
-    inset: 0;
-    display: grid;
-    place-items: center;
-    background: rgba(0, 0, 0, .32);
-  }
-
-  .modal {
+  :global(.record) {
     width: min(480px, calc(100vw - 32px));
-    max-height: 90vh;
-    overflow: hidden;
-    border-radius: 14px;
-    background: var(--surface);
-    box-shadow: 0 16px 48px rgba(0, 0, 0, .18);
-  }
-
-  .modal header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 18px 20px 14px;
-    border-bottom: 1px solid var(--border);
+    max-width: min(480px, calc(100vw - 32px));
   }
 
   .record-form {
@@ -99,16 +79,13 @@
     gap: 14px 10px;
     max-height: 66vh;
     overflow: auto;
-    margin: 18px 20px;
   }
 
-  .record footer {
+  footer {
     display: flex;
     align-items: center;
     justify-content: flex-end;
     gap: 8px;
-    padding: 12px 20px;
-    border-top: 1px solid var(--border);
   }
 
   .modal-error {
@@ -117,7 +94,7 @@
     font-size: 12px;
   }
 
-  .record footer button {
+  footer button {
     padding: 8px 20px;
   }
 </style>

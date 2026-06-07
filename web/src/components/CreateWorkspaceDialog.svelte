@@ -1,8 +1,9 @@
 <script lang="ts">
+  import * as Dialog from "$lib/components/ui/dialog/index.js";
   import { createWorkspace } from "../lib/create-workspace.svelte";
   import { switchWorkspace } from "../lib/switch-workspace.svelte";
 
-  /** 关闭对话框（取消或成功后）；由父组件控制可见性。 */
+  /** 关闭对话框（取消或成功后）；由父组件控制可见性（父用 {#if} 挂载）。 */
   let { onclose, oncreated }: { onclose?: () => void; oncreated?: () => void } = $props();
 
   let name = $state("");
@@ -12,6 +13,19 @@
   /** 非空时表示 workspace 已建但 token scope 没切，展示「重试进入」按钮。 */
   let pendingEnter = $state<string | null>(null);
   let retrying = $state(false);
+
+  // 父组件用 {#if} 控制挂载，所以挂载即打开；用户通过 Escape / 外点 / 关闭按钮关闭时
+  // onOpenChange(false) 回流到父组件的 onclose（提交中阻止关闭，避免丢失进行中的创建）。
+  let open = $state(true);
+
+  function handleOpenChange(next: boolean) {
+    if (next) return;
+    if (submitting || retrying) {
+      open = true;
+      return;
+    }
+    onclose?.();
+  }
 
   /** name → 默认 slug：小写、空白转连字符、去掉非法字符。后端用同样的 SLUG_PATTERN 把关。 */
   function slugify(value: string): string {
@@ -87,18 +101,11 @@
   }
 </script>
 
-<svelte:window onkeydown={(e) => e.key === "Escape" && onclose?.()} />
-
-<div
-  class="backdrop"
-  role="presentation"
-  onclick={(e) => {
-    // 只在点到背景本身（而非对话框内部）时关闭。
-    if (e.target === e.currentTarget) onclose?.();
-  }}
->
-  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="cw-title" tabindex="-1">
-    <h2 id="cw-title">新建工作区</h2>
+<Dialog.Root bind:open onOpenChange={handleOpenChange}>
+  <Dialog.Content class="create-workspace">
+    <Dialog.Header>
+      <Dialog.Title>新建工作区</Dialog.Title>
+    </Dialog.Header>
 
     <form onsubmit={submit}>
       <label class="field">
@@ -146,33 +153,14 @@
         </button>
       </div>
     </form>
-  </div>
-</div>
+  </Dialog.Content>
+</Dialog.Root>
 
 <style>
-  .backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 100;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: rgba(16, 24, 40, 0.45);
-    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  }
-
-  .dialog {
+  :global(.create-workspace) {
     width: min(28rem, calc(100vw - 2rem));
-    background: #ffffff;
-    border-radius: 12px;
-    box-shadow: 0 18px 48px rgba(16, 24, 40, 0.24);
-    padding: 1.5rem;
-  }
-
-  h2 {
-    margin: 0 0 1rem;
-    font-size: 1.15rem;
-    color: #16181d;
+    max-width: min(28rem, calc(100vw - 2rem));
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   }
 
   form {

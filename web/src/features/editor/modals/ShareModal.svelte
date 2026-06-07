@@ -1,5 +1,5 @@
 <script lang="ts">
-  import Icon from "../../../components/Icon.svelte";
+  import * as Dialog from "$lib/components/ui/dialog/index.js";
   import { SelectMenu } from "$lib/components/ui/select/index.js";
   import { editorUi } from "../lib/editor-ui.svelte";
 
@@ -14,24 +14,22 @@
     { value: "invite_only", label: "仅指定成员可访问" },
   ];
 
-  function close() {
-    editorUi.showShare = false;
+  // 可见性由 editorUi.showShare 单向驱动到本地 open；用户关闭回流到 store。
+  let open = $state(false);
+  $effect(() => {
+    open = editorUi.showShare;
+  });
+
+  function handleOpenChange(next: boolean) {
+    editorUi.showShare = next;
   }
 </script>
 
-<div class="modal-backdrop" role="presentation" onmousedown={close}>
-  <div
-    class="modal share"
-    role="dialog"
-    aria-modal="true"
-    aria-label="分享工作簿"
-    tabindex="-1"
-    onmousedown={(event) => event.stopPropagation()}
-  >
-    <header>
-      <strong>分享工作簿</strong>
-      <button class="icon-btn" onclick={close}><Icon name="x" size={16} /></button>
-    </header>
+<Dialog.Root bind:open onOpenChange={handleOpenChange}>
+  <Dialog.Content class="share">
+    <Dialog.Header>
+      <Dialog.Title>分享工作簿</Dialog.Title>
+    </Dialog.Header>
     <div class="share-body">
       <label>
         <span>链接权限</span>
@@ -46,45 +44,20 @@
       </label>
     </div>
     <footer>
-      <button class="secondary-btn" onclick={close}>关闭</button>
+      <button class="secondary-btn" onclick={() => (editorUi.showShare = false)}>关闭</button>
     </footer>
-  </div>
-</div>
+  </Dialog.Content>
+</Dialog.Root>
 
 <style>
-  .modal-backdrop {
-    position: fixed;
-    z-index: 100;
-    inset: 0;
-    display: grid;
-    place-items: center;
-    background: rgba(0, 0, 0, .32);
-  }
-
-  .modal {
-    max-height: 90vh;
-    overflow: hidden;
-    border-radius: 14px;
-    background: var(--surface);
-    box-shadow: 0 16px 48px rgba(0, 0, 0, .18);
-  }
-
-  .share {
+  :global(.share) {
     width: min(540px, calc(100vw - 32px));
-  }
-
-  .modal header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 18px 20px 14px;
-    border-bottom: 1px solid var(--border);
+    max-width: min(540px, calc(100vw - 32px));
   }
 
   .share-body {
     display: grid;
     gap: 16px;
-    padding: 18px 20px;
   }
 
   .share-body label > span {
@@ -111,12 +84,10 @@
     font-size: 13px;
   }
 
-  .share footer {
+  footer {
     display: flex;
     align-items: center;
     justify-content: flex-end;
     gap: 8px;
-    padding: 12px 20px;
-    border-top: 1px solid var(--border);
   }
 </style>
