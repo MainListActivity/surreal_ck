@@ -1,5 +1,5 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: done
+Label: done
 
 # SHADCN-03 — RecordPicker 外壳迁移（→ bits-ui Combobox）
 
