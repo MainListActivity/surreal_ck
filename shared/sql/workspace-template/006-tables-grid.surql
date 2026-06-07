@@ -22,7 +22,7 @@ DEFINE FIELD IF NOT EXISTS workbook ON TABLE sheet TYPE record<workbook>;
 DEFINE FIELD IF NOT EXISTS label ON TABLE sheet TYPE string;
 -- 每个 sheet 背后是一张真实业务数据表，table_name 指向它；searchRecord 据此动态查询。
 DEFINE FIELD IF NOT EXISTS table_name ON TABLE sheet TYPE string;
-DEFINE FIELD IF NOT EXISTS column_defs ON TABLE sheet TYPE array DEFAULT [];
+DEFINE FIELD OVERWRITE column_defs ON TABLE sheet TYPE any DEFAULT [];
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE sheet TYPE datetime VALUE time::now() READONLY;
 DEFINE FIELD IF NOT EXISTS updated_at ON TABLE sheet TYPE datetime VALUE time::now();
 DEFINE INDEX IF NOT EXISTS sheet_workbook ON TABLE sheet COLUMNS workbook;
