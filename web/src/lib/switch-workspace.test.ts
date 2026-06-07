@@ -28,10 +28,10 @@ function setup(overrides: Partial<SwitchDeps> & { switchResponses?: SwitchRespon
     navigate: [] as string[],
   };
 
-  const switchResponses = overrides.switchResponses ?? [{ status: 200, body: { ok: true, accessToken: jwt({ "https://surrealdb.com/db": "ws_beta" }), expiresIn: 3600 } }];
+  const switchResponses = overrides.switchResponses ?? [{ status: 200, body: { ok: true, accessToken: jwt({ db: "ws_beta" }), expiresIn: 3600 } }];
   let switchIdx = 0;
 
-  let token = overrides.getToken?.() ?? jwt({ "https://surrealdb.com/db": "ws_alpha" });
+  let token = overrides.getToken?.() ?? jwt({ db: "ws_alpha" });
 
   const deps: SwitchDeps = {
     listWorkspaces:
@@ -66,8 +66,8 @@ function setup(overrides: Partial<SwitchDeps> & { switchResponses?: SwitchRespon
 }
 
 describe("currentDbFromToken", () => {
-  test("从 token 的 surrealdb.com/db claim 取当前 db", () => {
-    expect(currentDbFromToken(jwt({ "https://surrealdb.com/db": "ws_alpha" }))).toBe("ws_alpha");
+  test("从 token 的 db claim 取当前 db", () => {
+    expect(currentDbFromToken(jwt({ db: "ws_alpha" }))).toBe("ws_alpha");
   });
 
   test("无 token / 无 claim 时返回 null", () => {

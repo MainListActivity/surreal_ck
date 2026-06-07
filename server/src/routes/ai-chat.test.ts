@@ -10,7 +10,7 @@ import { createRunRegistry } from "../ai/run-registry";
 const testUser = {
   subject: "user-123",
   email: "ada@example.test",
-  raw: { "https://surrealdb.com/db": "ws_demo", "https://surrealdb.com/ac": "admin" },
+  raw: { db: "ws_demo", ac: "admin" },
   rawToken: "test-token",
 };
 

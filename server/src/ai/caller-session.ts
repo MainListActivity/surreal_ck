@@ -11,7 +11,7 @@ export type CreateCallerSessionOptions = {
 /**
  * 用调用者的 OIDC token 在 SurrealDB 上建立一条会话。
  *
- * token 里带 `https://surrealdb.com/db` / `https://surrealdb.com/ac` scope claim，
+ * token 里带 `db` / `ac` scope claim，
  * DB 引擎的 admin / participant access (TYPE JWT / RECORD WITH JWT) 在 authenticate 时校验并把
  * 会话落到目标 database —— 所以这里**只** connect + authenticate，不需要再 use()。
  *

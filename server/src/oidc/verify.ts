@@ -3,14 +3,9 @@ import type { SessionUser } from "@surreal-ck/shared";
 import { env } from "../env";
 import { getJwks } from "./jwks";
 
-const SURREAL_EMAIL_CLAIM = "https://surrealdb.com/email";
-
 function readEmail(payload: Record<string, unknown>): string | undefined {
-  const standard = payload.email;
-  if (typeof standard === "string" && standard.trim()) return standard;
-
-  const surreal = payload[SURREAL_EMAIL_CLAIM];
-  if (typeof surreal === "string" && surreal.trim()) return surreal;
+  const email = payload.email;
+  if (typeof email === "string" && email.trim()) return email;
 
   return undefined;
 }

@@ -26,7 +26,7 @@ function setup(overrides: Partial<CreateDeps> & { outcome?: CreateOutcome } = {}
     overrides.outcome ?? {
       kind: "ok",
       status: 200,
-      body: { slug: "gamma", dbName: "ws_gamma", accessToken: jwt({ "https://surrealdb.com/db": "ws_gamma" }), expiresIn: 3600 },
+      body: { slug: "gamma", dbName: "ws_gamma", accessToken: jwt({ db: "ws_gamma" }), expiresIn: 3600 },
     };
 
   const deps: CreateDeps = {

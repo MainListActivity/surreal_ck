@@ -82,7 +82,7 @@ describe("OIDC SPA auth client", () => {
 
     const token = unsignedJwt({
       exp: Date.parse("2026-05-28T01:00:00Z") / 1000,
-      "https://surrealdb.com/db": "ws_beta",
+      db: "ws_beta",
     });
 
     expect(auth.storeAccessToken(token, null)).toBe(token);
@@ -157,8 +157,8 @@ describe("OIDC SPA auth client", () => {
             access_token: "opaque-access-token",
             id_token: unsignedJwt({
               email: "ada@example.test",
-              "https://surrealdb.com/db": "ws_wrong",
-              "https://surrealdb.com/ac": "admin",
+              db: "ws_wrong",
+              ac: "admin",
             }),
             expires_at: 1893456000,
             profile: {},

@@ -32,7 +32,6 @@ async function signToken(
   overrides: {
     subject?: string;
     email?: string | null;
-    surrealEmail?: string;
     audience?: string;
     expiresIn?: string;
     useWrongKey?: boolean;
@@ -41,9 +40,6 @@ async function signToken(
   const payload: Record<string, unknown> = {};
   if (overrides.email !== null) {
     payload.email = overrides.email ?? "ada@example.test";
-  }
-  if (overrides.surrealEmail) {
-    payload["https://surrealdb.com/email"] = overrides.surrealEmail;
   }
 
   return new SignJWT(payload)
@@ -139,15 +135,14 @@ describe("OIDC middleware", () => {
     expect(jwksHits).toBe(1);
   });
 
-  test("uses the SurrealDB email claim when the standard email claim is absent", async () => {
+  test("reads the email claim into the session", async () => {
     const app = createProtectedApp();
 
     const response = await app.fetch(
       new Request("http://localhost/protected", {
         headers: {
           authorization: `Bearer ${await signToken({
-            email: null,
-            surrealEmail: "yyx6953119@gmail.com",
+            email: "yyx6953119@gmail.com",
           })}`,
         },
       }),
@@ -158,6 +153,19 @@ describe("OIDC middleware", () => {
       subject: "user:ada",
       email: "yyx6953119@gmail.com",
     });
+  });
+
+  test("leaves email undefined when the claim is absent", async () => {
+    const app = createProtectedApp();
+
+    const response = await app.fetch(
+      new Request("http://localhost/protected", {
+        headers: { authorization: `Bearer ${await signToken({ email: null })}` },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ subject: "user:ada" });
   });
 
   test("distinguishes expired, bad signature, and bad audience failures", async () => {

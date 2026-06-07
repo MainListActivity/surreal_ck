@@ -1,3 +1,9 @@
+-- 把 admin / participant 两个 JWT access 的 email claim 从
+-- `https://surrealdb.com/email` 切到短名 `email`。
+-- 对已存在的 workspace database（schema_version < 7）重新 OVERWRITE。
+-- 这两块必须与 001-access.surql 改后的对应块逐字一致。
+-- employee access 不涉及 JWT claim，不在此重定义。
+
 DEFINE ACCESS OVERWRITE admin ON DATABASE TYPE JWT URL "<__OIDC_JWKS_URL__>"
   AUTHENTICATE {
       LET $existing = (
@@ -41,25 +47,3 @@ DEFINE ACCESS OVERWRITE participant ON DATABASE TYPE RECORD
       };
   }
   DURATION FOR TOKEN 1h, FOR SESSION NONE;
-
-DEFINE ACCESS employee ON DATABASE TYPE RECORD
-  SIGNUP NONE
-  SIGNIN {
-    LET $u = SELECT * FROM user
-      WHERE subject = $subject
-        AND kind = "virtual"
-        AND virtual_profile.status = "active"
-      LIMIT 1;
-
-    IF array::len($u) = 0 {
-      THROW "no such employee";
-    };
-
-    LET $secret = SELECT VALUE secret FROM employee_credential WHERE employee = $u[0].id LIMIT 1;
-    IF array::len($secret) = 0 OR $secret[0] != $pass {
-      THROW "bad secret";
-    };
-
-    RETURN $u[0];
-  }
-  DURATION FOR SESSION 1h;

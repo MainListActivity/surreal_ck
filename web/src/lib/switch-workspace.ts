@@ -21,7 +21,7 @@ export type ListWorkspacesResponse = {
 
 export type LoadWorkspacesResult = {
   workspaces: WorkspaceListItem[];
-  /** token scope 中 `https://surrealdb.com/db` 对应的当前 db；用于高亮当前项。 */
+  /** token scope 中 `db` claim 对应的当前 db；用于高亮当前项。 */
   currentDbName: string | null;
   /** 是否显示「新建 workspace」按钮，权威来自后端 `canCreate`。 */
   canCreate: boolean;
@@ -67,7 +67,7 @@ export type WorkspaceSwitcher = {
   bootstrapWorkspace(slug?: string): Promise<BootstrapResult>;
 };
 
-const SURREAL_DB_CLAIM = "https://surrealdb.com/db";
+const SURREAL_DB_CLAIM = "db";
 
 function decodeBase64UrlJson(value: string): unknown {
   const base64 = value.replace(/-/g, "+").replace(/_/g, "/");

@@ -45,8 +45,47 @@ describe("IdP token scope adapter", () => {
       expect(requests[0]?.body).toEqual({
         subject_token: "current-user-token",
         claims: {
-          "https://surrealdb.com/db": "ws_beta",
-          "https://surrealdb.com/ac": "participant",
+          db: "ws_beta",
+          ac: "participant",
+          rl: ["EDITOR"],
+        },
+      });
+    } finally {
+      overrideEnv(previousEnv);
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  test("admin scope 下发 OWNER roles claim", async () => {
+    const previousEnv = { ...env };
+    const previousFetch = globalThis.fetch;
+    const requests: Array<{ body: unknown }> = [];
+
+    try {
+      overrideEnv({
+        IDP_SCOPE_API_URL: "https://idp.example.test/t/ck/scope",
+        OIDC_CLIENT_ID: "web-client",
+        OIDC_CLIENT_SECRET: "server-secret",
+      });
+      globalThis.fetch = (async (_url, init) => {
+        requests.push({ body: JSON.parse(String(init?.body)) });
+        return new Response(
+          JSON.stringify({ access_token: "scoped-access-token", expires_in: 3600 }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }) as typeof fetch;
+
+      await createIdpTokenScopeAdapter().updateUserScope({
+        subjectToken: "current-user-token",
+        scope: { db: "ws_alpha", ac: "admin" },
+      });
+
+      expect(requests[0]?.body).toEqual({
+        subject_token: "current-user-token",
+        claims: {
+          db: "ws_alpha",
+          ac: "admin",
+          rl: ["OWNER"],
         },
       });
     } finally {

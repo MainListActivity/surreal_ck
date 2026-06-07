@@ -29,8 +29,10 @@ export function createIdpTokenScopeAdapter(): IdpTokenScopeAdapter {
         body: JSON.stringify({
           subject_token: subjectToken,
           claims: {
-            "https://surrealdb.com/db": scope.db,
-            "https://surrealdb.com/ac": scope.ac,
+            db: scope.db,
+            ac: scope.ac,
+            // SurrealDB system-level roles claim：管理员 → OWNER，其余 → EDITOR。
+            RL: scope.ac === "admin" ? ["Owner"] : ["Editor"],
           },
         }),
       });
@@ -38,7 +40,7 @@ export function createIdpTokenScopeAdapter(): IdpTokenScopeAdapter {
       const body = await response.json().catch(() => null);
 
       if (!response.ok) {
-        throw new Error(`IdP scope update failed with ${response.status}`);
+        throw new Error(`IdP scope update failed with ${response.status}, ${JSON.stringify(body)}`);
       }
 
       if (!body || typeof body !== "object" || typeof (body as { access_token?: unknown }).access_token !== "string") {
