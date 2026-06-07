@@ -1,5 +1,5 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: done
+Label: done
 
 # SHADCN-02 — Dialog 群 + WorkspaceSwitcher 迁移
 
