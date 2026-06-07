@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import * as DropdownMenu from "$lib/components/ui/dropdown-menu/index.js";
   import CreateWorkspaceDialog from "./CreateWorkspaceDialog.svelte";
   import { getConnectionState } from "../lib/workspace-store.svelte";
   import { loadWorkspaces, switchWorkspace } from "../lib/switch-workspace.svelte";
@@ -88,54 +89,48 @@
 </script>
 
 <div class="switcher">
-  <button
-    type="button"
-    class="trigger"
-    aria-haspopup="listbox"
-    aria-expanded={open}
-    onclick={() => (open = !open)}
-  >
-    <span class="label">{current?.name ?? "选择工作区"}</span>
-    <span
-      class="conn"
-      data-state={connectionState}
-      title={connectionState}
-      aria-label={`连接状态：${connectionState}`}
-    ></span>
-    <span class="caret" aria-hidden="true">▾</span>
-  </button>
+  <DropdownMenu.Root bind:open>
+    <DropdownMenu.Trigger>
+      {#snippet child({ props })}
+        <button type="button" class="trigger" {...props}>
+          <span class="label">{current?.name ?? "选择工作区"}</span>
+          <span
+            class="conn"
+            data-state={connectionState}
+            title={connectionState}
+            aria-label={`连接状态：${connectionState}`}
+          ></span>
+          <span class="caret" aria-hidden="true">▾</span>
+        </button>
+      {/snippet}
+    </DropdownMenu.Trigger>
 
-  {#if open}
-    <ul class="menu" role="listbox">
+    <DropdownMenu.Content align="end" class="ws-menu">
       {#each workspaces as ws (ws.slug)}
-        <li role="option" aria-selected={ws.dbName === currentDbName}>
-          <button
-            type="button"
-            class="item"
-            class:active={ws.dbName === currentDbName}
-            disabled={switching !== null}
-            onclick={() => choose(ws.slug)}
-          >
-            <span class="item-name">{ws.name}</span>
-            <span class="item-role">{ws.role === "admin" ? "管理员" : "成员"}</span>
-            {#if switching === ws.slug}<span class="item-spin">切换中…</span>{/if}
-          </button>
-        </li>
+        <DropdownMenu.Item
+          class={`item ${ws.dbName === currentDbName ? "active" : ""}`}
+          disabled={switching !== null}
+          closeOnSelect={false}
+          onSelect={() => choose(ws.slug)}
+        >
+          <span class="item-name">{ws.name}</span>
+          <span class="item-role">{ws.role === "admin" ? "管理员" : "成员"}</span>
+          {#if switching === ws.slug}<span class="item-spin">切换中…</span>{/if}
+        </DropdownMenu.Item>
       {/each}
 
       {#if workspaces.length === 0}
-        <li class="empty">暂无可用工作区</li>
+        <div class="empty">暂无可用工作区</div>
       {/if}
 
       {#if createEntry.showEntry()}
-        <li class="create">
-          <button type="button" class="item create-item" onclick={startCreate}>
-            ＋ 新建工作区
-          </button>
-        </li>
+        <DropdownMenu.Separator />
+        <DropdownMenu.Item class="item create-item" closeOnSelect={false} onSelect={startCreate}>
+          ＋ 新建工作区
+        </DropdownMenu.Item>
       {/if}
-    </ul>
-  {/if}
+    </DropdownMenu.Content>
+  </DropdownMenu.Root>
 
   {#if error}
     <p class="error" role="alert">{error}</p>
@@ -188,43 +183,20 @@
     font-size: 0.7rem;
   }
 
-  .menu {
-    position: absolute;
-    right: 0;
-    top: calc(100% + 0.35rem);
-    z-index: 20;
+  :global(.ws-menu) {
     min-width: 14rem;
-    margin: 0;
-    padding: 0.35rem;
-    list-style: none;
-    border: 1px solid #d9dee7;
-    border-radius: 8px;
-    background: #ffffff;
-    box-shadow: 0 8px 24px rgba(16, 24, 40, 0.12);
   }
 
-  .item {
+  :global(.ws-menu .item) {
     display: flex;
     align-items: center;
     gap: 0.5rem;
     width: 100%;
-    border: none;
-    border-radius: 6px;
-    background: transparent;
-    color: #16181d;
     cursor: pointer;
-    font: inherit;
     text-align: left;
     padding: 0.5rem 0.6rem;
   }
-  .item:hover:not(:disabled) {
-    background: #f1f4f9;
-  }
-  .item:disabled {
-    cursor: progress;
-    opacity: 0.6;
-  }
-  .item.active {
+  :global(.ws-menu .item.active) {
     background: #eaf1ff;
     font-weight: 700;
   }
@@ -247,12 +219,7 @@
     font-size: 0.85rem;
   }
 
-  .create {
-    margin-top: 0.25rem;
-    border-top: 1px solid #e5e9f0;
-    padding-top: 0.25rem;
-  }
-  .create-item {
+  :global(.ws-menu .create-item) {
     color: #1f6feb;
     font-weight: 650;
   }

@@ -1,9 +1,28 @@
 <script lang="ts">
   import Icon from "../../../components/Icon.svelte";
+  import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
   import { editorStore } from "../../../lib/editor-store.svelte";
   import { editorUi } from "../lib/editor-ui.svelte";
 
   let confirming = $state(false);
+
+  // 可见性由 editorUi.leaveConfirm.open 单向驱动到本地 open；
+  // 用户关闭（Escape / 外点）回流到 store。AlertDialog 默认不点遮罩关闭，
+  // 但 Escape 仍可触发——交给 cancel()（处理中时阻止）。
+  let open = $state(false);
+  $effect(() => {
+    open = editorUi.leaveConfirm.open;
+  });
+
+  function handleOpenChange(next: boolean) {
+    if (next) return;
+    if (confirming) {
+      // 处理中不允许关闭，强制保持打开。
+      open = true;
+      return;
+    }
+    editorUi.closeLeaveConfirm();
+  }
 
   function cancel() {
     if (confirming) return;
@@ -21,21 +40,18 @@
   }
 </script>
 
-<div class="modal-backdrop" role="presentation" onmousedown={cancel}>
-  <div
-    class="modal"
-    role="dialog"
-    aria-modal="true"
-    aria-label="未保存草稿确认"
-    tabindex="-1"
-    onmousedown={(event) => event.stopPropagation()}
-  >
-    <header>
-      <span class="warn">
-        <Icon name="alertCircle" size={16} />
-      </span>
-      <strong>有未保存的草稿</strong>
-    </header>
+<AlertDialog.Root bind:open onOpenChange={handleOpenChange}>
+  <AlertDialog.Content class="leave-draft">
+    <AlertDialog.Header>
+      <AlertDialog.Title>
+        <span class="title-row">
+          <span class="warn">
+            <Icon name="alertCircle" size={16} />
+          </span>
+          有未保存的草稿
+        </span>
+      </AlertDialog.Title>
+    </AlertDialog.Header>
     <p class="body">
       当前工作簿中还有 <strong>{editorUi.leaveConfirm.draftCount}</strong> 条尚未填写完整的草稿记录。
       离开前会先保存已经填写完整的草稿，仍不完整的草稿将被丢弃。
@@ -49,35 +65,19 @@
         {confirming ? "处理中…" : "保存完整草稿并离开"}
       </button>
     </footer>
-  </div>
-</div>
+  </AlertDialog.Content>
+</AlertDialog.Root>
 
 <style>
-  .modal-backdrop {
-    position: fixed;
-    z-index: 200;
-    inset: 0;
-    display: grid;
-    place-items: center;
-    background: rgba(0, 0, 0, .32);
-  }
-
-  .modal {
+  :global(.leave-draft) {
     width: min(420px, calc(100vw - 32px));
-    overflow: hidden;
-    border-radius: 14px;
-    background: var(--surface);
-    box-shadow: 0 16px 48px rgba(0, 0, 0, .18);
+    max-width: min(420px, calc(100vw - 32px));
   }
 
-  header {
+  .title-row {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 18px 20px 6px;
-  }
-
-  header strong {
     font-size: 15px;
     color: var(--text-1);
   }
@@ -94,7 +94,7 @@
   }
 
   .body {
-    margin: 4px 20px 18px;
+    margin: 0;
     color: var(--text-2);
     font-size: 13px;
     line-height: 1.6;
@@ -107,7 +107,7 @@
   }
 
   .error {
-    margin: -6px 20px 14px;
+    margin: 0;
     color: var(--error);
     font-size: 12px;
     line-height: 1.5;
@@ -118,8 +118,6 @@
     align-items: center;
     justify-content: flex-end;
     gap: 8px;
-    padding: 12px 20px;
-    border-top: 1px solid var(--border);
   }
 
   footer button {
