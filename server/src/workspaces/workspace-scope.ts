@@ -200,7 +200,6 @@ export function createWorkspaceScopeModule(db?: Queryable): WorkspaceScopeModule
 
     async listWorkspaces(input) {
       const client = db ?? getRootConnection();
-      await client.use({ namespace: env.SURREAL_NS, database: SYSTEM_DATABASE });
       const identity = identityFilter(input);
 
       const result = await client.query(
