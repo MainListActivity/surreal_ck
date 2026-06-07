@@ -1,4 +1,4 @@
-import { getRootConnection } from "../db/root-connection";
+import { getRootDatabaseSession } from "../db/root-connection";
 import { dateTimeTimestamp, toIsoDateTimeString } from "../db/surreal-values";
 import { env } from "../env";
 
@@ -79,14 +79,8 @@ export type WorkspaceScopeModuleOptions = {
   namespace?: string;
 };
 
-// 注意：必须走主 root 连接 + use()，不要用 newSession() 池化 session。
-// surrealdb-js 2.0.3 下 newSession() 派生的子 session 虽然 session::ns()/db()
-// 报告正确（main/_system），但数据视图为空——同一时刻主连接能 SELECT 到行、
-// 子 session 查同一张表返回 [[]]。reconciler 用主连接正常，故此处对齐。
 async function defaultGetDbSession(database: string, namespace: string): Promise<Queryable> {
-  const connection = getRootConnection();
-  await connection.use({ namespace, database });
-  return connection;
+  return getRootDatabaseSession(database, namespace);
 }
 
 async function useInjectedDb(db: Queryable, namespace: string, database: string): Promise<Queryable> {
@@ -340,10 +334,9 @@ export function createWorkspaceScopeModule(input?: Queryable | WorkspaceScopeMod
           }
         }
       } finally {
-        // 目标 db 探查后必须把连接切回 _system：membership 更新都在 _system 上。
-        // 真实路径下 client 与 targetClient 是同一条共享 root 连接（getDbSession 切到了
-        // workspace db），不切回去会让下面的 UPDATE $membership 落到错误的 db。
-        await getSystemDb();
+        if (db) {
+          await useInjectedDb(client, namespace, SYSTEM_DATABASE);
+        }
       }
 
       if (needsSubjectBind(row, input.subject)) {

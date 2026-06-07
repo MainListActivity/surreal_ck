@@ -27,7 +27,11 @@ function rootAuthentication(): RootAuthentication {
 export function createRootSessionSource(getConnection: () => Surreal = getRootConnection) {
   return {
     async newSession() {
-      const session = await getConnection().newSession();
+      // forkSession（不是 newSession）：fork 会克隆当前会话的 namespace/database/
+      // authentication state，派生出的 session 仍以 root 身份登录；newSession 派生的是
+      // 一条**未认证**的全新会话，匿名身份受 PERMISSIONS 限制看不到任何数据
+      // （SELECT 返回 [[]]），导致 listWorkspaces 等永远查不到行。
+      const session = await getConnection().forkSession();
       return instrumentSurrealQuery(session, { source: "server:root-session" });
     },
   };
