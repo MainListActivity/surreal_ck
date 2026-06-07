@@ -1,6 +1,6 @@
 <script lang="ts">
   import { summarizeGridField } from "@surreal-ck/shared/field-schema";
-  import SelectMenu from "../../../components/SelectMenu.svelte";
+  import { SelectMenu } from "$lib/components/ui/select/index.js";
   import RecordPicker from "../../../components/RecordPicker.svelte";
   import type { GridColumnDef, RecordIdString } from "@surreal-ck/shared/rpc.types";
 

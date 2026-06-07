@@ -1,6 +1,6 @@
 <script lang="ts">
   import Icon from "../../../components/Icon.svelte";
-  import SelectMenu from "../../../components/SelectMenu.svelte";
+  import { SelectMenu } from "$lib/components/ui/select/index.js";
   import { editorUi } from "../lib/editor-ui.svelte";
 
   // 分享后端 endpoint 已废弃（CLAUDE.md：不新增后端分享代理）。

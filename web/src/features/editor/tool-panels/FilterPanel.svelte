@@ -1,6 +1,6 @@
 <script lang="ts">
   import Icon from "../../../components/Icon.svelte";
-  import SelectMenu from "../../../components/SelectMenu.svelte";
+  import { SelectMenu } from "$lib/components/ui/select/index.js";
   import { editorStore } from "../../../lib/editor-store.svelte";
   import type { FilterOp, GridColumnDef } from "@surreal-ck/shared/rpc.types";
   import { cleanFilterDrafts, filterValueKind, type FilterDraft } from "./tool-drafts";
