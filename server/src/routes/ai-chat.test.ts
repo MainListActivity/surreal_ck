@@ -192,6 +192,37 @@ describe("POST /api/chat", () => {
     expect(service.resumeCalls[0].session).toBe(fakeSession);
   });
 
+  test("resume endpoint：POST /api/chat/runs/:runId/resume 提交 decision 并返回新的 streamToken", async () => {
+    const registry = createRunRegistry();
+    const service = stubService();
+    const app = makeApp({ registry, service });
+
+    const start = await app.request("/api/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "找张三的债权" }),
+    });
+    const { runId, streamToken: firstToken } = (await start.json()) as { runId: string; streamToken: string };
+
+    const res = await app.request(`/api/chat/runs/${runId}/resume`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: { kind: "candidate-chosen", candidateId: "claim:abc" } }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { runId: string; streamUrl: string; streamToken: string };
+    expect(body).toMatchObject({
+      runId,
+      streamUrl: `/api/chat/stream?runId=${runId}`,
+    });
+    expect(body.streamToken).toBeTruthy();
+    expect(body.streamToken).not.toBe(firstToken);
+    expect(registry.resolveStreamToken({ runId, streamToken: body.streamToken })?.ownerSubject).toBe(testUser.subject);
+    expect(service.resumeCalls).toHaveLength(1);
+    expect(service.resumeCalls[0].decision).toEqual({ kind: "candidate-chosen", candidateId: "claim:abc" });
+  });
+
   test("resume：用别人的 runId → 403，不调用 resumeChat", async () => {
     const registry = createRunRegistry();
     const service = stubService();

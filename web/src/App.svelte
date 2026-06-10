@@ -2,6 +2,8 @@
   import { onMount } from "svelte";
   import LoginRoute from "./routes/auth/login.svelte";
   import CallbackRoute from "./routes/auth/callback.svelte";
+  import AiDrawer from "./components/AiDrawer.svelte";
+  import Icon from "./components/Icon.svelte";
   import EditorScreen from "./screens/EditorScreen.svelte";
   import WorkspaceScreen from "./screens/WorkspaceScreen.svelte";
   import NoWorkspaceScreen from "./screens/NoWorkspaceScreen.svelte";
@@ -22,6 +24,7 @@
   let wsCanCreate = $state(false);
   // 上一次已 bootstrap 的 slug；slug 不变就不重复连库。
   let bootstrappedSlug = $state<string | null>(null);
+  let aiDrawerOpen = $state(false);
 
   function currentPath(): string {
     return `${window.location.pathname}${window.location.search}${window.location.hash}`;
@@ -43,6 +46,10 @@
 
   function openWorkbook(slug: string, workbookId: string): void {
     navigateTo(editorPath(slug, workbookId));
+  }
+
+  function openAiDrawer(): void {
+    aiDrawerOpen = true;
   }
 
   async function refreshSession(): Promise<string | null> {
@@ -169,23 +176,53 @@
     </main>
   {:else if route.kind === "editor"}
     {@const r = route}
-    <main class="editor-shell">
-      <EditorScreen
-        slug={r.slug}
-        workbookId={r.workbookId}
-        sheetId={r.sheetId}
-        onback={() => navigatePage(r.slug, "home")}
-        onroute={navigateTo}
+    <div class="app-with-ai">
+      <main class="editor-shell app-main">
+        <EditorScreen
+          slug={r.slug}
+          workbookId={r.workbookId}
+          sheetId={r.sheetId}
+          onback={() => navigatePage(r.slug, "home")}
+          onroute={navigateTo}
+        />
+      </main>
+      <AiDrawer
+        open={aiDrawerOpen}
+        workspaceSlug={r.slug}
+        routeScreen="editor"
+        onclose={() => (aiDrawerOpen = false)}
       />
-    </main>
+      {#if !aiDrawerOpen}
+        <button type="button" class="ai-launcher" aria-label="AI 助手" onclick={openAiDrawer}>
+          <Icon name="ai" size={16} color="#fff" />
+          <span>AI</span>
+        </button>
+      {/if}
+    </div>
   {:else if route.kind === "workspace"}
     {@const r = route}
-    <WorkspaceScreen
-      slug={r.slug}
-      page={r.page}
-      onopenworkbook={(workbookId) => openWorkbook(r.slug, workbookId)}
-      onnavigate={(page) => navigatePage(r.slug, page)}
-    />
+    <div class="app-with-ai">
+      <main class="app-main">
+        <WorkspaceScreen
+          slug={r.slug}
+          page={r.page}
+          onopenworkbook={(workbookId) => openWorkbook(r.slug, workbookId)}
+          onnavigate={(page) => navigatePage(r.slug, page)}
+        />
+      </main>
+      <AiDrawer
+        open={aiDrawerOpen}
+        workspaceSlug={r.slug}
+        routeScreen={r.page === "dashboard" ? "dashboard" : "workspace"}
+        onclose={() => (aiDrawerOpen = false)}
+      />
+      {#if !aiDrawerOpen}
+        <button type="button" class="ai-launcher" aria-label="AI 助手" onclick={openAiDrawer}>
+          <Icon name="ai" size={16} color="#fff" />
+          <span>AI</span>
+        </button>
+      {/if}
+    </div>
   {:else}
     <main class="loading" aria-live="polite">正在进入工作区…</main>
   {/if}
@@ -301,6 +338,45 @@
     display: flex;
     height: 100vh;
     overflow: hidden;
+  }
+
+  .app-with-ai {
+    position: relative;
+    display: flex;
+    height: 100vh;
+    min-width: 0;
+    overflow: hidden;
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+
+  .app-main {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .ai-launcher {
+    position: fixed;
+    right: 22px;
+    bottom: 22px;
+    z-index: 25;
+    display: inline-flex;
+    height: 42px;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    padding: 0 14px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--primary);
+    color: #fff;
+    box-shadow: 0 10px 24px rgba(22, 100, 255, .24);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 650;
+  }
+
+  .ai-launcher:hover {
+    background: var(--primary-hover);
   }
 
   .standalone {

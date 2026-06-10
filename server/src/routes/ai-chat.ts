@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { validator } from "hono/validator";
 import type { MiddlewareHandler } from "hono";
 import type { Surreal } from "surrealdb";
 import type { AiContextSnapshot, ResumeDecision } from "@surreal-ck/shared";
@@ -35,9 +36,22 @@ export type AiChatRoutesDeps = {
   requireUser?: () => MiddlewareHandler<AppBindings>;
 };
 
-export function createAiChatRoutes(deps: AiChatRoutesDeps): Hono<AppBindings> {
+const resumeDecisionJson = validator("json", (value: { decision?: unknown }, c) => {
+  const parsed = ResumeAiWorkflowRequestSchema.safeParse({
+    runId: c.req.param("runId"),
+    decision: value?.decision,
+  });
+  if (!parsed.success) {
+    throw new HttpError(400, "chat-resume-invalid", "resume payload is invalid", parsed.error.flatten());
+  }
+  return {
+    runId: parsed.data.runId,
+    decision: parsed.data.decision as ResumeDecision,
+  };
+});
+
+export function createAiChatRoutes(deps: AiChatRoutesDeps) {
   const requireUser = deps.requireUser ?? requireOidc;
-  const routes = new Hono<AppBindings>();
 
   /** token 通过了 OIDC 校验，但 SurrealDB access AUTHENTICATE 拒绝（db 不存在 / scope 不匹配）→ 403。 */
   async function signIn(rawToken: string): Promise<Surreal> {
@@ -50,50 +64,66 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps): Hono<AppBindings> {
     }
   }
 
-  routes.post("/api/chat", requireUser(), async (c) => {
-    const body = await c.req.json().catch(() => null);
-    const user = c.var.user;
-
-    // ── resume 路径 ──
-    if (body?.resume !== undefined && body?.resume !== null) {
-      const parsed = ResumeAiWorkflowRequestSchema.safeParse(body.resume);
-      if (!parsed.success) {
-        throw new HttpError(400, "chat-resume-invalid", "resume payload is invalid", parsed.error.flatten());
-      }
-      const { runId, decision } = parsed.data;
-
-      const record = deps.registry.get(runId);
-      if (!record || record.ownerSubject !== user.subject) {
-        // 找不到 / 非本人持有 → 不泄漏 run 是否存在，统一 403。
-        throw new HttpError(403, "chat-run-forbidden", "Run is not owned by caller");
-      }
-
-      // resume 用新 session（OIDC token 可能已刷新；workflow state 不持有 session 引用）。
-      const session = await signIn(user.rawToken);
-      // 刷新 streamToken / TTL，客户端据此重连 WS 拿后续事件。
-      const { streamToken } = deps.registry.register({ runId, ownerSubject: user.subject });
-
-      await deps.service.resumeChat({ runId, decision: decision as ResumeDecision, surrealSession: session });
-
-      return c.json({ runId, streamUrl: `/api/chat/stream?runId=${runId}`, streamToken });
+  async function resumeRun(input: {
+    runId: string;
+    decision: ResumeDecision;
+    user: AppBindings["Variables"]["user"];
+  }): Promise<{ runId: string; streamUrl: string; streamToken: string }> {
+    const { runId, decision, user } = input;
+    const record = deps.registry.get(runId);
+    if (!record || record.ownerSubject !== user.subject) {
+      // 找不到 / 非本人持有 → 不泄漏 run 是否存在，统一 403。
+      throw new HttpError(403, "chat-run-forbidden", "Run is not owned by caller");
     }
 
-    // ── 新 run 路径 ──
-    const message = typeof body?.message === "string" ? body.message : undefined;
-    if (!message) {
-      throw new HttpError(400, "chat-message-required", "message is required");
-    }
-    const userContext = body?.contextSnapshot as AiContextSnapshot | undefined;
-
+    // resume 用新 session（OIDC token 可能已刷新；workflow state 不持有 session 引用）。
     const session = await signIn(user.rawToken);
-
-    const runId = crypto.randomUUID();
+    // 刷新 streamToken / TTL，客户端据此重连 WS 拿后续事件。
     const { streamToken } = deps.registry.register({ runId, ownerSubject: user.subject });
 
-    await deps.service.startChat({ runId, message, userContext, surrealSession: session });
+    await deps.service.resumeChat({ runId, decision, surrealSession: session });
 
-    return c.json({ runId, streamUrl: `/api/chat/stream?runId=${runId}`, streamToken });
-  });
+    return { runId, streamUrl: `/api/chat/stream?runId=${runId}`, streamToken };
+  }
 
-  return routes;
+  return new Hono<AppBindings>()
+    .post("/api/chat/runs/:runId/resume", requireUser(), resumeDecisionJson, async (c) => {
+      const parsed = c.req.valid("json");
+      const result = await resumeRun({
+        runId: parsed.runId,
+        decision: parsed.decision,
+        user: c.var.user,
+      });
+      return c.json(result);
+    })
+    .post("/api/chat", requireUser(), async (c) => {
+      const body = await c.req.json().catch(() => null);
+      const user = c.var.user;
+
+      // ── resume 路径 ──
+      if (body?.resume !== undefined && body?.resume !== null) {
+        const parsed = ResumeAiWorkflowRequestSchema.safeParse(body.resume);
+        if (!parsed.success) {
+          throw new HttpError(400, "chat-resume-invalid", "resume payload is invalid", parsed.error.flatten());
+        }
+        const { runId, decision } = parsed.data;
+        return c.json(await resumeRun({ runId, decision: decision as ResumeDecision, user }));
+      }
+
+      // ── 新 run 路径 ──
+      const message = typeof body?.message === "string" ? body.message : undefined;
+      if (!message) {
+        throw new HttpError(400, "chat-message-required", "message is required");
+      }
+      const userContext = body?.contextSnapshot as AiContextSnapshot | undefined;
+
+      const session = await signIn(user.rawToken);
+
+      const runId = crypto.randomUUID();
+      const { streamToken } = deps.registry.register({ runId, ownerSubject: user.subject });
+
+      await deps.service.startChat({ runId, message, userContext, surrealSession: session });
+
+      return c.json({ runId, streamUrl: `/api/chat/stream?runId=${runId}`, streamToken });
+    });
 }

@@ -1,4 +1,4 @@
-Status: needs-triage
+Status: done
 Label: needs-triage
 
 # WP-D2-08 — AI 抽屉接 chat/stream
@@ -19,11 +19,11 @@ UI 行为保持与既有抽屉一致（流式 markdown、候选选择卡、tool 
 
 ## Acceptance criteria
 
-- [ ] 在某 workspace 内打开抽屉，输入 "打开工作簿 X"。
-- [ ] 前端立即显示"路由中…"进度提示，随后 chunk 流式出现。
-- [ ] Router workflow done 后渲染最终 message + citations。
-- [ ] suspend 场景：UI 显示候选列表；点选某项 → 后端继续推进 → done。
-- [ ] 切换 workspace 时未完成的 chat 会话被关闭（WS 主动 close）。
+- [x] 在某 workspace 内打开抽屉，输入 "打开工作簿 X"。
+- [x] 前端立即显示"路由中…"进度提示，随后 chunk 流式出现。
+- [x] Router workflow done 后渲染最终 message + citations。
+- [x] suspend 场景：UI 显示候选列表；点选某项 → 后端继续推进 → done。
+- [x] 切换 workspace 时未完成的 chat 会话被关闭（WS 主动 close）。
 
 ## Notes
 
