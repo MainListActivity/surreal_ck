@@ -271,6 +271,8 @@ Issues and PRDs for this repo are tracked as local markdown files under `.scratc
 - `.scratch/workspace-as-db/`        — workspace 身份层（簇 C，依赖 B）
 - `.scratch/mastra-router-migration/` — Router workflow 迁入（簇 D1，依赖 C）
 - `.scratch/web-frontend-migration/`  — 前端迁移（簇 D2，依赖 C；可与 D1 并行）
+- `.scratch/web-dashboard-migration/` — Dashboard 直连迁移（簇 D3，依赖 D2-07；D3-05 收口 AI 图表持久化）
+- `.scratch/claims-vertical/`        — 律师破产债权垂直簇（依赖 D2-07 编辑器；法律内容全部走 workbook_template 数据行，可整体移除）
 - `.scratch/virtual-office/`         — 虚拟办公室（簇 E，依赖 D1 + D2）
 
 ### Triage labels

@@ -264,3 +264,15 @@ Before handoff:
 - Run `pnpm test` when touching shared/server public behavior, and include the focused package test command in the handoff.
 - Update the issue with any changed assumptions.
 - If a downstream issue's dependency is now satisfied, note that explicitly in the final response.
+
+## 2026-06-10 triage update
+
+This section supersedes the stale inventory lines above (the 2026-05-21 snapshot said `ready-for-agent: RR-012 only` and `AI-006 / AI-007: needs-triage`).
+
+- `.scratch/agentic-ai-product/PRD.md` is now `done` (historical). Its remaining open semantics were rewritten in place or re-homed:
+  - `AI-006` rewritten → row-patch proposal card + confirm-then-direct-write (frontend half), `ready-for-agent`, blocked by `WP-D2-08`.
+  - `AI-007` rewritten → `buildAiContextSnapshot` test suite (unblocked) + web selection wiring (blocked by `WP-D2-08`), `ready-for-agent`.
+  - `AI-005` / `AI-012` stay `done` with post-pivot comments; do not revive `ai.executeAction` RPC shapes from their old text.
+- New issue `D3-05` (`.scratch/web-dashboard-migration/issues/05-ai-dashboard-draft-persist.md`, `ready-for-agent`) closes the "agent generates a chart and persists it" loop: dashboard-draft suspend card → preview via D3-02/03 → confirmed direct write to `dashboard_page` → resume. Blocked by D3-01..04 and `WP-D2-08`.
+- New cluster `.scratch/claims-vertical/` (PRD `ready-for-agent`): the lawyer bankruptcy-claims vertical. All legal domain content (workbook template, Excel column aliases, agent domain hints, sample data) lives in `workbook_template` rows seeded per deployment config — removable without code changes. Platform code/schema/prompts must stay free of legal vocabulary. Issues to be split with `/to-issues`; it can start after the D2-07 editor substrate (already landed) and does not depend on D3 or cluster E.
+- Suggested ordering of the newly opened work: claims-vertical (template pack schema → legal pack data → instantiation → Excel import → domain hints) and `AI-007`'s test half can start now; `AI-006`, `AI-007` wiring half, and `D3-05` queue behind `WP-D2-08` (and D3-01..04 for `D3-05`).
