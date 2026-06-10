@@ -5,8 +5,8 @@ describe("workspace template scripts", () => {
   test("loads workspace template scripts in version order from the shared template directory", async () => {
     const scripts = await loadTemplateScripts();
 
-    expect(WORKSPACE_TEMPLATE_VERSION).toBe(7);
-    expect(scripts.map((script) => script.version)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(WORKSPACE_TEMPLATE_VERSION).toBe(8);
+    expect(scripts.map((script) => script.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     expect(scripts.map((script) => script.name)).toEqual([
       "001-access.surql",
       "002-tables-core.surql",
@@ -15,6 +15,7 @@ describe("workspace template scripts", () => {
       "005-mastra-runtime-storage.surql",
       "006-tables-grid.surql",
       "007-access-claim-rename.surql",
+      "008-resource-library.surql",
     ]);
     expect(scripts[0]?.sql).toContain("DEFINE ACCESS OVERWRITE admin");
     expect(scripts[1]?.sql).toContain("DEFINE TABLE IF NOT EXISTS user");
@@ -22,6 +23,7 @@ describe("workspace template scripts", () => {
     expect(scripts[3]?.sql).toContain("DEFINE TABLE IF NOT EXISTS workflow_run");
     expect(scripts[4]?.sql).toContain("DEFINE TABLE IF NOT EXISTS memory_thread");
     expect(scripts[5]?.sql).toContain("DEFINE TABLE IF NOT EXISTS workbook");
+    expect(scripts[7]?.sql).toContain("DEFINE TABLE IF NOT EXISTS resource_item");
   });
 
   test("grid 业务表归属 workspace database：无 workspace 字段，PERMISSIONS 只表达本 workspace 角色", async () => {
@@ -81,6 +83,48 @@ describe("workspace template scripts", () => {
     expect(sql).toContain("DEFINE TABLE IF NOT EXISTS observability_event_raw");
     expect(sql).toMatch(/DEFINE FIELD IF NOT EXISTS owner_user ON TABLE memory_thread TYPE record<user> DEFAULT \$auth/);
     expect(sql).toMatch(/FOR select WHERE owner_user = \$auth OR \$auth\.is_admin = true/);
+  });
+
+  test("resource 库表归属 workspace database：四张表齐全、无 workspace 字段、归因 DEFAULT $auth", async () => {
+    const scripts = await loadTemplateScripts();
+    const resource = scripts.find((script) => script.name === "008-resource-library.surql");
+
+    expect(resource).toBeDefined();
+    const sql = resource!.sql;
+    // 四张资源表都在
+    expect(sql).toContain("DEFINE TABLE IF NOT EXISTS resource_item");
+    expect(sql).toContain("DEFINE TABLE IF NOT EXISTS resource_embedding");
+    expect(sql).toContain("DEFINE TABLE IF NOT EXISTS workspace_embedding_profile");
+    expect(sql).toContain("DEFINE TABLE IF NOT EXISTS research_session");
+    // 隔离靠 db 边界：不带 workspace 字段，不写跨 workspace 嵌套，不残留 sync 时代结构
+    expect(sql).not.toMatch(/DEFINE FIELD [\w ]+ workspace ON TABLE/);
+    expect(sql).not.toContain("<-has_workspace_member<-workspace");
+    expect(sql).not.toContain("app_user");
+    expect(sql).not.toContain("local_resource_session_link");
+    expect(sql).not.toContain("_origin_session_id");
+    // 归因走当前会话身份（真人或虚拟员工）
+    expect(sql).toContain("DEFINE FIELD IF NOT EXISTS created_by ON TABLE resource_item TYPE record<user> DEFAULT $auth");
+    expect(sql).toContain("DEFINE FIELD IF NOT EXISTS created_by ON TABLE research_session TYPE record<user> DEFAULT $auth");
+    // 共享库：成员可读写，删除仅管理员
+    expect(sql).toMatch(/resource_item SCHEMAFULL[\s\S]*?FOR select WHERE \$auth != NONE/);
+    expect(sql).toMatch(/resource_item SCHEMAFULL[\s\S]*?FOR delete WHERE \$auth\.is_admin = true/);
+    // 检索过程私有：创建者或管理员可见
+    expect(sql).toMatch(/research_session SCHEMAFULL[\s\S]*?FOR select WHERE created_by = \$auth OR \$auth\.is_admin = true/);
+  });
+
+  test("resource_embedding 保留 (resource, profile_key) 唯一索引与 status 枚举；profile 仅管理员可写", async () => {
+    const scripts = await loadTemplateScripts();
+    const sql = scripts.find((script) => script.name === "008-resource-library.surql")!.sql;
+
+    // embedding 行按 (resource, profile_key) 唯一，写入走 ON DUPLICATE KEY UPDATE
+    expect(sql).toMatch(/DEFINE INDEX IF NOT EXISTS \w+ ON TABLE resource_embedding COLUMNS resource, profile_key UNIQUE/);
+    expect(sql).toContain("DEFINE FIELD IF NOT EXISTS resource ON TABLE resource_embedding TYPE record<resource_item>");
+    // V1 无 enqueue/retry endpoint，但 disabled/失败状态语义保留
+    expect(sql).toMatch(/status ON TABLE resource_embedding[\s\S]*?\["disabled", "pending", "indexed", "failed", "stale"\]/);
+    expect(sql).toContain("DEFINE FIELD IF NOT EXISTS vector ON TABLE resource_embedding TYPE array<float>");
+    // embedding profile：成员可读、仅管理员可写；维度必须为正
+    expect(sql).toMatch(/workspace_embedding_profile SCHEMAFULL[\s\S]*?FOR create, update, delete WHERE \$auth\.is_admin = true/);
+    expect(sql).toMatch(/dimensions ON TABLE workspace_embedding_profile TYPE int[\s\S]*?ASSERT \$value > 0/);
   });
 
   test("keeps JWT access placeholders by default and can render them for backend execution", async () => {
