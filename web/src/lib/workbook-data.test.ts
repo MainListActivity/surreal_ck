@@ -8,8 +8,10 @@ import {
   defineField,
   deleteRows,
   loadSheet,
+  removeField,
   saveCells,
   subscribeLive,
+  updateSheetColumns,
   type SheetRef,
 } from "./workbook-data";
 
@@ -469,5 +471,128 @@ describe("defineField — 管理员加字段走 DEFINE FIELD（DDL）", () => {
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.message).toContain("权限");
+  });
+});
+
+describe("removeField — 管理员删字段走 REMOVE FIELD（DDL）", () => {
+  test("拼出 REMOVE FIELD IF EXISTS 并经 conn.query 下发", async () => {
+    const calls: string[] = [];
+    const conn = fakeConn({
+      query: (async (sql: string) => {
+        calls.push(sql);
+        return [];
+      }) as SurrealConn["query"],
+    });
+
+    const result = await removeField(conn, "ent_claim", "note");
+
+    expect(result.ok).toBe(true);
+    expect(calls).toEqual(["REMOVE FIELD IF EXISTS note ON TABLE ent_claim"]);
+  });
+
+  test("非法字段标识 / 系统保留字段：拒绝且不发任何 SQL", async () => {
+    const calls: string[] = [];
+    const conn = fakeConn({
+      query: (async (sql: string) => {
+        calls.push(sql);
+        return [];
+      }) as SurrealConn["query"],
+    });
+
+    for (const bad of ["note; REMOVE TABLE user", "id", "created_at", "大写X", ""]) {
+      const result = await removeField(conn, "ent_claim", bad);
+      expect(result.ok).toBe(false);
+    }
+    expect(calls).toEqual([]);
+  });
+});
+
+describe("updateSheetColumns — 字段集合 diff 落 DDL + column_defs 持久化", () => {
+  test("保留/新增列逐个 OVERWRITE 定义，删掉的列 REMOVE，最后写回 sheet.column_defs", async () => {
+    const sqls: string[] = [];
+    const updates: Array<{ id: string; patch: Record<string, unknown> }> = [];
+    const conn = fakeConn({
+      query: (async (sql: string) => {
+        sqls.push(sql);
+        return [];
+      }) as SurrealConn["query"],
+      updateRecord: (async (id: string, patch: Record<string, unknown>) => {
+        updates.push({ id, patch });
+        return patch;
+      }) as SurrealConn["updateRecord"],
+    });
+
+    const next: GridColumnDef[] = [
+      { key: "name", label: "名称", fieldType: "text" },
+      { key: "note", label: "备注", fieldType: "text" },
+    ];
+    const result = await updateSheetColumns(
+      conn,
+      { sheetId: "sheet:s1", tableName: "ent_claim", columns },
+      next,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(sqls).toEqual([
+      "DEFINE FIELD OVERWRITE name ON TABLE ent_claim TYPE option<string>",
+      "DEFINE FIELD OVERWRITE note ON TABLE ent_claim TYPE option<string>",
+      "REMOVE FIELD IF EXISTS amount ON TABLE ent_claim",
+      "REMOVE FIELD IF EXISTS status ON TABLE ent_claim",
+    ]);
+    expect(updates).toHaveLength(1);
+    expect(updates[0].id).toBe("sheet:s1");
+    const defs = updates[0].patch.column_defs as Array<Record<string, unknown>>;
+    expect(defs.map((d) => d.key)).toEqual(["name", "note"]);
+    expect(defs[0].field_type).toBe("text");
+    if (result.ok) expect(result.columns.map((c) => c.key)).toEqual(["name", "note"]);
+  });
+});
+
+describe("updateSheetColumns — 校验与权限失败路径", () => {
+  test("空列表 / 重复 key：拒绝且不发任何 SQL", async () => {
+    const sqls: string[] = [];
+    const conn = fakeConn({
+      query: (async (sql: string) => {
+        sqls.push(sql);
+        return [];
+      }) as SurrealConn["query"],
+    });
+    const target = { sheetId: "sheet:s1", tableName: "ent_claim", columns };
+
+    const empty = await updateSheetColumns(conn, target, []);
+    expect(empty.ok).toBe(false);
+    if (!empty.ok) expect(empty.message).toContain("至少保留一个字段");
+
+    const dup = await updateSheetColumns(conn, target, [
+      { key: "name", label: "名称", fieldType: "text" },
+      { key: "name", label: "重名", fieldType: "text" },
+    ]);
+    expect(dup.ok).toBe(false);
+    if (!dup.ok) expect(dup.message).toContain("字段标识重复");
+
+    expect(sqls).toEqual([]);
+  });
+
+  test("普通成员无 DDL 权限：引擎拒绝 → 中文错误，column_defs 不写回", async () => {
+    let persisted = false;
+    const conn = fakeConn({
+      query: (async () => {
+        throw new Error("IAM error: Not enough permissions to perform this action");
+      }) as SurrealConn["query"],
+      updateRecord: (async (_id: string, patch: Record<string, unknown>) => {
+        persisted = true;
+        return patch;
+      }) as SurrealConn["updateRecord"],
+    });
+
+    const result = await updateSheetColumns(
+      conn,
+      { sheetId: "sheet:s1", tableName: "ent_claim", columns },
+      [{ key: "name", label: "名称", fieldType: "text" }],
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("仅工作区管理员");
+    expect(persisted).toBe(false);
   });
 });

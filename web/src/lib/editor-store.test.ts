@@ -284,3 +284,109 @@ function setupWithUnsub(onUnsub: () => void) {
   const store = createEditorStore({ getConn: () => conn });
   return { store, conn };
 }
+
+describe("updateFields — 字段集合 DDL 编排（浏览器直连，替代 legacy updateSheetFields RPC）", () => {
+  test("成功：保留/新增列 OVERWRITE、删掉列 REMOVE、column_defs 写回，内存 columns/sheets/rows 同步", async () => {
+    const { store, rec } = setup({
+      rows: [{ id: "ent_claim:a", name: "张三", amount: 100 }],
+    });
+    await store.loadWorkbook("workbook:wb1");
+
+    const ok = await store.updateFields([
+      { key: "name", label: "名称", fieldType: "text", required: true },
+      { key: "note", label: "备注", fieldType: "text" },
+    ]);
+
+    expect(ok).toBe(true);
+    const ddl = rec.queries.map((q) => q.sql).filter((s) => /DEFINE FIELD|REMOVE FIELD/.test(s));
+    expect(ddl).toEqual([
+      expect.stringContaining("DEFINE FIELD OVERWRITE name ON TABLE ent_claim"),
+      expect.stringContaining("DEFINE FIELD OVERWRITE note ON TABLE ent_claim"),
+      "REMOVE FIELD IF EXISTS amount ON TABLE ent_claim",
+    ]);
+    expect(rec.updates).toHaveLength(1);
+    expect(rec.updates[0].id).toBe("sheet:s1");
+    expect((rec.updates[0].patch.column_defs as Array<{ key: string }>).map((d) => d.key)).toEqual(["name", "note"]);
+
+    expect(store.columns.map((c) => c.key)).toEqual(["name", "note"]);
+    expect(store.sheets[0].columns.map((c) => c.key)).toEqual(["name", "note"]);
+    // 删掉的列从已有行 values 中裁剪，不留脏数据。
+    expect(store.rows[0].values).toEqual({ name: "张三" });
+    expect(store.saveError).toBeNull();
+  });
+});
+
+describe("updateFields — 引擎拒绝（普通成员无 DDL 权限）", () => {
+  test("saveError 给出中文提示，内存 columns / rows 不变", async () => {
+    const { store, conn, rec } = setup({
+      rows: [{ id: "ent_claim:a", name: "张三", amount: 100 }],
+    });
+    await store.loadWorkbook("workbook:wb1");
+
+    const originalQuery = conn.query.bind(conn);
+    conn.query = (async (sql: string, bindings?: Record<string, unknown>) => {
+      if (/DEFINE FIELD/.test(sql)) {
+        throw new Error("IAM error: Not enough permissions to perform this action");
+      }
+      return originalQuery(sql, bindings);
+    }) as SurrealConn["query"];
+
+    const ok = await store.updateFields([{ key: "name", label: "名称", fieldType: "text" }]);
+
+    expect(ok).toBe(false);
+    expect(store.saveError).toContain("仅工作区管理员");
+    expect(store.columns.map((c) => c.key)).toEqual(["name", "amount"]);
+    expect(store.rows[0].values).toEqual({ name: "张三", amount: 100 });
+    expect(rec.updates).toHaveLength(0);
+  });
+});
+
+describe("addField / removeFieldByKey / reorderFields — 字段编排入口", () => {
+  test("addField：列尾追加默认文本字段，key/label 避让已有冲突", async () => {
+    const { store } = setup({
+      sheets: [sheetRecord({
+        column_defs: [
+          { key: "field_3", label: "字段3", field_type: "text" },
+          { key: "amount", label: "金额", field_type: "decimal" },
+        ],
+      })],
+    });
+    await store.loadWorkbook("workbook:wb1");
+
+    const ok = await store.addField();
+
+    expect(ok).toBe(true);
+    expect(store.columns.map((c) => c.key)).toEqual(["field_3", "amount", "field_4"]);
+    const added = store.columns[2];
+    expect(added.label).toBe("字段4");
+    expect(added.fieldType).toBe("text");
+    expect(added.required).toBe(false);
+  });
+
+  test("removeFieldByKey：正常删除；仅剩一列时拒绝并报错", async () => {
+    const { store, rec } = setup();
+    await store.loadWorkbook("workbook:wb1");
+
+    expect(await store.removeFieldByKey("amount")).toBe(true);
+    expect(store.columns.map((c) => c.key)).toEqual(["name"]);
+    expect(rec.queries.some((q) => q.sql === "REMOVE FIELD IF EXISTS amount ON TABLE ent_claim")).toBe(true);
+
+    expect(await store.removeFieldByKey("name")).toBe(false);
+    expect(store.saveError).toContain("至少保留一个字段");
+    expect(store.columns.map((c) => c.key)).toEqual(["name"]);
+  });
+
+  test("reorderFields：按 key 顺序重排并持久化；同序短路不发请求", async () => {
+    const { store, rec } = setup();
+    await store.loadWorkbook("workbook:wb1");
+    const before = rec.updates.length;
+
+    expect(await store.reorderFields(["amount", "name"])).toBe(true);
+    expect(store.columns.map((c) => c.key)).toEqual(["amount", "name"]);
+    expect(rec.updates.length).toBe(before + 1);
+
+    // 同序：直接成功，不再发 DDL / column_defs 更新。
+    expect(await store.reorderFields(["amount", "name"])).toBe(true);
+    expect(rec.updates.length).toBe(before + 1);
+  });
+});

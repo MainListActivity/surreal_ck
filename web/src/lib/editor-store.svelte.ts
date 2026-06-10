@@ -130,5 +130,9 @@ export const editorStore = {
   ) => store.insertBlankRows(targetRowId, count, position),
   duplicateRowAsDraft: (sourceRowId: RecordIdString | string) => store.duplicateRowAsDraft(sourceRowId),
   commitDraftEdit: (draftId: string, values: Record<string, unknown>) => store.commitDraftEdit(draftId, values),
+  updateFields: (columns: GridColumnDef[]) => store.updateFields(columns),
+  addField: () => store.addField(),
+  removeFieldByKey: (key: string) => store.removeFieldByKey(key),
+  reorderFields: (orderedKeys: string[]) => store.reorderFields(orderedKeys),
   reset: () => store.reset(),
 };

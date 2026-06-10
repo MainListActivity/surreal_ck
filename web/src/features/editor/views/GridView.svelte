@@ -16,7 +16,6 @@
   // ── 范围裁定 ──────────────────────────────────────────────────
   //  - 引用单元格（07e）：ReferenceCell 徽章展示目标记录展示值 + RecordPicker 内联编辑器。
   //  - 日期单元格：只读展示（formatDateValue），内联 DatePicker 编辑器留后续簇（不在 07e 范围）。
-  //  - 新增字段（addField / DDL）：表头「+」按钮暂禁用 → 07g。
   // 这些占位都不阻断主路：行仍可读、文本/数字/勾选单元格仍可编辑直连 UPDATE。
 
   /** RevoGrid 引用单元格编辑器：在单元格内挂载 RecordPicker 组件并自动展开。 */
@@ -209,12 +208,13 @@
             "grid-add-field-header": true,
           },
           type: "button",
-          // 新增字段是 DDL，留到 07g；此处暂禁用，避免误以为可点。
-          title: "添加一列（即将上线）",
-          disabled: true,
+          // 加列是 DDL：普通成员禁用（引擎层本就会拒，按钮态只是提示）。
+          title: canWriteSharedStructure ? "添加一列" : "仅工作区管理员可添加字段",
+          disabled: !canWriteSharedStructure || editorStore.saving,
           onClick: (event: MouseEvent) => {
             event.preventDefault();
             event.stopPropagation();
+            void editorStore.addField();
           },
         },
         h("span", { class: { "grid-add-field-header__icon": true }, "aria-hidden": "true" }, "+"),

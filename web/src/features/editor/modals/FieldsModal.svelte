@@ -1,0 +1,650 @@
+<script lang="ts">
+  import * as Dialog from "$lib/components/ui/dialog/index.js";
+  import { SelectMenu } from "$lib/components/ui/select/index.js";
+  import Icon from "../../../components/Icon.svelte";
+  import DatePicker from "../../../components/DatePicker.svelte";
+  import { canWriteSharedStructure as canWriteSharedStructureFn } from "../../../lib/permissions.svelte";
+  import { editorStore } from "../../../lib/editor-store.svelte";
+  import { listReferenceTargets } from "../../../lib/reference-cache";
+  import { getSurreal } from "../../../lib/surreal";
+  import { editorUi } from "../lib/editor-ui.svelte";
+  import { getFieldTypeMeta } from "../lib/field-type-meta";
+  import {
+    buildGridFieldDraft,
+    GRID_FIELD_TYPE_OPTIONS,
+    commitGridFieldDraft,
+  } from "@surreal-ck/shared/field-schema";
+  import type { GridFieldDraft } from "@surreal-ck/shared/field-schema";
+  import {
+    DATE_FORMAT_PRESETS,
+    DEFAULT_DATE_FORMAT,
+    formatDateValue,
+  } from "@surreal-ck/shared/date-format";
+  import type { GridColumnDef, ReferenceTargetOption } from "@surreal-ck/shared/rpc.types";
+
+  const fieldTypeOptions = GRID_FIELD_TYPE_OPTIONS;
+
+  const dateFormatOptions = [
+    ...DATE_FORMAT_PRESETS.map((preset) => ({
+      value: preset.value,
+      label: `${preset.label} (${preset.value})`,
+    })),
+    { value: "__custom__", label: "自定义…" },
+  ];
+
+  let draftError = $state<string | null>(null);
+  let fieldDraft = $state<GridFieldDraft | null>(null);
+  let dateFormatMode = $state<"preset" | "custom">("preset");
+  let referenceTargets = $state<ReferenceTargetOption[]>([]);
+  let referenceTargetsLoaded = $state(false);
+  const canWriteSharedStructure = $derived(canWriteSharedStructureFn());
+  const fieldKey = $derived(editorUi.editingFieldKey);
+  /** 用户在原字段就是 reference 时不允许换目标表，避免破坏已写入数据。 */
+  const referenceTargetLocked = $derived<boolean>(
+    !!editorStore.columns.find((col) => col.key === fieldKey && col.fieldType === "reference" && col.referenceTable),
+  );
+
+  // 可见性由 editorUi.editingFieldKey 单向驱动；用户关闭（Escape / 外点 / 关闭按钮）
+  // 经 onOpenChange 回流到 store，焦点陷阱 / scroll-lock / aria 交给 bits-ui Dialog。
+  let open = $state(false);
+  $effect(() => {
+    open = fieldKey !== null;
+  });
+
+  function handleOpenChange(next: boolean) {
+    if (!next) editorUi.closeFieldEditor();
+  }
+
+  /** 直连枚举可引用目标（替代 legacy appApi.listReferenceTargets），惰性加载一次。 */
+  async function loadReferenceTargetsIfNeeded() {
+    if (referenceTargetsLoaded) return;
+    try {
+      referenceTargets = await listReferenceTargets(getSurreal());
+      referenceTargetsLoaded = true;
+    } catch {
+      // 加载失败保持未加载态；下次进入 reference 类型时重试。
+    }
+  }
+
+  $effect(() => {
+    if (fieldDraft?.fieldType === "reference") {
+      void loadReferenceTargetsIfNeeded();
+    }
+  });
+
+  const selectedReferenceTarget = $derived.by<ReferenceTargetOption | undefined>(() => {
+    const draft = fieldDraft;
+    if (!draft?.referenceTable) return undefined;
+    return referenceTargets.find((t) => t.table === draft.referenceTable);
+  });
+
+  $effect(() => {
+    if (fieldKey === null) return;
+    const source = editorStore.columns.find((col) => col.key === fieldKey);
+    if (!source) {
+      editorUi.closeFieldEditor();
+      return;
+    }
+
+    const dateFormat = source.dateFormat?.trim() || DEFAULT_DATE_FORMAT;
+    const isPreset = DATE_FORMAT_PRESETS.some((preset) => preset.value === dateFormat);
+
+    fieldDraft = buildGridFieldDraft(source);
+    dateFormatMode = isPreset ? "preset" : "custom";
+    draftError = null;
+  });
+
+  function selectDateFormatPreset(value: string) {
+    if (!fieldDraft) return;
+    if (value === "__custom__") {
+      dateFormatMode = "custom";
+      return;
+    }
+    dateFormatMode = "preset";
+    fieldDraft.dateFormat = value;
+  }
+
+  function updateDateConstraint(target: "minDate" | "maxDate", next: Date | null) {
+    if (!fieldDraft) return;
+    fieldDraft.constraints[target] = next ? next.toISOString() : undefined;
+  }
+
+  function close() {
+    editorUi.closeFieldEditor();
+  }
+
+  async function save() {
+    if (!canWriteSharedStructure || !fieldDraft || fieldKey === null) return;
+
+    let updatedField: GridColumnDef;
+    try {
+      updatedField = commitGridFieldDraft(fieldDraft, true);
+      draftError = null;
+    } catch (err) {
+      draftError = err instanceof Error ? err.message : String(err);
+      return;
+    }
+
+    const nextColumns = editorStore.columns.map((column) => column.key === fieldKey ? updatedField : column);
+    const ok = await editorStore.updateFields(nextColumns);
+    if (ok) close();
+  }
+
+  async function removeField() {
+    if (!canWriteSharedStructure || fieldKey === null) return;
+    if (editorStore.columns.length <= 1) {
+      draftError = "至少保留一个字段";
+      return;
+    }
+
+    const ok = await editorStore.removeFieldByKey(fieldKey);
+    if (ok) close();
+  }
+
+  function selectReferenceTarget(table: string) {
+    const draft = fieldDraft;
+    if (!draft) return;
+    const target = referenceTargets.find((t) => t.table === table);
+    draft.referenceTable = target?.table;
+    draft.referenceSheetId = target?.sheetId;
+    // 切换目标表时，若原 displayKey 在新目标里不存在则清掉。
+    if (target && draft.referenceDisplayKey
+        && !target.displayKeys.some((k) => k.key === draft.referenceDisplayKey)) {
+      draft.referenceDisplayKey = undefined;
+    }
+  }
+
+  function getFieldTypeLabel(fieldType: GridColumnDef["fieldType"]) {
+    return fieldTypeOptions.find((option) => option.value === fieldType)?.label ?? fieldType;
+  }
+
+  function hasRules(field: GridFieldDraft) {
+    return field.fieldType !== "checkbox";
+  }
+
+  function targetGroupLabel(target: ReferenceTargetOption): string {
+    return target.workbookName ? `${target.workbookName} · ${target.sheetName ?? ""}` : "系统对象";
+  }
+</script>
+
+<Dialog.Root bind:open onOpenChange={handleOpenChange}>
+  <Dialog.Content class="field-modal">
+    {#if fieldDraft}
+      <Dialog.Header>
+        <Dialog.Title>字段设置</Dialog.Title>
+        <Dialog.Description>只编辑当前字段，后续可在同一入口扩展关联、权限与更多字段能力。</Dialog.Description>
+      </Dialog.Header>
+
+      <div class="field-card">
+        <div class="field-head">
+          <div class="field-title">
+            <span class="field-index">当前字段</span>
+            <strong>{fieldDraft.label || "未命名字段"}</strong>
+            <div class="field-badges">
+              <span class="type-badge">
+                <Icon name={getFieldTypeMeta(fieldDraft.fieldType).icon} size={12} />
+                {getFieldTypeLabel(fieldDraft.fieldType)}
+              </span>
+              {#if fieldDraft.required}
+                <span class="required-badge">必填</span>
+              {/if}
+            </div>
+          </div>
+          <button
+            class="danger-link"
+            onclick={removeField}
+            disabled={!canWriteSharedStructure || editorStore.columns.length <= 1 || editorStore.saving}
+          >
+            删除字段
+          </button>
+        </div>
+
+        <div class="field-grid base-grid">
+          <label class="span-2">
+            <span>字段名</span>
+            <input bind:value={fieldDraft.label} placeholder="显示名称" />
+          </label>
+          <label class="span-2">
+            <span>标识</span>
+            <input bind:value={fieldDraft.key} placeholder="field_key" />
+          </label>
+          <label>
+            <span>类型</span>
+            <SelectMenu
+              value={fieldDraft.fieldType}
+              options={[...fieldTypeOptions]}
+              ariaLabel="字段类型"
+              onChange={(next) => {
+                if (fieldDraft) fieldDraft.fieldType = next as GridColumnDef["fieldType"];
+              }}
+            />
+          </label>
+          <div class="toggle-card">
+            <span>校验</span>
+            <label class="switch-row">
+              <input type="checkbox" bind:checked={fieldDraft.required} />
+              <span>必填字段</span>
+            </label>
+          </div>
+        </div>
+
+        {#if hasRules(fieldDraft)}
+          <div class="constraints">
+            <div class="section-head">
+              <strong>字段约束</strong>
+              <span>按当前字段类型配置输入边界，保证录入数据更稳定。</span>
+            </div>
+
+            {#if fieldDraft.fieldType === "text"}
+              <div class="field-grid rule-grid">
+                <label>
+                  <span>最小长度</span>
+                  <input type="number" min="0" bind:value={fieldDraft.constraints.minLength} />
+                </label>
+                <label>
+                  <span>最大长度</span>
+                  <input type="number" min="0" bind:value={fieldDraft.constraints.maxLength} />
+                </label>
+              </div>
+            {/if}
+
+            {#if fieldDraft.fieldType === "single_select"}
+              <div class="field-grid rule-grid">
+                <label class="span-2">
+                  <span>选项列表</span>
+                  <textarea bind:value={fieldDraft.optionsText} rows="4" placeholder={"待处理\n处理中\n已完成"}></textarea>
+                </label>
+                <label>
+                  <span>选项最大长度</span>
+                  <input type="number" min="0" bind:value={fieldDraft.constraints.maxLength} />
+                </label>
+              </div>
+            {/if}
+
+            {#if fieldDraft.fieldType === "number" || fieldDraft.fieldType === "decimal"}
+              <div class="field-grid rule-grid">
+                <label>
+                  <span>最小值</span>
+                  <input type="number" bind:value={fieldDraft.constraints.min} />
+                </label>
+                <label>
+                  <span>最大值</span>
+                  <input type="number" bind:value={fieldDraft.constraints.max} />
+                </label>
+                <label>
+                  <span>步长</span>
+                  <input type="number" min="0" step="any" bind:value={fieldDraft.constraints.step} />
+                </label>
+              </div>
+            {/if}
+
+            {#if fieldDraft.fieldType === "reference"}
+              <div class="field-grid rule-grid">
+                <label class="span-2">
+                  <span>引用目标</span>
+                  {#if referenceTargetLocked}
+                    <input type="text" disabled value={selectedReferenceTarget?.label ?? fieldDraft.referenceTable ?? ""} />
+                    <small class="hint">已建字段不可更换目标表，避免破坏已写入的引用数据。</small>
+                  {:else}
+                    <SelectMenu
+                      value={fieldDraft.referenceTable ?? ""}
+                      options={[
+                        { value: "", label: "请选择目标" },
+                        ...referenceTargets.map((t) => ({
+                          value: t.table,
+                          label: `${targetGroupLabel(t)} → ${t.label}`,
+                        })),
+                      ]}
+                      ariaLabel="引用目标"
+                      onChange={selectReferenceTarget}
+                    />
+                    {#if !referenceTargetsLoaded}
+                      <small class="hint">加载可引用目标…</small>
+                    {/if}
+                  {/if}
+                </label>
+                {#if selectedReferenceTarget}
+                  <label>
+                    <span>展示字段</span>
+                    <SelectMenu
+                      value={fieldDraft.referenceDisplayKey ?? ""}
+                      options={[
+                        { value: "", label: "默认（name / 显示名 / 主键）" },
+                        ...selectedReferenceTarget.displayKeys.map((k) => ({
+                          value: k.key,
+                          label: `${k.label}（${k.key}）`,
+                        })),
+                      ]}
+                      ariaLabel="展示字段"
+                      onChange={(next) => {
+                        if (fieldDraft) fieldDraft.referenceDisplayKey = next || undefined;
+                      }}
+                    />
+                  </label>
+                {/if}
+                <div class="toggle-card">
+                  <span>多值</span>
+                  <label class="switch-row">
+                    <input
+                      type="checkbox"
+                      bind:checked={fieldDraft.referenceMultiple}
+                      disabled={referenceTargetLocked}
+                    />
+                    <span>允许选择多条记录</span>
+                  </label>
+                </div>
+              </div>
+            {/if}
+
+            {#if fieldDraft.fieldType === "date"}
+              <div class="field-grid rule-grid">
+                <label class="span-2">
+                  <span>显示格式</span>
+                  <SelectMenu
+                    value={dateFormatMode === "custom" ? "__custom__" : fieldDraft.dateFormat ?? DEFAULT_DATE_FORMAT}
+                    options={dateFormatOptions}
+                    ariaLabel="日期显示格式"
+                    onChange={selectDateFormatPreset}
+                  />
+                </label>
+                {#if dateFormatMode === "custom"}
+                  <label class="span-2">
+                    <span>自定义格式</span>
+                    <input
+                      type="text"
+                      placeholder="YYYY-MM-DD HH:mm:ss"
+                      bind:value={fieldDraft.dateFormat}
+                    />
+                    <small class="hint">
+                      预览：{formatDateValue(new Date(), fieldDraft.dateFormat) || "格式无效"}
+                    </small>
+                  </label>
+                {/if}
+                <label>
+                  <span>最早日期</span>
+                  <DatePicker
+                    value={fieldDraft.constraints.minDate}
+                    dateFormat={fieldDraft.dateFormat}
+                    fullWidth
+                    placeholder="不限"
+                    onChange={(next) => updateDateConstraint("minDate", next)}
+                  />
+                </label>
+                <label>
+                  <span>最晚日期</span>
+                  <DatePicker
+                    value={fieldDraft.constraints.maxDate}
+                    dateFormat={fieldDraft.dateFormat}
+                    fullWidth
+                    placeholder="不限"
+                    onChange={(next) => updateDateConstraint("maxDate", next)}
+                  />
+                </label>
+              </div>
+            {/if}
+          </div>
+        {/if}
+      </div>
+
+      <footer>
+        {#if editorStore.saveError}
+          <span class="modal-error">{editorStore.saveError}</span>
+        {:else if draftError}
+          <span class="modal-error">{draftError}</span>
+        {/if}
+        <button class="secondary-btn" onclick={close}>取消</button>
+        <button class="primary-btn" onclick={save} disabled={!canWriteSharedStructure || editorStore.saving}>保存字段</button>
+      </footer>
+    {/if}
+  </Dialog.Content>
+</Dialog.Root>
+
+<style>
+  :global(.field-modal) {
+    width: min(720px, calc(100vw - 32px));
+    max-width: min(720px, calc(100vw - 32px));
+  }
+
+  .field-card {
+    display: grid;
+    gap: 16px;
+    max-height: calc(90vh - 200px);
+    overflow: auto;
+  }
+
+  .field-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+  }
+
+  .field-title {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .field-index {
+    color: var(--text-3);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+  }
+
+  .field-title strong {
+    color: var(--text-1);
+    font-size: 15px;
+    line-height: 1.3;
+  }
+
+  .field-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .type-badge,
+  .required-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 24px;
+    padding: 0 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .type-badge {
+    background: #eef3ff;
+    color: #3156b8;
+  }
+
+  .required-badge {
+    background: #fff4e8;
+    color: #b86a1d;
+  }
+
+  .danger-link {
+    display: inline-flex;
+    align-items: center;
+    height: 32px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: 8px;
+    background: #fff1f0;
+    color: var(--error);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .danger-link:disabled {
+    opacity: .45;
+    cursor: not-allowed;
+  }
+
+  .field-grid {
+    display: grid;
+    gap: 12px;
+  }
+
+  .base-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .rule-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .span-2 {
+    grid-column: span 2;
+  }
+
+  label,
+  .toggle-card {
+    display: grid;
+    gap: 6px;
+  }
+
+  label > span,
+  .toggle-card > span {
+    color: var(--text-3);
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .toggle-card {
+    align-content: start;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--soft);
+  }
+
+  .switch-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 22px;
+    color: var(--text-1);
+    font-size: 13px;
+  }
+
+  .switch-row input {
+    width: 16px;
+    height: 16px;
+    margin: 0;
+  }
+
+  .constraints {
+    display: grid;
+    gap: 12px;
+    padding: 14px;
+    border: 1px solid #edf1f6;
+    border-radius: 12px;
+    background: #fafbfd;
+  }
+
+  .section-head {
+    display: grid;
+    gap: 4px;
+  }
+
+  .section-head strong {
+    color: var(--text-1);
+    font-size: 13px;
+  }
+
+  .section-head span {
+    color: var(--text-3);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  input {
+    width: 100%;
+    height: 40px;
+    padding: 0 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    outline: none;
+    color: var(--text-1);
+    font-size: 13px;
+    background: var(--surface);
+  }
+
+  textarea {
+    width: 100%;
+    min-height: 96px;
+    resize: vertical;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    outline: none;
+    color: var(--text-1);
+    font-size: 13px;
+    font-family: inherit;
+    background: var(--surface);
+  }
+
+  input:focus,
+  textarea:focus {
+    border-color: #8db3ff;
+    box-shadow: 0 0 0 3px rgba(22, 100, 255, .12);
+  }
+
+  footer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+  }
+
+  footer .secondary-btn,
+  footer .primary-btn {
+    height: 36px;
+    padding: 0 18px;
+  }
+
+  .modal-error {
+    margin-right: auto;
+    color: var(--error);
+    font-size: 12px;
+  }
+
+  .hint {
+    display: block;
+    margin-top: 6px;
+    color: var(--text-3);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  @media (max-width: 720px) {
+    .field-head,
+    footer {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
+    .base-grid,
+    .rule-grid {
+      grid-template-columns: 1fr 1fr;
+    }
+  }
+
+  @media (max-width: 560px) {
+    .base-grid,
+    .rule-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .span-2 {
+      grid-column: auto;
+    }
+  }
+</style>

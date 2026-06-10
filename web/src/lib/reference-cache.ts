@@ -1,4 +1,4 @@
-import type { RecordIdString, ReferenceTargetPreview } from "@surreal-ck/shared/rpc.types";
+import type { RecordIdString, ReferenceTargetOption, ReferenceTargetPreview } from "@surreal-ck/shared/rpc.types";
 import { isLikelyRecordId, toRecordId } from "./record-id";
 import type { SurrealConn } from "./surreal";
 
@@ -157,4 +157,55 @@ export async function searchReferenceCandidates(
     primaryLabel: pickPrimaryLabel(record, displayKey) ?? String(record.id),
     preview: previewFields(record),
   }));
+}
+
+/** sheet 记录上派生引用目标所需的字段；column_defs 是 storedDef（snake_case）。 */
+type SheetTargetRow = {
+  id: unknown;
+  label?: unknown;
+  table_name?: unknown;
+  workbook?: unknown;
+  workbook_name?: unknown;
+  column_defs?: Array<{ key: string; label: string; field_type: string }>;
+};
+
+/** 系统对象目标：成员引用选 user 表；displayKeys 对齐 workspace 模板的 user schema。 */
+const USER_TARGET: ReferenceTargetOption = {
+  table: "user",
+  label: "系统：用户",
+  displayKeys: [
+    { key: "display_name", label: "显示名", fieldType: "text" },
+    { key: "email", label: "邮箱", fieldType: "text" },
+  ],
+};
+
+/**
+ * 枚举本 workspace 内可作为引用目标的表（替代 legacy 后端 `appApi.listReferenceTargets`）。
+ *
+ * 直连一条 `SELECT ... FROM sheet`（含 `workbook.name` record link 取工作簿名），每个
+ * sheet 派生一个 ent_* 目标，displayKeys 取自 column_defs。系统对象 `user` 恒在首位。
+ * 跨 workspace 隔离由 db 边界保证——这里天然只看得到当前 workspace 的 sheet。
+ */
+export async function listReferenceTargets(conn: SurrealConn): Promise<ReferenceTargetOption[]> {
+  const rows = await conn.query<SheetTargetRow>(
+    "SELECT id, label, table_name, column_defs, workbook, workbook.name AS workbook_name FROM sheet ORDER BY created_at ASC",
+  );
+  const targets: ReferenceTargetOption[] = [USER_TARGET];
+  for (const row of rows) {
+    if (typeof row.table_name !== "string" || !row.table_name) continue;
+    targets.push({
+      table: row.table_name,
+      label: [row.workbook_name, row.label].filter(Boolean).join(" / "),
+      workbookId: String(row.workbook) as RecordIdString,
+      workbookName: typeof row.workbook_name === "string" ? row.workbook_name : undefined,
+      sheetId: String(row.id) as RecordIdString,
+      sheetName: typeof row.label === "string" ? row.label : undefined,
+      displayKeys: (row.column_defs ?? []).map((c) => ({
+        key: c.key,
+        label: c.label,
+        fieldType: c.field_type,
+      })),
+    });
+  }
+  return targets;
 }

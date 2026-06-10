@@ -20,6 +20,7 @@ import {
   prepareRecordFields,
   saveCells,
   subscribeLive,
+  updateSheetColumns,
   type SheetRef,
 } from "./workbook-data";
 import { isDraftRowId, recordDrafts } from "./record-drafts";
@@ -445,6 +446,94 @@ export function createEditorStore(deps: EditorDeps) {
     return ok;
   }
 
+  /**
+   * 整体更新当前 sheet 的字段集合（编辑/删除/重排统一走这里）：
+   * DDL diff + column_defs 持久化交给 {@link updateSheetColumns}，成功后同步内存
+   * columns / sheets 元数据，并把已删列从行 values 中裁剪掉。
+   */
+  async function updateFields(columns: GridColumnDef[]): Promise<boolean> {
+    const meta = state.sheets.find((s) => s.id === state.activeSheetId);
+    if (!meta) return false;
+    state.saving = true;
+    state.saveError = null;
+    emit();
+    try {
+      const result = await updateSheetColumns(
+        deps.getConn(),
+        { sheetId: meta.id, tableName: meta.tableName, columns: state.columns },
+        columns,
+      );
+      if (!result.ok) {
+        state.saveError = result.message;
+        return false;
+      }
+      state.columns = result.columns;
+      state.sheets = state.sheets.map((s) => (s.id === meta.id ? { ...s, columns: result.columns } : s));
+      const kept = new Set(result.columns.map((c) => c.key));
+      state.rows = state.rows.map((row) => ({
+        ...row,
+        values: Object.fromEntries(Object.entries(row.values).filter(([key]) => kept.has(key))),
+      }));
+      return true;
+    } catch (err) {
+      state.saveError = String(err);
+      return false;
+    } finally {
+      state.saving = false;
+      emit();
+    }
+  }
+
+  /** 在列尾追加一个默认文本字段；key/label 自动避让已有冲突。 */
+  async function addField(): Promise<boolean> {
+    if (!state.activeSheetId) return false;
+    const existingKeys = new Set(state.columns.map((col) => col.key));
+    const existingLabels = new Set(state.columns.map((col) => col.label));
+    let i = state.columns.length + 1;
+    let key = `field_${i}`;
+    while (existingKeys.has(key)) {
+      i += 1;
+      key = `field_${i}`;
+    }
+    let labelIndex = state.columns.length + 1;
+    let label = `字段${labelIndex}`;
+    while (existingLabels.has(label)) {
+      labelIndex += 1;
+      label = `字段${labelIndex}`;
+    }
+    return updateFields([...state.columns, { key, label, fieldType: "text", required: false }]);
+  }
+
+  async function removeFieldByKey(key: string): Promise<boolean> {
+    if (state.columns.length <= 1) {
+      state.saveError = "至少保留一个字段";
+      emit();
+      return false;
+    }
+    const next = state.columns.filter((col) => col.key !== key);
+    if (next.length === state.columns.length) return false;
+    return updateFields(next);
+  }
+
+  /** 按给定 key 顺序重排列；忽略未知 key，缺失的列维持原顺序追加；同序短路不发请求。 */
+  async function reorderFields(orderedKeys: string[]): Promise<boolean> {
+    const byKey = new Map(state.columns.map((col) => [col.key, col]));
+    const next: GridColumnDef[] = [];
+    const seen = new Set<string>();
+    for (const key of orderedKeys) {
+      const col = byKey.get(key);
+      if (!col || seen.has(key)) continue;
+      next.push(col);
+      seen.add(key);
+    }
+    for (const col of state.columns) {
+      if (!seen.has(col.key)) next.push(col);
+    }
+    if (next.length !== state.columns.length) return false;
+    if (next.every((col, idx) => col.key === state.columns[idx].key)) return true;
+    return updateFields(next);
+  }
+
   /** 切 workspace / 离开工作簿：丢弃 drafts、退订 LIVE、状态归零。 */
   function reset(): void {
     stopLive();
@@ -526,6 +615,10 @@ export function createEditorStore(deps: EditorDeps) {
     insertBlankRows,
     duplicateRowAsDraft,
     commitDraftEdit,
+    updateFields,
+    addField,
+    removeFieldByKey,
+    reorderFields,
     reset,
   };
 }

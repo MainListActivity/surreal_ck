@@ -6,6 +6,7 @@
   import EditorWorkbookNav from "../features/editor/EditorWorkbookNav.svelte";
   import RightPanel from "../features/editor/RightPanel.svelte";
   import AddRecordModal from "../features/editor/modals/AddRecordModal.svelte";
+  import FieldsModal from "../features/editor/modals/FieldsModal.svelte";
   import LeaveDraftModal from "../features/editor/modals/LeaveDraftModal.svelte";
   import ShareModal from "../features/editor/modals/ShareModal.svelte";
   import { editorUi } from "../features/editor/lib/editor-ui.svelte";
@@ -138,6 +139,7 @@
 
 <!-- 可见性已由各 modal 内部读 editorUi 绑到 bits-ui Dialog 的 bind:open；此处无条件挂载 -->
 <AddRecordModal />
+<FieldsModal />
 <ShareModal {workbookId} />
 <LeaveDraftModal />
 

@@ -1,5 +1,5 @@
-Status: needs-triage
-Label: needs-triage
+Status: done
+Label: done
 
 # WP-D2-07g — 字段管理 + 记录详情/表单/弹窗
 
@@ -42,3 +42,16 @@ Label: needs-triage
 
 - ShareModal 若依赖后端分享 endpoint（已废弃）：MVP 内先降级为 stub 或移除分享入口，不要为它新增后端代理。
 - AiPanel 真正接线属 D2-08（AI 抽屉），本 issue 只搬占位容器。
+
+## Resolution
+
+分两轮完成：记录编辑半边（2026-05-30，见 git 历史）+ 字段管理半边（2026-06-10，本轮）。
+
+字段管理半边（TDD，浏览器直连替代 legacy `updateSheetFields` / `listReferenceTargets` RPC）：
+
+- `web/src/lib/workbook-data.ts`：新增 `removeField`（REMOVE FIELD IF EXISTS，标识符白名单 + 系统字段保护）、`updateSheetColumns`（逐列 DEFINE FIELD OVERWRITE → diff 删除列 REMOVE → `sheet.column_defs` storedDef 写回；空列表/重复 key 拒绝；引擎权限错误翻中文）。
+- `web/src/lib/reference-cache.ts`：新增 `listReferenceTargets`——一条 `SELECT ... workbook.name AS workbook_name FROM sheet` 派生 ent_* 目标，系统对象 `user`（display_name/email）恒在首位；db 边界天然限定本 workspace。
+- `web/src/lib/editor-store.ts`（+ `.svelte.ts` 透传）：新增 `updateFields`（成功后同步 columns/sheets、已删列从行 values 裁剪）、`addField`（key/label 自动避让）、`removeFieldByKey`（至少保留一列）、`reorderFields`（同序短路）。
+- 组件：`DatePicker` 迁入 `web/src/components/`；`FieldsModal`（bits-ui Dialog 外壳，对齐 AddRecordModal 模式）+ `FieldManagerPanel` 迁入 `features/editor/`；tools.ts 注册 `fields` 工具；EditorScreen 无条件挂载 FieldsModal；GridView 表头「+」按钮启用（管理员）直调 `editorStore.addField()`。
+
+验收：`bun test ./src` 207 pass（新增 9 个用例覆盖 DDL/编排/枚举行为）；typecheck + svelte-check 0 错误；组件无 electrobun/appApi/app-state import。普通成员加/删字段由 DB 引擎 access 拒绝 → `describeWriteError` 翻成「仅工作区管理员可修改表结构」直接展示（无后端守卫代码）。

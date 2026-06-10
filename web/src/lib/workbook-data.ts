@@ -1,6 +1,8 @@
 import {
   buildSurrealFieldSchema,
   coerceGridFieldValue,
+  gridColumnToStoredDef,
+  normalizeGridColumnDef,
   validateGridFieldValue,
 } from "@surreal-ck/shared/field-schema";
 import type {
@@ -236,6 +238,93 @@ export async function defineField(
   const ddl = `DEFINE FIELD ${schema.fieldName} ON TABLE ${tableName} TYPE ${schema.type}${schema.assert}`;
   try {
     await conn.query(ddl);
+  } catch (err) {
+    return { ok: false, message: describeWriteError(err) };
+  }
+  return { ok: true };
+}
+
+export type UpdateColumnsResult =
+  | { ok: true; columns: GridColumnDef[] }
+  | { ok: false; message: string };
+
+/** 字段集合更新的目标 sheet：记录 id（写 column_defs 用）+ 业务表名 + 当前列。 */
+export type SheetColumnsTarget = {
+  sheetId: RecordIdString | string;
+  tableName: string;
+  columns: GridColumnDef[];
+};
+
+/**
+ * 管理员整体更新一个 sheet 的字段集合（编辑/删除/重排的统一入口），对应 legacy
+ * 后端 `updateSheetFields` RPC 的浏览器直连版：
+ *
+ * 1. 逐列 `DEFINE FIELD OVERWRITE`（schema 由共享 {@link buildSurrealFieldSchema} 生成）；
+ * 2. 旧列集合里消失的 key 走 {@link removeField}（REMOVE FIELD）；
+ * 3. 把规整后的列集合以 storedDef（snake_case）写回 `sheet.column_defs`。
+ *
+ * DDL 与 sheet 行更新的权限都由引擎兜底（access 类型 + 表 PERMISSIONS），失败时
+ * 翻译成中文返回。成功时返回规整后的列 DTO，调用方直接替换内存 columns。
+ */
+export async function updateSheetColumns(
+  conn: SurrealConn,
+  sheet: SheetColumnsTarget,
+  nextColumns: GridColumnDef[],
+): Promise<UpdateColumnsResult> {
+  if (!nextColumns.length) return { ok: false, message: "至少保留一个字段" };
+
+  let normalized: GridColumnDef[];
+  try {
+    normalized = nextColumns.map(normalizeGridColumnDef);
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : String(err) };
+  }
+  const seen = new Set<string>();
+  for (const column of normalized) {
+    if (seen.has(column.key)) return { ok: false, message: `字段标识重复: ${column.key}` };
+    seen.add(column.key);
+  }
+
+  try {
+    for (const column of normalized) {
+      const schema = buildSurrealFieldSchema(column);
+      await conn.query(
+        `DEFINE FIELD OVERWRITE ${schema.fieldName} ON TABLE ${sheet.tableName} TYPE ${schema.type}${schema.assert}`,
+      );
+    }
+    for (const existing of sheet.columns) {
+      if (seen.has(existing.key)) continue;
+      const removed = await removeField(conn, sheet.tableName, existing.key);
+      if (!removed.ok) return removed;
+    }
+    await conn.updateRecord(String(sheet.sheetId), {
+      column_defs: normalized.map(gridColumnToStoredDef),
+    });
+  } catch (err) {
+    return { ok: false, message: describeWriteError(err) };
+  }
+  return { ok: true, columns: normalized };
+}
+
+/** 与 shared/field-schema 同口径的业务字段标识；DDL 标识符无法参数化，只放行白名单形态。 */
+const ENTITY_FIELD_NAME = /^[a-z][a-z0-9_]{0,62}$/;
+
+/**
+ * 管理员在浏览器直接删一列 = `REMOVE FIELD`（DDL）。`IF EXISTS` 使重复删除幂等。
+ * key 必须是合法业务字段标识且不是系统字段——标识符只能拼进 SQL 文本，先卡白名单。
+ * 与 {@link defineField} 同理：不写 is_admin 守卫，权限由 access 类型硬隔离，
+ * 引擎拒绝时翻译成中文提示。
+ */
+export async function removeField(
+  conn: SurrealConn,
+  tableName: string,
+  key: string,
+): Promise<SaveResult> {
+  if (!ENTITY_FIELD_NAME.test(key) || SYSTEM_FIELDS.has(key)) {
+    return { ok: false, message: `无效的字段标识: ${key}` };
+  }
+  try {
+    await conn.query(`REMOVE FIELD IF EXISTS ${key} ON TABLE ${tableName}`);
   } catch (err) {
     return { ok: false, message: describeWriteError(err) };
   }

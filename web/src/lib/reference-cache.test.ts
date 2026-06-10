@@ -4,6 +4,7 @@ import type { SurrealConn } from "./surreal";
 import {
   collectReferenceIdsFromValues,
   isLikelyRecordId,
+  listReferenceTargets,
   resolveReferences,
   searchReferenceCandidates,
 } from "./reference-cache";
@@ -154,5 +155,56 @@ describe("searchReferenceCandidates — 直连候选搜索", () => {
 
     expect(calls[0].sql).not.toMatch(/CONTAINS/);
     expect(calls[0].sql).toMatch(/LIMIT/);
+  });
+});
+
+describe("listReferenceTargets — 直连枚举本 workspace 可引用目标", () => {
+  test("系统对象 user 恒在首位，sheet 记录派生 ent_* 目标（label = 工作簿 / Sheet，displayKeys 来自 column_defs）", async () => {
+    const calls: Array<{ sql: string }> = [];
+    const conn = {
+      status: "connected",
+      query: (async (sql: string) => {
+        calls.push({ sql });
+        return [
+          {
+            id: "sheet:s1",
+            label: "债权表",
+            table_name: "ent_claim",
+            workbook: "workbook:w1",
+            workbook_name: "破产案A",
+            column_defs: [
+              { key: "name", label: "名称", field_type: "text" },
+              { key: "amount", label: "金额", field_type: "decimal" },
+            ],
+          },
+        ];
+      }),
+    } as unknown as SurrealConn;
+
+    const targets = await listReferenceTargets(conn);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].sql).toContain("FROM sheet");
+
+    expect(targets[0]).toEqual({
+      table: "user",
+      label: "系统：用户",
+      displayKeys: [
+        { key: "display_name", label: "显示名", fieldType: "text" },
+        { key: "email", label: "邮箱", fieldType: "text" },
+      ],
+    });
+    expect(targets[1]).toEqual({
+      table: "ent_claim",
+      label: "破产案A / 债权表",
+      workbookId: "workbook:w1",
+      workbookName: "破产案A",
+      sheetId: "sheet:s1",
+      sheetName: "债权表",
+      displayKeys: [
+        { key: "name", label: "名称", fieldType: "text" },
+        { key: "amount", label: "金额", fieldType: "decimal" },
+      ],
+    });
   });
 });
