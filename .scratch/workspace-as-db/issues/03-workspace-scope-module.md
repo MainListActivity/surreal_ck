@@ -1,5 +1,5 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: done
+Label: done
 
 # WP-C-03 — Workspace Scope Module
 
@@ -103,7 +103,7 @@ IdP 登录 hook 调用，用于给即将签发的 token 决定默认 SurrealDB s
 - [x] 用户切到有权限 workspace → `last_selected_at` 更新，IdP adapter 收到正确 `{ db, ac }`。
 - [x] IdP default-scope hook 对无 workspace 用户返回 login-denied，前端不会进入应用。
 - [x] IdP default-scope hook 对有 workspace 用户返回最近选择的 db/ac。
-- [ ] 所有失败路径都不把 OIDC token 或 IdP admin token 写入日志。
+- [x] 所有失败路径都不把 OIDC token 或 IdP admin token 写入日志。
 
 ## Blocked by
 
@@ -163,5 +163,20 @@ TDD 覆盖：
 
 Remaining:
 
-- switch-workspace 对目标 workspace db `user` 表的一致性校验与漂移错误码。
-- 失败路径 token / IdP admin token 日志 redaction 专项测试。
+- ~~switch-workspace 对目标 workspace db `user` 表的一致性校验与漂移错误码。~~（已完成：`workspace-scope.ts` drift 检测 + `session.ts` 409 `workspace-user-drift`）
+- ~~失败路径 token / IdP admin token 日志 redaction 专项测试。~~（见下方 2026-06-10 切片）
+
+## 2026-06-10 TDD slice: 失败路径日志 redaction（收口）
+
+最后一条验收完成：
+
+- `idp-scope-adapter.ts`：IdP 非 2xx 响应体进入 error message 前先 `redactSensitive()`——递归把 key 匹配 `/token|secret|password|authorization/i` 的值替换为 `[REDACTED]`（IdP 错误响应可能回显 subject_token 或携带 token 字段）。
+- `routes/session.ts` 502 路径：去掉 `console.log(e)`（原样打印上游 error，message 可能含 token），改为只记 `{ scope, error: e.name }`；同时不再把原始 error 塞进 `HttpError` details（details 会序列化进客户端响应体）。
+- 顺手修复两条陈旧 adapter 测试：claims 断言从 `rl: ["OWNER"/"EDITOR"]` 对齐到实现实际发送的 `RL: ["Owner"/"Editor"]`（线上调通后的真实约定）。
+
+TDD 覆盖：
+
+- `idp-scope-adapter.test.ts`：失败响应体含 access_token / subject_token / id_token / client_secret / 嵌套 refresh_token 时，error message 保留 status 与 error code 但不含任何 secret 值。
+- `session.test.ts`：fake adapter 抛出 message 含 subject token 的错误时，502 响应体与 console 输出（`Bun.inspect` 捕获）均不含 token；响应 code 为 `idp-scope-exchange-failed`。
+
+全量 server 测试 147 pass / 0 fail，typecheck 通过。issue 关闭。

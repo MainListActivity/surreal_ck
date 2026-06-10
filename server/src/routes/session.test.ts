@@ -260,6 +260,67 @@ describe("session workspace switch", () => {
     expect(adapterCalled).toBe(false);
   });
 
+  test("returns 502 without leaking the OIDC token to logs or response when IdP exchange fails", async () => {
+    const logs: string[] = [];
+    const originalConsoleError = console.error;
+    const originalConsoleLog = console.log;
+    console.error = (...args: unknown[]) => {
+      logs.push(Bun.inspect(args));
+    };
+    console.log = (...args: unknown[]) => {
+      logs.push(Bun.inspect(args));
+    };
+
+    const useSensitiveUser: MiddlewareHandler<AppBindings> = async (c, next) => {
+      c.set("user", { ...testUser, rawToken: "sensitive-user-token-abc" });
+      await next();
+    };
+
+    try {
+      const app = createApp({
+        requireUser: () => useSensitiveUser,
+        idpTokenScopeAdapter: {
+          async updateUserScope() {
+            // 模拟未脱敏的上游错误：message 直接含 subject token。
+            throw new Error(
+              'IdP scope update failed with 400, {"subject_token":"sensitive-user-token-abc"}',
+            );
+          },
+        },
+        workspaceScope: {
+          async getDefaultScope() {
+            return { kind: "login-denied", reason: "no-workspace" };
+          },
+          async listWorkspaces() {
+            return { workspaces: [], canCreate: false };
+          },
+          async switchWorkspace() {
+            return { kind: "switched", scope: { db: "ws_recent", ac: "admin" } };
+          },
+        },
+      });
+
+      const response = await app.fetch(
+        new Request("http://localhost/api/session/switch-workspace", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ workspaceSlug: "recent" }),
+        }),
+      );
+
+      expect(response.status).toBe(502);
+      const responseText = JSON.stringify(await response.json());
+      expect(responseText).toContain("idp-scope-exchange-failed");
+      expect(responseText).not.toContain("sensitive-user-token-abc");
+
+      const logText = logs.join("\n");
+      expect(logText).not.toContain("sensitive-user-token-abc");
+    } finally {
+      console.error = originalConsoleError;
+      console.log = originalConsoleLog;
+    }
+  });
+
   test("security audit: drift and forbidden errors do not leak token or secrets in logs", async () => {
     const logs: unknown[] = [];
     const originalConsoleError = console.error;

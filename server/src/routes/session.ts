@@ -52,9 +52,13 @@ export function createSessionRoutes(
           subjectToken: c.var.user.rawToken,
           scope: result.scope,
         });
-      } catch(e) {
-          console.log(e)
-        throw new HttpError(502, "idp-scope-exchange-failed", "IdP token scope exchange failed", e);
+      } catch (e) {
+        // 不打印原始 error、不放进响应 details：上游 message 可能携带 token。
+        console.error("[session] idp scope exchange failed", {
+          scope: result.scope,
+          error: e instanceof Error ? e.name : typeof e,
+        });
+        throw new HttpError(502, "idp-scope-exchange-failed", "IdP token scope exchange failed");
       }
 
       return c.json({

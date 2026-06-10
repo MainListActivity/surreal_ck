@@ -13,6 +13,25 @@ export interface IdpTokenScopeAdapter {
   }): Promise<IdpScopeTokenResult>;
 }
 
+// IdP 错误响应可能回显 subject_token 或携带 token / secret 字段；
+// 进入 error message（进而进入日志）前必须先脱敏。
+const SENSITIVE_KEY_PATTERN = /token|secret|password|authorization/i;
+
+function redactSensitive(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(redactSensitive);
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [
+        key,
+        SENSITIVE_KEY_PATTERN.test(key) ? "[REDACTED]" : redactSensitive(entry),
+      ]),
+    );
+  }
+  return value;
+}
+
 export function createIdpTokenScopeAdapter(): IdpTokenScopeAdapter {
   return {
     async updateUserScope({ subjectToken, scope }) {
@@ -40,7 +59,9 @@ export function createIdpTokenScopeAdapter(): IdpTokenScopeAdapter {
       const body = await response.json().catch(() => null);
 
       if (!response.ok) {
-        throw new Error(`IdP scope update failed with ${response.status}, ${JSON.stringify(body)}`);
+        throw new Error(
+          `IdP scope update failed with ${response.status}, ${JSON.stringify(redactSensitive(body))}`,
+        );
       }
 
       if (!body || typeof body !== "object" || typeof (body as { access_token?: unknown }).access_token !== "string") {
