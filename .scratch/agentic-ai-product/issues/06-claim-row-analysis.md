@@ -1,5 +1,5 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: done
+Label: done
 
 # AI-006 — 行分析提案卡：逐字段确认后直连写入（前端半边）
 
@@ -54,3 +54,15 @@ Router workflow 在行分析子 agent 产出 `RowPatchProposal` 后进入 workfl
 - 行分析 agent 的领域提示与"债权"措辞去硬编码（claims-vertical 簇）。
 - dashboard-draft 确认卡（D3-05）。
 - 服务端提案生成逻辑的任何改动（已落地）。
+
+## Comments
+
+**2026-06-10（agent，TDD 完成）**
+
+前端半边已落地，验收逐条对应：
+
+- 纯逻辑状态机 `web/src/lib/row-patch-card.ts`：`createRowPatchCard`（pending → writing/rejecting → done/rejected/error），默认全部接受、逐字段 `setAccepted`、`confirm` 只下发被接受字段、零接受 = 全部忽略走 write-rejected；写入失败/resume 失败均回 error 态保留卡片可重试，**不**以 write-confirmed resume。
+- 直连写入 `writeRowPatch`：按 sheetId 在 editorStore.sheets 找目标表后交给 `saveCells`（与手工编辑同一套 coerce/validate/边界包装；date 字符串 → `Date` → SDK CBOR `DateTime` tag，reference 字符串 → `StringRecordId`），错误经 `describeWriteError` 翻成中文。
+- `ai-drawer.ts`：suspend `await-write-confirm` 携带 row-patch-proposal 时 pending intent 带 `proposal`；新增 `session.resumeWrite(messageId, decision)`——resume 成功才 dismiss 卡片并重连 stream，失败上抛给卡片、卡片不消失。
+- 组件 `RowPatchCard.svelte`（低置信度黄色视觉区分 + 中文错误展示）接入 `AiDrawer.svelte` 的 pending intent 渲染。
+- 测试：`row-patch-card.test.ts` 10 个（状态机 + fake conn 写入断言含 record/datetime 边界类型）、`ai-drawer.test.ts` 新增 3 个（提案提取 / resumeWrite 成功到 done / 失败保留）。web 全量 229 pass，tsc + svelte-check 0 错误 0 警告。

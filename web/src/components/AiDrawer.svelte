@@ -4,6 +4,7 @@
   import { onDestroy } from "svelte";
   import { marked } from "marked";
   import Icon from "./Icon.svelte";
+  import RowPatchCard from "./RowPatchCard.svelte";
   import { api } from "../lib/api";
   import { connectWs } from "../lib/ws";
   import { buildDrawerContextSnapshot } from "../lib/ai-context-source";
@@ -15,7 +16,9 @@
     type AiDrawerState,
     type ChatRunStart,
   } from "../lib/ai-drawer";
-  import type { ChatStreamEvent, ResumeDecision } from "@surreal-ck/shared";
+  import { writeRowPatch, type RowPatchWriteResult } from "../lib/row-patch-card";
+  import { getSurreal } from "../lib/surreal";
+  import type { ChatStreamEvent, ResumeDecision, RowPatchProposal } from "@surreal-ck/shared";
 
   type Props = {
     open?: boolean;
@@ -138,6 +141,29 @@
 
   function useExample(text: string): void {
     prompt = text;
+  }
+
+  /**
+   * 提案卡确认后的直连写入：用当前 workspace 的浏览器 SurrealDB 会话，
+   * 复用编辑器同一套 saveCells 路径（coerce / validate / RecordId·Date 边界包装）。
+   * 失败（含 PERMISSIONS 拒绝）返回中文错误，卡片保留可重试。
+   */
+  function writeProposalValues(proposal: RowPatchProposal) {
+    return async (values: Record<string, unknown>): Promise<RowPatchWriteResult> => {
+      let conn;
+      try {
+        conn = getSurreal();
+      } catch {
+        return { ok: false, message: "尚未连接数据库，请刷新页面后重试。" };
+      }
+      return writeRowPatch({
+        conn,
+        sheets: editorStore.sheets,
+        sheetId: proposal.sheetId,
+        recordId: proposal.recordId,
+        values,
+      });
+    };
   }
 
   function visiblePendingFor(messageId: string) {
@@ -271,6 +297,12 @@
                       </button>
                     {/each}
                   </div>
+                {:else if pending.proposal}
+                  <RowPatchCard
+                    proposal={pending.proposal}
+                    write={writeProposalValues(pending.proposal)}
+                    resume={(decision) => session.resumeWrite(pending.messageId, decision.kind)}
+                  />
                 {:else}
                   <span>等待确认</span>
                 {/if}

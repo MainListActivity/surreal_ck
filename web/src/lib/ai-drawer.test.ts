@@ -41,7 +41,9 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function harness() {
+function harness(over: {
+  resumeChat?: (runId: string, decision: ResumeDecision) => Promise<{ runId: string; streamUrl: string; streamToken: string }>;
+} = {}) {
   const start = deferred<{ runId: string; streamUrl: string; streamToken: string }>();
   const starts: Array<{ message: string; contextSnapshot?: AiContextSnapshot }> = [];
   const resumes: Array<{ runId: string; decision: ResumeDecision }> = [];
@@ -55,6 +57,7 @@ function harness() {
         return start.promise;
       },
       async resumeChat(runId, decision) {
+        if (over.resumeChat) return over.resumeChat(runId, decision);
         resumes.push({ runId, decision });
         return { runId, streamUrl: `/api/chat/stream?runId=${runId}`, streamToken: "resume-token" };
       },
@@ -177,6 +180,108 @@ describe("AI 抽屉会话", () => {
     expect(done.sending).toBe(false);
     expect(done.activeRun).toBeNull();
     expect(done.messages[1]?.content).toBe("已打开 Beta");
+  });
+
+  test("suspend await-write-confirm 携带 row-patch-proposal 时，pending intent 带上提案供卡片渲染", async () => {
+    const h = harness();
+
+    const sending = h.session.sendMessage("分析这行债权", context());
+    h.start.resolve({ runId: "run-1", streamUrl: "/api/chat/stream?runId=run-1", streamToken: "stream-token" });
+    await sending;
+
+    const proposal = {
+      type: "row-patch-proposal" as const,
+      sheetId: "sheet:claims",
+      recordId: "ent_claim:one",
+      proposals: [
+        { field: "amount", currentValue: 100, suggestedValue: 250, basis: "依据合同附件二", confidence: "high" as const },
+      ],
+    };
+    h.emit({
+      kind: "suspend",
+      runId: "run-1",
+      payload: { kind: "await-write-confirm", runId: "run-1", intent: proposal },
+    });
+
+    const state = h.session.snapshot();
+    expect(state.sending).toBe(false);
+    expect(state.pendingIntents).toEqual([
+      {
+        messageId: "id-2",
+        runId: "run-1",
+        kind: "await-write-confirm",
+        proposal,
+        dismissed: false,
+      },
+    ]);
+  });
+
+  test("resumeWrite 成功：dismiss 提案卡、按 decision resume 并重连 stream 直到 done", async () => {
+    const h = harness();
+
+    const sending = h.session.sendMessage("分析这行债权", context());
+    h.start.resolve({ runId: "run-1", streamUrl: "/api/chat/stream?runId=run-1", streamToken: "stream-token" });
+    await sending;
+    h.emit({
+      kind: "suspend",
+      runId: "run-1",
+      payload: {
+        kind: "await-write-confirm",
+        runId: "run-1",
+        intent: {
+          type: "row-patch-proposal",
+          sheetId: "sheet:claims",
+          recordId: "ent_claim:one",
+          proposals: [],
+        },
+      },
+    });
+
+    await h.session.resumeWrite("id-2", "write-confirmed");
+
+    expect(h.resumes).toEqual([{ runId: "run-1", decision: { kind: "write-confirmed" } }]);
+    expect(h.session.snapshot().pendingIntents[0]?.dismissed).toBe(true);
+    expect(h.handles).toHaveLength(2);
+
+    h.emit({ kind: "done", runId: "run-1", message: assistantMessage("已写入 1 个字段"), toolCalls: [] }, 1);
+
+    const done = h.session.snapshot();
+    expect(done.sending).toBe(false);
+    expect(done.activeRun).toBeNull();
+    expect(done.messages[1]?.content).toBe("已写入 1 个字段");
+  });
+
+  test("resumeWrite 失败：错误上抛、提案卡保留（不 dismiss）、sending 复位", async () => {
+    const h = harness({
+      resumeChat: async () => {
+        throw new Error("AI 会话续跑失败。");
+      },
+    });
+
+    const sending = h.session.sendMessage("分析这行债权", context());
+    h.start.resolve({ runId: "run-1", streamUrl: "/api/chat/stream?runId=run-1", streamToken: "stream-token" });
+    await sending;
+    h.emit({
+      kind: "suspend",
+      runId: "run-1",
+      payload: {
+        kind: "await-write-confirm",
+        runId: "run-1",
+        intent: {
+          type: "row-patch-proposal",
+          sheetId: "sheet:claims",
+          recordId: "ent_claim:one",
+          proposals: [],
+        },
+      },
+    });
+
+    await expect(h.session.resumeWrite("id-2", "write-rejected")).rejects.toThrow("AI 会话续跑失败。");
+
+    const state = h.session.snapshot();
+    expect(state.pendingIntents[0]?.dismissed).toBe(false);
+    expect(state.sending).toBe(false);
+    expect(state.progressHint).toBeNull();
   });
 
   test("workspace 切换时主动关闭未完成的 chat stream", async () => {

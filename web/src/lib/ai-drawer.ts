@@ -5,6 +5,7 @@ import type {
   AiToolCallRecord,
   ChatStreamEvent,
   ResumeDecision,
+  RowPatchProposal,
 } from "@surreal-ck/shared";
 
 export type AiDrawerContextSnapshot = AiContextSnapshot & {
@@ -51,6 +52,8 @@ export type PendingAiIntent = {
     resourceType?: string;
     sourceUrl?: string;
   }>;
+  /** 仅 kind === "await-write-confirm" 且 intent 是行分析提案时携带，驱动提案卡渲染。 */
+  proposal?: RowPatchProposal;
   dismissed: boolean;
 };
 
@@ -77,6 +80,7 @@ export type AiDrawerSession = {
   snapshot(): AiDrawerState;
   sendMessage(message: string, contextSnapshot: AiDrawerContextSnapshot): Promise<void>;
   chooseCandidate(messageId: string, candidateId: string): Promise<void>;
+  resumeWrite(messageId: string, decision: "write-confirmed" | "write-rejected"): Promise<void>;
   syncWorkspace(workspaceSlug: string | null | undefined): void;
   dispose(): void;
 };
@@ -221,12 +225,14 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
           });
         }
       } else if (event.payload.kind === "await-write-confirm") {
+        const intent = event.payload.intent;
         state.pendingIntents = [
           ...state.pendingIntents,
           {
             messageId,
             runId: event.runId,
             kind: event.payload.kind,
+            ...(intent.type === "row-patch-proposal" ? { proposal: intent } : {}),
             dismissed: false,
           },
         ];
@@ -274,6 +280,33 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
       state.progressHint = null;
       state.sendError = error instanceof Error ? error.message : String(error);
       emitChange();
+    }
+  }
+
+  /**
+   * 提案卡确认/忽略后的 resume：成功才 dismiss 卡片并重连 stream；
+   * 失败把错误上抛给卡片状态机展示（卡片保留可重试），不污染 sendError。
+   */
+  async function resumeWrite(messageId: string, decision: "write-confirmed" | "write-rejected"): Promise<void> {
+    const pending = state.pendingIntents.find((intent) =>
+      intent.messageId === messageId && !intent.dismissed && intent.kind === "await-write-confirm",
+    );
+    if (!pending) return;
+
+    state.sending = true;
+    state.sendError = null;
+    state.progressHint = ROUTING_HINT;
+    emitChange();
+
+    try {
+      const run = await options.chatClient.resumeChat(pending.runId, { kind: decision });
+      markPendingDismissed(messageId);
+      connectRun(run, messageId);
+    } catch (error) {
+      state.sending = false;
+      state.progressHint = null;
+      emitChange();
+      throw error;
     }
   }
 
@@ -334,6 +367,7 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
     snapshot: cloneState,
     sendMessage,
     chooseCandidate,
+    resumeWrite,
     syncWorkspace,
     dispose() {
       closeActiveStream();
