@@ -1,5 +1,5 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: done
+Label: done
 
 # AI-007 — AI 上下文快照：shared 测试套件 + Web 选择态接线
 
@@ -43,3 +43,22 @@ Label: ready-for-agent
 **Out of scope:**
 - 快照字段瘦身 / sidecar 字段裁剪（独立优化，不混入本 issue）。
 - 服务端如何消费快照（Router workflow 已有合约）。
+
+## Comments
+
+**2026-06-10 — done（两个半边一起收口；D2-08 已落地，接线半边解锁）**
+
+测试半边：
+- `shared/src/ai-context.test.ts`（12 用例）：四种选择状态、陈旧态清除三连（切 sheet / 切 workbook / 取消选行）、label 优先级（name > code > id，id 为 RecordId 字符串形态）、快照深拷贝独立性（消息历史不被后续编辑污染）。纯函数零网络。
+- 测试语料刻意用中性领域词（客户/订单），不带法律词汇（claims-vertical 约定）。
+
+接线半边：
+- `web/src/lib/ai-context-source.ts` + 测试：`buildDrawerContextSnapshot` 把 routeScreen + 编辑器选择态映射成 `AiDrawerContextSnapshot`；非 editor 路由忽略编辑器状态；每次发消息现算，不缓存 → 不发陈旧快照。
+- editor store 新增 `workbook: {id, name}`（`loadWorkbook` 时 `SELECT name FROM $wb`，绑定走 `toRecordId`；读不到回退 RecordId 字符串；reset 清空），runes 层镜像同步；`EditorTopbar` 顺手改用真实名称（之前显示裸 id）。
+- `AiDrawer.svelte`：发消息从 `editorStore`/`editorUi` 单例构建完整快照；头部与空态展示 `contextHint`（`$derived`，随选择变化更新），提示与提交快照同源（所见即所发）。
+
+顺手修：`shared/sql/workspace-template/index.test.ts` 一条陈旧断言（c9a3972 已把 column_defs 改为 `DEFINE FIELD OVERWRITE`，断言未跟上；HEAD 上即失败，与本 issue 无关）。
+
+校验：shared 36 / server 148 / web 216 全过；web tsc + svelte-check 0 错误；shared typecheck 过。
+
+下游解锁：AI-006（行分析提案卡）此前缺的「选中行 record id 进快照」已就绪。

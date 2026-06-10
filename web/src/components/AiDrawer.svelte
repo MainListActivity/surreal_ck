@@ -6,6 +6,9 @@
   import Icon from "./Icon.svelte";
   import { api } from "../lib/api";
   import { connectWs } from "../lib/ws";
+  import { buildDrawerContextSnapshot } from "../lib/ai-context-source";
+  import { editorStore } from "../lib/editor-store.svelte";
+  import { editorUi } from "../features/editor/lib/editor-ui.svelte";
   import {
     createAiDrawerSession,
     type AiDrawerContextSnapshot,
@@ -104,21 +107,27 @@
     session.dispose();
   });
 
+  /**
+   * 发消息时从编辑器当前选择态构建完整快照——每次现算，不缓存，
+   * 选择变化后发送的永远是当下状态，不会带陈旧快照。
+   */
   function contextSnapshot(): AiDrawerContextSnapshot {
-    const label = routeScreen === "editor"
-      ? "当前在表格工作簿"
-      : routeScreen === "dashboard"
-        ? "当前在仪表盘"
-        : "当前在工作区";
-    return {
-      workspaceSlug: workspaceSlug ?? undefined,
-      route: { screen: routeScreen },
-      workbook: null,
-      sheet: null,
-      selectedRow: null,
-      contextHint: label,
-    };
+    return buildDrawerContextSnapshot({
+      workspaceSlug,
+      routeScreen,
+      editor: {
+        workbook: editorStore.workbook,
+        sheets: editorStore.sheets,
+        activeSheetId: editorStore.activeSheetId,
+        rows: editorStore.rows,
+        visibleColumns: editorStore.visibleColumns,
+        selectedRowId: editorUi.selectedRowId,
+      },
+    });
   }
+
+  // 头部提示与提交的快照走同一构建函数，保证「所见即所发」。
+  const contextHint = $derived(contextSnapshot().contextHint);
 
   async function sendPrompt(): Promise<void> {
     const next = prompt;
@@ -175,7 +184,7 @@
     <header>
       <div class="header-copy">
         <strong>AI 助手</strong>
-        <span>{workspaceSlug ?? "workspace"}</span>
+        <span title={contextHint}>{contextHint}</span>
       </div>
       <button type="button" class="icon-btn" aria-label="关闭 AI 助手" onclick={() => onclose?.()}>
         <Icon name="x" size={16} />
@@ -203,7 +212,7 @@
         <div class="empty">
           <span><Icon name="ai" size={22} /></span>
           <strong>当前上下文</strong>
-          <small>{routeScreen}</small>
+          <small>{contextHint}</small>
         </div>
       {:else}
         <div class="message-list">

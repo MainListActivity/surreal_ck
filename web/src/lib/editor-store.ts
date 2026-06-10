@@ -70,12 +70,19 @@ export type SheetMeta = {
   columns: GridColumnDef[];
 };
 
+/** 当前工作簿的展示元数据；AI 上下文快照与 Topbar 共用。 */
+export type WorkbookMeta = {
+  id: RecordIdString;
+  name: string;
+};
+
 export type EditorState = {
   loading: boolean;
   saving: boolean;
   error: string | null;
   saveError: string | null;
   workbookId: RecordIdString | null;
+  workbook: WorkbookMeta | null;
   activeSheetId: RecordIdString | null;
   sheets: SheetMeta[];
   columns: GridColumnDef[];
@@ -91,6 +98,7 @@ export type EditorSnapshot = {
   saving: boolean;
   error: string | null;
   saveError: string | null;
+  workbook: WorkbookMeta | null;
   activeSheetId: RecordIdString | null;
   sheets: SheetMeta[];
   columns: GridColumnDef[];
@@ -127,6 +135,7 @@ export function createEditorStore(deps: EditorDeps) {
     error: null,
     saveError: null,
     workbookId: null,
+    workbook: null,
     activeSheetId: null,
     sheets: [],
     columns: [],
@@ -143,6 +152,7 @@ export function createEditorStore(deps: EditorDeps) {
       saving: state.saving,
       error: state.error,
       saveError: state.saveError,
+      workbook: state.workbook,
       activeSheetId: state.activeSheetId,
       sheets: state.sheets,
       columns: state.columns,
@@ -195,7 +205,11 @@ export function createEditorStore(deps: EditorDeps) {
     state.workbookId = workbookId as RecordIdString;
     emit();
     try {
-      const sheets = await fetchSheets(deps.getConn(), workbookId);
+      const [sheets, workbookName] = await Promise.all([
+        fetchSheets(deps.getConn(), workbookId),
+        fetchWorkbookName(deps.getConn(), workbookId),
+      ]);
+      state.workbook = { id: workbookId as RecordIdString, name: workbookName };
       if (!sheets.length) {
         state.sheets = [];
         state.activeSheetId = null;
@@ -538,6 +552,7 @@ export function createEditorStore(deps: EditorDeps) {
   function reset(): void {
     stopLive();
     state.workbookId = null;
+    state.workbook = null;
     state.activeSheetId = null;
     state.sheets = [];
     state.columns = [];
@@ -594,6 +609,7 @@ export function createEditorStore(deps: EditorDeps) {
     get saving() { return state.saving; },
     get error() { return state.error; },
     get saveError() { return state.saveError; },
+    get workbook() { return state.workbook; },
     get activeSheetId() { return state.activeSheetId; },
     get sheets() { return state.sheets; },
     get columns() { return state.columns; },
@@ -639,6 +655,16 @@ async function fetchSheets(conn: SurrealConn, workbookId: string): Promise<Sheet
     tableName: String(rec.table_name),
     columns: ((rec.column_defs as StoredGridFieldDef[] | undefined) ?? []).map(storedColumnToDTO),
   }));
+}
+
+/** 读 workbook 记录的展示名；读不到（无权限 / 已删）时回退到 RecordId 字符串。 */
+async function fetchWorkbookName(conn: SurrealConn, workbookId: string): Promise<string> {
+  const records = await conn.query<{ name?: unknown }>(
+    "SELECT name FROM $wb",
+    { wb: toRecordId(workbookId) },
+  );
+  const name = records[0]?.name;
+  return typeof name === "string" && name.trim() ? name : workbookId;
 }
 
 /** createRecord 返回的原始记录裁成 GridRow（剔系统字段、只留已知列）。 */

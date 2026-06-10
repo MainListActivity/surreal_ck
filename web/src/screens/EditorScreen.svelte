@@ -92,7 +92,7 @@
 </script>
 
 <section class="editor">
-  <EditorTopbar workbookName={workbookId} {onback} />
+  <EditorTopbar workbookName={editorStore.workbook?.name ?? workbookId} {onback} />
 
   <div class="body">
     <EditorWorkbookNav onswitchsheet={handleSwitchSheet} />

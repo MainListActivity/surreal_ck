@@ -36,7 +36,11 @@ type Recorder = {
  * fake conn：第一条 `SELECT * FROM sheet ...` 返回 sheet 列表，其余 SELECT 返回行数据。
  * 用 `rows` 注入业务行；createRecord 给 draft 晋升一个真实 id。
  */
-function setup(opts: { rows?: Array<Record<string, unknown>>; sheets?: Array<Record<string, unknown>> } = {}) {
+function setup(opts: {
+  rows?: Array<Record<string, unknown>>;
+  sheets?: Array<Record<string, unknown>>;
+  workbookName?: string;
+} = {}) {
   const rec: Recorder = { queries: [], updates: [], creates: [], deletes: [], live: null };
   const sheets = opts.sheets ?? [sheetRecord()];
   const rows = opts.rows ?? [];
@@ -51,6 +55,7 @@ function setup(opts: { rows?: Array<Record<string, unknown>>; sheets?: Array<Rec
     query: (async (sql: string, bindings?: Record<string, unknown>) => {
       rec.queries.push({ sql, bindings });
       if (/FROM sheet/i.test(sql)) return sheets;
+      if (/SELECT name FROM/i.test(sql)) return [{ name: opts.workbookName ?? "项目台账" }];
       return rows;
     }) as SurrealConn["query"],
     liveTable: (async (_table: string, onMessage: (m: LiveMessage) => void) => {
@@ -124,6 +129,28 @@ describe("loadWorkbook — 直连读 sheet 列表 + 首个 sheet 的行", () => 
     expect(store.sheets.map((s) => s.label)).toEqual(["工作表 1", "工作表 2"]);
     const last = snapshots.at(-1)!;
     expect(last.sheets.map((s) => s.id)).toEqual(["sheet:s1", "sheet:s2"]);
+  });
+
+  test("读取 workbook 名称：store.workbook = {id, name} 并随快照发出（AI 快照 / Topbar 消费）", async () => {
+    const { store, rec, snapshots } = setup({ workbookName: "项目台账" });
+
+    await store.loadWorkbook("workbook:wb1");
+
+    expect(store.workbook).toEqual({ id: "workbook:wb1", name: "项目台账" });
+    expect(snapshots.at(-1)!.workbook).toEqual({ id: "workbook:wb1", name: "项目台账" });
+    // workbook record 绑定同 sheet 查询：必须包成 RecordId，不能是裸 string。
+    const wbQuery = rec.queries.find((q) => /SELECT name FROM/i.test(q.sql))!;
+    expect((wbQuery.bindings as { wb: unknown }).wb).toBeInstanceOf(StringRecordId);
+  });
+
+  test("reset 后 workbook 清空（离开工作簿不残留旧上下文）", async () => {
+    const { store } = setup({ workbookName: "项目台账" });
+    await store.loadWorkbook("workbook:wb1");
+    expect(store.workbook).not.toBeNull();
+
+    store.reset();
+
+    expect(store.workbook).toBeNull();
   });
 });
 

@@ -18,6 +18,7 @@ import {
   type EditorSnapshot,
   type SheetMeta,
   type TableViewAdapter,
+  type WorkbookMeta,
 } from "./editor-store";
 
 export { isDraftRowId } from "./record-drafts";
@@ -27,6 +28,7 @@ export type {
   TableViewActions,
   TableViewCardRenderers,
   SheetMeta,
+  WorkbookMeta,
 } from "./editor-store";
 
 /**
@@ -42,6 +44,7 @@ const reactive = $state<EditorSnapshot>({
   saving: false,
   error: null,
   saveError: null,
+  workbook: null,
   activeSheetId: null,
   sheets: [],
   columns: [],
@@ -57,6 +60,7 @@ const store = createEditorStore({
     reactive.saving = snapshot.saving;
     reactive.error = snapshot.error;
     reactive.saveError = snapshot.saveError;
+    reactive.workbook = snapshot.workbook;
     reactive.activeSheetId = snapshot.activeSheetId;
     reactive.sheets = snapshot.sheets;
     reactive.columns = snapshot.columns;
@@ -102,6 +106,7 @@ export const editorStore = {
   get saving(): boolean { return reactive.saving; },
   get error(): string | null { return reactive.error; },
   get saveError(): string | null { return reactive.saveError; },
+  get workbook(): WorkbookMeta | null { return reactive.workbook; },
   get activeSheetId(): RecordIdString | null { return reactive.activeSheetId; },
   get sheets(): SheetMeta[] { return reactive.sheets; },
   get columns(): GridColumnDef[] { return reactive.columns; },

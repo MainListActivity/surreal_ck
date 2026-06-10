@@ -43,7 +43,8 @@ describe("workspace template scripts", () => {
     expect(sql).toMatch(/FOR create, update, delete WHERE \$auth\.is_admin = true/);
     // searchRecord 需要 sheet 的 table_name / column_defs
     expect(sql).toContain("DEFINE FIELD IF NOT EXISTS table_name ON TABLE sheet");
-    expect(sql).toContain("DEFINE FIELD IF NOT EXISTS column_defs ON TABLE sheet");
+    // column_defs 用 OVERWRITE（c9a3972：旧库该字段类型不对，需要覆盖重定义才能写入 sheet）
+    expect(sql).toMatch(/DEFINE FIELD OVERWRITE column_defs ON TABLE sheet/);
   });
 
   test("workflow_run 表归属 workspace database：无 workspace 字段，owner_user 默认归因到当前会话", async () => {
