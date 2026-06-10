@@ -43,7 +43,7 @@ export type ActiveAiRun = {
 export type PendingAiIntent = {
   messageId: string;
   runId: string;
-  kind: "ambiguous-candidates" | "resource-candidates" | "await-write-confirm";
+  kind: "ambiguous-candidates" | "resource-candidates" | "await-write-confirm" | "manual-research";
   candidates?: Array<{
     id: string;
     label: string;
@@ -54,6 +54,12 @@ export type PendingAiIntent = {
   }>;
   /** 仅 kind === "await-write-confirm" 且 intent 是行分析提案时携带，驱动提案卡渲染。 */
   proposal?: RowPatchProposal;
+  /** 仅 kind === "manual-research" 携带：人工检索 panel 的会话上下文（RR-012）。 */
+  research?: {
+    sessionId: string;
+    query: string;
+    resourceType: string;
+  };
   dismissed: boolean;
 };
 
@@ -81,6 +87,8 @@ export type AiDrawerSession = {
   sendMessage(message: string, contextSnapshot: AiDrawerContextSnapshot): Promise<void>;
   chooseCandidate(messageId: string, candidateId: string): Promise<void>;
   resumeWrite(messageId: string, decision: "write-confirmed" | "write-rejected"): Promise<void>;
+  /** 人工检索完成：用已保存的资源 id resume workflow。成功才 dismiss 检索卡，失败上抛可重试。 */
+  finishResearch(messageId: string, resourceIds: string[]): Promise<void>;
   syncWorkspace(workspaceSlug: string | null | undefined): void;
   dispose(): void;
 };
@@ -224,6 +232,27 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
               : "找到多个候选，请先选择一个结果。",
           });
         }
+      } else if (event.payload.kind === "manual-research") {
+        state.pendingIntents = [
+          ...state.pendingIntents,
+          {
+            messageId,
+            runId: event.runId,
+            kind: "manual-research",
+            research: {
+              sessionId: event.payload.sessionId,
+              query: event.payload.query,
+              resourceType: event.payload.resourceType,
+            },
+            dismissed: false,
+          },
+        ];
+        const message = state.messages.find((item) => item.id === messageId);
+        if (message && !message.content.trim()) {
+          patchMessage(messageId, {
+            content: "资源库没有找到足够相关的资料，已开启人工检索；保存资源并完成检索后我会继续回答。",
+          });
+        }
       } else if (event.payload.kind === "await-write-confirm") {
         const intent = event.payload.intent;
         state.pendingIntents = [
@@ -310,6 +339,33 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
     }
   }
 
+  /** 与 resumeWrite 同语义：成功才 dismiss 检索卡并重连 stream；失败上抛，检索卡保留可重试。 */
+  async function finishResearch(messageId: string, resourceIds: string[]): Promise<void> {
+    const pending = state.pendingIntents.find((intent) =>
+      intent.messageId === messageId && !intent.dismissed && intent.kind === "manual-research",
+    );
+    if (!pending || resourceIds.length === 0) return;
+
+    state.sending = true;
+    state.sendError = null;
+    state.progressHint = ROUTING_HINT;
+    emitChange();
+
+    try {
+      const run = await options.chatClient.resumeChat(pending.runId, {
+        kind: "manual-research-completed",
+        resourceIds,
+      });
+      markPendingDismissed(messageId);
+      connectRun(run, messageId);
+    } catch (error) {
+      state.sending = false;
+      state.progressHint = null;
+      emitChange();
+      throw error;
+    }
+  }
+
   async function sendMessage(message: string, contextSnapshot: AiDrawerContextSnapshot): Promise<void> {
     const content = message.trim();
     if (!content || state.activeRun) return;
@@ -368,6 +424,7 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
     sendMessage,
     chooseCandidate,
     resumeWrite,
+    finishResearch,
     syncWorkspace,
     dispose() {
       closeActiveStream();

@@ -35,6 +35,10 @@ const EnvSchema = z.object({
   AI_MODEL: z.string().min(1).optional(),
   AI_API_KEY: z.string().min(1).optional(),
   AI_BASE_URL: z.string().url().optional(),
+
+  // 资源保存确认动作的 embedding provider key（与 chat 模型设置分离；openai-compatible）。
+  // 未配置时：无 profile 的 workspace 照常保存（embedding disabled），有 profile 的保存会失败。
+  EMBEDDING_API_KEY: z.string().min(1).optional(),
 });
 
 export type ServerEnv = z.infer<typeof EnvSchema>;

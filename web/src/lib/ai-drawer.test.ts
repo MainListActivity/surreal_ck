@@ -284,6 +284,98 @@ describe("AI 抽屉会话", () => {
     expect(state.progressHint).toBeNull();
   });
 
+  test("suspend manual-research：pending intent 携带检索会话上下文，驱动检索 panel 打开", async () => {
+    const h = harness();
+
+    const sending = h.session.sendMessage("查相似案例", context());
+    h.start.resolve({ runId: "run-1", streamUrl: "/api/chat/stream?runId=run-1", streamToken: "stream-token" });
+    await sending;
+
+    h.emit({
+      kind: "suspend",
+      runId: "run-1",
+      payload: {
+        kind: "manual-research",
+        runId: "run-1",
+        sessionId: "research_session:s1",
+        workspaceId: "ws_demo",
+        query: "查相似案例",
+        resourceType: "generic_note",
+      },
+    });
+
+    const state = h.session.snapshot();
+    expect(state.sending).toBe(false);
+    expect(state.pendingIntents).toEqual([
+      {
+        messageId: "id-2",
+        runId: "run-1",
+        kind: "manual-research",
+        research: { sessionId: "research_session:s1", query: "查相似案例", resourceType: "generic_note" },
+        dismissed: false,
+      },
+    ]);
+    expect(state.messages[1]?.content).toContain("人工检索");
+  });
+
+  test("finishResearch：用全部已保存资源 id resume；成功才 dismiss 检索卡", async () => {
+    const h = harness();
+
+    const sending = h.session.sendMessage("查相似案例", context());
+    h.start.resolve({ runId: "run-1", streamUrl: "/api/chat/stream?runId=run-1", streamToken: "stream-token" });
+    await sending;
+    h.emit({
+      kind: "suspend",
+      runId: "run-1",
+      payload: {
+        kind: "manual-research",
+        runId: "run-1",
+        sessionId: "research_session:s1",
+        workspaceId: "ws_demo",
+        query: "查相似案例",
+        resourceType: "generic_note",
+      },
+    });
+
+    await h.session.finishResearch("id-2", ["resource_item:r1", "resource_item:r2"]);
+
+    expect(h.resumes).toEqual([
+      {
+        runId: "run-1",
+        decision: { kind: "manual-research-completed", resourceIds: ["resource_item:r1", "resource_item:r2"] },
+      },
+    ]);
+    expect(h.session.snapshot().pendingIntents[0]?.dismissed).toBe(true);
+    expect(h.handles).toHaveLength(2);
+  });
+
+  test("finishResearch 失败：错误上抛、检索卡保留（不 dismiss）", async () => {
+    const h = harness({
+      resumeChat: async () => {
+        throw new Error("resume 失败");
+      },
+    });
+
+    const sending = h.session.sendMessage("查相似案例", context());
+    h.start.resolve({ runId: "run-1", streamUrl: "/api/chat/stream?runId=run-1", streamToken: "stream-token" });
+    await sending;
+    h.emit({
+      kind: "suspend",
+      runId: "run-1",
+      payload: {
+        kind: "manual-research",
+        runId: "run-1",
+        sessionId: "research_session:s1",
+        workspaceId: "ws_demo",
+        query: "查相似案例",
+        resourceType: "generic_note",
+      },
+    });
+
+    await expect(h.session.finishResearch("id-2", ["resource_item:r1"])).rejects.toThrow("resume 失败");
+    expect(h.session.snapshot().pendingIntents[0]?.dismissed).toBe(false);
+  });
+
   test("workspace 切换时主动关闭未完成的 chat stream", async () => {
     const h = harness();
 

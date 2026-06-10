@@ -12,6 +12,9 @@ import { createMemberRoutes } from "./routes/members";
 import { createSessionRoutes } from "./routes/session";
 import { createWorkspaceRoutes } from "./routes/workspaces";
 import { createAuthRoutes, createOidcTokenExchangeFromEnv, type OidcTokenExchangeOptions } from "./routes/auth";
+import { createResourceRoutes } from "./routes/resources";
+import { createOpenAiCompatibleEmbeddingProvider } from "./resources/embedding-provider";
+import type { EmbeddingProvider } from "./resources/research-save";
 import { createRunRegistry, type RunRegistry } from "./ai/run-registry";
 import { createRunBus, type RunBus } from "./ai/run-bus";
 import { createCallerSession } from "./ai/caller-session";
@@ -38,6 +41,8 @@ export type AppOptions = {
   runRegistry?: RunRegistry;
   /** router workflow 运行过程事件总线（progress/chunk/suspend/done）；默认进程内单例。 */
   runBus?: RunBus;
+  /** 资源保存确认动作的 embedding 生成器；默认 env.EMBEDDING_API_KEY 存在时接 openai-compatible。 */
+  embeddingProvider?: EmbeddingProvider;
 };
 
 type AiStreamWebSocket = ReturnType<typeof createAiStreamRoutes>["websocket"];
@@ -108,7 +113,19 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
         requireUser: options.requireUser,
       }),
     )
-    .route("/", aiStream.routes);
+    .route("/", aiStream.routes)
+    .route(
+      "/",
+      createResourceRoutes({
+        createCallerSession: options.createCallerSession ?? ((rawToken) => createCallerSession(rawToken)),
+        embeddingProvider:
+          options.embeddingProvider ??
+          (env.EMBEDDING_API_KEY
+            ? createOpenAiCompatibleEmbeddingProvider({ apiKey: env.EMBEDDING_API_KEY })
+            : undefined),
+        requireUser: options.requireUser,
+      }),
+    );
 }
 
 /** 端到端类型来源：route schema 完整的 Hono，供 web 端 hc<AppType> 推导。 */

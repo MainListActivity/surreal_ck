@@ -5,6 +5,8 @@
   import { marked } from "marked";
   import Icon from "./Icon.svelte";
   import RowPatchCard from "./RowPatchCard.svelte";
+  import ResearchPanel from "./ResearchPanel.svelte";
+  import { completeResearchSession } from "../lib/research-data";
   import { api } from "../lib/api";
   import { connectWs } from "../lib/ws";
   import { buildDrawerContextSnapshot } from "../lib/ai-context-source";
@@ -166,6 +168,17 @@
     };
   }
 
+  /**
+   * 人工检索完成：先浏览器直连把 research_session 置 completed（幂等可重试），
+   * 再用已保存资源 id resume workflow；resume 失败由 panel 显示 finishError 供重试。
+   */
+  function finishResearchFor(messageId: string) {
+    return async (input: { sessionId: string; runId?: string; resourceIds: string[] }): Promise<void> => {
+      await completeResearchSession(getSurreal(), input.sessionId);
+      await session.finishResearch(messageId, input.resourceIds);
+    };
+  }
+
   function visiblePendingFor(messageId: string) {
     return drawerState.pendingIntents.filter((item: AiDrawerState["pendingIntents"][number]) =>
       item.messageId === messageId && !item.dismissed,
@@ -297,6 +310,14 @@
                       </button>
                     {/each}
                   </div>
+                {:else if pending.kind === "manual-research" && pending.research}
+                  <ResearchPanel
+                    sessionId={pending.research.sessionId}
+                    runId={pending.runId}
+                    query={pending.research.query}
+                    resourceType={pending.research.resourceType}
+                    finish={finishResearchFor(pending.messageId)}
+                  />
                 {:else if pending.proposal}
                   <RowPatchCard
                     proposal={pending.proposal}
