@@ -1,4 +1,4 @@
-Status: needs-triage
+Status: done
 Label: needs-triage
 
 # WP-D2-07e — 引用字段（reference）直连化

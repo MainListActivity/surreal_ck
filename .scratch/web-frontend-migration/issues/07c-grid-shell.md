@@ -1,4 +1,4 @@
-Status: needs-triage
+Status: done
 Label: needs-triage
 
 # WP-D2-07c — Grid 外壳（RevoGrid + Vite worker）+ GridView

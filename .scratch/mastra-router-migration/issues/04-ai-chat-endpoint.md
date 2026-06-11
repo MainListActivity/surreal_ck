@@ -1,4 +1,4 @@
-Status: needs-triage
+Status: done
 Label: needs-triage
 
 # WP-D1-04 — Hono endpoint：POST /api/chat

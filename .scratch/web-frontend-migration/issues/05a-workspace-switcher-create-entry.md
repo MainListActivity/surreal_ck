@@ -1,4 +1,4 @@
-Status: needs-triage
+Status: done
 Label: needs-triage
 
 # WP-D2-05a — Workspace 下拉菜单的新建入口

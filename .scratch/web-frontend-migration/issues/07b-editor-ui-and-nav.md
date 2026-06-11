@@ -1,4 +1,4 @@
-Status: needs-triage
+Status: done
 Label: needs-triage
 
 # WP-D2-07b — editorUi 状态 + Workbook/Sheet 导航搬迁

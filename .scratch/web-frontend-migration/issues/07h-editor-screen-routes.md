@@ -1,4 +1,4 @@
-Status: needs-triage
+Status: done
 Label: needs-triage
 
 # WP-D2-07h — EditorScreen 装配 + 路由 + electrobun 清零

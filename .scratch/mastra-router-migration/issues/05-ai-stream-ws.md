@@ -1,4 +1,4 @@
-Status: needs-triage
+Status: done
 Label: needs-triage
 
 # WP-D1-05 — Hono WS endpoint：/api/chat/stream

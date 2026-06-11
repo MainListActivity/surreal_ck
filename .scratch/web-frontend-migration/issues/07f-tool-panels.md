@@ -1,4 +1,4 @@
-Status: needs-triage
+Status: done
 Label: needs-triage
 
 # WP-D2-07f — 工具条面板：Filter / Sort / Group + 工具条

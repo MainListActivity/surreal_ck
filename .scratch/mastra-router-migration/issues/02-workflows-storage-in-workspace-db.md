@@ -1,4 +1,4 @@
-Status: needs-triage
+Status: done
 Label: needs-triage
 
 # WP-D1-02 — WorkflowsStorage 落 workspace db workflow_run

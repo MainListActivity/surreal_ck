@@ -1,4 +1,4 @@
-Status: in-progress
+Status: done
 Label: needs-triage
 
 # WP-D2-07 — Workbook 主界面迁入（直连 SurrealDB）

@@ -1,4 +1,4 @@
-Status: needs-triage
+Status: done
 Label: needs-triage
 
 # WP-D2-07a — editorStore 重写到直连数据层（迁移 seam）

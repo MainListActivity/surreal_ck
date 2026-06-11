@@ -1,4 +1,4 @@
-Status: needs-triage
+Status: done
 Label: needs-triage
 
 # WP-D1-03 — Tool 鉴权重写：全部走调用者 session token

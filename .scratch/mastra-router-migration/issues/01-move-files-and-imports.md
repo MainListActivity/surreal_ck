@@ -1,4 +1,4 @@
-Status: needs-triage
+Status: done
 Label: needs-triage
 
 # WP-D1-01 — Router workflow 物理迁入 + import 更新
