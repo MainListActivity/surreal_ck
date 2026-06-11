@@ -56,7 +56,7 @@ export type AppWithWebSocket = Hono<AppBindings> & {
  * 生产 AI 自动装配：env 中 AI_PROVIDER / AI_MODEL / AI_API_KEY 三者齐备才接线（生产部署默认走这条）。
  * 任何一项缺失 → 返回 undefined，调用方落到 NOT_WIRED_AI_SERVICE 的 501，部署可观测、不静默。
  */
-function buildAutoAiChatService(runBus: RunBus): AiChatService | undefined {
+function buildAutoAiChatService(runBus: RunBus, embeddingProvider?: EmbeddingProvider): AiChatService | undefined {
   if (!env.AI_PROVIDER || !env.AI_MODEL || !env.AI_API_KEY) return undefined;
   const { runner, resumer } = createMastraRunner({
     settings: {
@@ -65,6 +65,8 @@ function buildAutoAiChatService(runBus: RunBus): AiChatService | undefined {
       apiKey: env.AI_API_KEY,
       baseUrl: env.AI_BASE_URL,
     },
+    // 资源检索查询向量与保存路径共用同一服务端 embedding key（RR-014）
+    embeddingProvider,
   });
   return createAiChatService({ runBus, runner, resumer });
 }
@@ -91,7 +93,12 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
   const memberManager = options.memberManager ?? createMemberManager();
   const runRegistry = options.runRegistry ?? createRunRegistry();
   const runBus = options.runBus ?? createRunBus();
-  const autoAiChatService = options.aiChatService ?? buildAutoAiChatService(runBus);
+  const embeddingProvider =
+    options.embeddingProvider ??
+    (env.EMBEDDING_API_KEY
+      ? createOpenAiCompatibleEmbeddingProvider({ apiKey: env.EMBEDDING_API_KEY })
+      : undefined);
+  const autoAiChatService = options.aiChatService ?? buildAutoAiChatService(runBus, embeddingProvider);
 
   const base = new Hono<AppBindings>();
   base.use("*", requestLogger);
@@ -118,11 +125,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
       "/",
       createResourceRoutes({
         createCallerSession: options.createCallerSession ?? ((rawToken) => createCallerSession(rawToken)),
-        embeddingProvider:
-          options.embeddingProvider ??
-          (env.EMBEDDING_API_KEY
-            ? createOpenAiCompatibleEmbeddingProvider({ apiKey: env.EMBEDDING_API_KEY })
-            : undefined),
+        embeddingProvider,
         requireUser: options.requireUser,
       }),
     );

@@ -23,6 +23,7 @@ import type {
   WorkflowSuspendedEvent,
 } from "@surreal-ck/shared";
 import type { AiChatService } from "../routes/ai-chat";
+import type { RouterPlan } from "../../ai/mastra/workflows/router-classifier";
 import type { RunBus } from "./run-bus";
 
 /**
@@ -36,6 +37,8 @@ export type ChatRunner = (input: {
   streamId: string;
   surrealSession: Surreal;
   userContext: AiContextSnapshot;
+  /** 确定性路由（如 composer 资源检索模式）；缺省走 LLM classifier。 */
+  planOverride?: RouterPlan;
   pushChunk: (e: AiMessageChunkEvent) => void;
   pushProgress: (e: AiProgressEvent) => void;
   onSuspend: (e: WorkflowSuspendedEvent) => void;
@@ -90,8 +93,12 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
   const { runBus, runner, resumer } = options;
 
   return {
-    async startChat({ runId, message, userContext, surrealSession }) {
+    async startChat({ runId, message, userContext, surrealSession, composerMode }) {
       const bridge = bridgeToBus(runBus, runId);
+      // composer 的「搜索资源」模式 = 确定性单步 plan，不经 LLM 路由（RR-011/RR-014 契约）。
+      const planOverride: RouterPlan | undefined = composerMode === "resource-search"
+        ? [{ category: "resource-retrieval", taskText: message }]
+        : undefined;
       // 后台启动：startChat 必须立即 resolve（D1-04 契约），workflow 异步跑完。
       void (async () => {
         try {
@@ -101,6 +108,7 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
             streamId: runId, // streamId 与 runId 同步，前端无需再额外配对
             surrealSession,
             userContext: userContext ?? ({} as AiContextSnapshot),
+            planOverride,
             pushChunk: bridge.pushChunk,
             pushProgress: bridge.pushProgress,
             onSuspend: bridge.onSuspend,

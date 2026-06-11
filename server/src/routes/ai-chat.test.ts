@@ -26,7 +26,7 @@ const fakeSession = { close: async () => {} } as unknown as Surreal;
 // 永远成功的会话工厂：把 rawToken authenticate 后的会话交给 service。
 const okSessionFactory: CallerSessionFactory = async () => fakeSession;
 
-type StartCall = { message: string; session: Surreal; runId: string };
+type StartCall = { message: string; session: Surreal; runId: string; composerMode?: "chat" | "resource-search" };
 type ResumeCall = { runId: string; decision: unknown; session: Surreal };
 
 function stubService(
@@ -38,7 +38,7 @@ function stubService(
     startCalls,
     resumeCalls,
     async startChat(input) {
-      startCalls.push({ message: input.message, session: input.surrealSession, runId: input.runId });
+      startCalls.push({ message: input.message, session: input.surrealSession, runId: input.runId, composerMode: input.composerMode });
       // 后台启动语义：立即 resolve（真实实现里 workflow 在后台继续跑）。
     },
     async resumeChat(input) {
@@ -70,6 +70,27 @@ function makeApp(opts: {
 }
 
 describe("POST /api/chat", () => {
+  test("composerMode=resource-search 透传给 service；非法值被丢弃", async () => {
+    const service = stubService();
+    const app = makeApp({ service });
+
+    const ok = await app.request("/api/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "查找合同解除案例", composerMode: "resource-search" }),
+    });
+    expect(ok.status).toBe(200);
+    expect(service.startCalls[0]?.composerMode).toBe("resource-search");
+
+    const bogus = await app.request("/api/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "嗨", composerMode: "root-mode" }),
+    });
+    expect(bogus.status).toBe(200);
+    expect(service.startCalls[1]?.composerMode).toBeUndefined();
+  });
+
   test("有效 token + message → 200 返回 runId / streamUrl / streamToken，并后台启动 workflow", async () => {
     const service = stubService();
     const app = makeApp({ service });

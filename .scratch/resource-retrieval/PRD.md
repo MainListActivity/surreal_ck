@@ -1,5 +1,7 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: done
+Label: done
+
+> 2026-06-11：issues 01–14 全部 done。RR-014 收口后检索读路径（搜索/详情/citation/manual-research suspend/composer 资源检索模式）已在 web-only 架构生产接线。
 
 # PRD: 通用资源检索底座
 

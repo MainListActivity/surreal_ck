@@ -14,10 +14,13 @@ import { createChitchatAgent } from "../../ai/mastra/agents/chitchat-agent";
 import { createClaimAnalysisAgent } from "../../ai/mastra/agents/claim-analysis-agent";
 import { createDashboardAgent } from "../../ai/mastra/agents/dashboard-agent";
 import {
+  answerSelectedResourceIds,
   createResourceAgent,
   makeResourceRetrievalExecutor,
   type ResourceRetrievalExecutorDeps,
 } from "../../ai/mastra/agents/resource-agent";
+import { createResourceSearchService } from "../resources/resource-search";
+import type { EmbeddingProvider } from "../resources/research-save";
 import { createNavigationAgent } from "../../ai/mastra/agents/navigation-agent";
 import type { AiSettings } from "../../ai/mastra/agents/model-config";
 import { initMastraForCurrentUser } from "../../ai/mastra";
@@ -61,6 +64,40 @@ export type AssembleExecutorDeps = {
 };
 
 /**
+ * RR-014 生产默认 resource deps：每次调用用 executor 透传进来的调用者 session
+ * 现场构造检索服务——session 属于单个 run，deps 本身无状态、可在装配期共享。
+ */
+export function createCallerSessionResourceDeps(
+  embeddingProvider?: EmbeddingProvider,
+): ResourceRetrievalExecutorDeps {
+  function requireSession(session: Surreal | undefined): Surreal {
+    if (!session) {
+      throw new Error("resource-retrieval deps 缺少调用者 surrealSession（不存在 root/service 兜底）");
+    }
+    return session;
+  }
+  return {
+    searchResources: (req, session) =>
+      createResourceSearchService({ session: requireSession(session), embeddingProvider })
+        .searchResources(req),
+    createResearchSession: (req, session) =>
+      createResourceSearchService({ session: requireSession(session) })
+        .createResearchSession(req),
+  };
+}
+
+/** resume 决策（resource-candidates-chosen / manual-research-completed）的 citation 回答生成器。 */
+function buildAnswerResourceSelection(session: Surreal): NonNullable<RouterRuntime["answerResourceSelection"]> {
+  const service = createResourceSearchService({ session });
+  return ({ resourceIds, taskText }) =>
+    answerSelectedResourceIds({
+      question: taskText,
+      resourceIds,
+      getResourceDetail: (req) => service.getResourceDetail(req),
+    });
+}
+
+/**
  * 4 个基础 agent → makeAgentExecutor 闭包；可选 resource-retrieval 走专用 executor。
  * router-workflow 的 SubAgentExecutors 类型已声明 resource-retrieval 可选，未挂时
  * 路由到 resource-retrieval 的 plan 会抛 "缺少 ... executor"——所以接入资源能力前
@@ -84,8 +121,10 @@ export function buildExecutors(agents: AssembleAgents, deps: AssembleExecutorDep
 export type CreateMastraRunnerOptions = {
   /** 模型 provider / model / apiKey 等；交给 model-config.buildModelConfig 用。 */
   settings?: AiSettings;
-  /** 资源 executor 的外部依赖；未提供则 plan 命中 resource-retrieval 会抛 missing-executor。 */
+  /** 资源 executor 的外部依赖；默认 createCallerSessionResourceDeps（调用者 session 检索服务）。 */
   resource?: ResourceRetrievalExecutorDeps;
+  /** 检索查询向量生成器（服务端持 key）；缺席时检索退化为关键词 + 索引状态推断。 */
+  embeddingProvider?: EmbeddingProvider;
 
   // ── 以下注入点用于测试与未来替换；生产默认从 agents/index 装配 ──
   /** 默认：用 settings 构造 5 agents（含 resource agent）。 */
@@ -107,6 +146,7 @@ export type ResumeWorkflowInput = {
   surrealSession: Surreal;
   executors: SubAgentExecutors;
   llmCaller: RouterLlmCaller;
+  answerResourceSelection?: RouterRuntime["answerResourceSelection"];
   userContext: import("@surreal-ck/shared").AiContextSnapshot;
   streamId: string;
   pushChunk: NonNullable<RouterRuntime["pushChunk"]>;
@@ -153,6 +193,7 @@ const defaultResumeWorkflow: NonNullable<CreateMastraRunnerOptions["resumeWorkfl
     pushChunk: input.pushChunk,
     pushProgress: input.pushProgress,
     onSuspend: input.onSuspend,
+    answerResourceSelection: input.answerResourceSelection,
   };
   requestContext.set(ROUTER_RUNTIME_KEY, runtime);
 
@@ -193,7 +234,9 @@ export function createMastraRunner(options: CreateMastraRunnerOptions = {}): { r
         throw new Error("createMastraRunner: missing AiSettings (provider/model/apiKey)");
       }
       cachedAgents = buildAgents(options.settings ?? ({} as AiSettings));
-      cachedExecutors = buildExecutors(cachedAgents, { resource: options.resource });
+      cachedExecutors = buildExecutors(cachedAgents, {
+        resource: options.resource ?? createCallerSessionResourceDeps(options.embeddingProvider),
+      });
       cachedLlm = buildLlmCaller(cachedAgents);
     }
     return { agents: cachedAgents, executors: cachedExecutors!, llm: cachedLlm! };
@@ -212,9 +255,11 @@ export function createMastraRunner(options: CreateMastraRunnerOptions = {}): { r
         llmCaller: llm,
         streamId: input.streamId,
         runId: input.runId,
+        planOverride: input.planOverride,
         pushChunk: input.pushChunk,
         pushProgress: input.pushProgress,
         onSuspend: input.onSuspend,
+        answerResourceSelection: buildAnswerResourceSelection(input.surrealSession),
       });
     },
 
@@ -228,6 +273,7 @@ export function createMastraRunner(options: CreateMastraRunnerOptions = {}): { r
         surrealSession: input.surrealSession,
         executors,
         llmCaller: llm,
+        answerResourceSelection: buildAnswerResourceSelection(input.surrealSession),
         userContext: input.userContext,
         streamId: input.streamId,
         pushChunk: input.pushChunk,

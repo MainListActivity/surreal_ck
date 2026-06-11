@@ -201,6 +201,51 @@ describe("resource retrieval executor", () => {
     });
   });
 
+  test("executor 把调用者 surrealSession 透传给 deps；默认 resolveWorkspaceId 用 session::db()", async () => {
+    const sessionQueries: string[] = [];
+    const fakeSession = {
+      async query(sql: string) {
+        sessionQueries.push(sql);
+        return ["ws_demo_db"];
+      },
+    } as unknown as import("surrealdb").Surreal;
+
+    const seenSessions: unknown[] = [];
+    const executor = makeResourceRetrievalExecutor({
+      searchResources: async (req, session) => {
+        seenSessions.push(session);
+        expect(req.workspaceId).toBe("ws_demo_db");
+        return { status: "miss", indexStatus: "index-disabled", queryText: req.query, results: [] };
+      },
+      createResearchSession: async (req, session) => {
+        seenSessions.push(session);
+        return {
+          session: {
+            id: "research_session:s1",
+            query: req.query,
+            resourceType: req.resourceType,
+          },
+        };
+      },
+    });
+
+    const out = await executor({
+      taskText: "查找合同解除案例",
+      shared: { userContext: emptyContext, confirmed: {} },
+      runId: "run-1",
+      surrealSession: fakeSession,
+    });
+
+    expect(sessionQueries.some((sql) => sql.includes("session::db"))).toBe(true);
+    expect(seenSessions).toEqual([fakeSession, fakeSession]);
+    expect(out.suspend).toMatchObject({ kind: "manual-research", workspaceId: "ws_demo_db" });
+  });
+
+  test("resource-agent 不再 import legacy 模块（RR-014 收口卫兵）", async () => {
+    const source = await Bun.file(new URL("./resource-agent.ts", import.meta.url)).text();
+    expect(source).not.toContain("legacy");
+  });
+
   test("answerSelectedResourceIds 只接收 resourceIds 并回查资源详情生成回答", async () => {
     const seenIds: string[] = [];
     const answer = await answerSelectedResourceIds({

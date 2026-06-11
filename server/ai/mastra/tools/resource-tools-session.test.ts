@@ -28,8 +28,47 @@ describe("resource tools — 走调用者 session / 不碰 root", () => {
     expect(result.intent.draft.quality).toBe("ai-draft");
   });
 
-  test("searchResources 在资源/向量 schema 定稿前明确抛 TODO（绝不退回 root/legacy 全局连接）", async () => {
-    const session = { query: async () => [] };
+  test("searchResources 用调用者 session 检索 resource_item，返回 band + indexStatus", async () => {
+    const calls: string[] = [];
+    const session = {
+      async query(sql: string) {
+        calls.push(sql);
+        if (sql.includes("FROM ONLY workspace_embedding_profile")) return [null];
+        if (sql.includes("FROM resource_item")) {
+          return [[{
+            id: "resource_item:r1",
+            resource_type: "generic_note",
+            title: "合同解除案例",
+            summary: "解除通知到达即生效。",
+            evidence: [],
+            tags: [],
+            structured_payload: {},
+            quality: "user-confirmed",
+            created_at: "2026-06-01T08:00:00.000Z",
+            updated_at: "2026-06-01T08:00:00.000Z",
+          }]];
+        }
+        return [[]];
+      },
+    };
+    const { searchResourcesTool } = await import("./resource-tools");
+    const execute = searchResourcesTool.execute as unknown as (
+      input: { workspaceId: string; query: string; answerThreshold?: number },
+      ctx: { requestContext: RequestContext },
+    ) => Promise<{ status: string; indexStatus: string; results: Array<{ resource: { id: string } }> }>;
+
+    const result = await execute(
+      { workspaceId: "workspace:demo", query: "合同解除案例", answerThreshold: 0.3 },
+      ctxWithSession(session),
+    );
+
+    expect(result.status).toBe("hit");
+    expect(result.indexStatus).toBe("index-disabled");
+    expect(result.results[0]!.resource.id).toBe("resource_item:r1");
+    expect(calls.some((sql) => sql.includes("FROM resource_item"))).toBe(true);
+  });
+
+  test("searchResources 没有调用者 session 时直接抛错（不存在 root/legacy 兜底）", async () => {
     const { searchResourcesTool } = await import("./resource-tools");
     const execute = searchResourcesTool.execute as unknown as (
       input: { workspaceId: string; query: string },
@@ -37,7 +76,39 @@ describe("resource tools — 走调用者 session / 不碰 root", () => {
     ) => Promise<unknown>;
 
     await expect(
-      execute({ workspaceId: "workspace:demo", query: "x" }, ctxWithSession(session)),
-    ).rejects.toThrow(/TODO|schema|未/i);
+      execute({ workspaceId: "workspace:demo", query: "x" }, { requestContext: new RequestContext() }),
+    ).rejects.toThrow(/surrealSession/);
+  });
+
+  test("getResourceDetail 用调用者 session 读取资源详情", async () => {
+    const session = {
+      async query(sql: string) {
+        if (sql.includes("FROM ONLY $resourceId")) {
+          return [{
+            id: "resource_item:r1",
+            resource_type: "generic_note",
+            title: "合同解除案例",
+            summary: "解除通知到达即生效。",
+            evidence: [{ text: "通知到达生效。", capturedAt: "2026-06-01T08:00:00.000Z", order: 0 }],
+            tags: [],
+            structured_payload: {},
+            quality: "user-confirmed",
+            created_at: "2026-06-01T08:00:00.000Z",
+            updated_at: "2026-06-01T08:00:00.000Z",
+          }];
+        }
+        return [[]];
+      },
+    };
+    const { getResourceDetailTool } = await import("./resource-tools");
+    const execute = getResourceDetailTool.execute as unknown as (
+      input: { resourceId: string },
+      ctx: { requestContext: RequestContext },
+    ) => Promise<{ resource: { id: string; title: string } }>;
+
+    const result = await execute({ resourceId: "resource_item:r1" }, ctxWithSession(session));
+
+    expect(result.resource.id).toBe("resource_item:r1");
+    expect(result.resource.title).toBe("合同解除案例");
   });
 });

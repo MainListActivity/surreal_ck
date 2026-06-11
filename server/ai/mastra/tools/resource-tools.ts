@@ -1,14 +1,8 @@
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
+import { createDefaultEmbeddingProvider } from "../../../src/resources/embedding-provider";
+import { createResourceSearchService } from "../../../src/resources/resource-search";
 import { getSurrealSession, type ToolRequestContext } from "./tool-session";
-
-/**
- * 资源检索 / 详情读取依赖 workspace 内的资源库 + 向量检索 schema，这些表在 web pivot 后的
- * workspace-template 里尚未定稿（embedding provider key 还得在后端，走 /api/resources/research/save）。
- * 在 schema 定稿前，这两个 tool 取到调用者 session 后明确抛 TODO，绝不退回 legacy 全局连接 / root。
- */
-const RESOURCE_SCHEMA_TODO =
-  "TODO: 资源库 / 向量检索 schema 在 web pivot 后尚未定稿，searchResources / getResourceDetail 暂不可用（不退回 root/legacy 连接）";
 
 const EvidenceInputSchema = z.object({
   text: z.string().trim().min(1),
@@ -48,23 +42,27 @@ export const searchResourcesTool = createTool({
     candidateThreshold: z.number().optional(),
   }),
   outputSchema: z.record(z.string(), z.unknown()),
-  execute: async (_input, ctx) => {
-    // 先确保调用者 session 存在（兑现「所有 DB 访问都以调用者身份」），再因 schema 未定稿抛 TODO
-    getSurrealSession(ctx as ToolRequestContext);
-    throw new Error(RESOURCE_SCHEMA_TODO);
+  execute: async (input, ctx) => {
+    const session = getSurrealSession(ctx as ToolRequestContext);
+    const service = createResourceSearchService({
+      session,
+      embeddingProvider: createDefaultEmbeddingProvider(),
+    });
+    return await service.searchResources(input);
   },
 });
 
 export const getResourceDetailTool = createTool({
   id: "getResourceDetail",
-  description: "按资源 id 读取资源详情、证据、structuredPayload、embedding 状态和 research session 关联。",
+  description: "按资源 id 读取资源详情、证据、structuredPayload 和 research session 关联。",
   inputSchema: z.object({
     resourceId: z.string(),
   }),
   outputSchema: z.record(z.string(), z.unknown()),
-  execute: async (_input, ctx) => {
-    getSurrealSession(ctx as ToolRequestContext);
-    throw new Error(RESOURCE_SCHEMA_TODO);
+  execute: async (input, ctx) => {
+    const session = getSurrealSession(ctx as ToolRequestContext);
+    const service = createResourceSearchService({ session });
+    return await service.getResourceDetail(input);
   },
 });
 

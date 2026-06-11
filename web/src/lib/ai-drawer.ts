@@ -18,8 +18,15 @@ export type ChatRunStart = {
   streamToken: string;
 };
 
+export type AiComposerMode = "chat" | "resource-search";
+
 export type AiDrawerChatClient = {
-  startChat(input: { message: string; contextSnapshot?: AiDrawerContextSnapshot }): Promise<ChatRunStart>;
+  startChat(input: {
+    message: string;
+    contextSnapshot?: AiDrawerContextSnapshot;
+    /** composer 显式提交模式；resource-search 确定性进入资源检索子 agent（RR-011/RR-014）。 */
+    composerMode?: AiComposerMode;
+  }): Promise<ChatRunStart>;
   resumeChat(runId: string, decision: ResumeDecision): Promise<ChatRunStart>;
 };
 
@@ -84,7 +91,11 @@ export type AiDrawerSessionOptions = {
 
 export type AiDrawerSession = {
   snapshot(): AiDrawerState;
-  sendMessage(message: string, contextSnapshot: AiDrawerContextSnapshot): Promise<void>;
+  sendMessage(
+    message: string,
+    contextSnapshot: AiDrawerContextSnapshot,
+    options?: { composerMode?: AiComposerMode },
+  ): Promise<void>;
   chooseCandidate(messageId: string, candidateId: string): Promise<void>;
   resumeWrite(messageId: string, decision: "write-confirmed" | "write-rejected"): Promise<void>;
   /** 人工检索完成：用已保存的资源 id resume workflow。成功才 dismiss 检索卡，失败上抛可重试。 */
@@ -366,7 +377,11 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
     }
   }
 
-  async function sendMessage(message: string, contextSnapshot: AiDrawerContextSnapshot): Promise<void> {
+  async function sendMessage(
+    message: string,
+    contextSnapshot: AiDrawerContextSnapshot,
+    sendOptions?: { composerMode?: AiComposerMode },
+  ): Promise<void> {
     const content = message.trim();
     if (!content || state.activeRun) return;
 
@@ -393,7 +408,11 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
     emitChange();
 
     try {
-      const run = await options.chatClient.startChat({ message: content, contextSnapshot });
+      const run = await options.chatClient.startChat({
+        message: content,
+        contextSnapshot,
+        ...(sendOptions?.composerMode ? { composerMode: sendOptions.composerMode } : {}),
+      });
       connectRun(run, assistantMessage.id);
     } catch (error) {
       state.sending = false;

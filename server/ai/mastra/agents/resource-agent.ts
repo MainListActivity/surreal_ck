@@ -1,5 +1,6 @@
 import { Agent } from "@mastra/core/agent";
 import { ModelRouterLanguageModel } from "@mastra/core/llm";
+import type { Surreal } from "surrealdb";
 import type { AiContextSnapshot } from "@surreal-ck/shared";
 import type { ResourceCitationDTO } from "@surreal-ck/shared";
 import type { SubAgentExecutor, SubAgentOutput } from "../workflows/router-workflow";
@@ -9,14 +10,6 @@ import { buildModelConfig, type AiSettings } from "./model-config";
 export { RESOURCE_TOOLS } from "../tools/resource-tools";
 
 export const RESOURCE_AGENT_ID = "resourceAgent";
-
-const LEGACY_DB_MODULE: string = "../../../legacy/db/index";
-const LEGACY_CONTEXT_MODULE: string = "../../../legacy/services/context";
-const LEGACY_RESOURCES_MODULE: string = "../../../legacy/services/resources";
-
-type LegacyDb = {
-  query<T>(sql: string, params?: Record<string, unknown>): Promise<T>;
-};
 
 export type ResourceEvidence = {
   text: string;
@@ -28,7 +21,8 @@ export type ResourceEvidence = {
 
 export type ResourceDTO = {
   id: string;
-  workspaceId: string;
+  /** 兼容旧契约字段；workspace-as-database 下 session 已绑定 db，新代码可不填。 */
+  workspaceId?: string;
   resourceType: string;
   title: string;
   summary: string;
@@ -40,7 +34,7 @@ export type ResourceDTO = {
 };
 
 export type SearchResourcesRequest = {
-  workspaceId: string;
+  workspaceId?: string;
   query: string;
   context?: {
     selectedRow?: AiContextSnapshot["selectedRow"];
@@ -69,7 +63,7 @@ export type SearchResourcesResponse = {
 };
 
 export type CreateResearchSessionRequest = {
-  workspaceId: string;
+  workspaceId?: string;
   query: string;
   context?: Record<string, unknown>;
   resourceType: string;
@@ -79,7 +73,7 @@ export type CreateResearchSessionRequest = {
 export type ResearchSessionResponse = {
   session: {
     id: string;
-    workspaceId: string;
+    workspaceId?: string;
     query: string;
     resourceType: string;
     [key: string]: unknown;
@@ -106,25 +100,6 @@ export type SaveResourceRequest = {
   quality: "ai-draft";
 };
 
-type LegacyResourcesModule = {
-  searchResources(req: SearchResourcesRequest): Promise<SearchResourcesResponse>;
-  getResourceDetail(req: GetResourceDetailRequest): Promise<Pick<ResourceDetailResponse, "resource">>;
-};
-
-async function loadLegacyResources(): Promise<LegacyResourcesModule> {
-  return await import(LEGACY_RESOURCES_MODULE) as LegacyResourcesModule;
-}
-
-async function defaultSearchResources(req: SearchResourcesRequest): Promise<SearchResourcesResponse> {
-  const { searchResources } = await loadLegacyResources();
-  return searchResources(req);
-}
-
-async function defaultGetResourceDetail(req: GetResourceDetailRequest): Promise<Pick<ResourceDetailResponse, "resource">> {
-  const { getResourceDetail } = await loadLegacyResources();
-  return getResourceDetail(req);
-}
-
 export const RESOURCE_INSTRUCTIONS = `你是 Surreal CK 的资源检索 AI 助手。
 始终使用简体中文回答。
 你的职责只有三类：
@@ -149,15 +124,16 @@ export type ResourceCitationAnswer = {
 };
 
 export type ResourceRetrievalExecutorDeps = {
-  resolveWorkspaceId?(context: AiContextSnapshot): Promise<string>;
-  searchResources?(req: SearchResourcesRequest): Promise<SearchResourcesResponse>;
-  createResearchSession?(req: CreateResearchSessionRequest): Promise<ResearchSessionResponse>;
+  /** 默认：用调用者 session 查 session::db()（workspace db 名即 workspace 标识）。 */
+  resolveWorkspaceId?(context: AiContextSnapshot, session?: Surreal): Promise<string>;
+  searchResources(req: SearchResourcesRequest, session?: Surreal): Promise<SearchResourcesResponse>;
+  createResearchSession?(req: CreateResearchSessionRequest, session?: Surreal): Promise<ResearchSessionResponse>;
 };
 
 export type AnswerSelectedResourceIdsInput = {
   question: string;
   resourceIds: string[];
-  getResourceDetail?(req: GetResourceDetailRequest): Promise<Pick<ResourceDetailResponse, "resource">>;
+  getResourceDetail(req: GetResourceDetailRequest): Promise<Pick<ResourceDetailResponse, "resource">>;
 };
 
 export type CreateResourceDraftFromEvidenceInput = {
@@ -200,20 +176,20 @@ export function createResourceCitationAnswer(input: {
 }
 
 export function makeResourceRetrievalExecutor(
-  deps: ResourceRetrievalExecutorDeps = {},
+  deps: ResourceRetrievalExecutorDeps,
 ): SubAgentExecutor {
-  const resolveWorkspaceId = deps.resolveWorkspaceId ?? getDefaultWorkspaceId;
-  const searchResources = deps.searchResources ?? defaultSearchResources;
+  const resolveWorkspaceId = deps.resolveWorkspaceId ?? resolveWorkspaceIdFromSession;
+  const searchResources = deps.searchResources;
   const createResearchSession = deps.createResearchSession;
 
-  return async ({ taskText, shared, runId }): Promise<SubAgentOutput> => {
-    const workspaceId = await resolveWorkspaceId(shared.userContext);
+  return async ({ taskText, shared, runId, surrealSession }): Promise<SubAgentOutput> => {
+    const workspaceId = await resolveWorkspaceId(shared.userContext, surrealSession);
     const response = await searchResources({
       workspaceId,
       query: taskText,
       context: buildResourceSearchContext(shared.userContext),
       limit: 5,
-    });
+    }, surrealSession);
 
     if (response.status === "hit" && response.results.length > 0) {
       const answer = createResourceCitationAnswer({
@@ -249,7 +225,7 @@ export function makeResourceRetrievalExecutor(
         context: buildResourceSearchContext(shared.userContext) ?? {},
         resourceType,
         originatingRunId: runId,
-      });
+      }, surrealSession);
       return {
         text: "资源库没有找到足够相关的资料，已准备人工检索会话。",
         confirmed: {},
@@ -273,8 +249,7 @@ export function makeResourceRetrievalExecutor(
 export async function answerSelectedResourceIds(
   input: AnswerSelectedResourceIdsInput,
 ): Promise<ResourceCitationAnswer> {
-  const getResourceDetail = input.getResourceDetail ?? defaultGetResourceDetail;
-  const details = await Promise.all(input.resourceIds.map((resourceId) => getResourceDetail({ resourceId })));
+  const details = await Promise.all(input.resourceIds.map((resourceId) => input.getResourceDetail({ resourceId })));
   return createResourceCitationAnswer({
     question: input.question,
     resources: details.map((detail) => detail.resource),
@@ -342,18 +317,16 @@ function describeResourceSearchMiss(indexStatus: SearchResourcesResponse["indexS
   return "资源库没有找到足够相关的资料。";
 }
 
-async function getDefaultWorkspaceId(): Promise<string> {
-  const [{ getCurrentUserRecordId }, { getLocalDb }] = await Promise.all([
-    import(LEGACY_CONTEXT_MODULE) as Promise<{ getCurrentUserRecordId(): Promise<unknown> }>,
-    import(LEGACY_DB_MODULE) as Promise<{ getLocalDb(): LegacyDb }>,
-  ]);
-  const userId = await getCurrentUserRecordId();
-  const db = getLocalDb();
-  const rows = await db.query<[{ id: unknown }[]]>(
-    `SELECT id FROM workspace WHERE owner = $userId LIMIT 1`,
-    { userId },
-  );
-  const row = rows[0]?.[0];
-  if (!row) throw new Error("缺少默认 workspace，无法检索资源");
-  return String(row.id);
+/** workspace-as-database：调用者 session 已绑定 workspace db，db 名即 workspace 标识。 */
+async function resolveWorkspaceIdFromSession(
+  _context: AiContextSnapshot,
+  session?: Surreal,
+): Promise<string> {
+  if (!session) {
+    throw new Error("resource-retrieval executor 缺少调用者 surrealSession，无法解析 workspace");
+  }
+  const results = await session.query<[string | null]>("RETURN session::db();");
+  const db = results[0];
+  if (!db) throw new Error("调用者 session 未绑定 workspace database");
+  return String(db);
 }

@@ -6,6 +6,7 @@
  * V1 只支持 openai-compatible；失败不重试——保存动作整体失败，由用户再次点击保存。
  */
 import type { EmbeddingProfile, EmbeddingProvider } from "./research-save";
+import { env } from "../env";
 
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
@@ -15,6 +16,12 @@ export type OpenAiCompatibleEmbeddingOptions = {
 };
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
+
+/** env.EMBEDDING_API_KEY 存在时的默认生成器；缺席返回 undefined（检索退化为关键词 + 状态推断）。 */
+export function createDefaultEmbeddingProvider(): EmbeddingProvider | undefined {
+  if (!env.EMBEDDING_API_KEY) return undefined;
+  return createOpenAiCompatibleEmbeddingProvider({ apiKey: env.EMBEDDING_API_KEY });
+}
 
 export function createOpenAiCompatibleEmbeddingProvider(
   options: OpenAiCompatibleEmbeddingOptions,

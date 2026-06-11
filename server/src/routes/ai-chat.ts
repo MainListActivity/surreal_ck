@@ -20,6 +20,8 @@ export type AiChatService = {
     message: string;
     userContext?: AiContextSnapshot;
     surrealSession: Surreal;
+    /** composer 显式提交模式；resource-search 确定性进入资源检索子 agent。 */
+    composerMode?: "chat" | "resource-search";
   }): Promise<void>;
   /** 后台续跑一个已 suspend 的 run：用（可能已刷新的）新 session 提交 decision；workflow state 不持有 session。 */
   resumeChat(input: {
@@ -116,13 +118,16 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
         throw new HttpError(400, "chat-message-required", "message is required");
       }
       const userContext = body?.contextSnapshot as AiContextSnapshot | undefined;
+      const composerMode = body?.composerMode === "resource-search" || body?.composerMode === "chat"
+        ? (body.composerMode as "chat" | "resource-search")
+        : undefined;
 
       const session = await signIn(user.rawToken);
 
       const runId = crypto.randomUUID();
       const { streamToken } = deps.registry.register({ runId, ownerSubject: user.subject });
 
-      await deps.service.startChat({ runId, message, userContext, surrealSession: session });
+      await deps.service.startChat({ runId, message, userContext, surrealSession: session, composerMode });
 
       return c.json({ runId, streamUrl: `/api/chat/stream?runId=${runId}`, streamToken });
     });

@@ -43,6 +43,50 @@ describe("AiChatService.startChat", () => {
     expect(events.some((e) => e.kind === "chunk" && e.text === "你好")).toBe(true);
   });
 
+  test("composerMode=resource-search：runner 收到确定性 planOverride（resource-retrieval 单步）", async () => {
+    const bus = createRunBus();
+    let capturedInput: Parameters<ChatRunner>[0] | undefined;
+    const runner: ChatRunner = async (input) => {
+      capturedInput = input;
+      return { runId: input.runId, finalText: "", status: "success" };
+    };
+    const service = createAiChatService({ runBus: bus, runner });
+
+    await service.startChat({
+      runId: "run-rs",
+      message: "查找合同解除案例",
+      userContext: ctx,
+      surrealSession: fakeSession,
+      composerMode: "resource-search",
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(capturedInput?.planOverride).toEqual([
+      { category: "resource-retrieval", taskText: "查找合同解除案例" },
+    ]);
+  });
+
+  test("composerMode 缺省或 chat：不带 planOverride，仍走 LLM 路由", async () => {
+    const bus = createRunBus();
+    let capturedInput: Parameters<ChatRunner>[0] | undefined;
+    const runner: ChatRunner = async (input) => {
+      capturedInput = input;
+      return { runId: input.runId, finalText: "", status: "success" };
+    };
+    const service = createAiChatService({ runBus: bus, runner });
+
+    await service.startChat({
+      runId: "run-chat",
+      message: "嗨",
+      userContext: ctx,
+      surrealSession: fakeSession,
+      composerMode: "chat",
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(capturedInput?.planOverride).toBeUndefined();
+  });
+
   test("workflow pushChunk(done) 翻译成 bus done 事件（携带 message + toolCalls）", async () => {
     const bus = createRunBus();
     const runner: ChatRunner = async (input) => {

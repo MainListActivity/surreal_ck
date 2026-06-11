@@ -51,6 +51,8 @@
 
   let drawerState: AiDrawerState = $state(emptyState());
   let prompt: string = $state("");
+  // composer 显式提交模式：「搜索资源」确定性进入资源检索子 agent（RR-011/RR-014）
+  let composerMode: "chat" | "resource-search" = $state("chat");
 
   function resolveStreamUrl(streamUrl: string): string {
     if (streamUrl.startsWith("ws://") || streamUrl.startsWith("wss://")) return streamUrl;
@@ -76,6 +78,7 @@
           json: {
             message: input.message,
             contextSnapshot: input.contextSnapshot,
+            composerMode: input.composerMode,
           },
         });
         return expectJson<ChatRunStart>(res, "AI 消息发送失败。");
@@ -138,7 +141,7 @@
     const next = prompt;
     if (!next.trim()) return;
     prompt = "";
-    await session.sendMessage(next, contextSnapshot());
+    await session.sendMessage(next, contextSnapshot(), { composerMode });
   }
 
   function useExample(text: string): void {
@@ -341,10 +344,19 @@
       <textarea
         bind:value={prompt}
         rows="3"
-        placeholder="输入消息"
+        placeholder={composerMode === "resource-search" ? "输入要在资源库检索的问题" : "输入消息"}
         disabled={drawerState.sending && !!drawerState.activeRun}
       ></textarea>
       <div class="composer-actions">
+        <button
+          type="button"
+          class="mode-btn"
+          class:active={composerMode === "resource-search"}
+          aria-pressed={composerMode === "resource-search"}
+          onclick={() => { composerMode = composerMode === "resource-search" ? "chat" : "resource-search"; }}
+        >
+          搜索资源
+        </button>
         <button type="submit" class="primary-btn" disabled={!prompt.trim() || (drawerState.sending && !!drawerState.activeRun)}>
           <Icon name="send" size={14} color="#fff" />{drawerState.sending ? "发送中" : "发送"}
         </button>
@@ -653,6 +665,23 @@
   .composer-actions {
     display: flex;
     justify-content: flex-end;
+    gap: 8px;
+  }
+
+  .mode-btn {
+    height: 34px;
+    padding: 0 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-secondary, #475569);
+    cursor: pointer;
+  }
+
+  .mode-btn.active {
+    border-color: var(--primary);
+    color: var(--primary);
+    background: rgba(22, 100, 255, .08);
   }
 
   .primary-btn {

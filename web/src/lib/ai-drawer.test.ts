@@ -45,7 +45,7 @@ function harness(over: {
   resumeChat?: (runId: string, decision: ResumeDecision) => Promise<{ runId: string; streamUrl: string; streamToken: string }>;
 } = {}) {
   const start = deferred<{ runId: string; streamUrl: string; streamToken: string }>();
-  const starts: Array<{ message: string; contextSnapshot?: AiContextSnapshot }> = [];
+  const starts: Array<{ message: string; contextSnapshot?: AiContextSnapshot; composerMode?: "chat" | "resource-search" }> = [];
   const resumes: Array<{ runId: string; decision: ResumeDecision }> = [];
   const handles: AiDrawerStreamHandle[] = [];
   const streamListeners: Array<(event: ChatStreamEvent) => void> = [];
@@ -126,6 +126,19 @@ describe("AI 抽屉会话", () => {
       content: "已打开工作簿 X",
       citations: [{ index: 1, title: "资料一" }],
     });
+  });
+
+  test("composer「搜索资源」模式：startChat 带 composerMode=resource-search（确定性进资源检索）", async () => {
+    const h = harness();
+
+    const sending = h.session.sendMessage("合同解除案例", context(), { composerMode: "resource-search" });
+
+    expect(h.starts).toEqual([
+      { message: "合同解除案例", contextSnapshot: context(), composerMode: "resource-search" },
+    ]);
+
+    h.start.resolve({ runId: "run-rs", streamUrl: "/api/chat/stream?runId=run-rs", streamToken: "t" });
+    await sending;
   });
 
   test("suspend 候选选择后调用 resume，并用新 streamToken 继续到 done", async () => {
