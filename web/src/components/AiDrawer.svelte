@@ -5,6 +5,7 @@
   import { marked } from "marked";
   import Icon from "./Icon.svelte";
   import RowPatchCard from "./RowPatchCard.svelte";
+  import DashboardDraftCard from "./DashboardDraftCard.svelte";
   import ResearchPanel from "./ResearchPanel.svelte";
   import { completeResearchSession } from "../lib/research-data";
   import { api } from "../lib/api";
@@ -19,8 +20,13 @@
     type ChatRunStart,
   } from "../lib/ai-drawer";
   import { writeRowPatch, type RowPatchWriteResult } from "../lib/row-patch-card";
+  import {
+    persistDashboardDraft,
+    previewDashboardDraft,
+    type PersistDashboardDraftResult,
+  } from "../features/dashboard/lib/dashboard-draft-card";
   import { getSurreal } from "../lib/surreal";
-  import type { ChatStreamEvent, ResumeDecision, RowPatchProposal } from "@surreal-ck/shared";
+  import type { ChatStreamEvent, DashboardDraftIntent, ResumeDecision, RowPatchProposal } from "@surreal-ck/shared";
 
   type Props = {
     open?: boolean;
@@ -168,6 +174,27 @@
         recordId: proposal.recordId,
         values,
       });
+    };
+  }
+
+  /**
+   * 仪表盘草稿卡的预览/保存：均以当前 workspace 的浏览器 SurrealDB 会话直连——
+   * 预览执行 D3-02 编译出的只读聚合，保存走 D3-01 dashboard_page 写入路径
+   * （PERMISSIONS 兜底，拒绝时中文错误，卡片保留可重试）。
+   */
+  function previewDashboardDraftFor(intent: DashboardDraftIntent) {
+    return () => previewDashboardDraft(getSurreal(), intent);
+  }
+
+  function saveDashboardDraftFor(intent: DashboardDraftIntent) {
+    return async (): Promise<PersistDashboardDraftResult> => {
+      let conn;
+      try {
+        conn = getSurreal();
+      } catch {
+        return { ok: false, message: "尚未连接数据库，请刷新页面后重试。" };
+      }
+      return persistDashboardDraft(conn, intent);
     };
   }
 
@@ -325,6 +352,13 @@
                   <RowPatchCard
                     proposal={pending.proposal}
                     write={writeProposalValues(pending.proposal)}
+                    resume={(decision) => session.resumeWrite(pending.messageId, decision.kind)}
+                  />
+                {:else if pending.dashboardDraft}
+                  <DashboardDraftCard
+                    intent={pending.dashboardDraft}
+                    preview={previewDashboardDraftFor(pending.dashboardDraft)}
+                    save={saveDashboardDraftFor(pending.dashboardDraft)}
                     resume={(decision) => session.resumeWrite(pending.messageId, decision.kind)}
                   />
                 {:else}

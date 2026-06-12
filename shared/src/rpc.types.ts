@@ -440,7 +440,7 @@ const DashboardDraftIntentSchema = z.object({
   widgetSpec: DashboardBuilderSpecSchema,
   draft: DashboardViewDraftSchema,
   explanation: z.string(),
-  preview: z.unknown().optional(),
+  preview: z.custom<DashboardPreviewResponse>().optional(),
 });
 
 const LegacyDashboardDraftIntentSchema = z.object({

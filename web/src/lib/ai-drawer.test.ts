@@ -229,6 +229,55 @@ describe("AI 抽屉会话", () => {
     ]);
   });
 
+  test("suspend await-write-confirm 携带 dashboard-draft 时，pending intent 带上草稿供卡片渲染", async () => {
+    const h = harness();
+
+    const sending = h.session.sendMessage("根据当前数据创建统计图表", context());
+    h.start.resolve({ runId: "run-1", streamUrl: "/api/chat/stream?runId=run-1", streamToken: "stream-token" });
+    await sending;
+
+    const widgetSpec = {
+      sourceTables: ["ent_claim"],
+      baseTable: "ent_claim",
+      metric: { op: "sum" as const, field: "amount" },
+      dimensions: [{ field: "declared_at", bucket: "month" as const }],
+      limit: 24,
+    };
+    const draftIntent = {
+      type: "dashboard-draft" as const,
+      title: "申报金额月趋势",
+      description: "按月统计债权申报金额",
+      widgetSpec,
+      draft: {
+        workspaceId: "workspace:main",
+        title: "申报金额月趋势",
+        queryMode: "builder" as const,
+        viewType: "line" as const,
+        resultContract: "time_series" as const,
+        builderSpec: widgetSpec,
+        status: "draft" as const,
+      },
+      explanation: "基于债权表，按月对申报金额求和。",
+    };
+    h.emit({
+      kind: "suspend",
+      runId: "run-1",
+      payload: { kind: "await-write-confirm", runId: "run-1", intent: draftIntent },
+    });
+
+    const state = h.session.snapshot();
+    expect(state.sending).toBe(false);
+    expect(state.pendingIntents).toEqual([
+      {
+        messageId: "id-2",
+        runId: "run-1",
+        kind: "await-write-confirm",
+        dashboardDraft: draftIntent,
+        dismissed: false,
+      },
+    ]);
+  });
+
   test("resumeWrite 成功：dismiss 提案卡、按 decision resume 并重连 stream 直到 done", async () => {
     const h = harness();
 

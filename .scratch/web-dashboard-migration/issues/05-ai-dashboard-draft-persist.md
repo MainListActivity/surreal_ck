@@ -1,5 +1,5 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: done
+Label: done
 
 # D3-05 — AI 仪表盘草稿卡：预览 → 确认 → 直连持久化
 
@@ -38,15 +38,26 @@ Label: ready-for-agent
 - D3-03 widget 组件——预览渲染复用，零 AI 特化分支。
 
 **Acceptance criteria:**
-- [ ] 暂停事件携带 dashboard-draft 时，抽屉渲染草稿卡，含 explanation 与真实数据预览。
-- [ ] 预览聚合以当前会话直连执行且为只读（无任何写语句）。
-- [ ] 确认保存后 `dashboard_page` 出现对应记录（直连 SELECT 断言），dashboard 屏幕可见且可编辑/删除。
-- [ ] 忽略草稿后无任何 dashboard 记录产生，run 以 rejected 路径结束。
-- [ ] 预览失败时卡片显示错误且无保存入口。
-- [ ] 纯逻辑层测试：草稿 → 预览查询参数、草稿 → dashboard_page 写入 payload 的转换（fake 连接断言），不打真 LLM。
+- [x] 暂停事件携带 dashboard-draft 时，抽屉渲染草稿卡，含 explanation 与真实数据预览。
+- [x] 预览聚合以当前会话直连执行且为只读（无任何写语句）。
+- [x] 确认保存后 `dashboard_page` 出现对应记录（直连 SELECT 断言），dashboard 屏幕可见且可编辑/删除。
+- [x] 忽略草稿后无任何 dashboard 记录产生，run 以 rejected 路径结束。
+- [x] 预览失败时卡片显示错误且无保存入口。
+- [x] 纯逻辑层测试：草稿 → 预览查询参数、草稿 → dashboard_page 写入 payload 的转换（fake 连接断言），不打真 LLM。
 
 **Out of scope:**
 - 服务端草稿生成质量与 prompt 调整（dashboardAgent 已落地）。
 - 手工 dashboard builder 本体（D3-01~04）。
 - raw SQL 草稿通道——V1 仅 builder-style 配置；raw SQL 待与手工 builder 的风险控制一并设计。
 - row-patch 提案卡（AI-006）。
+
+## 实现备注（2026-06-12）
+
+- 纯逻辑层 `web/src/features/dashboard/lib/dashboard-draft-card.ts`（13 测试 TDD）：
+  - `widgetFromDashboardDraft`：草稿 → `DashboardWidget`，复用 builder 的 `nextGridPlacement` / `newWidgetId`（两者本次导出共享），与手工 builder 完全同口径。
+  - `previewDashboardDraft`：D3-02 `runDashboardWidgetQuery` 只读直连。
+  - `persistDashboardDraft`：作用域（草稿 workbook / workspace 级）内有页则向最近更新页追加，无页则以草稿标题新建页再写入；错误透传 D3-01 中文翻译。
+  - `createDashboardDraftCard` 状态机：previewing → ready / preview-error → confirm（save 成功才 write-confirmed resume）/ reject（write-rejected）；save / resume 失败进 error 态保留卡片可重试；preview-error 无保存入口。
+- `ai-drawer.ts`：`PendingAiIntent` 增加 `dashboardDraft` 载荷（suspend await-write-confirm + intent.type === "dashboard-draft"）。
+- 组件：`DashboardDraftCard.svelte`（预览用 D3-03 widget 注册表渲染，零 AI 特化分支）+ AiDrawer 接线（沿用 RowPatchCard 的 deps 注入模式）。
+- shared：`DashboardDraftIntentSchema.preview` 由 `z.unknown()` 收紧为 `z.custom<DashboardPreviewResponse>()`，对齐手写类型（运行时不变）。

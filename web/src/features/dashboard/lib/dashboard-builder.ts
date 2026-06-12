@@ -104,10 +104,15 @@ export type WidgetFromDraftContext = {
   tableLabel?: string;
 };
 
+/** 页内唯一的 widget id；手工 builder 与 AI 草稿落成（D3-05）共用。 */
+export function newWidgetId(): string {
+  return `widget_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+}
+
 /** 草稿落成与 `dashboard_page.widgets[]`（D3-01 DashboardWidget）同口径的 widget。 */
 export function widgetFromDraft(draft: BuilderDraft, ctx: WidgetFromDraftContext): DashboardWidget {
   return {
-    id: ctx.existing?.id ?? `widget_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+    id: ctx.existing?.id ?? newWidgetId(),
     title: draft.title.trim() || autoTitle(draft, ctx.tableLabel),
     viewType: draft.chartType,
     spec: specFromDraft(draft),
@@ -135,8 +140,8 @@ export function draftFromWidget(widget: DashboardWidget): BuilderDraft {
   };
 }
 
-/** 两列流式布局：与 legacy 一致，kpi 高度 1，其余 2。 */
-function nextGridPlacement(index: number, chartType: BuilderChartType) {
+/** 两列流式布局：与 legacy 一致，kpi 高度 1，其余 2。AI 草稿落位（D3-05）共用。 */
+export function nextGridPlacement(index: number, chartType: DashboardViewType) {
   return {
     x: (index % 2) * 6,
     y: Math.floor(index / 2) * 2,

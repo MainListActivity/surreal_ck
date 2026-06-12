@@ -4,6 +4,7 @@ import type {
   AiProgressEvent,
   AiToolCallRecord,
   ChatStreamEvent,
+  DashboardDraftIntent,
   ResumeDecision,
   RowPatchProposal,
 } from "@surreal-ck/shared";
@@ -61,6 +62,8 @@ export type PendingAiIntent = {
   }>;
   /** 仅 kind === "await-write-confirm" 且 intent 是行分析提案时携带，驱动提案卡渲染。 */
   proposal?: RowPatchProposal;
+  /** 仅 kind === "await-write-confirm" 且 intent 是仪表盘草稿时携带，驱动草稿卡渲染（D3-05）。 */
+  dashboardDraft?: DashboardDraftIntent;
   /** 仅 kind === "manual-research" 携带：人工检索 panel 的会话上下文（RR-012）。 */
   research?: {
     sessionId: string;
@@ -273,6 +276,7 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
             runId: event.runId,
             kind: event.payload.kind,
             ...(intent.type === "row-patch-proposal" ? { proposal: intent } : {}),
+            ...(intent.type === "dashboard-draft" ? { dashboardDraft: intent } : {}),
             dismissed: false,
           },
         ];
