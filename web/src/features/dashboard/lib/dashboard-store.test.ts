@@ -122,6 +122,28 @@ describe("open — 空态与错误", () => {
     expect(calls).toHaveLength(1);
   });
 
+  test("从 workbook 级切到 workspace 级时清空旧页，并查询 workbook IS NONE", async () => {
+    const { store, calls } = setup({
+      onQuery: (sql) => {
+        if (sql.includes("workbook = $wb")) return [pageRow("p1", "overview", [])];
+        if (sql === "SELECT * FROM $page") return [pageRow("p1", "overview", [])];
+        if (sql.includes("workbook IS NONE")) return [];
+        return [];
+      },
+    });
+
+    await store.open({ workbookId: "workbook:wb1" });
+    await store.open({});
+
+    expect(store.state.workbookId).toBeNull();
+    expect(store.state.pages).toEqual([]);
+    expect(store.state.activePageId).toBeNull();
+    expect(store.state.activePage).toBeNull();
+    expect(calls.at(-1)?.sql).toBe(
+      "SELECT * FROM dashboard_page WHERE workbook IS NONE ORDER BY updated_at DESC",
+    );
+  });
+
   test("单个 widget 查询失败只标记该卡，其余正常", async () => {
     const { store } = setup({
       onQuery: (sql) => {

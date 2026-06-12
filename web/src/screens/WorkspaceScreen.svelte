@@ -1,5 +1,7 @@
 <script lang="ts">
   import SideNav from "../components/SideNav.svelte";
+  import DashboardScreen from "../features/dashboard/WorkbookDashboardScreen.svelte";
+  import { dashboardStore } from "../features/dashboard/lib/dashboard-store.svelte";
   import AdminConsoleScreen from "./AdminConsoleScreen.svelte";
   import HomeScreen from "./HomeScreen.svelte";
   import PlaceholderScreen from "./PlaceholderScreen.svelte";
@@ -27,6 +29,12 @@
 
   const canWriteSharedStructure = $derived(canWriteSharedStructureFn());
   const canOpenAdminConsole = $derived(isWorkspaceAdminFn());
+
+  $effect(() => {
+    if (page === "dashboard") {
+      void dashboardStore.open({});
+    }
+  });
 
   function goHome() {
     onnavigate?.("home");
@@ -70,13 +78,7 @@
         onaction={goHome}
       />
     {:else if page === "dashboard"}
-      <PlaceholderScreen
-        icon="coins"
-        title="仪表盘即将上线"
-        desc="数据仪表盘已规划在后续迭代（D3）中迁移。入口已保留，敬请期待。"
-        actionLabel="返回首页"
-        onaction={goHome}
-      />
+      <DashboardScreen />
     {:else if page === "admin"}
       <PlaceholderScreen
         icon="settings"

@@ -73,9 +73,18 @@ export function createDashboardStore(deps: DashboardStoreDeps) {
 
   /** 列出页并进入第一页（或指定页）。workbookId 同时记下来供建页用。 */
   async function open(scope: DashboardPageScope, requestedPageId?: string): Promise<void> {
-    state.workbookId = scope.workbookId ?? null;
+    const nextWorkbookId = scope.workbookId ?? null;
+    const scopeChanged = state.workbookId !== nextWorkbookId;
+    state.workbookId = nextWorkbookId;
     state.loading = true;
     state.error = null;
+    if (scopeChanged) {
+      state.pages = [];
+      state.activePageId = null;
+      state.activePage = null;
+      state.widgetData = {};
+      loadGeneration += 1;
+    }
     emit();
     try {
       const pages = await listDashboardPages(deps.getConn(), scope);
