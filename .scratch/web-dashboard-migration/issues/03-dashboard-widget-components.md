@@ -1,5 +1,5 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: done
+Label: done
 
 # D3-03 — widget 组件搬迁（6 widget + WidgetFrame + 注册表）
 
