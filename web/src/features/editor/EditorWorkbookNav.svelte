@@ -1,15 +1,18 @@
 <script lang="ts">
   import Icon from "../../components/Icon.svelte";
+  import { dashboardStore } from "../dashboard/lib/dashboard-store.svelte";
   import { editorStore } from "../../lib/editor-store.svelte";
   import { editorUi } from "./lib/editor-ui.svelte";
 
-  // 新建 / 重命名 sheet 与仪表盘均属结构操作（原走已废弃后端 RPC），
-  // 新架构直连数据层尚未补；本侧栏退化为只读 sheet 切换器，DDL 留后续 issue。
+  // 新建 / 重命名 sheet 属结构操作（原走已废弃后端 RPC），直连 DDL 留后续 issue；
+  // 仪表盘页已是直连数据行（dashboard_page），列表与进入在此，管理在屏幕工具栏。
   let { onswitchsheet }: { onswitchsheet?: (sheetId: string) => void } = $props();
 
   let collapsed = $state(false);
 
   async function openSheet(sheetId: string) {
+    editorUi.pageKind = "sheet";
+    editorUi.dashboardPageId = null;
     if (editorStore.activeSheetId === sheetId) return;
     editorUi.selectRow(null);
     if (onswitchsheet) {
@@ -17,6 +20,14 @@
       return;
     }
     await editorStore.switchSheet(sheetId);
+  }
+
+  async function openDashboard(pageId: string) {
+    editorUi.pageKind = "dashboard";
+    editorUi.dashboardPageId = pageId;
+    if (dashboardStore.activePageId !== pageId) {
+      await dashboardStore.selectPage(pageId);
+    }
   }
 
   function toggleCollapsed() {
@@ -57,7 +68,7 @@
           {@const label = sheet.label || `智能表${index + 1}`}
           <div
             class="nav-item"
-            class:active={editorStore.activeSheetId === sheet.id}
+            class:active={editorUi.pageKind === "sheet" && editorStore.activeSheetId === sheet.id}
             role="button"
             tabindex="0"
             onclick={() => void openSheet(sheet.id)}
@@ -71,6 +82,47 @@
           >
             <Icon name="grid" size={15} />
             <span>{label}</span>
+          </div>
+        {/each}
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-head">
+        <span>仪表盘</span>
+        <button
+          class="icon-btn"
+          title="打开仪表盘"
+          onclick={() => {
+            editorUi.pageKind = "dashboard";
+            editorUi.dashboardPageId = dashboardStore.activePageId;
+          }}
+        >
+          <Icon name="chevronRight" size={14} />
+        </button>
+      </div>
+
+      <div class="item-list">
+        {#if dashboardStore.pages.length === 0}
+          <div class="empty-hint">暂无仪表盘</div>
+        {/if}
+        {#each dashboardStore.pages as page (page.id)}
+          <div
+            class="nav-item"
+            class:active={editorUi.pageKind === "dashboard" && editorUi.dashboardPageId === page.id}
+            role="button"
+            tabindex="0"
+            onclick={() => void openDashboard(page.id)}
+            onkeydown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                void openDashboard(page.id);
+              }
+            }}
+            title={page.title}
+          >
+            <Icon name="coins" size={15} />
+            <span>{page.title}</span>
           </div>
         {/each}
       </div>

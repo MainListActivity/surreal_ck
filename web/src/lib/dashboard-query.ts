@@ -219,7 +219,8 @@ function countRows(
   return 0;
 }
 
-function metricLabel(op: DashboardBuilderSpec["metric"]["op"], field?: string): string {
+/** 指标的中文标签；编译器 displaySpec 与 builder 自动标题共用同一份词汇。 */
+export function metricLabel(op: DashboardBuilderSpec["metric"]["op"], field?: string): string {
   if (op === "count") return "记录数";
   if (op === "count_distinct") return field ? `${field} 去重数` : "去重数";
   if (op === "sum") return field ? `${field} 总和` : "总和";

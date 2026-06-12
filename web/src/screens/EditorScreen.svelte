@@ -5,6 +5,8 @@
   import EditorToolbar from "../features/editor/EditorToolbar.svelte";
   import EditorWorkbookNav from "../features/editor/EditorWorkbookNav.svelte";
   import RightPanel from "../features/editor/RightPanel.svelte";
+  import WorkbookDashboardScreen from "../features/dashboard/WorkbookDashboardScreen.svelte";
+  import { dashboardStore } from "../features/dashboard/lib/dashboard-store.svelte";
   import AddRecordModal from "../features/editor/modals/AddRecordModal.svelte";
   import FieldsModal from "../features/editor/modals/FieldsModal.svelte";
   import LeaveDraftModal from "../features/editor/modals/LeaveDraftModal.svelte";
@@ -64,6 +66,15 @@
     });
   });
 
+  // workbook 数据就绪后预取该 workbook 的 dashboard 页（直连列表 + 首页聚合）。
+  $effect(() => {
+    const currentWorkbookId = editorStore.workbook?.id;
+    if (!currentWorkbookId) return;
+    untrack(() => {
+      void dashboardStore.open({ workbookId: currentWorkbookId });
+    });
+  });
+
   function handleGlobalPointer(event: MouseEvent) {
     const target = event.target;
     if (
@@ -106,7 +117,7 @@
           <EmptyState icon="grid" title="无数据" desc="工作簿不包含任何 Sheet" />
         </div>
       {:else if editorUi.pageKind === "dashboard"}
-        <div class="dashboard-stub">看板即将上线</div>
+        <WorkbookDashboardScreen />
       {:else}
         <EditorToolbar />
         {#if currentView}
@@ -200,8 +211,7 @@
     font-size: 11px;
   }
 
-  .body-state,
-  .dashboard-stub {
+  .body-state {
     display: flex;
     flex: 1;
     align-items: center;
