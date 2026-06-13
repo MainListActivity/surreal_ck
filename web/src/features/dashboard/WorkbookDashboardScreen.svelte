@@ -1,6 +1,6 @@
 <script lang="ts">
   import EmptyState from "../../components/EmptyState.svelte";
-  import Icon from "../../components/Icon.svelte";
+  import { Plus, Pencil, Trash2, RefreshCw, X, Coins } from "@lucide/svelte";
   import type { DashboardWidget } from "../../lib/dashboard-data";
   import { editorStore } from "../../lib/editor-store.svelte";
   import { editorUi } from "../editor/lib/editor-ui.svelte";
@@ -99,23 +99,23 @@
         </button>
       {/each}
       <button class="new-page" title="新建仪表盘页" onclick={() => void createPage()}>
-        <Icon name="plus" size={13} />新建页
+        <Plus size={13} />新建页
       </button>
     </div>
     <div class="toolbar-actions">
       {#if activePage}
         <button class="secondary-btn" title="重命名当前页" onclick={() => void renamePage()}>
-          <Icon name="edit" size={14} />改名
+          <Pencil size={14} />改名
         </button>
         <button class="secondary-btn" title="删除当前页" onclick={() => void deletePage()}>
-          <Icon name="trash" size={14} />删除
+          <Trash2 size={14} />删除
         </button>
       {/if}
       <button class="secondary-btn" onclick={() => void dashboardStore.refresh()} disabled={!activePage}>
-        <Icon name="refresh" size={14} />刷新
+        <RefreshCw size={14} />刷新
       </button>
       <button class="primary-btn" onclick={() => (modal = { mode: "create" })} disabled={!activePage}>
-        <Icon name="plus" size={14} color="#fff" />添加图表
+        <Plus size={14} color="#fff" />添加图表
       </button>
     </div>
   </header>
@@ -130,11 +130,11 @@
     <div class="state">加载仪表盘…</div>
   {:else if !activePage}
     <div class="state">
-      <EmptyState icon="coins" title="暂无仪表盘" desc="点击「新建页」创建第一个仪表盘页。" />
+      <EmptyState icon={Coins} title="暂无仪表盘" desc="点击「新建页」创建第一个仪表盘页。" />
     </div>
   {:else if activePage.widgets.length === 0}
     <div class="state">
-      <EmptyState icon="coins" title="添加首个图表" desc="从智能表数据中创建汇总、趋势和占比图表。" />
+      <EmptyState icon={Coins} title="添加首个图表" desc="从智能表数据中创建汇总、趋势和占比图表。" />
     </div>
   {:else}
     <div class="widget-grid">
@@ -182,7 +182,7 @@
         <div class="modal-head">
           <strong>{modal.mode === "edit" ? "编辑图表" : "添加图表"}</strong>
           <button class="icon-btn" onclick={() => (modal = null)}>
-            <Icon name="x" size={18} />
+            <X size={18} />
           </button>
         </div>
         <DashboardViewBuilder

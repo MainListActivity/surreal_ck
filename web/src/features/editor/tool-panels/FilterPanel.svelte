@@ -1,5 +1,5 @@
 <script lang="ts">
-  import Icon from "../../../components/Icon.svelte";
+  import { X, Plus } from "@lucide/svelte";
   import { SelectMenu } from "$lib/components/ui/select/index.js";
   import { editorStore } from "../../../lib/editor-store.svelte";
   import type { FilterOp, GridColumnDef } from "@surreal-ck/shared/rpc.types";
@@ -118,14 +118,14 @@
         <span class="placeholder">—</span>
       {/if}
       <button class="icon-btn" onclick={() => removeClause(draft.id)} title="删除">
-        <Icon name="x" size={12} />
+        <X size={12} />
       </button>
     </div>
   {/each}
 
   <footer>
     <button class="ghost-btn" onclick={addClause}>
-      <Icon name="plus" size={12} />添加条件
+      <Plus size={12} />添加条件
     </button>
     <div class="spacer"></div>
     {#if drafts.length > 0}

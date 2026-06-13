@@ -3,7 +3,7 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
   import { marked } from "marked";
-  import Icon from "./Icon.svelte";
+  import { X, Sheet, Search, Coins, Sparkles, Send } from "@lucide/svelte";
   import RowPatchCard from "./RowPatchCard.svelte";
   import DashboardDraftCard from "./DashboardDraftCard.svelte";
   import ResearchPanel from "./ResearchPanel.svelte";
@@ -256,19 +256,19 @@
         <span title={contextHint}>{contextHint}</span>
       </div>
       <button type="button" class="icon-btn" aria-label="关闭 AI 助手" onclick={() => onclose?.()}>
-        <Icon name="x" size={16} />
+        <X size={16} />
       </button>
     </header>
 
     <div class="quick-actions">
       <button type="button" onclick={() => useExample("打开工作簿 X")}>
-        <Icon name="spreadsheet" size={14} />工作簿
+        <Sheet size={14} />工作簿
       </button>
       <button type="button" onclick={() => useExample("查找债权人或债权数据")}>
-        <Icon name="search" size={14} />查找
+        <Search size={14} />查找
       </button>
       <button type="button" onclick={() => useExample("根据当前数据创建统计图表")}>
-        <Icon name="coins" size={14} />图表
+        <Coins size={14} />图表
       </button>
     </div>
 
@@ -279,7 +279,7 @@
     <div class="conversation">
       {#if drawerState.messages.length === 0}
         <div class="empty">
-          <span><Icon name="ai" size={22} /></span>
+          <span><Sparkles size={22} /></span>
           <strong>当前上下文</strong>
           <small>{contextHint}</small>
         </div>
@@ -392,7 +392,7 @@
           搜索资源
         </button>
         <button type="submit" class="primary-btn" disabled={!prompt.trim() || (drawerState.sending && !!drawerState.activeRun)}>
-          <Icon name="send" size={14} color="#fff" />{drawerState.sending ? "发送中" : "发送"}
+          <Send size={14} color="#fff" />{drawerState.sending ? "发送中" : "发送"}
         </button>
       </div>
     </form>

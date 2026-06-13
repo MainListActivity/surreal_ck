@@ -1,5 +1,5 @@
 <script lang="ts">
-  import Icon from "../../../components/Icon.svelte";
+  import { Eye, Ellipsis, Plus } from "@lucide/svelte";
   import { canWriteSharedStructure as canWriteSharedStructureFn } from "../../../lib/permissions.svelte";
   import { editorStore } from "../../../lib/editor-store.svelte";
   import { editorUi } from "../lib/editor-ui.svelte";
@@ -110,7 +110,7 @@
           <span></span><span></span>
         </span>
         <span class="type-badge" title={meta.label}>
-          <Icon name={meta.icon} size={14} />
+          <svelte:component this={meta.icon} size={14} />
         </span>
         <span class="label">{col.label}</span>
         <button
@@ -120,7 +120,7 @@
           onclick={(event) => { event.stopPropagation(); toggleVisibility(col.key); }}
           aria-label={hidden.has(col.key) ? "显示字段" : "隐藏字段"}
         >
-          <Icon name="eye" size={14} />
+          <Eye size={14} />
         </button>
         <button
           type="button"
@@ -129,7 +129,7 @@
           onclick={(event) => openMenu(col.key, event)}
           aria-label="字段更多操作"
         >
-          <Icon name="moreH" size={14} />
+          <Ellipsis size={14} />
         </button>
 
         {#if menuKey === col.key}
@@ -157,7 +157,7 @@
     onclick={addField}
     disabled={!canWriteSharedStructure || !editorStore.activeSheetId || editorStore.saving}
   >
-    <Icon name="plus" size={14} />
+    <Plus size={14} />
     <span>添加字段</span>
   </button>
 </div>

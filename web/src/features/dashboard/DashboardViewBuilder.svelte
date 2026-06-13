@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { DashboardPreviewResponse, GridColumnDef } from "@surreal-ck/shared/rpc.types";
   import EmptyState from "../../components/EmptyState.svelte";
-  import Icon from "../../components/Icon.svelte";
+  import { X, Plus, AlertCircle, Coins } from "@lucide/svelte";
   import type { DashboardWidget } from "../../lib/dashboard-data";
   import { runDashboardWidgetQuery } from "../../lib/dashboard-query";
   import { getSurreal } from "../../lib/surreal";
@@ -233,12 +233,12 @@
             <input bind:value={filter.value} placeholder="值" oninput={invalidatePreview} />
           {/if}
           <button type="button" class="icon-btn" title="移除筛选" onclick={() => removeFilter(index)}>
-            <Icon name="x" size={14} />
+            <X size={14} />
           </button>
         </div>
       {/each}
       <button type="button" class="add-filter" onclick={addFilter}>
-        <Icon name="plus" size={13} />添加筛选
+        <Plus size={13} />添加筛选
       </button>
     </div>
 
@@ -275,7 +275,7 @@
     </div>
     {#if previewError}
       <div class="preview-empty">
-        <EmptyState icon="alertCircle" title="预览失败" desc={previewError} />
+        <EmptyState icon={AlertCircle} title="预览失败" desc={previewError} />
       </div>
     {:else if preview && previewRegistration}
       {@const WidgetComponent = previewRegistration.component}
@@ -284,7 +284,7 @@
       </div>
     {:else}
       <div class="preview-empty">
-        <EmptyState icon="coins" title="点击预览" desc="左侧配置完成后，点击「预览」直连执行只读聚合。" />
+        <EmptyState icon={Coins} title="点击预览" desc="左侧配置完成后，点击「预览」直连执行只读聚合。" />
       </div>
     {/if}
   </div>

@@ -1,14 +1,15 @@
 <script lang="ts">
-  import Icon from "./Icon.svelte";
+  import type { Component } from "svelte";
+  import { Info } from "@lucide/svelte";
 
   let {
-    icon = "info",
+    icon: IconComponent = Info,
     title,
     desc = "",
     action = "",
     onAction,
   }: {
-    icon?: string;
+    icon?: Component;
     title: string;
     desc?: string;
     action?: string;
@@ -17,7 +18,7 @@
 </script>
 
 <div class="empty-state">
-  <span class="empty-icon"><Icon name={icon} size={26} color="var(--text-3)" /></span>
+  <span class="empty-icon"><IconComponent size={26} color="var(--text-3)" /></span>
   <strong>{title}</strong>
   {#if desc}<p>{desc}</p>{/if}
   {#if action}<button class="primary-btn" onclick={onAction}>{action}</button>{/if}

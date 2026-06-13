@@ -3,7 +3,7 @@
   import LoginRoute from "./routes/auth/login.svelte";
   import CallbackRoute from "./routes/auth/callback.svelte";
   import AiDrawer from "./components/AiDrawer.svelte";
-  import Icon from "./components/Icon.svelte";
+  import { Sparkles, ClipboardList } from "@lucide/svelte";
   import EditorScreen from "./screens/EditorScreen.svelte";
   import WorkspaceScreen from "./screens/WorkspaceScreen.svelte";
   import NoWorkspaceScreen from "./screens/NoWorkspaceScreen.svelte";
@@ -148,7 +148,7 @@
 {:else if route.kind === "form" || route.kind === "form-success"}
   <main class="standalone">
     <PlaceholderScreen
-      icon="formIcon"
+      icon={ClipboardList}
       title={route.kind === "form-success" ? "提交成功" : "公开表单待迁移"}
       desc={route.kind === "form-success"
         ? "表单已提交。公开表单发布功能正在迁移中。"
@@ -194,7 +194,7 @@
       />
       {#if !aiDrawerOpen}
         <button type="button" class="ai-launcher" aria-label="AI 助手" onclick={openAiDrawer}>
-          <Icon name="ai" size={16} color="#fff" />
+          <Sparkles size={16} color="#fff" />
           <span>AI</span>
         </button>
       {/if}
@@ -218,7 +218,7 @@
       />
       {#if !aiDrawerOpen}
         <button type="button" class="ai-launcher" aria-label="AI 助手" onclick={openAiDrawer}>
-          <Icon name="ai" size={16} color="#fff" />
+          <Sparkles size={16} color="#fff" />
           <span>AI</span>
         </button>
       {/if}

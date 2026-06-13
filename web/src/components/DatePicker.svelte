@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import Icon from "./Icon.svelte";
+  import { Calendar, ChevronLeft, ChevronRight, Clock, ChevronUp, ChevronDown } from "@lucide/svelte";
   import {
     DEFAULT_DATE_FORMAT,
     dateFormatHasTime,
@@ -478,7 +478,7 @@
     aria-label={ariaLabel ?? placeholder}
     onclick={openPopover}
   >
-    <Icon name="calendar" size={14} />
+    <Calendar size={14} />
     <span class="dp-trigger-text">{displayText || placeholder}</span>
   </button>
 {:else}
@@ -503,15 +503,15 @@
           {#if viewMode === "days"}
             <button type="button" class="dp-nav" onclick={gotoPrevYear} aria-label="上一年">«</button>
             <button type="button" class="dp-nav" onclick={gotoPrevMonth} aria-label="上个月">
-              <Icon name="chevronLeft" size={14} />
+              <ChevronLeft size={14} />
             </button>
           {:else if viewMode === "months"}
             <button type="button" class="dp-nav" onclick={gotoPrevYear} aria-label="上一年">
-              <Icon name="chevronLeft" size={14} />
+              <ChevronLeft size={14} />
             </button>
           {:else}
             <button type="button" class="dp-nav" onclick={gotoPrevYearPage} aria-label="上一组">
-              <Icon name="chevronLeft" size={14} />
+              <ChevronLeft size={14} />
             </button>
           {/if}
 
@@ -525,16 +525,16 @@
 
           {#if viewMode === "days"}
             <button type="button" class="dp-nav" onclick={gotoNextMonth} aria-label="下个月">
-              <Icon name="chevronRight" size={14} />
+              <ChevronRight size={14} />
             </button>
             <button type="button" class="dp-nav" onclick={gotoNextYear} aria-label="下一年">»</button>
           {:else if viewMode === "months"}
             <button type="button" class="dp-nav" onclick={gotoNextYear} aria-label="下一年">
-              <Icon name="chevronRight" size={14} />
+              <ChevronRight size={14} />
             </button>
           {:else}
             <button type="button" class="dp-nav" onclick={gotoNextYearPage} aria-label="下一组">
-              <Icon name="chevronRight" size={14} />
+              <ChevronRight size={14} />
             </button>
           {/if}
         </div>
@@ -591,7 +591,7 @@
           <div class="dp-time-header">
             <div class="dp-time-heading">
               <span class="dp-time-heading-icon">
-                <Icon name="clock" size={12} />
+                <Clock size={12} />
               </span>
               <div class="dp-time-heading-copy">
                 <span class="dp-time-heading-title">时间</span>
@@ -628,7 +628,7 @@
         aria-label="增加{label}"
         onclick={() => onChange(value + 1)}
       >
-        <Icon name="chevronUp" size={12} />
+        <ChevronUp size={12} />
       </button>
       <input
         class="dp-tc-input"
@@ -659,7 +659,7 @@
         aria-label="减少{label}"
         onclick={() => onChange(value - 1)}
       >
-        <Icon name="chevronDown" size={12} />
+        <ChevronDown size={12} />
       </button>
     </div>
   </div>

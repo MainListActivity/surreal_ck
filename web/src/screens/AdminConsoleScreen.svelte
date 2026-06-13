@@ -1,5 +1,5 @@
 <script lang="ts">
-  import Icon from "../components/Icon.svelte";
+  import { Trash2, RefreshCw, Search, Copy } from "@lucide/svelte";
   import { isWorkspaceAdmin as isWorkspaceAdminFn } from "../lib/permissions.svelte";
   import { getSurreal } from "../lib/surreal";
   import { getCurrentWorkspace } from "../lib/workspace-store.svelte";
@@ -184,10 +184,10 @@
       </div>
       <div class="actions">
         <button type="button" class="secondary-btn" onclick={clearResult}>
-          <Icon name="trash" size={13} />清空
+          <Trash2 size={13} />清空
         </button>
         <button type="button" class="primary-btn" disabled={loading || !sql.trim() || !canRun} onclick={runQuery}>
-          <Icon name={loading ? "refresh" : "search"} size={13} color="#fff" />{loading ? "执行中" : "执行"}
+          {#if loading}<RefreshCw size={13} color="#fff" />{:else}<Search size={13} color="#fff" />{/if}{loading ? "执行中" : "执行"}
         </button>
       </div>
     </header>
@@ -224,7 +224,7 @@
             onclick={() => (mode = "json")}
           >JSON</button>
           <button type="button" class="icon-btn" disabled={!resultJson} title="复制结果" onclick={copyResult}>
-            <Icon name="copy" size={14} />
+            <Copy size={14} />
           </button>
         </div>
       </div>

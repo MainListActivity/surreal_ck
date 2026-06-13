@@ -1,5 +1,5 @@
 <script lang="ts">
-  import Icon from "../../components/Icon.svelte";
+  import { ChevronRight, ChevronLeft, Grid3x3, Coins } from "@lucide/svelte";
   import { dashboardStore } from "../dashboard/lib/dashboard-store.svelte";
   import { editorStore } from "../../lib/editor-store.svelte";
   import { editorUi } from "./lib/editor-ui.svelte";
@@ -44,14 +44,14 @@
       aria-label="展开侧栏"
       onclick={toggleCollapsed}
     >
-      <Icon name="chevronRight" size={16} />
+      <ChevronRight size={16} />
       <span class="collapsed-hint">展开</span>
     </button>
   {:else}
     <div class="nav-header">
       <span class="nav-header-title">侧栏</span>
       <button class="icon-btn collapse-btn-inline" title="收起侧栏" onclick={toggleCollapsed}>
-        <Icon name="chevronLeft" size={14} />
+        <ChevronLeft size={14} />
       </button>
     </div>
 
@@ -80,7 +80,7 @@
             }}
             title={label}
           >
-            <Icon name="grid" size={15} />
+            <Grid3x3 size={15} />
             <span>{label}</span>
           </div>
         {/each}
@@ -98,7 +98,7 @@
             editorUi.dashboardPageId = dashboardStore.activePageId;
           }}
         >
-          <Icon name="chevronRight" size={14} />
+          <ChevronRight size={14} />
         </button>
       </div>
 
@@ -121,7 +121,7 @@
             }}
             title={page.title}
           >
-            <Icon name="coins" size={15} />
+            <Coins size={15} />
             <span>{page.title}</span>
           </div>
         {/each}

@@ -1,6 +1,6 @@
 <script lang="ts">
   import EmptyState from "../../../components/EmptyState.svelte";
-  import Icon from "../../../components/Icon.svelte";
+  import { Plus, Link, Globe, Info } from "@lucide/svelte";
   import { canWriteEntityData as canWriteEntityDataFn } from "../../../lib/permissions.svelte";
   import { editorStore } from "../../../lib/editor-store.svelte";
   import { editorUi } from "../lib/editor-ui.svelte";
@@ -181,7 +181,7 @@
           <button type="button" class="add-row" onclick={() => addField(col.key)}>
             <span class="col-name">{col.label}</span>
             <em>{col.fieldType}</em>
-            <Icon name="plus" size={14} color="var(--primary)" />
+            <Plus size={14} color="var(--primary)" />
           </button>
         {/each}
       </div>
@@ -282,7 +282,7 @@
             />
           {/if}
         {:else}
-          <EmptyState icon="info" title="暂无字段" desc="请先在表格字段中定义当前 Sheet 的字段或将必填字段添加到表单" />
+          <EmptyState icon={Info} title="暂无字段" desc="请先在表格字段中定义当前 Sheet 的字段或将必填字段添加到表单" />
         {/if}
       </div>
 
@@ -319,11 +319,11 @@
     <span class="scope-title">邀请填写</span>
     <div class="share-grid">
       <button type="button" onclick={copyAppLink}>
-        <Icon name="link" size={22} />
+        <Link size={22} />
         App 链接
       </button>
       <button type="button" onclick={copyWebLink}>
-        <Icon name="globe" size={22} />
+        <Globe size={22} />
         浏览器链接
       </button>
     </div>

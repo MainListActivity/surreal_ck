@@ -1,7 +1,7 @@
 <script lang="ts">
   import Avatar from "./Avatar.svelte";
-  import Icon from "./Icon.svelte";
   import Logo from "./Logo.svelte";
+  import { Plus, House, Coins, Folder, Tag, Settings, Hash, Trash2, LogOut } from "@lucide/svelte";
   import WorkspaceSwitcher from "./WorkspaceSwitcher.svelte";
   import { logout } from "../lib/auth";
   import { getCurrentUser } from "../lib/workspace-store.svelte";
@@ -50,27 +50,27 @@
     title={canWriteSharedStructure ? "新建文档" : "需要管理员权限"}
     onclick={() => onnewdoc?.()}
   >
-    <Icon name="plus" size={15} color="#fff" />新建文档
+    <Plus size={15} color="#fff" />新建文档
   </button>
 
   <nav>
     <button class:active={page === "home"} onclick={() => go("home")}>
-      <Icon name="home" size={16} />首页
+      <House size={16} />首页
     </button>
     <button class:active={page === "dashboard"} onclick={() => go("dashboard")}>
-      <Icon name="coins" size={16} />仪表盘
+      <Coins size={16} />仪表盘
     </button>
     <button class:active={page === "docs"} onclick={() => go("docs")}>
-      <Icon name="folder" size={16} />我的文档
+      <Folder size={16} />我的文档
     </button>
     <button class:active={page === "templates"} onclick={() => go("templates")}>
-      <Icon name="tag" size={16} />模板库
+      <Tag size={16} />模板库
     </button>
   </nav>
 
   <div class="bottom-nav">
     <button class:active={page === "admin"} onclick={() => go("admin")}>
-      <Icon name="settings" size={16} />工作区设置
+      <Settings size={16} />工作区设置
     </button>
     <button
       class:active={page === "admin-console"}
@@ -78,10 +78,10 @@
       title={canOpenAdminConsole ? "SQL 控制台" : "需要管理员权限"}
       onclick={() => go("admin-console")}
     >
-      <Icon name="hash" size={16} />SQL 控制台
+      <Hash size={16} />SQL 控制台
     </button>
     <button class:active={page === "trash"} onclick={() => go("trash")}>
-      <Icon name="trash" size={16} />回收站
+      <Trash2 size={16} />回收站
     </button>
   </div>
 
@@ -91,7 +91,7 @@
       <div><strong>{userName}</strong><span>{userMeta}</span></div>
     </button>
     <button class="icon-btn logout-btn" title="退出登录" onclick={() => void logout()}>
-      <Icon name="logout" size={15} color="var(--text-3)" />
+      <LogOut size={15} color="var(--text-3)" />
     </button>
   </div>
 </aside>

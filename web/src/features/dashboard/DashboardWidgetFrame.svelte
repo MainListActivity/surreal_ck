@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
-  import Icon from "../../components/Icon.svelte";
+  import { Pencil, Trash2 } from "@lucide/svelte";
 
   let {
     title,
@@ -28,12 +28,12 @@
     <div class="actions">
       {#if onEdit}
         <button class="ghost" title="编辑视图" onclick={onEdit}>
-          <Icon name="edit" size={14} />
+          <Pencil size={14} />
         </button>
       {/if}
       {#if onRemove}
         <button class="ghost" title="移除组件" onclick={onRemove}>
-          <Icon name="trash" size={14} />
+          <Trash2 size={14} />
         </button>
       {/if}
     </div>

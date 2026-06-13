@@ -3,7 +3,7 @@
   import type { ColumnRegular, RevoGridCustomEvent } from "@revolist/svelte-datagrid";
   import { RevoGrid } from "@revolist/svelte-datagrid";
   import type { CellTemplateProp, RowHeaders } from "@revolist/revogrid";
-  import Icon from "../../../components/Icon.svelte";
+  import { ExternalLink, Copy, ArrowUp, ArrowDown, Link, Trash2, Settings, Eye } from "@lucide/svelte";
   import RecordPicker from "../../../components/RecordPicker.svelte";
   import ReferenceCell from "../components/ReferenceCell.svelte";
   import { editorStore } from "../../../lib/editor-store.svelte";
@@ -561,12 +561,12 @@
     onmousedown={(event) => event.stopPropagation()}
   >
     <button class="menu-item" role="menuitem" onclick={expandRecord}>
-      <Icon name="externalLink" size={13} />
+      <ExternalLink size={13} />
       <span>展开记录</span>
     </button>
     <div class="menu-sep"></div>
     <button class="menu-item" role="menuitem" onclick={duplicateRecord} disabled={!canWriteEntityData}>
-      <Icon name="copy" size={13} />
+      <Copy size={13} />
       <span>创建副本</span>
     </button>
     <button
@@ -576,7 +576,7 @@
       onclick={() => insertRows("above")}
       disabled={!canWriteEntityData}
     >
-      <Icon name="arrowUp" size={13} />
+      <ArrowUp size={13} />
       <span>在上方插入</span>
       <input
         type="number"
@@ -597,7 +597,7 @@
       onclick={() => insertRows("below")}
       disabled={!canWriteEntityData}
     >
-      <Icon name="arrowDown" size={13} />
+      <ArrowDown size={13} />
       <span>在下方插入</span>
       <input
         type="number"
@@ -613,12 +613,12 @@
     </button>
     <div class="menu-sep"></div>
     <button class="menu-item" role="menuitem" disabled>
-      <Icon name="link" size={13} />
+      <Link size={13} />
       <span>获取分享链接</span>
     </button>
     <div class="menu-sep"></div>
     <button class="menu-item danger" role="menuitem" onclick={deleteRecord} disabled={!canWriteEntityData}>
-      <Icon name="trash" size={13} />
+      <Trash2 size={13} />
       <span>删除记录</span>
     </button>
   </div>
@@ -639,11 +639,11 @@
     </div>
     <button class="menu-item" role="menuitem" onclick={openFieldEditor}>
       <span>字段设置</span>
-      <Icon name="settings" size={13} />
+      <Settings size={13} />
     </button>
     <button class="menu-item" role="menuitem" onclick={hideField}>
       <span>隐藏字段</span>
-      <Icon name="eye" size={13} />
+      <Eye size={13} />
     </button>
   </div>
 {/if}

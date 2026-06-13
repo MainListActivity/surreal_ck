@@ -1,5 +1,5 @@
 <script lang="ts">
-  import Icon from "../../../components/Icon.svelte";
+  import { ArrowLeft } from "@lucide/svelte";
   import { referenceCache } from "../../../lib/reference-cache.svelte";
   import { editorUi } from "../lib/editor-ui.svelte";
 
@@ -19,7 +19,7 @@
 <div class="ref-panel">
   <div class="bar">
     <button class="back" type="button" onclick={back} aria-label="返回">
-      <Icon name="arrowLeft" size={14} />
+      <ArrowLeft size={14} />
       <span>返回</span>
     </button>
   </div>

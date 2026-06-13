@@ -1,0 +1,1728 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>surreal_ck — 首页重设计稿</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-base: #0f1117;
+    --bg-surface: #161b27;
+    --bg-elevated: #1e2535;
+    --bg-hover: #252d3d;
+    --bg-active: #2a3347;
+    --border-subtle: rgba(255,255,255,0.06);
+    --border-default: rgba(255,255,255,0.10);
+    --border-strong: rgba(255,255,255,0.18);
+    --text-primary: #e8ecf4;
+    --text-secondary: #8892a4;
+    --text-tertiary: #545f72;
+    --text-link: #5b9cf6;
+    --accent-blue: #3b82f6;
+    --accent-blue-dim: rgba(59,130,246,0.15);
+    --accent-blue-glow: rgba(59,130,246,0.08);
+    --accent-green: #10b981;
+    --accent-green-dim: rgba(16,185,129,0.15);
+    --accent-amber: #f59e0b;
+    --accent-amber-dim: rgba(245,158,11,0.15);
+    --accent-purple: #8b5cf6;
+    --accent-purple-dim: rgba(139,92,246,0.15);
+    --accent-red: #ef4444;
+    --accent-red-dim: rgba(239,68,68,0.12);
+    --sidebar-width: 220px;
+    --right-panel-width: 280px;
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 14px;
+    --font-mono: 'JetBrains Mono', monospace;
+  }
+
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg-base: #f4f6fb;
+      --bg-surface: #ffffff;
+      --bg-elevated: #f0f3fa;
+      --bg-hover: #e8edf7;
+      --bg-active: #dde4f2;
+      --border-subtle: rgba(0,0,0,0.05);
+      --border-default: rgba(0,0,0,0.09);
+      --border-strong: rgba(0,0,0,0.15);
+      --text-primary: #111827;
+      --text-secondary: #4b5563;
+      --text-tertiary: #9ca3af;
+      --text-link: #2563eb;
+      --accent-blue: #2563eb;
+      --accent-blue-dim: rgba(37,99,235,0.10);
+      --accent-blue-glow: rgba(37,99,235,0.05);
+    }
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Inter', -apple-system, sans-serif;
+    background: var(--bg-base);
+    color: var(--text-primary);
+    height: 100vh;
+    display: flex;
+    overflow: hidden;
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ─── Shared icon-btn ─────────────────────────────── */
+  .icon-btn {
+    width: 30px;
+    height: 30px;
+    border-radius: var(--radius-sm);
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.12s, color 0.12s;
+    position: relative;
+  }
+  .icon-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+  .notif-dot {
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    width: 6px;
+    height: 6px;
+    background: var(--accent-blue);
+    border-radius: 50%;
+    border: 1.5px solid var(--bg-surface);
+  }
+
+  .avatar {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #f59e0b, #ef4444);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 600;
+    color: white;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  /* ─── Sidebar ─────────────────────────────────────── */
+  .sidebar {
+    width: var(--sidebar-width);
+    background: var(--bg-surface);
+    border-right: 1px solid var(--border-subtle);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    flex-shrink: 0;
+    height: 100vh;
+  }
+
+  /* Sidebar top: logo + search */
+  .sidebar-top {
+    padding: 14px 12px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .sidebar-logo {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    text-decoration: none;
+    color: var(--text-primary);
+    font-weight: 600;
+    font-size: 14px;
+    letter-spacing: -0.3px;
+  }
+
+  .sidebar-logo-icon {
+    width: 26px;
+    height: 26px;
+    background: linear-gradient(135deg, #3b82f6 0%, #6366f1 100%);
+    border-radius: 7px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 700;
+    color: white;
+    flex-shrink: 0;
+  }
+
+  .sidebar-search {
+    position: relative;
+  }
+
+  .sidebar-search input {
+    width: 100%;
+    height: 30px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    padding: 0 32px 0 30px;
+    font-size: 12.5px;
+    color: var(--text-primary);
+    font-family: inherit;
+    outline: none;
+    transition: border-color 0.15s, background 0.15s;
+  }
+
+  .sidebar-search input::placeholder { color: var(--text-tertiary); }
+  .sidebar-search input:focus {
+    border-color: var(--accent-blue);
+    background: var(--bg-hover);
+  }
+
+  .sidebar-search-icon {
+    position: absolute;
+    left: 9px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-tertiary);
+    pointer-events: none;
+  }
+
+  .sidebar-search-kbd {
+    position: absolute;
+    right: 7px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-tertiary);
+    background: var(--bg-base);
+    border: 1px solid var(--border-default);
+    border-radius: 3px;
+    padding: 1px 4px;
+    pointer-events: none;
+  }
+
+  /* Nav scroll area */
+  .sidebar-nav {
+    flex: 1;
+    overflow-y: auto;
+    scrollbar-width: none;
+    padding: 8px 8px 0;
+  }
+  .sidebar-nav::-webkit-scrollbar { display: none; }
+
+  .sidebar-section {
+    padding: 0;
+    margin-bottom: 4px;
+  }
+
+  .sidebar-section + .sidebar-section {
+    margin-top: 4px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .sidebar-label {
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    padding: 4px 8px 6px;
+  }
+
+  .sidebar-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    color: var(--text-secondary);
+    font-size: 13px;
+    font-weight: 400;
+    text-decoration: none;
+    transition: background 0.12s, color 0.12s;
+    position: relative;
+    user-select: none;
+  }
+
+  .sidebar-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+  .sidebar-item.active {
+    background: var(--accent-blue-dim);
+    color: var(--text-link);
+    font-weight: 500;
+  }
+
+  .sidebar-item-icon {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    opacity: 0.7;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .sidebar-item.active .sidebar-item-icon { opacity: 1; }
+
+  .sidebar-badge {
+    margin-left: auto;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 1px 5px;
+    border-radius: 10px;
+    background: var(--accent-blue-dim);
+    color: var(--accent-blue);
+  }
+
+  .sidebar-pinned-label {
+    padding: 4px 8px 4px;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .sidebar-pinned-action {
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--text-tertiary);
+    padding: 2px;
+    border-radius: 3px;
+    font-size: 11px;
+    display: flex;
+    align-items: center;
+  }
+  .sidebar-pinned-action:hover { color: var(--text-secondary); background: var(--bg-hover); }
+
+  .sidebar-workbook {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 5px 8px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    color: var(--text-secondary);
+    font-size: 12.5px;
+    transition: background 0.12s, color 0.12s;
+  }
+  .sidebar-workbook:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+  .sidebar-workbook-icon {
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+  }
+
+  .sidebar-footer {
+    padding: 8px;
+    border-top: 1px solid var(--border-subtle);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  /* Sidebar user bar at very bottom */
+  .sidebar-userbar {
+    padding: 10px 12px;
+    border-top: 1px solid var(--border-subtle);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .sidebar-userbar-info {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .sidebar-userbar-name {
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .sidebar-userbar-ws {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .main-inner {
+    padding: 24px 28px;
+  }
+
+  /* ─── Quick Actions ───────────────────────────────── */
+  .quick-actions {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin-bottom: 28px;
+  }
+
+  .quick-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-lg);
+    padding: 16px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, transform 0.1s;
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .quick-card::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(135deg, transparent 50%, rgba(255,255,255,0.015) 100%);
+    pointer-events: none;
+  }
+
+  .quick-card:hover {
+    background: var(--bg-elevated);
+    border-color: var(--border-strong);
+    transform: translateY(-1px);
+  }
+
+  .quick-card-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: var(--radius-sm);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-size: 16px;
+  }
+
+  .quick-card-icon.blue { background: var(--accent-blue-dim); color: var(--accent-blue); }
+  .quick-card-icon.purple { background: var(--accent-purple-dim); color: var(--accent-purple); }
+  .quick-card-icon.amber { background: var(--accent-amber-dim); color: var(--accent-amber); }
+
+  .quick-card-body { flex: 1; min-width: 0; }
+
+  .quick-card-title {
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .quick-card-desc {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    line-height: 1.4;
+  }
+
+  .quick-card-badge {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    font-size: 10px;
+    font-weight: 500;
+    padding: 2px 6px;
+    border-radius: 10px;
+    background: var(--accent-amber-dim);
+    color: var(--accent-amber);
+  }
+
+  /* ─── Section Header ──────────────────────────────── */
+  .section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 14px;
+  }
+
+  .section-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .section-tabs {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    background: var(--bg-elevated);
+    border-radius: var(--radius-sm);
+    padding: 2px;
+  }
+
+  .section-tab {
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    cursor: pointer;
+    border: none;
+    background: none;
+    transition: background 0.12s, color 0.12s;
+  }
+  .section-tab.active {
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  }
+  .section-tab:hover:not(.active) { color: var(--text-primary); }
+
+  .section-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .view-toggle {
+    width: 26px;
+    height: 26px;
+    border-radius: var(--radius-sm);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    color: var(--text-tertiary);
+    border: none;
+    background: none;
+    transition: background 0.12s, color 0.12s;
+  }
+  .view-toggle:hover, .view-toggle.active { background: var(--bg-hover); color: var(--text-primary); }
+
+  /* ─── Workbook Grid ───────────────────────────────── */
+  .workbook-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 12px;
+    margin-bottom: 32px;
+  }
+
+  .workbook-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    cursor: pointer;
+    transition: border-color 0.15s, box-shadow 0.15s, transform 0.1s;
+    position: relative;
+  }
+
+  .workbook-card:hover {
+    border-color: var(--border-strong);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+    transform: translateY(-1px);
+  }
+
+  .workbook-card-preview {
+    height: 100px;
+    background: var(--bg-elevated);
+    position: relative;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .workbook-card-preview-grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    grid-template-rows: repeat(4, 1fr);
+    gap: 1px;
+    width: 90%;
+    height: 80%;
+    opacity: 0.4;
+  }
+
+  .preview-cell {
+    background: var(--border-default);
+    border-radius: 1px;
+  }
+
+  .preview-cell.filled { background: var(--accent-blue); opacity: 0.5; }
+  .preview-cell.filled-2 { background: var(--accent-green); opacity: 0.4; }
+  .preview-cell.header { background: var(--border-strong); }
+
+  .workbook-card-type-badge {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    font-size: 10px;
+    font-weight: 500;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--bg-base);
+    border: 1px solid var(--border-default);
+    color: var(--text-tertiary);
+    font-family: var(--font-mono);
+  }
+
+  .workbook-card-body {
+    padding: 12px;
+  }
+
+  .workbook-card-title {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .workbook-card-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .workbook-card-time {
+    font-size: 11.5px;
+    color: var(--text-tertiary);
+  }
+
+  .workbook-card-collab {
+    display: flex;
+  }
+
+  .collab-avatar {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 1.5px solid var(--bg-surface);
+    margin-left: -5px;
+    font-size: 9px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+  }
+
+  .collab-avatar:first-child { margin-left: 0; }
+
+  .workbook-card-tags {
+    margin-top: 8px;
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+  }
+
+  .tag {
+    font-size: 10.5px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: 500;
+  }
+
+  .tag-blue { background: var(--accent-blue-dim); color: var(--text-link); }
+  .tag-green { background: var(--accent-green-dim); color: var(--accent-green); }
+  .tag-purple { background: var(--accent-purple-dim); color: var(--accent-purple); }
+  .tag-amber { background: var(--accent-amber-dim); color: var(--accent-amber); }
+
+  /* ─── List View ───────────────────────────────────── */
+  .workbook-list {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    margin-bottom: 32px;
+  }
+
+  .list-header {
+    display: grid;
+    grid-template-columns: 1fr 120px 130px 80px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border-subtle);
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--text-tertiary);
+    letter-spacing: 0.3px;
+  }
+
+  .list-row {
+    display: grid;
+    grid-template-columns: 1fr 120px 130px 80px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border-subtle);
+    align-items: center;
+    cursor: pointer;
+    transition: background 0.1s;
+  }
+
+  .list-row:last-child { border-bottom: none; }
+  .list-row:hover { background: var(--bg-elevated); }
+
+  .list-row-name {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .list-row-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-default);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    color: var(--text-secondary);
+    font-size: 12px;
+  }
+
+  .list-row-title {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .list-row-type {
+    font-size: 12px;
+    color: var(--text-tertiary);
+  }
+
+  .list-row-date {
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+
+  .list-row-collab {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+  }
+
+  /* ─── AI Banner ───────────────────────────────────── */
+  .ai-banner {
+    background: linear-gradient(135deg, rgba(59,130,246,0.08) 0%, rgba(139,92,246,0.06) 100%);
+    border: 1px solid rgba(59,130,246,0.2);
+    border-radius: var(--radius-lg);
+    padding: 16px 20px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 28px;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+  }
+
+  .ai-banner:hover {
+    background: linear-gradient(135deg, rgba(59,130,246,0.12) 0%, rgba(139,92,246,0.10) 100%);
+    border-color: rgba(59,130,246,0.35);
+  }
+
+  .ai-banner-icon {
+    width: 38px;
+    height: 38px;
+    border-radius: var(--radius-md);
+    background: linear-gradient(135deg, #3b82f6, #6366f1);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-size: 18px;
+    color: white;
+    box-shadow: 0 0 16px rgba(59,130,246,0.3);
+  }
+
+  .ai-banner-body { flex: 1; }
+  .ai-banner-title {
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 2px;
+  }
+  .ai-banner-desc { font-size: 12px; color: var(--text-secondary); }
+
+  .ai-banner-cta {
+    padding: 7px 14px;
+    background: var(--accent-blue);
+    border: none;
+    border-radius: var(--radius-sm);
+    font-size: 12.5px;
+    font-weight: 600;
+    color: white;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.12s, transform 0.1s;
+  }
+  .ai-banner-cta:hover { background: #2563eb; transform: translateY(-1px); }
+
+  /* ─── Main ────────────────────────────────────────── */
+  .main {
+    flex: 1;
+    overflow-y: auto;
+    height: 100vh;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-default) transparent;
+  }
+  .main::-webkit-scrollbar { width: 5px; }
+  .main::-webkit-scrollbar-track { background: transparent; }
+  .main::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: 10px; }
+
+  /* ─── Right Panel ─────────────────────────────────── */
+  .right-panel {
+    width: var(--right-panel-width);
+    background: var(--bg-surface);
+    border-left: 1px solid var(--border-subtle);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    flex-shrink: 0;
+    height: 100vh;
+  }
+
+  .panel-tabs {
+    display: flex;
+    gap: 4px;
+    padding: 10px 12px 8px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .panel-tab {
+    flex: 1;
+    padding: 5px 8px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    border: none;
+    background: none;
+    border-radius: var(--radius-sm);
+    transition: background 0.12s, color 0.12s;
+    white-space: nowrap;
+    text-align: center;
+  }
+  .panel-tab:hover:not(.active) { background: var(--bg-hover); color: var(--text-secondary); }
+  .panel-tab.active {
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    font-weight: 600;
+  }
+
+  .panel-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-default) transparent;
+  }
+
+  /* ─── Activity Feed ───────────────────────────────── */
+  .activity-item {
+    display: flex;
+    gap: 9px;
+    padding: 8px 8px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background 0.1s;
+  }
+  .activity-item:hover { background: var(--bg-elevated); }
+
+  .activity-avatar {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 700;
+    color: white;
+    margin-top: 1px;
+  }
+
+  .activity-content { flex: 1; min-width: 0; }
+
+  .activity-text {
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.45;
+    margin-bottom: 2px;
+  }
+  .activity-text strong { color: var(--text-primary); font-weight: 500; }
+
+  .activity-time {
+    font-size: 11px;
+    color: var(--text-tertiary);
+  }
+
+  .activity-doc {
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--text-link);
+    margin-top: 4px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  /* ─── Graph Insight Card ──────────────────────────── */
+  .insight-card {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    padding: 12px;
+    margin-bottom: 4px;
+  }
+
+  .insight-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+
+  .insight-card-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .insight-stat {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    letter-spacing: -0.5px;
+    margin-bottom: 2px;
+  }
+
+  .insight-delta {
+    font-size: 11.5px;
+    color: var(--accent-green);
+    display: flex;
+    align-items: center;
+    gap: 3px;
+  }
+
+  .insight-mini-chart {
+    height: 28px;
+    margin-top: 8px;
+    display: flex;
+    align-items: flex-end;
+    gap: 2px;
+  }
+
+  .mini-bar {
+    flex: 1;
+    background: var(--accent-blue);
+    opacity: 0.4;
+    border-radius: 2px 2px 0 0;
+    transition: opacity 0.15s;
+  }
+  .mini-bar:hover { opacity: 0.8; }
+  .mini-bar.active { opacity: 0.9; }
+
+  /* ─── New Workbook Button ─────────────────────────── */
+  .new-workbook-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 14px;
+    background: var(--accent-blue);
+    border: none;
+    border-radius: var(--radius-sm);
+    font-size: 12.5px;
+    font-weight: 600;
+    color: white;
+    cursor: pointer;
+    transition: background 0.12s, transform 0.1s;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  .new-workbook-btn:hover { background: #2563eb; transform: translateY(-1px); }
+
+  /* ─── Workspace Switcher ─────────────────────────── */
+  .ws-switcher-trigger {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    cursor: pointer;
+    border-radius: 4px;
+    padding: 1px 4px 1px 2px;
+    transition: background 0.12s;
+    color: var(--text-secondary);
+    font-size: 12.5px;
+    border: none;
+    background: none;
+    font-family: inherit;
+  }
+  .ws-switcher-trigger:hover { background: var(--bg-hover); color: var(--text-primary); }
+  .ws-switcher-trigger .ws-name {
+    color: var(--text-primary);
+    font-weight: 500;
+    font-size: 12.5px;
+  }
+  .ws-switcher-trigger svg { flex-shrink: 0; opacity: 0.5; transition: transform 0.15s; }
+  .ws-switcher-trigger[aria-expanded="true"] svg { transform: rotate(180deg); }
+
+  /* Inline panel above sidebar-footer */
+  .ws-panel {
+    background: var(--bg-base);
+    border-top: 1px solid var(--border-subtle);
+    overflow: hidden;
+    max-height: 0;
+    transition: max-height 0.2s ease;
+  }
+  .ws-panel.open { max-height: 260px; }
+
+  .ws-panel-header {
+    padding: 8px 12px 4px;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+  }
+
+  .ws-panel-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 12px;
+    cursor: pointer;
+    transition: background 0.1s;
+  }
+  .ws-panel-item:hover { background: var(--bg-hover); }
+  .ws-panel-item.current { background: var(--accent-blue-dim); }
+
+  .ws-panel-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 7px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    font-weight: 700;
+    flex-shrink: 0;
+    color: white;
+  }
+
+  .ws-panel-info { flex: 1; min-width: 0; }
+  .ws-panel-name {
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .ws-panel-role { font-size: 11px; color: var(--text-tertiary); }
+
+  .ws-panel-check { color: var(--accent-blue); flex-shrink: 0; }
+
+  .ws-panel-divider { height: 1px; background: var(--border-subtle); margin: 4px 0; }
+
+  .ws-panel-new {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 12px 10px;
+    cursor: pointer;
+    color: var(--text-secondary);
+    font-size: 12.5px;
+    transition: color 0.1s;
+  }
+  .ws-panel-new:hover { color: var(--text-primary); }
+
+  /* ─── Micro UI ────────────────────────────────────── */
+  .divider { height: 1px; background: var(--border-subtle); margin: 4px 0; }
+
+  .empty-state {
+    text-align: center;
+    padding: 48px 24px;
+    color: var(--text-tertiary);
+  }
+
+  .empty-state-icon { font-size: 32px; margin-bottom: 12px; opacity: 0.4; }
+  .empty-state-text { font-size: 13px; }
+
+  svg { display: block; }
+
+  /* ─── Responsive ──────────────────────────────────── */
+  @media (max-width: 1100px) {
+    .right-panel { display: none; }
+    :root { --right-panel-width: 0px; }
+  }
+
+  @media (max-width: 768px) {
+    .sidebar { display: none; }
+    .quick-actions { grid-template-columns: 1fr; }
+    .workbook-grid { grid-template-columns: 1fr 1fr; }
+  }
+
+  @media (max-width: 480px) {
+    .workbook-grid { grid-template-columns: 1fr; }
+    .main { padding: 16px; }
+  }
+
+  /* ─── Prefers Reduced Motion ──────────────────────── */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition: none !important; animation: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<!-- NO TOPBAR — layout is sidebar + main + right panel, all 100vh -->
+
+  <!-- SIDEBAR -->
+  <nav class="sidebar" aria-label="主导航">
+
+    <!-- Logo + Search -->
+    <div class="sidebar-top">
+      <a href="#" class="sidebar-logo" aria-label="surreal_ck 首页">
+        <div class="sidebar-logo-icon" aria-hidden="true">S</div>
+        surreal_ck
+      </a>
+      <div class="sidebar-search" role="search">
+        <svg class="sidebar-search-icon" width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/>
+          <path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <input type="search" placeholder="搜索工作簿、字段、关系..." aria-label="搜索">
+        <span class="sidebar-search-kbd" aria-hidden="true">⌘K</span>
+      </div>
+    </div>
+
+    <!-- Nav scroll area -->
+    <div class="sidebar-nav">
+      <div class="sidebar-section">
+        <a href="#" class="sidebar-item active" aria-current="page">
+          <span class="sidebar-item-icon" aria-hidden="true">
+            <svg width="15" height="15" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z"/>
+            </svg>
+          </span>
+          首页
+        </a>
+        <a href="#" class="sidebar-item">
+          <span class="sidebar-item-icon" aria-hidden="true">
+            <svg width="15" height="15" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z"/>
+            </svg>
+          </span>
+          仪表盘
+          <span class="sidebar-badge" aria-label="2 个仪表盘">2</span>
+        </a>
+        <a href="#" class="sidebar-item">
+          <span class="sidebar-item-icon" aria-hidden="true">
+            <svg width="15" height="15" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z"/>
+              <path fill-rule="evenodd" d="M4 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v11a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z" clip-rule="evenodd"/>
+            </svg>
+          </span>
+          我的文档
+        </a>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-pinned-label">
+          固定
+          <button class="sidebar-pinned-action" title="管理固定" aria-label="管理固定工作簿">
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+              <path d="M8 2a1 1 0 00-1 1v4H3a1 1 0 000 2h4v4a1 1 0 102 0V9h4a1 1 0 100-2H9V3a1 1 0 00-1-1z"/>
+            </svg>
+          </button>
+        </div>
+        <div class="sidebar-workbook" tabindex="0" role="link">
+          <div class="sidebar-workbook-icon" style="background: var(--accent-blue-dim);" aria-hidden="true">
+            <span style="color: var(--accent-blue); font-size: 11px; font-weight: 700;">⚡</span>
+          </div>
+          <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">龙腾资产债权追踪</span>
+        </div>
+        <div class="sidebar-workbook" tabindex="0" role="link">
+          <div class="sidebar-workbook-icon" style="background: var(--accent-green-dim);" aria-hidden="true">
+            <span style="color: var(--accent-green); font-size: 11px; font-weight: 700;">▤</span>
+          </div>
+          <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">Q2 破产案件管理</span>
+        </div>
+        <div class="sidebar-workbook" tabindex="0" role="link">
+          <div class="sidebar-workbook-icon" style="background: var(--accent-purple-dim);" aria-hidden="true">
+            <span style="color: var(--accent-purple); font-size: 11px; font-weight: 700;">◈</span>
+          </div>
+          <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">客户实体关系图谱</span>
+        </div>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-label">工作区</div>
+        <a href="#" class="sidebar-item">
+          <span class="sidebar-item-icon" aria-hidden="true">
+            <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M4 4a2 2 0 00-2 2v4a2 2 0 002 2V6h10a2 2 0 00-2-2H4zm2 6a2 2 0 012-2h8a2 2 0 012 2v4a2 2 0 01-2 2H8a2 2 0 01-2-2v-4zm6 4a2 2 0 100-4 2 2 0 000 4z" clip-rule="evenodd"/>
+            </svg>
+          </span>
+          模板库
+        </a>
+        <a href="#" class="sidebar-item">
+          <span class="sidebar-item-icon" aria-hidden="true">
+            <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M9 3a1 1 0 012 0v5.5a.5.5 0 001 0V4a1 1 0 112 0v4.5a.5.5 0 001 0V6a1 1 0 112 0v5a7 7 0 11-14 0V9a1 1 0 012 0v2.5a.5.5 0 001 0V4a1 1 0 012 0v4.5a.5.5 0 001 0V3z" clip-rule="evenodd"/>
+            </svg>
+          </span>
+          回收站
+        </a>
+      </div>
+    </div>
+
+    <!-- Workspace switcher inline panel (slides open above userbar) -->
+    <div class="ws-panel" id="ws-panel" role="listbox" aria-label="选择工作区">
+      <div class="ws-panel-header">切换工作区</div>
+      <div class="ws-panel-item current" role="option" aria-selected="true" tabindex="0" data-ws="看到就放过">
+        <div class="ws-panel-icon" style="background: linear-gradient(135deg, #3b82f6, #6366f1);">看</div>
+        <div class="ws-panel-info">
+          <div class="ws-panel-name">看到就放过</div>
+          <div class="ws-panel-role">管理员</div>
+        </div>
+        <svg class="ws-panel-check" width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M13.707 4.293a1 1 0 010 1.414l-7 7a1 1 0 01-1.414 0l-3-3a1 1 0 011.414-1.414L6 10.586l6.293-6.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+      </div>
+      <div class="ws-panel-item" role="option" aria-selected="false" tabindex="0" data-ws="龙腾律所">
+        <div class="ws-panel-icon" style="background: linear-gradient(135deg, #10b981, #059669);">龙</div>
+        <div class="ws-panel-info">
+          <div class="ws-panel-name">龙腾律所</div>
+          <div class="ws-panel-role">成员</div>
+        </div>
+      </div>
+      <div class="ws-panel-item" role="option" aria-selected="false" tabindex="0" data-ws="信达资产">
+        <div class="ws-panel-icon" style="background: linear-gradient(135deg, #f59e0b, #d97706);">信</div>
+        <div class="ws-panel-info">
+          <div class="ws-panel-name">信达资产</div>
+          <div class="ws-panel-role">管理员</div>
+        </div>
+      </div>
+      <div class="ws-panel-divider"></div>
+      <div class="ws-panel-new" role="button" tabindex="0" aria-label="新建工作区">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 2a1 1 0 00-1 1v4H3a1 1 0 000 2h4v4a1 1 0 102 0V9h4a1 1 0 100-2H9V3a1 1 0 00-1-1z"/></svg>
+        新建工作区
+      </div>
+    </div>
+
+    <!-- Footer: settings + SQL -->
+    <footer class="sidebar-footer">
+      <a href="#" class="sidebar-item">
+        <span class="sidebar-item-icon" aria-hidden="true">
+          <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd"/>
+          </svg>
+        </span>
+        工作区设置
+      </a>
+      <a href="#" class="sidebar-item">
+        <span class="sidebar-item-icon" aria-hidden="true">
+          <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M12.316 3.051a1 1 0 01.633 1.265l-4 12a1 1 0 11-1.898-.632l4-12a1 1 0 011.265-.633zM5.707 6.293a1 1 0 010 1.414L3.414 10l2.293 2.293a1 1 0 11-1.414 1.414l-3-3a1 1 0 010-1.414l3-3a1 1 0 011.414 0zm8.586 0a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 11-1.414-1.414L16.586 10l-2.293-2.293a1 1 0 010-1.414z" clip-rule="evenodd"/>
+          </svg>
+        </span>
+        SQL 控制台
+      </a>
+    </footer>
+
+    <!-- User bar: avatar + workspace switcher + notification -->
+    <div class="sidebar-userbar">
+      <div class="avatar" title="我的账户" role="button" tabindex="0" aria-label="用户菜单">Y</div>
+      <button class="sidebar-userbar-info" id="ws-trigger-sidebar" style="background:none;border:none;cursor:pointer;text-align:left;padding:0;min-width:0;flex:1;" aria-haspopup="listbox" aria-expanded="false" aria-label="切换工作区，当前：看到就放过">
+        <div style="display:flex; align-items:center; gap:3px;">
+          <div class="sidebar-userbar-name">看到就放过</div>
+          <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor" style="opacity:0.4; flex-shrink:0;" aria-hidden="true"><path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L8 8.586l1.293-1.293a1 1 0 111.414 1.414l-2 2a1 1 0 01-1.414 0l-2-2a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
+        </div>
+        <div class="sidebar-userbar-ws">组织账号</div>
+      </button>
+      <button class="icon-btn" title="通知" aria-label="通知，3 条未读" style="flex-shrink:0; width:26px; height:26px;">
+        <div class="notif-dot" aria-hidden="true"></div>
+        <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+          <path d="M10 2a6 6 0 00-6 6v3.586l-.707.707A1 1 0 004 14h12a1 1 0 00.707-1.707L16 11.586V8a6 6 0 00-6-6zM10 18a3 3 0 01-3-3h6a3 3 0 01-3 3z"/>
+        </svg>
+      </button>
+    </div>
+
+  </nav>
+
+  <!-- MAIN -->
+  <main class="main" role="main" aria-label="工作区首页">
+  <div class="main-inner">
+
+    <!-- Section: Greeting + New Button -->
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom: 22px;">
+      <div>
+        <h1 style="font-size:18px; font-weight:700; color:var(--text-primary); letter-spacing:-0.3px; margin-bottom:2px;" data-pretext>早上好，看到就放过</h1>
+        <div style="display:flex; align-items:center; gap:6px; margin-top:2px;">
+          <span style="font-size:12.5px; color:var(--text-tertiary);">工作区</span>
+          <span style="font-size:12.5px; color:var(--text-tertiary);">·</span>
+          <button class="ws-switcher-trigger" id="ws-trigger-main" aria-haspopup="listbox" aria-expanded="false" aria-label="切换工作区，当前：看到就放过">
+            <span class="ws-name">看到就放过</span>
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L8 8.586l1.293-1.293a1 1 0 111.414 1.414l-2 2a1 1 0 01-1.414 0l-2-2a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
+          </button>
+          <span style="font-size:12.5px; color:var(--text-tertiary);">·</span>
+          <span style="font-size:12.5px; color:var(--accent-green);">● 已连接</span>
+        </div>
+      </div>
+      <button class="new-workbook-btn" aria-label="新建工作簿">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 2a1 1 0 00-1 1v4H3a1 1 0 000 2h4v4a1 1 0 102 0V9h4a1 1 0 100-2H9V3a1 1 0 00-1-1z"/></svg>
+        新建工作簿
+      </button>
+    </div>
+
+    <!-- Section: Quick Actions -->
+    <div class="quick-actions" role="list" aria-label="快速操作">
+      <div class="quick-card" role="listitem" tabindex="0" aria-label="创建空白工作簿">
+        <div class="quick-card-icon blue" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor"><path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z"/><path fill-rule="evenodd" d="M4 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v11a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z" clip-rule="evenodd"/></svg>
+        </div>
+        <div class="quick-card-body">
+          <div class="quick-card-title" data-pretext>空白工作簿</div>
+          <div class="quick-card-desc" data-pretext>从零开始，自定义表结构与关系</div>
+        </div>
+      </div>
+      <div class="quick-card" role="listitem" tabindex="0" aria-label="从模板创建工作簿">
+        <div class="quick-card-icon purple" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4 4a2 2 0 00-2 2v4a2 2 0 002 2V6h10a2 2 0 00-2-2H4zm2 6a2 2 0 012-2h8a2 2 0 012 2v4a2 2 0 01-2 2H8a2 2 0 01-2-2v-4zm6 4a2 2 0 100-4 2 2 0 000 4z" clip-rule="evenodd"/></svg>
+        </div>
+        <div class="quick-card-body">
+          <div class="quick-card-title" data-pretext>从模板创建</div>
+          <div class="quick-card-desc" data-pretext>案件管理、债权追踪、实体图谱…</div>
+        </div>
+      </div>
+      <div class="quick-card" role="listitem" tabindex="0" aria-label="导入 Excel 文件">
+        <div class="quick-card-icon amber" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM6.293 6.707a1 1 0 010-1.414l3-3a1 1 0 011.414 0l3 3a1 1 0 01-1.414 1.414L11 5.414V13a1 1 0 11-2 0V5.414L7.707 6.707a1 1 0 01-1.414 0z" clip-rule="evenodd"/></svg>
+        </div>
+        <div class="quick-card-body">
+          <div class="quick-card-title" data-pretext>导入文件</div>
+          <div class="quick-card-desc" data-pretext>.xlsx / .csv，自动映射字段类型</div>
+        </div>
+        <span class="quick-card-badge" aria-label="即将上线">敬请期待</span>
+      </div>
+    </div>
+
+    <!-- Section: AI Banner -->
+    <div class="ai-banner" role="button" tabindex="0" aria-label="AI 助手：生成 SurrealQL 查询">
+      <div class="ai-banner-icon" aria-hidden="true">✦</div>
+      <div class="ai-banner-body">
+        <div class="ai-banner-title" data-pretext>AI 助手已就绪</div>
+        <div class="ai-banner-desc" data-pretext>告诉我你想分析什么，我来生成 SurrealQL 并直接操作你的表结构和数据</div>
+      </div>
+      <button class="ai-banner-cta" aria-label="打开 AI 助手">开始对话</button>
+    </div>
+
+    <!-- Section: Recent Workbooks -->
+    <div class="section-header">
+      <h2 class="section-title">最近</h2>
+      <div style="display:flex; align-items:center; gap: 10px;">
+        <div class="section-tabs" role="tablist" aria-label="工作簿筛选">
+          <button class="section-tab active" role="tab" aria-selected="true">全部</button>
+          <button class="section-tab" role="tab" aria-selected="false">我创建的</button>
+          <button class="section-tab" role="tab" aria-selected="false">与我共享</button>
+        </div>
+        <div class="section-actions">
+          <button class="view-toggle active" title="网格视图" aria-label="切换为网格视图" aria-pressed="true">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M1 2.5A1.5 1.5 0 012.5 1h3A1.5 1.5 0 017 2.5v3A1.5 1.5 0 015.5 7h-3A1.5 1.5 0 011 5.5v-3zm8 0A1.5 1.5 0 0110.5 1h3A1.5 1.5 0 0115 2.5v3A1.5 1.5 0 0113.5 7h-3A1.5 1.5 0 019 5.5v-3zm-8 8A1.5 1.5 0 012.5 9h3A1.5 1.5 0 017 10.5v3A1.5 1.5 0 015.5 15h-3A1.5 1.5 0 011 13.5v-3zm8 0A1.5 1.5 0 0110.5 9h3A1.5 1.5 0 0115 10.5v3A1.5 1.5 0 0113.5 15h-3A1.5 1.5 0 019 13.5v-3z"/></svg>
+          </button>
+          <button class="view-toggle" title="列表视图" aria-label="切换为列表视图" aria-pressed="false">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M2.5 12a.5.5 0 01.5-.5h10a.5.5 0 010 1H3a.5.5 0 01-.5-.5zm0-4a.5.5 0 01.5-.5h10a.5.5 0 010 1H3a.5.5 0 01-.5-.5zm0-4a.5.5 0 01.5-.5h10a.5.5 0 010 1H3a.5.5 0 01-.5-.5z" clip-rule="evenodd"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Workbook Grid -->
+    <div class="workbook-grid" role="list" aria-label="最近工作簿">
+
+      <!-- Card 1 -->
+      <article class="workbook-card" tabindex="0" role="listitem" aria-label="龙腾资产债权追踪工作簿">
+        <div class="workbook-card-preview" aria-hidden="true">
+          <div class="workbook-card-preview-grid">
+            <div class="preview-cell header"></div><div class="preview-cell header"></div><div class="preview-cell header"></div><div class="preview-cell header"></div><div class="preview-cell header"></div>
+            <div class="preview-cell filled"></div><div class="preview-cell"></div><div class="preview-cell filled"></div><div class="preview-cell"></div><div class="preview-cell filled"></div>
+            <div class="preview-cell"></div><div class="preview-cell filled-2"></div><div class="preview-cell"></div><div class="preview-cell filled-2"></div><div class="preview-cell"></div>
+            <div class="preview-cell filled"></div><div class="preview-cell filled"></div><div class="preview-cell"></div><div class="preview-cell"></div><div class="preview-cell filled"></div>
+          </div>
+          <span class="workbook-card-type-badge">债权</span>
+        </div>
+        <div class="workbook-card-body">
+          <div class="workbook-card-title" data-pretext>龙腾资产债权追踪</div>
+          <div class="workbook-card-tags">
+            <span class="tag tag-blue">破产案件</span>
+            <span class="tag tag-amber">待审核</span>
+          </div>
+          <div class="workbook-card-meta" style="margin-top:8px;">
+            <span class="workbook-card-time">2 小时前</span>
+            <div class="workbook-card-collab" aria-label="2 名协作者">
+              <div class="collab-avatar" style="background: #3b82f6;" aria-label="协作者 Y">Y</div>
+              <div class="collab-avatar" style="background: #10b981;" aria-label="协作者 Z">Z</div>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <!-- Card 2 -->
+      <article class="workbook-card" tabindex="0" role="listitem" aria-label="Q2 破产案件管理工作簿">
+        <div class="workbook-card-preview" aria-hidden="true">
+          <div class="workbook-card-preview-grid">
+            <div class="preview-cell header"></div><div class="preview-cell header"></div><div class="preview-cell header"></div><div class="preview-cell header"></div><div class="preview-cell header"></div>
+            <div class="preview-cell filled-2"></div><div class="preview-cell filled-2"></div><div class="preview-cell"></div><div class="preview-cell filled-2"></div><div class="preview-cell"></div>
+            <div class="preview-cell"></div><div class="preview-cell filled"></div><div class="preview-cell filled"></div><div class="preview-cell"></div><div class="preview-cell filled"></div>
+            <div class="preview-cell filled-2"></div><div class="preview-cell"></div><div class="preview-cell filled-2"></div><div class="preview-cell filled-2"></div><div class="preview-cell"></div>
+          </div>
+          <span class="workbook-card-type-badge">案件</span>
+        </div>
+        <div class="workbook-card-body">
+          <div class="workbook-card-title" data-pretext>Q2 破产案件管理</div>
+          <div class="workbook-card-tags">
+            <span class="tag tag-green">进行中</span>
+          </div>
+          <div class="workbook-card-meta" style="margin-top:8px;">
+            <span class="workbook-card-time">昨天</span>
+            <div class="workbook-card-collab" aria-label="1 名协作者">
+              <div class="collab-avatar" style="background: #8b5cf6;" aria-label="协作者 W">W</div>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <!-- Card 3 -->
+      <article class="workbook-card" tabindex="0" role="listitem" aria-label="客户实体关系图谱工作簿">
+        <div class="workbook-card-preview" style="background: linear-gradient(135deg, rgba(139,92,246,0.08), rgba(59,130,246,0.08));" aria-hidden="true">
+          <!-- Graph node visualization -->
+          <svg width="80" height="60" viewBox="0 0 80 60" opacity="0.5" aria-hidden="true">
+            <line x1="40" y1="30" x2="15" y2="15" stroke="#8b5cf6" stroke-width="1"/>
+            <line x1="40" y1="30" x2="65" y2="15" stroke="#8b5cf6" stroke-width="1"/>
+            <line x1="40" y1="30" x2="20" y2="48" stroke="#8b5cf6" stroke-width="1"/>
+            <line x1="40" y1="30" x2="60" y2="48" stroke="#8b5cf6" stroke-width="1"/>
+            <line x1="15" y1="15" x2="65" y2="15" stroke="#3b82f6" stroke-width="0.8" stroke-dasharray="2,2"/>
+            <circle cx="40" cy="30" r="6" fill="#8b5cf6" opacity="0.9"/>
+            <circle cx="15" cy="15" r="4" fill="#3b82f6" opacity="0.7"/>
+            <circle cx="65" cy="15" r="4" fill="#3b82f6" opacity="0.7"/>
+            <circle cx="20" cy="48" r="3.5" fill="#10b981" opacity="0.6"/>
+            <circle cx="60" cy="48" r="3.5" fill="#10b981" opacity="0.6"/>
+          </svg>
+          <span class="workbook-card-type-badge">图谱</span>
+        </div>
+        <div class="workbook-card-body">
+          <div class="workbook-card-title" data-pretext>客户实体关系图谱</div>
+          <div class="workbook-card-tags">
+            <span class="tag tag-purple">图关系</span>
+          </div>
+          <div class="workbook-card-meta" style="margin-top:8px;">
+            <span class="workbook-card-time">3 天前</span>
+            <div class="workbook-card-collab" aria-label="3 名协作者">
+              <div class="collab-avatar" style="background: #f59e0b;" aria-label="协作者 A">A</div>
+              <div class="collab-avatar" style="background: #3b82f6;" aria-label="协作者 B">B</div>
+              <div class="collab-avatar" style="background: #ef4444;" aria-label="协作者 C">C</div>
+            </div>
+          </div>
+        </div>
+      </article>
+
+      <!-- Card 4 -->
+      <article class="workbook-card" tabindex="0" role="listitem" aria-label="未命名工作簿">
+        <div class="workbook-card-preview" aria-hidden="true">
+          <div class="workbook-card-preview-grid">
+            <div class="preview-cell header"></div><div class="preview-cell header"></div><div class="preview-cell header"></div><div class="preview-cell header"></div><div class="preview-cell header"></div>
+            <div class="preview-cell"></div><div class="preview-cell"></div><div class="preview-cell"></div><div class="preview-cell"></div><div class="preview-cell"></div>
+            <div class="preview-cell"></div><div class="preview-cell"></div><div class="preview-cell"></div><div class="preview-cell"></div><div class="preview-cell"></div>
+            <div class="preview-cell"></div><div class="preview-cell"></div><div class="preview-cell"></div><div class="preview-cell"></div><div class="preview-cell"></div>
+          </div>
+          <span class="workbook-card-type-badge">自定义</span>
+        </div>
+        <div class="workbook-card-body">
+          <div class="workbook-card-title" style="color: var(--text-tertiary); font-style: italic;" data-pretext>未命名工作簿</div>
+          <div class="workbook-card-meta" style="margin-top: 12px;">
+            <span class="workbook-card-time">—</span>
+          </div>
+        </div>
+      </article>
+    </div>
+
+  </div><!-- /.main-inner -->
+  </main>
+
+  <!-- RIGHT PANEL -->
+  <aside class="right-panel" aria-label="动态与数据面板">
+    <div class="panel-tabs" role="tablist">
+      <button class="panel-tab active" role="tab" aria-selected="true">动态</button>
+      <button class="panel-tab" role="tab" aria-selected="false">数据概览</button>
+      <button class="panel-tab" role="tab" aria-selected="false">任务</button>
+    </div>
+
+    <div class="panel-body" role="tabpanel" aria-label="工作区动态">
+
+      <!-- Insight cards -->
+      <div class="insight-card">
+        <div class="insight-card-header">
+          <div class="insight-card-title">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="var(--accent-blue)" aria-hidden="true"><path d="M8 2a6 6 0 100 12A6 6 0 008 2zM1 8a7 7 0 1114 0A7 7 0 011 8z"/><path d="M8 4a.5.5 0 01.5.5v4h2a.5.5 0 010 1h-2.5A.5.5 0 018 9V4.5A.5.5 0 018.5 4H8z"/></svg>
+            本周新增记录
+          </div>
+        </div>
+        <div class="insight-stat" aria-label="247 条新记录">247</div>
+        <div class="insight-delta" aria-label="较上周增加 18%">
+          <svg width="10" height="10" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true"><path d="M6 2l4 4H7v4H5V6H2l4-4z"/></svg>
+          +18% vs 上周
+        </div>
+        <div class="insight-mini-chart" aria-hidden="true">
+          <div class="mini-bar" style="height: 40%"></div>
+          <div class="mini-bar" style="height: 55%"></div>
+          <div class="mini-bar" style="height: 45%"></div>
+          <div class="mini-bar" style="height: 70%"></div>
+          <div class="mini-bar" style="height: 60%"></div>
+          <div class="mini-bar active" style="height: 90%"></div>
+        </div>
+      </div>
+
+      <div class="divider" role="separator"></div>
+
+      <!-- Activity items -->
+      <div class="activity-item" tabindex="0" role="article" aria-label="协作者 Alex 更新了工作簿">
+        <div class="activity-avatar" style="background: #10b981;" aria-hidden="true">A</div>
+        <div class="activity-content">
+          <div class="activity-text" data-pretext><strong>Alex</strong> 在债权追踪表中添加了 12 条记录</div>
+          <div class="activity-doc">
+            <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M9 2H4a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2V7l-5-5z"/><path d="M9 2v5h5"/></svg>
+            龙腾资产债权追踪
+          </div>
+          <div class="activity-time">14 分钟前</div>
+        </div>
+      </div>
+
+      <div class="activity-item" tabindex="0" role="article" aria-label="AI 助手完成了 SurrealQL 查询">
+        <div class="activity-avatar" style="background: linear-gradient(135deg, #3b82f6, #6366f1);" aria-hidden="true">✦</div>
+        <div class="activity-content">
+          <div class="activity-text" data-pretext>AI 助手生成了 <strong>实体穿透查询</strong>，遍历 3 层持股关系</div>
+          <div class="activity-doc">
+            <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M9 2H4a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2V7l-5-5z"/><path d="M9 2v5h5"/></svg>
+            客户实体关系图谱
+          </div>
+          <div class="activity-time">1 小时前</div>
+        </div>
+      </div>
+
+      <div class="activity-item" tabindex="0" role="article" aria-label="新表单提交">
+        <div class="activity-avatar" style="background: #f59e0b;" aria-hidden="true">W</div>
+        <div class="activity-content">
+          <div class="activity-text" data-pretext><strong>Wang Lei</strong> 通过公开表单提交了新债权申请</div>
+          <div class="activity-doc">
+            <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M9 2H4a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2V7l-5-5z"/><path d="M9 2v5h5"/></svg>
+            Q2 破产案件管理
+          </div>
+          <div class="activity-time">3 小时前</div>
+        </div>
+      </div>
+
+      <div class="activity-item" tabindex="0" role="article" aria-label="协作者更新了字段定义">
+        <div class="activity-avatar" style="background: #8b5cf6;" aria-hidden="true">Z</div>
+        <div class="activity-content">
+          <div class="activity-text" data-pretext><strong>Zhang Min</strong> 新增了字段 <code style="font-family:var(--font-mono); font-size:11px; background:var(--bg-elevated); padding:1px 4px; border-radius:3px;">creditor_rank</code>（整数类型）</div>
+          <div class="activity-time">昨天 17:42</div>
+        </div>
+      </div>
+
+      <div class="activity-item" tabindex="0" role="article" aria-label="工作簿创建">
+        <div class="activity-avatar" style="background: #ef4444;" aria-hidden="true">Y</div>
+        <div class="activity-content">
+          <div class="activity-text" data-pretext><strong>你</strong>创建了工作簿并应用了 <strong>债权管理</strong> 模板</div>
+          <div class="activity-doc">
+            <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M9 2H4a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2V7l-5-5z"/><path d="M9 2v5h5"/></svg>
+            龙腾资产债权追踪
+          </div>
+          <div class="activity-time">2 天前</div>
+        </div>
+      </div>
+
+    </div>
+  </aside>
+
+
+
+
+<script type="module">
+// Inline Pretext bundle
+const pretextCode = document.createElement('script');
+pretextCode.type = 'module';
+
+// Import Pretext from vendor file content inlined here
+// (vendor/pretext.js content is inlined via CDN fallback pattern)
+import { prepare, layout } from 'https://esm.sh/@chenglou/pretext@0.1.7';
+
+async function initPretext() {
+  await document.fonts.ready;
+
+  const elements = document.querySelectorAll('[data-pretext]');
+  const prepared = new Map();
+
+  for (const el of elements) {
+    if (!el.textContent.trim()) continue;
+    try {
+      const font = getComputedStyle(el).font;
+      prepared.set(el, prepare(el.textContent, font));
+    } catch (e) {
+      // graceful degradation
+    }
+  }
+
+  function relayout() {
+    for (const [el, handle] of prepared) {
+      try {
+        const width = el.clientWidth;
+        if (width <= 0) continue;
+        const lineHeight = parseFloat(getComputedStyle(el).lineHeight) || 20;
+        const { height } = layout(handle, width, lineHeight);
+        if (height > 0) el.style.minHeight = `${height}px`;
+      } catch (e) {}
+    }
+  }
+
+  new ResizeObserver(() => relayout()).observe(document.body);
+  relayout();
+
+  // ── Workspace Switcher (inline panel) ───────────────
+  const wsPanel = document.getElementById('ws-panel');
+  const wsTriggers = ['ws-trigger-main', 'ws-trigger-sidebar'].map(id => document.getElementById(id)).filter(Boolean);
+
+  function toggleWsPanel(trigger) {
+    const isOpen = wsPanel.classList.contains('open');
+    wsPanel.classList.toggle('open', !isOpen);
+    wsTriggers.forEach(t => t.setAttribute('aria-expanded', String(!isOpen)));
+  }
+
+  wsTriggers.forEach(trigger => {
+    trigger.addEventListener('click', (e) => { e.stopPropagation(); toggleWsPanel(trigger); });
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!wsPanel.contains(e.target) && !wsTriggers.some(t => t.contains(e.target))) {
+      wsPanel.classList.remove('open');
+      wsTriggers.forEach(t => t.setAttribute('aria-expanded', 'false'));
+    }
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      wsPanel.classList.remove('open');
+      wsTriggers.forEach(t => t.setAttribute('aria-expanded', 'false'));
+    }
+  });
+
+  wsPanel.querySelectorAll('.ws-panel-item[data-ws]').forEach(item => {
+    item.addEventListener('click', () => {
+      const wsName = item.dataset.ws;
+      wsPanel.querySelectorAll('.ws-panel-item').forEach(i => {
+        i.classList.remove('current');
+        i.setAttribute('aria-selected', 'false');
+        i.querySelector('.ws-panel-check')?.remove();
+      });
+      item.classList.add('current');
+      item.setAttribute('aria-selected', 'true');
+      const checkSvg = `<svg class="ws-panel-check" width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M13.707 4.293a1 1 0 010 1.414l-7 7a1 1 0 01-1.414 0l-3-3a1 1 0 011.414-1.414L6 10.586l6.293-6.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>`;
+      item.insertAdjacentHTML('beforeend', checkSvg);
+      // Update name everywhere
+      document.querySelectorAll('.ws-name').forEach(el => el.textContent = wsName);
+      document.querySelector('.sidebar-userbar-name').textContent = wsName;
+      const greeting = document.querySelector('h1[data-pretext]');
+      if (greeting) greeting.textContent = '早上好，' + wsName;
+      wsPanel.classList.remove('open');
+      wsTriggers.forEach(t => t.setAttribute('aria-expanded', 'false'));
+    });
+  });
+
+  // Tab switching
+  document.querySelectorAll('.section-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      tab.closest('.section-tabs').querySelectorAll('.section-tab').forEach(t => {
+        t.classList.remove('active');
+        t.setAttribute('aria-selected', 'false');
+      });
+      tab.classList.add('active');
+      tab.setAttribute('aria-selected', 'true');
+    });
+  });
+
+  document.querySelectorAll('.panel-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      tab.closest('.panel-tabs').querySelectorAll('.panel-tab').forEach(t => {
+        t.classList.remove('active');
+        t.setAttribute('aria-selected', 'false');
+      });
+      tab.classList.add('active');
+      tab.setAttribute('aria-selected', 'true');
+    });
+  });
+
+  // View toggle
+  document.querySelectorAll('.view-toggle').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.view-toggle').forEach(b => {
+        b.classList.remove('active');
+        b.setAttribute('aria-pressed', 'false');
+      });
+      btn.classList.add('active');
+      btn.setAttribute('aria-pressed', 'true');
+    });
+  });
+
+  // Sidebar item highlight
+  document.querySelectorAll('.sidebar-item').forEach(item => {
+    item.addEventListener('click', (e) => {
+      e.preventDefault();
+      document.querySelectorAll('.sidebar-item').forEach(i => {
+        i.classList.remove('active');
+        i.removeAttribute('aria-current');
+      });
+      item.classList.add('active');
+      item.setAttribute('aria-current', 'page');
+    });
+  });
+}
+
+initPretext().catch(console.warn);
+</script>
+
+</body>
+</html>

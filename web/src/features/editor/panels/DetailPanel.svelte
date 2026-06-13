@@ -1,5 +1,6 @@
 <script lang="ts">
   import EmptyState from "../../../components/EmptyState.svelte";
+  import { Info } from "@lucide/svelte";
   import { editorStore, isDraftRowId } from "../../../lib/editor-store.svelte";
   import { editorUi } from "../lib/editor-ui.svelte";
   import { cardPillStyle } from "../lib/cell-style";
@@ -71,7 +72,7 @@
   </div>
 {:else}
   <EmptyState
-    icon="info"
+    icon={Info}
     title="未选择记录"
     desc="在表格 / 看板 / 画廊视图中选中一行查看详情，或切换到「表单视图」新增记录"
   />

@@ -1,6 +1,7 @@
 <script lang="ts">
   import CreateWorkspaceDialog from "../components/CreateWorkspaceDialog.svelte";
   import EmptyState from "../components/EmptyState.svelte";
+  import { Plus, Info } from "@lucide/svelte";
   import { logout } from "../lib/auth";
 
   // 账号当前没有任何可用 workspace 的空状态屏。
@@ -23,7 +24,7 @@
 <main class="no-workspace">
   {#if canCreate}
     <EmptyState
-      icon="plus"
+      icon={Plus}
       title="还没有工作区"
       desc="创建你的第一个工作区即可开始。每个工作区是一个独立的数据库，成员与数据互不干扰。"
       action="新建工作区"
@@ -31,7 +32,7 @@
     />
   {:else}
     <EmptyState
-      icon="info"
+      icon={Info}
       title="暂无可用工作区"
       desc="你的账号还没有被加入任何工作区。请联系工作区管理员邀请你加入。"
       action="重新登录"

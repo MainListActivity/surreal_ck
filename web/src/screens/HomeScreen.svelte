@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import Icon from "../components/Icon.svelte";
+  import { Search, Bell, Plus, Tag, Upload, List, Grid3x3, Sheet } from "@lucide/svelte";
   import { workbooksStore, filterWorkbooksByQuery } from "../lib/workbooks.svelte";
   import { canWriteSharedStructure as canWriteSharedStructureFn } from "../lib/permissions.svelte";
   import type { WorkbookRow } from "../lib/workbooks";
@@ -65,7 +65,7 @@
 <section class="home">
   <header class="topbar">
     <label class="search" class:active={query}>
-      <Icon name="search" size={14} color="var(--text-3)" />
+      <Search size={14} color="var(--text-3)" />
       <input bind:value={query} placeholder="搜索工作簿..." />
       {#if query}<button onclick={() => (query = "")}>×</button>{/if}
     </label>
@@ -74,7 +74,7 @@
       title="通知功能待迁移"
       onclick={() => (importStatus = "通知中心尚未迁移。")}
     >
-      <Icon name="bell" size={16} />
+      <Bell size={16} />
     </button>
   </header>
 
@@ -82,17 +82,17 @@
     {#if !query}
       <div class="quick-actions">
         <button onclick={handleCreateBlank} disabled={creating || !canWriteSharedStructure}>
-          <span><Icon name="plus" size={17} color="var(--primary)" /></span>
+          <span><Plus size={17} color="var(--primary)" /></span>
           <strong>{creating ? "创建中…" : "空白文档"}</strong>
           <small>{canWriteSharedStructure ? "从零开始创建" : "需要管理员权限"}</small>
         </button>
         <button onclick={() => ontemplates?.()} disabled={!canWriteSharedStructure}>
-          <span><Icon name="tag" size={17} color="var(--primary)" /></span>
+          <span><Tag size={17} color="var(--primary)" /></span>
           <strong>从模板创建</strong>
           <small>案件管理·法律实体追踪</small>
         </button>
         <button onclick={handleImportClick}>
-          <span><Icon name="upload" size={17} color="var(--primary)" /></span>
+          <span><Upload size={17} color="var(--primary)" /></span>
           <strong>导入文件</strong>
           <small>敬请期待</small>
         </button>
@@ -109,8 +109,8 @@
         {/each}
       </div>
       <div class="view-toggle">
-        <button class:active={view === "list"} onclick={() => (view = "list")}><Icon name="list" size={15} /></button>
-        <button class:active={view === "grid"} onclick={() => (view = "grid")}><Icon name="grid" size={15} /></button>
+        <button class:active={view === "list"} onclick={() => (view = "list")}><List size={15} /></button>
+        <button class:active={view === "grid"} onclick={() => (view = "grid")}><Grid3x3 size={15} /></button>
       </div>
     </div>
 
@@ -127,7 +127,7 @@
         <div class="head"><span>名称</span><span>模板类型</span><span>最近修改</span></div>
         {#each filtered as wb (wb.id)}
           <button class="row" onclick={() => open(wb)}>
-            <span class="name"><Icon name="spreadsheet" size={20} color="var(--primary)" /><strong>{wb.name}</strong></span>
+            <span class="name"><Sheet size={20} color="var(--primary)" /><strong>{wb.name}</strong></span>
             <span><em>{wb.templateKey ?? "自定义"}</em></span>
             <span>{formatDate(wb.updatedAt)}</span>
           </button>
@@ -137,7 +137,7 @@
       <div class="workbook-grid">
         {#each filtered as wb (wb.id)}
           <button onclick={() => open(wb)}>
-            <Icon name="spreadsheet" size={30} color="var(--primary)" />
+            <Sheet size={30} color="var(--primary)" />
             <strong>{wb.name}</strong>
             <span>{formatDate(wb.updatedAt)}</span>
           </button>

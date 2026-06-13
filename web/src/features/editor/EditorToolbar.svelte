@@ -1,5 +1,4 @@
 <script lang="ts">
-  import Icon from "../../components/Icon.svelte";
   import { editorStore } from "../../lib/editor-store.svelte";
   import { editorUi } from "./lib/editor-ui.svelte";
   import { viewRegistry } from "./registries/views";
@@ -38,7 +37,7 @@
   <div class="view-tabs">
     {#each viewRegistry as item}
       <button class:active={editorUi.view === item.id} onclick={() => (editorUi.view = item.id)}>
-        <Icon name={item.icon} size={13} />{item.label}
+        <svelte:component this={item.icon} size={13} />{item.label}
       </button>
     {/each}
   </div>
@@ -51,7 +50,7 @@
       class:applied={badge > 0}
       onclick={(event) => clickTool(action.id, event)}
     >
-      <Icon name={action.icon} size={13} />{action.label}
+      <svelte:component this={action.icon} size={13} />{action.label}
       {#if badge > 0}<span class="badge">{badge}</span>{/if}
     </button>
   {/each}

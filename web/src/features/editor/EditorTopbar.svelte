@@ -1,7 +1,7 @@
 <script lang="ts">
   import Avatar from "../../components/Avatar.svelte";
-  import Icon from "../../components/Icon.svelte";
   import Logo from "../../components/Logo.svelte";
+  import { ChevronLeft, RefreshCw, AlertCircle, WifiOff, Check, Share, Ellipsis } from "@lucide/svelte";
   import { canWriteSharedStructure as canWriteSharedStructureFn } from "../../lib/permissions.svelte";
   import { editorStore } from "../../lib/editor-store.svelte";
   import { editorUi } from "./lib/editor-ui.svelte";
@@ -35,7 +35,7 @@
 
 <header class="doc-topbar">
   <button class="icon-btn" onclick={() => onback?.()}>
-    <Icon name="chevronLeft" size={17} />
+    <ChevronLeft size={17} />
   </button>
   <button class="logo-btn" onclick={() => onback?.()}>
     <Logo size="sm" />
@@ -54,18 +54,18 @@
     class:warning={!canWriteSharedStructure}
   >
     {#if editorStore.saving}
-      <Icon name="refresh" size={13} />保存中…
+      <RefreshCw size={13} />保存中…
     {:else if editorStore.saveError}
-      <Icon name="alertCircle" size={13} />保存失败
+      <AlertCircle size={13} />保存失败
     {:else if !canWriteSharedStructure}
-      <Icon name="wifiOff" size={13} />只读
+      <WifiOff size={13} />只读
     {:else}
-      <Icon name="check" size={13} />已保存
+      <Check size={13} />已保存
     {/if}
   </span>
   {#if editorStore.pendingDraftCount > 0}
     <span class="draft-hint" title="这些草稿仅存在于内存中，待必填字段填齐后会自动保存">
-      <Icon name="alertCircle" size={12} />
+      <AlertCircle size={12} />
       {editorStore.pendingDraftCount} 条未保存草稿
     </span>
   {/if}
@@ -77,12 +77,12 @@
       title={tab.label}
       onclick={() => editorUi.togglePanel(tab.id)}
     >
-      <Icon name={tab.icon} size={15} />
+      <svelte:component this={tab.icon} size={15} />
     </button>
   {/each}
   <span class="divider"></span>
   <button class="share-btn" onclick={openShare}>
-    <Icon name="share" size={13} color="#fff" />分享
+    <Share size={13} color="#fff" />分享
   </button>
   <div class="member-stack">
     {#each quickMembers as member}
@@ -91,7 +91,7 @@
   </div>
   <div class="menu-wrap">
     <button class="icon-btn" onclick={toggleMenu} title="更多操作">
-      <Icon name="moreH" size={16} />
+      <Ellipsis size={16} />
     </button>
     {#if editorUi.showMenu}
       <div class="menu-pop">

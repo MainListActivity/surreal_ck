@@ -1,7 +1,6 @@
 <script lang="ts">
   import * as Dialog from "$lib/components/ui/dialog/index.js";
   import { SelectMenu } from "$lib/components/ui/select/index.js";
-  import Icon from "../../../components/Icon.svelte";
   import DatePicker from "../../../components/DatePicker.svelte";
   import { canWriteSharedStructure as canWriteSharedStructureFn } from "../../../lib/permissions.svelte";
   import { editorStore } from "../../../lib/editor-store.svelte";
@@ -22,7 +21,11 @@
   } from "@surreal-ck/shared/date-format";
   import type { GridColumnDef, ReferenceTargetOption } from "@surreal-ck/shared/rpc.types";
 
-  const fieldTypeOptions = GRID_FIELD_TYPE_OPTIONS;
+  const fieldTypeOptions = GRID_FIELD_TYPE_OPTIONS.map((opt) => ({
+    value: opt.value,
+    label: opt.label,
+    icon: getFieldTypeMeta(opt.value).icon,
+  }));
 
   const dateFormatOptions = [
     ...DATE_FORMAT_PRESETS.map((preset) => ({
@@ -182,7 +185,7 @@
             <strong>{fieldDraft.label || "未命名字段"}</strong>
             <div class="field-badges">
               <span class="type-badge">
-                <Icon name={getFieldTypeMeta(fieldDraft.fieldType).icon} size={12} />
+                <svelte:component this={getFieldTypeMeta(fieldDraft.fieldType).icon} size={12} />
                 {getFieldTypeLabel(fieldDraft.fieldType)}
               </span>
               {#if fieldDraft.required}

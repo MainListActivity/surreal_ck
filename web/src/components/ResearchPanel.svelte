@@ -6,7 +6,7 @@
   状态机在 lib/research-panel.ts（纯逻辑，单测覆盖），组件只做渲染与事件转发。
 -->
 <script lang="ts">
-  import Icon from "./Icon.svelte";
+  import { Search } from "@lucide/svelte";
   import { createResearchPanelSession, type ResearchPanelState } from "../lib/research-panel";
   import { createResearchSaveClient } from "../lib/research-save-client";
 
@@ -68,7 +68,7 @@
 
 <section class="research-panel" aria-label="人工检索">
   <header>
-    <Icon name="search" size={14} />
+    <Search size={14} />
     <div class="head-copy">
       <strong>人工检索：{panelState.context.query}</strong>
       <small>已保存 {panelState.savedResourceIds.length} 个资源</small>

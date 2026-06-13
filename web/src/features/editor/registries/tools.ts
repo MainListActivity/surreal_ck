@@ -3,6 +3,7 @@ import FieldManagerPanel from "../tool-panels/FieldManagerPanel.svelte";
 import FilterPanel from "../tool-panels/FilterPanel.svelte";
 import SortPanel from "../tool-panels/SortPanel.svelte";
 import GroupPanel from "../tool-panels/GroupPanel.svelte";
+import { Filter, Users, ArrowDownUp, Sheet } from "@lucide/svelte";
 
 /**
  * 工具栏按钮注册表。
@@ -14,17 +15,17 @@ import GroupPanel from "../tool-panels/GroupPanel.svelte";
 export type ToolRegistration = {
   id: string;
   label: string;
-  icon: string;
+  icon: Component;
   panelWidth?: number;
   panel?: Component;
   command?: () => void | Promise<void>;
 };
 
 export const toolRegistry: ToolRegistration[] = [
-  { id: "filter", label: "筛选", icon: "filter", panel: FilterPanel, panelWidth: 640 },
-  { id: "group", label: "分组", icon: "users", panel: GroupPanel, panelWidth: 420 },
-  { id: "sort", label: "排序", icon: "sortDesc", panel: SortPanel, panelWidth: 520 },
-  { id: "fields", label: "字段管理", icon: "spreadsheet", panel: FieldManagerPanel, panelWidth: 360 },
+  { id: "filter", label: "筛选", icon: Filter, panel: FilterPanel, panelWidth: 640 },
+  { id: "group", label: "分组", icon: Users, panel: GroupPanel, panelWidth: 420 },
+  { id: "sort", label: "排序", icon: ArrowDownUp, panel: SortPanel, panelWidth: 520 },
+  { id: "fields", label: "字段管理", icon: Sheet, panel: FieldManagerPanel, panelWidth: 360 },
 ];
 
 export function getTool(id: string): ToolRegistration | undefined {

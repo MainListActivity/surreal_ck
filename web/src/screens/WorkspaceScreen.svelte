@@ -11,6 +11,7 @@
     isWorkspaceAdmin as isWorkspaceAdminFn,
   } from "../lib/permissions.svelte";
   import type { WorkspacePage } from "../lib/route";
+  import { Tag, Settings, Lock, Trash2 } from "@lucide/svelte";
 
   // workspace 首页 shell：左侧 SideNav + 右侧按 page 切换内容。
   // 已迁功能（首页 workbook 列表）直接可用；未迁页面（模板/仪表盘/工作区设置/个人设置/
@@ -71,7 +72,7 @@
       />
     {:else if page === "templates"}
       <PlaceholderScreen
-        icon="tag"
+        icon={Tag}
         title="模板创建待迁移"
         desc="模板库依赖旧版接口，正在迁移中。当前请先用「空白文档」创建工作簿，迁移完成后将在此提供案件管理、法律实体追踪等模板。"
         actionLabel="返回首页"
@@ -81,7 +82,7 @@
       <DashboardScreen />
     {:else if page === "admin"}
       <PlaceholderScreen
-        icon="settings"
+        icon={Settings}
         title="工作区设置待迁移"
         desc="成员管理与工作区设置将接入 Workspace Scope Module，正在迁移中。如需切换或新建工作区，请使用左上角的工作区切换器。"
         actionLabel="返回首页"
@@ -92,7 +93,7 @@
         <AdminConsoleScreen />
       {:else}
         <PlaceholderScreen
-          icon="lock"
+          icon={Lock}
           title="需要管理员权限"
           desc="SQL 控制台只对当前 workspace 的管理员开放。"
           actionLabel="返回首页"
@@ -101,7 +102,7 @@
       {/if}
     {:else if page === "settings"}
       <PlaceholderScreen
-        icon="settings"
+        icon={Settings}
         title="个人设置待迁移"
         desc="个人 / AI / 向量化设置原依赖旧版接口，新架构尚未接入。入口已保留，迁移完成后在此提供。"
         actionLabel="返回首页"
@@ -109,7 +110,7 @@
       />
     {:else if page === "trash"}
       <PlaceholderScreen
-        icon="trash"
+        icon={Trash2}
         title="回收站待迁移"
         desc="回收站功能尚未迁移。删除的工作簿将在后续版本可在此恢复。"
         actionLabel="返回首页"

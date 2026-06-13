@@ -1,5 +1,5 @@
 <script lang="ts">
-  import Icon from "../../components/Icon.svelte";
+  import { X } from "@lucide/svelte";
   import { editorUi } from "./lib/editor-ui.svelte";
   import { panelRegistry, getPanel } from "./registries/panels";
   import ReferencePanel from "./panels/ReferencePanel.svelte";
@@ -20,7 +20,7 @@
         </button>
       {/each}
       <button class="close" onclick={() => (editorUi.panelOpen = false)}>
-        <Icon name="x" size={14} />
+        <X size={14} />
       </button>
     </div>
     <div class="panel-content">

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, untrack } from "svelte";
   import EmptyState from "../components/EmptyState.svelte";
+  import { Grid3x3 } from "@lucide/svelte";
   import EditorTopbar from "../features/editor/EditorTopbar.svelte";
   import EditorToolbar from "../features/editor/EditorToolbar.svelte";
   import EditorWorkbookNav from "../features/editor/EditorWorkbookNav.svelte";
@@ -114,7 +115,7 @@
         <div class="body-state error">{editorStore.error}</div>
       {:else if !editorStore.activeSheetId}
         <div class="body-state">
-          <EmptyState icon="grid" title="无数据" desc="工作簿不包含任何 Sheet" />
+          <EmptyState icon={Grid3x3} title="无数据" desc="工作簿不包含任何 Sheet" />
         </div>
       {:else if editorUi.pageKind === "dashboard"}
         <WorkbookDashboardScreen />

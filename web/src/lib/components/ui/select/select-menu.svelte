@@ -1,14 +1,14 @@
 <script lang="ts" module>
+	import type { Component } from "svelte";
 	export type SelectMenuOption = {
 		value: string;
 		label: string;
-		icon?: string;
+		icon?: Component;
 		disabled?: boolean;
 	};
 </script>
 
 <script lang="ts">
-	import Icon from "../../../../components/Icon.svelte";
 	import * as Select from "./index.js";
 
 	let {
@@ -48,7 +48,8 @@
 	>
 		<span class="flex min-w-0 items-center gap-2" data-slot="select-value">
 			{#if selected?.icon}
-				<Icon name={selected.icon} size={iconSize} />
+				{@const SelectedIcon = selected.icon}
+				<SelectedIcon size={iconSize} />
 			{/if}
 			<span class="truncate" class:text-muted-foreground={!selected || selected.disabled}>
 				{selected?.label ?? placeholder}
@@ -59,7 +60,8 @@
 		{#each options as option (option.value)}
 			<Select.Item value={option.value} label={option.label} disabled={option.disabled}>
 				{#if option.icon}
-					<Icon name={option.icon} size={iconSize} />
+					{@const OptionIcon = option.icon}
+					<OptionIcon size={iconSize} />
 				{/if}
 				<span class="truncate">{option.label}</span>
 			</Select.Item>

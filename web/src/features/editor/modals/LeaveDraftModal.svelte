@@ -1,5 +1,5 @@
 <script lang="ts">
-  import Icon from "../../../components/Icon.svelte";
+  import { AlertCircle } from "@lucide/svelte";
   import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
   import { editorStore } from "../../../lib/editor-store.svelte";
   import { editorUi } from "../lib/editor-ui.svelte";
@@ -46,7 +46,7 @@
       <AlertDialog.Title>
         <span class="title-row">
           <span class="warn">
-            <Icon name="alertCircle" size={16} />
+            <AlertCircle size={16} />
           </span>
           有未保存的草稿
         </span>

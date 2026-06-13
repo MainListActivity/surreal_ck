@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, untrack } from "svelte";
-  import Icon from "./Icon.svelte";
+  import { ChevronDown, Check } from "@lucide/svelte";
   import * as Popover from "$lib/components/ui/popover/index.js";
   import * as Command from "$lib/components/ui/command/index.js";
   import { getSurreal } from "../lib/surreal";
@@ -164,7 +164,7 @@
           {/each}
         </span>
       {/if}
-      <Icon name="chevronDown" size={12} />
+      <ChevronDown size={12} />
     </Popover.Trigger>
 
     <Popover.Content
@@ -200,7 +200,7 @@
               >
                 {#if multiple}
                   <span class="check" class:on={isSelected}>
-                    {#if isSelected}<Icon name="check" size={12} />{/if}
+                    {#if isSelected}<Check size={12} />{/if}
                   </span>
                 {/if}
                 <span class="cand-label">{item.primaryLabel}</span>
