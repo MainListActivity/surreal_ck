@@ -1,97 +1,132 @@
 <script lang="ts">
   import Avatar from "./Avatar.svelte";
   import Logo from "./Logo.svelte";
-  import { Plus, House, Coins, Folder, Tag, Settings, Hash, Trash2, LogOut } from "@lucide/svelte";
-  import WorkspaceSwitcher from "./WorkspaceSwitcher.svelte";
-  import { logout } from "../lib/auth";
-  import { getCurrentUser } from "../lib/workspace-store.svelte";
+  import WorkspaceSwitcherPanel from "./WorkspaceSwitcherPanel.svelte";
+  import { Plus, House, Coins, Folder, Tag, Settings, Hash, Trash2, Search, Bell } from "@lucide/svelte";
+  import { getCurrentUser, getCurrentWorkspace } from "../lib/workspace-store.svelte";
   import {
     canWriteSharedStructure as canWriteSharedStructureFn,
     isWorkspaceAdmin as isWorkspaceAdminFn,
   } from "../lib/permissions.svelte";
   import type { WorkspacePage } from "../lib/route";
 
-  // 新架构 SideNav：保留 legacy 全部可见入口（首页 / 仪表盘 / 我的文档 / 工作区设置 /
-  // 回收站 / 个人设置 / 退出 / 新建文档 / workspace 切换）。
+  // HR-01/03 首页骨架侧栏：保留主导航 / 工具导航 / 新建文档入口，顶部搜索已接入；
+  // workspace 切换从底部 inline panel 完成，避免再挂全局 dropdown。
   // legacy 的文件夹树 + 拖拽依赖已废弃的 folder 模型与后端 RPC，新模型下 workbook 表不带
   // folder（跨 workspace 靠 db 边界隔离），故「我的文档」退化为一个导航入口指向 docs 页，
   // 目录树留后续 issue。
   let {
     page,
+    query = "",
+    wsPanelOpen = $bindable(false),
     onnavigate,
     onnewdoc,
+    onsearchchange,
   }: {
     page: WorkspacePage;
+    query?: string;
+    wsPanelOpen?: boolean;
     onnavigate?: (page: WorkspacePage) => void;
     onnewdoc?: () => void;
+    onsearchchange?: (q: string) => void;
   } = $props();
 
   const canWriteSharedStructure = $derived(canWriteSharedStructureFn());
   const canOpenAdminConsole = $derived(isWorkspaceAdminFn());
   const user = $derived(getCurrentUser());
+  const workspace = $derived(getCurrentWorkspace());
   const userName = $derived(user?.name || user?.email || "我");
-  const userMeta = $derived(user?.email || "组织账号");
+  const workspaceName = $derived(workspace?.name || workspace?.slug || workspace?.dbName || "当前工作区");
 
   function go(target: WorkspacePage) {
     onnavigate?.(target);
   }
+
+  function handleSearchInput(event: Event) {
+    const value = (event.currentTarget as HTMLInputElement).value;
+    onsearchchange?.(value);
+  }
+
+  function toggleWorkspacePanel() {
+    wsPanelOpen = !wsPanelOpen;
+  }
 </script>
 
 <aside class="side-nav">
-  <button class="brand" onclick={() => go("home")}><Logo /></button>
-
-  <div class="ws-slot">
-    <WorkspaceSwitcher />
+  <div class="sidebar-top">
+    <button class="brand" onclick={() => go("home")}><Logo /></button>
+    <label class="sidebar-search" aria-label="搜索工作簿">
+      <Search size={14} color="var(--text-3)" />
+      <input type="search" value={query} oninput={handleSearchInput} placeholder="搜索工作簿..." />
+    </label>
   </div>
 
-  <button
-    class="new-doc primary-btn"
-    disabled={!canWriteSharedStructure}
-    title={canWriteSharedStructure ? "新建文档" : "需要管理员权限"}
-    onclick={() => onnewdoc?.()}
-  >
-    <Plus size={15} color="#fff" />新建文档
-  </button>
-
-  <nav>
-    <button class:active={page === "home"} onclick={() => go("home")}>
-      <House size={16} />首页
-    </button>
-    <button class:active={page === "dashboard"} onclick={() => go("dashboard")}>
-      <Coins size={16} />仪表盘
-    </button>
-    <button class:active={page === "docs"} onclick={() => go("docs")}>
-      <Folder size={16} />我的文档
-    </button>
-    <button class:active={page === "templates"} onclick={() => go("templates")}>
-      <Tag size={16} />模板库
-    </button>
-  </nav>
-
-  <div class="bottom-nav">
-    <button class:active={page === "admin"} onclick={() => go("admin")}>
-      <Settings size={16} />工作区设置
-    </button>
+  <div class="sidebar-nav">
     <button
-      class:active={page === "admin-console"}
-      disabled={!canOpenAdminConsole}
-      title={canOpenAdminConsole ? "SQL 控制台" : "需要管理员权限"}
-      onclick={() => go("admin-console")}
+      class="new-doc primary-btn"
+      disabled={!canWriteSharedStructure}
+      title={canWriteSharedStructure ? "新建文档" : "需要管理员权限"}
+      onclick={() => onnewdoc?.()}
     >
-      <Hash size={16} />SQL 控制台
+      <Plus size={15} color="#fff" />新建文档
     </button>
-    <button class:active={page === "trash"} onclick={() => go("trash")}>
-      <Trash2 size={16} />回收站
-    </button>
+
+    <nav class="main-nav">
+      <button class:active={page === "home"} onclick={() => go("home")}>
+        <House size={16} />首页
+      </button>
+      <button class:active={page === "dashboard"} onclick={() => go("dashboard")}>
+        <Coins size={16} />仪表盘
+      </button>
+      <button class:active={page === "docs"} onclick={() => go("docs")}>
+        <Folder size={16} />我的文档
+      </button>
+      <button class:active={page === "templates"} onclick={() => go("templates")}>
+        <Tag size={16} />模板库
+      </button>
+    </nav>
+
+    <div class="tool-nav">
+      <button class:active={page === "admin"} onclick={() => go("admin")}>
+        <Settings size={16} />工作区设置
+      </button>
+      <button
+        class:active={page === "admin-console"}
+        disabled={!canOpenAdminConsole}
+        title={canOpenAdminConsole ? "SQL 控制台" : "需要管理员权限"}
+        onclick={() => go("admin-console")}
+      >
+        <Hash size={16} />SQL 控制台
+      </button>
+      <button class:active={page === "trash"} onclick={() => go("trash")}>
+        <Trash2 size={16} />回收站
+      </button>
+    </div>
   </div>
 
-  <div class="user" class:active={page === "settings"}>
-    <button class="user-main" title="打开个人设置" onclick={() => go("settings")}>
+  <div class="sidebar-footer" aria-hidden="true"></div>
+
+  <WorkspaceSwitcherPanel bind:open={wsPanelOpen} />
+
+  <div class="sidebar-userbar" class:active={page === "settings"}>
+    <div class="user-main">
       <Avatar name={userName} size={30} />
-      <div><strong>{userName}</strong><span>{userMeta}</span></div>
-    </button>
-    <button class="icon-btn logout-btn" title="退出登录" onclick={() => void logout()}>
-      <LogOut size={15} color="var(--text-3)" />
+      <div>
+        <button
+          type="button"
+          class="workspace-name"
+          aria-expanded={wsPanelOpen}
+          onclick={toggleWorkspacePanel}
+        >
+          {workspaceName}
+        </button>
+        <button type="button" class="user-name" title="打开个人设置" onclick={() => go("settings")}>
+          {userName}
+        </button>
+      </div>
+    </div>
+    <button class="icon-btn notify-btn" title="通知功能待迁移" aria-label="通知功能待迁移">
+      <Bell size={15} color="var(--text-3)" />
     </button>
   </div>
 </aside>
@@ -99,7 +134,7 @@
 <style>
   .side-nav {
     display: flex;
-    width: 200px;
+    width: 220px;
     height: 100%;
     flex-shrink: 0;
     flex-direction: column;
@@ -108,32 +143,57 @@
     background: var(--surface);
   }
 
+  .sidebar-top,
+  .sidebar-footer,
+  .sidebar-userbar {
+    flex-shrink: 0;
+  }
+
+  .sidebar-top {
+    padding: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+
   .brand {
     display: flex;
-    padding: 16px 16px 12px;
+    width: 100%;
+    padding: 4px 2px 10px;
     border: 0;
-    border-bottom: 1px solid var(--border);
     border-radius: 0;
     background: transparent;
     cursor: pointer;
-    width: 100%;
   }
 
   .brand:hover {
     background: var(--bg);
   }
 
-  .ws-slot {
-    padding: 10px 12px 0;
-  }
-
-  .ws-slot :global(.switcher),
-  .ws-slot :global(.trigger) {
+  .sidebar-search {
+    display: flex;
     width: 100%;
+    height: 34px;
+    align-items: center;
+    gap: 8px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg);
   }
 
-  .ws-slot :global(.trigger) {
-    justify-content: space-between;
+  .sidebar-search:focus-within {
+    border-color: var(--primary);
+    background: var(--surface);
+  }
+
+  .sidebar-search input {
+    width: 100%;
+    min-width: 0;
+    flex: 1;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: var(--text-1);
+    font-size: 13px;
   }
 
   .new-doc {
@@ -148,15 +208,24 @@
     cursor: not-allowed;
   }
 
-  nav {
+  .sidebar-nav {
+    display: flex;
     flex: 1;
     min-height: 0;
-    overflow: auto;
+    flex-direction: column;
+    overflow-y: auto;
     padding: 4px 0;
   }
 
-  nav button,
-  .bottom-nav button {
+  .main-nav,
+  .tool-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .main-nav button,
+  .tool-nav button {
     display: flex;
     align-items: center;
     gap: 9px;
@@ -172,12 +241,12 @@
     cursor: pointer;
   }
 
-  nav button:hover,
-  .bottom-nav button:hover:not(:disabled) {
+  .main-nav button:hover,
+  .tool-nav button:hover:not(:disabled) {
     background: var(--bg);
   }
 
-  .bottom-nav button:disabled {
+  .tool-nav button:disabled {
     cursor: not-allowed;
     opacity: .52;
   }
@@ -188,19 +257,26 @@
     font-weight: 650;
   }
 
-  .bottom-nav {
+  .tool-nav {
+    margin-top: auto;
     padding: 4px 0;
   }
 
-  .user {
+  .sidebar-footer {
+    flex-shrink: 0;
+    padding: 0 12px 8px;
+  }
+
+  .sidebar-userbar {
     display: flex;
+    flex-shrink: 0;
     align-items: center;
     gap: 9px;
     padding: 10px 12px;
     border-top: 1px solid var(--border);
   }
 
-  .user.active {
+  .sidebar-userbar.active {
     background: var(--primary-light);
   }
 
@@ -215,11 +291,6 @@
     border-radius: 7px;
     background: transparent;
     text-align: left;
-    cursor: pointer;
-  }
-
-  .user-main:hover {
-    background: var(--bg);
   }
 
   .user-main div {
@@ -227,25 +298,38 @@
     flex: 1;
   }
 
-  .user-main strong,
-  .user-main span {
+  .workspace-name,
+  .user-name {
     display: block;
+    width: 100%;
+    padding: 0;
+    border: 0;
+    background: transparent;
     overflow: hidden;
+    font: inherit;
+    text-align: left;
     text-overflow: ellipsis;
     white-space: nowrap;
+    cursor: pointer;
   }
 
-  .user-main strong {
+  .workspace-name {
     color: var(--text-1);
     font-size: 12px;
+    font-weight: 650;
   }
 
-  .user-main span {
+  .workspace-name:hover,
+  .user-name:hover {
+    color: var(--primary);
+  }
+
+  .user-name {
     color: var(--text-3);
     font-size: 11px;
   }
 
-  .logout-btn {
+  .notify-btn {
     flex-shrink: 0;
   }
 </style>

@@ -1,28 +1,34 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { Search, Bell, Plus, Tag, Upload, List, Grid3x3, Sheet } from "@lucide/svelte";
+  import { Plus, Tag, Upload, List, Grid3x3, Sheet } from "@lucide/svelte";
   import { workbooksStore, filterWorkbooksByQuery } from "../lib/workbooks.svelte";
   import { canWriteSharedStructure as canWriteSharedStructureFn } from "../lib/permissions.svelte";
+  import { getCurrentWorkspace } from "../lib/workspace-store.svelte";
   import type { WorkbookRow } from "../lib/workbooks";
 
-  // workspace 首页：真实 workbook 列表（直连 SurrealDB）+ 搜索 + quick actions。
+  // workspace 首页：真实 workbook 列表（直连 SurrealDB）+ quick actions。
   // 跨 workspace 隔离靠 db 边界，列表查询不带鉴权过滤；写权限由 access 类型卡死，
   // 这里的 canWriteSharedStructure 仅做 UI 态。
   let {
+    query = "",
     onopen,
     ontemplates,
+    onworkspaceclick,
   }: {
+    query?: string;
     onopen?: (workbookId: string) => void;
     ontemplates?: () => void;
+    onworkspaceclick?: () => void;
   } = $props();
 
-  let query = $state("");
   let tab = $state<"recent" | "mine" | "shared">("recent");
   let view = $state<"list" | "grid">("list");
   let creating = $state(false);
   let importStatus = $state("");
 
   const canWriteSharedStructure = $derived(canWriteSharedStructureFn());
+  const workspace = $derived(getCurrentWorkspace());
+  const workspaceName = $derived(workspace?.name || workspace?.slug || workspace?.dbName || "当前工作区");
   const filtered = $derived(filterWorkbooksByQuery(workbooksStore.workbooks, query));
 
   onMount(() => {
@@ -63,22 +69,16 @@
 </script>
 
 <section class="home">
-  <header class="topbar">
-    <label class="search" class:active={query}>
-      <Search size={14} color="var(--text-3)" />
-      <input bind:value={query} placeholder="搜索工作簿..." />
-      {#if query}<button onclick={() => (query = "")}>×</button>{/if}
-    </label>
-    <button
-      class="icon-btn"
-      title="通知功能待迁移"
-      onclick={() => (importStatus = "通知中心尚未迁移。")}
-    >
-      <Bell size={16} />
-    </button>
-  </header>
-
   <div class="content">
+    <section class="greeting">
+      <p>欢迎回来</p>
+      <h1>
+        <button type="button" class="workspace-title" onclick={() => onworkspaceclick?.()}>
+          {workspaceName}
+        </button>
+      </h1>
+    </section>
+
     {#if !query}
       <div class="quick-actions">
         <button onclick={handleCreateBlank} disabled={creating || !canWriteSharedStructure}>
@@ -156,58 +156,42 @@
     background: var(--bg);
   }
 
-  .topbar {
-    display: flex;
-    height: 44px;
-    flex-shrink: 0;
-    align-items: center;
-    gap: 10px;
-    padding: 0 16px;
-    border-bottom: 1px solid var(--border);
-    background: var(--surface);
-  }
-
-  .search {
-    display: flex;
-    max-width: 480px;
-    height: 34px;
-    flex: 1;
-    align-items: center;
-    gap: 8px;
-    padding: 0 12px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--bg);
-  }
-
-  .search:focus-within,
-  .search.active {
-    border-color: var(--primary);
-    background: var(--surface);
-  }
-
-  input {
-    min-width: 0;
-    flex: 1;
-    border: 0;
-    outline: 0;
-    background: transparent;
-    color: var(--text-1);
-    font-size: 13px;
-  }
-
-  .search button {
-    border: 0;
-    background: transparent;
-    color: var(--text-3);
-    font-size: 16px;
-    cursor: pointer;
-  }
-
   .content {
     flex: 1;
     overflow: auto;
     padding: 24px 28px;
+  }
+
+  .greeting {
+    margin-bottom: 18px;
+  }
+
+  .greeting p {
+    margin: 0 0 4px;
+    color: var(--text-3);
+    font-size: 12px;
+  }
+
+  .greeting h1 {
+    margin: 0;
+  }
+
+  .workspace-title {
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--text-1);
+    font: inherit;
+    font-size: 22px;
+    font-weight: 720;
+    line-height: 1.25;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .workspace-title:hover {
+    color: var(--primary);
   }
 
   .quick-actions {

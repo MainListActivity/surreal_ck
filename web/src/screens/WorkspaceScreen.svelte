@@ -1,5 +1,6 @@
 <script lang="ts">
   import SideNav from "../components/SideNav.svelte";
+  import ActivityPanel from "../components/ActivityPanel.svelte";
   import DashboardScreen from "../features/dashboard/WorkbookDashboardScreen.svelte";
   import { dashboardStore } from "../features/dashboard/lib/dashboard-store.svelte";
   import AdminConsoleScreen from "./AdminConsoleScreen.svelte";
@@ -30,6 +31,8 @@
 
   const canWriteSharedStructure = $derived(canWriteSharedStructureFn());
   const canOpenAdminConsole = $derived(isWorkspaceAdminFn());
+  let query = $state("");
+  let wsPanelOpen = $state(false);
 
   $effect(() => {
     if (page === "dashboard") {
@@ -55,20 +58,27 @@
 <div class="workspace-shell">
   <SideNav
     {page}
+    {query}
+    bind:wsPanelOpen
     onnavigate={(target) => onnavigate?.(target)}
     onnewdoc={() => void createBlankAndOpen()}
+    onsearchchange={(q) => (query = q)}
   />
 
   <div class="workspace-content">
     {#if page === "home"}
       <HomeScreen
+        {query}
         onopen={(workbookId) => onopenworkbook?.(workbookId)}
         ontemplates={() => onnavigate?.("templates")}
+        onworkspaceclick={() => (wsPanelOpen = !wsPanelOpen)}
       />
     {:else if page === "docs"}
       <HomeScreen
+        {query}
         onopen={(workbookId) => onopenworkbook?.(workbookId)}
         ontemplates={() => onnavigate?.("templates")}
+        onworkspaceclick={() => (wsPanelOpen = !wsPanelOpen)}
       />
     {:else if page === "templates"}
       <PlaceholderScreen
@@ -84,7 +94,7 @@
       <PlaceholderScreen
         icon={Settings}
         title="工作区设置待迁移"
-        desc="成员管理与工作区设置将接入 Workspace Scope Module，正在迁移中。如需切换或新建工作区，请使用左上角的工作区切换器。"
+        desc="成员管理与工作区设置将接入 Workspace Scope Module，正在迁移中。如需切换或新建工作区，请使用左侧底部的工作区面板。"
         actionLabel="返回首页"
         onaction={goHome}
       />
@@ -118,6 +128,9 @@
       />
     {/if}
   </div>
+  {#if page === "home"}
+    <ActivityPanel />
+  {/if}
 </div>
 
 <style>

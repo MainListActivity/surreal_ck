@@ -14,15 +14,15 @@
 
 ## Acceptance criteria
 
-- [ ] 点击 sidebar 用户栏的 workspace 名称，panel 从底部向上滑出，再次点击收起
-- [ ] 点击首页 greeting 行的 workspace 名称，触发同一个 panel 滑出
-- [ ] panel 内列出所有可访问 workspace，当前 workspace 有勾选标记
-- [ ] 每行显示 workspace 名称和角色标签
-- [ ] 点击非当前 workspace 触发切换，切换完成后 panel 自动关闭
-- [ ] 点击当前 workspace 直接关闭 panel，不触发网络请求
-- [ ] 「新建工作区」入口调用现有创建流程
-- [ ] `switch-workspace-panel.ts` 有单元测试覆盖 `choose()` 正常路径和幂等路径
-- [ ] svelte-check 无类型错误
+- [x] 点击 sidebar 用户栏的 workspace 名称，panel 从底部向上滑出，再次点击收起
+- [x] 点击首页 greeting 行的 workspace 名称，触发同一个 panel 滑出
+- [x] panel 内列出所有可访问 workspace，当前 workspace 有勾选标记
+- [x] 每行显示 workspace 名称和角色标签
+- [x] 点击非当前 workspace 触发切换，切换完成后 panel 自动关闭
+- [x] 点击当前 workspace 直接关闭 panel，不触发网络请求
+- [x] 「新建工作区」入口调用现有创建流程
+- [x] `switch-workspace-panel.ts` 有单元测试覆盖 `choose()` 正常路径和幂等路径
+- [x] svelte-check 无类型错误
 
 ## Blocked by
 
