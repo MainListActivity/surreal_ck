@@ -1,7 +1,7 @@
 import type { RecordIdString } from "@surreal-ck/shared/rpc.types";
 
 export type ViewId = "grid" | "kanban" | "gallery" | "form";
-export type PanelId = "detail" | "changes" | "ai";
+export type PanelId = "detail" | "changes";
 export type EditorPageKind = "sheet" | "dashboard";
 
 export type ToolAnchor = {

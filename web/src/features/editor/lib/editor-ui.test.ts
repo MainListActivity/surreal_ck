@@ -31,10 +31,10 @@ describe("面板 open/toggle", () => {
 
   test("togglePanel 同 tab 二次调用关闭，不同 tab 切换并保持打开", () => {
     const { ui } = setup();
-    ui.togglePanel("ai");
+    ui.togglePanel("changes");
     expect(ui.panelOpen).toBe(true);
-    expect(ui.panelTab).toBe("ai");
-    ui.togglePanel("ai");
+    expect(ui.panelTab).toBe("changes");
+    ui.togglePanel("changes");
     expect(ui.panelOpen).toBe(false);
     ui.togglePanel("detail");
     expect(ui.panelOpen).toBe(true);
@@ -123,9 +123,9 @@ describe("onChange — 每次状态变更都发快照", () => {
     const { ui, snapshots } = setup();
     const before = snapshots.length;
     ui.view = "kanban";
-    ui.openPanel("ai");
+    ui.openPanel("changes");
     expect(snapshots.length).toBeGreaterThan(before);
-    expect(snapshots[snapshots.length - 1].panelTab).toBe("ai");
+    expect(snapshots[snapshots.length - 1].panelTab).toBe("changes");
     expect(snapshots[snapshots.length - 1].view).toBe("kanban");
   });
 });
