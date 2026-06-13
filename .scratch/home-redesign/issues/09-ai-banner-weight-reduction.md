@@ -12,11 +12,11 @@
 
 ## Acceptance criteria
 
-- [ ] `.ai-banner` 高度 ≤ 56px，无大面积渐变色块，无强投影
-- [ ] banner 背景使用 `var(--primary-light)`，文字/icon 使用 `var(--primary)`
-- [ ] "开始对话"按钮功能不变（触发 `onopenaichat`）
-- [ ] 快捷操作三格在视觉上位于 greeting 正下方，AI Banner 在其下方或视觉权重明显低于快捷操作
-- [ ] svelte-check 无类型错误
+- [x] `.ai-banner` 高度 ≤ 56px，无大面积渐变色块，无强投影
+- [x] banner 背景使用 `var(--primary-light)`，文字/icon 使用 `var(--primary)`
+- [x] "开始对话"按钮功能不变（触发 `onopenaichat`）
+- [x] 快捷操作三格在视觉上位于 greeting 正下方，AI Banner 在其下方或视觉权重明显低于快捷操作
+- [x] svelte-check 无类型错误
 
 ## Blocked by
 

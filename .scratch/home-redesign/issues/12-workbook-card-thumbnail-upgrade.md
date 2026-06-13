@@ -13,11 +13,11 @@
 
 ## Acceptance criteria
 
-- [ ] `blank` 类型 thumbnail 显示 Sheet 图标 + 三条细横线，不再是两条粗灰线
-- [ ] `table` / `graph` 类型 thumbnail 不受影响
-- [ ] 列表视图（`.list-preview.blank`）的图标同步更新（已有 `<Sheet>` icon，确认颜色/大小对齐）
-- [ ] 卡片高度、网格列数不变
-- [ ] svelte-check 无类型错误
+- [x] `blank` 类型 thumbnail 显示 Sheet 图标 + 三条细横线，不再是两条粗灰线
+- [x] `table` / `graph` 类型 thumbnail 不受影响
+- [x] 列表视图（`.list-preview.blank`）的图标同步更新（已有 `<Sheet>` icon，确认颜色/大小对齐）
+- [x] 卡片高度、网格列数不变
+- [x] svelte-check 无类型错误
 
 ## Blocked by
 

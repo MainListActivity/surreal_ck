@@ -10,11 +10,11 @@
 
 ## Acceptance criteria
 
-- [ ] 全页不出现绿色系色值（`#0f9f8f` 或 oklch 绿色节点已删除）
-- [ ] AI 助手面板 chip 按钮视觉与 SideNav active 态一致，无独立偏紫蓝硬编码
-- [ ] 快捷操作卡片 icon 色块、tab active 下划线、view-toggle active 态均使用同一 primary token
-- [ ] `grep -r '#0f9f8f\|#059669\|#0f9' web/src` 无结果（绿色清零）
-- [ ] svelte-check 无类型错误
+- [x] 全页不出现绿色系色值（`#0f9f8f` 或 oklch 绿色节点已删除）
+- [x] AI 助手面板 chip 按钮视觉与 SideNav active 态一致，无独立偏紫蓝硬编码
+- [x] 快捷操作卡片 icon 色块、tab active 下划线、view-toggle active 态均使用同一 primary token
+- [x] `grep -r '#0f9f8f\|#059669\|#0f9' web/src` 无结果（绿色清零）
+- [x] svelte-check 无类型错误
 
 ## Blocked by
 

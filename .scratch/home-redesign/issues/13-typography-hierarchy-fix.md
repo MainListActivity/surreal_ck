@@ -12,11 +12,11 @@
 
 ## Acceptance criteria
 
-- [ ] 动态 feed 时间戳 `color: var(--text-3); font-size: 11px`，与正文明显区分
-- [ ] 动态 feed 条目人名 `font-weight: 600`，动作描述 `font-weight: 400`
-- [ ] 首页 h1 `.workspace-title` font-size ≥ 24px 或视觉上明显重于 banner/快捷操作标题
-- [ ] 卡片 `.card-meta` 时间戳已为浅色小字（验收确认，无需改动）
-- [ ] svelte-check 无类型错误
+- [x] 动态 feed 时间戳 `color: var(--text-3); font-size: 11px`，与正文明显区分
+- [x] 动态 feed 条目人名 `font-weight: 600`，动作描述 `font-weight: 400`
+- [x] 首页 h1 `.workspace-title` font-size ≥ 24px 或视觉上明显重于 banner/快捷操作标题
+- [x] 卡片 `.card-meta` 时间戳已为浅色小字（验收确认，无需改动）
+- [x] svelte-check 无类型错误
 
 ## Blocked by
 
