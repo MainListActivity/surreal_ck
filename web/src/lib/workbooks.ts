@@ -15,6 +15,7 @@ export type WorkbookRow = {
   name: string;
   templateKey?: string;
   updatedAt?: string;
+  createdBy?: string;
 };
 
 export type WorkbooksState = {
@@ -40,6 +41,7 @@ function recordToWorkbook(rec: Record<string, unknown>): WorkbookRow {
     name: typeof rec.name === "string" ? rec.name : "",
     templateKey: typeof rec.template_key === "string" ? rec.template_key : undefined,
     updatedAt: typeof rec.updated_at === "string" ? rec.updated_at : undefined,
+    createdBy: rec.created_by || rec.owner_user ? String(rec.created_by ?? rec.owner_user) : undefined,
   };
 }
 

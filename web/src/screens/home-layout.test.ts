@@ -95,6 +95,7 @@ describe("HR-02 首页搜索状态提升", () => {
     expect(home).toMatch(/query\?: string/);
     expect(home).not.toMatch(/let query = \$state/);
     expect(home).not.toContain('const query = ""');
-    expect(home).toContain("filterWorkbooksByQuery(workbooksStore.workbooks, query)");
+    expect(home).toContain("filterHomeWorkbooks(workbooksStore.workbooks");
+    expect(home).toContain("{ query, tab, currentUserId }");
   });
 });
