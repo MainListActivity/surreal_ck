@@ -43,12 +43,12 @@
 </script>
 
 <aside class="activity-panel" aria-label="工作区动态">
-  <div class="tab-bar" role="tablist">
+  <div class="panel-tabs" role="tablist">
     {#each tabs as tab}
       <button
         role="tab"
         aria-selected={activeTab === tab.id}
-        class="tab-btn"
+        class="panel-tab"
         class:active={activeTab === tab.id}
         onclick={() => handleTabClick(tab.id)}
       >
@@ -57,55 +57,53 @@
     {/each}
   </div>
 
-  <div class="panel-body">
+  <div class="panel-body" role="tabpanel">
     {#if activeTab === "activity"}
-      <ul class="activity-list">
-        {#each MOCK_ACTIVITY_ENTRIES as entry (entry.id)}
-          <li class="activity-item">
-            <Avatar name={entry.actor} size={28} />
-            <div class="activity-content">
-              <p class="activity-desc">
-                <span class="actor">{entry.actor}</span>
-                {entry.action}
-              </p>
-              <time class="activity-time">{formatRelativeTime(entry.timestamp)}</time>
+      {#each MOCK_ACTIVITY_ENTRIES as entry (entry.id)}
+        <div class="activity-item" role="article">
+          <Avatar name={entry.actor} size={26} />
+          <div class="activity-content">
+            <div class="activity-text">
+              <strong>{entry.actor}</strong>{" "}{entry.action}
             </div>
-          </li>
-        {/each}
-      </ul>
-    {:else if activeTab === "overview"}
-      <div class="overview-section">
-        <div class="stat-card">
-          <span class="stat-label">工作簿总数</span>
-          <span class="stat-value">
-            {#if workbookCount === null}
-              <span class="loading">…</span>
-            {:else}
-              {workbookCount}
-            {/if}
-          </span>
-        </div>
-
-        <div class="chart-section">
-          <p class="chart-title">本周新增记录</p>
-          <div class="bar-chart" aria-label="本周新增记录趋势图">
-            {#each MOCK_CHART_BARS as bar}
-              <div class="bar-col">
-                <div
-                  class="bar"
-                  style={`height:${Math.round((bar.value / maxBarValue) * 80)}px`}
-                  title={`${bar.label}: ${bar.value}`}
-                ></div>
-                <span class="bar-label">{bar.label}</span>
-              </div>
-            {/each}
+            <div class="activity-time">{formatRelativeTime(entry.timestamp)}</div>
           </div>
+        </div>
+      {/each}
+    {:else if activeTab === "overview"}
+      <div class="insight-card">
+        <div class="insight-card-header">
+          <span class="insight-card-title">工作簿总数</span>
+        </div>
+        <div class="insight-stat" aria-label="工作簿总数">
+          {#if workbookCount === null}
+            <span class="loading">…</span>
+          {:else}
+            {workbookCount}
+          {/if}
+        </div>
+        <div class="insight-card-header" style="margin-top: 16px;">
+          <span class="insight-card-title">本周新增记录</span>
+        </div>
+        <div class="insight-mini-chart" aria-label="本周新增记录趋势图" aria-hidden="true">
+          {#each MOCK_CHART_BARS as bar}
+            <div
+              class="mini-bar"
+              style={`height:${Math.round((bar.value / maxBarValue) * 100)}%`}
+              title={`${bar.label}: ${bar.value}`}
+            ></div>
+          {/each}
+        </div>
+        <div class="chart-labels" aria-hidden="true">
+          {#each MOCK_CHART_BARS as bar}
+            <span>{bar.label.slice(1)}</span>
+          {/each}
         </div>
       </div>
     {:else if activeTab === "tasks"}
-      <div class="tasks-stub">
+      <div class="empty-state">
         <svg
-          class="stub-icon"
+          class="empty-icon"
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
@@ -115,8 +113,8 @@
           <rect x="3" y="3" width="18" height="18" rx="3" />
           <path d="M9 12l2 2 4-4" />
         </svg>
-        <p class="stub-title">虚拟办公室功能即将上线</p>
-        <p class="stub-desc">任务由 AI 员工自动处理，敬请期待。</p>
+        <p class="empty-title">虚拟办公室功能即将上线</p>
+        <p class="empty-desc">任务由 AI 员工自动处理，敬请期待。</p>
       </div>
     {/if}
   </div>
@@ -134,68 +132,68 @@
     background: var(--surface);
   }
 
-  /* segment control tab bar */
-  .tab-bar {
+  /* tab bar — prototype style: tabs sit in a row with padding, active gets elevated bg */
+  .panel-tabs {
     display: flex;
-    height: 44px;
-    flex-shrink: 0;
-    align-items: center;
-    gap: 2px;
-    padding: 6px 8px;
+    gap: 4px;
+    padding: 10px 12px 8px;
     border-bottom: 1px solid var(--border);
-    background: var(--surface);
+    flex-shrink: 0;
   }
 
-  .tab-btn {
+  .panel-tab {
     flex: 1;
-    height: 30px;
-    border: none;
-    border-radius: 6px;
-    background: transparent;
+    padding: 5px 6px;
+    font-size: 12px;
+    font-weight: 500;
     color: var(--text-3);
     cursor: pointer;
-    font-size: 11px;
-    font-weight: 500;
-    transition: background 0.15s, color 0.15s;
+    border: none;
+    background: none;
+    border-radius: 6px;
+    transition: background 0.12s, color 0.12s;
     white-space: nowrap;
+    text-align: center;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
-  .tab-btn:hover:not(.active) {
-    background: var(--surface-2, rgba(0 0 0 / .04));
+  .panel-tab:hover:not(.active) {
+    background: var(--soft, rgba(0 0 0 / .04));
+    color: var(--text-2);
   }
 
-  .tab-btn.active {
-    background: var(--accent, #5B78F6);
-    color: #fff;
+  .panel-tab.active {
+    background: var(--soft, rgba(0 0 0 / .06));
+    color: var(--text-1);
+    font-weight: 600;
   }
 
   /* scrollable body */
   .panel-body {
     flex: 1;
     overflow-y: auto;
-    padding: 12px 0;
-  }
-
-  /* activity list */
-  .activity-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
+    padding: 12px;
     display: flex;
     flex-direction: column;
-    gap: 0;
+    gap: 6px;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
   }
 
+  /* activity feed items — hover card style matching prototype */
   .activity-item {
     display: flex;
-    align-items: flex-start;
-    gap: 10px;
-    padding: 10px 14px;
-    border-bottom: 1px solid var(--border);
+    gap: 9px;
+    padding: 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.1s;
   }
 
-  .activity-item:last-child {
-    border-bottom: none;
+  .activity-item:hover {
+    background: var(--soft, rgba(0 0 0 / .04));
   }
 
   .activity-content {
@@ -203,18 +201,17 @@
     min-width: 0;
   }
 
-  .activity-desc {
-    margin: 0 0 2px;
+  .activity-text {
     font-size: 12px;
     color: var(--text-2);
-    line-height: 1.5;
+    line-height: 1.45;
+    margin-bottom: 2px;
     word-break: break-all;
   }
 
-  .actor {
-    font-weight: 600;
+  .activity-text strong {
     color: var(--text-1);
-    margin-right: 2px;
+    font-weight: 500;
   }
 
   .activity-time {
@@ -222,116 +219,100 @@
     color: var(--text-3);
   }
 
-  /* overview section */
-  .overview-section {
-    padding: 0 14px;
-    display: flex;
-    flex-direction: column;
-    gap: 20px;
-  }
-
-  .stat-card {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    padding: 14px;
+  /* overview: insight card */
+  .insight-card {
+    background: var(--soft, rgba(0 0 0 / .04));
+    border: 1px solid var(--border);
     border-radius: 10px;
-    background: var(--surface-2, rgba(0 0 0 / .04));
+    padding: 12px;
   }
 
-  .stat-label {
-    font-size: 11px;
-    color: var(--text-3);
-    font-weight: 500;
+  .insight-card-header {
+    display: flex;
+    align-items: center;
+    margin-bottom: 6px;
   }
 
-  .stat-value {
+  .insight-card-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-2);
+  }
+
+  .insight-stat {
     font-size: 28px;
     font-weight: 700;
     color: var(--text-1);
-    line-height: 1;
+    letter-spacing: -0.5px;
+    margin-bottom: 4px;
+    font-variant-numeric: tabular-nums;
   }
 
   .loading {
-    font-size: 18px;
+    font-size: 20px;
     color: var(--text-3);
   }
 
-  .chart-section {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .chart-title {
-    margin: 0;
-    font-size: 11px;
-    color: var(--text-3);
-    font-weight: 500;
-  }
-
-  .bar-chart {
+  .insight-mini-chart {
+    height: 48px;
     display: flex;
     align-items: flex-end;
-    gap: 4px;
-    height: 96px;
+    gap: 3px;
+    margin-top: 8px;
   }
 
-  .bar-col {
+  .mini-bar {
     flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 4px;
-    height: 96px;
-  }
-
-  .bar {
-    width: 100%;
-    border-radius: 3px 3px 0 0;
-    background: var(--accent, #5B78F6);
-    opacity: 0.7;
-    min-height: 4px;
+    background: var(--primary, #2563eb);
+    opacity: 0.45;
+    border-radius: 2px 2px 0 0;
+    min-height: 3px;
     transition: opacity 0.15s;
   }
 
-  .bar:hover {
-    opacity: 1;
+  .mini-bar:hover {
+    opacity: 0.85;
   }
 
-  .bar-label {
+  .chart-labels {
+    display: flex;
+    gap: 3px;
+    margin-top: 4px;
+  }
+
+  .chart-labels span {
+    flex: 1;
     font-size: 9px;
     color: var(--text-3);
-    white-space: nowrap;
+    text-align: center;
   }
 
   /* tasks stub */
-  .tasks-stub {
+  .empty-state {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
     gap: 8px;
-    padding: 48px 24px;
+    padding: 48px 16px;
     text-align: center;
   }
 
-  .stub-icon {
-    width: 40px;
-    height: 40px;
+  .empty-icon {
+    width: 36px;
+    height: 36px;
     color: var(--text-3);
-    opacity: 0.5;
+    opacity: 0.4;
   }
 
-  .stub-title {
+  .empty-title {
     margin: 0;
     font-size: 13px;
     font-weight: 600;
     color: var(--text-2);
   }
 
-  .stub-desc {
+  .empty-desc {
     margin: 0;
     font-size: 12px;
     color: var(--text-3);
