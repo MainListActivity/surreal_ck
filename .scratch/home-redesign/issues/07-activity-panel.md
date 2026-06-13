@@ -14,13 +14,13 @@
 
 ## Acceptance criteria
 
-- [ ] 三个 tab 可切换，segment control 样式正确
-- [ ] 动态 tab 渲染 mock 活动流，时间显示相对格式
-- [ ] 数据概览 tab 查询并展示真实工作簿计数
-- [ ] 数据概览 tab 有迷你 bar chart SVG（mock 数据可接受）
-- [ ] 任务 tab 显示空 state 占位文案
-- [ ] 面板不影响主内容区和 sidebar 的滚动
-- [ ] svelte-check 无类型错误
+- [x] 三个 tab 可切换，segment control 样式正确
+- [x] 动态 tab 渲染 mock 活动流，时间显示相对格式
+- [x] 数据概览 tab 查询并展示真实工作簿计数
+- [x] 数据概览 tab 有迷你 bar chart SVG（mock 数据可接受）
+- [x] 任务 tab 显示空 state 占位文案
+- [x] 面板不影响主内容区和 sidebar 的滚动
+- [x] svelte-check 无类型错误
 
 ## Blocked by
 
