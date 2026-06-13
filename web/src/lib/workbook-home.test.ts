@@ -2,10 +2,16 @@ import { describe, expect, test } from "bun:test";
 import type { WorkbookRow } from "./workbooks";
 import {
   WORKBOOK_VIEW_MODE_STORAGE_KEY,
+  connectionDotPresentation,
   filterHomeWorkbooks,
   formatWorkbookUpdatedAt,
+  getPinnedStorageKey,
+  homeGreetingForDate,
+  pinWorkbook,
+  readPinnedWorkbooks,
   readWorkbookViewMode,
   workbookCardPresentation,
+  writePinnedWorkbooks,
   writeWorkbookViewMode,
 } from "./workbook-home";
 
@@ -71,6 +77,29 @@ describe("workbook card presentation — 卡片展示模型", () => {
       previewKind: "blank",
       statusLabel: "草稿",
       templateLabel: "空白工作簿",
+    });
+  });
+});
+
+describe("home greeting presentation — 首页问候与连接状态", () => {
+  test("按当前小时输出早上好/下午好/晚上好", () => {
+    expect(homeGreetingForDate(new Date("2026-06-13T08:00:00"))).toBe("早上好");
+    expect(homeGreetingForDate(new Date("2026-06-13T14:00:00"))).toBe("下午好");
+    expect(homeGreetingForDate(new Date("2026-06-13T21:00:00"))).toBe("晚上好");
+  });
+
+  test("open 显示已连接绿点，其它状态显示断开红点", () => {
+    expect(connectionDotPresentation("open")).toEqual({
+      label: "已连接",
+      tone: "connected",
+    });
+    expect(connectionDotPresentation("closed")).toEqual({
+      label: "已断开",
+      tone: "disconnected",
+    });
+    expect(connectionDotPresentation("closing")).toEqual({
+      label: "已断开",
+      tone: "disconnected",
     });
   });
 });

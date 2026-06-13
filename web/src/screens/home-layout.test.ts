@@ -10,6 +10,10 @@ function readComponent(name: string): string {
   return readFileSync(fileURLToPath(new URL(`../components/${name}`, import.meta.url)), "utf8");
 }
 
+function readApp(): string {
+  return readFileSync(fileURLToPath(new URL("../App.svelte", import.meta.url)), "utf8");
+}
+
 function cssRule(source: string, selector: string): string {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = source.match(new RegExp(`${escaped}\\s*\\{([\\s\\S]*?)\\n\\s*\\}`, "m"));
@@ -97,5 +101,54 @@ describe("HR-02 首页搜索状态提升", () => {
     expect(home).not.toContain('const query = ""');
     expect(home).toContain("filterHomeWorkbooks(workbooksStore.workbooks");
     expect(home).toContain("{ query, tab, currentUserId }");
+  });
+});
+
+describe("HR-05 首页快捷操作与 AI 入口", () => {
+  test("HomeScreen 渲染三张快捷操作卡片，空白工作簿走现有新建流程，导入文件显示 stub", () => {
+    const home = readScreen("HomeScreen.svelte");
+
+    expect(home).toContain('class="quick-actions"');
+    expect(home).toContain("空白工作簿");
+    expect(home).toContain("从模板创建");
+    expect(home).toContain("导入文件");
+    expect(home).toContain("敬请期待");
+    expect(home).toContain('workbooksStore.createBlank("未命名工作簿")');
+    expect(home).toContain("onopen?.(wb.id)");
+    expect(home).toContain("handleImportClick");
+  });
+
+  test("HomeScreen 常驻 AI banner，并通过 onopenaichat 打开 AI 抽屉", () => {
+    const home = readScreen("HomeScreen.svelte");
+
+    expect(home).toMatch(/onopenaichat\?:\s*\(\)\s*=>\s*void/);
+    expect(home).toContain('class="ai-banner"');
+    expect(home).toContain("AI 能生成 SurrealQL");
+    expect(home).toContain("直接操作数据表结构和数据");
+    expect(home).toContain("开始对话");
+    expect(home).toContain("onopenaichat?.()");
+  });
+
+  test("HomeScreen greeting 显示时段问候、可点击 workspace 名称和连接状态点", () => {
+    const home = readScreen("HomeScreen.svelte");
+
+    expect(home).toContain("homeGreetingForDate()");
+    expect(home).toContain("getConnectionState()");
+    expect(home).toContain("connectionDotPresentation(connectionState)");
+    expect(home).toContain('class="workspace-title"');
+    expect(home).toContain("onworkspaceclick?.()");
+    expect(home).toContain('class={`conn-dot ${connectionDot.tone}`}');
+    expect(home).toContain("SurrealDB 连接状态");
+    expect(home).toContain("{connectionDot.label}");
+  });
+
+  test("WorkspaceScreen 和 App 把首页开始对话接到现有 AI drawer", () => {
+    const workspace = readScreen("WorkspaceScreen.svelte");
+    const app = readApp();
+
+    expect(workspace).toMatch(/onopenaichat\?:\s*\(\)\s*=>\s*void/);
+    expect(workspace.match(/onopenaichat=\{\(\) => onopenaichat\?\.\(\)\}/g)).toHaveLength(2);
+    expect(app).toContain("function openAiDrawer(): void");
+    expect(app).toContain("onopenaichat={openAiDrawer}");
   });
 });

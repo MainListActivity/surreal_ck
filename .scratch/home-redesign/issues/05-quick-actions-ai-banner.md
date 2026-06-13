@@ -10,11 +10,11 @@
 
 ## Acceptance criteria
 
-- [ ] 三张快捷操作卡片渲染正确，「空白工作簿」可发起新建，「导入文件」显示 stub 提示
-- [ ] AI banner 常驻显示，「开始对话」按钮触发 `AiDrawer`
-- [ ] greeting 显示时段问候语 + workspace 名称 + 连接状态 dot
-- [ ] 连接状态 dot 在 `connected` 时绿色，`disconnected` 时红色
-- [ ] svelte-check 无类型错误
+- [x] 三张快捷操作卡片渲染正确，「空白工作簿」可发起新建，「导入文件」显示 stub 提示
+- [x] AI banner 常驻显示，「开始对话」按钮触发 `AiDrawer`
+- [x] greeting 显示时段问候语 + workspace 名称 + 连接状态 dot
+- [x] 连接状态 dot 在 `connected` 时绿色，`disconnected` 时红色
+- [x] svelte-check 无类型错误
 
 ## Blocked by
 

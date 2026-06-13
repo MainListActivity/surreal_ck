@@ -1,12 +1,14 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { Grid3x3, List, MoreHorizontal, Pin, Plus, Sheet, Tag, Trash2, Upload } from "@lucide/svelte";
+  import { Grid3x3, List, MessageCircle, MoreHorizontal, Pin, Plus, Sheet, Sparkles, Tag, Trash2, Upload } from "@lucide/svelte";
   import { workbooksStore } from "../lib/workbooks.svelte";
   import { canWriteSharedStructure as canWriteSharedStructureFn } from "../lib/permissions.svelte";
-  import { getCurrentUser, getCurrentWorkspace } from "../lib/workspace-store.svelte";
+  import { getConnectionState, getCurrentUser, getCurrentWorkspace } from "../lib/workspace-store.svelte";
   import {
+    connectionDotPresentation,
     filterHomeWorkbooks,
     formatWorkbookUpdatedAt,
+    homeGreetingForDate,
     readWorkbookViewMode,
     workbookCardPresentation,
     writeWorkbookViewMode,
@@ -22,12 +24,14 @@
     query = "",
     onopen,
     ontemplates,
+    onopenaichat,
     onworkspaceclick,
     onpin,
   }: {
     query?: string;
     onopen?: (workbookId: string) => void;
     ontemplates?: () => void;
+    onopenaichat?: () => void;
     onworkspaceclick?: () => void;
     onpin?: (workbookId: string) => void;
   } = $props();
@@ -41,11 +45,14 @@
   const canWriteSharedStructure = $derived(canWriteSharedStructureFn());
   const workspace = $derived(getCurrentWorkspace());
   const currentUser = $derived(getCurrentUser());
+  const connectionState = $derived(getConnectionState());
   let tab = $state<WorkbookHomeTab>("all");
   let view = $state<WorkbookViewMode>("grid");
   let creating = $state(false);
   let importStatus = $state("");
 
+  const greeting = $derived(homeGreetingForDate());
+  const connectionDot = $derived(connectionDotPresentation(connectionState));
   const workspaceName = $derived(workspace?.name || workspace?.slug || workspace?.dbName || "当前工作区");
   const currentUserId = $derived(currentUser?.subject ? `user:${currentUser.subject}` : currentUser?.email);
   const visibleWorkbooks = $derived(
@@ -69,7 +76,7 @@
   }
 
   function handleImportClick() {
-    importStatus = "导入文件功能尚未迁移，当前版本请先使用空白文档或模板创建。";
+    importStatus = "导入文件功能尚未迁移，当前版本请先使用空白工作簿或模板创建。";
   }
 
   function open(wb: WorkbookRow) {
@@ -105,7 +112,7 @@
     if (query) return "没有匹配的工作簿";
     if (tab === "shared") return "共享工作簿会在权限模型接入后显示";
     if (tab === "mine") return "还没有你创建的工作簿";
-    return "还没有工作簿，点击上方“空白文档”创建第一个";
+    return "还没有工作簿，点击上方“空白工作簿”创建第一个";
   }
 
   function hashString(value: string): number {
@@ -118,19 +125,41 @@
 <section class="home">
   <div class="content">
     <section class="greeting">
-      <p>欢迎回来</p>
-      <h1>
-        <button type="button" class="workspace-title" onclick={() => onworkspaceclick?.()}>
-          {workspaceName}
-        </button>
-      </h1>
+      <p>{greeting}</p>
+      <div class="greeting-title-row">
+        <h1>
+          <button type="button" class="workspace-title" onclick={() => onworkspaceclick?.()}>
+            {workspaceName}
+          </button>
+        </h1>
+        <span
+          class={`conn-dot ${connectionDot.tone}`}
+          title={`SurrealDB 连接状态：${connectionDot.label}`}
+          aria-label={`SurrealDB 连接状态：${connectionDot.label}`}
+        ></span>
+        <span class="conn-label">{connectionDot.label}</span>
+      </div>
+    </section>
+
+    <section class="ai-banner" aria-label="AI 能力">
+      <div class="ai-banner-copy">
+        <span class="ai-banner-icon" aria-hidden="true"><Sparkles size={18} /></span>
+        <div>
+          <strong>AI 能生成 SurrealQL</strong>
+          <p>直接操作数据表结构和数据，把自然语言转成可执行的工作区操作。</p>
+        </div>
+      </div>
+      <button type="button" class="ai-banner-action" onclick={() => onopenaichat?.()}>
+        <MessageCircle size={16} />
+        <span>开始对话</span>
+      </button>
     </section>
 
     {#if !query}
       <div class="quick-actions">
         <button type="button" onclick={handleCreateBlank} disabled={creating || !canWriteSharedStructure}>
           <span><Plus size={17} color="var(--primary)" /></span>
-          <strong>{creating ? "创建中…" : "空白文档"}</strong>
+          <strong>{creating ? "创建中…" : "空白工作簿"}</strong>
           <small>{canWriteSharedStructure ? "从零开始创建" : "需要管理员权限"}</small>
         </button>
         <button type="button" onclick={() => ontemplates?.()} disabled={!canWriteSharedStructure}>
@@ -329,6 +358,13 @@
     margin: 0;
   }
 
+  .greeting-title-row {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 8px;
+  }
+
   .workspace-title {
     margin: 0;
     padding: 0;
@@ -345,6 +381,93 @@
 
   .workspace-title:hover {
     color: var(--primary);
+  }
+
+  .conn-dot {
+    width: 8px;
+    height: 8px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    box-shadow: 0 0 0 3px rgba(0, 0, 0, .04);
+  }
+
+  .conn-dot.connected {
+    background: var(--success);
+  }
+
+  .conn-dot.disconnected {
+    background: var(--error);
+  }
+
+  .conn-label {
+    color: var(--text-3);
+    font-size: 12px;
+  }
+
+  .ai-banner {
+    display: flex;
+    min-height: 96px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    margin-bottom: 12px;
+    padding: 18px 20px;
+    border-radius: 8px;
+    background: linear-gradient(135deg, #155eef 0%, #3b82f6 54%, #0f9f8f 100%);
+    color: #fff;
+    box-shadow: 0 12px 28px rgba(22, 100, 255, .18);
+  }
+
+  .ai-banner-copy {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .ai-banner-icon {
+    display: grid;
+    width: 40px;
+    height: 40px;
+    flex: 0 0 auto;
+    place-items: center;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, .18);
+    color: #fff;
+  }
+
+  .ai-banner strong {
+    display: block;
+    color: #fff;
+    font-size: 16px;
+  }
+
+  .ai-banner p {
+    margin: 5px 0 0;
+    color: rgba(255, 255, 255, .84);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+
+  .ai-banner-action {
+    display: inline-flex;
+    height: 34px;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    padding: 0 13px;
+    border: 0;
+    border-radius: 7px;
+    background: #fff;
+    color: #155eef;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 650;
+  }
+
+  .ai-banner-action:hover {
+    background: #edf4ff;
   }
 
   .quick-actions {

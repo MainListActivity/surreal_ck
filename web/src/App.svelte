@@ -207,6 +207,7 @@
           slug={r.slug}
           page={r.page}
           onopenworkbook={(workbookId) => openWorkbook(r.slug, workbookId)}
+          onopenaichat={openAiDrawer}
           onnavigate={(page) => navigatePage(r.slug, page)}
         />
       </main>

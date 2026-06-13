@@ -1,4 +1,5 @@
 import { filterWorkbooksByQuery, type WorkbookRow } from "./workbooks";
+import type { ConnectionState } from "./workspace-store";
 
 export type WorkbookHomeTab = "all" | "mine" | "shared";
 export type WorkbookViewMode = "grid" | "list";
@@ -15,6 +16,11 @@ export type WorkbookCardPresentation = {
   previewKind: WorkbookPreviewKind;
   statusLabel: string;
   templateLabel: string;
+};
+
+export type ConnectionDotPresentation = {
+  label: "已连接" | "已断开";
+  tone: "connected" | "disconnected";
 };
 
 export type WorkbookHomeFilter = {
@@ -75,4 +81,16 @@ export function workbookCardPresentation(templateKey: string | undefined): Workb
     };
   }
   return { previewKind: "blank", statusLabel: "草稿", templateLabel: "空白工作簿" };
+}
+
+export function homeGreetingForDate(now: Date = new Date()): string {
+  const hour = now.getHours();
+  if (hour < 12) return "早上好";
+  if (hour < 18) return "下午好";
+  return "晚上好";
+}
+
+export function connectionDotPresentation(state: ConnectionState): ConnectionDotPresentation {
+  if (state === "open") return { label: "已连接", tone: "connected" };
+  return { label: "已断开", tone: "disconnected" };
 }

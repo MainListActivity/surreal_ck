@@ -21,11 +21,13 @@
     slug,
     page,
     onopenworkbook,
+    onopenaichat,
     onnavigate,
   }: {
     slug: string;
     page: WorkspacePage;
     onopenworkbook?: (workbookId: string) => void;
+    onopenaichat?: () => void;
     onnavigate?: (page: WorkspacePage) => void;
   } = $props();
 
@@ -71,6 +73,7 @@
         {query}
         onopen={(workbookId) => onopenworkbook?.(workbookId)}
         ontemplates={() => onnavigate?.("templates")}
+        onopenaichat={() => onopenaichat?.()}
         onworkspaceclick={() => (wsPanelOpen = !wsPanelOpen)}
       />
     {:else if page === "docs"}
@@ -78,13 +81,14 @@
         {query}
         onopen={(workbookId) => onopenworkbook?.(workbookId)}
         ontemplates={() => onnavigate?.("templates")}
+        onopenaichat={() => onopenaichat?.()}
         onworkspaceclick={() => (wsPanelOpen = !wsPanelOpen)}
       />
     {:else if page === "templates"}
       <PlaceholderScreen
         icon={Tag}
         title="模板创建待迁移"
-        desc="模板库依赖旧版接口，正在迁移中。当前请先用「空白文档」创建工作簿，迁移完成后将在此提供案件管理、法律实体追踪等模板。"
+        desc="模板库依赖旧版接口，正在迁移中。当前请先用「空白工作簿」创建工作簿，迁移完成后将在此提供案件管理、法律实体追踪等模板。"
         actionLabel="返回首页"
         onaction={goHome}
       />
