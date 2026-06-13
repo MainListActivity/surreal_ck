@@ -11,3 +11,4 @@ data/
 .DS_Store
 .claude
 .agents
+.superpowers/*/*/state

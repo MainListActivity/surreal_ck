@@ -1,0 +1,26 @@
+<svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="fs" x1="16" y1="8" x2="16" y2="28" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#6db87a"/>
+      <stop offset="100%" stop-color="#4a9458"/>
+    </linearGradient>
+  </defs>
+  <!-- 土壤线 -->
+  <path d="M4 25 Q16 23 28 25" stroke="#8b7355" stroke-width="1.2" stroke-linecap="round" fill="none"/>
+  <!-- 左茎 -->
+  <path d="M11 25 L11 12" stroke="url(#fs)" stroke-width="1.6" stroke-linecap="round"/>
+  <!-- 左叶 -->
+  <path d="M11 18 C11 18 5 16 4 11 C7 11 11 14 11 18" fill="#6db87a" opacity="0.9"/>
+  <path d="M11 15 C11 15 16 13 17 8 C14 9 11 12 11 15" fill="#8dd49a" opacity="0.85"/>
+  <!-- 右茎 -->
+  <path d="M21 25 L21 12" stroke="url(#fs)" stroke-width="1.6" stroke-linecap="round"/>
+  <!-- 右叶 -->
+  <path d="M21 18 C21 18 27 16 28 11 C25 11 21 14 21 18" fill="#6db87a" opacity="0.9"/>
+  <path d="M21 15 C21 15 16 13 15 8 C18 9 21 12 21 15" fill="#8dd49a" opacity="0.85"/>
+  <!-- 豆子 -->
+  <circle cx="11" cy="25.5" r="1.8" fill="#e8935a"/>
+  <circle cx="21" cy="25.5" r="1.8" fill="#e8935a"/>
+  <!-- 嫩芽 -->
+  <path d="M11 12 C11 12 9 9 10 6 C12 7 12 10 11 12" fill="#a8e6b3" opacity="0.9"/>
+  <path d="M21 12 C21 12 23 9 22 6 C20 7 20 10 21 12" fill="#a8e6b3" opacity="0.9"/>
+</svg>

@@ -1,0 +1,39 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="appbg" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1a2e1c"/>
+      <stop offset="100%" stop-color="#0f1e14"/>
+    </linearGradient>
+    <linearGradient id="appstem" x1="512" y1="280" x2="512" y2="820" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#6db87a"/>
+      <stop offset="100%" stop-color="#4a9458"/>
+    </linearGradient>
+  </defs>
+  <!-- 圆角矩形底板 -->
+  <rect width="1024" height="1024" rx="230" fill="url(#appbg)"/>
+  <!-- 土壤线 -->
+  <path d="M160 790 Q512 740 864 790" stroke="#8b7355" stroke-width="36" stroke-linecap="round" fill="none"/>
+  <!-- 左茎 -->
+  <path d="M370 800 L370 400" stroke="url(#appstem)" stroke-width="44" stroke-linecap="round"/>
+  <!-- 左叶片 (左外) -->
+  <path d="M370 570 C370 570 192 510 166 360 C258 360 370 450 370 570" fill="#6db87a" opacity="0.9"/>
+  <!-- 左叶片 (右内) -->
+  <path d="M370 480 C370 480 512 426 538 276 C452 308 370 398 370 480" fill="#8dd49a" opacity="0.85"/>
+  <!-- 右茎 -->
+  <path d="M654 800 L654 400" stroke="url(#appstem)" stroke-width="44" stroke-linecap="round"/>
+  <!-- 右叶片 (右外) -->
+  <path d="M654 570 C654 570 832 510 858 360 C766 360 654 450 654 570" fill="#6db87a" opacity="0.9"/>
+  <!-- 右叶片 (左内) -->
+  <path d="M654 480 C654 480 512 426 486 276 C572 308 654 398 654 480" fill="#8dd49a" opacity="0.85"/>
+  <!-- 豆子 (左) -->
+  <circle cx="370" cy="810" r="50" fill="#e8935a"/>
+  <!-- 豆子高光 -->
+  <circle cx="352" cy="793" r="15" fill="rgba(255,255,255,0.3)"/>
+  <!-- 豆子 (右) -->
+  <circle cx="654" cy="810" r="50" fill="#e8935a"/>
+  <circle cx="636" cy="793" r="15" fill="rgba(255,255,255,0.3)"/>
+  <!-- 顶端嫩芽 (左) -->
+  <path d="M370 400 C370 400 314 314 342 228 C398 258 400 344 370 400" fill="#a8e6b3" opacity="0.9"/>
+  <!-- 顶端嫩芽 (右) -->
+  <path d="M654 400 C654 400 710 314 682 228 C626 258 624 344 654 400" fill="#a8e6b3" opacity="0.9"/>
+</svg>
