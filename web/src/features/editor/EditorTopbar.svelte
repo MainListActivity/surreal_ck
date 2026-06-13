@@ -1,18 +1,61 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import Avatar from "../../components/Avatar.svelte";
   import Logo from "../../components/Logo.svelte";
-  import { ChevronLeft, RefreshCw, AlertCircle, WifiOff, Check, Share, Ellipsis } from "@lucide/svelte";
+  import { ChevronLeft, RefreshCw, AlertCircle, WifiOff, Check, Share, Ellipsis, Pencil, X } from "@lucide/svelte";
   import { canWriteSharedStructure as canWriteSharedStructureFn } from "../../lib/permissions.svelte";
   import { editorStore } from "../../lib/editor-store.svelte";
   import { editorUi } from "./lib/editor-ui.svelte";
   import { panelRegistry } from "./registries/panels";
   import { menuRegistry } from "./registries/menu";
 
-  // 重命名工作簿属结构操作（原走已废弃后端 RPC），新架构直连数据层尚未补；
-  // 故标题只读，显示来自路由/上游传入的 workbook 名。重命名留后续 issue。
   let { workbookName = "", onback }: { workbookName?: string; onback?: () => void } = $props();
 
   const canWriteSharedStructure = $derived(canWriteSharedStructureFn());
+  const titleValue = $derived(editorStore.workbook?.name ?? workbookName);
+
+  let editingTitle = $state(false);
+  let titleDraft = $state("");
+  let committingTitle = $state(false);
+  let titleInputEl = $state<HTMLInputElement | null>(null);
+
+  async function startRenameTitle(event?: MouseEvent) {
+    event?.stopPropagation();
+    if (!canWriteSharedStructure || editorStore.loading || Boolean(editorStore.error)) return;
+    titleDraft = titleValue || "未命名工作簿";
+    editingTitle = true;
+    await tick();
+    titleInputEl?.focus();
+    titleInputEl?.select();
+  }
+
+  function cancelRenameTitle() {
+    editingTitle = false;
+    titleDraft = "";
+  }
+
+  async function commitRenameTitle() {
+    if (!editingTitle || committingTitle) return;
+    const next = titleDraft.trim();
+    if (next && next === titleValue) {
+      cancelRenameTitle();
+      return;
+    }
+    committingTitle = true;
+    const ok = await editorStore.renameWorkbook(next);
+    committingTitle = false;
+    if (ok) cancelRenameTitle();
+  }
+
+  function handleTitleKeydown(event: KeyboardEvent) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void commitRenameTitle();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      cancelRenameTitle();
+    }
+  }
 
   function toggleMenu(event: MouseEvent) {
     event.stopPropagation();
@@ -44,8 +87,48 @@
   <strong class="doc-title">
     {#if editorStore.loading}加载中…
     {:else if editorStore.error}加载失败
+    {:else if editingTitle}
+      <input
+        bind:this={titleInputEl}
+        class="title-input"
+        bind:value={titleDraft}
+        disabled={committingTitle}
+        aria-label="工作簿名"
+        onblur={() => void commitRenameTitle()}
+        onkeydown={handleTitleKeydown}
+      />
+      <button
+        type="button"
+        class="icon-btn title-action"
+        title="取消重命名"
+        aria-label="取消重命名"
+        disabled={committingTitle}
+        onmousedown={(event) => event.preventDefault()}
+        onclick={cancelRenameTitle}
+      >
+        <X size={13} />
+      </button>
     {:else}
-      <span class="title-text" title={workbookName}>{workbookName || "未命名工作簿"}</span>
+      <button
+        type="button"
+        class="title-button"
+        title={canWriteSharedStructure ? "双击重命名工作簿" : (titleValue || "未命名工作簿")}
+        disabled={!canWriteSharedStructure}
+        ondblclick={(event) => void startRenameTitle(event)}
+      >
+        <span class="title-text">{titleValue || "未命名工作簿"}</span>
+      </button>
+      {#if canWriteSharedStructure}
+        <button
+          type="button"
+          class="icon-btn title-action"
+          title="重命名工作簿"
+          aria-label="重命名工作簿"
+          onclick={(event) => void startRenameTitle(event)}
+        >
+          <Pencil size={13} />
+        </button>
+      {/if}
     {/if}
   </strong>
   <span
@@ -149,12 +232,51 @@
     white-space: nowrap;
   }
 
+  .title-button {
+    display: inline-flex;
+    min-width: 0;
+    max-width: 100%;
+    align-items: center;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .title-button:hover:not(:disabled) {
+    background: var(--bg);
+  }
+
+  .title-button:disabled {
+    cursor: default;
+  }
+
   .title-text {
     overflow: hidden;
     padding: 4px 7px;
     font-weight: 650;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .title-input {
+    width: min(420px, 100%);
+    height: 30px;
+    min-width: 120px;
+    border: 1px solid var(--primary);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text-1);
+    font-size: 14px;
+    font-weight: 650;
+    padding: 0 8px;
+    outline: 0;
+  }
+
+  .title-action {
+    flex: 0 0 auto;
   }
 
   .sync {

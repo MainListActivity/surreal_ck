@@ -40,6 +40,7 @@ function setup(opts: {
   rows?: Array<Record<string, unknown>>;
   sheets?: Array<Record<string, unknown>>;
   workbookName?: string;
+  updateThrows?: unknown;
 } = {}) {
   const rec: Recorder = { queries: [], updates: [], creates: [], deletes: [], live: null };
   const sheets = opts.sheets ?? [sheetRecord()];
@@ -63,6 +64,7 @@ function setup(opts: {
       return () => {};
     }) as SurrealConn["liveTable"],
     updateRecord: (async (id: string, patch: Record<string, unknown>) => {
+      if (opts.updateThrows) throw opts.updateThrows;
       rec.updates.push({ id, patch });
       return { id, ...patch };
     }) as SurrealConn["updateRecord"],
@@ -151,6 +153,55 @@ describe("loadWorkbook — 直连读 sheet 列表 + 首个 sheet 的行", () => 
     store.reset();
 
     expect(store.workbook).toBeNull();
+  });
+});
+
+describe("renameWorkbook / renameSheet — 结构名称直连更新", () => {
+  test("renameWorkbook 更新 workbook.name 并同步当前 workbook 元数据", async () => {
+    const { store, rec, snapshots } = setup({ workbookName: "项目台账" });
+    await store.loadWorkbook("workbook:wb1");
+
+    const ok = await store.renameWorkbook("项目总表");
+
+    expect(ok).toBe(true);
+    expect(rec.updates.at(-1)).toEqual({ id: "workbook:wb1", patch: { name: "项目总表" } });
+    expect(store.workbook).toEqual({ id: "workbook:wb1", name: "项目总表" });
+    expect(snapshots.at(-1)!.workbook).toEqual({ id: "workbook:wb1", name: "项目总表" });
+    expect(store.saveError).toBeNull();
+  });
+
+  test("renameSheet 更新 sheet.label，当前 sheet 与 sheets 快照保持一致", async () => {
+    const { store, rec, snapshots } = setup({
+      sheets: [
+        sheetRecord({ id: "sheet:s1", label: "工作表 1" }),
+        sheetRecord({ id: "sheet:s2", label: "工作表 2" }),
+      ],
+    });
+    await store.loadWorkbook("workbook:wb1", "sheet:s2");
+
+    const ok = await store.renameSheet("sheet:s2", "债权明细");
+
+    expect(ok).toBe(true);
+    expect(rec.updates.at(-1)).toEqual({ id: "sheet:s2", patch: { label: "债权明细" } });
+    expect(store.sheets.map((s) => s.label)).toEqual(["工作表 1", "债权明细"]);
+    expect(snapshots.at(-1)!.sheets.map((s) => s.label)).toEqual(["工作表 1", "债权明细"]);
+    expect(store.saveError).toBeNull();
+  });
+
+  test("引擎拒绝改名时返回 false，保留旧名称并写入 saveError", async () => {
+    const { store, rec } = setup({
+      workbookName: "项目台账",
+      updateThrows: new Error("permission denied"),
+    });
+    await store.loadWorkbook("workbook:wb1");
+
+    expect(await store.renameWorkbook("项目总表")).toBe(false);
+    expect(await store.renameSheet("sheet:s1", "债权明细")).toBe(false);
+
+    expect(rec.updates).toHaveLength(0);
+    expect(store.workbook?.name).toBe("项目台账");
+    expect(store.sheets[0].label).toBe("工作表 1");
+    expect(store.saveError).toContain("没有权限");
   });
 });
 

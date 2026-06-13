@@ -21,6 +21,7 @@ import {
   saveCells,
   subscribeLive,
   updateSheetColumns,
+  describeWriteError,
   type SheetRef,
 } from "./workbook-data";
 import { isDraftRowId, recordDrafts } from "./record-drafts";
@@ -258,6 +259,61 @@ export function createEditorStore(deps: EditorDeps) {
     syncDraftBucket();
     state.viewParams = { ...EMPTY_VIEW_PARAMS };
     await loadWorkbook(state.workbookId, sheetId);
+  }
+
+  async function renameWorkbook(name: string): Promise<boolean> {
+    const nextName = name.trim();
+    if (!nextName) {
+      state.saveError = "工作簿名不能为空";
+      emit();
+      return false;
+    }
+    if (!state.workbook) return false;
+    if (state.workbook.name === nextName) return true;
+
+    state.saving = true;
+    state.saveError = null;
+    emit();
+    try {
+      await deps.getConn().updateRecord(state.workbook.id, { name: nextName });
+      state.workbook = { ...state.workbook, name: nextName };
+      return true;
+    } catch (err) {
+      state.saveError = describeWriteError(err);
+      return false;
+    } finally {
+      state.saving = false;
+      emit();
+    }
+  }
+
+  async function renameSheet(sheetId: string, label: string): Promise<boolean> {
+    const nextLabel = label.trim();
+    if (!nextLabel) {
+      state.saveError = "智能表名称不能为空";
+      emit();
+      return false;
+    }
+    const target = state.sheets.find((sheet) => sheet.id === sheetId);
+    if (!target) return false;
+    if (target.label === nextLabel) return true;
+
+    state.saving = true;
+    state.saveError = null;
+    emit();
+    try {
+      await deps.getConn().updateRecord(sheetId, { label: nextLabel });
+      state.sheets = state.sheets.map((sheet) =>
+        sheet.id === sheetId ? { ...sheet, label: nextLabel } : sheet,
+      );
+      return true;
+    } catch (err) {
+      state.saveError = describeWriteError(err);
+      return false;
+    } finally {
+      state.saving = false;
+      emit();
+    }
   }
 
   async function setFilters(
@@ -621,6 +677,8 @@ export function createEditorStore(deps: EditorDeps) {
     loadWorkbook,
     reloadRows,
     switchSheet,
+    renameWorkbook,
+    renameSheet,
     setFilters,
     setSorts,
     setHiddenFields,

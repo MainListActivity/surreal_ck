@@ -1,14 +1,21 @@
 <script lang="ts">
-  import { ChevronRight, ChevronLeft, Grid3x3, Coins } from "@lucide/svelte";
+  import { tick } from "svelte";
+  import { ChevronRight, ChevronLeft, Grid3x3, Coins, Pencil, Check, X } from "@lucide/svelte";
   import { dashboardStore } from "../dashboard/lib/dashboard-store.svelte";
   import { editorStore } from "../../lib/editor-store.svelte";
+  import { canWriteSharedStructure as canWriteSharedStructureFn } from "../../lib/permissions.svelte";
   import { editorUi } from "./lib/editor-ui.svelte";
+  import type { SheetMeta } from "../../lib/editor-store.svelte";
 
-  // 新建 / 重命名 sheet 属结构操作（原走已废弃后端 RPC），直连 DDL 留后续 issue；
-  // 仪表盘页已是直连数据行（dashboard_page），列表与进入在此，管理在屏幕工具栏。
   let { onswitchsheet }: { onswitchsheet?: (sheetId: string) => void } = $props();
 
+  const canWriteSharedStructure = $derived(canWriteSharedStructureFn());
+
   let collapsed = $state(false);
+  let renamingSheetId = $state<string | null>(null);
+  let renameDraft = $state("");
+  let committingRename = $state(false);
+  let renameInputEl = $state<HTMLInputElement | null>(null);
 
   async function openSheet(sheetId: string) {
     editorUi.pageKind = "sheet";
@@ -27,6 +34,46 @@
     editorUi.dashboardPageId = pageId;
     if (dashboardStore.activePageId !== pageId) {
       await dashboardStore.selectPage(pageId);
+    }
+  }
+
+  async function startRenameSheet(event: MouseEvent, sheet: SheetMeta, label: string) {
+    event.stopPropagation();
+    if (!canWriteSharedStructure) return;
+    renamingSheetId = sheet.id;
+    renameDraft = label;
+    await tick();
+    renameInputEl?.focus();
+    renameInputEl?.select();
+  }
+
+  function cancelRenameSheet() {
+    renamingSheetId = null;
+    renameDraft = "";
+  }
+
+  async function commitRenameSheet() {
+    if (!renamingSheetId || committingRename) return;
+    const id = renamingSheetId;
+    const next = renameDraft.trim();
+    const current = editorStore.sheets.find((sheet) => sheet.id === id);
+    if (current && next === current.label) {
+      cancelRenameSheet();
+      return;
+    }
+    committingRename = true;
+    const ok = await editorStore.renameSheet(id, next);
+    committingRename = false;
+    if (ok) cancelRenameSheet();
+  }
+
+  function handleRenameKeydown(event: KeyboardEvent) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void commitRenameSheet();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      cancelRenameSheet();
     }
   }
 
@@ -66,23 +113,75 @@
         {/if}
         {#each editorStore.sheets as sheet, index (sheet.id)}
           {@const label = sheet.label || `智能表${index + 1}`}
-          <div
-            class="nav-item"
-            class:active={editorUi.pageKind === "sheet" && editorStore.activeSheetId === sheet.id}
-            role="button"
-            tabindex="0"
-            onclick={() => void openSheet(sheet.id)}
-            onkeydown={(event) => {
-              if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault();
-                void openSheet(sheet.id);
-              }
-            }}
-            title={label}
-          >
-            <Grid3x3 size={15} />
-            <span>{label}</span>
-          </div>
+          {#if renamingSheetId === sheet.id}
+            <div
+              class="nav-item editing"
+              class:active={editorUi.pageKind === "sheet" && editorStore.activeSheetId === sheet.id}
+            >
+              <Grid3x3 size={15} />
+              <input
+                bind:this={renameInputEl}
+                bind:value={renameDraft}
+                disabled={committingRename}
+                aria-label="智能表名称"
+                onblur={() => void commitRenameSheet()}
+                onkeydown={handleRenameKeydown}
+              />
+              <button
+                type="button"
+                class="item-icon"
+                title="保存名称"
+                aria-label="保存名称"
+                disabled={committingRename}
+                onmousedown={(event) => event.preventDefault()}
+                onclick={() => void commitRenameSheet()}
+              >
+                <Check size={13} />
+              </button>
+              <button
+                type="button"
+                class="item-icon"
+                title="取消重命名"
+                aria-label="取消重命名"
+                disabled={committingRename}
+                onmousedown={(event) => event.preventDefault()}
+                onclick={cancelRenameSheet}
+              >
+                <X size={13} />
+              </button>
+            </div>
+          {:else}
+            <div
+              class="nav-item"
+              class:active={editorUi.pageKind === "sheet" && editorStore.activeSheetId === sheet.id}
+              role="button"
+              tabindex="0"
+              onclick={() => void openSheet(sheet.id)}
+              ondblclick={(event) => void startRenameSheet(event, sheet, label)}
+              onkeydown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  void openSheet(sheet.id);
+                }
+              }}
+              title={canWriteSharedStructure ? `${label}（双击重命名）` : label}
+            >
+              <Grid3x3 size={15} />
+              <span>{label}</span>
+              {#if canWriteSharedStructure}
+                <button
+                  type="button"
+                  class="item-icon rename-trigger"
+                  title="重命名智能表"
+                  aria-label="重命名智能表"
+                  onmousedown={(event) => event.preventDefault()}
+                  onclick={(event) => void startRenameSheet(event, sheet, label)}
+                >
+                  <Pencil size={13} />
+                </button>
+              {/if}
+            </div>
+          {/if}
         {/each}
       </div>
     </div>
@@ -257,6 +356,55 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     flex: 1;
+  }
+
+  .nav-item.editing {
+    cursor: default;
+  }
+
+  .nav-item input {
+    min-width: 0;
+    height: 24px;
+    flex: 1;
+    border: 1px solid var(--primary);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text-1);
+    font-size: 13px;
+    padding: 0 6px;
+    outline: 0;
+  }
+
+  .item-icon {
+    display: inline-flex;
+    width: 24px;
+    height: 24px;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+  }
+
+  .item-icon:hover:not(:disabled) {
+    background: rgba(22, 100, 255, .08);
+  }
+
+  .item-icon:disabled {
+    cursor: default;
+    opacity: .55;
+  }
+
+  .rename-trigger {
+    opacity: 0;
+  }
+
+  .nav-item:hover .rename-trigger,
+  .nav-item:focus-within .rename-trigger {
+    opacity: 1;
   }
 
   .empty-hint {
