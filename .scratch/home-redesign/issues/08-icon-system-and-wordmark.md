@@ -25,13 +25,13 @@
 
 ## Acceptance criteria
 
-- [ ] `Logo.svelte` 渲染 `wordmark.svg` 图片而非 CSS 拼图，light/dark 主题下切换正确的变体
-- [ ] `web/src/lib/icons.ts` 和 `web/src/components/Icon.svelte` 已删除
-- [ ] 全局无 `<Icon name="..." />` 残留
-- [ ] 所有原 `Icon` 使用处已替换为对应 lucide 组件，视觉输出一致
-- [ ] shadcn-svelte `ui/` 组件不受影响
-- [ ] `svelte-check` 和 `tsc` 无类型错误
-- [ ] 本地 dev server 启动后各页面 icon 渲染正常，无缺图
+- [x] `Logo.svelte` 渲染 `wordmark.svg` 图片而非 CSS 拼图，light/dark 主题下切换正确的变体
+- [x] `web/src/lib/icons.ts` 和 `web/src/components/Icon.svelte` 已删除
+- [x] 全局无 `<Icon name="..." />` 残留
+- [x] 所有原 `Icon` 使用处已替换为对应 lucide 组件，视觉输出一致
+- [x] shadcn-svelte `ui/` 组件不受影响
+- [x] `svelte-check` 和 `tsc` 无类型错误
+- [x] 本地 dev server 启动后各页面 icon 渲染正常，无缺图
 
 ## Blocked by
 
