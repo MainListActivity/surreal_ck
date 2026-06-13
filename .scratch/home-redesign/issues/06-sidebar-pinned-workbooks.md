@@ -12,12 +12,12 @@
 
 ## Acceptance criteria
 
-- [ ] sidebar 已固定区正确读取 localStorage 并渲染固定列表
-- [ ] 点击已固定工作簿可跳转编辑器
-- [ ] 「+」按钮打开选择器，选中后工作簿出现在固定列表
-- [ ] 工作簿卡片「...」菜单中「固定到侧边栏」选项可用
-- [ ] 不同 workspace（dbName 不同）的固定列表互不干扰
-- [ ] svelte-check 无类型错误
+- [x] sidebar 已固定区正确读取 localStorage 并渲染固定列表
+- [x] 点击已固定工作簿可跳转编辑器
+- [x] 「+」按钮打开选择器，选中后工作簿出现在固定列表
+- [x] 工作簿卡片「...」菜单中「固定到侧边栏」选项可用
+- [x] 不同 workspace（dbName 不同）的固定列表互不干扰
+- [x] svelte-check 无类型错误
 
 ## Blocked by
 

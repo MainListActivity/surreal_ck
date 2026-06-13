@@ -103,3 +103,80 @@ describe("home greeting presentation — 首页问候与连接状态", () => {
     });
   });
 });
+
+// --- pinned workbooks ---
+
+type FakeStorage = {
+  store: Map<string, string>;
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+};
+
+function makeFakeStorage(): FakeStorage {
+  const store = new Map<string, string>();
+  return {
+    store,
+    getItem: (key) => store.get(key) ?? null,
+    setItem: (key, value) => store.set(key, value),
+  };
+}
+
+describe("getPinnedStorageKey — key 按 workspace 隔离", () => {
+  test("返回带 dbName 后缀的固定 key", () => {
+    expect(getPinnedStorageKey("ws_abc")).toBe("surreal_ck.pinned_workbooks.ws_abc");
+    expect(getPinnedStorageKey("ws_xyz")).toBe("surreal_ck.pinned_workbooks.ws_xyz");
+  });
+});
+
+describe("readPinnedWorkbooks — 读 localStorage", () => {
+  test("未写入时返回空数组", () => {
+    const storage = makeFakeStorage();
+    expect(readPinnedWorkbooks(storage, "ws_a")).toEqual([]);
+  });
+
+  test("能读出已写入的 id 列表", () => {
+    const storage = makeFakeStorage();
+    storage.store.set("surreal_ck.pinned_workbooks.ws_a", JSON.stringify(["workbook:1", "workbook:2"]));
+    expect(readPinnedWorkbooks(storage, "ws_a")).toEqual(["workbook:1", "workbook:2"]);
+  });
+
+  test("JSON 损坏时回退空数组", () => {
+    const storage = makeFakeStorage();
+    storage.store.set("surreal_ck.pinned_workbooks.ws_a", "not-json{{{");
+    expect(readPinnedWorkbooks(storage, "ws_a")).toEqual([]);
+  });
+});
+
+describe("writePinnedWorkbooks — 写 localStorage", () => {
+  test("把 id 数组序列化写入正确 key", () => {
+    const storage = makeFakeStorage();
+    writePinnedWorkbooks(storage, "ws_a", ["workbook:1", "workbook:2"]);
+    expect(storage.store.get("surreal_ck.pinned_workbooks.ws_a")).toBe(
+      JSON.stringify(["workbook:1", "workbook:2"]),
+    );
+  });
+});
+
+describe("pinWorkbook — 幂等固定工作簿", () => {
+  test("未固定时追加 id 并返回新列表", () => {
+    const storage = makeFakeStorage();
+    const result = pinWorkbook(storage, "ws_a", "workbook:1");
+    expect(result).toEqual(["workbook:1"]);
+    expect(readPinnedWorkbooks(storage, "ws_a")).toEqual(["workbook:1"]);
+  });
+
+  test("重复固定同一 id 不重复追加（幂等）", () => {
+    const storage = makeFakeStorage();
+    pinWorkbook(storage, "ws_a", "workbook:1");
+    const result = pinWorkbook(storage, "ws_a", "workbook:1");
+    expect(result).toEqual(["workbook:1"]);
+  });
+
+  test("不同 workspace 的固定列表互不干扰", () => {
+    const storage = makeFakeStorage();
+    pinWorkbook(storage, "ws_a", "workbook:1");
+    pinWorkbook(storage, "ws_b", "workbook:2");
+    expect(readPinnedWorkbooks(storage, "ws_a")).toEqual(["workbook:1"]);
+    expect(readPinnedWorkbooks(storage, "ws_b")).toEqual(["workbook:2"]);
+  });
+});

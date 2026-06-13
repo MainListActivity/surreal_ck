@@ -13,6 +13,9 @@
   } from "../lib/permissions.svelte";
   import type { WorkspacePage } from "../lib/route";
   import { Tag, Settings, Lock, Trash2 } from "@lucide/svelte";
+  import { getCurrentWorkspace } from "../lib/workspace-store.svelte";
+  import { pinWorkbook, readPinnedWorkbooks } from "../lib/workbook-home";
+  import type { WorkbookRow } from "../lib/workbooks";
 
   // workspace 首页 shell：左侧 SideNav + 右侧按 page 切换内容。
   // 已迁功能（首页 workbook 列表）直接可用；未迁页面（模板/仪表盘/工作区设置/个人设置/
@@ -35,6 +38,28 @@
   const canOpenAdminConsole = $derived(isWorkspaceAdminFn());
   let query = $state("");
   let wsPanelOpen = $state(false);
+
+  const currentWorkspace = $derived(getCurrentWorkspace());
+  const dbName = $derived(currentWorkspace?.dbName ?? "");
+
+  let pinnedIds = $state<string[]>([]);
+
+  $effect(() => {
+    if (dbName) {
+      pinnedIds = readPinnedWorkbooks(localStorage, dbName);
+    }
+  });
+
+  const pinnedWorkbooks = $derived<WorkbookRow[]>(
+    pinnedIds
+      .map((id) => workbooksStore.workbooks.find((wb) => wb.id === id))
+      .filter((wb): wb is WorkbookRow => wb !== undefined),
+  );
+
+  function handlePinWorkbook(id: string) {
+    if (!dbName) return;
+    pinnedIds = pinWorkbook(localStorage, dbName, id);
+  }
 
   $effect(() => {
     if (page === "dashboard") {
@@ -62,9 +87,13 @@
     {page}
     {query}
     bind:wsPanelOpen
+    {pinnedWorkbooks}
+    allWorkbooks={workbooksStore.workbooks}
     onnavigate={(target) => onnavigate?.(target)}
     onnewdoc={() => void createBlankAndOpen()}
     onsearchchange={(q) => (query = q)}
+    onpinworkbook={handlePinWorkbook}
+    onopenworkbook={(id) => onopenworkbook?.(id)}
   />
 
   <div class="workspace-content">

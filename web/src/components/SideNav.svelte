@@ -2,13 +2,14 @@
   import Avatar from "./Avatar.svelte";
   import Logo from "./Logo.svelte";
   import WorkspaceSwitcherPanel from "./WorkspaceSwitcherPanel.svelte";
-  import { Plus, House, Coins, Folder, Tag, Settings, Hash, Trash2, Search, Bell } from "@lucide/svelte";
+  import { Plus, House, Coins, Folder, Tag, Settings, Hash, Trash2, Search, Bell, BookOpen, Pin } from "@lucide/svelte";
   import { getCurrentUser, getCurrentWorkspace } from "../lib/workspace-store.svelte";
   import {
     canWriteSharedStructure as canWriteSharedStructureFn,
     isWorkspaceAdmin as isWorkspaceAdminFn,
   } from "../lib/permissions.svelte";
   import type { WorkspacePage } from "../lib/route";
+  import type { WorkbookRow } from "../lib/workbooks";
 
   // HR-01/03 首页骨架侧栏：保留主导航 / 工具导航 / 新建文档入口，顶部搜索已接入；
   // workspace 切换从底部 inline panel 完成，避免再挂全局 dropdown。
@@ -19,16 +20,24 @@
     page,
     query = "",
     wsPanelOpen = $bindable(false),
+    pinnedWorkbooks = [],
+    allWorkbooks = [],
     onnavigate,
     onnewdoc,
     onsearchchange,
+    onpinworkbook,
+    onopenworkbook,
   }: {
     page: WorkspacePage;
     query?: string;
     wsPanelOpen?: boolean;
+    pinnedWorkbooks?: WorkbookRow[];
+    allWorkbooks?: WorkbookRow[];
     onnavigate?: (page: WorkspacePage) => void;
     onnewdoc?: () => void;
     onsearchchange?: (q: string) => void;
+    onpinworkbook?: (id: string) => void;
+    onopenworkbook?: (id: string) => void;
   } = $props();
 
   const canWriteSharedStructure = $derived(canWriteSharedStructureFn());
@@ -37,6 +46,11 @@
   const workspace = $derived(getCurrentWorkspace());
   const userName = $derived(user?.name || user?.email || "我");
   const workspaceName = $derived(workspace?.name || workspace?.slug || workspace?.dbName || "当前工作区");
+
+  let pickerOpen = $state(false);
+
+  const pinnedIds = $derived(new Set(pinnedWorkbooks.map((wb) => wb.id)));
+  const unpinnedWorkbooks = $derived(allWorkbooks.filter((wb) => !pinnedIds.has(wb.id)));
 
   function go(target: WorkspacePage) {
     onnavigate?.(target);
@@ -49,6 +63,11 @@
 
   function toggleWorkspacePanel() {
     wsPanelOpen = !wsPanelOpen;
+  }
+
+  function handlePickerSelect(id: string) {
+    onpinworkbook?.(id);
+    pickerOpen = false;
   }
 </script>
 
@@ -85,6 +104,45 @@
         <Tag size={16} />模板库
       </button>
     </nav>
+
+    <div class="pinned-section">
+      <div class="pinned-header">
+        <span class="pinned-title">已固定</span>
+        <button
+          class="pin-add-btn"
+          title="固定工作簿"
+          aria-label="固定工作簿"
+          onclick={() => (pickerOpen = !pickerOpen)}
+        >
+          <Plus size={13} />
+        </button>
+      </div>
+
+      {#if pickerOpen && unpinnedWorkbooks.length > 0}
+        <div class="pin-picker" role="listbox" aria-label="选择要固定的工作簿">
+          {#each unpinnedWorkbooks as wb (wb.id)}
+            <button
+              class="pin-picker-item"
+              role="option"
+              aria-selected="false"
+              onclick={() => handlePickerSelect(wb.id)}
+            >
+              <BookOpen size={13} />
+              <span>{wb.name}</span>
+            </button>
+          {/each}
+        </div>
+      {:else if pickerOpen}
+        <div class="pin-picker-empty">全部已固定</div>
+      {/if}
+
+      {#each pinnedWorkbooks as wb (wb.id)}
+        <button class="pinned-item" onclick={() => onopenworkbook?.(wb.id)} title={wb.name}>
+          <Pin size={13} />
+          <span class="pinned-name">{wb.name}</span>
+        </button>
+      {/each}
+    </div>
 
     <div class="tool-nav">
       <button class:active={page === "admin"} onclick={() => go("admin")}>
@@ -331,5 +389,113 @@
 
   .notify-btn {
     flex-shrink: 0;
+  }
+
+  .pinned-section {
+    display: flex;
+    flex-direction: column;
+    padding: 8px 0 4px;
+    border-top: 1px solid var(--border);
+    margin-top: 4px;
+  }
+
+  .pinned-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 12px 4px;
+  }
+
+  .pinned-title {
+    color: var(--text-3);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+  }
+
+  .pin-add-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--text-3);
+    cursor: pointer;
+  }
+
+  .pin-add-btn:hover {
+    background: var(--bg);
+    color: var(--text-1);
+  }
+
+  .pinned-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: calc(100% - 24px);
+    margin: 0 12px;
+    padding: 5px 8px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-2);
+    font-size: 12.5px;
+    text-align: left;
+    cursor: pointer;
+    overflow: hidden;
+  }
+
+  .pinned-item:hover {
+    background: var(--bg);
+  }
+
+  .pinned-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .pin-picker {
+    display: flex;
+    flex-direction: column;
+    margin: 0 12px 4px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--surface);
+    overflow: hidden;
+  }
+
+  .pin-picker-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    border: 0;
+    border-bottom: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-2);
+    font-size: 12.5px;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .pin-picker-item:last-child {
+    border-bottom: 0;
+  }
+
+  .pin-picker-item:hover {
+    background: var(--bg);
+  }
+
+  .pin-picker-empty {
+    padding: 8px 10px;
+    color: var(--text-3);
+    font-size: 12px;
+    margin: 0 12px 4px;
   }
 </style>

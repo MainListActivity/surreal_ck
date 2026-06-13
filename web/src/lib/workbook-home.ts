@@ -1,6 +1,11 @@
 import { filterWorkbooksByQuery, type WorkbookRow } from "./workbooks";
 import type { ConnectionState } from "./workspace-store";
 
+export type PinnedWorkbooksStorage = {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): unknown;
+};
+
 export type WorkbookHomeTab = "all" | "mine" | "shared";
 export type WorkbookViewMode = "grid" | "list";
 export type WorkbookPreviewKind = "table" | "graph" | "blank";
@@ -93,4 +98,34 @@ export function homeGreetingForDate(now: Date = new Date()): string {
 export function connectionDotPresentation(state: ConnectionState): ConnectionDotPresentation {
   if (state === "open") return { label: "已连接", tone: "connected" };
   return { label: "已断开", tone: "disconnected" };
+}
+
+export const PINNED_WORKBOOKS_STORAGE_KEY_PREFIX = "surreal_ck.pinned_workbooks.";
+
+export function getPinnedStorageKey(dbName: string): string {
+  return `${PINNED_WORKBOOKS_STORAGE_KEY_PREFIX}${dbName}`;
+}
+
+export function readPinnedWorkbooks(storage: PinnedWorkbooksStorage | null | undefined, dbName: string): string[] {
+  const raw = storage?.getItem(getPinnedStorageKey(dbName));
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed as string[];
+    return [];
+  } catch {
+    return [];
+  }
+}
+
+export function writePinnedWorkbooks(storage: PinnedWorkbooksStorage | null | undefined, dbName: string, ids: string[]): void {
+  storage?.setItem(getPinnedStorageKey(dbName), JSON.stringify(ids));
+}
+
+export function pinWorkbook(storage: PinnedWorkbooksStorage | null | undefined, dbName: string, id: string): string[] {
+  const current = readPinnedWorkbooks(storage, dbName);
+  if (current.includes(id)) return current;
+  const updated = [...current, id];
+  writePinnedWorkbooks(storage, dbName, updated);
+  return updated;
 }
