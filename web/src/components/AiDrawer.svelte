@@ -272,6 +272,10 @@
       </button>
     </div>
 
+    {#if drawerState.sendError}
+      <p class="send-error header-error" role="alert">{drawerState.sendError}</p>
+    {/if}
+
     {#if drawerState.progressHint}
       <div class="progress-hint" aria-live="polite">{drawerState.progressHint}</div>
     {/if}
@@ -372,9 +376,6 @@
     </div>
 
     <form class="composer" onsubmit={(event) => { event.preventDefault(); void sendPrompt(); }}>
-      {#if drawerState.sendError}
-        <p class="send-error">{drawerState.sendError}</p>
-      {/if}
       <textarea
         bind:value={prompt}
         rows="3"
@@ -408,7 +409,7 @@
     height: 100%;
     flex: 0 0 auto;
     flex-direction: column;
-    border-left: 1px solid var(--border);
+    border-left: 2px solid var(--border-dark);
     background: var(--surface);
   }
 
@@ -418,6 +419,7 @@
     gap: 12px;
     padding: 16px 18px 14px;
     border-bottom: 1px solid var(--border);
+    background: var(--bg);
   }
 
   .header-copy {
@@ -429,6 +431,7 @@
   .header-copy strong {
     color: var(--text-1);
     font-size: 15px;
+    font-weight: 700;
     letter-spacing: 0;
   }
 
@@ -460,10 +463,10 @@
     justify-content: center;
     gap: 5px;
     padding: 0 8px;
-    border: 1px solid var(--border);
+    border: 1px solid var(--primary-light);
     border-radius: 7px;
-    background: var(--soft);
-    color: var(--text-2);
+    background: var(--primary-light);
+    color: var(--primary);
     cursor: pointer;
     font-size: 12px;
     font-weight: 550;
@@ -676,6 +679,13 @@
     margin: 0;
     color: var(--error);
     font-size: 12px;
+  }
+
+  .header-error {
+    padding: 8px 18px;
+    border-bottom: 1px solid var(--border);
+    background: var(--error-bg);
+    flex-shrink: 0;
   }
 
   textarea {

@@ -141,20 +141,6 @@
       </div>
     </section>
 
-    <section class="ai-banner" aria-label="AI 能力">
-      <div class="ai-banner-copy">
-        <span class="ai-banner-icon" aria-hidden="true"><Sparkles size={18} /></span>
-        <div>
-          <strong>AI 能生成 SurrealQL</strong>
-          <p>直接操作数据表结构和数据，把自然语言转成可执行的工作区操作。</p>
-        </div>
-      </div>
-      <button type="button" class="ai-banner-action" onclick={() => onopenaichat?.()}>
-        <MessageCircle size={16} />
-        <span>开始对话</span>
-      </button>
-    </section>
-
     {#if !query}
       <div class="quick-actions">
         <button type="button" onclick={handleCreateBlank} disabled={creating || !canWriteSharedStructure}>
@@ -177,6 +163,17 @@
         <div class="inline-note">{importStatus}</div>
       {/if}
     {/if}
+
+    <section class="ai-banner" aria-label="AI 能力">
+      <div class="ai-banner-copy">
+        <span class="ai-banner-icon" aria-hidden="true"><Sparkles size={14} /></span>
+        <span>AI 能生成 SurrealQL，直接操作数据表结构和数据</span>
+      </div>
+      <button type="button" class="ai-banner-action" onclick={() => onopenaichat?.()}>
+        <MessageCircle size={14} />
+        <span>开始对话</span>
+      </button>
+    </section>
 
     <section class="workbook-section" aria-label="工作簿">
       <div class="toolbar">
@@ -277,8 +274,10 @@
                     </svg>
                   {:else}
                     <div class="blank-preview">
-                      <span></span>
-                      <span></span>
+                      <Sheet size={24} color="var(--text-3)" />
+                      <span style="width:65%"></span>
+                      <span style="width:80%"></span>
+                      <span style="width:45%"></span>
                     </div>
                   {/if}
                 </div>
@@ -372,7 +371,7 @@
     background: transparent;
     color: var(--text-1);
     font: inherit;
-    font-size: 22px;
+    font-size: 24px;
     font-weight: 720;
     line-height: 1.25;
     text-align: left;
@@ -406,68 +405,60 @@
 
   .ai-banner {
     display: flex;
-    min-height: 96px;
+    height: 44px;
     align-items: center;
     justify-content: space-between;
-    gap: 18px;
-    margin-bottom: 12px;
-    padding: 18px 20px;
+    gap: 12px;
+    margin-bottom: 20px;
+    padding: 0 14px;
+    border: 1px solid var(--primary-light);
     border-radius: 8px;
-    background: linear-gradient(135deg, #155eef 0%, #3b82f6 54%, #0f9f8f 100%);
-    color: #fff;
-    box-shadow: 0 12px 28px rgba(22, 100, 255, .18);
+    background: var(--primary-light);
   }
 
   .ai-banner-copy {
     display: flex;
     min-width: 0;
     align-items: center;
-    gap: 14px;
+    gap: 8px;
+    color: var(--primary);
+    font-size: 13px;
+    overflow: hidden;
+  }
+
+  .ai-banner-copy span:last-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .ai-banner-icon {
     display: grid;
-    width: 40px;
-    height: 40px;
     flex: 0 0 auto;
     place-items: center;
-    border-radius: 8px;
-    background: rgba(255, 255, 255, .18);
-    color: #fff;
-  }
-
-  .ai-banner strong {
-    display: block;
-    color: #fff;
-    font-size: 16px;
-  }
-
-  .ai-banner p {
-    margin: 5px 0 0;
-    color: rgba(255, 255, 255, .84);
-    font-size: 12px;
-    line-height: 1.5;
+    color: var(--primary);
   }
 
   .ai-banner-action {
     display: inline-flex;
-    height: 34px;
+    height: 28px;
     flex: 0 0 auto;
     align-items: center;
     justify-content: center;
-    gap: 7px;
-    padding: 0 13px;
-    border: 0;
-    border-radius: 7px;
-    background: #fff;
-    color: #155eef;
+    gap: 6px;
+    padding: 0 10px;
+    border: 1px solid var(--primary);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--primary);
     cursor: pointer;
-    font-size: 13px;
-    font-weight: 650;
+    font-size: 12px;
+    font-weight: 600;
   }
 
   .ai-banner-action:hover {
-    background: #edf4ff;
+    background: var(--primary);
+    color: #fff;
   }
 
   .quick-actions {
@@ -769,20 +760,19 @@
   }
 
   .blank-preview {
-    display: grid;
-    width: 72%;
-    gap: 10px;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 7px;
+    padding: 0 18px;
   }
 
   .blank-preview span {
     display: block;
-    height: 12px;
+    height: 10px;
     border-radius: 999px;
     background: #dfe3ea;
-  }
-
-  .blank-preview span:last-child {
-    width: 64%;
   }
 
   .card-info {
@@ -839,7 +829,7 @@
   }
 
   .avatar.green {
-    background: #059669;
+    background: #0891b2;
   }
 
   .avatar.amber {
