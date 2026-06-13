@@ -402,15 +402,18 @@
 
 <style>
   .ai-drawer {
+    position: absolute;
+    top: 0;
+    right: 0;
     z-index: 30;
     display: flex;
     width: min(420px, 36vw);
     min-width: 360px;
     height: 100%;
-    flex: 0 0 auto;
     flex-direction: column;
     border-left: 2px solid var(--border-dark);
     background: var(--surface);
+    box-shadow: -4px 0 24px rgba(0, 0, 0, .08);
   }
 
   header {
