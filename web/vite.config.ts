@@ -34,6 +34,7 @@ export default defineConfig({
   },
   optimizeDeps: {
     entries: ["index.html"],
+    exclude: ["@revolist/svelte-datagrid", "@revolist/revogrid"],
   },
   build: {
     target: "esnext",
