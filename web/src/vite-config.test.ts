@@ -24,6 +24,11 @@ describe("D2-01 vite.config SPA 骨架", () => {
     expect(proxy!["/api"].changeOrigin).toBe(true);
   });
 
+  test("dev server 也通过 /api 代理 Mastra chat stream 的 WebSocket upgrade", () => {
+    const proxy = config.server?.proxy as Record<string, ProxyEntry> | undefined;
+    expect(proxy!["/api"].ws).toBe(true);
+  });
+
   test("dev server 把 /ws 代理到本地后端 8080 并开启 ws", () => {
     const proxy = config.server?.proxy as Record<string, ProxyEntry> | undefined;
     expect(proxy!["/ws"]).toBeDefined();
