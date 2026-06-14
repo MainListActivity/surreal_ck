@@ -60,6 +60,11 @@ import { SurrealWorkflowsStorage, type SurrealSessionResolver } from "./surreal-
 
 export type { SurrealSessionResolver };
 
+/** 内部便捷函数：从 resolver 中只取 db，供 Memory/Observability storage 使用（无需 subject）。 */
+function db(getSession: SurrealSessionResolver): Surreal {
+  return getSession().db;
+}
+
 export type ObservabilityRetention = { retentionDays: number };
 
 function defaultRetention(): ObservabilityRetention {
@@ -205,7 +210,7 @@ export class SurrealMemoryStorage extends MemoryStorage {
   }
 
   async dangerouslyClearAll(): Promise<void> {
-    await this.getSession().query(`
+    await db(this.getSession).query(`
       DELETE memory_message;
       DELETE memory_thread;
       DELETE memory_resource;
@@ -228,7 +233,7 @@ export class SurrealMemoryStorage extends MemoryStorage {
 
   async saveThread({ thread }: { thread: StorageThreadType }): Promise<StorageThreadType> {
     try {
-      await this.getSession().query(
+      await db(this.getSession).query(
         `UPSERT $id CONTENT {
           thread_id: $threadId,
           resource_id: $resourceId,
@@ -275,7 +280,7 @@ export class SurrealMemoryStorage extends MemoryStorage {
   }
 
   async deleteThread({ threadId }: { threadId: string }): Promise<void> {
-    await this.getSession().query(
+    await db(this.getSession).query(
       `DELETE memory_message WHERE thread_id = $threadId;
        DELETE memory_thread WHERE thread_id = $threadId;`,
       { threadId },
@@ -358,7 +363,7 @@ export class SurrealMemoryStorage extends MemoryStorage {
   async saveMessages(args: { messages: MastraDBMessage[] }): Promise<{ messages: MastraDBMessage[] }> {
     for (const message of args.messages) {
       try {
-        await this.getSession().query(
+        await db(this.getSession).query(
           `UPSERT $id CONTENT {
             message_id: $messageId,
             thread_id: $threadId,
@@ -401,7 +406,7 @@ export class SurrealMemoryStorage extends MemoryStorage {
   }
 
   async deleteMessages(messageIds: string[]): Promise<void> {
-    await this.getSession().query(`DELETE memory_message WHERE message_id IN $messageIds`, { messageIds });
+    await db(this.getSession).query(`DELETE memory_message WHERE message_id IN $messageIds`, { messageIds });
   }
 
   async listThreads(args: StorageListThreadsInput): Promise<StorageListThreadsOutput> {
@@ -444,7 +449,7 @@ export class SurrealMemoryStorage extends MemoryStorage {
   }
 
   async saveResource({ resource }: { resource: StorageResourceType }): Promise<StorageResourceType> {
-    await this.getSession().query(
+    await db(this.getSession).query(
       `UPSERT $id CONTENT {
         resource_id: $resourceId,
         working_memory: $workingMemory,
@@ -503,7 +508,7 @@ export class SurrealObservabilityStorage extends ObservabilityStorage {
   }
 
   async dangerouslyClearAll(): Promise<void> {
-    await this.getSession().query(`
+    await db(this.getSession).query(`
       DELETE observability_span;
       DELETE observability_event_raw;
     `);
@@ -537,11 +542,11 @@ export class SurrealObservabilityStorage extends ObservabilityStorage {
   }
 
   async batchDeleteTraces({ traceIds }: BatchDeleteTracesArgs): Promise<void> {
-    await this.getSession().query(`DELETE observability_span WHERE traceId IN $traceIds`, { traceIds });
+    await db(this.getSession).query(`DELETE observability_span WHERE traceId IN $traceIds`, { traceIds });
   }
 
   private async upsertSpan(span: SpanRecord): Promise<void> {
-    await this.getSession().query(`UPSERT $id CONTENT $content`, {
+    await db(this.getSession).query(`UPSERT $id CONTENT $content`, {
       id: rid("observability_span", `${span.traceId}_${span.spanId}`),
       content: {
         ...span,
@@ -663,7 +668,7 @@ export class SurrealObservabilityStorage extends ObservabilityStorage {
   }
 
   private async saveRawEvent(kind: string, payload: unknown): Promise<void> {
-    await this.getSession().query(
+    await db(this.getSession).query(
       `CREATE observability_event_raw CONTENT {
         kind: $kind,
         payload: $payload,

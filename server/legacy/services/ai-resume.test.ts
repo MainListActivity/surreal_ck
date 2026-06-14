@@ -63,7 +63,7 @@ const emptyContext: AiContextSnapshot = {
 
 function buildMastra() {
   return new Mastra({
-    storage: new SurrealMastraStore(),
+    storage: new SurrealMastraStore(() => ({ db: null as never, subject: "user:test" })),
     workflows: { [ROUTER_WORKFLOW_ID]: createRouterWorkflow() },
   });
 }

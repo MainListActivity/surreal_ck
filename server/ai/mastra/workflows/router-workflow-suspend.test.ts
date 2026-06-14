@@ -46,7 +46,7 @@ const fakeSession = {
     return [[]];
   },
 };
-const getSession = () => fakeSession as never;
+const getSession = () => ({ db: fakeSession as never, subject: "user:test" });
 
 import { Mastra } from "@mastra/core";
 import { RequestContext } from "@mastra/core/request-context";

@@ -16,8 +16,6 @@ type Row = {
 /**
  * 一个最小的 Surreal 会话替身，模拟已 SIGNIN 到某个 workspace database 的调用者会话。
  * 只解释本 storage 实际发出的 workflow_run 语句，按 run_id 主键在内存里读写。
- * 它不模拟 PERMISSIONS / $auth —— owner_user 归因由真实数据库 DEFAULT $auth 兜底，
- * 这里只验证 storage 没有自己去写 owner_user，也没有带 workspace 字段。
  */
 function fakeSession(rows: Map<string, Row>, opts: { failWrites?: boolean } = {}) {
   return {
@@ -87,7 +85,7 @@ describe("SurrealWorkflowsStorage（绑定调用者 surrealSession）", () => {
   beforeEach(() => {
     rows = new Map();
     session = fakeSession(rows);
-    storage = new SurrealWorkflowsStorage(() => session as never);
+    storage = new SurrealWorkflowsStorage(() => ({ db: session as never, subject: "user:test" }));
   });
 
   test("persist 后能 load 回同一个暂停态，状态来自 snapshot", async () => {
@@ -98,7 +96,7 @@ describe("SurrealWorkflowsStorage（绑定调用者 surrealSession）", () => {
     expect(rows.get("run-1")?.status).toBe("suspended");
   });
 
-  test("storage 不自己写 owner_user、不带 workspace 字段（归因交给 DB 的 DEFAULT $auth）", async () => {
+  test("storage 写入 owner_user 为调用者 subject 的 StringRecordId，不带 workspace 字段", async () => {
     const captured: Record<string, unknown>[] = [];
     const spySession = {
       query: async (_sql: string, params?: Record<string, unknown>) => {
@@ -106,12 +104,13 @@ describe("SurrealWorkflowsStorage（绑定调用者 surrealSession）", () => {
         return [[]];
       },
     };
-    const spyStorage = new SurrealWorkflowsStorage(() => spySession as never);
+    const spyStorage = new SurrealWorkflowsStorage(() => ({ db: spySession as never, subject: "user:alice" }));
     await spyStorage.persistWorkflowSnapshot({ workflowName: "router", runId: "run-x", snapshot: snapshot("run-x") });
 
     expect(captured.length).toBeGreaterThan(0);
     for (const content of captured) {
-      expect(content).not.toHaveProperty("owner_user");
+      expect(content).toHaveProperty("owner_user");
+      expect(String(content.owner_user)).toContain("user");
       expect(content).not.toHaveProperty("workspace");
     }
   });
@@ -120,7 +119,7 @@ describe("SurrealWorkflowsStorage（绑定调用者 surrealSession）", () => {
     let calls = 0;
     const storageWithCounter = new SurrealWorkflowsStorage(() => {
       calls += 1;
-      return session as never;
+      return { db: session as never, subject: "user:test" };
     });
     await storageWithCounter.persistWorkflowSnapshot({ workflowName: "router", runId: "run-2", snapshot: snapshot("run-2") });
     await storageWithCounter.loadWorkflowSnapshot({ workflowName: "router", runId: "run-2" });
@@ -175,7 +174,7 @@ describe("SurrealWorkflowsStorage（绑定调用者 surrealSession）", () => {
   });
 
   test("写入失败被吞掉，不抛到 workflow 引擎层（降级到内存态）", async () => {
-    const failing = new SurrealWorkflowsStorage(() => fakeSession(rows, { failWrites: true }) as never);
+    const failing = new SurrealWorkflowsStorage(() => ({ db: fakeSession(rows, { failWrites: true }) as never, subject: "user:test" }));
     await expect(
       failing.persistWorkflowSnapshot({ workflowName: "router", runId: "degraded", snapshot: snapshot("degraded") }),
     ).resolves.toBeUndefined();

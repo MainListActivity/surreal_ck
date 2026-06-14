@@ -20,6 +20,8 @@ export type AiChatService = {
     message: string;
     userContext?: AiContextSnapshot;
     surrealSession: Surreal;
+    /** 调用者 user record id（"user:xxx"），用于写入 workflow_run.owner_user。 */
+    ownerSubject: string;
     /** composer 显式提交模式；resource-search 确定性进入资源检索子 agent。 */
     composerMode?: "chat" | "resource-search";
   }): Promise<void>;
@@ -127,7 +129,7 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
       const runId = crypto.randomUUID();
       const { streamToken } = deps.registry.register({ runId, ownerSubject: user.subject });
 
-      await deps.service.startChat({ runId, message, userContext, surrealSession: session, composerMode });
+      await deps.service.startChat({ runId, message, userContext, surrealSession: session, ownerSubject: user.subject, composerMode });
 
       return c.json({ runId, streamUrl: `/api/chat/stream?runId=${runId}`, streamToken });
     });

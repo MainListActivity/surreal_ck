@@ -131,8 +131,8 @@ export type CreateMastraRunnerOptions = {
   buildAgents?: (settings: AiSettings) => AssembleAgents;
   /** 默认：复用 chitchat agent 的 model 作为 RouterLlmCaller。 */
   buildLlmCaller?: (agents: AssembleAgents) => RouterLlmCaller;
-  /** 默认：每 run 一个 Mastra，storage resolver 闭包绑死当前 session。 */
-  buildMastra?: (surrealSession: Surreal) => Mastra;
+  /** 默认：每 run 一个 Mastra，storage resolver 闭包绑死当前 session + subject。 */
+  buildMastra?: (surrealSession: Surreal, subject: string) => Mastra;
   /** 默认：真 runRouterChat。 */
   runRouterChat?: (input: RunRouterChatInput) => Promise<{ runId: string; finalText: string; status: "success" | "suspended" }>;
   /** 默认：真 Mastra resume（按 runId 找 workflow 并 run.resume）。 */
@@ -164,8 +164,8 @@ const defaultBuildAgents: NonNullable<CreateMastraRunnerOptions["buildAgents"]> 
 const defaultBuildLlmCaller: NonNullable<CreateMastraRunnerOptions["buildLlmCaller"]> = (agents) =>
   buildRouterLlmCaller(agents.chitchatAgent);
 
-const defaultBuildMastra: NonNullable<CreateMastraRunnerOptions["buildMastra"]> = (session) =>
-  initMastraForCurrentUser(() => session);
+const defaultBuildMastra: NonNullable<CreateMastraRunnerOptions["buildMastra"]> = (session, subject) =>
+  initMastraForCurrentUser(() => ({ db: session, subject }));
 
 /**
  * 默认 resume 实现：用 storage 校验 runId 是否已 suspended，然后 run.resume({ resumeData, requestContext })。
@@ -245,7 +245,7 @@ export function createMastraRunner(options: CreateMastraRunnerOptions = {}): { r
   return {
     async runner(input) {
       const { executors, llm } = ensureAgents();
-      const mastra = buildMastra(input.surrealSession);
+      const mastra = buildMastra(input.surrealSession, input.ownerSubject);
       return runRouterChatImpl({
         mastra,
         text: input.text,

@@ -6,14 +6,14 @@ import type {
   WorkflowRuns,
 } from "@mastra/core/storage";
 import type { StepResult, WorkflowRunState } from "@mastra/core/workflows";
-import type { Surreal } from "surrealdb";
+import { StringRecordId, type Surreal } from "surrealdb";
 
 /**
- * 解析出当前 workflow 运行所用的 SurrealDB 会话。
- * 真人 Router workflow → 浏览器 admin/participant 会话；虚拟员工 workflow → dispatcher 的 employee 会话。
- * storage 永远不持有 root 连接：snapshot 的归因（owner_user）由 workspace database 的 DEFAULT $auth 兜底。
+ * 解析出当前 workflow 运行所用的 SurrealDB 会话及调用者 user record id。
+ * subject 格式为 "user:xxx"（来自 OIDC token sub claim），insert 时显式写入 owner_user，
+ * 避免依赖 $auth（后端 authenticate 建立的会话 $auth 与浏览器直连会话行为可能不同）。
  */
-export type SurrealSessionResolver = () => Surreal;
+export type SurrealSessionResolver = () => { db: Surreal; subject: string };
 
 /** workflow_run 表里 storage 关心的列（owner_user / created_at 由 DB 维护，不在此手写）。 */
 type WorkflowRunRow = {
@@ -73,7 +73,8 @@ export class SurrealWorkflowsStorage extends WorkflowsStorage {
   }
 
   async dangerouslyClearAll(): Promise<void> {
-    await this.getSession().query("DELETE workflow_run;");
+    const { db } = this.getSession();
+    await db.query("DELETE workflow_run;");
   }
 
   async persistWorkflowSnapshot({
@@ -90,9 +91,10 @@ export class SurrealWorkflowsStorage extends WorkflowsStorage {
     updatedAt?: Date;
   }): Promise<void> {
     try {
+      const { db, subject } = this.getSession();
       // 唯一索引在 run_id 上，按规约用 INSERT ... ON DUPLICATE KEY UPDATE 处理冲突。
-      // owner_user 不在 content 里 —— 由 workflow_run 表的 DEFAULT $auth 归因到当前会话。
-      await this.getSession().query(
+      // owner_user 显式传入调用者 user record，不依赖 DEFAULT $auth（后端 authenticate 会话的 $auth 不可靠）。
+      await db.query(
         `INSERT INTO workflow_run $content
          ON DUPLICATE KEY UPDATE
            workflow_name = $input.workflow_name,
@@ -109,6 +111,7 @@ export class SurrealWorkflowsStorage extends WorkflowsStorage {
             kind: resolveKind(workflowName),
             state: snapshot,
             status: snapshot.status,
+            owner_user: new StringRecordId(subject),
           },
         },
       );
@@ -125,7 +128,8 @@ export class SurrealWorkflowsStorage extends WorkflowsStorage {
     runId: string;
   }): Promise<WorkflowRunState | null> {
     try {
-      const rows = await this.getSession().query<[WorkflowRunRow[]]>(
+      const { db } = this.getSession();
+      const rows = await db.query<[WorkflowRunRow[]]>(
         `SELECT * FROM workflow_run WHERE run_id = $runId AND workflow_name = $workflowName LIMIT 1`,
         { runId, workflowName },
       );
@@ -230,7 +234,8 @@ export class SurrealWorkflowsStorage extends WorkflowsStorage {
       sql += `;
        SELECT count() AS total FROM workflow_run WHERE ${where.join(" AND ")} GROUP ALL;`;
 
-      const rows = await this.getSession().query<[WorkflowRunRow[], { total?: number }[]]>(sql, params);
+      const { db } = this.getSession();
+      const rows = await db.query<[WorkflowRunRow[], { total?: number }[]]>(sql, params);
       const runs = (rows[0] ?? []).map(toWorkflowRun);
       return { runs, total: rows[1]?.[0]?.total ?? runs.length };
     } catch (err) {
@@ -247,8 +252,9 @@ export class SurrealWorkflowsStorage extends WorkflowsStorage {
     workflowName?: string;
   }): Promise<WorkflowRun | null> {
     try {
+      const { db } = this.getSession();
       const clause = workflowName ? "run_id = $runId AND workflow_name = $workflowName" : "run_id = $runId";
-      const rows = await this.getSession().query<[WorkflowRunRow[]]>(
+      const rows = await db.query<[WorkflowRunRow[]]>(
         `SELECT * FROM workflow_run WHERE ${clause} LIMIT 1`,
         { runId, workflowName },
       );
@@ -262,7 +268,8 @@ export class SurrealWorkflowsStorage extends WorkflowsStorage {
 
   async deleteWorkflowRunById({ workflowName, runId }: { workflowName: string; runId: string }): Promise<void> {
     try {
-      await this.getSession().query(
+      const { db } = this.getSession();
+      await db.query(
         `DELETE workflow_run WHERE run_id = $runId AND workflow_name = $workflowName`,
         { runId, workflowName },
       );

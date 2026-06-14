@@ -36,6 +36,8 @@ export type ChatRunner = (input: {
   runId: string;
   streamId: string;
   surrealSession: Surreal;
+  /** 调用者 user record id（"user:xxx"），用于写入 workflow_run.owner_user。 */
+  ownerSubject: string;
   userContext: AiContextSnapshot;
   /** 确定性路由（如 composer 资源检索模式）；缺省走 LLM classifier。 */
   planOverride?: RouterPlan;
@@ -93,7 +95,7 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
   const { runBus, runner, resumer } = options;
 
   return {
-    async startChat({ runId, message, userContext, surrealSession, composerMode }) {
+    async startChat({ runId, message, userContext, surrealSession, ownerSubject, composerMode }) {
       const bridge = bridgeToBus(runBus, runId);
       // composer 的「搜索资源」模式 = 确定性单步 plan，不经 LLM 路由（RR-011/RR-014 契约）。
       const planOverride: RouterPlan | undefined = composerMode === "resource-search"
@@ -107,6 +109,7 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
             runId,
             streamId: runId, // streamId 与 runId 同步，前端无需再额外配对
             surrealSession,
+            ownerSubject,
             userContext: userContext ?? ({} as AiContextSnapshot),
             planOverride,
             pushChunk: bridge.pushChunk,
