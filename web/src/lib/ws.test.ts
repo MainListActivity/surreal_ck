@@ -79,7 +79,11 @@ function fakeClock() {
   };
 }
 
-function setup(overrides: { onMessage?: (m: unknown) => void; onClose?: (code: number) => void } = {}) {
+function setup(overrides: {
+  onMessage?: (m: unknown) => void;
+  onClose?: (code: number) => void;
+  onIdleTimeout?: () => void;
+} = {}) {
   FakeSocket.instances = [];
   const clock = fakeClock();
   const messages: unknown[] = [];
@@ -91,6 +95,7 @@ function setup(overrides: { onMessage?: (m: unknown) => void; onClose?: (code: n
     params: { runId: "r1", streamToken: "tok" },
     onMessage: overrides.onMessage ?? ((m) => messages.push(m)),
     onClose: overrides.onClose ?? ((code) => closes.push(code)),
+    onIdleTimeout: overrides.onIdleTimeout,
     socketFactory: factory,
     timers: clock,
   });
@@ -160,5 +165,22 @@ describe("WS 客户端", () => {
 
     expect(FakeSocket.instances).toHaveLength(1);
     expect(closes).toEqual([]);
+  });
+
+  test("连接只收到服务端 ping 超过等待窗口 → 触发 idle timeout 并关闭 socket", () => {
+    let idleTimeouts = 0;
+    const { clock } = setup({ onIdleTimeout: () => { idleTimeouts += 1; } });
+    const sock = FakeSocket.instances[0];
+    sock.open();
+
+    sock.message('{"kind":"ping","runId":"r1"}\n');
+    clock.advance(44_999);
+    expect(idleTimeouts).toBe(0);
+    expect(sock.closed).toBe(false);
+
+    clock.advance(1);
+    expect(idleTimeouts).toBe(1);
+    expect(sock.closed).toBe(true);
+    expect(sock.closeCode).toBe(4000);
   });
 });

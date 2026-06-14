@@ -6,12 +6,11 @@ import type {
   WorkflowRuns,
 } from "@mastra/core/storage";
 import type { StepResult, WorkflowRunState } from "@mastra/core/workflows";
-import { StringRecordId, type Surreal } from "surrealdb";
+import type { Surreal } from "surrealdb";
 
 /**
- * 解析出当前 workflow 运行所用的 SurrealDB 会话及调用者 user record id。
- * subject 格式为 "user:xxx"（来自 OIDC token sub claim），insert 时显式写入 owner_user，
- * 避免依赖 $auth（后端 authenticate 建立的会话 $auth 与浏览器直连会话行为可能不同）。
+ * 解析出当前 workflow 运行所用的 SurrealDB 会话及调用者 subject。
+ * workflow_run.owner_user 由 workspace schema 的 DEFAULT $auth 归因，storage 不手写 owner_user。
  */
 export type SurrealSessionResolver = () => { db: Surreal; subject: string };
 
@@ -61,7 +60,7 @@ function resolveKind(workflowName: string): string {
 
 /**
  * 把 Mastra WorkflowsStorage 落到当前 workspace database 的 workflow_run 表。
- * 所有读写走注入的调用者会话；写入失败时降级为内存态（不把异常抛回 workflow 引擎，避免阻断对话）。
+ * 所有读写走注入的调用者会话；写入失败必须抛回 workflow 引擎，让 RunBus 能把错误传给前端。
  */
 export class SurrealWorkflowsStorage extends WorkflowsStorage {
   constructor(private readonly getSession: SurrealSessionResolver) {
@@ -91,9 +90,8 @@ export class SurrealWorkflowsStorage extends WorkflowsStorage {
     updatedAt?: Date;
   }): Promise<void> {
     try {
-      const { db, subject } = this.getSession();
+      const { db } = this.getSession();
       // 唯一索引在 run_id 上，按规约用 INSERT ... ON DUPLICATE KEY UPDATE 处理冲突。
-      // owner_user 显式传入调用者 user record，不依赖 DEFAULT $auth（后端 authenticate 会话的 $auth 不可靠）。
       await db.query(
         `INSERT INTO workflow_run $content
          ON DUPLICATE KEY UPDATE
@@ -111,12 +109,20 @@ export class SurrealWorkflowsStorage extends WorkflowsStorage {
             kind: resolveKind(workflowName),
             state: snapshot,
             status: snapshot.status,
-            owner_user: new StringRecordId(subject),
           },
         },
       );
     } catch (err) {
-      console.warn("[mastra] persist workflow snapshot 失败，降级为内存态:", err);
+      const causeMessage = err instanceof Error ? err.message : String(err);
+      console.warn("[mastra] persist workflow snapshot 失败", {
+        workflowName,
+        runId,
+        status: snapshot.status,
+        message: causeMessage,
+      });
+      throw new Error(`persist workflow snapshot failed for workflow=${workflowName} run=${runId}: ${causeMessage}`, {
+        cause: err,
+      });
     }
   }
 

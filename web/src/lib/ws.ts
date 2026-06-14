@@ -29,6 +29,9 @@ export type ConnectWsInput = {
   onMessage: (message: unknown) => void;
   /** 重连次数耗尽后回调，附带最后一次的 close code，让上层决定是否重登 / 提示。 */
   onClose?: (code: number) => void;
+  /** 建连后长时间没有非 ping 业务事件时触发，让上层退出 loading。 */
+  onIdleTimeout?: () => void;
+  idleTimeoutMs?: number;
   socketFactory?: WsSocketFactory;
   timers?: WsTimers;
 };
@@ -38,6 +41,8 @@ export type WsHandle = {
 };
 
 const HEARTBEAT_MS = 25_000;
+const IDLE_TIMEOUT_MS = 45_000;
+const IDLE_TIMEOUT_CLOSE_CODE = 4000;
 const MAX_RECONNECTS = 5;
 /** 指数退避基数；第 n 次重连等待 RECONNECT_BASE_MS * 2^(n-1)。 */
 const RECONNECT_BASE_MS = 1_000;
@@ -79,6 +84,7 @@ export function connectWs(input: ConnectWsInput): WsHandle {
 
   let socket: WsSocket | null = null;
   let heartbeat: number | null = null;
+  let idleTimer: number | null = null;
   let reconnectTimer: number | null = null;
   let reconnects = 0;
   let stopped = false;
@@ -90,12 +96,37 @@ export function connectWs(input: ConnectWsInput): WsHandle {
     }
   }
 
+  function stopIdleTimer(): void {
+    if (idleTimer !== null) {
+      timers.clearTimeout(idleTimer);
+      idleTimer = null;
+    }
+  }
+
+  function isPing(message: unknown): boolean {
+    return typeof message === "object" && message !== null && (message as { kind?: unknown }).kind === "ping";
+  }
+
+  function armIdleTimer(): void {
+    if (!input.onIdleTimeout) return;
+    stopIdleTimer();
+    idleTimer = timers.setTimeout(() => {
+      if (stopped) return;
+      stopped = true;
+      stopHeartbeat();
+      input.onIdleTimeout?.();
+      socket?.close(IDLE_TIMEOUT_CLOSE_CODE);
+    }, input.idleTimeoutMs ?? IDLE_TIMEOUT_MS);
+  }
+
   function deliver(raw: string): void {
     for (const line of raw.split("\n")) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       try {
-        input.onMessage(JSON.parse(trimmed));
+        const message = JSON.parse(trimmed) as unknown;
+        input.onMessage(message);
+        if (!isPing(message)) armIdleTimer();
       } catch {
         // 非 JSON 行忽略，避免一条坏帧打断整条流。
       }
@@ -109,10 +140,12 @@ export function connectWs(input: ConnectWsInput): WsHandle {
     sock.onopen = () => {
       reconnects = 0; // 成功连上后重置重连预算
       heartbeat = timers.setInterval(() => sock.send('{"type":"ping"}'), HEARTBEAT_MS);
+      armIdleTimer();
     };
     sock.onmessage = (data) => deliver(data);
     sock.onclose = (code) => {
       stopHeartbeat();
+      stopIdleTimer();
       if (stopped) return;
       if (reconnects < MAX_RECONNECTS) {
         const delay = RECONNECT_BASE_MS * 2 ** reconnects;
@@ -133,6 +166,7 @@ export function connectWs(input: ConnectWsInput): WsHandle {
     close() {
       stopped = true;
       stopHeartbeat();
+      stopIdleTimer();
       if (reconnectTimer !== null) {
         timers.clearTimeout(reconnectTimer);
         reconnectTimer = null;

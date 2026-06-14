@@ -49,6 +49,7 @@ function harness(over: {
   const resumes: Array<{ runId: string; decision: ResumeDecision }> = [];
   const handles: AiDrawerStreamHandle[] = [];
   const streamListeners: Array<(event: ChatStreamEvent) => void> = [];
+  const idleTimeoutListeners: Array<() => void> = [];
 
   const session = createAiDrawerSession({
     chatClient: {
@@ -64,6 +65,7 @@ function harness(over: {
     },
     connectStream(input) {
       streamListeners.push(input.onEvent);
+      if (input.onIdleTimeout) idleTimeoutListeners.push(input.onIdleTimeout);
       const handle: AiDrawerStreamHandle = {
         closed: false,
         close() {
@@ -88,6 +90,9 @@ function harness(over: {
     handles,
     emit(event: ChatStreamEvent, index = 0) {
       streamListeners[index]?.(event);
+    },
+    timeout(index = 0) {
+      idleTimeoutListeners[index]?.();
     },
   };
 }
@@ -139,6 +144,44 @@ describe("AI 抽屉会话", () => {
 
     h.start.resolve({ runId: "run-rs", streamUrl: "/api/chat/stream?runId=run-rs", streamToken: "t" });
     await sending;
+  });
+
+  test("stream 只有 ping 后超时：退出路由中状态并展示可理解错误", async () => {
+    const h = harness();
+
+    const sending = h.session.sendMessage("hi", context());
+    h.start.resolve({ runId: "run-1", streamUrl: "/api/chat/stream?runId=run-1", streamToken: "stream-token" });
+    await sending;
+
+    h.emit({ kind: "ping", runId: "run-1" });
+    expect(h.session.snapshot().sending).toBe(true);
+    expect(h.session.snapshot().progressHint).toBe("路由中…");
+
+    h.timeout();
+
+    const state = h.session.snapshot();
+    expect(state.sending).toBe(false);
+    expect(state.progressHint).toBeNull();
+    expect(state.activeRun).toBeNull();
+    expect(state.sendError).toContain("超时");
+    expect(h.handles[0]?.closed).toBe(true);
+  });
+
+  test("收到 stream error：退出路由中状态并展示错误信息", async () => {
+    const h = harness();
+
+    const sending = h.session.sendMessage("hi", context());
+    h.start.resolve({ runId: "run-1", streamUrl: "/api/chat/stream?runId=run-1", streamToken: "stream-token" });
+    await sending;
+
+    h.emit({ kind: "error", runId: "run-1", code: "chat-failed", message: "storage failed" });
+
+    const state = h.session.snapshot();
+    expect(state.sending).toBe(false);
+    expect(state.progressHint).toBeNull();
+    expect(state.activeRun).toBeNull();
+    expect(state.sendError).toBe("storage failed");
+    expect(h.handles[0]?.closed).toBe(true);
   });
 
   test("suspend 候选选择后调用 resume，并用新 streamToken 继续到 done", async () => {

@@ -20,7 +20,7 @@ export type AiChatService = {
     message: string;
     userContext?: AiContextSnapshot;
     surrealSession: Surreal;
-    /** 调用者 user record id（"user:xxx"），用于写入 workflow_run.owner_user。 */
+    /** 调用者 OIDC subject；stream 授权和 Mastra 上下文识别用，DB 归因走 caller session 的 $auth。 */
     ownerSubject: string;
     /** composer 显式提交模式；resource-search 确定性进入资源检索子 agent。 */
     composerMode?: "chat" | "resource-search";
@@ -30,6 +30,8 @@ export type AiChatService = {
     runId: string;
     decision: ResumeDecision;
     surrealSession: Surreal;
+    /** 调用者 OIDC subject；stream 授权和 Mastra 上下文识别用，DB 归因走 caller session 的 $auth。 */
+    ownerSubject: string;
   }): Promise<void>;
 };
 
@@ -39,6 +41,18 @@ export type AiChatRoutesDeps = {
   registry: RunRegistry;
   requireUser?: () => MiddlewareHandler<AppBindings>;
 };
+
+async function closeCallerSessionQuietly(session: Surreal): Promise<void> {
+  const close = (session as unknown as { close?: () => Promise<unknown> | unknown }).close;
+  if (typeof close !== "function") return;
+  try {
+    await close.call(session);
+  } catch (error) {
+    console.warn("[ai-chat] failed to close caller session after startup failure", {
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
 
 const resumeDecisionJson = validator("json", (value: { decision?: unknown }, c) => {
   const parsed = ResumeAiWorkflowRequestSchema.safeParse({
@@ -85,7 +99,12 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
     // 刷新 streamToken / TTL，客户端据此重连 WS 拿后续事件。
     const { streamToken } = deps.registry.register({ runId, ownerSubject: user.subject });
 
-    await deps.service.resumeChat({ runId, decision, surrealSession: session });
+    try {
+      await deps.service.resumeChat({ runId, decision, surrealSession: session, ownerSubject: user.subject });
+    } catch (error) {
+      await closeCallerSessionQuietly(session);
+      throw error;
+    }
 
     return { runId, streamUrl: `/api/chat/stream?runId=${runId}`, streamToken };
   }
@@ -129,7 +148,12 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
       const runId = crypto.randomUUID();
       const { streamToken } = deps.registry.register({ runId, ownerSubject: user.subject });
 
-      await deps.service.startChat({ runId, message, userContext, surrealSession: session, ownerSubject: user.subject, composerMode });
+      try {
+        await deps.service.startChat({ runId, message, userContext, surrealSession: session, ownerSubject: user.subject, composerMode });
+      } catch (error) {
+        await closeCallerSessionQuietly(session);
+        throw error;
+      }
 
       return c.json({ runId, streamUrl: `/api/chat/stream?runId=${runId}`, streamToken });
     });

@@ -96,7 +96,7 @@ describe("SurrealWorkflowsStorage（绑定调用者 surrealSession）", () => {
     expect(rows.get("run-1")?.status).toBe("suspended");
   });
 
-  test("storage 写入 owner_user 为调用者 subject 的 StringRecordId，不带 workspace 字段", async () => {
+  test("storage 写入不携带 owner_user，让 workflow_run schema 用 DEFAULT $auth 归因", async () => {
     const captured: Record<string, unknown>[] = [];
     const spySession = {
       query: async (_sql: string, params?: Record<string, unknown>) => {
@@ -109,10 +109,27 @@ describe("SurrealWorkflowsStorage（绑定调用者 surrealSession）", () => {
 
     expect(captured.length).toBeGreaterThan(0);
     for (const content of captured) {
-      expect(content).toHaveProperty("owner_user");
-      expect(String(content.owner_user)).toContain("user");
+      expect(content).not.toHaveProperty("owner_user");
       expect(content).not.toHaveProperty("workspace");
     }
+  });
+
+  test("OIDC subject 不是 record id 时也不会被包装成 owner_user", async () => {
+    const captured: Record<string, unknown>[] = [];
+    const spySession = {
+      query: async (_sql: string, params?: Record<string, unknown>) => {
+        if (params?.content) captured.push(params.content as Record<string, unknown>);
+        return [[]];
+      },
+    };
+    const spyStorage = new SurrealWorkflowsStorage(() => ({ db: spySession as never, subject: "auth0|user-123" }));
+
+    await expect(
+      spyStorage.persistWorkflowSnapshot({ workflowName: "router", runId: "run-oidc-sub", snapshot: snapshot("run-oidc-sub") }),
+    ).resolves.toBeUndefined();
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]).not.toHaveProperty("owner_user");
   });
 
   test("每次操作都从注入的 resolver 取当前会话", async () => {
@@ -173,10 +190,10 @@ describe("SurrealWorkflowsStorage（绑定调用者 surrealSession）", () => {
     await expect(storage.loadWorkflowSnapshot({ workflowName: "router", runId: "run-4" })).resolves.toBeNull();
   });
 
-  test("写入失败被吞掉，不抛到 workflow 引擎层（降级到内存态）", async () => {
+  test("写入失败会抛到 workflow 引擎层，错误包含 workflowName/runId 便于 RunBus 暴露", async () => {
     const failing = new SurrealWorkflowsStorage(() => ({ db: fakeSession(rows, { failWrites: true }) as never, subject: "user:test" }));
     await expect(
       failing.persistWorkflowSnapshot({ workflowName: "router", runId: "degraded", snapshot: snapshot("degraded") }),
-    ).resolves.toBeUndefined();
+    ).rejects.toThrow(/router.*degraded|degraded.*router/);
   });
 });

@@ -219,7 +219,7 @@ export class SurrealMemoryStorage extends MemoryStorage {
 
   async getThreadById({ threadId }: { threadId: string }): Promise<StorageThreadType | null> {
     try {
-      const rows = await this.getSession().query<[ThreadRow[]]>(
+      const rows = await db(this.getSession).query<[ThreadRow[]]>(
         `SELECT * FROM memory_thread WHERE thread_id = $threadId LIMIT 1`,
         { threadId },
       );
@@ -267,7 +267,7 @@ export class SurrealMemoryStorage extends MemoryStorage {
     title: string;
     metadata: Record<string, unknown>;
   }): Promise<StorageThreadType> {
-    const rows = await this.getSession().query<[ThreadRow[]]>(
+    const rows = await db(this.getSession).query<[ThreadRow[]]>(
       `UPDATE memory_thread
        SET title = $title, metadata = $metadata, updated_at = time::now()
        WHERE thread_id = $id
@@ -330,7 +330,7 @@ export class SurrealMemoryStorage extends MemoryStorage {
     }
 
     try {
-      const rows = await this.getSession().query<[MessageRow[], { total?: number }[]]>(
+      const rows = await db(this.getSession).query<[MessageRow[], { total?: number }[]]>(
         `SELECT * FROM memory_message
          WHERE ${where.join(" AND ")}
          ORDER BY created_at ${direction}
@@ -349,7 +349,7 @@ export class SurrealMemoryStorage extends MemoryStorage {
 
   async listMessagesById({ messageIds }: { messageIds: string[] }): Promise<{ messages: MastraDBMessage[] }> {
     try {
-      const rows = await this.getSession().query<[MessageRow[]]>(
+      const rows = await db(this.getSession).query<[MessageRow[]]>(
         `SELECT * FROM memory_message WHERE message_id IN $messageIds ORDER BY created_at ASC`,
         { messageIds },
       );
@@ -423,7 +423,7 @@ export class SurrealMemoryStorage extends MemoryStorage {
       params.resourceId = args.filter.resourceId;
     }
 
-    const rows = await this.getSession().query<[ThreadRow[], { total?: number }[]]>(
+    const rows = await db(this.getSession).query<[ThreadRow[], { total?: number }[]]>(
       `SELECT * FROM memory_thread
        WHERE ${where.join(" AND ")}
        ORDER BY updated_at ${direction}
@@ -440,7 +440,7 @@ export class SurrealMemoryStorage extends MemoryStorage {
   }
 
   async getResourceById({ resourceId }: { resourceId: string }): Promise<StorageResourceType | null> {
-    const rows = await this.getSession().query<[ResourceRow[]]>(
+    const rows = await db(this.getSession).query<[ResourceRow[]]>(
       `SELECT * FROM memory_resource WHERE resource_id = $resourceId LIMIT 1`,
       { resourceId },
     );
@@ -523,7 +523,7 @@ export class SurrealObservabilityStorage extends ObservabilityStorage {
     spanId,
     ...patch
   }: BatchUpdateSpansArgs["records"][number] & { traceId: string; spanId: string }): Promise<void> {
-    const rows = await this.getSession().query<[SpanRow[]]>(
+    const rows = await db(this.getSession).query<[SpanRow[]]>(
       `SELECT * FROM observability_span WHERE traceId = $traceId AND spanId = $spanId LIMIT 1`,
       { traceId, spanId },
     );
@@ -568,7 +568,7 @@ export class SurrealObservabilityStorage extends ObservabilityStorage {
   }
 
   async getSpans(args: GetSpansArgs): Promise<GetSpansResponse> {
-    const rows = await this.getSession().query<[SpanRow[]]>(
+    const rows = await db(this.getSession).query<[SpanRow[]]>(
       `SELECT * FROM observability_span
        WHERE traceId = $traceId AND spanId IN $spanIds
        ORDER BY startedAt ASC`,
@@ -578,7 +578,7 @@ export class SurrealObservabilityStorage extends ObservabilityStorage {
   }
 
   async getRootSpan(args: GetRootSpanArgs): Promise<GetRootSpanResponse | null> {
-    const rows = await this.getSession().query<[SpanRow[]]>(
+    const rows = await db(this.getSession).query<[SpanRow[]]>(
       `SELECT * FROM observability_span
        WHERE traceId = $traceId AND parentSpanId = NONE
        ORDER BY startedAt ASC
@@ -590,7 +590,7 @@ export class SurrealObservabilityStorage extends ObservabilityStorage {
   }
 
   async getTrace(args: GetTraceArgs): Promise<GetTraceResponse | null> {
-    const rows = await this.getSession().query<[SpanRow[]]>(
+    const rows = await db(this.getSession).query<[SpanRow[]]>(
       `SELECT * FROM observability_span WHERE traceId = $traceId ORDER BY startedAt ASC`,
       args,
     );
@@ -623,7 +623,7 @@ export class SurrealObservabilityStorage extends ObservabilityStorage {
       }
     }
 
-    const rows = await this.getSession().query<[SpanRow[], { total?: number }[]]>(
+    const rows = await db(this.getSession).query<[SpanRow[], { total?: number }[]]>(
       `SELECT * FROM observability_span
        WHERE ${where.join(" AND ")}
        ORDER BY startedAt ${direction}
@@ -641,7 +641,7 @@ export class SurrealObservabilityStorage extends ObservabilityStorage {
   }
 
   private async findSpan(traceId: string, spanId: string): Promise<SpanRecord | null> {
-    const rows = await this.getSession().query<[SpanRow[]]>(
+    const rows = await db(this.getSession).query<[SpanRow[]]>(
       `SELECT * FROM observability_span WHERE traceId = $traceId AND spanId = $spanId LIMIT 1`,
       { traceId, spanId },
     );

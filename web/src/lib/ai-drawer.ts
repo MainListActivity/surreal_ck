@@ -36,6 +36,7 @@ export type AiDrawerStreamInput = {
   streamToken: string;
   onEvent: (event: ChatStreamEvent) => void;
   onClose?: (code: number) => void;
+  onIdleTimeout?: () => void;
 };
 
 export type AiDrawerStreamHandle = {
@@ -108,6 +109,7 @@ export type AiDrawerSession = {
 };
 
 const ROUTING_HINT = "路由中…";
+const STREAM_TIMEOUT_MESSAGE = "AI 响应超时，请重试。";
 
 export function progressEventToHint(event: AiProgressEvent): string {
   switch (event.kind) {
@@ -191,6 +193,14 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
           clearRun(run.runId);
           emitChange();
         }
+      },
+      onIdleTimeout: () => {
+        handleStreamEvent({
+          kind: "error",
+          runId: run.runId,
+          code: "stream-timeout",
+          message: STREAM_TIMEOUT_MESSAGE,
+        }, messageId);
       },
     });
     emitChange();

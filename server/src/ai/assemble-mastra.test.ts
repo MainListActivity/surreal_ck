@@ -208,6 +208,7 @@ describe("createMastraRunner", () => {
       streamId: "run-1",
       decision: { kind: "write-confirmed" },
       surrealSession: newSession,
+      ownerSubject: "user-123",
       userContext: { route: { screen: "home" }, workbook: null, sheet: null, selectedRow: null, contextHint: "" },
       pushChunk: () => {},
       pushProgress: () => {},

@@ -26,6 +26,18 @@ const fakeSession = { close: async () => {} } as unknown as Surreal;
 // 永远成功的会话工厂：把 rawToken authenticate 后的会话交给 service。
 const okSessionFactory: CallerSessionFactory = async () => fakeSession;
 
+function closableSession() {
+  const closed: string[] = [];
+  return {
+    session: {
+      async close() {
+        closed.push("closed");
+      },
+    } as unknown as Surreal,
+    closed,
+  };
+}
+
 type StartCall = { message: string; session: Surreal; runId: string; composerMode?: "chat" | "resource-search" };
 type ResumeCall = { runId: string; decision: unknown; session: Surreal };
 
@@ -139,6 +151,27 @@ describe("POST /api/chat", () => {
     });
     expect(res.status).toBe(403);
     expect(service.startCalls).toHaveLength(0);
+  });
+
+  test("workflow 服务启动前失败 → 关闭已经 authenticate 的 caller session", async () => {
+    const { session, closed } = closableSession();
+    const app = makeApp({
+      sessionFactory: async () => session,
+      service: stubService({
+        async startChat() {
+          throw new Error("service boot failed");
+        },
+      }),
+    });
+
+    const res = await app.request("/api/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "x" }),
+    });
+
+    expect(res.status).toBe(500);
+    expect(closed).toEqual(["closed"]);
   });
 
   test("同一调用者并发两次 → 两个独立 runId，registry 各注册一条且 owner 为调用者", async () => {

@@ -36,7 +36,7 @@ export type ChatRunner = (input: {
   runId: string;
   streamId: string;
   surrealSession: Surreal;
-  /** 调用者 user record id（"user:xxx"），用于写入 workflow_run.owner_user。 */
+  /** 调用者 OIDC subject；stream 授权和 Mastra 上下文识别用，DB 归因走 caller session 的 $auth。 */
   ownerSubject: string;
   userContext: AiContextSnapshot;
   /** 确定性路由（如 composer 资源检索模式）；缺省走 LLM classifier。 */
@@ -51,6 +51,8 @@ export type ChatResumer = (input: {
   streamId: string;
   decision: ResumeDecision;
   surrealSession: Surreal;
+  /** 调用者 OIDC subject；stream 授权和 Mastra 上下文识别用，DB 归因走 caller session 的 $auth。 */
+  ownerSubject: string;
   userContext: AiContextSnapshot;
   pushChunk: (e: AiMessageChunkEvent) => void;
   pushProgress: (e: AiProgressEvent) => void;
@@ -91,6 +93,13 @@ function bridgeToBus(bus: RunBus, runId: string) {
   };
 }
 
+async function closeCallerSession(session: Surreal): Promise<void> {
+  const close = (session as unknown as { close?: () => Promise<unknown> | unknown }).close;
+  if (typeof close === "function") {
+    await close.call(session);
+  }
+}
+
 export function createAiChatService(options: CreateAiChatServiceOptions): AiChatService {
   const { runBus, runner, resumer } = options;
 
@@ -119,11 +128,13 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
           // success / suspended：workflow 自己已 publish done（finalize step）；suspended 不发 done。
         } catch (cause) {
           bridge.publishErrorIfNotTerminal(cause instanceof Error ? cause.message : String(cause));
+        } finally {
+          await closeCallerSession(surrealSession);
         }
       })();
     },
 
-    async resumeChat({ runId, decision, surrealSession }) {
+    async resumeChat({ runId, decision, surrealSession, ownerSubject }) {
       if (!resumer) {
         throw new Error("AiChatService: resumer not configured");
       }
@@ -135,6 +146,7 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
             streamId: runId,
             decision,
             surrealSession,
+            ownerSubject,
             userContext: options.resumeUserContextFallback ?? ({} as AiContextSnapshot),
             pushChunk: bridge.pushChunk,
             pushProgress: bridge.pushProgress,
@@ -142,6 +154,8 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
           });
         } catch (cause) {
           bridge.publishErrorIfNotTerminal(cause instanceof Error ? cause.message : String(cause));
+        } finally {
+          await closeCallerSession(surrealSession);
         }
       })();
     },

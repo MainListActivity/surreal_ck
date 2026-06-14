@@ -265,7 +265,7 @@ export function createMastraRunner(options: CreateMastraRunnerOptions = {}): { r
 
     async resumer(input) {
       const { executors, llm } = ensureAgents();
-      const mastra = buildMastra(input.surrealSession);
+      const mastra = buildMastra(input.surrealSession, input.ownerSubject);
       return resumeWorkflowImpl({
         mastra,
         runId: input.runId,

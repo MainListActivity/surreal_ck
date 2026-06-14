@@ -76,4 +76,18 @@ describe("attachStream", () => {
     expect(f.events().map((e) => e.kind)).toEqual(["chunk", "done"]);
     expect(f.closed).toBeDefined();
   });
+
+  test("error 终态会回放给迟到订阅者并关闭 stream", () => {
+    const registry = createRunRegistry();
+    const bus = createRunBus();
+    const { streamToken } = registry.register({ runId: "run-1", ownerSubject: "alice" });
+    bus.publish("run-1", { kind: "error", runId: "run-1", code: "chat-failed", message: "storage failed" });
+
+    const f = fakeSink();
+    const result = attachStream({ runId: "run-1", streamToken, registry, bus, sink: f.sink });
+
+    expect(result.ok).toBe(true);
+    expect(f.events()).toEqual([{ kind: "error", runId: "run-1", code: "chat-failed", message: "storage failed" }]);
+    expect(f.closed).toBeDefined();
+  });
 });

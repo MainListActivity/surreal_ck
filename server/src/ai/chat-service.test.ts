@@ -13,6 +13,18 @@ const ctx: AiContextSnapshot = {
 };
 const fakeSession = {} as unknown as Surreal;
 
+function closableSession() {
+  const closed: string[] = [];
+  return {
+    session: {
+      async close() {
+        closed.push("closed");
+      },
+    } as unknown as Surreal,
+    closed,
+  };
+}
+
 function collect(bus: ReturnType<typeof createRunBus>, runId: string) {
   const events: ChatStreamEvent[] = [];
   bus.subscribe(runId, (e) => events.push(e));
@@ -20,6 +32,20 @@ function collect(bus: ReturnType<typeof createRunBus>, runId: string) {
 }
 
 describe("AiChatService.startChat", () => {
+  test("workflow 完成后关闭本次 run 的 caller session", async () => {
+    const bus = createRunBus();
+    const { session, closed } = closableSession();
+    const service = createAiChatService({
+      runBus: bus,
+      runner: async (input) => ({ runId: input.runId, finalText: "ok", status: "success" }),
+    });
+
+    await service.startChat({ runId: "run-close", message: "x", userContext: ctx, surrealSession: session });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(closed).toEqual(["closed"]);
+  });
+
   test("把 runRouterChat 的 pushChunk(delta) 翻译成 bus.publish({kind:'chunk'})，并透传 surrealSession + runId + text", async () => {
     const bus = createRunBus();
     // 捕获 service 喂给 runRouterChat 的参数
@@ -113,6 +139,7 @@ describe("AiChatService.startChat", () => {
 
   test("workflow pushProgress / onSuspend 翻译成 bus progress / suspend 事件", async () => {
     const bus = createRunBus();
+    const { session, closed } = closableSession();
     const runner: ChatRunner = async (input) => {
       input.pushProgress({ kind: "routing", runId: input.runId });
       input.onSuspend({
@@ -126,13 +153,14 @@ describe("AiChatService.startChat", () => {
 
     const events: ChatStreamEvent[] = [];
     bus.subscribe("run-1", (e) => events.push(e));
-    await service.startChat({ runId: "run-1", message: "x", userContext: ctx, surrealSession: fakeSession });
+    await service.startChat({ runId: "run-1", message: "x", userContext: ctx, surrealSession: session });
     await new Promise((r) => setTimeout(r, 0));
 
     const progress = events.find((e) => e.kind === "progress");
     expect((progress as { progress: { kind: string } } | undefined)?.progress.kind).toBe("routing");
     const suspend = events.find((e) => e.kind === "suspend");
     expect((suspend as { payload: { kind: string } } | undefined)?.payload.kind).toBe("ambiguous-candidates");
+    expect(closed).toEqual(["closed"]);
   });
 
   test("resumeChat 用新 session 走 resumer，事件桥接同样有效", async () => {
@@ -156,6 +184,7 @@ describe("AiChatService.startChat", () => {
       runId: "run-1",
       decision: { kind: "write-confirmed" },
       surrealSession: fakeSession,
+      ownerSubject: "user-123",
     });
     await new Promise((r) => setTimeout(r, 0));
 
@@ -163,6 +192,26 @@ describe("AiChatService.startChat", () => {
     expect(capturedResume?.decision).toEqual({ kind: "write-confirmed" });
     expect(capturedResume?.surrealSession).toBe(fakeSession);
     expect(events.some((e) => e.kind === "chunk" && e.text === "继续")).toBe(true);
+  });
+
+  test("resume workflow 完成后关闭本次 resume 的 caller session", async () => {
+    const bus = createRunBus();
+    const { session, closed } = closableSession();
+    const service = createAiChatService({
+      runBus: bus,
+      runner: async (i) => ({ runId: i.runId, finalText: "", status: "success" }),
+      resumer: async (input) => ({ runId: input.runId, finalText: "ok", status: "success" }),
+    });
+
+    await service.resumeChat({
+      runId: "run-resume-close",
+      decision: { kind: "write-confirmed" },
+      surrealSession: session,
+      ownerSubject: "user-123",
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(closed).toEqual(["closed"]);
   });
 
   test("resumeChat 未注入 resumer → 抛错（路由层会翻成 501/500）", async () => {
@@ -176,12 +225,14 @@ describe("AiChatService.startChat", () => {
         runId: "run-1",
         decision: { kind: "write-confirmed" },
         surrealSession: fakeSession,
+        ownerSubject: "user-123",
       }),
     ).rejects.toThrow(/resumer not configured/);
   });
 
   test("runner 抛错 → publish error 事件，不向上抛（startChat 已经 resolve）", async () => {
     const bus = createRunBus();
+    const { session, closed } = closableSession();
     const runner: ChatRunner = async () => {
       throw new Error("LLM provider 500");
     };
@@ -189,11 +240,12 @@ describe("AiChatService.startChat", () => {
 
     const events: ChatStreamEvent[] = [];
     bus.subscribe("run-1", (e) => events.push(e));
-    await service.startChat({ runId: "run-1", message: "x", userContext: ctx, surrealSession: fakeSession });
+    await service.startChat({ runId: "run-1", message: "x", userContext: ctx, surrealSession: session });
     await new Promise((r) => setTimeout(r, 0));
 
     const err = events.find((e) => e.kind === "error");
     expect(err).toMatchObject({ kind: "error", runId: "run-1", code: "chat-failed" });
     expect((err as { message: string }).message).toBe("LLM provider 500");
+    expect(closed).toEqual(["closed"]);
   });
 });

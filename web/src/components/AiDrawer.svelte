@@ -105,6 +105,7 @@
           input.onEvent(message as ChatStreamEvent);
         },
         onClose: input.onClose,
+        onIdleTimeout: input.onIdleTimeout,
       });
     },
     onChange(next) {
