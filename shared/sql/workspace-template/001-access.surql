@@ -27,15 +27,17 @@ DEFINE ACCESS OVERWRITE participant ON DATABASE TYPE RECORD
           WHERE subject = $token.sub
       );
       IF !$existing {
-          CREATE user CONTENT {
+          LET $created = (CREATE ONLY user CONTENT {
               subject: $token.sub,
               email: $token.email,
               display_name: $token.email,
               kind: "human",
               is_admin: false,
               last_seen_at: time::now(),
-          };
+          });
+          RETURN $created.id;
       };
+      RETURN $existing;
   }
   DURATION FOR TOKEN 1h, FOR SESSION NONE;
 
