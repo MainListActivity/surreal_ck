@@ -4,7 +4,7 @@ DEFINE TABLE IF NOT EXISTS workflow_run SCHEMAFULL CHANGEFEED 7d
     FOR create WHERE owner_user = $auth,
     FOR update WHERE owner_user = $auth,
     FOR delete WHERE owner_user = $auth OR $auth.is_admin = true;
-DEFINE FIELD IF NOT EXISTS owner_user ON TABLE workflow_run TYPE record<user> DEFAULT $auth;
+DEFINE FIELD IF NOT EXISTS owner_user ON TABLE workflow_run TYPE record<user> DEFAULT fn::current_user();
 DEFINE FIELD IF NOT EXISTS run_id ON TABLE workflow_run TYPE string;
 DEFINE FIELD IF NOT EXISTS workflow_name ON TABLE workflow_run TYPE string;
 DEFINE FIELD IF NOT EXISTS kind ON TABLE workflow_run TYPE string
