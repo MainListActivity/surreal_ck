@@ -12,6 +12,10 @@ import type {
   RecordIdString,
   ViewParams,
 } from "@surreal-ck/shared/rpc.types";
+import {
+  mapNullsToSurrealNone,
+  omitNullishSurrealFields,
+} from "@surreal-ck/shared/surreal-values";
 import { asBindable, recordValueToString, toRecordFieldValue } from "./record-id";
 import type { SurrealConn, SurrealWriter } from "./surreal";
 
@@ -105,9 +109,11 @@ export function wrapRecordField(value: unknown, column: GridColumnDef): unknown 
 }
 
 /**
- * 整行写入前的字段规整：逐列把 reference 值包成 RecordId（其余原样）。
- * 给绕过 {@link saveCells} 的直连写入路径（如 draft 晋升 createRecord）复用，
- * 保证「写 record 字段须用 RecordId」这条规则只有一处实现、不再各写各的。
+ * 整行写入前的字段规整：逐列把 reference 值包成 RecordId（其余原样），再剔除所有
+ * `null` / `undefined`。给绕过 {@link saveCells} 的直连写入路径（如 draft 晋升
+ * createRecord）复用，保证两条规则各只有一处实现：
+ * - 「写 record 字段须用 RecordId」；
+ * - 「CONTENT 未填字段直接省略——绝不往 option<T> 写 null」。
  */
 export function prepareRecordFields(
   values: Record<string, unknown>,
@@ -119,7 +125,7 @@ export function prepareRecordFields(
     const column = columnByKey.get(key);
     out[key] = column ? wrapRecordField(value, column) : value;
   }
-  return out;
+  return omitNullishSurrealFields(out);
 }
 
 /**
@@ -186,9 +192,11 @@ async function writePatch(
   patch: CellPatch,
 ): Promise<void> {
   if (patch.id) {
-    await tx.updateRecord(patch.id, patch.values);
+    // MERGE 清空字段：null → undefined(NONE)。往 option<T> 写 null 会被引擎拒。
+    await tx.updateRecord(patch.id, mapNullsToSurrealNone(patch.values));
   } else {
-    await tx.createRecord(tableName, patch.values);
+    // CONTENT 未填字段：直接省略（coerce 把空单元格归一成 null，这里整批剔除）。
+    await tx.createRecord(tableName, omitNullishSurrealFields(patch.values));
   }
 }
 

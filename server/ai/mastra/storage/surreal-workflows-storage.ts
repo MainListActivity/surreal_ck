@@ -6,6 +6,7 @@ import type {
   WorkflowRuns,
 } from "@mastra/core/storage";
 import type { StepResult, WorkflowRunState } from "@mastra/core/workflows";
+import { omitNullishSurrealFields } from "@surreal-ck/shared/surreal-values";
 import type { Surreal } from "surrealdb";
 
 /**
@@ -102,14 +103,15 @@ export class SurrealWorkflowsStorage extends WorkflowsStorage {
            status = $input.status,
            updated_at = time::now()`,
         {
-          content: {
+          // resource_id 是 option<string>：没有就省略字段（NONE），不写 null。
+          content: omitNullishSurrealFields({
             run_id: runId,
             workflow_name: workflowName,
-            resource_id: resourceId ?? null,
+            resource_id: resourceId,
             kind: resolveKind(workflowName),
             state: snapshot,
             status: snapshot.status,
-          },
+          }),
         },
       );
     } catch (err) {

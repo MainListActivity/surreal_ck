@@ -7,3 +7,4 @@ export * from "./research-url";
 export * from "./rpc.types";
 export * from "./server-types";
 export * from "./surreal-query-log";
+export * from "./surreal-values";

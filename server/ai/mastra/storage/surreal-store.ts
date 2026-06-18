@@ -54,6 +54,7 @@ import type {
   TraceStatus,
 } from "@mastra/core/storage";
 import type { MastraDBMessage, StorageThreadType } from "@mastra/core/memory";
+import { omitNullishSurrealFields } from "@surreal-ck/shared/surreal-values";
 import { RecordId, type Surreal } from "surrealdb";
 import { env } from "../../../src/env";
 import { SurrealWorkflowsStorage, type SurrealSessionResolver } from "./surreal-workflows-storage";
@@ -246,7 +247,8 @@ export class SurrealMemoryStorage extends MemoryStorage {
           id: rid("memory_thread", thread.id),
           threadId: thread.id,
           resourceId: thread.resourceId,
-          title: thread.title ?? null,
+          // option<string>：未填写写 NONE，不能写 null（引擎按类型拒）。
+          title: thread.title ?? undefined,
           metadata: thread.metadata ?? {},
           createdAt: thread.createdAt ?? new Date(),
           updatedAt: thread.updatedAt ?? new Date(),
@@ -378,7 +380,7 @@ export class SurrealMemoryStorage extends MemoryStorage {
             id: rid("memory_message", message.id),
             messageId: message.id,
             threadId: message.threadId ?? "",
-            resourceId: message.resourceId ?? null,
+            resourceId: message.resourceId ?? undefined, // option<string>：NONE 而非 null
             role: (message as { role?: string }).role ?? "user",
             type: (message as { type?: string }).type ?? "text",
             content: message,
@@ -460,7 +462,7 @@ export class SurrealMemoryStorage extends MemoryStorage {
       {
         id: rid("memory_resource", resource.id),
         resourceId: resource.id,
-        workingMemory: resource.workingMemory ?? null,
+        workingMemory: resource.workingMemory ?? undefined, // option<string>：NONE 而非 null
         metadata: resource.metadata ?? {},
         createdAt: resource.createdAt ?? new Date(),
         updatedAt: resource.updatedAt ?? new Date(),
@@ -548,17 +550,20 @@ export class SurrealObservabilityStorage extends ObservabilityStorage {
   private async upsertSpan(span: SpanRecord): Promise<void> {
     await db(this.getSession).query(`UPSERT $id CONTENT $content`, {
       id: rid("observability_span", `${span.traceId}_${span.spanId}`),
-      content: {
+      // option<string> 字段（user_id/resource_id/thread_id/agent_id/workflow_id）
+      // 与 ...span 携带的可空字段（parentSpanId/endedAt/updatedAt 等）都不能写 null：
+      // 整体过滤掉 null/undefined，未填即 NONE。
+      content: omitNullishSurrealFields({
         ...span,
-        user_id: span.userId ?? null,
-        resource_id: span.resourceId ?? null,
-        thread_id: span.threadId ?? null,
-        agent_id: String(span.entityType ?? "") === "agent" ? span.entityId : null,
-        workflow_id: String(span.entityType ?? "") === "workflow" ? span.entityId : null,
+        user_id: span.userId,
+        resource_id: span.resourceId,
+        thread_id: span.threadId,
+        agent_id: String(span.entityType ?? "") === "agent" ? span.entityId : undefined,
+        workflow_id: String(span.entityType ?? "") === "workflow" ? span.entityId : undefined,
         createdAt: span.createdAt ?? new Date(),
         updatedAt: new Date(),
         expires_at: observabilityExpiry(this.retention.retentionDays),
-      },
+      }),
     });
   }
 
