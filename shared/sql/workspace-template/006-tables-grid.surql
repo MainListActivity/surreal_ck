@@ -36,7 +36,7 @@ DEFINE FIELD IF NOT EXISTS workbook ON TABLE dashboard_page TYPE option<record<w
 DEFINE FIELD IF NOT EXISTS title ON TABLE dashboard_page TYPE string;
 DEFINE FIELD IF NOT EXISTS slug ON TABLE dashboard_page TYPE string;
 DEFINE FIELD IF NOT EXISTS description ON TABLE dashboard_page TYPE option<string>;
-DEFINE FIELD IF NOT EXISTS widgets ON TABLE dashboard_page TYPE array DEFAULT [];
+DEFINE FIELD OVERWRITE widgets ON TABLE dashboard_page TYPE any DEFAULT [];
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE dashboard_page TYPE datetime VALUE time::now() READONLY;
 DEFINE FIELD IF NOT EXISTS updated_at ON TABLE dashboard_page TYPE datetime VALUE time::now();
 DEFINE INDEX IF NOT EXISTS dashboard_page_slug_unique ON TABLE dashboard_page COLUMNS workbook, slug UNIQUE;
