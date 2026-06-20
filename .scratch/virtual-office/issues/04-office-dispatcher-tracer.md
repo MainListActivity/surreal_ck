@@ -75,3 +75,4 @@ server/ai/office/
 - dispatcher 与 Router workflow 并列存放——前者在 `server/ai/office/`，后者在 `server/ai/mastra/workflows/`。
 - **单实例约束**：MVP 后端单副本部署。多 workspace × 多员工 × 多 LIVE 连接的容量上限是首次大客户出现时的重点测试项。
 - 触发到表的写入路径不需要 `triggerEmployee` 内部入口——所有写都通过 employee 连接，员工自己的 LIVE 订阅会自然命中下一次循环。
+- 员工走 employee（RECORD）access，`$auth` = 该员工 user record，所以 office_* 表的 `DEFAULT fn::current_user()`（见 VO-02 与 `shared/sql/workspace-template/009-fn-current-user.surql`）在员工写入时自动归因到 `$auth`，无需手工传 from/assigner。这与真人 admin JWT 路径（`$auth=NONE`，靠 `$token.sub` 反查）统一为同一函数。workflow_run 持久化同理走员工会话归因。

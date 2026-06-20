@@ -21,7 +21,7 @@ Label: needs-triage
    c. 浏览器以 admin access：
       - `INSERT office_role` 三条（manager / analyst / form-officer）。
       - 调后端 `POST /api/workspaces/:slug/employees` 三次（dispatcher 写 employee_credential + 同步缓存）。该 endpoint 内部用 root + admin 协作完成"INSERT user kind=virtual + INSERT employee_credential"。
-      - `INSERT office_task { assigner: self, assignee: manager, goal: '<目标>，请规划下一步' }`。
+      - `INSERT office_task { assignee: manager, goal: '<目标>，请规划下一步', status: 'open' }`——**不手工传 assigner**：浏览器是 admin JWT 会话（`$auth` 为 NONE），assigner 由 `DEFAULT fn::current_user()` 按 `$token.sub` 反查填为发起的管理员。
    d. dispatcher LIVE 命中该 task → 自然拉起第一次执行窗口；浏览器办公室页 LIVE 订阅看到员工陆续上岗 + 第一条 message。
 4. 前端跳转到办公室页（Web 路由），通过浏览器直连 LIVE 看实时进展。
 
@@ -29,7 +29,7 @@ Label: needs-triage
 
 `goal` 字段落在 ws db 的 workspace metadata 表；IdP 不保管 workspace 元数据。
 
-在 workspace template 增量 `004-tables-vo.surql` 新增 `workspace_meta` 单例表：
+在 workspace template 新增量（**版本号按 `index.ts` manifest 末尾顺延，当前已到 009，故 ≥010**；旧稿写的 `004-tables-vo.surql` 已过时，004 槽位是 workflow-run）新增 `workspace_meta` 单例表：
 
 ```surql
 DEFINE TABLE workspace_meta SCHEMAFULL
@@ -40,6 +40,8 @@ DEFINE FIELD goal ON workspace_meta TYPE option<string>;
 DEFINE FIELD created_at ON workspace_meta TYPE datetime VALUE time::now();
 -- 实际只 CREATE workspace_meta:default 一条记录
 ```
+
+注：`FOR update WHERE $auth.is_admin = true` 对 admin JWT 会话恒 false（admin `$auth=NONE`）——真人 admin 写 goal 靠 JWT 超级会话绕过 PERMISSIONS，该子句只对（未来可能的）RECORD-admin 生效。goal 的写入发生在 3.c 的 admin 会话内，没问题。
 
 ### 文案
 
@@ -68,3 +70,4 @@ DEFINE FIELD created_at ON workspace_meta TYPE datetime VALUE time::now();
 - 这是产品 hero flow——验收时建议把 demo 录屏归档到 `.scratch/virtual-office/demo/`。
 - "调后端 `POST /api/workspaces/:slug/employees`"是因为 `employee_credential` 表 PERMISSIONS NONE，admin 也写不了，必须 root；后端在该 endpoint 内部用 root 写 secret + dispatcher 缓存。
 - 创建失败回滚由 Workspace Scope Module 主导；浏览器没有 NS-admin token。
+- 3.a 调 `/api/workspaces` 是否被允许，取决于调用者 OIDC token 的 `can_create_workspace` claim（IdP 登录 hook 注入）+ `_system.system_admin` allowlist——这条授权链路属 `/api/workspaces` 内部，VO-11 不重复实现，但 onboarding 入口在 UI 上应对"无创建权限"的用户隐藏/禁用。详见记忆 idp-hook-claim-system-admin。

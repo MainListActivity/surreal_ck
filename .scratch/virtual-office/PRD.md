@@ -62,11 +62,20 @@
 
 ### DDL 授权规则
 
-- **虚拟员工** 的 employee access 仍然只有 DML，不能直接 DDL。
+- **虚拟员工** 的 employee access 是 RECORD 类型，引擎层只有 DML、不能 DDL。
 - AI / **虚拟员工** 发起的建 **数据表**、定义 **字段**、调整 schema 等 DDL，必须使用发出指令的真人当前 workspace session 执行。
-- 发出指令者如果不是 **工作区管理员**，DDL 会被 SurrealDB 引擎拒绝；AI 不做应用层越权兜底。
+- DDL 能力由 **access 类型** 卡死：只有 admin（`TYPE JWT`，数据库级管理员）能 DDL；participant / employee（`TYPE RECORD`）无 DDL。而用户能用哪种 access，取决于 IdP 给他的 token 带的是 admin 还是 participant scope（per-workspace，由该 db 内 `user.is_admin` 决定）——普通成员拿不到 admin scope，自然 signin 不进 admin、做不了 DDL。授权关卡在 token 颁发阶段，不是运行时判 is_admin。
 - 后端不保存真人长期 token，不用 root 或 service JWT 代写业务 DDL。
 - 后台 **执行窗口** 没有可用真人 session 时，只能生成待确认意图或 **用户通知请求**，等待真人回来确认。
+
+### 身份归因规则（统一基线，2026-06-20 校正）
+
+- **谁能拿到 admin token 由 IdP 认证阶段卡死**：IdP 颁发 token 前调后端用户身份接口，后端按**该 workspace db 内** `user.is_admin` 决定是否给该 db 颁发 admin scope（per-workspace 粒度，见 `server/src/workspaces/workspace-scope.ts` getDefaultScope）。普通成员的 token 只带 participant scope。所以"能 signin 某 db 的 admin access"本身就等价于"是该 workspace 的管理员"。
+- **admin 是 `TYPE JWT` access：会话的 `$auth` 为 NONE**，是数据库级管理员——不论 PERMISSIONS 为何，能读写任何数据、修改任何表结构（DDL）。它不受 record-level PERMISSIONS 约束。
+- **participant / employee 是 `TYPE RECORD` access：`$auth` = 对应 user record**，逐条受表 PERMISSIONS 约束。
+- office_* / workflow_run 等表的归因字段统一用 `DEFAULT fn::current_user()`（见 `shared/sql/workspace-template/009-fn-current-user.surql`）：RECORD 会话返回 `$auth`，admin JWT 会话按 `$token.sub` 反查 user record。**不要再写 `DEFAULT $auth`**——admin 路径会因 `$auth=NONE` 写入失败。
+- PERMISSIONS 子句里的 `$auth.is_admin = true` 兜底分支对 admin JWT 会话恒 false（admin `$auth=NONE`）；真人 admin 靠超级会话绕过整张表 PERMISSIONS 完成兜底，不依赖该分支。保留只为表达意图。
+- "谁能开员工 / 谁是管理员"这类授权**靠"能否 signin 该 db 的 admin access"判定**（关卡在 token 颁发阶段，已前移），endpoint 只需 signin 失败即拒，不需在应用层再查 is_admin（见 issue 03）。
 
 ## 主要风险
 
