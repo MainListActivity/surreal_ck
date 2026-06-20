@@ -5,8 +5,8 @@ describe("workspace template scripts", () => {
   test("loads workspace template scripts in version order from the shared template directory", async () => {
     const scripts = await loadTemplateScripts();
 
-    expect(WORKSPACE_TEMPLATE_VERSION).toBe(8);
-    expect(scripts.map((script) => script.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(WORKSPACE_TEMPLATE_VERSION).toBe(9);
+    expect(scripts.map((script) => script.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
     expect(scripts.map((script) => script.name)).toEqual([
       "001-access.surql",
       "002-tables-core.surql",
@@ -16,6 +16,7 @@ describe("workspace template scripts", () => {
       "006-tables-grid.surql",
       "007-access-claim-rename.surql",
       "008-resource-library.surql",
+      "009-fn-current-user.surql",
     ]);
     expect(scripts[0]?.sql).toContain("DEFINE ACCESS OVERWRITE admin");
     expect(scripts[1]?.sql).toContain("DEFINE TABLE IF NOT EXISTS user");
@@ -24,6 +25,23 @@ describe("workspace template scripts", () => {
     expect(scripts[4]?.sql).toContain("DEFINE TABLE IF NOT EXISTS memory_thread");
     expect(scripts[5]?.sql).toContain("DEFINE TABLE IF NOT EXISTS workbook");
     expect(scripts[7]?.sql).toContain("DEFINE TABLE IF NOT EXISTS resource_item");
+    expect(scripts[8]?.sql).toContain("DEFINE FUNCTION OVERWRITE fn::current_user()");
+  });
+
+  test("fn::current_user：JWT 会话($auth NONE)按 $token.sub 反查，RECORD 会话直接返回 $auth，函数对所有会话可调用", async () => {
+    const scripts = await loadTemplateScripts();
+    const fn = scripts.find((script) => script.name === "009-fn-current-user.surql");
+
+    expect(fn).toBeDefined();
+    const sql = fn!.sql;
+
+    expect(sql).toContain("DEFINE FUNCTION OVERWRITE fn::current_user() -> option<record<user>>");
+    // RECORD 路径：$auth 已是 user，直接取 id
+    expect(sql).toMatch(/IF \$auth != NONE[\s\S]*?RETURN \$auth\.id/);
+    // JWT 路径：按 $token.sub 反查 user.subject
+    expect(sql).toMatch(/SELECT VALUE id FROM ONLY user WHERE subject = \$token\.sub/);
+    // 函数需对所有会话可调用（admin/participant/employee 都要能拿当前用户）
+    expect(sql).toContain("PERMISSIONS FULL");
   });
 
   test("grid 业务表归属 workspace database：无 workspace 字段，PERMISSIONS 只表达本 workspace 角色", async () => {
@@ -57,9 +75,10 @@ describe("workspace template scripts", () => {
     const sql = workflowRun!.sql;
     // 归属由 workspace database 边界表达，不再带 workspace 字段
     expect(sql).not.toMatch(/DEFINE FIELD IF NOT EXISTS workspace ON TABLE workflow_run/);
-    // owner_user 是 record<user>，默认取当前会话身份（真人 $auth 或虚拟员工 $auth）
+    // owner_user 是 record<user>，默认取当前会话身份。归因走 fn::current_user()：
+    // admin(JWT) 会话 $auth 为 NONE，靠 $token.sub 反查；participant/employee(RECORD) 直接返回 $auth。
     expect(sql).toContain("DEFINE FIELD IF NOT EXISTS owner_user ON TABLE workflow_run TYPE record<user>");
-    expect(sql).toContain("DEFAULT $auth");
+    expect(sql).toContain("DEFAULT fn::current_user()");
     // 至少覆盖 owner_user + status 的索引，便于恢复未完成 run
     expect(sql).toMatch(/DEFINE INDEX IF NOT EXISTS \w+ ON TABLE workflow_run COLUMNS owner_user, status/);
     // 普通成员只能看自己的 run，管理员可审计本 workspace 内 run

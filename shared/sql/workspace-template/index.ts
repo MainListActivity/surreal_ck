@@ -19,6 +19,7 @@ const TEMPLATE_FILES = [
   { version: 6, name: "006-tables-grid.surql" },
   { version: 7, name: "007-access-claim-rename.surql" },
   { version: 8, name: "008-resource-library.surql" },
+  { version: 9, name: "009-fn-current-user.surql" },
 ] as const;
 
 export const WORKSPACE_TEMPLATE_VERSION = TEMPLATE_FILES.at(-1)?.version ?? 0;
