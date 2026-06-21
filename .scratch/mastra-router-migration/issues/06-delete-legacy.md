@@ -29,7 +29,15 @@ Label: done
 - 验收：`pnpm --filter @surreal-ck/server typecheck` 0 错误；`pnpm --filter @surreal-ck/server test` 116 pass / 0 fail。
 - `server/tsconfig.json` 的 `exclude: ["legacy", ...]` 保留——`server/legacy/` 其余子目录（auth / db / rpc / services / sync / templates / logging）仍在，由后续簇负责；D1 自己不再依赖任何"legacy known errors"豁免。
 
+## 全树清空收口（2026-06-21）
+
+- 本 issue 当时只删了 `server/legacy/ai/`。剩余子目录（auth / db / rpc / services / sync / templates / logging + 顶层 desktop 残file）经确认零现行引用、不进测试 gate（`server/test` glob 仅 `src/**` + `ai/**`），已整体删除——`server/legacy/` 不复存在。
+- 卫兵测试 `server/src/legacy-retired.test.ts` 扩展为断言整个 `server/legacy/` 不存在。
+- 两个 server tsconfig 移除失效的 `legacy` exclude（`include` 本就只列 `src` / `ai`）。
+- 验收：typecheck 0 错误；`server test` 178 pass / 1 skip / 0 fail；`build:types` 正常 emit。
+- AGENTS.md「Project Structure」段落同步更新为"legacy 源料已全部清空"。
+
 ## Notes
 
 - 这一步要在 D1 全部完成后再做，避免边迁边删导致中间态不可恢复。
-- web/legacy/ 与 server/legacy/ 中**前端**部分仍保留，由簇 D2 处理。
+- ~~web/legacy/ 与 server/legacy/ 中**前端**部分仍保留，由簇 D2 处理。~~ web/legacy/ 已由 WP-D2-09 删除；server/legacy/ 全树已清空（见上）。

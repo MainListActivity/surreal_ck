@@ -163,8 +163,7 @@ This is a **Web app**：Svelte 5 前端 + Hono on Bun 后端 + 自部署 Surreal
 
 ## Project Structure
 
-> 仓库正在按 `.scratch/wp-restructure/` 计划迁到 pnpm workspaces。迁移完成前 `src/main/**` 与 `src/renderer/**` 暂以 `server/legacy/` 与 `web/legacy/` 形态存在，新代码请按"目标位置"列写。
-> `server/legacy/ai/` 已随簇 D1-06 清空（Mastra 全部位于 `server/ai/mastra/**`）；`server/legacy/` 其余子目录（auth / db / rpc / services / sync / templates / logging 等）与 `web/legacy/` 仍待后续簇收口。
+> 仓库已迁到 pnpm workspaces（`server/` + `web/` + `shared/`）。原 Electrobun 客户端的 `src/main/**` / `src/renderer/**` 迁移源料（曾以 `server/legacy/` 与 `web/legacy/` 暂存）已全部清空，所有代码位于下表"目标位置"。
 
 | 目标位置 | 描述 |
 | --- | --- |
