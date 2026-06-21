@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createAuthClient, createOidcUserManagerSettings } from "./auth";
+import { createAuthClient, createOidcUserManagerSettings, parseUserFromToken } from "./auth";
 
 function memoryStorage(seed: Record<string, string> = {}): Storage {
   const values = new Map(Object.entries(seed));
@@ -386,5 +386,31 @@ describe("OIDC SPA auth client", () => {
     await auth.login();
 
     expect(redirectArgs).toEqual({ state: { returnTo: "/workbooks/alpha" } });
+  });
+});
+
+describe("parseUserFromToken", () => {
+  test("从 token 解析 sub / email / name 身份 claim", () => {
+    const token = unsignedJwt({ sub: "user:ada", email: "ada@example.test", name: "Ada" });
+
+    expect(parseUserFromToken(token)).toEqual({
+      subject: "user:ada",
+      email: "ada@example.test",
+      name: "Ada",
+    });
+  });
+
+  test("缺失的 claim 不写入（保持 undefined）", () => {
+    const token = unsignedJwt({ sub: "user:ada", email: "ada@example.test" });
+
+    expect(parseUserFromToken(token)).toEqual({
+      subject: "user:ada",
+      email: "ada@example.test",
+    });
+  });
+
+  test("无法解析时返回 null（不抛）", () => {
+    expect(parseUserFromToken(null)).toBeNull();
+    expect(parseUserFromToken("not-a-jwt")).toBeNull();
   });
 });

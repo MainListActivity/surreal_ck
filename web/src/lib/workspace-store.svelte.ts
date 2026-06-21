@@ -1,3 +1,4 @@
+import { parseUserFromToken } from "./auth";
 import { connectSurreal } from "./surreal";
 import {
   createWorkspaceState,
@@ -34,7 +35,11 @@ const state = createWorkspaceState({
 });
 
 export function enterWorkspace(input: EnterWorkspaceInput): Promise<void> {
-  return state.enterWorkspace(input);
+  // 调用方（switch / create / bootstrap）只传 rawToken，不带 user；在此从 token
+  // 解析身份 claim 初始化 currentUser，侧栏头像才能显示真实昵称而非占位「我」。
+  // per-workspace 的 display_name 随后由个人中心保存覆盖。
+  const user = input.user ?? parseUserFromToken(input.rawToken) ?? undefined;
+  return state.enterWorkspace({ ...input, user });
 }
 
 export function setCurrentUserDisplayName(displayName: string | null): void {

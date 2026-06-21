@@ -418,3 +418,25 @@ export function requireAuthenticatedRoute(path?: string): boolean {
 export function login(returnTo?: string): Promise<void> {
   return defaultAuth.login(returnTo);
 }
+
+/** OIDC token 里的身份 claim（标准 sub / email / name；见 server/src/oidc/verify.ts）。 */
+export type TokenUserClaims = {
+  subject?: string;
+  email?: string;
+  name?: string;
+};
+
+/**
+ * 从 access token 解析身份 claim，供进入 workspace 时初始化 currentUser。
+ * 注意：这是 IdP 身份，不含 per-workspace 的 display_name——后者由个人中心
+ * 保存后通过 setCurrentUserDisplayName 覆盖。解析失败返回 null（不抛）。
+ */
+export function parseUserFromToken(token: string | null | undefined): TokenUserClaims | null {
+  const payload = decodeJwtPayload(token ?? undefined);
+  if (!payload) return null;
+  const user: TokenUserClaims = {};
+  if (typeof payload.sub === "string") user.subject = payload.sub;
+  if (typeof payload.email === "string") user.email = payload.email;
+  if (typeof payload.name === "string") user.name = payload.name;
+  return user;
+}

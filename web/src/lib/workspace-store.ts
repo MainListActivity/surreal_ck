@@ -104,8 +104,9 @@ export function createWorkspaceState(options: WorkspaceStateOptions): WorkspaceS
       setConnectionState("open");
     },
     setCurrentUserDisplayName(displayName) {
-      if (!currentUser) return;
-      currentUser = { ...currentUser, displayName };
+      // 即使 currentUser 尚未从 token 初始化（解析失败的兜底），保存后也要让消费方
+      // 拿到新昵称，因此 null 时新建一个仅含 displayName 的最小用户对象。
+      currentUser = { ...(currentUser ?? {}), displayName };
       emitChange();
     },
   };

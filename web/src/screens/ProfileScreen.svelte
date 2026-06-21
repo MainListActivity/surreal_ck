@@ -40,6 +40,8 @@
       }
       profile = next;
       nameDraft = next.displayName ?? "";
+      // db 是 SSOT：把读回的 display_name 同步进 store，侧栏头像随之显示真实昵称。
+      setCurrentUserDisplayName(next.displayName);
     } catch {
       loadFailed = true;
       profile = null;
