@@ -7,5 +7,5 @@
     "outDir": "./dist"
   },
   "include": ["src/**/*.ts", "ai/**/*.ts"],
-  "exclude": ["node_modules", "legacy", "**/*.test.ts"]
+  "exclude": ["node_modules", "**/*.test.ts"]
 }
