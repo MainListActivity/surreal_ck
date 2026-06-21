@@ -44,7 +44,7 @@
   const canOpenAdminConsole = $derived(isWorkspaceAdminFn());
   const user = $derived(getCurrentUser());
   const workspace = $derived(getCurrentWorkspace());
-  const userName = $derived(user?.name || user?.email || "我");
+  const userName = $derived(user?.displayName || user?.name || user?.email || "我");
   const workspaceName = $derived(workspace?.name || workspace?.slug || workspace?.dbName || "当前工作区");
 
   let pickerOpen = $state(false);

@@ -37,6 +37,10 @@ export function enterWorkspace(input: EnterWorkspaceInput): Promise<void> {
   return state.enterWorkspace(input);
 }
 
+export function setCurrentUserDisplayName(displayName: string | null): void {
+  state.setCurrentUserDisplayName(displayName);
+}
+
 export function getCurrentUser(): CurrentUser | null {
   return reactive.currentUser;
 }

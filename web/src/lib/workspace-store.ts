@@ -6,6 +6,8 @@ export type CurrentUser = {
   subject?: string;
   email?: string;
   name?: string;
+  /** 当前 workspace db 里 user.display_name 的镜像；个人中心保存后回写，侧栏据此刷新。 */
+  displayName?: string | null;
 };
 
 export type CurrentWorkspace = {
@@ -44,6 +46,8 @@ export type WorkspaceState = {
   readonly currentWorkspace: CurrentWorkspace | null;
   readonly connectionState: ConnectionState;
   enterWorkspace(input: EnterWorkspaceInput): Promise<void>;
+  /** 个人中心保存 display_name 后回写，让侧栏等消费方同步刷新；未签入时 no-op。 */
+  setCurrentUserDisplayName(displayName: string | null): void;
 };
 
 export function createWorkspaceState(options: WorkspaceStateOptions): WorkspaceState {
@@ -98,6 +102,11 @@ export function createWorkspaceState(options: WorkspaceStateOptions): WorkspaceS
       currentUser = input.user ?? null;
       currentWorkspace = workspace;
       setConnectionState("open");
+    },
+    setCurrentUserDisplayName(displayName) {
+      if (!currentUser) return;
+      currentUser = { ...currentUser, displayName };
+      emitChange();
     },
   };
 }

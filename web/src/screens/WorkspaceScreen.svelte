@@ -6,6 +6,7 @@
   import AdminConsoleScreen from "./AdminConsoleScreen.svelte";
   import HomeScreen from "./HomeScreen.svelte";
   import PlaceholderScreen from "./PlaceholderScreen.svelte";
+  import ProfileScreen from "./ProfileScreen.svelte";
   import { workbooksStore } from "../lib/workbooks.svelte";
   import {
     canWriteSharedStructure as canWriteSharedStructureFn,
@@ -144,13 +145,7 @@
         />
       {/if}
     {:else if page === "settings"}
-      <PlaceholderScreen
-        icon={Settings}
-        title="个人设置待迁移"
-        desc="个人 / AI / 向量化设置原依赖旧版接口，新架构尚未接入。入口已保留，迁移完成后在此提供。"
-        actionLabel="返回首页"
-        onaction={goHome}
-      />
+      <ProfileScreen />
     {:else if page === "trash"}
       <PlaceholderScreen
         icon={Trash2}
