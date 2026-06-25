@@ -246,30 +246,43 @@
 
   :global(body) {
     margin: 0;
-    background: #f7f8fa;
+    background: var(--bg);
     color: var(--text-1);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
   }
 
   :global(:root) {
-    --primary: #1664ff;
-    --primary-light: #ebf0ff;
-    --primary-hover: #0e4fcc;
-    --bg: #f2f3f5;
-    --surface: #fff;
-    --soft: #f7f8fa;
-    --text-1: #1d2129;
-    --text-2: #4e5969;
-    --text-3: #86909c;
-    --border: #e5e6eb;
-    --border-dark: #c9cdd4;
-    --success: #00b42a;
-    --success-bg: #e8ffea;
-    --warning: #ff7d00;
-    --warning-bg: #fff7e8;
-    --error: #f53f3f;
-    --error-bg: #ffece8;
-    --purple: #7b61ff;
-    --purple-bg: #f0edff;
+    /* 卯豆 暖绿品牌（纸质米色背景 + 嫩芽绿）。
+       token 名沿用旧蓝色主题，映射到暖色系，整站随之换肤。 */
+    --primary: #2f7a4c;
+    --primary-light: #e7f0e4;
+    --primary-hover: #266340;
+    --brand-strong: #266340;
+    --brand-mid: #6db87a;
+    --bg: #efebe2;
+    --surface: #fbfaf5;
+    --surface-2: #ffffff;
+    --soft: #ece7db;
+    --text-1: #221e17;
+    --text-2: #5c5447;
+    --text-3: #9a917f;
+    --border: #e6dfd0;
+    --border-dark: #dad1be;
+    --success: #2f7a4c;
+    --success-bg: #e7f0e4;
+    --warning: #cc6b3a;
+    --warning-bg: #f7e7da;
+    --error: #c0492b;
+    --error-bg: #f6e3dc;
+    --purple: #8a5a8f;
+    --purple-bg: #f0e7f1;
+    /* 种子/陶土暖橙强调色 */
+    --seed: #cc6b3a;
+    --seed-strong: #b65b2e;
+    --seed-soft: #f7e7da;
+    --font-serif: "Spectral", "Noto Serif SC", serif;
+    --font-sans: "Plus Jakarta Sans", "Noto Sans SC", system-ui, -apple-system, "Segoe UI", sans-serif;
   }
 
   :global(button),
@@ -332,7 +345,7 @@
   .loading {
     box-sizing: border-box;
     min-height: 100vh;
-    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-family: var(--font-sans);
   }
 
   .editor-shell {
@@ -347,7 +360,7 @@
     height: 100vh;
     min-width: 0;
     overflow: hidden;
-    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-family: var(--font-sans);
   }
 
   .app-main {

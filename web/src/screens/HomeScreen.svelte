@@ -1,6 +1,20 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { Grid3x3, List, MessageCircle, MoreHorizontal, Pin, Plus, Sheet, Sparkles, Tag, Trash2, Upload } from "@lucide/svelte";
+  import {
+    ArrowRight,
+    Clock,
+    Grid3x3,
+    LayoutTemplate,
+    Leaf,
+    List,
+    ListFilter,
+    MoreHorizontal,
+    Pin,
+    Plus,
+    Trash2,
+    Upload,
+    UserPlus,
+  } from "@lucide/svelte";
   import { workbooksStore } from "../lib/workbooks.svelte";
   import { canWriteSharedStructure as canWriteSharedStructureFn } from "../lib/permissions.svelte";
   import { getConnectionState, getCurrentUser, getCurrentWorkspace } from "../lib/workspace-store.svelte";
@@ -13,6 +27,7 @@
     workbookCardPresentation,
     writeWorkbookViewMode,
     type WorkbookHomeTab,
+    type WorkbookPreviewKind,
     type WorkbookViewMode,
   } from "../lib/workbook-home";
   import type { WorkbookRow } from "../lib/workbooks";
@@ -48,16 +63,39 @@
   const connectionState = $derived(getConnectionState());
   let tab = $state<WorkbookHomeTab>("all");
   let view = $state<WorkbookViewMode>("grid");
+  let sort = $state<"recent" | "name">("recent");
   let creating = $state(false);
   let importStatus = $state("");
 
   const greeting = $derived(homeGreetingForDate());
   const connectionDot = $derived(connectionDotPresentation(connectionState));
   const workspaceName = $derived(workspace?.name || workspace?.slug || workspace?.dbName || "当前工作区");
+  const userName = $derived(currentUser?.displayName || currentUser?.name || currentUser?.email || "你");
   const currentUserId = $derived(currentUser?.subject ? `user:${currentUser.subject}` : currentUser?.email);
-  const visibleWorkbooks = $derived(
+  const filteredWorkbooks = $derived(
     filterHomeWorkbooks(workbooksStore.workbooks, { query, tab, currentUserId }),
   );
+  const visibleWorkbooks = $derived(
+    sort === "name"
+      ? [...filteredWorkbooks].sort((a, b) => a.name.localeCompare(b.name, "zh"))
+      : filteredWorkbooks,
+  );
+  const totalCount = $derived(workbooksStore.workbooks.length);
+
+  // 卯豆 配色：按 workbook 形态映射强调色（表=嫩芽绿 / 图谱=陶土 / 空白=石灰）。
+  type Tone = { accent: string; soft: string; label: string };
+  const tones: Record<WorkbookPreviewKind, Tone> = {
+    table: { accent: "#2F7A4C", soft: "#E7F0E4", label: "#2F7A4C" },
+    graph: { accent: "#CC6B3A", soft: "#F7E7DA", label: "#B65B2E" },
+    blank: { accent: "#8C8472", soft: "#ECE7DB", label: "#6F6859" },
+  };
+
+  function statusTone(label: string): { fg: string; bg: string } {
+    if (label === "已发布") return { fg: "#266340", bg: "#E7F0E4" };
+    if (label === "草稿") return { fg: "#6F6859", bg: "#ECE7DB" };
+    if (label === "待审核") return { fg: "#356A96", bg: "#E4EEF5" };
+    return { fg: "#B65B2E", bg: "#F7E7DA" };
+  }
 
   onMount(() => {
     view = readWorkbookViewMode(window.localStorage);
@@ -93,12 +131,12 @@
     onpin?.(wb.id);
   }
 
-  function collaboratorsFor(wb: WorkbookRow): Array<{ initials: string; tone: string }> {
+  function collaboratorsFor(wb: WorkbookRow): Array<{ initials: string; color: string }> {
     const people = [
-      { initials: "林", tone: "blue" },
-      { initials: "陈", tone: "green" },
-      { initials: "周", tone: "amber" },
-      { initials: "AI", tone: "purple" },
+      { initials: "林", color: "#2F7A4C" },
+      { initials: "陈", color: "#3E78A8" },
+      { initials: "周", color: "#CC6B3A" },
+      { initials: "AI", color: "#8A5A8F" },
     ];
     const count = (hashString(wb.id) % people.length) + 1;
     return people.slice(0, count);
@@ -109,10 +147,10 @@
   }
 
   function emptyMessage(): string {
-    if (query) return "没有匹配的工作簿";
+    if (query) return `没有匹配「${query}」的工作簿`;
     if (tab === "shared") return "共享工作簿会在权限模型接入后显示";
     if (tab === "mine") return "还没有你创建的工作簿";
-    return "还没有工作簿，点击上方“空白工作簿”创建第一个";
+    return "还没有工作簿，点击上方「空白工作簿」创建第一个";
   }
 
   function hashString(value: string): number {
@@ -124,39 +162,62 @@
 
 <section class="home">
   <div class="content">
-    <section class="greeting">
-      <p>{greeting}</p>
-      <div class="greeting-title-row">
+    <header class="page-head">
+      <div class="head-text">
+        <p class="hello">{greeting}，{userName} 👋</p>
         <h1>
           <button type="button" class="workspace-title" onclick={() => onworkspaceclick?.()}>
             {workspaceName}
           </button>
         </h1>
-        <span
-          class={`conn-dot ${connectionDot.tone}`}
-          title={`SurrealDB 连接状态：${connectionDot.label}`}
-          aria-label={`SurrealDB 连接状态：${connectionDot.label}`}
-        ></span>
-        <span class="conn-label">{connectionDot.label}</span>
+        <div class="stats">
+          <span class="stat">
+            <span
+              class={`conn-dot ${connectionDot.tone}`}
+              title={`SurrealDB 连接状态：${connectionDot.label}`}
+              aria-label={`SurrealDB 连接状态：${connectionDot.label}`}
+            ></span>
+            数据库{connectionDot.label}
+          </span>
+          <span class="divider"></span>
+          <span class="stat"><strong>{totalCount}</strong> 个工作簿</span>
+          <span class="divider"></span>
+          <span class="stat"><strong>4</strong> 位协作者在线</span>
+        </div>
       </div>
-    </section>
+      <button type="button" class="invite-btn" onclick={() => onworkspaceclick?.()}>
+        <UserPlus size={16} />
+        邀请协作者
+      </button>
+    </header>
 
     {#if !query}
       <div class="quick-actions">
-        <button type="button" onclick={handleCreateBlank} disabled={creating || !canWriteSharedStructure}>
-          <span><Plus size={17} color="var(--primary)" /></span>
-          <strong>{creating ? "创建中…" : "空白工作簿"}</strong>
-          <small>{canWriteSharedStructure ? "从零开始创建" : "需要管理员权限"}</small>
+        <button
+          type="button"
+          class="qa qa-brand"
+          onclick={handleCreateBlank}
+          disabled={creating || !canWriteSharedStructure}
+        >
+          <span class="qa-icon"><Plus size={21} /></span>
+          <span class="qa-text">
+            <strong>{creating ? "创建中…" : "空白工作簿"}</strong>
+            <small>{canWriteSharedStructure ? "从零开始搭建数据表" : "需要管理员权限"}</small>
+          </span>
         </button>
-        <button type="button" onclick={() => ontemplates?.()} disabled={!canWriteSharedStructure}>
-          <span><Tag size={17} color="var(--primary)" /></span>
-          <strong>从模板创建</strong>
-          <small>案件管理·法律实体追踪</small>
+        <button type="button" class="qa qa-seed" onclick={() => ontemplates?.()} disabled={!canWriteSharedStructure}>
+          <span class="qa-icon"><LayoutTemplate size={21} /></span>
+          <span class="qa-text">
+            <strong>从模板创建</strong>
+            <small>案件管理 · 实体追踪</small>
+          </span>
         </button>
-        <button type="button" onclick={handleImportClick}>
-          <span><Upload size={17} color="var(--primary)" /></span>
-          <strong>导入文件</strong>
-          <small>敬请期待</small>
+        <button type="button" class="qa qa-neutral" onclick={handleImportClick}>
+          <span class="qa-icon"><Upload size={21} /></span>
+          <span class="qa-text">
+            <strong>导入文件</strong>
+            <small>Excel · CSV · JSON</small>
+          </span>
         </button>
       </div>
       {#if importStatus}
@@ -164,51 +225,68 @@
       {/if}
     {/if}
 
-    <section class="ai-banner" aria-label="AI 能力">
-      <div class="ai-banner-copy">
-        <span class="ai-banner-icon" aria-hidden="true"><Sparkles size={14} /></span>
-        <span>AI 能生成 SurrealQL，直接操作数据表结构和数据</span>
+    <section class="ai-banner" aria-label="AI 助手">
+      <span class="ai-orb"><Leaf size={24} color="#fff" class="ai-leaf" /></span>
+      <div class="ai-copy">
+        <div class="ai-title">
+          <strong>卯豆 AI 助手</strong>
+          <span class="ai-beta">BETA</span>
+        </div>
+        <p>用自然语言查询数据、生成报表、自动整理案件台账——试试「列出本月即将到期的合同」。</p>
       </div>
-      <button type="button" class="ai-banner-action" onclick={() => onopenaichat?.()}>
-        <MessageCircle size={14} />
-        <span>开始对话</span>
+      <button type="button" class="ai-action" onclick={() => onopenaichat?.()}>
+        开始对话
+        <ArrowRight size={16} />
       </button>
     </section>
 
     <section class="workbook-section" aria-label="工作簿">
       <div class="toolbar">
-        <div class="tabs" role="tablist" aria-label="工作簿筛选">
-          {#each tabs as item}
+        <div class="section-title">
+          <h2>工作簿</h2>
+          <span class="count">{visibleWorkbooks.length} 个</span>
+        </div>
+        <div class="controls">
+          <div class="segment" role="tablist" aria-label="工作簿筛选">
+            {#each tabs as item}
+              <button
+                type="button"
+                role="tab"
+                aria-selected={tab === item.id}
+                class:active={tab === item.id}
+                onclick={() => (tab = item.id)}
+              >
+                {item.label}
+              </button>
+            {/each}
+          </div>
+          <label class="sort">
+            <ListFilter size={14} color="var(--text-3)" />
+            <select bind:value={sort} aria-label="排序方式">
+              <option value="recent">最近更新</option>
+              <option value="name">按名称</option>
+            </select>
+          </label>
+          <div class="segment view-toggle" aria-label="视图切换">
             <button
               type="button"
-              role="tab"
-              aria-selected={tab === item.id}
-              class:active={tab === item.id}
-              onclick={() => (tab = item.id)}
+              class:active={view === "grid"}
+              aria-label="网格视图"
+              title="网格视图"
+              onclick={() => setView("grid")}
             >
-              {item.label}
+              <Grid3x3 size={16} />
             </button>
-          {/each}
-        </div>
-        <div class="view-toggle" aria-label="视图切换">
-          <button
-            type="button"
-            class:active={view === "grid"}
-            aria-label="网格视图"
-            title="网格视图"
-            onclick={() => setView("grid")}
-          >
-            <Grid3x3 size={15} />
-          </button>
-          <button
-            type="button"
-            class:active={view === "list"}
-            aria-label="列表视图"
-            title="列表视图"
-            onclick={() => setView("list")}
-          >
-            <List size={15} />
-          </button>
+            <button
+              type="button"
+              class:active={view === "list"}
+              aria-label="列表视图"
+              title="列表视图"
+              onclick={() => setView("list")}
+            >
+              <List size={16} />
+            </button>
+          </div>
         </div>
       </div>
 
@@ -217,90 +295,88 @@
       {:else if workbooksStore.error}
         <div class="state-msg error">{workbooksStore.error}</div>
       {:else if visibleWorkbooks.length === 0}
-        <div class="state-msg">{emptyMessage()}</div>
+        <div class="empty">
+          <span class="empty-icon"><LayoutTemplate size={26} color="var(--primary)" /></span>
+          <p>{emptyMessage()}</p>
+        </div>
       {:else if view === "list"}
         <div class="workbook-table">
-          <div class="head"><span>名称</span><span>状态</span><span>协作者</span><span>最近修改</span></div>
-          {#each visibleWorkbooks as wb (wb.id)}
+          {#each visibleWorkbooks as wb, i (wb.id)}
             {@const presentation = workbookCardPresentation(wb.templateKey)}
+            {@const tone = tones[presentation.previewKind]}
+            {@const st = statusTone(presentation.statusLabel)}
             {@const collaborators = collaboratorsFor(wb)}
-            <div class="workbook-list-row">
-              <button type="button" class="list-main" onclick={() => open(wb)}>
-                <span class="list-name">
-                  <span class={`list-preview ${presentation.previewKind}`}>
-                    <Sheet size={16} />
-                  </span>
-                  <span>
-                    <strong>{wb.name}</strong>
-                    <small>{presentation.templateLabel}</small>
-                  </span>
+            <button
+              type="button"
+              class="list-row"
+              style={`animation-delay:${(0.03 * i).toFixed(2)}s`}
+              onclick={() => open(wb)}
+            >
+              <span class="list-icon" style={`background:${tone.soft};color:${tone.accent}`}>
+                {#if presentation.previewKind === "graph"}
+                  {@render graphMark(tone.accent)}
+                {:else if presentation.previewKind === "blank"}
+                  {@render blankMark(tone.accent)}
+                {:else}
+                  {@render tableMark(tone.accent)}
+                {/if}
+              </span>
+              <span class="list-main">
+                <span class="list-title-row">
+                  <strong>{wb.name}</strong>
+                  <span class="tag" style={`color:${tone.label};background:${tone.soft}`}>{presentation.templateLabel}</span>
                 </span>
-                <span><em>{presentation.statusLabel}</em></span>
-                <span class="avatars" aria-label="协作者">
-                  {#each collaborators.slice(0, 3) as person}
-                    <span class={`avatar ${person.tone}`}>{person.initials}</span>
-                  {/each}
-                  {#if extraCollaborators(collaborators)}
-                    <span class="avatar more">+{extraCollaborators(collaborators)}</span>
-                  {/if}
-                </span>
-                <span>{formatWorkbookUpdatedAt(wb.updatedAt)}</span>
-              </button>
-            </div>
+                <small>{wb.templateKey ?? "自定义工作簿"}</small>
+              </span>
+              <span class="status-pill" style={`color:${st.fg};background:${st.bg}`}>{presentation.statusLabel}</span>
+              <span class="avatars" aria-label="协作者">
+                {#each collaborators.slice(0, 3) as person}
+                  <span class="avatar" style={`background:${person.color}`}>{person.initials}</span>
+                {/each}
+                {#if extraCollaborators(collaborators)}
+                  <span class="avatar more">+{extraCollaborators(collaborators)}</span>
+                {/if}
+              </span>
+              <span class="list-updated">{formatWorkbookUpdatedAt(wb.updatedAt)}</span>
+            </button>
           {/each}
         </div>
       {:else}
         <div class="workbook-grid">
-          {#each visibleWorkbooks as wb (wb.id)}
+          {#each visibleWorkbooks as wb, i (wb.id)}
             {@const presentation = workbookCardPresentation(wb.templateKey)}
+            {@const tone = tones[presentation.previewKind]}
+            {@const st = statusTone(presentation.statusLabel)}
             {@const collaborators = collaboratorsFor(wb)}
-            <article class="workbook-card">
+            <article class="workbook-card" style={`animation-delay:${(0.04 * i).toFixed(2)}s`}>
               <button type="button" class="card-main" onclick={() => open(wb)}>
-                <div class={`workbook-card-preview ${presentation.previewKind}`} aria-hidden="true">
-                  {#if presentation.previewKind === "table"}
-                    <div class="preview-grid">
-                      {#each Array(12) as _, i}
-                        <span class:strong={i === 0 || i === 5 || i === 10}></span>
-                      {/each}
-                    </div>
-                  {:else if presentation.previewKind === "graph"}
-                    <svg viewBox="0 0 180 92" role="img" aria-label="图谱预览">
-                      <line x1="52" y1="44" x2="104" y2="24" />
-                      <line x1="52" y1="44" x2="118" y2="68" />
-                      <line x1="104" y1="24" x2="118" y2="68" />
-                      <circle cx="52" cy="44" r="15" />
-                      <circle cx="104" cy="24" r="13" />
-                      <circle cx="118" cy="68" r="17" />
-                    </svg>
-                  {:else}
-                    <div class="blank-preview">
-                      <Sheet size={24} color="var(--text-3)" />
-                      <span style="width:65%"></span>
-                      <span style="width:80%"></span>
-                      <span style="width:45%"></span>
-                    </div>
-                  {/if}
+                <div class="card-preview" style={`background:${tone.soft}`}>
+                  <div class="card-grid-bg" style={`background-image:linear-gradient(${tone.accent} 1px,transparent 1px),linear-gradient(90deg,${tone.accent} 1px,transparent 1px)`}></div>
+                  <span class="card-kind" style={`color:${tone.accent}`}>
+                    {#if presentation.previewKind === "graph"}
+                      {@render graphMark(tone.accent)}
+                    {:else if presentation.previewKind === "blank"}
+                      {@render blankMark(tone.accent)}
+                    {:else}
+                      {@render tableMark(tone.accent)}
+                    {/if}
+                  </span>
+                  <span class="status-pill card-status" style={`color:${st.fg};background:${st.bg}`}>{presentation.statusLabel}</span>
                 </div>
-
                 <div class="card-info">
-                  <div class="card-title-row">
-                    <strong title={wb.name}>{wb.name}</strong>
-                    <em>{presentation.statusLabel}</em>
-                  </div>
-                  <div class="card-meta">
-                    <span>{presentation.templateLabel}</span>
-                    <span>{formatWorkbookUpdatedAt(wb.updatedAt)}</span>
-                  </div>
+                  <span class="tag" style={`color:${tone.label};background:${tone.soft}`}>{presentation.templateLabel}</span>
+                  <h3 title={wb.name}>{wb.name}</h3>
+                  <p class="card-sub">{wb.templateKey ?? "自定义工作簿"}</p>
                   <div class="card-footer">
                     <span class="avatars" aria-label="协作者">
                       {#each collaborators.slice(0, 3) as person}
-                        <span class={`avatar ${person.tone}`}>{person.initials}</span>
+                        <span class="avatar" style={`background:${person.color}`}>{person.initials}</span>
                       {/each}
                       {#if extraCollaborators(collaborators)}
                         <span class="avatar more">+{extraCollaborators(collaborators)}</span>
                       {/if}
                     </span>
-                    <span class="record-hint">{wb.templateKey ?? "custom"}</span>
+                    <span class="updated"><Clock size={12} />{formatWorkbookUpdatedAt(wb.updatedAt)}</span>
                   </div>
                 </div>
               </button>
@@ -312,7 +388,7 @@
                 <div class="menu-popover" role="menu">
                   <button type="button" role="menuitem" onclick={(event) => pinWorkbook(event, wb)}>
                     <Pin size={14} />
-                    <span>固定到 sidebar</span>
+                    <span>固定到侧栏</span>
                   </button>
                   <button type="button" role="menuitem" disabled>
                     <Trash2 size={14} />
@@ -328,6 +404,27 @@
   </div>
 </section>
 
+{#snippet tableMark(color: string)}
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={color} stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="4" y="4" width="16" height="16" rx="2.5" />
+    <path d="M4 10h16M4 15h16M10 4v16" />
+  </svg>
+{/snippet}
+
+{#snippet graphMark(color: string)}
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={color} stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="5" cy="6" r="2.4" /><circle cx="19" cy="8" r="2.4" /><circle cx="12" cy="18" r="2.4" />
+    <path d="M7 7l3.5 9M17 9.5 13 16" />
+  </svg>
+{/snippet}
+
+{#snippet blankMark(color: string)}
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={color} stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="5" y="3" width="14" height="18" rx="2.5" />
+    <path d="M9 8h6M9 12h6M9 16h3" />
+  </svg>
+{/snippet}
+
 <style>
   .home {
     display: flex;
@@ -340,28 +437,52 @@
   .content {
     flex: 1;
     overflow: auto;
-    padding: 24px 28px 32px;
+    padding: 44px 48px 72px;
   }
 
-  .greeting {
-    margin-bottom: 18px;
+  .content > * {
+    max-width: 1200px;
+    margin-left: auto;
+    margin-right: auto;
   }
 
-  .greeting p {
-    margin: 0 0 4px;
-    color: var(--text-3);
-    font-size: 12px;
+  @keyframes omFadeUp {
+    from { opacity: 0; transform: translateY(14px); }
+    to { opacity: 1; transform: translateY(0); }
   }
 
-  .greeting h1 {
-    margin: 0;
+  @keyframes omPulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(47, 122, 76, .25); }
+    50% { box-shadow: 0 0 0 6px rgba(47, 122, 76, 0); }
   }
 
-  .greeting-title-row {
+  @keyframes omSway {
+    0%, 100% { transform: rotate(-3deg); }
+    50% { transform: rotate(3deg); }
+  }
+
+  /* ---------- header ---------- */
+  .page-head {
     display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 24px;
+    margin-bottom: 30px;
+    animation: omFadeUp .6s cubic-bezier(.2, .7, .2, 1) both;
+  }
+
+  .head-text {
     min-width: 0;
-    align-items: center;
-    gap: 8px;
+  }
+
+  .hello {
+    margin: 0 0 10px;
+    color: var(--text-3);
+    font-size: 13px;
+  }
+
+  h1 {
+    margin: 0;
   }
 
   .workspace-title {
@@ -370,10 +491,11 @@
     border: 0;
     background: transparent;
     color: var(--text-1);
-    font: inherit;
-    font-size: 24px;
-    font-weight: 720;
-    line-height: 1.25;
+    font-family: var(--font-serif);
+    font-size: 42px;
+    font-weight: 600;
+    line-height: 1.08;
+    letter-spacing: -.5px;
     text-align: left;
     cursor: pointer;
   }
@@ -382,144 +504,278 @@
     color: var(--primary);
   }
 
+  .stats {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    margin-top: 14px;
+    flex-wrap: wrap;
+  }
+
+  .stat {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    color: var(--text-2);
+    font-size: 12.5px;
+  }
+
+  .stat strong {
+    color: var(--text-1);
+    font-weight: 700;
+  }
+
+  .divider {
+    width: 1px;
+    height: 13px;
+    background: var(--border-dark);
+  }
+
   .conn-dot {
     width: 8px;
     height: 8px;
-    flex: 0 0 auto;
     border-radius: 50%;
-    box-shadow: 0 0 0 3px rgba(0, 0, 0, .04);
   }
 
   .conn-dot.connected {
-    background: var(--success);
+    background: var(--primary);
+    animation: omPulse 2.4s ease-in-out infinite;
   }
 
   .conn-dot.disconnected {
     background: var(--error);
   }
 
-  .conn-label {
-    color: var(--text-3);
-    font-size: 12px;
-  }
-
-  .ai-banner {
-    display: flex;
-    height: 44px;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    margin-bottom: 20px;
-    padding: 0 14px;
-    border: 1px solid var(--primary-light);
-    border-radius: 8px;
-    background: var(--primary-light);
-  }
-
-  .ai-banner-copy {
-    display: flex;
-    min-width: 0;
+  .invite-btn {
+    display: inline-flex;
+    height: 42px;
+    flex-shrink: 0;
     align-items: center;
     gap: 8px;
-    color: var(--primary);
+    padding: 0 18px;
+    border: 1px solid var(--border-dark);
+    border-radius: 11px;
+    background: var(--surface);
+    color: var(--text-1);
     font-size: 13px;
-    overflow: hidden;
-  }
-
-  .ai-banner-copy span:last-child {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .ai-banner-icon {
-    display: grid;
-    flex: 0 0 auto;
-    place-items: center;
-    color: var(--primary);
-  }
-
-  .ai-banner-action {
-    display: inline-flex;
-    height: 28px;
-    flex: 0 0 auto;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    padding: 0 10px;
-    border: 1px solid var(--primary);
-    border-radius: 6px;
-    background: transparent;
-    color: var(--primary);
-    cursor: pointer;
-    font-size: 12px;
     font-weight: 600;
+    cursor: pointer;
+    transition: border-color .15s ease, box-shadow .15s ease;
   }
 
-  .ai-banner-action:hover {
-    background: var(--primary);
-    color: #fff;
+  .invite-btn:hover {
+    border-color: var(--primary);
+    box-shadow: 0 8px 18px -10px rgba(47, 122, 76, .5);
   }
 
+  /* ---------- quick actions ---------- */
   .quick-actions {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 8px;
-    margin-bottom: 20px;
+    gap: 16px;
+    margin-bottom: 16px;
   }
 
-  .quick-actions button,
-  .workbook-card {
+  .qa {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 18px;
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: 16px;
     background: var(--surface);
     text-align: left;
-    transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease;
-  }
-
-  .quick-actions button {
-    display: grid;
-    grid-template-columns: 36px 1fr;
-    column-gap: 12px;
-    padding: 14px 16px;
     cursor: pointer;
+    animation: omFadeUp .55s cubic-bezier(.2, .7, .2, 1) both;
+    transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;
   }
 
-  .quick-actions button:hover:not(:disabled),
-  .workbook-card:hover {
-    border-color: var(--primary);
-    box-shadow: 0 8px 22px rgba(22, 100, 255, .10);
+  .qa:hover:not(:disabled) {
+    transform: translateY(-2px);
   }
 
-  .workbook-card:hover {
-    transform: translateY(-1px);
+  .qa-brand:hover:not(:disabled) {
+    border-color: var(--brand-mid);
+    box-shadow: 0 16px 32px -18px rgba(47, 122, 76, .5);
   }
 
-  .quick-actions button:disabled {
+  .qa-seed:hover:not(:disabled) {
+    border-color: #e2a782;
+    box-shadow: 0 16px 32px -18px rgba(204, 107, 58, .45);
+  }
+
+  .qa-neutral:hover:not(:disabled) {
+    border-color: var(--border-dark);
+    box-shadow: 0 16px 32px -18px rgba(34, 30, 23, .3);
+  }
+
+  .qa:disabled {
     opacity: .55;
     cursor: not-allowed;
   }
 
-  .quick-actions span {
+  .qa-icon {
     display: grid;
-    width: 36px;
-    height: 36px;
-    grid-row: span 2;
+    width: 44px;
+    height: 44px;
+    flex-shrink: 0;
     place-items: center;
-    border-radius: 8px;
+    border-radius: 13px;
+  }
+
+  .qa-brand .qa-icon {
     background: var(--primary-light);
+    color: var(--primary);
   }
 
-  strong {
+  .qa-seed .qa-icon {
+    background: var(--seed-soft);
+    color: var(--seed);
+  }
+
+  .qa-neutral .qa-icon {
+    background: var(--bg);
+    color: var(--text-2);
+  }
+
+  .qa-text {
+    min-width: 0;
+  }
+
+  .qa-text strong {
+    display: block;
+    margin-bottom: 3px;
     color: var(--text-1);
-    font-size: 13px;
+    font-size: 14px;
+    font-weight: 700;
   }
 
-  small {
+  .qa-text small {
+    display: block;
     color: var(--text-3);
-    font-size: 11px;
+    font-size: 12px;
   }
 
+  .inline-note {
+    margin: 0 0 16px;
+    color: var(--text-3);
+    font-size: 12px;
+  }
+
+  /* ---------- AI banner ---------- */
+  .ai-banner {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    margin-bottom: 34px;
+    padding: 22px 26px;
+    border-radius: 18px;
+    background: linear-gradient(105deg, #234e36 0%, #2f7a4c 55%, #3c8f5a 100%);
+    overflow: hidden;
+    animation: omFadeUp .55s cubic-bezier(.2, .7, .2, 1) both .24s;
+  }
+
+  .ai-banner::before,
+  .ai-banner::after {
+    position: absolute;
+    border-radius: 50%;
+    content: "";
+    pointer-events: none;
+  }
+
+  .ai-banner::before {
+    right: -40px;
+    top: -50px;
+    width: 220px;
+    height: 220px;
+    background: radial-gradient(circle, rgba(255, 255, 255, .14), transparent 70%);
+  }
+
+  .ai-banner::after {
+    right: 120px;
+    bottom: -70px;
+    width: 160px;
+    height: 160px;
+    background: radial-gradient(circle, rgba(141, 212, 154, .25), transparent 70%);
+  }
+
+  .ai-orb {
+    display: grid;
+    width: 50px;
+    height: 50px;
+    flex-shrink: 0;
+    place-items: center;
+    border-radius: 15px;
+    background: rgba(255, 255, 255, .16);
+  }
+
+  .ai-orb :global(.ai-leaf) {
+    transform-origin: 50% 100%;
+    animation: omSway 4s ease-in-out infinite;
+  }
+
+  .ai-copy {
+    flex: 1;
+    min-width: 0;
+    position: relative;
+  }
+
+  .ai-title {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    margin-bottom: 5px;
+  }
+
+  .ai-title strong {
+    color: #fff;
+    font-size: 15px;
+    font-weight: 700;
+  }
+
+  .ai-beta {
+    padding: 2px 8px;
+    border-radius: 99px;
+    background: rgba(255, 255, 255, .18);
+    color: #eaf6e9;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: .6px;
+  }
+
+  .ai-copy p {
+    margin: 0;
+    max-width: 560px;
+    color: rgba(255, 255, 255, .82);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .ai-action {
+    position: relative;
+    display: inline-flex;
+    height: 42px;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 8px;
+    padding: 0 20px;
+    border: 0;
+    border-radius: 12px;
+    background: #fff;
+    color: var(--brand-strong);
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: transform .15s ease, box-shadow .15s ease;
+  }
+
+  .ai-action:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 14px 26px -12px rgba(0, 0, 0, .4);
+  }
+
+  /* ---------- workbook section ---------- */
   .workbook-section {
     min-width: 0;
   }
@@ -528,295 +784,239 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    border-bottom: 1px solid var(--border);
+    gap: 16px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+    animation: omFadeUp .5s cubic-bezier(.2, .7, .2, 1) both .3s;
   }
 
-  .tabs {
+  .section-title {
     display: flex;
+    align-items: baseline;
+    gap: 12px;
   }
 
-  .tabs button {
-    position: relative;
-    height: 40px;
+  .section-title h2 {
+    margin: 0;
+    color: var(--text-1);
+    font-family: var(--font-serif);
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -.2px;
+  }
+
+  .count {
+    color: var(--text-3);
+    font-size: 13px;
+  }
+
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .segment {
+    display: inline-flex;
+    gap: 2px;
+    padding: 3px;
+    border: 1px solid var(--border);
+    border-radius: 11px;
+    background: var(--bg);
+  }
+
+  .segment button {
+    display: grid;
+    height: 30px;
+    place-items: center;
     padding: 0 14px;
     border: 0;
+    border-radius: 8px;
     background: transparent;
-    color: var(--text-2);
-    font-size: 13px;
+    color: var(--text-3);
+    font-size: 12.5px;
+    font-weight: 600;
     cursor: pointer;
+    transition: all .15s ease;
   }
 
-  .tabs button.active {
-    color: var(--primary);
-    font-weight: 650;
-  }
-
-  .tabs button.active::after {
-    position: absolute;
-    right: 12px;
-    bottom: 0;
-    left: 12px;
-    height: 2px;
-    border-radius: 2px;
-    background: var(--primary);
-    content: "";
-  }
-
-  .view-toggle {
-    display: flex;
-    gap: 4px;
+  .segment button.active {
+    background: var(--surface);
+    color: var(--text-1);
+    box-shadow: 0 1px 3px rgba(34, 30, 23, .12);
   }
 
   .view-toggle button {
-    display: grid;
     width: 32px;
-    height: 32px;
-    place-items: center;
-    border: 0;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--text-2);
-    cursor: pointer;
+    padding: 0;
+    color: var(--text-3);
   }
 
   .view-toggle button.active {
-    background: var(--primary-light);
-    color: var(--primary);
+    color: var(--text-1);
   }
 
-  .head,
-  .list-main {
-    display: grid;
-    grid-template-columns: minmax(260px, 1fr) 120px 132px 150px;
+  .sort {
+    position: relative;
+    display: inline-flex;
     align-items: center;
   }
 
-  .head {
-    padding: 6px 10px;
-    border-bottom: 1px solid var(--border);
-    color: var(--text-3);
-    font-size: 11px;
-    font-weight: 600;
+  .sort :global(svg) {
+    position: absolute;
+    left: 11px;
+    pointer-events: none;
   }
 
-  .workbook-list-row {
-    border-bottom: 1px solid var(--border);
-  }
-
-  .list-main {
-    width: 100%;
-    min-height: 58px;
-    padding: 8px 10px;
-    border: 0;
-    background: transparent;
+  .sort select {
+    appearance: none;
+    height: 36px;
+    padding: 0 30px 0 32px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
     color: var(--text-2);
-    font-size: 13px;
-    text-align: left;
+    font-size: 12.5px;
+    font-weight: 500;
     cursor: pointer;
   }
 
-  .list-main:hover {
-    background: #f7f9ff;
-  }
-
-  .list-name {
-    display: flex;
-    min-width: 0;
-    align-items: center;
-    gap: 10px;
-  }
-
-  .list-name strong,
-  .card-title-row strong {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .list-name > span:last-child {
-    display: grid;
-    min-width: 0;
-    gap: 2px;
-  }
-
-  .list-preview {
-    display: grid;
-    width: 34px;
-    height: 34px;
-    flex: 0 0 auto;
-    place-items: center;
-    border-radius: 8px;
-    color: var(--primary);
-  }
-
-  .list-preview.table {
-    background: var(--primary-light);
-  }
-
-  .list-preview.graph {
-    background: var(--purple-bg);
-    color: var(--purple);
-  }
-
-  .list-preview.blank {
-    background: var(--soft);
-    color: var(--text-3);
-  }
-
-  em {
-    display: inline-flex;
-    width: fit-content;
-    padding: 2px 7px;
-    border-radius: 4px;
-    background: var(--primary-light);
-    color: var(--primary);
-    font-size: 11px;
-    font-style: normal;
-  }
-
+  /* ---------- grid ---------- */
   .workbook-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-    gap: 14px;
-    padding-top: 14px;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 18px;
   }
 
   .workbook-card {
     position: relative;
     min-width: 0;
-    overflow: visible;
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    background: var(--surface);
+    overflow: hidden;
+    animation: omFadeUp .5s cubic-bezier(.2, .7, .2, 1) both;
+    transition: transform .2s ease, box-shadow .2s ease, border-color .2s ease;
+  }
+
+  .workbook-card:hover {
+    transform: translateY(-4px);
+    border-color: var(--border-dark);
+    box-shadow: 0 22px 44px -22px rgba(34, 30, 23, .4);
   }
 
   .card-main {
-    display: grid;
+    display: flex;
     width: 100%;
-    min-height: 246px;
-    grid-template-rows: 116px 1fr;
+    flex-direction: column;
     padding: 0;
     border: 0;
-    border-radius: 8px;
     background: transparent;
     text-align: left;
     cursor: pointer;
   }
 
-  .workbook-card-preview {
-    display: grid;
-    margin: 12px 12px 0;
+  .card-preview {
+    position: relative;
+    height: 118px;
     overflow: hidden;
-    place-items: center;
-    border-radius: 8px;
   }
 
-  .workbook-card-preview.table {
-    border: 1px solid #cfe0ff;
-    background: linear-gradient(180deg, #f8fbff, #eef5ff);
+  .card-grid-bg {
+    position: absolute;
+    inset: 0;
+    opacity: .5;
+    background-size: 26px 26px;
+    mask-image: linear-gradient(160deg, #000, transparent 75%);
+    -webkit-mask-image: linear-gradient(160deg, #000, transparent 75%);
   }
 
-  .workbook-card-preview.graph {
-    border: 1px solid #dfd7ff;
-    background: #f7f4ff;
-  }
-
-  .workbook-card-preview.blank {
-    border: 1px solid var(--border);
-    background: linear-gradient(135deg, #f7f8fa, #edf0f5);
-  }
-
-  .preview-grid {
+  .card-kind {
+    position: absolute;
+    left: 18px;
+    top: 18px;
     display: grid;
-    width: calc(100% - 30px);
-    height: 74px;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    grid-template-rows: repeat(3, minmax(0, 1fr));
-    gap: 5px;
+    width: 42px;
+    height: 42px;
+    place-items: center;
+    border-radius: 12px;
+    background: var(--surface);
+    box-shadow: 0 4px 12px -4px rgba(34, 30, 23, .18);
   }
 
-  .preview-grid span {
-    border: 1px solid #d9e6ff;
-    border-radius: 4px;
-    background: rgba(255, 255, 255, .86);
-  }
-
-  .preview-grid span.strong {
-    background: #dbe9ff;
-  }
-
-  .workbook-card-preview svg {
-    width: 82%;
-    height: 82%;
-  }
-
-  .workbook-card-preview line {
-    stroke: #a797e9;
-    stroke-width: 3;
-    stroke-linecap: round;
-  }
-
-  .workbook-card-preview circle {
-    fill: #fff;
-    stroke: var(--purple);
-    stroke-width: 4;
-  }
-
-  .blank-preview {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    justify-content: center;
-    gap: 7px;
-    padding: 0 18px;
-  }
-
-  .blank-preview span {
-    display: block;
-    height: 10px;
-    border-radius: 999px;
-    background: #dfe3ea;
+  .card-status {
+    position: absolute;
+    right: 14px;
+    top: 14px;
   }
 
   .card-info {
-    display: grid;
-    gap: 10px;
-    padding: 14px 14px 13px;
+    display: flex;
+    flex-direction: column;
+    padding: 16px 18px 14px;
   }
 
-  .card-title-row,
-  .card-meta,
+  .tag {
+    align-self: flex-start;
+    padding: 2px 9px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .card-info h3 {
+    margin: 9px 0 6px;
+    color: var(--text-1);
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1.35;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .card-sub {
+    margin: 0 0 16px;
+    color: var(--text-3);
+    font-size: 12px;
+  }
+
   .card-footer {
     display: flex;
-    min-width: 0;
     align-items: center;
     justify-content: space-between;
-    gap: 10px;
   }
 
-  .card-title-row strong {
-    min-width: 0;
-    font-size: 14px;
-  }
-
-  .card-meta,
-  .record-hint {
+  .updated {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     color: var(--text-3);
+    font-size: 11.5px;
+  }
+
+  /* ---------- status / tag / avatars ---------- */
+  .status-pill {
+    padding: 4px 10px;
+    border-radius: 99px;
     font-size: 11px;
+    font-weight: 600;
   }
 
   .avatars {
     display: flex;
-    min-width: 0;
     align-items: center;
   }
 
   .avatar {
     display: grid;
-    width: 24px;
-    height: 24px;
+    width: 26px;
+    height: 26px;
     place-items: center;
     border: 2px solid var(--surface);
     border-radius: 50%;
     color: #fff;
-    font-size: 10px;
+    font-size: 10.5px;
     font-weight: 700;
   }
 
@@ -824,30 +1024,149 @@
     margin-left: -7px;
   }
 
-  .avatar.blue {
-    background: #2563eb;
-  }
-
-  .avatar.green {
-    background: #0891b2;
-  }
-
-  .avatar.amber {
-    background: #d97706;
-  }
-
-  .avatar.purple {
-    background: #7c3aed;
-  }
-
   .avatar.more {
-    background: var(--text-3);
+    background: var(--text-3) !important;
   }
 
+  /* ---------- list ---------- */
+  .workbook-table {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    background: var(--surface);
+    overflow: hidden;
+  }
+
+  .list-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    width: 100%;
+    padding: 14px 18px;
+    border: 0;
+    border-bottom: 1px solid var(--border);
+    background: transparent;
+    text-align: left;
+    cursor: pointer;
+    animation: omFadeUp .5s cubic-bezier(.2, .7, .2, 1) both;
+    transition: background .15s ease;
+  }
+
+  .list-row:last-child {
+    border-bottom: 0;
+  }
+
+  .list-row:hover {
+    background: var(--bg);
+  }
+
+  .list-icon {
+    display: grid;
+    width: 40px;
+    height: 40px;
+    flex-shrink: 0;
+    place-items: center;
+    border-radius: 11px;
+  }
+
+  .list-main {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .list-title-row {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+
+  .list-title-row strong {
+    color: var(--text-1);
+    font-size: 14px;
+    font-weight: 700;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .list-title-row .tag {
+    flex-shrink: 0;
+    padding: 1px 8px;
+    border-radius: 5px;
+    font-size: 10.5px;
+  }
+
+  .list-main small {
+    display: block;
+    margin-top: 3px;
+    color: var(--text-3);
+    font-size: 12px;
+  }
+
+  .list-row .status-pill,
+  .list-row .avatars {
+    flex-shrink: 0;
+  }
+
+  .list-row .avatar {
+    width: 24px;
+    height: 24px;
+    font-size: 10px;
+  }
+
+  .list-updated {
+    width: 96px;
+    flex-shrink: 0;
+    text-align: right;
+    color: var(--text-3);
+    font-size: 12px;
+  }
+
+  /* ---------- states ---------- */
+  .state-msg {
+    padding: 48px 0;
+    color: var(--text-3);
+    font-size: 13px;
+    text-align: center;
+  }
+
+  .state-msg.error {
+    color: var(--error);
+  }
+
+  .empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    padding: 64px 20px;
+    border: 1px dashed var(--border-dark);
+    border-radius: 18px;
+    background: var(--surface);
+  }
+
+  .empty-icon {
+    display: grid;
+    width: 60px;
+    height: 60px;
+    place-items: center;
+    border-radius: 18px;
+    background: var(--primary-light);
+  }
+
+  .empty p {
+    margin: 0;
+    color: var(--text-2);
+    font-size: 14px;
+  }
+
+  /* ---------- more menu ---------- */
   .more-menu {
     position: absolute;
-    top: 18px;
-    right: 18px;
+    top: 16px;
+    right: 16px;
     z-index: 2;
     opacity: 0;
     pointer-events: none;
@@ -860,34 +1179,30 @@
     pointer-events: auto;
   }
 
-  .more-trigger,
-  .menu-popover button {
-    border: 1px solid var(--border);
-    background: var(--surface);
-    color: var(--text-2);
-    cursor: pointer;
-  }
-
   .more-trigger {
     display: grid;
     width: 30px;
     height: 30px;
     place-items: center;
-    border-radius: 7px;
-    box-shadow: 0 6px 16px rgba(15, 23, 42, .10);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: var(--surface);
+    color: var(--text-2);
+    cursor: pointer;
+    box-shadow: 0 6px 16px rgba(34, 30, 23, .12);
   }
 
   .menu-popover {
     position: absolute;
-    top: 34px;
+    top: 36px;
     right: 0;
     display: none;
-    min-width: 138px;
+    min-width: 144px;
     padding: 5px;
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: 10px;
     background: var(--surface);
-    box-shadow: 0 14px 28px rgba(15, 23, 42, .14);
+    box-shadow: 0 14px 28px rgba(34, 30, 23, .14);
   }
 
   .more-menu:hover .menu-popover,
@@ -899,39 +1214,25 @@
   .menu-popover button {
     display: flex;
     align-items: center;
-    gap: 7px;
+    gap: 8px;
     width: 100%;
-    padding: 7px 8px;
+    padding: 8px 9px;
     border: 0;
-    border-radius: 6px;
-    font-size: 12px;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--text-2);
+    font-size: 12.5px;
     text-align: left;
+    cursor: pointer;
   }
 
   .menu-popover button:hover:not(:disabled) {
-    background: var(--soft);
+    background: var(--bg);
     color: var(--text-1);
   }
 
   .menu-popover button:disabled {
     opacity: .5;
     cursor: not-allowed;
-  }
-
-  .state-msg {
-    padding: 48px 0;
-    color: var(--text-3);
-    font-size: 13px;
-    text-align: center;
-  }
-
-  .state-msg.error {
-    color: var(--error);
-  }
-
-  .inline-note {
-    margin: -8px 0 16px;
-    color: var(--text-3);
-    font-size: 12px;
   }
 </style>

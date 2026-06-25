@@ -90,6 +90,7 @@
       <Plus size={15} color="#fff" />新建文档
     </button>
 
+    <span class="nav-label">导航</span>
     <nav class="main-nav">
       <button class:active={page === "home"} onclick={() => go("home")}>
         <House size={16} />首页
@@ -138,12 +139,13 @@
 
       {#each pinnedWorkbooks as wb (wb.id)}
         <button class="pinned-item" onclick={() => onopenworkbook?.(wb.id)} title={wb.name}>
-          <Pin size={13} />
+          <Pin size={13} color="var(--seed)" />
           <span class="pinned-name">{wb.name}</span>
         </button>
       {/each}
     </div>
 
+    <span class="nav-label tool-label">工具</span>
     <div class="tool-nav">
       <button class:active={page === "admin"} onclick={() => go("admin")}>
         <Settings size={16} />工作区设置
@@ -192,7 +194,7 @@
 <style>
   .side-nav {
     display: flex;
-    width: 220px;
+    width: 256px;
     height: 100%;
     flex-shrink: 0;
     flex-direction: column;
@@ -208,33 +210,29 @@
   }
 
   .sidebar-top {
-    padding: 12px;
-    border-bottom: 1px solid var(--border);
+    padding: 16px 16px 14px;
   }
 
   .brand {
     display: flex;
     width: 100%;
-    padding: 4px 2px 10px;
+    margin-bottom: 14px;
+    padding: 2px;
     border: 0;
-    border-radius: 0;
+    border-radius: 10px;
     background: transparent;
     cursor: pointer;
-  }
-
-  .brand:hover {
-    background: var(--bg);
   }
 
   .sidebar-search {
     display: flex;
     width: 100%;
-    height: 34px;
+    height: 38px;
     align-items: center;
-    gap: 8px;
-    padding: 0 10px;
+    gap: 9px;
+    padding: 0 12px;
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: 11px;
     background: var(--bg);
   }
 
@@ -255,15 +253,26 @@
   }
 
   .new-doc {
-    width: calc(100% - 24px);
-    margin: 8px 12px;
-    padding: 8px 0;
+    width: calc(100% - 32px);
+    height: 42px;
+    margin: 0 16px 18px;
+    border-radius: 12px;
+    font-weight: 600;
     cursor: pointer;
+    box-shadow: 0 8px 18px -8px rgba(47, 122, 76, .6);
+    transition: transform .15s ease, box-shadow .15s ease, background .15s ease;
+  }
+
+  .new-doc:hover:not(:disabled) {
+    background: var(--brand-strong);
+    transform: translateY(-1px);
+    box-shadow: 0 12px 22px -8px rgba(47, 122, 76, .7);
   }
 
   .new-doc:disabled {
     opacity: .55;
     cursor: not-allowed;
+    box-shadow: none;
   }
 
   .sidebar-nav {
@@ -272,36 +281,52 @@
     min-height: 0;
     flex-direction: column;
     overflow-y: auto;
-    padding: 4px 0;
+    padding: 0 0 8px;
+  }
+
+  .nav-label {
+    padding: 0 22px 8px;
+    color: var(--text-3);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+  }
+
+  .tool-label {
+    padding-top: 18px;
   }
 
   .main-nav,
   .tool-nav {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 3px;
   }
 
   .main-nav button,
   .tool-nav button {
     display: flex;
     align-items: center;
-    gap: 9px;
-    width: calc(100% - 24px);
-    margin: 0 12px;
-    padding: 7px 10px;
+    gap: 11px;
+    width: calc(100% - 32px);
+    margin: 0 16px;
+    padding: 9px 12px;
     border: 0;
-    border-radius: 7px;
+    border-radius: 10px;
     background: transparent;
     color: var(--text-2);
     font-size: 13px;
+    font-weight: 500;
     text-align: left;
     cursor: pointer;
+    transition: background .15s ease, color .15s ease;
   }
 
   .main-nav button:hover,
   .tool-nav button:hover:not(:disabled) {
     background: var(--bg);
+    color: var(--text-1);
   }
 
   .tool-nav button:disabled {
@@ -311,13 +336,12 @@
 
   button.active {
     background: var(--primary-light);
-    color: var(--primary);
-    font-weight: 650;
+    color: var(--brand-strong);
+    font-weight: 600;
   }
 
   .tool-nav {
     margin-top: auto;
-    padding: 4px 0;
   }
 
   .sidebar-footer {
@@ -329,8 +353,8 @@
     display: flex;
     flex-shrink: 0;
     align-items: center;
-    gap: 9px;
-    padding: 10px 12px;
+    gap: 10px;
+    padding: 12px 16px;
     border-top: 1px solid var(--border);
   }
 
@@ -394,23 +418,22 @@
   .pinned-section {
     display: flex;
     flex-direction: column;
-    padding: 8px 0 4px;
-    border-top: 1px solid var(--border);
-    margin-top: 4px;
+    margin-top: 22px;
+    padding: 0;
   }
 
   .pinned-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0 12px 4px;
+    padding: 0 22px 8px;
   }
 
   .pinned-title {
     color: var(--text-3);
-    font-size: 11px;
+    font-size: 10.5px;
     font-weight: 600;
-    letter-spacing: 0.03em;
+    letter-spacing: 1.5px;
     text-transform: uppercase;
   }
 
@@ -436,18 +459,19 @@
   .pinned-item {
     display: flex;
     align-items: center;
-    gap: 8px;
-    width: calc(100% - 24px);
-    margin: 0 12px;
-    padding: 5px 8px;
+    gap: 9px;
+    width: calc(100% - 28px);
+    margin: 0 14px;
+    padding: 7px 10px;
     border: 0;
-    border-radius: 6px;
+    border-radius: 9px;
     background: transparent;
     color: var(--text-2);
     font-size: 12.5px;
     text-align: left;
     cursor: pointer;
     overflow: hidden;
+    transition: background .15s ease;
   }
 
   .pinned-item:hover {
@@ -463,9 +487,9 @@
   .pin-picker {
     display: flex;
     flex-direction: column;
-    margin: 0 12px 4px;
+    margin: 0 14px 4px;
     border: 1px solid var(--border);
-    border-radius: 7px;
+    border-radius: 9px;
     background: var(--surface);
     overflow: hidden;
   }
@@ -496,6 +520,6 @@
     padding: 8px 10px;
     color: var(--text-3);
     font-size: 12px;
-    margin: 0 12px 4px;
+    margin: 0 14px 4px;
   }
 </style>
