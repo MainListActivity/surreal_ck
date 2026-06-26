@@ -1,0 +1,23 @@
+#V2
+CREATE ev SET city = "a";
+CREATE ev SET city = "b";
+SELECT city, count() AS value FROM ev GROUP BY city;
+CREATE ev SET city = "a";
+SELECT city, count() AS value FROM ev GROUP BY city;
+CREATE ev SET created_at = d"2026-06-26T03:00:00Z";
+CREATE ev SET created_at = d"2026-06-26T09:00:00Z";
+CREATE ev SET created_at = d"2026-06-24T09:00:00Z";
+CREATE ev SET created_at = d"2026-06-22T09:00:00Z";
+SELECT time::format(created_at, "%Y-%m-%d") AS day, count() AS value FROM ev GROUP BY day ORDER BY day;
+DEFINE TABLE activity_event SCHEMALESS;
+CREATE activity_event SET created_at = d"2026-06-26T03:00:00Z";
+CREATE activity_event SET created_at = d"2026-06-26T09:00:00Z";
+CREATE activity_event SET created_at = d"2026-06-22T09:00:00Z";
+LET $since = d"2026-06-20T00:00:00Z";
+SELECT time::format(created_at, "%Y-%m-%d") AS day, count() AS value FROM activity_event WHERE created_at >= $since GROUP BY day ORDER BY day;
+DEFINE TABLE activity_event SCHEMALESS;
+CREATE activity_event SET created_at = d"2026-06-26T03:00:00Z";
+CREATE activity_event SET created_at = d"2026-06-26T09:00:00Z";
+CREATE activity_event SET created_at = d"2026-06-22T09:00:00Z";
+LET $since = d"2026-06-20T00:00:00Z";
+SELECT time::format(created_at, "%Y-%m-%d") AS day, count() AS value FROM activity_event WHERE created_at >= $since GROUP BY day ORDER BY day;

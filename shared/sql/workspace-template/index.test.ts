@@ -5,8 +5,8 @@ describe("workspace template scripts", () => {
   test("loads workspace template scripts in version order from the shared template directory", async () => {
     const scripts = await loadTemplateScripts();
 
-    expect(WORKSPACE_TEMPLATE_VERSION).toBe(9);
-    expect(scripts.map((script) => script.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(WORKSPACE_TEMPLATE_VERSION).toBe(10);
+    expect(scripts.map((script) => script.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     expect(scripts.map((script) => script.name)).toEqual([
       "001-access.surql",
       "002-tables-core.surql",
@@ -17,6 +17,7 @@ describe("workspace template scripts", () => {
       "007-access-claim-rename.surql",
       "008-resource-library.surql",
       "009-fn-current-user.surql",
+      "010-activity-event.surql",
     ]);
     expect(scripts[0]?.sql).toContain("DEFINE ACCESS OVERWRITE admin");
     expect(scripts[1]?.sql).toContain("DEFINE TABLE IF NOT EXISTS user");
@@ -26,6 +27,7 @@ describe("workspace template scripts", () => {
     expect(scripts[5]?.sql).toContain("DEFINE TABLE IF NOT EXISTS workbook");
     expect(scripts[7]?.sql).toContain("DEFINE TABLE IF NOT EXISTS resource_item");
     expect(scripts[8]?.sql).toContain("DEFINE FUNCTION OVERWRITE fn::current_user()");
+    expect(scripts[9]?.sql).toContain("DEFINE TABLE IF NOT EXISTS activity_event");
   });
 
   test("fn::current_user：JWT 会话($auth NONE)按 $token.sub 反查，RECORD 会话直接返回 $auth，函数对所有会话可调用", async () => {
@@ -144,6 +146,35 @@ describe("workspace template scripts", () => {
     // embedding profile：成员可读、仅管理员可写；维度必须为正
     expect(sql).toMatch(/workspace_embedding_profile SCHEMAFULL[\s\S]*?FOR create, update, delete WHERE \$auth\.is_admin = true/);
     expect(sql).toMatch(/dimensions ON TABLE workspace_embedding_profile TYPE int[\s\S]*?ASSERT \$value > 0/);
+  });
+
+  test("activity_event 表归属 workspace database：归因 fn::current_user()、verb 枚举、静态表挂 event", async () => {
+    const scripts = await loadTemplateScripts();
+    const activity = scripts.find((script) => script.name === "010-activity-event.surql");
+
+    expect(activity).toBeDefined();
+    const sql = activity!.sql;
+
+    expect(sql).toContain("DEFINE TABLE IF NOT EXISTS activity_event");
+    // 隔离靠 db 边界：不带 workspace 字段
+    expect(sql).not.toMatch(/DEFINE FIELD [\w ]+ workspace ON TABLE activity_event/);
+    // 归因走当前会话身份（009），与 admin/participant/employee 三路兼容
+    expect(sql).toContain("DEFINE FIELD IF NOT EXISTS actor ON TABLE activity_event TYPE option<record<user>> DEFAULT fn::current_user()");
+    // verb 用枚举约束，覆盖 workbook / field / record 写入动词
+    expect(sql).toMatch(/verb ON TABLE activity_event TYPE string\s+ASSERT \$value INSIDE \[/);
+    expect(sql).toContain('"workbook.create"');
+    expect(sql).toContain('"record.write"');
+    // 同 workspace 任何登录用户可读可写动态，仅管理员可改删
+    expect(sql).toContain("FOR select WHERE $auth != NONE");
+    expect(sql).toContain("FOR create WHERE $auth != NONE");
+    expect(sql).toMatch(/FOR update, delete WHERE \$auth\.is_admin = true/);
+    // created_at 带索引供列表倒序 / 趋势聚合
+    expect(sql).toMatch(/DEFINE INDEX IF NOT EXISTS \w+ ON TABLE activity_event COLUMNS created_at/);
+    // 静态业务表写入即落动态
+    expect(sql).toContain("DEFINE EVENT OVERWRITE workbook_activity ON TABLE workbook");
+    expect(sql).toContain("DEFINE EVENT OVERWRITE sheet_activity ON TABLE sheet");
+    expect(sql).toContain("DEFINE EVENT OVERWRITE dashboard_page_activity ON TABLE dashboard_page");
+    expect(sql).toContain("CREATE activity_event CONTENT");
   });
 
   test("keeps JWT access placeholders by default and can render them for backend execution", async () => {

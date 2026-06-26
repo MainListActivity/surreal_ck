@@ -2,13 +2,6 @@ import type { SurrealConn } from "./surreal";
 
 export type ActivityTab = "activity" | "overview" | "tasks";
 
-export type ActivityEntry = {
-  id: string;
-  actor: string;
-  action: string;
-  timestamp: Date;
-};
-
 export type ChartBar = {
   label: string;
   value: number;
@@ -41,26 +34,52 @@ export async function countWorkbooks(conn: Pick<SurrealConn, "query">): Promise<
   return rows[0]?.count ?? 0;
 }
 
-const NOW = new Date();
-const h = (hours: number) => new Date(NOW.getTime() - hours * 3600000);
-const d = (days: number) => new Date(NOW.getTime() - days * 86400000);
+/** 一天对应的本地日期 key（YYYY-MM-DD），与 SurrealDB time::format 同口径但按本地时区。 */
+function localDayKey(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
 
-export const MOCK_ACTIVITY_ENTRIES: ActivityEntry[] = [
-  { id: "1", actor: "张三", action: "添加了 12 条记录", timestamp: h(2) },
-  { id: "2", actor: "AI 助手", action: "生成了 SurrealQL 查询", timestamp: d(1) },
-  { id: "3", actor: "李四", action: "新建了工作簿「债权台账 v2」", timestamp: d(1) },
-  { id: "4", actor: "王五", action: "修改了 3 个字段定义", timestamp: d(2) },
-  { id: "5", actor: "张三", action: "导入了 Excel 文件", timestamp: d(3) },
-  { id: "6", actor: "AI 助手", action: "完成了资源检索任务", timestamp: d(5) },
-  { id: "7", actor: "李四", action: "邀请了新成员加入工作区", timestamp: d(7) },
-];
+const WEEKDAY_LABELS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+function weekdayLabel(date: Date): string {
+  return WEEKDAY_LABELS[date.getDay()];
+}
 
-export const MOCK_CHART_BARS: ChartBar[] = [
-  { label: "周一", value: 8 },
-  { label: "周二", value: 23 },
-  { label: "周三", value: 15 },
-  { label: "周四", value: 41 },
-  { label: "周五", value: 19 },
-  { label: "周六", value: 6 },
-  { label: "周日", value: 12 },
-];
+/** SurrealDB 按天聚合返回的一行。 */
+export type DailyCountRow = { day: string; value: number };
+
+/**
+ * 纯逻辑：把按天聚合结果补成连续 `days` 天的桶（最旧→最新，含今天），缺失日期补 0，
+ * label 用中文星期。`day` 为 YYYY-MM-DD（按本地时区比对，与 localDayKey 一致）。
+ */
+export function buildTrendBuckets(rows: DailyCountRow[], days: number, now: Date = new Date()): ChartBar[] {
+  const counts = new Map<string, number>();
+  for (const r of rows) counts.set(r.day, (counts.get(r.day) ?? 0) + (r.value ?? 0));
+
+  const bars: ChartBar[] = [];
+  for (let i = days - 1; i >= 0; i--) {
+    const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+    const key = localDayKey(date);
+    bars.push({ label: weekdayLabel(date), value: counts.get(key) ?? 0 });
+  }
+  return bars;
+}
+
+/**
+ * 读最近 `days` 天每天的动态事件数，补零后返回 `ChartBar[]`（供数据概览迷你 bar chart）。
+ * 单表 + created_at 索引，比跨所有实体表聚合轻。PERMISSIONS 兜底，查询不带鉴权过滤。
+ */
+export async function loadDailyActivityTrend(
+  conn: Pick<SurrealConn, "query">,
+  days = 7,
+  now: Date = new Date(),
+): Promise<ChartBar[]> {
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (days - 1));
+  const rows = await conn.query<DailyCountRow>(
+    'SELECT time::format(created_at, "%Y-%m-%d") AS day, count() AS value FROM activity_event WHERE created_at >= $since GROUP BY day ORDER BY day',
+    { since: start },
+  );
+  return buildTrendBuckets(rows, days, now);
+}

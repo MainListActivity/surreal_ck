@@ -149,6 +149,21 @@ describe("buildCreateWorkbookTransaction — 纯 SurrealQL 构造", () => {
     expect(sql).toMatch(/last_opened_sheet: sheet:[0-9a-f]+/);
   });
 
+  test("实体表挂 record_activity event：行 CREATE/DELETE 自动落 activity_event", () => {
+    const { sql, bindings } = buildCreateWorkbookTransaction("台账");
+    const tableName = String(bindings.tableName);
+    // event 定义与建表在同一事务内
+    expect(sql).toMatch(new RegExp(`DEFINE EVENT (IF NOT EXISTS |OVERWRITE )?\\w+ ON TABLE ${tableName}`));
+    // CREATE → record.write，DELETE → record.delete
+    expect(sql).toContain('"record.write"');
+    expect(sql).toContain('"record.delete"');
+    // 写入 activity_event，归因由表字段 DEFAULT fn::current_user() 负责（event 内不手填 actor）
+    expect(sql).toContain("CREATE activity_event CONTENT");
+    expect(sql).not.toContain("actor:");
+    // 事件 THEN 块只在 CREATE/DELETE 触发（数据行 UPDATE 不算"新增/删除记录"，避免刷屏）
+    expect(sql).toMatch(/WHEN \$event = "CREATE" OR \$event = "DELETE"/);
+  });
+
   test("用户输入只进 bindings，不拼进 SQL 文本（防注入）", () => {
     const { sql, bindings } = buildCreateWorkbookTransaction("'; DROP TABLE workbook; --");
     expect(sql).not.toContain("DROP TABLE workbook");

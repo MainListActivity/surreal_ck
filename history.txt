@@ -1,0 +1,14 @@
+#V2
+-- 最小复现：user + fn::current_user + workbook + activity_event event
+DEFINE TABLE user SCHEMAFULL;
+DEFINE FIELD subject ON user TYPE option<string>;
+DEFINE FIELD display_name ON user TYPE option<string>;
+DEFINE FIELD is_admin ON user TYPE bool DEFAULT false;
+DEFINE FUNCTION OVERWRITE fn::current_user() -> option<record<user>> {    IF $auth != NONE { RETURN $auth.id; };    IF $token != NONE AND $token.sub != NONE {        RETURN (SELECT VALUE id FROM ONLY user WHERE subject = $token.sub LIMIT 1);    };    RETURN NONE;} PERMISSIONS FULL;
+DEFINE TABLE workbook SCHEMAFULL;
+DEFINE FIELD name ON workbook TYPE string;
+DEFINE FIELD created_at ON workbook TYPE datetime VALUE time::now() READONLY;
+DEFINE FIELD updated_at ON workbook TYPE datetime VALUE time::now();
+DEFINE TABLE activity_event SCHEMAFULL;
+DEFINE FIELD actor ON activity_event TYPE option<record<user>> DEFAULT fn::current_user();
+DEFINE FIELD verb ON activity_event TYPE string

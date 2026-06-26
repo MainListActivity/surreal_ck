@@ -1,13 +1,14 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import Avatar from "./Avatar.svelte";
   import {
     type ActivityTab,
-    formatRelativeTime,
+    type ChartBar,
     countWorkbooks,
-    MOCK_ACTIVITY_ENTRIES,
-    MOCK_CHART_BARS,
+    loadDailyActivityTrend,
   } from "$lib/activity-panel";
+  import { activityFeed } from "$lib/activity-feed.svelte";
+  import { activityRelativeTime } from "$lib/activity-feed";
   import { getSurreal } from "$lib/surreal";
 
   let activeTab = $state<ActivityTab>("activity");
@@ -19,26 +20,37 @@
   ];
 
   let workbookCount = $state<number | null>(null);
+  let trendBars = $state<ChartBar[]>([]);
 
-  const maxBarValue = $derived(Math.max(...MOCK_CHART_BARS.map((b) => b.value), 1));
+  const maxBarValue = $derived(Math.max(...trendBars.map((b) => b.value), 1));
 
   onMount(() => {
-    if (activeTab === "overview") loadWorkbookCount();
+    void activityFeed.start();
+    if (activeTab === "overview") loadOverview();
   });
 
-  async function loadWorkbookCount() {
+  onDestroy(() => {
+    activityFeed.stop();
+  });
+
+  async function loadOverview() {
     if (workbookCount !== null) return;
+    const conn = getSurreal();
     try {
-      const conn = getSurreal();
       workbookCount = await countWorkbooks(conn);
     } catch {
       workbookCount = 0;
+    }
+    try {
+      trendBars = await loadDailyActivityTrend(conn);
+    } catch {
+      trendBars = [];
     }
   }
 
   function handleTabClick(tab: ActivityTab) {
     activeTab = tab;
-    if (tab === "overview") loadWorkbookCount();
+    if (tab === "overview") loadOverview();
   }
 </script>
 
@@ -59,17 +71,24 @@
 
   <div class="panel-body" role="tabpanel">
     {#if activeTab === "activity"}
-      {#each MOCK_ACTIVITY_ENTRIES as entry (entry.id)}
-        <div class="activity-item" role="article">
-          <Avatar name={entry.actor} size={26} />
-          <div class="activity-content">
-            <div class="activity-text">
-              <strong>{entry.actor}</strong>{" "}{entry.action}
+      {#if activityFeed.loading && activityFeed.items.length === 0}
+        <div class="feed-state">加载中…</div>
+      {:else if activityFeed.items.length === 0}
+        <div class="feed-state">暂无动态</div>
+      {:else}
+        {#each activityFeed.items as item (item.id)}
+          {@const actor = activityFeed.actorName(item)}
+          <div class="activity-item" role="article">
+            <Avatar name={actor} size={26} />
+            <div class="activity-content">
+              <div class="activity-text">
+                <strong>{actor}</strong>{" "}{item.action}
+              </div>
+              <div class="activity-time">{activityRelativeTime(item)}</div>
             </div>
-            <div class="activity-time">{formatRelativeTime(entry.timestamp)}</div>
           </div>
-        </div>
-      {/each}
+        {/each}
+      {/if}
     {:else if activeTab === "overview"}
       <div class="insight-card">
         <div class="insight-card-header">
@@ -83,10 +102,10 @@
           {/if}
         </div>
         <div class="insight-card-header" style="margin-top: 16px;">
-          <span class="insight-card-title">本周新增记录</span>
+          <span class="insight-card-title">近 7 天动态</span>
         </div>
-        <div class="insight-mini-chart" aria-label="本周新增记录趋势图" aria-hidden="true">
-          {#each MOCK_CHART_BARS as bar}
+        <div class="insight-mini-chart" aria-label="近 7 天动态趋势图" aria-hidden="true">
+          {#each trendBars as bar}
             <div
               class="mini-bar"
               style={`height:${Math.round((bar.value / maxBarValue) * 100)}%`}
@@ -95,7 +114,7 @@
           {/each}
         </div>
         <div class="chart-labels" aria-hidden="true">
-          {#each MOCK_CHART_BARS as bar}
+          {#each trendBars as bar}
             <span>{bar.label.slice(1)}</span>
           {/each}
         </div>
@@ -180,6 +199,14 @@
     gap: 6px;
     scrollbar-width: thin;
     scrollbar-color: var(--border) transparent;
+  }
+
+  /* activity feed loading / empty state */
+  .feed-state {
+    padding: 32px 12px;
+    font-size: 12px;
+    color: var(--text-3);
+    text-align: center;
   }
 
   /* activity feed items — hover card style matching prototype */

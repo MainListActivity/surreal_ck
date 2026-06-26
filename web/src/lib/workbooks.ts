@@ -79,6 +79,10 @@ export function entityTableNameForWorkbook(wbKey: string): string {
  * - 实体表沿用 006-tables-grid 的 `SCHEMALESS CHANGEFEED 7d` 形态 + created_at/updated_at
  *   系统字段；业务列由 {@link buildSurrealFieldSchema} 生成（与 defineField / 后端模板同口径）。
  *   不带 workspace 字段（db 边界隔离）。
+ * - 实体表是动态建的，不在静态模板 schema 里，所以它的 record_activity event 必须在
+ *   建表时一并 `DEFINE`（HR-15）：数据行 CREATE → `record.write`、DELETE → `record.delete`
+ *   时引擎自动 `CREATE activity_event`，归因由 activity_event.actor 的 DEFAULT
+ *   fn::current_user() 负责（010）——前端零埋点。这是 DDL，与建表同一会话（admin）。
  * - workbook / sheet 用 JS 预生成的 key 显式建 RecordId，使表名能在建表前先算出来。
  * - 表名 / 字段名来自受控来源（randomKey + 固定列定义），不接受用户输入，无注入面；
  *   name / label 等用户值走 $bindings。
@@ -101,6 +105,7 @@ DEFINE TABLE IF NOT EXISTS ${tableName} SCHEMALESS CHANGEFEED 7d;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE ${tableName} TYPE datetime VALUE time::now() READONLY;
 DEFINE FIELD IF NOT EXISTS updated_at ON TABLE ${tableName} TYPE datetime VALUE time::now();
 DEFINE FIELD IF NOT EXISTS ${fieldSchema.fieldName} ON TABLE ${tableName} TYPE ${fieldSchema.type}${fieldSchema.assert};
+DEFINE EVENT OVERWRITE record_activity ON TABLE ${tableName} WHEN $event = "CREATE" OR $event = "DELETE" THEN { LET $verb = IF $event = "CREATE" { "record.write" } ELSE { "record.delete" }; LET $rec = IF $event = "DELETE" { $before } ELSE { $after }; CREATE activity_event CONTENT { verb: $verb, target_kind: "record", target: $rec.id }; };
 CREATE ${wbId} CONTENT { name: $name, last_opened_sheet: ${sheetId} };
 CREATE ${sheetId} CONTENT { workbook: ${wbId}, label: $label, table_name: $tableName, column_defs: $columnDefs };
 COMMIT TRANSACTION;`;
