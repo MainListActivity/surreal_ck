@@ -1,3 +1,4 @@
+import type { WorkbookTemplate } from "@surreal-ck/shared/rpc.types";
 import { filterWorkbooksByQuery, type WorkbookRow } from "./workbooks";
 import type { ConnectionState } from "./workspace-store";
 
@@ -17,11 +18,40 @@ export type WorkbookViewModeStorage = {
   setItem(key: string, value: string): unknown;
 };
 
+/**
+ * 卡片展示 = 工作簿类型(模板)派生而来。类型语义只有一份真相，在 `workbook_template`
+ * 数据里；这里只做「模板 → 视觉」的解析，无模板回退到空白工作簿。
+ *
+ * 状态（草稿 / 进行中 / 已发布）是另一条正交轴，由后续需求实现——本类型刻意不含
+ * statusLabel，避免再把类型和状态揉成一团。
+ */
 export type WorkbookCardPresentation = {
   previewKind: WorkbookPreviewKind;
-  statusLabel: string;
   templateLabel: string;
+  /** lucide 图标名（来自模板 icon）；无则用 previewKind 内置 svg mark。 */
+  icon?: string;
+  accent: string;
+  soft: string;
 };
+
+/** previewKind → 内置 svg mark 的兜底配色（无模板 / 模板无 accent 时用）。 */
+const PREVIEW_TONE: Record<WorkbookPreviewKind, { accent: string; soft: string }> = {
+  table: { accent: "#2F7A4C", soft: "#E7F0E4" },
+  graph: { accent: "#CC6B3A", soft: "#F7E7DA" },
+  blank: { accent: "#8C8472", soft: "#ECE7DB" },
+};
+
+/** 把 hex 强调色淡化成卡片背景（soft）：直接退回 previewKind 的内置 soft 即可，避免引色彩库。 */
+function softFor(previewKind: WorkbookPreviewKind): string {
+  return PREVIEW_TONE[previewKind].soft;
+}
+
+/** 模板 icon 名 → previewKind（决定无 icon 时的 svg mark 与兜底配色）。 */
+function previewKindForTemplate(template: WorkbookTemplate | undefined): WorkbookPreviewKind {
+  if (!template) return "blank";
+  if (["network", "relations", "graph", "git-fork"].includes(template.icon ?? "")) return "graph";
+  return "table";
+}
 
 export type ConnectionDotPresentation = {
   label: "已连接" | "已断开";
@@ -73,19 +103,28 @@ export function formatWorkbookUpdatedAt(value: string | undefined, now: Date = n
   return date.toLocaleDateString("zh-CN");
 }
 
-export function workbookCardPresentation(templateKey: string | undefined): WorkbookCardPresentation {
-  const key = templateKey?.toLowerCase() ?? "";
-  if (["graph", "network", "relations", "relationship"].includes(key)) {
-    return { previewKind: "graph", statusLabel: "待审核", templateLabel: "关系图谱" };
-  }
-  if (["claims", "claim", "finance", "table", "ledger"].includes(key)) {
+/**
+ * 卡片展示从工作簿解析到的业务模板派生：模板的 icon / accent / label 直接驱动渲染，
+ * 解析不到模板（templateRef 为空，或模板已被删）= 空白工作簿。
+ * 不再用字符串硬猜，也不在这里造类型语义——类型只活在 workbook_template 数据里。
+ */
+export function workbookCardPresentation(template: WorkbookTemplate | undefined): WorkbookCardPresentation {
+  if (!template) {
     return {
-      previewKind: "table",
-      statusLabel: key === "finance" ? "待审核" : "进行中",
-      templateLabel: key === "finance" ? "财务汇总" : "债权台账",
+      previewKind: "blank",
+      templateLabel: "空白工作簿",
+      accent: PREVIEW_TONE.blank.accent,
+      soft: PREVIEW_TONE.blank.soft,
     };
   }
-  return { previewKind: "blank", statusLabel: "草稿", templateLabel: "空白工作簿" };
+  const previewKind = previewKindForTemplate(template);
+  return {
+    previewKind,
+    templateLabel: template.label || "未命名类型",
+    icon: template.icon,
+    accent: template.accent || PREVIEW_TONE[previewKind].accent,
+    soft: softFor(previewKind),
+  };
 }
 
 export function homeGreetingForDate(now: Date = new Date()): string {

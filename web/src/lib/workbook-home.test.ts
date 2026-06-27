@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { WorkbookTemplate } from "@surreal-ck/shared/rpc.types";
 import type { WorkbookRow } from "./workbooks";
 import {
   WORKBOOK_VIEW_MODE_STORAGE_KEY,
@@ -16,9 +17,9 @@ import {
 } from "./workbook-home";
 
 const rows: WorkbookRow[] = [
-  { id: "workbook:a", name: "案件台账", templateKey: "claims", createdBy: "user:alice" },
-  { id: "workbook:b", name: "财务汇总", templateKey: "finance", createdBy: "user:bob" },
-  { id: "workbook:c", name: "图谱分析", templateKey: "graph", createdBy: "user:alice" },
+  { id: "workbook:a", name: "案件台账", templateRef: "workbook_template:case", createdBy: "user:alice" },
+  { id: "workbook:b", name: "财务汇总", createdBy: "user:bob" },
+  { id: "workbook:c", name: "图谱分析", templateRef: "workbook_template:entity", createdBy: "user:alice" },
 ];
 
 describe("filterHomeWorkbooks — 首页 tab 过滤", () => {
@@ -62,21 +63,37 @@ describe("workbook card presentation — 卡片展示模型", () => {
     expect(formatWorkbookUpdatedAt(undefined, now)).toBe("—");
   });
 
-  test("templateKey 映射为可区分的预览类型和状态标签", () => {
-    expect(workbookCardPresentation("claims")).toEqual({
+  test("展示从业务模板派生：模板的 icon/accent/label 驱动渲染，类型语义不在前端硬编码", () => {
+    const caseTemplate: WorkbookTemplate = {
+      id: "workbook_template:case", key: "case", label: "案件管理",
+      icon: "scale", accent: "#CC6B3A", columnDefs: [], builtin: true, sortOrder: 10,
+    };
+    expect(workbookCardPresentation(caseTemplate)).toEqual({
       previewKind: "table",
-      statusLabel: "进行中",
-      templateLabel: "债权台账",
+      templateLabel: "案件管理",
+      icon: "scale",
+      accent: "#CC6B3A",
+      soft: "#E7F0E4",
     });
-    expect(workbookCardPresentation("graph")).toEqual({
-      previewKind: "graph",
-      statusLabel: "待审核",
-      templateLabel: "关系图谱",
-    });
+  });
+
+  test("network 类图标解析为 graph 预览；模板缺 accent 时回退内置配色", () => {
+    const entityTemplate: WorkbookTemplate = {
+      id: "workbook_template:entity", key: "entity", label: "实体追踪",
+      icon: "network", columnDefs: [], builtin: true, sortOrder: 20,
+    };
+    const p = workbookCardPresentation(entityTemplate);
+    expect(p.previewKind).toBe("graph");
+    expect(p.templateLabel).toBe("实体追踪");
+    expect(p.accent).toBe("#CC6B3A"); // graph 兜底 accent
+  });
+
+  test("无模板（templateRef 为空或模板已删）= 空白工作簿，不造类型语义", () => {
     expect(workbookCardPresentation(undefined)).toEqual({
       previewKind: "blank",
-      statusLabel: "草稿",
       templateLabel: "空白工作簿",
+      accent: "#8C8472",
+      soft: "#ECE7DB",
     });
   });
 });

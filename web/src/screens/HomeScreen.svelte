@@ -16,6 +16,7 @@
     UserPlus,
   } from "@lucide/svelte";
   import { workbooksStore } from "../lib/workbooks.svelte";
+  import { workbookTemplatesStore } from "../lib/workbook-templates.svelte";
   import { canWriteSharedStructure as canWriteSharedStructureFn } from "../lib/permissions.svelte";
   import { getConnectionState, getCurrentUser, getCurrentWorkspace } from "../lib/workspace-store.svelte";
   import {
@@ -27,7 +28,6 @@
     workbookCardPresentation,
     writeWorkbookViewMode,
     type WorkbookHomeTab,
-    type WorkbookPreviewKind,
     type WorkbookViewMode,
   } from "../lib/workbook-home";
   import type { WorkbookRow } from "../lib/workbooks";
@@ -82,24 +82,21 @@
   );
   const totalCount = $derived(workbooksStore.workbooks.length);
 
-  // 卯豆 配色：按 workbook 形态映射强调色（表=嫩芽绿 / 图谱=陶土 / 空白=石灰）。
-  type Tone = { accent: string; soft: string; label: string };
-  const tones: Record<WorkbookPreviewKind, Tone> = {
-    table: { accent: "#2F7A4C", soft: "#E7F0E4", label: "#2F7A4C" },
-    graph: { accent: "#CC6B3A", soft: "#F7E7DA", label: "#B65B2E" },
-    blank: { accent: "#8C8472", soft: "#ECE7DB", label: "#6F6859" },
-  };
+  // templateRef → 模板的解析：类型语义只活在 workbook_template 数据里，这里按引用查回模板，
+  // 卡片展示（图标 / 强调色 / 类型名）全部由模板派生，前端不硬编码类型。
+  const templateById = $derived(
+    new Map(workbookTemplatesStore.templates.map((tpl) => [tpl.id, tpl])),
+  );
 
-  function statusTone(label: string): { fg: string; bg: string } {
-    if (label === "已发布") return { fg: "#266340", bg: "#E7F0E4" };
-    if (label === "草稿") return { fg: "#6F6859", bg: "#ECE7DB" };
-    if (label === "待审核") return { fg: "#356A96", bg: "#E4EEF5" };
-    return { fg: "#B65B2E", bg: "#F7E7DA" };
+  function presentationFor(wb: WorkbookRow) {
+    const template = wb.templateRef ? templateById.get(wb.templateRef) : undefined;
+    return workbookCardPresentation(template);
   }
 
   onMount(() => {
     view = readWorkbookViewMode(window.localStorage);
     void workbooksStore.load();
+    void workbookTemplatesStore.load();
   });
 
   async function handleCreateBlank() {
@@ -302,9 +299,7 @@
       {:else if view === "list"}
         <div class="workbook-table">
           {#each visibleWorkbooks as wb, i (wb.id)}
-            {@const presentation = workbookCardPresentation(wb.templateKey)}
-            {@const tone = tones[presentation.previewKind]}
-            {@const st = statusTone(presentation.statusLabel)}
+            {@const presentation = presentationFor(wb)}
             {@const collaborators = collaboratorsFor(wb)}
             <button
               type="button"
@@ -312,23 +307,22 @@
               style={`animation-delay:${(0.03 * i).toFixed(2)}s`}
               onclick={() => open(wb)}
             >
-              <span class="list-icon" style={`background:${tone.soft};color:${tone.accent}`}>
+              <span class="list-icon" style={`background:${presentation.soft};color:${presentation.accent}`}>
                 {#if presentation.previewKind === "graph"}
-                  {@render graphMark(tone.accent)}
+                  {@render graphMark(presentation.accent)}
                 {:else if presentation.previewKind === "blank"}
-                  {@render blankMark(tone.accent)}
+                  {@render blankMark(presentation.accent)}
                 {:else}
-                  {@render tableMark(tone.accent)}
+                  {@render tableMark(presentation.accent)}
                 {/if}
               </span>
               <span class="list-main">
                 <span class="list-title-row">
                   <strong>{wb.name}</strong>
-                  <span class="tag" style={`color:${tone.label};background:${tone.soft}`}>{presentation.templateLabel}</span>
+                  <span class="tag" style={`color:${presentation.accent};background:${presentation.soft}`}>{presentation.templateLabel}</span>
                 </span>
-                <small>{wb.templateKey ?? "自定义工作簿"}</small>
+                <small>{presentation.templateLabel}</small>
               </span>
-              <span class="status-pill" style={`color:${st.fg};background:${st.bg}`}>{presentation.statusLabel}</span>
               <span class="avatars" aria-label="协作者">
                 {#each collaborators.slice(0, 3) as person}
                   <span class="avatar" style={`background:${person.color}`}>{person.initials}</span>
@@ -344,29 +338,26 @@
       {:else}
         <div class="workbook-grid">
           {#each visibleWorkbooks as wb, i (wb.id)}
-            {@const presentation = workbookCardPresentation(wb.templateKey)}
-            {@const tone = tones[presentation.previewKind]}
-            {@const st = statusTone(presentation.statusLabel)}
+            {@const presentation = presentationFor(wb)}
             {@const collaborators = collaboratorsFor(wb)}
             <article class="workbook-card" style={`animation-delay:${(0.04 * i).toFixed(2)}s`}>
               <button type="button" class="card-main" onclick={() => open(wb)}>
-                <div class="card-preview" style={`background:${tone.soft}`}>
-                  <div class="card-grid-bg" style={`background-image:linear-gradient(${tone.accent} 1px,transparent 1px),linear-gradient(90deg,${tone.accent} 1px,transparent 1px)`}></div>
-                  <span class="card-kind" style={`color:${tone.accent}`}>
+                <div class="card-preview" style={`background:${presentation.soft}`}>
+                  <div class="card-grid-bg" style={`background-image:linear-gradient(${presentation.accent} 1px,transparent 1px),linear-gradient(90deg,${presentation.accent} 1px,transparent 1px)`}></div>
+                  <span class="card-kind" style={`color:${presentation.accent}`}>
                     {#if presentation.previewKind === "graph"}
-                      {@render graphMark(tone.accent)}
+                      {@render graphMark(presentation.accent)}
                     {:else if presentation.previewKind === "blank"}
-                      {@render blankMark(tone.accent)}
+                      {@render blankMark(presentation.accent)}
                     {:else}
-                      {@render tableMark(tone.accent)}
+                      {@render tableMark(presentation.accent)}
                     {/if}
                   </span>
-                  <span class="status-pill card-status" style={`color:${st.fg};background:${st.bg}`}>{presentation.statusLabel}</span>
                 </div>
                 <div class="card-info">
-                  <span class="tag" style={`color:${tone.label};background:${tone.soft}`}>{presentation.templateLabel}</span>
+                  <span class="tag" style={`color:${presentation.accent};background:${presentation.soft}`}>{presentation.templateLabel}</span>
                   <h3 title={wb.name}>{wb.name}</h3>
-                  <p class="card-sub">{wb.templateKey ?? "自定义工作簿"}</p>
+                  <p class="card-sub">{presentation.templateLabel}</p>
                   <div class="card-footer">
                     <span class="avatars" aria-label="协作者">
                       {#each collaborators.slice(0, 3) as person}
@@ -944,12 +935,6 @@
     box-shadow: 0 4px 12px -4px rgba(34, 30, 23, .18);
   }
 
-  .card-status {
-    position: absolute;
-    right: 14px;
-    top: 14px;
-  }
-
   .card-info {
     display: flex;
     flex-direction: column;
@@ -995,14 +980,7 @@
     font-size: 11.5px;
   }
 
-  /* ---------- status / tag / avatars ---------- */
-  .status-pill {
-    padding: 4px 10px;
-    border-radius: 99px;
-    font-size: 11px;
-    font-weight: 600;
-  }
-
+  /* ---------- tag / avatars ---------- */
   .avatars {
     display: flex;
     align-items: center;
@@ -1104,7 +1082,6 @@
     font-size: 12px;
   }
 
-  .list-row .status-pill,
   .list-row .avatars {
     flex-shrink: 0;
   }

@@ -5,8 +5,8 @@ describe("workspace template scripts", () => {
   test("loads workspace template scripts in version order from the shared template directory", async () => {
     const scripts = await loadTemplateScripts();
 
-    expect(WORKSPACE_TEMPLATE_VERSION).toBe(10);
-    expect(scripts.map((script) => script.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(WORKSPACE_TEMPLATE_VERSION).toBe(11);
+    expect(scripts.map((script) => script.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
     expect(scripts.map((script) => script.name)).toEqual([
       "001-access.surql",
       "002-tables-core.surql",
@@ -18,6 +18,7 @@ describe("workspace template scripts", () => {
       "008-resource-library.surql",
       "009-fn-current-user.surql",
       "010-activity-event.surql",
+      "011-workbook-template.surql",
     ]);
     expect(scripts[0]?.sql).toContain("DEFINE ACCESS OVERWRITE admin");
     expect(scripts[1]?.sql).toContain("DEFINE TABLE IF NOT EXISTS user");
@@ -28,6 +29,36 @@ describe("workspace template scripts", () => {
     expect(scripts[7]?.sql).toContain("DEFINE TABLE IF NOT EXISTS resource_item");
     expect(scripts[8]?.sql).toContain("DEFINE FUNCTION OVERWRITE fn::current_user()");
     expect(scripts[9]?.sql).toContain("DEFINE TABLE IF NOT EXISTS activity_event");
+    expect(scripts[10]?.sql).toContain("DEFINE TABLE IF NOT EXISTS workbook_template");
+  });
+
+  test("workbook_template：类型由业务数据定义——底层不枚举行业类型，仅管理员可增改删，workbook 引用为可选 record", async () => {
+    const scripts = await loadTemplateScripts();
+    const tpl = scripts.find((script) => script.name === "011-workbook-template.surql");
+
+    expect(tpl).toBeDefined();
+    const sql = tpl!.sql;
+
+    expect(sql).toContain("DEFINE TABLE IF NOT EXISTS workbook_template");
+    // key 唯一索引：稳定业务标识 + 幂等 seed 的依据
+    expect(sql).toContain("DEFINE INDEX IF NOT EXISTS workbook_template_key_unique ON TABLE workbook_template COLUMNS key UNIQUE");
+    // 展示元数据是数据字段，不是底层枚举：icon / accent 都在表里
+    expect(sql).toContain("DEFINE FIELD IF NOT EXISTS icon ON TABLE workbook_template");
+    expect(sql).toContain("DEFINE FIELD IF NOT EXISTS accent ON TABLE workbook_template");
+    // 跨 workspace 隔离靠 db 边界：模板表不带 workspace 字段
+    expect(sql).not.toMatch(/DEFINE FIELD IF NOT EXISTS workspace ON TABLE workbook_template/);
+    // 模板全员可见，仅管理员可增改删
+    expect(sql).toContain("FOR select WHERE $auth != NONE");
+    expect(sql).toContain("FOR create, update, delete WHERE $auth.is_admin = true");
+    // workbook 升级为 option record 引用——空=空白工作簿；底层不枚举类型字符串
+    expect(sql).toContain("DEFINE FIELD OVERWRITE template ON TABLE workbook TYPE option<record<workbook_template>>");
+    // 内置模板作为 seed 数据行播种（不是 schema 枚举），且幂等可重入
+    expect(sql).toContain("INSERT INTO workbook_template");
+    expect(sql).toContain("ON DUPLICATE KEY UPDATE");
+    // 设计稿里的五种内置类型都作为数据行存在
+    for (const key of ['key: "case"', 'key: "entity"', 'key: "compliance"', 'key: "diligence"', 'key: "asset"']) {
+      expect(sql).toContain(key);
+    }
   });
 
   test("fn::current_user：JWT 会话($auth NONE)按 $token.sub 反查，RECORD 会话直接返回 $auth，函数对所有会话可调用", async () => {

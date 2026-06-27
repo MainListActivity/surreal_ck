@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { AiChatMessage } from "./ai-context";
 import type { CapabilityMatrix } from "./capabilities";
+import type { StoredGridFieldDef } from "./field-schema";
 
 // Legacy desktop RPC shape placeholder. Web-only code should not add new
 // Electrobun contracts, but historical DTOs still reference AppRPC.
@@ -782,7 +783,30 @@ export type MoveWorkbookResponse = {
   workbook: WorkbookSummaryDTO;
 };
 
-// ─── Template DTOs ────────────────────────────────────────────────────────────
+// ─── Workbook template（直连模型）─────────────────────────────────────────────
+// 工作簿「类型」= 业务模板的产物。底层不枚举行业类型，模板是 workspace 内
+// `workbook_template` 表的数据行；前端直连读这张表拿到展示元数据（icon/accent/label），
+// 不再用字符串硬猜。`column_defs` 与 sheet 同口径（StoredGridFieldDef[]），从模板
+// 建工作簿时据此建实体表。下面这些 *DTO 是 pre-pivot 的后端 RPC 残留，已无人引用。
+
+export type WorkbookTemplate = {
+  id: RecordIdString;
+  key: string;
+  label: string;
+  description?: string;
+  /** lucide 图标名；卡片直接据此渲染——视觉也由业务数据定义。 */
+  icon?: string;
+  /** 卡片强调色（hex）。 */
+  accent?: string;
+  /** 从模板新建时的默认工作簿名。 */
+  defaultName?: string;
+  /** 建实体表的列定义，与 sheet.column_defs 同口径。 */
+  columnDefs: StoredGridFieldDef[];
+  builtin: boolean;
+  sortOrder: number;
+};
+
+// ─── Template DTOs（legacy，pre-pivot 后端 RPC，无人引用）────────────────────────
 
 export type TemplateSummaryDTO = {
   key: string;

@@ -13,7 +13,12 @@ import { describeWriteError } from "./workbook-data";
 export type WorkbookRow = {
   id: RecordIdString;
   name: string;
-  templateKey?: string;
+  /**
+   * 工作簿「类型」= 它由哪个业务模板生成。底层只存这个不透明的 `workbook_template`
+   * record 引用；为空 = 空白工作簿（合法常态，不是草稿）。卡片据此向模板 store
+   * 解析图标 / 强调色 / 类型名，不再用字符串硬猜。
+   */
+  templateRef?: RecordIdString;
   updatedAt?: string;
   createdBy?: string;
 };
@@ -39,7 +44,7 @@ function recordToWorkbook(rec: Record<string, unknown>): WorkbookRow {
   return {
     id: String(rec.id) as RecordIdString,
     name: typeof rec.name === "string" ? rec.name : "",
-    templateKey: typeof rec.template_key === "string" ? rec.template_key : undefined,
+    templateRef: rec.template != null ? (String(rec.template) as RecordIdString) : undefined,
     updatedAt: typeof rec.updated_at === "string" ? rec.updated_at : undefined,
     createdBy: rec.created_by || rec.owner_user ? String(rec.created_by ?? rec.owner_user) : undefined,
   };
@@ -88,25 +93,44 @@ export function entityTableNameForWorkbook(wbKey: string): string {
  *   name / label 等用户值走 $bindings。
  * - 末句 `RETURN`（事务外）回读新 workbook，供调用方裁成 WorkbookRow。
  */
+export type CreateWorkbookOptions = {
+  /** 业务列定义；缺省只建一个必填文本 name 列。从模板建时传模板的 column_defs。 */
+  columns?: GridColumnDef[];
+  /** 工作簿类型 = 由哪个模板生成；写入 workbook.template（option record）。空白工作簿不传。 */
+  templateRef?: RecordIdString | string;
+};
+
 export function buildCreateWorkbookTransaction(
   name: string,
-  column: GridColumnDef = DEFAULT_BLANK_COLUMN,
+  options: CreateWorkbookOptions = {},
 ): { sql: string; bindings: Record<string, unknown>; workbookId: RecordIdString } {
+  const columns = options.columns?.length ? options.columns : [DEFAULT_BLANK_COLUMN];
   const wbKey = randomKey();
   const sheetKey = randomKey();
   const tableName = entityTableNameForWorkbook(wbKey);
   const wbId = `workbook:${wbKey}`;
   const sheetId = `sheet:${sheetKey}`;
 
-  const fieldSchema = buildSurrealFieldSchema(column);
+  // 每个业务列一条 DEFINE FIELD；列定义来自受控来源（固定默认列或模板数据），
+  // 字段名 / 类型由 buildSurrealFieldSchema 生成，用户值走 $bindings，无注入面。
+  const fieldDdl = columns
+    .map((column) => {
+      const fieldSchema = buildSurrealFieldSchema(column);
+      return `DEFINE FIELD IF NOT EXISTS ${fieldSchema.fieldName} ON TABLE ${tableName} TYPE ${fieldSchema.type}${fieldSchema.assert};`;
+    })
+    .join("\n");
+
+  // template 引用作为 record id 直接拼进 CREATE CONTENT（受控来源：模板 store 的 id，
+  // 经 ASSERT 过的 record id 字符串），无引用时省略该字段 = 空白工作簿。
+  const templateClause = options.templateRef ? `, template: ${String(options.templateRef)}` : "";
 
   const sql = `BEGIN TRANSACTION;
 DEFINE TABLE IF NOT EXISTS ${tableName} SCHEMALESS CHANGEFEED 7d;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE ${tableName} TYPE datetime VALUE time::now() READONLY;
 DEFINE FIELD IF NOT EXISTS updated_at ON TABLE ${tableName} TYPE datetime VALUE time::now();
-DEFINE FIELD IF NOT EXISTS ${fieldSchema.fieldName} ON TABLE ${tableName} TYPE ${fieldSchema.type}${fieldSchema.assert};
+${fieldDdl}
 DEFINE EVENT OVERWRITE record_activity ON TABLE ${tableName} WHEN $event = "CREATE" OR $event = "DELETE" THEN { LET $verb = IF $event = "CREATE" { "record.write" } ELSE { "record.delete" }; LET $rec = IF $event = "DELETE" { $before } ELSE { $after }; CREATE activity_event CONTENT { verb: $verb, target_kind: "record", target: $rec.id }; };
-CREATE ${wbId} CONTENT { name: $name, last_opened_sheet: ${sheetId} };
+CREATE ${wbId} CONTENT { name: $name, last_opened_sheet: ${sheetId}${templateClause} };
 CREATE ${sheetId} CONTENT { workbook: ${wbId}, label: $label, table_name: $tableName, column_defs: $columnDefs };
 COMMIT TRANSACTION;`;
 
@@ -116,19 +140,17 @@ COMMIT TRANSACTION;`;
       name,
       label: "Sheet 1",
       tableName,
-      columnDefs: [gridColumnToStoredDef(column)],
+      columnDefs: columns.map(gridColumnToStoredDef),
     },
     workbookId: wbId as RecordIdString,
   };
 }
 
-/** 纯过滤：按 name / templateKey 大小写不敏感匹配；空 query 返回全部。 */
+/** 纯过滤：按 name 大小写不敏感匹配；空 query 返回全部。 */
 export function filterWorkbooksByQuery(workbooks: WorkbookRow[], query: string): WorkbookRow[] {
   const q = query.trim().toLowerCase();
   if (!q) return workbooks;
-  return workbooks.filter(
-    (wb) => wb.name.toLowerCase().includes(q) || (wb.templateKey ?? "").toLowerCase().includes(q),
-  );
+  return workbooks.filter((wb) => wb.name.toLowerCase().includes(q));
 }
 
 /**
@@ -168,14 +190,14 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
   }
 
   /**
-   * 建空白工作簿 = 一次事务内建实体表（DDL）+ workbook + 一张默认 sheet，
-   * 三者原子（{@link buildCreateWorkbookTransaction}）。新工作簿打开即可用，
-   * 不会出现「workbook 已建但无 sheet / sheet 指向不存在表」的中间态。
+   * 建工作簿 = 一次事务内建实体表（DDL）+ workbook + 一张默认 sheet，三者原子
+   * （{@link buildCreateWorkbookTransaction}）。新工作簿打开即可用，不会出现
+   * 「workbook 已建但无 sheet / sheet 指向不存在表」的中间态。
    * DDL/写权限由 access 类型卡死，participant 触发的权限错误翻成中文提示。
    */
-  async function createBlank(name: string): Promise<WorkbookRow | null> {
+  async function create(name: string, options: CreateWorkbookOptions): Promise<WorkbookRow | null> {
     state.error = null;
-    const { sql, bindings, workbookId } = buildCreateWorkbookTransaction(name);
+    const { sql, bindings, workbookId } = buildCreateWorkbookTransaction(name, options);
     try {
       await deps.getConn().query(sql, bindings);
     } catch (err) {
@@ -185,10 +207,29 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
     }
     // 事务成功 = workbook/sheet/实体表都已落库。id 与名字 JS 侧已知，无需回读拼一行
     //（updated_at 由列表下次 load 时补全），避免依赖多语句事务的返回值索引。
-    const workbook: WorkbookRow = { id: workbookId, name };
+    const templateRef = options.templateRef ? (String(options.templateRef) as RecordIdString) : undefined;
+    const workbook: WorkbookRow = { id: workbookId, name, templateRef };
     state.workbooks = [workbook, ...state.workbooks];
     emit();
     return workbook;
+  }
+
+  /** 空白工作簿：无模板引用 = 无类型（合法常态，卡片显示「空白工作簿」）。 */
+  function createBlank(name: string): Promise<WorkbookRow | null> {
+    return create(name, {});
+  }
+
+  /**
+   * 从业务模板新建：工作簿带上 template 引用（= 类型），实体表按模板 column_defs 建列。
+   * 模板的展示元数据（icon / accent / label）不落到 workbook 上，卡片渲染时按
+   * templateRef 向模板 store 解析——类型语义只有一份真相，在模板数据里。
+   */
+  function createFromTemplate(
+    template: { id: RecordIdString | string; defaultName?: string; columns?: GridColumnDef[] },
+    name?: string,
+  ): Promise<WorkbookRow | null> {
+    const finalName = (name?.trim() || template.defaultName?.trim() || "未命名工作簿");
+    return create(finalName, { templateRef: template.id, columns: template.columns });
   }
 
   async function rename(id: RecordIdString | string, name: string): Promise<boolean> {
@@ -211,6 +252,7 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
     get workbooks(): WorkbookRow[] { return state.workbooks; },
     load,
     createBlank,
+    createFromTemplate,
     rename,
   };
 }

@@ -57,7 +57,7 @@ function setup(opts: {
 }
 
 const sampleRows = [
-  { id: "workbook:wb1", name: "案件台账", template_key: "claims", updated_at: "2026-05-20" },
+  { id: "workbook:wb1", name: "案件台账", template: "workbook_template:case", updated_at: "2026-05-20" },
   { id: "workbook:wb2", name: "财务汇总", updated_at: "2026-05-19" },
 ];
 
@@ -72,8 +72,8 @@ describe("load — 直连读 workbook 列表", () => {
     expect(store.loading).toBe(false);
     expect(store.error).toBeNull();
     expect(store.workbooks).toEqual([
-      { id: "workbook:wb1", name: "案件台账", templateKey: "claims", updatedAt: "2026-05-20" },
-      { id: "workbook:wb2", name: "财务汇总", templateKey: undefined, updatedAt: "2026-05-19" },
+      { id: "workbook:wb1", name: "案件台账", templateRef: "workbook_template:case", updatedAt: "2026-05-20" },
+      { id: "workbook:wb2", name: "财务汇总", templateRef: undefined, updatedAt: "2026-05-19" },
     ]);
   });
 
@@ -122,7 +122,9 @@ describe("createBlank — 管理员建空白 workbook", () => {
     ]);
 
     expect(created?.id).toMatch(/^workbook:[0-9a-f]+$/);
-    expect(store.workbooks[0]).toEqual({ id: created!.id, name: "新工作簿" });
+    // 空白工作簿无类型：templateRef 为 undefined，CREATE 不带 template 字段
+    expect(store.workbooks[0]).toEqual({ id: created!.id, name: "新工作簿", templateRef: undefined });
+    expect(sql).not.toContain("template:");
   });
 
   test("无权限（participant 尝试建表）→ 返回 null 且 error 是中文提示", async () => {
@@ -133,6 +135,38 @@ describe("createBlank — 管理员建空白 workbook", () => {
 
     expect(created).toBeNull();
     expect(store.error).toContain("没有权限");
+  });
+});
+
+describe("createFromTemplate — 从业务模板建工作簿（带类型）", () => {
+  test("workbook CREATE 带 template 引用，实体表按模板列定义建列，默认名回退模板 defaultName", async () => {
+    const { store, rec } = setup({ workbooks: [...sampleRows] });
+    await store.load();
+
+    const created = await store.createFromTemplate({
+      id: "workbook_template:case",
+      defaultName: "未命名案件库",
+      columns: [
+        { key: "name", label: "案件名", fieldType: "text", required: true },
+        { key: "amount", label: "金额", fieldType: "decimal" },
+      ],
+    });
+
+    const txQuery = rec.queries.find((q) => /BEGIN TRANSACTION/i.test(q.sql));
+    const sql = txQuery!.sql;
+    // 工作簿带上 template 引用 = 类型
+    expect(sql).toMatch(/CREATE workbook:[0-9a-f]+ CONTENT \{[^}]*template: workbook_template:case/);
+    // 实体表按模板两列建 DEFINE FIELD
+    expect(sql).toMatch(/DEFINE FIELD IF NOT EXISTS name ON TABLE ent_[0-9a-f]+_main TYPE string/);
+    expect(sql).toMatch(/DEFINE FIELD IF NOT EXISTS amount ON TABLE ent_[0-9a-f]+_main TYPE option<number>/);
+    // 列定义存进 sheet.column_defs（stored 形态）
+    const b = txQuery!.bindings as Record<string, unknown>;
+    expect(b.columnDefs).toEqual([
+      { key: "name", label: "案件名", field_type: "text", required: true, options: undefined, constraints: undefined, date_format: undefined, reference_table: undefined, reference_sheet_id: undefined, reference_multiple: undefined, reference_display_key: undefined },
+      { key: "amount", label: "金额", field_type: "decimal", required: undefined, options: undefined, constraints: undefined, date_format: undefined, reference_table: undefined, reference_sheet_id: undefined, reference_multiple: undefined, reference_display_key: undefined },
+    ]);
+    expect(b.name).toBe("未命名案件库");
+    expect(created?.templateRef).toBe("workbook_template:case");
   });
 });
 
@@ -200,7 +234,7 @@ describe("rename — 改 workbook 名", () => {
 
 describe("filterWorkbooksByQuery — 纯过滤", () => {
   const list: WorkbookRow[] = [
-    { id: "workbook:wb1", name: "案件台账", templateKey: "claims" },
+    { id: "workbook:wb1", name: "案件台账", templateRef: "workbook_template:case" },
     { id: "workbook:wb2", name: "财务汇总" },
   ];
 
@@ -208,9 +242,8 @@ describe("filterWorkbooksByQuery — 纯过滤", () => {
     expect(filterWorkbooksByQuery(list, "")).toEqual(list);
   });
 
-  test("按 name 或 templateKey 大小写不敏感匹配", () => {
+  test("按 name 大小写不敏感匹配", () => {
     expect(filterWorkbooksByQuery(list, "案件").map((w) => w.id)).toEqual(["workbook:wb1"]);
-    expect(filterWorkbooksByQuery(list, "CLAIMS").map((w) => w.id)).toEqual(["workbook:wb1"]);
     expect(filterWorkbooksByQuery(list, "汇总").map((w) => w.id)).toEqual(["workbook:wb2"]);
     expect(filterWorkbooksByQuery(list, "xyz")).toEqual([]);
   });

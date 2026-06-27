@@ -5,6 +5,7 @@
   import { dashboardStore } from "../features/dashboard/lib/dashboard-store.svelte";
   import AdminConsoleScreen from "./AdminConsoleScreen.svelte";
   import HomeScreen from "./HomeScreen.svelte";
+  import TemplatesScreen from "./TemplatesScreen.svelte";
   import PlaceholderScreen from "./PlaceholderScreen.svelte";
   import ProfileScreen from "./ProfileScreen.svelte";
   import { workbooksStore } from "../lib/workbooks.svelte";
@@ -13,7 +14,7 @@
     isWorkspaceAdmin as isWorkspaceAdminFn,
   } from "../lib/permissions.svelte";
   import type { WorkspacePage } from "../lib/route";
-  import { Tag, Settings, Lock, Trash2 } from "@lucide/svelte";
+  import { Settings, Lock, Trash2 } from "@lucide/svelte";
   import { getCurrentWorkspace } from "../lib/workspace-store.svelte";
   import { pinWorkbook, readPinnedWorkbooks } from "../lib/workbook-home";
   import type { WorkbookRow } from "../lib/workbooks";
@@ -115,12 +116,9 @@
         onworkspaceclick={() => (wsPanelOpen = !wsPanelOpen)}
       />
     {:else if page === "templates"}
-      <PlaceholderScreen
-        icon={Tag}
-        title="模板创建待迁移"
-        desc="模板库依赖旧版接口，正在迁移中。当前请先用「空白工作簿」创建工作簿，迁移完成后将在此提供案件管理、法律实体追踪等模板。"
-        actionLabel="返回首页"
-        onaction={goHome}
+      <TemplatesScreen
+        onopen={(workbookId) => onopenworkbook?.(workbookId)}
+        onback={goHome}
       />
     {:else if page === "dashboard"}
       <DashboardScreen />
