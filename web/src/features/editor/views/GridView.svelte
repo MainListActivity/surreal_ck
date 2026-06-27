@@ -625,12 +625,13 @@
       <button
         type="button"
         class="grid-footer"
-        aria-label="添加一行"
-        title="添加一行"
+        aria-label="添加新记录"
+        title="添加新记录"
         onclick={appendRowAtEnd}
         disabled={!canWriteEntityData || !editorStore.activeSheetId}
       >
         <span class="footer-add-icon">+</span>
+        <span class="footer-add-label">添加新记录</span>
       </button>
     </div>
   </section>
@@ -773,7 +774,7 @@
     border: 1px solid var(--border);
     border-radius: 8px 8px 0 0;
     background: var(--surface);
-    box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
+    box-shadow: 0 1px 2px rgba(34, 30, 23, .04);
   }
 
   .grid-footer {
@@ -782,21 +783,24 @@
     height: var(--add-row-height);
     align-items: center;
     justify-content: flex-start;
-    padding: 0 0 0 28px;
+    gap: 11px;
+    padding: 0 30px;
     border: 1px solid var(--border);
     border-top: 0;
     border-radius: 0 0 8px 8px;
     background: var(--surface);
     color: var(--text-3);
     cursor: pointer;
-    box-shadow: 0 1px 2px rgba(15, 23, 42, .03);
+    font-size: 13px;
+    font-weight: 500;
+    box-shadow: 0 1px 2px rgba(34, 30, 23, .03);
     transition: background .16s ease, color .16s ease, box-shadow .16s ease;
   }
 
   .grid-footer:hover:not(:disabled) {
-    background: var(--primary-light);
+    background: var(--soft);
     color: var(--primary);
-    box-shadow: inset 0 0 0 1px rgba(47, 122, 76, .12);
+    box-shadow: inset 0 0 0 1px rgba(47, 122, 76, .08);
   }
 
   .grid-footer:disabled {
@@ -806,15 +810,17 @@
 
   .footer-add-icon {
     display: inline-flex;
-    width: 26px;
-    height: 26px;
+    width: 17px;
+    height: 17px;
     align-items: center;
     justify-content: center;
-    border: 1px solid var(--border-dark);
-    border-radius: 999px;
-    background: var(--surface);
     color: currentColor;
-    font-size: 16px;
+    font-size: 20px;
+    font-weight: 400;
+    line-height: 1;
+  }
+
+  .footer-add-label {
     line-height: 1;
   }
 
