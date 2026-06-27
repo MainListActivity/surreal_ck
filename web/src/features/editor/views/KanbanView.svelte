@@ -1,9 +1,16 @@
 <script lang="ts">
   import { editorStore } from "../../../lib/editor-store.svelte";
+  import { editorUi } from "../lib/editor-ui.svelte";
+  import type { RecordIdString } from "@surreal-ck/shared/rpc.types";
   import { cardAccent } from "../lib/cell-style";
 
   const tableView = $derived(editorStore.tableViewAdapter);
   const cols = $derived(tableView.renderers);
+
+  function openRecordDetail(rowId: RecordIdString) {
+    editorUi.selectRow(rowId);
+    editorUi.panelOpen = true;
+  }
 
   function statusOf(row: { values: Record<string, unknown> }) {
     return String(cols.status ? row.values[cols.status.key] ?? "未分类" : "全部");
@@ -28,7 +35,7 @@
       </header>
       <div class="kanban-list">
         {#each rowsOf(status) as row}
-          <button class="kanban-card" onclick={() => tableView.actions.openRecord(row.id)}>
+          <button class="kanban-card" onclick={() => openRecordDetail(row.id as RecordIdString)}>
             <strong>{String(cols.title ? row.values[cols.title.key] ?? "—" : row.id)}</strong>
             {#if cols.amount}
               <span class="money">¥ {String(row.values[cols.amount.key] ?? "0")}</span>
@@ -116,9 +123,10 @@
   .money {
     display: block;
     margin-bottom: 8px;
-    color: #0070c0;
+    color: var(--seed-strong);
     font-size: 12px;
     font-weight: 600;
+    font-variant-numeric: tabular-nums;
   }
 
   .kanban-meta {

@@ -1,14 +1,21 @@
 <script lang="ts">
   import { editorStore } from "../../../lib/editor-store.svelte";
+  import { editorUi } from "../lib/editor-ui.svelte";
+  import type { RecordIdString } from "@surreal-ck/shared/rpc.types";
   import { cardAccent, cardPillStyle } from "../lib/cell-style";
 
   const tableView = $derived(editorStore.tableViewAdapter);
   const cols = $derived(tableView.renderers);
+
+  function openRecordDetail(rowId: RecordIdString) {
+    editorUi.selectRow(rowId);
+    editorUi.panelOpen = true;
+  }
 </script>
 
 <div class="gallery">
   {#each tableView.visibleRows.slice(0, 80) as row}
-    <button class="gallery-card" onclick={() => tableView.actions.openRecord(row.id)}>
+    <button class="gallery-card" onclick={() => openRecordDetail(row.id as RecordIdString)}>
       <span
         class="gallery-strip"
         style={`background:${cardAccent(cols.status ? row.values[cols.status.key] : "")}`}
@@ -103,9 +110,10 @@
   .money {
     display: block;
     margin-bottom: 8px;
-    color: #0070c0;
+    color: var(--seed-strong);
     font-size: 12px;
     font-weight: 600;
+    font-variant-numeric: tabular-nums;
   }
 
   .pill {

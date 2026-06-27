@@ -131,6 +131,12 @@
     return !!row && !row._isGroup;
   }
 
+  /** 在右侧详情面板展开某行记录（行首展开图标 + 行菜单「展开记录」共用）。 */
+  function openRecordDetail(rowId: RecordIdString) {
+    editorUi.selectRow(rowId);
+    editorUi.panelOpen = true;
+  }
+
   const rowHeaderColumn = $derived<RowHeaders>({
     prop: "__row_header__",
     size: 56,
@@ -141,7 +147,50 @@
     cellTemplate: (h, props: CellTemplateProp) => {
       const row = props.model as GridSourceRow;
       if (row?._isGroup) return "";
-      return String(row?._rowNumber ?? props.rowIndex + 1);
+
+      const label = String(row?._rowNumber ?? props.rowIndex + 1);
+      const rowId = typeof row?._id === "string" ? row._id : null;
+
+      // 行首悬停态：默认显示行号，鼠标悬停行首单元格时行号淡出、展开图标淡入。
+      return h("div", { class: { "grid-row-head": true } }, [
+        h("span", { class: { "grid-row-head__num": true } }, label),
+        rowId
+          ? h(
+              "button",
+              {
+                class: { "grid-row-head__expand": true },
+                type: "button",
+                title: "展开详情",
+                "aria-label": "展开详情",
+                onClick: (event: MouseEvent) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  openRecordDetail(rowId as RecordIdString);
+                },
+              },
+              h(
+                "svg",
+                {
+                  width: 15,
+                  height: 15,
+                  viewBox: "0 0 24 24",
+                  fill: "none",
+                  stroke: "currentColor",
+                  "stroke-width": 2,
+                  "stroke-linecap": "round",
+                  "stroke-linejoin": "round",
+                  "aria-hidden": "true",
+                },
+                [
+                  h("path", { d: "M15 3h6v6" }),
+                  h("path", { d: "M10 14 21 3" }),
+                  h("path", { d: "M9 21H3v-6" }),
+                  h("path", { d: "M3 21l7-7" }),
+                ],
+              ),
+            )
+          : null,
+      ]);
     },
   });
 
@@ -301,14 +350,25 @@
     getWebComponent: () => HTMLElement & {
       getFocused?: () => Promise<{ y?: number } | undefined>;
       getSource?: () => Promise<Array<Record<string, unknown>>>;
+      refresh?: () => Promise<void> | void;
+      rowHeaders?: RowHeaders | boolean;
     };
   } | null>(null);
 
   let cleanup: (() => void) | undefined;
 
+  function syncRowHeaders() {
+    const grid = gridRef?.getWebComponent();
+    if (!grid) return;
+
+    grid.rowHeaders = rowHeaderColumn;
+    void grid.refresh?.();
+  }
+
   onMount(() => {
     const grid = gridRef?.getWebComponent();
     if (!grid) return;
+    syncRowHeaders();
 
     const beforePaste = (event: Event) => {
       const detail = (event as CustomEvent<{ parsed?: unknown[][] }>).detail;
@@ -381,10 +441,32 @@
       }
     };
 
+    let hoveredRowHead: HTMLElement | null = null;
+    const setHoveredRowHead = (next: HTMLElement | null) => {
+      if (hoveredRowHead === next) return;
+      hoveredRowHead?.classList.remove("is-hovered");
+      hoveredRowHead = next;
+      hoveredRowHead?.classList.add("is-hovered");
+    };
+
+    const onRowHeadOver = (event: Event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      setHoveredRowHead(target.closest(".grid-row-head"));
+    };
+
+    const onRowHeadOut = (event: Event) => {
+      const related = (event as MouseEvent).relatedTarget;
+      if (related instanceof HTMLElement && hoveredRowHead?.contains(related)) return;
+      setHoveredRowHead(null);
+    };
+
     grid.addEventListener("beforepasteapply", beforePaste);
     grid.addEventListener("afterpasteapply", afterPaste);
     grid.addEventListener("contextmenu", onContextMenu, true);
     grid.addEventListener("mousedown", onCellMouseDown, true);
+    grid.addEventListener("mouseover", onRowHeadOver, true);
+    grid.addEventListener("mouseout", onRowHeadOut, true);
     document.addEventListener("mousedown", onRowMenuBackdrop, true);
 
     cleanup = () => {
@@ -392,7 +474,10 @@
       grid.removeEventListener("afterpasteapply", afterPaste);
       grid.removeEventListener("contextmenu", onContextMenu, true);
       grid.removeEventListener("mousedown", onCellMouseDown, true);
+      grid.removeEventListener("mouseover", onRowHeadOver, true);
+      grid.removeEventListener("mouseout", onRowHeadOut, true);
       document.removeEventListener("mousedown", onRowMenuBackdrop, true);
+      setHoveredRowHead(null);
     };
   });
 
@@ -457,7 +542,7 @@
 
   function expandRecord() {
     if (!rowMenu.rowId) return;
-    tableView.actions.openRecord(rowMenu.rowId);
+    openRecordDetail(rowMenu.rowId);
     closeRowMenu();
   }
 
@@ -518,7 +603,7 @@
           source={gridSource}
           columns={gridColumns}
           theme="compact"
-          rowHeaders={rowHeaderColumn}
+          rowHeaders={true}
           range={true}
           resize={true}
           useClipboard={true}
@@ -659,7 +744,7 @@
     flex-direction: column;
     overflow: auto;
     padding: 18px 22px;
-    background: #f4f6f9;
+    background: var(--bg);
   }
 
   .grid-shell {
@@ -701,7 +786,7 @@
     border: 1px solid var(--border);
     border-top: 0;
     border-radius: 0 0 8px 8px;
-    background: #fff;
+    background: var(--surface);
     color: var(--text-3);
     cursor: pointer;
     box-shadow: 0 1px 2px rgba(15, 23, 42, .03);
@@ -709,9 +794,9 @@
   }
 
   .grid-footer:hover:not(:disabled) {
-    background: #eef5ff;
+    background: var(--primary-light);
     color: var(--primary);
-    box-shadow: inset 0 0 0 1px rgba(37, 99, 235, .08);
+    box-shadow: inset 0 0 0 1px rgba(47, 122, 76, .12);
   }
 
   .grid-footer:disabled {
@@ -725,9 +810,9 @@
     height: 26px;
     align-items: center;
     justify-content: center;
-    border: 1px solid #c9d1de;
+    border: 1px solid var(--border-dark);
     border-radius: 999px;
-    background: #fff;
+    background: var(--surface);
     color: currentColor;
     font-size: 16px;
     line-height: 1;
@@ -752,9 +837,9 @@
     --revo-grid-primary: var(--primary);
     --revo-grid-cell-border: var(--border);
     --revo-grid-header-border: var(--border);
-    --revo-grid-row-hover: #f7f9ff;
-    --revo-grid-focused-bg: #edf2ff;
-    --revo-grid-header-bg: #f7f8fa;
+    --revo-grid-row-hover: var(--soft);
+    --revo-grid-focused-bg: var(--primary-light);
+    --revo-grid-header-bg: var(--soft);
     --revo-grid-text: var(--text-2);
     border: 0;
   }
@@ -775,7 +860,7 @@
 
   :global(revo-grid .grid-header-cell__icon) {
     flex: 0 0 auto;
-    color: #7b8494;
+    color: var(--text-3);
   }
 
   :global(revo-grid .grid-header-cell__label) {
@@ -812,13 +897,13 @@
     justify-content: center;
     border: 0;
     background: transparent;
-    color: #7b8494;
+    color: var(--text-3);
     cursor: pointer;
     transition: background .16s ease, color .16s ease;
   }
 
   :global(revo-grid .grid-add-field-header:hover:not(:disabled)) {
-    background: #eef5ff;
+    background: var(--primary-light);
     color: var(--primary);
   }
 
@@ -838,16 +923,69 @@
     font-weight: 300;
   }
 
+  /* 行首单元格：默认显示行号，悬停行首时行号淡出、展开图标淡入并可点击。 */
+  :global(revo-grid .grid-row-head) {
+    position: relative;
+    display: flex;
+    width: calc(100% + 24px);
+    height: 100%;
+    margin: 0 -12px;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+  }
+
+  :global(revo-grid .grid-row-head__num) {
+    color: var(--text-3);
+    font-variant-numeric: tabular-nums;
+    transition: opacity .14s ease;
+  }
+
+  :global(revo-grid .grid-row-head__expand) {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    border: 0;
+    padding: 0;
+    background: transparent;
+    color: var(--text-3);
+    cursor: pointer;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .14s ease, color .14s ease, background .14s ease;
+  }
+
+  :global(revo-grid .grid-row-head:hover .grid-row-head__num),
+  :global(revo-grid .grid-row-head.is-hovered .grid-row-head__num),
+  :global(revo-grid .grid-row-head:focus-within .grid-row-head__num) {
+    opacity: 0;
+  }
+
+  :global(revo-grid .grid-row-head:hover .grid-row-head__expand),
+  :global(revo-grid .grid-row-head.is-hovered .grid-row-head__expand),
+  :global(revo-grid .grid-row-head:focus-within .grid-row-head__expand) {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  :global(revo-grid .grid-row-head__expand:hover) {
+    background: var(--primary-light);
+    color: var(--primary);
+  }
+
   .field-menu {
     position: fixed;
     z-index: 60;
     display: grid;
     min-width: 188px;
     padding: 8px;
-    border: 1px solid #dfe4ee;
+    border: 1px solid var(--border);
     border-radius: 12px;
-    background: rgba(255, 255, 255, .98);
-    box-shadow: 0 18px 42px rgba(15, 23, 42, .16);
+    background: var(--surface);
+    box-shadow: 0 18px 42px rgba(34, 30, 23, .16);
     backdrop-filter: blur(12px);
   }
 
@@ -855,7 +993,7 @@
     display: grid;
     gap: 3px;
     padding: 4px 6px 8px;
-    border-bottom: 1px solid #edf1f6;
+    border-bottom: 1px solid var(--border);
     margin-bottom: 4px;
   }
 
@@ -885,7 +1023,7 @@
   }
 
   .menu-item:hover {
-    background: #f5f8ff;
+    background: var(--primary-light);
     color: var(--primary);
   }
 
@@ -895,10 +1033,10 @@
     display: grid;
     min-width: 220px;
     padding: 6px;
-    border: 1px solid #dfe4ee;
+    border: 1px solid var(--border);
     border-radius: 12px;
-    background: rgba(255, 255, 255, .98);
-    box-shadow: 0 18px 42px rgba(15, 23, 42, .16);
+    background: var(--surface);
+    box-shadow: 0 18px 42px rgba(34, 30, 23, .16);
     backdrop-filter: blur(12px);
   }
 
@@ -919,7 +1057,7 @@
   }
 
   .row-menu .menu-item:hover:not(:disabled) {
-    background: #f5f8ff;
+    background: var(--primary-light);
     color: var(--primary);
   }
 
@@ -929,18 +1067,18 @@
   }
 
   .row-menu .menu-item.danger {
-    color: var(--error, #e54848);
+    color: var(--error, #c0492b);
   }
 
   .row-menu .menu-item.danger:hover:not(:disabled) {
-    background: #fff0f0;
-    color: var(--error, #e54848);
+    background: var(--error-bg, #f6e3dc);
+    color: var(--error, #c0492b);
   }
 
   .row-menu .menu-sep {
     height: 1px;
     margin: 4px 6px;
-    background: #edf1f6;
+    background: var(--border);
   }
 
   .row-menu .menu-row {
@@ -960,7 +1098,7 @@
   }
 
   .row-menu .menu-row:hover:not(:disabled) {
-    background: #f5f8ff;
+    background: var(--primary-light);
   }
 
   .row-menu .menu-row > span {
