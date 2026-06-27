@@ -3,6 +3,20 @@ import type { DashboardNormalizedResult } from "@surreal-ck/shared/rpc.types";
 export const DASHBOARD_EMPTY_TEXT = "暂无数据";
 export const DASHBOARD_PLACEHOLDER = "—";
 
+/**
+ * 图表分类配色：暖绿 / 陶土设计语言，与全站换肤 token 同源
+ * （主绿 → 嫩芽绿 → 陶土橙 → 紫 → 深绿 → 浅陶土）。
+ * 所有多色图表（柱状 / 饼图等）共用同一调色板，保持设计语言一致。
+ */
+export const CHART_PALETTE = [
+  "#2f7a4c",
+  "#6db87a",
+  "#cc6b3a",
+  "#8a5a8f",
+  "#266340",
+  "#e0a96d",
+] as const;
+
 export type DashboardWidgetModelInput = {
   title: string;
   displaySpec?: Record<string, unknown>;

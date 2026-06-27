@@ -205,7 +205,7 @@
     flex: 1;
     flex-direction: column;
     padding: 18px 20px 20px;
-    background: #f4f6f9;
+    background: var(--bg);
     overflow: auto;
   }
 
@@ -231,13 +231,13 @@
     padding: 0 14px;
     border: 1px solid var(--border);
     border-radius: 999px;
-    background: rgba(255, 255, 255, .9);
+    background: var(--surface);
     color: var(--text-2);
     cursor: pointer;
   }
 
   .page-switcher button.active {
-    border-color: rgba(22, 100, 255, .22);
+    border-color: var(--primary);
     background: var(--primary-light);
     color: var(--primary);
     font-weight: 650;

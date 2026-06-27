@@ -832,14 +832,24 @@
     min-height: 0 !important;
   }
 
-  :global(revo-grid) {
-    --revo-grid-font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+  /* 用 .grid-card 提升特异性：RevoGrid 自带样式表在 `revo-grid {}` 里硬声明
+     --revo-grid-background:#fff 等默认值，同特异性靠后会盖掉我们的覆盖。
+     加一层祖先选择器（0,1,1 > 0,0,1）确保纸色 token 稳赢。 */
+  :global(.grid-card revo-grid) {
+    --revo-grid-font-family: var(--font-sans);
     --revo-grid-primary: var(--primary);
+    /* 单元格 / 行首号码格 / 表头底色全部锚到纸色 token，避免冷白叠暖米色产生色差 */
+    --revo-grid-background: var(--surface);
+    --revo-grid-foreground: var(--text-2);
+    --revo-grid-cell-disabled-bg: var(--surface);
+    --revo-grid-border: var(--border);
     --revo-grid-cell-border: var(--border);
+    --revo-grid-divider: var(--border);
     --revo-grid-header-border: var(--border);
+    --revo-grid-header-bg: var(--soft);
+    --revo-grid-header-color: var(--text-2);
     --revo-grid-row-hover: var(--soft);
     --revo-grid-focused-bg: var(--primary-light);
-    --revo-grid-header-bg: var(--soft);
     --revo-grid-text: var(--text-2);
     border: 0;
   }

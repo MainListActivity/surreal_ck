@@ -1,12 +1,12 @@
 <script lang="ts">
   import { PieChart } from "layerchart";
   import type { DashboardNormalizedResult } from "@surreal-ck/shared/rpc.types";
-  import { toPieChartModel } from "./model";
+  import { CHART_PALETTE, toPieChartModel } from "./model";
 
   let { result }: { title: string; result?: DashboardNormalizedResult; displaySpec?: Record<string, unknown> } = $props();
 
   const model = $derived(toPieChartModel(result));
-  const palette = ["#1664ff", "#14c9c9", "#73d13d", "#ffbb33", "#ff7d00", "#722ed1"];
+  const palette = CHART_PALETTE;
 </script>
 
 {#if model.rows.length > 0}

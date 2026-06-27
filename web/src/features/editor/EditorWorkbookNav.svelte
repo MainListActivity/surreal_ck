@@ -238,7 +238,7 @@
     gap: 18px;
     padding: 16px 12px;
     border-right: 1px solid var(--border);
-    background: linear-gradient(180deg, #fbfcff 0%, #f7f8fa 100%);
+    background: var(--surface);
     overflow: auto;
     transition: width .18s ease;
     position: relative;
@@ -267,7 +267,7 @@
   }
 
   .collapsed-trigger:hover {
-    background: rgba(22, 100, 255, .06);
+    background: var(--primary-light);
     color: var(--primary);
   }
 
@@ -341,12 +341,12 @@
   }
 
   .nav-item:hover {
-    background: rgba(22, 100, 255, .06);
+    background: var(--soft);
     color: var(--text-1);
   }
 
   .nav-item.active {
-    background: rgba(22, 100, 255, .1);
+    background: var(--primary-light);
     color: var(--primary);
     font-weight: 650;
   }
@@ -390,7 +390,7 @@
   }
 
   .item-icon:hover:not(:disabled) {
-    background: rgba(22, 100, 255, .08);
+    background: var(--primary-light);
   }
 
   .item-icon:disabled {

@@ -305,7 +305,7 @@
     flex-direction: column;
     overflow-y: auto;
     border-right: 1px solid var(--border);
-    background: #fbfcff;
+    background: var(--surface);
   }
 
   .form-block {
@@ -352,13 +352,13 @@
     height: 38px;
     border: 1px solid var(--border);
     border-radius: 10px;
-    background: #fff;
+    background: var(--surface);
     color: var(--text-2);
     cursor: pointer;
   }
 
   .type-grid button.active {
-    border-color: rgba(22, 100, 255, .22);
+    border-color: var(--primary);
     background: var(--primary-light);
     color: var(--primary);
     font-weight: 650;
@@ -437,7 +437,7 @@
   }
 
   .builder-actions button.secondary {
-    border-color: rgba(22, 100, 255, .22);
+    border-color: var(--primary);
     background: var(--primary-light);
     color: var(--primary);
   }

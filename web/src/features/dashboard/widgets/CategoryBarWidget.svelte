@@ -1,12 +1,12 @@
 <script lang="ts">
   import { BarChart } from "layerchart";
   import type { DashboardNormalizedResult } from "@surreal-ck/shared/rpc.types";
-  import { toCategoryChartModel } from "./model";
+  import { CHART_PALETTE, toCategoryChartModel } from "./model";
 
   let { result }: { title: string; result?: DashboardNormalizedResult; displaySpec?: Record<string, unknown> } = $props();
 
   const model = $derived(toCategoryChartModel(result));
-  const palette = ["#1664ff", "#4080ff", "#7bc6ff", "#69d1c5", "#36cfc9", "#73d13d"];
+  const palette = CHART_PALETTE;
 </script>
 
 {#if model.rows.length > 0}
