@@ -43,7 +43,7 @@ describe("HR-01 workspace 首页布局骨架", () => {
     expectDeclaration(panel, "flex-shrink", "0");
   });
 
-  test("SideNav 是 220px 固定侧栏，导航滚动区与底部用户栏分离", () => {
+  test("SideNav 是 256px 固定侧栏，导航滚动区与底部用户栏分离", () => {
     const sideNav = readComponent("SideNav.svelte");
 
     expect(sideNav).toContain('class="sidebar-top"');
@@ -52,7 +52,7 @@ describe("HR-01 workspace 首页布局骨架", () => {
     expect(sideNav).toContain('class="sidebar-userbar"');
 
     const aside = cssRule(sideNav, ".side-nav");
-    expectDeclaration(aside, "width", "220px");
+    expectDeclaration(aside, "width", "256px");
     expectDeclaration(aside, "flex-shrink", "0");
 
     const nav = cssRule(sideNav, ".sidebar-nav");
@@ -112,7 +112,7 @@ describe("HR-05 首页快捷操作与 AI 入口", () => {
     expect(home).toContain("空白工作簿");
     expect(home).toContain("从模板创建");
     expect(home).toContain("导入文件");
-    expect(home).toContain("敬请期待");
+    expect(home).toContain("导入文件功能尚未迁移");
     expect(home).toContain('workbooksStore.createBlank("未命名工作簿")');
     expect(home).toContain("onopen?.(wb.id)");
     expect(home).toContain("handleImportClick");
@@ -123,8 +123,8 @@ describe("HR-05 首页快捷操作与 AI 入口", () => {
 
     expect(home).toMatch(/onopenaichat\?:\s*\(\)\s*=>\s*void/);
     expect(home).toContain('class="ai-banner"');
-    expect(home).toContain("AI 能生成 SurrealQL");
-    expect(home).toContain("直接操作数据表结构和数据");
+    expect(home).toContain("卯豆 AI 助手");
+    expect(home).toContain("用自然语言查询数据、生成报表、自动整理案件台账");
     expect(home).toContain("开始对话");
     expect(home).toContain("onopenaichat?.()");
   });
