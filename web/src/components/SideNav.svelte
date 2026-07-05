@@ -147,9 +147,11 @@
 
     <span class="nav-label tool-label">工具</span>
     <div class="tool-nav">
-      <button class:active={page === "admin"} onclick={() => go("admin")}>
-        <Settings size={16} />工作区设置
-      </button>
+      {#if canOpenAdminConsole}
+        <button class:active={page === "admin"} onclick={() => go("admin")}>
+          <Settings size={16} />工作区设置
+        </button>
+      {/if}
       <button
         class:active={page === "admin-console"}
         disabled={!canOpenAdminConsole}

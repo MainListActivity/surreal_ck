@@ -8,19 +8,20 @@
   import TemplatesScreen from "./TemplatesScreen.svelte";
   import PlaceholderScreen from "./PlaceholderScreen.svelte";
   import ProfileScreen from "./ProfileScreen.svelte";
+  import WorkspaceSettingsScreen from "./WorkspaceSettingsScreen.svelte";
   import { workbooksStore } from "../lib/workbooks.svelte";
   import {
     canWriteSharedStructure as canWriteSharedStructureFn,
     isWorkspaceAdmin as isWorkspaceAdminFn,
   } from "../lib/permissions.svelte";
   import type { WorkspacePage } from "../lib/route";
-  import { Settings, Lock, Trash2 } from "@lucide/svelte";
+  import { Lock, Trash2 } from "@lucide/svelte";
   import { getCurrentWorkspace } from "../lib/workspace-store.svelte";
   import { pinWorkbook, readPinnedWorkbooks } from "../lib/workbook-home";
   import type { WorkbookRow } from "../lib/workbooks";
 
   // workspace 首页 shell：左侧 SideNav + 右侧按 page 切换内容。
-  // 已迁功能（首页 workbook 列表）直接可用；未迁页面（模板/仪表盘/工作区设置/个人设置/
+  // 已迁功能（首页 workbook 列表）直接可用；未迁页面（模板/仪表盘/个人设置/
   // 回收站）给明确占位，入口不丢——这是 D2-09 删除 web/legacy/ 前的安全阀。
   let {
     slug,
@@ -123,13 +124,7 @@
     {:else if page === "dashboard"}
       <DashboardScreen />
     {:else if page === "admin"}
-      <PlaceholderScreen
-        icon={Settings}
-        title="工作区设置待迁移"
-        desc="成员管理与工作区设置将接入 Workspace Scope Module，正在迁移中。如需切换或新建工作区，请使用左侧底部的工作区面板。"
-        actionLabel="返回首页"
-        onaction={goHome}
-      />
+      <WorkspaceSettingsScreen />
     {:else if page === "admin-console"}
       {#if canOpenAdminConsole}
         <AdminConsoleScreen />
