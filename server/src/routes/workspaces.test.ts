@@ -3,6 +3,11 @@ import type { MiddlewareHandler } from "hono";
 import { createApp } from "../app";
 import type { AppBindings } from "../hono-types";
 import type { CreateWorkspaceInput, CreateWorkspaceResult, WorkspaceCreator } from "../workspaces/create-workspace";
+import type {
+  RenameWorkspaceInput,
+  RenameWorkspaceResult,
+  WorkspaceSettingsManager,
+} from "../workspaces/workspace-settings-manager";
 import type { WorkspaceScopeModule } from "../workspaces/workspace-scope";
 
 const testUser = {
@@ -42,6 +47,21 @@ function stubWorkspaceScope(canCreate: boolean): WorkspaceScopeModule {
     },
     async switchWorkspace() {
       return { kind: "forbidden" };
+    },
+  };
+}
+
+function stubSettingsManager(
+  handler: (input: RenameWorkspaceInput) => RenameWorkspaceResult = () => ({ kind: "renamed" }),
+): { manager: WorkspaceSettingsManager; calls: RenameWorkspaceInput[] } {
+  const calls: RenameWorkspaceInput[] = [];
+  return {
+    calls,
+    manager: {
+      async renameWorkspace(input) {
+        calls.push(input);
+        return handler(input);
+      },
     },
   };
 }
@@ -181,5 +201,113 @@ describe("POST /api/workspaces", () => {
 
     expect(response.status).toBe(502);
     expect(await response.json()).toMatchObject({ error: { code: "scope-update-failed" } });
+  });
+});
+
+describe("PATCH /api/workspaces/:slug", () => {
+  test("requires OIDC before renaming a workspace", async () => {
+    const { manager, calls } = stubSettingsManager();
+    const app = createApp({ workspaceSettingsManager: manager });
+
+    const response = await app.fetch(
+      new Request("http://localhost/api/workspaces/acme", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "Acme Legal" }),
+      }),
+    );
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toMatchObject({ error: { code: "oidc-missing" } });
+    expect(calls).toEqual([]);
+  });
+
+  test("renames a workspace from the caller's OIDC subject and slug", async () => {
+    const { manager, calls } = stubSettingsManager();
+    const app = createApp({
+      requireUser: () => useTestUser,
+      workspaceSettingsManager: manager,
+    });
+
+    const response = await app.fetch(
+      new Request("http://localhost/api/workspaces/acme", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "  Acme Legal  " }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true });
+    expect(calls).toEqual([{ callerSubject: "user-123", slug: "acme", name: "Acme Legal" }]);
+  });
+
+  test("rejects an empty or too-long name before touching the manager", async () => {
+    const { manager, calls } = stubSettingsManager();
+    const app = createApp({
+      requireUser: () => useTestUser,
+      workspaceSettingsManager: manager,
+    });
+
+    const emptyResponse = await app.fetch(
+      new Request("http://localhost/api/workspaces/acme", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "   " }),
+      }),
+    );
+    const longResponse = await app.fetch(
+      new Request("http://localhost/api/workspaces/acme", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "x".repeat(81) }),
+      }),
+    );
+
+    expect(emptyResponse.status).toBe(400);
+    expect(await emptyResponse.json()).toMatchObject({ error: { code: "workspace-name-invalid" } });
+    expect(longResponse.status).toBe(400);
+    expect(await longResponse.json()).toMatchObject({ error: { code: "workspace-name-invalid" } });
+    expect(calls).toEqual([]);
+  });
+
+  test("maps non-admin callers to 403 without leaking the raw token", async () => {
+    const { manager } = stubSettingsManager(() => ({ kind: "forbidden" }));
+    const app = createApp({
+      requireUser: () => useTestUser,
+      workspaceSettingsManager: manager,
+    });
+
+    const response = await app.fetch(
+      new Request("http://localhost/api/workspaces/acme", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "Acme Legal" }),
+      }),
+    );
+    const payload = await response.json();
+
+    expect(response.status).toBe(403);
+    expect(payload).toMatchObject({ error: { code: "workspace-rename-forbidden" } });
+    expect(JSON.stringify(payload)).not.toContain("test-token");
+  });
+
+  test("maps missing or inactive workspaces to 404", async () => {
+    const { manager } = stubSettingsManager(() => ({ kind: "workspace-not-found" }));
+    const app = createApp({
+      requireUser: () => useTestUser,
+      workspaceSettingsManager: manager,
+    });
+
+    const response = await app.fetch(
+      new Request("http://localhost/api/workspaces/ghost", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "Ghost" }),
+      }),
+    );
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toMatchObject({ error: { code: "workspace-not-found" } });
   });
 });

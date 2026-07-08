@@ -46,6 +46,10 @@ export function setCurrentUserDisplayName(displayName: string | null): void {
   state.setCurrentUserDisplayName(displayName);
 }
 
+export function setCurrentWorkspaceName(name: string): void {
+  state.setCurrentWorkspaceName(name);
+}
+
 export function getCurrentUser(): CurrentUser | null {
   return reactive.currentUser;
 }

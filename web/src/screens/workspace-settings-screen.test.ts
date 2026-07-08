@@ -28,3 +28,26 @@ describe("WS-01 工作区设置页接入", () => {
     );
   });
 });
+
+describe("WS-03 工作区基本信息区块", () => {
+  test("设置页展示工作区 name / slug / role，并把改名成功回写 workspace-store", () => {
+    const settings = readScreen("WorkspaceSettingsScreen.svelte");
+
+    expect(settings).toMatch(/import \{ renameWorkspace \} from "\.\.\/lib\/workspace-meta-data";/);
+    expect(settings).toMatch(/setCurrentWorkspaceName/);
+    expect(settings).toContain('aria-label="基本信息"');
+    expect(settings).toContain("显示名称");
+    expect(settings).toContain("Slug");
+    expect(settings).toContain("当前角色");
+    expect(settings).toMatch(/const result = await renameWorkspace\(workspaceSlug, workspaceNameDraft\);/);
+    expect(settings).toMatch(/syncedWorkspaceName = result\.name;/);
+    expect(settings).toMatch(/setCurrentWorkspaceName\(result\.name\);/);
+  });
+
+  test("基本信息保存入口只对管理员开放，空名或未改动不可保存", () => {
+    const settings = readScreen("WorkspaceSettingsScreen.svelte");
+
+    expect(settings).toMatch(/const canSaveWorkspaceName = \$derived\([\s\S]*trimmedWorkspaceName\.length > 0[\s\S]*workspaceNameDirty/);
+    expect(settings).toMatch(/\{#if canManage\}\s*<button[\s\S]*type="submit"[\s\S]*disabled=\{!canSaveWorkspaceName\}[\s\S]*保存[\s\S]*<\/button>\s*\{\/if\}/);
+  });
+});

@@ -4,9 +4,23 @@ import type { AppBindings } from "../hono-types";
 import { HttpError } from "../http-error";
 import { requireOidc } from "../middleware/oidc";
 import type { WorkspaceCreator } from "../workspaces/create-workspace";
+import {
+  createWorkspaceSettingsManager,
+  type WorkspaceSettingsManager,
+} from "../workspaces/workspace-settings-manager";
 import type { WorkspaceScopeModule } from "../workspaces/workspace-scope";
 
 const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
+const MAX_WORKSPACE_NAME_LENGTH = 80;
+
+function workspaceRenameErrorToHttp(kind: "forbidden" | "workspace-not-found"): HttpError {
+  switch (kind) {
+    case "forbidden":
+      return new HttpError(403, "workspace-rename-forbidden", "Only a workspace admin can rename the workspace");
+    case "workspace-not-found":
+      return new HttpError(404, "workspace-not-found", "Workspace does not exist or is not active");
+  }
+}
 
 // 注意：链式 .post() 并让返回类型被推导（不要标 `: Hono<AppBindings>`，
 // 也不要先 `const routes` 再逐条 in-place 注册），否则 /api/workspaces 的
@@ -15,50 +29,73 @@ export function createWorkspaceRoutes(
   workspaceCreator: WorkspaceCreator,
   workspaceScope: WorkspaceScopeModule,
   requireUser: () => MiddlewareHandler<AppBindings> = requireOidc,
+  workspaceSettingsManager: WorkspaceSettingsManager = createWorkspaceSettingsManager(),
 ) {
-  return new Hono<AppBindings>().post("/api/workspaces", requireUser(), async (c) => {
-    const body = await c.req.json().catch(() => null);
-    const name = typeof body?.name === "string" ? body.name.trim() : "";
-    const slug = typeof body?.slug === "string" ? body.slug.trim().toLowerCase() : "";
+  return new Hono<AppBindings>()
+    .post("/api/workspaces", requireUser(), async (c) => {
+      const body = await c.req.json().catch(() => null);
+      const name = typeof body?.name === "string" ? body.name.trim() : "";
+      const slug = typeof body?.slug === "string" ? body.slug.trim().toLowerCase() : "";
 
-    if (!name) {
-      throw new HttpError(400, "workspace-name-required", "name is required");
-    }
-    if (!SLUG_PATTERN.test(slug)) {
-      throw new HttpError(400, "workspace-slug-invalid", "slug must be 1-40 lowercase alphanumeric or hyphen characters");
-    }
-    const { canCreate } = await workspaceScope.listWorkspaces({
-      subject: c.var.user.subject,
-      email: c.var.user.email,
-    });
-    if (!canCreate) {
-      throw new HttpError(403, "workspace-create-forbidden", "Workspace creation is not allowed for this user");
-    }
+      if (!name) {
+        throw new HttpError(400, "workspace-name-required", "name is required");
+      }
+      if (!SLUG_PATTERN.test(slug)) {
+        throw new HttpError(400, "workspace-slug-invalid", "slug must be 1-40 lowercase alphanumeric or hyphen characters");
+      }
+      const { canCreate } = await workspaceScope.listWorkspaces({
+        subject: c.var.user.subject,
+        email: c.var.user.email,
+      });
+      if (!canCreate) {
+        throw new HttpError(403, "workspace-create-forbidden", "Workspace creation is not allowed for this user");
+      }
 
-    const result = await workspaceCreator.createWorkspace({
-      subject: c.var.user.subject,
-      subjectToken: c.var.user.rawToken,
-      email: c.var.user.email ?? "",
-      name,
-      slug,
-    });
+      const result = await workspaceCreator.createWorkspace({
+        subject: c.var.user.subject,
+        subjectToken: c.var.user.rawToken,
+        email: c.var.user.email ?? "",
+        name,
+        slug,
+      });
 
-    if (result.kind === "slug-conflict") {
-      throw new HttpError(409, "workspace-slug-conflict", "Workspace slug already exists");
-    }
+      if (result.kind === "slug-conflict") {
+        throw new HttpError(409, "workspace-slug-conflict", "Workspace slug already exists");
+      }
 
-    if (result.kind === "scope-update-failed") {
-      throw new HttpError(502, "scope-update-failed", "Workspace created but token scope update failed; retry switch-workspace", {
+      if (result.kind === "scope-update-failed") {
+        throw new HttpError(502, "scope-update-failed", "Workspace created but token scope update failed; retry switch-workspace", {
+          slug: result.slug,
+          dbName: result.dbName,
+        });
+      }
+
+      return c.json({
         slug: result.slug,
         dbName: result.dbName,
+        accessToken: result.accessToken,
+        expiresIn: result.expiresIn,
       });
-    }
+    })
+    .patch("/api/workspaces/:slug", requireUser(), async (c) => {
+      const slug = c.req.param("slug");
+      const body = await c.req.json().catch(() => null);
+      const name = typeof body?.name === "string" ? body.name.trim() : "";
 
-    return c.json({
-      slug: result.slug,
-      dbName: result.dbName,
-      accessToken: result.accessToken,
-      expiresIn: result.expiresIn,
+      if (!name || name.length > MAX_WORKSPACE_NAME_LENGTH) {
+        throw new HttpError(400, "workspace-name-invalid", "name must be 1-80 characters");
+      }
+
+      const result = await workspaceSettingsManager.renameWorkspace({
+        callerSubject: c.var.user.subject,
+        slug,
+        name,
+      });
+
+      if (result.kind !== "renamed") {
+        throw workspaceRenameErrorToHttp(result.kind);
+      }
+
+      return c.json({ ok: true });
     });
-  });
 }

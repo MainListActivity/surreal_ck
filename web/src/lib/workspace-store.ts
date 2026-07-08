@@ -48,6 +48,8 @@ export type WorkspaceState = {
   enterWorkspace(input: EnterWorkspaceInput): Promise<void>;
   /** 个人中心保存 display_name 后回写，让侧栏等消费方同步刷新；未签入时 no-op。 */
   setCurrentUserDisplayName(displayName: string | null): void;
+  /** 工作区设置保存 name 后回写，让侧栏、标题等消费方同步刷新；未签入时 no-op。 */
+  setCurrentWorkspaceName(name: string): void;
 };
 
 export function createWorkspaceState(options: WorkspaceStateOptions): WorkspaceState {
@@ -107,6 +109,11 @@ export function createWorkspaceState(options: WorkspaceStateOptions): WorkspaceS
       // 即使 currentUser 尚未从 token 初始化（解析失败的兜底），保存后也要让消费方
       // 拿到新昵称，因此 null 时新建一个仅含 displayName 的最小用户对象。
       currentUser = { ...(currentUser ?? {}), displayName };
+      emitChange();
+    },
+    setCurrentWorkspaceName(name) {
+      if (!currentWorkspace) return;
+      currentWorkspace = { ...currentWorkspace, name };
       emitChange();
     },
   };

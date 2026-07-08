@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { AlertCircle, RefreshCw, ShieldCheck, Trash2, UserPlus } from "@lucide/svelte";
+  import { AlertCircle, RefreshCw, Save, ShieldCheck, Trash2, UserPlus } from "@lucide/svelte";
   import EmptyState from "../components/EmptyState.svelte";
   import {
     addMember,
@@ -10,11 +10,13 @@
     type WorkspaceMember,
   } from "../lib/members-data";
   import { isWorkspaceAdmin as isWorkspaceAdminFn } from "../lib/permissions.svelte";
+  import { renameWorkspace } from "../lib/workspace-meta-data";
   import { getSurreal } from "../lib/surreal";
   import {
     getConnectionState,
     getCurrentUser,
     getCurrentWorkspace,
+    setCurrentWorkspaceName,
   } from "../lib/workspace-store.svelte";
 
   const connectionState = $derived(getConnectionState());
@@ -26,6 +28,12 @@
   let members = $state<WorkspaceMember[]>([]);
   let loading = $state(true);
   let loadError = $state("");
+  let workspaceNameDraft = $state("");
+  let syncedWorkspaceSlug = $state("");
+  let syncedWorkspaceName = $state("");
+  let renameWriting = $state(false);
+  let renameError = $state("");
+  let renameOk = $state("");
   let emailDraft = $state("");
   let displayNameDraft = $state("");
   let roleDraft = $state<"participant" | "admin">("participant");
@@ -34,6 +42,12 @@
   let actionOk = $state("");
   let loadedSlug = $state("");
 
+  const workspaceOriginalName = $derived((workspace?.name ?? "").trim());
+  const trimmedWorkspaceName = $derived(workspaceNameDraft.trim());
+  const workspaceNameDirty = $derived(trimmedWorkspaceName !== workspaceOriginalName);
+  const canSaveWorkspaceName = $derived(
+    canManage && !renameWriting && trimmedWorkspaceName.length > 0 && workspaceNameDirty && workspaceSlug !== "",
+  );
   const canAdd = $derived(canManage && !writing && emailDraft.trim().length > 0 && workspaceSlug !== "");
 
   onMount(() => {
@@ -49,6 +63,17 @@
     void refresh();
   });
 
+  $effect(() => {
+    const nextSlug = workspace?.slug ?? "";
+    const nextName = workspace?.name ?? "";
+    if (nextSlug === syncedWorkspaceSlug && nextName === syncedWorkspaceName) return;
+    syncedWorkspaceSlug = nextSlug;
+    syncedWorkspaceName = nextName;
+    workspaceNameDraft = nextName;
+    renameError = "";
+    renameOk = "";
+  });
+
   async function refresh() {
     loading = true;
     loadError = "";
@@ -60,6 +85,23 @@
     } finally {
       loading = false;
     }
+  }
+
+  async function submitWorkspaceName() {
+    if (!canSaveWorkspaceName) return;
+    renameWriting = true;
+    renameError = "";
+    renameOk = "";
+    const result = await renameWorkspace(workspaceSlug, workspaceNameDraft);
+    renameWriting = false;
+    if (!result.ok) {
+      renameError = result.message;
+      return;
+    }
+    workspaceNameDraft = result.name;
+    syncedWorkspaceName = result.name;
+    setCurrentWorkspaceName(result.name);
+    renameOk = "已保存";
   }
 
   async function submitMember() {
@@ -124,6 +166,13 @@
   function roleLabel(isAdmin: boolean): string {
     return isAdmin ? "管理员" : "成员";
   }
+
+  function workspaceRoleLabel(role: string | undefined): string {
+    if (role === "admin") return "管理员";
+    if (role === "participant") return "成员";
+    if (role === "employee") return "虚拟员工";
+    return role || "未知";
+  }
 </script>
 
 <section class="workspace-settings">
@@ -136,6 +185,54 @@
       <RefreshCw size={15} />刷新
     </button>
   </header>
+
+  <section class="settings-section" aria-label="基本信息">
+    <div class="section-head">
+      <div>
+        <h2>基本信息</h2>
+        <p>工作区名称会同步到侧栏和页面标题。</p>
+      </div>
+      {#if !canManage}
+        <span class="readonly-badge">只读</span>
+      {/if}
+    </div>
+
+    <form class="basic-form" onsubmit={(event) => { event.preventDefault(); void submitWorkspaceName(); }}>
+      <label>
+        <span>显示名称</span>
+        <input
+          type="text"
+          bind:value={workspaceNameDraft}
+          maxlength="80"
+          readonly={!canManage}
+          disabled={renameWriting}
+          oninput={() => {
+            renameError = "";
+            renameOk = "";
+          }}
+        />
+      </label>
+      <label>
+        <span>Slug</span>
+        <input type="text" value={workspaceSlug || "—"} readonly />
+      </label>
+      <label>
+        <span>当前角色</span>
+        <input type="text" value={workspaceRoleLabel(workspace?.role)} readonly />
+      </label>
+      {#if canManage}
+        <button type="submit" class="primary-btn" disabled={!canSaveWorkspaceName}>
+          <Save size={15} />{renameWriting ? "保存中…" : "保存"}
+        </button>
+      {/if}
+    </form>
+
+    {#if renameError}
+      <p class="action-msg error">{renameError}</p>
+    {:else if renameOk}
+      <p class="action-msg ok">{renameOk}</p>
+    {/if}
+  </section>
 
   <section class="settings-section" aria-label="成员管理">
     <div class="section-head">
@@ -281,6 +378,7 @@
 
   .page-head,
   .section-head,
+  .basic-form,
   .invite-form,
   .member-row,
   .list-head {
@@ -332,6 +430,13 @@
     font-weight: 700;
   }
 
+  .basic-form {
+    display: grid;
+    grid-template-columns: minmax(240px, 1.2fr) minmax(160px, .8fr) minmax(140px, .7fr) auto;
+    gap: 12px;
+    align-items: end;
+  }
+
   .invite-form {
     display: grid;
     grid-template-columns: minmax(220px, 1fr) minmax(180px, .8fr) 140px auto;
@@ -368,6 +473,10 @@
   select:focus {
     border-color: var(--primary);
     outline: none;
+  }
+
+  input[readonly] {
+    color: var(--text-2);
   }
 
   .ghost-btn,
@@ -560,6 +669,7 @@
   }
 
   @media (max-width: 860px) {
+    .basic-form,
     .invite-form {
       grid-template-columns: 1fr;
     }

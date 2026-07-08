@@ -119,4 +119,24 @@ describe("workspace 状态层", () => {
 
     expect(snapshots).toEqual(["open", "closed", "open"]);
   });
+
+  test("setCurrentWorkspaceName 更新当前 workspace 名称并通知 runes 镜像", async () => {
+    const fake = fakeConn();
+    const names: Array<string | undefined> = [];
+    const state = createWorkspaceState({
+      surrealUrl: "ws://localhost:8000/rpc",
+      namespace: "main",
+      connect: async () => fake.conn,
+      onChange: (snap) => names.push(snap.currentWorkspace?.name),
+    });
+
+    await state.enterWorkspace({ ...workspaceInput, slug: "acme", name: "Acme" });
+    state.setCurrentWorkspaceName("Acme Legal");
+
+    expect(state.currentWorkspace).toMatchObject({
+      slug: "acme",
+      name: "Acme Legal",
+    });
+    expect(names).toEqual(["Acme", "Acme Legal"]);
+  });
 });

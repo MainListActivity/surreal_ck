@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 Label: ready-for-agent
 Category: feature
 Priority: P1
@@ -36,12 +36,12 @@ Priority: P1
 
 ## Acceptance criteria
 
-- [ ] 管理员 `PATCH /api/workspaces/:slug` body `{ name }` → `_system.workspace.name` 更新、`updated_at` 自动刷新，返回 `{ ok: true }`。
-- [ ] 普通成员 / 非目标 workspace 成员调用 → 403，不写入。
-- [ ] workspace 不存在 / 非 active → 404；空 name → 400。
-- [ ] 端到端类型经 `createApp` 链推导（前端 `api.ts` 能拿到该 route 的类型）。
-- [ ] 有单测覆盖：成功改名 / 403 / 404 / 空 name；失败路径无敏感凭证泄漏。
-- [ ] `pnpm --filter @surreal-ck/server test` / `typecheck` 通过。
+- [x] 管理员 `PATCH /api/workspaces/:slug` body `{ name }` → `_system.workspace.name` 更新、`updated_at` 自动刷新，返回 `{ ok: true }`。
+- [x] 普通成员 / 非目标 workspace 成员调用 → 403，不写入。
+- [x] workspace 不存在 / 非 active → 404；空 name → 400。
+- [x] 端到端类型经 `createApp` 链推导（前端 `api.ts` 能拿到该 route 的类型）。
+- [x] 有单测覆盖：成功改名 / 403 / 404 / 空 name；失败路径无敏感凭证泄漏。
+- [x] `pnpm --filter @surreal-ck/server test` / `typecheck` 通过。
 
 ## 显式不做
 

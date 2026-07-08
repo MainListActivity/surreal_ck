@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 Label: ready-for-agent
 Category: feature
 Priority: P1
@@ -34,12 +34,12 @@ Priority: P1
 
 ## Acceptance criteria
 
-- [ ] 工作区设置页有「基本信息」区块，展示当前 name（可改）、slug（只读）、当前用户角色（只读）。
-- [ ] 改 name 保存 → 调 `PATCH /api/workspaces/:slug` → 成功后回写 `workspace-store`，侧栏 / 标题随之刷新，无需重进 workspace。
-- [ ] 普通成员看到只读区块，无保存入口。
-- [ ] 空名禁用保存；保存失败有错误态且不回写 store。
-- [ ] data 层有单测覆盖 rename 成功 / 失败归一。
-- [ ] `pnpm --filter @surreal-ck/web test` / `typecheck` / `build` 通过。
+- [x] 工作区设置页有「基本信息」区块，展示当前 name（可改）、slug（只读）、当前用户角色（只读）。
+- [x] 改 name 保存 → 调 `PATCH /api/workspaces/:slug` → 成功后回写 `workspace-store`，侧栏 / 标题随之刷新，无需重进 workspace。
+- [x] 普通成员看到只读区块，无保存入口。
+- [x] 空名禁用保存；保存失败有错误态且不回写 store。
+- [x] data 层有单测覆盖 rename 成功 / 失败归一。
+- [x] `pnpm --filter @surreal-ck/web test` / `typecheck` / `build` 通过。
 
 ## 显式不做
 

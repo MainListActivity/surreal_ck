@@ -21,6 +21,10 @@ import { createCallerSession } from "./ai/caller-session";
 import { HttpError } from "./http-error";
 import { createWorkspaceCreator, type WorkspaceCreator } from "./workspaces/create-workspace";
 import { createMemberManager, type MemberManager } from "./workspaces/member-manager";
+import {
+  createWorkspaceSettingsManager,
+  type WorkspaceSettingsManager,
+} from "./workspaces/workspace-settings-manager";
 import { createIdpTokenScopeAdapter, type IdpTokenScopeAdapter } from "./workspaces/idp-scope-adapter";
 import { createWorkspaceScopeModule, type WorkspaceScopeModule } from "./workspaces/workspace-scope";
 import type { AppBindings } from "./hono-types";
@@ -30,6 +34,7 @@ export type AppOptions = {
   workspaceScope?: WorkspaceScopeModule;
   idpTokenScopeAdapter?: IdpTokenScopeAdapter;
   workspaceCreator?: WorkspaceCreator;
+  workspaceSettingsManager?: WorkspaceSettingsManager;
   memberManager?: MemberManager;
   oidcTokenExchange?: OidcTokenExchangeOptions;
   requireUser?: () => MiddlewareHandler<AppBindings>;
@@ -90,6 +95,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
   const workspaceScope = options.workspaceScope ?? createWorkspaceScopeModule();
   const idpTokenScopeAdapter = options.idpTokenScopeAdapter ?? createIdpTokenScopeAdapter();
   const workspaceCreator = options.workspaceCreator ?? createWorkspaceCreator({ idpTokenScopeAdapter });
+  const workspaceSettingsManager = options.workspaceSettingsManager ?? createWorkspaceSettingsManager();
   const memberManager = options.memberManager ?? createMemberManager();
   const runRegistry = options.runRegistry ?? createRunRegistry();
   const runBus = options.runBus ?? createRunBus();
@@ -109,7 +115,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     .route("/", createAuthRoutes(options.oidcTokenExchange ?? createOidcTokenExchangeFromEnv()))
     .route("/", createInternalIdpRoutes(workspaceScope))
     .route("/", createSessionRoutes(workspaceScope, idpTokenScopeAdapter, options.requireUser))
-    .route("/", createWorkspaceRoutes(workspaceCreator, workspaceScope, options.requireUser))
+    .route("/", createWorkspaceRoutes(workspaceCreator, workspaceScope, options.requireUser, workspaceSettingsManager))
     .route("/", createMemberRoutes(memberManager, options.requireUser))
     .route(
       "/",
