@@ -19,7 +19,7 @@
     type AiDrawerState,
     type ChatRunStart,
   } from "../lib/ai-drawer";
-  import { writeRowPatch, type RowPatchWriteResult } from "../lib/row-patch-card";
+  import type { RowPatchWriteResult } from "../lib/row-patch-card";
   import {
     persistDashboardDraft,
     previewDashboardDraft,
@@ -156,25 +156,13 @@
   }
 
   /**
-   * 提案卡确认后的直连写入：用当前 workspace 的浏览器 SurrealDB 会话，
-   * 复用编辑器同一套 saveCells 路径（coerce / validate / RecordId·Date 边界包装）。
+   * 提案卡确认后的写入统一走活动数据表运行时，复用手工编辑的字段规则、
+   * 最小 patch、RecordId·Date 编解码和结构化错误。
    * 失败（含 PERMISSIONS 拒绝）返回中文错误，卡片保留可重试。
    */
   function writeProposalValues(proposal: RowPatchProposal) {
     return async (values: Record<string, unknown>): Promise<RowPatchWriteResult> => {
-      let conn;
-      try {
-        conn = getSurreal();
-      } catch {
-        return { ok: false, message: "尚未连接数据库，请刷新页面后重试。" };
-      }
-      return writeRowPatch({
-        conn,
-        sheets: editorStore.sheets,
-        sheetId: proposal.sheetId,
-        recordId: proposal.recordId,
-        values,
-      });
+      return editorStore.writeRecordPatch(proposal.sheetId, proposal.recordId, values);
     };
   }
 

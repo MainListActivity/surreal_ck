@@ -140,8 +140,22 @@
       return;
     }
 
-    const ok = await editorStore.removeFieldByKey(fieldKey);
+    const plan = await editorStore.planFieldRemoval(fieldKey);
+    if (!plan) {
+      draftError = editorStore.saveError;
+      return;
+    }
+    if (plan.blockers.length) {
+      draftError = `字段仍被以下持久化视图依赖：${plan.blockers.map((item) => item.label).join("、")}`;
+      return;
+    }
+    const impact = plan.affectedRecordCount > 0
+      ? `这会永久删除 ${plan.affectedRecordCount} 条记录中的「${plan.fieldLabel}」数据。`
+      : `这会永久删除字段「${plan.fieldLabel}」。`;
+    if (!globalThis.confirm(`${impact}\n此操作不可撤销，是否继续？`)) return;
+    const ok = await editorStore.confirmFieldRemoval(plan.token);
     if (ok) close();
+    else draftError = editorStore.saveError;
   }
 
   function selectReferenceTarget(table: string) {
@@ -209,7 +223,7 @@
           </label>
           <label class="span-2">
             <span>标识</span>
-            <input bind:value={fieldDraft.key} placeholder="field_key" />
+            <input bind:value={fieldDraft.key} placeholder="field_key" disabled title="字段标识创建后不可修改" />
           </label>
           <label>
             <span>类型</span>

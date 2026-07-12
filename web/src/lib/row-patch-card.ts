@@ -1,6 +1,4 @@
-import type { GridColumnDef, RowPatchProposal } from "@surreal-ck/shared";
-import type { SurrealConn } from "./surreal";
-import { saveCells } from "./workbook-data";
+import type { RowPatchProposal } from "@surreal-ck/shared";
 
 /**
  * 行分析提案卡的纯逻辑状态机（AI-006）。
@@ -8,8 +6,8 @@ import { saveCells } from "./workbook-data";
  * Router workflow 在写操作前 suspend，提案（RowPatchProposal）经 chat stream
  * 推到 AI 抽屉；本模块管理「逐字段接受/忽略 → 确认写入 → resume」的状态流转，
  * 与 svelte runes 镜像分离（沿用 editor-store 的分层风格）：
- * - 写入通过注入的 `write` 完成（生产接 workbook-data 的 saveCells，复用编辑器
- *   同一套字段约束 / 序列化 / RecordId·Date 边界包装）；
+ * - 写入通过注入的 `write` 完成（生产接当前 DataTableRuntime，复用编辑器
+ *   同一套字段约束 / 编解码 / 调度与错误语义）；
  * - resume 通过注入的 `resume` 完成（生产接 ai-drawer session 的 resumeWrite）。
  *
  * 写入失败（含 PERMISSIONS 拒绝）时卡片保留并展示中文错误，**不**以
@@ -135,33 +133,4 @@ export function formatRowPatchValue(value: unknown): string {
   if (value instanceof Date) return value.toISOString();
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
-}
-
-export type RowPatchSheetRef = {
-  id: string;
-  tableName: string;
-  columns: GridColumnDef[];
-};
-
-/**
- * 提案确认后的直连写入：按 sheetId 在编辑器当前 sheets 里找到目标表，
- * 把已接受字段交给 {@link saveCells}（与手工编辑同一套 coerce / validate /
- * RecordId·Date 边界包装），向目标记录 MERGE。不另开 UPDATE 通道。
- */
-export async function writeRowPatch(input: {
-  conn: SurrealConn;
-  sheets: RowPatchSheetRef[];
-  sheetId: string;
-  recordId: string;
-  values: Record<string, unknown>;
-}): Promise<RowPatchWriteResult> {
-  const sheet = input.sheets.find((item) => item.id === input.sheetId);
-  if (!sheet) {
-    return { ok: false, message: "提案对应的数据表不在当前工作簿中，请打开该数据表后重试。" };
-  }
-  return saveCells(
-    input.conn,
-    { tableName: sheet.tableName, columns: sheet.columns },
-    [{ id: input.recordId, values: input.values }],
-  );
 }

@@ -1,6 +1,7 @@
 services:
   surrealdb:
-    image: surrealdb/surrealdb:latest
+    # 数据表运行时依赖 3.0.5 已验证的 DDL + DML 混合事务提交/回滚语义。
+    image: surrealdb/surrealdb:3.0.5
     command: start --user root --pass root memory
     ports:
       - "8000:8000"

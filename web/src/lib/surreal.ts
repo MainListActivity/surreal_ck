@@ -42,6 +42,11 @@ export type SurrealWriter = {
   deleteRecord(id: string): Promise<unknown>;
 };
 
+/** 事务内除记录写入外还允许执行 DDL / 预检查询；仅数据表运行时等深 Module 消费。 */
+export type SurrealTransactionWriter = SurrealWriter & {
+  query<T = unknown>(sql: string, bindings?: Record<string, unknown>): Promise<T[]>;
+};
+
 /**
  * The slice of the official `surrealdb` driver this module depends on.
  * Kept narrow so the connection lifecycle and data layer can be unit-tested
@@ -64,7 +69,7 @@ export type SurrealConn = SurrealWriter & {
     onMessage: (message: LiveMessage & { value: T }) => void,
   ): Promise<() => void>;
   /** 在 SurrealDB 事务内执行一批写入；失败时 cancel，成功时 commit。 */
-  transaction<T>(run: (tx: SurrealWriter) => Promise<T>): Promise<T>;
+  transaction<T>(run: (tx: SurrealTransactionWriter) => Promise<T>): Promise<T>;
 };
 
 /** driver 上 query / live / update / create 的最小形状，仅用于浏览器 adapter 内部桥接。 */
@@ -75,6 +80,10 @@ type RawWriter = {
 };
 
 type RawTransaction = RawWriter & {
+  query<R extends unknown[] = unknown[]>(
+    sql: string,
+    bindings?: Record<string, unknown>,
+  ): { collect(): Promise<R> };
   commit(): Promise<void>;
   cancel(): Promise<void>;
 };
@@ -181,10 +190,25 @@ export function createBrowserConn(raw: RawDriver, logOptions: BrowserQueryLogOpt
     updateRecord: writer.updateRecord,
     createRecord: writer.createRecord,
     deleteRecord: writer.deleteRecord,
-    async transaction<T>(run: (tx: SurrealWriter) => Promise<T>): Promise<T> {
+    async transaction<T>(run: (tx: SurrealTransactionWriter) => Promise<T>): Promise<T> {
       const tx = await rawBeginTransaction.call(raw);
       try {
-        const result = await run(createWriter(tx, queryLogger));
+        const txQuery = tx.query;
+        const transactionWriter: SurrealTransactionWriter = Object.assign(
+          createWriter(tx, queryLogger),
+          {
+            async query<TValue = unknown>(
+              sql: string,
+              bindings?: Record<string, unknown>,
+            ): Promise<TValue[]> {
+              return await queryLogger(sql, bindings, async () => {
+                const collected = await txQuery.call(tx, sql, bindings).collect();
+                return (collected[0] ?? []) as TValue[];
+              });
+            },
+          },
+        );
+        const result = await run(transactionWriter);
         await tx.commit();
         return result;
       } catch (err) {

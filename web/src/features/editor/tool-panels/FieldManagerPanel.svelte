@@ -36,7 +36,13 @@
   async function deleteField(key: string) {
     closeMenu();
     if (!canWriteSharedStructure) return;
-    await editorStore.removeFieldByKey(key);
+    const plan = await editorStore.planFieldRemoval(key);
+    if (!plan || plan.blockers.length) return;
+    const impact = plan.affectedRecordCount > 0
+      ? `这会永久删除 ${plan.affectedRecordCount} 条记录中的「${plan.fieldLabel}」数据。`
+      : `这会永久删除字段「${plan.fieldLabel}」。`;
+    if (!globalThis.confirm(`${impact}\n此操作不可撤销，是否继续？`)) return;
+    await editorStore.confirmFieldRemoval(plan.token);
   }
 
   async function addField() {

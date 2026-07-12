@@ -128,6 +128,8 @@ export const editorStore = {
   setHiddenFields: (hiddenFields: string[]) => store.setHiddenFields(hiddenFields),
   setGroupBy: (groupBy: string | null) => store.setGroupBy(groupBy),
   saveRows: (patches: Array<{ id?: RecordIdString; values: Record<string, unknown> }>) => store.saveRows(patches),
+  writeRecordPatch: (sheetId: string, recordId: RecordIdString, values: Record<string, unknown>) =>
+    store.writeRecordPatch(sheetId, recordId, values),
   saveFromSource: (source: Array<Record<string, unknown>>) => store.saveFromSource(source),
   deleteRows: (ids: Array<RecordIdString | string>) => store.deleteRows(ids),
   insertBlankRows: (
@@ -140,6 +142,8 @@ export const editorStore = {
   updateFields: (columns: GridColumnDef[]) => store.updateFields(columns),
   addField: () => store.addField(),
   removeFieldByKey: (key: string) => store.removeFieldByKey(key),
+  planFieldRemoval: (key: string) => store.planFieldRemoval(key),
+  confirmFieldRemoval: (token: string) => store.confirmFieldRemoval(token),
   reorderFields: (orderedKeys: string[]) => store.reorderFields(orderedKeys),
   reset: () => store.reset(),
 };

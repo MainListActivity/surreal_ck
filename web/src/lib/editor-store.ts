@@ -12,18 +12,15 @@ import type {
   SortClause,
   ViewParams,
 } from "@surreal-ck/shared/rpc.types";
-import { recordValueToString, toRecordId } from "./record-id";
+import { toRecordId } from "./record-id";
 import type { SurrealConn } from "./surreal";
+import { describeWriteError } from "./workbook-data";
 import {
-  deleteRows as deleteRowsDirect,
-  loadSheet,
-  prepareRecordFields,
-  saveCells,
-  subscribeLive,
-  updateSheetColumns,
-  describeWriteError,
-  type SheetRef,
-} from "./workbook-data";
+  openDataTableRuntime,
+  type DataTableRuntime,
+  type DataTableRuntimeSnapshot,
+  type FieldRemovalPlan,
+} from "./data-table-runtime";
 import { isDraftRowId, recordDrafts } from "./record-drafts";
 
 export { isDraftRowId } from "./record-drafts";
@@ -117,8 +114,6 @@ export type EditorDeps = {
   openRecord?: (id: RecordIdString) => void;
 };
 
-const PAGE: { limit: number; start: number } = { limit: 500, start: 0 };
-
 const EMPTY_VIEW_PARAMS: ViewParams = {
   filters: [],
   filterMode: "and",
@@ -145,7 +140,8 @@ export function createEditorStore(deps: EditorDeps) {
     draftsBySheet: {},
   };
 
-  let unsubscribeLive: (() => void) | null = null;
+  let runtime: DataTableRuntime | null = null;
+  let loadGeneration = 0;
 
   function emit(): void {
     deps.onChange?.({
@@ -163,44 +159,33 @@ export function createEditorStore(deps: EditorDeps) {
     });
   }
 
-  function sheetRef(): SheetRef | null {
-    const meta = state.sheets.find((s) => s.id === state.activeSheetId);
-    if (!meta) return null;
-    return { tableName: meta.tableName, columns: meta.columns };
-  }
-
   /** 把 state.rows 中持久化部分写回 bucket（不动 drafts），保持 rows 与 bucket 一致。 */
   function syncDraftBucket(): void {
     state.draftsBySheet = recordDrafts.syncBucket(state.activeSheetId, state.rows, state.draftsBySheet);
   }
 
-  function stopLive(): void {
-    unsubscribeLive?.();
-    unsubscribeLive = null;
-  }
-
-  async function startLive(): Promise<void> {
-    const ref = sheetRef();
-    if (!ref) return;
-    unsubscribeLive = await subscribeLive(deps.getConn(), ref, {
-      onUpsert: (row) => {
-        const idx = state.rows.findIndex((r) => r.id === row.id);
-        if (idx === -1) state.rows = [...state.rows, row];
-        else state.rows = state.rows.map((r) => (r.id === row.id ? row : r));
-        emit();
-      },
-      onRemove: (id) => {
-        state.rows = state.rows.filter((r) => r.id !== id);
-        emit();
-      },
-    });
+  function applyRuntimeSnapshot(snapshot: DataTableRuntimeSnapshot): void {
+    if (snapshot.dataTableId !== state.activeSheetId) return;
+    state.columns = snapshot.columns;
+    state.viewParams = snapshot.query;
+    state.rows = recordDrafts.rowsWithDrafts(snapshot.dataTableId, snapshot.records, state.draftsBySheet);
+    state.sheets = state.sheets.map((sheet) => sheet.id === snapshot.dataTableId
+      ? { ...sheet, label: snapshot.label, columns: snapshot.columns }
+      : sheet);
+    state.loading = snapshot.status === "opening" || snapshot.status === "refreshing";
+    state.error = snapshot.error?.message ?? null;
+    emit();
   }
 
   /** 读 workbook 下所有 sheet，挑选 active sheet，派生 columns 并加载行 + 订阅 LIVE。 */
   async function loadWorkbook(workbookId: string, sheetId?: string): Promise<void> {
+    const generation = ++loadGeneration;
     const switchingWorkbook = state.workbookId !== workbookId;
     if (switchingWorkbook) state.draftsBySheet = {};
-    stopLive();
+    const previousRuntime = runtime;
+    runtime = null;
+    if (previousRuntime) await previousRuntime.close();
+    if (generation !== loadGeneration) return;
     state.loading = true;
     state.error = null;
     state.workbookId = workbookId as RecordIdString;
@@ -222,11 +207,19 @@ export function createEditorStore(deps: EditorDeps) {
       state.sheets = sheets;
       const active = sheets.find((s) => s.id === sheetId) ?? sheets[0];
       state.activeSheetId = active.id;
-      state.columns = active.columns;
-      const ref: SheetRef = { tableName: active.tableName, columns: active.columns };
-      const rows = await loadSheet(deps.getConn(), ref, state.viewParams, PAGE);
-      state.rows = recordDrafts.rowsWithDrafts(active.id, rows, state.draftsBySheet);
-      await startLive();
+      const opened = await openDataTableRuntime({
+        conn: deps.getConn(),
+        workbookId,
+        dataTableId: active.id,
+        query: state.viewParams,
+        onChange: applyRuntimeSnapshot,
+      });
+      if (generation !== loadGeneration) {
+        await opened.close();
+        return;
+      }
+      runtime = opened;
+      applyRuntimeSnapshot(opened.snapshot);
     } catch (err) {
       state.error = String(err);
     } finally {
@@ -237,15 +230,14 @@ export function createEditorStore(deps: EditorDeps) {
 
   /** 仅重查当前 sheet 的行，不动 sheet/columns/viewParams 结构。 */
   async function reloadRows(): Promise<void> {
-    const ref = sheetRef();
-    if (!ref || !state.activeSheetId) return;
+    if (!runtime || !state.activeSheetId) return;
     syncDraftBucket();
     state.loading = true;
     state.error = null;
     emit();
     try {
-      const rows = await loadSheet(deps.getConn(), ref, state.viewParams, PAGE);
-      state.rows = recordDrafts.rowsWithDrafts(state.activeSheetId, rows, state.draftsBySheet);
+      await runtime.refresh();
+      applyRuntimeSnapshot(runtime.snapshot);
     } catch (err) {
       state.error = String(err);
     } finally {
@@ -321,12 +313,12 @@ export function createEditorStore(deps: EditorDeps) {
     filterMode: "and" | "or" = state.viewParams.filterMode ?? "and",
   ): Promise<void> {
     state.viewParams = { ...state.viewParams, filters, filterMode };
-    await reloadRows();
+    if (runtime) await runtime.setQuery(state.viewParams);
   }
 
   async function setSorts(sorts: SortClause[]): Promise<void> {
     state.viewParams = { ...state.viewParams, sorts };
-    await reloadRows();
+    if (runtime) await runtime.setQuery(state.viewParams);
   }
 
   function setHiddenFields(hiddenFields: string[]): void {
@@ -343,35 +335,28 @@ export function createEditorStore(deps: EditorDeps) {
   async function saveRows(
     rawPatches: Array<{ id?: RecordIdString; values: Record<string, unknown> }>,
   ): Promise<boolean> {
-    const ref = sheetRef();
-    if (!ref) return false;
-    // 带 id 的部分 patch 与现有行合并后再校验/写入，避免必填字段被误判为缺失。
-    const rowById = new Map(state.rows.map((r) => [r.id, r]));
-    const patches = rawPatches.map((p) => {
-      if (!p.id) return p;
-      const existing = rowById.get(p.id);
-      return existing ? { id: p.id, values: { ...existing.values, ...p.values } } : p;
-    });
-    const validationError = validatePatches(patches, state.columns);
-    if (validationError) {
-      state.saveError = validationError;
-      emit();
-      return false;
-    }
+    if (!runtime) return false;
+    const persisted = rawPatches.filter((patch): patch is { id: RecordIdString; values: Record<string, unknown> } => !!patch.id);
+    const creates = rawPatches.filter((patch) => !patch.id);
     state.saving = true;
     state.saveError = null;
     emit();
     try {
-      const result = await saveCells(deps.getConn(), ref, patches);
-      if (!result.ok) {
-        state.saveError = result.message;
-        return false;
+      if (persisted.length) {
+        const result = await runtime.updateRecords(persisted);
+        if (!result.ok) {
+          state.saveError = result.error.message;
+          return false;
+        }
       }
-      // 写库成功后用最新值就地合并（LIVE 会再补一次，幂等）。
-      const byId = new Map(patches.filter((p) => p.id).map((p) => [p.id as string, p.values]));
-      state.rows = state.rows.map((row) =>
-        byId.has(row.id) ? { ...row, values: { ...row.values, ...byId.get(row.id) } } : row,
-      );
+      for (const create of creates) {
+        const result = await runtime.promoteDraft(create.values);
+        if (result.status !== "promoted") {
+          state.saveError = result.status === "failed" ? result.error.message : "记录未通过字段校验";
+          return false;
+        }
+      }
+      applyRuntimeSnapshot(runtime.snapshot);
       return true;
     } catch (err) {
       state.saveError = String(err);
@@ -380,6 +365,19 @@ export function createEditorStore(deps: EditorDeps) {
       state.saving = false;
       emit();
     }
+  }
+
+  /** AI 提案与手工编辑共用活动数据表运行时，不再根据物理表名另开写入路径。 */
+  async function writeRecordPatch(
+    sheetId: string,
+    recordId: RecordIdString,
+    values: Record<string, unknown>,
+  ): Promise<{ ok: true } | { ok: false; message: string }> {
+    if (sheetId !== state.activeSheetId || !runtime) {
+      return { ok: false, message: "提案对应的数据表当前未打开，请打开该数据表后重试。" };
+    }
+    const ok = await saveRows([{ id: recordId, values }]);
+    return ok ? { ok: true } : { ok: false, message: state.saveError ?? "记录写入失败" };
   }
 
   /** 删行：draft 本地丢弃，持久化行走 deleteRows（DELETE by RecordId）。 */
@@ -401,9 +399,10 @@ export function createEditorStore(deps: EditorDeps) {
     state.saveError = null;
     emit();
     try {
-      const result = await deleteRowsDirect(deps.getConn(), persisted);
+      if (!runtime) return false;
+      const result = await runtime.deleteRecords(persisted);
       if (!result.ok) {
-        state.saveError = result.message;
+        state.saveError = result.error.message;
         return false;
       }
       const removed = new Set<string>(persisted);
@@ -459,31 +458,24 @@ export function createEditorStore(deps: EditorDeps) {
     draftId: string,
     values: Record<string, unknown>,
   ): Promise<{ promoted: boolean; newId?: RecordIdString }> {
-    const ref = sheetRef();
-    if (!ref || !state.activeSheetId) return { promoted: false };
+    if (!runtime || !state.activeSheetId) return { promoted: false };
     const merged = recordDrafts.merge(state.activeSheetId, state.rows, state.draftsBySheet, draftId, values);
     if (!merged) return { promoted: false };
     state.rows = merged.rows;
     state.draftsBySheet = merged.draftsBySheet;
     emit();
 
-    const probe = [{ values: { ...values } }];
-    if (validatePatches(probe, state.columns)) {
-      // 留作 draft，不算错误——这正是 draft 的目的。
-      return { promoted: false };
-    }
-
     state.saving = true;
     state.saveError = null;
     emit();
     try {
-      const conn = deps.getConn();
-      // 绕过 saveCells 的直连写入也要把 reference 列包成 RecordId（复用同一处规则）。
-      const created = await conn.createRecord<{ id: unknown } & Record<string, unknown>>(
-        ref.tableName,
-        prepareRecordFields(probe[0].values, state.columns),
-      );
-      const promotedRow = recordRowToGrid(created, state.columns);
+      const result = await runtime.promoteDraft(values);
+      if (result.status === "incomplete") return { promoted: false };
+      if (result.status === "failed") {
+        state.saveError = result.error.message;
+        return { promoted: false };
+      }
+      const promotedRow = result.record;
       const next = recordDrafts.promote(state.activeSheetId, state.rows, state.draftsBySheet, draftId, promotedRow);
       state.rows = next.rows;
       state.draftsBySheet = next.draftsBySheet;
@@ -518,32 +510,31 @@ export function createEditorStore(deps: EditorDeps) {
 
   /**
    * 整体更新当前 sheet 的字段集合（编辑/删除/重排统一走这里）：
-   * DDL diff + column_defs 持久化交给 {@link updateSheetColumns}，成功后同步内存
+   * DDL diff + column_defs 原子持久化交给当前 DataTableRuntime，成功后同步内存
    * columns / sheets 元数据，并把已删列从行 values 中裁剪掉。
    */
   async function updateFields(columns: GridColumnDef[]): Promise<boolean> {
-    const meta = state.sheets.find((s) => s.id === state.activeSheetId);
-    if (!meta) return false;
+    if (!runtime || !state.activeSheetId) return false;
     state.saving = true;
     state.saveError = null;
     emit();
     try {
-      const result = await updateSheetColumns(
-        deps.getConn(),
-        { sheetId: meta.id, tableName: meta.tableName, columns: state.columns },
-        columns,
-      );
+      const result = await runtime.updateFields(columns);
       if (!result.ok) {
-        state.saveError = result.message;
+        state.saveError = result.error.message;
         return false;
       }
-      state.columns = result.columns;
-      state.sheets = state.sheets.map((s) => (s.id === meta.id ? { ...s, columns: result.columns } : s));
-      const kept = new Set(result.columns.map((c) => c.key));
-      state.rows = state.rows.map((row) => ({
-        ...row,
-        values: Object.fromEntries(Object.entries(row.values).filter(([key]) => kept.has(key))),
-      }));
+      state.columns = result.value;
+      state.sheets = state.sheets.map((s) => (s.id === state.activeSheetId ? { ...s, columns: result.value } : s));
+      const kept = new Set(result.value.map((c) => c.key));
+      state.draftsBySheet = Object.fromEntries(Object.entries(state.draftsBySheet).map(([id, drafts]) => [
+        id,
+        drafts.map((draft) => ({
+          ...draft,
+          values: Object.fromEntries(Object.entries(draft.values).filter(([key]) => kept.has(key))),
+        })),
+      ]));
+      applyRuntimeSnapshot(runtime.snapshot);
       return true;
     } catch (err) {
       state.saveError = String(err);
@@ -575,14 +566,57 @@ export function createEditorStore(deps: EditorDeps) {
   }
 
   async function removeFieldByKey(key: string): Promise<boolean> {
-    if (state.columns.length <= 1) {
-      state.saveError = "至少保留一个字段";
+    const plan = await planFieldRemoval(key);
+    if (!plan) return false;
+    if (plan.blockers.length) {
+      state.saveError = `字段仍被 ${plan.blockers.map((item) => item.label).join("、")} 依赖`;
       emit();
       return false;
     }
-    const next = state.columns.filter((col) => col.key !== key);
-    if (next.length === state.columns.length) return false;
-    return updateFields(next);
+    if (plan.affectedRecordCount > 0) {
+      state.saveError = `删除字段将清除 ${plan.affectedRecordCount} 条记录中的数据，请先确认`;
+      emit();
+      return false;
+    }
+    return confirmFieldRemoval(plan.token);
+  }
+
+  async function planFieldRemoval(key: string): Promise<FieldRemovalPlan | null> {
+    if (!runtime) return null;
+    const result = await runtime.planFieldRemoval(key);
+    if (!result.ok) {
+      state.saveError = result.error.message;
+      emit();
+      return null;
+    }
+    return result.value;
+  }
+
+  async function confirmFieldRemoval(token: string): Promise<boolean> {
+    if (!runtime || !state.activeSheetId) return false;
+    state.saving = true;
+    state.saveError = null;
+    emit();
+    try {
+      const result = await runtime.confirmFieldRemoval(token);
+      if (!result.ok) {
+        state.saveError = result.error.message;
+        return false;
+      }
+      const kept = new Set(result.value.map((column) => column.key));
+      state.draftsBySheet = Object.fromEntries(Object.entries(state.draftsBySheet).map(([id, drafts]) => [
+        id,
+        drafts.map((draft) => ({
+          ...draft,
+          values: Object.fromEntries(Object.entries(draft.values).filter(([key]) => kept.has(key))),
+        })),
+      ]));
+      applyRuntimeSnapshot(runtime.snapshot);
+      return true;
+    } finally {
+      state.saving = false;
+      emit();
+    }
   }
 
   /** 按给定 key 顺序重排列；忽略未知 key，缺失的列维持原顺序追加；同序短路不发请求。 */
@@ -606,7 +640,10 @@ export function createEditorStore(deps: EditorDeps) {
 
   /** 切 workspace / 离开工作簿：丢弃 drafts、退订 LIVE、状态归零。 */
   function reset(): void {
-    stopLive();
+    loadGeneration += 1;
+    const previousRuntime = runtime;
+    runtime = null;
+    void previousRuntime?.close();
     state.workbookId = null;
     state.workbook = null;
     state.activeSheetId = null;
@@ -684,6 +721,7 @@ export function createEditorStore(deps: EditorDeps) {
     setHiddenFields,
     setGroupBy,
     saveRows,
+    writeRecordPatch,
     saveFromSource,
     deleteRows,
     insertBlankRows,
@@ -692,13 +730,12 @@ export function createEditorStore(deps: EditorDeps) {
     updateFields,
     addField,
     removeFieldByKey,
+    planFieldRemoval,
+    confirmFieldRemoval,
     reorderFields,
     reset,
   };
 }
-
-/** entity 行上由 schema 维护、不属于业务列的系统字段。 */
-const SYSTEM_FIELDS = new Set(["id", "workspace", "created_by", "created_at", "updated_at"]);
 
 /** 读 workbook 下所有 sheet 记录，按 table_name + column_defs 派生展示元数据。 */
 async function fetchSheets(conn: SurrealConn, workbookId: string): Promise<SheetMeta[]> {
@@ -725,18 +762,6 @@ async function fetchWorkbookName(conn: SurrealConn, workbookId: string): Promise
   return typeof name === "string" && name.trim() ? name : workbookId;
 }
 
-/** createRecord 返回的原始记录裁成 GridRow（剔系统字段、只留已知列）。 */
-function recordRowToGrid(record: Record<string, unknown>, columns: GridColumnDef[]): GridRow {
-  const known = new Set(columns.map((c) => c.key));
-  const values: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(record)) {
-    if (SYSTEM_FIELDS.has(key)) continue;
-    // record 字段（引用）SDK 读回为 RecordId 实例——规整回 string，与网格内存模型一致。
-    if (known.has(key)) values[key] = recordValueToString(value);
-  }
-  return { id: String(record.id) as RecordIdString, values };
-}
-
 /** 隐藏字段过滤后的可见列。供 runes 层从快照派生用。 */
 export function visibleColumnsFrom(columns: GridColumnDef[], hiddenFields: string[] | undefined): GridColumnDef[] {
   const hidden = new Set(hiddenFields ?? []);
@@ -761,21 +786,4 @@ function deriveRenderers(columns: GridColumnDef[]): TableViewCardRenderers {
     amount: columns.find((col) => col.fieldType === "number" || col.fieldType === "decimal") ?? null,
     date: columns.find((col) => col.fieldType === "date") ?? null,
   };
-}
-
-function validatePatches(
-  patches: Array<{ id?: RecordIdString; values: Record<string, unknown> }>,
-  columns: GridColumnDef[],
-): string | null {
-  for (const [rowIndex, patch] of patches.entries()) {
-    for (const column of columns) {
-      const coerced = coerceGridFieldValue(patch.values[column.key], column);
-      const errors = validateGridFieldValue(coerced, column);
-      if (errors.length) {
-        return `第 ${rowIndex + 1} 行「${column.label}」${errors[0]}`;
-      }
-      patch.values[column.key] = coerced;
-    }
-  }
-  return null;
 }

@@ -213,7 +213,8 @@ describe("saveRows — 持久化行直连 UPDATE/CREATE", () => {
     const ok = await store.saveRows([{ id: "ent_claim:a", values: { amount: 200 } }]);
 
     expect(ok).toBe(true);
-    expect(rec.updates).toEqual([{ id: "ent_claim:a", patch: { name: "张三", amount: 200 } }]);
+    // 完整记录只用于校验；数据库 MERGE 只写用户实际修改的字段，避免覆盖协作者的新值。
+    expect(rec.updates).toEqual([{ id: "ent_claim:a", patch: { amount: 200 } }]);
   });
 
   test("校验失败（必填 name 缺）→ saveError 且不写库", async () => {
@@ -364,7 +365,7 @@ function setupWithUnsub(onUnsub: () => void) {
 }
 
 describe("updateFields — 字段集合 DDL 编排（浏览器直连，替代 legacy updateSheetFields RPC）", () => {
-  test("成功：保留/新增列 OVERWRITE、删掉列 REMOVE、column_defs 写回，内存 columns/sheets/rows 同步", async () => {
+  test("成功：保留/新增列 OVERWRITE、column_defs 写回，内存 columns/sheets/rows 同步", async () => {
     const { store, rec } = setup({
       rows: [{ id: "ent_claim:a", name: "张三", amount: 100 }],
     });
@@ -372,6 +373,7 @@ describe("updateFields — 字段集合 DDL 编排（浏览器直连，替代 le
 
     const ok = await store.updateFields([
       { key: "name", label: "名称", fieldType: "text", required: true },
+      { key: "amount", label: "金额", fieldType: "decimal" },
       { key: "note", label: "备注", fieldType: "text" },
     ]);
 
@@ -379,17 +381,16 @@ describe("updateFields — 字段集合 DDL 编排（浏览器直连，替代 le
     const ddl = rec.queries.map((q) => q.sql).filter((s) => /DEFINE FIELD|REMOVE FIELD/.test(s));
     expect(ddl).toEqual([
       expect.stringContaining("DEFINE FIELD OVERWRITE name ON TABLE ent_claim"),
+      expect.stringContaining("DEFINE FIELD OVERWRITE amount ON TABLE ent_claim"),
       expect.stringContaining("DEFINE FIELD OVERWRITE note ON TABLE ent_claim"),
-      "REMOVE FIELD IF EXISTS amount ON TABLE ent_claim",
     ]);
     expect(rec.updates).toHaveLength(1);
     expect(rec.updates[0].id).toBe("sheet:s1");
-    expect((rec.updates[0].patch.column_defs as Array<{ key: string }>).map((d) => d.key)).toEqual(["name", "note"]);
+    expect((rec.updates[0].patch.column_defs as Array<{ key: string }>).map((d) => d.key)).toEqual(["name", "amount", "note"]);
 
-    expect(store.columns.map((c) => c.key)).toEqual(["name", "note"]);
-    expect(store.sheets[0].columns.map((c) => c.key)).toEqual(["name", "note"]);
-    // 删掉的列从已有行 values 中裁剪，不留脏数据。
-    expect(store.rows[0].values).toEqual({ name: "张三" });
+    expect(store.columns.map((c) => c.key)).toEqual(["name", "amount", "note"]);
+    expect(store.sheets[0].columns.map((c) => c.key)).toEqual(["name", "amount", "note"]);
+    expect(store.rows[0].values).toEqual({ name: "张三", amount: 100 });
     expect(store.saveError).toBeNull();
   });
 });
@@ -409,7 +410,10 @@ describe("updateFields — 引擎拒绝（普通成员无 DDL 权限）", () => 
       return originalQuery(sql, bindings);
     }) as SurrealConn["query"];
 
-    const ok = await store.updateFields([{ key: "name", label: "名称", fieldType: "text" }]);
+    const ok = await store.updateFields([
+      { key: "name", label: "名称", fieldType: "text", required: true },
+      { key: "amount", label: "金额", fieldType: "decimal" },
+    ]);
 
     expect(ok).toBe(false);
     expect(store.saveError).toContain("仅工作区管理员");
