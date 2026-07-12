@@ -45,17 +45,29 @@ This application authenticates users via an OpenID Connect provider.
 
 ## Workspace Token Scope（本应用专用）
 
-本应用要求 token 中携带两个标准 SurrealDB scope claim，SurrealDB 的 `DEFINE ACCESS` AUTHENTICATE 据此把会话约束到某个 workspace database：
+最终 access token 使用 SurrealDB 识别的短 claim（官方也支持 namespaced 别名，但本项目代码统一使用短名）：
 
-| Claim | 含义 |
-|---|---|
-| `https://surrealdb.com/db` | 当前 workspace database 名，例如 `ws_a1b2c3d4e5f6`。 |
-| `https://surrealdb.com/ac` | 当前 SurrealDB access 名，MVP 为 `admin` 或 `participant`。 |
+| Claim | 来源 | 含义 |
+|---|---|---|
+| `db` | surreal_ck 登录 hook / scope exchange | 当前 workspace database，例如 `ws_a1b2c3d4e5f6`。 |
+| `ac` | surreal_ck 登录 hook / scope exchange | 当前 SurrealDB access：`admin` 或 `participant`。 |
+| `RL` | IdP client 固定配置；scope exchange 当前也显式重申 | 固定 system role `['Owner']`；只在 JWT system access 中解释。 |
 
-这两个 claim 的取值由**本应用**（后端 Workspace Scope Module）决定，不是用户登录时固定的：
+### 权限分流不变量
 
-- **登录默认 scope**：IdP 登录流程回调本应用 `GET /api/internal/idp/default-scope`，本应用按 subject 查 `_system.user_workspace_index` 返回默认 `{ db, ac }`，IdP 据此签发首个 token。
-- **切换 / 创建 workspace**：本应用后端用 server-only `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` 调 IdP `IDP_SCOPE_API_URL`，提交当前用户 `subject_token` 与目标 `db` / `ac` claims。IdP 立即返回带新 scope 的 `access_token`，前端保存该 token 后重新 `db.signin`。
+IdP 是 token 签名者，不是 workspace 权限权威。它每次正常签发 access token 时调用本应用 `GET /api/internal/idp/default-scope`，由 Workspace Scope Module 决定 `db` / `ac`；IdP client 配置固定加入 `RL=['Owner']`。
+
+- `ac=admin` → `DEFINE ACCESS admin TYPE JWT`：这是 database system user，`RL=['Owner']` 生效，因此管理员可执行 DDL + DML。
+- `ac=participant` → `DEFINE ACCESS participant TYPE RECORD WITH JWT`：RECORD user 不使用 system RBAC；无论正常登录时固定的 `RL=['Owner']`，还是 scope exchange 显式重申的其它 `RL`，都不授予 system role，只能按表 / 字段 PERMISSIONS 执行 DML。
+
+因此，**不能从 participant token 携带的 `RL` 推断普通成员拥有 DDL**。真正的能力分流点是由本应用 hook 决定、用户不能自行选择的 `ac`。
+
+签发路径：
+
+- **登录默认 scope**：IdP 在 `/token` 签发前调用本应用 hook；本应用按 subject 查 `_system.user_workspace_index` 返回 `{ db, ac, can_create_workspace }`，IdP 合并固定 `RL` 后签发首个 token。
+- **切换 / 创建 workspace**：本应用后端用 server-only `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` 调 IdP `/scope`，提交当前 `subject_token` 与目标 `db` / `ac`（当前 Adapter 同时提交对应 `RL`）。IdP 校验 confidential client、原 token 的 tenant/client/subject，并在换发时再次解析已配置的 hook claims；浏览器不能为任意 subject mint token。
+
+`_system.system_admin` 仅实现部署级 **workspace 创建开关**：表非空时所有已登录真人可创建 workspace，表为空时全部禁止。它不是逐 subject allowlist；行内 subject 只用于 seed / 审计。
 
 Scope exchange 请求由 Bun server 发出，浏览器永远不接触 `OIDC_CLIENT_SECRET`：
 
@@ -67,8 +79,9 @@ Content-Type: application/json
 {
   "subject_token": "<CURRENT_USER_ACCESS_TOKEN>",
   "claims": {
-    "https://surrealdb.com/db": "ws_a1b2c3d4e5f6",
-    "https://surrealdb.com/ac": "admin"
+    "db": "ws_a1b2c3d4e5f6",
+    "ac": "admin",
+    "RL": ["Owner"]
   }
 }
 ```

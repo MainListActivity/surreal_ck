@@ -131,7 +131,7 @@
 
 ### OIDC verify 中间件对 token claim 的处理
 
-后端 `requireOidc()` 中间件**只**验证 token 签名 + `iss` + `aud` + `exp`，并提取 `sub` / `email` 等基础 claim。**不约束** `https://surrealdb.com/db` / `https://surrealdb.com/ac` 这两个 scope claim——它们只是给 SurrealDB AUTHENTICATE 用的，对后端 endpoint 无意义。
+后端 `requireOidc()` 中间件**只**验证 token 签名 + `iss` + `aud` + `exp`，并提取 `sub` / `email` 等基础 claim。**不约束** `db` / `ac` / `RL` 这些 SurrealDB claim——它们用于选择 access 与 system role，对后端 endpoint 无意义。IdP 每次签发前通过 hook 从本应用取得 `db` / `ac`；固定 `RL=['Owner']` 只在 admin JWT system access 中生效。
 
 - `POST /api/session/switch-workspace`、`GET /api/session/workspaces`、成员管理、员工 lifecycle 等 Workspace Scope Module endpoint **必须忽略** scope claim：否则用户被当前 token 的 db scope 卡住，无法切换或操作其它 workspace。
 - `POST /api/chat`：同样只信 `sub`；Mastra tool 内部用调用者 OIDC token `db.signin` 到 token scope 所指 db，是 Mastra 而非中间件的责任。

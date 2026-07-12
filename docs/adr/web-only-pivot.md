@@ -45,7 +45,7 @@ Browser (Svelte 5 + RevoGrid + surrealdb browser SDK)
    │    登录 hook 从 Bun server 获取默认 workspace scope
    │
    ├── WSS（surrealdb browser SDK）──────► SurrealDB（公网 WSS + TLS）
-   │    用 token 中的 https://surrealdb.com/db / ac claims signin
+   │    用 token 中的 db / ac claims signin；RL=['Owner'] 仅由 admin JWT access 解释
    │    所有读 / 写 / LIVE SELECT 直接走这条连接
    │
    └── HTTPS / WSS ─────────────► Bun server (Hono)
@@ -63,12 +63,12 @@ Browser (Svelte 5 + RevoGrid + surrealdb browser SDK)
 - **前端**：浏览器原生，**默认直连 SurrealDB**（详见 [`frontend-direct-connect.md`](./frontend-direct-connect.md)）。读 / 写 / LIVE 订阅 / 管理员 DDL 全部走浏览器内 surrealdb-js。
 - **后端（Bun server）**：单容器单副本 MVP。只承载"必须在后端跑"的少数职责：Workspace Scope Module（workspace 列表、切换、创建、IdP default scope hook）、Mastra（LLM key 在后端）、资源保存 SSE（embedding provider key 在后端；用户确认后用调用者 workspace session 写入资源与 embedding）、Office dispatcher（员工 secret 在后端）、root 操作（_system schema 启动 / workspace lifecycle / employee_credential 写入）。**不再有业务数据 CRUD / LIVE 转发代理 endpoint**。
 - **数据库**：SurrealDB **自部署或托管，公网 WSS + TLS**（可选 IP 白名单 + WAF）。MVP 接受公网；不再要求与后端同机房内网。
-- **IdP**：只负责 OIDC 登录与 token scope 签发。workspace 列表、最近一次 workspace、成员关系和 workspace 创建都由本应用维护；IdP token 中只需要 `https://surrealdb.com/db` 与 `https://surrealdb.com/ac` claims。
+- **IdP**：只负责 OIDC 登录与 token 签发；每次签发前通过 hook 读取本应用决定的 `db` / `ac`，client 固定 `RL=['Owner']`。workspace 列表、最近一次 workspace、成员关系和 workspace 创建都由本应用维护。
 
 ### 1.1 身份与权限（详见 [`workspace-as-database.md`](./workspace-as-database.md) + [`frontend-direct-connect.md`](./frontend-direct-connect.md)）
 
 - 用户登录走 OIDC（浏览器内 SPA Auth Code + PKCE，**不经过后端**）。
-- 浏览器拿 OIDC token 直接按 `https://surrealdb.com/db` / `https://surrealdb.com/ac` claims `db.signin({ ac, ns, db, token })`。
+- 浏览器拿 OIDC token 直接按 `db` / `ac` claims `db.signin({ ac, ns, db, token })`。固定 `RL=['Owner']` 只在 `ac=admin` 的 JWT system access 中生效；participant RECORD access 忽略 system role。
 - 不存在"service JWT"。后端持有的 SurrealDB root 凭证仅用于：启动期 `_system` schema 初始化 + workspace 创建 / 迁移 + 写 `employee_credential`。
 - 虚拟员工是 workspace database 内 `user` 表中 `kind='virtual'` 的 record；通过 `DEFINE ACCESS employee ON DATABASE TYPE RECORD` 由 SurrealDB 自身管理。**dispatcher 在后端**每次执行窗口前用 employee secret SIGNIN 一次，拿短期 token 用完即弃。
 

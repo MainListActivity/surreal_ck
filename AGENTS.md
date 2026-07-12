@@ -46,8 +46,8 @@ Key routing rules:
 Browser (Svelte 5 + RevoGrid + surrealdb-js + oidc-client-ts)
    │
    ├── OIDC Auth Code + PKCE ─────► IdP（外部，只负责登录与 token scope 签发）
-   │     ↑ token claim 含 https://surrealdb.com/db / https://surrealdb.com/ac
-   │     ↑ 登录 hook 从 Bun server 获取默认 workspace scope
+   │     ↑ 每次签发前用登录 hook 从 Bun server 获取 db / ac
+   │     ↑ IdP client 固定 RL=["Owner"]；仅 admin JWT access 解释该 system role
    │
    ├── WSS（surrealdb-js）─────────► SurrealDB（公网 WSS + TLS）
    │     ├ admin access：DDL + DML
@@ -103,9 +103,11 @@ Browser (Svelte 5 + RevoGrid + surrealdb-js + oidc-client-ts)
 
 - 用户**默认直连 SurrealDB**——读 / 写 / LIVE / 管理员 DDL 全在浏览器内做。
 - 后端唯一长期凭证是 SurrealDB **root**（环境变量），仅用于：启动期 `_system` schema、workspace lifecycle、schema migration、`employee_credential` 写入、dispatcher 启动遍历。
-- 真人会话 = 浏览器用 IdP 颁发的 OIDC token 中 `https://surrealdb.com/db` / `https://surrealdb.com/ac` scope `db.signin` 到 ws db 的 `admin` 或 `participant` access。
+- 真人会话 = 浏览器用 IdP 颁发的 OIDC token 中短 claim `db` / `ac` `db.signin` 到 ws db 的 `admin` 或 `participant` access。IdP 每次签发前调用本应用 hook 决定 `db` / `ac`，client 配置固定加入 `RL=["Owner"]`。
 - 虚拟员工会话 = dispatcher 用员工 secret SIGNIN 到 ws db 的 `employee` access。
 - IdP 只负责登录与 token scope 签发；workspace 列表、最近选择、成员索引和 workspace 创建由后端 Workspace Scope Module 维护。
+- 正常登录 token 由 IdP client 固定加入 `RL=["Owner"]`；scope exchange 当前还会随 `ac` 显式重申 `RL`。只有 `admin`（TYPE JWT，system user）解释 system RBAC 并获得 DDL；`participant`（TYPE RECORD WITH JWT）忽略任何 system role，仍只受表 / 字段 PERMISSIONS 约束。**不得从 RECORD token 携带的 RL 推断普通成员越权。**
+- `_system.system_admin` 不是逐 subject allowlist；它是部署级 workspace 创建开关。表非空时所有已登录真人可创建 workspace，表为空时全部禁止；`subject` 只用于 seed / 审计。
 - **架构内不存在 service JWT 概念**。所有写入归因走 `$auth`，不要在表字段里手工标 `from_*`。
 - **NS-admin / execTemplate 概念已废除**。workspace 创建 = 后端 Workspace Scope Module 用 root 建库、应用模板、写 `_system`，再调用 IdP scope adapter。
 
@@ -147,8 +149,8 @@ Row-level security is defined once in `DEFINE TABLE ... PERMISSIONS` and enforce
 
 | 身份 | 走的 access | DB 引擎能力 | 谁持 token |
 |---|---|---|---|
-| **工作区管理员**（`user.kind='human' AND is_admin=true`） | `admin` ON DATABASE (TYPE JWT) | DDL + DML | 浏览器 |
-| **普通成员**（`user.kind='human' AND is_admin=false`） | `participant` ON DATABASE (TYPE RECORD WITH JWT) | 仅 DML（DDL 被引擎硬拒） | 浏览器 |
+| **工作区管理员**（`user.kind='human' AND is_admin=true`） | `admin` ON DATABASE (TYPE JWT) + `RL=["Owner"]` | system RBAC：DDL + DML | 浏览器 |
+| **普通成员**（`user.kind='human' AND is_admin=false`） | `participant` ON DATABASE (TYPE RECORD WITH JWT；固定 RL 不生效) | RECORD PERMISSIONS：仅 DML（DDL 被引擎硬拒） | 浏览器 |
 | **虚拟员工**（`user.kind='virtual'`） | `employee` ON DATABASE (TYPE RECORD) | 仅 DML（DDL 被引擎硬拒） | dispatcher（后端进程内）用员工 secret SIGNIN |
 
 access 与 token scope 约定见 [`docs/adr/workspace-as-database.md`](./docs/adr/workspace-as-database.md)。
@@ -220,6 +222,7 @@ This is a **Web app**：Svelte 5 前端 + Hono on Bun 后端 + 自部署 Surreal
 - `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` / `OIDC_TOKEN_ENDPOINT` / `OIDC_TOKEN_AUTH_METHOD`（后端 confidential client 代理 OIDC code 换 token 与 scope exchange；auth method 默认 `client_secret_basic`，需和 IdP 客户端配置一致）
 - `IDP_SCOPE_API_URL`（Workspace Scope Module 调 IdP scope exchange，返回带新 scope 的 access token）
 - `IDP_HOOK_SECRET`（IdP default-scope hook 鉴权，如 IdP 选型需要）
+- `SYSTEM_ADMIN_SUBJECTS`（只用于 seed `_system.system_admin` 使部署级 workspace 创建开关变为“开启”；不是逐 subject 授权名单）
 - `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` 等模型 provider key
 
 前端构建需要：

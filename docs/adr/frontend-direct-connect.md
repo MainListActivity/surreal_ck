@@ -9,6 +9,8 @@
   - [`backend-framework-hono.md`](./backend-framework-hono.md)（同期改写：保留 Workspace Scope Module endpoint）
   - [`virtual-office.md`](./virtual-office.md)（同期改写：办公室 UI 直接 LIVE 订阅）
 
+> **2026-07-12 implementation clarification**：当前 token 使用短 claim `db` / `ac` / `RL`。IdP 每次正常签发前调用本应用 hook 获取 `db` / `ac`，client 配置为正常登录固定 `RL=["Owner"]`，scope exchange 当前随 `ac` 显式重申 `RL`；只有 `ac=admin` 的 JWT system access 解释 system role，`ac=participant` 的 RECORD access 忽略任何 system role。`_system.system_admin` 是“表非空即全局开启”的 workspace 创建开关，不是逐 subject allowlist。
+
 ## Context
 
 之前 ADR 群（web-only-pivot / workspace-as-database / backend-framework-hono）默认采用"前端不直连 SurrealDB，一切走 Bun server"的拓扑。该决定的原始动机是"内网部署 + 不暴露公网 + 后端是唯一信任域"。
@@ -23,10 +25,11 @@
 
 同时，身份系统的职责已经收窄：**IdP 不是 workspace 列表或成员关系的权威**。IdP 只负责 OIDC 登录与签发 token，并提供一个很小的 token scope 更新能力。workspace 列表、最近一次登录 workspace、成员关系和 workspace 创建都由本应用维护。
 
-SurrealDB access 读取的 token scope 使用标准 claim：
+SurrealDB access 读取的 token scope 使用短 claim：
 
-- `https://surrealdb.com/db`：当前 workspace database 名。
-- `https://surrealdb.com/ac`：当前 SurrealDB access 名，MVP 为 `admin` 或 `participant`。
+- `db`：当前 workspace database 名。
+- `ac`：当前 SurrealDB access 名，MVP 为 `admin` 或 `participant`。
+- `RL`：IdP client 固定 `['Owner']`；只对 `admin` JWT system access 生效，participant RECORD access 不使用 system RBAC。
 
 ## Decision
 
@@ -40,7 +43,7 @@ Browser (Svelte 5 + RevoGrid + surrealdb browser SDK)
    ├─── OIDC Auth Code + PKCE ──► IdP（外部）
    │     ↑ 只负责身份登录与 token 签发
    │     ↑ 登录 hook 调本应用拿默认 token scope
-   │     ↑ scope 更新接口只改 token 中 surreal db/ac claims
+   │     ↑ IdP client 固定 RL=['Owner']；scope 更新接口换发 db/ac（并重申 RL）
    │
    ├─── WSS（surrealdb browser SDK）──► SurrealDB（公网 WSS + TLS + 可选 WAF）
    │     ├─ db.signin({ ac, ns: 'main', db, token })
@@ -84,8 +87,8 @@ IdP 的 Interface 收窄为两件事：
 
 ```ts
 type SurrealTokenScope = {
-  db: string; // maps to claim['https://surrealdb.com/db']
-  ac: 'admin' | 'participant'; // maps to claim['https://surrealdb.com/ac']
+  db: string; // maps to claim['db']
+  ac: 'admin' | 'participant'; // maps to claim['ac']
 };
 
 interface IdpTokenScopeAdapter {
@@ -106,7 +109,7 @@ IdP 不维护 workspace 列表，不决定成员关系，不执行 workspace 创
    - 优先 last_selected_at 最新的 workspace
    - 没有最近选择则取第一个 active workspace
    - 没有任何 workspace 则返回 login denied
-4. IdP 签发 OIDC token，含 `https://surrealdb.com/db` + `https://surrealdb.com/ac`
+4. IdP 把 hook 返回的 `db` / `ac` 与 client 固定的 `RL=['Owner']` 合并后签发 OIDC token
 5. 浏览器回到应用，按 token scope `db.signin`
 ```
 
@@ -209,10 +212,10 @@ dispatcher 仍在 Bun server 进程内，用 root 读 `employee_credential` → 
 
 ## Open Questions
 
-1. **IdP scope adapter 具体协议**：IdP 已选定 `o.maplayer.top/t/ck`（见 [`../oidc.md`](../oidc.md)），它提供专门的 scope 更新 API。具体 endpoint URL、管理 token、请求 / 返回 body、失败码待簇 C issue 03 实测回填。
-2. **登录 hook 鉴权**：`GET /api/internal/idp/default-scope` 由 `o.maplayer.top/t/ck` 的登录流程回调；鉴权方式（HMAC / 专用 bearer token）待簇 C issue 03 按 IdP 实际能力回填。
+1. ~~**IdP scope adapter 具体协议**~~：已落地为 confidential client 调 `/scope`，携带当前 `subject_token` 与 allowlisted `db` / `ac` / `RL` claims；IdP 绑定原 tenant/client/subject 后换发。
+2. ~~**登录 hook 鉴权**~~：已落地为 `IDP_HOOK_SECRET` 对齐 IdP client claim-hook header；一次签发只调用一次 hook，多条 claim 复用返回对象。
 3. ~~**成员管理路径**：管理员新增 / 删除成员时，如何同时写 workspace `user` 表与 `_system.user_workspace_index`，需要单独 issue 固化。~~ **已决定**（2026-05-18）：归 Workspace Scope Module（见 §6 保留清单），后端 root 原子同写两边。前端不直接写 ws db `user` 表的 human 行；浏览器若以 admin 直接 INSERT user，reconciler 会在下一轮校对中拉回 `_system.user_workspace_index`，但**不是**推荐路径。
-4. **创建 workspace 权限**：用应用内 entitlement 还是 IdP claim（如 `can_create_workspace`）作为 UI 显示和后端校验依据，待产品策略定。
+4. ~~**创建 workspace 权限**~~：MVP 已采用部署级开关；`_system.system_admin` 表非空时所有已登录真人可创建，表为空时全部禁止。`subject` 仅 seed / 审计，不做逐人授权；后端不信任 token 中的 `can_create_workspace` 作为安全闸门。
 
 ## P1 待补 ADR（公网形态遗留盲区，不阻塞簇 C / D，部署或扩容前必须补）
 
