@@ -155,6 +155,50 @@ describe("templateColumnDefs — stored → GridColumnDef", () => {
     }));
   });
 
+  test("每张数据表的样例记录与稳定跨表引用被转换为创建输入", () => {
+    const template = recordToTemplate({
+      id: "workbook_template:claims",
+      key: "claims",
+      label: "破产债权管理",
+      sheet_defs: [
+        {
+          key: "creditors",
+          label: "债权人表",
+          column_defs: [{ key: "name", label: "名称", field_type: "text" }],
+          sample_records: [{ key: "creditor-a", values: { name: "甲公司" } }],
+        },
+        {
+          key: "materials",
+          label: "证据材料表",
+          column_defs: [{
+            key: "creditor",
+            label: "关联债权人",
+            field_type: "reference",
+            reference_sheet_key: "creditors",
+          }],
+          sample_records: [{
+            key: "material-a",
+            values: { creditor: { sheet_key: "creditors", record_key: "creditor-a" } },
+          }],
+        },
+      ],
+    });
+
+    expect(templateSheetsForCreate(template)).toEqual([
+      expect.objectContaining({
+        key: "creditors",
+        sampleRecords: [{ key: "creditor-a", values: { name: "甲公司" } }],
+      }),
+      expect.objectContaining({
+        key: "materials",
+        sampleRecords: [{
+          key: "material-a",
+          values: { creditor: { sheetKey: "creditors", recordKey: "creditor-a" } },
+        }],
+      }),
+    ]);
+  });
+
   test("新模板包从首个数据表取实例化字段", () => {
     const template = recordToTemplate({
       id: "workbook_template:claims",

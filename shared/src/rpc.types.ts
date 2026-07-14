@@ -796,12 +796,28 @@ export type WorkbookTemplateFieldDef = StoredGridFieldDef & {
   reference_sheet_key?: string;
 };
 
+export type WorkbookTemplateSampleReference = {
+  /** 模板包内目标数据表的稳定 key。 */
+  sheet_key: string;
+  /** 目标数据表内样例记录的稳定 key。 */
+  record_key: string;
+};
+
+export type WorkbookTemplateSampleRecord = {
+  /** 数据表内稳定 key；仅用于本次实例化时解析引用。 */
+  key: string;
+  /** 字段标识 → 模板值；引用字段可使用 WorkbookTemplateSampleReference。 */
+  values: Record<string, unknown>;
+};
+
 export type WorkbookTemplateSheet = {
   /** 模板包内稳定的数据表标识；实例化后不作为真实表名。 */
   key: string;
   /** 数据表展示名。 */
   label: string;
   columnDefs: WorkbookTemplateFieldDef[];
+  /** 可选样例记录；用户选择空台账时不会实例化。 */
+  sampleRecords?: WorkbookTemplateSampleRecord[];
 };
 
 export type WorkbookTemplate = {

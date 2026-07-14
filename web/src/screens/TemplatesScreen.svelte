@@ -30,6 +30,8 @@
 
   const canWriteSharedStructure = $derived(canWriteSharedStructureFn());
   let creatingKey = $state<string | null>(null);
+  let includeSampleData = $state(true);
+  let createError = $state("");
 
   // 模板 icon 名（lucide kebab-case，存在数据里）→ 组件。未知图标回退通用图标。
   const ICONS: Record<string, typeof IconType> = {
@@ -51,6 +53,7 @@
   async function createFrom(template: WorkbookTemplate) {
     if (creatingKey || !canWriteSharedStructure) return;
     creatingKey = template.key;
+    createError = "";
     try {
       const sheets = templateSheetsForCreate(template);
       const columns = templateColumnDefs(template);
@@ -59,8 +62,9 @@
         defaultName: template.defaultName,
         sheets: sheets.length ? sheets : undefined,
         columns: sheets.length ? undefined : columns,
-      });
+      }, undefined, { includeSampleData });
       if (wb) onopen?.(wb.id);
+      else createError = workbooksStore.error ?? "模板创建失败，请稍后重试";
     } finally {
       creatingKey = null;
     }
@@ -76,6 +80,20 @@
       </div>
       <button type="button" class="back" onclick={() => onback?.()}>返回首页</button>
     </header>
+
+    <fieldset class="sample-choice" disabled={!!creatingKey || !canWriteSharedStructure}>
+      <legend>初始数据</legend>
+      <label>
+        <input type="radio" name="sample-data" value={true} bind:group={includeSampleData} />
+        <span><strong>包含样例数据</strong><small>推荐用于演示，可立即查看完整台账效果</small></span>
+      </label>
+      <label>
+        <input type="radio" name="sample-data" value={false} bind:group={includeSampleData} />
+        <span><strong>创建空台账</strong><small>只创建数据表和字段结构</small></span>
+      </label>
+    </fieldset>
+
+    {#if createError}<div class="state error" role="alert">{createError}</div>{/if}
 
     {#if workbookTemplatesStore.loading}
       <div class="state">加载模板中…</div>
@@ -173,6 +191,60 @@
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
     gap: 16px;
+  }
+
+  .sample-choice {
+    display: flex;
+    align-items: stretch;
+    gap: 12px;
+    margin: 0 0 24px;
+    padding: 0;
+    border: 0;
+  }
+
+  .sample-choice legend {
+    margin-bottom: 9px;
+    color: var(--text-2);
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .sample-choice label {
+    display: flex;
+    flex: 1;
+    gap: 10px;
+    padding: 13px 14px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface);
+    cursor: pointer;
+  }
+
+  .sample-choice label:has(input:checked) {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 1px var(--primary);
+  }
+
+  .sample-choice input {
+    margin: 3px 0 0;
+    accent-color: var(--primary);
+  }
+
+  .sample-choice span {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .sample-choice strong {
+    color: var(--text-1);
+    font-size: 13px;
+  }
+
+  .sample-choice small {
+    color: var(--text-3);
+    font-size: 11.5px;
+    font-weight: 400;
   }
 
   .card {

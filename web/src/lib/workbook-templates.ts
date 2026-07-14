@@ -4,6 +4,7 @@ import type {
   RecordIdString,
   WorkbookTemplate,
   WorkbookTemplateFieldDef,
+  WorkbookTemplateSampleRecord,
   WorkbookTemplateSheet,
 } from "@surreal-ck/shared/rpc.types";
 import type { SurrealConn } from "./surreal";
@@ -34,12 +35,16 @@ function recordToTemplateSheet(value: unknown): WorkbookTemplateSheet | null {
   const rec = value as Record<string, unknown>;
   if (typeof rec.key !== "string" || typeof rec.label !== "string") return null;
 
+  const sampleRecords = Array.isArray(rec.sample_records)
+    ? (rec.sample_records as WorkbookTemplateSampleRecord[])
+    : undefined;
   return {
     key: rec.key,
     label: rec.label,
     columnDefs: Array.isArray(rec.column_defs)
       ? (rec.column_defs as WorkbookTemplateFieldDef[])
       : [],
+    ...(sampleRecords ? { sampleRecords } : {}),
   };
 }
 
@@ -79,6 +84,24 @@ export function templateSheetsForCreate(template: WorkbookTemplate): TemplateShe
       ...storedColumnToDTO(column),
       referenceSheetKey: column.reference_sheet_key,
     })),
+    ...(sheet.sampleRecords ? { sampleRecords: sheet.sampleRecords.map((sample) => ({
+      key: sample.key,
+      values: Object.fromEntries(Object.entries(sample.values).map(([field, value]) => {
+        if (
+          typeof value === "object"
+          && value !== null
+          && !Array.isArray(value)
+          && typeof (value as Record<string, unknown>).sheet_key === "string"
+          && typeof (value as Record<string, unknown>).record_key === "string"
+        ) {
+          return [field, {
+            sheetKey: (value as Record<string, unknown>).sheet_key as string,
+            recordKey: (value as Record<string, unknown>).record_key as string,
+          }];
+        }
+        return [field, value];
+      })),
+    })) } : {}),
   }));
 }
 

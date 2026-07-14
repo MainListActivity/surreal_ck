@@ -265,3 +265,155 @@ describe("OIP-03 模板内跨数据表引用", () => {
     secondEditor.reset();
   }, 15_000);
 });
+
+describe("OIP-04 模板样例数据可选实例化", () => {
+  localSurrealTest("包含样例时编辑器读到样例记录，跨表引用指向同一实例内记录", async () => {
+    const { conn } = await setupDatabase();
+    const keys = [
+      "1111111111111111",
+      "2222222222222222",
+      "3333333333333333",
+      "4444444444444444",
+      "5555555555555555",
+    ];
+    const workbooks = createWorkbooksStore({ getConn: () => conn, generateKey: () => keys.shift()! });
+    const workbook = await workbooks.createFromTemplate({
+      id: "workbook_template:claims",
+      sheets: [
+        {
+          key: "creditors",
+          label: "债权人表",
+          columns: [{ key: "name", label: "名称", fieldType: "text", required: true }],
+          sampleRecords: [{ key: "creditor-a", values: { name: "甲公司" } }],
+        },
+        {
+          key: "materials",
+          label: "证据材料表",
+          columns: [
+            { key: "title", label: "材料", fieldType: "text", required: true },
+            {
+              key: "creditor",
+              label: "关联债权人",
+              fieldType: "reference",
+              referenceSheetKey: "creditors",
+            },
+          ],
+          sampleRecords: [{
+            key: "material-a",
+            values: {
+              title: "借款合同",
+              creditor: { sheetKey: "creditors", recordKey: "creditor-a" },
+            },
+          }],
+        },
+      ],
+    });
+    expect(workbook).not.toBeNull();
+
+    const editor = createEditorStore({ getConn: () => conn });
+    await editor.loadWorkbook(workbook!.id);
+    expect(editor.rows.map((row) => row.values.name)).toEqual(["甲公司"]);
+    const creditorId = editor.rows[0]!.id;
+    await editor.switchSheet(editor.sheets[1]!.id);
+    expect(editor.rows).toHaveLength(1);
+    expect(editor.rows[0]!.values).toEqual(expect.objectContaining({
+      title: "借款合同",
+      creditor: creditorId,
+    }));
+    editor.reset();
+  }, 15_000);
+
+  localSurrealTest("创建空台账时保留全部数据表结构且没有业务记录", async () => {
+    const { conn } = await setupDatabase();
+    const workbooks = createWorkbooksStore({ getConn: () => conn });
+    const workbook = await workbooks.createFromTemplate({
+      id: "workbook_template:claims",
+      sheets: [
+        {
+          key: "creditors",
+          label: "债权人表",
+          columns: [{ key: "name", label: "名称", fieldType: "text" }],
+          sampleRecords: [{ key: "creditor-a", values: { name: "甲公司" } }],
+        },
+        {
+          key: "materials",
+          label: "证据材料表",
+          columns: [{ key: "title", label: "材料", fieldType: "text" }],
+          sampleRecords: [{ key: "material-a", values: { title: "借款合同" } }],
+        },
+      ],
+    }, undefined, { includeSampleData: false });
+    expect(workbook).not.toBeNull();
+
+    const editor = createEditorStore({ getConn: () => conn });
+    await editor.loadWorkbook(workbook!.id);
+    expect(editor.sheets.map((sheet) => sheet.label)).toEqual(["债权人表", "证据材料表"]);
+    expect(editor.rows).toEqual([]);
+    await editor.switchSheet(editor.sheets[1]!.id);
+    expect(editor.rows).toEqual([]);
+    editor.reset();
+  }, 15_000);
+
+  localSurrealTest("样例类型错误时结构与业务数据在同一事务中整体回滚", async () => {
+    const { conn, inspector } = await setupDatabase();
+    const keys = ["1111111111111111", "2222222222222222", "3333333333333333"];
+    const workbooks = createWorkbooksStore({ getConn: () => conn, generateKey: () => keys.shift()! });
+    const workbook = await workbooks.createFromTemplate({
+      id: "workbook_template:claims",
+      sheets: [{
+        key: "creditors",
+        label: "债权人表",
+        columns: [{ key: "reviewed", label: "已审核", fieldType: "checkbox" }],
+        sampleRecords: [{ key: "creditor-a", values: { reviewed: "错误值" } }],
+      }],
+    });
+
+    expect(workbook).toBeNull();
+    expect(workbooks.error).toContain("模板样例数据不符合字段定义，工作簿未创建");
+    const records = await inspector.query<[
+      Array<Record<string, unknown>>,
+      Array<Record<string, unknown>>,
+    ]>(`
+      SELECT * FROM workbook:1111111111111111;
+      SELECT * FROM sheet:2222222222222222;
+    `).collect();
+    expect(records[0]).toEqual([]);
+    expect(records[1]).toEqual([]);
+    const databaseInfo = await inspector.query<[Array<{ tables: Record<string, string> }>]>(
+      "RETURN (INFO FOR DB).tables",
+    ).collect();
+    expect(JSON.stringify(databaseInfo)).not.toContain("ent_1111111111111111_main");
+  }, 15_000);
+
+  localSurrealTest("同一模板重复实例化时样例记录拥有不同 RecordId", async () => {
+    const { conn } = await setupDatabase();
+    const keys = [
+      "1111111111111111", "2222222222222222", "3333333333333333",
+      "4444444444444444", "5555555555555555", "6666666666666666",
+    ];
+    const workbooks = createWorkbooksStore({ getConn: () => conn, generateKey: () => keys.shift()! });
+    const template = {
+      id: "workbook_template:claims",
+      sheets: [{
+        key: "creditors",
+        label: "债权人表",
+        columns: [{ key: "name", label: "名称", fieldType: "text" }],
+        sampleRecords: [{ key: "creditor-a", values: { name: "甲公司" } }],
+      }],
+    };
+    const first = await workbooks.createFromTemplate(template, "实例一");
+    const second = await workbooks.createFromTemplate(template, "实例二");
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+
+    const firstEditor = createEditorStore({ getConn: () => conn });
+    await firstEditor.loadWorkbook(first!.id);
+    const firstRecordId = firstEditor.rows[0]!.id;
+    const secondEditor = createEditorStore({ getConn: () => conn });
+    await secondEditor.loadWorkbook(second!.id);
+    expect(secondEditor.rows[0]!.id).not.toBe(firstRecordId);
+    expect(secondEditor.rows[0]!.values.name).toBe("甲公司");
+    firstEditor.reset();
+    secondEditor.reset();
+  }, 15_000);
+});

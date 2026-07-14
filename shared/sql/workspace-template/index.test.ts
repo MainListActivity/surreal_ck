@@ -24,11 +24,23 @@ describe("workspace template scripts", () => {
     expect(migration?.sql).toContain("string::len($value) <= 64");
   });
 
+  test("模板样例数据增量约束稳定记录 key，并允许每条记录携带字段值", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.name === "014-template-sample-data.surql");
+
+    expect(migration).toBeDefined();
+    expect(migration?.sql).toMatch(
+      /DEFINE FIELD IF NOT EXISTS sheet_defs\.\*\.sample_records ON TABLE workbook_template TYPE option<array<object>>/,
+    );
+    expect(migration?.sql).toContain("sheet_defs.*.sample_records.*.key");
+    expect(migration?.sql).toContain("sheet_defs.*.sample_records.*.values");
+  });
+
   test("loads workspace template scripts in version order from the shared template directory", async () => {
     const scripts = await loadTemplateScripts();
 
-    expect(WORKSPACE_TEMPLATE_VERSION).toBe(13);
-    expect(scripts.map((script) => script.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
+    expect(WORKSPACE_TEMPLATE_VERSION).toBe(14);
+    expect(scripts.map((script) => script.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
     expect(scripts.map((script) => script.name)).toEqual([
       "001-access.surql",
       "002-tables-core.surql",
@@ -43,6 +55,7 @@ describe("workspace template scripts", () => {
       "011-workbook-template.surql",
       "012-workbook-template-package.surql",
       "013-template-cross-sheet-reference.surql",
+      "014-template-sample-data.surql",
     ]);
     expect(scripts[0]?.sql).toContain("DEFINE ACCESS OVERWRITE admin");
     expect(scripts[1]?.sql).toContain("DEFINE TABLE IF NOT EXISTS user");
@@ -56,6 +69,7 @@ describe("workspace template scripts", () => {
     expect(scripts[10]?.sql).toContain("DEFINE TABLE IF NOT EXISTS workbook_template");
     expect(scripts[11]?.sql).toContain("DEFINE FIELD IF NOT EXISTS sheet_defs ON TABLE workbook_template");
     expect(scripts[12]?.sql).toContain("reference_sheet_key");
+    expect(scripts[13]?.sql).toContain("sample_records");
   });
 
   test("workbook_template：类型由业务数据定义——底层不枚举行业类型，仅管理员可增改删，workbook 引用为可选 record", async () => {

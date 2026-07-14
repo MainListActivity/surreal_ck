@@ -139,6 +139,145 @@ describe("createBlank — 管理员建空白 workbook", () => {
 });
 
 describe("createFromTemplate — 从业务模板建工作簿（带类型）", () => {
+  test("默认包含模板样例记录，并把跨表样例引用解析为本次实例的 RecordId", async () => {
+    const keys = [
+      "1111111111111111",
+      "2222222222222222",
+      "3333333333333333",
+      "4444444444444444",
+      "5555555555555555",
+    ];
+    const queries: Array<{ sql: string; bindings?: Record<string, unknown> }> = [];
+    const conn = {
+      query: async (sql: string, bindings?: Record<string, unknown>) => {
+        queries.push({ sql, bindings });
+        return [];
+      },
+    } as unknown as SurrealConn;
+    const store = createWorkbooksStore({ getConn: () => conn, generateKey: () => keys.shift()! });
+
+    const workbook = await store.createFromTemplate({
+      id: "workbook_template:claims",
+      sheets: [
+        {
+          key: "creditors",
+          label: "债权人表",
+          columns: [{ key: "name", label: "名称", fieldType: "text" }],
+          sampleRecords: [{ key: "creditor-a", values: { name: "甲公司" } }],
+        },
+        {
+          key: "materials",
+          label: "证据材料表",
+          columns: [{
+            key: "creditor",
+            label: "关联债权人",
+            fieldType: "reference",
+            referenceSheetKey: "creditors",
+          }],
+          sampleRecords: [{
+            key: "material-a",
+            values: { creditor: { sheetKey: "creditors", recordKey: "creditor-a" } },
+          }],
+        },
+      ],
+    });
+
+    expect(workbook).not.toBeNull();
+    expect(queries).toHaveLength(1);
+    expect(queries[0]!.sql).toContain("CREATE ent_1111111111111111_2222222222222222:4444444444444444 CONTENT $sampleRecord0");
+    expect(queries[0]!.sql).toContain("CREATE ent_1111111111111111_3333333333333333:5555555555555555 CONTENT $sampleRecord1");
+    expect(queries[0]!.bindings?.sampleRecord0).toEqual({ name: "甲公司" });
+    expect(String((queries[0]!.bindings?.sampleRecord1 as Record<string, unknown>).creditor))
+      .toBe("ent_1111111111111111_2222222222222222:4444444444444444");
+  });
+
+  test("显式选择创建空台账时只创建结构，不写入样例业务记录", async () => {
+    const keys = ["1111111111111111", "2222222222222222"];
+    const queries: Array<{ sql: string; bindings?: Record<string, unknown> }> = [];
+    const conn = {
+      query: async (sql: string, bindings?: Record<string, unknown>) => {
+        queries.push({ sql, bindings });
+        return [];
+      },
+    } as unknown as SurrealConn;
+    const store = createWorkbooksStore({ getConn: () => conn, generateKey: () => keys.shift()! });
+
+    const workbook = await store.createFromTemplate({
+      id: "workbook_template:claims",
+      sheets: [{
+        key: "creditors",
+        label: "债权人表",
+        columns: [{ key: "name", label: "名称", fieldType: "text" }],
+        sampleRecords: [{ key: "creditor-a", values: { name: "甲公司" } }],
+      }],
+    }, undefined, { includeSampleData: false });
+
+    expect(workbook).not.toBeNull();
+    expect(queries).toHaveLength(1);
+    expect(queries[0]!.sql).not.toContain("$sampleRecord");
+    expect(Object.keys(queries[0]!.bindings ?? {})).not.toContain("sampleRecord0");
+  });
+
+  test("样例字段类型被数据库拒绝时返回中文回滚错误，且不加入工作簿列表", async () => {
+    const { store } = setup({ createThrows: new Error("Expected bool but found '错误值'") });
+
+    const workbook = await store.createFromTemplate({
+      id: "workbook_template:claims",
+      sheets: [{
+        key: "creditors",
+        label: "债权人表",
+        columns: [{ key: "reviewed", label: "已审核", fieldType: "checkbox" }],
+        sampleRecords: [{ key: "creditor-a", values: { reviewed: "错误值" } }],
+      }],
+    });
+
+    expect(workbook).toBeNull();
+    expect(store.workbooks).toEqual([]);
+    expect(store.error).toBe("模板样例数据不符合字段定义，工作簿未创建：Expected bool but found '错误值'");
+  });
+
+  test("同一数据表的样例记录 key 重复时在事务前拒绝，避免引用歧义", async () => {
+    const { store, rec } = setup();
+
+    const workbook = await store.createFromTemplate({
+      id: "workbook_template:claims",
+      sheets: [{
+        key: "creditors",
+        label: "债权人表",
+        columns: [{ key: "name", label: "名称", fieldType: "text" }],
+        sampleRecords: [
+          { key: "creditor-a", values: { name: "甲公司" } },
+          { key: "creditor-a", values: { name: "乙公司" } },
+        ],
+      }],
+    });
+
+    expect(workbook).toBeNull();
+    expect(store.error).toBe("模板样例数据不符合字段定义，工作簿未创建：样例记录 key 重复：creditors/creditor-a");
+    expect(rec.queries).toHaveLength(0);
+  });
+
+  test("样例引用找不到目标稳定 key 时在事务前返回中文错误", async () => {
+    const { store, rec } = setup();
+
+    const workbook = await store.createFromTemplate({
+      id: "workbook_template:claims",
+      sheets: [{
+        key: "materials",
+        label: "证据材料表",
+        columns: [{ key: "creditor", label: "关联债权人", fieldType: "reference", referenceSheetKey: "materials" }],
+        sampleRecords: [{
+          key: "material-a",
+          values: { creditor: { sheetKey: "materials", recordKey: "missing" } },
+        }],
+      }],
+    });
+
+    expect(workbook).toBeNull();
+    expect(store.error).toContain("样例数据引用无法解析：materials/missing");
+    expect(rec.queries).toHaveLength(0);
+  });
+
   test("模板字段通过稳定数据表 key 引用本次实例化的真实实体表", async () => {
     const keys = ["1111111111111111", "2222222222222222", "3333333333333333"];
     const queries: Array<{ sql: string; bindings?: Record<string, unknown> }> = [];

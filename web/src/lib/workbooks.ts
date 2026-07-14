@@ -2,6 +2,7 @@ import { buildSurrealFieldSchema, gridColumnToStoredDef } from "@surreal-ck/shar
 import type { GridColumnDef, RecordIdString } from "@surreal-ck/shared/rpc.types";
 import type { SurrealConn } from "./surreal";
 import { describeWriteError } from "./workbook-data";
+import { toRecordId } from "./record-id";
 
 /**
  * workbook 列表项——直连读 `workbook` 表的裁剪形态。
@@ -104,6 +105,8 @@ export type CreateWorkbookOptions = {
   sheetLabel?: string;
   /** 模板包的全部数据表；不传时保持旧单表创建语义。 */
   sheets?: TemplateSheetForCreate[];
+  /** 事务含模板样例 DML；用于把引擎校验失败规整成用户可读错误。 */
+  includesTemplateSamples?: boolean;
 };
 
 export type TemplateSheetForCreate = {
@@ -111,6 +114,17 @@ export type TemplateSheetForCreate = {
   key?: string;
   label: string;
   columns: TemplateColumnForCreate[];
+  sampleRecords?: TemplateSampleRecordForCreate[];
+};
+
+export type TemplateSampleReferenceForCreate = {
+  sheetKey: string;
+  recordKey: string;
+};
+
+export type TemplateSampleRecordForCreate = {
+  key: string;
+  values: Record<string, unknown | TemplateSampleReferenceForCreate>;
 };
 
 export type TemplateColumnForCreate = GridColumnDef & {
@@ -127,6 +141,11 @@ export type TemplateForCreate = {
   sheets?: TemplateSheetForCreate[];
   /** 旧调用形状：顶层 column_defs 转换后的字段。 */
   columns?: GridColumnDef[];
+};
+
+export type CreateFromTemplateOptions = {
+  /** 演示场景默认包含；用户可显式选择空台账。 */
+  includeSampleData?: boolean;
 };
 
 export function buildCreateWorkbookTransaction(
@@ -180,6 +199,40 @@ export function buildCreateWorkbookTransaction(
     }),
   }));
 
+  const sampleIds = new Map<string, string>();
+  const samples: Array<{
+    sheet: (typeof resolvedSheets)[number];
+    sample: TemplateSampleRecordForCreate;
+    recordId: string;
+  }> = [];
+  for (const sheet of resolvedSheets) {
+    for (const sample of sheet.sampleRecords ?? []) {
+      const lookupKey = `${sheet.key}\u0000${sample.key}`;
+      if (sampleIds.has(lookupKey)) {
+        throw new Error(`样例记录 key 重复：${sheet.key}/${sample.key}`);
+      }
+      const recordId = `${sheet.tableName}:${generateKey()}`;
+      sampleIds.set(lookupKey, recordId);
+      samples.push({ sheet, sample, recordId });
+    }
+  }
+
+  function resolveSampleValue(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map(resolveSampleValue);
+    if (typeof value !== "object" || value === null) return value;
+    const candidate = value as Partial<TemplateSampleReferenceForCreate>;
+    if (typeof candidate.sheetKey !== "string" || typeof candidate.recordKey !== "string") return value;
+    const recordId = sampleIds.get(`${candidate.sheetKey}\u0000${candidate.recordKey}`);
+    if (!recordId) {
+      throw new Error(`样例数据引用无法解析：${candidate.sheetKey}/${candidate.recordKey}`);
+    }
+    return toRecordId(recordId);
+  }
+
+  const sampleSql = samples.map(({ recordId }, index) =>
+    `CREATE ${recordId} CONTENT $sampleRecord${index};`
+  ).join("\n");
+
   const sheetSql = resolvedSheets.map((sheet) => {
     const fieldDdl = sheet.columns
       .map((column) => {
@@ -206,6 +259,7 @@ CREATE ${sheet.id} CONTENT { workbook: ${wbId}, label: ${labelBinding}, table_na
   const sql = `BEGIN TRANSACTION;
 CREATE ${wbId} CONTENT { name: $name, last_opened_sheet: ${createdSheets[0]!.id}${templateClause} };
 ${sheetSql}
+${sampleSql}
 COMMIT TRANSACTION;`;
 
   const bindings: Record<string, unknown> = { name };
@@ -215,6 +269,11 @@ COMMIT TRANSACTION;`;
     bindings[createdSheets.length === 1 ? "tableName" : `sheetTableName${suffix}`] = sheet.tableName;
     bindings[createdSheets.length === 1 ? "columnDefs" : `sheetColumnDefs${suffix}`] = sheet.columns.map(gridColumnToStoredDef);
   }
+  samples.forEach(({ sample }, index) => {
+    bindings[`sampleRecord${index}`] = Object.fromEntries(
+      Object.entries(sample.values).map(([field, value]) => [field, resolveSampleValue(value)]),
+    );
+  });
 
   return {
     sql,
@@ -281,7 +340,10 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
       const { sql, bindings } = transaction;
       await deps.getConn().query(sql, bindings);
     } catch (err) {
-      state.error = describeWriteError(err);
+      const message = describeWriteError(err);
+      state.error = options.includesTemplateSamples && !message.startsWith("没有权限")
+        ? `模板样例数据不符合字段定义，工作簿未创建：${message}`
+        : message;
       emit();
       return null;
     }
@@ -307,11 +369,17 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
   function createFromTemplate(
     template: TemplateForCreate,
     name?: string,
+    options: CreateFromTemplateOptions = {},
   ): Promise<WorkbookRow | null> {
     const finalName = (name?.trim() || template.defaultName?.trim() || "未命名工作簿");
+    const sheets = options.includeSampleData === false
+      ? template.sheets?.map(({ sampleRecords: _sampleRecords, ...sheet }) => sheet)
+      : template.sheets;
+    const includesTemplateSamples = sheets?.some((sheet) => (sheet.sampleRecords?.length ?? 0) > 0) ?? false;
     return create(finalName, {
       templateRef: template.id,
-      sheets: template.sheets,
+      sheets,
+      includesTemplateSamples,
       columns: template.sheet?.columns ?? template.columns,
       sheetLabel: template.sheet?.label,
     });
