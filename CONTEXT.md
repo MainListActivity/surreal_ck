@@ -132,6 +132,10 @@ _Avoid_: 过滤（当表达更完整的取数动作时）
 AI 入口的中央编排器，接收用户消息后先做意图分类，再把任务分派给对应的子 agent。本身不调用业务 tool，只负责切分、串行编排和暂停/恢复。
 _Avoid_: 主 agent，Workspace agent（当表达 AI 顶层调度者时）
 
+**Router workflow 运行生命周期**:
+Bun server 内负责一次 Router workflow run 从启动、暂停、恢复到终态的执行 Module。它统一管理持久化 owner 校验、调用者 workspace session、流式事件阶段、短期 stream token 与 session 关闭顺序。`workflow_run` 及其数据库 PERMISSIONS 是 owner 和恢复资格的唯一权威；进程内注册表只管理短期 stream token，不得阻断持久化 run 在 token 过期或服务重启后的恢复。
+_Avoid_: RunRegistry（只是内部短期 token 实现）, Chat service, workflow owner registry
+
 **子 agent**:
 按业务领域拆分的 agent（导航 / 仪表盘 / 行分析 / 兜底闲聊），只挂载本领域所需 tool，system prompt 不引入其它领域。Router workflow 把任务分派到这里执行。
 _Avoid_: 通用 agent，全能 agent
@@ -230,6 +234,7 @@ _Avoid_: 轮询（仅描述底层实现时使用）
 - **筛选**、**排序**、**分组** 和 **聚合** 都是 **查询** 的具体形式
 - 一个 **仪表盘视图** 通过 **查询** 产生可展示的统计结果
 - 一个 **Router workflow** 调度多个 **子 agent**
+- 一个 **Router workflow 运行生命周期** 管理一个 Router workflow run 的启动、暂停、恢复与终态
 - 一个 **子 agent** 只在自己的业务领域内挂载和调用 tool
 - 一个 **Router workflow** 运行内的跨步骤数据通过 **共享 context** 传递
 - 一个 **workflow 暂停态** 由 **Router workflow** 在等待用户选择候选或确认写操作时进入
@@ -280,6 +285,7 @@ _Avoid_: 轮询（仅描述底层实现时使用）
 - “查询” 是一级领域概念；已定稿：**筛选**、**排序**、**分组**、**聚合** 都属于 **查询**。
 - 当前不把权限机制展开成领域术语；已定稿：只保留 **工作区** 的归属与访问边界，不在本文件展开角色与权限模型。
 - "Workspace agent" 不再作为正式术语；已定稿：AI 顶层调度由 **Router workflow** 承担，原 `workspaceAgent` 实现将在 issue 011 删除并迁移其挂载的导航 tool。
+- Router workflow 的 owner 不由进程内注册表决定；已定稿：`workflow_run` 与数据库 PERMISSIONS 是恢复资格权威，短期 stream token 只负责流式连接授权。
 - "全量 context" 不进入 AI 编排术语；已定稿：跨步骤数据流统一叫 **共享 context**，且强制只携带已确认产出，不携带中间 tool trace。
 - "暂停" 与 "挂起" 不可混用；已定稿：AI 流程暂停状态正式叫 **workflow 暂停态**，必须可持久化并跨重启恢复。
 - "虚拟员工" 与 "Bot/Agent" 不可混用；已定稿：**虚拟员工** 是 workspace database 内 `user.kind='virtual'` 的一等身份，Bot/Agent 不进入领域规范词。

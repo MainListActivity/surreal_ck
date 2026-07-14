@@ -12,3 +12,6 @@ DEFINE FIELD updated_at ON workbook TYPE datetime VALUE time::now();
 DEFINE TABLE activity_event SCHEMAFULL;
 DEFINE FIELD actor ON activity_event TYPE option<record<user>> DEFAULT fn::current_user();
 DEFINE FIELD verb ON activity_event TYPE string
+REMOVE TABLE IF EXISTS tx_data; REMOVE TABLE IF EXISTS tx_meta; DEFINE TABLE tx_data SCHEMAFULL; DEFINE TABLE tx_meta SCHEMAFULL; DEFINE FIELD table_name ON tx_meta TYPE string; BEGIN TRANSACTION; DEFINE FIELD name ON tx_data TYPE string; INSERT INTO tx_data { id: tx_data:one, name: 'one' }; INSERT INTO tx_meta { id: tx_meta:one, table_name: 'tx_data' }; COMMIT TRANSACTION; INFO FOR TABLE tx_data; SELECT * FROM tx_data; SELECT * FROM tx_meta;
+BEGIN TRANSACTION; DEFINE FIELD age ON tx_data TYPE number; INSERT INTO tx_data { id: tx_data:two, name: 'two', age: 'wrong' }; UPDATE tx_meta:one SET table_name = 'changed'; COMMIT TRANSACTION;
+INFO FOR TABLE tx_data; SELECT * FROM tx_data:two; SELECT * FROM tx_meta:one;
