@@ -10,7 +10,11 @@
     type Icon as IconType,
   } from "@lucide/svelte";
   import { workbooksStore } from "../lib/workbooks.svelte";
-  import { workbookTemplatesStore, templateColumnDefs } from "../lib/workbook-templates.svelte";
+  import {
+    workbookTemplatesStore,
+    templateColumnDefs,
+    templateSheetsForCreate,
+  } from "../lib/workbook-templates.svelte";
   import { canWriteSharedStructure as canWriteSharedStructureFn } from "../lib/permissions.svelte";
   import type { WorkbookTemplate } from "@surreal-ck/shared/rpc.types";
 
@@ -48,15 +52,13 @@
     if (creatingKey || !canWriteSharedStructure) return;
     creatingKey = template.key;
     try {
-      const firstSheet = template.sheets[0];
+      const sheets = templateSheetsForCreate(template);
       const columns = templateColumnDefs(template);
       const wb = await workbooksStore.createFromTemplate({
         id: template.id,
         defaultName: template.defaultName,
-        sheet: firstSheet
-          ? { label: firstSheet.label, columns }
-          : undefined,
-        columns: firstSheet ? undefined : columns,
+        sheets: sheets.length ? sheets : undefined,
+        columns: sheets.length ? undefined : columns,
       });
       if (wb) onopen?.(wb.id);
     } finally {

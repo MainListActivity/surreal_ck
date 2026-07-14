@@ -5,7 +5,7 @@ import {
   type WorkbookTemplatesSnapshot,
 } from "./workbook-templates";
 
-export { templateColumnDefs } from "./workbook-templates";
+export { templateColumnDefs, templateSheetsForCreate } from "./workbook-templates";
 export type { WorkbookTemplate } from "@surreal-ck/shared/rpc.types";
 
 /**

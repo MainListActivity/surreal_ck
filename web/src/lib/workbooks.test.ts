@@ -139,6 +139,46 @@ describe("createBlank — 管理员建空白 workbook", () => {
 });
 
 describe("createFromTemplate — 从业务模板建工作簿（带类型）", () => {
+  test("双数据表模板在同一事务中创建两张独立实体表和数据表元数据", async () => {
+    const { store, rec } = setup();
+
+    const created = await store.createFromTemplate({
+      id: "workbook_template:claims",
+      defaultName: "破产债权台账",
+      sheets: [
+        {
+          label: "债权人表",
+          columns: [
+            { key: "creditor_name", label: "债权人名称", fieldType: "text", required: true },
+          ],
+        },
+        {
+          label: "证据材料表",
+          columns: [
+            { key: "material_name", label: "材料名称", fieldType: "text", required: true },
+          ],
+        },
+      ],
+    });
+
+    const transactions = rec.queries.filter((query) => /BEGIN TRANSACTION/i.test(query.sql));
+    expect(transactions).toHaveLength(1);
+    const transaction = transactions[0]!;
+    const entityTables = [...transaction.sql.matchAll(/DEFINE TABLE IF NOT EXISTS (ent_[0-9a-f_]+) SCHEMALESS/g)]
+      .map((match) => match[1]);
+    expect(entityTables).toHaveLength(2);
+    expect(new Set(entityTables).size).toBe(2);
+    expect(transaction.sql.match(/CREATE sheet:[0-9a-f]+ CONTENT/g)).toHaveLength(2);
+    expect(transaction.bindings).toEqual(expect.objectContaining({
+      name: "破产债权台账",
+      sheetLabel0: "债权人表",
+      sheetColumnDefs0: [expect.objectContaining({ key: "creditor_name" })],
+      sheetLabel1: "证据材料表",
+      sheetColumnDefs1: [expect.objectContaining({ key: "material_name" })],
+    }));
+    expect(created?.templateRef).toBe("workbook_template:claims");
+  });
+
   test("新模板包的首个数据表展示名和字段进入创建事务", async () => {
     const { store, rec } = setup();
 
@@ -198,6 +238,33 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
 });
 
 describe("buildCreateWorkbookTransaction — 纯 SurrealQL 构造", () => {
+  test("实例化使用注入的随机 key 边界预生成 workbook 与全部 sheet 标识", async () => {
+    const keys = ["1111111111111111", "2222222222222222", "3333333333333333"];
+    const queries: string[] = [];
+    const conn = {
+      query: async (sql: string) => {
+        queries.push(sql);
+        return [];
+      },
+    } as unknown as SurrealConn;
+    const store = createWorkbooksStore({
+      getConn: () => conn,
+      generateKey: () => keys.shift()!,
+    });
+
+    const workbook = await store.createFromTemplate({
+      id: "workbook_template:claims",
+      sheets: [
+        { label: "A", columns: [{ key: "name", label: "名称", fieldType: "text" }] },
+        { label: "B", columns: [{ key: "title", label: "标题", fieldType: "text" }] },
+      ],
+    });
+
+    expect(workbook?.id).toBe("workbook:1111111111111111");
+    expect(queries[0]).toContain("CREATE sheet:2222222222222222 CONTENT");
+    expect(queries[0]).toContain("CREATE sheet:3333333333333333 CONTENT");
+  });
+
   test("表名 / workbook id / sheet 三者 key 一致且引用闭环", () => {
     const { sql, bindings, workbookId } = buildCreateWorkbookTransaction("台账");
     const wbKey = workbookId.replace("workbook:", "");

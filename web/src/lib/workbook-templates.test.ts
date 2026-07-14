@@ -4,6 +4,7 @@ import {
   createWorkbookTemplatesStore,
   recordToTemplate,
   templateColumnDefs,
+  templateSheetsForCreate,
 } from "./workbook-templates";
 
 function setup(rows: Array<Record<string, unknown>>) {
@@ -90,6 +91,37 @@ describe("recordToTemplate — snake_case → camelCase", () => {
 });
 
 describe("templateColumnDefs — stored → GridColumnDef", () => {
+  test("多数据表模板把每张表的展示名和字段都转为创建输入", () => {
+    const template = recordToTemplate({
+      id: "workbook_template:claims",
+      key: "claims",
+      label: "破产债权管理",
+      sheet_defs: [
+        {
+          key: "creditors",
+          label: "债权人表",
+          column_defs: [{ key: "creditor_name", label: "债权人名称", field_type: "text" }],
+        },
+        {
+          key: "materials",
+          label: "证据材料表",
+          column_defs: [{ key: "material_name", label: "材料名称", field_type: "text" }],
+        },
+      ],
+    });
+
+    expect(templateSheetsForCreate(template)).toEqual([
+      {
+        label: "债权人表",
+        columns: [expect.objectContaining({ key: "creditor_name", fieldType: "text" })],
+      },
+      {
+        label: "证据材料表",
+        columns: [expect.objectContaining({ key: "material_name", fieldType: "text" })],
+      },
+    ]);
+  });
+
   test("新模板包从首个数据表取实例化字段", () => {
     const template = recordToTemplate({
       id: "workbook_template:claims",

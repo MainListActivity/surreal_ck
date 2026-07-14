@@ -7,6 +7,7 @@ import type {
   WorkbookTemplateSheet,
 } from "@surreal-ck/shared/rpc.types";
 import type { SurrealConn } from "./surreal";
+import type { TemplateSheetForCreate } from "./workbooks";
 
 /**
  * 工作簿「类型」= 业务模板的产物。模板是 workspace 内 `workbook_template` 表的数据行，
@@ -67,6 +68,14 @@ export function recordToTemplate(rec: Record<string, unknown>): WorkbookTemplate
 export function templateColumnDefs(template: WorkbookTemplate): GridColumnDef[] {
   const storedDefs = template.sheets[0]?.columnDefs ?? template.columnDefs;
   return storedDefs.map(storedColumnToDTO);
+}
+
+/** 把模板包的全部数据表转为工作簿实例化输入。 */
+export function templateSheetsForCreate(template: WorkbookTemplate): TemplateSheetForCreate[] {
+  return template.sheets.map((sheet) => ({
+    label: sheet.label,
+    columns: sheet.columnDefs.map(storedColumnToDTO),
+  }));
 }
 
 /**
