@@ -139,6 +139,120 @@ describe("createBlank — 管理员建空白 workbook", () => {
 });
 
 describe("createFromTemplate — 从业务模板建工作簿（带类型）", () => {
+  test("模板字段通过稳定数据表 key 引用本次实例化的真实实体表", async () => {
+    const keys = ["1111111111111111", "2222222222222222", "3333333333333333"];
+    const queries: Array<{ sql: string; bindings?: Record<string, unknown> }> = [];
+    const conn = {
+      query: async (sql: string, bindings?: Record<string, unknown>) => {
+        queries.push({ sql, bindings });
+        return [];
+      },
+    } as unknown as SurrealConn;
+    const store = createWorkbooksStore({
+      getConn: () => conn,
+      generateKey: () => keys.shift()!,
+    });
+
+    const workbook = await store.createFromTemplate({
+      id: "workbook_template:claims",
+      sheets: [
+        {
+          key: "creditors",
+          label: "债权人表",
+          columns: [{ key: "name", label: "名称", fieldType: "text" }],
+        },
+        {
+          key: "materials",
+          label: "证据材料表",
+          columns: [{
+            key: "creditor",
+            label: "关联债权人",
+            fieldType: "reference",
+            referenceSheetKey: "creditors",
+          }],
+        },
+      ],
+    });
+
+    expect(workbook).not.toBeNull();
+    const transaction = queries[0]!;
+    const creditorTable = "ent_1111111111111111_2222222222222222";
+    expect(transaction.sql).toContain(
+      `DEFINE FIELD IF NOT EXISTS creditor ON TABLE ent_1111111111111111_3333333333333333 TYPE option<record<${creditorTable}>>`,
+    );
+    expect(transaction.bindings?.sheetColumnDefs1).toEqual([
+      expect.objectContaining({
+        key: "creditor",
+        reference_table: creditorTable,
+        reference_sheet_id: "sheet:2222222222222222",
+      }),
+    ]);
+    expect(JSON.stringify(transaction.bindings?.sheetColumnDefs1)).not.toContain("creditors");
+  });
+
+  test("引用目标 key 不存在时在 DDL 前返回中文错误且不发查询", async () => {
+    const { store, rec } = setup();
+
+    const workbook = await store.createFromTemplate({
+      id: "workbook_template:claims",
+      sheets: [{
+        key: "materials",
+        label: "证据材料表",
+        columns: [{
+          key: "creditor",
+          label: "关联债权人",
+          fieldType: "reference",
+          referenceSheetKey: "creditors",
+        }],
+      }],
+    });
+
+    expect(workbook).toBeNull();
+    expect(store.error).toBe("引用目标数据表不存在：creditors");
+    expect(rec.queries).toHaveLength(0);
+  });
+
+  test("模板数据表 key 重复时在 DDL 前返回中文错误且不发查询", async () => {
+    const { store, rec } = setup();
+
+    const workbook = await store.createFromTemplate({
+      id: "workbook_template:claims",
+      sheets: [
+        { key: "creditors", label: "债权人表", columns: [{ key: "name", label: "名称", fieldType: "text" }] },
+        { key: "creditors", label: "重复表", columns: [{ key: "title", label: "标题", fieldType: "text" }] },
+      ],
+    });
+
+    expect(workbook).toBeNull();
+    expect(store.error).toBe("模板数据表 key 重复：creditors");
+    expect(rec.queries).toHaveLength(0);
+  });
+
+  test("非引用字段声明目标数据表时在 DDL 前返回中文错误", async () => {
+    const { store, rec } = setup();
+
+    const workbook = await store.createFromTemplate({
+      id: "workbook_template:claims",
+      sheets: [
+        { key: "creditors", label: "债权人表", columns: [{ key: "name", label: "名称", fieldType: "text" }] },
+        {
+          key: "materials",
+          label: "证据材料表",
+          columns: [{
+            key: "note",
+            label: "备注",
+            fieldType: "text",
+            referenceSheetKey: "creditors",
+          }],
+        },
+      ],
+    });
+
+    expect(workbook).toBeNull();
+    expect(store.error).toBe("字段“备注”不是引用字段，不能声明目标数据表");
+    expect(rec.queries).toHaveLength(0);
+  });
+
   test("双数据表模板在同一事务中创建两张独立实体表和数据表元数据", async () => {
     const { store, rec } = setup();
 

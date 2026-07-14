@@ -112,14 +112,47 @@ describe("templateColumnDefs — stored → GridColumnDef", () => {
 
     expect(templateSheetsForCreate(template)).toEqual([
       {
+        key: "creditors",
         label: "债权人表",
         columns: [expect.objectContaining({ key: "creditor_name", fieldType: "text" })],
       },
       {
+        key: "materials",
         label: "证据材料表",
         columns: [expect.objectContaining({ key: "material_name", fieldType: "text" })],
       },
     ]);
+  });
+
+  test("跨数据表引用声明转换为实例化专用 key，不伪装成运行时目标表", () => {
+    const template = recordToTemplate({
+      id: "workbook_template:claims",
+      key: "claims",
+      label: "破产债权管理",
+      sheet_defs: [
+        {
+          key: "creditors",
+          label: "债权人表",
+          column_defs: [{ key: "name", label: "名称", field_type: "text" }],
+        },
+        {
+          key: "materials",
+          label: "证据材料表",
+          column_defs: [{
+            key: "creditor",
+            label: "关联债权人",
+            field_type: "reference",
+            reference_sheet_key: "creditors",
+          }],
+        },
+      ],
+    });
+
+    expect(templateSheetsForCreate(template)[1]?.columns[0]).toEqual(expect.objectContaining({
+      fieldType: "reference",
+      referenceSheetKey: "creditors",
+      referenceTable: undefined,
+    }));
   });
 
   test("新模板包从首个数据表取实例化字段", () => {

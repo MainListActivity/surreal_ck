@@ -107,8 +107,15 @@ export type CreateWorkbookOptions = {
 };
 
 export type TemplateSheetForCreate = {
+  /** 模板包内稳定 key；仅用于实例化前解析跨数据表引用。 */
+  key?: string;
   label: string;
-  columns: GridColumnDef[];
+  columns: TemplateColumnForCreate[];
+};
+
+export type TemplateColumnForCreate = GridColumnDef & {
+  /** 模板包内的目标数据表 key；实例化后必须被真实表引用替代。 */
+  referenceSheetKey?: string;
 };
 
 export type TemplateForCreate = {
@@ -129,7 +136,7 @@ export function buildCreateWorkbookTransaction(
 ): { sql: string; bindings: Record<string, unknown>; workbookId: RecordIdString } {
   const wbKey = generateKey();
   const wbId = `workbook:${wbKey}`;
-  const requestedSheets = options.sheets?.length
+  const requestedSheets: TemplateSheetForCreate[] = options.sheets?.length
     ? options.sheets
     : [{
         label: options.sheetLabel?.trim() || "Sheet 1",
@@ -147,7 +154,33 @@ export function buildCreateWorkbookTransaction(
     };
   });
 
-  const sheetSql = createdSheets.map((sheet) => {
+  const sheetByKey = new Map<string, (typeof createdSheets)[number]>();
+  for (const sheet of createdSheets) {
+    if (!sheet.key) continue;
+    if (sheetByKey.has(sheet.key)) {
+      throw new Error(`模板数据表 key 重复：${sheet.key}`);
+    }
+    sheetByKey.set(sheet.key, sheet);
+  }
+  const resolvedSheets = createdSheets.map((sheet) => ({
+    ...sheet,
+    columns: sheet.columns.map((column) => {
+      if (!column.referenceSheetKey) return column;
+      if (column.fieldType !== "reference") {
+        throw new Error(`字段“${column.label}”不是引用字段，不能声明目标数据表`);
+      }
+      const target = sheetByKey.get(column.referenceSheetKey);
+      if (!target) throw new Error(`引用目标数据表不存在：${column.referenceSheetKey}`);
+      const { referenceSheetKey: _templateOnlyKey, ...runtimeColumn } = column;
+      return {
+        ...runtimeColumn,
+        referenceTable: target.tableName,
+        referenceSheetId: target.id as RecordIdString,
+      };
+    }),
+  }));
+
+  const sheetSql = resolvedSheets.map((sheet) => {
     const fieldDdl = sheet.columns
       .map((column) => {
         const fieldSchema = buildSurrealFieldSchema(column);
@@ -176,7 +209,7 @@ ${sheetSql}
 COMMIT TRANSACTION;`;
 
   const bindings: Record<string, unknown> = { name };
-  for (const sheet of createdSheets) {
+  for (const sheet of resolvedSheets) {
     const suffix = createdSheets.length === 1 ? "" : String(sheet.index);
     bindings[createdSheets.length === 1 ? "label" : `sheetLabel${suffix}`] = sheet.label.trim() || `Sheet ${sheet.index + 1}`;
     bindings[createdSheets.length === 1 ? "tableName" : `sheetTableName${suffix}`] = sheet.tableName;
@@ -241,12 +274,11 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
    */
   async function create(name: string, options: CreateWorkbookOptions): Promise<WorkbookRow | null> {
     state.error = null;
-    const { sql, bindings, workbookId } = buildCreateWorkbookTransaction(
-      name,
-      options,
-      deps.generateKey,
-    );
+    let workbookId: RecordIdString;
     try {
+      const transaction = buildCreateWorkbookTransaction(name, options, deps.generateKey);
+      workbookId = transaction.workbookId;
+      const { sql, bindings } = transaction;
       await deps.getConn().query(sql, bindings);
     } catch (err) {
       state.error = describeWriteError(err);

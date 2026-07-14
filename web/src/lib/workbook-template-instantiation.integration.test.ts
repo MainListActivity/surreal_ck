@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Surreal } from "surrealdb";
 import { createEditorStore } from "./editor-store";
+import { searchReferenceCandidates } from "./reference-cache";
 import { createBrowserConn, type SurrealConn } from "./surreal";
 import { createWorkbooksStore } from "./workbooks";
 
@@ -148,5 +149,119 @@ describe("OIP-02 多数据表模板实例化", () => {
     await editor.reloadRows();
     expect(editor.rows[0]?.values.name).toBe("回归记录");
     editor.reset();
+  }, 15_000);
+});
+
+describe("OIP-03 模板内跨数据表引用", () => {
+  localSurrealTest("引用选择器读取目标表记录并由编辑器写入正确的 RecordId", async () => {
+    const { conn } = await setupDatabase();
+    const keys = ["1111111111111111", "2222222222222222", "3333333333333333"];
+    const workbooks = createWorkbooksStore({
+      getConn: () => conn,
+      generateKey: () => keys.shift()!,
+    });
+    const workbook = await workbooks.createFromTemplate({
+      id: "workbook_template:claims",
+      sheets: [
+        {
+          key: "creditors",
+          label: "债权人表",
+          columns: [{ key: "name", label: "名称", fieldType: "text", required: true }],
+        },
+        {
+          key: "materials",
+          label: "证据材料表",
+          columns: [
+            { key: "title", label: "材料名称", fieldType: "text", required: true },
+            {
+              key: "creditor",
+              label: "关联债权人",
+              fieldType: "reference",
+              referenceSheetKey: "creditors",
+            },
+          ],
+        },
+      ],
+    });
+    expect(workbook).not.toBeNull();
+
+    const editor = createEditorStore({ getConn: () => conn });
+    await editor.loadWorkbook(workbook!.id);
+    expect(await editor.saveRows([{ values: { name: "甲公司" } }])).toBe(true);
+    const creditorId = editor.rows[0]!.id;
+    const creditorTable = editor.activeSheet!.tableName;
+
+    const candidates = await searchReferenceCandidates(conn, creditorTable, {
+      query: "甲公司",
+      displayKey: "name",
+    });
+    expect(candidates.map((candidate) => candidate.id)).toContain(creditorId);
+
+    await editor.switchSheet(editor.sheets[1]!.id);
+    const referenceColumn = editor.columns.find((column) => column.key === "creditor");
+    expect(referenceColumn?.referenceTable).toBe(creditorTable);
+    expect(referenceColumn?.referenceSheetId).toBe(editor.sheets[0]!.id);
+    expect(await editor.saveRows([{ values: { title: "借款合同", creditor: creditorId } }])).toBe(true);
+    await editor.reloadRows();
+    expect(editor.rows[0]?.values.creditor).toBe(creditorId);
+    editor.reset();
+  }, 15_000);
+
+  localSurrealTest("同一模板的两个实例拥有隔离的引用目标并拒绝跨实例 RecordId", async () => {
+    const { conn } = await setupDatabase();
+    const keys = [
+      "1111111111111111", "2222222222222222", "3333333333333333",
+      "4444444444444444", "5555555555555555", "6666666666666666",
+    ];
+    const workbooks = createWorkbooksStore({
+      getConn: () => conn,
+      generateKey: () => keys.shift()!,
+    });
+    const template = {
+      id: "workbook_template:claims",
+      sheets: [
+        {
+          key: "creditors",
+          label: "债权人表",
+          columns: [{ key: "name", label: "名称", fieldType: "text", required: true }],
+        },
+        {
+          key: "materials",
+          label: "证据材料表",
+          columns: [{
+            key: "creditor",
+            label: "关联债权人",
+            fieldType: "reference",
+            referenceSheetKey: "creditors",
+          }],
+        },
+      ],
+    };
+    const first = await workbooks.createFromTemplate(template, "实例一");
+    const second = await workbooks.createFromTemplate(template, "实例二");
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+
+    const firstEditor = createEditorStore({ getConn: () => conn });
+    await firstEditor.loadWorkbook(first!.id);
+    expect(await firstEditor.saveRows([{ values: { name: "甲公司" } }])).toBe(true);
+    const firstCreditorId = firstEditor.rows[0]!.id;
+    await firstEditor.switchSheet(firstEditor.sheets[1]!.id);
+    const firstTarget = firstEditor.columns.find((column) => column.key === "creditor")?.referenceTable;
+
+    const secondEditor = createEditorStore({ getConn: () => conn });
+    await secondEditor.loadWorkbook(second!.id);
+    const secondCreditorTable = secondEditor.activeSheet!.tableName;
+    await secondEditor.switchSheet(secondEditor.sheets[1]!.id);
+    const secondReference = secondEditor.columns.find((column) => column.key === "creditor");
+
+    expect(firstTarget).not.toBe(secondReference?.referenceTable);
+    expect(secondReference?.referenceTable).toBe(secondCreditorTable);
+    expect(secondReference?.referenceSheetId).toBe(secondEditor.sheets[0]!.id);
+    expect(await secondEditor.saveRows([{ values: { creditor: firstCreditorId } }])).toBe(false);
+    expect(secondEditor.saveError).toContain(`引用值必须属于 ${secondCreditorTable}`);
+
+    firstEditor.reset();
+    secondEditor.reset();
   }, 15_000);
 });

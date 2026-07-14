@@ -792,6 +792,8 @@ export type MoveWorkbookResponse = {
 export type WorkbookTemplateFieldDef = StoredGridFieldDef & {
   /** 导入历史 Excel / CSV 时可与该字段匹配的列名。 */
   aliases?: string[];
+  /** 模板包内目标数据表的稳定 key；实例化后不会写入数据表运行时元数据。 */
+  reference_sheet_key?: string;
 };
 
 export type WorkbookTemplateSheet = {

@@ -73,8 +73,12 @@ export function templateColumnDefs(template: WorkbookTemplate): GridColumnDef[] 
 /** 把模板包的全部数据表转为工作簿实例化输入。 */
 export function templateSheetsForCreate(template: WorkbookTemplate): TemplateSheetForCreate[] {
   return template.sheets.map((sheet) => ({
+    key: sheet.key,
     label: sheet.label,
-    columns: sheet.columnDefs.map(storedColumnToDTO),
+    columns: sheet.columnDefs.map((column) => ({
+      ...storedColumnToDTO(column),
+      referenceSheetKey: column.reference_sheet_key,
+    })),
   }));
 }
 
