@@ -139,6 +139,33 @@ describe("createBlank — 管理员建空白 workbook", () => {
 });
 
 describe("createFromTemplate — 从业务模板建工作簿（带类型）", () => {
+  test("新模板包的首个数据表展示名和字段进入创建事务", async () => {
+    const { store, rec } = setup();
+
+    const created = await store.createFromTemplate({
+      id: "workbook_template:claims",
+      defaultName: "破产债权台账",
+      sheet: {
+        label: "债权人表",
+        columns: [
+          { key: "creditor_name", label: "债权人名称", fieldType: "text", required: true },
+          { key: "claim_amount", label: "申报金额", fieldType: "decimal" },
+        ],
+      },
+    });
+
+    const txQuery = rec.queries.find((query) => /BEGIN TRANSACTION/i.test(query.sql));
+    expect(txQuery?.bindings).toEqual(expect.objectContaining({
+      name: "破产债权台账",
+      label: "债权人表",
+      columnDefs: [
+        expect.objectContaining({ key: "creditor_name", field_type: "text", required: true }),
+        expect.objectContaining({ key: "claim_amount", field_type: "decimal" }),
+      ],
+    }));
+    expect(created?.templateRef).toBe("workbook_template:claims");
+  });
+
   test("workbook CREATE 带 template 引用，实体表按模板列定义建列，默认名回退模板 defaultName", async () => {
     const { store, rec } = setup({ workbooks: [...sampleRows] });
     await store.load();

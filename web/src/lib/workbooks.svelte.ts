@@ -1,8 +1,9 @@
-import type { GridColumnDef, RecordIdString } from "@surreal-ck/shared/rpc.types";
+import type { RecordIdString } from "@surreal-ck/shared/rpc.types";
 import { getSurreal } from "./surreal";
 import {
   createWorkbooksStore,
   filterWorkbooksByQuery,
+  type TemplateForCreate,
   type WorkbookRow,
   type WorkbooksSnapshot,
 } from "./workbooks";
@@ -38,7 +39,7 @@ export const workbooksStore = {
   load: () => store.load(),
   createBlank: (name: string) => store.createBlank(name),
   createFromTemplate: (
-    template: { id: RecordIdString | string; defaultName?: string; columns?: GridColumnDef[] },
+    template: TemplateForCreate,
     name?: string,
   ) => store.createFromTemplate(template, name),
   rename: (id: RecordIdString | string, name: string) => store.rename(id, name),

@@ -98,6 +98,22 @@ export type CreateWorkbookOptions = {
   columns?: GridColumnDef[];
   /** 工作簿类型 = 由哪个模板生成；写入 workbook.template（option record）。空白工作簿不传。 */
   templateRef?: RecordIdString | string;
+  /** 单数据表模板的展示名；空白工作簿默认为 Sheet 1。 */
+  sheetLabel?: string;
+};
+
+export type TemplateSheetForCreate = {
+  label: string;
+  columns: GridColumnDef[];
+};
+
+export type TemplateForCreate = {
+  id: RecordIdString | string;
+  defaultName?: string;
+  /** 新模板包的首个数据表。 */
+  sheet?: TemplateSheetForCreate;
+  /** 旧调用形状：顶层 column_defs 转换后的字段。 */
+  columns?: GridColumnDef[];
 };
 
 export function buildCreateWorkbookTransaction(
@@ -138,7 +154,7 @@ COMMIT TRANSACTION;`;
     sql,
     bindings: {
       name,
-      label: "Sheet 1",
+      label: options.sheetLabel?.trim() || "Sheet 1",
       tableName,
       columnDefs: columns.map(gridColumnToStoredDef),
     },
@@ -225,11 +241,15 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
    * templateRef 向模板 store 解析——类型语义只有一份真相，在模板数据里。
    */
   function createFromTemplate(
-    template: { id: RecordIdString | string; defaultName?: string; columns?: GridColumnDef[] },
+    template: TemplateForCreate,
     name?: string,
   ): Promise<WorkbookRow | null> {
     const finalName = (name?.trim() || template.defaultName?.trim() || "未命名工作簿");
-    return create(finalName, { templateRef: template.id, columns: template.columns });
+    return create(finalName, {
+      templateRef: template.id,
+      columns: template.sheet?.columns ?? template.columns,
+      sheetLabel: template.sheet?.label,
+    });
   }
 
   async function rename(id: RecordIdString | string, name: string): Promise<boolean> {

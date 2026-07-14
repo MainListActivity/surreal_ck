@@ -789,6 +789,19 @@ export type MoveWorkbookResponse = {
 // 不再用字符串硬猜。`column_defs` 与 sheet 同口径（StoredGridFieldDef[]），从模板
 // 建工作簿时据此建实体表。下面这些 *DTO 是 pre-pivot 的后端 RPC 残留，已无人引用。
 
+export type WorkbookTemplateFieldDef = StoredGridFieldDef & {
+  /** 导入历史 Excel / CSV 时可与该字段匹配的列名。 */
+  aliases?: string[];
+};
+
+export type WorkbookTemplateSheet = {
+  /** 模板包内稳定的数据表标识；实例化后不作为真实表名。 */
+  key: string;
+  /** 数据表展示名。 */
+  label: string;
+  columnDefs: WorkbookTemplateFieldDef[];
+};
+
 export type WorkbookTemplate = {
   id: RecordIdString;
   key: string;
@@ -802,6 +815,8 @@ export type WorkbookTemplate = {
   defaultName?: string;
   /** 建实体表的列定义，与 sheet.column_defs 同口径。 */
   columnDefs: StoredGridFieldDef[];
+  /** 通用模板包中的数据表定义。OIP-01 只实例化第一项。 */
+  sheets: WorkbookTemplateSheet[];
   builtin: boolean;
   sortOrder: number;
 };

@@ -66,7 +66,7 @@ describe("workbook card presentation — 卡片展示模型", () => {
   test("展示从业务模板派生：模板的 icon/accent/label 驱动渲染，类型语义不在前端硬编码", () => {
     const caseTemplate: WorkbookTemplate = {
       id: "workbook_template:case", key: "case", label: "案件管理",
-      icon: "scale", accent: "#CC6B3A", columnDefs: [], builtin: true, sortOrder: 10,
+      icon: "scale", accent: "#CC6B3A", columnDefs: [], sheets: [], builtin: true, sortOrder: 10,
     };
     expect(workbookCardPresentation(caseTemplate)).toEqual({
       previewKind: "table",
@@ -80,7 +80,7 @@ describe("workbook card presentation — 卡片展示模型", () => {
   test("network 类图标解析为 graph 预览；模板缺 accent 时回退内置配色", () => {
     const entityTemplate: WorkbookTemplate = {
       id: "workbook_template:entity", key: "entity", label: "实体追踪",
-      icon: "network", columnDefs: [], builtin: true, sortOrder: 20,
+      icon: "network", columnDefs: [], sheets: [], builtin: true, sortOrder: 20,
     };
     const p = workbookCardPresentation(entityTemplate);
     expect(p.previewKind).toBe("graph");

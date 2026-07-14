@@ -2,11 +2,22 @@ import { describe, expect, test } from "bun:test";
 import { loadTemplateScripts, WORKSPACE_TEMPLATE_VERSION } from "@surreal-ck/shared/workspace-template";
 
 describe("workspace template scripts", () => {
+  test("模板包 schema 增量保留旧 column_defs，并新增可容纳稳定表 key、名称、字段与列别名的 sheet_defs", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.name === "012-workbook-template-package.surql");
+
+    expect(migration).toBeDefined();
+    expect(migration?.sql).toMatch(
+      /DEFINE FIELD IF NOT EXISTS sheet_defs ON TABLE workbook_template TYPE array<object>\s+DEFAULT \[\]/,
+    );
+    expect(migration?.sql).not.toMatch(/REMOVE FIELD\s+column_defs/i);
+  });
+
   test("loads workspace template scripts in version order from the shared template directory", async () => {
     const scripts = await loadTemplateScripts();
 
-    expect(WORKSPACE_TEMPLATE_VERSION).toBe(11);
-    expect(scripts.map((script) => script.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    expect(WORKSPACE_TEMPLATE_VERSION).toBe(12);
+    expect(scripts.map((script) => script.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
     expect(scripts.map((script) => script.name)).toEqual([
       "001-access.surql",
       "002-tables-core.surql",
@@ -19,6 +30,7 @@ describe("workspace template scripts", () => {
       "009-fn-current-user.surql",
       "010-activity-event.surql",
       "011-workbook-template.surql",
+      "012-workbook-template-package.surql",
     ]);
     expect(scripts[0]?.sql).toContain("DEFINE ACCESS OVERWRITE admin");
     expect(scripts[1]?.sql).toContain("DEFINE TABLE IF NOT EXISTS user");
@@ -30,6 +42,7 @@ describe("workspace template scripts", () => {
     expect(scripts[8]?.sql).toContain("DEFINE FUNCTION OVERWRITE fn::current_user()");
     expect(scripts[9]?.sql).toContain("DEFINE TABLE IF NOT EXISTS activity_event");
     expect(scripts[10]?.sql).toContain("DEFINE TABLE IF NOT EXISTS workbook_template");
+    expect(scripts[11]?.sql).toContain("DEFINE FIELD IF NOT EXISTS sheet_defs ON TABLE workbook_template");
   });
 
   test("workbook_template：类型由业务数据定义——底层不枚举行业类型，仅管理员可增改删，workbook 引用为可选 record", async () => {

@@ -1,5 +1,11 @@
 import { storedColumnToDTO, type StoredGridFieldDef } from "@surreal-ck/shared/field-schema";
-import type { GridColumnDef, RecordIdString, WorkbookTemplate } from "@surreal-ck/shared/rpc.types";
+import type {
+  GridColumnDef,
+  RecordIdString,
+  WorkbookTemplate,
+  WorkbookTemplateFieldDef,
+  WorkbookTemplateSheet,
+} from "@surreal-ck/shared/rpc.types";
 import type { SurrealConn } from "./surreal";
 
 /**
@@ -22,9 +28,26 @@ export type WorkbookTemplatesDeps = {
 
 export type WorkbookTemplatesStore = ReturnType<typeof createWorkbookTemplatesStore>;
 
+function recordToTemplateSheet(value: unknown): WorkbookTemplateSheet | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const rec = value as Record<string, unknown>;
+  if (typeof rec.key !== "string" || typeof rec.label !== "string") return null;
+
+  return {
+    key: rec.key,
+    label: rec.label,
+    columnDefs: Array.isArray(rec.column_defs)
+      ? (rec.column_defs as WorkbookTemplateFieldDef[])
+      : [],
+  };
+}
+
 /** 把 `workbook_template` 记录裁成展示用 {@link WorkbookTemplate}（snake_case → camelCase）。 */
 export function recordToTemplate(rec: Record<string, unknown>): WorkbookTemplate {
   const rawDefs = Array.isArray(rec.column_defs) ? (rec.column_defs as StoredGridFieldDef[]) : [];
+  const sheets = Array.isArray(rec.sheet_defs)
+    ? rec.sheet_defs.map(recordToTemplateSheet).filter((sheet): sheet is WorkbookTemplateSheet => sheet !== null)
+    : [];
   return {
     id: String(rec.id) as RecordIdString,
     key: typeof rec.key === "string" ? rec.key : "",
@@ -34,6 +57,7 @@ export function recordToTemplate(rec: Record<string, unknown>): WorkbookTemplate
     accent: typeof rec.accent === "string" ? rec.accent : undefined,
     defaultName: typeof rec.default_name === "string" ? rec.default_name : undefined,
     columnDefs: rawDefs,
+    sheets,
     builtin: rec.builtin === true,
     sortOrder: typeof rec.sort_order === "number" ? rec.sort_order : 0,
   };
@@ -41,7 +65,8 @@ export function recordToTemplate(rec: Record<string, unknown>): WorkbookTemplate
 
 /** 模板列定义（stored snake_case）→ 建实体表用的 {@link GridColumnDef}（camelCase）。 */
 export function templateColumnDefs(template: WorkbookTemplate): GridColumnDef[] {
-  return template.columnDefs.map(storedColumnToDTO);
+  const storedDefs = template.sheets[0]?.columnDefs ?? template.columnDefs;
+  return storedDefs.map(storedColumnToDTO);
 }
 
 /**

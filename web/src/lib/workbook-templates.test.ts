@@ -32,6 +32,37 @@ const caseRow = {
 };
 
 describe("recordToTemplate — snake_case → camelCase", () => {
+  test("新模板包保留单数据表的稳定 key、展示名、字段和 Excel 列别名", () => {
+    const template = recordToTemplate({
+      id: "workbook_template:claims",
+      key: "claims",
+      label: "破产债权管理",
+      sheet_defs: [{
+        key: "creditors",
+        label: "债权人表",
+        column_defs: [{
+          key: "creditor_name",
+          label: "债权人名称",
+          field_type: "text",
+          required: true,
+          aliases: ["申报人", "债权人"],
+        }],
+      }],
+    });
+
+    expect(template.sheets).toEqual([{
+      key: "creditors",
+      label: "债权人表",
+      columnDefs: [{
+        key: "creditor_name",
+        label: "债权人名称",
+        field_type: "text",
+        required: true,
+        aliases: ["申报人", "债权人"],
+      }],
+    }]);
+  });
+
   test("展示元数据与列定义都被裁出，builtin/sort_order 规范化", () => {
     expect(recordToTemplate(caseRow)).toEqual({
       id: "workbook_template:case",
@@ -42,6 +73,7 @@ describe("recordToTemplate — snake_case → camelCase", () => {
       accent: "#CC6B3A",
       defaultName: "未命名案件库",
       columnDefs: [{ key: "name", label: "案件名", field_type: "text", required: true }],
+      sheets: [],
       builtin: true,
       sortOrder: 10,
     });
@@ -58,6 +90,28 @@ describe("recordToTemplate — snake_case → camelCase", () => {
 });
 
 describe("templateColumnDefs — stored → GridColumnDef", () => {
+  test("新模板包从首个数据表取实例化字段", () => {
+    const template = recordToTemplate({
+      id: "workbook_template:claims",
+      key: "claims",
+      label: "破产债权管理",
+      column_defs: [],
+      sheet_defs: [{
+        key: "creditors",
+        label: "债权人表",
+        column_defs: [
+          { key: "creditor_name", label: "债权人名称", field_type: "text", required: true },
+          { key: "claim_amount", label: "申报金额", field_type: "decimal" },
+        ],
+      }],
+    });
+
+    expect(templateColumnDefs(template)).toEqual([
+      expect.objectContaining({ key: "creditor_name", label: "债权人名称", fieldType: "text", required: true }),
+      expect.objectContaining({ key: "claim_amount", label: "申报金额", fieldType: "decimal" }),
+    ]);
+  });
+
   test("把模板存储列定义转成建表用的 camelCase 列", () => {
     const t = recordToTemplate(caseRow);
     expect(templateColumnDefs(t)).toEqual([

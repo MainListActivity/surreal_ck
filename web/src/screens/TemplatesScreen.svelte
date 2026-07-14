@@ -48,10 +48,15 @@
     if (creatingKey || !canWriteSharedStructure) return;
     creatingKey = template.key;
     try {
+      const firstSheet = template.sheets[0];
+      const columns = templateColumnDefs(template);
       const wb = await workbooksStore.createFromTemplate({
         id: template.id,
         defaultName: template.defaultName,
-        columns: templateColumnDefs(template),
+        sheet: firstSheet
+          ? { label: firstSheet.label, columns }
+          : undefined,
+        columns: firstSheet ? undefined : columns,
       });
       if (wb) onopen?.(wb.id);
     } finally {
