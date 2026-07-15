@@ -4,6 +4,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./template-packs": "./sql/template-packs/index.ts",
     "./workspace-template": "./sql/workspace-template/index.ts",
     "./*": "./src/*"
   },

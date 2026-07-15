@@ -1,0 +1,68 @@
+-- 可选法律业务入门模板包。只包含业务数据，不定义平台 schema。
+-- 重复执行只更新本文件明确声明的字段；管理员自行添加的其它字段不会被覆盖。
+
+INSERT INTO workbook_template [
+  {
+    key: "case",
+    label: "案件管理",
+    icon: "scale",
+    accent: "#CC6B3A",
+    default_name: "未命名案件库",
+    description: "诉讼 / 破产案件全流程台账",
+    builtin: true,
+    sort_order: 10,
+    column_defs: [],
+  },
+  {
+    key: "entity",
+    label: "实体追踪",
+    icon: "network",
+    accent: "#3E78A8",
+    default_name: "未命名实体库",
+    description: "公司 / 自然人主体及关系网络",
+    builtin: true,
+    sort_order: 20,
+    column_defs: [],
+  },
+  {
+    key: "compliance",
+    label: "合规",
+    icon: "shield-check",
+    accent: "#2F7A4C",
+    default_name: "未命名合规库",
+    description: "合规事项与风险点跟踪",
+    builtin: true,
+    sort_order: 30,
+    column_defs: [],
+  },
+  {
+    key: "diligence",
+    label: "尽调",
+    icon: "search-check",
+    accent: "#8A5A8F",
+    default_name: "未命名尽调库",
+    description: "尽职调查清单与材料归集",
+    builtin: true,
+    sort_order: 40,
+    column_defs: [],
+  },
+  {
+    key: "asset",
+    label: "资产",
+    icon: "landmark",
+    accent: "#B68A2E",
+    default_name: "未命名资产库",
+    description: "资产清册与处置追踪",
+    builtin: true,
+    sort_order: 50,
+    column_defs: [],
+  },
+]
+ON DUPLICATE KEY UPDATE
+  label = $input.label,
+  icon = $input.icon,
+  accent = $input.accent,
+  default_name = $input.default_name,
+  description = $input.description,
+  builtin = $input.builtin,
+  sort_order = $input.sort_order;

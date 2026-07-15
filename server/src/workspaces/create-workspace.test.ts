@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { loadTemplateScripts, type WorkspaceTemplateScript } from "@surreal-ck/shared/workspace-template";
+import type { TemplatePackScript } from "@surreal-ck/shared/template-packs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -112,6 +113,14 @@ const templateScripts: WorkspaceTemplateScript[] = [
   { version: 3, name: "003-tables-office.surql", sql: "DEFINE TABLE office_role SCHEMAFULL;" },
 ];
 
+const selectedTemplatePacks: TemplatePackScript[] = [
+  {
+    name: "test-pack",
+    fileName: "test-pack.surql",
+    sql: 'INSERT INTO workbook_template { key: "test-pack" };',
+  },
+];
+
 const localSurrealTest = test.skipIf(process.env.RUN_LOCAL_SURREALDB_TESTS !== "1");
 
 function localSurrealConfig() {
@@ -178,6 +187,91 @@ describe("createWorkspace lifecycle", () => {
     } finally {
       await rm(migrationsDir, { recursive: true });
     }
+  });
+
+  test("通用 schema 完成后播种部署选择的模板包", async () => {
+    const db = createFakeDbState();
+    const { adapter } = recordingIdpAdapter();
+    const creator = createWorkspaceCreator({
+      getDbSession: fakeSessionFactory(db),
+      idpTokenScopeAdapter: adapter,
+      loadTemplateScripts: async () => templateScripts,
+      loadTemplatePackScripts: async () => selectedTemplatePacks,
+      generateId: () => "abcdef123456",
+      namespace: "main",
+    });
+
+    await creator.createWorkspace({
+      subject: "user-123",
+      subjectToken: "subject-token",
+      email: "ada@example.test",
+      name: "Acme Legal",
+      slug: "acme",
+    });
+
+    const workspaceQueries = db.queries
+      .filter((query) => query.database === "ws_abcdef123456")
+      .map((query) => query.sql);
+    expect(workspaceQueries.indexOf(selectedTemplatePacks[0]!.sql)).toBeGreaterThan(
+      workspaceQueries.indexOf(templateScripts.at(-1)!.sql),
+    );
+  });
+
+  test("模板包加载失败时补偿删除新建 database", async () => {
+    const db = createFakeDbState();
+    const { adapter, calls } = recordingIdpAdapter();
+    const creator = createWorkspaceCreator({
+      getDbSession: fakeSessionFactory(db),
+      idpTokenScopeAdapter: adapter,
+      loadTemplateScripts: async () => templateScripts,
+      loadTemplatePackScripts: async () => {
+        throw new Error("unknown template pack: missing-pack");
+      },
+      generateId: () => "abcdef123456",
+      namespace: "main",
+    });
+
+    await expect(
+      creator.createWorkspace({
+        subject: "user-123",
+        subjectToken: "subject-token",
+        email: "ada@example.test",
+        name: "Acme Legal",
+        slug: "acme",
+      }),
+    ).rejects.toThrow(/template apply failed/);
+
+    expect(db.queries.some((query) => query.sql.includes("REMOVE DATABASE") && query.sql.includes("ws_abcdef123456"))).toBe(true);
+    expect(db.queries.some((query) => query.sql.includes("CREATE ONLY workspace"))).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
+  test("模板包 SurQL 执行失败时补偿删除新建 database", async () => {
+    const db = createFakeDbState();
+    db.failOn = { database: "ws_abcdef123456", match: "INSERT INTO workbook_template" };
+    const { adapter, calls } = recordingIdpAdapter();
+    const creator = createWorkspaceCreator({
+      getDbSession: fakeSessionFactory(db),
+      idpTokenScopeAdapter: adapter,
+      loadTemplateScripts: async () => templateScripts,
+      loadTemplatePackScripts: async () => selectedTemplatePacks,
+      generateId: () => "abcdef123456",
+      namespace: "main",
+    });
+
+    await expect(
+      creator.createWorkspace({
+        subject: "user-123",
+        subjectToken: "subject-token",
+        email: "ada@example.test",
+        name: "Acme Legal",
+        slug: "acme",
+      }),
+    ).rejects.toThrow(/template apply failed/);
+
+    expect(db.queries.some((query) => query.sql.includes("REMOVE DATABASE") && query.sql.includes("ws_abcdef123456"))).toBe(true);
+    expect(db.queries.some((query) => query.sql.includes("CREATE ONLY workspace"))).toBe(false);
+    expect(calls).toEqual([]);
   });
 
   test("provisions db, applies template, seeds owner user and _system index, then updates IdP scope", async () => {

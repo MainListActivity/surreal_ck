@@ -26,6 +26,12 @@ const EnvSchema = z.object({
   // 当前 MVP 中该表非空即开启创建 workspace 能力，不做逐 subject 授权。
   SYSTEM_ADMIN_SUBJECTS: z.string().optional(),
 
+  // 逗号分隔的可选模板包；空配置保持通用工作区，不播种垂直模板。
+  WORKSPACE_TEMPLATE_PACKS: z
+    .string()
+    .optional()
+    .transform((value) => [...new Set((value ?? "").split(",").map((name) => name.trim()).filter(Boolean))]),
+
   RECONCILE_INTERVAL_SEC: z.coerce.number().int().positive().default(3600),
 
   MASTRA_OBSERVABILITY_RETENTION_DAYS: z.coerce.number().int().positive().max(3650).default(30),

@@ -2,6 +2,10 @@ import {
   loadTemplateScripts as loadTemplateScriptsDefault,
   type WorkspaceTemplateScript,
 } from "@surreal-ck/shared/workspace-template";
+import {
+  loadTemplatePackScripts as loadTemplatePackScriptsDefault,
+  type TemplatePackScript,
+} from "@surreal-ck/shared/template-packs";
 import { env } from "../env";
 import { getRootDatabaseSession } from "../db/root-connection";
 import type { IdpTokenScopeAdapter } from "./idp-scope-adapter";
@@ -46,6 +50,7 @@ export type CreateWorkspaceCreatorOptions = {
   getDbSession?: CreateWorkspaceSessionFactory;
   idpTokenScopeAdapter?: IdpTokenScopeAdapter;
   loadTemplateScripts?: () => Promise<WorkspaceTemplateScript[]>;
+  loadTemplatePackScripts?: () => Promise<TemplatePackScript[]>;
   generateId?: () => string;
   namespace?: string;
 };
@@ -64,6 +69,9 @@ async function defaultGetDbSession(database: string, namespace: string): Promise
 export function createWorkspaceCreator(options: CreateWorkspaceCreatorOptions = {}): WorkspaceCreator {
   const idpTokenScopeAdapter = options.idpTokenScopeAdapter ?? createIdpTokenScopeAdapter();
   const loadScripts = options.loadTemplateScripts ?? (() => loadTemplateScriptsDefault({ oidcJwksUrl: env.OIDC_JWKS_URL }));
+  const loadPackScripts =
+    options.loadTemplatePackScripts ??
+    (() => loadTemplatePackScriptsDefault({ selectedPacks: env.WORKSPACE_TEMPLATE_PACKS }));
   const generateId = options.generateId ?? defaultGenerateId;
   const namespace = options.namespace ?? env.SURREAL_NS;
   const getDbSession = options.getDbSession ?? defaultGetDbSession;
@@ -89,6 +97,7 @@ export function createWorkspaceCreator(options: CreateWorkspaceCreatorOptions = 
           input,
           dbName,
           loadScripts,
+          loadPackScripts,
           idpTokenScopeAdapter,
         });
 
@@ -122,6 +131,7 @@ type TryCreateWorkspaceInput = {
   input: CreateWorkspaceInput;
   dbName: string;
   loadScripts: () => Promise<WorkspaceTemplateScript[]>;
+  loadPackScripts: () => Promise<TemplatePackScript[]>;
   idpTokenScopeAdapter: IdpTokenScopeAdapter;
 };
 
@@ -134,6 +144,7 @@ async function tryCreateWorkspace({
   input,
   dbName,
   loadScripts,
+  loadPackScripts,
   idpTokenScopeAdapter,
 }: TryCreateWorkspaceInput): Promise<TryCreateWorkspaceResult> {
   let createdDatabase = false;
@@ -152,6 +163,11 @@ async function tryCreateWorkspace({
     const workspaceDb = await getDbSession(dbName, namespace);
     const scripts = await loadScripts();
     for (const script of scripts) {
+      await workspaceDb.query(script.sql);
+    }
+
+    const packScripts = await loadPackScripts();
+    for (const script of packScripts) {
       await workspaceDb.query(script.sql);
     }
 
