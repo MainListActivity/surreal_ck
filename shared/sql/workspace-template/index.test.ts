@@ -1,7 +1,71 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { loadTemplateScripts, WORKSPACE_TEMPLATE_VERSION } from "@surreal-ck/shared/workspace-template";
 
+const temporaryMigrationDirectories: string[] = [];
+
+async function createMigrationDirectory(files: Record<string, string>): Promise<string> {
+  const directory = await mkdtemp(join(tmpdir(), "surreal-ck-workspace-template-"));
+  temporaryMigrationDirectories.push(directory);
+
+  await Promise.all(Object.entries(files).map(([name, sql]) => writeFile(join(directory, name), sql, "utf8")));
+  return directory;
+}
+
+afterEach(async () => {
+  await Promise.all(temporaryMigrationDirectories.splice(0).map((directory) => rm(directory, { recursive: true })));
+});
+
 describe("workspace template scripts", () => {
+  test("自动发现合法编号的 SurQL 增量并严格按版本加载", async () => {
+    const migrationsDir = await createMigrationDirectory({
+      "002-second.surql": "-- second fixture",
+      "001-first.surql": "-- first fixture",
+    });
+
+    const scripts = await loadTemplateScripts({ migrationsDir });
+
+    expect(scripts).toEqual([
+      { version: 1, name: "001-first.surql", sql: "-- first fixture" },
+      { version: 2, name: "002-second.surql", sql: "-- second fixture" },
+    ]);
+  });
+
+  test("重复迁移版本会在加载任何脚本前给出明确错误", async () => {
+    const migrationsDir = await createMigrationDirectory({
+      "001-first.surql": "-- first fixture",
+      "001-duplicate.surql": "-- duplicate fixture",
+    });
+
+    await expect(loadTemplateScripts({ migrationsDir })).rejects.toThrow(
+      "workspace template migration version 001 is duplicated",
+    );
+  });
+
+  test("迁移版本断档会在加载任何脚本前指出缺失版本", async () => {
+    const migrationsDir = await createMigrationDirectory({
+      "001-first.surql": "-- first fixture",
+      "003-third.surql": "-- third fixture",
+    });
+
+    await expect(loadTemplateScripts({ migrationsDir })).rejects.toThrow(
+      "workspace template migration version 002 is missing",
+    );
+  });
+
+  test("非法 SurQL 文件名会在加载任何脚本前给出明确错误", async () => {
+    const migrationsDir = await createMigrationDirectory({
+      "001-first.surql": "-- first fixture",
+      "2-invalid.surql": "-- invalid fixture",
+    });
+
+    await expect(loadTemplateScripts({ migrationsDir })).rejects.toThrow(
+      "invalid workspace template migration filename: 2-invalid.surql",
+    );
+  });
+
   test("模板包 schema 增量保留旧 column_defs，并新增可容纳稳定表 key、名称、字段与列别名的 sheet_defs", async () => {
     const scripts = await loadTemplateScripts();
     const migration = scripts.find((script) => script.name === "012-workbook-template-package.surql");
@@ -45,42 +109,16 @@ describe("workspace template scripts", () => {
     expect(migration?.sql).toContain("default_dashboard.widgets");
   });
 
-  test("loads workspace template scripts in version order from the shared template directory", async () => {
+  test("默认目录的迁移版本由实际最高脚本推导，无需维护 TypeScript 清单", async () => {
     const scripts = await loadTemplateScripts();
 
-    expect(WORKSPACE_TEMPLATE_VERSION).toBe(15);
-    expect(scripts.map((script) => script.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
-    expect(scripts.map((script) => script.name)).toEqual([
-      "001-access.surql",
-      "002-tables-core.surql",
-      "003-tables-office.surql",
-      "004-workflow-run.surql",
-      "005-mastra-runtime-storage.surql",
-      "006-tables-grid.surql",
-      "007-access-claim-rename.surql",
-      "008-resource-library.surql",
-      "009-fn-current-user.surql",
-      "010-activity-event.surql",
-      "011-workbook-template.surql",
-      "012-workbook-template-package.surql",
-      "013-template-cross-sheet-reference.surql",
-      "014-template-sample-data.surql",
-      "015-template-default-dashboard.surql",
-    ]);
-    expect(scripts[0]?.sql).toContain("DEFINE ACCESS OVERWRITE admin");
-    expect(scripts[1]?.sql).toContain("DEFINE TABLE IF NOT EXISTS user");
-    expect(scripts[2]?.sql).toContain("DEFINE TABLE IF NOT EXISTS employee_credential");
-    expect(scripts[3]?.sql).toContain("DEFINE TABLE IF NOT EXISTS workflow_run");
-    expect(scripts[4]?.sql).toContain("DEFINE TABLE IF NOT EXISTS memory_thread");
-    expect(scripts[5]?.sql).toContain("DEFINE TABLE IF NOT EXISTS workbook");
-    expect(scripts[7]?.sql).toContain("DEFINE TABLE IF NOT EXISTS resource_item");
-    expect(scripts[8]?.sql).toContain("DEFINE FUNCTION OVERWRITE fn::current_user()");
-    expect(scripts[9]?.sql).toContain("DEFINE TABLE IF NOT EXISTS activity_event");
-    expect(scripts[10]?.sql).toContain("DEFINE TABLE IF NOT EXISTS workbook_template");
-    expect(scripts[11]?.sql).toContain("DEFINE FIELD IF NOT EXISTS sheet_defs ON TABLE workbook_template");
-    expect(scripts[12]?.sql).toContain("reference_sheet_key");
-    expect(scripts[13]?.sql).toContain("sample_records");
-    expect(scripts[14]?.sql).toContain("default_dashboard");
+    expect(scripts.map((script) => script.version)).toEqual(
+      Array.from({ length: scripts.length }, (_, index) => index + 1),
+    );
+    expect(scripts.every((script) => script.name.startsWith(String(script.version).padStart(3, "0") + "-"))).toBe(
+      true,
+    );
+    expect(WORKSPACE_TEMPLATE_VERSION).toBe(scripts.at(-1)?.version);
   });
 
   test("workbook_template：类型由业务数据定义——底层不枚举行业类型，仅管理员可增改删，workbook 引用为可选 record", async () => {

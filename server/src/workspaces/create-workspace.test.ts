@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import type { WorkspaceTemplateScript } from "@surreal-ck/shared/workspace-template";
+import { loadTemplateScripts, type WorkspaceTemplateScript } from "@surreal-ck/shared/workspace-template";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createWorkspaceCreator, type CreateWorkspaceClient, type CreateWorkspaceSessionFactory } from "./create-workspace";
 import { closeRootConnection, getRootConnection, initRootConnection } from "../db/root-connection";
 import { ensureSystemSchema } from "../db/system-schema";
@@ -135,6 +138,48 @@ async function withTimeout<T>(work: Promise<T>, label: string, timeoutMs = 5_000
 }
 
 describe("createWorkspace lifecycle", () => {
+  test("新工作区会应用加载器自动发现的完整 SurQL 脚本集合", async () => {
+    const migrationsDir = await mkdtemp(join(tmpdir(), "surreal-ck-create-workspace-"));
+    try {
+      await writeFile(join(migrationsDir, "001-base.surql"), "-- base migration", "utf8");
+      await writeFile(join(migrationsDir, "002-existing.surql"), "-- existing migration", "utf8");
+      await writeFile(join(migrationsDir, "003-auto-discovered.surql"), "-- newly added fixture", "utf8");
+      const db = createFakeDbState();
+      const { adapter } = recordingIdpAdapter();
+      const creator = createWorkspaceCreator({
+        getDbSession: fakeSessionFactory(db),
+        idpTokenScopeAdapter: adapter,
+        loadTemplateScripts: () => loadTemplateScripts({ migrationsDir }),
+        generateId: () => "abcdef123456",
+        namespace: "main",
+      });
+
+      await creator.createWorkspace({
+        subject: "user-123",
+        subjectToken: "subject-token",
+        email: "ada@example.test",
+        name: "Acme Legal",
+        slug: "acme",
+      });
+
+      const workspaceQueries = db.queries
+        .filter((query) => query.database === "ws_abcdef123456")
+        .map((query) => query.sql.trim());
+      expect(workspaceQueries.slice(0, 3)).toEqual([
+        "-- base migration",
+        "-- existing migration",
+        "-- newly added fixture",
+      ]);
+      expect(
+        db.queries.find(
+          (query) => query.database === "ws_abcdef123456" && query.sql.includes("UPSERT schema_version:current"),
+        )?.params?.version,
+      ).toBe(3);
+    } finally {
+      await rm(migrationsDir, { recursive: true });
+    }
+  });
+
   test("provisions db, applies template, seeds owner user and _system index, then updates IdP scope", async () => {
     const db = createFakeDbState();
     const { adapter, calls } = recordingIdpAdapter();

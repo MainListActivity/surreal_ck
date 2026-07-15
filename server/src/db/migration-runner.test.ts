@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import type { WorkspaceTemplateScript } from "@surreal-ck/shared/workspace-template";
+import { loadTemplateScripts, type WorkspaceTemplateScript } from "@surreal-ck/shared/workspace-template";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { migrateAllWorkspaces } from "./migration-runner";
 
 type QueryCall = {
@@ -62,6 +65,29 @@ function fakeScripts(...versions: number[]): WorkspaceTemplateScript[] {
 }
 
 describe("workspace migration runner", () => {
+  test("已有工作区只应用加载器自动发现的更高版本 SurQL 脚本", async () => {
+    const migrationsDir = await mkdtemp(join(tmpdir(), "surreal-ck-migrate-workspace-"));
+    try {
+      await writeFile(join(migrationsDir, "001-base.surql"), "-- base migration", "utf8");
+      await writeFile(join(migrationsDir, "002-existing.surql"), "-- existing migration", "utf8");
+      await writeFile(join(migrationsDir, "003-auto-discovered.surql"), "-- newly added fixture", "utf8");
+      const db = new FakeMigrationClient([{ dbName: "ws_behind", schemaVersion: 2 }]);
+
+      const result = await migrateAllWorkspaces(db, {
+        namespace: "main",
+        loadScripts: () => loadTemplateScripts({ migrationsDir }),
+      });
+
+      expect(result.migrated).toEqual([{ dbName: "ws_behind", fromVersion: 2, toVersion: 3 }]);
+      const appliedScripts = db.queryCalls
+        .map((call) => call.sql.trim())
+        .filter((sql) => sql.startsWith("--"));
+      expect(appliedScripts).toEqual(["-- newly added fixture"]);
+    } finally {
+      await rm(migrationsDir, { recursive: true });
+    }
+  });
+
   test("migrates a workspace db that is behind up to the latest template version", async () => {
     const db = new FakeMigrationClient([{ dbName: "ws_behind", schemaVersion: 1 }]);
 
