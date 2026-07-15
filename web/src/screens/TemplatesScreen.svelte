@@ -62,6 +62,7 @@
         defaultName: template.defaultName,
         sheets: sheets.length ? sheets : undefined,
         columns: sheets.length ? undefined : columns,
+        defaultDashboard: template.defaultDashboard,
       }, undefined, { includeSampleData });
       if (wb) onopen?.(wb.id);
       else createError = workbooksStore.error ?? "模板创建失败，请稍后重试";

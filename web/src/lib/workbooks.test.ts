@@ -139,6 +139,38 @@ describe("createBlank — 管理员建空白 workbook", () => {
 });
 
 describe("createFromTemplate — 从业务模板建工作簿（带类型）", () => {
+  test("列表组件缺少展示字段时在事务前拒绝整个模板", async () => {
+    const { store, rec } = setup();
+
+    const workbook = await store.createFromTemplate({
+      id: "workbook_template:claims",
+      sheets: [{
+        key: "creditors",
+        label: "债权人表",
+        columns: [{ key: "name", label: "名称", fieldType: "text" }],
+      }],
+      defaultDashboard: {
+        title: "债权概览",
+        slug: "claims-overview",
+        widgets: [{
+          id: "claim-list",
+          title: "债权列表",
+          viewType: "table",
+          spec: {
+            sourceTables: ["creditors"],
+            baseTable: "creditors",
+            metric: { op: "count" },
+          },
+          grid: { x: 0, y: 0, w: 12, h: 2 },
+        }],
+      },
+    });
+
+    expect(workbook).toBeNull();
+    expect(store.error).toContain("列表组件至少需要一个展示字段");
+    expect(rec.queries).toEqual([]);
+  });
+
   test("默认包含模板样例记录，并把跨表样例引用解析为本次实例的 RecordId", async () => {
     const keys = [
       "1111111111111111",

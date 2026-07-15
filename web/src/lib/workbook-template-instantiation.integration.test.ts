@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Surreal } from "surrealdb";
+import {
+  deleteDashboardPage,
+  listDashboardPages,
+  loadDashboardPage,
+  saveDashboardPageWidgets,
+} from "./dashboard-data";
+import { runDashboardWidgetQuery } from "./dashboard-query";
 import { createEditorStore } from "./editor-store";
 import { searchReferenceCandidates } from "./reference-cache";
 import { createBrowserConn, type SurrealConn } from "./surreal";
@@ -43,6 +50,16 @@ async function setupDatabase(): Promise<{ conn: SurrealConn; inspector: Surreal 
     DEFINE FIELD created_at ON TABLE sheet TYPE datetime VALUE time::now() READONLY;
     DEFINE FIELD updated_at ON TABLE sheet TYPE datetime VALUE time::now();
     DEFINE INDEX sheet_table_name_unique ON TABLE sheet COLUMNS table_name UNIQUE;
+
+    DEFINE TABLE dashboard_page SCHEMAFULL;
+    DEFINE FIELD workbook ON TABLE dashboard_page TYPE option<record<workbook>>;
+    DEFINE FIELD title ON TABLE dashboard_page TYPE string;
+    DEFINE FIELD slug ON TABLE dashboard_page TYPE string;
+    DEFINE FIELD description ON TABLE dashboard_page TYPE option<string>;
+    DEFINE FIELD widgets ON TABLE dashboard_page TYPE any DEFAULT [];
+    DEFINE FIELD created_at ON TABLE dashboard_page TYPE datetime VALUE time::now() READONLY;
+    DEFINE FIELD updated_at ON TABLE dashboard_page TYPE datetime VALUE time::now();
+    DEFINE INDEX dashboard_page_slug_unique ON TABLE dashboard_page COLUMNS workbook, slug UNIQUE;
 
     DEFINE TABLE activity_event SCHEMALESS;
     CREATE workbook_template:claims CONTENT { key: "claims" };
@@ -415,5 +432,176 @@ describe("OIP-04 模板样例数据可选实例化", () => {
     expect(secondEditor.rows[0]!.values.name).toBe("甲公司");
     firstEditor.reset();
     secondEditor.reset();
+  }, 15_000);
+});
+
+describe("OIP-05 模板默认仪表盘实例化", () => {
+  localSurrealTest("两个模板实例各自映射真实实体表，聚合随数据变化且默认组件可编辑删除", async () => {
+    const { conn } = await setupDatabase();
+    const keys = [
+      "1111111111111111", "2222222222222222", "3333333333333333", "4444444444444444", "5555555555555555",
+      "6666666666666666", "7777777777777777", "8888888888888888", "9999999999999999", "aaaaaaaaaaaaaaaa",
+    ];
+    const workbooks = createWorkbooksStore({ getConn: () => conn, generateKey: () => keys.shift()! });
+    const template = {
+      id: "workbook_template:claims",
+      sheets: [{
+        key: "creditors",
+        label: "债权人表",
+        columns: [
+          { key: "claim_amount", label: "申报金额", fieldType: "number" as const },
+          { key: "claim_type", label: "债权类型", fieldType: "text" as const },
+        ],
+        sampleRecords: [
+          { key: "claim-a", values: { claim_amount: 100, claim_type: "普通债权" } },
+          { key: "claim-b", values: { claim_amount: 250, claim_type: "担保债权" } },
+        ],
+      }],
+      defaultDashboard: {
+        title: "债权审核概览",
+        slug: "claims-overview",
+        widgets: [{
+          id: "total-claims",
+          title: "总申报金额",
+          viewType: "kpi" as const,
+          spec: {
+            sourceTables: ["creditors"],
+            baseTable: "creditors",
+            metric: { op: "sum" as const, field: "claim_amount" },
+          },
+          grid: { x: 0, y: 0, w: 6, h: 1 },
+        }, {
+          id: "claims-by-type",
+          title: "债权类型分布",
+          viewType: "bar" as const,
+          spec: {
+            sourceTables: ["creditors"],
+            baseTable: "creditors",
+            metric: { op: "count" as const },
+            dimensions: [{ field: "claim_type" }],
+          },
+          grid: { x: 0, y: 1, w: 6, h: 2 },
+        }, {
+          id: "largest-claims",
+          title: "债权列表",
+          viewType: "table" as const,
+          spec: {
+            sourceTables: ["creditors"],
+            baseTable: "creditors",
+            metric: { op: "count" as const },
+            sort: { field: "claim_amount", direction: "desc" as const },
+            limit: 5,
+          },
+          grid: { x: 6, y: 1, w: 6, h: 2 },
+          display: {
+            columns: [
+              { key: "claim_type", label: "债权类型" },
+              { key: "claim_amount", label: "申报金额" },
+            ],
+          },
+        }],
+      },
+    };
+
+    const first = await workbooks.createFromTemplate(template, "实例一");
+    const second = await workbooks.createFromTemplate(template, "实例二");
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+
+    const firstPages = await listDashboardPages(conn, { workbookId: first!.id });
+    const secondPages = await listDashboardPages(conn, { workbookId: second!.id });
+    expect(firstPages).toHaveLength(1);
+    expect(secondPages).toHaveLength(1);
+
+    const firstPage = await loadDashboardPage(conn, firstPages[0]!.id);
+    const secondPage = await loadDashboardPage(conn, secondPages[0]!.id);
+    const firstWidget = firstPage!.widgets[0]!;
+    const secondWidget = secondPage!.widgets[0]!;
+    const barWidget = firstPage!.widgets[1]!;
+    const tableWidget = firstPage!.widgets[2]!;
+    expect(firstWidget.spec.baseTable).toBe("ent_1111111111111111_main");
+    expect(secondWidget.spec.baseTable).toBe("ent_6666666666666666_main");
+    expect(firstWidget.spec.baseTable).not.toBe(secondWidget.spec.baseTable);
+    expect(await runDashboardWidgetQuery(conn, firstWidget)).toEqual(expect.objectContaining({
+      result: expect.objectContaining({ value: 350 }),
+    }));
+    expect(await runDashboardWidgetQuery(conn, secondWidget)).toEqual(expect.objectContaining({
+      result: expect.objectContaining({ value: 350 }),
+    }));
+    expect(await runDashboardWidgetQuery(conn, barWidget)).toEqual(expect.objectContaining({
+      result: expect.objectContaining({
+        rows: expect.arrayContaining([
+          expect.objectContaining({ key: "普通债权", value: 1 }),
+          expect.objectContaining({ key: "担保债权", value: 1 }),
+        ]),
+      }),
+    }));
+    expect(await runDashboardWidgetQuery(conn, tableWidget)).toEqual(expect.objectContaining({
+      result: {
+        columns: [
+          { key: "claim_type", label: "债权类型" },
+          { key: "claim_amount", label: "申报金额" },
+        ],
+        rows: [
+          expect.objectContaining({ claim_type: "担保债权", claim_amount: 250 }),
+          expect.objectContaining({ claim_type: "普通债权", claim_amount: 100 }),
+        ],
+      },
+    }));
+
+    await conn.createRecord(firstWidget.spec.baseTable, { claim_amount: 50 });
+    expect(await runDashboardWidgetQuery(conn, firstWidget)).toEqual(expect.objectContaining({
+      result: expect.objectContaining({ value: 400 }),
+    }));
+    expect(await runDashboardWidgetQuery(conn, secondWidget)).toEqual(expect.objectContaining({
+      result: expect.objectContaining({ value: 350 }),
+    }));
+
+    const relaid = { ...firstWidget, grid: { x: 6, y: 2, w: 6, h: 1 } };
+    expect((await saveDashboardPageWidgets(conn, firstPage!.id, [relaid, barWidget, tableWidget])).ok).toBe(true);
+    expect((await loadDashboardPage(conn, firstPage!.id))?.widgets[0]?.grid).toEqual(relaid.grid);
+    expect(await deleteDashboardPage(conn, firstPage!.id)).toEqual({ ok: true });
+    expect(await listDashboardPages(conn, { workbookId: first!.id })).toEqual([]);
+  }, 15_000);
+
+  localSurrealTest("仪表盘引用不存在的数据表 key 时整体拒绝且不留下工作簿", async () => {
+    const { conn, inspector } = await setupDatabase();
+    const keys = ["1111111111111111", "2222222222222222", "3333333333333333"];
+    const workbooks = createWorkbooksStore({ getConn: () => conn, generateKey: () => keys.shift()! });
+    const workbook = await workbooks.createFromTemplate({
+      id: "workbook_template:claims",
+      sheets: [{
+        key: "creditors",
+        label: "债权人表",
+        columns: [{ key: "claim_amount", label: "申报金额", fieldType: "number" }],
+      }],
+      defaultDashboard: {
+        title: "错误仪表盘",
+        slug: "broken-dashboard",
+        widgets: [{
+          id: "missing-source",
+          title: "错误来源",
+          viewType: "kpi",
+          spec: {
+            sourceTables: ["missing-sheet"],
+            baseTable: "missing-sheet",
+            metric: { op: "count" },
+          },
+          grid: { x: 0, y: 0, w: 6, h: 1 },
+        }],
+      },
+    });
+
+    expect(workbook).toBeNull();
+    expect(workbooks.error).toContain("默认仪表盘引用的数据表不存在：missing-sheet");
+    const [workbookRows, dashboardRows] = await inspector.query<[
+      Array<Record<string, unknown>>,
+      Array<Record<string, unknown>>,
+    ]>(`
+      SELECT * FROM workbook:1111111111111111;
+      SELECT * FROM dashboard_page;
+    `).collect();
+    expect(workbookRows).toEqual([]);
+    expect(dashboardRows).toEqual([]);
   }, 15_000);
 });

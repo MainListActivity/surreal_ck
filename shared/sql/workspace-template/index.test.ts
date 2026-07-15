@@ -36,11 +36,20 @@ describe("workspace template scripts", () => {
     expect(migration?.sql).toContain("sheet_defs.*.sample_records.*.values");
   });
 
+  test("默认仪表盘增量把结构化页面声明加入 workbook_template", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.name === "015-template-default-dashboard.surql");
+
+    expect(migration?.version).toBe(15);
+    expect(migration?.sql).toContain("default_dashboard");
+    expect(migration?.sql).toContain("default_dashboard.widgets");
+  });
+
   test("loads workspace template scripts in version order from the shared template directory", async () => {
     const scripts = await loadTemplateScripts();
 
-    expect(WORKSPACE_TEMPLATE_VERSION).toBe(14);
-    expect(scripts.map((script) => script.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+    expect(WORKSPACE_TEMPLATE_VERSION).toBe(15);
+    expect(scripts.map((script) => script.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
     expect(scripts.map((script) => script.name)).toEqual([
       "001-access.surql",
       "002-tables-core.surql",
@@ -56,6 +65,7 @@ describe("workspace template scripts", () => {
       "012-workbook-template-package.surql",
       "013-template-cross-sheet-reference.surql",
       "014-template-sample-data.surql",
+      "015-template-default-dashboard.surql",
     ]);
     expect(scripts[0]?.sql).toContain("DEFINE ACCESS OVERWRITE admin");
     expect(scripts[1]?.sql).toContain("DEFINE TABLE IF NOT EXISTS user");
@@ -70,6 +80,7 @@ describe("workspace template scripts", () => {
     expect(scripts[11]?.sql).toContain("DEFINE FIELD IF NOT EXISTS sheet_defs ON TABLE workbook_template");
     expect(scripts[12]?.sql).toContain("reference_sheet_key");
     expect(scripts[13]?.sql).toContain("sample_records");
+    expect(scripts[14]?.sql).toContain("default_dashboard");
   });
 
   test("workbook_template：类型由业务数据定义——底层不枚举行业类型，仅管理员可增改删，workbook 引用为可选 record", async () => {

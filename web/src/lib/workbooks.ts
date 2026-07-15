@@ -1,8 +1,15 @@
 import { buildSurrealFieldSchema, gridColumnToStoredDef } from "@surreal-ck/shared/field-schema";
-import type { GridColumnDef, RecordIdString } from "@surreal-ck/shared/rpc.types";
+import type {
+  DashboardBuilderSpec,
+  GridColumnDef,
+  RecordIdString,
+  WorkbookTemplateDashboardWidget,
+  WorkbookTemplateDefaultDashboard,
+} from "@surreal-ck/shared/rpc.types";
 import type { SurrealConn } from "./surreal";
 import { describeWriteError } from "./workbook-data";
 import { toRecordId } from "./record-id";
+import { compileDashboardWidgetQuery } from "./dashboard-query";
 
 /**
  * workbook 列表项——直连读 `workbook` 表的裁剪形态。
@@ -107,6 +114,10 @@ export type CreateWorkbookOptions = {
   sheets?: TemplateSheetForCreate[];
   /** 事务含模板样例 DML；用于把引擎校验失败规整成用户可读错误。 */
   includesTemplateSamples?: boolean;
+  /** 可选默认仪表盘声明；spec 中的数据表位置仍使用模板稳定 key。 */
+  defaultDashboard?: WorkbookTemplateDefaultDashboard;
+  /** 事务含默认仪表盘；用于把引擎校验失败规整成用户可读错误。 */
+  includesTemplateDashboard?: boolean;
 };
 
 export type TemplateSheetForCreate = {
@@ -141,12 +152,125 @@ export type TemplateForCreate = {
   sheets?: TemplateSheetForCreate[];
   /** 旧调用形状：顶层 column_defs 转换后的字段。 */
   columns?: GridColumnDef[];
+  /** widget spec 中的数据表位置使用模板数据表稳定 key。 */
+  defaultDashboard?: WorkbookTemplateDefaultDashboard;
 };
 
 export type CreateFromTemplateOptions = {
   /** 演示场景默认包含；用户可显式选择空台账。 */
   includeSampleData?: boolean;
 };
+
+const DASHBOARD_VIEW_TYPES = new Set(["kpi", "table", "bar", "line", "pie", "area"]);
+const DASHBOARD_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+function resolveDefaultDashboard(
+  dashboard: WorkbookTemplateDefaultDashboard,
+  sheetByKey: Map<string, TemplateSheetForCreate & { tableName: string }>,
+): WorkbookTemplateDefaultDashboard {
+  if (!dashboard.title?.trim()) throw new Error("默认仪表盘标题不能为空");
+  if (!DASHBOARD_SLUG.test(dashboard.slug)) throw new Error(`默认仪表盘 slug 非法：${dashboard.slug}`);
+  if (!Array.isArray(dashboard.widgets) || dashboard.widgets.length === 0) {
+    throw new Error("默认仪表盘至少需要一个组件");
+  }
+
+  const widgetIds = new Set<string>();
+  const widgets = dashboard.widgets.map((widget, index) => {
+    assertTemplateWidget(widget, index);
+    if (widgetIds.has(widget.id)) throw new Error(`默认仪表盘组件 id 重复：${widget.id}`);
+    widgetIds.add(widget.id);
+
+    const baseSheet = sheetByKey.get(widget.spec.baseTable);
+    if (!baseSheet) throw new Error(`默认仪表盘引用的数据表不存在：${widget.spec.baseTable}`);
+    const mapTable = (sheetKey: string): string => {
+      const sheet = sheetByKey.get(sheetKey);
+      if (!sheet) throw new Error(`默认仪表盘引用的数据表不存在：${sheetKey}`);
+      return sheet.tableName;
+    };
+    const spec: DashboardBuilderSpec = {
+      ...widget.spec,
+      baseTable: baseSheet.tableName,
+      sourceTables: widget.spec.sourceTables.map(mapTable),
+    };
+    validateDashboardWidgetFields(widget, baseSheet.columns);
+    const compiled = compileDashboardWidgetQuery({
+      spec,
+      viewType: widget.viewType,
+      display: widget.display,
+    });
+    const expectedContract = {
+      kpi: "single_value",
+      table: "table_rows",
+      bar: "category_breakdown",
+      pie: "category_breakdown",
+      line: "time_series",
+      area: "time_series",
+    }[widget.viewType];
+    if (compiled.resultContract !== expectedContract) {
+      throw new Error(`默认仪表盘组件“${widget.id}”的查询结构与组件类型不匹配`);
+    }
+    return { ...widget, spec };
+  });
+
+  return {
+    title: dashboard.title.trim(),
+    slug: dashboard.slug,
+    ...(dashboard.description?.trim() ? { description: dashboard.description.trim() } : {}),
+    widgets,
+  };
+}
+
+function assertTemplateWidget(widget: WorkbookTemplateDashboardWidget, index: number): void {
+  if (!widget || typeof widget !== "object") throw new Error(`默认仪表盘第 ${index + 1} 个组件无效`);
+  if (!widget.id?.trim()) throw new Error(`默认仪表盘第 ${index + 1} 个组件缺少 id`);
+  if (!widget.title?.trim()) throw new Error(`默认仪表盘组件“${widget.id}”缺少标题`);
+  if (!DASHBOARD_VIEW_TYPES.has(widget.viewType)) {
+    throw new Error(`默认仪表盘组件“${widget.id}”类型无效：${widget.viewType}`);
+  }
+  if (!widget.spec || typeof widget.spec !== "object") {
+    throw new Error(`默认仪表盘组件“${widget.id}”缺少查询 spec`);
+  }
+  if (!Array.isArray(widget.spec.sourceTables)) {
+    throw new Error(`默认仪表盘组件“${widget.id}”缺少数据表来源`);
+  }
+  const grid = widget.grid;
+  if (
+    !grid
+    || ![grid.x, grid.y, grid.w, grid.h].every((value) => Number.isInteger(value))
+    || grid.x < 0
+    || grid.y < 0
+    || grid.w <= 0
+    || grid.h <= 0
+  ) {
+    throw new Error(`默认仪表盘组件“${widget.id}”布局无效`);
+  }
+}
+
+function validateDashboardWidgetFields(
+  widget: WorkbookTemplateDashboardWidget,
+  columns: TemplateColumnForCreate[],
+): void {
+  const fields = new Set(["id", "created_at", "updated_at", ...columns.map((column) => column.key)]);
+  const usedFields = [
+    widget.spec.metric.field,
+    ...(widget.spec.dimensions ?? []).map((dimension) => dimension.field),
+    ...(widget.spec.filters ?? []).map((filter) => filter.field),
+    ...(widget.viewType === "table" && Array.isArray(widget.display?.columns)
+      ? widget.display.columns.map((column) => (
+          typeof column === "object" && column !== null && typeof (column as Record<string, unknown>).key === "string"
+            ? (column as Record<string, unknown>).key as string
+            : ""
+        ))
+      : []),
+  ].filter((field): field is string => typeof field === "string");
+  for (const field of usedFields) {
+    if (!fields.has(field)) throw new Error(`默认仪表盘组件“${widget.id}”引用的字段不存在：${field}`);
+  }
+  const sortField = widget.spec.sort?.field;
+  if (sortField && !fields.has(sortField) && !["value", "x", "y"].includes(sortField)) {
+    throw new Error(`默认仪表盘组件“${widget.id}”引用的排序字段不存在：${sortField}`);
+  }
+}
 
 export function buildCreateWorkbookTransaction(
   name: string,
@@ -229,6 +353,11 @@ export function buildCreateWorkbookTransaction(
     return toRecordId(recordId);
   }
 
+  const resolvedDashboard = options.defaultDashboard
+    ? resolveDefaultDashboard(options.defaultDashboard, sheetByKey)
+    : undefined;
+  const dashboardId = resolvedDashboard ? `dashboard_page:${generateKey()}` : undefined;
+
   const sampleSql = samples.map(({ recordId }, index) =>
     `CREATE ${recordId} CONTENT $sampleRecord${index};`
   ).join("\n");
@@ -255,11 +384,15 @@ CREATE ${sheet.id} CONTENT { workbook: ${wbId}, label: ${labelBinding}, table_na
   // template 引用作为 record id 直接拼进 CREATE CONTENT（受控来源：模板 store 的 id，
   // 经 ASSERT 过的 record id 字符串），无引用时省略该字段 = 空白工作簿。
   const templateClause = options.templateRef ? `, template: ${String(options.templateRef)}` : "";
+  const dashboardSql = resolvedDashboard && dashboardId
+    ? `CREATE ${dashboardId} CONTENT { workbook: ${wbId}, title: $dashboardTitle, slug: $dashboardSlug, widgets: $dashboardWidgets${resolvedDashboard.description ? ", description: $dashboardDescription" : ""} };`
+    : "";
 
   const sql = `BEGIN TRANSACTION;
 CREATE ${wbId} CONTENT { name: $name, last_opened_sheet: ${createdSheets[0]!.id}${templateClause} };
 ${sheetSql}
 ${sampleSql}
+${dashboardSql}
 COMMIT TRANSACTION;`;
 
   const bindings: Record<string, unknown> = { name };
@@ -274,6 +407,12 @@ COMMIT TRANSACTION;`;
       Object.entries(sample.values).map(([field, value]) => [field, resolveSampleValue(value)]),
     );
   });
+  if (resolvedDashboard) {
+    bindings.dashboardTitle = resolvedDashboard.title;
+    bindings.dashboardSlug = resolvedDashboard.slug;
+    bindings.dashboardWidgets = resolvedDashboard.widgets;
+    if (resolvedDashboard.description) bindings.dashboardDescription = resolvedDashboard.description;
+  }
 
   return {
     sql,
@@ -341,9 +480,11 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
       await deps.getConn().query(sql, bindings);
     } catch (err) {
       const message = describeWriteError(err);
-      state.error = options.includesTemplateSamples && !message.startsWith("没有权限")
-        ? `模板样例数据不符合字段定义，工作簿未创建：${message}`
-        : message;
+      state.error = options.includesTemplateDashboard && !message.startsWith("没有权限")
+        ? `模板默认仪表盘无效，工作簿未创建：${message}`
+        : options.includesTemplateSamples && !message.startsWith("没有权限")
+          ? `模板样例数据不符合字段定义，工作簿未创建：${message}`
+          : message;
       emit();
       return null;
     }
@@ -382,6 +523,8 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
       includesTemplateSamples,
       columns: template.sheet?.columns ?? template.columns,
       sheetLabel: template.sheet?.label,
+      defaultDashboard: template.defaultDashboard,
+      includesTemplateDashboard: template.defaultDashboard !== undefined,
     });
   }
 

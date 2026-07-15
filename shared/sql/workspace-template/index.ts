@@ -25,6 +25,7 @@ const TEMPLATE_FILES = [
   { version: 12, name: "012-workbook-template-package.surql" },
   { version: 13, name: "013-template-cross-sheet-reference.surql" },
   { version: 14, name: "014-template-sample-data.surql" },
+  { version: 15, name: "015-template-default-dashboard.surql" },
 ] as const;
 
 export const WORKSPACE_TEMPLATE_VERSION = TEMPLATE_FILES.at(-1)?.version ?? 0;

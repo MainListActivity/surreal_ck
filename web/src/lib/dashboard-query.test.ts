@@ -43,7 +43,7 @@ describe("runDashboardWidgetQuery — widget 配置直连执行聚合预览", ()
     const preview = await runDashboardWidgetQuery(conn, spec);
 
     expect(calls).toHaveLength(1);
-    expect(calls[0].sql).toBe("SELECT count() AS value FROM type::table($tb) LIMIT 1");
+    expect(calls[0].sql).toBe("SELECT count() AS value FROM type::table($tb) GROUP ALL LIMIT 1");
     expect(calls[0].bindings).toEqual({ tb: "ent_claim" });
     expect(preview.result).toEqual({ value: 7, label: "记录数" });
     expect(preview.resultMeta).toEqual({ contract: "single_value", viewType: "kpi" });
@@ -68,7 +68,7 @@ describe("runDashboardWidgetQuery — widget 配置直连执行聚合预览", ()
 
     const preview = await runDashboardWidgetQuery(conn, spec);
 
-    expect(calls[0].sql).toBe("SELECT math::sum(amount) AS value FROM type::table($tb) LIMIT 1");
+    expect(calls[0].sql).toBe("SELECT math::sum(amount) AS value FROM type::table($tb) GROUP ALL LIMIT 1");
     expect(calls[0].bindings).toEqual({ tb: "ent_claim" });
     expect(preview.result).toEqual({ value: 320, label: "amount 总和" });
   });
@@ -90,7 +90,7 @@ describe("runDashboardWidgetQuery — widget 配置直连执行聚合预览", ()
     const preview = await runDashboardWidgetQuery(conn, spec);
 
     expect(calls[0].sql).toBe(
-      "SELECT count() AS value FROM (SELECT claimant FROM type::table($tb) GROUP BY claimant) LIMIT 1",
+      "SELECT count() AS value FROM (SELECT claimant FROM type::table($tb) GROUP BY claimant) GROUP ALL LIMIT 1",
     );
     expect(calls[0].bindings).toEqual({ tb: "ent_claim" });
     expect(preview.result).toEqual({ value: 4, label: "claimant 去重数" });
@@ -270,6 +270,51 @@ describe("runDashboardWidgetQuery — widget 配置直连执行聚合预览", ()
     expect(preview.resultMeta).toEqual({ contract: "category_breakdown", viewType: "pie" });
     expect(preview.result).toEqual({
       rows: [{ key: "approved", label: "approved", value: 2 }],
+    });
+  });
+
+  test("table widget 按 display.columns 执行结构化列表查询", async () => {
+    const calls: Array<{ sql: string; bindings: Record<string, unknown> | undefined }> = [];
+    const widget: DashboardWidget = {
+      id: "tasks",
+      title: "近期待办",
+      viewType: "table",
+      spec: {
+        sourceTables: ["ent_tasks"],
+        baseTable: "ent_tasks",
+        metric: { op: "count" },
+        filters: [{ field: "status", op: "eq", value: "open" }],
+        sort: { field: "due_date", direction: "asc" },
+        limit: 7,
+      },
+      grid: { x: 0, y: 0, w: 12, h: 2 },
+      display: {
+        columns: [
+          { key: "title", label: "事项" },
+          { key: "due_date", label: "截止日期" },
+        ],
+      },
+    };
+    const conn = fakeConn({
+      query: (async (sql: string, bindings?: Record<string, unknown>) => {
+        calls.push({ sql, bindings });
+        return [{ title: "补充材料", due_date: "2026-07-20" }];
+      }) as SurrealConn["query"],
+    });
+
+    const preview = await runDashboardWidgetQuery(conn, widget);
+
+    expect(calls[0]).toEqual({
+      sql: "SELECT title, due_date FROM type::table($tb) WHERE status = $f0 ORDER BY due_date ASC LIMIT 7",
+      bindings: { tb: "ent_tasks", f0: "open" },
+    });
+    expect(preview.resultMeta).toEqual({ contract: "table_rows", viewType: "table" });
+    expect(preview.result).toEqual({
+      columns: [
+        { key: "title", label: "事项" },
+        { key: "due_date", label: "截止日期" },
+      ],
+      rows: [{ title: "补充材料", due_date: "2026-07-20" }],
     });
   });
 });

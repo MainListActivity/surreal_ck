@@ -33,6 +33,50 @@ const caseRow = {
 };
 
 describe("recordToTemplate — snake_case → camelCase", () => {
+  test("默认仪表盘声明保留稳定数据表 key 与 DashboardWidget 结构", () => {
+    const template = recordToTemplate({
+      id: "workbook_template:claims",
+      key: "claims",
+      label: "破产债权管理",
+      sheet_defs: [{
+        key: "creditors",
+        label: "债权人表",
+        column_defs: [{ key: "claim_amount", label: "申报金额", field_type: "currency" }],
+      }],
+      default_dashboard: {
+        title: "债权审核概览",
+        slug: "claims-overview",
+        widgets: [{
+          id: "total-claims",
+          title: "总申报金额",
+          viewType: "kpi",
+          spec: {
+            sourceTables: ["creditors"],
+            baseTable: "creditors",
+            metric: { op: "sum", field: "claim_amount" },
+          },
+          grid: { x: 0, y: 0, w: 6, h: 1 },
+        }],
+      },
+    });
+
+    expect(template.defaultDashboard).toEqual({
+      title: "债权审核概览",
+      slug: "claims-overview",
+      widgets: [{
+        id: "total-claims",
+        title: "总申报金额",
+        viewType: "kpi",
+        spec: {
+          sourceTables: ["creditors"],
+          baseTable: "creditors",
+          metric: { op: "sum", field: "claim_amount" },
+        },
+        grid: { x: 0, y: 0, w: 6, h: 1 },
+      }],
+    });
+  });
+
   test("新模板包保留单数据表的稳定 key、展示名、字段和 Excel 列别名", () => {
     const template = recordToTemplate({
       id: "workbook_template:claims",

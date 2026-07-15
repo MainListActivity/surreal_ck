@@ -62,6 +62,21 @@ export function compileDashboardWidgetQuery(
   const limit = normalizeLimit(spec.limit);
   const bindings: Record<string, unknown> = { tb: spec.baseTable };
   const where = compileWhere(spec.filters ?? [], bindings);
+  if (viewType === "table") {
+    const columns = normalizeTableColumns(display);
+    const orderBy = spec.sort
+      ? ` ORDER BY ${spec.sort.field} ${spec.sort.direction.toUpperCase()}`
+      : "";
+    return {
+      sql: `SELECT ${columns.map((column) => column.key).join(", ")} FROM type::table($tb)${where}${orderBy} LIMIT ${limit}`,
+      bindings,
+      sourceTables,
+      dependencies: Array.from(new Set([spec.baseTable, ...sourceTables])),
+      resultContract: "table_rows",
+      viewType,
+      displaySpec: withDisplay(display, { columns }),
+    };
+  }
   if (dimension?.bucket) {
     const bucketSql = compileBucketExpr(dimension.field, dimension.bucket);
     const metricSql = compileMetricExpr(spec.metric);
@@ -105,7 +120,7 @@ export function compileDashboardWidgetQuery(
     const field = spec.metric.field;
     if (!field) throw new Error("去重计数需要字段");
     return {
-      sql: `SELECT count() AS value FROM (SELECT ${field} FROM type::table($tb)${where} GROUP BY ${field}) LIMIT 1`,
+      sql: `SELECT count() AS value FROM (SELECT ${field} FROM type::table($tb)${where} GROUP BY ${field}) GROUP ALL LIMIT 1`,
       bindings,
       sourceTables,
       dependencies: Array.from(new Set([spec.baseTable, ...sourceTables])),
@@ -119,7 +134,7 @@ export function compileDashboardWidgetQuery(
 
   const metricSql = compileMetricExpr(spec.metric);
   return {
-    sql: `SELECT ${metricSql} AS value FROM type::table($tb)${where} LIMIT 1`,
+    sql: `SELECT ${metricSql} AS value FROM type::table($tb)${where} GROUP ALL LIMIT 1`,
     bindings,
     sourceTables,
     dependencies: Array.from(new Set([spec.baseTable, ...sourceTables])),
@@ -194,7 +209,10 @@ function normalizeDashboardResult(
     };
   }
   if (contract !== "single_value") {
-    return { columns: [], rows };
+    const columns = Array.isArray(displaySpec.columns)
+      ? displaySpec.columns.filter(isTableColumn)
+      : [];
+    return { columns, rows };
   }
   const row = rows[0] ?? {};
   return {
@@ -329,6 +347,23 @@ function compileWhere(
 
 function hasFilterValue(value: unknown): boolean {
   return value !== undefined && value !== null && value !== "";
+}
+
+function normalizeTableColumns(
+  display: Record<string, unknown> | undefined,
+): Array<{ key: string; label: string }> {
+  const columns = Array.isArray(display?.columns)
+    ? display.columns.filter(isTableColumn)
+    : [];
+  if (columns.length === 0) throw new Error("列表组件至少需要一个展示字段");
+  for (const column of columns) assertSafeIdentifier(column.key, "非法的列表字段");
+  return columns;
+}
+
+function isTableColumn(value: unknown): value is { key: string; label: string } {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const column = value as Record<string, unknown>;
+  return typeof column.key === "string" && typeof column.label === "string";
 }
 
 function assertSafeIdentifier(value: string, message: string): void {

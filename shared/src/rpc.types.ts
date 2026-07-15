@@ -810,6 +810,26 @@ export type WorkbookTemplateSampleRecord = {
   values: Record<string, unknown>;
 };
 
+/**
+ * 模板默认仪表盘中的 widget。结构与 dashboard_page.widgets[] 的 DashboardWidget
+ * 完全一致；实例化前 spec 中的表名位置使用模板数据表稳定 key。
+ */
+export type WorkbookTemplateDashboardWidget = {
+  id: string;
+  title: string;
+  viewType: DashboardViewType;
+  spec: DashboardBuilderSpec;
+  grid: { x: number; y: number; w: number; h: number };
+  display?: Record<string, unknown>;
+};
+
+export type WorkbookTemplateDefaultDashboard = {
+  title: string;
+  slug: string;
+  description?: string;
+  widgets: WorkbookTemplateDashboardWidget[];
+};
+
 export type WorkbookTemplateSheet = {
   /** 模板包内稳定的数据表标识；实例化后不作为真实表名。 */
   key: string;
@@ -835,6 +855,8 @@ export type WorkbookTemplate = {
   columnDefs: StoredGridFieldDef[];
   /** 通用模板包中的数据表定义。OIP-01 只实例化第一项。 */
   sheets: WorkbookTemplateSheet[];
+  /** 可选默认仪表盘；widget spec 中的数据表名暂为模板数据表稳定 key。 */
+  defaultDashboard?: WorkbookTemplateDefaultDashboard;
   builtin: boolean;
   sortOrder: number;
 };

@@ -3,6 +3,7 @@ import type {
   GridColumnDef,
   RecordIdString,
   WorkbookTemplate,
+  WorkbookTemplateDefaultDashboard,
   WorkbookTemplateFieldDef,
   WorkbookTemplateSampleRecord,
   WorkbookTemplateSheet,
@@ -48,12 +49,29 @@ function recordToTemplateSheet(value: unknown): WorkbookTemplateSheet | null {
   };
 }
 
+function recordToDefaultDashboard(value: unknown): WorkbookTemplateDefaultDashboard | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const rec = value as Record<string, unknown>;
+  if (
+    typeof rec.title !== "string"
+    || typeof rec.slug !== "string"
+    || !Array.isArray(rec.widgets)
+  ) return undefined;
+  return {
+    title: rec.title,
+    slug: rec.slug,
+    ...(typeof rec.description === "string" ? { description: rec.description } : {}),
+    widgets: rec.widgets as WorkbookTemplateDefaultDashboard["widgets"],
+  };
+}
+
 /** 把 `workbook_template` 记录裁成展示用 {@link WorkbookTemplate}（snake_case → camelCase）。 */
 export function recordToTemplate(rec: Record<string, unknown>): WorkbookTemplate {
   const rawDefs = Array.isArray(rec.column_defs) ? (rec.column_defs as StoredGridFieldDef[]) : [];
   const sheets = Array.isArray(rec.sheet_defs)
     ? rec.sheet_defs.map(recordToTemplateSheet).filter((sheet): sheet is WorkbookTemplateSheet => sheet !== null)
     : [];
+  const defaultDashboard = recordToDefaultDashboard(rec.default_dashboard);
   return {
     id: String(rec.id) as RecordIdString,
     key: typeof rec.key === "string" ? rec.key : "",
@@ -64,6 +82,7 @@ export function recordToTemplate(rec: Record<string, unknown>): WorkbookTemplate
     defaultName: typeof rec.default_name === "string" ? rec.default_name : undefined,
     columnDefs: rawDefs,
     sheets,
+    ...(defaultDashboard ? { defaultDashboard } : {}),
     builtin: rec.builtin === true,
     sortOrder: typeof rec.sort_order === "number" ? rec.sort_order : 0,
   };
