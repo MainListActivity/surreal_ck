@@ -120,7 +120,7 @@ describe("行分析提案卡状态机", () => {
 
   test("写入成功但 resume 失败：不进入 done，错误可见且可重试", async () => {
     let failResume = true;
-    const { card, resumes } = cardHarness({
+    const { card, resumes, writes } = cardHarness({
       resume: async (decision) => {
         if (failResume) {
           failResume = false;
@@ -137,6 +137,7 @@ describe("行分析提案卡状态机", () => {
 
     await card.confirm();
     expect(resumes).toEqual([{ kind: "write-confirmed" }]);
+    expect(writes).toHaveLength(1);
     expect(card.snapshot().status).toBe("done");
   });
 });

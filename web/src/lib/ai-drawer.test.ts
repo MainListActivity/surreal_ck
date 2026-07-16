@@ -42,6 +42,11 @@ function deferred<T>() {
 }
 
 function harness(over: {
+  startChat?: (input: {
+    message: string;
+    contextSnapshot?: AiContextSnapshot;
+    composerMode?: "chat" | "resource-search";
+  }) => Promise<{ runId: string; streamUrl: string; streamToken: string }>;
   resumeChat?: (runId: string, decision: ResumeDecision) => Promise<{ runId: string; streamUrl: string; streamToken: string }>;
 } = {}) {
   const start = deferred<{ runId: string; streamUrl: string; streamToken: string }>();
@@ -50,11 +55,13 @@ function harness(over: {
   const handles: AiDrawerStreamHandle[] = [];
   const streamListeners: Array<(event: ChatStreamEvent) => void> = [];
   const idleTimeoutListeners: Array<() => void> = [];
+  const closeListeners: Array<(code: number) => void> = [];
 
   const session = createAiDrawerSession({
     chatClient: {
       startChat(input) {
         starts.push(input);
+        if (over.startChat) return over.startChat(input);
         return start.promise;
       },
       async resumeChat(runId, decision) {
@@ -66,6 +73,7 @@ function harness(over: {
     connectStream(input) {
       streamListeners.push(input.onEvent);
       if (input.onIdleTimeout) idleTimeoutListeners.push(input.onIdleTimeout);
+      if (input.onClose) closeListeners.push(input.onClose);
       const handle: AiDrawerStreamHandle = {
         closed: false,
         close() {
@@ -94,10 +102,49 @@ function harness(over: {
     timeout(index = 0) {
       idleTimeoutListeners[index]?.();
     },
+    disconnect(code = 1006, index = 0) {
+      closeListeners[index]?.(code);
+    },
   };
 }
 
 describe("AI 抽屉会话", () => {
+  test("模型服务未配置：隐藏 provider 细节、保留原请求并可从同一用户消息重试", async () => {
+    let attempts = 0;
+    const h = harness({
+      startChat: async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          throw Object.assign(new Error("Missing OPENAI_API_KEY\n    at createOpenAIProvider"), {
+            code: "ai-not-configured",
+          });
+        }
+        return { runId: "run-retry", streamUrl: "/api/chat/stream?runId=run-retry", streamToken: "retry-token" };
+      },
+    });
+
+    await h.session.sendMessage("总结当前债权", context());
+
+    expect(h.session.snapshot()).toMatchObject({
+      sending: false,
+      sendError: "当前环境未配置 AI 服务",
+      retryableMessageId: "id-1",
+    });
+    expect(h.session.snapshot().messages.map((message) => [message.id, message.role, message.content])).toEqual([
+      ["id-1", "user", "总结当前债权"],
+    ]);
+
+    await h.session.retryMessage("id-1");
+
+    expect(attempts).toBe(2);
+    expect(h.session.snapshot().messages.filter((message) => message.role === "user")).toHaveLength(1);
+    expect(h.session.snapshot()).toMatchObject({
+      sendError: null,
+      retryableMessageId: null,
+      activeRun: { runId: "run-retry" },
+    });
+  });
+
   test("发送消息后立即显示路由提示，随后渲染 chunk 和最终带 citations 的消息", async () => {
     const h = harness();
 
@@ -164,10 +211,29 @@ describe("AI 抽屉会话", () => {
     expect(state.progressHint).toBeNull();
     expect(state.activeRun).toBeNull();
     expect(state.sendError).toContain("超时");
+    expect(state.retryableMessageId).toBe("id-1");
     expect(h.handles[0]?.closed).toBe(true);
   });
 
-  test("收到 stream error：退出路由中状态并展示错误信息", async () => {
+  test("stream 重连耗尽后中断：保留原消息、退出 loading 并提供网络错误重试", async () => {
+    const h = harness();
+
+    const sending = h.session.sendMessage("读取当前记录", context());
+    h.start.resolve({ runId: "run-1", streamUrl: "/api/chat/stream?runId=run-1", streamToken: "stream-token" });
+    await sending;
+
+    h.disconnect();
+
+    expect(h.session.snapshot()).toMatchObject({
+      sending: false,
+      activeRun: null,
+      sendError: "AI 连接已中断，请检查网络后重试。",
+      retryableMessageId: "id-1",
+    });
+    expect(h.session.snapshot().messages[0]).toMatchObject({ role: "user", content: "读取当前记录" });
+  });
+
+  test("未知 stream error：退出路由中状态并隐藏 provider 技术细节", async () => {
     const h = harness();
 
     const sending = h.session.sendMessage("hi", context());
@@ -180,8 +246,26 @@ describe("AI 抽屉会话", () => {
     expect(state.sending).toBe(false);
     expect(state.progressHint).toBeNull();
     expect(state.activeRun).toBeNull();
-    expect(state.sendError).toBe("storage failed");
+    expect(state.sendError).toBe("AI 服务暂时不可用，请稍后重试。");
     expect(h.handles[0]?.closed).toBe(true);
+  });
+
+  test("stream error 按权限与校验类别显示可区分的中文提示", async () => {
+    const cases = [
+      ["chat-signin-failed", "PERMISSIONS denied for user:abc", "没有权限执行此操作，请联系工作区管理员。"],
+      ["chat-resume-invalid", "ZodError: expected string", "请求内容未通过校验，请检查后重试。"],
+    ] as const;
+
+    for (const [code, rawMessage, expected] of cases) {
+      const h = harness();
+      const sending = h.session.sendMessage("执行任务", context());
+      h.start.resolve({ runId: "run-1", streamUrl: "/api/chat/stream?runId=run-1", streamToken: "stream-token" });
+      await sending;
+
+      h.emit({ kind: "error", runId: "run-1", code, message: rawMessage });
+
+      expect(h.session.snapshot().sendError).toBe(expected);
+    }
   });
 
   test("suspend 候选选择后调用 resume，并用新 streamToken 继续到 done", async () => {
@@ -342,15 +426,18 @@ describe("AI 抽屉会话", () => {
       },
     });
 
-    await h.session.resumeWrite("id-2", "write-confirmed");
+    const resuming = h.session.resumeWrite("id-2", "write-confirmed");
+    await Promise.resolve();
 
     expect(h.resumes).toEqual([{ runId: "run-1", decision: { kind: "write-confirmed" } }]);
-    expect(h.session.snapshot().pendingIntents[0]?.dismissed).toBe(true);
+    expect(h.session.snapshot().pendingIntents[0]?.dismissed).toBe(false);
     expect(h.handles).toHaveLength(2);
 
     h.emit({ kind: "done", runId: "run-1", message: assistantMessage("已写入 1 个字段"), toolCalls: [] }, 1);
+    await resuming;
 
     const done = h.session.snapshot();
+    expect(done.pendingIntents[0]?.dismissed).toBe(true);
     expect(done.sending).toBe(false);
     expect(done.activeRun).toBeNull();
     expect(done.messages[1]?.content).toBe("已写入 1 个字段");
@@ -381,12 +468,45 @@ describe("AI 抽屉会话", () => {
       },
     });
 
-    await expect(h.session.resumeWrite("id-2", "write-rejected")).rejects.toThrow("AI 会话续跑失败。");
+    await expect(h.session.resumeWrite("id-2", "write-rejected")).rejects.toThrow("AI 服务暂时不可用，请稍后重试。");
 
     const state = h.session.snapshot();
     expect(state.pendingIntents[0]?.dismissed).toBe(false);
     expect(state.sending).toBe(false);
     expect(state.progressHint).toBeNull();
+  });
+
+  test("resume stream 异步失败：同一确认卡保留，并以原 runId 再次提交同一决定", async () => {
+    const h = harness();
+    const sending = h.session.sendMessage("分析这行债权", context());
+    h.start.resolve({ runId: "run-1", streamUrl: "/api/chat/stream?runId=run-1", streamToken: "stream-token" });
+    await sending;
+    h.emit({
+      kind: "suspend",
+      runId: "run-1",
+      payload: {
+        kind: "await-write-confirm",
+        runId: "run-1",
+        intent: { type: "row-patch-proposal", sheetId: "sheet:claims", recordId: "ent_claim:one", proposals: [] },
+      },
+    });
+
+    const firstResume = h.session.resumeWrite("id-2", "write-confirmed");
+    await Promise.resolve();
+    expect(h.session.snapshot().pendingIntents[0]?.dismissed).toBe(false);
+    h.emit({ kind: "error", runId: "run-1", code: "chat-failed", message: "provider connection reset" }, 1);
+    await expect(firstResume).rejects.toThrow("网络连接异常，请检查网络后重试。");
+
+    const secondResume = h.session.resumeWrite("id-2", "write-confirmed");
+    await Promise.resolve();
+    h.emit({ kind: "done", runId: "run-1", message: assistantMessage("已继续执行"), toolCalls: [] }, 2);
+    await secondResume;
+
+    expect(h.resumes).toEqual([
+      { runId: "run-1", decision: { kind: "write-confirmed" } },
+      { runId: "run-1", decision: { kind: "write-confirmed" } },
+    ]);
+    expect(h.session.snapshot().pendingIntents[0]?.dismissed).toBe(true);
   });
 
   test("suspend manual-research：pending intent 携带检索会话上下文，驱动检索 panel 打开", async () => {
@@ -477,7 +597,7 @@ describe("AI 抽屉会话", () => {
       },
     });
 
-    await expect(h.session.finishResearch("id-2", ["resource_item:r1"])).rejects.toThrow("resume 失败");
+    await expect(h.session.finishResearch("id-2", ["resource_item:r1"])).rejects.toThrow("AI 服务暂时不可用，请稍后重试。");
     expect(h.session.snapshot().pendingIntents[0]?.dismissed).toBe(false);
   });
 

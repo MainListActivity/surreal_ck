@@ -56,6 +56,7 @@
       progressHint: null,
       activeRun: null,
       workspaceSlug: null,
+      retryableMessageId: null,
     };
   }
 
@@ -76,7 +77,10 @@
   async function expectJson<T>(res: Response, fallback: string): Promise<T> {
     if (!res.ok) {
       const body = await res.json().catch(() => null) as { error?: { message?: string; code?: string } } | null;
-      throw new Error(body?.error?.message ?? body?.error?.code ?? fallback);
+      throw Object.assign(new Error(body?.error?.message ?? fallback), {
+        code: body?.error?.code,
+        status: res.status,
+      });
     }
     return res.json() as Promise<T>;
   }
@@ -302,7 +306,17 @@
     {/if}
 
     {#if drawerState.sendError}
-      <p class="send-error header-error" role="alert">{drawerState.sendError}</p>
+      <div class="send-error-row">
+        <p class="send-error header-error" role="alert">{drawerState.sendError}</p>
+        {#if drawerState.retryableMessageId}
+          <button
+            type="button"
+            class="retry-message"
+            disabled={drawerState.sending}
+            onclick={() => void session.retryMessage(drawerState.retryableMessageId!)}
+          >重试</button>
+        {/if}
+      </div>
     {/if}
 
     {#if drawerState.progressHint}
@@ -740,11 +754,29 @@
     font-size: 12px;
   }
 
-  .header-error {
+  .send-error-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
     padding: 8px 18px;
     border-bottom: 1px solid var(--border);
     background: var(--error-bg);
     flex-shrink: 0;
+  }
+
+  .header-error {
+    padding: 0;
+  }
+
+  .retry-message {
+    padding: 4px 10px;
+    border: 1px solid var(--error);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--error);
+    font-size: 12px;
+    cursor: pointer;
   }
 
   textarea {

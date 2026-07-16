@@ -73,10 +73,14 @@
   <footer>
     {#if canSave}
       <button type="button" class="primary-btn" disabled={busy} onclick={() => void card.confirm()}>
-        {cardState.status === "saving" ? "保存中…" : "保存到仪表盘"}
+        {cardState.status === "saving"
+          ? (cardState.saved ? "再次提交中…" : "保存中…")
+          : cardState.saved
+            ? "再次提交确认"
+            : "保存到仪表盘"}
       </button>
     {/if}
-    <button type="button" class="ghost-btn" disabled={busy} onclick={() => void card.reject()}>
+    <button type="button" class="ghost-btn" disabled={busy || cardState.saved !== null} onclick={() => void card.reject()}>
       忽略
     </button>
   </footer>

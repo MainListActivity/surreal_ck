@@ -174,6 +174,7 @@ export function createDashboardDraftCard(deps: DashboardDraftCardDeps) {
       return;
     }
     state.status = doneStatus;
+    state.error = null;
     emitChange();
   }
 
@@ -183,6 +184,11 @@ export function createDashboardDraftCard(deps: DashboardDraftCardDeps) {
     state.status = "saving";
     state.error = null;
     emitChange();
+
+    if (state.saved) {
+      await resumeTo({ kind: "write-confirmed" }, "done");
+      return;
+    }
 
     const result = await deps.save();
     if (!result.ok) {
@@ -197,7 +203,10 @@ export function createDashboardDraftCard(deps: DashboardDraftCardDeps) {
 
   /** 忽略草稿：以 write-rejected resume，run 走取消路径，不产生任何 dashboard 记录。 */
   async function reject(): Promise<void> {
-    if (state.status !== "ready" && state.status !== "preview-error" && state.status !== "error") return;
+    if (
+      (state.status !== "ready" && state.status !== "preview-error" && state.status !== "error")
+      || state.saved !== null
+    ) return;
     state.status = "rejecting";
     state.error = null;
     emitChange();

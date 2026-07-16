@@ -83,6 +83,8 @@ export type AiDrawerState = {
   progressHint: string | null;
   activeRun: ActiveAiRun | null;
   workspaceSlug: string | null;
+  /** 最近一次可安全重发的读取请求所对应的用户消息。 */
+  retryableMessageId: string | null;
 };
 
 export type AiDrawerSessionOptions = {
@@ -104,12 +106,71 @@ export type AiDrawerSession = {
   resumeWrite(messageId: string, decision: "write-confirmed" | "write-rejected"): Promise<void>;
   /** 人工检索完成：用已保存的资源 id resume workflow。成功才 dismiss 检索卡，失败上抛可重试。 */
   finishResearch(messageId: string, resourceIds: string[]): Promise<void>;
+  /** 在原用户消息下重发同一读取请求，不复制用户消息。 */
+  retryMessage(messageId: string): Promise<void>;
   syncWorkspace(workspaceSlug: string | null | undefined): void;
   dispose(): void;
 };
 
 const ROUTING_HINT = "路由中…";
 const STREAM_TIMEOUT_MESSAGE = "AI 响应超时，请重试。";
+const AI_USER_MESSAGES = new Set([
+  "当前环境未配置 AI 服务",
+  STREAM_TIMEOUT_MESSAGE,
+  "AI 连接已中断，请检查网络后重试。",
+  "没有权限执行此操作，请联系工作区管理员。",
+  "请求内容未通过校验，请检查后重试。",
+  "网络连接异常，请检查网络后重试。",
+  "AI 服务暂时不可用，请稍后重试。",
+]);
+
+type RetryableRequest = {
+  message: string;
+  contextSnapshot: AiDrawerContextSnapshot;
+  composerMode?: AiComposerMode;
+  assistantMessageId: string;
+};
+
+type PendingRunCompletion = {
+  runId: string;
+  pendingIntent: PendingAiIntent;
+  resolve: () => void;
+  reject: (error: Error) => void;
+};
+
+function errorCode(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null || !("code" in error)) return undefined;
+  return typeof error.code === "string" ? error.code : undefined;
+}
+
+export function aiErrorMessage(error: unknown): string {
+  const code = errorCode(error)?.toLowerCase() ?? "";
+  const rawMessage = error instanceof Error
+    ? error.message
+    : typeof error === "object" && error !== null && "message" in error && typeof error.message === "string"
+      ? error.message
+      : String(error);
+  const searchable = `${code} ${rawMessage}`.toLowerCase();
+
+  if (AI_USER_MESSAGES.has(rawMessage)) return rawMessage;
+  if (
+    code === "ai-not-configured"
+    || /missing[\s_-]*(?:ai[\s_-]*settings|[a-z_]*api[\s_-]*key)|ai service[^\n]*not configured|resumer not configured/u.test(searchable)
+  ) {
+    return "当前环境未配置 AI 服务";
+  }
+  if (code === "stream-timeout") return STREAM_TIMEOUT_MESSAGE;
+  if (/forbidden|unauthori[sz]ed|permission|signin-failed|access denied/u.test(searchable)) {
+    return "没有权限执行此操作，请联系工作区管理员。";
+  }
+  if (/validation|invalid|bad-request|zoderror|unprocessable/u.test(searchable)) {
+    return "请求内容未通过校验，请检查后重试。";
+  }
+  if (/network|fetch failed|connection|stream-interrupted/u.test(searchable)) {
+    return "网络连接异常，请检查网络后重试。";
+  }
+  return "AI 服务暂时不可用，请稍后重试。";
+}
 
 export function progressEventToHint(event: AiProgressEvent): string {
   switch (event.kind) {
@@ -126,6 +187,8 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
   const createId = options.createId ?? (() => crypto.randomUUID());
   const now = options.now ?? (() => new Date().toISOString());
   let activeStream: AiDrawerStreamHandle | null = null;
+  let pendingRunCompletion: PendingRunCompletion | null = null;
+  const retryableRequests = new Map<string, RetryableRequest>();
 
   const state: AiDrawerState = {
     messages: [],
@@ -136,6 +199,7 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
     progressHint: null,
     activeRun: null,
     workspaceSlug: null,
+    retryableMessageId: null,
   };
 
   function cloneState(): AiDrawerState {
@@ -168,10 +232,35 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
     }
   }
 
+  function userMessageIdForAssistant(assistantMessageId: string): string | null {
+    for (const [userMessageId, request] of retryableRequests) {
+      if (request.assistantMessageId === assistantMessageId) return userMessageId;
+    }
+    return null;
+  }
+
   function markPendingDismissed(messageId: string): void {
     state.pendingIntents = state.pendingIntents.map((intent) =>
       intent.messageId === messageId ? { ...intent, dismissed: true } : intent,
     );
+  }
+
+  function markIntentDismissed(target: PendingAiIntent): void {
+    state.pendingIntents = state.pendingIntents.map((intent) =>
+      intent === target ? { ...intent, dismissed: true } : intent,
+    );
+  }
+
+  function settleRunCompletion(runId: string, error?: Error): void {
+    if (pendingRunCompletion?.runId !== runId) return;
+    const completion = pendingRunCompletion;
+    pendingRunCompletion = null;
+    if (error) {
+      completion.reject(error);
+      return;
+    }
+    markIntentDismissed(completion.pendingIntent);
+    completion.resolve();
   }
 
   function closeActiveStream(): void {
@@ -179,17 +268,20 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
     activeStream = null;
   }
 
-  function connectRun(run: ChatRunStart, messageId: string): void {
+  function connectRun(run: ChatRunStart, messageId: string, allowRequestRetry = false): void {
     closeActiveStream();
     state.activeRun = { runId: run.runId, messageId };
     activeStream = options.connectStream({
       url: run.streamUrl,
       streamToken: run.streamToken,
-      onEvent: (event) => handleStreamEvent(event, messageId),
+      onEvent: (event) => handleStreamEvent(event, messageId, allowRequestRetry),
       onClose: () => {
         if (state.activeRun?.runId === run.runId) {
           state.sending = false;
           state.progressHint = null;
+          state.sendError = "AI 连接已中断，请检查网络后重试。";
+          state.retryableMessageId = allowRequestRetry ? userMessageIdForAssistant(messageId) : null;
+          settleRunCompletion(run.runId, new Error(state.sendError));
           clearRun(run.runId);
           emitChange();
         }
@@ -200,13 +292,13 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
           runId: run.runId,
           code: "stream-timeout",
           message: STREAM_TIMEOUT_MESSAGE,
-        }, messageId);
+        }, messageId, allowRequestRetry);
       },
     });
     emitChange();
   }
 
-  function handleStreamEvent(event: ChatStreamEvent, messageId: string): void {
+  function handleStreamEvent(event: ChatStreamEvent, messageId: string, allowRequestRetry = false): void {
     if (event.kind === "ping") return;
     if (!state.activeRun || event.runId !== state.activeRun.runId) return;
 
@@ -232,11 +324,13 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
       state.progressHint = null;
       clearRun(event.runId);
       closeActiveStream();
+      settleRunCompletion(event.runId);
       emitChange();
       return;
     }
 
     if (event.kind === "suspend") {
+      settleRunCompletion(event.runId);
       if (event.payload.kind === "ambiguous-candidates" || event.payload.kind === "resource-candidates") {
         state.pendingIntents = [
           ...state.pendingIntents,
@@ -301,7 +395,9 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
     if (event.kind === "error") {
       state.sending = false;
       state.progressHint = null;
-      state.sendError = event.message;
+      state.sendError = aiErrorMessage(event);
+      state.retryableMessageId = allowRequestRetry ? userMessageIdForAssistant(messageId) : null;
+      settleRunCompletion(event.runId, new Error(state.sendError));
       clearRun(event.runId);
       closeActiveStream();
       emitChange();
@@ -332,7 +428,7 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
     } catch (error) {
       state.sending = false;
       state.progressHint = null;
-      state.sendError = error instanceof Error ? error.message : String(error);
+      state.sendError = aiErrorMessage(error);
       emitChange();
     }
   }
@@ -354,13 +450,16 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
 
     try {
       const run = await options.chatClient.resumeChat(pending.runId, { kind: decision });
-      markPendingDismissed(messageId);
+      const completion = new Promise<void>((resolve, reject) => {
+        pendingRunCompletion = { runId: run.runId, pendingIntent: pending, resolve, reject };
+      });
       connectRun(run, messageId);
+      await completion;
     } catch (error) {
       state.sending = false;
       state.progressHint = null;
       emitChange();
-      throw error;
+      throw new Error(aiErrorMessage(error));
     }
   }
 
@@ -387,7 +486,7 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
       state.sending = false;
       state.progressHint = null;
       emitChange();
-      throw error;
+      throw new Error(aiErrorMessage(error));
     }
   }
 
@@ -415,6 +514,13 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
       context: contextSnapshot,
     };
 
+    retryableRequests.set(userMessage.id, {
+      message: content,
+      contextSnapshot,
+      ...(sendOptions?.composerMode ? { composerMode: sendOptions.composerMode } : {}),
+      assistantMessageId: assistantMessage.id,
+    });
+
     state.messages = [...state.messages, userMessage, assistantMessage];
     state.sending = true;
     state.sendError = null;
@@ -427,11 +533,49 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
         contextSnapshot,
         ...(sendOptions?.composerMode ? { composerMode: sendOptions.composerMode } : {}),
       });
-      connectRun(run, assistantMessage.id);
+      connectRun(run, assistantMessage.id, true);
     } catch (error) {
       state.sending = false;
       state.progressHint = null;
-      state.sendError = error instanceof Error ? error.message : String(error);
+      state.sendError = aiErrorMessage(error);
+      state.retryableMessageId = userMessage.id;
+      state.messages = state.messages.filter((item) => item.id !== assistantMessage.id);
+      emitChange();
+    }
+  }
+
+  async function retryMessage(messageId: string): Promise<void> {
+    const request = retryableRequests.get(messageId);
+    if (!request || state.activeRun || state.sending) return;
+
+    const assistantMessage: AiChatMessage = {
+      id: createId(),
+      role: "assistant",
+      content: "",
+      createdAt: now(),
+      context: request.contextSnapshot,
+    };
+    const previousAssistantMessageId = request.assistantMessageId;
+    request.assistantMessageId = assistantMessage.id;
+    state.messages = [...state.messages.filter((item) => item.id !== previousAssistantMessageId), assistantMessage];
+    state.sending = true;
+    state.sendError = null;
+    state.retryableMessageId = null;
+    state.progressHint = ROUTING_HINT;
+    emitChange();
+
+    try {
+      const run = await options.chatClient.startChat({
+        message: request.message,
+        contextSnapshot: request.contextSnapshot,
+        ...(request.composerMode ? { composerMode: request.composerMode } : {}),
+      });
+      connectRun(run, assistantMessage.id, true);
+    } catch (error) {
+      state.sending = false;
+      state.progressHint = null;
+      state.sendError = aiErrorMessage(error);
+      state.retryableMessageId = messageId;
       state.messages = state.messages.filter((item) => item.id !== assistantMessage.id);
       emitChange();
     }
@@ -458,6 +602,7 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
     chooseCandidate,
     resumeWrite,
     finishResearch,
+    retryMessage,
     syncWorkspace,
     dispose() {
       closeActiveStream();

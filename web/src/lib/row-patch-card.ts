@@ -31,6 +31,8 @@ export type RowPatchCardState = {
   status: "pending" | "writing" | "rejecting" | "done" | "rejected" | "error";
   fields: RowPatchFieldView[];
   error: string | null;
+  /** 写入已成功、仅 workflow resume 待重试；此时不得再次写数据库。 */
+  writeCommitted: boolean;
 };
 
 export type RowPatchCardDeps = {
@@ -54,6 +56,7 @@ export function createRowPatchCard(deps: RowPatchCardDeps) {
       accepted: true,
     })),
     error: null,
+    writeCommitted: false,
   };
 
   function cloneState(): RowPatchCardState {
@@ -65,14 +68,14 @@ export function createRowPatchCard(deps: RowPatchCardDeps) {
   }
 
   function setAccepted(field: string, accepted: boolean): void {
-    if (state.status !== "pending" && state.status !== "error") return;
+    if ((state.status !== "pending" && state.status !== "error") || state.writeCommitted) return;
     state.fields = state.fields.map((item) => (item.field === field ? { ...item, accepted } : item));
     emitChange();
   }
 
   /** 全部忽略 / 关闭卡片：记录零变更，以 write-rejected resume，run 走取消路径。 */
   async function rejectAll(): Promise<void> {
-    if (state.status !== "pending" && state.status !== "error") return;
+    if ((state.status !== "pending" && state.status !== "error") || state.writeCommitted) return;
     state.status = "rejecting";
     state.error = null;
     emitChange();
@@ -91,11 +94,19 @@ export function createRowPatchCard(deps: RowPatchCardDeps) {
       return;
     }
     state.status = doneStatus;
+    state.error = null;
     emitChange();
   }
 
   async function confirm(): Promise<void> {
     if (state.status !== "pending" && state.status !== "error") return;
+    if (state.writeCommitted) {
+      state.status = "writing";
+      state.error = null;
+      emitChange();
+      await resumeTo({ kind: "write-confirmed" }, "done");
+      return;
+    }
     const accepted = state.fields.filter((field) => field.accepted);
     if (!accepted.length) {
       await rejectAll();
@@ -115,6 +126,7 @@ export function createRowPatchCard(deps: RowPatchCardDeps) {
       return;
     }
 
+    state.writeCommitted = true;
     await resumeTo({ kind: "write-confirmed" }, "done");
   }
 

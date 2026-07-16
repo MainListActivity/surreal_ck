@@ -58,7 +58,7 @@
           <input
             type="checkbox"
             checked={field.accepted}
-            disabled={busy}
+            disabled={busy || cardState.writeCommitted}
             onchange={(event) => card.setAccepted(field.field, event.currentTarget.checked)}
           />
           <span class="field-name">{field.field}</span>
@@ -85,9 +85,13 @@
       disabled={busy}
       onclick={() => void card.confirm()}
     >
-      {cardState.status === "writing" ? "写入中…" : `确认写入（${acceptedCount} 个字段）`}
+      {cardState.status === "writing"
+        ? (cardState.writeCommitted ? "再次提交中…" : "写入中…")
+        : cardState.writeCommitted
+          ? "再次提交确认"
+          : `确认写入（${acceptedCount} 个字段）`}
     </button>
-    <button type="button" class="ghost-btn" disabled={busy} onclick={() => void card.rejectAll()}>
+    <button type="button" class="ghost-btn" disabled={busy || cardState.writeCommitted} onclick={() => void card.rejectAll()}>
       全部忽略
     </button>
   </footer>

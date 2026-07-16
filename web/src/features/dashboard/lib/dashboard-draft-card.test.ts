@@ -351,10 +351,14 @@ describe("草稿卡状态机", () => {
     expect(resumes).toEqual([{ kind: "write-confirmed" }]);
   });
 
-  test("resume 失败：error 态保留卡片（保存可能已落库），不静默吞错", async () => {
+  test("resume 失败：保留已保存结果，再次提交只重试决定而不重复保存", async () => {
+    let failResume = true;
     const { card, saveCount } = cardHarness({
       resume: async () => {
-        throw new Error("AI 会话续跑失败。");
+        if (failResume) {
+          failResume = false;
+          throw new Error("AI 会话续跑失败。");
+        }
       },
     });
     await card.loadPreview();
@@ -365,5 +369,10 @@ describe("草稿卡状态机", () => {
     expect(saveCount()).toBe(1);
     expect(state.status).toBe("error");
     expect(state.error).toBe("AI 会话续跑失败。");
+
+    await card.confirm();
+
+    expect(saveCount()).toBe(1);
+    expect(card.snapshot().status).toBe("done");
   });
 });

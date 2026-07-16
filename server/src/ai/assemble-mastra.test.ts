@@ -223,4 +223,54 @@ describe("createMastraRunner", () => {
     expect(captured?.hasAnswerResourceSelection).toBe(true);
     expect(result.status).toBe("success");
   });
+
+  test("同一 runId 的决定重试命中已成功快照时直接返回，不重复 resume 已完成步骤", async () => {
+    let resumeCalls = 0;
+    const { createMastraRunner } = await import("./assemble-mastra");
+    const { resumer } = createMastraRunner({
+      buildAgents: () => ({
+        navigationAgent: {} as never,
+        dashboardAgent: {} as never,
+        claimAnalysisAgent: {} as never,
+        chitchatAgent: {} as never,
+      }),
+      buildLlmCaller: () => async () => "[]",
+      buildMastra: () => ({
+        getWorkflow: () => ({
+          createRun: async () => ({
+            resume: async () => {
+              resumeCalls += 1;
+              return { status: "success", result: { finalText: "不应执行" } };
+            },
+          }),
+        }),
+        getStorage: () => ({
+          stores: {
+            workflows: {
+              getWorkflowRunById: async () => ({
+                runId: "run-complete",
+                workflowName: "router",
+                snapshot: { status: "success" },
+              }),
+            },
+          },
+        }),
+      } as never),
+    });
+
+    const result = await resumer({
+      runId: "run-complete",
+      streamId: "run-complete",
+      decision: { kind: "write-confirmed" },
+      surrealSession: {} as never,
+      ownerSubject: "user-123",
+      userContext: { route: { screen: "home" }, workbook: null, sheet: null, selectedRow: null, contextHint: "" },
+      pushChunk: () => {},
+      pushProgress: () => {},
+      onSuspend: () => {},
+    });
+
+    expect(result).toEqual({ runId: "run-complete", finalText: "", status: "success" });
+    expect(resumeCalls).toBe(0);
+  });
 });

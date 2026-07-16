@@ -181,6 +181,14 @@ const defaultResumeWorkflow: NonNullable<CreateMastraRunnerOptions["resumeWorkfl
   if (!stored) {
     return { runId: input.runId, finalText: "", status: "cancelled" };
   }
+  // 同一决定可能因 HTTP/WS 断线被再次提交。已成功的持久化 run 是幂等权威：
+  // 不再调用 resume，避免重新执行已经完成的步骤；RunBus 会按同一 runId 回放终态。
+  const storedStatus = typeof stored.snapshot === "string"
+    ? (JSON.parse(stored.snapshot) as { status?: string }).status
+    : stored.snapshot.status;
+  if (storedStatus === "success") {
+    return { runId: input.runId, finalText: "", status: "success" };
+  }
   const run = await wf.createRun({ runId: input.runId });
   const requestContext = new RequestContext();
   const runtime: RouterRuntime = {
