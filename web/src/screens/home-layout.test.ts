@@ -100,7 +100,7 @@ describe("HR-02 首页搜索状态提升", () => {
     expect(home).not.toMatch(/let query = \$state/);
     expect(home).not.toContain('const query = ""');
     expect(home).toContain("filterHomeWorkbooks(workbooksStore.workbooks");
-    expect(home).toContain("{ query, tab, currentUserId }");
+    expect(home).toContain("{ query, tab, currentUserId, pinnedIds }");
   });
 });
 
@@ -150,5 +150,34 @@ describe("HR-05 首页快捷操作与 AI 入口", () => {
     expect(workspace.match(/onopenaichat=\{\(\) => onopenaichat\?\.\(\)\}/g)).toHaveLength(2);
     expect(app).toContain("function openAiDrawer(): void");
     expect(app).toContain("onopenaichat={openAiDrawer}");
+  });
+});
+
+describe("OIP-10 首页可信指标与真实筛选语义", () => {
+  test("HomeScreen 只在成员指标可用时展示真实数量，不保留模拟在线人数或协作者", () => {
+    const home = readScreen("HomeScreen.svelte");
+
+    expect(home).toContain("loadHomeMemberMetric(getSurreal())");
+    expect(home).toContain("const metricWorkspace = workspace?.dbName");
+    expect(home).toContain('connectionState !== "open"');
+    expect(home).toMatch(/\$effect\(\(\) => \{[\s\S]*memberMetric = null;[\s\S]*loadHomeMemberMetric\(getSurreal\(\)\)/);
+    expect(home).toMatch(/\{#if memberMetric\}[\s\S]*\{memberMetric\.value\}[\s\S]*\{memberMetric\.label\}/);
+    expect(home).not.toContain("4</strong> 位协作者在线");
+    expect(home).not.toContain("协作者在线");
+    expect(home).not.toContain("collaboratorsFor");
+    expect(home).not.toContain('aria-label="协作者"');
+  });
+
+  test("HomeScreen 用真实已固定列表替换未实现的共享筛选", () => {
+    const home = readScreen("HomeScreen.svelte");
+    const workspace = readScreen("WorkspaceScreen.svelte");
+
+    expect(home).toContain('{ id: "pinned", label: "已固定" }');
+    expect(home).not.toContain("与我共享");
+    expect(home).not.toContain('tab === "shared"');
+    expect(home).toContain("pinnedIds?: string[]");
+    expect(home).toContain("{ query, tab, currentUserId, pinnedIds }");
+    expect(workspace.match(/\{pinnedIds\}/g)).toHaveLength(2);
+    expect(workspace).toContain("onpin={handlePinWorkbook}");
   });
 });

@@ -103,7 +103,9 @@
     {#if page === "home"}
       <HomeScreen
         {query}
+        {pinnedIds}
         onopen={(workbookId) => onopenworkbook?.(workbookId)}
+        onpin={handlePinWorkbook}
         ontemplates={() => onnavigate?.("templates")}
         onopenaichat={() => onopenaichat?.()}
         onworkspaceclick={() => (wsPanelOpen = !wsPanelOpen)}
@@ -111,7 +113,9 @@
     {:else if page === "docs"}
       <HomeScreen
         {query}
+        {pinnedIds}
         onopen={(workbookId) => onopenworkbook?.(workbookId)}
+        onpin={handlePinWorkbook}
         ontemplates={() => onnavigate?.("templates")}
         onopenaichat={() => onopenaichat?.()}
         onworkspaceclick={() => (wsPanelOpen = !wsPanelOpen)}

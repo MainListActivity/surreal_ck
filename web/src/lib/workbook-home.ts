@@ -1,4 +1,5 @@
 import type { WorkbookTemplate } from "@surreal-ck/shared/rpc.types";
+import type { SurrealConn } from "./surreal";
 import { filterWorkbooksByQuery, type WorkbookRow } from "./workbooks";
 import type { ConnectionState } from "./workspace-store";
 
@@ -7,9 +8,14 @@ export type PinnedWorkbooksStorage = {
   setItem(key: string, value: string): unknown;
 };
 
-export type WorkbookHomeTab = "all" | "mine" | "shared";
+export type WorkbookHomeTab = "all" | "mine" | "pinned";
 export type WorkbookViewMode = "grid" | "list";
 export type WorkbookPreviewKind = "table" | "graph" | "blank";
+
+export type HomeWorkspaceMetric = {
+  value: number;
+  label: "位成员";
+};
 
 export const WORKBOOK_VIEW_MODE_STORAGE_KEY = "surreal_ck.workbook_view_mode";
 
@@ -62,14 +68,32 @@ export type WorkbookHomeFilter = {
   query: string;
   tab: WorkbookHomeTab;
   currentUserId?: string;
+  pinnedIds?: string[];
 };
 
 export function filterHomeWorkbooks(workbooks: WorkbookRow[], filter: WorkbookHomeFilter): WorkbookRow[] {
   const searched = filterWorkbooksByQuery(workbooks, filter.query);
   if (filter.tab === "all") return searched;
-  if (filter.tab === "shared") return [];
+  if (filter.tab === "pinned") {
+    const pinned = new Set(filter.pinnedIds ?? []);
+    return searched.filter((wb) => pinned.has(wb.id));
+  }
   if (!filter.currentUserId) return [];
   return searched.filter((wb) => wb.createdBy === filter.currentUserId);
+}
+
+export async function loadHomeMemberMetric(
+  conn: Pick<SurrealConn, "query">,
+): Promise<HomeWorkspaceMetric | null> {
+  try {
+    const rows = await conn.query<{ count: number }>(
+      "SELECT count() FROM user WHERE kind = 'human' AND disabled_at = NONE GROUP ALL",
+    );
+    const count = rows[0]?.count;
+    return typeof count === "number" && count > 0 ? { value: count, label: "位成员" } : null;
+  } catch {
+    return null;
+  }
 }
 
 export function readWorkbookViewMode(storage?: WorkbookViewModeStorage | null): WorkbookViewMode {

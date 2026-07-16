@@ -8,6 +8,7 @@ import {
   formatWorkbookUpdatedAt,
   getPinnedStorageKey,
   homeGreetingForDate,
+  loadHomeMemberMetric,
   pinWorkbook,
   readPinnedWorkbooks,
   readWorkbookViewMode,
@@ -15,6 +16,7 @@ import {
   writePinnedWorkbooks,
   writeWorkbookViewMode,
 } from "./workbook-home";
+import type { SurrealConn } from "./surreal";
 
 const rows: WorkbookRow[] = [
   { id: "workbook:a", name: "案件台账", templateRef: "workbook_template:case", createdBy: "user:alice" },
@@ -23,15 +25,19 @@ const rows: WorkbookRow[] = [
 ];
 
 describe("filterHomeWorkbooks — 首页 tab 过滤", () => {
-  test("先应用搜索，再按全部/我创建的/与我共享过滤", () => {
+  test("先应用搜索，再按全部/我创建的/已固定过滤", () => {
     expect(filterHomeWorkbooks(rows, { query: "图谱", tab: "all", currentUserId: "user:alice" }).map((w) => w.id))
       .toEqual(["workbook:c"]);
 
     expect(filterHomeWorkbooks(rows, { query: "", tab: "mine", currentUserId: "user:alice" }).map((w) => w.id))
       .toEqual(["workbook:a", "workbook:c"]);
 
-    expect(filterHomeWorkbooks(rows, { query: "", tab: "shared", currentUserId: "user:alice" }))
-      .toEqual([]);
+    expect(filterHomeWorkbooks(rows, {
+      query: "财务",
+      tab: "pinned",
+      currentUserId: "user:alice",
+      pinnedIds: ["workbook:a", "workbook:b"],
+    }).map((w) => w.id)).toEqual(["workbook:b"]);
   });
 });
 
@@ -118,6 +124,42 @@ describe("home greeting presentation — 首页问候与连接状态", () => {
       label: "已断开",
       tone: "disconnected",
     });
+  });
+});
+
+describe("loadHomeMemberMetric — 首页真实成员指标", () => {
+  test("可读到真人成员时展示真实成员数", async () => {
+    let capturedSql = "";
+    const conn = {
+      query: async (sql: string) => {
+        capturedSql = sql;
+        return [{ count: 3 }];
+      },
+    } as unknown as Pick<SurrealConn, "query">;
+
+    await expect(loadHomeMemberMetric(conn)).resolves.toEqual({ value: 3, label: "位成员" });
+    expect(capturedSql).toContain("FROM user");
+    expect(capturedSql).toContain("kind = 'human'");
+    expect(capturedSql).toContain("disabled_at = NONE");
+    expect(capturedSql).not.toContain("$auth");
+  });
+
+  test("没有可见成员数据时返回隐藏态", async () => {
+    const conn = {
+      query: async () => [],
+    } as unknown as Pick<SurrealConn, "query">;
+
+    await expect(loadHomeMemberMetric(conn)).resolves.toBeNull();
+  });
+
+  test("成员查询失败时返回隐藏态而不影响首页", async () => {
+    const conn = {
+      query: async () => {
+        throw new Error("Not enough permissions");
+      },
+    } as unknown as Pick<SurrealConn, "query">;
+
+    await expect(loadHomeMemberMetric(conn)).resolves.toBeNull();
   });
 });
 

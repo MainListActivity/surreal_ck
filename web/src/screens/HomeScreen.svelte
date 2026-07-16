@@ -19,15 +19,18 @@
   import { workbookTemplatesStore } from "../lib/workbook-templates.svelte";
   import { canWriteSharedStructure as canWriteSharedStructureFn } from "../lib/permissions.svelte";
   import { getConnectionState, getCurrentUser, getCurrentWorkspace } from "../lib/workspace-store.svelte";
+  import { getSurreal } from "../lib/surreal";
   import {
     connectionDotPresentation,
     filterHomeWorkbooks,
     formatWorkbookUpdatedAt,
     homeGreetingForDate,
+    loadHomeMemberMetric,
     readWorkbookViewMode,
     workbookCardPresentation,
     writeWorkbookViewMode,
     type WorkbookHomeTab,
+    type HomeWorkspaceMetric,
     type WorkbookViewMode,
   } from "../lib/workbook-home";
   import type { WorkbookRow } from "../lib/workbooks";
@@ -42,6 +45,7 @@
     onopenaichat,
     onworkspaceclick,
     onpin,
+    pinnedIds = [],
   }: {
     query?: string;
     onopen?: (workbookId: string) => void;
@@ -49,12 +53,13 @@
     onopenaichat?: () => void;
     onworkspaceclick?: () => void;
     onpin?: (workbookId: string) => void;
+    pinnedIds?: string[];
   } = $props();
 
   const tabs: Array<{ id: WorkbookHomeTab; label: string }> = [
     { id: "all", label: "全部" },
     { id: "mine", label: "我创建的" },
-    { id: "shared", label: "与我共享" },
+    { id: "pinned", label: "已固定" },
   ];
 
   const canWriteSharedStructure = $derived(canWriteSharedStructureFn());
@@ -66,6 +71,7 @@
   let sort = $state<"recent" | "name">("recent");
   let creating = $state(false);
   let importStatus = $state("");
+  let memberMetric = $state<HomeWorkspaceMetric | null>(null);
 
   const greeting = $derived(homeGreetingForDate());
   const connectionDot = $derived(connectionDotPresentation(connectionState));
@@ -73,7 +79,7 @@
   const userName = $derived(currentUser?.displayName || currentUser?.name || currentUser?.email || "你");
   const currentUserId = $derived(currentUser?.subject ? `user:${currentUser.subject}` : currentUser?.email);
   const filteredWorkbooks = $derived(
-    filterHomeWorkbooks(workbooksStore.workbooks, { query, tab, currentUserId }),
+    filterHomeWorkbooks(workbooksStore.workbooks, { query, tab, currentUserId, pinnedIds }),
   );
   const visibleWorkbooks = $derived(
     sort === "name"
@@ -97,6 +103,26 @@
     view = readWorkbookViewMode(window.localStorage);
     void workbooksStore.load();
     void workbookTemplatesStore.load();
+  });
+
+  $effect(() => {
+    const metricWorkspace = workspace?.dbName;
+    memberMetric = null;
+    if (!metricWorkspace || connectionState !== "open") return;
+
+    let active = true;
+    void (async () => {
+      try {
+        const metric = await loadHomeMemberMetric(getSurreal());
+        if (active) memberMetric = metric;
+      } catch {
+        if (active) memberMetric = null;
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
   });
 
   async function handleCreateBlank() {
@@ -128,32 +154,11 @@
     onpin?.(wb.id);
   }
 
-  function collaboratorsFor(wb: WorkbookRow): Array<{ initials: string; color: string }> {
-    const people = [
-      { initials: "林", color: "#2F7A4C" },
-      { initials: "陈", color: "#3E78A8" },
-      { initials: "周", color: "#CC6B3A" },
-      { initials: "AI", color: "#8A5A8F" },
-    ];
-    const count = (hashString(wb.id) % people.length) + 1;
-    return people.slice(0, count);
-  }
-
-  function extraCollaborators(collaborators: Array<unknown>): number {
-    return Math.max(0, collaborators.length - 3);
-  }
-
   function emptyMessage(): string {
     if (query) return `没有匹配「${query}」的工作簿`;
-    if (tab === "shared") return "共享工作簿会在权限模型接入后显示";
+    if (tab === "pinned") return "还没有已固定的工作簿";
     if (tab === "mine") return "还没有你创建的工作簿";
     return "还没有工作簿，点击上方「空白工作簿」创建第一个";
-  }
-
-  function hashString(value: string): number {
-    let hash = 0;
-    for (const char of value) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
-    return hash;
   }
 </script>
 
@@ -178,8 +183,10 @@
           </span>
           <span class="divider"></span>
           <span class="stat"><strong>{totalCount}</strong> 个工作簿</span>
-          <span class="divider"></span>
-          <span class="stat"><strong>4</strong> 位协作者在线</span>
+          {#if memberMetric}
+            <span class="divider"></span>
+            <span class="stat"><strong>{memberMetric.value}</strong> {memberMetric.label}</span>
+          {/if}
         </div>
       </div>
       <button type="button" class="invite-btn" onclick={() => onworkspaceclick?.()}>
@@ -300,7 +307,6 @@
         <div class="workbook-table">
           {#each visibleWorkbooks as wb, i (wb.id)}
             {@const presentation = presentationFor(wb)}
-            {@const collaborators = collaboratorsFor(wb)}
             <button
               type="button"
               class="list-row"
@@ -323,14 +329,6 @@
                 </span>
                 <small>{presentation.templateLabel}</small>
               </span>
-              <span class="avatars" aria-label="协作者">
-                {#each collaborators.slice(0, 3) as person}
-                  <span class="avatar" style={`background:${person.color}`}>{person.initials}</span>
-                {/each}
-                {#if extraCollaborators(collaborators)}
-                  <span class="avatar more">+{extraCollaborators(collaborators)}</span>
-                {/if}
-              </span>
               <span class="list-updated">{formatWorkbookUpdatedAt(wb.updatedAt)}</span>
             </button>
           {/each}
@@ -339,7 +337,6 @@
         <div class="workbook-grid">
           {#each visibleWorkbooks as wb, i (wb.id)}
             {@const presentation = presentationFor(wb)}
-            {@const collaborators = collaboratorsFor(wb)}
             <article class="workbook-card" style={`animation-delay:${(0.04 * i).toFixed(2)}s`}>
               <button type="button" class="card-main" onclick={() => open(wb)}>
                 <div class="card-preview" style={`background:${presentation.soft}`}>
@@ -359,14 +356,6 @@
                   <h3 title={wb.name}>{wb.name}</h3>
                   <p class="card-sub">{presentation.templateLabel}</p>
                   <div class="card-footer">
-                    <span class="avatars" aria-label="协作者">
-                      {#each collaborators.slice(0, 3) as person}
-                        <span class="avatar" style={`background:${person.color}`}>{person.initials}</span>
-                      {/each}
-                      {#if extraCollaborators(collaborators)}
-                        <span class="avatar more">+{extraCollaborators(collaborators)}</span>
-                      {/if}
-                    </span>
                     <span class="updated"><Clock size={12} />{formatWorkbookUpdatedAt(wb.updatedAt)}</span>
                   </div>
                 </div>
@@ -969,7 +958,7 @@
   .card-footer {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-end;
   }
 
   .updated {
@@ -978,32 +967,6 @@
     gap: 5px;
     color: var(--text-3);
     font-size: 11.5px;
-  }
-
-  /* ---------- tag / avatars ---------- */
-  .avatars {
-    display: flex;
-    align-items: center;
-  }
-
-  .avatar {
-    display: grid;
-    width: 26px;
-    height: 26px;
-    place-items: center;
-    border: 2px solid var(--surface);
-    border-radius: 50%;
-    color: #fff;
-    font-size: 10.5px;
-    font-weight: 700;
-  }
-
-  .avatar + .avatar {
-    margin-left: -7px;
-  }
-
-  .avatar.more {
-    background: var(--text-3) !important;
   }
 
   /* ---------- list ---------- */
@@ -1080,16 +1043,6 @@
     margin-top: 3px;
     color: var(--text-3);
     font-size: 12px;
-  }
-
-  .list-row .avatars {
-    flex-shrink: 0;
-  }
-
-  .list-row .avatar {
-    width: 24px;
-    height: 24px;
-    font-size: 10px;
   }
 
   .list-updated {
