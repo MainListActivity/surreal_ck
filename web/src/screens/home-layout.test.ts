@@ -105,17 +105,20 @@ describe("HR-02 首页搜索状态提升", () => {
 });
 
 describe("HR-05 首页快捷操作与 AI 入口", () => {
-  test("HomeScreen 渲染三张快捷操作卡片，空白工作簿走现有新建流程，导入文件显示 stub", () => {
+  test("HomeScreen 渲染三张快捷操作卡片，空白工作簿与 CSV 导入都有可用入口", () => {
     const home = readScreen("HomeScreen.svelte");
 
     expect(home).toContain('class="quick-actions"');
     expect(home).toContain("空白工作簿");
     expect(home).toContain("从模板创建");
     expect(home).toContain("导入文件");
-    expect(home).toContain("导入文件功能尚未迁移");
+    expect(home).not.toContain("导入文件功能尚未迁移");
     expect(home).toContain('workbooksStore.createBlank("未命名工作簿")');
     expect(home).toContain("onopen?.(wb.id)");
     expect(home).toContain("handleImportClick");
+    expect(home).toContain('accept=".csv,text/csv"');
+    expect(home).toContain("parseCsvImport(source, file.name)");
+    expect(home).toContain("<CsvImportDialog");
   });
 
   test("HomeScreen 常驻 AI banner，并通过 onopenaichat 打开 AI 抽屉", () => {

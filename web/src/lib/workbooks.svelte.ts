@@ -4,6 +4,7 @@ import {
   createWorkbooksStore,
   filterWorkbooksByQuery,
   type CreateFromTemplateOptions,
+  type CsvWorkbookImportInput,
   type TemplateForCreate,
   type WorkbookRow,
   type WorkbooksSnapshot,
@@ -39,6 +40,7 @@ export const workbooksStore = {
 
   load: () => store.load(),
   createBlank: (name: string) => store.createBlank(name),
+  importCsvWorkbook: (input: CsvWorkbookImportInput) => store.importCsvWorkbook(input),
   createFromTemplate: (
     template: TemplateForCreate,
     name?: string,

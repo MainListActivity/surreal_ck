@@ -34,6 +34,8 @@
     type WorkbookViewMode,
   } from "../lib/workbook-home";
   import type { WorkbookRow } from "../lib/workbooks";
+  import CsvImportDialog from "../components/CsvImportDialog.svelte";
+  import { parseCsvImport, type ParsedCsvImport } from "../lib/csv-import";
 
   // workspace 首页：真实 workbook 列表（直连 SurrealDB）+ quick actions。
   // 跨 workspace 隔离靠 db 边界，列表查询不带鉴权过滤；写权限由 access 类型卡死，
@@ -71,6 +73,8 @@
   let sort = $state<"recent" | "name">("recent");
   let creating = $state(false);
   let importStatus = $state("");
+  let fileInput = $state<HTMLInputElement>();
+  let csvImport = $state<ParsedCsvImport | null>(null);
   let memberMetric = $state<HomeWorkspaceMetric | null>(null);
 
   const greeting = $derived(homeGreetingForDate());
@@ -137,7 +141,27 @@
   }
 
   function handleImportClick() {
-    importStatus = "导入文件功能尚未迁移，当前版本请先使用空白工作簿或模板创建。";
+    importStatus = "";
+    fileInput?.click();
+  }
+
+  async function handleImportFile(event: Event): Promise<void> {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith(".csv")) {
+      importStatus = "请选择 .csv 文件";
+      return;
+    }
+    try {
+      const source = new TextDecoder("utf-8", { fatal: true }).decode(await file.arrayBuffer());
+      csvImport = parseCsvImport(source, file.name);
+    } catch (error) {
+      importStatus = error instanceof TypeError
+        ? "文件不是有效的 UTF-8 CSV，请转换编码后重试"
+        : (error instanceof Error ? error.message : "CSV 解析失败");
+    }
   }
 
   function open(wb: WorkbookRow) {
@@ -216,11 +240,18 @@
             <small>案件管理 · 实体追踪</small>
           </span>
         </button>
+        <input
+          class="file-input"
+          bind:this={fileInput}
+          type="file"
+          accept=".csv,text/csv"
+          onchange={(event) => void handleImportFile(event)}
+        />
         <button type="button" class="qa qa-neutral" onclick={handleImportClick}>
           <span class="qa-icon"><Upload size={21} /></span>
           <span class="qa-text">
             <strong>导入文件</strong>
-            <small>Excel · CSV · JSON</small>
+            <small>CSV · 自动识别字段</small>
           </span>
         </button>
       </div>
@@ -384,6 +415,14 @@
   </div>
 </section>
 
+{#if csvImport}
+  <CsvImportDialog
+    parsed={csvImport}
+    onclose={() => (csvImport = null)}
+    onopen={(workbookId) => onopen?.(workbookId)}
+  />
+{/if}
+
 {#snippet tableMark(color: string)}
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={color} stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
     <rect x="4" y="4" width="16" height="16" rx="2.5" />
@@ -406,6 +445,10 @@
 {/snippet}
 
 <style>
+  .file-input {
+    display: none;
+  }
+
   .home {
     display: flex;
     flex: 1;

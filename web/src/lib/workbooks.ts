@@ -10,6 +10,11 @@ import type { SurrealConn } from "./surreal";
 import { describeWriteError } from "./workbook-data";
 import { toRecordId } from "./record-id";
 import { compileDashboardWidgetQuery } from "./dashboard-query";
+import {
+  convertCsvImportRows,
+  type CsvImportField,
+  type CsvImportFieldType,
+} from "./csv-import";
 
 /**
  * workbook 列表项——直连读 `workbook` 表的裁剪形态。
@@ -48,6 +53,20 @@ export type WorkbooksDeps = {
 };
 
 export type WorkbooksStore = ReturnType<typeof createWorkbooksStore>;
+
+export type CsvWorkbookImportInput = {
+  workbookName: string;
+  sheetLabel: string;
+  fields: CsvImportField[];
+  rows: string[][];
+};
+
+export type CsvWorkbookImportResult = {
+  workbook: WorkbookRow;
+  importedCount: number;
+  skippedCount: number;
+  fields: Array<{ label: string; fieldType: CsvImportFieldType }>;
+};
 
 /** 把 `workbook` 记录裁成展示用 {@link WorkbookRow}（剔系统字段，规范化 key）。 */
 function recordToWorkbook(rec: Record<string, unknown>): WorkbookRow {
@@ -507,6 +526,50 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
     return create(name, {});
   }
 
+  async function importCsvWorkbook(
+    input: CsvWorkbookImportInput,
+  ): Promise<CsvWorkbookImportResult | null> {
+    const workbookName = input.workbookName.trim();
+    if (!workbookName) {
+      state.error = "工作簿名称不能为空";
+      emit();
+      return null;
+    }
+    const fields = input.fields.map((field) => ({
+      ...field,
+      label: field.label.trim(),
+    }));
+    if (fields.some((field) => !field.label)) {
+      state.error = "字段名称不能为空";
+      emit();
+      return null;
+    }
+
+    const converted = convertCsvImportRows(input.rows, fields);
+    const workbook = await create(workbookName, {
+      sheets: [{
+        label: input.sheetLabel.trim() || workbookName,
+        columns: fields.map((field) => ({
+          key: field.key,
+          label: field.label,
+          fieldType: field.fieldType,
+        })),
+        sampleRecords: converted.records.map((values, index) => ({
+          key: `csv-row-${index + 1}`,
+          values,
+        })),
+      }],
+    });
+    if (!workbook) return null;
+
+    return {
+      workbook,
+      importedCount: converted.records.length,
+      skippedCount: converted.skipped.length,
+      fields: fields.map(({ label, fieldType }) => ({ label, fieldType })),
+    };
+  }
+
   /**
    * 从业务模板新建：工作簿带上 template 引用（= 类型），各实体表按对应 column_defs 建列。
    * 模板的展示元数据（icon / accent / label）不落到 workbook 上，卡片渲染时按
@@ -553,6 +616,7 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
     get workbooks(): WorkbookRow[] { return state.workbooks; },
     load,
     createBlank,
+    importCsvWorkbook,
     createFromTemplate,
     rename,
   };
