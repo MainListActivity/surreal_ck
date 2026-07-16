@@ -3,6 +3,7 @@
   import { untrack } from "svelte";
   import { workbooksStore } from "../lib/workbooks.svelte";
   import type { ParsedXlsxImport, ParsedXlsxSheet } from "../lib/xlsx-import";
+  import { suggestXlsxSheetTarget, type XlsxTemplateTarget } from "../lib/xlsx-template-import";
   import {
     createXlsxImportController,
     type XlsxImportControllerSnapshot,
@@ -12,15 +13,26 @@
   type ExistingTarget = {
     id: string;
     label: string;
+    targets: XlsxTemplateTarget["targets"];
     importSheet: (sheet: ParsedXlsxSheet) => Promise<{ importedCount: number; skippedCount: number }>;
   };
 
-  let { parsed, existingTargets = [], newWorkbookAllowed = true, onclose, onopen }: {
+  let {
+    parsed,
+    existingTargets = [],
+    newWorkbookAllowed = true,
+    onclose,
+    onopen,
+    onopenDataTable,
+    onopenDashboard,
+  }: {
     parsed: ParsedXlsxImport;
     existingTargets?: ExistingTarget[];
     newWorkbookAllowed?: boolean;
     onclose?: () => void;
     onopen?: (workbookId: string) => void;
+    onopenDataTable?: (sheetId: string) => void | Promise<void>;
+    onopenDashboard?: () => void | Promise<void>;
   } = $props();
 
   let workbookName = $state(untrack(() => parsed.workbookName));
@@ -28,21 +40,28 @@
   let error = $state<string | null>(null);
   const initialParsed = untrack(() => parsed);
   const initialNewWorkbookAllowed = untrack(() => newWorkbookAllowed);
+  const initialExistingTargets = untrack(() => existingTargets);
   const controller = createXlsxImportController({
     parsed: initialParsed,
+    existingTargetOrder: initialExistingTargets.map((target) => target.id),
     importNewWorkbook: async ({ workbookName, sheets }) => {
       const imported = await workbooksStore.importXlsxWorkbook({ workbookName, sheets });
       if (!imported) throw new Error(workbooksStore.error ?? "导入失败，请稍后重试");
       return { workbookId: imported.workbook.id, sheets: imported.sheets };
     },
     importExistingSheet: async ({ sheet, targetSheetId }) => {
-      const target = existingTargets.find((candidate) => candidate.id === targetSheetId);
+      const target = initialExistingTargets.find((candidate) => candidate.id === targetSheetId);
       if (!target) throw new Error("目标数据表不存在");
       return target.importSheet(sheet);
     },
   });
   if (!initialNewWorkbookAllowed) {
-    for (const sheet of initialParsed.sheets) controller.setAction(sheet.name, { kind: "ignore" });
+    for (const sheet of initialParsed.sheets) {
+      const suggestedTargetId = suggestXlsxSheetTarget(sheet, initialExistingTargets);
+      controller.setAction(sheet.name, suggestedTargetId
+        ? { kind: "map-existing", targetSheetId: suggestedTargetId }
+        : { kind: "ignore" });
+    }
   }
   let view = $state<XlsxImportControllerSnapshot>(controller.snapshot);
   const activeSheet = $derived(parsed.sheets.find((sheet) => sheet.name === activeSheetName));
@@ -106,6 +125,12 @@
       </div>
       <footer>
         <button class="secondary" type="button" onclick={close}>稍后查看</button>
+        {#if view.firstImportedTargetId && onopenDataTable}
+          <button class="secondary" type="button" onclick={() => void onopenDataTable?.(view.firstImportedTargetId!)}>查看数据表</button>
+        {/if}
+        {#if view.firstImportedTargetId && onopenDashboard}
+          <button class="primary" type="button" onclick={() => void onopenDashboard?.()}>查看仪表盘</button>
+        {/if}
         {#if view.workbookId}<button class="primary" type="button" onclick={() => onopen?.(view.workbookId!)}>进入工作簿</button>{/if}
       </footer>
     {:else}

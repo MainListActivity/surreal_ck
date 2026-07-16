@@ -13,6 +13,7 @@
     type TemplateSheetImportControllerSnapshot,
   } from "../../../lib/template-sheet-import";
   import { editorUi } from "../lib/editor-ui.svelte";
+  import { dashboardStore } from "../../dashboard/lib/dashboard-store.svelte";
   import XlsxImportDialog from "../../../components/XlsxImportDialog.svelte";
   import type { ParsedXlsxImport, ParsedXlsxSheet } from "../../../lib/xlsx-import";
   import { createXlsxParseTask } from "../../../lib/xlsx-parse-task";
@@ -39,35 +40,52 @@
   }
 
   function xlsxTargets() {
-    return editorStore.sheets.map((target) => ({
-      id: target.id,
-      label: target.label,
-      importSheet: async (sheet: ParsedXlsxSheet) => {
-        await editorStore.switchSheet(target.id);
-        return importXlsxSheetIntoTemplate({
-          sheet,
-          targets: activeTargets(),
-          importRows: (input) => editorStore.importCsvRows(input),
-        });
-      },
-    }));
+    return editorStore.sheets.map((target) => {
+      const targets = importTargetsFor(target);
+      return {
+        id: target.id,
+        label: target.label,
+        targets,
+        importSheet: async (sheet: ParsedXlsxSheet) => {
+          await editorStore.switchSheet(target.id);
+          return importXlsxSheetIntoTemplate({
+            sheet,
+            targets,
+            importRows: (input) => editorStore.importCsvRows(input),
+          });
+        },
+      };
+    });
   }
 
-  function activeTargets(): TemplateImportTarget[] {
+  function importTargetsFor(target: (typeof editorStore.sheets)[number]): TemplateImportTarget[] {
     const workbook = editorStore.workbook;
-    const currentSheet = editorStore.sheets.find((sheet) => sheet.id === editorStore.activeSheetId);
     const template = workbook?.templateRef
       ? workbookTemplatesStore.templates.find((candidate) => candidate.id === workbook.templateRef)
       : undefined;
-    const sheetKey = templateSheetKeyForInstance(template, currentSheet, editorStore.sheets);
+    const sheetKey = templateSheetKeyForInstance(template, target, editorStore.sheets);
     const templateFields = sheetKey
       ? template?.sheets.find((sheet) => sheet.key === sheetKey)?.columnDefs
       : undefined;
     const aliasesByKey = new Map((templateFields ?? []).map((field) => [field.key, field.aliases]));
-    return editorStore.columns.map((column) => ({
-      column,
-      aliases: aliasesByKey.get(column.key),
-    }));
+    return target.columns.map((column) => ({ column, aliases: aliasesByKey.get(column.key) }));
+  }
+
+  function activeTargets(): TemplateImportTarget[] {
+    const currentSheet = editorStore.sheets.find((sheet) => sheet.id === editorStore.activeSheetId);
+    return currentSheet ? importTargetsFor(currentSheet) : [];
+  }
+
+  async function openImportedDataTable(sheetId: string): Promise<void> {
+    close();
+    await editorStore.switchSheet(sheetId);
+    editorUi.pageKind = "sheet";
+  }
+
+  async function openImportedDashboard(): Promise<void> {
+    close();
+    editorUi.pageKind = "dashboard";
+    await dashboardStore.refresh();
   }
 
   async function chooseFile(event: Event): Promise<void> {
@@ -128,6 +146,8 @@
       existingTargets={xlsxTargets()}
       newWorkbookAllowed={false}
       onclose={close}
+      onopenDataTable={openImportedDataTable}
+      onopenDashboard={openImportedDashboard}
     />
   {:else}
   <div class="overlay" role="presentation">

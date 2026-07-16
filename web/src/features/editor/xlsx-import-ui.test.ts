@@ -22,4 +22,16 @@ describe("OIP-13 XLSX 多 Sheet 导入向导 UI", () => {
     expect(editorDialog).toContain("newWorkbookAllowed={false}");
     expect(editorDialog).toContain("importXlsxSheetIntoTemplate");
   });
+
+  test("OIP-14 模板导入完成页可打开首个成功数据表或刷新后的默认仪表盘", () => {
+    const dialog = readFileSync(new URL("../../components/XlsxImportDialog.svelte", import.meta.url), "utf8");
+    const editorDialog = readFileSync(new URL("./modals/TemplateSheetImportDialog.svelte", import.meta.url), "utf8");
+
+    expect(dialog).toContain("查看数据表");
+    expect(dialog).toContain("查看仪表盘");
+    expect(dialog).toContain("view.firstImportedTargetId");
+    expect(editorDialog).toContain("dashboardStore.refresh()");
+    expect(editorDialog).toContain("onopenDataTable");
+    expect(editorDialog).toContain("onopenDashboard");
+  });
 });

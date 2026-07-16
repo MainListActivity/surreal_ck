@@ -6,8 +6,15 @@ import { runDashboardWidgetQuery } from "./dashboard-query";
 import { createEditorStore } from "./editor-store";
 import { searchReferenceCandidates } from "./reference-cache";
 import { createBrowserConn, type SurrealConn } from "./surreal";
-import { createWorkbookTemplatesStore, templateSheetsForCreate } from "./workbook-templates";
+import {
+  createWorkbookTemplatesStore,
+  templateSheetKeyForInstance,
+  templateSheetsForCreate,
+} from "./workbook-templates";
 import { createWorkbooksStore } from "./workbooks";
+import { createXlsxImportController } from "./xlsx-import-controller";
+import { parseXlsxImport } from "./xlsx-import";
+import { importXlsxSheetIntoTemplate } from "./xlsx-template-import";
 
 const localSurrealTest = test.skipIf(process.env.RUN_LOCAL_SURREALDB_TESTS !== "1");
 const opened: Surreal[] = [];
@@ -43,6 +50,7 @@ async function setupDatabase(): Promise<SurrealConn> {
     DEFINE FIELD label ON TABLE sheet TYPE string;
     DEFINE FIELD table_name ON TABLE sheet TYPE string;
     DEFINE FIELD column_defs ON TABLE sheet TYPE any DEFAULT [];
+    DEFINE FIELD template_sheet_key ON TABLE sheet TYPE option<string>;
     DEFINE FIELD created_at ON TABLE sheet TYPE datetime VALUE time::now() READONLY;
     DEFINE FIELD updated_at ON TABLE sheet TYPE datetime VALUE time::now();
     DEFINE INDEX sheet_table_name_unique ON TABLE sheet COLUMNS table_name UNIQUE;
@@ -82,6 +90,87 @@ describe("OIP-08 破产债权管理模板包", () => {
       defaultName: "破产债权管理台账",
     }));
   }, 15_000);
+
+  localSurrealTest("OIP-14 空台账导入脱敏历史 Excel 后默认仪表盘只统计成功记录", async () => {
+    const conn = await setupDatabase();
+    const templates = createWorkbookTemplatesStore({ getConn: () => conn });
+    await templates.load();
+    const template = templates.byKey("bankruptcy-claims")!;
+    const workbooks = createWorkbooksStore({ getConn: () => conn });
+    const workbook = await workbooks.createFromTemplate({
+      ...template,
+      sheets: templateSheetsForCreate(template),
+    }, undefined, { includeSampleData: false });
+    expect(workbook).not.toBeNull();
+
+    const editor = createEditorStore({ getConn: () => conn });
+    await editor.loadWorkbook(workbook!.id);
+    expect(editor.rows).toHaveLength(0);
+
+    const fixture = await Bun.file(new URL(
+      "../../../.scratch/operating-iteration-plan/fixtures/oip-14-historical-claims.xlsx",
+      import.meta.url,
+    )).arrayBuffer();
+    const parsed = parseXlsxImport(fixture, "oip-14-historical-claims.xlsx");
+    const controller = createXlsxImportController({
+      parsed,
+      existingTargetOrder: editor.sheets.map((sheet) => sheet.id),
+      importNewWorkbook: async () => ({ workbookId: workbook!.id, sheets: [] }),
+      importExistingSheet: async ({ sheet, targetSheetId }) => {
+        await editor.switchSheet(targetSheetId);
+        const currentSheet = editor.sheets.find((candidate) => candidate.id === targetSheetId)!;
+        const templateKey = templateSheetKeyForInstance(template, currentSheet, editor.sheets);
+        const templateFields = template.sheets.find((candidate) => candidate.key === templateKey)?.columnDefs ?? [];
+        const aliasesByKey = new Map(templateFields.map((field) => [field.key, field.aliases]));
+        return importXlsxSheetIntoTemplate({
+          sheet,
+          targets: editor.columns.map((column) => ({ column, aliases: aliasesByKey.get(column.key) })),
+          importRows: (input) => editor.importCsvRows(input),
+        });
+      },
+    });
+    const targetByTemplateKey = new Map(editor.sheets.map((sheet) => [sheet.templateSheetKey, sheet.id]));
+    controller.setAction("债权台账", {
+      kind: "map-existing",
+      targetSheetId: targetByTemplateKey.get("creditors")!,
+    });
+    controller.setAction("证据清单", {
+      kind: "map-existing",
+      targetSheetId: targetByTemplateKey.get("materials")!,
+    });
+    controller.setAction("待办清单", {
+      kind: "map-existing",
+      targetSheetId: targetByTemplateKey.get("tasks")!,
+    });
+    await controller.confirm();
+
+    expect(controller.snapshot.summary).toEqual({
+      importedCount: 6,
+      skippedCount: 2,
+      successfulSheetCount: 3,
+      failedSheetCount: 0,
+      ignoredSheetCount: 0,
+    });
+    expect(controller.snapshot.firstImportedTargetId).toBe(targetByTemplateKey.get("creditors"));
+
+    await editor.switchSheet(targetByTemplateKey.get("creditors")!);
+    expect(editor.rows).toHaveLength(2);
+    const creditorIds = new Set(editor.rows.map((row) => row.id));
+    await editor.switchSheet(targetByTemplateKey.get("materials")!);
+    expect(editor.rows).toHaveLength(2);
+    expect(editor.rows.every((row) => creditorIds.has(String(row.values.creditor)))).toBe(true);
+
+    const [pageSummary] = await listDashboardPages(conn, { workbookId: workbook!.id });
+    const page = await loadDashboardPage(conn, pageSummary!.id);
+    const results = await Promise.all(page!.widgets.map((widget) => runDashboardWidgetQuery(conn, widget)));
+    expect(Number((results[0]!.result as { value: unknown }).value)).toBe(2_000_000);
+    expect(Number((results[1]!.result as { value: unknown }).value)).toBe(1_500_000);
+    expect((results[2]!.result as { value: unknown }).value).toBe(1);
+    expect((results[3]!.result as { rows: unknown[] }).rows).toHaveLength(2);
+    expect((results[4]!.result as { rows: unknown[] }).rows).toHaveLength(2);
+    expect((results[5]!.result as { rows: unknown[] }).rows).toHaveLength(2);
+    editor.reset();
+  }, 20_000);
 
   localSurrealTest("从模板创建三张可编辑数据表，样例记录类型合法且引用可选择和回读", async () => {
     const conn = await setupDatabase();

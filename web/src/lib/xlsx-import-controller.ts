@@ -29,6 +29,7 @@ export type XlsxImportControllerSnapshot = {
   importing: boolean;
   cancelled: boolean;
   workbookId: string | null;
+  firstImportedTargetId: string | null;
 };
 
 type NewWorkbookResult = {
@@ -44,6 +45,8 @@ type ExistingSheetResult = {
 
 export function createXlsxImportController(input: {
   parsed: ParsedXlsxImport;
+  /** 模板实例中的数据表顺序；映射导入按此顺序执行，使引用目标先于引用方落库。 */
+  existingTargetOrder?: string[];
   importNewWorkbook: (input: {
     workbookName: string;
     sheets: ParsedXlsxSheet[];
@@ -61,6 +64,7 @@ export function createXlsxImportController(input: {
   let importing = false;
   let cancelled = false;
   let workbookId: string | null = null;
+  let firstImportedTargetId: string | null = null;
 
   function setAction(sheetName: string, action: XlsxSheetAction): void {
     if (importing || cancelled) return;
@@ -95,8 +99,22 @@ export function createXlsxImportController(input: {
       }
     }
 
-    const mappedSheets = input.parsed.sheets.filter((sheet) =>
-      actions.get(sheet.name)?.kind === "map-existing");
+    const targetOrder = new Map(
+      (input.existingTargetOrder ?? []).map((targetId, index) => [targetId, index]),
+    );
+    const mappedSheets = input.parsed.sheets
+      .filter((sheet) => actions.get(sheet.name)?.kind === "map-existing")
+      .sort((left, right) => {
+        const leftAction = actions.get(left.name);
+        const rightAction = actions.get(right.name);
+        const leftIndex = leftAction?.kind === "map-existing"
+          ? (targetOrder.get(leftAction.targetSheetId) ?? Number.MAX_SAFE_INTEGER)
+          : Number.MAX_SAFE_INTEGER;
+        const rightIndex = rightAction?.kind === "map-existing"
+          ? (targetOrder.get(rightAction.targetSheetId) ?? Number.MAX_SAFE_INTEGER)
+          : Number.MAX_SAFE_INTEGER;
+        return leftIndex - rightIndex;
+      });
     for (const sheet of mappedSheets) {
       const action = actions.get(sheet.name);
       if (action?.kind !== "map-existing") continue;
@@ -105,6 +123,7 @@ export function createXlsxImportController(input: {
           sheet,
           targetSheetId: action.targetSheetId,
         });
+        firstImportedTargetId ??= action.targetSheetId;
         resultByName.set(sheet.name, success(sheet.name, imported));
       } catch (cause) {
         resultByName.set(sheet.name, failed(sheet.name, safeError(cause)));
@@ -132,6 +151,7 @@ export function createXlsxImportController(input: {
       importing,
       cancelled,
       workbookId,
+      firstImportedTargetId,
     };
   }
 

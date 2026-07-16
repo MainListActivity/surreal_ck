@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { GridColumnDef } from "@surreal-ck/shared/rpc.types";
 import type { ParsedXlsxSheet } from "./xlsx-import";
-import { importXlsxSheetIntoTemplate } from "./xlsx-template-import";
+import { importXlsxSheetIntoTemplate, suggestXlsxSheetTarget } from "./xlsx-template-import";
 
 const sheet: ParsedXlsxSheet = {
   name: "历史债权",
@@ -58,5 +58,24 @@ describe("OIP-13 XLSX Sheet 映射已有模板数据表", () => {
         sourceCells: ["乙公司", "待确认"],
       }],
     });
+  });
+
+  test("OIP-14 根据字段名与列别名唯一最高匹配自动建议模板数据表", () => {
+    expect(suggestXlsxSheetTarget(sheet, [
+      {
+        id: "sheet:creditors",
+        targets: [
+          { column: { key: "creditor_name", label: "债权人名称", fieldType: "text" }, aliases: ["申报人"] },
+          { column: { key: "declared_amount", label: "申报金额", fieldType: "decimal" }, aliases: ["债权申报金额"] },
+        ],
+      },
+      {
+        id: "sheet:materials",
+        targets: [
+          { column: { key: "material_name", label: "材料名称", fieldType: "text" } },
+          { column: { key: "creditor", label: "关联债权人", fieldType: "reference" } },
+        ],
+      },
+    ])).toBe("sheet:creditors");
   });
 });

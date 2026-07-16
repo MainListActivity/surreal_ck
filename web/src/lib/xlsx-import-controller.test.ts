@@ -81,4 +81,30 @@ describe("OIP-13 多 Sheet 导入控制器", () => {
     expect(calls).toBe(0);
     expect(controller.snapshot.cancelled).toBe(true);
   });
+
+  test("OIP-14 映射到模板时按目标数据表顺序导入以先建立被引用记录", async () => {
+    const importOrder: string[] = [];
+    const reordered: ParsedXlsxImport = {
+      ...parsed,
+      sheets: [parsed.sheets[1]!, parsed.sheets[0]!, parsed.sheets[2]!],
+    };
+    const controller = createXlsxImportController({
+      parsed: reordered,
+      existingTargetOrder: ["sheet:creditors", "sheet:materials", "sheet:tasks"],
+      importNewWorkbook: async () => ({ workbookId: "workbook:new", sheets: [] }),
+      importExistingSheet: async ({ targetSheetId }) => {
+        importOrder.push(targetSheetId);
+        return { importedCount: 1, skippedCount: 0 };
+      },
+    });
+
+    controller.setAction("债权", { kind: "map-existing", targetSheetId: "sheet:creditors" });
+    controller.setAction("材料", { kind: "map-existing", targetSheetId: "sheet:materials" });
+    controller.setAction("待办", { kind: "map-existing", targetSheetId: "sheet:tasks" });
+    await controller.confirm();
+
+    expect(importOrder).toEqual(["sheet:creditors", "sheet:materials", "sheet:tasks"]);
+    expect(controller.snapshot.results.map((result) => result.sheetName)).toEqual(["材料", "债权", "待办"]);
+    expect(controller.snapshot.firstImportedTargetId).toBe("sheet:creditors");
+  });
 });
