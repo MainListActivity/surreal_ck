@@ -1,4 +1,6 @@
-import type { RowPatchProposal } from "@surreal-ck/shared";
+import type { RecordWriteProposal, RowPatchProposal } from "@surreal-ck/shared";
+
+export type ConfirmableRecordProposal = RowPatchProposal | RecordWriteProposal;
 
 /**
  * 行分析提案卡的纯逻辑状态机（AI-006）。
@@ -36,7 +38,7 @@ export type RowPatchCardState = {
 };
 
 export type RowPatchCardDeps = {
-  proposal: RowPatchProposal;
+  proposal: ConfirmableRecordProposal;
   write: (values: Record<string, unknown>) => Promise<RowPatchWriteResult>;
   resume: (decision: RowPatchResumeDecision) => Promise<void>;
   onChange?: (state: RowPatchCardState) => void;

@@ -8,6 +8,39 @@ const fields: GridColumnDef[] = [
 ];
 
 describe("analyzeClaimRow tool", () => {
+  test("跨数据表新建建议只形成 record-write-proposal，不需要或使用数据库会话", async () => {
+    const { proposeRecordWriteTool } = await import("./claim-analysis-tools");
+    const execute = proposeRecordWriteTool.execute as unknown as (input: {
+      operation: "create";
+      sheetId: string;
+      proposals: Array<{
+        field: string;
+        currentValue: unknown;
+        suggestedValue: unknown;
+        basis: string;
+        confidence: "high" | "medium" | "low";
+      }>;
+    }) => Promise<{ intent: { type: string; operation: string; sheetId: string } }>;
+
+    const result = await execute({
+      operation: "create",
+      sheetId: "sheet:tasks",
+      proposals: [{
+        field: "task_name",
+        currentValue: null,
+        suggestedValue: "补充送货签收单",
+        basis: "材料记录标记为缺失",
+        confidence: "high",
+      }],
+    });
+
+    expect(result.intent).toMatchObject({
+      type: "record-write-proposal",
+      operation: "create",
+      sheetId: "sheet:tasks",
+    });
+  });
+
   test("提案只包含当前数据表的可编辑字段", async () => {
     const { analyzeClaimRowTool } = await import("./claim-analysis-tools");
     const execute = analyzeClaimRowTool.execute as unknown as (input: {

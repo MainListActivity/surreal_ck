@@ -1,7 +1,7 @@
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
 import { StringRecordId, type Surreal } from "surrealdb";
-import type { GridColumnDef } from "@surreal-ck/shared";
+import type { GridColumnDef, RecordWriteProposal } from "@surreal-ck/shared";
 import { getSurrealSession, type ToolRequestContext } from "./tool-session";
 
 const SYSTEM_FIELDS = new Set(["id", "workspace", "created_by", "created_at", "updated_at"]);
@@ -42,6 +42,16 @@ const RowPatchProposalIntentSchema = z.object({
     type: z.literal("row-patch-proposal"),
     sheetId: z.string(),
     recordId: z.string(),
+    proposals: z.array(RowPatchProposalItemSchema),
+  }),
+});
+
+const RecordWriteProposalIntentSchema = z.object({
+  intent: z.object({
+    type: z.literal("record-write-proposal"),
+    operation: z.enum(["create", "update"]),
+    sheetId: z.string(),
+    recordId: z.string().optional(),
     proposals: z.array(RowPatchProposalItemSchema),
   }),
 });
@@ -236,6 +246,35 @@ export const analyzeClaimRowTool = createTool({
   },
 });
 
+export const proposeRecordWriteTool = createTool({
+  id: "proposeRecordWrite",
+  description: [
+    "为目标数据表生成创建或更新记录的逐字段写入提案。",
+    "只返回 record-write-proposal，不执行数据库写入；用户确认后由前端数据表运行时提交。",
+    "更新记录时必须提供 recordId。",
+  ].join(" "),
+  inputSchema: z.object({
+    operation: z.enum(["create", "update"]),
+    sheetId: z.string(),
+    recordId: z.string().optional(),
+    proposals: z.array(RowPatchProposalItemSchema),
+  }).superRefine((value, ctx) => {
+    if (value.operation === "update" && !value.recordId) {
+      ctx.addIssue({ code: "custom", path: ["recordId"], message: "更新记录时必须提供 recordId" });
+    }
+  }),
+  outputSchema: RecordWriteProposalIntentSchema,
+  execute: async (input) => ({
+    intent: {
+      type: "record-write-proposal" as const,
+      operation: input.operation,
+      sheetId: input.sheetId,
+      ...(input.recordId ? { recordId: input.recordId } : {}),
+      proposals: input.proposals,
+    } satisfies RecordWriteProposal,
+  }),
+});
+
 const FetchRelatedRecordsOutputSchema = z.object({
   source: z.enum(["record-resources", "related-records"]),
   items: z.array(z.unknown()),
@@ -301,4 +340,5 @@ export function collectReferenceIds(values: Record<string, unknown>, fields: Gri
 export const CLAIM_ANALYSIS_TOOLS = {
   analyzeClaimRow: analyzeClaimRowTool,
   fetchRelatedRecords: fetchRelatedRecordsTool,
+  proposeRecordWrite: proposeRecordWriteTool,
 } as const;

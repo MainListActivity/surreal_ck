@@ -8,6 +8,7 @@ import type {
   FilterClause,
   GridColumnDef,
   GridRow,
+  RecordWriteProposal,
   RecordIdString,
   SortClause,
   ViewParams,
@@ -411,6 +412,25 @@ export function createEditorStore(deps: EditorDeps) {
     return ok ? { ok: true } : { ok: false, message: state.saveError ?? "记录写入失败" };
   }
 
+  /** AI 跨记录提案：确认后才通过活动数据表运行时 create/update。 */
+  async function writeRecordProposal(
+    proposal: RecordWriteProposal,
+    values: Record<string, unknown>,
+  ): Promise<{ ok: true } | { ok: false; message: string }> {
+    if (proposal.sheetId !== state.activeSheetId || !runtime) {
+      return { ok: false, message: "提案对应的数据表当前未打开，请打开该数据表后重试。" };
+    }
+    if (proposal.operation === "update" && !proposal.recordId) {
+      return { ok: false, message: "更新提案缺少目标记录。" };
+    }
+    const ok = await saveRows([
+      proposal.operation === "update"
+        ? { id: proposal.recordId, values }
+        : { values },
+    ]);
+    return ok ? { ok: true } : { ok: false, message: state.saveError ?? "记录写入失败" };
+  }
+
   /** 删行：draft 本地丢弃，持久化行走 deleteRows（DELETE by RecordId）。 */
   async function deleteRows(ids: Array<RecordIdString | string>): Promise<boolean> {
     if (!state.activeSheetId || !ids.length) return false;
@@ -754,6 +774,7 @@ export function createEditorStore(deps: EditorDeps) {
     saveRows,
     importCsvRows,
     writeRecordPatch,
+    writeRecordProposal,
     saveFromSource,
     deleteRows,
     insertBlankRows,

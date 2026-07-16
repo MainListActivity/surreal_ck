@@ -42,6 +42,59 @@ function makeMastra() {
 }
 
 describe("runRouterChat 端到端", () => {
+  test("选中记录的审核摘要与关联资源 citation 到达最终用户消息", async () => {
+    const mastra = makeMastra();
+    const userContext: AiContextSnapshot = {
+      route: { screen: "editor", workbookId: "workbook:claims", sheetId: "sheet:creditors" },
+      workbook: { id: "workbook:claims", name: "债权台账" },
+      sheet: { id: "sheet:creditors", label: "债权人", tableName: "ent_creditors" },
+      selectedRow: {
+        id: "ent_creditors:yuanhang",
+        label: "远航供应链有限公司",
+        visibleValues: { declared_amount: 1_200_000, review_status: "部分确认", evidence_status: "待补充" },
+      },
+      contextHint: "债权人 / 远航供应链有限公司",
+    };
+    const executors = makeExecutors({
+      "claim-analysis": async ({ taskText, shared }) => {
+        expect(taskText).toBe("生成当前债权审核摘要");
+        expect(shared.userContext.selectedRow?.id).toBe("ent_creditors:yuanhang");
+        return {
+          text: "申报金额 120 万元；审核状态为部分确认；材料待补充。合同依据见 [1]。",
+          confirmed: {},
+          citations: [{
+            index: 1,
+            resourceId: "resource_item:contract",
+            title: "供货合同",
+            sourceUrl: "https://example.com/contract",
+          }],
+        };
+      },
+    });
+    const done: Array<{ content: string; citationTitle?: string }> = [];
+
+    const result = await runRouterChat({
+      mastra,
+      text: "生成当前债权审核摘要",
+      userContext,
+      surrealSession: fakeSession,
+      executors,
+      llmCaller: async () => "不应调用",
+      planOverride: [{ category: "claim-analysis", taskText: "生成当前债权审核摘要" }],
+      streamId: "summary-with-citation",
+      pushChunk: (event) => {
+        if (event.type !== "done") return;
+        done.push({ content: event.message.content, citationTitle: event.message.citations?.[0]?.title });
+      },
+    });
+
+    expect(result.status).toBe("success");
+    expect(done).toEqual([{
+      content: "申报金额 120 万元；审核状态为部分确认；材料待补充。合同依据见 [1]。",
+      citationTitle: "供货合同",
+    }]);
+  });
+
   test("单意图 navigation：聚合 streamId 上的 delta，并最后给一个 done", async () => {
     const mastra = makeMastra();
     const llm: RouterLlmCaller = async () =>

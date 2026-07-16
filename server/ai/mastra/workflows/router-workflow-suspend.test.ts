@@ -59,7 +59,7 @@ import {
   type SubAgentExecutors,
 } from "./router-workflow";
 import type { RouterLlmCaller } from "./router-classifier";
-import type { AiContextSnapshot } from "@surreal-ck/shared";
+import { WorkflowSuspendedEventSchema, type AiContextSnapshot } from "@surreal-ck/shared";
 
 const emptyContext: AiContextSnapshot = {
   route: { screen: "home" },
@@ -393,6 +393,61 @@ describe("router workflow suspend & resume", () => {
       resumeData: { decision: { kind: "write-confirmed" } },
     });
     expect(resumed.status).toBe("success");
+  });
+
+  test("待办创建提案通过公开暂停事件暴露，用户确认前不执行任何业务写入", async () => {
+    const llm: RouterLlmCaller = async () =>
+      '[{"category":"claim-analysis","taskText":"提出审核待办"}]';
+    let businessQueries = 0;
+    const businessSession = { query: async () => { businessQueries += 1; return [[]]; } } as never;
+    const proposal = {
+      type: "record-write-proposal" as const,
+      operation: "create" as const,
+      sheetId: "sheet:tasks",
+      proposals: [
+        {
+          field: "task_name",
+          currentValue: null,
+          suggestedValue: "补充送货签收单",
+          basis: "关联材料记录标记为缺失",
+          confidence: "high" as const,
+        },
+        {
+          field: "due_date",
+          currentValue: null,
+          suggestedValue: "2026-07-20T00:00:00.000Z",
+          basis: "按模板检查重点提出的建议期限",
+          confidence: "medium" as const,
+        },
+      ],
+    };
+    const executors: SubAgentExecutors = {
+      navigation: async () => ({ text: "", confirmed: {} }),
+      dashboard: async () => ({ text: "", confirmed: {} }),
+      "claim-analysis": async () => ({
+        text: "已生成待办写入提案，等待确认。",
+        confirmed: {},
+        suspend: { kind: "await-write-confirm", intent: proposal },
+      }),
+      chitchat: async () => ({ text: "", confirmed: {} }),
+    };
+    const events: unknown[] = [];
+    const mastra = buildMastra();
+    const run = await mastra.getWorkflow(ROUTER_WORKFLOW_ID).createRun();
+    const rc = new RequestContext();
+    rc.set(ROUTER_RUNTIME_KEY, makeRuntime({
+      executors,
+      llmCaller: llm,
+      surrealSession: businessSession,
+      onSuspend: (event) => events.push(event),
+    }));
+
+    const result = await run.start({ inputData: { text: "提出审核待办" }, requestContext: rc });
+
+    expect(result.status).toBe("suspended");
+    expect(businessQueries).toBe(0);
+    expect(WorkflowSuspendedEventSchema.safeParse(events[0]).success).toBe(true);
+    expect(events[0]).toMatchObject({ kind: "await-write-confirm", intent: proposal });
   });
 
   test("resume 写入 confirmed.resolvedRecord 前经过 zod 校验：候选 label 缺失则视为取消", async () => {

@@ -87,6 +87,30 @@ function recordToQuickTask(value: unknown): WorkbookTemplateQuickTask | null {
   };
 }
 
+function recordToRowAnalysis(value: unknown): WorkbookTemplate["rowAnalysis"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const rec = value as Record<string, unknown>;
+  if (typeof rec.background !== "string" || rec.background.trim() === "") return undefined;
+  const fieldSemantics = Array.isArray(rec.field_semantics)
+    ? rec.field_semantics.flatMap((item) => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+        const field = item as Record<string, unknown>;
+        return typeof field.field_key === "string" && typeof field.meaning === "string"
+          ? [{ fieldKey: field.field_key, meaning: field.meaning }]
+          : [];
+      })
+    : [];
+  const stringList = (input: unknown): string[] => Array.isArray(input)
+    ? input.filter((item): item is string => typeof item === "string" && item.trim() !== "")
+    : [];
+  return {
+    background: rec.background,
+    fieldSemantics,
+    reviewPoints: stringList(rec.review_points),
+    outputGuidance: stringList(rec.output_guidance),
+  };
+}
+
 /** 把 `workbook_template` 记录裁成展示用 {@link WorkbookTemplate}（snake_case → camelCase）。 */
 export function recordToTemplate(rec: Record<string, unknown>): WorkbookTemplate {
   const rawDefs = Array.isArray(rec.column_defs) ? (rec.column_defs as StoredGridFieldDef[]) : [];
@@ -97,6 +121,7 @@ export function recordToTemplate(rec: Record<string, unknown>): WorkbookTemplate
   const quickTasks = Array.isArray(rec.quick_tasks)
     ? rec.quick_tasks.map(recordToQuickTask).filter((task): task is WorkbookTemplateQuickTask => task !== null)
     : [];
+  const rowAnalysis = recordToRowAnalysis(rec.row_analysis);
   return {
     id: String(rec.id) as RecordIdString,
     key: typeof rec.key === "string" ? rec.key : "",
@@ -109,6 +134,7 @@ export function recordToTemplate(rec: Record<string, unknown>): WorkbookTemplate
     sheets,
     ...(defaultDashboard ? { defaultDashboard } : {}),
     ...(quickTasks.length > 0 ? { quickTasks } : {}),
+    ...(rowAnalysis ? { rowAnalysis } : {}),
     builtin: rec.builtin === true,
     sortOrder: typeof rec.sort_order === "number" ? rec.sort_order : 0,
   };

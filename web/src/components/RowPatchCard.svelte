@@ -4,7 +4,7 @@
    * 用户逐字段接受/忽略后确认写入或全部忽略。状态流转全部在
    * 纯逻辑层 `createRowPatchCard`（单测覆盖），这里只接线 + 渲染。
    */
-  import type { RowPatchProposal } from "@surreal-ck/shared";
+  import type { RecordWriteProposal, RowPatchProposal } from "@surreal-ck/shared";
   import {
     createRowPatchCard,
     formatRowPatchValue,
@@ -14,7 +14,7 @@
   } from "../lib/row-patch-card";
 
   type Props = {
-    proposal: RowPatchProposal;
+    proposal: RowPatchProposal | RecordWriteProposal;
     write: (values: Record<string, unknown>) => Promise<RowPatchWriteResult>;
     resume: (decision: RowPatchResumeDecision) => Promise<void>;
   };
@@ -47,8 +47,8 @@
 
 <div class="row-patch-card" aria-label="行分析提案">
   <header>
-    <strong>AI 修改建议</strong>
-    <small>{proposal.recordId}</small>
+    <strong>{proposal.type === "record-write-proposal" && proposal.operation === "create" ? "AI 新建建议" : "AI 修改建议"}</strong>
+    <small>{proposal.recordId ?? proposal.sheetId}</small>
   </header>
 
   <ul class="proposal-list">

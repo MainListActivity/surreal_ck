@@ -30,7 +30,13 @@
     type PersistDashboardDraftResult,
   } from "../features/dashboard/lib/dashboard-draft-card";
   import { getSurreal } from "../lib/surreal";
-  import type { ChatStreamEvent, DashboardDraftIntent, ResumeDecision, RowPatchProposal } from "@surreal-ck/shared";
+  import type {
+    ChatStreamEvent,
+    DashboardDraftIntent,
+    RecordWriteProposal,
+    ResumeDecision,
+    RowPatchProposal,
+  } from "@surreal-ck/shared";
 
   type Props = {
     open?: boolean;
@@ -187,8 +193,11 @@
    * 最小 patch、RecordId·Date 编解码和结构化错误。
    * 失败（含 PERMISSIONS 拒绝）返回中文错误，卡片保留可重试。
    */
-  function writeProposalValues(proposal: RowPatchProposal) {
+  function writeProposalValues(proposal: RowPatchProposal | RecordWriteProposal) {
     return async (values: Record<string, unknown>): Promise<RowPatchWriteResult> => {
+      if (proposal.type === "record-write-proposal") {
+        return editorStore.writeRecordProposal(proposal, values);
+      }
       return editorStore.writeRecordPatch(proposal.sheetId, proposal.recordId, values);
     };
   }

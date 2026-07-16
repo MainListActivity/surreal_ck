@@ -47,7 +47,7 @@ export function makeAgentExecutor(agent: Agent, options: AgentExecutorOptions = 
 
     // 把调用者 session 经 RequestContext 透传给 agent 的 tool（tool 用 ROUTER_RUNTIME_KEY 取）。
     const requestContext = new RequestContext();
-    requestContext.set(ROUTER_RUNTIME_KEY, { surrealSession });
+    requestContext.set(ROUTER_RUNTIME_KEY, { surrealSession, userContext: shared.userContext });
 
     const observedToolCalls: AiToolCallRecord[] = [];
     const stream = await agent.stream(

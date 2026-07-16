@@ -454,7 +454,55 @@ INSERT INTO workbook_template [
         ],
       },
     ],
+    row_analysis: {
+      background: "当前工作簿用于破产程序中的债权申报登记与审核管理。分析应围绕申报金额、审核结论、证据材料和办理期限展开，不替代管理人或律师的专业判断。",
+      field_semantics: [
+        { field_key: "creditor_name", meaning: "提出债权申报的主体名称" },
+        { field_key: "identity_number", meaning: "识别申报主体及疑似重复申报的稳定身份信息" },
+        { field_key: "declared_amount", meaning: "债权人本次申报的债权金额" },
+        { field_key: "reviewed_amount", meaning: "经当前审核流程确认或拟确认的金额" },
+        { field_key: "review_status", meaning: "当前债权审核所处状态及结论" },
+        { field_key: "evidence_status", meaning: "支撑债权申报的证据材料是否齐全或仍在审核" },
+        { field_key: "is_missing", meaning: "某项关联证据材料是否缺失" },
+        { field_key: "due_date", meaning: "补充材料、复核或其他办理事项的截止日期" },
+        { field_key: "status", meaning: "待办事项当前是否仍需处理" },
+      ],
+      review_points: [
+        "摘要必须覆盖申报金额、审核状态、材料情况和可用的引用依据。",
+        "风险清单按缺失信息、金额异常、疑似重复和期限风险分类，并逐项说明判断依据。",
+        "金额异常包括审核金额与申报金额差异显著、审核金额超过申报金额或金额与关联材料不一致。",
+        "疑似重复应结合身份信息、主体名称、申报金额及关联记录判断，不得只凭名称下结论。",
+        "期限风险应结合未完成待办、材料缺失和截止日期判断。",
+        "待办建议应关联债权人，给出事项名称、截止日期、负责人、优先级和状态；信息不足时保留为空或说明待确认。",
+      ],
+      output_guidance: [
+        "有记录关联资源时使用 [1]、[2] 格式引用，并确保编号对应工具返回的 citation。",
+        "没有关联资源时明确分开列示台账事实与模型建议，不得把模型推断写成已有材料结论。",
+        "任何字段补全或待办创建、更新都只能形成写入提案，等待用户确认后执行。",
+      ],
+    },
     quick_tasks: [
+      {
+        key: "selected-claim-review-summary",
+        label: "生成债权审核摘要",
+        task_text: "为当前选中的债权记录生成审核摘要，覆盖申报金额、审核状态、材料情况和引用依据；无关联资源时区分台账事实与模型建议。",
+        sheet_keys: ["creditors"],
+        risk: "query",
+      },
+      {
+        key: "selected-claim-risk-list",
+        label: "生成风险清单",
+        task_text: "检查当前选中的债权记录，按缺失信息、金额异常、疑似重复和期限风险生成清单，并逐项说明判断依据。",
+        sheet_keys: ["creditors"],
+        risk: "query",
+      },
+      {
+        key: "selected-claim-task-proposal",
+        label: "提出审核待办",
+        task_text: "根据当前选中债权的缺失材料与截止日期提出待办写入提案；只生成创建或更新建议，等待我确认后再写入。",
+        sheet_keys: ["creditors", "materials", "tasks"],
+        risk: "write",
+      },
       {
         key: "large-incomplete-claims",
         label: "筛选大额缺失材料",
@@ -656,4 +704,5 @@ ON DUPLICATE KEY UPDATE
   column_defs = $input.column_defs,
   sheet_defs = $input.sheet_defs,
   quick_tasks = $input.quick_tasks,
+  row_analysis = $input.row_analysis,
   default_dashboard = $input.default_dashboard;

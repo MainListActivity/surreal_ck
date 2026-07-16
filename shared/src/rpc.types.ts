@@ -304,6 +304,15 @@ export type RowPatchProposal = {
   }>;
 };
 
+export type RecordWriteProposal = {
+  type: "record-write-proposal";
+  operation: "create" | "update";
+  sheetId: string;
+  /** update 必填；create 不携带。 */
+  recordId?: RecordIdString;
+  proposals: RowPatchProposal["proposals"];
+};
+
 export type RowPatchIntent = {
   type: "rowPatch";
   sheetId: string;
@@ -335,6 +344,7 @@ export type AiStructuredIntent =
   | DashboardDraftIntent
   | LegacyDashboardDraftIntent
   | RowPatchProposal
+  | RecordWriteProposal
   | RowPatchIntent
   | ResourceDraftIntent;
 
@@ -462,6 +472,24 @@ const RowPatchProposalSchema = z.object({
   })),
 });
 
+const RecordWriteProposalSchema = z.object({
+  type: z.literal("record-write-proposal"),
+  operation: z.enum(["create", "update"]),
+  sheetId: z.string(),
+  recordId: z.string().optional(),
+  proposals: z.array(z.object({
+    field: z.string(),
+    currentValue: z.unknown(),
+    suggestedValue: z.unknown(),
+    basis: z.string(),
+    confidence: z.enum(["high", "medium", "low"]),
+  })),
+}).superRefine((value, ctx) => {
+  if (value.operation === "update" && !value.recordId) {
+    ctx.addIssue({ code: "custom", path: ["recordId"], message: "update proposal requires recordId" });
+  }
+});
+
 const RowPatchIntentSchema = z.object({
   type: z.literal("rowPatch"),
   sheetId: z.string(),
@@ -513,6 +541,7 @@ export const AiStructuredIntentSchema = z.union([
   DashboardDraftIntentSchema,
   LegacyDashboardDraftIntentSchema,
   RowPatchProposalSchema,
+  RecordWriteProposalSchema,
   RowPatchIntentSchema,
   ResourceDraftIntentSchema,
 ]);
@@ -844,6 +873,13 @@ export type WorkbookTemplateQuickTask = {
   risk: WorkbookTemplateQuickTaskRisk;
 };
 
+export type WorkbookTemplateRowAnalysis = {
+  background: string;
+  fieldSemantics: Array<{ fieldKey: string; meaning: string }>;
+  reviewPoints: string[];
+  outputGuidance: string[];
+};
+
 export type WorkbookTemplateSheet = {
   /** 模板包内稳定的数据表标识；实例化后不作为真实表名。 */
   key: string;
@@ -873,6 +909,8 @@ export type WorkbookTemplate = {
   defaultDashboard?: WorkbookTemplateDefaultDashboard;
   /** 数据驱动的 AI 快捷任务；缺省时 AI 抽屉使用通用入口。 */
   quickTasks?: WorkbookTemplateQuickTask[];
+  /** 通用行分析 agent 在当前工作簿内使用的模板领域说明。 */
+  rowAnalysis?: WorkbookTemplateRowAnalysis;
   builtin: boolean;
   sortOrder: number;
 };

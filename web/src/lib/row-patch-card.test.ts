@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import type { RowPatchProposal } from "@surreal-ck/shared";
-import { createRowPatchCard, formatRowPatchValue, type RowPatchCardState } from "./row-patch-card";
+import type { RecordWriteProposal, RowPatchProposal } from "@surreal-ck/shared";
+import {
+  createRowPatchCard,
+  formatRowPatchValue,
+  type ConfirmableRecordProposal,
+  type RowPatchCardState,
+} from "./row-patch-card";
 
 function proposal(over: Partial<RowPatchProposal> = {}): RowPatchProposal {
   return {
@@ -16,7 +21,7 @@ function proposal(over: Partial<RowPatchProposal> = {}): RowPatchProposal {
 }
 
 function cardHarness(input: {
-  proposal?: RowPatchProposal;
+  proposal?: ConfirmableRecordProposal;
   write?: (values: Record<string, unknown>) => Promise<{ ok: true } | { ok: false; message: string }>;
   resume?: (decision: { kind: "write-confirmed" | "write-rejected" }) => Promise<void>;
 } = {}) {
@@ -38,6 +43,26 @@ function cardHarness(input: {
 }
 
 describe("行分析提案卡状态机", () => {
+  test("新建记录提案在确认前零写入，确认后只提交接受的字段", async () => {
+    const createProposal: RecordWriteProposal = {
+      type: "record-write-proposal",
+      operation: "create",
+      sheetId: "sheet:tasks",
+      proposals: [
+        { field: "task_name", currentValue: null, suggestedValue: "补充材料", basis: "材料缺失", confidence: "high" },
+        { field: "due_date", currentValue: null, suggestedValue: "2026-07-20", basis: "建议期限", confidence: "medium" },
+      ],
+    };
+    const { card, writes, resumes } = cardHarness({ proposal: createProposal });
+
+    expect(writes).toEqual([]);
+    card.setAccepted("due_date", false);
+    await card.confirm();
+
+    expect(writes).toEqual([{ task_name: "补充材料" }]);
+    expect(resumes).toEqual([{ kind: "write-confirmed" }]);
+  });
+
   test("从 RowPatchProposal 初始化：逐字段展示当前值/建议值/依据/置信度，默认全部接受", () => {
     const { card } = cardHarness();
 
