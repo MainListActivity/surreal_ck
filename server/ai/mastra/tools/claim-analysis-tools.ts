@@ -122,6 +122,60 @@ async function resolveReferencesViaSession(
   return { items: firstStatementRows<unknown>(result) };
 }
 
+type RecordResourceRow = {
+  resource_id: unknown;
+  title: unknown;
+  summary: unknown;
+  source_url?: unknown;
+  evidence?: unknown;
+};
+
+async function resolveRecordResourcesViaSession(
+  session: Surreal,
+  recordId: string,
+): Promise<{
+  items: RecordResourceRow[];
+  citations: Array<{
+    index: number;
+    resourceId: string;
+    title: string;
+    sourceUrl?: string;
+    evidence?: Array<{ order: number; text: string }>;
+  }>;
+}> {
+  const result = await session.query(
+    `SELECT
+      in.id AS resource_id,
+      in.title AS title,
+      in.summary AS summary,
+      in.source_url AS source_url,
+      in.evidence AS evidence,
+      created_at
+    FROM $record<-resource_record_link
+    ORDER BY created_at DESC`,
+    { record: new StringRecordId(recordId) },
+  );
+  const items = firstStatementRows<RecordResourceRow>(result);
+  return {
+    items,
+    citations: items.map((item, index) => ({
+      index: index + 1,
+      resourceId: String(item.resource_id),
+      title: String(item.title),
+      sourceUrl: typeof item.source_url === "string" ? item.source_url : undefined,
+      evidence: Array.isArray(item.evidence)
+        ? item.evidence.flatMap((entry) => {
+            if (!entry || typeof entry !== "object") return [];
+            const value = entry as { order?: unknown; text?: unknown };
+            return typeof value.order === "number" && typeof value.text === "string"
+              ? [{ order: value.order, text: value.text }]
+              : [];
+          }).slice(0, 3)
+        : undefined,
+    })),
+  };
+}
+
 export function buildRowPatchProposal(input: {
   sheetId: string;
   recordId: string;
@@ -183,12 +237,20 @@ export const analyzeClaimRowTool = createTool({
 });
 
 const FetchRelatedRecordsOutputSchema = z.object({
+  source: z.enum(["record-resources", "related-records"]),
   items: z.array(z.unknown()),
+  citations: z.array(z.object({
+    index: z.number().int().positive(),
+    resourceId: z.string(),
+    title: z.string(),
+    sourceUrl: z.string().optional(),
+    evidence: z.array(z.object({ order: z.number().int().nonnegative(), text: z.string() })).optional(),
+  })),
 });
 
 export const fetchRelatedRecordsTool = createTool({
   id: "fetchRelatedRecords",
-  description: "根据当前记录中的 reference 字段读取关联记录预览，为债权行分析提供上下文。",
+  description: "优先读取当前业务记录关联的资源并返回 citations；没有关联资源时回退读取 reference 字段指向的记录预览。",
   inputSchema: z.object({
     workbookId: z.string().optional(),
     sheetId: z.string().optional(),
@@ -208,8 +270,15 @@ export const fetchRelatedRecordsTool = createTool({
           fields: fields as GridColumnDef[] | undefined,
         }, db)
       : { values: values ?? {}, fields: (fields ?? []) as GridColumnDef[] };
+    if (recordId) {
+      const resources = await resolveRecordResourcesViaSession(db, recordId);
+      if (resources.items.length > 0) {
+        return { source: "record-resources" as const, ...resources };
+      }
+    }
     const ids = collectReferenceIds(context.values, context.fields);
-    return resolveReferencesViaSession(db, ids);
+    const related = await resolveReferencesViaSession(db, ids);
+    return { source: "related-records" as const, items: related.items, citations: [] };
   },
 });
 

@@ -1,7 +1,7 @@
 import type { Agent } from "@mastra/core/agent";
 import { RequestContext } from "@mastra/core/request-context";
 import { z } from "zod";
-import type { AiStructuredIntent, AiToolCallRecord } from "@surreal-ck/shared";
+import type { AiStructuredIntent, AiToolCallRecord, ResourceCitationDTO } from "@surreal-ck/shared";
 import { serializeContextForAi } from "@surreal-ck/shared";
 import { ROUTER_RUNTIME_KEY, type SharedConfirmed, type SubAgentExecutor, type SubAgentSuspendSignal } from "./router-workflow";
 
@@ -16,6 +16,17 @@ const SchemaSummarySchema = z.object({
   tables: z.array(z.string()),
   fieldsByTable: z.record(z.string(), z.array(z.string())),
 });
+
+const ResourceCitationListSchema = z.array(z.object({
+  index: z.number().int().positive(),
+  resourceId: z.string(),
+  title: z.string(),
+  sourceUrl: z.string().optional(),
+  evidence: z.array(z.object({
+    order: z.number().int().nonnegative(),
+    text: z.string(),
+  })).optional(),
+}));
 
 /**
  * 把 Mastra Agent 适配成 SubAgentExecutor。
@@ -77,13 +88,33 @@ export function makeAgentExecutor(agent: Agent, options: AgentExecutorOptions = 
       onDelta?.(delta);
     }
     const text = aggregated || (await stream.text) || "";
+    const citations = deriveCitationsFromToolCalls(observedToolCalls);
     return {
       text,
       confirmed: deriveConfirmedFromToolCalls(observedToolCalls),
+      citations: citations.length ? citations : undefined,
       deltas,
       suspend: deriveSuspendSignalFromToolCalls(observedToolCalls),
     };
   };
+}
+
+export function deriveCitationsFromToolCalls(toolCalls: AiToolCallRecord[]): ResourceCitationDTO[] {
+  const byResource = new Map<string, ResourceCitationDTO>();
+  for (const call of toolCalls) {
+    const result = asRecord(call.result);
+    const parsed = ResourceCitationListSchema.safeParse(result?.citations);
+    if (!parsed.success) continue;
+    for (const citation of parsed.data) {
+      if (!byResource.has(citation.resourceId)) {
+        byResource.set(citation.resourceId, citation as ResourceCitationDTO);
+      }
+    }
+  }
+  return Array.from(byResource.values(), (citation, index) => ({
+    ...citation,
+    index: index + 1,
+  }));
 }
 
 export function deriveConfirmedFromToolCalls(toolCalls: AiToolCallRecord[]): SharedConfirmed {

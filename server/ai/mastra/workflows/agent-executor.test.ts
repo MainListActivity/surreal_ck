@@ -1,11 +1,37 @@
 import { describe, expect, test } from "bun:test";
 import {
+  deriveCitationsFromToolCalls,
   deriveConfirmedFromToolCalls,
   deriveSuspendSignalFromToolCalls,
 } from "./agent-executor";
 import type { AiToolCallRecord } from "@surreal-ck/shared";
 
 describe("agent executor tool result translation", () => {
+  test("记录关联资源的工具结果透传为可点击 citations", () => {
+    const citations = deriveCitationsFromToolCalls([{
+      toolName: "fetchRelatedRecords",
+      result: {
+        source: "record-resources",
+        items: [],
+        citations: [{
+          index: 1,
+          resourceId: "resource_item:r1",
+          title: "网页判例",
+          sourceUrl: "https://example.test/case",
+          evidence: [{ order: 0, text: "法院认为担保债权应单独审查。" }],
+        }],
+      },
+    }]);
+
+    expect(citations).toEqual([{
+      index: 1,
+      resourceId: "resource_item:r1",
+      title: "网页判例",
+      sourceUrl: "https://example.test/case",
+      evidence: [{ order: 0, text: "法院认为担保债权应单独审查。" }],
+    }]);
+  });
+
   test("ambiguous tool intent becomes a workflow suspend signal", () => {
     const signal = deriveSuspendSignalFromToolCalls([
       {

@@ -19,6 +19,8 @@ export type ResearchPanelContext = {
   runId?: string;
   query: string;
   resourceType: string;
+  /** 挂载资源面板时当前选中的业务记录；为空时资源仅保存到共享资源库。 */
+  recordId?: string;
 };
 
 export type EvidenceInput = {
@@ -38,13 +40,24 @@ export type ResearchDraftFields = {
 
 export type ResearchSaveProgress = "idle" | ResearchSaveStage;
 
+export type RelatedResourceSummary = {
+  linkId: string;
+  resourceId: string;
+  title: string;
+  summary: string;
+  sourceUrl?: string;
+};
+
 export type ResearchPanelState = {
   context: ResearchPanelContext;
   evidence: ResourceEvidenceDTO[];
   draft: ResearchDraftFields;
   saveProgress: ResearchSaveProgress;
-  saveError: { stage: ResearchSaveStage | "transport"; message: string } | null;
+  saveError: { stage: ResearchSaveStage | "transport" | "association"; message: string } | null;
   savedResourceIds: string[];
+  associatedResourceIds: string[];
+  relatedResources: RelatedResourceSummary[];
+  associationError: string | null;
   canSave: boolean;
   canFinish: boolean;
   finishing: boolean;
@@ -56,6 +69,10 @@ export type ResearchPanelOptions = {
   context: ResearchPanelContext;
   /** SSE 保存动作（research-save-client.save）。 */
   saveAction: (request: unknown, onEvent: (event: ResearchSaveEvent) => void) => Promise<void>;
+  /** 浏览器当前 workspace session 上的资源关联动作。 */
+  associationAction?: (input: { resourceId: string; recordId: string }) => Promise<void>;
+  loadAssociationsAction?: (recordId: string) => Promise<RelatedResourceSummary[]>;
+  unlinkAction?: (linkId: string) => Promise<void>;
   /** 完成检索：浏览器直连置 research_session completed，并（有 runId 时）resume workflow。 */
   finishAction?: (input: { sessionId: string; runId?: string; resourceIds: string[] }) => Promise<void>;
   now?: () => string;
@@ -68,6 +85,8 @@ export type ResearchPanelSession = {
   removeEvidence(order: number): void;
   updateDraft(patch: Partial<ResearchDraftFields>): void;
   save(): Promise<void>;
+  loadAssociations(): Promise<void>;
+  unlink(linkId: string): Promise<void>;
   finish(): Promise<void>;
 };
 
@@ -83,6 +102,9 @@ export function createResearchPanelSession(options: ResearchPanelOptions): Resea
   let saveProgress: ResearchSaveProgress = "idle";
   let saveError: ResearchPanelState["saveError"] = null;
   let savedResourceIds: string[] = [];
+  let associatedResourceIds: string[] = [];
+  let relatedResources: RelatedResourceSummary[] = [];
+  let associationError: string | null = null;
   let finishing = false;
   let finished = false;
   let finishError: string | null = null;
@@ -95,6 +117,9 @@ export function createResearchPanelSession(options: ResearchPanelOptions): Resea
       saveProgress,
       saveError: saveError ? { ...saveError } : null,
       savedResourceIds: [...savedResourceIds],
+      associatedResourceIds: [...associatedResourceIds],
+      relatedResources: relatedResources.map((item) => ({ ...item })),
+      associationError,
       canSave: saveProgress === "idle" && !finishing && !finished && evidence.length > 0,
       canFinish: saveProgress === "idle" && !finishing && !finished && savedResourceIds.length > 0,
       finishing,
@@ -170,6 +195,7 @@ export function createResearchPanelSession(options: ResearchPanelOptions): Resea
       emit();
 
       let failed = false;
+      let completedResourceId: string | null = null;
       try {
         await options.saveAction(request, (event) => {
           if (event.kind === "error") {
@@ -179,6 +205,7 @@ export function createResearchPanelSession(options: ResearchPanelOptions): Resea
             return;
           }
           if (event.kind === "done") {
+            completedResourceId = event.resourceId;
             savedResourceIds = [...savedResourceIds, event.resourceId];
             // 本资源已落库：清空草稿与证据篮，准备同一会话的下一个资源
             evidence = [];
@@ -196,6 +223,24 @@ export function createResearchPanelSession(options: ResearchPanelOptions): Resea
             emit();
           }
         });
+        if (completedResourceId && options.context.recordId && options.associationAction) {
+          try {
+            await options.associationAction({
+              resourceId: completedResourceId,
+              recordId: options.context.recordId,
+            });
+            associatedResourceIds = [...associatedResourceIds, completedResourceId];
+            if (options.loadAssociationsAction) {
+              relatedResources = await options.loadAssociationsAction(options.context.recordId);
+            }
+          } catch (error) {
+            failed = true;
+            saveError = {
+              stage: "association",
+              message: error instanceof Error ? error.message : String(error),
+            };
+          }
+        }
       } catch (error) {
         failed = true;
         saveError = {
@@ -207,6 +252,29 @@ export function createResearchPanelSession(options: ResearchPanelOptions): Resea
       // 失败时草稿与证据原样保留（failed 分支没有清空动作），可直接再次点保存
       void failed;
       saveProgress = "idle";
+      emit();
+    },
+
+    async loadAssociations() {
+      if (!options.context.recordId || !options.loadAssociationsAction) return;
+      associationError = null;
+      try {
+        relatedResources = await options.loadAssociationsAction(options.context.recordId);
+      } catch (error) {
+        associationError = error instanceof Error ? error.message : String(error);
+      }
+      emit();
+    },
+
+    async unlink(linkId) {
+      if (!options.unlinkAction) return;
+      associationError = null;
+      try {
+        await options.unlinkAction(linkId);
+        relatedResources = relatedResources.filter((item) => item.linkId !== linkId);
+      } catch (error) {
+        associationError = error instanceof Error ? error.message : String(error);
+      }
       emit();
     },
 

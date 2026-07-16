@@ -38,8 +38,11 @@ describe("claim-analysis agent 占位", () => {
   });
 
   test("claim-analysis agent 注册债权行分析工具", async () => {
-    const { CLAIM_ANALYSIS_TOOLS } = await import("./claim-analysis-agent");
+    const { CLAIM_ANALYSIS_INSTRUCTIONS, CLAIM_ANALYSIS_TOOLS } = await import("./claim-analysis-agent");
     expect(Object.keys(CLAIM_ANALYSIS_TOOLS).sort()).toEqual(["analyzeClaimRow", "fetchRelatedRecords"]);
+    expect(CLAIM_ANALYSIS_INSTRUCTIONS).toContain("优先使用当前记录的关联资源");
+    expect(CLAIM_ANALYSIS_INSTRUCTIONS).toContain("[1]");
+    expect(CLAIM_ANALYSIS_INSTRUCTIONS).toContain("无关联资源");
   });
 });
 

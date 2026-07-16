@@ -7,10 +7,12 @@ const context = {
   runId: "run-1",
   query: "合同无效再审案例",
   resourceType: "generic_note",
+  recordId: "ent_claim:c1",
 };
 
 function makeSession(overrides: Partial<ResearchPanelOptions> = {}) {
   const saveCalls: unknown[] = [];
+  const associationCalls: Array<{ resourceId: string; recordId: string }> = [];
   const finishCalls: Array<{ sessionId: string; runId?: string; resourceIds: string[] }> = [];
   let saveScript: ResearchSaveEvent[][] = [
     [
@@ -32,6 +34,9 @@ function makeSession(overrides: Partial<ResearchPanelOptions> = {}) {
     finishAction: async (input) => {
       finishCalls.push(input);
     },
+    associationAction: async (input) => {
+      associationCalls.push(input);
+    },
     now: () => "2026-06-11T08:00:00.000Z",
     ...overrides,
   });
@@ -39,6 +44,7 @@ function makeSession(overrides: Partial<ResearchPanelOptions> = {}) {
   return {
     session,
     saveCalls,
+    associationCalls,
     finishCalls,
     setSaveScript(scripts: ResearchSaveEvent[][]) {
       saveScript = scripts;
@@ -91,6 +97,56 @@ describe("research panel session", () => {
     const sent = saveCalls[0] as { sessionId: string; draft: { evidence: unknown[] } };
     expect(sent.sessionId).toBe(context.sessionId);
     expect(sent.draft.evidence).toHaveLength(1);
+  });
+
+  test("保存到当前选中记录：资源落库后使用当前 workspace session 建立关联", async () => {
+    const { session, associationCalls } = makeSession();
+    session.addEvidence({ text: "借款合同载明本金 100 万元" });
+    session.updateDraft({ title: "借款合同摘要", summary: "合同本金与期限摘要" });
+
+    await session.save();
+
+    expect(associationCalls).toEqual([{
+      resourceId: "resource_item:r1",
+      recordId: "ent_claim:c1",
+    }]);
+    expect(session.snapshot().associatedResourceIds).toEqual(["resource_item:r1"]);
+  });
+
+  test("当前记录可查看全部关联资源，并只解除关联而不删除资源", async () => {
+    const unlinkCalls: string[] = [];
+    const { session } = makeSession({
+      loadAssociationsAction: async () => [
+        {
+          linkId: "resource_record_link:l1",
+          resourceId: "resource_item:r1",
+          title: "网页判例",
+          summary: "判例摘要",
+          sourceUrl: "https://example.test/case",
+        },
+        {
+          linkId: "resource_record_link:l2",
+          resourceId: "resource_item:r2",
+          title: "人工摘要",
+          summary: "人工整理",
+        },
+      ],
+      unlinkAction: async (linkId) => {
+        unlinkCalls.push(linkId);
+      },
+    });
+
+    await session.loadAssociations();
+    expect(session.snapshot().relatedResources.map((item) => item.title)).toEqual([
+      "网页判例",
+      "人工摘要",
+    ]);
+
+    await session.unlink("resource_record_link:l1");
+    expect(unlinkCalls).toEqual(["resource_record_link:l1"]);
+    expect(session.snapshot().relatedResources.map((item) => item.resourceId)).toEqual([
+      "resource_item:r2",
+    ]);
   });
 
   test("保存失败（SSE error）：草稿与证据篮原样保留，可再次保存成功", async () => {

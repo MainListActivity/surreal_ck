@@ -393,6 +393,7 @@
                     runId={pending.runId}
                     query={pending.research.query}
                     resourceType={pending.research.resourceType}
+                    recordId={editorUi.selectedRowId ?? undefined}
                     finish={finishResearchFor(pending.messageId)}
                   />
                 {:else if pending.proposal}

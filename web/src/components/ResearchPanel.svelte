@@ -6,28 +6,39 @@
   状态机在 lib/research-panel.ts（纯逻辑，单测覆盖），组件只做渲染与事件转发。
 -->
 <script lang="ts">
+  import { onMount } from "svelte";
   import { Search } from "@lucide/svelte";
   import { createResearchPanelSession, type ResearchPanelState } from "../lib/research-panel";
   import { createResearchSaveClient } from "../lib/research-save-client";
+  import {
+    linkResourceToRecord,
+    listResourcesForRecord,
+    unlinkResourceFromRecord,
+  } from "../lib/resource-record-associations";
+  import { getSurreal } from "../lib/surreal";
 
   type Props = {
     sessionId: string;
     runId?: string;
     query: string;
     resourceType: string;
+    recordId?: string;
     /** 完成检索：置 research_session completed + resume workflow（由 AiDrawer 注入）。 */
     finish: (input: { sessionId: string; runId?: string; resourceIds: string[] }) => Promise<void>;
   };
 
-  let { sessionId, runId, query, resourceType, finish }: Props = $props();
+  let { sessionId, runId, query, resourceType, recordId, finish }: Props = $props();
 
   const saveClient = createResearchSaveClient();
   // 一个 panel 实例对应一个 manual-research intent（AiDrawer 按 messageId-kind key），
   // 会话上下文取挂载时的 props 即可——这些值在 intent 生命周期内不变。
   // svelte-ignore state_referenced_locally
   const panel = createResearchPanelSession({
-    context: { sessionId, runId, query, resourceType },
+    context: { sessionId, runId, query, resourceType, recordId },
     saveAction: (request, onEvent) => saveClient.save(request, onEvent),
+    associationAction: (input) => linkResourceToRecord(getSurreal(), input.resourceId, input.recordId),
+    loadAssociationsAction: (selectedRecordId) => listResourcesForRecord(getSurreal(), selectedRecordId),
+    unlinkAction: (linkId) => unlinkResourceFromRecord(getSurreal(), linkId),
     finishAction: (input) => finish(input),
     onChange(next) {
       panelState = next;
@@ -40,6 +51,10 @@
   let evidenceUrl = $state("");
   let evidenceTitle = $state("");
   let tagsText = $state("");
+
+  onMount(() => {
+    void panel.loadAssociations();
+  });
 
   const PROGRESS_LABEL: Record<string, string> = {
     validating: "校验草稿…",
@@ -100,6 +115,31 @@
     </button>
   </div>
 
+  {#if panelState.context.recordId}
+    <div class="block">
+      <span class="block-title">当前记录的关联资源</span>
+      {#if panelState.relatedResources.length}
+        <ul class="evidence-list">
+          {#each panelState.relatedResources as resource (resource.linkId)}
+            <li>
+              {#if resource.sourceUrl}
+                <a href={resource.sourceUrl} target="_blank" rel="noreferrer">{resource.title}</a>
+              {:else}
+                <strong>{resource.title}</strong>
+              {/if}
+              <p>{resource.summary}</p>
+              <button type="button" class="link-btn" onclick={() => void panel.unlink(resource.linkId)}>
+                解除关联
+              </button>
+            </li>
+          {/each}
+        </ul>
+      {:else}
+        <small>当前记录尚无关联资源。</small>
+      {/if}
+    </div>
+  {/if}
+
   <div class="block">
     <span class="block-title">资源草稿</span>
     <div class="field-row">
@@ -148,6 +188,9 @@
   {/if}
   {#if panelState.finishError}
     <p class="error">完成检索失败：{panelState.finishError}，可重试。</p>
+  {/if}
+  {#if panelState.associationError}
+    <p class="error">关联操作失败：{panelState.associationError}</p>
   {/if}
   {#if panelState.finished}
     <p class="progress">检索已完成，AI 正在基于已保存资源继续回答。</p>

@@ -78,4 +78,76 @@ describe("claim-analysis tools — 走调用者 session", () => {
     expect(session.calls.length).toBeGreaterThanOrEqual(2);
     expect(result.intent.proposals[0].currentValue).toBe(100);
   });
+
+  test("fetchRelatedRecords 优先读取当前记录关联资源并返回结构化 citations", async () => {
+    const session = makeFakeSession([
+      [[{
+        resource_id: "resource_item:r1",
+        title: "网页判例",
+        summary: "判例摘要",
+        source_url: "https://example.test/case",
+        evidence: [{ order: 0, text: "法院认为担保债权应单独审查。" }],
+      }]],
+    ]);
+    const { fetchRelatedRecordsTool } = await import("./claim-analysis-tools");
+    const execute = fetchRelatedRecordsTool.execute as unknown as (
+      input: {
+        recordId: string;
+        values: Record<string, unknown>;
+        fields: { key: string; label: string; fieldType: string }[];
+      },
+      ctx: { requestContext: RequestContext },
+    ) => Promise<{
+      source: string;
+      items: unknown[];
+      citations: Array<{ index: number; resourceId: string; title: string; sourceUrl?: string }>;
+    }>;
+
+    const result = await execute({
+      recordId: "ent_claim:c1",
+      values: { creditor: "ent_creditor:a" },
+      fields: [{ key: "creditor", label: "债权人", fieldType: "reference" }],
+    }, ctxWithSession(session));
+
+    expect(session.calls).toHaveLength(1);
+    expect(session.calls[0]!.sql).toContain("FROM $record<-resource_record_link");
+    expect(result.source).toBe("record-resources");
+    expect(result.citations).toEqual([{
+      index: 1,
+      resourceId: "resource_item:r1",
+      title: "网页判例",
+      sourceUrl: "https://example.test/case",
+      evidence: [{ order: 0, text: "法院认为担保债权应单独审查。" }],
+    }]);
+  });
+
+  test("当前记录无关联资源时回退读取普通 reference 字段", async () => {
+    const session = makeFakeSession([
+      [[]],
+      [[{ id: "ent_creditor:a", name: "甲公司" }]],
+    ]);
+    const { fetchRelatedRecordsTool } = await import("./claim-analysis-tools");
+    const execute = fetchRelatedRecordsTool.execute as unknown as (
+      input: {
+        recordId: string;
+        values: Record<string, unknown>;
+        fields: { key: string; label: string; fieldType: string }[];
+      },
+      ctx: { requestContext: RequestContext },
+    ) => Promise<{ source: string; items: unknown[]; citations: unknown[] }>;
+
+    const result = await execute({
+      recordId: "ent_claim:c1",
+      values: { creditor: "ent_creditor:a" },
+      fields: [{ key: "creditor", label: "债权人", fieldType: "reference" }],
+    }, ctxWithSession(session));
+
+    expect(session.calls).toHaveLength(2);
+    expect(session.calls[1]!.sql).toBe("SELECT * FROM $ids");
+    expect(result).toEqual({
+      source: "related-records",
+      items: [{ id: "ent_creditor:a", name: "甲公司" }],
+      citations: [],
+    });
+  });
 });
