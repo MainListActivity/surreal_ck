@@ -19,6 +19,7 @@
   import { getCurrentWorkspace } from "../lib/workspace-store.svelte";
   import { pinWorkbook, readPinnedWorkbooks } from "../lib/workbook-home";
   import type { WorkbookRow } from "../lib/workbooks";
+  import type { RiskNotification } from "../lib/risk-notifications";
 
   // workspace 首页 shell：左侧 SideNav + 右侧按 page 切换内容。
   // 已迁功能（首页 workbook 列表）直接可用；未迁页面（模板/仪表盘/个人设置/
@@ -28,12 +29,16 @@
     page,
     onopenworkbook,
     onopenaichat,
+    onopenrecord,
+    onasknotification,
     onnavigate,
   }: {
     slug: string;
     page: WorkspacePage;
     onopenworkbook?: (workbookId: string) => void;
     onopenaichat?: () => void;
+    onopenrecord?: (target: { workbookId: string; sheetId: string; recordId: string }) => void;
+    onasknotification?: (notification: RiskNotification) => void;
     onnavigate?: (page: WorkspacePage) => void;
   } = $props();
 
@@ -154,7 +159,7 @@
     {/if}
   </div>
   {#if page === "home"}
-    <ActivityPanel />
+    <ActivityPanel {onopenrecord} onaskai={onasknotification} />
   {/if}
 </div>
 

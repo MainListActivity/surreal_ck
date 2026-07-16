@@ -11,6 +11,8 @@
   import { isAuthenticated, logout, refresh, requireAuthenticatedRoute } from "./lib/auth";
   import { editorPath, parseRoute, workspacePath, type Route, type WorkspacePage } from "./lib/route";
   import { bootstrapWorkspace } from "./lib/switch-workspace.svelte";
+  import { buildRiskReminderAiContext, type RiskNotification } from "./lib/risk-notifications";
+  import type { AiDrawerContextSnapshot } from "./lib/ai-drawer";
 
   const REFRESH_INTERVAL_MS = 60_000;
 
@@ -25,6 +27,7 @@
   // 上一次已 bootstrap 的 slug；slug 不变就不重复连库。
   let bootstrappedSlug = $state<string | null>(null);
   let aiDrawerOpen = $state(false);
+  let aiContextOverride = $state<AiDrawerContextSnapshot | null>(null);
 
   function currentPath(): string {
     return `${window.location.pathname}${window.location.search}${window.location.hash}`;
@@ -49,7 +52,20 @@
   }
 
   function openAiDrawer(): void {
+    aiContextOverride = null;
     aiDrawerOpen = true;
+  }
+
+  function askAboutNotification(notification: RiskNotification): void {
+    aiContextOverride = buildRiskReminderAiContext(notification);
+    aiDrawerOpen = true;
+  }
+
+  function openNotificationRecord(
+    slug: string,
+    target: { workbookId: string; sheetId: string; recordId: string },
+  ): void {
+    navigateTo(`${editorPath(slug, target.workbookId, target.sheetId)}?record=${encodeURIComponent(target.recordId)}`);
   }
 
   async function refreshSession(): Promise<string | null> {
@@ -184,12 +200,14 @@
           sheetId={r.sheetId}
           onback={() => navigatePage(r.slug, "home")}
           onroute={navigateTo}
+          selectedRecordId={new URLSearchParams(window.location.search).get("record")}
         />
       </main>
       <AiDrawer
         open={aiDrawerOpen}
         workspaceSlug={r.slug}
         routeScreen="editor"
+        contextOverride={aiContextOverride}
         onclose={() => (aiDrawerOpen = false)}
       />
       {#if !aiDrawerOpen}
@@ -208,6 +226,8 @@
           page={r.page}
           onopenworkbook={(workbookId) => openWorkbook(r.slug, workbookId)}
           onopenaichat={openAiDrawer}
+          onopenrecord={(target) => openNotificationRecord(r.slug, target)}
+          onasknotification={askAboutNotification}
           onnavigate={(page) => navigatePage(r.slug, page)}
         />
       </main>
@@ -215,6 +235,7 @@
         open={aiDrawerOpen}
         workspaceSlug={r.slug}
         routeScreen={r.page === "dashboard" ? "dashboard" : "workspace"}
+        contextOverride={aiContextOverride}
         onclose={() => (aiDrawerOpen = false)}
       />
       {#if !aiDrawerOpen}

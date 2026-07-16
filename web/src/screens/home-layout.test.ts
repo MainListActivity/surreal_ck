@@ -35,7 +35,9 @@ describe("HR-01 workspace 首页布局骨架", () => {
     expectDeclaration(shell, "height", "100vh");
 
     expect(workspace).toMatch(/import ActivityPanel from "\.\.\/components\/ActivityPanel\.svelte";/);
-    expect(workspace).toMatch(/\{#if page === "home"\}\s*<ActivityPanel\s*\/>\s*\{\/if\}/);
+    expect(workspace).toMatch(
+      /\{#if page === "home"\}\s*<ActivityPanel \{onopenrecord\} onaskai=\{onasknotification\} \/>\s*\{\/if\}/,
+    );
     expect(workspace.match(/<ActivityPanel/g)).toHaveLength(1);
 
     const panel = cssRule(activity, ".activity-panel");

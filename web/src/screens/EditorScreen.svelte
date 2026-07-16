@@ -26,9 +26,10 @@
     sheetId?: string | null;
     onback?: () => void;
     onroute?: (path: string) => void;
+    selectedRecordId?: string | null;
   };
 
-  let { slug, workbookId, sheetId = null, onback, onroute }: Props = $props();
+  let { slug, workbookId, sheetId = null, selectedRecordId = null, onback, onroute }: Props = $props();
   let viewportWidth = $state(1440);
 
   const routeController = createEditorRouteController({
@@ -66,6 +67,13 @@
     untrack(() => {
       void routeController.open(route);
     });
+  });
+
+  $effect(() => {
+    if (selectedRecordId && editorStore.rows.some((row) => row.id === selectedRecordId)) {
+      editorUi.selectRow(selectedRecordId as import("@surreal-ck/shared").RecordIdString);
+      editorUi.openPanel("detail");
+    }
   });
 
   // workbook 数据就绪后预取该 workbook 的 dashboard 页（直连列表 + 首页聚合）。

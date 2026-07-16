@@ -139,6 +139,23 @@ describe("workspace template scripts", () => {
     expect(scripts.some((script) => script.sql.includes("INSERT INTO workbook_template"))).toBe(false);
   });
 
+  test("OIP-18 风险提醒 schema 以每日运行和提醒唯一索引保证幂等，并仅允许 employee 创建", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.name === "019-daily-claims-risk-reminder.surql");
+
+    expect(migration?.version).toBe(19);
+    const sql = migration?.sql ?? "";
+    expect(sql).toContain("risk_reminders_enabled ON TABLE workbook TYPE bool DEFAULT false");
+    expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS risk_check_run SCHEMAFULL/);
+    expect(sql).toMatch(/DEFINE INDEX IF NOT EXISTS \w+ ON TABLE risk_check_run COLUMNS check_date UNIQUE/);
+    expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS user_notification SCHEMAFULL CHANGEFEED 7d/);
+    expect(sql).toMatch(/FOR create WHERE \$auth\.kind = "virtual"/);
+    expect(sql).toMatch(/DEFINE INDEX IF NOT EXISTS \w+ ON TABLE user_notification COLUMNS dedupe_key UNIQUE/);
+    expect(sql).toContain("matched_fields ON TABLE user_notification TYPE object FLEXIBLE");
+    expect(sql).toContain("rule ON TABLE user_notification TYPE string");
+    expect(sql).toContain("checked_at ON TABLE user_notification TYPE datetime");
+  });
+
   test("workbook_template：类型由业务数据定义——底层不枚举行业类型，仅管理员可增改删，workbook 引用为可选 record", async () => {
     const scripts = await loadTemplateScripts();
     const tpl = scripts.find((script) => script.name === "011-workbook-template.surql");

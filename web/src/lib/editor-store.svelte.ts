@@ -132,6 +132,10 @@ export const editorStore = {
   importCsvRows: (input: ImportCsvRowsInput) => store.importCsvRows(input),
   writeRecordPatch: (sheetId: string, recordId: RecordIdString, values: Record<string, unknown>) =>
     store.writeRecordPatch(sheetId, recordId, values),
+  writeRecordProposal: (
+    proposal: Parameters<typeof store.writeRecordProposal>[0],
+    values: Record<string, unknown>,
+  ) => store.writeRecordProposal(proposal, values),
   saveFromSource: (source: Array<Record<string, unknown>>) => store.saveFromSource(source),
   deleteRows: (ids: Array<RecordIdString | string>) => store.deleteRows(ids),
   insertBlankRows: (

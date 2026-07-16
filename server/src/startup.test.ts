@@ -102,6 +102,36 @@ describe("server startup", () => {
     ]);
   });
 
+  test("监听后启动债权风险 dispatcher，关停时等待执行窗口收尾", async () => {
+    const calls: string[] = [];
+    const running = await startServer({
+      host: "127.0.0.1",
+      port: 18080,
+      envName: "test",
+      initRootConnection: async () => {},
+      ensureSystemSchema: async () => {},
+      seedSystemAdmins: async () => {},
+      migrateAllWorkspaces: async () => ({ total: 0, migrated: [] }),
+      createApp: () => ({ fetch: () => new Response("ok") }),
+      serve: () => ({ stop: () => calls.push("server:stop") }),
+      startReconcileLoop: () => ({ stop: () => {} }),
+      startClaimsRiskDispatcher: () => {
+        calls.push("claims-risk:start");
+        return { async stop() { calls.push("claims-risk:stop"); } };
+      },
+      closeRootConnection: async () => { calls.push("root:close"); },
+    });
+
+    await running.shutdown("SIGTERM");
+
+    expect(calls).toEqual([
+      "claims-risk:start",
+      "server:stop",
+      "claims-risk:stop",
+      "root:close",
+    ]);
+  });
+
   test("still listens when starting the reconcile heartbeat throws", async () => {
     const calls: string[] = [];
 

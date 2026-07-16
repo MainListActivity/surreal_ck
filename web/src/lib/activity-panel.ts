@@ -1,6 +1,6 @@
 import type { SurrealConn } from "./surreal";
 
-export type ActivityTab = "activity" | "overview" | "tasks";
+export type ActivityTab = "activity" | "overview" | "notifications";
 
 export type ChartBar = {
   label: string;

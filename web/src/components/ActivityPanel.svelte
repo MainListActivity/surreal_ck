@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
   import Avatar from "./Avatar.svelte";
+  import RiskNotificationInbox from "./RiskNotificationInbox.svelte";
+  import { loadRiskNotifications, type RiskNotification } from "$lib/risk-notifications";
   import {
     type ActivityTab,
     type ChartBar,
@@ -11,27 +13,50 @@
   import { activityRelativeTime } from "$lib/activity-feed";
   import { getSurreal } from "$lib/surreal";
 
+  let {
+    onopenrecord,
+    onaskai,
+  }: {
+    onopenrecord?: (target: { workbookId: string; sheetId: string; recordId: string }) => void;
+    onaskai?: (notification: RiskNotification) => void;
+  } = $props();
+
   let activeTab = $state<ActivityTab>("activity");
 
   const tabs: { id: ActivityTab; label: string }[] = [
     { id: "activity", label: "动态" },
     { id: "overview", label: "数据概览" },
-    { id: "tasks", label: "任务" },
+    { id: "notifications", label: "提醒" },
   ];
 
   let workbookCount = $state<number | null>(null);
   let trendBars = $state<ChartBar[]>([]);
+  let notificationCount = $state(0);
+  let stopNotificationLive: (() => void) | null = null;
 
   const maxBarValue = $derived(Math.max(...trendBars.map((b) => b.value), 1));
 
   onMount(() => {
     void activityFeed.start();
+    void refreshNotificationCount();
+    void getSurreal().liveTable("user_notification", () => void refreshNotificationCount())
+      .then((stop) => { stopNotificationLive = stop; })
+      .catch(() => undefined);
     if (activeTab === "overview") loadOverview();
   });
 
   onDestroy(() => {
     activityFeed.stop();
+    stopNotificationLive?.();
   });
+
+  async function refreshNotificationCount() {
+    try {
+      notificationCount = (await loadRiskNotifications(getSurreal())).length;
+    } catch {
+      notificationCount = 0;
+    }
+  }
 
   async function loadOverview() {
     if (workbookCount !== null) return;
@@ -65,6 +90,9 @@
         onclick={() => handleTabClick(tab.id)}
       >
         {tab.label}
+        {#if tab.id === "notifications" && notificationCount > 0}
+          <span class="notification-dot" aria-label={`${notificationCount} 条未处理提醒`}></span>
+        {/if}
       </button>
     {/each}
   </div>
@@ -119,22 +147,8 @@
           {/each}
         </div>
       </div>
-    {:else if activeTab === "tasks"}
-      <div class="empty-state">
-        <svg
-          class="empty-icon"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.5"
-          aria-hidden="true"
-        >
-          <rect x="3" y="3" width="18" height="18" rx="3" />
-          <path d="M9 12l2 2 4-4" />
-        </svg>
-        <p class="empty-title">虚拟办公室功能即将上线</p>
-        <p class="empty-desc">任务由 AI 员工自动处理，敬请期待。</p>
-      </div>
+    {:else if activeTab === "notifications"}
+      <RiskNotificationInbox {onopenrecord} {onaskai} />
     {/if}
   </div>
 </aside>
@@ -176,7 +190,10 @@
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+    position: relative;
   }
+
+  .notification-dot { position: absolute; top: 4px; right: 4px; width: 6px; height: 6px; border-radius: 999px; background: var(--error); }
 
   .panel-tab:hover:not(.active) {
     background: var(--soft, rgba(0 0 0 / .04));
@@ -314,35 +331,4 @@
     text-align: center;
   }
 
-  /* tasks stub */
-  .empty-state {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    padding: 48px 16px;
-    text-align: center;
-  }
-
-  .empty-icon {
-    width: 36px;
-    height: 36px;
-    color: var(--text-3);
-    opacity: 0.4;
-  }
-
-  .empty-title {
-    margin: 0;
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--text-2);
-  }
-
-  .empty-desc {
-    margin: 0;
-    font-size: 12px;
-    color: var(--text-3);
-    line-height: 1.5;
-  }
 </style>

@@ -5,6 +5,10 @@ import { ensureSystemSchema } from "./db/system-schema";
 import { seedSystemAdmins } from "./db/system-admin-seed";
 import { migrateAllWorkspaces } from "./db/migration-runner";
 import { startReconcileLoop, type ReconcileLoopHandle } from "./db/reconciler";
+import {
+  startClaimsRiskReminderDispatcher,
+  type ClaimsRiskDispatcherHandle,
+} from "../ai/office/claims-risk-dispatcher";
 
 type AppLike = {
   fetch: ReturnType<typeof createApp>["fetch"];
@@ -32,6 +36,7 @@ export type StartServerDeps = {
     websocket?: AppLike["websocket"];
   }) => ServerHandle;
   startReconcileLoop?: () => ReconcileLoopHandle;
+  startClaimsRiskDispatcher?: () => ClaimsRiskDispatcherHandle;
   closeRootConnection?: () => Promise<void>;
 };
 
@@ -54,6 +59,8 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
     ((options: { hostname: string; port: number; fetch: AppLike["fetch"] }) =>
       Bun.serve(options as Parameters<typeof Bun.serve>[0]));
   const startReconcile = deps.startReconcileLoop ?? startReconcileLoop;
+  const startClaimsRisk = deps.startClaimsRiskDispatcher
+    ?? (envName === "test" ? () => ({ async stop() {} }) : startClaimsRiskReminderDispatcher);
   const closeRoot = deps.closeRootConnection ?? closeRootConnection;
 
   await initRoot();
@@ -81,12 +88,22 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
     });
   }
 
+  let claimsRiskDispatcher: ClaimsRiskDispatcherHandle | undefined;
+  try {
+    claimsRiskDispatcher = startClaimsRisk();
+  } catch (cause) {
+    console.error("[server] failed to start claims risk dispatcher; continuing without it", {
+      message: cause instanceof Error ? cause.message : String(cause),
+    });
+  }
+
   return {
     server,
     async shutdown(signal: string): Promise<void> {
       console.info("[server] shutting down", { signal });
       server.stop();
       reconcileLoop?.stop();
+      await claimsRiskDispatcher?.stop();
       await closeRoot();
     },
   };

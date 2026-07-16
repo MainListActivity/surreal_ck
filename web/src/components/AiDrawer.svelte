@@ -43,6 +43,7 @@
     workspaceSlug?: string | null;
     routeScreen?: string;
     onclose?: () => void;
+    contextOverride?: AiDrawerContextSnapshot | null;
   };
 
   let {
@@ -50,6 +51,7 @@
     workspaceSlug = null,
     routeScreen = "workspace",
     onclose,
+    contextOverride = null,
   }: Props = $props();
 
   function emptyState(): AiDrawerState {
@@ -146,6 +148,7 @@
    * 选择变化后发送的永远是当下状态，不会带陈旧快照。
    */
   function contextSnapshot(): AiDrawerContextSnapshot {
+    if (contextOverride) return { ...contextOverride, workspaceSlug: workspaceSlug ?? undefined };
     return buildDrawerContextSnapshot({
       workspaceSlug,
       routeScreen,
