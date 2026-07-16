@@ -13,6 +13,10 @@
     type TemplateSheetImportControllerSnapshot,
   } from "../../../lib/template-sheet-import";
   import { editorUi } from "../lib/editor-ui.svelte";
+  import XlsxImportDialog from "../../../components/XlsxImportDialog.svelte";
+  import type { ParsedXlsxImport, ParsedXlsxSheet } from "../../../lib/xlsx-import";
+  import { createXlsxParseTask } from "../../../lib/xlsx-parse-task";
+  import { importXlsxSheetIntoTemplate } from "../../../lib/xlsx-template-import";
 
   type Controller = ReturnType<typeof createTemplateSheetImportController>;
 
@@ -20,6 +24,8 @@
   let controller = $state<Controller | null>(null);
   let view = $state<TemplateSheetImportControllerSnapshot | null>(null);
   let fileError = $state<string | null>(null);
+  let xlsxParsed = $state<ParsedXlsxImport | null>(null);
+  let xlsxParseTask = $state<ReturnType<typeof createXlsxParseTask> | null>(null);
 
   function close(): void {
     editorUi.showTemplateImport = false;
@@ -27,6 +33,24 @@
     controller = null;
     view = null;
     fileError = null;
+    xlsxParsed = null;
+    xlsxParseTask?.cancel();
+    xlsxParseTask = null;
+  }
+
+  function xlsxTargets() {
+    return editorStore.sheets.map((target) => ({
+      id: target.id,
+      label: target.label,
+      importSheet: async (sheet: ParsedXlsxSheet) => {
+        await editorStore.switchSheet(target.id);
+        return importXlsxSheetIntoTemplate({
+          sheet,
+          targets: activeTargets(),
+          importRows: (input) => editorStore.importCsvRows(input),
+        });
+      },
+    }));
   }
 
   function activeTargets(): TemplateImportTarget[] {
@@ -52,9 +76,14 @@
     if (!file) return;
     fileError = null;
     try {
-      if (!/\.csv$/i.test(file.name)) throw new Error("请选择 CSV 文件");
+      if (!/\.(?:csv|xlsx)$/i.test(file.name)) throw new Error("请选择 CSV 或 XLSX 文件");
       if (editorStore.workbook?.templateRef && workbookTemplatesStore.templates.length === 0) {
         await workbookTemplatesStore.load();
+      }
+      if (/\.xlsx$/i.test(file.name)) {
+        xlsxParseTask = createXlsxParseTask(file);
+        xlsxParsed = await xlsxParseTask.promise;
+        return;
       }
       parsed = parseCsvImport(await file.text(), file.name);
       controller = createTemplateSheetImportController({
@@ -66,6 +95,7 @@
     } catch (cause) {
       fileError = cause instanceof Error ? cause.message : String(cause);
     } finally {
+      xlsxParseTask = null;
       input.value = "";
     }
   }
@@ -92,6 +122,14 @@
 </script>
 
 {#if editorUi.showTemplateImport}
+  {#if xlsxParsed}
+    <XlsxImportDialog
+      parsed={xlsxParsed}
+      existingTargets={xlsxTargets()}
+      newWorkbookAllowed={false}
+      onclose={close}
+    />
+  {:else}
   <div class="overlay" role="presentation">
     <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="template-import-title">
       <header>
@@ -103,9 +141,9 @@
         {#if !parsed || !controller || !view}
           <label class="file-picker">
             <FileUp size={28} />
-            <strong>选择 CSV 文件</strong>
-            <span>使用当前数据表字段，支持中文表头</span>
-            <input type="file" accept=".csv,text/csv" onchange={(event) => void chooseFile(event)} />
+            <strong>选择 CSV 文件或 Excel 工作簿</strong>
+            <span>使用模板数据表字段，支持中文表头与多 Sheet</span>
+            <input type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onchange={(event) => void chooseFile(event)} />
           </label>
           {#if fileError}<p class="error" role="alert">{fileError}</p>{/if}
         {:else if view.importedCount > 0 || view.rejected.length > 0}
@@ -191,6 +229,7 @@
       </footer>
     </div>
   </div>
+  {/if}
 {/if}
 
 <style>

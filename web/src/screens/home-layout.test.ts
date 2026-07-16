@@ -116,7 +116,7 @@ describe("HR-05 首页快捷操作与 AI 入口", () => {
     expect(home).toContain('workbooksStore.createBlank("未命名工作簿")');
     expect(home).toContain("onopen?.(wb.id)");
     expect(home).toContain("handleImportClick");
-    expect(home).toContain('accept=".csv,text/csv"');
+    expect(home).toContain('accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"');
     expect(home).toContain("parseCsvImport(source, file.name)");
     expect(home).toContain("<CsvImportDialog");
   });

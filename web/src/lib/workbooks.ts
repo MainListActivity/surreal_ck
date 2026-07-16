@@ -15,6 +15,7 @@ import {
   type CsvImportField,
   type CsvImportFieldType,
 } from "./csv-import";
+import type { ParsedXlsxSheet } from "./xlsx-import";
 
 /**
  * workbook 列表项——直连读 `workbook` 表的裁剪形态。
@@ -66,6 +67,16 @@ export type CsvWorkbookImportResult = {
   importedCount: number;
   skippedCount: number;
   fields: Array<{ label: string; fieldType: CsvImportFieldType }>;
+};
+
+export type XlsxWorkbookImportInput = {
+  workbookName: string;
+  sheets: ParsedXlsxSheet[];
+};
+
+export type XlsxWorkbookImportResult = {
+  workbook: WorkbookRow;
+  sheets: Array<{ sheetName: string; importedCount: number; skippedCount: number }>;
 };
 
 /** 把 `workbook` 记录裁成展示用 {@link WorkbookRow}（剔系统字段，规范化 key）。 */
@@ -570,6 +581,64 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
     };
   }
 
+  async function importXlsxWorkbook(
+    input: XlsxWorkbookImportInput,
+  ): Promise<XlsxWorkbookImportResult | null> {
+    const workbookName = input.workbookName.trim();
+    if (!workbookName) {
+      state.error = "工作簿名称不能为空";
+      emit();
+      return null;
+    }
+    const sheets = input.sheets.filter((sheet) => sheet.status === "ready");
+    if (!sheets.length) {
+      state.error = "至少选择一个可导入的 Sheet";
+      emit();
+      return null;
+    }
+
+    const convertedSheets = sheets.map((sheet, sheetIndex) => {
+      const fields = sheet.fields.map((field) => ({ ...field, label: field.label.trim() }));
+      const converted = convertCsvImportRows(sheet.rows, fields);
+      return {
+        sheet,
+        fields,
+        converted,
+        create: {
+          key: `xlsx_${sheetIndex + 1}`,
+          label: sheet.name,
+          columns: fields.map((field) => ({
+            key: field.key,
+            label: field.label,
+            fieldType: field.fieldType,
+          })),
+          sampleRecords: converted.records.map((values, index) => ({
+            key: `xlsx-row-${index + 1}`,
+            values,
+          })),
+        } satisfies TemplateSheetForCreate,
+      };
+    });
+    if (convertedSheets.some(({ fields }) => fields.some((field) => !field.label))) {
+      state.error = "字段名称不能为空";
+      emit();
+      return null;
+    }
+
+    const workbook = await create(workbookName, {
+      sheets: convertedSheets.map(({ create }) => create),
+    });
+    if (!workbook) return null;
+    return {
+      workbook,
+      sheets: convertedSheets.map(({ sheet, converted }) => ({
+        sheetName: sheet.name,
+        importedCount: converted.records.length,
+        skippedCount: converted.skipped.length,
+      })),
+    };
+  }
+
   /**
    * 从业务模板新建：工作簿带上 template 引用（= 类型），各实体表按对应 column_defs 建列。
    * 模板的展示元数据（icon / accent / label）不落到 workbook 上，卡片渲染时按
@@ -617,6 +686,7 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
     load,
     createBlank,
     importCsvWorkbook,
+    importXlsxWorkbook,
     createFromTemplate,
     rename,
   };

@@ -35,7 +35,10 @@
   } from "../lib/workbook-home";
   import type { WorkbookRow } from "../lib/workbooks";
   import CsvImportDialog from "../components/CsvImportDialog.svelte";
+  import XlsxImportDialog from "../components/XlsxImportDialog.svelte";
   import { parseCsvImport, type ParsedCsvImport } from "../lib/csv-import";
+  import type { ParsedXlsxImport } from "../lib/xlsx-import";
+  import { createXlsxParseTask } from "../lib/xlsx-parse-task";
 
   // workspace 首页：真实 workbook 列表（直连 SurrealDB）+ quick actions。
   // 跨 workspace 隔离靠 db 边界，列表查询不带鉴权过滤；写权限由 access 类型卡死，
@@ -75,6 +78,8 @@
   let importStatus = $state("");
   let fileInput = $state<HTMLInputElement>();
   let csvImport = $state<ParsedCsvImport | null>(null);
+  let xlsxImport = $state<ParsedXlsxImport | null>(null);
+  let xlsxParseTask = $state<ReturnType<typeof createXlsxParseTask> | null>(null);
   let memberMetric = $state<HomeWorkspaceMetric | null>(null);
 
   const greeting = $derived(homeGreetingForDate());
@@ -150,18 +155,35 @@
     const file = input.files?.[0];
     input.value = "";
     if (!file) return;
-    if (!file.name.toLowerCase().endsWith(".csv")) {
-      importStatus = "请选择 .csv 文件";
+    if (!/\.(?:csv|xlsx)$/iu.test(file.name)) {
+      importStatus = "请选择 .csv 或 .xlsx 文件";
       return;
     }
     try {
+      if (/\.xlsx$/iu.test(file.name)) {
+        importStatus = "正在解析 Excel 文件…";
+        xlsxParseTask = createXlsxParseTask(file);
+        xlsxImport = await xlsxParseTask.promise;
+        importStatus = "";
+        return;
+      }
       const source = new TextDecoder("utf-8", { fatal: true }).decode(await file.arrayBuffer());
       csvImport = parseCsvImport(source, file.name);
     } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") {
+        importStatus = "";
+        return;
+      }
       importStatus = error instanceof TypeError
         ? "文件不是有效的 UTF-8 CSV，请转换编码后重试"
-        : (error instanceof Error ? error.message : "CSV 解析失败");
+        : (error instanceof Error ? error.message : "文件解析失败");
+    } finally {
+      xlsxParseTask = null;
     }
+  }
+
+  function cancelImportParsing(): void {
+    xlsxParseTask?.cancel();
   }
 
   function open(wb: WorkbookRow) {
@@ -244,19 +266,19 @@
           class="file-input"
           bind:this={fileInput}
           type="file"
-          accept=".csv,text/csv"
+          accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
           onchange={(event) => void handleImportFile(event)}
         />
         <button type="button" class="qa qa-neutral" onclick={handleImportClick}>
           <span class="qa-icon"><Upload size={21} /></span>
           <span class="qa-text">
             <strong>导入文件</strong>
-            <small>CSV · 自动识别字段</small>
+            <small>Excel / CSV · 自动识别字段</small>
           </span>
         </button>
       </div>
       {#if importStatus}
-        <div class="inline-note">{importStatus}</div>
+        <div class="inline-note">{importStatus}{#if xlsxParseTask}<button type="button" onclick={cancelImportParsing}>取消解析</button>{/if}</div>
       {/if}
     {/if}
 
@@ -419,6 +441,14 @@
   <CsvImportDialog
     parsed={csvImport}
     onclose={() => (csvImport = null)}
+    onopen={(workbookId) => onopen?.(workbookId)}
+  />
+{/if}
+
+{#if xlsxImport}
+  <XlsxImportDialog
+    parsed={xlsxImport}
+    onclose={() => (xlsxImport = null)}
     onopen={(workbookId) => onopen?.(workbookId)}
   />
 {/if}
