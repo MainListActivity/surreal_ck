@@ -41,6 +41,7 @@ export type EditorUiState = {
   editingFieldKey: string | null;
   fieldMenu: FieldMenuState;
   showShare: boolean;
+  showTemplateImport: boolean;
   showMenu: boolean;
   selectedRowId: RecordIdString | null;
   clipboardStatus: string;
@@ -86,6 +87,7 @@ export function createEditorUi(deps: EditorUiDeps = {}) {
     editingFieldKey: null,
     fieldMenu: { open: false, fieldKey: null, x: 0, y: 0 },
     showShare: false,
+    showTemplateImport: false,
     showMenu: false,
     selectedRowId: null,
     clipboardStatus: DEFAULT_CLIPBOARD_STATUS,
@@ -124,6 +126,8 @@ export function createEditorUi(deps: EditorUiDeps = {}) {
     get fieldMenu(): FieldMenuState { return state.fieldMenu; },
     get showShare(): boolean { return state.showShare; },
     set showShare(v: boolean) { state.showShare = v; emit(); },
+    get showTemplateImport(): boolean { return state.showTemplateImport; },
+    set showTemplateImport(v: boolean) { state.showTemplateImport = v; emit(); },
     get showMenu(): boolean { return state.showMenu; },
     set showMenu(v: boolean) { state.showMenu = v; emit(); },
     get selectedRowId(): RecordIdString | null { return state.selectedRowId; },

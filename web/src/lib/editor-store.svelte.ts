@@ -20,6 +20,7 @@ import {
   type TableViewAdapter,
   type WorkbookMeta,
 } from "./editor-store";
+import type { ImportCsvRowsInput } from "./data-table-runtime";
 
 export { isDraftRowId } from "./record-drafts";
 export type {
@@ -128,6 +129,7 @@ export const editorStore = {
   setHiddenFields: (hiddenFields: string[]) => store.setHiddenFields(hiddenFields),
   setGroupBy: (groupBy: string | null) => store.setGroupBy(groupBy),
   saveRows: (patches: Array<{ id?: RecordIdString; values: Record<string, unknown> }>) => store.saveRows(patches),
+  importCsvRows: (input: ImportCsvRowsInput) => store.importCsvRows(input),
   writeRecordPatch: (sheetId: string, recordId: RecordIdString, values: Record<string, unknown>) =>
     store.writeRecordPatch(sheetId, recordId, values),
   saveFromSource: (source: Array<Record<string, unknown>>) => store.saveFromSource(source),

@@ -22,6 +22,11 @@ import {
 } from "./workbook-data";
 import { recordValueToString, toRecordId } from "./record-id";
 import type { LiveMessage, SurrealConn } from "./surreal";
+import {
+  normalizeTemplateImportRows,
+  type TemplateImportMapping,
+  type TemplateImportRejectedRow,
+} from "./template-sheet-import";
 
 const PAGE = { limit: 500, start: 0 } as const;
 const SYSTEM_FIELDS = new Set(["id", "workspace", "created_by", "created_at", "updated_at"]);
@@ -88,6 +93,17 @@ export type OpenDataTableRuntimeInput = {
   dataTableId: string;
   query: ViewParams;
   onChange?: (snapshot: DataTableRuntimeSnapshot) => void;
+};
+
+export type ImportCsvRowsInput = {
+  rows: string[][];
+  rowNumbers?: number[];
+  mappings: TemplateImportMapping[];
+};
+
+export type ImportCsvRowsResult = {
+  importedCount: number;
+  rejected: TemplateImportRejectedRow[];
 };
 
 type StoredDataTable = {
@@ -349,6 +365,69 @@ export async function openDataTableRuntime(input: OpenDataTableRuntimeInput) {
     });
   }
 
+  async function importCsvRows(input: ImportCsvRowsInput): Promise<ImportCsvRowsResult> {
+    const closed = ensureOpen();
+    if (closed) {
+      return {
+        importedCount: 0,
+        rejected: input.rows.map((sourceCells, index) => ({
+          rowNumber: input.rowNumbers?.[index] ?? index + 2,
+          field: "整条记录",
+          reason: closed.ok ? "数据表运行时已关闭" : closed.error.message,
+          sourceCells: [...sourceCells],
+        })),
+      };
+    }
+
+    const mappedKeys = new Set(input.mappings.flatMap((mapping) =>
+      mapping.targetKey ? [mapping.targetKey] : []));
+    const referenceMatches = new Map<string, Map<string, string[]>>();
+    for (const column of columns) {
+      if (column.fieldType !== "reference" || !mappedKeys.has(column.key)) continue;
+      if (!column.referenceTable || !column.referenceDisplayKey) continue;
+      const rows = await conn.query<Record<string, unknown>>(
+        `SELECT id, ${column.referenceDisplayKey} FROM ${column.referenceTable}`,
+      );
+      const matches = new Map<string, string[]>();
+      for (const row of rows) {
+        const displayValue = row[column.referenceDisplayKey];
+        if (displayValue == null) continue;
+        const key = relaxedImportText(String(displayValue));
+        matches.set(key, [...(matches.get(key) ?? []), String(row.id)]);
+      }
+      referenceMatches.set(column.key, matches);
+    }
+
+    const normalized = normalizeTemplateImportRows({
+      rows: input.rows,
+      rowNumbers: input.rowNumbers,
+      mappings: input.mappings,
+      targets: columns.map((column) => ({ column })),
+      referenceMatches,
+    });
+    const rejected = [...normalized.rejected];
+    let importedCount = 0;
+    for (const record of normalized.records) {
+      try {
+        const raw = await runRecordMutation(`import:${record.rowNumber}:${crypto.randomUUID()}`, () =>
+          conn.createRecord<Record<string, unknown>>(
+            meta.tableName,
+            prepareRecordFields(record.values, columns),
+          ));
+        integrateReturnedRecord(recordToGrid(raw, columns));
+        importedCount += 1;
+      } catch (cause) {
+        rejected.push({
+          rowNumber: record.rowNumber,
+          field: "整条记录",
+          reason: classifyError(cause).message,
+          sourceCells: record.sourceCells,
+        });
+      }
+    }
+    return { importedCount, rejected };
+  }
+
   async function deleteRecords(ids: Array<RecordIdString | string>): Promise<RuntimeResult<void>> {
     const closed = ensureOpen();
     if (closed) return closed;
@@ -569,12 +648,17 @@ export async function openDataTableRuntime(input: OpenDataTableRuntimeInput) {
     refresh,
     updateRecords,
     promoteDraft,
+    importCsvRows,
     deleteRecords,
     updateFields,
     planFieldRemoval,
     confirmFieldRemoval,
     close,
   };
+}
+
+function relaxedImportText(value: string): string {
+  return value.toLocaleLowerCase().replace(/\s+/gu, "");
 }
 
 async function loadRuntimeMeta(

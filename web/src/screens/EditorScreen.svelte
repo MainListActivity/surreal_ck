@@ -11,6 +11,7 @@
   import AddRecordModal from "../features/editor/modals/AddRecordModal.svelte";
   import FieldsModal from "../features/editor/modals/FieldsModal.svelte";
   import LeaveDraftModal from "../features/editor/modals/LeaveDraftModal.svelte";
+  import TemplateSheetImportDialog from "../features/editor/modals/TemplateSheetImportDialog.svelte";
   import ShareModal from "../features/editor/modals/ShareModal.svelte";
   import { editorUi } from "../features/editor/lib/editor-ui.svelte";
   import { getTool } from "../features/editor/registries/tools";
@@ -154,6 +155,7 @@
 <FieldsModal />
 <ShareModal {workbookId} />
 <LeaveDraftModal />
+<TemplateSheetImportDialog />
 
 <style>
   .editor {

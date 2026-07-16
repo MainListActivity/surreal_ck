@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { Upload } from "@lucide/svelte";
   import { editorStore } from "../../lib/editor-store.svelte";
   import { editorUi } from "./lib/editor-ui.svelte";
   import { viewRegistry } from "./registries/views";
@@ -55,6 +56,13 @@
     </button>
   {/each}
   <div class="toolbar-fill"></div>
+  <button
+    class="tool-btn"
+    disabled={!editorStore.activeSheetId || editorStore.saving}
+    onclick={() => (editorUi.showTemplateImport = true)}
+  >
+    <Upload size={13} />导入 CSV
+  </button>
   {#if selectedCount > 0}
     <span class="selected-hint">已选 {selectedCount} 条</span>
   {/if}

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { GridColumnDef, ViewParams } from "@surreal-ck/shared/rpc.types";
 import type { LiveMessage, SurrealConn, SurrealTransactionWriter } from "./surreal";
 import { openDataTableRuntime } from "./data-table-runtime";
+import type { TemplateImportMapping } from "./template-sheet-import";
 
 const columns: GridColumnDef[] = [
   { key: "name", label: "名称", fieldType: "text", required: true },
@@ -23,13 +24,17 @@ function storedColumns() {
   ];
 }
 
-function runtimeHarness(initialRows: Array<Record<string, unknown>> = []) {
+function runtimeHarness(
+  initialRows: Array<Record<string, unknown>> = [],
+  runtimeColumns = storedColumns(),
+) {
   let rows = initialRows.map((row) => ({ ...row }));
   let live: ((message: LiveMessage) => void) | null = null;
   let unsubscribed = false;
   let createSeq = 0;
   const calls: string[] = [];
   const updates: Array<{ id: string; patch: Record<string, unknown> }> = [];
+  const creates: Array<{ table: string; data: Record<string, unknown> }> = [];
   const txCalls: string[] = [];
 
   const writer = {
@@ -41,6 +46,7 @@ function runtimeHarness(initialRows: Array<Record<string, unknown>> = []) {
       return { ...rows[index] };
     },
     async createRecord(table: string, data: Record<string, unknown>) {
+      creates.push({ table, data });
       createSeq += 1;
       const created = { id: `${table}:new${createSeq}`, ...data };
       rows.push(created);
@@ -66,7 +72,7 @@ function runtimeHarness(initialRows: Array<Record<string, unknown>> = []) {
           workbook: "workbook:w1",
           label: "数据表 1",
           table_name: "ent_claim",
-          column_defs: storedColumns(),
+          column_defs: runtimeColumns,
         }];
       }
       return rows.map((row) => ({ ...row }));
@@ -96,6 +102,7 @@ function runtimeHarness(initialRows: Array<Record<string, unknown>> = []) {
     conn,
     calls,
     updates,
+    creates,
     txCalls,
     get live() { return live; },
     get unsubscribed() { return unsubscribed; },
@@ -180,6 +187,77 @@ describe("数据表运行时打开与记录入口", () => {
     const promoted = await runtime.promoteDraft({ name: "乙", amount: 2 });
     expect(promoted.status).toBe("promoted");
     if (promoted.status === "promoted") expect(promoted.record.id).toBe("ent_claim:new1");
+  });
+
+  test("CSV 导入按显示值解析引用，未命中行不写入且可只重试修正后的原始行", async () => {
+    const h = runtimeHarness([], [
+      { key: "material_name", label: "材料名称", field_type: "text", required: true },
+      {
+        key: "creditor",
+        label: "关联债权人",
+        field_type: "reference",
+        required: true,
+        reference_table: "ent_creditor",
+        reference_display_key: "creditor_name",
+      },
+    ]);
+    const baseQuery = h.conn.query.bind(h.conn);
+    const referenceQueries: string[] = [];
+    h.conn.query = (async (sql: string, bindings?: Record<string, unknown>) => {
+      if (/FROM ent_creditor/i.test(sql)) {
+        referenceQueries.push(sql);
+        return [
+          { id: "ent_creditor:c1", creditor_name: "远航供应链有限公司" },
+          { id: "ent_creditor:c2", creditor_name: "华辰建设有限公司" },
+        ];
+      }
+      return baseQuery(sql, bindings);
+    }) as SurrealConn["query"];
+    const runtime = await openDataTableRuntime({
+      conn: h.conn,
+      workbookId: "workbook:w1",
+      dataTableId: "sheet:s1",
+      query: emptyView,
+    });
+    const mappings: TemplateImportMapping[] = [
+      { sourceIndex: 0, sourceLabel: "材料名称", targetKey: "material_name", matchedBy: "field-name" },
+      { sourceIndex: 1, sourceLabel: "债权人", targetKey: "creditor", matchedBy: "alias" },
+    ];
+
+    const first = await runtime.importCsvRows({
+      rows: [
+        ["送货签收单", "远航供应链有限公司"],
+        ["抵押登记", "未登记债权人"],
+      ],
+      mappings,
+    });
+
+    expect(first).toEqual({
+      importedCount: 1,
+      rejected: [{
+        rowNumber: 3,
+        field: "关联债权人",
+        reason: "未找到显示值为“未登记债权人”的引用记录",
+        sourceCells: ["抵押登记", "未登记债权人"],
+      }],
+    });
+    expect(h.creates).toHaveLength(1);
+    expect(referenceQueries).toEqual(["SELECT id, creditor_name FROM ent_creditor"]);
+    expect(h.creates[0]!.table).toBe("ent_claim");
+    expect(String(h.creates[0]!.data.creditor)).toBe("ent_creditor:c1");
+
+    const retry = await runtime.importCsvRows({
+      rows: [["抵押登记", "华辰建设有限公司"]],
+      rowNumbers: [3],
+      mappings,
+    });
+    expect(retry).toEqual({ importedCount: 1, rejected: [] });
+    expect(referenceQueries).toEqual([
+      "SELECT id, creditor_name FROM ent_creditor",
+      "SELECT id, creditor_name FROM ent_creditor",
+    ]);
+    expect(h.creates).toHaveLength(2);
+    expect(String(h.creates[1]!.data.creditor)).toBe("ent_creditor:c2");
   });
 });
 

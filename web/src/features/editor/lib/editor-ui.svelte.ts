@@ -31,6 +31,7 @@ const reactive = $state<EditorUiSnapshot>({
   editingFieldKey: null,
   fieldMenu: { open: false, fieldKey: null, x: 0, y: 0 },
   showShare: false,
+  showTemplateImport: false,
   showMenu: false,
   selectedRowId: null,
   clipboardStatus: "支持从 Excel / WPS / Google Sheets 直接复制 TSV 粘贴",
@@ -51,6 +52,7 @@ const store = createEditorUi({
     reactive.editingFieldKey = snapshot.editingFieldKey;
     reactive.fieldMenu = snapshot.fieldMenu;
     reactive.showShare = snapshot.showShare;
+    reactive.showTemplateImport = snapshot.showTemplateImport;
     reactive.showMenu = snapshot.showMenu;
     reactive.selectedRowId = snapshot.selectedRowId;
     reactive.clipboardStatus = snapshot.clipboardStatus;
@@ -81,6 +83,8 @@ export const editorUi = {
   get fieldMenu(): FieldMenuState { return reactive.fieldMenu; },
   get showShare(): boolean { return reactive.showShare; },
   set showShare(v: boolean) { store.showShare = v; },
+  get showTemplateImport(): boolean { return reactive.showTemplateImport; },
+  set showTemplateImport(v: boolean) { store.showTemplateImport = v; },
   get showMenu(): boolean { return reactive.showMenu; },
   set showMenu(v: boolean) { store.showMenu = v; },
   get selectedRowId(): RecordIdString | null { return reactive.selectedRowId; },

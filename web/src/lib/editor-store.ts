@@ -20,6 +20,8 @@ import {
   type DataTableRuntime,
   type DataTableRuntimeSnapshot,
   type FieldRemovalPlan,
+  type ImportCsvRowsInput,
+  type ImportCsvRowsResult,
 } from "./data-table-runtime";
 import { isDraftRowId, recordDrafts } from "./record-drafts";
 
@@ -365,6 +367,31 @@ export function createEditorStore(deps: EditorDeps) {
     } catch (err) {
       state.saveError = String(err);
       return false;
+    } finally {
+      state.saving = false;
+      emit();
+    }
+  }
+
+  async function importCsvRows(input: ImportCsvRowsInput): Promise<ImportCsvRowsResult> {
+    if (!runtime) {
+      return {
+        importedCount: 0,
+        rejected: input.rows.map((sourceCells, index) => ({
+          rowNumber: input.rowNumbers?.[index] ?? index + 2,
+          field: "整条记录",
+          reason: "数据表尚未打开",
+          sourceCells: [...sourceCells],
+        })),
+      };
+    }
+    state.saving = true;
+    state.saveError = null;
+    emit();
+    try {
+      const result = await runtime.importCsvRows(input);
+      applyRuntimeSnapshot(runtime.snapshot);
+      return result;
     } finally {
       state.saving = false;
       emit();
@@ -725,6 +752,7 @@ export function createEditorStore(deps: EditorDeps) {
     setHiddenFields,
     setGroupBy,
     saveRows,
+    importCsvRows,
     writeRecordPatch,
     saveFromSource,
     deleteRows,
