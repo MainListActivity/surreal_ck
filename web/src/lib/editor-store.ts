@@ -65,6 +65,8 @@ export type SheetMeta = {
   id: RecordIdString;
   label: string;
   tableName: string;
+  /** 模板内稳定数据表 key；空白/旧工作簿没有。 */
+  templateSheetKey?: string;
   columns: GridColumnDef[];
 };
 
@@ -72,6 +74,8 @@ export type SheetMeta = {
 export type WorkbookMeta = {
   id: RecordIdString;
   name: string;
+  /** 创建该工作簿的模板引用；空白工作簿没有。 */
+  templateRef?: RecordIdString;
 };
 
 export type EditorState = {
@@ -191,11 +195,11 @@ export function createEditorStore(deps: EditorDeps) {
     state.workbookId = workbookId as RecordIdString;
     emit();
     try {
-      const [sheets, workbookName] = await Promise.all([
+      const [sheets, workbook] = await Promise.all([
         fetchSheets(deps.getConn(), workbookId),
-        fetchWorkbookName(deps.getConn(), workbookId),
+        fetchWorkbookMeta(deps.getConn(), workbookId),
       ]);
-      state.workbook = { id: workbookId as RecordIdString, name: workbookName };
+      state.workbook = workbook;
       if (!sheets.length) {
         state.sheets = [];
         state.activeSheetId = null;
@@ -748,18 +752,23 @@ async function fetchSheets(conn: SurrealConn, workbookId: string): Promise<Sheet
     id: String(rec.id) as RecordIdString,
     label: typeof rec.label === "string" ? rec.label : "",
     tableName: String(rec.table_name),
+    ...(typeof rec.template_sheet_key === "string" ? { templateSheetKey: rec.template_sheet_key } : {}),
     columns: ((rec.column_defs as StoredGridFieldDef[] | undefined) ?? []).map(storedColumnToDTO),
   }));
 }
 
-/** 读 workbook 记录的展示名；读不到（无权限 / 已删）时回退到 RecordId 字符串。 */
-async function fetchWorkbookName(conn: SurrealConn, workbookId: string): Promise<string> {
-  const records = await conn.query<{ name?: unknown }>(
-    "SELECT name FROM $wb",
+/** 读 workbook 展示名和模板引用；读不到时保留可用的 RecordId 展示名。 */
+async function fetchWorkbookMeta(conn: SurrealConn, workbookId: string): Promise<WorkbookMeta> {
+  const records = await conn.query<{ name?: unknown; template?: unknown }>(
+    "SELECT name, template FROM $wb",
     { wb: toRecordId(workbookId) },
   );
-  const name = records[0]?.name;
-  return typeof name === "string" && name.trim() ? name : workbookId;
+  const record = records[0];
+  return {
+    id: workbookId as RecordIdString,
+    name: typeof record?.name === "string" && record.name.trim() ? record.name : workbookId,
+    ...(record?.template != null ? { templateRef: String(record.template) as RecordIdString } : {}),
+  };
 }
 
 /** 隐藏字段过滤后的可见列。供 runes 层从快照派生用。 */

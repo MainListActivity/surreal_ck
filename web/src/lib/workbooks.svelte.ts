@@ -3,6 +3,7 @@ import { getSurreal } from "./surreal";
 import {
   createWorkbooksStore,
   filterWorkbooksByQuery,
+  type CreateFromTemplateOptions,
   type TemplateForCreate,
   type WorkbookRow,
   type WorkbooksSnapshot,
@@ -41,6 +42,7 @@ export const workbooksStore = {
   createFromTemplate: (
     template: TemplateForCreate,
     name?: string,
-  ) => store.createFromTemplate(template, name),
+    options?: CreateFromTemplateOptions,
+  ) => store.createFromTemplate(template, name, options),
   rename: (id: RecordIdString | string, name: string) => store.rename(id, name),
 };

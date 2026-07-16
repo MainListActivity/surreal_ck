@@ -454,6 +454,50 @@ INSERT INTO workbook_template [
         ],
       },
     ],
+    quick_tasks: [
+      {
+        key: "large-incomplete-claims",
+        label: "筛选大额缺失材料",
+        task_text: "找出申报金额大于 100 万且证据材料不完整的债权人，并列出判断依据。",
+        sheet_keys: ["creditors", "materials"],
+        risk: "query",
+      },
+      {
+        key: "review-progress-dashboard",
+        label: "生成审核进度看板",
+        task_text: "根据当前工作簿生成债权审核进度看板草稿，先展示结果和变更预览，等待我确认后再保存。",
+        sheet_keys: ["creditors", "materials", "tasks"],
+        risk: "write",
+      },
+      {
+        key: "claim-type-summary",
+        label: "按类型汇总金额",
+        task_text: "按债权类型汇总申报金额，展示每类金额和总计。",
+        sheet_keys: ["creditors"],
+        risk: "query",
+      },
+      {
+        key: "weekly-missing-materials",
+        label: "本周补材料清单",
+        task_text: "列出本周需要补充材料的债权人、缺失材料、相关待办和截止日期。",
+        sheet_keys: ["creditors", "materials", "tasks"],
+        risk: "query",
+      },
+      {
+        key: "possible-duplicate-claims",
+        label: "检查重复申报",
+        task_text: "检查疑似重复申报的债权人，按身份号码、名称和金额说明重复依据。",
+        sheet_keys: ["creditors"],
+        risk: "query",
+      },
+      {
+        key: "open-task-summary",
+        label: "汇总未完成待办",
+        task_text: "按负责人和优先级汇总未完成待办，并列出已经逾期或即将到期的事项。",
+        sheet_keys: ["tasks"],
+        risk: "query",
+      },
+    ],
     default_dashboard: {
       title: "债权审核概览",
       slug: "claims-overview",
@@ -611,4 +655,5 @@ ON DUPLICATE KEY UPDATE
   sort_order = $input.sort_order,
   column_defs = $input.column_defs,
   sheet_defs = $input.sheet_defs,
+  quick_tasks = $input.quick_tasks,
   default_dashboard = $input.default_dashboard;

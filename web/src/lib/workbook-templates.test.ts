@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import type { SurrealConn } from "./surreal";
 import {
   createWorkbookTemplatesStore,
+  quickTasksForSheet,
   recordToTemplate,
+  templateSheetKeyForInstance,
   templateColumnDefs,
   templateSheetsForCreate,
 } from "./workbook-templates";
@@ -33,6 +35,32 @@ const caseRow = {
 };
 
 describe("recordToTemplate — snake_case → camelCase", () => {
+  test("快捷任务按当前稳定数据表 key 筛选、保留风险类型并限制为五项", () => {
+    const template = recordToTemplate({
+      id: "workbook_template:operations",
+      key: "operations",
+      label: "运营台账",
+      quick_tasks: [
+        { key: "overview", label: "查看概览", task_text: "汇总当前数据", risk: "query" },
+        { key: "find-open", label: "查找待处理", task_text: "查找待处理记录", sheet_keys: ["items"], risk: "query" },
+        { key: "update-owner", label: "补全负责人", task_text: "补全负责人", sheet_keys: ["items"], risk: "write" },
+        { key: "add-field", label: "增加字段", task_text: "增加优先级字段", sheet_keys: ["items"], risk: "ddl" },
+        { key: "fifth", label: "第五项", task_text: "第五项任务", sheet_keys: ["items"], risk: "query" },
+        { key: "sixth", label: "第六项", task_text: "第六项任务", sheet_keys: ["items"], risk: "query" },
+        { key: "other", label: "其它表任务", task_text: "处理其它数据", sheet_keys: ["other"], risk: "query" },
+      ],
+    });
+
+    expect(quickTasksForSheet(template, "items")).toEqual([
+      { key: "overview", label: "查看概览", taskText: "汇总当前数据", risk: "query", sheetKeys: [] },
+      { key: "find-open", label: "查找待处理", taskText: "查找待处理记录", risk: "query", sheetKeys: ["items"] },
+      { key: "update-owner", label: "补全负责人", taskText: "补全负责人", risk: "write", sheetKeys: ["items"] },
+      { key: "add-field", label: "增加字段", taskText: "增加优先级字段", risk: "ddl", sheetKeys: ["items"] },
+      { key: "fifth", label: "第五项", taskText: "第五项任务", risk: "query", sheetKeys: ["items"] },
+    ]);
+    expect(quickTasksForSheet(undefined, "items")).toEqual([]);
+  });
+
   test("默认仪表盘声明保留稳定数据表 key 与 DashboardWidget 结构", () => {
     const template = recordToTemplate({
       id: "workbook_template:claims",
@@ -135,6 +163,30 @@ describe("recordToTemplate — snake_case → camelCase", () => {
 });
 
 describe("templateColumnDefs — stored → GridColumnDef", () => {
+  test("旧模板实例没有稳定 key 时按模板表名或创建顺序恢复，显式 key 始终优先", () => {
+    const template = recordToTemplate({
+      id: "workbook_template:operations",
+      key: "operations",
+      label: "运营台账",
+      sheet_defs: [
+        { key: "items", label: "事项", column_defs: [] },
+        { key: "owners", label: "负责人", column_defs: [] },
+      ],
+    });
+    const instanceSheets = [
+      { id: "sheet:a", label: "事项" },
+      { id: "sheet:b", label: "已重命名负责人表" },
+    ];
+
+    expect(templateSheetKeyForInstance(template, instanceSheets[0], instanceSheets)).toBe("items");
+    expect(templateSheetKeyForInstance(template, instanceSheets[1], instanceSheets)).toBe("owners");
+    expect(templateSheetKeyForInstance(
+      template,
+      { ...instanceSheets[1], templateSheetKey: "explicit" },
+      instanceSheets,
+    )).toBe("explicit");
+  });
+
   test("多数据表模板把每张表的展示名和字段都转为创建输入", () => {
     const template = recordToTemplate({
       id: "workbook_template:claims",

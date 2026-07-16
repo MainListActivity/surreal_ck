@@ -109,6 +109,18 @@ describe("workspace template scripts", () => {
     expect(migration?.sql).toContain("default_dashboard.widgets");
   });
 
+  test("模板快捷任务增量保存任务声明，并让实例化数据表保留稳定模板 key", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.name === "016-template-quick-tasks.surql");
+
+    expect(migration?.version).toBe(16);
+    expect(migration?.sql).toContain("quick_tasks");
+    expect(migration?.sql).toContain("quick_tasks.*.task_text");
+    expect(migration?.sql).toContain("quick_tasks.*.sheet_keys");
+    expect(migration?.sql).toContain("quick_tasks.*.risk");
+    expect(migration?.sql).toContain("template_sheet_key ON TABLE sheet");
+  });
+
   test("默认目录的迁移版本由实际最高脚本推导，无需维护 TypeScript 清单", async () => {
     const scripts = await loadTemplateScripts();
 

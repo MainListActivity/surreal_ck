@@ -373,12 +373,14 @@ export function buildCreateWorkbookTransaction(
     const labelBinding = createdSheets.length === 1 ? "$label" : `$sheetLabel${bindingSuffix}`;
     const tableBinding = createdSheets.length === 1 ? "$tableName" : `$sheetTableName${bindingSuffix}`;
     const columnsBinding = createdSheets.length === 1 ? "$columnDefs" : `$sheetColumnDefs${bindingSuffix}`;
+    const templateKeyBinding = createdSheets.length === 1 ? "$sheetTemplateKey" : `$sheetTemplateKey${bindingSuffix}`;
+    const templateKeyClause = sheet.key ? `, template_sheet_key: ${templateKeyBinding}` : "";
     return `DEFINE TABLE IF NOT EXISTS ${sheet.tableName} SCHEMALESS CHANGEFEED 7d;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE ${sheet.tableName} TYPE datetime VALUE time::now() READONLY;
 DEFINE FIELD IF NOT EXISTS updated_at ON TABLE ${sheet.tableName} TYPE datetime VALUE time::now();
 ${fieldDdl}
 DEFINE EVENT OVERWRITE record_activity ON TABLE ${sheet.tableName} WHEN $event = "CREATE" OR $event = "DELETE" THEN { LET $verb = IF $event = "CREATE" { "record.write" } ELSE { "record.delete" }; LET $rec = IF $event = "DELETE" { $before } ELSE { $after }; CREATE activity_event CONTENT { verb: $verb, target_kind: "record", target: $rec.id }; };
-CREATE ${sheet.id} CONTENT { workbook: ${wbId}, label: ${labelBinding}, table_name: ${tableBinding}, column_defs: ${columnsBinding} };`;
+CREATE ${sheet.id} CONTENT { workbook: ${wbId}, label: ${labelBinding}, table_name: ${tableBinding}, column_defs: ${columnsBinding}${templateKeyClause} };`;
   }).join("\n");
 
   // template 引用作为 record id 直接拼进 CREATE CONTENT（受控来源：模板 store 的 id，
@@ -401,6 +403,9 @@ COMMIT TRANSACTION;`;
     bindings[createdSheets.length === 1 ? "label" : `sheetLabel${suffix}`] = sheet.label.trim() || `Sheet ${sheet.index + 1}`;
     bindings[createdSheets.length === 1 ? "tableName" : `sheetTableName${suffix}`] = sheet.tableName;
     bindings[createdSheets.length === 1 ? "columnDefs" : `sheetColumnDefs${suffix}`] = sheet.columns.map(gridColumnToStoredDef);
+    if (sheet.key) {
+      bindings[createdSheets.length === 1 ? "sheetTemplateKey" : `sheetTemplateKey${suffix}`] = sheet.key;
+    }
   }
   samples.forEach(({ sample }, index) => {
     bindings[`sampleRecord${index}`] = Object.fromEntries(
@@ -513,7 +518,7 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
     options: CreateFromTemplateOptions = {},
   ): Promise<WorkbookRow | null> {
     const finalName = (name?.trim() || template.defaultName?.trim() || "未命名工作簿");
-    const sheets = options.includeSampleData === false
+    const sheets: TemplateSheetForCreate[] | undefined = options.includeSampleData === false
       ? template.sheets?.map(({ sampleRecords: _sampleRecords, ...sheet }) => sheet)
       : template.sheets;
     const includesTemplateSamples = sheets?.some((sheet) => (sheet.sampleRecords?.length ?? 0) > 0) ?? false;

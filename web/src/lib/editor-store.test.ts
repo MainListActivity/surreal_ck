@@ -40,6 +40,7 @@ function setup(opts: {
   rows?: Array<Record<string, unknown>>;
   sheets?: Array<Record<string, unknown>>;
   workbookName?: string;
+  workbookTemplateRef?: string;
   updateThrows?: unknown;
 } = {}) {
   const rec: Recorder = { queries: [], updates: [], creates: [], deletes: [], live: null };
@@ -56,7 +57,10 @@ function setup(opts: {
     query: (async (sql: string, bindings?: Record<string, unknown>) => {
       rec.queries.push({ sql, bindings });
       if (/FROM sheet/i.test(sql)) return sheets;
-      if (/SELECT name FROM/i.test(sql)) return [{ name: opts.workbookName ?? "项目台账" }];
+      if (/SELECT name(?:, template)? FROM/i.test(sql)) return [{
+        name: opts.workbookName ?? "项目台账",
+        ...(opts.workbookTemplateRef ? { template: opts.workbookTemplateRef } : {}),
+      }];
       return rows;
     }) as SurrealConn["query"],
     liveTable: (async (_table: string, onMessage: (m: LiveMessage) => void) => {
@@ -141,8 +145,24 @@ describe("loadWorkbook — 直连读 sheet 列表 + 首个 sheet 的行", () => 
     expect(store.workbook).toEqual({ id: "workbook:wb1", name: "项目台账" });
     expect(snapshots.at(-1)!.workbook).toEqual({ id: "workbook:wb1", name: "项目台账" });
     // workbook record 绑定同 sheet 查询：必须包成 RecordId，不能是裸 string。
-    const wbQuery = rec.queries.find((q) => /SELECT name FROM/i.test(q.sql))!;
+    const wbQuery = rec.queries.find((q) => /SELECT name.*FROM/i.test(q.sql))!;
     expect((wbQuery.bindings as { wb: unknown }).wb).toBeInstanceOf(StringRecordId);
+  });
+
+  test("读取工作簿模板引用与数据表稳定模板 key，供 AI 快捷任务随上下文切换", async () => {
+    const { store } = setup({
+      workbookTemplateRef: "workbook_template:operations",
+      sheets: [sheetRecord({ template_sheet_key: "items" })],
+    });
+
+    await store.loadWorkbook("workbook:wb1");
+
+    expect(store.workbook).toEqual({
+      id: "workbook:wb1",
+      name: "项目台账",
+      templateRef: "workbook_template:operations",
+    });
+    expect(store.sheets[0]?.templateSheetKey).toBe("items");
   });
 
   test("reset 后 workbook 清空（离开工作簿不残留旧上下文）", async () => {

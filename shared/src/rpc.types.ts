@@ -830,6 +830,20 @@ export type WorkbookTemplateDefaultDashboard = {
   widgets: WorkbookTemplateDashboardWidget[];
 };
 
+export type WorkbookTemplateQuickTaskRisk = "query" | "write" | "ddl";
+
+export type WorkbookTemplateQuickTask = {
+  /** 模板包内稳定标识，仅用于 UI key，不进入 prompt。 */
+  key: string;
+  /** AI 抽屉显示文案。 */
+  label: string;
+  /** 点击后原样提交给 Router workflow 的任务文本。 */
+  taskText: string;
+  /** 空数组表示适用于该模板的全部数据表。 */
+  sheetKeys: string[];
+  risk: WorkbookTemplateQuickTaskRisk;
+};
+
 export type WorkbookTemplateSheet = {
   /** 模板包内稳定的数据表标识；实例化后不作为真实表名。 */
   key: string;
@@ -857,6 +871,8 @@ export type WorkbookTemplate = {
   sheets: WorkbookTemplateSheet[];
   /** 可选默认仪表盘；widget spec 中的数据表名暂为模板数据表稳定 key。 */
   defaultDashboard?: WorkbookTemplateDefaultDashboard;
+  /** 数据驱动的 AI 快捷任务；缺省时 AI 抽屉使用通用入口。 */
+  quickTasks?: WorkbookTemplateQuickTask[];
   builtin: boolean;
   sortOrder: number;
 };

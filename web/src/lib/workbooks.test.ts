@@ -361,6 +361,26 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
     expect(JSON.stringify(transaction.bindings?.sheetColumnDefs1)).not.toContain("creditors");
   });
 
+  test("模板实例化把每张数据表的稳定模板 key 写入数据表元数据", async () => {
+    const { store, rec } = setup();
+
+    await store.createFromTemplate({
+      id: "workbook_template:operations",
+      sheets: [
+        { key: "items", label: "事项", columns: [{ key: "name", label: "名称", fieldType: "text" }] },
+        { key: "owners", label: "负责人", columns: [{ key: "name", label: "名称", fieldType: "text" }] },
+      ],
+    });
+
+    const transaction = rec.queries.find((query) => /BEGIN TRANSACTION/i.test(query.sql))!;
+    expect(transaction.sql).toContain("template_sheet_key: $sheetTemplateKey0");
+    expect(transaction.sql).toContain("template_sheet_key: $sheetTemplateKey1");
+    expect(transaction.bindings).toEqual(expect.objectContaining({
+      sheetTemplateKey0: "items",
+      sheetTemplateKey1: "owners",
+    }));
+  });
+
   test("引用目标 key 不存在时在 DDL 前返回中文错误且不发查询", async () => {
     const { store, rec } = setup();
 

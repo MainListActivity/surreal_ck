@@ -5,6 +5,8 @@ import type {
   WorkbookTemplate,
   WorkbookTemplateDefaultDashboard,
   WorkbookTemplateFieldDef,
+  WorkbookTemplateQuickTask,
+  WorkbookTemplateQuickTaskRisk,
   WorkbookTemplateSampleRecord,
   WorkbookTemplateSheet,
 } from "@surreal-ck/shared/rpc.types";
@@ -65,6 +67,26 @@ function recordToDefaultDashboard(value: unknown): WorkbookTemplateDefaultDashbo
   };
 }
 
+function recordToQuickTask(value: unknown): WorkbookTemplateQuickTask | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const rec = value as Record<string, unknown>;
+  if (
+    typeof rec.key !== "string"
+    || typeof rec.label !== "string"
+    || typeof rec.task_text !== "string"
+    || (rec.risk !== "query" && rec.risk !== "write" && rec.risk !== "ddl")
+  ) return null;
+  return {
+    key: rec.key,
+    label: rec.label,
+    taskText: rec.task_text,
+    sheetKeys: Array.isArray(rec.sheet_keys)
+      ? rec.sheet_keys.filter((key): key is string => typeof key === "string")
+      : [],
+    risk: rec.risk as WorkbookTemplateQuickTaskRisk,
+  };
+}
+
 /** 把 `workbook_template` 记录裁成展示用 {@link WorkbookTemplate}（snake_case → camelCase）。 */
 export function recordToTemplate(rec: Record<string, unknown>): WorkbookTemplate {
   const rawDefs = Array.isArray(rec.column_defs) ? (rec.column_defs as StoredGridFieldDef[]) : [];
@@ -72,6 +94,9 @@ export function recordToTemplate(rec: Record<string, unknown>): WorkbookTemplate
     ? rec.sheet_defs.map(recordToTemplateSheet).filter((sheet): sheet is WorkbookTemplateSheet => sheet !== null)
     : [];
   const defaultDashboard = recordToDefaultDashboard(rec.default_dashboard);
+  const quickTasks = Array.isArray(rec.quick_tasks)
+    ? rec.quick_tasks.map(recordToQuickTask).filter((task): task is WorkbookTemplateQuickTask => task !== null)
+    : [];
   return {
     id: String(rec.id) as RecordIdString,
     key: typeof rec.key === "string" ? rec.key : "",
@@ -83,9 +108,45 @@ export function recordToTemplate(rec: Record<string, unknown>): WorkbookTemplate
     columnDefs: rawDefs,
     sheets,
     ...(defaultDashboard ? { defaultDashboard } : {}),
+    ...(quickTasks.length > 0 ? { quickTasks } : {}),
     builtin: rec.builtin === true,
     sortOrder: typeof rec.sort_order === "number" ? rec.sort_order : 0,
   };
+}
+
+/** 当前数据表可见的模板快捷任务。空配置返回 []，由抽屉保留通用入口。 */
+export function quickTasksForSheet(
+  template: WorkbookTemplate | undefined,
+  templateSheetKey: string | null | undefined,
+): WorkbookTemplateQuickTask[] {
+  if (!template) return [];
+  return (template.quickTasks ?? [])
+    .filter((task) => task.sheetKeys.length === 0 || (
+      templateSheetKey != null && task.sheetKeys.includes(templateSheetKey)
+    ))
+    .slice(0, 5);
+}
+
+type TemplateSheetInstance = {
+  label: string;
+  templateSheetKey?: string;
+};
+
+/**
+ * 新实例直接读取稳定 key；迁移前实例按未改名标签回退，再按创建顺序恢复。
+ * 顺序回退只服务旧数据，新实例不会依赖展示名称或数组位置。
+ */
+export function templateSheetKeyForInstance(
+  template: WorkbookTemplate | undefined,
+  currentSheet: TemplateSheetInstance | null | undefined,
+  instanceSheets: readonly TemplateSheetInstance[],
+): string | undefined {
+  if (!template || !currentSheet) return undefined;
+  if (currentSheet.templateSheetKey) return currentSheet.templateSheetKey;
+  const byLabel = template.sheets.find((sheet) => sheet.label === currentSheet.label);
+  if (byLabel) return byLabel.key;
+  const index = instanceSheets.indexOf(currentSheet);
+  return index >= 0 ? template.sheets[index]?.key : undefined;
 }
 
 /** 模板列定义（stored snake_case）→ 建实体表用的 {@link GridColumnDef}（camelCase）。 */

@@ -4,7 +4,10 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./template-packs": "./sql/template-packs/index.ts",
+    "./template-packs": {
+      "types": "./dist/sql/template-packs/index.d.ts",
+      "default": "./sql/template-packs/index.ts"
+    },
     "./workspace-template": "./sql/workspace-template/index.ts",
     "./*": "./src/*"
   },

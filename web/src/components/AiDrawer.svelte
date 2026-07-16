@@ -11,7 +11,11 @@
   import { api } from "../lib/api";
   import { connectWs } from "../lib/ws";
   import { buildDrawerContextSnapshot } from "../lib/ai-context-source";
+  import { presentAiQuickTasks, submitAiQuickTask } from "../lib/ai-quick-tasks";
   import { editorStore } from "../lib/editor-store.svelte";
+  import { workbookTemplatesStore } from "../lib/workbook-templates.svelte";
+  import { templateSheetKeyForInstance } from "../lib/workbook-templates";
+  import { getCurrentWorkspace } from "../lib/workspace-store.svelte";
   import { editorUi } from "../features/editor/lib/editor-ui.svelte";
   import {
     createAiDrawerSession,
@@ -118,6 +122,11 @@
     drawerState = session.snapshot();
   });
 
+  $effect(() => {
+    if (!open || !workspaceSlug || routeScreen !== "editor") return;
+    void workbookTemplatesStore.load();
+  });
+
   onDestroy(() => {
     session.dispose();
   });
@@ -143,6 +152,20 @@
 
   // 头部提示与提交的快照走同一构建函数，保证「所见即所发」。
   const contextHint = $derived(contextSnapshot().contextHint);
+  const activeSheet = $derived(
+    editorStore.sheets.find((sheet) => sheet.id === editorStore.activeSheetId),
+  );
+  const currentTemplate = $derived(
+    editorStore.workbook?.templateRef
+      ? workbookTemplatesStore.templates.find((template) => template.id === editorStore.workbook?.templateRef)
+      : undefined,
+  );
+  const currentTemplateSheetKey = $derived(
+    templateSheetKeyForInstance(currentTemplate, activeSheet, editorStore.sheets),
+  );
+  const templateQuickTasks = $derived(
+    presentAiQuickTasks(currentTemplate, currentTemplateSheetKey, getCurrentWorkspace()?.role),
+  );
 
   async function sendPrompt(): Promise<void> {
     const next = prompt;
@@ -249,17 +272,34 @@
       </button>
     </header>
 
-    <div class="quick-actions">
-      <button type="button" onclick={() => useExample("打开工作簿 X")}>
-        <Sheet size={14} />工作簿
-      </button>
-      <button type="button" onclick={() => useExample("查找债权人或债权数据")}>
-        <Search size={14} />查找
-      </button>
-      <button type="button" onclick={() => useExample("根据当前数据创建统计图表")}>
-        <Coins size={14} />图表
-      </button>
-    </div>
+    {#if templateQuickTasks.length > 0}
+      <div class="quick-actions template-actions">
+        {#each templateQuickTasks as action (action.task.key)}
+          <button
+            type="button"
+            disabled={action.disabled}
+            title={action.permissionMessage ?? action.task.label}
+            onclick={() => void submitAiQuickTask(action, session, contextSnapshot)}
+          >
+            <Sparkles size={14} />
+            <span>{action.task.label}</span>
+            {#if action.permissionMessage}<small>{action.permissionMessage}</small>{/if}
+          </button>
+        {/each}
+      </div>
+    {:else}
+      <div class="quick-actions">
+        <button type="button" onclick={() => useExample("打开工作簿 X")}>
+          <Sheet size={14} />工作簿
+        </button>
+        <button type="button" onclick={() => useExample("查找当前数据")}>
+          <Search size={14} />查找
+        </button>
+        <button type="button" onclick={() => useExample("根据当前数据创建统计图表")}>
+          <Coins size={14} />图表
+        </button>
+      </div>
+    {/if}
 
     {#if drawerState.sendError}
       <p class="send-error header-error" role="alert">{drawerState.sendError}</p>
@@ -463,6 +503,33 @@
     font-size: 12px;
     font-weight: 550;
     white-space: nowrap;
+  }
+
+  .template-actions {
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  }
+
+  .template-actions button {
+    height: auto;
+    min-height: 42px;
+    flex-wrap: wrap;
+    padding: 7px 8px;
+    white-space: normal;
+  }
+
+  .template-actions button span {
+    min-width: 0;
+  }
+
+  .template-actions button small {
+    width: 100%;
+    color: var(--text-3);
+    font-size: 10px;
+  }
+
+  .template-actions button:disabled {
+    cursor: not-allowed;
+    opacity: .7;
   }
 
   .progress-hint {

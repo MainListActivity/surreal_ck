@@ -58,4 +58,15 @@ describe("template pack scripts", () => {
       expect(script?.sql).toContain(`key: "${key}"`);
     }
   });
+
+  test("破产债权模板包声明至少五个数据驱动快捷任务并在幂等更新时保留", async () => {
+    const [script] = await loadTemplatePackScripts({ selectedPacks: ["bankruptcy-claims"] });
+    const taskCount = script?.sql.match(/task_text:/g)?.length ?? 0;
+
+    expect(taskCount).toBeGreaterThanOrEqual(5);
+    expect(script?.sql).toContain('label: "筛选大额缺失材料"');
+    expect(script?.sql).toContain('label: "生成审核进度看板"');
+    expect(script?.sql).toContain('risk: "write"');
+    expect(script?.sql).toContain("quick_tasks = $input.quick_tasks");
+  });
 });
