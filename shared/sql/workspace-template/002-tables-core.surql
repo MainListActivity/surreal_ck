@@ -13,6 +13,12 @@ DEFINE FIELD IF NOT EXISTS display_name ON TABLE user TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS avatar ON TABLE user TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS last_seen_at ON TABLE user TYPE option<datetime>;
 DEFINE FIELD IF NOT EXISTS virtual_profile ON TABLE user TYPE option<object>;
+DEFINE FIELD IF NOT EXISTS virtual_profile.role_key ON TABLE user TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS virtual_profile.role ON TABLE user TYPE option<record<office_role>>;
+DEFINE FIELD IF NOT EXISTS virtual_profile.supervisor ON TABLE user TYPE option<record<user>>;
+DEFINE FIELD IF NOT EXISTS virtual_profile.status ON TABLE user TYPE option<string>
+  ASSERT $value == NONE OR $value INSIDE ["active", "paused", "retired"];
+DEFINE FIELD IF NOT EXISTS virtual_profile.last_active_at ON TABLE user TYPE option<datetime>;
 DEFINE FIELD IF NOT EXISTS disabled_at ON TABLE user TYPE option<datetime>;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE user TYPE datetime VALUE time::now();
 DEFINE FIELD IF NOT EXISTS updated_at ON TABLE user TYPE datetime VALUE time::now();
