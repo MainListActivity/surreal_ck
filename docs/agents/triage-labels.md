@@ -12,4 +12,8 @@ The skills speak in terms of five canonical triage roles. This file maps those r
 
 When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the corresponding label string from this table.
 
+## Terminal state
+
+Completed local issues use `Status: done`. Files that carry a separate `Label:` line use `Label: done` as well. `done` is a repository lifecycle terminal state, not one of the five active triage roles above.
+
 Edit the right-hand column to match whatever vocabulary you actually use.

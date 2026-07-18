@@ -1,6 +1,6 @@
 # PRD — 工作区首页重设计
 
-Status: ready-for-agent
+Status: done
 
 ## Problem Statement
 
@@ -18,7 +18,7 @@ Status: ready-for-agent
 
 将工作区首页重构为三栏无 topbar 布局：
 
-- **左侧 sidebar**（220px）：顶部放 logo + 搜索框，中间放导航 + 固定工作簿，底部固定用户栏（头像 + workspace 名称 + 通知），workspace 切换 panel 从用户栏向上滑出
+- **左侧 sidebar**（最终实现为 256px）：顶部放 logo + 搜索框，中间放导航 + 固定工作簿，底部固定用户栏（头像 + workspace 名称 + 通知），workspace 切换 panel 从用户栏向上滑出
 - **主内容区**（flex-1）：greeting（含 workspace 切换 trigger）+ 快捷操作卡片 + AI banner + 工作簿卡片网格（带缩略图预览、协作者头像、状态标签）
 - **右侧动态面板**（280px）：动态 / 数据概览 / 任务三 tab，动态 tab 展示活动流 + 本周统计迷你图
 

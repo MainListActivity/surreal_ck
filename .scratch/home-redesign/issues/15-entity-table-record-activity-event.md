@@ -20,12 +20,12 @@ Status: done
 
 ## Acceptance criteria
 
-- [ ] 新建工作簿的建表事务内，为实体表追加 `DEFINE EVENT`，记录写入时自动 `CREATE activity_event`
-- [ ] 数据行 CREATE → `verb=record.write`；DELETE → `verb=record.delete`；归因 `fn::current_user()`
-- [ ] event 定义与建表 / 建 workbook / 建 sheet 在同一事务内（任一步失败整体回滚）
-- [ ] 新建工作簿后写入数据行，能 `SELECT * FROM activity_event` 查到对应事件
-- [ ] 相关纯逻辑测试（建表事务 SQL 含 event 定义）更新并全绿
-- [ ] svelte-check / tsc 无类型错误
+- [x] 新建工作簿的建表事务内，为实体表追加 `DEFINE EVENT`，记录写入时自动 `CREATE activity_event`
+- [x] 数据行 CREATE → `verb=record.write`；DELETE → `verb=record.delete`；归因 `fn::current_user()`
+- [x] event 定义与建表 / 建 workbook / 建 sheet 在同一事务内（任一步失败整体回滚）
+- [x] 新建工作簿后写入数据行，能 `SELECT * FROM activity_event` 查到对应事件
+- [x] 相关纯逻辑测试（建表事务 SQL 含 event 定义）更新并全绿
+- [x] svelte-check / tsc 无类型错误
 
 ## Blocked by
 

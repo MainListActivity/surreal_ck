@@ -23,14 +23,14 @@ Status: done
 
 ## Acceptance criteria
 
-- [ ] `shared/sql/workspace-template/010-*.surql` 定义 `activity_event` 表，SCHEMAFULL，归属 db 边界（无 workspace 字段）
-- [ ] `actor` 字段 `DEFAULT fn::current_user()`，类型 `option<record<user>>`
-- [ ] `verb` 用 `ASSERT $value INSIDE [...]` 枚举约束，覆盖 workbook / field / record 写入动词
-- [ ] `created_at` 带索引；PERMISSIONS 为「select/create: $auth != NONE，update/delete: is_admin」
-- [ ] workbook / sheet / dashboard_page 三张静态表各有 `DEFINE EVENT`，写入时自动 `CREATE activity_event`
-- [ ] `index.ts` 的 `WORKSPACE_TEMPLATE_VERSION` 升到 10，`TEMPLATE_FILES` 含新文件
-- [ ] `index.test.ts` 断言更新（version=10、文件名数组、新增 `activity_event` 断言），shared 测试全绿
-- [ ] `surreal validate` 通过
+- [x] `shared/sql/workspace-template/010-*.surql` 定义 `activity_event` 表，SCHEMAFULL，归属 db 边界（无 workspace 字段）
+- [x] `actor` 字段 `DEFAULT fn::current_user()`，类型 `option<record<user>>`
+- [x] `verb` 用 `ASSERT $value INSIDE [...]` 枚举约束，覆盖 workbook / field / record 写入动词
+- [x] `created_at` 带索引；PERMISSIONS 为「select/create: $auth != NONE，update/delete: is_admin」
+- [x] workbook / sheet / dashboard_page 三张静态表各有 `DEFINE EVENT`，写入时自动 `CREATE activity_event`
+- [x] workspace template 加载器自动发现版本 10 增量，无需维护手工文件清单
+- [x] `index.test.ts` 覆盖增量自动发现与 `activity_event` schema，shared 测试全绿
+- [x] `surreal validate` 通过
 
 ## Blocked by
 

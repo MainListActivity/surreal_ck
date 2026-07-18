@@ -1,3 +1,5 @@
+Status: done
+
 ## What to build
 
 实现右侧常驻动态面板 `ActivityPanel.svelte`，提供「动态」/「数据概览」/「任务」三 tab 视图。

@@ -1,3 +1,5 @@
+Status: done
+
 ## What to build
 
 统一 icon 系统，将业务 UI 从自制 `Icon.svelte` + 手写 `icons.ts` 全面迁移到 `@lucide/svelte`，同时将品牌 logo 从 CSS 拼图替换为 `assets/wordmark.svg`。

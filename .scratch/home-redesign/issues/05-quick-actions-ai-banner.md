@@ -1,3 +1,5 @@
+Status: done
+
 ## What to build
 
 在 `HomeScreen` 主内容区新增两个固定区块：快捷操作卡片组和 AI 能力 banner。

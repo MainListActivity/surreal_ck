@@ -1,8 +1,10 @@
+Status: done
+
 ## What to build
 
 将 `WorkspaceScreen` + `SideNav` + `HomeScreen` 重构为三栏无 topbar 布局骨架，作为后续所有首页 issues 的基础。
 
-移除 `HomeScreen` 内部的 topbar（搜索框 + 通知按钮），将整体结构改为：左侧 sidebar（220px）+ 主内容区（flex-1）+ 右侧动态面板（280px，仅 home 页渲染）。
+移除 `HomeScreen` 内部的 topbar（搜索框 + 通知按钮），将整体结构改为：左侧 sidebar（最终实现收口为 256px）+ 主内容区（flex-1）+ 右侧动态面板（280px，仅 home 页渲染）。
 
 `SideNav` 内部结构重组为四段：
 - `.sidebar-top`：预留搜索框插槽（内容由 HR-02 填充）
@@ -16,12 +18,12 @@
 
 ## Acceptance criteria
 
-- [ ] 页面整体为 `display:flex; height:100vh`，三列并排，无 topbar
-- [ ] `SideNav` 固定 220px 宽，内部四段结构完整，`.sidebar-userbar` 始终固定在底部可见
-- [ ] `ActivityPanel` 占位组件在 home 页可见（280px 宽），在其他页面（workbook 编辑器等）不渲染
-- [ ] `HomeScreen` 不再渲染任何 topbar 元素
-- [ ] 删除 topbar 相关 CSS，无视觉残留
-- [ ] svelte-check 无类型错误
+- [x] 页面整体为 `display:flex; height:100vh`，三列并排，无 topbar
+- [x] `SideNav` 固定 256px 宽，内部四段结构完整，`.sidebar-userbar` 始终固定在底部可见
+- [x] `ActivityPanel` 占位组件在 home 页可见（280px 宽），在其他页面（workbook 编辑器等）不渲染
+- [x] `HomeScreen` 不再渲染任何 topbar 元素
+- [x] 删除 topbar 相关 CSS，无视觉残留
+- [x] svelte-check 无类型错误
 
 ## Blocked by
 

@@ -1,3 +1,5 @@
+Status: done
+
 ## What to build
 
 工作簿卡片网格视图中，`blank` 类型的 thumbnail（`.blank-preview`）当前仅渲染两条灰色横线，信息密度极低，与 `table`（4×3 网格预览）和 `graph`（SVG 节点图）的视觉完成度差距明显。

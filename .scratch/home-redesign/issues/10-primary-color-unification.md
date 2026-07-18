@@ -1,3 +1,5 @@
+Status: done
+
 ## What to build
 
 统一全页 primary color，清除当前三套蓝紫色系并存的视觉噪点：

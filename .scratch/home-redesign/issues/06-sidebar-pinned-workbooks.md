@@ -1,3 +1,5 @@
+Status: done
+
 ## What to build
 
 在 `SideNav` 导航区新增固定工作簿列表，支持将工作簿固定到 sidebar 快速访问。

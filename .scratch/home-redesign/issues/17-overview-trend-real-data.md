@@ -19,12 +19,12 @@ Status: done
 
 ## Acceptance criteria
 
-- [ ] 数据概览趋势图数据来自真实 `activity_event` 按天聚合（最近 7 天）
-- [ ] 缺失日期补零，7 个桶顺序正确，横轴标签按实际日期生成
-- [ ] `MOCK_CHART_BARS` 删除
-- [ ] 工作簿总数仍为真实查询，不回归
-- [ ] 聚合 / 补零纯逻辑单测覆盖，web 测试全绿
-- [ ] svelte-check 无类型错误
+- [x] 数据概览趋势图数据来自真实 `activity_event` 按天聚合（最近 7 天）
+- [x] 缺失日期补零，7 个桶顺序正确，横轴标签按实际日期生成
+- [x] `MOCK_CHART_BARS` 删除
+- [x] 工作簿总数仍为真实查询，不回归
+- [x] 聚合 / 补零纯逻辑单测覆盖，web 测试全绿
+- [x] svelte-check 无类型错误
 
 ## Blocked by
 

@@ -1,3 +1,5 @@
+Status: done
+
 ## What to build
 
 将 workspace 切换功能从 shadcn `DropdownMenu` 改为内嵌在 sidebar 中的滑出面板，同时支持两个触发点。

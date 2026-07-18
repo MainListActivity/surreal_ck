@@ -1,3 +1,5 @@
+Status: done
+
 ## What to build
 
 将搜索状态从 `HomeScreen` 提升到 `WorkspaceScreen`，并在 `SideNav` 顶部承载搜索框 UI。
@@ -8,11 +10,11 @@
 
 ## Acceptance criteria
 
-- [ ] `SideNav` 顶部有可用的搜索框，输入后工作簿列表实时过滤
-- [ ] `HomeScreen` 的 `filterWorkbooksByQuery` 逻辑不变，只是 `query` 来源改为 prop
-- [ ] `query` 状态在 `WorkspaceScreen` 层持有，切换页面后回到首页搜索词保留
-- [ ] `HomeScreen` 自身不再持有 `query` state
-- [ ] svelte-check 无类型错误
+- [x] `SideNav` 顶部有可用的搜索框，输入后工作簿列表实时过滤
+- [x] `HomeScreen` 的 `filterWorkbooksByQuery` 逻辑不变，只是 `query` 来源改为 prop
+- [x] `query` 状态在 `WorkspaceScreen` 层持有，切换页面后回到首页搜索词保留
+- [x] `HomeScreen` 自身不再持有 `query` state
+- [x] svelte-check 无类型错误
 
 ## Blocked by
 

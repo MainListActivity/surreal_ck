@@ -22,14 +22,14 @@ Status: done
 
 ## Acceptance criteria
 
-- [ ] 动态 tab 渲染真实 `activity_event`，不再有 mock 数据（`MOCK_ACTIVITY_ENTRIES` 删除）
-- [ ] 初次进入加载最近 50 条，按 `created_at DESC` 排序
-- [ ] LIVE 订阅生效：新写操作产生的动态实时出现在列表头；组件卸载时退订
-- [ ] actor 显示真实用户昵称 / 邮箱回退；AI / 虚拟员工动态正确标注
-- [ ] 同人短时窗口同表的 record.write 聚合成"添加了 N 条记录"
-- [ ] loading 态与"暂无动态"空态齐全
-- [ ] 读取层纯逻辑单测覆盖（行→文案映射、聚合逻辑），web 测试全绿
-- [ ] `home-layout.test.ts` / 现有 activity-panel 测试不破，svelte-check 无类型错误
+- [x] 动态 tab 渲染真实 `activity_event`，不再有 mock 数据（`MOCK_ACTIVITY_ENTRIES` 删除）
+- [x] 初次进入加载最近 50 条，按 `created_at DESC` 排序
+- [x] LIVE 订阅生效：新写操作产生的动态实时出现在列表头；组件卸载时退订
+- [x] actor 显示真实用户昵称 / 邮箱回退；AI / 虚拟员工动态正确标注
+- [x] 同人短时窗口同表的 record.write 聚合成"添加了 N 条记录"
+- [x] loading 态与"暂无动态"空态齐全
+- [x] 读取层纯逻辑单测覆盖（行→文案映射、聚合逻辑），web 测试全绿
+- [x] `home-layout.test.ts` / 现有 activity-panel 测试不破，svelte-check 无类型错误
 
 ## Blocked by
 

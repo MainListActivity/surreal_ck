@@ -1,3 +1,5 @@
+Status: done
+
 ## What to build
 
 将 `HomeScreen.svelte` 中的 AI Banner 从全宽渐变大横幅降权为收纳式细条带，释放主内容区视觉空间，使快捷操作三格成为真正的视觉焦点。
