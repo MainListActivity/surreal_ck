@@ -13,6 +13,11 @@
   import { bootstrapWorkspace } from "./lib/switch-workspace.svelte";
   import { buildRiskReminderAiContext, type RiskNotification } from "./lib/risk-notifications";
   import type { AiDrawerContextSnapshot } from "./lib/ai-drawer";
+  import { buildBrowserTitle } from "./lib/browser-title";
+  import { getCurrentWorkspace } from "./lib/workspace-store.svelte";
+  import { editorStore } from "./lib/editor-store.svelte";
+  import { editorUi } from "./features/editor/lib/editor-ui.svelte";
+  import { dashboardStore } from "./features/dashboard/lib/dashboard-store.svelte";
 
   const REFRESH_INTERVAL_MS = 60_000;
 
@@ -28,6 +33,22 @@
   let bootstrappedSlug = $state<string | null>(null);
   let aiDrawerOpen = $state(false);
   let aiContextOverride = $state<AiDrawerContextSnapshot | null>(null);
+
+  const activeSheetName = $derived(
+    editorStore.sheets.find((sheet) => sheet.id === editorStore.activeSheetId)?.label ?? null,
+  );
+  const browserTitle = $derived(buildBrowserTitle({
+    route,
+    workspaceSlug: getCurrentWorkspace()?.slug,
+    workspaceName: getCurrentWorkspace()?.name,
+    loadedWorkbookId: editorStore.workbook?.id,
+    workbookName: editorStore.workbook?.name,
+    activeSheetId: editorStore.activeSheetId,
+    sheetName: activeSheetName,
+    dashboardWorkbookId: dashboardStore.workbookId,
+    dashboardTitle: dashboardStore.activePage?.title,
+    editorPageKind: editorUi.pageKind,
+  }));
 
   function currentPath(): string {
     return `${window.location.pathname}${window.location.search}${window.location.hash}`;
@@ -156,6 +177,10 @@
     };
   });
 </script>
+
+<svelte:head>
+  <title>{browserTitle}</title>
+</svelte:head>
 
 {#if route.kind === "login"}
   <LoginRoute />

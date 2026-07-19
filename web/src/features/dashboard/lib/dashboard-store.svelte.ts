@@ -41,6 +41,7 @@ export const dashboardStore = {
   get loading(): boolean { return reactive.loading; },
   get saving(): boolean { return reactive.saving; },
   get error(): string | null { return reactive.error; },
+  get workbookId(): string | null { return reactive.workbookId; },
   get pages(): DashboardPageSummary[] { return reactive.pages; },
   get activePageId(): string | null { return reactive.activePageId; },
   get activePage(): DashboardPage | null { return reactive.activePage; },
