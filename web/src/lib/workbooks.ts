@@ -1,4 +1,5 @@
 import { buildSurrealFieldSchema, gridColumnToStoredDef } from "@surreal-ck/shared/field-schema";
+import { buildRecordQuotaGuardSurql } from "@surreal-ck/shared/resource-quota";
 import type {
   DashboardBuilderSpec,
   GridColumnDef,
@@ -409,6 +410,7 @@ export function buildCreateWorkbookTransaction(
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE ${sheet.tableName} TYPE datetime VALUE time::now() READONLY;
 DEFINE FIELD IF NOT EXISTS updated_at ON TABLE ${sheet.tableName} TYPE datetime VALUE time::now();
 ${fieldDdl}
+${buildRecordQuotaGuardSurql({ tableName: sheet.tableName, sheetId: toRecordId(sheet.id) })}
 DEFINE EVENT OVERWRITE record_activity ON TABLE ${sheet.tableName} WHEN $event = "CREATE" OR $event = "DELETE" THEN { LET $verb = IF $event = "CREATE" { "record.write" } ELSE { "record.delete" }; LET $rec = IF $event = "DELETE" { $before } ELSE { $after }; CREATE activity_event CONTENT { verb: $verb, target_kind: "record", target: $rec.id }; };
 CREATE ${sheet.id} CONTENT { workbook: ${wbId}, label: ${labelBinding}, table_name: ${tableBinding}, column_defs: ${columnsBinding}${templateKeyClause} };`;
   }).join("\n");

@@ -127,6 +127,23 @@ describe("workspace migration runner", () => {
     expect(wsCalls).toEqual([]);
   });
 
+  test("配额 schema 已存在时仍重算已有数据表用量并补装动态表事件", async () => {
+    const db = new FakeMigrationClient([{ dbName: "ws_quota", schemaVersion: 20 }]);
+    const installedOn: string[] = [];
+
+    const result = await migrateAllWorkspaces(db, {
+      namespace: "main",
+      loadScripts: async () => fakeScripts(...Array.from({ length: 20 }, (_, index) => index + 1)),
+      installQuotaGuards: async (client) => {
+        expect(client).toBe(db);
+        installedOn.push(db.currentDatabase);
+      },
+    });
+
+    expect(result).toEqual({ total: 1, migrated: [] });
+    expect(installedOn).toEqual(["ws_quota"]);
+  });
+
   test("returns immediately without loading templates when there are no workspaces", async () => {
     const db = new FakeMigrationClient([]);
     let loadScriptsCalls = 0;

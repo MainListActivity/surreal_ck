@@ -156,6 +156,24 @@ describe("workspace template scripts", () => {
     expect(sql).toContain("checked_at ON TABLE user_notification TYPE datetime");
   });
 
+  test("资源配额增量定义三个递增套餐、工作区绑定和数据表级计量闸门", async () => {
+    const scripts = await loadTemplateScripts();
+    const quota = scripts.find((script) => script.name === "020-resource-quota.surql");
+
+    expect(quota?.version).toBe(20);
+    const sql = quota?.sql ?? "";
+    expect(sql).toContain("resource_quota_plan:plus");
+    expect(sql).toContain("resource_quota_plan:pro");
+    expect(sql).toContain("resource_quota_plan:max");
+    expect(sql).toContain("workspace_resource_quota:current");
+    expect(sql).toContain("max_sheets");
+    expect(sql).toContain("max_fields_per_sheet");
+    expect(sql).toContain("max_records_per_sheet");
+    expect(sql).toContain("DEFINE EVENT OVERWRITE resource_quota_guard ON TABLE sheet");
+    expect(sql).toContain('"quota-sheets-exceeded"');
+    expect(sql).toContain('"quota-fields-exceeded"');
+  });
+
   test("workbook_template：类型由业务数据定义——底层不枚举行业类型，仅管理员可增改删，workbook 引用为可选 record", async () => {
     const scripts = await loadTemplateScripts();
     const tpl = scripts.find((script) => script.name === "011-workbook-template.surql");

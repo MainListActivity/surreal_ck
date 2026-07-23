@@ -9,6 +9,7 @@
     "dev": "pnpm --filter @surreal-ck/server dev",
     "dev:server": "pnpm --filter @surreal-ck/server dev",
     "test": "pnpm -r --if-present run test",
+    "test:quota:local": "pnpm --filter @surreal-ck/shared run test:quota:local",
     "typecheck": "pnpm -r run typecheck",
     "icon:generate": "node scripts/generate-app-icons.mjs"
   },

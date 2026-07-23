@@ -12,6 +12,7 @@
     "./*": "./src/*"
   },
   "dependencies": {
+    "surrealdb": "^2.0.3",
     "zod": "^4.3.6"
   },
   "devDependencies": {
@@ -19,6 +20,7 @@
   },
   "scripts": {
     "test": "bun test",
+    "test:quota:local": "RUN_LOCAL_SURREALDB_QUOTA_TESTS=1 bun test src/resource-quota.cli.integration.test.ts",
     "build:types": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   }

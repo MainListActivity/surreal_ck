@@ -597,6 +597,17 @@ describe("buildCreateWorkbookTransaction — 纯 SurrealQL 构造", () => {
     expect(sql).toMatch(/WHEN \$event = "CREATE" OR \$event = "DELETE"/);
   });
 
+  test("实体表挂记录配额事件，并绑定对应的数据表 RecordId", () => {
+    const keys = ["1111111111111111", "2222222222222222"];
+    const { sql } = buildCreateWorkbookTransaction("台账", {}, () => keys.shift()!);
+
+    expect(sql).toContain(
+      "DEFINE EVENT OVERWRITE resource_quota_guard ON TABLE ent_1111111111111111_main",
+    );
+    expect(sql).toContain("sheet = sheet:2222222222222222");
+    expect(sql).toContain('"quota-records-exceeded"');
+  });
+
   test("用户输入只进 bindings，不拼进 SQL 文本（防注入）", () => {
     const { sql, bindings } = buildCreateWorkbookTransaction("'; DROP TABLE workbook; --");
     expect(sql).not.toContain("DROP TABLE workbook");

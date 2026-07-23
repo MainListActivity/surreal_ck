@@ -1,6 +1,7 @@
 import { loadTemplateScripts, type WorkspaceTemplateScript } from "@surreal-ck/shared/workspace-template";
 import { env } from "../env";
 import { getRootConnection } from "./root-connection";
+import { installExistingRecordQuotaGuards } from "./resource-quota";
 
 export type MigrationClient = {
   use(scope: { namespace: string; database: string }): Promise<unknown>;
@@ -10,6 +11,7 @@ export type MigrationClient = {
 export type MigrateAllWorkspacesOptions = {
   namespace?: string;
   loadScripts?: () => Promise<WorkspaceTemplateScript[]>;
+  installQuotaGuards?: (db: MigrationClient) => Promise<unknown>;
 };
 
 export type WorkspaceMigrationOutcome = {
@@ -54,6 +56,7 @@ export async function migrateAllWorkspaces(
 ): Promise<MigrateAllWorkspacesResult> {
   const namespace = options.namespace ?? env.SURREAL_NS;
   const loadScripts = options.loadScripts ?? (() => loadTemplateScripts({ oidcJwksUrl: env.OIDC_JWKS_URL }));
+  const installQuotaGuards = options.installQuotaGuards ?? installExistingRecordQuotaGuards;
 
   await db.use({ namespace, database: SYSTEM_DATABASE });
   const dbNames = readWorkspaceDbNames(await db.query("SELECT db_name FROM workspace;"));
@@ -80,6 +83,9 @@ export async function migrateAllWorkspaces(
       }
 
       const toVersion = scripts.at(-1)?.version ?? fromVersion;
+      if (toVersion >= 20) {
+        await installQuotaGuards(db);
+      }
       if (pending.length > 0) {
         migrated.push({ dbName, fromVersion, toVersion });
         console.info("[migration]", `${dbName}: ${fromVersion} → ${toVersion}`);
