@@ -86,7 +86,7 @@ ORDER BY sheet;
 ## 本地验证
 
 测试会使用本机 `surreal` CLI 启动独立的内存实例，不会接触开发数据。本次实现验证
-使用的 CLI 版本为 `3.0.5`：
+使用的 CLI 版本为 `3.2.3`：
 
 ```bash
 pnpm run test:quota:local

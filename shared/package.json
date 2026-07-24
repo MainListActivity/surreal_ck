@@ -12,7 +12,7 @@
     "./*": "./src/*"
   },
   "dependencies": {
-    "surrealdb": "^2.0.3",
+    "surrealdb": "^2.0.8",
     "zod": "^4.3.6"
   },
   "devDependencies": {

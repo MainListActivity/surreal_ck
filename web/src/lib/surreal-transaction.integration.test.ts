@@ -8,7 +8,7 @@ afterEach(async () => {
   await Promise.allSettled(opened.splice(0).map((db) => db.close()));
 });
 
-describe("SurrealDB 3.0.5 DDL + DML transaction contract", () => {
+describe("SurrealDB 3.2.3 DDL + DML transaction contract", () => {
   localSurrealTest("字段 DDL、业务 INSERT 与元数据 UPDATE 一起提交或一起回滚", async () => {
     const db = new Surreal();
     opened.push(db);
