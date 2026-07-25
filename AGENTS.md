@@ -276,6 +276,7 @@ Issues and PRDs for this repo are tracked as local markdown files under `.scratc
 - `.scratch/web-dashboard-migration/` — Dashboard 直连迁移（簇 D3，依赖 D2-07；D3-05 收口 AI 图表持久化）
 - `.scratch/claims-vertical/`        — 律师破产债权垂直簇（依赖 D2-07 编辑器；法律内容全部走 workbook_template 数据行，可整体移除）
 - `.scratch/virtual-office/`         — 虚拟办公室（簇 E，依赖 D1 + D2）
+- `.scratch/native-resource-quota/`  — 原生 table/field/record 配额与订阅控制面（跨仓；引擎规格位于 `/Users/y/IdeaProjects/surrealdb/.scratch/native-resource-quota/`）
 
 ### Triage labels
 
