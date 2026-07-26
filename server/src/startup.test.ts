@@ -9,8 +9,14 @@ describe("server startup", () => {
       host: "127.0.0.1",
       port: 18080,
       envName: "test",
+      probeNativeQuotaHttp: async () => {
+        calls.push("quota-http");
+      },
       initRootConnection: async () => {
         calls.push("init-root");
+      },
+      verifyNativeQuotaRootHandshake: async () => {
+        calls.push("quota-root-info");
       },
       ensureSystemSchema: async () => {
         calls.push("ensure-system-schema");
@@ -35,7 +41,16 @@ describe("server startup", () => {
       },
     });
 
-    expect(calls).toEqual(["init-root", "ensure-system-schema", "seed-admins", "migrate-workspaces", "create-app", "listen"]);
+    expect(calls).toEqual([
+      "quota-http",
+      "init-root",
+      "quota-root-info",
+      "ensure-system-schema",
+      "seed-admins",
+      "migrate-workspaces",
+      "create-app",
+      "listen",
+    ]);
   });
 
   test("starts the reconcile heartbeat after the server is listening", async () => {
@@ -45,8 +60,14 @@ describe("server startup", () => {
       host: "127.0.0.1",
       port: 18080,
       envName: "test",
+      probeNativeQuotaHttp: async () => {
+        calls.push("quota-http");
+      },
       initRootConnection: async () => {
         calls.push("init-root");
+      },
+      verifyNativeQuotaRootHandshake: async () => {
+        calls.push("quota-root-info");
       },
       ensureSystemSchema: async () => {
         calls.push("ensure-system-schema");
@@ -77,7 +98,9 @@ describe("server startup", () => {
 
     // reconcile loop 在监听之后启动，不阻塞 boot
     expect(calls).toEqual([
+      "quota-http",
       "init-root",
+      "quota-root-info",
       "ensure-system-schema",
       "seed-admins",
       "migrate-workspaces",
@@ -89,7 +112,9 @@ describe("server startup", () => {
     // shutdown 应停掉心跳并关闭 root
     await running.shutdown("SIGTERM");
     expect(calls).toEqual([
+      "quota-http",
       "init-root",
+      "quota-root-info",
       "ensure-system-schema",
       "seed-admins",
       "migrate-workspaces",
@@ -108,7 +133,9 @@ describe("server startup", () => {
       host: "127.0.0.1",
       port: 18080,
       envName: "test",
+      probeNativeQuotaHttp: async () => {},
       initRootConnection: async () => {},
+      verifyNativeQuotaRootHandshake: async () => {},
       ensureSystemSchema: async () => {},
       seedSystemAdmins: async () => {},
       migrateAllWorkspaces: async () => ({ total: 0, migrated: [] }),
@@ -139,8 +166,14 @@ describe("server startup", () => {
       host: "127.0.0.1",
       port: 18080,
       envName: "test",
+      probeNativeQuotaHttp: async () => {
+        calls.push("quota-http");
+      },
       initRootConnection: async () => {
         calls.push("init-root");
+      },
+      verifyNativeQuotaRootHandshake: async () => {
+        calls.push("quota-root-info");
       },
       ensureSystemSchema: async () => {
         calls.push("ensure-system-schema");
@@ -172,7 +205,9 @@ describe("server startup", () => {
     // 心跳启动抛错被吞：server 仍正常返回、已监听
     expect(running.server).toBeDefined();
     expect(calls).toEqual([
+      "quota-http",
       "init-root",
+      "quota-root-info",
       "ensure-system-schema",
       "seed-admins",
       "migrate-workspaces",
@@ -194,8 +229,14 @@ describe("server startup", () => {
         host: "127.0.0.1",
         port: 18080,
         envName: "test",
+        probeNativeQuotaHttp: async () => {
+          calls.push("quota-http");
+        },
         initRootConnection: async () => {
           calls.push("init-root");
+        },
+        verifyNativeQuotaRootHandshake: async () => {
+          calls.push("quota-root-info");
         },
         ensureSystemSchema: async () => {
           calls.push("ensure-system-schema");
@@ -221,7 +262,14 @@ describe("server startup", () => {
       }),
     ).rejects.toThrow("workspace migration failed");
 
-    expect(calls).toEqual(["init-root", "ensure-system-schema", "seed-admins", "migrate-workspaces"]);
+    expect(calls).toEqual([
+      "quota-http",
+      "init-root",
+      "quota-root-info",
+      "ensure-system-schema",
+      "seed-admins",
+      "migrate-workspaces",
+    ]);
   });
 
   test("does not listen when system schema seed fails", async () => {
@@ -232,8 +280,14 @@ describe("server startup", () => {
         host: "127.0.0.1",
         port: 18080,
         envName: "test",
+        probeNativeQuotaHttp: async () => {
+          calls.push("quota-http");
+        },
         initRootConnection: async () => {
           calls.push("init-root");
+        },
+        verifyNativeQuotaRootHandshake: async () => {
+          calls.push("quota-root-info");
         },
         ensureSystemSchema: async () => {
           calls.push("ensure-system-schema");
@@ -253,7 +307,12 @@ describe("server startup", () => {
       }),
     ).rejects.toThrow("SurrealDB unavailable");
 
-    expect(calls).toEqual(["init-root", "ensure-system-schema"]);
+    expect(calls).toEqual([
+      "quota-http",
+      "init-root",
+      "quota-root-info",
+      "ensure-system-schema",
+    ]);
   });
 
   test("把 app 的 websocket handler 透传给 Bun.serve（WS endpoint 才能升级）", async () => {
@@ -264,7 +323,9 @@ describe("server startup", () => {
       host: "127.0.0.1",
       port: 18080,
       envName: "test",
+      probeNativeQuotaHttp: async () => {},
       initRootConnection: async () => {},
+      verifyNativeQuotaRootHandshake: async () => {},
       ensureSystemSchema: async () => {},
       seedSystemAdmins: async () => {},
       migrateAllWorkspaces: async () => ({ total: 0, migrated: [] }),
@@ -277,5 +338,89 @@ describe("server startup", () => {
     });
 
     expect(servedWebSocket).toBe(wsHandler);
+  });
+
+  test("capability gate failure keeps migrations, app, scope routes and listener unavailable", async () => {
+    const calls: string[] = [];
+
+    await expect(
+      startServer({
+        host: "127.0.0.1",
+        port: 18080,
+        envName: "test",
+        probeNativeQuotaHttp: async () => {
+          calls.push("quota-http");
+          throw new Error("incompatible native quota capability");
+        },
+        initRootConnection: async () => {
+          calls.push("init-root");
+        },
+        verifyNativeQuotaRootHandshake: async () => {
+          calls.push("quota-root-info");
+        },
+        ensureSystemSchema: async () => {
+          calls.push("ensure-system-schema");
+        },
+        seedSystemAdmins: async () => {
+          calls.push("seed-admins");
+        },
+        migrateAllWorkspaces: async () => {
+          calls.push("migrate-workspaces");
+        },
+        createApp: () => {
+          calls.push("create-app");
+          return { fetch: () => new Response("ok") };
+        },
+        serve: () => {
+          calls.push("listen");
+          return { stop() {} };
+        },
+      }),
+    ).rejects.toThrow("incompatible native quota capability");
+
+    expect(calls).toEqual(["quota-http"]);
+  });
+
+  test("root INFO gate failure closes root and does not run schema migrations", async () => {
+    const calls: string[] = [];
+
+    await expect(
+      startServer({
+        host: "127.0.0.1",
+        port: 18080,
+        envName: "test",
+        probeNativeQuotaHttp: async () => {
+          calls.push("quota-http");
+        },
+        initRootConnection: async () => {
+          calls.push("init-root");
+        },
+        verifyNativeQuotaRootHandshake: async () => {
+          calls.push("quota-root-info");
+          throw new Error("untrusted quota ledger");
+        },
+        closeRootConnection: async () => {
+          calls.push("close-root");
+        },
+        ensureSystemSchema: async () => {
+          calls.push("ensure-system-schema");
+        },
+        createApp: () => {
+          calls.push("create-app");
+          return { fetch: () => new Response("ok") };
+        },
+        serve: () => {
+          calls.push("listen");
+          return { stop() {} };
+        },
+      }),
+    ).rejects.toThrow("untrusted quota ledger");
+
+    expect(calls).toEqual([
+      "quota-http",
+      "init-root",
+      "quota-root-info",
+      "close-root",
+    ]);
   });
 });

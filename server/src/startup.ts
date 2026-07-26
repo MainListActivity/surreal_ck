@@ -6,6 +6,11 @@ import { seedSystemAdmins } from "./db/system-admin-seed";
 import { migrateAllWorkspaces } from "./db/migration-runner";
 import { startReconcileLoop, type ReconcileLoopHandle } from "./db/reconciler";
 import {
+  NativeQuotaStartupGateError,
+  probeNativeQuotaHttp,
+  verifyNativeQuotaRootHandshake,
+} from "./db/native-quota/startup-gate";
+import {
   startClaimsRiskReminderDispatcher,
   type ClaimsRiskDispatcherHandle,
 } from "../ai/office/claims-risk-dispatcher";
@@ -24,7 +29,9 @@ export type StartServerDeps = {
   host?: string;
   port?: number;
   envName?: string;
+  probeNativeQuotaHttp?: () => Promise<unknown>;
   initRootConnection?: () => Promise<void>;
+  verifyNativeQuotaRootHandshake?: () => Promise<unknown>;
   ensureSystemSchema?: () => Promise<unknown>;
   seedSystemAdmins?: () => Promise<unknown>;
   migrateAllWorkspaces?: () => Promise<unknown>;
@@ -49,7 +56,11 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
   const host = deps.host ?? env.HOST;
   const port = deps.port ?? env.PORT;
   const envName = deps.envName ?? env.NODE_ENV;
+  const probeNativeQuota = deps.probeNativeQuotaHttp
+    ?? (() => probeNativeQuotaHttp({ production: envName === "production" }));
   const initRoot = deps.initRootConnection ?? initRootConnection;
+  const verifyNativeQuota = deps.verifyNativeQuotaRootHandshake
+    ?? verifyNativeQuotaRootHandshake;
   const ensureSchema = deps.ensureSystemSchema ?? ensureSystemSchema;
   const seedAdmins = deps.seedSystemAdmins ?? seedSystemAdmins;
   const migrateWorkspaces = deps.migrateAllWorkspaces ?? migrateAllWorkspaces;
@@ -63,7 +74,31 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
     ?? (envName === "test" ? () => ({ async stop() {} }) : startClaimsRiskReminderDispatcher);
   const closeRoot = deps.closeRootConnection ?? closeRootConnection;
 
-  await initRoot();
+  let rootConnectionAttempted = false;
+  try {
+    await probeNativeQuota();
+    rootConnectionAttempted = true;
+    await initRoot();
+    await verifyNativeQuota();
+  } catch (cause) {
+    if (rootConnectionAttempted) {
+      try {
+        await closeRoot();
+      } catch (closeCause) {
+        console.error("[server] failed to close root after native quota gate failure", {
+          message: closeCause instanceof Error ? closeCause.message : String(closeCause),
+        });
+      }
+    }
+    if (cause instanceof NativeQuotaStartupGateError) {
+      console.error("[server] native quota startup gate rejected this deployment", {
+        stage: cause.stage,
+        code: cause.diagnosticCode,
+        diagnostics: cause.diagnostics,
+      });
+    }
+    throw cause;
+  }
   await ensureSchema();
   await seedAdmins();
   await migrateWorkspaces();
