@@ -83,7 +83,10 @@ function integer(value: unknown, fallback = 0): SurrealInteger {
 
 function dateTime(value: unknown, name: string): DateTime {
   if (value instanceof DateTime) return value;
-  if (value instanceof Date || typeof value === "string") {
+  if (value instanceof Date) {
+    return new DateTime(value.toISOString());
+  }
+  if (typeof value === "string") {
     return new DateTime(value);
   }
   throw new TypeError(`invalid ${name} datetime`);

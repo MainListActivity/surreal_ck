@@ -24,6 +24,9 @@ describe("server startup", () => {
       seedSystemAdmins: async () => {
         calls.push("seed-admins");
       },
+      seedQuotaPlans: async () => {
+        calls.push("seed-plans");
+      },
       migrateAllWorkspaces: async () => {
         calls.push("migrate-workspaces");
         return { total: 0, migrated: [] };
@@ -47,6 +50,7 @@ describe("server startup", () => {
       "quota-root-info",
       "ensure-system-schema",
       "seed-admins",
+      "seed-plans",
       "migrate-workspaces",
       "create-app",
       "listen",
@@ -74,6 +78,9 @@ describe("server startup", () => {
       },
       seedSystemAdmins: async () => {
         calls.push("seed-admins");
+      },
+      seedQuotaPlans: async () => {
+        calls.push("seed-plans");
       },
       migrateAllWorkspaces: async () => {
         calls.push("migrate-workspaces");
@@ -103,6 +110,7 @@ describe("server startup", () => {
       "quota-root-info",
       "ensure-system-schema",
       "seed-admins",
+      "seed-plans",
       "migrate-workspaces",
       "create-app",
       "listen",
@@ -117,6 +125,7 @@ describe("server startup", () => {
       "quota-root-info",
       "ensure-system-schema",
       "seed-admins",
+      "seed-plans",
       "migrate-workspaces",
       "create-app",
       "listen",
@@ -138,6 +147,7 @@ describe("server startup", () => {
       verifyNativeQuotaRootHandshake: async () => {},
       ensureSystemSchema: async () => {},
       seedSystemAdmins: async () => {},
+      seedQuotaPlans: async () => {},
       migrateAllWorkspaces: async () => ({ total: 0, migrated: [] }),
       createApp: () => ({ fetch: () => new Response("ok") }),
       serve: () => ({ stop: () => calls.push("server:stop") }),
@@ -181,6 +191,9 @@ describe("server startup", () => {
       seedSystemAdmins: async () => {
         calls.push("seed-admins");
       },
+      seedQuotaPlans: async () => {
+        calls.push("seed-plans");
+      },
       migrateAllWorkspaces: async () => {
         calls.push("migrate-workspaces");
         return { total: 0, migrated: [] };
@@ -210,6 +223,7 @@ describe("server startup", () => {
       "quota-root-info",
       "ensure-system-schema",
       "seed-admins",
+      "seed-plans",
       "migrate-workspaces",
       "create-app",
       "listen",
@@ -244,6 +258,9 @@ describe("server startup", () => {
         seedSystemAdmins: async () => {
           calls.push("seed-admins");
         },
+        seedQuotaPlans: async () => {
+          calls.push("seed-plans");
+        },
         migrateAllWorkspaces: async () => {
           calls.push("migrate-workspaces");
           throw new Error("workspace migration failed on ws_broken (0/1 migrated before failure)");
@@ -268,6 +285,7 @@ describe("server startup", () => {
       "quota-root-info",
       "ensure-system-schema",
       "seed-admins",
+      "seed-plans",
       "migrate-workspaces",
     ]);
   });
@@ -328,6 +346,7 @@ describe("server startup", () => {
       verifyNativeQuotaRootHandshake: async () => {},
       ensureSystemSchema: async () => {},
       seedSystemAdmins: async () => {},
+      seedQuotaPlans: async () => {},
       migrateAllWorkspaces: async () => ({ total: 0, migrated: [] }),
       createApp: () => ({ fetch: () => new Response("ok"), websocket: wsHandler }),
       serve: (options: { websocket?: unknown }) => {
@@ -363,6 +382,9 @@ describe("server startup", () => {
         },
         seedSystemAdmins: async () => {
           calls.push("seed-admins");
+        },
+        seedQuotaPlans: async () => {
+          calls.push("seed-plans");
         },
         migrateAllWorkspaces: async () => {
           calls.push("migrate-workspaces");

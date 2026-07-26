@@ -36,12 +36,38 @@ export function createWorkspaceRoutes(
       const body = await c.req.json().catch(() => null);
       const name = typeof body?.name === "string" ? body.name.trim() : "";
       const slug = typeof body?.slug === "string" ? body.slug.trim().toLowerCase() : "";
+      const planKey =
+        typeof body?.planKey === "string"
+          ? body.planKey.trim().toLowerCase()
+          : typeof body?.resourceSource?.planKey === "string"
+            ? body.resourceSource.planKey.trim().toLowerCase()
+            : "";
+      const sourceKindRaw =
+        typeof body?.resourceSource?.sourceKind === "string"
+          ? body.resourceSource.sourceKind
+          : typeof body?.sourceKind === "string"
+            ? body.sourceKind
+            : undefined;
+      const sourceKind =
+        sourceKindRaw === "trial"
+        || sourceKindRaw === "manual"
+        || sourceKindRaw === "paid"
+        || sourceKindRaw === "contract"
+          ? sourceKindRaw
+          : undefined;
 
       if (!name) {
         throw new HttpError(400, "workspace-name-required", "name is required");
       }
       if (!SLUG_PATTERN.test(slug)) {
         throw new HttpError(400, "workspace-slug-invalid", "slug must be 1-40 lowercase alphanumeric or hyphen characters");
+      }
+      if (!planKey) {
+        throw new HttpError(
+          400,
+          "workspace-resource-source-required",
+          "planKey is required; resource entitlement is never implicit",
+        );
       }
       const { canCreate } = await workspaceScope.listWorkspaces({
         subject: c.var.user.subject,
@@ -57,10 +83,22 @@ export function createWorkspaceRoutes(
         email: c.var.user.email ?? "",
         name,
         slug,
+        resourceSource: { planKey, sourceKind },
       });
 
       if (result.kind === "slug-conflict") {
         throw new HttpError(409, "workspace-slug-conflict", "Workspace slug already exists");
+      }
+
+      if (result.kind === "no-resource-source") {
+        throw new HttpError(400, result.code, result.message);
+      }
+
+      if (result.kind === "provisioning_error") {
+        throw new HttpError(503, result.code, result.message, {
+          slug: result.slug,
+          dbName: result.dbName,
+        });
       }
 
       if (result.kind === "scope-update-failed") {

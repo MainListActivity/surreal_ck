@@ -82,7 +82,7 @@ describe("POST /api/workspaces", () => {
       new Request("http://localhost/api/workspaces", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: "Acme", slug: "acme" }),
+        body: JSON.stringify({ name: "Acme", slug: "acme", planKey: "trial" }),
       }),
     );
 
@@ -109,12 +109,41 @@ describe("POST /api/workspaces", () => {
       new Request("http://localhost/api/workspaces", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: "Acme", slug: "acme" }),
+        body: JSON.stringify({ name: "Acme", slug: "acme", planKey: "trial" }),
       }),
     );
 
     expect(response.status).toBe(403);
     expect(await response.json()).toMatchObject({ error: { code: "workspace-create-forbidden" } });
+    expect(calls).toEqual([]);
+  });
+
+  test("rejects create without explicit planKey resource source", async () => {
+    const { creator, calls } = stubCreator(() => ({
+      kind: "created",
+      slug: "acme",
+      dbName: "ws_x",
+      accessToken: "scoped-token",
+      expiresIn: 3600,
+    }));
+    const app = createApp({
+      requireUser: () => useTestUser,
+      workspaceCreator: creator,
+      workspaceScope: stubWorkspaceScope(true),
+    });
+
+    const response = await app.fetch(
+      new Request("http://localhost/api/workspaces", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "Acme", slug: "acme" }),
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: { code: "workspace-resource-source-required" },
+    });
     expect(calls).toEqual([]);
   });
 
@@ -137,7 +166,7 @@ describe("POST /api/workspaces", () => {
       new Request("http://localhost/api/workspaces", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: "Acme Legal", slug: "Acme" }),
+        body: JSON.stringify({ name: "Acme Legal", slug: "Acme", planKey: "trial" }),
       }),
     );
 
@@ -155,6 +184,7 @@ describe("POST /api/workspaces", () => {
         email: "ada@example.test",
         name: "Acme Legal",
         slug: "acme",
+        resourceSource: { planKey: "trial", sourceKind: undefined },
       },
     ]);
   });
@@ -171,7 +201,7 @@ describe("POST /api/workspaces", () => {
       new Request("http://localhost/api/workspaces", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: "Acme", slug: "acme" }),
+        body: JSON.stringify({ name: "Acme", slug: "acme", planKey: "trial" }),
       }),
     );
 
@@ -195,7 +225,7 @@ describe("POST /api/workspaces", () => {
       new Request("http://localhost/api/workspaces", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: "Acme", slug: "acme" }),
+        body: JSON.stringify({ name: "Acme", slug: "acme", planKey: "trial" }),
       }),
     );
 

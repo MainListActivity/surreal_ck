@@ -2,6 +2,24 @@ import { describe, expect, test } from "bun:test";
 import { DateTime } from "surrealdb";
 import { createWorkspaceScopeModule, type Queryable } from "./workspace-scope";
 
+const GATE_ELIGIBLE_WORKSPACE = {
+  id: "workspace:1",
+  status: "active",
+  slug: "abc",
+  name: "ABC",
+  desired_entitlement: "resource_entitlement:v1",
+  applied_entitlement: "resource_entitlement:v1",
+  desired_quota_projection: "quota_policy_projection:v1",
+  applied_quota_projection: "quota_policy_projection:v1",
+  quota_migration_state: "native_verified",
+};
+
+const GATE_ELIGIBLE_RUNTIME = {
+  ledger_state: "ready",
+  usage_trusted: true,
+  last_native_audit_at: new Date().toISOString(),
+};
+
 class FakeDb implements Queryable {
   readonly queries: Array<{ sql: string; params?: Record<string, unknown> }> = [];
   readonly useCalls: Array<{ namespace: string; database: string }> = [];
@@ -9,6 +27,9 @@ class FakeDb implements Queryable {
   indexRows: any[] = [];
   workspaceUserRows: Record<string, any[]> = {};
   systemAdminRowCount = 0;
+  /** Override to fail closed in gate tests. */
+  runtimeByWorkspace: Record<string, typeof GATE_ELIGIBLE_RUNTIME | null> = {};
+  defaultRuntime: typeof GATE_ELIGIBLE_RUNTIME | null = GATE_ELIGIBLE_RUNTIME;
 
   async use(scope: { namespace: string; database: string }): Promise<void> {
     this.useCalls.push(scope);
@@ -25,6 +46,15 @@ class FakeDb implements Queryable {
 
     if (normalizedSql.includes("FROM user_workspace_index")) {
       return [this.indexRows];
+    }
+
+    if (normalizedSql.includes("workspace_quota_runtime")) {
+      const key = String(params?.workspace ?? "");
+      const runtime =
+        key in this.runtimeByWorkspace
+          ? this.runtimeByWorkspace[key]
+          : this.defaultRuntime;
+      return [runtime ? [runtime] : []];
     }
 
     if (normalizedSql.includes("FROM user WHERE kind = 'human'")) {
@@ -69,6 +99,15 @@ class FilteringFakeDb extends FakeDb {
       ];
     }
 
+    if (normalizedSql.includes("workspace_quota_runtime")) {
+      const key = String(params?.workspace ?? "");
+      const runtime =
+        key in this.runtimeByWorkspace
+          ? this.runtimeByWorkspace[key]
+          : this.defaultRuntime;
+      return [runtime ? [runtime] : []];
+    }
+
     if (normalizedSql.includes("FROM user WHERE kind = 'human'")) {
       const currentDb = this.useCalls[this.useCalls.length - 1]?.database ?? "ws_unknown";
       const subject = params?.subject;
@@ -108,6 +147,15 @@ class ScopedFakeDb extends FakeDb {
       return [this.rowsByDatabase[this.currentDatabase] ?? []];
     }
 
+    if (normalizedSql.includes("workspace_quota_runtime")) {
+      const key = String(params?.workspace ?? "");
+      const runtime =
+        key in this.runtimeByWorkspace
+          ? this.runtimeByWorkspace[key]
+          : this.defaultRuntime;
+      return [runtime ? [runtime] : []];
+    }
+
     return [[]];
   }
 }
@@ -120,7 +168,7 @@ describe("WorkspaceScopeModule.switchWorkspace consistency & drift", () => {
         id: "user_workspace_index:1",
         db_name: "ws_abc",
         role: "admin",
-        workspace: { status: "active" },
+        workspace: { ...GATE_ELIGIBLE_WORKSPACE },
         email: "ada@example.test",
       },
     ];
@@ -158,7 +206,7 @@ describe("WorkspaceScopeModule.switchWorkspace consistency & drift", () => {
         id: "user_workspace_index:1",
         db_name: "ws_abc",
         role: "participant", // mismatch: index says participant
-        workspace: { status: "active" },
+        workspace: { ...GATE_ELIGIBLE_WORKSPACE },
         email: "ada@example.test",
       },
     ];
@@ -196,7 +244,7 @@ describe("WorkspaceScopeModule.switchWorkspace consistency & drift", () => {
         id: "user_workspace_index:1",
         db_name: "ws_abc",
         role: "participant",
-        workspace: { status: "active" },
+        workspace: { ...GATE_ELIGIBLE_WORKSPACE },
         email: "ada@example.test",
       },
     ];
@@ -234,7 +282,7 @@ describe("WorkspaceScopeModule.switchWorkspace consistency & drift", () => {
         subject: null,
         db_name: "ws_abc",
         role: "participant",
-        workspace: { status: "active", slug: "abc", name: "ABC" },
+        workspace: { ...GATE_ELIGIBLE_WORKSPACE, slug: "abc", name: "ABC" },
         email: "ada@example.test",
       },
     ];
@@ -282,7 +330,7 @@ describe("WorkspaceScopeModule.switchWorkspace consistency & drift", () => {
         id: "user_workspace_index:1",
         db_name: "ws_abc",
         role: "participant",
-        workspace: { status: "active" },
+        workspace: { ...GATE_ELIGIBLE_WORKSPACE },
         email: "ada@example.test",
       },
     ];
@@ -306,7 +354,7 @@ describe("WorkspaceScopeModule.switchWorkspace consistency & drift", () => {
         id: "user_workspace_index:1",
         db_name: "ws_abc",
         role: "participant",
-        workspace: { status: "active" },
+        workspace: { ...GATE_ELIGIBLE_WORKSPACE },
         email: "ada@example.test",
       },
     ];
@@ -338,7 +386,7 @@ describe("WorkspaceScopeModule disabled member filtering", () => {
       {
         db_name: "ws_abc",
         role: "participant",
-        workspace: { status: "active", slug: "abc", name: "ABC" },
+        workspace: { ...GATE_ELIGIBLE_WORKSPACE, slug: "abc", name: "ABC" },
       },
     ];
     const module = createWorkspaceScopeModule(db);
@@ -375,14 +423,14 @@ describe("WorkspaceScopeModule disabled member filtering", () => {
         role: "participant",
         last_selected_at: new DateTime("2026-05-22T01:00:00.000Z"),
         joined_at: new DateTime("2026-05-20T01:00:00.000Z"),
-        workspace: { status: "active", slug: "older", name: "Older" },
+        workspace: { ...GATE_ELIGIBLE_WORKSPACE, id: "workspace:older", slug: "older", name: "Older" },
       },
       {
         db_name: "ws_newer",
         role: "admin",
         last_selected_at: new DateTime("2026-05-23T01:00:00.000Z"),
         joined_at: new DateTime("2026-05-21T01:00:00.000Z"),
-        workspace: { status: "active", slug: "newer", name: "Newer" },
+        workspace: { ...GATE_ELIGIBLE_WORKSPACE, id: "workspace:newer", slug: "newer", name: "Newer" },
       },
     ];
     const module = createWorkspaceScopeModule(db);
@@ -420,7 +468,7 @@ describe("WorkspaceScopeModule disabled member filtering", () => {
         db_name: "ws_invited",
         role: "participant",
         email: "ada@example.test",
-        workspace: { status: "active", slug: "invited", name: "Invited" },
+        workspace: { ...GATE_ELIGIBLE_WORKSPACE, id: "workspace:invited", slug: "invited", name: "Invited" },
       },
     ];
     const module = createWorkspaceScopeModule(db);
@@ -449,7 +497,7 @@ describe("WorkspaceScopeModule disabled member filtering", () => {
         db_name: "ws_invited",
         role: "participant",
         email: "ada@example.test",
-        workspace: { status: "active", slug: "invited", name: "Invited" },
+        workspace: { ...GATE_ELIGIBLE_WORKSPACE, id: "workspace:invited", slug: "invited", name: "Invited" },
       },
     ];
     const module = createWorkspaceScopeModule(db);
@@ -481,7 +529,7 @@ describe("WorkspaceScopeModule.getDefaultScope system-admin creation switch", ()
   test("user with a workspace and empty system_admin: returns ws scope, canCreateWorkspace=false", async () => {
     const db = new FakeDb();
     db.indexRows = [
-      { db_name: "ws_abc", role: "participant", workspace: { status: "active" } },
+      { db_name: "ws_abc", role: "participant", workspace: { ...GATE_ELIGIBLE_WORKSPACE } },
     ];
     const module = createWorkspaceScopeModule(db);
 
@@ -498,7 +546,7 @@ describe("WorkspaceScopeModule.getDefaultScope system-admin creation switch", ()
     const db = new FakeDb();
     db.systemAdminRowCount = 1;
     db.indexRows = [
-      { db_name: "ws_abc", role: "admin", workspace: { status: "active" } },
+      { db_name: "ws_abc", role: "admin", workspace: { ...GATE_ELIGIBLE_WORKSPACE } },
     ];
     const module = createWorkspaceScopeModule(db);
 

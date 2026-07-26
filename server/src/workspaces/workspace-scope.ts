@@ -1,6 +1,10 @@
 import { getRootDatabaseSession } from "../db/root-connection";
 import { dateTimeTimestamp, toIsoDateTimeString } from "../db/surreal-values";
 import { env } from "../env";
+import {
+  evaluateWorkspaceScopeGate,
+  type WorkspaceScopeGateSnapshot,
+} from "./scope-gate";
 
 export type SurrealTokenScope = {
   db: string;
@@ -108,9 +112,15 @@ type WorkspaceIndexRow = {
   joined_at?: unknown;
   email?: unknown;
   workspace?: {
+    id?: unknown;
     slug?: unknown;
     name?: unknown;
     status?: unknown;
+    desired_entitlement?: unknown;
+    applied_entitlement?: unknown;
+    desired_quota_projection?: unknown;
+    applied_quota_projection?: unknown;
+    quota_migration_state?: unknown;
   };
 };
 
@@ -177,6 +187,58 @@ function needsSubjectBind(row: WorkspaceIndexRow, subject: string): boolean {
   return row.subject !== subject;
 }
 
+function workspaceRecordId(row: WorkspaceIndexRow): unknown {
+  return row.workspace?.id;
+}
+
+type RuntimeQuotaRow = {
+  ledger_state?: unknown;
+  usage_trusted?: unknown;
+  last_native_audit_at?: unknown;
+};
+
+async function loadScopeGateSnapshot(
+  client: Queryable,
+  row: WorkspaceIndexRow,
+): Promise<WorkspaceScopeGateSnapshot> {
+  const workspaceId = workspaceRecordId(row);
+  let runtime: RuntimeQuotaRow | null = null;
+
+  if (workspaceId !== undefined && workspaceId !== null) {
+    const runtimeResult = await client.query(
+      `
+        SELECT ledger_state, usage_trusted, last_native_audit_at
+        FROM ONLY workspace_quota_runtime
+        WHERE workspace = $workspace;
+      `,
+      { workspace: workspaceId },
+    );
+    const rows = Array.isArray(runtimeResult) ? runtimeResult[0] : undefined;
+    const first = Array.isArray(rows) ? rows[0] : rows;
+    if (typeof first === "object" && first !== null) {
+      runtime = first as RuntimeQuotaRow;
+    }
+  }
+
+  return {
+    status: typeof row.workspace?.status === "string" ? row.workspace.status : "failed",
+    desiredEntitlement: row.workspace?.desired_entitlement as string | undefined,
+    appliedEntitlement: row.workspace?.applied_entitlement as string | undefined,
+    desiredQuotaProjection: row.workspace?.desired_quota_projection as string | undefined,
+    appliedQuotaProjection: row.workspace?.applied_quota_projection as string | undefined,
+    ledgerState: typeof runtime?.ledger_state === "string" ? runtime.ledger_state : null,
+    usageTrusted: typeof runtime?.usage_trusted === "boolean" ? runtime.usage_trusted : null,
+    lastNativeAuditAt: runtime?.last_native_audit_at as string | undefined,
+    quotaMigrationState: row.workspace?.quota_migration_state as string | undefined,
+  };
+}
+
+async function isScopeEligible(client: Queryable, row: WorkspaceIndexRow): Promise<boolean> {
+  if (row.workspace?.status !== "active") return false;
+  const gate = evaluateWorkspaceScopeGate(await loadScopeGateSnapshot(client, row));
+  return gate.ok;
+}
+
 export function createWorkspaceScopeModule(input?: Queryable | WorkspaceScopeModuleOptions): WorkspaceScopeModule {
   const options = input && isWorkspaceScopeModuleOptions(input) ? input : { db: input };
   const db = options.db;
@@ -201,11 +263,14 @@ export function createWorkspaceScopeModule(input?: Queryable | WorkspaceScopeMod
       );
       const rows = rowsFromQueryResult(result);
 
-      const scope = rows
-        .filter((row) => row.workspace?.status === "active")
-        .sort(sortWorkspaceRows)
-        .map(rowToScope)
-        .find((candidate): candidate is SurrealTokenScope => candidate !== null);
+      let scope: SurrealTokenScope | null = null;
+      for (const row of rows
+        .filter((candidate) => candidate.workspace?.status === "active")
+        .sort(sortWorkspaceRows)) {
+        if (!(await isScopeEligible(client, row))) continue;
+        scope = rowToScope(row);
+        if (scope) break;
+      }
 
       const canCreateWorkspace = await hasSystemAdminRows(client);
 
@@ -279,6 +344,10 @@ export function createWorkspaceScopeModule(input?: Queryable | WorkspaceScopeMod
       const rows = rowsFromQueryResult(result);
       const row = rows.find((candidate) => rowToScope(candidate) !== null);
       if (!row || row.workspace?.status !== "active") {
+        return { kind: "forbidden" };
+      }
+
+      if (!(await isScopeEligible(client, row))) {
         return { kind: "forbidden" };
       }
 
