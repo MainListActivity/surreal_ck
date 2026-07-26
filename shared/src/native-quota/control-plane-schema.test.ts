@@ -59,7 +59,7 @@ describe("_system native quota control-plane schema", () => {
       .map((entry) => Number(entry.slice(0, 3)))
       .sort((left, right) => left - right);
 
-    expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
   });
 
   test("every quota control-plane table is root-only", async () => {
@@ -135,6 +135,10 @@ describe("_system native quota control-plane schema", () => {
       new URL("007-quota-projection-rule-labels.surql", migrationsDirectoryUrl),
       "utf8",
     );
+    const recoverySql = await readFile(
+      new URL("008-quota-reconciliation-recovery.surql", migrationsDirectoryUrl),
+      "utf8",
+    );
 
     expect(commercialSql).toContain("rules.*.selector.kind ON TABLE quota_plan_revision");
     expect(commercialSql).toContain("patches.*.selector.kind ON TABLE quota_override_revision");
@@ -153,6 +157,12 @@ describe("_system native quota control-plane schema", () => {
       "REMOVE FIELD IF EXISTS rules.*.rule_key ON TABLE quota_policy_projection",
     );
     expect(commercialSql).toContain('$value INSIDE ["exact", "regex"]');
+    expect(recoverySql).toContain(
+      'ASSERT $value INSIDE ["normal", "drift_reapply"]',
+    );
+    expect(recoverySql).toContain(
+      "next_attempt_at ON TABLE quota_sweep_cursor",
+    );
   });
 
   test("operator authority and causation are independent from workspace administration", async () => {

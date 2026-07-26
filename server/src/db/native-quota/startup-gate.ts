@@ -141,7 +141,7 @@ export async function probeNativeQuotaHttp(input: {
 
 export async function verifyNativeQuotaRootHandshake(
   input: {
-    client?: NativeQuotaClient;
+    client?: Pick<NativeQuotaClient, "info">;
     database?: string;
   } = {},
 ): Promise<NativeQuotaInfo> {
@@ -178,4 +178,3 @@ export async function verifyNativeQuotaRootHandshake(
 
   return info;
 }
-

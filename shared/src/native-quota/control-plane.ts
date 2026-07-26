@@ -286,6 +286,7 @@ export type QuotaMaterializationOperationRecord = {
   status: QuotaMaterializationStatus;
   idempotency_key: string;
   request_id?: string;
+  reconcile_mode: "normal" | "drift_reapply";
   attempt_count: SurrealInteger;
   next_attempt_at?: DateTime;
   first_failed_at?: DateTime;
@@ -302,6 +303,7 @@ export type QuotaMaterializationOperationRecord = {
   applied_native_generation?: SurrealInteger;
   readback_digest?: string;
   applied_at?: DateTime;
+  completed_at?: DateTime;
   superseded_by?: StringRecordId;
   created_at: DateTime;
   updated_at: DateTime;
@@ -387,6 +389,11 @@ export type QuotaSweepCursorRecord = {
   lease_owner?: string;
   lease_expires_at?: DateTime;
   fencing_token: SurrealInteger;
+  attempt_count: SurrealInteger;
+  next_attempt_at?: DateTime;
+  last_error_code?: string;
+  last_error_retryable?: boolean;
+  last_error_details?: ControlPlaneObject;
   last_started_at?: DateTime;
   last_completed_at?: DateTime;
   updated_at: DateTime;

@@ -95,7 +95,7 @@ describe("system schema seed", () => {
 
     const firstRun = await ensureSystemSchema(db, { namespace: "main" });
 
-    expect(firstRun).toEqual({ fromVersion: 3, toVersion: 7, appliedVersions: [4, 5, 6, 7] });
+    expect(firstRun).toEqual({ fromVersion: 3, toVersion: 8, appliedVersions: [4, 5, 6, 7, 8] });
     expect(db.queryCalls.some((call) => call.sql.includes("DEFINE TABLE IF NOT EXISTS quota_plan "))).toBeTrue();
     expect(db.queryCalls.some((call) => call.sql.includes("DEFINE TABLE IF NOT EXISTS resource_entitlement "))).toBeTrue();
     expect(db.queryCalls.some((call) => call.sql.includes("DEFINE TABLE IF NOT EXISTS platform_operator "))).toBeTrue();
@@ -103,7 +103,7 @@ describe("system schema seed", () => {
     const callsAfterFirstRun = db.queryCalls.length;
     const secondRun = await ensureSystemSchema(db, { namespace: "main" });
 
-    expect(secondRun).toEqual({ fromVersion: 7, toVersion: 7, appliedVersions: [] });
+    expect(secondRun).toEqual({ fromVersion: 8, toVersion: 8, appliedVersions: [] });
     expect(db.queryCalls.slice(callsAfterFirstRun).map((call) => call.sql.trim())).toEqual([
       "DEFINE DATABASE IF NOT EXISTS _system;",
       "SELECT version FROM _system_schema_version:current;",

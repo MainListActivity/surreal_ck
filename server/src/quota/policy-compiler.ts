@@ -4,6 +4,7 @@ import {
   type CompiledQuotaRuleLabel,
   type NativeQuotaLimit,
   type NativeQuotaResource,
+  type NativeQuotaRule,
   type ProductQuotaRule,
   type QuotaPolicyProjectionRecord,
   type ResourceEntitlementRecord,
@@ -321,6 +322,23 @@ function digestLimit(limit: NativeQuotaLimit): unknown {
     : { kind: "unlimited" };
 }
 
+export function canonicalNativePolicyDigest(
+  inputRules: readonly NativeQuotaRule[],
+): string {
+  const rules = [...inputRules].sort((left, right) =>
+    compareText(left.rule_id, right.rule_id)
+  );
+  return canonicalSha256({
+    format_version: 1,
+    rules: rules.map((rule) => ({
+      rule_id: rule.rule_id,
+      resource: rule.resource,
+      selector: rule.selector,
+      limit: digestLimit(rule.limit),
+    })),
+  });
+}
+
 /**
  * Pure policy compiler. It validates the complete managed coverage contract,
  * hides native DTO normalization, and returns one immutable projection whose
@@ -357,15 +375,7 @@ export function compileQuotaPolicy(
     );
   const rules = Object.freeze(pairs.map((pair) => pair.compiled));
   const ruleLabels = Object.freeze(pairs.map((pair) => pair.label));
-  const canonicalDigest = canonicalSha256({
-    format_version: 1,
-    rules: rules.map((rule) => ({
-      rule_id: rule.rule_id,
-      resource: rule.resource,
-      selector: rule.selector,
-      limit: digestLimit(rule.limit),
-    })),
-  });
+  const canonicalDigest = canonicalNativePolicyDigest(rules);
 
   const projection: QuotaPolicyProjectionRecord = Object.freeze({
     id: input.projection.id,
