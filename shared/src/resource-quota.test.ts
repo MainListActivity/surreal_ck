@@ -1,19 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { StringRecordId } from "surrealdb";
 import {
-  RESOURCE_QUOTA_PLANS,
   buildRecordQuotaGuardSurql,
 } from "./resource-quota";
 
 describe("resource quota public contract", () => {
-  test("Plus / Pro / Max 的三类额度严格递增", () => {
-    expect(RESOURCE_QUOTA_PLANS).toEqual({
-      plus: { maxSheets: 1, maxFieldsPerSheet: 3, maxRecordsPerSheet: 2 },
-      pro: { maxSheets: 2, maxFieldsPerSheet: 6, maxRecordsPerSheet: 4 },
-      max: { maxSheets: 3, maxFieldsPerSheet: 9, maxRecordsPerSheet: 6 },
-    });
-  });
-
   test("为动态实体表生成绑定数据表身份的记录配额事件", () => {
     const sql = buildRecordQuotaGuardSurql({
       tableName: "ent_a1b2_main",

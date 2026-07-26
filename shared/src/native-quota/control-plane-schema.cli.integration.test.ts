@@ -167,9 +167,8 @@ const productRule = `{
 
 const compiledRule = `{
   rule_id: "rule-records-ent",
-  rule_key: "records-ent",
   resource: "record",
-  selector: { kind: "regex", value: "^ent.*$" },
+  selector: { kind: "regex", pattern: "^ent.*$" },
   limit: { kind: "finite", value: 100 }
 }`;
 
@@ -178,7 +177,7 @@ describe("_system native quota schema against local SurrealDB", () => {
     "upgrades existing data, enforces authority invariants, denies database users, and reruns safely",
     async () => {
       const migrations = await readMigrations();
-      expect(migrations).toHaveLength(6);
+      expect(migrations).toHaveLength(7);
 
       for (const sql of migrations.slice(0, 3)) {
         expectSuccessful(await runSurrealCli(sql));
@@ -348,6 +347,13 @@ describe("_system native quota schema against local SurrealDB", () => {
           native_contract_major: 1,
           info_format_version: 1,
           rules: [${compiledRule}],
+          rule_labels: [{
+            rule_id: "rule-records-ent",
+            rule_key: "records-ent",
+            resource: "record",
+            customer_label: "实体记录",
+            customer_description: "ent 开头的表最多 100 条记录"
+          }],
           canonical_digest: "projection-digest-v1",
           correlation_id: "corr-entitlement-v1",
           causation_id: "resource_entitlement:existing_v1"

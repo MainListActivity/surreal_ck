@@ -1,25 +1,5 @@
 import type { StringRecordId } from "surrealdb";
 
-export const RESOURCE_QUOTA_PLANS = {
-  plus: {
-    maxSheets: 1,
-    maxFieldsPerSheet: 3,
-    maxRecordsPerSheet: 2,
-  },
-  pro: {
-    maxSheets: 2,
-    maxFieldsPerSheet: 6,
-    maxRecordsPerSheet: 4,
-  },
-  max: {
-    maxSheets: 3,
-    maxFieldsPerSheet: 9,
-    maxRecordsPerSheet: 6,
-  },
-} as const;
-
-export type ResourceQuotaPlanKey = keyof typeof RESOURCE_QUOTA_PLANS;
-
 export type RecordQuotaGuardInput = {
   tableName: string;
   sheetId: StringRecordId;

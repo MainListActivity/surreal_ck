@@ -5,10 +5,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StringRecordId } from "surrealdb";
 import {
-  RESOURCE_QUOTA_PLANS,
   buildRecordQuotaGuardSurql,
-  type ResourceQuotaPlanKey,
 } from "./resource-quota";
+
+const LEGACY_QUOTA_TEST_PLANS = {
+  plus: { maxSheets: 1, maxFieldsPerSheet: 3, maxRecordsPerSheet: 2 },
+  pro: { maxSheets: 2, maxFieldsPerSheet: 6, maxRecordsPerSheet: 4 },
+  max: { maxSheets: 3, maxFieldsPerSheet: 9, maxRecordsPerSheet: 6 },
+} as const;
+type LegacyQuotaTestPlanKey = keyof typeof LEGACY_QUOTA_TEST_PLANS;
 
 const RUN_CLI_QUOTA_TESTS = process.env.RUN_LOCAL_SURREALDB_QUOTA_TESTS === "1";
 const localSurrealTest = test.skipIf(!RUN_CLI_QUOTA_TESTS);
@@ -132,7 +137,7 @@ function expectSuccessful(output: string): void {
   expect(output).not.toMatch(/Parse error|There was a problem|An error occurred|Error while processing event/i);
 }
 
-async function bootstrapWorkspace(database: string, plan: ResourceQuotaPlanKey): Promise<void> {
+async function bootstrapWorkspace(database: string, plan: LegacyQuotaTestPlanKey): Promise<void> {
   const [gridSql, quotaSql] = await Promise.all([
     readFile(gridMigrationUrl, "utf8"),
     readFile(quotaMigrationUrl, "utf8"),
@@ -177,8 +182,8 @@ async function createManagedSheet(
   );
 }
 
-async function verifyPlanLimits(plan: ResourceQuotaPlanKey): Promise<string> {
-  const limits = RESOURCE_QUOTA_PLANS[plan];
+async function verifyPlanLimits(plan: LegacyQuotaTestPlanKey): Promise<string> {
+  const limits = LEGACY_QUOTA_TEST_PLANS[plan];
   const database = `quota_${plan}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
   await bootstrapWorkspace(database, plan);
 

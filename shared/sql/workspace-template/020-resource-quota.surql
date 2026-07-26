@@ -1,3 +1,7 @@
+-- LEGACY MIGRATION ONLY. These values are not native subscription authority.
+-- NQ-09 keeps the events until every workspace has a read-back verified native
+-- policy, then removes them transactionally; do not add or change plan values.
+--
 -- 工作区资源配额。每个 workspace database 就是一个工作区，因此
 -- workspace_resource_quota:current 是该工作区与套餐的唯一绑定。
 -- Plus / Pro / Max 为可手工修改的数据；事件每次都解引用当前套餐，

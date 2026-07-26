@@ -59,7 +59,7 @@ describe("_system native quota control-plane schema", () => {
       .map((entry) => Number(entry.slice(0, 3)))
       .sort((left, right) => left - right);
 
-    expect(versions).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7]);
   });
 
   test("every quota control-plane table is root-only", async () => {
@@ -131,11 +131,27 @@ describe("_system native quota control-plane schema", () => {
       new URL("005-quota-entitlement-reconciliation.surql", migrationsDirectoryUrl),
       "utf8",
     );
+    const projectionUpgradeSql = await readFile(
+      new URL("007-quota-projection-rule-labels.surql", migrationsDirectoryUrl),
+      "utf8",
+    );
 
     expect(commercialSql).toContain("rules.*.selector.kind ON TABLE quota_plan_revision");
     expect(commercialSql).toContain("patches.*.selector.kind ON TABLE quota_override_revision");
     expect(reconciliationSql).toContain("rules.*.selector.kind ON TABLE resource_entitlement");
     expect(reconciliationSql).toContain("rules.*.selector.kind ON TABLE quota_policy_projection");
+    expect(projectionUpgradeSql).toContain(
+      "rules.*.selector.pattern ON TABLE quota_policy_projection",
+    );
+    expect(projectionUpgradeSql).toContain(
+      "rules.*.selector.table ON TABLE quota_policy_projection",
+    );
+    expect(projectionUpgradeSql).toContain(
+      "REMOVE FIELD IF EXISTS rules.*.selector.value ON TABLE quota_policy_projection",
+    );
+    expect(projectionUpgradeSql).toContain(
+      "REMOVE FIELD IF EXISTS rules.*.rule_key ON TABLE quota_policy_projection",
+    );
     expect(commercialSql).toContain('$value INSIDE ["exact", "regex"]');
   });
 

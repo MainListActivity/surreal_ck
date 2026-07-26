@@ -60,13 +60,17 @@ export type ProductQuotaRule = Readonly<{
 
 export type CompiledQuotaRule = Readonly<{
   rule_id: string;
+  resource: NativeQuotaResource;
+  selector: NativeQuotaSelector;
+  limit: NativeQuotaLimit;
+}>;
+
+export type CompiledQuotaRuleLabel = Readonly<{
+  rule_id: string;
   rule_key: string;
   resource: NativeQuotaResource;
-  selector: Readonly<{
-    kind: NativeQuotaSelector["kind"];
-    value: string;
-  }>;
-  limit: NativeQuotaLimit;
+  customer_label: string;
+  customer_description?: string;
 }>;
 
 export type QuotaOverridePatch = Readonly<{
@@ -229,6 +233,7 @@ export type QuotaPolicyProjectionRecord = Readonly<{
   native_contract_major: SurrealInteger;
   info_format_version: SurrealInteger;
   rules: readonly CompiledQuotaRule[];
+  rule_labels: readonly CompiledQuotaRuleLabel[];
   canonical_digest: string;
   created_at: DateTime;
   correlation_id: string;
@@ -555,4 +560,3 @@ export type QuotaNotificationDeliveryRecord = {
   last_error_code?: string;
   updated_at: DateTime;
 };
-
