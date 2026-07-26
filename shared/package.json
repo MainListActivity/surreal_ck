@@ -21,6 +21,7 @@
   "scripts": {
     "test": "bun test",
     "test:quota:local": "RUN_LOCAL_SURREALDB_QUOTA_TESTS=1 bun test src/resource-quota.cli.integration.test.ts",
+    "test:system-schema:local": "RUN_LOCAL_SURREALDB_SYSTEM_SCHEMA_TESTS=1 bun test src/native-quota/control-plane-schema.cli.integration.test.ts",
     "build:types": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   }
