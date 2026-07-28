@@ -177,7 +177,7 @@ describe("_system native quota schema against local SurrealDB", () => {
     "upgrades existing data, enforces authority invariants, denies database users, and reruns safely",
     async () => {
       const migrations = await readMigrations();
-      expect(migrations).toHaveLength(11);
+      expect(migrations).toHaveLength(12);
 
       for (const sql of migrations.slice(0, 3)) {
         expectSuccessful(await runSurrealCli(sql));
@@ -421,6 +421,61 @@ describe("_system native quota schema against local SurrealDB", () => {
       expect(causation).toContain("request-override-v1");
       expect(causation).toContain("quota_materialization_operation:apply_v1");
       expect(causation).toContain("quota_materialization_attempt:apply_v1_a1");
+
+      expectSuccessful(await runSurrealCli(`
+        CREATE quota_alert_state:record_90_v1 CONTENT {
+          workspace: workspace:existing,
+          applied_projection: quota_policy_projection:existing_v1,
+          alert_kind: "threshold",
+          resource_key: "record/ent",
+          table_identity: "ent_case",
+          threshold_percent: 90,
+          episode: 1,
+          dedupe_key: "existing:record/ent:ent_case:90:1",
+          state: "notified",
+          used: 90,
+          limit: 100,
+          last_ratio_percent: 90,
+          first_observed_at: time::now(),
+          last_observed_at: time::now(),
+          notified_at: time::now()
+        };
+        CREATE quota_notification_outbox:record_90_v1 CONTENT {
+          workspace: workspace:existing,
+          billing_account: billing_account:acme,
+          alert_state: quota_alert_state:record_90_v1,
+          audience: "workspace_admin",
+          recipient_subject: "owner-existing",
+          channel: "in_app",
+          dedupe_key: "existing:record/ent:ent_case:90:1:owner-existing",
+          payload: {
+            format_version: 1,
+            kind: "threshold",
+            threshold_percent: 90,
+            resource_key: "record/ent",
+            label: "实体记录",
+            table_identity: "ent_case",
+            used: 90,
+            limit: 100
+          },
+          correlation_id: "corr-alert-record-90",
+          causation_id: "existing:record/ent:ent_case:90:1"
+        };
+        CREATE quota_notification_delivery:record_90_v1 CONTENT {
+          notification: quota_notification_outbox:record_90_v1,
+          status: "pending",
+          attempt_count: 0
+        };
+        UPDATE quota_notification_delivery:record_90_v1 SET read_at = time::now();
+      `));
+      const alertSnapshot = await runSurrealCli(`
+        SELECT alert_kind, threshold_percent
+        FROM ONLY quota_alert_state:record_90_v1;
+        SELECT read_at != NONE AS read
+        FROM ONLY quota_notification_delivery:record_90_v1;
+      `);
+      expect(alertSnapshot).toContain('"alert_kind":"threshold"');
+      expect(alertSnapshot).toContain('"read":true');
 
       expectSuccessful(await runSurrealCli(`
         DEFINE TABLE quota_test_identity SCHEMAFULL PERMISSIONS FULL;

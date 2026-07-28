@@ -59,10 +59,11 @@ function lastBoolean(result: unknown): boolean | undefined {
     const value = values[index];
     if (typeof value === "boolean") return value;
     if (Array.isArray(value)) {
-      const boolean = value.findLast(
-        (item): item is boolean => typeof item === "boolean",
-      );
-      if (boolean !== undefined) return boolean;
+      for (let nestedIndex = value.length - 1; nestedIndex >= 0; nestedIndex -= 1) {
+        if (typeof value[nestedIndex] === "boolean") {
+          return value[nestedIndex] as boolean;
+        }
+      }
     }
   }
   return undefined;

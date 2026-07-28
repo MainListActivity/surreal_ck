@@ -14,6 +14,9 @@ import {
   type OperatorIntentSubmission,
   type ProviderSubscriptionEventInput,
 } from "./subscription-lifecycle";
+import { SurrealQuotaAuthorityReader } from "./quota-authority-reader";
+import { SurrealQuotaObservationStore } from "./quota-observation";
+import { SurrealQuotaNotificationService } from "./quota-notifications";
 
 const RUN_INTEGRATION =
   process.env.RUN_LOCAL_SURREALDB_QUOTA_LIFECYCLE_TESTS === "1";
@@ -161,8 +164,9 @@ beforeAll(async () => {
       role: "owner",
       status: "active"
     };
-    CREATE workspace_user_index:alice CONTENT {
+    CREATE user_workspace_index:alice CONTENT {
       subject: "operator:alice",
+      workspace: workspace:acme,
       db_name: "ws_acme",
       role: "admin"
     };
@@ -372,6 +376,97 @@ describe("quota subscription lifecycle against local SurrealDB", () => {
         service_mode: "standard",
         sync_state: "in_sync",
       });
+
+      const authorityReader = new SurrealQuotaAuthorityReader({ db: client });
+      const authority = await authorityReader.findWorkspaceAuthority({
+        slug: "acme",
+        actor: { subject: "operator:alice" },
+      });
+      expect(authority).toMatchObject({
+        workspace: { record: "workspace:acme", database: "ws_acme" },
+        workspaceRole: "admin",
+        billingRole: "owner",
+        appliedEntitlement: { planKey: "plus" },
+      });
+      await expect(authorityReader.findBillingAuthority({
+        accountKey: "acme",
+        actor: { subject: "operator:alice" },
+      })).resolves.toMatchObject({
+        account: { accountKey: "acme" },
+        workspaces: [{ workspace: { record: "workspace:acme" } }],
+      });
+      await expect(authorityReader.findBillingAuthority({
+        accountKey: "beta",
+        actor: { subject: "operator:alice" },
+      })).resolves.toBeNull();
+
+      const observationStore = new SurrealQuotaObservationStore({ db: client });
+      const recipients = await observationStore.loadAlertRecipients(
+        id("workspace:acme"),
+      );
+      expect(recipients).toMatchObject({
+        workspaceAdmins: ["operator:alice"],
+        billingAdmins: ["operator:alice"],
+      });
+      const alertObservedAt = new DateTime(
+        "2026-08-01T00:00:13.000Z",
+      );
+      await observationStore.persistAlertTransitions({
+        workspace: id("workspace:acme"),
+        projection: materialization.projection.id,
+        transitions: [{
+          action: "notify",
+          dedupeKey: "workspace:acme:record/ent:ent_case:90:1",
+          snapshot: {
+            projection: materialization.projection.id.toString(),
+            kind: "threshold",
+            resourceKey: "record/ent",
+            tableIdentity: "ent_case",
+            threshold: 90,
+            episode: 1,
+            state: "notified",
+            used: 90n,
+            limit: 100n,
+            ratioPercent: 90,
+          },
+        }],
+        recipients,
+        labels: new Map([["record/ent", "实体记录"]]),
+        observedAt: alertObservedAt,
+      });
+      const alertSnapshots = await observationStore.loadAlertSnapshots({
+        workspace: id("workspace:acme"),
+        projection: materialization.projection.id,
+      });
+      expect(alertSnapshots).toHaveLength(1);
+      expect(alertSnapshots[0]).toMatchObject({
+        kind: "threshold",
+        threshold: 90,
+        episode: 1,
+      });
+
+      const notifications = new SurrealQuotaNotificationService({
+        db: client,
+      });
+      const inApp = await notifications.list({
+        actorSubject: "operator:alice",
+        limit: 10,
+      });
+      expect(inApp).toHaveLength(1);
+      expect(inApp[0]).toMatchObject({
+        workspace: { id: "workspace:acme" },
+        threshold_percent: 90,
+        table: "ent_case",
+        read_at: null,
+      });
+      expect(await notifications.markRead({
+        notification: id(inApp[0]!.id),
+        actorSubject: "operator:alice",
+      })).toBeTrue();
+      expect((await notifications.list({
+        actorSubject: "operator:alice",
+        limit: 10,
+      }))[0]?.read_at).not.toBeNull();
 
       const processIntent = async (
         submissionInput: OperatorIntentSubmission,

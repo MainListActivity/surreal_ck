@@ -29,6 +29,32 @@ import { createIdpTokenScopeAdapter, type IdpTokenScopeAdapter } from "./workspa
 import { createWorkspaceScopeModule, type WorkspaceScopeModule } from "./workspaces/workspace-scope";
 import type { AppBindings } from "./hono-types";
 import type { MiddlewareHandler } from "hono";
+import { createQuotaRoutes, type QuotaReadPort } from "./routes/quota";
+import { getRootConnection } from "./db/root-connection";
+import { SurrealNativeQuotaClient } from "./db/native-quota/client";
+import { QuotaInfoCache } from "./quota/quota-info-cache";
+import { SurrealQuotaAuthorityReader } from "./quota/quota-authority-reader";
+import {
+  QuotaObservationService,
+  SurrealQuotaObservationStore,
+} from "./quota/quota-observation";
+import { QuotaReadService } from "./quota/quota-read-service";
+import {
+  createOpsQuotaRoutes,
+  type QuotaOperatorIntentPort,
+} from "./routes/ops-quota";
+import { SurrealQuotaLifecycleStore } from "./quota/lifecycle-store";
+import { SurrealEntitlementRefreshService } from "./quota/entitlement-refresh";
+import { QuotaLifecycleCoordinator } from "./quota/subscription-lifecycle";
+import {
+  SurrealQuotaIntentStatusReader,
+  type QuotaIntentStatusReader,
+} from "./quota/quota-intent-status";
+import {
+  SurrealQuotaNotificationService,
+  type QuotaNotificationService,
+} from "./quota/quota-notifications";
+import { createQuotaNotificationRoutes } from "./routes/quota-notifications";
 
 export type AppOptions = {
   workspaceScope?: WorkspaceScopeModule;
@@ -48,6 +74,10 @@ export type AppOptions = {
   runBus?: RunBus;
   /** 资源保存确认动作的 embedding 生成器；默认 env.EMBEDDING_API_KEY 存在时接 openai-compatible。 */
   embeddingProvider?: EmbeddingProvider;
+  quotaReadService?: QuotaReadPort;
+  quotaOperatorIntents?: QuotaOperatorIntentPort;
+  quotaIntentStatus?: QuotaIntentStatusReader;
+  quotaNotifications?: QuotaNotificationService;
 };
 
 type AiStreamWebSocket = ReturnType<typeof createAiStreamRoutes>["websocket"];
@@ -75,6 +105,30 @@ function buildAutoAiChatService(runBus: RunBus, embeddingProvider?: EmbeddingPro
   });
   return createAiChatService({ runBus, runner, resumer });
 }
+
+function createDefaultQuotaReadService(): QuotaReadService {
+  return new QuotaReadService(
+    new SurrealQuotaAuthorityReader(),
+    new SurrealNativeQuotaClient({
+      async query<T>(sql: string, params?: Record<string, unknown>): Promise<T> {
+        return await getRootConnection().query(sql, params) as T;
+      },
+    }),
+    new QuotaInfoCache(),
+    new QuotaObservationService(new SurrealQuotaObservationStore()),
+  );
+}
+
+const defaultQuotaOperatorIntents: QuotaOperatorIntentPort = {
+  submitOperatorIntent(input) {
+    const db = getRootConnection();
+    return new QuotaLifecycleCoordinator(
+      new SurrealQuotaLifecycleStore(db),
+      new SurrealEntitlementRefreshService(db),
+      `quota:http:${process.pid}`,
+    ).submitOperatorIntent(input);
+  },
+};
 
 /** 默认 AI 服务：AI 装配未接线时让 /api/chat 明确返回 501，而不是 404 / 静默 500。 */
 const NOT_WIRED_AI_SERVICE: AiChatService = {
@@ -105,6 +159,8 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
       ? createOpenAiCompatibleEmbeddingProvider({ apiKey: env.EMBEDDING_API_KEY })
       : undefined);
   const autoAiChatService = options.aiChatService ?? buildAutoAiChatService(runBus, embeddingProvider);
+  const quotaReadService =
+    options.quotaReadService ?? createDefaultQuotaReadService();
 
   const base = new Hono<AppBindings>();
   base.use("*", requestLogger);
@@ -117,6 +173,30 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     .route("/", createSessionRoutes(workspaceScope, idpTokenScopeAdapter, options.requireUser))
     .route("/", createWorkspaceRoutes(workspaceCreator, workspaceScope, options.requireUser, workspaceSettingsManager))
     .route("/", createMemberRoutes(memberManager, options.requireUser))
+    .route(
+      "/",
+      createQuotaRoutes(
+        quotaReadService,
+        options.requireUser,
+      ),
+    )
+    .route(
+      "/",
+      createOpsQuotaRoutes({
+        reads: quotaReadService,
+        intents: options.quotaOperatorIntents ?? defaultQuotaOperatorIntents,
+        intentStatus:
+          options.quotaIntentStatus ?? new SurrealQuotaIntentStatusReader(),
+        requireUser: options.requireUser,
+      }),
+    )
+    .route(
+      "/",
+      createQuotaNotificationRoutes(
+        options.quotaNotifications ?? new SurrealQuotaNotificationService(),
+        options.requireUser,
+      ),
+    )
     .route(
       "/",
       createAiChatRoutes({

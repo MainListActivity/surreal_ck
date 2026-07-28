@@ -557,6 +557,7 @@ export type QuotaAlertStateRecord = {
   id: StringRecordId;
   workspace: StringRecordId;
   applied_projection: StringRecordId;
+  alert_kind: "threshold" | "over_limit";
   resource_key: string;
   table_identity?: string;
   threshold_percent: 80 | 90 | 100;
@@ -595,6 +596,7 @@ export type QuotaNotificationDeliveryRecord = {
   attempt_count: SurrealInteger;
   next_attempt_at?: DateTime;
   delivered_at?: DateTime;
+  read_at?: DateTime;
   last_error_code?: string;
   updated_at: DateTime;
 };

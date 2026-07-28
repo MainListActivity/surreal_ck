@@ -9,13 +9,21 @@ import { QuotaLifecycleCoordinator } from "./subscription-lifecycle";
 import {
   ControlPlaneSweep,
   MaterializationWorker,
+  NativeAuditSweep,
   startQuotaLoop,
   type QuotaLoopHandle,
 } from "./sweeps";
+import { SurrealQuotaAuthorityReader } from "./quota-authority-reader";
+import {
+  QuotaObservationService,
+  SurrealQuotaObservationStore,
+} from "./quota-observation";
+import { SurrealNativeAuditSweepHandler } from "./native-audit-sweep";
 
 const EVENT_INTERVAL_MS = 250;
 const MATERIALIZATION_INTERVAL_MS = 250;
 const BOUNDARY_INTERVAL_MS = 60_000;
+const NATIVE_AUDIT_INTERVAL_MS = 10_000;
 
 export type NativeQuotaRuntimeHandle = Readonly<{ stop(): void }>;
 
@@ -62,6 +70,19 @@ export function startNativeQuotaRuntime(): NativeQuotaRuntimeHandle {
     new SurrealLifecycleBoundarySweepHandler(db, refresher),
     `${workerId}:boundary`,
   );
+  const nativeClient = new SurrealNativeQuotaClient(db);
+  const nativeAudit = new NativeAuditSweep(
+    controlStore,
+    new SurrealNativeAuditSweepHandler(
+      db,
+      new SurrealQuotaAuthorityReader({ db }),
+      nativeClient,
+      new QuotaObservationService(
+        new SurrealQuotaObservationStore({ db }),
+      ),
+    ),
+    `${workerId}:native-audit`,
+  );
   const loops: QuotaLoopHandle[] = [
     startQuotaLoop({
       runOnce: () => lifecycle.processNextProviderEvent(),
@@ -91,6 +112,11 @@ export function startNativeQuotaRuntime(): NativeQuotaRuntimeHandle {
       },
       intervalMs: BOUNDARY_INTERVAL_MS,
       onError: (error) => reportLoopError("lifecycle-boundaries", error),
+    }),
+    startQuotaLoop({
+      runOnce: () => nativeAudit.runOnce(),
+      intervalMs: NATIVE_AUDIT_INTERVAL_MS,
+      onError: (error) => reportLoopError("native-audit", error),
     }),
   ];
   return Object.freeze({
