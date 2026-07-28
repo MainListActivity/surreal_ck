@@ -6,6 +6,7 @@ import {
   type NativeQuotaOperationResult,
   type QuotaMaterializationAttemptOutcome,
   type QuotaPolicyProjectionRecord,
+  type QuotaServiceMode,
   type SurrealInteger,
 } from "@surreal-ck/shared/native-quota";
 import type { DateTime, StringRecordId } from "surrealdb";
@@ -43,6 +44,7 @@ export type MaterializationLease = Readonly<{
   database: string;
   entitlement: StringRecordId;
   projection: QuotaPolicyProjectionRecord;
+  serviceMode: QuotaServiceMode;
   desiredEntitlement: StringRecordId;
   desiredProjection: StringRecordId;
   applied?: AppliedQuotaState;

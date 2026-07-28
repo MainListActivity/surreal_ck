@@ -15,6 +15,10 @@ import {
   startClaimsRiskReminderDispatcher,
   type ClaimsRiskDispatcherHandle,
 } from "../ai/office/claims-risk-dispatcher";
+import {
+  startNativeQuotaRuntime,
+  type NativeQuotaRuntimeHandle,
+} from "./quota/runtime";
 
 type AppLike = {
   fetch: ReturnType<typeof createApp>["fetch"];
@@ -45,6 +49,7 @@ export type StartServerDeps = {
     websocket?: AppLike["websocket"];
   }) => ServerHandle;
   startReconcileLoop?: () => ReconcileLoopHandle;
+  startQuotaRuntime?: () => NativeQuotaRuntimeHandle;
   startClaimsRiskDispatcher?: () => ClaimsRiskDispatcherHandle;
   closeRootConnection?: () => Promise<void>;
 };
@@ -73,6 +78,10 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
     ((options: { hostname: string; port: number; fetch: AppLike["fetch"] }) =>
       Bun.serve(options as Parameters<typeof Bun.serve>[0]));
   const startReconcile = deps.startReconcileLoop ?? startReconcileLoop;
+  const startQuota = deps.startQuotaRuntime
+    ?? (envName === "test"
+      ? () => ({ stop() {} })
+      : startNativeQuotaRuntime);
   const startClaimsRisk = deps.startClaimsRiskDispatcher
     ?? (envName === "test" ? () => ({ async stop() {} }) : startClaimsRiskReminderDispatcher);
   const closeRoot = deps.closeRootConnection ?? closeRootConnection;
@@ -136,12 +145,25 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
     });
   }
 
+  let quotaRuntime: NativeQuotaRuntimeHandle | undefined;
+  try {
+    quotaRuntime = startQuota();
+  } catch (cause) {
+    console.error(
+      "[server] failed to start native quota runtime; continuing without it",
+      {
+        message: cause instanceof Error ? cause.message : String(cause),
+      },
+    );
+  }
+
   return {
     server,
     async shutdown(signal: string): Promise<void> {
       console.info("[server] shutting down", { signal });
       server.stop();
       reconcileLoop?.stop();
+      quotaRuntime?.stop();
       await claimsRiskDispatcher?.stop();
       await closeRoot();
     },

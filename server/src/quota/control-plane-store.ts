@@ -2,6 +2,7 @@ import {
   NativeQuotaRuleSchema,
   type ControlPlaneObject,
   type QuotaPolicyProjectionRecord,
+  type QuotaServiceMode,
   type QuotaSweepName,
   type SurrealInteger,
 } from "@surreal-ck/shared/native-quota";
@@ -100,6 +101,17 @@ function addMilliseconds(value: DateTime, milliseconds: number): DateTime {
 
 function bool(value: unknown, fallback = false): boolean {
   return typeof value === "boolean" ? value : fallback;
+}
+
+function serviceMode(value: unknown): QuotaServiceMode {
+  if (
+    value === "standard"
+    || value === "grace"
+    || value === "retention"
+  ) {
+    return value;
+  }
+  throw new TypeError("invalid entitlement service mode");
 }
 
 function resultHasRow(result: unknown, statementIndex: number): boolean {
@@ -261,6 +273,7 @@ export class SurrealQuotaControlPlaneStore
       `
         SELECT * FROM ONLY $workspace;
         SELECT * FROM ONLY $projection;
+        SELECT service_mode FROM ONLY $entitlement;
         SELECT * FROM ONLY workspace_quota_runtime WHERE workspace = $workspace;
         SELECT count() AS count
         FROM quota_materialization_attempt
@@ -272,6 +285,10 @@ export class SurrealQuotaControlPlaneStore
         operation,
         workspace,
         projection: projectionId,
+        entitlement: requiredId(
+          claimed.entitlement,
+          "operation entitlement",
+        ),
       },
     );
     const workspaceRow = requiredRecord(
@@ -281,11 +298,15 @@ export class SurrealQuotaControlPlaneStore
     const projection = projectionFromRow(
       requiredRecord(statementValue(contextResult, 1), "projection"),
     );
-    const runtime = requiredRecord(
+    const entitlementRow = requiredRecord(
       statementValue(contextResult, 2),
+      "entitlement",
+    );
+    const runtime = requiredRecord(
+      statementValue(contextResult, 3),
       "workspace quota runtime",
     );
-    const attemptCountRow = optionalRecord(statementValue(contextResult, 3));
+    const attemptCountRow = optionalRecord(statementValue(contextResult, 4));
     const appliedProjectionId = optionalId(
       workspaceRow.applied_quota_projection,
     );
@@ -336,6 +357,7 @@ export class SurrealQuotaControlPlaneStore
       database: requiredString(workspaceRow.db_name, "workspace database"),
       entitlement: requiredId(claimed.entitlement, "operation entitlement"),
       projection,
+      serviceMode: serviceMode(entitlementRow.service_mode),
       desiredEntitlement,
       desiredProjection,
       applied,
@@ -443,7 +465,7 @@ export class SurrealQuotaControlPlaneStore
     ) {
       delete operationPatch.first_failed_at;
     }
-    const runtimePatch = this.runtimePatch(settlement);
+    const runtimePatch = this.runtimePatch(lease, settlement);
     const workspacePatch = settlement.kind === "succeeded"
       ? {
           applied_entitlement: lease.entitlement,
@@ -619,6 +641,7 @@ export class SurrealQuotaControlPlaneStore
   }
 
   private runtimePatch(
+    lease: MaterializationLease,
     settlement: MaterializationSettlement,
   ): ControlPlaneObject {
     const observedAt = settlement.completedAt;
@@ -634,6 +657,7 @@ export class SurrealQuotaControlPlaneStore
     if (settlement.kind === "succeeded") {
       return {
         ...base,
+        service_mode: lease.serviceMode,
         last_sync_error_code: undefined,
         last_sync_error_retryable: undefined,
         last_sync_error_details: undefined,

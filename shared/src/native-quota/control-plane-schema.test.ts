@@ -24,6 +24,7 @@ const quotaTables = [
   "platform_operator",
   "platform_operator_capability",
   "quota_operator_intent",
+  "quota_operator_intent_state",
   "quota_audit_event",
   "quota_alert_state",
   "quota_notification_outbox",
@@ -59,12 +60,12 @@ describe("_system native quota control-plane schema", () => {
       .map((entry) => Number(entry.slice(0, 3)))
       .sort((left, right) => left - right);
 
-    expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
   });
 
   test("every quota control-plane table is root-only", async () => {
     const sql = await Promise.all(
-      [4, 5, 6].map(async (version) => {
+      [4, 5, 6, 11].map(async (version) => {
         const entries = await readdir(migrationsDirectoryUrl);
         const name = entries.find((entry) => entry.startsWith(`${String(version).padStart(3, "0")}-`));
         if (!name) throw new Error(`missing migration ${version}`);
@@ -119,6 +120,16 @@ describe("_system native quota control-plane schema", () => {
     );
     expect(sql).toMatch(
       /quota_operator_intent_request_unique[\s\S]*?COLUMNS request_id\s+UNIQUE/u,
+    );
+    const lifecycleSql = await readFile(
+      new URL("011-quota-lifecycle-intent-processing.surql", migrationsDirectoryUrl),
+      "utf8",
+    );
+    expect(lifecycleSql).toMatch(
+      /quota_subscription_item_scheduled_workspace_unique[\s\S]*?COLUMNS scheduled_workspace UNIQUE/u,
+    );
+    expect(lifecycleSql).toMatch(
+      /quota_operator_intent_state_intent_unique[\s\S]*?COLUMNS intent UNIQUE/u,
     );
   });
 

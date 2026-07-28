@@ -52,6 +52,11 @@ function candidate(input: {
   trialStart?: string;
   trialEnd?: string;
   graceUntil?: string;
+  currentPeriodEnd?: string;
+  paidThrough?: string;
+  cancelAt?: string;
+  canceledAt?: string;
+  expiresAt?: string;
 }): EntitlementBaseCandidate {
   const subscriptionId = id(`quota_subscription:${input.itemId}`);
   const selectedPlan = input.plan ?? planRevision();
@@ -64,6 +69,13 @@ function candidate(input: {
       trial_start: input.trialStart ? date(input.trialStart) : undefined,
       trial_end: input.trialEnd ? date(input.trialEnd) : undefined,
       grace_until: input.graceUntil ? date(input.graceUntil) : undefined,
+      current_period_end: input.currentPeriodEnd
+        ? date(input.currentPeriodEnd)
+        : undefined,
+      paid_through: input.paidThrough ? date(input.paidThrough) : undefined,
+      cancel_at: input.cancelAt ? date(input.cancelAt) : undefined,
+      canceled_at: input.canceledAt ? date(input.canceledAt) : undefined,
+      expires_at: input.expiresAt ? date(input.expiresAt) : undefined,
     },
     item: {
       id: id(`quota_subscription_item:${input.itemId}`),
@@ -293,6 +305,52 @@ describe("resolveResourceEntitlement", () => {
       kind: "unresolved",
       reason: "no_eligible_source",
     });
+  });
+
+  test("canceled/paused subscriptions preserve paid access until the exclusive end boundary", () => {
+    for (const status of ["canceled", "paused"] as const) {
+      const beforeBoundary = candidate({
+        itemId: `${status}-before`,
+        accountId: status,
+        status,
+        paidThrough: "2026-08-01T00:00:00.001Z",
+        canceledAt: "2026-07-20T00:00:00.000Z",
+      });
+      const active = resolveResourceEntitlement(
+        resolutionInput([beforeBoundary]),
+      );
+      expect(active.kind, status).toBe("resolved");
+      if (active.kind !== "resolved") throw new Error("expected resolved");
+      expect(active.entitlement.service_mode).toBe("standard");
+      expect(active.entitlement.effective_until).toEqual(
+        date("2026-08-01T00:00:00.001Z"),
+      );
+
+      const atBoundary = candidate({
+        itemId: `${status}-at`,
+        accountId: status,
+        status,
+        paidThrough: "2026-08-01T00:00:00.000Z",
+      });
+      expect(resolveResourceEntitlement(resolutionInput([atBoundary]))).toEqual({
+        kind: "unresolved",
+        reason: "no_eligible_source",
+      });
+    }
+  });
+
+  test("payment recovery exits grace without changing the subscription item", () => {
+    const recovered = candidate({
+      itemId: "recovered",
+      accountId: "recovered",
+      status: "active",
+      currentPeriodEnd: "2026-09-01T00:00:00.000Z",
+    });
+    const result = resolveResourceEntitlement(resolutionInput([recovered]));
+    expect(result.kind).toBe("resolved");
+    if (result.kind !== "resolved") throw new Error("expected resolved");
+    expect(result.entitlement.service_mode).toBe("standard");
+    expect(result.entitlement.subscription_item).toEqual(recovered.item.id);
   });
 
   test("applies one active override and ignores it at the exclusive expiry boundary", () => {

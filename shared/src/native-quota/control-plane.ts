@@ -165,6 +165,7 @@ export type QuotaSubscriptionItemRecord = {
   effective_from: DateTime;
   effective_until?: DateTime;
   active_workspace?: StringRecordId;
+  scheduled_workspace?: StringRecordId;
   ended_reason?: string;
   created_at: DateTime;
   updated_at: DateTime;
@@ -422,6 +423,11 @@ export type ProviderEventStateRecord = {
   next_attempt_at?: DateTime;
   last_error_code?: string;
   last_error_details?: ControlPlaneObject;
+  lease_owner?: string;
+  lease_expires_at?: DateTime;
+  fencing_token: SurrealInteger;
+  applied_subscription?: StringRecordId;
+  applied_provider_revision?: SurrealInteger;
   processed_at?: DateTime;
   updated_at: DateTime;
 };
@@ -487,12 +493,37 @@ export type QuotaOperatorIntentRecord = Readonly<{
   operator_reason: string;
   effective_at: DateTime;
   input: ControlPlaneObject;
+  input_digest?: string;
   impact_preview?: ControlPlaneObject;
   before_digest?: string;
   correlation_id: string;
   causation_id?: string;
   created_at: DateTime;
 }>;
+
+export type QuotaOperatorIntentStateRecord = {
+  id: StringRecordId;
+  intent: StringRecordId;
+  state:
+    | "scheduled"
+    | "pending"
+    | "processing"
+    | "processed"
+    | "failed"
+    | "terminal_failed";
+  attempt_count: SurrealInteger;
+  next_attempt_at?: DateTime;
+  lease_owner?: string;
+  lease_expires_at?: DateTime;
+  fencing_token: SurrealInteger;
+  entitlement_operation?: StringRecordId;
+  materialization_operation?: StringRecordId;
+  affected_workspaces: StringRecordId[];
+  last_error_code?: string;
+  last_error_details?: ControlPlaneObject;
+  processed_at?: DateTime;
+  updated_at: DateTime;
+};
 
 export type QuotaAuditEventRecord = Readonly<{
   id: StringRecordId;

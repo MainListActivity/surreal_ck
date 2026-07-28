@@ -141,6 +141,7 @@ function lease(
     database: "ws_acme",
     entitlement: selectedProjection.entitlement,
     projection: selectedProjection,
+    serviceMode: "standard",
     desiredEntitlement: selectedProjection.entitlement,
     desiredProjection: selectedProjection.id,
     applied: {

@@ -169,6 +169,43 @@ describe("server startup", () => {
     ]);
   });
 
+  test("监听后启动原生配额 runtime，并在 root 连接关闭前停止", async () => {
+    const calls: string[] = [];
+    const running = await startServer({
+      host: "127.0.0.1",
+      port: 18080,
+      envName: "test",
+      probeNativeQuotaHttp: async () => {},
+      initRootConnection: async () => {},
+      verifyNativeQuotaRootHandshake: async () => {},
+      ensureSystemSchema: async () => {},
+      seedSystemAdmins: async () => {},
+      seedQuotaPlans: async () => {},
+      migrateAllWorkspaces: async () => ({ total: 0, migrated: [] }),
+      createApp: () => ({ fetch: () => new Response("ok") }),
+      serve: () => ({ stop: () => calls.push("server:stop") }),
+      startReconcileLoop: () => ({ stop: () => {} }),
+      startQuotaRuntime: () => {
+        calls.push("quota:start");
+        return { stop() {
+          calls.push("quota:stop");
+        } };
+      },
+      closeRootConnection: async () => {
+        calls.push("root:close");
+      },
+    });
+
+    await running.shutdown("SIGTERM");
+
+    expect(calls).toEqual([
+      "quota:start",
+      "server:stop",
+      "quota:stop",
+      "root:close",
+    ]);
+  });
+
   test("still listens when starting the reconcile heartbeat throws", async () => {
     const calls: string[] = [];
 

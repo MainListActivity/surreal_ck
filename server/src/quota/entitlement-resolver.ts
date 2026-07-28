@@ -27,9 +27,11 @@ export type EntitlementSubscription = Readonly<{
   current_period_end?: DateTime;
   trial_start?: DateTime;
   trial_end?: DateTime;
+  paid_through?: DateTime;
   grace_until?: DateTime;
   cancel_at_period_end?: boolean;
   cancel_at?: DateTime;
+  canceled_at?: DateTime;
   expires_at?: DateTime;
 }>;
 
@@ -263,6 +265,37 @@ function effectiveCandidate(
         candidate.item.effective_until,
         subscription.grace_until,
       ),
+    };
+  }
+
+  if (
+    subscription.status === "paused"
+    || subscription.status === "canceled"
+    || subscription.status === "expired"
+  ) {
+    let effectiveUntil = earliest(
+      candidate.item.effective_until,
+      subscription.paid_through,
+    );
+    effectiveUntil = earliest(
+      effectiveUntil,
+      subscription.current_period_end,
+    );
+    effectiveUntil = earliest(effectiveUntil, subscription.cancel_at);
+    effectiveUntil = earliest(effectiveUntil, subscription.expires_at);
+    // canceled_at is an observation timestamp, not paid access authority. It
+    // is only an immediate boundary when no explicit paid/effective end exists.
+    effectiveUntil ??= subscription.canceled_at;
+    if (!effectiveUntil || !isBefore(at, effectiveUntil)) return undefined;
+    return {
+      sourceType: sourceType(subscription.source),
+      serviceMode: "standard",
+      subscription: subscription.id,
+      billingAccount: subscription.billing_account,
+      subscriptionItem: candidate.item.id,
+      planRevision: candidate.planRevision,
+      effectiveAt: candidate.item.effective_from,
+      effectiveUntil,
     };
   }
 
