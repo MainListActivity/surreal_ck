@@ -39,7 +39,7 @@ function controlPlane(overrides: Partial<ProvisioningControlPlane> = {}): Provis
   const base: ProvisioningControlPlane & { stages: string[] } = {
     stages,
     async reserveWorkspace() {
-      return { kind: "reserved", workspace };
+      return { kind: "reserved", workspace, resumed: false };
     },
     async loadPlan(planKey) {
       if (planKey === "missing") return null;
@@ -206,6 +206,60 @@ describe("runProvisioningQuotaSaga", () => {
       true,
     );
     expect(cp.stages).toContain("applied-native");
+  });
+
+  test("resumes its persisted reservation and accepts its existing physical database", async () => {
+    const resumedWorkspace: ProvisioningWorkspaceRecord = {
+      id: new StringRecordId("workspace:ws_test"),
+      dbName: "ws_test",
+      slug: "test",
+      name: "Test",
+      ownerSubject: "user-1",
+      status: "provisioning_error",
+      stage: "entitlement_resolved",
+      quotaMigrationState: "not_started",
+    };
+    let applyCalls = 0;
+    const native = nativeMatching();
+    const cp = controlPlane({
+      async reserveWorkspace() {
+        return {
+          kind: "reserved",
+          workspace: resumedWorkspace,
+          resumed: true,
+        };
+      },
+      async createPhysicalDatabase() {
+        return { kind: "db-name-conflict" };
+      },
+    });
+
+    const result = await runProvisioningQuotaSaga(
+      cp,
+      {
+        ...native,
+        async applyPolicy(input) {
+          applyCalls += 1;
+          return native.applyPolicy(input);
+        },
+      },
+      {
+        subject: "user-1",
+        email: "a@b.c",
+        name: "Test",
+        slug: "test",
+        // A retry may generate a different candidate, but the reservation owns
+        // and resumes the original database name.
+        dbName: "ws_new_candidate",
+        resourceSource: { planKey: "trial", sourceKind: "trial" },
+      },
+      { now: new DateTime("2026-07-26T00:00:00.000Z") },
+    );
+
+    expect(result.kind).toBe("ready_for_template");
+    if (result.kind !== "ready_for_template") throw new Error("expected ready");
+    expect(result.workspace.dbName).toBe("ws_test");
+    expect(applyCalls).toBe(0);
   });
 
   test("readback mismatch stays provisioning_error and never ready_for_template", async () => {

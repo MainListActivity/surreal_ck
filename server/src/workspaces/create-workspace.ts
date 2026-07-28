@@ -15,6 +15,8 @@ import { NATIVE_QUOTA_EXPECTED_CONTRACT } from "@surreal-ck/shared/native-quota"
 import { DateTime, StringRecordId } from "surrealdb";
 import { env } from "../env";
 import { getRootDatabaseSession } from "../db/root-connection";
+import { toSurrealNone } from "../db/surreal-values";
+import { materializeWorkspaceMigrationSql } from "../db/workspace-migration-execution";
 import {
   SurrealNativeQuotaClient,
   type NativeQuotaClient,
@@ -26,6 +28,7 @@ import {
   type ExplicitResourceSource,
   type ProvisioningControlPlane,
   type ProvisioningPlanLookup,
+  type ProvisioningStage,
   type ProvisioningWorkspaceRecord,
 } from "./provisioning-saga";
 import { evaluateWorkspaceScopeGate } from "./scope-gate";
@@ -143,6 +146,65 @@ function asRecordId(value: unknown, fallback: string): StringRecordId {
   return new StringRecordId(fallback);
 }
 
+function provisioningWorkspaceFromRow(
+  row: Record<string, unknown>,
+  fallback: {
+    dbName: string;
+    slug: string;
+    name: string;
+    ownerSubject: string;
+  },
+): ProvisioningWorkspaceRecord {
+  const status =
+    row.status === "active" || row.status === "provisioning_error"
+      ? row.status
+      : "provisioning";
+  const quotaMigrationState =
+    row.quota_migration_state === "native_applied"
+    || row.quota_migration_state === "native_verified"
+    || row.quota_migration_state === "cleanup_done"
+      ? row.quota_migration_state
+      : "not_started";
+  return {
+    id: asRecordId(row.id, `workspace:${fallback.dbName}`),
+    dbName: typeof row.db_name === "string" ? row.db_name : fallback.dbName,
+    slug: typeof row.slug === "string" ? row.slug : fallback.slug,
+    name: typeof row.name === "string" ? row.name : fallback.name,
+    ownerSubject:
+      typeof row.owner_subject === "string"
+        ? row.owner_subject
+        : fallback.ownerSubject,
+    status,
+    stage:
+      typeof row.provisioning_stage === "string"
+        ? (row.provisioning_stage as ProvisioningStage)
+        : "reserved",
+    quotaMigrationState,
+    desiredEntitlement:
+      row.desired_entitlement === undefined
+        ? undefined
+        : asRecordId(row.desired_entitlement, "resource_entitlement:unknown"),
+    appliedEntitlement:
+      row.applied_entitlement === undefined
+        ? undefined
+        : asRecordId(row.applied_entitlement, "resource_entitlement:unknown"),
+    desiredQuotaProjection:
+      row.desired_quota_projection === undefined
+        ? undefined
+        : asRecordId(row.desired_quota_projection, "quota_policy_projection:unknown"),
+    appliedQuotaProjection:
+      row.applied_quota_projection === undefined
+        ? undefined
+        : asRecordId(row.applied_quota_projection, "quota_policy_projection:unknown"),
+    legacyCleanupAfter:
+      row.legacy_cleanup_after instanceof DateTime
+        ? row.legacy_cleanup_after
+        : typeof row.legacy_cleanup_after === "string"
+          ? new DateTime(row.legacy_cleanup_after)
+          : undefined,
+  };
+}
+
 function createSurrealControlPlane(
   systemDb: CreateWorkspaceClient,
   getDbSession: CreateWorkspaceSessionFactory,
@@ -150,17 +212,53 @@ function createSurrealControlPlane(
 ): ProvisioningControlPlane {
   return {
     async reserveWorkspace(input) {
+      const fallback = {
+        dbName: input.dbName,
+        slug: input.slug,
+        name: input.name,
+        ownerSubject: input.ownerSubject,
+      };
+      const loadExistingBySlug = async () =>
+        firstRow(
+          await systemDb.query(
+            `
+              SELECT *
+              FROM workspace
+              WHERE slug = $slug
+              LIMIT 1;
+            `,
+            { slug: input.slug },
+          ),
+        );
+
       try {
+        const existing = await loadExistingBySlug();
+        if (existing) {
+          if (
+            existing.owner_subject === input.ownerSubject
+            && (
+              existing.status === "provisioning"
+              || existing.status === "provisioning_error"
+            )
+          ) {
+            return {
+              kind: "reserved",
+              workspace: provisioningWorkspaceFromRow(existing, fallback),
+              resumed: true,
+            };
+          }
+          return { kind: "slug-conflict" };
+        }
+
+        const dbNameResult = await systemDb.query(
+          "SELECT VALUE id FROM workspace WHERE db_name = $dbName LIMIT 1;",
+          { dbName: input.dbName },
+        );
+        if (rowCount(dbNameResult) > 0) return { kind: "db-name-conflict" };
+
         const result = await systemDb.query(
           `
-            BEGIN TRANSACTION;
-            IF array::len((SELECT VALUE id FROM workspace WHERE slug = $slug LIMIT 1)) > 0 {
-              THROW "workspace-slug-conflict";
-            };
-            IF array::len((SELECT VALUE id FROM workspace WHERE db_name = $dbName LIMIT 1)) > 0 {
-              THROW "workspace-db-conflict";
-            };
-            LET $workspace = CREATE ONLY workspace CONTENT {
+            CREATE ONLY workspace CONTENT {
               db_name: $dbName,
               owner_subject: $subject,
               slug: $slug,
@@ -169,8 +267,6 @@ function createSurrealControlPlane(
               provisioning_stage: "reserved",
               quota_migration_state: "not_started"
             };
-            RETURN $workspace;
-            COMMIT TRANSACTION;
           `,
           {
             dbName: input.dbName,
@@ -183,19 +279,29 @@ function createSurrealControlPlane(
         if (!row) {
           throw new Error("workspace reserve returned no row");
         }
-        const workspace: ProvisioningWorkspaceRecord = {
-          id: asRecordId(row.id, `workspace:${input.dbName}`),
-          dbName: input.dbName,
-          slug: input.slug,
-          name: input.name,
-          ownerSubject: input.ownerSubject,
-          status: "provisioning",
-          stage: "reserved",
-          quotaMigrationState: "not_started",
+        return {
+          kind: "reserved",
+          workspace: provisioningWorkspaceFromRow(row, fallback),
+          resumed: false,
         };
-        return { kind: "reserved", workspace };
       } catch (cause) {
-        if (isSlugConflict(cause)) return { kind: "slug-conflict" };
+        if (isSlugConflict(cause)) {
+          const existing = await loadExistingBySlug();
+          if (
+            existing?.owner_subject === input.ownerSubject
+            && (
+              existing.status === "provisioning"
+              || existing.status === "provisioning_error"
+            )
+          ) {
+            return {
+              kind: "reserved",
+              workspace: provisioningWorkspaceFromRow(existing, fallback),
+              resumed: true,
+            };
+          }
+          return { kind: "slug-conflict" };
+        }
         if (isDbNameConflict(cause)) return { kind: "db-name-conflict" };
         throw cause;
       }
@@ -234,6 +340,74 @@ function createSurrealControlPlane(
     },
 
     async persistResourceSource(input) {
+      const loadExistingCandidate = async (): Promise<EntitlementBaseCandidate | null> => {
+        const itemResult = await systemDb.query(
+          `
+            SELECT * FROM quota_subscription_item
+            WHERE workspace = $workspace
+              AND status = "active"
+            LIMIT 1;
+          `,
+          { workspace: input.workspace.id },
+        );
+        const itemRow = firstRow(itemResult);
+        if (!itemRow) return null;
+        if (
+          asRecordId(
+            itemRow.plan_revision,
+            "quota_plan_revision:unknown",
+          ).toString() !== input.planRevision.id.toString()
+        ) {
+          throw new Error(
+            "existing provisioning source does not match requested plan revision",
+          );
+        }
+        const subResult = await systemDb.query(
+          "SELECT * FROM ONLY $subscription;",
+          { subscription: itemRow.subscription },
+        );
+        const subRow = firstRow(subResult);
+        if (!subRow) {
+          throw new Error("provisioning subscription item has no subscription");
+        }
+        const asOptionalDateTime = (value: unknown): DateTime | undefined => {
+          if (value instanceof DateTime) return value;
+          if (typeof value === "string") return new DateTime(value);
+          return undefined;
+        };
+        return {
+          subscription: {
+            id: asRecordId(subRow.id, "quota_subscription:unknown"),
+            billing_account: asRecordId(
+              subRow.billing_account,
+              "billing_account:unknown",
+            ),
+            source:
+              subRow.source as EntitlementBaseCandidate["subscription"]["source"],
+            status:
+              subRow.status as EntitlementBaseCandidate["subscription"]["status"],
+            trial_start: asOptionalDateTime(subRow.trial_start),
+            trial_end: asOptionalDateTime(subRow.trial_end),
+          },
+          item: {
+            id: asRecordId(itemRow.id, "quota_subscription_item:unknown"),
+            subscription: asRecordId(
+              itemRow.subscription,
+              "quota_subscription:unknown",
+            ),
+            workspace: input.workspace.id,
+            plan_revision: input.planRevision.id,
+            status: "active",
+            effective_from:
+              asOptionalDateTime(itemRow.effective_from) ?? DateTime.now(),
+          },
+          planRevision: input.planRevision,
+        };
+      };
+
+      const existing = await loadExistingCandidate();
+      if (existing) return existing;
+
       const accountKey = `personal:${input.ownerSubject}`;
       const subscriptionSource =
         input.sourceKind === "trial"
@@ -244,6 +418,8 @@ function createSurrealControlPlane(
 
       await systemDb.query(
         `
+          BEGIN TRANSACTION;
+
           LET $account = (
             SELECT * FROM billing_account WHERE account_key = $accountKey LIMIT 1
           )[0];
@@ -266,7 +442,10 @@ function createSurrealControlPlane(
           }
           ON DUPLICATE KEY UPDATE role = "owner", status = "active";
 
-          LET $subscription = CREATE ONLY quota_subscription CONTENT {
+          LET $subscription = CREATE ONLY type::record(
+            "quota_subscription",
+            $subscriptionKey
+          ) CONTENT {
             billing_account: $billing.id,
             source: $subscriptionSource,
             status: $subscriptionStatus,
@@ -276,16 +455,21 @@ function createSurrealControlPlane(
             correlation_id: $correlationId
           };
 
-          LET $item = CREATE ONLY quota_subscription_item CONTENT {
+          CREATE ONLY type::record(
+            "quota_subscription_item",
+            $itemKey
+          ) CONTENT {
             subscription: $subscription.id,
             workspace: $workspace,
             plan_revision: $planRevision,
             revision: 1,
             status: "active",
-            effective_from: time::now()
+            effective_from: $effectiveAt,
+            correlation_id: $correlationId,
+            causation_id: $correlationId
           };
 
-          RETURN { subscription: $subscription, item: $item, billing: $billing };
+          COMMIT TRANSACTION;
         `,
         {
           accountKey,
@@ -294,103 +478,124 @@ function createSurrealControlPlane(
           subscriptionSource,
           subscriptionStatus: input.sourceKind === "trial" ? "trialing" : "active",
           trialStart:
-            input.sourceKind === "trial" ? DateTime.now() : null,
+            input.sourceKind === "trial" ? input.effectiveAt : undefined,
           trialEnd:
             input.sourceKind === "trial"
               ? DateTime.fromEpochNanoseconds(
-                  DateTime.now().nanoseconds
+                  input.effectiveAt.nanoseconds
                     + 14n * 24n * 60n * 60n * 1_000_000_000n,
                 )
-              : null,
+              : undefined,
+          effectiveAt: input.effectiveAt,
           correlationId: input.correlationId,
+          subscriptionKey: `provision_${input.workspace.dbName}`,
+          itemKey: `provision_${input.workspace.dbName}`,
           workspace: input.workspace.id,
           planRevision: input.planRevision.id,
         },
       );
 
-      // Re-read ids for typed candidate
-      const itemResult = await systemDb.query(
-        `
-          SELECT * FROM quota_subscription_item
-          WHERE workspace = $workspace
-          ORDER BY created_at DESC
-          LIMIT 1;
-        `,
-        { workspace: input.workspace.id },
-      );
-      const itemRow = firstRow(itemResult);
-      if (!itemRow) {
+      const persisted = await loadExistingCandidate();
+      if (!persisted) {
         throw new Error("failed to persist subscription item for provisioning");
       }
-      const subResult = await systemDb.query("SELECT * FROM ONLY $subscription;", {
-        subscription: itemRow.subscription,
-      });
-      const subRow = firstRow(subResult);
-      if (!subRow) {
-        throw new Error("failed to load subscription for provisioning");
-      }
-
-      const candidate: EntitlementBaseCandidate = {
-        subscription: {
-          id: asRecordId(subRow.id, "quota_subscription:unknown"),
-          billing_account: asRecordId(subRow.billing_account, "billing_account:unknown"),
-          source: subRow.source as EntitlementBaseCandidate["subscription"]["source"],
-          status: subRow.status as EntitlementBaseCandidate["subscription"]["status"],
-          trial_start: subRow.trial_start
-            ? new DateTime(subRow.trial_start as string)
-            : undefined,
-          trial_end: subRow.trial_end
-            ? new DateTime(subRow.trial_end as string)
-            : undefined,
-        },
-        item: {
-          id: asRecordId(itemRow.id, "quota_subscription_item:unknown"),
-          subscription: asRecordId(itemRow.subscription, "quota_subscription:unknown"),
-          workspace: input.workspace.id,
-          plan_revision: input.planRevision.id,
-          status: "active",
-          effective_from: new DateTime(
-            (itemRow.effective_from as string) ?? new Date().toISOString(),
-          ),
-        },
-        planRevision: input.planRevision,
-      };
-      return candidate;
+      return persisted;
     },
 
     async persistEntitlementAndProjection(input) {
       const entitlement = input.entitlement;
       const projection = input.projection;
+      const existingResult = await systemDb.query(
+        `
+          SELECT id FROM ONLY $entitlementId;
+          SELECT id, canonical_digest FROM ONLY $projectionId;
+        `,
+        {
+          entitlementId: entitlement.id,
+          projectionId: projection.id,
+        },
+      );
+      const existingEntitlementRows = Array.isArray(existingResult)
+        ? existingResult[0]
+        : undefined;
+      const existingProjectionRows = Array.isArray(existingResult)
+        ? existingResult[1]
+        : undefined;
+      const existingEntitlement = Array.isArray(existingEntitlementRows)
+        ? existingEntitlementRows[0]
+        : existingEntitlementRows;
+      const existingProjection = Array.isArray(existingProjectionRows)
+        ? existingProjectionRows[0]
+        : existingProjectionRows;
+      if (existingEntitlement && existingProjection) {
+        if (
+          typeof existingProjection === "object"
+          && existingProjection !== null
+          && "canonical_digest" in existingProjection
+          && existingProjection.canonical_digest
+            !== projection.canonical_digest
+        ) {
+          throw new Error(
+            "existing provisioning projection digest does not match",
+          );
+        }
+        return {
+          entitlementId: entitlement.id,
+          projectionId: projection.id,
+        };
+      }
+      if (existingEntitlement || existingProjection) {
+        throw new Error(
+          "partial provisioning entitlement/projection state requires operator repair",
+        );
+      }
 
       await systemDb.query(
         `
-          CREATE $entitlementId CONTENT $entitlement;
-          CREATE $projectionId CONTENT $projection;
-          CREATE entitlement_operation CONTENT {
-            workspace: $workspace,
-            operation_kind: "workspace_provisioning",
-            outcome: "succeeded",
-            entitlement: $entitlementId,
-            projection: $projectionId,
-            idempotency_key: $idempotencyKey,
-            actor_kind: "system",
-            actor_subject: $actor,
-            effective_at: time::now(),
-            correlation_id: $correlationId,
-            causation_id: $causationId
-          };
-          UPSERT workspace_quota_runtime CONTENT {
-            workspace: $workspace,
-            sync_state: "pending",
-            service_mode: $serviceMode,
-            quota_compliance: "unknown",
-            capacity_state: "unknown",
-            auto_reconcile: true,
-            usage_trusted: false
-          };
-          UPDATE $workspace SET
-            desired_entitlement = $entitlementId,
-            desired_quota_projection = $projectionId;
+          BEGIN TRANSACTION;
+
+            CREATE $entitlementId CONTENT $entitlement;
+            CREATE $projectionId CONTENT $projection;
+            CREATE entitlement_operation CONTENT {
+              workspace: $workspace,
+              operation_kind: "workspace_provisioning",
+              outcome: "succeeded",
+              entitlement: $entitlementId,
+              projection: $projectionId,
+              idempotency_key: $idempotencyKey,
+              actor_kind: "system",
+              actor_subject: $actor,
+              effective_at: time::now(),
+              correlation_id: $correlationId,
+              causation_id: $causationId
+            };
+            LET $runtime = (
+              SELECT VALUE id
+              FROM workspace_quota_runtime
+              WHERE workspace = $workspace
+              LIMIT 1
+            )[0];
+            IF $runtime = NONE {
+              CREATE workspace_quota_runtime CONTENT {
+                workspace: $workspace,
+                sync_state: "pending",
+                service_mode: $serviceMode,
+                quota_compliance: "unknown",
+                capacity_state: "unknown",
+                auto_reconcile: true,
+                usage_trusted: false
+              };
+            } ELSE {
+              UPDATE $runtime SET
+                sync_state = "pending",
+                service_mode = $serviceMode,
+                auto_reconcile = true;
+            };
+            UPDATE $workspace SET
+              desired_entitlement = $entitlementId,
+              desired_quota_projection = $projectionId;
+
+          COMMIT TRANSACTION;
         `,
         {
           entitlementId: entitlement.id,
@@ -452,19 +657,21 @@ function createSurrealControlPlane(
             applied_entitlement = IF $appliedEntitlement = NONE THEN applied_entitlement ELSE $appliedEntitlement END,
             desired_quota_projection = IF $desiredQuotaProjection = NONE THEN desired_quota_projection ELSE $desiredQuotaProjection END,
             applied_quota_projection = IF $appliedQuotaProjection = NONE THEN applied_quota_projection ELSE $appliedQuotaProjection END,
+            legacy_cleanup_after = IF $legacyCleanupAfter = NONE THEN legacy_cleanup_after ELSE $legacyCleanupAfter END,
             updated_at = time::now();
         `,
         {
           workspace: input.workspaceId,
           stage: input.stage,
-          status: input.status ?? null,
-          quotaMigrationState: input.quotaMigrationState ?? null,
-          errorCode: input.errorCode ?? null,
-          error: input.error ?? null,
-          desiredEntitlement: input.desiredEntitlement ?? null,
-          appliedEntitlement: input.appliedEntitlement ?? null,
-          desiredQuotaProjection: input.desiredQuotaProjection ?? null,
-          appliedQuotaProjection: input.appliedQuotaProjection ?? null,
+          status: toSurrealNone(input.status),
+          quotaMigrationState: toSurrealNone(input.quotaMigrationState),
+          errorCode: toSurrealNone(input.errorCode),
+          error: toSurrealNone(input.error),
+          desiredEntitlement: toSurrealNone(input.desiredEntitlement),
+          appliedEntitlement: toSurrealNone(input.appliedEntitlement),
+          desiredQuotaProjection: toSurrealNone(input.desiredQuotaProjection),
+          appliedQuotaProjection: toSurrealNone(input.appliedQuotaProjection),
+          legacyCleanupAfter: toSurrealNone(input.legacyCleanupAfter),
         },
       );
     },
@@ -478,26 +685,47 @@ function createSurrealControlPlane(
             desired_entitlement = $entitlementId,
             desired_quota_projection = $projectionId,
             updated_at = time::now();
-          UPSERT workspace_quota_runtime CONTENT {
-            workspace: $workspace,
-            sync_state: "in_sync",
-            service_mode: "standard",
-            quota_compliance: "compliant",
-            capacity_state: "normal",
-            auto_reconcile: true,
-            last_native_audit_at: time::now(),
-            native_observed_at: time::now(),
-            native_observed_generation: $generation,
-            native_observed_digest: $digest,
-            ledger_state: $ledgerState,
-            usage_trusted: $usageTrusted
+          LET $runtime = (
+            SELECT VALUE id
+            FROM workspace_quota_runtime
+            WHERE workspace = $workspace
+            LIMIT 1
+          )[0];
+          IF $runtime = NONE {
+            CREATE workspace_quota_runtime CONTENT {
+              workspace: $workspace,
+              sync_state: "in_sync",
+              service_mode: "standard",
+              quota_compliance: "compliant",
+              capacity_state: "normal",
+              auto_reconcile: true,
+              last_native_audit_at: time::now(),
+              native_observed_at: time::now(),
+              native_observed_generation: $generation,
+              native_observed_digest: $digest,
+              ledger_state: $ledgerState,
+              usage_trusted: $usageTrusted
+            };
+          } ELSE {
+            UPDATE $runtime SET
+              sync_state = "in_sync",
+              service_mode = "standard",
+              quota_compliance = "compliant",
+              capacity_state = "normal",
+              auto_reconcile = true,
+              last_native_audit_at = time::now(),
+              native_observed_at = time::now(),
+              native_observed_generation = $generation,
+              native_observed_digest = $digest,
+              ledger_state = $ledgerState,
+              usage_trusted = $usageTrusted;
           };
         `,
         {
           workspace: input.workspaceId,
           entitlementId: input.entitlementId,
           projectionId: input.projectionId,
-          generation: input.generation ?? null,
+          generation: toSurrealNone(input.generation),
           digest: input.digest,
           ledgerState: input.ledgerState,
           usageTrusted: input.usageTrusted,
@@ -562,15 +790,6 @@ export function createWorkspaceCreator(
       }
 
       const systemDb = await getDbSession(SYSTEM_DATABASE, namespace);
-
-      // Fast slug precheck (reserve still enforces uniqueness transactionally).
-      const slugResult = await systemDb.query(
-        "SELECT id FROM workspace WHERE slug = $slug LIMIT 1;",
-        { slug: input.slug },
-      );
-      if (rowCount(slugResult) > 0) {
-        return { kind: "slug-conflict" };
-      }
 
       for (let attempt = 0; attempt < MAX_DB_NAME_ATTEMPTS; attempt += 1) {
         const dbName = makeWorkspaceDbName(generateId());
@@ -676,17 +895,23 @@ async function tryCreateWorkspace({
   }
 
   const workspace = sagaResult.workspace;
+  const provisionedDbName = workspace.dbName;
 
   try {
-    const workspaceDb = await getDbSession(dbName, namespace);
+    const workspaceDb = await getDbSession(provisionedDbName, namespace);
     const scripts = await loadScripts();
     const selection = selectContinuousEligibleMigrations(scripts, {
       engineCapabilities,
       quotaMigrationState: workspace.quotaMigrationState,
+      // Greenfield databases have never served legacy traffic and therefore
+      // do not need the existing-workspace rollback observation window.
+      legacyCleanupEligible: true,
     });
 
     for (const script of selection.eligible) {
-      await workspaceDb.query(script.sql);
+      await workspaceDb.query(
+        await materializeWorkspaceMigrationSql(workspaceDb, script),
+      );
       await workspaceDb.query(
         "UPSERT schema_version:current CONTENT { version: $version, applied_at: time::now() };",
         { version: script.version },
@@ -716,7 +941,7 @@ async function tryCreateWorkspace({
         message:
           "new workspace must complete legacy quota cleanup before becoming active",
         slug: input.slug,
-        dbName,
+        dbName: provisionedDbName,
       };
     }
 
@@ -768,12 +993,17 @@ async function tryCreateWorkspace({
       code: "workspace-template-apply-failed",
       message,
       slug: input.slug,
-      dbName,
+      dbName: provisionedDbName,
     };
   }
 
   try {
-    await createMembershipIndex(systemDb, input, dbName, workspace.id);
+    await createMembershipIndex(
+      systemDb,
+      input,
+      provisionedDbName,
+      workspace.id,
+    );
     await controlPlane.markStage({
       workspaceId: workspace.id,
       stage: "index_ready",
@@ -794,7 +1024,7 @@ async function tryCreateWorkspace({
       code: "workspace-index-failed",
       message,
       slug: input.slug,
-      dbName,
+      dbName: provisionedDbName,
     };
   }
 
@@ -816,7 +1046,7 @@ async function tryCreateWorkspace({
       code: `workspace-scope-gate-${gate.reason}`,
       message: `scope gate denied: ${gate.reason}`,
       slug: input.slug,
-      dbName,
+      dbName: provisionedDbName,
     };
   }
 
@@ -831,17 +1061,21 @@ async function tryCreateWorkspace({
   try {
     const scopeToken = await idpTokenScopeAdapter.updateUserScope({
       subjectToken: input.subjectToken,
-      scope: { db: dbName, ac: "admin" },
+      scope: { db: provisionedDbName, ac: "admin" },
     });
     return {
       kind: "created",
       slug: input.slug,
-      dbName,
+      dbName: provisionedDbName,
       accessToken: scopeToken.accessToken,
       expiresIn: scopeToken.expiresIn,
     };
   } catch {
-    return { kind: "scope-update-failed", slug: input.slug, dbName };
+    return {
+      kind: "scope-update-failed",
+      slug: input.slug,
+      dbName: provisionedDbName,
+    };
   }
 }
 

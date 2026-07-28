@@ -175,7 +175,7 @@ function createMockControlPlane(state: FakeDbState): ProvisioningControlPlane {
         stage: "reserved",
         quotaMigrationState: "not_started",
       };
-      return { kind: "reserved", workspace };
+      return { kind: "reserved", workspace, resumed: false };
     },
     async loadPlan(planKey) {
       if (planKey === "missing") return null;
@@ -452,7 +452,8 @@ describe("createWorkspace lifecycle", () => {
       accessToken: "scoped-token",
       expiresIn: 3600,
     });
-    expect(applyOrder[0]).toBe("apply");
+    expect(applyOrder[0]).toBe("info");
+    expect(applyOrder).not.toContain("apply");
     expect(calls).toEqual([
       { subjectToken: "subject-token", scope: { db: "ws_abcdef123456", ac: "admin" } },
     ]);
@@ -482,6 +483,57 @@ describe("createWorkspace lifecycle", () => {
     expect(result).toEqual({ kind: "slug-conflict" });
     expect(state.physicalDbNames.has("ws_abcdef123456")).toBe(false);
     expect(calls).toEqual([]);
+  });
+
+  test("retries a recoverable reservation with its original database name", async () => {
+    const state = createFakeDbState();
+    state.lastDbName = "ws_recoverable";
+    state.physicalDbNames.add("ws_recoverable");
+    const baseControlPlane = createMockControlPlane(state);
+    const controlPlane: ProvisioningControlPlane = {
+      ...baseControlPlane,
+      async reserveWorkspace() {
+        return {
+          kind: "reserved",
+          resumed: true,
+          workspace: {
+            id: new StringRecordId("workspace:recoverable"),
+            dbName: "ws_recoverable",
+            slug: "acme",
+            name: "Acme Legal",
+            ownerSubject: "user-123",
+            status: "provisioning_error",
+            stage: "owner_seeded",
+            quotaMigrationState: "native_verified",
+          },
+        };
+      },
+    };
+    const { adapter, calls } = recordingIdpAdapter();
+    const creator = createWorkspaceCreator({
+      getDbSession: fakeSessionFactory(state),
+      idpTokenScopeAdapter: adapter,
+      loadTemplateScripts: async () => templateScripts,
+      controlPlane,
+      nativeQuotaClient: createMockNative(),
+      generateId: () => "newcandidate12",
+      namespace: "main",
+    });
+
+    const result = await creator.createWorkspace(baseInput());
+
+    expect(result).toMatchObject({
+      kind: "created",
+      slug: "acme",
+      dbName: "ws_recoverable",
+    });
+    expect(state.requestedSessions).toContain("ws_recoverable");
+    expect(calls).toEqual([
+      {
+        subjectToken: "subject-token",
+        scope: { db: "ws_recoverable", ac: "admin" },
+      },
+    ]);
   });
 
   test("does not drop a pre-existing physical database when generated db name collides", async () => {

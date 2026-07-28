@@ -16,6 +16,7 @@ type WorkspaceFixture = {
   dbName: string;
   schemaVersion: number;
   quotaMigrationState?: string;
+  legacyCleanupAfter?: string;
   lastMigrationError?: string | null;
   lastMigrationVersion?: number | null;
 };
@@ -44,6 +45,7 @@ class FakeMigrationClient {
           id: workspace.id,
           db_name: workspace.dbName,
           quota_migration_state: workspace.quotaMigrationState ?? "not_started",
+          legacy_cleanup_after: workspace.legacyCleanupAfter,
         })),
       ];
     }
@@ -213,19 +215,50 @@ describe("workspace migration runner", () => {
     ).toBe(false);
   });
 
-  test("legacy cleanup runs when native_verified and marks cleanup_done", async () => {
+  test("legacy cleanup stays blocked during the rollback stability window", async () => {
     const workspaces: WorkspaceFixture[] = [
       {
-        id: "workspace:ready",
-        dbName: "ws_ready",
+        id: "workspace:waiting",
+        dbName: "ws_waiting",
         schemaVersion: 20,
         quotaMigrationState: "native_verified",
+        legacyCleanupAfter: "2026-08-26T00:00:00.000Z",
       },
     ];
     const db = new FakeMigrationClient(workspaces);
 
     const result = await migrateAllWorkspaces(db, {
       namespace: "main",
+      now: new Date("2026-07-27T00:00:00.000Z"),
+      engineCapabilities: [NATIVE_QUOTA_EXPECTED_CONTRACT.capabilityName],
+      loadScripts: async () => fakeScripts(...Array.from({ length: 21 }, (_, index) => index + 1)),
+    });
+
+    expect(result.migrated[0]).toMatchObject({
+      dbName: "ws_waiting",
+      fromVersion: 20,
+      toVersion: 20,
+      blockedVersion: 21,
+      blockedReason: "legacy_cleanup_window",
+    });
+    expect(workspaces[0]?.schemaVersion).toBe(20);
+  });
+
+  test("legacy cleanup runs after the persisted stability window and marks cleanup_done", async () => {
+    const workspaces: WorkspaceFixture[] = [
+      {
+        id: "workspace:ready",
+        dbName: "ws_ready",
+        schemaVersion: 20,
+        quotaMigrationState: "native_verified",
+        legacyCleanupAfter: "2026-07-26T00:00:00.000Z",
+      },
+    ];
+    const db = new FakeMigrationClient(workspaces);
+
+    const result = await migrateAllWorkspaces(db, {
+      namespace: "main",
+      now: new Date("2026-07-27T00:00:00.000Z"),
       engineCapabilities: [NATIVE_QUOTA_EXPECTED_CONTRACT.capabilityName],
       loadScripts: async () => fakeScripts(...Array.from({ length: 21 }, (_, index) => index + 1)),
     });
@@ -233,7 +266,11 @@ describe("workspace migration runner", () => {
     expect(result.migrated[0]?.toVersion).toBe(21);
     expect(workspaces[0]?.schemaVersion).toBe(21);
     expect(
-      db.queryCalls.some((call) => call.sql.includes("-- migration 21")),
+      db.queryCalls.some((call) =>
+        call.sql.includes(
+          "REMOVE EVENT IF EXISTS resource_quota_guard ON TABLE sheet",
+        )
+      ),
     ).toBe(true);
   });
 

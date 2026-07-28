@@ -9,7 +9,9 @@ import {
 } from "@surreal-ck/shared/workspace-migration-manifest";
 import { NATIVE_QUOTA_EXPECTED_CONTRACT } from "@surreal-ck/shared/native-quota";
 import { env } from "../env";
+import { dateTimeTimestamp } from "./surreal-values";
 import { getRootConnection } from "./root-connection";
+import { materializeWorkspaceMigrationSql } from "./workspace-migration-execution";
 
 export type MigrationClient = {
   use(scope: { namespace: string; database: string }): Promise<unknown>;
@@ -20,6 +22,7 @@ export type MigrateAllWorkspacesOptions = {
   namespace?: string;
   loadScripts?: () => Promise<WorkspaceTemplateScript[]>;
   engineCapabilities?: readonly string[];
+  now?: Date;
 };
 
 export type WorkspaceMigrationOutcome = {
@@ -41,6 +44,7 @@ type WorkspaceMigrationRow = {
   id?: unknown;
   db_name?: unknown;
   quota_migration_state?: unknown;
+  legacy_cleanup_after?: unknown;
 };
 
 function readVersionResult(result: unknown): number {
@@ -88,11 +92,12 @@ export async function migrateAllWorkspaces(
   const engineCapabilities = options.engineCapabilities ?? [
     NATIVE_QUOTA_EXPECTED_CONTRACT.capabilityName,
   ];
+  const nowMs = (options.now ?? new Date()).getTime();
 
   await db.use({ namespace, database: SYSTEM_DATABASE });
   const workspaceRows = readWorkspaceRows(
     await db.query(
-      "SELECT id, db_name, quota_migration_state FROM workspace;",
+      "SELECT id, db_name, quota_migration_state, legacy_cleanup_after FROM workspace;",
     ),
   );
 
@@ -114,10 +119,13 @@ export async function migrateAllWorkspaces(
       const selection = selectContinuousEligibleMigrations(pending, {
         engineCapabilities,
         quotaMigrationState: readQuotaMigrationState(row.quota_migration_state),
+        legacyCleanupEligible:
+          dateTimeTimestamp(row.legacy_cleanup_after) > 0
+          && dateTimeTimestamp(row.legacy_cleanup_after) <= nowMs,
       });
 
       for (const script of selection.eligible) {
-        await db.query(script.sql);
+        await db.query(await materializeWorkspaceMigrationSql(db, script));
         await db.query(
           "UPSERT schema_version:current CONTENT { version: $version, applied_at: time::now() };",
           { version: script.version },

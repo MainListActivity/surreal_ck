@@ -118,10 +118,10 @@ describe("POST /api/workspaces", () => {
     expect(calls).toEqual([]);
   });
 
-  test("rejects create without explicit planKey resource source", async () => {
-    const { creator, calls } = stubCreator(() => ({
+  test("assigns the server-owned trial source when the browser omits plan fields", async () => {
+    const { creator, calls } = stubCreator((input) => ({
       kind: "created",
-      slug: "acme",
+      slug: input.slug,
       dbName: "ws_x",
       accessToken: "scoped-token",
       expiresIn: 3600,
@@ -140,9 +140,43 @@ describe("POST /api/workspaces", () => {
       }),
     );
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(200);
+    expect(calls[0]?.resourceSource).toEqual({
+      planKey: "trial",
+      sourceKind: "trial",
+    });
+  });
+
+  test("rejects browser attempts to mint a paid or higher-tier source", async () => {
+    const { creator, calls } = stubCreator(() => ({
+      kind: "created",
+      slug: "acme",
+      dbName: "ws_x",
+      accessToken: "scoped-token",
+      expiresIn: 3600,
+    }));
+    const app = createApp({
+      requireUser: () => useTestUser,
+      workspaceCreator: creator,
+      workspaceScope: stubWorkspaceScope(true),
+    });
+
+    const response = await app.fetch(
+      new Request("http://localhost/api/workspaces", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: "Acme",
+          slug: "acme",
+          planKey: "max",
+          sourceKind: "paid",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(403);
     expect(await response.json()).toMatchObject({
-      error: { code: "workspace-resource-source-required" },
+      error: { code: "workspace-plan-selection-not-allowed" },
     });
     expect(calls).toEqual([]);
   });
@@ -184,7 +218,7 @@ describe("POST /api/workspaces", () => {
         email: "ada@example.test",
         name: "Acme Legal",
         slug: "acme",
-        resourceSource: { planKey: "trial", sourceKind: undefined },
+        resourceSource: { planKey: "trial", sourceKind: "trial" },
       },
     ]);
   });

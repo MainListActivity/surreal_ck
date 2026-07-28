@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StringRecordId } from "surrealdb";
 import {
+  buildLegacyQuotaCleanupSurql,
   buildRecordQuotaGuardSurql,
 } from "./resource-quota";
 
@@ -17,6 +18,7 @@ type LegacyQuotaTestPlanKey = keyof typeof LEGACY_QUOTA_TEST_PLANS;
 
 const RUN_CLI_QUOTA_TESTS = process.env.RUN_LOCAL_SURREALDB_QUOTA_TESTS === "1";
 const localSurrealTest = test.skipIf(!RUN_CLI_QUOTA_TESTS);
+const surrealBinary = process.env.SURREAL_BINARY ?? "surreal";
 const namespace = "main";
 const username = "root";
 const password = "root";
@@ -45,7 +47,7 @@ async function allocatePort(): Promise<number> {
 
 async function waitUntilReady(): Promise<void> {
   for (let attempt = 0; attempt < 50; attempt += 1) {
-    const ready = Bun.spawn(["surreal", "is-ready", "--endpoint", endpoint], {
+    const ready = Bun.spawn([surrealBinary, "is-ready", "--endpoint", endpoint], {
       cwd: cliWorkingDirectory,
       stdout: "ignore",
       stderr: "ignore",
@@ -63,7 +65,7 @@ beforeAll(async () => {
   const port = await allocatePort();
   endpoint = `ws://127.0.0.1:${port}`;
   surrealServer = Bun.spawn([
-    "surreal",
+    surrealBinary,
     "start",
     "--no-banner",
     "--log",
@@ -100,7 +102,7 @@ function oneLineSurql(sql: string): string {
 
 async function runSurrealCli(database: string, sql: string): Promise<string> {
   const child = Bun.spawn([
-    "surreal",
+    surrealBinary,
     "sql",
     "--json",
     "--hide-welcome",
@@ -258,4 +260,31 @@ describe("resource quota local SurrealDB CLI integration", () => {
   localSurrealTest("Max 限制 3 张/9 字段/6 记录", async () => {
     await verifyPlanLimits("max");
   }, 30_000);
+
+  localSurrealTest(
+    "021 在一个事务中移除静态与动态 guard，随后实体表可由 native quota 接管",
+    async () => {
+      const database = `quota_cleanup_${Date.now().toString(36)}`;
+      await bootstrapWorkspace(database, "plus");
+      expectSuccessful(await createManagedSheet(database, 1, 1));
+
+      const cleanupSql = buildLegacyQuotaCleanupSurql(["ent_quota_1"]);
+      expectSuccessful(await runSurrealCli(database, cleanupSql));
+
+      const eventInfo = await runSurrealCli(
+        database,
+        "RETURN (INFO FOR TABLE ent_quota_1).events.resource_quota_guard;",
+      );
+      expect(eventInfo).not.toContain(
+        "DEFINE EVENT resource_quota_guard ON ent_quota_1",
+      );
+      expectSuccessful(
+        await runSurrealCli(
+          database,
+          "CREATE ent_quota_1:after_cleanup CONTENT { field_1: 1 };",
+        ),
+      );
+    },
+    30_000,
+  );
 });

@@ -61,9 +61,10 @@ namespace: main
 │     │     • owner_subject (string)      — 创建者的 OIDC subject
 │     │     • slug (string, unique)       — URL 展示用
 │     │     • name (string)
-│     │     • status (string)             — 'provisioning' | 'active' | 'failed' | 'archived'
-│     │     • last_migration_version (option<string>) — 已应用到本 db 的 workspace-template 最高版本号
-│     │     • last_migration_error (option<string>)   — 上一次迁移失败原因（status='failed' 时填）
+│     │     • status (string)             — 'provisioning' | 'provisioning_error' | 'active' | 'failed' | 'archived'
+│     │     • last_migration_version (option<int>) — 已应用到本 db 的 workspace-template 最高版本号
+│     │     • last_migration_error (option<string>)   — 上一次迁移失败原因
+│     │     • legacy_cleanup_after (option<datetime>) — 旧 quota 回滚保护允许清理的最早时间
 │     │     • created_at, updated_at, archived_at?
 │     ├── TABLE user_workspace_index     — 本应用权威索引：subject → 可进入的 ws db
 │     │     • subject (string, indexed)   — OIDC subject
@@ -151,8 +152,9 @@ AI / 虚拟员工发起的 DDL 不改变上表能力划分：虚拟员工仍不�
 | 取值 | 含义 |
 |---|---|
 | `provisioning` | 创建流程进行中：db 已创建但模板 / owner / IdP scope 切换尚未全部完成。前端登录 / 列表不显示。 |
+| `provisioning_error` | 创建流程发生可恢复错误；保留 reservation、阶段和受原生 quota 保护的 db，同一 owner 用同一 slug 重试时从原 db 幂等续跑。前端登录 / 列表不显示，也不签发 scope。 |
 | `active` | 全部 lifecycle 步骤成功，可登录、可调度、可迁移。 |
-| `failed` | lifecycle 中途失败；`last_migration_error` 写明原因。等待管理员人工处置（重试 / 删除）。 |
+| `failed` | 不可自动恢复或经运营判定终止；`last_migration_error` 写明原因。等待管理员人工处置（修复 / 删除）。 |
 | `archived` | 已归档，登录与 dispatcher 都跳过；保留数据以便恢复。 |
 
 > Mastra `WorkflowsStorage` snapshot **不**落在 `_system`——它跨 workspace 会破坏 db 边界隔离。snapshot 应落在所属 workspace db 内（参见簇 D1 落地）。
@@ -186,17 +188,22 @@ AI / 虚拟员工发起的 DDL 不改变上表能力划分：虚拟员工仍不�
 
 ### 7. Workspace 创建
 
-workspace 创建由后端完成：
+workspace 创建由后端以 fail-closed saga 完成：
 
 1. 验证当前 OIDC subject 有创建 workspace 权限。
-2. 生成 `db_name = ws_<id12>`；用户输入的 slug 只用于 URL 和 `_system.workspace.slug`。
-3. root 创建 workspace database。
-4. 应用 `shared/sql/workspace-template/` 全量模板。
-5. 创建 owner user：`kind='human', is_admin=true`。
-6. 写 `_system.workspace` 与 `_system.user_workspace_index`。
+2. 公共创建入口只分配服务端拥有的 trial source；Plus / Pro / Max、paid / manual / contract 必须由带审计的订阅或运营意图修改。
+3. 生成 `db_name = ws_<id12>` 并原子保留 slug；同一 owner 对 `provisioning_error` slug 的重试恢复原 reservation 和原 db。
+4. 物化 entitlement / projection 后创建 database，应用并 INFO 回读原生 quota；账本 ready 且 digest 一致才标记 `native_verified`。
+5. 应用 `shared/sql/workspace-template/`、清理 greenfield legacy quota、播种模板包和 owner user。
+6. 写 `_system.user_workspace_index`，通过统一 active + quota scope gate 后才切换为 `active`。
 7. 调用 IdP Token Scope Adapter，把用户 scope 切到新 workspace 的 `admin` access。
 
-失败补偿集中在 Workspace Scope Module：模板失败则删除刚创建的 db；IdP scope 更新失败则返回可重试错误，避免前端散落补偿逻辑。
+失败补偿集中在 Workspace Scope Module：
+
+- 原生 quota 尚未建立前的物理库创建 / capability 失败可以删除新 db；reservation 保留错误信息供审计和重试。
+- 原生 policy 已 INFO 验证后，模板、owner 或 index 失败不得删除 db；保留受 quota 保护的 db 和 `provisioning_error` 状态，同一 owner 重试时幂等续跑。
+- 所有失败状态都不通过 scope gate。IdP scope 更新失败发生在 workspace 已 active 之后，返回可重试错误，由切换 workspace 流程重试 token scope。
+- 已有 workspace 的 legacy quota 清理还必须满足持久化的 `legacy_cleanup_after`；迁移协调器至少设置 30 日稳定观察窗。greenfield 从未承载 legacy 流量，可在开放 scope 前立即清理。
 
 ### 8. 成员管理
 

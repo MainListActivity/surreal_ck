@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { StringRecordId } from "surrealdb";
 import {
+  buildLegacyQuotaCleanupSurql,
   buildRecordQuotaGuardSurql,
 } from "./resource-quota";
 
@@ -26,5 +27,26 @@ describe("resource quota public contract", () => {
       tableName: "ent_ok",
       sheetId: new StringRecordId("workbook:c3d4"),
     })).toThrow("invalid sheet record id");
+  });
+
+  test("legacy cleanup 先显式移除全部动态 guard，再在同一事务删除支撑表", () => {
+    const sql = buildLegacyQuotaCleanupSurql([
+      "ent_beta",
+      "ent_alpha",
+      "ent_alpha",
+    ]);
+
+    expect(sql.match(/REMOVE EVENT IF EXISTS resource_quota_guard ON TABLE ent_alpha/g)).toHaveLength(1);
+    expect(sql).toContain(
+      "REMOVE EVENT IF EXISTS resource_quota_guard ON TABLE ent_beta",
+    );
+    expect(sql.indexOf("ON TABLE ent_beta")).toBeLessThan(
+      sql.indexOf("REMOVE TABLE IF EXISTS sheet_resource_usage"),
+    );
+    expect(sql).toMatch(/^BEGIN TRANSACTION;/u);
+    expect(sql).toMatch(/COMMIT TRANSACTION;$/u);
+    expect(() =>
+      buildLegacyQuotaCleanupSurql(["ent_ok; REMOVE DATABASE main"])
+    ).toThrow("invalid legacy quota entity table name");
   });
 });

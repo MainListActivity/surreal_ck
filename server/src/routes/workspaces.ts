@@ -36,25 +36,18 @@ export function createWorkspaceRoutes(
       const body = await c.req.json().catch(() => null);
       const name = typeof body?.name === "string" ? body.name.trim() : "";
       const slug = typeof body?.slug === "string" ? body.slug.trim().toLowerCase() : "";
-      const planKey =
+      const requestedPlanKey =
         typeof body?.planKey === "string"
           ? body.planKey.trim().toLowerCase()
           : typeof body?.resourceSource?.planKey === "string"
             ? body.resourceSource.planKey.trim().toLowerCase()
             : "";
-      const sourceKindRaw =
+      const requestedSourceKind =
         typeof body?.resourceSource?.sourceKind === "string"
           ? body.resourceSource.sourceKind
           : typeof body?.sourceKind === "string"
             ? body.sourceKind
             : undefined;
-      const sourceKind =
-        sourceKindRaw === "trial"
-        || sourceKindRaw === "manual"
-        || sourceKindRaw === "paid"
-        || sourceKindRaw === "contract"
-          ? sourceKindRaw
-          : undefined;
 
       if (!name) {
         throw new HttpError(400, "workspace-name-required", "name is required");
@@ -62,11 +55,14 @@ export function createWorkspaceRoutes(
       if (!SLUG_PATTERN.test(slug)) {
         throw new HttpError(400, "workspace-slug-invalid", "slug must be 1-40 lowercase alphanumeric or hyphen characters");
       }
-      if (!planKey) {
+      if (
+        (requestedPlanKey && requestedPlanKey !== "trial")
+        || (requestedSourceKind && requestedSourceKind !== "trial")
+      ) {
         throw new HttpError(
-          400,
-          "workspace-resource-source-required",
-          "planKey is required; resource entitlement is never implicit",
+          403,
+          "workspace-plan-selection-not-allowed",
+          "workspace creation cannot assign paid, contract, or manual plans",
         );
       }
       const { canCreate } = await workspaceScope.listWorkspaces({
@@ -83,7 +79,9 @@ export function createWorkspaceRoutes(
         email: c.var.user.email ?? "",
         name,
         slug,
-        resourceSource: { planKey, sourceKind },
+        // This public endpoint can issue only the server-owned trial source.
+        // Paid/manual/contract assignment belongs to audited NQ-06 intents.
+        resourceSource: { planKey: "trial", sourceKind: "trial" },
       });
 
       if (result.kind === "slug-conflict") {

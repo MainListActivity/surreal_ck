@@ -12,11 +12,12 @@ describe("workspace migration manifest", () => {
       evaluateWorkspaceMigrationEligibility(20, {
         engineCapabilities: [],
         quotaMigrationState: "not_started",
+        legacyCleanupEligible: false,
       }),
     ).toEqual({ kind: "eligible" });
   });
 
-  test("legacy cleanup requires native-quota capability and native_verified state", () => {
+  test("legacy cleanup requires native capability, native_verified, and elapsed stability window", () => {
     expect(WORKSPACE_MIGRATION_REQUIREMENTS[21]?.requires_engine_capability).toBe(
       NATIVE_QUOTA_EXPECTED_CONTRACT.capabilityName,
     );
@@ -25,6 +26,7 @@ describe("workspace migration manifest", () => {
       evaluateWorkspaceMigrationEligibility(21, {
         engineCapabilities: [NATIVE_QUOTA_EXPECTED_CONTRACT.capabilityName],
         quotaMigrationState: "not_started",
+        legacyCleanupEligible: false,
       }).kind,
     ).toBe("blocked");
 
@@ -32,6 +34,7 @@ describe("workspace migration manifest", () => {
       evaluateWorkspaceMigrationEligibility(21, {
         engineCapabilities: [],
         quotaMigrationState: "native_verified",
+        legacyCleanupEligible: true,
       }).kind,
     ).toBe("blocked");
 
@@ -39,6 +42,18 @@ describe("workspace migration manifest", () => {
       evaluateWorkspaceMigrationEligibility(21, {
         engineCapabilities: [NATIVE_QUOTA_EXPECTED_CONTRACT.capabilityName],
         quotaMigrationState: "native_verified",
+        legacyCleanupEligible: false,
+      }),
+    ).toMatchObject({
+      kind: "blocked",
+      reason: "legacy_cleanup_window",
+    });
+
+    expect(
+      evaluateWorkspaceMigrationEligibility(21, {
+        engineCapabilities: [NATIVE_QUOTA_EXPECTED_CONTRACT.capabilityName],
+        quotaMigrationState: "native_verified",
+        legacyCleanupEligible: true,
       }),
     ).toEqual({ kind: "eligible" });
   });
@@ -51,6 +66,7 @@ describe("workspace migration manifest", () => {
     const result = selectContinuousEligibleMigrations(pending, {
       engineCapabilities: [NATIVE_QUOTA_EXPECTED_CONTRACT.capabilityName],
       quotaMigrationState: "not_started",
+      legacyCleanupEligible: false,
     });
 
     expect(result.eligible.map((item) => item.version)).toEqual([19, 20]);
@@ -63,6 +79,7 @@ describe("workspace migration manifest", () => {
       evaluateWorkspaceMigrationEligibility(21, {
         engineCapabilities: [NATIVE_QUOTA_EXPECTED_CONTRACT.capabilityName],
         quotaMigrationState: "cleanup_done",
+        legacyCleanupEligible: false,
       }),
     ).toEqual({ kind: "eligible" });
   });

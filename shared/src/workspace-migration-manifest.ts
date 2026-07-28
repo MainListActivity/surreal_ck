@@ -19,6 +19,12 @@ export type WorkspaceMigrationRequirement = Readonly<{
    * When absent, any state is eligible.
    */
   requires_quota_migration_state?: readonly WorkspaceQuotaMigrationState[];
+  /**
+   * Existing workspaces may remove rollback protection only after the
+   * persisted stability window has elapsed. Greenfield provisioning sets this
+   * true explicitly because no legacy traffic or data ever relied on 020.
+   */
+  requires_legacy_cleanup_eligible?: boolean;
 }>;
 
 /** Version of the deferred legacy event/table cleanup migration. */
@@ -35,6 +41,7 @@ export const WORKSPACE_MIGRATION_REQUIREMENTS: Readonly<
       "native_verified",
       "cleanup_done",
     ] as const),
+    requires_legacy_cleanup_eligible: true,
   }),
 });
 
@@ -45,6 +52,7 @@ export type WorkspaceMigrationEligibility =
       reason:
         | "missing_engine_capability"
         | "quota_migration_state"
+        | "legacy_cleanup_window"
         | "unknown_requirement";
       details: Readonly<Record<string, unknown>>;
     };
@@ -52,6 +60,7 @@ export type WorkspaceMigrationEligibility =
 export type WorkspaceMigrationContext = Readonly<{
   engineCapabilities: ReadonlySet<string> | readonly string[];
   quotaMigrationState: WorkspaceQuotaMigrationState;
+  legacyCleanupEligible: boolean;
 }>;
 
 function asCapabilitySet(
@@ -103,6 +112,18 @@ export function evaluateWorkspaceMigrationEligibility(
         }),
       };
     }
+  }
+
+  if (
+    requirement.requires_legacy_cleanup_eligible
+    && context.quotaMigrationState !== "cleanup_done"
+    && !context.legacyCleanupEligible
+  ) {
+    return {
+      kind: "blocked",
+      reason: "legacy_cleanup_window",
+      details: Object.freeze({ version }),
+    };
   }
 
   return { kind: "eligible" };

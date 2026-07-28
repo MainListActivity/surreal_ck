@@ -59,7 +59,7 @@ describe("_system native quota control-plane schema", () => {
       .map((entry) => Number(entry.slice(0, 3)))
       .sort((left, right) => left - right);
 
-    expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
   });
 
   test("every quota control-plane table is root-only", async () => {

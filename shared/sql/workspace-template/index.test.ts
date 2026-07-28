@@ -174,16 +174,17 @@ describe("workspace template scripts", () => {
     expect(sql).toContain('"quota-fields-exceeded"');
   });
 
-  test("deferred legacy cleanup migration removes event quota tables after native_verified", async () => {
+  test("deferred cleanup migration is a harmless runtime-materialization marker", async () => {
     const scripts = await loadTemplateScripts();
     const cleanup = scripts.find((script) => script.name === "021-legacy-quota-cleanup.surql");
 
     expect(cleanup?.version).toBe(21);
     const sql = cleanup?.sql ?? "";
-    expect(sql).toContain("REMOVE EVENT IF EXISTS resource_quota_guard");
-    expect(sql).toContain("REMOVE TABLE IF EXISTS sheet_resource_usage");
-    expect(sql).toContain("REMOVE TABLE IF EXISTS workspace_resource_quota");
-    expect(sql).toContain("REMOVE TABLE IF EXISTS resource_quota_plan");
+    expect(sql).toContain(
+      'RETURN "legacy-quota-cleanup-runtime-materialization-required"',
+    );
+    expect(sql).not.toContain("REMOVE EVENT IF EXISTS");
+    expect(sql).not.toContain("REMOVE TABLE");
   });
 
   test("workbook_template：类型由业务数据定义——底层不枚举行业类型，仅管理员可增改删，workbook 引用为可选 record", async () => {

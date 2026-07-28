@@ -40,3 +40,12 @@ Assignee: grok
 - 统一 `evaluateWorkspaceScopeGate`：default-scope、switch-workspace、create 后签发共用。
 - 启动期 `seedQuotaPlans` 播种 trial/plus/pro/max/retention 完整 compiler 规则。
 - 验证：`pnpm typecheck`、`pnpm test`（shared 91 / server 261 / web 472 pass）、`surreal validate` 009/021 OK。
+
+**2026-07-27（Codex，review 修复）**
+
+- 公共 `POST /api/workspaces` 不再信任浏览器传入的 `planKey/sourceKind`：创建入口只可签发服务端 trial；paid/manual/contract 与 Plus/Pro/Max 留给 SCK-NQ-06 审计意图。
+- provisioning reservation 支持同一 owner + slug 从 `provisioning_error` 恢复原 db；subscription/item 使用确定性 id 和事务，entitlement/projection/runtime 写入可重试，`null` 统一编码为 SurrealQL `NONE`。
+- 模板失败后的补偿改为保留已受 native policy 保护的 db，不签发 scope；ADR 明确 `provisioning_error` 为可恢复状态，避免删除一个已进入原生配额流程的库。
+- `_system` 010 增加 `legacy_cleanup_after`。已有 workspace 必须经过 NQ-09 设置的至少 30 日稳定窗；greenfield 因从未承载 legacy 流量，可在首次开放 scope 前清理。
+- 021 改为 runtime-materialization marker。runner 读取并严格校验 `sheet.table_name`（仅 `ent_*`），把所有动态 / 静态 event 和旧支撑表的移除生成到同一个 transaction；不安全标识符 fail closed。
+- 验证：`pnpm test`、`pnpm typecheck`、全部 SurQL `surreal validate`、真实本地 SurrealDB `_system` 迁移、动态 event 清理，以及模板失败后同 slug / 原 db 恢复测试通过。

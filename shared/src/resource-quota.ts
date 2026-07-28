@@ -6,6 +6,7 @@ export type RecordQuotaGuardInput = {
 };
 
 const SAFE_TABLE_NAME = /^[a-z][a-z0-9_]{0,62}$/;
+const SAFE_ENTITY_TABLE_NAME = /^ent_[a-z0-9_]{1,58}$/;
 const SAFE_SHEET_RECORD_ID = /^sheet:[a-zA-Z0-9_]+$/;
 
 /**
@@ -40,4 +41,37 @@ export function buildRecordQuotaGuardSurql(input: RecordQuotaGuardInput): string
         WHERE sheet = ${input.sheetId};
     };
   };`;
+}
+
+/**
+ * Build the deferred legacy cleanup as one transaction. DDL identifiers cannot
+ * be parameterized reliably in REMOVE EVENT, so callers must first read the
+ * authoritative sheet.table_name values and pass them through this strict
+ * entity-table validator.
+ */
+export function buildLegacyQuotaCleanupSurql(
+  tableNames: readonly string[],
+): string {
+  const uniqueTableNames = [...new Set(tableNames)].sort();
+  for (const tableName of uniqueTableNames) {
+    if (!SAFE_ENTITY_TABLE_NAME.test(tableName)) {
+      throw new Error(
+        `invalid legacy quota entity table name: ${tableName}`,
+      );
+    }
+  }
+  const dynamicEventRemoval = uniqueTableNames
+    .map(
+      (tableName) =>
+        `  REMOVE EVENT IF EXISTS resource_quota_guard ON TABLE ${tableName};`,
+    )
+    .join("\n");
+
+  return `BEGIN TRANSACTION;
+${dynamicEventRemoval}
+  REMOVE EVENT IF EXISTS resource_quota_guard ON TABLE sheet;
+  REMOVE TABLE IF EXISTS sheet_resource_usage;
+  REMOVE TABLE IF EXISTS workspace_resource_quota;
+  REMOVE TABLE IF EXISTS resource_quota_plan;
+COMMIT TRANSACTION;`;
 }

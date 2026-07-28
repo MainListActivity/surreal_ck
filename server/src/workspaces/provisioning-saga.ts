@@ -40,6 +40,7 @@ export type ProvisioningWorkspaceRecord = Readonly<{
   appliedEntitlement?: StringRecordId;
   desiredQuotaProjection?: StringRecordId;
   appliedQuotaProjection?: StringRecordId;
+  legacyCleanupAfter?: DateTime;
 }>;
 
 export type ExplicitResourceSource = Readonly<{
@@ -65,7 +66,11 @@ export type ProvisioningControlPlane = {
     email: string;
     dbName: string;
   }): Promise<
-    | { kind: "reserved"; workspace: ProvisioningWorkspaceRecord }
+    | {
+        kind: "reserved";
+        workspace: ProvisioningWorkspaceRecord;
+        resumed: boolean;
+      }
     | { kind: "slug-conflict" }
     | { kind: "db-name-conflict" }
   >;
@@ -77,6 +82,8 @@ export type ProvisioningControlPlane = {
     planRevision: EntitlementPlanRevision;
     ownerSubject: string;
     email: string;
+    /** Same effective timestamp used by entitlement resolution. */
+    effectiveAt: DateTime;
     correlationId: string;
   }): Promise<EntitlementBaseCandidate>;
   persistEntitlementAndProjection(input: {
@@ -99,6 +106,7 @@ export type ProvisioningControlPlane = {
     appliedEntitlement?: StringRecordId;
     desiredQuotaProjection?: StringRecordId;
     appliedQuotaProjection?: StringRecordId;
+    legacyCleanupAfter?: DateTime;
   }): Promise<void>;
   markAppliedFromNative(input: {
     workspaceId: StringRecordId;
@@ -238,6 +246,28 @@ export async function runProvisioningQuotaSaga(
     input.resourceSource.planKey,
     input.resourceSource.sourceKind,
   );
+  const validSourceForTemplate =
+    (sourceKind === "trial" && plan.planRevision.template_kind === "trial")
+    || (
+      sourceKind !== "trial"
+      && plan.planRevision.template_kind === "commercial"
+    );
+  if (!validSourceForTemplate) {
+    await controlPlane.markStage({
+      workspaceId: workspace.id,
+      stage: workspace.stage ?? "reserved",
+      status: "provisioning_error",
+      errorCode: "workspace-resource-source-mismatch",
+      error: "resource source kind does not match the selected plan",
+    });
+    return {
+      kind: "no-resource-source",
+      code: "workspace-resource-source-mismatch",
+      message: "resource source kind does not match the selected plan",
+      workspaceId: workspace.id.toString(),
+      dbName: workspace.dbName,
+    };
+  }
 
   try {
     const candidate = await controlPlane.persistResourceSource({
@@ -247,6 +277,7 @@ export async function runProvisioningQuotaSaga(
       planRevision: plan.planRevision,
       ownerSubject: input.subject,
       email: input.email,
+      effectiveAt: now,
       correlationId,
     });
 
@@ -328,19 +359,35 @@ export async function runProvisioningQuotaSaga(
 
     const physical = await controlPlane.createPhysicalDatabase(workspace.dbName);
     if (physical.kind === "db-name-conflict") {
+      if (reserved.resumed) {
+        // A recoverable reservation owns this database name; continue from the
+        // persisted stage instead of treating its own database as a collision.
+      } else {
       // Free the reserved slug/db_name so the outer allocator can retry with a
       // new physical name without permanent slug capture.
-      await controlPlane.releaseReservation?.(workspace).catch(() => undefined);
-      return { kind: "db-name-conflict" };
+        await controlPlane.releaseReservation?.(workspace).catch(() => undefined);
+        return { kind: "db-name-conflict" };
+      }
     }
 
-    // Apply native policy before any template so the db is never unlimited.
-    await native.applyPolicy({
-      database: workspace.dbName,
-      rules: compiled.projection.rules,
-    });
-
+    // INFO-first makes a resumed operation idempotent and refuses to overwrite
+    // unexpected native drift without an explicit operator action.
     let info = await native.info(workspace.dbName);
+    const initialDigest = info.policy
+      ? canonicalNativePolicyDigest(info.policy.rules)
+      : undefined;
+    if (!info.policy) {
+      await native.applyPolicy({
+        database: workspace.dbName,
+        rules: compiled.projection.rules,
+      });
+      info = await native.info(workspace.dbName);
+    } else if (initialDigest !== compiled.projection.canonical_digest) {
+      throw new Error(
+        "existing native quota policy does not match the provisioning projection",
+      );
+    }
+
     if (!isReadyLedger(info)) {
       await native.rebuild(workspace.dbName);
       info = await native.info(workspace.dbName);
@@ -392,6 +439,7 @@ export async function runProvisioningQuotaSaga(
       appliedEntitlement: entitlement.id,
       desiredQuotaProjection: compiled.projection.id,
       appliedQuotaProjection: compiled.projection.id,
+      legacyCleanupAfter: now,
       errorCode: null,
       error: null,
     });
@@ -406,6 +454,7 @@ export async function runProvisioningQuotaSaga(
         appliedEntitlement: entitlement.id,
         desiredQuotaProjection: compiled.projection.id,
         appliedQuotaProjection: compiled.projection.id,
+        legacyCleanupAfter: now,
       },
       entitlementId: entitlement.id,
       projectionId: compiled.projection.id,

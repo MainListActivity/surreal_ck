@@ -1,5 +1,10 @@
 import { jsonify, RecordId, StringRecordId } from "surrealdb";
 
+/** surrealdb-js encodes `undefined` as SurrealQL NONE and `null` as NULL. */
+export function toSurrealNone<T>(value: T | null | undefined): T | undefined {
+  return value === null ? undefined : value;
+}
+
 export function toStringRecordId(value: unknown): StringRecordId | null {
   if (value instanceof StringRecordId) {
     return value;
