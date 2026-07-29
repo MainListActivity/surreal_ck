@@ -31,6 +31,7 @@
     onopenaichat,
     onopenrecord,
     onasknotification,
+    onopenquota,
     onnavigate,
   }: {
     slug: string;
@@ -39,6 +40,7 @@
     onopenaichat?: () => void;
     onopenrecord?: (target: { workbookId: string; sheetId: string; recordId: string }) => void;
     onasknotification?: (notification: RiskNotification) => void;
+    onopenquota?: (slug: string) => void;
     onnavigate?: (page: WorkspacePage) => void;
   } = $props();
 
@@ -102,6 +104,7 @@
     onsearchchange={(q) => (query = q)}
     onpinworkbook={handlePinWorkbook}
     onopenworkbook={(id) => onopenworkbook?.(id)}
+    {onopenquota}
   />
 
   <div class="workspace-content">

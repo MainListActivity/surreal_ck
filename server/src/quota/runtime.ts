@@ -19,6 +19,7 @@ import {
   SurrealQuotaObservationStore,
 } from "./quota-observation";
 import { SurrealNativeAuditSweepHandler } from "./native-audit-sweep";
+import { SurrealQuotaOperatorMaintenance } from "./operator-maintenance";
 
 const EVENT_INTERVAL_MS = 250;
 const MATERIALIZATION_INTERVAL_MS = 250;
@@ -45,9 +46,10 @@ export function startNativeQuotaRuntime(): NativeQuotaRuntimeHandle {
   const controlStore = new SurrealQuotaControlPlaneStore(db);
   const lifecycleStore = new SurrealQuotaLifecycleStore(db);
   const refresher = new SurrealEntitlementRefreshService(db);
+  const nativeClient = new SurrealNativeQuotaClient(db);
   const reconciler = new QuotaReconciler(
     controlStore,
-    new SurrealNativeQuotaClient(db),
+    nativeClient,
   );
   const materializationWorker = new MaterializationWorker(
     controlStore,
@@ -59,27 +61,36 @@ export function startNativeQuotaRuntime(): NativeQuotaRuntimeHandle {
       reportLoopError("materialization-wake", error)
     );
   };
+  const authorityReader = new SurrealQuotaAuthorityReader({ db });
+  const observations = new QuotaObservationService(
+    new SurrealQuotaObservationStore({ db }),
+  );
   const lifecycle = new QuotaLifecycleCoordinator(
     lifecycleStore,
     refresher,
     `${workerId}:lifecycle`,
     { wake: wakeMaterialization },
+    {
+      operatorMaintenance: new SurrealQuotaOperatorMaintenance(
+        db,
+        authorityReader,
+        nativeClient,
+        observations,
+      ),
+    },
   );
   const boundarySweep = new ControlPlaneSweep(
     controlStore,
     new SurrealLifecycleBoundarySweepHandler(db, refresher),
     `${workerId}:boundary`,
   );
-  const nativeClient = new SurrealNativeQuotaClient(db);
   const nativeAudit = new NativeAuditSweep(
     controlStore,
     new SurrealNativeAuditSweepHandler(
       db,
-      new SurrealQuotaAuthorityReader({ db }),
+      authorityReader,
       nativeClient,
-      new QuotaObservationService(
-        new SurrealQuotaObservationStore({ db }),
-      ),
+      observations,
     ),
     `${workerId}:native-audit`,
   );

@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { editorPath, parseRoute, workspacePath } from "./route";
+import {
+  billingQuotaPath,
+  editorPath,
+  opsQuotaPath,
+  parseRoute,
+  workspacePath,
+} from "./route";
 
 describe("parseRoute", () => {
   test("auth 路由", () => {
@@ -10,6 +16,19 @@ describe("parseRoute", () => {
   test("根路径与未知路径落 home", () => {
     expect(parseRoute("/")).toEqual({ kind: "home" });
     expect(parseRoute("/whatever")).toEqual({ kind: "home" });
+  });
+
+  test("独立配额运营与计费账户路由不依赖 workspace slug", () => {
+    expect(parseRoute("/ops")).toEqual({ kind: "ops" });
+    expect(parseRoute("/ops/quota")).toEqual({ kind: "ops" });
+    expect(parseRoute("/billing/team%20acme/quota")).toEqual({
+      kind: "billing-quota",
+      accountKey: "team acme",
+    });
+    expect(opsQuotaPath()).toBe("/ops");
+    expect(billingQuotaPath("team acme")).toBe(
+      "/billing/team%20acme/quota",
+    );
   });
 
   test("workspace 首页与子页面", () => {

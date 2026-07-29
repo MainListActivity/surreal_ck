@@ -84,7 +84,10 @@ describe("SurrealQuotaAuthorityReader", () => {
             return [[{
               subscription: {
                 id: "quota_subscription:sub",
+                source: "provider",
                 status: "active",
+                current_period_end: "2026-08-01T00:00:00.000Z",
+                cancel_at_period_end: false,
                 billing_account: {
                   id: "billing_account:team",
                   account_key: "team",
@@ -115,6 +118,13 @@ describe("SurrealQuotaAuthorityReader", () => {
       operatorCapabilities: ["quota.read", "override.manage"],
       appliedEntitlement: { planKey: "plus" },
       desiredEntitlement: { planKey: "pro" },
+      subscription: {
+        id: "quota_subscription:sub",
+        source: "provider",
+        current_period_end: "2026-08-01T00:00:00.000Z",
+        billingAccountRecord: "billing_account:team",
+        billingAccountKey: "team",
+      },
       runtime: {
         sync: "pending",
         capacity: "warning",

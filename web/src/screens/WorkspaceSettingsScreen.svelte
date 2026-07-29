@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { AlertCircle, RefreshCw, Save, ShieldCheck, Trash2, UserPlus } from "@lucide/svelte";
   import EmptyState from "../components/EmptyState.svelte";
+  import QuotaOverview from "../components/quota/QuotaOverview.svelte";
   import {
     addMember,
     loadMembers,
@@ -233,6 +234,10 @@
       <p class="action-msg ok">{renameOk}</p>
     {/if}
   </section>
+
+  {#if workspaceSlug}
+    <QuotaOverview slug={workspaceSlug} />
+  {/if}
 
   <section class="settings-section" aria-label="成员管理">
     <div class="section-head">

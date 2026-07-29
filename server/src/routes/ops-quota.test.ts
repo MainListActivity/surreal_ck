@@ -9,6 +9,7 @@ import type {
   QuotaOperatorIntentPort,
 } from "./ops-quota";
 import type { QuotaReadPort } from "./quota";
+import type { QuotaOpsPreflightPort } from "../quota/quota-ops-preflight";
 
 const testUser = {
   subject: "operator-123",
@@ -37,6 +38,31 @@ const noStatus: QuotaIntentStatusReader = {
   },
 };
 
+const acceptedPreflight: QuotaOpsPreflightPort = {
+  async preflight(input) {
+    return {
+      format_version: 1,
+      workspace: {
+        id: input.workspace.toString(),
+        slug: input.workspaceSlug,
+        name: "Demo",
+      },
+      kind: input.kind,
+      required_capability: "override.manage",
+      observed_at: "2026-07-28T00:59:59.000Z",
+      usage_trusted: true,
+      stale: false,
+      effective_at: input.effectiveAt,
+      current_plan: null,
+      target_plan: null,
+      resources: [],
+      overage_count: 0,
+      affected_capabilities: ["quota adjustment"],
+      before_digest: "native-digest",
+    };
+  },
+};
+
 describe("quota operations routes", () => {
   test("persists an audited intent and returns 202 status location", async () => {
     const submissions: OperatorIntentSubmission[] = [];
@@ -53,6 +79,7 @@ describe("quota operations routes", () => {
       quotaReadService: noReads,
       quotaOperatorIntents: intents,
       quotaIntentStatus: noStatus,
+      quotaOpsPreflight: acceptedPreflight,
       requireUser: () => useTestUser,
     });
     const response = await app.fetch(
@@ -62,12 +89,12 @@ describe("quota operations routes", () => {
         body: JSON.stringify({
           kind: "override_schedule",
           requestId: "req-1",
+          workspaceSlug: "demo",
           workspace: "workspace:demo",
           customerReason: "临时扩容",
           operatorReason: "支持工单 #42",
           effectiveAt: "2026-07-28T01:00:00.000Z",
           input: { mode: "temporary" },
-          impactPreview: { recordLimit: 200 },
         }),
       }),
     );
@@ -86,7 +113,12 @@ describe("quota operations routes", () => {
       customerReason: "临时扩容",
       operatorReason: "支持工单 #42",
       input: { mode: "temporary" },
-      impactPreview: { recordLimit: 200 },
+      impactPreview: {
+        format_version: 1,
+        observed_at: "2026-07-28T00:59:59.000Z",
+        usage_trusted: true,
+      },
+      beforeDigest: "native-digest",
     });
     expect(submissions[0]?.workspace?.toString()).toBe("workspace:demo");
   });

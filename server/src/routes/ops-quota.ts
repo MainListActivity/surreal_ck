@@ -2,6 +2,7 @@ import type {
   ControlPlaneObject,
   PlatformOperatorCapability,
   QuotaOperatorIntentKind,
+  QuotaOpsIntentPreflightView,
 } from "@surreal-ck/shared/native-quota";
 import { DateTime, StringRecordId } from "surrealdb";
 import { Hono } from "hono";
@@ -19,6 +20,8 @@ import {
 } from "../quota/quota-info-cache";
 import type { QuotaReadPort } from "./quota";
 import type { QuotaIntentStatusReader } from "../quota/quota-intent-status";
+import type { QuotaOpsConsolePort } from "../quota/quota-ops-console";
+import type { QuotaOpsPreflightPort } from "../quota/quota-ops-preflight";
 
 export interface QuotaOperatorIntentPort {
   submitOperatorIntent(
@@ -114,6 +117,25 @@ function effectiveAt(value: unknown): DateTime {
   return new DateTime(new Date(iso).toISOString());
 }
 
+function listLimit(value: string | undefined, fallback = 25): number {
+  if (value === undefined) return fallback;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 100) {
+    throw new HttpError(
+      400,
+      "quota-ops-limit-invalid",
+      "limit must be an integer from 1 to 100",
+    );
+  }
+  return parsed;
+}
+
+function preflightObject(
+  value: QuotaOpsIntentPreflightView,
+): ControlPlaneObject {
+  return value as unknown as ControlPlaneObject;
+}
+
 function lifecycleHttpError(error: QuotaLifecycleError): HttpError {
   if (error.code === "operator_capability_mismatch") {
     return new HttpError(403, error.code, "Operator capability is insufficient");
@@ -130,12 +152,42 @@ function lifecycleHttpError(error: QuotaLifecycleError): HttpError {
 
 export function createOpsQuotaRoutes(input: Readonly<{
   reads: QuotaReadPort;
+  console: QuotaOpsConsolePort;
+  preflight: QuotaOpsPreflightPort;
   intents: QuotaOperatorIntentPort;
   intentStatus: QuotaIntentStatusReader;
   requireUser?: () => MiddlewareHandler<AppBindings>;
 }>) {
   const requireUser = input.requireUser ?? requireOidc;
   return new Hono<AppBindings>()
+    .get("/api/ops/quota/context", requireUser(), async (c) => {
+      const context = await input.console.getContext({
+        actor: { subject: c.var.user.subject },
+      });
+      if (!context) {
+        throw new HttpError(
+          404,
+          "quota-ops-not-found",
+          "Quota operations console is not accessible",
+        );
+      }
+      return c.json(context);
+    })
+    .get("/api/ops/quota/search", requireUser(), async (c) => {
+      const result = await input.console.search({
+        actor: { subject: c.var.user.subject },
+        query: (c.req.query("q") ?? "").trim().slice(0, 160),
+        limit: listLimit(c.req.query("limit")),
+      });
+      if (!result) {
+        throw new HttpError(
+          404,
+          "quota-ops-not-found",
+          "Quota operations console is not accessible",
+        );
+      }
+      return c.json(result);
+    })
     .get("/api/ops/quota/workspaces/:slug", requireUser(), async (c) => {
       try {
         const result = await input.reads.getWorkspace({
@@ -167,6 +219,67 @@ export function createOpsQuotaRoutes(input: Readonly<{
         }
         throw error;
       }
+    })
+    .get(
+      "/api/ops/quota/workspaces/:slug/timeline",
+      requireUser(),
+      async (c) => {
+        const result = await input.console.getTimeline({
+          actor: { subject: c.var.user.subject },
+          slug: c.req.param("slug"),
+          limit: listLimit(c.req.query("limit"), 50),
+        });
+        if (!result) {
+          throw new HttpError(
+            404,
+            "quota-ops-workspace-not-found",
+            "Workspace timeline does not exist or is not accessible",
+          );
+        }
+        return c.json(result);
+      },
+    )
+    .post("/api/ops/quota/preflight", requireUser(), async (c) => {
+      const body = await c.req.json().catch(() => null);
+      if (!body || !INTENT_KINDS.has(body.kind)) {
+        throw new HttpError(
+          400,
+          "quota-intent-kind-invalid",
+          "kind is not a supported quota operator intent",
+        );
+      }
+      const workspace = recordId(body.workspace, "workspace");
+      if (!workspace) {
+        throw new HttpError(
+          400,
+          "quota-intent-target-invalid",
+          "workspace is required for an operator preflight",
+        );
+      }
+      const at = effectiveAt(body.effectiveAt);
+      const result = await input.preflight.preflight({
+        actor: {
+          subject: c.var.user.subject,
+          ...(c.var.user.email ? { email: c.var.user.email } : {}),
+        },
+        workspaceSlug: requiredText(
+          body.workspaceSlug,
+          "workspaceSlug",
+          160,
+        ),
+        workspace,
+        kind: body.kind as QuotaOperatorIntentKind,
+        effectiveAt: at.toString(),
+        intentInput: object(body.input, "input", {}),
+      });
+      if (!result) {
+        throw new HttpError(
+          404,
+          "quota-intent-preflight-not-found",
+          "Intent target, plan, or operator capability is not accessible",
+        );
+      }
+      return c.json(result);
     })
     .get("/api/ops/quota/intents/:intentId", requireUser(), async (c) => {
       const raw = c.req.param("intentId");
@@ -214,16 +327,47 @@ export function createOpsQuotaRoutes(input: Readonly<{
         requiredCapabilityForIntent(kind);
       const requestId = requiredText(body.requestId, "requestId", 128);
       const workspace = recordId(body.workspace, "workspace");
+      if (!workspace) {
+        throw new HttpError(
+          400,
+          "quota-intent-target-invalid",
+          "workspace is required for an operator intent",
+        );
+      }
       const billingAccount = recordId(
         body.billingAccount,
         "billing_account",
       );
+      const at = effectiveAt(body.effectiveAt);
+      const intentInput = object(body.input, "input", {});
+      const preflight = await input.preflight.preflight({
+        actor: {
+          subject: c.var.user.subject,
+          ...(c.var.user.email ? { email: c.var.user.email } : {}),
+        },
+        workspaceSlug: requiredText(
+          body.workspaceSlug,
+          "workspaceSlug",
+          160,
+        ),
+        workspace,
+        kind,
+        effectiveAt: at.toString(),
+        intentInput,
+      });
+      if (!preflight) {
+        throw new HttpError(
+          404,
+          "quota-intent-preflight-not-found",
+          "Intent target, plan, or operator capability is not accessible",
+        );
+      }
       const submission: OperatorIntentSubmission = {
         kind,
         actorSubject: c.var.user.subject,
         actorCapability: capability,
         requestId,
-        ...(workspace ? { workspace } : {}),
+        workspace,
         ...(billingAccount ? { billingAccount } : {}),
         customerReason: requiredText(
           body.customerReason,
@@ -235,11 +379,11 @@ export function createOpsQuotaRoutes(input: Readonly<{
           "operatorReason",
           2_000,
         ),
-        effectiveAt: effectiveAt(body.effectiveAt),
-        input: object(body.input, "input", {}),
-        impactPreview: object(body.impactPreview, "impactPreview", {}),
-        ...(typeof body.beforeDigest === "string" && body.beforeDigest.length > 0
-          ? { beforeDigest: body.beforeDigest }
+        effectiveAt: at,
+        input: intentInput,
+        impactPreview: preflightObject(preflight),
+        ...(preflight.before_digest
+          ? { beforeDigest: preflight.before_digest }
           : {}),
         correlationId:
           typeof body.correlationId === "string"

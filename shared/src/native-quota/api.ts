@@ -1,4 +1,5 @@
 import type {
+  PlatformOperatorCapability,
   QuotaOperatorIntentKind,
   QuotaCapacityState,
   QuotaCompliance,
@@ -100,6 +101,11 @@ export type QuotaApiCustomerView = Readonly<{
   stale: boolean;
   applied: QuotaApiEntitlementSummary | null;
   desired: QuotaApiEntitlementSummary | null;
+  billing_account: Readonly<{
+    account_key: string;
+    name: string;
+    subscription: QuotaApiSubscriptionLifecycle;
+  }> | null;
   resources: readonly QuotaApiResource[];
   actions: readonly ("refresh" | "contact_workspace_admin")[];
 }>;
@@ -121,6 +127,7 @@ export type QuotaApiBillingWorkspaceSummary = Readonly<{
   plan_name: string | null;
   plan_revision: number | string | null;
   subscription_status: QuotaSubscriptionStatus | null;
+  subscription: QuotaApiSubscriptionLifecycle | null;
   statuses: QuotaApiStatuses;
   utilization: Readonly<{
     capacity: QuotaCapacityState;
@@ -128,6 +135,17 @@ export type QuotaApiBillingWorkspaceSummary = Readonly<{
     usage_trusted: boolean;
     stale: boolean;
   }>;
+}>;
+
+export type QuotaApiSubscriptionLifecycle = Readonly<{
+  id: string;
+  source: "provider" | "manual" | "contract";
+  status: QuotaSubscriptionStatus;
+  current_period_end: string | null;
+  paid_through: string | null;
+  grace_until: string | null;
+  cancel_at_period_end: boolean;
+  cancel_at: string | null;
 }>;
 
 export type QuotaApiBillingWorkspaceView = Readonly<{
@@ -142,6 +160,7 @@ export type QuotaApiBillingWorkspaceView = Readonly<{
   plan_name: string | null;
   plan_revision: number | string | null;
   subscription_status: QuotaSubscriptionStatus | null;
+  subscription: QuotaApiSubscriptionLifecycle | null;
   statuses: QuotaApiStatuses;
   utilization: Readonly<{
     capacity: QuotaCapacityState;
@@ -179,8 +198,12 @@ export type QuotaApiOperatorView = Omit<QuotaApiCustomerView, "view"> &
       capabilities: readonly QuotaApiCapability[];
     }>;
     operator: Readonly<{
+      capabilities: readonly PlatformOperatorCapability[];
       workspace_record: string;
       database: string;
+      billing_account_record: string | null;
+      billing_account_key: string | null;
+      current_subscription: string | null;
       desired_entitlement: string | null;
       applied_entitlement: string | null;
       desired_projection: string | null;
@@ -229,4 +252,135 @@ export type QuotaOperatorIntentStatusView = Readonly<{
   last_error_code: string | null;
   affected_workspaces: readonly string[];
   updated_at: string;
+}>;
+
+export type QuotaOpsPlanRule = Readonly<{
+  rule_key: string;
+  resource: NativeQuotaResource;
+  label: string;
+  description: string | null;
+  selector: Readonly<{
+    kind: "exact" | "regex";
+    value: string;
+  }>;
+  limit: Readonly<
+    | { kind: "finite"; value: QuotaApiCount }
+    | { kind: "unlimited" }
+  >;
+}>;
+
+export type QuotaOpsPlanRevision = Readonly<{
+  id: string;
+  plan_key: string;
+  plan_name: string;
+  revision: QuotaApiCount;
+  template_kind: "commercial" | "trial" | "retention" | "contract";
+  published_at: string;
+  rules: readonly QuotaOpsPlanRule[];
+}>;
+
+export type QuotaOpsContextView = Readonly<{
+  format_version: typeof QUOTA_API_FORMAT_VERSION;
+  viewer: Readonly<{
+    subject: string;
+    capabilities: readonly PlatformOperatorCapability[];
+  }>;
+  plans: readonly QuotaOpsPlanRevision[];
+}>;
+
+export type QuotaOpsSearchResult =
+  | Readonly<{
+      kind: "workspace";
+      workspace: QuotaApiWorkspace;
+      billing_account: Readonly<{
+        id: string;
+        account_key: string;
+        name: string;
+      }> | null;
+      applied_plan_name: string | null;
+      sync: QuotaSyncState;
+      capacity: QuotaCapacityState;
+    }>
+  | Readonly<{
+      kind: "billing_account";
+      billing_account: Readonly<{
+        id: string;
+        account_key: string;
+        name: string;
+      }>;
+      workspace_count: QuotaApiCount;
+      workspace_slugs: readonly string[];
+    }>
+  | Readonly<{
+      kind: "subject";
+      subject: string;
+      workspace_slugs: readonly string[];
+      billing_account_keys: readonly string[];
+    }>;
+
+export type QuotaOpsSearchView = Readonly<{
+  format_version: typeof QUOTA_API_FORMAT_VERSION;
+  viewer: Readonly<{
+    subject: string;
+    capabilities: readonly PlatformOperatorCapability[];
+  }>;
+  query: string;
+  results: readonly QuotaOpsSearchResult[];
+}>;
+
+export type QuotaOpsTimelineItem = Readonly<{
+  id: string;
+  kind:
+    | "operator_intent"
+    | "entitlement_operation"
+    | "materialization_operation"
+    | "materialization_attempt"
+    | "audit";
+  label: string;
+  state: string;
+  occurred_at: string;
+  actor_subject: string | null;
+  authorized_capability: PlatformOperatorCapability | null;
+  request_id: string | null;
+  correlation_id: string;
+  error_code: string | null;
+}>;
+
+export type QuotaOpsTimelineView = Readonly<{
+  format_version: typeof QUOTA_API_FORMAT_VERSION;
+  workspace: QuotaApiWorkspace;
+  items: readonly QuotaOpsTimelineItem[];
+}>;
+
+export type QuotaOpsImpactResource = Readonly<{
+  key: string;
+  label: string;
+  resource: NativeQuotaResource;
+  selector: string;
+  current_limit: QuotaApiCount | "unlimited" | null;
+  target_limit: QuotaApiCount | "unlimited" | null;
+  used: QuotaApiCount | null;
+  projected_over_by: QuotaApiCount | null;
+}>;
+
+export type QuotaOpsIntentPreflightView = Readonly<{
+  format_version: typeof QUOTA_API_FORMAT_VERSION;
+  workspace: QuotaApiWorkspace;
+  kind: QuotaOperatorIntentKind;
+  required_capability: PlatformOperatorCapability;
+  observed_at: string;
+  usage_trusted: boolean;
+  stale: false;
+  effective_at: string;
+  current_plan: QuotaApiEntitlementSummary | null;
+  target_plan: Readonly<{
+    id: string;
+    plan_key: string;
+    plan_name: string;
+    revision: QuotaApiCount;
+  }> | null;
+  resources: readonly QuotaOpsImpactResource[];
+  overage_count: number;
+  affected_capabilities: readonly string[];
+  before_digest: string | null;
 }>;

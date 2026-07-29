@@ -46,6 +46,10 @@ export function buildBrowserTitle(input: BrowserTitleInput): string {
   if (route.kind === "callback") return title("正在登录");
   if (route.kind === "form") return title("公开表单");
   if (route.kind === "form-success") return title("提交成功");
+  if (route.kind === "ops") return title("配额运营台");
+  if (route.kind === "billing-quota") {
+    return title("计费账户配额", route.accountKey);
+  }
 
   const workspaceMatchesRoute = input.workspaceSlug === undefined || input.workspaceSlug === route.slug;
   const workspaceName = (workspaceMatchesRoute ? clean(input.workspaceName) : null) ?? route.slug;

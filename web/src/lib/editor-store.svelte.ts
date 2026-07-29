@@ -21,6 +21,7 @@ import {
   type WorkbookMeta,
 } from "./editor-store";
 import type { ImportCsvRowsInput } from "./data-table-runtime";
+import { getCurrentWorkspace } from "./workspace-store.svelte";
 
 export { isDraftRowId } from "./record-drafts";
 export type {
@@ -56,6 +57,10 @@ const reactive = $state<EditorSnapshot>({
 
 const store = createEditorStore({
   getConn: getSurreal,
+  getQuotaFailureViewer: () =>
+    getCurrentWorkspace()?.role === "admin"
+      ? { kind: "workspace_admin" }
+      : { kind: "participant" },
   onChange(snapshot) {
     reactive.loading = snapshot.loading;
     reactive.saving = snapshot.saving;

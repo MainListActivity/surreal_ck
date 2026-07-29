@@ -1005,6 +1005,34 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
       );
       return Object.freeze({ workspaces: Object.freeze([workspace]) });
     }
+    if (claim.kind === "ledger_rebuild") {
+      const workspace = inputRecordId(
+        claim.input,
+        "workspace",
+        claim.workspace,
+      );
+      await this.db.query(
+        `
+          BEGIN TRANSACTION;
+          LET $intentState = SELECT * FROM ONLY $state;
+          IF $intentState = NONE
+            OR $intentState.state != "processing"
+            OR $intentState.lease_owner != $worker
+            OR $intentState.fencing_token != $fencingToken {
+            THROW "operator-intent-lease-lost";
+          };
+          UPDATE $state SET affected_workspaces = [$workspace];
+          COMMIT TRANSACTION;
+        `,
+        {
+          state: claim.state,
+          worker: claim.workerId,
+          fencingToken: claim.fencingToken,
+          workspace,
+        },
+      );
+      return Object.freeze({ workspaces: Object.freeze([workspace]) });
+    }
     throw new QuotaLifecycleError(
       "operator_intent_not_executable",
       `operator intent ${claim.kind} requires its dedicated executor`,

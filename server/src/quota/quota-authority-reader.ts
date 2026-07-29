@@ -461,6 +461,46 @@ export class SurrealQuotaAuthorityReader implements QuotaAuthorityReader {
       workspace.applied_quota_projection,
     );
     const subscriptionStatus = parseSubscriptionStatus(subscription?.status);
+    const subscriptionId = toStringRecordId(subscription?.id);
+    const subscriptionSource = subscription?.source;
+    const normalizedSubscriptionSource:
+      | "provider"
+      | "manual"
+      | "contract"
+      | undefined =
+        subscriptionSource === "provider"
+        || subscriptionSource === "manual"
+        || subscriptionSource === "contract"
+          ? subscriptionSource
+          : undefined;
+    const subscriptionAuthority =
+      subscriptionId
+      && billingAccountId
+      && typeof billingAccount?.account_key === "string"
+      && normalizedSubscriptionSource
+      && subscriptionStatus
+        ? {
+            id: subscriptionId.toString(),
+            source: normalizedSubscriptionSource,
+            status: subscriptionStatus,
+            current_period_end:
+              toIsoDateTimeString(subscription?.current_period_end) ?? null,
+            paid_through:
+              toIsoDateTimeString(subscription?.paid_through) ?? null,
+            grace_until:
+              toIsoDateTimeString(subscription?.grace_until) ?? null,
+            cancel_at_period_end:
+              subscription?.cancel_at_period_end === true,
+            cancel_at:
+              toIsoDateTimeString(subscription?.cancel_at) ?? null,
+            billingAccountRecord: billingAccountId.toString(),
+            billingAccountKey: billingAccount.account_key,
+            billingAccountName: requiredString(
+              billingAccount.name,
+              "billing account name",
+            ),
+          }
+        : undefined;
 
     return {
       workspace: {
@@ -477,6 +517,7 @@ export class SurrealQuotaAuthorityReader implements QuotaAuthorityReader {
       ...(desiredProjection ? { desiredProjection } : {}),
       ...(appliedProjection ? { appliedProjection } : {}),
       ...(subscriptionStatus ? { subscriptionStatus } : {}),
+      ...(subscriptionAuthority ? { subscription: subscriptionAuthority } : {}),
       runtime,
       commercialStateAt,
     };

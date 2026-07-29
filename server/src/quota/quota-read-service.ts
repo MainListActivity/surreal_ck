@@ -15,6 +15,7 @@ import {
   type QuotaApiParticipantView,
   type QuotaApiResource,
   type QuotaApiStatuses,
+  type QuotaApiSubscriptionLifecycle,
   type QuotaApiUsage,
   type QuotaApiWorkspaceView,
   type QuotaCapacityState,
@@ -96,6 +97,11 @@ export type QuotaWorkspaceAuthority = Readonly<{
   desiredProjection?: QuotaAuthorityProjection;
   appliedProjection?: QuotaAuthorityProjection;
   subscriptionStatus?: QuotaSubscriptionStatus;
+  subscription?: QuotaApiSubscriptionLifecycle & Readonly<{
+    billingAccountRecord: string;
+    billingAccountKey: string;
+    billingAccountName: string;
+  }>;
   runtime: QuotaAuthorityRuntime;
   commercialStateAt: string;
 }>;
@@ -318,6 +324,23 @@ function entitlementSummary(
   };
 }
 
+function subscriptionSummary(
+  authority: QuotaWorkspaceAuthority,
+): QuotaApiSubscriptionLifecycle | null {
+  const subscription = authority.subscription;
+  if (!subscription) return null;
+  return {
+    id: subscription.id,
+    source: subscription.source,
+    status: subscription.status,
+    current_period_end: subscription.current_period_end,
+    paid_through: subscription.paid_through,
+    grace_until: subscription.grace_until,
+    cancel_at_period_end: subscription.cancel_at_period_end,
+    cancel_at: subscription.cancel_at,
+  };
+}
+
 function currentStatuses(
   authority: QuotaWorkspaceAuthority,
   info: NativeQuotaInfo,
@@ -445,6 +468,91 @@ export class QuotaReadService {
     }
   }
 
+  private operatorView(
+    authority: QuotaWorkspaceAuthority,
+    actor: QuotaReadActor,
+    info: NativeQuotaInfo,
+    cacheAgeMs: number | null,
+  ): QuotaApiOperatorView {
+    const resources = resourcesFromInfo(authority, info, true);
+    const stale =
+      this.now() - Date.parse(info.observed_at) > this.staleAfterMs;
+    return {
+      format_version: QUOTA_API_FORMAT_VERSION,
+      view: "operator",
+      viewer: {
+        subject: actor.subject,
+        capabilities: capabilities(authority),
+      },
+      workspace: workspaceRef(authority),
+      statuses: currentStatuses(authority, info, resources),
+      observed_at: info.observed_at,
+      commercial_state_at: authority.commercialStateAt,
+      cache_age_ms: cacheAgeMs,
+      usage_trusted: info.ledger.usage_trusted && info.usage !== null,
+      stale,
+      applied: entitlementSummary(authority.appliedEntitlement),
+      desired: entitlementSummary(authority.desiredEntitlement),
+      billing_account:
+        (
+          authority.billingRole === "owner"
+          || authority.billingRole === "admin"
+          || authority.operatorCapabilities.includes("quota.read")
+        )
+        && authority.subscription
+          ? {
+              account_key: authority.subscription.billingAccountKey,
+              name: authority.subscription.billingAccountName,
+              subscription: subscriptionSummary(authority)!,
+            }
+          : null,
+      resources,
+      actions: ["refresh"],
+      operator: {
+        capabilities: [...authority.operatorCapabilities],
+        workspace_record: authority.workspace.record,
+        database: authority.workspace.database,
+        billing_account_record:
+          authority.subscription?.billingAccountRecord ?? null,
+        billing_account_key:
+          authority.subscription?.billingAccountKey ?? null,
+        current_subscription: authority.subscription?.id ?? null,
+        desired_entitlement: authority.desiredEntitlement?.record ?? null,
+        applied_entitlement: authority.appliedEntitlement?.record ?? null,
+        desired_projection: authority.desiredProjection?.record ?? null,
+        applied_projection: authority.appliedProjection?.record ?? null,
+        native_generation:
+          info.policy === null ? null : apiCount(info.policy.generation),
+        native_digest:
+          info.policy === null
+            ? null
+            : canonicalNativePolicyDigest(info.policy.rules),
+        drift_error_code: authority.runtime.lastSyncErrorCode ?? null,
+        auto_reconcile: authority.runtime.autoReconcile,
+      },
+    };
+  }
+
+  /**
+   * 运营变更的服务端 preflight：绕过客户页缓存和显式刷新限速，始终直接读取
+   * native INFO。调用方必须继续校验返回 workspace record 与意图目标一致。
+   */
+  async getOperatorWorkspaceFresh(input: Readonly<{
+    slug: string;
+    actor: QuotaReadActor;
+  }>): Promise<QuotaApiOperatorView | null> {
+    const authority = await this.authorityReader.findWorkspaceAuthority(input);
+    if (
+      !authority
+      || !authority.operatorCapabilities.includes("quota.read")
+    ) {
+      return null;
+    }
+    const info = await this.native.info(authority.workspace.database);
+    await this.recordObservation(authority, info);
+    return this.operatorView(authority, input.actor, info, 0);
+  }
+
   async getWorkspace(input: Readonly<{
     slug: string;
     actor: QuotaReadActor;
@@ -517,35 +625,15 @@ export class QuotaReadService {
     } as const;
 
     if (canOperate) {
-      const view: QuotaApiOperatorView = {
-        ...common,
-        view: "operator",
-        usage_trusted: usageTrusted,
-        stale,
-        applied: entitlementSummary(authority.appliedEntitlement),
-        desired: entitlementSummary(authority.desiredEntitlement),
-        resources,
-        actions: ["refresh"],
-        operator: {
-          workspace_record: authority.workspace.record,
-          database: authority.workspace.database,
-          desired_entitlement: authority.desiredEntitlement?.record ?? null,
-          applied_entitlement: authority.appliedEntitlement?.record ?? null,
-          desired_projection: authority.desiredProjection?.record ?? null,
-          applied_projection: authority.appliedProjection?.record ?? null,
-          native_generation:
-            cached.info.policy === null
-              ? null
-              : apiCount(cached.info.policy.generation),
-          native_digest:
-            cached.info.policy === null
-              ? null
-              : canonicalNativePolicyDigest(cached.info.policy.rules),
-          drift_error_code: authority.runtime.lastSyncErrorCode ?? null,
-          auto_reconcile: authority.runtime.autoReconcile,
-        },
+      return {
+        kind: "ok",
+        view: this.operatorView(
+          authority,
+          input.actor,
+          cached.info,
+          cached.cacheAgeMs,
+        ),
       };
-      return { kind: "ok", view };
     }
 
     if (canReadWorkspace) {
@@ -556,6 +644,14 @@ export class QuotaReadService {
         stale,
         applied: entitlementSummary(authority.appliedEntitlement),
         desired: entitlementSummary(authority.desiredEntitlement),
+        billing_account:
+          canReadBilling && authority.subscription
+            ? {
+                account_key: authority.subscription.billingAccountKey,
+                name: authority.subscription.billingAccountName,
+                subscription: subscriptionSummary(authority)!,
+              }
+            : null,
         resources,
         actions: ["refresh"],
       };
@@ -576,6 +672,7 @@ export class QuotaReadService {
           ? null
           : apiCount(authority.appliedEntitlement.planRevision),
       subscription_status: authority.subscriptionStatus ?? null,
+      subscription: subscriptionSummary(authority),
       utilization: {
         capacity: common.statuses.capacity,
         highest_percent: highestUtilization(resources),
@@ -622,6 +719,7 @@ export class QuotaReadService {
               ? null
               : apiCount(workspace.appliedEntitlement.planRevision),
           subscription_status: workspace.subscriptionStatus ?? null,
+          subscription: subscriptionSummary(workspace),
           statuses: current,
           utilization: {
             capacity: current.capacity,

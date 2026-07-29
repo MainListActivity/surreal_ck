@@ -25,6 +25,7 @@ import {
   type ImportCsvRowsResult,
 } from "./data-table-runtime";
 import { isDraftRowId, recordDrafts } from "./record-drafts";
+import type { QuotaFailureViewer } from "@surreal-ck/shared/native-quota";
 
 export { isDraftRowId } from "./record-drafts";
 
@@ -119,6 +120,8 @@ export type EditorDeps = {
   /** UI 选择 / 打开记录的副作用；默认 no-op，避免与 UI 层耦合。 */
   selectRow?: (id: RecordIdString | null) => void;
   openRecord?: (id: RecordIdString) => void;
+  /** 仅控制 quota error 的客户安全裁剪；授权仍由数据库执行。 */
+  getQuotaFailureViewer?: () => QuotaFailureViewer;
 };
 
 const EMPTY_VIEW_PARAMS: ViewParams = {
@@ -219,6 +222,7 @@ export function createEditorStore(deps: EditorDeps) {
         workbookId,
         dataTableId: active.id,
         query: state.viewParams,
+        quotaViewer: deps.getQuotaFailureViewer?.(),
         onChange: applyRuntimeSnapshot,
       });
       if (generation !== loadGeneration) {

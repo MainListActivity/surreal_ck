@@ -1,8 +1,9 @@
 <script lang="ts">
   import Avatar from "./Avatar.svelte";
   import Logo from "./Logo.svelte";
+  import QuotaNotificationMenu from "./quota/QuotaNotificationMenu.svelte";
   import WorkspaceSwitcherPanel from "./WorkspaceSwitcherPanel.svelte";
-  import { Plus, House, Coins, Folder, Tag, Settings, Hash, Trash2, Search, Bell, BookOpen, Pin } from "@lucide/svelte";
+  import { Plus, House, Coins, Folder, Tag, Settings, Hash, Trash2, Search, BookOpen, Pin } from "@lucide/svelte";
   import { getCurrentUser, getCurrentWorkspace } from "../lib/workspace-store.svelte";
   import {
     canWriteSharedStructure as canWriteSharedStructureFn,
@@ -27,6 +28,7 @@
     onsearchchange,
     onpinworkbook,
     onopenworkbook,
+    onopenquota,
   }: {
     page: WorkspacePage;
     query?: string;
@@ -38,6 +40,7 @@
     onsearchchange?: (q: string) => void;
     onpinworkbook?: (id: string) => void;
     onopenworkbook?: (id: string) => void;
+    onopenquota?: (slug: string) => void;
   } = $props();
 
   const canWriteSharedStructure = $derived(canWriteSharedStructureFn());
@@ -187,9 +190,7 @@
         </button>
       </div>
     </div>
-    <button class="icon-btn notify-btn" title="通知功能待迁移" aria-label="通知功能待迁移">
-      <Bell size={15} color="var(--text-3)" />
-    </button>
+    <QuotaNotificationMenu {onopenquota} />
   </div>
 </aside>
 
@@ -411,10 +412,6 @@
   .user-name {
     color: var(--text-3);
     font-size: 11px;
-  }
-
-  .notify-btn {
-    flex-shrink: 0;
   }
 
   .pinned-section {

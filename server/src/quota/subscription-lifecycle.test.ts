@@ -10,6 +10,7 @@ import {
   QuotaLifecycleError,
   requiredCapabilityForIntent,
   type EntitlementRefreshPort,
+  type QuotaOperatorMaintenancePort,
   type OperatorIntentClaim,
   type OperatorIntentSubmission,
   type ProviderApplyResult,
@@ -214,6 +215,18 @@ class MemoryRefresher implements EntitlementRefreshPort {
   }
 }
 
+class MemoryOperatorMaintenance implements QuotaOperatorMaintenancePort {
+  readonly calls: Parameters<
+    QuotaOperatorMaintenancePort["rebuildLedger"]
+  >[0][] = [];
+
+  async rebuildLedger(
+    input: Parameters<QuotaOperatorMaintenancePort["rebuildLedger"]>[0],
+  ) {
+    this.calls.push(input);
+  }
+}
+
 function coordinator(
   store: MemoryLifecycleStore,
   refresher: MemoryRefresher,
@@ -299,6 +312,36 @@ describe("QuotaLifecycleCoordinator", () => {
       && call.actorKind === "provider"
     )).toBeTrue();
     expect(wakes).toBe(1);
+  });
+
+  test("ledger rebuild uses root-side maintenance and INFO readback path", async () => {
+    const store = new MemoryLifecycleStore();
+    store.operatorClaim = operatorClaim({
+      kind: "ledger_rebuild",
+      authorizedCapability: "ledger.rebuild",
+      input: { workspace: "workspace:acme" },
+    });
+    const refresher = new MemoryRefresher();
+    const maintenance = new MemoryOperatorMaintenance();
+    const service = new QuotaLifecycleCoordinator(
+      store,
+      refresher,
+      "worker-a",
+      undefined,
+      {
+        clock: { now: () => now },
+        operatorMaintenance: maintenance,
+      },
+    );
+
+    await expect(service.processNextOperatorIntent()).resolves.toBe(
+      "processed",
+    );
+    expect(refresher.calls).toHaveLength(0);
+    expect(maintenance.calls).toEqual([{
+      workspace: id("workspace:acme"),
+      actorSubject: "operator:alice",
+    }]);
   });
 
   test("terminal failure has no retry timestamp; retryable failure receives backoff", async () => {

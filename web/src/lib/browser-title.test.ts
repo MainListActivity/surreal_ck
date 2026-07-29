@@ -8,6 +8,12 @@ describe("buildBrowserTitle", () => {
     expect(buildBrowserTitle({ route: { kind: "callback" } })).toBe("正在登录 - 卯豆");
     expect(buildBrowserTitle({ route: { kind: "form" } })).toBe("公开表单 - 卯豆");
     expect(buildBrowserTitle({ route: { kind: "form-success" } })).toBe("提交成功 - 卯豆");
+    expect(buildBrowserTitle({ route: { kind: "ops" } })).toBe(
+      "配额运营台 - 卯豆",
+    );
+    expect(buildBrowserTitle({
+      route: { kind: "billing-quota", accountKey: "acme" },
+    })).toBe("计费账户配额 - acme - 卯豆");
   });
 
   test("工作区首页优先显示工作区名称", () => {

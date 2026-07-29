@@ -8,6 +8,8 @@
   import WorkspaceScreen from "./screens/WorkspaceScreen.svelte";
   import NoWorkspaceScreen from "./screens/NoWorkspaceScreen.svelte";
   import PlaceholderScreen from "./screens/PlaceholderScreen.svelte";
+  import BillingQuotaScreen from "./screens/BillingQuotaScreen.svelte";
+  import QuotaOperationsScreen from "./screens/QuotaOperationsScreen.svelte";
   import { isAuthenticated, logout, refresh, requireAuthenticatedRoute } from "./lib/auth";
   import { editorPath, parseRoute, workspacePath, type Route, type WorkspacePage } from "./lib/route";
   import { bootstrapWorkspace } from "./lib/switch-workspace.svelte";
@@ -96,7 +98,14 @@
   /** 按当前路由建立 / 复用 workspace 直连；home 落地后跳到具体 /w/:slug。 */
   async function ensureWorkspace(): Promise<void> {
     const r = route;
-    if (r.kind === "login" || r.kind === "callback" || r.kind === "form" || r.kind === "form-success") {
+    if (
+      r.kind === "login"
+      || r.kind === "callback"
+      || r.kind === "form"
+      || r.kind === "form-success"
+      || r.kind === "ops"
+      || r.kind === "billing-quota"
+    ) {
       return;
     }
 
@@ -199,7 +208,17 @@
     />
   </main>
 {:else if ready && isAuthenticated()}
-  {#if wsState === "connecting" || wsState === "idle"}
+  {#if route.kind === "ops"}
+    <QuotaOperationsScreen
+      onexit={() => navigateTo("/")}
+    />
+  {:else if route.kind === "billing-quota"}
+    <BillingQuotaScreen
+      accountKey={route.accountKey}
+      onback={() => navigateTo("/")}
+      onopenworkspace={(slug) => navigateTo(workspacePath(slug, "admin"))}
+    />
+  {:else if wsState === "connecting" || wsState === "idle"}
     <main class="loading" aria-live="polite">正在连接工作区…</main>
   {:else if wsState === "empty"}
     <NoWorkspaceScreen
@@ -253,6 +272,7 @@
           onopenaichat={openAiDrawer}
           onopenrecord={(target) => openNotificationRecord(r.slug, target)}
           onasknotification={askAboutNotification}
+          onopenquota={(slug) => navigatePage(slug, "admin")}
           onnavigate={(page) => navigatePage(r.slug, page)}
         />
       </main>

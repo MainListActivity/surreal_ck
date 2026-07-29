@@ -15,6 +15,12 @@ import type {
 } from "@surreal-ck/shared/rpc.types";
 import { mapNullsToSurrealNone } from "@surreal-ck/shared/surreal-values";
 import {
+  extractNativeQuotaError,
+  mapQuotaFailure,
+  type QuotaFailure,
+  type QuotaFailureViewer,
+} from "@surreal-ck/shared/native-quota";
+import {
   buildSelect,
   describeWriteError,
   prepareRecordFields,
@@ -40,6 +46,9 @@ export type DataTableRuntimeErrorCode =
   | "conflict"
   | "unavailable"
   | "outcome-unknown"
+  | "quota-exceeded"
+  | "quota-policy-changed"
+  | "quota-unavailable"
   | "closed"
   | "unexpected";
 
@@ -48,6 +57,7 @@ export type DataTableRuntimeError = {
   message: string;
   retryable: boolean;
   fieldErrors?: Record<string, string[]>;
+  quotaFailure?: QuotaFailure;
 };
 
 export type RuntimeResult<T = void> =
@@ -93,6 +103,7 @@ export type OpenDataTableRuntimeInput = {
   dataTableId: string;
   query: ViewParams;
   onChange?: (snapshot: DataTableRuntimeSnapshot) => void;
+  quotaViewer?: QuotaFailureViewer;
 };
 
 export type ImportCsvRowsInput = {
@@ -130,6 +141,14 @@ export type DataTableRuntime = Awaited<ReturnType<typeof openDataTableRuntime>>;
 export async function openDataTableRuntime(input: OpenDataTableRuntimeInput) {
   const { conn } = input;
   const meta = await loadRuntimeMeta(conn, input.workbookId, input.dataTableId);
+  const quotaViewer: QuotaFailureViewer =
+    input.quotaViewer?.kind === "workspace_admin"
+      || input.quotaViewer?.kind === "operator"
+      ? input.quotaViewer
+      : {
+          kind: "participant",
+          operated_table: meta.tableName,
+        };
   let status: DataTableRuntimeStatus = "opening";
   let columns = meta.columns;
   let records: GridRow[] = [];
@@ -144,6 +163,10 @@ export async function openDataTableRuntime(input: OpenDataTableRuntimeInput) {
   let schemaTail: Promise<unknown> = Promise.resolve();
   const recordTails = new Map<string, Promise<unknown>>();
   const removalPlans = new Map<string, FieldRemovalPlan & { schemaFingerprint: string }>();
+
+  function classifyRuntimeError(cause: unknown): DataTableRuntimeError {
+    return classifyError(cause, quotaViewer);
+  }
 
   function snapshot(): DataTableRuntimeSnapshot {
     return {
@@ -247,7 +270,7 @@ export async function openDataTableRuntime(input: OpenDataTableRuntimeInput) {
           if (!applySafeLive(message)) scheduleRefresh();
         }
       } catch (cause) {
-        error = classifyError(cause);
+        error = classifyRuntimeError(cause);
         status = "error";
       } finally {
         emit();
@@ -336,7 +359,7 @@ export async function openDataTableRuntime(input: OpenDataTableRuntimeInput) {
         integrateReturnedRecord(updated, previous);
         return { ok: true, value: updated } as RuntimeResult<GridRow>;
       } catch (cause) {
-        return { ok: false, error: classifyError(cause) } as RuntimeResult<GridRow>;
+        return { ok: false, error: classifyRuntimeError(cause) } as RuntimeResult<GridRow>;
       }
     })));
     const failure = results.find((result) => !result.ok);
@@ -360,7 +383,7 @@ export async function openDataTableRuntime(input: OpenDataTableRuntimeInput) {
         integrateReturnedRecord(created);
         return { status: "promoted", record: created } as DraftPromotionResult;
       } catch (cause) {
-        return { status: "failed", error: classifyError(cause) } as DraftPromotionResult;
+        return { status: "failed", error: classifyRuntimeError(cause) } as DraftPromotionResult;
       }
     });
   }
@@ -420,7 +443,7 @@ export async function openDataTableRuntime(input: OpenDataTableRuntimeInput) {
         rejected.push({
           rowNumber: record.rowNumber,
           field: "整条记录",
-          reason: classifyError(cause).message,
+          reason: classifyRuntimeError(cause).message,
           sourceCells: record.sourceCells,
         });
       }
@@ -440,7 +463,7 @@ export async function openDataTableRuntime(input: OpenDataTableRuntimeInput) {
       scheduleRefresh();
       return { ok: true, value: undefined };
     } catch (cause) {
-      return { ok: false, error: classifyError(cause) };
+      return { ok: false, error: classifyRuntimeError(cause) };
     }
   }
 
@@ -534,7 +557,7 @@ export async function openDataTableRuntime(input: OpenDataTableRuntimeInput) {
         if (cause instanceof RuntimeConflictError) {
           return { ok: false, error: runtimeError("conflict", cause.message, false) };
         }
-        return { ok: false, error: classifyError(cause) };
+        return { ok: false, error: classifyRuntimeError(cause) };
       }
     });
   }
@@ -582,7 +605,7 @@ export async function openDataTableRuntime(input: OpenDataTableRuntimeInput) {
       const { schemaFingerprint: _, ...publicPlan } = plan;
       return { ok: true, value: publicPlan };
     } catch (cause) {
-      return { ok: false, error: classifyError(cause) };
+      return { ok: false, error: classifyRuntimeError(cause) };
     }
   }
 
@@ -869,11 +892,66 @@ function runtimeError(
   message: string,
   retryable: boolean,
   fieldErrors?: Record<string, string[]>,
+  quotaFailure?: QuotaFailure,
 ): DataTableRuntimeError {
-  return { code, message, retryable, ...(fieldErrors ? { fieldErrors } : {}) };
+  return {
+    code,
+    message,
+    retryable,
+    ...(fieldErrors ? { fieldErrors } : {}),
+    ...(quotaFailure ? { quotaFailure } : {}),
+  };
 }
 
-function classifyError(cause: unknown): DataTableRuntimeError {
+function quotaFailureMessage(failure: QuotaFailure): string {
+  if (failure.kind === "exceeded") {
+    const resources = [...new Set(
+      failure.violations.map((violation) =>
+        violation.resource === "table"
+          ? "数据表数量"
+          : violation.resource === "field"
+            ? "字段数量"
+            : "记录数量"
+      ),
+    )];
+    const scope = resources.length > 0 ? resources.join("、") : "当前资源";
+    return `${scope}已达到配额。本次事务未提交，草稿已保留；请删除或减少用量、升级计划，或联系工作区管理员。`;
+  }
+  if (failure.kind === "policy_changed") {
+    return "配额策略在操作期间发生变化，草稿已保留。请刷新用量后重试；只有幂等操作才可自动重试一次。";
+  }
+  if (failure.kind === "ledger_unavailable") {
+    return "配额账本正在初始化或重建，当前写入未提交，草稿已保留。请稍后重试或联系平台运营。";
+  }
+  if (failure.kind === "generation_mismatch") {
+    return "配额策略版本已变化，当前写入未提交，草稿已保留。请刷新页面后重试。";
+  }
+  if (failure.kind === "policy_invalid" || failure.kind === "incompatible") {
+    return "当前数据库配额策略不可用，写入未提交且草稿已保留。请联系平台运营处理。";
+  }
+  return failure.message ?? "配额操作失败，草稿已保留。";
+}
+
+function classifyError(
+  cause: unknown,
+  quotaViewer: QuotaFailureViewer,
+): DataTableRuntimeError {
+  if (extractNativeQuotaError(cause)) {
+    const failure = mapQuotaFailure(cause, quotaViewer);
+    const code =
+      failure.kind === "exceeded"
+        ? "quota-exceeded"
+        : failure.kind === "policy_changed"
+          ? "quota-policy-changed"
+          : "quota-unavailable";
+    return runtimeError(
+      code,
+      quotaFailureMessage(failure),
+      failure.retryable,
+      undefined,
+      failure,
+    );
+  }
   const message = cause instanceof Error ? cause.message : String(cause);
   if (/permission|not allowed|IAM/i.test(message)) {
     return runtimeError("permission-denied", describeWriteError(cause), false);

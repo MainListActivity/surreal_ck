@@ -7,6 +7,8 @@
  * 支持的路由：
  * - `/auth/login`                                  → login
  * - `/auth/callback`                               → callback
+ * - `/ops`                                         → 平台配额运营台
+ * - `/billing/:accountKey/quota`                   → 计费账户配额
  * - `/w/:slug`                                     → workspace（首页 shell）
  * - `/w/:slug/{docs|templates|dashboard|admin|admin-console|settings|trash}` → workspace 子页面
  * - `/w/:slug/wb/:workbookId`                      → editor（默认 sheet）
@@ -30,6 +32,8 @@ export type Route =
   | { kind: "home" }
   | { kind: "form" }
   | { kind: "form-success" }
+  | { kind: "ops" }
+  | { kind: "billing-quota"; accountKey: string }
   | { kind: "workspace"; slug: string; page: WorkspacePage }
   | { kind: "editor"; slug: string; workbookId: string; sheetId: string | null };
 
@@ -52,6 +56,19 @@ export function parseRoute(pathname: string): Route {
   if (pathname === "/form-success") return { kind: "form-success" };
 
   const segments = pathname.split("/").filter(Boolean);
+  if (segments[0] === "ops" && segments.length <= 2) {
+    return { kind: "ops" };
+  }
+  if (
+    segments[0] === "billing"
+    && segments[1]
+    && segments[2] === "quota"
+  ) {
+    return {
+      kind: "billing-quota",
+      accountKey: decodeURIComponent(segments[1]),
+    };
+  }
 
   if (segments[0] === "w" && segments[1]) {
     const slug = decodeURIComponent(segments[1]);
@@ -85,4 +102,12 @@ export function editorPath(slug: string, workbookId: string, sheetId?: string | 
 export function workspacePath(slug: string, page: WorkspacePage = "home"): string {
   const base = `/w/${encodeURIComponent(slug)}`;
   return page === "home" ? base : `${base}/${page}`;
+}
+
+export function billingQuotaPath(accountKey: string): string {
+  return `/billing/${encodeURIComponent(accountKey)}/quota`;
+}
+
+export function opsQuotaPath(): string {
+  return "/ops";
 }

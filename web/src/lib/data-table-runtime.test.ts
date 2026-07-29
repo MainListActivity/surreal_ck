@@ -189,6 +189,67 @@ describe("数据表运行时打开与记录入口", () => {
     if (promoted.status === "promoted") expect(promoted.record.id).toBe("ent_claim:new1");
   });
 
+  test("原生 quota error 保留草稿语义并按 participant 裁剪全表计数", async () => {
+    const h = runtimeHarness();
+    h.conn.createRecord = async () => {
+      throw Object.assign(new Error("message wording is not parsed"), {
+        kind: "Quota",
+        details: {
+          code: "quota_exceeded",
+          retryable: false,
+          details: {
+            violations: [
+              {
+                resource: "record",
+                table: "ent_claim",
+                rule_ids: ["secret-rule"],
+                limit: 10,
+                current: 10,
+                delta: 1,
+                projected: 11,
+                over_by: 1,
+              },
+              {
+                resource: "field",
+                table: "private_table",
+                rule_ids: ["other-secret"],
+                limit: 2,
+                current: 2,
+                delta: 1,
+                projected: 3,
+                over_by: 1,
+              },
+            ],
+          },
+        },
+      });
+    };
+    const runtime = await openDataTableRuntime({
+      conn: h.conn,
+      workbookId: "workbook:w1",
+      dataTableId: "sheet:s1",
+      query: emptyView,
+      quotaViewer: { kind: "participant" },
+    });
+    const result = await runtime.promoteDraft({ name: "保留我", amount: 2 });
+    expect(result.status).toBe("failed");
+    if (result.status !== "failed") return;
+    expect(result.error).toMatchObject({
+      code: "quota-exceeded",
+      retryable: false,
+      message: expect.stringContaining("草稿已保留"),
+      quotaFailure: {
+        kind: "exceeded",
+        preserve_draft: true,
+        transaction_committed: false,
+        violations: [{ resource: "record", table: "ent_claim" }],
+      },
+    });
+    expect(JSON.stringify(result.error)).not.toContain("private_table");
+    expect(JSON.stringify(result.error)).not.toContain("secret-rule");
+    expect(JSON.stringify(result.error)).not.toContain('"current":10');
+  });
+
   test("CSV 导入按显示值解析引用，未命中行不写入且可只重试修正后的原始行", async () => {
     const h = runtimeHarness([], [
       { key: "material_name", label: "材料名称", field_type: "text", required: true },

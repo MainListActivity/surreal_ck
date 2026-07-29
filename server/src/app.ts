@@ -55,6 +55,15 @@ import {
   type QuotaNotificationService,
 } from "./quota/quota-notifications";
 import { createQuotaNotificationRoutes } from "./routes/quota-notifications";
+import {
+  SurrealQuotaOpsConsole,
+  type QuotaOpsConsolePort,
+} from "./quota/quota-ops-console";
+import {
+  QuotaOpsPreflightService,
+  type QuotaOpsFreshReadPort,
+  type QuotaOpsPreflightPort,
+} from "./quota/quota-ops-preflight";
 
 export type AppOptions = {
   workspaceScope?: WorkspaceScopeModule;
@@ -78,6 +87,8 @@ export type AppOptions = {
   quotaOperatorIntents?: QuotaOperatorIntentPort;
   quotaIntentStatus?: QuotaIntentStatusReader;
   quotaNotifications?: QuotaNotificationService;
+  quotaOpsConsole?: QuotaOpsConsolePort;
+  quotaOpsPreflight?: QuotaOpsPreflightPort;
 };
 
 type AiStreamWebSocket = ReturnType<typeof createAiStreamRoutes>["websocket"];
@@ -161,6 +172,14 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
   const autoAiChatService = options.aiChatService ?? buildAutoAiChatService(runBus, embeddingProvider);
   const quotaReadService =
     options.quotaReadService ?? createDefaultQuotaReadService();
+  const quotaOpsConsole =
+    options.quotaOpsConsole ?? new SurrealQuotaOpsConsole();
+  const quotaOpsPreflight =
+    options.quotaOpsPreflight
+    ?? new QuotaOpsPreflightService(
+      quotaReadService as unknown as QuotaOpsFreshReadPort,
+      quotaOpsConsole,
+    );
 
   const base = new Hono<AppBindings>();
   base.use("*", requestLogger);
@@ -184,6 +203,8 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
       "/",
       createOpsQuotaRoutes({
         reads: quotaReadService,
+        console: quotaOpsConsole,
+        preflight: quotaOpsPreflight,
         intents: options.quotaOperatorIntents ?? defaultQuotaOperatorIntents,
         intentStatus:
           options.quotaIntentStatus ?? new SurrealQuotaIntentStatusReader(),

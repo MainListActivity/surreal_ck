@@ -206,6 +206,13 @@ export interface MaterializationWakePort {
   wake(): void;
 }
 
+export interface QuotaOperatorMaintenancePort {
+  rebuildLedger(input: Readonly<{
+    workspace: StringRecordId;
+    actorSubject: string;
+  }>): Promise<void>;
+}
+
 export function requiredCapabilityForIntent(
   kind: QuotaOperatorIntentKind,
 ): PlatformOperatorCapability {
@@ -311,6 +318,7 @@ export class QuotaLifecycleCoordinator {
   private readonly clock: Readonly<{ now(): DateTime }>;
   private readonly leaseDurationMs: number;
   private readonly retryMs: number;
+  private readonly operatorMaintenance?: QuotaOperatorMaintenancePort;
 
   constructor(
     private readonly store: QuotaLifecycleStore,
@@ -321,11 +329,13 @@ export class QuotaLifecycleCoordinator {
       clock?: Readonly<{ now(): DateTime }>;
       leaseDurationMs?: number;
       retryMs?: number;
+      operatorMaintenance?: QuotaOperatorMaintenancePort;
     }> = {},
   ) {
     this.clock = options.clock ?? { now: () => DateTime.now() };
     this.leaseDurationMs = options.leaseDurationMs ?? DEFAULT_LEASE_MS;
     this.retryMs = options.retryMs ?? DEFAULT_RETRY_MS;
+    this.operatorMaintenance = options.operatorMaintenance;
   }
 
   ingestProviderEvent(
@@ -433,18 +443,34 @@ export class QuotaLifecycleCoordinator {
     try {
       const mutation = await this.store.applyOperatorMutation(claim);
       let refreshResult: EntitlementRefreshResult = {};
-      for (const workspace of mutation.workspaces) {
-        refreshResult = await this.refresher.refreshWorkspace({
-          workspace,
-          at: claim.effectiveAt,
-          operationKind: operationKindForIntent(claim),
-          actorKind: "operator",
-          actorSubject: claim.actorSubject,
-          authorizedCapability: claim.authorizedCapability,
-          requestId: claim.requestId,
-          correlationId: claim.correlationId,
-          causationId: claim.intent.toString(),
-        });
+      if (claim.kind === "ledger_rebuild") {
+        if (!this.operatorMaintenance) {
+          throw new QuotaLifecycleError(
+            "operator_ledger_executor_unavailable",
+            "ledger rebuild executor is not configured",
+            true,
+          );
+        }
+        for (const workspace of mutation.workspaces) {
+          await this.operatorMaintenance.rebuildLedger({
+            workspace,
+            actorSubject: claim.actorSubject,
+          });
+        }
+      } else {
+        for (const workspace of mutation.workspaces) {
+          refreshResult = await this.refresher.refreshWorkspace({
+            workspace,
+            at: claim.effectiveAt,
+            operationKind: operationKindForIntent(claim),
+            actorKind: "operator",
+            actorSubject: claim.actorSubject,
+            authorizedCapability: claim.authorizedCapability,
+            requestId: claim.requestId,
+            correlationId: claim.correlationId,
+            causationId: claim.intent.toString(),
+          });
+        }
       }
       const settled = await this.store.settleOperatorIntent(
         claim,

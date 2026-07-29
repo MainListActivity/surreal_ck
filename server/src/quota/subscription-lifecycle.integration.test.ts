@@ -17,6 +17,7 @@ import {
 import { SurrealQuotaAuthorityReader } from "./quota-authority-reader";
 import { SurrealQuotaObservationStore } from "./quota-observation";
 import { SurrealQuotaNotificationService } from "./quota-notifications";
+import { SurrealQuotaOpsConsole } from "./quota-ops-console";
 
 const RUN_INTEGRATION =
   process.env.RUN_LOCAL_SURREALDB_QUOTA_LIFECYCLE_TESTS === "1";
@@ -178,6 +179,12 @@ beforeAll(async () => {
     CREATE platform_operator_capability:alice_subscription CONTENT {
       operator: platform_operator:alice,
       capability: "subscription.manage",
+      status: "active",
+      granted_by_subject: "system:test"
+    };
+    CREATE platform_operator_capability:alice_quota_read CONTENT {
+      operator: platform_operator:alice,
+      capability: "quota.read",
       status: "active",
       granted_by_subject: "system:test"
     };
@@ -399,6 +406,42 @@ describe("quota subscription lifecycle against local SurrealDB", () => {
         accountKey: "beta",
         actor: { subject: "operator:alice" },
       })).resolves.toBeNull();
+
+      const opsConsole = new SurrealQuotaOpsConsole({ db: client });
+      const opsContext = await opsConsole.getContext({
+        actor: { subject: "operator:alice" },
+      });
+      expect(opsContext).toMatchObject({
+        viewer: {
+          capabilities: ["quota.read", "subscription.manage"],
+        },
+      });
+      expect(opsContext?.plans.map((plan) => plan.plan_key)).toEqual(
+        expect.arrayContaining(["plus", "pro", "max"]),
+      );
+      const opsSearch = await opsConsole.search({
+        actor: { subject: "operator:alice" },
+        query: "acme",
+        limit: 25,
+      });
+      expect(opsSearch?.results.some((result) =>
+        result.kind === "workspace"
+        && result.workspace.slug === "acme"
+      )).toBeTrue();
+      expect(opsSearch?.results.some((result) =>
+        result.kind === "billing_account"
+        && result.billing_account.account_key === "acme"
+      )).toBeTrue();
+      const opsTimeline = await opsConsole.getTimeline({
+        actor: { subject: "operator:alice" },
+        slug: "acme",
+        limit: 50,
+      });
+      expect(opsTimeline?.workspace.slug).toBe("acme");
+      expect(opsTimeline?.items.some((item) =>
+        item.kind === "operator_intent"
+        && item.authorized_capability === "subscription.manage"
+      )).toBeTrue();
 
       const observationStore = new SurrealQuotaObservationStore({ db: client });
       const recipients = await observationStore.loadAlertRecipients(
