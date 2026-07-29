@@ -152,6 +152,74 @@ describe("SurrealNativeQuotaClient", () => {
     ]);
   });
 
+  test("reasserts the same generation and removes every legacy event atomically", async () => {
+    const queries: string[] = [];
+    const client = new SurrealNativeQuotaClient({
+      async query(sql) {
+        queries.push(sql);
+        if (sql.startsWith("RETURN")) return [true];
+        return [
+          [],
+          [policyResult("ws_demo", 2)],
+          [],
+          [],
+          [],
+        ];
+      },
+    });
+    const rules = [{
+      rule_id: "records",
+      resource: "record" as const,
+      selector: { kind: "regex" as const, pattern: "^ent_" },
+      limit: { kind: "finite" as const, value: 10 },
+    }];
+
+    await expect(client.readLegacyQuotaEvents(
+      "ws_demo",
+      ["sheet", "ent_case"],
+    )).resolves.toEqual(new Map([
+      ["ent_case", true],
+      ["sheet", true],
+    ]));
+    await expect(client.cutoverLegacyQuotaEvents({
+      database: "ws_demo",
+      rules,
+      expectedGeneration: 1,
+      legacyEventTables: ["sheet", "ent_case", "ent_case"],
+    })).resolves.toMatchObject({ operation: "alter_quota" });
+
+    expect(queries.at(-1)).toContain("BEGIN TRANSACTION;");
+    expect(queries.at(-1)).toContain(
+      "DEFINE QUOTA OVERWRITE ON DATABASE ws_demo EXPECT GENERATION 1",
+    );
+    expect(queries.at(-1)).toContain(
+      "REMOVE EVENT IF EXISTS resource_quota_guard ON TABLE `ent_case`;",
+    );
+    expect(queries.at(-1)).toContain(
+      "REMOVE EVENT IF EXISTS resource_quota_guard ON TABLE `sheet`;",
+    );
+    expect(queries.at(-1)).toMatch(/COMMIT TRANSACTION;$/u);
+  });
+
+  test("rejects unsafe legacy event identifiers before the cutover transaction", async () => {
+    const client = new SurrealNativeQuotaClient({
+      async query() {
+        throw new Error("must not query");
+      },
+    });
+    await expect(client.cutoverLegacyQuotaEvents({
+      database: "ws_demo",
+      rules: [{
+        rule_id: "records",
+        resource: "record",
+        selector: { kind: "regex", pattern: "^ent_" },
+        limit: { kind: "unlimited" },
+      }],
+      expectedGeneration: 1,
+      legacyEventTables: ["ent_ok; REMOVE DATABASE ws_demo"],
+    })).rejects.toThrow("Invalid legacy quota event table identifier");
+  });
+
   test("rejects empty policies and unsafe numeric guards before querying", async () => {
     const client = new SurrealNativeQuotaClient({
       async query() {

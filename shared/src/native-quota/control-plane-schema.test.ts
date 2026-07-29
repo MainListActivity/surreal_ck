@@ -29,6 +29,12 @@ const quotaTables = [
   "quota_alert_state",
   "quota_notification_outbox",
   "quota_notification_delivery",
+  "quota_migration_run",
+  "quota_migration_inventory",
+  "quota_migration_assignment",
+  "quota_migration_workspace_operation",
+  "quota_migration_cohort",
+  "quota_migration_signal",
 ] as const;
 
 const immutableTables = [
@@ -42,6 +48,9 @@ const immutableTables = [
   "quota_operator_intent",
   "quota_audit_event",
   "quota_notification_outbox",
+  "quota_migration_inventory",
+  "quota_migration_assignment",
+  "quota_migration_signal",
 ] as const;
 
 function tableDefinition(sql: string, table: string): string {
@@ -60,12 +69,14 @@ describe("_system native quota control-plane schema", () => {
       .map((entry) => Number(entry.slice(0, 3)))
       .sort((left, right) => left - right);
 
-    expect(versions).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    expect(versions).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+    ]);
   });
 
   test("every quota control-plane table is root-only", async () => {
     const sql = await Promise.all(
-      [4, 5, 6, 11].map(async (version) => {
+      [4, 5, 6, 11, 13].map(async (version) => {
         const entries = await readdir(migrationsDirectoryUrl);
         const name = entries.find((entry) => entry.startsWith(`${String(version).padStart(3, "0")}-`));
         if (!name) throw new Error(`missing migration ${version}`);
@@ -83,6 +94,7 @@ describe("_system native quota control-plane schema", () => {
       readFile(new URL("004-quota-commercial-authority.surql", migrationsDirectoryUrl), "utf8"),
       readFile(new URL("005-quota-entitlement-reconciliation.surql", migrationsDirectoryUrl), "utf8"),
       readFile(new URL("006-quota-operations-observability.surql", migrationsDirectoryUrl), "utf8"),
+      readFile(new URL("013-legacy-quota-migration-conductor.surql", migrationsDirectoryUrl), "utf8"),
     ]).then((parts) => parts.join("\n"));
 
     for (const table of immutableTables) {
@@ -130,6 +142,16 @@ describe("_system native quota control-plane schema", () => {
     );
     expect(lifecycleSql).toMatch(
       /quota_operator_intent_state_intent_unique[\s\S]*?COLUMNS intent UNIQUE/u,
+    );
+    const migrationSql = await readFile(
+      new URL("013-legacy-quota-migration-conductor.surql", migrationsDirectoryUrl),
+      "utf8",
+    );
+    expect(migrationSql).toMatch(
+      /quota_migration_assignment_workspace_unique[\s\S]*?COLUMNS run, workspace UNIQUE/u,
+    );
+    expect(migrationSql).toMatch(
+      /quota_migration_workspace_operation_unique[\s\S]*?COLUMNS run, workspace UNIQUE/u,
     );
   });
 

@@ -17,6 +17,16 @@ export interface NativeQuotaClient {
   rebuild(database: string): Promise<NativeQuotaOperationResult>;
 }
 
+export interface NativeQuotaMigrationClient extends NativeQuotaClient {
+  readLegacyQuotaEvents(
+    database: string,
+    tableNames: readonly string[],
+  ): Promise<ReadonlyMap<string, boolean>>;
+  cutoverLegacyQuotaEvents(
+    input: NativeQuotaLegacyCutoverInput,
+  ): Promise<NativeQuotaOperationResult>;
+}
+
 const DATABASE_IDENTIFIER = /^(?:_system|ws_[a-z0-9_]+)$/;
 const UNSIGNED_MAX = 18_446_744_073_709_551_615n;
 
@@ -24,6 +34,13 @@ export type NativeQuotaPolicyApplyInput = Readonly<{
   database: string;
   rules: readonly NativeQuotaRule[];
   expectedGeneration?: number | bigint;
+}>;
+
+export type NativeQuotaLegacyCutoverInput = Readonly<{
+  database: string;
+  rules: readonly NativeQuotaRule[];
+  expectedGeneration: number | bigint;
+  legacyEventTables: readonly string[];
 }>;
 
 function assertDatabaseIdentifier(database: string): void {
@@ -37,6 +54,26 @@ function firstStatementResult(result: unknown): unknown {
     throw new Error("Native quota INFO returned an unexpected statement result");
   }
   return result[0];
+}
+
+function operationResult(result: unknown): unknown {
+  const values = Array.isArray(result) ? result : [result];
+  const queue = [...values];
+  while (queue.length > 0) {
+    const value = queue.shift();
+    if (Array.isArray(value)) {
+      queue.push(...value);
+      continue;
+    }
+    if (
+      typeof value === "object"
+      && value !== null
+      && "operation" in value
+    ) {
+      return value;
+    }
+  }
+  throw new Error("Native quota transaction returned no operation result");
 }
 
 function unsignedLiteral(
@@ -100,6 +137,31 @@ function serializeRule(rule: NativeQuotaRule): string {
   ].join(" ");
 }
 
+function assertLegacyEventTable(table: string): void {
+  if (table !== "sheet" && !/^ent_[a-z0-9_]{1,58}$/u.test(table)) {
+    throw new Error(`Invalid legacy quota event table identifier: ${table}`);
+  }
+}
+
+export function buildNativeQuotaPolicySurql(
+  input: NativeQuotaPolicyApplyInput,
+): string {
+  assertDatabaseIdentifier(input.database);
+  if (input.rules.length === 0) {
+    throw new TypeError("native quota policy must contain at least one rule");
+  }
+  const mode = input.expectedGeneration === undefined
+    ? "DEFINE QUOTA"
+    : "DEFINE QUOTA OVERWRITE";
+  const guard = input.expectedGeneration === undefined
+    ? ""
+    : ` EXPECT GENERATION ${
+      unsignedLiteral(input.expectedGeneration, "generation")
+    }`;
+  const rules = input.rules.map(serializeRule).join(" ");
+  return `${mode} ON DATABASE ${input.database}${guard} ${rules}`;
+}
+
 /**
  * SurrealQL quota grammar 的唯一应用侧适配器。上层只依赖 NativeQuotaClient
  * 与 shared DTO，不拼接或解析 quota 语句。
@@ -118,19 +180,8 @@ export class SurrealNativeQuotaClient implements NativeQuotaClient {
   async applyPolicy(
     input: NativeQuotaPolicyApplyInput,
   ): Promise<NativeQuotaOperationResult> {
-    assertDatabaseIdentifier(input.database);
-    if (input.rules.length === 0) {
-      throw new TypeError("native quota policy must contain at least one rule");
-    }
-    const mode = input.expectedGeneration === undefined
-      ? "DEFINE QUOTA"
-      : `DEFINE QUOTA OVERWRITE`;
-    const guard = input.expectedGeneration === undefined
-      ? ""
-      : ` EXPECT GENERATION ${unsignedLiteral(input.expectedGeneration, "generation")}`;
-    const rules = input.rules.map(serializeRule).join(" ");
     const result = await this.db.query(
-      `${mode} ON DATABASE ${input.database}${guard} ${rules};`,
+      `${buildNativeQuotaPolicySurql(input)};`,
     );
     return NativeQuotaOperationResultSchema.parse(
       jsonify(firstStatementResult(result)),
@@ -144,6 +195,50 @@ export class SurrealNativeQuotaClient implements NativeQuotaClient {
     );
     return NativeQuotaOperationResultSchema.parse(
       jsonify(firstStatementResult(result)),
+    );
+  }
+
+  async readLegacyQuotaEvents(
+    database: string,
+    tableNames: readonly string[],
+  ): Promise<ReadonlyMap<string, boolean>> {
+    assertDatabaseIdentifier(database);
+    const unique = [...new Set(tableNames)].sort();
+    const result = new Map<string, boolean>();
+    for (const table of unique) {
+      assertLegacyEventTable(table);
+      const response = await this.db.query(
+        `RETURN (INFO FOR TABLE ${escapeIdentifier(table)}).events.resource_quota_guard != NONE;`,
+      );
+      const value = jsonify(firstStatementResult(response));
+      result.set(table, value === true);
+    }
+    return result;
+  }
+
+  async cutoverLegacyQuotaEvents(
+    input: NativeQuotaLegacyCutoverInput,
+  ): Promise<NativeQuotaOperationResult> {
+    const tables = [...new Set(input.legacyEventTables)].sort();
+    for (const table of tables) assertLegacyEventTable(table);
+    const policy = buildNativeQuotaPolicySurql({
+      database: input.database,
+      rules: input.rules,
+      expectedGeneration: input.expectedGeneration,
+    });
+    const removals = tables.map((table) =>
+      `REMOVE EVENT IF EXISTS resource_quota_guard ON TABLE ${
+        escapeIdentifier(table)
+      };`
+    ).join("\n");
+    const result = await this.db.query(
+      `BEGIN TRANSACTION;
+${policy};
+${removals}
+COMMIT TRANSACTION;`,
+    );
+    return NativeQuotaOperationResultSchema.parse(
+      operationResult(jsonify(result)),
     );
   }
 }

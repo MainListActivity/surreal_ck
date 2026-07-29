@@ -177,7 +177,7 @@ describe("_system native quota schema against local SurrealDB", () => {
     "upgrades existing data, enforces authority invariants, denies database users, and reruns safely",
     async () => {
       const migrations = await readMigrations();
-      expect(migrations).toHaveLength(12);
+      expect(migrations).toHaveLength(13);
 
       for (const sql of migrations.slice(0, 3)) {
         expectSuccessful(await runSurrealCli(sql));

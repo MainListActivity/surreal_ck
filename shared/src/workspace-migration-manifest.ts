@@ -8,6 +8,7 @@ import { NATIVE_QUOTA_EXPECTED_CONTRACT } from "./native-quota/compatibility";
 export type WorkspaceQuotaMigrationState =
   | "not_started"
   | "native_applied"
+  | "native_policy_active"
   | "native_verified"
   | "cleanup_done";
 

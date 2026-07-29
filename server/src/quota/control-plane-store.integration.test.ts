@@ -5,6 +5,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DateTime, StringRecordId, Surreal } from "surrealdb";
 import { SurrealQuotaControlPlaneStore } from "./control-plane-store";
+import { SurrealQuotaMigrationStore } from "../quota-migration/store";
+import {
+  assignMigrationCohorts,
+  migrationChecksum,
+  physicalScanChecksum,
+} from "../quota-migration/model";
+import type {
+  QuotaMigrationAssignmentManifest,
+  QuotaMigrationInventory,
+} from "@surreal-ck/shared/native-quota";
 
 const RUN_INTEGRATION =
   process.env.RUN_LOCAL_SURREALDB_CONTROL_PLANE_TESTS === "1";
@@ -309,5 +319,166 @@ describe("SurrealQuotaControlPlaneStore against local SurrealDB", () => {
       expect(JSON.stringify(cursor)).toContain('"attempt_count":0');
     },
     30_000,
+  );
+
+  localTest(
+    "persists immutable migration inventory/assignments and pauses on blocking signals",
+    async () => {
+      if (!db) throw new Error("integration database not initialized");
+      await db.query(`
+        CREATE billing_account:acme CONTENT {
+          account_key: "acme",
+          name: "Acme",
+          kind: "team",
+          status: "active"
+        };
+        CREATE platform_operator:migration CONTENT {
+          subject: "operator:migration",
+          status: "active"
+        };
+        CREATE platform_operator_capability:migration_subscription CONTENT {
+          operator: platform_operator:migration,
+          capability: "subscription.manage",
+          status: "active",
+          granted_by_subject: "root"
+        };
+      `);
+      const physicalTables = [{
+        table: "sheet",
+        field_count: "1",
+        record_count: "0",
+      }];
+      const workspaceUnsigned = {
+        workspace_id: "workspace:acme",
+        workspace_slug: "acme",
+        database: "ws_acme",
+        workspace_status: "active" as const,
+        legacy: null,
+        physical: {
+          tables: physicalTables,
+          totals: {
+            table_count: "1",
+            field_count: "1",
+            record_count: "0",
+          },
+          scan_checksum: physicalScanChecksum(physicalTables),
+        },
+        target: null,
+        anomalies: [],
+      };
+      const workspaceInventory = {
+        ...workspaceUnsigned,
+        checksum: migrationChecksum(workspaceUnsigned),
+      };
+      const inventoryUnsigned = {
+        format_version: 1 as const,
+        run_id: "integration",
+        namespace,
+        generated_at: "2026-07-29T00:00:00.000Z",
+        workspaces: [workspaceInventory],
+      };
+      const inventory: QuotaMigrationInventory = {
+        ...inventoryUnsigned,
+        checksum: migrationChecksum(inventoryUnsigned),
+      };
+      const store = new SurrealQuotaMigrationStore(queryClient());
+      const run = await store.persistInventory(inventory);
+      expect(run.state).toBe("inventory_ready");
+      expect(await store.inventoryBlockers(run.id)).toEqual([]);
+
+      const assignment = {
+        workspace_id: "workspace:acme",
+        workspace_slug: "acme",
+        database: "ws_acme",
+        billing_account_id: "billing_account:acme",
+        plan_revision_id: "quota_plan_revision:plus_v1",
+        source: "manual" as const,
+        effective_at: "2026-07-29T00:00:00.000Z",
+        rollout_class: "internal" as const,
+        evidence_reference: "integration-evidence",
+      };
+      const manifestUnsigned = {
+        format_version: 1 as const,
+        manifest_id: "integration-approved",
+        inventory_checksum: inventory.checksum,
+        approved_by_subject: "operator:migration",
+        approved_at: "2026-07-29T00:00:00.000Z",
+        assignments: [assignment],
+      };
+      const manifest: QuotaMigrationAssignmentManifest = {
+        ...manifestUnsigned,
+        checksum: migrationChecksum(manifestUnsigned),
+      };
+      const context = await store.manifestContext(manifest);
+      expect(context.approverAuthorized).toBe(true);
+      expect(context.billingAccounts.has("billing_account:acme")).toBe(true);
+      expect(context.plans.has("quota_plan_revision:plus_v1")).toBe(true);
+
+      await store.persistAssignments(
+        run,
+        manifest,
+        assignMigrationCohorts(manifest.assignments),
+      );
+      await store.applyAssignmentAuthority(
+        run,
+        manifest,
+        "workspace:acme",
+      );
+      const snapshot = JSON.stringify(await db.query(`
+        SELECT count() AS assignments
+          FROM quota_migration_assignment GROUP ALL;
+        SELECT count() AS cohorts
+          FROM quota_migration_cohort GROUP ALL;
+        SELECT status, workspace, plan_revision
+          FROM quota_subscription_item
+          WHERE active_workspace = workspace:acme;
+      `));
+      expect(snapshot).toContain('"assignments":1');
+      expect(snapshot).toContain('"cohorts":5');
+      expect(snapshot).toContain('"status":"active"');
+      expect(snapshot).toContain('"plan_revision":"quota_plan_revision:plus_v1"');
+
+      await store.recordSignal(run, "synthetic_internal", {
+        kind: "counter_mismatch",
+        workspace_id: "workspace:acme",
+        details: { source: "integration" },
+        observed_at: "2026-07-29T00:01:00.000Z",
+      });
+      expect((await store.findRun("integration"))?.state).toBe("paused");
+
+      const cleanupAt = new DateTime("2026-09-01T00:00:00.000Z");
+      await db.query(
+        `
+          UPDATE $run SET
+            state = "observing",
+            all_native_verified_at = d"2026-07-29T00:00:00.000Z",
+            full_audit_clean_at = d"2026-07-30T00:00:00.000Z",
+            product_release_stable_since = d"2026-07-29T00:00:00.000Z",
+            pre_native_compatibility_blocked_at =
+              d"2026-09-02T00:00:00.000Z",
+            cleanup_not_before = d"2026-08-28T00:00:00.000Z";
+          UPDATE quota_migration_workspace_operation
+            SET state = "native_verified"
+            WHERE run = $run;
+        `,
+        { run: run.id },
+      );
+      await expect(
+        store.markCleanupEligible(run, cleanupAt),
+      ).rejects.toThrow();
+      await db.query(
+        `
+          UPDATE $run SET
+            pre_native_compatibility_blocked_at =
+              d"2026-08-31T00:00:00.000Z";
+        `,
+        { run: run.id },
+      );
+      await store.markCleanupEligible(run, cleanupAt);
+      expect((await store.findRun("integration"))?.state).toBe(
+        "cleanup_eligible",
+      );
+    },
+    60_000,
   );
 });

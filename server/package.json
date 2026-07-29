@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "bun run --idleTimeout=5 --env-file=../.env --watch src/index.ts",
     "start": "bun run --env-file=../.env src/index.ts",
+    "quota:migration": "bun run --env-file=../.env src/quota-migration/cli.ts",
     "build:types": "tsc -p tsconfig.build.json",
     "test": "bun test ./src/*.test.ts ./src/**/*.test.ts ./ai/**/*.test.ts --preload ./test/setup-env.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json"

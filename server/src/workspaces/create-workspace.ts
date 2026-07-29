@@ -161,6 +161,7 @@ function provisioningWorkspaceFromRow(
       : "provisioning";
   const quotaMigrationState =
     row.quota_migration_state === "native_applied"
+    || row.quota_migration_state === "native_policy_active"
     || row.quota_migration_state === "native_verified"
     || row.quota_migration_state === "cleanup_done"
       ? row.quota_migration_state

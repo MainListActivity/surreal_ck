@@ -183,13 +183,13 @@ describe("workspace migration runner", () => {
     ).toBe(false);
   });
 
-  test("legacy cleanup is blocked until native_verified and does not advance version", async () => {
+  test("legacy cleanup stays blocked at native_policy_active and does not advance version", async () => {
     const workspaces: WorkspaceFixture[] = [
       {
         id: "workspace:legacy",
         dbName: "ws_legacy",
         schemaVersion: 20,
-        quotaMigrationState: "not_started",
+        quotaMigrationState: "native_policy_active",
       },
     ];
     const db = new FakeMigrationClient(workspaces);

@@ -66,6 +66,7 @@ function readQuotaMigrationState(value: unknown): WorkspaceQuotaMigrationState {
   if (
     value === "not_started"
     || value === "native_applied"
+    || value === "native_policy_active"
     || value === "native_verified"
     || value === "cleanup_done"
   ) {
