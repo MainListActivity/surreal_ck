@@ -1,0 +1,394 @@
+name: Native quota downstream release acceptance
+
+run-name: "Accept native quota ${{ inputs.candidate_tag }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_tag:
+        description: Signed candidate GitHub release tag in MainListActivity/surrealdb
+        required: true
+        type: string
+      expected_git_sha:
+        description: Exact 40-character candidate source SHA
+        required: true
+        type: string
+      expected_digest:
+        description: Exact sha256 OCI digest
+        required: true
+        type: string
+      signature_policy:
+        description: Downstream verification policy (keyless signing still protects promotion)
+        required: true
+        default: waived_no_certificate
+        type: choice
+        options:
+          - waived_no_certificate
+          - verify_keyless
+      waiver_reason:
+        description: Required audit reason when signature verification is waived
+        required: false
+        default: Project owner has no certificate; downstream signature verification explicitly waived.
+        type: string
+      dispatch_production:
+        description: Dispatch production only after canary and staging receipts exist
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: native-quota-acceptance-${{ inputs.expected_digest }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+permissions: {}
+
+jobs:
+  accept:
+    name: Cross-repository contract and deployment acceptance
+    runs-on: ubuntu-24.04
+    environment: native-quota-production-acceptance
+    permissions:
+      contents: read
+      id-token: write
+      packages: read
+    steps:
+      - name: Harden the runner
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout surreal_ck
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install exact pnpm
+        run: |
+          set -euo pipefail
+          corepack enable
+          corepack prepare pnpm@10.32.1 --activate
+          test "$(pnpm --version)" = "10.32.1"
+          pnpm install --frozen-lockfile
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.0.6
+
+      - name: Download exact fork candidate evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+        run: |
+          set -euo pipefail
+          mkdir candidate
+          gh release download "$CANDIDATE_TAG" \
+            --repo MainListActivity/surrealdb \
+            --dir candidate
+          test -f candidate/native-quota-release-candidate.json
+          test -f candidate/native-quota-release-candidate.sigstore.json
+          test -f candidate/native-quota-v1.json
+
+      - name: Verify manifest, hashes, SDK, CLI, SBOM and provenance
+        env:
+          CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+          EXPECTED_SHA: ${{ inputs.expected_git_sha }}
+          EXPECTED_DIGEST: ${{ inputs.expected_digest }}
+          SIGNATURE_POLICY: ${{ inputs.signature_policy }}
+        run: |
+          set -euo pipefail
+          node scripts/native-quota/verify-release-candidate.mjs \
+            --candidate candidate/native-quota-release-candidate.json \
+            --compatibility candidate/native-quota-v1.json \
+            --assets-dir candidate \
+            --expected-sha "$EXPECTED_SHA" \
+            --expected-digest "$EXPECTED_DIGEST" \
+            --signature-policy "$SIGNATURE_POLICY" \
+            --candidate-tag "$CANDIDATE_TAG" \
+            --output candidate/verified-identity.json
+
+      - name: Verify candidate and image keyless signatures
+        if: inputs.signature_policy == 'verify_keyless'
+        env:
+          EXPECTED_DIGEST: ${{ inputs.expected_digest }}
+        run: |
+          set -euo pipefail
+          issuer="https://token.actions.githubusercontent.com"
+          identity="^https://github\\.com/MainListActivity/surrealdb/\\.github/workflows/native-quota-candidate\\.yml@refs/heads/(main|releases/sck-[0-9]+\\.[0-9]+)$"
+          cosign verify-blob \
+            --bundle candidate/native-quota-release-candidate.sigstore.json \
+            --certificate-identity-regexp "$identity" \
+            --certificate-oidc-issuer "$issuer" \
+            candidate/native-quota-release-candidate.json
+          cosign verify \
+            --certificate-identity-regexp "$identity" \
+            --certificate-oidc-issuer "$issuer" \
+            "ghcr.io/mainlistactivity/surrealdb-native-quota@$EXPECTED_DIGEST" \
+            > candidate/downstream-image-signature-verification.json
+
+      - name: Record explicit no-certificate waiver
+        if: inputs.signature_policy == 'waived_no_certificate'
+        env:
+          CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+          EXPECTED_SHA: ${{ inputs.expected_git_sha }}
+          EXPECTED_DIGEST: ${{ inputs.expected_digest }}
+          WAIVER_REASON: ${{ inputs.waiver_reason }}
+        run: |
+          set -euo pipefail
+          test -n "$WAIVER_REASON"
+          jq -n \
+            --arg candidate_tag "$CANDIDATE_TAG" \
+            --arg git_sha "$EXPECTED_SHA" \
+            --arg digest "$EXPECTED_DIGEST" \
+            --arg reason "$WAIVER_REASON" \
+            --arg approved_by "$GITHUB_ACTOR" \
+            --arg approved_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg run_url "https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            '{
+              format_version: 1,
+              policy: "waived_no_certificate",
+              scope: "surreal_ck_downstream_candidate_and_image_signature_verification",
+              candidate: {
+                tag: $candidate_tag,
+                git_sha: $git_sha,
+                digest: $digest
+              },
+              reason: $reason,
+              approved_by: $approved_by,
+              approved_at: $approved_at,
+              run_url: $run_url,
+              retained_gates: [
+                "digest",
+                "manifest",
+                "artifact_hashes",
+                "SBOM",
+                "provenance",
+                "vulnerability",
+                "multi_arch",
+                "runtime_capability"
+              ],
+              production_acceptance_signature: "keyless_github_oidc_required"
+            }' > candidate/signature-waiver.json
+
+      - name: Verify multi-architecture digest and smoke exact image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ inputs.expected_git_sha }}
+          EXPECTED_DIGEST: ${{ inputs.expected_digest }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/mainlistactivity/surrealdb-native-quota@$EXPECTED_DIGEST"
+          echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker buildx imagetools inspect "$image" --raw > candidate/oci-index.json
+          jq -e '
+            [.manifests[].platform | "\(.os)/\(.architecture)"] | sort
+            == ["linux/amd64", "linux/arm64"]
+          ' candidate/oci-index.json >/dev/null
+
+          container="native-quota-acceptance-${GITHUB_RUN_ID}"
+          volume="${container}-data"
+          cleanup() {
+            docker rm -f "$container" >/dev/null 2>&1 || true
+            docker volume rm "$volume" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker volume create "$volume" >/dev/null
+          docker run -d --name "$container" \
+            -p 18080:8000 \
+            -v "$volume:/data" \
+            "$image" \
+            start --no-banner --log none --user root --pass root rocksdb:/data
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent \
+              'http://127.0.0.1:18080/ready?require=native-quota-v1' >/dev/null; then
+              break
+            fi
+            test "$attempt" -lt 60
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:18080/capabilities \
+            > candidate/live-capabilities.json
+          jq -e \
+            --arg sha "$EXPECTED_SHA" \
+            '.build.git_sha == $sha
+             and .fork.id == "mainlistactivity/surrealdb-native-quota"
+             and .fork.release == "3.3.0-native-quota.1"
+             and .quota.name == "native-quota-v1"
+             and .storage.backend == "rocksdb"
+             and .storage.ready == true
+             and .backend.production == true
+             and .backend.hard_quota_certified == true' \
+            candidate/live-capabilities.json >/dev/null
+          cleanup
+          trap - EXIT
+
+      - name: Extract exact candidate CLI
+        id: cli
+        run: |
+          set -euo pipefail
+          archive="$(jq -er \
+            '.cli.artifacts[] | select(.architecture == "amd64") | .name' \
+            candidate/native-quota-release-candidate.json)"
+          mkdir candidate-cli
+          tar -xzf "candidate/$archive" -C candidate-cli
+          binary="$(find candidate-cli -type f -name surreal -print -quit)"
+          test -n "$binary"
+          chmod +x "$binary"
+          echo "binary=$(realpath "$binary")" >> "$GITHUB_OUTPUT"
+
+      - name: Start vanilla negative control
+        id: vanilla
+        run: |
+          set -euo pipefail
+          container="native-quota-vanilla-${GITHUB_RUN_ID}"
+          docker run -d --name "$container" \
+            -p 18081:8000 \
+            surrealdb/surrealdb:v3.2.3 \
+            start --no-banner --log none --user root --pass root memory
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:18081/health >/dev/null; then
+              break
+            fi
+            test "$attempt" -lt 60
+            sleep 1
+          done
+          echo "container=$container" >> "$GITHUB_OUTPUT"
+
+      - name: Run complete application gates
+        env:
+          NATIVE_QUOTA_E2E_BINARY: ${{ steps.cli.outputs.binary }}
+          NATIVE_QUOTA_E2E_EXPECTED_GIT_SHA: ${{ inputs.expected_git_sha }}
+          NATIVE_QUOTA_E2E_VANILLA_URL: ws://127.0.0.1:18081/rpc
+          SURREAL_BINARY: ${{ steps.cli.outputs.binary }}
+        run: |
+          set -euo pipefail
+          pnpm typecheck
+          pnpm test
+          pnpm test:quota:cross-repo
+          RUN_LOCAL_SURREALDB_CONTROL_PLANE_TESTS=1 \
+            RUN_LOCAL_SURREALDB_QUOTA_LIFECYCLE_TESTS=1 \
+            pnpm --filter @surreal-ck/server exec bun test \
+              ./src/quota/control-plane-store.integration.test.ts \
+              ./src/quota/subscription-lifecycle.integration.test.ts \
+              --preload ./test/setup-env.ts
+
+      - name: Stop vanilla negative control
+        if: always()
+        env:
+          VANILLA_CONTAINER: ${{ steps.vanilla.outputs.container }}
+        run: |
+          if [ -n "$VANILLA_CONTAINER" ]; then
+            docker rm -f "$VANILLA_CONTAINER" >/dev/null 2>&1 || true
+          fi
+
+      - name: Validate deployable image and compose cutover
+        env:
+          SURREALDB_NATIVE_QUOTA_IMAGE: ghcr.io/mainlistactivity/surrealdb-native-quota@${{ inputs.expected_digest }}
+        run: |
+          set -euo pipefail
+          docker compose config > candidate/docker-compose.resolved.yml
+          grep -F "ghcr.io/mainlistactivity/surrealdb-native-quota@sha256:" \
+            candidate/docker-compose.resolved.yml >/dev/null
+          if grep -F "surrealdb/surrealdb:v3.2.3" \
+            candidate/docker-compose.resolved.yml >/dev/null; then
+            echo "::error::official SurrealDB image leaked into deployable compose"
+            exit 1
+          fi
+          docker build --tag surreal-ck:native-quota-acceptance .
+
+      - name: Create and keyless-sign downstream acceptance statement
+        env:
+          SIGNATURE_POLICY: ${{ inputs.signature_policy }}
+        run: |
+          set -euo pipefail
+          jq \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg run_url "https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --arg commit "$GITHUB_SHA" \
+            --arg signature_policy "$SIGNATURE_POLICY" \
+            '{
+              format_version: 1,
+              decision: "accepted",
+              repository: $repository,
+              app_git_sha: $commit,
+              run_url: $run_url,
+              candidate: {
+                release: .release,
+                git_sha: .git_sha,
+                digest: .digest,
+                image_reference: .image_reference
+              },
+              gates: {
+                contract: "passed",
+                e2e: "passed",
+                deployment: "passed"
+              },
+              evidence: {
+                sdk: .sdk,
+                backend: .backend,
+                signature_policy: $signature_policy,
+                cryptographic_evidence: .cryptographic_evidence,
+                scenarios: [
+                  "legacy_bypass",
+                  "exact_regex_table_field_record",
+                  "batch_atomicity",
+                  "concurrent_last_slot",
+                  "owner_participant_iam",
+                  "upgrade_readback",
+                  "downgrade_non_worsening",
+                  "drift_repair",
+                  "rebuild",
+                  "engine_restart",
+                  "snapshot_restore",
+                  "vanilla_refusal",
+                  "legacy_cleanup"
+                ]
+              }
+            }' candidate/verified-identity.json \
+            > surreal-ck-native-quota-acceptance.json
+          cosign sign-blob --yes \
+            --bundle surreal-ck-native-quota-acceptance.sigstore.json \
+            surreal-ck-native-quota-acceptance.json
+
+      - name: Upload acceptance and waiver evidence
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: native-quota-acceptance-${{ inputs.expected_git_sha }}
+          path: |
+            surreal-ck-native-quota-acceptance.json
+            surreal-ck-native-quota-acceptance.sigstore.json
+            candidate/verified-identity.json
+            candidate/signature-waiver.json
+            candidate/live-capabilities.json
+            candidate/oci-index.json
+            candidate/docker-compose.resolved.yml
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Dispatch production promotion
+        if: inputs.dispatch_production
+        env:
+          GH_TOKEN: ${{ secrets.NATIVE_QUOTA_PROMOTION_TOKEN }}
+          CANDIDATE_TAG: ${{ inputs.candidate_tag }}
+          EXPECTED_SHA: ${{ inputs.expected_git_sha }}
+          EXPECTED_DIGEST: ${{ inputs.expected_digest }}
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN" || {
+            echo "::error::NATIVE_QUOTA_PROMOTION_TOKEN is required"
+            exit 1
+          }
+          statement="$(base64 -w0 surreal-ck-native-quota-acceptance.json)"
+          bundle="$(base64 -w0 surreal-ck-native-quota-acceptance.sigstore.json)"
+          gh api --method POST repos/MainListActivity/surrealdb/dispatches \
+            -f event_type=native-quota-stable-accepted \
+            -f "client_payload[candidate_tag]=$CANDIDATE_TAG" \
+            -f "client_payload[release]=3.3.0-native-quota.1" \
+            -f "client_payload[git_sha]=$EXPECTED_SHA" \
+            -f "client_payload[digest]=$EXPECTED_DIGEST" \
+            -f "client_payload[acceptance_statement_b64]=$statement" \
+            -f "client_payload[acceptance_bundle_b64]=$bundle"

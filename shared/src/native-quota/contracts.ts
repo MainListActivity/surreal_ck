@@ -10,6 +10,9 @@ const UIntSchema = z.union([
   SafeIntegerSchema.nonnegative(),
   z.bigint().nonnegative(),
 ]);
+const NullableWireUIntSchema = UIntSchema.nullish().transform(
+  (value) => value ?? null,
+);
 
 export const NativeQuotaResourceSchema = z.enum(["table", "field", "record"]);
 export type NativeQuotaResource = z.infer<typeof NativeQuotaResourceSchema>;
@@ -118,14 +121,14 @@ const NativeQuotaEffectiveUsageSchema = z.object({
   limit: NativeQuotaLimitSchema,
   limit_origin: z.enum(["exact", "regex_min", "explicit_unlimited", "unmatched"]),
   matched_rule_ids: z.array(z.string().min(1)),
-  remaining: UIntSchema.nullable(),
+  remaining: NullableWireUIntSchema,
   used: UIntSchema,
 });
 
 const NativeQuotaTableBucketUsageSchema = z.object({
   exceeded: z.boolean(),
   limit: NativeQuotaLimitSchema,
-  remaining: UIntSchema.nullable(),
+  remaining: NullableWireUIntSchema,
   rule_id: z.string().min(1),
   used: UIntSchema,
 });
@@ -141,9 +144,10 @@ export const NativeQuotaInfoSchema = z.object({
       generation: UIntSchema,
       operation_id: z.string().min(1),
     })
-    .nullable(),
+    .nullish()
+    .transform((value) => value ?? null),
   ledger: z.object({
-    active_epoch: UIntSchema.nullable(),
+    active_epoch: NullableWireUIntSchema,
     state: z.enum(["uninitialized", "rebuilding", "ready", "corrupt"]),
     usage_trusted: z.boolean(),
   }),
@@ -153,7 +157,8 @@ export const NativeQuotaInfoSchema = z.object({
       generation: UIntSchema,
       rules: z.array(NativeQuotaRuleSchema),
     })
-    .nullable(),
+    .nullish()
+    .transform((value) => value ?? null),
   usage: z
     .object({
       table_buckets: z.array(NativeQuotaTableBucketUsageSchema),
@@ -170,13 +175,14 @@ export const NativeQuotaInfoSchema = z.object({
         record: z.array(z.string().min(1)),
       }),
     })
-    .nullable(),
+    .nullish()
+    .transform((value) => value ?? null),
 });
 export type NativeQuotaInfo = z.infer<typeof NativeQuotaInfoSchema>;
 
 export const NativeQuotaOperationStateSchema = z.object({
-  active_epoch: UIntSchema.nullable(),
-  generation: UIntSchema.nullable(),
+  active_epoch: NullableWireUIntSchema,
+  generation: NullableWireUIntSchema,
   ledger_state: z.enum(["uninitialized", "rebuilding", "ready", "corrupt"]),
 });
 

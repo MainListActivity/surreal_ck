@@ -1,15 +1,36 @@
 services:
   surrealdb:
-    # 数据表运行时依赖 3.2.3 已验证的 DDL + DML 混合事务提交/回滚语义。
-    image: surrealdb/surrealdb:v3.2.3
-    command: start --user root --pass root memory
+    # 只接受 native-quota candidate/production receipt 中的自有仓库 digest。
+    # tag、官方 surrealdb/surrealdb 镜像和空值都会在 compose 解析/应用启动门失败。
+    image: "${SURREALDB_NATIVE_QUOTA_IMAGE:?set a digest-pinned ghcr.io/mainlistactivity/surrealdb-native-quota@sha256 reference}"
+    command:
+      - start
+      - --user
+      - root
+      - --pass
+      - root
+      - rocksdb:/data
     ports:
       - "8000:8000"
+    volumes:
+      - surrealdb-native-quota-data:/data
+    healthcheck:
+      test:
+        - CMD
+        - /surreal
+        - is-ready
+        - --endpoint
+        - http://127.0.0.1:8000
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 5s
 
   server:
     build: .
     depends_on:
-      - surrealdb
+      surrealdb:
+        condition: service_healthy
     env_file:
       - .env.example
     environment:
@@ -18,3 +39,6 @@ services:
       SURREAL_ROOT_PASS: root
     ports:
       - "8080:8080"
+
+volumes:
+  surrealdb-native-quota-data:

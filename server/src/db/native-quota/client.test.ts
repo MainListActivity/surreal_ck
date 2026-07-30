@@ -30,7 +30,7 @@ function policyResult(database: string, generation: number) {
     changed: true,
     before: {
       active_epoch: 1,
-      generation: generation === 1 ? null : generation - 1,
+      ...(generation === 1 ? {} : { generation: generation - 1 }),
       ledger_state: "ready",
     },
     after: {
@@ -66,10 +66,14 @@ function rebuildResult(database: string) {
 describe("SurrealNativeQuotaClient", () => {
   test("keeps quota grammar inside the adapter and returns a typed INFO DTO", async () => {
     const queries: string[] = [];
+    const wireInfoWithoutNone: Partial<ReturnType<typeof readyInfo>> =
+      structuredClone(readyInfo("_system"));
+    delete wireInfoWithoutNone.latest_change;
+    delete wireInfoWithoutNone.policy;
     const client = new SurrealNativeQuotaClient({
       async query(sql) {
         queries.push(sql);
-        return [readyInfo("_system")];
+        return [wireInfoWithoutNone];
       },
     });
 
@@ -121,7 +125,10 @@ describe("SurrealNativeQuotaClient", () => {
     await expect(client.applyPolicy({
       database: "ws_demo",
       rules,
-    })).resolves.toMatchObject({ operation: "define_quota" });
+    })).resolves.toMatchObject({
+      operation: "define_quota",
+      before: { generation: null },
+    });
     await expect(client.applyPolicy({
       database: "ws_demo",
       rules,
