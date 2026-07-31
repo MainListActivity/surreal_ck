@@ -169,7 +169,7 @@ describe("server startup", () => {
     ]);
   });
 
-  test("监听后启动原生配额 runtime，并在 root 连接关闭前停止", async () => {
+  test("监听前启动原生配额 runtime，并在 root 连接关闭前停止", async () => {
     const calls: string[] = [];
     const running = await startServer({
       host: "127.0.0.1",
@@ -183,7 +183,10 @@ describe("server startup", () => {
       seedQuotaPlans: async () => {},
       migrateAllWorkspaces: async () => ({ total: 0, migrated: [] }),
       createApp: () => ({ fetch: () => new Response("ok") }),
-      serve: () => ({ stop: () => calls.push("server:stop") }),
+      serve: () => {
+        calls.push("server:start");
+        return { stop: () => calls.push("server:stop") };
+      },
       startReconcileLoop: () => ({ stop: () => {} }),
       startQuotaRuntime: () => {
         calls.push("quota:start");
@@ -200,10 +203,46 @@ describe("server startup", () => {
 
     expect(calls).toEqual([
       "quota:start",
+      "server:start",
       "server:stop",
       "quota:stop",
       "root:close",
     ]);
+  });
+
+  test("原生配额 runtime 启动失败时关闭 root 且不监听", async () => {
+    const calls: string[] = [];
+    const failure = new Error("quota-runtime-failed");
+
+    await expect(startServer({
+      host: "127.0.0.1",
+      port: 18080,
+      envName: "test",
+      probeNativeQuotaHttp: async () => {},
+      initRootConnection: async () => {},
+      verifyNativeQuotaRootHandshake: async () => {},
+      ensureSystemSchema: async () => {},
+      seedSystemAdmins: async () => {},
+      seedQuotaPlans: async () => {},
+      migrateAllWorkspaces: async () => ({ total: 0, migrated: [] }),
+      createApp: () => {
+        calls.push("create-app");
+        return { fetch: () => new Response("ok") };
+      },
+      serve: () => {
+        calls.push("server:start");
+        return { stop: () => {} };
+      },
+      startQuotaRuntime: () => {
+        calls.push("quota:start");
+        throw failure;
+      },
+      closeRootConnection: async () => {
+        calls.push("root:close");
+      },
+    })).rejects.toBe(failure);
+
+    expect(calls).toEqual(["quota:start", "root:close"]);
   });
 
   test("still listens when starting the reconcile heartbeat throws", async () => {

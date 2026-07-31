@@ -6,9 +6,9 @@ services:
     command:
       - start
       - --user
-      - root
+      - "${SURREAL_ROOT_USER:?set SURREAL_ROOT_USER}"
       - --pass
-      - root
+      - "${SURREAL_ROOT_PASS:?set SURREAL_ROOT_PASS}"
       - rocksdb:/data
     ports:
       - "8000:8000"
@@ -35,8 +35,8 @@ services:
       - .env.example
     environment:
       SURREAL_URL: ws://surrealdb:8000/rpc
-      SURREAL_ROOT_USER: root
-      SURREAL_ROOT_PASS: root
+      SURREAL_ROOT_USER: "${SURREAL_ROOT_USER:?set SURREAL_ROOT_USER}"
+      SURREAL_ROOT_PASS: "${SURREAL_ROOT_PASS:?set SURREAL_ROOT_PASS}"
     ports:
       - "8080:8080"
 

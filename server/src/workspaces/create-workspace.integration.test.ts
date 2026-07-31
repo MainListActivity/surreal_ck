@@ -1,16 +1,11 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import {
-  type NativeQuotaInfo,
-  type NativeQuotaOperationResult,
-  type NativeQuotaRule,
-} from "@surreal-ck/shared/native-quota";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Surreal } from "surrealdb";
 import { seedQuotaPlans } from "../db/quota-plan-seed";
-import type { NativeQuotaClient } from "../db/native-quota/client";
+import { SurrealNativeQuotaClient } from "../db/native-quota/client";
 import {
   createWorkspaceCreator,
   type CreateWorkspaceSessionFactory,
@@ -95,7 +90,7 @@ beforeAll(async () => {
     "root",
     "--pass",
     "root",
-    "memory",
+    `rocksdb:${join(workingDirectory, "data")}`,
   ], {
     cwd: workingDirectory,
     stdout: "ignore",
@@ -134,72 +129,13 @@ afterAll(async () => {
   }
 });
 
-function nativeQuotaStub(): NativeQuotaClient {
-  const policies = new Map<string, readonly NativeQuotaRule[]>();
-  const state = (
-    generation: number | null,
-    ledgerState: "uninitialized" | "ready",
-  ) => ({
-    active_epoch: generation,
-    generation,
-    ledger_state: ledgerState,
-  });
-  return {
-    async info(database): Promise<NativeQuotaInfo> {
-      const rules = policies.get(database);
-      return {
-        database,
-        format_version: 1,
-        latest_change: null,
-        observed_at: new Date().toISOString(),
-        policy: rules ? { generation: 1, rules: [...rules] } : null,
-        ledger: {
-          active_epoch: rules ? 1 : null,
-          state: rules ? "ready" : "uninitialized",
-          usage_trusted: Boolean(rules),
-        },
-        usage: rules
-          ? {
-              table_buckets: [],
-              tables: [],
-              unmatched: { table: [], field: [], record: [] },
-            }
-          : null,
-      };
-    },
-    async applyPolicy(input): Promise<NativeQuotaOperationResult> {
-      policies.set(input.database, input.rules);
-      return {
-        format_version: 1,
-        operation_id: `apply-${input.database}`,
-        operation: "define_quota",
-        database: input.database,
-        changed: true,
-        before: state(null, "uninitialized"),
-        after: state(1, "ready"),
-      };
-    },
-    async rebuild(database): Promise<NativeQuotaOperationResult> {
-      return {
-        format_version: 1,
-        operation_id: `rebuild-${database}`,
-        operation: "rebuild_quota",
-        database,
-        changed: false,
-        before: state(1, "ready"),
-        after: state(1, "ready"),
-        duration_ms: 0,
-        scanned: { table: 0, field: 0, record: 0 },
-      };
-    },
-  };
-}
-
 describe("workspace provisioning against local SurrealDB", () => {
   localTest(
     "retains a quota-protected database after template failure and resumes the original reservation",
     async () => {
-      const nativeQuotaClient = nativeQuotaStub();
+      const nativeQuotaClient = new SurrealNativeQuotaClient(
+        await getDbSession("_system"),
+      );
       const baseOptions = {
         getDbSession,
         namespace,
@@ -283,6 +219,14 @@ describe("workspace provisioning against local SurrealDB", () => {
       expect(persisted[1]).toHaveLength(1);
       expect(persisted[2]).toHaveLength(1);
       expect(persisted[3]).toHaveLength(1);
+
+      const nativeInfo = await nativeQuotaClient.info("ws_recover000001");
+      expect(nativeInfo.policy?.generation).toBe(1);
+      expect(nativeInfo.policy?.rules.length).toBeGreaterThan(0);
+      expect(nativeInfo.ledger).toMatchObject({
+        state: "ready",
+        usage_trusted: true,
+      });
     },
     30_000,
   );

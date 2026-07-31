@@ -208,8 +208,6 @@ function provisioningWorkspaceFromRow(
 
 function createSurrealControlPlane(
   systemDb: CreateWorkspaceClient,
-  getDbSession: CreateWorkspaceSessionFactory,
-  namespace: string,
 ): ProvisioningControlPlane {
   return {
     async reserveWorkspace(input) {
@@ -421,19 +419,17 @@ function createSurrealControlPlane(
         `
           BEGIN TRANSACTION;
 
-          LET $account = (
-            SELECT * FROM billing_account WHERE account_key = $accountKey LIMIT 1
-          )[0];
-          LET $billing = IF $account = NONE {
-            CREATE ONLY billing_account CONTENT {
+          LET $billing = (
+            INSERT INTO billing_account {
               account_key: $accountKey,
               name: $accountName,
               kind: "personal",
               status: "active"
             }
-          } ELSE {
-            $account
-          };
+            ON DUPLICATE KEY UPDATE
+              name = $input.name,
+              status = "active"
+          )[0];
 
           INSERT INTO billing_account_member {
             billing_account: $billing.id,
@@ -853,7 +849,7 @@ async function tryCreateWorkspace({
 }: TryCreateWorkspaceInput): Promise<TryCreateWorkspaceResult> {
   const controlPlane =
     injectedControlPlane
-    ?? createSurrealControlPlane(systemDb, getDbSession, namespace);
+    ?? createSurrealControlPlane(systemDb);
 
   const native =
     nativeQuotaClient

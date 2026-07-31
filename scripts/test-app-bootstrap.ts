@@ -8,7 +8,7 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { Surreal, RecordId, DateTime } from "surrealdb";
+import { Surreal, RecordId } from "surrealdb";
 import { createNodeEngines } from "@surrealdb/node";
 
 let passed = 0;

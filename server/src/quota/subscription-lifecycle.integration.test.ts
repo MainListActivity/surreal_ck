@@ -4,6 +4,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DateTime, jsonify, StringRecordId, Surreal } from "surrealdb";
+import { SurrealNativeQuotaClient } from "../db/native-quota/client";
 import { seedQuotaPlans } from "../db/quota-plan-seed";
 import { SurrealQuotaControlPlaneStore } from "./control-plane-store";
 import { SurrealEntitlementRefreshService } from "./entitlement-refresh";
@@ -18,6 +19,7 @@ import { SurrealQuotaAuthorityReader } from "./quota-authority-reader";
 import { SurrealQuotaObservationStore } from "./quota-observation";
 import { SurrealQuotaNotificationService } from "./quota-notifications";
 import { SurrealQuotaOpsConsole } from "./quota-ops-console";
+import { QuotaReconciler, type MaterializationLease } from "./reconciler";
 
 const RUN_INTEGRATION =
   process.env.RUN_LOCAL_SURREALDB_QUOTA_LIFECYCLE_TESTS === "1";
@@ -111,7 +113,7 @@ beforeAll(async () => {
     "root",
     "--pass",
     "root",
-    "memory",
+    `rocksdb:${join(workingDirectory, "data")}`,
   ], {
     cwd: workingDirectory,
     stdout: "ignore",
@@ -265,6 +267,37 @@ describe("quota subscription lifecycle against local SurrealDB", () => {
     async () => {
       const client = queryClient();
       const store = new SurrealQuotaLifecycleStore(client);
+      const controlStore = new SurrealQuotaControlPlaneStore(client);
+      const nativeQuota = new SurrealNativeQuotaClient(client);
+      let reconcileNow = new DateTime("2026-08-01T00:00:00.000Z");
+      const reconciler = new QuotaReconciler(controlStore, nativeQuota, {
+        clock: { now: () => reconcileNow },
+        random: () => 0,
+      });
+      const reconcileNext = async (
+        at: DateTime,
+      ): Promise<{
+        lease: MaterializationLease;
+        info: Awaited<ReturnType<SurrealNativeQuotaClient["info"]>>;
+      }> => {
+        reconcileNow = at;
+        const lease = await controlStore.claimNextMaterialization({
+          workerId: "materializer-a",
+          now: at,
+          leaseDurationMs: 30_000,
+        });
+        if (!lease) throw new Error("expected materialization");
+        await expect(reconciler.reconcile(lease)).resolves.toMatchObject({
+          kind: "succeeded",
+        });
+        const info = await nativeQuota.info(lease.database);
+        expect(info.policy?.generation).toBeGreaterThan(0);
+        expect(info.ledger).toMatchObject({
+          state: "ready",
+          usage_trusted: true,
+        });
+        return { lease, info };
+      };
       const effectiveAt = new DateTime("2026-08-01T00:00:10.000Z");
       const submission = manualAssignment("manual-plus-1", effectiveAt);
       const persisted = await store.persistOperatorIntent({
@@ -350,23 +383,11 @@ describe("quota subscription lifecycle against local SurrealDB", () => {
         sync_state: "pending",
       });
 
-      const controlStore = new SurrealQuotaControlPlaneStore(client);
-      const materialization = await controlStore.claimNextMaterialization({
-        workerId: "materializer-a",
-        now: new DateTime("2026-08-01T00:00:11.000Z"),
-        leaseDurationMs: 30_000,
-      });
+      const { lease: materialization, info: plusInfo } = await reconcileNext(
+        new DateTime("2026-08-01T00:00:11.000Z"),
+      );
       expect(materialization?.serviceMode).toBe("standard");
-      if (!materialization) throw new Error("expected materialization");
-      await expect(controlStore.settleMaterialization(materialization, {
-        kind: "succeeded",
-        outcome: "succeeded",
-        completedAt: new DateTime("2026-08-01T00:00:12.000Z"),
-        observedAfterGeneration: 1,
-        observedAfterDigest: materialization.projection.canonical_digest,
-        ledgerState: "ready",
-        usageTrusted: true,
-      })).resolves.toBe("committed");
+      expect(plusInfo.policy?.rules).toEqual(materialization.projection.rules);
       const applied = await db!.query(
         `
           SELECT desired_entitlement, applied_entitlement
@@ -551,7 +572,9 @@ describe("quota subscription lifecycle against local SurrealDB", () => {
           refreshResult,
           submissionInput.effectiveAt,
         )).toBeTrue();
-        return appliedMutation;
+        const native = await reconcileNext(submissionInput.effectiveAt);
+        expect(native.info.policy?.rules).toEqual(native.lease.projection.rules);
+        return { appliedMutation, native };
       };
 
       const rolloutAt = new DateTime("2026-08-03T00:00:00.000Z");
@@ -584,6 +607,16 @@ describe("quota subscription lifecycle against local SurrealDB", () => {
       );
       expect(rows(rolledOut)[0]?.plan_revision).toBe(
         "quota_plan_revision:pro_v1",
+      );
+      const proInfo = await nativeQuota.info("ws_acme");
+      expect(proInfo.policy?.rules).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            resource: "record",
+            selector: { kind: "regex", pattern: "^ent_" },
+            limit: { kind: "finite", value: 4 },
+          }),
+        ]),
       );
       const rolledOutSubscription = rows(rolledOut)[0]?.subscription;
       if (typeof rolledOutSubscription === "string") {
@@ -634,6 +667,16 @@ describe("quota subscription lifecycle against local SurrealDB", () => {
       expect(rows(switched, 1)[0]?.billing_account).toBe(
         "billing_account:beta",
       );
+      const maxInfo = await nativeQuota.info("ws_acme");
+      expect(maxInfo.policy?.rules).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            resource: "record",
+            selector: { kind: "regex", pattern: "^ent_" },
+            limit: { kind: "finite", value: 6 },
+          }),
+        ]),
+      );
 
       await db!.query(`
         CREATE platform_operator_capability:alice_override CONTENT {
@@ -681,6 +724,16 @@ describe("quota subscription lifecycle against local SurrealDB", () => {
         revision: 1,
         request_id: "override-records-1",
       });
+      const overrideInfo = await nativeQuota.info("ws_acme");
+      expect(overrideInfo.policy?.rules).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            resource: "record",
+            selector: { kind: "regex", pattern: "^ent_" },
+            limit: { kind: "finite", value: 9 },
+          }),
+        ]),
+      );
 
       const revisionTwo = providerEvent("provider-revision-2", 2, "active");
       await expect(store.ingestProviderEvent(revisionTwo)).resolves.toMatchObject({
@@ -753,6 +806,13 @@ describe("quota subscription lifecycle against local SurrealDB", () => {
         processed: 1,
         failed: 0,
       });
+      const retentionNative = await reconcileNext(
+        new DateTime("2026-08-13T00:00:00.001Z"),
+      );
+      expect(retentionNative.lease.serviceMode).toBe("retention");
+      expect(retentionNative.info.policy?.rules).toEqual(
+        retentionNative.lease.projection.rules,
+      );
       const retention = await db!.query(
         `
           LET $workspace = SELECT * FROM ONLY workspace:acme;
@@ -831,7 +891,22 @@ describe("quota subscription lifecycle against local SurrealDB", () => {
         { subscription: id(activeSubscription) },
       ))[0]?.revision;
       expect(revisionAfterReplay).toBe(revisionAfterFirst);
-      await store.settleOperatorIntent(replayClaim, {}, endAt);
+      const replayRefresh = await refresher.refreshWorkspace({
+        workspace: id("workspace:acme"),
+        at: endAt,
+        operationKind: "manual_assignment",
+        actorKind: "operator",
+        actorSubject: replayClaim.actorSubject,
+        authorizedCapability: replayClaim.authorizedCapability,
+        requestId: replayClaim.requestId,
+        correlationId: replayClaim.correlationId,
+        causationId: replayClaim.intent.toString(),
+      });
+      await store.settleOperatorIntent(replayClaim, replayRefresh, endAt);
+      const finalInfo = await nativeQuota.info("ws_acme");
+      expect(finalInfo.policy?.rules).toEqual(
+        retentionNative.info.policy?.rules,
+      );
 
       const invalidOverrideAt = new DateTime(
         "2026-08-15T00:00:00.000Z",

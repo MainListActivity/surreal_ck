@@ -3,8 +3,17 @@ import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DateTime, StringRecordId, Surreal } from "surrealdb";
+import { DateTime, Surreal } from "surrealdb";
+import { SurrealNativeQuotaClient } from "../db/native-quota/client";
+import { commercialProductRules } from "../db/quota-plan-rules";
 import { SurrealQuotaControlPlaneStore } from "./control-plane-store";
+import { SurrealEntitlementRefreshService } from "./entitlement-refresh";
+import { QuotaReconciler } from "./reconciler";
+import { MaterializationWorker } from "./sweeps";
+import {
+  DurableQuotaMigrationPolicyActivator,
+  LegacyQuotaMigrationConductor,
+} from "../quota-migration/conductor";
 import { SurrealQuotaMigrationStore } from "../quota-migration/store";
 import {
   assignMigrationCohorts,
@@ -83,7 +92,7 @@ beforeAll(async () => {
     "root",
     "--pass",
     "root",
-    "memory",
+    `rocksdb:${join(workingDirectory, "data")}`,
   ], {
     cwd: workingDirectory,
     stdout: "ignore",
@@ -123,13 +132,7 @@ beforeAll(async () => {
       plan: quota_plan:plus,
       revision: 1,
       template_kind: "commercial",
-      rules: [{
-        rule_key: "records",
-        resource: "record",
-        selector: { kind: "regex", value: "^ent_" },
-        limit: { kind: "finite", value: 100 },
-        customer_label: "记录数"
-      }],
+      rules: $seededRules,
       created_by_subject: "operator:test",
       published_at: time::now(),
       correlation_id: "corr-plan"
@@ -195,7 +198,50 @@ beforeAll(async () => {
       idempotency_key: "materialize-acme-v1",
       correlation_id: "corr-materialize"
     };
+  `, {
+    seededRules: commercialProductRules({
+      tables: 1,
+      fields: 3,
+      records: 2,
+    }),
+  });
+  await db.query("DEFINE DATABASE IF NOT EXISTS ws_acme;");
+
+  const workspaceDb = new Surreal();
+  await workspaceDb.connect(`${endpoint}/rpc`, {
+    authentication: { username: "root", password: "root" },
+    namespace,
+    database: "ws_acme",
+  });
+  await workspaceDb.query(`
+    DEFINE TABLE resource_quota_plan SCHEMALESS;
+    DEFINE TABLE workspace_resource_quota SCHEMALESS;
+    DEFINE TABLE sheet_resource_usage SCHEMALESS;
+    DEFINE TABLE sheet SCHEMAFULL;
+    DEFINE FIELD table_name ON TABLE sheet TYPE string;
+    DEFINE TABLE ent_case SCHEMALESS;
+    DEFINE TABLE legacy_quota_event SCHEMALESS;
+    CREATE resource_quota_plan:plus SET
+      key = "plus",
+      max_sheets = 1,
+      max_fields_per_sheet = 3,
+      max_records_per_sheet = 100;
+    CREATE workspace_resource_quota:current SET
+      plan = resource_quota_plan:plus,
+      sheet_count = 1;
+    CREATE sheet:case SET table_name = "ent_case";
+    CREATE sheet_resource_usage:case SET
+      sheet = sheet:case,
+      record_count = 99;
+    CREATE ent_case:one SET value = 1;
+    DEFINE EVENT resource_quota_guard ON TABLE sheet
+      WHEN $event = "CREATE"
+      THEN (CREATE legacy_quota_event SET source = $after.id);
+    DEFINE EVENT resource_quota_guard ON TABLE ent_case
+      WHEN $event = "CREATE"
+      THEN (CREATE legacy_quota_event SET source = $after.id);
   `);
+  await workspaceDb.close();
 });
 
 afterAll(async () => {
@@ -480,5 +526,234 @@ describe("SurrealQuotaControlPlaneStore against local SurrealDB", () => {
       );
     },
     60_000,
+  );
+
+  localTest(
+    "runs the durable migration conductor through native policy cutover and cleanup eligibility",
+    async () => {
+      if (!db) throw new Error("integration database not initialized");
+      await db.query(`
+        INSERT INTO billing_account {
+          id: billing_account:acme,
+          account_key: "acme",
+          name: "Acme",
+          kind: "team",
+          status: "active"
+        }
+        ON DUPLICATE KEY UPDATE name = $input.name, status = "active";
+        INSERT INTO platform_operator {
+          id: platform_operator:migration,
+          subject: "operator:migration",
+          status: "active"
+        }
+        ON DUPLICATE KEY UPDATE status = "active";
+        INSERT INTO platform_operator_capability {
+          id: platform_operator_capability:migration_subscription,
+          operator: platform_operator:migration,
+          capability: "subscription.manage",
+          status: "active",
+          granted_by_subject: "root"
+        }
+        ON DUPLICATE KEY UPDATE status = "active";
+        UPDATE workspace:acme SET
+          desired_entitlement = NONE,
+          applied_entitlement = NONE,
+          desired_quota_projection = NONE,
+          applied_quota_projection = NONE;
+        UPDATE workspace_quota_runtime SET
+          sync_state = "pending",
+          service_mode = "retention",
+          usage_trusted = false
+        WHERE workspace = workspace:acme;
+      `);
+
+      const sessions = new Map<string, Surreal>();
+      const sessionFor = async (targetDatabase: string) => {
+        const existing = sessions.get(targetDatabase);
+        if (existing) return existing;
+        const session = new Surreal();
+        await session.connect(`${endpoint}/rpc`, {
+          authentication: { username: "root", password: "root" },
+          namespace,
+          database: targetDatabase,
+        });
+        sessions.set(targetDatabase, session);
+        return session;
+      };
+
+      try {
+        const systemClient = queryClient();
+        const migrationStore = new SurrealQuotaMigrationStore(systemClient);
+        const refresher = new SurrealEntitlementRefreshService(systemClient);
+        const controlStore = new SurrealQuotaControlPlaneStore(systemClient);
+        const nativeQuota = new SurrealNativeQuotaClient(systemClient);
+        let now = new DateTime("2026-07-29T00:02:00.000Z");
+        const reconciler = new QuotaReconciler(controlStore, nativeQuota, {
+          clock: { now: () => now },
+          random: () => 0,
+        });
+        const worker = new MaterializationWorker(
+          controlStore,
+          reconciler,
+          "migration-materializer",
+          { clock: { now: () => now } },
+        );
+        const activator = new DurableQuotaMigrationPolicyActivator(
+          migrationStore,
+          worker,
+        );
+        const makeConductor = () =>
+          new LegacyQuotaMigrationConductor(
+            migrationStore,
+            sessionFor,
+            refresher,
+            activator,
+            {
+              clock: { now: () => now },
+              workerId: "migration-conductor",
+            },
+          );
+        let conductor = makeConductor();
+        const assignment = {
+          workspace_id: "workspace:acme",
+          workspace_slug: "acme",
+          database: "ws_acme",
+          billing_account_id: "billing_account:acme",
+          plan_revision_id: "quota_plan_revision:plus_v1",
+          source: "manual" as const,
+          effective_at: now.toString(),
+          rollout_class: "internal" as const,
+          evidence_reference: "integration-approved",
+        };
+        const inventory = await conductor.createInventory({
+          runId: "conductor-e2e",
+          namespace,
+          draftAssignments: [assignment],
+        });
+        expect(inventory.workspaces).toHaveLength(1);
+        expect(inventory.workspaces[0]?.legacy?.event_targets).toEqual(
+          expect.arrayContaining([
+            { table: "sheet", event_present: true },
+            { table: "ent_case", event_present: true },
+          ]),
+        );
+
+        const manifestUnsigned = {
+          format_version: 1 as const,
+          manifest_id: "conductor-e2e-approved",
+          inventory_checksum: inventory.checksum,
+          approved_by_subject: "operator:migration",
+          approved_at: now.toString(),
+          assignments: [assignment],
+        };
+        const manifest: QuotaMigrationAssignmentManifest = {
+          ...manifestUnsigned,
+          checksum: migrationChecksum(manifestUnsigned),
+        };
+        try {
+          await conductor.importApprovedManifest("conductor-e2e", manifest);
+        } catch (cause) {
+          throw new Error("manifest import failed", { cause });
+        }
+        try {
+          await conductor.prepareNativeEnforcement("conductor-e2e", {
+            snapshot_id: "snapshot-conductor-e2e",
+            snapshot_checksum: `sha256:${"1".repeat(64)}`,
+            restore_drill_completed_at: now.toString(),
+            fork_release: "3.3.0-native-quota.1",
+            fork_image_digest: `sha256:${"2".repeat(64)}`,
+            compatibility_manifest_revision: "native-quota-v1.0",
+            backend: "rocksdb",
+            backend_certification_revision: "native-quota-contract-v1",
+            format_migration_completed_at: now.toString(),
+          });
+        } catch (cause) {
+          throw new Error(
+            `native enforcement preparation failed: ${
+              JSON.stringify(cause)
+            }`,
+            { cause },
+          );
+        }
+        await expect(
+          conductor.assertPublicReopenReady("conductor-e2e"),
+        ).resolves.toBeUndefined();
+
+        await conductor.pause("conductor-e2e", "operator-drill");
+        expect((await migrationStore.findRun("conductor-e2e"))?.state).toBe(
+          "paused",
+        );
+        await conductor.resume("conductor-e2e");
+
+        // Recreate the conductor at the persisted phase boundary to prove that
+        // no in-memory state is required for cutover.
+        conductor = makeConductor();
+        const cohorts = [
+          "synthetic_internal",
+          "one_percent",
+          "ten_percent",
+          "fifty_percent",
+          "remainder",
+        ] as const;
+        for (const cohort of cohorts) {
+          const observeUntil = await conductor.cutoverCohort(
+            "conductor-e2e",
+            cohort,
+          );
+          now = observeUntil;
+          await conductor.completeCohort("conductor-e2e", cohort);
+        }
+
+        const nativeInfo = await nativeQuota.info("ws_acme");
+        expect(nativeInfo.policy?.rules).toHaveLength(8);
+        expect(nativeInfo.policy?.rules).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              resource: "record",
+              selector: { kind: "regex", pattern: "^ent_" },
+              limit: { kind: "finite", value: 2 },
+            }),
+          ]),
+        );
+        expect(nativeInfo.ledger).toMatchObject({
+          state: "ready",
+          usage_trusted: true,
+        });
+        const workspaceSession = await sessionFor("ws_acme");
+        const eventReadback = await workspaceSession.query(`
+          RETURN (INFO FOR TABLE sheet).events.resource_quota_guard != NONE;
+          RETURN (INFO FOR TABLE ent_case).events.resource_quota_guard != NONE;
+        `);
+        expect(eventReadback).toEqual([false, false]);
+
+        const verifiedRun = await migrationStore.findRun("conductor-e2e");
+        expect(verifiedRun?.state).toBe("native_verified");
+        if (!verifiedRun?.allNativeVerifiedAt) {
+          throw new Error("expected native verification timestamp");
+        }
+        now = DateTime.fromEpochNanoseconds(
+          verifiedRun.allNativeVerifiedAt.nanoseconds
+            + 31n * 24n * 60n * 60n * 1_000_000_000n,
+        );
+        const cleanupNotBefore = await conductor.recordCleanupEvidence(
+          "conductor-e2e",
+          {
+            fullAuditCleanAt: verifiedRun.allNativeVerifiedAt,
+            productReleaseStableSince: verifiedRun.allNativeVerifiedAt,
+            preNativeCompatibilityBlockedAt: verifiedRun.allNativeVerifiedAt,
+          },
+        );
+        expect(cleanupNotBefore.nanoseconds).toBeLessThanOrEqual(now.nanoseconds);
+        await conductor.markCleanupEligible("conductor-e2e");
+        expect((await migrationStore.findRun("conductor-e2e"))?.state).toBe(
+          "cleanup_eligible",
+        );
+      } finally {
+        await Promise.all(
+          [...sessions.values()].map(async (session) => await session.close()),
+        );
+      }
+    },
+    120_000,
   );
 });

@@ -116,6 +116,23 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
   await seedPlans();
   await migrateWorkspaces();
 
+  let quotaRuntime: NativeQuotaRuntimeHandle;
+  try {
+    quotaRuntime = startQuota();
+  } catch (cause) {
+    try {
+      await closeRoot();
+    } catch (closeCause) {
+      console.error("[server] failed to close root after quota runtime failure", {
+        message: closeCause instanceof Error ? closeCause.message : String(closeCause),
+      });
+    }
+    console.error("[server] failed to start native quota runtime; refusing traffic", {
+      message: cause instanceof Error ? cause.message : String(cause),
+    });
+    throw cause;
+  }
+
   const app = makeApp();
   const server = serve({
     hostname: host,
@@ -145,25 +162,13 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
     });
   }
 
-  let quotaRuntime: NativeQuotaRuntimeHandle | undefined;
-  try {
-    quotaRuntime = startQuota();
-  } catch (cause) {
-    console.error(
-      "[server] failed to start native quota runtime; continuing without it",
-      {
-        message: cause instanceof Error ? cause.message : String(cause),
-      },
-    );
-  }
-
   return {
     server,
     async shutdown(signal: string): Promise<void> {
       console.info("[server] shutting down", { signal });
       server.stop();
       reconcileLoop?.stop();
-      quotaRuntime?.stop();
+      quotaRuntime.stop();
       await claimsRiskDispatcher?.stop();
       await closeRoot();
     },

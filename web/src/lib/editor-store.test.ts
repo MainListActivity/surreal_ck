@@ -1,13 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { StringRecordId } from "surrealdb";
-import type { GridColumnDef } from "@surreal-ck/shared/rpc.types";
 import type { SurrealConn, LiveMessage } from "./surreal";
 import { createEditorStore, type EditorSnapshot } from "./editor-store";
-
-const columns: GridColumnDef[] = [
-  { key: "name", label: "名称", fieldType: "text", required: true },
-  { key: "amount", label: "金额", fieldType: "decimal" },
-];
 
 /** sheet 记录形态（column_defs 是 stored field def）。 */
 function sheetRecord(over: Record<string, unknown> = {}) {

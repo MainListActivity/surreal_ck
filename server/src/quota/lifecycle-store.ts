@@ -134,16 +134,6 @@ function integer(value: unknown, field: string): SurrealInteger {
   );
 }
 
-function optionalInteger(value: unknown): SurrealInteger | undefined {
-  if (
-    typeof value === "bigint"
-    || (typeof value === "number" && Number.isSafeInteger(value))
-  ) {
-    return value;
-  }
-  return undefined;
-}
-
 function deterministicId(
   table: string,
   ...identity: readonly string[]

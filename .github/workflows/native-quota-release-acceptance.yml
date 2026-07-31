@@ -20,7 +20,7 @@ on:
       signature_policy:
         description: Downstream verification policy (keyless signing still protects promotion)
         required: true
-        default: waived_no_certificate
+        default: verify_keyless
         type: choice
         options:
           - waived_no_certificate
@@ -266,15 +266,11 @@ jobs:
           SURREAL_BINARY: ${{ steps.cli.outputs.binary }}
         run: |
           set -euo pipefail
+          pnpm lint
           pnpm typecheck
           pnpm test
           pnpm test:quota:cross-repo
-          RUN_LOCAL_SURREALDB_CONTROL_PLANE_TESTS=1 \
-            RUN_LOCAL_SURREALDB_QUOTA_LIFECYCLE_TESTS=1 \
-            pnpm --filter @surreal-ck/server exec bun test \
-              ./src/quota/control-plane-store.integration.test.ts \
-              ./src/quota/subscription-lifecycle.integration.test.ts \
-              --preload ./test/setup-env.ts
+          pnpm test:quota:integration
 
       - name: Stop vanilla negative control
         if: always()
@@ -290,14 +286,26 @@ jobs:
           SURREALDB_NATIVE_QUOTA_IMAGE: ghcr.io/mainlistactivity/surrealdb-native-quota@${{ inputs.expected_digest }}
         run: |
           set -euo pipefail
-          docker compose config > candidate/docker-compose.resolved.yml
+          export SURREAL_ROOT_USER="acceptance-${GITHUB_RUN_ID}"
+          export SURREAL_ROOT_PASS="$(openssl rand -hex 32)"
+          docker compose config > /tmp/native-quota-compose.resolved.yml
           grep -F "ghcr.io/mainlistactivity/surrealdb-native-quota@sha256:" \
-            candidate/docker-compose.resolved.yml >/dev/null
+            /tmp/native-quota-compose.resolved.yml >/dev/null
           if grep -F "surrealdb/surrealdb:v3.2.3" \
-            candidate/docker-compose.resolved.yml >/dev/null; then
+            /tmp/native-quota-compose.resolved.yml >/dev/null; then
             echo "::error::official SurrealDB image leaked into deployable compose"
             exit 1
           fi
+          jq -n \
+            --arg image "$SURREALDB_NATIVE_QUOTA_IMAGE" \
+            --arg checked_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{
+              format_version: 1,
+              result: "passed",
+              image: $image,
+              credentials: "runtime_environment_required",
+              checked_at: $checked_at
+            }' > candidate/docker-compose-validation.json
           docker build --tag surreal-ck:native-quota-acceptance .
 
       - name: Create and keyless-sign downstream acceptance statement
@@ -365,12 +373,31 @@ jobs:
             candidate/signature-waiver.json
             candidate/live-capabilities.json
             candidate/oci-index.json
-            candidate/docker-compose.resolved.yml
+            candidate/docker-compose-validation.json
           if-no-files-found: warn
           retention-days: 90
 
+  promote:
+    name: Dispatch production promotion
+    needs: accept
+    if: inputs.dispatch_production
+    runs-on: ubuntu-24.04
+    environment: native-quota-production-acceptance
+    permissions:
+      contents: read
+    steps:
+      - name: Harden the promotion runner
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        with:
+          egress-policy: audit
+
+      - name: Download accepted evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: native-quota-acceptance-${{ inputs.expected_git_sha }}
+          path: acceptance
+
       - name: Dispatch production promotion
-        if: inputs.dispatch_production
         env:
           GH_TOKEN: ${{ secrets.NATIVE_QUOTA_PROMOTION_TOKEN }}
           CANDIDATE_TAG: ${{ inputs.candidate_tag }}
@@ -382,8 +409,8 @@ jobs:
             echo "::error::NATIVE_QUOTA_PROMOTION_TOKEN is required"
             exit 1
           }
-          statement="$(base64 -w0 surreal-ck-native-quota-acceptance.json)"
-          bundle="$(base64 -w0 surreal-ck-native-quota-acceptance.sigstore.json)"
+          statement="$(base64 -w0 acceptance/surreal-ck-native-quota-acceptance.json)"
+          bundle="$(base64 -w0 acceptance/surreal-ck-native-quota-acceptance.sigstore.json)"
           gh api --method POST repos/MainListActivity/surrealdb/dispatches \
             -f event_type=native-quota-stable-accepted \
             -f "client_payload[candidate_tag]=$CANDIDATE_TAG" \

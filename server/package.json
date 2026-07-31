@@ -14,6 +14,7 @@
     "build:types": "tsc -p tsconfig.build.json",
     "test": "bun test ./src/*.test.ts ./src/**/*.test.ts ./ai/**/*.test.ts --preload ./test/setup-env.ts",
     "test:quota:cross-repo": "RUN_NATIVE_QUOTA_CROSS_REPO_E2E=1 bun test ./src/release-acceptance/native-quota-cross-repo.integration.test.ts --preload ./test/setup-env.ts",
+    "test:quota:integration": "RUN_LOCAL_SURREALDB_CONTROL_PLANE_TESTS=1 RUN_LOCAL_SURREALDB_QUOTA_LIFECYCLE_TESTS=1 RUN_LOCAL_SURREALDB_WORKSPACE_PROVISIONING_TESTS=1 bun test ./src/quota/control-plane-store.integration.test.ts ./src/quota/subscription-lifecycle.integration.test.ts ./src/workspaces/create-workspace.integration.test.ts --preload ./test/setup-env.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

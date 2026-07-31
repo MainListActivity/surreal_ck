@@ -15,7 +15,13 @@ describe("quota migration scanners", () => {
           return [{ tables: [{ name: "sheet" }, { name: "ent_case" }] }];
         }
         if (sql.includes("`ent_case`")) {
-          return [{ fields: [{ name: "a" }, { name: "b" }] }, [{ count: 4 }]];
+          return [{
+            fields: [
+              { name: "a" },
+              { name: "items.*" },
+              { name: "items.*.value" },
+            ],
+          }, [{ count: 4 }]];
         }
         return [{ fields: [{ name: "name" }] }, [{ count: 1 }]];
       },

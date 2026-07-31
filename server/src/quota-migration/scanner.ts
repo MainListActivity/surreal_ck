@@ -115,6 +115,23 @@ function tableNamesFromDatabaseInfo(result: unknown): string[] {
   );
 }
 
+function quotaFieldCount(fields: readonly unknown[], tableName: string): bigint {
+  let count = 0n;
+  for (const field of fields) {
+    const name = isRecord(field) ? stringValue(field.name) : null;
+    if (!name) {
+      throw new Error(
+        `INFO FOR TABLE STRUCTURE returned an invalid field for ${tableName}`,
+      );
+    }
+    // SurrealDB synthesizes a trailing `.*` container when a typed array has
+    // explicit descendants. Native quota meters the user-defined descendants,
+    // not this generated catalog parent.
+    if (!name.endsWith(".*")) count += 1n;
+  }
+  return count;
+}
+
 export class SurrealQuotaPhysicalScanner {
   constructor(private readonly db: QuotaMigrationWorkspaceQueryClient) {}
 
@@ -139,7 +156,7 @@ SELECT count() AS count FROM ${table} GROUP ALL;`,
           `INFO FOR TABLE STRUCTURE returned no fields for ${tableName}`,
         );
       }
-      const fieldCount = BigInt(tableInfo.fields.length);
+      const fieldCount = quotaFieldCount(tableInfo.fields, tableName);
       const recordCount = requiredCount(
         firstObject(result, 1)?.count ?? 0,
         `${tableName} record`,
@@ -299,4 +316,3 @@ export class SurrealLegacyQuotaInventoryReader {
     });
   }
 }
-

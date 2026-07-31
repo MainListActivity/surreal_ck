@@ -20,7 +20,7 @@ import type {
 } from "./provisioning-saga";
 import { commercialProductRules, SEEDED_PLAN_LIMITS } from "../db/quota-plan-rules";
 import type { EntitlementBaseCandidate } from "../quota/entitlement-resolver";
-import { canonicalNativePolicyDigest, compileQuotaPolicy } from "../quota/policy-compiler";
+import { compileQuotaPolicy } from "../quota/policy-compiler";
 
 class FakeDb implements CreateWorkspaceClient {
   constructor(

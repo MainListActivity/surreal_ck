@@ -12,9 +12,7 @@ import {
   type QuotaMigrationInventory,
   type QuotaMigrationInventoryWorkspace,
   type QuotaMigrationLegacyEvidence,
-  type QuotaMigrationMaintenanceEvidence,
   type QuotaMigrationPhysicalScan,
-  type QuotaMigrationSignal,
   type ResourceEntitlementRecord,
 } from "@surreal-ck/shared/native-quota";
 import { DateTime, StringRecordId } from "surrealdb";
@@ -173,15 +171,6 @@ export type CreateMigrationInventoryInput = Readonly<{
 
 function iso(value: DateTime): string {
   return new Date(Number(value.nanoseconds / 1_000_000n)).toISOString();
-}
-
-function emptyLegacyEvidence(): QuotaMigrationLegacyEvidence {
-  return {
-    plans: [],
-    plan_binding: null,
-    counters: { sheet_count: null, per_sheet_records: [] },
-    event_targets: [],
-  };
 }
 
 function anomaly(

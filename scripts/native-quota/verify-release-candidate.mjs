@@ -204,7 +204,42 @@ const provenance = await readFile(
   join(assetsDirectory, candidate.evidence.provenance.document),
   "utf8",
 );
-requireValue(provenance.trim().length > 0, "provenance evidence is empty");
+const provenanceEnvelopes = provenance
+  .split(/\r?\n/u)
+  .filter((line) => line.trim().length > 0)
+  .map((line, index) => {
+    try {
+      return JSON.parse(line);
+    } catch (error) {
+      fail(
+        `provenance line ${index + 1} is not JSON: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  });
+const expectedSubjectDigest = digest.slice("sha256:".length);
+const provenanceMatchesImage = provenanceEnvelopes.some((envelope) => {
+  if (typeof envelope?.payload !== "string") return false;
+  let statement;
+  try {
+    statement = JSON.parse(
+      Buffer.from(envelope.payload, "base64").toString("utf8"),
+    );
+  } catch {
+    return false;
+  }
+  return typeof statement?.predicateType === "string"
+    && statement.predicateType.includes("slsa.dev/provenance")
+    && Array.isArray(statement.subject)
+    && statement.subject.some(
+      (subject) => subject?.digest?.sha256 === expectedSubjectDigest,
+    );
+});
+requireValue(
+  provenanceMatchesImage,
+  "provenance does not contain SLSA subject bound to the expected image digest",
+);
 
 const identity = {
   format_version: 1,
@@ -223,7 +258,8 @@ const identity = {
       args["signature-policy"] === "verify_keyless" ? "verified" : "waived_no_certificate",
     hashes: "verified",
     sbom: "verified",
-    provenance: "verified",
+    provenance:
+      args["signature-policy"] === "verify_keyless" ? "verified" : "content_bound",
     vulnerabilities: "passed",
   },
 };

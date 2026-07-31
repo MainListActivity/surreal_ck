@@ -42,3 +42,27 @@ Assignee: codex
 - 按项目所有者确认，下游重复的 candidate/image signature verify 可显式记为 `waived_no_certificate`；candidate/promotion 的 keyless 签名验证及其余供应链门不豁免，也不要求持有长期证书。
 - 本地证据：应用全量 `typecheck` 与测试通过（shared 98、server 335、web 485；仅环境门用例按预期 skip）；真实 RocksDB 双仓 E2E 2 tests / 50 assertions；真实控制面与订阅生命周期 3 tests / 81 assertions；fork mem/RocksDB backend contracts 各 4、RocksDB certification 1、quota wire error 2、server capability 7、release manifest 5 均通过。
 - multi-arch image、远端 SBOM/provenance/signature 与 canary/staging/production receipts 必须由真实 candidate release workflow 产生；本任务完成的是可执行且 fail-closed 的发布门，未伪造尚未发生的生产发布证据。
+
+**2026-07-30（Codex，最终双仓复审修复）**
+
+- workspace provisioning 与订阅生命周期集成测试不再桩造 native success：均使用真实
+  RocksDB candidate、真实 `DEFINE QUOTA`、`INFO FOR QUOTA` readback 与 desired/applied
+  收敛；新增可重复的 `pnpm test:quota:integration` 发布门。
+- migration conductor 在 RocksDB 上完整跑通 inventory、批准 manifest、账本 rebuild、
+  原生物化、进程内 conductor 重建、五 cohort、旧 event 原子去除及 30 日 cleanup
+  eligibility。由此发现并修复独立扫描器误计 SurrealDB 自动合成 `array.*` 字段的问题。
+- 双仓 E2E 增加 exact field、regex field、第四张 `^ent_` 表拒绝，以及 HTTP/WSS
+  `code/retryable/details` 完整一致性；fork backend contract 同步覆盖 RELATE/级联、
+  materialized view、semantic import 与 record range。
+- server 在 quota runtime 无法启动时先关闭 root 并拒绝监听；compose 不再硬编码 root
+  凭证或上传解析后的含密 compose。发布默认 keyless 校验，显式 waiver 仍保留；生产
+  promotion token 移至独立 runner。
+- 新增真实 `pnpm lint` 门与 provenance SLSA subject/digest 校验；fork storage marker
+  改为首条发布线 exact-release-only，补齐 `ResourceKind::Quota` revision lock。
+- 跨仓验收现同时接受 workflow 注入的 `SURREAL_BINARY` 与本地专用 override，避免 CI
+  静默回退 sibling debug binary；RocksDB candidate 的 suite lifecycle hook 使用显式
+  30 秒启动、15 秒清理上限，冷启动超时时不再被 Bun 默认 5 秒误判。
+- 最终本地证据：fork core 2959/2959（9 ignored）、memory/RocksDB quota contract
+  各 5/5、storage format 8/8、clippy 与 revision lock 全部通过；真实双仓 E2E
+  2/2（51 assertions），真实 quota integration 为 shared 5/5（115 assertions）和
+  server 5/5（129 assertions）；应用 lint、typecheck、全量测试全部通过。

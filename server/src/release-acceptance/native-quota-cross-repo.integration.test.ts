@@ -62,6 +62,12 @@ const primaryRules = [
     rule_id: "ent_fields",
     resource: "field",
     selector: { kind: "regex", pattern: "^ent_" },
+    limit: { kind: "finite", value: 3 },
+  },
+  {
+    rule_id: "claim_fields",
+    resource: "field",
+    selector: { kind: "exact", table: "ent_claim" },
     limit: { kind: "finite", value: 2 },
   },
   {
@@ -84,6 +90,7 @@ function repositoryRoot(): string {
 
 function candidateBinary(): string {
   return process.env.NATIVE_QUOTA_E2E_BINARY
+    ?? process.env.SURREAL_BINARY
     ?? resolve(repositoryRoot(), "../surrealdb/target/debug/surreal");
 }
 
@@ -332,7 +339,7 @@ beforeAll(async () => {
   rpcUrl = `ws://127.0.0.1:${port}/rpc`;
   await startCandidate(primaryDataDirectory);
   await bootstrap();
-});
+}, 30_000);
 
 afterAll(async () => {
   await closeClients();
@@ -340,7 +347,7 @@ afterAll(async () => {
   if (workingDirectory) {
     await rm(workingDirectory, { recursive: true, force: true });
   }
-});
+}, 15_000);
 
 describe("SCK-NQ-10 cross-repository native quota release acceptance", () => {
   crossRepoTest("bypass、规则、并发、IAM、生命周期与恢复矩阵", async () => {
@@ -413,6 +420,15 @@ describe("SCK-NQ-10 cross-repository native quota release acceptance", () => {
 
     await owner.query("DEFINE TABLE ent_batch SCHEMALESS PERMISSIONS FULL;").collect();
     await owner.query(`
+      DEFINE FIELD one ON TABLE ent_batch TYPE option<number>;
+      DEFINE FIELD two ON TABLE ent_batch TYPE option<number>;
+      DEFINE FIELD three ON TABLE ent_batch TYPE option<number>;
+    `).collect();
+    await quotaError(
+      owner.query("DEFINE FIELD four ON TABLE ent_batch TYPE number;").collect(),
+      "quota_exceeded",
+    );
+    await owner.query(`
       INSERT INTO ent_batch [
         { id: ent_batch:one, value: 1 },
         { id: ent_batch:two, value: 2 }
@@ -432,6 +448,10 @@ describe("SCK-NQ-10 cross-repository native quota release acceptance", () => {
     await owner.query(
       "DEFINE TABLE ent_participant SCHEMALESS PERMISSIONS FULL;",
     ).collect();
+    await quotaError(
+      owner.query("DEFINE TABLE ent_over_limit SCHEMALESS;").collect(),
+      "quota_exceeded",
+    );
     const participantDdl = await openParticipant(primaryDatabase);
     await expect(
       participantDdl.query("DEFINE TABLE ent_escape SCHEMALESS;").collect(),
@@ -463,6 +483,19 @@ describe("SCK-NQ-10 cross-repository native quota release acceptance", () => {
       ).collect(),
       "quota_exceeded",
     );
+    const wsEnvelope = extractNativeQuotaError(wsError);
+    expect(wsEnvelope).toMatchObject({
+      code: "quota_exceeded",
+      retryable: false,
+      details: {
+        database: primaryDatabase,
+        violations: [{
+          resource: "record",
+          table: "ent_participant",
+          limit: 3,
+        }],
+      },
+    });
     const participantFailure = mapQuotaFailure(wsError, {
       kind: "participant",
       operated_table: "ent_participant",
@@ -499,7 +532,8 @@ describe("SCK-NQ-10 cross-repository native quota release acceptance", () => {
     expect(httpResponse.status).toBe(200);
     const httpResults = await httpResponse.json() as Array<Record<string, unknown>>;
     expect(httpResults[0]?.status).toBe("ERR");
-    expect(extractNativeQuotaError(httpResults[0])?.code).toBe("quota_exceeded");
+    const httpEnvelope = extractNativeQuotaError(httpResults[0]);
+    expect(httpEnvelope).toEqual(wsEnvelope);
 
     await owner.query(`
       DEFINE TABLE sheet SCHEMALESS;

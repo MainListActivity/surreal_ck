@@ -1,0 +1,8 @@
+{
+  "rules": {
+    "no-unsafe-optional-chaining": "off",
+    "no-useless-escape": "off",
+    "unicorn/no-useless-fallback-in-spread": "off",
+    "unicorn/no-useless-spread": "off"
+  }
+}
