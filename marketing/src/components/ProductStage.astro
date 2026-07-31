@@ -1,0 +1,401 @@
+---
+import { Bot, ChevronDown, CircleDollarSign, LayoutDashboard, ListFilter, Search, Sparkles, Table2 } from "@lucide/astro";
+import { views, workbookRows } from "../data/product";
+---
+
+<div class="stage-wrap" aria-label="卯豆产品界面示意">
+  <div class="stage-shadow" aria-hidden="true"></div>
+  <div class="stage">
+    <div class="window-bar">
+      <div class="window-dots" aria-hidden="true"><i></i><i></i><i></i></div>
+      <span>破产债权工作空间</span>
+      <div class="window-members"><b>林</b><b>陈</b><b>周</b><em>+4</em></div>
+    </div>
+    <div class="product-shell">
+      <aside class="rail">
+        <div class="rail-brand"><span class="mini-sprout">⌁</span><strong>卯豆</strong></div>
+        <div class="rail-search"><Search size={11} /><span>搜索工作簿</span></div>
+        <nav aria-label="产品界面示意导航">
+          <span><LayoutDashboard size={12} />首页</span>
+          <span class="active"><Table2 size={12} />债权申报台账</span>
+          <span><CircleDollarSign size={12} />清偿测算</span>
+        </nav>
+        <div class="rail-bottom"><i>林</i><span><strong>澄明律所</strong><small>案件工作区</small></span></div>
+      </aside>
+
+      <div class="workbook">
+        <header class="book-head">
+          <div><span class="book-kicker">工作簿</span><h3>债权申报台账</h3></div>
+          <button type="button">共享 <ChevronDown size={11} /></button>
+        </header>
+        <div class="viewbar">
+          <div class="views">
+            {views.map((view, index) => <span class:list={[{ active: index === 0 }]}>{view}</span>)}
+          </div>
+          <div class="view-tools"><span><ListFilter size={11} />筛选</span><span>排序</span><b>＋ 新记录</b></div>
+        </div>
+        <div class="sheet">
+          <div class="sheet-row sheet-head"><span>#</span><span>债权人</span><span>申报金额</span><span>审查状态</span><span>负责人</span></div>
+          {workbookRows.map((row, index) => (
+            <div class="sheet-row">
+              <span>{index + 1}</span>
+              <span class="company"><i>{row.name.slice(0, 1)}</i>{row.name}</span>
+              <span>{row.amount}</span>
+              <span><em class:list={["status", row.tone]}>{row.status}</em></span>
+              <span class="owner"><b>{row.owner.slice(0, 1)}</b>{row.owner}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+
+    <div class="ai-card">
+      <div class="ai-head"><span><Sparkles size={13} />卯豆 AI</span><em>理解当前工作簿</em></div>
+      <p>找出本周需要优先处理的债权，并说明原因。</p>
+      <div class="ai-answer">
+        <span><Bot size={14} /></span>
+        <div><strong>已找到 3 条高优先级记录</strong><small>综合材料完整度、异议状态与截止日期排序</small></div>
+      </div>
+      <div class="ai-action"><span>已生成优先级视图</span><button type="button">打开视图 →</button></div>
+    </div>
+  </div>
+</div>
+
+<style>
+  .stage-wrap {
+    position: relative;
+    width: min(1120px, 100%);
+    margin: 58px auto 0;
+    padding: 0 24px 38px;
+  }
+
+  .stage-shadow {
+    position: absolute;
+    right: 10%;
+    bottom: 0;
+    left: 10%;
+    height: 65%;
+    border-radius: 50%;
+    background: rgba(67, 73, 53, .22);
+    filter: blur(42px);
+  }
+
+  .stage {
+    position: relative;
+    min-height: 520px;
+    overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, .82);
+    border-radius: 24px;
+    background: var(--surface);
+    box-shadow: 0 30px 75px rgba(67, 57, 39, .18), 0 4px 14px rgba(67, 57, 39, .08);
+  }
+
+  .window-bar {
+    display: grid;
+    height: 42px;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    border-bottom: 1px solid var(--border);
+    background: rgba(251, 250, 245, .92);
+    color: var(--text-3);
+    font-size: 10px;
+  }
+
+  .window-dots {
+    display: flex;
+    gap: 5px;
+    padding-left: 15px;
+  }
+
+  .window-dots i {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #d9d2c5;
+  }
+
+  .window-dots i:nth-child(2) { background: #e1b693; }
+  .window-dots i:nth-child(3) { background: #9ac2a1; }
+
+  .window-members {
+    display: flex;
+    justify-content: flex-end;
+    padding-right: 14px;
+  }
+
+  .window-members b,
+  .window-members em {
+    display: grid;
+    width: 23px;
+    height: 23px;
+    margin-left: -5px;
+    place-items: center;
+    border: 2px solid var(--surface);
+    border-radius: 50%;
+    background: #dbe9d9;
+    color: var(--primary);
+    font-size: 8px;
+    font-style: normal;
+  }
+
+  .window-members b:nth-child(2) { background: #f3ddce; color: var(--seed-strong); }
+  .window-members b:nth-child(3) { background: #e9dfea; color: var(--purple); }
+  .window-members em { background: #e7e1d5; color: var(--text-2); }
+
+  .product-shell {
+    display: grid;
+    min-height: 478px;
+    grid-template-columns: 168px minmax(0, 1fr);
+  }
+
+  .rail {
+    position: relative;
+    padding: 20px 13px;
+    border-right: 1px solid var(--border);
+    background: #f7f3e9;
+  }
+
+  .rail-brand {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 0 4px 17px;
+    font-family: var(--font-serif);
+    font-size: 13px;
+  }
+
+  .mini-sprout {
+    display: grid;
+    width: 23px;
+    height: 23px;
+    place-items: center;
+    border-radius: 7px;
+    background: var(--primary-light);
+    color: var(--primary);
+    font-family: serif;
+    font-size: 18px;
+    transform: rotate(10deg);
+  }
+
+  .rail-search {
+    display: flex;
+    height: 29px;
+    align-items: center;
+    gap: 6px;
+    padding: 0 8px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    color: var(--text-3);
+    font-size: 8px;
+  }
+
+  .rail nav {
+    display: grid;
+    gap: 4px;
+    margin-top: 18px;
+  }
+
+  .rail nav span {
+    display: flex;
+    height: 30px;
+    align-items: center;
+    gap: 7px;
+    padding: 0 8px;
+    border-radius: 7px;
+    color: var(--text-2);
+    font-size: 9px;
+  }
+
+  .rail nav span.active {
+    background: var(--primary-light);
+    color: var(--primary);
+    font-weight: 700;
+  }
+
+  .rail-bottom {
+    position: absolute;
+    right: 13px;
+    bottom: 16px;
+    left: 13px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+  }
+
+  .rail-bottom > i {
+    display: grid;
+    width: 25px;
+    height: 25px;
+    flex: 0 0 auto;
+    place-items: center;
+    border-radius: 50%;
+    background: var(--primary);
+    color: white;
+    font-size: 8px;
+    font-style: normal;
+  }
+
+  .rail-bottom span { display: grid; gap: 2px; }
+  .rail-bottom strong { font-size: 8px; }
+  .rail-bottom small { color: var(--text-3); font-size: 7px; }
+
+  .workbook { padding: 23px 24px; background: #fffefa; }
+
+  .book-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .book-kicker {
+    color: var(--text-3);
+    font-size: 8px;
+    letter-spacing: .08em;
+  }
+
+  .book-head h3 {
+    margin: 4px 0 0;
+    color: var(--text-1);
+    font-family: var(--font-serif);
+    font-size: 21px;
+    font-weight: 600;
+  }
+
+  .book-head button {
+    display: flex;
+    height: 29px;
+    align-items: center;
+    gap: 5px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 7px;
+    background: var(--primary);
+    color: white;
+    font-size: 9px;
+  }
+
+  .viewbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 22px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .views { display: flex; gap: 18px; }
+  .views span {
+    padding: 0 1px 9px;
+    color: var(--text-3);
+    font-size: 9px;
+  }
+  .views span.active {
+    border-bottom: 2px solid var(--primary);
+    color: var(--primary);
+    font-weight: 700;
+  }
+
+  .view-tools { display: flex; align-items: center; gap: 10px; padding-bottom: 8px; }
+  .view-tools span { display: flex; gap: 4px; color: var(--text-3); font-size: 8px; }
+  .view-tools b { padding: 6px 8px; border-radius: 5px; background: var(--primary-light); color: var(--primary); font-size: 8px; }
+
+  .sheet {
+    margin-top: 14px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+
+  .sheet-row {
+    display: grid;
+    min-height: 50px;
+    grid-template-columns: 38px 1.35fr 1fr 1fr .8fr;
+    align-items: center;
+    border-top: 1px solid var(--border);
+    color: var(--text-2);
+    font-size: 9px;
+  }
+
+  .sheet-row:first-child { border-top: 0; }
+  .sheet-row > span { display: flex; align-items: center; height: 100%; padding: 0 12px; border-left: 1px solid var(--border); }
+  .sheet-row > span:first-child { justify-content: center; border-left: 0; color: var(--text-3); }
+  .sheet-head { min-height: 34px; background: #f7f3e9; color: var(--text-3); font-size: 8px; }
+
+  .company { gap: 7px; color: var(--text-1); font-weight: 600; }
+  .company i {
+    display: grid;
+    width: 20px;
+    height: 20px;
+    place-items: center;
+    border-radius: 5px;
+    background: #edf0e5;
+    color: var(--primary);
+    font-size: 8px;
+    font-style: normal;
+  }
+
+  .status { padding: 4px 7px; border-radius: 999px; font-size: 8px; font-style: normal; }
+  .status.green { background: var(--success-bg); color: var(--success); }
+  .status.orange { background: var(--seed-soft); color: var(--seed-strong); }
+  .status.purple { background: var(--purple-bg); color: var(--purple); }
+  .status.sand { background: var(--soft); color: var(--text-2); }
+
+  .owner { gap: 6px; }
+  .owner b {
+    display: grid;
+    width: 20px;
+    height: 20px;
+    place-items: center;
+    border-radius: 50%;
+    background: var(--soft);
+    font-size: 7px;
+  }
+
+  .ai-card {
+    position: absolute;
+    right: 23px;
+    bottom: 21px;
+    width: 355px;
+    overflow: hidden;
+    border: 1px solid rgba(102, 149, 109, .3);
+    border-radius: 15px;
+    background: rgba(252, 252, 247, .96);
+    box-shadow: 0 18px 40px rgba(46, 72, 49, .18);
+    backdrop-filter: blur(14px);
+  }
+
+  .ai-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 11px 13px;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(90deg, var(--primary-light), #f8f5ec);
+  }
+
+  .ai-head span { display: flex; align-items: center; gap: 6px; color: var(--primary); font-size: 9px; font-weight: 700; }
+  .ai-head em { color: var(--text-3); font-size: 7px; font-style: normal; }
+  .ai-card > p { margin: 0; padding: 13px; color: var(--text-1); font-size: 10px; font-weight: 600; }
+  .ai-answer { display: flex; align-items: flex-start; gap: 8px; padding: 0 13px 12px; }
+  .ai-answer > span { display: grid; width: 25px; height: 25px; flex: 0 0 auto; place-items: center; border-radius: 7px; background: var(--primary); color: white; }
+  .ai-answer div { display: grid; gap: 3px; }
+  .ai-answer strong { color: var(--text-1); font-size: 9px; }
+  .ai-answer small { color: var(--text-3); font-size: 7.5px; }
+  .ai-action { display: flex; align-items: center; justify-content: space-between; padding: 9px 13px; border-top: 1px solid var(--border); background: #f8f5ec; }
+  .ai-action span { color: var(--text-3); font-size: 7.5px; }
+  .ai-action button { border: 0; background: transparent; color: var(--primary); font-size: 8px; font-weight: 700; }
+
+  @media (max-width: 760px) {
+    .stage-wrap { margin-top: 38px; padding: 0 0 28px; }
+    .stage { min-height: 465px; border-radius: 17px; }
+    .window-bar { grid-template-columns: 1fr 1fr; }
+    .window-bar > span { display: none; }
+    .rail { display: none; }
+    .product-shell { grid-template-columns: 1fr; min-width: 690px; }
+    .workbook { padding: 18px 18px; }
+    .stage { overflow: hidden; }
+    .sheet-row { grid-template-columns: 32px 1.3fr 1fr 1fr .8fr; }
+    .ai-card { right: 12px; bottom: 14px; width: min(335px, calc(100% - 24px)); }
+  }
+</style>

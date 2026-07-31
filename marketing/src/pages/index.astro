@@ -1,0 +1,1012 @@
+---
+import {
+  ArrowRight,
+  ChartColumn,
+  Bot,
+  Check,
+  ChevronRight,
+  CircleCheck,
+  Database,
+  FileSearch,
+  GalleryVerticalEnd,
+  Import,
+  LayoutDashboard,
+  Link2,
+  Menu,
+  Rows3,
+  ShieldCheck,
+  Sparkles,
+  Table2,
+  Users,
+  WandSparkles,
+  X,
+} from "@lucide/astro";
+import Brand from "../components/Brand.astro";
+import ProductStage from "../components/ProductStage.astro";
+import BaseLayout from "../layouts/BaseLayout.astro";
+import { capabilityCards, navigation, templateCards, workflowSteps } from "../data/product";
+
+const appUrl = import.meta.env.PUBLIC_APP_URL || "/auth/login";
+const iconByName = {
+  database: Database,
+  layout: GalleryVerticalEnd,
+  sparkles: Sparkles,
+} as const;
+---
+
+<BaseLayout>
+  <div class="page-shell">
+    <header class="site-header">
+      <div class="container nav-inner">
+        <a class="brand-link" href="#top" aria-label="卯豆首页"><Brand /></a>
+        <nav class="desktop-nav" aria-label="主导航">
+          {navigation.map((item) => <a href={item.href}>{item.label}</a>)}
+        </nav>
+        <div class="nav-actions">
+          <a class="login-link" href={appUrl}>登录</a>
+          <a class="nav-cta" href={appUrl}>开始使用 <ArrowRight size={14} /></a>
+        </div>
+        <details class="mobile-nav">
+          <summary aria-label="打开导航"><Menu class="menu-open" size={21} /><X class="menu-close" size={21} /></summary>
+          <nav aria-label="移动端导航">
+            {navigation.map((item) => <a href={item.href}>{item.label}<ChevronRight size={14} /></a>)}
+            <a class="mobile-login" href={appUrl}>进入工作空间 <ArrowRight size={14} /></a>
+          </nav>
+        </details>
+      </div>
+    </header>
+
+    <main id="top">
+      <section class="hero">
+        <div class="hero-grain" aria-hidden="true"></div>
+        <div class="hero-orbit orbit-one" aria-hidden="true"></div>
+        <div class="hero-orbit orbit-two" aria-hidden="true"></div>
+        <div class="container hero-content">
+          <p class="hero-badge"><Sparkles size={13} /> AI 原生的数据工作空间 <span>NEW</span></p>
+          <h1>让每一张表，<br /><em>成为行动的起点。</em></h1>
+          <p class="hero-lead">
+            卯豆把表格、数据库、团队协作与 AI 放进同一个工作空间。<br class="wide-only" />
+            从整理信息到形成判断，让数据自然长成团队的工作方式。
+          </p>
+          <div class="hero-actions">
+            <a class="button button-primary" href={appUrl}>开始使用卯豆 <ArrowRight size={15} /></a>
+            <a class="button button-secondary" href="#capabilities">看看能做什么</a>
+          </div>
+          <div class="hero-notes" aria-label="产品特点">
+            <span><Check size={13} /> Excel / CSV 快速导入</span>
+            <span><Check size={13} /> 实时多人协作</span>
+            <span><Check size={13} /> AI 理解工作上下文</span>
+          </div>
+          <ProductStage />
+        </div>
+      </section>
+
+      <section class="premise section-space">
+        <div class="container premise-grid">
+          <div>
+            <p class="eyebrow">一个事实源，多种工作方式</p>
+            <h2>不是给表格增加功能，<br />而是让工作重新围绕数据组织。</h2>
+          </div>
+          <div class="premise-copy">
+            <p>团队真正需要的不是更多散落的工具，而是一份随时准确、人人都能理解、可以继续行动的数据。</p>
+            <p>卯豆保留表格的直觉，把结构、关联、权限和智能藏在背后，让复杂工作仍然简单。</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="capabilities" class="capabilities section-space">
+        <div class="container">
+          <div class="section-heading">
+            <p class="eyebrow">产品能力</p>
+            <h2>熟悉的开始，更深的可能</h2>
+            <p>每一项能力都围绕同一个目标：让团队更快地从信息走向结论。</p>
+          </div>
+          <div class="capability-grid">
+            {capabilityCards.map((item, index) => {
+              const Icon = iconByName[item.icon];
+              return (
+                <article class:list={["capability-card", `card-${index + 1}`]}>
+                  <div class="capability-icon"><Icon size={20} stroke-width={1.8} /></div>
+                  <p>{item.eyebrow}</p>
+                  <h3>{item.title}</h3>
+                  <span>{item.description}</span>
+                  <div class="card-index">0{index + 1}</div>
+                </article>
+              );
+            })}
+          </div>
+        </div>
+      </section>
+
+      <section class="showcase section-space">
+        <div class="container">
+          <div class="section-heading compact">
+            <p class="eyebrow">从不同角度看见工作</p>
+            <h2>一份数据，服务每一种角色</h2>
+          </div>
+
+          <div class="bento-grid">
+            <article class="bento views-card">
+              <div class="bento-copy">
+                <span class="feature-label"><Rows3 size={15} /> 多视图协作</span>
+                <h3>负责人看进度，管理者看全局，<br />数据仍然只有一份。</h3>
+                <p>在表格、看板、画廊与表单之间自由切换，每个人都用适合自己的方式完成工作。</p>
+              </div>
+              <div class="kanban-demo" aria-label="看板视图示意">
+                <div class="kanban-top"><strong>债权审查进度</strong><span><Table2 size={11} /> 表格</span><span class="active"><Rows3 size={11} /> 看板</span></div>
+                <div class="kanban-columns">
+                  <div><p><i class="dot sand"></i>待核验 <em>8</em></p><span><b>华远供应链</b><small>¥ 680,000 · 林澈</small></span><span><b>合信商贸</b><small>缺少付款凭证</small></span></div>
+                  <div><p><i class="dot orange"></i>复核中 <em>5</em></p><span><b>北辰实业</b><small>存在金额异议</small></span><span><b>启航物流</b><small>今日更新</small></span></div>
+                  <div><p><i class="dot green"></i>已确认 <em>24</em></p><span><b>知行科技</b><small>材料完整</small></span><span class="ghost-card"><b>+ 新建记录</b></span></div>
+                </div>
+              </div>
+            </article>
+
+            <article class="bento ai-showcase">
+              <div class="ai-orb"><WandSparkles size={22} /></div>
+              <span class="feature-label light"><Sparkles size={15} /> 卯豆 AI</span>
+              <h3>把问题说出来，<br />让答案回到工作里。</h3>
+              <p>AI 会理解当前工作簿、筛选条件与记录关联，不只回答问题，还能生成视图、图表与下一步动作。</p>
+              <div class="prompt-card">
+                <p>“按负责人汇总有异议的债权，并生成本周复核计划。”</p>
+                <div><span><Bot size={14} /> 正在分析 126 条记录</span><i></i><i></i><i></i></div>
+              </div>
+            </article>
+
+            <article class="bento dashboard-card">
+              <div class="bento-copy small-copy">
+                <span class="feature-label"><ChartColumn size={15} /> 实时仪表盘</span>
+                <h3>数字变化，结论同步更新</h3>
+                <p>无需维护另一份报表，图表始终基于最新数据。</p>
+              </div>
+              <div class="chart-demo" aria-label="仪表盘图表示意">
+                <header><span><small>申报总额</small><strong>¥12.84M</strong></span><em>较上周 +8.2%</em></header>
+                <div class="chart-body">
+                  <div class="y-axis"><span>12M</span><span>8M</span><span>4M</span><span>0</span></div>
+                  <div class="bars"><i style="--bar:35%"></i><i style="--bar:52%"></i><i style="--bar:43%"></i><i style="--bar:68%"></i><i style="--bar:61%"></i><i class="active" style="--bar:84%"></i><i style="--bar:74%"></i></div>
+                </div>
+                <div class="chart-labels"><span>周一</span><span>周二</span><span>周三</span><span>周四</span><span>周五</span><span>周六</span><span>今日</span></div>
+              </div>
+            </article>
+
+            <article class="bento research-card">
+              <div class="bento-copy small-copy">
+                <span class="feature-label"><FileSearch size={15} /> 资料与记录关联</span>
+                <h3>结论有出处，材料有归属</h3>
+                <p>把研究资料、证据与业务记录连接起来，随时追溯判断依据。</p>
+              </div>
+              <div class="link-demo">
+                <div class="doc-card"><span>PDF</span><p><strong>债权申报书.pdf</strong><small>12 页 · 已提取</small></p><CircleCheck size={15} /></div>
+                <div class="connector"><i></i><Link2 size={14} /><i></i></div>
+                <div class="record-card"><span>记录</span><p><small>债权人</small><strong>华远供应链</strong></p><p><small>申报金额</small><strong>¥ 680,000</strong></p></div>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="templates" class="templates section-space">
+        <div class="container template-layout">
+          <div class="template-intro">
+            <p class="eyebrow">行业模板</p>
+            <h2>从行业经验开始，<br />不必从空白表格开始。</h2>
+            <p>字段、视图和工作流程已经按实际场景组织好。选择模板，导入资料，然后按照团队习惯继续调整。</p>
+            <a href={appUrl}>浏览全部模板 <ArrowRight size={14} /></a>
+          </div>
+          <div class="template-list">
+            {templateCards.map((template) => (
+              <a class:list={["template-item", template.tone]} href={appUrl}>
+                <span class="template-number">{template.number}</span>
+                <span class="template-icon"><LayoutDashboard size={18} /></span>
+                <span class="template-name"><strong>{template.name}</strong><small>{template.meta}</small></span>
+                <ChevronRight size={18} />
+              </a>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section id="workflow" class="workflow section-space">
+        <div class="container">
+          <div class="workflow-head">
+            <div><p class="eyebrow">工作方式</p><h2>三步，把信息变成团队能力</h2></div>
+            <p>卯豆不要求团队改变熟悉的工作习惯，只把每一步连接得更自然。</p>
+          </div>
+          <div class="workflow-steps">
+            {workflowSteps.map((step, index) => (
+              <article>
+                <div class="step-top"><span>{step.number}</span>{index === 0 ? <Import size={19} /> : index === 1 ? <Users size={19} /> : <Sparkles size={19} />}</div>
+                <h3>{step.title}</h3>
+                <p>{step.description}</p>
+              </article>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section id="security" class="security">
+        <div class="security-pattern" aria-hidden="true"></div>
+        <div class="container security-grid">
+          <div class="security-copy">
+            <p class="eyebrow">数据安全</p>
+            <h2>权限不是页面上的开关，<br />而是数据本身的边界。</h2>
+            <p>每个工作区拥有独立数据库边界。成员权限、实时查询与数据操作由数据库统一执行，结构管理只对管理员开放。</p>
+            <div class="security-points">
+              <span><ShieldCheck size={16} /> 工作区数据库天然隔离</span>
+              <span><ShieldCheck size={16} /> 角色与数据权限统一约束</span>
+              <span><ShieldCheck size={16} /> 所有操作保留真实身份归因</span>
+            </div>
+          </div>
+          <div class="security-visual" aria-label="权限结构示意">
+            <div class="security-core"><ShieldCheck size={28} /><strong>Workspace DB</strong><small>独立数据边界</small></div>
+            <div class="role role-admin"><span>管</span><p><strong>管理员</strong><small>结构 + 数据</small></p><i></i></div>
+            <div class="role role-member"><span>员</span><p><strong>团队成员</strong><small>按权限协作</small></p><i></i></div>
+            <div class="role role-ai"><span><Sparkles size={13} /></span><p><strong>AI 助手</strong><small>沿用当前身份</small></p><i></i></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="final-cta">
+        <div class="container final-inner">
+          <div class="final-seed seed-a" aria-hidden="true"></div>
+          <div class="final-seed seed-b" aria-hidden="true"></div>
+          <p>从一张熟悉的表格开始</p>
+          <h2>让团队的数据，<br /><em>自己长出答案。</em></h2>
+          <a class="button final-button" href={appUrl}>开始使用卯豆 <ArrowRight size={15} /></a>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="container footer-main">
+        <div><Brand inverted /><p>AI 原生的数据工作空间</p></div>
+        <nav aria-label="页脚导航">{navigation.map((item) => <a href={item.href}>{item.label}</a>)}</nav>
+        <a class="footer-login" href={appUrl}>进入工作空间 <ArrowRight size={14} /></a>
+      </div>
+      <div class="container footer-bottom"><span>© {new Date().getFullYear()} 卯豆 Workspace</span><span>让数据自然生长</span></div>
+    </footer>
+  </div>
+</BaseLayout>
+
+<style>
+  .page-shell {
+    overflow: hidden;
+  }
+
+  .site-header {
+    position: fixed;
+    z-index: 50;
+    top: 0;
+    right: 0;
+    left: 0;
+    border-bottom: 1px solid rgba(218, 209, 190, .72);
+    background: rgba(239, 235, 226, .86);
+    backdrop-filter: blur(18px) saturate(135%);
+  }
+
+  .nav-inner {
+    display: grid;
+    height: 72px;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+  }
+
+  .brand-link {
+    justify-self: start;
+  }
+
+  .desktop-nav {
+    display: flex;
+    align-items: center;
+    gap: 31px;
+  }
+
+  .desktop-nav a,
+  .login-link {
+    position: relative;
+    color: var(--text-2);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .desktop-nav a::after {
+    position: absolute;
+    right: 0;
+    bottom: -8px;
+    left: 0;
+    height: 1px;
+    background: var(--primary);
+    content: "";
+    opacity: 0;
+    transform: scaleX(.4);
+    transition: opacity .2s ease, transform .2s ease;
+  }
+
+  .desktop-nav a:hover {
+    color: var(--primary);
+  }
+
+  .desktop-nav a:hover::after {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+
+  .nav-actions {
+    display: flex;
+    align-items: center;
+    justify-self: end;
+    gap: 19px;
+  }
+
+  .nav-cta {
+    display: inline-flex;
+    height: 38px;
+    align-items: center;
+    gap: 7px;
+    padding: 0 14px;
+    border-radius: 9px;
+    background: var(--primary);
+    color: white;
+    font-size: 11px;
+    font-weight: 700;
+    transition: background-color .2s ease, transform .2s ease;
+  }
+
+  .nav-cta:hover {
+    background: var(--primary-hover);
+    transform: translateY(-1px);
+  }
+
+  .mobile-nav {
+    display: none;
+  }
+
+  .hero {
+    position: relative;
+    padding: 151px 0 74px;
+    background:
+      radial-gradient(circle at 15% 30%, rgba(109, 184, 122, .13), transparent 26%),
+      radial-gradient(circle at 86% 15%, rgba(204, 107, 58, .08), transparent 22%),
+      var(--bg);
+  }
+
+  .hero-grain {
+    position: absolute;
+    inset: 0;
+    opacity: .25;
+    background-image: repeating-radial-gradient(circle at 10% 20%, rgba(74, 61, 39, .15) 0, rgba(74, 61, 39, .15) .35px, transparent .5px, transparent 4px);
+    background-size: 6px 6px;
+    pointer-events: none;
+  }
+
+  .hero-orbit {
+    position: absolute;
+    border: 1px solid rgba(47, 122, 76, .1);
+    border-radius: 50%;
+    pointer-events: none;
+  }
+
+  .orbit-one { top: 140px; left: -190px; width: 420px; height: 420px; }
+  .orbit-two { top: 85px; right: -135px; width: 310px; height: 310px; }
+
+  .hero-content {
+    position: relative;
+    text-align: center;
+  }
+
+  .hero-badge {
+    display: inline-flex;
+    margin: 0;
+    align-items: center;
+    gap: 7px;
+    padding: 7px 9px 7px 11px;
+    border: 1px solid #d4ddcf;
+    border-radius: 999px;
+    background: rgba(251, 250, 245, .72);
+    color: var(--primary);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .08em;
+  }
+
+  .hero-badge span {
+    padding: 3px 5px;
+    border-radius: 999px;
+    background: var(--primary);
+    color: white;
+    font-size: 7px;
+    letter-spacing: .06em;
+  }
+
+  .hero h1 {
+    max-width: 950px;
+    margin: 26px auto 0;
+    font-family: var(--font-serif);
+    font-size: clamp(48px, 7vw, 84px);
+    font-weight: 600;
+    letter-spacing: -.045em;
+    line-height: 1.08;
+  }
+
+  .hero h1 em {
+    color: var(--primary);
+    font-style: italic;
+    font-weight: 500;
+  }
+
+  .hero-lead {
+    margin: 28px auto 0;
+    color: var(--text-2);
+    font-size: 16px;
+    line-height: 1.9;
+  }
+
+  .hero-actions {
+    display: flex;
+    justify-content: center;
+    gap: 11px;
+    margin-top: 30px;
+  }
+
+  .hero-notes {
+    display: flex;
+    justify-content: center;
+    gap: 24px;
+    margin-top: 22px;
+    color: var(--text-3);
+    font-size: 10px;
+  }
+
+  .hero-notes span {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .hero-notes svg { color: var(--primary); }
+
+  .section-space {
+    padding: 118px 0;
+  }
+
+  .premise {
+    background: var(--surface);
+  }
+
+  .premise-grid {
+    display: grid;
+    grid-template-columns: 1.45fr .8fr;
+    gap: 110px;
+    align-items: end;
+  }
+
+  .premise h2,
+  .section-heading h2,
+  .template-intro h2,
+  .workflow-head h2,
+  .security-copy h2,
+  .final-inner h2 {
+    margin: 18px 0 0;
+    font-family: var(--font-serif);
+    font-size: clamp(36px, 4.5vw, 57px);
+    font-weight: 600;
+    letter-spacing: -.035em;
+    line-height: 1.2;
+  }
+
+  .premise-copy {
+    display: grid;
+    gap: 18px;
+    padding-bottom: 7px;
+  }
+
+  .premise-copy p {
+    margin: 0;
+    color: var(--text-2);
+    font-size: 13px;
+    line-height: 1.85;
+  }
+
+  .capabilities {
+    background: var(--surface);
+  }
+
+  .section-heading {
+    max-width: 690px;
+    margin: 0 auto 54px;
+    text-align: center;
+  }
+
+  .section-heading > p:last-child {
+    margin: 17px 0 0;
+    color: var(--text-2);
+    font-size: 13px;
+    line-height: 1.8;
+  }
+
+  .section-heading.compact {
+    margin-bottom: 48px;
+  }
+
+  .capability-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+  }
+
+  .capability-card {
+    position: relative;
+    min-height: 335px;
+    overflow: hidden;
+    padding: 31px;
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    background: #f7f4eb;
+    transition: transform .25s ease, box-shadow .25s ease;
+  }
+
+  .capability-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 20px 50px rgba(66, 55, 36, .08);
+  }
+
+  .capability-icon {
+    display: grid;
+    width: 42px;
+    height: 42px;
+    margin-bottom: 48px;
+    place-items: center;
+    border-radius: 12px;
+    background: var(--primary-light);
+    color: var(--primary);
+  }
+
+  .card-2 .capability-icon { background: var(--seed-soft); color: var(--seed-strong); }
+  .card-3 .capability-icon { background: var(--purple-bg); color: var(--purple); }
+
+  .capability-card > p {
+    margin: 0 0 11px;
+    color: var(--text-3);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+  }
+
+  .capability-card h3 {
+    max-width: 280px;
+    margin: 0;
+    font-family: var(--font-serif);
+    font-size: 25px;
+    font-weight: 600;
+    line-height: 1.35;
+  }
+
+  .capability-card > span {
+    display: block;
+    margin-top: 15px;
+    color: var(--text-2);
+    font-size: 12px;
+    line-height: 1.75;
+  }
+
+  .card-index {
+    position: absolute;
+    top: 21px;
+    right: 24px;
+    color: rgba(92, 84, 71, .2);
+    font-family: var(--font-serif);
+    font-size: 33px;
+  }
+
+  .showcase {
+    background: var(--bg);
+  }
+
+  .bento-grid {
+    display: grid;
+    grid-template-columns: 1.15fr .85fr;
+    gap: 17px;
+  }
+
+  .bento {
+    position: relative;
+    overflow: hidden;
+    border: 1px solid var(--border-dark);
+    border-radius: 21px;
+    background: var(--surface);
+  }
+
+  .views-card {
+    min-height: 610px;
+    grid-column: 1 / -1;
+    padding: 48px 48px 0;
+  }
+
+  .bento-copy {
+    max-width: 610px;
+  }
+
+  .feature-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    color: var(--primary);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .08em;
+  }
+
+  .bento h3 {
+    margin: 18px 0 0;
+    font-family: var(--font-serif);
+    font-size: 34px;
+    font-weight: 600;
+    letter-spacing: -.025em;
+    line-height: 1.3;
+  }
+
+  .bento-copy > p,
+  .ai-showcase > p {
+    max-width: 580px;
+    margin: 14px 0 0;
+    color: var(--text-2);
+    font-size: 12px;
+    line-height: 1.8;
+  }
+
+  .kanban-demo {
+    position: absolute;
+    right: 48px;
+    bottom: -14px;
+    left: 48px;
+    min-width: 670px;
+    min-height: 340px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 15px 15px 0 0;
+    background: #fffefa;
+    box-shadow: 0 23px 50px rgba(63, 53, 35, .1);
+  }
+
+  .kanban-top {
+    display: flex;
+    height: 54px;
+    align-items: center;
+    gap: 17px;
+    padding: 0 20px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .kanban-top strong { margin-right: auto; font-family: var(--font-serif); font-size: 14px; }
+  .kanban-top span { display: inline-flex; align-items: center; gap: 5px; color: var(--text-3); font-size: 9px; }
+  .kanban-top span.active { color: var(--primary); font-weight: 700; }
+
+  .kanban-columns {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    padding: 18px;
+    background: #f7f4eb;
+  }
+
+  .kanban-columns > div { min-width: 0; }
+  .kanban-columns p { display: flex; align-items: center; gap: 6px; margin: 0 0 10px; color: var(--text-2); font-size: 9px; font-weight: 700; }
+  .kanban-columns p em { display: grid; width: 17px; height: 17px; margin-left: auto; place-items: center; border-radius: 50%; background: var(--soft); color: var(--text-3); font-size: 7px; font-style: normal; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; }
+  .dot.sand { background: #bcab8d; }
+  .dot.orange { background: var(--seed); }
+  .dot.green { background: var(--primary); }
+  .kanban-columns div > span { display: grid; gap: 5px; min-height: 69px; margin-bottom: 8px; padding: 13px; border: 1px solid var(--border); border-radius: 9px; background: white; box-shadow: 0 3px 8px rgba(53, 44, 29, .04); }
+  .kanban-columns span b { font-size: 9px; }
+  .kanban-columns span small { color: var(--text-3); font-size: 7.5px; }
+  .kanban-columns span.ghost-card { min-height: 48px; place-items: center; border-style: dashed; background: transparent; color: var(--text-3); box-shadow: none; }
+
+  .ai-showcase {
+    min-height: 535px;
+    padding: 43px;
+    border-color: #305e3d;
+    background: #173c29;
+    color: white;
+  }
+
+  .ai-showcase::after {
+    position: absolute;
+    top: -100px;
+    right: -80px;
+    width: 300px;
+    height: 300px;
+    border: 1px solid rgba(255, 255, 255, .08);
+    border-radius: 50%;
+    content: "";
+    box-shadow: 0 0 0 45px rgba(255, 255, 255, .025), 0 0 0 90px rgba(255, 255, 255, .02);
+  }
+
+  .ai-orb {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    width: 49px;
+    height: 49px;
+    margin-bottom: 45px;
+    place-items: center;
+    border: 1px solid rgba(255,255,255,.15);
+    border-radius: 15px;
+    background: rgba(255,255,255,.08);
+    color: #b6deba;
+  }
+
+  .feature-label.light { color: #a8d9ae; }
+  .ai-showcase h3 { position: relative; z-index: 1; font-size: 37px; }
+  .ai-showcase > p { color: #b7c7bb; }
+
+  .prompt-card {
+    position: absolute;
+    right: 28px;
+    bottom: 28px;
+    left: 28px;
+    overflow: hidden;
+    border: 1px solid rgba(255,255,255,.12);
+    border-radius: 13px;
+    background: rgba(255,255,255,.075);
+    backdrop-filter: blur(8px);
+  }
+
+  .prompt-card > p { margin: 0; padding: 16px; color: #f6f1e7; font-family: var(--font-serif); font-size: 13px; line-height: 1.55; }
+  .prompt-card > div { display: flex; align-items: center; gap: 4px; padding: 10px 14px; border-top: 1px solid rgba(255,255,255,.1); color: #9db8a2; font-size: 8px; }
+  .prompt-card > div span { display: inline-flex; margin-right: auto; align-items: center; gap: 6px; }
+  .prompt-card > div i { width: 4px; height: 4px; border-radius: 50%; background: #89c591; }
+  .prompt-card > div i:nth-last-child(2) { opacity: .6; }
+  .prompt-card > div i:last-child { opacity: .3; }
+
+  .dashboard-card,
+  .research-card {
+    min-height: 535px;
+    padding: 42px 38px;
+  }
+
+  .small-copy h3 { font-size: 29px; }
+
+  .chart-demo {
+    position: absolute;
+    right: 28px;
+    bottom: 28px;
+    left: 28px;
+    min-height: 254px;
+    padding: 19px;
+    border: 1px solid var(--border);
+    border-radius: 13px;
+    background: #fffefa;
+  }
+
+  .chart-demo header { display: flex; align-items: end; justify-content: space-between; }
+  .chart-demo header span { display: grid; gap: 4px; }
+  .chart-demo header small { color: var(--text-3); font-size: 8px; }
+  .chart-demo header strong { font-family: var(--font-serif); font-size: 24px; }
+  .chart-demo header em { padding: 5px 7px; border-radius: 999px; background: var(--primary-light); color: var(--primary); font-size: 7.5px; font-style: normal; font-weight: 700; }
+  .chart-body { display: grid; height: 132px; margin-top: 12px; grid-template-columns: 25px 1fr; }
+  .y-axis { display: flex; flex-direction: column; justify-content: space-between; padding: 2px 0; color: var(--text-3); font-size: 6px; }
+  .bars { display: flex; align-items: end; justify-content: space-around; padding: 0 8px; border-bottom: 1px solid var(--border); background: repeating-linear-gradient(to bottom, transparent 0, transparent 32px, var(--border) 33px); }
+  .bars i { width: 8%; height: var(--bar); border-radius: 3px 3px 0 0; background: #bdd6bb; }
+  .bars i.active { background: var(--primary); }
+  .chart-labels { display: grid; margin: 7px 0 0 25px; grid-template-columns: repeat(7, 1fr); color: var(--text-3); font-size: 6px; text-align: center; }
+
+  .research-card { background: #f7f3e9; }
+  .link-demo { position: absolute; right: 28px; bottom: 28px; left: 28px; }
+  .doc-card,
+  .record-card { border: 1px solid var(--border); border-radius: 11px; background: #fffefa; box-shadow: 0 8px 22px rgba(65, 53, 34, .05); }
+  .doc-card { display: flex; align-items: center; gap: 10px; padding: 13px; }
+  .doc-card > span { display: grid; width: 33px; height: 38px; place-items: center; border-radius: 6px; background: var(--seed-soft); color: var(--seed-strong); font-size: 7px; font-weight: 700; }
+  .doc-card p { display: grid; gap: 3px; margin: 0 auto 0 0; }
+  .doc-card strong { font-size: 9px; }
+  .doc-card small { color: var(--text-3); font-size: 7px; }
+  .doc-card svg { color: var(--primary); }
+  .connector { display: flex; height: 34px; align-items: center; justify-content: center; gap: 6px; color: var(--primary); }
+  .connector i { width: 30%; height: 1px; background: var(--border-dark); }
+  .record-card { display: grid; grid-template-columns: auto 1fr 1fr; gap: 14px; align-items: center; padding: 14px; }
+  .record-card > span { padding: 5px 7px; border-radius: 5px; background: var(--primary-light); color: var(--primary); font-size: 7px; font-weight: 700; }
+  .record-card p { display: grid; gap: 3px; margin: 0; }
+  .record-card small { color: var(--text-3); font-size: 7px; }
+  .record-card strong { font-size: 9px; }
+
+  .templates {
+    background: #e9e2d4;
+  }
+
+  .template-layout {
+    display: grid;
+    grid-template-columns: .82fr 1.18fr;
+    gap: 110px;
+    align-items: center;
+  }
+
+  .template-intro > p:nth-of-type(2) { margin: 22px 0 0; color: var(--text-2); font-size: 13px; line-height: 1.85; }
+  .template-intro > a { display: inline-flex; align-items: center; gap: 8px; margin-top: 28px; color: var(--primary); font-size: 12px; font-weight: 700; }
+  .template-intro > a:hover { text-decoration: underline; text-underline-offset: 5px; }
+
+  .template-list { display: grid; gap: 10px; }
+  .template-item { display: grid; min-height: 104px; grid-template-columns: 42px 48px 1fr auto; align-items: center; gap: 13px; padding: 0 22px; border: 1px solid rgba(184, 170, 145, .5); border-radius: 14px; background: rgba(251, 250, 245, .76); transition: transform .2s ease, background-color .2s ease; }
+  .template-item:hover { background: var(--surface); transform: translateX(5px); }
+  .template-number { color: var(--text-3); font-family: var(--font-serif); font-size: 11px; }
+  .template-icon { display: grid; width: 42px; height: 42px; place-items: center; border-radius: 11px; background: var(--primary-light); color: var(--primary); }
+  .template-item.orange .template-icon { background: var(--seed-soft); color: var(--seed-strong); }
+  .template-item.purple .template-icon { background: var(--purple-bg); color: var(--purple); }
+  .template-name { display: grid; gap: 6px; }
+  .template-name strong { font-family: var(--font-serif); font-size: 17px; font-weight: 600; }
+  .template-name small { color: var(--text-3); font-size: 9px; }
+  .template-item > svg { color: var(--text-3); }
+
+  .workflow {
+    background: var(--surface);
+  }
+
+  .workflow-head {
+    display: grid;
+    grid-template-columns: 1fr 310px;
+    gap: 60px;
+    align-items: end;
+  }
+
+  .workflow-head > p { margin: 0 0 8px; color: var(--text-2); font-size: 13px; line-height: 1.8; }
+  .workflow-steps { display: grid; margin-top: 62px; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--border-dark); }
+  .workflow-steps article { min-height: 280px; padding: 30px 31px 0; border-left: 1px solid var(--border); }
+  .workflow-steps article:first-child { border-left: 0; }
+  .step-top { display: flex; align-items: center; justify-content: space-between; color: var(--primary); }
+  .step-top span { color: var(--text-3); font-family: var(--font-serif); font-size: 12px; }
+  .workflow-steps h3 { margin: 70px 0 0; font-family: var(--font-serif); font-size: 22px; font-weight: 600; }
+  .workflow-steps p { margin: 14px 0 0; color: var(--text-2); font-size: 11px; line-height: 1.8; }
+
+  .security {
+    position: relative;
+    overflow: hidden;
+    padding: 124px 0;
+    background: #193b29;
+    color: white;
+  }
+
+  .security-pattern { position: absolute; inset: 0; opacity: .32; background-image: radial-gradient(rgba(255,255,255,.12) .7px, transparent .7px); background-size: 20px 20px; mask-image: linear-gradient(90deg, transparent, black 45%, black); }
+  .security-grid { position: relative; display: grid; grid-template-columns: 1fr 1fr; gap: 100px; align-items: center; }
+  .security-copy .eyebrow { color: #9fd0a6; }
+  .security-copy h2 { font-size: clamp(38px, 4.5vw, 56px); }
+  .security-copy > p:nth-of-type(2) { max-width: 560px; margin: 23px 0 0; color: #b7c5ba; font-size: 13px; line-height: 1.85; }
+  .security-points { display: grid; gap: 13px; margin-top: 31px; }
+  .security-points span { display: flex; align-items: center; gap: 9px; color: #d8e2d9; font-size: 11px; }
+  .security-points svg { color: #9fd0a6; }
+
+  .security-visual { position: relative; min-height: 420px; }
+  .security-core { position: absolute; z-index: 2; top: 50%; left: 50%; display: grid; width: 145px; height: 145px; place-items: center; padding: 24px; border: 1px solid rgba(255,255,255,.22); border-radius: 50%; background: rgba(255,255,255,.1); box-shadow: 0 0 0 38px rgba(255,255,255,.035), 0 0 0 77px rgba(255,255,255,.02); transform: translate(-50%, -50%); backdrop-filter: blur(9px); }
+  .security-core svg { color: #a8d9ae; }
+  .security-core strong { margin-top: 6px; font-family: var(--font-serif); font-size: 13px; }
+  .security-core small { color: #9db2a1; font-size: 7px; }
+  .role { position: absolute; z-index: 3; display: flex; width: 168px; align-items: center; gap: 10px; padding: 11px 12px; border: 1px solid rgba(255,255,255,.13); border-radius: 11px; background: rgba(10, 36, 22, .72); box-shadow: 0 10px 30px rgba(0,0,0,.15); backdrop-filter: blur(9px); }
+  .role > span { display: grid; width: 31px; height: 31px; flex: 0 0 auto; place-items: center; border-radius: 8px; background: rgba(159,208,166,.15); color: #a8d9ae; font-size: 10px; }
+  .role p { display: grid; gap: 3px; margin: 0; }
+  .role strong { font-size: 9px; }
+  .role small { color: #91a796; font-size: 7px; }
+  .role i { position: absolute; height: 1px; background: rgba(168,217,174,.35); }
+  .role-admin { top: 28px; left: 0; }
+  .role-admin i { top: 59px; left: 137px; width: 92px; transform: rotate(28deg); }
+  .role-member { top: 173px; right: -2px; }
+  .role-member i { top: 26px; right: 165px; width: 70px; }
+  .role-ai { bottom: 26px; left: 16px; }
+  .role-ai i { bottom: 53px; left: 142px; width: 83px; transform: rotate(-28deg); }
+
+  .final-cta {
+    padding: 26px;
+    background: var(--surface);
+  }
+
+  .final-inner {
+    position: relative;
+    overflow: hidden;
+    max-width: 1220px;
+    padding: 105px 30px;
+    border-radius: 22px;
+    background: #dfe9db;
+    text-align: center;
+  }
+
+  .final-inner::before,
+  .final-inner::after { position: absolute; width: 350px; height: 350px; border: 1px solid rgba(47,122,76,.1); border-radius: 50%; content: ""; }
+  .final-inner::before { top: -190px; left: -90px; box-shadow: 0 0 0 52px rgba(47,122,76,.025), 0 0 0 103px rgba(47,122,76,.02); }
+  .final-inner::after { right: -80px; bottom: -240px; box-shadow: 0 0 0 52px rgba(47,122,76,.025), 0 0 0 103px rgba(47,122,76,.02); }
+  .final-inner > p { position: relative; z-index: 1; margin: 0; color: var(--primary); font-size: 10px; font-weight: 700; letter-spacing: .14em; }
+  .final-inner h2 { position: relative; z-index: 1; margin-top: 17px; font-size: clamp(43px, 5.5vw, 68px); }
+  .final-inner h2 em { color: var(--primary); font-style: italic; font-weight: 500; }
+  .final-button { position: relative; z-index: 1; margin-top: 29px; background: var(--text-1); color: white; }
+  .final-button:hover { background: var(--primary); }
+  .final-seed { position: absolute; width: 12px; height: 16px; border-radius: 70% 30% 60% 40%; background: var(--seed); opacity: .6; transform: rotate(35deg); }
+  .seed-a { top: 24%; left: 15%; }
+  .seed-b { right: 14%; bottom: 25%; width: 8px; height: 11px; opacity: .35; transform: rotate(-28deg); }
+
+  footer {
+    padding: 70px 0 27px;
+    background: #14241a;
+    color: white;
+  }
+
+  .footer-main { display: grid; grid-template-columns: 1fr auto 1fr; align-items: start; }
+  .footer-main > div > p { margin: 13px 0 0; color: #809287; font-size: 9px; }
+  .footer-main nav { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px 42px; }
+  .footer-main nav a { color: #a9b7ad; font-size: 10px; }
+  .footer-main nav a:hover { color: white; }
+  .footer-login { display: inline-flex; justify-self: end; align-items: center; gap: 7px; padding-bottom: 5px; border-bottom: 1px solid rgba(255,255,255,.22); color: #dfe8e1; font-size: 10px; font-weight: 700; }
+  .footer-bottom { display: flex; justify-content: space-between; margin-top: 58px; padding-top: 19px; border-top: 1px solid rgba(255,255,255,.08); color: #64766a; font-size: 8px; }
+
+  @media (max-width: 920px) {
+    .desktop-nav { display: none; }
+    .nav-inner { grid-template-columns: 1fr auto; }
+    .nav-actions { display: none; }
+    .mobile-nav { position: relative; display: block; justify-self: end; }
+    .mobile-nav summary { display: grid; width: 39px; height: 39px; place-items: center; border: 1px solid var(--border-dark); border-radius: 10px; background: var(--surface); cursor: pointer; list-style: none; }
+    .mobile-nav summary::-webkit-details-marker { display: none; }
+    .menu-close { display: none; }
+    .mobile-nav[open] .menu-open { display: none; }
+    .mobile-nav[open] .menu-close { display: block; }
+    .mobile-nav nav { position: absolute; top: 49px; right: 0; display: grid; width: 250px; overflow: hidden; border: 1px solid var(--border-dark); border-radius: 13px; background: var(--surface); box-shadow: 0 18px 45px rgba(48,40,27,.14); }
+    .mobile-nav nav a { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--border); color: var(--text-2); font-size: 11px; }
+    .mobile-nav nav a:last-child { border-bottom: 0; }
+    .mobile-nav .mobile-login { background: var(--primary); color: white; font-weight: 700; }
+
+    .premise-grid,
+    .template-layout,
+    .security-grid { grid-template-columns: 1fr; gap: 50px; }
+    .capability-grid { grid-template-columns: 1fr; }
+    .capability-card { min-height: 275px; }
+    .capability-icon { margin-bottom: 32px; }
+    .bento-grid { grid-template-columns: 1fr; }
+    .views-card { grid-column: auto; }
+    .ai-showcase,
+    .dashboard-card,
+    .research-card { min-height: 530px; }
+    .template-intro { max-width: 650px; }
+    .workflow-head { grid-template-columns: 1fr; gap: 25px; }
+    .workflow-steps { grid-template-columns: 1fr; border-top: 0; }
+    .workflow-steps article { min-height: auto; padding: 28px 0; border-top: 1px solid var(--border); border-left: 0; }
+    .workflow-steps h3 { margin-top: 40px; }
+    .security-visual { width: min(530px, 100%); margin: 0 auto; }
+  }
+
+  @media (max-width: 680px) {
+    .nav-inner { height: 64px; }
+    .hero { padding: 126px 0 58px; }
+    .hero h1 { font-size: clamp(43px, 13vw, 62px); }
+    .hero-lead { font-size: 14px; }
+    .wide-only { display: none; }
+    .hero-actions { flex-direction: column; align-items: stretch; padding: 0 9px; }
+    .hero-notes { flex-wrap: wrap; gap: 9px 15px; }
+    .section-space { padding: 85px 0; }
+    .premise-grid { gap: 30px; }
+    .premise h2,
+    .section-heading h2,
+    .template-intro h2,
+    .workflow-head h2,
+    .security-copy h2 { font-size: 36px; }
+    .section-heading { text-align: left; }
+    .capability-card { padding: 26px; }
+    .views-card { min-height: 555px; padding: 31px 25px 0; }
+    .bento h3 { font-size: 29px; }
+    .kanban-demo { right: 25px; bottom: -10px; left: 25px; min-width: 600px; transform: scale(.82); transform-origin: left bottom; }
+    .ai-showcase { min-height: 540px; padding: 31px 25px; }
+    .ai-showcase h3 { font-size: 32px; }
+    .dashboard-card,
+    .research-card { padding: 31px 25px; }
+    .chart-demo,
+    .link-demo { right: 18px; bottom: 18px; left: 18px; }
+    .template-layout { gap: 42px; }
+    .template-item { grid-template-columns: 30px 42px 1fr auto; gap: 9px; padding: 0 14px; }
+    .template-name strong { font-size: 15px; }
+    .security { padding: 88px 0; }
+    .security-grid { gap: 45px; }
+    .security-visual { min-height: 380px; transform: scale(.88); }
+    .role-admin { left: -24px; }
+    .role-member { right: -26px; }
+    .role-ai { left: -12px; }
+    .final-cta { padding: 12px; }
+    .final-inner { padding: 86px 19px; border-radius: 17px; }
+    .final-inner h2 { font-size: 43px; }
+    .footer-main { grid-template-columns: 1fr; gap: 38px; }
+    .footer-main nav { justify-self: start; }
+    .footer-login { justify-self: start; }
+  }
+</style>

@@ -6,6 +6,7 @@ build/
 data/
 .build/
 .vite/
+.astro/
 *.tsbuildinfo
 .env
 .DS_Store
