@@ -191,7 +191,8 @@ function createMockControlPlane(state: FakeDbState): ProvisioningControlPlane {
           source: "manual",
           status: input.sourceKind === "trial" ? "trialing" : "active",
           trial_start: input.sourceKind === "trial" ? new DateTime("2026-07-01T00:00:00.000Z") : undefined,
-          trial_end: input.sourceKind === "trial" ? new DateTime("2026-08-01T00:00:00.000Z") : undefined,
+          // Keep the fixture active independently of the wall clock used by CI.
+          trial_end: input.sourceKind === "trial" ? new DateTime("2099-01-01T00:00:00.000Z") : undefined,
         },
         item: {
           id: new StringRecordId(`quota_subscription_item:${input.workspace.dbName}`),
