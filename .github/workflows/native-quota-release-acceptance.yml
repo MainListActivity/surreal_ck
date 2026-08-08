@@ -204,14 +204,29 @@ jobs:
             -v "$volume:/data" \
             "$image" \
             start --no-banner --log none --user root --pass root rocksdb:/data
+          ready=false
           for attempt in $(seq 1 60); do
             if curl --fail --silent \
               'http://127.0.0.1:18080/ready?require=native-quota-v1' >/dev/null; then
+              ready=true
               break
             fi
-            test "$attempt" -lt 60
             sleep 1
           done
+          if [ "$ready" != true ]; then
+            echo "native quota image did not become ready within 60 seconds"
+            echo "container status:"
+            docker inspect --format '{{json .State}}' "$container" || true
+            echo "container logs:"
+            docker logs "$container" || true
+            echo "status endpoint:"
+            curl --silent --show-error --max-time 5 \
+              http://127.0.0.1:18080/status || true
+            echo "capabilities endpoint:"
+            curl --silent --show-error --max-time 5 \
+              http://127.0.0.1:18080/capabilities || true
+            exit 1
+          fi
           curl --fail --silent http://127.0.0.1:18080/capabilities \
             > candidate/live-capabilities.json
           jq -e \
