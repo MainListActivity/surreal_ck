@@ -272,11 +272,11 @@ jobs:
           set -euo pipefail
           container="native-quota-vanilla-${GITHUB_RUN_ID}"
           docker run -d --name "$container" \
-            -p 18081:8000 \
+            -p 18082:8000 \
             surrealdb/surrealdb:v3.2.3 \
             start --no-banner --log none --user root --pass root memory
           for attempt in $(seq 1 60); do
-            if curl --fail --silent http://127.0.0.1:18081/health >/dev/null; then
+            if curl --fail --silent http://127.0.0.1:18082/health >/dev/null; then
               break
             fi
             test "$attempt" -lt 60
@@ -288,7 +288,7 @@ jobs:
         env:
           NATIVE_QUOTA_E2E_BINARY: ${{ steps.cli.outputs.binary }}
           NATIVE_QUOTA_E2E_EXPECTED_GIT_SHA: ${{ inputs.expected_git_sha }}
-          NATIVE_QUOTA_E2E_VANILLA_URL: ws://127.0.0.1:18081/rpc
+          NATIVE_QUOTA_E2E_VANILLA_URL: ws://127.0.0.1:18082/rpc
           SURREAL_BINARY: ${{ steps.cli.outputs.binary }}
         run: |
           set -euo pipefail
