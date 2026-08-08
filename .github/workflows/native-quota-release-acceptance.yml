@@ -192,16 +192,20 @@ jobs:
           ' candidate/oci-index.json >/dev/null
 
           container="native-quota-acceptance-${GITHUB_RUN_ID}"
-          volume="${container}-data"
+          data_dir="${RUNNER_TEMP}/${container}-data"
           cleanup() {
             docker rm -f "$container" >/dev/null 2>&1 || true
-            docker volume rm "$volume" >/dev/null 2>&1 || true
+            rm -rf -- "$data_dir"
           }
           trap cleanup EXIT
-          docker volume create "$volume" >/dev/null
+          # The production image runs as nonroot. A newly-created Docker
+          # volume is root-owned, so use a runner bind mount with explicit
+          # writable permissions to exercise the same nonroot container path.
+          mkdir -p "$data_dir"
+          chmod 0777 "$data_dir"
           docker run -d --name "$container" \
             -p 18080:8000 \
-            -v "$volume:/data" \
+            -v "$data_dir:/data" \
             "$image" \
             start --no-banner --log none --user root --pass root rocksdb:/data
           ready=false
