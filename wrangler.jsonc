@@ -1,0 +1,13 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "surreal-ck-hono-edge",
+  "main": "cloudflare/edge-proxy.ts",
+  "compatibility_date": "2025-01-01",
+  "workers_dev": true,
+  "vars": {
+    "ORIGIN_BASE_URL": "https://data.maplayer.top"
+  },
+  "observability": {
+    "enabled": true
+  }
+}
