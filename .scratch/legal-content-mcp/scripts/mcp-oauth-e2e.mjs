@@ -255,6 +255,64 @@ async function loadBatch() {
   return object(JSON.parse(await readFile(path, "utf8")), "CONTENT_BATCH_FILE");
 }
 
+function contentApiUrl(pathname) {
+  const url = new URL(mcpUrl);
+  url.pathname = pathname;
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
+/**
+ * 真实生产验收不能把合成文书伪装成公开数据。仅在 --fixture 时登记专用、
+ * 不可售的来源；已经存在时只验证其权限，不制造新的许可修订。
+ */
+async function ensureSyntheticFixtureSource(accessToken) {
+  const headers = { authorization: `Bearer ${accessToken}`, accept: "application/json" };
+  const listed = await fetch(contentApiUrl("/api/content/sources"), { headers });
+  const existing = await parseJsonResponse(listed);
+  if (!listed.ok || !Array.isArray(existing)) {
+    return { ok: false, httpStatus: listed.status, created: false };
+  }
+
+  const source = existing.find((item) => item && typeof item === "object" && item.sourceKey === "fixture.synthetic.cn");
+  if (source) {
+    const allowed = Array.isArray(source.allowedActions) ? source.allowedActions : [];
+    return {
+      ok: source.status === "active" && allowed.includes("submit") && allowed.includes("publish"),
+      httpStatus: listed.status,
+      created: false,
+    };
+  }
+
+  const registered = await fetch(contentApiUrl("/api/content/sources"), {
+    method: "POST",
+    headers: { ...headers, "content-type": "application/json" },
+    body: JSON.stringify({
+      sourceKey: "fixture.synthetic.cn",
+      label: "SCK-LCM-10 合成验收来源（不可售）",
+      jurisdiction: "中国大陆（合成测试）",
+      baseUrl: "https://example.invalid/sck-lcm-10",
+      status: "active",
+      allowedActions: ["submit", "publish", "withdraw", "restore"],
+      license: {
+        licenseKind: "synthetic-e2e-only",
+        allowedActions: ["submit", "publish", "withdraw", "restore"],
+        effectiveFrom: "2026-09-01T00:00:00Z",
+        effectiveUntil: null,
+        evidenceUrl: "https://example.invalid/sck-lcm-10/license",
+        evidenceText: "仅用于 SCK-LCM-10 自动验收；不代表真实裁判文书、不可对外销售或作为法律内容提供。",
+      },
+    }),
+  });
+  const sourceResult = await parseJsonResponse(registered);
+  return {
+    ok: registered.ok && sourceResult?.sourceKey === "fixture.synthetic.cn",
+    httpStatus: registered.status,
+    created: registered.ok,
+  };
+}
+
 function clientAuth(client, headers, form) {
   const method = client.token_endpoint_auth_method || "none";
   if (method === "client_secret_basic") {
@@ -381,6 +439,12 @@ async function main() {
   if (!batch) {
     report.lifecycle = { skipped: true, reason: "未配置 --fixture 或 CONTENT_BATCH_FILE" };
   } else {
+    if (fixtureRequested) {
+      report.lifecycle.source = await ensureSyntheticFixtureSource(initialAccess);
+      if (!report.lifecycle.source.ok) {
+        report.failures.push({ step: "fixture_source", ...safeHttpError(report.lifecycle.source.httpStatus, "") });
+      }
+    }
     const submitted = await callAndRecord("submit_batch", batch);
     batchId = typeof submitted.value?.batchId === "string" ? submitted.value.batchId : null;
     report.lifecycle.submit = {
