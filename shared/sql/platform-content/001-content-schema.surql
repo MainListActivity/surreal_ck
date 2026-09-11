@@ -106,7 +106,9 @@ DEFINE FIELD IF NOT EXISTS source_form ON TABLE content_version TYPE string
     "amendment_notice",
   ];
 DEFINE FIELD IF NOT EXISTS evidence ON TABLE content_version TYPE array<object> FLEXIBLE;
+DEFINE FIELD IF NOT EXISTS evidence.* ON TABLE content_version TYPE object FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS field_issues ON TABLE content_version TYPE array<object> FLEXIBLE;
+DEFINE FIELD IF NOT EXISTS field_issues.* ON TABLE content_version TYPE object FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS processing ON TABLE content_version TYPE object FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS content_kind_payload ON TABLE content_version TYPE object FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS received_at ON TABLE content_version TYPE datetime
@@ -160,6 +162,7 @@ DEFINE FIELD IF NOT EXISTS raw_article_label ON TABLE content_citation TYPE opti
 DEFINE FIELD IF NOT EXISTS resolution ON TABLE content_citation TYPE string
   ASSERT $value INSIDE ["unresolved", "ambiguous", "proposed", "verified"];
 DEFINE FIELD IF NOT EXISTS candidates ON TABLE content_citation TYPE array<object> FLEXIBLE;
+DEFINE FIELD IF NOT EXISTS candidates.* ON TABLE content_citation TYPE object FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS treatment ON TABLE content_citation TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS treatment_evidence ON TABLE content_citation TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE content_citation TYPE datetime
@@ -180,6 +183,7 @@ DEFINE FIELD IF NOT EXISTS revision ON TABLE citation_resolution TYPE int
 DEFINE FIELD IF NOT EXISTS status ON TABLE citation_resolution TYPE string
   ASSERT $value INSIDE ["unresolved", "ambiguous", "proposed", "verified"];
 DEFINE FIELD IF NOT EXISTS candidates ON TABLE citation_resolution TYPE array<object> FLEXIBLE;
+DEFINE FIELD IF NOT EXISTS candidates.* ON TABLE citation_resolution TYPE object FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS evidence_ref ON TABLE citation_resolution TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS verified_by_subject ON TABLE citation_resolution TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE citation_resolution TYPE datetime
@@ -265,6 +269,7 @@ DEFINE FIELD IF NOT EXISTS target_item ON TABLE ingestion_entry TYPE option<reco
 DEFINE FIELD IF NOT EXISTS expected_version ON TABLE ingestion_entry TYPE option<record<content_version>>;
 DEFINE FIELD IF NOT EXISTS payload ON TABLE ingestion_entry TYPE object FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS issues ON TABLE ingestion_entry TYPE array<object> FLEXIBLE;
+DEFINE FIELD IF NOT EXISTS issues.* ON TABLE ingestion_entry TYPE object FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS status ON TABLE ingestion_entry TYPE string
   ASSERT $value INSIDE [
     "accepted",
@@ -290,6 +295,7 @@ DEFINE FIELD IF NOT EXISTS revision ON TABLE validation_revision TYPE int
 DEFINE FIELD IF NOT EXISTS request_digest ON TABLE validation_revision TYPE string;
 DEFINE FIELD IF NOT EXISTS rules_version ON TABLE validation_revision TYPE string;
 DEFINE FIELD IF NOT EXISTS issues ON TABLE validation_revision TYPE array<object> FLEXIBLE;
+DEFINE FIELD IF NOT EXISTS issues.* ON TABLE validation_revision TYPE object FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS publishable ON TABLE validation_revision TYPE bool;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE validation_revision TYPE datetime
   DEFAULT time::now();
@@ -335,6 +341,7 @@ DEFINE FIELD IF NOT EXISTS status ON TABLE publication_item_result TYPE string
   ];
 DEFINE FIELD IF NOT EXISTS version ON TABLE publication_item_result TYPE option<record<content_version>>;
 DEFINE FIELD IF NOT EXISTS issues ON TABLE publication_item_result TYPE array<object> FLEXIBLE;
+DEFINE FIELD IF NOT EXISTS issues.* ON TABLE publication_item_result TYPE object FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE publication_item_result TYPE datetime
   DEFAULT time::now();
 DEFINE INDEX IF NOT EXISTS publication_item_result_unique ON TABLE publication_item_result COLUMNS request, entry_key
