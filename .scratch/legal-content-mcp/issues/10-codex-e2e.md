@@ -62,6 +62,9 @@ Parent: [实施规格](../PRD.md)
 - 已增加安全 bootstrap 配置：部署者可在 Hono 环境中显式指定 OIDC subject 与
   内容能力，服务启动时只补缺失授权；当前生产环境尚未写入该配置，避免未经真人
   确认授予平台运营权限。
+- 已提交可复用的 ego-browser 页面脚本
+  `.scratch/legal-content-mcp/scripts/ego-mcp-e2e.mjs`：复用 TaskSpace 1/p1，
+  不携带密码；密码为空时交还用户，完成后将 loopback 回调安全写入临时文件。
 
 ## Handoff
 
