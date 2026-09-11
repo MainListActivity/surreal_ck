@@ -29,7 +29,8 @@ const PublicIdSchema = z
   .trim()
   .min(1)
   .max(256)
-  .refine((value) => !/\s/u.test(value), "公开 ID 不能包含空白字符");
+  .refine((value) => !/\s/u.test(value), "公开 ID 不能包含空白字符")
+  .refine((value) => !/^[A-Za-z_][A-Za-z0-9_]*:[^:]+$/u.test(value), "公开 ID 不能暴露数据库 RecordId 语法");
 
 const IdempotencyKeySchema = z
   .string()
@@ -270,7 +271,11 @@ const BaseUpsertPayloadSchema = z.strictObject({
   source: ContentSourceSchema,
   document: ContentDocumentSchema,
   target: z
-    .strictObject({ itemId: PublicIdSchema, expectedVersionId: PublicIdSchema.nullable().optional() })
+    .strictObject({
+      itemId: PublicIdSchema,
+      expectedVersionId: PublicIdSchema.nullable().optional(),
+      expectedPublicationRevision: NonNegativeIntegerSchema.nullable().optional(),
+    })
     .nullable()
     .optional(),
 });
@@ -419,6 +424,7 @@ export const ContentVersionSummarySchema = z.strictObject({
   bodyBytes: NonNegativeIntegerSchema,
   publicationStatus: z.enum(["published", "withdrawn"]),
 });
+export type ContentVersionSummary = z.infer<typeof ContentVersionSummarySchema>;
 
 export const SearchContentItemSchema = z.strictObject({
   itemId: PublicIdSchema,

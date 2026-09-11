@@ -1,6 +1,6 @@
-Status: blocked
-Label: needs-triage
-Assignee: unassigned
+Status: done
+Label: verified
+Assignee: codex
 ID: SCK-LCM-05
 Repository: surreal_ck
 
@@ -23,9 +23,17 @@ Parent: [实施规格](../PRD.md)
 
 ## Acceptance
 
-- [ ] 真实/合成 fixture 均有明确边界；完整正文在处理链中不截断，定位可复核。
-- [ ] 并发重复提交不重复创建，超限、重复引用、同号不同文书和错误哈希测试通过。
-- [ ] 失败项独立返回；批次成功不意味着已发布，许可不足阻断发布。
+- [x] 真实/合成 fixture 均有明确边界；完整正文在处理链中不截断，定位可复核。
+- [x] 并发重复提交不重复创建，超限、重复引用、同号不同文书和错误哈希测试通过。
+- [x] 失败项独立返回；批次成功不意味着已发布，许可不足阻断发布。
+
+## Verification
+
+- `pnpm --filter @surreal-ck/shared typecheck`
+- `pnpm --filter @surreal-ck/server typecheck`
+- `pnpm --filter @surreal-ck/server exec bun test src/content/service.test.ts --preload ./test/setup-env.ts`
+- `InMemoryPlatformContentStore` 覆盖 actor/key 幂等、同来源重复、来源拒绝、伪造 actor、条目级失败与发布许可检查。
+- `SurrealPlatformContentStore` 使用本地 SurrealDB 可选集成测试验证参数化 RecordId、批次事务和重启可恢复的公开 batch id。
 
 ## Handoff
 

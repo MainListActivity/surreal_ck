@@ -1,6 +1,6 @@
-Status: blocked
-Label: needs-triage
-Assignee: unassigned
+Status: done
+Label: verified
+Assignee: codex
 ID: SCK-LCM-06
 Repository: surreal_ck
 
@@ -21,9 +21,16 @@ Parent: [实施规格](../PRD.md)
 
 ## Acceptance
 
-- [ ] 两运营同时发布、撤回与恢复能发现过期前提。
-- [ ] 进程中断恢复不重复版本/事件，不泄露半成品；未知许可拒绝。
-- [ ] 客户读取路径实测撤回后拒绝，旧 token/缓存不扩大访问，恢复需重新核验。
+- [x] 两运营同时发布、撤回与恢复能发现过期前提。
+- [x] 进程中断恢复不重复版本/事件，不泄露半成品；未知许可拒绝。
+- [x] 客户读取路径实测撤回后拒绝，旧 token/缓存不扩大访问，恢复需重新核验。
+
+## Verification
+
+- `pnpm --filter @surreal-ck/server exec bun test src/content/service.test.ts --preload ./test/setup-env.ts`
+- `RUN_LOCAL_PLATFORM_CONTENT_TESTS=1 pnpm --filter @surreal-ck/server exec bun test src/content/store.integration.test.ts`
+- 持久化适配器以 `publication_request` 唯一幂等行预留 pending；内容版本、来源关联、citation/法规条款、projection、publication event 和 entry 状态在同一事务内提交。
+- `expectedVersionId` / `expectedPublicationRevision` 使用条件更新，过期前提返回 `stale_version`；撤回保留版本和事件，仅将投影置为 withdrawn，恢复必须携带新的状态前提。
 
 ## Handoff
 

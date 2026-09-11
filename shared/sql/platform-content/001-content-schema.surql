@@ -55,6 +55,9 @@ DEFINE FIELD IF NOT EXISTS kind ON TABLE content_item TYPE string
 DEFINE FIELD IF NOT EXISTS current_version ON TABLE content_item TYPE option<record<content_version>>;
 DEFINE FIELD IF NOT EXISTS publication_status ON TABLE content_item TYPE string
   ASSERT $value INSIDE ["unpublished", "published", "withdrawn"];
+DEFINE FIELD IF NOT EXISTS publication_revision ON TABLE content_item TYPE int
+  DEFAULT 1
+  ASSERT $value > 0;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE content_item TYPE datetime
   DEFAULT time::now();
 DEFINE FIELD IF NOT EXISTS updated_at ON TABLE content_item TYPE datetime
@@ -77,6 +80,7 @@ DEFINE INDEX IF NOT EXISTS content_source_record_source_key_unique ON TABLE cont
 DEFINE INDEX IF NOT EXISTS content_source_record_item ON TABLE content_source_record COLUMNS item;
 
 DEFINE TABLE IF NOT EXISTS content_version SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD IF NOT EXISTS public_id ON TABLE content_version TYPE string;
 DEFINE FIELD IF NOT EXISTS item ON TABLE content_version TYPE record<content_item>;
 DEFINE FIELD IF NOT EXISTS revision ON TABLE content_version TYPE int
   ASSERT $value > 0;
@@ -111,6 +115,8 @@ DEFINE FIELD IF NOT EXISTS created_by_subject ON TABLE content_version TYPE stri
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE content_version TYPE datetime
   DEFAULT time::now();
 DEFINE INDEX IF NOT EXISTS content_version_revision_unique ON TABLE content_version COLUMNS item, revision
+  UNIQUE;
+DEFINE INDEX IF NOT EXISTS content_version_public_id_unique ON TABLE content_version COLUMNS public_id
   UNIQUE;
 DEFINE INDEX IF NOT EXISTS content_version_body_sha256 ON TABLE content_version COLUMNS body_sha256;
 DEFINE EVENT IF NOT EXISTS content_version_immutable ON TABLE content_version
@@ -153,6 +159,7 @@ DEFINE FIELD IF NOT EXISTS raw_law_name ON TABLE content_citation TYPE option<st
 DEFINE FIELD IF NOT EXISTS raw_article_label ON TABLE content_citation TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS resolution ON TABLE content_citation TYPE string
   ASSERT $value INSIDE ["unresolved", "ambiguous", "proposed", "verified"];
+DEFINE FIELD IF NOT EXISTS candidates ON TABLE content_citation TYPE array<object> FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS treatment ON TABLE content_citation TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS treatment_evidence ON TABLE content_citation TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE content_citation TYPE datetime
@@ -205,10 +212,12 @@ DEFINE FIELD IF NOT EXISTS resolution_revision ON TABLE cites_legislation TYPE r
   READONLY;
 
 DEFINE TABLE IF NOT EXISTS ingestion_batch SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD IF NOT EXISTS public_id ON TABLE ingestion_batch TYPE string;
 DEFINE FIELD IF NOT EXISTS actor_subject ON TABLE ingestion_batch TYPE string;
 DEFINE FIELD IF NOT EXISTS idempotency_key ON TABLE ingestion_batch TYPE string;
 DEFINE FIELD IF NOT EXISTS request_digest ON TABLE ingestion_batch TYPE string;
 DEFINE FIELD IF NOT EXISTS contract_version ON TABLE ingestion_batch TYPE string;
+DEFINE FIELD IF NOT EXISTS request ON TABLE ingestion_batch TYPE object FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS status ON TABLE ingestion_batch TYPE string
   ASSERT $value INSIDE [
     "received",
@@ -218,6 +227,9 @@ DEFINE FIELD IF NOT EXISTS status ON TABLE ingestion_batch TYPE string
     "rejected",
     "published",
   ];
+DEFINE FIELD IF NOT EXISTS validation_revision ON TABLE ingestion_batch TYPE int
+  DEFAULT 1
+  ASSERT $value > 0;
 DEFINE FIELD IF NOT EXISTS received_at ON TABLE ingestion_batch TYPE datetime
   DEFAULT time::now();
 DEFINE FIELD IF NOT EXISTS updated_at ON TABLE ingestion_batch TYPE datetime
@@ -225,6 +237,24 @@ DEFINE FIELD IF NOT EXISTS updated_at ON TABLE ingestion_batch TYPE datetime
 DEFINE FIELD IF NOT EXISTS supersedes_batch ON TABLE ingestion_batch TYPE option<record<ingestion_batch>>;
 DEFINE INDEX IF NOT EXISTS ingestion_batch_actor_idempotency_unique ON TABLE ingestion_batch COLUMNS actor_subject, idempotency_key
   UNIQUE;
+DEFINE INDEX IF NOT EXISTS ingestion_batch_public_id_unique ON TABLE ingestion_batch COLUMNS public_id
+  UNIQUE;
+
+DEFINE TABLE IF NOT EXISTS platform_content_audit_event SCHEMAFULL
+  PERMISSIONS NONE;
+DEFINE FIELD IF NOT EXISTS kind ON TABLE platform_content_audit_event TYPE string;
+DEFINE FIELD IF NOT EXISTS batch ON TABLE platform_content_audit_event TYPE option<record<ingestion_batch>>;
+DEFINE FIELD IF NOT EXISTS entry ON TABLE platform_content_audit_event TYPE option<record<ingestion_entry>>;
+DEFINE FIELD IF NOT EXISTS actor_subject ON TABLE platform_content_audit_event TYPE string;
+DEFINE FIELD IF NOT EXISTS details ON TABLE platform_content_audit_event TYPE object FLEXIBLE;
+DEFINE FIELD IF NOT EXISTS occurred_at ON TABLE platform_content_audit_event TYPE datetime
+  DEFAULT time::now();
+DEFINE EVENT IF NOT EXISTS platform_content_audit_event_immutable ON TABLE platform_content_audit_event
+  WHEN $event = "UPDATE"
+  OR $event = "DELETE"
+  THEN {
+    THROW "immutable-platform-content-record:platform_content_audit_event";
+  };
 
 DEFINE TABLE IF NOT EXISTS ingestion_entry SCHEMAFULL PERMISSIONS NONE;
 DEFINE FIELD IF NOT EXISTS batch ON TABLE ingestion_entry TYPE record<ingestion_batch>;
@@ -234,6 +264,7 @@ DEFINE FIELD IF NOT EXISTS operation ON TABLE ingestion_entry TYPE string
 DEFINE FIELD IF NOT EXISTS target_item ON TABLE ingestion_entry TYPE option<record<content_item>>;
 DEFINE FIELD IF NOT EXISTS expected_version ON TABLE ingestion_entry TYPE option<record<content_version>>;
 DEFINE FIELD IF NOT EXISTS payload ON TABLE ingestion_entry TYPE object FLEXIBLE;
+DEFINE FIELD IF NOT EXISTS issues ON TABLE ingestion_entry TYPE array<object> FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS status ON TABLE ingestion_entry TYPE string
   ASSERT $value INSIDE [
     "accepted",
@@ -246,6 +277,7 @@ DEFINE FIELD IF NOT EXISTS status ON TABLE ingestion_entry TYPE string
     "unchanged",
     "failed",
   ];
+DEFINE FIELD IF NOT EXISTS publication_status ON TABLE ingestion_entry TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE ingestion_entry TYPE datetime
   DEFAULT time::now();
 DEFINE INDEX IF NOT EXISTS ingestion_entry_batch_key_unique ON TABLE ingestion_entry COLUMNS batch, entry_key
@@ -271,6 +303,7 @@ DEFINE EVENT IF NOT EXISTS validation_revision_immutable ON TABLE validation_rev
   };
 
 DEFINE TABLE IF NOT EXISTS publication_request SCHEMAFULL PERMISSIONS NONE;
+DEFINE FIELD IF NOT EXISTS public_id ON TABLE publication_request TYPE string;
 DEFINE FIELD IF NOT EXISTS batch ON TABLE publication_request TYPE record<ingestion_batch>;
 DEFINE FIELD IF NOT EXISTS actor_subject ON TABLE publication_request TYPE string;
 DEFINE FIELD IF NOT EXISTS validation_revision ON TABLE publication_request TYPE int
@@ -279,16 +312,15 @@ DEFINE FIELD IF NOT EXISTS entry_keys ON TABLE publication_request TYPE array<st
 DEFINE FIELD IF NOT EXISTS idempotency_key ON TABLE publication_request TYPE string;
 DEFINE FIELD IF NOT EXISTS status ON TABLE publication_request TYPE string
   ASSERT $value INSIDE ["pending", "completed", "partial", "failed"];
+DEFINE FIELD IF NOT EXISTS response ON TABLE publication_request TYPE option<object> FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE publication_request TYPE datetime
   DEFAULT time::now();
+DEFINE FIELD IF NOT EXISTS updated_at ON TABLE publication_request TYPE datetime
+  VALUE time::now();
 DEFINE INDEX IF NOT EXISTS publication_request_idempotency_unique ON TABLE publication_request COLUMNS actor_subject, idempotency_key
   UNIQUE;
-DEFINE EVENT IF NOT EXISTS publication_request_immutable ON TABLE publication_request
-  WHEN $event = "UPDATE"
-  OR $event = "DELETE"
-  THEN {
-    THROW "immutable-platform-content-record:publication_request";
-  };
+DEFINE INDEX IF NOT EXISTS publication_request_public_id_unique ON TABLE publication_request COLUMNS public_id
+  UNIQUE;
 
 DEFINE TABLE IF NOT EXISTS publication_item_result SCHEMAFULL PERMISSIONS NONE;
 DEFINE FIELD IF NOT EXISTS request ON TABLE publication_item_result TYPE record<publication_request>;

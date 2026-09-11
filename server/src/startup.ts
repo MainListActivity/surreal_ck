@@ -2,6 +2,7 @@ import { createApp } from "./app";
 import { env } from "./env";
 import { closeRootConnection, initRootConnection } from "./db/root-connection";
 import { ensureSystemSchema } from "./db/system-schema";
+import { ensurePlatformContentSchema } from "./content/schema";
 import { seedSystemAdmins } from "./db/system-admin-seed";
 import { seedQuotaPlans } from "./db/quota-plan-seed";
 import { migrateAllWorkspaces } from "./db/migration-runner";
@@ -38,6 +39,7 @@ export type StartServerDeps = {
   initRootConnection?: () => Promise<void>;
   verifyNativeQuotaRootHandshake?: () => Promise<unknown>;
   ensureSystemSchema?: () => Promise<unknown>;
+  ensurePlatformContentSchema?: () => Promise<unknown>;
   seedSystemAdmins?: () => Promise<unknown>;
   seedQuotaPlans?: () => Promise<unknown>;
   migrateAllWorkspaces?: () => Promise<unknown>;
@@ -69,6 +71,8 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
   const verifyNativeQuota = deps.verifyNativeQuotaRootHandshake
     ?? verifyNativeQuotaRootHandshake;
   const ensureSchema = deps.ensureSystemSchema ?? ensureSystemSchema;
+  const ensureContentSchema = deps.ensurePlatformContentSchema
+    ?? (envName === "test" ? async () => undefined : () => ensurePlatformContentSchema());
   const seedAdmins = deps.seedSystemAdmins ?? seedSystemAdmins;
   const seedPlans = deps.seedQuotaPlans ?? seedQuotaPlans;
   const migrateWorkspaces = deps.migrateAllWorkspaces ?? migrateAllWorkspaces;
@@ -112,6 +116,7 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
     throw cause;
   }
   await ensureSchema();
+  await ensureContentSchema();
   await seedAdmins();
   await seedPlans();
   await migrateWorkspaces();

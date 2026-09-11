@@ -64,6 +64,9 @@ import {
   type QuotaOpsFreshReadPort,
   type QuotaOpsPreflightPort,
 } from "./quota/quota-ops-preflight";
+import { createContentRoutes } from "./routes/content";
+import { PlatformContentService } from "./content/service";
+import { SurrealPlatformContentStore } from "./content/store";
 
 export type AppOptions = {
   workspaceScope?: WorkspaceScopeModule;
@@ -89,6 +92,8 @@ export type AppOptions = {
   quotaNotifications?: QuotaNotificationService;
   quotaOpsConsole?: QuotaOpsConsolePort;
   quotaOpsPreflight?: QuotaOpsPreflightPort;
+  /** 平台法律内容维护服务；生产默认绑定 _system 平台内容库。 */
+  platformContentService?: PlatformContentService;
 };
 
 type AiStreamWebSocket = ReturnType<typeof createAiStreamRoutes>["websocket"];
@@ -128,6 +133,19 @@ function createDefaultQuotaReadService(): QuotaReadService {
     new QuotaInfoCache(),
     new QuotaObservationService(new SurrealQuotaObservationStore()),
   );
+}
+
+function createDefaultPlatformContentService(): PlatformContentService {
+  const store = new SurrealPlatformContentStore({
+    async query(sql: string, params?: Record<string, unknown>): Promise<unknown> {
+      return await getRootConnection().query(sql, params);
+    },
+  });
+  return new PlatformContentService({
+    store,
+    // 来源由运营端登记到平台内容库；动态读取避免发布进程重启后回退到旧配置。
+    sourceProvider: { list: () => store.listSources?.() ?? Promise.resolve([]) },
+  });
 }
 
 const defaultQuotaOperatorIntents: QuotaOperatorIntentPort = {
@@ -180,6 +198,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
       quotaReadService as unknown as QuotaOpsFreshReadPort,
       quotaOpsConsole,
     );
+  const platformContentService = options.platformContentService ?? createDefaultPlatformContentService();
 
   const base = new Hono<AppBindings>();
   base.use("*", requestLogger);
@@ -218,6 +237,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
         options.requireUser,
       ),
     )
+    .route("/", createContentRoutes({ service: platformContentService, requireUser: options.requireUser }))
     .route(
       "/",
       createAiChatRoutes({
