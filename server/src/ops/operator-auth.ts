@@ -5,6 +5,7 @@ import type { AppBindings } from "../hono-types";
 import { HttpError } from "../http-error";
 import { env } from "../env";
 import { getRootDatabaseSession } from "../db/root-connection";
+import { introspectOidcAccessToken, type OidcTokenActivityChecker } from "../oidc/introspection";
 import { verifyOidcToken } from "../oidc/verify";
 
 export type PlatformOperatorAuth = Readonly<{
@@ -77,9 +78,15 @@ export function createPlatformOperatorCapabilityReader(
  */
 export function requirePlatformOperator(
   requiredCapability?: PlatformOperatorCapability,
-  options: Readonly<{ reader?: PlatformOperatorCapabilityReader }> = {},
+  options: Readonly<{
+    reader?: PlatformOperatorCapabilityReader;
+    tokenActivityChecker?: OidcTokenActivityChecker;
+  }> = {},
 ): MiddlewareHandler<AppBindings> {
   const reader = options.reader ?? createPlatformOperatorCapabilityReader();
+  const tokenActivityChecker =
+    options.tokenActivityChecker ??
+    (env.NODE_ENV === "production" ? introspectOidcAccessToken : async () => true);
   return async (c, next) => {
     const token = bearerToken(c.req.header("authorization"));
     let user;
@@ -88,6 +95,9 @@ export function requirePlatformOperator(
     } catch (error) {
       if (error instanceof HttpError) throw error;
       throw oidcError(error);
+    }
+    if (!(await tokenActivityChecker(token))) {
+      throw new HttpError(401, "oidc-revoked", "Bearer token has been revoked");
     }
     const capabilities = [...await reader.getCapabilities(user.subject)].sort();
     if (capabilities.length === 0) {

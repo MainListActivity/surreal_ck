@@ -19,6 +19,9 @@ const EnvSchema = z.object({
   OIDC_CLIENT_ID: z.string().min(1).optional(),
   OIDC_CLIENT_SECRET: z.string().min(1).optional(),
   OIDC_TOKEN_ENDPOINT: z.string().url().optional(),
+  // 运营端的 OAuth access token 在每次 MCP 调用时通过此端点确认未被撤销；
+  // 缺省时按 issuer 的 RFC 7662 相对端点推导。
+  OIDC_INTROSPECTION_ENDPOINT: z.string().url().optional(),
   OIDC_TOKEN_AUTH_METHOD: z.enum(["client_secret_basic", "client_secret_post"]).default("client_secret_basic"),
 
   IDP_HOOK_SECRET: z.string().min(8),

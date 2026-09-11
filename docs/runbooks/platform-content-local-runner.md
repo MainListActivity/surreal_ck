@@ -36,8 +36,11 @@ Runner 的顺序固定为：`initialize` → `get_data_contract` → `submit_bat
 写入仓库或终端输出：
 
 ```bash
-# Ego 页面脚本：必须在用户明确交还 TaskSpace 后运行；默认复用 TaskSpace 1 / p1
-rtk proxy ego-browser nodejs .scratch/legal-content-mcp/scripts/ego-mcp-e2e.mjs
+# Ego 页面脚本：必须在用户明确交还 TaskSpace 后运行；默认复用 TaskSpace 1 / p1。
+# ego-browser 的 Node runtime 只接受 heredoc；替换成你的工作区绝对路径。
+rtk proxy ego-browser nodejs <<'EOF'
+await import('file:///Users/y/IdeaProjects/surreal_ck/.scratch/legal-content-mcp/scripts/ego-mcp-e2e.mjs')
+EOF
 
 # 回调已生成后，执行发现、五工具、刷新、重连和撤销验收
 CONTENT_MCP_URL=https://l.maplayer.top/api/ops/mcp \

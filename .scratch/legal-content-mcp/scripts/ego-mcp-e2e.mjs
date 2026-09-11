@@ -35,14 +35,13 @@ const saveCallbackFromPage = async () => {
 
 const currentUrl = await page.url();
 const current = new URL(currentUrl);
-const isCallbackPage = current.hostname === "127.0.0.1" && current.port === "43123";
 const isExistingAuthChallenge =
   current.hostname === "auth.maplayer.top" &&
   (current.pathname.startsWith("/login/ck") || current.pathname.startsWith("/consent"));
 // 工作区首页的登录态不一定等于 IdP cookie；从业务页进入验收时必须先打开
 // 本次 DCR 生成的授权 URL。若 IdP 会话有效，会直接跳到 consent；若当前已在
 // challenge 页，则保留用户正在填写的内容。
-if (!isCallbackPage && !isExistingAuthChallenge) {
+if (!isExistingAuthChallenge) {
   await page.goto(authUrl);
   await page.waitForLoadState();
 }
