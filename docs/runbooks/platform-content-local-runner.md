@@ -28,6 +28,34 @@ CONTENT_PUBLISH_CONFIRM=YES pnpm content:runner -- --publish
 
 Runner 的顺序固定为：`initialize` → `get_data_contract` → `submit_batch`（同 actor/幂等键可安全重跑）→ 分页 `inspect_batch`。没有 `--publish` 时永远不调用 `publish_batch`；`--publish` 仍要求 `CONTENT_PUBLISH_CONFIRM=YES`，且只提交状态为 `ready` 的条目。
 
+## Codex OAuth / MCP 验收
+
+生产验收使用 `.scratch/legal-content-mcp/scripts/ego-mcp-e2e.mjs` 完成真人登录与
+同意，再使用 `.scratch/legal-content-mcp/scripts/mcp-oauth-e2e.mjs` 换取 token 并
+调用五工具。两个脚本只在本机临时目录读写 0600 文件，绝不把密码、授权码或 token
+写入仓库或终端输出：
+
+```bash
+# Ego 页面脚本：必须在用户明确交还 TaskSpace 后运行；默认复用 TaskSpace 1 / p1
+rtk proxy ego-browser nodejs .scratch/legal-content-mcp/scripts/ego-mcp-e2e.mjs
+
+# 回调已生成后，执行发现、五工具、刷新、重连和撤销验收
+CONTENT_MCP_URL=https://l.maplayer.top/api/ops/mcp \
+  rtk proxy node .scratch/legal-content-mcp/scripts/mcp-oauth-e2e.mjs
+```
+
+验收脚本默认只提交并 inspect。要执行明确的发布测试，必须同时提供一个已登记且
+获许可的成品批次（或显式标记为 synthetic 的 `--fixture`）以及：
+
+```bash
+CONTENT_PUBLISH_CONFIRM=YES \
+  rtk proxy node .scratch/legal-content-mcp/scripts/mcp-oauth-e2e.mjs --fixture --publish
+```
+
+`--fixture` 仅用于协议联调，来源键 `fixture.synthetic.cn` 未登记时应准确记录
+`source_not_registered`，不能把这种结果当作真实法规/裁判文书发布成功。详细结果写入
+`CONTENT_E2E_REPORT_FILE`（默认 `/tmp/sck-mcp-e2e-report.json`），摘要不包含凭证。
+
 ## 采集与持续更新约定
 
 - 本地 agent 应为每次采集生成稳定的 `idempotencyKey`，同一来源记录使用 `source.recordKey`，重叠发现由服务端按来源记录和正文摘要去重。

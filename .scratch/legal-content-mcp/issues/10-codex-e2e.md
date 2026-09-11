@@ -65,6 +65,10 @@ Parent: [实施规格](../PRD.md)
 - 已提交可复用的 ego-browser 页面脚本
   `.scratch/legal-content-mcp/scripts/ego-mcp-e2e.mjs`：复用 TaskSpace 1/p1，
   不携带密码；密码为空时交还用户，完成后将 loopback 回调安全写入临时文件。
+- 已提交可复用的 OAuth/MCP 验收脚本
+  `.scratch/legal-content-mcp/scripts/mcp-oauth-e2e.mjs`：校验 state、交换授权码、
+  调用 initialize/tools/list 与五个工具，并在存在 refresh token 时验证刷新、重连和
+  撤销；凭证与完整报告只写入本机 0600 临时文件，不打印 secret/code/token。
 
 ## Handoff
 
