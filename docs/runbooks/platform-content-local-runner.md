@@ -55,6 +55,16 @@ CONTENT_PUBLISH_CONFIRM=YES \
   rtk proxy node .scratch/legal-content-mcp/scripts/mcp-oauth-e2e.mjs --fixture --publish
 ```
 
+需要执行 SCK-LCM-10 的完整生产验收时，再明确加入 `--full-lifecycle`：它会使用
+不可售的 synthetic 文书和法规，验证文书发布、修订、撤回、恢复、法规条文拆分及
+已发布投影读取。流程结束时文书和法规均恢复为已发布状态；不会创建真实来源或可售数据。
+
+```bash
+CONTENT_PUBLISH_CONFIRM=YES \
+  rtk proxy node .scratch/legal-content-mcp/scripts/mcp-oauth-e2e.mjs \
+  --fixture --publish --full-lifecycle
+```
+
 `--fixture` 仅用于协议联调，来源键 `fixture.synthetic.cn` 未登记时应准确记录
 `source_not_registered`，不能把这种结果当作真实法规/裁判文书发布成功。详细结果写入
 `CONTENT_E2E_REPORT_FILE`（默认 `/tmp/sck-mcp-e2e-report.json`），摘要不包含凭证。

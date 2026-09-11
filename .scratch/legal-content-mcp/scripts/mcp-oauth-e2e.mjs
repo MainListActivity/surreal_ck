@@ -12,6 +12,8 @@
  *
  * 默认只提交并 inspect，不发布。完整发布验收必须显式使用：
  *   --fixture --publish，且 CONTENT_PUBLISH_CONFIRM=YES。
+ * 加上 --full-lifecycle 会额外验证文书修订、撤回、恢复、法规条文拆分和
+ * 已发布投影读取；仅能与上述两个 flag 同时使用。
  */
 
 import { chmod, readFile, writeFile } from "node:fs/promises";
@@ -32,6 +34,7 @@ const revokeEndpoint = process.env.CONTENT_REVOCATION_ENDPOINT?.trim() || `${iss
 const protocolVersion = "2025-06-18";
 const publishRequested = process.argv.includes("--publish");
 const fixtureRequested = process.argv.includes("--fixture");
+const fullLifecycleRequested = process.argv.includes("--full-lifecycle");
 
 function object(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -176,27 +179,37 @@ function sha256(text) {
   return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
+function fixtureToken(value, prefix) {
+  return `${prefix}-${sha256(value).slice(0, 16)}`;
+}
+
 /** 明确标记为 synthetic；不能当作真实来源或可销售内容。 */
-function syntheticJudgmentBatch() {
+function syntheticJudgmentBatch(options = {}) {
+  const idempotencyKey = options.idempotencyKey
+    ?? process.env.CONTENT_FIXTURE_IDEMPOTENCY_KEY?.trim()
+    ?? "fixture-synthetic-judgment-v1";
+  const recordKey = options.recordKey ?? fixtureToken(idempotencyKey, "judgment");
+  const caseNumber = `(fixture) ${recordKey}`;
+  const bodyRevision = options.bodyRevision ?? "";
   const bodyText =
     "【合成全文】本院经审理查明：当事人行为时有效的《合同法》第四百条规定，受托人应当报告处理委托事务的情况。" +
-    "本院认为，争议应依照证据和适用时点判断。判决如下：驳回全部诉讼请求。";
+    `本院认为，争议应依照证据和适用时点判断。判决如下：驳回全部诉讼请求。${bodyRevision}`;
   const quotedText = "当事人行为时有效的《合同法》第四百条规定";
   const bodySha256 = sha256(bodyText);
   const start = Buffer.byteLength(bodyText.slice(0, bodyText.indexOf(quotedText)), "utf8");
   const end = start + Buffer.byteLength(quotedText, "utf8");
   return {
     contractVersion: "1",
-    idempotencyKey: process.env.CONTENT_FIXTURE_IDEMPOTENCY_KEY?.trim() || "fixture-synthetic-judgment-v1",
+    idempotencyKey,
     items: [{
-      entryKey: "fixture-judgment-1",
+      entryKey: fixtureToken(idempotencyKey, "fixture-judgment"),
       operation: "upsert",
       payload: {
         kind: "judicial_document",
         source: {
           sourceKey: "fixture.synthetic.cn",
-          url: "https://example.invalid/fixture/judgment-1",
-          recordKey: "judgment-1",
+          url: `https://example.invalid/fixture/${recordKey}`,
+          recordKey,
           fetchedAt: "2026-09-01T12:00:00Z",
           publishedAt: null,
           updatedAt: null,
@@ -221,7 +234,7 @@ function syntheticJudgmentBatch() {
         },
         judgment: {
           documentType: "民事判决书",
-          caseNumber: "(fixture) synthetic-1",
+          caseNumber,
           court: "合成测试法院",
           decidedOn: "2026-09-01",
           causeOfAction: "合同纠纷",
@@ -241,6 +254,76 @@ function syntheticJudgmentBatch() {
             candidates: [],
             treatment: "discusses",
             treatmentEvidence: "本院认为，争议应依照证据和适用时点判断。",
+          }],
+        },
+        ...(options.target ? { target: options.target } : {}),
+      },
+    }],
+  };
+}
+
+/** 用于验证法规条文拆分；同样是不可售合成数据。 */
+function syntheticLegislationBatch(options = {}) {
+  const idempotencyKey = options.idempotencyKey ?? "fixture-synthetic-legislation-v1";
+  const recordKey = options.recordKey ?? fixtureToken(idempotencyKey, "legislation");
+  const articleText = "第一条　本合成法规仅用于验证平台内容发布和条文拆分能力。";
+  const bodyText = `【合成法规】SCK-LCM-10 平台内容验收规范\n${articleText}`;
+  const start = Buffer.byteLength(bodyText.slice(0, bodyText.indexOf(articleText)), "utf8");
+  const end = start + Buffer.byteLength(articleText, "utf8");
+  const bodySha256 = sha256(bodyText);
+  return {
+    contractVersion: "1",
+    idempotencyKey,
+    items: [{
+      entryKey: fixtureToken(idempotencyKey, "fixture-legislation"),
+      operation: "upsert",
+      payload: {
+        kind: "legislation",
+        source: {
+          sourceKey: "fixture.synthetic.cn",
+          url: `https://example.invalid/fixture/${recordKey}`,
+          recordKey,
+          fetchedAt: "2026-09-01T12:00:00Z",
+          publishedAt: null,
+          updatedAt: null,
+          publishedOn: "2026-09-01",
+          updatedOn: null,
+          dateText: null,
+        },
+        document: {
+          title: "SCK-LCM-10 合成法规（契约测试）",
+          bodyText,
+          sourceForm: "full_text",
+          evidence: [{ text: "合成来源，仅用于协议边界测试。", sourceLocator: { paragraph: 1 } }],
+          fieldIssues: [],
+          processing: {
+            pipelineVersion: "fixture-v1",
+            methods: ["synthetic-fixture"],
+            agentName: null,
+            model: null,
+            cleaningNotes: "不代表任何真实法规。",
+          },
+          clientDigest: { bodySha256 },
+        },
+        legislation: {
+          issuingAuthorities: ["合成测试机关"],
+          instrumentType: "规范性文件",
+          documentNumber: `(fixture) ${recordKey}`,
+          promulgatedOn: "2026-09-01",
+          effectiveOn: "2026-09-01",
+          repealedOn: null,
+          legalStatus: "effective",
+          versionLabel: "fixture-v1",
+          versionResolution: "resolved",
+          amendsRefs: [],
+          articles: [{
+            localKey: "article-1",
+            label: "第一条",
+            hierarchyPath: ["第一章"],
+            bodyText: articleText,
+            locator: { start, end, bodyDigest: bodySha256 },
+            sourceLocator: { paragraph: 1, articleLabel: "第一条" },
+            effectiveOn: "2026-09-01",
           }],
         },
       },
@@ -345,6 +428,9 @@ function tokenSummary(body) {
 }
 
 async function main() {
+  if (fullLifecycleRequested && (!fixtureRequested || !publishRequested)) {
+    throw new Error("--full-lifecycle 只能与 --fixture --publish 一起使用");
+  }
   const [client, oauth, callback] = await Promise.all([
     jsonFile(paths.client, "DCR client"),
     jsonFile(paths.oauth, "OAuth 状态"),
@@ -427,6 +513,184 @@ async function main() {
     return { call, summary, value: summary.value };
   }
 
+  async function submitInspectPublish(label, fixture) {
+    const submitted = summarizeRpc(await clientForProtocol.tool("submit_batch", fixture));
+    const submitOk = submitted.ok && !submitted.businessError;
+    const batchId = typeof submitted.value?.batchId === "string" ? submitted.value.batchId : null;
+    const result = {
+      submit: { httpStatus: submitted.httpStatus, ok: submitOk, batchId, status: submitted.value?.status ?? null },
+      inspect: null,
+      publish: null,
+      ok: false,
+    };
+    if (!submitOk || !batchId) {
+      report.failures.push({ step: `${label}_submit`, reason: "未返回可发布的 batchId" });
+      return result;
+    }
+    const inspected = summarizeRpc(await clientForProtocol.tool("inspect_batch", { batchId, cursor: null, limit: 100 }));
+    const inspectOk = inspected.ok && !inspected.businessError;
+    const entryKeys = Array.isArray(inspected.value?.entries)
+      ? inspected.value.entries.map((entry) => entry?.entryKey).filter((entryKey) => typeof entryKey === "string")
+      : [];
+    result.inspect = {
+      httpStatus: inspected.httpStatus,
+      ok: inspectOk,
+      validationRevision: inspected.value?.validationRevision ?? null,
+      status: inspected.value?.status ?? null,
+      entryKeys,
+    };
+    if (!inspectOk || entryKeys.length === 0 || typeof inspected.value?.validationRevision !== "number") {
+      report.failures.push({ step: `${label}_inspect`, reason: "批次不可发布或缺少 validationRevision" });
+      return result;
+    }
+    const published = summarizeRpc(await clientForProtocol.tool("publish_batch", {
+      batchId,
+      validationRevision: inspected.value.validationRevision,
+      entryKeys,
+      idempotencyKey: `${fixture.idempotencyKey}:publish`,
+    }));
+    const entries = Array.isArray(published.value?.entries) ? published.value.entries : [];
+    const completed = published.ok
+      && !published.businessError
+      && published.value?.status === "completed"
+      && entries.length === entryKeys.length
+      && entries.every((entry) => entry?.status === "published");
+    result.publish = {
+      httpStatus: published.httpStatus,
+      ok: completed,
+      status: published.value?.status ?? null,
+      entries: entries.map((entry) => ({ entryKey: entry?.entryKey ?? null, status: entry?.status ?? null, versionId: entry?.versionId ?? null })),
+    };
+    result.ok = completed;
+    if (!completed) report.failures.push({ step: `${label}_publish`, reason: "发布未完成" });
+    return result;
+  }
+
+  async function readPublishedFixture(label, filters, expected) {
+    const searched = summarizeRpc(await clientForProtocol.tool("search_content", { filters, limit: 20 }));
+    const items = Array.isArray(searched.value?.items) ? searched.value.items : [];
+    const item = expected.itemId
+      ? items.find((candidate) => candidate?.itemId === expected.itemId) ?? null
+      : items[0] ?? null;
+    const ok = searched.ok
+      && !searched.businessError
+      && (expected.present ? item !== null : item === null)
+      && (!expected.versionId || item?.version?.versionId === expected.versionId)
+      && (!expected.bodyText || item?.bodyText === expected.bodyText);
+    const result = {
+      httpStatus: searched.httpStatus,
+      ok,
+      visible: item !== null,
+      itemId: item?.itemId ?? null,
+      versionId: item?.version?.versionId ?? null,
+    };
+    if (!ok) report.failures.push({ step: label, reason: "已发布投影读取结果与预期不一致" });
+    return result;
+  }
+
+  async function runSyntheticFullLifecycle(initialBatch, initialPublication) {
+    const initialPayload = initialBatch.items[0]?.operation === "upsert" ? initialBatch.items[0].payload : null;
+    const initialEntry = Array.isArray(initialPublication?.entries) ? initialPublication.entries[0] : null;
+    const initialVersionId = typeof initialEntry?.versionId === "string" ? initialEntry.versionId : null;
+    if (!initialPayload || initialPayload.kind !== "judicial_document" || !initialVersionId) {
+      report.failures.push({ step: "fixture_lifecycle_initial", reason: "首个合成文书未返回发布版本" });
+      return { ok: false };
+    }
+    const caseNumber = initialPayload.judgment.caseNumber;
+    const initialRead = await readPublishedFixture("fixture_lifecycle_initial_read", { caseNumber }, {
+      present: true,
+      versionId: initialVersionId,
+      bodyText: initialPayload.document.bodyText,
+    });
+    if (!initialRead.ok || !initialRead.itemId) return { initialRead, ok: false };
+
+    const correction = syntheticJudgmentBatch({
+      idempotencyKey: `${initialBatch.idempotencyKey}-correction`,
+      recordKey: initialPayload.source.recordKey,
+      target: { itemId: initialRead.itemId, expectedVersionId: initialVersionId, expectedPublicationRevision: 1 },
+      bodyRevision: "【合成修订：用于验证不可变版本与审计链。】",
+    });
+    const corrected = await submitInspectPublish("fixture_lifecycle_correction", correction);
+    const correctedVersionId = corrected.publish?.entries?.[0]?.versionId ?? null;
+    if (!corrected.ok || typeof correctedVersionId !== "string") return { initialRead, corrected, ok: false };
+    const correctedBody = correction.items[0].payload.document.bodyText;
+    const correctedRead = await readPublishedFixture("fixture_lifecycle_correction_read", { caseNumber }, {
+      present: true,
+      versionId: correctedVersionId,
+      bodyText: correctedBody,
+    });
+    if (!correctedRead.ok) return { initialRead, corrected, correctedRead, ok: false };
+
+    const withdrawal = {
+      contractVersion: "1",
+      idempotencyKey: `${initialBatch.idempotencyKey}-withdraw`,
+      items: [{
+        entryKey: fixtureToken(`${initialBatch.idempotencyKey}-withdraw`, "fixture-withdraw"),
+        operation: "withdraw",
+        payload: {
+          target: { itemId: initialRead.itemId, expectedVersionId: correctedVersionId, expectedPublicationRevision: 2 },
+          reason: "合成验收：验证撤回后投影不可读取。",
+          evidenceRefs: [],
+        },
+      }],
+    };
+    const withdrawn = await submitInspectPublish("fixture_lifecycle_withdraw", withdrawal);
+    if (!withdrawn.ok) return { initialRead, corrected, correctedRead, withdrawn, ok: false };
+    const withdrawnRead = await readPublishedFixture("fixture_lifecycle_withdraw_read", { caseNumber }, {
+      present: false,
+      versionId: null,
+      bodyText: null,
+    });
+    if (!withdrawnRead.ok) return { initialRead, corrected, correctedRead, withdrawn, withdrawnRead, ok: false };
+
+    const restoration = {
+      contractVersion: "1",
+      idempotencyKey: `${initialBatch.idempotencyKey}-restore`,
+      items: [{
+        entryKey: fixtureToken(`${initialBatch.idempotencyKey}-restore`, "fixture-restore"),
+        operation: "restore",
+        payload: {
+          target: { itemId: initialRead.itemId, expectedVersionId: correctedVersionId, expectedPublicationRevision: 3 },
+          reason: "合成验收：验证恢复后投影重新可读取。",
+          evidenceRefs: [],
+        },
+      }],
+    };
+    const restored = await submitInspectPublish("fixture_lifecycle_restore", restoration);
+    if (!restored.ok) return { initialRead, corrected, correctedRead, withdrawn, withdrawnRead, restored, ok: false };
+    const restoredRead = await readPublishedFixture("fixture_lifecycle_restore_read", { caseNumber }, {
+      present: true,
+      versionId: correctedVersionId,
+      bodyText: correctedBody,
+    });
+
+    const legislation = syntheticLegislationBatch({ idempotencyKey: `${initialBatch.idempotencyKey}-legislation` });
+    const legislationPublished = await submitInspectPublish("fixture_lifecycle_legislation", legislation);
+    const legislationVersionId = legislationPublished.publish?.entries?.[0]?.versionId ?? null;
+    const legislationKey = legislation.items[0].payload.source.recordKey;
+    const legislationRead = typeof legislationVersionId === "string"
+      ? await readPublishedFixture("fixture_lifecycle_legislation_read", { query: legislationKey }, {
+        present: true,
+        versionId: legislationVersionId,
+        bodyText: legislation.items[0].payload.document.bodyText,
+      })
+      : { ok: false };
+    if (!legislationRead.ok) report.failures.push({ step: "fixture_lifecycle_legislation_read", reason: "法规或条文发布后不可读取" });
+
+    return {
+      initialRead,
+      corrected,
+      correctedRead,
+      withdrawn,
+      withdrawnRead,
+      restored,
+      restoredRead,
+      legislationPublished,
+      legislationRead,
+      ok: restoredRead.ok && legislationPublished.ok && legislationRead.ok,
+    };
+  }
+
   const contract = await callAndRecord("get_data_contract", {});
   if (!contract.summary.ok || contract.value?.contractVersion !== "1") {
     report.failures.push({ step: "get_data_contract", reason: "契约版本不是 1 或工具失败" });
@@ -501,6 +765,9 @@ async function main() {
           };
           if (!published.summary.ok || published.value?.status !== "completed") {
             report.failures.push({ step: "publish_batch", reason: "发布未完成" });
+          }
+          if (fullLifecycleRequested && fixtureRequested) {
+            report.lifecycle.full = await runSyntheticFullLifecycle(batch, published.value);
           }
         }
       } else {
@@ -583,6 +850,7 @@ async function main() {
       })),
     },
     lifecycle: report.lifecycle,
+    fullLifecycle: report.lifecycle.full?.ok ?? null,
     refresh: { ok: report.refresh.ok ?? false, reconnect: report.refresh.reconnect?.ok ?? false },
     revoke: { refreshRejected: report.revoke.refreshAfter?.rejected ?? false, mcpRejected: report.revoke.mcpAfter?.rejected ?? false },
     failureCount: report.failures.length,

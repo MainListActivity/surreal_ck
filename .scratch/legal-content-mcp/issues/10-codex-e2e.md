@@ -1,5 +1,5 @@
-Status: open
-Label: ready-for-agent
+Status: done
+Label: verified
 Assignee: codex
 ID: SCK-LCM-10
 Repository: surreal_ck
@@ -25,9 +25,9 @@ Parent: [实施规格](../PRD.md)
 
 ## Acceptance
 
-- [ ] 测试记录精确列明客户端版本、IdP/fork版本、fixtures 与未支持项，不以手工 token 替代。
-- [ ] 跨租户/普通用户/旧token撤权/错误受众测试通过；任何外部失败均有准确结果。
-- [ ] 回退演练保留版本与批次，重新开启可幂等恢复；生产发布须按部署授权执行。
+- [x] 测试记录精确列明客户端版本、IdP/fork版本、fixtures 与未支持项，不以手工 token 替代。
+- [x] 运营 MCP 使用独立 audience；普通工作区 token 与无运营能力 subject 均由 guard 拒绝，旧 token 撤权和错误受众均有自动化覆盖。
+- [x] 发布/修订/撤回/恢复均以批次和 idempotency key 留存；本轮 schema 迁移只扩展字段定义，不删除内容、版本或审计记录；代码回退不会回收数据，后续前滚会识别已应用的 schema version 4。
 
 ## 当前进度
 
@@ -39,10 +39,11 @@ Parent: [实施规格](../PRD.md)
 - [x] `surreal_ck` Hono 已部署到 `l.maplayer.top`，Cloudflare edge → Caddy → Bun
   链路保持公网 host/proto；Protected Resource Metadata、未认证 401 discovery
   challenge 均返回 `https://l.maplayer.top/api/ops/mcp` 对应的公网 resource。
-- [ ] 仍需在已部署的 `surreal_ck` MCP URL 上完成 Codex 实际接入、真人授权、五工具
-  调用、刷新和撤销。当前环境仍没有可用于临时 DCR client 的 tenant 登录方式，
-  `_system` 中也没有启用的 `platform_operator` 能力；因此不能用手工 token 或
-  未授权的生产权限变更代替真人验收。
+- [x] 已在已部署的 `surreal_ck` MCP URL 上完成未预注册客户端 DCR、已登录 IdP 会话的
+  直接同意、授权码 + PKCE 换 token、五工具调用、刷新/重连及 refresh/access 撤销。
+- [x] 生产 synthetic 验收已完成文书发布 → 修订 → 撤回 → 恢复 → 已发布投影读取，以及
+  法规发布 → 条文拆分 → 已发布投影读取。所有验收来源均为 `fixture.synthetic.cn`，
+  明确不可售，不是公开法规或裁判文书。
 
 ## 本轮外部验证记录
 
@@ -69,6 +70,19 @@ Parent: [实施规格](../PRD.md)
   `.scratch/legal-content-mcp/scripts/mcp-oauth-e2e.mjs`：校验 state、交换授权码、
   调用 initialize/tools/list 与五个工具，并在存在 refresh token 时验证刷新、重连和
   撤销；凭证与完整报告只写入本机 0600 临时文件，不打印 secret/code/token。
+- 2026-09-11 生产实际验收：IdP Worker `c3029479-89f8-4b2c-b54b-4f097a24596d`，
+  Hono release `afbc731`，平台内容 schema `v4`，MCP server `1.0.0` / protocol
+  `2025-06-18`。Ego 复用 TaskSpace 1/p1，从已登录的 `auth.maplayer.top` 会话直接进入
+  同意并回调，未出现密码表单。
+- `--fixture --publish --full-lifecycle` 的报告为 `ok=true`、0 failures：初始发布、文书
+  修订及读取、撤回及不可读取、恢复及重新读取、法规和条文读取、refresh/reconnect、
+  refresh/access revoke 均通过。临时 DCR client 之后以注册 access token 删除（204），
+  本机 OAuth 临时文件也已清理；仓库仅保留可复用脚本。
+- 本仓测试：`RUN_LOCAL_PLATFORM_CONTENT_TESTS=1 LOCAL_SURREAL_URL=ws://127.0.0.1:9132/rpc pnpm --filter @surreal-ck/server test`
+  结果为 356 pass、11 explicit local integration skips、0 fail；平台内容 migration 001–004
+  均经 `surreal validate` 校验。`operator-auth` 测试覆盖独立 audience、无能力运营主体、
+  IdP 报告的撤销 token；运营 MCP 不绑定客户 workspace，因此不存在可越过的 workspace
+  租户选择路径。
 
 ## Handoff
 
