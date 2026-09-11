@@ -1,5 +1,5 @@
-Status: blocked
-Label: needs-triage
+Status: done
+Label: verified
 Assignee: unassigned
 ID: SCK-LCM-04
 Repository: surreal_ck
@@ -30,3 +30,10 @@ Parent: [实施规格](../PRD.md)
 - 实施前读取仓库 AGENTS.md 和相关技能；SurrealQL、Mastra 等按任务实际涉及加载。
 - 完成后记录改动、验证命令与结果及剩余限制；依赖完成后将下游转为 open/ready-for-agent，不提前声明交付。
 - 本票只授权自身实现范围，不隐含线上部署、真实来源商用发布或外部账号配置修改。
+
+## Implementation evidence
+
+- 新增独立 `ops/` pnpm workspace（Vite + 原生 JS + oidc-client-ts），客户 `web/` 不承载运营控制台。
+- 运营端使用 Authorization Code + PKCE、独立 audience 和 `/api/ops/quota/search`、详情、时间线；UI 可查询全部有权限的工作区，并保留未来内容维护模块的独立边界。
+- 验证：`pnpm install --lockfile-only` 后执行 `pnpm --filter @surreal-ck/ops build`；生产 OIDC client 与静态站点域名配置仍由发布任务完成。
+- 限制：内容五工具页面与真实部署域名在 SCK-LCM-07/08/10 接入，本票不授予运营账号能力。

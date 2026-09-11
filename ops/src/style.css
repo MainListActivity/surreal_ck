@@ -1,0 +1,56 @@
+:root {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #20252d;
+  background: #f3f5f7;
+  font-synthesis: none;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; }
+button, input { font: inherit; }
+button { cursor: pointer; }
+.shell { max-width: 1440px; margin: 0 auto; padding: 36px 40px 24px; }
+.topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 28px; }
+.eyebrow { margin: 0 0 8px; color: #6b55c8; font-size: 11px; letter-spacing: .13em; font-weight: 750; }
+h1, h2, h3, h4, p { margin-top: 0; }
+h1 { margin-bottom: 8px; font-size: clamp(28px, 3vw, 42px); letter-spacing: -.03em; }
+h2 { margin: 0; font-size: 18px; }
+h3 { margin-bottom: 0; font-size: 24px; }
+h4 { margin: 26px 0 10px; font-size: 13px; letter-spacing: .04em; text-transform: uppercase; color: #66707c; }
+.muted { color: #737d88; }
+.layout { display: grid; grid-template-columns: minmax(320px, 0.84fr) minmax(0, 1.6fr); gap: 20px; align-items: start; }
+.panel { min-height: 560px; background: #fff; border: 1px solid #e2e6eb; border-radius: 18px; box-shadow: 0 12px 28px #3038440b; padding: 22px; }
+.panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+.search-form { display: flex; gap: 8px; margin-bottom: 14px; }
+input { width: 100%; min-width: 0; border: 1px solid #d9dee5; border-radius: 10px; padding: 11px 12px; outline: none; }
+input:focus { border-color: #7963d5; box-shadow: 0 0 0 3px #7963d51c; }
+button { border: 0; border-radius: 10px; padding: 10px 14px; color: #fff; background: #6550c5; font-weight: 650; }
+button:hover { filter: brightness(.97); }
+button:disabled { cursor: not-allowed; opacity: .5; }
+button.ghost { color: #4f5965; background: #f0f2f5; }
+button.primary { padding: 11px 16px; }
+.identity { display: flex; align-items: center; gap: 12px; color: #4f5965; font-size: 13px; }
+.status { min-height: 20px; font-size: 13px; }
+.error { color: #b33b45 !important; }
+.results { display: grid; gap: 8px; margin-top: 10px; }
+.result { display: grid; grid-template-columns: auto 1fr; grid-template-rows: auto auto; gap: 2px 10px; padding: 13px 14px; text-align: left; background: #fafbfc; border: 1px solid #e7ebef; color: #26303a; }
+.result:hover { background: #f2efff; border-color: #cfc5fa; }
+.result-kind { grid-row: span 2; align-self: center; color: #7b68cf; font-size: 10px; text-transform: uppercase; letter-spacing: .07em; }
+.result strong { font-size: 14px; }
+.result .muted { font-size: 12px; font-weight: 400; }
+.badge { display: inline-flex; align-items: center; max-width: 240px; overflow: hidden; padding: 4px 9px; border-radius: 999px; color: #5e49bc; background: #eeeaff; font-size: 11px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.empty-state, .loading { display: grid; place-items: center; min-height: 170px; color: #818b96; text-align: center; font-size: 14px; }
+.detail-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-bottom: 20px; border-bottom: 1px solid #edf0f2; }
+.metric-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 18px; }
+.metric-grid > div { display: grid; gap: 6px; padding: 14px; background: #f7f8fa; border-radius: 12px; }
+.metric-grid strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px !important; }
+.resource-list { display: grid; border: 1px solid #edf0f2; border-radius: 10px; overflow: hidden; }
+.resource-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 11px 13px; font-size: 13px; border-bottom: 1px solid #edf0f2; }
+.resource-row:last-child { border-bottom: 0; }
+.timeline { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.timeline li { display: flex; align-items: baseline; gap: 12px; font-size: 13px; }
+.timeline time { min-width: 180px; color: #8a939d; font-size: 11px; }
+.footer { margin-top: 18px; font-size: 12px; }
+@media (max-width: 900px) { .shell { padding: 22px 16px; } .topbar { flex-direction: column; } .layout { grid-template-columns: 1fr; } .panel { min-height: 0; } }
+@media (max-width: 560px) { .metric-grid { grid-template-columns: 1fr; } .search-form { flex-direction: column; } .timeline time { min-width: 0; } }
