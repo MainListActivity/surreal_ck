@@ -57,6 +57,8 @@ Parent: [实施规格](../PRD.md)
 - 生产链路验证：`GET /health=200`、`GET` Protected Resource Metadata `=200`、
   未带 bearer 的 `POST /api/ops/mcp=401`，且 `WWW-Authenticate` 指向上述公网
   metadata URL；SurrealDB 服务保持运行，本轮只重启 Hono 服务。
+- 本轮 Hono release：`779ee75`；远端 TypeScript 预检通过，原子切换后
+  `surreal-ck-hono.service=active`、`surrealdb.service=active`，旧 release 保留可回退。
 - 已增加安全 bootstrap 配置：部署者可在 Hono 环境中显式指定 OIDC subject 与
   内容能力，服务启动时只补缺失授权；当前生产环境尚未写入该配置，避免未经真人
   确认授予平台运营权限。
