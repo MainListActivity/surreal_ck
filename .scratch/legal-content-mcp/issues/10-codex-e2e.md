@@ -36,18 +36,27 @@ Parent: [实施规格](../PRD.md)
   resource、scope、DCR 与 revocation 元数据。
 - [x] 通过生产 DCR 验证 `native` loopback client、managed resource 与
   `openid content.read` scope 请求；错误缺少 `application_type` 会被拒绝。
+- [x] `surreal_ck` Hono 已部署到 `l.maplayer.top`，Cloudflare edge → Caddy → Bun
+  链路保持公网 host/proto；Protected Resource Metadata、未认证 401 discovery
+  challenge 均返回 `https://l.maplayer.top/api/ops/mcp` 对应的公网 resource。
 - [ ] 仍需在已部署的 `surreal_ck` MCP URL 上完成 Codex 实际接入、真人授权、五工具
-  调用、刷新和撤销。当前环境的 `ck` tenant 没有启用任何 client 登录方式，且
-  `surreal_ck` server 尚无可确认的公网 HTTP 部署地址，因此不能用手工 token 代替。
+  调用、刷新和撤销。当前环境仍没有可用于临时 DCR client 的 tenant 登录方式，
+  `_system` 中也没有启用的 `platform_operator` 能力；因此不能用手工 token 或
+  未授权的生产权限变更代替真人验收。
 
 ## 本轮外部验证记录
 
 - IdP Worker 版本：`0e95ee90-afcb-4019-bcf5-4059c75e3588`（已包含 MCP registration client lifecycle）。
 - 发现端点：`https://o.maplayer.top/t/ck/.well-known/openid-configuration`。
 - DCR 端点：`https://o.maplayer.top/t/ck/connect/mcp/register`。
+- MCP 端点：`https://l.maplayer.top/api/ops/mcp`。
+- Protected Resource Metadata：`https://l.maplayer.top/api/ops/.well-known/oauth-protected-resource`。
 - DCR 返回 `201`；测试客户端只用于联调，未签发用户 token。生命周期接口已用临时
   client 验证 `GET=200`、`DELETE=204`；历史联调 client 已从生产 D1 定向清理，
   并补写 `oidc.client.deleted` 审计事件（不删除原注册审计）。
+- 生产链路验证：`GET /health=200`、`GET` Protected Resource Metadata `=200`、
+  未带 bearer 的 `POST /api/ops/mcp=401`，且 `WWW-Authenticate` 指向上述公网
+  metadata URL；SurrealDB 服务保持运行，本轮只重启 Hono 服务。
 
 ## Handoff
 

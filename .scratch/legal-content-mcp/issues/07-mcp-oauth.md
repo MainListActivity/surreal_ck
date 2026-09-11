@@ -40,7 +40,11 @@ Parent: [实施规格](../PRD.md)
 
 ## Current limitation
 
-生产 `ck` tenant 尚未配置可用的 client 登录方式，且 surreal_ck MCP server 尚无确认的公网 HTTP 部署地址；因此不以手工 token 冒充真实 Codex 验收，剩余联测转交 SCK-LCM-10。
+生产 `ck` tenant 尚未配置可用于临时 DCR client 的登录方式，且 `_system` 中没有
+启用的 `platform_operator` 能力；因此不以手工 token 或未授权的生产权限变更冒充
+真实 Codex 验收。MCP server 已部署为
+`https://l.maplayer.top/api/ops/mcp`，剩余真人授权、五工具、刷新/撤销联测转交
+SCK-LCM-10。
 
 ## Handoff
 
