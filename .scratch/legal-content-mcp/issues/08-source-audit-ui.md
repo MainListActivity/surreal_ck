@@ -1,6 +1,6 @@
-Status: blocked
-Label: needs-triage
-Assignee: unassigned
+Status: done
+Label: verified
+Assignee: codex
 ID: SCK-LCM-08
 Repository: surreal_ck
 
@@ -22,9 +22,20 @@ Parent: [实施规格](../PRD.md)
 
 ## Acceptance
 
-- [ ] 有相应能力运营能登记来源，使 get_data_contract 可分页发现；客户拒绝。
-- [ ] 许可修订审计完整，历史批次仍能解释当时校验依据。
-- [ ] 大批次分页、失败提示及与 MCP 结果一致性验证。
+- [x] 有相应能力运营能登记来源，使 get_data_contract 可分页发现；客户拒绝。
+- [x] 许可修订审计完整，历史批次仍能解释当时校验依据。
+- [x] 大批次分页、失败提示及与 MCP 结果一致性验证。
+
+## Verification
+
+- `pnpm --filter @surreal-ck/shared typecheck`
+- `pnpm --filter @surreal-ck/server typecheck`
+- `pnpm --filter @surreal-ck/server exec bun test src/content/service.test.ts src/routes/content.test.ts src/ops/mcp/routes.test.ts --preload ./test/setup-env.ts`
+- `RUN_LOCAL_PLATFORM_CONTENT_TESTS=1 pnpm --filter @surreal-ck/server exec bun test src/content/store.integration.test.ts --preload ./test/setup-env.ts`
+- `pnpm --filter @surreal-ck/ops build`
+- `shared/sql/platform-content/003-ops-maintenance.surql` 通过 `surreal validate`。
+
+`/api/content/sources` 使用 `content.source.manage` 能力登记或修订来源；许可修订写入不可变 `source_license_revision`，批次写入 `source_license_snapshot`。`/api/content/batches`、`/detail` 和 `/api/content/audit` 均支持受限分页；MCP 的 `inspect_batch` 复用同一个 `PlatformContentService`，不会出现另一套状态判断。
 
 ## Handoff
 

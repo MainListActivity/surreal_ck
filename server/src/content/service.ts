@@ -22,17 +22,106 @@ import {
   type SubmitBatchResponse,
 } from "@surreal-ck/shared/platform-content";
 import { PLATFORM_CONTENT_LIMITS, sha256Hex, validatePlatformContentBatch } from "@surreal-ck/shared/platform-content";
+import { z } from "zod";
 
 export type ContentOperator = Readonly<{
   subject: string;
   capabilities: readonly string[];
 }>;
 
+export const ContentSourceActionSchema = z.enum(["submit", "publish", "withdraw", "restore"]);
+export type ContentSourceAction = z.infer<typeof ContentSourceActionSchema>;
+
+export type ContentSourceLicenseRevision = Readonly<{
+  revision: number;
+  licenseKind: string;
+  allowedActions: readonly ContentSourceAction[];
+  effectiveFrom: string;
+  effectiveUntil: string | null;
+  evidenceUrl: string | null;
+  evidenceText: string | null;
+  createdBySubject?: string;
+  createdAt?: string;
+}>;
+
 export type ContentSourceRegistration = Readonly<{
   sourceKey: string;
   label: string;
   status: "active" | "inactive";
-  allowedActions: readonly ("submit" | "publish" | "withdraw" | "restore")[];
+  allowedActions: readonly ContentSourceAction[];
+  jurisdiction?: string | null;
+  baseUrl?: string;
+  license?: ContentSourceLicenseRevision | null;
+}>;
+
+const HttpUrlSchema = z.string().trim().min(1).max(4096).refine((value) => {
+  try {
+    const parsed = new URL(value);
+    return (parsed.protocol === "http:" || parsed.protocol === "https:") && Boolean(parsed.hostname);
+  } catch {
+    return false;
+  }
+}, "必须是带主机名的 http / https URL");
+
+const TimestampSchema = z.string().trim().refine((value) => Number.isFinite(Date.parse(value)), "必须是有效时间戳");
+
+export const ContentSourceRegistrationInputSchema = z.strictObject({
+  sourceKey: z.string().trim().min(1).max(256).refine((value) => !/\s|:/u.test(value), "sourceKey 不能包含空白或 RecordId 分隔符"),
+  label: z.string().trim().min(1).max(512),
+  jurisdiction: z.string().trim().min(1).max(128).nullable().optional(),
+  baseUrl: HttpUrlSchema,
+  status: z.enum(["active", "inactive"]),
+  allowedActions: z.array(ContentSourceActionSchema).min(1).max(4),
+  license: z.strictObject({
+    licenseKind: z.string().trim().min(1).max(128),
+    allowedActions: z.array(ContentSourceActionSchema).min(1).max(4),
+    effectiveFrom: TimestampSchema,
+    effectiveUntil: TimestampSchema.nullable().optional(),
+    evidenceUrl: HttpUrlSchema.nullable().optional(),
+    evidenceText: z.string().trim().min(1).max(4096).nullable().optional(),
+  }).superRefine((value, context) => {
+    if (value.effectiveUntil && Date.parse(value.effectiveUntil) < Date.parse(value.effectiveFrom)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["effectiveUntil"], message: "许可结束时间不能早于生效时间" });
+    }
+  }),
+  expectedLicenseRevision: z.number().int().min(1).nullable().optional(),
+});
+export type ContentSourceRegistrationInput = z.infer<typeof ContentSourceRegistrationInputSchema>;
+
+export type ContentBatchSummary = Readonly<{
+  batchId: string;
+  actorSubject: string;
+  idempotencyKey: string;
+  requestDigest: string;
+  receivedAt: string;
+  status: StoredContentBatch["status"];
+  validationRevision: number;
+  entryCount: number;
+  acceptedCount: number;
+  duplicateCount: number;
+  rejectedCount: number;
+  publishedCount: number;
+  sourceKeys: readonly string[];
+}>;
+
+export type ContentBatchSummaryPage = Readonly<{
+  items: readonly ContentBatchSummary[];
+  nextCursor: string | null;
+}>;
+
+export type ContentAuditEvent = Readonly<{
+  eventId: string;
+  kind: string;
+  actorSubject: string;
+  occurredAt: string;
+  batchId: string | null;
+  entryKey: string | null;
+  details: Record<string, unknown>;
+}>;
+
+export type ContentAuditPage = Readonly<{
+  items: readonly ContentAuditEvent[];
+  nextCursor: string | null;
 }>;
 
 export type ContentSourceProvider = {
@@ -48,6 +137,7 @@ export type StoredContentBatch = {
   receivedAt: string;
   status: SubmitBatchResponse["status"] | "published";
   validationRevision: number;
+  sourceLicenseSnapshot?: Readonly<Record<string, ContentSourceLicenseRevision>>;
   entries: Array<{
     entryKey: string;
     operation: IngestionEntry["operation"];
@@ -110,6 +200,21 @@ export interface PlatformContentStore {
     response: PublishBatchResponse;
   }>): Promise<void>;
   listSources?(): Promise<readonly ContentSourceRegistration[]>;
+  registerSource?(input: Readonly<{
+    source: ContentSourceRegistrationInput;
+    actorSubject: string;
+  }>): Promise<ContentSourceRegistration>;
+  listBatchSummaries?(input: Readonly<{
+    cursor: string | null;
+    limit: number;
+    status?: StoredContentBatch["status"];
+  }>): Promise<ContentBatchSummaryPage>;
+  listAuditEvents?(input: Readonly<{
+    cursor: string | null;
+    limit: number;
+    kind?: string;
+    batchId?: string;
+  }>): Promise<ContentAuditPage>;
 }
 
 export class ContentServiceError extends Error {
@@ -153,6 +258,40 @@ function batchStatus(entries: StoredContentBatch["entries"]): StoredContentBatch
   return "ready";
 }
 
+function encodeCursor(offset: number): string {
+  return `o${offset.toString(36)}`;
+}
+
+function decodeCursor(cursor: string | null | undefined): number {
+  if (!cursor) return 0;
+  if (!/^o[0-9a-z]+$/u.test(cursor)) throw new ContentServiceError("invalid_request", "分页游标无效");
+  const offset = Number.parseInt(cursor.slice(1), 36);
+  if (!Number.isSafeInteger(offset) || offset < 0) throw new ContentServiceError("invalid_request", "分页游标无效");
+  return offset;
+}
+
+function batchSummary(batch: StoredContentBatch): ContentBatchSummary {
+  const sourceKeys = new Set<string>();
+  for (const item of batch.request.items) {
+    if (item.operation === "upsert") sourceKeys.add(item.payload.source.sourceKey);
+  }
+  return {
+    batchId: batch.batchId,
+    actorSubject: batch.actorSubject,
+    idempotencyKey: batch.idempotencyKey,
+    requestDigest: batch.requestDigest,
+    receivedAt: batch.receivedAt,
+    status: batch.status,
+    validationRevision: batch.validationRevision,
+    entryCount: batch.entries.length,
+    acceptedCount: batch.entries.filter((entry) => entry.status === "accepted").length,
+    duplicateCount: batch.entries.filter((entry) => entry.status === "duplicate").length,
+    rejectedCount: batch.entries.filter((entry) => entry.status === "rejected").length,
+    publishedCount: batch.entries.filter((entry) => entry.publicationStatus === "published").length,
+    sourceKeys: [...sourceKeys].sort(),
+  };
+}
+
 function responseFromBatch(batch: StoredContentBatch): SubmitBatchResponse {
   return SubmitBatchResponseSchema.parse({
     batchId: batch.batchId,
@@ -176,7 +315,7 @@ export type PlatformContentServiceOptions = Readonly<{
 }>;
 
 export class PlatformContentService {
-  private readonly sourceMap: ReadonlyMap<string, ContentSourceRegistration>;
+  private readonly sourceMap: Map<string, ContentSourceRegistration>;
   private readonly now: () => Date;
   private readonly idFactory: (prefix: string) => string;
 
@@ -200,6 +339,9 @@ export class PlatformContentService {
       throw new ContentServiceError("unsupported_contract", `不支持的数据契约版本 ${request.contractVersion}`);
     }
     const sources = await this.currentSourceMap();
+    const sourceList = [...sources.values()].sort((left, right) => left.sourceKey.localeCompare(right.sourceKey));
+    const sourceOffset = decodeCursor(request.sourceCursor);
+    const sourcePage = sourceList.slice(sourceOffset, sourceOffset + 100);
     return GetDataContractResponseSchema.parse({
       contractVersion: "1",
       operations: ["get_data_contract", "search_content", "submit_batch", "inspect_batch", "publish_batch"],
@@ -210,8 +352,14 @@ export class PlatformContentService {
         "identity_ambiguous", "stale_version", "validation_stale", "idempotency_conflict", "publish_failed",
         "duplicate_entry_key", "duplicate_target",
       ],
-      sources: [...sources.values()].map((source) => ({ ...source, allowedActions: [...source.allowedActions] })),
-      sourceNextCursor: null,
+      // 契约保持稳定；许可修订等运营字段通过来源管理接口返回，不混入 MCP v1 schema。
+      sources: sourcePage.map((source) => ({
+        sourceKey: source.sourceKey,
+        label: source.label,
+        status: source.status,
+        allowedActions: [...source.allowedActions],
+      })),
+      sourceNextCursor: sourceOffset + sourcePage.length < sourceList.length ? encodeCursor(sourceOffset + sourcePage.length) : null,
       examples: ["submit_batch: 合法的 IngestionBatch JSON", "inspect_batch: 使用返回的 batchId 与 validationRevision", "publish_batch: 先审阅条目后提交 entryKeys"],
     });
   }
@@ -256,12 +404,14 @@ export class PlatformContentService {
     }
 
     const entries: StoredContentBatch["entries"] = [];
+    const sourceLicenseSnapshot: Record<string, ContentSourceLicenseRevision> = {};
     for (const entry of request.items) {
       if (entry.operation === "withdraw") requireCapability(actor, "content.withdraw");
       if (entry.operation === "restore") requireCapability(actor, "content.restore");
       const entryIssues = [...(issuesByEntry.get(entry.entryKey) ?? [])];
       if (entry.operation === "upsert") {
         const source = sourceMap.get(entry.payload.source.sourceKey);
+        if (source?.license) sourceLicenseSnapshot[source.sourceKey] = source.license;
         if (!source) {
           entryIssues.push(issue("source_not_registered", `来源 ${entry.payload.source.sourceKey} 未登记`, { entryKey: entry.entryKey }));
         } else if (source.status !== "active" || !source.allowedActions.includes("submit")) {
@@ -296,6 +446,7 @@ export class PlatformContentService {
       receivedAt: this.now().toISOString(),
       status: batchStatus(entries),
       validationRevision: 1,
+      sourceLicenseSnapshot,
       entries,
     };
     await this.options.store.saveBatch(batch);
@@ -312,11 +463,14 @@ export class PlatformContentService {
   async inspectBatchResponse(actor: ContentOperator, requestInput: unknown): Promise<import("@surreal-ck/shared/platform-content").InspectBatchResponse> {
     const request = InspectBatchRequestSchema.parse(requestInput);
     const batch = await this.inspectBatch(actor, request.batchId);
+    const offset = decodeCursor(request.cursor);
+    const limit = request.limit ?? 20;
+    const page = batch.entries.slice(offset, offset + limit);
     return InspectBatchResponseSchema.parse({
       batchId: batch.batchId,
       validationRevision: batch.validationRevision,
       status: batch.status,
-      entries: batch.entries.slice(0, request.limit).map((entry) => ({
+      entries: page.map((entry) => ({
         entryKey: entry.entryKey,
         operation: entry.operation,
         status: entry.status === "rejected" ? "blocked" : entry.status === "duplicate" ? "unchanged" : entry.publicationStatus ? "published" : "ready",
@@ -324,8 +478,94 @@ export class PlatformContentService {
         diff: null,
         publicationStatus: entry.publicationStatus ?? null,
       })),
-      nextCursor: null,
+      nextCursor: offset + page.length < batch.entries.length ? encodeCursor(offset + page.length) : null,
     });
+  }
+
+  async inspectBatchDetail(actor: ContentOperator, batchId: string): Promise<Readonly<{
+    batch: StoredContentBatch;
+    summary: ContentBatchSummary;
+  }>> {
+    const batch = await this.inspectBatch(actor, batchId);
+    return { batch, summary: batchSummary(batch) };
+  }
+
+  async listSources(actor: ContentOperator): Promise<readonly ContentSourceRegistration[]> {
+    requireCapability(actor, "content.read");
+    return [...(await this.currentSourceMap()).values()].sort((left, right) => left.sourceKey.localeCompare(right.sourceKey));
+  }
+
+  async registerSource(actor: ContentOperator, requestInput: unknown): Promise<ContentSourceRegistration> {
+    requireCapability(actor, "content.source.manage");
+    const parsed = ContentSourceRegistrationInputSchema.safeParse(requestInput);
+    if (!parsed.success) throw new ContentServiceError("invalid_request", "来源登记内容不符合契约结构");
+    let source: ContentSourceRegistration;
+    try {
+      source = this.options.store.registerSource
+        ? await this.options.store.registerSource({ source: parsed.data, actorSubject: actor.subject })
+        : {
+          sourceKey: parsed.data.sourceKey,
+          label: parsed.data.label,
+          status: parsed.data.status,
+          allowedActions: [...parsed.data.allowedActions],
+          jurisdiction: parsed.data.jurisdiction ?? null,
+          baseUrl: parsed.data.baseUrl,
+          license: {
+            revision: (this.sourceMap.get(parsed.data.sourceKey)?.license?.revision ?? 0) + 1,
+            licenseKind: parsed.data.license.licenseKind,
+            allowedActions: [...parsed.data.license.allowedActions],
+            effectiveFrom: parsed.data.license.effectiveFrom,
+            effectiveUntil: parsed.data.license.effectiveUntil ?? null,
+            evidenceUrl: parsed.data.license.evidenceUrl ?? null,
+            evidenceText: parsed.data.license.evidenceText ?? null,
+            createdBySubject: actor.subject,
+          },
+          } satisfies ContentSourceRegistration;
+    } catch (error) {
+      if (String(error).includes("platform-content-stale-source")) {
+        throw new ContentServiceError("stale_version", "来源许可修订已变化，请重新加载后再保存");
+      }
+      throw error;
+    }
+    this.sourceMap.set(source.sourceKey, source);
+    return source;
+  }
+
+  async listBatchSummaries(actor: ContentOperator, input: Readonly<{
+    cursor?: string | null;
+    limit?: number;
+    status?: StoredContentBatch["status"];
+  }> = {}): Promise<ContentBatchSummaryPage> {
+    requireCapability(actor, "content.read");
+    const limit = input.limit ?? 25;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new ContentServiceError("invalid_request", "limit 必须是 1 到 100 的整数");
+    const cursor = input.cursor ?? null;
+    decodeCursor(cursor);
+    if (this.options.store.listBatchSummaries) return this.options.store.listBatchSummaries({ cursor, limit, ...(input.status ? { status: input.status } : {}) });
+    const all = [...(this.options.store instanceof InMemoryPlatformContentStore ? this.options.store.listBatches() : [])]
+      .filter((batch) => !input.status || batch.status === input.status)
+      .sort((left, right) => right.receivedAt.localeCompare(left.receivedAt));
+    const offset = decodeCursor(cursor);
+    const page = all.slice(offset, offset + limit).map(batchSummary);
+    return { items: page, nextCursor: offset + page.length < all.length ? encodeCursor(offset + page.length) : null };
+  }
+
+  async listAuditEvents(actor: ContentOperator, input: Readonly<{
+    cursor?: string | null;
+    limit?: number;
+    kind?: string;
+    batchId?: string;
+  }> = {}): Promise<ContentAuditPage> {
+    requireCapability(actor, "content.read");
+    const limit = input.limit ?? 25;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new ContentServiceError("invalid_request", "limit 必须是 1 到 100 的整数");
+    const cursor = input.cursor ?? null;
+    decodeCursor(cursor);
+    if (this.options.store.listAuditEvents) return this.options.store.listAuditEvents({ cursor, limit, ...(input.kind ? { kind: input.kind } : {}), ...(input.batchId ? { batchId: input.batchId } : {}) });
+    if (this.options.store instanceof InMemoryPlatformContentStore) {
+      return this.options.store.listAuditEvents({ cursor, limit, ...(input.kind ? { kind: input.kind } : {}), ...(input.batchId ? { batchId: input.batchId } : {}) });
+    }
+    return { items: [], nextCursor: null };
   }
 
   async publishBatch(actor: ContentOperator, requestInput: unknown): Promise<PublishBatchResponse> {
@@ -451,6 +691,8 @@ export class InMemoryPlatformContentStore implements PlatformContentStore {
   private readonly batches = new Map<string, StoredContentBatch>();
   private readonly idempotency = new Map<string, string>();
   private readonly published: StoredPublishedContent[] = [];
+  private readonly sources = new Map<string, ContentSourceRegistration>();
+  private readonly audits: ContentAuditEvent[] = [];
   private readonly publications = new Map<string, {
     reservation: PublicationReservation;
     response: PublishBatchResponse | null;
@@ -465,6 +707,15 @@ export class InMemoryPlatformContentStore implements PlatformContentStore {
   async saveBatch(batch: StoredContentBatch): Promise<void> {
     this.batches.set(batch.batchId, batch);
     this.idempotency.set(`${batch.actorSubject}\u0000${batch.idempotencyKey}`, batch.batchId);
+    this.audits.unshift({
+      eventId: `audit_${crypto.randomUUID()}`,
+      kind: "batch_received",
+      actorSubject: batch.actorSubject,
+      occurredAt: batch.receivedAt,
+      batchId: batch.batchId,
+      entryKey: null,
+      details: { entryCount: batch.entries.length },
+    });
   }
 
   async getBatch(batchId: string): Promise<StoredContentBatch | null> {
@@ -623,6 +874,77 @@ export class InMemoryPlatformContentStore implements PlatformContentStore {
       if (result.status === "published" || result.status === "unchanged") entry.publicationStatus = "published";
     }
     if (input.response.status === "completed") batch.status = "published";
+    this.audits.unshift({
+      eventId: `audit_${crypto.randomUUID()}`,
+      kind: "publication_completed",
+      actorSubject: input.reservation.actorSubject,
+      occurredAt: new Date().toISOString(),
+      batchId: input.reservation.batchId,
+      entryKey: null,
+      details: { publicationId: input.reservation.publicationId, status: input.response.status },
+    });
+  }
+
+  listBatches(): StoredContentBatch[] {
+    return [...this.batches.values()];
+  }
+
+  async listSources(): Promise<readonly ContentSourceRegistration[]> {
+    return [...this.sources.values()];
+  }
+
+  async registerSource(input: { source: ContentSourceRegistrationInput; actorSubject: string }): Promise<ContentSourceRegistration> {
+    const current = this.sources.get(input.source.sourceKey);
+    const currentRevision = current?.license?.revision ?? 0;
+    if (input.source.expectedLicenseRevision !== undefined && input.source.expectedLicenseRevision !== null && input.source.expectedLicenseRevision !== currentRevision) {
+      throw new ContentServiceError("stale_version", "来源许可修订已变化，请重新加载后再保存");
+    }
+    const source: ContentSourceRegistration = {
+      sourceKey: input.source.sourceKey,
+      label: input.source.label,
+      status: input.source.status,
+      allowedActions: [...input.source.allowedActions],
+      jurisdiction: input.source.jurisdiction ?? null,
+      baseUrl: input.source.baseUrl,
+      license: {
+        revision: currentRevision + 1,
+        licenseKind: input.source.license.licenseKind,
+        allowedActions: [...input.source.license.allowedActions],
+        effectiveFrom: input.source.license.effectiveFrom,
+        effectiveUntil: input.source.license.effectiveUntil ?? null,
+        evidenceUrl: input.source.license.evidenceUrl ?? null,
+        evidenceText: input.source.license.evidenceText ?? null,
+        createdBySubject: input.actorSubject,
+        createdAt: new Date().toISOString(),
+      },
+    };
+    this.sources.set(source.sourceKey, source);
+    this.audits.unshift({
+      eventId: `audit_${crypto.randomUUID()}`,
+      kind: current ? "source_updated" : "source_registered",
+      actorSubject: input.actorSubject,
+      occurredAt: new Date().toISOString(),
+      batchId: null,
+      entryKey: null,
+      details: { sourceKey: source.sourceKey, licenseRevision: source.license?.revision ?? null },
+    });
+    return source;
+  }
+
+  async listBatchSummaries(input: { cursor: string | null; limit: number; status?: StoredContentBatch["status"] }): Promise<ContentBatchSummaryPage> {
+    const all = this.listBatches()
+      .filter((batch) => !input.status || batch.status === input.status)
+      .sort((left, right) => right.receivedAt.localeCompare(left.receivedAt));
+    const offset = decodeCursor(input.cursor);
+    const page = all.slice(offset, offset + input.limit).map(batchSummary);
+    return { items: page, nextCursor: offset + page.length < all.length ? encodeCursor(offset + page.length) : null };
+  }
+
+  async listAuditEvents(input: { cursor: string | null; limit: number; kind?: string; batchId?: string }): Promise<ContentAuditPage> {
+    const all = this.audits.filter((event) => (!input.kind || event.kind === input.kind) && (!input.batchId || event.batchId === input.batchId));
+    const offset = decodeCursor(input.cursor);
+    const page = all.slice(offset, offset + input.limit);
+    return { items: page, nextCursor: offset + page.length < all.length ? encodeCursor(offset + page.length) : null };
   }
 
   private toPublished(

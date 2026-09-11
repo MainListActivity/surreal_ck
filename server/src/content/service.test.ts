@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createSyntheticJudgmentBatch } from "@surreal-ck/shared/platform-content";
 import { ContentServiceError, InMemoryPlatformContentStore, PlatformContentService } from "./service";
 
-const operator = { subject: "operator:ada", capabilities: ["content.submit", "content.read", "content.publish", "content.withdraw", "content.restore"] } as const;
+const operator = { subject: "operator:ada", capabilities: ["content.submit", "content.read", "content.publish", "content.withdraw", "content.restore", "content.source.manage"] } as const;
 const source = {
   sourceKey: "fixture.synthetic.cn",
   label: "合成测试来源",
@@ -134,5 +134,72 @@ describe("platform content ingestion service", () => {
       idempotencyKey: "publication-restore",
     });
     expect((await service.searchContent(operator, { limit: 20 })).items).toHaveLength(1);
+  });
+
+  test("versions source licences and paginates batch and audit views", async () => {
+    const store = new InMemoryPlatformContentStore();
+    const service = new PlatformContentService({ store, sources: [source] });
+    const registered = await service.registerSource(operator, {
+      sourceKey: "gov.example.cn",
+      label: "公开法规示例",
+      jurisdiction: "中国大陆",
+      baseUrl: "https://gov.example.cn",
+      status: "active",
+      allowedActions: ["submit", "publish"],
+      license: {
+        licenseKind: "public",
+        allowedActions: ["submit", "publish"],
+        effectiveFrom: "2026-09-01T00:00:00Z",
+        effectiveUntil: null,
+        evidenceUrl: "https://gov.example.cn/license",
+        evidenceText: "公开许可说明",
+      },
+    });
+    expect(registered.license?.revision).toBe(1);
+    expect((await service.getDataContract(operator)).sources.some((item) => item.sourceKey === "gov.example.cn")).toBe(true);
+
+    const batch = await createSyntheticJudgmentBatch();
+    const large = {
+      ...batch,
+      idempotencyKey: "pagination-batch",
+      items: Array.from({ length: 3 }, (_, index) => ({
+        ...batch.items[0]!,
+        entryKey: `entry-${index + 1}`,
+        payload: {
+          ...batch.items[0]!.payload,
+          source: { ...batch.items[0]!.payload.source, recordKey: null },
+        },
+      })),
+    };
+    const submitted = await service.submitBatch(operator, large);
+    const firstPage = await service.inspectBatchResponse(operator, { batchId: submitted.batchId, limit: 2 });
+    expect(firstPage.entries).toHaveLength(2);
+    expect(firstPage.nextCursor).toBeTypeOf("string");
+    const secondPage = await service.inspectBatchResponse(operator, { batchId: submitted.batchId, cursor: firstPage.nextCursor, limit: 2 });
+    expect(secondPage.entries).toHaveLength(1);
+    expect(secondPage.nextCursor).toBeNull();
+
+    const summaries = await service.listBatchSummaries(operator, { limit: 1 });
+    expect(summaries.items[0]?.batchId).toBe(submitted.batchId);
+    expect(summaries.items[0]?.entryCount).toBe(3);
+    const audit = await service.listAuditEvents(operator, { limit: 10 });
+    expect(audit.items.some((item) => item.kind === "batch_received" && item.batchId === submitted.batchId)).toBe(true);
+    expect(audit.items.some((item) => item.kind === "source_registered")).toBe(true);
+  });
+
+  test("paginates source discovery in the data contract", async () => {
+    const sources = Array.from({ length: 101 }, (_, index) => ({
+      sourceKey: `source-${index.toString().padStart(3, "0")}`,
+      label: `来源 ${index}`,
+      status: "active" as const,
+      allowedActions: ["submit"] as const,
+    }));
+    const service = new PlatformContentService({ store: new InMemoryPlatformContentStore(), sources });
+    const first = await service.getDataContract(operator);
+    expect(first.sources).toHaveLength(100);
+    expect(first.sourceNextCursor).toBeTypeOf("string");
+    const second = await service.getDataContract(operator, { sourceCursor: first.sourceNextCursor });
+    expect(second.sources).toHaveLength(1);
+    expect(second.sourceNextCursor).toBeNull();
   });
 });

@@ -13,3 +13,4 @@ data/
 .claude
 .agents
 .superpowers/*/*/state
+.content-runner-checkpoint.json

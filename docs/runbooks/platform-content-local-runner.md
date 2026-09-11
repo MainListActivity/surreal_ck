@@ -1,0 +1,45 @@
+# 平台法律内容本地 Runner
+
+本地 Runner 只负责把本地采集/清洗 agent 产出的 **成品 `IngestionBatch` JSON** 推送到平台内容 MCP。它不抓取网页、不持有 SurrealDB root、不自动绕过运营审核；来源站点适配和正文许可判断必须在本地完成，并由运营端登记来源许可。
+
+## 配置
+
+```bash
+export CONTENT_MCP_URL=https://api.example.com/api/ops/mcp
+export CONTENT_ACCESS_TOKEN='从 OAuth 授权得到的短期 access token'
+export CONTENT_BATCH_FILE=/absolute/path/batch.json
+export CONTENT_CHECKPOINT_FILE=/absolute/path/content-runner-checkpoint.json
+```
+
+`CONTENT_ACCESS_TOKEN` 不会写入检查点或日志。检查点只保存幂等键、公开 `batchId`、审阅时间和发布状态。
+
+## 运行
+
+```bash
+# 先发现契约、提交、完整分页 inspect；默认停在人工审阅
+pnpm content:runner
+
+# 仅用于本地 MCP 联调的合成文书，不代表真实来源许可
+CONTENT_MCP_URL=... CONTENT_ACCESS_TOKEN=... pnpm content:runner -- --fixture
+
+# 只有人工在运营端确认后，才显式允许发布
+CONTENT_PUBLISH_CONFIRM=YES pnpm content:runner -- --publish
+```
+
+Runner 的顺序固定为：`initialize` → `get_data_contract` → `submit_batch`（同 actor/幂等键可安全重跑）→ 分页 `inspect_batch`。没有 `--publish` 时永远不调用 `publish_batch`；`--publish` 仍要求 `CONTENT_PUBLISH_CONFIRM=YES`，且只提交状态为 `ready` 的条目。
+
+## 采集与持续更新约定
+
+- 本地 agent 应为每次采集生成稳定的 `idempotencyKey`，同一来源记录使用 `source.recordKey`，重叠发现由服务端按来源记录和正文摘要去重。
+- 每次运行保留检查点；网络错误、401、refresh 失败或来源被撤权时停止远端操作，重新 OAuth 登录后再继续。
+- 采集失败、正文不完整、法条/引用无法定位时，保留 `fieldIssues`、`evidence` 和 `processing`，不要伪造完整正文；批次会在运营端显示失败原因。
+- 来源许可由 `/api/content/sources` 管理。新的许可修订不会改写历史批次，提交时生效的修订会写入 `sourceLicenseSnapshot`。
+- 运行器不创建定时任务。需要定时采集时由运营明确配置本地 scheduler，并保持默认“提交后待审核”。
+
+## 脱机与重跑
+
+如果提交前离线，检查点不会前进；恢复网络后可重跑相同命令。若提交已成功但进程在写检查点前退出，按相同幂等键重跑会得到原批次，而不会重复入库。更换输入内容时必须更换幂等键，或明确使用 `--force` 并更换检查点文件。
+
+## 当前限制
+
+首期不提供可视化爬虫/清洗编辑器，也不内置真实中国大陆法规或裁判文书抓取器。只有已登记、许可状态允许 `submit` 的来源才能进入成品批次；真实来源的获取、清洗和许可证明仍由本地 agent 与运营审核负责。

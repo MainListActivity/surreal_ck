@@ -12,6 +12,7 @@
     "dev:ops": "pnpm --filter @surreal-ck/ops dev",
     "build:marketing": "pnpm --filter @surreal-ck/marketing build",
     "build:ops": "pnpm --filter @surreal-ck/ops build",
+    "content:runner": "bun scripts/platform-content-runner.ts",
     "test": "pnpm -r --if-present run test",
     "test:quota:local": "pnpm --filter @surreal-ck/shared run test:quota:local",
     "test:quota:cross-repo": "pnpm --filter @surreal-ck/server run test:quota:cross-repo",

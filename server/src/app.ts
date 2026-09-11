@@ -67,6 +67,7 @@ import {
 import { createContentRoutes } from "./routes/content";
 import { PlatformContentService } from "./content/service";
 import { SurrealPlatformContentStore } from "./content/store";
+import { createContentMcpRoutes } from "./ops/mcp/routes";
 
 export type AppOptions = {
   workspaceScope?: WorkspaceScopeModule;
@@ -238,6 +239,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
       ),
     )
     .route("/", createContentRoutes({ service: platformContentService, requireUser: options.requireUser }))
+    .route("/", createContentMcpRoutes({ service: platformContentService }))
     .route(
       "/",
       createAiChatRoutes({

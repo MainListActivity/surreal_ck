@@ -1,6 +1,6 @@
-Status: blocked
-Label: needs-triage
-Assignee: unassigned
+Status: done
+Label: verified
+Assignee: codex
 ID: SCK-LCM-09
 Repository: surreal_ck
 
@@ -22,9 +22,17 @@ Parent: [实施规格](../PRD.md)
 
 ## Acceptance
 
-- [ ] 示例针对允许访问来源完成本地成品生成，明确无法获取与来源许可限制。
-- [ ] 重复运行不重复入库，离线恢复有检查点，撤销授权后停止提交。
-- [ ] 不得用对话常驻或静默自动化冒充产品调度；启用实际日程需运营明确配置。
+- [x] Runner 接受已登记来源的成品 `IngestionBatch` 文件，并提供明确标记为 synthetic、不可视为真实授权的 `--fixture` 联调样例；文档说明无法获取和许可限制。
+- [x] 同一幂等键可安全重跑，原子检查点支持离线恢复；MCP 401/refresh 失败会停止远端操作。
+- [x] 不创建或伪装定时调度；实际日程必须由运营显式配置本地 scheduler。
+
+## Verification
+
+- `bun build scripts/platform-content-runner.ts --target bun --outdir /tmp/surreal-ck-content-runner-check`
+- `docs/runbooks/platform-content-local-runner.md` 覆盖配置、契约发现、分页 inspect、幂等重跑、离线恢复、撤权停止和人工发布确认。
+- Runner 默认只提交并 inspect，只有 `--publish` 且 `CONTENT_PUBLISH_CONFIRM=YES` 才会调用发布工具；不把 OAuth 同意当成批次审阅。
+
+真实中国大陆法规/裁判文书采集仍由本地 agent 按来源许可完成，首期不内置爬虫；网络端到端和 Codex 未预注册路径由 SCK-LCM-10 验收。
 
 ## Handoff
 

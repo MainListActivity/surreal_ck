@@ -11,6 +11,12 @@ import { sha256Hex } from "@surreal-ck/shared/platform-content";
 import type {
   PlatformContentStore,
   ContentSourceRegistration,
+  ContentSourceRegistrationInput,
+  ContentSourceLicenseRevision,
+  ContentAuditEvent,
+  ContentAuditPage,
+  ContentBatchSummary,
+  ContentBatchSummaryPage,
   PublicationApplyResult,
   PublicationReservation,
   PublicationReservationResult,
@@ -66,6 +72,93 @@ function asString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
+function cursorOffset(cursor: string | null): number {
+  if (!cursor) return 0;
+  if (!/^o[0-9a-z]+$/u.test(cursor)) throw new Error("platform content pagination cursor is invalid");
+  const offset = Number.parseInt(cursor.slice(1), 36);
+  if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("platform content pagination cursor is invalid");
+  return offset;
+}
+
+function nextCursor(offset: number): string {
+  return `o${offset.toString(36)}`;
+}
+
+function asNullableString(value: unknown): string | null {
+  return value === null || value === undefined ? null : asString(value);
+}
+
+function parseLicense(value: unknown): ContentSourceLicenseRevision | null {
+  if (!isRow(value)) return null;
+  const revision = typeof value.revision === "number" ? value.revision : Number(value.revision);
+  const licenseKind = asString(value.license_kind) ?? asString(value.licenseKind);
+  let effectiveFrom: string | null = null;
+  try {
+    const rawEffectiveFrom = value.effective_from ?? value.effectiveFrom;
+    effectiveFrom = rawEffectiveFrom === undefined || rawEffectiveFrom === null ? null : iso(rawEffectiveFrom);
+  } catch {
+    effectiveFrom = null;
+  }
+  if (!Number.isSafeInteger(revision) || revision < 1 || !licenseKind || !effectiveFrom) return null;
+  const rawAllowedActions = value.allowed_actions ?? value.allowedActions;
+  const allowedActions = Array.isArray(rawAllowedActions)
+    ? rawAllowedActions.filter((action): action is ContentSourceLicenseRevision["allowedActions"][number] => action === "submit" || action === "publish" || action === "withdraw" || action === "restore")
+    : [];
+  return {
+    revision,
+    licenseKind,
+    allowedActions,
+    effectiveFrom,
+    effectiveUntil: asNullableString(value.effective_until ?? value.effectiveUntil),
+    evidenceUrl: asNullableString(value.evidence_url ?? value.evidenceUrl),
+    evidenceText: asNullableString(value.evidence_text ?? value.evidenceText),
+    ...(asString(value.created_by_subject ?? value.createdBySubject) ? { createdBySubject: asString(value.created_by_subject ?? value.createdBySubject)! } : {}),
+    ...(value.created_at !== undefined || value.createdAt !== undefined ? { createdAt: iso(value.created_at ?? value.createdAt) } : {}),
+  };
+}
+
+function parseSource(row: Row, license?: ContentSourceLicenseRevision | null): ContentSourceRegistration | null {
+  const sourceKey = asString(row.source_key);
+  const label = asString(row.label);
+  const status = row.status === "active" || row.status === "inactive" ? row.status : null;
+  if (!sourceKey || !label || !status) return null;
+  const allowedActions = Array.isArray(row.allowed_actions)
+    ? row.allowed_actions.filter((action): action is ContentSourceRegistration["allowedActions"][number] => action === "submit" || action === "publish" || action === "withdraw" || action === "restore")
+    : [];
+  const effectiveAllowedActions = license
+    ? allowedActions.filter((action) => license.allowedActions.includes(action))
+    : allowedActions;
+  return {
+    sourceKey,
+    label,
+    status,
+    allowedActions: effectiveAllowedActions,
+    jurisdiction: asNullableString(row.jurisdiction),
+    ...(asString(row.base_url) ? { baseUrl: asString(row.base_url)! } : {}),
+    license: license ?? null,
+  };
+}
+
+function summarizeBatch(batch: StoredContentBatch): ContentBatchSummary {
+  const sourceKeys = new Set<string>();
+  for (const item of batch.request.items) if (item.operation === "upsert") sourceKeys.add(item.payload.source.sourceKey);
+  return {
+    batchId: batch.batchId,
+    actorSubject: batch.actorSubject,
+    idempotencyKey: batch.idempotencyKey,
+    requestDigest: batch.requestDigest,
+    receivedAt: batch.receivedAt,
+    status: batch.status,
+    validationRevision: batch.validationRevision,
+    entryCount: batch.entries.length,
+    acceptedCount: batch.entries.filter((entry) => entry.status === "accepted").length,
+    duplicateCount: batch.entries.filter((entry) => entry.status === "duplicate").length,
+    rejectedCount: batch.entries.filter((entry) => entry.status === "rejected").length,
+    publishedCount: batch.entries.filter((entry) => entry.publicationStatus === "published").length,
+    sourceKeys: [...sourceKeys].sort(),
+  };
+}
+
 function parseBatch(row: Row, entryRows: Row[]): StoredContentBatch {
   const batchId = asString(row.public_id);
   if (!batchId || typeof row.actor_subject !== "string" || typeof row.idempotency_key !== "string") {
@@ -77,6 +170,13 @@ function parseBatch(row: Row, entryRows: Row[]): StoredContentBatch {
     && status !== "partially_validated" && status !== "rejected" && status !== "published"
   ) throw new Error("platform content batch has invalid status");
   if (!isRow(row.request)) throw new Error("platform content batch has no request");
+  const sourceLicenseSnapshot: Record<string, ContentSourceLicenseRevision> = {};
+  if (isRow(row.source_license_snapshot)) {
+    for (const [sourceKey, rawLicense] of Object.entries(row.source_license_snapshot)) {
+      const license = parseLicense(rawLicense);
+      if (license) sourceLicenseSnapshot[sourceKey] = license;
+    }
+  }
   return {
     batchId,
     actorSubject: row.actor_subject,
@@ -86,6 +186,7 @@ function parseBatch(row: Row, entryRows: Row[]): StoredContentBatch {
     receivedAt: iso(row.received_at),
     status,
     validationRevision: typeof row.validation_revision === "number" ? row.validation_revision : 1,
+    sourceLicenseSnapshot,
     entries: entryRows.map((entry) => ({
       entryKey: String(entry.entry_key),
       operation: entry.operation as StoredContentBatch["entries"][number]["operation"],
@@ -127,16 +228,88 @@ export class SurrealPlatformContentStore implements PlatformContentStore {
   ) {}
 
   async listSources(): Promise<readonly ContentSourceRegistration[]> {
-    const result = await this.db.query("SELECT source_key, label, status, allowed_actions FROM content_source ORDER BY source_key ASC;");
-    return rows(result).flatMap((row) => {
-      const sourceKey = asString(row.source_key);
-      const label = asString(row.label);
-      const status = row.status === "active" || row.status === "inactive" ? row.status : null;
-      const allowedActions = Array.isArray(row.allowed_actions)
-        ? row.allowed_actions.filter((action): action is ContentSourceRegistration["allowedActions"][number] => action === "submit" || action === "publish" || action === "withdraw" || action === "restore")
-        : [];
-      return sourceKey && label && status ? [{ sourceKey, label, status, allowedActions }] : [];
+    const result = await this.db.query("SELECT * FROM content_source ORDER BY source_key ASC;");
+    const sourceRows = rows(result);
+    const licenseResult = await this.db.query("SELECT * FROM source_license_revision ORDER BY revision DESC;");
+    const licensesBySource = new Map<string, ContentSourceLicenseRevision>();
+    for (const row of rows(licenseResult)) {
+      const sourceId = internalRecordId(row.source, "content_source")?.toString();
+      const license = parseLicense(row);
+      if (sourceId && license && !licensesBySource.has(sourceId)) licensesBySource.set(sourceId, license);
+    }
+    return sourceRows.flatMap((row) => {
+      const sourceId = internalRecordId(row.id, "content_source")?.toString();
+      const source = parseSource(row, sourceId ? licensesBySource.get(sourceId) ?? null : null);
+      return source ? [source] : [];
     });
+  }
+
+  async registerSource(input: { source: ContentSourceRegistrationInput; actorSubject: string }): Promise<ContentSourceRegistration> {
+    const { source: registration, actorSubject } = input;
+    const existingResult = await this.db.query("SELECT * FROM content_source WHERE source_key = $sourceKey LIMIT 1;", {
+      sourceKey: registration.sourceKey,
+    });
+    const existing = rows(existingResult)[0];
+    const source = existing ? internalRecordId(existing.id, "content_source") : this.idFactory("content_source");
+    if (!source) throw new Error("platform content source record id is malformed");
+    const revisionResult = await this.db.query(
+      "SELECT VALUE revision FROM source_license_revision WHERE source = $source ORDER BY revision DESC LIMIT 1;",
+      { source },
+    );
+    const currentRevisionValue = firstValue(revisionResult);
+    const currentRevision = typeof currentRevisionValue === "number" ? currentRevisionValue : Number(currentRevisionValue ?? 0);
+    if (!Number.isSafeInteger(currentRevision) || currentRevision < 0) throw new Error("platform content source license revision is malformed");
+    if (registration.expectedLicenseRevision !== undefined && registration.expectedLicenseRevision !== null && registration.expectedLicenseRevision !== currentRevision) {
+      throw new Error("platform-content-stale-source");
+    }
+    const nextRevision = currentRevision + 1;
+    const license = this.idFactory("source_license_revision");
+    const statements: string[] = ["BEGIN TRANSACTION;"];
+    const params: Record<string, unknown> = {
+      source,
+      license,
+      sourceKey: registration.sourceKey,
+      label: registration.label,
+      jurisdiction: registration.jurisdiction ?? undefined,
+      baseUrl: registration.baseUrl,
+      status: registration.status,
+      allowedActions: registration.allowedActions,
+      revision: nextRevision,
+      licenseKind: registration.license.licenseKind,
+      licenseAllowedActions: registration.license.allowedActions,
+      effectiveFrom: new Date(registration.license.effectiveFrom),
+      effectiveUntil: registration.license.effectiveUntil ? new Date(registration.license.effectiveUntil) : undefined,
+      evidenceUrl: registration.license.evidenceUrl ?? undefined,
+      evidenceText: registration.license.evidenceText ?? undefined,
+      actorSubject,
+      auditKind: existing ? "source_updated" : "source_registered",
+      auditDetails: {
+        sourceKey: registration.sourceKey,
+        licenseRevision: nextRevision,
+        licenseKind: registration.license.licenseKind,
+        allowedActions: registration.license.allowedActions,
+      },
+    };
+    if (existing) {
+      statements.push("UPDATE $source SET label = $label, jurisdiction = $jurisdiction, base_url = $baseUrl, status = $status, allowed_actions = $allowedActions, updated_at = time::now();");
+    } else {
+      statements.push("CREATE $source CONTENT { source_key: $sourceKey, label: $label, jurisdiction: $jurisdiction, base_url: $baseUrl, status: $status, allowed_actions: $allowedActions, created_at: time::now(), updated_at: time::now() };");
+    }
+    statements.push(
+      "CREATE $license CONTENT { source: $source, revision: $revision, license_kind: $licenseKind, allowed_actions: $licenseAllowedActions, effective_from: $effectiveFrom, effective_until: $effectiveUntil, evidence_url: $evidenceUrl, evidence_text: $evidenceText, created_by_subject: $actorSubject, created_at: time::now() };",
+      "CREATE platform_content_audit_event CONTENT { kind: $auditKind, actor_subject: $actorSubject, details: $auditDetails, occurred_at: time::now() };",
+      "COMMIT TRANSACTION;",
+    );
+    try {
+      await this.db.query(statements.join("\n"), params);
+    } catch (error) {
+      await this.db.query("CANCEL TRANSACTION;").catch(() => undefined);
+      throw error;
+    }
+    const sources = await this.listSources();
+    const result = sources.find((candidate) => candidate.sourceKey === registration.sourceKey);
+    if (!result) throw new Error("platform content source was not readable after registration");
+    return result;
   }
 
   async findBatchByIdempotency(input: { actorSubject: string; idempotencyKey: string }): Promise<StoredContentBatch | null> {
@@ -163,6 +336,7 @@ export class SurrealPlatformContentStore implements PlatformContentStore {
       request: batch.request,
       status: batch.status,
       validationRevision: batch.validationRevision,
+      sourceLicenseSnapshot: batch.sourceLicenseSnapshot ?? {},
       receivedAt: new Date(batch.receivedAt),
       entryCount: batch.entries.length,
     };
@@ -176,6 +350,7 @@ export class SurrealPlatformContentStore implements PlatformContentStore {
         request: $request,
         status: $status,
         validation_revision: $validationRevision,
+        source_license_snapshot: $sourceLicenseSnapshot,
         received_at: $receivedAt,
         updated_at: time::now()
       };`,
@@ -230,6 +405,78 @@ export class SurrealPlatformContentStore implements PlatformContentStore {
       { batch: batchRecord },
     );
     return parseBatch(batch, rows(entriesResult));
+  }
+
+  async listBatchSummaries(input: { cursor: string | null; limit: number; status?: StoredContentBatch["status"] }): Promise<ContentBatchSummaryPage> {
+    const offset = cursorOffset(input.cursor);
+    const conditions = input.status ? "WHERE status = $status" : "";
+    const result = await this.db.query(
+      `SELECT public_id, received_at FROM ingestion_batch ${conditions} ORDER BY received_at DESC START $offset LIMIT $pageLimit;`,
+      { ...(input.status ? { status: input.status } : {}), offset, pageLimit: input.limit + 1 },
+    );
+    const ids = rows(result).flatMap((row) => {
+      const publicId = asString(row.public_id);
+      return publicId ? [publicId] : [];
+    });
+    const pageIds = ids.slice(0, input.limit);
+    const items: ContentBatchSummary[] = [];
+    for (const batchId of pageIds) {
+      const batch = await this.getBatch(batchId);
+      if (batch) items.push(summarizeBatch(batch));
+    }
+    return {
+      items,
+      nextCursor: ids.length > input.limit ? nextCursor(offset + items.length) : null,
+    };
+  }
+
+  async listAuditEvents(input: { cursor: string | null; limit: number; kind?: string; batchId?: string }): Promise<ContentAuditPage> {
+    const offset = cursorOffset(input.cursor);
+    const conditions: string[] = [];
+    const params: Record<string, unknown> = { offset, pageLimit: input.limit + 1 };
+    if (input.kind) {
+      conditions.push("kind = $kind");
+      params.kind = input.kind;
+    }
+    if (input.batchId) {
+      conditions.push("batch IN (SELECT VALUE id FROM ingestion_batch WHERE public_id = $batchId)");
+      params.batchId = input.batchId;
+    }
+    const result = await this.db.query(
+      `SELECT * FROM platform_content_audit_event ${conditions.length ? `WHERE ${conditions.join(" AND ")}` : ""}
+       ORDER BY occurred_at DESC START $offset LIMIT $pageLimit;`,
+      params,
+    );
+    const rowsPage = rows(result);
+    const items: ContentAuditEvent[] = rowsPage.slice(0, input.limit).flatMap((row) => {
+      const eventId = row.id && typeof row.id === "object" ? String(row.id) : asString(row.id);
+      const kind = asString(row.kind);
+      const actorSubject = asString(row.actor_subject);
+      if (!eventId || !kind || !actorSubject) return [];
+      let occurredAt: string;
+      try {
+        occurredAt = iso(row.occurred_at);
+      } catch {
+        return [];
+      }
+      const batchObject = asObject(row.batch);
+      const batchId = asString(batchObject?.public_id) ?? (typeof row.batch === "string" && row.batch.startsWith("ingestion_batch:") ? row.batch.slice("ingestion_batch:".length) : null);
+      const entryObject = asObject(row.entry);
+      const entryKey = asString(entryObject?.entry_key);
+      return [{
+        eventId,
+        kind,
+        actorSubject,
+        occurredAt,
+        batchId,
+        entryKey,
+        details: asObject(row.details) ?? {},
+      }];
+    });
+    return {
+      items,
+      nextCursor: rowsPage.length > input.limit ? nextCursor(offset + items.length) : null,
+    };
   }
 
   async findBySourceRecord(input: { sourceKey: string; recordKey: string }): Promise<StoredPublishedContent | null> {
