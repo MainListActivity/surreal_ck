@@ -439,6 +439,12 @@ export const PLATFORM_OPERATOR_CAPABILITIES = [
   "reconcile.audit",
   "drift.manage",
   "ledger.rebuild",
+  "content.read",
+  "content.submit",
+  "content.publish",
+  "content.withdraw",
+  "content.restore",
+  "content.source.manage",
 ] as const;
 export type PlatformOperatorCapability =
   (typeof PLATFORM_OPERATOR_CAPABILITIES)[number];

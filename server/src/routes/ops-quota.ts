@@ -9,7 +9,6 @@ import { Hono } from "hono";
 import type { MiddlewareHandler } from "hono";
 import type { AppBindings } from "../hono-types";
 import { HttpError } from "../http-error";
-import { requireOidc } from "../middleware/oidc";
 import {
   QuotaLifecycleError,
   requiredCapabilityForIntent,
@@ -22,6 +21,7 @@ import type { QuotaReadPort } from "./quota";
 import type { QuotaIntentStatusReader } from "../quota/quota-intent-status";
 import type { QuotaOpsConsolePort } from "../quota/quota-ops-console";
 import type { QuotaOpsPreflightPort } from "../quota/quota-ops-preflight";
+import { requirePlatformOperator } from "../ops/operator-auth";
 
 export interface QuotaOperatorIntentPort {
   submitOperatorIntent(
@@ -158,7 +158,8 @@ export function createOpsQuotaRoutes(input: Readonly<{
   intentStatus: QuotaIntentStatusReader;
   requireUser?: () => MiddlewareHandler<AppBindings>;
 }>) {
-  const requireUser = input.requireUser ?? requireOidc;
+  // 测试/嵌入调用可注入 middleware；生产默认要求独立运营 audience 与有效运营身份。
+  const requireUser = input.requireUser ?? (() => requirePlatformOperator());
   return new Hono<AppBindings>()
     .get("/api/ops/quota/context", requireUser(), async (c) => {
       const context = await input.console.getContext({

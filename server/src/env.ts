@@ -14,6 +14,8 @@ const EnvSchema = z.object({
   OIDC_ISSUER: z.string().url(),
   OIDC_JWKS_URL: z.string().url(),
   OIDC_AUDIENCE: z.string().min(1),
+  // 独立运营端 / 内容 MCP 的 audience；生产环境由 IdP 单独注册资源标识。
+  OIDC_OPS_AUDIENCE: z.string().min(1).optional(),
   OIDC_CLIENT_ID: z.string().min(1).optional(),
   OIDC_CLIENT_SECRET: z.string().min(1).optional(),
   OIDC_TOKEN_ENDPOINT: z.string().url().optional(),
