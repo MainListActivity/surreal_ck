@@ -15,6 +15,7 @@ const page = task.page("p1");
 
 const readJson = async (path) => JSON.parse(await readFile(path, "utf8"));
 const safeCallbackPath = "/tmp/sck-mcp-e2e-callback.json";
+const authUrl = (await readFile("/tmp/sck-mcp-e2e-auth-url.txt", "utf8")).trim();
 
 const saveCallbackFromPage = async () => {
   const currentUrl = await page.url();
@@ -33,8 +34,15 @@ const saveCallbackFromPage = async () => {
 };
 
 const currentUrl = await page.url();
-if (currentUrl === "https://auth.maplayer.top/login" || currentUrl === "https://auth.maplayer.top/login/") {
-  const authUrl = (await readFile("/tmp/sck-mcp-e2e-auth-url.txt", "utf8")).trim();
+const current = new URL(currentUrl);
+const isCallbackPage = current.hostname === "127.0.0.1" && current.port === "43123";
+const isExistingAuthChallenge =
+  current.hostname === "auth.maplayer.top" &&
+  (current.pathname.startsWith("/login/ck") || current.pathname.startsWith("/consent"));
+// 工作区首页的登录态不一定等于 IdP cookie；从业务页进入验收时必须先打开
+// 本次 DCR 生成的授权 URL。若 IdP 会话有效，会直接跳到 consent；若当前已在
+// challenge 页，则保留用户正在填写的内容。
+if (!isCallbackPage && !isExistingAuthChallenge) {
   await page.goto(authUrl);
   await page.waitForLoadState();
 }
@@ -47,9 +55,7 @@ await page.waitForSelector("loc=css:input[autocomplete='username']", {
 const urlAfterNavigation = await page.url();
 if (urlAfterNavigation.includes("/login/ck")) {
   const user = await readJson("/tmp/sck-mcp-e2e-user-safe.json");
-  const snapshot = await page.snapshot();
-  const usernameRef = snapshot.match(/textbox \[ref=(\d+), loc=css:input\[placeholder=\"alice@example.com\"\]\]/)?.[1];
-  if (usernameRef) await page.fill(`@${usernameRef}`, user.email);
+  await page.fill("loc=css:input[autocomplete='username']", user.email);
 
   const passwordLength = await page.evaluate(() => {
     const input = document.querySelector('input[type="password"]');
@@ -61,18 +67,12 @@ if (urlAfterNavigation.includes("/login/ck")) {
     process.exit(0);
   }
 
-  const loginSnapshot = await page.snapshot();
-  const loginRef = loginSnapshot.match(/button \[ref=(\d+)\]\n\s+text \"登录\"/)?.[1];
-  if (!loginRef) throw new Error("未找到登录按钮");
-  await page.click(`@${loginRef}`, { label: "submit OAuth login" });
+  await page.click("loc=role:button[name='登录']", { label: "submit OAuth login" });
   await page.waitForLoadState();
 }
 
 if ((await page.url()).includes("/consent")) {
-  const consentSnapshot = await page.snapshot();
-  const approveRef = consentSnapshot.match(/button \[ref=(\d+)\][\s\S]*?text \"允许\"/)?.[1];
-  if (!approveRef) throw new Error("未找到 OAuth 同意按钮");
-  await page.click(`@${approveRef}`, { label: "approve MCP scopes" });
+  await page.click("loc=role:button[name='允许']", { label: "approve MCP scopes" });
   await page.waitForLoadState();
 }
 
