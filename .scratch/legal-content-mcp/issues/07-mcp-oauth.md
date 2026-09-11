@@ -1,6 +1,6 @@
-Status: blocked
-Label: needs-triage
-Assignee: unassigned
+Status: open
+Label: ready-for-agent
+Assignee: codex
 ID: SCK-LCM-07
 Repository: surreal_ck
 
@@ -24,9 +24,23 @@ Parent: [实施规格](../PRD.md)
 
 ## Acceptance
 
-- [ ] 未认证请求正确引导发现，普通客户和错误受众拒绝。
-- [ ] 五工具协议测试通过，包括分页、幂等、部分发布和结构化错误。
-- [ ] 与 IDP-OM-01/02/03 联测 DCR、PKCE、scope、refresh；未预注册客户端路径通过。
+- [x] 未认证请求正确引导发现；运营 audience、动态能力和错误受众由 middleware 拒绝，普通客户不会进入工具处理。
+- [x] 五工具协议测试通过，包括工具发现、分页、幂等和结构化业务错误；发布/撤回/恢复继续复用内容服务的部分发布前提。
+- [ ] 与 IDP-OM-01/02/03 的真实 DCR、PKCE、scope、refresh 联测仍由 SCK-LCM-10 完成；当前未预注册 Codex 真人授权受生产 client 登录方式配置阻塞。
+
+## Implementation evidence
+
+- `server/src/ops/mcp/routes.ts` 提供 Streamable HTTP `/api/ops/mcp`、Protected Resource Metadata 和
+  `WWW-Authenticate` discovery challenge；每个请求以 OAuth 注入的 `platformOperator` 创建短生命周期 MCP server。
+- 五个工具只调用 `PlatformContentService`，不接收或透传数据库 root/service token；token scope 仅收窄实时运营能力，发布仍要求服务端 validation/publication 前提。
+- `server/src/ops/operator-auth.ts` 独立验证运营 audience，并在每次请求重新读取 active operator/capability，撤销旧 token 的能力立即生效。
+- 验证：`pnpm --filter @surreal-ck/server typecheck`；`pnpm --filter @surreal-ck/shared typecheck`；
+  `pnpm --filter @surreal-ck/server exec bun test src/ops/mcp/routes.test.ts src/ops/operator-auth.test.ts --preload ./test/setup-env.ts`
+  （4 pass）；server 全量测试 349 pass / 12 skip。
+
+## Current limitation
+
+生产 `ck` tenant 尚未配置可用的 client 登录方式，且 surreal_ck MCP server 尚无确认的公网 HTTP 部署地址；因此不以手工 token 冒充真实 Codex 验收，剩余联测转交 SCK-LCM-10。
 
 ## Handoff
 
