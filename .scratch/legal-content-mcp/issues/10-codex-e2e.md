@@ -1,6 +1,6 @@
-Status: blocked
-Label: needs-triage
-Assignee: unassigned
+Status: open
+Label: ready-for-agent
+Assignee: codex
 ID: SCK-LCM-10
 Repository: surreal_ck
 
@@ -28,6 +28,26 @@ Parent: [实施规格](../PRD.md)
 - [ ] 测试记录精确列明客户端版本、IdP/fork版本、fixtures 与未支持项，不以手工 token 替代。
 - [ ] 跨租户/普通用户/旧token撤权/错误受众测试通过；任何外部失败均有准确结果。
 - [ ] 回退演练保留版本与批次，重新开启可幂等恢复；生产发布须按部署授权执行。
+
+## 当前进度
+
+- [x] `ma_hono` 生产 Worker 已部署，D1 迁移 `0011_mcp_resource_scope.sql` 与
+  `0012_consent_challenges.sql` 已应用；`ck` issuer discovery 已返回 MCP
+  resource、scope、DCR 与 revocation 元数据。
+- [x] 通过生产 DCR 验证 `native` loopback client、managed resource 与
+  `openid content.read` scope 请求；错误缺少 `application_type` 会被拒绝。
+- [ ] 仍需在已部署的 `surreal_ck` MCP URL 上完成 Codex 实际接入、真人授权、五工具
+  调用、刷新和撤销。当前环境的 `ck` tenant 没有启用任何 client 登录方式，且
+  `surreal_ck` server 尚无可确认的公网 HTTP 部署地址，因此不能用手工 token 代替。
+
+## 本轮外部验证记录
+
+- IdP Worker 版本：`0e95ee90-afcb-4019-bcf5-4059c75e3588`（已包含 MCP registration client lifecycle）。
+- 发现端点：`https://o.maplayer.top/t/ck/.well-known/openid-configuration`。
+- DCR 端点：`https://o.maplayer.top/t/ck/connect/mcp/register`。
+- DCR 返回 `201`；测试客户端只用于联调，未签发用户 token。生命周期接口已用临时
+  client 验证 `GET=200`、`DELETE=204`；历史联调 client 已从生产 D1 定向清理，
+  并补写 `oidc.client.deleted` 审计事件（不删除原注册审计）。
 
 ## Handoff
 
