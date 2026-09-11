@@ -88,14 +88,32 @@ function protectedResourceMetadata({
   };
 }
 
-function resourceMetadataUrl(requestUrl: string): string {
-  const url = new URL(requestUrl);
+function resourceMetadataUrl(input: Readonly<{
+  requestUrl: string;
+  forwardedHost?: string;
+  forwardedProto?: string;
+}>): string {
+  const url = new URL(input.requestUrl);
+  const forwardedHost = input.forwardedHost?.split(",", 1)[0]?.trim();
+  const forwardedProto = input.forwardedProto?.trim().toLowerCase();
+  if (
+    forwardedHost !== undefined &&
+    /^[A-Za-z0-9.-]+(?::[0-9]{1,5})?$/u.test(forwardedHost) &&
+    (forwardedProto === "http" || forwardedProto === "https")
+  ) {
+    url.host = forwardedHost;
+    url.protocol = `${forwardedProto}:`;
+  }
   return `${url.origin}/api/ops/.well-known/oauth-protected-resource`;
 }
 
 function withMcpBearerChallenge(
   middleware: MiddlewareHandler<AppBindings>,
-  metadataUrl: (requestUrl: string) => string,
+  metadataUrl: (input: {
+    requestUrl: string;
+    forwardedHost?: string;
+    forwardedProto?: string;
+  }) => string,
 ): MiddlewareHandler<AppBindings> {
   return async (c, next) => {
     try {
@@ -104,7 +122,11 @@ function withMcpBearerChallenge(
       if (error instanceof HttpError && error.status === 401) {
         c.header(
           "WWW-Authenticate",
-          `Bearer resource_metadata="${metadataUrl(c.req.url)}"`,
+          `Bearer resource_metadata="${metadataUrl({
+            requestUrl: c.req.url,
+            forwardedHost: c.req.header("x-forwarded-host"),
+            forwardedProto: c.req.header("x-forwarded-proto"),
+          })}"`,
         );
       }
       throw error;

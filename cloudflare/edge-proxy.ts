@@ -27,6 +27,7 @@ export default {
     const headers = new Headers(request.headers);
     headers.set("x-edge-proxy-secret", env.EDGE_PROXY_SECRET);
     headers.set("x-forwarded-host", incoming.host);
+    headers.set("x-forwarded-proto", incoming.protocol.slice(0, -1));
     headers.delete("host");
 
     const body = request.method === "GET" || request.method === "HEAD" ? undefined : request.body;

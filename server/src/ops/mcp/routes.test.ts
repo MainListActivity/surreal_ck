@@ -98,6 +98,25 @@ describe("platform content MCP", () => {
     );
   });
 
+  test("uses the public forwarded origin in the discovery challenge", async () => {
+    const app = createTestApp(async () => {
+      throw new HttpError(401, "oidc-missing", "Missing bearer token");
+    });
+    const response = await app.fetch(
+      new Request("https://data.example.test/api/ops/mcp", {
+        method: "POST",
+        headers: {
+          "x-forwarded-host": "l.example.test",
+          "x-forwarded-proto": "https",
+        },
+      }),
+    );
+    expect(response.status).toBe(401);
+    expect(response.headers.get("www-authenticate")).toContain(
+      'resource_metadata="https://l.example.test/api/ops/.well-known/oauth-protected-resource"',
+    );
+  });
+
   test("serves initialize, tools/list, and structured business errors through Streamable HTTP", async () => {
     const app = createTestApp();
     const initialize = await call(app, {
