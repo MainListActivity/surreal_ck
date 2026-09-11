@@ -106,8 +106,8 @@ describe("platform content MCP", () => {
       new Request("https://data.example.test/api/ops/mcp", {
         method: "POST",
         headers: {
-          "x-forwarded-host": "l.example.test",
-          "x-forwarded-proto": "https",
+          "x-surreal-ck-public-host": "l.example.test",
+          "x-surreal-ck-public-proto": "https",
         },
       }),
     );

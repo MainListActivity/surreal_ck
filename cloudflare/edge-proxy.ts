@@ -28,6 +28,10 @@ export default {
     headers.set("x-edge-proxy-secret", env.EDGE_PROXY_SECRET);
     headers.set("x-forwarded-host", incoming.host);
     headers.set("x-forwarded-proto", incoming.protocol.slice(0, -1));
+    // Caddy may overwrite the standard forwarded headers while proxying to
+    // Bun. Keep a dedicated public-origin pair for OAuth discovery URLs.
+    headers.set("x-surreal-ck-public-host", incoming.host);
+    headers.set("x-surreal-ck-public-proto", incoming.protocol.slice(0, -1));
     headers.delete("host");
 
     const body = request.method === "GET" || request.method === "HEAD" ? undefined : request.body;

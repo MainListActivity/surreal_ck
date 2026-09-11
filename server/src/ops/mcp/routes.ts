@@ -124,8 +124,10 @@ function withMcpBearerChallenge(
           "WWW-Authenticate",
           `Bearer resource_metadata="${metadataUrl({
             requestUrl: c.req.url,
-            forwardedHost: c.req.header("x-forwarded-host"),
-            forwardedProto: c.req.header("x-forwarded-proto"),
+            forwardedHost:
+              c.req.header("x-surreal-ck-public-host") ?? c.req.header("x-forwarded-host"),
+            forwardedProto:
+              c.req.header("x-surreal-ck-public-proto") ?? c.req.header("x-forwarded-proto"),
           })}"`,
         );
       }
