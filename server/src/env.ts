@@ -28,6 +28,13 @@ const EnvSchema = z.object({
   // 当前 MVP 中该表非空即开启创建 workspace 能力，不做逐 subject 授权。
   SYSTEM_ADMIN_SUBJECTS: z.string().optional(),
 
+  // 首次部署可选的运营主体 bootstrap；必须同时配置能力，且只补缺失记录，不会
+  // 自动重新启用已禁用的主体或已撤销的能力。能力名以逗号分隔。
+  PLATFORM_OPERATOR_SUBJECTS: z.string().optional(),
+  PLATFORM_OPERATOR_CAPABILITIES: z.string().optional(),
+  PLATFORM_OPERATOR_DISPLAY_NAME: z.string().min(1).optional(),
+  PLATFORM_OPERATOR_GRANTOR_SUBJECT: z.string().min(1).optional(),
+
   // 逗号分隔的可选模板包；空配置保持通用工作区，不播种垂直模板。
   WORKSPACE_TEMPLATE_PACKS: z
     .string()

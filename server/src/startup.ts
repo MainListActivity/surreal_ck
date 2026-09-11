@@ -4,6 +4,7 @@ import { closeRootConnection, initRootConnection } from "./db/root-connection";
 import { ensureSystemSchema } from "./db/system-schema";
 import { ensurePlatformContentSchema } from "./content/schema";
 import { seedSystemAdmins } from "./db/system-admin-seed";
+import { seedPlatformOperators } from "./db/platform-operator-seed";
 import { seedQuotaPlans } from "./db/quota-plan-seed";
 import { migrateAllWorkspaces } from "./db/migration-runner";
 import { startReconcileLoop, type ReconcileLoopHandle } from "./db/reconciler";
@@ -41,6 +42,7 @@ export type StartServerDeps = {
   ensureSystemSchema?: () => Promise<unknown>;
   ensurePlatformContentSchema?: () => Promise<unknown>;
   seedSystemAdmins?: () => Promise<unknown>;
+  seedPlatformOperators?: () => Promise<unknown>;
   seedQuotaPlans?: () => Promise<unknown>;
   migrateAllWorkspaces?: () => Promise<unknown>;
   createApp?: () => AppLike;
@@ -74,6 +76,8 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
   const ensureContentSchema = deps.ensurePlatformContentSchema
     ?? (envName === "test" ? async () => undefined : () => ensurePlatformContentSchema());
   const seedAdmins = deps.seedSystemAdmins ?? seedSystemAdmins;
+  const seedOperators = deps.seedPlatformOperators
+    ?? (envName === "test" ? async () => undefined : seedPlatformOperators);
   const seedPlans = deps.seedQuotaPlans ?? seedQuotaPlans;
   const migrateWorkspaces = deps.migrateAllWorkspaces ?? migrateAllWorkspaces;
   const makeApp = deps.createApp ?? createApp;
@@ -118,6 +122,7 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
   await ensureSchema();
   await ensureContentSchema();
   await seedAdmins();
+  await seedOperators();
   await seedPlans();
   await migrateWorkspaces();
 

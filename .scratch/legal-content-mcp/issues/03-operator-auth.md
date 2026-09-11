@@ -36,5 +36,8 @@ Parent: [实施规格](../PRD.md)
 - `server/src/ops/operator-auth.ts` 将运营 audience 与客户 audience 分离，按请求验证 OIDC issuer/audience，并实时查询 `platform_operator` 与 active capability；禁用运营或撤销能力会立即拒绝旧 token。
 - `shared/src/native-quota/control-plane.ts` 与 system migration 014 增加 `content.read/submit/publish/withdraw/restore/source.manage` 能力，未复用 `system_admin` workspace 创建开关。
 - `createOpsQuotaRoutes` 默认改用运营身份 middleware；测试注入的 middleware 仍可用于纯路由单测。
+- `PLATFORM_OPERATOR_SUBJECTS` + `PLATFORM_OPERATOR_CAPABILITIES` 提供显式的启动期
+  bootstrap；两项同时配置才生效，只补缺失主体/能力，不会在重启时恢复已禁用主体或
+  已撤销能力，能力名会按共享白名单校验。
 - 验证：运营 auth 测试 1 pass；既有 OIDC/ops route 测试 8 pass；server typecheck 通过；migration 014 经 Surreal CLI validate。
 - 限制：IdP DCR/resource indicator 和实际 MCP endpoint 由 ma_hono IDP-OM 与 SCK-LCM-07 实施；内容表的细粒度 publisher PERMISSIONS 在 SCK-LCM-05 接收入口时落地。
