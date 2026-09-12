@@ -68,14 +68,6 @@ function toolSuccess(value: unknown) {
   };
 }
 
-function configuredResource(input: Readonly<{ resourceUri?: string }>): string {
-  const resource = input.resourceUri ?? env.OIDC_OPS_AUDIENCE ?? env.OIDC_AUDIENCE;
-  if (!resource) {
-    throw new HttpError(503, "oidc-ops-audience-not-configured", "运营 MCP resource 未配置");
-  }
-  return resource;
-}
-
 function protectedResourceMetadata({
   authorizationServer,
   resource,
@@ -88,11 +80,11 @@ function protectedResourceMetadata({
   };
 }
 
-function resourceMetadataUrl(input: Readonly<{
+function publicRequestUrl(input: Readonly<{
   requestUrl: string;
   forwardedHost?: string;
   forwardedProto?: string;
-}>): string {
+}>): URL {
   const url = new URL(input.requestUrl);
   const forwardedHost = input.forwardedHost?.split(",", 1)[0]?.trim();
   const forwardedProto = input.forwardedProto?.trim().toLowerCase();
@@ -104,7 +96,28 @@ function resourceMetadataUrl(input: Readonly<{
     url.host = forwardedHost;
     url.protocol = `${forwardedProto}:`;
   }
+  return url;
+}
+
+function resourceMetadataUrl(input: Readonly<{
+  requestUrl: string;
+  forwardedHost?: string;
+  forwardedProto?: string;
+}>): string {
+  const url = publicRequestUrl(input);
   return `${url.origin}/api/ops/.well-known/oauth-protected-resource`;
+}
+
+function mcpResourceUrl(input: Readonly<{
+  requestUrl: string;
+  forwardedHost?: string;
+  forwardedProto?: string;
+}>): string {
+  const url = publicRequestUrl(input);
+  url.pathname = "/api/ops/mcp";
+  url.search = "";
+  url.hash = "";
+  return url.toString();
 }
 
 function withMcpBearerChallenge(
@@ -238,7 +251,6 @@ export function createContentMcpRoutes(input: Readonly<{
   authorizationServer?: string;
   requireOperator?: MiddlewareHandler<AppBindings>;
 }>) {
-  const resource = configuredResource(input);
   const authorizationServer = input.authorizationServer ?? env.OIDC_ISSUER;
   const authenticate = withMcpBearerChallenge(
     input.requireOperator ?? requirePlatformOperator(),
@@ -246,11 +258,32 @@ export function createContentMcpRoutes(input: Readonly<{
   );
   const app = new Hono<AppBindings>();
 
+  const resourceForRequest = (requestUrl: string, forwardedHost?: string, forwardedProto?: string) =>
+    input.resourceUri ?? mcpResourceUrl({ requestUrl, forwardedHost, forwardedProto });
+
   app.get("/api/ops/.well-known/oauth-protected-resource", (c) =>
-    c.json(protectedResourceMetadata({ authorizationServer, resource })),
+    c.json(
+      protectedResourceMetadata({
+        authorizationServer,
+        resource: resourceForRequest(
+          c.req.url,
+          c.req.header("x-surreal-ck-public-host") ?? c.req.header("x-forwarded-host"),
+          c.req.header("x-surreal-ck-public-proto") ?? c.req.header("x-forwarded-proto"),
+        ),
+      }),
+    ),
   );
   app.get("/api/ops/mcp/.well-known/oauth-protected-resource", (c) =>
-    c.json(protectedResourceMetadata({ authorizationServer, resource })),
+    c.json(
+      protectedResourceMetadata({
+        authorizationServer,
+        resource: resourceForRequest(
+          c.req.url,
+          c.req.header("x-surreal-ck-public-host") ?? c.req.header("x-forwarded-host"),
+          c.req.header("x-surreal-ck-public-proto") ?? c.req.header("x-forwarded-proto"),
+        ),
+      }),
+    ),
   );
 
   app.options("/api/ops/mcp", (c) => {

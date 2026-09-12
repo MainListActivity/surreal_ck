@@ -33,6 +33,7 @@ function createTestApp(
     });
     await next();
   },
+  resourceUri?: string,
 ) {
   const service = new PlatformContentService({
     store: new InMemoryPlatformContentStore(),
@@ -45,7 +46,7 @@ function createTestApp(
     createContentMcpRoutes({
       service,
       authorizationServer: "https://auth.example.test",
-      resourceUri: "https://auth.example.test/ops",
+      resourceUri,
       requireOperator: middleware,
     }),
   );
@@ -70,7 +71,7 @@ describe("platform content MCP", () => {
   test("publishes protected-resource metadata and returns a bearer discovery challenge", async () => {
     const app = createTestApp(async () => {
       throw new HttpError(401, "oidc-missing", "Missing bearer token");
-    });
+    }, "https://auth.example.test/ops");
     const metadata = await app.fetch(
       new Request("https://api.example.test/api/ops/.well-known/oauth-protected-resource"),
     );
@@ -96,6 +97,15 @@ describe("platform content MCP", () => {
     expect(response.headers.get("www-authenticate")).toContain(
       'resource_metadata="https://api.example.test/api/ops/.well-known/oauth-protected-resource"',
     );
+  });
+
+  test("derives the MCP resource URL when no audience override is provided", async () => {
+    const app = createTestApp();
+    const metadata = await app.fetch(
+      new Request("https://api.example.test/api/ops/.well-known/oauth-protected-resource"),
+    );
+    expect(metadata.status).toBe(200);
+    expect((await metadata.json()).resource).toBe("https://api.example.test/api/ops/mcp");
   });
 
   test("uses the public forwarded origin in the discovery challenge", async () => {
