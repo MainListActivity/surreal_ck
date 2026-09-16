@@ -13,6 +13,9 @@ function fakeConn() {
       status = "connected";
       return true;
     },
+    async authenticate() {
+      return {};
+    },
     async use(what) {
       return what ?? { namespace: null, database: null };
     },
