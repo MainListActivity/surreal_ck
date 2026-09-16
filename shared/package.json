@@ -9,6 +9,7 @@
       "default": "./sql/template-packs/index.ts"
     },
     "./workspace-template": "./sql/workspace-template/index.ts",
+    "./platform-content-schema": "./sql/platform-content/index.ts",
     "./*": "./src/*"
   },
   "dependencies": {

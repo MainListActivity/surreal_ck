@@ -36,6 +36,7 @@ import {
 import { RequestContext } from "@mastra/core/request-context";
 import type { Surreal } from "surrealdb";
 import type { ChatRunner, ChatResumer } from "./chat-service";
+import type { SearchContentResponse } from "@surreal-ck/shared/platform-content";
 
 /**
  * 把一个已构造好的 Mastra Agent 适配成 RouterLlmCaller：
@@ -69,6 +70,7 @@ export type AssembleExecutorDeps = {
  */
 export function createCallerSessionResourceDeps(
   embeddingProvider?: EmbeddingProvider,
+  searchLegalContent?: (input: Readonly<{ query: string; limit: number }>) => Promise<SearchContentResponse>,
 ): ResourceRetrievalExecutorDeps {
   function requireSession(session: Surreal | undefined): Surreal {
     if (!session) {
@@ -83,6 +85,7 @@ export function createCallerSessionResourceDeps(
     createResearchSession: (req, session) =>
       createResourceSearchService({ session: requireSession(session) })
         .createResearchSession(req),
+    searchLegalContent,
   };
 }
 
@@ -125,6 +128,8 @@ export type CreateMastraRunnerOptions = {
   resource?: ResourceRetrievalExecutorDeps;
   /** 检索查询向量生成器（服务端持 key）；缺席时检索退化为关键词 + 索引状态推断。 */
   embeddingProvider?: EmbeddingProvider;
+  /** 平台已发布法律库的只读检索入口。 */
+  searchLegalContent?: ResourceRetrievalExecutorDeps["searchLegalContent"];
 
   // ── 以下注入点用于测试与未来替换；生产默认从 agents/index 装配 ──
   /** 默认：用 settings 构造 5 agents（含 resource agent）。 */
@@ -243,7 +248,7 @@ export function createMastraRunner(options: CreateMastraRunnerOptions = {}): { r
       }
       cachedAgents = buildAgents(options.settings ?? ({} as AiSettings));
       cachedExecutors = buildExecutors(cachedAgents, {
-        resource: options.resource ?? createCallerSessionResourceDeps(options.embeddingProvider),
+        resource: options.resource ?? createCallerSessionResourceDeps(options.embeddingProvider, options.searchLegalContent),
       });
       cachedLlm = buildLlmCaller(cachedAgents);
     }

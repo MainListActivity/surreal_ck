@@ -42,6 +42,37 @@ describe("quota migration scanners", () => {
     expect(queries).toHaveLength(3);
   });
 
+  test("matches native field accounting for relation endpoint fields", async () => {
+    const scanner = new SurrealQuotaPhysicalScanner({
+      async query(sql) {
+        if (sql === "INFO FOR DATABASE STRUCTURE;") {
+          return [{
+            tables: [{
+              name: "resource_record_link",
+              kind: { kind: "RELATION" },
+            }],
+          }];
+        }
+        return [{
+          fields: [
+            { name: "in" },
+            { name: "out" },
+            { name: "created_at" },
+          ],
+        }, [{ count: 2 }]];
+      },
+    });
+
+    await expect(scanner.scan()).resolves.toMatchObject({
+      tables: [{
+        table: "resource_record_link",
+        field_count: "1",
+        record_count: "2",
+      }],
+      totals: { table_count: "1", field_count: "1", record_count: "2" },
+    });
+  });
+
   test("legacy mutable values remain evidence and unsafe event targets block", async () => {
     const reader = new SurrealLegacyQuotaInventoryReader({
       async query(sql) {

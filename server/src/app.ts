@@ -11,7 +11,13 @@ import { createInternalIdpRoutes } from "./routes/internal-idp";
 import { createMemberRoutes } from "./routes/members";
 import { createSessionRoutes } from "./routes/session";
 import { createWorkspaceRoutes } from "./routes/workspaces";
-import { createAuthRoutes, createOidcTokenExchangeFromEnv, type OidcTokenExchangeOptions } from "./routes/auth";
+import {
+  createAuthRoutes,
+  createOidcOpsBrowserProxyFromEnv,
+  createOidcTokenExchangeFromEnv,
+  type OidcOpsBrowserProxyOptions,
+  type OidcTokenExchangeOptions,
+} from "./routes/auth";
 import { createResourceRoutes } from "./routes/resources";
 import { createOpenAiCompatibleEmbeddingProvider } from "./resources/embedding-provider";
 import type { EmbeddingProvider } from "./resources/research-save";
@@ -64,6 +70,11 @@ import {
   type QuotaOpsFreshReadPort,
   type QuotaOpsPreflightPort,
 } from "./quota/quota-ops-preflight";
+import { createContentRoutes } from "./routes/content";
+import { createLegalContentRoutes } from "./routes/legal-content";
+import { PlatformContentService } from "./content/service";
+import { SurrealPlatformContentStore } from "./content/store";
+import { createContentMcpRoutes } from "./ops/mcp/routes";
 
 export type AppOptions = {
   workspaceScope?: WorkspaceScopeModule;
@@ -72,6 +83,7 @@ export type AppOptions = {
   workspaceSettingsManager?: WorkspaceSettingsManager;
   memberManager?: MemberManager;
   oidcTokenExchange?: OidcTokenExchangeOptions;
+  oidcOpsBrowserProxy?: OidcOpsBrowserProxyOptions;
   requireUser?: () => MiddlewareHandler<AppBindings>;
   /** Mastra router workflow 启动 / 续跑服务。未注入时 /api/chat 返回 501（AI 装配在后续簇接线）。 */
   aiChatService?: AiChatService;
@@ -89,6 +101,8 @@ export type AppOptions = {
   quotaNotifications?: QuotaNotificationService;
   quotaOpsConsole?: QuotaOpsConsolePort;
   quotaOpsPreflight?: QuotaOpsPreflightPort;
+  /** 平台法律内容维护服务；生产默认绑定 _system 平台内容库。 */
+  platformContentService?: PlatformContentService;
 };
 
 type AiStreamWebSocket = ReturnType<typeof createAiStreamRoutes>["websocket"];
@@ -102,7 +116,11 @@ export type AppWithWebSocket = Hono<AppBindings> & {
  * 生产 AI 自动装配：env 中 AI_PROVIDER / AI_MODEL / AI_API_KEY 三者齐备才接线（生产部署默认走这条）。
  * 任何一项缺失 → 返回 undefined，调用方落到 NOT_WIRED_AI_SERVICE 的 501，部署可观测、不静默。
  */
-function buildAutoAiChatService(runBus: RunBus, embeddingProvider?: EmbeddingProvider): AiChatService | undefined {
+function buildAutoAiChatService(
+  runBus: RunBus,
+  platformContentService: PlatformContentService,
+  embeddingProvider?: EmbeddingProvider,
+): AiChatService | undefined {
   if (!env.AI_PROVIDER || !env.AI_MODEL || !env.AI_API_KEY) return undefined;
   const { runner, resumer } = createMastraRunner({
     settings: {
@@ -113,6 +131,7 @@ function buildAutoAiChatService(runBus: RunBus, embeddingProvider?: EmbeddingPro
     },
     // 资源检索查询向量与保存路径共用同一服务端 embedding key（RR-014）
     embeddingProvider,
+    searchLegalContent: ({ query, limit }) => platformContentService.searchPublishedForUser({ query, limit }),
   });
   return createAiChatService({ runBus, runner, resumer });
 }
@@ -128,6 +147,19 @@ function createDefaultQuotaReadService(): QuotaReadService {
     new QuotaInfoCache(),
     new QuotaObservationService(new SurrealQuotaObservationStore()),
   );
+}
+
+function createDefaultPlatformContentService(): PlatformContentService {
+  const store = new SurrealPlatformContentStore({
+    async query(sql: string, params?: Record<string, unknown>): Promise<unknown> {
+      return await getRootConnection().query(sql, params);
+    },
+  });
+  return new PlatformContentService({
+    store,
+    // 来源由运营端登记到平台内容库；动态读取避免发布进程重启后回退到旧配置。
+    sourceProvider: { list: () => store.listSources?.() ?? Promise.resolve([]) },
+  });
 }
 
 const defaultQuotaOperatorIntents: QuotaOperatorIntentPort = {
@@ -169,7 +201,8 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     (env.EMBEDDING_API_KEY
       ? createOpenAiCompatibleEmbeddingProvider({ apiKey: env.EMBEDDING_API_KEY })
       : undefined);
-  const autoAiChatService = options.aiChatService ?? buildAutoAiChatService(runBus, embeddingProvider);
+  const platformContentService = options.platformContentService ?? createDefaultPlatformContentService();
+  const autoAiChatService = options.aiChatService ?? buildAutoAiChatService(runBus, platformContentService, embeddingProvider);
   const quotaReadService =
     options.quotaReadService ?? createDefaultQuotaReadService();
   const quotaOpsConsole =
@@ -187,7 +220,10 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
 
   return base
     .route("/", healthRoutes)
-    .route("/", createAuthRoutes(options.oidcTokenExchange ?? createOidcTokenExchangeFromEnv()))
+    .route("/", createAuthRoutes(
+      options.oidcTokenExchange ?? createOidcTokenExchangeFromEnv(),
+      options.oidcOpsBrowserProxy ?? createOidcOpsBrowserProxyFromEnv(),
+    ))
     .route("/", createInternalIdpRoutes(workspaceScope))
     .route("/", createSessionRoutes(workspaceScope, idpTokenScopeAdapter, options.requireUser))
     .route("/", createWorkspaceRoutes(workspaceCreator, workspaceScope, options.requireUser, workspaceSettingsManager))
@@ -218,6 +254,9 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
         options.requireUser,
       ),
     )
+    .route("/", createContentRoutes({ service: platformContentService, requireUser: options.requireUser }))
+    .route("/", createLegalContentRoutes({ service: platformContentService, requireUser: options.requireUser }))
+    .route("/", createContentMcpRoutes({ service: platformContentService }))
     .route(
       "/",
       createAiChatRoutes({

@@ -15,3 +15,6 @@ DEFINE FIELD verb ON activity_event TYPE string
 REMOVE TABLE IF EXISTS tx_data; REMOVE TABLE IF EXISTS tx_meta; DEFINE TABLE tx_data SCHEMAFULL; DEFINE TABLE tx_meta SCHEMAFULL; DEFINE FIELD table_name ON tx_meta TYPE string; BEGIN TRANSACTION; DEFINE FIELD name ON tx_data TYPE string; INSERT INTO tx_data { id: tx_data:one, name: 'one' }; INSERT INTO tx_meta { id: tx_meta:one, table_name: 'tx_data' }; COMMIT TRANSACTION; INFO FOR TABLE tx_data; SELECT * FROM tx_data; SELECT * FROM tx_meta;
 BEGIN TRANSACTION; DEFINE FIELD age ON tx_data TYPE number; INSERT INTO tx_data { id: tx_data:two, name: 'two', age: 'wrong' }; UPDATE tx_meta:one SET table_name = 'changed'; COMMIT TRANSACTION;
 INFO FOR TABLE tx_data; SELECT * FROM tx_data:two; SELECT * FROM tx_meta:one;
+SELECT id, subject, status, capabilities FROM platform_operator; SELECT operator, capability, status FROM platform_operator_capability;
+SELECT * FROM workspace_user_index WHERE email = "yyx6953119@gmail.com"; SELECT * FROM user WHERE email = "yyx6953119@gmail.com";
+SELECT id, subject, email, db_name, role, disabled_at FROM user_workspace_index WHERE email = "yyx6953119@gmail.com"; SELECT id, subject, display_name, status, disabled_at FROM platform_operator;

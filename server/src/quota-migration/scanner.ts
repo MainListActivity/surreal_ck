@@ -99,23 +99,41 @@ function quoteIdentifier(value: string): string {
   }\``;
 }
 
-function tableNamesFromDatabaseInfo(result: unknown): string[] {
+type TableCatalogEntry = Readonly<{
+  name: string;
+  isRelation: boolean;
+}>;
+
+function tableCatalogFromDatabaseInfo(result: unknown): TableCatalogEntry[] {
   const info = firstObject(result);
   if (!info || !Array.isArray(info.tables)) {
     throw new Error("INFO FOR DATABASE STRUCTURE returned no table catalog");
   }
-  const names = info.tables.map((entry) =>
-    isRecord(entry) ? stringValue(entry.name) : null
-  );
-  if (names.some((name) => !name)) {
+  const entries = info.tables.map((entry): TableCatalogEntry | null => {
+    if (!isRecord(entry)) return null;
+    const name = stringValue(entry.name);
+    if (!name) return null;
+    const kind = isRecord(entry.kind)
+      ? stringValue(entry.kind.kind)
+      : stringValue(entry.kind);
+    return {
+      name,
+      isRelation: kind?.toUpperCase() === "RELATION",
+    };
+  });
+  if (entries.some((entry) => !entry)) {
     throw new Error("INFO FOR DATABASE STRUCTURE returned an invalid table name");
   }
-  return (names as string[]).sort((left, right) =>
-    left.localeCompare(right)
+  return (entries as TableCatalogEntry[]).sort((left, right) =>
+    left.name.localeCompare(right.name)
   );
 }
 
-function quotaFieldCount(fields: readonly unknown[], tableName: string): bigint {
+function quotaFieldCount(
+  fields: readonly unknown[],
+  tableName: string,
+  isRelation: boolean,
+): bigint {
   let count = 0n;
   for (const field of fields) {
     const name = isRecord(field) ? stringValue(field.name) : null;
@@ -126,8 +144,12 @@ function quotaFieldCount(fields: readonly unknown[], tableName: string): bigint 
     }
     // SurrealDB synthesizes a trailing `.*` container when a typed array has
     // explicit descendants. Native quota meters the user-defined descendants,
-    // not this generated catalog parent.
-    if (!name.endsWith(".*")) count += 1n;
+    // not this generated catalog parent. Native quota also excludes the
+    // implicit `in`/`out` endpoint fields from RELATION tables.
+    if (
+      !name.endsWith(".*")
+      && !(isRelation && (name === "in" || name === "out"))
+    ) count += 1n;
   }
   return count;
 }
@@ -139,12 +161,12 @@ export class SurrealQuotaPhysicalScanner {
     const databaseInfo = await this.db.query(
       "INFO FOR DATABASE STRUCTURE;",
     );
-    const tableNames = tableNamesFromDatabaseInfo(databaseInfo);
+    const tableCatalog = tableCatalogFromDatabaseInfo(databaseInfo);
     const tables: QuotaMigrationPhysicalTable[] = [];
     let totalFields = 0n;
     let totalRecords = 0n;
 
-    for (const tableName of tableNames) {
+    for (const { name: tableName, isRelation } of tableCatalog) {
       const table = quoteIdentifier(tableName);
       const result = await this.db.query(
         `INFO FOR TABLE ${table} STRUCTURE;
@@ -156,7 +178,7 @@ SELECT count() AS count FROM ${table} GROUP ALL;`,
           `INFO FOR TABLE STRUCTURE returned no fields for ${tableName}`,
         );
       }
-      const fieldCount = quotaFieldCount(tableInfo.fields, tableName);
+      const fieldCount = quotaFieldCount(tableInfo.fields, tableName, isRelation);
       const recordCount = requiredCount(
         firstObject(result, 1)?.count ?? 0,
         `${tableName} record`,

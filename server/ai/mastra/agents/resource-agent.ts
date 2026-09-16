@@ -3,6 +3,7 @@ import { ModelRouterLanguageModel } from "@mastra/core/llm";
 import type { Surreal } from "surrealdb";
 import type { AiContextSnapshot } from "@surreal-ck/shared";
 import type { ResourceCitationDTO } from "@surreal-ck/shared";
+import type { SearchContentItem, SearchContentResponse } from "@surreal-ck/shared/platform-content";
 import type { SubAgentExecutor, SubAgentOutput } from "../workflows/router-workflow";
 import { RESOURCE_TOOLS } from "../tools/resource-tools";
 import { buildModelConfig, type AiSettings } from "./model-config";
@@ -127,6 +128,8 @@ export type ResourceRetrievalExecutorDeps = {
   /** 默认：用调用者 session 查 session::db()（workspace db 名即 workspace 标识）。 */
   resolveWorkspaceId?(context: AiContextSnapshot, session?: Surreal): Promise<string>;
   searchResources(req: SearchResourcesRequest, session?: Surreal): Promise<SearchResourcesResponse>;
+  /** workspace 资源未命中后，查询平台已发布法律库。 */
+  searchLegalContent?(req: Readonly<{ query: string; limit: number }>): Promise<SearchContentResponse>;
   createResearchSession?(req: CreateResearchSessionRequest, session?: Surreal): Promise<ResearchSessionResponse>;
 };
 
@@ -180,6 +183,7 @@ export function makeResourceRetrievalExecutor(
 ): SubAgentExecutor {
   const resolveWorkspaceId = deps.resolveWorkspaceId ?? resolveWorkspaceIdFromSession;
   const searchResources = deps.searchResources;
+  const searchLegalContent = deps.searchLegalContent;
   const createResearchSession = deps.createResearchSession;
 
   return async ({ taskText, shared, runId, surrealSession }): Promise<SubAgentOutput> => {
@@ -217,6 +221,21 @@ export function makeResourceRetrievalExecutor(
       };
     }
 
+    if (response.status === "miss" && searchLegalContent) {
+      const legal = await searchLegalContent({ query: taskText, limit: 5 });
+      if (legal.items.length > 0) {
+        const answer = createResourceCitationAnswer({
+          question: taskText,
+          resources: legal.items.map(legalContentToResource),
+        });
+        return {
+          text: `已从平台已发布法律库检索到结果。\n${answer.text}`,
+          citations: answer.citations,
+          confirmed: {},
+        };
+      }
+    }
+
     if (response.status === "miss" && createResearchSession) {
       const resourceType = "generic_note";
       const created = await createResearchSession({
@@ -243,6 +262,54 @@ export function makeResourceRetrievalExecutor(
       text: describeResourceSearchMiss(response.indexStatus),
       confirmed: {},
     };
+  };
+}
+
+function legalContentToResource(item: SearchContentItem): ResourceDTO {
+  const citations = item.judgment?.citations ?? [];
+  const citationEvidence = citations.slice(0, 3).map((citation, order) => {
+    const reference = [citation.rawLawName, citation.rawArticleLabel].filter(Boolean).join(" ");
+    const resolution = citation.resolution === "verified" ? "已核验" : `解析状态：${citation.resolution}`;
+    return {
+      text: [reference, citation.quotedText, resolution].filter(Boolean).join("；"),
+      sourceUrl: item.version.sourceUrl,
+      sourceTitle: item.title,
+      capturedAt: item.version.updatedAt ?? item.version.publishedAt ?? new Date(0).toISOString(),
+      order,
+    };
+  });
+  const bodyExcerpt = item.bodyText?.trim().slice(0, 600);
+  const evidence: ResourceEvidence[] = citationEvidence.length > 0
+    ? citationEvidence
+    : bodyExcerpt
+      ? [{
+        text: bodyExcerpt,
+        sourceUrl: item.version.sourceUrl,
+        sourceTitle: item.title,
+        capturedAt: item.version.updatedAt ?? item.version.publishedAt ?? new Date(0).toISOString(),
+        order: 0,
+      }]
+      : [];
+  const summaryParts = [
+    item.judgment?.caseNumber,
+    item.judgment?.court,
+    item.legislation?.documentNumber,
+    item.legislation?.legalStatus,
+  ].filter(Boolean);
+  return {
+    id: item.itemId,
+    resourceType: item.kind === "judicial_document" ? "legal_judgment" : "legislation",
+    title: item.title,
+    summary: summaryParts.join(" · ") || bodyExcerpt || "平台已发布法律内容",
+    sourceUrl: item.version.sourceUrl,
+    sourceTitle: item.version.sourceKey,
+    evidence,
+    structuredPayload: {
+      kind: item.kind,
+      version: item.version,
+      legislation: item.legislation,
+      judgment: item.judgment,
+    },
   };
 }
 

@@ -24,4 +24,19 @@ describe("loadEnv template pack selection", () => {
       }).WORKSPACE_TEMPLATE_PACKS,
     ).toEqual(["claims-demo", "test-pack"]);
   });
+
+  test("读取平台运营 bootstrap 配置但不隐式填充权限", () => {
+    const loaded = loadEnv({
+      ...requiredEnv,
+      PLATFORM_OPERATOR_SUBJECTS: "user-1",
+      PLATFORM_OPERATOR_CAPABILITIES: "content.read,content.submit",
+      PLATFORM_OPERATOR_DISPLAY_NAME: "Content Ops",
+      PLATFORM_OPERATOR_GRANTOR_SUBJECT: "deploy-admin",
+    });
+
+    expect(loaded.PLATFORM_OPERATOR_SUBJECTS).toBe("user-1");
+    expect(loaded.PLATFORM_OPERATOR_CAPABILITIES).toBe("content.read,content.submit");
+    expect(loaded.PLATFORM_OPERATOR_DISPLAY_NAME).toBe("Content Ops");
+    expect(loaded.PLATFORM_OPERATOR_GRANTOR_SUBJECT).toBe("deploy-admin");
+  });
 });

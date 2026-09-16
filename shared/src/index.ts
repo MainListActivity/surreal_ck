@@ -3,6 +3,7 @@ export * from "./capabilities";
 export * from "./date-format";
 export * from "./field-schema";
 export * from "./native-quota";
+export * from "./platform-content";
 export * from "./research-save";
 export * from "./research-url";
 export * from "./resource-quota";

@@ -1,6 +1,6 @@
 import type { StringRecordId } from "surrealdb";
 import { env } from "../env";
-import { getRootConnection } from "./root-connection";
+import { getRootDatabaseSession } from "./root-connection";
 import { toStringRecordId } from "./surreal-values";
 
 export type ReconcileClient = {
@@ -208,13 +208,19 @@ async function applyDriftActions(
 }
 
 export async function reconcileWorkspaceIndex(
-  db: ReconcileClient = getRootConnection(),
+  db: ReconcileClient | undefined = undefined,
   options: ReconcileOptions = {},
 ): Promise<ReconcileResult> {
   const namespace = options.namespace ?? env.SURREAL_NS;
+  // Reconciliation changes the selected database while inspecting each
+  // workspace. Keep that mutable session isolated from the shared root
+  // connection used by quota workers and request handlers; otherwise a
+  // concurrent tick can issue `_system` control-plane queries against a
+  // workspace database and report misleading "table does not exist" errors.
+  const client = db ?? await getRootDatabaseSession(SYSTEM_DATABASE, namespace);
 
-  await db.use({ namespace, database: SYSTEM_DATABASE });
-  const workspaces = readWorkspaces(await db.query("SELECT id, db_name FROM workspace WHERE status = 'active';"));
+  await client.use({ namespace, database: SYSTEM_DATABASE });
+  const workspaces = readWorkspaces(await client.query("SELECT id, db_name FROM workspace WHERE status = 'active';"));
 
   let userCount = 0;
   let drift = 0;
@@ -223,23 +229,23 @@ export async function reconcileWorkspaceIndex(
 
   for (const workspace of workspaces) {
     try {
-      const indexResult = await db.query(
+      const indexResult = await client.query(
         "SELECT id, subject, email, role FROM user_workspace_index WHERE db_name = $dbName AND disabled_at = NONE;",
         { dbName: workspace.dbName },
       );
       const indexRows = readIndexRows(indexResult);
 
-      await db.use({ namespace, database: workspace.dbName });
+      await client.use({ namespace, database: workspace.dbName });
       const userRows = readUserRows(
-        await db.query("SELECT id, subject, email, is_admin FROM user WHERE kind = 'human' AND disabled_at = NONE;"),
+        await client.query("SELECT id, subject, email, is_admin FROM user WHERE kind = 'human' AND disabled_at = NONE;"),
       );
-      await db.use({ namespace, database: SYSTEM_DATABASE });
+      await client.use({ namespace, database: SYSTEM_DATABASE });
 
       userCount += userRows.length;
 
       const actions = classifyWorkspaceDrift(indexRows, userRows);
       drift += actions.length;
-      repaired += await applyDriftActions(db, workspace, actions);
+      repaired += await applyDriftActions(client, workspace, actions);
     } catch (cause) {
       // 单个 workspace db 不可达不应阻塞整轮校对；记入失败清单，下次心跳重试。
       failedWorkspaces.push(workspace.dbName);
@@ -249,7 +255,7 @@ export async function reconcileWorkspaceIndex(
       });
       // 把会话切回 _system，避免后续 workspace 在错误的 db 上查询。
       try {
-        await db.use({ namespace, database: SYSTEM_DATABASE });
+        await client.use({ namespace, database: SYSTEM_DATABASE });
       } catch {
         // 连切回 _system 都失败说明 root 连接整体异常，留给下次心跳处理。
       }

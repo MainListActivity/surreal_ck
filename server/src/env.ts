@@ -14,9 +14,16 @@ const EnvSchema = z.object({
   OIDC_ISSUER: z.string().url(),
   OIDC_JWKS_URL: z.string().url(),
   OIDC_AUDIENCE: z.string().min(1),
+  // 独立运营端 / 内容 MCP 的 audience；生产环境由 IdP 单独注册资源标识。
+  OIDC_OPS_AUDIENCE: z.string().min(1).optional(),
+  /** 运营 SPA 的 public client；后端只代理该 client 的 PKCE token exchange。 */
+  OIDC_OPS_CLIENT_ID: z.string().min(1).optional(),
   OIDC_CLIENT_ID: z.string().min(1).optional(),
   OIDC_CLIENT_SECRET: z.string().min(1).optional(),
   OIDC_TOKEN_ENDPOINT: z.string().url().optional(),
+  // 运营端的 OAuth access token 在每次 MCP 调用时通过此端点确认未被撤销；
+  // 缺省时按 issuer 的 RFC 7662 相对端点推导。
+  OIDC_INTROSPECTION_ENDPOINT: z.string().url().optional(),
   OIDC_TOKEN_AUTH_METHOD: z.enum(["client_secret_basic", "client_secret_post"]).default("client_secret_basic"),
 
   IDP_HOOK_SECRET: z.string().min(8),
@@ -25,6 +32,13 @@ const EnvSchema = z.object({
   // 逗号分隔的 OIDC subject 列表；启动时 upsert 进 _system.system_admin。
   // 当前 MVP 中该表非空即开启创建 workspace 能力，不做逐 subject 授权。
   SYSTEM_ADMIN_SUBJECTS: z.string().optional(),
+
+  // 首次部署可选的运营主体 bootstrap；必须同时配置能力，且只补缺失记录，不会
+  // 自动重新启用已禁用的主体或已撤销的能力。能力名以逗号分隔。
+  PLATFORM_OPERATOR_SUBJECTS: z.string().optional(),
+  PLATFORM_OPERATOR_CAPABILITIES: z.string().optional(),
+  PLATFORM_OPERATOR_DISPLAY_NAME: z.string().min(1).optional(),
+  PLATFORM_OPERATOR_GRANTOR_SUBJECT: z.string().min(1).optional(),
 
   // 逗号分隔的可选模板包；空配置保持通用工作区，不播种垂直模板。
   WORKSPACE_TEMPLATE_PACKS: z
