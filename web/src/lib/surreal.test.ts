@@ -6,6 +6,7 @@ type ConnectCall = { url: string; opts: unknown };
 
 function fakeSurreal(overrides: Partial<SurrealConn> = {}) {
   const connectCalls: ConnectCall[] = [];
+  const authenticateCalls: string[] = [];
   const useCalls: unknown[] = [];
   let closed = false;
   let status: SurrealConn["status"] = "disconnected";
@@ -19,6 +20,10 @@ function fakeSurreal(overrides: Partial<SurrealConn> = {}) {
       connectCalls.push({ url: String(url), opts });
       status = "connected";
       return true;
+    },
+    async authenticate(token) {
+      authenticateCalls.push(token);
+      return {};
     },
     async use(what) {
       useCalls.push(what);
@@ -56,6 +61,7 @@ function fakeSurreal(overrides: Partial<SurrealConn> = {}) {
   return {
     conn,
     connectCalls,
+    authenticateCalls,
     useCalls,
     get closed() {
       return closed;
@@ -74,7 +80,7 @@ const input: SurrealConnectInput = {
 };
 
 describe("SurrealDB 浏览器直连客户端", () => {
-  test("connectSurreal 用 raw token 连接到正确的 ns/db 并被 getSurreal 返回", async () => {
+  test("connectSurreal 先连接正确 ns/db，再显式 authenticate raw token", async () => {
     const fake = fakeSurreal();
     const client = createSurrealClient({ factory: () => fake.conn });
 
@@ -85,10 +91,25 @@ describe("SurrealDB 浏览器直连客户端", () => {
     expect(fake.connectCalls[0].opts).toMatchObject({
       namespace: "main",
       database: "ws_a1b2c3d4e5f6",
-      authentication: "raw.jwt.token",
     });
+    expect(fake.connectCalls[0].opts).not.toHaveProperty("authentication");
+    expect(fake.authenticateCalls).toEqual(["raw.jwt.token"]);
     expect(connected).toBe(fake.conn);
     expect(client.getSurreal()).toBe(fake.conn);
+  });
+
+  test("authenticate 失败时关闭新连接且不暴露为当前连接", async () => {
+    const fake = fakeSurreal({
+      async authenticate() {
+        throw new Error("There was a problem with authentication");
+      },
+    });
+    const client = createSurrealClient({ factory: () => fake.conn });
+
+    await expect(client.connectSurreal(input)).rejects.toThrow("authentication");
+
+    expect(fake.closed).toBe(true);
+    expect(() => client.getSurreal()).toThrow("Surreal not connected");
   });
 
   test("切换 workspace 时先 close 旧连接再连新连接，getSurreal 指向最新", async () => {

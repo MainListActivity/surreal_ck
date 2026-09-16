@@ -56,6 +56,7 @@ export type SurrealTransactionWriter = SurrealWriter & {
 export type SurrealConn = SurrealWriter & {
   readonly status: ConnectionStatus;
   connect(url: string, opts?: unknown): Promise<true>;
+  authenticate(token: string): Promise<unknown>;
   use(what?: { namespace?: string; database?: string }): Promise<unknown>;
   close(): Promise<true>;
   subscribe(event: string, listener: (...payload: unknown[]) => void): () => void;
@@ -258,11 +259,19 @@ export function createSurrealClient(options: SurrealClientOptions = {}): Surreal
       db = null;
 
       const next = factory();
-      await next.connect(input.url, {
-        namespace: input.namespace,
-        database: input.dbName,
-        authentication: input.rawToken,
-      });
+      try {
+        // 先选定 ns/db，再显式 authenticate。生产浏览器中把外部 JWT 作为
+        // connect authentication provider 会在初始连接阶段被 SDK 拒绝；
+        // 显式 authenticate 与后端 caller-session 的已验证路径保持一致。
+        await next.connect(input.url, {
+          namespace: input.namespace,
+          database: input.dbName,
+        });
+        await next.authenticate(input.rawToken);
+      } catch (error) {
+        await next.close().catch(() => true);
+        throw error;
+      }
       (next as SurrealConn & Partial<BrowserQueryLogController>).setQueryLogScope?.({
         namespace: input.namespace,
         database: input.dbName,
