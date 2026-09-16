@@ -29,6 +29,8 @@ class FakeMigrationClient {
   constructor(
     private readonly workspaces: WorkspaceFixture[],
     private readonly failOnDb?: string,
+    private readonly missingResourceLibrary = new Set<string>(),
+    private readonly resourceProbeError?: string,
   ) {}
 
   async use(scope: { namespace: string; database: string }): Promise<void> {
@@ -53,6 +55,16 @@ class FakeMigrationClient {
     if (sql.includes("SELECT") && sql.includes("schema_version:current")) {
       const workspace = this.workspaces.find((entry) => entry.dbName === this.currentDatabase);
       return [[{ version: workspace?.schemaVersion ?? 0 }]];
+    }
+
+    if (sql.includes("FROM ONLY workspace_embedding_profile:default")) {
+      if (this.resourceProbeError && this.currentDatabase === this.failOnDb) {
+        throw new Error(this.resourceProbeError);
+      }
+      if (this.missingResourceLibrary.has(this.currentDatabase)) {
+        throw new Error("The table 'workspace_embedding_profile' does not exist");
+      }
+      return [[null]];
     }
 
     if (sql.includes("migration") && this.currentDatabase === this.failOnDb) {
@@ -181,6 +193,51 @@ describe("workspace migration runner", () => {
     expect(
       db.queryCalls.some((call) => call.sql.includes("install") || call.sql.includes("sheet_resource")),
     ).toBe(false);
+  });
+
+  test("repairs a missing resource library without advancing the migration version", async () => {
+    const workspace: WorkspaceFixture = {
+      id: "workspace:drifted",
+      dbName: "ws_drifted",
+      schemaVersion: 20,
+    };
+    const db = new FakeMigrationClient(
+      [workspace],
+      undefined,
+      new Set([workspace.dbName]),
+    );
+    const scripts = fakeScripts(...Array.from({ length: 20 }, (_, index) => index + 1));
+    scripts[7] = {
+      version: 8,
+      name: "008-resource-library.surql",
+      sql: "-- repair resource library",
+    };
+
+    const result = await migrateAllWorkspaces(db, {
+      namespace: "main",
+      loadScripts: async () => scripts,
+    });
+
+    expect(result).toEqual({ total: 1, migrated: [] });
+    expect(workspace.schemaVersion).toBe(20);
+    expect(db.queryCalls.some((call) => call.sql.includes("-- repair resource library"))).toBe(true);
+    expect(db.queryCalls.some((call) => call.sql.includes("UPSERT schema_version"))).toBe(false);
+  });
+
+  test("does not treat an unrelated resource probe failure as schema drift", async () => {
+    const db = new FakeMigrationClient(
+      [{ id: "workspace:offline", dbName: "ws_offline", schemaVersion: 20 }],
+      "ws_offline",
+      new Set(),
+      "connection closed",
+    );
+
+    await expect(migrateAllWorkspaces(db, {
+      namespace: "main",
+      loadScripts: async () => fakeScripts(...Array.from({ length: 20 }, (_, index) => index + 1)),
+    })).rejects.toThrow("workspace migration failed on ws_offline");
+
+    expect(db.queryCalls.some((call) => call.sql.includes("-- migration 8"))).toBe(false);
   });
 
   test("legacy cleanup stays blocked at native_policy_active and does not advance version", async () => {

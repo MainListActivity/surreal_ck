@@ -39,6 +39,9 @@ export type MigrateAllWorkspacesResult = {
 };
 
 const SYSTEM_DATABASE = "_system";
+const RESOURCE_LIBRARY_MIGRATION_VERSION = 8;
+const RESOURCE_LIBRARY_PROBE = "SELECT * FROM ONLY workspace_embedding_profile:default;";
+const RESOURCE_LIBRARY_TABLE = "workspace_embedding_profile";
 
 type WorkspaceMigrationRow = {
   id?: unknown;
@@ -83,6 +86,32 @@ async function readCurrentVersion(db: MigrationClient): Promise<number> {
   }
 }
 
+async function repairResourceLibrarySchemaDrift(
+  db: MigrationClient,
+  scripts: readonly WorkspaceTemplateScript[],
+  currentVersion: number,
+): Promise<boolean> {
+  if (currentVersion < RESOURCE_LIBRARY_MIGRATION_VERSION) return false;
+
+  try {
+    await db.query(RESOURCE_LIBRARY_PROBE);
+    return false;
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    if (!message.includes(RESOURCE_LIBRARY_TABLE) || !message.includes("does not exist")) {
+      throw cause;
+    }
+    const resourceLibrary = scripts.find(
+      (script) => script.version === RESOURCE_LIBRARY_MIGRATION_VERSION,
+    );
+    if (!resourceLibrary) {
+      throw new Error("resource library repair migration is unavailable");
+    }
+    await db.query(await materializeWorkspaceMigrationSql(db, resourceLibrary));
+    return true;
+  }
+}
+
 export async function migrateAllWorkspaces(
   db: MigrationClient = getRootConnection(),
   options: MigrateAllWorkspacesOptions = {},
@@ -116,6 +145,14 @@ export async function migrateAllWorkspaces(
     try {
       await db.use({ namespace, database: dbName });
       const fromVersion = await readCurrentVersion(db);
+      const repairedResourceLibrary = await repairResourceLibrarySchemaDrift(
+        db,
+        scripts,
+        fromVersion,
+      );
+      if (repairedResourceLibrary) {
+        console.info("[migration]", `${dbName}: repaired missing resource library schema`);
+      }
       const pending = scripts.filter((script) => script.version > fromVersion);
       const selection = selectContinuousEligibleMigrations(pending, {
         engineCapabilities,
