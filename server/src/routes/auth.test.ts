@@ -9,6 +9,44 @@ afterEach(() => {
 });
 
 describe("POST /api/auth/token", () => {
+  test("proxies operations PKCE token exchange and JWKS without exposing a client secret", async () => {
+    const upstream: Array<{ url: string; method: string; body: string }> = [];
+    const app = createApp({
+      oidcOpsBrowserProxy: {
+        clientId: "ops-public-client",
+        tokenEndpoint: "https://idp.example.test/token",
+        jwksUrl: "https://idp.example.test/jwks.json",
+        fetch: async (input, init = {}) => {
+          upstream.push({ url: String(input), method: init.method ?? "GET", body: String(init.body ?? "") });
+          if (String(input).endsWith("jwks.json")) return Response.json({ keys: [{ kid: "k1" }] });
+          return Response.json({ access_token: "ops-token", refresh_token: "must-not-leak", token_type: "Bearer" });
+        },
+      },
+    });
+
+    const token = await app.request("/api/auth/ops/token", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code: "ops-code",
+        code_verifier: "ops-verifier",
+        client_id: "forged-client",
+        client_secret: "forged-secret",
+        redirect_uri: "https://ops.example.test/auth/callback.html",
+      }),
+    });
+    expect(token.status).toBe(200);
+    expect(await token.json()).toEqual({ access_token: "ops-token", token_type: "Bearer" });
+    expect(upstream[0]?.body).toContain("client_id=ops-public-client");
+    expect(upstream[0]?.body).not.toContain("forged-secret");
+
+    const jwks = await app.request("/api/auth/ops/jwks");
+    expect(jwks.status).toBe(200);
+    expect(await jwks.json()).toEqual({ keys: [{ kid: "k1" }] });
+    expect(jwks.headers.get("cache-control")).toBe("public, max-age=300");
+  });
+
   test("exchanges an authorization code through the backend confidential client using client_secret_basic", async () => {
     let upstreamRequest: { url: string; method: string; body: string; authorization: string | null } | undefined;
     const app = createApp({

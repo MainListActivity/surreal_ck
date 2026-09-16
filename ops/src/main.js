@@ -1,12 +1,5 @@
-import { UserManager, WebStorageStateStore } from "oidc-client-ts";
 import "./style.css";
-
-const config = {
-  issuer: import.meta.env.VITE_OPS_OIDC_ISSUER || "",
-  clientId: import.meta.env.VITE_OPS_OIDC_CLIENT_ID || "",
-  audience: import.meta.env.VITE_OPS_OIDC_AUDIENCE || "",
-  apiBase: import.meta.env.VITE_OPS_API_BASE_URL || "/api",
-};
+import { authConfig as config, createOpsUserManager } from "./auth.js";
 
 const app = document.querySelector("#app");
 let userManager;
@@ -32,19 +25,7 @@ function escapeHtml(value) {
 }
 
 function setupUserManager() {
-  if (!config.issuer || !config.clientId) return null;
-  return new UserManager({
-    authority: config.issuer,
-    client_id: config.clientId,
-    redirect_uri: `${window.location.origin}/auth/callback.html`,
-    post_logout_redirect_uri: window.location.origin,
-    response_type: "code",
-    scope: "openid",
-    filterProtocolClaims: true,
-    loadUserInfo: false,
-    userStore: new WebStorageStateStore({ store: window.sessionStorage }),
-    extraQueryParams: config.audience ? { resource: config.audience } : undefined,
-  });
+  return createOpsUserManager();
 }
 
 function renderShell() {
@@ -149,7 +130,7 @@ function renderAuth() {
   const slot = document.querySelector("#auth-slot");
   if (user) {
     slot.innerHTML = `<div class="identity"><span>${escapeHtml(user.profile?.email || user.profile?.sub || "运营账号")}</span><button id="logout" class="ghost">退出</button></div>`;
-    document.querySelector("#logout").addEventListener("click", () => void userManager?.signoutRedirect());
+    document.querySelector("#logout").addEventListener("click", () => void userManager?.removeUser().then(() => window.location.replace("/")));
     return;
   }
   const label = config.issuer && config.clientId ? "运营登录" : "未配置 OIDC";

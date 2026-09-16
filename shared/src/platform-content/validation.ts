@@ -1,6 +1,5 @@
 import {
   CitationLocatorSchema,
-  ContentCitationSchema,
   IngestionBatchSchema,
   PLATFORM_CONTENT_LIMITS,
   type ContentCitation,

@@ -6,6 +6,7 @@ import { handleError } from "../middleware/error";
 import { createSyntheticJudgmentBatch } from "@surreal-ck/shared/platform-content";
 import { InMemoryPlatformContentStore, PlatformContentService } from "../content/service";
 import { createContentRoutes } from "./content";
+import { createLegalContentRoutes } from "./legal-content";
 
 const source = {
   sourceKey: "fixture.synthetic.cn",
@@ -28,6 +29,39 @@ function useOperator(): MiddlewareHandler<AppBindings> {
 }
 
 describe("platform content routes", () => {
+  test("ordinary authenticated users can search published legal content without operator capabilities", async () => {
+    const store = new InMemoryPlatformContentStore();
+    const service = new PlatformContentService({ store, sources: [source], idFactory: (prefix) => `${prefix}_public` });
+    const batch = await createSyntheticJudgmentBatch();
+    const submitted = await service.submitBatch(operator, batch);
+    await service.publishBatch(operator, {
+      batchId: submitted.batchId,
+      validationRevision: 1,
+      entryKeys: ["fixture-judgment-1"],
+      idempotencyKey: "public-search-publication",
+    });
+    const app = new Hono<AppBindings>();
+    app.onError(handleError);
+    app.route("/", createLegalContentRoutes({
+      service,
+      requireUser: () => async (c, next) => {
+        c.set("user", { subject: "user:reader", email: "reader@example.test", raw: {}, rawToken: "test" });
+        await next();
+      },
+    }));
+
+    const response = await app.request("/api/legal/search", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query: "合成全文", limit: 5 }),
+    });
+
+    expect(response.status).toBe(200);
+    const result = await response.json();
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0].version.publicationStatus).toBe("published");
+  });
+
   test("exposes the five contract operations behind the operator context", async () => {
     const service = new PlatformContentService({ store: new InMemoryPlatformContentStore(), sources: [source] });
     const app = new Hono<AppBindings>();

@@ -16,6 +16,8 @@ const EnvSchema = z.object({
   OIDC_AUDIENCE: z.string().min(1),
   // 独立运营端 / 内容 MCP 的 audience；生产环境由 IdP 单独注册资源标识。
   OIDC_OPS_AUDIENCE: z.string().min(1).optional(),
+  /** 运营 SPA 的 public client；后端只代理该 client 的 PKCE token exchange。 */
+  OIDC_OPS_CLIENT_ID: z.string().min(1).optional(),
   OIDC_CLIENT_ID: z.string().min(1).optional(),
   OIDC_CLIENT_SECRET: z.string().min(1).optional(),
   OIDC_TOKEN_ENDPOINT: z.string().url().optional(),

@@ -11,7 +11,13 @@ import { createInternalIdpRoutes } from "./routes/internal-idp";
 import { createMemberRoutes } from "./routes/members";
 import { createSessionRoutes } from "./routes/session";
 import { createWorkspaceRoutes } from "./routes/workspaces";
-import { createAuthRoutes, createOidcTokenExchangeFromEnv, type OidcTokenExchangeOptions } from "./routes/auth";
+import {
+  createAuthRoutes,
+  createOidcOpsBrowserProxyFromEnv,
+  createOidcTokenExchangeFromEnv,
+  type OidcOpsBrowserProxyOptions,
+  type OidcTokenExchangeOptions,
+} from "./routes/auth";
 import { createResourceRoutes } from "./routes/resources";
 import { createOpenAiCompatibleEmbeddingProvider } from "./resources/embedding-provider";
 import type { EmbeddingProvider } from "./resources/research-save";
@@ -65,6 +71,7 @@ import {
   type QuotaOpsPreflightPort,
 } from "./quota/quota-ops-preflight";
 import { createContentRoutes } from "./routes/content";
+import { createLegalContentRoutes } from "./routes/legal-content";
 import { PlatformContentService } from "./content/service";
 import { SurrealPlatformContentStore } from "./content/store";
 import { createContentMcpRoutes } from "./ops/mcp/routes";
@@ -76,6 +83,7 @@ export type AppOptions = {
   workspaceSettingsManager?: WorkspaceSettingsManager;
   memberManager?: MemberManager;
   oidcTokenExchange?: OidcTokenExchangeOptions;
+  oidcOpsBrowserProxy?: OidcOpsBrowserProxyOptions;
   requireUser?: () => MiddlewareHandler<AppBindings>;
   /** Mastra router workflow 启动 / 续跑服务。未注入时 /api/chat 返回 501（AI 装配在后续簇接线）。 */
   aiChatService?: AiChatService;
@@ -108,7 +116,11 @@ export type AppWithWebSocket = Hono<AppBindings> & {
  * 生产 AI 自动装配：env 中 AI_PROVIDER / AI_MODEL / AI_API_KEY 三者齐备才接线（生产部署默认走这条）。
  * 任何一项缺失 → 返回 undefined，调用方落到 NOT_WIRED_AI_SERVICE 的 501，部署可观测、不静默。
  */
-function buildAutoAiChatService(runBus: RunBus, embeddingProvider?: EmbeddingProvider): AiChatService | undefined {
+function buildAutoAiChatService(
+  runBus: RunBus,
+  platformContentService: PlatformContentService,
+  embeddingProvider?: EmbeddingProvider,
+): AiChatService | undefined {
   if (!env.AI_PROVIDER || !env.AI_MODEL || !env.AI_API_KEY) return undefined;
   const { runner, resumer } = createMastraRunner({
     settings: {
@@ -119,6 +131,7 @@ function buildAutoAiChatService(runBus: RunBus, embeddingProvider?: EmbeddingPro
     },
     // 资源检索查询向量与保存路径共用同一服务端 embedding key（RR-014）
     embeddingProvider,
+    searchLegalContent: ({ query, limit }) => platformContentService.searchPublishedForUser({ query, limit }),
   });
   return createAiChatService({ runBus, runner, resumer });
 }
@@ -188,7 +201,8 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     (env.EMBEDDING_API_KEY
       ? createOpenAiCompatibleEmbeddingProvider({ apiKey: env.EMBEDDING_API_KEY })
       : undefined);
-  const autoAiChatService = options.aiChatService ?? buildAutoAiChatService(runBus, embeddingProvider);
+  const platformContentService = options.platformContentService ?? createDefaultPlatformContentService();
+  const autoAiChatService = options.aiChatService ?? buildAutoAiChatService(runBus, platformContentService, embeddingProvider);
   const quotaReadService =
     options.quotaReadService ?? createDefaultQuotaReadService();
   const quotaOpsConsole =
@@ -199,7 +213,6 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
       quotaReadService as unknown as QuotaOpsFreshReadPort,
       quotaOpsConsole,
     );
-  const platformContentService = options.platformContentService ?? createDefaultPlatformContentService();
 
   const base = new Hono<AppBindings>();
   base.use("*", requestLogger);
@@ -207,7 +220,10 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
 
   return base
     .route("/", healthRoutes)
-    .route("/", createAuthRoutes(options.oidcTokenExchange ?? createOidcTokenExchangeFromEnv()))
+    .route("/", createAuthRoutes(
+      options.oidcTokenExchange ?? createOidcTokenExchangeFromEnv(),
+      options.oidcOpsBrowserProxy ?? createOidcOpsBrowserProxyFromEnv(),
+    ))
     .route("/", createInternalIdpRoutes(workspaceScope))
     .route("/", createSessionRoutes(workspaceScope, idpTokenScopeAdapter, options.requireUser))
     .route("/", createWorkspaceRoutes(workspaceCreator, workspaceScope, options.requireUser, workspaceSettingsManager))
@@ -239,6 +255,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
       ),
     )
     .route("/", createContentRoutes({ service: platformContentService, requireUser: options.requireUser }))
+    .route("/", createLegalContentRoutes({ service: platformContentService, requireUser: options.requireUser }))
     .route("/", createContentMcpRoutes({ service: platformContentService }))
     .route(
       "/",

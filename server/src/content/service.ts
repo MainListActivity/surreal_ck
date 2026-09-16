@@ -6,6 +6,7 @@ import {
   InspectBatchResponseSchema,
   PublishBatchRequestSchema,
   PublishBatchResponseSchema,
+  PublicLegalSearchRequestSchema,
   SearchContentResponseSchema,
   SearchContentRequestSchema,
   SubmitBatchResponseSchema,
@@ -675,6 +676,27 @@ export class PlatformContentService {
   async searchContent(actor: ContentOperator, requestInput: unknown): Promise<SearchContentResponse> {
     requireCapability(actor, "content.read");
     const request = SearchContentRequestSchema.parse(requestInput);
+    return this.search(request);
+  }
+
+  /** 普通产品用户只可检索已经发布的内容，发布状态由服务端强制覆盖。 */
+  async searchPublishedForUser(requestInput: unknown): Promise<SearchContentResponse> {
+    const parsed = PublicLegalSearchRequestSchema.safeParse(requestInput);
+    if (!parsed.success) throw new ContentServiceError("invalid_request", "法律库检索参数不符合契约结构");
+    const request: SearchContentRequest = {
+      filters: {
+        query: parsed.data.query,
+        kind: parsed.data.kind ?? null,
+        sourceKey: parsed.data.sourceKey ?? null,
+        caseNumber: parsed.data.caseNumber ?? null,
+        publicationStatus: "published",
+      },
+      limit: parsed.data.limit,
+    };
+    return this.search(request);
+  }
+
+  private async search(request: SearchContentRequest): Promise<SearchContentResponse> {
     const items = await this.options.store.searchPublished(request);
     return SearchContentResponseSchema.parse({
       items: items.slice(0, request.limit ?? 20).map(({ sourceRecordKey: _sourceRecordKey, bodySha256: _bodySha256, publicationRevision: _publicationRevision, ...item }) => item),

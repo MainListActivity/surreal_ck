@@ -1,16 +1,9 @@
-import { UserManager, WebStorageStateStore } from "oidc-client-ts";
+import { createOpsUserManager } from "./auth.js";
 
-const manager = new UserManager({
-  authority: import.meta.env.VITE_OPS_OIDC_ISSUER,
-  client_id: import.meta.env.VITE_OPS_OIDC_CLIENT_ID,
-  redirect_uri: `${window.location.origin}/auth/callback.html`,
-  post_logout_redirect_uri: window.location.origin,
-  response_type: "code",
-  scope: "openid",
-  userStore: new WebStorageStateStore({ store: window.sessionStorage }),
-});
+const manager = createOpsUserManager();
 
 try {
+  if (!manager) throw new Error("运营端 OIDC 未配置");
   await manager.signinRedirectCallback();
   window.location.replace("/");
 } catch (error) {

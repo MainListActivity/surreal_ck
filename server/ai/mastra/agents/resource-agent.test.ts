@@ -201,6 +201,71 @@ describe("resource retrieval executor", () => {
     });
   });
 
+  test("workspace miss 后检索平台已发布法律库，并显式保留未解析引用状态", async () => {
+    let researchCreated = false;
+    const executor = makeResourceRetrievalExecutor({
+      resolveWorkspaceId: async () => "workspace:demo",
+      searchResources: async () => ({
+        status: "miss",
+        indexStatus: "ready",
+        queryText: "著作权法第十条案例",
+        results: [],
+      }),
+      searchLegalContent: async () => ({
+        items: [{
+          itemId: "content_item:case-269",
+          kind: "judgment",
+          title: "指导案例269号",
+          version: {
+            versionId: "content_version:case-269-v1",
+            versionLabel: "v1",
+            sourceKey: "court.gov.cn.guiding-cases",
+            sourceUrl: "https://www.court.gov.cn/zixun/xiangqing/000.html",
+            publishedAt: "2026-09-16T00:00:00.000Z",
+            updatedAt: null,
+            bodyBytes: 1000,
+            publicationStatus: "published",
+          },
+          judgment: {
+            caseNumber: "（2024）最高法知民终269号",
+            court: "最高人民法院",
+            citations: [{
+              localCitationKey: "citation-1",
+              relationKind: "explicit_citation",
+              speaker: "court",
+              quotedText: "依照著作权法第十条处理。",
+              locator: { start: 0, end: 12, bodyDigest: "a".repeat(64), sourceLocator: null },
+              rawLawName: "中华人民共和国著作权法",
+              rawArticleLabel: "第十条",
+              resolution: "unresolved",
+              candidates: [],
+              treatment: "applies",
+              treatmentEvidence: null,
+            }],
+          },
+          bodyText: "裁判正文",
+        }],
+        nextCursor: null,
+      }),
+      createResearchSession: async () => {
+        researchCreated = true;
+        throw new Error("不应创建人工检索会话");
+      },
+    });
+
+    const out = await executor({
+      taskText: "著作权法第十条案例",
+      shared: { userContext: emptyContext, confirmed: {} },
+      runId: "run-legal",
+    });
+
+    expect(researchCreated).toBe(false);
+    expect(out.suspend).toBeUndefined();
+    expect(out.text).toContain("平台已发布法律库");
+    expect(out.citations?.[0]?.sourceUrl).toContain("court.gov.cn");
+    expect(out.citations?.[0]?.evidence[0]?.text).toContain("解析状态：unresolved");
+  });
+
   test("executor 把调用者 surrealSession 透传给 deps；默认 resolveWorkspaceId 用 session::db()", async () => {
     const sessionQueries: string[] = [];
     const fakeSession = {

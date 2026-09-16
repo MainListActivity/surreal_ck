@@ -414,6 +414,19 @@ export const SearchContentRequestSchema = z.strictObject({
 });
 export type SearchContentRequest = z.infer<typeof SearchContentRequestSchema>;
 
+/**
+ * 面向已登录产品用户的只读法律库检索参数。
+ * 发布状态不暴露给调用方，由服务端固定为 published，防止读到撤回内容。
+ */
+export const PublicLegalSearchRequestSchema = z.strictObject({
+  query: z.string().trim().min(1).max(1024),
+  kind: ContentKindSchema.nullable().optional(),
+  sourceKey: PublicIdSchema.nullable().optional(),
+  caseNumber: z.string().trim().min(1).max(256).nullable().optional(),
+  limit: NonNegativeIntegerSchema.min(1).max(20).default(5),
+});
+export type PublicLegalSearchRequest = z.infer<typeof PublicLegalSearchRequestSchema>;
+
 export const ContentVersionSummarySchema = z.strictObject({
   versionId: PublicIdSchema,
   versionLabel: z.string().trim().min(1).max(256).nullable(),

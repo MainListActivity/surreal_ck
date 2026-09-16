@@ -13,4 +13,4 @@ pnpm --filter @surreal-ck/ops dev
 pnpm --filter @surreal-ck/ops build
 ```
 
-生产环境配置 `VITE_OPS_OIDC_ISSUER`、`VITE_OPS_OIDC_CLIENT_ID`、`VITE_OPS_OIDC_AUDIENCE` 和 `VITE_OPS_API_BASE_URL`。运营 API 仍在 `surreal_ck/server`，页面可部署到独立静态站点或同域反向代理路径。
+生产环境配置 `VITE_OPS_OIDC_ISSUER`、`VITE_OPS_OIDC_CLIENT_ID`、`VITE_OPS_OIDC_AUDIENCE` 和 `VITE_OPS_API_BASE_URL`。后端可选配置同一个 `OIDC_OPS_CLIENT_ID` 做硬绑定；未配置时仍由 IdP 校验 public client、redirect URI 与 PKCE。运营 API 仍在 `surreal_ck/server`，页面可部署到独立静态站点或同域反向代理路径。
