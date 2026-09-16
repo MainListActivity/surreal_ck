@@ -68,6 +68,8 @@ export type WorkspaceSwitcher = {
 };
 
 const SURREAL_DB_CLAIM = "db";
+const SURREAL_ACCESS_CLAIM = "ac";
+const SURREAL_ROLES_CLAIM = "RL";
 
 function decodeBase64UrlJson(value: string): unknown {
   const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
@@ -92,6 +94,29 @@ function decodeJwtPayload(token: string | null): Record<string, unknown> | null 
 export function currentDbFromToken(token: string | null): string | null {
   const claim = decodeJwtPayload(token)?.[SURREAL_DB_CLAIM];
   return typeof claim === "string" ? claim : null;
+}
+
+/**
+ * SurrealDB 的 JWT access 不只依赖 db，还依赖 ac 与数组形态的 RL。
+ * IdP 的初始登录 token 可能已带同名 db，但仍是登录系统自己的 access/role；
+ * 只有三项都匹配时才能跳过后端 scope exchange。
+ */
+export function tokenMatchesWorkspaceScope(
+  token: string | null,
+  workspace: Pick<WorkspaceListItem, "dbName" | "role">,
+): boolean {
+  const payload = decodeJwtPayload(token);
+  if (!payload) return false;
+
+  const expectedRole = workspace.role === "admin" ? "Owner" : "Editor";
+  const roles = payload[SURREAL_ROLES_CLAIM];
+
+  return (
+    payload[SURREAL_DB_CLAIM] === workspace.dbName
+    && payload[SURREAL_ACCESS_CLAIM] === workspace.role
+    && Array.isArray(roles)
+    && roles.includes(expectedRole)
+  );
 }
 
 function errorStatus(error: unknown): number | null {
@@ -120,7 +145,7 @@ export function createWorkspaceSwitcher(deps: SwitchDeps): WorkspaceSwitcher {
       if (!target) return { ok: false, reason: "forbidden" };
 
       // 已经在目标 workspace：短路，避免无谓的 switch / 换 token / 重连。
-      if (currentDbFromToken(deps.getToken()) === target.dbName) {
+      if (tokenMatchesWorkspaceScope(deps.getToken(), target)) {
         return { ok: true, noop: true };
       }
 
@@ -176,7 +201,7 @@ export function createWorkspaceSwitcher(deps: SwitchDeps): WorkspaceSwitcher {
       }
 
       // token 已 scope 到目标 db：直接用现有 token 连库（switchWorkspace 此时会短路不连）。
-      if (currentDb === target.dbName) {
+      if (tokenMatchesWorkspaceScope(deps.getToken(), target)) {
         await deps.enterWorkspace({
           rawToken: deps.getToken() ?? "",
           dbName: target.dbName,

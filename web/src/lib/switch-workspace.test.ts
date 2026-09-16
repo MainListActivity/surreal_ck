@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   createWorkspaceSwitcher,
   currentDbFromToken,
+  tokenMatchesWorkspaceScope,
   type SwitchDeps,
   type WorkspaceListItem,
 } from "./switch-workspace";
@@ -31,7 +32,7 @@ function setup(overrides: Partial<SwitchDeps> & { switchResponses?: SwitchRespon
   const switchResponses = overrides.switchResponses ?? [{ status: 200, body: { ok: true, accessToken: jwt({ db: "ws_beta" }), expiresIn: 3600 } }];
   let switchIdx = 0;
 
-  let token = overrides.getToken?.() ?? jwt({ db: "ws_alpha" });
+  let token = overrides.getToken?.() ?? jwt({ db: "ws_alpha", ac: "admin", RL: ["Owner"] });
 
   const deps: SwitchDeps = {
     listWorkspaces:
@@ -74,6 +75,33 @@ describe("currentDbFromToken", () => {
     expect(currentDbFromToken(null)).toBeNull();
     expect(currentDbFromToken(jwt({ sub: "u" }))).toBeNull();
     expect(currentDbFromToken("not-a-jwt")).toBeNull();
+  });
+});
+
+describe("tokenMatchesWorkspaceScope", () => {
+  test("db、ac 与数组 RL 全部匹配时才接受管理员 scope", () => {
+    expect(tokenMatchesWorkspaceScope(
+      jwt({ db: "ws_alpha", ac: "admin", RL: ["Owner"] }),
+      workspaces[0],
+    )).toBe(true);
+  });
+
+  test("拒绝 IdP 初始登录的字符串 role，避免把未交换 token 交给 SurrealDB", () => {
+    expect(tokenMatchesWorkspaceScope(
+      jwt({ db: "ws_alpha", ac: "admin", RL: "owner" }),
+      workspaces[0],
+    )).toBe(false);
+  });
+
+  test("普通成员必须匹配 participant access 与 Editor role", () => {
+    expect(tokenMatchesWorkspaceScope(
+      jwt({ db: "ws_beta", ac: "participant", RL: ["Editor"] }),
+      workspaces[1],
+    )).toBe(true);
+    expect(tokenMatchesWorkspaceScope(
+      jwt({ db: "ws_beta", ac: "admin", RL: ["Owner"] }),
+      workspaces[1],
+    )).toBe(false);
   });
 });
 
@@ -204,6 +232,27 @@ describe("bootstrapWorkspace — 页面加载/刷新后建立直连", () => {
     expect(result.ok).toBe(true);
     expect(result.slug).toBe("beta");
     expect(calls.switch).toEqual([{ workspaceSlug: "beta" }]);
+    expect(calls.storeToken).toHaveLength(1);
+    expect(calls.enter).toHaveLength(1);
+  });
+
+  test("URL slug 与 token db 相同但 ac/RL 未交换：仍走完整 scope exchange", async () => {
+    const { switcher, calls } = setup({
+      getToken: () => jwt({ db: "ws_alpha", ac: "madocs", RL: "owner" }),
+      switchResponses: [{
+        status: 200,
+        body: {
+          ok: true,
+          accessToken: jwt({ db: "ws_alpha", ac: "admin", RL: ["Owner"] }),
+          expiresIn: 3600,
+        },
+      }],
+    });
+
+    const result = await switcher.bootstrapWorkspace("alpha");
+
+    expect(result).toEqual({ ok: true, slug: "alpha" });
+    expect(calls.switch).toEqual([{ workspaceSlug: "alpha" }]);
     expect(calls.storeToken).toHaveLength(1);
     expect(calls.enter).toHaveLength(1);
   });
