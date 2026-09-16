@@ -66,6 +66,11 @@ describe("platform content ingestion service", () => {
     const search = await service.searchContent(operator, { limit: 20 });
     expect(search.items).toHaveLength(1);
     expect(search.items[0]?.bodyText).toContain("合成全文");
+    const naturalLanguageSearch = await service.searchPublishedForUser({
+      query: "请查找合同法第四百条相关的最高人民法院案例，并给出官方来源链接",
+      limit: 5,
+    });
+    expect(naturalLanguageSearch.items).toHaveLength(1);
   });
 
   test("detects stale publication assumptions and allows correction, withdraw, and restore", async () => {

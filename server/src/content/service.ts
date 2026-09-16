@@ -174,6 +174,15 @@ export type PublicationReservationResult =
   | Readonly<{ kind: "replay"; response: PublishBatchResponse }>
   | Readonly<{ kind: "conflict" }>;
 
+function legalFallbackQuery(query: string): string | null {
+  const legalTitle = Array.from(query.matchAll(/[\p{Script=Han}]{2,24}?(?:法|条例|规定|解释)/gu))
+    .map((match) => match[0]
+      ?.replace(/^(?:请|帮我|查找|查询|检索|寻找|有关|关于|相关)+/u, "")
+      .trim())
+    .find((term) => term && term !== query);
+  return legalTitle ?? null;
+}
+
 export interface PlatformContentStore {
   findBatchByIdempotency(input: Readonly<{ actorSubject: string; idempotencyKey: string }>): Promise<StoredContentBatch | null>;
   saveBatch(batch: StoredContentBatch): Promise<void>;
@@ -693,7 +702,15 @@ export class PlatformContentService {
       },
       limit: parsed.data.limit,
     };
-    return this.search(request);
+    const exact = await this.search(request);
+    if (exact.items.length > 0 || !parsed.data.query) return exact;
+
+    const fallbackQuery = legalFallbackQuery(parsed.data.query);
+    if (!fallbackQuery) return exact;
+    return this.search({
+      ...request,
+      filters: { ...request.filters, query: fallbackQuery },
+    });
   }
 
   private async search(request: SearchContentRequest): Promise<SearchContentResponse> {
