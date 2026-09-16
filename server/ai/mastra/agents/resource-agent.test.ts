@@ -214,7 +214,7 @@ describe("resource retrieval executor", () => {
       searchLegalContent: async () => ({
         items: [{
           itemId: "content_item:case-269",
-          kind: "judgment",
+          kind: "judicial_document",
           title: "指导案例269号",
           version: {
             versionId: "content_version:case-269-v1",

@@ -298,7 +298,7 @@ function legalContentToResource(item: SearchContentItem): ResourceDTO {
   ].filter(Boolean);
   return {
     id: item.itemId,
-    resourceType: item.kind === "judgment" ? "legal_judgment" : "legislation",
+    resourceType: item.kind === "judicial_document" ? "legal_judgment" : "legislation",
     title: item.title,
     summary: summaryParts.join(" · ") || bodyExcerpt || "平台已发布法律内容",
     sourceUrl: item.version.sourceUrl,
