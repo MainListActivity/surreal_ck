@@ -42,6 +42,9 @@ const SYSTEM_DATABASE = "_system";
 const RESOURCE_LIBRARY_MIGRATION_VERSION = 8;
 const RESOURCE_LIBRARY_PROBE = "SELECT * FROM ONLY workspace_embedding_profile:default;";
 const RESOURCE_LIBRARY_TABLE = "workspace_embedding_profile";
+const CURRENT_USER_FUNCTION_MIGRATION_VERSION = 9;
+const RESOURCE_LIBRARY_IDENTITY_MIGRATION_VERSION = 22;
+const RESOURCE_LIBRARY_IDENTITY_PROBE = "INFO FOR TABLE research_session;";
 
 type WorkspaceMigrationRow = {
   id?: unknown;
@@ -110,6 +113,35 @@ async function repairResourceLibrarySchemaDrift(
     await db.query(await materializeWorkspaceMigrationSql(db, resourceLibrary));
     return true;
   }
+}
+
+function readInfoFieldDefinition(result: unknown, field: string): string | null {
+  const info = Array.isArray(result) ? result[0] : undefined;
+  const fields = typeof info === "object" && info !== null ? Reflect.get(info, "fields") : undefined;
+  const definition = typeof fields === "object" && fields !== null ? Reflect.get(fields, field) : undefined;
+  return typeof definition === "string" ? definition : null;
+}
+
+async function repairResourceLibraryIdentity(
+  db: MigrationClient,
+  scripts: readonly WorkspaceTemplateScript[],
+  effectiveVersion: number,
+): Promise<boolean> {
+  if (effectiveVersion < CURRENT_USER_FUNCTION_MIGRATION_VERSION) return false;
+  const definition = readInfoFieldDefinition(
+    await db.query(RESOURCE_LIBRARY_IDENTITY_PROBE),
+    "created_by",
+  );
+  if (definition?.includes("fn::current_user()")) return false;
+
+  const identityRepair = scripts.find(
+    (script) => script.version === RESOURCE_LIBRARY_IDENTITY_MIGRATION_VERSION,
+  );
+  if (!identityRepair) {
+    throw new Error("resource library identity repair migration is unavailable");
+  }
+  await db.query(await materializeWorkspaceMigrationSql(db, identityRepair));
+  return true;
 }
 
 export async function migrateAllWorkspaces(
@@ -188,6 +220,14 @@ export async function migrateAllWorkspaces(
       }
 
       const toVersion = selection.eligible.at(-1)?.version ?? fromVersion;
+      const repairedResourceIdentity = await repairResourceLibraryIdentity(
+        db,
+        scripts,
+        toVersion,
+      );
+      if (repairedResourceIdentity) {
+        console.info("[migration]", `${dbName}: repaired resource library user attribution`);
+      }
       await db.use({ namespace, database: SYSTEM_DATABASE });
       await db.query(
         `

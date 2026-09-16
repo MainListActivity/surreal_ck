@@ -328,6 +328,16 @@ describe("workspace template scripts", () => {
     expect(sql).toMatch(/dimensions ON TABLE workspace_embedding_profile TYPE int[\s\S]*?ASSERT \$value > 0/);
   });
 
+  test("资源库身份修复兼容 JWT admin 与 RECORD 会话", async () => {
+    const scripts = await loadTemplateScripts();
+    const repair = scripts.find((script) => script.name === "022-resource-library-current-user.surql");
+
+    expect(repair).toBeDefined();
+    expect(repair!.sql).toContain("DEFAULT fn::current_user()");
+    expect(repair!.sql).toContain("created_by = fn::current_user()");
+    expect(repair!.sql).not.toContain("DEFAULT $auth");
+  });
+
   test("activity_event 表归属 workspace database：归因 fn::current_user()、verb 枚举、静态表挂 event", async () => {
     const scripts = await loadTemplateScripts();
     const activity = scripts.find((script) => script.name === "010-activity-event.surql");

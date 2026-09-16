@@ -31,6 +31,7 @@ class FakeMigrationClient {
     private readonly failOnDb?: string,
     private readonly missingResourceLibrary = new Set<string>(),
     private readonly resourceProbeError?: string,
+    private readonly legacyResourceIdentity = new Set<string>(),
   ) {}
 
   async use(scope: { namespace: string; database: string }): Promise<void> {
@@ -65,6 +66,13 @@ class FakeMigrationClient {
         throw new Error("The table 'workspace_embedding_profile' does not exist");
       }
       return [[null]];
+    }
+
+    if (sql.includes("INFO FOR TABLE research_session")) {
+      const defaultExpression = this.legacyResourceIdentity.has(this.currentDatabase)
+        ? "$auth"
+        : "fn::current_user()";
+      return [{ fields: { created_by: `DEFINE FIELD created_by ON research_session TYPE record<user> DEFAULT ${defaultExpression}` } }];
     }
 
     if (sql.includes("migration") && this.currentDatabase === this.failOnDb) {
@@ -238,6 +246,42 @@ describe("workspace migration runner", () => {
     })).rejects.toThrow("workspace migration failed on ws_offline");
 
     expect(db.queryCalls.some((call) => call.sql.includes("-- migration 8"))).toBe(false);
+  });
+
+  test("repairs JWT user attribution even while the v21 cleanup gate is blocked", async () => {
+    const workspace: WorkspaceFixture = {
+      id: "workspace:legacy-auth",
+      dbName: "ws_legacy_auth",
+      schemaVersion: 20,
+      quotaMigrationState: "native_policy_active",
+    };
+    const scripts = fakeScripts(...Array.from({ length: 22 }, (_, index) => index + 1));
+    scripts[21] = {
+      version: 22,
+      name: "022-resource-library-current-user.surql",
+      sql: "-- repair resource identity",
+    };
+    const db = new FakeMigrationClient(
+      [workspace],
+      undefined,
+      new Set(),
+      undefined,
+      new Set([workspace.dbName]),
+    );
+
+    const result = await migrateAllWorkspaces(db, {
+      namespace: "main",
+      loadScripts: async () => scripts,
+    });
+
+    expect(result.migrated[0]).toMatchObject({
+      dbName: workspace.dbName,
+      fromVersion: 20,
+      toVersion: 20,
+      blockedVersion: 21,
+    });
+    expect(workspace.schemaVersion).toBe(20);
+    expect(db.queryCalls.some((call) => call.sql.includes("-- repair resource identity"))).toBe(true);
   });
 
   test("legacy cleanup stays blocked at native_policy_active and does not advance version", async () => {
