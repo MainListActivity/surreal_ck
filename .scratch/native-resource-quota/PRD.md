@@ -1,9 +1,24 @@
-Status: open
-Label: ready-for-agent
+Status: done
+Label: done
 
 # surreal_ck 订阅配额控制面实施规格
 
-更新时间：2026-07-25
+更新时间：2026-09-18（状态收口；规格内容仍以 2026-07-25 版本为准）
+
+## 当前状态
+
+10 张实施票（SCK-NQ-01..10）与决策地图 14 张票全部 done，SurrealDB fork 已发布
+`sck-3.3.0-native-quota.1`。仓库内 `shared/src/native-quota/**`、
+`server/src/db/native-quota/**`、`server/src/quota/**`、`server/src/routes/quota*.ts`、
+`ops/` 运营台与 `web/src/lib/quota/**` 均已落地，`docker-compose.yml` 只接受
+digest 固定的自有镜像。
+
+本规格不再有待开工的实现票。剩余的是运维动作，不是代码：按
+[`native-quota-release-cutover.md`](../../docs/runbooks/native-quota-release-cutover.md)
+与 [`native-quota-legacy-migration.md`](../../docs/runbooks/native-quota-legacy-migration.md)
+在真实生产环境执行维护窗、分 cohort 晋级、24h/48h 观察窗与 30 日 delayed cleanup，
+并保留真实运行记录；验收口径见
+[`native-quota-acceptance-matrix.md`](../../docs/release/native-quota-acceptance-matrix.md)。
 
 ## 一句话
 
