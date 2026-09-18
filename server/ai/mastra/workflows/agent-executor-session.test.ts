@@ -49,3 +49,24 @@ describe("makeAgentExecutor — 把调用者 session 透传给 tool", () => {
     expect(runtime?.surrealSession).toBe(session);
   });
 });
+
+describe("makeAgentExecutor — LLM stream 失败不得伪装成空回复", () => {
+  test("textStream 为空且 stream.error 存在时向上抛错", async () => {
+    const agent = {
+      async stream() {
+        return {
+          textStream: (async function* () {})(),
+          text: Promise.resolve(""),
+          error: new Error("model route not found"),
+          finishReason: Promise.resolve("error"),
+        };
+      },
+    } as unknown as Agent;
+    const executor = makeAgentExecutor(agent);
+
+    await expect(executor({
+      taskText: "你好",
+      shared: { userContext: emptyUserContext(), confirmed: {} },
+    })).rejects.toThrow("model route not found");
+  });
+});
