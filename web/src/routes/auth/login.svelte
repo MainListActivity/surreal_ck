@@ -3,6 +3,7 @@
   import { login } from "../../lib/auth";
 
   let error = $state<string | null>(null);
+  let slow = $state(false);
 
   function callbackErrorMessage(value: unknown): string {
     return value instanceof Error ? value.message : String(value);
@@ -15,6 +16,7 @@
 
   async function startLogin(): Promise<void> {
     error = null;
+    slow = false;
     try {
       await login(returnToFromLocation());
     } catch (value) {
@@ -23,7 +25,11 @@
   }
 
   onMount(() => {
+    const timer = window.setTimeout(() => {
+      slow = true;
+    }, 8000);
     void startLogin();
+    return () => window.clearTimeout(timer);
   });
 </script>
 
@@ -38,6 +44,10 @@
       <p class="eyebrow">OIDC</p>
       <h1>正在跳转登录</h1>
       <p class="message">请在身份提供方完成登录。</p>
+      {#if slow}
+        <p class="message">跳转时间比预期更长。若页面一直停在这里，请重试。</p>
+        <button type="button" onclick={startLogin}>重试</button>
+      {/if}
     {/if}
   </section>
 </main>

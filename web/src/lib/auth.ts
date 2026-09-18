@@ -51,6 +51,7 @@ const EXP_KEY = "oidc.exp";
 const LEGACY_ID_TOKEN_KEY = "oidc.id_token";
 const LEGACY_CLAIMS_KEY = "oidc.claims";
 const REFRESH_SKEW_MS = 5 * 60 * 1000;
+const OIDC_REQUEST_TIMEOUT_SECONDS = 15;
 
 type ViteEnv = Partial<{
   VITE_API_BASE_URL: string;
@@ -110,21 +111,32 @@ export function createOidcUserManagerSettings({
 
   if (!authority || !clientId || !redirectUri || !audience) return undefined;
 
+  const issuer = authority.replace(/\/+$/, "");
+  const tokenEndpoint = `${apiBaseUrl(env, origin)}/api/auth/token`;
+
   return {
-    authority,
+    authority: issuer,
     client_id: clientId,
     redirect_uri: redirectUri,
     response_type: "code",
     scope: "openid profile email offline_access",
-    silent_redirect_uri: redirectUri,
     post_logout_redirect_uri: origin,
     automaticSilentRenew: false,
     includeIdTokenInSilentRenew: false,
-    metadataSeed: {
-      token_endpoint: `${apiBaseUrl(env, origin)}/api/auth/token`,
+    loadUserInfo: false,
+    monitorSession: false,
+    requestTimeoutInSeconds: OIDC_REQUEST_TIMEOUT_SECONDS,
+    // Skip discovery so login can assign the IdP URL immediately. The token
+    // endpoint stays on this app's confidential proxy, not the IdP.
+    metadata: {
+      issuer,
+      authorization_endpoint: `${issuer}/authorize`,
+      token_endpoint: tokenEndpoint,
+      jwks_uri: `${issuer}/jwks.json`,
     },
     extraQueryParams: { audience },
     userStore: new WebStorageStateStore({ store: storage }),
+    stateStore: new WebStorageStateStore({ store: storage }),
   };
 }
 
@@ -375,8 +387,13 @@ export function createAuthClient(options: AuthClientOptions = {}): AuthClient {
       return false;
     },
     async login(returnTo = currentPath()) {
+      const dest = returnTo.startsWith("/") && !isAuthRoute(returnTo) ? returnTo : "/";
+      if (isCurrentAuthenticated()) {
+        navigate(dest);
+        return;
+      }
       if (!userManager?.signinRedirect) throw new Error("OIDC client is not configured");
-      await userManager.signinRedirect({ state: { returnTo } });
+      await userManager.signinRedirect({ state: { returnTo: dest } });
     },
   };
 }
