@@ -23,8 +23,23 @@
 
   const REFRESH_INTERVAL_MS = 60_000;
 
-  let route = $state<Route>({ kind: "home" });
-  let ready = $state(false);
+  function initialRoute(): Route {
+    if (typeof window === "undefined") return { kind: "home" };
+    return parseRoute(window.location.pathname);
+  }
+
+  function isPublicRoute(value: Route): boolean {
+    return (
+      value.kind === "login"
+      || value.kind === "callback"
+      || value.kind === "form"
+      || value.kind === "form-success"
+    );
+  }
+
+  const bootRoute = initialRoute();
+  let route = $state<Route>(bootRoute);
+  let ready = $state(isPublicRoute(bootRoute));
   // workspace 直连建立状态：进入任何业务路由前必须先 bootstrapWorkspace 把连接拉起来。
   // "empty" = 账号还没有任何 workspace（区别于真正的连接错误），由 NoWorkspaceScreen 接管。
   let wsState = $state<"idle" | "connecting" | "ready" | "error" | "empty">("idle");

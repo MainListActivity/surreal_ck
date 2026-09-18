@@ -3,6 +3,7 @@
   import { handleCallback } from "../../lib/auth";
 
   let error = $state<string | null>(null);
+  let started = false;
 
   async function completeLogin(): Promise<void> {
     const result = await handleCallback(window.location.href);
@@ -15,6 +16,8 @@
   }
 
   onMount(() => {
+    if (started) return;
+    started = true;
     void completeLogin();
   });
 </script>

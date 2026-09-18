@@ -46,9 +46,15 @@ describe("OIDC SPA auth client", () => {
       storage: memoryStorage(),
     });
 
-    expect(settings?.metadataSeed).toMatchObject({
+    expect(settings?.metadata).toMatchObject({
+      issuer: "https://idp.example.test",
+      authorization_endpoint: "https://idp.example.test/authorize",
       token_endpoint: "https://api.example.test/api/auth/token",
+      jwks_uri: "https://idp.example.test/jwks.json",
     });
+    expect(settings?.metadataSeed).toBeUndefined();
+    expect(settings?.requestTimeoutInSeconds).toBe(15);
+    expect(settings?.loadUserInfo).toBe(false);
     expect(settings?.client_secret).toBeUndefined();
   });
 
@@ -386,6 +392,47 @@ describe("OIDC SPA auth client", () => {
     await auth.login();
 
     expect(redirectArgs).toEqual({ state: { returnTo: "/workbooks/alpha" } });
+  });
+
+  test("已登录访问 login 时不再发起 OIDC redirect，直接回 returnTo", async () => {
+    const navigations: string[] = [];
+    let signinCalled = false;
+    const auth = createAuthClient({
+      storage: memoryStorage({
+        "oidc.access_token": "access-token",
+        "oidc.exp": "1893456000",
+      }),
+      now: () => new Date("2026-05-28T00:00:00Z"),
+      currentPath: () => "/auth/login?returnTo=%2Fworkbooks",
+      navigate: (url) => navigations.push(url),
+      userManager: {
+        async signinRedirect() {
+          signinCalled = true;
+        },
+      },
+    });
+
+    await auth.login("/workbooks");
+
+    expect(signinCalled).toBe(false);
+    expect(navigations).toEqual(["/workbooks"]);
+  });
+
+  test("login 的 returnTo 若仍是 auth 路由则回首页", async () => {
+    const redirectArgs: { state?: { returnTo?: string } }[] = [];
+    const auth = createAuthClient({
+      storage: memoryStorage(),
+      currentPath: () => "/auth/login?returnTo=%2F",
+      userManager: {
+        async signinRedirect(args) {
+          redirectArgs.push(args ?? {});
+        },
+      },
+    });
+
+    await auth.login("/auth/login?returnTo=%2F");
+
+    expect(redirectArgs).toEqual([{ state: { returnTo: "/" } }]);
   });
 });
 
