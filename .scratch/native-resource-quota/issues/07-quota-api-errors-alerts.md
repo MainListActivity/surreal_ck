@@ -1,5 +1,5 @@
-Status: closed
-Label: completed
+Status: done
+Label: done
 Assignee: codex
 
 # SCK-NQ-07 — 实现角色化 quota API、错误映射、缓存与预警
