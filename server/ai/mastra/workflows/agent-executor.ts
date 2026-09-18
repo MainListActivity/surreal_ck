@@ -87,6 +87,8 @@ export function makeAgentExecutor(agent: Agent, options: AgentExecutorOptions = 
       aggregated += delta;
       onDelta?.(delta);
     }
+    const failure = streamFailure(stream);
+    if (failure) throw failure;
     const text = aggregated || (await stream.text) || "";
     const citations = deriveCitationsFromToolCalls(observedToolCalls);
     return {
@@ -159,4 +161,16 @@ function readToolIntent(call: AiToolCallRecord): AiStructuredIntent | null {
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
+}
+
+function streamFailure(stream: { error?: unknown }): Error | null {
+  const err = stream.error;
+  if (err == null || err === false) return null;
+  if (err instanceof Error) return err;
+  if (typeof err === "string" && err.length > 0) return new Error(err);
+  const record = asRecord(err);
+  if (typeof record?.message === "string" && record.message.length > 0) {
+    return new Error(record.message);
+  }
+  return new Error("LLM stream failed");
 }
