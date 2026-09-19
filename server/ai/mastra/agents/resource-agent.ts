@@ -266,7 +266,7 @@ export function makeResourceRetrievalExecutor(
 }
 
 function legalContentToResource(item: SearchContentItem): ResourceDTO {
-  const citations = item.judgment?.citations ?? [];
+  const citations = orderCitationsForEvidence(item.judgment?.citations ?? []);
   const citationEvidence = citations.slice(0, 3).map((citation, order) => {
     const reference = [citation.rawLawName, citation.rawArticleLabel].filter(Boolean).join(" ");
     const resolution = describeCitationResolution(citation.resolution);
@@ -311,6 +311,24 @@ function legalContentToResource(item: SearchContentItem): ResourceDTO {
       judgment: item.judgment,
     },
   };
+}
+
+const CITATION_RESOLUTION_PRIORITY = {
+  verified: 0,
+  proposed: 1,
+  ambiguous: 2,
+  unresolved: 3,
+} as const;
+
+export function orderCitationsForEvidence<
+  T extends { resolution: keyof typeof CITATION_RESOLUTION_PRIORITY },
+>(citations: readonly T[]): T[] {
+  return citations
+    .map((citation, index) => ({ citation, index }))
+    .sort((left, right) => CITATION_RESOLUTION_PRIORITY[left.citation.resolution]
+      - CITATION_RESOLUTION_PRIORITY[right.citation.resolution]
+      || left.index - right.index)
+    .map(({ citation }) => citation);
 }
 
 function describeCitationResolution(resolution: "unresolved" | "ambiguous" | "proposed" | "verified"): string {

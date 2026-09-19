@@ -6,6 +6,7 @@ import {
   createResourceCitationAnswer,
   createResourceDraftFromEvidence,
   makeResourceRetrievalExecutor,
+  orderCitationsForEvidence,
 } from "./resource-agent";
 
 const emptyContext: AiContextSnapshot = {
@@ -44,6 +45,17 @@ const resource: ResourceDTO = {
 };
 
 describe("resource retrieval executor", () => {
+  test("法律证据优先展示已核验引用并保持同状态原始顺序", () => {
+    const ordered = orderCitationsForEvidence([
+      { id: "u1", resolution: "unresolved" as const },
+      { id: "a1", resolution: "ambiguous" as const },
+      { id: "v1", resolution: "verified" as const },
+      { id: "p1", resolution: "proposed" as const },
+      { id: "v2", resolution: "verified" as const },
+    ]);
+    expect(ordered.map((item) => item.id)).toEqual(["v1", "v2", "p1", "a1", "u1"]);
+  });
+
   test("高置信命中时生成带文本引用和结构化 citations 的回答", async () => {
     const answer = createResourceCitationAnswer({
       question: "查找合同解除案例",
