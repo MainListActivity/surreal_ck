@@ -269,7 +269,7 @@ function legalContentToResource(item: SearchContentItem): ResourceDTO {
   const citations = item.judgment?.citations ?? [];
   const citationEvidence = citations.slice(0, 3).map((citation, order) => {
     const reference = [citation.rawLawName, citation.rawArticleLabel].filter(Boolean).join(" ");
-    const resolution = citation.resolution === "verified" ? "已核验" : `解析状态：${citation.resolution}`;
+    const resolution = describeCitationResolution(citation.resolution);
     return {
       text: [reference, citation.quotedText, resolution].filter(Boolean).join("；"),
       sourceUrl: item.version.sourceUrl,
@@ -311,6 +311,19 @@ function legalContentToResource(item: SearchContentItem): ResourceDTO {
       judgment: item.judgment,
     },
   };
+}
+
+function describeCitationResolution(resolution: "unresolved" | "ambiguous" | "proposed" | "verified"): string {
+  switch (resolution) {
+    case "verified":
+      return "法条版本已核验";
+    case "proposed":
+      return "已匹配候选法条，待核验";
+    case "ambiguous":
+      return "匹配到多个法规版本，待确认";
+    case "unresolved":
+      return "法条版本尚未绑定";
+  }
 }
 
 export async function answerSelectedResourceIds(

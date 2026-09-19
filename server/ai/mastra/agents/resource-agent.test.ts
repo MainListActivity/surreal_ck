@@ -201,7 +201,7 @@ describe("resource retrieval executor", () => {
     });
   });
 
-  test("workspace miss 后检索平台已发布法律库，并显式保留未解析引用状态", async () => {
+  test("workspace miss 后检索平台已发布法律库，并用面向用户的中文说明未绑定法条版本", async () => {
     let researchCreated = false;
     const executor = makeResourceRetrievalExecutor({
       resolveWorkspaceId: async () => "workspace:demo",
@@ -263,7 +263,8 @@ describe("resource retrieval executor", () => {
     expect(out.suspend).toBeUndefined();
     expect(out.text).toContain("平台已发布法律库");
     expect(out.citations?.[0]?.sourceUrl).toContain("court.gov.cn");
-    expect(out.citations?.[0]?.evidence[0]?.text).toContain("解析状态：unresolved");
+    expect(out.citations?.[0]?.evidence[0]?.text).toContain("法条版本尚未绑定");
+    expect(out.citations?.[0]?.evidence[0]?.text).not.toContain("unresolved");
   });
 
   test("executor 把调用者 surrealSession 透传给 deps；默认 resolveWorkspaceId 用 session::db()", async () => {

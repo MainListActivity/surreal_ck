@@ -223,6 +223,13 @@ export interface PlatformContentStore {
   getBatch(batchId: string): Promise<StoredContentBatch | null>;
   findBySourceRecord(input: Readonly<{ sourceKey: string; recordKey: string }>): Promise<StoredPublishedContent | null>;
   searchPublished(input: SearchContentRequest): Promise<StoredPublishedContent[]>;
+  reconcileCitationResolutions?(input: Readonly<{ actorSubject: string }>): Promise<Readonly<{
+    scanned: number;
+    verified: number;
+    proposed: number;
+    ambiguous: number;
+    unchanged: number;
+  }>>;
   applyPublication(input: Readonly<{
     batch: StoredContentBatch;
     entryKey: string;
@@ -712,6 +719,16 @@ export class PlatformContentService {
         idempotencyKey: request.idempotencyKey,
         response,
       });
+    }
+    if (publishedCount > 0 && this.options.store.reconcileCitationResolutions) {
+      try {
+        await this.options.store.reconcileCitationResolutions({ actorSubject: "system:citation-resolver" });
+      } catch (cause) {
+        console.error("[platform-content] citation resolution reconciliation failed", {
+          batchId: request.batchId,
+          message: cause instanceof Error ? cause.message : String(cause),
+        });
+      }
     }
     return response;
   }
