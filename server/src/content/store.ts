@@ -8,6 +8,12 @@ import {
   type SearchContentRequest,
 } from "@surreal-ck/shared/platform-content";
 import { sha256Hex } from "@surreal-ck/shared/platform-content";
+import {
+  applyCitationResolutionOverlays,
+  loadCitationResolutionOverlays,
+  reconcileCitationResolutions as reconcileStoredCitationResolutions,
+  type CitationResolutionReconcileResult,
+} from "./citation-resolution";
 import type {
   PlatformContentStore,
   ContentSourceRegistration,
@@ -488,7 +494,10 @@ export class SurrealPlatformContentStore implements PlatformContentStore {
        FETCH item, version, version.source;`,
       input,
     );
-    return parsePublished(rows(result)[0]);
+    const item = parsePublished(rows(result)[0]);
+    if (!item) return null;
+    const overlays = await loadCitationResolutionOverlays(this.db, [item.version.versionId]);
+    return applyCitationResolutionOverlays([item], overlays)[0] ?? null;
   }
 
   async searchPublished(input: SearchContentRequest): Promise<StoredPublishedContent[]> {
@@ -517,10 +526,16 @@ export class SurrealPlatformContentStore implements PlatformContentStore {
        FETCH item, version, version.source;`,
       { ...params, limit: input.limit },
     );
-    return rows(result).flatMap((row) => {
+    const items = rows(result).flatMap((row) => {
       const item = parsePublished(row);
       return item ? [item] : [];
     });
+    const overlays = await loadCitationResolutionOverlays(this.db, items.map((item) => item.version.versionId));
+    return applyCitationResolutionOverlays(items, overlays);
+  }
+
+  async reconcileCitationResolutions(input: { actorSubject: string }): Promise<CitationResolutionReconcileResult> {
+    return reconcileStoredCitationResolutions(this.db, input.actorSubject);
   }
 
   async reservePublication(input: { reservation: PublicationReservation }): Promise<PublicationReservationResult> {

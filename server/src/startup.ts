@@ -1,8 +1,9 @@
 import { createApp } from "./app";
 import { env } from "./env";
-import { closeRootConnection, initRootConnection } from "./db/root-connection";
+import { closeRootConnection, getRootConnection, initRootConnection } from "./db/root-connection";
 import { ensureSystemSchema } from "./db/system-schema";
 import { ensurePlatformContentSchema } from "./content/schema";
+import { reconcileCitationResolutions } from "./content/citation-resolution";
 import { seedSystemAdmins } from "./db/system-admin-seed";
 import { seedPlatformOperators } from "./db/platform-operator-seed";
 import { seedQuotaPlans } from "./db/quota-plan-seed";
@@ -41,6 +42,7 @@ export type StartServerDeps = {
   verifyNativeQuotaRootHandshake?: () => Promise<unknown>;
   ensureSystemSchema?: () => Promise<unknown>;
   ensurePlatformContentSchema?: () => Promise<unknown>;
+  reconcileCitationResolutions?: () => Promise<unknown>;
   seedSystemAdmins?: () => Promise<unknown>;
   seedPlatformOperators?: () => Promise<unknown>;
   seedQuotaPlans?: () => Promise<unknown>;
@@ -75,6 +77,12 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
   const ensureSchema = deps.ensureSystemSchema ?? ensureSystemSchema;
   const ensureContentSchema = deps.ensurePlatformContentSchema
     ?? (envName === "test" ? async () => undefined : () => ensurePlatformContentSchema());
+  const reconcileContentCitations = deps.reconcileCitationResolutions
+    ?? (envName === "test"
+      ? async () => undefined
+      : () => reconcileCitationResolutions({
+        query: (sql, params) => getRootConnection().query(sql, params),
+      }));
   const seedAdmins = deps.seedSystemAdmins ?? seedSystemAdmins;
   const seedOperators = deps.seedPlatformOperators
     ?? (envName === "test" ? async () => undefined : seedPlatformOperators);
@@ -121,6 +129,14 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
   }
   await ensureSchema();
   await ensureContentSchema();
+  try {
+    const result = await reconcileContentCitations();
+    if (envName !== "test") console.info("[platform-content] citation resolutions reconciled", result);
+  } catch (cause) {
+    console.error("[platform-content] citation resolution reconciliation failed during startup", {
+      message: cause instanceof Error ? cause.message : String(cause),
+    });
+  }
   await seedAdmins();
   await seedOperators();
   await seedPlans();
