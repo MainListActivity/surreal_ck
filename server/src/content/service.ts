@@ -177,10 +177,44 @@ export type PublicationReservationResult =
 function legalFallbackQuery(query: string): string | null {
   const legalTitle = Array.from(query.matchAll(/[\p{Script=Han}]{2,24}?(?:法|条例|规定|解释)/gu))
     .map((match) => match[0]
-      ?.replace(/^(?:请|帮我|查找|查询|检索|寻找|有关|关于|相关)+/u, "")
+      ?.replace(/^(?:请|帮我|查找|查询|检索|搜索|寻找|查一下|查下|有关|关于|相关)+/u, "")
       .trim())
     .find((term) => term && term !== query);
   return legalTitle ?? null;
+}
+
+const LEGAL_QUERY_NOISE = /请|帮我|麻烦|想要|查找|查询|检索|搜索|寻找|查一下|查下|看看|有关|关于|相关|一下/gu;
+const LEGAL_QUERY_GENERIC_NOUN = /(?:的)?(?:指导性案例|指导案例|典型案例|入库案例|案例|判决|裁定|法条)/gu;
+
+function stripLegalQueryNoise(query: string): string {
+  return query
+    .replace(LEGAL_QUERY_NOISE, " ")
+    .replace(/(?:并)?给出官方来源链接/gu, " ")
+    .replace(/适用法条/gu, " ")
+    .replace(LEGAL_QUERY_GENERIC_NOUN, " ")
+    .replace(/[，。？?、,.!！；;：:\s]+/g, " ")
+    .trim();
+}
+
+/** 自然语言问句拆成可做 CONTAINS 的短语，避免整句检索零命中后误进人工检索。 */
+export function legalSearchQueryCandidates(query: string): string[] {
+  const seen = new Set<string>();
+  const add = (value: string | null | undefined) => {
+    const next = value?.trim();
+    if (!next || next.length < 2 || seen.has(next)) return;
+    seen.add(next);
+  };
+
+  add(query);
+  add(legalFallbackQuery(query));
+
+  const stripped = stripLegalQueryNoise(query);
+  add(stripped);
+
+  for (const part of stripped.split(/的|和|与|及|或|\s+/u)) {
+    add(part.trim());
+  }
+  return [...seen];
 }
 
 export interface PlatformContentStore {
@@ -705,12 +739,14 @@ export class PlatformContentService {
     const exact = await this.search(request);
     if (exact.items.length > 0 || !parsed.data.query) return exact;
 
-    const fallbackQuery = legalFallbackQuery(parsed.data.query);
-    if (!fallbackQuery) return exact;
-    return this.search({
-      ...request,
-      filters: { ...request.filters, query: fallbackQuery },
-    });
+    for (const fallbackQuery of legalSearchQueryCandidates(parsed.data.query).slice(1)) {
+      const fallback = await this.search({
+        ...request,
+        filters: { ...request.filters, query: fallbackQuery },
+      });
+      if (fallback.items.length > 0) return fallback;
+    }
+    return exact;
   }
 
   private async search(request: SearchContentRequest): Promise<SearchContentResponse> {

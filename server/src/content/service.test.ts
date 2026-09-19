@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createSyntheticJudgmentBatch } from "@surreal-ck/shared/platform-content";
-import { ContentServiceError, InMemoryPlatformContentStore, PlatformContentService } from "./service";
+import { ContentServiceError, InMemoryPlatformContentStore, PlatformContentService, legalSearchQueryCandidates } from "./service";
 
 const operator = { subject: "operator:ada", capabilities: ["content.submit", "content.read", "content.publish", "content.withdraw", "content.restore", "content.source.manage"] } as const;
 const source = {
@@ -71,6 +71,13 @@ describe("platform content ingestion service", () => {
       limit: 5,
     });
     expect(naturalLanguageSearch.items).toHaveLength(1);
+
+    const nounPhraseSearch = await service.searchPublishedForUser({
+      query: "查找委托事务案例",
+      limit: 5,
+    });
+    expect(nounPhraseSearch.items).toHaveLength(1);
+    expect(nounPhraseSearch.items[0]?.bodyText).toContain("委托事务");
   });
 
   test("detects stale publication assumptions and allows correction, withdraw, and restore", async () => {
@@ -206,5 +213,12 @@ describe("platform content ingestion service", () => {
     const second = await service.getDataContract(operator, { sourceCursor: first.sourceNextCursor });
     expect(second.sources).toHaveLength(1);
     expect(second.sourceNextCursor).toBeNull();
+  });
+
+  test("legalSearchQueryCandidates 从自然语言问句抽出可检索短语", () => {
+    expect(legalSearchQueryCandidates("查找合同解除案例")).toContain("合同解除");
+    expect(legalSearchQueryCandidates("帮我查一下最高法关于专利侵权许诺销售的指导案例和适用法条")).toEqual(
+      expect.arrayContaining(["最高法", "专利侵权许诺销售"]),
+    );
   });
 });
