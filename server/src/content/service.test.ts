@@ -220,5 +220,10 @@ describe("platform content ingestion service", () => {
     expect(legalSearchQueryCandidates("帮我查一下最高法关于专利侵权许诺销售的指导案例和适用法条")).toEqual(
       expect.arrayContaining(["最高法", "专利侵权许诺销售"]),
     );
+    expect(legalSearchQueryCandidates("查找（2023）最高法知民终113号并给出官方来源链接")).toEqual([
+      "查找（2023）最高法知民终113号并给出官方来源链接",
+      "（2023）最高法知民终113号",
+      "最高法",
+    ]);
   });
 });

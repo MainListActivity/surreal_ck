@@ -206,10 +206,9 @@ export function legalSearchQueryCandidates(query: string): string[] {
   };
 
   add(query);
-  add(legalFallbackQuery(query));
-
   const stripped = stripLegalQueryNoise(query);
   add(stripped);
+  add(legalFallbackQuery(query));
 
   for (const part of stripped.split(/的|和|与|及|或|\s+/u)) {
     add(part.trim());
