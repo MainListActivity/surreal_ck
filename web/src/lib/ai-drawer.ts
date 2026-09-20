@@ -616,7 +616,3 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
     },
   };
 }
-
-export function toolCallTraceLabel(toolCall: AiToolCallRecord): string {
-  return toolCall.toolName;
-}

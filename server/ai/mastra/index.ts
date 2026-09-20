@@ -1,47 +1,7 @@
 import { Mastra } from "@mastra/core";
 import { ConsoleLogger } from "@mastra/core/logger";
-import type {
-  CreateDashboardViewResponse,
-  DashboardViewDraftDTO,
-  PreviewDashboardViewResponse,
-  ReferenceTargetOption,
-} from "@surreal-ck/shared";
 import { SurrealMastraStore, type SurrealSessionResolver } from "./storage/surreal-store";
 import { createRouterWorkflow, ROUTER_WORKFLOW_ID } from "./workflows/router-workflow";
-export { createNavigationAgent, NAVIGATION_AGENT_ID } from "./agents/navigation-agent";
-export { createResourceAgent, RESOURCE_AGENT_ID } from "./agents/resource-agent";
-export { ROUTER_WORKFLOW_ID } from "./workflows/router-workflow";
-
-const LEGACY_DASHBOARD_MASTRA_MODULE: string = "../../legacy/services/dashboard-mastra";
-
-type LegacyDashboardMastraModule = {
-  listDashboardGenerationTargets(): Promise<ReferenceTargetOption[]>;
-  previewGeneratedDashboardView(draft: DashboardViewDraftDTO): Promise<PreviewDashboardViewResponse>;
-  saveGeneratedDashboardView(draft: DashboardViewDraftDTO): Promise<CreateDashboardViewResponse>;
-};
-
-async function loadLegacyDashboardMastra(): Promise<LegacyDashboardMastraModule> {
-  return await import(LEGACY_DASHBOARD_MASTRA_MODULE) as LegacyDashboardMastraModule;
-}
-
-export async function listDashboardGenerationTargets(): Promise<ReferenceTargetOption[]> {
-  const { listDashboardGenerationTargets: listTargets } = await loadLegacyDashboardMastra();
-  return listTargets();
-}
-
-export async function previewGeneratedDashboardView(
-  draft: DashboardViewDraftDTO,
-): Promise<PreviewDashboardViewResponse> {
-  const { previewGeneratedDashboardView: previewView } = await loadLegacyDashboardMastra();
-  return previewView(draft);
-}
-
-export async function saveGeneratedDashboardView(
-  draft: DashboardViewDraftDTO,
-): Promise<CreateDashboardViewResponse> {
-  const { saveGeneratedDashboardView: saveView } = await loadLegacyDashboardMastra();
-  return saveView(draft);
-}
 
 let _lastMastra: Mastra | null = null;
 

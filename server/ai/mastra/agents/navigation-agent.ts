@@ -32,15 +32,3 @@ export function createNavigationAgent(settings: AiSettings): Agent {
     tools: NAVIGATION_TOOLS,
   });
 }
-
-export const navigationAgent = new Agent({
-  id: NAVIGATION_AGENT_ID,
-  name: "Navigation Agent",
-  instructions: NAVIGATION_AGENT_INSTRUCTIONS,
-  model: new ModelRouterLanguageModel({
-    providerId: "openai",
-    modelId: "gpt-4o",
-    apiKey: "placeholder",
-  }),
-  tools: NAVIGATION_TOOLS,
-});
