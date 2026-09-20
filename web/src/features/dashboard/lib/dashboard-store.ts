@@ -40,9 +40,6 @@ export type DashboardStoreDeps = {
   /** 镜像进 runes，使组件响应式更新。纯逻辑层不依赖它。 */
   onChange?: (snapshot: DashboardStoreSnapshot) => void;
 };
-
-export type DashboardStore = ReturnType<typeof createDashboardStore>;
-
 /**
  * dashboard 屏幕编排层：page 列表 / 切换 / widget 聚合执行全部直连 SurrealDB
  * （D3-01 数据层 + D3-02 查询编译器），无后端缓存、无代理 endpoint。

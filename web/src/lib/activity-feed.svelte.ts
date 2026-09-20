@@ -15,8 +15,6 @@ import {
  * 重新聚合后镜像进 $state，动态 tab 即时刷新。
  */
 
-type UserLite = { id: string; displayName: string };
-
 type FeedState = {
   loading: boolean;
   /** 原始行（created_at DESC），LIVE CREATE 插表头；聚合在 derived 里做。 */
@@ -108,4 +106,3 @@ function createActivityFeed() {
 }
 
 export const activityFeed = createActivityFeed();
-export type { UserLite };

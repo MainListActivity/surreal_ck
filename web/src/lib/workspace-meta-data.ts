@@ -24,7 +24,7 @@ type HonoWorkspaceMetaRouteClient = {
   };
 };
 
-export const honoWorkspaceMetaEndpoint: WorkspaceMetaEndpointClient = {
+const honoWorkspaceMetaEndpoint: WorkspaceMetaEndpointClient = {
   async rename(slug, name) {
     const client = defaultApi as unknown as HonoWorkspaceMetaRouteClient;
     return client.api.workspaces[":slug"].$patch({ param: { slug }, json: { name } });

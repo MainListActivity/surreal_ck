@@ -85,7 +85,7 @@ type ClaimRowContextInput = {
  * - 调用方已传 values+fields 时纯返回，不碰 DB；
  * - 否则用调用者 session 读 sheet.column_defs（字段定义）和真实数据表里的当前记录。
  */
-export async function resolveClaimRowContext(
+async function resolveClaimRowContext(
   input: ClaimRowContextInput,
   session?: Surreal,
 ): Promise<{ values: Record<string, unknown>; fields: GridColumnDef[] }> {
@@ -186,7 +186,7 @@ async function resolveRecordResourcesViaSession(
   };
 }
 
-export function buildRowPatchProposal(input: {
+function buildRowPatchProposal(input: {
   sheetId: string;
   recordId: string;
   values: Record<string, unknown>;
@@ -321,7 +321,7 @@ export const fetchRelatedRecordsTool = createTool({
   },
 });
 
-export function collectReferenceIds(values: Record<string, unknown>, fields: GridColumnDef[]): string[] {
+function collectReferenceIds(values: Record<string, unknown>, fields: GridColumnDef[]): string[] {
   const ids: string[] = [];
   for (const field of fields) {
     if (field.fieldType !== "reference") continue;

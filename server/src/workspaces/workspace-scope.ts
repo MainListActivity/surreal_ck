@@ -12,7 +12,7 @@ export type SurrealTokenScope = {
 };
 
 /** `_system` 库名；无 workspace 但可创建时登录此库承接首个 workspace 创建。 */
-export const SYSTEM_DATABASE = "_system";
+const SYSTEM_DATABASE = "_system";
 
 export type DefaultScopeResult =
   | {

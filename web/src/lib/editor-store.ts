@@ -27,8 +27,6 @@ import {
 import { isDraftRowId, recordDrafts } from "./record-drafts";
 import type { QuotaFailureViewer } from "@surreal-ck/shared/native-quota";
 
-export { isDraftRowId } from "./record-drafts";
-
 export type TableViewRow = GridRow & { rowNumber: number };
 
 export type TableViewCardRenderers = {
@@ -131,9 +129,6 @@ const EMPTY_VIEW_PARAMS: ViewParams = {
   hiddenFields: [],
   groupBy: null,
 };
-
-export type EditorStore = ReturnType<typeof createEditorStore>;
-
 export function createEditorStore(deps: EditorDeps) {
   const state: EditorState = {
     loading: false,

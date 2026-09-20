@@ -7,12 +7,6 @@ import { env } from "../env";
 import { getRootDatabaseSession } from "../db/root-connection";
 import { introspectOidcAccessToken, type OidcTokenActivityChecker } from "../oidc/introspection";
 import { verifyOidcToken } from "../oidc/verify";
-
-export type PlatformOperatorAuth = Readonly<{
-  subject: string;
-  capabilities: readonly PlatformOperatorCapability[];
-}>;
-
 export type PlatformOperatorCapabilityReader = {
   getCapabilities(subject: string): Promise<readonly PlatformOperatorCapability[]>;
 };
@@ -45,7 +39,7 @@ function oidcError(error: unknown): HttpError {
   return new HttpError(401, "oidc-invalid", "Invalid bearer token");
 }
 
-export function createPlatformOperatorCapabilityReader(
+function createPlatformOperatorCapabilityReader(
   db?: Queryable,
 ): PlatformOperatorCapabilityReader {
   const getDb = db ? async () => db : () => getRootDatabaseSession("_system");

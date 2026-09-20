@@ -13,7 +13,7 @@ import {
 import type { DateTime, StringRecordId } from "surrealdb";
 import { canonicalSha256, stableSha256 } from "./canonical";
 
-export const QUOTA_POLICY_COMPILER_VERSION = "quota-policy-compiler-v1";
+const QUOTA_POLICY_COMPILER_VERSION = "quota-policy-compiler-v1";
 const MAX_CONTROL_PLANE_LIMIT = 9_223_372_036_854_775_807n;
 const REQUIRED_RESOURCES = ["table", "field", "record"] as const;
 const MANAGED_TABLE_PATTERN = "^ent_";

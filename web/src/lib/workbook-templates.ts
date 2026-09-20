@@ -30,9 +30,6 @@ export type WorkbookTemplatesDeps = {
   getConn: () => SurrealConn;
   onChange?: (snapshot: WorkbookTemplatesSnapshot) => void;
 };
-
-export type WorkbookTemplatesStore = ReturnType<typeof createWorkbookTemplatesStore>;
-
 function recordToTemplateSheet(value: unknown): WorkbookTemplateSheet | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const rec = value as Record<string, unknown>;

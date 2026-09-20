@@ -1,7 +1,7 @@
 import type { DashboardNormalizedResult } from "@surreal-ck/shared/rpc.types";
 
-export const DASHBOARD_EMPTY_TEXT = "暂无数据";
-export const DASHBOARD_PLACEHOLDER = "—";
+const DASHBOARD_EMPTY_TEXT = "暂无数据";
+const DASHBOARD_PLACEHOLDER = "—";
 
 /**
  * 图表分类配色：暖绿 / 陶土设计语言，与全站换肤 token 同源

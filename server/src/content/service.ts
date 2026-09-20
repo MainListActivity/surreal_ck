@@ -30,7 +30,7 @@ export type ContentOperator = Readonly<{
   capabilities: readonly string[];
 }>;
 
-export const ContentSourceActionSchema = z.enum(["submit", "publish", "withdraw", "restore"]);
+const ContentSourceActionSchema = z.enum(["submit", "publish", "withdraw", "restore"]);
 export type ContentSourceAction = z.infer<typeof ContentSourceActionSchema>;
 
 export type ContentSourceLicenseRevision = Readonly<{

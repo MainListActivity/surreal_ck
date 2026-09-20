@@ -154,4 +154,4 @@ await db.merge(id, mapNullsToSurrealNone({
   - `mapNullsToSurrealNone({ a: 1, b: null })` 中 `b` 必须变成 `undefined`
 
 ## Related Issues
-- [surrealdb-embedded-local-first-session-isolation-2026-04-25.md](/Users/y/IdeaProjects/surreal_ck/docs/solutions/best-practices/surrealdb-embedded-local-first-session-isolation-2026-04-25.md) 同属 SurrealDB SDK / embedded 使用约定，但它的 `token_store` 示例需要按这次规则刷新。
+- [surrealdb-embedded-local-first-session-isolation-2026-04-25.md](../../archive/solutions/surrealdb-embedded-local-first-session-isolation-2026-04-25.md) 同属 SurrealDB SDK / embedded 使用约定，但它的 `token_store` 示例需要按这次规则刷新。

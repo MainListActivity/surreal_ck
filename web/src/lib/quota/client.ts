@@ -134,7 +134,7 @@ type HonoQuotaClient = {
   };
 };
 
-export const honoQuotaEndpoint: QuotaEndpointClient = {
+const honoQuotaEndpoint: QuotaEndpointClient = {
   workspace(slug, refresh) {
     const client = defaultApi as unknown as HonoQuotaClient;
     return client.api.workspaces[":slug"].quota.$get({

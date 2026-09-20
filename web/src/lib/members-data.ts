@@ -69,7 +69,7 @@ export async function loadMembers(conn: SurrealConn): Promise<WorkspaceMember[]>
   }));
 }
 
-export const honoMemberEndpoint: MemberEndpointClient = {
+const honoMemberEndpoint: MemberEndpointClient = {
   async create(slug, input) {
     const client = defaultApi as unknown as HonoMemberRouteClient;
     return client.api.workspaces[":slug"].members.$post({ param: { slug }, json: input });

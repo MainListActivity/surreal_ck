@@ -404,10 +404,6 @@ export function getToken(): string | null {
   return defaultAuth.getToken();
 }
 
-export function getSession(): AuthSession | null {
-  return defaultAuth.getSession();
-}
-
 export function isAuthenticated(): boolean {
   return defaultAuth.isAuthenticated();
 }

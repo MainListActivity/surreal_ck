@@ -3,7 +3,7 @@ import { ModelRouterLanguageModel } from "@mastra/core/llm";
 import { navigateTool, searchWorkbookTool, searchDashboardTool, searchRecordTool } from "../tools/navigation-tools";
 import { buildModelConfig, type AiSettings } from "./model-config";
 
-export const NAVIGATION_AGENT_ID = "navigationAgent";
+const NAVIGATION_AGENT_ID = "navigationAgent";
 
 const NAVIGATION_AGENT_INSTRUCTIONS = `你是 Surreal CK 的导航 AI 助手。
 始终使用简体中文回答。
@@ -16,7 +16,7 @@ const NAVIGATION_AGENT_INSTRUCTIONS = `你是 Surreal CK 的导航 AI 助手。
 - searchDashboard：按名称搜索仪表盘
 - searchRecord：在指定数据表中按关键字搜索记录`;
 
-export const NAVIGATION_TOOLS = {
+const NAVIGATION_TOOLS = {
   navigateTool,
   searchWorkbookTool,
   searchDashboardTool,

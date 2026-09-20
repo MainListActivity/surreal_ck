@@ -24,14 +24,7 @@ import type { ImportCsvRowsInput } from "./data-table-runtime";
 import { getCurrentWorkspace } from "./workspace-store.svelte";
 
 export { isDraftRowId } from "./record-drafts";
-export type {
-  TableViewAdapter,
-  TableViewRow,
-  TableViewActions,
-  TableViewCardRenderers,
-  SheetMeta,
-  WorkbookMeta,
-} from "./editor-store";
+export type { SheetMeta } from "./editor-store";
 
 /**
  * Reactive mirror of the pure {@link createEditorStore}. The logic layer

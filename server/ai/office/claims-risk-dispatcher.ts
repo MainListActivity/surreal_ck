@@ -86,7 +86,7 @@ function shanghaiDateKey(date: Date): string {
   return `${part("year")}-${part("month")}-${part("day")}`;
 }
 
-export async function listClaimsRiskEmployees(): Promise<ClaimsRiskEmployeeTarget[]> {
+async function listClaimsRiskEmployees(): Promise<ClaimsRiskEmployeeTarget[]> {
   const system = await getRootDatabaseSession("_system");
   const [workspaces] = await system.query<[{ db_name?: unknown }[]]>(
     'SELECT db_name FROM workspace WHERE status = "active"',
@@ -108,7 +108,7 @@ export async function listClaimsRiskEmployees(): Promise<ClaimsRiskEmployeeTarge
   return targets;
 }
 
-export async function openClaimsRiskEmployeeStore(
+async function openClaimsRiskEmployeeStore(
   target: ClaimsRiskEmployeeTarget,
 ): Promise<EmployeeStoreWindow> {
   const session = new Surreal();

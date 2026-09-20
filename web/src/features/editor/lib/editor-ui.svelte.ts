@@ -11,8 +11,6 @@ import {
   type ViewId,
 } from "./editor-ui";
 
-export type { ViewId, PanelId, EditorPageKind } from "./editor-ui";
-
 /**
  * Reactive mirror of the pure {@link createEditorUi}. 纯逻辑层（editor-ui.test.ts
  * 单测）持有真实状态并 emit 快照，这里镜像进 Svelte 5 runes 供组件响应式消费。

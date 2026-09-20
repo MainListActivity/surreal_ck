@@ -123,9 +123,6 @@ export type DashboardDraftCardDeps = {
   resume: (decision: { kind: "write-confirmed" | "write-rejected" }) => Promise<void>;
   onChange?: (state: DashboardDraftCardState) => void;
 };
-
-export type DashboardDraftCard = ReturnType<typeof createDashboardDraftCard>;
-
 /**
  * 草稿卡状态机：previewing → ready（或 preview-error）→ 确认保存 / 忽略 → resume。
  * 与 svelte runes 镜像分离（沿用 row-patch-card 的分层风格）。

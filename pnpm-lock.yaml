@@ -93,6 +93,9 @@ importers:
       '@lucide/svelte':
         specifier: ^1.17.0
         version: 1.17.0(svelte@5.55.4)
+      '@revolist/revogrid':
+        specifier: 4.21.4
+        version: 4.21.4
       '@revolist/svelte-datagrid':
         specifier: ^4.21.3
         version: 4.21.4

@@ -766,5 +766,3 @@ export class SurrealMastraStore extends MastraCompositeStore {
     };
   }
 }
-
-export type { Surreal };

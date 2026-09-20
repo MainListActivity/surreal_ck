@@ -289,6 +289,3 @@ export async function migrateAllWorkspaces(
 
   return { total: workspaceRows.length, migrated };
 }
-
-// retained for tests that import the private helper name path via re-export
-export type { WorkspaceQuotaMigrationState };

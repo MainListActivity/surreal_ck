@@ -21,7 +21,7 @@ export type DashboardWidgetRegistration = DashboardWidgetDefinition & {
   component: Component<DashboardWidgetComponentProps>;
 };
 
-export const dashboardWidgetRegistry: DashboardWidgetRegistration[] = [
+const dashboardWidgetRegistry: DashboardWidgetRegistration[] = [
   { viewType: "kpi", componentName: "KpiWidget", component: KpiWidget },
   { viewType: "table", componentName: "TableWidget", component: TableWidget },
   { viewType: "bar", componentName: "CategoryBarWidget", component: CategoryBarWidget },
