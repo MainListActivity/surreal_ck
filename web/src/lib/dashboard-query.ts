@@ -4,7 +4,7 @@ import type {
   DashboardPreviewResponse,
   DashboardResultContract,
   DashboardViewType,
-} from "@surreal-ck/shared/rpc.types";
+} from "@surreal-ck/shared/dto";
 import type { DashboardWidget } from "./dashboard-data";
 import type { SurrealConn } from "./surreal";
 

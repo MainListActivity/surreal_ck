@@ -7,7 +7,7 @@ export * from "./platform-content";
 export * from "./research-save";
 export * from "./research-url";
 export * from "./resource-quota";
-export * from "./rpc.types";
+export * from "./dto";
 export * from "./server-types";
 export * from "./surreal-query-log";
 export * from "./surreal-values";

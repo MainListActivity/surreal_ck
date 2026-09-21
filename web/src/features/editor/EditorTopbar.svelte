@@ -160,7 +160,7 @@
       title={tab.label}
       onclick={() => editorUi.togglePanel(tab.id)}
     >
-      <svelte:component this={tab.icon} size={15} />
+      <tab.icon size={15} />
     </button>
   {/each}
   <span class="divider"></span>

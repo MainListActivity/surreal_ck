@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { GridColumnDef } from "@surreal-ck/shared/rpc.types";
+import type { GridColumnDef } from "@surreal-ck/shared/dto";
 import type { ParsedXlsxSheet } from "./xlsx-import";
 import { importXlsxSheetIntoTemplate, suggestXlsxSheetTarget } from "./xlsx-template-import";
 

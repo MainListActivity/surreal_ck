@@ -1,4 +1,4 @@
-import type { RecordIdString, ReferenceTargetPreview } from "@surreal-ck/shared/rpc.types";
+import type { RecordIdString, ReferenceTargetPreview } from "@surreal-ck/shared/dto";
 import { getSurreal } from "./surreal";
 import { isLikelyRecordId, resolveReferences } from "./reference-cache";
 

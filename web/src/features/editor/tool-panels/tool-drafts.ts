@@ -1,4 +1,4 @@
-import type { FilterClause, FilterOp, SortClause } from "@surreal-ck/shared/rpc.types";
+import type { FilterClause, FilterOp, SortClause } from "@surreal-ck/shared/dto";
 
 /**
  * 工具面板 draft 清洗（纯逻辑，可单测）。

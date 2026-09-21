@@ -1,4 +1,4 @@
-import type { FilterClause, GridColumnDef, ViewParams } from "@surreal-ck/shared/rpc.types";
+import type { FilterClause, GridColumnDef, ViewParams } from "@surreal-ck/shared/dto";
 import { omitNullishSurrealFields } from "@surreal-ck/shared/surreal-values";
 import { asBindable, toRecordFieldValue } from "./record-id";
 

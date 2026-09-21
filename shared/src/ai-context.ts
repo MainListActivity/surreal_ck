@@ -1,4 +1,4 @@
-import type { GridColumnDef, GridRow, RecordIdString, ResourceCitationDTO } from "./rpc.types";
+import type { GridColumnDef, GridRow, RecordIdString, ResourceCitationDTO } from "./dto";
 
 export type AiRouteContext = {
   screen: string;

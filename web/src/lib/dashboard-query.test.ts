@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { DashboardBuilderSpec } from "@surreal-ck/shared/rpc.types";
+import type { DashboardBuilderSpec } from "@surreal-ck/shared/dto";
 import type { SurrealConn } from "./surreal";
 import { runDashboardWidgetQuery } from "./dashboard-query";
 import type { DashboardWidget } from "./dashboard-data";

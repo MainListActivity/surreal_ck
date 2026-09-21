@@ -4,7 +4,7 @@ import type {
   RecordIdString,
   SortClause,
   ViewParams,
-} from "@surreal-ck/shared/rpc.types";
+} from "@surreal-ck/shared/dto";
 import {
   coerceGridFieldValue,
   validateGridFieldValue,

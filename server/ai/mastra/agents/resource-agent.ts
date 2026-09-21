@@ -3,6 +3,17 @@ import { ModelRouterLanguageModel } from "@mastra/core/llm";
 import type { Surreal } from "surrealdb";
 import type { AiContextSnapshot } from "@surreal-ck/shared";
 import type { ResourceCitationDTO } from "@surreal-ck/shared";
+import type {
+  CitableResource,
+  CreateResearchSessionRequest,
+  GetResourceDetailRequest,
+  ResearchSessionResponse,
+  ResourceDetailResponse,
+  ResourceEvidenceDTO,
+  SaveResourceRequest,
+  SearchResourcesRequest,
+  SearchResourcesResponse,
+} from "@surreal-ck/shared/dto";
 import type { SearchContentItem, SearchContentResponse } from "@surreal-ck/shared/platform-content";
 import type { SubAgentExecutor, SubAgentOutput } from "../workflows/router-workflow";
 import { RESOURCE_TOOLS } from "../tools/resource-tools";
@@ -11,95 +22,6 @@ import { buildModelConfig, type AiSettings } from "./model-config";
 export { RESOURCE_TOOLS } from "../tools/resource-tools";
 
 export const RESOURCE_AGENT_ID = "resourceAgent";
-
-export type ResourceEvidence = {
-  text: string;
-  sourceUrl?: string;
-  sourceTitle?: string;
-  capturedAt: string;
-  order: number;
-};
-
-export type ResourceDTO = {
-  id: string;
-  /** 兼容旧契约字段；workspace-as-database 下 session 已绑定 db，新代码可不填。 */
-  workspaceId?: string;
-  resourceType: string;
-  title: string;
-  summary: string;
-  sourceUrl?: string;
-  sourceTitle?: string;
-  evidence: ResourceEvidence[];
-  structuredPayload?: Record<string, unknown>;
-  [key: string]: unknown;
-};
-
-export type SearchResourcesRequest = {
-  workspaceId?: string;
-  query: string;
-  context?: {
-    selectedRow?: AiContextSnapshot["selectedRow"];
-    document?: { title?: string; text?: string } | string;
-    manualText?: string;
-  };
-  resourceType?: string;
-  filters?: Record<string, unknown>;
-  limit?: number;
-  answerThreshold?: number;
-  candidateThreshold?: number;
-};
-
-export type SearchResourcesResponse = {
-  status: "hit" | "candidates" | "miss";
-  indexStatus: "ready" | "index-disabled" | "index-pending" | "index-error";
-  queryText: string;
-  results: Array<{
-    resource: ResourceDTO;
-    score: number;
-    vectorScore?: number;
-    keywordScore?: number;
-    qualityScore?: number;
-    recencyScore?: number;
-  }>;
-};
-
-export type CreateResearchSessionRequest = {
-  workspaceId?: string;
-  query: string;
-  context?: Record<string, unknown>;
-  resourceType: string;
-  originatingRunId?: string;
-};
-
-export type ResearchSessionResponse = {
-  session: {
-    id: string;
-    workspaceId?: string;
-    query: string;
-    resourceType: string;
-    [key: string]: unknown;
-  };
-};
-
-export type GetResourceDetailRequest = {
-  resourceId: string;
-};
-
-export type ResourceDetailResponse = {
-  resource: ResourceDTO;
-};
-
-export type SaveResourceRequest = {
-  workspaceId: string;
-  resourceType: string;
-  title: string;
-  summary: string;
-  sourceUrl?: string;
-  sourceTitle?: string;
-  evidence: ResourceEvidence[];
-  structuredPayload: Record<string, unknown>;
-  quality: "ai-draft";
-};
 
 export const RESOURCE_INSTRUCTIONS = `你是 Surreal CK 的资源检索 AI 助手。
 始终使用简体中文回答。
@@ -142,14 +64,14 @@ export type AnswerSelectedResourceIdsInput = {
 export type CreateResourceDraftFromEvidenceInput = {
   workspaceId: string;
   resourceType: string;
-  evidence: ResourceEvidence[];
+  evidence: ResourceEvidenceDTO[];
   title?: string;
   summary?: string;
 };
 
 export function createResourceCitationAnswer(input: {
   question: string;
-  resources: ResourceDTO[];
+  resources: CitableResource[];
 }): ResourceCitationAnswer {
   const citations = input.resources.map((resource, index): ResourceCitationDTO => ({
     index: index + 1,
@@ -265,7 +187,7 @@ export function makeResourceRetrievalExecutor(
   };
 }
 
-function legalContentToResource(item: SearchContentItem): ResourceDTO {
+function legalContentToResource(item: SearchContentItem): CitableResource {
   const citations = orderCitationsForEvidence(item.judgment?.citations ?? []);
   const citationEvidence = citations.slice(0, 3).map((citation, order) => {
     const reference = [citation.rawLawName, citation.rawArticleLabel].filter(Boolean).join(" ");
@@ -279,7 +201,7 @@ function legalContentToResource(item: SearchContentItem): ResourceDTO {
     };
   });
   const bodyExcerpt = item.bodyText?.trim().slice(0, 600);
-  const evidence: ResourceEvidence[] = citationEvidence.length > 0
+  const evidence: ResourceEvidenceDTO[] = citationEvidence.length > 0
     ? citationEvidence
     : bodyExcerpt
       ? [{
@@ -390,7 +312,7 @@ function omitUndefinedRecord(input: Record<string, unknown>): Record<string, unk
   return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
 }
 
-function summarizeEvidence(evidence: ResourceEvidence[]): string {
+function summarizeEvidence(evidence: ResourceEvidenceDTO[]): string {
   const text = evidence.map((item) => item.text.trim()).filter(Boolean).join(" ");
   return text.length > 160 ? `${text.slice(0, 160)}...` : text;
 }

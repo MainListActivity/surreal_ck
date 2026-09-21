@@ -1,3 +1,4 @@
+import type { ListWorkspacesResponse, WorkspaceListItem } from "@surreal-ck/shared/dto";
 import { getRootDatabaseSession } from "../db/root-connection";
 import { dateTimeTimestamp, toIsoDateTimeString } from "../db/surreal-values";
 import { env } from "../env";
@@ -31,14 +32,6 @@ export type DefaultScopeInput = {
   email?: string;
 };
 
-export type WorkspaceListItem = {
-  slug: string;
-  name: string;
-  dbName: string;
-  role: "admin" | "participant";
-  lastSelectedAt: string | null;
-};
-
 export type SwitchWorkspaceInput = {
   subject: string;
   email?: string;
@@ -58,11 +51,8 @@ export type SwitchWorkspaceResult =
       kind: "drift";
     };
 
-export type ListWorkspacesResult = {
-  workspaces: WorkspaceListItem[];
-  /** `_system.system_admin` 表是否已有任意行；有行即允许创建 workspace。 */
-  canCreate: boolean;
-};
+/** `_system.system_admin` 表是否已有任意行决定 `canCreate`；有行即允许创建 workspace。 */
+export type ListWorkspacesResult = ListWorkspacesResponse;
 
 export interface WorkspaceScopeModule {
   getDefaultScope(input: DefaultScopeInput): Promise<DefaultScopeResult>;

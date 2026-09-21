@@ -1,4 +1,4 @@
-import type { GridColumnDef, GridFieldConstraints } from "./rpc.types";
+import type { GridColumnDef, GridFieldConstraints } from "./dto/editor";
 import { DEFAULT_DATE_FORMAT } from "./date-format";
 
 const INTEGER_EPSILON = 1e-9;

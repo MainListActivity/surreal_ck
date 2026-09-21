@@ -1,18 +1,9 @@
+import type { CreateWorkspaceRequest, CreateWorkspaceResponse } from "@surreal-ck/shared/dto";
 import type { EnterWorkspaceInput } from "./workspace-store";
 
 /** 表单输入：workspace 名称 + slug。 */
-export type CreateWorkspaceInput = {
-  name: string;
-  slug: string;
-};
-
-/** 后端 `POST /api/workspaces` 的正常返回。 */
-export type CreateResponse = {
-  slug: string;
-  dbName: string;
-  accessToken: string;
-  expiresIn: number | null;
-};
+export type CreateWorkspaceInput = CreateWorkspaceRequest;
+export type CreateResponse = CreateWorkspaceResponse;
 
 export type CreateResult =
   | { ok: true }

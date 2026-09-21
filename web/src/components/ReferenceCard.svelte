@@ -1,6 +1,6 @@
 <script lang="ts">
   import { referenceCache } from "../lib/reference-cache.svelte";
-  import type { RecordIdString } from "@surreal-ck/shared/rpc.types";
+  import type { RecordIdString } from "@surreal-ck/shared/dto";
 
   /** 固定尺寸的引用记录浮窗（hover 时展示）。 */
   let {

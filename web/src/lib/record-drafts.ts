@@ -1,4 +1,4 @@
-import type { GridColumnDef, GridRow, RecordIdString } from "@surreal-ck/shared/rpc.types";
+import type { GridColumnDef, GridRow, RecordIdString } from "@surreal-ck/shared/dto";
 
 type DraftBuckets = Record<string, GridRow[]>;
 

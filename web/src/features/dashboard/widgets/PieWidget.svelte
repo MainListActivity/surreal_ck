@@ -1,6 +1,6 @@
 <script lang="ts">
   import { PieChart } from "layerchart";
-  import type { DashboardNormalizedResult } from "@surreal-ck/shared/rpc.types";
+  import type { DashboardNormalizedResult } from "@surreal-ck/shared/dto";
   import { CHART_PALETTE, toPieChartModel } from "./model";
 
   let { result }: { title: string; result?: DashboardNormalizedResult; displaySpec?: Record<string, unknown> } = $props();

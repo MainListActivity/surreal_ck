@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { StringRecordId } from "surrealdb";
-import type { GridColumnDef, ViewParams } from "@surreal-ck/shared/rpc.types";
+import type { GridColumnDef, ViewParams } from "@surreal-ck/shared/dto";
 import {
   buildSelect,
   describeWriteError,

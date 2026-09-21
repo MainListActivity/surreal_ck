@@ -38,7 +38,7 @@
   <div class="view-tabs">
     {#each viewRegistry as item}
       <button class:active={editorUi.view === item.id} onclick={() => (editorUi.view = item.id)}>
-        <svelte:component this={item.icon} size={13} />{item.label}
+        <item.icon size={13} />{item.label}
       </button>
     {/each}
   </div>
@@ -51,7 +51,7 @@
       class:applied={badge > 0}
       onclick={(event) => clickTool(action.id, event)}
     >
-      <svelte:component this={action.icon} size={13} />{action.label}
+      <action.icon size={13} />{action.label}
       {#if badge > 0}<span class="badge">{badge}</span>{/if}
     </button>
   {/each}

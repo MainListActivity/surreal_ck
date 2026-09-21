@@ -1,5 +1,5 @@
 import { buildAiContextSnapshot } from "@surreal-ck/shared/ai-context";
-import type { GridColumnDef, GridRow, RecordIdString } from "@surreal-ck/shared/rpc.types";
+import type { GridColumnDef, GridRow, RecordIdString } from "@surreal-ck/shared/dto";
 import type { AiDrawerContextSnapshot } from "./ai-drawer";
 import type { SheetMeta, WorkbookMeta } from "./editor-store";
 

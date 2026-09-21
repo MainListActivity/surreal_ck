@@ -1,4 +1,4 @@
-import type { GridColumnDef } from "@surreal-ck/shared/rpc.types";
+import type { GridColumnDef } from "@surreal-ck/shared/dto";
 
 export type DerivedColumns = {
   title: GridColumnDef | null;

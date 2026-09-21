@@ -2,7 +2,7 @@
   import { summarizeGridField } from "@surreal-ck/shared/field-schema";
   import { SelectMenu } from "$lib/components/ui/select/index.js";
   import RecordPicker from "../../../components/RecordPicker.svelte";
-  import type { GridColumnDef, RecordIdString } from "@surreal-ck/shared/rpc.types";
+  import type { GridColumnDef, RecordIdString } from "@surreal-ck/shared/dto";
 
   // ── 字段输入支持（07e 起）──────────────────────────────────────
   // 文本/数字/勾选/单选/引用 输入均已接通（引用走 RecordPicker 直连）。

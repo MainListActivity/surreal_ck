@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AiContextSnapshot } from "@surreal-ck/shared";
-import type { ResourceDTO } from "./resource-agent";
+import type { ResourceDTO } from "@surreal-ck/shared/dto";
 import {
   answerSelectedResourceIds,
   createResourceCitationAnswer,
@@ -37,8 +37,6 @@ const resource: ResourceDTO = {
   tags: ["合同"],
   structuredPayload: {},
   quality: "user-confirmed",
-  duplicateHashes: { content: "c", evidence: "e", source: "s" },
-  embedding: { status: "indexed" },
   createdBy: "app_user:u1",
   createdAt: "2026-05-11T08:00:00.000Z",
   updatedAt: "2026-05-11T08:00:00.000Z",

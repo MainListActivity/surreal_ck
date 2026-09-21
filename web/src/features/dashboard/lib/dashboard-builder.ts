@@ -3,7 +3,7 @@ import type {
   DashboardBuilderSpec,
   DashboardViewType,
   GridColumnDef,
-} from "@surreal-ck/shared/rpc.types";
+} from "@surreal-ck/shared/dto";
 import type { DashboardWidget } from "../../../lib/dashboard-data";
 import { metricLabel, validateDashboardWidgetSpec } from "../../../lib/dashboard-query";
 

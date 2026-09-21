@@ -4,7 +4,7 @@
   import { referenceCache } from "../../../lib/reference-cache.svelte";
   import { editorUi } from "../lib/editor-ui.svelte";
   import ReferenceCard from "../../../components/ReferenceCard.svelte";
-  import type { RecordIdString } from "@surreal-ck/shared/rpc.types";
+  import type { RecordIdString } from "@surreal-ck/shared/dto";
 
   /**
    * 表格单元格内的引用展示：逗号分隔的可点击徽章。

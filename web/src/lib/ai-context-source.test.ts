@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { GridColumnDef, GridRow, RecordIdString } from "@surreal-ck/shared/rpc.types";
+import type { GridColumnDef, GridRow, RecordIdString } from "@surreal-ck/shared/dto";
 import { buildDrawerContextSnapshot, type DrawerEditorState } from "./ai-context-source";
 
 function editorState(over: Partial<DrawerEditorState> = {}): DrawerEditorState {

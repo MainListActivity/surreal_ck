@@ -1,4 +1,4 @@
-import type { DashboardNormalizedResult } from "@surreal-ck/shared/rpc.types";
+import type { DashboardNormalizedResult } from "@surreal-ck/shared/dto";
 
 const DASHBOARD_EMPTY_TEXT = "暂无数据";
 const DASHBOARD_PLACEHOLDER = "—";

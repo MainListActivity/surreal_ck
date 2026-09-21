@@ -1,4 +1,4 @@
-import type { WorkbookTemplate } from "@surreal-ck/shared/rpc.types";
+import type { WorkbookTemplate } from "@surreal-ck/shared/dto";
 import { getSurreal } from "./surreal";
 import {
   createWorkbookTemplatesStore,

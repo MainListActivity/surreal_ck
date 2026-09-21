@@ -116,7 +116,7 @@
           <span></span><span></span>
         </span>
         <span class="type-badge" title={meta.label}>
-          <svelte:component this={meta.icon} size={14} />
+          <meta.icon size={14} />
         </span>
         <span class="label">{col.label}</span>
         <button

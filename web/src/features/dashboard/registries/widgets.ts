@@ -2,7 +2,7 @@ import type { Component } from "svelte";
 import type {
   DashboardNormalizedResult,
   DashboardViewType,
-} from "@surreal-ck/shared/rpc.types";
+} from "@surreal-ck/shared/dto";
 import KpiWidget from "../widgets/KpiWidget.svelte";
 import TableWidget from "../widgets/TableWidget.svelte";
 import CategoryBarWidget from "../widgets/CategoryBarWidget.svelte";

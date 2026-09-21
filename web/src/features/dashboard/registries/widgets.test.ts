@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { DashboardViewType } from "@surreal-ck/shared/rpc.types";
+import type { DashboardViewType } from "@surreal-ck/shared/dto";
 import {
   dashboardWidgetDefinitions,
   getDashboardWidgetDefinition,

@@ -5,7 +5,7 @@
   import { editorStore } from "../../../lib/editor-store.svelte";
   import { editorUi } from "../lib/editor-ui.svelte";
   import RecordForm from "../components/RecordForm.svelte";
-  import type { GridColumnDef } from "@surreal-ck/shared/rpc.types";
+  import type { GridColumnDef } from "@surreal-ck/shared/dto";
 
   type FormMode = "edit" | "fill";
 

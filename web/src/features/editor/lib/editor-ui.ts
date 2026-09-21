@@ -1,4 +1,4 @@
-import type { RecordIdString } from "@surreal-ck/shared/rpc.types";
+import type { RecordIdString } from "@surreal-ck/shared/dto";
 
 export type ViewId = "grid" | "kanban" | "gallery" | "form";
 export type PanelId = "detail" | "changes";

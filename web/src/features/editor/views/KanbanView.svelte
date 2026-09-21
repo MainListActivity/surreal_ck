@@ -1,7 +1,7 @@
 <script lang="ts">
   import { editorStore } from "../../../lib/editor-store.svelte";
   import { editorUi } from "../lib/editor-ui.svelte";
-  import type { RecordIdString } from "@surreal-ck/shared/rpc.types";
+  import type { RecordIdString } from "@surreal-ck/shared/dto";
   import { cardAccent } from "../lib/cell-style";
 
   const tableView = $derived(editorStore.tableViewAdapter);
