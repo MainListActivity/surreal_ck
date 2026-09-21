@@ -1,7 +1,7 @@
 import type {
   DashboardBuilderSpec,
   DashboardViewType,
-} from "@surreal-ck/shared/rpc.types";
+} from "@surreal-ck/shared/dto";
 import { recordValueToString, toRecordId } from "./record-id";
 import type { SurrealConn } from "./surreal";
 import { describeWriteError, type SaveResult } from "./workbook-data";

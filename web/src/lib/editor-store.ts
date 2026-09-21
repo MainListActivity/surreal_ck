@@ -12,7 +12,7 @@ import type {
   RecordIdString,
   SortClause,
   ViewParams,
-} from "@surreal-ck/shared/rpc.types";
+} from "@surreal-ck/shared/dto";
 import { toRecordId } from "./record-id";
 import type { SurrealConn } from "./surreal";
 import { describeWriteError } from "./workbook-data";

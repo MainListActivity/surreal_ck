@@ -8,23 +8,31 @@
  */
 import { DateTime, StringRecordId } from "surrealdb";
 import type { Surreal } from "surrealdb";
+import type {
+  CreateResearchSessionRequest,
+  GetResourceDetailRequest,
+  ResearchSessionDTO,
+  ResearchSessionResponse,
+  ResearchSessionStatus,
+  ResourceDetailResponse,
+  ResourceDTO,
+  ResourceEmbeddingStatus,
+  ResourceEvidenceDTO,
+  ResourceQuality,
+  ResourceSearchContext,
+  ResourceSearchFilters,
+  ResourceSearchIndexStatus,
+  ResourceSearchStatus,
+  SearchResourcesRequest,
+  SearchResourcesResponse,
+} from "@surreal-ck/shared/dto";
 import {
   createEmbeddingProfileKey,
   type EmbeddingProfile,
   type EmbeddingProvider,
 } from "./research-save";
 
-// ─── 行 / DTO 类型（新 schema：无 workspace 字段） ───────────────────────────
-
-export type ResourceQuality = "user-confirmed" | "ai-draft" | "imported" | "deprecated";
-
-export type ResourceEvidence = {
-  text: string;
-  sourceUrl?: string;
-  sourceTitle?: string;
-  capturedAt: string;
-  order: number;
-};
+// ─── 行类型（新 schema：无 workspace 字段；DTO 契约在 @surreal-ck/shared/dto） ─────
 
 export type ResourceItemRow = {
   id: unknown;
@@ -33,7 +41,7 @@ export type ResourceItemRow = {
   summary: string;
   source_url?: string;
   source_title?: string;
-  evidence: ResourceEvidence[];
+  evidence: ResourceEvidenceDTO[];
   tags: string[];
   structured_payload: Record<string, unknown>;
   quality: ResourceQuality;
@@ -48,87 +56,9 @@ export type ResourceEmbeddingRow = {
   id: unknown;
   resource: unknown;
   profile_key: string;
-  status: "disabled" | "pending" | "indexed" | "failed" | "stale";
+  status: ResourceEmbeddingStatus;
   vector?: number[];
   error_summary?: string;
-};
-
-export type ResourceDTO = {
-  id: string;
-  workspaceId?: string;
-  resourceType: string;
-  title: string;
-  summary: string;
-  sourceUrl?: string;
-  sourceTitle?: string;
-  evidence: ResourceEvidence[];
-  tags: string[];
-  structuredPayload: Record<string, unknown>;
-  quality: ResourceQuality;
-  createdBy?: string;
-  createdAt: string;
-  updatedAt: string;
-};
-
-export type ResourceSearchContext = {
-  selectedRow?: unknown;
-  document?: { title?: string; text?: string } | string;
-  manualText?: string;
-};
-
-export type ResourceSearchFilters = {
-  tags?: string[];
-  sourceDomain?: string;
-  dateFrom?: string;
-  dateTo?: string;
-};
-
-export type ResourceSearchStatus = "hit" | "candidates" | "miss";
-export type ResourceSearchIndexStatus = "ready" | "index-disabled" | "index-pending" | "index-error";
-
-export type SearchResourcesRequest = {
-  /** 兼容旧契约字段；session 已绑定 workspace db，服务不再用它过滤。 */
-  workspaceId?: string;
-  query: string;
-  context?: ResourceSearchContext;
-  resourceType?: string;
-  filters?: ResourceSearchFilters;
-  limit?: number;
-  answerThreshold?: number;
-  candidateThreshold?: number;
-};
-
-export type ResourceSearchResult = {
-  resource: ResourceDTO;
-  score: number;
-  vectorScore: number;
-  keywordScore: number;
-  qualityScore: number;
-  recencyScore: number;
-};
-
-export type SearchResourcesResponse = {
-  status: ResourceSearchStatus;
-  indexStatus: ResourceSearchIndexStatus;
-  queryText: string;
-  results: ResourceSearchResult[];
-};
-
-export type GetResourceDetailRequest = {
-  resourceId: string;
-};
-
-export type ResourceDetailResponse = {
-  resource: ResourceDTO & { researchSessionId?: string };
-};
-
-export type CreateResearchSessionRequest = {
-  /** 兼容旧契约字段；session 已绑定 workspace db。 */
-  workspaceId?: string;
-  query: string;
-  context?: Record<string, unknown>;
-  resourceType: string;
-  originatingRunId?: string;
 };
 
 export type ResearchSessionRow = {
@@ -136,28 +66,14 @@ export type ResearchSessionRow = {
   query: string;
   context: Record<string, unknown>;
   resource_type: string;
-  status: "open" | "completed" | "cancelled";
+  status: ResearchSessionStatus;
   created_resources: unknown[];
   originating_run_id?: string;
+  created_by?: unknown;
   created_at: Date | DateTime | string;
   updated_at: Date | DateTime | string;
-};
-
-export type ResearchSessionDTO = {
-  id: string;
-  workspaceId?: string;
-  query: string;
-  context: Record<string, unknown>;
-  resourceType: string;
-  status: "open" | "completed" | "cancelled";
-  resourceIds: string[];
-  originatingRunId?: string;
-  createdAt: string;
-  updatedAt: string;
-};
-
-export type ResearchSessionResponse = {
-  session: ResearchSessionDTO;
+  completed_at?: Date | DateTime | string;
+  cancelled_at?: Date | DateTime | string;
 };
 
 export type ResourceSearchServiceDeps = {
@@ -366,9 +282,28 @@ function resourceRowToDTO(row: ResourceItemRow): ResourceDTO {
     tags: row.tags ?? [],
     structuredPayload: row.structured_payload ?? {},
     quality: row.quality,
+    confidence: row.confidence,
+    sourceTrust: row.source_trust,
     createdBy: row.created_by ? String(row.created_by) : undefined,
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),
+  };
+}
+
+function researchSessionRowToDTO(row: ResearchSessionRow): ResearchSessionDTO {
+  return {
+    id: String(row.id),
+    query: row.query,
+    context: row.context ?? {},
+    resourceType: row.resource_type,
+    status: row.status,
+    resourceIds: (row.created_resources ?? []).map(String),
+    originatingRunId: row.originating_run_id,
+    createdBy: row.created_by ? String(row.created_by) : undefined,
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+    completedAt: row.completed_at ? toIso(row.completed_at) : undefined,
+    cancelledAt: row.cancelled_at ? toIso(row.cancelled_at) : undefined,
   };
 }
 
@@ -523,19 +458,7 @@ export function createResourceSearchService(deps: ResourceSearchServiceDeps) {
       const row = results[0];
       if (!row) throw new Error("检索会话创建后读取失败");
 
-      return {
-        session: {
-          id: String(row.id),
-          query: row.query,
-          context: row.context ?? {},
-          resourceType: row.resource_type,
-          status: row.status,
-          resourceIds: (row.created_resources ?? []).map(String),
-          originatingRunId: row.originating_run_id,
-          createdAt: toIso(row.created_at),
-          updatedAt: toIso(row.updated_at),
-        },
-      };
+      return { session: researchSessionRowToDTO(row) };
     },
   };
 }

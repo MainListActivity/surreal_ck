@@ -1,4 +1,4 @@
-import type { WorkbookTemplate, WorkbookTemplateQuickTask } from "@surreal-ck/shared/rpc.types";
+import type { WorkbookTemplate, WorkbookTemplateQuickTask } from "@surreal-ck/shared/dto";
 import type { WorkspaceRole } from "./permissions";
 import type { AiDrawerContextSnapshot, AiDrawerSession } from "./ai-drawer";
 import { quickTasksForSheet } from "./workbook-templates";

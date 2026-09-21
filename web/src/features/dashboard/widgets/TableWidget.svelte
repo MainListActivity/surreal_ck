@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { DashboardNormalizedResult } from "@surreal-ck/shared/rpc.types";
+  import type { DashboardNormalizedResult } from "@surreal-ck/shared/dto";
   import { toTableWidgetModel } from "./model";
 
   let { result }: { title: string; result?: DashboardNormalizedResult; displaySpec?: Record<string, unknown> } = $props();

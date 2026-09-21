@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { GridColumnDef } from "@surreal-ck/shared/rpc.types";
+import type { GridColumnDef } from "@surreal-ck/shared/dto";
 import { deriveColumns } from "./derived-columns";
 
 const col = (over: Partial<GridColumnDef> & Pick<GridColumnDef, "key" | "label" | "fieldType">): GridColumnDef =>

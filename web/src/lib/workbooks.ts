@@ -6,7 +6,7 @@ import type {
   RecordIdString,
   WorkbookTemplateDashboardWidget,
   WorkbookTemplateDefaultDashboard,
-} from "@surreal-ck/shared/rpc.types";
+} from "@surreal-ck/shared/dto";
 import type { SurrealConn } from "./surreal";
 import { describeWriteError } from "./workbook-data";
 import { toRecordId } from "./record-id";

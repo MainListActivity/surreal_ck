@@ -1,4 +1,4 @@
-import type { DashboardViewType } from "@surreal-ck/shared/rpc.types";
+import type { DashboardViewType } from "@surreal-ck/shared/dto";
 
 export type DashboardWidgetDefinition = {
   viewType: DashboardViewType;

@@ -9,7 +9,7 @@ import type {
   WorkbookTemplateQuickTaskRisk,
   WorkbookTemplateSampleRecord,
   WorkbookTemplateSheet,
-} from "@surreal-ck/shared/rpc.types";
+} from "@surreal-ck/shared/dto";
 import type { SurrealConn } from "./surreal";
 import type { TemplateSheetForCreate } from "./workbooks";
 

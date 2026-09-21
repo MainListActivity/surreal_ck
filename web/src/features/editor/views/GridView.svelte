@@ -10,7 +10,7 @@
   import { editorUi } from "../lib/editor-ui.svelte";
   import { canWriteEntityData as canWriteEntityDataFn, canWriteSharedStructure as canWriteSharedStructureFn } from "../../../lib/permissions.svelte";
   import { getFieldTypeIconPaths, getFieldTypeMeta } from "../lib/field-type-meta";
-  import type { GridColumnDef, RecordIdString } from "@surreal-ck/shared/rpc.types";
+  import type { GridColumnDef, RecordIdString } from "@surreal-ck/shared/dto";
   import { formatDateValue } from "@surreal-ck/shared/date-format";
 
   // ── 范围裁定 ──────────────────────────────────────────────────

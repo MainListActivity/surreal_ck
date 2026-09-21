@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { DashboardNormalizedResult } from "@surreal-ck/shared/rpc.types";
+import type { DashboardNormalizedResult } from "@surreal-ck/shared/dto";
 import {
   toCategoryChartModel,
   toKpiWidgetModel,

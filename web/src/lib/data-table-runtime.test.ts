@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { GridColumnDef, ViewParams } from "@surreal-ck/shared/rpc.types";
+import type { GridColumnDef, ViewParams } from "@surreal-ck/shared/dto";
 import type { LiveMessage, SurrealConn, SurrealTransactionWriter } from "./surreal";
 import { openDataTableRuntime } from "./data-table-runtime";
 import type { TemplateImportMapping } from "./template-sheet-import";

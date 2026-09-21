@@ -12,7 +12,7 @@ import type {
   GridRow,
   RecordIdString,
   ViewParams,
-} from "@surreal-ck/shared/rpc.types";
+} from "@surreal-ck/shared/dto";
 import { mapNullsToSurrealNone } from "@surreal-ck/shared/surreal-values";
 import {
   extractNativeQuotaError,

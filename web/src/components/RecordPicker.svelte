@@ -6,7 +6,7 @@
   import { getSurreal } from "../lib/surreal";
   import { referenceCache } from "../lib/reference-cache.svelte";
   import { searchReferenceCandidates } from "../lib/reference-cache";
-  import type { RecordIdString, ReferenceTargetPreview } from "@surreal-ck/shared/rpc.types";
+  import type { RecordIdString, ReferenceTargetPreview } from "@surreal-ck/shared/dto";
 
   /**
    * 引用记录选择器：触发按钮 + 浮层搜索列表。

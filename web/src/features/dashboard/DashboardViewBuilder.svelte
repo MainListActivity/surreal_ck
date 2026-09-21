@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { DashboardPreviewResponse, GridColumnDef } from "@surreal-ck/shared/rpc.types";
+  import type { DashboardPreviewResponse, GridColumnDef } from "@surreal-ck/shared/dto";
   import EmptyState from "../../components/EmptyState.svelte";
   import { X, Plus, AlertCircle, Coins } from "@lucide/svelte";
   import type { DashboardWidget } from "../../lib/dashboard-data";

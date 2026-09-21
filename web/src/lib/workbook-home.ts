@@ -1,4 +1,4 @@
-import type { WorkbookTemplate } from "@surreal-ck/shared/rpc.types";
+import type { WorkbookTemplate } from "@surreal-ck/shared/dto";
 import type { SurrealConn } from "./surreal";
 import { filterWorkbooksByQuery, type WorkbookRow } from "./workbooks";
 import type { ConnectionState } from "./workspace-store";

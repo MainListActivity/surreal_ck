@@ -1,4 +1,4 @@
-import type { GridColumnDef } from "@surreal-ck/shared/rpc.types";
+import type { GridColumnDef } from "@surreal-ck/shared/dto";
 import { validateGridFieldValue } from "@surreal-ck/shared/field-schema";
 import type { ParsedCsvImport } from "./csv-import";
 

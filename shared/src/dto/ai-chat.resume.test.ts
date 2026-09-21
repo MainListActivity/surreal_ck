@@ -3,7 +3,7 @@ import {
   ResolvedRecordSchema,
   ResumeAiWorkflowRequestSchema,
   WorkflowSuspendedEventSchema,
-} from "./rpc.types";
+} from "./ai-chat";
 
 describe("ResolvedRecordSchema", () => {
   test("接受合法的 id+label", () => {

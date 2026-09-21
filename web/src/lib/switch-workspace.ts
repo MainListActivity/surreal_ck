@@ -1,23 +1,11 @@
+import type {
+  ListWorkspacesResponse,
+  SwitchWorkspaceResponse,
+  WorkspaceListItem,
+} from "@surreal-ck/shared/dto";
 import type { EnterWorkspaceInput } from "./workspace-store";
 
-/**
- * Workspace 列表项；权威来自后端 Workspace Scope Module
- * （`GET /api/session/workspaces`），不来自 IdP token。
- */
-export type WorkspaceListItem = {
-  slug: string;
-  name: string;
-  dbName: string;
-  role: "admin" | "participant";
-  lastSelectedAt: string | null;
-};
-
-/** 后端 `GET /api/session/workspaces` 的返回：列表 + 是否可建库。 */
-export type ListWorkspacesResponse = {
-  workspaces: WorkspaceListItem[];
-  /** `_system.system_admin` 表非空时为 true；是否可建库由后端判定。 */
-  canCreate: boolean;
-};
+export type { ListWorkspacesResponse, WorkspaceListItem };
 
 export type LoadWorkspacesResult = {
   workspaces: WorkspaceListItem[];
@@ -38,12 +26,7 @@ export type BootstrapResult =
   | { ok: false; reason: "none"; canCreate: boolean }
   | { ok: false; reason: "forbidden" | "refresh-failed" | "error"; message?: string };
 
-/** 后端 `POST /api/session/switch-workspace` 的正常返回。 */
-export type SwitchResponse = {
-  ok: boolean;
-  accessToken: string;
-  expiresIn: number | null;
-};
+export type SwitchResponse = SwitchWorkspaceResponse;
 
 /**
  * switch-workspace 的全部外部依赖；注入以便单测，默认绑定到模块级单例。

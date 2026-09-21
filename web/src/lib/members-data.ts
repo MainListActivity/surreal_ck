@@ -1,3 +1,4 @@
+import type { AddWorkspaceMemberRequest } from "@surreal-ck/shared/dto";
 import { api as defaultApi } from "./api";
 import type { SurrealConn } from "./surreal";
 
@@ -9,11 +10,7 @@ export type WorkspaceMember = {
   pending: boolean;
 };
 
-export type AddMemberInput = {
-  email: string;
-  displayName?: string;
-  isAdmin: boolean;
-};
+export type AddMemberInput = AddWorkspaceMemberRequest;
 
 export type MemberWriteResult = { ok: true } | { ok: false; message: string };
 

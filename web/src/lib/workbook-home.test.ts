@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { WorkbookTemplate } from "@surreal-ck/shared/rpc.types";
+import type { WorkbookTemplate } from "@surreal-ck/shared/dto";
 import type { WorkbookRow } from "./workbooks";
 import {
   WORKBOOK_VIEW_MODE_STORAGE_KEY,

@@ -19,7 +19,7 @@
     DEFAULT_DATE_FORMAT,
     formatDateValue,
   } from "@surreal-ck/shared/date-format";
-  import type { GridColumnDef, ReferenceTargetOption } from "@surreal-ck/shared/rpc.types";
+  import type { GridColumnDef, ReferenceTargetOption } from "@surreal-ck/shared/dto";
 
   const fieldTypeOptions = GRID_FIELD_TYPE_OPTIONS.map((opt) => ({
     value: opt.value,
@@ -187,6 +187,7 @@
 <Dialog.Root bind:open onOpenChange={handleOpenChange}>
   <Dialog.Content class="field-modal">
     {#if fieldDraft}
+      {@const FieldTypeIcon = getFieldTypeMeta(fieldDraft.fieldType).icon}
       <Dialog.Header>
         <Dialog.Title>字段设置</Dialog.Title>
         <Dialog.Description>只编辑当前字段，后续可在同一入口扩展关联、权限与更多字段能力。</Dialog.Description>
@@ -199,7 +200,7 @@
             <strong>{fieldDraft.label || "未命名字段"}</strong>
             <div class="field-badges">
               <span class="type-badge">
-                <svelte:component this={getFieldTypeMeta(fieldDraft.fieldType).icon} size={12} />
+                <FieldTypeIcon size={12} />
                 {getFieldTypeLabel(fieldDraft.fieldType)}
               </span>
               {#if fieldDraft.required}

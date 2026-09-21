@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { DashboardNormalizedResult } from "@surreal-ck/shared/rpc.types";
+  import type { DashboardNormalizedResult } from "@surreal-ck/shared/dto";
   import { toKpiWidgetModel } from "./model";
 
   let {

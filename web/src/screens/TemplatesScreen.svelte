@@ -16,7 +16,7 @@
     templateSheetsForCreate,
   } from "../lib/workbook-templates.svelte";
   import { canWriteSharedStructure as canWriteSharedStructureFn } from "../lib/permissions.svelte";
-  import type { WorkbookTemplate } from "@surreal-ck/shared/rpc.types";
+  import type { WorkbookTemplate } from "@surreal-ck/shared/dto";
 
   // 模板选择页：列出 workspace 内 workbook_template 数据行，点选即按模板建工作簿（带类型）。
   // 类型语义全在模板数据里——本页不硬编码任何行业类型，只渲染数据 + 触发 createFromTemplate。
