@@ -2,8 +2,6 @@ import type { RecordIdString, ReferenceTargetPreview } from "@surreal-ck/shared/
 import { getSurreal } from "./surreal";
 import { isLikelyRecordId, resolveReferences } from "./reference-cache";
 
-export { collectReferenceIdsFromValues } from "./reference-cache";
-
 /**
  * 引用展示值缓存（runes）。批量 + 节流地调用纯 {@link resolveReferences}（直连 SurrealDB），
  * 把结果镜像进 `$state.entries` 供 ReferenceCell / ReferenceCard / RecordPicker 响应式读取。

@@ -9,7 +9,6 @@
 import { DateTime, StringRecordId } from "surrealdb";
 import type { Surreal } from "surrealdb";
 import {
-  buildResourceEmbeddingText as buildDraftEmbeddingText,
   createEmbeddingProfileKey,
   type EmbeddingProfile,
   type EmbeddingProvider,
@@ -171,7 +170,7 @@ export type ResourceSearchServiceDeps = {
 
 // ─── 检索文本与排序（纯逻辑，自 legacy resource-search.ts 移植） ─────────────
 
-export function buildResourceSearchText(req: {
+function buildResourceSearchText(req: {
   query: string;
   context?: ResourceSearchContext;
 }): string {
@@ -195,7 +194,7 @@ export type RankedResourceRow = {
   recencyScore: number;
 };
 
-export function rankResourceSearchRows(req: {
+function rankResourceSearchRows(req: {
   rows: ResourceItemRow[];
   queryText: string;
   vectorScores: Map<string, number>;
@@ -328,7 +327,7 @@ function clampPositiveInteger(value: number | undefined, fallback: number): numb
   return value as number;
 }
 
-export function cosineSimilarity(left: number[], right: number[]): number {
+function cosineSimilarity(left: number[], right: number[]): number {
   const length = Math.min(left.length, right.length);
   if (length === 0) return 0;
   let dot = 0;
@@ -355,7 +354,7 @@ function toIso(value: Date | DateTime | string): string {
   return toDate(value).toISOString();
 }
 
-export function resourceRowToDTO(row: ResourceItemRow): ResourceDTO {
+function resourceRowToDTO(row: ResourceItemRow): ResourceDTO {
   return {
     id: String(row.id),
     resourceType: row.resource_type,
@@ -540,7 +539,3 @@ export function createResourceSearchService(deps: ResourceSearchServiceDeps) {
     },
   };
 }
-
-export type ResourceSearchService = ReturnType<typeof createResourceSearchService>;
-// buildDraftEmbeddingText 由保存路径使用；检索查询向量直接用 queryText（与 legacy 行为一致）。
-export { buildDraftEmbeddingText };

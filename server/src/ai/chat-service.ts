@@ -13,12 +13,9 @@
 
 import type { Surreal } from "surrealdb";
 import type {
-  AiChatMessage,
   AiContextSnapshot,
   AiMessageChunkEvent,
   AiProgressEvent,
-  AiToolCallRecord,
-  ChatStreamEvent,
   ResumeDecision,
   WorkflowSuspendedEvent,
 } from "@surreal-ck/shared";
@@ -161,6 +158,3 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
     },
   };
 }
-
-// 防止未用 type 警告（保留 re-export 便于下一切片消费）。
-export type { AiChatMessage, AiToolCallRecord, ChatStreamEvent };

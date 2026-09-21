@@ -144,7 +144,7 @@ function errorCode(error: unknown): string | undefined {
   return typeof error.code === "string" ? error.code : undefined;
 }
 
-export function aiErrorMessage(error: unknown): string {
+function aiErrorMessage(error: unknown): string {
   const code = errorCode(error)?.toLowerCase() ?? "";
   const rawMessage = error instanceof Error
     ? error.message
@@ -173,7 +173,7 @@ export function aiErrorMessage(error: unknown): string {
   return "AI 服务暂时不可用，请稍后重试。";
 }
 
-export function progressEventToHint(event: AiProgressEvent): string {
+function progressEventToHint(event: AiProgressEvent): string {
   switch (event.kind) {
     case "routing":
       return ROUTING_HINT;
@@ -615,8 +615,4 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
       emitChange();
     },
   };
-}
-
-export function toolCallTraceLabel(toolCall: AiToolCallRecord): string {
-  return toolCall.toolName;
 }

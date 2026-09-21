@@ -1,4 +1,4 @@
-export const QUOTA_ALERT_THRESHOLDS = [80, 90, 100] as const;
+const QUOTA_ALERT_THRESHOLDS = [80, 90, 100] as const;
 export type QuotaAlertThreshold = (typeof QUOTA_ALERT_THRESHOLDS)[number];
 export type QuotaAlertKind = "threshold" | "over_limit";
 

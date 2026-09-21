@@ -299,7 +299,3 @@ export function connectSurreal(input: SurrealConnectInput): Promise<SurrealConn>
 export function getSurreal(): SurrealConn {
   return defaultClient.getSurreal();
 }
-
-export function closeSurreal(): Promise<void> {
-  return defaultClient.closeSurreal();
-}

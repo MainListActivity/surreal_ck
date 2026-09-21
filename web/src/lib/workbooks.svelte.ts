@@ -2,7 +2,6 @@ import type { RecordIdString } from "@surreal-ck/shared/rpc.types";
 import { getSurreal } from "./surreal";
 import {
   createWorkbooksStore,
-  filterWorkbooksByQuery,
   type CreateFromTemplateOptions,
   type CsvWorkbookImportInput,
   type XlsxWorkbookImportInput,
@@ -10,9 +9,6 @@ import {
   type WorkbookRow,
   type WorkbooksSnapshot,
 } from "./workbooks";
-
-export { filterWorkbooksByQuery };
-export type { WorkbookRow } from "./workbooks";
 
 /**
  * Reactive mirror of the pure {@link createWorkbooksStore}. The logic layer

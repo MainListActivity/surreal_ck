@@ -63,9 +63,6 @@ export type EditorUiDeps = {
   /** 镜像进 runes，使组件响应式更新。纯逻辑层不依赖它。 */
   onChange?: (snapshot: EditorUiSnapshot) => void;
 };
-
-export type EditorUi = ReturnType<typeof createEditorUi>;
-
 const DEFAULT_CLIPBOARD_STATUS = "支持从 Excel / WPS / Google Sheets 直接复制 TSV 粘贴";
 
 /**

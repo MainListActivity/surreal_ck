@@ -196,7 +196,7 @@ This is a **Web app**：Svelte 5 前端 + Hono on Bun 后端 + 自部署 Surreal
 | `shared/`                    | 前后端共享类型 / DTO（含 `router-workflow.types.ts`、`ai-context.ts`） |
 | `shared/sql/system/`         | `_system` schema 增量（按版本号排序的 .surql） |
 | `shared/sql/workspace-template/` | workspace database 模板增量（含三条 access + user + office_role + employee_credential） |
-| `schema/`                    | 历史 SurrealQL 全量定义；新增量请走 `shared/sql/**`，本目录视为参考 |
+| `docs/archive/`              | 已归档的 pre-pivot 产物：历史全量 `schema/`、旧 plans、embedded 时代 solution；仅供参考，新增量请走 `shared/sql/**` |
 | `docs/adr/`                  | 架构决策记录（Accepted / Superseded 状态见每篇 header） |
 | `docs/agents/`               | 仓库内 skill 约定（issue-tracker、triage-labels、domain） |
 | `.scratch/<feature>/`        | 每个 feature 一个目录：PRD.md + issues/NN-*.md |

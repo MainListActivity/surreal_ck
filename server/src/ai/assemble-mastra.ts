@@ -15,7 +15,6 @@ import { createClaimAnalysisAgent } from "../../ai/mastra/agents/claim-analysis-
 import { createDashboardAgent } from "../../ai/mastra/agents/dashboard-agent";
 import {
   answerSelectedResourceIds,
-  createResourceAgent,
   makeResourceRetrievalExecutor,
   type ResourceRetrievalExecutorDeps,
 } from "../../ai/mastra/agents/resource-agent";
@@ -68,7 +67,7 @@ export type AssembleExecutorDeps = {
  * RR-014 生产默认 resource deps：每次调用用 executor 透传进来的调用者 session
  * 现场构造检索服务——session 属于单个 run，deps 本身无状态、可在装配期共享。
  */
-export function createCallerSessionResourceDeps(
+function createCallerSessionResourceDeps(
   embeddingProvider?: EmbeddingProvider,
   searchLegalContent?: (input: Readonly<{ query: string; limit: number }>) => Promise<SearchContentResponse>,
 ): ResourceRetrievalExecutorDeps {
@@ -296,6 +295,3 @@ export function createMastraRunner(options: CreateMastraRunnerOptions = {}): { r
     },
   };
 }
-
-// 防止「未使用 createResourceAgent」误判：保留显式 re-export，未来若需独立暴露资源 agent 也方便。
-export { createResourceAgent };

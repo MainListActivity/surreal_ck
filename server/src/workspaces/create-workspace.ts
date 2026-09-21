@@ -9,7 +9,6 @@ import {
 import {
   LEGACY_QUOTA_CLEANUP_MIGRATION_VERSION,
   selectContinuousEligibleMigrations,
-  type WorkspaceQuotaMigrationState,
 } from "@surreal-ck/shared/workspace-migration-manifest";
 import { NATIVE_QUOTA_EXPECTED_CONTRACT } from "@surreal-ck/shared/native-quota";
 import { DateTime, StringRecordId } from "surrealdb";
@@ -33,8 +32,7 @@ import {
 } from "./provisioning-saga";
 import { evaluateWorkspaceScopeGate } from "./scope-gate";
 import type { EntitlementBaseCandidate, EntitlementPlanRevision } from "../quota/entitlement-resolver";
-import type { ProductQuotaRule, ResourceEntitlementRecord } from "@surreal-ck/shared/native-quota";
-import type { CompiledQuotaPolicy } from "../quota/policy-compiler";
+import type { ProductQuotaRule } from "@surreal-ck/shared/native-quota";
 
 export type CreateWorkspaceClient = {
   query(sql: string, params?: Record<string, unknown>): Promise<unknown>;
@@ -1182,6 +1180,4 @@ async function dropWorkspaceDatabase(
 }
 
 // re-export for callers / tests
-export type { ExplicitResourceSource, WorkspaceQuotaMigrationState };
-// silence unused type imports in some TS configs
-export type { ResourceEntitlementRecord, CompiledQuotaPolicy };
+export type { ExplicitResourceSource };

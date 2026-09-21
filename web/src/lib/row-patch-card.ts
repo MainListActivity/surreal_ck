@@ -43,9 +43,6 @@ export type RowPatchCardDeps = {
   resume: (decision: RowPatchResumeDecision) => Promise<void>;
   onChange?: (state: RowPatchCardState) => void;
 };
-
-export type RowPatchCard = ReturnType<typeof createRowPatchCard>;
-
 export function createRowPatchCard(deps: RowPatchCardDeps) {
   const state: RowPatchCardState = {
     status: "pending",

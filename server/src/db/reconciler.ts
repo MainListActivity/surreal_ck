@@ -61,7 +61,7 @@ function matchIndexForUser(user: UserRow, indexRows: IndexRow[]): IndexRow | und
  * 权威方向：role 以 ws db user.is_admin 为准；ws-only user 自动补 index；
  * index-only（ws 无对应 user）仅告警不删（MVP 避免误删历史归因）。
  */
-export function classifyWorkspaceDrift(indexRows: IndexRow[], userRows: UserRow[]): DriftAction[] {
+function classifyWorkspaceDrift(indexRows: IndexRow[], userRows: UserRow[]): DriftAction[] {
   const actions: DriftAction[] = [];
   const matchedIndexIds = new Set<unknown>();
 

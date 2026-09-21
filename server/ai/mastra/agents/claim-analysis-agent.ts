@@ -44,7 +44,7 @@ export type ClaimAnalysisAgentDeps = {
 };
 
 /** 通过调用者 session 读取当前工作簿引用的模板提示；空白工作簿返回 null。 */
-export async function loadTemplateRowAnalysis(
+async function loadTemplateRowAnalysis(
   session: Surreal,
   workbookId: string,
 ): Promise<TemplateRowAnalysis | null> {
@@ -76,7 +76,7 @@ export async function loadTemplateRowAnalysis(
   };
 }
 
-export function buildClaimAnalysisInstructions(analysis: TemplateRowAnalysis | null): string {
+function buildClaimAnalysisInstructions(analysis: TemplateRowAnalysis | null): string {
   if (!analysis) return CLAIM_ANALYSIS_INSTRUCTIONS;
   const sections = [
     CLAIM_ANALYSIS_INSTRUCTIONS,

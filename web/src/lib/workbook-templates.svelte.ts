@@ -6,7 +6,6 @@ import {
 } from "./workbook-templates";
 
 export { templateColumnDefs, templateSheetsForCreate } from "./workbook-templates";
-export type { WorkbookTemplate } from "@surreal-ck/shared/rpc.types";
 
 /**
  * Reactive mirror of the pure {@link createWorkbookTemplatesStore}. 纯逻辑层持有真实状态并

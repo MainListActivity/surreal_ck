@@ -22,7 +22,7 @@ export type SurrealQueryLoggingOptions = {
   enabled?: boolean;
 };
 
-export function shouldLogServerSurrealQueries(): boolean {
+function shouldLogServerSurrealQueries(): boolean {
   return shouldLogSurrealQueries(env.SURREAL_LOG_QUERIES, env.NODE_ENV === "development");
 }
 

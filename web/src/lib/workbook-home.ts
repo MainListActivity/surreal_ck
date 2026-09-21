@@ -163,7 +163,7 @@ export function connectionDotPresentation(state: ConnectionState): ConnectionDot
   return { label: "已断开", tone: "disconnected" };
 }
 
-export const PINNED_WORKBOOKS_STORAGE_KEY_PREFIX = "surreal_ck.pinned_workbooks.";
+const PINNED_WORKBOOKS_STORAGE_KEY_PREFIX = "surreal_ck.pinned_workbooks.";
 
 export function getPinnedStorageKey(dbName: string): string {
   return `${PINNED_WORKBOOKS_STORAGE_KEY_PREFIX}${dbName}`;

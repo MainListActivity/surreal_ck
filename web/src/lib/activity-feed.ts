@@ -86,7 +86,7 @@ export function describeActivity(verb: string, targetName: string | undefined, c
 }
 
 /** 聚合窗口：同 actor + 同表 + record.write/delete 在此窗口内合并成一条。 */
-export const RECORD_AGGREGATION_WINDOW_MS = 5 * 60 * 1000;
+const RECORD_AGGREGATION_WINDOW_MS = 5 * 60 * 1000;
 
 /** 从 target（record id "table:id"）取表名，供 record.* 聚合分组。 */
 function tableOf(target: string | undefined): string {

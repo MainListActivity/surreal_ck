@@ -143,7 +143,7 @@ function assertLegacyEventTable(table: string): void {
   }
 }
 
-export function buildNativeQuotaPolicySurql(
+function buildNativeQuotaPolicySurql(
   input: NativeQuotaPolicyApplyInput,
 ): string {
   assertDatabaseIdentifier(input.database);

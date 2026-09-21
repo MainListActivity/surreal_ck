@@ -142,7 +142,7 @@ export async function getRootDatabaseSession(database: string, namespace = env.S
   return rootSessionPool.get(database, namespace);
 }
 
-export function isRootConnected(): boolean {
+function isRootConnected(): boolean {
   return connected && rootConnection?.isConnected === true;
 }
 

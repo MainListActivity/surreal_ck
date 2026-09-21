@@ -18,7 +18,7 @@ import { classifyTask, type RouterCategory, type RouterLlmCaller, type RouterPla
 
 export const ROUTER_WORKFLOW_ID = "routerWorkflow";
 export const ROUTER_RUNTIME_KEY = "routerRuntime";
-export const AMBIGUOUS_CANDIDATES_LIMIT = 20;
+const AMBIGUOUS_CANDIDATES_LIMIT = 20;
 
 // ─── 共享 context 协议 ────────────────────────────────────────────────────────
 

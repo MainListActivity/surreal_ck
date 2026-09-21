@@ -33,7 +33,7 @@ export type QuotaOpsActionDefinition = Readonly<{
   impact: "normal" | "high";
 }>;
 
-export const QUOTA_OPS_ACTIONS: readonly QuotaOpsActionDefinition[] = [
+const QUOTA_OPS_ACTIONS: readonly QuotaOpsActionDefinition[] = [
   {
     kind: "subscription_upsert",
     label: "设置手工/合同计划",
@@ -127,7 +127,7 @@ export function availableQuotaOpsActions(
   return QUOTA_OPS_ACTIONS.filter((action) => granted.has(action.capability));
 }
 
-export function semanticQuotaRuleKey(resource: QuotaApiResource): string {
+function semanticQuotaRuleKey(resource: QuotaApiResource): string {
   if (resource.selector.kind !== "regex") return resource.key;
   const matchedTable = resource.selector.matched_tables?.find((table) =>
     resource.key.endsWith(`:${table}`)
@@ -229,7 +229,7 @@ export function syncPresentation(
   return values[value];
 }
 
-export function compliancePresentation(
+function compliancePresentation(
   value: QuotaCompliance,
 ): QuotaStatusPresentation {
   return value === "compliant"
@@ -239,7 +239,7 @@ export function compliancePresentation(
       : { label: "未知", description: "账本尚未提供可信结论。", tone: "unknown" };
 }
 
-export function serviceModePresentation(
+function serviceModePresentation(
   value: QuotaServiceMode,
 ): QuotaStatusPresentation {
   return value === "standard"

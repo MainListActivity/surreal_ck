@@ -317,6 +317,6 @@ async function connectRemote(accessToken: string): Promise<void> {
 
 ## Related
 
-- `docs/plans/2026-04-25-002-feat-local-first-dual-db-architecture-plan.md` — 架构规划文档，包含需求溯源和技术决策
+- `docs/archive/plans/2026-04-25-002-feat-local-first-dual-db-architecture-plan.md` — 架构规划文档，包含需求溯源和技术决策
 - `src/main/db/index.ts` — 本架构的完整实现
 - `scripts/verify-multi-session.ts` — 验证 newSession() KV 共享 + OPTION IMPORT USE 行为的实验脚本

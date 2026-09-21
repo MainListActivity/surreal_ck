@@ -53,9 +53,6 @@ export type WorkbooksDeps = {
   /** 镜像进 runes，使组件响应式更新。纯逻辑层不依赖它。 */
   onChange?: (snapshot: WorkbooksSnapshot) => void;
 };
-
-export type WorkbooksStore = ReturnType<typeof createWorkbooksStore>;
-
 export type CsvWorkbookImportInput = {
   workbookName: string;
   sheetLabel: string;
