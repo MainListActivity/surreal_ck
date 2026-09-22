@@ -10,6 +10,7 @@ import type {
   WorkflowSuspendedEvent,
 } from "@surreal-ck/shared";
 import type { RouterLlmCaller } from "./router-classifier";
+import type { DecisionCaller } from "../../decision/model";
 import {
   ROUTER_RUNTIME_KEY,
   ROUTER_WORKFLOW_ID,
@@ -31,6 +32,10 @@ export type RunRouterChatInput = {
   surrealSession: Surreal;
   executors: SubAgentExecutors;
   llmCaller: RouterLlmCaller;
+  /** 可选决策模型：意图分类的单意图捷径；缺席时纯 LLM 分类。 */
+  decisionModel?: DecisionCaller;
+  /** 决策置信度阈值；默认 router-classifier 内 0.75。 */
+  jevConfidenceThreshold?: number;
   planOverride?: RouterPlan;
   streamId: string;
   pushChunk: RouterChatStreamPusher;
@@ -61,6 +66,8 @@ export async function runRouterChat(input: RunRouterChatInput): Promise<RunRoute
     surrealSession: input.surrealSession,
     executors: input.executors,
     llmCaller: input.llmCaller,
+    decisionModel: input.decisionModel,
+    jevConfidenceThreshold: input.jevConfidenceThreshold,
     planOverride: input.planOverride,
     streamId: input.streamId,
     runId: businessRunId,

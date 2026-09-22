@@ -34,6 +34,7 @@ import {
 } from "../../ai/mastra/workflows/router-workflow";
 import { RequestContext } from "@mastra/core/request-context";
 import type { Surreal } from "surrealdb";
+import type { DecisionCaller } from "../../ai/decision/model";
 import type { ChatRunner, ChatResumer } from "./chat-service";
 import type { SearchContentResponse } from "@surreal-ck/shared/platform-content";
 
@@ -127,6 +128,10 @@ export type CreateMastraRunnerOptions = {
   resource?: ResourceRetrievalExecutorDeps;
   /** 检索查询向量生成器（服务端持 key）；缺席时检索退化为关键词 + 索引状态推断。 */
   embeddingProvider?: EmbeddingProvider;
+  /** 可选决策模型：意图分类的单意图捷径；缺席时纯 LLM 分类（生产由 TYPESAFE_API_KEY 装配）。 */
+  decisionModel?: DecisionCaller;
+  /** 决策置信度阈值；默认 router-classifier 内 0.75。 */
+  jevConfidenceThreshold?: number;
   /** 平台已发布法律库的只读检索入口。 */
   searchLegalContent?: ResourceRetrievalExecutorDeps["searchLegalContent"];
 
@@ -265,6 +270,8 @@ export function createMastraRunner(options: CreateMastraRunnerOptions = {}): { r
         surrealSession: input.surrealSession,
         executors,
         llmCaller: llm,
+        decisionModel: options.decisionModel,
+        jevConfidenceThreshold: options.jevConfidenceThreshold,
         streamId: input.streamId,
         runId: input.runId,
         planOverride: input.planOverride,
