@@ -92,6 +92,11 @@ describe("platform content MCP", () => {
         "activation.summary.read",
         "activation.followup.read",
         "activation.followup.write",
+        "activation.proposal.read",
+        "activation.proposal.submit",
+        "activation.proposal.review",
+        "activation.proposal.execute",
+        "activation.proposal.takeover",
       ],
       bearer_methods_supported: ["header"],
     });

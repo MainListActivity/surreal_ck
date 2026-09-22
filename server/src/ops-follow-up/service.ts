@@ -42,6 +42,8 @@ export interface OpsFollowUpStore {
     leaseExpiresAt: string;
     idempotencyKey: string;
     requestDigest: string;
+    sourceSummaryId?: string;
+    sourceUpdatedAt?: string;
   }>): Promise<FollowUpItem | null>;
   update(input: Readonly<{
     followUpId: string;
@@ -53,6 +55,8 @@ export interface OpsFollowUpStore {
     result: string | null;
     idempotencyKey: string;
     requestDigest: string;
+    sourceSummaryId?: string;
+    sourceUpdatedAt?: string;
   }>): Promise<FollowUpItem | null>;
 }
 
@@ -244,13 +248,13 @@ export class OpsFollowUpService {
     return { items, nextCursor: rows.length > pageSize && tail ? encode({ updatedAt: tail.updatedAt, followUpId: tail.followUpId }) : null };
   }
 
-  async claim(actor: OpsFollowUpActor, input: Readonly<{ followUpId: string; expectedVersion: number; leaseSeconds: number; idempotencyKey: string }>): Promise<FollowUpItem> {
+  async claim(actor: OpsFollowUpActor, input: Readonly<{ followUpId: string; expectedVersion: number; leaseSeconds: number; idempotencyKey: string; sourceSummaryId?: string; sourceUpdatedAt?: string }>): Promise<FollowUpItem> {
     requireWrite(actor);
     if (!input.followUpId.startsWith("activation_follow_up:") || !claimFollowUpSchema.safeParse({ expectedVersion: input.expectedVersion, leaseSeconds: input.leaseSeconds, idempotencyKey: input.idempotencyKey }).success) {
       throw new OpsFollowUpServiceError("invalid_request", "认领请求无效");
     }
     const key = idempotencyKey(input.idempotencyKey);
-    const requestDigest = digest("claimed", { followUpId: input.followUpId, expectedVersion: input.expectedVersion, leaseSeconds: input.leaseSeconds });
+    const requestDigest = digest("claimed", { followUpId: input.followUpId, expectedVersion: input.expectedVersion, leaseSeconds: input.leaseSeconds, sourceSummaryId: input.sourceSummaryId, sourceUpdatedAt: input.sourceUpdatedAt });
     const replay = replayOrConflict(await this.store.findIdempotent(actor.subject, key), requestDigest);
     if (replay) return publicItem(replay, await this.store.getSummary(replay.summaryId), actor, this.now());
     if (!Number.isInteger(input.expectedVersion) || input.expectedVersion < 1 || !Number.isInteger(input.leaseSeconds) || input.leaseSeconds < 30 || input.leaseSeconds > 3600) {
@@ -267,6 +271,8 @@ export class OpsFollowUpService {
         leaseExpiresAt: new Date(now.getTime() + input.leaseSeconds * 1_000).toISOString(),
         idempotencyKey: key,
         requestDigest,
+        sourceSummaryId: input.sourceSummaryId,
+        sourceUpdatedAt: input.sourceUpdatedAt,
       });
     } catch (error) {
       const concurrentReplay = replayOrConflict(await this.store.findIdempotent(actor.subject, key), requestDigest);
@@ -277,13 +283,13 @@ export class OpsFollowUpService {
     return publicItem(changed, await this.store.getSummary(changed.summaryId), actor, this.now());
   }
 
-  async update(actor: OpsFollowUpActor, input: Readonly<{ followUpId: string; expectedVersion: number; status: "waiting" | "resolved" | "dismissed"; dueCheckAt: string | null; result: string | null; idempotencyKey: string }>): Promise<FollowUpItem> {
+  async update(actor: OpsFollowUpActor, input: Readonly<{ followUpId: string; expectedVersion: number; status: "waiting" | "resolved" | "dismissed"; dueCheckAt: string | null; result: string | null; idempotencyKey: string; sourceSummaryId?: string; sourceUpdatedAt?: string }>): Promise<FollowUpItem> {
     requireWrite(actor);
     if (!input.followUpId.startsWith("activation_follow_up:") || !updateFollowUpSchema.safeParse({ expectedVersion: input.expectedVersion, status: input.status, dueCheckAt: input.dueCheckAt, result: input.result, idempotencyKey: input.idempotencyKey }).success) {
       throw new OpsFollowUpServiceError("invalid_request", "更新请求无效");
     }
     const key = idempotencyKey(input.idempotencyKey);
-    const requestDigest = digest("updated", { followUpId: input.followUpId, expectedVersion: input.expectedVersion, status: input.status, dueCheckAt: input.dueCheckAt, result: input.result });
+    const requestDigest = digest("updated", { followUpId: input.followUpId, expectedVersion: input.expectedVersion, status: input.status, dueCheckAt: input.dueCheckAt, result: input.result, sourceSummaryId: input.sourceSummaryId, sourceUpdatedAt: input.sourceUpdatedAt });
     const replay = replayOrConflict(await this.store.findIdempotent(actor.subject, key), requestDigest);
     if (replay) return publicItem(replay, await this.store.getSummary(replay.summaryId), actor, this.now());
     if (!Number.isInteger(input.expectedVersion) || input.expectedVersion < 1 || (input.dueCheckAt !== null && Number.isNaN(Date.parse(input.dueCheckAt)))) {

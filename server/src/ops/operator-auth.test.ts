@@ -112,4 +112,19 @@ describe("platform operator authentication", () => {
     expect(response.status).toBe(401);
     expect(await response.json()).toMatchObject({ error: { code: "oidc-revoked" } });
   });
+
+  test("uses the operator registry as the trusted human or agent classification", async () => {
+    const reader: PlatformOperatorCapabilityReader = {
+      async getCapabilities() { return ["content.read"]; },
+      async getKind() { return "agent"; },
+    };
+    const app = new Hono<AppBindings>();
+    app.onError(handleError);
+    app.get("/kind", requirePlatformOperator("content.read", { reader }), (c) => c.json({ kind: c.var.platformOperator.kind }));
+    const response = await app.fetch(new Request("http://localhost/kind", {
+      headers: { authorization: `Bearer ${await signToken(opsAudience)}` },
+    }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ kind: "agent" });
+  });
 });

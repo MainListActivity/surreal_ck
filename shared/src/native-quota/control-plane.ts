@@ -446,6 +446,13 @@ export const PLATFORM_OPERATOR_CAPABILITIES = [
   "content.restore",
   "content.source.manage",
   "activation.summary.read",
+  "activation.followup.read",
+  "activation.followup.write",
+  "activation.proposal.read",
+  "activation.proposal.submit",
+  "activation.proposal.review",
+  "activation.proposal.execute",
+  "activation.proposal.takeover",
 ] as const;
 export type PlatformOperatorCapability =
   (typeof PLATFORM_OPERATOR_CAPABILITIES)[number];
@@ -453,6 +460,7 @@ export type PlatformOperatorCapability =
 export type PlatformOperatorRecord = {
   id: StringRecordId;
   subject: string;
+  kind?: "human" | "agent";
   display_name?: string;
   status: "active" | "disabled";
   created_at: DateTime;

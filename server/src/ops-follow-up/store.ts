@@ -192,6 +192,10 @@ export class SurrealOpsFollowUpStore implements OpsFollowUpStore {
     const db = await this.db();
     const result = await db.query(
       `BEGIN TRANSACTION;
+       IF $sourceSummary != NONE {
+         LET $source = (SELECT id FROM $sourceSummary WHERE status = "active" AND updated_at = $sourceUpdatedAt LIMIT 1);
+         IF array::len($source) = 0 { THROW "follow-up source changed"; };
+       };
        LET $changed = (UPDATE $followUp SET owner_subject = $actorSubject, lease_expires_at = $leaseExpiresAt,
          status = "claimed", version += 1, updated_at = time::now()
        WHERE version = $expectedVersion AND status NOTINSIDE ["resolved", "dismissed"]
@@ -204,7 +208,7 @@ export class SurrealOpsFollowUpStore implements OpsFollowUpStore {
        };
        RETURN $changed;
        COMMIT TRANSACTION;`,
-      { followUp: new StringRecordId(input.followUpId), actorSubject: input.actorSubject, leaseExpiresAt: new DateTime(input.leaseExpiresAt), expectedVersion: input.expectedVersion, now: new DateTime(input.now), idempotencyKey: input.idempotencyKey, requestDigest: input.requestDigest },
+      { followUp: new StringRecordId(input.followUpId), actorSubject: input.actorSubject, leaseExpiresAt: new DateTime(input.leaseExpiresAt), expectedVersion: input.expectedVersion, now: new DateTime(input.now), idempotencyKey: input.idempotencyKey, requestDigest: input.requestDigest, sourceSummary: input.sourceSummaryId ? new StringRecordId(input.sourceSummaryId) : undefined, sourceUpdatedAt: input.sourceUpdatedAt ? new DateTime(input.sourceUpdatedAt) : undefined },
     );
     const row = projection(result, "workspace_slug");
     const item = row ? mapFollowUp(row) : null;
@@ -216,6 +220,10 @@ export class SurrealOpsFollowUpStore implements OpsFollowUpStore {
     const db = await this.db();
     const result = await db.query(
       `BEGIN TRANSACTION;
+       IF $sourceSummary != NONE {
+         LET $source = (SELECT id FROM $sourceSummary WHERE status = "active" AND updated_at = $sourceUpdatedAt LIMIT 1);
+         IF array::len($source) = 0 { THROW "follow-up source changed"; };
+       };
        LET $changed = (UPDATE $followUp SET status = $status, due_check_at = $dueCheckAt, result = $result, version += 1, updated_at = time::now()
        WHERE version = $expectedVersion AND owner_subject = $actorSubject AND lease_expires_at > $now
          AND status NOTINSIDE ["resolved", "dismissed"] RETURN AFTER);
@@ -233,6 +241,8 @@ export class SurrealOpsFollowUpStore implements OpsFollowUpStore {
         actorSubject: input.actorSubject, now: new DateTime(input.now),
         idempotencyKey: input.idempotencyKey,
         requestDigest: input.requestDigest,
+        sourceSummary: input.sourceSummaryId ? new StringRecordId(input.sourceSummaryId) : undefined,
+        sourceUpdatedAt: input.sourceUpdatedAt ? new DateTime(input.sourceUpdatedAt) : undefined,
       },
     );
     const row = projection(result, "workspace_slug");

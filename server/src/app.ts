@@ -82,6 +82,9 @@ import { createActivationSummaryRoutes } from "./routes/activation-summary";
 import { OpsFollowUpService } from "./ops-follow-up/service";
 import { SurrealOpsFollowUpStore } from "./ops-follow-up/store";
 import { createOpsFollowUpRoutes } from "./routes/ops-follow-up";
+import { OpsProposalService } from "./ops-proposal/service";
+import { SurrealOpsProposalStore } from "./ops-proposal/store";
+import { createOpsProposalRoutes } from "./routes/ops-proposal";
 
 export type AppOptions = {
   workspaceScope?: WorkspaceScopeModule;
@@ -114,6 +117,7 @@ export type AppOptions = {
   activationSummaryService?: ActivationSummaryService;
   /** 运营机会与内部跟进队列；页面和 MCP 复用。 */
   opsFollowUpService?: OpsFollowUpService;
+  opsProposalService?: OpsProposalService;
 };
 
 type AiStreamWebSocket = ReturnType<typeof createAiStreamRoutes>["websocket"];
@@ -227,6 +231,8 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     ?? new ActivationSummaryService(new SurrealActivationSummaryStore());
   const opsFollowUpService = options.opsFollowUpService
     ?? new OpsFollowUpService(new SurrealOpsFollowUpStore());
+  const opsProposalService = options.opsProposalService
+    ?? new OpsProposalService(new SurrealOpsProposalStore(), opsFollowUpService);
   const autoAiChatService = options.aiChatService ?? buildAutoAiChatService(runBus, platformContentService, embeddingProvider);
   const quotaReadService =
     options.quotaReadService ?? createDefaultQuotaReadService();
@@ -286,10 +292,12 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
       requireUser: options.requireUser,
     }))
     .route("/", createOpsFollowUpRoutes({ service: opsFollowUpService }))
+    .route("/", createOpsProposalRoutes({ service: opsProposalService }))
     .route("/", createContentMcpRoutes({
       service: platformContentService,
       activationSummaryService,
       opsFollowUpService,
+      opsProposalService,
     }))
     .route(
       "/",

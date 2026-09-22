@@ -17,6 +17,7 @@ import {
   ActivationSummaryServiceError,
 } from "../../activation-summary/service";
 import { OpsFollowUpService, OpsFollowUpServiceError } from "../../ops-follow-up/service";
+import { OpsProposalService, OpsProposalServiceError, type OpsProposalActor } from "../../ops-proposal/service";
 
 const MCP_SCOPES = [
   "content.read",
@@ -28,6 +29,11 @@ const MCP_SCOPES = [
   "activation.summary.read",
   "activation.followup.read",
   "activation.followup.write",
+  "activation.proposal.read",
+  "activation.proposal.submit",
+  "activation.proposal.review",
+  "activation.proposal.execute",
+  "activation.proposal.takeover",
 ] as const;
 
 const toolInputSchema = z.record(z.string(), z.unknown());
@@ -53,6 +59,8 @@ function toolError(error: unknown) {
       : error instanceof ActivationSummaryServiceError
         ? { error: { code: error.code, message: error.message } }
       : error instanceof OpsFollowUpServiceError
+        ? { error: { code: error.code, message: error.message } }
+      : error instanceof OpsProposalServiceError
         ? { error: { code: error.code, message: error.message } }
       : error instanceof ZodError
         ? {
@@ -163,9 +171,10 @@ function withMcpBearerChallenge(
 
 function buildServer(
   service: PlatformContentService,
-  operator: ContentOperator,
+  operator: ContentOperator & OpsProposalActor,
   activationSummaryService?: ActivationSummaryService,
   opsFollowUpService?: OpsFollowUpService,
+  opsProposalService?: OpsProposalService,
 ): McpServer {
   const server = new McpServer(
     { name: "surreal-ck-platform-content", version: "1.0.0" },
@@ -299,6 +308,53 @@ function buildServer(
     );
   }
 
+  if (opsProposalService) {
+    server.registerTool("list_ops_proposals", {
+      title: "列出运营建议", description: "稳定分页读取待审阅建议及真实执行结果。", inputSchema: toolInputSchema,
+    }, async (args) => {
+      try { return toolSuccess(await opsProposalService.list(operator, { limit: typeof args.limit === "number" ? args.limit : undefined, cursor: typeof args.cursor === "string" ? args.cursor : undefined })); }
+      catch (error) { return toolError(error); }
+    });
+    server.registerTool("get_ops_proposal", {
+      title: "读取运营建议", description: "读取建议动作、依据、审阅状态和实际工具结果。", inputSchema: toolInputSchema,
+    }, async (args) => {
+      try {
+        if (typeof args.proposalId !== "string") throw new OpsProposalServiceError("invalid_request", "proposalId 必填");
+        return toolSuccess(await opsProposalService.get(operator, args.proposalId));
+      } catch (error) { return toolError(error); }
+    });
+    server.registerTool("submit_ops_proposal", {
+      title: "提交运营建议", description: "只允许提议现有内部跟进动作；提交不执行。agentId 仅从已验证 token 的 act claim 获取。", inputSchema: toolInputSchema,
+    }, async (args) => {
+      try { return toolSuccess(await opsProposalService.submit(operator, args)); }
+      catch (error) { return toolError(error); }
+    });
+    server.registerTool("review_ops_proposal", {
+      title: "人工审阅运营建议", description: "绑定建议版本及动作摘要审批或拒绝；审批本身不执行。", inputSchema: toolInputSchema,
+    }, async (args) => {
+      try {
+        if (typeof args.proposalId !== "string" || typeof args.expectedVersion !== "number" || typeof args.actionDigest !== "string" || (args.decision !== "approve" && args.decision !== "reject") || typeof args.reason !== "string" || typeof args.idempotencyKey !== "string") throw new OpsProposalServiceError("invalid_request", "审阅参数不完整");
+        return toolSuccess(await opsProposalService.review(operator, { proposalId: args.proposalId, expectedVersion: args.expectedVersion, actionDigest: args.actionDigest, decision: args.decision, reason: args.reason, idempotencyKey: args.idempotencyKey }));
+      } catch (error) { return toolError(error); }
+    });
+    server.registerTool("execute_ops_proposal", {
+      title: "执行已审批运营建议", description: "重新验证版本、来源和当前 capability，仅执行受限内部跟进动作。", inputSchema: toolInputSchema,
+    }, async (args) => {
+      try {
+        if (typeof args.proposalId !== "string" || typeof args.expectedVersion !== "number" || typeof args.idempotencyKey !== "string") throw new OpsProposalServiceError("invalid_request", "执行参数不完整");
+        return toolSuccess(await opsProposalService.execute(operator, { proposalId: args.proposalId, expectedVersion: args.expectedVersion, idempotencyKey: args.idempotencyKey }));
+      } catch (error) { return toolError(error); }
+    });
+    server.registerTool("takeover_follow_up", {
+      title: "人工接管内部事项", description: "人工按事项版本覆盖旧租约，旧认领和基于旧版本的建议立即失效。", inputSchema: toolInputSchema,
+    }, async (args) => {
+      try {
+        if (typeof args.followUpId !== "string" || typeof args.expectedVersion !== "number" || typeof args.leaseSeconds !== "number" || typeof args.reason !== "string" || typeof args.idempotencyKey !== "string") throw new OpsProposalServiceError("invalid_request", "接管参数不完整");
+        return toolSuccess(await opsProposalService.takeover(operator, { followUpId: args.followUpId, expectedVersion: args.expectedVersion, leaseSeconds: args.leaseSeconds, reason: args.reason, idempotencyKey: args.idempotencyKey }));
+      } catch (error) { return toolError(error); }
+    });
+  }
+
   server.registerTool(
     "search_content",
     {
@@ -370,6 +426,7 @@ export function createContentMcpRoutes(input: Readonly<{
   service: PlatformContentService;
   activationSummaryService?: ActivationSummaryService;
   opsFollowUpService?: OpsFollowUpService;
+  opsProposalService?: OpsProposalService;
   resourceUri?: string;
   authorizationServer?: string;
   requireOperator?: MiddlewareHandler<AppBindings>;
@@ -434,8 +491,10 @@ export function createContentMcpRoutes(input: Readonly<{
         : operator.capabilities.filter((capability) => tokenScopes.has(capability));
     const server = buildServer(input.service, {
       subject: operator.subject,
+      kind: operator.kind,
       capabilities: effectiveCapabilities,
-    }, input.activationSummaryService, input.opsFollowUpService);
+      agentId: operator.kind === "agent" ? operator.subject : c.var.user?.raw?.act && typeof c.var.user.raw.act === "object" && "sub" in c.var.user.raw.act && typeof c.var.user.raw.act.sub === "string" ? c.var.user.raw.act.sub : null,
+    }, input.activationSummaryService, input.opsFollowUpService, input.opsProposalService);
     const transport = new WebStandardStreamableHTTPServerTransport({
       enableJsonResponse: true,
     });

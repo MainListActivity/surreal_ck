@@ -16,6 +16,7 @@ const contentState = {
 };
 const activationState = { items: [], cursor: null };
 const followUpState = { opportunities: [], opportunityCursor: null, items: [], cursor: null };
+const proposalState = { items: [], cursor: null };
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -45,6 +46,7 @@ function renderShell() {
         <button class="section-tab active" data-view="quota">配额运营</button>
         <button class="section-tab" data-view="activation">团队启用摘要</button>
         <button class="section-tab" data-view="followup">机会与跟进</button>
+        <button class="section-tab" data-view="proposal">建议审阅</button>
         <button class="section-tab" data-view="content">内容维护</button>
       </nav>
       <main id="quota-view" class="layout">
@@ -86,6 +88,14 @@ function renderShell() {
           <div id="followup-status" class="status muted">登录后加载队列。</div>
           <div id="followup-list" class="activation-list"></div>
           <button id="followup-next" class="ghost more-button" hidden>加载更多事项</button>
+        </section>
+      </main>
+      <main id="proposal-view" class="activation-layout" hidden>
+        <section class="panel activation-panel">
+          <div class="panel-heading"><div><h2>运营建议审阅</h2><p class="muted activation-help">提交建议不会执行；审批绑定动作和版本，执行时重新验证来源与能力。</p></div><button id="proposal-refresh" class="ghost">刷新</button></div>
+          <div id="proposal-status" class="status muted">登录后加载建议。</div>
+          <div id="proposal-list" class="activation-list"></div>
+          <button id="proposal-next" class="ghost more-button" hidden>加载更多建议</button>
         </section>
       </main>
       <main id="content-view" class="content-layout" hidden>
@@ -133,15 +143,17 @@ function renderShell() {
   document.querySelector("#refresh").addEventListener("click", () => void search(document.querySelector("#search-input").value));
   document.querySelectorAll(".section-tab").forEach((button) => {
     button.addEventListener("click", () => {
-      activeView = ["content", "activation", "followup"].includes(button.dataset.view) ? button.dataset.view : "quota";
+      activeView = ["content", "activation", "followup", "proposal"].includes(button.dataset.view) ? button.dataset.view : "quota";
       document.querySelectorAll(".section-tab").forEach((tab) => tab.classList.toggle("active", tab === button));
       document.querySelector("#quota-view").hidden = activeView !== "quota";
       document.querySelector("#content-view").hidden = activeView !== "content";
       document.querySelector("#activation-view").hidden = activeView !== "activation";
       document.querySelector("#followup-view").hidden = activeView !== "followup";
+      document.querySelector("#proposal-view").hidden = activeView !== "proposal";
       if (activeView === "content" && user) void loadContent();
       if (activeView === "activation" && user) void loadActivationSummaries();
       if (activeView === "followup" && user) void loadFollowUps();
+      if (activeView === "proposal" && user) void loadProposals();
     });
   });
   document.querySelector("#content-refresh").addEventListener("click", () => void loadContent());
@@ -150,6 +162,8 @@ function renderShell() {
   document.querySelector("#followup-refresh").addEventListener("click", () => void loadFollowUps());
   document.querySelector("#opportunity-next").addEventListener("click", () => void loadOpportunities(true));
   document.querySelector("#followup-next").addEventListener("click", () => void loadQueue(true));
+  document.querySelector("#proposal-refresh").addEventListener("click", () => void loadProposals());
+  document.querySelector("#proposal-next").addEventListener("click", () => void loadProposals(true));
   document.querySelector("#batch-refresh").addEventListener("click", () => void loadBatches());
   document.querySelector("#batch-filter").addEventListener("change", () => void loadBatches());
   document.querySelector("#batch-next").addEventListener("click", () => void loadBatches(true));
@@ -291,11 +305,14 @@ function renderFollowUps() {
     <article class="activation-row followup-card">
       <span><strong>${escapeHtml(item.workspaceSlug)} · ${escapeHtml(item.reason)}</strong><small>${item.sourceAvailable ? `来源 v${escapeHtml(item.sourceContractVersion)} · ${escapeHtml(item.sourceFreshness)} · ${escapeHtml(item.sourceUpdatedAt)}` : "来源已撤回，仅保留最小处理历史"}</small><small>负责人：${escapeHtml(item.ownerSubject || "未认领")} · 到期检查：${escapeHtml(item.dueCheckAt || "未设置")}</small>${item.result ? `<small>处理结果：${escapeHtml(item.result)}</small>` : ""}</span>
       <span class="badge">${escapeHtml(item.status)} · v${escapeHtml(item.version)}</span>
-      <span>${item.sourceAvailable ? `<button class="ghost followup-summary" data-summary-id="${escapeHtml(item.summaryId)}">查看摘要</button>` : ""}${item.nextStep === "claim" ? `<button class="ghost followup-claim" data-id="${escapeHtml(item.followUpId)}" data-version="${escapeHtml(item.version)}">认领</button>` : item.nextStep === "none" ? "" : `<form class="followup-update" data-id="${escapeHtml(item.followUpId)}" data-version="${escapeHtml(item.version)}"><label>状态<select name="status"><option value="waiting">待检查</option><option value="resolved">已完成</option><option value="dismissed">不再跟进</option></select></label><label>到期检查<input name="dueCheckAt" type="datetime-local" value="${escapeHtml(item.dueCheckAt?.slice(0, 16) || "")}" /></label><label>处理结果<textarea name="result" maxlength="2000" required>${escapeHtml(item.result || "")}</textarea></label><button type="submit">保存</button></form>`}</span>
+      <span>${item.sourceAvailable ? `<button class="ghost followup-summary" data-summary-id="${escapeHtml(item.summaryId)}">查看摘要</button><button class="ghost followup-propose" data-id="${escapeHtml(item.followUpId)}">建议认领</button>` : ""}${item.status !== "resolved" && item.status !== "dismissed" && item.ownerSubject ? `<button class="ghost followup-takeover" data-id="${escapeHtml(item.followUpId)}" data-version="${escapeHtml(item.version)}">人工接管</button>` : ""}${item.nextStep === "claim" ? `<button class="ghost followup-claim" data-id="${escapeHtml(item.followUpId)}" data-version="${escapeHtml(item.version)}">认领</button>` : item.nextStep === "none" ? "" : `<form class="followup-update" data-id="${escapeHtml(item.followUpId)}" data-version="${escapeHtml(item.version)}"><label>状态<select name="status"><option value="waiting">待检查</option><option value="resolved">已完成</option><option value="dismissed">不再跟进</option></select></label><label>到期检查<input name="dueCheckAt" type="datetime-local" value="${escapeHtml(item.dueCheckAt?.slice(0, 16) || "")}" /></label><label>处理结果<textarea name="result" maxlength="2000" required>${escapeHtml(item.result || "")}</textarea></label><button type="submit">保存</button><button type="button" class="ghost followup-propose-update">提议更新</button></form>`}</span>
     </article>`).join("") : `<div class="empty-state compact">队列为空。</div>`;
   container.querySelectorAll(".followup-claim").forEach((button) => button.addEventListener("click", () => void claimFollowUp(button.dataset.id, Number(button.dataset.version))));
+  container.querySelectorAll(".followup-propose").forEach((button) => button.addEventListener("click", () => void proposeFollowUp(button.dataset.id)));
+  container.querySelectorAll(".followup-takeover").forEach((button) => button.addEventListener("click", () => void takeoverFollowUp(button.dataset.id, Number(button.dataset.version))));
   container.querySelectorAll(".followup-summary").forEach((button) => button.addEventListener("click", () => void locateSummary(button.dataset.summaryId)));
   container.querySelectorAll(".followup-update").forEach((form) => form.addEventListener("submit", (event) => { event.preventDefault(); void updateFollowUp(form); }));
+  container.querySelectorAll(".followup-propose-update").forEach((button) => button.addEventListener("click", () => void proposeUpdateFollowUp(button.closest("form"))));
   document.querySelector("#followup-next").hidden = !followUpState.cursor;
 }
 
@@ -352,6 +369,98 @@ async function updateFollowUp(form) {
     await api(`/ops/follow-ups/${encodeURIComponent(form.dataset.id)}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedVersion: Number(form.dataset.version), status: fields.get("status"), dueCheckAt: dueCheckAt ? new Date(dueCheckAt).toISOString() : null, result: String(fields.get("result") || "").trim(), idempotencyKey: requestKey("ops-update") }) });
     await loadQueue();
   } catch (error) { document.querySelector("#followup-status").textContent = error instanceof Error ? error.message : "更新失败"; }
+}
+
+async function proposeFollowUp(followUpId) {
+  const item = followUpState.items.find((row) => row.followUpId === followUpId);
+  if (!item) return;
+  const rationale = window.prompt("建议依据（仅写运营摘要，不含案件正文）", `摘要显示 ${item.reason}`);
+  if (!rationale) return;
+  try {
+    await api("/ops/proposals", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({
+      followUpId, followUpVersion: item.version, summaryUpdatedAt: item.sourceUpdatedAt,
+      action: { type: "follow_up.claim", leaseSeconds: 900 }, rationale,
+      expectedResult: "内部事项由执行人认领", triggerReason: "fresh_activation_opportunity",
+      inputSummary: `${item.reason} / ${item.period.startedAt.slice(0, 10)}`, idempotencyKey: requestKey("ops-proposal"),
+    }) });
+    document.querySelector('[data-view="proposal"]').click();
+  } catch (error) { document.querySelector("#followup-status").textContent = error instanceof Error ? error.message : "提交建议失败"; }
+}
+
+async function proposeUpdateFollowUp(form) {
+  if (!form) return;
+  const item = followUpState.items.find((row) => row.followUpId === form.dataset.id);
+  if (!item) return;
+  const fields = new FormData(form);
+  const status = String(fields.get("status") || "");
+  const result = String(fields.get("result") || "").trim() || null;
+  if (status !== "waiting" && !result) { document.querySelector("#followup-status").textContent = "结束事项需填写结果"; return; }
+  const rationale = window.prompt("更新建议依据（不含案件正文）");
+  if (!rationale) return;
+  const dueCheckAt = fields.get("dueCheckAt");
+  try {
+    await api("/ops/proposals", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({
+      followUpId: item.followUpId, followUpVersion: item.version, summaryUpdatedAt: item.sourceUpdatedAt,
+      action: { type: "follow_up.update", status, dueCheckAt: dueCheckAt ? new Date(dueCheckAt).toISOString() : null, result },
+      rationale, expectedResult: `内部事项更新为 ${status}`, triggerReason: "manual_support_review",
+      inputSummary: `${item.reason} / ${item.period.startedAt.slice(0, 10)}`, idempotencyKey: requestKey("ops-proposal-update"),
+    }) });
+    document.querySelector('[data-view="proposal"]').click();
+  } catch (error) { document.querySelector("#followup-status").textContent = error instanceof Error ? error.message : "提交建议失败"; }
+}
+
+async function takeoverFollowUp(followUpId, expectedVersion) {
+  const reason = window.prompt("接管理由（原持有人的租约将立即失效）");
+  if (!reason) return;
+  try {
+    await api(`/ops/follow-ups/${encodeURIComponent(followUpId)}/takeover`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedVersion, leaseSeconds: 900, reason, idempotencyKey: requestKey("ops-takeover") }) });
+    await Promise.all([loadQueue(), loadProposals()]);
+  } catch (error) { document.querySelector("#followup-status").textContent = error instanceof Error ? error.message : "接管失败"; }
+}
+
+function renderProposals() {
+  const container = document.querySelector("#proposal-list");
+  container.innerHTML = proposalState.items.length ? proposalState.items.map((item) => `
+    <article class="activation-row followup-card">
+      <span><strong>${escapeHtml(item.followUpId)}</strong><small>动作：${escapeHtml(JSON.stringify(item.action))} · 事项 v${escapeHtml(item.followUpVersion)} · 摘要 ${escapeHtml(item.summaryUpdatedAt)}</small><small>动作摘要：${escapeHtml(item.actionDigest)}</small><small>依据：${escapeHtml(item.rationale)}</small><small>预期：${escapeHtml(item.expectedResult)}</small><small>发起：${escapeHtml(item.proposerSubject)} · agent：${escapeHtml(item.agentId || "无")}</small>${item.reviewReason ? `<small>审阅：${escapeHtml(item.reviewReason)}</small>` : ""}${item.toolResult ? `<small>工具结果：${escapeHtml(item.toolResult.code)} · 事项 v${escapeHtml(item.actionFollowUpVersion || "—")}</small>` : ""}</span>
+      <span class="badge">${escapeHtml(item.status)} · v${escapeHtml(item.version)}</span>
+      <span>${item.status === "pending" ? `<button class="ghost proposal-review" data-id="${escapeHtml(item.proposalId)}" data-decision="approve">批准</button><button class="ghost proposal-review" data-id="${escapeHtml(item.proposalId)}" data-decision="reject">拒绝</button>` : ""}${item.status === "approved" || item.status === "executing" ? `<button class="ghost proposal-execute" data-id="${escapeHtml(item.proposalId)}">${item.status === "executing" ? "恢复执行" : "执行"}</button>` : ""}</span>
+    </article>`).join("") : `<div class="empty-state compact">暂无建议。</div>`;
+  container.querySelectorAll(".proposal-review").forEach((button) => button.addEventListener("click", () => void reviewProposal(button.dataset.id, button.dataset.decision)));
+  container.querySelectorAll(".proposal-execute").forEach((button) => button.addEventListener("click", () => void executeProposal(button.dataset.id)));
+  document.querySelector("#proposal-next").hidden = !proposalState.cursor;
+}
+
+async function loadProposals(append = false) {
+  try {
+    const cursor = append ? proposalState.cursor : null;
+    const page = await api(`/ops/proposals?limit=25${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+    proposalState.items = append ? [...proposalState.items, ...(page.items || [])] : (page.items || []);
+    proposalState.cursor = page.nextCursor || null;
+    renderProposals();
+    document.querySelector("#proposal-status").textContent = `已加载 ${proposalState.items.length} 条建议`;
+  } catch (error) { document.querySelector("#proposal-status").textContent = error instanceof Error ? error.message : "加载失败"; }
+}
+
+async function reviewProposal(proposalId, decision) {
+  const item = proposalState.items.find((row) => row.proposalId === proposalId);
+  if (!item) return;
+  const reason = window.prompt(decision === "approve" ? "批准理由" : "拒绝理由");
+  if (!reason) return;
+  try {
+    await api(`/ops/proposals/${encodeURIComponent(proposalId)}/review`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedVersion: item.version, actionDigest: item.actionDigest, decision, reason, idempotencyKey: requestKey("ops-review") }) });
+    await loadProposals();
+  } catch (error) { document.querySelector("#proposal-status").textContent = error instanceof Error ? error.message : "审阅失败"; }
+}
+
+async function executeProposal(proposalId) {
+  const item = proposalState.items.find((row) => row.proposalId === proposalId);
+  if (!item) return;
+  try {
+    await api(`/ops/proposals/${encodeURIComponent(proposalId)}/execute`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedVersion: item.version, idempotencyKey: requestKey("ops-execute") }) });
+    await loadProposals();
+    await loadQueue();
+  } catch (error) { document.querySelector("#proposal-status").textContent = error instanceof Error ? error.message : "执行失败"; }
 }
 
 function renderAuth() {
