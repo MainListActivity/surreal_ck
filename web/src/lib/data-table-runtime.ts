@@ -33,6 +33,7 @@ import {
   type TemplateImportMapping,
   type TemplateImportRejectedRow,
 } from "./template-sheet-import";
+import { importFingerprint } from "./import-batch";
 
 const PAGE = { limit: 500, start: 0 } as const;
 const SYSTEM_FIELDS = new Set(["id", "workspace", "created_by", "created_at", "updated_at"]);
@@ -129,6 +130,21 @@ export type FullDataTableScanResult = {
   stale: boolean;
 };
 
+export type RecordFieldRepairPlan = {
+  token: string;
+  recordId: RecordIdString;
+  fieldKey: string;
+  fieldLabel: string;
+  before: unknown;
+  after: unknown;
+  beforeFingerprint: string;
+};
+
+export type RecordFieldRepairResult = {
+  record: GridRow;
+  alreadyConfirmed: boolean;
+};
+
 type StoredImportBatchRow = {
   status?: "success" | "rejected" | "outcome_unknown";
   target_record?: unknown;
@@ -180,6 +196,7 @@ export async function openDataTableRuntime(input: OpenDataTableRuntimeInput) {
   let schemaTail: Promise<unknown> = Promise.resolve();
   const recordTails = new Map<string, Promise<unknown>>();
   const removalPlans = new Map<string, FieldRemovalPlan & { schemaFingerprint: string }>();
+  const repairPlans = new Map<string, RecordFieldRepairPlan>();
 
   function classifyRuntimeError(cause: unknown): DataTableRuntimeError {
     return classifyError(cause, quotaViewer);
@@ -236,6 +253,101 @@ export async function openDataTableRuntime(input: OpenDataTableRuntimeInput) {
       scannedCount: scanned.length,
       stale: before !== after,
     };
+  }
+
+  async function planRecordFieldRepair(input: {
+    recordId: RecordIdString;
+    fieldKey: string;
+    value: unknown;
+  }): Promise<RuntimeResult<RecordFieldRepairPlan>> {
+    const closed = ensureOpen();
+    if (closed) return closed as RuntimeResult<RecordFieldRepairPlan>;
+    const column = columns.find((candidate) => candidate.key === input.fieldKey);
+    if (!column) return { ok: false, error: runtimeError("not-found", `字段不存在: ${input.fieldKey}`, false) };
+    try {
+      const rows = await conn.query<Record<string, unknown>>(
+        "SELECT * FROM type::table($tb) WHERE id = $record LIMIT 1",
+        { tb: meta.tableName, record: toRecordId(input.recordId) },
+      );
+      const raw = rows[0];
+      if (!raw) return { ok: false, error: runtimeError("not-found", `记录不存在或无权读取: ${input.recordId}`, false) };
+      const current = recordToGrid(raw, columns);
+      const after = coerceGridFieldValue(input.value, column);
+      const validation = validateValues({ ...current.values, [input.fieldKey]: after }, columns);
+      if (Object.keys(validation).length) {
+        return { ok: false, error: runtimeError("validation", "修正值未通过字段校验", false, validation) };
+      }
+      const plan: RecordFieldRepairPlan = {
+        token: crypto.randomUUID(), recordId: input.recordId, fieldKey: input.fieldKey,
+        fieldLabel: column.label, before: current.values[input.fieldKey], after,
+        beforeFingerprint: importFingerprint({ value: current.values[input.fieldKey] ?? null }),
+      };
+      repairPlans.set(plan.token, plan);
+      return { ok: true, value: plan };
+    } catch (cause) {
+      return { ok: false, error: classifyRuntimeError(cause) };
+    }
+  }
+
+  async function confirmRecordFieldRepair(input: {
+    token: string;
+    findingId: string;
+    idempotencyKey: string;
+  }): Promise<RuntimeResult<RecordFieldRepairResult>> {
+    const closed = ensureOpen();
+    if (closed) return closed as RuntimeResult<RecordFieldRepairResult>;
+    const plan = repairPlans.get(input.token);
+    if (!plan) return { ok: false, error: runtimeError("conflict", "修正预览已失效，请重新核对", false) };
+    const column = columns.find((candidate) => candidate.key === plan.fieldKey);
+    if (!column) return { ok: false, error: runtimeError("conflict", "字段结构已变化，请重新核对", false) };
+    try {
+      const outcome = await conn.transaction(async (tx) => {
+        const existing = await tx.query<Record<string, unknown>>(
+          "SELECT id FROM data_check_finding_event WHERE idempotency_key = $key LIMIT 1",
+          { key: input.idempotencyKey },
+        );
+        if (existing.length) {
+          const latest = await tx.query<Record<string, unknown>>(
+            "SELECT * FROM type::table($tb) WHERE id = $record LIMIT 1",
+            { tb: meta.tableName, record: toRecordId(plan.recordId) },
+          );
+          return { raw: latest[0], alreadyConfirmed: true };
+        }
+        const rows = await tx.query<Record<string, unknown>>(
+          "SELECT * FROM type::table($tb) WHERE id = $record LIMIT 1",
+          { tb: meta.tableName, record: toRecordId(plan.recordId) },
+        );
+        const raw = rows[0];
+        if (!raw) throw new RuntimeConflictError("记录不存在或已无权读取，请重新核对");
+        const current = recordToGrid(raw, columns);
+        if (importFingerprint({ value: current.values[plan.fieldKey] ?? null }) !== plan.beforeFingerprint) {
+          throw new RuntimeConflictError("记录已被他人修改，请重新核对后再确认");
+        }
+        const updatedRaw = await tx.updateRecord<Record<string, unknown>>(plan.recordId, {
+          [plan.fieldKey]: wrapRecordField(plan.after, column),
+        });
+        await tx.updateRecord(input.findingId, {
+          status: "pending_review",
+          resolution_reason: undefined,
+          resolved_at: undefined,
+        });
+        await tx.createRecord("data_check_finding_event", {
+          finding: toRecordId(input.findingId), kind: "repair_confirmed",
+          idempotency_key: input.idempotencyKey, field: plan.fieldKey,
+          before_value: plan.before, after_value: plan.after,
+        });
+        return { raw: { ...raw, ...updatedRaw, [plan.fieldKey]: plan.after }, alreadyConfirmed: false };
+      });
+      if (!outcome.raw) return { ok: false, error: runtimeError("not-found", "修正结果无法读取", false) };
+      const record = recordToGrid(outcome.raw, columns);
+      integrateReturnedRecord(record, records.find((candidate) => candidate.id === record.id));
+      return { ok: true, value: { record, alreadyConfirmed: outcome.alreadyConfirmed } };
+    } catch (cause) {
+      if (cause instanceof RuntimeConflictError) {
+        return { ok: false, error: runtimeError("conflict", cause.message, false) };
+      }
+      return { ok: false, error: classifyRuntimeError(cause) };
+    }
   }
 
   function applySafeLive(message: LiveMessage): boolean {
@@ -797,6 +909,8 @@ export async function openDataTableRuntime(input: OpenDataTableRuntimeInput) {
     promoteDraft,
     importCsvRows,
     scanAllRecords,
+    planRecordFieldRepair,
+    confirmRecordFieldRepair,
     deleteRecords,
     updateFields,
     planFieldRemoval,

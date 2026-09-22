@@ -37,6 +37,7 @@ function runtimeHarness(
   const creates: Array<{ table: string; data: Record<string, unknown> }> = [];
   const txCalls: string[] = [];
   const importReceipts = new Map<string, Record<string, unknown>>();
+  const findingEvents = new Map<string, Record<string, unknown>>();
 
   const writer = {
     async updateRecord(id: string, patch: Record<string, unknown>) {
@@ -50,6 +51,10 @@ function runtimeHarness(
       creates.push({ table, data });
       createSeq += 1;
       const created = { id: `${table}:new${createSeq}`, ...data };
+      if (table === "data_check_finding_event") {
+        findingEvents.set(String(data.idempotency_key), created);
+        return created;
+      }
       rows.push(created);
       return created;
     },
@@ -104,6 +109,13 @@ function runtimeHarness(
         ...writer,
         query: (async (sql: string, bindings?: Record<string, unknown>) => {
           txCalls.push(sql);
+          if (/FROM data_check_finding_event/i.test(sql)) {
+            const event = findingEvents.get(String(bindings?.key));
+            return event ? [{ ...event }] : [];
+          }
+          if (/FROM type::table/i.test(sql) && bindings?.record) {
+            return rows.filter((row) => row.id === String(bindings.record)).map((row) => ({ ...row }));
+          }
           if (/CREATE \$targetRecord/i.test(sql)) {
             const created = { id: bindings?.targetRecord, ...(bindings?.data as Record<string, unknown>) };
             creates.push({ table: "ent_claim", data: bindings?.data as Record<string, unknown> });
@@ -139,6 +151,7 @@ function runtimeHarness(
     creates,
     txCalls,
     importReceipts,
+    findingEvents,
     get live() { return live; },
     get unsubscribed() { return unsubscribed; },
     setRows(next: Array<Record<string, unknown>>) { rows = next.map((row) => ({ ...row })); },
@@ -146,6 +159,47 @@ function runtimeHarness(
 }
 
 describe("数据表运行时打开与记录入口", () => {
+  test("字段修正先只生成差异预览，确认时事务重验并幂等记录审计", async () => {
+    const h = runtimeHarness([{ id: "ent_claim:a", name: "旧名称", amount: 1 }]);
+    const runtime = await openDataTableRuntime({
+      conn: h.conn, workbookId: "workbook:w1", dataTableId: "sheet:s1", query: emptyView,
+    });
+    const preview = await runtime.planRecordFieldRepair({ recordId: "ent_claim:a", fieldKey: "name", value: "新名称" });
+    expect(preview).toMatchObject({ ok: true, value: { before: "旧名称", after: "新名称", fieldLabel: "名称" } });
+    expect(h.updates).toEqual([]);
+    if (!preview.ok) throw new Error("预览失败");
+
+    const confirmed = await runtime.confirmRecordFieldRepair({
+      token: preview.value.token, findingId: "data_check_finding:f1", idempotencyKey: "repair:f1:v1",
+    });
+    const repeated = await runtime.confirmRecordFieldRepair({
+      token: preview.value.token, findingId: "data_check_finding:f1", idempotencyKey: "repair:f1:v1",
+    });
+
+    expect(confirmed).toMatchObject({ ok: true, value: { alreadyConfirmed: false, record: { values: { name: "新名称" } } } });
+    expect(repeated).toMatchObject({ ok: true, value: { alreadyConfirmed: true } });
+    expect(h.findingEvents.size).toBe(1);
+    expect(h.updates.filter((update) => update.id === "ent_claim:a")).toHaveLength(1);
+    expect(h.updates).toContainEqual(expect.objectContaining({ id: "data_check_finding:f1", patch: { status: "pending_review" } }));
+  });
+
+  test("字段修正确认发现预览后并发变化时零覆盖", async () => {
+    const h = runtimeHarness([{ id: "ent_claim:a", name: "旧名称", amount: 1 }]);
+    const runtime = await openDataTableRuntime({
+      conn: h.conn, workbookId: "workbook:w1", dataTableId: "sheet:s1", query: emptyView,
+    });
+    const preview = await runtime.planRecordFieldRepair({ recordId: "ent_claim:a", fieldKey: "name", value: "新名称" });
+    if (!preview.ok) throw new Error("预览失败");
+    h.setRows([{ id: "ent_claim:a", name: "他人修改", amount: 1 }]);
+    const result = await runtime.confirmRecordFieldRepair({
+      token: preview.value.token, findingId: "data_check_finding:f1", idempotencyKey: "repair:f1:conflict",
+    });
+
+    expect(result).toMatchObject({ ok: false, error: { code: "conflict" } });
+    expect(h.updates).toEqual([]);
+    expect(h.findingEvents.size).toBe(0);
+  });
+
   test("全范围扫描跨过默认 500 条窗口并保留末尾记录", async () => {
     const rows = Array.from({ length: 501 }, (_, index) => ({
       id: `ent_claim:r${index + 1}`,

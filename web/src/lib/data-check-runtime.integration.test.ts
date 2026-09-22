@@ -3,6 +3,9 @@ import { readFile } from "node:fs/promises";
 import { Surreal } from "surrealdb";
 import { createBrowserConn, type SurrealConn } from "./surreal";
 import { createDataCheckService } from "./data-check-runtime";
+import { openDataTableRuntime } from "./data-table-runtime";
+import { markFindingNotApplicable } from "./finding-repair";
+import { toRecordId } from "./record-id";
 
 const localSurrealTest = test.skipIf(process.env.RUN_LOCAL_SURREALDB_IMPORT_TESTS !== "1");
 const opened: Surreal[] = [];
@@ -19,6 +22,7 @@ describe("数据体检真实 SurrealDB 契约", () => {
     await root.query(`DEFINE NAMESPACE IF NOT EXISTS ${namespace}; USE NS ${namespace}; DEFINE DATABASE ${database};`).collect();
     await root.use({ namespace, database });
     const migration = await readFile(new URL("../../../shared/sql/workspace-template/025-data-check-findings.surql", import.meta.url), "utf8");
+    const repairMigration = await readFile(new URL("../../../shared/sql/workspace-template/027-finding-repair.surql", import.meta.url), "utf8");
     await root.query(`
       DEFINE TABLE user SCHEMAFULL PERMISSIONS FULL;
       DEFINE FIELD subject ON user TYPE string;
@@ -40,13 +44,14 @@ describe("数据体检真实 SurrealDB 契约", () => {
       DEFINE FIELD label ON sheet TYPE string;
       DEFINE FIELD table_name ON sheet TYPE string;
       DEFINE FIELD column_defs ON sheet TYPE any;
-      DEFINE TABLE ent_check SCHEMALESS PERMISSIONS FOR select WHERE $auth != NONE;
+      DEFINE TABLE ent_check SCHEMALESS PERMISSIONS FOR select, update WHERE $auth != NONE;
       DEFINE FIELD updated_at ON ent_check TYPE datetime VALUE time::now();
       CREATE workbook:w SET name = "体检台账";
       CREATE sheet:s SET workbook = workbook:w, label = "记录", table_name = "ent_check", column_defs = [
         { key: "name", label: "名称", field_type: "text", required: true }
       ];
       ${migration}
+      ${repairMigration}
     `).collect();
     const rows = Array.from({ length: 501 }, (_, index) => index === 500 ? {} : { name: `记录 ${index + 1}` });
     await root.query("INSERT INTO ent_check $rows", { rows }).collect();
@@ -64,5 +69,39 @@ describe("数据体检真实 SurrealDB 契约", () => {
     expect(await conn.query("SELECT * FROM data_check_run")).toHaveLength(1);
     expect(await conn.query("SELECT * FROM data_check_finding")).toHaveLength(1);
     expect(await service.load(result.id)).toMatchObject({ id: result.id, findingCount: 1 });
+
+    const finding = result.findings[0]!;
+    const runtime = await openDataTableRuntime({
+      conn, workbookId: "workbook:w", dataTableId: "sheet:s",
+      query: { filters: [], filterMode: "and", sorts: [], hiddenFields: [], groupBy: null },
+    });
+    const preview = await runtime.planRecordFieldRepair({ recordId: finding.recordId as never, fieldKey: "name", value: "补全名称" });
+    expect(preview).toMatchObject({ ok: true, value: { before: undefined, after: "补全名称" } });
+    if (!preview.ok) throw new Error("真实库修正预览失败");
+    expect(await runtime.confirmRecordFieldRepair({
+      token: preview.value.token, findingId: finding.id, idempotencyKey: "repair-real-1",
+    })).toMatchObject({ ok: true, value: { alreadyConfirmed: false } });
+    expect(await runtime.confirmRecordFieldRepair({
+      token: preview.value.token, findingId: finding.id, idempotencyKey: "repair-real-1",
+    })).toMatchObject({ ok: true, value: { alreadyConfirmed: true } });
+    expect(await conn.query("SELECT * FROM data_check_finding_event")).toHaveLength(1);
+    expect(await conn.query("SELECT status FROM data_check_finding")).toEqual([expect.objectContaining({ status: "pending_review" })]);
+
+    await markFindingNotApplicable(conn, {
+      findingId: finding.id, reason: "经律师确认属于合法例外", idempotencyKey: "not-applicable-real-1",
+    });
+    expect(await conn.query("SELECT status, resolution_reason FROM data_check_finding")).toEqual([
+      expect.objectContaining({ status: "not_applicable", resolution_reason: "经律师确认属于合法例外" }),
+    ]);
+    expect(await conn.query("SELECT * FROM data_check_finding_event")).toHaveLength(2);
+    await runtime.close();
+
+    await conn.query("UPDATE type::table($tb) UNSET name WHERE id = $record", {
+      tb: "ent_check", record: toRecordId(finding.recordId),
+    });
+    await service.start({ workbookId: "workbook:w" });
+    expect(await conn.query("SELECT status, resolution_reason FROM data_check_finding")).toEqual([
+      expect.objectContaining({ status: "pending", resolution_reason: undefined }),
+    ]);
   }, 20_000);
 });

@@ -120,6 +120,16 @@ describe("workspace template scripts", () => {
     expect(migration?.sql).not.toMatch(/\b(?:EXECUTE|FUNCTION|QUERY)\b/i);
   });
 
+  test("问题修正增量定义处理状态和只追加幂等审计事件", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.version === 27);
+    expect(migration?.sql).toContain('"pending_review"');
+    expect(migration?.sql).toContain("data_check_finding_event SCHEMAFULL");
+    expect(migration?.sql).toContain("FOR update, delete NONE");
+    expect(migration?.sql).toContain("data_check_finding_event_idempotency_unique");
+    expect(migration?.sql).toContain("actor ON TABLE data_check_finding_event");
+  });
+
   test("模板快捷任务增量保存任务声明，并让实例化数据表保留稳定模板 key", async () => {
     const scripts = await loadTemplateScripts();
     const migration = scripts.find((script) => script.name === "016-template-quick-tasks.surql");

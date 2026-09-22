@@ -22,6 +22,10 @@ describe("全范围数据体检界面", () => {
     expect(dialog).toContain("重复候选");
     expect(dialog).toContain("引用无法核验");
     expect(dialog).toContain("字段一致性");
+    expect(dialog).toContain("预览字段差异");
+    expect(dialog).toContain("确认修正并提交复核");
+    expect(dialog).toContain("不适用理由");
+    expect(dialog).toContain("重新核对");
   });
 
   test("模板页为管理员提供三类受限规则配置入口", async () => {

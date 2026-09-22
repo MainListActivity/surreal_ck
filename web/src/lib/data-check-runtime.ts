@@ -25,6 +25,8 @@ export type DataCheckFinding = {
   sheetId: string;
   field: string;
   evidenceFingerprint: string;
+  status: "pending" | "processing" | "pending_review" | "closed" | "not_applicable";
+  resolutionReason: string | null;
 };
 
 export type DataCheckRunSnapshot = {
@@ -47,6 +49,7 @@ type StoredRun = {
 type StoredFinding = {
   id?: unknown; category?: unknown; explanation?: unknown; rule_key?: unknown;
   rule_version?: unknown; record?: unknown; sheet?: unknown; field?: unknown; evidence_fingerprint?: unknown;
+  status?: unknown; resolution_reason?: unknown;
 };
 
 export function createDataCheckService(conn: SurrealConn) {
@@ -113,6 +116,9 @@ export function createDataCheckService(conn: SurrealConn) {
           run_history = array::union(run_history ?? [], [$run]),
           occurrences += 1,
           explanation = $explanation,
+          resolution_reason = IF status INSIDE ["pending_review", "closed", "not_applicable"] OR evidence_fingerprint != $evidenceFingerprint THEN NONE ELSE resolution_reason END,
+          resolved_at = IF status INSIDE ["pending_review", "closed", "not_applicable"] OR evidence_fingerprint != $evidenceFingerprint THEN NONE ELSE resolved_at END,
+          status = IF status INSIDE ["pending_review", "closed", "not_applicable"] OR evidence_fingerprint != $evidenceFingerprint THEN "pending" ELSE status END,
           evidence_fingerprint = $evidenceFingerprint,
           last_seen_at = time::now()
         RETURN AFTER`,
@@ -261,7 +267,14 @@ function mapFinding(row: StoredFinding): DataCheckFinding {
     ruleVersion: String(row.rule_version ?? DATA_CHECK_RULES_VERSION),
     recordId: recordValueToString(row.record) ?? "", sheetId: recordValueToString(row.sheet) ?? "",
     field: String(row.field ?? ""), evidenceFingerprint: String(row.evidence_fingerprint ?? ""),
+    status: normalizeFindingStatus(row.status),
+    resolutionReason: row.resolution_reason == null ? null : String(row.resolution_reason),
   };
+}
+
+function normalizeFindingStatus(value: unknown): DataCheckFinding["status"] {
+  if (value === "processing" || value === "pending_review" || value === "closed" || value === "not_applicable") return value;
+  return "pending";
 }
 
 async function loadTemplateRules(conn: SurrealConn, workbookId: string) {
