@@ -9,6 +9,12 @@ describe("运营启用摘要页面", () => {
     expect(source).toContain("/ops/activation-summaries?limit=25");
     expect(source).toContain("/ops/activation-summaries/${encodeURIComponent(summaryId)}");
     expect(source).toContain("团队提供");
-    expect(source).toContain("未知、未完成和失败保持独立显示");
+    expect(source).toContain('summary.contractVersion === "2"');
+    expect(source).toContain("固定运行问题解决率");
+    expect(source).toContain("不适用和结果待核实保持独立显示");
+    expect(source).toContain("新鲜度以摘要更新时间");
+    expect(source).toContain("逐指标口径与来源");
+    expect(source).toContain("metric.definition");
+    expect(source).toContain("各指标窗口见口径说明");
   });
 });

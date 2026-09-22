@@ -129,7 +129,7 @@ export function entityTableNameForWorkbook(wbKey: string): string {
  *   系统字段；业务列由 {@link buildSurrealFieldSchema} 生成（与 defineField / 后端模板同口径）。
  *   不带 workspace 字段（db 边界隔离）。
  * - 实体表是动态建的，不在静态模板 schema 里，所以它的 record_activity event 必须在
- *   建表时一并 `DEFINE`（HR-15）：数据行 CREATE → `record.write`、DELETE → `record.delete`
+ *   建表时一并 `DEFINE`（HR-15）：数据行 CREATE/UPDATE → `record.write`、DELETE → `record.delete`
  *   时引擎自动 `CREATE activity_event`，归因由 activity_event.actor 的 DEFAULT
  *   fn::current_user() 负责（010）——前端零埋点。这是 DDL，与建表同一会话（admin）。
  * - workbook / 全部 sheet 用 JS 预生成的 key 显式建 RecordId，使表名能在建表前先算出来。
@@ -457,7 +457,7 @@ DEFINE FIELD IF NOT EXISTS created_at ON TABLE ${sheet.tableName} TYPE datetime 
 DEFINE FIELD IF NOT EXISTS updated_at ON TABLE ${sheet.tableName} TYPE datetime VALUE time::now();
 ${fieldDdl}
 ${buildRecordQuotaGuardSurql({ tableName: sheet.tableName, sheetId: toRecordId(sheet.id) })}
-DEFINE EVENT OVERWRITE record_activity ON TABLE ${sheet.tableName} WHEN $event = "CREATE" OR $event = "DELETE" THEN { LET $verb = IF $event = "CREATE" { "record.write" } ELSE { "record.delete" }; LET $rec = IF $event = "DELETE" { $before } ELSE { $after }; CREATE activity_event CONTENT { verb: $verb, target_kind: "record", target: $rec.id }; };
+DEFINE EVENT OVERWRITE record_activity ON TABLE ${sheet.tableName} WHEN $event = "CREATE" OR $event = "UPDATE" OR $event = "DELETE" THEN { LET $verb = IF $event = "DELETE" { "record.delete" } ELSE { "record.write" }; LET $rec = IF $event = "DELETE" { $before } ELSE { $after }; CREATE activity_event CONTENT { verb: $verb, target_kind: "record", target: $rec.id }; };
 CREATE ${sheet.id} CONTENT { workbook: ${wbId}, label: ${labelBinding}, table_name: ${tableBinding}, column_defs: ${columnsBinding}${templateKeyClause} };`;
   }).join("\n");
 

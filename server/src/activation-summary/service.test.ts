@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { ActivationSummaryV1, SharedActivationSummary } from "@surreal-ck/shared";
+import type { ActivationSummary, ActivationSummaryV1, ActivationSummaryV2, SharedActivationSummary } from "@surreal-ck/shared";
 import {
   ActivationSummaryService,
   ActivationSummaryServiceError,
@@ -26,6 +26,28 @@ const summary: ActivationSummaryV1 = {
   dedupeKey: "2026-09:v1",
 };
 
+const summaryV2: ActivationSummaryV2 = {
+  contractVersion: "2",
+  period: summary.period,
+  stage: "activated",
+  progress: {
+    members: { state: "completed", total: 2, firstLoginCompleted: 2, source: "user.last_seen_at", definition: "members" },
+    workbooks: { state: "completed", count: 1, source: "workbook", definition: "workbooks" },
+    imports: { state: "completed", completed: 1, outcomeUnknown: 1, source: "import_batch+import_batch_row", definition: "imports" },
+    checks: { state: "completed", completed: 1, failed: 0, source: "data_check_run", definition: "checks" },
+    reviews: { state: "completed", completed: 1, pending: 0, source: "finding_assignment", definition: "reviews" },
+  },
+  outcomes: {
+    firstReview: { state: "completed", durationMinutes: 60, source: "import→review", definition: "first review" },
+    importQuality: { state: "completed", terminalBatches: 1, failedBatches: 0, outcomeUnknownBatches: 1, failureRate: 0, determinedRows: 10, rejectedRows: 0, outcomeUnknownRows: 1, rejectionRate: 0, source: "import evidence", definition: "import quality" },
+    issueResolution: { state: "not_applicable", runStartedAt: summary.period.startedAt, denominator: 0, reviewedClosed: 0, notApplicable: 0, rate: null, source: "fixed run", definition: "issue resolution" },
+    collaboration: { state: "completed", humanActors: 2, source: "assignment events", definition: "collaboration" },
+    nextWeekUpdate: { state: "completed", windowStartedAt: summary.period.startedAt, windowEndedAt: summary.period.endedAt, evidenceAt: summary.updatedAt, source: "activity event", definition: "next week update" },
+  },
+  updatedAt: summary.updatedAt,
+  dedupeKey: "2026-09:v2",
+};
+
 class MemoryStore implements ActivationSummaryStore {
   readonly authority: WorkspaceSummaryAuthority = {
     workspaceId: "workspace:demo",
@@ -43,12 +65,12 @@ class MemoryStore implements ActivationSummaryStore {
   async findIdempotent(_workspaceId: string, key: string) {
     return this.audit.get(key) ?? null;
   }
-  async share(input: { summary: ActivationSummaryV1; idempotencyKey: string }) {
+  async share(input: { summary: ActivationSummary; idempotencyKey: string }) {
     this.writes += 1;
     this.item = {
       summaryId: "workspace_activation_summary:demo",
       workspaceSlug: "demo",
-      contractVersion: "1",
+      contractVersion: input.summary.contractVersion,
       status: "active",
       summary: input.summary,
       suppliedAt: input.summary.updatedAt,
@@ -118,6 +140,21 @@ describe("activation summary service", () => {
     expect(replay).toEqual(first);
     expect(store.writes).toBe(1);
     expect(first.summary?.metrics.imports).toEqual({ state: "unknown", count: null, source: "not_reported_v1" });
+  });
+
+  test("accepts v2 outcomes without collapsing not-applicable or outcome-unknown", async () => {
+    const service = new ActivationSummaryService(new MemoryStore());
+    const shared = await service.share({
+      workspaceSlug: "demo",
+      actorSubject: "admin-1",
+      summary: summaryV2,
+      idempotencyKey: "request-v2-0001",
+    });
+    expect(shared.contractVersion).toBe("2");
+    expect(shared.summary?.contractVersion).toBe("2");
+    if (shared.summary?.contractVersion !== "2") throw new Error("expected v2 summary");
+    expect(shared.summary.outcomes.issueResolution.state).toBe("not_applicable");
+    expect(shared.summary.progress.imports.outcomeUnknown).toBe(1);
   });
 
   test("withdrawal clears content and removes it from operator reads", async () => {

@@ -1,5 +1,5 @@
 import type {
-  ActivationSummaryV1,
+  ActivationSummary,
   SharedActivationSummary,
 } from "@surreal-ck/shared";
 import { DateTime, StringRecordId } from "surrealdb";
@@ -38,10 +38,10 @@ function mapSummary(row: SummaryRow): SharedActivationSummary | null {
   return {
     summaryId,
     workspaceSlug,
-    contractVersion: "1",
+    contractVersion: row.contract_version === "2" ? "2" : "1",
     status,
     summary: status === "active" && row.content && typeof row.content === "object"
-      ? row.content as ActivationSummaryV1
+      ? row.content as ActivationSummary
       : null,
     suppliedAt: toIsoDateTimeString(row.supplied_at),
     updatedAt,
@@ -98,7 +98,7 @@ export class SurrealActivationSummaryStore implements ActivationSummaryStore {
   async share(input: Readonly<{
     authority: WorkspaceSummaryAuthority;
     actorSubject: string;
-    summary: ActivationSummaryV1;
+    summary: ActivationSummary;
     idempotencyKey: string;
   }>): Promise<SharedActivationSummary> {
     const db = await this.getSession("_system", this.namespace);
@@ -107,7 +107,7 @@ export class SurrealActivationSummaryStore implements ActivationSummaryStore {
        LET $projection = (UPSERT workspace_activation_summary
          SET workspace = $workspace,
              workspace_slug = $workspaceSlug,
-             contract_version = "1",
+             contract_version = $contractVersion,
              dedupe_key = $dedupeKey,
              status = "active",
              content = $content,
@@ -127,6 +127,7 @@ export class SurrealActivationSummaryStore implements ActivationSummaryStore {
       {
         workspace: new StringRecordId(input.authority.workspaceId),
         workspaceSlug: input.authority.workspaceSlug,
+        contractVersion: input.summary.contractVersion,
         dedupeKey: input.summary.dedupeKey,
         content: input.summary,
         actorSubject: input.actorSubject,

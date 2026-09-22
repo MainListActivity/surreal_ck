@@ -140,6 +140,12 @@ describe("workspace template scripts", () => {
     expect(migration?.sql).toContain("reviewer = fn::current_user()");
   });
 
+  test("业务记录更新证据迁移由运行时安全展开动态表事件", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.version === 29);
+    expect(migration?.sql).toContain("record-update-activity-runtime-materialization-required");
+  });
+
   test("模板快捷任务增量保存任务声明，并让实例化数据表保留稳定模板 key", async () => {
     const scripts = await loadTemplateScripts();
     const migration = scripts.find((script) => script.name === "016-template-quick-tasks.surql");

@@ -191,7 +191,7 @@ function buildServer(
       "list_activation_summaries",
       {
         title: "列出团队启用摘要",
-        description: "稳定分页读取工作区管理员主动共享的最小启用摘要。摘要为团队提供，不用于计费或权限判断。",
+        description: "稳定分页读取工作区管理员主动共享的最小启用摘要。v2 保留指标状态、持久证据来源、固定分母、时区周期与更新时间；未知、不适用、未完成、失败和结果待核实不得合并。摘要为团队提供，不用于计费或权限判断。",
         inputSchema: toolInputSchema,
       },
       async (args) => {
@@ -208,7 +208,7 @@ function buildServer(
       "get_activation_summary",
       {
         title: "读取团队启用摘要",
-        description: "按摘要 ID 读取同一运营服务中的授权摘要详情。",
+        description: "按摘要 ID 读取同一运营服务中的授权摘要详情，并按 source、period、updatedAt 解释 v2 指标口径与新鲜度。",
         inputSchema: toolInputSchema,
       },
       async (args) => {

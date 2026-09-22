@@ -1,7 +1,7 @@
 import {
-  activationSummaryV1Schema,
+  activationSummarySchema,
   type ActivationSummaryPage,
-  type ActivationSummaryV1,
+  type ActivationSummary,
   type SharedActivationSummary,
 } from "@surreal-ck/shared";
 
@@ -27,7 +27,7 @@ export interface ActivationSummaryStore {
   share(input: Readonly<{
     authority: WorkspaceSummaryAuthority;
     actorSubject: string;
-    summary: ActivationSummaryV1;
+    summary: ActivationSummary;
     idempotencyKey: string;
   }>): Promise<SharedActivationSummary>;
   withdraw(input: Readonly<{
@@ -99,9 +99,9 @@ export class ActivationSummaryService {
   }>): Promise<SharedActivationSummary> {
     const authority = await this.store.resolveAdmin(input.workspaceSlug, input.actorSubject);
     if (!authority) throw new ActivationSummaryServiceError("forbidden", "仅当前工作区管理员可共享摘要");
-    const parsed = activationSummaryV1Schema.safeParse(input.summary);
+    const parsed = activationSummarySchema.safeParse(input.summary);
     if (!parsed.success) {
-      throw new ActivationSummaryServiceError("invalid_request", "摘要不符合 v1 白名单契约");
+      throw new ActivationSummaryServiceError("invalid_request", "摘要不符合 v1/v2 白名单契约");
     }
     const serializedSize = new TextEncoder().encode(JSON.stringify(parsed.data)).byteLength;
     if (serializedSize > 16_384) {

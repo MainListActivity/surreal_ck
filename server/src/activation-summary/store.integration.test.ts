@@ -96,10 +96,32 @@ describe("activation summary Surreal store", () => {
       updatedAt: "2026-09-22T12:00:00.000Z",
       dedupeKey: "2026-09:v1",
     };
+    const summaryV2 = {
+      contractVersion: "2" as const,
+      period: summary.period,
+      stage: "activated" as const,
+      progress: {
+        members: { state: "completed" as const, total: 2, firstLoginCompleted: 2, source: "user.last_seen_at", definition: "members" },
+        workbooks: { state: "completed" as const, count: 1, source: "workbook", definition: "workbooks" },
+        imports: { state: "completed" as const, completed: 1, outcomeUnknown: 0, source: "import evidence", definition: "imports" },
+        checks: { state: "completed" as const, completed: 1, failed: 0, source: "check runs", definition: "checks" },
+        reviews: { state: "completed" as const, completed: 1, pending: 0, source: "assignments", definition: "reviews" },
+      },
+      outcomes: {
+        firstReview: { state: "completed" as const, durationMinutes: 60, source: "import→review", definition: "first review" },
+        importQuality: { state: "completed" as const, terminalBatches: 1, failedBatches: 0, outcomeUnknownBatches: 0, failureRate: 0, determinedRows: 5, rejectedRows: 0, outcomeUnknownRows: 0, rejectionRate: 0, source: "import rows", definition: "import quality" },
+        issueResolution: { state: "not_applicable" as const, runStartedAt: summary.period.startedAt, denominator: 0, reviewedClosed: 0, notApplicable: 0, rate: null, source: "fixed run", definition: "issue resolution" },
+        collaboration: { state: "completed" as const, humanActors: 2, source: "assignment events", definition: "collaboration" },
+        nextWeekUpdate: { state: "completed" as const, windowStartedAt: summary.period.startedAt, windowEndedAt: summary.period.endedAt, evidenceAt: summary.updatedAt, source: "activity event", definition: "next week update" },
+      },
+      updatedAt: summary.updatedAt,
+      dedupeKey: "2026-09:v2",
+    };
     const first = await service.share({ workspaceSlug: "demo", actorSubject: "admin-1", summary, idempotencyKey: "request-0001" });
     const replay = await service.share({ workspaceSlug: "demo", actorSubject: "admin-1", summary, idempotencyKey: "request-0001" });
     expect(replay.summaryId).toBe(first.summaryId);
-    await service.share({ workspaceSlug: "demo-2", actorSubject: "admin-2", summary, idempotencyKey: "request-0002" });
+    const v2 = await service.share({ workspaceSlug: "demo-2", actorSubject: "admin-2", summary: summaryV2, idempotencyKey: "request-0002" });
+    expect(v2.contractVersion).toBe("2");
     const page = await service.list({ subject: "ops", capabilities: ["activation.summary.read"] }, { limit: 1 });
     expect(page.items).toHaveLength(1);
     expect(page.nextCursor).toBeTypeOf("string");

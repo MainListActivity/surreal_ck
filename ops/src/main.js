@@ -146,8 +146,20 @@ function renderShell() {
 
 function activationMetric(metric) {
   if (!metric || metric.state === "unknown") return "未知";
+  if (metric.state === "not_applicable") return "不适用";
   if (metric.state === "failed") return "采集失败";
   return `${metric.count ?? 0} · ${metric.state === "completed" ? "已完成" : "未完成"}`;
+}
+
+function activationStateLabel(metric) {
+  if (!metric || metric.state === "unknown") return "未知（缺少可靠证据）";
+  if (metric.state === "not_applicable") return "不适用（分母为零）";
+  if (metric.state === "failed") return "失败";
+  return metric.state === "completed" ? "已完成" : "未完成";
+}
+
+function activationRate(value) {
+  return value == null ? "—" : `${(value * 100).toFixed(1)}%`;
 }
 
 function renderActivationSummaries() {
@@ -168,17 +180,42 @@ function renderActivationSummaries() {
 function renderActivationDetail(item) {
   const summary = item?.summary;
   if (!summary) return;
-  document.querySelector("#activation-detail").innerHTML = `
-    <div class="detail-head"><div><p class="eyebrow">${escapeHtml(item.workspaceSlug)}</p><h3>${escapeHtml(summary.stage)}</h3></div><span class="badge">契约 v${escapeHtml(summary.contractVersion)}</span></div>
-    <div class="metric-grid">
+  const explanations = summary.contractVersion === "2" ? [
+    ["成员首次登录", summary.progress.members],
+    ["工作簿", summary.progress.workbooks],
+    ["导入", summary.progress.imports],
+    ["体检", summary.progress.checks],
+    ["复核", summary.progress.reviews],
+    ["首次复核耗时", summary.outcomes.firstReview],
+    ["导入质量", summary.outcomes.importQuality],
+    ["问题解决率", summary.outcomes.issueResolution],
+    ["多人协作", summary.outcomes.collaboration],
+    ["次周更新", summary.outcomes.nextWeekUpdate],
+  ].map(([label, metric]) => `<li><strong>${escapeHtml(label)}</strong>：${escapeHtml(metric.definition)} <span class="muted">来源 ${escapeHtml(metric.source)}</span></li>`).join("") : "";
+  const metrics = summary.contractVersion === "2" ? `
+      <div><span class="muted">成员首次登录</span><strong>${escapeHtml(`${summary.progress.members.firstLoginCompleted ?? "—"} / ${summary.progress.members.total ?? "—"} · ${activationStateLabel(summary.progress.members)}`)}</strong></div>
+      <div><span class="muted">导入完成 / 结果待核实</span><strong>${escapeHtml(`${summary.progress.imports.completed ?? "—"} / ${summary.progress.imports.outcomeUnknown ?? "—"}`)}</strong></div>
+      <div><span class="muted">体检完成 / 失败</span><strong>${escapeHtml(`${summary.progress.checks.completed ?? "—"} / ${summary.progress.checks.failed ?? "—"}`)}</strong></div>
+      <div><span class="muted">复核完成 / 待审</span><strong>${escapeHtml(`${summary.progress.reviews.completed ?? "—"} / ${summary.progress.reviews.pending ?? "—"}`)}</strong></div>
+      <div><span class="muted">首次复核耗时</span><strong>${escapeHtml(`${activationStateLabel(summary.outcomes.firstReview)} · ${summary.outcomes.firstReview.durationMinutes ?? "—"} 分钟`)}</strong></div>
+      <div><span class="muted">批次失败率 / 拒绝行比例</span><strong>${escapeHtml(`${activationRate(summary.outcomes.importQuality.failureRate)} / ${activationRate(summary.outcomes.importQuality.rejectionRate)}`)}</strong></div>
+      <div><span class="muted">固定运行问题解决率</span><strong>${escapeHtml(`${activationStateLabel(summary.outcomes.issueResolution)} · ${activationRate(summary.outcomes.issueResolution.rate)}`)}</strong></div>
+      <div><span class="muted">多人协作</span><strong>${escapeHtml(`${activationStateLabel(summary.outcomes.collaboration)} · ${summary.outcomes.collaboration.humanActors ?? "—"} 位真人`)}</strong></div>
+      <div><span class="muted">次周更新</span><strong>${escapeHtml(activationStateLabel(summary.outcomes.nextWeekUpdate))}</strong></div>
+      <div><span class="muted">固定运行分母</span><strong>${escapeHtml(summary.outcomes.issueResolution.denominator ?? "—")}</strong></div>` : `
       <div><span class="muted">成员启用</span><strong>${escapeHtml(activationMetric(summary.metrics.members))}</strong></div>
       <div><span class="muted">工作簿启用</span><strong>${escapeHtml(activationMetric(summary.metrics.workbooks))}</strong></div>
       <div><span class="muted">导入</span><strong>${escapeHtml(activationMetric(summary.metrics.imports))}</strong></div>
-      <div><span class="muted">复核</span><strong>${escapeHtml(activationMetric(summary.metrics.reviews))}</strong></div>
+      <div><span class="muted">复核</span><strong>${escapeHtml(activationMetric(summary.metrics.reviews))}</strong></div>`;
+  document.querySelector("#activation-detail").innerHTML = `
+    <div class="detail-head"><div><p class="eyebrow">${escapeHtml(item.workspaceSlug)}</p><h3>${escapeHtml(summary.stage)}</h3></div><span class="badge">契约 v${escapeHtml(summary.contractVersion)}</span></div>
+    <div class="metric-grid">
+      ${metrics}
       <div><span class="muted">来源</span><strong>团队提供</strong></div>
       <div><span class="muted">更新时间</span><strong>${escapeHtml(item.updatedAt)}</strong></div>
     </div>
-    <p class="activation-note">统计周期：${escapeHtml(summary.period.startedAt)} — ${escapeHtml(summary.period.endedAt)} · ${escapeHtml(summary.period.timeZone)}。未知、未完成和失败保持独立显示。</p>`;
+    ${summary.contractVersion === "2" ? `<details class="activation-note"><summary>逐指标口径与来源</summary><ul>${explanations}</ul></details>` : ""}
+    <p class="activation-note">摘要证据覆盖期：${escapeHtml(summary.period.startedAt)} — ${escapeHtml(summary.period.endedAt)} · ${escapeHtml(summary.period.timeZone)}。各指标窗口见口径说明；未知、未完成、失败、不适用和结果待核实保持独立显示；新鲜度以摘要更新时间 ${escapeHtml(summary.updatedAt)} 为准。</p>`;
 }
 
 async function loadActivationSummaries(append = false) {

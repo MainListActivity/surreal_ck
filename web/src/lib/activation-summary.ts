@@ -1,5 +1,6 @@
 import type {
   ActivationMetric,
+  ActivationSummary,
   ActivationSummaryV1,
   SharedActivationSummary,
 } from "@surreal-ck/shared";
@@ -9,13 +10,13 @@ import type { SurrealConn } from "./surreal";
 type CountRow = { count?: number };
 
 export type ActivationSummaryEndpoint = {
-  share(slug: string, summary: ActivationSummaryV1, idempotencyKey: string): Promise<Response>;
+  share(slug: string, summary: ActivationSummary, idempotencyKey: string): Promise<Response>;
   withdraw(slug: string, idempotencyKey: string): Promise<Response>;
 };
 
 type HonoClient = {
   api: { workspaces: { ":slug": { "activation-summary": {
-    $post(input: { param: { slug: string }; json: { summary: ActivationSummaryV1; idempotencyKey: string } }): Promise<Response>;
+    $post(input: { param: { slug: string }; json: { summary: ActivationSummary; idempotencyKey: string } }): Promise<Response>;
     $delete(input: { param: { slug: string }; json: { idempotencyKey: string } }): Promise<Response>;
   } } } };
 };
@@ -103,7 +104,7 @@ function message(body: unknown, fallback: string): string {
 
 export async function shareActivationSummary(
   slug: string,
-  summary: ActivationSummaryV1,
+  summary: ActivationSummary,
   endpoint: ActivationSummaryEndpoint = activationSummaryEndpoint,
 ): Promise<{ ok: true; value: SharedActivationSummary } | { ok: false; message: string }> {
   const response = await endpoint.share(slug, summary, crypto.randomUUID());
