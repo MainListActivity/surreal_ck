@@ -14,6 +14,10 @@ describe("OIP-13 XLSX 多 Sheet 导入向导 UI", () => {
     expect(dialog).toContain('value="ignore"');
     expect(dialog).toContain('value="new-sheet"');
     expect(dialog).toContain("数据预览");
+    expect(dialog).toContain("字段映射");
+    expect(dialog).toContain("setFieldMapping");
+    expect(dialog).toContain("原始行号");
+    expect(dialog).toContain("previewCell");
     expect(dialog).toContain("workbooksStore.importXlsxWorkbook");
     expect(dialog).toContain("成功记录");
     expect(dialog).toContain("跳过记录");

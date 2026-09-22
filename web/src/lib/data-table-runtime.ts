@@ -27,7 +27,7 @@ import {
   wrapRecordField,
 } from "./workbook-data";
 import { recordValueToString, toRecordId } from "./record-id";
-import type { LiveMessage, SurrealConn } from "./surreal";
+import type { LiveMessage, SurrealConn, SurrealTransactionWriter } from "./surreal";
 import {
   normalizeTemplateImportRows,
   type TemplateImportMapping,
@@ -110,11 +110,22 @@ export type ImportCsvRowsInput = {
   rows: string[][];
   rowNumbers?: number[];
   mappings: TemplateImportMapping[];
+  batch?: {
+    id: string;
+    sheetName: string;
+  };
 };
 
 export type ImportCsvRowsResult = {
   importedCount: number;
   rejected: TemplateImportRejectedRow[];
+  replayedCount?: number;
+  outcomeUnknownCount?: number;
+};
+
+type StoredImportBatchRow = {
+  status?: "success" | "rejected" | "outcome_unknown";
+  target_record?: unknown;
 };
 
 type StoredDataTable = {
@@ -430,25 +441,105 @@ export async function openDataTableRuntime(input: OpenDataTableRuntimeInput) {
     });
     const rejected = [...normalized.rejected];
     let importedCount = 0;
+    let replayedCount = 0;
+    let outcomeUnknownCount = 0;
+
+    if (input.batch) {
+      for (const failure of normalized.rejected) {
+        await persistImportReceipt(conn, input.batch, failure.rowNumber, {
+          status: "rejected",
+          field: failure.field,
+          reason: failure.reason,
+          sourceCells: failure.sourceCells,
+        }).catch(() => undefined);
+      }
+    }
+
     for (const record of normalized.records) {
+      if (input.batch) {
+        const receipt = await loadImportReceipt(conn, input.batch, record.rowNumber);
+        if (receipt?.status === "success") {
+          importedCount += 1;
+          replayedCount += 1;
+          continue;
+        }
+        if (receipt?.status === "outcome_unknown") {
+          outcomeUnknownCount += 1;
+          rejected.push({
+            rowNumber: record.rowNumber,
+            field: "整条记录",
+            reason: "上次提交结果待核实，请刷新批次结果后再重试",
+            sourceCells: record.sourceCells,
+          });
+          continue;
+        }
+      }
       try {
-        const raw = await runRecordMutation(`import:${record.rowNumber}:${crypto.randomUUID()}`, () =>
-          conn.createRecord<Record<string, unknown>>(
-            meta.tableName,
-            prepareRecordFields(record.values, columns),
-          ));
+        const raw = await runRecordMutation(`import:${record.rowNumber}:${crypto.randomUUID()}`, async () => {
+          if (!input.batch) {
+            return conn.createRecord<Record<string, unknown>>(
+              meta.tableName,
+              prepareRecordFields(record.values, columns),
+            );
+          }
+          return conn.transaction(async (tx) => {
+            const targetRecord = toRecordId(
+              `${meta.tableName}:${stableImportRecordKey(input.batch!.id, input.batch!.sheetName, record.rowNumber)}`,
+            );
+            const created = await tx.query<Record<string, unknown>>(
+              "CREATE $targetRecord CONTENT $data RETURN AFTER",
+              {
+                targetRecord,
+                data: prepareRecordFields(record.values, columns),
+              },
+            );
+            const row = created[0];
+            if (!row) throw new Error("导入记录写入后未返回结果");
+            await persistImportReceipt(tx, input.batch!, record.rowNumber, {
+              status: "success",
+              targetRecord,
+            });
+            return row;
+          });
+        });
         integrateReturnedRecord(recordToGrid(raw, columns));
         importedCount += 1;
       } catch (cause) {
+        if (input.batch) {
+          const verified = await loadImportReceipt(conn, input.batch, record.rowNumber).catch(() => null);
+          if (verified?.status === "success") {
+            importedCount += 1;
+            replayedCount += 1;
+            continue;
+          }
+        }
+        const runtimeFailure = classifyRuntimeError(cause);
+        if (input.batch && runtimeFailure.code === "outcome-unknown") {
+          outcomeUnknownCount += 1;
+          await persistImportReceipt(conn, input.batch, record.rowNumber, {
+            status: "outcome_unknown",
+            reason: runtimeFailure.message,
+            sourceCells: record.sourceCells,
+          }).catch(() => undefined);
+        } else if (input.batch) {
+          await persistImportReceipt(conn, input.batch, record.rowNumber, {
+            status: "rejected",
+            field: "整条记录",
+            reason: runtimeFailure.message,
+            sourceCells: record.sourceCells,
+          }).catch(() => undefined);
+        }
         rejected.push({
           rowNumber: record.rowNumber,
           field: "整条记录",
-          reason: classifyRuntimeError(cause).message,
+          reason: runtimeFailure.message,
           sourceCells: record.sourceCells,
         });
       }
     }
-    return { importedCount, rejected };
+    return input.batch
+      ? { importedCount, rejected, replayedCount, outcomeUnknownCount }
+      : { importedCount, rejected };
   }
 
   async function deleteRecords(ids: Array<RecordIdString | string>): Promise<RuntimeResult<void>> {
@@ -678,6 +769,78 @@ export async function openDataTableRuntime(input: OpenDataTableRuntimeInput) {
     confirmFieldRemoval,
     close,
   };
+}
+
+async function loadImportReceipt(
+  conn: Pick<SurrealConn, "query">,
+  batch: NonNullable<ImportCsvRowsInput["batch"]>,
+  rowNumber: number,
+): Promise<StoredImportBatchRow | null> {
+  const rows = await conn.query<StoredImportBatchRow>(
+    "SELECT status, target_record FROM import_batch_row WHERE batch = $batch AND sheet_name = $sheetName AND source_row_number = $rowNumber LIMIT 1",
+    { batch: toRecordId(batch.id), sheetName: batch.sheetName, rowNumber },
+  );
+  return rows[0] ?? null;
+}
+
+async function persistImportReceipt(
+  writer: Pick<SurrealConn, "query"> | { query: SurrealTransactionWriter["query"] },
+  batch: NonNullable<ImportCsvRowsInput["batch"]>,
+  rowNumber: number,
+  receipt: {
+    status: "success" | "rejected" | "outcome_unknown";
+    targetRecord?: unknown;
+    field?: string;
+    reason?: string;
+    sourceCells?: string[];
+  },
+): Promise<void> {
+  await writer.query(
+    `INSERT INTO import_batch_row {
+      batch: $batch,
+      sheet_name: $sheetName,
+      source_row_number: $rowNumber,
+      status: $status,
+      target_record: $targetRecord,
+      field: $field,
+      reason: $reason,
+      source_cells: $sourceCells
+    } ON DUPLICATE KEY UPDATE
+      status = $status,
+      target_record = $targetRecord,
+      field = $field,
+      reason = $reason,
+      source_cells = $sourceCells,
+      updated_at = time::now()
+    RETURN AFTER`,
+    mapNullsToSurrealNone({
+      batch: toRecordId(batch.id),
+      sheetName: batch.sheetName,
+      rowNumber,
+      status: receipt.status,
+      targetRecord: receipt.targetRecord ?? null,
+      field: receipt.field ?? null,
+      reason: receipt.reason ?? null,
+      sourceCells: receipt.sourceCells ?? null,
+    }),
+  );
+}
+
+function stableImportRecordKey(batchId: string, sheetName: string, rowNumber: number): string {
+  const source = `${batchId}\u0000${sheetName}\u0000${rowNumber}`;
+  let left = 2166136261;
+  let right = 2166136261 ^ 0x9e3779b9;
+  for (let index = 0; index < source.length; index += 1) {
+    const code = source.charCodeAt(index);
+    left ^= code;
+    left = Math.imul(left, 16777619);
+    right ^= code + index;
+    right = Math.imul(right, 2246822519);
+  }
+  const digest = [left, right]
+    .map((hash) => (hash >>> 0).toString(16).padStart(8, "0"))
+    .join("");
+  return `import_${digest}_${rowNumber}`;
 }
 
 function relaxedImportText(value: string): string {

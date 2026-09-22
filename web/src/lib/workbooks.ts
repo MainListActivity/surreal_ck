@@ -70,11 +70,17 @@ export type CsvWorkbookImportResult = {
 export type XlsxWorkbookImportInput = {
   workbookName: string;
   sheets: ParsedXlsxSheet[];
+  batch?: { id: string };
 };
 
 export type XlsxWorkbookImportResult = {
   workbook: WorkbookRow;
-  sheets: Array<{ sheetName: string; importedCount: number; skippedCount: number }>;
+  sheets: Array<{
+    sheetName: string;
+    importedCount: number;
+    skippedCount: number;
+    rejected?: Array<{ rowNumber: number; field: string; reason: string; sourceCells: string[] }>;
+  }>;
 };
 
 /** 把 `workbook` 记录裁成展示用 {@link WorkbookRow}（剔系统字段，规范化 key）。 */
@@ -146,6 +152,22 @@ export type CreateWorkbookOptions = {
   defaultDashboard?: WorkbookTemplateDefaultDashboard;
   /** 事务含默认仪表盘；用于把引擎校验失败规整成用户可读错误。 */
   includesTemplateDashboard?: boolean;
+  /** XLSX 新工作簿导入的逐行回执；与结构及业务记录进入同一原子事务。 */
+  importBatch?: {
+    id: string;
+    receipts: ImportReceiptForCreate[];
+  };
+};
+
+type ImportReceiptForCreate = {
+  sheetKey: string;
+  sheetName: string;
+  rowNumber: number;
+  status: "success" | "rejected";
+  sampleKey?: string;
+  field?: string;
+  reason?: string;
+  sourceCells?: string[];
 };
 
 export type TemplateSheetForCreate = {
@@ -390,6 +412,31 @@ export function buildCreateWorkbookTransaction(
     `CREATE ${recordId} CONTENT $sampleRecord${index};`
   ).join("\n");
 
+  const importReceiptSql = (options.importBatch?.receipts ?? []).map((receipt, index) => {
+    const targetRecord = receipt.sampleKey
+      ? sampleIds.get(`${receipt.sheetKey}\u0000${receipt.sampleKey}`)
+      : undefined;
+    if (receipt.status === "success" && !targetRecord) {
+      throw new Error(`导入成功回执无法解析目标记录：${receipt.sheetName}/${receipt.rowNumber}`);
+    }
+    return `INSERT INTO import_batch_row {
+  batch: $importBatch${index},
+  sheet_name: $importSheetName${index},
+  source_row_number: $importRowNumber${index},
+  status: $importRowStatus${index},
+  target_record: $importTargetRecord${index},
+  field: $importRowField${index},
+  reason: $importRowReason${index},
+  source_cells: $importSourceCells${index}
+} ON DUPLICATE KEY UPDATE
+  status = $importRowStatus${index},
+  target_record = $importTargetRecord${index},
+  field = $importRowField${index},
+  reason = $importRowReason${index},
+  source_cells = $importSourceCells${index},
+  updated_at = time::now();`;
+  }).join("\n");
+
   const sheetSql = resolvedSheets.map((sheet) => {
     const fieldDdl = sheet.columns
       .map((column) => {
@@ -418,15 +465,32 @@ CREATE ${sheet.id} CONTENT { workbook: ${wbId}, label: ${labelBinding}, table_na
   const dashboardSql = resolvedDashboard && dashboardId
     ? `CREATE ${dashboardId} CONTENT { workbook: ${wbId}, title: $dashboardTitle, slug: $dashboardSlug, widgets: $dashboardWidgets${resolvedDashboard.description ? ", description: $dashboardDescription" : ""} };`
     : "";
+  const importBatchSql = options.importBatch
+    ? `UPDATE import_batch SET workbook = ${wbId}, updated_at = time::now() WHERE id = $importBatchWorkbook;`
+    : "";
+  const importBatchSheetSql = options.importBatch
+    ? resolvedSheets.map((sheet) =>
+      `UPDATE import_batch_sheet SET target_sheet = ${sheet.id}, updated_at = time::now() WHERE batch = $importBatchWorkbook AND sheet_name = $importBatchSheetName${sheet.index};`
+    ).join("\n")
+    : "";
 
   const sql = `BEGIN TRANSACTION;
 CREATE ${wbId} CONTENT { name: $name, last_opened_sheet: ${createdSheets[0]!.id}${templateClause} };
 ${sheetSql}
 ${sampleSql}
+${importBatchSql}
+${importBatchSheetSql}
+${importReceiptSql}
 ${dashboardSql}
 COMMIT TRANSACTION;`;
 
   const bindings: Record<string, unknown> = { name };
+  if (options.importBatch) {
+    bindings.importBatchWorkbook = toRecordId(options.importBatch.id);
+    for (const sheet of resolvedSheets) {
+      bindings[`importBatchSheetName${sheet.index}`] = sheet.label;
+    }
+  }
   for (const sheet of resolvedSheets) {
     const suffix = createdSheets.length === 1 ? "" : String(sheet.index);
     bindings[createdSheets.length === 1 ? "label" : `sheetLabel${suffix}`] = sheet.label.trim() || `Sheet ${sheet.index + 1}`;
@@ -440,6 +504,19 @@ COMMIT TRANSACTION;`;
     bindings[`sampleRecord${index}`] = Object.fromEntries(
       Object.entries(sample.values).map(([field, value]) => [field, resolveSampleValue(value)]),
     );
+  });
+  (options.importBatch?.receipts ?? []).forEach((receipt, index) => {
+    const targetRecord = receipt.sampleKey
+      ? sampleIds.get(`${receipt.sheetKey}\u0000${receipt.sampleKey}`)
+      : undefined;
+    bindings[`importBatch${index}`] = toRecordId(options.importBatch!.id);
+    bindings[`importSheetName${index}`] = receipt.sheetName;
+    bindings[`importRowNumber${index}`] = receipt.rowNumber;
+    bindings[`importRowStatus${index}`] = receipt.status;
+    bindings[`importTargetRecord${index}`] = targetRecord ? toRecordId(targetRecord) : undefined;
+    bindings[`importRowField${index}`] = receipt.field;
+    bindings[`importRowReason${index}`] = receipt.reason;
+    bindings[`importSourceCells${index}`] = receipt.sourceCells;
   });
   if (resolvedDashboard) {
     bindings.dashboardTitle = resolvedDashboard.title;
@@ -598,11 +675,45 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
 
     const convertedSheets = sheets.map((sheet, sheetIndex) => {
       const fields = sheet.fields.map((field) => ({ ...field, label: field.label.trim() }));
-      const converted = convertCsvImportRows(sheet.rows, fields);
+      const convertedRows = sheet.rows.map((sourceCells, rowIndex) => {
+        const rowNumber = rowIndex + 2;
+        const converted = convertCsvImportRows([sourceCells], fields);
+        const record = converted.records[0];
+        return record
+          ? { rowNumber, sourceCells, record }
+          : {
+              rowNumber,
+              sourceCells,
+              reason: converted.skipped[0]?.reason ?? "记录无法转换",
+            };
+      });
+      const accepted = convertedRows.filter((row): row is typeof row & { record: Record<string, unknown> } => "record" in row);
+      const rejected = convertedRows.filter((row): row is typeof row & { reason: string } => "reason" in row);
+      const converted = {
+        records: accepted.map((row) => row.record),
+        skipped: rejected.map((row) => ({ rowNumber: row.rowNumber, reason: row.reason })),
+      };
       return {
         sheet,
         fields,
         converted,
+        receipts: convertedRows.map((row) => "record" in row
+          ? {
+              sheetKey: `xlsx_${sheetIndex + 1}`,
+              sheetName: sheet.name,
+              rowNumber: row.rowNumber,
+              status: "success" as const,
+              sampleKey: `xlsx-row-${row.rowNumber}`,
+            }
+          : {
+              sheetKey: `xlsx_${sheetIndex + 1}`,
+              sheetName: sheet.name,
+              rowNumber: row.rowNumber,
+              status: "rejected" as const,
+              field: "整条记录",
+              reason: row.reason,
+              sourceCells: [...row.sourceCells],
+            }),
         create: {
           key: `xlsx_${sheetIndex + 1}`,
           label: sheet.name,
@@ -611,10 +722,7 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
             label: field.label,
             fieldType: field.fieldType,
           })),
-          sampleRecords: converted.records.map((values, index) => ({
-            key: `xlsx-row-${index + 1}`,
-            values,
-          })),
+          sampleRecords: accepted.map((row) => ({ key: `xlsx-row-${row.rowNumber}`, values: row.record })),
         } satisfies TemplateSheetForCreate,
       };
     });
@@ -626,6 +734,12 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
 
     const workbook = await create(workbookName, {
       sheets: convertedSheets.map(({ create }) => create),
+      ...(input.batch ? {
+        importBatch: {
+          id: input.batch.id,
+          receipts: convertedSheets.flatMap(({ receipts }) => receipts),
+        },
+      } : {}),
     });
     if (!workbook) return null;
     return {
@@ -634,6 +748,14 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
         sheetName: sheet.name,
         importedCount: converted.records.length,
         skippedCount: converted.skipped.length,
+        ...(converted.skipped.length ? {
+          rejected: converted.skipped.map((failure) => ({
+            rowNumber: failure.rowNumber,
+            field: "整条记录",
+            reason: failure.reason,
+            sourceCells: [...sheet.rows[failure.rowNumber - 2]!],
+          })),
+        } : {}),
       })),
     };
   }

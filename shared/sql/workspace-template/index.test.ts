@@ -187,6 +187,26 @@ describe("workspace template scripts", () => {
     expect(sql).not.toContain("REMOVE TABLE");
   });
 
+  test("运营导入批次增量保存可恢复状态、逐表结果和幂等逐行回执", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.name === "023-import-batch-recovery.surql");
+
+    expect(migration?.version).toBe(23);
+    const sql = migration?.sql ?? "";
+    expect(sql).toContain("DEFINE TABLE IF NOT EXISTS import_batch SCHEMAFULL CHANGEFEED 7d");
+    expect(sql).toContain("DEFINE TABLE IF NOT EXISTS import_batch_sheet SCHEMAFULL");
+    expect(sql).toContain("DEFINE TABLE IF NOT EXISTS import_batch_row SCHEMAFULL");
+    expect(sql).toContain('"processing", "completed", "partial_failure", "failed", "outcome_unknown"');
+    expect(sql).toContain("target_record ON TABLE import_batch_row TYPE option<record>");
+    expect(sql).toContain("mappings.* ON TABLE import_batch_sheet TYPE object FLEXIBLE");
+    expect(sql).toContain("ALTER FIELD mappings.* ON TABLE import_batch_sheet FLEXIBLE");
+    expect(sql).toContain(
+      "DEFINE INDEX IF NOT EXISTS import_batch_row_source_unique ON TABLE import_batch_row COLUMNS batch, sheet_name, source_row_number UNIQUE",
+    );
+    expect(sql).toContain("DEFAULT fn::current_user()");
+    expect(sql).not.toContain("source_file");
+  });
+
   test("workbook_template：类型由业务数据定义——底层不枚举行业类型，仅管理员可增改删，workbook 引用为可选 record", async () => {
     const scripts = await loadTemplateScripts();
     const tpl = scripts.find((script) => script.name === "011-workbook-template.surql");

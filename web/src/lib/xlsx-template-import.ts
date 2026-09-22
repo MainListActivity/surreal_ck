@@ -3,6 +3,7 @@ import {
   mapCsvHeadersToTemplateFields,
   type TemplateImportExecutionInput,
   type TemplateImportExecutionResult,
+  type TemplateImportMapping,
   type TemplateImportRejectedRow,
   type TemplateImportTarget,
 } from "./template-sheet-import";
@@ -35,6 +36,7 @@ export function suggestXlsxSheetTarget(
 export async function importXlsxSheetIntoTemplate(input: {
   sheet: ParsedXlsxSheet;
   targets: TemplateImportTarget[];
+  mappings?: TemplateImportMapping[];
   importRows: (input: TemplateImportExecutionInput) => Promise<TemplateImportExecutionResult>;
 }): Promise<{
   importedCount: number;
@@ -44,7 +46,7 @@ export async function importXlsxSheetIntoTemplate(input: {
   if (input.sheet.status !== "ready") {
     throw new Error(input.sheet.issue ?? "Sheet 不可导入");
   }
-  const mappings = mapCsvHeadersToTemplateFields(
+  const mappings = input.mappings ?? mapCsvHeadersToTemplateFields(
     input.sheet.fields.map((field) => field.label),
     input.targets,
   );

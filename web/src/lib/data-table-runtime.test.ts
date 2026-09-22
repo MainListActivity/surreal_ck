@@ -36,6 +36,7 @@ function runtimeHarness(
   const updates: Array<{ id: string; patch: Record<string, unknown> }> = [];
   const creates: Array<{ table: string; data: Record<string, unknown> }> = [];
   const txCalls: string[] = [];
+  const importReceipts = new Map<string, Record<string, unknown>>();
 
   const writer = {
     async updateRecord(id: string, patch: Record<string, unknown>) {
@@ -64,7 +65,7 @@ function runtimeHarness(
     use: async () => ({}),
     close: async () => true,
     subscribe: () => () => {},
-    query: (async (sql: string) => {
+    query: (async (sql: string, bindings?: Record<string, unknown>) => {
       calls.push(sql);
       if (/FROM sheet/i.test(sql)) {
         return [{
@@ -74,6 +75,11 @@ function runtimeHarness(
           table_name: "ent_claim",
           column_defs: runtimeColumns,
         }];
+      }
+      if (/FROM import_batch_row/i.test(sql)) {
+        const key = `${String(bindings?.batch)}:${String(bindings?.sheetName)}:${String(bindings?.rowNumber)}`;
+        const receipt = importReceipts.get(key);
+        return receipt ? [{ ...receipt }] : [];
       }
       return rows.map((row) => ({ ...row }));
     }) as SurrealConn["query"],
@@ -87,8 +93,27 @@ function runtimeHarness(
       txCalls.push("BEGIN");
       const tx: SurrealTransactionWriter = {
         ...writer,
-        query: (async (sql: string) => {
+        query: (async (sql: string, bindings?: Record<string, unknown>) => {
           txCalls.push(sql);
+          if (/CREATE \$targetRecord/i.test(sql)) {
+            const created = { id: bindings?.targetRecord, ...(bindings?.data as Record<string, unknown>) };
+            creates.push({ table: "ent_claim", data: bindings?.data as Record<string, unknown> });
+            rows.push(created);
+            return [created];
+          }
+          if (/INSERT INTO import_batch_row/i.test(sql)) {
+            const key = `${String(bindings?.batch)}:${String(bindings?.sheetName)}:${String(bindings?.rowNumber)}`;
+            const receipt = {
+              id: `import_batch_row:${importReceipts.size + 1}`,
+              batch: bindings?.batch,
+              sheet_name: bindings?.sheetName,
+              source_row_number: bindings?.rowNumber,
+              status: bindings?.status,
+              target_record: bindings?.targetRecord,
+            };
+            importReceipts.set(key, receipt);
+            return [receipt];
+          }
           return /SELECT \*/i.test(sql) ? rows.map((row) => ({ ...row })) : [];
         }) as SurrealTransactionWriter["query"],
       };
@@ -104,6 +129,7 @@ function runtimeHarness(
     updates,
     creates,
     txCalls,
+    importReceipts,
     get live() { return live; },
     get unsubscribed() { return unsubscribed; },
     setRows(next: Array<Record<string, unknown>>) { rows = next.map((row) => ({ ...row })); },
@@ -319,6 +345,35 @@ describe("数据表运行时打开与记录入口", () => {
     ]);
     expect(h.creates).toHaveLength(2);
     expect(String(h.creates[1]!.data.creditor)).toBe("ent_creditor:c2");
+  });
+
+  test("持久批次把业务记录与成功回执同事务提交，并在重放前核实回执", async () => {
+    const h = runtimeHarness();
+    const runtime = await openDataTableRuntime({
+      conn: h.conn,
+      workbookId: "workbook:w1",
+      dataTableId: "sheet:s1",
+      query: emptyView,
+    });
+    const input = {
+      rows: [["甲", "100"]],
+      rowNumbers: [8],
+      mappings: [
+        { sourceIndex: 0, sourceLabel: "名称", targetKey: "name", matchedBy: "field-name" },
+        { sourceIndex: 1, sourceLabel: "金额", targetKey: "amount", matchedBy: "field-name" },
+      ] satisfies TemplateImportMapping[],
+      batch: { id: "import_batch:b1", sheetName: "债权" },
+    };
+
+    const first = await runtime.importCsvRows(input);
+    const replay = await runtime.importCsvRows(input);
+
+    expect(first).toEqual({ importedCount: 1, rejected: [], replayedCount: 0, outcomeUnknownCount: 0 });
+    expect(replay).toEqual({ importedCount: 1, rejected: [], replayedCount: 1, outcomeUnknownCount: 0 });
+    expect(h.creates).toHaveLength(1);
+    expect(h.importReceipts.size).toBe(1);
+    expect(h.txCalls.filter((call) => call === "BEGIN")).toHaveLength(1);
+    expect(h.txCalls.some((call) => /INSERT INTO import_batch_row/i.test(call))).toBe(true);
   });
 });
 

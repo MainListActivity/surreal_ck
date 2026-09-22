@@ -1,5 +1,6 @@
 <script lang="ts">
   import { FileUp, X } from "@lucide/svelte";
+  import { onMount } from "svelte";
   import type { ParsedCsvImport } from "../../../lib/csv-import";
   import { parseCsvImport } from "../../../lib/csv-import";
   import { editorStore } from "../../../lib/editor-store.svelte";
@@ -18,6 +19,8 @@
   import type { ParsedXlsxImport, ParsedXlsxSheet } from "../../../lib/xlsx-import";
   import { createXlsxParseTask } from "../../../lib/xlsx-parse-task";
   import { importXlsxSheetIntoTemplate } from "../../../lib/xlsx-template-import";
+  import { createImportBatchService, importFingerprint, type ImportBatchSnapshot, type ImportBatchStatus } from "../../../lib/import-batch";
+  import { getSurreal } from "../../../lib/surreal";
 
   type Controller = ReturnType<typeof createTemplateSheetImportController>;
 
@@ -27,6 +30,28 @@
   let fileError = $state<string | null>(null);
   let xlsxParsed = $state<ParsedXlsxImport | null>(null);
   let xlsxParseTask = $state<ReturnType<typeof createXlsxParseTask> | null>(null);
+  let csvBatchId = $state<string | null>(null);
+  let csvBatchStatus = $state<ImportBatchStatus | null>(null);
+  const batchService = createImportBatchService(getSurreal());
+  let recentBatches = $state<ImportBatchSnapshot[]>([]);
+  let selectedBatch = $state<ImportBatchSnapshot | null>(null);
+
+  onMount(() => {
+    void loadRecentBatches();
+  });
+
+  async function loadRecentBatches(): Promise<void> {
+    try {
+      recentBatches = await batchService.listRecent(8);
+      if (selectedBatch) selectedBatch = recentBatches.find((batch) => batch.id === selectedBatch?.id) ?? null;
+    } catch {
+      recentBatches = [];
+    }
+  }
+
+  async function inspectBatch(id: string): Promise<void> {
+    selectedBatch = await batchService.load(id);
+  }
 
   function close(): void {
     editorUi.showTemplateImport = false;
@@ -37,6 +62,8 @@
     xlsxParsed = null;
     xlsxParseTask?.cancel();
     xlsxParseTask = null;
+    csvBatchId = null;
+    csvBatchStatus = null;
   }
 
   function xlsxTargets() {
@@ -46,12 +73,17 @@
         id: target.id,
         label: target.label,
         targets,
-        importSheet: async (sheet: ParsedXlsxSheet) => {
+        importSheet: async (
+          sheet: ParsedXlsxSheet,
+          batch?: { id: string; sheetName: string },
+          mappings?: import("../../../lib/template-sheet-import").TemplateImportMapping[],
+        ) => {
           await editorStore.switchSheet(target.id);
           return importXlsxSheetIntoTemplate({
             sheet,
             targets,
-            importRows: (input) => editorStore.importCsvRows(input),
+            mappings,
+            importRows: (input) => editorStore.importCsvRows({ ...input, batch }),
           });
         },
       };
@@ -107,7 +139,39 @@
       controller = createTemplateSheetImportController({
         parsed,
         targets: activeTargets(),
-        importRows: (input) => editorStore.importCsvRows(input),
+        importRows: async (importInput) => {
+          const activeSheet = editorStore.sheets.find((sheet) => sheet.id === editorStore.activeSheetId);
+          if (!activeSheet) throw new Error("当前数据表不可用");
+          if (!csvBatchId) {
+            const started = await batchService.start({
+              fileName: parsed!.fileName,
+              fileDigest: importFingerprint({ fields: parsed!.fields, rows: parsed!.rows }),
+              mappingVersion: importFingerprint(importInput.mappings),
+              mode: "existing_tables",
+              workbookId: editorStore.workbook?.id,
+              sheets: [{
+                sheetName: activeSheet.label,
+                targetSheetId: activeSheet.id,
+                mappings: importInput.mappings,
+              }],
+            });
+            csvBatchId = started.id;
+            csvBatchStatus = "processing";
+          }
+          const result = await editorStore.importCsvRows({
+            ...importInput,
+            batch: { id: csvBatchId, sheetName: activeSheet.label },
+          });
+          await batchService.finishSheet(csvBatchId, activeSheet.label, {
+            status: "completed",
+            importedCount: result.importedCount,
+            rejectedCount: result.rejected.length,
+            targetSheetId: activeSheet.id,
+          });
+          csvBatchStatus = result.rejected.length ? "partial_failure" : "completed";
+          await batchService.finish(csvBatchId, csvBatchStatus);
+          return result;
+        },
       });
       view = controller.snapshot;
     } catch (cause) {
@@ -165,8 +229,27 @@
             <span>使用模板数据表字段，支持中文表头与多 Sheet</span>
             <input type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onchange={(event) => void chooseFile(event)} />
           </label>
+          {#if recentBatches.length > 0}
+            <section class="recent-batches">
+              <div class="section-title"><h3>最近导入批次</h3><button type="button" onclick={() => void loadRecentBatches()}>刷新</button></div>
+              {#each recentBatches as batch}
+                <button class="batch-row" type="button" onclick={() => void inspectBatch(batch.id)}>
+                  <strong>{batch.fileName}</strong>
+                  <span>{batch.status === "outcome_unknown" ? "结果待核实" : batch.status} · {batch.updatedAt}</span>
+                </button>
+              {/each}
+              {#if selectedBatch}
+                <p class="batch-detail">
+                  成功 {selectedBatch.sheets.reduce((sum, sheet) => sum + sheet.importedCount, 0)} 条，
+                  拒绝 {selectedBatch.sheets.reduce((sum, sheet) => sum + sheet.rejectedCount, 0)} 条。
+                  {selectedBatch.status === "outcome_unknown" ? "请先核实回执，不要盲目重试。" : "结果已从数据库恢复。"}
+                </p>
+              {/if}
+            </section>
+          {/if}
           {#if fileError}<p class="error" role="alert">{fileError}</p>{/if}
         {:else if view.importedCount > 0 || view.rejected.length > 0}
+          {#if csvBatchId}<p class="batch-result">批次 {csvBatchId} · {csvBatchStatus === "partial_failure" ? "部分失败，可修正后重试" : "结果已持久保存"}</p>{/if}
           <div class="summary" aria-live="polite">
             <div><strong>{view.importedCount}</strong><span>成功记录</span></div>
             <div><strong>{view.rejected.length}</strong><span>失败记录</span></div>
