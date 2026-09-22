@@ -15,6 +15,7 @@ import type {
 } from "@surreal-ck/shared";
 import { ResolvedRecordSchema } from "@surreal-ck/shared";
 import { classifyTask, type RouterCategory, type RouterLlmCaller, type RouterPlan } from "./router-classifier";
+import type { DecisionCaller } from "../../decision/model";
 
 export const ROUTER_WORKFLOW_ID = "routerWorkflow";
 export const ROUTER_RUNTIME_KEY = "routerRuntime";
@@ -318,6 +319,10 @@ export type RouterRuntime = {
   surrealSession: Surreal;
   executors: SubAgentExecutors;
   llmCaller: RouterLlmCaller;
+  /** 可选决策模型：意图分类的单意图捷径；缺席时纯 LLM 分类。 */
+  decisionModel?: DecisionCaller;
+  /** 决策置信度阈值；默认 router-classifier 内 0.75。 */
+  jevConfidenceThreshold?: number;
   planOverride?: RouterPlan;
   streamId: string;
   /** 业务侧 runId（可与 Mastra runId 不同）。 */
@@ -354,7 +359,13 @@ export function createRouterWorkflow() {
     execute: async ({ inputData, requestContext, setState }) => {
       const runtime = getRuntime(requestContext);
       runtime.pushProgress?.({ kind: "routing", runId: runtime.runId });
-      const plan = runtime.planOverride ?? await classifyTask({ text: inputData.text, llmCaller: runtime.llmCaller });
+      const plan = runtime.planOverride ?? await classifyTask({
+        text: inputData.text,
+        llmCaller: runtime.llmCaller,
+        decisionModel: runtime.decisionModel,
+        userContext: runtime.userContext,
+        confidenceThreshold: runtime.jevConfidenceThreshold,
+      });
       await setState({
         plan,
         cursor: 0,

@@ -59,6 +59,12 @@ const EnvSchema = z.object({
   // 资源保存确认动作的 embedding provider key（与 chat 模型设置分离；openai-compatible）。
   // 未配置时：无 profile 的 workspace 照常保存（embedding disabled），有 profile 的保存会失败。
   EMBEDDING_API_KEY: z.string().min(1).optional(),
+
+  // TypeSafe 决策模型（System One / Jev）：意图分类的单意图捷径。key 缺省即纯 LLM 分类。
+  TYPESAFE_API_KEY: z.string().min(1).optional(),
+  JEV_MODEL: z.string().min(1).default("jev-latest"),
+  JEV_CONFIDENCE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.75),
+  JEV_TIMEOUT_MS: z.coerce.number().int().positive().default(1500),
 });
 
 export type ServerEnv = z.infer<typeof EnvSchema>;

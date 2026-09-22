@@ -7,6 +7,7 @@ import { createAiStreamRoutes } from "./routes/ai-stream";
 import { createAiChatService } from "./ai/chat-service";
 import { createMastraRunner } from "./ai/assemble-mastra";
 import { env } from "./env";
+import { createTypeSafeDecisionModel } from "../ai/decision/model";
 import { createInternalIdpRoutes } from "./routes/internal-idp";
 import { createMemberRoutes } from "./routes/members";
 import { createSessionRoutes } from "./routes/session";
@@ -122,6 +123,14 @@ function buildAutoAiChatService(
   embeddingProvider?: EmbeddingProvider,
 ): AiChatService | undefined {
   if (!env.AI_PROVIDER || !env.AI_MODEL || !env.AI_API_KEY) return undefined;
+  // TYPESAFE_API_KEY 缺省 → decisionModel 为 undefined，意图分类保持纯 LLM 路径。
+  const decisionModel = env.TYPESAFE_API_KEY
+    ? createTypeSafeDecisionModel({
+        apiKey: env.TYPESAFE_API_KEY,
+        model: env.JEV_MODEL,
+        timeoutMs: env.JEV_TIMEOUT_MS,
+      })
+    : undefined;
   const { runner, resumer } = createMastraRunner({
     settings: {
       provider: env.AI_PROVIDER,
@@ -129,6 +138,8 @@ function buildAutoAiChatService(
       apiKey: env.AI_API_KEY,
       baseUrl: env.AI_BASE_URL,
     },
+    decisionModel,
+    jevConfidenceThreshold: env.JEV_CONFIDENCE_THRESHOLD,
     // 资源检索查询向量与保存路径共用同一服务端 embedding key（RR-014）
     embeddingProvider,
     searchLegalContent: ({ query, limit }) => platformContentService.searchPublishedForUser({ query, limit }),
