@@ -109,6 +109,17 @@ describe("workspace template scripts", () => {
     expect(migration?.sql).toContain("default_dashboard.widgets");
   });
 
+  test("模板检查规则增量保存版本化受限声明并扩展体检问题分类", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.version === 26);
+    expect(migration?.sql).toContain("check_rules ON TABLE workbook_template");
+    expect(migration?.sql).toContain("check_rules.version");
+    expect(migration?.sql).toContain("check_rules.rules");
+    expect(migration?.sql).toContain('"duplicate_candidate"');
+    expect(migration?.sql).toContain('"reference_unverifiable"');
+    expect(migration?.sql).not.toMatch(/\b(?:EXECUTE|FUNCTION|QUERY)\b/i);
+  });
+
   test("模板快捷任务增量保存任务声明，并让实例化数据表保留稳定模板 key", async () => {
     const scripts = await loadTemplateScripts();
     const migration = scripts.find((script) => script.name === "016-template-quick-tasks.surql");

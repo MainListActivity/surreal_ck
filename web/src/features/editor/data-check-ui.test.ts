@@ -19,5 +19,21 @@ describe("全范围数据体检界面", () => {
     expect(dialog).toContain("结果待重检");
     expect(dialog).toContain("完整扫描范围内未发现问题");
     expect(dialog).toContain("定位记录");
+    expect(dialog).toContain("重复候选");
+    expect(dialog).toContain("引用无法核验");
+    expect(dialog).toContain("字段一致性");
+  });
+
+  test("模板页为管理员提供三类受限规则配置入口", async () => {
+    const [templates, rulesDialog] = await Promise.all([
+      read("../../screens/TemplatesScreen.svelte"),
+      read("../../components/TemplateCheckRulesDialog.svelte"),
+    ]);
+    expect(templates).toContain("配置数据检查规则");
+    expect(templates).toContain("canWriteSharedStructure");
+    expect(rulesDialog).toContain("duplicate");
+    expect(rulesDialog).toContain("reference_exists");
+    expect(rulesDialog).toContain("consistency");
+    expect(rulesDialog).toContain("不执行脚本或查询");
   });
 });

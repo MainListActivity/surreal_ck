@@ -63,6 +63,37 @@ export type WorkbookTemplateRowAnalysis = {
   outputGuidance: string[];
 };
 
+export type WorkbookTemplateCheckRule =
+  | {
+      key: string;
+      type: "duplicate";
+      sheetKey: string;
+      fields: string[];
+      minimumGroupSize: number;
+      explanation: string;
+    }
+  | {
+      key: string;
+      type: "reference_exists";
+      sheetKey: string;
+      field: string;
+      targetSheetKey: string;
+      explanation: string;
+    }
+  | {
+      key: string;
+      type: "consistency";
+      sheetKey: string;
+      leftField: string;
+      rightField: string;
+      explanation: string;
+    };
+
+export type WorkbookTemplateCheckRules = {
+  version: string;
+  rules: WorkbookTemplateCheckRule[];
+};
+
 export type WorkbookTemplateSheet = {
   /** 模板包内稳定的数据表标识；实例化后不作为真实表名。 */
   key: string;
@@ -94,6 +125,8 @@ export type WorkbookTemplate = {
   quickTasks?: WorkbookTemplateQuickTask[];
   /** 通用行分析 agent 在当前工作簿内使用的模板领域说明。 */
   rowAnalysis?: WorkbookTemplateRowAnalysis;
+  /** 管理员声明的受限跨记录体检规则；不接受脚本或任意查询。 */
+  checkRules?: WorkbookTemplateCheckRules;
   builtin: boolean;
   sortOrder: number;
 };

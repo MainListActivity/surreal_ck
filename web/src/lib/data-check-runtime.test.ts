@@ -2,11 +2,12 @@ import { describe, expect, test } from "bun:test";
 import type { SurrealConn } from "./surreal";
 import { createDataCheckService } from "./data-check-runtime";
 
-function harness(options: { stale?: boolean } = {}) {
+function harness(options: { stale?: boolean; templateVersion?: { current: string } } = {}) {
   const records = Array.from({ length: 501 }, (_, index) => ({
     id: `ent_claim:r${index + 1}`,
     name: index === 500 ? null : `记录 ${index + 1}`,
     updated_at: "2026-09-22T00:00:00Z",
+    legal_name: index === 0 ? " ACME " : index === 500 ? "acme" : `主体 ${index}`,
   }));
   const runs = new Map<string, Record<string, unknown>>();
   const findings = new Map<string, Record<string, unknown>>();
@@ -14,8 +15,11 @@ function harness(options: { stale?: boolean } = {}) {
   let latestReads = 0;
   const sheet = {
     id: "sheet:s1", workbook: "workbook:w1", label: "债权",
-    table_name: "ent_claim",
-    column_defs: [{ key: "name", label: "名称", field_type: "text", required: true }],
+    table_name: "ent_claim", template_sheet_key: "claims",
+    column_defs: [
+      { key: "name", label: "名称", field_type: "text", required: true },
+      { key: "legal_name", label: "主体", field_type: "text" },
+    ],
   };
   const conn = {
     status: "connected",
@@ -33,6 +37,19 @@ function harness(options: { stale?: boolean } = {}) {
     },
     query: async (sql: string, bindings?: Record<string, unknown>) => {
       if (/FROM sheet WHERE workbook/i.test(sql)) return [sheet];
+      if (/SELECT template FROM workbook/i.test(sql)) {
+        return options.templateVersion ? [{ template: "workbook_template:claims" }] : [];
+      }
+      if (/FROM workbook_template/i.test(sql)) return [{
+        sheet_defs: [{ key: "claims", label: "债权", column_defs: sheet.column_defs }],
+        check_rules: {
+          version: options.templateVersion?.current,
+          rules: [{
+            key: "same_legal_name", type: "duplicate", sheet_key: "claims",
+            fields: ["legal_name"], minimum_group_size: 2, explanation: "主体名称相同",
+          }],
+        },
+      }];
       if (/FROM sheet WHERE id/i.test(sql)) return [sheet];
       if (/SELECT count\(\) AS total/i.test(sql)) return [{ total: records.length }];
       if (/SELECT updated_at .*ORDER BY updated_at DESC/i.test(sql)) {
@@ -50,7 +67,8 @@ function harness(options: { stale?: boolean } = {}) {
         const row = previous ?? {
           id: `data_check_finding:${stable}`,
           category: bindings?.category, explanation: bindings?.explanation,
-          rule_key: bindings?.ruleKey, record: bindings?.record, sheet: bindings?.sheet,
+          rule_key: bindings?.ruleKey, rule_version: bindings?.ruleVersion,
+          record: bindings?.record, sheet: bindings?.sheet,
           field: bindings?.field, evidence_fingerprint: bindings?.evidenceFingerprint,
         };
         findings.set(stable, row);
@@ -103,5 +121,22 @@ describe("全范围数据体检公开接口", () => {
     const result = await createDataCheckService(h.conn).start({ workbookId: "workbook:w1", signal: controller.signal });
 
     expect(result).toMatchObject({ status: "cancelled", stale: true, error: "用户已取消" });
+  });
+
+  test("模板规则跨 500 条分页产生候选，升级版本后不复用旧问题身份", async () => {
+    const version = { current: "v1" };
+    const h = harness({ templateVersion: version });
+    const service = createDataCheckService(h.conn);
+    const first = await service.start({ workbookId: "workbook:w1" });
+    version.current = "v2";
+    const second = await service.start({ workbookId: "workbook:w1" });
+    const firstDuplicates = first.findings.filter((finding) => finding.category === "duplicate_candidate");
+    const secondDuplicates = second.findings.filter((finding) => finding.category === "duplicate_candidate");
+
+    expect(first.rulesVersion).toContain("template:v1");
+    expect(firstDuplicates.map((finding) => finding.recordId)).toEqual(["ent_claim:r1", "ent_claim:r501"]);
+    expect(second.rulesVersion).toContain("template:v2");
+    expect(secondDuplicates[0]?.id).not.toBe(firstDuplicates[0]?.id);
+    expect(firstDuplicates.every((finding) => finding.explanation.includes("仅供核验"))).toBe(true);
   });
 });
