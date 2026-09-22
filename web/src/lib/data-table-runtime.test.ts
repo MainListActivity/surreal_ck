@@ -81,6 +81,15 @@ function runtimeHarness(
         const receipt = importReceipts.get(key);
         return receipt ? [{ ...receipt }] : [];
       }
+      if (/SELECT count\(\) AS total/i.test(sql)) return [{ total: rows.length }];
+      if (/SELECT updated_at .*ORDER BY updated_at DESC/i.test(sql)) {
+        return rows.length ? [{ updated_at: rows.at(-1)?.updated_at ?? "2026-09-22T00:00:00Z" }] : [];
+      }
+      if (/FROM type::table/i.test(sql)) {
+        const limit = Number(sql.match(/LIMIT (\d+)/i)?.[1] ?? rows.length);
+        const start = Number(sql.match(/START (\d+)/i)?.[1] ?? 0);
+        return rows.slice(start, start + limit).map((row) => ({ ...row }));
+      }
       return rows.map((row) => ({ ...row }));
     }) as SurrealConn["query"],
     liveTable: (async (_table: string, handler: (message: LiveMessage) => void) => {
@@ -137,6 +146,25 @@ function runtimeHarness(
 }
 
 describe("数据表运行时打开与记录入口", () => {
+  test("全范围扫描跨过默认 500 条窗口并保留末尾记录", async () => {
+    const rows = Array.from({ length: 501 }, (_, index) => ({
+      id: `ent_claim:r${index + 1}`,
+      name: index === 500 ? null : `记录 ${index + 1}`,
+      amount: index,
+      updated_at: "2026-09-22T00:00:00Z",
+    }));
+    const h = runtimeHarness(rows);
+    const runtime = await openDataTableRuntime({
+      conn: h.conn, workbookId: "workbook:w1", dataTableId: "sheet:s1", query: emptyView,
+    });
+
+    const scanned = await runtime.scanAllRecords();
+
+    expect(scanned.scannedCount).toBe(501);
+    expect(scanned.records.at(-1)).toMatchObject({ id: "ent_claim:r501", values: { name: null } });
+    expect(scanned.stale).toBe(false);
+  });
+
   test("先建立 LIVE 再查询正式记录，并验证工作簿 + 数据表归属", async () => {
     const h = runtimeHarness([{ id: "ent_claim:a", name: "甲", amount: 1 }]);
     const runtime = await openDataTableRuntime({

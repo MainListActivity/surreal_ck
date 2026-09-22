@@ -219,6 +219,16 @@ describe("workspace template scripts", () => {
     expect(sql).toContain("import_batch_undo_batch_unique ON TABLE import_batch_undo COLUMNS batch UNIQUE");
   });
 
+  test("数据体检增量持久运行范围、终态和跨重扫稳定问题身份", async () => {
+    const scripts = await loadTemplateScripts();
+    const sql = scripts.find((script) => script.name === "025-data-check-findings.surql")?.sql ?? "";
+    expect(sql).toContain("DEFINE TABLE IF NOT EXISTS data_check_run SCHEMAFULL CHANGEFEED 7d");
+    expect(sql).toContain('"processing", "completed", "partial", "failed", "cancelled"');
+    expect(sql).toContain("DEFINE TABLE IF NOT EXISTS data_check_finding SCHEMAFULL CHANGEFEED 7d");
+    expect(sql).toContain("run_history ON TABLE data_check_finding TYPE array<record<data_check_run>>");
+    expect(sql).toContain("data_check_finding_stable_unique ON TABLE data_check_finding COLUMNS stable_key UNIQUE");
+  });
+
   test("workbook_template：类型由业务数据定义——底层不枚举行业类型，仅管理员可增改删，workbook 引用为可选 record", async () => {
     const scripts = await loadTemplateScripts();
     const tpl = scripts.find((script) => script.name === "011-workbook-template.surql");

@@ -123,6 +123,12 @@ export type ImportCsvRowsResult = {
   outcomeUnknownCount?: number;
 };
 
+export type FullDataTableScanResult = {
+  records: GridRow[];
+  scannedCount: number;
+  stale: boolean;
+};
+
 type StoredImportBatchRow = {
   status?: "success" | "rejected" | "outcome_unknown";
   target_record?: unknown;
@@ -204,6 +210,32 @@ export async function openDataTableRuntime(input: OpenDataTableRuntimeInput) {
     const built = buildSelect(meta.tableName, query, columns, PAGE);
     const raw = await conn.query<Record<string, unknown>>(built.sql, built.bindings);
     return raw.map((record) => recordToGrid(record, columns));
+  }
+
+  async function scanAllRecords(options: {
+    pageSize?: number;
+    signal?: AbortSignal;
+    onProgress?: (scannedCount: number) => void;
+  } = {}): Promise<FullDataTableScanResult> {
+    const pageSize = Math.max(1, Math.min(1_000, Math.trunc(options.pageSize ?? 500)));
+    const before = await scanFingerprint(conn, meta.tableName);
+    const scanned: GridRow[] = [];
+    for (let start = 0; ; start += pageSize) {
+      if (options.signal?.aborted) throw new DOMException("数据体检已取消", "AbortError");
+      const page = await conn.query<Record<string, unknown>>(
+        `SELECT * FROM type::table($tb) ORDER BY id ASC LIMIT ${pageSize} START ${start}`,
+        { tb: meta.tableName },
+      );
+      scanned.push(...page.map((record) => recordToGrid(record, columns)));
+      options.onProgress?.(scanned.length);
+      if (page.length < pageSize) break;
+    }
+    const after = await scanFingerprint(conn, meta.tableName);
+    return {
+      records: scanned,
+      scannedCount: scanned.length,
+      stale: before !== after,
+    };
   }
 
   function applySafeLive(message: LiveMessage): boolean {
@@ -764,12 +796,21 @@ export async function openDataTableRuntime(input: OpenDataTableRuntimeInput) {
     updateRecords,
     promoteDraft,
     importCsvRows,
+    scanAllRecords,
     deleteRecords,
     updateFields,
     planFieldRemoval,
     confirmFieldRemoval,
     close,
   };
+}
+
+async function scanFingerprint(conn: Pick<SurrealConn, "query">, tableName: string): Promise<string> {
+  const [countRows, latestRows] = await Promise.all([
+    conn.query<{ total?: unknown }>("SELECT count() AS total FROM type::table($tb) GROUP ALL", { tb: tableName }),
+    conn.query<{ updated_at?: unknown }>("SELECT updated_at FROM type::table($tb) ORDER BY updated_at DESC LIMIT 1", { tb: tableName }),
+  ]);
+  return `${String(countRows[0]?.total ?? 0)}:${String(latestRows[0]?.updated_at ?? "")}`;
 }
 
 async function loadImportReceipt(
