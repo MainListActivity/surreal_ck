@@ -133,7 +133,7 @@ describe("OIP-13 多 Sheet 导入控制器", () => {
         { sheetName: "债权", targetSheetId: "sheet:claims", mappingVersion: "mapping", status: "completed", importedCount: 2, rejectedCount: 0, error: null },
         { sheetName: "材料", targetSheetId: "sheet:evidence", mappingVersion: "mapping", status: "failed", importedCount: 0, rejectedCount: 1, error: "写入失败" },
       ],
-      rows: [{ sheetName: "材料", rowNumber: 3, status: "rejected", targetRecordId: null, field: "整条记录", reason: "写入失败", sourceCells: ["合同"] }],
+      rows: [{ sheetName: "材料", rowNumber: 3, status: "rejected", targetRecordId: null, targetUpdatedAt: null, field: "整条记录", reason: "写入失败", sourceCells: ["合同"] }],
     };
     const batchService = {
       start: async () => { events.push("start"); return { id: "import_batch:b1" }; },
@@ -257,8 +257,8 @@ describe("OIP-13 多 Sheet 导入控制器", () => {
         updatedAt: "2026-09-22T10:01:00Z",
         sheets: [],
         rows: [
-          { sheetName: "债权", rowNumber: 2, status: "success", targetRecordId: "ent_claim:a", field: null, reason: null, sourceCells: [] },
-          { sheetName: "债权", rowNumber: 3, status: "success", targetRecordId: "ent_claim:b", field: null, reason: null, sourceCells: [] },
+          { sheetName: "债权", rowNumber: 2, status: "success", targetRecordId: "ent_claim:a", targetUpdatedAt: "2026-09-22T10:00:00Z", field: null, reason: null, sourceCells: [] },
+          { sheetName: "债权", rowNumber: 3, status: "success", targetRecordId: "ent_claim:b", targetUpdatedAt: "2026-09-22T10:00:00Z", field: null, reason: null, sourceCells: [] },
         ],
       }),
     } as ImportBatchService;

@@ -3,6 +3,7 @@
   import { untrack } from "svelte";
   import { workbooksStore } from "../lib/workbooks.svelte";
   import { createImportBatchService, rejectedRowsToCsv } from "../lib/import-batch";
+  import { createImportBatchUndoService, type ImportUndoPreview } from "../lib/import-batch-undo";
   import { getSurreal } from "../lib/surreal";
   import { convertCsvImportRows } from "../lib/csv-import";
   import type { ParsedXlsxImport, ParsedXlsxSheet } from "../lib/xlsx-import";
@@ -54,6 +55,8 @@
   const initialNewWorkbookAllowed = untrack(() => newWorkbookAllowed);
   const initialExistingTargets = untrack(() => existingTargets);
   let mappingStates = $state<Record<string, { targetId: string; mappings: TemplateImportMapping[] }>>({});
+  let undoPreview = $state<ImportUndoPreview | null>(null);
+  let undoing = $state(false);
 
   function mappingsFor(sheet: ParsedXlsxSheet, targetId: string): TemplateImportMapping[] {
     const existing = mappingStates[sheet.name];
@@ -68,6 +71,7 @@
   }
 
   const batchService = createImportBatchService(getSurreal());
+  const undoService = createImportBatchUndoService(getSurreal());
   const controller = createXlsxImportController({
     parsed: initialParsed,
     batchService,
@@ -175,6 +179,37 @@
     view = controller.snapshot;
   }
 
+  async function previewUndo(): Promise<void> {
+    if (!view.batchId) return;
+    error = null;
+    try {
+      undoPreview = await undoService.preview(view.batchId);
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : "撤销预检失败";
+    }
+  }
+
+  async function confirmUndo(): Promise<void> {
+    if (!view.batchId || undoPreview?.status !== "ready") return;
+    undoing = true;
+    error = null;
+    try {
+      const result = await undoService.undo(view.batchId, undoPreview.token);
+      if (result.status === "conflict" && result.conflict) {
+        undoPreview = result.conflict;
+        error = "记录在确认前发生变化，已停止撤销，请重新预检";
+        return;
+      }
+      undoPreview = await undoService.preview(view.batchId);
+      await controller.recover(view.batchId);
+      view = controller.snapshot;
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : "撤销失败";
+    } finally {
+      undoing = false;
+    }
+  }
+
   function downloadRejected(sheetName: string): void {
     const sheet = parsed.sheets.find((candidate) => candidate.name === sheetName);
     const result = view.results.find((candidate) => candidate.sheetName === sheetName);
@@ -213,11 +248,27 @@
         {#if view.batchId}
           <div class="batch-state">
             <span>导入批次 {view.batchId}</span>
-            <strong>{view.batchStatus === "outcome_unknown" ? "结果待核实" : "结果已持久保存"}</strong>
+            <strong>{view.batchStatus === "outcome_unknown" ? "结果待核实" : view.batchStatus === "undone" ? "已撤销" : "结果已持久保存"}</strong>
             <button class="secondary" type="button" onclick={() => void refreshBatch()}>刷新批次结果</button>
+            {#if view.batchStatus !== "undone"}<button class="secondary" type="button" onclick={() => void previewUndo()}>撤销预检</button>{/if}
           </div>
         {/if}
+        {#if undoPreview}
+          <section class="undo-preview">
+            <h3>撤销预检</h3>
+            {#if undoPreview.status === "ready"}
+              <p>将仅删除本批次新增的 {undoPreview.deletableCount} 条记录，不删除工作簿、数据表或字段。</p>
+              <button class="danger" type="button" disabled={undoing} onclick={() => void confirmUndo()}>{undoing ? "正在撤销…" : "确认撤销本批次"}</button>
+            {:else if undoPreview.status === "already_undone"}
+              <p>该批次已撤销，重复操作不会再次删除记录。</p>
+            {:else}
+              <p>当前无法整体撤销：</p>
+              <ul>{#each undoPreview.blockers as blocker}<li>{blocker.message}</li>{/each}</ul>
+            {/if}
+          </section>
+        {/if}
         {#if view.batchError}<p class="error" role="alert">{view.batchError}</p>{/if}
+        {#if error}<p class="error" role="alert">{error}</p>{/if}
         <div class="summary">
           <div><strong>{view.summary.importedCount}</strong><span>成功记录</span></div>
           <div><strong>{view.summary.skippedCount}</strong><span>跳过记录</span></div>
@@ -314,6 +365,7 @@
   th { position: sticky; top: 0; background: var(--surface-2); }
   .summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; } .summary div { display: grid; gap: 4px; padding: 18px; border-radius: 12px; background: var(--surface-2); text-align: center; } .summary strong { color: var(--brand); font-size: 28px; } .summary span { font-size: 12px; }
   .batch-state { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; padding: 10px 12px; border-radius: 10px; background: var(--surface-2); font-size: 12px; } .batch-state strong { margin-left: auto; }
+  .undo-preview { margin-bottom: 12px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; } .undo-preview h3 { margin-top: 0; } .undo-preview p, .undo-preview li { font-size: 12px; } button.danger { border: 1px solid var(--danger, #b42318); border-radius: 9px; padding: 9px 16px; color: #fff; background: var(--danger, #b42318); font: inherit; font-weight: 600; cursor: pointer; }
   .results { display: grid; gap: 8px; padding: 0; list-style: none; } .results li { display: flex; justify-content: space-between; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; } .results li.item-failed { border-color: var(--danger, #b42318); } .results span { color: var(--text-3); font-size: 12px; }
   .results li:has(.rejections) { flex-wrap: wrap; } .rejections { width: 100%; margin: 8px 0 0; padding-left: 20px; color: var(--danger, #b42318); font-size: 12px; } .rejections li { display: list-item; padding: 3px 0; border: 0; }
   .error { margin-top: 14px; color: var(--danger, #b42318); }

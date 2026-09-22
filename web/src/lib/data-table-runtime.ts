@@ -498,6 +498,7 @@ export async function openDataTableRuntime(input: OpenDataTableRuntimeInput) {
             await persistImportReceipt(tx, input.batch!, record.rowNumber, {
               status: "success",
               targetRecord,
+              targetUpdatedAt: row.updated_at,
             });
             return row;
           });
@@ -790,6 +791,7 @@ async function persistImportReceipt(
   receipt: {
     status: "success" | "rejected" | "outcome_unknown";
     targetRecord?: unknown;
+    targetUpdatedAt?: unknown;
     field?: string;
     reason?: string;
     sourceCells?: string[];
@@ -802,12 +804,14 @@ async function persistImportReceipt(
       source_row_number: $rowNumber,
       status: $status,
       target_record: $targetRecord,
+      target_updated_at: $targetUpdatedAt,
       field: $field,
       reason: $reason,
       source_cells: $sourceCells
     } ON DUPLICATE KEY UPDATE
       status = $status,
       target_record = $targetRecord,
+      target_updated_at = $targetUpdatedAt,
       field = $field,
       reason = $reason,
       source_cells = $sourceCells,
@@ -819,6 +823,7 @@ async function persistImportReceipt(
       rowNumber,
       status: receipt.status,
       targetRecord: receipt.targetRecord ?? null,
+      targetUpdatedAt: receipt.targetUpdatedAt ?? null,
       field: receipt.field ?? null,
       reason: receipt.reason ?? null,
       sourceCells: receipt.sourceCells ?? null,

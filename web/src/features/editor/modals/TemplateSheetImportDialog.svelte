@@ -20,6 +20,7 @@
   import { createXlsxParseTask } from "../../../lib/xlsx-parse-task";
   import { importXlsxSheetIntoTemplate } from "../../../lib/xlsx-template-import";
   import { createImportBatchService, importFingerprint, type ImportBatchSnapshot, type ImportBatchStatus } from "../../../lib/import-batch";
+  import { createImportBatchUndoService, type ImportUndoPreview } from "../../../lib/import-batch-undo";
   import { getSurreal } from "../../../lib/surreal";
 
   type Controller = ReturnType<typeof createTemplateSheetImportController>;
@@ -33,8 +34,11 @@
   let csvBatchId = $state<string | null>(null);
   let csvBatchStatus = $state<ImportBatchStatus | null>(null);
   const batchService = createImportBatchService(getSurreal());
+  const undoService = createImportBatchUndoService(getSurreal());
   let recentBatches = $state<ImportBatchSnapshot[]>([]);
   let selectedBatch = $state<ImportBatchSnapshot | null>(null);
+  let undoPreview = $state<ImportUndoPreview | null>(null);
+  let undoing = $state(false);
 
   onMount(() => {
     void loadRecentBatches();
@@ -51,6 +55,7 @@
 
   async function inspectBatch(id: string): Promise<void> {
     selectedBatch = await batchService.load(id);
+    undoPreview = null;
   }
 
   function close(): void {
@@ -64,6 +69,7 @@
     xlsxParseTask = null;
     csvBatchId = null;
     csvBatchStatus = null;
+    undoPreview = null;
   }
 
   function xlsxTargets() {
@@ -201,6 +207,36 @@
     await controller?.retryRejected();
     if (controller) view = controller.snapshot;
   }
+
+  async function previewBatchUndo(batchId = csvBatchId ?? selectedBatch?.id ?? null): Promise<void> {
+    if (!batchId) return;
+    fileError = null;
+    try {
+      undoPreview = await undoService.preview(batchId);
+    } catch (cause) {
+      fileError = cause instanceof Error ? cause.message : "撤销预检失败";
+    }
+  }
+
+  async function confirmBatchUndo(batchId = csvBatchId ?? selectedBatch?.id ?? null): Promise<void> {
+    if (!batchId || undoPreview?.status !== "ready") return;
+    undoing = true;
+    try {
+      const result = await undoService.undo(batchId, undoPreview.token);
+      if (result.status === "conflict" && result.conflict) {
+        undoPreview = result.conflict;
+        fileError = "记录在确认前发生变化，已停止撤销，请重新预检";
+        return;
+      }
+      csvBatchStatus = csvBatchId === batchId ? "undone" : csvBatchStatus;
+      undoPreview = await undoService.preview(batchId);
+      await loadRecentBatches();
+    } catch (cause) {
+      fileError = cause instanceof Error ? cause.message : "撤销失败";
+    } finally {
+      undoing = false;
+    }
+  }
 </script>
 
 {#if editorUi.showTemplateImport}
@@ -235,7 +271,7 @@
               {#each recentBatches as batch}
                 <button class="batch-row" type="button" onclick={() => void inspectBatch(batch.id)}>
                   <strong>{batch.fileName}</strong>
-                  <span>{batch.status === "outcome_unknown" ? "结果待核实" : batch.status} · {batch.updatedAt}</span>
+                  <span>{batch.status === "outcome_unknown" ? "结果待核实" : batch.status === "undone" ? "已撤销" : batch.status} · {batch.updatedAt}</span>
                 </button>
               {/each}
               {#if selectedBatch}
@@ -244,12 +280,16 @@
                   拒绝 {selectedBatch.sheets.reduce((sum, sheet) => sum + sheet.rejectedCount, 0)} 条。
                   {selectedBatch.status === "outcome_unknown" ? "请先核实回执，不要盲目重试。" : "结果已从数据库恢复。"}
                 </p>
+                {#if selectedBatch.status !== "undone"}<button type="button" onclick={() => void previewBatchUndo(selectedBatch!.id)}>撤销预检</button>{/if}
               {/if}
             </section>
           {/if}
+          {#if undoPreview}<section class="undo-preview"><h3>撤销预检</h3>{#if undoPreview.status === "ready"}<p>将删除本批次新增的 {undoPreview.deletableCount} 条记录，不删除结构。</p><button class="danger" type="button" disabled={undoing} onclick={() => void confirmBatchUndo()}>{undoing ? "正在撤销…" : "确认撤销本批次"}</button>{:else if undoPreview.status === "already_undone"}<p>该批次已撤销。</p>{:else}<ul>{#each undoPreview.blockers as blocker}<li>{blocker.message}</li>{/each}</ul>{/if}</section>{/if}
           {#if fileError}<p class="error" role="alert">{fileError}</p>{/if}
         {:else if view.importedCount > 0 || view.rejected.length > 0}
-          {#if csvBatchId}<p class="batch-result">批次 {csvBatchId} · {csvBatchStatus === "partial_failure" ? "部分失败，可修正后重试" : "结果已持久保存"}</p>{/if}
+          {#if csvBatchId}<p class="batch-result">批次 {csvBatchId} · {csvBatchStatus === "partial_failure" ? "部分失败，可修正后重试" : csvBatchStatus === "undone" ? "已撤销" : "结果已持久保存"} {#if csvBatchStatus !== "undone"}<button type="button" onclick={() => void previewBatchUndo(csvBatchId)}>撤销预检</button>{/if}</p>{/if}
+          {#if undoPreview}<section class="undo-preview"><h3>撤销预检</h3>{#if undoPreview.status === "ready"}<p>将删除本批次新增的 {undoPreview.deletableCount} 条记录，不删除结构。</p><button class="danger" type="button" disabled={undoing} onclick={() => void confirmBatchUndo(csvBatchId)}>{undoing ? "正在撤销…" : "确认撤销本批次"}</button>{:else if undoPreview.status === "already_undone"}<p>该批次已撤销。</p>{:else}<ul>{#each undoPreview.blockers as blocker}<li>{blocker.message}</li>{/each}</ul>{/if}</section>{/if}
+          {#if fileError}<p class="error" role="alert">{fileError}</p>{/if}
           <div class="summary" aria-live="polite">
             <div><strong>{view.importedCount}</strong><span>成功记录</span></div>
             <div><strong>{view.rejected.length}</strong><span>失败记录</span></div>
@@ -361,6 +401,7 @@
   .retry-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
   .retry-fields label { display: grid; gap: 5px; color: var(--text-3); font-size: 11px; }
   .error { margin-top: 12px; color: var(--error); font-size: 13px; } .done { padding: 28px; text-align: center; color: var(--primary); }
+  .undo-preview { margin-top: 12px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; } .undo-preview p, .undo-preview li { font-size: 12px; } button.danger { border: 1px solid var(--error); border-radius: 9px; padding: 9px 16px; color: white; background: var(--error); font: inherit; font-weight: 600; }
   button.primary, button.secondary { border-radius: 9px; padding: 9px 16px; font: inherit; font-weight: 600; cursor: pointer; }
   button.primary { border: 1px solid var(--primary); background: var(--primary); color: white; }
   button.secondary { border: 1px solid var(--border); background: transparent; color: var(--text-2); }

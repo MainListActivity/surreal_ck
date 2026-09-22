@@ -9,7 +9,8 @@ export type ImportBatchStatus =
   | "completed"
   | "partial_failure"
   | "failed"
-  | "outcome_unknown";
+  | "outcome_unknown"
+  | "undone";
 
 export type ImportBatchSheetStatus =
   | "pending"
@@ -44,6 +45,7 @@ export type ImportBatchSnapshot = {
     rowNumber: number;
     status: "success" | "rejected" | "outcome_unknown";
     targetRecordId: string | null;
+    targetUpdatedAt: string | null;
     field: string | null;
     reason: string | null;
     sourceCells: string[];
@@ -80,6 +82,7 @@ type StoredBatchRow = {
   source_row_number?: unknown;
   status?: unknown;
   target_record?: unknown;
+  target_updated_at?: unknown;
   field?: unknown;
   reason?: unknown;
   source_cells?: unknown;
@@ -221,6 +224,7 @@ export function createImportBatchService(conn: SurrealConn) {
         rowNumber: numberValue(row.source_row_number),
         status: row.status as ImportBatchSnapshot["rows"][number]["status"],
         targetRecordId: optionalString(row.target_record),
+        targetUpdatedAt: optionalString(row.target_updated_at),
         field: optionalString(row.field),
         reason: optionalString(row.reason),
         sourceCells: Array.isArray(row.source_cells) ? row.source_cells.map(String) : [],

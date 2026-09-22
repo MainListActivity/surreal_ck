@@ -16,6 +16,9 @@ describe("OIP-13 XLSX 多 Sheet 导入向导 UI", () => {
     expect(dialog).toContain("数据预览");
     expect(dialog).toContain("字段映射");
     expect(dialog).toContain("setFieldMapping");
+    expect(dialog).toContain("撤销预检");
+    expect(dialog).toContain("确认撤销本批次");
+    expect(dialog).toContain("记录在确认前发生变化");
     expect(dialog).toContain("原始行号");
     expect(dialog).toContain("previewCell");
     expect(dialog).toContain("workbooksStore.importXlsxWorkbook");

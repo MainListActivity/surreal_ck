@@ -207,6 +207,18 @@ describe("workspace template scripts", () => {
     expect(sql).not.toContain("source_file");
   });
 
+  test("导入撤销增量保留目标版本戳、终态与不可删除的审计回执", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.name === "024-import-batch-undo.surql");
+    expect(migration).toBeDefined();
+    const sql = migration!.sql;
+    expect(sql).toContain("target_updated_at ON TABLE import_batch_row TYPE option<datetime>");
+    expect(sql).toContain('"outcome_unknown", "undone"');
+    expect(sql).toContain("DEFINE TABLE IF NOT EXISTS import_batch_undo SCHEMAFULL");
+    expect(sql).toContain("FOR update, delete NONE");
+    expect(sql).toContain("import_batch_undo_batch_unique ON TABLE import_batch_undo COLUMNS batch UNIQUE");
+  });
+
   test("workbook_template：类型由业务数据定义——底层不枚举行业类型，仅管理员可增改删，workbook 引用为可选 record", async () => {
     const scripts = await loadTemplateScripts();
     const tpl = scripts.find((script) => script.name === "011-workbook-template.surql");

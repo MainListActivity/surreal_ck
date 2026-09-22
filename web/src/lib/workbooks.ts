@@ -425,12 +425,14 @@ export function buildCreateWorkbookTransaction(
   source_row_number: $importRowNumber${index},
   status: $importRowStatus${index},
   target_record: $importTargetRecord${index},
+  target_updated_at: ${receipt.status === "success" ? "time::now()" : "NONE"},
   field: $importRowField${index},
   reason: $importRowReason${index},
   source_cells: $importSourceCells${index}
 } ON DUPLICATE KEY UPDATE
   status = $importRowStatus${index},
   target_record = $importTargetRecord${index},
+  target_updated_at = ${receipt.status === "success" ? "time::now()" : "NONE"},
   field = $importRowField${index},
   reason = $importRowReason${index},
   source_cells = $importSourceCells${index},
