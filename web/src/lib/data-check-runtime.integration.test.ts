@@ -6,6 +6,7 @@ import { createDataCheckService } from "./data-check-runtime";
 import { openDataTableRuntime } from "./data-table-runtime";
 import { markFindingNotApplicable } from "./finding-repair";
 import { toRecordId } from "./record-id";
+import { createFindingAssignment, reviewFindingAssignment, submitFindingAssignment } from "./finding-assignment";
 
 const localSurrealTest = test.skipIf(process.env.RUN_LOCAL_SURREALDB_IMPORT_TESTS !== "1");
 const opened: Surreal[] = [];
@@ -23,6 +24,7 @@ describe("数据体检真实 SurrealDB 契约", () => {
     await root.use({ namespace, database });
     const migration = await readFile(new URL("../../../shared/sql/workspace-template/025-data-check-findings.surql", import.meta.url), "utf8");
     const repairMigration = await readFile(new URL("../../../shared/sql/workspace-template/027-finding-repair.surql", import.meta.url), "utf8");
+    const assignmentMigration = await readFile(new URL("../../../shared/sql/workspace-template/028-finding-assignment-review.surql", import.meta.url), "utf8");
     await root.query(`
       DEFINE TABLE user SCHEMAFULL PERMISSIONS FULL;
       DEFINE FIELD subject ON user TYPE string;
@@ -35,8 +37,10 @@ describe("数据体检真实 SurrealDB 契约", () => {
       DEFINE ACCESS employee_test ON DATABASE TYPE RECORD SIGNIN (
         SELECT * FROM user WHERE subject = $subject AND id = (SELECT VALUE employee FROM employee_credential WHERE secret = $pass LIMIT 1)[0]
       );
-      CREATE user:member CONTENT { subject: "member", kind: "virtual", is_admin: false };
+      CREATE user:member CONTENT { subject: "member", kind: "human", is_admin: false };
+      CREATE user:reviewer CONTENT { subject: "reviewer", kind: "human", is_admin: false };
       CREATE employee_credential:member CONTENT { employee: user:member, secret: "pass" };
+      CREATE employee_credential:reviewer CONTENT { employee: user:reviewer, secret: "pass2" };
       DEFINE TABLE workbook SCHEMAFULL PERMISSIONS FOR select WHERE $auth != NONE;
       DEFINE FIELD name ON workbook TYPE string;
       DEFINE TABLE sheet SCHEMAFULL PERMISSIONS FOR select WHERE $auth != NONE;
@@ -52,6 +56,7 @@ describe("数据体检真实 SurrealDB 契约", () => {
       ];
       ${migration}
       ${repairMigration}
+      ${assignmentMigration}
     `).collect();
     const rows = Array.from({ length: 501 }, (_, index) => index === 500 ? {} : { name: `记录 ${index + 1}` });
     await root.query("INSERT INTO ent_check $rows", { rows }).collect();
@@ -99,9 +104,43 @@ describe("数据体检真实 SurrealDB 契约", () => {
     await conn.query("UPDATE type::table($tb) UNSET name WHERE id = $record", {
       tb: "ent_check", record: toRecordId(finding.recordId),
     });
-    await service.start({ workbookId: "workbook:w" });
+    const reopened = await service.start({ workbookId: "workbook:w" });
+    expect(reopened).toMatchObject({ status: "completed", findingCount: 1 });
     expect(await conn.query("SELECT status, resolution_reason FROM data_check_finding")).toEqual([
       expect.objectContaining({ status: "pending", resolution_reason: undefined }),
     ]);
+
+    const assignment = await createFindingAssignment(conn, {
+      findingIds: [finding.id], assigneeId: "user:member", reviewerId: "user:reviewer",
+      dueAt: "2026-10-01T00:00:00Z", completionCondition: "补齐名称并完成体检", idempotencyKey: "assignment-real-1",
+    });
+    const submitted = await submitFindingAssignment(conn, {
+      assignmentId: assignment.id, expectedVersion: assignment.version, note: "已处理，待复核",
+      resourceIds: [], idempotencyKey: "assignment-submit-real-1",
+    });
+    expect(await conn.query("SELECT handlers, active_assignment FROM data_check_finding")).toEqual([
+      expect.objectContaining({ handlers: expect.any(Array), active_assignment: expect.anything() }),
+    ]);
+    const reviewer = new Surreal();
+    opened.push(reviewer);
+    await reviewer.connect(url, { namespace, database });
+    await reviewer.signin({ namespace, database, access: "employee_test", variables: { subject: "reviewer", pass: "pass2" } });
+    const reviewerConn = createBrowserConn(reviewer as never) as SurrealConn;
+    const returned = await reviewFindingAssignment(reviewerConn, {
+      assignmentId: assignment.id, expectedVersion: submitted.version, decision: "return",
+      reason: "请补充最新体检", idempotencyKey: "assignment-return-real-1",
+    });
+    const resubmitted = await submitFindingAssignment(conn, {
+      assignmentId: assignment.id, expectedVersion: returned.version, note: "已补充并再次提交",
+      resourceIds: [], idempotencyKey: "assignment-submit-real-2",
+    });
+    await conn.updateRecord(finding.recordId, { name: "复核完成名称" });
+    await service.start({ workbookId: "workbook:w" });
+    const approved = await reviewFindingAssignment(reviewerConn, {
+      assignmentId: assignment.id, expectedVersion: resubmitted.version, decision: "approve",
+      idempotencyKey: "assignment-approve-real-1",
+    });
+    expect(approved.status).toBe("completed");
+    expect(await reviewerConn.query("SELECT status FROM data_check_finding")).toEqual([expect.objectContaining({ status: "closed" })]);
   }, 20_000);
 });

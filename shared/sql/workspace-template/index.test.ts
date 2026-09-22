@@ -130,6 +130,16 @@ describe("workspace template scripts", () => {
     expect(migration?.sql).toContain("actor ON TABLE data_check_finding_event");
   });
 
+  test("真人派单增量支持多问题、活动指针、复核权限和幂等事件", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.version === 28);
+    expect(migration?.sql).toContain("finding_assignment SCHEMAFULL");
+    expect(migration?.sql).toContain("findings ON TABLE finding_assignment TYPE array<record<data_check_finding>>");
+    expect(migration?.sql).toContain("active_assignment ON TABLE data_check_finding");
+    expect(migration?.sql).toContain("finding_assignment_event_idempotency_unique");
+    expect(migration?.sql).toContain("reviewer = fn::current_user()");
+  });
+
   test("模板快捷任务增量保存任务声明，并让实例化数据表保留稳定模板 key", async () => {
     const scripts = await loadTemplateScripts();
     const migration = scripts.find((script) => script.name === "016-template-quick-tasks.surql");

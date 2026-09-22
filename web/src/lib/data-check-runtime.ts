@@ -116,6 +116,8 @@ export function createDataCheckService(conn: SurrealConn) {
           run_history = array::union(run_history ?? [], [$run]),
           occurrences += 1,
           explanation = $explanation,
+          active_assignment = IF status INSIDE ["closed", "not_applicable"] THEN NONE ELSE active_assignment END,
+          handlers = IF status INSIDE ["closed", "not_applicable"] THEN [] ELSE handlers ?? [] END,
           resolution_reason = IF status INSIDE ["pending_review", "closed", "not_applicable"] OR evidence_fingerprint != $evidenceFingerprint THEN NONE ELSE resolution_reason END,
           resolved_at = IF status INSIDE ["pending_review", "closed", "not_applicable"] OR evidence_fingerprint != $evidenceFingerprint THEN NONE ELSE resolved_at END,
           status = IF status INSIDE ["pending_review", "closed", "not_applicable"] OR evidence_fingerprint != $evidenceFingerprint THEN "pending" ELSE status END,

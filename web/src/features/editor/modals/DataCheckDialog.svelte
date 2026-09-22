@@ -8,6 +8,13 @@
   import { openDataTableRuntime, type DataTableRuntime, type RecordFieldRepairPlan } from "../../../lib/data-table-runtime";
   import { markFindingNotApplicable, startFindingProcessing } from "../../../lib/finding-repair";
   import type { DataCheckFinding } from "../../../lib/data-check-runtime";
+  import {
+    createFindingAssignment,
+    loadActiveFindingAssignment,
+    reviewFindingAssignment,
+    submitFindingAssignment,
+    type FindingAssignment,
+  } from "../../../lib/finding-assignment";
 
   const service = createDataCheckService(getSurreal());
   let result = $state<DataCheckRunSnapshot | null>(null);
@@ -22,6 +29,14 @@
   let dispositionReason = $state("");
   let actionError = $state("");
   let actionBusy = $state(false);
+  let assignment = $state<FindingAssignment | null>(null);
+  let assigneeId = $state("");
+  let reviewerId = $state("");
+  let dueAt = $state("");
+  let completionCondition = $state("");
+  let assignmentNote = $state("");
+  let assignmentReason = $state("");
+  let assignmentResources = $state("");
 
   onMount(() => {
     void restoreLatest();
@@ -78,6 +93,7 @@
     repairPlan = null;
     repairKey = crypto.randomUUID();
     dispositionReason = "";
+    assignment = await loadActiveFindingAssignment(getSurreal(), finding.id).catch(() => null);
     actionError = "";
     try {
       await startFindingProcessing(getSurreal(), {
@@ -88,6 +104,43 @@
     } catch (cause) {
       actionError = cause instanceof Error ? cause.message : String(cause);
     }
+  }
+
+  async function createAssignment(): Promise<void> {
+    if (!activeFinding) return;
+    actionBusy = true; actionError = "";
+    try {
+      assignment = await createFindingAssignment(getSurreal(), {
+        findingIds: [activeFinding.id], assigneeId, reviewerId, dueAt,
+        completionCondition, idempotencyKey: `assignment:${activeFinding.id}:${repairKey}`,
+      });
+    } catch (cause) { actionError = cause instanceof Error ? cause.message : String(cause); }
+    finally { actionBusy = false; }
+  }
+
+  async function submitAssignment(): Promise<void> {
+    if (!assignment) return;
+    actionBusy = true; actionError = "";
+    try {
+      assignment = await submitFindingAssignment(getSurreal(), {
+        assignmentId: assignment.id, expectedVersion: assignment.version, note: assignmentNote,
+        resourceIds: assignmentResources.split(/[\s,]+/).filter(Boolean), idempotencyKey: `submit:${assignment.id}:${assignment.version}`,
+      });
+    } catch (cause) { actionError = cause instanceof Error ? cause.message : String(cause); }
+    finally { actionBusy = false; }
+  }
+
+  async function reviewAssignment(decision: "approve" | "return"): Promise<void> {
+    if (!assignment) return;
+    actionBusy = true; actionError = "";
+    try {
+      assignment = await reviewFindingAssignment(getSurreal(), {
+        assignmentId: assignment.id, expectedVersion: assignment.version, decision,
+        reason: assignmentReason, idempotencyKey: `${decision}:${assignment.id}:${assignment.version}`,
+      });
+      if (result) result = await service.load(result.id);
+    } catch (cause) { actionError = cause instanceof Error ? cause.message : String(cause); }
+    finally { actionBusy = false; }
   }
 
   async function previewRepair(): Promise<void> {
@@ -183,6 +236,13 @@
             {#if repairPlan}<div class="diff"><span>修正前：{String(repairPlan.before ?? "（空）")}</span><strong>→</strong><span>修正后：{String(repairPlan.after ?? "（空）")}</span></div><button class="primary" disabled={actionBusy} onclick={() => void confirmRepair()}>确认修正并提交复核</button>{:else}<button disabled={actionBusy} onclick={() => void previewRepair()}>预览字段差异</button>{/if}
           {/if}
           <label>不适用理由<textarea bind:value={dispositionReason} maxlength="500"></textarea></label><button disabled={actionBusy} onclick={() => void markNotApplicable()}>标记不适用</button>
+          <div class="assignment"><h4>真人派单</h4>{#if assignment}
+            <p>{assignment.status} · 负责人 {assignment.assigneeId} · 复核人 {assignment.reviewerId} · 截止 {assignment.dueAt}</p>
+            {#if assignment.status === "active" || assignment.status === "returned"}<label>处理说明<textarea bind:value={assignmentNote}></textarea></label><label>材料资源 RecordId（逗号分隔）<input bind:value={assignmentResources} placeholder="resource:..." /></label><button disabled={actionBusy} onclick={() => void submitAssignment()}>提交待复核</button>{/if}
+            {#if assignment.status === "submitted"}<label>复核意见或例外理由<textarea bind:value={assignmentReason}></textarea></label><div><button disabled={actionBusy} onclick={() => void reviewAssignment("return")}>退回处理</button><button class="primary" disabled={actionBusy} onclick={() => void reviewAssignment("approve")}>复核通过</button></div>{/if}
+          {:else}
+            <label>负责人 RecordId<input bind:value={assigneeId} placeholder="user:..." /></label><label>复核人 RecordId<input bind:value={reviewerId} placeholder="user:..." /></label><label>截止时间<input type="datetime-local" bind:value={dueAt} /></label><label>完成条件<textarea bind:value={completionCondition}></textarea></label><button disabled={actionBusy} onclick={() => void createAssignment()}>创建真人派单</button>
+          {/if}</div>
           {#if actionError}<p class="error">{actionError}</p>{/if}<button onclick={() => (activeFinding = null)}>取消处理</button>
         </section>{/if}
       {:else}<p class="empty">尚未运行数据体检。</p>{/if}
@@ -201,5 +261,6 @@
   .version { margin-top: 10px; color: var(--text-3); font-size: 11px; }
   .findings { display: grid; gap: 8px; padding: 0; list-style: none; } .findings li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; } .findings div { display: grid; gap: 3px; } .findings span, .findings small { color: var(--text-3); font-size: 12px; }
   .finding-actions { display: flex !important; grid-auto-flow: column; } .repair { display: grid; gap: 10px; margin-top: 14px; padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); } .repair h3 { margin: 0; } .repair label { display: grid; gap: 5px; font-size: 12px; } .repair input, .repair textarea { padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); } .diff { display: grid; grid-template-columns: 1fr auto 1fr; gap: 8px; align-items: center; }
+  .assignment { display: grid; gap: 8px; margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--border); } .assignment h4 { margin: 0; }
   button { border-radius: 8px; padding: 8px 12px; border: 1px solid var(--border); background: transparent; } .primary { color: white; border-color: var(--primary); background: var(--primary); } .danger { color: white; border-color: var(--error); background: var(--error); }
 </style>
