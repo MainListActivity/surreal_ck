@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { AlertCircle, RefreshCw, Save, ShieldCheck, Trash2, UserPlus } from "@lucide/svelte";
+  import { AlertCircle, RefreshCw, Save, Share2, ShieldCheck, Trash2, UserPlus } from "@lucide/svelte";
+  import type { ActivationSummaryV1 } from "@surreal-ck/shared";
   import EmptyState from "../components/EmptyState.svelte";
   import QuotaOverview from "../components/quota/QuotaOverview.svelte";
   import {
@@ -13,6 +14,11 @@
   import { isWorkspaceAdmin as isWorkspaceAdminFn } from "../lib/permissions.svelte";
   import { renameWorkspace } from "../lib/workspace-meta-data";
   import { getSurreal } from "../lib/surreal";
+  import {
+    buildActivationSummaryPreview,
+    shareActivationSummary,
+    withdrawActivationSummary,
+  } from "../lib/activation-summary";
   import {
     getConnectionState,
     getCurrentUser,
@@ -42,6 +48,10 @@
   let actionError = $state("");
   let actionOk = $state("");
   let loadedSlug = $state("");
+  let summaryPreview = $state<ActivationSummaryV1 | null>(null);
+  let summaryWriting = $state(false);
+  let summaryMessage = $state("");
+  let summaryError = $state("");
 
   const workspaceOriginalName = $derived((workspace?.name ?? "").trim());
   const trimmedWorkspaceName = $derived(workspaceNameDraft.trim());
@@ -80,12 +90,41 @@
     loadError = "";
     try {
       members = await loadMembers(getSurreal());
+      if (canManage) summaryPreview = await buildActivationSummaryPreview(getSurreal());
     } catch (err) {
       members = [];
       loadError = err instanceof Error ? err.message : String(err);
     } finally {
       loading = false;
     }
+  }
+
+  async function shareSummary() {
+    if (!summaryPreview || !workspaceSlug) return;
+    summaryWriting = true;
+    summaryError = "";
+    summaryMessage = "";
+    const result = await shareActivationSummary(workspaceSlug, summaryPreview);
+    summaryWriting = false;
+    if (!result.ok) summaryError = result.message;
+    else summaryMessage = "已共享给平台运营；该摘要标记为团队提供，不用于收费或权限判断。";
+  }
+
+  async function withdrawSummary() {
+    if (!workspaceSlug || !globalThis.confirm("撤回后运营端将立即停止展示摘要内容，确认撤回？")) return;
+    summaryWriting = true;
+    summaryError = "";
+    summaryMessage = "";
+    const result = await withdrawActivationSummary(workspaceSlug);
+    summaryWriting = false;
+    if (!result.ok) summaryError = result.message;
+    else summaryMessage = "共享已撤回，摘要内容已清除。";
+  }
+
+  function metricText(metric: ActivationSummaryV1["metrics"][keyof ActivationSummaryV1["metrics"]]): string {
+    if (metric.state === "unknown") return "未知（v1 未上报）";
+    if (metric.state === "failed") return "采集失败";
+    return `${metric.count ?? 0} · ${metric.state === "completed" ? "已完成" : "未完成"}`;
   }
 
   async function submitWorkspaceName() {
@@ -237,6 +276,40 @@
 
   {#if workspaceSlug}
     <QuotaOverview slug={workspaceSlug} />
+  {/if}
+
+  {#if canManage}
+    <section class="settings-section" aria-label="运营摘要共享">
+      <div class="section-head">
+        <div>
+          <h2>运营摘要共享</h2>
+          <p>预览并主动共享最小启用信息；不会共享文件名、案件、正文、材料或成员邮箱。</p>
+        </div>
+        <span class="readonly-badge">契约 v1</span>
+      </div>
+      {#if summaryPreview}
+        <div class="summary-preview">
+          <div><span>阶段</span><strong>{summaryPreview.stage}</strong></div>
+          <div><span>成员启用</span><strong>{metricText(summaryPreview.metrics.members)}</strong></div>
+          <div><span>工作簿启用</span><strong>{metricText(summaryPreview.metrics.workbooks)}</strong></div>
+          <div><span>导入 / 复核</span><strong>未知（v1 未上报）</strong></div>
+          <div><span>统计周期</span><strong>{summaryPreview.period.startedAt.slice(0, 10)} — {summaryPreview.period.endedAt.slice(0, 10)}</strong></div>
+          <div><span>来源</span><strong>当前工作区直接查询</strong></div>
+        </div>
+        <div class="summary-actions">
+          <button type="button" class="primary-btn" disabled={summaryWriting} onclick={() => void shareSummary()}>
+            <Share2 size={15} />{summaryWriting ? "处理中…" : "确认共享"}
+          </button>
+          <button type="button" class="danger-text-btn" disabled={summaryWriting} onclick={() => void withdrawSummary()}>
+            撤回共享
+          </button>
+        </div>
+      {:else}
+        <p class="action-msg error">摘要预览暂不可用，请刷新后重试。</p>
+      {/if}
+      {#if summaryError}<p class="action-msg error">{summaryError}</p>{/if}
+      {#if summaryMessage}<p class="action-msg ok">{summaryMessage}</p>{/if}
+    </section>
   {/if}
 
   <section class="settings-section" aria-label="成员管理">
@@ -448,6 +521,27 @@
     gap: 12px;
     align-items: end;
   }
+
+  .summary-preview {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .summary-preview div {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 5px;
+    padding: 12px;
+    border-radius: 9px;
+    background: var(--bg);
+  }
+
+  .summary-preview span { color: var(--text-3); font-size: 11px; }
+  .summary-preview strong { color: var(--text-1); font-size: 13px; }
+  .summary-actions { display: flex; align-items: center; gap: 12px; }
+  .danger-text-btn { border: 0; background: transparent; color: var(--error); cursor: pointer; }
 
   label {
     display: flex;

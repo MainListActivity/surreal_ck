@@ -76,6 +76,9 @@ import { createLegalContentRoutes } from "./routes/legal-content";
 import { PlatformContentService } from "./content/service";
 import { SurrealPlatformContentStore } from "./content/store";
 import { createContentMcpRoutes } from "./ops/mcp/routes";
+import { ActivationSummaryService } from "./activation-summary/service";
+import { SurrealActivationSummaryStore } from "./activation-summary/store";
+import { createActivationSummaryRoutes } from "./routes/activation-summary";
 
 export type AppOptions = {
   workspaceScope?: WorkspaceScopeModule;
@@ -104,6 +107,8 @@ export type AppOptions = {
   quotaOpsPreflight?: QuotaOpsPreflightPort;
   /** 平台法律内容维护服务；生产默认绑定 _system 平台内容库。 */
   platformContentService?: PlatformContentService;
+  /** 团队主动共享的启用摘要服务；运营页面与 MCP 复用。 */
+  activationSummaryService?: ActivationSummaryService;
 };
 
 type AiStreamWebSocket = ReturnType<typeof createAiStreamRoutes>["websocket"];
@@ -213,6 +218,8 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
       ? createOpenAiCompatibleEmbeddingProvider({ apiKey: env.EMBEDDING_API_KEY })
       : undefined);
   const platformContentService = options.platformContentService ?? createDefaultPlatformContentService();
+  const activationSummaryService = options.activationSummaryService
+    ?? new ActivationSummaryService(new SurrealActivationSummaryStore());
   const autoAiChatService = options.aiChatService ?? buildAutoAiChatService(runBus, platformContentService, embeddingProvider);
   const quotaReadService =
     options.quotaReadService ?? createDefaultQuotaReadService();
@@ -267,7 +274,14 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     )
     .route("/", createContentRoutes({ service: platformContentService, requireUser: options.requireUser }))
     .route("/", createLegalContentRoutes({ service: platformContentService, requireUser: options.requireUser }))
-    .route("/", createContentMcpRoutes({ service: platformContentService }))
+    .route("/", createActivationSummaryRoutes({
+      service: activationSummaryService,
+      requireUser: options.requireUser,
+    }))
+    .route("/", createContentMcpRoutes({
+      service: platformContentService,
+      activationSummaryService,
+    }))
     .route(
       "/",
       createAiChatRoutes({

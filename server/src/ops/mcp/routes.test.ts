@@ -11,6 +11,8 @@ import {
   type ContentSourceRegistration,
 } from "../../content/service";
 import { createContentMcpRoutes } from "./routes";
+import { ActivationSummaryService } from "../../activation-summary/service";
+import type { ActivationSummaryV1, SharedActivationSummary } from "@surreal-ck/shared";
 
 const source: ContentSourceRegistration = {
   sourceKey: "official-demo",
@@ -86,6 +88,7 @@ describe("platform content MCP", () => {
         "content.withdraw",
         "content.restore",
         "content.source.manage",
+        "activation.summary.read",
       ],
       bearer_methods_supported: ["header"],
     });
@@ -215,5 +218,59 @@ describe("platform content MCP", () => {
     });
     const replayBody = (await replay.json()) as { result?: { structuredContent?: { batchId?: string } } };
     expect(replayBody.result?.structuredContent?.batchId).toBe(batchId);
+  });
+
+  test("reads the same team-supplied activation projection and obeys token scope narrowing", async () => {
+    const activation: SharedActivationSummary = {
+      summaryId: "workspace_activation_summary:demo",
+      workspaceSlug: "demo",
+      contractVersion: "1",
+      status: "active",
+      summary: {
+        contractVersion: "1",
+        period: { startedAt: "2026-09-01T00:00:00.000Z", endedAt: "2026-10-01T00:00:00.000Z", timeZone: "UTC" },
+        stage: "incomplete",
+        metrics: {
+          members: { state: "completed", count: 1, source: "workspace.user" },
+          workbooks: { state: "incomplete", count: 0, source: "workspace.workbook" },
+          imports: { state: "unknown", count: null, source: "not_reported_v1" },
+          reviews: { state: "unknown", count: null, source: "not_reported_v1" },
+        },
+        updatedAt: "2026-09-22T12:00:00.000Z",
+        dedupeKey: "2026-09:v1",
+      },
+      suppliedAt: "2026-09-22T12:00:00.000Z",
+      updatedAt: "2026-09-22T12:00:00.000Z",
+      sourceTrust: "team_supplied",
+    };
+    const activationService = new ActivationSummaryService({
+      async resolveAdmin() { return null; },
+      async findIdempotent() { return null; },
+      async share(_input: { summary: ActivationSummaryV1 }) { return activation; },
+      async withdraw() { return { ...activation, status: "withdrawn", summary: null }; },
+      async list() { return [activation]; },
+      async get() { return activation; },
+    });
+    const service = new PlatformContentService({ store: new InMemoryPlatformContentStore(), sources: [source] });
+    const app = new Hono<AppBindings>();
+    app.onError(handleError);
+    app.route("/", createContentMcpRoutes({
+      service,
+      activationSummaryService: activationService,
+      authorizationServer: "https://auth.example.test",
+      requireOperator: async (c, next) => {
+        c.set("user", { subject: "operator:ada", raw: { scope: "activation.summary.read" }, rawToken: "token" });
+        c.set("platformOperator", { subject: "operator:ada", capabilities: ["activation.summary.read"] });
+        await next();
+      },
+    }));
+    const response = await call(app, {
+      jsonrpc: "2.0",
+      id: 20,
+      method: "tools/call",
+      params: { name: "list_activation_summaries", arguments: { limit: 10 } },
+    });
+    const body = await response.json() as { result?: { structuredContent?: { items?: SharedActivationSummary[] } } };
+    expect(body.result?.structuredContent?.items?.[0]).toEqual(activation);
   });
 });

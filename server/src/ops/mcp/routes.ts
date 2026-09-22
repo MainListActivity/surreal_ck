@@ -12,6 +12,10 @@ import {
   type ContentOperator,
   type PlatformContentService,
 } from "../../content/service";
+import {
+  ActivationSummaryService,
+  ActivationSummaryServiceError,
+} from "../../activation-summary/service";
 
 const MCP_SCOPES = [
   "content.read",
@@ -20,6 +24,7 @@ const MCP_SCOPES = [
   "content.withdraw",
   "content.restore",
   "content.source.manage",
+  "activation.summary.read",
 ] as const;
 
 const toolInputSchema = z.record(z.string(), z.unknown());
@@ -42,6 +47,8 @@ function toolError(error: unknown) {
             ...(Object.keys(error.details).length > 0 ? { details: error.details } : {}),
           },
         }
+      : error instanceof ActivationSummaryServiceError
+        ? { error: { code: error.code, message: error.message } }
       : error instanceof ZodError
         ? {
             error: {
@@ -152,6 +159,7 @@ function withMcpBearerChallenge(
 function buildServer(
   service: PlatformContentService,
   operator: ContentOperator,
+  activationSummaryService?: ActivationSummaryService,
 ): McpServer {
   const server = new McpServer(
     { name: "surreal-ck-platform-content", version: "1.0.0" },
@@ -177,6 +185,44 @@ function buildServer(
       }
     },
   );
+
+  if (activationSummaryService) {
+    server.registerTool(
+      "list_activation_summaries",
+      {
+        title: "列出团队启用摘要",
+        description: "稳定分页读取工作区管理员主动共享的最小启用摘要。摘要为团队提供，不用于计费或权限判断。",
+        inputSchema: toolInputSchema,
+      },
+      async (args) => {
+        try {
+          const limit = typeof args.limit === "number" ? args.limit : undefined;
+          const cursor = typeof args.cursor === "string" ? args.cursor : undefined;
+          return toolSuccess(await activationSummaryService.list(operator, { limit, cursor }));
+        } catch (error) {
+          return toolError(error);
+        }
+      },
+    );
+    server.registerTool(
+      "get_activation_summary",
+      {
+        title: "读取团队启用摘要",
+        description: "按摘要 ID 读取同一运营服务中的授权摘要详情。",
+        inputSchema: toolInputSchema,
+      },
+      async (args) => {
+        try {
+          if (typeof args.summaryId !== "string" || args.summaryId.length === 0) {
+            throw new ActivationSummaryServiceError("invalid_request", "summaryId 必填");
+          }
+          return toolSuccess(await activationSummaryService.get(operator, args.summaryId));
+        } catch (error) {
+          return toolError(error);
+        }
+      },
+    );
+  }
 
   server.registerTool(
     "search_content",
@@ -247,6 +293,7 @@ function buildServer(
 
 export function createContentMcpRoutes(input: Readonly<{
   service: PlatformContentService;
+  activationSummaryService?: ActivationSummaryService;
   resourceUri?: string;
   authorizationServer?: string;
   requireOperator?: MiddlewareHandler<AppBindings>;
@@ -312,7 +359,7 @@ export function createContentMcpRoutes(input: Readonly<{
     const server = buildServer(input.service, {
       subject: operator.subject,
       capabilities: effectiveCapabilities,
-    });
+    }, input.activationSummaryService);
     const transport = new WebStandardStreamableHTTPServerTransport({
       enableJsonResponse: true,
     });

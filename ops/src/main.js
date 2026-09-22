@@ -14,6 +14,7 @@ const contentState = {
   auditCursor: null,
   selectedBatch: null,
 };
+const activationState = { items: [], cursor: null };
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -41,6 +42,7 @@ function renderShell() {
       </header>
       <nav class="section-tabs" aria-label="运营模块">
         <button class="section-tab active" data-view="quota">配额运营</button>
+        <button class="section-tab" data-view="activation">团队启用摘要</button>
         <button class="section-tab" data-view="content">内容维护</button>
       </nav>
       <main id="quota-view" class="layout">
@@ -56,6 +58,18 @@ function renderShell() {
         <section class="panel detail-panel">
           <div class="panel-heading"><h2>工作区详情</h2><span id="detail-badge" class="badge">未选择</span></div>
           <div id="detail" class="empty-state">从左侧选择一个工作区查看计划、资源使用和操作时间线。</div>
+        </section>
+      </main>
+      <main id="activation-view" class="activation-layout" hidden>
+        <section class="panel activation-panel">
+          <div class="panel-heading"><div><h2>团队启用摘要</h2><p class="muted activation-help">仅展示工作区管理员主动共享的数据；不用于收费、授权或全站可信计量。</p></div><button id="activation-refresh" class="ghost">刷新</button></div>
+          <div id="activation-status" class="status muted">登录后加载授权摘要。</div>
+          <div id="activation-list" class="activation-list"></div>
+          <button id="activation-next" class="ghost more-button" hidden>加载更多摘要</button>
+        </section>
+        <section class="panel activation-panel">
+          <div class="panel-heading"><h2>摘要详情</h2><span class="badge">team_supplied</span></div>
+          <div id="activation-detail" class="empty-state">选择一条摘要查看口径、来源与新鲜度。</div>
         </section>
       </main>
       <main id="content-view" class="content-layout" hidden>
@@ -103,14 +117,18 @@ function renderShell() {
   document.querySelector("#refresh").addEventListener("click", () => void search(document.querySelector("#search-input").value));
   document.querySelectorAll(".section-tab").forEach((button) => {
     button.addEventListener("click", () => {
-      activeView = button.dataset.view === "content" ? "content" : "quota";
+      activeView = ["content", "activation"].includes(button.dataset.view) ? button.dataset.view : "quota";
       document.querySelectorAll(".section-tab").forEach((tab) => tab.classList.toggle("active", tab === button));
       document.querySelector("#quota-view").hidden = activeView !== "quota";
       document.querySelector("#content-view").hidden = activeView !== "content";
+      document.querySelector("#activation-view").hidden = activeView !== "activation";
       if (activeView === "content" && user) void loadContent();
+      if (activeView === "activation" && user) void loadActivationSummaries();
     });
   });
   document.querySelector("#content-refresh").addEventListener("click", () => void loadContent());
+  document.querySelector("#activation-refresh").addEventListener("click", () => void loadActivationSummaries());
+  document.querySelector("#activation-next").addEventListener("click", () => void loadActivationSummaries(true));
   document.querySelector("#batch-refresh").addEventListener("click", () => void loadBatches());
   document.querySelector("#batch-filter").addEventListener("change", () => void loadBatches());
   document.querySelector("#batch-next").addEventListener("click", () => void loadBatches(true));
@@ -124,6 +142,72 @@ function renderShell() {
     event.preventDefault();
     void registerSource(new FormData(event.currentTarget));
   });
+}
+
+function activationMetric(metric) {
+  if (!metric || metric.state === "unknown") return "未知";
+  if (metric.state === "failed") return "采集失败";
+  return `${metric.count ?? 0} · ${metric.state === "completed" ? "已完成" : "未完成"}`;
+}
+
+function renderActivationSummaries() {
+  const container = document.querySelector("#activation-list");
+  if (!activationState.items.length) {
+    container.innerHTML = `<div class="empty-state compact">没有团队主动共享的摘要。</div>`;
+  } else {
+    container.innerHTML = activationState.items.map((item) => `<button class="activation-row" data-summary-id="${escapeHtml(item.summaryId)}">
+      <span><strong>${escapeHtml(item.workspaceSlug)}</strong><small>${escapeHtml(item.summary?.period?.startedAt?.slice(0, 10) || "未知周期")}</small></span>
+      <span class="badge">${escapeHtml(item.summary?.stage || "unknown")}</span>
+      <time>${escapeHtml(item.updatedAt)}</time>
+    </button>`).join("");
+    container.querySelectorAll(".activation-row").forEach((row) => row.addEventListener("click", () => void loadActivationDetail(row.dataset.summaryId)));
+  }
+  document.querySelector("#activation-next").hidden = !activationState.cursor;
+}
+
+function renderActivationDetail(item) {
+  const summary = item?.summary;
+  if (!summary) return;
+  document.querySelector("#activation-detail").innerHTML = `
+    <div class="detail-head"><div><p class="eyebrow">${escapeHtml(item.workspaceSlug)}</p><h3>${escapeHtml(summary.stage)}</h3></div><span class="badge">契约 v${escapeHtml(summary.contractVersion)}</span></div>
+    <div class="metric-grid">
+      <div><span class="muted">成员启用</span><strong>${escapeHtml(activationMetric(summary.metrics.members))}</strong></div>
+      <div><span class="muted">工作簿启用</span><strong>${escapeHtml(activationMetric(summary.metrics.workbooks))}</strong></div>
+      <div><span class="muted">导入</span><strong>${escapeHtml(activationMetric(summary.metrics.imports))}</strong></div>
+      <div><span class="muted">复核</span><strong>${escapeHtml(activationMetric(summary.metrics.reviews))}</strong></div>
+      <div><span class="muted">来源</span><strong>团队提供</strong></div>
+      <div><span class="muted">更新时间</span><strong>${escapeHtml(item.updatedAt)}</strong></div>
+    </div>
+    <p class="activation-note">统计周期：${escapeHtml(summary.period.startedAt)} — ${escapeHtml(summary.period.endedAt)} · ${escapeHtml(summary.period.timeZone)}。未知、未完成和失败保持独立显示。</p>`;
+}
+
+async function loadActivationSummaries(append = false) {
+  const status = document.querySelector("#activation-status");
+  status.textContent = "正在加载授权摘要……";
+  status.className = "status muted";
+  try {
+    const cursor = append ? activationState.cursor : null;
+    const page = await api(`/ops/activation-summaries?limit=25${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+    activationState.items = append ? [...activationState.items, ...(page.items || [])] : (page.items || []);
+    activationState.cursor = page.nextCursor || null;
+    renderActivationSummaries();
+    status.textContent = `已加载 ${activationState.items.length} 条团队提供摘要`;
+  } catch (error) {
+    status.textContent = error instanceof Error ? error.message : "摘要加载失败";
+    status.className = "status error";
+  }
+}
+
+async function loadActivationDetail(summaryId) {
+  const detail = document.querySelector("#activation-detail");
+  detail.className = "empty-state";
+  detail.textContent = "正在加载……";
+  try {
+    renderActivationDetail(await api(`/ops/activation-summaries/${encodeURIComponent(summaryId)}`));
+  } catch (error) {
+    detail.textContent = error instanceof Error ? error.message : "摘要详情加载失败";
+    detail.className = "empty-state error";
+  }
 }
 
 function renderAuth() {

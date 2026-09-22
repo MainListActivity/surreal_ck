@@ -445,6 +445,7 @@ export const PLATFORM_OPERATOR_CAPABILITIES = [
   "content.withdraw",
   "content.restore",
   "content.source.manage",
+  "activation.summary.read",
 ] as const;
 export type PlatformOperatorCapability =
   (typeof PLATFORM_OPERATOR_CAPABILITIES)[number];
