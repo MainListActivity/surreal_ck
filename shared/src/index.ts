@@ -4,6 +4,7 @@ export * from "./capabilities";
 export * from "./date-format";
 export * from "./field-schema";
 export * from "./native-quota";
+export * from "./ops-follow-up";
 export * from "./platform-content";
 export * from "./research-save";
 export * from "./research-url";

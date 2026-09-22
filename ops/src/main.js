@@ -15,6 +15,7 @@ const contentState = {
   selectedBatch: null,
 };
 const activationState = { items: [], cursor: null };
+const followUpState = { opportunities: [], opportunityCursor: null, items: [], cursor: null };
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -43,6 +44,7 @@ function renderShell() {
       <nav class="section-tabs" aria-label="运营模块">
         <button class="section-tab active" data-view="quota">配额运营</button>
         <button class="section-tab" data-view="activation">团队启用摘要</button>
+        <button class="section-tab" data-view="followup">机会与跟进</button>
         <button class="section-tab" data-view="content">内容维护</button>
       </nav>
       <main id="quota-view" class="layout">
@@ -70,6 +72,20 @@ function renderShell() {
         <section class="panel activation-panel">
           <div class="panel-heading"><h2>摘要详情</h2><span class="badge">team_supplied</span></div>
           <div id="activation-detail" class="empty-state">选择一条摘要查看口径、来源与新鲜度。</div>
+        </section>
+      </main>
+      <main id="followup-view" class="activation-layout" hidden>
+        <section class="panel activation-panel">
+          <div class="panel-heading"><div><h2>运营机会</h2><p class="muted activation-help">只从新鲜、明确且仍获授权的摘要派生；未知或陈旧信号不代表流失。</p></div><button id="followup-refresh" class="ghost">刷新</button></div>
+          <div id="opportunity-status" class="status muted">登录后加载机会。</div>
+          <div id="opportunity-list" class="activation-list"></div>
+          <button id="opportunity-next" class="ghost more-button" hidden>加载更多机会</button>
+        </section>
+        <section class="panel activation-panel">
+          <div class="panel-heading"><div><h2>内部跟进队列</h2><p class="muted activation-help">认领使用有期限租约；这里只维护内部事项，不发送外部消息。</p></div></div>
+          <div id="followup-status" class="status muted">登录后加载队列。</div>
+          <div id="followup-list" class="activation-list"></div>
+          <button id="followup-next" class="ghost more-button" hidden>加载更多事项</button>
         </section>
       </main>
       <main id="content-view" class="content-layout" hidden>
@@ -117,18 +133,23 @@ function renderShell() {
   document.querySelector("#refresh").addEventListener("click", () => void search(document.querySelector("#search-input").value));
   document.querySelectorAll(".section-tab").forEach((button) => {
     button.addEventListener("click", () => {
-      activeView = ["content", "activation"].includes(button.dataset.view) ? button.dataset.view : "quota";
+      activeView = ["content", "activation", "followup"].includes(button.dataset.view) ? button.dataset.view : "quota";
       document.querySelectorAll(".section-tab").forEach((tab) => tab.classList.toggle("active", tab === button));
       document.querySelector("#quota-view").hidden = activeView !== "quota";
       document.querySelector("#content-view").hidden = activeView !== "content";
       document.querySelector("#activation-view").hidden = activeView !== "activation";
+      document.querySelector("#followup-view").hidden = activeView !== "followup";
       if (activeView === "content" && user) void loadContent();
       if (activeView === "activation" && user) void loadActivationSummaries();
+      if (activeView === "followup" && user) void loadFollowUps();
     });
   });
   document.querySelector("#content-refresh").addEventListener("click", () => void loadContent());
   document.querySelector("#activation-refresh").addEventListener("click", () => void loadActivationSummaries());
   document.querySelector("#activation-next").addEventListener("click", () => void loadActivationSummaries(true));
+  document.querySelector("#followup-refresh").addEventListener("click", () => void loadFollowUps());
+  document.querySelector("#opportunity-next").addEventListener("click", () => void loadOpportunities(true));
+  document.querySelector("#followup-next").addEventListener("click", () => void loadQueue(true));
   document.querySelector("#batch-refresh").addEventListener("click", () => void loadBatches());
   document.querySelector("#batch-filter").addEventListener("change", () => void loadBatches());
   document.querySelector("#batch-next").addEventListener("click", () => void loadBatches(true));
@@ -245,6 +266,92 @@ async function loadActivationDetail(summaryId) {
     detail.textContent = error instanceof Error ? error.message : "摘要详情加载失败";
     detail.className = "empty-state error";
   }
+}
+
+function requestKey(prefix) {
+  return `${prefix}-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`}`;
+}
+
+function renderOpportunities() {
+  const container = document.querySelector("#opportunity-list");
+  container.innerHTML = followUpState.opportunities.length ? followUpState.opportunities.map((item) => `
+    <article class="activation-row">
+      <span><strong>${escapeHtml(item.workspaceSlug)}</strong><small>${escapeHtml(item.reason)} · ${escapeHtml(item.period.startedAt.slice(0, 10))}</small></span>
+      <span class="badge">${escapeHtml(item.freshness)} · 来源 v${escapeHtml(item.sourceContractVersion)}</span>
+      <span><button class="ghost opportunity-summary" data-summary-id="${escapeHtml(item.summaryId)}">查看摘要</button><button class="ghost opportunity-create" data-opportunity-id="${escapeHtml(item.opportunityId)}">创建事项</button></span>
+    </article>`).join("") : `<div class="empty-state compact">没有可操作的新鲜机会。</div>`;
+  container.querySelectorAll(".opportunity-create").forEach((button) => button.addEventListener("click", () => void createFollowUp(button.dataset.opportunityId)));
+  container.querySelectorAll(".opportunity-summary").forEach((button) => button.addEventListener("click", () => void locateSummary(button.dataset.summaryId)));
+  document.querySelector("#opportunity-next").hidden = !followUpState.opportunityCursor;
+}
+
+function renderFollowUps() {
+  const container = document.querySelector("#followup-list");
+  container.innerHTML = followUpState.items.length ? followUpState.items.map((item) => `
+    <article class="activation-row followup-card">
+      <span><strong>${escapeHtml(item.workspaceSlug)} · ${escapeHtml(item.reason)}</strong><small>${item.sourceAvailable ? `来源 v${escapeHtml(item.sourceContractVersion)} · ${escapeHtml(item.sourceFreshness)} · ${escapeHtml(item.sourceUpdatedAt)}` : "来源已撤回，仅保留最小处理历史"}</small><small>负责人：${escapeHtml(item.ownerSubject || "未认领")} · 到期检查：${escapeHtml(item.dueCheckAt || "未设置")}</small>${item.result ? `<small>处理结果：${escapeHtml(item.result)}</small>` : ""}</span>
+      <span class="badge">${escapeHtml(item.status)} · v${escapeHtml(item.version)}</span>
+      <span>${item.sourceAvailable ? `<button class="ghost followup-summary" data-summary-id="${escapeHtml(item.summaryId)}">查看摘要</button>` : ""}${item.nextStep === "claim" ? `<button class="ghost followup-claim" data-id="${escapeHtml(item.followUpId)}" data-version="${escapeHtml(item.version)}">认领</button>` : item.nextStep === "none" ? "" : `<form class="followup-update" data-id="${escapeHtml(item.followUpId)}" data-version="${escapeHtml(item.version)}"><label>状态<select name="status"><option value="waiting">待检查</option><option value="resolved">已完成</option><option value="dismissed">不再跟进</option></select></label><label>到期检查<input name="dueCheckAt" type="datetime-local" value="${escapeHtml(item.dueCheckAt?.slice(0, 16) || "")}" /></label><label>处理结果<textarea name="result" maxlength="2000" required>${escapeHtml(item.result || "")}</textarea></label><button type="submit">保存</button></form>`}</span>
+    </article>`).join("") : `<div class="empty-state compact">队列为空。</div>`;
+  container.querySelectorAll(".followup-claim").forEach((button) => button.addEventListener("click", () => void claimFollowUp(button.dataset.id, Number(button.dataset.version))));
+  container.querySelectorAll(".followup-summary").forEach((button) => button.addEventListener("click", () => void locateSummary(button.dataset.summaryId)));
+  container.querySelectorAll(".followup-update").forEach((form) => form.addEventListener("submit", (event) => { event.preventDefault(); void updateFollowUp(form); }));
+  document.querySelector("#followup-next").hidden = !followUpState.cursor;
+}
+
+async function locateSummary(summaryId) {
+  document.querySelector('[data-view="activation"]').click();
+  await loadActivationDetail(summaryId);
+}
+
+async function loadOpportunities(append = false) {
+  const cursor = append ? followUpState.opportunityCursor : null;
+  const page = await api(`/ops/activation-opportunities?limit=25${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+  followUpState.opportunities = append ? [...followUpState.opportunities, ...(page.items || [])] : (page.items || []);
+  followUpState.opportunityCursor = page.nextCursor || null;
+  renderOpportunities();
+  document.querySelector("#opportunity-status").textContent = `已加载 ${followUpState.opportunities.length} 个机会`;
+}
+
+async function loadQueue(append = false) {
+  const cursor = append ? followUpState.cursor : null;
+  const page = await api(`/ops/follow-ups?limit=25${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+  followUpState.items = append ? [...followUpState.items, ...(page.items || [])] : (page.items || []);
+  followUpState.cursor = page.nextCursor || null;
+  renderFollowUps();
+  document.querySelector("#followup-status").textContent = `已加载 ${followUpState.items.length} 个内部事项`;
+}
+
+async function loadFollowUps() {
+  try { await Promise.all([loadOpportunities(), loadQueue()]); }
+  catch (error) {
+    const message = error instanceof Error ? error.message : "机会与队列加载失败";
+    document.querySelector("#opportunity-status").textContent = message;
+    document.querySelector("#followup-status").textContent = message;
+  }
+}
+
+async function createFollowUp(opportunityId) {
+  try {
+    await api("/ops/follow-ups", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ opportunityId, dueCheckAt: null, idempotencyKey: requestKey("ops-create") }) });
+    await loadFollowUps();
+  } catch (error) { document.querySelector("#opportunity-status").textContent = error instanceof Error ? error.message : "创建失败"; }
+}
+
+async function claimFollowUp(followUpId, expectedVersion) {
+  try {
+    await api(`/ops/follow-ups/${encodeURIComponent(followUpId)}/claim`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedVersion, leaseSeconds: 900, idempotencyKey: requestKey("ops-claim") }) });
+    await loadQueue();
+  } catch (error) { document.querySelector("#followup-status").textContent = error instanceof Error ? error.message : "认领失败"; }
+}
+
+async function updateFollowUp(form) {
+  const fields = new FormData(form);
+  const dueCheckAt = fields.get("dueCheckAt");
+  try {
+    await api(`/ops/follow-ups/${encodeURIComponent(form.dataset.id)}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedVersion: Number(form.dataset.version), status: fields.get("status"), dueCheckAt: dueCheckAt ? new Date(dueCheckAt).toISOString() : null, result: String(fields.get("result") || "").trim(), idempotencyKey: requestKey("ops-update") }) });
+    await loadQueue();
+  } catch (error) { document.querySelector("#followup-status").textContent = error instanceof Error ? error.message : "更新失败"; }
 }
 
 function renderAuth() {

@@ -12,7 +12,8 @@ import {
 } from "../../content/service";
 import { createContentMcpRoutes } from "./routes";
 import { ActivationSummaryService } from "../../activation-summary/service";
-import type { ActivationSummaryV1, SharedActivationSummary } from "@surreal-ck/shared";
+import type { ActivationSummaryV1, FollowUpItem, SharedActivationSummary } from "@surreal-ck/shared";
+import { OpsFollowUpService } from "../../ops-follow-up/service";
 
 const source: ContentSourceRegistration = {
   sourceKey: "official-demo",
@@ -89,6 +90,8 @@ describe("platform content MCP", () => {
         "content.restore",
         "content.source.manage",
         "activation.summary.read",
+        "activation.followup.read",
+        "activation.followup.write",
       ],
       bearer_methods_supported: ["header"],
     });
@@ -252,15 +255,45 @@ describe("platform content MCP", () => {
       async get() { return activation; },
     });
     const service = new PlatformContentService({ store: new InMemoryPlatformContentStore(), sources: [source] });
+    let followUp: FollowUpItem | null = null;
+    const followUpService = new OpsFollowUpService({
+      async listActiveSummaries() { return [activation]; },
+      async getSummary() { return activation; },
+      async findIdempotent() { return null; },
+      async create(input) {
+        followUp = {
+          followUpId: "activation_follow_up:demo", workspaceSlug: input.workspaceSlug, summaryId: input.summaryId,
+          reason: input.reason, period: input.period, dedupeKey: input.dedupeKey,
+          sourceContractVersion: input.sourceContractVersion, sourceUpdatedAt: input.sourceUpdatedAt,
+          sourceAvailable: true, sourceFreshness: "fresh", status: "open", ownerSubject: null, leaseExpiresAt: null,
+          dueCheckAt: input.dueCheckAt, result: null, version: 1,
+          createdAt: activation.updatedAt, updatedAt: activation.updatedAt, nextStep: "claim",
+        };
+        return followUp;
+      },
+      async list() { return followUp ? [followUp] : []; },
+      async get() { return followUp; },
+      async claim(input) {
+        if (!followUp || followUp.version !== input.expectedVersion) return null;
+        followUp = { ...followUp, ownerSubject: input.actorSubject, leaseExpiresAt: input.leaseExpiresAt, status: "claimed", version: 2, nextStep: "update" };
+        return followUp;
+      },
+      async update(input) {
+        if (!followUp || followUp.version !== input.expectedVersion || followUp.ownerSubject !== input.actorSubject) return null;
+        followUp = { ...followUp, status: input.status, dueCheckAt: input.dueCheckAt, result: input.result, version: 3, nextStep: "none" };
+        return followUp;
+      },
+    }, () => new Date("2026-09-22T12:00:00.000Z"));
     const app = new Hono<AppBindings>();
     app.onError(handleError);
     app.route("/", createContentMcpRoutes({
       service,
       activationSummaryService: activationService,
+      opsFollowUpService: followUpService,
       authorizationServer: "https://auth.example.test",
       requireOperator: async (c, next) => {
-        c.set("user", { subject: "operator:ada", raw: { scope: "activation.summary.read" }, rawToken: "token" });
-        c.set("platformOperator", { subject: "operator:ada", capabilities: ["activation.summary.read"] });
+        c.set("user", { subject: "operator:ada", raw: { scope: "activation.summary.read activation.followup.read" }, rawToken: "token" });
+        c.set("platformOperator", { subject: "operator:ada", capabilities: ["activation.summary.read", "activation.followup.read", "activation.followup.write"] });
         await next();
       },
     }));
@@ -272,5 +305,45 @@ describe("platform content MCP", () => {
     });
     const body = await response.json() as { result?: { structuredContent?: { items?: SharedActivationSummary[] } } };
     expect(body.result?.structuredContent?.items?.[0]).toEqual(activation);
+
+    const opportunityResponse = await call(app, {
+      jsonrpc: "2.0",
+      id: 21,
+      method: "tools/call",
+      params: { name: "list_activation_opportunities", arguments: { limit: 1 } },
+    });
+    const opportunityBody = await opportunityResponse.json() as { result?: { structuredContent?: { items?: Array<{ freshness?: string; nextStep?: string }> } } };
+    expect(opportunityBody.result?.structuredContent?.items?.[0]).toMatchObject({ freshness: "fresh", nextStep: "create_follow_up" });
+
+    const deniedCreate = await call(app, {
+      jsonrpc: "2.0",
+      id: 22,
+      method: "tools/call",
+      params: { name: "create_follow_up", arguments: { opportunityId: "x", dueCheckAt: null, idempotencyKey: "mcp-create-0001" } },
+    });
+    const deniedBody = await deniedCreate.json() as { result?: { structuredContent?: { error?: { code?: string } } } };
+    expect(deniedBody.result?.structuredContent?.error?.code).toBe("capability_missing");
+
+    const writableApp = new Hono<AppBindings>();
+    writableApp.onError(handleError);
+    writableApp.route("/", createContentMcpRoutes({
+      service, activationSummaryService: activationService, opsFollowUpService: followUpService,
+      authorizationServer: "https://auth.example.test",
+      requireOperator: async (c, next) => {
+        c.set("user", { subject: "operator:ada", raw: { scope: "activation.summary.read activation.followup.read activation.followup.write" }, rawToken: "token" });
+        c.set("platformOperator", { subject: "operator:ada", capabilities: ["activation.summary.read", "activation.followup.read", "activation.followup.write"] });
+        await next();
+      },
+    }));
+    const opportunityId = (opportunityBody.result?.structuredContent?.items?.[0] as { opportunityId?: string } | undefined)?.opportunityId;
+    const createdResponse = await call(writableApp, { jsonrpc: "2.0", id: 23, method: "tools/call", params: { name: "create_follow_up", arguments: { opportunityId, dueCheckAt: null, idempotencyKey: "mcp-create-0002" } } });
+    const created = await createdResponse.json() as { result?: { structuredContent?: FollowUpItem } };
+    expect(created.result?.structuredContent).toMatchObject({ followUpId: "activation_follow_up:demo", nextStep: "claim" });
+    const claimedResponse = await call(writableApp, { jsonrpc: "2.0", id: 24, method: "tools/call", params: { name: "claim_follow_up", arguments: { followUpId: "activation_follow_up:demo", expectedVersion: 1, leaseSeconds: 60, idempotencyKey: "mcp-claim-0001" } } });
+    const claimed = await claimedResponse.json() as { result?: { structuredContent?: FollowUpItem } };
+    expect(claimed.result?.structuredContent).toMatchObject({ status: "claimed", version: 2, ownerSubject: "operator:ada" });
+    const updatedResponse = await call(writableApp, { jsonrpc: "2.0", id: 25, method: "tools/call", params: { name: "update_follow_up", arguments: { followUpId: "activation_follow_up:demo", expectedVersion: 2, status: "resolved", dueCheckAt: null, result: "已处理", idempotencyKey: "mcp-update-0001" } } });
+    const updated = await updatedResponse.json() as { result?: { structuredContent?: FollowUpItem } };
+    expect(updated.result?.structuredContent).toMatchObject({ status: "resolved", result: "已处理", nextStep: "none" });
   });
 });

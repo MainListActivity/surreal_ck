@@ -79,6 +79,9 @@ import { createContentMcpRoutes } from "./ops/mcp/routes";
 import { ActivationSummaryService } from "./activation-summary/service";
 import { SurrealActivationSummaryStore } from "./activation-summary/store";
 import { createActivationSummaryRoutes } from "./routes/activation-summary";
+import { OpsFollowUpService } from "./ops-follow-up/service";
+import { SurrealOpsFollowUpStore } from "./ops-follow-up/store";
+import { createOpsFollowUpRoutes } from "./routes/ops-follow-up";
 
 export type AppOptions = {
   workspaceScope?: WorkspaceScopeModule;
@@ -109,6 +112,8 @@ export type AppOptions = {
   platformContentService?: PlatformContentService;
   /** 团队主动共享的启用摘要服务；运营页面与 MCP 复用。 */
   activationSummaryService?: ActivationSummaryService;
+  /** 运营机会与内部跟进队列；页面和 MCP 复用。 */
+  opsFollowUpService?: OpsFollowUpService;
 };
 
 type AiStreamWebSocket = ReturnType<typeof createAiStreamRoutes>["websocket"];
@@ -220,6 +225,8 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
   const platformContentService = options.platformContentService ?? createDefaultPlatformContentService();
   const activationSummaryService = options.activationSummaryService
     ?? new ActivationSummaryService(new SurrealActivationSummaryStore());
+  const opsFollowUpService = options.opsFollowUpService
+    ?? new OpsFollowUpService(new SurrealOpsFollowUpStore());
   const autoAiChatService = options.aiChatService ?? buildAutoAiChatService(runBus, platformContentService, embeddingProvider);
   const quotaReadService =
     options.quotaReadService ?? createDefaultQuotaReadService();
@@ -278,9 +285,11 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
       service: activationSummaryService,
       requireUser: options.requireUser,
     }))
+    .route("/", createOpsFollowUpRoutes({ service: opsFollowUpService }))
     .route("/", createContentMcpRoutes({
       service: platformContentService,
       activationSummaryService,
+      opsFollowUpService,
     }))
     .route(
       "/",

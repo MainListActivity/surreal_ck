@@ -16,6 +16,7 @@ import {
   ActivationSummaryService,
   ActivationSummaryServiceError,
 } from "../../activation-summary/service";
+import { OpsFollowUpService, OpsFollowUpServiceError } from "../../ops-follow-up/service";
 
 const MCP_SCOPES = [
   "content.read",
@@ -25,6 +26,8 @@ const MCP_SCOPES = [
   "content.restore",
   "content.source.manage",
   "activation.summary.read",
+  "activation.followup.read",
+  "activation.followup.write",
 ] as const;
 
 const toolInputSchema = z.record(z.string(), z.unknown());
@@ -48,6 +51,8 @@ function toolError(error: unknown) {
           },
         }
       : error instanceof ActivationSummaryServiceError
+        ? { error: { code: error.code, message: error.message } }
+      : error instanceof OpsFollowUpServiceError
         ? { error: { code: error.code, message: error.message } }
       : error instanceof ZodError
         ? {
@@ -160,6 +165,7 @@ function buildServer(
   service: PlatformContentService,
   operator: ContentOperator,
   activationSummaryService?: ActivationSummaryService,
+  opsFollowUpService?: OpsFollowUpService,
 ): McpServer {
   const server = new McpServer(
     { name: "surreal-ck-platform-content", version: "1.0.0" },
@@ -220,6 +226,75 @@ function buildServer(
         } catch (error) {
           return toolError(error);
         }
+      },
+    );
+  }
+
+  if (opsFollowUpService) {
+    server.registerTool(
+      "list_activation_opportunities",
+      {
+        title: "列出启用支持机会",
+        description: "稳定分页列出从未撤回、新鲜且结论明确的授权摘要派生的内部支持机会。未知或陈旧摘要不会被当作流失事实。",
+        inputSchema: toolInputSchema,
+      },
+      async (args) => {
+        try {
+          return toolSuccess(await opsFollowUpService.listOpportunities(operator, {
+            limit: typeof args.limit === "number" ? args.limit : undefined,
+            cursor: typeof args.cursor === "string" ? args.cursor : undefined,
+          }));
+        } catch (error) { return toolError(error); }
+      },
+    );
+    server.registerTool(
+      "list_follow_ups",
+      { title: "列出内部跟进队列", description: "稳定分页列出内部跟进事项；摘要撤回后只返回最小历史并标记来源不可用。", inputSchema: toolInputSchema },
+      async (args) => {
+        try {
+          return toolSuccess(await opsFollowUpService.listFollowUps(operator, {
+            limit: typeof args.limit === "number" ? args.limit : undefined,
+            cursor: typeof args.cursor === "string" ? args.cursor : undefined,
+          }));
+        } catch (error) { return toolError(error); }
+      },
+    );
+    server.registerTool(
+      "create_follow_up",
+      { title: "创建内部跟进事项", description: "按机会稳定身份创建或去重内部事项，不发送任何外部消息。", inputSchema: toolInputSchema },
+      async (args) => {
+        try {
+          if (typeof args.opportunityId !== "string" || typeof args.idempotencyKey !== "string" || (args.dueCheckAt !== null && args.dueCheckAt !== undefined && typeof args.dueCheckAt !== "string")) throw new OpsFollowUpServiceError("invalid_request", "opportunityId 与 idempotencyKey 必填");
+          return toolSuccess(await opsFollowUpService.create(operator, { opportunityId: args.opportunityId, dueCheckAt: typeof args.dueCheckAt === "string" ? args.dueCheckAt : null, idempotencyKey: args.idempotencyKey }));
+        } catch (error) { return toolError(error); }
+      },
+    );
+    server.registerTool(
+      "claim_follow_up",
+      { title: "认领内部跟进事项", description: "用预期版本和有期限租约认领事项；竞争者只能有一个成功。", inputSchema: toolInputSchema },
+      async (args) => {
+        try {
+          if (typeof args.followUpId !== "string" || typeof args.expectedVersion !== "number" || typeof args.leaseSeconds !== "number" || typeof args.idempotencyKey !== "string") throw new OpsFollowUpServiceError("invalid_request", "认领参数不完整");
+          return toolSuccess(await opsFollowUpService.claim(operator, { followUpId: args.followUpId, expectedVersion: args.expectedVersion, leaseSeconds: args.leaseSeconds, idempotencyKey: args.idempotencyKey }));
+        } catch (error) { return toolError(error); }
+      },
+    );
+    server.registerTool(
+      "update_follow_up",
+      { title: "更新内部跟进事项", description: "仅当前有效租约持有人可按预期版本更新状态、到期检查时间和结果。", inputSchema: toolInputSchema },
+      async (args) => {
+        try {
+          const status = args.status;
+          if (typeof args.followUpId !== "string" || typeof args.expectedVersion !== "number" || (status !== "waiting" && status !== "resolved" && status !== "dismissed") || typeof args.idempotencyKey !== "string") throw new OpsFollowUpServiceError("invalid_request", "更新参数不完整");
+          return toolSuccess(await opsFollowUpService.update(operator, {
+            followUpId: args.followUpId,
+            expectedVersion: args.expectedVersion,
+            status,
+            dueCheckAt: typeof args.dueCheckAt === "string" ? args.dueCheckAt : null,
+            result: typeof args.result === "string" ? args.result : null,
+            idempotencyKey: args.idempotencyKey,
+          }));
+        } catch (error) { return toolError(error); }
       },
     );
   }
@@ -294,6 +369,7 @@ function buildServer(
 export function createContentMcpRoutes(input: Readonly<{
   service: PlatformContentService;
   activationSummaryService?: ActivationSummaryService;
+  opsFollowUpService?: OpsFollowUpService;
   resourceUri?: string;
   authorizationServer?: string;
   requireOperator?: MiddlewareHandler<AppBindings>;
@@ -359,7 +435,7 @@ export function createContentMcpRoutes(input: Readonly<{
     const server = buildServer(input.service, {
       subject: operator.subject,
       capabilities: effectiveCapabilities,
-    }, input.activationSummaryService);
+    }, input.activationSummaryService, input.opsFollowUpService);
     const transport = new WebStandardStreamableHTTPServerTransport({
       enableJsonResponse: true,
     });

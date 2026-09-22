@@ -8,6 +8,10 @@ describe("运营启用摘要页面", () => {
     expect(source).toContain('data-view="activation"');
     expect(source).toContain("/ops/activation-summaries?limit=25");
     expect(source).toContain("/ops/activation-summaries/${encodeURIComponent(summaryId)}");
+    expect(source).toContain('data-view="followup"');
+    expect(source).toContain("/ops/activation-opportunities?limit=25");
+    expect(source).toContain("/ops/follow-ups?limit=25");
+    expect(source).toContain("/claim");
     expect(source).toContain("团队提供");
     expect(source).toContain('summary.contractVersion === "2"');
     expect(source).toContain("固定运行问题解决率");
