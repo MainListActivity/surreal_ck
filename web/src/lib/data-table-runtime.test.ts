@@ -36,6 +36,8 @@ function runtimeHarness(
   const updates: Array<{ id: string; patch: Record<string, unknown> }> = [];
   const creates: Array<{ table: string; data: Record<string, unknown> }> = [];
   const txCalls: string[] = [];
+  const importReceipts = new Map<string, Record<string, unknown>>();
+  const findingEvents = new Map<string, Record<string, unknown>>();
 
   const writer = {
     async updateRecord(id: string, patch: Record<string, unknown>) {
@@ -49,6 +51,10 @@ function runtimeHarness(
       creates.push({ table, data });
       createSeq += 1;
       const created = { id: `${table}:new${createSeq}`, ...data };
+      if (table === "data_check_finding_event") {
+        findingEvents.set(String(data.idempotency_key), created);
+        return created;
+      }
       rows.push(created);
       return created;
     },
@@ -64,7 +70,7 @@ function runtimeHarness(
     use: async () => ({}),
     close: async () => true,
     subscribe: () => () => {},
-    query: (async (sql: string) => {
+    query: (async (sql: string, bindings?: Record<string, unknown>) => {
       calls.push(sql);
       if (/FROM sheet/i.test(sql)) {
         return [{
@@ -74,6 +80,20 @@ function runtimeHarness(
           table_name: "ent_claim",
           column_defs: runtimeColumns,
         }];
+      }
+      if (/FROM import_batch_row/i.test(sql)) {
+        const key = `${String(bindings?.batch)}:${String(bindings?.sheetName)}:${String(bindings?.rowNumber)}`;
+        const receipt = importReceipts.get(key);
+        return receipt ? [{ ...receipt }] : [];
+      }
+      if (/SELECT count\(\) AS total/i.test(sql)) return [{ total: rows.length }];
+      if (/SELECT updated_at .*ORDER BY updated_at DESC/i.test(sql)) {
+        return rows.length ? [{ updated_at: rows.at(-1)?.updated_at ?? "2026-09-22T00:00:00Z" }] : [];
+      }
+      if (/FROM type::table/i.test(sql)) {
+        const limit = Number(sql.match(/LIMIT (\d+)/i)?.[1] ?? rows.length);
+        const start = Number(sql.match(/START (\d+)/i)?.[1] ?? 0);
+        return rows.slice(start, start + limit).map((row) => ({ ...row }));
       }
       return rows.map((row) => ({ ...row }));
     }) as SurrealConn["query"],
@@ -87,8 +107,34 @@ function runtimeHarness(
       txCalls.push("BEGIN");
       const tx: SurrealTransactionWriter = {
         ...writer,
-        query: (async (sql: string) => {
+        query: (async (sql: string, bindings?: Record<string, unknown>) => {
           txCalls.push(sql);
+          if (/FROM data_check_finding_event/i.test(sql)) {
+            const event = findingEvents.get(String(bindings?.key));
+            return event ? [{ ...event }] : [];
+          }
+          if (/FROM type::table/i.test(sql) && bindings?.record) {
+            return rows.filter((row) => row.id === String(bindings.record)).map((row) => ({ ...row }));
+          }
+          if (/CREATE \$targetRecord/i.test(sql)) {
+            const created = { id: bindings?.targetRecord, ...(bindings?.data as Record<string, unknown>) };
+            creates.push({ table: "ent_claim", data: bindings?.data as Record<string, unknown> });
+            rows.push(created);
+            return [created];
+          }
+          if (/INSERT INTO import_batch_row/i.test(sql)) {
+            const key = `${String(bindings?.batch)}:${String(bindings?.sheetName)}:${String(bindings?.rowNumber)}`;
+            const receipt = {
+              id: `import_batch_row:${importReceipts.size + 1}`,
+              batch: bindings?.batch,
+              sheet_name: bindings?.sheetName,
+              source_row_number: bindings?.rowNumber,
+              status: bindings?.status,
+              target_record: bindings?.targetRecord,
+            };
+            importReceipts.set(key, receipt);
+            return [receipt];
+          }
           return /SELECT \*/i.test(sql) ? rows.map((row) => ({ ...row })) : [];
         }) as SurrealTransactionWriter["query"],
       };
@@ -104,6 +150,8 @@ function runtimeHarness(
     updates,
     creates,
     txCalls,
+    importReceipts,
+    findingEvents,
     get live() { return live; },
     get unsubscribed() { return unsubscribed; },
     setRows(next: Array<Record<string, unknown>>) { rows = next.map((row) => ({ ...row })); },
@@ -111,6 +159,66 @@ function runtimeHarness(
 }
 
 describe("数据表运行时打开与记录入口", () => {
+  test("字段修正先只生成差异预览，确认时事务重验并幂等记录审计", async () => {
+    const h = runtimeHarness([{ id: "ent_claim:a", name: "旧名称", amount: 1 }]);
+    const runtime = await openDataTableRuntime({
+      conn: h.conn, workbookId: "workbook:w1", dataTableId: "sheet:s1", query: emptyView,
+    });
+    const preview = await runtime.planRecordFieldRepair({ recordId: "ent_claim:a", fieldKey: "name", value: "新名称" });
+    expect(preview).toMatchObject({ ok: true, value: { before: "旧名称", after: "新名称", fieldLabel: "名称" } });
+    expect(h.updates).toEqual([]);
+    if (!preview.ok) throw new Error("预览失败");
+
+    const confirmed = await runtime.confirmRecordFieldRepair({
+      token: preview.value.token, findingId: "data_check_finding:f1", idempotencyKey: "repair:f1:v1",
+    });
+    const repeated = await runtime.confirmRecordFieldRepair({
+      token: preview.value.token, findingId: "data_check_finding:f1", idempotencyKey: "repair:f1:v1",
+    });
+
+    expect(confirmed).toMatchObject({ ok: true, value: { alreadyConfirmed: false, record: { values: { name: "新名称" } } } });
+    expect(repeated).toMatchObject({ ok: true, value: { alreadyConfirmed: true } });
+    expect(h.findingEvents.size).toBe(1);
+    expect(h.updates.filter((update) => update.id === "ent_claim:a")).toHaveLength(1);
+    expect(h.updates).toContainEqual(expect.objectContaining({ id: "data_check_finding:f1", patch: { status: "pending_review" } }));
+  });
+
+  test("字段修正确认发现预览后并发变化时零覆盖", async () => {
+    const h = runtimeHarness([{ id: "ent_claim:a", name: "旧名称", amount: 1 }]);
+    const runtime = await openDataTableRuntime({
+      conn: h.conn, workbookId: "workbook:w1", dataTableId: "sheet:s1", query: emptyView,
+    });
+    const preview = await runtime.planRecordFieldRepair({ recordId: "ent_claim:a", fieldKey: "name", value: "新名称" });
+    if (!preview.ok) throw new Error("预览失败");
+    h.setRows([{ id: "ent_claim:a", name: "他人修改", amount: 1 }]);
+    const result = await runtime.confirmRecordFieldRepair({
+      token: preview.value.token, findingId: "data_check_finding:f1", idempotencyKey: "repair:f1:conflict",
+    });
+
+    expect(result).toMatchObject({ ok: false, error: { code: "conflict" } });
+    expect(h.updates).toEqual([]);
+    expect(h.findingEvents.size).toBe(0);
+  });
+
+  test("全范围扫描跨过默认 500 条窗口并保留末尾记录", async () => {
+    const rows = Array.from({ length: 501 }, (_, index) => ({
+      id: `ent_claim:r${index + 1}`,
+      name: index === 500 ? null : `记录 ${index + 1}`,
+      amount: index,
+      updated_at: "2026-09-22T00:00:00Z",
+    }));
+    const h = runtimeHarness(rows);
+    const runtime = await openDataTableRuntime({
+      conn: h.conn, workbookId: "workbook:w1", dataTableId: "sheet:s1", query: emptyView,
+    });
+
+    const scanned = await runtime.scanAllRecords();
+
+    expect(scanned.scannedCount).toBe(501);
+    expect(scanned.records.at(-1)).toMatchObject({ id: "ent_claim:r501", values: { name: null } });
+    expect(scanned.stale).toBe(false);
+  });
+
   test("先建立 LIVE 再查询正式记录，并验证工作簿 + 数据表归属", async () => {
     const h = runtimeHarness([{ id: "ent_claim:a", name: "甲", amount: 1 }]);
     const runtime = await openDataTableRuntime({
@@ -319,6 +427,35 @@ describe("数据表运行时打开与记录入口", () => {
     ]);
     expect(h.creates).toHaveLength(2);
     expect(String(h.creates[1]!.data.creditor)).toBe("ent_creditor:c2");
+  });
+
+  test("持久批次把业务记录与成功回执同事务提交，并在重放前核实回执", async () => {
+    const h = runtimeHarness();
+    const runtime = await openDataTableRuntime({
+      conn: h.conn,
+      workbookId: "workbook:w1",
+      dataTableId: "sheet:s1",
+      query: emptyView,
+    });
+    const input = {
+      rows: [["甲", "100"]],
+      rowNumbers: [8],
+      mappings: [
+        { sourceIndex: 0, sourceLabel: "名称", targetKey: "name", matchedBy: "field-name" },
+        { sourceIndex: 1, sourceLabel: "金额", targetKey: "amount", matchedBy: "field-name" },
+      ] satisfies TemplateImportMapping[],
+      batch: { id: "import_batch:b1", sheetName: "债权" },
+    };
+
+    const first = await runtime.importCsvRows(input);
+    const replay = await runtime.importCsvRows(input);
+
+    expect(first).toEqual({ importedCount: 1, rejected: [], replayedCount: 0, outcomeUnknownCount: 0 });
+    expect(replay).toEqual({ importedCount: 1, rejected: [], replayedCount: 1, outcomeUnknownCount: 0 });
+    expect(h.creates).toHaveLength(1);
+    expect(h.importReceipts.size).toBe(1);
+    expect(h.txCalls.filter((call) => call === "BEGIN")).toHaveLength(1);
+    expect(h.txCalls.some((call) => /INSERT INTO import_batch_row/i.test(call))).toBe(true);
   });
 });
 

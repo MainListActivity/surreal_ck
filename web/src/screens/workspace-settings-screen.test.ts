@@ -51,3 +51,21 @@ describe("WS-03 工作区基本信息区块", () => {
     expect(settings).toMatch(/\{#if canManage\}\s*<button[\s\S]*type="submit"[\s\S]*disabled=\{!canSaveWorkspaceName\}[\s\S]*保存[\s\S]*<\/button>\s*\{\/if\}/);
   });
 });
+
+describe("运营摘要主动共享", () => {
+  test("管理员先预览白名单字段，再明确共享或撤回", () => {
+    const settings = readScreen("WorkspaceSettingsScreen.svelte");
+
+    expect(settings).toContain('aria-label="运营摘要共享"');
+    expect(settings).toContain("不会共享文件名、案件、正文、材料或成员邮箱");
+    expect(settings).toContain("确认共享");
+    expect(settings).toContain("撤回共享");
+    expect(settings).toContain("契约 v2");
+    expect(settings).toContain("未知（缺少可靠证据）");
+    expect(settings).toContain("固定运行问题解决率");
+    expect(settings).toContain("结果待核实");
+    expect(settings).toContain("逐指标口径与来源");
+    expect(settings).toContain("summaryPreview.progress.checks.definition");
+    expect(settings).toMatch(/\{#if canManage\}[\s\S]*aria-label="运营摘要共享"/);
+  });
+});

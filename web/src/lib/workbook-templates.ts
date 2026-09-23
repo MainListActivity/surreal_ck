@@ -7,11 +7,13 @@ import type {
   WorkbookTemplateFieldDef,
   WorkbookTemplateQuickTask,
   WorkbookTemplateQuickTaskRisk,
+  WorkbookTemplateCheckRules,
   WorkbookTemplateSampleRecord,
   WorkbookTemplateSheet,
 } from "@surreal-ck/shared/dto";
 import type { SurrealConn } from "./surreal";
 import type { TemplateSheetForCreate } from "./workbooks";
+import { parseTemplateCheckRules, serializeTemplateCheckRules } from "./template-check-rules";
 
 /**
  * 工作簿「类型」= 业务模板的产物。模板是 workspace 内 `workbook_template` 表的数据行，
@@ -119,6 +121,12 @@ export function recordToTemplate(rec: Record<string, unknown>): WorkbookTemplate
     ? rec.quick_tasks.map(recordToQuickTask).filter((task): task is WorkbookTemplateQuickTask => task !== null)
     : [];
   const rowAnalysis = recordToRowAnalysis(rec.row_analysis);
+  let checkRules: WorkbookTemplateCheckRules | undefined;
+  try {
+    checkRules = parseTemplateCheckRules(rec.check_rules, sheets);
+  } catch {
+    checkRules = undefined;
+  }
   return {
     id: String(rec.id) as RecordIdString,
     key: typeof rec.key === "string" ? rec.key : "",
@@ -132,6 +140,7 @@ export function recordToTemplate(rec: Record<string, unknown>): WorkbookTemplate
     ...(defaultDashboard ? { defaultDashboard } : {}),
     ...(quickTasks.length > 0 ? { quickTasks } : {}),
     ...(rowAnalysis ? { rowAnalysis } : {}),
+    ...(checkRules ? { checkRules } : {}),
     builtin: rec.builtin === true,
     sortOrder: typeof rec.sort_order === "number" ? rec.sort_order : 0,
   };
@@ -244,11 +253,27 @@ export function createWorkbookTemplatesStore(deps: WorkbookTemplatesDeps) {
     return state.templates.find((tpl) => tpl.key === key);
   }
 
+  async function saveCheckRules(templateId: string, value: unknown): Promise<WorkbookTemplateCheckRules> {
+    const template = state.templates.find((candidate) => candidate.id === templateId);
+    if (!template) throw new Error("模板不存在或已被删除");
+    const validated = parseTemplateCheckRules(value, template.sheets);
+    if (!validated) throw new Error("检查规则不能为空");
+    await deps.getConn().updateRecord(templateId, {
+      check_rules: serializeTemplateCheckRules(validated),
+    });
+    state.templates = state.templates.map((candidate) => candidate.id === templateId
+      ? { ...candidate, checkRules: validated }
+      : candidate);
+    emit();
+    return validated;
+  }
+
   return {
     get loading(): boolean { return state.loading; },
     get error(): string | null { return state.error; },
     get templates(): WorkbookTemplate[] { return state.templates; },
     load,
     byKey,
+    saveCheckRules,
   };
 }

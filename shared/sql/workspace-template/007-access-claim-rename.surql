@@ -12,12 +12,10 @@ DEFINE ACCESS OVERWRITE admin ON DATABASE TYPE JWT URL "<__OIDC_JWKS_URL__>"
           WHERE subject = $token.sub
       );
       IF !$existing {
-          LET $display_name = $token["email"];
-
           CREATE user CONTENT {
               subject: $token.sub,
-              email: $token["email"],
-              display_name: $token["email"],
+              email: $token.email,
+              display_name: $token.email,
               kind: "human",
               is_admin: true,
               last_seen_at: time::now(),
@@ -34,16 +32,16 @@ DEFINE ACCESS OVERWRITE participant ON DATABASE TYPE RECORD
           WHERE subject = $token.sub
       );
       IF !$existing {
-          LET $display_name = $token["email"];
-
-          CREATE user CONTENT {
+          LET $created = (CREATE ONLY user CONTENT {
               subject: $token.sub,
-              email: $token["email"],
-              display_name: $token["email"],
+              email: $token.email,
+              display_name: $token.email,
               kind: "human",
               is_admin: false,
               last_seen_at: time::now(),
-          };
+          });
+          RETURN $created.id;
       };
+      RETURN $existing;
   }
   DURATION FOR TOKEN 1h, FOR SESSION NONE;

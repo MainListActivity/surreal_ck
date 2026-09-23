@@ -11,14 +11,19 @@ import {
 
 function setup(rows: Array<Record<string, unknown>>) {
   const queries: string[] = [];
+  const updates: Array<{ id: string; patch: Record<string, unknown> }> = [];
   const conn = {
     query: (async (sql: string) => {
       queries.push(sql);
       return rows;
     }) as SurrealConn["query"],
+    updateRecord: async (id: string, patch: Record<string, unknown>) => {
+      updates.push({ id, patch });
+      return { id, ...patch };
+    },
   } as SurrealConn;
   const store = createWorkbookTemplatesStore({ getConn: () => conn });
-  return { store, queries };
+  return { store, queries, updates };
 }
 
 const caseRow = {
@@ -343,5 +348,24 @@ describe("createWorkbookTemplatesStore — 直连读模板", () => {
     await broken.load();
     expect(broken.error).not.toBeNull();
     expect(broken.templates).toEqual([]);
+  });
+
+  test("管理员保存前校验规则字段，并把受限配置写回模板记录", async () => {
+    const row = {
+      ...caseRow,
+      sheet_defs: [{ key: "cases", label: "案件", column_defs: caseRow.column_defs }],
+    };
+    const { store, updates } = setup([row]);
+    await store.load();
+    await store.saveCheckRules(caseRow.id, { version: "v2", rules: [{
+      key: "same_name", type: "duplicate", sheetKey: "cases", fields: ["name"],
+      minimumGroupSize: 2, explanation: "案件名相同，需人工核验",
+    }] });
+
+    expect(updates[0]).toMatchObject({ id: caseRow.id, patch: { check_rules: { version: "v2" } } });
+    expect(store.byKey("case")?.checkRules?.version).toBe("v2");
+    await expect(store.saveCheckRules(caseRow.id, { version: "v3", rules: [{
+      key: "bad", type: "duplicate", sheetKey: "cases", fields: ["unknown"], explanation: "错误",
+    }] })).rejects.toThrow("不存在的字段");
   });
 });

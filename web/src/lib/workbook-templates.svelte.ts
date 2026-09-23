@@ -33,4 +33,5 @@ export const workbookTemplatesStore = {
 
   load: () => store.load(),
   byKey: (key: string) => store.byKey(key),
+  saveCheckRules: (templateId: string, value: unknown) => store.saveCheckRules(templateId, value),
 };

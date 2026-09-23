@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Upload } from "@lucide/svelte";
+  import { SearchCheck, Upload } from "@lucide/svelte";
   import { editorStore } from "../../lib/editor-store.svelte";
   import { editorUi } from "./lib/editor-ui.svelte";
   import { viewRegistry } from "./registries/views";
@@ -62,6 +62,13 @@
     onclick={() => (editorUi.showTemplateImport = true)}
   >
     <Upload size={13} />导入 CSV
+  </button>
+  <button
+    class="tool-btn"
+    disabled={!editorStore.workbook?.id || editorStore.saving}
+    onclick={() => (editorUi.showDataCheck = true)}
+  >
+    <SearchCheck size={13} />数据体检
   </button>
   {#if selectedCount > 0}
     <span class="selected-hint">已选 {selectedCount} 条</span>

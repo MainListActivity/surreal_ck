@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { AlertCircle, RefreshCw, Save, ShieldCheck, Trash2, UserPlus } from "@lucide/svelte";
+  import { AlertCircle, RefreshCw, Save, Share2, ShieldCheck, Trash2, UserPlus } from "@lucide/svelte";
+  import type { ActivationSummaryV2 } from "@surreal-ck/shared";
   import EmptyState from "../components/EmptyState.svelte";
   import QuotaOverview from "../components/quota/QuotaOverview.svelte";
   import {
@@ -13,6 +14,11 @@
   import { isWorkspaceAdmin as isWorkspaceAdminFn } from "../lib/permissions.svelte";
   import { renameWorkspace } from "../lib/workspace-meta-data";
   import { getSurreal } from "../lib/surreal";
+  import {
+    shareActivationSummary,
+    withdrawActivationSummary,
+  } from "../lib/activation-summary";
+  import { buildActivationSummaryV2 } from "../lib/activation-outcomes";
   import {
     getConnectionState,
     getCurrentUser,
@@ -42,6 +48,10 @@
   let actionError = $state("");
   let actionOk = $state("");
   let loadedSlug = $state("");
+  let summaryPreview = $state<ActivationSummaryV2 | null>(null);
+  let summaryWriting = $state(false);
+  let summaryMessage = $state("");
+  let summaryError = $state("");
 
   const workspaceOriginalName = $derived((workspace?.name ?? "").trim());
   const trimmedWorkspaceName = $derived(workspaceNameDraft.trim());
@@ -80,12 +90,47 @@
     loadError = "";
     try {
       members = await loadMembers(getSurreal());
+      if (canManage) summaryPreview = await buildActivationSummaryV2(getSurreal());
     } catch (err) {
       members = [];
       loadError = err instanceof Error ? err.message : String(err);
     } finally {
       loading = false;
     }
+  }
+
+  async function shareSummary() {
+    if (!summaryPreview || !workspaceSlug) return;
+    summaryWriting = true;
+    summaryError = "";
+    summaryMessage = "";
+    const result = await shareActivationSummary(workspaceSlug, summaryPreview);
+    summaryWriting = false;
+    if (!result.ok) summaryError = result.message;
+    else summaryMessage = "已共享给平台运营；该摘要标记为团队提供，不用于收费或权限判断。";
+  }
+
+  async function withdrawSummary() {
+    if (!workspaceSlug || !globalThis.confirm("撤回后运营端将立即停止展示摘要内容，确认撤回？")) return;
+    summaryWriting = true;
+    summaryError = "";
+    summaryMessage = "";
+    const result = await withdrawActivationSummary(workspaceSlug);
+    summaryWriting = false;
+    if (!result.ok) summaryError = result.message;
+    else summaryMessage = "共享已撤回，摘要内容已清除。";
+  }
+
+  function metricText(metric: { state: string; count?: number | null }): string {
+    if (metric.state === "unknown") return "未知（缺少可靠证据）";
+    if (metric.state === "not_applicable") return "不适用";
+    if (metric.state === "failed") return "采集失败";
+    const count = metric.count == null ? "" : `${metric.count} · `;
+    return `${count}${metric.state === "completed" ? "已完成" : "未完成"}`;
+  }
+
+  function percent(value: number | null): string {
+    return value === null ? "—" : `${(value * 100).toFixed(1)}%`;
   }
 
   async function submitWorkspaceName() {
@@ -237,6 +282,62 @@
 
   {#if workspaceSlug}
     <QuotaOverview slug={workspaceSlug} />
+  {/if}
+
+  {#if canManage}
+    <section class="settings-section" aria-label="运营摘要共享">
+      <div class="section-head">
+        <div>
+          <h2>运营摘要共享</h2>
+          <p>预览并主动共享最小启用信息；不会共享文件名、案件、正文、材料或成员邮箱。</p>
+        </div>
+        <span class="readonly-badge">契约 v2</span>
+      </div>
+      {#if summaryPreview}
+        <div class="summary-preview">
+          <div><span>阶段</span><strong>{summaryPreview.stage}</strong></div>
+          <div><span>成员首次登录</span><strong>{summaryPreview.progress.members.firstLoginCompleted ?? "—"} / {summaryPreview.progress.members.total ?? "—"}</strong></div>
+          <div><span>工作簿</span><strong>{metricText({ ...summaryPreview.progress.workbooks, count: summaryPreview.progress.workbooks.count })}</strong></div>
+          <div><span>导入完成 / 结果待核实</span><strong>{summaryPreview.progress.imports.completed ?? "—"} / {summaryPreview.progress.imports.outcomeUnknown ?? "—"}</strong></div>
+          <div><span>体检完成 / 失败</span><strong>{summaryPreview.progress.checks.completed ?? "—"} / {summaryPreview.progress.checks.failed ?? "—"}</strong></div>
+          <div><span>复核完成 / 待审</span><strong>{summaryPreview.progress.reviews.completed ?? "—"} / {summaryPreview.progress.reviews.pending ?? "—"}</strong></div>
+          <div><span>首次复核耗时</span><strong>{metricText(summaryPreview.outcomes.firstReview)} · {summaryPreview.outcomes.firstReview.durationMinutes ?? "—"} 分钟</strong></div>
+          <div><span>批次失败率 / 拒绝行比例</span><strong>{percent(summaryPreview.outcomes.importQuality.failureRate)} / {percent(summaryPreview.outcomes.importQuality.rejectionRate)}</strong></div>
+          <div><span>固定运行问题解决率</span><strong>{metricText(summaryPreview.outcomes.issueResolution)} · {percent(summaryPreview.outcomes.issueResolution.rate)}</strong></div>
+          <div><span>多人协作</span><strong>{metricText(summaryPreview.outcomes.collaboration)} · {summaryPreview.outcomes.collaboration.humanActors ?? "—"} 位真人</strong></div>
+          <div><span>次周更新</span><strong>{metricText(summaryPreview.outcomes.nextWeekUpdate)}</strong></div>
+          <div><span>证据覆盖期</span><strong>{summaryPreview.period.startedAt.slice(0, 10)} — {summaryPreview.period.endedAt.slice(0, 10)}</strong></div>
+          <div><span>来源</span><strong>当前工作区直接查询</strong></div>
+        </div>
+        <details class="summary-definitions">
+          <summary>逐指标口径与来源</summary>
+          <ul>
+            <li>{summaryPreview.progress.members.definition} · {summaryPreview.progress.members.source}</li>
+            <li>{summaryPreview.progress.workbooks.definition} · {summaryPreview.progress.workbooks.source}</li>
+            <li>{summaryPreview.progress.imports.definition} · {summaryPreview.progress.imports.source}</li>
+            <li>{summaryPreview.progress.checks.definition} · {summaryPreview.progress.checks.source}</li>
+            <li>{summaryPreview.progress.reviews.definition} · {summaryPreview.progress.reviews.source}</li>
+            <li>{summaryPreview.outcomes.firstReview.definition} · {summaryPreview.outcomes.firstReview.source}</li>
+            <li>{summaryPreview.outcomes.importQuality.definition} · {summaryPreview.outcomes.importQuality.source}</li>
+            <li>{summaryPreview.outcomes.issueResolution.definition} · {summaryPreview.outcomes.issueResolution.source}</li>
+            <li>{summaryPreview.outcomes.collaboration.definition} · {summaryPreview.outcomes.collaboration.source}</li>
+            <li>{summaryPreview.outcomes.nextWeekUpdate.definition} · {summaryPreview.outcomes.nextWeekUpdate.source}</li>
+          </ul>
+        </details>
+        <div class="summary-actions">
+          <button type="button" class="primary-btn" disabled={summaryWriting} onclick={() => void shareSummary()}>
+            <Share2 size={15} />{summaryWriting ? "处理中…" : "确认共享"}
+          </button>
+          <button type="button" class="danger-text-btn" disabled={summaryWriting} onclick={() => void withdrawSummary()}>
+            撤回共享
+          </button>
+        </div>
+      {:else}
+        <p class="action-msg error">摘要预览暂不可用，请刷新后重试。</p>
+      {/if}
+      {#if summaryError}<p class="action-msg error">{summaryError}</p>{/if}
+      {#if summaryMessage}<p class="action-msg ok">{summaryMessage}</p>{/if}
+    </section>
   {/if}
 
   <section class="settings-section" aria-label="成员管理">
@@ -448,6 +549,31 @@
     gap: 12px;
     align-items: end;
   }
+
+  .summary-preview {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .summary-preview div {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 5px;
+    padding: 12px;
+    border-radius: 9px;
+    background: var(--bg);
+  }
+
+  .summary-preview span { color: var(--text-3); font-size: 11px; }
+  .summary-preview strong { color: var(--text-1); font-size: 13px; }
+  .summary-definitions { color: var(--text-2); font-size: 12px; }
+  .summary-definitions summary { cursor: pointer; font-weight: 600; }
+  .summary-definitions ul { margin: 8px 0 0; padding-left: 20px; }
+  .summary-definitions li + li { margin-top: 4px; }
+  .summary-actions { display: flex; align-items: center; gap: 12px; }
+  .danger-text-btn { border: 0; background: transparent; color: var(--error); cursor: pointer; }
 
   label {
     display: flex;

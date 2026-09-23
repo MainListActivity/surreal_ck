@@ -17,6 +17,7 @@
   } from "../lib/workbook-templates.svelte";
   import { canWriteSharedStructure as canWriteSharedStructureFn } from "../lib/permissions.svelte";
   import type { WorkbookTemplate } from "@surreal-ck/shared/dto";
+  import TemplateCheckRulesDialog from "../components/TemplateCheckRulesDialog.svelte";
 
   // 模板选择页：列出 workspace 内 workbook_template 数据行，点选即按模板建工作簿（带类型）。
   // 类型语义全在模板数据里——本页不硬编码任何行业类型，只渲染数据 + 触发 createFromTemplate。
@@ -32,6 +33,7 @@
   let creatingKey = $state<string | null>(null);
   let includeSampleData = $state(true);
   let createError = $state("");
+  let configuringTemplate = $state<WorkbookTemplate | null>(null);
 
   // 模板 icon 名（lucide kebab-case，存在数据里）→ 组件。未知图标回退通用图标。
   const ICONS: Record<string, typeof IconType> = {
@@ -106,24 +108,22 @@
       <div class="grid">
         {#each workbookTemplatesStore.templates as tpl (tpl.id)}
           {@const Ico = iconFor(tpl.icon)}
-          <button
-            type="button"
-            class="card"
-            onclick={() => createFrom(tpl)}
-            disabled={!!creatingKey || !canWriteSharedStructure}
-          >
-            <span class="badge" style={`background:${tpl.accent ?? "#8C8472"}1A;color:${tpl.accent ?? "#6F6859"}`}>
-              <Ico size={22} />
-            </span>
-            <strong>{tpl.label}</strong>
-            {#if tpl.description}<small>{tpl.description}</small>{/if}
-            <span class="action">{creatingKey === tpl.key ? "创建中…" : (canWriteSharedStructure ? "使用此模板" : "需要管理员权限")}</span>
-          </button>
+          <article class="card">
+            <button class="use-template" type="button" onclick={() => createFrom(tpl)} disabled={!!creatingKey || !canWriteSharedStructure}>
+              <span class="badge" style={`background:${tpl.accent ?? "#8C8472"}1A;color:${tpl.accent ?? "#6F6859"}`}><Ico size={22} /></span>
+              <strong>{tpl.label}</strong>
+              {#if tpl.description}<small>{tpl.description}</small>{/if}
+              <span class="action">{creatingKey === tpl.key ? "创建中…" : (canWriteSharedStructure ? "使用此模板" : "需要管理员权限")}</span>
+            </button>
+            {#if canWriteSharedStructure}<button class="configure" type="button" onclick={() => (configuringTemplate = tpl)}>配置数据检查规则{tpl.checkRules ? ` · ${tpl.checkRules.version}` : ""}</button>{/if}
+          </article>
         {/each}
       </div>
     {/if}
   </div>
 </section>
+
+{#if configuringTemplate}<TemplateCheckRulesDialog template={configuringTemplate} onclose={() => (configuringTemplate = null)} />{/if}
 
 <style>
   .templates {
@@ -253,25 +253,23 @@
     flex-direction: column;
     align-items: flex-start;
     gap: 8px;
-    padding: 20px;
+    padding: 0;
     border: 1px solid var(--border);
     border-radius: 16px;
     background: var(--surface);
     text-align: left;
-    cursor: pointer;
     transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;
   }
 
-  .card:hover:not(:disabled) {
+  .card:hover {
     transform: translateY(-3px);
     border-color: var(--border-dark);
     box-shadow: 0 18px 36px -20px rgba(34, 30, 23, .4);
   }
 
-  .card:disabled {
-    opacity: .6;
-    cursor: not-allowed;
-  }
+  .use-template { display: flex; width: 100%; flex: 1; flex-direction: column; align-items: flex-start; gap: 8px; padding: 20px; border: 0; background: transparent; text-align: left; cursor: pointer; }
+  .use-template:disabled { opacity: .6; cursor: not-allowed; }
+  .configure { width: calc(100% - 40px); margin: 0 20px 16px; padding: 8px 0 0; border: 0; border-top: 1px solid var(--border); background: transparent; color: var(--text-2); font-size: 11.5px; text-align: left; cursor: pointer; }
 
   .badge {
     display: grid;

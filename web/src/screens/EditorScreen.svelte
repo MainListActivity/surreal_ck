@@ -12,6 +12,7 @@
   import FieldsModal from "../features/editor/modals/FieldsModal.svelte";
   import LeaveDraftModal from "../features/editor/modals/LeaveDraftModal.svelte";
   import TemplateSheetImportDialog from "../features/editor/modals/TemplateSheetImportDialog.svelte";
+  import DataCheckDialog from "../features/editor/modals/DataCheckDialog.svelte";
   import ShareModal from "../features/editor/modals/ShareModal.svelte";
   import { editorUi } from "../features/editor/lib/editor-ui.svelte";
   import { getTool } from "../features/editor/registries/tools";
@@ -164,6 +165,7 @@
 <ShareModal {workbookId} />
 <LeaveDraftModal />
 <TemplateSheetImportDialog />
+<DataCheckDialog />
 
 <style>
   .editor {

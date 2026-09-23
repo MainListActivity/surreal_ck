@@ -78,4 +78,20 @@ describe("OIP-13 XLSX Sheet 映射已有模板数据表", () => {
       },
     ])).toBe("sheet:creditors");
   });
+
+  test("用户调整后的字段映射原样进入公开导入接口", async () => {
+    const mappings = [
+      { sourceIndex: 0, sourceLabel: "申报人", targetKey: null, matchedBy: null },
+      { sourceIndex: 1, sourceLabel: "债权申报金额", targetKey: "manual_amount", matchedBy: null },
+    ] as const;
+    await importXlsxSheetIntoTemplate({
+      sheet,
+      targets: [{ column: { key: "manual_amount", label: "人工确认金额", fieldType: "decimal" } }],
+      mappings: mappings.map((mapping) => ({ ...mapping })),
+      importRows: async (input) => {
+        expect(input.mappings).toEqual(mappings);
+        return { importedCount: 1, rejected: [] };
+      },
+    });
+  });
 });

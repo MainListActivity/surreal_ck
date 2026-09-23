@@ -109,6 +109,43 @@ describe("workspace template scripts", () => {
     expect(migration?.sql).toContain("default_dashboard.widgets");
   });
 
+  test("模板检查规则增量保存版本化受限声明并扩展体检问题分类", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.version === 26);
+    expect(migration?.sql).toContain("check_rules ON TABLE workbook_template");
+    expect(migration?.sql).toContain("check_rules.version");
+    expect(migration?.sql).toContain("check_rules.rules");
+    expect(migration?.sql).toContain('"duplicate_candidate"');
+    expect(migration?.sql).toContain('"reference_unverifiable"');
+    expect(migration?.sql).not.toMatch(/\b(?:EXECUTE|FUNCTION|QUERY)\b/i);
+  });
+
+  test("问题修正增量定义处理状态和只追加幂等审计事件", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.version === 27);
+    expect(migration?.sql).toContain('"pending_review"');
+    expect(migration?.sql).toContain("data_check_finding_event SCHEMAFULL");
+    expect(migration?.sql).toContain("FOR update, delete NONE");
+    expect(migration?.sql).toContain("data_check_finding_event_idempotency_unique");
+    expect(migration?.sql).toContain("actor ON TABLE data_check_finding_event");
+  });
+
+  test("真人派单增量支持多问题、活动指针、复核权限和幂等事件", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.version === 28);
+    expect(migration?.sql).toContain("finding_assignment SCHEMAFULL");
+    expect(migration?.sql).toContain("findings ON TABLE finding_assignment TYPE array<record<data_check_finding>>");
+    expect(migration?.sql).toContain("active_assignment ON TABLE data_check_finding");
+    expect(migration?.sql).toContain("finding_assignment_event_idempotency_unique");
+    expect(migration?.sql).toContain("reviewer = fn::current_user()");
+  });
+
+  test("业务记录更新证据迁移由运行时安全展开动态表事件", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.version === 29);
+    expect(migration?.sql).toContain("record-update-activity-runtime-materialization-required");
+  });
+
   test("模板快捷任务增量保存任务声明，并让实例化数据表保留稳定模板 key", async () => {
     const scripts = await loadTemplateScripts();
     const migration = scripts.find((script) => script.name === "016-template-quick-tasks.surql");
@@ -185,6 +222,48 @@ describe("workspace template scripts", () => {
     );
     expect(sql).not.toContain("REMOVE EVENT IF EXISTS");
     expect(sql).not.toContain("REMOVE TABLE");
+  });
+
+  test("运营导入批次增量保存可恢复状态、逐表结果和幂等逐行回执", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.name === "023-import-batch-recovery.surql");
+
+    expect(migration?.version).toBe(23);
+    const sql = migration?.sql ?? "";
+    expect(sql).toContain("DEFINE TABLE IF NOT EXISTS import_batch SCHEMAFULL CHANGEFEED 7d");
+    expect(sql).toContain("DEFINE TABLE IF NOT EXISTS import_batch_sheet SCHEMAFULL");
+    expect(sql).toContain("DEFINE TABLE IF NOT EXISTS import_batch_row SCHEMAFULL");
+    expect(sql).toContain('"processing", "completed", "partial_failure", "failed", "outcome_unknown"');
+    expect(sql).toContain("target_record ON TABLE import_batch_row TYPE option<record>");
+    expect(sql).toContain("mappings.* ON TABLE import_batch_sheet TYPE object FLEXIBLE");
+    expect(sql).toContain("ALTER FIELD mappings.* ON TABLE import_batch_sheet FLEXIBLE");
+    expect(sql).toContain(
+      "DEFINE INDEX IF NOT EXISTS import_batch_row_source_unique ON TABLE import_batch_row COLUMNS batch, sheet_name, source_row_number UNIQUE",
+    );
+    expect(sql).toContain("DEFAULT fn::current_user()");
+    expect(sql).not.toContain("source_file");
+  });
+
+  test("导入撤销增量保留目标版本戳、终态与不可删除的审计回执", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.name === "024-import-batch-undo.surql");
+    expect(migration).toBeDefined();
+    const sql = migration!.sql;
+    expect(sql).toContain("target_updated_at ON TABLE import_batch_row TYPE option<datetime>");
+    expect(sql).toContain('"outcome_unknown", "undone"');
+    expect(sql).toContain("DEFINE TABLE IF NOT EXISTS import_batch_undo SCHEMAFULL");
+    expect(sql).toContain("FOR update, delete NONE");
+    expect(sql).toContain("import_batch_undo_batch_unique ON TABLE import_batch_undo COLUMNS batch UNIQUE");
+  });
+
+  test("数据体检增量持久运行范围、终态和跨重扫稳定问题身份", async () => {
+    const scripts = await loadTemplateScripts();
+    const sql = scripts.find((script) => script.name === "025-data-check-findings.surql")?.sql ?? "";
+    expect(sql).toContain("DEFINE TABLE IF NOT EXISTS data_check_run SCHEMAFULL CHANGEFEED 7d");
+    expect(sql).toContain('"processing", "completed", "partial", "failed", "cancelled"');
+    expect(sql).toContain("DEFINE TABLE IF NOT EXISTS data_check_finding SCHEMAFULL CHANGEFEED 7d");
+    expect(sql).toContain("run_history ON TABLE data_check_finding TYPE array<record<data_check_run>>");
+    expect(sql).toContain("data_check_finding_stable_unique ON TABLE data_check_finding COLUMNS stable_key UNIQUE");
   });
 
   test("workbook_template：类型由业务数据定义——底层不枚举行业类型，仅管理员可增改删，workbook 引用为可选 record", async () => {

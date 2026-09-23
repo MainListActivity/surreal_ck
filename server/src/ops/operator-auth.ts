@@ -7,8 +7,16 @@ import { env } from "../env";
 import { getRootDatabaseSession } from "../db/root-connection";
 import { introspectOidcAccessToken, type OidcTokenActivityChecker } from "../oidc/introspection";
 import { verifyOidcToken } from "../oidc/verify";
+
+export type PlatformOperatorAuth = Readonly<{
+  subject: string;
+  kind?: "human" | "agent";
+  capabilities: readonly PlatformOperatorCapability[];
+}>;
+
 export type PlatformOperatorCapabilityReader = {
   getCapabilities(subject: string): Promise<readonly PlatformOperatorCapability[]>;
+  getKind?(subject: string): Promise<"human" | "agent" | null>;
 };
 
 type Queryable = { query(sql: string, params?: Record<string, unknown>): Promise<unknown> };
@@ -39,11 +47,17 @@ function oidcError(error: unknown): HttpError {
   return new HttpError(401, "oidc-invalid", "Invalid bearer token");
 }
 
-function createPlatformOperatorCapabilityReader(
+export function createPlatformOperatorCapabilityReader(
   db?: Queryable,
 ): PlatformOperatorCapabilityReader {
   const getDb = db ? async () => db : () => getRootDatabaseSession("_system");
   return {
+    async getKind(subject) {
+      const result = await (await getDb()).query(`SELECT kind FROM platform_operator WHERE subject = $subject AND status = "active" LIMIT 1;`, { subject });
+      const row = rows(result)[0];
+      if (!row || typeof row !== "object" || !("kind" in row)) return null;
+      return row.kind === "human" || row.kind === "agent" ? row.kind : null;
+    },
     async getCapabilities(subject) {
       const result = await (await getDb()).query(
         `
@@ -101,7 +115,8 @@ export function requirePlatformOperator(
       throw new HttpError(403, "platform-operator-capability-missing", "运营账号没有执行此操作的能力");
     }
     c.set("user", user);
-    c.set("platformOperator", { subject: user.subject, capabilities });
+    const kind = await reader.getKind?.(user.subject) ?? undefined;
+    c.set("platformOperator", { subject: user.subject, kind, capabilities });
     await next();
   };
 }

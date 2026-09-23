@@ -27,12 +27,13 @@ import {
   wrapRecordField,
 } from "./workbook-data";
 import { recordValueToString, toRecordId } from "./record-id";
-import type { LiveMessage, SurrealConn } from "./surreal";
+import type { LiveMessage, SurrealConn, SurrealTransactionWriter } from "./surreal";
 import {
   normalizeTemplateImportRows,
   type TemplateImportMapping,
   type TemplateImportRejectedRow,
 } from "./template-sheet-import";
+import { importFingerprint } from "./import-batch";
 
 const PAGE = { limit: 500, start: 0 } as const;
 const SYSTEM_FIELDS = new Set(["id", "workspace", "created_by", "created_at", "updated_at"]);
@@ -110,11 +111,43 @@ export type ImportCsvRowsInput = {
   rows: string[][];
   rowNumbers?: number[];
   mappings: TemplateImportMapping[];
+  batch?: {
+    id: string;
+    sheetName: string;
+  };
 };
 
 export type ImportCsvRowsResult = {
   importedCount: number;
   rejected: TemplateImportRejectedRow[];
+  replayedCount?: number;
+  outcomeUnknownCount?: number;
+};
+
+export type FullDataTableScanResult = {
+  records: GridRow[];
+  scannedCount: number;
+  stale: boolean;
+};
+
+export type RecordFieldRepairPlan = {
+  token: string;
+  recordId: RecordIdString;
+  fieldKey: string;
+  fieldLabel: string;
+  before: unknown;
+  after: unknown;
+  beforeFingerprint: string;
+};
+
+export type RecordFieldRepairResult = {
+  record: GridRow;
+  alreadyConfirmed: boolean;
+};
+
+type StoredImportBatchRow = {
+  status?: "success" | "rejected" | "outcome_unknown";
+  target_record?: unknown;
 };
 
 type StoredDataTable = {
@@ -163,6 +196,7 @@ export async function openDataTableRuntime(input: OpenDataTableRuntimeInput) {
   let schemaTail: Promise<unknown> = Promise.resolve();
   const recordTails = new Map<string, Promise<unknown>>();
   const removalPlans = new Map<string, FieldRemovalPlan & { schemaFingerprint: string }>();
+  const repairPlans = new Map<string, RecordFieldRepairPlan>();
 
   function classifyRuntimeError(cause: unknown): DataTableRuntimeError {
     return classifyError(cause, quotaViewer);
@@ -193,6 +227,127 @@ export async function openDataTableRuntime(input: OpenDataTableRuntimeInput) {
     const built = buildSelect(meta.tableName, query, columns, PAGE);
     const raw = await conn.query<Record<string, unknown>>(built.sql, built.bindings);
     return raw.map((record) => recordToGrid(record, columns));
+  }
+
+  async function scanAllRecords(options: {
+    pageSize?: number;
+    signal?: AbortSignal;
+    onProgress?: (scannedCount: number) => void;
+  } = {}): Promise<FullDataTableScanResult> {
+    const pageSize = Math.max(1, Math.min(1_000, Math.trunc(options.pageSize ?? 500)));
+    const before = await scanFingerprint(conn, meta.tableName);
+    const scanned: GridRow[] = [];
+    for (let start = 0; ; start += pageSize) {
+      if (options.signal?.aborted) throw new DOMException("数据体检已取消", "AbortError");
+      const page = await conn.query<Record<string, unknown>>(
+        `SELECT * FROM type::table($tb) ORDER BY id ASC LIMIT ${pageSize} START ${start}`,
+        { tb: meta.tableName },
+      );
+      scanned.push(...page.map((record) => recordToGrid(record, columns)));
+      options.onProgress?.(scanned.length);
+      if (page.length < pageSize) break;
+    }
+    const after = await scanFingerprint(conn, meta.tableName);
+    return {
+      records: scanned,
+      scannedCount: scanned.length,
+      stale: before !== after,
+    };
+  }
+
+  async function planRecordFieldRepair(input: {
+    recordId: RecordIdString;
+    fieldKey: string;
+    value: unknown;
+  }): Promise<RuntimeResult<RecordFieldRepairPlan>> {
+    const closed = ensureOpen();
+    if (closed) return closed as RuntimeResult<RecordFieldRepairPlan>;
+    const column = columns.find((candidate) => candidate.key === input.fieldKey);
+    if (!column) return { ok: false, error: runtimeError("not-found", `字段不存在: ${input.fieldKey}`, false) };
+    try {
+      const rows = await conn.query<Record<string, unknown>>(
+        "SELECT * FROM type::table($tb) WHERE id = $record LIMIT 1",
+        { tb: meta.tableName, record: toRecordId(input.recordId) },
+      );
+      const raw = rows[0];
+      if (!raw) return { ok: false, error: runtimeError("not-found", `记录不存在或无权读取: ${input.recordId}`, false) };
+      const current = recordToGrid(raw, columns);
+      const after = coerceGridFieldValue(input.value, column);
+      const validation = validateValues({ ...current.values, [input.fieldKey]: after }, columns);
+      if (Object.keys(validation).length) {
+        return { ok: false, error: runtimeError("validation", "修正值未通过字段校验", false, validation) };
+      }
+      const plan: RecordFieldRepairPlan = {
+        token: crypto.randomUUID(), recordId: input.recordId, fieldKey: input.fieldKey,
+        fieldLabel: column.label, before: current.values[input.fieldKey], after,
+        beforeFingerprint: importFingerprint({ value: current.values[input.fieldKey] ?? null }),
+      };
+      repairPlans.set(plan.token, plan);
+      return { ok: true, value: plan };
+    } catch (cause) {
+      return { ok: false, error: classifyRuntimeError(cause) };
+    }
+  }
+
+  async function confirmRecordFieldRepair(input: {
+    token: string;
+    findingId: string;
+    idempotencyKey: string;
+  }): Promise<RuntimeResult<RecordFieldRepairResult>> {
+    const closed = ensureOpen();
+    if (closed) return closed as RuntimeResult<RecordFieldRepairResult>;
+    const plan = repairPlans.get(input.token);
+    if (!plan) return { ok: false, error: runtimeError("conflict", "修正预览已失效，请重新核对", false) };
+    const column = columns.find((candidate) => candidate.key === plan.fieldKey);
+    if (!column) return { ok: false, error: runtimeError("conflict", "字段结构已变化，请重新核对", false) };
+    try {
+      const outcome = await conn.transaction(async (tx) => {
+        const existing = await tx.query<Record<string, unknown>>(
+          "SELECT id FROM data_check_finding_event WHERE idempotency_key = $key LIMIT 1",
+          { key: input.idempotencyKey },
+        );
+        if (existing.length) {
+          const latest = await tx.query<Record<string, unknown>>(
+            "SELECT * FROM type::table($tb) WHERE id = $record LIMIT 1",
+            { tb: meta.tableName, record: toRecordId(plan.recordId) },
+          );
+          return { raw: latest[0], alreadyConfirmed: true };
+        }
+        const rows = await tx.query<Record<string, unknown>>(
+          "SELECT * FROM type::table($tb) WHERE id = $record LIMIT 1",
+          { tb: meta.tableName, record: toRecordId(plan.recordId) },
+        );
+        const raw = rows[0];
+        if (!raw) throw new RuntimeConflictError("记录不存在或已无权读取，请重新核对");
+        const current = recordToGrid(raw, columns);
+        if (importFingerprint({ value: current.values[plan.fieldKey] ?? null }) !== plan.beforeFingerprint) {
+          throw new RuntimeConflictError("记录已被他人修改，请重新核对后再确认");
+        }
+        const updatedRaw = await tx.updateRecord<Record<string, unknown>>(plan.recordId, {
+          [plan.fieldKey]: wrapRecordField(plan.after, column),
+        });
+        await tx.updateRecord(input.findingId, {
+          status: "pending_review",
+          resolution_reason: undefined,
+          resolved_at: undefined,
+        });
+        await tx.createRecord("data_check_finding_event", {
+          finding: toRecordId(input.findingId), kind: "repair_confirmed",
+          idempotency_key: input.idempotencyKey, field: plan.fieldKey,
+          before_value: plan.before, after_value: plan.after,
+        });
+        return { raw: { ...raw, ...updatedRaw, [plan.fieldKey]: plan.after }, alreadyConfirmed: false };
+      });
+      if (!outcome.raw) return { ok: false, error: runtimeError("not-found", "修正结果无法读取", false) };
+      const record = recordToGrid(outcome.raw, columns);
+      integrateReturnedRecord(record, records.find((candidate) => candidate.id === record.id));
+      return { ok: true, value: { record, alreadyConfirmed: outcome.alreadyConfirmed } };
+    } catch (cause) {
+      if (cause instanceof RuntimeConflictError) {
+        return { ok: false, error: runtimeError("conflict", cause.message, false) };
+      }
+      return { ok: false, error: classifyRuntimeError(cause) };
+    }
   }
 
   function applySafeLive(message: LiveMessage): boolean {
@@ -430,25 +585,106 @@ export async function openDataTableRuntime(input: OpenDataTableRuntimeInput) {
     });
     const rejected = [...normalized.rejected];
     let importedCount = 0;
+    let replayedCount = 0;
+    let outcomeUnknownCount = 0;
+
+    if (input.batch) {
+      for (const failure of normalized.rejected) {
+        await persistImportReceipt(conn, input.batch, failure.rowNumber, {
+          status: "rejected",
+          field: failure.field,
+          reason: failure.reason,
+          sourceCells: failure.sourceCells,
+        }).catch(() => undefined);
+      }
+    }
+
     for (const record of normalized.records) {
+      if (input.batch) {
+        const receipt = await loadImportReceipt(conn, input.batch, record.rowNumber);
+        if (receipt?.status === "success") {
+          importedCount += 1;
+          replayedCount += 1;
+          continue;
+        }
+        if (receipt?.status === "outcome_unknown") {
+          outcomeUnknownCount += 1;
+          rejected.push({
+            rowNumber: record.rowNumber,
+            field: "整条记录",
+            reason: "上次提交结果待核实，请刷新批次结果后再重试",
+            sourceCells: record.sourceCells,
+          });
+          continue;
+        }
+      }
       try {
-        const raw = await runRecordMutation(`import:${record.rowNumber}:${crypto.randomUUID()}`, () =>
-          conn.createRecord<Record<string, unknown>>(
-            meta.tableName,
-            prepareRecordFields(record.values, columns),
-          ));
+        const raw = await runRecordMutation(`import:${record.rowNumber}:${crypto.randomUUID()}`, async () => {
+          if (!input.batch) {
+            return conn.createRecord<Record<string, unknown>>(
+              meta.tableName,
+              prepareRecordFields(record.values, columns),
+            );
+          }
+          return conn.transaction(async (tx) => {
+            const targetRecord = toRecordId(
+              `${meta.tableName}:${stableImportRecordKey(input.batch!.id, input.batch!.sheetName, record.rowNumber)}`,
+            );
+            const created = await tx.query<Record<string, unknown>>(
+              "CREATE $targetRecord CONTENT $data RETURN AFTER",
+              {
+                targetRecord,
+                data: prepareRecordFields(record.values, columns),
+              },
+            );
+            const row = created[0];
+            if (!row) throw new Error("导入记录写入后未返回结果");
+            await persistImportReceipt(tx, input.batch!, record.rowNumber, {
+              status: "success",
+              targetRecord,
+              targetUpdatedAt: row.updated_at,
+            });
+            return row;
+          });
+        });
         integrateReturnedRecord(recordToGrid(raw, columns));
         importedCount += 1;
       } catch (cause) {
+        if (input.batch) {
+          const verified = await loadImportReceipt(conn, input.batch, record.rowNumber).catch(() => null);
+          if (verified?.status === "success") {
+            importedCount += 1;
+            replayedCount += 1;
+            continue;
+          }
+        }
+        const runtimeFailure = classifyRuntimeError(cause);
+        if (input.batch && runtimeFailure.code === "outcome-unknown") {
+          outcomeUnknownCount += 1;
+          await persistImportReceipt(conn, input.batch, record.rowNumber, {
+            status: "outcome_unknown",
+            reason: runtimeFailure.message,
+            sourceCells: record.sourceCells,
+          }).catch(() => undefined);
+        } else if (input.batch) {
+          await persistImportReceipt(conn, input.batch, record.rowNumber, {
+            status: "rejected",
+            field: "整条记录",
+            reason: runtimeFailure.message,
+            sourceCells: record.sourceCells,
+          }).catch(() => undefined);
+        }
         rejected.push({
           rowNumber: record.rowNumber,
           field: "整条记录",
-          reason: classifyRuntimeError(cause).message,
+          reason: runtimeFailure.message,
           sourceCells: record.sourceCells,
         });
       }
     }
-    return { importedCount, rejected };
+    return input.batch
+      ? { importedCount, rejected, replayedCount, outcomeUnknownCount }
+      : { importedCount, rejected };
   }
 
   async function deleteRecords(ids: Array<RecordIdString | string>): Promise<RuntimeResult<void>> {
@@ -672,12 +908,99 @@ export async function openDataTableRuntime(input: OpenDataTableRuntimeInput) {
     updateRecords,
     promoteDraft,
     importCsvRows,
+    scanAllRecords,
+    planRecordFieldRepair,
+    confirmRecordFieldRepair,
     deleteRecords,
     updateFields,
     planFieldRemoval,
     confirmFieldRemoval,
     close,
   };
+}
+
+async function scanFingerprint(conn: Pick<SurrealConn, "query">, tableName: string): Promise<string> {
+  const [countRows, latestRows] = await Promise.all([
+    conn.query<{ total?: unknown }>("SELECT count() AS total FROM type::table($tb) GROUP ALL", { tb: tableName }),
+    conn.query<{ updated_at?: unknown }>("SELECT updated_at FROM type::table($tb) ORDER BY updated_at DESC LIMIT 1", { tb: tableName }),
+  ]);
+  return `${String(countRows[0]?.total ?? 0)}:${String(latestRows[0]?.updated_at ?? "")}`;
+}
+
+async function loadImportReceipt(
+  conn: Pick<SurrealConn, "query">,
+  batch: NonNullable<ImportCsvRowsInput["batch"]>,
+  rowNumber: number,
+): Promise<StoredImportBatchRow | null> {
+  const rows = await conn.query<StoredImportBatchRow>(
+    "SELECT status, target_record FROM import_batch_row WHERE batch = $batch AND sheet_name = $sheetName AND source_row_number = $rowNumber LIMIT 1",
+    { batch: toRecordId(batch.id), sheetName: batch.sheetName, rowNumber },
+  );
+  return rows[0] ?? null;
+}
+
+async function persistImportReceipt(
+  writer: Pick<SurrealConn, "query"> | { query: SurrealTransactionWriter["query"] },
+  batch: NonNullable<ImportCsvRowsInput["batch"]>,
+  rowNumber: number,
+  receipt: {
+    status: "success" | "rejected" | "outcome_unknown";
+    targetRecord?: unknown;
+    targetUpdatedAt?: unknown;
+    field?: string;
+    reason?: string;
+    sourceCells?: string[];
+  },
+): Promise<void> {
+  await writer.query(
+    `INSERT INTO import_batch_row {
+      batch: $batch,
+      sheet_name: $sheetName,
+      source_row_number: $rowNumber,
+      status: $status,
+      target_record: $targetRecord,
+      target_updated_at: $targetUpdatedAt,
+      field: $field,
+      reason: $reason,
+      source_cells: $sourceCells
+    } ON DUPLICATE KEY UPDATE
+      status = $status,
+      target_record = $targetRecord,
+      target_updated_at = $targetUpdatedAt,
+      field = $field,
+      reason = $reason,
+      source_cells = $sourceCells,
+      updated_at = time::now()
+    RETURN AFTER`,
+    mapNullsToSurrealNone({
+      batch: toRecordId(batch.id),
+      sheetName: batch.sheetName,
+      rowNumber,
+      status: receipt.status,
+      targetRecord: receipt.targetRecord ?? null,
+      targetUpdatedAt: receipt.targetUpdatedAt ?? null,
+      field: receipt.field ?? null,
+      reason: receipt.reason ?? null,
+      sourceCells: receipt.sourceCells ?? null,
+    }),
+  );
+}
+
+function stableImportRecordKey(batchId: string, sheetName: string, rowNumber: number): string {
+  const source = `${batchId}\u0000${sheetName}\u0000${rowNumber}`;
+  let left = 2166136261;
+  let right = 2166136261 ^ 0x9e3779b9;
+  for (let index = 0; index < source.length; index += 1) {
+    const code = source.charCodeAt(index);
+    left ^= code;
+    left = Math.imul(left, 16777619);
+    right ^= code + index;
+    right = Math.imul(right, 2246822519);
+  }
+  const digest = [left, right]
+    .map((hash) => (hash >>> 0).toString(16).padStart(8, "0"))
+    .join("");
+  return `import_${digest}_${rowNumber}`;
 }
 
 function relaxedImportText(value: string): string {

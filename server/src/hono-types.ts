@@ -6,6 +6,7 @@ export type AppBindings = {
     user: SessionUser;
     platformOperator: {
       subject: string;
+      kind?: "human" | "agent";
       capabilities: readonly PlatformOperatorCapability[];
     };
   };
