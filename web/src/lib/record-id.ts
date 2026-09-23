@@ -54,3 +54,20 @@ export function recordValueToString(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(recordValueToString);
   return value;
 }
+
+/** 读边界里只要非空字符串标识；数字、空值和对象视为缺失，避免 `unknown ?? ""` 收成 `{}`。 */
+export function recordIdString(value: unknown): string | null {
+  const normalized = recordValueToString(value);
+  return typeof normalized === "string" && normalized.length > 0 ? normalized : null;
+}
+
+/** 单个标识或标识数组都收成完整 `table:id` 列表，不把字符串拆成字符。 */
+export function recordIdStrings(value: unknown): string[] {
+  const normalized = recordValueToString(value);
+  if (Array.isArray(normalized)) return normalized.flatMap((item) => {
+    const id = recordIdString(item);
+    return id ? [id] : [];
+  });
+  const id = recordIdString(normalized);
+  return id ? [id] : [];
+}

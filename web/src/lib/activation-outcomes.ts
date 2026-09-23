@@ -1,6 +1,6 @@
 import type { ActivationSummaryV2 } from "@surreal-ck/shared";
 import type { DateTime } from "surrealdb";
-import { recordValueToString } from "./record-id";
+import { recordIdString, recordIdStrings } from "./record-id";
 import type { SurrealConn } from "./surreal";
 
 type EvidenceGroup<T> = { available: true; rows: T[] } | { available: false; rows: [] };
@@ -35,9 +35,7 @@ type StoredFinding = { id: unknown; workbook?: unknown; run_history?: unknown; s
 type StoredAssignment = { id: unknown; findings?: unknown; assignee?: unknown; reviewer?: unknown; status?: unknown; reviewed_at?: DateTime };
 type StoredAssignmentEvent = { assignment?: unknown; actor?: unknown; kind?: unknown };
 type StoredActivity = { verb?: unknown; created_at?: DateTime };
-const recordIds = (value: unknown): string[] => Array.isArray(value)
-  ? value.flatMap((item) => recordValueToString(item) ?? [])
-  : [];
+const recordIds = (value: unknown): string[] => recordIdStrings(value);
 const dateTimeIso = (value: DateTime | null | undefined): string | null => value ? value.toDate().toISOString() : null;
 
 async function loadEvidenceGroup<T>(load: () => Promise<T[]>): Promise<EvidenceGroup<T>> {
@@ -47,14 +45,14 @@ async function loadEvidenceGroup<T>(load: () => Promise<T[]>): Promise<EvidenceG
 
 export async function loadActivationEvidence(conn: SurrealConn): Promise<ActivationEvidence> {
   const [users, workbooks, imports, importRows, runs, findings, assignments, assignmentEvents, activities] = await Promise.all([
-    loadEvidenceGroup(async () => (await conn.query<StoredUser>("SELECT id, last_seen_at FROM user WHERE kind = 'human' AND disabled_at = NONE")).map((row) => ({ id: recordValueToString(row.id) ?? "", lastSeenAt: dateTimeIso(row.last_seen_at) }))),
-    loadEvidenceGroup(async () => (await conn.query<StoredWorkbook>("SELECT id FROM workbook")).map((row) => ({ id: recordValueToString(row.id) ?? "" }))),
-    loadEvidenceGroup(async () => (await conn.query<StoredImport>("SELECT id, workbook, status, started_at, completed_at FROM import_batch")).map((row) => ({ id: recordValueToString(row.id) ?? "", workbookId: recordValueToString(row.workbook), status: String(row.status ?? ""), startedAt: dateTimeIso(row.started_at) ?? "", completedAt: dateTimeIso(row.completed_at) }))),
-    loadEvidenceGroup(async () => (await conn.query<StoredImportRow>("SELECT batch, status FROM import_batch_row")).map((row) => ({ batchId: recordValueToString(row.batch) ?? "", status: String(row.status ?? "") }))),
-    loadEvidenceGroup(async () => (await conn.query<StoredRun>("SELECT id, workbook, status, finding_count, started_at FROM data_check_run")).map((row) => ({ id: recordValueToString(row.id) ?? "", workbookId: recordValueToString(row.workbook) ?? "", status: String(row.status ?? ""), findingCount: Number(row.finding_count ?? 0), startedAt: dateTimeIso(row.started_at) ?? "" }))),
-    loadEvidenceGroup(async () => (await conn.query<StoredFinding>("SELECT id, workbook, run_history, status FROM data_check_finding")).map((row) => ({ id: recordValueToString(row.id) ?? "", workbookId: recordValueToString(row.workbook) ?? "", runHistory: recordIds(row.run_history), status: String(row.status ?? "") }))),
-    loadEvidenceGroup(async () => (await conn.query<StoredAssignment>("SELECT id, findings, assignee, reviewer, status, reviewed_at FROM finding_assignment")).map((row) => ({ id: recordValueToString(row.id) ?? "", findingIds: recordIds(row.findings), assigneeId: recordValueToString(row.assignee) ?? "", reviewerId: recordValueToString(row.reviewer) ?? "", status: String(row.status ?? ""), reviewedAt: dateTimeIso(row.reviewed_at) }))),
-    loadEvidenceGroup(async () => (await conn.query<StoredAssignmentEvent>("SELECT assignment, actor, kind FROM finding_assignment_event WHERE actor.kind = 'human'")).map((row) => ({ assignmentId: recordValueToString(row.assignment) ?? "", actorId: recordValueToString(row.actor) ?? "", kind: String(row.kind ?? "") }))),
+    loadEvidenceGroup(async () => (await conn.query<StoredUser>("SELECT id, last_seen_at FROM user WHERE kind = 'human' AND disabled_at = NONE")).map((row) => ({ id: recordIdString(row.id) ?? "", lastSeenAt: dateTimeIso(row.last_seen_at) }))),
+    loadEvidenceGroup(async () => (await conn.query<StoredWorkbook>("SELECT id FROM workbook")).map((row) => ({ id: recordIdString(row.id) ?? "" }))),
+    loadEvidenceGroup(async () => (await conn.query<StoredImport>("SELECT id, workbook, status, started_at, completed_at FROM import_batch")).map((row) => ({ id: recordIdString(row.id) ?? "", workbookId: recordIdString(row.workbook), status: String(row.status ?? ""), startedAt: dateTimeIso(row.started_at) ?? "", completedAt: dateTimeIso(row.completed_at) }))),
+    loadEvidenceGroup(async () => (await conn.query<StoredImportRow>("SELECT batch, status FROM import_batch_row")).map((row) => ({ batchId: recordIdString(row.batch) ?? "", status: String(row.status ?? "") }))),
+    loadEvidenceGroup(async () => (await conn.query<StoredRun>("SELECT id, workbook, status, finding_count, started_at FROM data_check_run")).map((row) => ({ id: recordIdString(row.id) ?? "", workbookId: recordIdString(row.workbook) ?? "", status: String(row.status ?? ""), findingCount: Number(row.finding_count ?? 0), startedAt: dateTimeIso(row.started_at) ?? "" }))),
+    loadEvidenceGroup(async () => (await conn.query<StoredFinding>("SELECT id, workbook, run_history, status FROM data_check_finding")).map((row) => ({ id: recordIdString(row.id) ?? "", workbookId: recordIdString(row.workbook) ?? "", runHistory: recordIds(row.run_history), status: String(row.status ?? "") }))),
+    loadEvidenceGroup(async () => (await conn.query<StoredAssignment>("SELECT id, findings, assignee, reviewer, status, reviewed_at FROM finding_assignment")).map((row) => ({ id: recordIdString(row.id) ?? "", findingIds: recordIds(row.findings), assigneeId: recordIdString(row.assignee) ?? "", reviewerId: recordIdString(row.reviewer) ?? "", status: String(row.status ?? ""), reviewedAt: dateTimeIso(row.reviewed_at) }))),
+    loadEvidenceGroup(async () => (await conn.query<StoredAssignmentEvent>("SELECT assignment, actor, kind FROM finding_assignment_event WHERE actor.kind = 'human'")).map((row) => ({ assignmentId: recordIdString(row.assignment) ?? "", actorId: recordIdString(row.actor) ?? "", kind: String(row.kind ?? "") }))),
     loadEvidenceGroup(async () => (await conn.query<StoredActivity>("SELECT verb, created_at FROM activity_event WHERE verb = 'record.write'")).map((row) => ({ verb: String(row.verb ?? ""), createdAt: dateTimeIso(row.created_at) ?? "" }))),
   ]);
   return { users, workbooks, imports, importRows, runs, findings, assignments, assignmentEvents, activities };

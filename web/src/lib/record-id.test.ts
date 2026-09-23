@@ -3,6 +3,8 @@ import { RecordId, StringRecordId } from "surrealdb";
 import {
   asBindable,
   isLikelyRecordId,
+  recordIdString,
+  recordIdStrings,
   recordValueToString,
   toRecordFieldValue,
   toRecordId,
@@ -74,5 +76,21 @@ describe("recordValueToString — 读边界把 RecordId 实例规整回 string",
     const escaped = recordValueToString(new RecordId("t", "1")) as string;
     expect(escaped).toBe("t:⟨1⟩");
     expect(String(toRecordId(escaped))).toBe("t:⟨1⟩");
+  });
+});
+
+describe("recordIdString — 只要非空字符串标识", () => {
+  test("RecordId 与字符串保留，数字和空值视为缺失", () => {
+    expect(recordIdString(new RecordId("ent_claim", "r501"))).toBe("ent_claim:r501");
+    expect(recordIdString("sheet:claims")).toBe("sheet:claims");
+    expect(recordIdString(100)).toBeNull();
+    expect(recordIdString(null)).toBeNull();
+    expect(recordIdString("")).toBeNull();
+  });
+  test("数组收成完整标识，不拆成字符", () => {
+    expect(recordIdStrings([new RecordId("ent_claim", "r1"), "ent_claim:r501", 100, null])).toEqual([
+      "ent_claim:r1",
+      "ent_claim:r501",
+    ]);
   });
 });

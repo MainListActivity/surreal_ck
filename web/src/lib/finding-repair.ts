@@ -1,5 +1,5 @@
 import { DateTime } from "surrealdb";
-import { recordValueToString, toRecordId } from "./record-id";
+import { recordIdString, toRecordId } from "./record-id";
 import type { SurrealConn } from "./surreal";
 
 export type FindingDispositionResult = { id: string; status: "not_applicable"; alreadyApplied: boolean };
@@ -44,7 +44,7 @@ export async function markFindingNotApplicable(
       { key: input.idempotencyKey },
     );
     if (existing.length) return {
-      id: recordValueToString(existing[0]?.finding) ?? input.findingId,
+      id: recordIdString(existing[0]?.finding) ?? input.findingId,
       status: "not_applicable" as const,
       alreadyApplied: true,
     };

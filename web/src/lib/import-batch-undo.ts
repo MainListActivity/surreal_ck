@@ -1,5 +1,5 @@
 import { importFingerprint } from "./import-batch";
-import { recordValueToString, toRecordId } from "./record-id";
+import { recordIdString, toRecordId } from "./record-id";
 import type { SurrealConn, SurrealTransactionWriter } from "./surreal";
 
 const SAFE_IDENTIFIER = /^[a-z][a-z0-9_]{0,62}$/;
@@ -162,7 +162,7 @@ async function inspectUndo(writer: QueryWriter, batchId: string) {
     { batch: toRecordId(batchId) },
   );
   const targets = receiptRows.map((row) => ({
-    id: recordValueToString(row.target_record) ?? "",
+    id: recordIdString(row.target_record) ?? "",
     importedUpdatedAt: optionalString(row.target_updated_at),
     currentUpdatedAt: null as string | null,
   })).filter((target) => target.id.includes(":"));
@@ -203,7 +203,7 @@ async function inspectUndo(writer: QueryWriter, batchId: string) {
           { target: toRecordId(target.id) },
         );
         for (const reference of references) {
-          const referencingRecordId = recordValueToString(reference.id);
+          const referencingRecordId = recordIdString(reference.id);
           if (!referencingRecordId || targetIds.has(referencingRecordId)) continue;
           blockers.push({
             kind: "external_reference",
@@ -267,7 +267,7 @@ function completedResult(
     status,
     deletedCount: Number(undo.deleted_count ?? 0),
     targetRecordIds: Array.isArray(undo.target_records)
-      ? undo.target_records.map(recordValueToString).filter((id): id is string => Boolean(id))
+      ? undo.target_records.map(recordIdString).filter((id): id is string => Boolean(id))
       : [],
   };
 }

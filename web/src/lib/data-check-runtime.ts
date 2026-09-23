@@ -1,7 +1,7 @@
 import { DateTime } from "surrealdb";
 import { importFingerprint } from "./import-batch";
 import { openDataTableRuntime } from "./data-table-runtime";
-import { recordValueToString, toRecordId } from "./record-id";
+import { recordIdString, toRecordId } from "./record-id";
 import type { SurrealConn } from "./surreal";
 import { validateGridFieldValue } from "@surreal-ck/shared/field-schema";
 import type { WorkbookTemplateSheet } from "@surreal-ck/shared/dto";
@@ -64,7 +64,7 @@ export function createDataCheckService(conn: SurrealConn) {
       { workbook: toRecordId(input.workbookId) },
     );
     const selected = input.sheetIds?.length
-      ? sheets.filter((sheet) => input.sheetIds!.includes(recordValueToString(sheet.id) ?? ""))
+      ? sheets.filter((sheet) => input.sheetIds!.includes(recordIdString(sheet.id) ?? ""))
       : sheets;
     const templateRules = await loadTemplateRules(conn, input.workbookId);
     const rulesVersion = templateRules
@@ -72,7 +72,7 @@ export function createDataCheckService(conn: SurrealConn) {
       : DATA_CHECK_RULES_VERSION;
     const createdValue = await conn.createRecord<StoredRun | StoredRun[]>("data_check_run", {
       workbook: toRecordId(input.workbookId),
-      scope_sheets: selected.map((sheet) => toRecordId(recordValueToString(sheet.id)!)),
+      scope_sheets: selected.map((sheet) => toRecordId(recordIdString(sheet.id)!)),
       rules_version: rulesVersion,
       status: "processing",
       scanned_count: 0,
@@ -81,8 +81,9 @@ export function createDataCheckService(conn: SurrealConn) {
       stale: false,
     });
     const created = Array.isArray(createdValue) ? createdValue[0] : createdValue;
-    const runId = recordValueToString(created.id);
-    if (!runId) throw new Error("数据体检创建后未返回运行标识");
+    const parsedRunId = recordIdString(created?.id);
+    if (!parsedRunId) throw new Error("数据体检创建后未返回运行标识");
+    const runId: string = parsedRunId;
     let scannedCount = 0;
     let totalCount = 0;
     let stale = false;
@@ -95,7 +96,7 @@ export function createDataCheckService(conn: SurrealConn) {
       const key = typeof sheet.template_sheet_key === "string" ? sheet.template_sheet_key : undefined;
       if (!key) continue;
       scannedByTemplateKey.set(key, { sheetKey: key, records: [], readable: false });
-      sheetIdByTemplateKey.set(key, recordValueToString(sheet.id)!);
+      sheetIdByTemplateKey.set(key, recordIdString(sheet.id)!);
     }
 
     async function persistFinding(candidate: Omit<DataCheckFinding, "id"> & { stableEvidence: unknown }): Promise<void> {
@@ -141,7 +142,7 @@ export function createDataCheckService(conn: SurrealConn) {
     try {
       for (const sheet of selected) {
         if (input.signal?.aborted) throw new DOMException("数据体检已取消", "AbortError");
-        const sheetId = recordValueToString(sheet.id)!;
+        const sheetId = recordIdString(sheet.id)!;
         let runtime: Awaited<ReturnType<typeof openDataTableRuntime>> | null = null;
         try {
           runtime = await openDataTableRuntime({
@@ -175,7 +176,7 @@ export function createDataCheckService(conn: SurrealConn) {
                 await persistFinding({
                   category, explanation, ruleKey, ruleVersion: DATA_CHECK_RULES_VERSION,
                   recordId: record.id, sheetId, field: column.key, evidenceFingerprint,
-                  stableEvidence: null,
+                  stableEvidence: null, status: "pending", resolutionReason: null,
                 });
               }
             }
@@ -207,6 +208,8 @@ export function createDataCheckService(conn: SurrealConn) {
             field: finding.field,
             evidenceFingerprint: importFingerprint(finding.evidence),
             stableEvidence: finding.groupKey ?? null,
+            status: "pending",
+            resolutionReason: null,
           });
         }
       }
@@ -233,7 +236,7 @@ export function createDataCheckService(conn: SurrealConn) {
     const run = runs[0];
     if (!run) return null;
     return {
-      id: recordValueToString(run.id) ?? runId,
+      id: recordIdString(run.id) ?? runId,
       status: run.status as DataCheckStatus,
       scannedCount: Number(run.scanned_count ?? 0), totalCount: Number(run.total_count ?? 0),
       findingCount: Number(run.finding_count ?? findings.length), stale: run.stale === true,
@@ -247,7 +250,7 @@ export function createDataCheckService(conn: SurrealConn) {
       "SELECT id FROM data_check_run WHERE workbook = $workbook ORDER BY started_at DESC LIMIT 1",
       { workbook: toRecordId(workbookId) },
     );
-    const id = recordValueToString(rows[0]?.id);
+    const id = recordIdString(rows[0]?.id);
     return id ? load(id) : null;
   }
 
@@ -264,10 +267,10 @@ async function finishRun(conn: SurrealConn, snapshot: DataCheckRunSnapshot): Pro
 
 function mapFinding(row: StoredFinding): DataCheckFinding {
   return {
-    id: recordValueToString(row.id) ?? "", category: row.category as DataCheckFinding["category"],
+    id: recordIdString(row.id) ?? "", category: row.category as DataCheckFinding["category"],
     explanation: String(row.explanation ?? ""), ruleKey: String(row.rule_key ?? ""),
     ruleVersion: String(row.rule_version ?? DATA_CHECK_RULES_VERSION),
-    recordId: recordValueToString(row.record) ?? "", sheetId: recordValueToString(row.sheet) ?? "",
+    recordId: recordIdString(row.record) ?? "", sheetId: recordIdString(row.sheet) ?? "",
     field: String(row.field ?? ""), evidenceFingerprint: String(row.evidence_fingerprint ?? ""),
     status: normalizeFindingStatus(row.status),
     resolutionReason: row.resolution_reason == null ? null : String(row.resolution_reason),
@@ -284,7 +287,7 @@ async function loadTemplateRules(conn: SurrealConn, workbookId: string) {
     "SELECT template FROM workbook WHERE id = $workbook LIMIT 1",
     { workbook: toRecordId(workbookId) },
   );
-  const templateId = recordValueToString(workbooks[0]?.template);
+  const templateId = recordIdString(workbooks[0]?.template);
   if (!templateId) return undefined;
   const templates = await conn.query<Record<string, unknown>>(
     "SELECT sheet_defs, check_rules FROM workbook_template WHERE id = $template LIMIT 1",

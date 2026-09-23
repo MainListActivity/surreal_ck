@@ -1,5 +1,5 @@
 import { DateTime } from "surrealdb";
-import { recordValueToString, toRecordId } from "./record-id";
+import { recordIdString, recordIdStrings, toRecordId } from "./record-id";
 import type { SurrealConn, SurrealTransactionWriter } from "./surreal";
 
 export type FindingAssignmentStatus = "active" | "submitted" | "returned" | "completed" | "cancelled";
@@ -135,19 +135,23 @@ async function appendEvent(tx: SurrealTransactionWriter, assignmentId: string, k
 
 function mapAssignment(row: AssignmentRow): FindingAssignment {
   return {
-    id: requiredId(row), findingIds: recordArray(row.findings), assigneeId: recordValueToString(row.assignee) ?? "",
-    reviewerId: recordValueToString(row.reviewer) ?? "", dueAt: String(row.due_at ?? ""),
+    id: requiredId(row), findingIds: recordArray(row.findings), assigneeId: recordIdString(row.assignee) ?? "",
+    reviewerId: recordIdString(row.reviewer) ?? "", dueAt: String(row.due_at ?? ""),
     completionCondition: String(row.completion_condition ?? ""), status: row.status as FindingAssignmentStatus,
     version: Number(row.version ?? 1),
   };
 }
-function single<T>(value: T | T[]): T { return Array.isArray(value) ? value[0]! : value; }
-function requiredId(row: AssignmentRow): string { const id = recordValueToString(row.id); if (!id) throw new Error("写入后未返回派单标识"); return id; }
-function recordArray(value: unknown): string[] { return Array.isArray(value) ? value.flatMap((item) => recordValueToString(item) ?? []) : []; }
+function single(value: unknown): AssignmentRow {
+  const row = Array.isArray(value) ? value[0] : value;
+  if (!row || typeof row !== "object") throw new Error("写入后未返回记录");
+  return row as AssignmentRow;
+}
+function requiredId(row: AssignmentRow): string { const id = recordIdString(row.id); if (!id) throw new Error("写入后未返回派单标识"); return id; }
+function recordArray(value: unknown): string[] { return recordIdStrings(value); }
 function assertVersion(row: AssignmentRow, expected: number) { if (Number(row.version) !== expected) throw new Error("派单已被他人更新，请刷新后重试"); }
 async function updateRequired(tx: SurrealTransactionWriter, id: string, patch: Record<string, unknown>) {
   const value = await tx.updateRecord<AssignmentRow>(id, patch);
   const row = single(value);
-  if (!row || !recordValueToString(row.id)) throw new Error("记录更新被权限策略拒绝");
+  if (!row || !recordIdString(row.id)) throw new Error("记录更新被权限策略拒绝");
   return row;
 }
