@@ -18,6 +18,7 @@ const activationState = { items: [], cursor: null };
 const followUpState = { opportunities: [], opportunityCursor: null, items: [], cursor: null };
 const proposalState = { items: [], cursor: null };
 const autonomyState = { policies: [], history: [] };
+const agentRunState = { items: [] };
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -113,6 +114,7 @@ function renderShell() {
           <div id="autonomy-list" class="activation-list"></div>
         </section>
         <section class="panel activation-panel"><div class="panel-heading"><h2>授权操作历史</h2></div><div id="autonomy-history" class="activation-list"></div></section>
+        <section class="panel activation-panel"><div class="panel-heading"><div><h2>Agent 运行进度</h2><p class="muted activation-help">仅显示外部运行宿主最后上报的检查点；进程退出后不会自动继续。</p></div><button id="agent-runs-refresh" class="ghost">刷新</button></div><div id="agent-runs-status" class="status muted">尚未加载。</div><div id="agent-runs-list" class="activation-list"></div></section>
       </main>
       <main id="content-view" class="content-layout" hidden>
         <section class="panel content-panel">
@@ -171,7 +173,7 @@ function renderShell() {
       if (activeView === "activation" && user) void loadActivationSummaries();
       if (activeView === "followup" && user) void loadFollowUps();
       if (activeView === "proposal" && user) void loadProposals();
-      if (activeView === "autonomy" && user) void loadAutonomy();
+      if (activeView === "autonomy" && user) { void loadAutonomy(); void loadAgentRuns(); }
     });
   });
   document.querySelector("#content-refresh").addEventListener("click", () => void loadContent());
@@ -183,6 +185,7 @@ function renderShell() {
   document.querySelector("#proposal-refresh").addEventListener("click", () => void loadProposals());
   document.querySelector("#proposal-next").addEventListener("click", () => void loadProposals(true));
   document.querySelector("#autonomy-refresh").addEventListener("click", () => void loadAutonomy());
+  document.querySelector("#agent-runs-refresh").addEventListener("click", () => void loadAgentRuns());
   document.querySelector("#autonomy-form").addEventListener("submit", (event) => { event.preventDefault(); void saveAutonomy(new FormData(event.currentTarget)); });
   document.querySelector("#batch-refresh").addEventListener("click", () => void loadBatches());
   document.querySelector("#batch-filter").addEventListener("change", () => void loadBatches());
@@ -523,6 +526,24 @@ async function changeAutonomyStatus(policyId, status) {
     await api(`/ops/autonomy/policies/${encodeURIComponent(policyId)}/status`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedVersion: item.version, status, reason, idempotencyKey: requestKey("ops-autonomy-status") }) });
     await loadAutonomy();
   } catch (error) { document.querySelector("#autonomy-status").textContent = error instanceof Error ? error.message : "状态变更失败"; }
+}
+
+async function loadAgentRuns() {
+  const status = document.querySelector("#agent-runs-status");
+  try {
+    const page = await api("/ops/agent-runs");
+    agentRunState.items = page.items || [];
+    status.textContent = `最近 ${agentRunState.items.length} 条运行报告；不提供在线状态探测。`;
+    const container = document.querySelector("#agent-runs-list");
+    container.innerHTML = agentRunState.items.length ? agentRunState.items.map((item) => `
+      <article class="activation-row followup-card"><span><strong>${escapeHtml(item.agentSubject)} / ${escapeHtml(item.workspaceSlug)}</strong>
+        <small>运行键：${escapeHtml(item.runKey)} · 最后上报：${escapeHtml(item.updatedAt)}</small>
+        <small>已确认动作：${escapeHtml(item.actionsCompleted)} · 重试：${escapeHtml(item.retryCount)}${item.lastErrorCode ? ` · 最近错误：${escapeHtml(item.lastErrorCode)}` : ""}</small>
+        <small>下次检查：${escapeHtml(item.dueCheckAt || "未安排")} · 待核实动作：${escapeHtml(item.pendingAction?.tool || "无")}</small></span>
+        <span class="badge">${escapeHtml(item.status === "running" ? "上次报告：执行中（在线未知）" : item.status)} · v${escapeHtml(item.version)}</span>
+        <button class="ghost agent-run-takeover">查看跟进与人工接管</button></article>`).join("") : `<div class="empty-state compact">尚无 agent 运行报告。</div>`;
+    container.querySelectorAll(".agent-run-takeover").forEach((button) => button.addEventListener("click", () => document.querySelector('[data-view="followup"]').click()));
+  } catch (error) { status.textContent = error instanceof Error ? error.message : "加载运行报告失败"; }
 }
 
 function renderAuth() {

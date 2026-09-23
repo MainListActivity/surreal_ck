@@ -88,6 +88,9 @@ import { createOpsProposalRoutes } from "./routes/ops-proposal";
 import { OpsAutonomyService } from "./ops-autonomy/service";
 import { SurrealOpsAutonomyStore } from "./ops-autonomy/store";
 import { createOpsAutonomyRoutes } from "./routes/ops-autonomy";
+import { OpsRunService } from "./ops-run/service";
+import { SurrealOpsRunStore } from "./ops-run/store";
+import { createOpsRunRoutes } from "./routes/ops-run";
 
 export type AppOptions = {
   workspaceScope?: WorkspaceScopeModule;
@@ -122,6 +125,7 @@ export type AppOptions = {
   opsFollowUpService?: OpsFollowUpService;
   opsProposalService?: OpsProposalService;
   opsAutonomyService?: OpsAutonomyService;
+  opsRunService?: OpsRunService;
 };
 
 type AiStreamWebSocket = ReturnType<typeof createAiStreamRoutes>["websocket"];
@@ -239,6 +243,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     ?? new OpsFollowUpService(new SurrealOpsFollowUpStore(), undefined, opsAutonomyService);
   const opsProposalService = options.opsProposalService
     ?? new OpsProposalService(new SurrealOpsProposalStore(), opsFollowUpService, opsAutonomyService);
+  const opsRunService = options.opsRunService ?? new OpsRunService(new SurrealOpsRunStore(), opsAutonomyService);
   const autoAiChatService = options.aiChatService ?? buildAutoAiChatService(runBus, platformContentService, embeddingProvider);
   const quotaReadService =
     options.quotaReadService ?? createDefaultQuotaReadService();
@@ -300,12 +305,14 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     .route("/", createOpsFollowUpRoutes({ service: opsFollowUpService }))
     .route("/", createOpsProposalRoutes({ service: opsProposalService }))
     .route("/", createOpsAutonomyRoutes({ service: opsAutonomyService }))
+    .route("/", createOpsRunRoutes({ service: opsRunService }))
     .route("/", createContentMcpRoutes({
       service: platformContentService,
       activationSummaryService,
       opsFollowUpService,
       opsProposalService,
       opsAutonomyService,
+      opsRunService,
     }))
     .route(
       "/",

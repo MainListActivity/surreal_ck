@@ -19,6 +19,7 @@ import {
 import { OpsFollowUpService, OpsFollowUpServiceError } from "../../ops-follow-up/service";
 import { OpsProposalService, OpsProposalServiceError, type OpsProposalActor } from "../../ops-proposal/service";
 import { OpsAutonomyService, OpsAutonomyError } from "../../ops-autonomy/service";
+import { OpsRunService, OpsRunError } from "../../ops-run/service";
 
 const MCP_SCOPES = [
   "content.read",
@@ -66,6 +67,8 @@ function toolError(error: unknown) {
       : error instanceof OpsProposalServiceError
         ? { error: { code: error.code, message: error.message } }
       : error instanceof OpsAutonomyError
+        ? { error: { code: error.code, message: error.message } }
+      : error instanceof OpsRunError
         ? { error: { code: error.code, message: error.message } }
       : error instanceof ZodError
         ? {
@@ -181,6 +184,7 @@ function buildServer(
   opsFollowUpService?: OpsFollowUpService,
   opsProposalService?: OpsProposalService,
   opsAutonomyService?: OpsAutonomyService,
+  opsRunService?: OpsRunService,
 ): McpServer {
   const server = new McpServer(
     { name: "surreal-ck-platform-content", version: "1.0.0" },
@@ -392,6 +396,29 @@ function buildServer(
     });
   }
 
+  if (opsRunService) {
+    server.registerTool("get_agent_run_checkpoint", {
+      title: "读取自身运行检查点", description: "按工作区和运行键恢复 agent 检查点；暂停后不可继续读取。", inputSchema: toolInputSchema,
+    }, async (args) => {
+      try {
+        if (typeof args.workspaceSlug !== "string" || typeof args.runKey !== "string") throw new OpsRunError("invalid_request", "工作区和运行键必填");
+        return toolSuccess({ item: await opsRunService.get(operator, args.workspaceSlug, args.runKey) });
+      } catch (error) { return toolError(error); }
+    });
+    server.registerTool("save_agent_run_checkpoint", {
+      title: "保存自身运行检查点", description: "用版本前提持久化游标、待核实动作和重试状态；不代表业务动作已成功。", inputSchema: toolInputSchema,
+    }, async (args) => {
+      try { return toolSuccess(await opsRunService.save(operator, args)); }
+      catch (error) { return toolError(error); }
+    });
+    server.registerTool("list_agent_runs", {
+      title: "查看 agent 运行进度", description: "真人运营人员查看最新运行、失败和待人工处理状态。", inputSchema: toolInputSchema,
+    }, async () => {
+      try { return toolSuccess(await opsRunService.list(operator)); }
+      catch (error) { return toolError(error); }
+    });
+  }
+
   server.registerTool(
     "search_content",
     {
@@ -469,6 +496,7 @@ export function createContentMcpRoutes(input: Readonly<{
   opsFollowUpService?: OpsFollowUpService;
   opsProposalService?: OpsProposalService;
   opsAutonomyService?: OpsAutonomyService;
+  opsRunService?: OpsRunService;
   resourceUri?: string;
   authorizationServer?: string;
   requireOperator?: MiddlewareHandler<AppBindings>;
@@ -536,7 +564,7 @@ export function createContentMcpRoutes(input: Readonly<{
       kind: operator.kind,
       capabilities: effectiveCapabilities,
       agentId: operator.kind === "agent" ? operator.subject : c.var.user?.raw?.act && typeof c.var.user.raw.act === "object" && "sub" in c.var.user.raw.act && typeof c.var.user.raw.act.sub === "string" ? c.var.user.raw.act.sub : null,
-    }, input.activationSummaryService, input.opsFollowUpService, input.opsProposalService, input.opsAutonomyService);
+    }, input.activationSummaryService, input.opsFollowUpService, input.opsProposalService, input.opsAutonomyService, input.opsRunService);
     const transport = new WebStandardStreamableHTTPServerTransport({
       enableJsonResponse: true,
     });
