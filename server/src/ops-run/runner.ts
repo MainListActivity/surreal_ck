@@ -23,7 +23,8 @@ function dueKey(item: FollowUpItem): string {
 function nextState(run: OpsRun, change: Partial<SaveOpsRun>): SaveOpsRun {
   return { runKey: run.runKey, workspaceSlug: run.workspaceSlug, expectedVersion: run.version,
     status: change.status ?? run.status, cursor: change.cursor === undefined ? run.cursor : change.cursor,
-    processedIds: change.processedIds ?? run.processedIds, pendingAction: change.pendingAction === undefined ? run.pendingAction : change.pendingAction,
+    processedIds: change.processedIds ?? run.processedIds, trackedProposalIds: change.trackedProposalIds ?? run.trackedProposalIds,
+    pendingAction: change.pendingAction === undefined ? run.pendingAction : change.pendingAction,
     dueCheckAt: change.dueCheckAt === undefined ? run.dueCheckAt : change.dueCheckAt,
     retryCount: change.retryCount ?? run.retryCount, lastErrorCode: change.lastErrorCode === undefined ? run.lastErrorCode : change.lastErrorCode,
     actionsCompleted: change.actionsCompleted ?? run.actionsCompleted };
@@ -32,14 +33,42 @@ function nextState(run: OpsRun, change: Partial<SaveOpsRun>): SaveOpsRun {
 /** 单次外部进程驱动；不自建常驻调度。每个副作用先持久化待核实调用，再用稳定幂等键确认结果。 */
 export class ExternalOpsAgentRunner {
   constructor(private readonly mcp: OpsMcpPort, private readonly now: () => Date = () => new Date()) {}
-  private async dueItem(run: OpsRun, deadline: number): Promise<{ item: FollowUpItem; key: string } | null> {
+  private async findFollowUp(followUpId: string, deadline: number): Promise<FollowUpItem | null> {
+    let cursor: string | null = null;
+    for (let pageNumber = 0; pageNumber < 20 && this.now().getTime() < deadline; pageNumber++) {
+      const page: FollowUpPage = await this.mcp.call<FollowUpPage>("list_follow_ups", { limit: 50, cursor });
+      const found = page.items.find((item) => item.followUpId === followUpId);
+      if (found) return found;
+      if (!page.nextCursor) return null;
+      cursor = page.nextCursor;
+    }
+    return null;
+  }
+  private async checkTracked(run: OpsRun, deadline: number): Promise<OpsRun> {
+    for (const proposalId of [...run.trackedProposalIds]) {
+      const proposal = await this.mcp.call<OpsProposal>("get_ops_proposal", { proposalId });
+      if (proposal.status === "failed" || proposal.status === "stale" || proposal.status === "rejected") {
+        return await this.save(run, { status: "needs_human", lastErrorCode: `proposal_${proposal.status}` });
+      }
+      if (proposal.status !== "succeeded") continue;
+      if (proposal.toolResult?.code !== "action_succeeded") {
+        return await this.save(run, { status: "needs_human", lastErrorCode: "proposal_result_unverified" });
+      }
+      const item = proposal.actionFollowUpVersion ? await this.findFollowUp(proposal.followUpId, deadline) : null;
+      if (item && proposal.actionFollowUpVersion && item.version >= proposal.actionFollowUpVersion) {
+        run = await this.save(run, { trackedProposalIds: run.trackedProposalIds.filter((id) => id !== proposalId) });
+      }
+    }
+    return run;
+  }
+  private async dueItem(run: OpsRun, deadline: number, skipped: ReadonlySet<string>): Promise<{ item: FollowUpItem; key: string } | null> {
     let cursor: string | null = null;
     for (let pageNumber = 0; pageNumber < 20 && this.now().getTime() < deadline; pageNumber++) {
       const page: FollowUpPage = await this.mcp.call<FollowUpPage>("list_follow_ups", { limit: 50, cursor });
       const item = page.items.find((row) => {
         return row.workspaceSlug === run.workspaceSlug && row.dueCheckAt !== null
           && Date.parse(row.dueCheckAt) <= this.now().getTime() && row.status !== "resolved" && row.status !== "dismissed"
-          && !run.processedIds.includes(dueKey(row));
+          && !run.processedIds.includes(dueKey(row)) && !skipped.has(dueKey(row));
       });
       if (item) return { item, key: dueKey(item) };
       if (!page.nextCursor) return null;
@@ -58,20 +87,27 @@ export class ExternalOpsAgentRunner {
     const found = await this.mcp.call<CheckpointResponse>("get_agent_run_checkpoint", { runKey: input.runKey, workspaceSlug: input.workspaceSlug });
     let run = found.item ?? await this.mcp.call<OpsRun>("save_agent_run_checkpoint", {
       runKey: input.runKey, workspaceSlug: input.workspaceSlug, expectedVersion: null, status: "running", cursor: null,
-      processedIds: [], pendingAction: null, dueCheckAt: null, retryCount: 0, lastErrorCode: null, actionsCompleted: 0,
+      processedIds: [], trackedProposalIds: [], pendingAction: null, dueCheckAt: null, retryCount: 0, lastErrorCode: null, actionsCompleted: 0,
     } satisfies SaveOpsRun);
+    if (run.status === "needs_human") return run;
+    run = await this.checkTracked(run, deadline);
     if (run.status === "needs_human") return run;
     if (run.status === "waiting" && run.dueCheckAt && Date.parse(run.dueCheckAt) > this.now().getTime()) return run;
     run = await this.save(run, { status: "running", dueCheckAt: null });
     let actionsThisRound = 0;
     let steps = 0;
+    const skippedDue = new Set<string>();
+    let nextLeaseCheckAt: number | null = null;
     while (actionsThisRound < budget.maxActions && steps++ < budget.maxActions * 10 && this.now().getTime() < deadline) {
       if (run.pendingAction) {
         const action = run.pendingAction;
         try {
           const args = JSON.parse(action.argsJson) as Record<string, unknown>;
-          const result = await this.mcp.call<FollowUpItem | { proposalId: string }>(action.tool, args);
-          actionsThisRound++;
+          const verified = await this.mcp.call<{ item: FollowUpItem | { proposalId: string } | null }>("verify_ops_action", {
+            tool: action.tool, ...args,
+          });
+          const result = verified.item ?? await this.mcp.call<FollowUpItem | { proposalId: string }>(action.tool, args);
+          if (!verified.item) actionsThisRound++;
           if (action.tool === "create_follow_up") {
             const item = result as FollowUpItem;
             if (item.nextStep !== "claim") {
@@ -99,21 +135,31 @@ export class ExternalOpsAgentRunner {
             }), actionsCompleted: run.actionsCompleted + 1, retryCount: 0 });
             continue;
           }
+          let trackedProposalIds = run.trackedProposalIds;
           if (action.tool === "submit_ops_proposal") {
             const proposalId = (result as { proposalId: string }).proposalId;
-            const verified = await this.mcp.call<OpsProposal>("get_ops_proposal", { proposalId });
-            if (verified.status !== "pending" && verified.status !== "approved" && verified.status !== "executing" && verified.status !== "succeeded") {
-              return await this.save(run, { status: "needs_human", lastErrorCode: `proposal_${verified.status}` });
+            const proposal = await this.mcp.call<OpsProposal>("get_ops_proposal", { proposalId });
+            if (proposal.status !== "pending" && proposal.status !== "approved" && proposal.status !== "executing" && proposal.status !== "succeeded") {
+              return await this.save(run, { status: "needs_human", lastErrorCode: `proposal_${proposal.status}` });
             }
+            trackedProposalIds = [...new Set([...run.trackedProposalIds, proposalId])];
+            if (trackedProposalIds.length > 500) return await this.save(run, { status: "needs_human", lastErrorCode: "proposal_tracking_limit" });
           }
           run = await this.save(run, { pendingAction: null,
             processedIds: [...run.processedIds.slice(-498), action.targetId],
-            actionsCompleted: run.actionsCompleted + 1, retryCount: 0 });
+            trackedProposalIds, actionsCompleted: run.actionsCompleted + 1, retryCount: 0 });
           continue;
         } catch (error) {
           if (!(error && typeof error === "object" && "code" in error)) throw error;
           const code = String(error.code);
-          if (["paused", "revoked", "out_of_scope", "capability_missing"].includes(code)) throw error;
+          if (code === "paused") {
+            await this.save(run, { status: "waiting", lastErrorCode: code, dueCheckAt: new Date(this.now().getTime() + budget.intervalMs).toISOString() });
+            throw error;
+          }
+          if (["revoked", "out_of_scope", "capability_missing"].includes(code)) {
+            await this.save(run, { status: "needs_human", lastErrorCode: code, dueCheckAt: null });
+            throw error;
+          }
           if (["conflict", "not_found", "invalid_request"].includes(code)) {
             return await this.save(run, { status: "needs_human", lastErrorCode: code, retryCount: run.retryCount + 1 });
           }
@@ -132,7 +178,7 @@ export class ExternalOpsAgentRunner {
         continue;
       }
       if (page.nextCursor) { run = await this.save(run, { cursor: page.nextCursor }); continue; }
-      const due = await this.dueItem(run, deadline);
+      const due = await this.dueItem(run, deadline, skippedDue);
       if (due) {
         if (!due.item.sourceAvailable || due.item.sourceFreshness !== "fresh") {
           return await this.save(run, { status: "needs_human", lastErrorCode: "due_source_unavailable_or_stale", cursor: null });
@@ -153,9 +199,15 @@ export class ExternalOpsAgentRunner {
           }) });
           continue;
         }
-        return await this.save(run, { status: "needs_human", lastErrorCode: "due_lease_held_by_other", cursor: null });
+        skippedDue.add(due.key);
+        const leaseEnd = due.item.leaseExpiresAt ? Date.parse(due.item.leaseExpiresAt) : Number.NaN;
+        if (Number.isFinite(leaseEnd) && leaseEnd > this.now().getTime()) nextLeaseCheckAt = Math.min(nextLeaseCheckAt ?? leaseEnd, leaseEnd);
+        continue;
       }
-      return await this.save(run, { status: "waiting", cursor: null, dueCheckAt: new Date(this.now().getTime() + budget.intervalMs).toISOString() });
+      return await this.save(run, { status: "waiting", cursor: null, dueCheckAt: new Date(Math.min(this.now().getTime() + budget.intervalMs, nextLeaseCheckAt ?? Infinity)).toISOString() });
+    }
+    if (actionsThisRound >= budget.maxActions || this.now().getTime() >= deadline) {
+      return await this.save(run, { status: "needs_human", lastErrorCode: actionsThisRound >= budget.maxActions ? "action_budget_exhausted" : "time_budget_exhausted", dueCheckAt: null });
     }
     return await this.save(run, { status: "waiting", dueCheckAt: new Date(this.now().getTime() + budget.intervalMs).toISOString() });
   }

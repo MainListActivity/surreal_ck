@@ -207,4 +207,22 @@ describe("ops follow-up service", () => {
     await expect(service.create(reader, { opportunityId: opportunity.opportunityId, dueCheckAt: null, idempotencyKey: "create-0001" })).rejects.toMatchObject({ code: "capability_missing" });
     await expect(service.create(writer, { opportunityId: opportunity.opportunityId, dueCheckAt: null, idempotencyKey: "short" })).rejects.toMatchObject({ code: "invalid_request" });
   });
+
+  test("暂停后不能用旧幂等键取回已完成跟进动作", async () => {
+    const store = new MemoryStore();
+    let paused = false;
+    const service = new OpsFollowUpService(store, () => new Date(NOW), {
+      authorize: async () => { if (paused) throw { code: "paused" }; },
+      allowedWorkspaces: async () => ["demo"],
+    });
+    const agent = { ...writer, kind: "agent" as const };
+    const opportunity = (await service.listOpportunities(agent, {})).items[0]!;
+    const createInput = { opportunityId: opportunity.opportunityId, dueCheckAt: null, idempotencyKey: "create-verify-01" };
+    const created = await service.create(agent, createInput);
+    expect(await service.verifyAction(agent, "follow_up.create", { ...createInput, idempotencyKey: "missing-key-01" })).toBeNull();
+    expect((await service.verifyAction(agent, "follow_up.create", createInput))?.followUpId).toBe(created.followUpId);
+    await expect(service.verifyAction(agent, "follow_up.create", { ...createInput, dueCheckAt: "2026-09-30T00:00:00.000Z" })).rejects.toMatchObject({ code: "conflict" });
+    paused = true;
+    await expect(service.verifyAction(agent, "follow_up.create", createInput)).rejects.toMatchObject({ code: "paused" });
+  });
 });

@@ -6,6 +6,7 @@ DEFINE FIELD IF NOT EXISTS workspace_slug ON TABLE ops_agent_run TYPE string;
 DEFINE FIELD IF NOT EXISTS status ON TABLE ops_agent_run TYPE string ASSERT $value INSIDE ["running", "waiting", "completed", "needs_human"];
 DEFINE FIELD IF NOT EXISTS cursor ON TABLE ops_agent_run TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS processed_ids ON TABLE ops_agent_run TYPE array<string>;
+DEFINE FIELD IF NOT EXISTS tracked_proposal_ids ON TABLE ops_agent_run TYPE array<record<ops_proposal>> DEFAULT [];
 DEFINE FIELD IF NOT EXISTS pending_action ON TABLE ops_agent_run TYPE option<object> FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS due_check_at ON TABLE ops_agent_run TYPE option<datetime>;
 DEFINE FIELD IF NOT EXISTS retry_count ON TABLE ops_agent_run TYPE int;

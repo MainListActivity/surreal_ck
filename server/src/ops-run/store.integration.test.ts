@@ -62,7 +62,7 @@ describe("ops agent run Surreal store", () => {
   localTest("检查点可跨连接恢复，版本竞争只允许一个写入", async () => {
     const store = new SurrealOpsRunStore(async (database) => await session(database), "main");
     const base = { runKey: "daily-run-001", workspaceSlug: "team-a", expectedVersion: null, status: "running" as const,
-      cursor: null, processedIds: [], pendingAction: null, dueCheckAt: null, retryCount: 0, lastErrorCode: null, actionsCompleted: 0 };
+      cursor: null, processedIds: [], trackedProposalIds: [], pendingAction: null, dueCheckAt: null, retryCount: 0, lastErrorCode: null, actionsCompleted: 0 };
     const first = await store.save("agent-1", base);
     expect(first).toMatchObject({ version: 1, status: "running" });
     const other = new SurrealOpsRunStore(async (database) => await session(database), "main");
@@ -119,6 +119,8 @@ describe("ops agent run Surreal store", () => {
     const done = await runner.run({ runKey: "daily-runner-001", workspaceSlug: "team-runner" });
     expect(done.status).toBe("waiting");
     expect(done.actionsCompleted).toBe(3);
+    expect(done.trackedProposalIds).toHaveLength(1);
+    expect(done.trackedProposalIds[0]).toStartWith("ops_proposal:");
     expect((await proposals.list({ subject: "agent-runner", kind: "agent", capabilities: caps }, {})).items[0]).toMatchObject({ status: "pending", triggerReason: "fresh_activation_opportunity" });
     expect((await runner.run({ runKey: "daily-runner-001", workspaceSlug: "team-runner" })).actionsCompleted).toBe(3);
   }, 30_000);

@@ -193,6 +193,51 @@ export class OpsFollowUpService {
     if (!this.autonomy && actor.kind === "agent") throw new OpsAutonomyError("out_of_scope", "agent 自治授权服务不可用");
     return await this.autonomy?.allowedWorkspaces(actor, action) ?? null;
   }
+  async verifyAction(actor: OpsFollowUpActor, action: "follow_up.create" | "follow_up.claim" | "follow_up.update", input: unknown): Promise<FollowUpItem | null> {
+    const body = input && typeof input === "object" ? input as Record<string, unknown> : null;
+    if (!body) throw new OpsFollowUpServiceError("invalid_request", "核实请求无效");
+    const replay = action === "follow_up.create"
+      ? this.replayCreate(actor, body)
+      : action === "follow_up.claim"
+        ? this.replayClaim(actor, body)
+        : this.replayUpdate(actor, body);
+    const item = await replay;
+    if (!item) return null;
+    await this.authorize(actor, action, item.workspaceSlug);
+    return publicItem(item, await this.store.getSummary(item.summaryId), actor, this.now());
+  }
+
+  private async replayCreate(actor: OpsFollowUpActor, body: Record<string, unknown>): Promise<FollowUpItem | null> {
+    const parsed = createFollowUpSchema.safeParse(body);
+    if (!parsed.success) throw new OpsFollowUpServiceError("invalid_request", "创建跟进事项请求无效");
+    return replayOrConflict(await this.store.findIdempotent(actor.subject, idempotencyKey(parsed.data.idempotencyKey)), digest("created", { opportunityId: parsed.data.opportunityId, dueCheckAt: parsed.data.dueCheckAt }));
+  }
+
+  private async replayClaim(actor: OpsFollowUpActor, body: Record<string, unknown>): Promise<FollowUpItem | null> {
+    if (typeof body.followUpId !== "string") throw new OpsFollowUpServiceError("invalid_request", "认领请求无效");
+    const parsed = claimFollowUpSchema.safeParse({ expectedVersion: body.expectedVersion, leaseSeconds: body.leaseSeconds, idempotencyKey: body.idempotencyKey });
+    if (!parsed.success) throw new OpsFollowUpServiceError("invalid_request", "认领请求无效");
+    return replayOrConflict(await this.store.findIdempotent(actor.subject, idempotencyKey(parsed.data.idempotencyKey)), digest("claimed", {
+      followUpId: body.followUpId, expectedVersion: parsed.data.expectedVersion, leaseSeconds: parsed.data.leaseSeconds,
+      sourceSummaryId: typeof body.sourceSummaryId === "string" ? body.sourceSummaryId : undefined,
+      sourceUpdatedAt: typeof body.sourceUpdatedAt === "string" ? body.sourceUpdatedAt : undefined,
+    }));
+  }
+
+  private async replayUpdate(actor: OpsFollowUpActor, body: Record<string, unknown>): Promise<FollowUpItem | null> {
+    if (typeof body.followUpId !== "string") throw new OpsFollowUpServiceError("invalid_request", "更新请求无效");
+    const parsed = updateFollowUpSchema.safeParse({
+      expectedVersion: body.expectedVersion, status: body.status, dueCheckAt: body.dueCheckAt ?? null,
+      result: body.result ?? null, idempotencyKey: body.idempotencyKey,
+    });
+    if (!parsed.success) throw new OpsFollowUpServiceError("invalid_request", "更新请求无效");
+    return replayOrConflict(await this.store.findIdempotent(actor.subject, idempotencyKey(parsed.data.idempotencyKey)), digest("updated", {
+      followUpId: body.followUpId, expectedVersion: parsed.data.expectedVersion, status: parsed.data.status,
+      dueCheckAt: parsed.data.dueCheckAt, result: parsed.data.result,
+      sourceSummaryId: typeof body.sourceSummaryId === "string" ? body.sourceSummaryId : undefined,
+      sourceUpdatedAt: typeof body.sourceUpdatedAt === "string" ? body.sourceUpdatedAt : undefined,
+    }));
+  }
 
   async listOpportunities(actor: OpsFollowUpActor, input: Readonly<{ limit?: number; cursor?: string }>): Promise<ActivationOpportunityPage> {
     requireRead(actor);

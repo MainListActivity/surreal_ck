@@ -33,7 +33,7 @@ function app(kind: "agent" | "human", scope: string) {
   return web;
 }
 const body = { runKey: "daily-run-001", workspaceSlug: "team-a", expectedVersion: null, status: "running", cursor: null,
-  processedIds: [], pendingAction: null, dueCheckAt: null, retryCount: 0, lastErrorCode: null, actionsCompleted: 0 };
+  processedIds: [], trackedProposalIds: [], pendingAction: null, dueCheckAt: null, retryCount: 0, lastErrorCode: null, actionsCompleted: 0 };
 describe("ops run HTTP", () => {
   test("agent 报告检查点，真人只读列表；scope 收窄拒绝旧 token", async () => {
     const agent = app("agent", "activation.followup.read");

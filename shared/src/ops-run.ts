@@ -14,6 +14,7 @@ export const saveOpsRunSchema = z.object({
   status: z.enum(["running", "waiting", "completed", "needs_human"]),
   cursor: z.string().max(2048).nullable(),
   processedIds: z.array(z.string().min(1).max(256)).max(500),
+  trackedProposalIds: z.array(z.string().startsWith("ops_proposal:").max(256)).max(500),
   pendingAction: opsRunPendingActionSchema.nullable(),
   dueCheckAt: z.string().datetime().nullable(),
   retryCount: z.number().int().min(0).max(100),

@@ -83,6 +83,17 @@ export class OpsProposalService {
     if (prior.requestDigest !== requestDigest) throw new OpsProposalServiceError("conflict", "幂等键已用于不同请求");
     return prior.item;
   }
+  async verifySubmittedAction(actor: OpsProposalActor, input: unknown): Promise<OpsProposal | null> {
+    const parsed = submitOpsProposalSchema.safeParse(input);
+    if (!parsed.success) throw new OpsProposalServiceError("invalid_request", "建议请求无效");
+    const body = parsed.data;
+    const replay = await this.replay(actor, body.idempotencyKey, digest({ event: "submit", body }));
+    if (!replay) return null;
+    const followUp = await this.store.getFollowUp(replay.followUpId);
+    if (!followUp) throw new OpsProposalServiceError("not_found", "跟进事项不存在");
+    await this.authorize(actor, "proposal.submit", followUp.workspaceSlug);
+    return replay;
+  }
 
   async submit(actor: OpsProposalActor, input: unknown): Promise<OpsProposal> {
     requireCapability(actor, "activation.proposal.submit");

@@ -366,6 +366,23 @@ function buildServer(
     });
   }
 
+  if (opsFollowUpService && opsProposalService) {
+    server.registerTool("verify_ops_action", {
+      title: "核实待完成内部动作", description: "按调用者和稳定幂等键只读核实已落库结果；未找到时返回 null。", inputSchema: toolInputSchema,
+    }, async (args) => {
+      try {
+        if (typeof args.tool !== "string" || typeof args.idempotencyKey !== "string") throw new OpsRunError("invalid_request", "动作和幂等键必填");
+        const { tool, ...request } = args;
+        if (tool === "submit_ops_proposal") return toolSuccess({ item: await opsProposalService.verifySubmittedAction(operator, request) });
+        if (tool === "create_follow_up" || tool === "claim_follow_up" || tool === "update_follow_up") {
+          const action = tool === "create_follow_up" ? "follow_up.create" : tool === "claim_follow_up" ? "follow_up.claim" : "follow_up.update";
+          return toolSuccess({ item: await opsFollowUpService.verifyAction(operator, action, request) });
+        }
+        throw new OpsRunError("invalid_request", "不支持的动作");
+      } catch (error) { return toolError(error); }
+    });
+  }
+
   if (opsAutonomyService) {
     server.registerTool("list_agent_policies", {
       title: "列出 agent 自治授权", description: "真人运营人员查看工作区动作白名单与暂停状态。", inputSchema: toolInputSchema,

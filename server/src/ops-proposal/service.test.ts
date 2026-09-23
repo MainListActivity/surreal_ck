@@ -149,4 +149,20 @@ describe("ops proposal service", () => {
     expect(resumed).toMatchObject({ status: "succeeded", toolResult: { code: "action_succeeded", followUpVersion: 2 } });
     expect(calls).toBe(1);
   });
+
+  test("暂停后不能用旧幂等键取回已提交建议", async () => {
+    const store = new MemoryStore();
+    let paused = false;
+    const service = new OpsProposalService(store, { claim: async () => followUp, update: async () => followUp }, {
+      authorize: async () => { if (paused) throw { code: "paused" }; },
+      allowedWorkspaces: async () => ["team"],
+    });
+    const agent = { ...actor, subject: "agent-1", kind: "agent" as const };
+    const proposed = await service.submit(agent, submit);
+    expect(await service.verifySubmittedAction(agent, { ...submit, idempotencyKey: "missing-key-01" })).toBeNull();
+    expect((await service.verifySubmittedAction(agent, submit))?.proposalId).toBe(proposed.proposalId);
+    await expect(service.verifySubmittedAction(agent, { ...submit, rationale: "另一份请求内容" })).rejects.toMatchObject({ code: "conflict" });
+    paused = true;
+    await expect(service.verifySubmittedAction(agent, submit)).rejects.toMatchObject({ code: "paused" });
+  });
 });

@@ -5,7 +5,7 @@ import { OpsRunService, type OpsRunStore } from "./service";
 const agent = { subject: "agent-1", kind: "agent" as const, capabilities: ["activation.followup.read"] };
 const human = { subject: "human-1", kind: "human" as const, capabilities: ["activation.autonomy.read"] };
 const initial: SaveOpsRun = { runKey: "daily-run-001", workspaceSlug: "team-a", expectedVersion: null, status: "running",
-  cursor: null, processedIds: [], pendingAction: null, dueCheckAt: null, retryCount: 0, lastErrorCode: null, actionsCompleted: 0 };
+  cursor: null, processedIds: [], trackedProposalIds: [], pendingAction: null, dueCheckAt: null, retryCount: 0, lastErrorCode: null, actionsCompleted: 0 };
 class MemoryStore implements OpsRunStore {
   item: OpsRun | null = null;
   async get(subject: string, workspace: string, key: string) {
