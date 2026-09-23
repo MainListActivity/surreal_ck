@@ -5,7 +5,8 @@
   "exports": {
     "./app-type": {
       "types": "./dist/server/src/app.d.ts"
-    }
+    },
+    "./acceptance-harness": "./src/acceptance-harness.ts"
   },
   "scripts": {
     "dev": "bun run --idleTimeout=5 --env-file=../.env --watch src/index.ts",
