@@ -4,32 +4,6 @@ import { exportJWK, generateKeyPair, SignJWT, type KeyLike } from "jose";
 import { Surreal } from "surrealdb";
 import { Hono } from "hono";
 import { shareActivationSummarySchema } from "@surreal-ck/shared";
-import {
-  loadTemplateScripts,
-  WORKSPACE_TEMPLATE_VERSION,
-  ActivationSummaryService,
-  createActivationSummaryRoutes,
-  createContentMcpRoutes,
-  createPlatformOperatorCapabilityReader,
-  ensureSystemSchema,
-  env,
-  ExternalOpsAgentRunner,
-  handleError,
-  InMemoryPlatformContentStore,
-  OpsAutonomyService,
-  OpsFollowUpService,
-  OpsProposalService,
-  OpsRunService,
-  PlatformContentService,
-  requirePlatformOperator,
-  SurrealActivationSummaryStore,
-  SurrealOpsAutonomyStore,
-  SurrealOpsFollowUpStore,
-  SurrealOpsProposalStore,
-  SurrealOpsRunStore,
-  type AppBindings,
-  type OpsMcpPort,
-} from "@surreal-ck/server/acceptance-harness";
 import { buildActivationSummaryV2 } from "./activation-outcomes";
 import { createDataCheckService } from "./data-check-runtime";
 import { openDataTableRuntime } from "./data-table-runtime";
@@ -48,6 +22,21 @@ let endpoint = "";
 let surrealProcess: ReturnType<typeof Bun.spawn> | null = null;
 let jwksServer: ReturnType<typeof Bun.serve> | null = null;
 let privateKey: KeyLike | null = null;
+
+async function loadHarness() {
+  process.env.NODE_ENV ??= "test";
+  process.env.HOST ??= "127.0.0.1";
+  process.env.PORT ??= "18080";
+  process.env.SURREAL_URL ??= "ws://127.0.0.1:65535/rpc";
+  process.env.SURREAL_NS ??= "main";
+  process.env.SURREAL_ROOT_USER ??= "root";
+  process.env.SURREAL_ROOT_PASS ??= "test-root-pass";
+  process.env.OIDC_ISSUER ??= "http://127.0.0.1:18081/issuer";
+  process.env.OIDC_JWKS_URL ??= "http://127.0.0.1:18081/jwks";
+  process.env.OIDC_AUDIENCE ??= "surreal-ck-test";
+  process.env.IDP_HOOK_SECRET ??= "test-hook-secret";
+  return await import("@surreal-ck/server/acceptance-harness");
+}
 
 async function freePort(): Promise<number> {
   return await new Promise((resolve, reject) => {
@@ -70,12 +59,12 @@ async function rootSession(database: string): Promise<Surreal> {
   return db;
 }
 
-async function signToken(subject: string, claims: Record<string, unknown>, audience?: string): Promise<string> {
+async function signToken(issuer: string, subject: string, claims: Record<string, unknown>, audience?: string): Promise<string> {
   if (!privateKey) throw new Error("jwks key missing");
   let token = new SignJWT(claims)
     .setProtectedHeader({ alg: "RS256", kid: "joint-acceptance" })
     .setSubject(subject)
-    .setIssuer(env.OIDC_ISSUER)
+    .setIssuer(issuer)
     .setIssuedAt()
     .setExpirationTime("1h");
   if (audience) token = token.setAudience(audience);
@@ -91,10 +80,15 @@ async function openCaller(database: string, token: string): Promise<SurrealConn>
   return createBrowserConn(db as never);
 }
 
-async function applyWorkspaceTemplate(database: string): Promise<void> {
+async function applyWorkspaceTemplate(
+  database: string,
+  loadTemplateScripts: Awaited<ReturnType<typeof loadHarness>>["loadTemplateScripts"],
+  workspaceTemplateVersion: number,
+  jwksUrl: string,
+): Promise<void> {
   const root = await rootSession(database);
-  const scripts = await loadTemplateScripts({ oidcJwksUrl: env.OIDC_JWKS_URL });
-  expect(scripts.at(-1)?.version).toBe(WORKSPACE_TEMPLATE_VERSION);
+  const scripts = await loadTemplateScripts({ oidcJwksUrl: jwksUrl });
+  expect(scripts.at(-1)?.version).toBe(workspaceTemplateVersion);
   for (const script of scripts) {
     try {
       await root.query(script.sql).collect();
@@ -113,6 +107,30 @@ describe("律师团队与主动运营联合验收", () => {
   });
 
   localTest("隔离库里完成导入、体检、复核、摘要共享和 agent 接管", async () => {
+    const {
+      loadTemplateScripts,
+      WORKSPACE_TEMPLATE_VERSION,
+      ActivationSummaryService,
+      createActivationSummaryRoutes,
+      createContentMcpRoutes,
+      createPlatformOperatorCapabilityReader,
+      ensureSystemSchema,
+      env,
+      ExternalOpsAgentRunner,
+      handleError,
+      InMemoryPlatformContentStore,
+      OpsAutonomyService,
+      OpsFollowUpService,
+      OpsProposalService,
+      OpsRunService,
+      PlatformContentService,
+      requirePlatformOperator,
+      SurrealActivationSummaryStore,
+      SurrealOpsAutonomyStore,
+      SurrealOpsFollowUpStore,
+      SurrealOpsProposalStore,
+      SurrealOpsRunStore,
+    } = await loadHarness();
     const port = await freePort();
     endpoint = `ws://127.0.0.1:${port}`;
     surrealProcess = Bun.spawn(["surreal", "start", "--no-banner", "--log", "none", "--allow-net", "127.0.0.1", "--bind", `127.0.0.1:${port}`, "--user", "root", "--pass", "root", "memory"], { stdout: "ignore", stderr: "ignore" });
@@ -141,8 +159,8 @@ describe("律师团队与主动运营联合验收", () => {
     const system = await rootSession("_system");
     const migrated = await ensureSystemSchema(system, { namespace });
     expect(migrated.toVersion).toBeGreaterThanOrEqual(20);
-    await applyWorkspaceTemplate("ws_joint");
-    await applyWorkspaceTemplate("ws_other");
+    await applyWorkspaceTemplate("ws_joint", loadTemplateScripts, WORKSPACE_TEMPLATE_VERSION, env.OIDC_JWKS_URL);
+    await applyWorkspaceTemplate("ws_other", loadTemplateScripts, WORKSPACE_TEMPLATE_VERSION, env.OIDC_JWKS_URL);
 
     const systemRoot = await rootSession("_system");
     await systemRoot.query(`
@@ -210,9 +228,9 @@ describe("律师团队与主动运营联合验收", () => {
       ];
     `).collect();
 
-    const adminToken = await signToken("admin-joint", { email: "admin@joint.test", ns: namespace, db: "ws_joint", ac: "admin", rl: ["Owner"] });
-    const memberToken = await signToken("member-joint", { email: "member@joint.test", ns: namespace, db: "ws_joint", ac: "participant" });
-    const reviewerToken = await signToken("reviewer-joint", { email: "reviewer@joint.test", ns: namespace, db: "ws_joint", ac: "participant" });
+    const adminToken = await signToken(env.OIDC_ISSUER, "admin-joint", { email: "admin@joint.test", ns: namespace, db: "ws_joint", ac: "admin", rl: ["Owner"] });
+    const memberToken = await signToken(env.OIDC_ISSUER, "member-joint", { email: "member@joint.test", ns: namespace, db: "ws_joint", ac: "participant" });
+    const reviewerToken = await signToken(env.OIDC_ISSUER, "reviewer-joint", { email: "reviewer@joint.test", ns: namespace, db: "ws_joint", ac: "participant" });
     const admin = await openCaller("ws_joint", adminToken);
     const member = await openCaller("ws_joint", memberToken);
     await openCaller("ws_joint", reviewerToken);
@@ -355,7 +373,7 @@ describe("律师团队与主动运营联合验收", () => {
     expect(summary.contractVersion).toBe("2");
     expect(summary.progress.imports.completed).toBeGreaterThan(0);
     const reader = createPlatformOperatorCapabilityReader(systemRoot);
-    const app = new Hono<AppBindings>();
+    const app = new Hono();
     app.onError(handleError);
     const summaries = new ActivationSummaryService(new SurrealActivationSummaryStore(rootSession, namespace));
     const autonomy = new OpsAutonomyService(new SurrealOpsAutonomyStore(rootSession, namespace));
@@ -372,14 +390,14 @@ describe("律师团队与主动运营联合验收", () => {
     }));
     const parsedSummary = shareActivationSummarySchema.safeParse({ summary, idempotencyKey: "joint-share-001" });
     if (!parsedSummary.success) throw new Error(JSON.stringify(parsedSummary.error.issues.slice(0, 8)));
-    const adminApiToken = await signToken("admin-joint", { email: "admin@joint.test" }, env.OIDC_AUDIENCE);
+    const adminApiToken = await signToken(env.OIDC_ISSUER, "admin-joint", { email: "admin@joint.test" }, env.OIDC_AUDIENCE);
     const shared = await app.request("/api/workspaces/team-joint/activation-summary", {
       method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${adminApiToken}` },
       body: JSON.stringify({ summary, idempotencyKey: "joint-share-001" }),
     });
     expect(shared.status).toBe(200);
     const sharedBody = await shared.json() as { workspaceSlug: string; status: string; updatedAt: string };
-    const opsToken = await signToken("ops-human", { scope: "activation.summary.read content.read" }, env.OIDC_AUDIENCE);
+    const opsToken = await signToken(env.OIDC_ISSUER, "ops-human", { scope: "activation.summary.read content.read" }, env.OIDC_AUDIENCE);
     const listed = await app.request("/api/ops/activation-summaries", { headers: { authorization: `Bearer ${opsToken}` } });
     expect(listed.status).toBe(200);
     const listedBody = await listed.json() as { items: Array<{ workspaceSlug: string; status: string; updatedAt: string }> };
@@ -400,13 +418,13 @@ describe("律师团队与主动运营联合验收", () => {
     expect(contract.contractVersion).toBe("1");
     const mcpSummaries = await callTool<{ items: Array<{ workspaceSlug: string; status: string; updatedAt: string }> }>(opsToken, "list_activation_summaries", {});
     expect(mcpSummaries.items[0]).toMatchObject({ workspaceSlug: sharedBody.workspaceSlug, status: "active", updatedAt: sharedBody.updatedAt });
-    const agentToken = await signToken("ops-agent", {
+    const agentToken = await signToken(env.OIDC_ISSUER, "ops-agent", {
       scope: "activation.followup.read activation.followup.write activation.proposal.read activation.proposal.submit",
     }, env.OIDC_AUDIENCE);
-    const narrowed = await signToken("ops-agent", { scope: "activation.followup.read" }, env.OIDC_AUDIENCE);
+    const narrowed = await signToken(env.OIDC_ISSUER, "ops-agent", { scope: "activation.followup.read" }, env.OIDC_AUDIENCE);
     await expect(callTool(narrowed, "create_follow_up", { opportunityId: "x", dueCheckAt: null, idempotencyKey: "joint-narrow" })).rejects.toMatchObject({ code: "capability_missing" });
     let sequence = 0;
-    const portAdapter: OpsMcpPort = { async call<T>(tool: string, args: Record<string, unknown>): Promise<T> {
+    const portAdapter = { async call<T>(tool: string, args: Record<string, unknown>): Promise<T> {
       const response = await app.request("/api/ops/mcp", {
         method: "POST",
         headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${agentToken}` },
@@ -433,7 +451,7 @@ describe("律师团队与主动运营联合验收", () => {
     expect((await runner.run({ runKey: "joint-run-001", workspaceSlug: "team-joint" })).actionsCompleted).toBe(3);
     const followPage = await followUps.listFollowUps({ subject: "ops-agent", kind: "agent", capabilities: ["activation.followup.read", "activation.followup.write"] }, {});
     expect(followPage.items).toHaveLength(1);
-    const humanToken = await signToken("ops-human", {
+    const humanToken = await signToken(env.OIDC_ISSUER, "ops-human", {
       scope: "activation.proposal.takeover activation.proposal.read activation.followup.read activation.followup.write",
     }, env.OIDC_AUDIENCE);
     const taken = await callTool<{ version: number }>(humanToken, "takeover_follow_up", {
