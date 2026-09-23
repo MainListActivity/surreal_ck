@@ -215,7 +215,7 @@ describe("律师团队与主动运营联合验收", () => {
     const reviewerToken = await signToken("reviewer-joint", { email: "reviewer@joint.test", ns: namespace, db: "ws_joint", ac: "participant" });
     const admin = await openCaller("ws_joint", adminToken);
     const member = await openCaller("ws_joint", memberToken);
-    const reviewer = await openCaller("ws_joint", reviewerToken);
+    await openCaller("ws_joint", reviewerToken);
     await expect(member.query("DEFINE TABLE forbidden_by_participant SCHEMALESS")).rejects.toThrow();
 
     const mappings: TemplateImportMapping[] = [
