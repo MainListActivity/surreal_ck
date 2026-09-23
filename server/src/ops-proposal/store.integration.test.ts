@@ -67,6 +67,9 @@ describe("ops proposal Surreal store", () => {
       action: { type: "follow_up.claim", leaseSeconds: 900 }, rationale: "新鲜摘要有未完成事项", expectedResult: "人工认领内部事项",
       triggerReason: "fresh_activation_opportunity", inputSummary: "团队启用未完成", idempotencyKey: "proposal-real-submit-001" });
     expect(submitted.status).toBe("pending");
+    const scopedStore = new SurrealOpsProposalStore(async (database) => await session(database), "main");
+    expect((await scopedStore.list({ limit: 10, cursor: null, workspaceSlugs: ["demo"] })).map((row) => row.proposalId)).toContain(submitted.proposalId);
+    expect(await scopedStore.list({ limit: 10, cursor: null, workspaceSlugs: ["other"] })).toEqual([]);
     expect(submitted.actionDigest).toBe(proposalService.actionDigest(submitted.action));
     const replay = await proposalService.submit(actor, { followUpId: item.followUpId, followUpVersion: item.version, summaryUpdatedAt: item.sourceUpdatedAt,
       action: { type: "follow_up.claim", leaseSeconds: 900 }, rationale: "新鲜摘要有未完成事项", expectedResult: "人工认领内部事项",

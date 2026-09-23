@@ -85,6 +85,9 @@ import { createOpsFollowUpRoutes } from "./routes/ops-follow-up";
 import { OpsProposalService } from "./ops-proposal/service";
 import { SurrealOpsProposalStore } from "./ops-proposal/store";
 import { createOpsProposalRoutes } from "./routes/ops-proposal";
+import { OpsAutonomyService } from "./ops-autonomy/service";
+import { SurrealOpsAutonomyStore } from "./ops-autonomy/store";
+import { createOpsAutonomyRoutes } from "./routes/ops-autonomy";
 
 export type AppOptions = {
   workspaceScope?: WorkspaceScopeModule;
@@ -118,6 +121,7 @@ export type AppOptions = {
   /** 运营机会与内部跟进队列；页面和 MCP 复用。 */
   opsFollowUpService?: OpsFollowUpService;
   opsProposalService?: OpsProposalService;
+  opsAutonomyService?: OpsAutonomyService;
 };
 
 type AiStreamWebSocket = ReturnType<typeof createAiStreamRoutes>["websocket"];
@@ -227,12 +231,14 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
       ? createOpenAiCompatibleEmbeddingProvider({ apiKey: env.EMBEDDING_API_KEY })
       : undefined);
   const platformContentService = options.platformContentService ?? createDefaultPlatformContentService();
+  const opsAutonomyService = options.opsAutonomyService
+    ?? new OpsAutonomyService(new SurrealOpsAutonomyStore());
   const activationSummaryService = options.activationSummaryService
-    ?? new ActivationSummaryService(new SurrealActivationSummaryStore());
+    ?? new ActivationSummaryService(new SurrealActivationSummaryStore(), opsAutonomyService);
   const opsFollowUpService = options.opsFollowUpService
-    ?? new OpsFollowUpService(new SurrealOpsFollowUpStore());
+    ?? new OpsFollowUpService(new SurrealOpsFollowUpStore(), undefined, opsAutonomyService);
   const opsProposalService = options.opsProposalService
-    ?? new OpsProposalService(new SurrealOpsProposalStore(), opsFollowUpService);
+    ?? new OpsProposalService(new SurrealOpsProposalStore(), opsFollowUpService, opsAutonomyService);
   const autoAiChatService = options.aiChatService ?? buildAutoAiChatService(runBus, platformContentService, embeddingProvider);
   const quotaReadService =
     options.quotaReadService ?? createDefaultQuotaReadService();
@@ -293,11 +299,13 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     }))
     .route("/", createOpsFollowUpRoutes({ service: opsFollowUpService }))
     .route("/", createOpsProposalRoutes({ service: opsProposalService }))
+    .route("/", createOpsAutonomyRoutes({ service: opsAutonomyService }))
     .route("/", createContentMcpRoutes({
       service: platformContentService,
       activationSummaryService,
       opsFollowUpService,
       opsProposalService,
+      opsAutonomyService,
     }))
     .route(
       "/",

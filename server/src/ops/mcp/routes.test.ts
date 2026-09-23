@@ -97,6 +97,8 @@ describe("platform content MCP", () => {
         "activation.proposal.review",
         "activation.proposal.execute",
         "activation.proposal.takeover",
+        "activation.autonomy.read",
+        "activation.autonomy.manage",
       ],
       bearer_methods_supported: ["header"],
     });

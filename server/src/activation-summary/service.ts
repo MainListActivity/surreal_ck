@@ -4,9 +4,11 @@ import {
   type ActivationSummary,
   type SharedActivationSummary,
 } from "@surreal-ck/shared";
+import { OpsAutonomyError, type OpsAutonomyService } from "../ops-autonomy/service";
 
 export type ActivationSummaryActor = Readonly<{
   subject: string;
+  kind?: "human" | "agent";
   capabilities: readonly string[];
 }>;
 
@@ -35,7 +37,7 @@ export interface ActivationSummaryStore {
     actorSubject: string;
     idempotencyKey: string;
   }>): Promise<SharedActivationSummary>;
-  list(input: Readonly<{ limit: number; cursor: ActivationSummaryCursor | null }>): Promise<SharedActivationSummary[]>;
+  list(input: Readonly<{ limit: number; cursor: ActivationSummaryCursor | null; workspaceSlugs?: readonly string[] | null }>): Promise<SharedActivationSummary[]>;
   get(summaryId: string): Promise<SharedActivationSummary | null>;
 }
 
@@ -89,7 +91,10 @@ function requireReadCapability(actor: ActivationSummaryActor): void {
 }
 
 export class ActivationSummaryService {
-  constructor(private readonly store: ActivationSummaryStore) {}
+  constructor(private readonly store: ActivationSummaryStore, private readonly autonomy?: Pick<OpsAutonomyService, "authorize" | "allowedWorkspaces">) {}
+  private requireAutonomy(actor: ActivationSummaryActor): void {
+    if (!this.autonomy && actor.kind === "agent") throw new OpsAutonomyError("out_of_scope", "agent 自治授权服务不可用");
+  }
 
   async share(input: Readonly<{
     workspaceSlug: string;
@@ -136,12 +141,14 @@ export class ActivationSummaryService {
     cursor?: string;
   }>): Promise<ActivationSummaryPage> {
     requireReadCapability(actor);
+    this.requireAutonomy(actor);
+    const workspaceSlugs = await this.autonomy?.allowedWorkspaces(actor, "activation.summary.read") ?? null;
     const requestedLimit = input.limit ?? 20;
     if (!Number.isInteger(requestedLimit) || requestedLimit < 1) {
       throw new ActivationSummaryServiceError("invalid_request", "limit 必须是正整数");
     }
     const limit = Math.min(100, requestedLimit);
-    const rows = await this.store.list({ limit: limit + 1, cursor: decodeCursor(input.cursor) });
+    const rows = await this.store.list({ limit: limit + 1, cursor: decodeCursor(input.cursor), workspaceSlugs });
     const items = rows.slice(0, limit);
     const tail = items.at(-1);
     return {
@@ -154,10 +161,12 @@ export class ActivationSummaryService {
 
   async get(actor: ActivationSummaryActor, summaryId: string): Promise<SharedActivationSummary> {
     requireReadCapability(actor);
+    this.requireAutonomy(actor);
     const item = await this.store.get(summaryId);
     if (!item || item.status !== "active" || item.summary === null) {
       throw new ActivationSummaryServiceError("not_found", "摘要不存在或已撤回");
     }
+    await this.autonomy?.authorize(actor, "activation.summary.read", item.workspaceSlug);
     return item;
   }
 }

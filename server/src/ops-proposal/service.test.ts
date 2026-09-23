@@ -120,7 +120,9 @@ describe("ops proposal service", () => {
 
   test("agent 身份不能自审建议或接管", async () => {
     const store = new MemoryStore();
-    const service = new OpsProposalService(store, { claim: async () => followUp, update: async () => followUp });
+    const service = new OpsProposalService(store, { claim: async () => followUp, update: async () => followUp }, {
+      authorize: async () => {}, allowedWorkspaces: async () => [followUp.workspaceSlug],
+    });
     const agent = { ...actor, kind: "agent" as const, agentId: "agent-runtime-1", capabilities: [...capabilities, "activation.proposal.takeover"] };
     const proposed = await service.submit(agent, submit);
     await expect(service.review(agent, { proposalId: proposed.proposalId, expectedVersion: 1, actionDigest: service.actionDigest(proposed.action), decision: "approve", reason: "自审", idempotencyKey: "agent-self-review" })).rejects.toMatchObject({ code: "capability_missing" });

@@ -8,12 +8,15 @@ import type { AppBindings } from "../hono-types";
 import { HttpError } from "../http-error";
 import { requireOidc } from "../middleware/oidc";
 import { requirePlatformOperator } from "../ops/operator-auth";
+import { OpsAutonomyError } from "../ops-autonomy/service";
+import { autonomyHttpError } from "./ops-autonomy";
 import {
   ActivationSummaryService,
   ActivationSummaryServiceError,
 } from "../activation-summary/service";
 
 function asHttpError(error: unknown): never {
+  if (error instanceof OpsAutonomyError) return autonomyHttpError(error);
   if (!(error instanceof ActivationSummaryServiceError)) throw error;
   const status = error.code === "forbidden" || error.code === "capability_missing"
     ? 403
@@ -32,8 +35,9 @@ function operator(c: { var: AppBindings["Variables"] }) {
     : null;
   return {
     subject: actor.subject,
+    kind: actor.kind,
     capabilities: scopes === null
-      ? actor.capabilities
+      ? actor.kind === "agent" ? [] : actor.capabilities
       : actor.capabilities.filter((capability) => scopes.has(capability)),
   };
 }

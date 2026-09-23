@@ -453,6 +453,8 @@ export const PLATFORM_OPERATOR_CAPABILITIES = [
   "activation.proposal.review",
   "activation.proposal.execute",
   "activation.proposal.takeover",
+  "activation.autonomy.read",
+  "activation.autonomy.manage",
 ] as const;
 export type PlatformOperatorCapability =
   (typeof PLATFORM_OPERATOR_CAPABILITIES)[number];

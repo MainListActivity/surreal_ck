@@ -85,11 +85,13 @@ export class SurrealOpsProposalStore implements OpsProposalStore {
     const row = first(await (await this.db()).query("SELECT * FROM $proposal LIMIT 1;", { proposal: new StringRecordId(proposalId) }));
     return row ? mapProposal(row) : null;
   }
-  async list(input: { limit: number; cursor: OpsProposalCursor | null }): Promise<OpsProposal[]> {
-    const clause = input.cursor ? "WHERE updated_at < $updatedAt OR (updated_at = $updatedAt AND id < $proposalId)" : "";
+  async list(input: { limit: number; cursor: OpsProposalCursor | null; workspaceSlugs?: readonly string[] | null }): Promise<OpsProposal[]> {
+    const clause = input.cursor ? "AND (updated_at < $updatedAt OR (updated_at = $updatedAt AND id < $proposalId))" : "";
+    const scopeClause = input.workspaceSlugs ? "follow_up.workspace_slug INSIDE $workspaceSlugs" : "true";
     const params: Record<string, unknown> = { limit: input.limit };
+    if (input.workspaceSlugs) params.workspaceSlugs = [...input.workspaceSlugs];
     if (input.cursor) { params.updatedAt = new DateTime(input.cursor.updatedAt); params.proposalId = new StringRecordId(input.cursor.proposalId); }
-    return rows(await (await this.db()).query(`SELECT * FROM ops_proposal ${clause} ORDER BY updated_at DESC, id DESC LIMIT $limit;`, params)).map(mapProposal).filter((row): row is OpsProposal => row !== null);
+    return rows(await (await this.db()).query(`SELECT * FROM ops_proposal WHERE ${scopeClause} ${clause} ORDER BY updated_at DESC, id DESC LIMIT $limit;`, params)).map(mapProposal).filter((row): row is OpsProposal => row !== null);
   }
   async create(input: Parameters<OpsProposalStore["create"]>[0]): Promise<OpsProposal> {
     const actionDigest = digestProposalAction(input.action);

@@ -18,6 +18,7 @@ import {
 } from "../../activation-summary/service";
 import { OpsFollowUpService, OpsFollowUpServiceError } from "../../ops-follow-up/service";
 import { OpsProposalService, OpsProposalServiceError, type OpsProposalActor } from "../../ops-proposal/service";
+import { OpsAutonomyService, OpsAutonomyError } from "../../ops-autonomy/service";
 
 const MCP_SCOPES = [
   "content.read",
@@ -34,6 +35,8 @@ const MCP_SCOPES = [
   "activation.proposal.review",
   "activation.proposal.execute",
   "activation.proposal.takeover",
+  "activation.autonomy.read",
+  "activation.autonomy.manage",
 ] as const;
 
 const toolInputSchema = z.record(z.string(), z.unknown());
@@ -61,6 +64,8 @@ function toolError(error: unknown) {
       : error instanceof OpsFollowUpServiceError
         ? { error: { code: error.code, message: error.message } }
       : error instanceof OpsProposalServiceError
+        ? { error: { code: error.code, message: error.message } }
+      : error instanceof OpsAutonomyError
         ? { error: { code: error.code, message: error.message } }
       : error instanceof ZodError
         ? {
@@ -175,6 +180,7 @@ function buildServer(
   activationSummaryService?: ActivationSummaryService,
   opsFollowUpService?: OpsFollowUpService,
   opsProposalService?: OpsProposalService,
+  opsAutonomyService?: OpsAutonomyService,
 ): McpServer {
   const server = new McpServer(
     { name: "surreal-ck-platform-content", version: "1.0.0" },
@@ -194,6 +200,7 @@ function buildServer(
     },
     async (args) => {
       try {
+        if (operator.kind === "agent") throw new OpsAutonomyError("out_of_scope", "该工具不在 agent 自治动作范围内");
         return toolSuccess(await service.getDataContract(operator, args));
       } catch (error) {
         return toolError(error);
@@ -355,6 +362,36 @@ function buildServer(
     });
   }
 
+  if (opsAutonomyService) {
+    server.registerTool("list_agent_policies", {
+      title: "列出 agent 自治授权", description: "真人运营人员查看工作区动作白名单与暂停状态。", inputSchema: toolInputSchema,
+    }, async (args) => {
+      try { return toolSuccess(await opsAutonomyService.list(operator, typeof args.agentSubject === "string" ? args.agentSubject : undefined)); }
+      catch (error) { return toolError(error); }
+    });
+    server.registerTool("list_agent_policy_history", {
+      title: "读取自治授权历史", description: "读取配置、暂停、恢复和撤权审计。", inputSchema: toolInputSchema,
+    }, async (args) => {
+      try { return toolSuccess(await opsAutonomyService.history(operator, typeof args.policyId === "string" ? args.policyId : undefined)); }
+      catch (error) { return toolError(error); }
+    });
+    server.registerTool("configure_agent_policy", {
+      title: "配置 agent 工作区动作范围", description: "仅真人可配置，且不能授予双方均未持有的能力。", inputSchema: toolInputSchema,
+    }, async (args) => {
+      try { return toolSuccess(await opsAutonomyService.configure(operator, args)); }
+      catch (error) { return toolError(error); }
+    });
+    server.registerTool("change_agent_policy_status", {
+      title: "暂停、恢复或撤销 agent 自治", description: "实时变更该工作区动作策略；已完成动作不回滚。", inputSchema: toolInputSchema,
+    }, async (args) => {
+      try {
+        const status = args.status;
+        if (typeof args.policyId !== "string" || typeof args.expectedVersion !== "number" || (status !== "active" && status !== "paused" && status !== "revoked") || typeof args.reason !== "string" || typeof args.idempotencyKey !== "string") throw new OpsAutonomyError("invalid_request", "状态参数不完整");
+        return toolSuccess(await opsAutonomyService.changeStatus(operator, { policyId: args.policyId, expectedVersion: args.expectedVersion, status, reason: args.reason, idempotencyKey: args.idempotencyKey }));
+      } catch (error) { return toolError(error); }
+    });
+  }
+
   server.registerTool(
     "search_content",
     {
@@ -364,6 +401,7 @@ function buildServer(
     },
     async (args) => {
       try {
+        if (operator.kind === "agent") throw new OpsAutonomyError("out_of_scope", "该工具不在 agent 自治动作范围内");
         return toolSuccess(await service.searchContent(operator, args));
       } catch (error) {
         return toolError(error);
@@ -380,6 +418,7 @@ function buildServer(
     },
     async (args) => {
       try {
+        if (operator.kind === "agent") throw new OpsAutonomyError("out_of_scope", "该工具不在 agent 自治动作范围内");
         return toolSuccess(await service.submitBatch(operator, args));
       } catch (error) {
         return toolError(error);
@@ -396,6 +435,7 @@ function buildServer(
     },
     async (args) => {
       try {
+        if (operator.kind === "agent") throw new OpsAutonomyError("out_of_scope", "该工具不在 agent 自治动作范围内");
         return toolSuccess(await service.inspectBatchResponse(operator, args));
       } catch (error) {
         return toolError(error);
@@ -412,6 +452,7 @@ function buildServer(
     },
     async (args) => {
       try {
+        if (operator.kind === "agent") throw new OpsAutonomyError("out_of_scope", "该工具不在 agent 自治动作范围内");
         return toolSuccess(await service.publishBatch(operator, args));
       } catch (error) {
         return toolError(error);
@@ -427,6 +468,7 @@ export function createContentMcpRoutes(input: Readonly<{
   activationSummaryService?: ActivationSummaryService;
   opsFollowUpService?: OpsFollowUpService;
   opsProposalService?: OpsProposalService;
+  opsAutonomyService?: OpsAutonomyService;
   resourceUri?: string;
   authorizationServer?: string;
   requireOperator?: MiddlewareHandler<AppBindings>;
@@ -487,14 +529,14 @@ export function createContentMcpRoutes(input: Readonly<{
         : null;
     const effectiveCapabilities =
       tokenScopes === null
-        ? operator.capabilities
+        ? operator.kind === "agent" ? [] : operator.capabilities
         : operator.capabilities.filter((capability) => tokenScopes.has(capability));
     const server = buildServer(input.service, {
       subject: operator.subject,
       kind: operator.kind,
       capabilities: effectiveCapabilities,
       agentId: operator.kind === "agent" ? operator.subject : c.var.user?.raw?.act && typeof c.var.user.raw.act === "object" && "sub" in c.var.user.raw.act && typeof c.var.user.raw.act.sub === "string" ? c.var.user.raw.act.sub : null,
-    }, input.activationSummaryService, input.opsFollowUpService, input.opsProposalService);
+    }, input.activationSummaryService, input.opsFollowUpService, input.opsProposalService, input.opsAutonomyService);
     const transport = new WebStandardStreamableHTTPServerTransport({
       enableJsonResponse: true,
     });

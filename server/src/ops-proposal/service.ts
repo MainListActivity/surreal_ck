@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { executeOpsProposalSchema, reviewOpsProposalSchema, submitOpsProposalSchema, takeoverFollowUpSchema, type FollowUpItem, type OpsProposal, type OpsProposalAction, type OpsProposalPage } from "@surreal-ck/shared";
 import type { OpsFollowUpActor } from "../ops-follow-up/service";
+import { OpsAutonomyError, type OpsAutonomyService } from "../ops-autonomy/service";
 
 export type OpsProposalActor = OpsFollowUpActor & { kind?: "human" | "agent"; agentId?: string | null };
 export type OpsProposalCursor = { updatedAt: string; proposalId: string };
@@ -9,7 +10,7 @@ export interface OpsProposalStore {
   getSummaryUpdatedAt(summaryId: string): Promise<string | null>;
   findByIdempotency(actorSubject: string, idempotencyKey: string): Promise<{ item: OpsProposal; requestDigest: string } | null>;
   get(proposalId: string): Promise<OpsProposal | null>;
-  list(input: { limit: number; cursor: OpsProposalCursor | null }): Promise<OpsProposal[]>;
+  list(input: { limit: number; cursor: OpsProposalCursor | null; workspaceSlugs?: readonly string[] | null }): Promise<OpsProposal[]>;
   create(input: { followUpId: string; summaryId: string; summaryUpdatedAt: string; followUpVersion: number; action: OpsProposalAction; rationale: string; expectedResult: string; triggerReason: string; inputSummary: string; actorSubject: string; agentId: string | null; idempotencyKey: string; requestDigest: string }): Promise<OpsProposal>;
   review(input: { proposalId: string; expectedVersion: number; actionDigest: string; decision: "approve" | "reject"; reason: string; actorSubject: string; agentId: string | null; idempotencyKey: string; requestDigest: string }): Promise<OpsProposal | null>;
   reserve(input: { proposalId: string; expectedVersion: number; actorSubject: string; agentId: string | null; idempotencyKey: string; requestDigest: string }): Promise<OpsProposal | null>;
@@ -45,14 +46,21 @@ function cursor(value?: string): OpsProposalCursor | null {
 }
 
 export class OpsProposalService {
-  constructor(private readonly store: OpsProposalStore, private readonly actions: FollowUpActions) {}
+  constructor(private readonly store: OpsProposalStore, private readonly actions: FollowUpActions,
+    private readonly autonomy?: Pick<OpsAutonomyService, "authorize" | "allowedWorkspaces">) {}
+  private async authorize(actor: OpsProposalActor, action: "proposal.read" | "proposal.submit" | "proposal.execute", workspaceSlug: string): Promise<void> {
+    if (!this.autonomy && actor.kind === "agent") throw new OpsAutonomyError("out_of_scope", "agent 自治授权服务不可用");
+    await this.autonomy?.authorize(actor, action, workspaceSlug);
+  }
   actionDigest(action: OpsProposalAction): string { return digestProposalAction(action); }
 
   async list(actor: OpsProposalActor, input: { limit?: number; cursor?: string }): Promise<OpsProposalPage> {
     requireCapability(actor, "activation.proposal.read");
     const limit = input.limit ?? 20;
     if (!Number.isInteger(limit) || limit < 1) throw new OpsProposalServiceError("invalid_request", "limit 必须是正整数");
-    const rows = await this.store.list({ limit: Math.min(limit, 100) + 1, cursor: cursor(input.cursor) });
+    if (!this.autonomy && actor.kind === "agent") throw new OpsAutonomyError("out_of_scope", "agent 自治授权服务不可用");
+    const workspaceSlugs = await this.autonomy?.allowedWorkspaces(actor, "proposal.read") ?? null;
+    const rows = await this.store.list({ limit: Math.min(limit, 100) + 1, cursor: cursor(input.cursor), workspaceSlugs });
     const items = rows.slice(0, Math.min(limit, 100));
     const tail = items.at(-1);
     return { items, nextCursor: rows.length > items.length && tail ? Buffer.from(JSON.stringify({ updatedAt: tail.updatedAt, proposalId: tail.proposalId })).toString("base64url") : null };
@@ -63,6 +71,9 @@ export class OpsProposalService {
     if (!proposalId.startsWith("ops_proposal:")) throw new OpsProposalServiceError("invalid_request", "建议 ID 无效");
     const proposal = await this.store.get(proposalId);
     if (!proposal) throw new OpsProposalServiceError("not_found", "建议不存在");
+    const followUp = await this.store.getFollowUp(proposal.followUpId);
+    if (!followUp) throw new OpsProposalServiceError("not_found", "跟进事项不存在");
+    await this.authorize(actor, "proposal.read", followUp.workspaceSlug);
     return proposal;
   }
 
@@ -82,9 +93,15 @@ export class OpsProposalService {
     const body = parsed.data;
     const requestDigest = digest({ event: "submit", body });
     const replay = await this.replay(actor, body.idempotencyKey, requestDigest);
-    if (replay) return replay;
+    if (replay) {
+      const priorFollowUp = await this.store.getFollowUp(replay.followUpId);
+      if (!priorFollowUp) throw new OpsProposalServiceError("not_found", "跟进事项不存在");
+      await this.authorize(actor, "proposal.submit", priorFollowUp.workspaceSlug);
+      return replay;
+    }
     const item = await this.store.getFollowUp(body.followUpId);
     if (!item) throw new OpsProposalServiceError("not_found", "跟进事项不存在");
+    await this.authorize(actor, "proposal.submit", item.workspaceSlug);
     const summaryUpdatedAt = await this.store.getSummaryUpdatedAt(item.summaryId);
     if (item.version !== body.followUpVersion || !item.sourceAvailable || item.sourceFreshness !== "fresh" || summaryUpdatedAt !== body.summaryUpdatedAt || item.sourceUpdatedAt !== body.summaryUpdatedAt || item.status === "resolved" || item.status === "dismissed") {
       throw new OpsProposalServiceError("conflict", "建议前提已变化");
@@ -93,7 +110,10 @@ export class OpsProposalService {
     try { return await this.store.create({ ...body, inputSummary, summaryId: item.summaryId, actorSubject: actor.subject, agentId: actor.agentId ?? null, requestDigest }); }
     catch (error) {
       const concurrent = await this.replay(actor, body.idempotencyKey, requestDigest);
-      if (concurrent) return concurrent;
+      if (concurrent) {
+        await this.authorize(actor, "proposal.submit", item.workspaceSlug);
+        return concurrent;
+      }
       const current = await this.store.getFollowUp(body.followUpId);
       if (!current || current.version !== body.followUpVersion || current.sourceUpdatedAt !== body.summaryUpdatedAt || !current.sourceAvailable) throw new OpsProposalServiceError("conflict", "建议前提已变化");
       throw error;
@@ -139,8 +159,16 @@ export class OpsProposalService {
     if (!executeOpsProposalSchema.safeParse({ expectedVersion: input.expectedVersion, idempotencyKey: input.idempotencyKey }).success) throw new OpsProposalServiceError("invalid_request", "执行请求无效");
     const requestDigest = digest({ event: "execute", input });
     const replay = await this.replay(actor, input.idempotencyKey, requestDigest);
-    if (replay) return replay;
+    if (replay) {
+      const priorFollowUp = await this.store.getFollowUp(replay.followUpId);
+      if (!priorFollowUp) throw new OpsProposalServiceError("not_found", "跟进事项不存在");
+      await this.authorize(actor, "proposal.execute", priorFollowUp.workspaceSlug);
+      return replay;
+    }
     let proposal = await this.get(actor, input.proposalId);
+    const followUp = await this.store.getFollowUp(proposal.followUpId);
+    if (!followUp) throw new OpsProposalServiceError("not_found", "跟进事项不存在");
+    await this.authorize(actor, "proposal.execute", followUp.workspaceSlug);
     if (proposal.version !== input.expectedVersion || (proposal.status !== "approved" && proposal.status !== "executing")) throw new OpsProposalServiceError("conflict", "建议未获有效批准");
     if (proposal.status === "executing" && proposal.executorSubject !== actor.subject) throw new OpsProposalServiceError("conflict", "建议正由另一执行人处理");
     const actionKey = `proposal-action-${digest(proposal.proposalId).slice(0, 48)}`;

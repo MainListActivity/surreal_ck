@@ -11,8 +11,9 @@ import {
   type SharedActivationSummary,
 } from "@surreal-ck/shared";
 import { createHash } from "node:crypto";
+import { OpsAutonomyError, type OpsAutonomyService } from "../ops-autonomy/service";
 
-export type OpsFollowUpActor = Readonly<{ subject: string; capabilities: readonly string[] }>;
+export type OpsFollowUpActor = Readonly<{ subject: string; kind?: "human" | "agent"; capabilities: readonly string[] }>;
 export type FollowUpCursor = Readonly<{ updatedAt: string; followUpId: string }>;
 
 export interface OpsFollowUpStore {
@@ -32,7 +33,7 @@ export interface OpsFollowUpStore {
     sourceUpdatedAt: string;
     dueCheckAt: string | null;
   }>): Promise<FollowUpItem>;
-  list(input: Readonly<{ limit: number; cursor: FollowUpCursor | null }>): Promise<FollowUpItem[]>;
+  list(input: Readonly<{ limit: number; cursor: FollowUpCursor | null; workspaceSlugs?: readonly string[] | null }>): Promise<FollowUpItem[]>;
   get(followUpId: string): Promise<FollowUpItem | null>;
   claim(input: Readonly<{
     followUpId: string;
@@ -181,15 +182,26 @@ function publicItem(item: FollowUpItem, source: SharedActivationSummary | null, 
 }
 
 export class OpsFollowUpService {
-  constructor(private readonly store: OpsFollowUpStore, private readonly now: () => Date = () => new Date()) {}
+  constructor(private readonly store: OpsFollowUpStore, private readonly now: () => Date = () => new Date(),
+    private readonly autonomy?: Pick<OpsAutonomyService, "authorize" | "allowedWorkspaces">) {}
+
+  private async authorize(actor: OpsFollowUpActor, action: "follow_up.create" | "follow_up.claim" | "follow_up.update", workspaceSlug: string): Promise<void> {
+    if (!this.autonomy && actor.kind === "agent") throw new OpsAutonomyError("out_of_scope", "agent 自治授权服务不可用");
+    await this.autonomy?.authorize(actor, action, workspaceSlug);
+  }
+  private async allowedWorkspaces(actor: OpsFollowUpActor, action: "opportunity.read" | "follow_up.read"): Promise<string[] | null> {
+    if (!this.autonomy && actor.kind === "agent") throw new OpsAutonomyError("out_of_scope", "agent 自治授权服务不可用");
+    return await this.autonomy?.allowedWorkspaces(actor, action) ?? null;
+  }
 
   async listOpportunities(actor: OpsFollowUpActor, input: Readonly<{ limit?: number; cursor?: string }>): Promise<ActivationOpportunityPage> {
     requireRead(actor);
+    const allowed = await this.allowedWorkspaces(actor, "opportunity.read");
     const pageSize = limit(input.limit);
     const cursor = decode<{ sourceUpdatedAt: string; opportunityId: string }>(input.cursor, ["sourceUpdatedAt", "opportunityId"], "机会");
     const candidates = (await this.store.listActiveSummaries())
       .map((item) => opportunity(item, this.now()))
-      .filter((item): item is ActivationOpportunity => item !== null)
+      .filter((item): item is ActivationOpportunity => item !== null && (!allowed || allowed.includes(item.workspaceSlug)))
       .sort((a, b) => b.sourceUpdatedAt.localeCompare(a.sourceUpdatedAt) || b.opportunityId.localeCompare(a.opportunityId))
       .filter((item) => !cursor || item.sourceUpdatedAt < cursor.sourceUpdatedAt || (item.sourceUpdatedAt === cursor.sourceUpdatedAt && item.opportunityId < cursor.opportunityId));
     const items = candidates.slice(0, pageSize);
@@ -206,10 +218,14 @@ export class OpsFollowUpService {
     const key = idempotencyKey(input.idempotencyKey);
     const requestDigest = digest("created", { opportunityId: input.opportunityId, dueCheckAt: input.dueCheckAt });
     const replay = replayOrConflict(await this.store.findIdempotent(actor.subject, key), requestDigest);
-    if (replay) return publicItem(replay, await this.store.getSummary(replay.summaryId), actor, this.now());
+    if (replay) {
+      await this.authorize(actor, "follow_up.create", replay.workspaceSlug);
+      return publicItem(replay, await this.store.getSummary(replay.summaryId), actor, this.now());
+    }
     const all = await this.store.listActiveSummaries();
     const selected = all.map((item) => opportunity(item, this.now())).find((item) => item?.opportunityId === input.opportunityId) ?? null;
     if (!selected) throw new OpsFollowUpServiceError("not_found", "机会不存在、已过期或来源已撤回");
+    await this.authorize(actor, "follow_up.create", selected.workspaceSlug);
     if (input.dueCheckAt !== null && Number.isNaN(Date.parse(input.dueCheckAt))) throw new OpsFollowUpServiceError("invalid_request", "到期检查时间无效");
     let created: FollowUpItem;
     try {
@@ -228,7 +244,10 @@ export class OpsFollowUpService {
       });
     } catch (error) {
       const concurrentReplay = replayOrConflict(await this.store.findIdempotent(actor.subject, key), requestDigest);
-      if (concurrentReplay) return publicItem(concurrentReplay, await this.store.getSummary(concurrentReplay.summaryId), actor, this.now());
+      if (concurrentReplay) {
+        await this.authorize(actor, "follow_up.create", concurrentReplay.workspaceSlug);
+        return publicItem(concurrentReplay, await this.store.getSummary(concurrentReplay.summaryId), actor, this.now());
+      }
       const source = await this.store.getSummary(selected.summaryId);
       if (source?.status !== "active" || source.updatedAt !== selected.sourceUpdatedAt) {
         throw new OpsFollowUpServiceError("not_found", "机会来源已变化或撤回");
@@ -240,9 +259,10 @@ export class OpsFollowUpService {
 
   async listFollowUps(actor: OpsFollowUpActor, input: Readonly<{ limit?: number; cursor?: string }>): Promise<FollowUpPage> {
     requireRead(actor);
+    const workspaceSlugs = await this.allowedWorkspaces(actor, "follow_up.read");
     const pageSize = limit(input.limit);
     const cursor = decode<FollowUpCursor>(input.cursor, ["updatedAt", "followUpId"], "跟进事项");
-    const rows = await this.store.list({ limit: pageSize + 1, cursor });
+    const rows = await this.store.list({ limit: pageSize + 1, cursor, workspaceSlugs });
     const items = await Promise.all(rows.slice(0, pageSize).map(async (item) => publicItem(item, await this.store.getSummary(item.summaryId), actor, this.now())));
     const tail = items.at(-1);
     return { items, nextCursor: rows.length > pageSize && tail ? encode({ updatedAt: tail.updatedAt, followUpId: tail.followUpId }) : null };
@@ -256,10 +276,16 @@ export class OpsFollowUpService {
     const key = idempotencyKey(input.idempotencyKey);
     const requestDigest = digest("claimed", { followUpId: input.followUpId, expectedVersion: input.expectedVersion, leaseSeconds: input.leaseSeconds, sourceSummaryId: input.sourceSummaryId, sourceUpdatedAt: input.sourceUpdatedAt });
     const replay = replayOrConflict(await this.store.findIdempotent(actor.subject, key), requestDigest);
-    if (replay) return publicItem(replay, await this.store.getSummary(replay.summaryId), actor, this.now());
+    if (replay) {
+      await this.authorize(actor, "follow_up.claim", replay.workspaceSlug);
+      return publicItem(replay, await this.store.getSummary(replay.summaryId), actor, this.now());
+    }
     if (!Number.isInteger(input.expectedVersion) || input.expectedVersion < 1 || !Number.isInteger(input.leaseSeconds) || input.leaseSeconds < 30 || input.leaseSeconds > 3600) {
       throw new OpsFollowUpServiceError("invalid_request", "预期版本或租约时长无效");
     }
+    const target = await this.store.get(input.followUpId);
+    if (!target) throw new OpsFollowUpServiceError("not_found", "跟进事项不存在");
+    await this.authorize(actor, "follow_up.claim", target.workspaceSlug);
     const now = this.now();
     let changed: FollowUpItem | null;
     try {
@@ -276,7 +302,10 @@ export class OpsFollowUpService {
       });
     } catch (error) {
       const concurrentReplay = replayOrConflict(await this.store.findIdempotent(actor.subject, key), requestDigest);
-      if (concurrentReplay) return publicItem(concurrentReplay, await this.store.getSummary(concurrentReplay.summaryId), actor, this.now());
+      if (concurrentReplay) {
+        await this.authorize(actor, "follow_up.claim", concurrentReplay.workspaceSlug);
+        return publicItem(concurrentReplay, await this.store.getSummary(concurrentReplay.summaryId), actor, this.now());
+      }
       throw error;
     }
     if (!changed) throw new OpsFollowUpServiceError("conflict", "事项版本已变化或租约仍由其他运营人员持有");
@@ -291,16 +320,25 @@ export class OpsFollowUpService {
     const key = idempotencyKey(input.idempotencyKey);
     const requestDigest = digest("updated", { followUpId: input.followUpId, expectedVersion: input.expectedVersion, status: input.status, dueCheckAt: input.dueCheckAt, result: input.result, sourceSummaryId: input.sourceSummaryId, sourceUpdatedAt: input.sourceUpdatedAt });
     const replay = replayOrConflict(await this.store.findIdempotent(actor.subject, key), requestDigest);
-    if (replay) return publicItem(replay, await this.store.getSummary(replay.summaryId), actor, this.now());
+    if (replay) {
+      await this.authorize(actor, "follow_up.update", replay.workspaceSlug);
+      return publicItem(replay, await this.store.getSummary(replay.summaryId), actor, this.now());
+    }
     if (!Number.isInteger(input.expectedVersion) || input.expectedVersion < 1 || (input.dueCheckAt !== null && Number.isNaN(Date.parse(input.dueCheckAt)))) {
       throw new OpsFollowUpServiceError("invalid_request", "预期版本或到期检查时间无效");
     }
+    const target = await this.store.get(input.followUpId);
+    if (!target) throw new OpsFollowUpServiceError("not_found", "跟进事项不存在");
+    await this.authorize(actor, "follow_up.update", target.workspaceSlug);
     let changed: FollowUpItem | null;
     try {
       changed = await this.store.update({ ...input, actorSubject: actor.subject, idempotencyKey: key, requestDigest, now: this.now().toISOString() });
     } catch (error) {
       const concurrentReplay = replayOrConflict(await this.store.findIdempotent(actor.subject, key), requestDigest);
-      if (concurrentReplay) return publicItem(concurrentReplay, await this.store.getSummary(concurrentReplay.summaryId), actor, this.now());
+      if (concurrentReplay) {
+        await this.authorize(actor, "follow_up.update", concurrentReplay.workspaceSlug);
+        return publicItem(concurrentReplay, await this.store.getSummary(concurrentReplay.summaryId), actor, this.now());
+      }
       throw error;
     }
     if (!changed) throw new OpsFollowUpServiceError("conflict", "事项版本、持有人或租约已失效");

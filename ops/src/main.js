@@ -17,6 +17,7 @@ const contentState = {
 const activationState = { items: [], cursor: null };
 const followUpState = { opportunities: [], opportunityCursor: null, items: [], cursor: null };
 const proposalState = { items: [], cursor: null };
+const autonomyState = { policies: [], history: [] };
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -47,6 +48,7 @@ function renderShell() {
         <button class="section-tab" data-view="activation">团队启用摘要</button>
         <button class="section-tab" data-view="followup">机会与跟进</button>
         <button class="section-tab" data-view="proposal">建议审阅</button>
+        <button class="section-tab" data-view="autonomy">Agent 授权</button>
         <button class="section-tab" data-view="content">内容维护</button>
       </nav>
       <main id="quota-view" class="layout">
@@ -98,6 +100,20 @@ function renderShell() {
           <button id="proposal-next" class="ghost more-button" hidden>加载更多建议</button>
         </section>
       </main>
+      <main id="autonomy-view" class="activation-layout" hidden>
+        <section class="panel activation-panel">
+          <div class="panel-heading"><div><h2>Agent 自动运营范围</h2><p class="muted activation-help">按工作区授予内部动作，实时暂停或撤权；批准不会扩大 OAuth 与运营 capability。</p></div><button id="autonomy-refresh" class="ghost">刷新</button></div>
+          <form id="autonomy-form" class="source-form">
+            <label>Agent 主体<input name="agentSubject" required maxlength="256" placeholder="已登记的 agent subject" /></label>
+            <label>工作区 slug<input name="workspaceSlug" required maxlength="128" /></label>
+            <label class="wide">允许动作<select name="actions" multiple size="9"><option value="activation.summary.read">读取授权摘要</option><option value="opportunity.read">读取机会</option><option value="follow_up.read">读取跟进</option><option value="follow_up.create">创建跟进</option><option value="follow_up.claim">认领跟进</option><option value="follow_up.update">更新跟进</option><option value="proposal.read">读取建议</option><option value="proposal.submit">提交建议</option><option value="proposal.execute">执行已批准建议</option></select></label>
+            <div class="form-actions wide"><button type="submit">保存范围</button><span id="autonomy-form-status" class="status muted"></span></div>
+          </form>
+          <div id="autonomy-status" class="status muted">登录后加载授权。</div>
+          <div id="autonomy-list" class="activation-list"></div>
+        </section>
+        <section class="panel activation-panel"><div class="panel-heading"><h2>授权操作历史</h2></div><div id="autonomy-history" class="activation-list"></div></section>
+      </main>
       <main id="content-view" class="content-layout" hidden>
         <section class="panel content-panel">
           <div class="panel-heading"><h2>来源登记与许可</h2><button id="content-refresh" class="ghost">刷新</button></div>
@@ -143,17 +159,19 @@ function renderShell() {
   document.querySelector("#refresh").addEventListener("click", () => void search(document.querySelector("#search-input").value));
   document.querySelectorAll(".section-tab").forEach((button) => {
     button.addEventListener("click", () => {
-      activeView = ["content", "activation", "followup", "proposal"].includes(button.dataset.view) ? button.dataset.view : "quota";
+      activeView = ["content", "activation", "followup", "proposal", "autonomy"].includes(button.dataset.view) ? button.dataset.view : "quota";
       document.querySelectorAll(".section-tab").forEach((tab) => tab.classList.toggle("active", tab === button));
       document.querySelector("#quota-view").hidden = activeView !== "quota";
       document.querySelector("#content-view").hidden = activeView !== "content";
       document.querySelector("#activation-view").hidden = activeView !== "activation";
       document.querySelector("#followup-view").hidden = activeView !== "followup";
       document.querySelector("#proposal-view").hidden = activeView !== "proposal";
+      document.querySelector("#autonomy-view").hidden = activeView !== "autonomy";
       if (activeView === "content" && user) void loadContent();
       if (activeView === "activation" && user) void loadActivationSummaries();
       if (activeView === "followup" && user) void loadFollowUps();
       if (activeView === "proposal" && user) void loadProposals();
+      if (activeView === "autonomy" && user) void loadAutonomy();
     });
   });
   document.querySelector("#content-refresh").addEventListener("click", () => void loadContent());
@@ -164,6 +182,8 @@ function renderShell() {
   document.querySelector("#followup-next").addEventListener("click", () => void loadQueue(true));
   document.querySelector("#proposal-refresh").addEventListener("click", () => void loadProposals());
   document.querySelector("#proposal-next").addEventListener("click", () => void loadProposals(true));
+  document.querySelector("#autonomy-refresh").addEventListener("click", () => void loadAutonomy());
+  document.querySelector("#autonomy-form").addEventListener("submit", (event) => { event.preventDefault(); void saveAutonomy(new FormData(event.currentTarget)); });
   document.querySelector("#batch-refresh").addEventListener("click", () => void loadBatches());
   document.querySelector("#batch-filter").addEventListener("change", () => void loadBatches());
   document.querySelector("#batch-next").addEventListener("click", () => void loadBatches(true));
@@ -461,6 +481,48 @@ async function executeProposal(proposalId) {
     await loadProposals();
     await loadQueue();
   } catch (error) { document.querySelector("#proposal-status").textContent = error instanceof Error ? error.message : "执行失败"; }
+}
+
+function renderAutonomy() {
+  const container = document.querySelector("#autonomy-list");
+  container.innerHTML = autonomyState.policies.length ? autonomyState.policies.map((item) => `
+    <article class="activation-row followup-card"><span><strong>${escapeHtml(item.agentSubject)} / ${escapeHtml(item.workspaceSlug)}</strong><small>动作：${escapeHtml(item.actions.join(", ") || "无")}</small><small>更新人：${escapeHtml(item.updatedBySubject)} · ${escapeHtml(item.updatedAt)}</small></span><span class="badge">${escapeHtml(item.status)} · v${escapeHtml(item.version)}</span><span>${item.status !== "revoked" ? `<button class="ghost autonomy-status-change" data-id="${escapeHtml(item.policyId)}" data-status="${item.status === "paused" ? "active" : "paused"}">${item.status === "paused" ? "恢复" : "暂停"}</button><button class="ghost autonomy-status-change" data-id="${escapeHtml(item.policyId)}" data-status="revoked">撤权</button>` : ""}</span></article>`).join("") : `<div class="empty-state compact">尚未配置 agent 自治范围。</div>`;
+  container.querySelectorAll(".autonomy-status-change").forEach((button) => button.addEventListener("click", () => void changeAutonomyStatus(button.dataset.id, button.dataset.status)));
+  document.querySelector("#autonomy-history").innerHTML = autonomyState.history.length ? autonomyState.history.map((item) => `
+    <article class="activation-row"><span><strong>${escapeHtml(item.event)}</strong><small>${escapeHtml(item.policyId)} · v${escapeHtml(item.version)} · ${escapeHtml(item.occurredAt)}</small><small>操作者：${escapeHtml(item.actorSubject)} · 原因：${escapeHtml(item.reason)}</small></span></article>`).join("") : `<div class="empty-state compact">暂无操作历史。</div>`;
+}
+
+async function loadAutonomy() {
+  try {
+    const [policies, history] = await Promise.all([api("/ops/autonomy/policies"), api("/ops/autonomy/history")]);
+    autonomyState.policies = policies.items || [];
+    autonomyState.history = history.items || [];
+    renderAutonomy();
+    document.querySelector("#autonomy-status").textContent = `已加载 ${autonomyState.policies.length} 条授权`;
+  } catch (error) { document.querySelector("#autonomy-status").textContent = error instanceof Error ? error.message : "加载授权失败"; }
+}
+
+async function saveAutonomy(fields) {
+  const agentSubject = String(fields.get("agentSubject") || "").trim();
+  const workspaceSlug = String(fields.get("workspaceSlug") || "").trim();
+  const actions = fields.getAll("actions").map(String);
+  const previous = autonomyState.policies.find((item) => item.agentSubject === agentSubject && item.workspaceSlug === workspaceSlug);
+  try {
+    await api("/ops/autonomy/policies", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ agentSubject, workspaceSlug, actions, expectedVersion: previous?.version ?? null, idempotencyKey: requestKey("ops-autonomy-config") }) });
+    await loadAutonomy();
+    document.querySelector("#autonomy-form-status").textContent = "已保存";
+  } catch (error) { document.querySelector("#autonomy-form-status").textContent = error instanceof Error ? error.message : "保存失败"; }
+}
+
+async function changeAutonomyStatus(policyId, status) {
+  const item = autonomyState.policies.find((row) => row.policyId === policyId);
+  if (!item) return;
+  const reason = window.prompt(status === "active" ? "恢复原因" : status === "paused" ? "暂停原因" : "撤权原因");
+  if (!reason) return;
+  try {
+    await api(`/ops/autonomy/policies/${encodeURIComponent(policyId)}/status`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedVersion: item.version, status, reason, idempotencyKey: requestKey("ops-autonomy-status") }) });
+    await loadAutonomy();
+  } catch (error) { document.querySelector("#autonomy-status").textContent = error instanceof Error ? error.message : "状态变更失败"; }
 }
 
 function renderAuth() {

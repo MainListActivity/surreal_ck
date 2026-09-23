@@ -5,8 +5,11 @@ import type { AppBindings } from "../hono-types";
 import { HttpError } from "../http-error";
 import { requirePlatformOperator } from "../ops/operator-auth";
 import { OpsProposalService, OpsProposalServiceError, type OpsProposalActor } from "../ops-proposal/service";
+import { OpsAutonomyError } from "../ops-autonomy/service";
+import { autonomyHttpError } from "./ops-autonomy";
 
 function asHttpError(error: unknown): never {
+  if (error instanceof OpsAutonomyError) return autonomyHttpError(error);
   if (!(error instanceof OpsProposalServiceError)) throw error;
   const status = error.code === "capability_missing" ? 403 : error.code === "not_found" ? 404 : error.code === "conflict" ? 409 : 400;
   throw new HttpError(status, `ops-proposal-${error.code}`, error.message);
@@ -19,7 +22,7 @@ function actor(c: { var: AppBindings["Variables"] }): OpsProposalActor {
   const act = raw?.act;
   const delegatedAgentId = act && typeof act === "object" && "sub" in act && typeof act.sub === "string" ? act.sub : null;
   const agentId = operator.kind === "agent" ? delegatedAgentId ?? operator.subject : delegatedAgentId;
-  return { subject: operator.subject, kind: operator.kind, capabilities: scope ? operator.capabilities.filter((capability) => scope.has(capability)) : operator.capabilities, agentId };
+  return { subject: operator.subject, kind: operator.kind, capabilities: scope ? operator.capabilities.filter((capability) => scope.has(capability)) : operator.kind === "agent" ? [] : operator.capabilities, agentId };
 }
 export function createOpsProposalRoutes(input: { service: OpsProposalService; requireOperator?: () => MiddlewareHandler<AppBindings> }) {
   const app = new Hono<AppBindings>();

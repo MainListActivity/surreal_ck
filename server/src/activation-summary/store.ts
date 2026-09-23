@@ -178,20 +178,22 @@ export class SurrealActivationSummaryStore implements ActivationSummaryStore {
     return mapped;
   }
 
-  async list(input: Readonly<{ limit: number; cursor: ActivationSummaryCursor | null }>): Promise<SharedActivationSummary[]> {
+  async list(input: Readonly<{ limit: number; cursor: ActivationSummaryCursor | null; workspaceSlugs?: readonly string[] | null }>): Promise<SharedActivationSummary[]> {
     const db = await this.getSession("_system", this.namespace);
     const cursorClause = input.cursor
       ? `AND (updated_at < $cursorUpdatedAt
            OR (updated_at = $cursorUpdatedAt AND id < $cursorId))`
       : "";
     const params: Record<string, unknown> = { limit: input.limit };
+    const scopeClause = input.workspaceSlugs ? "AND workspace_slug INSIDE $workspaceSlugs" : "";
+    if (input.workspaceSlugs) params.workspaceSlugs = [...input.workspaceSlugs];
     if (input.cursor) {
       params.cursorUpdatedAt = new DateTime(input.cursor.updatedAt);
       params.cursorId = new StringRecordId(input.cursor.summaryId);
     }
     return rows(await db.query(
       `SELECT * FROM workspace_activation_summary
-       WHERE status = "active" ${cursorClause}
+       WHERE status = "active" ${scopeClause} ${cursorClause}
        ORDER BY updated_at DESC, id DESC LIMIT $limit;`,
       params,
     )).map(mapSummary).filter((value): value is SharedActivationSummary => value !== null);

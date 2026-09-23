@@ -5,8 +5,11 @@ import type { AppBindings } from "../hono-types";
 import { HttpError } from "../http-error";
 import { requirePlatformOperator } from "../ops/operator-auth";
 import { OpsFollowUpService, OpsFollowUpServiceError } from "../ops-follow-up/service";
+import { OpsAutonomyError } from "../ops-autonomy/service";
+import { autonomyHttpError } from "./ops-autonomy";
 
 function asHttpError(error: unknown): never {
+  if (error instanceof OpsAutonomyError) return autonomyHttpError(error);
   if (!(error instanceof OpsFollowUpServiceError)) throw error;
   const status = error.code === "capability_missing" ? 403 : error.code === "not_found" ? 404 : error.code === "conflict" ? 409 : 400;
   throw new HttpError(status, `ops-follow-up-${error.code}`, error.message);
@@ -19,7 +22,8 @@ function actor(c: { var: AppBindings["Variables"] }) {
   const scopes = typeof rawScope === "string" ? new Set(rawScope.split(/\s+/u).filter(Boolean)) : null;
   return {
     subject: operator.subject,
-    capabilities: scopes ? operator.capabilities.filter((capability) => scopes.has(capability)) : operator.capabilities,
+    kind: operator.kind,
+    capabilities: scopes ? operator.capabilities.filter((capability) => scopes.has(capability)) : operator.kind === "agent" ? [] : operator.capabilities,
   };
 }
 

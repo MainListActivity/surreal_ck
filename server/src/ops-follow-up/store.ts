@@ -170,15 +170,17 @@ export class SurrealOpsFollowUpStore implements OpsFollowUpStore {
     return item;
   }
 
-  async list(input: { limit: number; cursor: FollowUpCursor | null }): Promise<FollowUpItem[]> {
-    const cursorSql = input.cursor ? `WHERE updated_at < $updatedAt OR (updated_at = $updatedAt AND id < $followUpId)` : "";
+  async list(input: { limit: number; cursor: FollowUpCursor | null; workspaceSlugs?: readonly string[] | null }): Promise<FollowUpItem[]> {
+    const cursorSql = input.cursor ? `AND (updated_at < $updatedAt OR (updated_at = $updatedAt AND id < $followUpId))` : "";
+    const scopeSql = input.workspaceSlugs ? "workspace_slug INSIDE $workspaceSlugs" : "true";
     const params: Record<string, unknown> = { limit: input.limit };
+    if (input.workspaceSlugs) params.workspaceSlugs = [...input.workspaceSlugs];
     if (input.cursor) {
       params.updatedAt = new DateTime(input.cursor.updatedAt);
       params.followUpId = new StringRecordId(input.cursor.followUpId);
     }
     return rows(await (await this.db()).query(
-      `SELECT * FROM activation_follow_up ${cursorSql} ORDER BY updated_at DESC, id DESC LIMIT $limit;`, params,
+      `SELECT * FROM activation_follow_up WHERE ${scopeSql} ${cursorSql} ORDER BY updated_at DESC, id DESC LIMIT $limit;`, params,
     )).map(mapFollowUp).filter((item): item is FollowUpItem => item !== null);
   }
 
