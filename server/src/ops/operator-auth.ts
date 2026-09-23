@@ -47,7 +47,7 @@ function oidcError(error: unknown): HttpError {
   return new HttpError(401, "oidc-invalid", "Invalid bearer token");
 }
 
-function createPlatformOperatorCapabilityReader(
+export function createPlatformOperatorCapabilityReader(
   db?: Queryable,
 ): PlatformOperatorCapabilityReader {
   const getDb = db ? async () => db : () => getRootDatabaseSession("_system");
