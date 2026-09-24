@@ -14,3 +14,4 @@ data/
 .agents
 .superpowers/*/*/state
 .content-runner-checkpoint.json
+.scratch/legal-corpus-ingestion/
