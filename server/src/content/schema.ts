@@ -19,7 +19,7 @@ export type EnsurePlatformContentSchemaResult = {
   appliedVersions: number[];
 };
 
-const DEFAULT_DATABASE = "_system";
+const DEFAULT_DATABASE = "platform_content";
 
 function readVersionResult(result: unknown): number {
   const firstResult = Array.isArray(result) ? result[0] : undefined;
@@ -36,30 +36,34 @@ async function readCurrentVersion(db: PlatformContentSchemaClient): Promise<numb
   }
 }
 
-/** 在部署级 _system database 以连续版本安全应用平台内容 schema。 */
+/** 在独立 database 以连续版本安全应用平台内容 schema。 */
 export async function ensurePlatformContentSchema(
-  db: PlatformContentSchemaClient = getRootConnection(),
+  db?: PlatformContentSchemaClient,
   options: EnsurePlatformContentSchemaOptions = {},
 ): Promise<EnsurePlatformContentSchemaResult> {
   const namespace = options.namespace ?? env.SURREAL_NS;
-  const database = options.database ?? DEFAULT_DATABASE;
+  const database = options.database ?? env.CONTENT_DATABASE ?? DEFAULT_DATABASE;
+  if (database === "_system") throw new Error("platform content must use an isolated database");
   const loadScripts = options.loadScripts ?? (() => loadPlatformContentScripts());
-  await db.use({ namespace, database });
-  const fromVersion = await readCurrentVersion(db);
-  const scripts = await loadScripts();
-  const pending = scripts.filter((script) => script.version > fromVersion);
-  const appliedVersions: number[] = [];
-  for (const script of pending) {
-    await db.query(script.sql);
-    await db.query(
-      "UPSERT platform_content_schema_version:current CONTENT { version: $version, applied_at: time::now() };",
-      { version: script.version },
-    );
-    appliedVersions.push(script.version);
+  const ownedSession = db ? null : await getRootConnection().forkSession();
+  const client = db ?? ownedSession!;
+  try {
+    await client.query(`DEFINE DATABASE IF NOT EXISTS ${database};`);
+    await client.use({ namespace, database });
+    const fromVersion = await readCurrentVersion(client);
+    const scripts = await loadScripts();
+    const pending = scripts.filter((script) => script.version > fromVersion);
+    const appliedVersions: number[] = [];
+    for (const script of pending) {
+      await client.query(script.sql);
+      await client.query(
+        "UPSERT platform_content_schema_version:current CONTENT { version: $version, applied_at: time::now() };",
+        { version: script.version },
+      );
+      appliedVersions.push(script.version);
+    }
+    return { fromVersion, toVersion: scripts.at(-1)?.version ?? fromVersion, appliedVersions };
+  } finally {
+    await ownedSession?.closeSession();
   }
-  return {
-    fromVersion,
-    toVersion: scripts.at(-1)?.version ?? fromVersion,
-    appliedVersions,
-  };
 }

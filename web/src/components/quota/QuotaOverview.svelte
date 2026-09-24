@@ -15,6 +15,8 @@
     QuotaApiOperatorView,
     QuotaApiWorkspaceView,
   } from "@surreal-ck/shared/native-quota";
+  import { api } from "../../lib/api";
+  import type { ProductEntitlementView } from "@surreal-ck/shared";
   import { loadWorkspaceQuota } from "../../lib/quota/client";
   import {
     formatQuotaCount,
@@ -32,6 +34,8 @@
   let refreshing = $state(false);
   let error = $state("");
   let loadedSlug = $state("");
+  let product = $state<ProductEntitlementView | null>(null);
+  let productError = $state("");
 
   const detailed = $derived<
     QuotaApiCustomerView | QuotaApiOperatorView | null
@@ -73,8 +77,21 @@
     return percent === null ? 0 : Math.max(0, Math.min(percent, 100));
   }
 
+  async function loadProduct(current: string) {
+    product = null;
+    productError = "";
+    try {
+      const response = await api.api.workspaces[":slug"]["product-entitlement"].$get({ param: { slug: current } });
+      if (!response.ok) throw new Error("无法读取内容权益");
+      product = await response.json() as ProductEntitlementView;
+    } catch (cause) {
+      productError = cause instanceof Error ? cause.message : "无法读取内容权益";
+    }
+  }
+
   onMount(() => {
     void load(false);
+    void loadProduct(slug);
     const interval = window.setInterval(() => {
       if (document.visibilityState === "visible") void load(false);
     }, POLL_INTERVAL_MS);
@@ -89,7 +106,10 @@
   });
 
   $effect(() => {
-    if (slug && slug !== loadedSlug && !loading) void load(false);
+    if (slug && slug !== loadedSlug && !loading) {
+      void load(false);
+      void loadProduct(slug);
+    }
   });
 </script>
 
@@ -272,6 +292,43 @@
       {/each}
     </div>
   {/if}
+
+  <div class="product-entitlement">
+    <div class="usage-head">
+      <div>
+        <h3>内容权益</h3>
+        <p>浏览、检索和打开全文不消耗 AI 额度。资源容量仍以已应用配额为准。</p>
+      </div>
+    </div>
+    {#if productError}
+      <div class="notice error" role="alert"><AlertTriangle size={17} /><span>{productError}</span></div>
+    {:else if !product}
+      <p class="product-waiting">正在读取内容权益…</p>
+    {:else}
+      <div class="product-grid">
+        <article>
+          <span>内容范围</span>
+          <strong>{product.summary}</strong>
+          <p>{product.content.projectionLabel}{#if product.effectiveUntil} · 到期 {product.effectiveUntil.slice(0, 10)}{/if}</p>
+        </article>
+        <article>
+          <span>来源</span>
+          <strong>{product.content.sources.map((source) => source.label).join("、") || "无有效来源"}</strong>
+          <p>{product.baseSource.planName ?? "未绑定产品套餐"}{#if product.baseSource.planRevision} · v{product.baseSource.planRevision}{/if}</p>
+        </article>
+        <article>
+          <span>AI 额度</span>
+          <strong>{product.ai.ledgerLabel}</strong>
+          <p>{product.ai.actions.join("、") || "当前版本没有 AI 动作"}</p>
+        </article>
+        <article>
+          <span>资源容量</span>
+          <strong>{product.resource.appliedPlanName ?? "尚未应用"}</strong>
+          <p>{product.resource.statusLabel}{product.resource.syncState ? ` · ${product.resource.syncState}` : ""}</p>
+        </article>
+      </div>
+    {/if}
+  </div>
 </section>
 
 <style>
@@ -308,6 +365,13 @@
   h2, h3, p { margin: 0; }
   h2 { font-size: 20px; }
   .quota-head p, .usage-head p { margin-top: 5px; color: var(--text-3); font-size: 12px; }
+  .product-entitlement { padding: 8px 26px 24px; border-top: 1px solid var(--border); }
+  .product-waiting { margin: 8px 0 0; color: var(--text-3); font-size: 13px; }
+  .product-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .product-grid article { padding: 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+  .product-grid span, .product-grid p { color: var(--text-3); font-size: 12px; }
+  .product-grid strong { display: block; margin: 4px 0; font-size: 15px; }
+  @media (max-width: 720px) { .product-grid { grid-template-columns: 1fr; } }
 
   .refresh-button {
     display: inline-flex;

@@ -1,9 +1,11 @@
 import { createApp } from "./app";
 import { env } from "./env";
-import { closeRootConnection, getRootConnection, initRootConnection } from "./db/root-connection";
+import { closeRootConnection, getRootDatabaseSession, initRootConnection } from "./db/root-connection";
 import { ensureSystemSchema } from "./db/system-schema";
 import { ensurePlatformContentSchema } from "./content/schema";
+import { assertLegacyContentMigrated } from "./content/migrate-legacy";
 import { reconcileCitationResolutions } from "./content/citation-resolution";
+import { initContentPublisherSession, closeContentPublisherSession, contentPublisherQuery } from "./content/publisher-session";
 import { seedSystemAdmins } from "./db/system-admin-seed";
 import { seedPlatformOperators } from "./db/platform-operator-seed";
 import { seedQuotaPlans } from "./db/quota-plan-seed";
@@ -42,6 +44,8 @@ export type StartServerDeps = {
   verifyNativeQuotaRootHandshake?: () => Promise<unknown>;
   ensureSystemSchema?: () => Promise<unknown>;
   ensurePlatformContentSchema?: () => Promise<unknown>;
+  assertLegacyContentMigrated?: () => Promise<unknown>;
+  initContentPublisherSession?: () => Promise<unknown>;
   reconcileCitationResolutions?: () => Promise<unknown>;
   seedSystemAdmins?: () => Promise<unknown>;
   seedPlatformOperators?: () => Promise<unknown>;
@@ -58,6 +62,7 @@ export type StartServerDeps = {
   startQuotaRuntime?: () => NativeQuotaRuntimeHandle;
   startClaimsRiskDispatcher?: () => ClaimsRiskDispatcherHandle;
   closeRootConnection?: () => Promise<void>;
+  closeContentPublisherSession?: () => Promise<void>;
 };
 
 export type RunningServer = {
@@ -77,12 +82,19 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
   const ensureSchema = deps.ensureSystemSchema ?? ensureSystemSchema;
   const ensureContentSchema = deps.ensurePlatformContentSchema
     ?? (envName === "test" ? async () => undefined : () => ensurePlatformContentSchema());
+  const assertContentMigrated = deps.assertLegacyContentMigrated
+    ?? (envName === "test" ? async () => undefined : async () => {
+      await assertLegacyContentMigrated(
+        await getRootDatabaseSession("_system"),
+        await getRootDatabaseSession(env.CONTENT_DATABASE),
+      );
+    });
+  const initPublisher = deps.initContentPublisherSession
+    ?? (envName === "test" ? async () => undefined : initContentPublisherSession);
   const reconcileContentCitations = deps.reconcileCitationResolutions
     ?? (envName === "test"
       ? async () => undefined
-      : () => reconcileCitationResolutions({
-        query: (sql, params) => getRootConnection().query(sql, params),
-      }));
+      : () => reconcileCitationResolutions(contentPublisherQuery));
   const seedAdmins = deps.seedSystemAdmins ?? seedSystemAdmins;
   const seedOperators = deps.seedPlatformOperators
     ?? (envName === "test" ? async () => undefined : seedPlatformOperators);
@@ -129,6 +141,8 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
   }
   await ensureSchema();
   await ensureContentSchema();
+  await assertContentMigrated();
+  await initPublisher();
   try {
     const result = await reconcileContentCitations();
     if (envName !== "test") console.info("[platform-content] citation resolutions reconciled", result);
@@ -196,6 +210,7 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
       reconcileLoop?.stop();
       quotaRuntime.stop();
       await claimsRiskDispatcher?.stop();
+      await (deps.closeContentPublisherSession ?? closeContentPublisherSession)();
       await closeRoot();
     },
   };

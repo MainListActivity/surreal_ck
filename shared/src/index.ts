@@ -9,6 +9,7 @@ export * from "./ops-proposal";
 export * from "./ops-autonomy";
 export * from "./ops-run";
 export * from "./platform-content";
+export * from "./product-entitlement";
 export * from "./research-save";
 export * from "./research-url";
 export * from "./resource-quota";
