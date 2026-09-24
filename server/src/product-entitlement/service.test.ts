@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { AssignProductEntitlement, GrantContentCollection, PublishProductRevision } from "@surreal-ck/shared";
 import { resolveEntitlement, type ContentGrantFact, type FeatureValue, type ProductRevisionBody, type ResourceFact, type SubscriptionFact } from "./resolve";
-import { ProductEntitlementError, ProductEntitlementService, type AuditRecord, type ProductActor, type ProductEntitlementStore, type SnapshotRecord, type WorkspaceRef } from "./service";
+import { ProductEntitlementService, type AuditRecord, type ProductActor, type ProductEntitlementStore, type SnapshotRecord, type WorkspaceRef } from "./service";
 
 class MemoryStore implements ProductEntitlementStore {
   workspaces = new Map<string, WorkspaceRef>();
