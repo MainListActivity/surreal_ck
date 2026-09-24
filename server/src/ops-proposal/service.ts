@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { executeOpsProposalSchema, reviewOpsProposalSchema, submitOpsProposalSchema, takeoverFollowUpSchema, type FollowUpItem, type OpsProposal, type OpsProposalAction, type OpsProposalPage } from "@surreal-ck/shared";
 import type { OpsFollowUpActor } from "../ops-follow-up/service";
 import { OpsAutonomyError, type OpsAutonomyService } from "../ops-autonomy/service";
+import { matchesProposalPremise } from "../ops-follow-up/premise";
 
 export type OpsProposalActor = OpsFollowUpActor & { kind?: "human" | "agent"; agentId?: string | null };
 export type OpsProposalCursor = { updatedAt: string; proposalId: string };
@@ -114,7 +115,7 @@ export class OpsProposalService {
     if (!item) throw new OpsProposalServiceError("not_found", "跟进事项不存在");
     await this.authorize(actor, "proposal.submit", item.workspaceSlug);
     const summaryUpdatedAt = await this.store.getSummaryUpdatedAt(item.summaryId);
-    if (item.version !== body.followUpVersion || !item.sourceAvailable || item.sourceFreshness !== "fresh" || summaryUpdatedAt !== body.summaryUpdatedAt || item.sourceUpdatedAt !== body.summaryUpdatedAt || item.status === "resolved" || item.status === "dismissed") {
+    if (!matchesProposalPremise(item, { followUpVersion: body.followUpVersion, summaryId: item.summaryId, summaryUpdatedAt: body.summaryUpdatedAt }, summaryUpdatedAt)) {
       throw new OpsProposalServiceError("conflict", "建议前提已变化");
     }
     const inputSummary = JSON.stringify({ action: body.action.type, followUpId: item.followUpId, followUpVersion: item.version, summaryId: item.summaryId, summaryUpdatedAt: item.sourceUpdatedAt });
@@ -126,7 +127,7 @@ export class OpsProposalService {
         return concurrent;
       }
       const current = await this.store.getFollowUp(body.followUpId);
-      if (!current || current.version !== body.followUpVersion || current.sourceUpdatedAt !== body.summaryUpdatedAt || !current.sourceAvailable) throw new OpsProposalServiceError("conflict", "建议前提已变化");
+      if (!matchesProposalPremise(current, { followUpVersion: body.followUpVersion, summaryId: item.summaryId, summaryUpdatedAt: body.summaryUpdatedAt }, await this.store.getSummaryUpdatedAt(item.summaryId))) throw new OpsProposalServiceError("conflict", "建议前提已变化");
       throw error;
     }
   }
@@ -157,7 +158,7 @@ export class OpsProposalService {
 
   private async assertCurrent(proposal: OpsProposal): Promise<void> {
     const [item, summaryUpdatedAt] = await Promise.all([this.store.getFollowUp(proposal.followUpId), this.store.getSummaryUpdatedAt(proposal.summaryId)]);
-    if (!item || item.version !== proposal.followUpVersion || item.sourceUpdatedAt !== proposal.summaryUpdatedAt || !item.sourceAvailable || item.sourceFreshness !== "fresh" || summaryUpdatedAt !== proposal.summaryUpdatedAt || item.status === "resolved" || item.status === "dismissed") {
+    if (!matchesProposalPremise(item, proposal, summaryUpdatedAt)) {
       throw new OpsProposalServiceError("conflict", "建议前提已变化，旧批准无效");
     }
   }

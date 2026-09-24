@@ -107,6 +107,7 @@ export function makeResourceRetrievalExecutor(
   const searchResources = deps.searchResources;
   const searchLegalContent = deps.searchLegalContent;
   const createResearchSession = deps.createResearchSession;
+  const coverageNotice = searchLegalContent ? "" : "平台法律库授权检索暂不可用，本次仅检查了工作区资源。";
 
   return async ({ taskText, shared, runId, surrealSession }): Promise<SubAgentOutput> => {
     const workspaceId = await resolveWorkspaceId(shared.userContext, surrealSession);
@@ -150,6 +151,19 @@ export function makeResourceRetrievalExecutor(
           question: taskText,
           resources: legal.items.map(legalContentToResource),
         });
+        answer.citations = answer.citations.map((citation, index) => {
+          const item = legal.items[index]!;
+          const locator = orderCitationsForEvidence(item.judgment?.citations ?? [])[0]?.locator;
+          return {
+            ...citation,
+            platformContent: {
+              itemId: item.itemId,
+              versionId: item.version.versionId,
+              sourceKey: item.version.sourceKey,
+              locator: locator ? { start: locator.start, end: locator.end, bodyDigest: locator.bodyDigest } : null,
+            },
+          };
+        });
         return {
           text: `已从平台已发布法律库检索到结果。\n${answer.text}`,
           citations: answer.citations,
@@ -168,7 +182,7 @@ export function makeResourceRetrievalExecutor(
         originatingRunId: runId,
       }, surrealSession);
       return {
-        text: "资源库没有找到足够相关的资料，已准备人工检索会话。",
+        text: `资源库没有找到足够相关的资料，已准备人工检索会话。${coverageNotice}`,
         confirmed: {},
         suspend: {
           kind: "manual-research",
@@ -181,7 +195,7 @@ export function makeResourceRetrievalExecutor(
     }
 
     return {
-      text: describeResourceSearchMiss(response.indexStatus),
+      text: `${describeResourceSearchMiss(response.indexStatus)}${coverageNotice}`,
       confirmed: {},
     };
   };

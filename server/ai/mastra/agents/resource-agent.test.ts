@@ -157,6 +157,7 @@ describe("resource retrieval executor", () => {
     });
 
     expect(out.text).toContain("语义索引存在失败状态");
+    expect(out.text).toContain("平台法律库授权检索暂不可用");
     expect(out.suspend).toBeUndefined();
   });
 
@@ -275,6 +276,12 @@ describe("resource retrieval executor", () => {
     expect(out.citations?.[0]?.sourceUrl).toContain("court.gov.cn");
     expect(out.citations?.[0]?.evidence[0]?.text).toContain("法条版本尚未绑定");
     expect(out.citations?.[0]?.evidence[0]?.text).not.toContain("unresolved");
+    expect(out.citations?.[0]?.platformContent).toEqual({
+      itemId: "content_item:case-269",
+      versionId: "content_version:case-269-v1",
+      sourceKey: "court.gov.cn.guiding-cases",
+      locator: { start: 0, end: 12, bodyDigest: "a".repeat(64) },
+    });
   });
 
   test("executor 把调用者 surrealSession 透传给 deps；默认 resolveWorkspaceId 用 session::db()", async () => {

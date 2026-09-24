@@ -5,6 +5,7 @@ import { getRootDatabaseSession } from "../db/root-connection";
 import { toIsoDateTimeString, toStringRecordId } from "../db/surreal-values";
 import { env } from "../env";
 import { SurrealOpsFollowUpStore } from "../ops-follow-up/store";
+import { followUpSourceState } from "../ops-follow-up/premise";
 import { digestProposalAction, type OpsProposalCursor, type OpsProposalStore } from "./service";
 
 type Queryable = { query(sql: string, params?: Record<string, unknown>): Promise<unknown> };
@@ -63,9 +64,7 @@ export class SurrealOpsProposalStore implements OpsProposalStore {
     const item = await this.followUps.get(followUpId);
     if (!item) return null;
     const summaryUpdatedAt = await this.getSummaryUpdatedAt(item.summaryId);
-    const sourceAvailable = summaryUpdatedAt === item.sourceUpdatedAt;
-    const age = summaryUpdatedAt ? Date.now() - Date.parse(summaryUpdatedAt) : Number.NaN;
-    return { ...item, sourceAvailable, sourceFreshness: !sourceAvailable ? "unavailable" : !Number.isFinite(age) || age < 0 ? "unknown" : age > 30 * 86400_000 ? "stale" : "fresh" };
+    return { ...item, ...followUpSourceState(item.sourceUpdatedAt, summaryUpdatedAt, new Date()) };
   }
   async getSummaryUpdatedAt(summaryId: string): Promise<string | null> {
     if (!summaryId.startsWith("workspace_activation_summary:")) return null;

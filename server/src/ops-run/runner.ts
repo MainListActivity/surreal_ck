@@ -1,5 +1,6 @@
 import type { ActivationOpportunity, FollowUpItem, OpsProposal, OpsRun, SaveOpsRun } from "@surreal-ck/shared";
 import { createHash } from "node:crypto";
+import { hasCurrentFollowUpSource } from "../ops-follow-up/premise";
 
 export interface OpsMcpPort {
   call<T>(tool: string, args: Record<string, unknown>): Promise<T>;
@@ -180,7 +181,7 @@ export class ExternalOpsAgentRunner {
       if (page.nextCursor) { run = await this.save(run, { cursor: page.nextCursor }); continue; }
       const due = await this.dueItem(run, deadline, skippedDue);
       if (due) {
-        if (!due.item.sourceAvailable || due.item.sourceFreshness !== "fresh") {
+        if (!hasCurrentFollowUpSource(due.item)) {
           return await this.save(run, { status: "needs_human", lastErrorCode: "due_source_unavailable_or_stale", cursor: null });
         }
         if (due.item.nextStep === "claim") {

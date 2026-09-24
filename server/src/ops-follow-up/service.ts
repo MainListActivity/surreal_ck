@@ -12,6 +12,7 @@ import {
 } from "@surreal-ck/shared";
 import { createHash } from "node:crypto";
 import { OpsAutonomyError, type OpsAutonomyService } from "../ops-autonomy/service";
+import { FOLLOW_UP_SOURCE_FRESH_MS, followUpSourceState } from "./premise";
 
 export type OpsFollowUpActor = Readonly<{ subject: string; kind?: "human" | "agent"; capabilities: readonly string[] }>;
 export type FollowUpCursor = Readonly<{ updatedAt: string; followUpId: string }>;
@@ -70,8 +71,6 @@ export class OpsFollowUpServiceError extends Error {
     this.name = "OpsFollowUpServiceError";
   }
 }
-
-const FRESH_MS = 30 * 24 * 60 * 60 * 1_000;
 
 function requireRead(actor: OpsFollowUpActor): void {
   if (!actor.capabilities.includes("activation.followup.read")) {
@@ -147,7 +146,7 @@ function reasonOf(item: SharedActivationSummary): FollowUpReason | null {
 function opportunity(item: SharedActivationSummary, now: Date): ActivationOpportunity | null {
   if (item.status !== "active" || !item.summary) return null;
   const age = now.getTime() - Date.parse(item.updatedAt);
-  if (!Number.isFinite(age) || age < 0 || age > FRESH_MS) return null;
+  if (!Number.isFinite(age) || age < 0 || age > FOLLOW_UP_SOURCE_FRESH_MS) return null;
   const reason = reasonOf(item);
   if (!reason) return null;
   const period = item.summary.period;
@@ -171,14 +170,12 @@ function dedupeKey(item: ActivationOpportunity): string {
 }
 
 function publicItem(item: FollowUpItem, source: SharedActivationSummary | null, actor: OpsFollowUpActor, now: Date): FollowUpItem {
-  const available = source?.status === "active" && source.summary !== null
-    && source.updatedAt === item.sourceUpdatedAt;
+  const state = followUpSourceState(item.sourceUpdatedAt,
+    source?.status === "active" && source.summary !== null ? source.updatedAt : null, now);
   const terminal = item.status === "resolved" || item.status === "dismissed";
   const liveLease = item.leaseExpiresAt !== null && Date.parse(item.leaseExpiresAt) > now.getTime();
   const nextStep = terminal ? "none" : liveLease ? item.ownerSubject === actor.subject ? "update" : "none" : "claim";
-  const sourceAge = source ? now.getTime() - Date.parse(source.updatedAt) : Number.NaN;
-  const sourceFreshness = !available ? "unavailable" : !Number.isFinite(sourceAge) || sourceAge < 0 ? "unknown" : sourceAge > FRESH_MS ? "stale" : "fresh";
-  return { ...item, sourceAvailable: available, sourceFreshness, nextStep };
+  return { ...item, ...state, nextStep };
 }
 
 export class OpsFollowUpService {
