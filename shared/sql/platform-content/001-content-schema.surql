@@ -1,8 +1,7 @@
 -- 平台法律内容库 v1。
 --
--- 该库位于部署级 _system database；客户 workspace database 不复制正文。
--- 迁移/权限由 server/src/content/schema.ts 与 SCK-LCM-03 的受限 publisher access
--- 管理。所有历史版本、校验修订及发布事件先按不可变审计记录设计。
+-- 由 server/src/content/schema.ts 安装到独立 platform_content database。
+-- 客户 workspace database 不复制正文。历史版本、校验修订及发布事件不可变。
 
 DEFINE TABLE IF NOT EXISTS platform_content_schema_version SCHEMAFULL
   PERMISSIONS NONE;

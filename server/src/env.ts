@@ -10,6 +10,8 @@ const EnvSchema = z.object({
   SURREAL_ROOT_USER: z.string().min(1),
   SURREAL_ROOT_PASS: z.string().min(1),
   SURREAL_LOG_QUERIES: z.string().optional(),
+  CONTENT_DATABASE: z.string().regex(/^[a-z][a-z0-9_]*$/u).default("platform_content"),
+  CONTENT_PUBLISHER_SECRET: z.string().min(32).optional(),
 
   OIDC_ISSUER: z.string().url(),
   OIDC_JWKS_URL: z.string().url(),

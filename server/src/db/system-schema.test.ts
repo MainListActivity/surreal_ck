@@ -97,8 +97,8 @@ describe("system schema seed", () => {
 
     expect(firstRun).toEqual({
       fromVersion: 3,
-      toVersion: 20,
-      appliedVersions: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+      toVersion: 21,
+      appliedVersions: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21],
     });
     expect(db.queryCalls.some((call) => call.sql.includes("DEFINE TABLE IF NOT EXISTS quota_plan "))).toBeTrue();
     expect(db.queryCalls.some((call) => call.sql.includes("DEFINE TABLE IF NOT EXISTS resource_entitlement "))).toBeTrue();
@@ -124,13 +124,16 @@ describe("system schema seed", () => {
     expect(db.queryCalls.some((call) =>
       call.sql.includes("DEFINE TABLE IF NOT EXISTS ops_agent_run")
     )).toBeTrue();
+    expect(db.queryCalls.some((call) =>
+      call.sql.includes("DEFINE TABLE IF NOT EXISTS product_plan ")
+    )).toBeTrue();
 
     const callsAfterFirstRun = db.queryCalls.length;
     const secondRun = await ensureSystemSchema(db, { namespace: "main" });
 
     expect(secondRun).toEqual({
-      fromVersion: 20,
-      toVersion: 20,
+      fromVersion: 21,
+      toVersion: 21,
       appliedVersions: [],
     });
     expect(db.queryCalls.slice(callsAfterFirstRun).map((call) => call.sql.trim())).toEqual([

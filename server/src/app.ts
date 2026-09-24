@@ -75,6 +75,7 @@ import { createContentRoutes } from "./routes/content";
 import { createLegalContentRoutes } from "./routes/legal-content";
 import { PlatformContentService } from "./content/service";
 import { SurrealPlatformContentStore } from "./content/store";
+import { contentPublisherQuery } from "./content/publisher-session";
 import { createContentMcpRoutes } from "./ops/mcp/routes";
 import { ActivationSummaryService } from "./activation-summary/service";
 import { SurrealActivationSummaryStore } from "./activation-summary/store";
@@ -91,6 +92,9 @@ import { createOpsAutonomyRoutes } from "./routes/ops-autonomy";
 import { OpsRunService } from "./ops-run/service";
 import { SurrealOpsRunStore } from "./ops-run/store";
 import { createOpsRunRoutes } from "./routes/ops-run";
+import { ProductEntitlementService } from "./product-entitlement/service";
+import { SurrealProductEntitlementStore } from "./product-entitlement/store";
+import { createProductEntitlementRoutes } from "./routes/product-entitlement";
 
 export type AppOptions = {
   workspaceScope?: WorkspaceScopeModule;
@@ -117,7 +121,7 @@ export type AppOptions = {
   quotaNotifications?: QuotaNotificationService;
   quotaOpsConsole?: QuotaOpsConsolePort;
   quotaOpsPreflight?: QuotaOpsPreflightPort;
-  /** 平台法律内容维护服务；生产默认绑定 _system 平台内容库。 */
+  /** 平台法律内容维护服务；生产默认使用独立内容库的 publisher 会话。 */
   platformContentService?: PlatformContentService;
   /** 团队主动共享的启用摘要服务；运营页面与 MCP 复用。 */
   activationSummaryService?: ActivationSummaryService;
@@ -126,6 +130,7 @@ export type AppOptions = {
   opsProposalService?: OpsProposalService;
   opsAutonomyService?: OpsAutonomyService;
   opsRunService?: OpsRunService;
+  productEntitlementService?: ProductEntitlementService;
 };
 
 type AiStreamWebSocket = ReturnType<typeof createAiStreamRoutes>["websocket"];
@@ -182,11 +187,7 @@ function createDefaultQuotaReadService(): QuotaReadService {
 }
 
 function createDefaultPlatformContentService(): PlatformContentService {
-  const store = new SurrealPlatformContentStore({
-    async query(sql: string, params?: Record<string, unknown>): Promise<unknown> {
-      return await getRootConnection().query(sql, params);
-    },
-  });
+  const store = new SurrealPlatformContentStore(contentPublisherQuery);
   return new PlatformContentService({
     store,
     // 来源由运营端登记到平台内容库；动态读取避免发布进程重启后回退到旧配置。
@@ -243,6 +244,8 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
   const opsProposalService = options.opsProposalService
     ?? new OpsProposalService(new SurrealOpsProposalStore(), opsFollowUpService, opsAutonomyService);
   const opsRunService = options.opsRunService ?? new OpsRunService(new SurrealOpsRunStore(), opsAutonomyService);
+  const productEntitlementService = options.productEntitlementService
+    ?? new ProductEntitlementService(new SurrealProductEntitlementStore());
   const autoAiChatService = options.aiChatService ?? buildAutoAiChatService(runBus, platformContentService, embeddingProvider);
   const quotaReadService =
     options.quotaReadService ?? createDefaultQuotaReadService();
@@ -305,6 +308,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     .route("/", createOpsProposalRoutes({ service: opsProposalService }))
     .route("/", createOpsAutonomyRoutes({ service: opsAutonomyService }))
     .route("/", createOpsRunRoutes({ service: opsRunService }))
+    .route("/", createProductEntitlementRoutes({ service: productEntitlementService, requireCustomer: options.requireUser }))
     .route("/", createContentMcpRoutes({
       service: platformContentService,
       activationSummaryService,

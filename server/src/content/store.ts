@@ -543,7 +543,7 @@ export class SurrealPlatformContentStore implements PlatformContentStore {
     const existingResult = await this.db.query(
       `SELECT * FROM publication_request
        WHERE actor_subject = $actorSubject AND idempotency_key = $idempotencyKey
-       LIMIT 1;`,
+       LIMIT 1 FETCH batch;`,
       { actorSubject: reservation.actorSubject, idempotencyKey: reservation.idempotencyKey },
     );
     const existing = rows(existingResult)[0];
@@ -598,7 +598,7 @@ export class SurrealPlatformContentStore implements PlatformContentStore {
       return { kind: "created", reservation };
     } catch (error) {
       const retry = await this.db.query(
-        "SELECT * FROM publication_request WHERE actor_subject = $actorSubject AND idempotency_key = $idempotencyKey LIMIT 1;",
+        "SELECT * FROM publication_request WHERE actor_subject = $actorSubject AND idempotency_key = $idempotencyKey LIMIT 1 FETCH batch;",
         { actorSubject: reservation.actorSubject, idempotencyKey: reservation.idempotencyKey },
       );
       const row = rows(retry)[0];
@@ -708,7 +708,11 @@ export class SurrealPlatformContentStore implements PlatformContentStore {
       }
     }
 
-    const itemId = targetId ?? `item_${crypto.randomUUID().replaceAll("-", "")}`;
+    const itemId = targetId ?? `item_${await sha256Hex(
+      payload.source.recordKey
+        ? `${payload.source.sourceKey}\u0000${payload.source.recordKey}`
+        : `${input.batch.batchId}\u0000${input.entryKey}`,
+    )}`;
     const versionId = `version_${crypto.randomUUID().replaceAll("-", "")}`;
     const itemRecord = itemRecordId(itemId);
     const versionRecord = versionRecordId(versionId);
@@ -820,6 +824,15 @@ export class SurrealPlatformContentStore implements PlatformContentStore {
       await this.db.query(statements.join("\n"), binds);
       return { status: "published", versionId, issues: [] };
     } catch (error) {
+      const committed = payload.source.recordKey
+        ? await this.findBySourceRecord({
+          sourceKey: payload.source.sourceKey,
+          recordKey: payload.source.recordKey,
+        })
+        : null;
+      if (committed?.bodySha256 === bodySha256) {
+        return { status: "unchanged", versionId: committed.version.versionId, issues: [] };
+      }
       if (String(error).includes("platform-content-stale")) {
         const current = await this.readItem(itemId);
         return { status: "blocked", versionId: current?.versionId ?? null, issues: [issue("stale_version", "目标内容版本或发布修订已变化，请重新 inspect_batch")] };

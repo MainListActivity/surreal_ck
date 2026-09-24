@@ -30,7 +30,7 @@ describe("platform content schema migration", () => {
       loadScripts: async () => scripts,
     });
     expect(first).toEqual({ fromVersion: 0, toVersion: 2, appliedVersions: [1, 2] });
-    expect(db.useCalls).toEqual([{ namespace: "main", database: "_system" }]);
+    expect(db.useCalls).toEqual([{ namespace: "main", database: "platform_content" }]);
     const second = await ensurePlatformContentSchema(db, {
       namespace: "main",
       loadScripts: async () => scripts,

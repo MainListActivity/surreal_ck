@@ -622,7 +622,26 @@ function valueOrDash(value) {
   return value === null || value === undefined || value === "" ? "—" : escapeHtml(value);
 }
 
-function renderDetail(view, timeline) {
+function renderProductEntitlement(product) {
+  if (!product) return `<div class="empty-state compact">内容权益尚未读取。</div>`;
+  const sources = (product.content?.sources || []).map((source) => `${source.label}${source.effectiveUntil ? ` · 至 ${source.effectiveUntil.slice(0, 10)}` : ""}`).join("、");
+  return `<div class="metric-grid">
+      <div><span class="muted">内容范围</span><strong>${escapeHtml(product.summary)}</strong></div>
+      <div><span class="muted">授权投影</span><strong>${escapeHtml(product.content?.projectionLabel || "无有效内容授权")}</strong></div>
+      <div><span class="muted">来源与到期</span><strong>${escapeHtml(sources || "无有效来源")}</strong></div>
+      <div><span class="muted">AI 额度</span><strong>${escapeHtml(product.ai?.ledgerLabel || "尚无可用 AI 额度账本")}</strong></div>
+      <div><span class="muted">资源 applied</span><strong>${escapeHtml(product.resource?.appliedPlanName || "尚未应用")} · ${escapeHtml(product.resource?.statusLabel || "")}</strong></div>
+    </div>
+    <form id="product-assign" class="search-form">
+      <input name="billingAccountKey" placeholder="计费账户" required />
+      <input name="productPlanRevisionId" placeholder="product_plan_revision:…" required />
+      <input name="reason" placeholder="分配原因" required />
+      <button type="submit">绑定产品版本</button>
+    </form>
+    <p id="product-assign-status" class="status muted"></p>`;
+}
+
+function renderDetail(view, timeline, product) {
   selectedWorkspace = view;
   document.querySelector("#detail-badge").textContent = view.workspace.slug;
   const resources = (view.resources || []).map((resource) => `
@@ -633,18 +652,55 @@ function renderDetail(view, timeline) {
     <div class="detail-head"><div><p class="eyebrow">${escapeHtml(view.workspace.slug)}</p><h3>${escapeHtml(view.workspace.name)}</h3></div><span class="badge">${escapeHtml(view.view)}</span></div>
     <div class="metric-grid"><div><span class="muted">当前计划</span><strong>${valueOrDash(view.operator?.applied_plan_name)}</strong></div><div><span class="muted">配额状态</span><strong>${valueOrDash(view.statuses?.[0]?.capacity_state || "normal")}</strong></div><div><span class="muted">工作区 ID</span><strong class="mono">${valueOrDash(view.operator?.workspace_record)}</strong></div></div>
     <h4>资源使用</h4><div class="resource-list">${resources || `<div class="empty-state">暂无资源观测。</div>`}</div>
+    <h4>内容权益</h4>${renderProductEntitlement(product)}
     <h4>最近操作</h4><ul class="timeline">${events || `<li class="muted">暂无时间线。</li>`}</ul>`;
+  document.querySelector("#product-assign")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const fields = new FormData(event.currentTarget);
+    void assignProduct(view.workspace.slug, fields);
+  });
+}
+
+let productAssignAttempt = null;
+
+async function assignProduct(slug, fields) {
+  const status = document.querySelector("#product-assign-status");
+  const body = {
+    workspaceSlug: slug,
+    billingAccountKey: String(fields.get("billingAccountKey") || ""),
+    productPlanRevisionId: String(fields.get("productPlanRevisionId") || ""),
+    reason: String(fields.get("reason") || ""),
+  };
+  const fingerprint = JSON.stringify(body);
+  if (!productAssignAttempt || productAssignAttempt.fingerprint !== fingerprint) {
+    productAssignAttempt = { fingerprint, idempotencyKey: `assign-${slug}-${Date.now()}` };
+  }
+  status.textContent = "正在绑定产品版本……";
+  try {
+    await api("/ops/product-entitlements/assignments", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...body, idempotencyKey: productAssignAttempt.idempotencyKey }),
+    });
+    status.textContent = "已绑定，正在刷新权益。";
+    await loadWorkspace(slug);
+    productAssignAttempt = null;
+  } catch (error) {
+    status.textContent = error instanceof Error ? error.message : "绑定失败";
+    status.className = "status error";
+  }
 }
 
 async function loadWorkspace(slug) {
   const detail = document.querySelector("#detail");
   detail.innerHTML = `<div class="loading">正在加载 ${escapeHtml(slug)}……</div>`;
   try {
-    const [view, timeline] = await Promise.all([
+    const [view, timeline, product] = await Promise.all([
       api(`/ops/quota/workspaces/${encodeURIComponent(slug)}`),
       api(`/ops/quota/workspaces/${encodeURIComponent(slug)}/timeline?limit=20`),
+      api(`/ops/product-entitlements/workspaces/${encodeURIComponent(slug)}`),
     ]);
-    renderDetail(view, timeline);
+    renderDetail(view, timeline, product);
   } catch (error) {
     detail.innerHTML = `<div class="empty-state error">${escapeHtml(error instanceof Error ? error.message : "加载失败")}</div>`;
   }

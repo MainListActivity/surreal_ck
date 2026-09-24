@@ -20,5 +20,10 @@ describe("运营启用摘要页面", () => {
     expect(source).toContain("逐指标口径与来源");
     expect(source).toContain("metric.definition");
     expect(source).toContain("各指标窗口见口径说明");
+    expect(source).toContain("/ops/product-entitlements/workspaces/");
+    expect(source).toContain("/ops/product-entitlements/assignments");
+    expect(source).toContain("productAssignAttempt");
+    expect(source).toContain("尚无可用 AI 额度账本");
+    expect(source).toContain("资源 applied");
   });
 });
