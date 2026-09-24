@@ -164,7 +164,6 @@ function buildAutoAiChatService(
     jevConfidenceThreshold: env.JEV_CONFIDENCE_THRESHOLD,
     // 资源检索查询向量与保存路径共用同一服务端 embedding key（RR-014）
     embeddingProvider,
-    searchLegalContent: ({ query, limit }) => platformContentService.searchPublishedForUser({ query, limit }),
   });
   return createAiChatService({ runBus, runner, resumer });
 }
@@ -297,7 +296,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
       ),
     )
     .route("/", createContentRoutes({ service: platformContentService, requireUser: options.requireUser }))
-    .route("/", createLegalContentRoutes({ service: platformContentService, requireUser: options.requireUser }))
+    .route("/", createLegalContentRoutes({ requireUser: options.requireUser }))
     .route("/", createActivationSummaryRoutes({
       service: activationSummaryService,
       requireUser: options.requireUser,

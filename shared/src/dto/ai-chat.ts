@@ -92,6 +92,12 @@ export type ResourceCitationDTO = {
     order: number;
     text: string;
   }>;
+  platformContent?: {
+    itemId: string;
+    versionId: string;
+    sourceKey: string;
+    locator: { start: number; end: number; bodyDigest: string } | null;
+  };
 };
 
 export type ResourceDraftIntent = {

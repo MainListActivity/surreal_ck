@@ -97,6 +97,23 @@ class FakeReconcileClient {
 }
 
 describe("workspace index reconciler", () => {
+  test("uses and closes an isolated session even when reconciliation fails", async () => {
+    const session = new FakeReconcileClient([], []);
+    let closed = 0;
+    const result = await reconcileWorkspaceIndex(undefined, {
+      namespace: "main",
+      newSession: async () => Object.assign(session, { closeSession: async () => { closed += 1; } }),
+    });
+    expect(result.workspaces).toBe(0);
+    expect(closed).toBe(1);
+    session.query = async () => { throw new Error("database unavailable"); };
+    await expect(reconcileWorkspaceIndex(undefined, {
+      namespace: "main",
+      newSession: async () => session as FakeReconcileClient & { closeSession(): Promise<void> },
+    })).rejects.toThrow("database unavailable");
+    expect(closed).toBe(2);
+  });
+
   test("reports zero drift and makes no repairs when index matches workspace users", async () => {
     const db = new FakeReconcileClient(
       [
@@ -311,6 +328,28 @@ describe("reconcile heartbeat loop", () => {
     };
   }
 
+  test("does not overlap ticks while reconciliation is running", async () => {
+    const t = makeTimers();
+    let release!: () => void;
+    let runs = 0;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const handle = startReconcileLoop({
+      runOnce: async () => { runs += 1; if (runs === 1) await gate; },
+      setInterval: t.setInterval,
+      clearInterval: t.clearInterval,
+    });
+    await Promise.resolve();
+    t.tick();
+    await Promise.resolve();
+    expect(runs).toBe(1);
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    t.tick();
+    await Promise.resolve();
+    expect(runs).toBe(2);
+    handle.stop();
+  });
+
   test("runs once immediately on start, then schedules a repeating interval", async () => {
     const t = makeTimers();
     let runs = 0;
@@ -334,6 +373,7 @@ describe("reconcile heartbeat loop", () => {
     expect(timer?.ms).toBe(1800 * 1000);
 
     // 到点再跑
+    await new Promise((resolve) => setTimeout(resolve, 0));
     t.tick();
     await Promise.resolve();
     expect(runs).toBe(2);
@@ -365,6 +405,7 @@ describe("reconcile heartbeat loop", () => {
 
     // 一次失败后定时器仍在，下次 tick 仍会跑
     expect(t.timers.size).toBe(1);
+    await new Promise((resolve) => setTimeout(resolve, 0));
     t.tick();
     await Promise.resolve();
     await Promise.resolve();

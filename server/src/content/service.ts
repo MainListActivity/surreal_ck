@@ -738,8 +738,9 @@ export class PlatformContentService {
     return this.search(request);
   }
 
-  /** 普通产品用户只可检索已经发布的内容，发布状态由服务端强制覆盖。 */
-  async searchPublishedForUser(requestInput: unknown): Promise<SearchContentResponse> {
+  /** 运营端便捷检索。产品用户须走调用者绑定的内容授权会话。 */
+  async searchPublishedForOperator(actor: ContentOperator, requestInput: unknown): Promise<SearchContentResponse> {
+    requireCapability(actor, "content.read");
     const parsed = PublicLegalSearchRequestSchema.safeParse(requestInput);
     if (!parsed.success) throw new ContentServiceError("invalid_request", "法律库检索参数不符合契约结构");
     const request: SearchContentRequest = {

@@ -29,7 +29,7 @@ function useOperator(): MiddlewareHandler<AppBindings> {
 }
 
 describe("platform content routes", () => {
-  test("ordinary authenticated users can search published legal content without operator capabilities", async () => {
+  test("ordinary authenticated users cannot read platform content without an entitlement session", async () => {
     const store = new InMemoryPlatformContentStore();
     const service = new PlatformContentService({ store, sources: [source], idFactory: (prefix) => `${prefix}_public` });
     const batch = await createSyntheticJudgmentBatch();
@@ -43,7 +43,6 @@ describe("platform content routes", () => {
     const app = new Hono<AppBindings>();
     app.onError(handleError);
     app.route("/", createLegalContentRoutes({
-      service,
       requireUser: () => async (c, next) => {
         c.set("user", { subject: "user:reader", email: "reader@example.test", raw: {}, rawToken: "test" });
         await next();
@@ -56,10 +55,9 @@ describe("platform content routes", () => {
       body: JSON.stringify({ query: "合成全文", limit: 5 }),
     });
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(503);
     const result = await response.json();
-    expect(result.items).toHaveLength(1);
-    expect(result.items[0].version.publicationStatus).toBe("published");
+    expect(result.error.code).toBe("content_authorization_unavailable");
   });
 
   test("exposes the five contract operations behind the operator context", async () => {
