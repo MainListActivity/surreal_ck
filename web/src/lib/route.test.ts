@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   billingQuotaPath,
+  contentReaderPath,
   editorPath,
   opsQuotaPath,
   parseRoute,
@@ -34,6 +35,7 @@ describe("parseRoute", () => {
   test("workspace 首页与子页面", () => {
     expect(parseRoute("/w/acme")).toEqual({ kind: "workspace", slug: "acme", page: "home" });
     expect(parseRoute("/w/acme/docs")).toEqual({ kind: "workspace", slug: "acme", page: "docs" });
+    expect(parseRoute("/w/acme/content")).toEqual({ kind: "workspace", slug: "acme", page: "content" });
     expect(parseRoute("/w/acme/templates")).toEqual({
       kind: "workspace",
       slug: "acme",
@@ -56,6 +58,12 @@ describe("parseRoute", () => {
       page: "settings",
     });
     expect(parseRoute("/w/acme/trash")).toEqual({ kind: "workspace", slug: "acme", page: "trash" });
+  });
+
+  test("已知内容指针进入独立阅读路由", () => {
+    const path = contentReaderPath("my space", "case/2026:1");
+    expect(path).toBe("/w/my%20space/content/case%2F2026%3A1");
+    expect(parseRoute(path)).toEqual({ kind: "content-reader", slug: "my space", publicId: "case/2026:1" });
   });
 
   test("未知 workspace 子页面退回 home 页面（不丢 slug）", () => {

@@ -6,12 +6,13 @@
   import { Sparkles, ClipboardList } from "@lucide/svelte";
   import EditorScreen from "./screens/EditorScreen.svelte";
   import WorkspaceScreen from "./screens/WorkspaceScreen.svelte";
+  import ContentReaderScreen from "./screens/ContentReaderScreen.svelte";
   import NoWorkspaceScreen from "./screens/NoWorkspaceScreen.svelte";
   import PlaceholderScreen from "./screens/PlaceholderScreen.svelte";
   import BillingQuotaScreen from "./screens/BillingQuotaScreen.svelte";
   import QuotaOperationsScreen from "./screens/QuotaOperationsScreen.svelte";
   import { isAuthenticated, logout, refresh, requireAuthenticatedRoute } from "./lib/auth";
-  import { editorPath, parseRoute, workspacePath, type Route, type WorkspacePage } from "./lib/route";
+  import { contentReaderPath, editorPath, parseRoute, workspacePath, type Route, type WorkspacePage } from "./lib/route";
   import { bootstrapWorkspace } from "./lib/switch-workspace.svelte";
   import { buildRiskReminderAiContext, type RiskNotification } from "./lib/risk-notifications";
   import type { AiDrawerContextSnapshot } from "./lib/ai-drawer";
@@ -124,7 +125,7 @@
       return;
     }
 
-    const slug = r.kind === "workspace" || r.kind === "editor" ? r.slug : undefined;
+    const slug = r.kind === "workspace" || r.kind === "editor" || r.kind === "content-reader" ? r.slug : undefined;
     if (slug && slug === bootstrappedSlug && wsState === "ready") return;
 
     wsState = "connecting";
@@ -276,6 +277,13 @@
         </button>
       {/if}
     </div>
+  {:else if route.kind === "content-reader"}
+    {@const r = route}
+    <ContentReaderScreen
+      slug={r.slug}
+      publicId={r.publicId}
+      onback={() => navigateTo(workspacePath(r.slug, "content"))}
+    />
   {:else if route.kind === "workspace"}
     {@const r = route}
     <div class="app-with-ai">
@@ -289,6 +297,7 @@
           onasknotification={askAboutNotification}
           onopenquota={(slug) => navigatePage(slug, "admin")}
           onnavigate={(page) => navigatePage(r.slug, page)}
+          onopencontent={(publicId) => navigateTo(contentReaderPath(r.slug, publicId))}
         />
       </main>
       <AiDrawer
