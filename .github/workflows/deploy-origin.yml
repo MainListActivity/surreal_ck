@@ -78,8 +78,13 @@ jobs:
             fi
           done
           install -d -m 700 ~/.ssh
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/origin
+          printf '%s\n' "$SSH_KEY" | tr -d '\r' > ~/.ssh/origin
           chmod 600 ~/.ssh/origin
+          if ! fingerprint="$(ssh-keygen -y -P '' -f ~/.ssh/origin 2>/dev/null | ssh-keygen -lf - 2>/dev/null)"; then
+            echo "::error::SSH_KEY is not an unencrypted OpenSSH/PEM private key"
+            exit 1
+          fi
+          echo "deploy key: $fingerprint"
           printf '%s\n' "$ORIGIN_KNOWN_HOSTS" > ~/.ssh/known_hosts
           cat > ~/.ssh/config <<CFG
           Host origin
