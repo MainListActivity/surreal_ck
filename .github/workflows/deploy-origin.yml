@@ -67,7 +67,7 @@ jobs:
 
       - name: Configure SSH
         env:
-          SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_KEY: ${{ secrets.ORIGIN_SSH_KEY || secrets.SSH_KEY }}
           ORIGIN_KNOWN_HOSTS: ${{ vars.ORIGIN_KNOWN_HOSTS }}
         run: |
           set -euo pipefail

@@ -50,7 +50,7 @@ origin 是 `data.maplayer.top`（`129.146.179.37`）上的 systemd 服务 `surre
 
 GitHub `production` Environment 额外配置：
 
-- Secret `SSH_KEY`：`ubuntu@129.146.179.37` 的部署私钥。
+- Secret `ORIGIN_SSH_KEY`：专用 ed25519 部署私钥（指纹 `SHA256:a6kDk9GJtawCz+OAP4dhJXQ2iAscwlyLDe/BRuo5gt0`），公钥以 `restrict` 选项登记在主机 `~ubuntu/.ssh/authorized_keys`。未配置时回退到 `SSH_KEY`。
 - Variables：`ORIGIN_HOST=129.146.179.37`、`ORIGIN_USER=ubuntu`、`ORIGIN_KNOWN_HOSTS`（主机 ed25519 公钥，指纹 `SHA256:lXW+YzF2c6i7Lr8oziMi1Iy/sOj0zDhZR4DvPErvFFM`）。
 
 手动重发某个已通过 CI 的 commit：从 Actions 运行 `Deploy origin` 并填入完整 SHA。回滚就是重发上一个 commit。
