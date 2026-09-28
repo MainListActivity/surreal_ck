@@ -107,7 +107,7 @@ describe("content reader permission matrix", () => {
     expect(readOnly.permissions.aiUse).toBe(false);
     expect(contentReaderFieldAllowed("body", readOnly.permissions)).toBe(true);
     expect(contentReaderFieldAllowed("excerpt", readOnly.permissions)).toBe(false);
-    expect(citeOnly.permissions.aiUse).toBe(false);
+    expect(citeOnly.permissions.aiUse).toBe(true);
     expect(contentReaderFieldAllowed("excerpt", citeOnly.permissions)).toBe(true);
     expect(contentReaderFieldAllowed("body", citeOnly.permissions)).toBe(false);
     expect(full.permissions).toMatchObject({ read: true, cite: true, export: true, aiUse: true, metadataOnly: false });
@@ -132,5 +132,47 @@ describe("content reader exchange input", () => {
   test("formats a positive entitlement revision for the IdP identity pattern", () => {
     expect(formatEntitlementRevision(12)).toEqual({ ok: true, entitlementRevision: "12" });
     expect(formatEntitlementRevision(0).ok).toBe(false);
+  });
+});
+
+
+describe("returned contract regressions", () => {
+  test("browse remains visible with export, and export never grants body", () => {
+    const result = contentReaderPermissions({ contentActions: ["browse", "export"], aiActions: [] });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.permissions.export).toBe(true);
+    expect(contentReaderFieldAllowed("metadata", result.permissions)).toBe(true);
+    expect(contentReaderFieldAllowed("body", result.permissions)).toBe(false);
+    expect(contentReaderFieldAllowed("excerpt", result.permissions)).toBe(false);
+  });
+  test("independent actions preserve field restrictions across all combinations", () => {
+    const actions = ["browse", "search", "read", "cite", "export"];
+    for (let mask = 0; mask < 32; mask++) {
+      const contentActions = actions.filter((_, bit) => (mask & (1 << bit)) !== 0);
+      for (const aiActions of [[], ["research"], ["generate"], ["research", "generate"]]) {
+        const result = contentReaderPermissions({ contentActions, aiActions });
+        expect(result.ok).toBe(true);
+        if (!result.ok) continue;
+        const p = result.permissions;
+        expect(p.search).toBe(contentActions.includes("search"));
+        expect(p.export).toBe(contentActions.includes("export"));
+        expect(p.aiUse).toBe(aiActions.length > 0);
+        expect(contentReaderFieldAllowed("metadata", p)).toBe(contentActions.includes("browse") || contentActions.includes("search"));
+        expect(contentReaderFieldAllowed("body", p)).toBe(contentActions.includes("read"));
+        expect(contentReaderFieldAllowed("article", p)).toBe(contentActions.includes("read"));
+        expect(contentReaderFieldAllowed("excerpt", p)).toBe(contentActions.includes("cite"));
+        expect(contentReaderFieldAllowed("hidden", p)).toBe(false);
+      }
+    }
+    expect(contentReaderPermissions({ contentActions: [], aiActions: ["unknown"] })).toEqual({ ok: false, error: "projection_incomplete" });
+  });
+  test("rejects any deadline beyond the 900 second bound", () => {
+    for (const invalid of ["tokenExpiresAtSeconds", "sessionExpiresAtSeconds", "projectionConfirmedUntilSeconds"] as const) {
+      const input = { nowSeconds: NOW, tokenExpiresAtSeconds: NOW + 900, sessionExpiresAtSeconds: NOW + 900, projectionConfirmedUntilSeconds: NOW + 900 };
+      input[invalid] = NOW + 901;
+      expect(remainingContentReaderCloseSeconds(input)).toBeNull();
+    }
+    expect(remainingContentReaderCloseSeconds({ nowSeconds: NOW, tokenExpiresAtSeconds: NOW + 3600, sessionExpiresAtSeconds: NOW + 3600, projectionConfirmedUntilSeconds: NOW + 3600 })).toBeNull();
   });
 });
