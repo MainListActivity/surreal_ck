@@ -20,13 +20,24 @@ defaults:
 permissions: {}
 
 jobs:
-  deploy:
-    name: Cloudflare production
+  origin:
+    name: Hono origin
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.event == 'push' &&
        github.event.workflow_run.head_branch == 'main' &&
        github.event.workflow_run.conclusion == 'success')
+    permissions:
+      checks: read
+      contents: read
+    uses: ./.github/workflows/deploy-origin.yml
+    with:
+      sha: ${{ github.event.workflow_run.head_sha || github.sha }}
+    secrets: inherit
+
+  deploy:
+    name: Cloudflare production
+    needs: origin
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment:
