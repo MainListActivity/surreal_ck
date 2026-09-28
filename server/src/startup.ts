@@ -6,6 +6,8 @@ import { ensurePlatformContentSchema } from "./content/schema";
 import { assertLegacyContentMigrated } from "./content/migrate-legacy";
 import { reconcileCitationResolutions } from "./content/citation-resolution";
 import { initContentPublisherSession, closeContentPublisherSession, contentPublisherQuery } from "./content/publisher-session";
+import { initContentProjectionSession, closeContentProjectionSession } from "./content/reader-session";
+import { defineContentReaderAccess } from "./content/reader-access";
 import { seedSystemAdmins } from "./db/system-admin-seed";
 import { seedPlatformOperators } from "./db/platform-operator-seed";
 import { seedQuotaPlans } from "./db/quota-plan-seed";
@@ -46,6 +48,8 @@ export type StartServerDeps = {
   ensurePlatformContentSchema?: () => Promise<unknown>;
   assertLegacyContentMigrated?: () => Promise<unknown>;
   initContentPublisherSession?: () => Promise<unknown>;
+  initContentProjectionSession?: () => Promise<unknown>;
+  defineContentReaderAccess?: () => Promise<unknown>;
   reconcileCitationResolutions?: () => Promise<unknown>;
   seedSystemAdmins?: () => Promise<unknown>;
   seedPlatformOperators?: () => Promise<unknown>;
@@ -63,6 +67,7 @@ export type StartServerDeps = {
   startClaimsRiskDispatcher?: () => ClaimsRiskDispatcherHandle;
   closeRootConnection?: () => Promise<void>;
   closeContentPublisherSession?: () => Promise<void>;
+  closeContentProjectionSession?: () => Promise<void>;
 };
 
 export type RunningServer = {
@@ -91,6 +96,13 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
     });
   const initPublisher = deps.initContentPublisherSession
     ?? (envName === "test" ? async () => undefined : initContentPublisherSession);
+  const initProjection = deps.initContentProjectionSession
+    ?? (envName === "test" ? async () => undefined : initContentProjectionSession);
+  const defineReader = deps.defineContentReaderAccess
+    ?? (envName === "test" ? async () => undefined : async () => defineContentReaderAccess(
+      await getRootDatabaseSession(env.CONTENT_DATABASE),
+      { jwksUrl: env.OIDC_JWKS_URL, issuer: env.OIDC_ISSUER, audience: env.OIDC_AUDIENCE },
+    ));
   const reconcileContentCitations = deps.reconcileCitationResolutions
     ?? (envName === "test"
       ? async () => undefined
@@ -143,6 +155,8 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
   await ensureContentSchema();
   await assertContentMigrated();
   await initPublisher();
+  await defineReader();
+  await initProjection();
   try {
     const result = await reconcileContentCitations();
     if (envName !== "test") console.info("[platform-content] citation resolutions reconciled", result);
@@ -211,6 +225,7 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
       quotaRuntime.stop();
       await claimsRiskDispatcher?.stop();
       await (deps.closeContentPublisherSession ?? closeContentPublisherSession)();
+      await (deps.closeContentProjectionSession ?? closeContentProjectionSession)();
       await closeRoot();
     },
   };
