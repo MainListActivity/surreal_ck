@@ -72,6 +72,56 @@ describe("content reader exchange plan", () => {
   });
 });
 
+describe("content reader exchange plan export/ai intersections", () => {
+  test("read+export entitlement with export+research license still issues", () => {
+    const planned = planContentReaderExchange({
+      ...base,
+      body: { contentPublicId: "law-1" },
+      entitlement: { ...entitlement, contentActions: ["read", "export"], aiActions: [] },
+      content: { ...content, licenseActions: ["export", "research"] },
+    });
+    expect(planned.ok).toBe(true);
+    if (!planned.ok) return;
+    expect(planned.plan.write.gateActions).toEqual(["export"]);
+    expect(planned.plan.write.gateAiActions).toEqual([]);
+    expect(planned.plan.write.actions ?? planned.plan.write.gateActions).toEqual(["export"]);
+  });
+
+  test("export-only entitlement and export-only license issues", () => {
+    const planned = planContentReaderExchange({
+      ...base,
+      body: { contentPublicId: "law-1" },
+      entitlement: { ...entitlement, contentActions: ["export"], aiActions: [] },
+      content: { ...content, licenseActions: ["export"] },
+    });
+    expect(planned.ok).toBe(true);
+    if (!planned.ok) return;
+    expect(planned.plan.write.gateActions).toEqual(["export"]);
+    expect(planned.plan.write.gateAiActions).toEqual([]);
+  });
+
+  test("research-only entitlement and research-only license issues with ai gate actions", () => {
+    const planned = planContentReaderExchange({
+      ...base,
+      body: { contentPublicId: "law-1" },
+      entitlement: { ...entitlement, contentActions: [], aiActions: ["research"] },
+      content: { ...content, licenseActions: ["research"] },
+    });
+    expect(planned.ok).toBe(true);
+    if (!planned.ok) return;
+    expect(planned.plan.write.gateActions).toEqual([]);
+    expect(planned.plan.write.gateAiActions).toEqual(["research"]);
+  });
+
+  test("empty intersection is still denied", () => {
+    expect(planContentReaderExchange({
+      ...base,
+      body: { contentPublicId: "law-1" },
+      content: { ...content, licenseActions: ["publish"] },
+    })).toEqual({ ok: false, error: "action_denied" });
+  });
+});
+
 describe("content reader exchange execution", () => {
   test("writes the projection only after the IdP accepts, and does not treat 900 as unbounded", async () => {
     const writes: unknown[] = [];

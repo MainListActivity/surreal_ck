@@ -52,6 +52,7 @@ export type ContentReaderProjectionWrite = {
   licenseUntilSeconds: number | null;
   licenseActions: readonly string[];
   gateActions: readonly string[];
+  gateAiActions: readonly string[];
 };
 
 export type PlannedContentReaderExchange = {
@@ -126,7 +127,8 @@ export function planContentReaderExchange(input: {
   const allowedAiActions = entitlement.aiActions.filter((action) => licenseActions.has(action));
   const allowed = contentReaderPermissions({ contentActions: allowedContentActions, aiActions: allowedAiActions });
   if (!allowed.ok) return fail(allowed.error);
-  if (!allowed.permissions.metadata && !allowed.permissions.read && !allowed.permissions.cite) return fail("action_denied");
+  if (!allowed.permissions.metadata && !allowed.permissions.read && !allowed.permissions.cite
+    && !allowed.permissions.export && !allowed.permissions.aiUse) return fail("action_denied");
   const lease = contentReaderLeaseEnd({
     nowSeconds: input.nowSeconds,
     subjectExpiresAtSeconds: input.subjectExpiresAtSeconds,
@@ -164,6 +166,7 @@ export function planContentReaderExchange(input: {
         licenseUntilSeconds: content.licenseUntilSeconds,
         licenseActions: content.licenseActions,
         gateActions: allowedContentActions,
+        gateAiActions: allowedAiActions,
       },
       success: {
         contractId: CONTENT_READER_CONTRACT_ID,

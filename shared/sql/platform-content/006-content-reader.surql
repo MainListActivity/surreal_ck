@@ -13,7 +13,7 @@ DEFINE ACCESS content_projection_sync ON DATABASE TYPE RECORD
  DURATION FOR TOKEN 15m, FOR SESSION 15m;
 
 DEFINE TABLE content_authorization_projection SCHEMAFULL
- PERMISSIONS FOR select, create, update WHERE $auth = content_projection_identity:server FOR delete NONE;
+ PERMISSIONS FOR select WHERE $auth = content_projection_identity:server OR id = $auth FOR create, update WHERE $auth = content_projection_identity:server FOR delete NONE;
 DEFINE FIELD workspace_id ON content_authorization_projection TYPE string;
 DEFINE FIELD revision ON content_authorization_projection TYPE string;
 DEFINE FIELD revision_number ON content_authorization_projection TYPE int ASSERT $value > 0;
@@ -88,7 +88,7 @@ DEFINE FUNCTION fn::content_reader_action($version: record<content_version>, $ac
  IF $g = NONE OR $g.collection_matched != true OR $g.source_status != "active" OR $g.publication_status != "published"
   OR $g.license_from > time::now() OR ($g.license_until != NONE AND $g.license_until <= time::now()) { RETURN false; };
  IF $action = "metadata" { RETURN ("browse" IN $g.actions AND "browse" IN $g.license_actions) OR ("search" IN $g.actions AND "search" IN $g.license_actions); };
- IF $action = "ai_use" { RETURN ("research" IN $g.actions AND "research" IN $g.license_actions) OR ("generate" IN $g.actions AND "generate" IN $g.license_actions); };
+ IF $action = "ai_use" { RETURN ("research" IN $g.ai_actions AND "research" IN $g.license_actions) OR ("generate" IN $g.ai_actions AND "generate" IN $g.license_actions); };
  RETURN $action IN $g.actions AND $action IN $g.license_actions;
 };
 
