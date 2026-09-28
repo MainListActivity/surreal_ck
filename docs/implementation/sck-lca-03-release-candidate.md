@@ -78,3 +78,54 @@
 - `15c49fb` 之后的提交是否已经在生产。
 - 正式内容集合、来源许可里的客户动作、两个真实工作区的成员身份。
 - 样本计划任务不在工程可见队列里；QA 用自己的样本计划接这份候选，不用合成正文代替生产验收。
+
+## 隔离联调（真实浏览器 + 真实 SurrealDB，合成数据）
+
+QA 退回补做的浏览器联调。环境：vanilla SurrealDB 3.2.3 内存实例（`ws://127.0.0.1:19000`）、fixture OIDC IdP（`http://127.0.0.1:19001`，脚本 `.scratch/sck-lca-03-e2e/fixture-idp.ts`，含真实 authorize/PKCE/token/JWKS/scope 端点，签发前真实调用应用 default-scope hook）、候选 server `:8080`（唯一 stub 是 native-quota 启动门，vanilla 无该扩展面）、vite dev `:5173`。工作区 `ws_alpha`（alice admin、bob participant、carol 已移除）与 `ws_beta`（eve participant、权益快照已过期）由 root 种子按 creator 同名字段写入，工作区库应用真实 workspace-template。内容、集合绑定、许可修订、过期许可来源为 root 种子。
+
+这不是最终验收：IdP 是 fixture、内容与工作区是合成种子、工作区 provisioning 因 vanilla 缺 `INFO FOR QUOTA` 改走 root 种子。
+
+### 浏览器路径（ego-browser 实测，页面真实渲染）
+
+| 步骤 | 实际结果 |
+|---|---|
+| alice（alpha admin）登录 | 真实 OIDC code+PKCE 流程过 `/api/auth/token` 代理；hook 返回 `db=ws_alpha, ac=admin`；浏览器直连 SurrealDB signin 成功，工作区 dashboard 渲染 |
+| 入口 → 打开 `law-demo-1` | 侧栏"法律内容"入口 → 输入公开 ID → `/w/alpha/content/law-demo-1` 渲染：标题、精确版本"2026 联调修订 · #3"、来源 `full_text · https://synthetic.invalid/law-demo-1`、授权状态"当前已授权读取"、正文两段 |
+| 返回工作区 | 工作区界面与连接正常，workspace token 未被替换 |
+| bob（alpha participant）同流程 | 同样成功打开阅读页，正文可读 |
+| 不存在公开 ID `no-such-law` | 阅读页显示"无法打开正文／当前授权不允许读取"，无内容泄漏 |
+| `law-withdrawn`（publication_status=withdrawn） | 同上拒绝页 |
+| eve（beta，权益快照已过期） | 登录 beta 工作区正常；打开 `law-demo-1` → 拒绝页（API 实际 `content-reader-entitlement_expired`） |
+| carol（已从 alpha 移除） | 登录后看到"还没有工作区"；直接访问 `/w/alpha/content/law-demo-1` 同样不能进入（API 实际 `content-reader-member_removed`） |
+
+### 数据库层矩阵（`.scratch/sck-lca-03-e2e/db-matrix.ts`，真实 SurrealDB + 真实签发 token）
+
+| 检查 | 结果 |
+|---|---|
+| 换票成功 | HTTP 200，`expiresInSeconds=900`，返回 workspaceId/revision/digest/leaseEndSeconds |
+| content_reader 认证读正文 | 认证成功，`SELECT body_text` 返回两段正文；法条 `legal_article_version.body_text` 可读 |
+| 隐藏字段 | `license evidence_text` 0 行；版本 `evidence`/`processing` 返回 NONE |
+| 读者自读门禁 | 只看到自己工作区的 1 行 gate，`actions=["browse","read","cite"]` |
+| DDL | `DEFINE TABLE` → IAM NotAllowedError |
+| DML/写投影/写门禁 | UPDATE 正文、DELETE gate、UPDATE 自身投影、CREATE gate 均无报错但 0 行生效（root 复核：body 未变、gate 仍 1 行、无新增投影） |
+| 并发换票 | 同工作区 3 并发全成功；投影仍 1 行 active、门禁仍 1 行 |
+| 换票负例 | 过期权益 `entitlement_expired`；移除成员 `member_removed`；非成员 `not_member`；撤回内容 `content_withdrawn`；过期许可 `license_expired` |
+| 伪造 token | workspace/revision/subject 任一项不匹配 → authenticate 被拒"content projection rejected" |
+| 投影中断 | `status=closed` 后旧有效 token authenticate 被拒；恢复 `active` 后恢复 |
+| token 过期 | 1s token 过期后 authenticate 被拒 |
+| 工作区 admin token 用 RL=Owner 直签内容库 | 拒绝（内容库无 admin access） |
+
+### 联调期发现并修复
+
+- `fn::content_reader_action` 的 `ai_use` 分支改查 `ai_actions`（修复前在 B 分支，合入候选）。
+- 换票发票条件：动作交集仅剩 export 或 aiUse 时不再拒绝。
+- 成员核验按 workspace `identityFilter` 同语义放宽为 subject 或（subject=NONE+email）匹配，否则未 switch 的 email 绑定成员会被误判移除。
+- 换票失败与投影写失败分别返回 503/`projection_incomplete`，均不扩大访问。
+
+### 遗留未验证项（交 QA/G2）
+
+- 真实 IdP（ma_hono `content_reader.v1` 部署态、allowlist、实际 TTL）与生产库。
+- native-quota 版 SurrealDB 的启动门与 provisioning saga（vanilla 上 stub 跳过）。
+- 超过 15 分钟墙钟的 reader 会话与 `DURATION FOR TOKEN 15m` 到期行为。
+- 门户级"双工作区浏览器矩阵"中 beta 用合成过期权益代替真实跨工作区夹具。
+

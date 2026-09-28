@@ -119,10 +119,11 @@ export function createContentReaderExchangeHandler(deps: ContentReaderExchangeDe
       try {
         const workspaceDbSession = await getWorkspaceDb(workspaceDb);
         const userRows = rows(await workspaceDbSession.query(
-          `SELECT id FROM user WHERE subject = $subject AND kind = "human" AND disabled_at = NONE LIMIT 1;`,
-          { subject: caller.subject },
+          `SELECT id, disabled_at FROM user WHERE kind = "human"
+            AND (subject = $subject OR (subject = NONE AND email = $email));`,
+          { subject: caller.subject, ...(caller.email ? { email: caller.email } : {}) },
         ));
-        if (userRows.length === 0) membership = "removed";
+        if (!userRows.some((row) => row.disabled_at == null)) membership = "removed";
       } catch {
         throw new HttpError(503, "content-reader-unavailable", "成员与工作区事实暂不可读");
       }
