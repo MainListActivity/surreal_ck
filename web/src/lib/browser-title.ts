@@ -4,6 +4,7 @@ const BRAND = "卯豆";
 
 const WORKSPACE_PAGE_TITLES: Record<Exclude<WorkspacePage, "home">, string> = {
   docs: "我的文档",
+  content: "法律内容",
   templates: "模板库",
   dashboard: "仪表盘",
   admin: "工作区设置",
@@ -58,6 +59,7 @@ export function buildBrowserTitle(input: BrowserTitleInput): string {
     if (route.page === "home") return title(workspaceName);
     return title(WORKSPACE_PAGE_TITLES[route.page], workspaceName);
   }
+  if (route.kind === "content-reader") return title("内容阅读", workspaceName);
 
   const workbookMatchesRoute = input.loadedWorkbookId === undefined
     || input.loadedWorkbookId === route.workbookId;
