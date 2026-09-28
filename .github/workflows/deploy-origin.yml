@@ -59,10 +59,17 @@ jobs:
             exit 1
           fi
 
+      - name: Checkout deploy tooling
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          sparse-checkout: scripts/deploy
+          persist-credentials: false
+
       - name: Checkout the CI-approved commit
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ env.RELEASE_SHA }}
+          path: release
           persist-credentials: false
 
       - name: Configure SSH
@@ -102,7 +109,7 @@ jobs:
           set -euo pipefail
           release_id="${RELEASE_SHA:0:7}-ci${GITHUB_RUN_ID}"
           archive="/tmp/surreal_ck-${release_id}.tar.gz"
-          git archive --format=tar.gz -o release.tar.gz "$RELEASE_SHA"
+          git -C release archive --format=tar.gz -o "$PWD/release.tar.gz" "$RELEASE_SHA"
           scp -q release.tar.gz "origin:$archive"
           scp -q scripts/deploy/origin-release.sh "origin:/tmp/origin-release-${release_id}.sh"
           ssh origin "bash /tmp/origin-release-${release_id}.sh '$release_id' '$archive'; status=\$?; rm -f /tmp/origin-release-${release_id}.sh; exit \$status"
