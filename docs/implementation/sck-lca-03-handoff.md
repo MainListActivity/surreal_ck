@@ -13,7 +13,7 @@
 | 前置 | 代码事实 | 生产部署 |
 |---|---|---|
 | SCK-LCA-01 / 02 | `surreal_ck` `main` = `15c49fb933dd473d25498799d5ac2425d959c743`。独立内容库脚本 `shared/sql/platform-content/001`–`005`，产品权益 `shared/sql/system/021-product-entitlement.surql`，解析器 `product-entitlement-v1`。本会话读了这些文件，没有重跑 01/02 的集成测试。 | 未知。交 E / G2。 |
-| IDP-LCR-01 | 分支 `feat/content-reader-token-exchange` 与 `main` 同为 `f20b9d5b4fbaaada143a79b2e94b30b022777249`。`content_reader` 不在该提交里。未跟踪文件 `src/domain/tokens/content-reader-policy.ts` SHA-256 `2817960a41751a48152daf66e01ac14f54a72751727517a6c9c53b778daf7dd9`；handoff SHA-256 `1ed484ef05ec97d148f7e3eadae90a64b8c07ead99f2382fdcccda1d99f7e2d9`。`token-service.ts`、`platform-config.ts` 有未提交修改。本会话没有跑 IdP 测试，也没有改 `ma_hono`。 | 未知。未配置 `content_reader_allowed_client_ids` 时，工作区代码会拒绝签发。 |
+| IDP-LCR-01 | 分支 `feat/content-reader-token-exchange` 与 `main` 同为 `f20b9d5b4fbaaada143a79b2e94b30b022777249`。`content_reader` 不在该提交里。未跟踪文件 `src/domain/tokens/content-reader-policy.ts` SHA-256 `2817960a41751a48152daf66e01ac14f54a72751727517a6c9c53b778daf7dd9`；handoff SHA-256 `1ed484ef05ec97d148f7e3eadae90a64b8c07ead99f2382fdcccda1d99f7e2d9`。`token-service.ts`、`platform-config.ts` 有未提交修改。本会话没有跑 IdP 测试，也没有改 `ma_hono`。 | 未知。未配置 `content_reader_allowed_client_ids` 时，IdP 代码会拒绝签发。 |
 
 已核对的 IdP 行为（来自上述未提交源码，不是发布制品）：
 
@@ -50,8 +50,9 @@
 | search | 权益含 `search`。本票不实现 04 的检索入口。 | 不含 `search`。search 本身不打开正文。 |
 | read | 权益含 `read`，可读已发布版本的 `body_text` 和法条 `body_text`。 | 否则这两类字段不可读。 |
 | cite | 权益含 `cite`，可读摘录和 `quoted_text`。 | cite 不隐含 read。 |
-| export | 同时含 `export` 和 `read` 才允许导出能力位。本票不实现导出产品。 | 只有 export 或只有 read 都拒绝导出。 |
-| AI 使用 | 含 `read`，且 AI 动作含 `research` 或 `generate`。本票只给出能力位，不调用模型，不扣 05 的额度。 | 缺 read 或缺 AI 动作。 |
+| export | 含 `export` 即允许独立导出能力位，不隐含 read。本票不实现导出产品。 | 缺 export 拒绝；export 本身不开放正文或摘录字段。 |
+| AI 使用 | AI 动作含 `research` 或 `generate`，不依赖 read。本票只给出能力位，不调用模型，不扣 05 的额度。 | 缺 AI 动作；AI 能力位不开放正文或摘录。 |
+| metadata | 含 `browse` 或 `search`；独立 `metadata` 位，不因同时存在 export/AI 而消失。 | 不含 browse/search 时，其他动作不隐含元数据权限。 |
 | metadata-only | 只有 `browse` 和/或 `search`。可见公开 ID、标题、版本标签、来源、发布状态、授权状态。 | 正文、摘录、法条全文、隐藏字段，包括单条、批量和直接 RecordId。 |
 | 隐藏字段 | 无 | `evidence`、`field_issues`、`processing`、`content_kind_payload`、`created_by_subject`、许可 `evidence_text`、凭证哈希、审计与迁移状态。任何动作都不开放。 |
 
@@ -78,7 +79,7 @@ B 追加 `shared/sql/platform-content/006-*.surql`，使连续版本从 5 变成
 总收敛：
 
 - 撤权写入成功：投影改为 closed 或从 `allowed_subjects` 去掉该主体后，下一次内容查询由 schema 拒绝。
-- 撤权写入没有落地：新读取仍须在 `remainingContentReaderCloseSeconds` 内停止。该值是 token `exp`、数据库会话截止、投影 `confirmed_until` 三者剩余时间的最小值，因此不超过 900 秒。
+- 撤权写入没有落地：新读取仍须在 `remainingContentReaderCloseSeconds` 内停止。该值是 token `exp`、数据库会话截止、投影 `confirmed_until` 三者剩余时间的最小值；任一截止点超过 now+900 秒或不是整数，辅助函数返回 null，调用方必须拒绝读取，不能把 null 当作无限期。合法结果在 0–900 秒内。此校验不能替代数据库真实到期 enforcement。
 - 成员移除今天只在工作区 `user.disabled_at` 和 `_system.user_workspace_index.disabled_at` 打时间（`member-manager.ts`），不删除用户，也不撤销已发出的 IdP token。participant 的 AUTHENTICATE 不检查 `disabled_at`。所以旧工作区连接不能当作内容撤权机制。内容换票看到 `disabled_at` 必须拒绝；已建立的内容连接靠投影主体列表和上面的 900 秒上限关闭。
 
 ## B / C / D 边界
@@ -103,3 +104,24 @@ C 可以按本接口做页面，但模拟响应不能写成真实联调。真实
 - `15c49fb` 是否就是当前生产版本，内容库迁移是否已在生产执行。
 - 正式内容集合、来源许可和真实客户身份。本契约不把合成 fixture 当成商业内容。
 - SurrealDB 对 `TYPE RECORD WITH JWT` 长连接的逐查询 `exp` 行为。
+
+## eng-02 退回修订与完整 IdP 工件快照
+
+2026-09-28 接手 fe16358；不修改外部仓库。以下用 git status --porcelain --untracked-files=all 枚举，再用 Python hashlib.sha256 对字节计算。M 为已跟踪修改，?? 为未跟踪。工件不等于已提交或部署版本；B/D 消费前重新比对，变化须重新评审。
+
+| 路径（ma_hono 根目录） | 状态 | SHA-256 |
+|---|---|---|
+| `src/app/app.ts` | `M` | `6f54e782f9ba5cbe8aca0d5d2689810fead52d9d08d7222a6009802dab40bd98` |
+| `src/config/platform-config.ts` | `M` | `6dad032934b9acaeb59ee206fc3288798f2dfa12f18c9109c4effdde029e184d` |
+| `src/domain/tokens/token-service.ts` | `M` | `fbbb49964d764bbdd26560dcd3ed5b4728cb204660ed2698dee924e21566733d` |
+| `src/index.ts` | `M` | `f15091356f2e06ff4ee97083e18f4edf07167b08044af0aa16fe66640aed5806` |
+| `tests/authorization/authorize-request.test.ts` | `M` | `f98b2df445a9028b14e3863c4b0b294d3fe613890f985f7b05c6463735efdf6f` |
+| `tests/config/platform-config.test.ts` | `M` | `d1547d3ee60005fecfd46dac0d22492dc977da078c394c5b0811082bef67247b` |
+| `.scratch/content-reader-scope/PRD.md` | `??` | `51121de094ced4a15b246fe7bdf88def695e2a3f9ebab2753bf491d5a35bd21d` |
+| `.scratch/content-reader-scope/handoff-surreal-ck.md` | `??` | `1ed484ef05ec97d148f7e3eadae90a64b8c07ead99f2382fdcccda1d99f7e2d9` |
+| `.scratch/content-reader-scope/issues/01-content-reader-token-exchange.md` | `??` | `02076acb09f0f8bb8b1d71f48474dcd0ac7b6411da33164d1f36479772dffb30` |
+| `src/domain/tokens/content-reader-policy.ts` | `??` | `2817960a41751a48152daf66e01ac14f54a72751727517a6c9c53b778daf7dd9` |
+| `tests/oidc/content-reader-policy.test.ts` | `??` | `6d0889f97fc649b83303dbfa06677b88ae83c64a43bfb27405ec88c9cdd6cbb6` |
+| `tests/oidc/content-reader-scope.test.ts` | `??` | `6a99940706905bfbb6f288896b01cea903112ae62c9f22d28f178b3208be7840` |
+
+修订契约：metadata 位独立表示 browse/search；export 与 research/generate 分别控制能力位，均不隐含 read/cite。字段只由各自动作开启，hidden 始终拒绝。来源许可与权益先逐动作取交集，未知动作仍拒绝。metadataOnly 仅描述只有元数据的组合，不再用它推导 metadata 可见性。补全128种组合与超900秒拒绝回归。保留8条AC及B/C/D范围，未执行任何生产动作。

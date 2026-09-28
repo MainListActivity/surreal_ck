@@ -118,6 +118,8 @@ export type ContentReaderFailure = {
 };
 
 export type ContentReaderPermissions = {
+  /** browse 或 search 授予元数据，不由其他动作隐式授予。 */
+  metadata: boolean;
   search: boolean;
   read: boolean;
   cite: boolean;
@@ -185,6 +187,7 @@ export function contentReaderLeaseEnd(input: {
 
 /**
  * 撤权写失败时，新读取仍须在此剩余秒数内关闭。
+ * 任一截止点超过 now + 900 秒返回 null（无效契约，调用方必须拒绝读取）。
  * 三个时间戳各自不得晚于其起点 + 900 秒；客户读取不得延后其中任何一个。
  */
 export function remainingContentReaderCloseSeconds(input: {
@@ -200,6 +203,7 @@ export function remainingContentReaderCloseSeconds(input: {
     input.projectionConfirmedUntilSeconds,
   ];
   if (values.some((value) => !integerSeconds(value))) return null;
+  if (values.slice(1).some((value) => value - input.nowSeconds > CONTENT_READER_BOUND_SECONDS)) return null;
   const deadline = Math.min(
     input.tokenExpiresAtSeconds,
     input.sessionExpiresAtSeconds,
@@ -222,16 +226,17 @@ export function contentReaderPermissions(input: {
   const read = input.contentActions.includes("read");
   const cite = input.contentActions.includes("cite");
   const search = input.contentActions.includes("search");
-  const exportAllowed = input.contentActions.includes("export") && read;
-  const aiUse = read && input.aiActions.some((action) => action === "research" || action === "generate");
-  const metadataOnly = (input.contentActions.includes("browse") || search)
+  const exportAllowed = input.contentActions.includes("export");
+  const aiUse = input.aiActions.some((action) => action === "research" || action === "generate");
+  const metadata = input.contentActions.includes("browse") || search;
+  const metadataOnly = metadata
     && !read
     && !cite
     && !input.contentActions.includes("export")
     && !aiUse;
   return {
     ok: true,
-    permissions: { search, read, cite, export: exportAllowed, aiUse, metadataOnly },
+    permissions: { metadata, search, read, cite, export: exportAllowed, aiUse, metadataOnly },
   };
 }
 
@@ -241,7 +246,7 @@ export function contentReaderFieldAllowed(
 ): boolean {
   if (fieldClass === "hidden") return false;
   if (fieldClass === "metadata") {
-    return permissions.metadataOnly || permissions.read || permissions.cite || permissions.search || permissions.export;
+    return permissions.metadata;
   }
   if (fieldClass === "body" || fieldClass === "article") return permissions.read;
   if (fieldClass === "excerpt") return permissions.cite;

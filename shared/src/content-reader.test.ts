@@ -83,6 +83,7 @@ describe("content reader permission matrix", () => {
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     expect(parsed.permissions).toEqual({
+      metadata: true,
       search: true,
       read: false,
       cite: false,
