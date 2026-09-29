@@ -12,6 +12,6 @@
 <PopoverPrimitive.Trigger
 	bind:ref
 	data-slot="popover-trigger"
-	class={cn("", className)}
+	class={cn("aria-expanded:bg-muted aria-expanded:text-foreground active:not-aria-[haspopup]:translate-y-px", className)}
 	{...restProps}
 />

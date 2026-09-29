@@ -2,13 +2,13 @@
 	import { tv, type VariantProps } from "tailwind-variants";
 
 	const inputGroupButtonVariants = tv({
-		base: "gap-2 text-sm flex items-center shadow-none",
+		base: "gap-2 text-sm flex items-center shadow-none active:not-aria-[haspopup]:translate-y-px aria-expanded:bg-muted aria-expanded:text-foreground",
 		variants: {
 			size: {
-				xs: "h-6 gap-1 rounded-[calc(var(--radius)-3px)] px-1.5 [&>svg:not([class*='size-'])]:size-3.5",
-				sm: "cn-input-group-button-size-sm",
-				"icon-xs": "size-6 rounded-[calc(var(--radius)-3px)] p-0 has-[>svg]:p-0",
-				"icon-sm": "size-8 p-0 has-[>svg]:p-0",
+				xs: "h-6 gap-1 rounded-[min(var(--radius-md),10px)] px-2 text-xs [&>svg:not([class*='size-'])]:size-3",
+				sm: "h-7 gap-1 rounded-[min(var(--radius-md),12px)] px-2.5 text-[0.8rem] [&>svg:not([class*='size-'])]:size-3.5",
+				"icon-xs": "size-6 rounded-[min(var(--radius-md),10px)] p-0 has-[>svg]:p-0 [&>svg:not([class*='size-'])]:size-3",
+				"icon-sm": "size-7 rounded-[min(var(--radius-md),12px)] p-0 has-[>svg]:p-0 [&>svg:not([class*='size-'])]:size-3.5",
 			},
 		},
 		defaultVariants: {
