@@ -2,7 +2,6 @@ import {
   AI_CHAT_ACTION_KEY,
   type AiAllowanceBucketView,
   type AiAllowanceLedgerView,
-  type AiAllowanceNoticeView,
   type AiAllowanceSnapshot,
 } from "@surreal-ck/shared";
 import type { SurrealConn } from "./surreal";

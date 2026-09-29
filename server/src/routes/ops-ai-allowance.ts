@@ -5,12 +5,6 @@ import { HttpError } from "../http-error";
 import { requirePlatformOperator } from "../ops/operator-auth";
 import { AiAllowanceError, type AiAllowanceService } from "../ai-allowance/service";
 
-function fail(error: unknown): never {
-  if (!(error instanceof AiAllowanceError)) throw error;
-  const status = error.code === "ai-allowance-unavailable" ? 400 : 403;
-  throw new HttpError(status, error.code, error.message, error.details);
-}
-
 /**
  * 运营授予 AI 额度桶：往目标 workspace database 写独立额度桶 + grant 账本。
  * workspace 形参同时接受 slug 与 db_name（_system 里两者都唯一）。
@@ -30,18 +24,25 @@ export function createOpsAiAllowanceRoutes(input: { service: AiAllowanceService 
       if (!db) {
         throw new HttpError(404, "ai-allowance-workspace-not-found", "workspace 不存在");
       }
-      const result = await input.service.grant({
-        db,
-        kind: body.kind,
-        amount: body.amount,
-        label: body.label,
-        periodKey: body.periodKey,
-        effectiveFrom: body.effectiveFrom ? new Date(body.effectiveFrom) : new Date(),
-        expiresAt: new Date(body.expiresAt),
-        source: body.source,
-        operatorSubject: operator?.subject ?? "unknown",
-      });
-      return c.json(result, 201);
+      try {
+        const result = await input.service.grant({
+          db,
+          kind: body.kind,
+          amount: body.amount,
+          label: body.label,
+          periodKey: body.periodKey,
+          effectiveFrom: body.effectiveFrom ? new Date(body.effectiveFrom) : new Date(),
+          expiresAt: new Date(body.expiresAt),
+          source: body.source,
+          operatorSubject: operator?.subject ?? "unknown",
+        });
+        return c.json(result, 201);
+      } catch (error) {
+        if (error instanceof AiAllowanceError) {
+          throw new HttpError(400, error.code, error.message, error.details);
+        }
+        throw error;
+      }
     },
   );
 }
