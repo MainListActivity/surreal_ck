@@ -75,3 +75,41 @@ done
 [ "$(readlink "$ORIGIN_ROOT/current")" = "$ORIGIN_ROOT/releases/test-ci1" ]
 [ "$(ls -1 "$ORIGIN_ROOT/releases" | wc -l)" -eq 2 ]
 echo 'actual release hook, switch, restart, and health check completed after launcher died'
+
+# Kill launch after it has prepared deploy-jobs but before it can spawn a
+# detached child. A later launch must claim and run the same release id.
+cat >"$test_root/bin/chmod" <<'SH'
+#!/usr/bin/env bash
+if [ "${INJECT_BEFORE_SPAWN:-}" = 1 ] && [ "${2:-}" = "$ORIGIN_ROOT/deploy-jobs" ] && [ ! -e "$ORIGIN_ROOT/injected" ]; then
+  touch "$ORIGIN_ROOT/injected"
+  kill -9 "$PPID"
+fi
+exec /bin/chmod "$@"
+SH
+chmod +x "$test_root/bin/chmod"
+cat >"$test_root/release2.sh" <<'SH'
+#!/usr/bin/env bash
+sleep 1
+printf 'run\n' >>"$ORIGIN_ROOT/executions2"
+SH
+INJECT_BEFORE_SPAWN=1 bash "$script_dir/origin-release-runner.sh" launch test-ci2 \
+  "$test_root/release2.sh" "$test_root/unused-archive" '' >/dev/null 2>&1 || true
+[ ! -e "$ORIGIN_ROOT/deploy-jobs/test-ci2" ]
+
+bash "$script_dir/origin-release-runner.sh" launch test-ci2 \
+  "$test_root/release2.sh" "$test_root/unused-archive" '' >/dev/null &
+first=$!
+bash "$script_dir/origin-release-runner.sh" launch test-ci2 \
+  "$test_root/release2.sh" "$test_root/unused-archive" '' >/dev/null &
+second=$!
+wait "$first"
+wait "$second"
+for _ in $(seq 1 40); do
+  result=$(bash "$script_dir/origin-release-runner.sh" status test-ci2)
+  [ "$result" = success ] && break
+  [ "$result" = running ] || { echo "unexpected retry result: $result" >&2; exit 1; }
+  sleep 0.25
+done
+[ "$result" = success ]
+[ "$(wc -l <"$ORIGIN_ROOT/executions2")" -eq 1 ]
+echo 'pre-spawn disconnect recovered; concurrent launch ran once'
