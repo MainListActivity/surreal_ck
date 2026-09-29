@@ -1,7 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createServer } from "node:net";
 import { Surreal } from "surrealdb";
+import type { SessionUser } from "@surreal-ck/shared";
 import { ensureSystemSchema } from "../db/system-schema";
+import { createContentReaderExchangeHandler } from "../content/reader-handler";
 import { ProductEntitlementService } from "./service";
 import { SurrealProductEntitlementStore } from "./store";
 
@@ -126,5 +128,87 @@ describe("product entitlement surreal store", () => {
     await store.pointWorkspace("workspace:team", olderId);
     const pointer = await db.query(`SELECT VALUE current_product_entitlement.revision FROM ONLY workspace:team;`).collect();
     expect(pointer[0]).toBe(expired.revision);
+  });
+
+  localTest("指派到低配产品再恢复同 digest 产品时指针回指旧快照", async () => {
+    const db = await session();
+    await db.query(`
+      CREATE workspace:rollback SET db_name = "ws_rollback", owner_subject = "lawyer", slug = "rollback", name = "回滚夹具", status = "active";
+      CREATE user_workspace_index:rollback_lawyer SET subject = "lawyer", workspace = workspace:rollback, db_name = "ws_rollback", role = "admin";
+      CREATE quota_subscription:rollback SET billing_account = billing_account:acct, source = "manual", status = "active", revision = 1, correlation_id = "fixture-sub-rollback";
+      CREATE quota_subscription_item:rollback SET subscription = quota_subscription:rollback, workspace = workspace:rollback, plan_revision = quota_plan_revision:fixture,
+        revision = 1, status = "active", effective_from = <datetime>"2026-09-01T00:00:00.000Z", effective_until = NONE, correlation_id = "fixture-item-rollback";
+    `).collect();
+    const store = new SurrealProductEntitlementStore(async () => await session(), "main");
+    const service = new ProductEntitlementService(store, () => new Date("2026-09-24T00:00:00.000Z"));
+    const operator = { subject: "ops", capabilities: ["subscription.manage", "quota.read"] };
+    const publish = (planKey: string, displayName: string, actions: string[], idempotencyKey: string) =>
+      service.publishRevision(operator, {
+        planKey, displayName, revision: 1, resourceTemplateId: "quota_plan_revision:fixture",
+        collections: [{ key: "fixture_core", label: "夹具核心" }], actions, aiActions: [],
+        features: [], reason: "发布夹具版本", idempotencyKey,
+      });
+    const assign = (productPlanRevisionId: string, idempotencyKey: string) =>
+      service.assign(operator, {
+        workspaceSlug: "rollback", billingAccountKey: "acct-a", productPlanRevisionId,
+        reason: "指派", idempotencyKey,
+      });
+
+    const full = await publish("fixture_full", "夹具全量", ["browse", "search", "read"], "publish-full-001");
+    const meta = await publish("fixture_meta", "夹具元数据", ["browse"], "publish-meta-001");
+
+    const first = await assign(full.productPlanRevisionId, "assign-rb-001");
+    expect(first.content.actions).toEqual(["browse", "read", "search"]);
+    const lowered = await assign(meta.productPlanRevisionId, "assign-rb-002");
+    expect(lowered.revision).toBeGreaterThan(first.revision);
+    expect(lowered.content.actions).toEqual(["browse"]);
+
+    const restored = await assign(full.productPlanRevisionId, "assign-rb-003");
+    expect(restored.revision).toBe(first.revision);
+    expect(restored.content.actions).toEqual(["browse", "read", "search"]);
+    const pointer = await db.query(`SELECT VALUE current_product_entitlement.revision FROM ONLY workspace:rollback;`).collect();
+    expect(pointer[0]).toBe(first.revision);
+    const view = await service.getForOperator(operator, "rollback");
+    expect(view.revision).toBe(first.revision);
+    const projectionWrites: Record<string, unknown>[] = [];
+    const nowSeconds = Math.floor(new Date("2026-09-24T00:00:00.000Z").getTime() / 1000);
+    const exchange = createContentReaderExchangeHandler({
+      nowSeconds: () => nowSeconds,
+      database: "platform_content",
+      namespace: "main",
+      entitlementStore: store,
+      getSystemDb: async () => ({
+        async query() {
+          return [[{ subject: "lawyer", disabled_at: null, workspace: { id: "workspace:rollback", status: "active" } }]];
+        },
+      }),
+      getWorkspaceDb: async () => ({ async query() { return [[{ id: "user:lawyer", disabled_at: null }]]; } }),
+      getContentDb: async () => ({
+        async query(sql: string, params?: Record<string, unknown>) {
+          if (sql.includes("UPSERT")) {
+            projectionWrites.push(params ?? {});
+            return [null, null];
+          }
+          return [null, null, null, null, {
+            version: "content_version:v", item: "content_item:i", source_status: "active",
+            publication_status: "published", license: "source_license_revision:l",
+            license_actions: ["browse", "read", "search"],
+            license_from: "2026-09-01T00:00:00.000Z", license_until: null,
+            collections: ["fixture_core"],
+          }];
+        },
+      }),
+      idpContentReader: {
+        async exchangeContentReaderScope() { return { accessToken: "content-token", expiresIn: 120 }; },
+      },
+    });
+    const caller: SessionUser = {
+      subject: "lawyer", raw: { db: "ws_rollback", ac: "participant", exp: nowSeconds + 5000 }, rawToken: "workspace-token",
+    };
+    const exchanged = await exchange(caller, { contentPublicId: "fixture-article" });
+    expect(exchanged).toMatchObject({ entitlementRevision: String(first.revision), accessToken: "content-token" });
+    expect(projectionWrites[0]).toMatchObject({ revisionNumber: first.revision, gateActions: ["browse", "read", "search"] });
+    const count = await db.query(`SELECT count() FROM workspace_product_entitlement WHERE workspace = workspace:rollback GROUP ALL;`).collect();
+    expect((count[0] as Array<{ count: number }>)[0]?.count).toBe(2);
   });
 });

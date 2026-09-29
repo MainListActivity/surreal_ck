@@ -16,6 +16,7 @@ class MemoryStore implements ProductEntitlementStore {
   audits: (AuditRecord & { actor: string; idempotencyKey: string })[] = [];
   resource: ResourceFact = { appliedPlanKey: null, appliedPlanName: null, appliedRevision: null, desiredPlanKey: null, syncState: null };
   failNextInsert = false;
+  now = "2026-09-24T00:00:00.000Z";
   private sequence = 0;
 
   async workspaceBySlug(slug: string) { return [...this.workspaces.values()].find((item) => item.slug === slug) ?? null; }
@@ -94,8 +95,15 @@ class MemoryStore implements ProductEntitlementStore {
   async pointWorkspace(workspaceId: string, snapshotId: string) {
     const next = this.snapshots.find((item) => item.id === snapshotId);
     if (!next) return;
+    const item = this.items.get(workspaceId);
+    const bound = item && item.status === "active"
+      && item.effectiveFrom <= this.now
+      && (item.effectiveUntil === null || item.effectiveUntil > this.now)
+      && (item.subscriptionStatus === "active" || item.subscriptionStatus === "trialing")
+      ? item.productPlanRevisionId : null;
     const current = this.snapshots.find((item) => item.id === this.pointer.get(workspaceId));
-    if (current && current.revision >= next.revision) return;
+    if (current && current.revision >= next.revision
+      && !(bound !== null && next.productPlanRevisionId === bound)) return;
     this.pointer.set(workspaceId, snapshotId);
   }
   async auditByKey(actor: string, idempotencyKey: string) {
@@ -186,6 +194,50 @@ describe("product entitlement", () => {
     });
   });
 
+  test("指派到低配产品再恢复同 digest 产品时指针回指", async () => {
+    const store = new MemoryStore();
+    workspace(store);
+    const service = new ProductEntitlementService(store, () => new Date("2026-09-24T00:00:00.000Z"));
+    store.insertProductRevision = async (input) => {
+      const id = `product_plan_revision:${input.planId}:${input.revision}`;
+      store.pendingRevision.set(id, {
+        planKey: input.planId.endsWith(":fixture_plus") ? "fixture_plus" : "fixture_meta",
+        planName: input.planId.endsWith(":fixture_plus") ? "夹具律师 Plus" : "夹具元数据",
+        revision: input.revision,
+        collections: [{ key: "fixture_core", label: "夹具核心" }],
+        actions: input.planId.endsWith(":fixture_plus") ? ["browse", "search", "read"] : ["browse"],
+        aiActions: [], features: [] as FeatureValue[],
+      });
+      const created = `product_plan_revision:${input.planId}:${input.revision}`;
+      store.revisions.set(created, { ...store.pendingRevision.get(id)!, id: created });
+      return created;
+    };
+    const full = await service.publishRevision(operator, publishBody(1, "fixture_core", "夹具核心"));
+    const meta = await service.publishRevision(operator, {
+      ...publishBody(1, "fixture_core", "夹具核心"),
+      planKey: "fixture_meta", displayName: "夹具元数据", actions: ["browse"], aiActions: [],
+      idempotencyKey: "publish-meta-001",
+    });
+
+    const assigned = await service.assign(operator, { ...assignment(full.productPlanRevisionId), idempotencyKey: "assign-full-001" });
+    expect(assigned.revision).toBe(1);
+    expect(assigned.content.actions).toEqual(["browse", "read", "search"]);
+
+    const lowered = await service.assign(operator, { ...assignment(meta.productPlanRevisionId), idempotencyKey: "assign-meta-001" });
+    expect(lowered.revision).toBe(2);
+    expect(lowered.content.actions).toEqual(["browse"]);
+
+    const restored = await service.assign(operator, { ...assignment(full.productPlanRevisionId), idempotencyKey: "assign-full-002" });
+    expect(restored.revision).toBe(assigned.revision);
+
+    const current = await store.currentSnapshot("workspace:team");
+    expect(current?.revision).toBe(assigned.revision);
+    const view = await service.getForCustomer("lawyer", "team");
+    expect(view.revision).toBe(assigned.revision);
+    expect(view.content.actions).toEqual(["browse", "read", "search"]);
+    expect(store.snapshots).toHaveLength(2);
+  });
+
   test("到期、无产品来源、跨计费账户和内容增量按已确认规则解析", async () => {
     const store = new MemoryStore();
     workspace(store);
@@ -224,10 +276,12 @@ describe("product entitlement", () => {
     expect(expanded.content.actions).toContain("cite");
     expect(store.snapshots).toHaveLength(2);
     expect(store.snapshots[0]?.collections.map((item) => item.key)).toEqual(["fixture_core"]);
+    // 回指到当前绑定产品的旧快照是纠偏（恢复指派场景），允许。
     const currentId = store.pointer.get("workspace:team");
     await store.pointWorkspace("workspace:team", store.snapshots[0]!.id);
-    expect(store.pointer.get("workspace:team")).toBe(currentId);
+    expect(store.pointer.get("workspace:team")).toBe(store.snapshots[0]!.id);
     expect(currentId).not.toBe(store.snapshots[0]!.id);
+    await store.pointWorkspace("workspace:team", currentId!);
 
     store.items.set("workspace:team", { ...store.items.get("workspace:team")!, effectiveUntil: "2026-09-02T00:00:00.000Z" });
     const read = await service.getForCustomer("lawyer", "team");
@@ -433,7 +487,8 @@ describe("product entitlement", () => {
     const read = await service.getForCustomer("lawyer", "team");
     expect(read.summary).toBe("无有效内容授权");
     expect(read.baseSource.planKey).toBeNull();
-    expect(read.revision).toBeGreaterThan(store.snapshots[0]!.revision);
+    expect(read.revision).toBe(0);
+    expect(store.snapshots[0]!.revision).toBeGreaterThan(read.revision);
     expect(store.items.get("workspace:team")?.productPlanRevisionId).toBeNull();
     failBind = false;
     await service.assign(operator, assignment(revisionId));

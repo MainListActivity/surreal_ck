@@ -330,11 +330,25 @@ export class SurrealProductEntitlementStore implements ProductEntitlementStore {
   }
 
   async pointWorkspace(workspaceId: string, snapshotId: string): Promise<void> {
+    // 指针必须跟随当前绑定产品，而不是单调最大的快照 revision：
+    // digest 命中旧快照的恢复指派（降级→恢复、grant 到期回退）需要回指到
+    // 当前绑定产品的既有快照。单调保护只拦「目标产品不是当前绑定产品」的旧快照。
     await (await this.db()).query(`
-      LET $next = (SELECT revision FROM ONLY $snapshot);
+      LET $next = (SELECT revision, product_plan_revision FROM ONLY $snapshot);
       LET $current = (SELECT current_product_entitlement FROM ONLY $workspace);
       LET $linked = IF $current = NONE THEN NONE ELSE $current.current_product_entitlement END;
-      IF $next.revision != NONE AND ($linked = NONE OR $linked.revision < $next.revision) {
+      LET $item = (SELECT product_plan_revision, status, effective_from, effective_until,
+        subscription.status AS subscription_status
+        FROM quota_subscription_item WHERE active_workspace = $workspace LIMIT 1)[0];
+      LET $bound = IF $item != NONE AND $item.status = "active"
+        AND $item.effective_from <= time::now()
+        AND ($item.effective_until = NONE OR $item.effective_until > time::now())
+        AND ($item.subscription_status = "active" OR $item.subscription_status = "trialing")
+        THEN $item.product_plan_revision ELSE NONE END;
+      IF $next.revision != NONE
+         AND ($linked = NONE
+           OR $linked.revision < $next.revision
+           OR ($bound != NONE AND $next.product_plan_revision = $bound)) {
         UPDATE $workspace SET current_product_entitlement = $snapshot;
       };
     `, {
