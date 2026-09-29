@@ -32,4 +32,4 @@
 - 2026-09-24：用户确认拆分后发布；当前为实施规格，尚未执行实现与验收。
 - 2026-09-29：实现短期调用者内容检索会话、内容库授权 facet 及既有发布回填、关键词和法律属性过滤、数据库权限内计数与游标分页、正文定位和工作区精确版本引用卡片。工作区仅保存指针、来源、定位与本人批注；撤回或修订后的搜索由当前发布状态及版本 gate 控制。
 - 验证：`pnpm --filter @surreal-ck/server exec bun test src/content/search.integration.test.ts --preload ./test/setup-env.ts` 1 通过；`RUN_LOCAL_PLATFORM_CONTENT_TESTS=1 pnpm --filter @surreal-ck/server exec bun test src/content/store.integration.test.ts --preload ./test/setup-env.ts` 3 通过；web 定向测试 8 通过；两份 SurrealQL 经 `surreal validate` 通过。真实内容库测试覆盖拒绝越权 ID、计数与分页、修订、撤回；生产环境原生配额需在后续上线验收中实测（本地 SurrealDB 为标准 3.2.3）。
-- 下游：需审核新平台内容 schema v7 与工作区模板 v30 的增量迁移；本票是实现交付，尚未生产部署。HNSW 召回和排序优化留给 LCA12。
+- 下游：需审核新平台内容 schema v7 与工作区模板 v31 的增量迁移；本票是实现交付，尚未生产部署。HNSW 召回和排序优化留给 LCA12。
