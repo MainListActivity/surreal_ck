@@ -132,9 +132,10 @@ export class ProductEntitlementService {
       await this.bindReplay(workspace.id, revision.id, replay.revision);
       return replay;
     }
-    const materialized = await this.materialize(workspace, input.idempotencyKey, revision);
-    await this.store.attachAuditEntitlement(actor.subject, input.idempotencyKey, materialized.snapshot.id);
+    const materialized = await this.materialize(workspace, input.idempotencyKey, revision, false);
     await this.bindAssigned(workspace.id, revision.id);
+    await this.store.pointWorkspace(workspace.id, materialized.snapshot.id);
+    await this.store.attachAuditEntitlement(actor.subject, input.idempotencyKey, materialized.snapshot.id);
     return (await this.storedView(actor.subject, input.idempotencyKey, requestDigest)) ?? materialized.view;
   }
 
@@ -270,13 +271,14 @@ export class ProductEntitlementService {
     workspace: WorkspaceRef,
     causationId: string,
     revisionOverride?: ProductRevisionBody,
+    point = true,
   ): Promise<{ view: ProductEntitlementView; snapshot: SnapshotRecord }> {
     const draft = await this.draftFor(workspace, revisionOverride);
     const resource = await this.store.resourceStatus(workspace.id);
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const same = await this.store.snapshotByDigest(workspace.id, draft.digest);
       if (same) {
-        await this.store.pointWorkspace(workspace.id, same.id);
+        if (point) await this.store.pointWorkspace(workspace.id, same.id);
         return { snapshot: same, view: toView(workspace.slug, same.revision, same, resource) };
       }
       const current = await this.store.currentSnapshot(workspace.id);
@@ -288,7 +290,7 @@ export class ProductEntitlementService {
       if (inserted === "ok") {
         const saved = await this.store.snapshotByDigest(workspace.id, draft.digest);
         if (!saved) throw new ProductEntitlementError("conflict", "权益快照没有写上");
-        await this.store.pointWorkspace(workspace.id, saved.id);
+        if (point) await this.store.pointWorkspace(workspace.id, saved.id);
         return { snapshot: saved, view: toView(workspace.slug, saved.revision, saved, resource) };
       }
     }
