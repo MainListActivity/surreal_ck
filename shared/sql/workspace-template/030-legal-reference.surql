@@ -12,6 +12,7 @@ DEFINE FIELD IF NOT EXISTS published_on ON legal_reference TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS locator ON legal_reference TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS note ON legal_reference TYPE option<string>
   ASSERT $value = NONE OR string::len($value) <= 4000;
-DEFINE FIELD IF NOT EXISTS created_by ON legal_reference TYPE record<user> DEFAULT $auth READONLY;
+DEFINE FIELD IF NOT EXISTS created_by ON legal_reference TYPE record<user> DEFAULT $auth
+  ASSERT $value = $auth READONLY;
 DEFINE FIELD IF NOT EXISTS created_at ON legal_reference TYPE datetime VALUE time::now() READONLY;
 DEFINE INDEX IF NOT EXISTS legal_reference_version ON legal_reference FIELDS content_version_id;

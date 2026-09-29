@@ -1,7 +1,5 @@
-import { StringRecordId, Surreal } from "surrealdb";
-import type { ContentReaderFailure, ContentSearchExchangeSuccess } from "@surreal-ck/shared";
-import { getToken } from "./auth";
-import { getCurrentWorkspace } from "./workspace-store.svelte";
+import { StringRecordId } from "surrealdb";
+import { CONTENT_SEARCH_COUNT_QUERY, CONTENT_SEARCH_QUERY, type ContentReaderFailure, type ContentSearchExchangeSuccess } from "@surreal-ck/shared";
 
 export type LegalSearchFilters = {
   keyword: string;
@@ -9,6 +7,7 @@ export type LegalSearchFilters = {
   publishedFrom: string;
   publishedUntil: string;
   jurisdiction: string;
+  effectiveOn: string;
 };
 
 export type LegalSearchResult = {
@@ -21,6 +20,7 @@ export type LegalSearchResult = {
   sourceUrl: string;
   publishedOn: string | null;
   jurisdiction: string | null;
+  effectiveOn: string | null;
 };
 
 export type LegalSearchPage = { items: LegalSearchResult[]; nextCursor: string | null; total: number };
@@ -34,21 +34,7 @@ type Queryable = {
 };
 
 const PAGE_SIZE = 20;
-const SEARCH_WHERE = `
-  ($keyword = "" OR searchable_text CONTAINS $keyword)
-  AND ($kind = "all" OR item.kind = $kind)
-  AND ($from = "" OR version.published_on >= $from)
-  AND ($until = "" OR version.published_on <= $until)
-  AND ($jurisdiction = "" OR version.source.jurisdiction = $jurisdiction)
-`;
-export const CONTENT_SEARCH_QUERY = `SELECT id, version.id AS version_id, version.public_id AS public_id,
-  version.title AS title, version.revision AS revision, version.version_label AS version_label,
-  item.kind AS kind, version.source_url AS source_url, version.published_on AS published_on,
-  version.source.jurisdiction AS jurisdiction
-  FROM content_publication_projection WHERE ${SEARCH_WHERE}
-  AND ($cursor = NONE OR id > $cursor) ORDER BY id ASC LIMIT 21;`;
-export const CONTENT_SEARCH_COUNT_QUERY = `SELECT count() AS total FROM content_publication_projection
-  WHERE ${SEARCH_WHERE} GROUP ALL;`;
+export { CONTENT_SEARCH_QUERY, CONTENT_SEARCH_COUNT_QUERY } from "@surreal-ck/shared";
 
 function rows(value: unknown[]): Record<string, unknown>[] {
   return Array.isArray(value[0]) ? value[0] as Record<string, unknown>[] : [];
@@ -65,7 +51,7 @@ function entry(row: Record<string, unknown>): LegalSearchResult | null {
   return {
     id, publicId, title, sourceUrl, revision: row.revision as number,
     versionLabel: text(row.version_label), kind: text(row.kind) ?? "unknown",
-    publishedOn: text(row.published_on), jurisdiction: text(row.jurisdiction),
+    publishedOn: text(row.published_on), jurisdiction: text(row.jurisdiction), effectiveOn: text(row.effective_on),
   };
 }
 
@@ -89,6 +75,7 @@ export function createContentSearch(deps: {
   }
   return {
     close,
+    deadlineSeconds: () => deadline,
     async open(): Promise<LegalSearchState> {
       await close();
       const current = generation;
@@ -127,11 +114,16 @@ export function createContentSearch(deps: {
         keyword: filters.keyword.trim().slice(0, 200), kind: filters.kind,
         from: filters.publishedFrom, until: filters.publishedUntil,
         jurisdiction: filters.jurisdiction.trim().slice(0, 100),
+        effective: filters.effectiveOn,
       };
       const [result, count] = await Promise.all([
         db.query(CONTENT_SEARCH_QUERY, { ...bindings, cursor: cursor ? new StringRecordId(cursor) : undefined }).collect(),
         db.query(CONTENT_SEARCH_COUNT_QUERY, bindings).collect(),
       ]);
+      if (!db || deps.workspaceDb() !== workspaceDb || deps.nowSeconds() >= deadline) {
+        await close();
+        throw new Error("content-search-session-expired");
+      }
       const pageRows = rows(result);
       if (pageRows.length > PAGE_SIZE + 1) throw new Error("content-search-invalid-page");
       const items = pageRows.slice(0, PAGE_SIZE).map(entry);
@@ -141,28 +133,4 @@ export function createContentSearch(deps: {
       return { items: items as LegalSearchResult[], nextCursor, total: typeof total === "number" ? total : 0 };
     },
   };
-}
-
-export function createBrowserContentSearch() {
-  const baseUrl = import.meta.env.VITE_API_BASE_URL?.replace(/\/+$/, "") ?? "";
-  return createContentSearch({
-    surrealUrl: import.meta.env.VITE_SURREAL_URL,
-    workspaceDb: () => getCurrentWorkspace()?.dbName ?? null,
-    nowSeconds: () => Math.floor(Date.now() / 1000),
-    connect: () => new Surreal() as unknown as Queryable,
-    async exchange() {
-      const token = getToken();
-      if (!token) return { ok: false, error: "not_member" };
-      const response = await fetch(`${baseUrl}/api/session/content-search`, {
-        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: "{}", cache: "no-store",
-      });
-      const value: unknown = await response.json().catch(() => null);
-      if (value && typeof value === "object" && (value as { ok?: unknown }).ok === false) {
-        return value as ContentReaderFailure;
-      }
-      if (!response.ok || !value || typeof value !== "object") throw new Error("content-search-exchange-failed");
-      return value as ContentSearchExchangeSuccess;
-    },
-  });
 }

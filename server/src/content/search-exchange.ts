@@ -67,6 +67,11 @@ export function createContentSearchExchangeHandler() {
       const permissions = contentReaderPermissions(entitlement);
       if (!permissions.ok) return { ok: false, error: permissions.error };
       if (!permissions.permissions.search) return { ok: false, error: "action_denied" };
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      if (entitlement.effectiveUntilSeconds !== null && entitlement.effectiveUntilSeconds <= nowSeconds) {
+        return { ok: false, error: "entitlement_expired" };
+      }
+      if (subjectExpiresAtSeconds <= nowSeconds) return { ok: false, error: "invalid_lifetime" };
 
       // A bounded scan fails closed instead of silently providing partial coverage.
       const catalog = rows(await content.query(
@@ -75,7 +80,6 @@ export function createContentSearchExchangeHandler() {
           ORDER BY id LIMIT 5001;`,
       ));
       if (catalog.length > 5000) throw new Error("content search catalog exceeds safe scan bound");
-      const nowSeconds = Math.floor(Date.now() / 1000);
       const activeSubjects = index.flatMap((row) => row.disabled_at == null && typeof row.subject === "string" ? [row.subject] : []);
       const plans: PlannedContentReaderExchange[] = [];
       for (const row of catalog) {
