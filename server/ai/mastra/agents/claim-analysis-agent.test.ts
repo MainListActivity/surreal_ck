@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { RequestContext } from "@mastra/core/request-context";
 import type { AiContextSnapshot } from "@surreal-ck/shared";
 import { ROUTER_RUNTIME_KEY } from "../workflows/router-workflow";
+import { setExecutionContext } from "../execution-context";
 import { createClaimAnalysisAgent } from "./claim-analysis-agent";
 import type { AiSettings } from "./model-config";
 
@@ -60,8 +61,8 @@ describe("claim-analysis agent 模板 instructions", () => {
       },
     };
     const requestContext = new RequestContext();
+    setExecutionContext(requestContext, { surrealSession: session as never });
     requestContext.set(ROUTER_RUNTIME_KEY, {
-      surrealSession: session,
       userContext: selectedClaimContext,
     });
     const agent = createClaimAnalysisAgent(fakeSettings, { model });
@@ -82,8 +83,8 @@ describe("claim-analysis agent 模板 instructions", () => {
     const model = await createPromptCapturingModel(modelCalls);
     const session = { async query() { return [[{ row_analysis: undefined }]]; } };
     const requestContext = new RequestContext();
+    setExecutionContext(requestContext, { surrealSession: session as never });
     requestContext.set(ROUTER_RUNTIME_KEY, {
-      surrealSession: session,
       userContext: {
         ...selectedClaimContext,
         route: { ...selectedClaimContext.route, workbookId: "workbook:plain" },

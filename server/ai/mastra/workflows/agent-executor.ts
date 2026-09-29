@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { AiStructuredIntent, AiToolCallRecord, ResourceCitationDTO } from "@surreal-ck/shared";
 import { serializeContextForAi } from "@surreal-ck/shared";
 import { ROUTER_RUNTIME_KEY, type SharedConfirmed, type SubAgentExecutor, type SubAgentSuspendSignal } from "./router-workflow";
+import { setExecutionContext } from "../execution-context";
 
 export type AgentExecutorOptions = {
   /** 调用 agent 时透传给 stream() 的最大步数。默认 4。 */
@@ -45,9 +46,12 @@ export function makeAgentExecutor(agent: Agent, options: AgentExecutorOptions = 
       JSON.stringify(shared.confirmed, null, 2),
     ].join("\n");
 
-    // 把调用者 session 经 RequestContext 透传给 agent 的 tool（tool 用 ROUTER_RUNTIME_KEY 取）。
+    // 会话走共享执行上下文 seam（tool 只从这里取）；Router 私有数据留在 ROUTER_RUNTIME_KEY。
     const requestContext = new RequestContext();
-    requestContext.set(ROUTER_RUNTIME_KEY, { surrealSession, userContext: shared.userContext });
+    if (surrealSession) {
+      setExecutionContext(requestContext, { surrealSession });
+    }
+    requestContext.set(ROUTER_RUNTIME_KEY, { userContext: shared.userContext });
 
     const observedToolCalls: AiToolCallRecord[] = [];
     const stream = await agent.stream(

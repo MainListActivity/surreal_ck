@@ -32,6 +32,7 @@ import {
   type RouterRuntime,
   type SubAgentExecutors,
 } from "../../ai/mastra/workflows/router-workflow";
+import { setExecutionContext } from "../../ai/mastra/execution-context";
 import { RequestContext } from "@mastra/core/request-context";
 import type { Surreal } from "surrealdb";
 import type { DecisionCaller } from "../../ai/decision/model";
@@ -212,6 +213,7 @@ const defaultResumeWorkflow: NonNullable<CreateMastraRunnerOptions["resumeWorkfl
     onSuspend: input.onSuspend,
     answerResourceSelection: input.answerResourceSelection,
   };
+  setExecutionContext(requestContext, { surrealSession: input.surrealSession });
   requestContext.set(ROUTER_RUNTIME_KEY, runtime);
 
   const result = await run.resume({ resumeData: { decision: input.decision }, requestContext });
