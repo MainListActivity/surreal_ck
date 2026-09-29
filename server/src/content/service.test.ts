@@ -280,6 +280,68 @@ describe("platform content ingestion service", () => {
     })).rejects.toMatchObject<ContentServiceError>({ code: "invalid_request" });
   });
 
+  test("writes one collection binding on publish and rejects illegal or unknown keys", async () => {
+    const store = new InMemoryPlatformContentStore();
+    const service = new PlatformContentService({
+      store,
+      sources: [source],
+      activeCollectionKeys: async () => ["statutes", "cases"],
+    });
+    const batch = await createSyntheticJudgmentBatch();
+    const withCollections = (idempotencyKey: string, collections?: string[]) => {
+      const next = structuredClone(batch);
+      next.idempotencyKey = idempotencyKey;
+      if (collections) next.items[0]!.payload.collections = collections;
+      return next;
+    };
+
+    await expect(service.submitBatch(operator, withCollections("bad-key", ["NotAKey"])))
+      .rejects.toMatchObject<ContentServiceError>({ code: "invalid_request" });
+    const unknown = await service.submitBatch(operator, withCollections("unknown-key", ["not_listed"]));
+    expect(unknown.entries[0]).toMatchObject({ status: "rejected" });
+    expect(unknown.entries[0]?.issues[0]).toMatchObject({ code: "invalid_request", fieldPath: "payload.collections" });
+
+    const unbound = await service.submitBatch(operator, withCollections("no-collections"));
+    const unboundPublication = await service.publishBatch(operator, {
+      batchId: unbound.batchId,
+      validationRevision: 1,
+      entryKeys: ["fixture-judgment-1"],
+      idempotencyKey: "publication-unbound",
+    });
+    expect(unboundPublication.entries[0]?.status).toBe("published");
+    const unboundItemId = (await service.searchContent(operator, { limit: 20 })).items[0]?.itemId;
+    expect(unboundItemId).toBeTruthy();
+    expect(store.collectionBinding(unboundItemId!)).toBeNull();
+
+    const boundBatch = withCollections("with-collections", ["statutes"]);
+    boundBatch.items[0]!.payload.source.recordKey = "bound-1";
+    const bound = await service.submitBatch(operator, boundBatch);
+    expect(bound.entries[0]?.status).toBe("accepted");
+    const published = await service.publishBatch(operator, {
+      batchId: bound.batchId,
+      validationRevision: 1,
+      entryKeys: ["fixture-judgment-1"],
+      idempotencyKey: "publication-bound",
+    });
+    expect(published.entries[0]?.status).toBe("published");
+    const boundItemId = (await service.searchContent(operator, { limit: 20 })).items
+      .find((item) => item.version.sourceKey === source.sourceKey && item.itemId !== unboundItemId)?.itemId;
+    expect(store.collectionBinding(boundItemId!)).toEqual(["statutes"]);
+
+    const again = withCollections("with-collections-again", ["statutes", "cases"]);
+    again.items[0]!.payload.source.recordKey = "bound-1";
+    const resubmitted = await service.submitBatch(operator, again);
+    const republished = await service.publishBatch(operator, {
+      batchId: resubmitted.batchId,
+      validationRevision: 1,
+      entryKeys: ["fixture-judgment-1"],
+      idempotencyKey: "publication-bound-again",
+    });
+    expect(republished.entries[0]?.status).toBe("unchanged");
+    expect(store.collectionBinding(boundItemId!)).toEqual(["statutes", "cases"]);
+    expect((await service.searchContent(operator, { limit: 20 })).items).toHaveLength(2);
+  });
+
   test("legalSearchQueryCandidates 从自然语言问句抽出可检索短语", () => {
     expect(legalSearchQueryCandidates("查找合同解除案例")).toContain("合同解除");
     expect(legalSearchQueryCandidates("帮我查一下最高法关于专利侵权许诺销售的指导案例和适用法条")).toEqual(

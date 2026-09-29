@@ -292,6 +292,15 @@ function issue(
   };
 }
 
+function unknownCollectionKeys(
+  collections: readonly string[] | undefined,
+  catalog: ReadonlySet<string> | null,
+): string[] {
+  if (!collections || collections.length === 0) return [];
+  const active = catalog ?? new Set<string>();
+  return collections.filter((key) => !active.has(key));
+}
+
 function requireCapability(actor: ContentOperator, capability: string): void {
   if (!actor.subject.trim()) throw new ContentServiceError("forged_actor", "运营 actor subject 不能为空");
   if (!actor.capabilities.includes(capability)) {
@@ -360,6 +369,8 @@ export type PlatformContentServiceOptions = Readonly<{
   store: PlatformContentStore;
   sources?: readonly ContentSourceRegistration[];
   sourceProvider?: ContentSourceProvider;
+  /** 活跃集合键。载荷带 collections 时必填；缺省载荷不查目录。 */
+  activeCollectionKeys?: () => Promise<readonly string[]>;
   now?: () => Date;
   limits?: Partial<Parameters<typeof validatePlatformContentBatch>[1]>;
   idFactory?: (prefix: string) => string;
@@ -374,6 +385,14 @@ export class PlatformContentService {
     this.sourceMap = new Map((options.sources ?? []).map((source) => [source.sourceKey, source]));
     this.now = options.now ?? (() => new Date());
     this.idFactory = options.idFactory ?? ((prefix) => `${prefix}_${crypto.randomUUID()}`);
+  }
+
+  private async collectionCatalog(items: readonly IngestionEntry[]): Promise<ReadonlySet<string> | null> {
+    const needed = items.some((item) => item.operation === "upsert" && (item.payload.collections?.length ?? 0) > 0);
+    if (!needed) return null;
+    const load = this.options.activeCollectionKeys;
+    if (!load) throw new ContentServiceError("invalid_request", "内容集合目录未配置，不能接受 collections");
+    return new Set(await load());
   }
 
   private async currentSourceMap(): Promise<ReadonlyMap<string, ContentSourceRegistration>> {
@@ -456,6 +475,7 @@ export class PlatformContentService {
 
     const entries: StoredContentBatch["entries"] = [];
     const sourceLicenseSnapshot: Record<string, ContentSourceLicenseRevision> = {};
+    const catalog = await this.collectionCatalog(request.items);
     for (const entry of request.items) {
       if (entry.operation === "withdraw") requireCapability(actor, "content.withdraw");
       if (entry.operation === "restore") requireCapability(actor, "content.restore");
@@ -468,7 +488,14 @@ export class PlatformContentService {
         } else if (source.status !== "active" || !source.allowedActions.includes("submit")) {
           entryIssues.push(issue("source_not_authorized", `来源 ${entry.payload.source.sourceKey} 当前不允许提交`, { entryKey: entry.entryKey }));
         }
-        if (entry.payload.source.recordKey) {
+        const unknown = unknownCollectionKeys(entry.payload.collections, catalog);
+        if (unknown.length > 0) {
+          entryIssues.push(issue("invalid_request", `未知内容集合：${unknown.join("、")}`, {
+            entryKey: entry.entryKey,
+            fieldPath: "payload.collections",
+          }));
+        }
+        if (entryIssues.length === 0 && entry.payload.source.recordKey) {
           const duplicate = await this.options.store.findBySourceRecord({
             sourceKey: entry.payload.source.sourceKey,
             recordKey: entry.payload.source.recordKey,
@@ -654,6 +681,7 @@ export class PlatformContentService {
     }
     const entriesByKey = new Map(batch.entries.map((entry) => [entry.entryKey, entry]));
     const sourceMap = await this.currentSourceMap();
+    const catalog = await this.collectionCatalog(batch.request.items);
     const resultEntries: PublishBatchResponse["entries"] = [];
     for (const entryKey of request.entryKeys) {
       const entry = entriesByKey.get(entryKey);
@@ -686,6 +714,16 @@ export class PlatformContentService {
             status: "blocked",
             versionId: null,
             issues: [issue("source_not_authorized", `来源 ${requestEntry.payload.source.sourceKey} 当前不允许发布`, { entryKey })],
+          });
+          continue;
+        }
+        const unknown = unknownCollectionKeys(requestEntry.payload.collections, catalog);
+        if (unknown.length > 0) {
+          resultEntries.push({
+            entryKey,
+            status: "blocked",
+            versionId: null,
+            issues: [issue("invalid_request", `未知内容集合：${unknown.join("、")}`, { entryKey, fieldPath: "payload.collections" })],
           });
           continue;
         }
@@ -791,6 +829,11 @@ export class InMemoryPlatformContentStore implements PlatformContentStore {
     response: PublishBatchResponse | null;
   }>();
   private readonly publicationRevisions = new Map<string, number>();
+  private readonly collectionBindings = new Map<string, readonly string[]>();
+
+  collectionBinding(itemId: string): readonly string[] | null {
+    return this.collectionBindings.get(itemId) ?? null;
+  }
 
   async findBatchByIdempotency(input: { actorSubject: string; idempotencyKey: string }): Promise<StoredContentBatch | null> {
     const batchId = this.idempotency.get(`${input.actorSubject}\u0000${input.idempotencyKey}`);
@@ -855,6 +898,7 @@ export class InMemoryPlatformContentStore implements PlatformContentStore {
         ? this.published.find((item) => item.version.sourceKey === requestEntry.payload.source.sourceKey && item.sourceRecordKey === sourceRecordKey)
         : undefined;
       if (existing && existing.bodySha256 === bodySha256) {
+        this.rememberCollections(existing.itemId, requestEntry.payload.collections);
         return { status: "unchanged", versionId: existing.version.versionId, issues: [] };
       }
       const targetId = requestEntry.payload.target?.itemId;
@@ -886,6 +930,7 @@ export class InMemoryPlatformContentStore implements PlatformContentStore {
           const index = this.published.indexOf(next);
           this.published[index] = updated;
           this.publicationRevisions.set(target.itemId, nextRevision);
+          this.rememberCollections(target.itemId, requestEntry.payload.collections);
           return { status: "published", versionId, issues: [] };
         }
       }
@@ -894,6 +939,7 @@ export class InMemoryPlatformContentStore implements PlatformContentStore {
       const published = this.toPublished(requestEntry, itemId, versionId, 1, bodySha256);
       this.published.push(published);
       this.publicationRevisions.set(itemId, 1);
+      this.rememberCollections(itemId, requestEntry.payload.collections);
       return { status: "published", versionId, issues: [] };
     }
     const target = this.published.find((item) => item.itemId === requestEntry.payload.target.itemId);
@@ -1038,6 +1084,11 @@ export class InMemoryPlatformContentStore implements PlatformContentStore {
     const offset = decodeCursor(input.cursor);
     const page = all.slice(offset, offset + input.limit);
     return { items: page, nextCursor: offset + page.length < all.length ? encodeCursor(offset + page.length) : null };
+  }
+
+  private rememberCollections(itemId: string, collections: readonly string[] | undefined): void {
+    if (!collections || collections.length === 0) return;
+    this.collectionBindings.set(itemId, [...collections]);
   }
 
   private toPublished(

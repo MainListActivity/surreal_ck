@@ -268,6 +268,9 @@ export const JudgmentMetadataSchema = z.strictObject({
 });
 export type JudgmentMetadata = z.infer<typeof JudgmentMetadataSchema>;
 
+/** 与 _system.content_collection.collection_key 相同的键形。空数组与缺省都表示不写绑定。 */
+const ContentCollectionKeySchema = z.string().regex(/^[a-z][a-z0-9_]{1,64}$/u);
+
 const BaseUpsertPayloadSchema = z.strictObject({
   source: ContentSourceSchema,
   document: ContentDocumentSchema,
@@ -279,6 +282,10 @@ const BaseUpsertPayloadSchema = z.strictObject({
     })
     .nullable()
     .optional(),
+  collections: z.array(ContentCollectionKeySchema).max(32).refine(
+    (keys) => new Set(keys).size === keys.length,
+    "内容集合键不能重复",
+  ).optional(),
 });
 
 export const LegislationUpsertPayloadSchema = BaseUpsertPayloadSchema.extend({

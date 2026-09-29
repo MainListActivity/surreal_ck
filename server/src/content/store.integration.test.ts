@@ -5,6 +5,8 @@ import { loadPlatformContentScripts } from "@surreal-ck/shared/platform-content-
 import { PlatformContentService } from "./service";
 import { SurrealPlatformContentStore } from "./store";
 import { provisionContentPublisher } from "./publisher-session";
+import { fetchContentReaderTarget } from "./reader-projection";
+import { planContentReaderExchange } from "./reader-exchange";
 import { SurrealNativeQuotaClient } from "../db/native-quota/client";
 import { extractNativeQuotaError } from "@surreal-ck/shared/native-quota";
 import { Hono } from "hono";
@@ -353,6 +355,209 @@ describe("Surreal platform content store", () => {
         },
       })).rejects.toMatchObject({ code: "invalid_request" });
     } finally {
+      await publisher.close();
+      await db.close();
+    }
+  });
+
+  localTest("publish writes one collection binding visible to the reader gate", async () => {
+    const db = new Surreal();
+    const publisher = new Surreal();
+    const projection = new Surreal();
+    const namespace = `content_test_${crypto.randomUUID().replaceAll("-", "")}`;
+    const database = "platform";
+    const url = process.env.LOCAL_SURREAL_URL ?? "ws://127.0.0.1:8999/rpc";
+    await db.connect(url, { namespace, database, authentication: { username: "root", password: "root" } });
+    await db.use({ namespace, database });
+    try {
+      for (const script of await loadPlatformContentScripts()) await db.query(script.sql);
+      const secret = `${crypto.randomUUID()}${crypto.randomUUID()}`;
+      await provisionContentPublisher(db, secret);
+      const projectionPass = `${crypto.randomUUID()}${crypto.randomUUID()}`;
+      await db.query(`
+        INSERT INTO content_projection_identity { id: content_projection_identity:server, active: true }
+          ON DUPLICATE KEY UPDATE active = true;
+        INSERT INTO content_projection_credential { id: content_projection_credential:server, secret_hash: crypto::argon2::generate($pass) }
+          ON DUPLICATE KEY UPDATE secret_hash = crypto::argon2::generate($pass);
+      `, { pass: projectionPass });
+      await publisher.connect(url, { namespace, database });
+      await publisher.signin({ namespace, database, access: "content_publisher", variables: { pass: secret } });
+      await projection.connect(url, { namespace, database });
+      await projection.signin({ namespace, database, access: "content_projection_sync", variables: { pass: projectionPass } });
+      const service = new PlatformContentService({
+        store: new SurrealPlatformContentStore(publisher),
+        sources: [],
+        activeCollectionKeys: async () => ["statutes", "cases"],
+      });
+      await service.registerSource(operator, {
+        sourceKey: "fixture.synthetic.cn",
+        label: "合成来源",
+        baseUrl: "https://example.invalid",
+        status: "active",
+        allowedActions: ["submit", "publish", "browse", "search", "read", "cite", "export"],
+        license: {
+          licenseKind: "synthetic",
+          allowedActions: ["submit", "publish", "browse", "search", "read", "cite", "export"],
+          effectiveFrom: "2026-09-01T00:00:00Z",
+          effectiveUntil: null,
+          evidenceText: "合成许可",
+        },
+      });
+      const law = await createSyntheticLegislationBatch();
+      const bound = structuredClone(law);
+      bound.idempotencyKey = "binding-batch";
+      bound.items[0]!.payload.collections = ["statutes"];
+      const submitted = await service.submitBatch(operator, bound);
+      expect(submitted.entries[0]?.status).toBe("accepted");
+      const published = await service.publishBatch(operator, {
+        batchId: submitted.batchId,
+        validationRevision: 1,
+        entryKeys: ["fixture-legislation-1"],
+        idempotencyKey: "binding-publication",
+      });
+      expect(published.entries[0]?.status).toBe("published");
+      const versionId = published.entries[0]?.versionId;
+      expect(versionId).toBeTruthy();
+      const target = await fetchContentReaderTarget(projection, versionId!);
+      expect(target?.collectionKeys).toEqual(["statutes"]);
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      const allowed = planContentReaderExchange({
+        body: { contentPublicId: versionId },
+        subject: "human",
+        workspaceDb: "ws_alpha",
+        workspaceActive: true,
+        membership: "active",
+        activeSubjects: ["human"],
+        subjectExpiresAtSeconds: nowSeconds + 3600,
+        nowSeconds,
+        subjectIsContentReader: false,
+        database,
+        namespace,
+        entitlement: {
+          revision: 1,
+          digest: "sha256:abc",
+          resolverVersion: "product-entitlement-v1",
+          effectiveUntilSeconds: null,
+          collections: ["statutes"],
+          contentActions: ["browse", "read"],
+          aiActions: [],
+        },
+        content: target,
+      });
+      expect(allowed.ok).toBe(true);
+
+      const republish = structuredClone(bound);
+      republish.idempotencyKey = "binding-batch-again";
+      republish.items[0]!.payload.collections = ["statutes", "cases"];
+      const resubmitted = await service.submitBatch(operator, republish);
+      const republished = await service.publishBatch(operator, {
+        batchId: resubmitted.batchId,
+        validationRevision: 1,
+        entryKeys: ["fixture-legislation-1"],
+        idempotencyKey: "binding-publication-again",
+      });
+      expect(republished.entries[0]?.status).toBe("unchanged");
+      const bindings = (await db.query("SELECT collections FROM content_collection_binding;"))[0] as { collections: string[] }[];
+      expect(bindings).toHaveLength(1);
+      expect(bindings[0]?.collections).toEqual(["statutes", "cases"]);
+      const again = await fetchContentReaderTarget(projection, versionId!);
+      expect(again?.collectionKeys).toEqual(["statutes", "cases"]);
+      const events = (await db.query("SELECT event_kind, reason, occurred_at FROM publication_event ORDER BY occurred_at;"))[0] as { event_kind: string; reason: string | null }[];
+      expect(events).toHaveLength(2);
+      expect(events[1]).toMatchObject({ event_kind: "corrected", reason: "content collections updated" });
+
+      await db.query(`DEFINE EVENT reject_binding_audit ON publication_event
+        WHEN $event = "CREATE" AND $after.reason = "content collections updated"
+        THEN { THROW "audit-unavailable"; };`);
+      const failedBatch = structuredClone(bound);
+      failedBatch.idempotencyKey = "binding-batch-audit-failure";
+      failedBatch.items[0]!.payload.collections = ["cases"];
+      const failedSubmitted = await service.submitBatch(operator, failedBatch);
+      const failedPublication = await service.publishBatch(operator, {
+        batchId: failedSubmitted.batchId,
+        validationRevision: 1,
+        entryKeys: ["fixture-legislation-1"],
+        idempotencyKey: "binding-publication-audit-failure",
+      });
+      expect(failedPublication.entries[0]?.status).toBe("failed");
+      expect((await fetchContentReaderTarget(projection, versionId!))?.collectionKeys).toEqual(["statutes", "cases"]);
+      expect((await db.query("SELECT * FROM publication_event;"))[0]).toHaveLength(2);
+      await db.query("REMOVE EVENT reject_binding_audit ON publication_event;");
+
+      const plain = structuredClone(law);
+      plain.idempotencyKey = "unbound-batch";
+      plain.items[0]!.entryKey = "fixture-legislation-2";
+      plain.items[0]!.payload.source.recordKey = "law-2";
+      const plainSubmitted = await service.submitBatch(operator, plain);
+      const plainPublished = await service.publishBatch(operator, {
+        batchId: plainSubmitted.batchId,
+        validationRevision: 1,
+        entryKeys: ["fixture-legislation-2"],
+        idempotencyKey: "unbound-publication",
+      });
+      expect(plainPublished.entries[0]?.status).toBe("published");
+      expect((await db.query("SELECT collections FROM content_collection_binding;"))[0]).toHaveLength(1);
+      const unbound = await fetchContentReaderTarget(projection, plainPublished.entries[0]!.versionId!);
+      expect(unbound?.collectionKeys).toEqual([]);
+      const deniedInput = {
+        body: { contentPublicId: plainPublished.entries[0]!.versionId },
+        subject: "human",
+        workspaceDb: "ws_alpha",
+        workspaceActive: true,
+        membership: "active",
+        activeSubjects: ["human"],
+        subjectExpiresAtSeconds: nowSeconds + 3600,
+        nowSeconds,
+        subjectIsContentReader: false,
+        database,
+        namespace,
+        entitlement: {
+          revision: 1,
+          digest: "sha256:abc",
+          resolverVersion: "product-entitlement-v1",
+          effectiveUntilSeconds: null,
+          collections: ["statutes"],
+          contentActions: ["browse", "read"],
+          aiActions: [],
+        },
+        content: unbound,
+      } as const;
+      const denied = planContentReaderExchange(deniedInput);
+      expect(denied).toEqual({ ok: false, error: "collection_denied" });
+
+      const empty = structuredClone(law);
+      empty.idempotencyKey = "empty-collections-batch";
+      empty.items[0]!.entryKey = "fixture-legislation-empty";
+      empty.items[0]!.payload.source.recordKey = "law-empty";
+      empty.items[0]!.payload.collections = [];
+      const emptySubmitted = await service.submitBatch(operator, empty);
+      expect(emptySubmitted.entries[0]?.status).toBe("accepted");
+      const emptyPublished = await service.publishBatch(operator, {
+        batchId: emptySubmitted.batchId,
+        validationRevision: 1,
+        entryKeys: ["fixture-legislation-empty"],
+        idempotencyKey: "empty-collections-publication",
+      });
+      expect(emptyPublished.entries[0]?.status).toBe("published");
+      expect((await db.query("SELECT collections FROM content_collection_binding;"))[0]).toHaveLength(1);
+      const emptyTarget = await fetchContentReaderTarget(projection, emptyPublished.entries[0]!.versionId!);
+      expect(emptyTarget?.collectionKeys).toEqual([]);
+      expect(planContentReaderExchange({
+        ...deniedInput,
+        body: { contentPublicId: emptyPublished.entries[0]!.versionId },
+        content: emptyTarget,
+      })).toEqual({ ok: false, error: "collection_denied" });
+
+      const unknown = structuredClone(law);
+      unknown.idempotencyKey = "unknown-collection";
+      unknown.items[0]!.entryKey = "fixture-legislation-3";
+      unknown.items[0]!.payload.source.recordKey = "law-3";
+      unknown.items[0]!.payload.collections = ["not_listed"];
+      const rejected = await service.submitBatch(operator, unknown);
+      expect(rejected.entries[0]).toMatchObject({ status: "rejected" });
+      expect((await db.query("SELECT collections FROM content_collection_binding;"))[0]).toHaveLength(1);
+    } finally {
+      await projection.close();
       await publisher.close();
       await db.close();
     }
