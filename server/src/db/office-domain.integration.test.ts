@@ -299,6 +299,15 @@ describe("VO01 办公室领域 schema 合约（真实三类会话）", () => {
     expect(String(noteRows[0]?.from_employee)).toBe("user:analyst");
     expect(noteRows[0]?.purpose).toBe("office-request");
 
+    // 冒名 from_employee 被拒：通知归因与 office_* 同构，必须等于 $auth
+    const spoofedNote = await pmSession.query(
+      `CREATE user_notification CONTENT {
+        dedupe_key: "spoof-1", to_user: user:owner, from_employee: user:analyst,
+        title: "t", body: "b", severity: "info"
+      }`,
+    ).collect();
+    expect(rows(spoofedNote)).toHaveLength(0);
+
     const intentRows = rows<{ author: unknown; status: string }>(
       await analystSession.query(
         `CREATE office_ddl_intent CONTENT {

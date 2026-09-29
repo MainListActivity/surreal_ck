@@ -135,6 +135,15 @@ DEFINE EVENT OVERWRITE office_ddl_intent_status_guard ON TABLE office_ddl_intent
   };
 
 -- ── user_notification 通用化：保留债权字段语义，扩展为通用人类注意力通道 ──────
+-- FOR create 收紧：通知归因与 office_* 同构，from_employee 必须等于 $auth，杜绝手工
+-- 冒名 from_*。其余 PERMISSIONS 子句与 019 逐字一致；生产 writer（saveReminder）不显式
+-- 传 from_employee，DEFAULT 先于权限求值，收紧对每日债权提醒无损。
+DEFINE TABLE OVERWRITE user_notification SCHEMAFULL CHANGEFEED 7d
+  PERMISSIONS
+    FOR select WHERE to_user = fn::current_user() OR fn::current_user().is_admin = true,
+    FOR create WHERE $auth.kind = "virtual" AND from_employee = fn::current_user(),
+    FOR update WHERE to_user = fn::current_user() OR fn::current_user().is_admin = true,
+    FOR delete WHERE fn::current_user().is_admin = true;
 -- 债权专属字段放宽为可选（存量行不受影响），新增 purpose/payload/task/answer。
 DEFINE FIELD OVERWRITE workbook ON TABLE user_notification TYPE option<record<workbook>>;
 DEFINE FIELD OVERWRITE related_record ON TABLE user_notification TYPE option<record>;
