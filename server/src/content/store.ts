@@ -702,10 +702,26 @@ export class SurrealPlatformContentStore implements PlatformContentStore {
       : null;
     if (existingBySource && existingBySource.bodySha256 === bodySha256) {
       if (payload.collections && payload.collections.length > 0) {
+        const entryRecord = await this.entryRecord(input.batch.batchId, input.entryKey);
+        if (!entryRecord || !input.publicationId) {
+          return { status: "blocked", versionId: existingBySource.version.versionId, issues: [issue("identity_ambiguous", "发布记录不存在")] };
+        }
         try {
-          await this.db.query(BIND_COLLECTION_SQL, {
+          await this.db.query([
+            "BEGIN TRANSACTION;",
+            BIND_COLLECTION_SQL,
+            "CREATE publication_event CONTENT { request: $publicationRequest, entry: $entry, item: $item, version: $version, event_kind: \"corrected\", actor_subject: $actorSubject, reason: \"content collections updated\", occurred_at: time::now() };",
+            "UPSERT publication_item_result CONTENT { request: $publicationRequest, entry_key: $entryKey, status: \"unchanged\", version: $version, issues: [], created_at: time::now() };",
+            "UPDATE $entry SET status = \"published\", publication_status = \"published\";",
+            "COMMIT TRANSACTION;",
+          ].join("\n"), {
             item: itemRecordId(existingBySource.itemId),
             collections: [...payload.collections],
+            version: versionRecordId(existingBySource.version.versionId),
+            publicationRequest: publicationRequestId(input.publicationId),
+            entry: entryRecord,
+            actorSubject: input.actorSubject,
+            entryKey: input.entryKey,
           });
         } catch (error) {
           return { status: "failed", versionId: existingBySource.version.versionId, issues: [issue("publish_failed", String(error), true)] };

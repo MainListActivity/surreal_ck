@@ -462,6 +462,27 @@ describe("Surreal platform content store", () => {
       expect(bindings[0]?.collections).toEqual(["statutes", "cases"]);
       const again = await fetchContentReaderTarget(projection, versionId!);
       expect(again?.collectionKeys).toEqual(["statutes", "cases"]);
+      const events = (await db.query("SELECT event_kind, reason, occurred_at FROM publication_event ORDER BY occurred_at;"))[0] as { event_kind: string; reason: string | null }[];
+      expect(events).toHaveLength(2);
+      expect(events[1]).toMatchObject({ event_kind: "corrected", reason: "content collections updated" });
+
+      await db.query(`DEFINE EVENT reject_binding_audit ON publication_event
+        WHEN $event = "CREATE" AND $after.reason = "content collections updated"
+        THEN { THROW "audit-unavailable"; };`);
+      const failedBatch = structuredClone(bound);
+      failedBatch.idempotencyKey = "binding-batch-audit-failure";
+      failedBatch.items[0]!.payload.collections = ["cases"];
+      const failedSubmitted = await service.submitBatch(operator, failedBatch);
+      const failedPublication = await service.publishBatch(operator, {
+        batchId: failedSubmitted.batchId,
+        validationRevision: 1,
+        entryKeys: ["fixture-legislation-1"],
+        idempotencyKey: "binding-publication-audit-failure",
+      });
+      expect(failedPublication.entries[0]?.status).toBe("failed");
+      expect((await fetchContentReaderTarget(projection, versionId!))?.collectionKeys).toEqual(["statutes", "cases"]);
+      expect((await db.query("SELECT * FROM publication_event;"))[0]).toHaveLength(2);
+      await db.query("REMOVE EVENT reject_binding_audit ON publication_event;");
 
       const plain = structuredClone(law);
       plain.idempotencyKey = "unbound-batch";
