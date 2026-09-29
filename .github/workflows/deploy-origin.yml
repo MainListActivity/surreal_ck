@@ -1,0 +1,134 @@
+name: Deploy origin
+
+run-name: "Deploy origin ${{ inputs.sha }}"
+
+on:
+  workflow_call:
+    inputs:
+      sha:
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 已通过 Quality gate 的提交（完整 SHA）
+        type: string
+        required: true
+
+defaults:
+  run:
+    shell: bash
+
+permissions: {}
+
+jobs:
+  origin:
+    name: Hono origin (systemd)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    concurrency:
+      group: production-origin
+      cancel-in-progress: false
+    environment:
+      name: production
+      url: https://l.maplayer.top/health
+    permissions:
+      checks: read
+      contents: read
+    env:
+      RELEASE_SHA: ${{ inputs.sha }}
+      ORIGIN_HOST: ${{ vars.ORIGIN_HOST }}
+      ORIGIN_USER: ${{ vars.ORIGIN_USER }}
+    steps:
+      - name: Harden the runner
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        with:
+          egress-policy: audit
+
+      - name: Verify the release commit passed CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test -n "$RELEASE_SHA"
+          passed="$(gh api \
+            "repos/$GITHUB_REPOSITORY/commits/$RELEASE_SHA/check-runs" \
+            --jq 'any(.check_runs[]; .name == "Quality gate" and .conclusion == "success")')"
+          if [ "$passed" != "true" ]; then
+            echo "::error::Quality gate for $RELEASE_SHA has not succeeded"
+            exit 1
+          fi
+
+      - name: Checkout deploy tooling
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          sparse-checkout: scripts/deploy
+          persist-credentials: false
+
+      - name: Checkout the CI-approved commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+          path: release
+          persist-credentials: false
+
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.ORIGIN_SSH_KEY || secrets.SSH_KEY }}
+          ORIGIN_KNOWN_HOSTS: ${{ vars.ORIGIN_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          for name in SSH_KEY ORIGIN_KNOWN_HOSTS ORIGIN_HOST ORIGIN_USER; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name is not configured in the production environment"
+              exit 1
+            fi
+          done
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" | tr -d '\r' > ~/.ssh/origin
+          chmod 600 ~/.ssh/origin
+          if ! fingerprint="$(ssh-keygen -y -P '' -f ~/.ssh/origin 2>/dev/null | ssh-keygen -lf - 2>/dev/null)"; then
+            echo "::error::SSH_KEY is not an unencrypted OpenSSH/PEM private key"
+            exit 1
+          fi
+          echo "deploy key: $fingerprint"
+          printf '%s\n' "$ORIGIN_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<CFG
+          Host origin
+            HostName $ORIGIN_HOST
+            User $ORIGIN_USER
+            IdentityFile ~/.ssh/origin
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            PubkeyAcceptedAlgorithms +ssh-rsa
+            ServerAliveInterval 15
+          CFG
+
+      - name: Upload and activate release
+        env:
+          ALL_SECRETS: ${{ toJSON(secrets) }}
+        run: |
+          set -euo pipefail
+          release_id="${RELEASE_SHA:0:7}-ci${GITHUB_RUN_ID}"
+          archive="/tmp/surreal_ck-${release_id}.tar.gz"
+          env_additions="/tmp/surreal_ck-env-${release_id}"
+          umask 077
+          # ORIGIN_ENV_<NAME> secrets become <NAME>=<value> in the origin server.env.
+          jq -r 'to_entries[] | select(.key | startswith("ORIGIN_ENV_")) | "\(.key | ltrimstr("ORIGIN_ENV_"))=\(.value)"' \
+            <<<"$ALL_SECRETS" > env.additions
+          if ! jq -e '[to_entries[] | select(.key | startswith("ORIGIN_ENV_")) | .value | select(contains("\n"))] | length == 0' \
+            <<<"$ALL_SECRETS" >/dev/null; then
+            echo "::error::ORIGIN_ENV_* secrets must be single-line values"
+            exit 1
+          fi
+          echo "env keys: $(cut -d= -f1 env.additions | tr '\n' ' ')"
+          scp -q env.additions "origin:$env_additions"
+          rm -f env.additions
+          git -C release archive --format=tar.gz -o "$PWD/release.tar.gz" "$RELEASE_SHA"
+          scp -q release.tar.gz "origin:$archive"
+          scp -q scripts/deploy/origin-release.sh "origin:/tmp/origin-release-${release_id}.sh"
+          ssh origin "bash /tmp/origin-release-${release_id}.sh '$release_id' '$archive' '$env_additions'; status=\$?; rm -f /tmp/origin-release-${release_id}.sh '$env_additions'; exit \$status"
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/origin
