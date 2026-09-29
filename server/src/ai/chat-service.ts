@@ -12,12 +12,13 @@
  */
 
 import type { Surreal } from "surrealdb";
-import type {
-  AiContextSnapshot,
-  AiMessageChunkEvent,
-  AiProgressEvent,
-  ResumeDecision,
-  WorkflowSuspendedEvent,
+import {
+  createDefaultAiContextSnapshot,
+  type AiContextSnapshot,
+  type AiMessageChunkEvent,
+  type AiProgressEvent,
+  type ResumeDecision,
+  type WorkflowSuspendedEvent,
 } from "@surreal-ck/shared";
 import type { AiChatService } from "../routes/ai-chat";
 import type { RouterPlan } from "../../ai/mastra/workflows/router-classifier";
@@ -116,7 +117,7 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
             streamId: runId, // streamId 与 runId 同步，前端无需再额外配对
             surrealSession,
             ownerSubject,
-            userContext: userContext ?? ({} as AiContextSnapshot),
+            userContext: userContext ?? createDefaultAiContextSnapshot(),
             planOverride,
             pushChunk: bridge.pushChunk,
             pushProgress: bridge.pushProgress,
@@ -144,7 +145,7 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
             decision,
             surrealSession,
             ownerSubject,
-            userContext: options.resumeUserContextFallback ?? ({} as AiContextSnapshot),
+            userContext: options.resumeUserContextFallback ?? createDefaultAiContextSnapshot(),
             pushChunk: bridge.pushChunk,
             pushProgress: bridge.pushProgress,
             onSuspend: bridge.onSuspend,
