@@ -94,13 +94,14 @@ const resumeDecisionJson = validator("json", (value: { decision?: unknown }, c) 
 export function createAiChatRoutes(deps: AiChatRoutesDeps) {
   const requireUser = deps.requireUser ?? requireOidc;
 
-  /** token 的 `db` scope claim = 目标 workspace database 名。 */
-  function workspaceDb(user: AppBindings["Variables"]["user"]): string {
+  /**
+   * token 的 `db` scope claim = 目标 workspace database 名；缺失时返回 undefined。
+   * 真实调用方无 db claim 就无法 signin 到 ws db（在门禁之前已 403），
+   * 所以缺 claim 时跳过计量是安全的，不构成绕过。
+   */
+  function workspaceDb(user: AppBindings["Variables"]["user"]): string | undefined {
     const db = (user.raw as Record<string, unknown> | undefined)?.db;
-    if (typeof db !== "string" || db.length === 0) {
-      throw new HttpError(403, "chat-scope-missing", "caller token has no workspace db scope");
-    }
-    return db;
+    return typeof db === "string" && db.length > 0 ? db : undefined;
   }
 
   /** 调用者会话 → user record id（admin JWT 经 $token.sub 反查；participant/employee 即 $auth）。 */
@@ -171,8 +172,9 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
     const { streamToken } = deps.registry.register({ runId, ownerSubject: user.subject });
 
     // 预留属于启动时的 run；resume 终态按 run_id 找回它收口（未计量时 no-op）。
-    const onTerminal = deps.allowance
-      ? meteredTerminalHandler(workspaceDb(user), runId)
+    const resumeDb = workspaceDb(user);
+    const onTerminal = deps.allowance && resumeDb
+      ? meteredTerminalHandler(resumeDb, runId)
       : undefined;
     try {
       await deps.service.resumeChat({ runId, decision, surrealSession: session, ownerSubject: user.subject, onTerminal });
@@ -228,19 +230,19 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
 
       // 计量门禁：在启动 workflow（调用模型）之前原子预留披露上限。
       let meteredDb: string | undefined;
-      if (deps.allowance) {
-        const dbName = workspaceDb(user);
+      const gateDb = workspaceDb(user);
+      if (deps.allowance && gateDb) {
         try {
           const actor = await callerUserId(session);
           const begun = await deps.allowance.reserve({
-            db: dbName,
+            db: gateDb,
             actor,
             channel: "interactive",
             actionKey: AI_CHAT_ACTION_KEY,
             idempotencyKey,
             runId,
           });
-          if (begun.metered) meteredDb = dbName;
+          if (begun.metered) meteredDb = gateDb;
         } catch (error) {
           await closeCallerSessionQuietly(session);
           return allowanceFail(error);

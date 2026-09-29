@@ -50,7 +50,12 @@ function harness(over: {
   resumeChat?: (runId: string, decision: ResumeDecision) => Promise<{ runId: string; streamUrl: string; streamToken: string }>;
 } = {}) {
   const start = deferred<{ runId: string; streamUrl: string; streamToken: string }>();
-  const starts: Array<{ message: string; contextSnapshot?: AiContextSnapshot; composerMode?: "chat" | "resource-search" }> = [];
+  const starts: Array<{
+    message: string;
+    contextSnapshot?: AiContextSnapshot;
+    composerMode?: "chat" | "resource-search";
+    idempotencyKey?: string;
+  }> = [];
   const resumes: Array<{ runId: string; decision: ResumeDecision }> = [];
   const handles: AiDrawerStreamHandle[] = [];
   const streamListeners: Array<(event: ChatStreamEvent) => void> = [];
@@ -137,6 +142,9 @@ describe("AI 抽屉会话", () => {
     await h.session.retryMessage("id-1");
 
     expect(attempts).toBe(2);
+    // LCA05：重试复用同一幂等键 → 服务端命中既有预留，不重复扣款。
+    expect(h.starts[1]?.idempotencyKey).toBe(h.starts[0]?.idempotencyKey);
+    expect(h.starts[1]?.idempotencyKey).toBeTruthy();
     expect(h.session.snapshot().messages.filter((message) => message.role === "user")).toHaveLength(1);
     expect(h.session.snapshot()).toMatchObject({
       sendError: null,
@@ -156,7 +164,9 @@ describe("AI 抽屉会话", () => {
       ["user", "打开工作簿 X"],
       ["assistant", ""],
     ]);
-    expect(h.starts).toEqual([{ message: "打开工作簿 X", contextSnapshot: context() }]);
+    expect(h.starts).toEqual([
+      { message: "打开工作簿 X", contextSnapshot: context(), idempotencyKey: expect.any(String) },
+    ]);
 
     h.start.resolve({ runId: "run-1", streamUrl: "/api/chat/stream?runId=run-1", streamToken: "stream-token" });
     await sending;
@@ -186,7 +196,12 @@ describe("AI 抽屉会话", () => {
     const sending = h.session.sendMessage("合同解除案例", context(), { composerMode: "resource-search" });
 
     expect(h.starts).toEqual([
-      { message: "合同解除案例", contextSnapshot: context(), composerMode: "resource-search" },
+      {
+        message: "合同解除案例",
+        contextSnapshot: context(),
+        composerMode: "resource-search",
+        idempotencyKey: expect.any(String),
+      },
     ]);
 
     h.start.resolve({ runId: "run-rs", streamUrl: "/api/chat/stream?runId=run-rs", streamToken: "t" });

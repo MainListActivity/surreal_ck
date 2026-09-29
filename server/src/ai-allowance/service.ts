@@ -200,14 +200,14 @@ export class AiAllowanceService {
     );
     if (existing) return { metered: true, reservation: existing, reused: true };
 
-    // 消费顺序：最早到期 → 同到期套餐/补偿先于购买 → 创建序。
+    // 消费顺序：最早到期 → 同到期套餐/补偿先于购买 → 创建序（ORDER BY 只接 idiom，先投影再排）。
     const candidates = rows<{ id: unknown }>(
       await session
         .query(
-          `SELECT id FROM ai_allowance_bucket
+          `SELECT id, expires_at, created_at, (kind = "purchased") AS purchased_last FROM ai_allowance_bucket
            WHERE status = "active" AND effective_from <= time::now() AND expires_at > time::now()
              AND available >= $amt
-           ORDER BY expires_at ASC, (kind = "purchased") ASC, created_at ASC`,
+           ORDER BY expires_at ASC, purchased_last ASC, created_at ASC`,
           { amt: amount },
         )
         .collect(),
@@ -296,19 +296,24 @@ export class AiAllowanceService {
            UPDATE ONLY $r.bucket SET reserved -= $r.max_amount, settled += $charge;
            LET $b = (SELECT expires_at FROM ONLY $r.bucket);
            LET $excess = $r.max_amount - $charge;
-           IF $excess > 0 AND $b.expires_at > time::now() {
-             UPDATE ONLY $r.bucket SET available += $excess;
-           };
            CREATE ai_ledger_entry CONTENT {
              kind: "settle", bucket: $r.bucket, reservation: $r.id, amount: $charge,
              note: $note, resulting_available: (SELECT VALUE available FROM ONLY $r.bucket)[0]
            };
            IF $excess > 0 {
-             CREATE ai_ledger_entry CONTENT {
-               kind: $b.expires_at > time::now() ? "release" : "writeoff",
-               bucket: $r.bucket, reservation: $r.id, amount: $excess,
-               note: "unused hold after partial settle",
-               resulting_available: (SELECT VALUE available FROM ONLY $r.bucket)[0]
+             IF $b.expires_at > time::now() {
+               UPDATE ONLY $r.bucket SET available += $excess;
+               CREATE ai_ledger_entry CONTENT {
+                 kind: "release", bucket: $r.bucket, reservation: $r.id, amount: $excess,
+                 note: "unused hold after partial settle",
+                 resulting_available: (SELECT VALUE available FROM ONLY $r.bucket)[0]
+               };
+             } ELSE {
+               CREATE ai_ledger_entry CONTENT {
+                 kind: "writeoff", bucket: $r.bucket, reservation: $r.id, amount: $excess,
+                 note: "unused hold on expired bucket",
+                 resulting_available: (SELECT VALUE available FROM ONLY $r.bucket)[0]
+               };
              };
            };
          };
@@ -338,11 +343,15 @@ export class AiAllowanceService {
            LET $b = (SELECT expires_at FROM ONLY $r.bucket);
            IF $b.expires_at > time::now() {
              UPDATE ONLY $r.bucket SET available += $r.max_amount;
-           };
-           CREATE ai_ledger_entry CONTENT {
-             kind: $b.expires_at > time::now() ? "release" : "writeoff",
-             bucket: $r.bucket, reservation: $r.id, amount: $r.max_amount,
-             note: $reason, resulting_available: (SELECT VALUE available FROM ONLY $r.bucket)[0]
+             CREATE ai_ledger_entry CONTENT {
+               kind: "release", bucket: $r.bucket, reservation: $r.id, amount: $r.max_amount,
+               note: $reason, resulting_available: (SELECT VALUE available FROM ONLY $r.bucket)[0]
+             };
+           } ELSE {
+             CREATE ai_ledger_entry CONTENT {
+               kind: "writeoff", bucket: $r.bucket, reservation: $r.id, amount: $r.max_amount,
+               note: $reason, resulting_available: (SELECT VALUE available FROM ONLY $r.bucket)[0]
+             };
            };
          };
          COMMIT;`,
@@ -393,11 +402,15 @@ export class AiAllowanceService {
              LET $b = (SELECT expires_at FROM ONLY $r.bucket);
              IF $b.expires_at > time::now() {
                UPDATE ONLY $r.bucket SET available += $r.max_amount;
-             };
-             CREATE ai_ledger_entry CONTENT {
-               kind: $b.expires_at > time::now() ? "expire" : "writeoff",
-               bucket: $r.bucket, reservation: $r.id, amount: $r.max_amount,
-               note: "reservation deadline lapsed", resulting_available: (SELECT VALUE available FROM ONLY $r.bucket)[0]
+               CREATE ai_ledger_entry CONTENT {
+                 kind: "expire", bucket: $r.bucket, reservation: $r.id, amount: $r.max_amount,
+                 note: "reservation deadline lapsed", resulting_available: (SELECT VALUE available FROM ONLY $r.bucket)[0]
+               };
+             } ELSE {
+               CREATE ai_ledger_entry CONTENT {
+                 kind: "writeoff", bucket: $r.bucket, reservation: $r.id, amount: $r.max_amount,
+                 note: "hold on expired bucket lapses", resulting_available: (SELECT VALUE available FROM ONLY $r.bucket)[0]
+               };
              };
            };
            COMMIT;`,

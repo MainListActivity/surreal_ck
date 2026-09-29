@@ -4,7 +4,7 @@
 
 **Blocked by:** [02 — 工作区绑定产品套餐并展示内容权益](02-product-entitlement-assignment.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **ID:** SCK-LCA-05
 **确认时序号:** 6
