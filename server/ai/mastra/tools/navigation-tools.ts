@@ -1,7 +1,7 @@
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
 import { StringRecordId } from "surrealdb";
-import { getSurrealSession, type ToolRequestContext } from "./tool-session";
+import { getSurrealSession, type ToolRequestContext } from "../execution-context";
 
 /** SurrealDB SDK 的 query 返回「每条语句结果」的数组；取第一条语句的行集。 */
 function firstStatementRows<T>(queryResult: unknown): T[] {

@@ -17,6 +17,7 @@ import {
   type RouterRuntime,
   type SubAgentExecutors,
 } from "./router-workflow";
+import { setExecutionContext } from "../execution-context";
 import type { RouterPlan } from "./router-classifier";
 
 export type RouterChatStreamPusher = (event: AiMessageChunkEvent) => void;
@@ -79,6 +80,8 @@ export async function runRouterChat(input: RunRouterChatInput): Promise<RunRoute
   };
 
   const requestContext = new RequestContext();
+  // Router run 也走共享执行上下文 seam 注入调用者会话；Router 私有运行时仍走 ROUTER_RUNTIME_KEY。
+  setExecutionContext(requestContext, { surrealSession: input.surrealSession });
   requestContext.set(ROUTER_RUNTIME_KEY, runtime);
 
   const workflow = input.mastra.getWorkflow(ROUTER_WORKFLOW_ID);

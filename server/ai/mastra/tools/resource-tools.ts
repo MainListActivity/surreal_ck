@@ -2,7 +2,7 @@ import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
 import { createDefaultEmbeddingProvider } from "../../../src/resources/embedding-provider";
 import { createResourceSearchService } from "../../../src/resources/resource-search";
-import { getSurrealSession, type ToolRequestContext } from "./tool-session";
+import { getSurrealSession, type ToolRequestContext } from "../execution-context";
 
 const EvidenceInputSchema = z.object({
   text: z.string().trim().min(1),

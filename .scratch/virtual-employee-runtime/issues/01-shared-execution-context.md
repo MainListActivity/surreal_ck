@@ -1,5 +1,5 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: done
+Label: done
 
 # 01 — 共享执行上下文 seam，保持 Router 零回归
 

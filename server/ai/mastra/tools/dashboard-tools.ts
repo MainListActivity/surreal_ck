@@ -1,6 +1,6 @@
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
-import { getSurrealSession, type ToolRequestContext } from "./tool-session";
+import { getSurrealSession, type ToolRequestContext } from "../execution-context";
 import { createDashboardDraftIntent, type DashboardDraftSchema as DraftSchema } from "./dashboard-draft";
 
 /** SurrealDB SDK query() 返回「每条语句结果」数组；取第一条语句行集。 */
