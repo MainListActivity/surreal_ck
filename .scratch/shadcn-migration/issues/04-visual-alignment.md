@@ -1,5 +1,5 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: done
+Label: done
 
 # SHADCN-04 — 视觉对齐收尾（官方默认 → button 规范）
 
@@ -21,10 +21,10 @@ SHADCN-01/02/03 拉进来的封装都用了官方默认样式。本 issue 统一
 
 ## Acceptance criteria
 
-- [ ] 各新封装的 size / 按压 / aria-expanded 高亮 / 圆角与 button 规范一致
-- [ ] light / dark 两套主题下外观一致（走 app.css 变量，不硬编码颜色）
-- [ ] 仅改 `$lib/components/ui/**` 样式 class，无业务逻辑改动
-- [ ] `pnpm --filter @surreal-ck/web run typecheck` 通过
+- [x] 各新封装的 size / 按压 / aria-expanded 高亮 / 圆角与 button 规范一致
+- [x] light / dark 两套主题下外观一致（走 app.css 变量，不硬编码颜色）
+- [x] 仅改 `$lib/components/ui/**` 样式 class，无业务逻辑改动
+- [x] `pnpm --filter @surreal-ck/web run typecheck` 通过
 
 ## Blocked by
 
