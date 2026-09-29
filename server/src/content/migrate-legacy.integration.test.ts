@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Surreal } from "surrealdb";
 import { loadPlatformContentScripts } from "@surreal-ck/shared/platform-content-schema";
-import { migrateLegacyPlatformContent, assertLegacyContentMigrated } from "./migrate-legacy";
+import { migrateLegacyPlatformContent, migrateLegacyPlatformContentIfNeeded, assertLegacyContentMigrated } from "./migrate-legacy";
 import { ensurePlatformContentSchema } from "./schema";
 
 const localTest = test.skipIf(process.env.RUN_LOCAL_PLATFORM_CONTENT_TESTS !== "1");
@@ -105,6 +105,44 @@ describe("legacy content migration", () => {
       await expect(assertLegacyContentMigrated(source, target)).rejects.toThrow("broken migrated reference");
       await target.query("DELETE content_source_record:broken;");
       await expect(assertLegacyContentMigrated(source, target)).rejects.toThrow("content migration count mismatch");
+    } finally {
+      await Promise.all([source.close(), target.close()]);
+    }
+  });
+
+  localTest("short-circuits on the verified marker once the target database diverges", async () => {
+    const namespace = `content_migrate_${crypto.randomUUID().replaceAll("-", "")}`;
+    const url = process.env.LOCAL_SURREAL_URL ?? "ws://127.0.0.1:8999/rpc";
+    const source = new Surreal();
+    const target = new Surreal();
+    const authentication = { username: "root", password: "root" };
+    await source.connect(url, { namespace: "main", database: "main", authentication });
+    await source.query(`DEFINE NAMESPACE IF NOT EXISTS ${namespace};`);
+    await source.use({ namespace });
+    await source.query("DEFINE DATABASE IF NOT EXISTS _system; DEFINE DATABASE IF NOT EXISTS platform_content;");
+    await source.use({ namespace, database: "_system" });
+    await target.connect(url, { namespace, database: "platform_content", authentication });
+    try {
+      const scripts = await loadPlatformContentScripts();
+      for (const script of scripts.filter((script) => script.version < 5)) await source.query(script.sql);
+      await ensurePlatformContentSchema(target, { namespace, database: "platform_content" });
+      await source.query(`
+        CREATE content_source:fixture CONTENT {
+          source_key: "fixture", label: "测试来源", base_url: "https://example.invalid",
+          status: "active", allowed_actions: ["submit", "publish"]
+        };
+      `);
+      await expect(migrateLegacyPlatformContentIfNeeded({ source, target, writesFrozen: true }))
+        .resolves.toMatchObject({ content_source: 1 });
+      // Post-cutover writes diverge the databases; a strict recount would now fail.
+      await target.query(`CREATE content_source:post_cutover CONTENT {
+        source_key: "post-cutover", label: "新库合法新增", base_url: "https://example.invalid/new",
+        status: "active", allowed_actions: ["submit"]
+      };`);
+      await expect(migrateLegacyPlatformContentIfNeeded({ source, target, writesFrozen: true }))
+        .resolves.toBe("already-migrated");
+      await expect(migrateLegacyPlatformContentIfNeeded({ source, target, writesFrozen: false }))
+        .rejects.toThrow("writes must be frozen");
     } finally {
       await Promise.all([source.close(), target.close()]);
     }

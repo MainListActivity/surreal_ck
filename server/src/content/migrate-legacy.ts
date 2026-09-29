@@ -23,7 +23,7 @@ export const CONTENT_MIGRATION_TABLES = [
 
 type Row = Record<string, unknown>;
 type Queryable = { query(sql: string, params?: Record<string, unknown>): Promise<unknown> };
-type MigrationTarget = Queryable & {
+export type MigrationTarget = Queryable & {
   select(id: StringRecordId): PromiseLike<unknown>;
   create(id: StringRecordId): { content(data: Row): PromiseLike<unknown> };
   relate(from: StringRecordId, edge: RecordId, to: StringRecordId, data: Row): PromiseLike<unknown>;
@@ -179,6 +179,27 @@ export async function migrateLegacyPlatformContent(input: Readonly<{
     summary,
   });
   return summary;
+}
+
+/**
+ * The marker row is written only after a successful strict verification, so its
+ * presence means the one-shot frozen copy already completed. Post-cutover the
+ * target database legitimately gains new rows, which would fail the strict
+ * equal-count verification on every subsequent deploy.
+ */
+export async function legacyContentMigrationCompleted(target: Queryable): Promise<boolean> {
+  const marker = rows(await target.query("SELECT * FROM content_migration_state:legacy;"))[0];
+  return marker?.source_database === "_system" && marker.verified_at != null;
+}
+
+export async function migrateLegacyPlatformContentIfNeeded(input: Readonly<{
+  source: Queryable;
+  target: MigrationTarget;
+  writesFrozen: boolean;
+}>): Promise<ContentMigrationSummary | "already-migrated"> {
+  if (!input.writesFrozen) throw new Error("legacy content writes must be frozen before migration");
+  if (await legacyContentMigrationCompleted(input.target)) return "already-migrated";
+  return migrateLegacyPlatformContent(input);
 }
 
 export async function assertLegacyContentMigrated(source: Queryable, target: Queryable): Promise<void> {
