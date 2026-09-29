@@ -1,5 +1,5 @@
-Status: ready-for-human
-Label: ready-for-human
+Status: done
+Label: done
 
 # WP-B-06 — Dockerfile + .env.example + 启动文档
 
@@ -56,8 +56,8 @@ IDP_HOOK_SECRET=change_me
 
 ## Acceptance criteria
 
-- [ ] `docker build .` 成功，镜像 < 200MB。
-- [ ] `docker compose up` 后 `curl localhost:8080/health` 返回 `{ status: 'ok' }`。
+- [x] `docker build .` 成功，镜像 158MB < 200MB（2026-09-29 实测，详见收口注记）。
+- [x] `docker compose up` 后 `curl localhost:8080/health` 返回 `{ status: 'ok', surrealdb: 'up' }`（2026-09-29 实测）。
 - [x] `.env.example` 不含任何真实 secret / 占位 secret 看就知道是占位。
 - [x] `server/README.md` 三句话能让新人跑起来。
 
@@ -69,3 +69,11 @@ Dockerfile、`.env.example`、`docker-compose.yml`、`server/README.md` 已落�
 
 - 镜像里不要装 pnpm（runtime 阶段直接用 Bun 跑 src，不需要 pnpm）。
 - 生产部署的 secret 管理（k8s secrets / Vault / 1Password）超出本 issue，下放到运维章节。
+
+## 2026-09-29 收口注记
+
+判定：**不过时，按票交付并收口**。核对依据：现行发布为合入 main → Actions 自动 Deploy production（origin systemd + Cloudflare），生产不消费容器镜像；但 `quality-gate.yml` 的 "Build deployable server image" 每 PR 执行 `docker build .`，Dockerfile 有持续消费方；compose 是本地开发路径。因此保留产物、补齐未验 AC。
+
+改动：Dockerfile runtime 改用 `pnpm --filter @surreal-ck/server deploy --prod --legacy` 产出仅生产依赖的自包含目录，并裁除 node_modules 内 *.d.ts/*.map/CHANGELOG/README（Bun 直接跑 TS 源，运行期不需要）。镜像 358MB → 158MB（podman build 实测）。
+
+本机验证（podman machine，arm64）：`podman build -t surreal-ck:slim2 .` 成功、镜像 158MB；`podman compose up -d`（SURREALDB_NATIVE_QUOTA_IMAGE 用最近一次 native-quota 验收 run 的 digest）后 `curl localhost:8080/health` 返回 `{"status":"ok","surrealdb":"up"}`。CI 侧由 quality-gate 的 docker build 步骤持续守护。
