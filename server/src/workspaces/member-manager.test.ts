@@ -129,7 +129,7 @@ describe("MemberManager.addMember", () => {
     expect(userInsert?.params?.isAdmin).toBe(false);
 
     const indexInsert = state.queries.find(
-      (q) => q.database === "_system" && q.sql.includes("user_workspace_index") && q.params?.email === "newbie@example.test",
+      (q) => q.database === "_system" && q.sql.includes("INSERT INTO user_workspace_index") && q.params?.email === "newbie@example.test",
     );
     expect(indexInsert).toBeDefined();
     expect(indexInsert?.params?.role).toBe("participant");
@@ -158,7 +158,7 @@ describe("MemberManager.addMember", () => {
     expect(result).toEqual({ kind: "added" });
 
     const indexInsert = state.queries.find(
-      (q) => q.database === "_system" && q.sql.includes("user_workspace_index") && q.params?.email === "newbie@example.test",
+      (q) => q.database === "_system" && q.sql.includes("INSERT INTO user_workspace_index") && q.params?.email === "newbie@example.test",
     );
     expect(indexInsert?.params?.workspace).toBeInstanceOf(StringRecordId);
     expect((indexInsert?.params?.workspace as StringRecordId).toString()).toBe("workspace:acme");

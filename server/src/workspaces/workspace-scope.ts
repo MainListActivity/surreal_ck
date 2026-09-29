@@ -341,7 +341,7 @@ export function createWorkspaceScopeModule(input?: Queryable | WorkspaceScopeMod
         return { kind: "forbidden" };
       }
 
-      const membership = row.id;
+      let membership = row.id;
       if (membership === undefined || membership === null) {
         return { kind: "drift" };
       }
@@ -399,10 +399,23 @@ export function createWorkspaceScopeModule(input?: Queryable | WorkspaceScopeMod
       }
 
       if (needsSubjectBind(row, input.subject)) {
-        await client.query("UPDATE $membership SET subject = $subject;", {
-          membership,
-          subject: input.subject,
-        });
+        // 旧版本 re-add 会留下 disabled 的已绑定行和 active 的 NONE 行。
+        // 先恢复原行，再禁用临时行，避免唯一索引冲突及后续重复列出工作区。
+        const previousResult = await client.query(
+          "SELECT id FROM user_workspace_index WHERE workspace = $workspace AND subject = $subject LIMIT 1;",
+          { workspace: workspaceRecordId(row), subject: input.subject },
+        );
+        const previous = rowsFromQueryResult(previousResult)[0];
+        if (previous?.id !== undefined && previous.id !== null && String(previous.id) !== String(membership)) {
+          await client.query("UPDATE $membership SET disabled_at = time::now();", { membership });
+          membership = previous.id;
+          await client.query("UPDATE $membership SET disabled_at = NONE;", { membership });
+        } else {
+          await client.query("UPDATE $membership SET subject = $subject;", {
+            membership,
+            subject: input.subject,
+          });
+        }
       }
 
       if (correctedRole && row.role !== correctedRole) {
