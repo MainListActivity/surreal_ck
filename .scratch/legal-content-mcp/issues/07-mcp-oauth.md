@@ -1,5 +1,5 @@
-Status: open
-Label: ready-for-agent
+Status: done
+Label: verified
 Assignee: codex
 ID: SCK-LCM-07
 Repository: surreal_ck
@@ -26,7 +26,7 @@ Parent: [实施规格](../PRD.md)
 
 - [x] 未认证请求正确引导发现；运营 audience、动态能力和错误受众由 middleware 拒绝，普通客户不会进入工具处理。
 - [x] 五工具协议测试通过，包括工具发现、分页、幂等和结构化业务错误；发布/撤回/恢复继续复用内容服务的部分发布前提。
-- [ ] 与 IDP-OM-01/02/03 的真实 DCR、PKCE、scope、refresh 联测仍由 SCK-LCM-10 完成；当前未预注册 Codex 真人授权受生产 client 登录方式配置阻塞。
+- [x] 与 IDP-OM-01/02/03 的真实 DCR、PKCE、scope、refresh 联测由 [SCK-LCM-10](10-codex-e2e.md) 于 2026-09-11 在生产完成。
 
 ## Implementation evidence
 
@@ -38,13 +38,16 @@ Parent: [实施规格](../PRD.md)
   `pnpm --filter @surreal-ck/server exec bun test src/ops/mcp/routes.test.ts src/ops/operator-auth.test.ts --preload ./test/setup-env.ts`
   （4 pass）；server 全量测试 349 pass / 12 skip。
 
-## Current limitation
+## Cross-ticket completion evidence
 
-生产 `ck` tenant 尚未配置可用于临时 DCR client 的登录方式，且 `_system` 中没有
-启用的 `platform_operator` 能力；因此不以手工 token 或未授权的生产权限变更冒充
-真实 Codex 验收。MCP server 已部署为
-`https://l.maplayer.top/api/ops/mcp`，剩余真人授权、五工具、刷新/撤销联测转交
-SCK-LCM-10。
+上述生产授权限制是本票初次实现时的状态，已由 SCK-LCM-10 的生产联测收口：
+未预注册客户端完成 DCR、已登录 IdP 会话同意、授权码 + PKCE 换票，随后在
+`https://l.maplayer.top/api/ops/mcp` 完成五工具调用、refresh/reconnect 和
+refresh/access 撤销。LCM-10 记录了 IdP Worker `c3029479-89f8-4b2c-b54b-4f097a24596d`、
+Hono release `afbc731`、MCP protocol `2025-06-18`；其
+`--fixture --publish --full-lifecycle` 生产报告为 `ok=true`、0 failures。
+可复核步骤与无凭证脚本见 [LCM-10](10-codex-e2e.md) 及
+`../scripts/mcp-oauth-e2e.mjs`。本次只归档已完成证据，不重复联调或扩大生产权限。
 
 ## Handoff
 
