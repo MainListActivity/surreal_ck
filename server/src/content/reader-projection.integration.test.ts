@@ -37,7 +37,8 @@ test("content projection sync writes converge and gate a real content_reader ses
   const publicKey = await exportJWK(keys.publicKey);
   const jwks = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => Response.json({ keys: [{ ...publicKey, kid: "fixture", alg: "ES256", use: "sig" }] }) });
   const issuer = `http://127.0.0.1:${jwks.port}`;
-  const proc = Bun.spawn([`${homedir()}/.surrealdb/surreal`, "start", "--allow-all", "--bind", `127.0.0.1:${port}`, "--user", "test", "--pass", password, "memory"], { stdout: "ignore", stderr: "ignore" });
+  const surrealBinary = process.env.SURREAL_BINARY ?? `${homedir()}/.surrealdb/surreal`;
+  const proc = Bun.spawn([surrealBinary, "start", "--allow-all", "--bind", `127.0.0.1:${port}`, "--user", "test", "--pass", password, "memory"], { stdout: "ignore", stderr: "ignore" });
   const root = new Surreal();
   const sync = new Surreal();
   try {

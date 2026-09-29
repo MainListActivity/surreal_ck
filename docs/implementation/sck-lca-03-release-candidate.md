@@ -1,6 +1,12 @@
 # SCK-LCA-03 发布前候选
 
-集成人：`engineering-grok-4e9709`。集成分支 `task/86b409f0`。本文件是预发布说明，不是生产验收，也不把实施票标成 done。生产发布、权限、许可和投影状态变更仍要等 G2 `553ba0a0-79d8-4b72-bdc9-9f8ef1d4bdee` 对这个候选和具体操作方案批准。
+原集成人：`engineering-grok-4e9709`，PR #30 分支 `task/86b409f0`。本文件是预发布说明，不是生产验收，也不把实施票标成 done。当前发布链为目标 `639ddcfae11dda57`、实现任务 `fe3991c3-fc5a-48a9-9c58-c949e0e3ef3d`；上线申请由本链的运营/Jev 决定，旧目标的 G2 `553ba0a0-79d8-4b72-bdc9-9f8ef1d4bdee` 不代表本目标授权。
+
+## 2026-09-28 实现修复进展
+
+- PR #30 原 head `5384fd69847080cd39fbea1902d676e6965bced9` 的 Quality gate run `36459246415` 在 Test 失败：两项内容库集成测试硬编码本机 `~/.surrealdb/surreal`，runner 上不存在。已让测试支持 `SURREAL_BINARY`，Quality gate 下载官方 SurrealDB 3.2.3 linux-amd64 发布物并校验 SHA-256，保持两项真实数据库集成测试正常执行。
+- 本地 `pnpm lint`、`pnpm typecheck`、`pnpm test`、web 和 marketing 构建均通过；两项原失败测试在本机 SurrealDB 3.2.3 实际执行通过。CI 固定新 head 的结果以 PR check 为准。
+- #29 已合入 `main`，但 origin 尚未发布所需内容；#36 的停写与仅复制迁移钩子已通过 Quality gate、尚未合入。必须在本链上线申请批准后，按 `project.release` 先发布 #36 和 origin 前置，再发布 #30。不得单独发布前端。
 
 ## 固定提交
 
@@ -31,7 +37,7 @@
 
 来源许可原文仍只含运营动作时，不能从 `publish` 推出 `read`。客户动作必须同时出现在权益和许可里。
 
-## 部署顺序（G2 批准后才执行）
+## 部署顺序（本链上线申请批准后才执行）
 
 1. 确认目标 IdP 已部署 `content_reader.v1`，并且 `content_reader_allowed_client_ids` 含本应用 confidential client。未配置时换票失败。不要在这一步改 `ma_hono` 代码。
 2. 部署本候选服务。启动沿现有入口应用内容库迁移到 006，再用运行环境的 OIDC JWKS 定义 `content_reader`，并初始化投影同步凭证。root 只建凭证，不读取客户正文。
@@ -72,7 +78,7 @@
 
 命令：`surreal validate shared/sql/platform-content/006-content-reader.surql` 退出 0。`bun test` 覆盖 reader 集成、投影集成、换票、handler、IdP adapter、web content-reader 与 route。server `tsc --noEmit` 退出 0。`pnpm --filter @surreal-ck/web typecheck` 退出 0。
 
-## 交给样本计划与 G2 的未知项
+## 交给上线申请与生产验收的未知项
 
 - 目标 IdP 是否已经部署未提交的 `content_reader.v1`，allowlist 与实际 max TTL。
 - `15c49fb` 之后的提交是否已经在生产。
@@ -122,10 +128,9 @@ QA 退回补做的浏览器联调。环境：vanilla SurrealDB 3.2.3 内存实�
 - 成员核验按 workspace `identityFilter` 同语义放宽为 subject 或（subject=NONE+email）匹配，否则未 switch 的 email 绑定成员会被误判移除。
 - 换票失败与投影写失败分别返回 503/`projection_incomplete`，均不扩大访问。
 
-### 遗留未验证项（交 QA/G2）
+### 遗留未验证项（交 QA 与上线申请）
 
 - 真实 IdP（ma_hono `content_reader.v1` 部署态、allowlist、实际 TTL）与生产库。
 - native-quota 版 SurrealDB 的启动门与 provisioning saga（vanilla 上 stub 跳过）。
 - 超过 15 分钟墙钟的 reader 会话与 `DURATION FOR TOKEN 15m` 到期行为。
 - 门户级"双工作区浏览器矩阵"中 beta 用合成过期权益代替真实跨工作区夹具。
-

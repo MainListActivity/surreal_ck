@@ -54,6 +54,20 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      - name: Install SurrealDB for content integration tests
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/surreal-v3.2.3.linux-amd64.tgz"
+          curl --fail --location --silent --show-error \
+            https://github.com/surrealdb/surrealdb/releases/download/v3.2.3/surreal-v3.2.3.linux-amd64.tgz \
+            --output "$archive"
+          echo "f8daafa0655fb3825e6a23911a808e80a2621acff231ccbe9364cae9987e9d84  $archive" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/surreal-cli"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/surreal-cli"
+          test -x "$RUNNER_TEMP/surreal-cli/surreal"
+          "$RUNNER_TEMP/surreal-cli/surreal" version
+          echo "SURREAL_BINARY=$RUNNER_TEMP/surreal-cli/surreal" >> "$GITHUB_ENV"
+
       - name: Test
         run: pnpm test
 
