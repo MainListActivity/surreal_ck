@@ -46,7 +46,16 @@ Variables：
 
 origin 是 `data.maplayer.top`（`129.146.179.37`）上的 systemd 服务 `surreal-ck-hono`，工作目录 `/home/ubuntu/surreal_ck/current`，环境文件 `/etc/surreal-ck/server.env`（只在主机上，CI 不读取也不改写）。
 
-`Deploy origin` 的步骤：确认 commit 通过 Quality gate → `git archive` 打包 → scp 到主机 → 执行 `scripts/deploy/origin-release.sh`：解包到 `releases/<sha7>-ci<run_id>`，`bunx pnpm@10.32.1 install --frozen-lockfile --prod`，原子切换 `current`，重启服务，轮询 `http://127.0.0.1:8080/health`。90 秒内不健康就切回上一个 `current` 并重启，job 失败，Cloudflare 不会发布。CI 发布目录保留最近 8 个，手工发布目录不动。
+`Deploy origin` 的步骤：确认 commit 通过 Quality gate → `git archive` 打包 → scp 到主机 → 执行 `scripts/deploy/origin-release.sh`：
+
+1. 解包到 `releases/<sha7>-ci<run_id>`，`bunx pnpm@10.32.1 install --frozen-lockfile --prod`。
+2. 备份 `server.env` 到 `~/surreal_ck/backups/env/`，再把 GitHub `production` Environment 中所有 `ORIGIN_ENV_<NAME>` secret 写成 `server.env` 的 `<NAME>=<值>`（只增改这些键，值必须单行，日志只打印键名）。
+3. 发布代码里存在 `scripts/deploy/origin-pre-start.sh` 时：停掉 `surreal-ck-hono`（冻结 origin 写入），在新版本目录执行该钩子（`ORIGIN_ENV_FILE` 指向 `server.env`）。钩子必须幂等，用于一次性数据复制迁移等。
+4. 原子切换 `current`，重启服务，轮询 `http://127.0.0.1:8080/health`。
+
+钩子失败或 90 秒内不健康：恢复 `server.env` 备份和上一个 `current` 并重启，job 失败，Cloudflare 不会发布。CI 发布目录与 env 备份各保留最近 8 个，手工发布目录不动。
+
+新增服务端环境变量：`gh secret set ORIGIN_ENV_<NAME> --env production`，下一次发布生效。不需要登录主机。
 
 GitHub `production` Environment 额外配置：
 
@@ -57,4 +66,4 @@ GitHub `production` Environment 额外配置：
 
 ## 边界
 
-Hono 启动时会执行 schema 与数据迁移，代码回滚不会回滚数据库。需要新增 `server.env` 变量或冻结写入的数据迁移时，必须先在主机上准备好再合入 main，否则 origin 启动失败并自动回滚。SurrealDB 服务本身（`surrealdb.service`）与 root 凭证不由 CI 管理。
+Hono 启动时会执行 schema 与数据迁移，代码回滚不会回滚数据库。需要的新环境变量先用 `ORIGIN_ENV_*` secret 配好，需要停写执行的迁移放进 `origin-pre-start.sh`，再合入 main。SurrealDB 服务本身（`surrealdb.service`）与 root 凭证不由 CI 管理。
