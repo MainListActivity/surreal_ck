@@ -243,6 +243,28 @@ describe("runRouterChat 端到端", () => {
     expect(runIds.size).toBe(1);
   });
 
+  test("workflow 失败时抛出可读的底层错误，而不是 [object Object]", async () => {
+    const mastra = makeMastra();
+    const executors = makeExecutors({
+      navigation: async () => {
+        throw new Error("navigation blew up");
+      },
+    });
+
+    await expect(
+      runRouterChat({
+        mastra,
+        text: "打开工作簿",
+        userContext: ctx,
+        surrealSession: fakeSession,
+        executors,
+        llmCaller: async () => `[{"category":"navigation","taskText":"a"}]`,
+        streamId: "err-readable",
+        pushChunk: () => {},
+      }),
+    ).rejects.toThrow(/navigation blew up/);
+  });
+
   test("Mastra storage 收到 workflow run 快照（验证走的是真正的 workflow 引擎）", async () => {
     const storage = new InMemoryStore();
     const mastra = new Mastra({

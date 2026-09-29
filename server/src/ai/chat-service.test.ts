@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Surreal } from "surrealdb";
+import { AiContextSnapshotSchema, createDefaultAiContextSnapshot } from "@surreal-ck/shared";
 import type { AiContextSnapshot, ChatStreamEvent, ResumeDecision } from "@surreal-ck/shared";
 import { createRunBus } from "./run-bus";
 import { createAiChatService, type ChatRunner } from "./chat-service";
@@ -228,6 +229,22 @@ describe("AiChatService.startChat", () => {
         ownerSubject: "user-123",
       }),
     ).rejects.toThrow(/resumer not configured/);
+  });
+
+  test("省略 userContext → runner 收到通过 schema 校验的默认快照（非 {}）", async () => {
+    const bus = createRunBus();
+    let capturedInput: Parameters<ChatRunner>[0] | undefined;
+    const runner: ChatRunner = async (input) => {
+      capturedInput = input;
+      return { runId: input.runId, finalText: "", status: "success" };
+    };
+    const service = createAiChatService({ runBus: bus, runner });
+
+    await service.startChat({ runId: "run-noctx", message: "嗨", surrealSession: fakeSession, ownerSubject: "u" });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(capturedInput?.userContext).toEqual(createDefaultAiContextSnapshot());
+    expect(AiContextSnapshotSchema.safeParse(capturedInput?.userContext).success).toBe(true);
   });
 
   test("runner 抛错 → publish error 事件，不向上抛（startChat 已经 resolve）", async () => {
