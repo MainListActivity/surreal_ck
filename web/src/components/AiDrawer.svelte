@@ -30,6 +30,8 @@
     type PersistDashboardDraftResult,
   } from "../features/dashboard/lib/dashboard-draft-card";
   import { getSurreal } from "../lib/surreal";
+  import { loadAiAllowanceSnapshot } from "../lib/ai-allowance";
+  import type { AiAllowanceSnapshot } from "@surreal-ck/shared";
   import type {
     ChatStreamEvent,
     DashboardDraftIntent,
@@ -101,6 +103,7 @@
             message: input.message,
             contextSnapshot: input.contextSnapshot,
             composerMode: input.composerMode,
+            idempotencyKey: input.idempotencyKey,
           },
         });
         return expectJson<ChatRunStart>(res, "AI 消息发送失败。");
@@ -132,6 +135,37 @@
   $effect(() => {
     session.syncWorkspace(workspaceSlug);
     drawerState = session.snapshot();
+  });
+
+  // LCA05：共享 AI 额度只读快照——打开抽屉/切换工作区时加载，run 终态后刷新。
+  let allowance = $state<AiAllowanceSnapshot | null>(null);
+  let allowanceTimer: ReturnType<typeof setTimeout> | null = null;
+  async function refreshAllowance() {
+    if (!open || !workspaceSlug) {
+      allowance = null;
+      return;
+    }
+    try {
+      allowance = await loadAiAllowanceSnapshot(getSurreal());
+    } catch {
+      allowance = null;
+    }
+  }
+  $effect(() => {
+    if (!open || !workspaceSlug) {
+      allowance = null;
+      return;
+    }
+    void refreshAllowance();
+  });
+  $effect(() => {
+    // run 到达终态（activeRun 清空、sending 归位）后延迟刷新一次账本。
+    if (drawerState.sending || drawerState.activeRun) return;
+    if (allowanceTimer) clearTimeout(allowanceTimer);
+    allowanceTimer = setTimeout(() => void refreshAllowance(), 800);
+  });
+  onDestroy(() => {
+    if (allowanceTimer) clearTimeout(allowanceTimer);
   });
 
   $effect(() => {
@@ -431,6 +465,19 @@
       {/if}
     </div>
 
+    {#if allowance?.quote}
+      <div class="allowance-line" role="status">
+        <Coins size={12} />
+        本次预计消耗 {allowance.quote.amount} AI 额度 · 可用 {allowance.available}
+        {#if allowance.reserved > 0}· 预留中 {allowance.reserved}{/if}
+        {#if allowance.available < allowance.quote.amount}
+          <span class="allowance-low">额度不足</span>
+        {/if}
+        {#if allowance.notices[0]}
+          <span class="allowance-notice">{allowance.notices[0].message}</span>
+        {/if}
+      </div>
+    {/if}
     <form class="composer" onsubmit={(event) => { event.preventDefault(); void sendPrompt(); }}>
       <textarea
         bind:value={prompt}
@@ -759,6 +806,26 @@
     padding: 12px 18px 16px;
     border-top: 1px solid var(--border);
     background: var(--surface);
+  }
+
+  .allowance-line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 18px 0;
+    color: var(--text-muted, #6b7280);
+    font-size: 12px;
+  }
+
+  .allowance-line .allowance-low {
+    color: var(--error, #dc2626);
+    font-weight: 600;
+  }
+
+  .allowance-line .allowance-notice {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .send-error {

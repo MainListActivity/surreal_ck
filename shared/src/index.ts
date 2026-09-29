@@ -1,4 +1,5 @@
 export * from "./ai-context";
+export * from "./ai-allowance";
 export * from "./activation-summary";
 export * from "./capabilities";
 export * from "./date-format";

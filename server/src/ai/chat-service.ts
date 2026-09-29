@@ -19,7 +19,7 @@ import type {
   ResumeDecision,
   WorkflowSuspendedEvent,
 } from "@surreal-ck/shared";
-import type { AiChatService } from "../routes/ai-chat";
+import type { AiChatService, RunTerminalOutcome } from "../routes/ai-chat";
 import type { RouterPlan } from "../../ai/mastra/workflows/router-classifier";
 import type { RunBus } from "./run-bus";
 
@@ -101,7 +101,7 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
   const { runBus, runner, resumer } = options;
 
   return {
-    async startChat({ runId, message, userContext, surrealSession, ownerSubject, composerMode }) {
+    async startChat({ runId, message, userContext, surrealSession, ownerSubject, composerMode, onTerminal }) {
       const bridge = bridgeToBus(runBus, runId);
       // composer 的「搜索资源」模式 = 确定性单步 plan，不经 LLM 路由（RR-011/RR-014 契约）。
       const planOverride: RouterPlan | undefined = composerMode === "resource-search"
@@ -109,8 +109,9 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
         : undefined;
       // 后台启动：startChat 必须立即 resolve（D1-04 契约），workflow 异步跑完。
       void (async () => {
+        let outcome: RunTerminalOutcome = "failed";
         try {
-          await runner({
+          const result = await runner({
             text: message,
             runId,
             streamId: runId, // streamId 与 runId 同步，前端无需再额外配对
@@ -123,22 +124,31 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
             onSuspend: bridge.onSuspend,
           });
           // success / suspended：workflow 自己已 publish done（finalize step）；suspended 不发 done。
+          outcome = result.status === "success" ? "success" : "suspended";
         } catch (cause) {
+          outcome = "failed";
           bridge.publishErrorIfNotTerminal(cause instanceof Error ? cause.message : String(cause));
         } finally {
+          // 计量收口（结算/释放预留）不依赖 WS 是否仍连着。
+          try {
+            onTerminal?.(outcome);
+          } catch {
+            // 终态回调失败不回写 run 结果；失联预留由 deadline 清扫兜底。
+          }
           await closeCallerSession(surrealSession);
         }
       })();
     },
 
-    async resumeChat({ runId, decision, surrealSession, ownerSubject }) {
+    async resumeChat({ runId, decision, surrealSession, ownerSubject, onTerminal }) {
       if (!resumer) {
         throw new Error("AiChatService: resumer not configured");
       }
       const bridge = bridgeToBus(runBus, runId);
       void (async () => {
+        let outcome: RunTerminalOutcome = "failed";
         try {
-          await resumer({
+          const result = await resumer({
             runId,
             streamId: runId,
             decision,
@@ -149,9 +159,16 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
             pushProgress: bridge.pushProgress,
             onSuspend: bridge.onSuspend,
           });
+          outcome = result.status === "success" ? "success" : result.status === "cancelled" ? "cancelled" : "suspended";
         } catch (cause) {
+          outcome = "failed";
           bridge.publishErrorIfNotTerminal(cause instanceof Error ? cause.message : String(cause));
         } finally {
+          try {
+            onTerminal?.(outcome);
+          } catch {
+            // 同上：收口失败不影响 run 结果，deadline 清扫兜底。
+          }
           await closeCallerSession(surrealSession);
         }
       })();

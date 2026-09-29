@@ -98,6 +98,9 @@ import { SurrealProductEntitlementStore } from "./product-entitlement/store";
 import { createProductEntitlementRoutes } from "./routes/product-entitlement";
 import { createContentReaderRoutes, type ContentReaderExchangeHandler } from "./routes/content-reader";
 import { createContentReaderExchangeHandler } from "./content/reader-handler";
+import { AiAllowanceService, type Queryable as AllowanceQueryable } from "./ai-allowance/service";
+import { getRootDatabaseSession } from "./db/root-connection";
+import { createOpsAiAllowanceRoutes } from "./routes/ops-ai-allowance";
 
 export type AppOptions = {
   workspaceScope?: WorkspaceScopeModule;
@@ -135,6 +138,8 @@ export type AppOptions = {
   opsRunService?: OpsRunService;
   productEntitlementService?: ProductEntitlementService;
   contentReaderExchange?: ContentReaderExchangeHandler;
+  /** LCA05 共享 AI 额度门禁；注入后 /api/chat 新 run 在启动 workflow 前原子预留。 */
+  aiAllowance?: AiAllowanceService;
 };
 
 type AiStreamWebSocket = ReturnType<typeof createAiStreamRoutes>["websocket"];
@@ -252,6 +257,10 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
   const productEntitlementService = options.productEntitlementService
     ?? new ProductEntitlementService(new SurrealProductEntitlementStore());
   const autoAiChatService = options.aiChatService ?? buildAutoAiChatService(runBus, platformContentService, embeddingProvider);
+  const aiAllowanceService = options.aiAllowance ?? new AiAllowanceService({
+    workspaceSession: async (db) => (await getRootDatabaseSession(db)) as unknown as AllowanceQueryable,
+    systemSession: async () => (await getRootDatabaseSession("_system")) as unknown as AllowanceQueryable,
+  });
   const quotaReadService =
     options.quotaReadService ?? createDefaultQuotaReadService();
   const quotaOpsConsole =
@@ -332,9 +341,11 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
         service: autoAiChatService ?? NOT_WIRED_AI_SERVICE,
         createCallerSession: options.createCallerSession ?? ((rawToken) => createCallerSession(rawToken)),
         registry: runRegistry,
+        allowance: aiAllowanceService,
         requireUser: options.requireUser,
       }),
     )
+    .route("/", createOpsAiAllowanceRoutes({ service: aiAllowanceService }))
     .route("/", aiStream.routes)
     .route(
       "/",
