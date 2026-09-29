@@ -282,7 +282,7 @@ const BaseUpsertPayloadSchema = z.strictObject({
     })
     .nullable()
     .optional(),
-  collections: z.array(ContentCollectionKeySchema).min(1).max(32).refine(
+  collections: z.array(ContentCollectionKeySchema).max(32).refine(
     (keys) => new Set(keys).size === keys.length,
     "内容集合键不能重复",
   ).optional(),

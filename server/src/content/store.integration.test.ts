@@ -478,7 +478,7 @@ describe("Surreal platform content store", () => {
       expect((await db.query("SELECT collections FROM content_collection_binding;"))[0]).toHaveLength(1);
       const unbound = await fetchContentReaderTarget(projection, plainPublished.entries[0]!.versionId!);
       expect(unbound?.collectionKeys).toEqual([]);
-      const denied = planContentReaderExchange({
+      const deniedInput = {
         body: { contentPublicId: plainPublished.entries[0]!.versionId },
         subject: "human",
         workspaceDb: "ws_alpha",
@@ -500,8 +500,32 @@ describe("Surreal platform content store", () => {
           aiActions: [],
         },
         content: unbound,
-      });
+      } as const;
+      const denied = planContentReaderExchange(deniedInput);
       expect(denied).toEqual({ ok: false, error: "collection_denied" });
+
+      const empty = structuredClone(law);
+      empty.idempotencyKey = "empty-collections-batch";
+      empty.items[0]!.entryKey = "fixture-legislation-empty";
+      empty.items[0]!.payload.source.recordKey = "law-empty";
+      empty.items[0]!.payload.collections = [];
+      const emptySubmitted = await service.submitBatch(operator, empty);
+      expect(emptySubmitted.entries[0]?.status).toBe("accepted");
+      const emptyPublished = await service.publishBatch(operator, {
+        batchId: emptySubmitted.batchId,
+        validationRevision: 1,
+        entryKeys: ["fixture-legislation-empty"],
+        idempotencyKey: "empty-collections-publication",
+      });
+      expect(emptyPublished.entries[0]?.status).toBe("published");
+      expect((await db.query("SELECT collections FROM content_collection_binding;"))[0]).toHaveLength(1);
+      const emptyTarget = await fetchContentReaderTarget(projection, emptyPublished.entries[0]!.versionId!);
+      expect(emptyTarget?.collectionKeys).toEqual([]);
+      expect(planContentReaderExchange({
+        ...deniedInput,
+        body: { contentPublicId: emptyPublished.entries[0]!.versionId },
+        content: emptyTarget,
+      })).toEqual({ ok: false, error: "collection_denied" });
 
       const unknown = structuredClone(law);
       unknown.idempotencyKey = "unknown-collection";
