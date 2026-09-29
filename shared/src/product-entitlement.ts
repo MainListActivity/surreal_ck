@@ -4,6 +4,13 @@ export const CONTENT_ACTIONS = ["browse", "search", "read", "cite", "export"] as
 export const AI_TEMPLATE_ACTIONS = ["research", "generate"] as const;
 export const PRODUCT_ENTITLEMENT_RESOLVER_VERSION = "product-entitlement-v1";
 
+/** 来源许可可登记的全部动作：四个运营动词加上全部客户动作（含 AI）。 */
+export const SOURCE_LICENSE_ACTIONS = [
+  "submit", "publish", "withdraw", "restore",
+  ...CONTENT_ACTIONS,
+  ...AI_TEMPLATE_ACTIONS,
+] as const;
+
 const collectionSchema = z.object({
   key: z.string().regex(/^[a-z][a-z0-9_]{1,64}$/u),
   label: z.string().trim().min(1).max(80),

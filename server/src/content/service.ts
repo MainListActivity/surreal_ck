@@ -23,6 +23,7 @@ import {
   type SubmitBatchResponse,
 } from "@surreal-ck/shared/platform-content";
 import { PLATFORM_CONTENT_LIMITS, sha256Hex, validatePlatformContentBatch } from "@surreal-ck/shared/platform-content";
+import { SOURCE_LICENSE_ACTIONS } from "@surreal-ck/shared/product-entitlement";
 import { z } from "zod";
 
 export type ContentOperator = Readonly<{
@@ -30,7 +31,7 @@ export type ContentOperator = Readonly<{
   capabilities: readonly string[];
 }>;
 
-const ContentSourceActionSchema = z.enum(["submit", "publish", "withdraw", "restore"]);
+const ContentSourceActionSchema = z.enum(SOURCE_LICENSE_ACTIONS);
 export type ContentSourceAction = z.infer<typeof ContentSourceActionSchema>;
 
 export type ContentSourceLicenseRevision = Readonly<{
@@ -72,10 +73,10 @@ export const ContentSourceRegistrationInputSchema = z.strictObject({
   jurisdiction: z.string().trim().min(1).max(128).nullable().optional(),
   baseUrl: HttpUrlSchema,
   status: z.enum(["active", "inactive"]),
-  allowedActions: z.array(ContentSourceActionSchema).min(1).max(4),
+  allowedActions: z.array(ContentSourceActionSchema).min(1).max(SOURCE_LICENSE_ACTIONS.length),
   license: z.strictObject({
     licenseKind: z.string().trim().min(1).max(128),
-    allowedActions: z.array(ContentSourceActionSchema).min(1).max(4),
+    allowedActions: z.array(ContentSourceActionSchema).min(1).max(SOURCE_LICENSE_ACTIONS.length),
     effectiveFrom: TimestampSchema,
     effectiveUntil: TimestampSchema.nullable().optional(),
     evidenceUrl: HttpUrlSchema.nullable().optional(),

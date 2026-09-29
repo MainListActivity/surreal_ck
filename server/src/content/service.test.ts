@@ -215,6 +215,71 @@ describe("platform content ingestion service", () => {
     expect(second.sourceNextCursor).toBeNull();
   });
 
+  test("registers customer actions in the license vocabulary and rejects unknown verbs", async () => {
+    const store = new InMemoryPlatformContentStore();
+    const service = new PlatformContentService({ store, sources: [source] });
+    const customerActions = ["submit", "publish", "browse", "search", "read", "cite", "export", "research", "generate"] as const;
+    const registered = await service.registerSource(operator, {
+      sourceKey: "flk.example.cn",
+      label: "官方法规发布",
+      jurisdiction: "中国大陆",
+      baseUrl: "https://flk.example.cn",
+      status: "active",
+      allowedActions: [...customerActions],
+      license: {
+        licenseKind: "official-legislative-document-publication",
+        allowedActions: [...customerActions],
+        effectiveFrom: "2026-09-01T00:00:00Z",
+        effectiveUntil: null,
+        evidenceUrl: "https://flk.example.cn/license",
+        evidenceText: "法定排除依据说明",
+      },
+    });
+    expect(registered.allowedActions).toEqual([...customerActions]);
+    expect(registered.license?.allowedActions).toEqual([...customerActions]);
+    const listed = await service.listSources(operator);
+    const readBack = listed.find((item) => item.sourceKey === "flk.example.cn");
+    expect(readBack?.allowedActions).toEqual([...customerActions]);
+    expect(readBack?.license?.allowedActions).toEqual([...customerActions]);
+    expect((await service.getDataContract(operator)).sources.find((item) => item.sourceKey === "flk.example.cn")?.allowedActions)
+      .toEqual([...customerActions]);
+
+    const licenseActions = [...customerActions, "withdraw", "restore"];
+    const widened = await service.registerSource(operator, {
+      sourceKey: "flk.example.cn",
+      label: "官方法规发布",
+      jurisdiction: "中国大陆",
+      baseUrl: "https://flk.example.cn",
+      status: "active",
+      allowedActions: licenseActions,
+      license: {
+        licenseKind: "official-legislative-document-publication",
+        allowedActions: licenseActions,
+        effectiveFrom: "2026-09-02T00:00:00Z",
+        effectiveUntil: null,
+        evidenceUrl: "https://flk.example.cn/license",
+        evidenceText: "更新许可说明",
+      },
+      expectedLicenseRevision: 1,
+    });
+    expect(widened.license?.revision).toBe(2);
+    expect(widened.license?.allowedActions).toEqual(licenseActions);
+
+    await expect(service.registerSource(operator, {
+      sourceKey: "evil.example.cn",
+      label: "非法动作",
+      baseUrl: "https://evil.example.cn",
+      status: "active",
+      allowedActions: ["submit", "delete"],
+      license: {
+        licenseKind: "public",
+        allowedActions: ["submit", "delete"],
+        effectiveFrom: "2026-09-01T00:00:00Z",
+        effectiveUntil: null,
+      },
+    })).rejects.toMatchObject<ContentServiceError>({ code: "invalid_request" });
+  });
+
   test("legalSearchQueryCandidates 从自然语言问句抽出可检索短语", () => {
     expect(legalSearchQueryCandidates("查找合同解除案例")).toContain("合同解除");
     expect(legalSearchQueryCandidates("帮我查一下最高法关于专利侵权许诺销售的指导案例和适用法条")).toEqual(
