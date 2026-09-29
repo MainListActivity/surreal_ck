@@ -1,4 +1,5 @@
 import { StringRecordId } from "surrealdb";
+import { SOURCE_LICENSE_ACTIONS } from "@surreal-ck/shared/product-entitlement";
 import {
   PublishBatchResponseSchema,
   type ContentVersionSummary,
@@ -94,6 +95,8 @@ function asNullableString(value: unknown): string | null {
   return value === null || value === undefined ? null : asString(value);
 }
 
+const SOURCE_LICENSE_ACTION_SET: ReadonlySet<string> = new Set(SOURCE_LICENSE_ACTIONS);
+
 function parseLicense(value: unknown): ContentSourceLicenseRevision | null {
   if (!isRow(value)) return null;
   const revision = typeof value.revision === "number" ? value.revision : Number(value.revision);
@@ -108,7 +111,7 @@ function parseLicense(value: unknown): ContentSourceLicenseRevision | null {
   if (!Number.isSafeInteger(revision) || revision < 1 || !licenseKind || !effectiveFrom) return null;
   const rawAllowedActions = value.allowed_actions ?? value.allowedActions;
   const allowedActions = Array.isArray(rawAllowedActions)
-    ? rawAllowedActions.filter((action): action is ContentSourceLicenseRevision["allowedActions"][number] => action === "submit" || action === "publish" || action === "withdraw" || action === "restore")
+    ? rawAllowedActions.filter((action): action is ContentSourceLicenseRevision["allowedActions"][number] => typeof action === "string" && SOURCE_LICENSE_ACTION_SET.has(action))
     : [];
   return {
     revision,
@@ -129,7 +132,7 @@ function parseSource(row: Row, license?: ContentSourceLicenseRevision | null): C
   const status = row.status === "active" || row.status === "inactive" ? row.status : null;
   if (!sourceKey || !label || !status) return null;
   const allowedActions = Array.isArray(row.allowed_actions)
-    ? row.allowed_actions.filter((action): action is ContentSourceRegistration["allowedActions"][number] => action === "submit" || action === "publish" || action === "withdraw" || action === "restore")
+    ? row.allowed_actions.filter((action): action is ContentSourceRegistration["allowedActions"][number] => typeof action === "string" && SOURCE_LICENSE_ACTION_SET.has(action))
     : [];
   const effectiveAllowedActions = license
     ? allowedActions.filter((action) => license.allowedActions.includes(action))

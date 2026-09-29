@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { SOURCE_LICENSE_ACTIONS } from "../product-entitlement";
 
 /** 平台法律内容 MCP 的稳定协议版本。 */
 export const PLATFORM_CONTENT_CONTRACT_VERSION = "1" as const;
@@ -379,7 +380,7 @@ export const ContractSourceSchema = z.strictObject({
   sourceKey: PublicIdSchema,
   label: z.string().trim().min(1).max(512),
   status: z.enum(["active", "inactive"]),
-  allowedActions: z.array(z.enum(["submit", "publish", "withdraw", "restore"])).max(8),
+  allowedActions: z.array(z.enum(SOURCE_LICENSE_ACTIONS)).max(SOURCE_LICENSE_ACTIONS.length),
 });
 
 export const GetDataContractResponseSchema = z.strictObject({

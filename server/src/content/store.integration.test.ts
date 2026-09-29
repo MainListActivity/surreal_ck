@@ -295,4 +295,66 @@ describe("Surreal platform content store", () => {
       await db.close();
     }
   });
+
+  localTest("round-trips customer license actions through the real store and still rejects unknown verbs", async () => {
+    const db = new Surreal();
+    const publisher = new Surreal();
+    const namespace = `content_test_${crypto.randomUUID().replaceAll("-", "")}`;
+    const database = "platform";
+    await db.connect(process.env.LOCAL_SURREAL_URL ?? "ws://127.0.0.1:8999/rpc", {
+      namespace,
+      database,
+      authentication: { username: "root", password: "root" },
+    });
+    await db.use({ namespace, database });
+    try {
+      const scripts = await loadPlatformContentScripts();
+      for (const script of scripts) await db.query(script.sql);
+      const secret = `${crypto.randomUUID()}${crypto.randomUUID()}`;
+      await provisionContentPublisher(db, secret);
+      await publisher.connect(process.env.LOCAL_SURREAL_URL ?? "ws://127.0.0.1:8999/rpc", { namespace, database });
+      await publisher.signin({ namespace, database, access: "content_publisher", variables: { pass: secret } });
+      const service = new PlatformContentService({ store: new SurrealPlatformContentStore(publisher), sources: [] });
+      const actions = ["submit", "publish", "browse", "search", "read", "cite", "export", "research", "generate"];
+      const registered = await service.registerSource(operator, {
+        sourceKey: "flk.example.cn",
+        label: "官方法规发布",
+        jurisdiction: "中国大陆",
+        baseUrl: "https://flk.example.cn",
+        status: "active",
+        allowedActions: actions,
+        license: {
+          licenseKind: "official-legislative-document-publication",
+          allowedActions: actions,
+          effectiveFrom: "2026-09-01T00:00:00Z",
+          effectiveUntil: null,
+          evidenceUrl: "https://flk.example.cn/license",
+          evidenceText: "法定排除依据说明",
+        },
+      });
+      expect(registered.license?.allowedActions).toEqual(actions);
+      const readBack = (await new SurrealPlatformContentStore(publisher).listSources())
+        .find((item) => item.sourceKey === "flk.example.cn");
+      expect(readBack?.allowedActions).toEqual(actions);
+      expect(readBack?.license?.allowedActions).toEqual(actions);
+      const raw = await db.query("SELECT allowed_actions FROM source_license_revision WHERE source.source_key = 'flk.example.cn';");
+      expect(JSON.stringify(raw)).toContain('"read"');
+      await expect(service.registerSource(operator, {
+        sourceKey: "invalid.example.cn",
+        label: "非法动作",
+        baseUrl: "https://invalid.example.cn",
+        status: "active",
+        allowedActions: ["submit", "delete"],
+        license: {
+          licenseKind: "public",
+          allowedActions: ["submit", "delete"],
+          effectiveFrom: "2026-09-01T00:00:00Z",
+          effectiveUntil: null,
+        },
+      })).rejects.toMatchObject({ code: "invalid_request" });
+    } finally {
+      await publisher.close();
+      await db.close();
+    }
+  });
 });
