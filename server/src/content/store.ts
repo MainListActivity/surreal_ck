@@ -221,6 +221,9 @@ function versionRecordId(versionId: string): StringRecordId {
   return new StringRecordId(`content_version:${versionId}`);
 }
 
+const BIND_COLLECTION_SQL =
+  "INSERT INTO content_collection_binding { item: $item, collections: $collections } ON DUPLICATE KEY UPDATE collections = $collections;";
+
 function issue(code: "stale_version" | "identity_ambiguous" | "source_not_registered" | "publish_failed", message: string, retryable = false) {
   return { code, message, retryable } as const;
 }
@@ -698,6 +701,16 @@ export class SurrealPlatformContentStore implements PlatformContentStore {
       ? await this.findBySourceRecord({ sourceKey: payload.source.sourceKey, recordKey: payload.source.recordKey })
       : null;
     if (existingBySource && existingBySource.bodySha256 === bodySha256) {
+      if (payload.collections && payload.collections.length > 0) {
+        try {
+          await this.db.query(BIND_COLLECTION_SQL, {
+            item: itemRecordId(existingBySource.itemId),
+            collections: [...payload.collections],
+          });
+        } catch (error) {
+          return { status: "failed", versionId: existingBySource.version.versionId, issues: [issue("publish_failed", String(error), true)] };
+        }
+      }
       return { status: "unchanged", versionId: existingBySource.version.versionId, issues: [] };
     }
 
@@ -819,8 +832,12 @@ export class SurrealPlatformContentStore implements PlatformContentStore {
       "CREATE publication_event CONTENT { request: $publicationRequest, entry: $entry, item: $item, version: $version, event_kind: IF $revision = 1 THEN \"published\" ELSE \"corrected\" END, actor_subject: $actorSubject, reason: NONE, occurred_at: time::now() };",
       "UPSERT publication_item_result CONTENT { request: $publicationRequest, entry_key: $entryKey, status: \"published\", version: $version, issues: [], created_at: time::now() };",
       "UPDATE $entryRecord SET status = \"published\", publication_status = \"published\";",
-      "COMMIT TRANSACTION;",
     );
+    if (payload.collections && payload.collections.length > 0) {
+      binds.collections = [...payload.collections];
+      statements.push(BIND_COLLECTION_SQL);
+    }
+    statements.push("COMMIT TRANSACTION;");
     binds.versionLabel = payload.kind === "legislation" ? (payload.legislation.versionLabel ?? undefined) : undefined;
     binds.entryRecord = entryRecord;
     try {

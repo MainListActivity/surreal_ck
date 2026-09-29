@@ -75,6 +75,7 @@ import { createContentRoutes } from "./routes/content";
 import { createLegalContentRoutes } from "./routes/legal-content";
 import { PlatformContentService } from "./content/service";
 import { SurrealPlatformContentStore } from "./content/store";
+import { activeContentCollectionKeys } from "./content/collection-catalog";
 import { contentPublisherQuery } from "./content/publisher-session";
 import { createContentMcpRoutes } from "./ops/mcp/routes";
 import { ActivationSummaryService } from "./activation-summary/service";
@@ -195,6 +196,7 @@ function createDefaultPlatformContentService(): PlatformContentService {
     store,
     // 来源由运营端登记到平台内容库；动态读取避免发布进程重启后回退到旧配置。
     sourceProvider: { list: () => store.listSources?.() ?? Promise.resolve([]) },
+    activeCollectionKeys: activeContentCollectionKeys,
   });
 }
 
