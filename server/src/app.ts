@@ -95,6 +95,8 @@ import { createOpsRunRoutes } from "./routes/ops-run";
 import { ProductEntitlementService } from "./product-entitlement/service";
 import { SurrealProductEntitlementStore } from "./product-entitlement/store";
 import { createProductEntitlementRoutes } from "./routes/product-entitlement";
+import { createContentReaderRoutes, type ContentReaderExchangeHandler } from "./routes/content-reader";
+import { createContentReaderExchangeHandler } from "./content/reader-handler";
 
 export type AppOptions = {
   workspaceScope?: WorkspaceScopeModule;
@@ -131,6 +133,7 @@ export type AppOptions = {
   opsAutonomyService?: OpsAutonomyService;
   opsRunService?: OpsRunService;
   productEntitlementService?: ProductEntitlementService;
+  contentReaderExchange?: ContentReaderExchangeHandler;
 };
 
 type AiStreamWebSocket = ReturnType<typeof createAiStreamRoutes>["websocket"];
@@ -270,6 +273,10 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     ))
     .route("/", createInternalIdpRoutes(workspaceScope))
     .route("/", createSessionRoutes(workspaceScope, idpTokenScopeAdapter, options.requireUser))
+    .route("/", createContentReaderRoutes({
+      exchange: options.contentReaderExchange ?? createContentReaderExchangeHandler(),
+      requireUser: options.requireUser,
+    }))
     .route("/", createWorkspaceRoutes(workspaceCreator, workspaceScope, options.requireUser, workspaceSettingsManager))
     .route("/", createMemberRoutes(memberManager, options.requireUser))
     .route(

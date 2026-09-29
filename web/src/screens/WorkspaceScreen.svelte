@@ -5,6 +5,7 @@
   import { dashboardStore } from "../features/dashboard/lib/dashboard-store.svelte";
   import AdminConsoleScreen from "./AdminConsoleScreen.svelte";
   import HomeScreen from "./HomeScreen.svelte";
+  import ContentEntryScreen from "./ContentEntryScreen.svelte";
   import TemplatesScreen from "./TemplatesScreen.svelte";
   import PlaceholderScreen from "./PlaceholderScreen.svelte";
   import ProfileScreen from "./ProfileScreen.svelte";
@@ -33,6 +34,7 @@
     onasknotification,
     onopenquota,
     onnavigate,
+    onopencontent,
   }: {
     slug: string;
     page: WorkspacePage;
@@ -42,6 +44,7 @@
     onasknotification?: (notification: RiskNotification) => void;
     onopenquota?: (slug: string) => void;
     onnavigate?: (page: WorkspacePage) => void;
+    onopencontent?: (publicId: string) => void;
   } = $props();
 
   const canWriteSharedStructure = $derived(canWriteSharedStructureFn());
@@ -133,6 +136,8 @@
         onopen={(workbookId) => onopenworkbook?.(workbookId)}
         onback={goHome}
       />
+    {:else if page === "content"}
+      <ContentEntryScreen onopen={(publicId) => onopencontent?.(publicId)} />
     {:else if page === "dashboard"}
       <DashboardScreen />
     {:else if page === "admin"}

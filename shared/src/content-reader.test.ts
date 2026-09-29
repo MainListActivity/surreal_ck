@@ -1,0 +1,179 @@
+import { describe, expect, test } from "bun:test";
+import {
+  CONTENT_READER_BOUND_SECONDS,
+  CLIENT_AUTHORITY_FIELDS,
+  contentReaderExchangeRequestSchema,
+  contentReaderFieldAllowed,
+  contentReaderLeaseEnd,
+  contentReaderPermissions,
+  formatEntitlementRevision,
+  remainingContentReaderCloseSeconds,
+} from "./content-reader";
+
+const NOW = 1_780_000_000;
+
+describe("content reader lease", () => {
+  test("caps an open-ended entitlement at 900 seconds", () => {
+    const result = contentReaderLeaseEnd({
+      nowSeconds: NOW,
+      subjectExpiresAtSeconds: NOW + 86_400,
+      entitlementEffectiveUntilSeconds: null,
+      licenseEffectiveUntilSeconds: null,
+    });
+    expect(result).toEqual({ ok: true, leaseEndSeconds: NOW + CONTENT_READER_BOUND_SECONDS });
+  });
+
+  test("does not outlive entitlement, license, or the subject token", () => {
+    expect(contentReaderLeaseEnd({
+      nowSeconds: NOW,
+      subjectExpiresAtSeconds: NOW + 5_000,
+      entitlementEffectiveUntilSeconds: NOW + 300,
+      licenseEffectiveUntilSeconds: NOW + 120,
+    })).toEqual({ ok: true, leaseEndSeconds: NOW + 120 });
+    expect(contentReaderLeaseEnd({
+      nowSeconds: NOW,
+      subjectExpiresAtSeconds: NOW + 60,
+      entitlementEffectiveUntilSeconds: null,
+      licenseEffectiveUntilSeconds: null,
+    })).toEqual({ ok: true, leaseEndSeconds: NOW + 60 });
+  });
+
+  test("rejects an already expired entitlement or license", () => {
+    expect(contentReaderLeaseEnd({
+      nowSeconds: NOW,
+      subjectExpiresAtSeconds: NOW + 100,
+      entitlementEffectiveUntilSeconds: NOW,
+      licenseEffectiveUntilSeconds: null,
+    }).ok).toBe(false);
+    expect(contentReaderLeaseEnd({
+      nowSeconds: NOW,
+      subjectExpiresAtSeconds: NOW + 100,
+      entitlementEffectiveUntilSeconds: null,
+      licenseEffectiveUntilSeconds: NOW - 1,
+    })).toEqual({ ok: false, error: "lease_exceeds_validity" });
+  });
+});
+
+describe("content reader revocation bound", () => {
+  test("closes on the earliest of token, session, and projection confirmation", () => {
+    expect(remainingContentReaderCloseSeconds({
+      nowSeconds: NOW,
+      tokenExpiresAtSeconds: NOW + 900,
+      sessionExpiresAtSeconds: NOW + 400,
+      projectionConfirmedUntilSeconds: NOW + 200,
+    })).toBe(200);
+    expect(remainingContentReaderCloseSeconds({
+      nowSeconds: NOW,
+      tokenExpiresAtSeconds: NOW + 900,
+      sessionExpiresAtSeconds: NOW + 900,
+      projectionConfirmedUntilSeconds: NOW + 900,
+    })).toBe(900);
+    expect(remainingContentReaderCloseSeconds({
+      nowSeconds: NOW,
+      tokenExpiresAtSeconds: NOW - 1,
+      sessionExpiresAtSeconds: NOW + 900,
+      projectionConfirmedUntilSeconds: NOW + 900,
+    })).toBe(0);
+  });
+});
+
+describe("content reader permission matrix", () => {
+  test("metadata-only cannot read body, excerpt, or article text", () => {
+    const parsed = contentReaderPermissions({ contentActions: ["browse", "search"], aiActions: [] });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.permissions).toEqual({
+      metadata: true,
+      search: true,
+      read: false,
+      cite: false,
+      export: false,
+      aiUse: false,
+      metadataOnly: true,
+    });
+    expect(contentReaderFieldAllowed("metadata", parsed.permissions)).toBe(true);
+    expect(contentReaderFieldAllowed("body", parsed.permissions)).toBe(false);
+    expect(contentReaderFieldAllowed("excerpt", parsed.permissions)).toBe(false);
+    expect(contentReaderFieldAllowed("article", parsed.permissions)).toBe(false);
+    expect(contentReaderFieldAllowed("hidden", parsed.permissions)).toBe(false);
+  });
+
+  test("read, cite, export, and AI use are independent", () => {
+    const readOnly = contentReaderPermissions({ contentActions: ["read"], aiActions: [] });
+    const citeOnly = contentReaderPermissions({ contentActions: ["cite"], aiActions: ["research"] });
+    const full = contentReaderPermissions({ contentActions: ["read", "cite", "export"], aiActions: ["generate"] });
+    expect(readOnly.ok && citeOnly.ok && full.ok).toBe(true);
+    if (!readOnly.ok || !citeOnly.ok || !full.ok) return;
+    expect(readOnly.permissions.export).toBe(false);
+    expect(readOnly.permissions.aiUse).toBe(false);
+    expect(contentReaderFieldAllowed("body", readOnly.permissions)).toBe(true);
+    expect(contentReaderFieldAllowed("excerpt", readOnly.permissions)).toBe(false);
+    expect(citeOnly.permissions.aiUse).toBe(true);
+    expect(contentReaderFieldAllowed("excerpt", citeOnly.permissions)).toBe(true);
+    expect(contentReaderFieldAllowed("body", citeOnly.permissions)).toBe(false);
+    expect(full.permissions).toMatchObject({ read: true, cite: true, export: true, aiUse: true, metadataOnly: false });
+  });
+
+  test("unknown actions fail closed", () => {
+    expect(contentReaderPermissions({ contentActions: ["read", "admin"], aiActions: [] }).ok).toBe(false);
+  });
+});
+
+describe("content reader exchange input", () => {
+  test("accepts only a content public id", () => {
+    expect(contentReaderExchangeRequestSchema.safeParse({ contentPublicId: "law-2024-1" }).success).toBe(true);
+    expect(contentReaderExchangeRequestSchema.safeParse({ contentPublicId: "content_item:abc" }).success).toBe(false);
+    expect(contentReaderExchangeRequestSchema.safeParse({
+      contentPublicId: "law-2024-1",
+      entitlementRevision: "9",
+    }).success).toBe(false);
+    expect(CLIENT_AUTHORITY_FIELDS).toContain("lease_end");
+  });
+
+  test("formats a positive entitlement revision for the IdP identity pattern", () => {
+    expect(formatEntitlementRevision(12)).toEqual({ ok: true, entitlementRevision: "12" });
+    expect(formatEntitlementRevision(0).ok).toBe(false);
+  });
+});
+
+
+describe("returned contract regressions", () => {
+  test("browse remains visible with export, and export never grants body", () => {
+    const result = contentReaderPermissions({ contentActions: ["browse", "export"], aiActions: [] });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.permissions.export).toBe(true);
+    expect(contentReaderFieldAllowed("metadata", result.permissions)).toBe(true);
+    expect(contentReaderFieldAllowed("body", result.permissions)).toBe(false);
+    expect(contentReaderFieldAllowed("excerpt", result.permissions)).toBe(false);
+  });
+  test("independent actions preserve field restrictions across all combinations", () => {
+    const actions = ["browse", "search", "read", "cite", "export"];
+    for (let mask = 0; mask < 32; mask++) {
+      const contentActions = actions.filter((_, bit) => (mask & (1 << bit)) !== 0);
+      for (const aiActions of [[], ["research"], ["generate"], ["research", "generate"]]) {
+        const result = contentReaderPermissions({ contentActions, aiActions });
+        expect(result.ok).toBe(true);
+        if (!result.ok) continue;
+        const p = result.permissions;
+        expect(p.search).toBe(contentActions.includes("search"));
+        expect(p.export).toBe(contentActions.includes("export"));
+        expect(p.aiUse).toBe(aiActions.length > 0);
+        expect(contentReaderFieldAllowed("metadata", p)).toBe(contentActions.includes("browse") || contentActions.includes("search"));
+        expect(contentReaderFieldAllowed("body", p)).toBe(contentActions.includes("read"));
+        expect(contentReaderFieldAllowed("article", p)).toBe(contentActions.includes("read"));
+        expect(contentReaderFieldAllowed("excerpt", p)).toBe(contentActions.includes("cite"));
+        expect(contentReaderFieldAllowed("hidden", p)).toBe(false);
+      }
+    }
+    expect(contentReaderPermissions({ contentActions: [], aiActions: ["unknown"] })).toEqual({ ok: false, error: "projection_incomplete" });
+  });
+  test("rejects any deadline beyond the 900 second bound", () => {
+    for (const invalid of ["tokenExpiresAtSeconds", "sessionExpiresAtSeconds", "projectionConfirmedUntilSeconds"] as const) {
+      const input = { nowSeconds: NOW, tokenExpiresAtSeconds: NOW + 900, sessionExpiresAtSeconds: NOW + 900, projectionConfirmedUntilSeconds: NOW + 900 };
+      input[invalid] = NOW + 901;
+      expect(remainingContentReaderCloseSeconds(input)).toBeNull();
+    }
+    expect(remainingContentReaderCloseSeconds({ nowSeconds: NOW, tokenExpiresAtSeconds: NOW + 3600, sessionExpiresAtSeconds: NOW + 3600, projectionConfirmedUntilSeconds: NOW + 3600 })).toBeNull();
+  });
+});

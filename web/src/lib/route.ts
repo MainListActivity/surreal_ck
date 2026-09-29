@@ -19,6 +19,7 @@
 export type WorkspacePage =
   | "home"
   | "docs"
+  | "content"
   | "templates"
   | "dashboard"
   | "admin"
@@ -35,11 +36,13 @@ export type Route =
   | { kind: "ops" }
   | { kind: "billing-quota"; accountKey: string }
   | { kind: "workspace"; slug: string; page: WorkspacePage }
+  | { kind: "content-reader"; slug: string; publicId: string }
   | { kind: "editor"; slug: string; workbookId: string; sheetId: string | null };
 
 const WORKSPACE_PAGES: readonly WorkspacePage[] = [
   "home",
   "docs",
+  "content",
   "templates",
   "dashboard",
   "admin",
@@ -73,6 +76,10 @@ export function parseRoute(pathname: string): Route {
   if (segments[0] === "w" && segments[1]) {
     const slug = decodeURIComponent(segments[1]);
 
+    if (segments[2] === "content" && segments[3] && segments.length === 4) {
+      return { kind: "content-reader", slug, publicId: decodeURIComponent(segments[3]) };
+    }
+
     // /w/:slug/wb/:workbookId(/sheet/:sheetId)
     if (segments[2] === "wb" && segments[3]) {
       const workbookId = decodeURIComponent(segments[3]);
@@ -102,6 +109,10 @@ export function editorPath(slug: string, workbookId: string, sheetId?: string | 
 export function workspacePath(slug: string, page: WorkspacePage = "home"): string {
   const base = `/w/${encodeURIComponent(slug)}`;
   return page === "home" ? base : `${base}/${page}`;
+}
+
+export function contentReaderPath(slug: string, publicId: string): string {
+  return `${workspacePath(slug, "content")}/${encodeURIComponent(publicId)}`;
 }
 
 export function billingQuotaPath(accountKey: string): string {

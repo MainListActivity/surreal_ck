@@ -452,7 +452,7 @@ describe("workspace template scripts", () => {
 
     // 001 两处 + 007 两处（admin / participant 各一）
     expect(rawSql.match(/<__OIDC_JWKS_URL__>/g)?.length).toBe(4);
-    expect(rawScripts[0]?.sql).toContain("DEFINE ACCESS employee");
+    expect(rawScripts[0]?.sql).toContain("DEFINE ACCESS OVERWRITE employee");
     expect(rawScripts[0]?.sql).not.toContain("DEFINE ACCESS employee ON DATABASE TYPE RECORD\n  WITH JWT");
 
     const renderedScripts = await loadTemplateScripts({
