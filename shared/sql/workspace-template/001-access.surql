@@ -41,7 +41,9 @@ DEFINE ACCESS OVERWRITE participant ON DATABASE TYPE RECORD
   }
   DURATION FOR TOKEN 1h, FOR SESSION NONE;
 
-DEFINE ACCESS employee ON DATABASE TYPE RECORD
+-- OVERWRITE：001 在 schema_version 落标前失败时，重试会再次执行本脚本。
+-- 没有 OVERWRITE 时，已建好的 employee access 会让重试停在 provisioning_error。
+DEFINE ACCESS OVERWRITE employee ON DATABASE TYPE RECORD
   SIGNUP NONE
   SIGNIN {
     LET $u = SELECT * FROM user
