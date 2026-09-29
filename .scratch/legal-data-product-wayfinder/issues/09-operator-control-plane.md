@@ -75,9 +75,18 @@ Parent: [`律师行业订阅与平台法律数据产品决策地图`](../PRD.md)
 
 - 首期异常类型白名单：已付款未交付（provider 已确认收款但 entitlement / materialization 未完成）、权益投影失败、额度结算异常（预留泄漏、重复扣减、退款失败）、配额漂移（drift detected）、授权收回失败。
 - 订阅正常到期、合法 over_limit、预期内 retention 均不是系统异常，不进异常列表。
-- 异常通过 in_app 通知触达运营（复用 `quota_notification_outbox`，audience=operator），列表支持按工作区 / 异常类型 / 时间筛选；运营可标记已处理但记录不删除。
 - 每条异常提供对应的纠正入口：重试交付、漂移转 override、补偿额度或人工修订，从异常直接发起而不是让运营手工拼参数。
 - 资源用量阈值类客户提醒沿用既有 `quota_alert_state`（threshold / over_limit，audience=workspace_admin / billing_admin）；客户提醒与运营异常告警分通道，客户侧提示不当作平台故障。
+
+##### 异常存储与通知契约（选定路径：新异常状态表 + 扩展现有 outbox）
+
+现有 `quota_alert_state` 的 `alert_kind` 只含 threshold / over_limit，且 `quota_notification_outbox.alert_state` 是必填 `record<quota_alert_state>`；现有通知读取也只解析这两类 payload。五类运营异常不是配额阈值事件，不能直接塞进这两张表，因此首期采用：
+
+- 新增 `ops_anomaly` 异常状态表（对照 `quota_alert_state` 的模式）：`anomaly_kind` 枚举（`payment_undelivered` / `projection_failed` / `settlement_anomaly` / `quota_drift` / `revocation_failed`）、workspace、billing_account（可选）、来源引用（provider_event / operator_intent / entitlement_operation / materialization_attempt / ledger entry，按类型至少其一）、`dedupe_key` 唯一索引、`state`（open / notified / acknowledged / resolved）、first_seen_at / last_seen_at / occurrence_count、severity、correlation_id；不可变历史追加、状态机只前迁，记录不删除。
+- 扩展 `quota_notification_outbox`：`alert_state` 放宽为 `option`，新增 `anomaly` 字段 `option<record<ops_anomaly>>`；schema 断言两者恰有其一；payload 携带异常 payload（kind、摘要、来源引用、目标链接）。复用现有 `quota_notification_delivery` 的投递/重试/去重机制，不再建第二套 outbox。
+- 通知读取 DTO 扩展：现有解析器（`quota-notifications` 只认 threshold / over_limit，其他返回 null）增加 anomaly 分支，异常项返回 kind、来源引用与跳转链接；ops 异常列表直接读 `ops_anomaly`（支持按工作区 / 类型 / 时间 / 状态筛选），outbox 仅负责触达与 badge。
+- 受众与通道：异常通知 audience 固定 `operator`，channel 首期仍 `in_app`；运营可在列表标记 acknowledged（只迁状态不删记录）。
+- 所需 schema 迁移为「放宽 alert_state + 新增 anomaly 字段 + 新增 ops_anomaly 表」，只新增与放宽、不删改已有数据，符合红线；检测写入点（哪些系统事件产生异常行）随实施落入对应服务，不在本票定义枚举之外的来源。
 
 ### 2. 运营动作集
 
@@ -120,7 +129,8 @@ Parent: [`律师行业订阅与平台法律数据产品决策地图`](../PRD.md)
 
 #### 3.2 平台运营资格与细分能力
 
-- 运营身份存于 `_system` 的 `platform_operator`（subject、kind、status、granted_by、granted_at、revoked_at），能力存于 `platform_operator_capability`，由具备授权资格的运营或系统管理员发放与收回，全程留痕。
+- 运营身份存于 `_system` 的 `platform_operator`（subject、display_name、status、kind、created_at / disabled_at / updated_at），能力存于 `platform_operator_capability`（operator、capability、status、granted_by_subject、granted_at、revoked_at、updated_at）。
+- 能力的发放与收回在 capability 行上留痕（granted_by_subject / granted_at / revoked_at）；首期不为 `platform_operator` 主体新增 granted_by 类审计字段——运营记录的创建与禁用属部署级管理动作，其审计需求随实施评估，不写成已存在的能力。
 - 首期能力键沿用现有点分命名并补齐动作集所需的新键：
 
   | 能力 | 覆盖动作 | 状态 |
@@ -167,4 +177,5 @@ Parent: [`律师行业订阅与平台法律数据产品决策地图`](../PRD.md)
 - 11 号规格需核对已有原生配额运营能力，优先复用并补足内容、AI 和产品计划解释。
 - 11 号规格单独拆出 `ops/` 应用、`server/src/ops/` 入口整理、运营登录适配、全工作区分页目录与旧入口迁移验收任务。
 - 实施时注意：本票新增 `entitlement.grant`、`ai.credit.manage` 两个能力键与对应的 grant intent 需要 schema / 枚举扩展；其余动作映射到既有 intent kind。
+- 异常告警链路（§1.5）的实施项：`_system` schema 迁移（新增 `ops_anomaly` 表、`quota_notification_outbox.alert_state` 放宽为 option + 新增 `anomaly` 字段与二选一断言）、通知读取 DTO 增加 anomaly 分支、异常检测写入点落入对应服务（交付物化、投影、结算、漂移扫描、授权收回）、ops UI 异常列表与 acknowledged 交互。
 - 本票为运营面板方案，尚未表示界面或后端动作已经实现。
