@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  ContractSourceSchema,
   GetDataContractResponseSchema,
   IngestionBatchSchema,
   InspectBatchRequestSchema,
@@ -115,5 +116,17 @@ describe("platform content contract v1", () => {
         examples: ["submit_batch"],
       }).contractVersion,
     ).toBe("1");
+  });
+
+  test("contract source vocabulary accepts customer actions and still rejects unknown verbs", () => {
+    const source = {
+      sourceKey: "flk.example.cn",
+      label: "官方法规发布",
+      status: "active",
+      allowedActions: ["submit", "publish", "browse", "search", "read", "cite", "export", "research", "generate"],
+    };
+    expect(ContractSourceSchema.safeParse(source).success).toBe(true);
+    expect(ContractSourceSchema.safeParse({ ...source, allowedActions: ["submit", "delete"] }).success).toBe(false);
+    expect(ContractSourceSchema.safeParse({ ...source, allowedActions: ["submit", "read", "read"] }).success).toBe(true);
   });
 });
