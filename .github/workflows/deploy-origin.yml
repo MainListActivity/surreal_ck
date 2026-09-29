@@ -105,14 +105,29 @@ jobs:
           CFG
 
       - name: Upload and activate release
+        env:
+          ALL_SECRETS: ${{ toJSON(secrets) }}
         run: |
           set -euo pipefail
           release_id="${RELEASE_SHA:0:7}-ci${GITHUB_RUN_ID}"
           archive="/tmp/surreal_ck-${release_id}.tar.gz"
+          env_additions="/tmp/surreal_ck-env-${release_id}"
+          umask 077
+          # ORIGIN_ENV_<NAME> secrets become <NAME>=<value> in the origin server.env.
+          jq -r 'to_entries[] | select(.key | startswith("ORIGIN_ENV_")) | "\(.key | ltrimstr("ORIGIN_ENV_"))=\(.value)"' \
+            <<<"$ALL_SECRETS" > env.additions
+          if ! jq -e '[to_entries[] | select(.key | startswith("ORIGIN_ENV_")) | .value | select(contains("\n"))] | length == 0' \
+            <<<"$ALL_SECRETS" >/dev/null; then
+            echo "::error::ORIGIN_ENV_* secrets must be single-line values"
+            exit 1
+          fi
+          echo "env keys: $(cut -d= -f1 env.additions | tr '\n' ' ')"
+          scp -q env.additions "origin:$env_additions"
+          rm -f env.additions
           git -C release archive --format=tar.gz -o "$PWD/release.tar.gz" "$RELEASE_SHA"
           scp -q release.tar.gz "origin:$archive"
           scp -q scripts/deploy/origin-release.sh "origin:/tmp/origin-release-${release_id}.sh"
-          ssh origin "bash /tmp/origin-release-${release_id}.sh '$release_id' '$archive'; status=\$?; rm -f /tmp/origin-release-${release_id}.sh; exit \$status"
+          ssh origin "bash /tmp/origin-release-${release_id}.sh '$release_id' '$archive' '$env_additions'; status=\$?; rm -f /tmp/origin-release-${release_id}.sh '$env_additions'; exit \$status"
 
       - name: Remove SSH key
         if: always()
