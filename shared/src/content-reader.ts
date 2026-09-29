@@ -111,6 +111,11 @@ export type ContentReaderExchangeSuccess = {
   contentPublicId: string;
 };
 
+/** Search does not accept a client-chosen content pointer or authority fields. */
+export type ContentSearchExchangeSuccess =
+  | { status: "empty" }
+  | (Omit<ContentReaderExchangeSuccess, "contentPublicId"> & { status: "ready" });
+
 export type ContentReaderFailure = {
   ok: false;
   error: ContentReaderError;
