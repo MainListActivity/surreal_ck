@@ -144,18 +144,40 @@ export function createMemberManager(options: MemberManagerOptions = {}): MemberM
         { email: input.email, displayName: input.displayName ?? input.email, isAdmin: input.isAdmin },
       );
 
-      // _system 索引行：subject NONE（NONE 不参与 (subject, workspace) 唯一索引约束），
-      // workspace 为 RecordId。
-      await systemDb.query(
-        `INSERT INTO user_workspace_index {
-           subject: NONE,
-           email: $email,
-           workspace: $workspace,
-           db_name: $dbName,
-           role: $role
-         };`,
-        { email: input.email, workspace: workspace.workspaceId, dbName: workspace.dbName, role },
+      // 重新加入时复活旧索引行，保留已绑定的 subject，避免新建的 NONE 行
+      // 在 switch-workspace 回填 subject 时撞上 (subject, workspace) 唯一索引。
+      const existingResult = await systemDb.query(
+        "SELECT id, subject FROM user_workspace_index WHERE workspace = $workspace AND email = $email;",
+        { workspace: workspace.workspaceId, email: input.email },
       );
+      const existingRows = Array.isArray(existingResult) && Array.isArray(existingResult[0])
+        ? existingResult[0] as Record<string, unknown>[]
+        : [];
+      const existing = existingRows.find((row) => typeof row.subject === "string") ?? existingRows[0];
+      const existingId = existing ? toStringRecordId(existing.id) : null;
+
+      if (existingId) {
+        // 历史版本可能留下多行；只让选中的一行处于 active 状态。
+        await systemDb.query(
+          "UPDATE user_workspace_index SET disabled_at = time::now() WHERE workspace = $workspace AND email = $email AND id != $membership AND disabled_at = NONE;",
+          { workspace: workspace.workspaceId, email: input.email, membership: existingId },
+        );
+        await systemDb.query(
+          "UPDATE $membership SET disabled_at = NONE, role = $role, db_name = $dbName;",
+          { membership: existingId, role, dbName: workspace.dbName },
+        );
+      } else {
+        await systemDb.query(
+          `INSERT INTO user_workspace_index {
+             subject: NONE,
+             email: $email,
+             workspace: $workspace,
+             db_name: $dbName,
+             role: $role
+           };`,
+          { email: input.email, workspace: workspace.workspaceId, dbName: workspace.dbName, role },
+        );
+      }
 
       return { kind: "added" };
     },
