@@ -7,6 +7,7 @@ import {
 } from "@surreal-ck/shared";
 import type { AppBindings } from "../hono-types";
 import { HttpError } from "../http-error";
+import { inspectProductRevisionRaw } from "../product-entitlement/inspect";
 import { requireOidc } from "../middleware/oidc";
 import { requirePlatformOperator } from "../ops/operator-auth";
 import { ProductEntitlementError, ProductEntitlementService, type ProductActor } from "../product-entitlement/service";
@@ -28,13 +29,23 @@ function operator(c: { var: AppBindings["Variables"] }): ProductActor {
 
 export function createProductEntitlementRoutes(input: {
   service: ProductEntitlementService;
+  /** 运营只读诊断（LCA05）：读产品修订原始模板行与表结构；默认走真实实现。 */
+  inspectRevision?: (id: string) => Promise<unknown>;
   requireCustomer?: () => MiddlewareHandler<AppBindings>;
 }) {
   const requireCustomer = input.requireCustomer ?? requireOidc;
+  const inspectRevision = input.inspectRevision ?? inspectProductRevisionRaw;
   return new Hono<AppBindings>()
     .get("/api/workspaces/:slug/product-entitlement", requireCustomer(), async (c) => {
       try {
         return c.json(await input.service.getForCustomer(c.var.user.subject, c.req.param("slug")));
+      } catch (error) {
+        return fail(error);
+      }
+    })
+    .get("/api/ops/product-entitlements/revisions/:id/inspect", requirePlatformOperator("subscription.manage"), async (c) => {
+      try {
+        return c.json(await inspectRevision(c.req.param("id")));
       } catch (error) {
         return fail(error);
       }

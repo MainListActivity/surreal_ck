@@ -2,6 +2,12 @@
 
 Issues and PRDs for this repo live as markdown files in `.scratch/`.
 
+Company operations, customer delivery, and cross-role handoffs use the separate
+private GitHub workspace described in [company-operations.md](../company-operations.md).
+For those tasks, read that entry first. This file remains authoritative for local
+technical specifications and implementation issues; their completion does not
+replace company-level acceptance.
+
 ## Conventions
 
 - One feature per directory: `.scratch/<feature-slug>/`
