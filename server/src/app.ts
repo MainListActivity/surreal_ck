@@ -99,6 +99,9 @@ import { createProductEntitlementRoutes } from "./routes/product-entitlement";
 import { createContentReaderRoutes, type ContentReaderExchangeHandler } from "./routes/content-reader";
 import { createContentReaderExchangeHandler } from "./content/reader-handler";
 import { createContentSearchExchangeHandler } from "./content/search-exchange";
+import { createEmployeeRoutes } from "./routes/employees";
+import { createProductionEmployeeLifecycle, resolveWorkspaceBySlug } from "../ai/office/employee-service";
+import type { EmployeeLifecycle } from "../ai/office/employee-lifecycle";
 
 export type AppOptions = {
   workspaceScope?: WorkspaceScopeModule;
@@ -136,6 +139,10 @@ export type AppOptions = {
   opsRunService?: OpsRunService;
   productEntitlementService?: ProductEntitlementService;
   contentReaderExchange?: ContentReaderExchangeHandler;
+  /** 虚拟员工生命周期服务（VER02）；默认生产装配。 */
+  employeeLifecycle?: EmployeeLifecycle;
+  /** slug → db_name 解析（路由层 scope 校验用）；默认 root 读 _system。 */
+  employeeWorkspaceResolver?: (slug: string) => Promise<{ dbName: string } | null>;
 };
 
 type AiStreamWebSocket = ReturnType<typeof createAiStreamRoutes>["websocket"];
@@ -283,6 +290,11 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     }))
     .route("/", createWorkspaceRoutes(workspaceCreator, workspaceScope, options.requireUser, workspaceSettingsManager))
     .route("/", createMemberRoutes(memberManager, options.requireUser))
+    .route("/", createEmployeeRoutes({
+      lifecycle: options.employeeLifecycle ?? createProductionEmployeeLifecycle(),
+      resolveWorkspace: options.employeeWorkspaceResolver ?? resolveWorkspaceBySlug,
+      requireUser: options.requireUser,
+    }))
     .route(
       "/",
       createQuotaRoutes(

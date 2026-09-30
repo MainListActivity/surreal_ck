@@ -22,6 +22,7 @@ import {
   startClaimsRiskReminderDispatcher,
   type ClaimsRiskDispatcherHandle,
 } from "../ai/office/claims-risk-dispatcher";
+import { stopEmployeeRuntime, warmupEmployeeRuntime } from "../ai/office/employee-service";
 import {
   startNativeQuotaRuntime,
   type NativeQuotaRuntimeHandle,
@@ -216,6 +217,14 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
     });
   }
 
+  // 虚拟员工 runtime（VER02）：重启后回装 secret 缓存；失败不阻塞对外服务，
+  // 员工会话随生命周期/执行按需 SIGNIN。
+  void warmupEmployeeRuntime().catch((cause: unknown) => {
+    console.error("[server] failed to warm up employee runtime; continuing without it", {
+      message: cause instanceof Error ? cause.message : String(cause),
+    });
+  });
+
   return {
     server,
     async shutdown(signal: string): Promise<void> {
@@ -224,6 +233,7 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
       reconcileLoop?.stop();
       quotaRuntime.stop();
       await claimsRiskDispatcher?.stop();
+      await stopEmployeeRuntime();
       await (deps.closeContentPublisherSession ?? closeContentPublisherSession)();
       await (deps.closeContentProjectionSession ?? closeContentProjectionSession)();
       await closeRoot();
