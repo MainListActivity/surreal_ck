@@ -26,6 +26,7 @@ import {
   assembleResearchAnswerText,
   buildResearchPrompt,
   createEvidenceRegistry,
+  citationDTO,
   validateResearchAnswer,
   type CorpusAvailability,
 } from "../../../src/research/research-answer";
@@ -67,24 +68,29 @@ export function makeLegalResearchExecutor(deps: LegalResearchExecutorDeps): SubA
 
     // ── 执行窗口：workspace session（透传）+ content session（runtime 注入，可选） ──
     // 窗口打开失败（IdP/投影/网络）一律按平台不可用降级，不中断 run、不外泄错误链。
-    const [privateSearch, corpusWindow] = await Promise.all([
+    const [privateOutcome, corpusWindow] = await Promise.all([
       searchResources({
         workspaceId,
         query: taskText,
         context: buildResourceSearchContext(shared.userContext),
         limit: 5,
-      }, surrealSession),
+      }, surrealSession).then(
+        (value) => ({ ok: true as const, value }),
+        (error: unknown) => ({ ok: false as const, error }),
+      ),
       openWindowQuietly(openContentSession),
     ]);
 
     try {
-      const corpusAvailability: CorpusAvailability = corpusWindow.kind === "ready"
+      if (!privateOutcome.ok) throw privateOutcome.error;
+      const privateSearch = privateOutcome.value;
+      let corpusAvailability: CorpusAvailability = corpusWindow.kind === "ready"
         ? "ready"
         : corpusWindow.kind === "empty"
           ? "empty"
           : "unavailable";
-      const corpusNotice = corpusWindow.kind === "unavailable"
-        ? `平台语料暂不可用（${corpusWindow.reason}），本回答仅基于工作区私有资料（partial）。`
+      let corpusNotice = corpusWindow.kind === "unavailable"
+        ? "平台语料暂不可用（unavailable），本回答仅基于工作区私有资料（partial）。"
         : corpusWindow.kind === "empty"
           ? "平台语料当前没有可授权集合，本回答仅基于工作区私有资料（partial）。"
           : undefined;
@@ -101,6 +107,8 @@ export function makeLegalResearchExecutor(deps: LegalResearchExecutorDeps): SubA
         } catch {
           // 检索失败按平台不可用处理：不把原始错误带进模型上下文或日志。
           platformEvidence = { evidence: [], rejected: [], candidatesSeen: 0 };
+          corpusAvailability = "unavailable";
+          corpusNotice = "平台语料暂不可用（unavailable），本回答仅基于工作区私有资料（partial）。";
         }
       }
 
@@ -196,6 +204,10 @@ export function makeLegalResearchExecutor(deps: LegalResearchExecutorDeps): SubA
       } catch {
         analysisText = "模型分析暂不可用；以上证据仅作登记，不构成结论。";
       }
+
+      // 来源事实/用户材料也展示了登记句柄，每个展示的句柄都必须有同号引用。
+      citations = registry.entries.filter((entry) => entry.quoteAllowed)
+        .map((entry) => citationDTO(registry, entry.handle, entry.handle));
 
       const text = assembleResearchAnswerText({
         question: taskText,

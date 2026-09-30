@@ -103,6 +103,12 @@ describe("buildResearchPrompt", () => {
 });
 
 describe("validateResearchAnswer", () => {
+  test("引用次序不同仍使用登记句柄，不能重排为另一来源", () => {
+    const { registry } = registryWithCite();
+    const result = validateResearchAnswer({ modelText: "材料 [2] 后参照 [1]", registry });
+    expect(result.citations.map((citation) => citation.index)).toEqual([2, 1]);
+    expect(result.citations[0]?.evidence?.[0]?.order).toBe(0);
+  });
   test("伪造句柄被剔除并记因，合法句柄生成登记表来源的引用快照", () => {
     const { registry, platformHandle } = registryWithCite();
     const result = validateResearchAnswer({

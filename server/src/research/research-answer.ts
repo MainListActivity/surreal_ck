@@ -186,7 +186,7 @@ export function validateResearchAnswer(input: {
     citedHandles.push(handle);
   }
 
-  const citations = citedHandles.map((handle, index) => citationDTO(input.registry, handle, index + 1));
+  const citations = citedHandles.map((handle) => citationDTO(input.registry, handle, handle));
   return { citedHandles, rejected, citations };
 }
 
@@ -198,7 +198,7 @@ export function citationDTO(registry: ResearchEvidenceRegistry, handle: number, 
     index,
     resourceId: entry.sourceType === "platform" ? entry.platform!.itemId : entry.private!.resourceId,
     title: entry.title,
-    evidence: [{ order: 0, text: entry.quote }],
+    evidence: [{ order: entry.private?.order ?? 0, text: entry.quote }],
   };
   if (entry.sourceType === "platform" && entry.platform) {
     return {
@@ -254,7 +254,10 @@ export function assembleResearchAnswerText(input: ResearchAnswerAssemblyInput): 
 
   sections.push("");
   sections.push("【模型分析】");
-  sections.push(input.analysisText.trim() || "证据不足，无法给出有依据的分析。");
+  // 不仅剔除引用 DTO：含不合法引用的整段模型分析也不进入消息/流/快照。
+  sections.push(input.rejected.length > 0
+    ? "模型引用未通过核验，已舍弃该分析；请依据上方证据或补充材料。"
+    : input.analysisText.trim() || "证据不足，无法给出有依据的分析。");
 
   const gaps: string[] = [];
   if (input.corpusAvailability !== "ready") {

@@ -171,6 +171,27 @@ describe("legal research executor", () => {
     expect(out.citations![0]!.index).toBe(1);
     expect(out.text).toContain("引用 [9] 未通过核验（句柄未登记），已从引用中移除。");
     expect(out.text).toContain("【覆盖说明】");
+    expect(out.text).not.toContain("伪造 [9]");
+  });
+
+  test("检索异常明确降级，私有检索失败也关闭已打开窗口", async () => {
+    const { executor, prompts } = executorWith({ search: hitResponse() });
+    const window = readyWindow();
+    if (window.kind !== "ready") throw new Error("fixture");
+    window.session = { query: async () => { throw new Error("internal-secret"); } } as unknown as Pick<Surreal, "query">;
+    const out = await run(executor, async () => window);
+    expect(prompts[0]).toContain("unavailable");
+    expect(out.text).toContain("partial");
+    expect(out.text).not.toContain("internal-secret");
+
+    closeCount = 0;
+    const failing = makeLegalResearchExecutor({
+      resolveWorkspaceId: async () => "ws_demo",
+      searchResources: async () => { throw new Error("private query failed"); },
+      answerModel: async () => "unused",
+    });
+    await expect(run(failing, async () => readyWindow())).rejects.toThrow("private query failed");
+    expect(closeCount).toBe(1);
   });
 
   test("平台不可用：降级为私有资料分析并显式标注 partial", async () => {
@@ -243,7 +264,8 @@ describe("legal research executor", () => {
     });
     const out = await run(executor, () => Promise.resolve(readyWindow()));
     expect(out.text).toContain("模型分析暂不可用");
-    expect(out.citations).toBeUndefined();
+    expect(out.citations).toHaveLength(1);
+    expect(out.citations?.[0]?.index).toBe(1);
     expect(out.text).toContain("CANARY-AUTHORIZED");
   });
 });
