@@ -196,6 +196,21 @@ describe("浏览器 adapter 的 query / liveTable 透传", () => {
     expect(result).toBe(rows);
   });
 
+  test("事务失败保留真正的权限错误，不被回滚占位错误掩盖", async () => {
+    const permissionError = new Error("Not enough permissions to perform this action");
+    const rawDriver = {
+      query: () => ({
+        collect: async () => { throw new Error("The query was not executed due to a failed transaction"); },
+        responses: async () => [
+          { success: false, error: new Error("The query was not executed due to a failed transaction") },
+          { success: false, error: permissionError },
+        ],
+      }),
+    };
+    const conn = createBrowserConn(rawDriver as never);
+    await expect(conn.query("BEGIN TRANSACTION; DEFINE TABLE example; COMMIT TRANSACTION;")).rejects.toBe(permissionError);
+  });
+
   test("queryRaw 返回所有语句结果", async () => {
     const calls: string[] = [];
     const firstRows = [{ id: "workbook:1" }];
