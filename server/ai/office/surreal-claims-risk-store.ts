@@ -33,22 +33,22 @@ export function createSurrealClaimsRiskStore(session: EmployeeQuerySession): Cla
 
   return {
     async beginDailyRun(checkDate: string): Promise<DailyRunState> {
+      // UPSERT ... WHERE 单语句 CAS：行缺失 → 插入 running；非 completed →
+      // 夺回 running（重试 failed/running 残留）；completed → 空集跳过。
+      // 不用 ON DUPLICATE：RECORD 会话下其未限定字段引用求值为 NONE，条件恒真。
       const rows = await session.query<{ status: string }>(
-        `INSERT INTO risk_check_run {
-          check_date: $checkDate,
-          status: "running",
-          started_at: time::now()
-        }
-        ON DUPLICATE KEY UPDATE
-          status = IF status = "completed" { "completed" } ELSE { "running" },
+        `UPSERT risk_check_run SET
+          check_date = $checkDate,
+          status = "running",
           employee = fn::current_user(),
-          started_at = IF status = "completed" { started_at } ELSE { time::now() },
-          completed_at = IF status = "completed" { completed_at } ELSE { NONE },
+          started_at = time::now(),
+          completed_at = NONE,
           error_message = NONE
+        WHERE check_date = $checkDate AND status != "completed"
         RETURN AFTER`,
         { checkDate },
       );
-      return rows[0]?.status === "completed" ? "completed" : "acquired";
+      return rows[0] == null ? "completed" : "acquired";
     },
 
     async loadEnabledWorkbooks(): Promise<ClaimsWorkbook[]> {
