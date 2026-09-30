@@ -38,7 +38,7 @@ function closableSession() {
   };
 }
 
-type StartCall = { message: string; session: Surreal; runId: string; composerMode?: "chat" | "resource-search" };
+type StartCall = { message: string; session: Surreal; runId: string; userContext?: unknown; composerMode?: "chat" | "resource-search" };
 type ResumeCall = { runId: string; decision: unknown; session: Surreal };
 
 function stubService(
@@ -50,7 +50,7 @@ function stubService(
     startCalls,
     resumeCalls,
     async startChat(input) {
-      startCalls.push({ message: input.message, session: input.surrealSession, runId: input.runId, composerMode: input.composerMode });
+      startCalls.push({ message: input.message, session: input.surrealSession, runId: input.runId, userContext: input.userContext, composerMode: input.composerMode });
       // 后台启动语义：立即 resolve（真实实现里 workflow 在后台继续跑）。
     },
     async resumeChat(input) {
@@ -124,6 +124,69 @@ describe("POST /api/chat", () => {
     expect(service.startCalls[0].message).toBe("打开债权工作簿");
     expect(service.startCalls[0].session).toBe(fakeSession);
     expect(service.startCalls[0].runId).toBe(body.runId);
+  });
+
+  test("省略 contextSnapshot → 照常受理，service 层注入合法默认快照；提供了非法快照则 400 且不建会话", async () => {
+    const service = stubService();
+    let sessionCreated = 0;
+    const app = makeApp({
+      service,
+      sessionFactory: async () => {
+        sessionCreated += 1;
+        return fakeSession;
+      },
+    });
+
+    const ok = await app.request("/api/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "打开债权工作簿" }),
+    });
+    expect(ok.status).toBe(200);
+    expect(service.startCalls).toHaveLength(1);
+    expect(service.startCalls[0]?.userContext).toBeUndefined();
+
+    const bad = await app.request("/api/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "x", contextSnapshot: { route: {} } }),
+    });
+    expect(bad.status).toBe(400);
+    const badBody = (await bad.json()) as { error?: { code?: string } };
+    expect(badBody.error?.code).toBe("chat-context-invalid");
+    expect(service.startCalls).toHaveLength(1);
+    // 校验在 signIn 之前完成：非法快照不消耗一次 caller session
+    expect(sessionCreated).toBe(1);
+  });
+
+  test("合法 contextSnapshot 通过校验并透传（多余键被剥离）", async () => {
+    const service = stubService();
+    const app = makeApp({ service });
+
+    const res = await app.request("/api/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: "打开工作簿",
+        contextSnapshot: {
+          route: { screen: "home" },
+          workbook: null,
+          sheet: null,
+          selectedRow: null,
+          contextHint: "当前在应用首页",
+          workspaceSlug: "ws_demo",
+        },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(service.startCalls[0]?.userContext).toEqual({
+      route: { screen: "home" },
+      workbook: null,
+      sheet: null,
+      selectedRow: null,
+      contextHint: "当前在应用首页",
+    });
   });
 
   test("缺 Bearer token → 401（真实 requireOidc）", async () => {

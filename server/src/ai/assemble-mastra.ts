@@ -32,11 +32,13 @@ import {
   type RouterRuntime,
   type SubAgentExecutors,
 } from "../../ai/mastra/workflows/router-workflow";
+import { setExecutionContext } from "../../ai/mastra/execution-context";
 import { RequestContext } from "@mastra/core/request-context";
 import type { Surreal } from "surrealdb";
 import type { DecisionCaller } from "../../ai/decision/model";
 import type { ChatRunner, ChatResumer } from "./chat-service";
 import type { SearchContentResponse } from "@surreal-ck/shared/platform-content";
+import type { ResourceCitationDTO } from "@surreal-ck/shared";
 
 /**
  * 把一个已构造好的 Mastra Agent 适配成 RouterLlmCaller：
@@ -190,13 +192,33 @@ const defaultResumeWorkflow: NonNullable<CreateMastraRunnerOptions["resumeWorkfl
   if (!stored) {
     return { runId: input.runId, finalText: "", status: "cancelled" };
   }
+  const snapshot = (typeof stored.snapshot === "string"
+    ? JSON.parse(stored.snapshot)
+    : stored.snapshot) as {
+    status?: string;
+    result?: { finalText?: string; steps?: Array<{ citations?: ResourceCitationDTO[] }> };
+  };
   // 同一决定可能因 HTTP/WS 断线被再次提交。已成功的持久化 run 是幂等权威：
-  // 不再调用 resume，避免重新执行已经完成的步骤；RunBus 会按同一 runId 回放终态。
-  const storedStatus = typeof stored.snapshot === "string"
-    ? (JSON.parse(stored.snapshot) as { status?: string }).status
-    : stored.snapshot.status;
-  if (storedStatus === "success") {
-    return { runId: input.runId, finalText: "", status: "success" };
+  // 不再调用 resume，避免重新执行已经完成的步骤。但 RunBus 的终态缓存只保留
+  // CHAT_STREAM_TERMINAL_RETENTION_MS，迟到的重连订阅拿不到历史 done——
+  // 必须按持久化 result 重建并重新投递终态，否则新 stream 只剩心跳。
+  if (snapshot.status === "success") {
+    const finalText = snapshot.result?.finalText ?? "";
+    const citations = (snapshot.result?.steps ?? []).flatMap((s) => s.citations ?? []);
+    input.pushChunk({
+      streamId: input.streamId,
+      type: "done",
+      message: {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content: finalText || "我没有生成有效回复。",
+        createdAt: new Date().toISOString(),
+        context: input.userContext,
+        citations: citations.length ? citations : undefined,
+      },
+      toolCalls: [],
+    });
+    return { runId: input.runId, finalText, status: "success" };
   }
   const run = await wf.createRun({ runId: input.runId });
   const requestContext = new RequestContext();
@@ -212,6 +234,7 @@ const defaultResumeWorkflow: NonNullable<CreateMastraRunnerOptions["resumeWorkfl
     onSuspend: input.onSuspend,
     answerResourceSelection: input.answerResourceSelection,
   };
+  setExecutionContext(requestContext, { surrealSession: input.surrealSession });
   requestContext.set(ROUTER_RUNTIME_KEY, runtime);
 
   const result = await run.resume({ resumeData: { decision: input.decision }, requestContext });

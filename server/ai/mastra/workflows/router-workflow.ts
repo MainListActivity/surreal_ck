@@ -13,7 +13,7 @@ import type {
   ResumeDecision,
   WorkflowSuspendedEvent,
 } from "@surreal-ck/shared";
-import { ResolvedRecordSchema } from "@surreal-ck/shared";
+import { AiContextSnapshotSchema, ResolvedRecordSchema } from "@surreal-ck/shared";
 import { classifyTask, type RouterCategory, type RouterLlmCaller, type RouterPlan } from "./router-classifier";
 import type { DecisionCaller } from "../../decision/model";
 
@@ -203,25 +203,6 @@ const RouterStepResultSchema = z.object({
 
 const RouterPlanItemSchema = z.object({ category: RouterCategoryEnum, taskText: z.string() });
 
-const AiContextSnapshotStateSchema = z.object({
-  route: z.object({
-    screen: z.string(),
-    dashboardPageId: z.string().optional(),
-    workbookId: z.string().optional(),
-    sheetId: z.string().optional(),
-    folderId: z.string().optional(),
-    templateKey: z.string().optional(),
-  }),
-  workbook: z.object({ id: z.string(), name: z.string() }).nullable(),
-  sheet: z.object({ id: z.string(), label: z.string(), tableName: z.string() }).nullable(),
-  selectedRow: z.object({
-    id: z.string(),
-    label: z.string(),
-    visibleValues: z.record(z.string(), z.unknown()),
-  }).nullable(),
-  contextHint: z.string(),
-});
-
 const SharedConfirmedSchema = z.object({
   resolvedRecord: ResolvedRecordSchema.optional(),
   schemaSummary: z
@@ -238,7 +219,7 @@ const RouterStateSchema = z.object({
   confirmed: SharedConfirmedSchema.default({}),
   steps: z.array(RouterStepResultSchema).default([]),
   cancelled: z.boolean().default(false),
-  userContext: AiContextSnapshotStateSchema.optional(),
+  userContext: AiContextSnapshotSchema.optional(),
 });
 /** 运行时已被 schema default 兜底的状态形状（去除可选）。 */
 type RouterState = {

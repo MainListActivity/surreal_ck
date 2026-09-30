@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type { GridColumnDef, GridRow, RecordIdString, ResourceCitationDTO } from "./dto";
 
 export type AiRouteContext = {
@@ -33,6 +34,43 @@ export type AiContextSnapshot = {
   selectedRow: AiSelectedRowContext;
   contextHint: string;
 };
+
+/**
+ * AiContextSnapshot 的运行时校验：`/api/chat` 入口与 Mastra workflow stateSchema
+ * 共用同一份合同，避免「入口声称可选、引擎内部却硬性要求全字段」的两张皮。
+ */
+export const AiContextSnapshotSchema = z.object({
+  route: z.object({
+    screen: z.string(),
+    dashboardPageId: z.string().optional(),
+    workbookId: z.string().optional(),
+    sheetId: z.string().optional(),
+    folderId: z.string().optional(),
+    templateKey: z.string().optional(),
+  }),
+  workbook: z.object({ id: z.string(), name: z.string() }).nullable(),
+  sheet: z.object({ id: z.string(), label: z.string(), tableName: z.string() }).nullable(),
+  selectedRow: z.object({
+    id: z.string(),
+    label: z.string(),
+    visibleValues: z.record(z.string(), z.unknown()),
+  }).nullable(),
+  contextHint: z.string(),
+});
+
+/**
+ * 调用方缺省 contextSnapshot 时的兜底快照：结构合法，并如实标注未提供页面上下文，
+ * 不伪装成「当前在应用首页」误导模型。
+ */
+export function createDefaultAiContextSnapshot(): AiContextSnapshot {
+  return {
+    route: { screen: "unknown" },
+    workbook: null,
+    sheet: null,
+    selectedRow: null,
+    contextHint: "未提供页面上下文",
+  };
+}
 
 export type AiChatMessage = {
   id: string;

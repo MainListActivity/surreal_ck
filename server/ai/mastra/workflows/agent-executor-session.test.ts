@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { Agent } from "@mastra/core/agent";
 import { makeAgentExecutor } from "./agent-executor";
 import { ROUTER_RUNTIME_KEY } from "./router-workflow";
+import { EXECUTION_CONTEXT_KEY } from "../execution-context";
 import type { AiContextSnapshot } from "@surreal-ck/shared";
 
 function emptyUserContext(): AiContextSnapshot {
@@ -32,7 +33,7 @@ function makeRecordingAgent(): { agent: Agent; lastOptions: () => unknown } {
 }
 
 describe("makeAgentExecutor — 把调用者 session 透传给 tool", () => {
-  test("agent.stream 收到带 surrealSession 的 requestContext", async () => {
+  test("agent.stream 收到的 requestContext 经共享执行上下文携带 surrealSession", async () => {
     const { agent, lastOptions } = makeRecordingAgent();
     const executor = makeAgentExecutor(agent);
     const session = { __isSession: true };
@@ -45,8 +46,25 @@ describe("makeAgentExecutor — 把调用者 session 透传给 tool", () => {
 
     const options = lastOptions() as { requestContext?: { get(key: string): unknown } };
     expect(options.requestContext).toBeDefined();
-    const runtime = options.requestContext!.get(ROUTER_RUNTIME_KEY) as { surrealSession?: unknown };
-    expect(runtime?.surrealSession).toBe(session);
+    const execCtx = options.requestContext!.get(EXECUTION_CONTEXT_KEY) as { surrealSession?: unknown };
+    expect(execCtx?.surrealSession).toBe(session);
+    // Router 私有数据仍走 ROUTER_RUNTIME_KEY，但不再携带会话
+    const runtime = options.requestContext!.get(ROUTER_RUNTIME_KEY) as { userContext?: unknown; surrealSession?: unknown };
+    expect(runtime?.userContext).toBeDefined();
+    expect(runtime?.surrealSession).toBeUndefined();
+  });
+
+  test("surrealSession 缺席时不写共享执行上下文（tool 将 fail-closed）", async () => {
+    const { agent, lastOptions } = makeRecordingAgent();
+    const executor = makeAgentExecutor(agent);
+
+    await executor({
+      taskText: "闲聊",
+      shared: { userContext: emptyUserContext(), confirmed: {} },
+    });
+
+    const options = lastOptions() as { requestContext?: { get(key: string): unknown } };
+    expect(options.requestContext!.get(EXECUTION_CONTEXT_KEY)).toBeUndefined();
   });
 });
 
