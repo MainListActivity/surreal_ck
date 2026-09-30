@@ -31,7 +31,7 @@ export type RegisteredEvidence = Readonly<{
    */
   quoteAllowed: boolean;
   /** 私有材料无平台版本概念；只在 platform 侧有值。 */
-  platform: (Pick<PlatformEvidence, "versionId" | "itemId" | "versionPublicId" | "sourceKey" | "sourceUrl" | "locator" | "quoteSha256" | "bodySha256" | "kind"> & { versionLabel: string | null }) | null;
+  platform: (Pick<PlatformEvidence, "versionId" | "itemId" | "versionPublicId" | "sourceKey" | "sourceUrl" | "locator" | "quoteSha256" | "bodySha256" | "kind"> & { versionLabel: string | null; entitlementRevision?: string }) | null;
   private: (Pick<PrivateEvidence, "resourceId" | "resourceType" | "sourceUrl" | "order">) | null;
 }>;
 
@@ -69,7 +69,8 @@ export function createEvidenceRegistry(limit: number): ResearchEvidenceRegistry 
       if (entries.length >= limit) return null;
       const quote = input.quote.trim();
       if (!quote) return null;
-      const dedupeKey = `${input.sourceType}:${quote}`;
+      const sourceId = input.platform?.versionId ?? input.private?.resourceId ?? input.title;
+      const dedupeKey = `${input.sourceType}:${sourceId}:${quote}`;
       if (seenQuotes.has(dedupeKey)) return null;
       seenQuotes.add(dedupeKey);
       const handle = entries.length + 1;
@@ -140,7 +141,7 @@ function formatPlatformEntry(entry: RegisteredEvidence): string {
 
 export type RejectedCitation = Readonly<{
   handle: number;
-  reason: "forged" | "cite_not_allowed";
+  reason: "forged" | "cite_not_allowed" | "unsupported_quote";
 }>;
 
 export type ValidatedResearchAnswer = Readonly<{
@@ -153,7 +154,7 @@ export type ValidatedResearchAnswer = Readonly<{
 /** 从模型文本解析 [n] 句柄（全文出现过的编号按序去重）。 */
 export function parseCitationHandles(text: string): number[] {
   const handles: number[] = [];
-  for (const match of text.matchAll(/\[(\d{1,3})\]/gu)) {
+  for (const match of text.matchAll(/\[(\d+)\]/gu)) {
     const handle = Number(match[1]);
     if (Number.isInteger(handle) && handle > 0 && !handles.includes(handle)) handles.push(handle);
   }
@@ -173,6 +174,11 @@ export function validateResearchAnswer(input: {
   const handles = parseCitationHandles(input.modelText);
   const citedHandles: number[] = [];
   const rejected: RejectedCitation[] = [];
+  for (const entry of input.registry.entries) {
+    if (!entry.quoteAllowed && input.modelText.includes(entry.quote) && !handles.includes(entry.handle)) {
+      rejected.push({ handle: entry.handle, reason: "cite_not_allowed" });
+    }
+  }
   for (const handle of handles) {
     const entry = input.registry.get(handle);
     if (!entry) {
@@ -181,6 +187,13 @@ export function validateResearchAnswer(input: {
     }
     if (!entry.quoteAllowed) {
       rejected.push({ handle, reason: "cite_not_allowed" });
+      continue;
+    }
+    // 直接引文必须是登记片段的原文子串；不能用真实句柄包装编造的条文。
+    const clauses = input.modelText.split(/[。！？\n]/u).filter((clause) => clause.includes(`[${handle}]`));
+    const quotes = clauses.flatMap((clause) => Array.from(clause.matchAll(/[“「"]([^”」"\n]+)[”」"]/gu), (match) => match[1]!));
+    if (quotes.some((quote) => !entry.quote.includes(quote))) {
+      rejected.push({ handle, reason: "unsupported_quote" });
       continue;
     }
     citedHandles.push(handle);
@@ -208,6 +221,9 @@ export function citationDTO(registry: ResearchEvidenceRegistry, handle: number, 
         itemId: entry.platform.itemId,
         versionId: entry.platform.versionId,
         sourceKey: entry.platform.sourceKey ?? "",
+        versionPublicId: entry.platform.versionPublicId,
+        quoteSha256: entry.platform.quoteSha256,
+        entitlementRevision: entry.platform.entitlementRevision,
         locator: entry.platform.locator
           ? { start: entry.platform.locator.start, end: entry.platform.locator.end, bodyDigest: entry.platform.locator.bodyDigest }
           : null,
@@ -278,7 +294,9 @@ export function assembleResearchAnswerText(input: ResearchAnswerAssemblyInput): 
   for (const item of input.rejected) {
     gaps.push(item.reason === "forged"
       ? `引用 [${item.handle}] 未通过核验（句柄未登记），已从引用中移除。`
-      : `引用 [${item.handle}] 缺少引用许可，已从引用中移除。`);
+      : item.reason === "cite_not_allowed"
+        ? `引用 [${item.handle}] 缺少引用许可，已从引用中移除。`
+        : `引用 [${item.handle}] 的直接引文不受证据支持，已舍弃该分析。`);
   }
   if (gaps.length > 0) {
     sections.push("");

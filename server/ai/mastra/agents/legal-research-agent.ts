@@ -101,7 +101,10 @@ export function makeLegalResearchExecutor(deps: LegalResearchExecutorDeps): SubA
         rejected: [],
         candidatesSeen: 0,
       };
-      if (corpusWindow.kind === "ready") {
+      if (corpusWindow.kind === "ready" && corpusWindow.leaseEndSeconds <= Date.now() / 1000) {
+        corpusAvailability = "unavailable";
+        corpusNotice = "平台授权窗口已到期，请重新开始研究；本回答仅基于工作区私有资料（partial）。";
+      } else if (corpusWindow.kind === "ready") {
         try {
           platformEvidence = await retrieveAuthorizedCorpus({ session: corpusWindow.session, query: taskText });
         } catch {
@@ -130,6 +133,7 @@ export function makeLegalResearchExecutor(deps: LegalResearchExecutorDeps): SubA
             bodySha256: item.bodySha256,
             kind: item.kind,
             versionLabel: null,
+            entitlementRevision: corpusWindow.kind === "ready" ? corpusWindow.entitlementRevision : undefined,
           },
         });
       }
@@ -203,6 +207,10 @@ export function makeLegalResearchExecutor(deps: LegalResearchExecutorDeps): SubA
         citations = validated.citations;
       } catch {
         analysisText = "模型分析暂不可用；以上证据仅作登记，不构成结论。";
+      }
+      if (platformEvidence.evidence.length > 0 && corpusWindow.kind === "ready"
+        && corpusWindow.leaseEndSeconds <= Date.now() / 1000) {
+        return { text: "平台授权窗口已到期，未保存或输出平台证据。请重新开始授权研究（unavailable）。", confirmed: {} };
       }
 
       // 来源事实/用户材料也展示了登记句柄，每个展示的句柄都必须有同号引用。

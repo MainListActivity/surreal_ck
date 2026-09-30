@@ -103,6 +103,12 @@ describe("buildResearchPrompt", () => {
 });
 
 describe("validateResearchAnswer", () => {
+  test("真实句柄不能包装虚构引文，大编号也作为伪造拒绝", () => {
+    const { registry } = registryWithCite();
+    const result = validateResearchAnswer({ modelText: "甲法规定“无限责任” [1]，另据 [9999]。", registry });
+    expect(result.rejected).toEqual([{ handle: 1, reason: "unsupported_quote" }, { handle: 9999, reason: "forged" }]);
+    expect(result.citations).toEqual([]);
+  });
   test("引用次序不同仍使用登记句柄，不能重排为另一来源", () => {
     const { registry } = registryWithCite();
     const result = validateResearchAnswer({ modelText: "材料 [2] 后参照 [1]", registry });
@@ -223,7 +229,7 @@ describe("assembleResearchAnswerText", () => {
 
 describe("parseCitationHandles", () => {
   test("按首次出现去重且忽略非法编号", () => {
-    expect(parseCitationHandles("a [2] b [1] c [2] d [0] e [9999] f [x]")).toEqual([2, 1]);
+    expect(parseCitationHandles("a [2] b [1] c [2] d [0] e [9999] f [x]")).toEqual([2, 1, 9999]);
   });
 });
 

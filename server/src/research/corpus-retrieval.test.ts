@@ -32,7 +32,8 @@ function fakeContentSession(rows: FakeContentRows) {
 }
 
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
-const digest = "a".repeat(64);
+const mainBody = "第一条 合同自成立时生效。第二条 当事人应当遵循诚信原则。";
+const digest = sha(mainBody);
 
 const baseFacet = { id: "content_search_facet:x", kind: "legislation", jurisdiction: "CN", published_on: "2026-01-01" };
 const baseGate = {
@@ -54,7 +55,7 @@ describe("retrieveAuthorizedCorpus", () => {
         public_id: "a-v1",
         title: "甲法",
         body_text: body,
-        body_sha256: digest,
+        body_sha256: sha(body),
         source: "content_source:s",
         source_url: "https://example.invalid/a",
       }],
@@ -75,7 +76,7 @@ describe("retrieveAuthorizedCorpus", () => {
       title: "甲法",
       quote: "第一条 合同自成立时生效。",
       quoteAllowed: true,
-      locator: { start: 0, end: 12, bodyDigest: digest },
+      locator: { start: 0, end: 13, bodyDigest: digest },
       quoteSha256: sha("第一条 合同自成立时生效。"),
       bodySha256: digest,
       sourceKey: "s",
@@ -86,7 +87,7 @@ describe("retrieveAuthorizedCorpus", () => {
     const session = fakeContentSession({
       facet: [{ ...baseFacet, version_id: "content_version:v1", public_id: "a-v1", title: "甲法" }],
       gates: [{ version: "content_version:v1", ...baseGate, ai_actions: [] }],
-      versions: [{ id: "content_version:v1", public_id: "a-v1", title: "甲法", body_text: "正文", body_sha256: digest }],
+      versions: [{ id: "content_version:v1", public_id: "a-v1", title: "甲法", body_text: "正文", body_sha256: sha("正文") }],
       articles: [{ local_key: "art-1", label: "第一条", body_text: "第一条", locator: null }],
     });
     const result = await retrieveAuthorizedCorpus({ session, query: "q" });
@@ -126,7 +127,7 @@ describe("retrieveAuthorizedCorpus", () => {
         public_id: "a-v1",
         title: "甲法",
         body_text: "现行正文",
-        body_sha256: digest,
+        body_sha256: sha("现行正文"),
       }],
       articles: [{ local_key: "art-1", label: "第一条", body_text: "旧版正文", locator: { start: 0, end: 4, bodyDigest: "b".repeat(64) } }],
     });
@@ -134,8 +135,8 @@ describe("retrieveAuthorizedCorpus", () => {
     expect(result.rejected).toEqual([{ versionPublicId: "a-v1", reason: "version_mismatch" }]);
     // 无可登记片段 → 正文受限摘录兜底，仍然绑定版本哈希。
     expect(result.evidence).toHaveLength(1);
-    expect(result.evidence[0]!.locator).toBeNull();
-    expect(result.evidence[0]!.bodySha256).toBe(digest);
+    expect(result.evidence[0]!.locator).toEqual({ start: 0, end: 4, bodyDigest: sha("现行正文") });
+    expect(result.evidence[0]!.bodySha256).toBe(sha("现行正文"));
   });
 
   test("文书引用片段需要 cite；quoted_text 不可见时回退正文摘录且不可引用", async () => {
@@ -143,21 +144,21 @@ describe("retrieveAuthorizedCorpus", () => {
     const withCite = fakeContentSession({
       facet: [{ ...baseFacet, kind: "judicial_document", version_id: "content_version:c1", public_id: "c-v1", title: "乙案" }],
       gates: [{ version: "content_version:c1", ...baseGate }],
-      versions: [{ id: "content_version:c1", public_id: "c-v1", title: "乙案", body_text: body, body_sha256: digest }],
+      versions: [{ id: "content_version:c1", public_id: "c-v1", title: "乙案", body_text: body, body_sha256: sha(body) }],
       citations: [{
         local_citation_key: "cite-1",
         quoted_text: "合同解除条件成就",
-        locator: { start: 4, end: 12, bodyDigest: digest },
+        locator: { start: 4, end: 12, bodyDigest: sha(body) },
       }],
     });
     const cited = await retrieveAuthorizedCorpus({ session: withCite, query: "q" });
     expect(cited.evidence).toHaveLength(1);
-    expect(cited.evidence[0]).toMatchObject({ quote: "合同解除条件成就", quoteAllowed: true, locator: { start: 4, end: 12 } });
+    expect(cited.evidence[0]).toMatchObject({ quote: "合同解除条件成就", quoteAllowed: true, locator: { start: 5, end: 13 } });
 
     const noCite = fakeContentSession({
       facet: [{ ...baseFacet, kind: "judicial_document", version_id: "content_version:c1", public_id: "c-v1", title: "乙案" }],
       gates: [{ version: "content_version:c1", ...baseGate, actions: ["browse", "search", "read"], license_actions: ["browse", "search", "read", "research"] }],
-      versions: [{ id: "content_version:c1", public_id: "c-v1", title: "乙案", body_text: body, body_sha256: digest }],
+      versions: [{ id: "content_version:c1", public_id: "c-v1", title: "乙案", body_text: body, body_sha256: sha(body) }],
       citations: [{ local_citation_key: "cite-1", quoted_text: null, locator: null }],
     });
     const fallback = await retrieveAuthorizedCorpus({ session: noCite, query: "q" });
@@ -171,7 +172,7 @@ describe("retrieveAuthorizedCorpus", () => {
     const session = fakeContentSession({
       facet: [{ ...baseFacet, version_id: "content_version:v1", public_id: "a-v1", title: "甲法" }],
       gates: [{ version: "content_version:v1", ...baseGate }],
-      versions: [{ id: "content_version:v1", public_id: "a-v1", title: "甲法", body_text: longBody, body_sha256: digest }],
+      versions: [{ id: "content_version:v1", public_id: "a-v1", title: "甲法", body_text: longBody, body_sha256: sha(longBody) }],
       articles: [],
     });
     const result = await retrieveAuthorizedCorpus({ session, query: "q" });
@@ -195,7 +196,7 @@ describe("retrieveAuthorizedCorpus", () => {
         public_id: c.public_id,
         title: c.title,
         body_text: `正文${c.public_id}`,
-        body_sha256: digest,
+        body_sha256: sha(`正文${c.public_id}`),
       })),
       articles: [],
     });

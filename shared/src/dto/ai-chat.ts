@@ -96,6 +96,9 @@ export type ResourceCitationDTO = {
     itemId: string;
     versionId: string;
     sourceKey: string;
+    versionPublicId?: string;
+    quoteSha256?: string;
+    entitlementRevision?: string;
     locator: { start: number; end: number; bodyDigest: string } | null;
   };
 };

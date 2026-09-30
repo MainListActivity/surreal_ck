@@ -12,10 +12,9 @@ import { retrieveAuthorizedCorpus } from "./corpus-retrieval";
 
 /**
  * LCA06 联调（真实引擎）：授权候选登记为证据、授权外候选（无 gate / 撤回）被拒，
- * CANARY-DENIED 全程不进入检索结果。需要本地 SurrealDB 时置
- * RUN_LOCAL_PLATFORM_CONTENT_TESTS=1 运行。
+ * CANARY-DENIED 全程不进入检索结果。默认在独立内存实例运行。
  */
-const localTest = test.skipIf(process.env.RUN_LOCAL_PLATFORM_CONTENT_TESTS !== "1");
+const localTest = test;
 
 localTest("授权语料检索在真实引擎上按 gate 强制授权", async () => {
   const port = 19000 + Math.floor(Math.random() * 10000);
@@ -55,7 +54,7 @@ localTest("授权语料检索在真实引擎上按 gate 强制授权", async () 
       CREATE content_item:a SET public_id='a', kind='legislation', publication_status='published', current_version=content_version:a;
       CREATE content_item:b SET public_id='b', kind='legislation', publication_status='published', current_version=content_version:b;
       CREATE content_version:a SET public_id='a-v1', item=content_item:a, revision=1, source=content_source:s, source_url='https://example.invalid/a', fetched_at=time::now(), published_on='2026-01-01', title='甲法', body_text=$body, body_sha256=$bodyHash, source_form='full_text', evidence=[], field_issues=[], processing={}, content_kind_payload={}, created_by_subject='fixture';
-      CREATE content_version:b SET public_id='b-v1', item=content_item:b, revision=1, source=content_source:s, source_url='https://example.invalid/b', fetched_at=time::now(), published_on='2026-01-02', title='乙法', body_text='乙法正文涉合同事项。', body_sha256='b', source_form='full_text', evidence=[], field_issues=[], processing={}, content_kind_payload={}, created_by_subject='fixture';
+      CREATE content_version:b SET public_id='b-v1', item=content_item:b, revision=1, source=content_source:s, source_url='https://example.invalid/b', fetched_at=time::now(), published_on='2026-01-02', title='乙法', body_text='乙法正文涉合同事项。CANARY-DENIED', body_sha256='b', source_form='full_text', evidence=[], field_issues=[], processing={}, content_kind_payload={}, created_by_subject='fixture';
       CREATE legal_article_version:a1 SET regulation_version=content_version:a, local_key='a1', label='第一条', hierarchy_path=[], body_text='第一条 合同自成立时生效。', locator={ start: 0, end: 12, bodyDigest: $bodyHash }, effective_on=NONE, created_at=time::now();
       CREATE content_collection_binding:a SET item=content_item:a, collections=['core'];
       CREATE content_collection_binding:b SET item=content_item:b, collections=['premium'];
@@ -95,11 +94,21 @@ localTest("授权语料检索在真实引擎上按 gate 强制授权", async () 
     expect(evidence.title).toBe("甲法");
     expect(evidence.quote).toBe("第一条 合同自成立时生效。");
     expect(evidence.quoteAllowed).toBe(true);
-    expect(evidence.locator).toEqual({ start: 0, end: 12, bodyDigest: digestOf("第一条 合同自成立时生效。第二条 当事人应当遵循诚信原则。") });
+    expect(evidence.locator).toEqual({ start: 0, end: 13, bodyDigest: digestOf("第一条 合同自成立时生效。第二条 当事人应当遵循诚信原则。") });
     expect(evidence.bodySha256).toBe(evidence.locator!.bodyDigest);
     expect(evidence.sourceKey).toBe("s");
     expect(JSON.stringify(result)).not.toContain("CANARY-DENIED");
     expect(JSON.stringify(result)).not.toContain("b-v1");
+
+    // AI 使用许可与普通 read/cite 分别生效，不因可阅读就进入模型证据。
+    await root.query("UPDATE content_read_gate SET ai_actions = [];");
+    const noAi = await retrieveAuthorizedCorpus({ session: reader, query: "合同" });
+    expect(noAi.evidence).toEqual([]);
+    expect(noAi.rejected[0]?.reason).toBe("ai_use_denied");
+    await root.query("UPDATE content_read_gate SET ai_actions = ['research'], actions = ['browse', 'search', 'read'];");
+    const noCite = await retrieveAuthorizedCorpus({ session: reader, query: "合同" });
+    expect(noCite.evidence).toHaveLength(1);
+    expect(noCite.evidence[0]?.quoteAllowed).toBe(false);
 
     // 撤回后：facet 不再返回候选（当前发布状态 gate）。
     await root.query("UPDATE content_item:a SET publication_status='withdrawn';");
@@ -107,6 +116,7 @@ localTest("授权语料检索在真实引擎上按 gate 强制授权", async () 
       keyword: "合同", kind: "all", from: "", until: "", jurisdiction: "", effective: "",
     });
     expect(afterWithdraw[0]).toHaveLength(0);
+    expect((await retrieveAuthorizedCorpus({ session: reader, query: "合同" })).evidence).toEqual([]);
   } finally {
     await reader.close().catch(() => undefined);
     await sync.close().catch(() => undefined);

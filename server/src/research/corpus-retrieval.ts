@@ -213,6 +213,10 @@ export async function retrieveAuthorizedCorpus(input: {
     const bodySha256 = typeof version.body_sha256 === "string" && version.body_sha256.length > 0
       ? version.body_sha256
       : null;
+    if (!bodySha256 || sha256(bodyText) !== bodySha256) {
+      rejected.push({ versionPublicId: candidate.versionPublicId, reason: "version_mismatch" });
+      continue;
+    }
 
     const registerEvidence = (fragment: {
       quote: string;
@@ -221,6 +225,14 @@ export async function retrieveAuthorizedCorpus(input: {
       const quote = capQuote(fragment.quote);
       if (!quote) return false;
       if (fragment.locator && bodySha256 && fragment.locator.bodyDigest !== bodySha256) {
+        rejected.push({ versionPublicId: candidate.versionPublicId, reason: "version_mismatch" });
+        return false;
+      }
+      // 结构化片段必须能在这版正文中找到；截断后位置仍准确，不能仅比较摘要字段。
+      const preferred = fragment.locator?.start;
+      const start = preferred !== undefined && bodyText.slice(preferred, preferred + quote.length) === quote
+        ? preferred : bodyText.indexOf(quote);
+      if (start < 0) {
         rejected.push({ versionPublicId: candidate.versionPublicId, reason: "version_mismatch" });
         return false;
       }
@@ -234,7 +246,7 @@ export async function retrieveAuthorizedCorpus(input: {
         sourceUrl: typeof version.source_url === "string" ? version.source_url : null,
         quote,
         quoteAllowed: citeAllowed,
-        locator: fragment.locator,
+        locator: { start, end: start + quote.length, bodyDigest: bodySha256 },
         quoteSha256: sha256(quote),
         bodySha256,
       });

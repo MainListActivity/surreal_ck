@@ -214,6 +214,9 @@ const RouterStepResultSchema = z.object({
       itemId: z.string(),
       versionId: z.string(),
       sourceKey: z.string(),
+      versionPublicId: z.string().optional(),
+      quoteSha256: z.string().optional(),
+      entitlementRevision: z.string().optional(),
       locator: z.object({
         start: z.number(),
         end: z.number(),

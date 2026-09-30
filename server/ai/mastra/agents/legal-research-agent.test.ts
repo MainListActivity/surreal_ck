@@ -3,10 +3,10 @@ import { createHash } from "node:crypto";
 import type { Surreal } from "surrealdb";
 import type { AiContextSnapshot } from "@surreal-ck/shared";
 import type { ResourceDTO, SearchResourcesRequest, SearchResourcesResponse } from "@surreal-ck/shared/dto";
-import { makeLegalResearchExecutor, type ResearchAnswerModel } from "./legal-research-agent";
+import { createLegalResearchAgent, makeLegalResearchExecutor, type ResearchAnswerModel } from "./legal-research-agent";
 import type { ContentResearchWindow } from "../../../src/research/window";
 
-const digest = createHash("sha256").update("现行正文").digest("hex");
+const digest = createHash("sha256").update("第一条 合同自成立时生效。（CANARY-AUTHORIZED）").digest("hex");
 
 /** 授权内语料：带唯一标记 CANARY-AUTHORIZED；授权外语料：CANARY-DENIED（绝不允许进入提示词/回答）。 */
 const AUTH_QUOTE = "第一条 合同自成立时生效。（CANARY-AUTHORIZED）";
@@ -40,7 +40,7 @@ function fakeContentSession(): Pick<Surreal, "query"> {
     }
     if (sql.includes("content_citation")) return Promise.resolve([[]]);
     if (sql.includes("FROM content_version")) {
-      return Promise.resolve([[{ id: "content_version:v-auth", item: "content_item:i-auth", public_id: "a-v1", title: "甲法", body_text: "现行正文", body_sha256: digest, source_key: "s", source_url: "https://example.invalid/a" }]]);
+      return Promise.resolve([[{ id: "content_version:v-auth", item: "content_item:i-auth", public_id: "a-v1", title: "甲法", body_text: AUTH_QUOTE, body_sha256: digest, source_key: "s", source_url: "https://example.invalid/a" }]]);
     }
     return Promise.resolve([[]]);
   };
@@ -125,6 +125,38 @@ function run(executor: ReturnType<typeof makeLegalResearchExecutor>, openContent
 }
 
 describe("legal research executor", () => {
+  test("授权窗口在模型返回前到期时不输出或保存平台证据", async () => {
+    const window = readyWindow();
+    if (window.kind !== "ready") throw new Error("fixture");
+    const { executor } = executorWith({ model: () => {
+      window.leaseEndSeconds = 0;
+      return "合同成立 [1]";
+    } });
+    const out = await run(executor, async () => window);
+    expect(out.text).toContain("重新开始授权研究");
+    expect(out.text).not.toContain("CANARY-AUTHORIZED");
+    expect(out.citations).toBeUndefined();
+  });
+  test.skipIf(process.env.RUN_LIVE_RESEARCH_MODEL_TESTS !== "1")("真实模型只接收授权与私有证据片段", async () => {
+    if (!process.env.AI_PROVIDER || !process.env.AI_MODEL || !process.env.AI_API_KEY) throw new Error("缺少真实模型配置");
+    const agent = createLegalResearchAgent({ provider: process.env.AI_PROVIDER, model: process.env.AI_MODEL,
+      apiKey: process.env.AI_API_KEY, baseUrl: process.env.AI_BASE_URL });
+    let received = "";
+    let modelText = "";
+    const { executor } = executorWith({ search: hitResponse(), model: async (prompt) => {
+      received = prompt;
+      try { modelText = (await agent.generate(prompt, { modelSettings: { maxOutputTokens: 500, temperature: 0 } })).text; }
+      catch { throw new Error("真实模型调用失败（不输出配置或原始错误）"); }
+      return modelText;
+    } });
+    const out = await run(executor, async () => readyWindow());
+    expect(received).toContain("CANARY-AUTHORIZED");
+    expect(received).toContain("CANARY-PRIVATE");
+    expect(received).not.toContain("CANARY-DENIED");
+    expect(modelText.length).toBeGreaterThan(0);
+    expect(out.text).not.toContain("CANARY-DENIED");
+    expect(JSON.stringify(out.citations)).not.toContain("CANARY-DENIED");
+  }, 60_000);
   test("联合平台与私有材料：提示词只含登记证据，引用只含登记句柄，窗口用后即关", async () => {
     closeCount = 0;
     const { executor, prompts } = executorWith({
@@ -153,7 +185,7 @@ describe("legal research executor", () => {
       resourceId: "content_item:i-auth",
       platformContent: {
         versionId: "content_version:v-auth",
-        locator: { start: 0, end: 10, bodyDigest: digest },
+        locator: { start: 0, end: AUTH_QUOTE.length, bodyDigest: digest },
       },
     });
     expect(out.suspend).toBeUndefined();
