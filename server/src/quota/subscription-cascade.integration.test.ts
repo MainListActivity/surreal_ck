@@ -483,4 +483,446 @@ describe("subscription cascade against local SurrealDB (LCA08)", () => {
     },
     120_000,
   );
+
+  localTest(
+    "real commercial entries: operator plan_rollout keeps product binding and cycles, provider renewal extends item window, past_due recovers",
+    async () => {
+      // ── 0. 夹具：provider 关联订阅 + 首个 item（root 造初始态）────────────
+      await db!.query(`DEFINE DATABASE IF NOT EXISTS ws_lca08b;`);
+      const wsB = await connect("ws_lca08b");
+      await wsB.query(
+        await readFile(
+          new URL("../../../shared/sql/workspace-template/035-ai-allowance.surql", import.meta.url),
+          "utf8",
+        ),
+      );
+      await db!.query(`
+        CREATE billing_account:lca08b CONTENT {
+          account_key: "lca08b",
+          name: "LCA08B Billing",
+          kind: "team",
+          status: "active"
+        };
+        CREATE workspace:lca08b CONTENT {
+          db_name: "ws_lca08b",
+          owner_subject: "operator:carol",
+          slug: "lca08b",
+          name: "LCA08B",
+          status: "active"
+        };
+        CREATE user_workspace_index:carol_lca08b CONTENT {
+          subject: "operator:carol",
+          workspace: workspace:lca08b,
+          db_name: "ws_lca08b",
+          role: "admin"
+        };
+        CREATE billing_account_member:carol_lca08b CONTENT {
+          billing_account: billing_account:lca08b,
+          subject: "operator:carol",
+          role: "owner",
+          status: "active"
+        };
+        CREATE platform_operator:carol CONTENT {
+          subject: "operator:carol",
+          display_name: "Carol",
+          status: "active"
+        };
+        CREATE platform_operator_capability:carol_subscription CONTENT {
+          operator: platform_operator:carol,
+          capability: "subscription.manage",
+          status: "active",
+          granted_by_subject: "system:test"
+        };
+        CREATE platform_operator_capability:carol_quota_read CONTENT {
+          operator: platform_operator:carol,
+          capability: "quota.read",
+          status: "active",
+          granted_by_subject: "system:test"
+        };
+        CREATE quota_subscription:lca08bsub CONTENT {
+          billing_account: billing_account:lca08b,
+          source: "provider",
+          status: "active",
+          revision: 1,
+          provider: "fixture_provider",
+          provider_customer_id: "cus_lca08b",
+          provider_subscription_id: "sub_lca08b_1",
+          provider_source_revision: 1,
+          current_period_start: <datetime> "2026-09-01T00:00:00.000Z",
+          current_period_end: <datetime> "2026-10-01T00:00:00.000Z",
+          cancel_at_period_end: false,
+          correlation_id: "fixture-lca08b"
+        };
+        CREATE quota_subscription_item:lca08bitem CONTENT {
+          subscription: quota_subscription:lca08bsub,
+          workspace: workspace:lca08b,
+          plan_revision: quota_plan_revision:plus_v1,
+          revision: 1,
+          status: "active",
+          effective_from: <datetime> "2026-09-01T00:00:00.000Z",
+          effective_until: <datetime> "2026-10-01T00:00:00.000Z",
+          active_workspace: workspace:lca08b,
+          correlation_id: "fixture-lca08b"
+        };
+      `);
+
+      const client = queryClient();
+      const productStore = new SurrealProductEntitlementStore(
+        async () => client,
+        namespace,
+      );
+      const products = new ProductEntitlementService(
+        productStore,
+        () => new Date("2026-09-24T00:00:00.000Z"),
+      );
+      const operator: ProductActor = {
+        subject: "operator:carol",
+        capabilities: ["subscription.manage", "quota.read"],
+      };
+      const synchronizer = new AiAllowancePlanCycleSynchronizer({
+        workspaceSession: async (dbName) => {
+          if (dbName === "ws_lca08b") return wsB;
+          if (!workspaceDb) throw new Error("workspace database missing");
+          return workspaceDb;
+        },
+      });
+      // 真实链路：coordinator（运营意图/provider 事件）→ 级联 → 产品快照 → 周期桶。
+      const cascade = new SubscriptionEntitlementCascade(
+        new SurrealEntitlementRefreshService(client),
+        products,
+        synchronizer,
+      );
+      let lifecycleNow = new DateTime("2026-09-24T00:00:00.000Z");
+      const coordinator = new QuotaLifecycleCoordinator(
+        new SurrealQuotaLifecycleStore(client),
+        cascade,
+        "worker-lca08b",
+        undefined,
+        { clock: { now: () => lifecycleNow } },
+      );
+
+      // ── 1. 产品指派走真实运营入口：产品绑定落在活跃 item 上，首桶 200 ─────
+      const rev1 = await products.publishRevision(operator, {
+        planKey: "fixture_pro",
+        displayName: "夹具律师 Pro",
+        revision: 1,
+        resourceTemplateId: "quota_plan_revision:plus_v1",
+        collections: [{ key: "pro_core", label: "Pro 核心" }],
+        actions: ["browse", "search", "read"],
+        aiActions: ["research"],
+        features: [{ key: "ai_cycle_allowance", enabled: true, limit: 200 }],
+        reason: "LCA08 真实入口夹具发布",
+        idempotencyKey: "lca08b-publish-1",
+      });
+      await products.assign(operator, {
+        workspaceSlug: "lca08b",
+        billingAccountKey: "lca08b",
+        productPlanRevisionId: rev1.productPlanRevisionId,
+        reason: "LCA08 真实入口夹具指派",
+        idempotencyKey: "lca08b-assign-1",
+      });
+      // 指派后的快照刷新与周期桶落地：与 lifecycle 事件同一入口（级联）。
+      await cascade.refreshWorkspace({
+        workspace: id("workspace:lca08b"),
+        at: new DateTime("2026-09-24T00:00:00.000Z"),
+        operationKind: "manual_assignment",
+        actorKind: "operator",
+        actorSubject: "operator:carol",
+        authorizedCapability: "subscription.manage",
+        correlationId: "corr-lca08b-assign",
+        causationId: "causation:lca08b-assign",
+      });
+      const boundItem = rows(
+        await db!.query(
+          `SELECT product_plan_revision, effective_until FROM ONLY quota_subscription_item:lca08bitem;`,
+        ),
+      )[0];
+      expect(String(boundItem?.product_plan_revision)).toBe(
+        rev1.productPlanRevisionId,
+      );
+      let buckets = rows(
+        await wsB.query(
+          `SELECT period_key, total, available, expires_at FROM ai_allowance_bucket;`,
+        ),
+      );
+      expect(buckets).toHaveLength(1);
+      expect(buckets[0]).toMatchObject({ total: 200, available: 200 });
+      expect(String(buckets[0]!.period_key)).toBe(
+        "subscription:quota_subscription:lca08bsub:2026-09-01T00:00:00.000Z",
+      );
+      expect(new Date(String(buckets[0]!.expires_at)).toISOString()).toBe(
+        "2026-10-01T00:00:00.000Z",
+      );
+
+      // ── 2. 真实运营入口周期内升级：新 item 保留产品绑定并对齐订阅付费窗口，
+      //      周期键不变只补差 150，桶到期边界不变 ─────────────────────────
+      const rev2 = await products.publishRevision(operator, {
+        planKey: "fixture_pro",
+        displayName: "夹具律师 Pro",
+        revision: 2,
+        resourceTemplateId: "quota_plan_revision:plus_v1",
+        collections: [
+          { key: "pro_core", label: "Pro 核心" },
+          { key: "pro_expanded", label: "Pro 扩展" },
+        ],
+        actions: ["browse", "search", "read"],
+        aiActions: ["research"],
+        features: [{ key: "ai_cycle_allowance", enabled: true, limit: 350 }],
+        reason: "LCA08 真实入口升级发布",
+        idempotencyKey: "lca08b-publish-2",
+      });
+      await coordinator.submitOperatorIntent({
+        kind: "subscription_upsert",
+        actorSubject: "operator:carol",
+        actorCapability: "subscription.manage",
+        requestId: "lca08b-rollout-rev2",
+        workspace: id("workspace:lca08b"),
+        billingAccount: id("billing_account:lca08b"),
+        customerReason: "客户要求升级到 Pro r2",
+        operatorReason: "LCA08 真实入口 plan_rollout",
+        effectiveAt: new DateTime("2026-09-24T00:00:00.000Z"),
+        input: {
+          mode: "plan_rollout",
+          workspace: id("workspace:lca08b"),
+          billing_account: id("billing_account:lca08b"),
+          plan_revision: id("quota_plan_revision:plus_v1"),
+          product_plan_revision: id(rev2.productPlanRevisionId),
+          status: "active",
+        },
+        impactPreview: { from: "fixture_pro:1", to: "fixture_pro:2" },
+        correlationId: "corr-lca08b-rollout-rev2",
+      });
+      await expect(
+        coordinator.processNextOperatorIntent(),
+      ).resolves.toBe("processed");
+      const upgradedItems = rows(
+        await db!.query(
+          `SELECT id, product_plan_revision, effective_from, effective_until, status
+           FROM quota_subscription_item
+           WHERE active_workspace = workspace:lca08b;`,
+        ),
+      );
+      expect(upgradedItems).toHaveLength(1);
+      expect(String(upgradedItems[0]!.product_plan_revision)).toBe(
+        rev2.productPlanRevisionId,
+      );
+      expect(new Date(String(upgradedItems[0]!.effective_from)).toISOString()).toBe(
+        "2026-09-24T00:00:00.000Z",
+      );
+      // R1：升级 item 的产品窗口对齐订阅付费窗口（10/1），而非从 9/24 悬空。
+      expect(new Date(String(upgradedItems[0]!.effective_until)).toISOString()).toBe(
+        "2026-10-01T00:00:00.000Z",
+      );
+      buckets = rows(
+        await wsB.query(
+          `SELECT period_key, total, available, expires_at FROM ai_allowance_bucket;`,
+        ),
+      );
+      expect(buckets).toHaveLength(1);
+      expect(buckets[0]).toMatchObject({ total: 350, available: 350 });
+      expect(String(buckets[0]!.period_key)).toBe(
+        "subscription:quota_subscription:lca08bsub:2026-09-01T00:00:00.000Z",
+      );
+      expect(new Date(String(buckets[0]!.expires_at)).toISOString()).toBe(
+        "2026-10-01T00:00:00.000Z",
+      );
+      let grants = rows(
+        await wsB.query(
+          `SELECT kind, amount FROM ai_ledger_entry WHERE kind = "grant" ORDER BY amount;`,
+        ),
+      );
+      expect(grants.map((grant) => grant.amount)).toEqual([150, 200]);
+
+      // ── 3. 真实 provider 入口续期：item 窗口随付费窗口延长，产品绑定保留，
+      //      新周期键新桶，旧桶不结转 ────────────────────────────────────
+      lifecycleNow = new DateTime("2026-10-01T00:00:00.000Z");
+      await coordinator.ingestProviderEvent({
+        provider: "fixture_provider",
+        eventId: "evt-renew-1",
+        eventType: "customer.subscription.updated",
+        providerObjectId: "sub_lca08b_1",
+        payloadDigest: "digest-renew-1",
+        safePayload: { object_kind: "subscription" },
+        signatureVerifiedAt: lifecycleNow,
+        correlationId: "corr-lca08b-renew-1",
+        snapshot: {
+          billingAccount: id("billing_account:lca08b"),
+          providerCustomerId: "cus_lca08b",
+          providerSubscriptionId: "sub_lca08b_1",
+          sourceRevision: 2,
+          status: "active",
+          currentPeriodStart: new DateTime("2026-10-01T00:00:00.000Z"),
+          currentPeriodEnd: new DateTime("2026-11-01T00:00:00.000Z"),
+          cancelAtPeriodEnd: false,
+        },
+      });
+      await expect(
+        coordinator.processNextProviderEvent(),
+      ).resolves.toBe("processed");
+      const renewedItems = rows(
+        await db!.query(
+          `SELECT product_plan_revision, effective_until, status
+           FROM quota_subscription_item
+           WHERE active_workspace = workspace:lca08b;`,
+        ),
+      );
+      expect(renewedItems).toHaveLength(1);
+      expect(String(renewedItems[0]!.product_plan_revision)).toBe(
+        rev2.productPlanRevisionId,
+      );
+      // R1 provider 侧：续期把 item 窗口从 10/1 延长到 11/1，产品绑定不被触碰。
+      expect(new Date(String(renewedItems[0]!.effective_until)).toISOString()).toBe(
+        "2026-11-01T00:00:00.000Z",
+      );
+      buckets = rows(
+        await wsB.query(
+          `SELECT period_key, total, expires_at FROM ai_allowance_bucket ORDER BY period_key;`,
+        ),
+      );
+      expect(buckets).toHaveLength(2);
+      const oldPeriod = buckets.find((bucket) =>
+        String(bucket.period_key).endsWith("2026-09-01T00:00:00.000Z"),
+      );
+      const newPeriod = buckets.find((bucket) =>
+        String(bucket.period_key).endsWith("2026-10-01T00:00:00.000Z"),
+      );
+      expect(oldPeriod).toMatchObject({ total: 350 });
+      expect(new Date(String(oldPeriod!.expires_at)).toISOString()).toBe(
+        "2026-10-01T00:00:00.000Z",
+      );
+      expect(newPeriod).toMatchObject({ total: 350 });
+      expect(new Date(String(newPeriod!.expires_at)).toISOString()).toBe(
+        "2026-11-01T00:00:00.000Z",
+      );
+      grants = rows(
+        await wsB.query(
+          `SELECT kind, amount FROM ai_ledger_entry WHERE kind = "grant" ORDER BY amount;`,
+        ),
+      );
+      expect(grants.map((grant) => grant.amount)).toEqual([150, 200, 350]);
+
+      // ── 4. 重复/乱序 provider 事件：旧修订被 stale_ignored，不重复授予 ─────
+      await coordinator.ingestProviderEvent({
+        provider: "fixture_provider",
+        eventId: "evt-renew-dup",
+        eventType: "customer.subscription.updated",
+        providerObjectId: "sub_lca08b_1",
+        payloadDigest: "digest-renew-dup",
+        safePayload: { object_kind: "subscription" },
+        signatureVerifiedAt: lifecycleNow,
+        correlationId: "corr-lca08b-renew-dup",
+        snapshot: {
+          billingAccount: id("billing_account:lca08b"),
+          providerCustomerId: "cus_lca08b",
+          providerSubscriptionId: "sub_lca08b_1",
+          sourceRevision: 2,
+          status: "active",
+          currentPeriodStart: new DateTime("2026-10-01T00:00:00.000Z"),
+          currentPeriodEnd: new DateTime("2026-11-01T00:00:00.000Z"),
+          cancelAtPeriodEnd: false,
+        },
+      });
+      await expect(
+        coordinator.processNextProviderEvent(),
+      ).resolves.toBe("stale_ignored");
+      buckets = rows(
+        await wsB.query(`SELECT period_key FROM ai_allowance_bucket;`),
+      );
+      expect(buckets).toHaveLength(2);
+      grants = rows(
+        await wsB.query(`SELECT kind, amount FROM ai_ledger_entry WHERE kind = "grant";`),
+      );
+      expect(grants).toHaveLength(3);
+
+      // ── 5. 续费失败（past_due）：权益清空、桶保留；恢复后回指既有快照，
+      //      同周期恢复不重复授予 ────────────────────────────────────────
+      await coordinator.ingestProviderEvent({
+        provider: "fixture_provider",
+        eventId: "evt-past-due",
+        eventType: "customer.subscription.updated",
+        providerObjectId: "sub_lca08b_1",
+        payloadDigest: "digest-past-due",
+        safePayload: { object_kind: "subscription" },
+        signatureVerifiedAt: lifecycleNow,
+        correlationId: "corr-lca08b-past-due",
+        snapshot: {
+          billingAccount: id("billing_account:lca08b"),
+          providerCustomerId: "cus_lca08b",
+          providerSubscriptionId: "sub_lca08b_1",
+          sourceRevision: 3,
+          status: "past_due",
+          currentPeriodStart: new DateTime("2026-11-01T00:00:00.000Z"),
+          currentPeriodEnd: new DateTime("2026-12-01T00:00:00.000Z"),
+          graceUntil: new DateTime("2026-11-08T00:00:00.000Z"),
+          cancelAtPeriodEnd: false,
+        },
+      });
+      await expect(
+        coordinator.processNextProviderEvent(),
+      ).resolves.toBe("processed");
+      const pastDuePointer = rows(
+        await db!.query(
+          `SELECT current_product_entitlement.* FROM ONLY workspace:lca08b;`,
+        ),
+      );
+      expect(pastDuePointer[0]?.current_product_entitlement).toMatchObject({
+        base_source_kind: "none",
+      });
+      buckets = rows(
+        await wsB.query(`SELECT period_key, total FROM ai_allowance_bucket ORDER BY period_key;`),
+      );
+      expect(buckets).toHaveLength(2);
+
+      await coordinator.ingestProviderEvent({
+        provider: "fixture_provider",
+        eventId: "evt-recovered",
+        eventType: "customer.subscription.updated",
+        providerObjectId: "sub_lca08b_1",
+        payloadDigest: "digest-recovered",
+        safePayload: { object_kind: "subscription" },
+        signatureVerifiedAt: lifecycleNow,
+        correlationId: "corr-lca08b-recovered",
+        snapshot: {
+          billingAccount: id("billing_account:lca08b"),
+          providerCustomerId: "cus_lca08b",
+          providerSubscriptionId: "sub_lca08b_1",
+          sourceRevision: 4,
+          status: "active",
+          currentPeriodStart: new DateTime("2026-11-01T00:00:00.000Z"),
+          currentPeriodEnd: new DateTime("2026-12-01T00:00:00.000Z"),
+          cancelAtPeriodEnd: false,
+        },
+      });
+      await expect(
+        coordinator.processNextProviderEvent(),
+      ).resolves.toBe("processed");
+      const recoveredPointer = rows(
+        await db!.query(
+          `SELECT current_product_entitlement.* FROM ONLY workspace:lca08b;`,
+        ),
+      );
+      expect(recoveredPointer[0]?.current_product_entitlement).toMatchObject({
+        base_source_kind: "subscription",
+        product_plan_key: "fixture_pro",
+      });
+      buckets = rows(
+        await wsB.query(`SELECT period_key, total, expires_at FROM ai_allowance_bucket ORDER BY period_key;`),
+      );
+      expect(buckets).toHaveLength(3);
+      const recoveredPeriod = buckets.find((bucket) =>
+        String(bucket.period_key).endsWith("2026-11-01T00:00:00.000Z"),
+      );
+      expect(recoveredPeriod).toMatchObject({ total: 350 });
+      expect(new Date(String(recoveredPeriod!.expires_at)).toISOString()).toBe(
+        "2026-12-01T00:00:00.000Z",
+      );
+      grants = rows(
+        await wsB.query(`SELECT kind, amount FROM ai_ledger_entry WHERE kind = "grant" ORDER BY amount;`),
+      );
+      expect(grants.map((grant) => grant.amount)).toEqual([150, 200, 350, 350]);
+
+      await wsB.close();
+    },
+    120_000,
+  );
 });

@@ -101,6 +101,12 @@ export class SurrealProductEntitlementStore implements ProductEntitlementStore {
       subscriptionId,
       billingAccountKey: account.account_key,
       subscriptionStatus: subscription.status as SubscriptionFact["subscriptionStatus"],
+      // 周期身份取订阅自身的付费窗口，缺省回退 paid_through / item 窗口：
+      // 周期内升级（换 item）不改变周期身份，续期（推进订阅周期）才换。
+      cycleFrom: when(subscription.current_period_start) ?? effectiveFrom,
+      cycleUntil: when(subscription.current_period_end)
+        ?? when(subscription.paid_through)
+        ?? when(item.effective_until),
     };
   }
 

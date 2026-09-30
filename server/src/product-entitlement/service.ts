@@ -212,8 +212,13 @@ export class ProductEntitlementService {
   ): Promise<{ changed: boolean; planCycle: PlanCycleDirective | null }> {
     const workspace = await this.store.workspaceById(workspaceId);
     if (!workspace) throw new ProductEntitlementError("not_found", "工作区不存在");
-    const draft = await this.draftFor(workspace);
-    const planCycle = planCycleDirective(workspace.dbName, draft);
+    const { draft, subscription } = await this.resolveFor(workspace);
+    // 周期身份来自订阅事实（订阅级付费窗口），与 item 生效时间解耦。
+    const planCycle = planCycleDirective(
+      workspace.dbName,
+      draft,
+      subscription ? { cycleFrom: subscription.cycleFrom, cycleUntil: subscription.cycleUntil } : null,
+    );
     const current = await this.store.currentSnapshot(workspace.id);
     if (current && current.digest === draft.digest) {
       return { changed: false, planCycle };
@@ -359,17 +364,27 @@ export class ProductEntitlementService {
   }
 
   private async draftFor(workspace: WorkspaceRef, revisionOverride?: ProductRevisionBody): Promise<EntitlementDraft> {
+    return (await this.resolveFor(workspace, revisionOverride)).draft;
+  }
+
+  private async resolveFor(workspace: WorkspaceRef, revisionOverride?: ProductRevisionBody): Promise<{
+    draft: EntitlementDraft;
+    subscription: SubscriptionFact | null;
+  }> {
     const subscription = await this.store.activeItem(workspace.id);
     const subscriptionForResolve = subscription && revisionOverride
       ? { ...subscription, productPlanRevisionId: revisionOverride.id }
       : subscription;
     const productRevision = revisionOverride
       ?? (subscription?.productPlanRevisionId ? await this.store.productRevision(subscription.productPlanRevisionId) : null);
-    return resolveEntitlement({
-      now: this.now().toISOString(),
-      subscription: subscriptionForResolve,
-      productRevision,
-      grants: await this.store.grants(workspace.id),
-    });
+    return {
+      draft: resolveEntitlement({
+        now: this.now().toISOString(),
+        subscription: subscriptionForResolve,
+        productRevision,
+        grants: await this.store.grants(workspace.id),
+      }),
+      subscription,
+    };
   }
 }
