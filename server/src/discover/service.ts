@@ -477,8 +477,10 @@ async function findPlanSuggestion(
   gapCollections: string[],
 ): Promise<DiscoverSuggestion | null> {
   if (gapCollections.length === 0) return null;
+  // product_plan 的键就是顶层 plan_key/display_name（021-product-entitlement.surql），
+  // 不能写 plan.*——无该字段则投影恒 NONE、建议恒不返回（生产退回 LCA11-AC5）。
   const planRows = rows(await system.query(
-    `SELECT plan.plan_key AS plan_key, plan.display_name AS plan_name,
+    `SELECT plan_key, display_name AS plan_name,
             active_revision.content_template.collections AS collections
      FROM product_plan
      WHERE status = "active" AND active_revision != NONE;`,
