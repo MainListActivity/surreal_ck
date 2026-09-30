@@ -51,7 +51,7 @@ export type EmployeeLifecycleDeps = {
   callerSession(database: string, rawToken: string): Promise<ClosableQueryable>;
   /** 目标 workspace root 会话：employee_credential 读写。 */
   rootSession(database: string): Promise<Queryable>;
-  runtime: EmployeeRuntime;
+  runtime: Pick<EmployeeRuntime, "register" | "close">;
   generateSecret?: () => string;
   now?: () => Date;
   /** employee access 会话时长（秒），退休时报告剩余有效窗口。 */
@@ -240,11 +240,11 @@ export function createEmployeeLifecycle(deps: EmployeeLifecycleDeps) {
             },
           );
           created = true;
-        } catch (cause) {
+        } catch {
           // 并发创建撞 id / 唯一索引：回读已存在记录，收敛到同一员工。
           console.warn("[employee-lifecycle] create returned error, re-reading", {
             employeeId: identity.recordId,
-            message: cause instanceof Error ? cause.message : String(cause),
+            code: "employee-create-retry",
           });
         }
         row ??= await readEmployee(admin, employee);
@@ -272,7 +272,7 @@ export function createEmployeeLifecycle(deps: EmployeeLifecycleDeps) {
           employeeId: identity.recordId,
           subject: current.subject || identity.subject,
           secret: credential.secret,
-        });
+        }, { activate: true });
       }
       return { kind: "ok", employee: current, created };
       } finally {
@@ -323,8 +323,8 @@ export function createEmployeeLifecycle(deps: EmployeeLifecycleDeps) {
       if (action === "pause") {
         if (current.status === "active") {
           await admin.query(`UPDATE $employee SET virtual_profile.status = "paused";`, { employee });
-          await deps.runtime.close(database, employeeId);
         }
+        await deps.runtime.close(database, employeeId, { deactivate: true });
         return { kind: "ok", employee: { ...current, status: "paused" }, created: false };
       }
 
@@ -344,13 +344,14 @@ export function createEmployeeLifecycle(deps: EmployeeLifecycleDeps) {
             employeeId,
             subject: current.subject,
             secret: credential.secret,
-          });
+          }, { activate: true });
         }
         return { kind: "ok", employee: { ...current, status: "active" }, created: false };
       }
 
       // retire：已退休幂等返回（附剩余 token 窗口 = rotated_at + TTL）。
       if (current.status === "retired") {
+        await deps.runtime.close(database, employeeId, { forgetSecret: true });
         const credential = await readCredential(database, employee);
         const expireBy = credential?.rotatedAt
           ? new Date(credential.rotatedAt.getTime() + sessionTtlSeconds * 1000)

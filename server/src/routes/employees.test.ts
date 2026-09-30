@@ -1,7 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test, spyOn } from "bun:test";
 import type { MiddlewareHandler } from "hono";
 import { createApp } from "../app";
 import type { AppBindings } from "../hono-types";
+import { createEmployeeRuntime } from "../../ai/office/employee-runtime";
+import type { Surreal } from "surrealdb";
 import type { EmployeeLifecycle, EmployeeLifecycleResult } from "../../ai/office/employee-lifecycle";
 
 /** 路由层测试：scope 校验、请求体校验、结果→状态码映射、响应不泄漏凭证。 */
@@ -172,5 +174,55 @@ describe("POST /api/workspaces/:slug/employees/:key/:action", () => {
     );
     expect(res.status).toBe(403);
     expect(calls).toHaveLength(0);
+  });
+});
+
+
+describe("GET controlled employee runtime observation", () => {
+  const path = "http://localhost/api/internal/workspaces/acme/employees/ve_ab12/runtime";
+  test("无凭证 401；participant/跨库/缺 scope 403，均不触发探测", async () => {
+    const { lifecycle } = stubLifecycle({ kind: "ok", employee: okEmployee, created: false });
+    let probes = 0;
+    const employeeRuntime = { inspect: async () => { probes++; throw new Error("should-not-probe"); } };
+    const options = { employeeLifecycle: lifecycle, employeeRuntime,
+      employeeWorkspaceResolver: async () => ({ dbName: "ws_acme" }) };
+    expect((await createApp(options).fetch(new Request(path))).status).toBe(401);
+    for (const user of [participantUser, foreignUser, { ...adminUser, raw: {} }]) {
+      expect((await createApp({ ...options, requireUser: () => useUser(user) }).fetch(new Request(path))).status).toBe(403);
+    }
+    expect(probes).toBe(0);
+  });
+
+  test("admin 读取注入的同一 runtime；白名单响应/no-store；异常与日志去敏", async () => {
+    const marker = "SYNTHETIC_SECRET_TOKEN_ROOT_PAYLOAD";
+    const logs: unknown[] = [];
+    const info = spyOn(console, "info").mockImplementation((...args) => { logs.push(args); });
+    const error = spyOn(console, "error").mockImplementation((...args) => { logs.push(args); });
+    try {
+      const runtime = createEmployeeRuntime({ surrealUrl: "wss://example.test", namespace: "main", connect: () => ({
+        async connect() {}, async signin() {}, async close() {},
+        async auth() { return { id: "user:ve_ab12", virtual_profile: { status: "active" }, secret: marker, token: marker }; },
+      } as unknown as Surreal) });
+      await runtime.register({ database: "ws_acme", employeeId: "user:ve_ab12", subject: marker, secret: marker });
+      const options = { employeeLifecycle: stubLifecycle({ kind: "ok", employee: okEmployee, created: false }).lifecycle,
+        employeeWorkspaceResolver: async () => ({ dbName: "ws_acme" }), requireUser: () => useUser(adminUser), employeeRuntime: runtime };
+      const app = createApp(options);
+      const response = await app.fetch(new Request(path + "?sql=" + encodeURIComponent(marker)));
+      expect(response.status).toBe(200);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      const body = await response.json();
+      expect(body).toMatchObject({ database: "ws_acme", employeeId: "user:ve_ab12", usable: true, generation: 1 });
+      expect(Object.keys(body).sort()).toEqual(["database", "employeeId", "instanceId", "sampledAt", "sessionPresent", "connectionCount", "usable", "generation", "lastRegisteredAt", "lastClosedAt", "closeConfirmed", "probeCode"].sort());
+      expect(JSON.stringify(body)).not.toContain(marker);
+      await runtime.close("ws_acme", "user:ve_ab12");
+      expect(await (await app.fetch(new Request(path))).json()).toMatchObject({ usable: false, closeConfirmed: true });
+      expect((await app.fetch(new Request(path.replace("ve_ab12", "bad-key")))).status).toBe(400);
+      const failed = createApp({ ...options, employeeRuntime: { inspect: async () => { throw new Error(marker); } } });
+      const failure = await failed.fetch(new Request(path));
+      expect(failure.status).toBe(503);
+      expect(await failure.text()).not.toContain(marker);
+      expect(JSON.stringify(logs)).not.toContain(marker);
+      await runtime.stop();
+    } finally { info.mockRestore(); error.mockRestore(); }
   });
 });
