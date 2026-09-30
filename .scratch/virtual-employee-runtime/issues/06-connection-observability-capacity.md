@@ -1,5 +1,5 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: done
+Label: done
 
 # 06 — 连接监督、观测与容量验收
 
@@ -7,7 +7,7 @@ Label: ready-for-agent
 
 **Blocked by:** 05 — 预算、循环、重试与全局背压。
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [x] token 续约或连接重建后只有一组有效监听和一个员工 session，不产生重复触发。
 - [x] 断线期间已进入持久化队列的 trigger 在恢复后继续执行；LIVE 事件本身不作为唯一持久化来源。
