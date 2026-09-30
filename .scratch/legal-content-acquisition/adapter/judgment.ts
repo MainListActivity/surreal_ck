@@ -42,7 +42,9 @@ function sectionSpeaker(text: string, quoteStartByte: number): "court" | "party"
     .map((marker) => ({ marker, byte: utf8ByteLength(text.slice(0, Math.max(0, text.indexOf(marker)))) }))
     .filter((entry) => text.includes(entry.marker))
     .sort((left, right) => left.byte - right.byte);
+  if (positions.length === 0) return "unknown";
   const active = [...positions].reverse().find((entry) => entry.byte <= quoteStartByte);
+  // 引文位于首个段落标记之前：诉辩部分，归属当事人；之后的按所处标记判定。
   if (!active) return "party";
   if (active.marker === "本院认为" || active.marker === "判决如下" || active.marker === "裁定如下") return "court";
   if (active.marker.endsWith("查明")) return "unknown";

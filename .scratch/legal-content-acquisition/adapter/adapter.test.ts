@@ -13,7 +13,7 @@ import { utf8Slice, sha256Hex, validatePlatformContentBatch, type IngestionBatch
 import { chineseDateToIsoDate, chineseNumberToInteger, extractLegislationPage, latestRevisionClause } from "./legislation";
 import { extractJudgmentPage } from "./judgment";
 import { buildJudgmentEntry, buildLegislationEntry, validateBatch } from "./emit";
-import { parseRobotsDisallowAll, isPathDisallowed } from "./http";
+import { parseRobotsDisallowAll, isPathDisallowed, politeFetchHtml } from "./http";
 import { requireQualifiedSource, AccessRestrictedError } from "./sources";
 
 const fixtureDir = join(import.meta.dir, "test-fixtures");
@@ -166,6 +166,17 @@ describe("裁判文书页适配器（合成 CICC 形态页面）", () => {
     const html = await loadFixture("cicc-index-page.html");
     expect(() => extractJudgmentPage({ html, url: "https://cicc.court.gov.cn/html/1/218/180/316/index.html" })).toThrow(AccessRestrictedError);
   });
+
+  test("文书无任何段落标记时引文 speaker=unknown（不冒充当事人/法院）", () => {
+    const html = `<html><head><title>【测试】合成裁定案</title></head><body>` +
+      `<p>中华人民共和国最高人民法院</p><p>民事裁定书</p><p>（2026）合成商终2号</p>` +
+      `<p>申请人主张，依据《合成合同法》第三条的规定应当支持其请求，事实与理由均已陈述清楚。</p>` +
+      `<p>二〇二六年一月二日</p></body></html>`;
+    const extracted = extractJudgmentPage({ html, url: CICC_URL });
+    expect(extracted.citations).toHaveLength(1);
+    expect(extracted.citations[0].speaker).toBe("unknown");
+    expect(utf8Slice(extracted.bodyText, extracted.citations[0].locator.start, extracted.citations[0].locator.end)).toBe("《合成合同法》第三条");
+  });
 });
 
 describe("来源准入与访问限制红线", () => {
@@ -182,6 +193,88 @@ describe("来源准入与访问限制红线", () => {
     const partial = parseRobotsDisallowAll("User-agent: *\nDisallow: /private/\n");
     expect(isPathDisallowed(partial, "https://example.com/public/page")).toBe(false);
     expect(isPathDisallowed(partial, "https://example.com/private/x")).toBe(true);
+  });
+});
+
+describe("抓取防线：robots 规则执行与重定向约束（注入 fetcher，不发真实请求）", () => {
+  const robotsUrl = "https://fgk.chinatax.gov.cn/robots.txt";
+
+  /** 路由表假 fetch：记录请求顺序，命中不到的路由直接抛错（测试里绝不出网）。 */
+  function fakeFetch(routes: Record<string, () => Response>) {
+    const calls: string[] = [];
+    const fetchImpl = (async (input: unknown, _init?: unknown) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      calls.push(url);
+      const handler = routes[url];
+      if (!handler) throw new Error(`unexpected fetch: ${url}`);
+      return handler();
+    }) as unknown as typeof fetch;
+    return { fetchImpl, calls };
+  }
+
+  async function rejectionOf(url: string, fetchImpl: typeof fetch): Promise<Error> {
+    const error = await politeFetchHtml(url, { fetchImpl, robotsCache: new Map() }).then(
+      () => null,
+      (cause: unknown) => cause,
+    );
+    expect(error).toBeInstanceOf(AccessRestrictedError);
+    return error as Error;
+  }
+
+  test("robots Disallow 规则对目标 URL 生效：命中即停，不发出内容请求", async () => {
+    const { fetchImpl, calls } = fakeFetch({
+      [robotsUrl]: () => new Response("User-agent: *\nDisallow: /zcfgk/\n", { status: 200 }),
+    });
+    const error = await rejectionOf(FGK_URL, fetchImpl);
+    expect(error.message).toContain("robots.txt 禁止采集");
+    expect(calls).toEqual([robotsUrl]);
+  });
+
+  test("302 重定向越出准入 origin：拒绝且不请求外站（cookie 不出域）", async () => {
+    const { fetchImpl, calls } = fakeFetch({
+      [robotsUrl]: () => new Response("not found", { status: 404 }),
+      [FGK_URL]: () => new Response("", { status: 302, headers: { location: "https://attacker.example.com/harvest" } }),
+    });
+    const error = await rejectionOf(FGK_URL, fetchImpl);
+    expect(error.message).toContain("越出准入来源");
+    expect(calls).toEqual([robotsUrl, FGK_URL]);
+  });
+
+  test("302 重定向目标命中 robots Disallow：拒绝且不抓被禁路径", async () => {
+    const { fetchImpl, calls } = fakeFetch({
+      [robotsUrl]: () => new Response("User-agent: *\nDisallow: /blocked/\n", { status: 200 }),
+      [FGK_URL]: () => new Response("", { status: 302, headers: { location: "/blocked/internal" } }),
+    });
+    const error = await rejectionOf(FGK_URL, fetchImpl);
+    expect(error.message).toContain("robots.txt 禁止采集");
+    expect(calls).toEqual([robotsUrl, FGK_URL]);
+  });
+
+  test("同 origin 重定向超限：按访问限制拒绝", async () => {
+    const redirect = () => new Response("", { status: 302, headers: { location: `${FGK_URL}?again` } });
+    const { fetchImpl, calls } = fakeFetch({
+      [robotsUrl]: () => new Response("not found", { status: 404 }),
+      [FGK_URL]: redirect,
+      [`${FGK_URL}?again`]: redirect,
+    });
+    const error = await rejectionOf(FGK_URL, fetchImpl);
+    expect(error.message).toContain("HTTP 302");
+    expect(calls).toHaveLength(1 + 4);
+  });
+
+  test("同 origin 且未禁路径的 302 正常跟随（WAF 发 cookie 的标准会话形态）", async () => {
+    let hits = 0;
+    const { fetchImpl, calls } = fakeFetch({
+      [robotsUrl]: () => new Response("not found", { status: 404 }),
+      [FGK_URL]: () =>
+        ++hits === 1
+          ? new Response("", { status: 302, headers: { location: FGK_URL, "set-cookie": "waf=1; Path=/" } })
+          : new Response("<html><body>正文</body></html>", { status: 200 }),
+    });
+    const result = await politeFetchHtml(FGK_URL, { fetchImpl, robotsCache: new Map() });
+    expect(result.status).toBe(200);
+    expect(result.html).toContain("正文");
+    expect(calls).toEqual([robotsUrl, FGK_URL, FGK_URL]);
   });
 });
 

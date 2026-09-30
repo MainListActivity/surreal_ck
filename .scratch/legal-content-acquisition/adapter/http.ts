@@ -1,6 +1,9 @@
 /**
  * 礼貌抓取层：普通浏览器式 HTTP GET，标准 cookie 会话处理；
- * 每次采集前强制 robots.txt 检查；遇到登录/验证码/403 等访问限制立即停止。
+ * 每次采集前强制 robots.txt 检查，且解析出的 Disallow 规则对目标 URL 与
+ * 每个重定向目标都强制生效；遇到登录/验证码/403 等访问限制立即停止。
+ * 重定向只允许落在准入来源 origin 之内：跨域/出站 3xx 一律按访问限制拒绝，
+ * 防止把外站响应当作来源内容、或把站点会话 cookie 发给第三方主机。
  * 不内置任何凭证；不重试除「WAF 首访发 cookie 的同址 302」以外的任何重定向循环。
  */
 
@@ -21,8 +24,15 @@ export type PoliteFetchResult = Readonly<{
   sha256: string;
 }>;
 
-type robotsCache = Map<string, string[]>;
-const robotsDisallowedPaths: robotsCache = new Map();
+export type RobotsCache = Map<string, string[]>;
+const robotsDisallowedPaths: RobotsCache = new Map();
+
+/** 抓取上下文：重定向必须留在准入 origin 内且不得命中 robots Disallow。 */
+type FetchPolicy = Readonly<{
+  origin: string;
+  disallowPrefixes: readonly string[];
+  fetchImpl: typeof fetch;
+}>;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -32,10 +42,11 @@ async function fetchWithCookies(
   url: string,
   cookies: Map<string, string>,
   trail: FetchTrailEvent[],
+  policy: FetchPolicy,
   redirectsLeft = 3,
 ): Promise<{ status: number; body: string; location: string | null; setCookie: string | null }> {
   const cookieHeader = [...cookies.entries()].map(([k, v]) => `${k}=${v}`).join("; ");
-  const response = await fetch(url, {
+  const response = await policy.fetchImpl(url, {
     redirect: "manual",
     headers: {
       "user-agent": USER_AGENT,
@@ -54,9 +65,26 @@ async function fetchWithCookies(
   trail.push({ at: nowIso(), step: "fetch", detail: `${response.status} ${url}` });
   if (response.status >= 300 && response.status < 400) {
     const location = response.headers.get("location");
-    if (location && redirectsLeft > 0) {
-      const next = new URL(location, url).toString();
-      return fetchWithCookies(next, cookies, trail, redirectsLeft - 1);
+    if (location) {
+      let next: string;
+      try {
+        next = new URL(location, url).toString();
+      } catch {
+        trail.push({ at: nowIso(), step: "stop", detail: `重定向目标无法解析：${location}，按访问限制拒绝` });
+        throw new AccessRestrictedError(`重定向目标无法解析（${location}），按访问限制停止采集：${url}`);
+      }
+      if (new URL(next).origin !== policy.origin) {
+        trail.push({ at: nowIso(), step: "stop", detail: `重定向目标越出准入来源 origin（${new URL(next).origin}），按访问限制拒绝` });
+        throw new AccessRestrictedError(`重定向目标越出准入来源 ${policy.origin}：${next}，按访问限制停止采集（原 URL：${url}）`);
+      }
+      if (isPathDisallowed(policy.disallowPrefixes, next)) {
+        trail.push({ at: nowIso(), step: "stop", detail: `重定向目标命中 robots Disallow：${new URL(next).pathname}，停止采集` });
+        throw new AccessRestrictedError(`重定向目标被 robots.txt 禁止采集：${next}（原 URL：${url}）`);
+      }
+      if (redirectsLeft > 0) {
+        return fetchWithCookies(next, cookies, trail, policy, redirectsLeft - 1);
+      }
+      trail.push({ at: nowIso(), step: "stop", detail: `重定向次数超过上限，按访问限制拒绝：${url}` });
     }
   }
   return { status: response.status, body: await response.text(), location: response.headers.get("location"), setCookie };
@@ -84,13 +112,14 @@ export function isPathDisallowed(disallowPrefixes: readonly string[], url: strin
   return disallowPrefixes.some((prefix) => prefix === "/" || path.startsWith(prefix));
 }
 
-async function ensureRobotsChecked(origin: string, trail: FetchTrailEvent[]): Promise<void> {
+async function ensureRobotsChecked(origin: string, trail: FetchTrailEvent[], cache: RobotsCache, fetchImpl: typeof fetch): Promise<string[]> {
   const config = QUALIFIED_SOURCES[new URL(origin).host];
   const forbidden = ROBOTS_FORBIDDEN_SOURCES[new URL(origin).host];
   if (forbidden) throw new AccessRestrictedError(forbidden);
-  if (robotsDisallowedPaths.has(origin)) return;
+  const cached = cache.get(origin);
+  if (cached) return cached;
   const robotsUrl = `${origin}/robots.txt`;
-  const response = await fetch(robotsUrl, {
+  const response = await fetchImpl(robotsUrl, {
     redirect: "manual",
     headers: { "user-agent": USER_AGENT },
     signal: AbortSignal.timeout(15_000),
@@ -109,7 +138,8 @@ async function ensureRobotsChecked(origin: string, trail: FetchTrailEvent[]): Pr
     throw new AccessRestrictedError(`robots 状态 ${response.status} 且准入记录未核验过该站 robots，保守停止：${robotsUrl}`);
   }
   trail.push({ at: nowIso(), step: "robots", detail: `${robotsUrl} -> ${response.status}, Disallow 规则 ${disallow.length} 条` });
-  robotsDisallowedPaths.set(origin, disallow);
+  cache.set(origin, disallow);
+  return disallow;
 }
 
 /**
@@ -137,18 +167,29 @@ function detectAccessRestriction(html: string): string | null {
 }
 
 /**
- * 采集入口：robots 检查 → GET（标准 cookie 会话）→ 限制检测。
+ * 采集入口：robots 检查 → 目标 URL 命中 Disallow 即停 → GET（标准 cookie 会话，
+ * 重定向限同 origin 且不越出 robots 规则）→ 限制检测。
  * 返回原始 HTML 快照与采集轨迹（时间、跳转、cookie 名）。
+ * `opts.fetchImpl` / `opts.robotsCache` 仅供测试注入，生产调用不传。
  */
-export async function politeFetchHtml(url: string): Promise<PoliteFetchResult> {
+export async function politeFetchHtml(
+  url: string,
+  opts?: Readonly<{ fetchImpl?: typeof fetch; robotsCache?: RobotsCache }>,
+): Promise<PoliteFetchResult> {
   const config = requireQualifiedSource(url);
   if (!url.startsWith(`${config.origin}/`)) {
     throw new AccessRestrictedError(`URL 不在准入来源 ${config.origin} 之下：${url}`);
   }
   const trail: FetchTrailEvent[] = [];
-  await ensureRobotsChecked(config.origin, trail);
+  const cache = opts?.robotsCache ?? robotsDisallowedPaths;
+  const fetchImpl = opts?.fetchImpl ?? fetch;
+  const disallow = await ensureRobotsChecked(config.origin, trail, cache, fetchImpl);
+  if (isPathDisallowed(disallow, url)) {
+    trail.push({ at: nowIso(), step: "stop", detail: `目标路径命中 robots Disallow：${new URL(url).pathname}，停止采集` });
+    throw new AccessRestrictedError(`目标路径被 robots.txt 禁止采集（访问限制已变化），停止采集：${url}`);
+  }
   const fetchedAt = nowIso();
-  const { status, body } = await fetchWithCookies(url, new Map(), trail);
+  const { status, body } = await fetchWithCookies(url, new Map(), trail, { origin: config.origin, disallowPrefixes: disallow, fetchImpl });
   if (status !== 200) {
     trail.push({ at: nowIso(), step: "stop", detail: `HTTP ${status}，按访问限制处理，停止采集` });
     throw new AccessRestrictedError(`来源返回 HTTP ${status}（非 200），访问限制可能已变化，停止采集：${url}`);
