@@ -78,6 +78,27 @@ function digestOf(value: unknown): string {
   return JSON.stringify(value);
 }
 
+/**
+ * 同号重发的幂等语义：产品修订一经发布不可变。请求体与既有修订内容完全一致才算重放
+ * （幂等返回既有 id）；任何内容差异都是冲突，必须报错——绝不能静默返回旧修订，
+ * 否则运营会以为新内容（如 aiActions）已生效（LCA05 生产实测踩坑）。
+ */
+function sameRevisionContent(current: ProductRevisionBody, input: PublishProductRevision): boolean {
+  const signatureOf = (values: readonly string[]): string =>
+    JSON.stringify([...new Set(values)].sort());
+  const featureSignature = (features: { key: string; enabled: boolean; limit: number | null }[]): string =>
+    signatureOf(features.map((feature) => `${feature.key}\u0000${feature.enabled}\u0000${feature.limit ?? "null"}`));
+  const collectionSignature = (collections: { key: string; label: string }[]): string =>
+    signatureOf(collections.map((collection) => `${collection.key}\u0000${collection.label}`));
+  return current.planKey === input.planKey
+    && current.planName === input.displayName
+    && current.revision === input.revision
+    && signatureOf(current.actions) === signatureOf(input.actions)
+    && signatureOf(current.aiActions) === signatureOf(input.aiActions)
+    && featureSignature(current.features) === featureSignature(input.features)
+    && collectionSignature(current.collections) === collectionSignature(input.collections);
+}
+
 function assertActions(actions: readonly string[]): void {
   if (new Set(actions).size !== actions.length) throw new ProductEntitlementError("invalid_request", "动作重复");
 }
@@ -100,7 +121,13 @@ export class ProductEntitlementService {
     }
     const planId = await this.store.upsertPlan(input.planKey, input.displayName);
     const existing = await this.store.productRevisionId(planId, input.revision);
-    if (existing) return await this.finishPublish(actor, input.reason, input.idempotencyKey, requestDigest, planId, existing);
+    if (existing) {
+      const current = await this.store.productRevision(existing);
+      if (!current || !sameRevisionContent(current, input)) {
+        throw new ProductEntitlementError("conflict", "产品版本已存在且内容不一致，请发布新的版本号");
+      }
+      return await this.finishPublish(actor, input.reason, input.idempotencyKey, requestDigest, planId, existing);
+    }
     const collections = [];
     for (const collection of input.collections) collections.push(await this.store.upsertCollection(collection.key, collection.label));
     const created = await this.store.insertProductRevision({
@@ -113,9 +140,16 @@ export class ProductEntitlementService {
       actor: actor.subject,
       correlationId: input.idempotencyKey,
     });
-    const revisionId = created ?? await this.store.productRevisionId(planId, input.revision);
-    if (!revisionId) throw new ProductEntitlementError("conflict", "产品版本已存在");
-    return await this.finishPublish(actor, input.reason, input.idempotencyKey, requestDigest, planId, revisionId);
+    if (!created) {
+      // 并发竞争：同号修订刚被并排请求写入；同样必须内容一致才认幂等。
+      const raced = await this.store.productRevisionId(planId, input.revision);
+      const current = raced ? await this.store.productRevision(raced) : null;
+      if (!raced || !current || !sameRevisionContent(current, input)) {
+        throw new ProductEntitlementError("conflict", "产品版本已存在且内容不一致，请发布新的版本号");
+      }
+      return await this.finishPublish(actor, input.reason, input.idempotencyKey, requestDigest, planId, raced);
+    }
+    return await this.finishPublish(actor, input.reason, input.idempotencyKey, requestDigest, planId, created);
   }
 
   async assign(actor: ProductActor, input: AssignProductEntitlement): Promise<ProductEntitlementView> {
