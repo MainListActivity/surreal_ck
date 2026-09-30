@@ -64,11 +64,13 @@ export function compileDashboardWidgetQuery(
   const where = compileWhere(spec.filters ?? [], bindings);
   if (viewType === "table") {
     const columns = normalizeTableColumns(display);
+    const projected = columns.map((column) => column.key);
+    if (spec.sort && !projected.includes(spec.sort.field)) projected.push(spec.sort.field);
     const orderBy = spec.sort
       ? ` ORDER BY ${spec.sort.field} ${spec.sort.direction.toUpperCase()}`
       : "";
     return {
-      sql: `SELECT ${columns.map((column) => column.key).join(", ")} FROM type::table($tb)${where}${orderBy} LIMIT ${limit}`,
+      sql: `SELECT ${projected.join(", ")} FROM type::table($tb)${where}${orderBy} LIMIT ${limit}`,
       bindings,
       sourceTables,
       dependencies: Array.from(new Set([spec.baseTable, ...sourceTables])),
@@ -101,7 +103,12 @@ export function compileDashboardWidgetQuery(
   }
   if (dimension && !dimension.bucket) {
     const metricSql = compileMetricExpr(spec.metric);
-    const orderBy = compileOrderBy(spec.sort, "value", "desc");
+    const orderBy = compileOrderBy(spec.sort, "value", "desc", {
+      [dimension.field]: dimension.field,
+      key: "key",
+      label: "label",
+      value: "value",
+    });
     return {
       sql: `SELECT ${dimension.field} AS key, string::concat(${dimension.field} ?? '') AS label, ${metricSql} AS value FROM type::table($tb)${where} GROUP BY ${dimension.field} ${orderBy} LIMIT ${limit}`,
       bindings,
@@ -278,7 +285,7 @@ function compileOrderBy(
   fallbackDirection: "asc" | "desc",
   aliases: Record<string, string> = {},
 ): string {
-  const field = sort ? aliases[sort.field] ?? sort.field : fallbackField;
+  const field = sort ? aliases[sort.field] ?? fallbackField : fallbackField;
   const direction = (sort?.direction ?? fallbackDirection).toUpperCase();
   return `ORDER BY ${field} ${direction}`;
 }

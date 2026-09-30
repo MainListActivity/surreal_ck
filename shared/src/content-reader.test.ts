@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   CONTENT_READER_BOUND_SECONDS,
   CLIENT_AUTHORITY_FIELDS,
+  contentExchangeFailure,
   contentReaderExchangeRequestSchema,
   contentReaderFieldAllowed,
   contentReaderLeaseEnd,
@@ -175,5 +176,44 @@ describe("returned contract regressions", () => {
       expect(remainingContentReaderCloseSeconds(input)).toBeNull();
     }
     expect(remainingContentReaderCloseSeconds({ nowSeconds: NOW, tokenExpiresAtSeconds: NOW + 3600, sessionExpiresAtSeconds: NOW + 3600, projectionConfirmedUntilSeconds: NOW + 3600 })).toBeNull();
+  });
+});
+
+describe("content exchange failure mapping", () => {
+  test("maps normalized API error envelopes back to reader failures", () => {
+    expect(contentExchangeFailure(
+      { error: { code: "content-reader-collection_denied", message: "内容读取凭证被拒绝" } },
+      "content-reader-",
+    )).toEqual({ ok: false, error: "collection_denied" });
+    expect(contentExchangeFailure(
+      { error: { code: "content-search-not_member", message: "内容检索凭证被拒绝" } },
+      "content-search-",
+    )).toEqual({ ok: false, error: "not_member" });
+  });
+
+  test("keeps idpError when details carry it", () => {
+    expect(contentExchangeFailure(
+      { error: { code: "content-reader-idp_rejected", message: "x", details: { idpError: "invalid_scope" } } },
+      "content-reader-",
+    )).toEqual({ ok: false, error: "idp_rejected", idpError: "invalid_scope" });
+  });
+
+  test("fails closed on wrong prefix, unknown codes, and unrelated envelopes", () => {
+    expect(contentExchangeFailure(
+      { error: { code: "content-reader-not_member" } }, "content-search-",
+    )).toBeNull();
+    expect(contentExchangeFailure(
+      { error: { code: "content-search-bogus" } }, "content-search-",
+    )).toBeNull();
+    expect(contentExchangeFailure(
+      { error: { code: "oidc-invalid" } }, "content-reader-",
+    )).toBeNull();
+    expect(contentExchangeFailure({ ok: false, error: "collection_denied" }, "content-reader-")).toBeNull();
+    expect(contentExchangeFailure(null, "content-reader-")).toBeNull();
+    expect(contentExchangeFailure("content-reader-collection_denied", "content-reader-")).toBeNull();
+    expect(contentExchangeFailure(
+      { error: { code: "content-reader-idp_rejected", details: { idpError: "bogus" } } },
+      "content-reader-",
+    )).toEqual({ ok: false, error: "idp_rejected" });
   });
 });

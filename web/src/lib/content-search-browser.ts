@@ -1,5 +1,5 @@
 import { Surreal } from "surrealdb";
-import type { ContentReaderFailure, ContentSearchExchangeSuccess } from "@surreal-ck/shared";
+import { contentExchangeFailure, type ContentReaderFailure, type ContentSearchExchangeSuccess } from "@surreal-ck/shared";
 import { getToken } from "./auth";
 import { getCurrentWorkspace } from "./workspace-store.svelte";
 import { createContentSearch } from "./content-search";
@@ -22,6 +22,8 @@ export function createBrowserContentSearch() {
       if (value && typeof value === "object" && (value as { ok?: unknown }).ok === false) {
         return value as ContentReaderFailure;
       }
+      const failure = contentExchangeFailure(value, "content-search-");
+      if (failure) return failure;
       if (!response.ok || !value || typeof value !== "object") throw new Error("content-search-exchange-failed");
       return value as ContentSearchExchangeSuccess;
     },
