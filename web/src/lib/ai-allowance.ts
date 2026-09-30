@@ -7,6 +7,47 @@ import {
 import type { SurrealConn } from "./surreal";
 import { recordValueToString } from "./record-id";
 
+/** 账本条目对客户可读的类别名。 */
+export const aiAllowanceLedgerKindLabels: Record<AiAllowanceLedgerView["kind"], string> = {
+  grant: "授予",
+  reserve: "预留",
+  settle: "结算",
+  release: "释放返还",
+  expire: "到期失效",
+  writeoff: "过期冲销",
+};
+
+/** 账本条目对可用额度的方向：授予与释放返还为入，其余为出。 */
+export function aiAllowanceLedgerSign(kind: AiAllowanceLedgerView["kind"]): "+" | "-" {
+  return kind === "grant" || kind === "release" ? "+" : "-";
+}
+
+/** 额度桶类别名。 */
+export const aiAllowanceBucketKindLabels: Record<AiAllowanceBucketView["kind"], string> = {
+  plan_cycle: "套餐周期",
+  purchased: "购买加量",
+  compensation: "人工补偿",
+};
+
+/** 账本/桶时间统一短格式（本地时区 MM-DD HH:mm）。 */
+export function formatAllowanceTime(iso: string): string {
+  const time = new Date(iso).getTime();
+  if (!Number.isFinite(time)) return "";
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(time));
+}
+
+/** 桶当前状态的可读标签：已过期 > 已暂停 > 生效中。 */
+export function aiAllowanceBucketStatusLabel(bucket: Pick<AiAllowanceBucketView, "expired" | "status">): string {
+  if (bucket.expired) return "已过期";
+  if (bucket.status === "suspended") return "已暂停";
+  return "生效中";
+}
+
 /**
  * LCA05 工作区共享 AI 额度：浏览器直连 workspace db 只读账本
  * （成员 FOR select 放行；写入全部由服务端 root 经门禁落账）。
