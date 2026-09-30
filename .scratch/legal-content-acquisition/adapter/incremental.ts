@@ -103,6 +103,8 @@ export type SourceCounts = Readonly<{
   deferred: number;
   pendingVerification: number;
   staged: number;
+  /** 遗留排队长度（预算顺延与重放期排队的候选总数）。 */
+  queued: number;
   failuresActive: number;
   failuresExhausted: number;
 }>;
@@ -188,6 +190,7 @@ const EMPTY_COUNTS: SourceCounts = {
   deferred: 0,
   pendingVerification: 0,
   staged: 0,
+  queued: 0,
   failuresActive: 0,
   failuresExhausted: 0,
 };
@@ -232,6 +235,7 @@ function countsOf(source: SourceState, maxAttempts: number, extra: Partial<Sourc
     ...extra,
     pendingVerification: source.lastPendingVerification ?? 0,
     staged,
+    queued: source.pending.length,
     failuresActive: active,
     failuresExhausted: exhausted,
   };
@@ -412,6 +416,26 @@ async function runSourcePass(input: {
   });
 
   if (options.readmit?.includes(sourceKey)) source.disabled = null;
+
+  // 停摆期候选不丢：来源停用或待提交批次存在时，本 pass 提供且未入库的候选先排队持久化
+  // （已见记录由重叠复查管；恢复准入/提交成功后下个 pass 处理）。
+  if (source.disabled || source.pendingBatch) {
+    let queuedNew = false;
+    for (const url of urls) {
+      if (source.pending.includes(url)) continue;
+      let recordKey: string | null = null;
+      try {
+        recordKey = recordKeyForUrl(url, kind);
+      } catch {
+        recordKey = null;
+      }
+      if (recordKey !== null && source.seen[recordKey]) continue;
+      source.pending.push(url);
+      queuedNew = true;
+    }
+    if (queuedNew) await saveStateAtomically(deps.statePath, state);
+  }
+
   if (source.disabled) {
     return finish("blocked", "disabled", { mode: "none", checkedUrls: 0, note: `来源已停用：${source.disabled.reason}` }, {});
   }
@@ -435,8 +459,9 @@ async function runSourcePass(input: {
   // ── 组装工作清单：遗留排队 → 本 pass 候选 → 失败重试 → 有界重叠复查（去重） ──
   const retryUrls = source.failures.filter((failure) => failure.attempts < deps.maxAttempts).map((failure) => failure.url);
   const submittableSeen = Object.values(source.seen).filter((record) => record.submittedSha256 !== null);
+  // 最久未查优先（升序）：窗口逐 pass 轮换覆盖全部已提交记录，而非钉死最新 N 条。
   const overlapUrls = [...submittableSeen]
-    .sort((a, b) => (a.lastCheckedAt < b.lastCheckedAt ? 1 : -1))
+    .sort((a, b) => (a.lastCheckedAt > b.lastCheckedAt ? 1 : -1))
     .slice(0, deps.overlapLimit)
     .map((record) => record.url);
   const work: WorkItem[] = [];
@@ -601,7 +626,7 @@ async function runSourcePass(input: {
     checkedUrls,
     note: noCursor
       ? `无可靠游标：仅扫描提供的候选（本轮实际检查 ${checkedUrls} 个 URL），不宣称全量覆盖`
-      : `有界扫描：候选/重试 + 最近 ${deps.overlapLimit} 条重叠复查（本轮实际检查 ${checkedUrls} 个 URL），不宣称全量覆盖`,
+      : `有界扫描：候选/重试 + 最久未查 ${deps.overlapLimit} 条重叠复查（本轮实际检查 ${checkedUrls} 个 URL），不宣称全量覆盖`,
   };
 
   if (batchRecords.length === 0) {
@@ -612,7 +637,7 @@ async function runSourcePass(input: {
         ? "parse_failure"
         : requestFailures > 0
           ? "request_failure"
-          : "parse_failure";
+          : "empty";
     return finish(outcome, null, scanRange, { candidates, duplicates, updated, failed, retried, deferred });
   }
 

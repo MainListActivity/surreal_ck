@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runIncrementalPass, loadIncrementalState, BatchKeyConflictError, type IncrementalDeps, type IncrementalPassOptions, type IncrementalState } from "./incremental";
 import { McpHttpError } from "../../../scripts/platform-content-runner";
+import { makeSubmitRemote } from "./incremental-run";
 import { QUALIFIED_SOURCES } from "./sources";
 
 const FGK_URL_A = "https://fgk.chinatax.gov.cn/zcfgk/c100009/c5233383/content.html";
@@ -43,13 +44,13 @@ function fixedResponse(status: number, body: string): Response {
 
 function robotsAwareFetch(routes: FetchRoutes) {
   const calls: string[] = [];
-  const fetchImpl: typeof fetch = async (input) => {
+  const fetchImpl = (async (input: URL | RequestInfo) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     calls.push(url);
     const handler = routes.get(url);
     if (!handler) return fixedResponse(404, "not found");
     return handler();
-  };
+  }) as typeof fetch;
   return { fetchImpl, calls };
 }
 
@@ -454,5 +455,129 @@ describe("LCAQ-03 增量检查点与恢复", () => {
       expect(config.license.revision).toBeGreaterThan(0);
       expect(config.license.licenseKind.length).toBeGreaterThan(0);
     }
+  });
+});
+
+// ── 接线回归：引擎 × 真实 submitAndInspectBatch（假 MCP fetch）───────────────────
+// 验收发现的楔死缺陷：runner 检查点守卫要求同文件同幂等键，而引擎每 pass 生成新键；
+// 组装方必须以 force 放开守卫（引擎 pendingBatch 自管键生命周期）。本组测试锁住该边界。
+
+function fakeMcpFetch() {
+  const batches = new Map<string, string>();
+  let seq = 0;
+  const calls: string[] = [];
+  const impl = (async (_input: URL | RequestInfo, init?: RequestInit) => {
+    const request = JSON.parse(String(init?.body)) as { id: unknown; method: string; params?: { name?: string; arguments?: Record<string, unknown> } };
+    const tool = request.params?.name;
+    const args = request.params?.arguments ?? {};
+    calls.push(String(tool ?? request.method));
+    let result: unknown = {};
+    if (tool === "get_data_contract") result = { contractVersion: "1" };
+    else if (tool === "submit_batch") {
+      const key = String(args.idempotencyKey);
+      const existing = batches.get(key);
+      if (!existing) batches.set(key, `mcp-batch-${++seq}`);
+      result = { batchId: batches.get(key), status: "submitted" };
+    } else if (tool === "inspect_batch") {
+      result = { status: "ready", entries: [], nextCursor: null };
+    }
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  return { impl, batches, calls };
+}
+
+/** 使用 incremental-run.ts 的真实装配（makeSubmitRemote）：production 去 force 立即由本组测试暴露。 */
+function wireRealSubmit(harness: Harness, mcpFetch: typeof fetch): void {
+  harness.deps = {
+    ...harness.deps,
+    submitRemote: makeSubmitRemote({
+      mcpUrl: "http://fake.local/mcp",
+      accessToken: TOKEN_SENTINEL,
+      outDir: harness.deps.outDir,
+      fetchImpl: mcpFetch,
+    }),
+  };
+}
+
+describe("LCAQ-03 真实 runner 通道接线（假 MCP）", () => {
+  test("连续新批次键可提交：p1 落检查点后 p2 不被守卫拒绝", async () => {
+    const harness = await makeHarness();
+    const mcp = fakeMcpFetch();
+    wireRealSubmit(harness, mcp.impl);
+    harness.setRoute(FGK_URL_A, FGK_HTML);
+    harness.setRoute(FGK_URL_B, FGK_HTML);
+
+    await runIncrementalPass(harness.deps, defaultOptions({ urls: [FGK_URL_A] }));
+    const report2 = await runIncrementalPass(harness.deps, defaultOptions({ urls: [FGK_URL_B] }));
+
+    const fgk = report2.sources.find((source) => source.sourceKey === "fgk.chinatax.gov.cn")!;
+    expect(fgk.outcome).toBe("ok");
+    expect([...mcp.batches.keys()]).toEqual(["lcaq03-fgk.chinatax.gov.cn-p1", "lcaq03-fgk.chinatax.gov.cn-p2"]);
+    expect(new Set(mcp.batches.values()).size).toBe(2);
+    const state = await loadIncrementalState(harness.statePath);
+    expect(state.sources["fgk.chinatax.gov.cn"]!.pendingBatch).toBeNull();
+    expect(state.sources["fgk.chinatax.gov.cn"]!.seen["c5233384"]!.submittedSha256).not.toBeNull();
+    await rm(harness.dir, { recursive: true });
+  });
+
+  test("同键同内容重放：中断恢复经真实通道复用服务端批次", async () => {
+    const harness = await makeHarness();
+    const mcp = fakeMcpFetch();
+    wireRealSubmit(harness, mcp.impl);
+    harness.setRoute(FGK_URL_A, FGK_HTML);
+
+    await runIncrementalPass(harness.deps, defaultOptions({ urls: [FGK_URL_A], offline: true }));
+    const pendingKey = (await loadIncrementalState(harness.statePath)).sources["fgk.chinatax.gov.cn"]!.pendingBatch!.idempotencyKey;
+    const submitsBefore = mcp.calls.filter((name) => name === "submit_batch").length;
+
+    const replay = await runIncrementalPass(harness.deps, defaultOptions({}));
+    const fgk = replay.sources.find((source) => source.sourceKey === "fgk.chinatax.gov.cn")!;
+    expect(fgk.outcome).toBe("ok");
+    expect(mcp.batches.get(pendingKey)).toBeDefined();
+    expect(mcp.calls.filter((name) => name === "submit_batch").length).toBe(submitsBefore + 1);
+    const state = await loadIncrementalState(harness.statePath);
+    expect(state.sources["fgk.chinatax.gov.cn"]!.pendingBatch).toBeNull();
+    await rm(harness.dir, { recursive: true });
+  });
+
+  test("重放待提交批次期间提供的候选排队不丢失，恢复后正常处理", async () => {
+    const harness = await makeHarness();
+    harness.setRoute(FGK_URL_A, FGK_HTML);
+    harness.setRoute(FGK_URL_B, FGK_HTML);
+
+    await runIncrementalPass(harness.deps, defaultOptions({ urls: [FGK_URL_A], offline: true }));
+    // 重放 pass 同时提供新候选 URL-B：重放成功后 URL-B 应在 pending 中。
+    const replay = await runIncrementalPass(harness.deps, defaultOptions({ urls: [FGK_URL_B] }));
+    expect(replay.sources.find((source) => source.sourceKey === "fgk.chinatax.gov.cn")!.outcome).toBe("ok");
+    const stateAfterReplay = await loadIncrementalState(harness.statePath);
+    expect(stateAfterReplay.sources["fgk.chinatax.gov.cn"]!.pending).toEqual([FGK_URL_B]);
+    expect(replay.sources.find((source) => source.sourceKey === "fgk.chinatax.gov.cn")!.counts.queued).toBe(1);
+
+    const next = await runIncrementalPass(harness.deps, defaultOptions({}));
+    expect(next.sources.find((source) => source.sourceKey === "fgk.chinatax.gov.cn")!.counts.candidates).toBe(1);
+    expect(harness.submitted.at(-1)!.items.map((item) => item.entryKey)).toEqual(["fgk.chinatax.gov.cn--c5233384"]);
+    await rm(harness.dir, { recursive: true });
+  });
+
+  test("重叠窗口轮换覆盖：最久未查优先，窗口外记录逐 pass 轮入", async () => {
+    const harness = await makeHarness({ overlapLimit: 1 });
+    harness.setRoute(FGK_URL_A, FGK_HTML);
+    harness.setRoute(FGK_URL_B, FGK_HTML);
+    await runIncrementalPass(harness.deps, defaultOptions({ urls: [FGK_URL_A, FGK_URL_B] }));
+
+    harness.calls.length = 0;
+    await runIncrementalPass(harness.deps, defaultOptions({}));
+    const firstChecked = harness.calls.filter((url) => !url.includes("robots"));
+    expect(firstChecked).toHaveLength(1);
+
+    harness.calls.length = 0;
+    await runIncrementalPass(harness.deps, defaultOptions({}));
+    const secondChecked = harness.calls.filter((url) => !url.includes("robots"));
+    expect(secondChecked).toHaveLength(1);
+    expect(secondChecked[0]).not.toBe(firstChecked[0]); // 轮换而非钉死同一条
+    await rm(harness.dir, { recursive: true });
   });
 });

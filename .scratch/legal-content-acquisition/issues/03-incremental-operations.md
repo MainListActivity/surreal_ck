@@ -40,5 +40,14 @@ Repository: surreal_ck
 - **停止条件**：来源访问限制/许可边界变化（robots/登录/验证码/403，AccessRestrictedError）→ 来源停用、未处理候选保留排队，恢复需 `--readmit <sourceKey>`；MCP 401/403 → 全局授权停止（后续 pass 拒绝远端，批次保留），恢复需运营重新完成 OAuth 后 `--reauthorized`。
 - **可见性**：每来源报告 outcome（ok/empty/request_failure/parse_failure/blocked/conflict，空结果与失败区分）、最近成功检查时间、扫描范围与诚实说明、候选/重复/更新/失败/重试/顺延/待核验/暂存/失败活跃/耗尽计数、停用原因；报告落盘 `runs/last-pass-report.json` 并输出 JSON。
 - **无调度**：本工具单次运行，不创建任何默认定时器；周期运行须运营显式配置本地 scheduler 调用。自动运行只 submit+inspect，代码中无发布通路（`publish_batch` 仅存在于 runner CLI 的显式 `--publish` + `CONTENT_PUBLISH_CONFIRM=YES` 分支）；OAuth 同意不构成任何批次的发布批准。
-- **验证**：`bun test ./.scratch/legal-content-acquisition/adapter/` → 37 pass（16 增量 + 21 既有适配器无回归）；`bunx tsc --noEmit --strict`（适配器与 runner，仅环境缺 Bun 全局类型的既有告警）；`bun build scripts/platform-content-runner.ts --target bun`（LCM-09 验证命令）通过；`pnpm typecheck` / `pnpm lint` 全 workspace 干净。
+- **验证**：`bun test ./.scratch/legal-content-acquisition/adapter/` → 41 pass（20 增量 + 21 既有适配器无回归）；`bunx tsc --noEmit --strict`（适配器/runner/测试，带 bun-types 零错误）；`bun build scripts/platform-content-runner.ts --target bun`（LCM-09 验证命令）通过；`pnpm typecheck` / `pnpm lint` 全 workspace 干净。
 - **限制**：真实来源的列表页发现（自动发现新详情页 URL）仍不在适配器内——候选 URL 由运营/上游清单提供，重叠复查只覆盖已见记录；DB 迁移：无；新环境变量：无（沿用 CONTENT_MCP_URL/CONTENT_ACCESS_TOKEN/CONTENT_BATCH 既有约定）。
+
+## 返工记录（2026-09-30，验收退回修复）
+
+- **修复 runner 检查点守卫楔死**（验收阻断项）：`submitAndInspectBatch` 的「检查点幂等键 ≠ 批次键即拒绝」守卫与引擎每 pass 新键 `lcaq03-<source>-p<seq>` 冲突，来源首笔提交成功后第二笔起永久被拒。修复：`incremental-run.ts` 导出 `makeSubmitRemote`（生产装配与测试共用），per-source 检查点 + `force: true`——批次键生命周期由引擎 `pendingBatch` 自管（同键同内容复用、同键不同内容报冲突），runner 检查点退化为「最近提交进度」指针；独立 CLI 模式守卫语义不变（`main()` 仍不传 force）。
+- **补真实通道接线测试**：新增 `makeSubmitRemote` × 真实 `submitAndInspectBatch`（假 MCP fetch）接线回归 4 条——连续新批次键可提交、同键重放复用服务端批次、重放期候选排队、重叠窗口轮换；负向验证：去掉 `force` 立即失败。
+- **重叠窗口轮换**：复查排序由 lastCheckedAt 降序（窗口自锁在最新 N 条）改为升序最久未查优先，窗口逐 pass 轮换覆盖全部已提交记录。
+- **重放期候选不丢**：`pendingBatch` 重放前把本 pass 提供且未入库的候选先入 `pending` 排队并持久化；`SourceCounts` 新增 `queued` 字段暴露遗留排队长度。
+- **可见性修正**：零失败全顺延（如 `--fetch-budget 0`）的 outcome 由误标 `parse_failure` 改为 `empty`（顺延计数仍在 `deferred`/`queued` 可见）。
+- **健壮性**：数字 flag（`--overlap-limit/--max-attempts/--fetch-budget`）经 `numericFlag` 解析，缺值/非法值回退默认而非 NaN；`incremental-run.ts` 加 `import.meta.main` 守卫（可被测试 import 而不执行 CLI）。

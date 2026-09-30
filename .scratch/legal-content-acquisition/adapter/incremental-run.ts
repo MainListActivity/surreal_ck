@@ -41,6 +41,38 @@ function flagValues(name: string): string[] {
   return Bun.argv.filter((arg, index) => Bun.argv[index - 1] === name);
 }
 
+function numericFlag(name: string, fallback: number): number {
+  const raw = flagValue(name);
+  const parsed = raw === undefined || raw.startsWith("--") ? fallback : Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+/**
+ * 生产提交通道（导出供测试复现真实装配）。
+ * 复用 LCM-09 runner：submit + inspect + 原子检查点；无 --publish 通路。
+ * 批次键生命周期由引擎 pendingBatch 管理（同键同内容复用、同键不同内容报冲突）；
+ * runner 检查点在此退化为「该来源最近提交进度」指针，故 force 放开多键守卫——
+ * 绝不能去掉 force：引擎每 pass 生成新批次键，守卫会永久拒绝第二笔起的提交。
+ */
+export function makeSubmitRemote(input: {
+  mcpUrl: string;
+  accessToken: string;
+  outDir: string;
+  fetchImpl?: typeof fetch;
+}): IncrementalDeps["submitRemote"] {
+  return async ({ sourceKey, batch }) => {
+    const result = await submitAndInspectBatch({
+      mcpUrl: input.mcpUrl,
+      accessToken: input.accessToken,
+      batch,
+      checkpointPath: join(input.outDir, `runner-checkpoint-${sourceKey}.json`),
+      force: true,
+      fetchImpl: input.fetchImpl,
+    });
+    return { batchId: result.batchId, status: result.batchStatus, entries: result.entries };
+  };
+}
+
 async function main(): Promise<void> {
   const urls = flagValues("--url");
   const readmit = flagValues("--readmit");
@@ -59,22 +91,13 @@ async function main(): Promise<void> {
   const deps: IncrementalDeps = {
     fetchImpl: fetch,
     isAuthError: (error) => error instanceof McpHttpError && (error.status === 401 || error.status === 403),
-    submitRemote: async ({ sourceKey, batch }) => {
-      // 复用 LCM-09 runner：submit + inspect + 原子检查点；无 --publish 通路。
-      const result = await submitAndInspectBatch({
-        mcpUrl,
-        accessToken,
-        batch,
-        checkpointPath: join(outDir, `runner-checkpoint-${sourceKey}.json`),
-      });
-      return { batchId: result.batchId, status: result.batchStatus, entries: result.entries };
-    },
+    submitRemote: makeSubmitRemote({ mcpUrl, accessToken, outDir }),
     now: () => new Date(),
     outDir,
     statePath,
-    overlapLimit: Number(flagValue("--overlap-limit") ?? 5),
-    maxAttempts: Number(flagValue("--max-attempts") ?? 3),
-    fetchBudgetPerSource: Number(flagValue("--fetch-budget") ?? 12),
+    overlapLimit: numericFlag("--overlap-limit", 5),
+    maxAttempts: numericFlag("--max-attempts", 3),
+    fetchBudgetPerSource: numericFlag("--fetch-budget", 12),
   };
 
   const options: IncrementalPassOptions = {
@@ -107,7 +130,9 @@ async function main(): Promise<void> {
   if (degraded) process.exitCode = 1;
 }
 
-await main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : "增量采集失败");
-  process.exitCode = 1;
-});
+if (import.meta.main) {
+  await main().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : "增量采集失败");
+    process.exitCode = 1;
+  });
+}
