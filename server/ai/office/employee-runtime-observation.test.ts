@@ -44,13 +44,13 @@ describe("employee runtime controlled observation", () => {
     expect(f.counts().connects).toBe(0);
     await f.runtime.register(target);
     const active = await f.inspect();
-    expect(active).toMatchObject({ usable: true, sessionPresent: true, generation: 1, probeCode: "ok" });
+    expect(active).toMatchObject({ usable: true, sessionPresent: true, connectionCount: 1, generation: 1, probeCode: "ok" });
     expect(active.lastRegisteredAt).not.toBeNull();
     expect(JSON.stringify(active)).not.toContain(marker);
     expect(f.counts()).toEqual({ connects: 1, live: 1, peak: 1, probes: 1 });
-    await Promise.all([f.runtime.close(target.database, target.employeeId), f.runtime.close(target.database, target.employeeId)]);
+    await Promise.all([f.runtime.close(target.database, target.employeeId, { deactivate: true }), f.runtime.close(target.database, target.employeeId, { deactivate: true })]);
     const paused = await f.inspect();
-    expect(paused).toMatchObject({ usable: false, sessionPresent: false, closeConfirmed: true, generation: 1 });
+    expect(paused).toMatchObject({ usable: false, sessionPresent: false, connectionCount: 0, closeConfirmed: true, generation: 1 });
     expect(paused.lastClosedAt).not.toBeNull();
     expect(f.counts().live).toBe(0);
     await expect(f.runtime.openSession(target.database, target.employeeId)).rejects.toThrow("employee-session-blocked");
@@ -61,6 +61,20 @@ describe("employee runtime controlled observation", () => {
     expect(f.counts()).toMatchObject({ live: 1, peak: 1 });
     await f.runtime.close(target.database, target.employeeId, { forgetSecret: true });
     expect(await f.inspect()).toMatchObject({ closeConfirmed: true, usable: false });
+    await expect(f.runtime.register(target, { activate: true })).rejects.toThrow("employee-session-blocked");
+    await f.runtime.stop();
+  });
+
+  test("普通窗口关闭后可再次显式注册；生命周期暂停不会被窗口 close 解除", async () => {
+    const f = fixture();
+    await f.runtime.register(target);
+    await f.runtime.close(target.database, target.employeeId);
+    expect(await f.inspect()).toMatchObject({ closeConfirmed: true, usable: false, connectionCount: 0 });
+    await f.runtime.openSession(target.database, target.employeeId);
+    expect(await f.inspect()).toMatchObject({ usable: true, generation: 2, connectionCount: 1 });
+    await f.runtime.close(target.database, target.employeeId, { deactivate: true });
+    await f.runtime.close(target.database, target.employeeId);
+    await expect(f.runtime.openSession(target.database, target.employeeId)).rejects.toThrow("employee-session-blocked");
     await f.runtime.stop();
   });
 
@@ -72,7 +86,7 @@ describe("employee runtime controlled observation", () => {
     try {
       const f = fixture({ close: async () => { await gate.promise; if (fail) throw new Error(marker); } });
       await f.runtime.register(target);
-      const close = f.runtime.close(target.database, target.employeeId);
+      const close = f.runtime.close(target.database, target.employeeId, { deactivate: true });
       expect(f.runtime.session(target.database, target.employeeId)).toBeUndefined();
       expect(await f.inspect()).toMatchObject({ closeConfirmed: null, usable: false });
       gate.resolve();
@@ -81,7 +95,7 @@ describe("employee runtime controlled observation", () => {
       await expect(f.runtime.register(target, { activate: true })).rejects.toThrow("employee-close-failed");
       expect(f.counts()).toMatchObject({ live: 1, connects: 1 });
       fail = false;
-      await f.runtime.close(target.database, target.employeeId);
+      await f.runtime.close(target.database, target.employeeId, { deactivate: true });
       expect(await f.inspect()).toMatchObject({ closeConfirmed: true });
       expect(f.counts().live).toBe(0);
       await f.runtime.stop();
@@ -100,7 +114,7 @@ describe("employee runtime controlled observation", () => {
       await entered.promise;
       const queued = f.runtime.register(target);
       void queued.catch(() => undefined);
-      const close = f.runtime.close(target.database, target.employeeId, { forgetSecret });
+      const close = f.runtime.close(target.database, target.employeeId, { forgetSecret, deactivate: true });
       let completed = false;
       void close.then(() => { completed = true; });
       await Promise.resolve();
@@ -157,7 +171,7 @@ describe("employee runtime controlled observation", () => {
     await f.runtime.register(target);
     const probe = f.inspect();
     await entered.promise;
-    await f.runtime.close(target.database, target.employeeId);
+    await f.runtime.close(target.database, target.employeeId, { deactivate: true });
     await f.runtime.register(target, { activate: true });
     gate.resolve();
     expect(await probe).toMatchObject({ usable: false, probeCode: "changed", generation: 2 });

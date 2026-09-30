@@ -212,7 +212,7 @@ describe("GET controlled employee runtime observation", () => {
       expect(response.headers.get("cache-control")).toBe("no-store");
       const body = await response.json();
       expect(body).toMatchObject({ database: "ws_acme", employeeId: "user:ve_ab12", usable: true, generation: 1 });
-      expect(Object.keys(body).sort()).toEqual(["database", "employeeId", "instanceId", "sampledAt", "sessionPresent", "usable", "generation", "lastRegisteredAt", "lastClosedAt", "closeConfirmed", "probeCode"].sort());
+      expect(Object.keys(body).sort()).toEqual(["database", "employeeId", "instanceId", "sampledAt", "sessionPresent", "connectionCount", "usable", "generation", "lastRegisteredAt", "lastClosedAt", "closeConfirmed", "probeCode"].sort());
       expect(JSON.stringify(body)).not.toContain(marker);
       await runtime.close("ws_acme", "user:ve_ab12");
       expect(await (await app.fetch(new Request(path))).json()).toMatchObject({ usable: false, closeConfirmed: true });

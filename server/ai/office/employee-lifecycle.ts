@@ -324,7 +324,7 @@ export function createEmployeeLifecycle(deps: EmployeeLifecycleDeps) {
         if (current.status === "active") {
           await admin.query(`UPDATE $employee SET virtual_profile.status = "paused";`, { employee });
         }
-        await deps.runtime.close(database, employeeId);
+        await deps.runtime.close(database, employeeId, { deactivate: true });
         return { kind: "ok", employee: { ...current, status: "paused" }, created: false };
       }
 

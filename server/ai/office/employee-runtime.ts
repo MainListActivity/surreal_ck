@@ -47,8 +47,8 @@ export type EmployeeCredential = { subject: string; secret: string };
 export type EmployeeRuntime = {
   /** 注册并 SIGNIN；先确认关闭旧连接。activate 仅供生命周期确认 active 后解除暂停。 */
   register(target: EmployeeSessionTarget, options?: { activate?: boolean }): Promise<void>;
-  /** 关闭并移除会话。forgetSecret=true（退休）时连 secret 缓存一并丢弃。 */
-  close(database: string, employeeId: string, options?: { forgetSecret?: boolean }): Promise<void>;
+  /** 关闭并移除会话；deactivate 持续封禁（暂停），forgetSecret 永久封禁（退休）。 */
+  close(database: string, employeeId: string, options?: { forgetSecret?: boolean; deactivate?: boolean }): Promise<void>;
   /** 当前允许获取的会话；暂停/停止/未注册返回 undefined，绝不隐式重建。 */
   session(database: string, employeeId: string): Surreal | undefined;
   /** 取缓存 secret；未命中且给了 rootSession 时回源 employee_credential。 */
@@ -73,6 +73,8 @@ export type EmployeeRuntimeObservation = {
   instanceId: string;
   sampledAt: string;
   sessionPresent: boolean;
+  /** 当前由本员工 runtime 持有的连接对象数（含连接中/关闭失败），非全局总数。 */
+  connectionCount: number;
   usable: boolean;
   generation: number;
   lastRegisteredAt: string | null;
@@ -92,6 +94,9 @@ export function createEmployeeRuntime(deps: EmployeeRuntimeDeps): EmployeeRuntim
   const subjects = new Map<EmployeeKey, string>();
   const inflight = new Map<EmployeeKey, Promise<void>>();
   const blocked = new Set<EmployeeKey>();
+  const retired = new Set<EmployeeKey>();
+  const suspended = new Set<EmployeeKey>();
+  const connections = new Map<EmployeeKey, Set<Surreal>>();
   const epochs = new Map<EmployeeKey, number>();
   const closing = new Map<EmployeeKey, Set<Surreal>>();
   const observations = new Map<EmployeeKey, ObservationState>();
@@ -127,6 +132,7 @@ export function createEmployeeRuntime(deps: EmployeeRuntimeDeps): EmployeeRuntim
     const pending = closing.get(key) ?? new Set<Surreal>();
     pending.add(db);
     closing.set(key, pending);
+    state(key).closeConfirmed = null;
     try {
       await db.close();
     } catch {
@@ -134,6 +140,8 @@ export function createEmployeeRuntime(deps: EmployeeRuntimeDeps): EmployeeRuntim
       event("close-failed");
       throw new Error("employee-close-failed");
     }
+    connections.get(key)?.delete(db);
+    if (connections.get(key)?.size === 0) connections.delete(key);
     pending.delete(db);
     if (pending.size === 0) closing.delete(key);
     state(key).lastClosedAt = new Date().toISOString();
@@ -159,6 +167,9 @@ export function createEmployeeRuntime(deps: EmployeeRuntimeDeps): EmployeeRuntim
     await closeSession(key);
     if (!allowed(key, epoch)) throw new Error("employee-session-blocked");
     const db = deps.connect ? deps.connect() : new Surreal();
+    const owned = connections.get(key) ?? new Set<Surreal>();
+    owned.add(db);
+    connections.set(key, owned);
     try {
       await db.connect(deps.surrealUrl, {
         reconnect: false,
@@ -192,7 +203,10 @@ export function createEmployeeRuntime(deps: EmployeeRuntimeDeps): EmployeeRuntim
     async register(target, options) {
       const key = keyOf(target.database, target.employeeId);
       // 只有生命周期服务在确认 active 后可解除暂停；执行窗口不能隐式复活。
-      if (options?.activate && !stopped) blocked.delete(key);
+      if (options?.activate && !stopped && !retired.has(key)) {
+        suspended.delete(key);
+        blocked.delete(key);
+      }
       const epoch = epochs.get(key) ?? 0;
       await serialized(key, () => doRegister(target, epoch));
     },
@@ -200,12 +214,20 @@ export function createEmployeeRuntime(deps: EmployeeRuntimeDeps): EmployeeRuntim
     async close(database, employeeId, options) {
       const key = keyOf(database, employeeId);
       blocked.add(key);
-      epochs.set(key, (epochs.get(key) ?? 0) + 1);
+      if (connections.get(key)?.size) state(key).closeConfirmed = null;
+      const epoch = (epochs.get(key) ?? 0) + 1;
+      epochs.set(key, epoch);
+      if (options?.deactivate || options?.forgetSecret) suspended.add(key);
       if (options?.forgetSecret) {
+        retired.add(key);
         secrets.delete(key);
         subjects.delete(key);
       }
-      await serialized(key, () => closeSession(key));
+      await serialized(key, async () => {
+        await closeSession(key);
+        // 窗口结束只关闭连接；生命周期暂停/退休才持续封禁。
+        if (!suspended.has(key) && epochs.get(key) === epoch) blocked.delete(key);
+      });
     },
 
     session(database, employeeId) {
@@ -245,7 +267,7 @@ export function createEmployeeRuntime(deps: EmployeeRuntimeDeps): EmployeeRuntim
       }
       return {
         database, employeeId, instanceId, sampledAt: new Date().toISOString(),
-        sessionPresent: !!this.session(database, employeeId), usable: probeCode === "ok",
+        sessionPresent: !!this.session(database, employeeId), connectionCount: connections.get(key)?.size ?? 0, usable: probeCode === "ok",
         ...(observations.get(key) ?? emptyState()), probeCode,
       };
     },
