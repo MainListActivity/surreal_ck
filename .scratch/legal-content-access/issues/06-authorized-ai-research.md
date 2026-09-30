@@ -56,4 +56,4 @@
   - 本地验证：研究五文件 40 pass / 1 skip / 0 fail（真实内存 SurrealDB 测试默认运行，覆盖集合隔离、独立 AI/cite 动作和内容撤回；跳过项是需显式开启的真实模型测试）；显式真实模型命令 RUN_LIVE_RESEARCH_MODEL_TESTS=1，使用既有配置，10 pass / 0 fail，实际调用一次真实模型，模型输入含授权/私有标记而不含授权外标记，答案与 citations 同样无授权外标记。
   - web 全量 550 pass / 18 skip / 0 fail（含精确版本回链与片段摘要核验）；pnpm typecheck 0 errors，2 项既有 Svelte warning；pnpm lint 0 errors/warnings；web build 通过。
   - server 全量本机 628 pass / 38 skip / 4 fail：4 项是 OIDC 固定测试服务冲突，共享 main 单独 OIDC 测试同样失败。本轮不停止其他进程，不将其声称为全仓通过；最新 PR CI 结果以交接证据为准。
-  - 无 schema 迁移、新环境变量或主机准备；未改生产数据/部署。真实引擎测试用上游 3.2.3 验 SQL/身份契约，不替代生产 fork 验收。浏览器完整登录/引用回链尚未实测；生产身份/套餐矩阵归 LCA14，历史合法引用恢复、报告保存与缓存重新授权仍归 07/09。新研究路径每次新开授权窗口，不复用平台证据快照。
+  - 无 schema 迁移、新环境变量或主机准备；未改生产数据/部署。真实引擎测试用上游 3.2.3 验 SQL/身份契约，不替代生产 fork 验收。ego-browser 夹具实际点击固定 a-v1 回链后出现正确片段，错误摘要不出现核验片段（README 在 web/test-fixtures/research-citation）；生产浏览器完整登录/引用回链尚未实测；生产身份/套餐矩阵归 LCA14，历史合法引用恢复、报告保存与缓存重新授权仍归 07/09。新研究路径每次新开授权窗口，不复用平台证据快照。
