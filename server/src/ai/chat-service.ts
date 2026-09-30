@@ -15,8 +15,10 @@ import type { Surreal } from "surrealdb";
 import {
   createDefaultAiContextSnapshot,
   type AiContextSnapshot,
+  type AiChatMessage,
   type AiMessageChunkEvent,
   type AiProgressEvent,
+  type ChatStreamEvent,
   type ResumeDecision,
   type WorkflowSuspendedEvent,
 } from "@surreal-ck/shared";
@@ -68,25 +70,51 @@ export type CreateAiChatServiceOptions = {
 
 /** 把 router workflow runtime 事件桥接到 RunBus。返回三个 pusher + 一个 done/error 终态广播。 */
 function bridgeToBus(bus: RunBus, runId: string) {
+  let terminalPublished = false;
+  const emit = (event: ChatStreamEvent) => {
+    if (event.kind === "done" || event.kind === "error") terminalPublished = true;
+    bus.publish(runId, event);
+  };
   return {
     pushChunk(e: AiMessageChunkEvent) {
       // workflow 的 chunk 有三种 type：delta / error / done。各自映射成 ChatStreamEvent kind。
       if (e.type === "delta") {
-        bus.publish(runId, { kind: "chunk", runId, text: e.text });
+        emit({ kind: "chunk", runId, text: e.text });
       } else if (e.type === "done") {
-        bus.publish(runId, { kind: "done", runId, message: e.message, toolCalls: e.toolCalls });
+        emit({ kind: "done", runId, message: e.message, toolCalls: e.toolCalls });
       } else if (e.type === "error") {
-        bus.publish(runId, { kind: "error", runId, code: "chat-error", message: e.message });
+        emit({ kind: "error", runId, code: "chat-error", message: e.message });
       }
     },
     pushProgress(e: AiProgressEvent) {
-      bus.publish(runId, { kind: "progress", runId, progress: e });
+      emit({ kind: "progress", runId, progress: e });
     },
     onSuspend(e: WorkflowSuspendedEvent) {
-      bus.publish(runId, { kind: "suspend", runId, payload: e });
+      emit({ kind: "suspend", runId, payload: e });
     },
     publishErrorIfNotTerminal(message: string) {
-      bus.publish(runId, { kind: "error", runId, code: "chat-failed", message });
+      emit({ kind: "error", runId, code: "chat-failed", message });
+    },
+    /**
+     * 终态兜底：runner/resumer resolve 出终态却没有投递任何 done/error 时补发。
+     * 典型场景：resume 命中持久化 success 快照短路返回，RunBus 终态缓存已过期，
+     * 新订阅者只剩心跳——必须保证终态可达。已发过终态则不动（不重复发布）。
+     */
+    ensureTerminal(result: { finalText: string; status: "success" | "suspended" | "cancelled" }, userContext: AiContextSnapshot) {
+      if (terminalPublished) return;
+      if (result.status === "success") {
+        const message: AiChatMessage = {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: result.finalText || "我没有生成有效回复。",
+          createdAt: new Date().toISOString(),
+          context: userContext,
+        };
+        emit({ kind: "done", runId, message, toolCalls: [] });
+      } else if (result.status === "cancelled") {
+        emit({ kind: "error", runId, code: "chat-run-ended", message: "该运行已结束或不存在，请重新发起对话" });
+      }
+      // suspended 且未发 suspend 事件时没有可伪造的 payload，不补发。
     },
   };
 }
@@ -111,7 +139,7 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
       // 后台启动：startChat 必须立即 resolve（D1-04 契约），workflow 异步跑完。
       void (async () => {
         try {
-          await runner({
+          const result = await runner({
             text: message,
             runId,
             streamId: runId, // streamId 与 runId 同步，前端无需再额外配对
@@ -124,6 +152,7 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
             onSuspend: bridge.onSuspend,
           });
           // success / suspended：workflow 自己已 publish done（finalize step）；suspended 不发 done。
+          bridge.ensureTerminal(result, userContext ?? createDefaultAiContextSnapshot());
         } catch (cause) {
           bridge.publishErrorIfNotTerminal(cause instanceof Error ? cause.message : String(cause));
         } finally {
@@ -137,19 +166,21 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
         throw new Error("AiChatService: resumer not configured");
       }
       const bridge = bridgeToBus(runBus, runId);
+      const userContext = options.resumeUserContextFallback ?? createDefaultAiContextSnapshot();
       void (async () => {
         try {
-          await resumer({
+          const result = await resumer({
             runId,
             streamId: runId,
             decision,
             surrealSession,
             ownerSubject,
-            userContext: options.resumeUserContextFallback ?? createDefaultAiContextSnapshot(),
+            userContext,
             pushChunk: bridge.pushChunk,
             pushProgress: bridge.pushProgress,
             onSuspend: bridge.onSuspend,
           });
+          bridge.ensureTerminal(result, userContext);
         } catch (cause) {
           bridge.publishErrorIfNotTerminal(cause instanceof Error ? cause.message : String(cause));
         } finally {
