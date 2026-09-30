@@ -59,7 +59,7 @@ describe("resource quota public contract", () => {
     expect(sql).toMatch(/COMMIT TRANSACTION;$/u);
     expect(() =>
       buildLegacyQuotaCleanupSurql(["ent_ok; REMOVE DATABASE main"])
-    ).toThrow("invalid legacy quota entity table name");
+    ).toThrow("invalid legacy quota table name");
   });
 
   test("residual sweep 只移除残留 guard，不触碰任何表或数据", () => {
@@ -74,5 +74,21 @@ describe("resource quota public contract", () => {
     expect(() =>
       buildLegacyQuotaGuardResidualSurql(["ent_ok; REMOVE DATABASE main"])
     ).toThrow("invalid residual quota guard table name");
+  });
+
+  test("sheet.table_name 不限于 ent_ 前缀：qa_* 等合法标识符照常清扫", () => {
+    const sql = buildLegacyQuotaGuardResidualSurql([
+      "qa_ver03_materials",
+      "ent_alpha_main",
+    ]);
+
+    expect(sql).toContain(
+      "REMOVE EVENT IF EXISTS resource_quota_guard ON TABLE qa_ver03_materials",
+    );
+    expect(sql).toContain(
+      "REMOVE EVENT IF EXISTS resource_quota_guard ON TABLE ent_alpha_main",
+    );
+    const cleanup = buildLegacyQuotaCleanupSurql(["qa_ver03_materials"]);
+    expect(cleanup).toContain("ON TABLE qa_ver03_materials");
   });
 });
