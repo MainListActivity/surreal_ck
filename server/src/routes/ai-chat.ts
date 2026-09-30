@@ -110,7 +110,14 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
 
   /** 调用者会话 → user record id（admin JWT 经 $token.sub 反查；participant/employee 即 $auth）。 */
   async function callerUserId(session: Surreal): Promise<StringRecordId> {
-    const result = await session.query("RETURN fn::current_user()").collect();
+    let result: unknown;
+    try {
+      result = await session.query("RETURN fn::current_user()");
+    } catch (error) {
+      throw new HttpError(503, "chat-actor-unavailable", "cannot reach workspace database; retry later", {
+        cause: error instanceof Error ? error.message : String(error),
+      });
+    }
     const statement = Array.isArray(result) ? result[0] : result;
     const value = Array.isArray(statement) ? statement[0] : statement;
     if (value == null) {

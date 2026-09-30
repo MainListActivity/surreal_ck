@@ -1,4 +1,4 @@
-import { StringRecordId } from "surrealdb";
+import { isRetryableConflict, QueryError, StringRecordId, SurrealError } from "surrealdb";
 
 /**
  * LCA05 工作区共享 AI 额度账本服务。
@@ -42,8 +42,38 @@ export class AiAllowanceError extends Error {
 }
 
 export type Queryable = {
-  query(sql: string, bindings?: Record<string, unknown>): { collect(): Promise<unknown[]> };
+  /** thenable 语义：await 后得到全语句结果数组（SDK Query 与插桩会话均满足）。 */
+  query(sql: string, bindings?: Record<string, unknown>): PromiseLike<unknown>;
 };
+
+/**
+ * 可安全重试的事务冲突判定：3.1+ 引擎给结构化 TransactionConflict（isRetryableConflict），
+ * 旧引擎只回纯文本 "The query was not executed due to a failed transaction"（生产实测复现）。
+ */
+export function isRetryableTxnError(error: unknown): boolean {
+  if (isRetryableConflict(error)) return true;
+  return error instanceof QueryError && /failed transaction|transaction conflict/i.test(error.message);
+}
+
+/** 账本会话错误归一：事务冲突由调用方重试；其余 SurrealDB 错误解释成 unavailable（503）。 */
+function toAllowanceError(error: unknown): never {
+  if (error instanceof AiAllowanceError) throw error;
+  if (isRetryableTxnError(error)) throw error;
+  if (error instanceof SurrealError) {
+    throw new AiAllowanceError("ai-allowance-unavailable", "AI allowance ledger is unavailable; retry later", {
+      cause: error.name,
+    });
+  }
+  throw error;
+}
+
+async function collect(session: Queryable, sql: string, bindings?: Record<string, unknown>): Promise<unknown> {
+  try {
+    return await session.query(sql, bindings);
+  } catch (error) {
+    return toAllowanceError(error);
+  }
+}
 
 export type AiAllowanceDeps = {
   /** root 会话到目标 workspace database。 */
@@ -115,6 +145,12 @@ function rid(value: unknown): StringRecordId {
 }
 
 const DEFAULT_WINDOW_MS = 15 * 60 * 1000;
+/** 桶条件扣减的事务冲突重试上限；抖动退避，超限归一为 retryable unavailable。 */
+const MAX_RESERVE_ATTEMPTS = 4;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 export class AiAllowanceService {
   constructor(private readonly deps: AiAllowanceDeps) {}
@@ -131,12 +167,7 @@ export class AiAllowanceService {
   async resolveWorkspaceDb(workspace: string): Promise<string | null> {
     const sys = await this.deps.systemSession();
     const row = first<{ db_name?: unknown }>(
-      await sys
-        .query(
-          `SELECT db_name FROM workspace WHERE db_name = $w OR slug = $w LIMIT 1`,
-          { w: workspace },
-        )
-        .collect(),
+      await collect(sys, `SELECT db_name FROM workspace WHERE db_name = $w OR slug = $w LIMIT 1`, { w: workspace }),
     );
     return typeof row?.db_name === "string" ? row.db_name : null;
   }
@@ -145,13 +176,12 @@ export class AiAllowanceService {
   async entitledActions(dbName: string): Promise<readonly string[] | null> {
     const sys = await this.deps.systemSession();
     const row = first<{ ai_actions?: unknown }>(
-      await sys
-        .query(
-          `SELECT current_product_entitlement.ai_actions AS ai_actions
-           FROM workspace WHERE db_name = $db LIMIT 1`,
-          { db: dbName },
-        )
-        .collect(),
+      await collect(
+        sys,
+        `SELECT current_product_entitlement.ai_actions AS ai_actions
+         FROM workspace WHERE db_name = $db LIMIT 1`,
+        { db: dbName },
+      ),
     );
     if (!row || !Array.isArray(row.ai_actions)) return null;
     return row.ai_actions.map(String);
@@ -179,14 +209,13 @@ export class AiAllowanceService {
     await this.sweepExpired(session);
 
     const rate = first<{ id: unknown; amount: number; revision: number }>(
-      await session
-        .query(
-          `SELECT id, amount, revision FROM ai_rate_card
-           WHERE action_key = $action AND status = "active"
-           ORDER BY revision DESC LIMIT 1`,
-          { action: input.actionKey },
-        )
-        .collect(),
+      await collect(
+        session,
+        `SELECT id, amount, revision FROM ai_rate_card
+         WHERE action_key = $action AND status = "active"
+         ORDER BY revision DESC LIMIT 1`,
+        { action: input.actionKey },
+      ),
     );
     if (!rate) {
       throw new AiAllowanceError("ai-action-unmetered", `no active rate revision for action ${input.actionKey}`, { actionKey: input.actionKey });
@@ -194,29 +223,30 @@ export class AiAllowanceService {
     const amount = rate.amount;
 
     const existing = first<ReservationRow>(
-      await session
-        .query(`SELECT * FROM ai_reservation WHERE idempotency_key = $key`, { key: input.idempotencyKey })
-        .collect(),
+      await collect(session, `SELECT * FROM ai_reservation WHERE idempotency_key = $key`, { key: input.idempotencyKey }),
     );
     if (existing) return { metered: true, reservation: existing, reused: true };
 
-    // 消费顺序：最早到期 → 同到期套餐/补偿先于购买 → 创建序（ORDER BY 只接 idiom，先投影再排）。
-    const candidates = rows<{ id: unknown }>(
-      await session
-        .query(
+    // 桶 UPDATE 的条件扣减在并发下会以事务冲突失败；冲突可安全重试——
+    // 每轮重取候选桶（余额可能已被别路消耗→自然落到 insufficient）。
+    for (let attempt = 0; ; attempt += 1) {
+      // 消费顺序：最早到期 → 同到期套餐/补偿先于购买 → 创建序（ORDER BY 只接 idiom，先投影再排）。
+      const candidates = rows<{ id: unknown }>(
+        await collect(
+          session,
           `SELECT id, expires_at, created_at, (kind = "purchased") AS purchased_last FROM ai_allowance_bucket
            WHERE status = "active" AND effective_from <= time::now() AND expires_at > time::now()
              AND available >= $amt
            ORDER BY expires_at ASC, purchased_last ASC, created_at ASC`,
           { amt: amount },
-        )
-        .collect(),
-    );
+        ),
+      );
 
-    for (const candidate of candidates) {
-      try {
-        await session
-          .query(
+      let conflict = false;
+      for (const candidate of candidates) {
+        try {
+          await collect(
+            session,
             `BEGIN;
              LET $u = (UPDATE $bucket SET available -= $amt, reserved += $amt
                        WHERE available >= $amt AND status = "active" AND expires_at > time::now());
@@ -224,7 +254,7 @@ export class AiAllowanceService {
                LET $res = (CREATE ONLY ai_reservation CONTENT {
                  actor: $actor, channel: $channel, action_key: $action, rate: $rate,
                  idempotency_key: $key, run_id: $runId, bucket: $bucket,
-                 max_amount: $amt, deadline: $deadline
+                 max_amount: $amt, deadline: time::now() + duration::from_millis($window)
                });
                CREATE ai_ledger_entry CONTENT {
                  kind: "reserve", bucket: $bucket, reservation: $res.id, amount: $amt,
@@ -241,26 +271,34 @@ export class AiAllowanceService {
               key: input.idempotencyKey,
               runId: input.runId,
               amt: amount,
-              deadline: new Date(this.nowMs + this.windowMs),
+              window: this.windowMs,
             },
-          )
-          .collect();
-      } catch (error) {
-        // 幂等键冲突 → 并发重试中的另一路已落账；返回既有预留即可。
-        const raced = first<ReservationRow>(
-          await session
-            .query(`SELECT * FROM ai_reservation WHERE idempotency_key = $key`, { key: input.idempotencyKey })
-            .collect(),
+          );
+        } catch (error) {
+          // 幂等键冲突 → 并发重试中的另一路已落账；返回既有预留即可。
+          const raced = first<ReservationRow>(
+            await collect(session, `SELECT * FROM ai_reservation WHERE idempotency_key = $key`, { key: input.idempotencyKey }),
+          );
+          if (raced) return { metered: true, reservation: raced, reused: true };
+          if (isRetryableTxnError(error)) {
+            conflict = true;
+            break;
+          }
+          throw error;
+        }
+        const created = first<ReservationRow>(
+          await collect(session, `SELECT * FROM ai_reservation WHERE idempotency_key = $key`, { key: input.idempotencyKey }),
         );
-        if (raced) return { metered: true, reservation: raced, reused: true };
-        throw error;
+        if (created) return { metered: true, reservation: created, reused: false };
       }
-      const created = first<ReservationRow>(
-        await session
-          .query(`SELECT * FROM ai_reservation WHERE idempotency_key = $key`, { key: input.idempotencyKey })
-          .collect(),
-      );
-      if (created) return { metered: true, reservation: created, reused: false };
+      if (!conflict) break;
+      if (attempt + 1 >= MAX_RESERVE_ATTEMPTS) {
+        throw new AiAllowanceError("ai-allowance-unavailable", "allowance ledger write is contended; retry later", {
+          actionKey: input.actionKey,
+          retryable: true,
+        });
+      }
+      await sleep(5 + Math.random() * 20 * (attempt + 1));
     }
 
     throw new AiAllowanceError("ai-allowance-insufficient", "workspace AI allowance cannot cover the disclosed maximum", {
@@ -273,9 +311,7 @@ export class AiAllowanceService {
   async settle(input: { db: string; idempotencyKey: string; amount?: number; note?: string }): Promise<void> {
     const session = await this.deps.workspaceSession(input.db);
     const reservation = first<ReservationRow>(
-      await session
-        .query(`SELECT * FROM ai_reservation WHERE idempotency_key = $key`, { key: input.idempotencyKey })
-        .collect(),
+      await collect(session, `SELECT * FROM ai_reservation WHERE idempotency_key = $key`, { key: input.idempotencyKey }),
     );
     if (!reservation || reservation.status !== "reserved") return;
 
@@ -286,46 +322,45 @@ export class AiAllowanceService {
       });
     }
 
-    await session
-      .query(
-        `BEGIN;
-         LET $r = (SELECT * FROM ai_reservation WHERE idempotency_key = $key AND status = "reserved")[0];
-         IF $r != NONE {
-           UPDATE ONLY $r.id SET status = "settled", settled_amount = $charge,
-             outcome = $outcome, resolved_at = time::now();
-           UPDATE ONLY $r.bucket SET reserved -= $r.max_amount, settled += $charge;
-           LET $b = (SELECT expires_at FROM ONLY $r.bucket);
-           LET $excess = $r.max_amount - $charge;
-           CREATE ai_ledger_entry CONTENT {
-             kind: "settle", bucket: $r.bucket, reservation: $r.id, amount: $charge,
-             note: $note, resulting_available: (SELECT VALUE available FROM ONLY $r.bucket)[0]
-           };
-           IF $excess > 0 {
-             IF $b.expires_at > time::now() {
-               UPDATE ONLY $r.bucket SET available += $excess;
-               CREATE ai_ledger_entry CONTENT {
-                 kind: "release", bucket: $r.bucket, reservation: $r.id, amount: $excess,
-                 note: "unused hold after partial settle",
-                 resulting_available: (SELECT VALUE available FROM ONLY $r.bucket)[0]
-               };
-             } ELSE {
-               CREATE ai_ledger_entry CONTENT {
-                 kind: "writeoff", bucket: $r.bucket, reservation: $r.id, amount: $excess,
-                 note: "unused hold on expired bucket",
-                 resulting_available: (SELECT VALUE available FROM ONLY $r.bucket)[0]
-               };
+    await collect(
+      session,
+      `BEGIN;
+       LET $r = (SELECT * FROM ai_reservation WHERE idempotency_key = $key AND status = "reserved")[0];
+       IF $r != NONE {
+         UPDATE ONLY $r.id SET status = "settled", settled_amount = $charge,
+           outcome = $outcome, resolved_at = time::now();
+         UPDATE ONLY $r.bucket SET reserved -= $r.max_amount, settled += $charge;
+         LET $b = (SELECT expires_at FROM ONLY $r.bucket);
+         LET $excess = $r.max_amount - $charge;
+         CREATE ai_ledger_entry CONTENT {
+           kind: "settle", bucket: $r.bucket, reservation: $r.id, amount: $charge,
+           note: $note, resulting_available: (SELECT VALUE available FROM ONLY $r.bucket)[0]
+         };
+         IF $excess > 0 {
+           IF $b.expires_at > time::now() {
+             UPDATE ONLY $r.bucket SET available += $excess;
+             CREATE ai_ledger_entry CONTENT {
+               kind: "release", bucket: $r.bucket, reservation: $r.id, amount: $excess,
+               note: "unused hold after partial settle",
+               resulting_available: (SELECT VALUE available FROM ONLY $r.bucket)[0]
+             };
+           } ELSE {
+             CREATE ai_ledger_entry CONTENT {
+               kind: "writeoff", bucket: $r.bucket, reservation: $r.id, amount: $excess,
+               note: "unused hold on expired bucket",
+               resulting_available: (SELECT VALUE available FROM ONLY $r.bucket)[0]
              };
            };
          };
-         COMMIT;`,
-        {
-          key: input.idempotencyKey,
-          charge,
-          outcome: input.note ?? "success",
-          note: input.note ?? "settled on delivered result",
-        },
-      )
-      .collect();
+       };
+       COMMIT;`,
+      {
+        key: input.idempotencyKey,
+        charge,
+        outcome: input.note ?? "success",
+        note: input.note ?? "settled on delivered result",
+      },
+    );
 
     await this.emitThresholdNotices(session, rid(reservation.bucket));
   }
@@ -333,42 +368,41 @@ export class AiAllowanceService {
   /** 释放：回原桶；原桶已到期 → 只记 writeoff 不恢复可用。幂等。 */
   async release(input: { db: string; idempotencyKey: string; reason: string }): Promise<void> {
     const session = await this.deps.workspaceSession(input.db);
-    await session
-      .query(
-        `BEGIN;
-         LET $r = (SELECT * FROM ai_reservation WHERE idempotency_key = $key AND status = "reserved")[0];
-         IF $r != NONE {
-           UPDATE ONLY $r.id SET status = "released", outcome = $reason, resolved_at = time::now();
-           UPDATE ONLY $r.bucket SET reserved -= $r.max_amount;
-           LET $b = (SELECT expires_at FROM ONLY $r.bucket);
-           IF $b.expires_at > time::now() {
-             UPDATE ONLY $r.bucket SET available += $r.max_amount;
-             CREATE ai_ledger_entry CONTENT {
-               kind: "release", bucket: $r.bucket, reservation: $r.id, amount: $r.max_amount,
-               note: $reason, resulting_available: (SELECT VALUE available FROM ONLY $r.bucket)[0]
-             };
-           } ELSE {
-             CREATE ai_ledger_entry CONTENT {
-               kind: "writeoff", bucket: $r.bucket, reservation: $r.id, amount: $r.max_amount,
-               note: $reason, resulting_available: (SELECT VALUE available FROM ONLY $r.bucket)[0]
-             };
+    await collect(
+      session,
+      `BEGIN;
+       LET $r = (SELECT * FROM ai_reservation WHERE idempotency_key = $key AND status = "reserved")[0];
+       IF $r != NONE {
+         UPDATE ONLY $r.id SET status = "released", outcome = $reason, resolved_at = time::now();
+         UPDATE ONLY $r.bucket SET reserved -= $r.max_amount;
+         LET $b = (SELECT expires_at FROM ONLY $r.bucket);
+         IF $b.expires_at > time::now() {
+           UPDATE ONLY $r.bucket SET available += $r.max_amount;
+           CREATE ai_ledger_entry CONTENT {
+             kind: "release", bucket: $r.bucket, reservation: $r.id, amount: $r.max_amount,
+             note: $reason, resulting_available: (SELECT VALUE available FROM ONLY $r.bucket)[0]
+           };
+         } ELSE {
+           CREATE ai_ledger_entry CONTENT {
+             kind: "writeoff", bucket: $r.bucket, reservation: $r.id, amount: $r.max_amount,
+             note: $reason, resulting_available: (SELECT VALUE available FROM ONLY $r.bucket)[0]
            };
          };
-         COMMIT;`,
-        { key: input.idempotencyKey, reason: input.reason },
-      )
-      .collect();
+       };
+       COMMIT;`,
+      { key: input.idempotencyKey, reason: input.reason },
+    );
   }
 
   /** run 终态收口：按 run_id 找回未决预留 → success 结算 / failure、cancelled 释放。幂等。 */
   async finishByRun(input: { db: string; runId: string; outcome: "success" | "failure" | "cancelled" }): Promise<void> {
     const session = await this.deps.workspaceSession(input.db);
     const reservation = first<ReservationRow>(
-      await session
-        .query(`SELECT * FROM ai_reservation WHERE run_id = $run AND status = "reserved" ORDER BY created_at DESC LIMIT 1`, {
-          run: input.runId,
-        })
-        .collect(),
+      await collect(
+        session,
+        `SELECT * FROM ai_reservation WHERE run_id = $run AND status = "reserved" ORDER BY created_at DESC LIMIT 1`,
+        { run: input.runId },
+      ),
     );
     if (!reservation) return;
     if (input.outcome === "success") {
@@ -387,15 +421,13 @@ export class AiAllowanceService {
     const target = session ?? (db ? await this.deps.workspaceSession(db) : undefined);
     if (!target) return 0;
     const overdue = rows<{ id: unknown }>(
-      await target
-        .query(`SELECT id FROM ai_reservation WHERE status = "reserved" AND deadline <= time::now()`)
-        .collect(),
+      await collect(target, `SELECT id FROM ai_reservation WHERE status = "reserved" AND deadline <= time::now()`),
     );
     for (const row of overdue) {
-      await target
-        .query(
-          `BEGIN;
-           LET $r = (SELECT * FROM ONLY $rid);
+      await collect(
+        target,
+        `BEGIN;
+         LET $r = (SELECT * FROM ONLY $rid);
            IF $r != NONE AND $r.status = "reserved" {
              UPDATE ONLY $r.id SET status = "expired", outcome = "execution_window_expired", resolved_at = time::now();
              UPDATE ONLY $r.bucket SET reserved -= $r.max_amount;
@@ -414,9 +446,8 @@ export class AiAllowanceService {
              };
            };
            COMMIT;`,
-          { rid: rid(row.id) },
-        )
-        .collect();
+        { rid: rid(row.id) },
+      );
     }
     return overdue.length;
   }
@@ -426,7 +457,7 @@ export class AiAllowanceService {
     const session = await this.deps.workspaceSession(db);
     await this.sweepExpired(session);
     const buckets = rows<AllowanceBucketRow>(
-      await session.query(`SELECT * FROM ai_allowance_bucket ORDER BY expires_at ASC`).collect(),
+      await collect(session, `SELECT * FROM ai_allowance_bucket ORDER BY expires_at ASC`),
     );
     const now = this.nowMs;
     const ts = (v: unknown) => (v instanceof Date ? v.getTime() : new Date(String(v)).getTime());
@@ -460,32 +491,31 @@ export class AiAllowanceService {
       throw new AiAllowanceError("ai-allowance-unavailable", "grant amount must be a positive integer");
     }
     const session = await this.deps.workspaceSession(input.db);
-    const result = await session
-      .query(
-        `BEGIN;
-         LET $b = (CREATE ONLY ai_allowance_bucket CONTENT {
-           kind: $kind, label: $label, source: $source, period_key: $period,
-           total: $amt, available: $amt, reserved: 0, settled: 0,
-           effective_from: $eff, expires_at: $exp
-         });
-         CREATE ai_ledger_entry CONTENT {
-           kind: "grant", bucket: $b.id, amount: $amt,
-           note: $note, resulting_available: $b.available
-         };
-         COMMIT;
-         RETURN $b;`,
-        {
-          kind: input.kind,
-          label: input.label,
-          source: input.source,
-          period: input.periodKey,
-          amt: input.amount,
-          eff: input.effectiveFrom,
-          exp: input.expiresAt,
-          note: `${input.kind} grant by ${input.operatorSubject}`,
-        },
-      )
-      .collect();
+    const result = await collect(
+      session,
+      `BEGIN;
+       LET $b = (CREATE ONLY ai_allowance_bucket CONTENT {
+         kind: $kind, label: $label, source: $source, period_key: $period,
+         total: $amt, available: $amt, reserved: 0, settled: 0,
+         effective_from: $eff, expires_at: $exp
+       });
+       CREATE ai_ledger_entry CONTENT {
+         kind: "grant", bucket: $b.id, amount: $amt,
+         note: $note, resulting_available: $b.available
+       };
+       COMMIT;
+       RETURN $b;`,
+      {
+        kind: input.kind,
+        label: input.label,
+        source: input.source,
+        period: input.periodKey,
+        amt: input.amount,
+        eff: input.effectiveFrom,
+        exp: input.expiresAt,
+        note: `${input.kind} grant by ${input.operatorSubject}`,
+      },
+    );
     const bucket = first<{ id: unknown }>(Array.isArray(result) ? result[result.length - 1] : result);
     return { bucket: bucket?.id };
   }
@@ -493,26 +523,23 @@ export class AiAllowanceService {
   /** 结算后按桶 settled/total 触发 50/80/100 阈值提示（period_key×threshold 唯一去重）。 */
   private async emitThresholdNotices(session: Queryable, bucket: StringRecordId): Promise<void> {
     const row = first<{ settled: number; total: number; period_key: string; label: string }>(
-      await session
-        .query(`SELECT settled, total, period_key, label FROM ONLY $b`, { b: bucket })
-        .collect(),
+      await collect(session, `SELECT settled, total, period_key, label FROM ONLY $b`, { b: bucket }),
     );
     if (!row || row.total <= 0) return;
     const percent = Math.floor((row.settled / row.total) * 100);
     for (const threshold of [50, 80, 100]) {
       if (percent < threshold) continue;
-      await session
-        .query(
-          `INSERT INTO ai_allowance_notice [
-            { period_key: $period, threshold: $t, message: $msg }
-          ] ON DUPLICATE KEY UPDATE period_key = period_key`,
-          {
-            period: row.period_key,
-            t: threshold,
-            msg: `AI 额度周期 ${row.period_key}（${row.label}）已消耗超过 ${threshold}%`,
-          },
-        )
-        .collect();
+      await collect(
+        session,
+        `INSERT INTO ai_allowance_notice [
+          { period_key: $period, threshold: $t, message: $msg }
+        ] ON DUPLICATE KEY UPDATE period_key = period_key`,
+        {
+          period: row.period_key,
+          t: threshold,
+          msg: `AI 额度周期 ${row.period_key}（${row.label}）已消耗超过 ${threshold}%`,
+        },
+      );
     }
   }
 }
