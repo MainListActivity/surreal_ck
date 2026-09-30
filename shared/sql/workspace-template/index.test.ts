@@ -446,6 +446,18 @@ describe("workspace template scripts", () => {
     expect(sql).toContain("CREATE activity_event CONTENT");
   });
 
+  test("通知终态增量把结构化 answer 纳入与 resolution 同一守卫事件", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.name === "032-notification-answer-terminal.surql");
+    expect(migration).toBeDefined();
+    const sql = migration!.sql;
+    // OVERWRITE 既有事件而非新增第二个事件：终态语义只有一处事实来源
+    expect(sql).toContain("DEFINE EVENT OVERWRITE user_notification_resolution_guard ON TABLE user_notification");
+    expect(sql).toContain("$before.answer != NONE AND $after.answer != $before.answer");
+    expect(sql).toContain("$before.resolution != NONE AND $after.resolution != $before.resolution");
+    expect(sql).toContain("$before.resolved_at != NONE AND $after.resolved_at != $before.resolved_at");
+  });
+
   test("keeps JWT access placeholders by default and can render them for backend execution", async () => {
     const rawScripts = await loadTemplateScripts();
     const rawSql = rawScripts.map((script) => script.sql).join("\n");
