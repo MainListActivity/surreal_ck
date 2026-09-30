@@ -1,0 +1,15 @@
+{
+  "sourceKey": "fgk.chinatax.gov.cn",
+  "label": "国家税务总局政策法规库",
+  "jurisdiction": "CN",
+  "baseUrl": "https://fgk.chinatax.gov.cn",
+  "status": "active",
+  "allowedActions": ["submit"],
+  "license": {
+    "licenseKind": "official-statutory-text-internal-verification",
+    "allowedActions": ["submit"],
+    "effectiveFrom": "2026-09-30T00:00:00.000Z",
+    "evidenceUrl": "https://fgk.chinatax.gov.cn/zcfgk/c100009/c5233383/content.html",
+    "evidenceText": "准入核验日期 2026-09-30（Asia/Shanghai）。官方入口与发布者：https://fgk.chinatax.gov.cn 为国家税务总局政策法规库；站点页脚原文「主办单位：国家税务总局 版权所有：国家税务总局」「网站标识码：bm29000002 京ICP备13021685号-2」。文件形态与完整性证据：法规全文 HTML 页；样本《中华人民共和国公司法》（成文日期 2023-12-29，第二次修订）https://fgk.chinatax.gov.cn/zcfgk/c100009/c5233383/content.html 于 2026-09-30 HTTP 200（305131 字节），正文完整至最后一条「第二百六十六条 本法自 2024 年 7 月 1 日起施行」，含第一至二百六十六条全部条文。可访问方式：普通 HTTP GET，无需登录、无验证码；robots.txt 不存在（HTTP 404），未发现站点级自动化访问禁令。稳定记录键：站内内容 id（URL 路径段，如 c5233383）+ 发文字号/成文日期（列表页含「序号/标题/发文字号/成文日期」列）。增量发现：政策法规>法律 列表页 https://fgk.chinatax.gov.cn/zcfgk/c100009/listflfg_fg.html（HTTP 200）；列表行为前端渲染，程序化增量接口待 LCA-02 确认。许可依据：法规文本系《著作权法》第五条列举的不适用著作权的官方文件（法律、法规），站点本身未附加转载限制声明；本库为政府转载法规全文。许可范围：仅允许内部核验采集与暂存（submit）；客户发布/浏览/检索/读取/引用/导出与 AI 使用未经确认，拒绝进入相应动作。未知项：站点对程序化批量访问的速率或技术限制、数据库编排汇编的权利归属、商用与 AI 授权——留待运营/法务确认后另立许可修订。"
+  }
+}

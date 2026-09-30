@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 Label: ready-for-agent
 ID: SCK-LCAQ-01
 Repository: surreal_ck
@@ -15,10 +15,10 @@ Repository: surreal_ck
 
 ## Acceptance criteria
 
-- [ ] 每个候选有来源 URL、获取日期、文件形态与完整性证据、可访问方式、限制和许可原文/出处；无法验证的权利明确为未知并拒绝进入相应生产动作。
-- [ ] 不绕过登录、验证码、反自动化或访问限制；需要外部联系、签约或专业法律判断时先按公司授权链升级，不代行。
-- [ ] 已准入来源写入现有许可修订机制，历史修订可追溯；批次在提交时固化 `sourceLicenseSnapshot`，权限与发布前再次检查。
-- [ ] 样本只保存许可允许留存的证据，全文、摘要、指导案例整理稿与裁判原件不混称；记录真实样本与合成 fixture 的差别。
+- [x] 每个候选有来源 URL、获取日期、文件形态与完整性证据、可访问方式、限制和许可原文/出处；无法验证的权利明确为未知并拒绝进入相应生产动作。（`../qualification/source-qualification-records.md`）
+- [x] 不绕过登录、验证码、反自动化或访问限制；需要外部联系、签约或专业法律判断时先按公司授权链升级，不代行。（flk.npc.gov.cn / wenshu.court.gov.cn robots 全站禁采 → 不采集不注册；商用/AI/客户读取授权未知 → 拒绝，列入交接升级）
+- [x] 已准入来源写入现有许可修订机制，历史修订可追溯；批次在提交时固化 `sourceLicenseSnapshot`，权限与发布前再次检查。（fgk.chinatax.gov.cn rev1、cicc.court.gov.cn rev1→rev2 经真实 `POST /api/content/sources` 建立；`platform_content.source_license_revision` 直查可见 append-only 历史；publish 门由 `PlatformContentService` 以 allowedActions 复查）
+- [x] 样本只保存许可允许留存的证据，全文、摘要、指导案例整理稿与裁判原件不混称；记录真实样本与合成 fixture 的差别。（记录只存 URL/完整性核验/许可原文引用，未存全文；真实 URL 样本与 fixture.synthetic.cn 合成 fixture 严格区分）
 
 ## Scope handoff
 
@@ -27,3 +27,11 @@ Repository: surreal_ck
 ## Blocked by
 
 None - can start immediately
+
+## 实现记录（2026-09-30，task ea2c110c）
+
+- 准入记录：`.scratch/legal-content-acquisition/qualification/source-qualification-records.md`（结论、逐项证据表、不合格候选、证据纪律、交接升级）。
+- 注册载荷（可复用工件）：`qualification/register-fgk.chinatax.gov.cn.json`、`qualification/register-cicc.court.gov.cn.json`、`qualification/register-cicc-rev2.json`。
+- 注册方式：本地隔离栈真实调用 `POST /api/content/sources`（native-quota SurrealDB 引擎容器 + Bun server 真实路由/校验/存储 + fixture IdP ops1 运营身份）。生产端点已上线（GET 实测 401），生产注册需运营真人 OAuth 登录后用同批载荷执行（runbook：`docs/runbooks/platform-content-local-runner.md`）。
+- 关键证据：fgk 样本（公司法 2023 全文至第 266 条）当日 HTTP 200；CICC 判决书（（2022）最高法商初7号）当日全文结构完整；CICC 免责声明原文「仅限用于学习和研究目的」→ 两来源 allowedActions 均仅 `submit`；flk/wenshu robots 全站禁采 → 不合格不注册。
+- 未验证/未知项已在记录中显式列出（批量采集接口、汇编权利、商用/AI 授权、文书原件一致性）。
