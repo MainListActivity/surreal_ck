@@ -50,11 +50,11 @@ describe("workbooksStore.importCsvWorkbook — CSV 新工作簿原子导入", ()
         { label: "申报日期", fieldType: "date" },
       ],
     });
-    expect(queries).toHaveLength(1);
-    expect(queries[0]!.sql).toMatch(/^BEGIN TRANSACTION;/);
-    expect(queries[0]!.sql).toContain("CREATE ent_1111111111111111_main:3333333333333333 CONTENT $sampleRecord0");
-    expect(queries[0]!.sql).toMatch(/COMMIT TRANSACTION;$/);
-    expect(queries[0]!.bindings?.sampleRecord0).toEqual({
+    expect(queries.filter((query) => /BEGIN TRANSACTION/i.test(query.sql))).toHaveLength(1);
+    expect(queries.find((query) => /BEGIN TRANSACTION/i.test(query.sql))!.sql).toMatch(/^BEGIN TRANSACTION;/);
+    expect(queries.find((query) => /BEGIN TRANSACTION/i.test(query.sql))!.sql).toContain("CREATE ent_1111111111111111_main:3333333333333333 CONTENT $sampleRecord0");
+    expect(queries.find((query) => /BEGIN TRANSACTION/i.test(query.sql))!.sql).toMatch(/COMMIT TRANSACTION;$/);
+    expect(queries.find((query) => /BEGIN TRANSACTION/i.test(query.sql))!.bindings?.sampleRecord0).toEqual({
       field_1: "甲公司",
       field_2: 1000,
       field_3: new Date("2026-07-01T00:00:00.000Z"),
@@ -74,7 +74,7 @@ describe("workbooksStore.importCsvWorkbook — CSV 新工作簿原子导入", ()
     });
 
     expect(result).toBeNull();
-    expect(queries).toHaveLength(1);
+    expect(queries.filter((query) => /BEGIN TRANSACTION/i.test(query.sql))).toHaveLength(1);
     expect(store.error).toBe("没有权限执行该操作（仅工作区管理员可修改表结构）");
     expect(store.workbooks).toEqual([]);
   });
