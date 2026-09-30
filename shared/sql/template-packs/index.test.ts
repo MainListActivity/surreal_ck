@@ -59,14 +59,24 @@ describe("template pack scripts", () => {
     }
   });
 
-  test("破产债权模板包声明至少五个数据驱动快捷任务并在幂等更新时保留", async () => {
+  test("破产债权模板包为纯数据文件且声明两表形状的幂等更新", async () => {
     const [script] = await loadTemplatePackScripts({ selectedPacks: ["bankruptcy-claims"] });
-    const taskCount = script?.sql.match(/task_text:/g)?.length ?? 0;
 
+    // 纯数据文件：只 INSERT 模板行，不定义平台 schema。
+    expect(script?.sql).not.toContain("DEFINE");
+    expect(script?.sql).toContain("ON DUPLICATE KEY UPDATE");
+    // 幂等更新只覆盖声明字段；旧顶层 column_defs 兼容输入与管理员自定义不被覆盖。
+    expect(script?.sql).not.toContain("column_defs = $input.column_defs");
+    for (const field of ["sheet_defs", "quick_tasks", "row_analysis", "default_dashboard"]) {
+      expect(script?.sql).toContain(`${field} = $input.${field}`);
+    }
+    // 两表形状：债权人 + 债权申报（引用回 creditors）。
+    for (const key of ["creditors", "claims"]) {
+      expect(script?.sql).toContain(`key: "${key}"`);
+    }
+    expect(script?.sql).toContain('reference_sheet_key: "creditors"');
+    const taskCount = script?.sql.match(/task_text:/g)?.length ?? 0;
     expect(taskCount).toBeGreaterThanOrEqual(5);
-    expect(script?.sql).toContain('label: "筛选大额缺失材料"');
-    expect(script?.sql).toContain('label: "生成审核进度看板"');
     expect(script?.sql).toContain('risk: "write"');
-    expect(script?.sql).toContain("quick_tasks = $input.quick_tasks");
   });
 });
