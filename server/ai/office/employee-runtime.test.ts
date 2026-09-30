@@ -58,7 +58,7 @@ describe("employee runtime session registry", () => {
     const log: string[] = [];
     const runtime = createEmployeeRuntime({
       surrealUrl: "wss://x", namespace: "main", connect: fakeConnect(log).connect,
-      rootSession: async () => ({ query: async () => [[{ secret: "from-db" }]] }),
+      rootSession: async () => ({ query: async () => [[{ secret: "from-db", subject: "ve-1" }]] }),
     });
     await runtime.register(target());
     expect(await runtime.secretFor("ws_a", "user:ve_1")).toBe("s3cret");
@@ -75,7 +75,7 @@ describe("employee runtime session registry", () => {
       surrealUrl: "wss://x", namespace: "main",
       connect: fakeConnect(log, { failSigninFor: ["ve-dead"] }).connect,
     });
-    await expect(runtime.register(target("ve-dead"))).rejects.toThrow("no such employee");
+    await expect(runtime.register(target("ve-dead"))).rejects.toThrow("employee-signin-failed");
     expect(runtime.session("ws_a", "user:ve_1")).toBeUndefined();
     expect(runtime.activeSessions()).toBe(0);
     await runtime.stop();
