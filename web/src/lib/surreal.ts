@@ -90,7 +90,10 @@ type RawTransaction = RawWriter & {
 };
 
 type RawDriver = {
-  query(sql: string, bindings?: Record<string, unknown>): { collect(): Promise<unknown[]> };
+  query(sql: string, bindings?: Record<string, unknown>): {
+    collect(): Promise<unknown[]>;
+    responses?(): Promise<Array<{ success: true; result: unknown } | { success: false; error: Error }>>;
+  };
   live(what: Table): PromiseLike<{ subscribe(handler: (message: LiveMessage) => void): () => void }>;
   beginTransaction(): Promise<RawTransaction>;
 } & RawWriter;
@@ -170,7 +173,22 @@ export function createBrowserConn(raw: RawDriver, logOptions: BrowserQueryLogOpt
     },
     async query<T = unknown>(sql: string, bindings?: Record<string, unknown>): Promise<T[]> {
       return await queryLogger(sql, bindings, async () => {
-        const collected = await rawQuery.call(raw, sql, bindings).collect();
+        const query = rawQuery.call(raw, sql, bindings);
+        // 显式多语句事务失败时，SDK collect() 只抛第一个错误；它可能只是
+        // 回滚占位提示。保留引擎真正拒绝的语句错误，让权限/类型提示可读。
+        if (/^\s*BEGIN\s+TRANSACTION\b/i.test(sql) && query.responses) {
+          const responses = await query.responses();
+          const failures = responses.filter((response) => !response.success);
+          if (failures.length) {
+            const cause = failures.find((response) => (
+              !/not executed due to a (?:failed|cancelled) transaction/i.test(response.error.message)
+            ));
+            throw (cause ?? failures[0])!.error;
+          }
+          const first = responses[0];
+          return (first?.success ? first.result ?? [] : []) as T[];
+        }
+        const collected = await query.collect();
         return (collected[0] ?? []) as T[];
       });
     },
