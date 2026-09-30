@@ -57,7 +57,11 @@ import type { MastraDBMessage, StorageThreadType } from "@mastra/core/memory";
 import { omitNullishSurrealFields } from "@surreal-ck/shared/surreal-values";
 import { RecordId, type Surreal } from "surrealdb";
 import { env } from "../../../src/env";
-import { SurrealWorkflowsStorage, type SurrealSessionResolver } from "./surreal-workflows-storage";
+import {
+  SurrealWorkflowsStorage,
+  type SurrealSessionResolver,
+  type SurrealWorkflowsStorageOptions,
+} from "./surreal-workflows-storage";
 
 export type { SurrealSessionResolver };
 
@@ -757,11 +761,15 @@ export class SurrealMastraStore extends MastraCompositeStore {
     observability: SurrealObservabilityStorage;
   };
 
-  constructor(getSession: SurrealSessionResolver, retention: ObservabilityRetention = defaultRetention()) {
+  constructor(
+    getSession: SurrealSessionResolver,
+    retention: ObservabilityRetention = defaultRetention(),
+    workflowsOptions: SurrealWorkflowsStorageOptions = {},
+  ) {
     super({ id: "surreal-mastra-store", name: "SurrealMastraStore" });
     this.stores = {
       memory: new SurrealMemoryStorage(getSession),
-      workflows: new SurrealWorkflowsStorage(getSession),
+      workflows: new SurrealWorkflowsStorage(getSession, workflowsOptions),
       observability: new SurrealObservabilityStorage(getSession, retention),
     };
   }

@@ -27,6 +27,9 @@ function fakeQueue(
         deliveries.push(delivery);
         return respond(delivery);
       },
+      async reconcile() {
+        return { scanned: 0, reclaimed: 0, completed: 0, waiting: 0, failed: 0 };
+      },
     },
   };
 }
@@ -56,6 +59,11 @@ function captureHandler(): {
           ...trigger,
         },
         session,
+        // VER04 handler ctx：测试直接透传 effect（不写账本）与不可用的 suspend。
+        effects: { runEffect: (_key, fn) => fn() },
+        suspend: async () => {
+          throw new Error("suspend not supported in test");
+        },
       });
     },
   };

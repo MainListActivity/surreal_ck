@@ -59,13 +59,33 @@ function resolveKind(workflowName: string): string {
   return VALID_KINDS.has(workflowName) ? workflowName : "router";
 }
 
+export type SurrealWorkflowsStorageOptions = {
+  /**
+   * strict（员工 run 专用）：load/get/list 读失败一律抛出而非降级为空。
+   * 缺 snapshot 被当成新 run 是 VER04 禁止的行为——窗口必须 fail-closed。
+   * Router 侧保持默认降级（已有 UX 约定：存储抖动时仍可读历史）。
+   */
+  strict?: boolean;
+};
+
 /**
  * 把 Mastra WorkflowsStorage 落到当前 workspace database 的 workflow_run 表。
  * 所有读写走注入的调用者会话；写入失败必须抛回 workflow 引擎，让 RunBus 能把错误传给前端。
  */
 export class SurrealWorkflowsStorage extends WorkflowsStorage {
-  constructor(private readonly getSession: SurrealSessionResolver) {
+  constructor(
+    private readonly getSession: SurrealSessionResolver,
+    private readonly options: SurrealWorkflowsStorageOptions = {},
+  ) {
     super();
+  }
+
+  private strictFail(op: string, err: unknown): Error {
+    const causeMessage = err instanceof Error ? err.message : String(err);
+    console.warn(`[mastra] ${op} 失败（strict，员工 run 窗口将 fail-closed）`, {
+      message: causeMessage,
+    });
+    return new Error(`${op} failed: ${causeMessage}`, { cause: err });
   }
 
   supportsConcurrentUpdates(): boolean {
@@ -144,6 +164,7 @@ export class SurrealWorkflowsStorage extends WorkflowsStorage {
       const row = rows[0]?.[0];
       return row?.state ? parseState(row.state) : null;
     } catch (err) {
+      if (this.options.strict) throw this.strictFail("load workflow snapshot", err);
       console.warn("[mastra] load workflow snapshot 失败，降级为内存态:", err);
       return null;
     }
@@ -163,7 +184,12 @@ export class SurrealWorkflowsStorage extends WorkflowsStorage {
     requestContext: Record<string, any>;
   }): Promise<Record<string, StepResult<any, any, any, any>>> {
     const snapshot = await this.loadWorkflowSnapshot({ workflowName, runId });
-    if (!snapshot) return {};
+    if (!snapshot) {
+      if (this.options.strict) {
+        throw this.strictFail("update workflow results (snapshot missing)", new Error(`run=${runId}`));
+      }
+      return {};
+    }
 
     const existing = snapshot.context[stepId];
     if (
@@ -200,7 +226,12 @@ export class SurrealWorkflowsStorage extends WorkflowsStorage {
     opts: UpdateWorkflowStateOptions;
   }): Promise<WorkflowRunState | undefined> {
     const snapshot = await this.loadWorkflowSnapshot({ workflowName, runId });
-    if (!snapshot) return undefined;
+    if (!snapshot) {
+      if (this.options.strict) {
+        throw this.strictFail("update workflow state (snapshot missing)", new Error(`run=${runId}`));
+      }
+      return undefined;
+    }
     const next = { ...snapshot, ...opts };
     await this.persistWorkflowSnapshot({ workflowName, runId, snapshot: next });
     return next;
@@ -247,6 +278,7 @@ export class SurrealWorkflowsStorage extends WorkflowsStorage {
       const runs = (rows[0] ?? []).map(toWorkflowRun);
       return { runs, total: rows[1]?.[0]?.total ?? runs.length };
     } catch (err) {
+      if (this.options.strict) throw this.strictFail("list workflow runs", err);
       console.warn("[mastra] list workflow runs 失败，降级为空集:", err);
       return { runs: [], total: 0 };
     }
@@ -269,6 +301,7 @@ export class SurrealWorkflowsStorage extends WorkflowsStorage {
       const row = rows[0]?.[0];
       return row ? toWorkflowRun(row) : null;
     } catch (err) {
+      if (this.options.strict) throw this.strictFail("get workflow run", err);
       console.warn("[mastra] get workflow run 失败:", err);
       return null;
     }
