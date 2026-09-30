@@ -1,11 +1,15 @@
-import { getRootConnection } from "../db/root-connection";
+import { getRootConnection, getRootDatabaseSession } from "../db/root-connection";
 import { SurrealNativeQuotaClient } from "../db/native-quota/client";
+import { AiAllowancePlanCycleSynchronizer } from "../ai-allowance/plan-cycle";
+import { ProductEntitlementService } from "../product-entitlement/service";
+import { SurrealProductEntitlementStore } from "../product-entitlement/store";
 import { SurrealQuotaControlPlaneStore } from "./control-plane-store";
 import { SurrealEntitlementRefreshService } from "./entitlement-refresh";
 import { SurrealQuotaLifecycleStore } from "./lifecycle-store";
 import { SurrealLifecycleBoundarySweepHandler } from "./lifecycle-sweep";
 import { QuotaReconciler } from "./reconciler";
 import { QuotaLifecycleCoordinator } from "./subscription-lifecycle";
+import { SubscriptionEntitlementCascade } from "./subscription-cascade";
 import {
   ControlPlaneSweep,
   MaterializationWorker,
@@ -45,7 +49,14 @@ export function startNativeQuotaRuntime(): NativeQuotaRuntimeHandle {
   const workerId = `quota:${process.pid}:${crypto.randomUUID()}`;
   const controlStore = new SurrealQuotaControlPlaneStore(db);
   const lifecycleStore = new SurrealQuotaLifecycleStore(db);
-  const refresher = new SurrealEntitlementRefreshService(db);
+  // LCA08：native 刷新完成后由级联重算产品权益快照并同步 AI 周期额度。
+  const refresher = new SubscriptionEntitlementCascade(
+    new SurrealEntitlementRefreshService(db),
+    new ProductEntitlementService(new SurrealProductEntitlementStore()),
+    new AiAllowancePlanCycleSynchronizer({
+      workspaceSession: (database) => getRootDatabaseSession(database),
+    }),
+  );
   const nativeClient = new SurrealNativeQuotaClient(db);
   const reconciler = new QuotaReconciler(
     controlStore,

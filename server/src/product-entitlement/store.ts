@@ -3,7 +3,7 @@ import { getRootDatabaseSession } from "../db/root-connection";
 import { toIsoDateTimeString, toStringRecordId, toSurrealNone } from "../db/surreal-values";
 import { env } from "../env";
 import type { ContentGrantFact, FeatureValue, NamedCollection, ProductRevisionBody, ResourceFact, SubscriptionFact } from "./resolve";
-import type { AuditRecord, ProductEntitlementStore, SnapshotRecord, WorkspaceRef } from "./service";
+import type { AuditRecord, ProductEntitlementStore, SnapshotRecord, WorkspaceRef, WorkspaceRuntimeRef } from "./service";
 
 type Queryable = { query(sql: string, params?: Record<string, unknown>): Promise<unknown> };
 type SessionFactory = (database: string, namespace: string) => Promise<Queryable>;
@@ -61,6 +61,13 @@ export class SurrealProductEntitlementStore implements ProductEntitlementStore {
     const row = first(await (await this.db()).query(`SELECT id, slug FROM workspace WHERE slug = $slug LIMIT 1;`, { slug }));
     const id = idOf(row?.id);
     return row && id && typeof row.slug === "string" ? { id, slug: row.slug } : null;
+  }
+
+  async workspaceById(id: string): Promise<WorkspaceRuntimeRef | null> {
+    const row = first(await (await this.db()).query(`SELECT id, slug, db_name FROM $id;`, { id: new StringRecordId(id) }));
+    const rowId = idOf(row?.id);
+    if (!row || !rowId || typeof row.slug !== "string" || typeof row.db_name !== "string") return null;
+    return { id: rowId, slug: row.slug, dbName: row.db_name };
   }
 
   async membership(subject: string, workspaceId: string): Promise<"admin" | "participant" | null> {

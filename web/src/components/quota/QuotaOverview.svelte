@@ -309,7 +309,9 @@
         <article>
           <span>内容范围</span>
           <strong>{product.summary}</strong>
-          <p>{product.content.projectionLabel}{#if product.effectiveUntil} · 到期 {product.effectiveUntil.slice(0, 10)}{/if}</p>
+          <p>
+            {product.content.projectionLabel}{#if product.effectiveFrom} · 生效 {product.effectiveFrom.slice(0, 10)}{/if}{#if product.effectiveUntil} · 到期 {product.effectiveUntil.slice(0, 10)}{/if}
+          </p>
         </article>
         <article>
           <span>来源</span>
