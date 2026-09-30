@@ -129,8 +129,6 @@ describe("employee trigger runtime against real SurrealDB", () => {
 
     const first = await triggerRuntime.enqueue(delivery(dbA, "daily-claims-risk:user:claims_risk_reminder:2026-09-30"));
     expect(first.outcome).toBe("completed");
-    // 窗口结束后员工会话已关闭
-    expect(runtime.session(dbA, "user:claims_risk_reminder")).toBeUndefined();
 
     // 同 workspace 同键重复投递：只产生一次副作用
     const second = await triggerRuntime.enqueue(delivery(dbA, "daily-claims-risk:user:claims_risk_reminder:2026-09-30"));
@@ -168,8 +166,10 @@ describe("employee trigger runtime against real SurrealDB", () => {
       expect(sql).toContain("employee_credential");
     }
 
-    // stop 之后拒绝新投递
+    // stop 之后拒绝新投递；窗口 drain 模型下会话随 lane 空闲关闭，stop 后必然全关
     await triggerRuntime.stop();
+    expect(runtime.session(dbA, "user:claims_risk_reminder")).toBeUndefined();
+    expect(runtime.session(dbB, "user:claims_risk_reminder")).toBeUndefined();
     await expect(
       triggerRuntime.enqueue(delivery(dbA, "daily-claims-risk:user:claims_risk_reminder:2026-10-01")),
     ).rejects.toThrow("employee-trigger-runtime-stopped");
