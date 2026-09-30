@@ -1,6 +1,12 @@
-import { buildLegacyQuotaCleanupSurql } from "@surreal-ck/shared";
+import {
+  buildLegacyQuotaCleanupSurql,
+  buildLegacyQuotaGuardResidualSurql,
+} from "@surreal-ck/shared";
 import type { WorkspaceTemplateScript } from "@surreal-ck/shared/workspace-template";
-import { LEGACY_QUOTA_CLEANUP_MIGRATION_VERSION } from "@surreal-ck/shared/workspace-migration-manifest";
+import {
+  LEGACY_QUOTA_CLEANUP_MIGRATION_VERSION,
+  LEGACY_QUOTA_GUARD_RESIDUAL_MIGRATION_VERSION,
+} from "@surreal-ck/shared/workspace-migration-manifest";
 
 export type WorkspaceMigrationExecutionClient = {
   query(sql: string, params?: Record<string, unknown>): Promise<unknown>;
@@ -24,6 +30,7 @@ export async function materializeWorkspaceMigrationSql(
 ): Promise<string> {
   if (
     script.version !== LEGACY_QUOTA_CLEANUP_MIGRATION_VERSION
+    && script.version !== LEGACY_QUOTA_GUARD_RESIDUAL_MIGRATION_VERSION
     && script.version !== RECORD_UPDATE_ACTIVITY_MIGRATION_VERSION
   ) {
     return script.sql;
@@ -33,6 +40,9 @@ export async function materializeWorkspaceMigrationSql(
   );
   if (script.version === LEGACY_QUOTA_CLEANUP_MIGRATION_VERSION) {
     return buildLegacyQuotaCleanupSurql(tableNames);
+  }
+  if (script.version === LEGACY_QUOTA_GUARD_RESIDUAL_MIGRATION_VERSION) {
+    return buildLegacyQuotaGuardResidualSurql(tableNames);
   }
   const safeNames = [...new Set(tableNames)].sort();
   for (const tableName of safeNames) {
