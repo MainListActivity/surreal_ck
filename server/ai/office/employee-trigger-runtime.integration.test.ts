@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { loadTemplateScripts } from "@surreal-ck/shared/workspace-template";
 import { Surreal } from "surrealdb";
 import { homedir } from "node:os";
+import { createMastraEmployeeDriver } from "./employee-mastra-runner";
 import { createEmployeeRuntime } from "./employee-runtime";
 import { createEmployeeTriggerRuntime } from "./employee-trigger-runtime";
 
@@ -101,7 +102,10 @@ describe("employee trigger runtime against real SurrealDB", () => {
       },
     });
 
-    const triggerRuntime = createEmployeeTriggerRuntime({ sessions: runtime });
+    const triggerRuntime = createEmployeeTriggerRuntime({
+      sessions: runtime,
+      driver: createMastraEmployeeDriver,
+    });
     const effects: Array<{ database: string; key: string }> = [];
     triggerRuntime.registerHandler("daily-claims-risk", async ({ trigger, session }) => {
       effects.push({ database: trigger.database, key: trigger.idempotencyKey });

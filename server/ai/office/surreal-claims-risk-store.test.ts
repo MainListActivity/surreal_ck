@@ -33,9 +33,10 @@ describe("OIP-18 employee SurrealDB store", () => {
   });
 
   test("已完成的检查日返回 completed，阻止 runner 再读业务记录", async () => {
+    // UPSERT ... WHERE status != "completed"：completed 行不命中 WHERE → 空集 = 已完成。
     const session: EmployeeQuerySession = {
       async query() {
-        return [{ status: "completed" }];
+        return [];
       },
     };
 

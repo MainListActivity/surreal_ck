@@ -23,7 +23,7 @@ export type ClaimsRiskEmployeeTarget = {
   employeeId: string;
 };
 
-export type ClaimsRiskTriggerQueue = Pick<EmployeeTriggerRuntime, "enqueue">;
+export type ClaimsRiskTriggerQueue = Pick<EmployeeTriggerRuntime, "enqueue" | "reconcile">;
 
 export type ClaimsRiskDispatchDeps = {
   now?: () => Date;
@@ -139,6 +139,10 @@ function asEmployeeQuerySession(session: TriggerSession): EmployeeQuerySession {
  * 把债权风险岗位逻辑挂到 trigger runtime：handler 拿到的 session 就是该员工的
  * RECORD 会话，所有业务写（risk_check_run / user_notification）归因到员工本人。
  * checkDate 以 payload_ref 引用传递，与幂等键里的日期一致。
+ *
+ * 岗位级副作用经 runEffect 记账（VER04）：崩溃发生在"效果已提交、snapshot
+ * 未更新"之间时，重放窗口读到 committed 账本直接回既有结果，不重复执行检查。
+ * 账本内部的 reminder 落库本身还有 dedupe_key 唯一索引兜底——两层幂等。
  */
 export function registerClaimsRiskHandler(
   runtime: Pick<EmployeeTriggerRuntime, "registerHandler">,
@@ -147,11 +151,13 @@ export function registerClaimsRiskHandler(
   const now = deps.now ?? (() => new Date());
   const storeFor = deps.storeFor
     ?? ((session: TriggerSession) => createSurrealClaimsRiskStore(asEmployeeQuerySession(session)));
-  runtime.registerHandler(CLAIMS_RISK_REASON, async ({ trigger, session }) =>
-    runDailyClaimsRiskCheck(storeFor(session), {
-      checkDate: trigger.payloadRef ?? shanghaiDateKey(now()),
-      checkedAt: now(),
-    }),
+  runtime.registerHandler(CLAIMS_RISK_REASON, async ({ trigger, session, effects }) =>
+    effects.runEffect("risk-check", () =>
+      runDailyClaimsRiskCheck(storeFor(session), {
+        checkDate: trigger.payloadRef ?? shanghaiDateKey(now()),
+        checkedAt: now(),
+      }),
+    ),
   );
 }
 
@@ -167,6 +173,13 @@ export async function runClaimsRiskReminderDispatch(
   let failed = 0;
   for (const target of targets) {
     try {
+      // 先回收上次进程留下的孤儿窗口（pending / 过期 lease），再投递当日触发。
+      await runtime.reconcile(target).catch((cause) => {
+        console.warn("[claims-risk] reconcile skipped", {
+          database: target.database,
+          message: cause instanceof Error ? cause.message : String(cause),
+        });
+      });
       const result = await runtime.enqueue({
         database: target.database,
         employeeId: target.employeeId,

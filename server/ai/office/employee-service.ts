@@ -7,6 +7,7 @@ import {
   createEmployeeTriggerRuntime,
   type EmployeeTriggerRuntime,
 } from "./employee-trigger-runtime";
+import { createMastraEmployeeDriver } from "./employee-mastra-runner";
 
 /**
  * 生产装配：进程内单例 employee runtime + 生命周期服务。
@@ -38,9 +39,12 @@ export async function stopEmployeeRuntime(): Promise<void> {
 
 let sharedTriggerRuntime: EmployeeTriggerRuntime | null = null;
 
-/** 进程内单例持久化触发 runtime（VER3）：会话全部走 employee runtime。 */
+/** 进程内单例持久化触发 runtime（VER3/VER4）：会话走 employee runtime，durable run 走 Mastra driver。 */
 export function getEmployeeTriggerRuntime(): EmployeeTriggerRuntime {
-  sharedTriggerRuntime ??= createEmployeeTriggerRuntime({ sessions: getEmployeeRuntime() });
+  sharedTriggerRuntime ??= createEmployeeTriggerRuntime({
+    sessions: getEmployeeRuntime(),
+    driver: createMastraEmployeeDriver,
+  });
   return sharedTriggerRuntime;
 }
 
