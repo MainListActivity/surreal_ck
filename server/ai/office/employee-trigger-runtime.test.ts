@@ -17,6 +17,7 @@ type FakeDb = {
   byId: Map<string, Row>;
   effects: Map<string, Row>;
   windows: Map<string, Row>;
+  usage: Map<string, Row>;
   counter: number;
 };
 
@@ -32,7 +33,7 @@ function fakeSessions() {
   const db = (name: string): FakeDb => {
     let entry = databases.get(name);
     if (!entry) {
-      entry = { rows: new Map(), byId: new Map(), effects: new Map(), windows: new Map(), counter: 0 };
+      entry = { rows: new Map(), byId: new Map(), effects: new Map(), windows: new Map(), usage: new Map(), counter: 0 };
       databases.set(name, entry);
     }
     return entry;
@@ -49,7 +50,11 @@ function fakeSessions() {
             const existing = store.rows.get(key);
             if (existing) return [[existing]];
             store.counter += 1;
-            const row: Row = { id: `employee_trigger:t${store.counter}`, ...content } as Row;
+            const row: Row = {
+              id: `employee_trigger:t${store.counter}`,
+              created_at: store.counter,
+              ...content,
+            } as Row;
             store.rows.set(key, row);
             store.byId.set(row.id, row);
             return [[row]];
@@ -100,11 +105,52 @@ function fakeSessions() {
           if (sql.includes("UPDATE employee_window")) {
             const row = store.windows.get(String(params.employee));
             if (row && row.holder === params.holder) {
-              row.lease_expires_at = undefined;
-              row.holder = undefined;
-              row.trigger = undefined;
+              // markWindowTrigger 写当前 trigger；releaseWindow 清 holder/lease/trigger。
+              if ("trigger" in params) row.trigger = params.trigger;
+              if (sql.includes("holder = NONE")) {
+                row.lease_expires_at = undefined;
+                row.holder = undefined;
+                row.trigger = undefined;
+              }
             }
             return [[]];
+          }
+          if (sql.includes("FROM employee_token_usage") && !sql.includes("UPSERT")) {
+            const key = `${String(params.employee)}::${String(params.day)}`;
+            const row = store.usage.get(key);
+            return [row ? [row] : []];
+          }
+          if (sql.includes("UPSERT employee_token_usage")) {
+            const key = `${String(params.employee)}::${String(params.day)}`;
+            if (sql.includes("budget_signal_at IS NONE")) {
+              // budget-exhausted signal 的 CAS 去重位：已标记 → 空（判负）。
+              const existing = store.usage.get(key);
+              if (existing?.budget_signal_at) return [[]];
+              const row = existing ?? ({
+                id: `employee_token_usage:u${store.usage.size + 1}`,
+                employee: params.employee,
+                day: params.day,
+              } as Row);
+              row.budget_signal_at = new Date();
+              store.usage.set(key, row);
+              return [[row]];
+            }
+            // recordUsage：UPSERT+WHERE 原子累计（行缺失 → 插入）。
+            const row = store.usage.get(key) ?? ({
+              id: `employee_token_usage:u${store.usage.size + 1}`,
+              employee: params.employee,
+              day: params.day,
+            } as Row);
+            const bump = (field: string, delta: unknown) => {
+              row[field] = Number(row[field] ?? 0) + Number(delta ?? 0);
+            };
+            bump("provider_input_tokens", params.providerIn);
+            bump("provider_output_tokens", params.providerOut);
+            bump("estimated_input_tokens", params.estimatedIn);
+            bump("estimated_output_tokens", params.estimatedOut);
+            bump("calls", 1);
+            store.usage.set(key, row);
+            return [[row]];
           }
           if (sql.includes("UPDATE $trigger") && "claimable" in params) {
             // lease 原子认领：status INSIDE $claimable，或 leased/running 且 lease 到期/缺失。
@@ -134,19 +180,26 @@ function fakeSessions() {
           if (sql.includes("FROM employee_trigger") && sql.includes("lease_expires_at")) {
             const employee = String(params.employee);
             const nowTs = params.now as Date;
-            const matched = [...store.byId.values()].filter((row) => {
-              if (String(row.employee) !== employee) return false;
-              if (row.status === "pending") return true;
-              if (!["leased", "running"].includes(row.status)) return false;
-              const lease = row.lease_expires_at as Date | undefined;
-              return lease == null || lease <= nowTs;
-            });
+            const matched = [...store.byId.values()]
+              .filter((row) => {
+                if (String(row.employee) !== employee) return false;
+                if (row.status === "pending") return true;
+                if (!["leased", "running"].includes(row.status)) return false;
+                const lease = row.lease_expires_at as Date | undefined;
+                return lease == null || lease <= nowTs;
+              })
+              .sort((a, b) => Number(a.created_at ?? 0) - Number(b.created_at ?? 0));
+            // claimNextPending 的 SELECT ... LIMIT 1 取最早一条；reconcile 扫描无限定。
+            if (sql.includes("LIMIT 1")) return [matched.slice(0, 1)];
             return [matched];
           }
           if (sql.includes("FROM $trigger")) {
             const row = store.byId.get(String(params.trigger));
-            const employee = String(params.employee);
-            return [row && String(row.employee) === employee ? [row] : []];
+            // resume 的读带 employee 过滤；sweepWaiters 只按 id 读状态。
+            if (row && "employee" in params && String(row.employee) !== String(params.employee)) {
+              return [[]];
+            }
+            return [row ? [row] : []];
           }
           return [[]];
         },
@@ -189,6 +242,7 @@ function fakeDriver(script: Map<string, EmployeeRunResult> = new Map()): {
           suspend: async () => {
             throw new Error("suspend not supported by fake driver");
           },
+          ...ctx.gates.forTrigger(trigger),
         });
         return { status: "success", output };
       } catch (cause) {
@@ -250,8 +304,9 @@ describe("employee trigger runtime（VER04 lease/durable run/幂等副作用）"
     expect(row.lease_expires_at).toBeInstanceOf(Date);
     expect(row.result).toEqual({ remindersCreated: 2 });
     expect(drivers[0]?.calls).toEqual(["load:er-employee_trigger:t1", "start:er-employee_trigger:t1"]);
-    expect(log).toEqual(["open:ws_a::user:ve_1", "close:ws_a::user:ve_1"]);
+    // 会话随 lane 空闲在窗口收尾关闭（waiter 先行 resolve）；stop 后必然已关。
     await runtime.stop();
+    expect(log).toEqual(["open:ws_a::user:ve_1", "close:ws_a::user:ve_1"]);
   });
 
   test("同一幂等键重复投递：完成后 coalesced，handler/driver 只跑一次", async () => {
@@ -470,8 +525,10 @@ describe("employee trigger runtime（VER04 lease/durable run/幂等副作用）"
     const rt2 = createEmployeeTriggerRuntime({ sessions, driver: fakeDriver().factory, leaseTtlMs: 60_000 });
     rt1.start();
     rt2.start();
-    rt1.registerHandler("daily-claims-risk", async () => { await gate; return { one: 1 }; });
-    rt2.registerHandler("daily-claims-risk", async () => ({ two: 2 }));
+    let rt1Calls = 0;
+    let rt2Calls = 0;
+    rt1.registerHandler("daily-claims-risk", async () => { await gate; rt1Calls += 1; return { one: 1 }; });
+    rt2.registerHandler("daily-claims-risk", async () => { rt2Calls += 1; return { two: 2 }; });
 
     const first = rt1.enqueue(delivery({ idempotencyKey: "k-a" }));
     await Bun.sleep(50); // 窗口 1 已持有员工互斥行
@@ -486,10 +543,13 @@ describe("employee trigger runtime（VER04 lease/durable run/幂等副作用）"
     release();
     expect(await first).toMatchObject({ outcome: "completed" });
 
-    // 窗口释放后（holder/lease 清空）：k-b 可被认领执行
+    // 窗口属于员工而非投递进程：rt1 的窗口 drain 同员工全部 pending，
+    // k-b 已被 rt1 的窗口恰好执行一次；同键再投递收敛为 coalesced。
     const unblocked = await rt2.enqueue(delivery({ idempotencyKey: "k-b" }));
-    expect(unblocked).toMatchObject({ outcome: "completed" });
+    expect(unblocked).toMatchObject({ outcome: "coalesced", triggerId: "employee_trigger:t2" });
     expect(db.rows.get("k-b")!.status).toBe("completed");
+    expect(rt1Calls).toBe(2); // k-a + k-b 各恰好一次
+    expect(rt2Calls).toBe(0);
     await rt1.stop();
     await rt2.stop();
   });

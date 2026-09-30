@@ -1,12 +1,28 @@
 import { StringRecordId } from "surrealdb";
 import type { EmployeeEffects } from "./employee-effects";
+import {
+  createMeteredModel,
+  createSurrealUsageMeter,
+  defaultErrorClassifier,
+  DEFAULT_GATE_LIMITS,
+  DEFAULT_RETRY_POLICY,
+  withBoundedRetry,
+  type EmployeeUsageMeter,
+  type ErrorClassifier,
+  type GateLimits,
+  type MeteredModel,
+  type RetryPolicy,
+  type RuntimeSignal,
+  type RuntimeSignalEmitter,
+} from "./employee-gates";
 
 /**
- * 通用持久化触发 runtime（VER03 建立，VER04 加 lease/durable run/幂等副作用）。
+ * 通用持久化触发 runtime（VER03 建立，VER04 加 lease/durable run/幂等副作用，
+ * VER05 加预算、循环、重试与全局背压闸门）。
  *
  * - adapter 只负责把外部观察翻译成 TriggerDelivery（员工、原因、payload 引用、
  *   chain depth、幂等键）交给 enqueue()；runtime 负责 employee SIGNIN、把触发
- *   持久化到 workspace 内的 employee_trigger 表、经有 lease 的执行窗口驱动一个
+ *   持久化到 workspace 内的 employee_trigger 表、经有 lease 的执行窗口驱动
  *   durable workflow run、落结果、关会话。
  * - 触发记录由员工自己的 RECORD 会话写入（employee_trigger 只有 virtual 能建、
  *   employee = $auth 能改），root 不出现在这条路径上。
@@ -22,9 +38,18 @@ import type { EmployeeEffects } from "./employee-effects";
  *   fail-closed——缺 snapshot 绝不当新 run。
  * - 有副作用的动作必须经 ctx.effects.runEffect(稳定 key) 落 employee_effect
  *   账本："效果已提交、snapshot 未更新"之间崩溃，重启重放时回既有结果。
- * - 一个员工同一时刻只有一个执行窗口：同 (database, employeeId) 的窗口请求
- *   在进程内串行；跨进程由 employee_window 行的 UPSERT CAS 互斥（lease 到期
- *   可被接管）；窗口结束关闭该员工会话。
+ * - 一个员工同一时刻只有一个执行窗口：employee_window 行的 UPSERT CAS 是
+ *   跨进程互斥；进程内同 (database, employeeId) 共用一条 lane——窗口按
+ *   FIFO drain 该员工的 pending/过期触发，事件风暴下同一员工最多有
+ *   「当前窗口 + 至多一个合并后的后续窗口」，不为每条触发各开窗口。
+ * - 全局背压：进程级信号量限制同时在跑的执行窗口数；拿槽的窗口才有
+ *   employee 会话，等待中的触发保持 pending 由 drain/回收接手。
+ * - 闸门（详见 employee-gates）：每次模型调用经 ctx.model 计量闸门
+ *   （窗口步数上限、按剩余额度压本次输出上限、provider usage/有界估算
+ *   记账、同日同员工 budget-exhausted signal 只发一次）；级联触发经
+ *   ctx.emit 投递、链深由 runtime 继承 parent+1 不可绕过；认领次数
+ *   超 maxTriggerAttempts 转 failed + retry-exhausted signal；投递
+ *   chainDepth 超 maxChainDepth 直接拒绝 + chain-depth-exceeded signal。
  * - 本模块不认识办公室领域表；领域读写全部发生在 adapter 注册的 handler 里。
  */
 
@@ -48,7 +73,7 @@ export type TriggerDelivery = {
   reason: string;
   /** 领域 payload 的引用（不复制大 payload 进触发记录）。 */
   payloadRef?: string;
-  /** 触发链深度；顶层观察为 0，级联触发由 adapter 递增。 */
+  /** 触发链深度；顶层观察为 0，级联触发由 runtime 继承递增（外部投递受上限约束）。 */
   chainDepth?: number;
   /** 幂等键：同一逻辑触发的重复投递必须撞同一个键。 */
   idempotencyKey: string;
@@ -74,15 +99,57 @@ export type TriggerHandlerContext = {
   resumeData?: unknown;
   /** 显式挂起本次执行（Mastra suspend）：run 落 suspended、触发置 waiting。 */
   suspend: (payload?: unknown) => Promise<never>;
+  /** 计量模型闸门：handler 内每次模型调用必经（预算/步数/重试/记账）。 */
+  model: MeteredModel;
+  /**
+   * 级联投递：handler 产生后续触发时经此投递——链深强制 = 本触发
+   * chainDepth + 1，调用方无法传入更小数字绕过上限；fire-and-forget
+   * （同员工不等待执行，避免在串行 lane 内自锁）。
+   */
+  emit: CascadeEmit;
+  /** 窗口限额视图：交给 Mastra agent 的 maxSteps / 循环条件的 iteration 上限。 */
+  limits: GateLimits;
 };
 
 export type TriggerHandler = (ctx: TriggerHandlerContext) => Promise<unknown>;
+
+/** ctx.emit 的入参：链深不在其中——由 runtime 从父触发继承 +1。 */
+export type CascadeEmitInput = {
+  reason: string;
+  payloadRef?: string;
+  idempotencyKey: string;
+  /** 目标员工（同 workspace database 内）；缺省 = 当前触发员工。 */
+  employeeId?: string;
+};
+
+export type CascadeEmitResult =
+  | { accepted: true; triggerId: string; chainDepth: number }
+  | {
+      accepted: false;
+      rejected: "chain-depth-exceeded" | "persist-failed";
+      chainDepth?: number;
+      error?: string;
+    };
+
+export type CascadeEmit = (input: CascadeEmitInput) => Promise<CascadeEmitResult>;
 
 /** durable run 的终态视图（runtime 只关心这三态 + 失败原因）。 */
 export type EmployeeRunResult =
   | { status: "success"; output: unknown }
   | { status: "suspended" }
   | { status: "failed"; error: string };
+
+/** 窗口为单次触发执行准备的 handler 闸门（driver 注入 handler ctx）。 */
+export type HandlerGates = {
+  model: MeteredModel;
+  emit: CascadeEmit;
+  limits: GateLimits;
+};
+
+export type WindowGates = {
+  /** 按触发信封生成 handler 闸门；窗口级计数器（步数）在底层共享。 */
+  forTrigger(trigger: TriggerEnvelope): HandlerGates;
+};
 
 /**
  * workflow runner seam：员工窗口与 durable workflow 引擎之间的边界。
@@ -106,11 +173,13 @@ export type EmployeeRunDriverFactory = (ctx: {
   database: string;
   employeeId: string;
   resolveHandler: (reason: string) => TriggerHandler | undefined;
+  /** 本窗口的 handler 闸门（budget/steps/limits/级联），按触发信封取。 */
+  gates: WindowGates;
 }) => EmployeeRunDriver;
 
 export type EnqueueResult =
   | { outcome: "completed"; triggerId: string }
-  /** 同一幂等键已由先前投递完成，或 lease 仍被活跃窗口持有：本次不重跑。 */
+  /** 同一幂等键已由先前投递完成，或窗口/执行由别处接管：本次不重跑。 */
   | { outcome: "coalesced"; triggerId: string }
   /** 触发显式 suspend：等待 resumeTrigger 注入恢复数据。 */
   | { outcome: "waiting"; triggerId: string }
@@ -147,6 +216,11 @@ export type EmployeeTriggerRuntime = {
     triggerId: string;
     resumeData?: unknown;
   }): Promise<EnqueueResult>;
+  /**
+   * 订阅结构化 runtime signal（budget/depth/retry/step 超限）。业务 adapter
+   * 在此决定如何通知用户；未订阅时信号只进结构化日志。
+   */
+  onSignal(emitter: RuntimeSignalEmitter): void;
   /**
    * 关闭闸门并等待在途窗口排空：之后 enqueue 一律拒绝；
    * 窗口内打开的员工会话随窗口结束全部关闭。
@@ -197,6 +271,31 @@ const TERMINAL_FAILURE_SNAPSHOT_STATUSES = new Set([
   "paused",
 ]);
 
+/** 同 (database, employeeId) 的执行车道：会话、窗口调度、投递互斥都在这条 lane 上。 */
+type LaneWaiter = {
+  triggerId: string;
+  settled: boolean;
+  resolve: (result: EnqueueResult) => void;
+};
+
+type Lane = {
+  database: string;
+  employeeId: string;
+  /** 窗口类任务（drain/reconcile/resume）的串行链尾。 */
+  tail: Promise<void>;
+  /** persist/会话开关的互斥链尾（防窗口 drain 期间会话被关闭/替换）。 */
+  persistTail: Promise<unknown>;
+  /** lane 当前持有的员工会话；由窗口/投递共享，lane 空闲时关闭。 */
+  session?: TriggerSession;
+  sessionOpening?: Promise<TriggerSession>;
+  /** 已排队或正在运行的 drain 窗口：保证 ≤1 运行窗口 + ≤1 排队后续窗口。 */
+  windowPlanned: boolean;
+  /** 有 handler 级联投递进来：窗口结束时无论如何排一个后续窗口兜底。 */
+  followupWanted: boolean;
+  /** triggerId → 等待其终态的 enqueue 调用方。 */
+  waiters: Map<string, LaneWaiter>;
+};
+
 export function createEmployeeTriggerRuntime(deps: {
   sessions: TriggerSessionManager;
   driver: EmployeeRunDriverFactory;
@@ -204,24 +303,226 @@ export function createEmployeeTriggerRuntime(deps: {
   leaseTtlMs?: number;
   /** 时钟 seam（lease 判定写进 SQL 参数，测试可注入确定性时间）。 */
   now?: () => Date;
+  /** 闸门限额覆盖（默认见 DEFAULT_GATE_LIMITS）。 */
+  limits?: Partial<GateLimits>;
+  /** 结构化 signal 出口；缺省为结构化日志。onSignal 订阅者额外收到。 */
+  emitSignal?: RuntimeSignalEmitter;
+  /** 每日 token 用量 seam；缺省走员工会话写 employee_token_usage。 */
+  meter?: EmployeeUsageMeter;
+  /** 错误分类器（transient/permanent）；缺省 defaultErrorClassifier。 */
+  classifyError?: ErrorClassifier;
+  /** 重试策略覆盖（maxAttempts/base/max/jitter）。 */
+  retryPolicy?: Partial<RetryPolicy>;
+  /** 退避 sleep seam（测试注入虚拟时钟）。 */
+  sleep?: (ms: number) => Promise<void>;
 }): EmployeeTriggerRuntime {
   const handlers = new Map<string, TriggerHandler>();
-  /** (database, employeeId) → 串行链尾：保证每员工同时只有一个执行窗口。 */
-  const chains = new Map<string, Promise<unknown>>();
+  const lanes = new Map<string, Lane>();
+  const signalSubscribers: RuntimeSignalEmitter[] = [];
   let started = false;
   const leaseTtlMs = deps.leaseTtlMs ?? 60_000;
   const now = deps.now ?? (() => new Date());
+  const limits: GateLimits = { ...DEFAULT_GATE_LIMITS, ...deps.limits };
+  const meter = deps.meter ?? createSurrealUsageMeter();
+  const retryPolicy: RetryPolicy = { ...DEFAULT_RETRY_POLICY, ...deps.retryPolicy };
+  const classify = deps.classifyError ?? defaultErrorClassifier;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const emitSignalDep = deps.emitSignal ?? defaultSignalLogger;
 
-  function serialized<T>(key: string, work: () => Promise<T>): Promise<T> {
-    const next = (chains.get(key) ?? Promise.resolve()).then(work);
-    const tracked = next.catch(() => undefined);
-    chains.set(key, tracked);
-    return next.finally(() => {
-      if (chains.get(key) === tracked) chains.delete(key);
+  // ── 进程级窗口并发信号量（全局背压上限）────────────────────────────────
+  let activeWindows = 0;
+  const windowQueue: Array<() => void> = [];
+  function acquireWindowSlot(): Promise<() => void> {
+    if (activeWindows < limits.maxConcurrentWindows) {
+      activeWindows += 1;
+      return Promise.resolve(releaseWindowSlot);
+    }
+    return new Promise((resolve) => {
+      windowQueue.push(() => {
+        activeWindows += 1;
+        resolve(releaseWindowSlot);
+      });
     });
+  }
+  function releaseWindowSlot(): void {
+    activeWindows = Math.max(0, activeWindows - 1);
+    windowQueue.shift()?.();
   }
 
   const keyOf = (database: string, employeeId: string) => `${database}::${employeeId}`;
+
+  function laneOf(database: string, employeeId: string): Lane {
+    const key = keyOf(database, employeeId);
+    let lane = lanes.get(key);
+    if (!lane) {
+      lane = {
+        database,
+        employeeId,
+        tail: Promise.resolve(),
+        persistTail: Promise.resolve(),
+        windowPlanned: false,
+        followupWanted: false,
+        waiters: new Map(),
+      };
+      lanes.set(key, lane);
+    }
+    return lane;
+  }
+
+  function defaultSignalLogger(signal: RuntimeSignal): void {
+    console.warn("[employee-trigger] runtime-signal", JSON.stringify(signal));
+  }
+
+  /** 信号出口：dep emitter + 全部订阅者，逐个隔离异常不阻断闸门判定。 */
+  async function emitRuntimeSignal(
+    signal: Omit<RuntimeSignal, "at"> & { at?: Date },
+  ): Promise<void> {
+    const full: RuntimeSignal = { ...signal, at: signal.at ?? now() };
+    for (const emit of [emitSignalDep, ...signalSubscribers]) {
+      try {
+        await emit(full);
+      } catch (cause) {
+        console.warn("[employee-trigger] signal emit failed", {
+          kind: full.kind,
+          message: errorMessage(cause),
+        });
+      }
+    }
+  }
+
+  // ── lane 内 persist/会话互斥 ────────────────────────────────────────────
+
+  function inPersist<T>(lane: Lane, work: (lane: Lane) => Promise<T> | T): Promise<T> {
+    const next = lane.persistTail.then(() => work(lane));
+    lane.persistTail = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }
+
+  /** lane 会话：窗口与投递共享同一条；openSession 带 transient 重试。 */
+  async function ensureLaneSession(lane: Lane): Promise<TriggerSession> {
+    if (lane.session) return lane.session;
+    lane.sessionOpening ??= withBoundedRetry(
+      () => deps.sessions.openSession(lane.database, lane.employeeId),
+      { policy: retryPolicy, classify, sleep },
+    )
+      .then((session) => {
+        lane.session = session;
+        return session;
+      })
+      .finally(() => {
+        lane.sessionOpening = undefined;
+      });
+    return lane.sessionOpening;
+  }
+
+  async function closeLaneSession(lane: Lane): Promise<void> {
+    const session = lane.session;
+    lane.session = undefined;
+    if (session) await deps.sessions.close(lane.database, lane.employeeId).catch(() => undefined);
+  }
+
+  // ── waiter 结算 ─────────────────────────────────────────────────────────
+
+  function settleWaiter(lane: Lane, triggerId: string, result: EnqueueResult): void {
+    const waiter = lane.waiters.get(triggerId);
+    if (!waiter || waiter.settled) return;
+    waiter.settled = true;
+    lane.waiters.delete(triggerId);
+    waiter.resolve(result);
+  }
+
+  function settleAllWaiters(lane: Lane, outcome: "coalesced" | "failed", error?: string): void {
+    for (const waiter of [...lane.waiters.values()]) {
+      if (waiter.settled) continue;
+      waiter.settled = true;
+      lane.waiters.delete(waiter.triggerId);
+      waiter.resolve(
+        outcome === "coalesced"
+          ? { outcome: "coalesced", triggerId: waiter.triggerId }
+          : { outcome: "failed", triggerId: waiter.triggerId, error: error ?? "unknown" },
+      );
+    }
+  }
+
+  function hasUnsettledWaiters(lane: Lane): boolean {
+    for (const waiter of lane.waiters.values()) if (!waiter.settled) return true;
+    return false;
+  }
+
+  /**
+   * 窗口结束清扫：仍为终态未决的 waiter 按其触发行状态结算——
+   * 终态如实回报；pending 留给后续窗口；leased/running/缺失 = 别处接管或异常。
+   */
+  async function sweepWaiters(lane: Lane, session: TriggerSession): Promise<void> {
+    for (const waiter of [...lane.waiters.values()]) {
+      if (waiter.settled) continue;
+      try {
+        const [rows] = await session.query<[TriggerRow[]]>(
+          `SELECT id, status, error_message FROM $trigger;`,
+          { trigger: new StringRecordId(waiter.triggerId) },
+        );
+        const row = rows?.[0];
+        const status = row ? String(row.status) : "missing";
+        if (status === "completed") {
+          settleWaiter(lane, waiter.triggerId, { outcome: "completed", triggerId: waiter.triggerId });
+        } else if (status === "failed") {
+          settleWaiter(lane, waiter.triggerId, {
+            outcome: "failed",
+            triggerId: waiter.triggerId,
+            error: typeof row?.error_message === "string" ? row.error_message : "trigger-failed",
+          });
+        } else if (status === "waiting") {
+          settleWaiter(lane, waiter.triggerId, { outcome: "waiting", triggerId: waiter.triggerId });
+        } else if (status === "pending") {
+          // 仍在队列里：留给本 lane 的后续窗口（housekeeping 会排）。
+        } else {
+          settleWaiter(lane, waiter.triggerId, { outcome: "coalesced", triggerId: waiter.triggerId });
+        }
+      } catch {
+        // 查询失败不结算；housekeeping 若仍见其未决会再排窗口，stop 兜底。
+      }
+    }
+  }
+
+  // ── 窗口调度与收尾 ──────────────────────────────────────────────────────
+
+  function scheduleWindow(lane: Lane): void {
+    if (!started || lane.windowPlanned) return;
+    lane.windowPlanned = true;
+    lane.tail = lane.tail.then(() => runWindow(lane));
+  }
+
+  /** 任意窗口类任务排到 lane 串行链尾（drain/reconcile/resume 共用互斥）。 */
+  function laneTask<T>(lane: Lane, work: () => Promise<T>): Promise<T> {
+    const next = lane.tail.then(work);
+    lane.tail = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }
+
+  /**
+   * 窗口/任务收尾：若仍有未决 waiter 或 handler 级联投递过，排一个后续窗口；
+   * lane 彻底空闲则释放员工会话。统一在 persistTail 互斥内判定。
+   */
+  async function housekeeping(lane: Lane): Promise<void> {
+    await inPersist(lane, async () => {
+      if (!started) settleAllWaiters(lane, "failed", "employee-trigger-runtime-stopped");
+      const needFollowup = started && (hasUnsettledWaiters(lane) || lane.followupWanted);
+      lane.followupWanted = false;
+      if (needFollowup) {
+        scheduleWindow(lane);
+        return;
+      }
+      if (!lane.windowPlanned) await closeLaneSession(lane);
+    });
+  }
+
+  // ── 触发持久化与窗口互斥 ────────────────────────────────────────────────
 
   async function persistTrigger(
     session: TriggerSession,
@@ -249,16 +550,12 @@ export function createEmployeeTriggerRuntime(deps: {
    * 员工级窗口互斥（跨进程）：employee_window 行是"该员工正在跑"的占位。
    * employee 唯一索引 + UPSERT ... WHERE 构成单语句 CAS：行缺失 → 插入；
    * 行存在且租约到期/已释放（lease_expires_at IS NONE 或 <= now）→ 换 holder；
-   * 活跃持有者 → WHERE 落空返回空。同员工第二个触发在活跃窗口期拿不到互斥行，
-   * 保持 pending 由下次 reconcile/投递回收。
-   * 注意不用 INSERT ... ON DUPLICATE KEY UPDATE 表达条件接管：RECORD 会话下
-   * ON DUP 的未限定字段引用求值为 NONE（经真实库验证），条件恒真、等同无条件覆盖。
+   * 活跃持有者 → WHERE 落空返回空。拿不到互斥行的 lane 不启动 drain。
    * 返回 holder nonce = 赢；null = 被活跃窗口持有。
    */
   async function acquireWindow(
     session: TriggerSession,
     employeeId: string,
-    triggerId: string,
   ): Promise<string | null> {
     const holder = crypto.randomUUID();
     const leaseExpires = new Date(now().getTime() + leaseTtlMs);
@@ -267,7 +564,7 @@ export function createEmployeeTriggerRuntime(deps: {
         `UPSERT employee_window SET
            employee = $employee,
            holder = $holder,
-           trigger = $trigger,
+           trigger = NONE,
            lease_expires_at = $leaseExpires
          WHERE employee = $employee
            AND (lease_expires_at IS NONE OR lease_expires_at <= $now)
@@ -275,7 +572,6 @@ export function createEmployeeTriggerRuntime(deps: {
         {
           employee: new StringRecordId(employeeId),
           holder,
-          trigger: new StringRecordId(triggerId),
           leaseExpires,
           now: now(),
         },
@@ -291,6 +587,24 @@ export function createEmployeeTriggerRuntime(deps: {
   /** 唯一索引冲突判定：SurrealDB 报 "Database index ... already contains ..."。 */
   function isUniqueIndexConflict(err: unknown): boolean {
     return err instanceof Error && /index.*already contains/i.test(err.message);
+  }
+
+  /** 观测位：窗口当前正在驱动的触发（不影响互斥语义）。 */
+  async function markWindowTrigger(
+    session: TriggerSession,
+    employeeId: string,
+    holder: string,
+    triggerId: string,
+  ): Promise<void> {
+    try {
+      await session.query(
+        `UPDATE employee_window SET trigger = $trigger, updated_at = time::now()
+         WHERE employee = $employee AND holder = $holder;`,
+        { employee: new StringRecordId(employeeId), holder, trigger: new StringRecordId(triggerId) },
+      );
+    } catch {
+      // 观测位失败不影响互斥
+    }
   }
 
   /** 释放窗口：只有仍持有该 holder 的窗口才清（防清掉后来者的新租约）。 */
@@ -338,6 +652,26 @@ export function createEmployeeTriggerRuntime(deps: {
     return rows?.[0] ?? null;
   }
 
+  /** drain 取件：按 created_at FIFO 找最早可认领触发并原子认领；撞车重找。 */
+  async function claimNextPending(session: TriggerSession, lane: Lane): Promise<TriggerRow | null> {
+    for (let round = 0; round < 8; round += 1) {
+      const [rows] = await session.query<[TriggerRow[]]>(
+        `SELECT id, created_at FROM employee_trigger
+         WHERE employee = $employee
+           AND (status = "pending"
+                OR (status INSIDE ["leased", "running"]
+                    AND (lease_expires_at = NONE OR lease_expires_at <= $now)))
+         ORDER BY created_at ASC LIMIT 1;`,
+        { employee: new StringRecordId(lane.employeeId), now: now() },
+      );
+      const candidate = rows?.[0];
+      if (!candidate) return null;
+      const claimed = await claimLease(session, String(candidate.id));
+      if (claimed) return claimed;
+    }
+    return null;
+  }
+
   async function setStatus(
     session: TriggerSession,
     triggerId: string,
@@ -376,6 +710,93 @@ export function createEmployeeTriggerRuntime(deps: {
     };
   }
 
+  // ── handler 闸门 ────────────────────────────────────────────────────────
+
+  function gatesFor(lane: Lane, session: TriggerSession, steps: { count: number }): WindowGates {
+    return {
+      forTrigger(trigger) {
+        return {
+          limits,
+          model: createMeteredModel({
+            session,
+            database: lane.database,
+            employeeId: lane.employeeId,
+            triggerId: trigger.id,
+            reason: trigger.reason,
+            limits,
+            meter,
+            emitSignal: (partial) =>
+              emitRuntimeSignal({ ...partial, database: lane.database, employeeId: lane.employeeId }),
+            now,
+            steps,
+            retry: { policy: retryPolicy, classify, sleep },
+          }),
+          emit: (input) => emitCascade(lane, trigger, input),
+        };
+      },
+    };
+  }
+
+  /**
+   * 级联投递：链深 = 父触发 chainDepth + 1（从持久化行读，不接受调用方传值）。
+   * fire-and-forget：同员工投递只落库 + 置 followupWanted，由本 lane 的
+   * drain/后续窗口拾取；跨员工投递额外调度目标 lane。绝不在此等待执行——
+   * 否则同员工 lane 内自锁。
+   */
+  async function emitCascade(
+    lane: Lane,
+    parent: TriggerEnvelope,
+    input: CascadeEmitInput,
+  ): Promise<CascadeEmitResult> {
+    const depth = parent.chainDepth + 1;
+    const targetEmployee = input.employeeId ?? parent.employeeId;
+    if (depth > limits.maxChainDepth) {
+      await emitRuntimeSignal({
+        kind: "chain-depth-exceeded",
+        database: lane.database,
+        employeeId: parent.employeeId,
+        triggerId: parent.id,
+        reason: input.reason,
+        detail: {
+          parentTriggerId: parent.id,
+          parentDepth: parent.chainDepth,
+          attemptedDepth: depth,
+          max: limits.maxChainDepth,
+          childReason: input.reason,
+          idempotencyKey: input.idempotencyKey,
+        },
+      });
+      return { accepted: false, rejected: "chain-depth-exceeded", chainDepth: depth };
+    }
+    let row: TriggerRow | null;
+    try {
+      row = await inPersist(lane, async (l) =>
+        persistTrigger(await ensureLaneSession(l), {
+          database: lane.database,
+          employeeId: targetEmployee,
+          reason: input.reason,
+          payloadRef: input.payloadRef,
+          chainDepth: depth,
+          idempotencyKey: input.idempotencyKey,
+        }),
+      );
+    } catch (cause) {
+      return { accepted: false, rejected: "persist-failed", error: errorMessage(cause) };
+    }
+    const triggerId = row?.id == null ? undefined : String(row.id);
+    if (!triggerId) {
+      return { accepted: false, rejected: "persist-failed", error: "employee-trigger-persist-failed" };
+    }
+    if (targetEmployee === lane.employeeId) {
+      lane.followupWanted = true;
+    } else {
+      scheduleWindow(laneOf(lane.database, targetEmployee));
+    }
+    return { accepted: true, triggerId, chainDepth: depth };
+  }
+
+  // ── run 驱动与窗口主体 ──────────────────────────────────────────────────
+
   /**
    * 已认领触发 → 驱动其 durable run 到终态/挂起态。
    * 快照缺失但 run_id 已分配 = 上次死在窗口早期，start 是唯一正确入口；
@@ -386,6 +807,8 @@ export function createEmployeeTriggerRuntime(deps: {
     session: TriggerSession,
     row: TriggerRow,
     envelope: TriggerEnvelope,
+    lane: Lane,
+    steps: { count: number },
   ): Promise<EnqueueResult> {
     const triggerId = String(row.id);
     const runId = typeof row.run_id === "string" && row.run_id ? row.run_id : `er-${triggerId}`;
@@ -394,6 +817,7 @@ export function createEmployeeTriggerRuntime(deps: {
       database: envelope.database,
       employeeId: envelope.employeeId,
       resolveHandler: (reason) => handlers.get(reason),
+      gates: gatesFor(lane, session, steps),
     });
     const state = await driver.loadRunState(runId);
 
@@ -437,54 +861,127 @@ export function createEmployeeTriggerRuntime(deps: {
     return { outcome: "failed", triggerId, error: result.error };
   }
 
-  async function executeWindow(delivery: TriggerDelivery): Promise<EnqueueResult> {
-    let session: TriggerSession;
-    try {
-      session = await deps.sessions.openSession(delivery.database, delivery.employeeId);
-    } catch (cause) {
-      // 员工暂停/退休或凭证缺失时连 SIGNIN 都过不去：触发不落库，返回失败由 adapter 决定。
-      return { outcome: "failed", error: errorMessage(cause) };
-    }
-    let triggerId: string | undefined;
-    try {
-      const row = await persistTrigger(session, delivery);
-      triggerId = row?.id == null ? undefined : String(row.id);
-      if (!triggerId) throw new Error("employee-trigger-persist-failed");
-      if (row?.status === "completed") return { outcome: "coalesced", triggerId };
-      if (row?.status === "waiting") return { outcome: "waiting", triggerId };
-      if (row?.status === "failed") {
-        // failed 是同键终态：如实回报既有失败，不隐式重跑。
-        const message = typeof row.error_message === "string" ? row.error_message : "trigger-failed";
-        return { outcome: "failed", triggerId, error: message };
-      }
+  /** 认领数超上限：同键终态 failed + retry-exhausted signal。返回 true 表示已按终态处理。 */
+  async function exhaustAttempts(
+    lane: Lane,
+    session: TriggerSession,
+    claimed: TriggerRow,
+  ): Promise<boolean> {
+    const attempts = typeof claimed.attempts === "number" ? claimed.attempts : 0;
+    if (attempts <= limits.maxTriggerAttempts) return false;
+    const triggerId = String(claimed.id);
+    const message = `attempts-exhausted:${attempts}>${limits.maxTriggerAttempts}`;
+    await setStatus(session, triggerId, "failed", { message }).catch(() => undefined);
+    await emitRuntimeSignal({
+      kind: "retry-exhausted",
+      database: lane.database,
+      employeeId: lane.employeeId,
+      triggerId,
+      reason: typeof claimed.reason === "string" ? claimed.reason : undefined,
+      detail: { attempts, max: limits.maxTriggerAttempts },
+    });
+    settleWaiter(lane, triggerId, { outcome: "failed", triggerId, error: message });
+    return true;
+  }
 
-      // 员工级互斥在触发租约之外：活跃窗口期同员工的其他触发保持 pending。
-      const holder = await acquireWindow(session, delivery.employeeId, triggerId);
-      if (!holder) return { outcome: "coalesced", triggerId };
+  /**
+   * drain 窗口：全局信号量槽位 → 员工互斥行 → FIFO 认领驱动触发，
+   * 直到排空、步数截断（maxTriggersPerWindow）或进程停闸。
+   */
+  async function runWindow(lane: Lane): Promise<void> {
+    const release = await acquireWindowSlot();
+    try {
+      if (!started) return;
+      let session: TriggerSession;
       try {
-        const claimed = await claimLease(session, triggerId);
-        if (!claimed) return { outcome: "coalesced", triggerId };
-        const envelope = envelopeOf(claimed, delivery);
-        return await driveRun(session, claimed, envelope);
-      } finally {
-        await releaseWindow(session, delivery.employeeId, holder).catch(() => undefined);
+        session = await inPersist(lane, () => ensureLaneSession(lane));
+      } catch (cause) {
+        settleAllWaiters(lane, "failed", errorMessage(cause));
+        return;
       }
-    } catch (cause) {
-      // 基础设施异常（storage 读写失败、驱动崩溃、会话断开）：不打 failed——
-      // 该行保留 leased/running 与 lease 到期时间，交给 reconcile/下次投递按
-      // durable 语义回收。本窗口只如实上报这次尝试失败。
-      const error = errorMessage(cause);
-      console.error("[employee-trigger] window crashed", {
-        database: delivery.database,
-        employeeId: delivery.employeeId,
-        reason: delivery.reason,
-        idempotencyKey: delivery.idempotencyKey,
-        triggerId,
-        message: error,
-      });
-      return { outcome: "failed", ...(triggerId ? { triggerId } : {}), error };
+      let holder: string | null;
+      try {
+        holder = await acquireWindow(session, lane.employeeId);
+      } catch (cause) {
+        settleAllWaiters(lane, "failed", errorMessage(cause));
+        return;
+      }
+      if (!holder) {
+        // 别进程持有活跃窗口：本 lane 的触发留在 pending 由其 drain/回收接手。
+        settleAllWaiters(lane, "coalesced");
+        return;
+      }
+      try {
+        const steps = { count: 0 };
+        let processed = 0;
+        while (started && processed < limits.maxTriggersPerWindow) {
+          let claimed: TriggerRow | null;
+          try {
+            claimed = await claimNextPending(session, lane);
+          } catch (cause) {
+            // 取件本身故障（会话断开/存储异常）= 窗口级崩溃：行保持 pending，
+            // waiter 如实失败，交给下投递或 reconcile 重启窗口。
+            const error = errorMessage(cause);
+            console.error("[employee-trigger] window crashed", {
+              database: lane.database,
+              employeeId: lane.employeeId,
+              message: error,
+            });
+            settleAllWaiters(lane, "failed", error);
+            return;
+          }
+          if (!claimed) break;
+          processed += 1;
+          const triggerId = String(claimed.id);
+          await markWindowTrigger(session, lane.employeeId, holder, triggerId);
+          const reason = typeof claimed.reason === "string" ? claimed.reason : "";
+          const idempotencyKey =
+            typeof claimed.idempotency_key === "string" ? claimed.idempotency_key : triggerId;
+          const envelope = envelopeOf(claimed, {
+            database: lane.database,
+            employeeId: lane.employeeId,
+            reason,
+            idempotencyKey,
+          });
+          if (await exhaustAttempts(lane, session, claimed)) continue;
+          try {
+            const outcome = await driveRun(session, claimed, envelope, lane, steps);
+            settleWaiter(lane, triggerId, outcome);
+          } catch (cause) {
+            // 基础设施异常（storage 读写失败、驱动崩溃、会话断开）：不打 failed——
+            // 该行保留 leased/running 与 lease 到期时间，交给 reconcile/下次投递
+            // 按 durable 语义回收。本窗口如实上报这次尝试失败并停止 drain。
+            const error = errorMessage(cause);
+            console.error("[employee-trigger] window crashed", {
+              database: lane.database,
+              employeeId: lane.employeeId,
+              reason,
+              idempotencyKey,
+              triggerId,
+              message: error,
+            });
+            settleWaiter(lane, triggerId, { outcome: "failed", triggerId, error });
+            break;
+          }
+        }
+        await sweepWaiters(lane, session);
+      } catch (cause) {
+        // drain 中其余基础设施异常（标记/收尾读写失败）：waiter 一律如实失败，
+        // 触发保留 lease 供 reconcile 回收，互斥行由 finally 释放。
+        const error = errorMessage(cause);
+        console.error("[employee-trigger] window crashed", {
+          database: lane.database,
+          employeeId: lane.employeeId,
+          message: error,
+        });
+        settleAllWaiters(lane, "failed", error);
+      } finally {
+        await releaseWindow(session, lane.employeeId, holder).catch(() => undefined);
+      }
     } finally {
-      await deps.sessions.close(delivery.database, delivery.employeeId).catch(() => undefined);
+      release();
+      lane.windowPlanned = false;
+      await housekeeping(lane);
     }
   }
 
@@ -497,73 +994,154 @@ export function createEmployeeTriggerRuntime(deps: {
       handlers.set(reason, handler);
     },
 
-    enqueue(delivery) {
-      if (!started) return Promise.reject(new Error("employee-trigger-runtime-stopped"));
-      return serialized(keyOf(delivery.database, delivery.employeeId), () => {
-        if (!started) throw new Error("employee-trigger-runtime-stopped");
-        return executeWindow(delivery);
+    async enqueue(delivery) {
+      if (!started) throw new Error("employee-trigger-runtime-stopped");
+      const depth = delivery.chainDepth ?? 0;
+      if (depth > limits.maxChainDepth) {
+        await emitRuntimeSignal({
+          kind: "chain-depth-exceeded",
+          database: delivery.database,
+          employeeId: delivery.employeeId,
+          reason: delivery.reason,
+          detail: {
+            chainDepth: depth,
+            max: limits.maxChainDepth,
+            idempotencyKey: delivery.idempotencyKey,
+          },
+        });
+        return { outcome: "failed", error: `chain-depth-exceeded:${depth}>${limits.maxChainDepth}` };
+      }
+      const lane = laneOf(delivery.database, delivery.employeeId);
+      let row: TriggerRow | null;
+      try {
+        row = await inPersist(lane, async (l) =>
+          persistTrigger(await ensureLaneSession(l), delivery),
+        );
+      } catch (cause) {
+        // 员工暂停/退休或凭证缺失时连 SIGNIN 都过不去：触发不落库，返回失败由 adapter 决定。
+        return { outcome: "failed", error: errorMessage(cause) };
+      }
+      const triggerId = row?.id == null ? undefined : String(row.id);
+      if (!triggerId) return { outcome: "failed", error: "employee-trigger-persist-failed" };
+      if (row?.status === "completed") {
+        await housekeeping(lane);
+        return { outcome: "coalesced", triggerId };
+      }
+      if (row?.status === "waiting") {
+        await housekeeping(lane);
+        return { outcome: "waiting", triggerId };
+      }
+      if (row?.status === "failed") {
+        // failed 是同键终态：如实回报既有失败，不隐式重跑。
+        await housekeeping(lane);
+        const message = typeof row.error_message === "string" ? row.error_message : "trigger-failed";
+        return { outcome: "failed", triggerId, error: message };
+      }
+
+      const waiter: LaneWaiter = {
+        triggerId,
+        settled: false,
+        resolve: () => undefined,
+      };
+      const promise = new Promise<EnqueueResult>((resolve) => {
+        waiter.resolve = resolve;
       });
+      lane.waiters.set(triggerId, waiter);
+      scheduleWindow(lane);
+      return promise;
     },
 
     async reconcile({ database, employeeId }) {
-      return serialized(keyOf(database, employeeId), async () => {
+      const lane = laneOf(database, employeeId);
+      return laneTask(lane, async (): Promise<ReconcileResult> => {
         const summary: ReconcileResult = { scanned: 0, reclaimed: 0, completed: 0, waiting: 0, failed: 0 };
         if (!started) return summary;
         let session: TriggerSession;
         try {
-          session = await deps.sessions.openSession(database, employeeId);
+          session = await inPersist(lane, () => ensureLaneSession(lane));
         } catch {
           return summary;
         }
+        const [rows] = await session.query<[TriggerRow[]]>(
+          `SELECT id, status, payload_ref, chain_depth, reason, idempotency_key, run_id
+           FROM employee_trigger
+           WHERE employee = $employee
+             AND (
+               status = "pending"
+               OR (status INSIDE ["leased", "running"]
+                   AND (lease_expires_at = NONE OR lease_expires_at <= $now))
+             );`,
+          { employee: new StringRecordId(employeeId), now: now() },
+        );
+        summary.scanned = rows?.length ?? 0;
+        if (!rows || rows.length === 0) {
+          await housekeeping(lane);
+          return summary;
+        }
+        const release = await acquireWindowSlot();
         try {
-          const [rows] = await session.query<[TriggerRow[]]>(
-            `SELECT id, status, payload_ref, chain_depth, reason, idempotency_key, run_id
-             FROM employee_trigger
-             WHERE employee = $employee
-               AND (
-                 status = "pending"
-                 OR (status INSIDE ["leased", "running"]
-                     AND (lease_expires_at = NONE OR lease_expires_at <= $now))
-               );`,
-            { employee: new StringRecordId(employeeId), now: now() },
-          );
-          summary.scanned = rows?.length ?? 0;
-          for (const row of rows ?? []) {
-            const triggerId = String(row.id);
-            // 活跃窗口期互斥：本进程串行 + employee_window 跨进程守门。
-            const holder = await acquireWindow(session, employeeId, triggerId);
-            if (!holder) continue;
-            try {
+          // 活跃窗口期互斥：本进程串行 + employee_window 跨进程守门。
+          const holder = await acquireWindow(session, employeeId).catch(() => null);
+          if (!holder) {
+            await housekeeping(lane);
+            return summary;
+          }
+          try {
+            const steps = { count: 0 };
+            for (const row of rows) {
+              if (!started) break;
+              const triggerId = String(row.id);
               const claimed = await claimLease(session, triggerId);
               if (!claimed) continue;
               summary.reclaimed += 1;
-              const reason = typeof row.reason === "string" ? row.reason : "";
-              const idempotencyKey = typeof row.idempotency_key === "string" ? row.idempotency_key : triggerId;
+              await markWindowTrigger(session, employeeId, holder, triggerId);
+              if (await exhaustAttempts(lane, session, claimed)) {
+                summary.failed += 1;
+                continue;
+              }
+              const reason = typeof claimed.reason === "string" ? claimed.reason : "";
+              const idempotencyKey =
+                typeof claimed.idempotency_key === "string" ? claimed.idempotency_key : triggerId;
               const envelope = envelopeOf(claimed, { database, employeeId, reason, idempotencyKey });
-              const outcome = await driveRun(session, claimed, envelope);
-              if (outcome.outcome === "completed") summary.completed += 1;
-              else if (outcome.outcome === "waiting") summary.waiting += 1;
-              else summary.failed += 1;
-            } finally {
-              await releaseWindow(session, employeeId, holder).catch(() => undefined);
+              try {
+                const outcome = await driveRun(session, claimed, envelope, lane, steps);
+                if (outcome.outcome === "completed") summary.completed += 1;
+                else if (outcome.outcome === "waiting") summary.waiting += 1;
+                else summary.failed += 1;
+                settleWaiter(lane, triggerId, outcome);
+              } catch (cause) {
+                summary.failed += 1;
+                settleWaiter(lane, triggerId, {
+                  outcome: "failed",
+                  triggerId,
+                  error: errorMessage(cause),
+                });
+                break;
+              }
             }
+            await sweepWaiters(lane, session);
+          } finally {
+            await releaseWindow(session, employeeId, holder).catch(() => undefined);
           }
-          return summary;
         } finally {
-          await deps.sessions.close(database, employeeId).catch(() => undefined);
+          release();
+          await housekeeping(lane);
         }
+        return summary;
       });
     },
 
     async resumeTrigger({ database, employeeId, triggerId, resumeData }) {
-      return serialized(keyOf(database, employeeId), async (): Promise<EnqueueResult> => {
+      const lane = laneOf(database, employeeId);
+      return laneTask(lane, async (): Promise<EnqueueResult> => {
         if (!started) throw new Error("employee-trigger-runtime-stopped");
         let session: TriggerSession;
         try {
-          session = await deps.sessions.openSession(database, employeeId);
+          session = await inPersist(lane, () => ensureLaneSession(lane));
         } catch (cause) {
           return { outcome: "failed", error: errorMessage(cause) };
         }
+        let release: (() => void) | null = null;
         try {
           const [rows] = await session.query<[TriggerRow[]]>(
             `SELECT id, status, payload_ref, chain_depth, reason, idempotency_key, run_id
@@ -575,21 +1153,29 @@ export function createEmployeeTriggerRuntime(deps: {
           if (row.status !== "waiting") {
             return { outcome: "failed", triggerId, error: `trigger-not-waiting:${String(row.status)}` };
           }
+          release = await acquireWindowSlot();
           // resume 也经窗口互斥 + lease：同一时刻只允许一个窗口碰这条触发。
-          const holder = await acquireWindow(session, employeeId, triggerId);
+          const holder = await acquireWindow(session, employeeId);
           if (!holder) return { outcome: "coalesced", triggerId };
           try {
             const claimed = await claimLease(session, triggerId, ["waiting"]);
             if (!claimed) return { outcome: "coalesced", triggerId };
-            const reason = typeof row.reason === "string" ? row.reason : "";
-            const idempotencyKey = typeof row.idempotency_key === "string" ? row.idempotency_key : triggerId;
+            if (await exhaustAttempts(lane, session, claimed)) {
+              return { outcome: "failed", triggerId, error: "attempts-exhausted" };
+            }
+            await markWindowTrigger(session, employeeId, holder, triggerId);
+            const reason = typeof claimed.reason === "string" ? claimed.reason : "";
+            const idempotencyKey =
+              typeof claimed.idempotency_key === "string" ? claimed.idempotency_key : triggerId;
             const envelope = envelopeOf(claimed, { database, employeeId, reason, idempotencyKey });
-            const runId = typeof claimed.run_id === "string" && claimed.run_id ? claimed.run_id : `er-${triggerId}`;
+            const runId =
+              typeof claimed.run_id === "string" && claimed.run_id ? claimed.run_id : `er-${triggerId}`;
             const driver = deps.driver({
               session,
               database,
               employeeId,
               resolveHandler: (r) => handlers.get(r),
+              gates: gatesFor(lane, session, { count: 0 }),
             });
             const state = await driver.loadRunState(runId);
             if (!state) {
@@ -620,14 +1206,27 @@ export function createEmployeeTriggerRuntime(deps: {
           console.error("[employee-trigger] resume crashed", { database, employeeId, triggerId, message: error });
           return { outcome: "failed", triggerId, error };
         } finally {
-          await deps.sessions.close(database, employeeId).catch(() => undefined);
+          release?.();
+          await housekeeping(lane);
         }
       });
     },
 
+    onSignal(emitter) {
+      signalSubscribers.push(emitter);
+    },
+
     async stop() {
       started = false;
-      await Promise.allSettled([...chains.values()]);
+      for (const lane of lanes.values()) {
+        settleAllWaiters(lane, "failed", "employee-trigger-runtime-stopped");
+      }
+      // 等在途窗口排空（drain 循环在每条边界检查 started，跑完当前触发即退出）。
+      await Promise.allSettled([...lanes.values()].map((lane) => lane.tail));
+      for (const lane of lanes.values()) {
+        await inPersist(lane, () => closeLaneSession(lane)).catch(() => undefined);
+      }
+      lanes.clear();
     },
   };
 }
