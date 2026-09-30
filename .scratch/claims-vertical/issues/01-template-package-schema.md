@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 Label: ready-for-agent
 
 # CV-01 — 模板包通用 schema 与权限
@@ -28,3 +28,15 @@ Label: ready-for-agent
 ## Blocked by
 
 None - can start immediately
+
+## Comments
+
+- 2026-09-30 CV-01 实施记录（对照既有 OIP 能力）：
+  - `key` 唯一、label/description、管理员写/成员只读：`011-workbook-template.surql` 已覆盖（OIP-01）。
+  - 数据表定义数组与每列别名：`012` `sheet_defs` 已覆盖；顶层 `column_defs` 保留为旧模板兼容输入（OIP-01）。
+  - 模板内跨表引用声明：`013` `reference_sheet_key` 已覆盖（OIP-03）。
+  - 可选样例记录：`014` `sample_records` 已覆盖（OIP-04）。
+  - 可选 agent 领域提示对象：`018` `row_analysis` 已覆盖（OIP-17）。
+  - 共享 DTO `shared/src/dto/workbook-template.ts` 与 schema 同口径（storedDef snake_case），无第二套列描述语言。
+  - 缺口与本次新增：既有权限集成测试依赖 `RUN_LOCAL_SURREALDB_TESTS`（CI 不跑）。新增 `server/src/db/workbook-template-contract.integration.test.ts`：spawn 内存 SurrealDB、应用 001-034 全量链并整体重放验证幂等，验证包行全字段（别名/引用/样例/领域提示）与旧 `column_defs` 行的成员可读、成员写/删/DDL 被拒、管理员会话增改删、`key` 唯一索引、SCHEMAFULL 拒未声明顶层字段。无新增 schema 增量（现有契约已覆盖全部验收标准），不改写/删除既有数据。
+  - 交接：模板包数据行与播种接线属 CV-02；多表实例化属 CV-03。
