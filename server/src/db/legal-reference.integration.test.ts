@@ -84,7 +84,7 @@ async function setupFixture(): Promise<Fixture> {
     `).collect();
 
     const scripts = await loadTemplateScripts();
-    for (const name of ["009-fn-current-user.surql", "031-legal-reference.surql"]) {
+    for (const name of ["009-fn-current-user.surql", "032-legal-reference.surql"]) {
       const script = scripts.find((candidate) => candidate.name === name);
       if (!script) throw new Error(`missing workspace migration: ${name}`);
       await root.query(script.sql).collect();
