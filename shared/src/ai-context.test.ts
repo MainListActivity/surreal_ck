@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildAiContextSnapshot } from "./ai-context";
+import { AiContextSnapshotSchema, buildAiContextSnapshot, createDefaultAiContextSnapshot } from "./ai-context";
 
 describe("buildAiContextSnapshot — 四种选择状态", () => {
   test("no-selection：只携带路由，workbook/sheet/selectedRow 全空，提示反映路由", () => {
@@ -193,5 +193,30 @@ describe("buildAiContextSnapshot — 快照独立性", () => {
       customer_name: "张三",
       attachment: { fileName: "a.pdf" },
     });
+  });
+});
+
+describe("AiContextSnapshotSchema 与默认快照", () => {
+  test("合法快照通过校验；多余键（如 workspaceSlug）被剥离", () => {
+    const parsed = AiContextSnapshotSchema.safeParse({
+      route: { screen: "editor", workbookId: "workbook:case" },
+      workbook: { id: "workbook:case", name: "台账" },
+      sheet: null,
+      selectedRow: null,
+      contextHint: "当前在表格工作簿",
+      workspaceSlug: "ws_demo",
+    });
+    expect(parsed.success).toBe(true);
+    expect(parsed.data).not.toHaveProperty("workspaceSlug");
+  });
+
+  test("缺字段的空对象与残缺 route 被拒绝（对应省略 contextSnapshot 的历史崩溃路径）", () => {
+    expect(AiContextSnapshotSchema.safeParse({}).success).toBe(false);
+    expect(AiContextSnapshotSchema.safeParse({ route: {} }).success).toBe(false);
+    expect(AiContextSnapshotSchema.safeParse({ route: { screen: "home" } }).success).toBe(false);
+  });
+
+  test("createDefaultAiContextSnapshot 返回的快照自身通过 schema", () => {
+    expect(AiContextSnapshotSchema.safeParse(createDefaultAiContextSnapshot()).success).toBe(true);
   });
 });

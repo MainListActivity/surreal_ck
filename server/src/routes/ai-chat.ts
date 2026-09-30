@@ -3,8 +3,12 @@ import { validator } from "hono/validator";
 import type { MiddlewareHandler } from "hono";
 import type { Surreal } from "surrealdb";
 import { StringRecordId } from "surrealdb";
-import { AI_CHAT_ACTION_KEY, type AiContextSnapshot, type ResumeDecision } from "@surreal-ck/shared";
-import { ResumeAiWorkflowRequestSchema } from "@surreal-ck/shared";
+import type { AiContextSnapshot, ResumeDecision } from "@surreal-ck/shared";
+import {
+  AI_CHAT_ACTION_KEY,
+  AiContextSnapshotSchema,
+  ResumeAiWorkflowRequestSchema,
+} from "@surreal-ck/shared";
 import type { AppBindings } from "../hono-types";
 import { HttpError } from "../http-error";
 import { requireOidc } from "../middleware/oidc";
@@ -215,7 +219,16 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
       if (!message) {
         throw new HttpError(400, "chat-message-required", "message is required");
       }
-      const userContext = body?.contextSnapshot as AiContextSnapshot | undefined;
+      // contextSnapshot 可省略（service 会注入合法默认快照）；一旦提供就必须满足 schema，
+      // 在 signIn 之前 fail-fast——不能先 200 受理再让 workflow 内部炸出不透明错误。
+      let userContext: AiContextSnapshot | undefined;
+      if (body?.contextSnapshot !== undefined && body?.contextSnapshot !== null) {
+        const parsed = AiContextSnapshotSchema.safeParse(body.contextSnapshot);
+        if (!parsed.success) {
+          throw new HttpError(400, "chat-context-invalid", "contextSnapshot is invalid", parsed.error.flatten());
+        }
+        userContext = parsed.data as AiContextSnapshot;
+      }
       const composerMode = body?.composerMode === "resource-search" || body?.composerMode === "chat"
         ? (body.composerMode as "chat" | "resource-search")
         : undefined;

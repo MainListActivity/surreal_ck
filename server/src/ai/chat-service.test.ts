@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Surreal } from "surrealdb";
+import { AiContextSnapshotSchema, createDefaultAiContextSnapshot } from "@surreal-ck/shared";
 import type { AiContextSnapshot, ChatStreamEvent, ResumeDecision } from "@surreal-ck/shared";
 import { createRunBus } from "./run-bus";
 import { createAiChatService, type ChatRunner } from "./chat-service";
@@ -214,6 +215,80 @@ describe("AiChatService.startChat", () => {
     expect(closed).toEqual(["closed"]);
   });
 
+  test("resumer 短路返回 success 但未投递事件 → 兜底补发 done（终态缓存过期后的重复 resume）", async () => {
+    const bus = createRunBus();
+    const service = createAiChatService({
+      runBus: bus,
+      runner: async (i) => ({ runId: i.runId, finalText: "", status: "success" }),
+      // 模拟命中持久化 success 快照的短路：不发任何事件直接返回终态。
+      resumer: async (input) => ({ runId: input.runId, finalText: "已完成的答复", status: "success" }),
+    });
+
+    const events: ChatStreamEvent[] = [];
+    bus.subscribe("run-terminal", (e) => events.push(e));
+    await service.resumeChat({
+      runId: "run-terminal",
+      decision: { kind: "write-confirmed" },
+      surrealSession: fakeSession,
+      ownerSubject: "user-123",
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const done = events.find((e) => e.kind === "done");
+    expect(done).toBeDefined();
+    expect((done as { message: { content: string } }).message.content).toBe("已完成的答复");
+  });
+
+  test("resumer 返回 cancelled（run 不存在或已结束）→ 兜底补发 error 终态，订阅者不挂空", async () => {
+    const bus = createRunBus();
+    const service = createAiChatService({
+      runBus: bus,
+      runner: async (i) => ({ runId: i.runId, finalText: "", status: "success" }),
+      resumer: async (input) => ({ runId: input.runId, finalText: "", status: "cancelled" }),
+    });
+
+    const events: ChatStreamEvent[] = [];
+    bus.subscribe("run-ended", (e) => events.push(e));
+    await service.resumeChat({
+      runId: "run-ended",
+      decision: { kind: "write-confirmed" },
+      surrealSession: fakeSession,
+      ownerSubject: "user-123",
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(events.find((e) => e.kind === "error")).toMatchObject({ kind: "error", code: "chat-run-ended" });
+  });
+
+  test("resumer 自己已发 done → 兜底不重复补发终态", async () => {
+    const bus = createRunBus();
+    const service = createAiChatService({
+      runBus: bus,
+      runner: async (i) => ({ runId: i.runId, finalText: "", status: "success" }),
+      resumer: async (input) => {
+        input.pushChunk({
+          streamId: input.streamId,
+          type: "done",
+          message: { id: "m1", role: "assistant", content: "完成", createdAt: "t", context: ctx },
+          toolCalls: [],
+        });
+        return { runId: input.runId, finalText: "完成", status: "success" };
+      },
+    });
+
+    const events: ChatStreamEvent[] = [];
+    bus.subscribe("run-dedup", (e) => events.push(e));
+    await service.resumeChat({
+      runId: "run-dedup",
+      decision: { kind: "write-confirmed" },
+      surrealSession: fakeSession,
+      ownerSubject: "user-123",
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(events.filter((e) => e.kind === "done")).toHaveLength(1);
+  });
+
   test("resumeChat 未注入 resumer → 抛错（路由层会翻成 501/500）", async () => {
     const bus = createRunBus();
     const service = createAiChatService({
@@ -228,6 +303,22 @@ describe("AiChatService.startChat", () => {
         ownerSubject: "user-123",
       }),
     ).rejects.toThrow(/resumer not configured/);
+  });
+
+  test("省略 userContext → runner 收到通过 schema 校验的默认快照（非 {}）", async () => {
+    const bus = createRunBus();
+    let capturedInput: Parameters<ChatRunner>[0] | undefined;
+    const runner: ChatRunner = async (input) => {
+      capturedInput = input;
+      return { runId: input.runId, finalText: "", status: "success" };
+    };
+    const service = createAiChatService({ runBus: bus, runner });
+
+    await service.startChat({ runId: "run-noctx", message: "嗨", surrealSession: fakeSession, ownerSubject: "u" });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(capturedInput?.userContext).toEqual(createDefaultAiContextSnapshot());
+    expect(AiContextSnapshotSchema.safeParse(capturedInput?.userContext).success).toBe(true);
   });
 
   test("runner 抛错 → publish error 事件，不向上抛（startChat 已经 resolve）", async () => {
