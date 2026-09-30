@@ -14,6 +14,7 @@ import {
   type EmployeeRuntimeSupervisor,
   type EmployeeStartupProgress,
 } from "./employee-supervisor";
+import { registerQaProbeHandler } from "./qa-probe";
 
 /**
  * 生产装配：进程内单例 employee runtime + 生命周期服务 + 启动监督。
@@ -56,6 +57,8 @@ export function getEmployeeTriggerRuntime(): EmployeeTriggerRuntime {
     shutdownDeadlineMs: env.EMPLOYEE_RUNTIME_SHUTDOWN_DEADLINE_MS,
     abortGraceMs: env.EMPLOYEE_SHUTDOWN_ABORT_GRACE_MS,
   });
+  // qa-probe 诊断 handler 常驻共享单例：内部投递口随时可用，不依赖 dispatcher 启动顺序。
+  registerQaProbeHandler(sharedTriggerRuntime);
   return sharedTriggerRuntime;
 }
 
