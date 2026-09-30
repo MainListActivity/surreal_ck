@@ -3,6 +3,7 @@ import type { MiddlewareHandler } from "hono";
 import type { AppBindings } from "../hono-types";
 import { HttpError } from "../http-error";
 import { requireOidc } from "../middleware/oidc";
+import type { EmployeeRuntime } from "../../ai/office/employee-runtime";
 import type { EmployeeLifecycle, EmployeeLifecycleResult } from "../../ai/office/employee-lifecycle";
 
 /**
@@ -47,6 +48,7 @@ function assertAdminScope(user: AppBindings["Variables"]["user"], dbName: string
 
 export function createEmployeeRoutes(input: {
   lifecycle: EmployeeLifecycle;
+  runtime: Pick<EmployeeRuntime, "inspect">;
   resolveWorkspace: (slug: string) => Promise<{ dbName: string } | null>;
   requireUser?: () => MiddlewareHandler<AppBindings>;
 }): Hono<AppBindings> {
@@ -64,6 +66,20 @@ export function createEmployeeRoutes(input: {
     assertAdminScope(c.var.user, workspace.dbName);
     return workspace.dbName;
   }
+
+  routes.get("/api/internal/workspaces/:slug/employees/:employeeKey/runtime", requireUser(), async (c) => {
+    const database = await scopedDb(c);
+    const employeeKey = c.req.param("employeeKey");
+    if (!/^[a-z][a-z0-9_]{0,62}$/i.test(employeeKey)) {
+      throw new HttpError(400, "employee-id-invalid", "员工 key 格式不合法");
+    }
+    c.header("Cache-Control", "no-store");
+    try {
+      return c.json(await input.runtime.inspect(database, `user:${employeeKey}`));
+    } catch {
+      throw new HttpError(503, "employee-runtime-unavailable", "员工会话观测暂不可用");
+    }
+  });
 
   routes.post("/api/workspaces/:slug/employees", requireUser(), async (c) => {
     await scopedDb(c);

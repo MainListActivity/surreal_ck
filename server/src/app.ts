@@ -105,8 +105,10 @@ import { createEmployeeRoutes } from "./routes/employees";
 import { createOfficeRoutes, type OfficeBootstrapAction } from "./routes/office";
 import {
   createProductionEmployeeLifecycle,
+  getEmployeeRuntime,
   resolveWorkspaceBySlug,
 } from "../ai/office/employee-service";
+import type { EmployeeRuntime } from "../ai/office/employee-runtime";
 import { createProductionOfficeBootstrap } from "../ai/office/office-trigger-adapter";
 import type { EmployeeLifecycle } from "../ai/office/employee-lifecycle";
 import { AiAllowanceService, type Queryable as AllowanceQueryable } from "./ai-allowance/service";
@@ -151,6 +153,7 @@ export type AppOptions = {
   discoverService?: DiscoverService;
   contentReaderExchange?: ContentReaderExchangeHandler;
   /** 虚拟员工生命周期服务（VER02）；默认生产装配。 */
+  employeeRuntime?: Pick<EmployeeRuntime, "inspect">;
   employeeLifecycle?: EmployeeLifecycle;
   /** slug → db_name 解析（路由层 scope 校验用）；默认 root 读 _system。 */
   employeeWorkspaceResolver?: (slug: string) => Promise<{ dbName: string } | null>;
@@ -320,6 +323,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     .route("/", createMemberRoutes(memberManager, options.requireUser))
     .route("/", createEmployeeRoutes({
       lifecycle: options.employeeLifecycle ?? createProductionEmployeeLifecycle(),
+      runtime: options.employeeRuntime ?? getEmployeeRuntime(),
       resolveWorkspace: options.employeeWorkspaceResolver ?? resolveWorkspaceBySlug,
       requireUser: options.requireUser,
     }))

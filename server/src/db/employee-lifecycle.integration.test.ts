@@ -126,7 +126,13 @@ async function readSecret(fixture: Fixture, employeeId: string): Promise<string 
 describe("employee lifecycle against real SurrealDB", () => {
   test("create→pause→resume→retire 全程：幂等、SIGNIN 门控、凭证旋转", async () => {
     const fixture = await setupFixture();
+    const disconnected = new Set<Surreal>();
     const runtime = createEmployeeRuntime({
+      connect: () => {
+        const db = new Surreal();
+        db.subscribe("disconnected", () => { disconnected.add(db); });
+        return db;
+      },
       surrealUrl: fixture.url,
       namespace: fixture.namespace,
     });
@@ -172,6 +178,8 @@ describe("employee lifecycle against real SurrealDB", () => {
     expect(first.created).toBe(true);
     expect(first.employee.status).toBe("active");
     const employeeId = first.employee.id;
+    const observation = await runtime.inspect(fixture.database, employeeId);
+    expect(observation).toMatchObject({ usable: true, sessionPresent: true, generation: 1 });
     const secret = await readSecret(fixture, employeeId);
     expect(secret).toBeTruthy();
 
@@ -198,13 +206,21 @@ describe("employee lifecycle against real SurrealDB", () => {
     expect(String(who?.[0]?.id ?? "")).toBe(employeeId);
     expect(who?.[0]?.role).toBe("project-manager");
 
+    const originalSession = runtime.session(fixture.database, employeeId)!;
+    expect(disconnected.has(originalSession)).toBe(false);
     // pause：关闭 runtime 会话，DB 层 SIGNIN 同步拒绝
     expect((await lifecycle.pause("acme", employeeId.slice(5), "owner-sub")).kind).toBe("ok");
     expect(runtime.session(fixture.database, employeeId)).toBeUndefined();
+    expect(await runtime.inspect(fixture.database, employeeId)).toMatchObject({ usable: false, closeConfirmed: true });
+    expect(disconnected.has(originalSession)).toBe(true);
+    expect(originalSession.status).toBe("disconnected");
+    await expect(runtime.openSession(fixture.database, employeeId)).rejects.toThrow("employee-session-blocked");
     await expect(employeeSignin(fixture, first.employee.subject, secret!)).rejects.toThrow();
 
     // resume：恢复后可再次 SIGNIN
     expect((await lifecycle.resume("acme", employeeId.slice(5), "owner-sub")).kind).toBe("ok");
+    expect(await runtime.inspect(fixture.database, employeeId)).toMatchObject({ usable: true, generation: 3, instanceId: observation.instanceId });
+    const resumedSession = runtime.session(fixture.database, employeeId)!;
     const revived = await employeeSignin(fixture, first.employee.subject, secret!);
     expect(revived).toBeDefined();
 
@@ -213,6 +229,9 @@ describe("employee lifecycle against real SurrealDB", () => {
     expect(retired.kind).toBe("ok");
     if (retired.kind !== "ok") return;
     expect(retired.credentialsExpireBy).toBeTruthy();
+    expect(await runtime.inspect(fixture.database, employeeId)).toMatchObject({ usable: false, closeConfirmed: true });
+    expect(disconnected.has(resumedSession)).toBe(true);
+    expect(resumedSession.status).toBe("disconnected");
     const rotated = await readSecret(fixture, employeeId);
     expect(rotated).toBeTruthy();
     expect(rotated).not.toBe(secret);
