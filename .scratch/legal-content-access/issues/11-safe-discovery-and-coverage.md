@@ -4,7 +4,7 @@
 
 **Blocked by:** [01 — 将内容维护迁到独立内容库](01-isolated-content-publishing.md)；[02 — 工作区绑定产品套餐并展示内容权益](02-product-entitlement-assignment.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **ID:** SCK-LCA-11
 **确认时序号:** 12

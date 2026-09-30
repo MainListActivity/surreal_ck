@@ -9,6 +9,7 @@
   import ContentReaderScreen from "./screens/ContentReaderScreen.svelte";
   import NoWorkspaceScreen from "./screens/NoWorkspaceScreen.svelte";
   import PlaceholderScreen from "./screens/PlaceholderScreen.svelte";
+  import DiscoverScreen from "./screens/DiscoverScreen.svelte";
   import BillingQuotaScreen from "./screens/BillingQuotaScreen.svelte";
   import QuotaOperationsScreen from "./screens/QuotaOperationsScreen.svelte";
   import { isAuthenticated, logout, refresh, requireAuthenticatedRoute } from "./lib/auth";
@@ -35,6 +36,7 @@
       || value.kind === "callback"
       || value.kind === "form"
       || value.kind === "form-success"
+      || value.kind === "discover"
     );
   }
 
@@ -119,6 +121,7 @@
       || r.kind === "callback"
       || r.kind === "form"
       || r.kind === "form-success"
+      || r.kind === "discover"
       || r.kind === "ops"
       || r.kind === "billing-quota"
     ) {
@@ -173,8 +176,10 @@
       return;
     }
 
-    if (route.kind === "form" || route.kind === "form-success") {
+    if (route.kind === "form" || route.kind === "form-success" || route.kind === "discover") {
+      // 公开路由不强制登录；已登录访客静默刷新 token，让 evaluate 可走成员路径。
       ready = true;
+      if (route.kind === "discover" && isAuthenticated()) void refreshSession();
       return;
     }
 
@@ -223,6 +228,8 @@
       onaction={() => navigateTo("/auth/login")}
     />
   </main>
+{:else if route.kind === "discover"}
+  <DiscoverScreen onlogin={() => navigateTo("/auth/login")} />
 {:else if ready && isAuthenticated()}
   {#if route.kind === "ops"}
     <QuotaOperationsScreen

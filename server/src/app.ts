@@ -37,7 +37,7 @@ import { createWorkspaceScopeModule, type WorkspaceScopeModule } from "./workspa
 import type { AppBindings } from "./hono-types";
 import type { MiddlewareHandler } from "hono";
 import { createQuotaRoutes, type QuotaReadPort } from "./routes/quota";
-import { getRootConnection } from "./db/root-connection";
+import { getRootConnection, getRootDatabaseSession } from "./db/root-connection";
 import { SurrealNativeQuotaClient } from "./db/native-quota/client";
 import { QuotaInfoCache } from "./quota/quota-info-cache";
 import { SurrealQuotaAuthorityReader } from "./quota/quota-authority-reader";
@@ -95,6 +95,8 @@ import { SurrealOpsRunStore } from "./ops-run/store";
 import { createOpsRunRoutes } from "./routes/ops-run";
 import { ProductEntitlementService } from "./product-entitlement/service";
 import { SurrealProductEntitlementStore } from "./product-entitlement/store";
+import { createDiscoverService, type DiscoverService } from "./discover/service";
+import { createDiscoverRoutes } from "./routes/discover";
 import { createProductEntitlementRoutes } from "./routes/product-entitlement";
 import { createContentReaderRoutes, type ContentReaderExchangeHandler } from "./routes/content-reader";
 import { createContentReaderExchangeHandler } from "./content/reader-handler";
@@ -103,7 +105,6 @@ import { createEmployeeRoutes } from "./routes/employees";
 import { createProductionEmployeeLifecycle, resolveWorkspaceBySlug } from "../ai/office/employee-service";
 import type { EmployeeLifecycle } from "../ai/office/employee-lifecycle";
 import { AiAllowanceService, type Queryable as AllowanceQueryable } from "./ai-allowance/service";
-import { getRootDatabaseSession } from "./db/root-connection";
 import { createOpsAiAllowanceRoutes } from "./routes/ops-ai-allowance";
 
 export type AppOptions = {
@@ -141,6 +142,8 @@ export type AppOptions = {
   opsAutonomyService?: OpsAutonomyService;
   opsRunService?: OpsRunService;
   productEntitlementService?: ProductEntitlementService;
+  /** LCA11 公开发现服务；测试可注入替身，默认走 publisher + _system root。 */
+  discoverService?: DiscoverService;
   contentReaderExchange?: ContentReaderExchangeHandler;
   /** 虚拟员工生命周期服务（VER02）；默认生产装配。 */
   employeeLifecycle?: EmployeeLifecycle;
@@ -269,6 +272,15 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     workspaceSession: async (db) => (await getRootDatabaseSession(db)) as unknown as AllowanceQueryable,
     systemSession: async () => (await getRootDatabaseSession("_system")) as unknown as AllowanceQueryable,
   });
+  const discoverService = options.discoverService ?? createDiscoverService({
+    content: contentPublisherQuery,
+    system: {
+      async query(sql, params) {
+        return (await getRootDatabaseSession("_system", env.SURREAL_NS)).query(sql, params);
+      },
+    },
+    entitlementStore: new SurrealProductEntitlementStore(),
+  });
   const quotaReadService =
     options.quotaReadService ?? createDefaultQuotaReadService();
   const quotaOpsConsole =
@@ -331,6 +343,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
       ),
     )
     .route("/", createContentRoutes({ service: platformContentService, requireUser: options.requireUser }))
+    .route("/", createDiscoverRoutes({ service: discoverService, requireUser: options.requireUser }))
     .route("/", createLegalContentRoutes({ requireUser: options.requireUser }))
     .route("/", createActivationSummaryRoutes({
       service: activationSummaryService,
