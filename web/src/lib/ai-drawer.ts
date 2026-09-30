@@ -28,6 +28,8 @@ export type AiDrawerChatClient = {
     contextSnapshot?: AiDrawerContextSnapshot;
     /** composer 显式提交模式；resource-search 确定性进入资源检索子 agent（RR-011/RR-014）。 */
     composerMode?: AiComposerMode;
+    /** 提交级幂等键：重试复用同一键，服务端预留不重复扣款（LCA05）。 */
+    idempotencyKey?: string;
   }): Promise<ChatRunStart>;
   resumeChat(runId: string, decision: ResumeDecision): Promise<ChatRunStart>;
 };
@@ -130,6 +132,8 @@ type RetryableRequest = {
   contextSnapshot: AiDrawerContextSnapshot;
   composerMode?: AiComposerMode;
   assistantMessageId: string;
+  /** 提交级幂等键：发送与重试共用，服务端据此复用同一预留。 */
+  idempotencyKey: string;
 };
 
 type PendingRunCompletion = {
@@ -160,6 +164,11 @@ function aiErrorMessage(error: unknown): string {
   ) {
     return "当前环境未配置 AI 服务";
   }
+  if (code === "ai-allowance-insufficient") return "本工作区 AI 额度不足，请联系管理员充值或等待周期刷新。";
+  if (code === "ai-action-unmetered" || code === "ai-action-not-entitled") {
+    return "当前套餐未开通该 AI 能力，请联系工作区管理员。";
+  }
+  if (code === "ai-allowance-unavailable") return "AI 额度账本暂不可用，请稍后重试。";
   if (code === "stream-timeout") return STREAM_TIMEOUT_MESSAGE;
   if (/forbidden|unauthori[sz]ed|permission|signin-failed|access denied/u.test(searchable)) {
     return "没有权限执行此操作，请联系工作区管理员。";
@@ -522,6 +531,7 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
       contextSnapshot,
       ...(sendOptions?.composerMode ? { composerMode: sendOptions.composerMode } : {}),
       assistantMessageId: assistantMessage.id,
+      idempotencyKey: createId(),
     });
 
     state.messages = [...state.messages, userMessage, assistantMessage];
@@ -535,6 +545,7 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
         message: content,
         contextSnapshot,
         ...(sendOptions?.composerMode ? { composerMode: sendOptions.composerMode } : {}),
+        idempotencyKey: retryableRequests.get(userMessage.id)?.idempotencyKey,
       });
       connectRun(run, assistantMessage.id, true);
     } catch (error) {
@@ -572,6 +583,7 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
         message: request.message,
         contextSnapshot: request.contextSnapshot,
         ...(request.composerMode ? { composerMode: request.composerMode } : {}),
+        idempotencyKey: request.idempotencyKey,
       });
       connectRun(run, assistantMessage.id, true);
     } catch (error) {

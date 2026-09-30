@@ -104,6 +104,8 @@ import { createContentSearchExchangeHandler } from "./content/search-exchange";
 import { createEmployeeRoutes } from "./routes/employees";
 import { createProductionEmployeeLifecycle, resolveWorkspaceBySlug } from "../ai/office/employee-service";
 import type { EmployeeLifecycle } from "../ai/office/employee-lifecycle";
+import { AiAllowanceService, type Queryable as AllowanceQueryable } from "./ai-allowance/service";
+import { createOpsAiAllowanceRoutes } from "./routes/ops-ai-allowance";
 
 export type AppOptions = {
   workspaceScope?: WorkspaceScopeModule;
@@ -147,6 +149,8 @@ export type AppOptions = {
   employeeLifecycle?: EmployeeLifecycle;
   /** slug → db_name 解析（路由层 scope 校验用）；默认 root 读 _system。 */
   employeeWorkspaceResolver?: (slug: string) => Promise<{ dbName: string } | null>;
+  /** LCA05 共享 AI 额度门禁；注入后 /api/chat 新 run 在启动 workflow 前原子预留。 */
+  aiAllowance?: AiAllowanceService;
 };
 
 type AiStreamWebSocket = ReturnType<typeof createAiStreamRoutes>["websocket"];
@@ -264,6 +268,10 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
   const productEntitlementService = options.productEntitlementService
     ?? new ProductEntitlementService(new SurrealProductEntitlementStore());
   const autoAiChatService = options.aiChatService ?? buildAutoAiChatService(runBus, platformContentService, embeddingProvider);
+  const aiAllowanceService = options.aiAllowance ?? new AiAllowanceService({
+    workspaceSession: async (db) => (await getRootDatabaseSession(db)) as unknown as AllowanceQueryable,
+    systemSession: async () => (await getRootDatabaseSession("_system")) as unknown as AllowanceQueryable,
+  });
   const discoverService = options.discoverService ?? createDiscoverService({
     content: contentPublisherQuery,
     system: {
@@ -360,9 +368,11 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
         service: autoAiChatService ?? NOT_WIRED_AI_SERVICE,
         createCallerSession: options.createCallerSession ?? ((rawToken) => createCallerSession(rawToken)),
         registry: runRegistry,
+        allowance: aiAllowanceService,
         requireUser: options.requireUser,
       }),
     )
+    .route("/", createOpsAiAllowanceRoutes({ service: aiAllowanceService }))
     .route("/", aiStream.routes)
     .route(
       "/",

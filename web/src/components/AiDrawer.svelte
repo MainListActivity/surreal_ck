@@ -30,6 +30,15 @@
     type PersistDashboardDraftResult,
   } from "../features/dashboard/lib/dashboard-draft-card";
   import { getSurreal } from "../lib/surreal";
+  import {
+    aiAllowanceBucketKindLabels,
+    aiAllowanceBucketStatusLabel,
+    aiAllowanceLedgerKindLabels,
+    aiAllowanceLedgerSign,
+    formatAllowanceTime,
+    loadAiAllowanceSnapshot,
+  } from "../lib/ai-allowance";
+  import type { AiAllowanceSnapshot } from "@surreal-ck/shared";
   import type {
     ChatStreamEvent,
     DashboardDraftIntent,
@@ -101,6 +110,7 @@
             message: input.message,
             contextSnapshot: input.contextSnapshot,
             composerMode: input.composerMode,
+            idempotencyKey: input.idempotencyKey,
           },
         });
         return expectJson<ChatRunStart>(res, "AI 消息发送失败。");
@@ -132,6 +142,37 @@
   $effect(() => {
     session.syncWorkspace(workspaceSlug);
     drawerState = session.snapshot();
+  });
+
+  // LCA05：共享 AI 额度只读快照——打开抽屉/切换工作区时加载，run 终态后刷新。
+  let allowance = $state<AiAllowanceSnapshot | null>(null);
+  let allowanceTimer: ReturnType<typeof setTimeout> | null = null;
+  async function refreshAllowance() {
+    if (!open || !workspaceSlug) {
+      allowance = null;
+      return;
+    }
+    try {
+      allowance = await loadAiAllowanceSnapshot(getSurreal());
+    } catch {
+      allowance = null;
+    }
+  }
+  $effect(() => {
+    if (!open || !workspaceSlug) {
+      allowance = null;
+      return;
+    }
+    void refreshAllowance();
+  });
+  $effect(() => {
+    // run 到达终态（activeRun 清空、sending 归位）后延迟刷新一次账本。
+    if (drawerState.sending || drawerState.activeRun) return;
+    if (allowanceTimer) clearTimeout(allowanceTimer);
+    allowanceTimer = setTimeout(() => void refreshAllowance(), 800);
+  });
+  onDestroy(() => {
+    if (allowanceTimer) clearTimeout(allowanceTimer);
   });
 
   $effect(() => {
@@ -431,6 +472,51 @@
       {/if}
     </div>
 
+    {#if allowance?.quote}
+      <div class="allowance-line" role="status">
+        <Coins size={12} />
+        本次预计消耗 {allowance.quote.amount} AI 额度 · 可用 {allowance.available}
+        {#if allowance.reserved > 0}· 预留中 {allowance.reserved}{/if}
+        {#if allowance.suspended > 0}· 暂停 {allowance.suspended}{/if}
+        {#if allowance.expired > 0}· 已过期 {allowance.expired}{/if}
+        {#if allowance.available < allowance.quote.amount}
+          <span class="allowance-low">额度不足</span>
+        {/if}
+        {#if allowance.notices[0]}
+          <span class="allowance-notice">{allowance.notices[0].message}</span>
+        {/if}
+      </div>
+    {/if}
+    {#if allowance && (allowance.buckets.length > 0 || allowance.entries.length > 0)}
+      <details class="allowance-ledger">
+        <summary>额度明细与消费记录</summary>
+        {#if allowance.buckets.length > 0}
+          <ul class="allowance-buckets">
+            {#each allowance.buckets as bucket (bucket.id)}
+              <li>
+                <span class="bucket-label">{bucket.label || aiAllowanceBucketKindLabels[bucket.kind]}</span>
+                <span class="bucket-amount">{bucket.available + bucket.reserved}/{bucket.total}</span>
+                <span class="bucket-meta">
+                  {aiAllowanceBucketStatusLabel(bucket)}{#if formatAllowanceTime(bucket.expires_at)} · {formatAllowanceTime(bucket.expires_at)} 到期{/if}
+                </span>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+        {#if allowance.entries.length > 0}
+          <ul class="allowance-entries">
+            {#each allowance.entries as entry (entry.id)}
+              <li>
+                <span class="entry-kind">{aiAllowanceLedgerKindLabels[entry.kind]}</span>
+                <span class="entry-amount">{aiAllowanceLedgerSign(entry.kind)}{entry.amount}</span>
+                {#if entry.note}<span class="entry-note">{entry.note}</span>{/if}
+                <span class="entry-time">{formatAllowanceTime(entry.created_at)}</span>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </details>
+    {/if}
     <form class="composer" onsubmit={(event) => { event.preventDefault(); void sendPrompt(); }}>
       <textarea
         bind:value={prompt}
@@ -759,6 +845,80 @@
     padding: 12px 18px 16px;
     border-top: 1px solid var(--border);
     background: var(--surface);
+  }
+
+  .allowance-line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 18px 0;
+    color: var(--text-muted, #6b7280);
+    font-size: 12px;
+  }
+
+  .allowance-line .allowance-low {
+    color: var(--error, #dc2626);
+    font-weight: 600;
+  }
+
+  .allowance-line .allowance-notice {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .allowance-ledger {
+    padding: 2px 18px 0;
+    color: var(--text-muted, #6b7280);
+    font-size: 12px;
+  }
+
+  .allowance-ledger summary {
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .allowance-ledger ul {
+    margin: 4px 0 2px;
+    padding: 0 0 0 14px;
+    list-style: none;
+    max-height: 160px;
+    overflow-y: auto;
+  }
+
+  .allowance-ledger li {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    padding: 2px 0;
+  }
+
+  .allowance-buckets .bucket-label {
+    flex-shrink: 0;
+    color: var(--text, #374151);
+  }
+
+  .allowance-buckets .bucket-meta,
+  .allowance-entries .entry-time {
+    margin-left: auto;
+    flex-shrink: 0;
+    font-size: 11px;
+  }
+
+  .allowance-entries .entry-kind {
+    flex-shrink: 0;
+  }
+
+  .allowance-entries .entry-amount {
+    flex-shrink: 0;
+    font-variant-numeric: tabular-nums;
+    color: var(--text, #374151);
+  }
+
+  .allowance-entries .entry-note {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .send-error {
