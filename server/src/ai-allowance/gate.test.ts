@@ -32,10 +32,10 @@ function useUser(): MiddlewareHandler<AppBindings> {
   };
 }
 
-/** 带 fn::current_user() 响应的假会话。 */
+/** 带 fn::current_user() 响应的假会话（thenable 语义：await 得语句结果数组）。 */
 const fakeSession = {
-  query() {
-    return { collect: async () => [["user:1"]] };
+  async query() {
+    return [["user:1"]];
   },
   async close() {},
 } as unknown as Surreal;
@@ -137,6 +137,63 @@ describe("/api/chat AI 额度门禁", () => {
     expect(finishCalls).toHaveLength(1);
     await new Promise((r) => setImmediate(r));
     expect(finishCalls[0]).toMatchObject({ db: "ws_test", outcome: "failure" });
+  });
+
+  test("账本不可用 → 503 ai-allowance-unavailable，不启动 run", async () => {
+    const allowance: AiAllowanceGate = {
+      async reserve() {
+        throw new AiAllowanceError("ai-allowance-unavailable", "allowance ledger is unavailable; retry later");
+      },
+      async finishByRun() {},
+    };
+    const app = makeApp(allowance, {});
+    const res = await app.request("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "hi" }),
+    });
+    expect(res.status).toBe(503);
+    const body = await res.json() as { error: { code: string } };
+    expect(body.error.code).toBe("ai-allowance-unavailable");
+  });
+
+  test("调用者会话查询失败 → 503 chat-actor-unavailable，不启动 run", async () => {
+    const brokenSession = {
+      async query() {
+        throw new Error("connection reset");
+      },
+      async close() {},
+    } as unknown as Surreal;
+    const allowance: AiAllowanceGate = {
+      async reserve() {
+        return { metered: true };
+      },
+      async finishByRun() {},
+    };
+    const service: AiChatService = {
+      async startChat() {},
+      async resumeChat() {},
+    };
+    const app = new Hono<AppBindings>();
+    app.onError(handleError);
+    app.route(
+      "/",
+      createAiChatRoutes({
+        service,
+        createCallerSession: async () => brokenSession,
+        registry: createRunRegistry(),
+        allowance,
+        requireUser: () => useUser(),
+      }),
+    );
+    const res = await app.request("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "hi" }),
+    });
+    expect(res.status).toBe(503);
+    const body = await res.json() as { error: { code: string } };
+    expect(body.error.code).toBe("chat-actor-unavailable");
   });
 
   test("未注入门禁 → 不计量（向后兼容）", async () => {

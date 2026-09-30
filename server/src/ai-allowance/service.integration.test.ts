@@ -49,18 +49,16 @@ async function provision(database: string): Promise<{ session: Queryable }> {
 /** 权益快照 stub：entitled 集合返回 ai_actions，其余 db 返回 null（遗留未计量）。 */
 function fakeSystem(entitled: Readonly<Record<string, readonly string[]>>): Queryable {
   return {
-    query: (sql: string, bindings?: Record<string, unknown>) => ({
-      collect: async () => {
-        const db = String(bindings?.db ?? bindings?.w ?? "");
-        if (sql.includes("current_product_entitlement")) {
-          return [[entitled[db] ? { ai_actions: [...entitled[db]] } : null]];
-        }
-        if (sql.includes("db_name") || sql.includes("slug")) {
-          return [[{ db_name: db }]];
-        }
-        return [[]];
-      },
-    }),
+    query: async (sql: string, bindings?: Record<string, unknown>) => {
+      const db = String(bindings?.db ?? bindings?.w ?? "");
+      if (sql.includes("current_product_entitlement")) {
+        return [[entitled[db] ? { ai_actions: [...entitled[db]] } : null]];
+      }
+      if (sql.includes("db_name") || sql.includes("slug")) {
+        return [[{ db_name: db }]];
+      }
+      return [[]];
+    },
   };
 }
 
