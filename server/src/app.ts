@@ -107,6 +107,7 @@ import type { EmployeeRuntime } from "../ai/office/employee-runtime";
 import type { EmployeeLifecycle } from "../ai/office/employee-lifecycle";
 import { AiAllowanceService, type Queryable as AllowanceQueryable } from "./ai-allowance/service";
 import { createOpsAiAllowanceRoutes } from "./routes/ops-ai-allowance";
+import { createContentResearchSessionFactory, type ContentResearchSessionFactory } from "./research/window";
 
 export type AppOptions = {
   workspaceScope?: WorkspaceScopeModule;
@@ -153,6 +154,8 @@ export type AppOptions = {
   employeeWorkspaceResolver?: (slug: string) => Promise<{ dbName: string } | null>;
   /** LCA05 共享 AI 额度门禁；注入后 /api/chat 新 run 在启动 workflow 前原子预留。 */
   aiAllowance?: AiAllowanceService;
+  /** LCA06：调用者 content_reader 研究窗口工厂；默认生产装配（search exchange 复用）。 */
+  createContentResearchSession?: ContentResearchSessionFactory;
 };
 
 type AiStreamWebSocket = ReturnType<typeof createAiStreamRoutes>["websocket"];
@@ -191,6 +194,8 @@ function buildAutoAiChatService(
     jevConfidenceThreshold: env.JEV_CONFIDENCE_THRESHOLD,
     // 资源检索查询向量与保存路径共用同一服务端 embedding key（RR-014）
     embeddingProvider,
+    // LCA06：授权法律研究窗口（content_reader 会话服务端自持；复用 LCA04 search exchange）
+    createContentResearchSession: createContentResearchSessionFactory(),
   });
   return createAiChatService({ runBus, runner, resumer });
 }
@@ -372,6 +377,8 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
         createCallerSession: options.createCallerSession ?? ((rawToken) => createCallerSession(rawToken)),
         registry: runRegistry,
         allowance: aiAllowanceService,
+        createContentResearchSession:
+          options.createContentResearchSession ?? createContentResearchSessionFactory(),
         requireUser: options.requireUser,
       }),
     )

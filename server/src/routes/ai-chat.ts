@@ -13,6 +13,8 @@ import type { AppBindings } from "../hono-types";
 import { HttpError } from "../http-error";
 import { requireOidc } from "../middleware/oidc";
 import { AiAllowanceError } from "../ai-allowance/service";
+import type { ContentResearchSessionFactory } from "../research/window";
+import type { OpenContentResearchSession } from "../../ai/mastra/workflows/router-workflow";
 import type { RunRegistry } from "../ai/run-registry";
 
 /** 用调用者 OIDC token 在 SurrealDB 上 authenticate 出一条会话（admin / participant access）。失败即抛。 */
@@ -33,6 +35,8 @@ export type AiChatService = {
     ownerSubject: string;
     /** composer 显式提交模式；resource-search 确定性进入资源检索子 agent。 */
     composerMode?: "chat" | "resource-search";
+    /** LCA06：调用者 content_reader 窗口工厂（路由层用调用者 token 构造；模型不可自选上下文）。 */
+    openContentSession?: OpenContentResearchSession;
     /** run 到达终态时回调一次（suspended 也回调——门禁据此决定释放还是保留预留）。 */
     onTerminal?: (outcome: RunTerminalOutcome) => void;
   }): Promise<void>;
@@ -66,6 +70,8 @@ export type AiChatRoutesDeps = {
   registry: RunRegistry;
   /** LCA05 共享 AI 额度门禁；未注入时 /api/chat 不计量（向后兼容）。 */
   allowance?: AiAllowanceGate;
+  /** LCA06：为调用者开设 content_reader 研究窗口的工厂；注入后 AI 研究可联合平台授权语料。 */
+  createContentResearchSession?: ContentResearchSessionFactory;
   requireUser?: () => MiddlewareHandler<AppBindings>;
 };
 
@@ -279,6 +285,11 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
           surrealSession: session,
           ownerSubject: user.subject,
           composerMode,
+          // 惰性工厂：executor 在执行窗口内才打开 content_reader 会话；闭包持有调用者 token，
+          // 不进入 workflow state / 消息 / 日志。
+          openContentSession: deps.createContentResearchSession
+            ? () => deps.createContentResearchSession!(user)
+            : undefined,
           onTerminal: meteredDb ? meteredTerminalHandler(meteredDb, runId) : undefined,
         });
       } catch (error) {

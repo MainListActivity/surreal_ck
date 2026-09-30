@@ -1,0 +1,242 @@
+/**
+ * LCA06 授权法律研究 agent：联合平台授权语料与工作区私有材料生成可核验回答。
+ *
+ * 与 resource-agent 的差异：
+ * - 执行窗口内同时持有调用者 workspace session 与 content_reader session
+ *   （openContentSession 由执行 runtime 注入，模型不能选择安全上下文）；
+ * - 平台语料经 Authorized Corpus 检索（关键词 + 结构化），证据句柄绑定精确版本、
+ *   定位、哈希与授权修订；模型只能引用已登记句柄，后处理剔除伪造与无许可引用；
+ * - 平台不可用/为空时降级为私有资料分析并显式标注 partial/unavailable；
+ * - 挂起（resource-candidates / manual-research）只携带工作区资源候选，
+ *   平台证据不进入 workflow state（LCA07 之前不沿用旧快照恢复）。
+ */
+import { Agent } from "@mastra/core/agent";
+import { ModelRouterLanguageModel } from "@mastra/core/llm";
+import type { Surreal } from "surrealdb";
+import type { AiContextSnapshot } from "@surreal-ck/shared";
+import type { SearchResourcesRequest, SearchResourcesResponse } from "@surreal-ck/shared/dto";
+import type { SubAgentExecutor, SubAgentOutput } from "../workflows/router-workflow";
+import { buildModelConfig, type AiSettings } from "./model-config";
+import type { ContentResearchWindow } from "../../../src/research/window";
+import {
+  RESEARCH_EVIDENCE_LIMIT,
+  retrieveAuthorizedCorpus,
+} from "../../../src/research/corpus-retrieval";
+import {
+  assembleResearchAnswerText,
+  buildResearchPrompt,
+  createEvidenceRegistry,
+  validateResearchAnswer,
+  type CorpusAvailability,
+} from "../../../src/research/research-answer";
+
+export const LEGAL_RESEARCH_AGENT_ID = "legalResearchAgent";
+
+export const LEGAL_RESEARCH_INSTRUCTIONS = `你是 Surreal CK 的授权法律研究助手。
+始终使用简体中文回答。
+你收到的提示词里只会包含已登记的授权证据片段；只允许引用其中标注的句柄编号。
+绝不编造句柄、版本号或条文文本；证据不足时明确说明缺口。`;
+
+export function createLegalResearchAgent(settings: AiSettings): Agent {
+  return new Agent({
+    name: "Legal Research Agent",
+    id: LEGAL_RESEARCH_AGENT_ID,
+    instructions: LEGAL_RESEARCH_INSTRUCTIONS,
+    model: new ModelRouterLanguageModel(buildModelConfig(settings)),
+  });
+}
+
+/** 生产/测试共用的回答模型：输入提示词，输出模型文本。 */
+export type ResearchAnswerModel = (prompt: string) => Promise<string>;
+
+export type LegalResearchExecutorDeps = {
+  /** 默认：用调用者 session 查 session::db()（workspace db 名即 workspace 标识）。 */
+  resolveWorkspaceId?(context: AiContextSnapshot, session?: Surreal): Promise<string>;
+  /** 工作区私有材料检索（调用者 workspace session；授权由 db 边界与 schema PERMISSIONS 保证）。 */
+  searchResources(req: SearchResourcesRequest, session?: Surreal): Promise<SearchResourcesResponse>;
+  /** 生成模型（真实装配用 Mastra agent；测试注入替身并检查提示词）。 */
+  answerModel: ResearchAnswerModel;
+};
+
+export function makeLegalResearchExecutor(deps: LegalResearchExecutorDeps): SubAgentExecutor {
+  const resolveWorkspaceId = deps.resolveWorkspaceId ?? resolveWorkspaceIdFromSession;
+  const searchResources = deps.searchResources;
+
+  return async ({ taskText, shared, surrealSession, openContentSession }): Promise<SubAgentOutput> => {
+    const workspaceId = await resolveWorkspaceId(shared.userContext, surrealSession);
+
+    // ── 执行窗口：workspace session（透传）+ content session（runtime 注入，可选） ──
+    const [privateSearch, corpusWindow] = await Promise.all([
+      searchResources({
+        workspaceId,
+        query: taskText,
+        context: buildResourceSearchContext(shared.userContext),
+        limit: 5,
+      }, surrealSession),
+      openContentSession
+        ? openContentSession()
+        : Promise.resolve({ kind: "unavailable" as const, reason: "platform_error" as const }),
+    ]);
+
+    try {
+      const corpusAvailability: CorpusAvailability = corpusWindow.kind === "ready"
+        ? "ready"
+        : corpusWindow.kind === "empty"
+          ? "empty"
+          : "unavailable";
+      const corpusNotice = corpusWindow.kind === "unavailable"
+        ? `平台语料暂不可用（${corpusWindow.reason}），本回答仅基于工作区私有资料（partial）。`
+        : corpusWindow.kind === "empty"
+          ? "平台语料当前没有可授权集合，本回答仅基于工作区私有资料（partial）。"
+          : undefined;
+
+      // ── 平台语料召回 + 证据登记（库层授权 + 本地校验双层） ──
+      let platformEvidence: Awaited<ReturnType<typeof retrieveAuthorizedCorpus>> = {
+        evidence: [],
+        rejected: [],
+        candidatesSeen: 0,
+      };
+      if (corpusWindow.kind === "ready") {
+        try {
+          platformEvidence = await retrieveAuthorizedCorpus({ session: corpusWindow.session, query: taskText });
+        } catch {
+          // 检索失败按平台不可用处理：不把原始错误带进模型上下文或日志。
+          platformEvidence = { evidence: [], rejected: [], candidatesSeen: 0 };
+        }
+      }
+
+      const registry = createEvidenceRegistry(RESEARCH_EVIDENCE_LIMIT);
+      for (const item of platformEvidence.evidence) {
+        registry.register({
+          sourceType: "platform",
+          title: item.title,
+          quote: item.quote,
+          quoteAllowed: item.quoteAllowed,
+          platform: {
+            versionId: item.versionId,
+            itemId: item.itemId,
+            versionPublicId: item.versionPublicId,
+            sourceKey: item.sourceKey,
+            sourceUrl: item.sourceUrl,
+            locator: item.locator,
+            quoteSha256: item.quoteSha256,
+            bodySha256: item.bodySha256,
+            kind: item.kind,
+            versionLabel: null,
+          },
+        });
+      }
+
+      // ── 私有材料证据：登记可作依据的片段（资源行来自调用者 workspace session） ──
+      for (const result of privateSearch.results) {
+        for (const item of result.resource.evidence) {
+          if (registry.size >= RESEARCH_EVIDENCE_LIMIT) break;
+          registry.register({
+            sourceType: "private",
+            title: result.resource.title,
+            quote: item.text,
+            private: {
+              resourceId: result.resource.id,
+              resourceType: result.resource.resourceType,
+              sourceUrl: result.resource.sourceUrl ?? null,
+              order: item.order,
+            },
+          });
+        }
+        if (registry.size >= RESEARCH_EVIDENCE_LIMIT) break;
+      }
+
+      const hasPlatformEvidence = platformEvidence.evidence.some((item) => item.quoteAllowed);
+      const hasAnyEvidence = registry.size > 0;
+
+      // ── 私有候选挂起：只在没有任何平台可引用证据时保持既有 UX ──
+      if (!hasPlatformEvidence && privateSearch.status === "candidates" && privateSearch.results.length > 0) {
+        return {
+          text: "找到了可能相关的资源，请选择要用于回答的资料。",
+          confirmed: {},
+          suspend: {
+            kind: "resource-candidates",
+            candidates: privateSearch.results.map((item) => ({
+              id: item.resource.id,
+              label: item.resource.title,
+              summary: item.resource.summary,
+              score: item.score,
+              resourceType: item.resource.resourceType,
+              sourceUrl: item.resource.sourceUrl,
+            })),
+          },
+        };
+      }
+
+      // ── 无任何证据：说明缺口，不调用模型生成假装有来源的法律结论 ──
+      if (!hasAnyEvidence) {
+        const gapText = assembleResearchAnswerText({
+          question: taskText,
+          registry,
+          corpusAvailability,
+          corpusNotice,
+          candidateRejections: platformEvidence.rejected.length,
+          analysisText: "",
+          rejected: [],
+          citedHandles: [],
+        });
+        return { text: gapText, confirmed: {} };
+      }
+
+      // ── 模型分析：提示词只含登记证据；替身/真实模型都从同一入口注入 ──
+      const prompt = buildResearchPrompt({ question: taskText, registry, corpusAvailability });
+      let analysisText = "";
+      let rejected: ReturnType<typeof validateResearchAnswer>["rejected"] = [];
+      let citations: ReturnType<typeof validateResearchAnswer>["citations"] = [];
+      try {
+        const modelText = await deps.answerModel(prompt);
+        const validated = validateResearchAnswer({ modelText, registry });
+        analysisText = modelText;
+        rejected = validated.rejected;
+        citations = validated.citations;
+      } catch {
+        analysisText = "模型分析暂不可用；以上证据仅作登记，不构成结论。";
+      }
+
+      const text = assembleResearchAnswerText({
+        question: taskText,
+        registry,
+        corpusAvailability,
+        corpusNotice,
+        candidateRejections: platformEvidence.rejected.length,
+        analysisText,
+        rejected,
+        citedHandles: citations.map((c) => c.index),
+      });
+
+      return {
+        text,
+        confirmed: {},
+        ...(citations.length > 0 ? { citations } : {}),
+      };
+    } finally {
+      if (corpusWindow.kind === "ready") await corpusWindow.close();
+    }
+  };
+}
+
+function buildResourceSearchContext(context: AiContextSnapshot): SearchResourcesRequest["context"] {
+  return {
+    selectedRow: context.selectedRow ?? undefined,
+    manualText: context.contextHint || undefined,
+  };
+}
+
+/** workspace-as-database：调用者 session 已绑定 workspace db，db 名即 workspace 标识。 */
+async function resolveWorkspaceIdFromSession(
+  _context: AiContextSnapshot,
+  session?: Surreal,
+): Promise<string> {
+  if (!session) {
+    throw new Error("legal-research executor 缺少调用者 surrealSession，无法解析 workspace");
+  }
+  const results = await session.query<[string | null]>("RETURN session::db();");
+  const db = results[0];
+  if (!db) throw new Error("调用者 session 未绑定 workspace database");
+  return String(db);
+}
