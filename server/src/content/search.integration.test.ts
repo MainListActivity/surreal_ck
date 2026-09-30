@@ -50,7 +50,7 @@ test("authorized catalog filters before pagination and count", async () => {
       CREATE content_publication_projection:b SET item=content_item:b, version=content_version:b, searchable_text='乙案', indexed_at=time::now(), publication_revision=1;
     `);
     await root.query("UPSERT platform_content_schema_version:current CONTENT { version: 6, applied_at: time::now() };");
-    expect((await ensurePlatformContentSchema(root, { namespace: "test", database: "content" })).appliedVersions).toEqual([7]);
+    expect((await ensurePlatformContentSchema(root, { namespace: "test", database: "content" })).appliedVersions).toEqual([7, 8]);
     await sync.connect(url, { namespace: "test", database: "content" });
     await sync.signin({ namespace: "test", database: "content", access: "content_projection_sync", variables: { pass } });
     // 回归（LCA04 生产 503 根因）：3.3 引擎要求 ORDER BY 字段在 SELECT 投影内，

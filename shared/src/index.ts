@@ -10,6 +10,7 @@ export * from "./ops-autonomy";
 export * from "./ops-run";
 export * from "./content-reader";
 export * from "./content-search";
+export * from "./discover";
 export * from "./platform-content";
 export * from "./product-entitlement";
 export * from "./research-save";

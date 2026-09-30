@@ -4,9 +4,11 @@ export const CONTENT_ACTIONS = ["browse", "search", "read", "cite", "export"] as
 export const AI_TEMPLATE_ACTIONS = ["research", "generate"] as const;
 export const PRODUCT_ENTITLEMENT_RESOLVER_VERSION = "product-entitlement-v1";
 
-/** 来源许可可登记的全部动作：四个运营动词加上全部客户动作（含 AI）。 */
+/** 来源许可可登记的全部动作：四个运营动词 + discover 公开投影 + 全部客户动作（含 AI）。 */
 export const SOURCE_LICENSE_ACTIONS = [
   "submit", "publish", "withdraw", "restore",
+  // discover：许可允许该来源进入公开发现投影（只暴露安全元数据，不暴露正文）。
+  "discover",
   ...CONTENT_ACTIONS,
   ...AI_TEMPLATE_ACTIONS,
 ] as const;

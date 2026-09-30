@@ -14,6 +14,7 @@
  * - `/w/:slug/wb/:workbookId`                      → editor（默认 sheet）
  * - `/w/:slug/wb/:workbookId/sheet/:sheetId`       → editor（指定 sheet）
  * - `/form` / `/form-success`                      → 公开表单占位页
+ * - `/discover`                                    → 公开发现预览（访客可用）
  * - 其余                                            → home
  */
 export type WorkspacePage =
@@ -33,6 +34,7 @@ export type Route =
   | { kind: "home" }
   | { kind: "form" }
   | { kind: "form-success" }
+  | { kind: "discover" }
   | { kind: "ops" }
   | { kind: "billing-quota"; accountKey: string }
   | { kind: "workspace"; slug: string; page: WorkspacePage }
@@ -57,6 +59,7 @@ export function parseRoute(pathname: string): Route {
   if (pathname === "/auth/callback") return { kind: "callback" };
   if (pathname === "/form") return { kind: "form" };
   if (pathname === "/form-success") return { kind: "form-success" };
+  if (pathname === "/discover") return { kind: "discover" };
 
   const segments = pathname.split("/").filter(Boolean);
   if (segments[0] === "ops" && segments.length <= 2) {
@@ -121,4 +124,8 @@ export function billingQuotaPath(accountKey: string): string {
 
 export function opsQuotaPath(): string {
   return "/ops";
+}
+
+export function discoverPath(): string {
+  return "/discover";
 }
