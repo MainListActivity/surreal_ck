@@ -13,6 +13,7 @@ import type {
   TriggerEnvelope,
   TriggerHandler,
   TriggerSession,
+  WindowGates,
 } from "./employee-trigger-runtime";
 
 /**
@@ -48,6 +49,7 @@ const JobOutputSchema = z.object({ output: z.any() });
 type EmployeeJobRuntime = {
   session: TriggerSession;
   resolveHandler: (reason: string) => TriggerHandler | undefined;
+  gates: WindowGates;
 };
 
 type EmployeeRunDriverContext = {
@@ -55,6 +57,7 @@ type EmployeeRunDriverContext = {
   database: string;
   employeeId: string;
   resolveHandler: (reason: string) => TriggerHandler | undefined;
+  gates: WindowGates;
 };
 
 function buildEmployeeWorkflow() {
@@ -74,6 +77,7 @@ function buildEmployeeWorkflow() {
         effects: createEmployeeEffects(runtime.session, inputData.id),
         resumeData,
         suspend: suspend as (payload?: unknown) => Promise<never>,
+        ...runtime.gates.forTrigger(inputData as TriggerEnvelope),
       });
       return { output };
     },
@@ -142,6 +146,7 @@ export function createMastraEmployeeDriver(
     requestContext.set(EMPLOYEE_RUNTIME_KEY, {
       session: ctx.session,
       resolveHandler: ctx.resolveHandler,
+      gates: ctx.gates,
     } satisfies EmployeeJobRuntime);
     return requestContext;
   }

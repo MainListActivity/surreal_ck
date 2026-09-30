@@ -473,6 +473,23 @@ describe("workspace template scripts", () => {
     expect(sql).toContain('"pending", "leased", "running", "waiting", "completed", "failed"');
   });
 
+  test("VER05 用量账本按 (employee, day) 唯一、计量来源分列且含 signal CAS 位", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.name === "037-employee-budget-gates.surql");
+
+    expect(migration?.version).toBe(37);
+    const sql = migration?.sql ?? "";
+    expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS employee_token_usage SCHEMAFULL/);
+    expect(sql).toMatch(/DEFINE INDEX IF NOT EXISTS \w+ ON TABLE employee_token_usage COLUMNS employee, day UNIQUE/);
+    expect(sql).toContain('FOR create WHERE $auth.kind = "virtual"');
+    expect(sql).toContain("FOR update WHERE employee = $auth");
+    expect(sql).toContain("provider_input_tokens ON TABLE employee_token_usage TYPE int");
+    expect(sql).toContain("provider_output_tokens ON TABLE employee_token_usage TYPE int");
+    expect(sql).toContain("estimated_input_tokens ON TABLE employee_token_usage TYPE int");
+    expect(sql).toContain("estimated_output_tokens ON TABLE employee_token_usage TYPE int");
+    expect(sql).toContain("budget_signal_at ON TABLE employee_token_usage TYPE option<datetime>");
+  });
+
   test("keeps JWT access placeholders by default and can render them for backend execution", async () => {
     const rawScripts = await loadTemplateScripts();
     const rawSql = rawScripts.map((script) => script.sql).join("\n");
