@@ -42,6 +42,8 @@ const TriggerInputSchema = z.object({
   payloadRef: z.string().nullable(),
   chainDepth: z.number(),
   idempotencyKey: z.string(),
+  /** 认领时绑定的 durable run id；旧 snapshot 的 inputData 可能缺该字段。 */
+  runId: z.string().nullable().optional(),
 });
 
 const JobOutputSchema = z.object({ output: z.any() });
@@ -71,13 +73,14 @@ function buildEmployeeWorkflow() {
       if (!runtime) throw new Error("employee-job-runtime-missing");
       const handler = runtime.resolveHandler(inputData.reason);
       if (!handler) throw new Error(`no-handler:${inputData.reason}`);
+      const trigger: TriggerEnvelope = { ...inputData, runId: inputData.runId ?? null };
       const output = await handler({
-        trigger: inputData as TriggerEnvelope,
+        trigger,
         session: runtime.session,
         effects: createEmployeeEffects(runtime.session, inputData.id),
         resumeData,
         suspend: suspend as (payload?: unknown) => Promise<never>,
-        ...runtime.gates.forTrigger(inputData as TriggerEnvelope),
+        ...runtime.gates.forTrigger(trigger),
       });
       return { output };
     },

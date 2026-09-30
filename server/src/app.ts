@@ -111,7 +111,10 @@ import {
 } from "../ai/office/employee-service";
 import type { EmployeeTriggerRuntime } from "../ai/office/employee-trigger-runtime";
 import type { EmployeeRuntime } from "../ai/office/employee-runtime";
-import { createProductionOfficeBootstrap } from "../ai/office/office-trigger-adapter";
+import {
+  createProductionOfficeBootstrap,
+  createProductionOfficeRequestWake,
+} from "../ai/office/office-trigger-adapter";
 import type { EmployeeLifecycle } from "../ai/office/employee-lifecycle";
 import { AiAllowanceService, type Queryable as AllowanceQueryable } from "./ai-allowance/service";
 import { createOpsAiAllowanceRoutes } from "./routes/ops-ai-allowance";
@@ -164,6 +167,12 @@ export type AppOptions = {
   employeeWorkspaceResolver?: (slug: string) => Promise<{ dbName: string } | null>;
   /** 虚拟办公室一次性 bootstrap（VO02）；默认生产装配（lifecycle + 通用 trigger runtime）。 */
   officeBootstrap?: OfficeBootstrapAction;
+  /** VO03：人类请求终态唤醒；默认生产装配（caller session 校验 + 通用 trigger runtime）。 */
+  officeRequestWake?: (input: {
+    slug: string;
+    callerToken: string;
+    notificationId: string;
+  }) => Promise<import("../ai/office/office-trigger-adapter").OfficeRequestWakeResult>;
   /** LCA05 共享 AI 额度门禁；注入后 /api/chat 新 run 在启动 workflow 前原子预留。 */
   aiAllowance?: AiAllowanceService;
   /** LCA06：调用者 content_reader 研究窗口工厂；默认生产装配（search exchange 复用）。 */
@@ -339,6 +348,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     }))
     .route("/", createOfficeRoutes({
       bootstrap: options.officeBootstrap ?? createProductionOfficeBootstrap(),
+      wakeRequest: options.officeRequestWake ?? createProductionOfficeRequestWake(),
       resolveWorkspace: options.employeeWorkspaceResolver ?? resolveWorkspaceBySlug,
       requireUser: options.requireUser,
     }))

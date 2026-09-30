@@ -14,9 +14,11 @@
   import { getSurreal } from "$lib/surreal";
 
   let {
+    slug,
     onopenrecord,
     onaskai,
   }: {
+    slug?: string;
     onopenrecord?: (target: { workbookId: string; sheetId: string; recordId: string }) => void;
     onaskai?: (notification: RiskNotification) => void;
   } = $props();
@@ -148,7 +150,7 @@
         </div>
       </div>
     {:else if activeTab === "notifications"}
-      <RiskNotificationInbox {onopenrecord} {onaskai} />
+      <RiskNotificationInbox {slug} {onopenrecord} {onaskai} />
     {/if}
   </div>
 </aside>
