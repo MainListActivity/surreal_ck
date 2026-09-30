@@ -55,3 +55,13 @@ tags:
   经过哨兵，无额外权限要求。
 - `INFO FOR DB/TABLE` 需要 `Base::Db` View 权限，RECORD access 成员不能用
   于事件内自检——不要用 INFO 做事件级探测。
+
+## Follow-up: 首次部署被 039 自身卡死（已修复）
+
+`sheet.table_name` 不限于 `ent_*` 前缀（生产存在 `qa_ver03_materials`）。
+039 初次上线时把 `ent_*` 校验当 invariant，物化阶段抛错 → 启动迁移中止 →
+健康检查失败 → 自动回滚。
+
+修复：校验放宽为通用安全标识符（`^[a-z][a-z0-9_]{0,62}$`），物化层对仍不
+安全的名字改为跳过并 `console.warn`，不再让单行异常数据中止启动迁移。
+021 deferred cleanup 与 029 `record_activity` 回填的同名枚举走同一过滤。

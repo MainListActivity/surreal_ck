@@ -6,7 +6,15 @@ export type RecordQuotaGuardInput = {
 };
 
 const SAFE_TABLE_NAME = /^[a-z][a-z0-9_]{0,62}$/;
-const SAFE_ENTITY_TABLE_NAME = /^ent_[a-z0-9_]{1,58}$/;
+
+/**
+ * sheet.table_name 由建簿事务写入，允许 qa_* 等非 ent_ 前缀的合法标识符；
+ * 动态迁移枚举它们时只需拒绝无法安全拼进 DDL 的名字。
+ */
+export function isSafeSheetTableName(name: string): boolean {
+  return SAFE_TABLE_NAME.test(name);
+}
+
 const SAFE_SHEET_RECORD_ID = /^sheet:[a-zA-Z0-9_]+$/;
 
 /**
@@ -50,18 +58,16 @@ export function buildRecordQuotaGuardSurql(input: RecordQuotaGuardInput): string
 /**
  * Build the deferred legacy cleanup as one transaction. DDL identifiers cannot
  * be parameterized reliably in REMOVE EVENT, so callers must first read the
- * authoritative sheet.table_name values and pass them through this strict
- * entity-table validator.
+ * authoritative sheet.table_name values and pass them through the identifier
+ * validator (sheet table names are not limited to the ent_ prefix).
  */
 export function buildLegacyQuotaCleanupSurql(
   tableNames: readonly string[],
 ): string {
   const uniqueTableNames = [...new Set(tableNames)].sort();
   for (const tableName of uniqueTableNames) {
-    if (!SAFE_ENTITY_TABLE_NAME.test(tableName)) {
-      throw new Error(
-        `invalid legacy quota entity table name: ${tableName}`,
-      );
+    if (!isSafeSheetTableName(tableName)) {
+      throw new Error(`invalid legacy quota table name: ${tableName}`);
     }
   }
   const dynamicEventRemoval = uniqueTableNames
@@ -90,7 +96,7 @@ export function buildLegacyQuotaGuardResidualSurql(
 ): string {
   const uniqueTableNames = [...new Set(tableNames)].sort();
   for (const tableName of uniqueTableNames) {
-    if (!SAFE_ENTITY_TABLE_NAME.test(tableName)) {
+    if (!isSafeSheetTableName(tableName)) {
       throw new Error(
         `invalid residual quota guard table name: ${tableName}`,
       );
