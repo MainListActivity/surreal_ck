@@ -106,8 +106,10 @@ import { createOfficeRoutes, type OfficeBootstrapAction } from "./routes/office"
 import {
   createProductionEmployeeLifecycle,
   getEmployeeRuntime,
+  getEmployeeTriggerRuntime,
   resolveWorkspaceBySlug,
 } from "../ai/office/employee-service";
+import type { EmployeeTriggerRuntime } from "../ai/office/employee-trigger-runtime";
 import type { EmployeeRuntime } from "../ai/office/employee-runtime";
 import { createProductionOfficeBootstrap } from "../ai/office/office-trigger-adapter";
 import type { EmployeeLifecycle } from "../ai/office/employee-lifecycle";
@@ -154,6 +156,8 @@ export type AppOptions = {
   contentReaderExchange?: ContentReaderExchangeHandler;
   /** 虚拟员工生命周期服务（VER02）；默认生产装配。 */
   employeeRuntime?: Pick<EmployeeRuntime, "inspect">;
+  /** qa-probe 受控投递口（VER 联验补齐）；默认生产共享单例。 */
+  employeeTriggerRuntime?: Pick<EmployeeTriggerRuntime, "enqueue" | "start" | "registerHandler">;
   employeeLifecycle?: EmployeeLifecycle;
   /** slug → db_name 解析（路由层 scope 校验用）；默认 root 读 _system。 */
   employeeWorkspaceResolver?: (slug: string) => Promise<{ dbName: string } | null>;
@@ -324,6 +328,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     .route("/", createEmployeeRoutes({
       lifecycle: options.employeeLifecycle ?? createProductionEmployeeLifecycle(),
       runtime: options.employeeRuntime ?? getEmployeeRuntime(),
+      triggerRuntime: options.employeeTriggerRuntime ?? getEmployeeTriggerRuntime(),
       resolveWorkspace: options.employeeWorkspaceResolver ?? resolveWorkspaceBySlug,
       requireUser: options.requireUser,
     }))

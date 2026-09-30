@@ -8,6 +8,7 @@ import {
   type EmployeeTriggerRuntime,
 } from "./employee-trigger-runtime";
 import { createMastraEmployeeDriver } from "./employee-mastra-runner";
+import { registerQaProbeHandler } from "./qa-probe";
 
 /**
  * 生产装配：进程内单例 employee runtime + 生命周期服务。
@@ -45,6 +46,8 @@ export function getEmployeeTriggerRuntime(): EmployeeTriggerRuntime {
     sessions: getEmployeeRuntime(),
     driver: createMastraEmployeeDriver,
   });
+  // qa-probe 诊断 handler 常驻共享单例：内部投递口随时可用，不依赖 dispatcher 启动顺序。
+  registerQaProbeHandler(sharedTriggerRuntime);
   return sharedTriggerRuntime;
 }
 
