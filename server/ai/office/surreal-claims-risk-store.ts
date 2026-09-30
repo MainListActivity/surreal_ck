@@ -25,7 +25,7 @@ export function createSurrealClaimsRiskStore(session: EmployeeQuerySession): Cla
   async function owner(): Promise<StringRecordId | null> {
     if (notificationOwner !== undefined) return notificationOwner;
     const rows = await session.query<{ id: unknown }>(
-      'SELECT id FROM user WHERE kind = "human" AND is_admin = true AND disabled_at = NONE ORDER BY created_at ASC LIMIT 1',
+      'SELECT id, created_at FROM user WHERE kind = "human" AND is_admin = true AND disabled_at = NONE ORDER BY created_at ASC LIMIT 1',
     );
     notificationOwner = rows[0]?.id == null ? null : new StringRecordId(recordString(rows[0].id));
     return notificationOwner;
