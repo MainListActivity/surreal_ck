@@ -44,3 +44,22 @@ rtk proxy pnpm test
 真实库测试使用本地临时内存 SurrealDB 与本地 JWKS，确认已有员工连接固定 auth 可用，pause/retire 的 disconnected 事件与 SDK disconnected 状态、resume 新代次。并发/关闭失败/去敏测试使用注入连接，合成敏感标记不会进入响应或诊断日志。运行成功不等于生产验收。
 
 诊断数据仅在进程内，无持久化历史。本交付不新增 scheduler，不覆盖 VER04 真正 trigger/window 拒绝，不代表 VER06 续约、重连、容量或长期运维已验收。上线后仍需 QA 生产复验，且目标整体验收等待该链完成。
+
+## 受控 trigger 投递诊断口（VER 联验补齐）
+
+入口：`POST /api/internal/workspaces/:slug/employees/:employeeKey/triggers`，与上文 GET runtime 观测口同级、同一 scope 规则（token `db` 精确等于 slug 对应数据库且 `ac=admin`；无凭证 401，participant/跨库 403）。
+
+用途：给指定员工投递一个**无副作用**的 `qa-probe` 触发，验证"投递 → employee SIGNIN → 执行窗口 → durable run → effect 账本"整条真实链路。handler 只经 `runEffect("qa-probe", …)` 记一行 `employee_effect` 账本并返回 `{ probe: true, triggerId, employeeId, payloadRef }`；不写任何业务表，不消耗模型额度。生产装配在 `getEmployeeTriggerRuntime()` 共享单例上常驻注册，不依赖 dispatcher 启动顺序。
+
+请求体：
+
+| 字段 | 规则 |
+| --- | --- |
+| idempotencyKey | 必填，8–200 位 `[a-zA-Z0-9:_-]`；同键重放返回既有终态 |
+| payloadRef | 可选 string ≤200 字符，原样回显在 probe 结果里 |
+| reason | 可选，仅允许 `qa-probe`（缺省即 qa-probe），其他值 400 |
+| chainDepth | 可选非负整数，默认 0；超过 runtime 链深上限时 outcome=failed |
+
+响应恒为 HTTP 200 + `{ ok: true, outcome, triggerId?, error? }`：`completed`/`coalesced`/`waiting`/`failed` 都是正常终态——`failed` 本身就是诊断结论（如暂停/退休/缺凭证员工在 SIGNIN 阶段被拒，此时 `employee_trigger` 不落行、`error` 说明原因；超链深同上）。参数非法才返回 4xx。响应不含 Surreal 行对象、会话、凭证或堆栈；投递后可用 GET runtime 观测口核对会话/窗口证据。
+
+QA 最小用法：登记测试 workspace 的 admin token → POST 本口投递 `qa-probe` 到 active 夹具员工 → 期望 `outcome:"completed"`；pause 该员工后换幂等键再投 → 期望 `outcome:"failed"` 且观测口无新窗口。
