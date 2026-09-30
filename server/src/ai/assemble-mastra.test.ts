@@ -226,6 +226,7 @@ describe("createMastraRunner", () => {
 
   test("同一 runId 的决定重试命中已成功快照时直接返回，不重复 resume 已完成步骤", async () => {
     let resumeCalls = 0;
+    const pushed: Array<{ type: string; message?: { content: string; citations?: unknown[] } }> = [];
     const { createMastraRunner } = await import("./assemble-mastra");
     const { resumer } = createMastraRunner({
       buildAgents: () => ({
@@ -250,7 +251,13 @@ describe("createMastraRunner", () => {
               getWorkflowRunById: async () => ({
                 runId: "run-complete",
                 workflowName: "router",
-                snapshot: { status: "success" },
+                snapshot: {
+                  status: "success",
+                  result: {
+                    finalText: "历史答复",
+                    steps: [{ category: "chitchat", taskText: "t", text: "历史答复", citations: [{ title: "民法典" }] }],
+                  },
+                },
               }),
             },
           },
@@ -265,12 +272,17 @@ describe("createMastraRunner", () => {
       surrealSession: {} as never,
       ownerSubject: "user-123",
       userContext: { route: { screen: "home" }, workbook: null, sheet: null, selectedRow: null, contextHint: "" },
-      pushChunk: () => {},
+      pushChunk: (e) => pushed.push(e as never),
       pushProgress: () => {},
       onSuspend: () => {},
     });
 
-    expect(result).toEqual({ runId: "run-complete", finalText: "", status: "success" });
+    // 短路不重复执行步骤，但必须按持久化 result 重建 done 终态——
+    // RunBus 终态缓存过期后，迟到订阅者只能靠这次投递拿到结果。
+    expect(result).toEqual({ runId: "run-complete", finalText: "历史答复", status: "success" });
     expect(resumeCalls).toBe(0);
+    const done = pushed.find((e) => e.type === "done");
+    expect(done?.message?.content).toBe("历史答复");
+    expect(done?.message?.citations).toEqual([{ title: "民法典" }]);
   });
 });
