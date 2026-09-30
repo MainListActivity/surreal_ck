@@ -4,7 +4,7 @@ import { Surreal } from "surrealdb";
 import { AiAllowanceError, AiAllowanceService, type Queryable } from "./service";
 
 /**
- * LCA05 共享 AI 额度账本合约测试：对真实 SurrealDB 跑 workspace template（含 034），
+ * LCA05 共享 AI 额度账本合约测试：对真实 SurrealDB 跑 workspace template（含 035），
  * 覆盖并发扣款、幂等重试、失败释放、失联回收、桶到期、消费顺序、成员只读与双库隔离。
  * 费率与额度均使用测试值（种子修订 revision_label=test-rate-v1，自建测试桶）。
  */
