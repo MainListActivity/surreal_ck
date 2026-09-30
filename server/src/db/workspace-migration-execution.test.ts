@@ -44,6 +44,35 @@ describe("materializeWorkspaceMigrationSql", () => {
     ).rejects.toThrow("invalid legacy quota entity table name");
   });
 
+  test("materializes the residual guard sweep for post-cleanup entity tables", async () => {
+    const sql = await materializeWorkspaceMigrationSql(
+      {
+        async query() {
+          return [["ent_beta_main", "ent_alpha_main"]];
+        },
+      },
+      {
+        version: 39,
+        name: "039-legacy-quota-guard-residual.surql",
+        sql: "-- marker",
+      },
+    );
+
+    expect(sql).toContain("REMOVE EVENT IF EXISTS resource_quota_guard ON TABLE ent_alpha_main");
+    expect(sql).toContain("REMOVE EVENT IF EXISTS resource_quota_guard ON TABLE ent_beta_main");
+    expect(sql).toContain("REMOVE EVENT IF EXISTS resource_quota_guard ON TABLE sheet");
+    expect(sql).not.toContain("REMOVE TABLE");
+  });
+
+  test("rejects unsafe table names before residual sweep DDL", async () => {
+    await expect(
+      materializeWorkspaceMigrationSql(
+        { async query() { return [["ent_ok", "sheet; REMOVE DATABASE main"]]; } },
+        { version: 39, name: "039-legacy-quota-guard-residual.surql", sql: "-- marker" },
+      ),
+    ).rejects.toThrow("invalid residual quota guard table name");
+  });
+
   test("upgrades existing dynamic tables to record update activity evidence", async () => {
     const sql = await materializeWorkspaceMigrationSql(
       { async query() { return [["ent_beta_main", "ent_alpha_main"]]; } },
