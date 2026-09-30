@@ -86,7 +86,7 @@ async function handleBootstrap(ctx: TriggerHandlerContext): Promise<unknown> {
       goal: meta.goal,
       // 初始任务由 PM 自己承接：assignee 合法（active virtual），parent/depth=0 有界。
       assignee: ctx.trigger.employeeId,
-      completion: `拆解目标「${meta.goal}」并向 primary contact 交付一份持久报告`,
+      completion: `承接目标「${meta.goal}」：发布可见进度，并向 primary contact 交付一份含目标确认与后续步骤的持久报告`,
       brief: { source: "office-bootstrap" },
     }),
   );
@@ -185,16 +185,26 @@ async function handleOfficeTask(ctx: TriggerHandlerContext): Promise<unknown> {
   }
 
   // 交付：持久报告发给 primary contact（确定性 id，重放只有一行）。
+  // 报告措辞与任务 completion 对齐：只陈述本 handler 实际完成的链路动作；
+  // 目标拆解与执行指派是人类的后续步骤，不在这里宣告完成。
   const summary = rejections.length
     ? `任务「${task.goal}」执行受阻：${rejections.join("；")}`
-    : `任务「${task.goal}」已完成：已承接、已推进并向 primary contact 交付本报告。`;
+    : `任务「${task.goal}」已完成：已承接、发布可见进度并向 primary contact 交付持久报告。`;
+  const nextSteps = delegatedTo
+    ? [`跟进子任务执行（assignee=${delegatedTo}）`]
+    : rejections.length
+      ? [`由管理员修正边界条件后重新指派或调整任务「${task.goal}」`]
+      : [
+          `由 primary contact 确认目标「${task.goal}」的范围与优先级`,
+          "确认后指派后续执行任务（当前在岗员工仅项目经理，可经 bootstrap 增开岗位或派给真人成员）",
+        ];
   await ctx.effects.runEffect("report", () =>
     deliverOfficeReport(ctx.session, {
       id: `office_report:pm_report_${recordKey(task.id)}`,
       task: task.id,
       to: meta.primaryContact,
       summary,
-      nextSteps: delegatedTo ? [`跟进子任务执行（assignee=${delegatedTo}）`] : ["等待目标拆解的后续指令"],
+      nextSteps,
       blockedBy: rejections.length ? rejections.join("；") : undefined,
     }),
   );

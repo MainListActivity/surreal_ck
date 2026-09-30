@@ -229,7 +229,6 @@ describe("VO02 项目经理纵切（真实 SurrealDB）", () => {
     expect(String(task.id)).toBe("office_task:pm_initial");
     expect(String(task.assigner)).toBe(pmId);
     expect(String(task.assignee)).toBe(pmId);
-    expect(task.completion).toContain("交付");
     expect(task.parent ?? null).toBeNull();
 
     // 可见进度（至少一条）+ 持久报告，全部归因到 PM 自身。
@@ -239,12 +238,29 @@ describe("VO02 项目经理纵切（真实 SurrealDB）", () => {
     for (const m of messages) expect(String(m.author)).toBe(pmId);
 
     const reports = await rows<Record<string, unknown>>(fixture,
-      "SELECT id, author, task, to, summary FROM office_report");
+      "SELECT id, author, task, to, summary, next_steps, blocked_by FROM office_report");
     expect(reports).toHaveLength(1);
     expect(String(reports[0]!.id)).toBe("office_report:pm_report_office_task_pm_initial");
     expect(String(reports[0]!.author)).toBe(pmId);
     expect(String(reports[0]!.task)).toBe("office_task:pm_initial");
     expect(String(reports[0]!.to)).toBe("user:member");
+
+    // completion 与报告实际成果一致：tracer 交付的是"承接+可见进度+持久报告"
+    // 链路本身；报告据实陈述已完成动作，后续步骤如实指向人类确认与指派，
+    // 不宣告未发生的模型拆解。
+    const completion = String(task.completion);
+    const summary = String(reports[0]!.summary);
+    const nextSteps = reports[0]!.next_steps as string[];
+    expect(completion).toContain("把债权台账跑出风险清单");
+    expect(completion).toContain("持久报告");
+    expect(summary).toContain("把债权台账跑出风险清单");
+    expect(summary).toContain("持久报告");
+    expect(summary).not.toContain("受阻");
+    expect(reports[0]!.blocked_by ?? null).toBeNull();
+    expect(Array.isArray(nextSteps)).toBe(true);
+    expect(nextSteps.length).toBeGreaterThanOrEqual(1);
+    expect(nextSteps[0]).toContain("把债权台账跑出风险清单");
+    expect(nextSteps.join("\n")).not.toContain("等待目标拆解");
 
     // primary contact（participant RECORD 会话）能读到报告。
     const member = await jwtSession(fixture, { sub: "member-sub", ac: "participant" });
@@ -404,6 +420,40 @@ describe("VO02 项目经理纵切（真实 SurrealDB）", () => {
     await stack.triggerRuntime.stop();
     await stack.employeeRuntime.stop();
   }, 120_000);
+
+  test("meta 完整但尚未开岗时 reconcile 不替代 bootstrap 开岗", async () => {
+    const fixture = await setupFixture("ws_vo02_nopm");
+    const stack = buildStack(fixture);
+    const admin = await jwtSession(fixture, { sub: "owner-sub", ac: "admin" });
+    await admin.query(
+      `CREATE office_meta:office CONTENT {
+        goal: "完整 meta 但无员工", primary_contact: user:member, state: "onboarding"
+      };`,
+    ).collect();
+
+    // reconcile 只补投已开岗员工与未完成任务；首次开岗必须经 admin bootstrap。
+    const summary = await reconcileOfficeWorkspace({
+      runtime: stack.triggerRuntime,
+      root: {
+        query: (sql: string, params?: Record<string, unknown>) =>
+          fixture.root.query(sql, params),
+      },
+      database: fixture.database,
+    });
+    expect(summary.employees).toBe(0);
+    expect(summary.dispatched).toBe(0);
+    expect(summary.coalesced).toBe(0);
+    expect(summary.failed).toBe(0);
+    expect(await rows(fixture, 'SELECT id FROM user WHERE kind = "virtual"')).toHaveLength(0);
+    expect(await rows(fixture, "SELECT id FROM office_task")).toHaveLength(0);
+    expect(await rows(fixture, "SELECT id FROM employee_trigger")).toHaveLength(0);
+    const [meta] = await rows<Record<string, unknown>>(fixture,
+      "SELECT state FROM office_meta:office");
+    expect(meta?.state).toBe("onboarding");
+
+    await stack.triggerRuntime.stop();
+    await stack.employeeRuntime.stop();
+  }, 90_000);
 
   test("定期 reconciliation 补投未被通知的任务", async () => {
     const fixture = await setupFixture("ws_vo02_reconcile");

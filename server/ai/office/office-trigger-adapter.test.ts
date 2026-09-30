@@ -229,4 +229,26 @@ describe("office task dispatch + reconcile", () => {
     expect(summary.coalesced).toBe(2);
     expect(summary.failed).toBe(0);
   });
+
+  test("reconcile：meta 就绪但尚无在岗员工时不投递（首次开岗只能经 bootstrap）", async () => {
+    const db = "ws_nopm";
+    const { runtime, enqueued, reconciled } = fakeRuntime("completed");
+    const summary = await reconcileOfficeWorkspace({
+      runtime,
+      root: {
+        async query(sql: string) {
+          if (sql.includes("FROM office_meta:office")) {
+            return [[{ goal: "g", primary_contact: "user:owner" }]];
+          }
+          return [[]];
+        },
+      },
+      database: db,
+    });
+    expect(summary.employees).toBe(0);
+    expect(summary.dispatched).toBe(0);
+    expect(summary.failed).toBe(0);
+    expect(enqueued).toHaveLength(0);
+    expect(reconciled).toHaveLength(0);
+  });
 });

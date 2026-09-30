@@ -7,7 +7,7 @@ Label: done
 
 **Blocked by:** virtual-office/01 — 办公室领域与现有通知兼容闭环；virtual-employee-runtime/05 — 预算、循环、重试与全局背压。
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] 同一 office bootstrap 请求重试时只得到一个项目经理 employee 和一个初始任务。
 - [ ] 项目经理的所有 task/message/report 写入都使用自身 employee session，root 不参与业务写入。
