@@ -29,10 +29,13 @@ function fixture() {
     async connect(_url, options) { calls.push(`connect:${options.database}`); },
     async authenticate(token) { calls.push(`authenticate:${token}`); },
     query(sql, bindings) {
+      if (sql.includes("legal_article_version")) return { async collect() { return [[]]; } };
+      if (sql.includes("content_reader_action")) return { async collect() { return [true]; } };
       calls.push(`query:${bindings.publicId}`);
       expect(sql).toBe(CONTENT_PAGE_QUERY);
       return { async collect() {
         return [[{
+          id: "content_version:law",
           public_id: "law-2026-1", title: "已发布法条", revision: 3,
           version_label: "2026 修订", source_url: "https://source.example/law",
           source_form: "official", published_at: "2026-09-01T00:00:00Z",

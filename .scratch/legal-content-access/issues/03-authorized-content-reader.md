@@ -4,7 +4,7 @@
 
 **Blocked by:** [01 — 将内容维护迁到独立内容库](01-isolated-content-publishing.md)；[02 — 工作区绑定产品套餐并展示内容权益](02-product-entitlement-assignment.md)；[IDP-LCR-01 — 短期内容读取凭证](/Users/y/IdeaProjects/ma_hono/.scratch/content-reader-scope/issues/01-content-reader-token-exchange.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **ID:** SCK-LCA-03
 **确认时序号:** 4
@@ -31,4 +31,4 @@
 ## Comments
 
 - 2026-09-24：用户确认拆分后发布；当前为实施规格，尚未执行实现与验收。
-
+- 2026-09-29：已由先前交付完成独立内容会话、投影权限与阅读页，并合入主干；本次 LCA04 只同步此票状态，不更改其实现。

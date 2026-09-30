@@ -6,8 +6,10 @@ import {
   type ContentReaderExchangeSuccess,
   type ContentReaderFailure,
 } from "@surreal-ck/shared";
+import { StringRecordId } from "surrealdb";
 
 export type ContentPage = {
+  versionId: string;
   publicId: string;
   title: string;
   revision: number;
@@ -16,6 +18,8 @@ export type ContentPage = {
   sourceForm: string;
   publishedAt: string | null;
   bodyText: string;
+  canCite: boolean;
+  articles: Array<{ id: string; label: string; localKey: string; bodyText: string }>;
   authorizedUntilSeconds: number;
 };
 
@@ -24,6 +28,7 @@ export type ContentReaderResult =
   | { ok: false; reason: ContentReaderError | "invalid_id" | "workspace_changed" | "session_expired" | "content_unavailable" };
 
 type ContentRow = {
+  id?: unknown;
   public_id?: unknown;
   title?: unknown;
   revision?: unknown;
@@ -37,7 +42,7 @@ type ContentRow = {
 export interface ContentConnection {
   connect(url: string, options: { namespace: string; database: string }): Promise<unknown>;
   authenticate(token: string): Promise<unknown>;
-  query(sql: string, bindings: { publicId: string }): { collect(): Promise<unknown[]> };
+  query(sql: string, bindings: Record<string, unknown>): { collect(): Promise<unknown[]> };
   close(): Promise<unknown>;
 }
 
@@ -51,7 +56,7 @@ export type ContentReaderDependencies = {
 
 // The WHERE clause only selects the requested public pointer. Content authorization
 // and field visibility belong to the content database schema, never this query.
-export const CONTENT_PAGE_QUERY = "SELECT public_id, title, revision, version_label, source_url, source_form, published_at, body_text FROM content_version WHERE public_id = $publicId LIMIT 1;";
+export const CONTENT_PAGE_QUERY = "SELECT id, public_id, title, revision, version_label, source_url, source_form, published_at, body_text FROM content_version WHERE public_id = $publicId LIMIT 1;";
 
 function isFailure(value: unknown): value is ContentReaderFailure {
   return Boolean(value && typeof value === "object" && (value as { ok?: unknown }).ok === false);
@@ -77,10 +82,11 @@ function isExchangeSuccess(value: unknown): value is ContentReaderExchangeSucces
 }
 
 function pageFromRow(row: ContentRow, publicId: string, authorizedUntilSeconds: number): ContentPage | null {
-  if (row.public_id !== publicId || typeof row.title !== "string" || !Number.isInteger(row.revision)
+  if (!row.id || row.public_id !== publicId || typeof row.title !== "string" || !Number.isInteger(row.revision)
     || typeof row.source_url !== "string" || typeof row.source_form !== "string"
     || typeof row.body_text !== "string") return null;
   return {
+    versionId: String(row.id),
     publicId,
     title: row.title,
     revision: row.revision as number,
@@ -89,6 +95,8 @@ function pageFromRow(row: ContentRow, publicId: string, authorizedUntilSeconds: 
     sourceForm: row.source_form,
     publishedAt: row.published_at == null ? null : String(row.published_at),
     bodyText: row.body_text,
+    canCite: false,
+    articles: [],
     authorizedUntilSeconds,
   };
 }
@@ -152,6 +160,18 @@ export function createContentReader(deps: ContentReaderDependencies) {
         const row = Array.isArray(rows) ? rows[0] as ContentRow | undefined : undefined;
         const page = row && pageFromRow(row, parsed.data.contentPublicId, deadline);
         if (!page) return { ok: false, reason: "content_unavailable" };
+        const version = new StringRecordId(page.versionId);
+        const [articleResult, citeResult] = await Promise.all([
+          next.query("SELECT id, label, local_key, body_text FROM legal_article_version WHERE regulation_version = $version ORDER BY local_key;", { version }).collect(),
+          next.query("RETURN fn::content_reader_action($version, 'cite');", { version }).collect(),
+        ]);
+        const articleRows = Array.isArray(articleResult[0]) ? articleResult[0] as Record<string, unknown>[] : [];
+        page.articles = articleRows.flatMap((article) =>
+          article.id && typeof article.label === "string" && typeof article.local_key === "string"
+            && typeof article.body_text === "string"
+            ? [{ id: String(article.id), label: article.label, localKey: article.local_key, bodyText: article.body_text }]
+            : []);
+        page.canCite = citeResult[0] === true;
         connection = next;
         return { ok: true, page };
       } catch {

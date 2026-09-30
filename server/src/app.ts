@@ -98,6 +98,7 @@ import { SurrealProductEntitlementStore } from "./product-entitlement/store";
 import { createProductEntitlementRoutes } from "./routes/product-entitlement";
 import { createContentReaderRoutes, type ContentReaderExchangeHandler } from "./routes/content-reader";
 import { createContentReaderExchangeHandler } from "./content/reader-handler";
+import { createContentSearchExchangeHandler } from "./content/search-exchange";
 import { createEmployeeRoutes } from "./routes/employees";
 import { createProductionEmployeeLifecycle, resolveWorkspaceBySlug } from "../ai/office/employee-service";
 import type { EmployeeLifecycle } from "../ai/office/employee-lifecycle";
@@ -284,6 +285,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     .route("/", createSessionRoutes(workspaceScope, idpTokenScopeAdapter, options.requireUser))
     .route("/", createContentReaderRoutes({
       exchange: options.contentReaderExchange ?? createContentReaderExchangeHandler(),
+      searchExchange: createContentSearchExchangeHandler(),
       requireUser: options.requireUser,
     }))
     .route("/", createWorkspaceRoutes(workspaceCreator, workspaceScope, options.requireUser, workspaceSettingsManager))

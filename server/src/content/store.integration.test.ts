@@ -417,6 +417,10 @@ describe("Surreal platform content store", () => {
       });
       expect(published.entries[0]?.status).toBe("published");
       const versionId = published.entries[0]?.versionId;
+      const searchFacets = (await db.query("SELECT item, version, kind, jurisdiction FROM content_search_facet;"))[0] as Array<{ version: unknown; kind: string; jurisdiction?: string }>;
+      expect(searchFacets).toHaveLength(1);
+      expect(String(searchFacets[0]?.version)).toBe(`content_version:${versionId}`);
+      expect(searchFacets[0]?.kind).toBe("legislation");
       expect(versionId).toBeTruthy();
       const target = await fetchContentReaderTarget(projection, versionId!);
       expect(target?.collectionKeys).toEqual(["statutes"]);

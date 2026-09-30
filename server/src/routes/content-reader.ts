@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { MiddlewareHandler } from "hono";
-import type { ContentReaderExchangeSuccess, ContentReaderFailure } from "@surreal-ck/shared";
+import type { ContentReaderExchangeSuccess, ContentReaderFailure, ContentSearchExchangeSuccess } from "@surreal-ck/shared";
 import type { AppBindings } from "../hono-types";
 import { HttpError } from "../http-error";
 import { requireOidc } from "../middleware/oidc";
@@ -20,10 +20,20 @@ function statusFor(error: ContentReaderFailure["error"]): number {
 
 export function createContentReaderRoutes(input: {
   exchange: ContentReaderExchangeHandler;
+  searchExchange?: (caller: AppBindings["Variables"]["user"], body: unknown) => Promise<ContentSearchExchangeSuccess | ContentReaderFailure>;
   requireUser?: () => MiddlewareHandler<AppBindings>;
 }) {
   const requireUser = input.requireUser ?? requireOidc;
-  return new Hono<AppBindings>().post("/api/session/content-reader", requireUser(), async (c) => {
+  const app = new Hono<AppBindings>();
+  if (input.searchExchange) app.post("/api/session/content-search", requireUser(), async (c) => {
+    const body = await c.req.json().catch(() => null);
+    const result = await input.searchExchange!(c.var.user, body);
+    if ("ok" in result) {
+      throw new HttpError(statusFor(result.error), `content-search-${result.error}`, "内容检索凭证被拒绝");
+    }
+    return c.json(result);
+  });
+  return app.post("/api/session/content-reader", requireUser(), async (c) => {
     const body = await c.req.json().catch(() => null);
     const result = await input.exchange(c.var.user, body);
     if ("ok" in result) {
