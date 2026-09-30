@@ -426,6 +426,62 @@ describe("VO01 办公室领域 schema 合约（真实三类会话）", () => {
     ).rejects.toThrow(/terminal/i);
   });
 
+  localSurrealTest("结构化 answer 与 resolution 同属终态：收件人首答幂等，改口被守卫回滚", async () => {
+    const database = `vo01_answer_${Date.now().toString(36)}`;
+    const root = await rootConnection(database);
+    await applyTemplate(root);
+    await defineTestAccesses(root);
+    await seedPrincipals(root);
+
+    const pmSession = await pm(database);
+    const memberSession = await member(database);
+
+    // 员工创建指向普通成员的通知；participant 收件人是唯一有权作答的人
+    await pmSession.query(
+      `CREATE user_notification CONTENT {
+        dedupe_key: "req-answer", to_user: user:member, title: "t", body: "b",
+        severity: "info", purpose: "office-request"
+      }`,
+    ).collect();
+    const note = rows<{ id: unknown }>(
+      await root.query<{ id: unknown }[]>(
+        "SELECT id FROM user_notification WHERE dedupe_key = $k",
+        { k: "req-answer" },
+      ).collect(),
+    )[0]!;
+
+    // 首次解决：结构化答复与文字 resolution、resolved_at 一起落库
+    await memberSession.query(
+      `UPDATE $note SET answer = { choice: "A" }, resolution = "选了 A", resolved_at = time::now()`,
+      { note: note.id },
+    ).collect();
+
+    // 重复提交同值天然幂等（不报错、不改值）
+    await memberSession.query(
+      `UPDATE $note SET answer = { choice: "A" }, resolution = "选了 A"`,
+      { note: note.id },
+    ).collect();
+
+    // 改口：answer 与 resolution 一样被终态守卫拒绝
+    await expect(
+      memberSession.query(`UPDATE $note SET answer = { choice: "B" }`, { note: note.id }).collect(),
+    ).rejects.toThrow(/terminal/i);
+    // 清空同样被拒绝
+    await expect(
+      memberSession.query(`UPDATE $note SET answer = NONE`, { note: note.id }).collect(),
+    ).rejects.toThrow(/terminal/i);
+
+    // 回滚验证：被拒写不落地，原值原样保留
+    const kept = rows<{ answer: { choice: string }; resolution: string }>(
+      await root.query<{ answer: { choice: string }; resolution: string }[]>(
+        `SELECT answer, resolution FROM $note`,
+        { note: note.id },
+      ).collect(),
+    );
+    expect(kept[0]?.answer.choice).toBe("A");
+    expect(kept[0]?.resolution).toBe("选了 A");
+  });
+
   localSurrealTest("存量债权通知 fixture 无损迁移，收件箱/解决/去重语义不变", async () => {
     const database = `vo01_notif_${Date.now().toString(36)}`;
     const root = await rootConnection(database);
