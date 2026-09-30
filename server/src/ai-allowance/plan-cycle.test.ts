@@ -123,15 +123,70 @@ describe("syncPlanCycleAllowance（LCA08 周期额度规则）", () => {
       productPlanName: "夹具律师 Plus",
       features: [{ key: "ai_cycle_allowance", enabled: true, limit: 200 }],
     };
-    expect(planCycleDirective("ws_team", base)?.cycleAllowance).toBe(200);
-    expect(planCycleDirective("ws_team", { ...base, baseSourceKind: "none" })).toBeNull();
-    expect(planCycleDirective("ws_team", { ...base, effectiveUntil: null })).toBeNull();
-    expect(planCycleDirective(null, base)).toBeNull();
+    expect(planCycleDirective("ws_team", base, null)?.cycleAllowance).toBe(200);
+    expect(planCycleDirective("ws_team", { ...base, baseSourceKind: "none" }, null)).toBeNull();
+    expect(planCycleDirective("ws_team", { ...base, effectiveUntil: null }, null)).toBeNull();
+    expect(planCycleDirective(null, base, null)).toBeNull();
     expect(
-      planCycleDirective("ws_team", { ...base, features: [{ key: "ai_cycle_allowance", enabled: false, limit: 200 }] }),
+      planCycleDirective("ws_team", { ...base, features: [{ key: "ai_cycle_allowance", enabled: false, limit: 200 }] }, null),
     ).toBeNull();
     expect(
-      planCycleDirective("ws_team", { ...base, features: [{ key: "other", enabled: true, limit: 5 }] }),
+      planCycleDirective("ws_team", { ...base, features: [{ key: "other", enabled: true, limit: 5 }] }, null),
+    ).toBeNull();
+  });
+
+  test("planCycleDirective：周期身份取订阅级周期，周期内升级换 item 不换周期键（R2）", () => {
+    const base = {
+      baseSourceKind: "subscription" as const,
+      baseSourceId: "quota_subscription:team",
+      effectiveFrom: "2026-09-01T00:00:00.000Z",
+      effectiveUntil: "2026-10-01T00:00:00.000Z",
+      productPlanName: "夹具律师 Plus",
+      features: [{ key: "ai_cycle_allowance", enabled: true, limit: 200 }],
+    };
+    const cycle = {
+      cycleFrom: "2026-09-01T00:00:00.000Z",
+      cycleUntil: "2026-10-01T00:00:00.000Z",
+    };
+    const before = planCycleDirective("ws_team", base, cycle);
+    expect(before?.periodKey).toBe("subscription:quota_subscription:team:2026-09-01T00:00:00.000Z");
+    expect(before?.expiresAt).toBe("2026-10-01T00:00:00.000Z");
+
+    // 周期内升级：item 生效时间变成 9/24，但周期身份与桶到期边界不变。
+    const upgraded = planCycleDirective("ws_team", { ...base, effectiveFrom: "2026-09-24T00:00:00.000Z" }, cycle);
+    expect(upgraded?.periodKey).toBe(before?.periodKey);
+    expect(upgraded?.expiresAt).toBe("2026-10-01T00:00:00.000Z");
+
+    // 续期：订阅推进付费周期 → 新周期键、新到期边界。
+    const renewed = planCycleDirective("ws_team", { ...base, effectiveFrom: "2026-10-01T00:00:00.000Z" }, {
+      cycleFrom: "2026-10-01T00:00:00.000Z",
+      cycleUntil: "2026-11-01T00:00:00.000Z",
+    });
+    expect(renewed?.periodKey).not.toBe(before?.periodKey);
+    expect(renewed?.periodKey).toBe("subscription:quota_subscription:team:2026-10-01T00:00:00.000Z");
+    expect(renewed?.expiresAt).toBe("2026-11-01T00:00:00.000Z");
+
+    // 试用转付费：baseSourceKind 翻转即新周期键，不复活试用余额。
+    const trial = planCycleDirective("ws_team", { ...base, baseSourceKind: "trial" }, cycle);
+    expect(trial?.periodKey).not.toBe(before?.periodKey);
+    expect(trial?.periodKey).toBe("trial:quota_subscription:team:2026-09-01T00:00:00.000Z");
+  });
+
+  test("planCycleDirective：订阅无周期字段时回退 item 窗口", () => {
+    const base = {
+      baseSourceKind: "subscription" as const,
+      baseSourceId: "quota_subscription:team",
+      effectiveFrom: "2026-09-01T00:00:00.000Z",
+      effectiveUntil: "2026-10-01T00:00:00.000Z",
+      productPlanName: "夹具律师 Plus",
+      features: [{ key: "ai_cycle_allowance", enabled: true, limit: 200 }],
+    };
+    const fallback = planCycleDirective("ws_team", base, { cycleFrom: null, cycleUntil: null });
+    expect(fallback?.periodKey).toBe("subscription:quota_subscription:team:2026-09-01T00:00:00.000Z");
+    expect(fallback?.expiresAt).toBe("2026-10-01T00:00:00.000Z");
+    // 订阅周期与 item 窗口都缺失 → 不授予。
+    expect(
+      planCycleDirective("ws_team", { ...base, effectiveFrom: null, effectiveUntil: null }, { cycleFrom: null, cycleUntil: null }),
     ).toBeNull();
   });
 

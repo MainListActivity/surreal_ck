@@ -6,13 +6,16 @@ import { isRetryableTxnError, type Queryable } from "./service";
 /**
  * LCA08 订阅驱动的套餐周期 AI 额度同步规则（版本化、不可变）。
  *
- * 规则版本 plan-cycle-rules-v1：
+ * 规则版本 plan-cycle-rules-v2（相对 v1 的变化见"周期身份"）：
  * - 额度来源：工作区当前绑定产品修订的 feature `ai_cycle_allowance`
  *   （enabled 且 limit_value > 0）。数值只来自已发布的不可变产品修订，
  *   生产启用必须使用获批修订，不从测试默认值推定。
- * - 周期身份：`period_key = "<baseSourceId>:<effectiveFrom>"`。续期/降级
- *   产生新的订阅项窗口 → 新 period_key → 新桶；周期额度不结转（旧桶保留
- *   自身到期时间，不延长、不复活、不回收）。
+ * - 周期身份：`period_key = "<baseSourceKind>:<baseSourceId>:<cycleFrom>"`，
+ *   其中 cycleFrom 是订阅级付费周期起点（订阅 current_period_start，缺省
+ *   回退 item 窗口起点）。周期身份独立于周期内升级产生的订阅项窗口：
+ *   周期内升级/降级（换 item、改生效时间）不换 period_key，只有续期
+ *   （订阅推进到新付费周期）或试用转付费才产生新 period_key → 新桶；
+ *   周期额度不结转（旧桶保留自身到期时间，不延长、不复活、不回收）。
  * - 升级补差：同周期内目标额度高于已授予额度时，一次性补发整数正差额
  *   （单位为整数额度，delta = target − granted，不做时间比例折算，无需
  *   取整）；桶的 expires_at 保持周期边界不变。
@@ -20,11 +23,12 @@ import { isRetryableTxnError, type Queryable } from "./service";
  * - 到期/保留模式（usable=false 或计划未配额度）：不授予、不补差、不触碰
  *   既有桶（保留模式暂停的是新的收费动作，不重置桶到期时间，也不暂停
  *   既有余额的消费）。
- * - 试用转付费：付费周期使用自己的 period_key 新建桶，不复活旧试用余额。
+ * - 试用转付费：baseSourceKind 从 trial 翻转为 subscription，period_key
+ *   随之改变，付费周期新建桶，不复活旧试用余额。
  * - 幂等：桶使用由 period_key 派生的确定性 id；重复同步最多建一次桶、
  *   补一次差额（total 达到目标后 delta 恒为 0）。
  */
-export const AI_PLAN_CYCLE_RULE_VERSION = "plan-cycle-rules-v1" as const;
+export const AI_PLAN_CYCLE_RULE_VERSION = "plan-cycle-rules-v2" as const;
 
 /** 产品修订里承载套餐周期 AI 额度的 feature key。 */
 export const AI_CYCLE_ALLOWANCE_FEATURE_KEY = "ai_cycle_allowance";
@@ -55,26 +59,38 @@ type DraftFacts = Pick<
   "baseSourceKind" | "baseSourceId" | "effectiveFrom" | "effectiveUntil" | "productPlanName" | "features"
 >;
 
+/** 订阅级付费周期身份（来自 SubscriptionFact，见 store.activeItem）。 */
+export type CycleIdentity = Readonly<{
+  cycleFrom: string | null;
+  cycleUntil: string | null;
+}>;
+
 /**
  * 从权益草稿推导周期额度指令。base source 不可用（到期/无来源）或计划
  * 未配置周期额度时返回 null，同步器据此跳过（不授予也不改动既有桶）。
+ * 周期身份由调用方从订阅事实传入（cycleFrom/cycleUntil，缺省回退 item
+ * 窗口）；周期内升级（换 item）不改变周期身份，续期才换。
  */
 export function planCycleDirective(
   workspaceDb: string | null,
   draft: DraftFacts,
+  cycle: CycleIdentity | null,
 ): PlanCycleDirective | null {
   if (!workspaceDb) return null;
   if (draft.baseSourceKind === "none") return null;
-  if (!draft.baseSourceId || !draft.effectiveFrom || !draft.effectiveUntil) return null;
+  if (!draft.baseSourceId) return null;
+  const periodFrom = cycle?.cycleFrom ?? draft.effectiveFrom;
+  const periodUntil = cycle?.cycleUntil ?? draft.effectiveUntil;
+  if (!periodFrom || !periodUntil) return null;
   const feature = draft.features.find((item) => item.key === AI_CYCLE_ALLOWANCE_FEATURE_KEY);
   if (!feature || !feature.enabled || feature.limit === null || feature.limit <= 0) return null;
   return Object.freeze({
     workspaceDb,
     usable: true,
-    periodKey: `${draft.baseSourceId}:${draft.effectiveFrom}`,
+    periodKey: `${draft.baseSourceKind}:${draft.baseSourceId}:${periodFrom}`,
     cycleAllowance: feature.limit,
-    expiresAt: draft.effectiveUntil,
-    periodStart: draft.effectiveFrom,
+    expiresAt: periodUntil,
+    periodStart: periodFrom,
     label: `${draft.productPlanName ?? "套餐"}周期 AI 额度`,
   });
 }
