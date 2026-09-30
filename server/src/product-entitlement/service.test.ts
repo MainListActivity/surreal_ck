@@ -238,6 +238,38 @@ describe("product entitlement", () => {
     expect(store.snapshots).toHaveLength(2);
   });
 
+  test("同号重发：内容一致的幂等重放返回既有修订，内容差异报 conflict 不静默吞掉", async () => {
+    const store = new MemoryStore();
+    workspace(store);
+    const service = new ProductEntitlementService(store, () => new Date("2026-09-24T00:00:00.000Z"));
+    const remember = store.insertProductRevision.bind(store);
+    store.insertProductRevision = async (input) => {
+      const id = `product_plan_revision:${input.planId}:${input.revision}`;
+      store.pendingRevision.set(id, {
+        planKey: "fixture_plus", planName: "夹具律师 Plus", revision: input.revision,
+        collections: [{ key: "fixture_core", label: "夹具核心" }], actions: ["browse", "search", "read"],
+        aiActions: [], features: [{ key: "audit_export", enabled: true, limit: null }],
+      });
+      return remember(input);
+    };
+    const first = await service.publishRevision(operator, { ...publishBody(1, "fixture_core", "夹具核心"), aiActions: [] });
+    // 内容一致 + 新幂等键 → 幂等重放，返回既有修订 id。
+    const replay = await service.publishRevision(operator, { ...publishBody(1, "fixture_core", "夹具核心"), aiActions: [], idempotencyKey: "publish-replay-key" });
+    expect(replay.productPlanRevisionId).toBe(first.productPlanRevisionId);
+    // 内容差异（补 aiActions）→ conflict，绝不静默返回旧修订（LCA05 生产教训）。
+    await expect(service.publishRevision(operator, { ...publishBody(1, "fixture_core", "夹具核心"), idempotencyKey: "publish-divergent-key" }))
+      .rejects.toMatchObject({ code: "conflict" });
+    // 顺序不敏感：actions 集合相同、顺序不同 → 仍视为重放。
+    const reordered = await service.publishRevision(operator, {
+      ...publishBody(1, "fixture_core", "夹具核心"), aiActions: [], actions: ["read", "browse", "search"],
+      idempotencyKey: "publish-reordered-key",
+    });
+    expect(reordered.productPlanRevisionId).toBe(first.productPlanRevisionId);
+    // 修订号必须前进：发布 rev2 才能真正携带新内容。
+    const second = await service.publishRevision(operator, publishBody(2, "fixture_core", "夹具核心"));
+    expect(second.productPlanRevisionId).not.toBe(first.productPlanRevisionId);
+  });
+
   test("到期、无产品来源、跨计费账户和内容增量按已确认规则解析", async () => {
     const store = new MemoryStore();
     workspace(store);
@@ -303,10 +335,11 @@ describe("product entitlement", () => {
     const service = new ProductEntitlementService(store, () => new Date("2026-09-24T00:00:00.000Z"));
     const planId = await store.upsertPlan("fixture_plus");
     const revisionId = `product_plan_revision:${planId}:1`;
+    // 崩溃恢复场景：修订行已写入（内容 = 完整发布体），审计还没落。重试同体必须幂等返回且不再插模板。
     store.revisions.set(revisionId, {
       id: revisionId, planKey: "fixture_plus", planName: "夹具律师 Plus", revision: 1,
       collections: [{ key: "fixture_core", label: "夹具核心" }], actions: ["browse", "search", "read"],
-      aiActions: ["research"], features: [],
+      aiActions: ["research"], features: [{ key: "audit_export", enabled: true, limit: null }],
     });
     let templates = 0;
     store.insertContentTemplate = async () => {
@@ -523,11 +556,14 @@ describe("product entitlement", () => {
     const store = new MemoryStore();
     workspace(store);
     const service = new ProductEntitlementService(store, () => new Date("2026-09-24T00:00:00.000Z"));
+    // 修订行内容必须与发布请求体一致（同号重发要求幂等匹配）；rev1/rev2 仅 collections 不同。
     store.insertProductRevision = async (input) => {
       const id = `product_plan_revision:${input.planId}:${input.revision}`;
       store.revisions.set(id, {
         id, planKey: "fixture_plus", planName: "夹具律师 Plus", revision: input.revision,
-        collections: [], actions: [], aiActions: [], features: [],
+        collections: [input.revision === 1 ? { key: "fixture_core", label: "夹具核心" } : { key: "fixture_expanded", label: "夹具扩展" }],
+        actions: ["browse", "search", "read"], aiActions: ["research"],
+        features: [{ key: "audit_export", enabled: true, limit: null }],
       });
       return id;
     };
