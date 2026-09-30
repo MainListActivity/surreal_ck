@@ -15,7 +15,8 @@ import type { EmployeeLifecycle, EmployeeLifecycleResult } from "../../ai/office
  */
 
 const REQUEST_KEY_PATTERN = /^[a-zA-Z0-9:_-]{8,200}$/;
-const NAME_PATTERN = /^[a-z][a-z0-9_]{0,62}$/i;
+// 线上既有 office_role key 含连字符（project-manager / data-analyst）。
+const NAME_PATTERN = /^[a-z][a-z0-9_-]{0,62}$/i;
 
 function resultToResponse(result: Exclude<EmployeeLifecycleResult, { kind: "ok" }>): HttpError {
   switch (result.kind) {

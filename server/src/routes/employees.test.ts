@@ -104,6 +104,22 @@ describe("POST /api/workspaces/:slug/employees", () => {
     expect((await app.fetch(post("/api/workspaces/acme/employees", { requestKey: "has space in key" }))).status).toBe(400);
   });
 
+  test("roleKey 接受既有连字符岗位 key（project-manager），非法格式仍 400", async () => {
+    const { lifecycle, calls } = stubLifecycle({ kind: "ok", employee: okEmployee, created: true });
+    const app = appWith(lifecycle);
+    const ok = await app.fetch(
+      post("/api/workspaces/acme/employees", { requestKey: "req-key-0001", roleKey: "project-manager" }),
+    );
+    expect(ok.status).toBe(200);
+    expect(calls).toEqual([{ action: "provision", slug: "acme" }]);
+    expect(
+      (await app.fetch(post("/api/workspaces/acme/employees", { requestKey: "req-key-0001", roleKey: "-bad" }))).status,
+    ).toBe(400);
+    expect(
+      (await app.fetch(post("/api/workspaces/acme/employees", { requestKey: "req-key-0001", roleKey: "has space" }))).status,
+    ).toBe(400);
+  });
+
   test("participant token / 其它 workspace token / 缺 db claim → 403 且不进 lifecycle", async () => {
     const { lifecycle, calls } = stubLifecycle({ kind: "ok", employee: okEmployee, created: true });
     for (const user of [participantUser, foreignUser, { ...adminUser, raw: {} }]) {

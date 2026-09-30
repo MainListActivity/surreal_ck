@@ -47,7 +47,7 @@ function fakeSession(db: FakeDb) {
           subject: params.subject,
           kind: "virtual",
           display_name: params.displayName,
-          virtual_profile: { status: null, role_key: params.roleKey, role: params.role },
+          virtual_profile: { status: null, ...((params.virtualProfile ?? {}) as Row) },
         });
         return [[db.users.get(id)!]];
       }

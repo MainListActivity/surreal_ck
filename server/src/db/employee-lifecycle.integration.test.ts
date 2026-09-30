@@ -154,6 +154,15 @@ describe("employee lifecycle against real SurrealDB", () => {
       runtime,
       sessionTtlSeconds: 3600,
     });
+    // 回归（VER02 QA 退回根因）：无 roleKey 创建不得把 JS null 绑进 option 字段——
+    // 引擎把 null 当 NULL 而非 NONE，option<record<…>> 类型强转会直接拒收。
+    const noRole = await lifecycle.provision({ slug: "acme", callerToken: "owner-sub", requestKey: "req-key-0000" });
+    expect(noRole.kind).toBe("ok");
+    if (noRole.kind === "ok") {
+      expect(noRole.employee.status).toBe("active");
+      expect(noRole.employee.roleKey).toBeNull();
+    }
+
     const input = { slug: "acme", callerToken: "owner-sub", requestKey: "req-key-0001", roleKey: "project-manager" };
 
     // 幂等创建：两次调用收敛到同一员工、同一条凭证
@@ -171,11 +180,13 @@ describe("employee lifecycle against real SurrealDB", () => {
     if (again.kind !== "ok") return;
     expect(again.employee.id).toBe(employeeId);
     const [userCount] = await fixture.root.query<[{ n: number }[]]>(
-      `SELECT count() AS n FROM user WHERE kind = "virtual" GROUP ALL;`,
+      `SELECT count() AS n FROM user WHERE kind = "virtual" AND subject = $subject GROUP ALL;`,
+      { subject: first.employee.subject },
     );
     expect(userCount?.[0]?.n).toBe(1);
     const [credCount] = await fixture.root.query<[{ n: number }[]]>(
-      "SELECT count() AS n FROM employee_credential GROUP ALL;",
+      "SELECT count() AS n FROM employee_credential WHERE employee = $employee GROUP ALL;",
+      { employee: new StringRecordId(employeeId) },
     );
     expect(credCount?.[0]?.n).toBe(1);
 
