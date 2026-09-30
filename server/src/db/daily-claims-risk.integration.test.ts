@@ -22,8 +22,10 @@ describe("OIP-18 风险提醒 SurrealDB access contract", () => {
         password: process.env.LOCAL_SURREAL_ROOT_PASS ?? "root",
       },
       namespace,
-      database,
     });
+    // SurrealDB 3.x 不再随 DEFINE TABLE 隐式建库：先在 namespace 级建库再进入。
+    await root.query(`DEFINE DATABASE IF NOT EXISTS ${database}`).collect();
+    await root.use({ namespace, database });
     await root.query(`
       DEFINE TABLE user SCHEMAFULL PERMISSIONS FULL;
       DEFINE FIELD email ON TABLE user TYPE string;
