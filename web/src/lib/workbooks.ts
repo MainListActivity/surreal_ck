@@ -461,9 +461,9 @@ DEFINE EVENT OVERWRITE record_activity ON TABLE ${sheet.tableName} WHEN $event =
 CREATE ${sheet.id} CONTENT { workbook: ${wbId}, label: ${labelBinding}, table_name: ${tableBinding}, column_defs: ${columnsBinding}${templateKeyClause} };`;
   }).join("\n");
 
-  // template 引用作为 record id 直接拼进 CREATE CONTENT（受控来源：模板 store 的 id，
-  // 经 ASSERT 过的 record id 字符串），无引用时省略该字段 = 空白工作簿。
-  const templateClause = options.templateRef ? `, template: ${String(options.templateRef)}` : "";
+  // 模板引用也走 SDK RecordId binding；数据行中的标识不成为事务语句。
+  // 无引用时省略该字段 = 空白工作簿。
+  const templateClause = options.templateRef ? ", template: $templateRef" : "";
   const dashboardSql = resolvedDashboard && dashboardId
     ? `CREATE ${dashboardId} CONTENT { workbook: ${wbId}, title: $dashboardTitle, slug: $dashboardSlug, widgets: $dashboardWidgets${resolvedDashboard.description ? ", description: $dashboardDescription" : ""} };`
     : "";
@@ -487,6 +487,7 @@ ${dashboardSql}
 COMMIT TRANSACTION;`;
 
   const bindings: Record<string, unknown> = { name };
+  if (options.templateRef) bindings.templateRef = toRecordId(String(options.templateRef));
   if (options.importBatch) {
     bindings.importBatchWorkbook = toRecordId(options.importBatch.id);
     for (const sheet of resolvedSheets) {

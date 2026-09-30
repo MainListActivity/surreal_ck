@@ -16,10 +16,18 @@ import type {
 import { AiContextSnapshotSchema, ResolvedRecordSchema } from "@surreal-ck/shared";
 import { classifyTask, type RouterCategory, type RouterLlmCaller, type RouterPlan } from "./router-classifier";
 import type { DecisionCaller } from "../../decision/model";
+import type { ContentResearchWindow } from "../../../src/research/window";
 
 export const ROUTER_WORKFLOW_ID = "routerWorkflow";
 export const ROUTER_RUNTIME_KEY = "routerRuntime";
 const AMBIGUOUS_CANDIDATES_LIMIT = 20;
+
+/**
+ * LCA06：执行 runtime 注入的调用者 content_reader 窗口工厂（可缺省）。
+ * 由路由层用调用者 OIDC token 构造闭包，executor 在执行窗口内打开/关闭；
+ * 模型与 workflow state 都拿不到 token，也不能自选安全上下文。
+ */
+export type OpenContentResearchSession = () => Promise<ContentResearchWindow>;
 
 // ─── 共享 context 协议 ────────────────────────────────────────────────────────
 
@@ -81,6 +89,10 @@ export type SubAgentInput = {
    * 流式 delta 实时回调；非流式 executor 可忽略。
    */
   onDelta?: (delta: string) => void;
+  /**
+   * LCA06：调用者 content_reader 窗口工厂（runtime 注入；缺席 = 本 run 不做平台语料研究）。
+   */
+  openContentSession?: OpenContentResearchSession;
 };
 
 export type SubAgentOutput = {
@@ -198,6 +210,19 @@ const RouterStepResultSchema = z.object({
       order: z.number(),
       text: z.string(),
     })).optional(),
+    platformContent: z.object({
+      itemId: z.string(),
+      versionId: z.string(),
+      sourceKey: z.string(),
+      versionPublicId: z.string().optional(),
+      quoteSha256: z.string().optional(),
+      entitlementRevision: z.string().optional(),
+      locator: z.object({
+        start: z.number(),
+        end: z.number(),
+        bodyDigest: z.string(),
+      }).nullable(),
+    }).optional(),
   })).optional(),
 });
 
@@ -318,6 +343,8 @@ export type RouterRuntime = {
     taskText: string;
     userContext: AiContextSnapshot;
   }) => Promise<{ text: string; citations?: ResourceCitationDTO[] }>;
+  /** LCA06：调用者 content_reader 窗口工厂；缺席时 resource-retrieval 不做平台语料研究。 */
+  openContentSession?: OpenContentResearchSession;
 };
 
 function getRuntime(requestContext: { get(key: string): unknown }): RouterRuntime {
@@ -489,6 +516,7 @@ export function createRouterWorkflow() {
         runId: runtime.runId,
         surrealSession: runtime.surrealSession,
         onDelta,
+        openContentSession: runtime.openContentSession,
       });
 
       // 非流式 executor 的 deltas 补播

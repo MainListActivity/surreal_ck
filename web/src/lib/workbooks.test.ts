@@ -527,7 +527,8 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
     const txQuery = rec.queries.find((q) => /BEGIN TRANSACTION/i.test(q.sql));
     const sql = txQuery!.sql;
     // 工作簿带上 template 引用 = 类型
-    expect(sql).toMatch(/CREATE workbook:[0-9a-f]+ CONTENT \{[^}]*template: workbook_template:case/);
+    expect(sql).toMatch(/CREATE workbook:[0-9a-f]+ CONTENT \{[^}]*template: \$templateRef/);
+    expect(String((txQuery!.bindings as Record<string, unknown>).templateRef)).toBe("workbook_template:case");
     // 实体表按模板两列建 DEFINE FIELD
     expect(sql).toMatch(/DEFINE FIELD IF NOT EXISTS name ON TABLE ent_[0-9a-f]+_main TYPE string/);
     expect(sql).toMatch(/DEFINE FIELD IF NOT EXISTS amount ON TABLE ent_[0-9a-f]+_main TYPE option<number>/);
@@ -543,6 +544,15 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
 });
 
 describe("buildCreateWorkbookTransaction — 纯 SurrealQL 构造", () => {
+  test("模板记录引用通过 SDK binding 传递，特殊标识不能成为事务语句", () => {
+    const templateRef = 'workbook_template:⟨ops; COMMIT TRANSACTION;⟩';
+    const { sql, bindings } = buildCreateWorkbookTransaction("设备台账", { templateRef });
+    expect(sql).not.toContain(templateRef);
+    expect(sql).toContain("template: $templateRef");
+    expect(String(bindings.templateRef)).toBe(templateRef);
+    expect(typeof bindings.templateRef).toBe("object");
+  });
+
   test("实例化使用注入的随机 key 边界预生成 workbook 与全部 sheet 标识", async () => {
     const keys = ["1111111111111111", "2222222222222222", "3333333333333333"];
     const queries: string[] = [];
