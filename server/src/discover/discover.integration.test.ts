@@ -4,6 +4,7 @@ import { loadPlatformContentScripts } from "@surreal-ck/shared/platform-content-
 import { homedir } from "node:os";
 import { createDiscoverService } from "./service";
 import type { Queryable } from "./service";
+import { ensureSystemSchema } from "../db/system-schema";
 
 /**
  * LCA11 真实 SurrealDB 集成测试：起独立内存实例，应用 001-008 内容库 schema，
@@ -41,6 +42,7 @@ describe("LCA11 公开发现投影（真实 SurrealDB）", () => {
     const root = new Surreal();
     const publisher = new Surreal();
     const stranger = new Surreal();
+    const sys = new Surreal();
     try {
       await root.connect(url);
       await root.signin({ username: "test", password });
@@ -68,15 +70,43 @@ describe("LCA11 公开发现投影（真实 SurrealDB）", () => {
         CREATE content_version:v2 SET public_id='v2', item=content_item:i2, revision=1, source=content_source:s2, source_url='https://example.invalid/2', fetched_at=time::now(), title='LOCKED_MARKER_裁判文书', body_text='LOCKED_MARKER_BODY_SECRET', body_sha256='h2', source_form='full_text', evidence=[], field_issues=[], processing={}, content_kind_payload={}, created_by_subject='fixture';
         CREATE content_collection_binding:b1 SET item=content_item:i1, collections=['core_statutes'];
         CREATE content_collection_binding:b2 SET item=content_item:i2, collections=['locked_cases'];
+        CREATE content_item:i3 SET public_id='i3', kind='legislation', publication_status='published', current_version=content_version:v3;
+        CREATE content_version:v3 SET public_id='v3', item=content_item:i3, revision=1, source=content_source:s1, source_url='https://example.invalid/3', fetched_at=time::now(), title='建设工程合同示范文本', body_text='PUBLIC_OK_BODY_3', body_sha256='h3', source_form='full_text', evidence=[], field_issues=[], processing={}, content_kind_payload={}, created_by_subject='fixture';
+        CREATE content_collection_binding:b3 SET item=content_item:i3, collections=['qa_gap_pack'];
+        CREATE content_search_facet:f3 SET item=content_item:i3, version=content_version:v3, kind='legislation', jurisdiction='CN', published_on='2025-03-01';
         CREATE content_search_facet:f1 SET item=content_item:i1, version=content_version:v1, kind='legislation', jurisdiction='CN', published_on='2025-01-01';
         CREATE content_search_facet:f2 SET item=content_item:i2, version=content_version:v2, kind='judicial_document', jurisdiction='CN', published_on='2025-02-01';
       `);
 
+      // _system 走真实 schema：QA 退回证明 fake 行无法校验 system 侧投影
+      //（product_plan 只有 plan_key，旧查询 plan.plan_key 恒 NONE → 建议恒 null）。
+      await sys.connect(url);
+      await sys.signin({ username: "test", password });
+      await sys.use({ namespace: "test", database: "_system" });
+      await ensureSystemSchema(sys, { namespace: "test" });
+      await sys.query(`
+        CREATE content_collection:col_core CONTENT {collection_key:'core_statutes', display_name:'核心法规', status:'active'};
+        CREATE content_collection:col_gap CONTENT {collection_key:'qa_gap_pack', display_name:'缺口扩展包', status:'active'};
+        CREATE content_template_revision:ctr1 CONTENT {
+          collections:[
+            {collection:content_collection:col_core, collection_key:'core_statutes', display_name:'核心法规'},
+            {collection:content_collection:col_gap, collection_key:'qa_gap_pack', display_name:'缺口扩展包'}
+          ],
+          actions:['browse'], created_by_subject:'fixture'
+        };
+        CREATE ai_template_revision:atr1 CONTENT {actions:['research'], created_by_subject:'fixture'};
+        CREATE feature_template_revision:ftr1 CONTENT {features:[], created_by_subject:'fixture'};
+        CREATE quota_plan:qp1 CONTENT {plan_key:'lawyer_pro', display_name:'Pro', visibility:'public', status:'active'};
+        CREATE quota_plan_revision:qpr1 CONTENT {plan:quota_plan:qp1, revision:1, template_kind:'commercial', rules:[], created_by_subject:'fixture', published_at:time::now(), correlation_id:'c1'};
+        CREATE product_plan:pp1 CONTENT {plan_key:'lawyer_pro', display_name:'Pro', status:'active', active_revision:product_plan_revision:ppr1};
+        CREATE product_plan_revision:ppr1 CONTENT {plan:product_plan:pp1, revision:1, resource_template:quota_plan_revision:qpr1, content_template:content_template_revision:ctr1, ai_template:ai_template_revision:atr1, feature_template:feature_template_revision:ftr1, created_by_subject:'fixture', published_at:time::now(), correlation_id:'c1'};
+      `);
+
       const fakeSystem: Queryable = {
-        async query(sql: string) {
+        async query(sql: string, params?: Record<string, unknown>) {
           if (sql.includes("FROM workspace WHERE")) return [[{ id: "workspace:w1", db_name: "ws_acme", status: "active" }]];
           if (sql.includes("FROM user_workspace_index")) return [[{ subject: "alice", disabled_at: null }]];
-          if (sql.includes("FROM product_plan")) return [[{ plan_key: "lawyer_pro", plan_name: "Pro", collections: [{ collection_key: "core_statutes" }, { collection_key: "locked_cases" }] }]];
+          if (sql.includes("FROM product_plan")) return sys.query(sql, params);
           if (sql.includes("quota_subscription_item")) return [[null]];
           if (sql.includes("billing_account_member")) return [[]];
           return [[]];
@@ -88,31 +118,37 @@ describe("LCA11 公开发现投影（真实 SurrealDB）", () => {
         entitlementStore: { async currentSnapshot() { return { collections: [{ key: "core_statutes", label: "核心法规" }] }; } },
       });
 
-      // 重建：只有 i1（s1 许可含 discover）入投影；i2 许可不含 discover 不入。
+      // 重建：i1+i3（s1 许可含 discover）入投影；i2 许可不含 discover 不入。
       const rebuilt = await service.rebuildProjection("ops:test", {
         examples: [{ key: "ex1", title: "策划示例", summary: "示例摘要（运营撰写）", citationLabels: ["示例法条"], position: 0 }],
         reason: "initial publish",
       });
-      expect(rebuilt).toEqual({ listed: 1, delisted: 0, examples: 1 });
+      expect(rebuilt).toEqual({ listed: 2, delisted: 0, examples: 1 });
 
       const projectionRows = await root.query<{ public_id: string; listed: boolean }[]>(
         "SELECT public_id, listed FROM content_discover_item;",
       );
-      expect(projectionRows[0]).toEqual([{ public_id: "i1", listed: true }]);
+      expect(projectionRows[0]).toContainEqual({ public_id: "i1", listed: true });
+      expect(projectionRows[0]).toContainEqual({ public_id: "i3", listed: true });
       // 投影里绝不出现锁定标记（标题/正文都没有进表）。
       expect(JSON.stringify(projectionRows)).not.toContain("LOCKED_MARKER");
 
-      // 公开查询：问题命中 i1；锁定条目与其标记不出现在输出。
+      // 公开查询：问题命中 i1+i3；锁定条目与其标记不出现在输出。
       const query = await service.publicQuery("建设工程");
-      expect(query.scope.matchedCount).toBe(1);
+      expect(query.scope.matchedCount).toBe(2);
       expect(query.matchedItems[0]?.publicId).toBe("i1");
       expect(JSON.stringify(query)).not.toContain("LOCKED_MARKER");
       expect(JSON.stringify(query)).not.toContain("SECRET");
       expect(JSON.stringify(query)).not.toContain("body_text");
 
-      // 成员评估：i1 集合已覆盖 → full。
+      // 成员评估：core_statutes 已覆盖、qa_gap_pack 是缺口 → partial；
+      // 真实 _system 套餐目录应给出覆盖缺口的单一套餐建议（QA 退回项）。
       const evaluation = await service.evaluateMember({ question: "建设工程", subject: "alice", workspaceDb: "ws_acme" });
-      expect(evaluation.coverage).toBe("full");
+      expect(evaluation.coverage).toBe("partial");
+      expect(evaluation.gapCollections).toEqual(["qa_gap_pack"]);
+      expect(evaluation.suggestion?.planKey).toBe("lawyer_pro");
+      expect(evaluation.suggestion?.coversCollections).toEqual(["qa_gap_pack"]);
+      expect(evaluation.entry).toEqual({ kind: "request_admin", planKey: "lawyer_pro" });
       expect(JSON.stringify(evaluation)).not.toContain("LOCKED_MARKER");
 
       // 事件落库：字段全部结构化，无问题原文。
@@ -140,16 +176,19 @@ describe("LCA11 公开发现投影（真实 SurrealDB）", () => {
       await stranger.query("INSERT INTO content_discover_item { item: content_item:i1, version: content_version:v1, public_id: 'evil', kind: 'legislation', title: 'x', source_key: 'x', source_label: 'x', collections: [], license_revision: source_license_revision:l1 };");
       const rootView = await root.query<{ public_id: string }[]>("SELECT public_id FROM content_discover_item;");
       expect(JSON.stringify(rootView)).not.toContain("evil");
-      expect(rootView[0]).toHaveLength(1);
+      expect(rootView[0]).toHaveLength(2);
 
       // 撤回内容 → 重建后 listed=false，不再公开。
       await publisher.query("UPDATE content_item:i1 SET publication_status = 'withdrawn';");
       const second = await service.rebuildProjection("ops:test", { examples: [], reason: "after withdraw" });
-      expect(second.listed).toBe(0);
+      expect(second.listed).toBe(1);
       expect(second.delisted).toBe(1);
       const after = await service.publicQuery("建设工程");
-      expect(after.scope.matchedCount).toBe(0);
+      // i1 下架后只剩 i3 命中。
+      expect(after.scope.matchedCount).toBe(1);
+      expect(after.matchedItems[0]?.publicId).toBe("i3");
     } finally {
+      await sys.close();
       await stranger.close();
       await publisher.close();
       await root.close();
