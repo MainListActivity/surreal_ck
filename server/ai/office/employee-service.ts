@@ -3,6 +3,10 @@ import { getRootDatabaseSession } from "../../src/db/root-connection";
 import { createCallerSession } from "../../src/ai/caller-session";
 import { createEmployeeLifecycle, type EmployeeLifecycle } from "./employee-lifecycle";
 import { createEmployeeRuntime, type EmployeeRuntime } from "./employee-runtime";
+import {
+  createEmployeeTriggerRuntime,
+  type EmployeeTriggerRuntime,
+} from "./employee-trigger-runtime";
 
 /**
  * 生产装配：进程内单例 employee runtime + 生命周期服务。
@@ -29,6 +33,20 @@ export async function warmupEmployeeRuntime(): Promise<void> {
 export async function stopEmployeeRuntime(): Promise<void> {
   const runtime = sharedRuntime;
   sharedRuntime = null;
+  await runtime?.stop();
+}
+
+let sharedTriggerRuntime: EmployeeTriggerRuntime | null = null;
+
+/** 进程内单例持久化触发 runtime（VER3）：会话全部走 employee runtime。 */
+export function getEmployeeTriggerRuntime(): EmployeeTriggerRuntime {
+  sharedTriggerRuntime ??= createEmployeeTriggerRuntime({ sessions: getEmployeeRuntime() });
+  return sharedTriggerRuntime;
+}
+
+export async function stopEmployeeTriggerRuntime(): Promise<void> {
+  const runtime = sharedTriggerRuntime;
+  sharedTriggerRuntime = null;
   await runtime?.stop();
 }
 

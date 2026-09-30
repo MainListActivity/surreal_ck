@@ -458,6 +458,21 @@ describe("workspace template scripts", () => {
     expect(sql).toContain("$before.resolved_at != NONE AND $after.resolved_at != $before.resolved_at");
   });
 
+  test("VER03 持久化触发表以幂等键唯一索引收敛重复投递，且只允许 employee 自写", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.name === "034-employee-trigger.surql");
+
+    expect(migration?.version).toBe(34);
+    const sql = migration?.sql ?? "";
+    expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS employee_trigger SCHEMAFULL/);
+    expect(sql).toMatch(/DEFINE INDEX IF NOT EXISTS \w+ ON TABLE employee_trigger COLUMNS idempotency_key UNIQUE/);
+    expect(sql).toContain('FOR create WHERE $auth.kind = "virtual"');
+    expect(sql).toContain("FOR update WHERE employee = $auth");
+    expect(sql).toContain("payload_ref ON TABLE employee_trigger TYPE option<string>");
+    expect(sql).toContain("chain_depth ON TABLE employee_trigger TYPE int DEFAULT 0");
+    expect(sql).toContain('"pending", "leased", "running", "waiting", "completed", "failed"');
+  });
+
   test("keeps JWT access placeholders by default and can render them for backend execution", async () => {
     const rawScripts = await loadTemplateScripts();
     const rawSql = rawScripts.map((script) => script.sql).join("\n");
