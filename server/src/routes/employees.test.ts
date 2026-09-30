@@ -70,9 +70,38 @@ function stubLifecycle(result: EmployeeLifecycleResult): {
   };
 }
 
+type TriggerCall = {
+  database: string;
+  employeeId: string;
+  reason: string;
+  payloadRef?: string;
+  chainDepth: number;
+  idempotencyKey: string;
+};
+
+function stubTriggerRuntime(outcome: "completed" | "coalesced" | "waiting" | "failed" = "completed") {
+  const calls: TriggerCall[] = [];
+  const result =
+    outcome === "failed"
+      ? { outcome, error: "employee-signin-failed" as string }
+      : { outcome, triggerId: "employee_trigger:probe1" };
+  return {
+    calls,
+    runtime: {
+      start() {},
+      registerHandler() {},
+      async enqueue(delivery: TriggerCall) {
+        calls.push(delivery);
+        return result;
+      },
+    },
+  };
+}
+
 function appWith(lifecycle: EmployeeLifecycle, user = adminUser) {
   return createApp({
     employeeLifecycle: lifecycle,
+    employeeTriggerRuntime: stubTriggerRuntime().runtime,
     employeeWorkspaceResolver: async (slug) => (slug === "acme" ? { dbName: "ws_acme" } : null),
     requireUser: () => useUser(user),
   });
@@ -224,5 +253,100 @@ describe("GET controlled employee runtime observation", () => {
       expect(JSON.stringify(logs)).not.toContain(marker);
       await runtime.stop();
     } finally { info.mockRestore(); error.mockRestore(); }
+  });
+});
+
+describe("POST /api/internal/workspaces/:slug/employees/:employeeKey/triggers (qa-probe)", () => {
+  const path = "/api/internal/workspaces/acme/employees/ve_ab12/triggers";
+
+  function probeApp(result: Parameters<typeof stubTriggerRuntime>[0] = "completed", user = adminUser) {
+    const stub = stubTriggerRuntime(result);
+    const app = createApp({
+      employeeLifecycle: stubLifecycle({ kind: "ok", employee: okEmployee, created: false }).lifecycle,
+      employeeTriggerRuntime: stub.runtime,
+      employeeWorkspaceResolver: async (slug) => (slug === "acme" ? { dbName: "ws_acme" } : null),
+      requireUser: () => useUser(user),
+    });
+    return { app, calls: stub.calls };
+  }
+
+  test("无凭证 401；participant/跨库/缺 scope 403 且不投递", async () => {
+    const { app, calls } = probeApp();
+    expect((await app.fetch(post("/api/internal/workspaces/acme/employees/ve_ab12/triggers", { idempotencyKey: "qa-probe-0001" }))).status).toBe(200);
+    for (const user of [participantUser, foreignUser, { ...adminUser, raw: {} }]) {
+      const blocked = probeApp("completed", user);
+      expect((await blocked.app.fetch(post(path, { idempotencyKey: "qa-probe-0002" }))).status).toBe(403);
+      expect(blocked.calls).toHaveLength(0);
+    }
+    expect(calls).toHaveLength(1);
+  });
+
+  test("admin + 合法体 → 200，投递参数正确且响应只有终态摘要", async () => {
+    const { app, calls } = probeApp("completed");
+    const res = await app.fetch(post(path, {
+      idempotencyKey: "qa-probe-0003",
+      payloadRef: "office_meta:office",
+      chainDepth: 1,
+    }));
+    expect(res.status).toBe(200);
+    const body = await res.json() as Record<string, unknown>;
+    expect(body).toEqual({ ok: true, outcome: "completed", triggerId: "employee_trigger:probe1" });
+    expect(calls).toEqual([{
+      database: "ws_acme",
+      employeeId: "user:ve_ab12",
+      reason: "qa-probe",
+      payloadRef: "office_meta:office",
+      chainDepth: 1,
+      idempotencyKey: "qa-probe-0003",
+    }]);
+  });
+
+  test("缺省 reason 即 qa-probe；其他 reason / 非法字段 → 400 不投递", async () => {
+    const { app, calls } = probeApp();
+    for (const body of [
+      { idempotencyKey: "qa-probe-ok", reason: "daily-claims-risk" },
+      { idempotencyKey: "qa-probe-ok", reason: "office-bootstrap" },
+      { idempotencyKey: "short" },
+      { idempotencyKey: "has space in key!!" },
+      {},
+      { idempotencyKey: "qa-probe-ok", chainDepth: -1 },
+      { idempotencyKey: "qa-probe-ok", chainDepth: 1.5 },
+      { idempotencyKey: "qa-probe-ok", chainDepth: "0" },
+      { idempotencyKey: "qa-probe-ok", payloadRef: 42 },
+      { idempotencyKey: "qa-probe-ok", payloadRef: "x".repeat(201) },
+    ]) {
+      expect((await app.fetch(post(path, body))).status).toBe(400);
+    }
+    // 缺省 reason 与合法 chainDepth/payloadRef 通过。
+    expect((await app.fetch(post(path, { idempotencyKey: "qa-probe-ok9" }))).status).toBe(200);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ reason: "qa-probe", chainDepth: 0 });
+    expect(calls[0]).not.toHaveProperty("payloadRef");
+  });
+
+  test("employeeKey 格式非法 → 400；waiting/coalesced/failed 均 200 透传 outcome", async () => {
+    const { app } = probeApp();
+    expect((await app.fetch(post(path.replace("ve_ab12", "9bad"), { idempotencyKey: "qa-probe-0004" }))).status).toBe(400);
+    expect((await app.fetch(post(path.replace("ve_ab12", "bad%40key"), { idempotencyKey: "qa-probe-0005" }))).status).toBe(400);
+
+    for (const outcome of ["waiting", "coalesced", "failed"] as const) {
+      const probe = probeApp(outcome);
+      const res = await probe.app.fetch(post(path, { idempotencyKey: `qa-probe-${outcome}` }));
+      expect(res.status).toBe(200);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.ok).toBe(true);
+      expect(body.outcome).toBe(outcome);
+      if (outcome === "failed") expect(body.error).toBe("employee-signin-failed");
+    }
+  });
+
+  test("响应不泄漏内部对象/凭证/堆栈", async () => {
+    const { app } = probeApp("completed");
+    const res = await app.fetch(post(path, { idempotencyKey: "qa-probe-leak" }));
+    const text = await res.text();
+    expect(text).not.toContain("secret");
+    expect(text).not.toContain("token");
+    expect(text).not.toContain("Surreal");
+    expect(text).not.toContain("stack");
   });
 });

@@ -102,8 +102,16 @@ import { createContentReaderRoutes, type ContentReaderExchangeHandler } from "./
 import { createContentReaderExchangeHandler } from "./content/reader-handler";
 import { createContentSearchExchangeHandler } from "./content/search-exchange";
 import { createEmployeeRoutes } from "./routes/employees";
-import { createProductionEmployeeLifecycle, getEmployeeRuntime, resolveWorkspaceBySlug } from "../ai/office/employee-service";
+import { createOfficeRoutes, type OfficeBootstrapAction } from "./routes/office";
+import {
+  createProductionEmployeeLifecycle,
+  getEmployeeRuntime,
+  getEmployeeTriggerRuntime,
+  resolveWorkspaceBySlug,
+} from "../ai/office/employee-service";
+import type { EmployeeTriggerRuntime } from "../ai/office/employee-trigger-runtime";
 import type { EmployeeRuntime } from "../ai/office/employee-runtime";
+import { createProductionOfficeBootstrap } from "../ai/office/office-trigger-adapter";
 import type { EmployeeLifecycle } from "../ai/office/employee-lifecycle";
 import { AiAllowanceService, type Queryable as AllowanceQueryable } from "./ai-allowance/service";
 import { createOpsAiAllowanceRoutes } from "./routes/ops-ai-allowance";
@@ -149,9 +157,13 @@ export type AppOptions = {
   contentReaderExchange?: ContentReaderExchangeHandler;
   /** 虚拟员工生命周期服务（VER02）；默认生产装配。 */
   employeeRuntime?: Pick<EmployeeRuntime, "inspect">;
+  /** qa-probe 受控投递口（VER 联验补齐）；默认生产共享单例。 */
+  employeeTriggerRuntime?: Pick<EmployeeTriggerRuntime, "enqueue" | "start" | "registerHandler">;
   employeeLifecycle?: EmployeeLifecycle;
   /** slug → db_name 解析（路由层 scope 校验用）；默认 root 读 _system。 */
   employeeWorkspaceResolver?: (slug: string) => Promise<{ dbName: string } | null>;
+  /** 虚拟办公室一次性 bootstrap（VO02）；默认生产装配（lifecycle + 通用 trigger runtime）。 */
+  officeBootstrap?: OfficeBootstrapAction;
   /** LCA05 共享 AI 额度门禁；注入后 /api/chat 新 run 在启动 workflow 前原子预留。 */
   aiAllowance?: AiAllowanceService;
   /** LCA06：调用者 content_reader 研究窗口工厂；默认生产装配（search exchange 复用）。 */
@@ -321,6 +333,12 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     .route("/", createEmployeeRoutes({
       lifecycle: options.employeeLifecycle ?? createProductionEmployeeLifecycle(),
       runtime: options.employeeRuntime ?? getEmployeeRuntime(),
+      triggerRuntime: options.employeeTriggerRuntime ?? getEmployeeTriggerRuntime(),
+      resolveWorkspace: options.employeeWorkspaceResolver ?? resolveWorkspaceBySlug,
+      requireUser: options.requireUser,
+    }))
+    .route("/", createOfficeRoutes({
+      bootstrap: options.officeBootstrap ?? createProductionOfficeBootstrap(),
       resolveWorkspace: options.employeeWorkspaceResolver ?? resolveWorkspaceBySlug,
       requireUser: options.requireUser,
     }))
