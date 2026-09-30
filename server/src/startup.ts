@@ -22,7 +22,11 @@ import {
   startClaimsRiskReminderDispatcher,
   type ClaimsRiskDispatcherHandle,
 } from "../ai/office/claims-risk-dispatcher";
-import { stopEmployeeRuntime, warmupEmployeeRuntime } from "../ai/office/employee-service";
+import {
+  stopEmployeeRuntime,
+  stopEmployeeTriggerRuntime,
+  warmupEmployeeRuntime,
+} from "../ai/office/employee-service";
 import {
   startNativeQuotaRuntime,
   type NativeQuotaRuntimeHandle,
@@ -233,6 +237,7 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
       reconcileLoop?.stop();
       quotaRuntime.stop();
       await claimsRiskDispatcher?.stop();
+      await stopEmployeeTriggerRuntime();
       await stopEmployeeRuntime();
       await (deps.closeContentPublisherSession ?? closeContentPublisherSession)();
       await (deps.closeContentProjectionSession ?? closeContentProjectionSession)();

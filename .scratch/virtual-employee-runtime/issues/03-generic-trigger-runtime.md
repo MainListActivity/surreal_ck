@@ -1,5 +1,5 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: done
+Label: done
 
 # 03 — 通用持久化触发接管每日债权风险员工
 
