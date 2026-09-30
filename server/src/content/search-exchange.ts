@@ -16,6 +16,13 @@ import { getContentProjectionSession } from "./reader-session";
 type Row = Record<string, unknown>;
 const rows = (value: unknown): Row[] => Array.isArray(value) && Array.isArray(value[0]) ? value[0] as Row[] : [];
 
+// 3.3 引擎要求 ORDER BY 字段必须出现在 SELECT 投影（"Missing order idiom"），
+// id 一并选出不改变下游（只读 public_id）。
+export const CONTENT_CATALOG_SCAN_QUERY = `SELECT id, version.public_id AS public_id
+  FROM content_publication_projection
+  WHERE item.publication_status = "published" AND item.current_version = version
+  ORDER BY id LIMIT 5001;`;
+
 /**
  * Issue one short content_reader lease for an authorized catalog. All content
  * facts are inspected through content_projection_sync; the response contains
@@ -74,11 +81,7 @@ export function createContentSearchExchangeHandler() {
       if (subjectExpiresAtSeconds <= nowSeconds) return { ok: false, error: "invalid_lifetime" };
 
       // A bounded scan fails closed instead of silently providing partial coverage.
-      const catalog = rows(await content.query(
-        `SELECT version.public_id AS public_id FROM content_publication_projection
-          WHERE item.publication_status = "published" AND item.current_version = version
-          ORDER BY id LIMIT 5001;`,
-      ));
+      const catalog = rows(await content.query(CONTENT_CATALOG_SCAN_QUERY));
       if (catalog.length > 5000) throw new Error("content search catalog exceeds safe scan bound");
       const activeSubjects = index.flatMap((row) => row.disabled_at == null && typeof row.subject === "string" ? [row.subject] : []);
       const plans: PlannedContentReaderExchange[] = [];

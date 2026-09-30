@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { defineContentReaderAccess } from "./reader-access";
 import { ensurePlatformContentSchema } from "./schema";
 import { writeContentReaderProjection } from "./reader-projection";
+import { CONTENT_CATALOG_SCAN_QUERY } from "./search-exchange";
 import type { ContentReaderProjectionWrite } from "./reader-exchange";
 
 test("authorized catalog filters before pagination and count", async () => {
@@ -52,6 +53,11 @@ test("authorized catalog filters before pagination and count", async () => {
     expect((await ensurePlatformContentSchema(root, { namespace: "test", database: "content" })).appliedVersions).toEqual([7]);
     await sync.connect(url, { namespace: "test", database: "content" });
     await sync.signin({ namespace: "test", database: "content", access: "content_projection_sync", variables: { pass } });
+    // 回归（LCA04 生产 503 根因）：3.3 引擎要求 ORDER BY 字段在 SELECT 投影内，
+    // catalog 扫描必须原样在真实引擎上执行通过并返回公开指针。
+    const catalog = await sync.query(CONTENT_CATALOG_SCAN_QUERY);
+    expect((catalog[0] as { public_id?: string }[]).map((row) => row.public_id).sort())
+      .toEqual(["a-v1", "b-v1"]);
     const write: ContentReaderProjectionWrite = {
       workspaceId: "ws_test", revision: "1", revisionNumber: 1, digest: "sha256:fixture", resolverVersion: "test",
       collections: ["core"], contentActions: ["browse", "search", "read", "cite"], aiActions: [], allowedSubjects: ["human"],
