@@ -42,6 +42,8 @@
     projection_incomplete: "内容授权尚未完成同步。",
     projection_stale: "内容授权需要重新确认。",
     projection_closed: "内容授权已撤销。",
+    idp_rejected: "内容授权服务暂不可用，请稍后重试。",
+    invalid_lifetime: "内容授权服务暂不可用，请稍后重试。",
   };
 
   function clearPage() {

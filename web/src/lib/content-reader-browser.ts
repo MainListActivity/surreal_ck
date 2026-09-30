@@ -1,5 +1,5 @@
 import { Surreal } from "surrealdb";
-import type { ContentReaderExchangeSuccess, ContentReaderFailure } from "@surreal-ck/shared";
+import { contentExchangeFailure, type ContentReaderExchangeSuccess, type ContentReaderFailure } from "@surreal-ck/shared";
 import { getToken } from "./auth";
 import { createContentReader, isExchangeSuccess, isFailure, type ContentConnection } from "./content-reader";
 import { getCurrentWorkspace } from "./workspace-store.svelte";
@@ -22,6 +22,8 @@ export function createBrowserContentReader() {
       });
       const payload: unknown = await response.json().catch(() => null);
       if (isFailure(payload)) return payload;
+      const failure = contentExchangeFailure(payload, "content-reader-");
+      if (failure) return failure;
       if (!response.ok || !isExchangeSuccess(payload)) {
         return { ok: false, error: "idp_rejected" };
       }

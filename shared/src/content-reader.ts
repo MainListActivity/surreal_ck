@@ -122,6 +122,38 @@ export type ContentReaderFailure = {
   idpError?: IdpContentReaderError;
 };
 
+export type ContentExchangeErrorPrefix = "content-reader-" | "content-search-";
+
+/**
+ * 服务端统一错误信封 `{ error: { code: "<prefix><reason>", details? } }` → `ContentReaderFailure`。
+ * 只认前缀内、且在 CONTENT_READER_ERRORS 里的 code；其余（oidc-*、internal、未知码）返回 null，
+ * 由调用方落到自身兜底，避免把无关错误误映射成领域原因。
+ */
+export function contentExchangeFailure(
+  payload: unknown,
+  prefix: ContentExchangeErrorPrefix,
+): ContentReaderFailure | null {
+  if (!payload || typeof payload !== "object") return null;
+  const error = (payload as { error?: unknown }).error;
+  if (!error || typeof error !== "object") return null;
+  const code = (error as { code?: unknown }).code;
+  if (typeof code !== "string" || !code.startsWith(prefix)) return null;
+  const reason = code.slice(prefix.length) as ContentReaderError;
+  if (!(CONTENT_READER_ERRORS as readonly string[]).includes(reason)) return null;
+  const details = (error as { details?: unknown }).details;
+  const idpError = details && typeof details === "object"
+    ? (details as { idpError?: unknown }).idpError
+    : undefined;
+  return {
+    ok: false,
+    error: reason,
+    ...(typeof idpError === "string"
+    && (IDP_CONTENT_READER_ERRORS as readonly string[]).includes(idpError)
+      ? { idpError: idpError as IdpContentReaderError }
+      : {}),
+  };
+}
+
 export type ContentReaderPermissions = {
   /** browse 或 search 授予元数据，不由其他动作隐式授予。 */
   metadata: boolean;

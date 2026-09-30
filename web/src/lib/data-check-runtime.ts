@@ -246,8 +246,8 @@ export function createDataCheckService(conn: SurrealConn) {
   }
 
   async function loadLatest(workbookId: string): Promise<DataCheckRunSnapshot | null> {
-    const rows = await conn.query<{ id?: unknown }>(
-      "SELECT id FROM data_check_run WHERE workbook = $workbook ORDER BY started_at DESC LIMIT 1",
+    const rows = await conn.query<{ id?: unknown; started_at?: unknown }>(
+      "SELECT id, started_at FROM data_check_run WHERE workbook = $workbook ORDER BY started_at DESC LIMIT 1",
       { workbook: toRecordId(workbookId) },
     );
     const id = recordIdString(rows[0]?.id);
