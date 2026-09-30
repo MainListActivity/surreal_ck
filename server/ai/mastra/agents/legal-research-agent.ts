@@ -66,6 +66,7 @@ export function makeLegalResearchExecutor(deps: LegalResearchExecutorDeps): SubA
     const workspaceId = await resolveWorkspaceId(shared.userContext, surrealSession);
 
     // ── 执行窗口：workspace session（透传）+ content session（runtime 注入，可选） ──
+    // 窗口打开失败（IdP/投影/网络）一律按平台不可用降级，不中断 run、不外泄错误链。
     const [privateSearch, corpusWindow] = await Promise.all([
       searchResources({
         workspaceId,
@@ -73,9 +74,7 @@ export function makeLegalResearchExecutor(deps: LegalResearchExecutorDeps): SubA
         context: buildResourceSearchContext(shared.userContext),
         limit: 5,
       }, surrealSession),
-      openContentSession
-        ? openContentSession()
-        : Promise.resolve({ kind: "unavailable" as const, reason: "platform_error" as const }),
+      openWindowQuietly(openContentSession),
     ]);
 
     try {
@@ -225,6 +224,20 @@ function buildResourceSearchContext(context: AiContextSnapshot): SearchResources
     selectedRow: context.selectedRow ?? undefined,
     manualText: context.contextHint || undefined,
   };
+}
+
+/** 打开内容研究窗口；未注入或打开失败都归一为平台不可用（不外泄错误细节）。 */
+async function openWindowQuietly(
+  openContentSession?: () => Promise<ContentResearchWindow>,
+): Promise<ContentResearchWindow> {
+  if (!openContentSession) {
+    return { kind: "unavailable", reason: "platform_error" };
+  }
+  try {
+    return await openContentSession();
+  } catch {
+    return { kind: "unavailable", reason: "platform_error" };
+  }
 }
 
 /** workspace-as-database：调用者 session 已绑定 workspace db，db 名即 workspace 标识。 */

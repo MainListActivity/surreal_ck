@@ -210,6 +210,16 @@ const RouterStepResultSchema = z.object({
       order: z.number(),
       text: z.string(),
     })).optional(),
+    platformContent: z.object({
+      itemId: z.string(),
+      versionId: z.string(),
+      sourceKey: z.string(),
+      locator: z.object({
+        start: z.number(),
+        end: z.number(),
+        bodyDigest: z.string(),
+      }).nullable(),
+    }).optional(),
   })).optional(),
 });
 

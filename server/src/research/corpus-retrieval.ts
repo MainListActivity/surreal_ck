@@ -7,7 +7,7 @@
  * 授权外候选只记 rejected 摘要（版本指针 + 稳定原因码），正文/片段绝不外泄。
  */
 import { createHash } from "node:crypto";
-import type { Surreal } from "surrealdb";
+import { StringRecordId, type Surreal } from "surrealdb";
 import { CONTENT_SEARCH_QUERY } from "@surreal-ck/shared";
 
 type Row = Record<string, unknown>;
@@ -118,6 +118,14 @@ function toLocator(value: unknown): EvidenceLocator | null {
   return { start: raw.start, end: raw.end, bodyDigest: raw.bodyDigest };
 }
 
+/** content_source 表对读者不可见；从 version.source 记录 id（metadata 字段可见）取键。 */
+function sourceKeyOf(value: unknown): string | null {
+  if (value == null) return null;
+  const text = String(value);
+  const sep = text.indexOf(":");
+  return sep === -1 ? null : text.slice(sep + 1);
+}
+
 /**
  * 召回 + 逐候选登记。拒绝决定全部来自数据库可见事实：
  * - 无 AI 使用许可 → ai_use_denied（正文/片段不进入模型上下文）；
@@ -187,12 +195,13 @@ export async function retrieveAuthorizedCorpus(input: {
     }
 
     // 3) 版本事实：read 不获准时 body_text 字段在库层不可见（NONE）。
+    //    content_source 表对读者不可见，sourceKey 从 source 记录 id 派生。
     const versionRows = await queryRows(
       session,
-      `SELECT id, public_id, title, version_label, source_url, body_text, body_sha256,
-        source.source_key AS source_key, published_on
+      `SELECT id, item, public_id, title, version_label, source_url, body_text, body_sha256,
+        source, published_on
         FROM content_version WHERE id = $version;`,
-      { version: candidate.versionId },
+      { version: new StringRecordId(candidate.versionId) },
     );
     const version = versionRows[0];
     const bodyText = typeof version?.body_text === "string" ? version.body_text : null;
@@ -217,11 +226,11 @@ export async function retrieveAuthorizedCorpus(input: {
       }
       evidence.push({
         versionId: candidate.versionId,
-        itemId: typeof version.id === "string" ? version.id : String(version.id ?? ""),
+        itemId: version.item != null ? String(version.item) : candidate.versionId,
         versionPublicId: typeof version.public_id === "string" ? version.public_id : candidate.versionPublicId,
         title: typeof version.title === "string" && version.title ? version.title : candidate.title,
         kind: candidate.kind,
-        sourceKey: typeof version.source_key === "string" ? version.source_key : null,
+        sourceKey: sourceKeyOf(version.source),
         sourceUrl: typeof version.source_url === "string" ? version.source_url : null,
         quote,
         quoteAllowed: citeAllowed,
@@ -239,7 +248,7 @@ export async function retrieveAuthorizedCorpus(input: {
       const articleRows = await queryRows(
         session,
         `SELECT local_key, label, body_text, locator FROM legal_article_version WHERE regulation_version = $version;`,
-        { version: candidate.versionId },
+        { version: new StringRecordId(candidate.versionId) },
       );
       for (const article of articleRows) {
         if (evidence.length >= RESEARCH_EVIDENCE_LIMIT) break;
@@ -255,7 +264,7 @@ export async function retrieveAuthorizedCorpus(input: {
         session,
         `SELECT local_citation_key, quoted_text, locator, raw_law_name, raw_article_label
           FROM content_citation WHERE document_version = $version;`,
-        { version: candidate.versionId },
+        { version: new StringRecordId(candidate.versionId) },
       );
       for (const citation of citationRows) {
         if (evidence.length >= RESEARCH_EVIDENCE_LIMIT) break;
