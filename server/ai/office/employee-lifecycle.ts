@@ -221,23 +221,31 @@ export function createEmployeeLifecycle(deps: EmployeeLifecycleDeps) {
       if (!row) {
         try {
           // 先建记录但 status 留空：凭证写成功前无法 SIGNIN，半途失败可安全重试。
+          // option 字段不能绑 JS null——引擎把 null 当 NULL 而非 NONE，类型强转
+          // 直接拒收（"Expected none | record<…> but found NULL"）；无岗位时整段省略。
+          const virtualProfile = input.roleKey && role
+            ? { role_key: input.roleKey, role }
+            : {};
           await admin.query(
             `CREATE ${identity.recordId} CONTENT {
               email: $email, subject: $subject, kind: "virtual", is_admin: false,
               display_name: $displayName,
-              virtual_profile: { status: NONE, role_key: $roleKey, role: $role }
+              virtual_profile: $virtualProfile
             };`,
             {
               email: identity.email,
               subject: identity.subject,
               displayName: input.displayName ?? "虚拟员工",
-              roleKey: input.roleKey ?? null,
-              role,
+              virtualProfile,
             },
           );
           created = true;
-        } catch {
+        } catch (cause) {
           // 并发创建撞 id / 唯一索引：回读已存在记录，收敛到同一员工。
+          console.warn("[employee-lifecycle] create returned error, re-reading", {
+            employeeId: identity.recordId,
+            message: cause instanceof Error ? cause.message : String(cause),
+          });
         }
         row ??= await readEmployee(admin, employee);
         if (!row) throw new Error("employee-create-failed");
