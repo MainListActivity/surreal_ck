@@ -30,6 +30,7 @@
     type PersistDashboardDraftResult,
   } from "../features/dashboard/lib/dashboard-draft-card";
   import { getSurreal } from "../lib/surreal";
+  import { researchCitationHref } from "../lib/research-citation";
   import {
     aiAllowanceBucketKindLabels,
     aiAllowanceBucketStatusLabel,
@@ -394,8 +395,12 @@
                 {#if message.citations?.length}
                   <ol class="citations" aria-label="引用">
                     {#each message.citations as citation (citation.index)}
-                      <li>
-                        {#if citation.sourceUrl}
+                      <li value={citation.index}>
+                        {#if citation.platformContent}
+                          {@const href = researchCitationHref(workspaceSlug, citation)}
+                          {#if href}<a {href} target="_blank" rel="noreferrer">{citation.title} · 精确版本与位置</a>
+                          {:else}<span>{citation.title} · 历史引用指针不完整，需重新研究</span>{/if}
+                        {:else if citation.sourceUrl}
                           <a href={citation.sourceUrl} target="_blank" rel="noreferrer">{citation.title}</a>
                         {:else}
                           <span>{citation.title}</span>
