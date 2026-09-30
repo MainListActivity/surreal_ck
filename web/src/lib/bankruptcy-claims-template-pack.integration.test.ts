@@ -28,10 +28,14 @@ async function setupDatabase(): Promise<SurrealConn> {
     password: process.env.LOCAL_SURREAL_ROOT_PASS ?? "root",
   };
 
-  const inspector = new Surreal();
-  opened.push(inspector);
-  await inspector.connect(url, { authentication, namespace, database });
-  await inspector.query(`
+  const bootstrap = new Surreal();
+  opened.push(bootstrap);
+  await bootstrap.connect(url, { authentication });
+  await bootstrap.query(
+    `DEFINE NAMESPACE IF NOT EXISTS ${namespace}; USE NS ${namespace}; DEFINE DATABASE IF NOT EXISTS ${database};`,
+  ).collect();
+  await bootstrap.use({ namespace, database });
+  await bootstrap.query(`
     DEFINE TABLE workbook_template SCHEMALESS;
 
     DEFINE TABLE workbook SCHEMAFULL;
@@ -64,8 +68,23 @@ async function setupDatabase(): Promise<SurrealConn> {
     DEFINE TABLE activity_event SCHEMALESS;
   `).collect();
 
+  // 实体表 record 守卫依赖 legacy 配额 schema（sheet 创建事件回填 sheet_resource_usage），
+  // 按文件原样应用 020（不复制粘贴，避免漂移），并把 MVP 占位计划放宽到演示样例规模
+  // ——新 workspace 生产上由 native quota 管控，行为等价。
+  const quotaMigration = await Bun.file(new URL(
+    "../../../shared/sql/workspace-template/020-resource-quota.surql",
+    import.meta.url,
+  )).text();
+  await bootstrap.query(quotaMigration).collect();
+  await bootstrap.query(`
+    UPDATE resource_quota_plan:plus SET
+      max_sheets = 10,
+      max_fields_per_sheet = 40,
+      max_records_per_sheet = 10000;
+  `).collect();
+
   const [pack] = await loadTemplatePackScripts({ selectedPacks: ["bankruptcy-claims"] });
-  await inspector.query(pack!.sql).collect();
+  await bootstrap.query(pack!.sql).collect();
 
   const browser = new Surreal();
   opened.push(browser);
