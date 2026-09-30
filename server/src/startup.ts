@@ -28,6 +28,10 @@ import {
   stopEmployeeTriggerRuntime,
 } from "../ai/office/employee-service";
 import {
+  startOfficeReconciler,
+  type OfficeReconcilerHandle,
+} from "../ai/office/office-trigger-adapter";
+import {
   startNativeQuotaRuntime,
   type NativeQuotaRuntimeHandle,
 } from "./quota/runtime";
@@ -70,6 +74,8 @@ export type StartServerDeps = {
   startReconcileLoop?: () => ReconcileLoopHandle;
   startQuotaRuntime?: () => NativeQuotaRuntimeHandle;
   startClaimsRiskDispatcher?: () => ClaimsRiskDispatcherHandle;
+  /** 办公室领域 reconciliation（VO02）；test 环境默认不启动。 */
+  startOfficeReconciler?: () => OfficeReconcilerHandle;
   closeRootConnection?: () => Promise<void>;
   closeContentPublisherSession?: () => Promise<void>;
   closeContentProjectionSession?: () => Promise<void>;
@@ -129,6 +135,8 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
       : startNativeQuotaRuntime);
   const startClaimsRisk = deps.startClaimsRiskDispatcher
     ?? (envName === "test" ? () => ({ async stop() {} }) : startClaimsRiskReminderDispatcher);
+  const startOffice = deps.startOfficeReconciler
+    ?? (envName === "test" ? () => ({ async stop() {} }) : startOfficeReconciler);
   const closeRoot = deps.closeRootConnection ?? closeRootConnection;
 
   let rootConnectionAttempted = false;
@@ -221,6 +229,15 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
     });
   }
 
+  let officeReconciler: OfficeReconcilerHandle | undefined;
+  try {
+    officeReconciler = startOffice();
+  } catch (cause) {
+    console.error("[server] failed to start office reconciler; continuing without it", {
+      message: cause instanceof Error ? cause.message : String(cause),
+    });
+  }
+
   // 虚拟员工 runtime 启动监督（VER06）：回装 secret 缓存 + 分批 reconcile
   // active 员工的孤儿触发；失败不阻塞对外服务，进度经运维端点可观测。
   void startEmployeeSupervision();
@@ -233,6 +250,7 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
       reconcileLoop?.stop();
       quotaRuntime.stop();
       await claimsRiskDispatcher?.stop();
+      await officeReconciler?.stop();
       await stopEmployeeTriggerRuntime({
         deadlineMs: env.EMPLOYEE_RUNTIME_SHUTDOWN_DEADLINE_MS,
       });
