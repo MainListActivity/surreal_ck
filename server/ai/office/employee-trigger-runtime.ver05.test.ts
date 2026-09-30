@@ -711,7 +711,7 @@ describe("VER05 事件风暴与全局背压", () => {
   });
 
   test("多员工并发：全局同时运行窗口数不超过 maxConcurrentWindows", async () => {
-    const { sessions, databases } = fakeSessions();
+    const { sessions } = fakeSessions();
     const { factory } = fakeDriver();
     const runtime = createEmployeeTriggerRuntime({
       sessions,
