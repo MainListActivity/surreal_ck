@@ -108,4 +108,43 @@ describe("employee runtime session registry", () => {
     await runtime.stop();
     await expect(runtime.register(target())).rejects.toThrow("employee-runtime-stopped");
   });
+
+  test("openSession 回源 employee_credential 后 SIGNIN 并返回会话", async () => {
+    const log: string[] = [];
+    const rootQueries: string[] = [];
+    const runtime = createEmployeeRuntime({
+      surrealUrl: "wss://x", namespace: "main",
+      connect: fakeConnect(log).connect,
+      rootSession: async () => ({
+        query: async (sql: string) => {
+          rootQueries.push(sql);
+          return [[{ secret: "db-secret", subject: "ve-1" }]];
+        },
+      }),
+    });
+    const session = await runtime.openSession("ws_a", "user:ve_1");
+    expect(session).toBe(runtime.session("ws_a", "user:ve_1"));
+    expect(log).toEqual(["connect:ws_a", "signin:employee:ve-1"]);
+    expect(rootQueries.join("")).toContain("employee_credential");
+    // 凭证已缓存：再次 openSession 不再回源 root，但会换新会话
+    const again = await runtime.openSession("ws_a", "user:ve_1");
+    expect(rootQueries).toHaveLength(1);
+    expect(again).not.toBe(session);
+    expect(log.filter((l) => l === "signin:employee:ve-1")).toHaveLength(2);
+    await runtime.stop();
+  });
+
+  test("openSession 拿不到凭证时拒绝且不留会话", async () => {
+    const log: string[] = [];
+    const runtime = createEmployeeRuntime({
+      surrealUrl: "wss://x", namespace: "main",
+      connect: fakeConnect(log).connect,
+      rootSession: async () => ({ query: async () => [[]] }),
+    });
+    await expect(runtime.openSession("ws_a", "user:ve_1"))
+      .rejects.toThrow("employee-credential-missing");
+    expect(runtime.activeSessions()).toBe(0);
+    expect(log).toHaveLength(0);
+    await runtime.stop();
+  });
 });

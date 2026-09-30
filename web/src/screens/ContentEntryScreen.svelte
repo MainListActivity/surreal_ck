@@ -22,7 +22,7 @@
 
   async function loadSaved() {
     try {
-      saved = await getSurreal().query("SELECT id, content_public_id, content_version_id, title, locator, note FROM legal_reference ORDER BY created_at DESC LIMIT 100;");
+      saved = await getSurreal().query("SELECT id, created_at, content_public_id, content_version_id, title, locator, note FROM legal_reference ORDER BY created_at DESC LIMIT 100;");
       savedError = false;
     } catch { saved = []; savedError = true; }
   }
