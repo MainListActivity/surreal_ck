@@ -40,6 +40,8 @@ export type EmployeeRuntimeDeps = {
   systemSession?: () => Promise<Queryable>;
 };
 
+export type EmployeeCredential = { subject: string; secret: string };
+
 export type EmployeeRuntime = {
   /** 注册并 SIGNIN 一条员工会话；同员工已有会话先关闭再替换，不产生并发双连接。 */
   register(target: EmployeeSessionTarget): Promise<void>;
@@ -49,6 +51,13 @@ export type EmployeeRuntime = {
   session(database: string, employeeId: string): Surreal | undefined;
   /** 取缓存 secret；未命中且给了 rootSession 时回源 employee_credential。 */
   secretFor(database: string, employeeId: string): Promise<string | null>;
+  /** 取 SIGNIN 所需完整凭证（subject+secret）；缓存未命中时回源 employee_credential。 */
+  credentialFor(database: string, employeeId: string): Promise<EmployeeCredential | null>;
+  /**
+   * 为一个执行窗口打开员工会话：解析凭证 → register（SIGNIN）→ 返回会话。
+   * 已有会话先被替换，保证窗口拿到的总是新鲜 token（session TTL 很短）。
+   */
+  openSession(database: string, employeeId: string): Promise<Surreal>;
   /** 进程启动后回装凭证缓存（遍历 active workspace → employee_credential，不开会话）。 */
   warmup(): Promise<{ databases: number; credentials: number }>;
   activeSessions(): number;
@@ -129,9 +138,14 @@ export function createEmployeeRuntime(deps: EmployeeRuntimeDeps): EmployeeRuntim
     },
 
     async secretFor(database, employeeId) {
+      return (await this.credentialFor(database, employeeId))?.secret ?? null;
+    },
+
+    async credentialFor(database, employeeId) {
       const key = keyOf(database, employeeId);
-      const cached = secrets.get(key);
-      if (cached) return cached;
+      const cachedSecret = secrets.get(key);
+      const cachedSubject = subjects.get(key);
+      if (cachedSecret && cachedSubject) return { subject: cachedSubject, secret: cachedSecret };
       if (!deps.rootSession) return null;
       const root = await deps.rootSession(database);
       const [rows] = await root.query<[{ secret?: unknown; subject?: unknown }[]]>(
@@ -143,7 +157,22 @@ export function createEmployeeRuntime(deps: EmployeeRuntimeDeps): EmployeeRuntim
       if (typeof row?.secret !== "string" || !row.secret) return null;
       secrets.set(key, row.secret);
       if (typeof row.subject === "string") subjects.set(key, row.subject);
-      return row.secret;
+      const subject = subjects.get(key);
+      return subject ? { subject, secret: row.secret } : null;
+    },
+
+    async openSession(database, employeeId) {
+      const credential = await this.credentialFor(database, employeeId);
+      if (!credential) throw new Error("employee-credential-missing");
+      await this.register({
+        database,
+        employeeId,
+        subject: credential.subject,
+        secret: credential.secret,
+      });
+      const session = sessions.get(keyOf(database, employeeId));
+      if (!session) throw new Error("employee-session-unavailable");
+      return session;
     },
 
     async warmup() {

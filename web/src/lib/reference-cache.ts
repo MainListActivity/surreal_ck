@@ -167,6 +167,7 @@ type SheetTargetRow = {
   workbook?: unknown;
   workbook_name?: unknown;
   column_defs?: Array<{ key: string; label: string; field_type: string }>;
+  created_at?: unknown;
 };
 
 /** 系统对象目标：成员引用选 user 表；displayKeys 对齐 workspace 模板的 user schema。 */
@@ -188,7 +189,7 @@ const USER_TARGET: ReferenceTargetOption = {
  */
 export async function listReferenceTargets(conn: SurrealConn): Promise<ReferenceTargetOption[]> {
   const rows = await conn.query<SheetTargetRow>(
-    "SELECT id, label, table_name, column_defs, workbook, workbook.name AS workbook_name FROM sheet ORDER BY created_at ASC",
+    "SELECT id, label, table_name, column_defs, workbook, workbook.name AS workbook_name, created_at FROM sheet ORDER BY created_at ASC",
   );
   const targets: ReferenceTargetOption[] = [USER_TARGET];
   for (const row of rows) {

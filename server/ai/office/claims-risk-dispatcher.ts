@@ -1,44 +1,62 @@
-import { StringRecordId, Surreal } from "surrealdb";
-import { env } from "../../src/env";
+import { StringRecordId } from "surrealdb";
 import { getRootDatabaseSession } from "../../src/db/root-connection";
 import { runDailyClaimsRiskCheck, type ClaimsRiskStore } from "./daily-claims-risk";
+import { getEmployeeTriggerRuntime } from "./employee-service";
+import type {
+  EmployeeTriggerRuntime,
+  TriggerSession,
+} from "./employee-trigger-runtime";
 import { createSurrealClaimsRiskStore, type EmployeeQuerySession } from "./surreal-claims-risk-store";
+
+/**
+ * 每日债权风险 trigger adapter（VER03）：定时观察只负责两件事——
+ * 用 root 枚举 active workspace 并保证专用员工身份/凭证存在（启动枚举与凭证维护），
+ * 然后向通用 trigger runtime 投递幂等触发。employee SIGNIN、执行窗口、
+ * 触发持久化、结果与关停全部归 runtime；用户提醒由 handler 内既有检查逻辑产生。
+ */
+
+export const CLAIMS_RISK_REASON = "daily-claims-risk";
 
 export type ClaimsRiskEmployeeTarget = {
   database: string;
-  subject: string;
-  secret: string;
+  /** 员工 user record id（如 "user:claims_risk_reminder"）。 */
+  employeeId: string;
 };
 
-export type EmployeeStoreWindow = {
-  store: ClaimsRiskStore;
-  close(): Promise<void>;
-};
+export type ClaimsRiskTriggerQueue = Pick<EmployeeTriggerRuntime, "enqueue">;
 
 export type ClaimsRiskDispatchDeps = {
   now?: () => Date;
   listEmployees?: () => Promise<ClaimsRiskEmployeeTarget[]>;
-  openEmployeeStore?: (target: ClaimsRiskEmployeeTarget) => Promise<EmployeeStoreWindow>;
+  /** 测试注入 trigger runtime；默认生产单例。 */
+  triggerRuntime?: ClaimsRiskTriggerQueue;
 };
 
-export type ClaimsRiskDispatchResult = { targets: number; completed: number; failed: number };
+export type ClaimsRiskDispatchResult = {
+  targets: number;
+  completed: number;
+  /** 当日幂等键已由先前投递完成，本次只观察不重跑。 */
+  coalesced: number;
+  failed: number;
+};
 
 export type RootEmployeeProvisioningSession = {
   query<T = Record<string, unknown>>(sql: string, params?: Record<string, unknown>): Promise<T[]>;
 };
 
 const CLAIMS_RISK_EMPLOYEE_SUBJECT = "claims-risk-reminder";
+const CLAIMS_RISK_EMPLOYEE_ID = "user:claims_risk_reminder";
 
 export async function ensureClaimsRiskEmployee(
   root: RootEmployeeProvisioningSession,
   generateSecret: () => string = () => `${crypto.randomUUID()}${crypto.randomUUID()}`,
-): Promise<{ subject: string; secret: string }> {
+): Promise<{ employeeId: string; subject: string; secret: string }> {
   let employees = await root.query<{ id: unknown; subject?: unknown }>(
-    "SELECT id, subject FROM user:claims_risk_reminder",
+    `SELECT id, subject FROM ${CLAIMS_RISK_EMPLOYEE_ID}`,
   );
   if (employees.length === 0) {
     await root.query(
-      `CREATE user:claims_risk_reminder CONTENT {
+      `CREATE ${CLAIMS_RISK_EMPLOYEE_ID} CONTENT {
         email: "claims-risk-reminder@virtual.local",
         subject: $subject,
         kind: "virtual",
@@ -48,10 +66,10 @@ export async function ensureClaimsRiskEmployee(
       }`,
       { subject: CLAIMS_RISK_EMPLOYEE_SUBJECT },
     );
-    employees = [{ id: "user:claims_risk_reminder", subject: CLAIMS_RISK_EMPLOYEE_SUBJECT }];
+    employees = [{ id: CLAIMS_RISK_EMPLOYEE_ID, subject: CLAIMS_RISK_EMPLOYEE_SUBJECT }];
   }
-  const employeeId = employees[0]?.id;
-  const employeeRecord = typeof employeeId === "string" ? new StringRecordId(employeeId) : employeeId;
+  const employeeId = typeof employees[0]?.id === "string" ? employees[0].id : CLAIMS_RISK_EMPLOYEE_ID;
+  const employeeRecord = new StringRecordId(employeeId);
   const subject = typeof employees[0]?.subject === "string"
     ? employees[0].subject
     : CLAIMS_RISK_EMPLOYEE_SUBJECT;
@@ -60,7 +78,7 @@ export async function ensureClaimsRiskEmployee(
     { employee: employeeRecord },
   );
   if (typeof credentials[0]?.secret === "string" && credentials[0].secret) {
-    return { subject, secret: credentials[0].secret };
+    return { employeeId, subject, secret: credentials[0].secret };
   }
   const secret = generateSecret();
   await root.query(
@@ -72,7 +90,7 @@ export async function ensureClaimsRiskEmployee(
     ON DUPLICATE KEY UPDATE secret = $input.secret, rotated_at = time::now()`,
     { employee: employeeRecord, secret },
   );
-  return { subject, secret };
+  return { employeeId, subject, secret };
 }
 
 function shanghaiDateKey(date: Date): string {
@@ -103,79 +121,90 @@ async function listClaimsRiskEmployees(): Promise<ClaimsRiskEmployeeTarget[]> {
       },
     };
     const employee = await ensureClaimsRiskEmployee(provisioningSession);
-    targets.push({ database, ...employee });
+    targets.push({ database, employeeId: employee.employeeId });
   }
   return targets;
 }
 
-async function openClaimsRiskEmployeeStore(
-  target: ClaimsRiskEmployeeTarget,
-): Promise<EmployeeStoreWindow> {
-  const session = new Surreal();
-  await session.connect(env.SURREAL_URL, {
-    reconnect: false,
-    namespace: env.SURREAL_NS,
-    database: target.database,
-  });
-  try {
-    await session.signin({
-      namespace: env.SURREAL_NS,
-      database: target.database,
-      access: "employee",
-      variables: { subject: target.subject, pass: target.secret },
-    });
-  } catch (cause) {
-    await session.close();
-    throw cause;
-  }
-  const querySession: EmployeeQuerySession = {
+function asEmployeeQuerySession(session: TriggerSession): EmployeeQuerySession {
+  return {
     async query<T = Record<string, unknown>>(sql: string, params?: Record<string, unknown>) {
       const results = await session.query<[T[]]>(sql, params);
-      return results[0] ?? [];
+      return results?.[0] ?? [];
     },
   };
-  return {
-    store: createSurrealClaimsRiskStore(querySession),
-    async close() { await session.close(); },
-  };
+}
+
+/**
+ * 把债权风险岗位逻辑挂到 trigger runtime：handler 拿到的 session 就是该员工的
+ * RECORD 会话，所有业务写（risk_check_run / user_notification）归因到员工本人。
+ * checkDate 以 payload_ref 引用传递，与幂等键里的日期一致。
+ */
+export function registerClaimsRiskHandler(
+  runtime: Pick<EmployeeTriggerRuntime, "registerHandler">,
+  deps: { now?: () => Date; storeFor?: (session: TriggerSession) => ClaimsRiskStore } = {},
+): void {
+  const now = deps.now ?? (() => new Date());
+  const storeFor = deps.storeFor
+    ?? ((session: TriggerSession) => createSurrealClaimsRiskStore(asEmployeeQuerySession(session)));
+  runtime.registerHandler(CLAIMS_RISK_REASON, async ({ trigger, session }) =>
+    runDailyClaimsRiskCheck(storeFor(session), {
+      checkDate: trigger.payloadRef ?? shanghaiDateKey(now()),
+      checkedAt: now(),
+    }),
+  );
 }
 
 export async function runClaimsRiskReminderDispatch(
   deps: ClaimsRiskDispatchDeps = {},
 ): Promise<ClaimsRiskDispatchResult> {
   const now = (deps.now ?? (() => new Date()))();
+  const checkDate = shanghaiDateKey(now);
   const targets = await (deps.listEmployees ?? listClaimsRiskEmployees)();
-  const openStore = deps.openEmployeeStore ?? openClaimsRiskEmployeeStore;
+  const runtime = deps.triggerRuntime ?? getEmployeeTriggerRuntime();
   let completed = 0;
+  let coalesced = 0;
   let failed = 0;
   for (const target of targets) {
-    let window: EmployeeStoreWindow | undefined;
     try {
-      window = await openStore(target);
-      await runDailyClaimsRiskCheck(window.store, { checkDate: shanghaiDateKey(now), checkedAt: now });
-      completed += 1;
+      const result = await runtime.enqueue({
+        database: target.database,
+        employeeId: target.employeeId,
+        reason: CLAIMS_RISK_REASON,
+        payloadRef: checkDate,
+        chainDepth: 0,
+        idempotencyKey: `${CLAIMS_RISK_REASON}:${target.employeeId}:${checkDate}`,
+      });
+      if (result.outcome === "completed") completed += 1;
+      else if (result.outcome === "coalesced") coalesced += 1;
+      else failed += 1;
     } catch (cause) {
       failed += 1;
-      console.error("[claims-risk] employee window failed", {
+      console.error("[claims-risk] trigger delivery failed", {
         database: target.database,
         message: cause instanceof Error ? cause.message : String(cause),
       });
-    } finally {
-      await window?.close().catch(() => undefined);
     }
   }
-  return { targets: targets.length, completed, failed };
+  return { targets: targets.length, completed, coalesced, failed };
 }
 
 export type ClaimsRiskDispatcherHandle = { stop(): Promise<void> };
 
 export function startClaimsRiskReminderDispatcher(
-  deps: ClaimsRiskDispatchDeps & { intervalMs?: number } = {},
+  deps: ClaimsRiskDispatchDeps & {
+    intervalMs?: number;
+    triggerRuntime?: EmployeeTriggerRuntime;
+    storeFor?: (session: TriggerSession) => ClaimsRiskStore;
+  } = {},
 ): ClaimsRiskDispatcherHandle {
+  const runtime = deps.triggerRuntime ?? getEmployeeTriggerRuntime();
+  registerClaimsRiskHandler(runtime, { now: deps.now, storeFor: deps.storeFor });
+  runtime.start();
   let running: Promise<unknown> | null = null;
   const tick = () => {
     if (running) return;
-    running = runClaimsRiskReminderDispatch(deps)
+    running = runClaimsRiskReminderDispatch({ ...deps, triggerRuntime: runtime })
       .catch((cause) => console.error("[claims-risk] dispatch failed", {
         message: cause instanceof Error ? cause.message : String(cause),
       }))
@@ -187,6 +216,7 @@ export function startClaimsRiskReminderDispatcher(
     async stop() {
       clearInterval(timer);
       await running;
+      await runtime.stop();
     },
   };
 }

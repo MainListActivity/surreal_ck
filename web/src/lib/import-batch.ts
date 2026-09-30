@@ -234,8 +234,8 @@ export function createImportBatchService(conn: SurrealConn) {
 
   async function listRecent(limit = 10): Promise<ImportBatchSnapshot[]> {
     const safeLimit = Math.max(1, Math.min(50, Math.trunc(limit)));
-    const batches = await conn.query<Pick<StoredBatch, "id">>(
-      "SELECT id FROM import_batch ORDER BY updated_at DESC LIMIT $limit",
+    const batches = await conn.query<Pick<StoredBatch, "id" | "updated_at">>(
+      "SELECT id, updated_at FROM import_batch ORDER BY updated_at DESC LIMIT $limit",
       { limit: safeLimit },
     );
     const loaded = await Promise.all(batches.map((batch) => load(String(batch.id))));
