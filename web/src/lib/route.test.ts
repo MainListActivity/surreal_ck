@@ -75,6 +75,7 @@ describe("parseRoute", () => {
   test("公开表单占位页", () => {
     expect(parseRoute("/form")).toEqual({ kind: "form" });
     expect(parseRoute("/form-success")).toEqual({ kind: "form-success" });
+    expect(parseRoute("/discover")).toEqual({ kind: "discover" });
   });
 
   test("workbook 路由（默认 sheet）", () => {
