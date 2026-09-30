@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { RequestContext } from "@mastra/core/request-context";
-import { ROUTER_RUNTIME_KEY } from "../workflows/router-workflow";
+import { setExecutionContext } from "../execution-context";
 
 function ctxWithSession(session: unknown): { requestContext: RequestContext } {
   const requestContext = new RequestContext();
-  requestContext.set(ROUTER_RUNTIME_KEY, { surrealSession: session });
+  setExecutionContext(requestContext, { surrealSession: session as never });
   return { requestContext };
 }
 

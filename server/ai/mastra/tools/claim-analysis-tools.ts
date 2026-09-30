@@ -2,7 +2,7 @@ import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
 import { StringRecordId, type Surreal } from "surrealdb";
 import type { GridColumnDef, RecordWriteProposal } from "@surreal-ck/shared";
-import { getSurrealSession, type ToolRequestContext } from "./tool-session";
+import { getSurrealSession, type ToolRequestContext } from "../execution-context";
 
 const SYSTEM_FIELDS = new Set(["id", "workspace", "created_by", "created_at", "updated_at"]);
 

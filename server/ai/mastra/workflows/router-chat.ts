@@ -17,6 +17,7 @@ import {
   type RouterRuntime,
   type SubAgentExecutors,
 } from "./router-workflow";
+import { setExecutionContext } from "../execution-context";
 import type { RouterPlan } from "./router-classifier";
 
 export type RouterChatStreamPusher = (event: AiMessageChunkEvent) => void;
@@ -58,6 +59,26 @@ export type RunRouterChatResult = {
   status: "success" | "suspended";
 };
 
+/**
+ * Mastra `run.start()` 失败时 `result.error` 是序列化后的纯对象
+ * （`errorInstance.toJSON()`：`{message, name?, code?, details?, cause?}`），
+ * `instanceof Error` 恒为 false；直接 `String()` 会得到 "[object Object]"。
+ * 沿 message/cause 链把可读信息还原出来。
+ */
+function describeRunFailure(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  const messages: string[] = [];
+  let cur: unknown = error;
+  for (let depth = 0; cur && typeof cur === "object" && depth < 5; depth += 1) {
+    const message = (cur as { message?: unknown }).message;
+    if (typeof message === "string" && message && !messages.includes(message)) {
+      messages.push(message);
+    }
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return messages.length ? messages.join(" | caused by: ") : String(error ?? "router workflow failed");
+}
+
 export async function runRouterChat(input: RunRouterChatInput): Promise<RunRouterChatResult> {
   const businessRunId = input.runId ?? crypto.randomUUID();
 
@@ -79,6 +100,8 @@ export async function runRouterChat(input: RunRouterChatInput): Promise<RunRoute
   };
 
   const requestContext = new RequestContext();
+  // Router run 也走共享执行上下文 seam 注入调用者会话；Router 私有运行时仍走 ROUTER_RUNTIME_KEY。
+  setExecutionContext(requestContext, { surrealSession: input.surrealSession });
   requestContext.set(ROUTER_RUNTIME_KEY, runtime);
 
   const workflow = input.mastra.getWorkflow(ROUTER_WORKFLOW_ID);
@@ -89,7 +112,7 @@ export async function runRouterChat(input: RunRouterChatInput): Promise<RunRoute
   });
 
   if (result.status === "failed") {
-    throw result.error instanceof Error ? result.error : new Error(String(result.error ?? "router workflow failed"));
+    throw new Error(describeRunFailure(result.error));
   }
   if (result.status === "suspended") {
     return { runId: businessRunId, finalText: "", status: "suspended" };

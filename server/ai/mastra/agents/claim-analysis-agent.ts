@@ -4,6 +4,7 @@ import type { AiContextSnapshot } from "@surreal-ck/shared";
 import { StringRecordId, type Surreal } from "surrealdb";
 import { CLAIM_ANALYSIS_TOOLS } from "../tools/claim-analysis-tools";
 import { ROUTER_RUNTIME_KEY } from "../workflows/router-workflow";
+import { getExecutionContext } from "../execution-context";
 import { buildModelConfig, type AiSettings } from "./model-config";
 
 export const CLAIM_ANALYSIS_AGENT_ID = "claimAnalysisAgent";
@@ -34,7 +35,6 @@ type StoredTemplateRowAnalysis = {
 };
 
 type ClaimAnalysisRuntime = {
-  surrealSession?: Surreal;
   userContext?: AiContextSnapshot;
 };
 
@@ -105,9 +105,11 @@ export function createClaimAnalysisAgent(settings: AiSettings, deps: ClaimAnalys
     id: CLAIM_ANALYSIS_AGENT_ID,
     instructions: async ({ requestContext }) => {
       const runtime = requestContext?.get(ROUTER_RUNTIME_KEY) as ClaimAnalysisRuntime | undefined;
+      // 会话只从共享执行上下文取；缺席时 fail-soft 回退到通用 instructions。
+      const surrealSession = getExecutionContext(requestContext)?.surrealSession;
       const workbookId = runtime?.userContext?.workbook?.id ?? runtime?.userContext?.route.workbookId;
-      if (!runtime?.surrealSession || !workbookId) return CLAIM_ANALYSIS_INSTRUCTIONS;
-      return buildClaimAnalysisInstructions(await loadAnalysis(runtime.surrealSession, workbookId));
+      if (!surrealSession || !workbookId) return CLAIM_ANALYSIS_INSTRUCTIONS;
+      return buildClaimAnalysisInstructions(await loadAnalysis(surrealSession, workbookId));
     },
     model: deps.model ?? new ModelRouterLanguageModel(buildModelConfig(settings)),
     tools: CLAIM_ANALYSIS_TOOLS,
