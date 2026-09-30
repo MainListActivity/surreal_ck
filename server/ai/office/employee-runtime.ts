@@ -5,9 +5,9 @@ import { StringRecordId, Surreal } from "surrealdb";
  *
  * - 会话即执行窗口的载体：register() 立即 SIGNIN 并登记；close() 关闭并摘除。
  *   暂停/退休的员工在 DB 层由 employee access 的 SIGNIN query 拒绝（status != "active"），
- *   本模块不再保留其会话，"不再接受新执行窗口"由这两条共同保证。
+ *   close 立即封住会话获取并作废旧注册，直到生命周期显式 activate。
  * - secret 只进不出：缓存仅供 SIGNIN，绝不出现在返回值或日志里；日志只带
- *   database / employeeId。
+ *   白名单事件 / 随机实例标识。
  * - 重启后注册表为空：warmup() 遍历 active workspace 把 employee_credential 重新
  *   装载进 secret 缓存（不开会话）；会话按需由调用方再次 register。
  */
@@ -34,6 +34,8 @@ export type EmployeeRuntimeDeps = {
   namespace: string;
   /** 测试注入连接工厂；默认 new Surreal()。 */
   connect?: () => Surreal;
+  /** 固定探测超时；生产默认 1500ms。 */
+  probeTimeoutMs?: number;
   /** root 会话工厂（读 employee_credential；凭证表 PERMISSIONS NONE，只有 root 能读）。 */
   rootSession?: (database: string) => Promise<Queryable>;
   /** _system 会话工厂（warmup 遍历 workspace 索引）。 */
@@ -43,11 +45,11 @@ export type EmployeeRuntimeDeps = {
 export type EmployeeCredential = { subject: string; secret: string };
 
 export type EmployeeRuntime = {
-  /** 注册并 SIGNIN 一条员工会话；同员工已有会话先关闭再替换，不产生并发双连接。 */
-  register(target: EmployeeSessionTarget): Promise<void>;
+  /** 注册并 SIGNIN；先确认关闭旧连接。activate 仅供生命周期确认 active 后解除暂停。 */
+  register(target: EmployeeSessionTarget, options?: { activate?: boolean }): Promise<void>;
   /** 关闭并移除会话。forgetSecret=true（退休）时连 secret 缓存一并丢弃。 */
   close(database: string, employeeId: string, options?: { forgetSecret?: boolean }): Promise<void>;
-  /** 当前存活会话；未注册返回 undefined，绝不隐式重建。 */
+  /** 当前允许获取的会话；暂停/停止/未注册返回 undefined，绝不隐式重建。 */
   session(database: string, employeeId: string): Surreal | undefined;
   /** 取缓存 secret；未命中且给了 rootSession 时回源 employee_credential。 */
   secretFor(database: string, employeeId: string): Promise<string | null>;
@@ -60,9 +62,27 @@ export type EmployeeRuntime = {
   openSession(database: string, employeeId: string): Promise<Surreal>;
   /** 进程启动后回装凭证缓存（遍历 active workspace → employee_credential，不开会话）。 */
   warmup(): Promise<{ databases: number; credentials: number }>;
+  inspect(database: string, employeeId: string): Promise<EmployeeRuntimeObservation>;
   activeSessions(): number;
   stop(): Promise<void>;
 };
+
+export type EmployeeRuntimeObservation = {
+  database: string;
+  employeeId: string;
+  instanceId: string;
+  sampledAt: string;
+  sessionPresent: boolean;
+  usable: boolean;
+  generation: number;
+  lastRegisteredAt: string | null;
+  lastClosedAt: string | null;
+  closeConfirmed: boolean | null;
+  probeCode: "ok" | "absent" | "unavailable" | "timeout" | "changed";
+};
+
+type ObservationState = Pick<EmployeeRuntimeObservation,
+  "generation" | "lastRegisteredAt" | "lastClosedAt" | "closeConfirmed">;
 
 const keyOf = (database: string, employeeId: string): EmployeeKey => `${database}::${employeeId}`;
 
@@ -71,18 +91,73 @@ export function createEmployeeRuntime(deps: EmployeeRuntimeDeps): EmployeeRuntim
   const secrets = new Map<EmployeeKey, string>();
   const subjects = new Map<EmployeeKey, string>();
   const inflight = new Map<EmployeeKey, Promise<void>>();
+  const blocked = new Set<EmployeeKey>();
+  const epochs = new Map<EmployeeKey, number>();
+  const closing = new Map<EmployeeKey, Set<Surreal>>();
+  const observations = new Map<EmployeeKey, ObservationState>();
+  const instanceId = crypto.randomUUID();
   let stopped = false;
+
+  const emptyState = (): ObservationState => ({ generation: 0, lastRegisteredAt: null, lastClosedAt: null, closeConfirmed: null });
+
+  function state(key: EmployeeKey): ObservationState {
+    let value = observations.get(key);
+    if (!value) {
+      value = emptyState();
+      observations.set(key, value);
+    }
+    return value;
+  }
+
+  // 日志只发固定事件和随机实例标识；不输出输入、SDK 错误或错误链。
+  function event(code: "registered" | "closed" | "close-failed" | "signin-failed") {
+    console.info("[employee-runtime]", { event: code, instanceId });
+  }
+
+  function serialized<T>(key: EmployeeKey, work: () => Promise<T>): Promise<T> {
+    const next = (inflight.get(key) ?? Promise.resolve()).then(work);
+    const tracked = next.then(() => undefined, () => undefined);
+    inflight.set(key, tracked);
+    return next.finally(() => {
+      if (inflight.get(key) === tracked) inflight.delete(key);
+    });
+  }
+
+  async function closeConnection(key: EmployeeKey, db: Surreal): Promise<void> {
+    const pending = closing.get(key) ?? new Set<Surreal>();
+    pending.add(db);
+    closing.set(key, pending);
+    try {
+      await db.close();
+    } catch {
+      state(key).closeConfirmed = false;
+      event("close-failed");
+      throw new Error("employee-close-failed");
+    }
+    pending.delete(db);
+    if (pending.size === 0) closing.delete(key);
+    state(key).lastClosedAt = new Date().toISOString();
+    state(key).closeConfirmed = pending.size === 0;
+    event("closed");
+  }
 
   async function closeSession(key: EmployeeKey): Promise<void> {
     const previous = sessions.get(key);
     sessions.delete(key);
-    if (previous) await previous.close().catch(() => undefined);
+    const all = new Set(closing.get(key));
+    if (previous) all.add(previous);
+    for (const db of all) await closeConnection(key, db);
   }
 
-  async function doRegister(target: EmployeeSessionTarget): Promise<void> {
-    if (stopped) throw new Error("employee-runtime-stopped");
+  function allowed(key: EmployeeKey, epoch: number): boolean {
+    return !stopped && !blocked.has(key) && (epochs.get(key) ?? 0) === epoch;
+  }
+
+  async function doRegister(target: EmployeeSessionTarget, epoch: number): Promise<void> {
     const key = keyOf(target.database, target.employeeId);
+    if (!allowed(key, epoch)) throw new Error(stopped ? "employee-runtime-stopped" : "employee-session-blocked");
     await closeSession(key);
+    if (!allowed(key, epoch)) throw new Error("employee-session-blocked");
     const db = deps.connect ? deps.connect() : new Surreal();
     try {
       await db.connect(deps.surrealUrl, {
@@ -96,45 +171,83 @@ export function createEmployeeRuntime(deps: EmployeeRuntimeDeps): EmployeeRuntim
         access: "employee",
         variables: { subject: target.subject, pass: target.secret },
       });
-    } catch (cause) {
-      await db.close().catch(() => undefined);
-      console.warn("[employee-runtime] employee signin refused", {
-        database: target.database,
-        employeeId: target.employeeId,
-        message: cause instanceof Error ? cause.message : String(cause),
-      });
-      throw cause;
+    } catch {
+      event("signin-failed");
+      await closeConnection(key, db);
+      throw new Error("employee-signin-failed");
     }
-    if (stopped) {
-      await db.close().catch(() => undefined);
-      throw new Error("employee-runtime-stopped");
+    if (!allowed(key, epoch)) {
+      await closeConnection(key, db);
+      throw new Error(stopped ? "employee-runtime-stopped" : "employee-session-blocked");
     }
     sessions.set(key, db);
     secrets.set(key, target.secret);
     subjects.set(key, target.subject);
+    state(key).generation += 1;
+    state(key).lastRegisteredAt = new Date().toISOString();
+    event("registered");
   }
 
   return {
-    async register(target) {
+    async register(target, options) {
       const key = keyOf(target.database, target.employeeId);
-      const next = (inflight.get(key) ?? Promise.resolve()).then(() => doRegister(target));
-      const tracked = next.catch(() => undefined);
-      inflight.set(key, tracked);
-      try {
-        await next;
-      } finally {
-        if (inflight.get(key) === tracked) inflight.delete(key);
-      }
+      // 只有生命周期服务在确认 active 后可解除暂停；执行窗口不能隐式复活。
+      if (options?.activate && !stopped) blocked.delete(key);
+      const epoch = epochs.get(key) ?? 0;
+      await serialized(key, () => doRegister(target, epoch));
     },
 
     async close(database, employeeId, options) {
       const key = keyOf(database, employeeId);
-      await closeSession(key);
-      if (options?.forgetSecret) secrets.delete(key);
+      blocked.add(key);
+      epochs.set(key, (epochs.get(key) ?? 0) + 1);
+      if (options?.forgetSecret) {
+        secrets.delete(key);
+        subjects.delete(key);
+      }
+      await serialized(key, () => closeSession(key));
     },
 
     session(database, employeeId) {
-      return sessions.get(keyOf(database, employeeId));
+      const key = keyOf(database, employeeId);
+      return stopped || blocked.has(key) ? undefined : sessions.get(key);
+    },
+
+    async inspect(database, employeeId) {
+      const key = keyOf(database, employeeId);
+      const db = this.session(database, employeeId);
+      const epoch = epochs.get(key) ?? 0;
+      const generation = observations.get(key)?.generation ?? 0;
+      let probeCode: EmployeeRuntimeObservation["probeCode"] = "absent";
+      if (db) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          probeCode = await Promise.race([
+            // SDK auth() 固定读取当前 $auth，不接受 SQL/参数，不 SIGNIN、不重连、不写业务。
+            Promise.resolve(db.auth<{ virtual_profile?: { status?: string } }>()).then(
+              (row): EmployeeRuntimeObservation["probeCode"] =>
+                row && String(row.id) === employeeId && row.virtual_profile?.status === "active"
+                  ? "ok" : "unavailable",
+              (): EmployeeRuntimeObservation["probeCode"] => "unavailable",
+            ),
+            new Promise<"timeout">((resolve) => {
+              timer = setTimeout(() => resolve("timeout"), deps.probeTimeoutMs ?? 1500);
+            }),
+          ]);
+        } catch {
+          probeCode = "unavailable";
+        } finally {
+          clearTimeout(timer);
+        }
+        if (this.session(database, employeeId) !== db || (epochs.get(key) ?? 0) !== epoch || state(key).generation !== generation) {
+          probeCode = "changed";
+        }
+      }
+      return {
+        database, employeeId, instanceId, sampledAt: new Date().toISOString(),
+        sessionPresent: !!this.session(database, employeeId), usable: probeCode === "ok",
+        ...(observations.get(key) ?? emptyState()), probeCode,
+      };
     },
 
     async secretFor(database, employeeId) {
@@ -162,7 +275,11 @@ export function createEmployeeRuntime(deps: EmployeeRuntimeDeps): EmployeeRuntim
     },
 
     async openSession(database, employeeId) {
+      const key = keyOf(database, employeeId);
+      const epoch = epochs.get(key) ?? 0;
+      if (!allowed(key, epoch)) throw new Error("employee-session-blocked");
       const credential = await this.credentialFor(database, employeeId);
+      if (!allowed(key, epoch)) throw new Error("employee-session-blocked");
       if (!credential) throw new Error("employee-credential-missing");
       await this.register({
         database,
@@ -170,7 +287,7 @@ export function createEmployeeRuntime(deps: EmployeeRuntimeDeps): EmployeeRuntim
         subject: credential.subject,
         secret: credential.secret,
       });
-      const session = sessions.get(keyOf(database, employeeId));
+      const session = this.session(database, employeeId);
       if (!session) throw new Error("employee-session-unavailable");
       return session;
     },
@@ -207,11 +324,12 @@ export function createEmployeeRuntime(deps: EmployeeRuntimeDeps): EmployeeRuntim
 
     async stop() {
       stopped = true;
-      const all = [...sessions.values()];
-      sessions.clear();
+      await Promise.all([...inflight.values()]);
+      const keys = new Set([...sessions.keys(), ...closing.keys()]);
+      const results = await Promise.allSettled([...keys].map((key) => closeSession(key)));
       secrets.clear();
       subjects.clear();
-      await Promise.allSettled(all.map((db) => db.close()));
+      if (results.some((result) => result.status === "rejected")) throw new Error("employee-close-failed");
     },
   };
 }

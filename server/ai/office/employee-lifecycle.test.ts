@@ -104,17 +104,12 @@ function fakeRuntime() {
   const registered: EmployeeSessionTarget[] = [];
   const closed: string[] = [];
   const forgotten: string[] = [];
-  const runtime: EmployeeRuntime = {
+  const runtime: Pick<EmployeeRuntime, "register" | "close"> = {
     async register(target) { registered.push(target); },
     async close(database, employeeId, options) {
       closed.push(`${database}::${employeeId}`);
       if (options?.forgetSecret) forgotten.push(`${database}::${employeeId}`);
     },
-    session: () => undefined,
-    async secretFor() { return null; },
-    async warmup() { return { databases: 0, credentials: 0 }; },
-    activeSessions: () => registered.length,
-    async stop() {},
   };
   return { runtime, registered, closed, forgotten };
 }
