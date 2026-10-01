@@ -29,7 +29,7 @@ export function parseXlsxImport(data: ArrayBuffer | Uint8Array, fileName: string
 
   return {
     fileName,
-    workbookName: fileName.replace(/\.xlsx$/iu, "").trim() || "导入的工作簿",
+    workbookName: fileName.replace(/\.(?:xlsx|xls)$/iu, "").trim() || "导入的工作簿",
     sheets,
   };
 }
