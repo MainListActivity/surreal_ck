@@ -37,6 +37,25 @@ function parseState(state: WorkflowRunRow["state"]): WorkflowRunState {
   return typeof state === "string" ? (JSON.parse(state) as WorkflowRunState) : cloneJson(state);
 }
 
+/** 旧研究快照也只能恢复元数据；不改写库中历史数据。运行时会话从不序列化。 */
+function researchSnapshot(snapshot: WorkflowRunState): WorkflowRunState {
+  const sanitize = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(sanitize);
+    if (!value || typeof value !== "object") return value;
+    const source = value as Record<string, unknown>;
+    const out = Object.fromEntries(Object.entries(source).filter(([key]) => key !== "requestContext").map(([key, child]) => [key, sanitize(child)]));
+    if (source.category === "resource-retrieval" && (source.researchAuthorization
+      || (Array.isArray(source.citations) && source.citations.some(c => c && typeof c === "object" && "platformContent" in c)))) {
+      out.text = "";
+      out.researchAuthorization ??= { workspaceId: "", kind: "unavailable" };
+      if (Array.isArray(out.citations)) out.citations = out.citations.map(c => ({ ...c, evidence: [] }));
+    }
+    if (Array.isArray(out.steps) && out.steps.some(s => s?.researchAuthorization)) out.finalText = "研究结果需在新的授权窗口重新读取。";
+    return out;
+  };
+  return { ...(sanitize({ ...snapshot, requestContext: undefined }) as WorkflowRunState), requestContext: {} };
+}
+
 function normalizeDate(value: unknown): Date {
   if (value instanceof Date) return value;
   if (typeof value === "string" || typeof value === "number") return new Date(value);
@@ -48,7 +67,7 @@ function toWorkflowRun(row: WorkflowRunRow): WorkflowRun {
     workflowName: row.workflow_name,
     runId: row.run_id,
     resourceId: row.resource_id,
-    snapshot: parseState(row.state),
+    snapshot: row.workflow_name === "routerWorkflow" ? researchSnapshot(parseState(row.state)) : parseState(row.state),
     createdAt: normalizeDate(row.created_at),
     updatedAt: normalizeDate(row.updated_at),
   };
@@ -129,7 +148,7 @@ export class SurrealWorkflowsStorage extends WorkflowsStorage {
             workflow_name: workflowName,
             resource_id: resourceId,
             kind: resolveKind(workflowName),
-            state: snapshot,
+            state: workflowName === "routerWorkflow" ? researchSnapshot(snapshot) : snapshot,
             status: snapshot.status,
           }),
         },
@@ -162,7 +181,7 @@ export class SurrealWorkflowsStorage extends WorkflowsStorage {
         { runId, workflowName },
       );
       const row = rows[0]?.[0];
-      return row?.state ? parseState(row.state) : null;
+      return row?.state ? (workflowName === "routerWorkflow" ? researchSnapshot(parseState(row.state)) : parseState(row.state)) : null;
     } catch (err) {
       if (this.options.strict) throw this.strictFail("load workflow snapshot", err);
       console.warn("[mastra] load workflow snapshot 失败，降级为内存态:", err);

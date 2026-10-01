@@ -57,6 +57,7 @@ export type ChatResumer = (input: {
   /** 调用者 OIDC subject；stream 授权和 Mastra 上下文识别用，DB 归因走 caller session 的 $auth。 */
   ownerSubject: string;
   userContext: AiContextSnapshot;
+  openContentSession?: OpenContentResearchSession;
   pushChunk: (e: AiMessageChunkEvent) => void;
   pushProgress: (e: AiProgressEvent) => void;
   onSuspend: (e: WorkflowSuspendedEvent) => void;
@@ -165,7 +166,7 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
         } finally {
           // 计量收口（结算/释放预留）不依赖 WS 是否仍连着。
           try {
-            onTerminal?.(outcome);
+            await onTerminal?.(outcome);
           } catch {
             // 终态回调失败不回写 run 结果；失联预留由 deadline 清扫兜底。
           }
@@ -174,7 +175,7 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
       })();
     },
 
-    async resumeChat({ runId, decision, surrealSession, ownerSubject, onTerminal }) {
+    async resumeChat({ runId, decision, surrealSession, ownerSubject, openContentSession, onTerminal }) {
       if (!resumer) {
         throw new Error("AiChatService: resumer not configured");
       }
@@ -187,6 +188,7 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
             runId,
             streamId: runId,
             decision,
+            openContentSession,
             surrealSession,
             ownerSubject,
             userContext,
@@ -201,7 +203,7 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
           bridge.publishErrorIfNotTerminal(cause instanceof Error ? cause.message : String(cause));
         } finally {
           try {
-            onTerminal?.(outcome);
+            await onTerminal?.(outcome);
           } catch {
             // 同上：收口失败不影响 run 结果，deadline 清扫兜底。
           }
