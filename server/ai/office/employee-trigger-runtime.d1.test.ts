@@ -41,6 +41,8 @@ function fakeSessions(input: {
   let effectCounter = 0;
   let openSessionFail: Error | null = null;
   let openCount = 0;
+  let hangPattern: RegExp | null = null;
+  let hangNotify: (() => void) | null = null;
 
   const sessions: TriggerSessionManager = {
     async openSession(_database, _employeeId) {
@@ -48,6 +50,12 @@ function fakeSessions(input: {
       openCount += 1;
       return {
         async query(sql: string, params: Record<string, unknown> = {}) {
+          // D1 二次返工：确定性悬挂钩子——命中 pattern 的查询永不 settle
+          //（模拟 SDK 对被关闭/僵尸连接的 query 行为）。
+          if (hangPattern && hangPattern.test(sql)) {
+            hangNotify?.();
+            await new Promise<never>(() => undefined);
+          }
           if (sql.includes("INSERT INTO employee_trigger")) {
             const content = params.content as Record<string, unknown>;
             const key = String(content.idempotency_key);
@@ -181,6 +189,12 @@ function fakeSessions(input: {
     /** 模拟 pause/retire 后的员工：openSession（SIGNIN）直接拒绝。 */
     blockOpen(fail: Error | null) {
       openSessionFail = fail;
+    },
+    /** D1 二次返工：命中 pattern 的查询永不 settle（僵尸连接语义）；null 解除。
+     *  onHang 在悬挂真正发生时回调（供测试确定性地把 close 打进在途窗口）。 */
+    hangMatching(pattern: RegExp | null, onHang?: () => void) {
+      hangPattern = pattern;
+      hangNotify = onHang ?? null;
     },
     allRows(): Row[] {
       return [...byId.values()];
@@ -342,6 +356,120 @@ describe("D1 竞态收敛：pause 关闭落在执行窗口内", () => {
     );
     expect(second).toMatchObject({ outcome: "completed" });
     expect(hooked.openCount()).toBeGreaterThanOrEqual(2);
+    await runtime.stop();
+  }, 10_000);
+
+  // ── D1 二次返工（残余洞）：pause 关闭落在非 driveRun 段 ────────────────
+
+  test("claim 段竞态：pause 关闭落在 claimNextPending 在途时投递有界 failed，后续投递恢复（QA 复现象）", async () => {
+    const handlers = new Map<string, TriggerHandler>();
+    const { factory } = fakeDriver(handlers);
+    const hooked = fakeSessions({
+      onSessionClosed: (database, employeeId) =>
+        runtime.invalidateSession({ database, employeeId }),
+    });
+    const runtime = createEmployeeTriggerRuntime({
+      sessions: hooked.sessions,
+      driver: factory,
+      // 大 deadline：收敛只可能来自「失效即拒」立即路径，排除兜底竞速。
+      sessionOpDeadlineMs: 60_000,
+      // 窗口互斥行短租约：失效路径上 release 写不进死会话，行按 lease TTL 自愈。
+      leaseTtlMs: 40,
+    });
+    runtime.start();
+    handlers.set("qa-probe", async () => ({ probe: true }));
+
+    // 取件 SELECT 永不 settle（pause 的 close 正落在它在途时——QA 复现象：
+    // 楔形在 windowPlanned/lane.tail，而非 driveRun 段）。
+    const hungInClaim = new Promise<void>((resolve) => hooked.hangMatching(/FROM employee_trigger/, resolve));
+    const first = runtime.enqueue(delivery({ idempotencyKey: "qa-probe:ve_1:claim-hang" }));
+    await bounded(hungInClaim, 2_000); // 确认已挂在取件查询上
+    // pause：生命周期关闭会话——失效通知落在在途窗口内。
+    await hooked.sessions.close("ws_a", "user:ve_1", { deactivate: true });
+    await bounded(expect(first).resolves.toMatchObject({
+      outcome: "failed",
+      error: "employee-session-closed",
+    }));
+
+    // 夹具行仍 pending（从未被认领）；解除悬挂后 lane 必须已回到可调度状态。
+    expect(hooked.allRows()).toHaveLength(1);
+    hooked.hangMatching(null);
+
+    // resume 后新代次全新会话：同一次投递语义的后续请求恢复 completed。
+    const second = await bounded(
+      runtime.enqueue(delivery({ idempotencyKey: "qa-probe:ve_1:after-claim" })),
+      2_000,
+    );
+    expect(second).toMatchObject({ outcome: "completed" });
+    expect(hooked.openCount()).toBeGreaterThanOrEqual(2);
+    for (const row of hooked.allRows()) {
+      expect(["completed", "failed", "waiting"]).toContain(row.status);
+    }
+    await runtime.stop();
+  }, 10_000);
+
+  test("persist 段竞态：pause 关闭落在 enqueue 落库在途时投递有界 failed 且 persist 链自愈", async () => {
+    const handlers = new Map<string, TriggerHandler>();
+    const { factory } = fakeDriver(handlers);
+    const hooked = fakeSessions({
+      onSessionClosed: (database, employeeId) =>
+        runtime.invalidateSession({ database, employeeId }),
+    });
+    const runtime = createEmployeeTriggerRuntime({
+      sessions: hooked.sessions,
+      driver: factory,
+      sessionOpDeadlineMs: 30, // persist 无窗口上下文：硬截止兜底（失效即拒不适用）
+    });
+    runtime.start();
+    handlers.set("qa-probe", async () => ({ probe: true }));
+
+    // INSERT 永不 settle：投递调用方不得无限悬挂（D1 合同 3）。
+    const hungInPersist = new Promise<void>((resolve) => hooked.hangMatching(/INSERT INTO employee_trigger/, resolve));
+    const first = runtime.enqueue(delivery({ idempotencyKey: "qa-probe:ve_1:persist-hang" }));
+    await bounded(hungInPersist, 2_000); // 确认已挂在落库查询上
+    await hooked.sessions.close("ws_a", "user:ve_1", { deactivate: true });
+    await bounded(expect(first).resolves.toMatchObject({
+      outcome: "failed",
+      error: "employee-session-closed",
+    }));
+    expect(hooked.allRows()).toHaveLength(0); // 落库从未完成，不落库
+    hooked.hangMatching(null);
+
+    // persist 链已自愈：后续投递不再被悬挂的落库任务阻塞。
+    const second = await bounded(
+      runtime.enqueue(delivery({ idempotencyKey: "qa-probe:ve_1:after-persist" })),
+      2_000,
+    );
+    expect(second).toMatchObject({ outcome: "completed" });
+    await runtime.stop();
+  }, 10_000);
+
+  test("无失效通知的会话死亡：护栏硬截止兜底收敛，lane 恢复可调度", async () => {
+    const handlers = new Map<string, TriggerHandler>();
+    const { factory } = fakeDriver(handlers);
+    const hooked = fakeSessions(); // 不发 onSessionClosed（网络死亡场景）
+    const runtime = createEmployeeTriggerRuntime({
+      sessions: hooked.sessions,
+      driver: factory,
+      sessionOpDeadlineMs: 30,
+      windowDeadlineMs: 5_000, // 兜底的是查询护栏，不是窗口看门狗
+    });
+    runtime.start();
+    handlers.set("qa-probe", async () => ({ probe: true }));
+
+    hooked.hangMatching(/FROM employee_trigger/);
+    const first = runtime.enqueue(delivery({ idempotencyKey: "qa-probe:ve_1:no-notify" }));
+    await bounded(expect(first).resolves.toMatchObject({
+      outcome: "failed",
+      error: "employee-session-closed", // 归一化错误码，不透出 SDK 原始串
+    }));
+    hooked.hangMatching(null);
+
+    const second = await bounded(
+      runtime.enqueue(delivery({ idempotencyKey: "qa-probe:ve_1:after-deadline" })),
+      2_000,
+    );
+    expect(second).toMatchObject({ outcome: "completed" });
     await runtime.stop();
   }, 10_000);
 });
