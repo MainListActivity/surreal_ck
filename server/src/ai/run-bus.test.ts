@@ -61,6 +61,44 @@ describe("RunBus", () => {
     bus.subscribe("run-1", afterWindow.listener);
     expect(afterWindow.events).toEqual([]);
   });
+
+  test("segment 后新订阅只回放分段之后的事件（LCA07 resume 回归）", () => {
+    const bus = createRunBus();
+    bus.publish("run-1", { kind: "progress", runId: "run-1", progress: { kind: "routing", runId: "run-1" } });
+    bus.publish("run-1", {
+      kind: "suspend",
+      runId: "run-1",
+      payload: { kind: "resource-candidates", runId: "run-1", candidates: [{ id: "r1", label: "R1" }] },
+    } as ChatStreamEvent);
+
+    // resume 决策消费了 suspend：分段丢弃旧回放缓存
+    bus.segment("run-1");
+
+    const sink = collect();
+    bus.subscribe("run-1", sink.listener);
+    bus.publish("run-1", { kind: "chunk", runId: "run-1", text: "续" });
+    bus.publish("run-1", { kind: "done", runId: "run-1", message: doneMessage(), toolCalls: [] });
+
+    expect(sink.events.map((e) => e.kind)).toEqual(["chunk", "done"]);
+  });
+
+  test("segment 不影响已连接监听，也不影响其他 runId 的回放", () => {
+    const bus = createRunBus();
+    bus.publish("run-1", { kind: "chunk", runId: "run-1", text: "a" });
+    bus.publish("run-2", { kind: "chunk", runId: "run-2", text: "b" });
+    const live = collect();
+    bus.subscribe("run-1", live.listener);
+
+    bus.segment("run-1");
+    bus.segment("run-9");
+
+    bus.publish("run-1", { kind: "chunk", runId: "run-1", text: "c" });
+    expect(live.events.map((e) => (e.kind === "chunk" ? e.text : e.kind))).toEqual(["a", "c"]);
+
+    const other = collect();
+    bus.subscribe("run-2", other.listener);
+    expect(other.events.map((e) => (e.kind === "chunk" ? e.text : e.kind))).toEqual(["b"]);
+  });
 });
 
 // RunBus 不解释 message 内容，只按 kind 路由；此处构造一个最小占位 done 消息。

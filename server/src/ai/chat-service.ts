@@ -179,6 +179,11 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
       if (!resumer) {
         throw new Error("AiChatService: resumer not configured");
       }
+      // LCA07：suspend 已被本次 resume 决策消费，旧回放缓存（含那次 suspend）
+      // 必须在此分段丢弃——resume 后的新流订阅若回放到旧 suspend，前端会按
+      // suspend 语义自关新流，续跑答案永远不可见。同步执行，保证 resume 端点
+      // 返回（客户端随即重连 stream）之前分段生效。
+      runBus.segment(runId);
       const bridge = bridgeToBus(runBus, runId);
       const userContext = options.resumeUserContextFallback ?? createDefaultAiContextSnapshot();
       void (async () => {

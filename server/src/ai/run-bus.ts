@@ -20,6 +20,13 @@ export type RunBus = {
   publish(runId: string, event: ChatStreamEvent): void;
   /** 订阅一个 runId：先回放已缓存事件，再接后续。返回取消订阅函数。 */
   subscribe(runId: string, listener: RunBusListener): () => void;
+  /**
+   * resume 分段（LCA07）：suspend 被用户决策消费后调用。丢弃该 runId 的回放
+   * 缓冲，使 resume 之后的新订阅只回放 resume 后的事件——否则新流先收到旧的
+   * suspend，前端按 suspend 语义自关新流，续跑答案永远不可见。已连接的监听
+   * 不受影响（它们已消费过旧事件）；未 resume 的断网重连回放不变（D1-05）。
+   */
+  segment(runId: string): void;
 };
 
 type RunChannel = {
@@ -65,6 +72,11 @@ export function createRunBus(now: () => number = Date.now): RunBus {
       return () => {
         ch.listeners.delete(listener);
       };
+    },
+
+    segment(runId) {
+      const ch = channels.get(runId);
+      if (ch) ch.backlog = [];
     },
   };
 }
