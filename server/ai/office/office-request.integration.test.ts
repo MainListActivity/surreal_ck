@@ -106,9 +106,17 @@ async function setupFixture(database: string): Promise<Fixture> {
   }
 }
 
+type SessionOptions = {
+  /** 注入的底层驱动选项——测试用 websocketImpl 获得真实断线原语。 */
+  driver?: ConstructorParameters<typeof Surreal>[0];
+  /** connect() 选项——重连测试用更短的重试间隔。 */
+  connect?: Parameters<Surreal["connect"]>[1];
+};
+
 async function jwtSession(
   fixture: Fixture,
   input: { sub: string; ac: "admin" | "participant" },
+  options: SessionOptions = {},
 ): Promise<Surreal> {
   const claims: Record<string, unknown> = {
     ns: fixture.namespace,
@@ -124,11 +132,54 @@ async function jwtSession(
     .setIssuedAt()
     .setProtectedHeader({ alg: "ES256", kid: "fixture" })
     .sign(fixture.privateKey);
-  const db = new Surreal();
+  const db = new Surreal(options.driver);
   opened.push(db);
-  await db.connect(fixture.url);
+  await db.connect(fixture.url, options.connect);
   await db.authenticate(token);
   return db;
+}
+
+/** 断线原语：真实关闭底层 WebSocket（服务端仍在运行），SDK 走断线→自动重连路径。 */
+class CuttableSocket extends WebSocket {
+  static #open = new Set<CuttableSocket>();
+
+  constructor(url: string | URL, protocols?: string | string[]) {
+    super(url, protocols);
+    CuttableSocket.#open.add(this);
+    this.addEventListener("close", () => CuttableSocket.#open.delete(this));
+  }
+
+  /** 切断当前所有底层 socket；连接 Surreal 实例保留并自动重连。 */
+  static severAll(): void {
+    for (const socket of [...CuttableSocket.#open]) socket.close();
+  }
+}
+
+const FAST_RECONNECT: SessionOptions = {
+  driver: { websocketImpl: CuttableSocket },
+  connect: {
+    reconnect: {
+      enabled: true,
+      attempts: -1,
+      retryDelay: 40,
+      retryDelayMax: 300,
+      retryDelayMultiplier: 1,
+      retryDelayJitter: 0,
+    },
+  },
+};
+
+/** 等 SDK 完成一次断线重连；必须在切断前调用，拿到下一次 connected 的 promise。 */
+function waitForReconnect(db: Surreal): () => Promise<void> {
+  let resolveNext!: () => void;
+  const next = new Promise<void>((resolve) => {
+    resolveNext = resolve;
+  });
+  const off = db.subscribe("connected", () => {
+    off();
+    resolveNext();
+  });
+  return () => next;
 }
 
 type Stack = {
@@ -679,3 +730,134 @@ test("VO03 续跑关联守卫：其他请求、其他 assignee 和取消终态�
   await stack.triggerRuntime.stop();
   await stack.employeeRuntime.stop();
 }, 60_000);
+
+
+describe("VO03 断线重连（真实 WS 中断与 SDK 自动恢复）", () => {
+  test("答复提交在途断线 + 终态与唤醒间断线：重连收敛唯一终态、恰好一次续跑、债权提醒兼容", async () => {
+    const fixture = await setupFixture("ws_vo03_reconnect");
+    const stack = buildStack(fixture);
+    const admin = await jwtSession(fixture, { sub: "owner-sub", ac: "admin" });
+    await admin.query(`CREATE office_meta:office CONTENT {
+      goal: "断线重连闭环", primary_contact: user:member, state: "onboarding"
+    };`).collect();
+    expect((await stack.bootstrap({ slug: "acme", callerToken: "owner-sub:admin" })).kind).toBe("ok");
+    const pmId = officeManagerEmployeeId(fixture.database);
+    await waitFor(async () => {
+      const [t] = await rows<{ status?: unknown }>(fixture,
+        "SELECT status FROM office_task:pm_initial");
+      return t?.status === "done" ? t : null;
+    });
+    await admin.query(`CREATE office_task:ask_reconnect CONTENT {
+      goal: "断线期间的答复", assignee: ${pmId},
+      brief: { ask_human: { prompt: "断网期间的答复会丢吗？", to: "user:member" } }
+    };`).collect();
+    expect((await notifyOfficeTask(stack.triggerRuntime, {
+      database: fixture.database, assigneeId: pmId, taskId: "office_task:ask_reconnect",
+    })).outcome).toBe("completed");
+    const [request] = await rows<{ id: unknown }>(fixture,
+      'SELECT id FROM user_notification WHERE purpose = "office-request"');
+    const notificationId = String(request!.id);
+
+    // 收件人经可强制断开的真实 WebSocket 读取收件箱——请求可见（快照读）。
+    const member = await jwtSession(fixture, { sub: "member-sub", ac: "participant" }, FAST_RECONNECT);
+    const [pending] = await member.query<[unknown[]]>(
+      `SELECT id FROM ${notificationId} WHERE resolved_at = NONE;`);
+    expect(pending).toHaveLength(1);
+
+    // 断线点 A：答复提交在途时切断底层 socket。提交结果不确定——服务端可能已
+    // 提交但响应丢失，也可能根本没送达；SDK 重连后按连接状态重放在途调用，
+    // WHERE resolved_at = NONE 的 CAS 保证重复递交也不改写首个终态。
+    const reconnectedA = waitForReconnect(member);
+    const attempt = memberResolve(member, notificationId, { action: "answered", text: "首次答复" })
+      .then((count) => ({ ok: true as const, count }), (cause) => ({ ok: false as const, cause }));
+    CuttableSocket.severAll();
+    const first = await attempt;
+    if (first.ok) expect([0, 1]).toContain(first.count);
+    await reconnectedA();
+
+    // 会话恢复后读回真实状态收敛不确定响应；若首次未落库则补交同一份答复。
+    const [[mid]] = await member.query<[{ resolved_at?: unknown }[]]>(
+      `SELECT resolved_at FROM ${notificationId};`);
+    if (mid?.resolved_at == null) {
+      expect(await memberResolve(member, notificationId, { action: "answered", text: "首次答复" }))
+        .toBe(1);
+    }
+    // 终态唯一：重复点击/改口 CAS 均写不到行，首个答复不被覆盖。
+    expect(await memberResolve(member, notificationId, { action: "answered", text: "改口" }))
+      .toBe(0);
+    const [[terminal]] = await member.query<[
+      { resolved_at?: unknown; answer?: { action?: string; text?: string } }[],
+    ]>(`SELECT resolved_at, answer FROM ${notificationId};`);
+    expect(terminal?.resolved_at ?? null).not.toBeNull();
+    expect(terminal?.answer?.action).toBe("answered");
+    expect(terminal?.answer?.text).toBe("首次答复");
+
+    // 断线点 B：终态已落库、唤醒未发出时再次断线。断线窗口里由其他会话写入
+    // 债权提醒；收件人重连后的快照读必须能看到它（缺口由快照收敛，不靠 LIVE 重放）。
+    const reconnectedB = waitForReconnect(member);
+    CuttableSocket.severAll();
+    await admin.query(`CREATE user_notification:risk_gap CONTENT {
+      dedupe_key: "risk-gap-1", to_user: user:member, purpose: "claims-risk",
+      title: "断线窗口提醒", body: "断线期间产生", severity: "warning"
+    };`).collect();
+    await reconnectedB();
+    const [gapRow] = await member.query<[unknown[]]>(
+      `SELECT id FROM user_notification:risk_gap;`);
+    expect(gapRow).toHaveLength(1);
+
+    // 唤醒走服务端窄端点的调用者会话（与浏览器 HTTP 调用同构）：恰好一次续跑。
+    const woken = await stack.wake({
+      slug: "acme", callerToken: "member-sub:participant", notificationId,
+    });
+    expect(woken).toMatchObject({ kind: "ok" });
+    await waitFor(async () => {
+      const [t] = await rows<{ status?: unknown }>(fixture,
+        "SELECT status FROM office_task:ask_reconnect");
+      return t?.status === "done" ? t : null;
+    });
+    const msgKey = notificationId.replace(/[^a-zA-Z0-9_]/g, "_");
+    const [task] = await rows<{ status: string; result?: { requestId?: string } }>(fixture,
+      "SELECT status, result FROM office_task:ask_reconnect");
+    expect(task).toMatchObject({ status: "done", result: { requestId: notificationId } });
+    const answerMsgs = await rows<{ body: string }>(fixture,
+      `SELECT body FROM office_message:pm_answer_${msgKey}`);
+    expect(answerMsgs).toHaveLength(1);
+    expect(answerMsgs[0]!.body).toContain("首次答复");
+    const reports = await rows<{ summary: string }>(fixture,
+      "SELECT summary FROM office_report WHERE task = office_task:ask_reconnect");
+    expect(reports).toHaveLength(1);
+    expect(reports[0]!.summary).toContain("首次答复");
+
+    // 重复唤醒与 reconcile 都收敛同一触发键——不重复后续效果。
+    const dupWake = await stack.wake({
+      slug: "acme", callerToken: "member-sub:participant", notificationId,
+    });
+    expect(dupWake).toMatchObject({ kind: "ok", outcome: "coalesced" });
+    const summary = await reconcileOfficeWorkspace({
+      runtime: stack.triggerRuntime,
+      root: { query: (sql, params) => fixture.root.query(sql, params) },
+      database: fixture.database,
+    });
+    expect(summary.failed).toBe(0);
+    await Bun.sleep(150);
+    expect(await rows(fixture,
+      'SELECT id FROM employee_trigger WHERE reason = "office-request-resolved"'))
+      .toHaveLength(1);
+    expect(await rows(fixture,
+      `SELECT id FROM office_message:pm_answer_${msgKey}`)).toHaveLength(1);
+    expect(await rows(fixture,
+      "SELECT id FROM office_report WHERE task = office_task:ask_reconnect")).toHaveLength(1);
+
+    // 债权提醒仍走老 resolution 路径可读可解决，不受请求闭环影响。
+    await member.query(
+      `UPDATE user_notification:risk_gap SET resolution = "已处理", resolved_at = time::now();`,
+    ).collect();
+    const [[riskRow]] = await member.query<[{ resolution?: string; resolved_at?: unknown }[]]>(
+      `SELECT resolution, resolved_at FROM user_notification:risk_gap;`);
+    expect(riskRow?.resolution).toBe("已处理");
+    expect(riskRow?.resolved_at ?? null).not.toBeNull();
+
+    await stack.triggerRuntime.stop();
+    await stack.employeeRuntime.stop();
+  }, 120_000);
+});
