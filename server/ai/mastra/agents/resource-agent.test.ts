@@ -43,7 +43,7 @@ const resource: ResourceDTO = {
 };
 
 describe("resource retrieval executor", () => {
-  test("法律证据优先展示已核验引用并保持同状态原始顺序", () => {
+  test("平台证据优先展示已核验引用并保持同状态原始顺序", () => {
     const ordered = orderCitationsForEvidence([
       { id: "u1", resolution: "unresolved" as const },
       { id: "a1", resolution: "ambiguous" as const },
@@ -157,7 +157,7 @@ describe("resource retrieval executor", () => {
     });
 
     expect(out.text).toContain("语义索引存在失败状态");
-    expect(out.text).toContain("平台法律库授权检索暂不可用");
+    expect(out.text).toContain("平台已发布内容库授权检索暂不可用");
     expect(out.suspend).toBeUndefined();
   });
 
@@ -212,7 +212,7 @@ describe("resource retrieval executor", () => {
     });
   });
 
-  test("workspace miss 后检索平台已发布法律库，并用面向用户的中文说明未绑定法条版本", async () => {
+  test("workspace miss 后检索平台已发布内容库，并用面向用户的中文说明未绑定引用版本", async () => {
     let researchCreated = false;
     const executor = makeResourceRetrievalExecutor({
       resolveWorkspaceId: async () => "workspace:demo",
@@ -222,7 +222,7 @@ describe("resource retrieval executor", () => {
         queryText: "著作权法第十条案例",
         results: [],
       }),
-      searchLegalContent: async () => ({
+      searchPlatformContent: async () => ({
         items: [{
           itemId: "content_item:case-269",
           kind: "judicial_document",
@@ -272,9 +272,9 @@ describe("resource retrieval executor", () => {
 
     expect(researchCreated).toBe(false);
     expect(out.suspend).toBeUndefined();
-    expect(out.text).toContain("平台已发布法律库");
+    expect(out.text).toContain("平台已发布内容库");
     expect(out.citations?.[0]?.sourceUrl).toContain("court.gov.cn");
-    expect(out.citations?.[0]?.evidence[0]?.text).toContain("法条版本尚未绑定");
+    expect(out.citations?.[0]?.evidence[0]?.text).toContain("所引版本尚未绑定");
     expect(out.citations?.[0]?.evidence[0]?.text).not.toContain("unresolved");
     expect(out.citations?.[0]?.platformContent).toEqual({
       itemId: "content_item:case-269",

@@ -21,7 +21,7 @@ export function createLegalContentRoutes(input: Readonly<{
     });
     const parsed = LegalRetrievalRequestSchema.safeParse(body);
     if (!parsed.success) throw new HttpError(400, "invalid_request", "检索请求或筛选条件无效");
-    if (!input.openContentSession) throw new HttpError(503, "content_authorization_unavailable", "平台法律内容授权服务尚未就绪");
+    if (!input.openContentSession) throw new HttpError(503, "content_authorization_unavailable", "平台内容授权服务尚未就绪");
     const window = await input.openContentSession(c.var.user);
     c.header("Cache-Control", "no-store");
     if (window.kind === "empty") return c.json({

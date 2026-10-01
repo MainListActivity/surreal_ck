@@ -781,7 +781,7 @@ export class PlatformContentService {
   async searchPublishedForOperator(actor: ContentOperator, requestInput: unknown): Promise<SearchContentResponse> {
     requireCapability(actor, "content.read");
     const parsed = PublicLegalSearchRequestSchema.safeParse(requestInput);
-    if (!parsed.success) throw new ContentServiceError("invalid_request", "法律库检索参数不符合契约结构");
+    if (!parsed.success) throw new ContentServiceError("invalid_request", "内容库检索参数不符合契约结构");
     const request: SearchContentRequest = {
       filters: {
         query: parsed.data.query,

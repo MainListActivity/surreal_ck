@@ -149,6 +149,18 @@ function addMilliseconds(value: DateTime, milliseconds: number): DateTime {
   );
 }
 
+// 提交事务里剩余的查询错误只剩真实的基础设施/事务失败（业务拒绝都经
+// $failure RETURN 传出）；统一落成可重试的 lifecycle 错误，HTTP 层映射
+// 503 而不是裸 500。
+function operatorIntentSubmitError(error: unknown): QuotaLifecycleError {
+  if (error instanceof QuotaLifecycleError) return error;
+  return new QuotaLifecycleError(
+    "operator_intent_persist_failed",
+    error instanceof Error ? error.message : "operator intent persistence failed",
+    true,
+  );
+}
+
 function snapshotObject(
   snapshot: ProviderSubscriptionSnapshot,
 ): ControlPlaneObject {
@@ -696,9 +708,6 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
           WHERE subject = $actorSubject AND status = "active"
           LIMIT 1
         )[0];
-        IF $operator = NONE {
-          THROW "operator-not-authorized";
-        };
         LET $capability = (
           SELECT *
           FROM platform_operator_capability
@@ -707,20 +716,26 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
             AND status = "active"
           LIMIT 1
         )[0];
-        IF $capability = NONE {
-          THROW "operator-capability-denied";
-        };
         LET $existing = (
           SELECT *
           FROM quota_operator_intent
           WHERE request_id = $requestId
           LIMIT 1
         )[0];
-        IF $existing != NONE
+        // 业务拒绝用 RETURN 而不是 THROW：事务内 THROW 的值不会随
+        // QueryError/NotExecuted 传到调用方（外层只剩通用事务失败
+        // 文案），HTTP 层无法区分 409/403 与真正的 500。
+        LET $failure = IF $operator = NONE {
+          "operator-not-authorized"
+        } ELSE IF $capability = NONE {
+          "operator-capability-denied"
+        } ELSE IF $existing != NONE
           AND $existing.input_digest != $inputDigest {
-          THROW "operator-intent-idempotency-conflict";
+          "operator-intent-idempotency-conflict"
+        } ELSE {
+          NONE
         };
-        IF $existing = NONE {
+        IF $failure = NONE AND $existing = NONE {
           CREATE $intent CONTENT {
             intent_kind: $intentKind,
             workspace: $workspace,
@@ -748,8 +763,9 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
           };
         };
         RETURN {
+          failure: $failure,
           intent: IF $existing = NONE { $intent } ELSE { $existing.id },
-          accepted: $existing = NONE
+          accepted: $existing = NONE AND $failure = NONE
         };
         COMMIT TRANSACTION;
       `,
@@ -773,13 +789,34 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
         correlationId: input.correlationId,
         causationId: input.causationId,
       },
-    );
+    ).catch((error: unknown) => {
+      throw operatorIntentSubmitError(error);
+    });
     const row = lastRecord(result);
     if (!row) {
       throw new QuotaLifecycleError(
         "operator_intent_persist_failed",
         "operator intent insert returned no result",
         true,
+      );
+    }
+    const failure = optionalString(row.failure);
+    if (failure === "operator-intent-idempotency-conflict") {
+      throw new QuotaLifecycleError(
+        "operator_intent_idempotency_conflict",
+        "requestId was already used with a different payload",
+      );
+    }
+    if (failure === "operator-capability-denied") {
+      throw new QuotaLifecycleError(
+        "operator_capability_mismatch",
+        "operator capability is insufficient",
+      );
+    }
+    if (failure === "operator-not-authorized") {
+      throw new QuotaLifecycleError(
+        "operator_not_authorized",
+        "operator is not authorized",
       );
     }
     return Object.freeze({
@@ -1233,6 +1270,10 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
               correlation_id = $correlationId,
               causation_id = $intent;
           };
+          LET $subNow = SELECT * FROM ONLY $targetSubscription;
+          LET $windowEnd = $subNow.current_period_end
+            ?? $subNow.paid_through
+            ?? $subNow.trial_end;
           LET $same = $current != NONE
             AND $current.subscription = $targetSubscription
             AND $current.plan_revision = $planRevision
@@ -1247,11 +1288,7 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
                 correlation_id = $correlationId,
                 causation_id = $intent;
             };
-            LET $subNow = SELECT * FROM ONLY $targetSubscription;
-            LET $itemUntil = $subNow.current_period_end
-              ?? $subNow.paid_through
-              ?? $subNow.trial_end;
-            IF $itemUntil != NONE AND $itemUntil <= $effectiveAt {
+            IF $windowEnd != NONE AND $windowEnd <= $effectiveAt {
               THROW "operator-subscription-item-window-invalid";
             };
             CREATE $item CONTENT {
@@ -1262,9 +1299,21 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
               revision: IF $current = NONE { 1 } ELSE { $current.revision + 1 },
               status: "active",
               effective_from: $effectiveAt,
-              effective_until: $itemUntil,
+              effective_until: $windowEnd,
               correlation_id: $correlationId,
               causation_id: $intent
+            };
+          } ELSE {
+            // LCA08 续作：运营侧同套餐同产品续费（$same 分支不新建
+            // item）必须随订阅付费窗口向前延长活跃 item 窗口，与
+            // provider 快照路径一致（只延不缩）；否则续费后权益仍按旧
+            // 窗口到期，付费周期内误落 retention。
+            IF $windowEnd != NONE {
+              UPDATE quota_subscription_item SET
+                effective_until = $windowEnd
+              WHERE subscription = $targetSubscription
+                AND status = "active"
+                AND (effective_until = NONE OR effective_until < $windowEnd);
             };
           };
         };

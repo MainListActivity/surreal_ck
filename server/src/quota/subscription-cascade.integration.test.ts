@@ -10,7 +10,10 @@ import { ProductEntitlementService, type ProductActor } from "../product-entitle
 import { SurrealProductEntitlementStore } from "../product-entitlement/store";
 import { seedQuotaPlans } from "../db/quota-plan-seed";
 import { SurrealEntitlementRefreshService } from "./entitlement-refresh";
-import { QuotaLifecycleCoordinator } from "./subscription-lifecycle";
+import {
+  QuotaLifecycleCoordinator,
+  QuotaLifecycleError,
+} from "./subscription-lifecycle";
 import { SubscriptionEntitlementCascade } from "./subscription-cascade";
 import { SurrealQuotaLifecycleStore } from "./lifecycle-store";
 
@@ -1199,6 +1202,200 @@ describe("subscription cascade against local SurrealDB (LCA08)", () => {
       expect(purchasedRow.terminated_at ?? null).toBeNull();
 
       await wsC.close();
+    },
+    120_000,
+  );
+
+  localTest(
+    "operator renewal extends the active item window and replay conflict maps to an idempotency-conflict code",
+    async () => {
+      // QA 退回缺陷回归：运营路径同套餐同产品续费（$same 分支）必须随
+      // 订阅付费窗口向前延长活跃 item 的 effective_until——否则周期前移
+      // 后权益按旧窗口到期，付费周期内误落 retention。provider 快照路径
+      // 已有同语义（本文件上一用例第 3 段），本用例覆盖运营入口。
+      await db!.query(`DEFINE DATABASE IF NOT EXISTS ws_lca08d;`);
+      const wsD = await connect("ws_lca08d");
+      for (const script of ["035-ai-allowance.surql", "042-ai-plan-upgrade-proration.surql"]) {
+        await wsD.query(
+          await readFile(
+            new URL(`../../../shared/sql/workspace-template/${script}`, import.meta.url),
+            "utf8",
+          ),
+        );
+      }
+      await db!.query(`
+        CREATE billing_account:lca08d CONTENT {
+          account_key: "lca08d",
+          name: "LCA08D Billing",
+          kind: "team",
+          status: "active"
+        };
+        CREATE workspace:lca08d CONTENT {
+          db_name: "ws_lca08d",
+          owner_subject: "operator:dana",
+          slug: "lca08d",
+          name: "LCA08D",
+          status: "active"
+        };
+        CREATE platform_operator:dana CONTENT {
+          subject: "operator:dana",
+          display_name: "Dana",
+          status: "active"
+        };
+        CREATE platform_operator_capability:dana_subscription CONTENT {
+          operator: platform_operator:dana,
+          capability: "subscription.manage",
+          status: "active",
+          granted_by_subject: "system:test"
+        };
+        CREATE quota_subscription:lca08dsub CONTENT {
+          billing_account: billing_account:lca08d,
+          source: "manual",
+          status: "active",
+          revision: 1,
+          current_period_start: <datetime> "2026-10-01T00:00:00.000Z",
+          current_period_end: <datetime> "2026-11-01T00:00:00.000Z",
+          paid_through: <datetime> "2026-11-01T00:00:00.000Z",
+          cancel_at_period_end: false,
+          correlation_id: "fixture-lca08d"
+        };
+        CREATE quota_subscription_item:lca08ditem CONTENT {
+          subscription: quota_subscription:lca08dsub,
+          workspace: workspace:lca08d,
+          plan_revision: quota_plan_revision:plus_v1,
+          revision: 1,
+          status: "active",
+          effective_from: <datetime> "2026-10-01T00:00:00.000Z",
+          effective_until: <datetime> "2026-11-01T00:00:00.000Z",
+          active_workspace: workspace:lca08d,
+          correlation_id: "fixture-lca08d"
+        };
+      `);
+
+      const client = queryClient();
+      const cascade = new SubscriptionEntitlementCascade(
+        new SurrealEntitlementRefreshService(client),
+        new ProductEntitlementService(
+          new SurrealProductEntitlementStore(async () => client, namespace),
+          () => new Date("2026-10-15T00:00:00.000Z"),
+        ),
+        new AiAllowancePlanCycleSynchronizer({
+          workspaceSession: async () => wsD,
+        }),
+      );
+      const lifecycleNow = new DateTime("2026-10-15T00:00:00.000Z");
+      const coordinator = new QuotaLifecycleCoordinator(
+        new SurrealQuotaLifecycleStore(client),
+        cascade,
+        "worker-lca08d",
+        undefined,
+        { clock: { now: () => lifecycleNow } },
+      );
+
+      // ── 1. 运营续费：同订阅同套餐，周期与 paid_through 前移 ────────────
+      const renewalSubmission = {
+        kind: "subscription_upsert" as const,
+        actorSubject: "operator:dana",
+        actorCapability: "subscription.manage" as const,
+        requestId: "lca08d-renew-1",
+        workspace: id("workspace:lca08d"),
+        billingAccount: id("billing_account:lca08d"),
+        customerReason: "客户续费下一个周期",
+        operatorReason: "LCA08 运营续费回归",
+        effectiveAt: lifecycleNow,
+        input: {
+          mode: "manual_assignment",
+          workspace: id("workspace:lca08d"),
+          billing_account: id("billing_account:lca08d"),
+          subscription: id("quota_subscription:lca08dsub"),
+          plan_revision: id("quota_plan_revision:plus_v1"),
+          source: "manual",
+          status: "active",
+          current_period_start: new DateTime("2026-11-01T00:00:00.000Z"),
+          current_period_end: new DateTime("2026-12-01T00:00:00.000Z"),
+          paid_through: new DateTime("2026-12-01T00:00:00.000Z"),
+        },
+        correlationId: "corr-lca08d-renew-1",
+      };
+      await expect(
+        coordinator.submitOperatorIntent(renewalSubmission),
+      ).resolves.toMatchObject({ kind: "accepted" });
+      await expect(
+        coordinator.processNextOperatorIntent(),
+      ).resolves.toBe("processed");
+
+      // 续费后：仍是同一个活跃 item（不新建），窗口向前延长到 12/1。
+      const renewedItems = rows(
+        await db!.query(
+          `SELECT id, status, effective_from, effective_until
+           FROM quota_subscription_item
+           WHERE workspace = workspace:lca08d;`,
+        ),
+      );
+      expect(renewedItems).toHaveLength(1);
+      expect(renewedItems[0]).toMatchObject({
+        id: "quota_subscription_item:lca08ditem",
+        status: "active",
+      });
+      expect(new Date(String(renewedItems[0]!.effective_from)).toISOString()).toBe(
+        "2026-10-01T00:00:00.000Z",
+      );
+      expect(new Date(String(renewedItems[0]!.effective_until)).toISOString()).toBe(
+        "2026-12-01T00:00:00.000Z",
+      );
+      const renewedSub = rows(
+        await db!.query(
+          `SELECT current_period_end, paid_through FROM ONLY quota_subscription:lca08dsub;`,
+        ),
+      )[0];
+      expect(new Date(String(renewedSub!.current_period_end)).toISOString()).toBe(
+        "2026-12-01T00:00:00.000Z",
+      );
+
+      // ── 2. 只延不缩：用更早窗口再提交同 plan upsert，窗口不回退 ────────
+      await coordinator.submitOperatorIntent({
+        ...renewalSubmission,
+        requestId: "lca08d-renew-shrink",
+        correlationId: "corr-lca08d-renew-shrink",
+        input: {
+          ...renewalSubmission.input,
+          current_period_start: new DateTime("2026-11-01T00:00:00.000Z"),
+          current_period_end: new DateTime("2026-11-15T00:00:00.000Z"),
+          paid_through: new DateTime("2026-11-15T00:00:00.000Z"),
+        },
+      });
+      await expect(
+        coordinator.processNextOperatorIntent(),
+      ).resolves.toBe("processed");
+      const afterShrink = rows(
+        await db!.query(
+          `SELECT effective_until FROM ONLY quota_subscription_item:lca08ditem;`,
+        ),
+      )[0];
+      expect(new Date(String(afterShrink!.effective_until)).toISOString()).toBe(
+        "2026-12-01T00:00:00.000Z",
+      );
+
+      // ── 3. 幂等语义：同 requestId 同载荷 → duplicate；改载荷 → ─────────
+      //      operator_intent_idempotency_conflict（路由映射 409，不再 500）
+      await expect(
+        coordinator.submitOperatorIntent(renewalSubmission),
+      ).resolves.toMatchObject({ kind: "duplicate" });
+      try {
+        await coordinator.submitOperatorIntent({
+          ...renewalSubmission,
+          customerReason: "同一 requestId 改了载荷",
+        });
+        expect.unreachable("conflicting payload must throw");
+      } catch (error) {
+        expect(error).toBeInstanceOf(QuotaLifecycleError);
+        expect((error as QuotaLifecycleError).code).toBe(
+          "operator_intent_idempotency_conflict",
+        );
+        expect((error as QuotaLifecycleError).retryable).toBe(false);
+      }
+
+      await wsD.close();
     },
     120_000,
   );

@@ -158,7 +158,7 @@
   <div class="reader-inner">
     <button class="back" type="button" onclick={onback}>← 返回工作区内容</button>
     <header>
-      <span class="eyebrow">法律内容 · 独立授权阅读</span>
+      <span class="eyebrow">平台内容 · 独立授权阅读</span>
       <h1>{page?.title ?? "内容阅读"}</h1>
       <p>当前工作区：{slug}</p>
     </header>
@@ -180,7 +180,7 @@
         <div><span>内容指针</span><strong>{page.publicId}</strong></div>
       </section>
       {#if page.articles.length > 0}
-        <nav class="locators" aria-label="法条定位">
+        <nav class="locators" aria-label="内容定位">
           {#each page.articles as article (article.id)}
             <button type="button" onclick={() => chooseLocator(`article:${article.localKey}`)}>{article.label}</button>
           {/each}
@@ -196,7 +196,7 @@
             <button type="button" onclick={() => chooseLocator(`paragraph:${index + 1}`)}>第 {index + 1} 段</button>
           {/each}
         </nav>
-        <article class="body" aria-label="法律内容正文">
+        <article class="body" aria-label="平台内容正文">
           {#each page.bodyText.split(/\n\s*\n/u).filter(Boolean) as paragraph, index}
             <p id={`legal-paragraph:${index + 1}`}>{paragraph}</p>
           {/each}

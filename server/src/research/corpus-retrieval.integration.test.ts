@@ -146,11 +146,11 @@ localTest("授权语料检索在真实引擎上按 gate 强制授权", async () 
     expect(JSON.stringify(result)).not.toContain("b-v1");
 
     // LCA07：每次研究都建立新的 RECORD 租约会话，不缓存检索结果或复用旧证据。
-    const { makeLegalResearchExecutor } = await import("../../ai/mastra/agents/legal-research-agent");
+    const { makeResearchExecutor } = await import("../../ai/mastra/agents/research-agent");
     const { createDefaultAiContextSnapshot } = await import("@surreal-ck/shared");
     const prompts: string[] = [];
     let windows = 0;
-    const executor = makeLegalResearchExecutor({ resolveWorkspaceId: async () => "ws_test", searchResources: async () => ({
+    const executor = makeResearchExecutor({ resolveWorkspaceId: async () => "ws_test", searchResources: async () => ({
       status: "miss", indexStatus: "index-disabled", queryText: "合同", results: [] }), answerModel: async p => { prompts.push(p); return "合法依据 [1]"; } });
     const openContentSession = async () => {
       windows++;

@@ -19,11 +19,11 @@ import {
   type ResourceRetrievalExecutorDeps,
 } from "../../ai/mastra/agents/resource-agent";
 import {
-  makeLegalResearchExecutor,
-  createLegalResearchAgent,
-  type LegalResearchExecutorDeps,
+  makeResearchExecutor,
+  createResearchAgent,
+  type ResearchExecutorDeps,
   type ResearchAnswerModel,
-} from "../../ai/mastra/agents/legal-research-agent";
+} from "../../ai/mastra/agents/research-agent";
 import { createResourceSearchService } from "../resources/resource-search";
 import type { EmbeddingProvider } from "../resources/research-save";
 import { createNavigationAgent } from "../../ai/mastra/agents/navigation-agent";
@@ -73,7 +73,7 @@ export type AssembleExecutorDeps = {
   /** 资源检索 executor 的外部依赖（搜索 / workspace 解析 / 研究 session）。未提供则不挂 resource-retrieval。 */
   resource?: ResourceRetrievalExecutorDeps;
   /** LCA06：授权研究 executor 依赖（联合平台授权语料 + 工作区私有材料）。提供时优先于 resource。 */
-  research?: LegalResearchExecutorDeps;
+  research?: ResearchExecutorDeps;
 };
 
 /**
@@ -82,7 +82,7 @@ export type AssembleExecutorDeps = {
  */
 function createCallerSessionResourceDeps(
   embeddingProvider?: EmbeddingProvider,
-  searchLegalContent?: (input: Readonly<{ query: string; limit: number }>) => Promise<SearchContentResponse>,
+  searchPlatformContent?: (input: Readonly<{ query: string; limit: number }>) => Promise<SearchContentResponse>,
 ): ResourceRetrievalExecutorDeps {
   function requireSession(session: Surreal | undefined): Surreal {
     if (!session) {
@@ -97,7 +97,7 @@ function createCallerSessionResourceDeps(
     createResearchSession: (req, session) =>
       createResourceSearchService({ session: requireSession(session) })
         .createResearchSession(req),
-    searchLegalContent,
+    searchPlatformContent,
   };
 }
 
@@ -126,7 +126,7 @@ export function buildExecutors(agents: AssembleAgents, deps: AssembleExecutorDep
     chitchat: makeAgentExecutor(agents.chitchatAgent),
   };
   if (deps.research) {
-    executors["resource-retrieval"] = makeLegalResearchExecutor(deps.research);
+    executors["resource-retrieval"] = makeResearchExecutor(deps.research);
   } else if (deps.resource) {
     executors["resource-retrieval"] = makeResourceRetrievalExecutor(deps.resource);
   }
@@ -146,11 +146,11 @@ export type CreateMastraRunnerOptions = {
   decisionModel?: DecisionCaller;
   /** 决策置信度阈值；默认 router-classifier 内 0.75。 */
   jevConfidenceThreshold?: number;
-  /** 平台已发布法律库的只读检索入口。 */
-  searchLegalContent?: ResourceRetrievalExecutorDeps["searchLegalContent"];
+  /** 平台已发布内容库的只读检索入口。 */
+  searchPlatformContent?: ResourceRetrievalExecutorDeps["searchPlatformContent"];
   /** LCA06：为调用者开设 content_reader 研究窗口的工厂；注入后 resource-retrieval 走授权研究 executor。 */
   createContentResearchSession?: ContentResearchSessionFactory;
-  /** LCA06：研究回答模型；默认用 settings 构造 legal research agent。 */
+  /** LCA06：研究回答模型；默认用 settings 构造研究 agent。 */
   researchAnswerModel?: ResearchAnswerModel;
 
   // ── 以下注入点用于测试与未来替换；生产默认从 agents/index 装配 ──
@@ -301,7 +301,7 @@ export function createMastraRunner(options: CreateMastraRunnerOptions = {}): { r
       const settings = options.settings ?? ({} as AiSettings);
       cachedAgents = buildAgents(settings);
       // LCA06：注入了研究窗口工厂 → resource-retrieval 升级为授权研究 executor
-      // （同一私有检索依赖；回答模型默认用 legal research agent）。
+      // （同一私有检索依赖；回答模型默认用研究 agent）。
       const research = options.createContentResearchSession
         ? {
             embeddingProvider: options.embeddingProvider,
@@ -311,11 +311,11 @@ export function createMastraRunner(options: CreateMastraRunnerOptions = {}): { r
               return (await createResourceSearchService({ session }).getResourceDetail({ resourceId: id })).resource;
             },
             answerModel: options.researchAnswerModel
-              ?? buildRouterLlmCaller(createLegalResearchAgent(settings)),
+              ?? buildRouterLlmCaller(createResearchAgent(settings)),
           }
         : undefined;
       cachedExecutors = buildExecutors(cachedAgents, {
-        resource: options.resource ?? createCallerSessionResourceDeps(options.embeddingProvider, options.searchLegalContent),
+        resource: options.resource ?? createCallerSessionResourceDeps(options.embeddingProvider, options.searchPlatformContent),
         research,
       });
       cachedLlm = buildLlmCaller(cachedAgents);
