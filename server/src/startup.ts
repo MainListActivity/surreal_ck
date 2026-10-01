@@ -23,14 +23,14 @@ import {
   type ClaimsRiskDispatcherHandle,
 } from "../ai/office/claims-risk-dispatcher";
 import {
+  startEmployeeSupervision,
+  stopEmployeeRuntime,
+  stopEmployeeTriggerRuntime,
+} from "../ai/office/employee-service";
+import {
   startOfficeReconciler,
   type OfficeReconcilerHandle,
 } from "../ai/office/office-trigger-adapter";
-import {
-  stopEmployeeRuntime,
-  stopEmployeeTriggerRuntime,
-  warmupEmployeeRuntime,
-} from "../ai/office/employee-service";
 import {
   startNativeQuotaRuntime,
   type NativeQuotaRuntimeHandle,
@@ -238,13 +238,9 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
     });
   }
 
-  // 虚拟员工 runtime（VER02）：重启后回装 secret 缓存；失败不阻塞对外服务，
-  // 员工会话随生命周期/执行按需 SIGNIN。
-  void warmupEmployeeRuntime().catch((cause: unknown) => {
-    console.error("[server] failed to warm up employee runtime; continuing without it", {
-      message: cause instanceof Error ? cause.message : String(cause),
-    });
-  });
+  // 虚拟员工 runtime 启动监督（VER06）：回装 secret 缓存 + 分批 reconcile
+  // active 员工的孤儿触发；失败不阻塞对外服务，进度经运维端点可观测。
+  void startEmployeeSupervision();
 
   return {
     server,
@@ -255,7 +251,9 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
       quotaRuntime.stop();
       await claimsRiskDispatcher?.stop();
       await officeReconciler?.stop();
-      await stopEmployeeTriggerRuntime();
+      await stopEmployeeTriggerRuntime({
+        deadlineMs: env.EMPLOYEE_RUNTIME_SHUTDOWN_DEADLINE_MS,
+      });
       await stopEmployeeRuntime();
       await (deps.closeContentPublisherSession ?? closeContentPublisherSession)();
       await (deps.closeContentProjectionSession ?? closeContentProjectionSession)();

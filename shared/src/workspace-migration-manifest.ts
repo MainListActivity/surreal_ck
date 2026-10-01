@@ -31,6 +31,14 @@ export type WorkspaceMigrationRequirement = Readonly<{
 /** Version of the deferred legacy event/table cleanup migration. */
 export const LEGACY_QUOTA_CLEANUP_MIGRATION_VERSION = 21;
 
+/**
+ * Version of the residual resource_quota_guard sweep. Entity tables created
+ * after (or missed by) the 021 cleanup can still carry a guard whose legacy
+ * tables no longer exist; removal is only safe once cleanup is done or
+ * verifiably in-flight (021 always precedes 039 in the same pending run).
+ */
+export const LEGACY_QUOTA_GUARD_RESIDUAL_MIGRATION_VERSION = 39;
+
 /** Gated migrations only. Ungated versions omit an entry. */
 export const WORKSPACE_MIGRATION_REQUIREMENTS: Readonly<
   Record<number, WorkspaceMigrationRequirement>
@@ -43,6 +51,14 @@ export const WORKSPACE_MIGRATION_REQUIREMENTS: Readonly<
       "cleanup_done",
     ] as const),
     requires_legacy_cleanup_eligible: true,
+  }),
+  // Residual guard sweep: only after legacy quota tables are gone (or being
+  // removed by 021 earlier in the same continuous run).
+  [LEGACY_QUOTA_GUARD_RESIDUAL_MIGRATION_VERSION]: Object.freeze({
+    requires_quota_migration_state: Object.freeze([
+      "native_verified",
+      "cleanup_done",
+    ] as const),
   }),
 });
 

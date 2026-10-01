@@ -361,6 +361,7 @@ describe("VER05 预算闸门（每员工每日 token 预算）", () => {
       driver: factory,
       limits: { dailyTokenBudget: 1000, fallbackInputTokens: 100 },
       emitSignal: emit,
+      now: () => new Date(`${DAY}T12:00:00+08:00`),
       sleep: () => Promise.resolve(),
     });
     runtime.start();
@@ -386,6 +387,7 @@ describe("VER05 预算闸门（每员工每日 token 预算）", () => {
       driver: factory2,
       limits: { dailyTokenBudget: 1000, fallbackInputTokens: 100 },
       emitSignal: emit,
+      now: () => new Date(`${DAY}T12:00:00+08:00`),
       sleep: () => Promise.resolve(),
     });
     runtime2.start();

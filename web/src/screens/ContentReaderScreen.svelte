@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
+  import { researchCitationExcerpt } from "../lib/research-citation";
   import { type ContentPage, type ContentReaderResult } from "../lib/content-reader";
   import { createBrowserContentReader } from "../lib/content-reader-browser";
   import { getCurrentWorkspace } from "../lib/workspace-store.svelte";
@@ -16,6 +17,7 @@
   let page = $state<ContentPage | null>(null);
   let reason = $state<string | null>(null);
   let loading = $state(true);
+  let researchExcerpt = $state<string | null>(null);
   let selectedLocator = $state<string | null>(null);
   let note = $state("");
   let saveStatus = $state<"idle" | "saving" | "saved" | "denied" | "quota" | "failed">("idle");
@@ -50,6 +52,7 @@
     if (expiryTimer) clearTimeout(expiryTimer);
     expiryTimer = undefined;
     page = null;
+    researchExcerpt = null;
     selectedLocator = null;
     saveStatus = "idle";
   }
@@ -110,6 +113,13 @@
       return;
     }
     page = result.page;
+    const excerpt = await researchCitationExcerpt(result.page.bodyText, globalThis.location.hash);
+    if (current !== sequence) return;
+    researchExcerpt = excerpt;
+    if (excerpt) {
+      await tick();
+      if (current === sequence) document.getElementById("research-citation")?.scrollIntoView({ block: "center" });
+    }
     const remainingMs = Math.max(0, result.page.authorizedUntilSeconds * 1000 - Date.now());
     expiryTimer = setTimeout(() => {
       if (current !== sequence) return;
@@ -162,6 +172,7 @@
         <button type="button" onclick={() => void load()}>重新验证</button>
       </div>
     {:else if page}
+      {#if researchExcerpt}<section id="research-citation" class="body" aria-label="研究引用的精确位置"><h2>研究引用的精确位置</h2><p>{researchExcerpt}</p></section>{/if}
       <section class="metadata" aria-label="内容版本与授权">
         <div><span>精确版本</span><strong>{page.versionLabel ?? `修订 ${page.revision}`} · #{page.revision}</strong></div>
         <div><span>来源</span><strong>{page.sourceForm} · {page.sourceUrl}</strong></div>

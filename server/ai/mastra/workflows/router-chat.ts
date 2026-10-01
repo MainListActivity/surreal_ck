@@ -14,6 +14,7 @@ import type { DecisionCaller } from "../../decision/model";
 import {
   ROUTER_RUNTIME_KEY,
   ROUTER_WORKFLOW_ID,
+  type OpenContentResearchSession,
   type RouterRuntime,
   type SubAgentExecutors,
 } from "./router-workflow";
@@ -48,6 +49,8 @@ export type RunRouterChatInput = {
     taskText: string;
     userContext: AiContextSnapshot;
   }) => Promise<{ text: string; citations?: ResourceCitationDTO[] }>;
+  /** LCA06：调用者 content_reader 窗口工厂；缺席时 resource-retrieval 不做平台语料研究。 */
+  openContentSession?: OpenContentResearchSession;
   /** 业务侧 runId（用于 progress 事件关联到 SendAiMessageResponse.runId）。
    *  传入时也作为 Mastra 的 runId，便于 ai.resumeWorkflow 用同一 id 接续。 */
   runId?: string;
@@ -97,6 +100,7 @@ export async function runRouterChat(input: RunRouterChatInput): Promise<RunRoute
     onSuspend: input.onSuspend,
     toolCalls: input.toolCalls,
     answerResourceSelection: input.answerResourceSelection,
+    openContentSession: input.openContentSession,
   };
 
   const requestContext = new RequestContext();
