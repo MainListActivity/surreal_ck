@@ -32,7 +32,7 @@ describe("OIP-18 employee SurrealDB store", () => {
     }]);
   });
 
-  test("提醒显式写 purpose=claims-risk，不依赖 schema 默认值（043 默认桶为 info）", async () => {
+  test("提醒显式写 purpose=claims-risk，不依赖 schema 默认值（044 默认桶为 info）", async () => {
     let inserted: Record<string, unknown> | undefined;
     const session: EmployeeQuerySession = {
       async query(sql, params) {
