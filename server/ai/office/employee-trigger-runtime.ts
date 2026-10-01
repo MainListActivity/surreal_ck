@@ -51,6 +51,13 @@ import {
  *   "employee-session-closed"。abort 后窗口 finally 必跑：windowPlanned
  *   复位、waiter 按归一化错误码结算、lane 会话缓存交 housekeeping 清理，
  *   不存在「悬挂窗口卡死 lane」的状态（VER 联验 D1 缺陷的根因即此）。
+ * - 死会话护栏（D1 二次返工）：SDK 对被关闭/僵尸连接上的 query 可能永不
+ *   settle，abort 信号打不断已在途的裸 await（PR #93 后 QA 复现的残余洞：
+ *   pause 落在 claim/persist/sweep 等非 driveRun 段时窗口仍会楔死）。
+ *   guardSession 对 lane 会话的每次查询统一有界竞速——会话失效中止立即
+ *   拒绝、sessionOpDeadlineMs 硬截止兜底——窗口 finally 必然有界完成，
+ *   windowPlanned/tail/persistTail/全局槽位自愈；迟到的底层结果被丢弃，
+ *   不产生 unhandled rejection 或僵尸窗口二次驱动。
  * - lane 会话缓存失效（D1 返工）：生命周期 close/register 替换会话时，
  *   会话管理器同步回调 invalidateSession，lane 立即丢弃旧会话对象——
  *   ensureLaneSession 绝不复用已关闭/已失效的会话；resume 后的下一个
@@ -474,6 +481,14 @@ export function createEmployeeTriggerRuntime(deps: {
    * 窗口内时 lane 有界收敛，不依赖 SDK 对死会话的报错行为。
    */
   windowDeadlineMs?: number;
+  /**
+   * 单次会话查询的硬截止（毫秒，D1 返工）：SDK 对被关闭/僵尸连接上的
+   * query 可能永不 settle（D1 原始缺陷 126s 无终态的根源）。guardSession
+   * 对 lane 会话的每次查询统一竞速：超时按可归一化错误抛出（调用方既有
+   * catch/崩溃路径据此有界收敛），底层 promise 的迟到结果被丢弃、不产生
+   * unhandled rejection。缺省 15s；必须小于窗口看门狗时限才有意义。
+   */
+  sessionOpDeadlineMs?: number;
   /** 时钟 seam（lease 判定写进 SQL 参数，测试可注入确定性时间）。 */
   now?: () => Date;
   /** 闸门限额覆盖（默认见 DEFAULT_GATE_LIMITS）。 */
@@ -500,6 +515,7 @@ export function createEmployeeTriggerRuntime(deps: {
   let stopping: Promise<void> | null = null;
   const leaseTtlMs = deps.leaseTtlMs ?? 60_000;
   const windowDeadlineMs = deps.windowDeadlineMs ?? leaseTtlMs + 5_000;
+  const sessionOpDeadlineMs = deps.sessionOpDeadlineMs ?? 15_000;
   const shutdownDeadlineMs = deps.shutdownDeadlineMs ?? 30_000;
   const abortGraceMs = deps.abortGraceMs ?? 5_000;
   const now = deps.now ?? (() => new Date());
@@ -616,6 +632,60 @@ export function createEmployeeTriggerRuntime(deps: {
     return next;
   }
 
+  /**
+   * 死会话护栏（D1 返工核心）：SDK 对被关闭/僵尸连接上的 query 可能永不
+   * settle，任何裸 await 都会把 runWindow/persistTail/lane.tail 永久楔死
+   * （pause 落在 claim/persist/sweep 等非 driveRun 段时 PR #93 的 abort
+   * 竞速观测不到）。guardSession 给会话的每次查询加两道有界竞速：
+   * - 失效即拒：本 lane 窗口因会话失效被中止
+   *   （windowAbortReason === "employee-session-closed"）时，在途与后续
+   *   查询立即失败——会话已死，不可能再有真实写库（其余中止原因不拦，
+   *   保持游离 driveRun 写库如实落库的语义）；
+   * - 硬截止兜底：超过 sessionOpDeadlineMs 仍无结果（如无失效通知的
+   *   网络死亡）按超时失败；调用方的既有 catch/崩溃路径据此有界收敛，
+   *   waiter 归一化结算为 "employee-session-closed"。
+   * 底层 promise 的迟到结果被丢弃且已挂 catch，不产生 unhandled rejection；
+   * 窗口 finally（releaseWindow 等）因此在有界时间内必然完成，
+   * windowPlanned/lane.tail/persistTail/全局槽位全部自愈。
+   */
+  function guardSession(lane: Lane, session: TriggerSession): TriggerSession {
+    return {
+      query<R extends unknown[] = unknown[]>(sql: string, params?: Record<string, unknown>): Promise<R> {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const abortSignal = lane.windowAbort?.signal;
+        let onSessionClosed: (() => void) | undefined;
+        const deadline = new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("employee-session-deadline")),
+            sessionOpDeadlineMs,
+          );
+        });
+        const sessionDied = new Promise<never>((_, reject) => {
+          if (!abortSignal) return;
+          const fire = () => {
+            if (lane.windowAbortReason === "employee-session-closed") {
+              reject(new Error("employee-session-closed"));
+            }
+          };
+          if (abortSignal.aborted) {
+            fire();
+            return;
+          }
+          onSessionClosed = fire;
+          abortSignal.addEventListener("abort", fire, { once: true });
+        });
+        return Promise.race([
+          Promise.resolve(session.query<R>(sql, params)),
+          deadline,
+          sessionDied,
+        ]).finally(() => {
+          if (timer) clearTimeout(timer);
+          if (onSessionClosed && abortSignal) abortSignal.removeEventListener("abort", onSessionClosed);
+        });
+      },
+    };
+  }
+
   /** lane 会话：窗口与投递共享同一条；openSession 带 transient 重试。 */
   async function ensureLaneSession(lane: Lane): Promise<TriggerSession> {
     if (lane.session) return lane.session;
@@ -632,8 +702,8 @@ export function createEmployeeTriggerRuntime(deps: {
       },
     )
       .then((session) => {
-        lane.session = session;
-        return session;
+        lane.session = guardSession(lane, session);
+        return lane.session;
       })
       .catch((cause) => {
         metricsState.sessionOpenFailures += 1;
