@@ -387,7 +387,11 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     )
     .route("/", createContentRoutes({ service: platformContentService, requireUser: options.requireUser }))
     .route("/", createDiscoverRoutes({ service: discoverService, requireUser: options.requireUser }))
-    .route("/", createLegalContentRoutes({ requireUser: options.requireUser }))
+    .route("/", createLegalContentRoutes({
+      requireUser: options.requireUser,
+      openContentSession: options.createContentResearchSession ?? createContentResearchSessionFactory(),
+      embeddingProvider,
+    }))
     .route("/", createActivationSummaryRoutes({
       service: activationSummaryService,
       requireUser: options.requireUser,

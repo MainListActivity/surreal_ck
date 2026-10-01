@@ -304,6 +304,7 @@ export function createMastraRunner(options: CreateMastraRunnerOptions = {}): { r
       // （同一私有检索依赖；回答模型默认用 legal research agent）。
       const research = options.createContentResearchSession
         ? {
+            embeddingProvider: options.embeddingProvider,
             searchResources: createCallerSessionResourceDeps(options.embeddingProvider).searchResources,
             loadResource: async (id: string, session?: Surreal) => {
               if (!session) throw new Error("missing caller session");

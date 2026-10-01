@@ -18,6 +18,7 @@ import type { SearchResourcesRequest, SearchResourcesResponse, ResourceDTO } fro
 import type { SubAgentExecutor, SubAgentOutput } from "../workflows/router-workflow";
 import { buildModelConfig, type AiSettings } from "./model-config";
 import type { ContentResearchWindow } from "../../../src/research/window";
+import type { EmbeddingProvider } from "../../../src/resources/research-save";
 import {
   RESEARCH_EVIDENCE_LIMIT,
   retrieveAuthorizedCorpus,
@@ -51,6 +52,7 @@ export function createLegalResearchAgent(settings: AiSettings): Agent {
 export type ResearchAnswerModel = (prompt: string) => Promise<string>;
 
 export type LegalResearchExecutorDeps = {
+  embeddingProvider?: EmbeddingProvider;
   /** 默认：用调用者 session 查 session::db()（workspace db 名即 workspace 标识）。 */
   resolveWorkspaceId?(context: AiContextSnapshot, session?: Surreal): Promise<string>;
   /** 工作区私有材料检索（调用者 workspace session；授权由 db 边界与 schema PERMISSIONS 保证）。 */
@@ -135,7 +137,9 @@ export function makeLegalResearchExecutor(deps: LegalResearchExecutorDeps): SubA
         corpusNotice = "平台授权窗口已到期，请重新开始研究；本回答仅基于工作区私有资料（partial）。";
       } else if (corpusWindow.kind === "ready") {
         try {
-          platformEvidence = await retrieveAuthorizedCorpus({ session: corpusWindow.session, query: taskText });
+          platformEvidence = await retrieveAuthorizedCorpus({
+            session: corpusWindow.session, query: taskText, embeddingProvider: deps.embeddingProvider,
+          });
         } catch {
           // 检索失败按平台不可用处理：不把原始错误带进模型上下文或日志。
           platformEvidence = { evidence: [], rejected: [], candidatesSeen: 0 };

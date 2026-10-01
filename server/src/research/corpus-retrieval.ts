@@ -9,6 +9,9 @@
 import { createHash } from "node:crypto";
 import { StringRecordId, type Surreal } from "surrealdb";
 import { CONTENT_SEARCH_QUERY } from "@surreal-ck/shared";
+import { LegalRetrievalRequestSchema } from "@surreal-ck/shared";
+import { retrievePlatformCandidates } from "./platform-retrieval";
+import type { EmbeddingProvider } from "../resources/research-save";
 
 type Row = Record<string, unknown>;
 type Queryable = Pick<Surreal, "query">;
@@ -137,6 +140,7 @@ export async function retrieveAuthorizedCorpus(input: {
   session: Queryable;
   query: string;
   limit?: number;
+  embeddingProvider?: EmbeddingProvider;
 }): Promise<CorpusRetrievalResult> {
   const { session } = input;
   const keyword = input.query.trim().slice(0, 1024);
@@ -144,7 +148,11 @@ export async function retrieveAuthorizedCorpus(input: {
   const limit = input.limit ?? 5;
 
   // 1) 召回：关键词 + 结构化 facet（数据库只返回当前已发布且 search 获准的行）。
-  const facetRows = await queryRows(session, CONTENT_SEARCH_QUERY, {
+  const facetRows = input.embeddingProvider ? (await retrievePlatformCandidates({
+    session, embeddingProvider: input.embeddingProvider, ai: true,
+    request: LegalRetrievalRequestSchema.parse({ query: keyword, limit: Math.min(20, limit) }),
+  })).items.map((hit) => ({ version_id: hit.versionId, public_id: hit.publicId, title: hit.title, kind: hit.kind }))
+    : await queryRows(session, CONTENT_SEARCH_QUERY, {
     keyword,
     kind: "all",
     from: "",

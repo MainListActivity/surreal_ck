@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { Surreal } from "surrealdb";
 import { SignJWT, generateKeyPair, exportJWK } from "jose";
 import { loadPlatformContentScripts } from "@surreal-ck/shared/platform-content-schema";
-import { defineContentReaderAccess } from "./reader-access";
+import { defineReaderFixture } from "../../test/define-reader-fixture";
 import { homedir } from "node:os";
 
 test("content reader development DB permissions", async () => {
@@ -27,7 +27,7 @@ test("content reader development DB permissions", async () => {
     await root.query("DEFINE NAMESPACE test; USE NS test; DEFINE DATABASE content; USE DB content;");
     await root.use({ namespace: "test", database: "content" });
     for (const script of await loadPlatformContentScripts()) await root.query(script.sql);
-    await defineContentReaderAccess(root, { jwksUrl: `${issuer}/jwks`, issuer, audience: "fixture" });
+    await defineReaderFixture(root, { jwksUrl: `${issuer}/jwks`, issuer, audience: "fixture" }, keys.publicKey);
     await root.query(`
       CREATE content_source:s SET source_key='s', label='synthetic', base_url='https://example.invalid', status='active', allowed_actions=['publish'];
       CREATE source_license_revision:l SET source=content_source:s, revision=1, license_kind='synthetic', allowed_actions=['browse','search','read','cite','export','research','generate'], effective_from=time::now()-1h, created_by_subject='fixture';
