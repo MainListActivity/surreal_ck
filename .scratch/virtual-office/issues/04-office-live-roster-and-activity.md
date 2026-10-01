@@ -7,7 +7,7 @@ Label: done
 
 **Blocked by:** virtual-office/02 — 项目经理派单到报告 tracer.
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] 页面能从真实 workspace database 显示员工身份/岗位/生命周期、任务状态、消息、报告和通知摘要。
 - [ ] LIVE 在初始 snapshot 完成前到达时先缓冲后合并，不丢事件、不重复记录，也不以订阅建立时刻作为数据库真相。
