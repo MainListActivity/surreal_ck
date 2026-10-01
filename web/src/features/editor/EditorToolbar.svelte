@@ -61,7 +61,7 @@
     disabled={!editorStore.activeSheetId || editorStore.saving}
     onclick={() => (editorUi.showTemplateImport = true)}
   >
-    <Upload size={13} />导入 CSV
+    <Upload size={13} />导入文件
   </button>
   <button
     class="tool-btn"
