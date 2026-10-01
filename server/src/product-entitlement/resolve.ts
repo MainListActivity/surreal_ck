@@ -197,6 +197,8 @@ export function toView(workspaceSlug: string, revision: number, draft: Entitleme
       collections: draft.collections,
       actions: draft.actions,
       sources: draft.sources,
+      // LCA13：核验由运营视图注入（getForOperator）；基础视图显式为 null。
+      projection: null,
     },
     ai: {
       actions: draft.aiActions,

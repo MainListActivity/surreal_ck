@@ -445,6 +445,10 @@ export const PLATFORM_OPERATOR_CAPABILITIES = [
   "content.withdraw",
   "content.restore",
   "content.source.manage",
+  // LCA13：运营能力分权——查看沿用 quota.read，订阅调整沿用 subscription.manage；
+  // 内容赠送与交付修复必须单独持能，工作区管理员/普通客户不持有。
+  "entitlement.gift",
+  "entitlement.repair",
   "activation.summary.read",
   "activation.followup.read",
   "activation.followup.write",

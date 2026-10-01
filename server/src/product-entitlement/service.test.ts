@@ -65,7 +65,40 @@ class MemoryStore implements ProductEntitlementStore {
       plan.active = revisionId;
     }
   }
-  async grants() { return this.grantRows; }
+  async grants() { return this.grantRows.filter((row) => !this.revocations.some((revoke) => revoke.grantId === row.id)); }
+  revocations: { workspaceId: string; grantId: string; reason: string; idempotencyKey: string }[] = [];
+  async grantFacts(workspaceId: string) {
+    return this.grantRows.map((row) => ({
+      ...row,
+      reason: typeof row.reason === "string" ? row.reason : null,
+      operatorSubject: typeof row.actor === "string" ? row.actor : null,
+      idempotencyKey: row.idempotencyKey ?? null,
+      revoked: this.revocations.some((revoke) => revoke.workspaceId === workspaceId && revoke.grantId === row.id),
+    }));
+  }
+  async grantById(workspaceId: string, grantId: string) {
+    const row = this.grantRows.find((item) => item.id === grantId);
+    if (!row) return null;
+    const revoke = this.revocations.find((item) => item.grantId === grantId);
+    return {
+      ...row,
+      reason: typeof row.reason === "string" ? row.reason : null,
+      operatorSubject: typeof row.actor === "string" ? row.actor : null,
+      idempotencyKey: row.idempotencyKey ?? null,
+      revoked: revoke !== undefined,
+      revokeReason: revoke?.reason ?? null,
+    };
+  }
+  async insertGrantRevocation(workspaceId: string, grantId: string, reason: string, _actor: string, idempotencyKey: string) {
+    if (this.revocations.some((item) => item.workspaceId === workspaceId && item.idempotencyKey === idempotencyKey)) return "replayed" as const;
+    if (this.revocations.some((item) => item.grantId === grantId)) return "replayed" as const;
+    this.revocations.push({ workspaceId, grantId, reason, idempotencyKey });
+    return "ok" as const;
+  }
+  async deliveryCandidates(limit: number, offset: number) {
+    const all = [...this.workspaces.values()].map((ref) => ({ ...ref, dbName: this.dbNames.get(ref.id) ?? `ws_${ref.slug}` }));
+    return all.slice(offset, offset + limit);
+  }
   async insertGrant(_workspaceId: string, grant: ContentGrantFact & { idempotencyKey: string }) {
     const existing = this.grantRows.find((item) => item.idempotencyKey === grant.idempotencyKey);
     if (existing) return existing.id;
@@ -142,7 +175,7 @@ function workspace(store: MemoryStore) {
   store.resource = { appliedPlanKey: "plus", appliedPlanName: "Plus 资源", appliedRevision: 3, desiredPlanKey: "plus", syncState: "synced" };
 }
 
-const operator: ProductActor = { subject: "ops", capabilities: ["subscription.manage", "quota.read"] };
+const operator: ProductActor = { subject: "ops", capabilities: ["subscription.manage", "quota.read", "entitlement.gift", "entitlement.repair"] };
 
 function publishBody(revision: number, key: string, label: string): PublishProductRevision {
   return {

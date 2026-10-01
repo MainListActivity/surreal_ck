@@ -4,7 +4,7 @@
 
 **Blocked by:** [03 — 订阅成员打开一篇获授权的法律内容](03-authorized-content-reader.md)；[05 — 工作区共享 AI 额度闭环](05-shared-ai-allowance.md)；[08 — 订阅变更驱动内容权限生效与收回](08-subscription-content-lifecycle.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **ID:** SCK-LCA-13
 **确认时序号:** 14
@@ -31,3 +31,6 @@
 
 - 2026-09-24：用户确认拆分后发布；当前为实施规格，尚未执行实现与验收。
 
+## Comments
+
+- 2026-10-01（engineering-factory-droid-33df59）：实现范围——运营解释视图增强（getForOperator 注入 AI 预留/结算真实账本事实、内容投影核验（复用 reader gate 受限会话）、来源理由/操作者/撤销状态）；交付修复（POST /api/ops/product-entitlements/workspaces/:slug/delivery-repair，限定修订护栏 expectedCurrentRevision，只算当前绑定修订，digest 幂等＋auditByKey 幂等，重驱幂等 plan-cycle 同步，不下单不直接发额度）＋只读 delivery-preview；临时内容赠送撤销（content_grant 不可变，新增 022 迁移 content_grant_revocation 追加式撤销，解析读取排除，撤销只移除该来源、基础订阅保留）；能力分权（新增 entitlement.gift / entitlement.repair，grants 端点从 subscription.manage 改挂 entitlement.gift）；异常队列（GET /api/ops/product-entitlements/exceptions：delivery_pending / projection_failure / ai_settlement_anomaly；正常到期与合法 over_limit 不入队）；ops 前端（来源明细+撤销、赠送表单、修复预览+确认、异常队列面板）。验证：`pnpm --filter @surreal-ck/shared run test`（155 过）、`pnpm --filter @surreal-ck/ops run test`（5 过）、`pnpm --filter @surreal-ck/server run test`（新增 6 用例全过；13 项失败为基线既有需真实 SurrealDB/OIDC 的集成测试，A/B stash 对照一致）、`pnpm run typecheck`（0 错）、`pnpm run lint`（0 警告）。迁移类型：只新增结构（022 新表）。未解决限制：旧 claim-analysis 类目记录无生产存量，兼容路径由三处单测覆盖（classifier/workflow/suspend）；真实内容赠送的产品数值（费率/额度）仍需获批修订后启用。下游交接：LCA14 可用 exceptions 队列与 delivery-repair 做生产灰度演练；运营人员需授予新能力行（entitlement.gift/entitlement.repair）。

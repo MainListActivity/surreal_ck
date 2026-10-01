@@ -66,6 +66,12 @@ function renderShell() {
           <div class="panel-heading"><h2>工作区详情</h2><span id="detail-badge" class="badge">未选择</span></div>
           <div id="detail" class="empty-state">从左侧选择一个工作区查看计划、资源使用和操作时间线。</div>
         </section>
+        <section class="panel exception-panel">
+          <div class="panel-heading"><h2>权益异常队列</h2><button id="exception-refresh" class="ghost">刷新</button></div>
+          <p class="muted">区分已确认商业来源未交付、内容投影故障与 AI 结算异常；正常到期与合法 over_limit 不算系统失败。</p>
+          <div id="exception-status" class="status muted">登录后加载异常队列。</div>
+          <ul id="exception-list" class="audit-list"></ul>
+        </section>
       </main>
       <main id="activation-view" class="activation-layout" hidden>
         <section class="panel activation-panel">
@@ -158,6 +164,7 @@ function renderShell() {
     event.preventDefault();
     void search(document.querySelector("#search-input").value);
   });
+  document.querySelector("#exception-refresh")?.addEventListener("click", () => void loadExceptions());
   document.querySelector("#refresh").addEventListener("click", () => void search(document.querySelector("#search-input").value));
   document.querySelectorAll(".section-tab").forEach((button) => {
     button.addEventListener("click", () => {
@@ -622,23 +629,187 @@ function valueOrDash(value) {
   return value === null || value === undefined || value === "" ? "—" : escapeHtml(value);
 }
 
+function sourceLine(source) {
+  const window = `${(source.effectiveFrom || "").slice(0, 10)} → ${source.effectiveUntil ? source.effectiveUntil.slice(0, 10) : "长期"}`;
+  const extra = [];
+  if (source.reason) extra.push(`理由：${source.reason}`);
+  if (source.operatorSubject) extra.push(`操作者：${source.operatorSubject.slice(0, 16)}…`);
+  const revokedTag = source.revoked ? ` · <em class="status-error">已撤销</em>` : "";
+  const revokeButton = source.kind === "grant" && !source.revoked
+    ? ` <button class="ghost gift-revoke" data-grant-id="${escapeHtml(source.sourceId)}">撤销赠送</button>`
+    : "";
+  return `<li><strong>${escapeHtml(source.label)}</strong> <span class="muted">[${escapeHtml(source.kind)}]</span>${revokedTag}<span class="muted"> · ${escapeHtml(window)}</span>${extra.length ? `<div class="muted">${escapeHtml(extra.join(" · "))}</div>` : ""}${revokeButton}</li>`;
+}
+
+function renderProjectionVerification(projection) {
+  if (!projection) return `<div class="muted">投影核验未启用。</div>`;
+  const verdictLabel = { ok: "核验通过", empty_collection: "集合无可读条目", projection_error: "投影故障", unavailable: "核验暂不可用" };
+  const rows = (projection.collections || []).map((item) => `<li><span>${escapeHtml(item.label || item.key)}</span><span class="muted">已发布 ${valueOrDash(item.publishedItems)} · 许可动作 ${escapeHtml((item.licenseActions || []).join("/") || "—")}${item.licenseUntil ? ` · 至 ${item.licenseUntil.slice(0, 10)}` : ""}</span></li>`).join("");
+  return `<div><span class="badge ${projection.verdict === "ok" ? "success" : "muted-badge"}">${escapeHtml(verdictLabel[projection.verdict] || projection.verdict)}</span> <span class="muted">${escapeHtml(projection.checkedAt || "")}</span></div><ul class="timeline">${rows || `<li class="muted">无集合核验数据。</li>`}</ul>`;
+}
+
+function renderAiStatus(ai) {
+  if (!ai || ai.ledger !== "ok") return `<div class="muted">${escapeHtml(ai?.ledgerLabel || "尚无可用 AI 额度账本")}</div>`;
+  const stuck = typeof ai.stuckReservations === "number" && ai.stuckReservations > 0 ? `<div class="status error">结算异常：${escapeHtml(String(ai.stuckReservations))} 条预留未收敛</div>` : "";
+  return `<div class="metric-grid">
+      <div><span class="muted">可用 / 已预留 / 已结算</span><strong>${valueOrDash(ai.consumableAllowance)} / ${valueOrDash(ai.reserved)} / ${valueOrDash(ai.settled)}</strong></div>
+      <div><span class="muted">暂停 / 已终止 / 已过期</span><strong>${valueOrDash(ai.suspended)} / ${valueOrDash(ai.terminated)} / ${valueOrDash(ai.expired)}</strong></div>
+    </div>${stuck}`;
+}
+
 function renderProductEntitlement(product) {
   if (!product) return `<div class="empty-state compact">内容权益尚未读取。</div>`;
-  const sources = (product.content?.sources || []).map((source) => `${source.label}${source.effectiveUntil ? ` · 至 ${source.effectiveUntil.slice(0, 10)}` : ""}`).join("、");
+  const sources = (product.content?.sources || []).map(sourceLine).join("");
   return `<div class="metric-grid">
       <div><span class="muted">内容范围</span><strong>${escapeHtml(product.summary)}</strong></div>
       <div><span class="muted">授权投影</span><strong>${escapeHtml(product.content?.projectionLabel || "无有效内容授权")}</strong></div>
-      <div><span class="muted">来源与到期</span><strong>${escapeHtml(sources || "无有效来源")}</strong></div>
-      <div><span class="muted">AI 额度</span><strong>${escapeHtml(product.ai?.ledgerLabel || "尚无可用 AI 额度账本")}</strong></div>
+      <div><span class="muted">当前修订</span><strong>v${escapeHtml(String(product.revision ?? "—"))} · 解析器 ${escapeHtml(product.resolverVersion || "—")}</strong></div>
       <div><span class="muted">资源 applied</span><strong>${escapeHtml(product.resource?.appliedPlanName || "尚未应用")} · ${escapeHtml(product.resource?.statusLabel || "")}</strong></div>
     </div>
+    <h4>权益来源（基础/赠送）</h4>
+    <ul class="timeline">${sources || `<li class="muted">无有效来源</li>`}</ul>
+    <h4>内容投影核验</h4>
+    ${renderProjectionVerification(product.content?.projection)}
+    <h4>AI 预留 / 结算</h4>
+    ${renderAiStatus(product.ai)}
     <form id="product-assign" class="search-form">
       <input name="billingAccountKey" placeholder="计费账户" required />
       <input name="productPlanRevisionId" placeholder="product_plan_revision:…" required />
       <input name="reason" placeholder="分配原因" required />
       <button type="submit">绑定产品版本</button>
     </form>
-    <p id="product-assign-status" class="status muted"></p>`;
+    <p id="product-assign-status" class="status muted"></p>
+    <h4>临时内容赠送</h4>
+    <form id="product-gift" class="search-form">
+      <input name="label" placeholder="赠送名称" required maxlength="80" />
+      <input name="collections" placeholder="集合 key（逗号分隔）" required />
+      <input name="actions" placeholder="动作（browse,search,read,cite,export）" required />
+      <label>开始<input name="effectiveFrom" type="datetime-local" required /></label>
+      <label>结束<input name="effectiveUntil" type="datetime-local" /></label>
+      <input name="reason" placeholder="赠送理由" required maxlength="500" />
+      <button type="submit">发放赠送</button>
+    </form>
+    <p id="product-gift-status" class="status muted"></p>
+    <h4>交付修复</h4>
+    <div id="repair-preview" class="muted">加载预览后显示当前与目标影响。</div>
+    <form id="product-repair" class="search-form">
+      <input name="reason" placeholder="修复原因" required maxlength="500" />
+      <button type="submit">重试交付（限定修订）</button>
+    </form>
+    <p id="product-repair-status" class="status muted"></p>`;
+}
+
+let giftGrantAttempt = null;
+let repairAttempt = null;
+let repairPreviewState = null;
+
+async function grantGift(slug, fields) {
+  const status = document.querySelector("#product-gift-status");
+  const body = {
+    workspaceSlug: slug,
+    label: String(fields.get("label") || ""),
+    collections: commaValues(fields.get("collections")).map((key) => ({ key, label: key })),
+    actions: commaValues(fields.get("actions")),
+    effectiveFrom: new Date(fields.get("effectiveFrom")).toISOString(),
+    effectiveUntil: fields.get("effectiveUntil") ? new Date(fields.get("effectiveUntil")).toISOString() : null,
+    reason: String(fields.get("reason") || ""),
+  };
+  const fingerprint = JSON.stringify(body);
+  if (!giftGrantAttempt || giftGrantAttempt.fingerprint !== fingerprint) {
+    giftGrantAttempt = { fingerprint, idempotencyKey: `gift-${slug}-${Date.now()}` };
+  }
+  status.textContent = "正在发放赠送……";
+  try {
+    await api("/ops/product-entitlements/grants", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...body, idempotencyKey: giftGrantAttempt.idempotencyKey }),
+    });
+    status.textContent = "已发放，正在刷新权益。";
+    giftGrantAttempt = null;
+    await loadWorkspace(slug);
+  } catch (error) {
+    status.textContent = error instanceof Error ? error.message : "赠送发放失败";
+    status.className = "status error";
+  }
+}
+
+async function revokeGift(slug, grantId) {
+  const status = document.querySelector("#product-gift-status");
+  const reason = window.prompt("撤销理由（写入审计）");
+  if (!reason) return;
+  status.textContent = "正在撤销……";
+  try {
+    await api("/ops/product-entitlements/grants/revoke", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workspaceSlug: slug, grantId, reason, idempotencyKey: `gift-revoke-${grantId}-${Date.now()}` }),
+    });
+    status.textContent = "已撤销，正在刷新权益。";
+    await loadWorkspace(slug);
+  } catch (error) {
+    status.textContent = error instanceof Error ? error.message : "撤销失败";
+    status.className = "status error";
+  }
+}
+
+async function loadRepairPreview(slug) {
+  const container = document.querySelector("#repair-preview");
+  try {
+    const preview = await api(`/ops/product-entitlements/workspaces/${encodeURIComponent(slug)}/delivery-preview`);
+    repairPreviewState = preview;
+    container.innerHTML = `<div class="metric-grid">
+      <div><span class="muted">当前快照修订</span><strong>v${escapeHtml(String(preview.current?.revision ?? "—"))}</strong></div>
+      <div><span class="muted">目标绑定修订</span><strong class="mono">${escapeHtml(preview.boundRevisionId || "无绑定产品")}</strong></div>
+      <div><span class="muted">目标内容范围</span><strong>${escapeHtml(preview.target?.summary || "—")}</strong></div>
+    </div>`;
+  } catch (error) {
+    repairPreviewState = null;
+    container.textContent = error instanceof Error ? error.message : "预览加载失败";
+  }
+}
+
+async function repairDelivery(slug) {
+  const status = document.querySelector("#product-repair-status");
+  if (!repairPreviewState) await loadRepairPreview(slug);
+  const reason = String(new FormData(document.querySelector("#product-repair")).get("reason") || "");
+  const body = {
+    workspaceSlug: slug,
+    reason,
+    idempotencyKey: repairAttempt?.fingerprint === `${slug}:${repairPreviewState?.current?.revision}` && repairAttempt
+      ? repairAttempt.idempotencyKey
+      : `repair-${slug}-${Date.now()}`,
+    expectedCurrentRevision: repairPreviewState?.current?.revision ?? null,
+  };
+  repairAttempt = { fingerprint: `${slug}:${body.expectedCurrentRevision}`, idempotencyKey: body.idempotencyKey };
+  status.textContent = "正在重试交付……";
+  try {
+    const result = await api(`/ops/product-entitlements/workspaces/${encodeURIComponent(slug)}/delivery-repair`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    status.textContent = result.note || "修复完成。";
+    await loadWorkspace(slug);
+  } catch (error) {
+    status.textContent = error instanceof Error ? error.message : "修复失败";
+    status.className = "status error";
+  }
+}
+
+async function loadExceptions() {
+  const container = document.querySelector("#exception-list");
+  const status = document.querySelector("#exception-status");
+  if (!container) return;
+  try {
+    const result = await api("/ops/product-entitlements/exceptions?limit=20");
+    const kindLabel = { delivery_pending: "已确认商业来源未交付", projection_failure: "内容投影故障", ai_settlement_anomaly: "AI 结算异常" };
+    container.innerHTML = (result.items || []).map((item) => `<li><strong>${escapeHtml(item.workspaceSlug)}</strong><span class="muted">${item.kinds.map((kind) => escapeHtml(kindLabel[kind] || kind)).join("、")}</span><span class="muted">快照 v${escapeHtml(String(item.detail?.currentRevision ?? "—"))}</span></li>`).join("") || `<li class="muted">没有待处理异常。正常到期与合法 over_limit 不算失败。</li>`;
+    status.textContent = `异常队列 ${result.items?.length || 0} 条。`;
+  } catch (error) {
+    status.textContent = error instanceof Error ? error.message : "异常队列加载失败";
+    status.className = "status error";
+  }
 }
 
 function renderDetail(view, timeline, product) {
@@ -659,6 +830,20 @@ function renderDetail(view, timeline, product) {
     const fields = new FormData(event.currentTarget);
     void assignProduct(view.workspace.slug, fields);
   });
+  document.querySelector("#product-gift")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const fields = new FormData(event.currentTarget);
+    void grantGift(view.workspace.slug, fields);
+  });
+  document.querySelector("#product-repair")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void repairDelivery(view.workspace.slug);
+  });
+  document.querySelectorAll("#detail .gift-revoke").forEach((button) => {
+    button.addEventListener("click", () => void revokeGift(view.workspace.slug, button.dataset.grantId));
+  });
+  void loadRepairPreview(view.workspace.slug);
+  void loadExceptions();
 }
 
 let productAssignAttempt = null;

@@ -60,6 +60,73 @@ export type PublishProductRevision = z.infer<typeof publishProductRevisionSchema
 export type AssignProductEntitlement = z.infer<typeof assignProductEntitlementSchema>;
 export type GrantContentCollection = z.infer<typeof grantContentCollectionSchema>;
 
+/** LCA13：撤销临时内容赠送（只移除该来源，基础订阅不受影响）。 */
+export const revokeContentGrantSchema = z.object({
+  workspaceSlug: z.string().trim().min(1).max(128),
+  grantId: z.string().startsWith("content_grant:"),
+  reason: z.string().trim().min(1).max(500),
+  idempotencyKey: z.string().min(8).max(200),
+}).strict();
+
+export type RevokeContentGrant = z.infer<typeof revokeContentGrantSchema>;
+
+/**
+ * LCA13：内容交付修复。expectedCurrentRevision 是限定修订护栏——运营声明
+ * 其看到的当前快照修订；不匹配即冲突（新版快照已出现，旧重试不得覆盖新撤权）。
+ */
+export const repairContentDeliverySchema = z.object({
+  workspaceSlug: z.string().trim().min(1).max(128),
+  reason: z.string().trim().min(1).max(500),
+  idempotencyKey: z.string().min(8).max(200),
+  expectedCurrentRevision: z.number().int().nonnegative().nullable(),
+}).strict();
+
+export type RepairContentDelivery = z.infer<typeof repairContentDeliverySchema>;
+
+/** LCA13：内容投影核验（复用 reader gate 同款受限会话，运营无额外权力）。 */
+export type ProjectionVerification = {
+  checkedAt: string;
+  verdict: "ok" | "empty_collection" | "projection_error" | "unavailable";
+  collections: {
+    key: string;
+    label: string;
+    publishedItems: number;
+    licenseUntil: string | null;
+    licenseActions: string[];
+  }[];
+};
+
+/** LCA13：异常队列条目。正常到期与合法 over_limit 不属于系统失败，不入队。 */
+export type EntitlementExceptionKind =
+  | "delivery_pending"
+  | "projection_failure"
+  | "ai_settlement_anomaly";
+
+export type EntitlementExceptionItem = {
+  workspaceSlug: string;
+  kinds: EntitlementExceptionKind[];
+  detail: {
+    /** delivery_pending：已确认商业来源绑定的修订与当前快照修订不一致。 */
+    boundRevisionId: string | null;
+    currentRevisionId: string | null;
+    currentRevision: number | null;
+    /** projection_failure：投影核验结论。 */
+    projectionVerdict: ProjectionVerification["verdict"] | null;
+    /** ai_settlement_anomaly：卡死预留数与说明。 */
+    stuckReservations: number;
+    anomalyNote: string | null;
+  };
+};
+
+export type DeliveryRepairResult = {
+  before: ProductEntitlementView;
+  after: ProductEntitlementView;
+  changed: boolean;
+  /** 修复顺带重驱的 AI 周期额度指令（幂等同步，不新增授予语义）。 */
+  planCycleSynced: boolean;
+  note: string;
+};
+
 export type ProductEntitlementView = {
   workspaceSlug: string;
   revision: number;
@@ -86,13 +153,27 @@ export type ProductEntitlementView = {
       label: string;
       effectiveFrom: string;
       effectiveUntil: string | null;
+      /** LCA13：赠送来源的解释性事实（仅 grant 来源，运营/客户视图均可读）。 */
+      reason?: string | null;
+      operatorSubject?: string | null;
+      revoked?: boolean;
     }[];
+    /** LCA13：内容投影核验结果（运营视图注入；客户视图为 null）。 */
+    projection?: ProjectionVerification | null;
   };
   ai: {
     actions: string[];
-    consumableAllowance: null;
-    ledger: "unavailable";
+    consumableAllowance: number | null;
+    ledger: "unavailable" | "ok";
     ledgerLabel: string;
+    /** LCA13：AI 预留/结算状态（运营视图注入真实账本事实；客户视图为 null）。 */
+    reserved?: number | null;
+    settled?: number | null;
+    suspended?: number | null;
+    terminated?: number | null;
+    expired?: number | null;
+    /** 超过结算窗口仍未终态的预留数（异常队列与运营解释共用）。 */
+    stuckReservations?: number | null;
   };
   features: { key: string; enabled: boolean; limit: number | null }[];
   resource: {

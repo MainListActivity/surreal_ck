@@ -27,3 +27,39 @@ describe("运营启用摘要页面", () => {
     expect(source).toContain("资源 applied");
   });
 });
+
+describe("LCA13 运营解释与交付修复界面", () => {
+  test("权益来源展示理由/操作者/撤销状态，赠送与撤销走独立能力端点", () => {
+    expect(source).toContain("/ops/product-entitlements/grants");
+    expect(source).toContain("/ops/product-entitlements/grants/revoke");
+    expect(source).toContain("giftGrantAttempt");
+    expect(source).toContain("撤销理由（写入审计）");
+    expect(source).toContain("理由：");
+    expect(source).toContain("操作者：");
+    expect(source).toContain("已撤销");
+  });
+
+  test("交付修复先展示当前与目标影响，限定修订重试且幂等", () => {
+    expect(source).toContain("/delivery-preview");
+    expect(source).toContain("/delivery-repair");
+    expect(source).toContain("expectedCurrentRevision");
+    expect(source).toContain("当前快照修订");
+    expect(source).toContain("目标绑定修订");
+    expect(source).toContain("重试交付（限定修订）");
+  });
+
+  test("异常队列区分三类系统失败并排除正常到期", () => {
+    expect(source).toContain("/ops/product-entitlements/exceptions");
+    expect(source).toContain("已确认商业来源未交付");
+    expect(source).toContain("内容投影故障");
+    expect(source).toContain("AI 结算异常");
+    expect(source).toContain("正常到期与合法 over_limit 不算系统失败");
+  });
+
+  test("AI 预留/结算状态展示卡死预留异常", () => {
+    expect(source).toContain("可用 / 已预留 / 已结算");
+    expect(source).toContain("暂停 / 已终止 / 已过期");
+    expect(source).toContain("结算异常：");
+    expect(source).toContain("内容投影核验");
+  });
+});
