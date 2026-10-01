@@ -154,6 +154,13 @@ export function createMastraEmployeeDriver(
     return requestContext;
   }
 
+  /**
+   * 当前驱动创建的最近一个 workflow run（一个窗口一次只有一个 run 在执行）。
+   * 关停到点时 runtime 调 abort() → run.cancel()：中止执行并把 snapshot
+   * 落 canceled，reconcile 随后把触发收敛为 failed。
+   */
+  let activeRun: { cancel(): Promise<void> } | null = null;
+
   return {
     async loadRunState(runId) {
       const snapshot = await storage.loadWorkflowSnapshot({
@@ -167,6 +174,7 @@ export function createMastraEmployeeDriver(
 
     async start({ runId, trigger }) {
       const run = await workflow.createRun({ runId });
+      activeRun = run;
       const result = (await run.start({
         inputData: trigger,
         requestContext: jobContext(),
@@ -176,6 +184,7 @@ export function createMastraEmployeeDriver(
 
     async restart({ runId }) {
       const run = await workflow.createRun({ runId });
+      activeRun = run;
       const result = (await run.restart({
         requestContext: jobContext(),
       })) as MastraRunResult;
@@ -184,11 +193,25 @@ export function createMastraEmployeeDriver(
 
     async resume({ runId, resumeData }) {
       const run = await workflow.createRun({ runId });
+      activeRun = run;
       const result = (await run.resume({
         resumeData,
         requestContext: jobContext(),
       })) as MastraRunResult;
       return toRunResult(result);
+    },
+
+    async abort() {
+      const run = activeRun;
+      if (!run) return;
+      try {
+        await run.cancel();
+      } catch (cause) {
+        // cancel 只终止执行并落 canceled snapshot；失败时触发仍靠 lease 回收兜底。
+        console.warn("[employee-mastra-runner] run cancel failed", {
+          message: cause instanceof Error ? cause.message : String(cause),
+        });
+      }
     },
   };
 }
