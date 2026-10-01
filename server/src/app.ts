@@ -112,7 +112,10 @@ import {
 } from "../ai/office/employee-service";
 import type { EmployeeTriggerRuntime } from "../ai/office/employee-trigger-runtime";
 import type { EmployeeRuntime } from "../ai/office/employee-runtime";
-import { createProductionOfficeBootstrap } from "../ai/office/office-trigger-adapter";
+import {
+  createProductionOfficeBootstrap,
+  createProductionOfficeRequestWake,
+} from "../ai/office/office-trigger-adapter";
 import type { EmployeeLifecycle } from "../ai/office/employee-lifecycle";
 import type { EmployeeRuntimeMetrics } from "../ai/office/employee-trigger-runtime";
 import type { EmployeeStartupProgress } from "../ai/office/employee-supervisor";
@@ -167,6 +170,12 @@ export type AppOptions = {
   employeeWorkspaceResolver?: (slug: string) => Promise<{ dbName: string } | null>;
   /** 虚拟办公室一次性 bootstrap（VO02）；默认生产装配（lifecycle + 通用 trigger runtime）。 */
   officeBootstrap?: OfficeBootstrapAction;
+  /** VO03：人类请求终态唤醒；默认生产装配（caller session 校验 + 通用 trigger runtime）。 */
+  officeRequestWake?: (input: {
+    slug: string;
+    callerToken: string;
+    notificationId: string;
+  }) => Promise<import("../ai/office/office-trigger-adapter").OfficeRequestWakeResult>;
   /** LCA05 共享 AI 额度门禁；注入后 /api/chat 新 run 在启动 workflow 前原子预留。 */
   aiAllowance?: AiAllowanceService;
   /** 虚拟员工 runtime 健康/容量快照（VER06）；默认读进程内 runtime 指标。 */
@@ -346,6 +355,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     }))
     .route("/", createOfficeRoutes({
       bootstrap: options.officeBootstrap ?? createProductionOfficeBootstrap(),
+      wakeRequest: options.officeRequestWake ?? createProductionOfficeRequestWake(),
       resolveWorkspace: options.employeeWorkspaceResolver ?? resolveWorkspaceBySlug,
       requireUser: options.requireUser,
     }))
@@ -377,7 +387,11 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     )
     .route("/", createContentRoutes({ service: platformContentService, requireUser: options.requireUser }))
     .route("/", createDiscoverRoutes({ service: discoverService, requireUser: options.requireUser }))
-    .route("/", createLegalContentRoutes({ requireUser: options.requireUser }))
+    .route("/", createLegalContentRoutes({
+      requireUser: options.requireUser,
+      openContentSession: options.createContentResearchSession ?? createContentResearchSessionFactory(),
+      embeddingProvider,
+    }))
     .route("/", createActivationSummaryRoutes({
       service: activationSummaryService,
       requireUser: options.requireUser,

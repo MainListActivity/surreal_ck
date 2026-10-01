@@ -36,7 +36,7 @@ describe("HR-01 workspace 首页布局骨架", () => {
 
     expect(workspace).toMatch(/import ActivityPanel from "\.\.\/components\/ActivityPanel\.svelte";/);
     expect(workspace).toMatch(
-      /\{#if page === "home"\}\s*<ActivityPanel \{onopenrecord\} onaskai=\{onasknotification\} \/>\s*\{\/if\}/,
+      /\{#if page === "home"\}\s*<ActivityPanel \{slug\} \{onopenrecord\} onaskai=\{onasknotification\} \/>\s*\{\/if\}/,
     );
     expect(workspace.match(/<ActivityPanel/g)).toHaveLength(1);
 

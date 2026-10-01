@@ -94,7 +94,10 @@ type RawDriver = {
     collect(): Promise<unknown[]>;
     responses?(): Promise<Array<{ success: true; result: unknown } | { success: false; error: Error }>>;
   };
-  live(what: Table): PromiseLike<{ subscribe(handler: (message: LiveMessage) => void): () => void }>;
+  live(what: Table): PromiseLike<{
+    subscribe(handler: (message: LiveMessage) => void): () => void;
+    kill?(): Promise<unknown>;
+  }>;
   beginTransaction(): Promise<RawTransaction>;
 } & RawWriter;
 
@@ -203,7 +206,13 @@ export function createBrowserConn(raw: RawDriver, logOptions: BrowserQueryLogOpt
     ): Promise<() => void> {
       return await queryLogger("LIVE SELECT * FROM type::table($table)", { table }, async () => {
         const subscription = await rawLive.call(raw, new Table(table));
-        return subscription.subscribe(onMessage as (message: LiveMessage) => void);
+        const unsubscribe = subscription.subscribe(onMessage as (message: LiveMessage) => void);
+        return () => {
+          unsubscribe();
+          // subscribe() 返回值只摘除本 handler；必须 kill 托管订阅，否则它在
+          // 之后每次重连时仍静默重注册 LIVE，泄漏服务器查询与分发通道。
+          void subscription.kill?.().catch(() => undefined);
+        };
       });
     },
     updateRecord: writer.updateRecord,

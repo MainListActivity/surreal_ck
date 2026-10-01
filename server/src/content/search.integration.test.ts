@@ -4,7 +4,7 @@ import { SignJWT, generateKeyPair, exportJWK } from "jose";
 import { CONTENT_SEARCH_COUNT_QUERY, CONTENT_SEARCH_QUERY } from "@surreal-ck/shared";
 import { loadPlatformContentScripts } from "@surreal-ck/shared/platform-content-schema";
 import { homedir } from "node:os";
-import { defineContentReaderAccess } from "./reader-access";
+import { defineReaderFixture } from "../../test/define-reader-fixture";
 import { ensurePlatformContentSchema } from "./schema";
 import { writeContentReaderProjection } from "./reader-projection";
 import { CONTENT_CATALOG_SCAN_QUERY } from "./search-exchange";
@@ -33,7 +33,7 @@ test("authorized catalog filters before pagination and count", async () => {
     await root.query("DEFINE NAMESPACE test; USE NS test; DEFINE DATABASE content; USE DB content;");
     await root.use({ namespace: "test", database: "content" });
     for (const script of (await loadPlatformContentScripts()).filter((entry) => entry.version <= 6)) await root.query(script.sql);
-    await defineContentReaderAccess(root, { jwksUrl: `${issuer}/jwks`, issuer, audience: "fixture" });
+    await defineReaderFixture(root, { jwksUrl: `${issuer}/jwks`, issuer, audience: "fixture" }, keys.publicKey);
     const pass = crypto.randomUUID();
     await root.query(`CREATE content_projection_identity:server SET active = true;
       CREATE content_projection_credential:server SET secret_hash = crypto::argon2::generate($pass);`, { pass });
@@ -50,7 +50,7 @@ test("authorized catalog filters before pagination and count", async () => {
       CREATE content_publication_projection:b SET item=content_item:b, version=content_version:b, searchable_text='乙案', indexed_at=time::now(), publication_revision=1;
     `);
     await root.query("UPSERT platform_content_schema_version:current CONTENT { version: 6, applied_at: time::now() };");
-    expect((await ensurePlatformContentSchema(root, { namespace: "test", database: "content" })).appliedVersions).toEqual([7, 8]);
+    expect((await ensurePlatformContentSchema(root, { namespace: "test", database: "content" })).appliedVersions).toEqual([7, 8, 9]);
     await sync.connect(url, { namespace: "test", database: "content" });
     await sync.signin({ namespace: "test", database: "content", access: "content_projection_sync", variables: { pass } });
     // 回归（LCA04 生产 503 根因）：3.3 引擎要求 ORDER BY 字段在 SELECT 投影内，

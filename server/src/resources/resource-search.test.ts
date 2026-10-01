@@ -27,10 +27,14 @@ function fakeSession(options: {
         const embeddings = options.embeddings ?? [];
         const profileKey = binds?.profileKey as string | undefined;
         const wantIndexed = sql.includes("'indexed'") || sql.includes('"indexed"');
-        return [embeddings.filter((row) =>
+        const matching = embeddings.filter((row) =>
           (!profileKey || row.profile_key === profileKey) &&
           (!wantIndexed || row.status === "indexed"),
-        )];
+        );
+        if (sql.includes("AS distance")) return [matching.map((row) => ({
+          resource: row.resource, distance: Array.isArray(row.vector) && row.vector[0] === 1 ? 0 : 1,
+        }))];
+        return [matching];
       }
       return [null];
     },
