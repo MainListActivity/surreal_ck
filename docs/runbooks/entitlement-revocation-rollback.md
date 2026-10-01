@@ -19,7 +19,8 @@
 1. **目标含撤销过滤**（目标目录 `server/src/product-entitlement` 下存在
    `content_grant_revocation` 引用）→ 直接放行，不停服不查库；
 2. **目标不含过滤** → `systemctl stop` 停掉运行中的 origin（冻结撤销
-   写入），然后定位受控检查器并查 `_system` 撤销计数：
+   写入），静置 `REVOCATION_GATE_DRAIN_SEC`（默认 3s）排空停服前已被
+   引擎接收的 in-flight 写入，然后定位受控检查器并查 `_system` 撤销计数：
    - 检查器定位顺序：本次发布包 → 回退目标/current → `$root/releases/`
      下任一留存的含门禁发布（keep 窗口内）。全部找不到 → **拒绝**
      （无法证明 `_system` 为空）；
@@ -35,6 +36,22 @@
 启动后其端点也不存在——「读到 0 之后又发生一次撤销」的竞态在结构上
 不成立。这与「把判定写得离切换很近」不同：不是靠间隔短，而是靠唯一
 写入路径被停服排空。
+
+**排空窗口依据**（可独立重跑）：`server/src/db/grant-revocation-drain-probe.ts`
+在公司 fork 真实实例上建模停服瞬间——独立写进程把 `sleep+CREATE` 语句
+送达引擎后 `process.exit` 硬退出（与 `systemctl stop` 的 TCP 拆除一致，
+不发 WS close 帧），只读连接以 2ms 轮询测量「断连后落库」延迟：
+
+```bash
+SURREAL_BINARY=~/.surrealdb/surreal \
+  bun run server/src/db/grant-revocation-drain-probe.ts
+```
+
+实测语义（本机 fork `1171dd01`，rocksdb）：已送达、死亡瞬间仍在执行的
+事务被引擎随连接拆除取消——断连后落库数为 0；死亡前已提交的写即刻
+可见。DRAIN_SEC=3s 因此是对边界时序（提交恰在拆除瞬间完成、非本机
+网络延迟）的保守覆盖，不是对观测上界的逼近。若探针显示断连后落库
+延迟逼近 DRAIN_SEC，须重新评估门禁而不是放宽静置。
 
 ## 2. 撤销存在后的回滚政策（门禁语义）
 
