@@ -14,7 +14,7 @@ const fakeSettings: AiSettings = {
   secretConfigured: true,
 };
 
-// 夹具用自制合成领域（设备巡检），刻意不带任何法律语义：
+// 夹具用自制合成领域（设备巡检），刻意不带任何特定领域语义：
 // 领域提示来自模板数据行，平台测试不应依赖某个具体垂直包内容。
 const selectedRowContext: AiContextSnapshot = {
   route: { screen: "editor", workbookId: "workbook:inspection", sheetId: "sheet:devices" },

@@ -45,7 +45,7 @@ function harness(options: { stale?: boolean; templateVersion?: { current: string
         check_rules: {
           version: options.templateVersion?.current,
           rules: [{
-            key: "same_legal_name", type: "duplicate", sheet_key: "items",
+            key: "same_party_name", type: "duplicate", sheet_key: "items",
             fields: ["legal_name"], minimum_group_size: 2, explanation: "主体名称相同",
           }],
         },
