@@ -145,6 +145,24 @@ localTest("授权语料检索在真实引擎上按 gate 强制授权", async () 
     expect(JSON.stringify(result)).not.toContain("CANARY-DENIED");
     expect(JSON.stringify(result)).not.toContain("b-v1");
 
+    // LCA07：每次研究都建立新的 RECORD 租约会话，不缓存检索结果或复用旧证据。
+    const { makeLegalResearchExecutor } = await import("../../ai/mastra/agents/legal-research-agent");
+    const { createDefaultAiContextSnapshot } = await import("@surreal-ck/shared");
+    const prompts: string[] = [];
+    let windows = 0;
+    const executor = makeLegalResearchExecutor({ resolveWorkspaceId: async () => "ws_test", searchResources: async () => ({
+      status: "miss", indexStatus: "index-disabled", queryText: "合同", results: [] }), answerModel: async p => { prompts.push(p); return "合法依据 [1]"; } });
+    const openContentSession = async () => {
+      windows++;
+      const fresh = new Surreal();
+      await fresh.connect(url, { namespace: "test", database: "content" }); await fresh.authenticate(await issue("human"));
+      return { kind: "ready" as const, namespace: "test", database: "content", session: fresh, entitlementRevision: "1",
+        digest: "sha256:fixture", leaseEndSeconds: Date.now()/1000 + 300, close: async () => { await fresh.close(); } };
+    };
+    const researchInput = { taskText: "合同", shared: { userContext: createDefaultAiContextSnapshot(), confirmed: {} }, openContentSession };
+    const firstResearch = await executor(researchInput);
+    expect(prompts[0]).toContain("第一条 合同自成立时生效");
+
     // AI 使用许可与普通 read/cite 分别生效，不因可阅读就进入模型证据。
     await root.query("UPDATE content_read_gate SET ai_actions = [];");
     // Ordinary semantic search is not an AI allowance action and remains allowed.
@@ -166,6 +184,13 @@ localTest("授权语料检索在真实引擎上按 gate 强制授权", async () 
     expect(afterWithdraw[0]).toHaveLength(0);
     expect((await retrieveAuthorizedCorpus({ session: reader, query: "合同" })).evidence).toEqual([]);
     expect((await retrievePlatformCandidates({ session: reader, request, embeddingProvider: provider })).items).toEqual([]);
+    const withdrawnResearch = await executor({ ...researchInput, expectedAuthorization: firstResearch.researchAuthorization,
+      expectedPlatformVersionIds: ["a-v1"] });
+    expect(withdrawnResearch.suspend?.kind).toBe("authorization_changed");
+    expect(prompts).toHaveLength(1); // 旧报告/引用不会送给模型
+    await executor({ ...researchInput, acceptAuthorizationChange: true });
+    expect(prompts).toHaveLength(1); // 当前无合法证据：不调用模型
+    expect(windows).toBe(3);
     await root.query("UPDATE content_item:a SET publication_status='published'; UPDATE content_authorization_projection SET revision='new-revision';");
     expect((await retrievePlatformCandidates({ session: reader, request, embeddingProvider: provider })).items).toEqual([]);
   } finally {

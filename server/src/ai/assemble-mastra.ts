@@ -36,6 +36,7 @@ import {
   ROUTER_RUNTIME_KEY,
   ROUTER_WORKFLOW_ID,
   type RouterRuntime,
+  type OpenContentResearchSession,
   type SubAgentExecutors,
 } from "../../ai/mastra/workflows/router-workflow";
 import { setExecutionContext } from "../../ai/mastra/execution-context";
@@ -173,6 +174,7 @@ export type ResumeWorkflowInput = {
   executors: SubAgentExecutors;
   llmCaller: RouterLlmCaller;
   answerResourceSelection?: RouterRuntime["answerResourceSelection"];
+  openContentSession?: OpenContentResearchSession;
   userContext: import("@surreal-ck/shared").AiContextSnapshot;
   streamId: string;
   pushChunk: NonNullable<RouterRuntime["pushChunk"]>;
@@ -218,6 +220,13 @@ const defaultResumeWorkflow: NonNullable<CreateMastraRunnerOptions["resumeWorkfl
   // CHAT_STREAM_TERMINAL_RETENTION_MS，迟到的重连订阅拿不到历史 done——
   // 必须按持久化 result 重建并重新投递终态，否则新 stream 只剩心跳。
   if (snapshot.status === "success") {
+    // 研究结果快照只允许元数据；旧版本快照也不重放平台证据。
+    if ((snapshot.result?.steps ?? []).some(s => (s as { category?: string }).category === "resource-retrieval")) {
+      const query = (snapshot.result?.steps ?? []).map(s => (s as { taskText?: string }).taskText ?? "").join("\n");
+      input.onSuspend({ kind: "authorization_changed", runId: input.runId, query, restart: true,
+        message: "该研究已结束。继续研究需开启新的授权窗口，重新读取当前合法证据。" });
+      return { runId: input.runId, finalText: "", status: "suspended" };
+    }
     const finalText = snapshot.result?.finalText ?? "";
     const citations = (snapshot.result?.steps ?? []).flatMap((s) => s.citations ?? []);
     input.pushChunk({
@@ -248,6 +257,7 @@ const defaultResumeWorkflow: NonNullable<CreateMastraRunnerOptions["resumeWorkfl
     pushProgress: input.pushProgress,
     onSuspend: input.onSuspend,
     answerResourceSelection: input.answerResourceSelection,
+    openContentSession: input.openContentSession,
   };
   setExecutionContext(requestContext, { surrealSession: input.surrealSession });
   requestContext.set(ROUTER_RUNTIME_KEY, runtime);
@@ -296,6 +306,10 @@ export function createMastraRunner(options: CreateMastraRunnerOptions = {}): { r
         ? {
             embeddingProvider: options.embeddingProvider,
             searchResources: createCallerSessionResourceDeps(options.embeddingProvider).searchResources,
+            loadResource: async (id: string, session?: Surreal) => {
+              if (!session) throw new Error("missing caller session");
+              return (await createResourceSearchService({ session }).getResourceDetail({ resourceId: id })).resource;
+            },
             answerModel: options.researchAnswerModel
               ?? buildRouterLlmCaller(createLegalResearchAgent(settings)),
           }
@@ -340,6 +354,7 @@ export function createMastraRunner(options: CreateMastraRunnerOptions = {}): { r
         mastra,
         runId: input.runId,
         decision: input.decision,
+        openContentSession: input.openContentSession,
         surrealSession: input.surrealSession,
         executors,
         llmCaller: llm,

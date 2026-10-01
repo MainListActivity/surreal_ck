@@ -301,3 +301,53 @@ describe("legal research executor", () => {
     expect(out.text).toContain("CANARY-AUTHORIZED");
   });
 });
+
+
+describe("LCA07 研究恢复重新鉴权（无缓存）", () => {
+  const previous = { workspaceId: "ws_demo", kind: "ready" as const, revision: "7", digest: "sha256:abc", leaseEndSeconds: Date.now() / 1000 + 600 };
+  for (const [name, expected, current] of [
+    ["暂停降级", previous, { kind: "empty" }],
+    ["权益到期", previous, { kind: "unavailable", reason: "entitlement_expired" }],
+    ["移除成员", previous, { kind: "unavailable", reason: "member_removed" }],
+    ["切换工作区", { ...previous, workspaceId: "ws_other" }, readyWindow()],
+    ["旧 lease 到期", { ...previous, leaseEndSeconds: 0 }, readyWindow()],
+    ["权益修订变化", { ...previous, revision: "6" }, readyWindow()],
+  ] as const) {
+    test(name + "：返回 authorization_changed，不读取旧平台证据或调用模型", async () => {
+      const { executor, prompts } = executorWith({ search: hitResponse() });
+      const out = await executor({ taskText: "合同", shared: { userContext: emptyContext, confirmed: {} },
+        expectedAuthorization: expected, openContentSession: async () => current as ContentResearchWindow });
+      expect(out.suspend?.kind).toBe("authorization_changed");
+      expect(prompts).toEqual([]);
+      expect(JSON.stringify(out)).not.toContain("CANARY-AUTHORIZED");
+    });
+  }
+  test("许可撤回后相同 query 新窗口重读 gate；历史回答没有自动进入模型", async () => {
+    const prompts: string[] = [];
+    let revoked = false;
+    const executor = makeLegalResearchExecutor({ resolveWorkspaceId: async () => "ws_demo", searchResources: async () => hitResponse(),
+      answerModel: async p => { prompts.push(p); return "当前证据 [1]"; } });
+    const open = async (): Promise<ContentResearchWindow> => {
+      const w = readyWindow();
+      if (w.kind !== "ready") throw new Error("fixture");
+      const original = w.session.query;
+      w.session = { query: ((sql: string) => revoked && sql.includes("content_read_gate") ? Promise.resolve([[]]) : original(sql)) as Surreal["query"] };
+      return w;
+    };
+    await run(executor, open);
+    revoked = true;
+    await run(executor, open);
+    expect(prompts[0]).toContain("CANARY-AUTHORIZED");
+    expect(prompts[1]).toContain("CANARY-PRIVATE");
+    expect(prompts[1]).not.toContain("CANARY-AUTHORIZED");
+  });
+  test("所选私有材料用新调用者会话读明细；失效选择不得送入模型", async () => {
+    const prompts: string[] = [];
+    const executor = makeLegalResearchExecutor({ resolveWorkspaceId: async () => "ws_demo", searchResources: async () => hitResponse("candidates"),
+      loadResource: async () => { throw new Error("revoked/cross workspace"); }, answerModel: async p => { prompts.push(p); return ""; } });
+    const out = await executor({ taskText: "合同", shared: { userContext: emptyContext, confirmed: {} }, selectedResourceIds: ["resource_item:revoked"],
+      openContentSession: async () => ({ kind: "empty" }) });
+    expect(out.suspend?.kind).toBe("authorization_changed");
+    expect(prompts).toEqual([]);
+  });
+});

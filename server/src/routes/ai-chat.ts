@@ -15,6 +15,7 @@ import { requireOidc } from "../middleware/oidc";
 import { AiAllowanceError } from "../ai-allowance/service";
 import type { ContentResearchSessionFactory } from "../research/window";
 import type { OpenContentResearchSession } from "../../ai/mastra/workflows/router-workflow";
+import { claimResumeWindow } from "../research/resume-window";
 import type { RunRegistry } from "../ai/run-registry";
 
 /** 用调用者 OIDC token 在 SurrealDB 上 authenticate 出一条会话（admin / participant access）。失败即抛。 */
@@ -38,7 +39,7 @@ export type AiChatService = {
     /** LCA06：调用者 content_reader 窗口工厂（路由层用调用者 token 构造；模型不可自选上下文）。 */
     openContentSession?: OpenContentResearchSession;
     /** run 到达终态时回调一次（suspended 也回调——门禁据此决定释放还是保留预留）。 */
-    onTerminal?: (outcome: RunTerminalOutcome) => void;
+    onTerminal?: (outcome: RunTerminalOutcome) => void | Promise<void>;
   }): Promise<void>;
   /** 后台续跑一个已 suspend 的 run：用（可能已刷新的）新 session 提交 decision；workflow state 不持有 session。 */
   resumeChat(input: {
@@ -47,7 +48,8 @@ export type AiChatService = {
     surrealSession: Surreal;
     /** 调用者 OIDC subject；stream 授权和 Mastra 上下文识别用，DB 归因走 caller session 的 $auth。 */
     ownerSubject: string;
-    onTerminal?: (outcome: RunTerminalOutcome) => void;
+    openContentSession?: OpenContentResearchSession;
+    onTerminal?: (outcome: RunTerminalOutcome) => void | Promise<void>;
   }): Promise<void>;
 };
 
@@ -61,6 +63,7 @@ export type AiAllowanceGate = {
     idempotencyKey: string;
     runId: string;
   }): Promise<{ metered: boolean }>;
+  resume?(input: { db: string; actor: StringRecordId; runId: string; actionKey: string; idempotencyKey: string }): Promise<{ metered: boolean }>;
   finishByRun(input: { db: string; runId: string; outcome: "success" | "failure" | "cancelled" }): Promise<void>;
 };
 
@@ -177,30 +180,36 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
     user: AppBindings["Variables"]["user"];
   }): Promise<{ runId: string; streamUrl: string; streamToken: string }> {
     const { runId, decision, user } = input;
-    const record = deps.registry.get(runId);
-    if (!record || record.ownerSubject !== user.subject) {
-      // 找不到 / 非本人持有 → 不泄漏 run 是否存在，统一 403。
-      throw new HttpError(403, "chat-run-forbidden", "Run is not owned by caller");
-    }
-
-    // resume 用新 session（OIDC token 可能已刷新；workflow state 不持有 session 引用）。
+    const known = deps.registry.get(runId);
+    if (known && known.ownerSubject !== user.subject) throw new HttpError(403, "chat-run-forbidden", "Run is not owned by caller");
+    // 内存 registry 只负责 stream；运行归属和并发窗口由当前 workspace 的持久化记录决定。
     const session = await signIn(user.rawToken);
-    // 刷新 streamToken / TTL，客户端据此重连 WS 拿后续事件。
-    const { streamToken } = deps.registry.register({ runId, ownerSubject: user.subject });
-
-    // 预留属于启动时的 run；resume 终态按 run_id 找回它收口（未计量时 no-op）。
-    const resumeDb = workspaceDb(user);
-    const onTerminal = deps.allowance && resumeDb
-      ? meteredTerminalHandler(resumeDb, runId)
-      : undefined;
+    let release: (() => Promise<void>) | undefined;
     try {
-      await deps.service.resumeChat({ runId, decision, surrealSession: session, ownerSubject: user.subject, onTerminal });
+      release = await claimResumeWindow(session, runId);
+      const resumeDb = workspaceDb(user);
+      if (deps.allowance?.resume && resumeDb) {
+        try {
+          await deps.allowance.resume({ db: resumeDb, actor: await callerUserId(session),
+            runId, actionKey: AI_CHAT_ACTION_KEY, idempotencyKey: `${runId}:resume:${JSON.stringify(decision)}` });
+        } catch (error) { allowanceFail(error); }
+      }
+      const finish = deps.allowance && resumeDb ? meteredTerminalHandler(resumeDb, runId) : undefined;
+      const onTerminal = async (outcome: RunTerminalOutcome) => {
+        finish?.(outcome);
+        await release?.();
+      };
+      const { streamToken } = deps.registry.register({ runId, ownerSubject: user.subject });
+      await deps.service.resumeChat({ runId, decision, surrealSession: session, ownerSubject: user.subject,
+        openContentSession: deps.createContentResearchSession ? () => deps.createContentResearchSession!(user) : undefined,
+        onTerminal });
+      return { runId, streamUrl: `/api/chat/stream?runId=${runId}`, streamToken };
     } catch (error) {
+      await release?.();
       await closeCallerSessionQuietly(session);
       throw error;
     }
 
-    return { runId, streamUrl: `/api/chat/stream?runId=${runId}`, streamToken };
   }
 
   return new Hono<AppBindings>()

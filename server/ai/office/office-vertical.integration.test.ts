@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { loadTemplateScripts } from "@surreal-ck/shared/workspace-template";
 import { Surreal } from "surrealdb";
-import { SignJWT, exportJWK, generateKeyPair } from "jose";
+import { SignJWT, exportSPKI, generateKeyPair } from "jose";
 import { homedir } from "node:os";
 import { createEmployeeLifecycle } from "./employee-lifecycle";
 import { createEmployeeRuntime, type EmployeeRuntime } from "./employee-runtime";
@@ -51,13 +51,8 @@ async function setupFixture(database: string): Promise<Fixture> {
   const port = 23000 + Math.floor(Math.random() * 10000);
   const password = crypto.randomUUID();
   const keys = await generateKeyPair("ES256");
-  const publicKey = await exportJWK(keys.publicKey);
-  const jwks = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    fetch: () => Response.json({ keys: [{ ...publicKey, kid: "fixture", alg: "ES256", use: "sig" }] }),
-  });
-  const issuer = `http://127.0.0.1:${jwks.port}`;
+  const publicKey = await exportSPKI(keys.publicKey);
+  const issuer = "https://vo02-fixture.example.test";
   const binary = process.env.SURREAL_BINARY ?? `${homedir()}/.surrealdb/surreal`;
   const proc = Bun.spawn(
     [binary, "start", "--allow-all", "--bind", `127.0.0.1:${port}`, "--user", "test", "--pass", password, "memory"],
@@ -79,7 +74,13 @@ async function setupFixture(database: string): Promise<Fixture> {
     ).collect();
     await root.use({ namespace, database });
     for (const script of await loadTemplateScripts({ oidcJwksUrl: `${issuer}/jwks` })) {
-      await root.query(script.sql).collect();
+      // 本地 fork 未启用 jwks feature；只替换 fixture 的签名验证来源，
+      // 保留生产 admin/participant access 类型、AUTHENTICATE 与真实 ES256 JWT。
+      const sql = script.sql.replaceAll(
+        `JWT URL "${issuer}/jwks"`,
+        `JWT ALGORITHM ES256 KEY ${JSON.stringify(publicKey)}`,
+      );
+      await root.query(sql).collect();
     }
     // 预建真人账号绕开 admin AUTHENTICATE 首次建用户的已知边角（见 VER02 测试）。
     await root.query(`
@@ -92,11 +93,10 @@ async function setupFixture(database: string): Promise<Fixture> {
         kind: "human", is_admin: false
       };
     `).collect();
-    fixtureCleanup.push(() => { proc.kill(); jwks.stop(true); });
+    fixtureCleanup.push(() => { proc.kill(); });
     return { url, namespace, database, issuer, privateKey: keys.privateKey, root };
   } catch (cause) {
     proc.kill();
-    jwks.stop(true);
     throw cause;
   }
 }

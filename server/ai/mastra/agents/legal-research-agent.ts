@@ -13,8 +13,8 @@
 import { Agent } from "@mastra/core/agent";
 import { ModelRouterLanguageModel } from "@mastra/core/llm";
 import type { Surreal } from "surrealdb";
-import type { AiContextSnapshot } from "@surreal-ck/shared";
-import type { SearchResourcesRequest, SearchResourcesResponse } from "@surreal-ck/shared/dto";
+import type { AiContextSnapshot, ResearchAuthorization } from "@surreal-ck/shared";
+import type { SearchResourcesRequest, SearchResourcesResponse, ResourceDTO } from "@surreal-ck/shared/dto";
 import type { SubAgentExecutor, SubAgentOutput } from "../workflows/router-workflow";
 import { buildModelConfig, type AiSettings } from "./model-config";
 import type { ContentResearchWindow } from "../../../src/research/window";
@@ -59,13 +59,14 @@ export type LegalResearchExecutorDeps = {
   searchResources(req: SearchResourcesRequest, session?: Surreal): Promise<SearchResourcesResponse>;
   /** 生成模型（真实装配用 Mastra agent；测试注入替身并检查提示词）。 */
   answerModel: ResearchAnswerModel;
+  loadResource?(resourceId: string, session?: Surreal): Promise<ResourceDTO>;
 };
 
 export function makeLegalResearchExecutor(deps: LegalResearchExecutorDeps): SubAgentExecutor {
   const resolveWorkspaceId = deps.resolveWorkspaceId ?? resolveWorkspaceIdFromSession;
   const searchResources = deps.searchResources;
 
-  return async ({ taskText, shared, surrealSession, openContentSession }): Promise<SubAgentOutput> => {
+  return async ({ taskText, shared, surrealSession, openContentSession, selectedResourceIds, expectedAuthorization, expectedPlatformVersionIds, acceptAuthorizationChange }): Promise<SubAgentOutput> => {
     const workspaceId = await resolveWorkspaceId(shared.userContext, surrealSession);
 
     // ── 执行窗口：workspace session（透传）+ content session（runtime 注入，可选） ──
@@ -85,7 +86,35 @@ export function makeLegalResearchExecutor(deps: LegalResearchExecutorDeps): SubA
 
     try {
       if (!privateOutcome.ok) throw privateOutcome.error;
+      const authorization: ResearchAuthorization = {
+        workspaceId, kind: corpusWindow.kind,
+        ...(corpusWindow.kind === "ready" ? { revision: corpusWindow.entitlementRevision,
+          digest: corpusWindow.digest, leaseEndSeconds: corpusWindow.leaseEndSeconds } : {}),
+      };
+      if (corpusWindow.kind === "unavailable" && ["not_member", "member_removed", "workspace_inactive"].includes(corpusWindow.reason)) {
+        return { text: "当前成员关系或工作区已失效。", confirmed: {}, researchAuthorization: authorization,
+          suspend: { kind: "authorization_changed", query: taskText, authorization, resourceIds: [] } };
+      }
+      if (expectedAuthorization && !acceptAuthorizationChange && (
+        expectedAuthorization.workspaceId !== workspaceId || expectedAuthorization.kind !== authorization.kind
+        || expectedAuthorization.revision !== authorization.revision || expectedAuthorization.digest !== authorization.digest
+        || (expectedAuthorization.leaseEndSeconds !== undefined && expectedAuthorization.leaseEndSeconds <= Date.now() / 1000)
+      )) {
+        return { text: "授权已变化，请重新检索或使用当前合法材料。", confirmed: {}, researchAuthorization: authorization,
+          suspend: { kind: "authorization_changed", query: taskText, authorization, resourceIds: selectedResourceIds ?? [] } };
+      }
       const privateSearch = privateOutcome.value;
+      if (selectedResourceIds?.length) {
+        try {
+          if (!deps.loadResource) throw new Error("missing selection reader");
+          const resources = await Promise.all([...new Set(selectedResourceIds)].map(id => deps.loadResource!(id, surrealSession)));
+          privateSearch.results = resources.map(resource => ({ resource, score: 1, vectorScore: 0, keywordScore: 0, qualityScore: 0, recencyScore: 0 }));
+          privateSearch.status = "hit";
+        } catch {
+          return { text: "所选材料当前不可访问，请重新检索。", confirmed: {}, researchAuthorization: authorization,
+            suspend: { kind: "authorization_changed", query: taskText, authorization, resourceIds: [] } };
+        }
+      }
       let corpusAvailability: CorpusAvailability = corpusWindow.kind === "ready"
         ? "ready"
         : corpusWindow.kind === "empty"
@@ -119,6 +148,11 @@ export function makeLegalResearchExecutor(deps: LegalResearchExecutorDeps): SubA
         }
       }
 
+      if (expectedPlatformVersionIds && !acceptAuthorizationChange
+        && expectedPlatformVersionIds.some(id => !platformEvidence.evidence.some(e => e.versionPublicId === id && e.quoteAllowed))) {
+        return { text: "之前引用的平台材料已失效。", confirmed: {}, researchAuthorization: authorization,
+          suspend: { kind: "authorization_changed", query: taskText, authorization, resourceIds: selectedResourceIds ?? [] } };
+      }
       const registry = createEvidenceRegistry(RESEARCH_EVIDENCE_LIMIT);
       for (const item of platformEvidence.evidence) {
         registry.register({
@@ -167,10 +201,12 @@ export function makeLegalResearchExecutor(deps: LegalResearchExecutorDeps): SubA
       // ── 私有候选挂起：只在没有任何平台可引用证据时保持既有 UX ──
       if (!hasPlatformEvidence && privateSearch.status === "candidates" && privateSearch.results.length > 0) {
         return {
+          researchAuthorization: authorization,
           text: "找到了可能相关的资源，请选择要用于回答的资料。",
           confirmed: {},
           suspend: {
             kind: "resource-candidates",
+            authorization,
             candidates: privateSearch.results.map((item) => ({
               id: item.resource.id,
               label: item.resource.title,
@@ -195,7 +231,7 @@ export function makeLegalResearchExecutor(deps: LegalResearchExecutorDeps): SubA
           rejected: [],
           citedHandles: [],
         });
-        return { text: gapText, confirmed: {} };
+        return { text: gapText, confirmed: {}, researchAuthorization: authorization };
       }
 
       // ── 模型分析：提示词只含登记证据；替身/真实模型都从同一入口注入 ──
@@ -214,7 +250,8 @@ export function makeLegalResearchExecutor(deps: LegalResearchExecutorDeps): SubA
       }
       if (platformEvidence.evidence.length > 0 && corpusWindow.kind === "ready"
         && corpusWindow.leaseEndSeconds <= Date.now() / 1000) {
-        return { text: "平台授权窗口已到期，未保存或输出平台证据。请重新开始授权研究（unavailable）。", confirmed: {} };
+        return { text: "平台授权窗口已到期，未保存或输出平台证据。请重新开始授权研究（unavailable）。", confirmed: {}, researchAuthorization: authorization,
+          suspend: { kind: "authorization_changed", query: taskText, authorization, resourceIds: selectedResourceIds ?? [] } };
       }
 
       // 来源事实/用户材料也展示了登记句柄，每个展示的句柄都必须有同号引用。
@@ -234,6 +271,7 @@ export function makeLegalResearchExecutor(deps: LegalResearchExecutorDeps): SubA
 
       return {
         text,
+        researchAuthorization: authorization,
         confirmed: {},
         ...(citations.length > 0 ? { citations } : {}),
       };

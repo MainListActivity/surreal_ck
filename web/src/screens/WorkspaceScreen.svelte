@@ -5,6 +5,7 @@
   import { dashboardStore } from "../features/dashboard/lib/dashboard-store.svelte";
   import AdminConsoleScreen from "./AdminConsoleScreen.svelte";
   import HomeScreen from "./HomeScreen.svelte";
+  import OfficeScreen from "./OfficeScreen.svelte";
   import ContentEntryScreen from "./ContentEntryScreen.svelte";
   import TemplatesScreen from "./TemplatesScreen.svelte";
   import PlaceholderScreen from "./PlaceholderScreen.svelte";
@@ -140,6 +141,8 @@
       <ContentEntryScreen onopen={(publicId) => onopencontent?.(publicId)} />
     {:else if page === "dashboard"}
       <DashboardScreen />
+    {:else if page === "office"}
+      <OfficeScreen {slug} />
     {:else if page === "admin"}
       <WorkspaceSettingsScreen />
     {:else if page === "admin-console"}
@@ -167,7 +170,7 @@
     {/if}
   </div>
   {#if page === "home"}
-    <ActivityPanel {onopenrecord} onaskai={onasknotification} />
+    <ActivityPanel {slug} {onopenrecord} onaskai={onasknotification} />
   {/if}
 </div>
 

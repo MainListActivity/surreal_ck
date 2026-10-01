@@ -180,3 +180,20 @@ describe("reserve 错误归一与 deadline", () => {
     expect(txn!.bindings).not.toHaveProperty("deadline");
   });
 });
+
+
+test("LCA07 resume：当前权益每次重读；有效预留复用，过期窗口新动作幂等，已结算重试不扣款", async () => {
+  let entitled = true;
+  let status = "reserved";
+  let reserves = 0;
+  const ledger: Queryable = { query: async sql => sql.includes("ORDER BY created_at DESC") ? [[{ id: "ai_reservation:old", actor: "user:m", status }]] : [[]] };
+  const svc = new AiAllowanceService({ workspaceSession: async () => ledger, systemSession: async () => ({ query: async () => [[{ ai_actions: entitled ? ["research"] : [] }]] }) });
+  const keys: string[] = [];
+  svc.reserve = async input => { reserves++; keys.push(input.idempotencyKey); status="reserved"; return { metered: false }; };
+  const input = { db: "ws", actor: new StringRecordId("user:m"), runId: "run", actionKey: "research", idempotencyKey: "run:resume:decision" };
+  await svc.resume(input); expect(reserves).toBe(0);
+  status="expired"; await svc.resume(input); await svc.resume(input);
+  expect(reserves).toBe(1); expect(keys).toEqual(["run:resume:decision:after:ai_reservation:old"]);
+  status="settled"; await svc.resume(input); expect(reserves).toBe(1);
+  entitled=false; await expect(svc.resume(input)).rejects.toMatchObject({ code: "ai-action-not-entitled" });
+});

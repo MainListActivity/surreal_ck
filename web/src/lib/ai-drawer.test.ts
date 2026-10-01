@@ -637,3 +637,29 @@ describe("AI 抽屉会话", () => {
     expect(state.progressHint).toBeNull();
   });
 });
+
+
+test("LCA07 authorization_changed：页面保留操作卡，并按所选动作重新授权恢复", async () => {
+  const h = harness();
+  const sending = h.session.sendMessage("合同研究", context());
+  h.start.resolve({ runId: "run-1", streamUrl: "/stream", streamToken: "token" }); await sending;
+  h.emit({ kind: "suspend", runId: "run-1", payload: { kind: "authorization_changed", runId: "run-1", query: "合同研究", message: "授权已变化" } });
+  expect(h.session.snapshot().pendingIntents[0]?.kind).toBe("authorization_changed");
+  await h.session.continueResearch("id-2", "research-continue-current");
+  expect(h.resumes).toEqual([{ runId: "run-1", decision: { kind: "research-continue-current" } }]);
+  expect(h.session.snapshot().pendingIntents[0]?.dismissed).toBe(true);
+});
+
+
+test("LCA07 已结束研究重新检索：新 run 只发送用户问题，不带历史助手文本", async () => {
+  let nextRun = 0;
+  const h = harness({ startChat: async () => ({ runId: `run-${++nextRun}`, streamUrl: "/stream", streamToken: "token" }) });
+  await h.session.sendMessage("合同研究", context());
+  h.emit({ kind: "suspend", runId: "run-1", payload: { kind: "authorization_changed", runId: "run-1", query: "合同研究", message: "旧报告已结束", restart: true } });
+  await h.session.continueResearch("id-2", "research-retry");
+  expect(h.starts).toHaveLength(2);
+  expect(h.starts[1]?.message).toBe("合同研究");
+  expect(h.starts[1]?.composerMode).toBe("resource-search");
+  expect(h.starts[1]?.idempotencyKey).not.toBe(h.starts[0]?.idempotencyKey);
+  expect(h.session.snapshot().activeRun?.runId).toBe("run-2");
+});
