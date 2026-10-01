@@ -1,6 +1,13 @@
-import { buildLegacyQuotaCleanupSurql } from "@surreal-ck/shared";
+import {
+  buildLegacyQuotaCleanupSurql,
+  buildLegacyQuotaGuardResidualSurql,
+  isSafeSheetTableName,
+} from "@surreal-ck/shared";
 import type { WorkspaceTemplateScript } from "@surreal-ck/shared/workspace-template";
-import { LEGACY_QUOTA_CLEANUP_MIGRATION_VERSION } from "@surreal-ck/shared/workspace-migration-manifest";
+import {
+  LEGACY_QUOTA_CLEANUP_MIGRATION_VERSION,
+  LEGACY_QUOTA_GUARD_RESIDUAL_MIGRATION_VERSION,
+} from "@surreal-ck/shared/workspace-migration-manifest";
 
 export type WorkspaceMigrationExecutionClient = {
   query(sql: string, params?: Record<string, unknown>): Promise<unknown>;
@@ -24,22 +31,31 @@ export async function materializeWorkspaceMigrationSql(
 ): Promise<string> {
   if (
     script.version !== LEGACY_QUOTA_CLEANUP_MIGRATION_VERSION
+    && script.version !== LEGACY_QUOTA_GUARD_RESIDUAL_MIGRATION_VERSION
     && script.version !== RECORD_UPDATE_ACTIVITY_MIGRATION_VERSION
   ) {
     return script.sql;
   }
-  const tableNames = stringRows(
+  const rawTableNames = stringRows(
     await db.query("SELECT VALUE table_name FROM sheet;"),
   );
+  // sheet.table_name 是持久化数据而非纯 ent_* 命名（如 qa_ver03_materials）；
+  // 无法安全拼进 DDL 的名字跳过并告警，不能让单行异常数据中止启动迁移。
+  const tableNames = [...new Set(rawTableNames)].filter((tableName) => {
+    if (isSafeSheetTableName(tableName)) return true;
+    console.warn(
+      "[migration]",
+      `skipped unsafe sheet.table_name: ${JSON.stringify(tableName)}`,
+    );
+    return false;
+  });
   if (script.version === LEGACY_QUOTA_CLEANUP_MIGRATION_VERSION) {
     return buildLegacyQuotaCleanupSurql(tableNames);
   }
-  const safeNames = [...new Set(tableNames)].sort();
-  for (const tableName of safeNames) {
-    if (!/^ent_[A-Za-z0-9_]+$/u.test(tableName)) {
-      throw new Error(`invalid activity entity table name: ${tableName}`);
-    }
+  if (script.version === LEGACY_QUOTA_GUARD_RESIDUAL_MIGRATION_VERSION) {
+    return buildLegacyQuotaGuardResidualSurql(tableNames);
   }
+  const safeNames = tableNames.sort();
   return `BEGIN TRANSACTION;\n${safeNames.map((tableName) =>
     `DEFINE EVENT OVERWRITE record_activity ON TABLE ${tableName}
       WHEN $event = "CREATE" OR $event = "UPDATE" OR $event = "DELETE"

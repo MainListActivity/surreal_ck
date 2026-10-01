@@ -18,6 +18,12 @@ import {
   makeResourceRetrievalExecutor,
   type ResourceRetrievalExecutorDeps,
 } from "../../ai/mastra/agents/resource-agent";
+import {
+  makeLegalResearchExecutor,
+  createLegalResearchAgent,
+  type LegalResearchExecutorDeps,
+  type ResearchAnswerModel,
+} from "../../ai/mastra/agents/legal-research-agent";
 import { createResourceSearchService } from "../resources/resource-search";
 import type { EmbeddingProvider } from "../resources/research-save";
 import { createNavigationAgent } from "../../ai/mastra/agents/navigation-agent";
@@ -30,6 +36,7 @@ import {
   ROUTER_RUNTIME_KEY,
   ROUTER_WORKFLOW_ID,
   type RouterRuntime,
+  type OpenContentResearchSession,
   type SubAgentExecutors,
 } from "../../ai/mastra/workflows/router-workflow";
 import { setExecutionContext } from "../../ai/mastra/execution-context";
@@ -39,6 +46,7 @@ import type { DecisionCaller } from "../../ai/decision/model";
 import type { ChatRunner, ChatResumer } from "./chat-service";
 import type { SearchContentResponse } from "@surreal-ck/shared/platform-content";
 import type { ResourceCitationDTO } from "@surreal-ck/shared";
+import type { ContentResearchSessionFactory } from "../research/window";
 
 /**
  * 把一个已构造好的 Mastra Agent 适配成 RouterLlmCaller：
@@ -64,6 +72,8 @@ export type AssembleAgents = {
 export type AssembleExecutorDeps = {
   /** 资源检索 executor 的外部依赖（搜索 / workspace 解析 / 研究 session）。未提供则不挂 resource-retrieval。 */
   resource?: ResourceRetrievalExecutorDeps;
+  /** LCA06：授权研究 executor 依赖（联合平台授权语料 + 工作区私有材料）。提供时优先于 resource。 */
+  research?: LegalResearchExecutorDeps;
 };
 
 /**
@@ -115,7 +125,9 @@ export function buildExecutors(agents: AssembleAgents, deps: AssembleExecutorDep
     "claim-analysis": makeAgentExecutor(agents.claimAnalysisAgent),
     chitchat: makeAgentExecutor(agents.chitchatAgent),
   };
-  if (deps.resource) {
+  if (deps.research) {
+    executors["resource-retrieval"] = makeLegalResearchExecutor(deps.research);
+  } else if (deps.resource) {
     executors["resource-retrieval"] = makeResourceRetrievalExecutor(deps.resource);
   }
   return executors;
@@ -136,6 +148,10 @@ export type CreateMastraRunnerOptions = {
   jevConfidenceThreshold?: number;
   /** 平台已发布法律库的只读检索入口。 */
   searchLegalContent?: ResourceRetrievalExecutorDeps["searchLegalContent"];
+  /** LCA06：为调用者开设 content_reader 研究窗口的工厂；注入后 resource-retrieval 走授权研究 executor。 */
+  createContentResearchSession?: ContentResearchSessionFactory;
+  /** LCA06：研究回答模型；默认用 settings 构造 legal research agent。 */
+  researchAnswerModel?: ResearchAnswerModel;
 
   // ── 以下注入点用于测试与未来替换；生产默认从 agents/index 装配 ──
   /** 默认：用 settings 构造 5 agents（含 resource agent）。 */
@@ -158,6 +174,7 @@ export type ResumeWorkflowInput = {
   executors: SubAgentExecutors;
   llmCaller: RouterLlmCaller;
   answerResourceSelection?: RouterRuntime["answerResourceSelection"];
+  openContentSession?: OpenContentResearchSession;
   userContext: import("@surreal-ck/shared").AiContextSnapshot;
   streamId: string;
   pushChunk: NonNullable<RouterRuntime["pushChunk"]>;
@@ -203,6 +220,13 @@ const defaultResumeWorkflow: NonNullable<CreateMastraRunnerOptions["resumeWorkfl
   // CHAT_STREAM_TERMINAL_RETENTION_MS，迟到的重连订阅拿不到历史 done——
   // 必须按持久化 result 重建并重新投递终态，否则新 stream 只剩心跳。
   if (snapshot.status === "success") {
+    // 研究结果快照只允许元数据；旧版本快照也不重放平台证据。
+    if ((snapshot.result?.steps ?? []).some(s => (s as { category?: string }).category === "resource-retrieval")) {
+      const query = (snapshot.result?.steps ?? []).map(s => (s as { taskText?: string }).taskText ?? "").join("\n");
+      input.onSuspend({ kind: "authorization_changed", runId: input.runId, query, restart: true,
+        message: "该研究已结束。继续研究需开启新的授权窗口，重新读取当前合法证据。" });
+      return { runId: input.runId, finalText: "", status: "suspended" };
+    }
     const finalText = snapshot.result?.finalText ?? "";
     const citations = (snapshot.result?.steps ?? []).flatMap((s) => s.citations ?? []);
     input.pushChunk({
@@ -233,6 +257,7 @@ const defaultResumeWorkflow: NonNullable<CreateMastraRunnerOptions["resumeWorkfl
     pushProgress: input.pushProgress,
     onSuspend: input.onSuspend,
     answerResourceSelection: input.answerResourceSelection,
+    openContentSession: input.openContentSession,
   };
   setExecutionContext(requestContext, { surrealSession: input.surrealSession });
   requestContext.set(ROUTER_RUNTIME_KEY, runtime);
@@ -273,9 +298,24 @@ export function createMastraRunner(options: CreateMastraRunnerOptions = {}): { r
       if (!options.buildAgents && !options.settings) {
         throw new Error("createMastraRunner: missing AiSettings (provider/model/apiKey)");
       }
-      cachedAgents = buildAgents(options.settings ?? ({} as AiSettings));
+      const settings = options.settings ?? ({} as AiSettings);
+      cachedAgents = buildAgents(settings);
+      // LCA06：注入了研究窗口工厂 → resource-retrieval 升级为授权研究 executor
+      // （同一私有检索依赖；回答模型默认用 legal research agent）。
+      const research = options.createContentResearchSession
+        ? {
+            searchResources: createCallerSessionResourceDeps(options.embeddingProvider).searchResources,
+            loadResource: async (id: string, session?: Surreal) => {
+              if (!session) throw new Error("missing caller session");
+              return (await createResourceSearchService({ session }).getResourceDetail({ resourceId: id })).resource;
+            },
+            answerModel: options.researchAnswerModel
+              ?? buildRouterLlmCaller(createLegalResearchAgent(settings)),
+          }
+        : undefined;
       cachedExecutors = buildExecutors(cachedAgents, {
         resource: options.resource ?? createCallerSessionResourceDeps(options.embeddingProvider, options.searchLegalContent),
+        research,
       });
       cachedLlm = buildLlmCaller(cachedAgents);
     }
@@ -298,6 +338,7 @@ export function createMastraRunner(options: CreateMastraRunnerOptions = {}): { r
         streamId: input.streamId,
         runId: input.runId,
         planOverride: input.planOverride,
+        openContentSession: input.openContentSession,
         pushChunk: input.pushChunk,
         pushProgress: input.pushProgress,
         onSuspend: input.onSuspend,
@@ -312,6 +353,7 @@ export function createMastraRunner(options: CreateMastraRunnerOptions = {}): { r
         mastra,
         runId: input.runId,
         decision: input.decision,
+        openContentSession: input.openContentSession,
         surrealSession: input.surrealSession,
         executors,
         llmCaller: llm,

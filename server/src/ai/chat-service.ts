@@ -24,6 +24,7 @@ import {
 } from "@surreal-ck/shared";
 import type { AiChatService, RunTerminalOutcome } from "../routes/ai-chat";
 import type { RouterPlan } from "../../ai/mastra/workflows/router-classifier";
+import type { OpenContentResearchSession } from "../../ai/mastra/workflows/router-workflow";
 import type { RunBus } from "./run-bus";
 
 /**
@@ -41,6 +42,8 @@ export type ChatRunner = (input: {
   userContext: AiContextSnapshot;
   /** 确定性路由（如 composer 资源检索模式）；缺省走 LLM classifier。 */
   planOverride?: RouterPlan;
+  /** LCA06：调用者 content_reader 窗口工厂（runtime 注入；缺席 = 不做平台语料研究）。 */
+  openContentSession?: OpenContentResearchSession;
   pushChunk: (e: AiMessageChunkEvent) => void;
   pushProgress: (e: AiProgressEvent) => void;
   onSuspend: (e: WorkflowSuspendedEvent) => void;
@@ -54,6 +57,7 @@ export type ChatResumer = (input: {
   /** 调用者 OIDC subject；stream 授权和 Mastra 上下文识别用，DB 归因走 caller session 的 $auth。 */
   ownerSubject: string;
   userContext: AiContextSnapshot;
+  openContentSession?: OpenContentResearchSession;
   pushChunk: (e: AiMessageChunkEvent) => void;
   pushProgress: (e: AiProgressEvent) => void;
   onSuspend: (e: WorkflowSuspendedEvent) => void;
@@ -130,7 +134,7 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
   const { runBus, runner, resumer } = options;
 
   return {
-    async startChat({ runId, message, userContext, surrealSession, ownerSubject, composerMode, onTerminal }) {
+    async startChat({ runId, message, userContext, surrealSession, ownerSubject, composerMode, openContentSession, onTerminal }) {
       const bridge = bridgeToBus(runBus, runId);
       // composer 的「搜索资源」模式 = 确定性单步 plan，不经 LLM 路由（RR-011/RR-014 契约）。
       const planOverride: RouterPlan | undefined = composerMode === "resource-search"
@@ -148,6 +152,7 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
             ownerSubject,
             userContext: userContext ?? createDefaultAiContextSnapshot(),
             planOverride,
+            openContentSession,
             pushChunk: bridge.pushChunk,
             pushProgress: bridge.pushProgress,
             onSuspend: bridge.onSuspend,
@@ -161,7 +166,7 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
         } finally {
           // 计量收口（结算/释放预留）不依赖 WS 是否仍连着。
           try {
-            onTerminal?.(outcome);
+            await onTerminal?.(outcome);
           } catch {
             // 终态回调失败不回写 run 结果；失联预留由 deadline 清扫兜底。
           }
@@ -170,7 +175,7 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
       })();
     },
 
-    async resumeChat({ runId, decision, surrealSession, ownerSubject, onTerminal }) {
+    async resumeChat({ runId, decision, surrealSession, ownerSubject, openContentSession, onTerminal }) {
       if (!resumer) {
         throw new Error("AiChatService: resumer not configured");
       }
@@ -183,6 +188,7 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
             runId,
             streamId: runId,
             decision,
+            openContentSession,
             surrealSession,
             ownerSubject,
             userContext,
@@ -197,7 +203,7 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
           bridge.publishErrorIfNotTerminal(cause instanceof Error ? cause.message : String(cause));
         } finally {
           try {
-            onTerminal?.(outcome);
+            await onTerminal?.(outcome);
           } catch {
             // 同上：收口失败不影响 run 结果，deadline 清扫兜底。
           }

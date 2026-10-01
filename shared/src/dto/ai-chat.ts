@@ -96,6 +96,9 @@ export type ResourceCitationDTO = {
     itemId: string;
     versionId: string;
     sourceKey: string;
+    versionPublicId?: string;
+    quoteSha256?: string;
+    entitlementRevision?: string;
     locator: { start: number; end: number; bodyDigest: string } | null;
   };
 };
@@ -386,7 +389,25 @@ const AwaitWriteConfirmEventSchema = z.object({
   intent: AiStructuredIntentSchema,
 });
 
+export const ResearchAuthorizationSchema = z.object({
+  workspaceId: z.string(),
+  kind: z.enum(["ready", "empty", "unavailable"]),
+  revision: z.string().optional(),
+  digest: z.string().optional(),
+  leaseEndSeconds: z.number().optional(),
+});
+export type ResearchAuthorization = z.infer<typeof ResearchAuthorizationSchema>;
+
+const AuthorizationChangedEventSchema = z.object({
+  kind: z.literal("authorization_changed"),
+  runId: z.string(),
+  query: z.string(),
+  message: z.string(),
+  restart: z.boolean().optional(),
+});
+
 export const WorkflowSuspendedEventSchema = z.discriminatedUnion("kind", [
+  AuthorizationChangedEventSchema,
   AmbiguousCandidatesEventSchema,
   ResourceCandidatesEventSchema,
   ManualResearchEventSchema,
@@ -394,7 +415,9 @@ export const WorkflowSuspendedEventSchema = z.discriminatedUnion("kind", [
 ]);
 export type WorkflowSuspendedEvent = z.infer<typeof WorkflowSuspendedEventSchema>;
 
-const ResumeDecisionSchema = z.discriminatedUnion("kind", [
+export const ResumeDecisionSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("research-retry") }),
+  z.object({ kind: z.literal("research-continue-current") }),
   z.object({ kind: z.literal("candidate-chosen"), candidateId: z.string().min(1) }),
   z.object({ kind: z.literal("candidate-cancelled") }),
   z.object({ kind: z.literal("write-confirmed") }),
