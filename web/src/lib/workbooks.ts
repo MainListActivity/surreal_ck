@@ -587,16 +587,24 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
 
   /**
    * 探测本工作区 legacy 记录配额是否仍在线。021 清理后记账表被移除，事件
-   * 引用缺失表会导致所有写入抛错；`record::exists` 是点查，不命中表定义
+   * 引用缺失表会让所有写入抛错；`record::exists` 是点查，不命中表定义
    * 检查，表不存在时返回 false 而不抛错。探测失败按在线处理：装配的硬化
    * 事件在表缺失时自动失效，安全方向偏向保守。
+   *
+   * 注意返回形状：conn.query 收敛「首个语句的结果」——SELECT 类语句返回行
+   * 数组，而 `RETURN <标量>` 语句直接返回该标量值（实测 SDK 2.0.8），不会
+   * 再包一层行数组。此前按行数组解构 `const [exists] = ...` 对布尔值迭代
+   * 必然抛 TypeError，探针恒走 catch 返回 true，native 配额工作区的新实体
+   * 表也被装上 legacy guard（与 native quota 收口意图不符，见任务
+   * dd8a1f81）。这里同时兼容两种形状，只把明确的 `false` 判为不在线。
    */
   async function detectLegacyRecordQuota(): Promise<boolean> {
     try {
-      const [exists] = await deps.getConn().query<boolean>(
+      const result = await deps.getConn().query<unknown>(
         "RETURN record::exists(workspace_resource_quota:current);",
       );
-      return exists !== false;
+      const first = Array.isArray(result) ? result[0] : result;
+      return first !== false;
     } catch {
       return true;
     }

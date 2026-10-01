@@ -19,6 +19,10 @@ function setup(opts: {
   workbooks?: Array<Record<string, unknown>>;
   createThrows?: unknown;
   updateThrows?: unknown;
+  /** RETURN record::exists 探针的注入返回值；缺省沿用旧行为（返回列表行）。 */
+  probeResult?: unknown;
+  /** RETURN record::exists 探针抛错（模拟查询失败）。 */
+  probeThrows?: unknown;
 } = {}) {
   const rec: Recorder = { queries: [], creates: [], updates: [] };
   const rows = opts.workbooks ?? [];
@@ -32,6 +36,10 @@ function setup(opts: {
     subscribe: () => () => {},
     query: (async (sql: string, bindings?: Record<string, unknown>) => {
       rec.queries.push({ sql, bindings });
+      if (/RETURN record::exists/i.test(sql)) {
+        if (opts.probeThrows) throw opts.probeThrows;
+        return opts.probeResult !== undefined ? opts.probeResult : rows;
+      }
       // createBlank 走多语句事务（BEGIN TRANSACTION）；用 createThrows 模拟引擎拒绝。
       if (/BEGIN TRANSACTION/i.test(sql) && opts.createThrows) throw opts.createThrows;
       return rows;
@@ -707,5 +715,49 @@ describe("filterWorkbooksByQuery — 纯过滤", () => {
     expect(filterWorkbooksByQuery(list, "案件").map((w) => w.id)).toEqual(["workbook:wb1"]);
     expect(filterWorkbooksByQuery(list, "汇总").map((w) => w.id)).toEqual(["workbook:wb2"]);
     expect(filterWorkbooksByQuery(list, "xyz")).toEqual([]);
+  });
+});
+
+describe("detectLegacyRecordQuota — native/legacy 配额模式探针（任务 dd8a1f81 回归）", () => {
+  const guardEvent = "DEFINE EVENT OVERWRITE resource_quota_guard";
+
+  test("native 工作区（探针返回标量 false）→ 新实体表不安装 legacy guard，activity 事件保留", async () => {
+    // 实测 SDK 2.0.8：conn.query 对 `RETURN <标量>` 直接返回该标量（非行数组）。
+    const { store, rec } = setup({ probeResult: false });
+    const workbook = await store.createBlank("native 工作簿");
+    expect(workbook).not.toBeNull();
+    const [txn] = rec.queries.filter((q) => /BEGIN TRANSACTION/i.test(q.sql));
+    expect(txn).toBeDefined();
+    expect(txn!.sql).not.toContain(guardEvent);
+    expect(txn!.sql).not.toContain('"quota-records-exceeded"');
+    // 配额无关的建表部分不受影响。
+    expect(txn!.sql).toContain("DEFINE EVENT OVERWRITE record_activity");
+    expect(txn!.sql).toMatch(/DEFINE TABLE IF NOT EXISTS ent_\w+/);
+  });
+
+  test("SDK 形状漂移护栏：行数组包裹的 [false] 同样判为不在线", async () => {
+    const { store, rec } = setup({ probeResult: [false] });
+    await store.createBlank("形状护栏工作簿");
+    const [txn] = rec.queries.filter((q) => /BEGIN TRANSACTION/i.test(q.sql));
+    expect(txn!.sql).not.toContain(guardEvent);
+  });
+
+  test("legacy 工作区（探针 true / 标量 true）→ 仍安装 guard，行为不变", async () => {
+    for (const probeResult of [true, undefined]) {
+      const { store, rec } = setup({ probeResult });
+      const workbook = await store.createBlank("legacy 工作簿");
+      expect(workbook).not.toBeNull();
+      const [txn] = rec.queries.filter((q) => /BEGIN TRANSACTION/i.test(q.sql));
+      expect(txn!.sql).toContain(guardEvent);
+      expect(txn!.sql).toContain('"quota-records-exceeded"');
+    }
+  });
+
+  test("探针查询失败 → 按在线保守处理（装 guard），不阻断建簿", async () => {
+    const { store, rec } = setup({ probeThrows: new Error("boom") });
+    const workbook = await store.createBlank("保守工作簿");
+    expect(workbook).not.toBeNull();
+    const [txn] = rec.queries.filter((q) => /BEGIN TRANSACTION/i.test(q.sql));
+    expect(txn!.sql).toContain(guardEvent);
   });
 });
