@@ -34,9 +34,67 @@ point_to() {
   mv -T "$root/current.next" "$root/current"
 }
 
+# LCA13 撤销兼容门禁：content_grant_revocation 是追加式撤销事实，不含撤销
+# 过滤的代码会把已撤销赠送静默复活（越权）。任何激活目标（新发布或回退的
+# previous）若不含撤销过滤，必须先证明 _system 里尚无撤销记录；判定紧邻
+# point_to，覆盖「事前检查与实际切换之间」的新撤销。
+target_has_revocation_filter() {
+  grep -rqs "content_grant_revocation" "$1/server/src/product-entitlement"
+}
+
+# 撤销存在性受控检查：0=无撤销、1=有撤销、2=无法证明（查询失败按不安全处理）。
+# 检查器来自当前部署包；目标与 current 均为门禁前代码时写入路径在结构上不
+# 存在，无需查询即可判定安全。
+grant_revocations_present() {
+  local checker=""
+  local candidate
+  for candidate in \
+    "$release/server/src/db/grant-revocation-check-cli.ts" \
+    "$previous/server/src/db/grant-revocation-check-cli.ts"; do
+    if [ -f "$candidate" ]; then
+      checker="$candidate"
+      break
+    fi
+  done
+  [ -n "$checker" ] || return 0
+  local output
+  if ! output=$(cd "$(dirname "$checker")/../.." \
+    && bun run --env-file="$env_file" src/db/grant-revocation-check-cli.ts 2>&1); then
+    echo "revocation gate: check command failed: $output" >&2
+    return 2
+  fi
+  echo "revocation gate: $output (checker: $checker)" >&2
+  case "$output" in
+    *grant_revocations=0*) return 0 ;;
+    *grant_revocations=[1-9]*) return 1 ;;
+    *) return 2 ;;
+  esac
+}
+
+require_revocation_compat() {
+  local target="$1"
+  if target_has_revocation_filter "$target"; then
+    return 0
+  fi
+  local verdict=0
+  grant_revocations_present || verdict=$?
+  if [ "$verdict" -eq 2 ]; then
+    echo "revocation gate: cannot prove _system has no grant revocations; refusing to activate $target" >&2
+    return 1
+  fi
+  if [ "$verdict" -eq 1 ]; then
+    echo "revocation gate: grant revocations exist; $target lacks revocation filtering — refusing to activate (deploy a revocation-aware commit instead)" >&2
+    return 1
+  fi
+}
+
 rollback() {
   echo "release $release_id failed: $1; restoring $previous" >&2
   sudo -n journalctl -u "$service" -n 40 --no-pager >&2 || true
+  if ! require_revocation_compat "$previous"; then
+    echo "automatic rollback refused: $previous is not revocation-compatible" >&2
+    exit 1
+  fi
   cat "$env_backup" > "$env_file"
   point_to "$previous"
   sudo -n systemctl restart "$service"
@@ -65,6 +123,12 @@ if [ -n "$env_additions" ] && [ -s "$env_additions" ]; then
   done < "$env_additions"
 fi
 [ -n "$env_additions" ] && rm -f "$env_additions"
+
+# 撤销兼容门禁：发布（含手动 Deploy origin 旧 sha）若目标不含撤销过滤，
+# 仅在 _system 无撤销记录时才放行；判定拒绝时不动运行中服务直接退出。
+if ! require_revocation_compat "$release"; then
+  exit 1
+fi
 
 # 发布钩子：发布代码里有 scripts/deploy/origin-pre-start.sh 时，停掉旧服务（冻结写入）后在新版本目录执行，
 # 例如一次性数据复制迁移。钩子必须幂等，读取 $ORIGIN_ENV_FILE。
