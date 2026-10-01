@@ -18,10 +18,16 @@ describe("router classifier 单意图分类", () => {
     expect(plan).toEqual([{ category: "dashboard", taskText: "做个统计图" }]);
   });
 
-  test("'分析这条记录' 走 claim-analysis 类目", async () => {
+  test("'分析这条记录' 走 row-analysis 类目", async () => {
+    const llm = fakeLlm(`[{"category":"row-analysis","taskText":"分析这条记录"}]`);
+    const plan = await classifyTask({ text: "分析这条记录", llmCaller: llm });
+    expect(plan).toEqual([{ category: "row-analysis", taskText: "分析这条记录" }]);
+  });
+
+  test("旧版 claim-analysis 类目输出归一化为 row-analysis（路由兼容）", async () => {
     const llm = fakeLlm(`[{"category":"claim-analysis","taskText":"分析这条记录"}]`);
     const plan = await classifyTask({ text: "分析这条记录", llmCaller: llm });
-    expect(plan).toEqual([{ category: "claim-analysis", taskText: "分析这条记录" }]);
+    expect(plan).toEqual([{ category: "row-analysis", taskText: "分析这条记录" }]);
   });
 
   test("'查找已有资料' 走 resource-retrieval 类目", async () => {
@@ -119,7 +125,7 @@ describe("router classifier 决策模型路径", () => {
 
   test("多意图（multi noul 达阈值）→ 回退 LLM 出完整 plan", async () => {
     const jev = fakeJev(jevAnswers(0.9, "navigation", 0.95));
-    const llm = fakeLlm(`[{"category":"navigation","taskText":"打开工作簿"},{"category":"claim-analysis","taskText":"分析记录"}]`);
+    const llm = fakeLlm(`[{"category":"navigation","taskText":"打开工作簿"},{"category":"row-analysis","taskText":"分析记录"}]`);
     const plan = await classifyTask({
       text: "打开工作簿然后分析这条记录",
       llmCaller: llm,

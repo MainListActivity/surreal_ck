@@ -45,7 +45,7 @@ function setup(byTable: Record<string, Array<Record<string, unknown>>>) {
 describe("isLikelyRecordId", () => {
   test("table:id 形态为真，其余为假", () => {
     expect(isLikelyRecordId("app_user:abc")).toBe(true);
-    expect(isLikelyRecordId("ent_claim:1")).toBe(true);
+    expect(isLikelyRecordId("ent_items:1")).toBe(true);
     expect(isLikelyRecordId("noColon")).toBe(false);
     expect(isLikelyRecordId(":leading")).toBe(false);
     expect(isLikelyRecordId("trailing:")).toBe(false);
@@ -66,10 +66,10 @@ describe("resolveReferences — 直连按表分组解析展示值", () => {
   test("按目标表分组各发一条 SELECT，WHERE id INSIDE $ids 参数化", async () => {
     const { conn, calls } = setup({
       app_user: [{ id: "app_user:u1", name: "张三" }],
-      ent_claim: [{ id: "ent_claim:c1", name: "案件A" }],
+      ent_items: [{ id: "ent_items:c1", name: "事项A" }],
     });
 
-    const items = await resolveReferences(conn, ["app_user:u1", "ent_claim:c1"]);
+    const items = await resolveReferences(conn, ["app_user:u1", "ent_items:c1"]);
 
     // 两张表 → 两条 query，都带 $tb + $ids 绑定，绝不内联
     expect(calls).toHaveLength(2);
@@ -84,7 +84,7 @@ describe("resolveReferences — 直连按表分组解析展示值", () => {
     const byId = new Map(items.map((i) => [i.id, i]));
     expect(byId.get("app_user:u1")?.primaryLabel).toBe("张三");
     expect(byId.get("app_user:u1")?.table).toBe("app_user");
-    expect(byId.get("ent_claim:c1")?.primaryLabel).toBe("案件A");
+    expect(byId.get("ent_items:c1")?.primaryLabel).toBe("事项A");
   });
 
   test("displayKey 回退链：name → display_name → email → id", async () => {
@@ -107,10 +107,10 @@ describe("resolveReferences — 直连按表分组解析展示值", () => {
 
   test("显式 displayKey 优先于回退链", async () => {
     const { conn, calls } = setup({
-      ent_claim: [{ id: "ent_claim:c1", name: "回退名", title: "标题值" }],
+      ent_items: [{ id: "ent_items:c1", name: "回退名", title: "标题值" }],
     });
 
-    const items = await resolveReferences(conn, ["ent_claim:c1"], { ent_claim: "title" });
+    const items = await resolveReferences(conn, ["ent_items:c1"], { ent_items: "title" });
     expect(items[0].primaryLabel).toBe("标题值");
     // 显式 displayKey 进入 SELECT 投影
     expect(calls[0].sql).toContain("title");
@@ -168,10 +168,10 @@ describe("listReferenceTargets — 直连枚举本 workspace 可引用目标", (
         return [
           {
             id: "sheet:s1",
-            label: "债权表",
-            table_name: "ent_claim",
+            label: "事项表",
+            table_name: "ent_items",
             workbook: "workbook:w1",
-            workbook_name: "破产案A",
+            workbook_name: "巡检案A",
             column_defs: [
               { key: "name", label: "名称", field_type: "text" },
               { key: "amount", label: "金额", field_type: "decimal" },
@@ -195,12 +195,12 @@ describe("listReferenceTargets — 直连枚举本 workspace 可引用目标", (
       ],
     });
     expect(targets[1]).toEqual({
-      table: "ent_claim",
-      label: "破产案A / 债权表",
+      table: "ent_items",
+      label: "巡检案A / 事项表",
       workbookId: "workbook:w1",
-      workbookName: "破产案A",
+      workbookName: "巡检案A",
       sheetId: "sheet:s1",
-      sheetName: "债权表",
+      sheetName: "事项表",
       displayKeys: [
         { key: "name", label: "名称", fieldType: "text" },
         { key: "amount", label: "金额", fieldType: "decimal" },

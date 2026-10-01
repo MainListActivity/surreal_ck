@@ -8,15 +8,15 @@ import {
 import { parseCsvImport } from "./csv-import";
 
 describe("OIP-12 模板数据表 CSV 导入映射", () => {
-  test("破产债权历史表头按字段名、模板别名、宽松文本的优先级自动对位", () => {
+  test("设备巡检历史表头按字段名、模板别名、宽松文本的优先级自动对位", () => {
     const targets: Array<{ column: GridColumnDef; aliases?: string[] }> = [
       {
-        column: { key: "creditor_name", label: "债权人名称", fieldType: "text" },
-        aliases: ["申报人", "债权人"],
+        column: { key: "owner_name", label: "负责人姓名", fieldType: "text" },
+        aliases: ["填报人", "负责人"],
       },
       {
-        column: { key: "declared_amount", label: "申报金额", fieldType: "decimal" },
-        aliases: ["债权申报金额"],
+        column: { key: "declared_amount", label: "登记金额", fieldType: "decimal" },
+        aliases: ["事项登记金额"],
       },
       {
         column: { key: "review_status", label: "审核状态", fieldType: "single_select" },
@@ -25,11 +25,11 @@ describe("OIP-12 模板数据表 CSV 导入映射", () => {
     ];
 
     expect(mapCsvHeadersToTemplateFields(
-      ["申报人", "债权 申报金额", "审核状态", "无关列"],
+      ["填报人", "事项 登记金额", "审核状态", "无关列"],
       targets,
     )).toEqual([
-      { sourceIndex: 0, sourceLabel: "申报人", targetKey: "creditor_name", matchedBy: "alias" },
-      { sourceIndex: 1, sourceLabel: "债权 申报金额", targetKey: "declared_amount", matchedBy: "relaxed" },
+      { sourceIndex: 0, sourceLabel: "填报人", targetKey: "owner_name", matchedBy: "alias" },
+      { sourceIndex: 1, sourceLabel: "事项 登记金额", targetKey: "declared_amount", matchedBy: "relaxed" },
       { sourceIndex: 2, sourceLabel: "审核状态", targetKey: "review_status", matchedBy: "field-name" },
       { sourceIndex: 3, sourceLabel: "无关列", targetKey: null, matchedBy: null },
     ]);
@@ -49,9 +49,9 @@ describe("OIP-12 模板数据表 CSV 导入映射", () => {
 
   test("按目标字段类型规整常见台账值，失败行保留原文件行号、字段和中文原因", () => {
     const targets: Array<{ column: GridColumnDef }> = [
-      { column: { key: "amount", label: "申报金额", fieldType: "decimal" } },
+      { column: { key: "amount", label: "登记金额", fieldType: "decimal" } },
       { column: { key: "count", label: "人数", fieldType: "number" } },
-      { column: { key: "date", label: "申报日期", fieldType: "date" } },
+      { column: { key: "date", label: "登记日期", fieldType: "date" } },
       { column: { key: "missing", label: "是否缺失", fieldType: "checkbox" } },
       {
         column: {
@@ -99,20 +99,20 @@ describe("OIP-12 模板数据表 CSV 导入映射", () => {
 
   test("用户可覆盖或忽略映射，并且修正后只重试拒绝的原始行", async () => {
     const parsed = parseCsvImport(
-      "申报人,债权申报金额,经办人,旧备注\n甲公司,1000,张三,保留\n乙公司,待确认,李四,忽略",
-      "历史债权.csv",
+      "填报人,事项登记金额,经办人,旧备注\n甲公司,1000,张三,保留\n乙公司,待确认,李四,忽略",
+      "历史事项.csv",
     );
     const calls: Array<{ rows: string[][]; rowNumbers?: number[] }> = [];
     const controller = createTemplateSheetImportController({
       parsed,
       targets: [
         {
-          column: { key: "creditor_name", label: "债权人名称", fieldType: "text" },
-          aliases: ["申报人"],
+          column: { key: "owner_name", label: "负责人姓名", fieldType: "text" },
+          aliases: ["填报人"],
         },
         {
-          column: { key: "declared_amount", label: "申报金额", fieldType: "decimal" },
-          aliases: ["债权申报金额"],
+          column: { key: "declared_amount", label: "登记金额", fieldType: "decimal" },
+          aliases: ["事项登记金额"],
         },
         { column: { key: "contact_name", label: "联系人", fieldType: "text" } },
       ],
@@ -123,7 +123,7 @@ describe("OIP-12 模板数据表 CSV 导入映射", () => {
             importedCount: 1,
             rejected: [{
               rowNumber: 3,
-              field: "申报金额",
+              field: "登记金额",
               reason: "值“待确认”不是有效金额/小数",
               sourceCells: [...input.rows[1]!],
             }],
@@ -146,7 +146,7 @@ describe("OIP-12 模板数据表 CSV 导入映射", () => {
       { rows: [["乙公司", "900", "李四", "忽略"]], rowNumbers: [3] },
     ]);
     expect(controller.snapshot.mappings.map(({ targetKey }) => targetKey)).toEqual([
-      "creditor_name",
+      "owner_name",
       "declared_amount",
       "contact_name",
       null,

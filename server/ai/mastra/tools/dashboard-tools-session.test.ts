@@ -25,9 +25,9 @@ describe("dashboard tools — 走调用者 session", () => {
     // 单条 SELECT sheet → [[row, ...]]
     const session = makeFakeSession([[[
       {
-        id: "sheet:claims",
-        label: "债权台账",
-        table_name: "ent_claim",
+        id: "sheet:items",
+        label: "巡检台账",
+        table_name: "ent_items",
         column_defs: [
           { key: "name", label: "名称", fieldType: "text" },
           { key: "amount", label: "金额", fieldType: "number" },
@@ -46,9 +46,9 @@ describe("dashboard tools — 走调用者 session", () => {
     const result = await execute({}, ctxWithSession(session));
 
     expect(session.calls[0].sql).toMatch(/sheet/i);
-    expect(result.tables[0].table).toBe("ent_claim");
-    expect(result.schemaSummary.tables).toContain("ent_claim");
-    expect(result.schemaSummary.fieldsByTable.ent_claim).toEqual(["name", "amount"]);
+    expect(result.tables[0].table).toBe("ent_items");
+    expect(result.schemaSummary.tables).toContain("ent_items");
+    expect(result.schemaSummary.fieldsByTable.ent_items).toEqual(["name", "amount"]);
   });
 
   test("generateDashboardDraft 不带 preview 时是纯草稿构造（不碰 session/DB）", async () => {
@@ -60,11 +60,11 @@ describe("dashboard tools — 走调用者 session", () => {
     }) => Promise<{ intent: { type: string; draft: { queryMode: string } } }>;
 
     const result = await execute({
-      description: "按月统计债权金额",
+      description: "按月统计故障次数",
       workspaceId: "workspace:demo",
       schemas: [{
-        table: "ent_claim",
-        label: "债权台账",
+        table: "ent_items",
+        label: "巡检台账",
         fields: [
           { key: "amount", label: "金额", fieldType: "number" },
           { key: "created_at", label: "创建", fieldType: "date" },

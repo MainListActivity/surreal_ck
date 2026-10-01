@@ -95,6 +95,6 @@ describe("真人派单与复核", () => {
     h.setLatestRun({ id: "data_check_run:r3", status: "completed", stale: false, started_at: "9999-01-01T00:00:00Z" }, ["data_check_finding:f1"]);
     await expect(reviewFindingAssignment(h.conn, { assignmentId: created.id, expectedVersion: submitted.version, decision: "approve", idempotencyKey: "approve-x" })).rejects.toThrow("例外必须填写理由");
     await expect(reviewFindingAssignment(h.conn, { assignmentId: created.id, expectedVersion: 1, decision: "return", reason: "退回", idempotencyKey: "bad-version" })).rejects.toThrow("他人更新");
-    expect((await reviewFindingAssignment(h.conn, { assignmentId: created.id, expectedVersion: submitted.version, decision: "approve", reason: "确认属于合法多条申报", idempotencyKey: "approve-exception" })).status).toBe("completed");
+    expect((await reviewFindingAssignment(h.conn, { assignmentId: created.id, expectedVersion: submitted.version, decision: "approve", reason: "确认属于合法多条登记", idempotencyKey: "approve-exception" })).status).toBe("completed");
   });
 });

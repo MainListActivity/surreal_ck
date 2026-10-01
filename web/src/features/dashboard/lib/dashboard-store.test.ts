@@ -6,9 +6,9 @@ import { createDashboardStore, type DashboardStoreSnapshot } from "./dashboard-s
 
 const kpiWidget: DashboardWidget = {
   id: "w1",
-  title: "债权总额",
+  title: "事项总额",
   viewType: "kpi",
-  spec: { sourceTables: ["ent_claim"], baseTable: "ent_claim", metric: { op: "sum", field: "amount" } },
+  spec: { sourceTables: ["ent_items"], baseTable: "ent_items", metric: { op: "sum", field: "amount" } },
   grid: { x: 0, y: 0, w: 6, h: 1 },
 };
 
@@ -17,8 +17,8 @@ const barWidget: DashboardWidget = {
   title: "按状态分布",
   viewType: "bar",
   spec: {
-    sourceTables: ["ent_claim"],
-    baseTable: "ent_claim",
+    sourceTables: ["ent_items"],
+    baseTable: "ent_items",
     metric: { op: "count" },
     dimensions: [{ field: "status" }],
   },

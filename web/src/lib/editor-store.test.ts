@@ -9,7 +9,7 @@ function sheetRecord(over: Record<string, unknown> = {}) {
     id: "sheet:s1",
     workbook: "workbook:wb1",
     label: "工作表 1",
-    table_name: "ent_claim",
+    table_name: "ent_items",
     column_defs: [
       { key: "name", label: "名称", field_type: "text", required: true },
       { key: "amount", label: "金额", field_type: "decimal" },
@@ -90,7 +90,7 @@ function setup(opts: {
 describe("loadWorkbook — 直连读 sheet 列表 + 首个 sheet 的行", () => {
   test("从 sheet 记录派生 columns + 业务行，并订阅 LIVE", async () => {
     const { store, rec } = setup({
-      rows: [{ id: "ent_claim:a", name: "张三", amount: 100, created_at: "x" }],
+      rows: [{ id: "ent_items:a", name: "张三", amount: 100, created_at: "x" }],
     });
 
     await store.loadWorkbook("workbook:wb1");
@@ -103,7 +103,7 @@ describe("loadWorkbook — 直连读 sheet 列表 + 首个 sheet 的行", () => 
     expect(String(wb)).toBe("workbook:wb1");
     expect(store.activeSheetId).toBe("sheet:s1");
     expect(store.columns.map((c) => c.key)).toEqual(["name", "amount"]);
-    expect(store.rows).toEqual([{ id: "ent_claim:a", values: { name: "张三", amount: 100 } }]);
+    expect(store.rows).toEqual([{ id: "ent_items:a", values: { name: "张三", amount: 100 } }]);
     expect(store.loading).toBe(false);
     expect(store.error).toBeNull();
     expect(rec.live).not.toBeNull();
@@ -193,12 +193,12 @@ describe("renameWorkbook / renameSheet — 结构名称直连更新", () => {
     });
     await store.loadWorkbook("workbook:wb1", "sheet:s2");
 
-    const ok = await store.renameSheet("sheet:s2", "债权明细");
+    const ok = await store.renameSheet("sheet:s2", "事项明细");
 
     expect(ok).toBe(true);
-    expect(rec.updates.at(-1)).toEqual({ id: "sheet:s2", patch: { label: "债权明细" } });
-    expect(store.sheets.map((s) => s.label)).toEqual(["工作表 1", "债权明细"]);
-    expect(snapshots.at(-1)!.sheets.map((s) => s.label)).toEqual(["工作表 1", "债权明细"]);
+    expect(rec.updates.at(-1)).toEqual({ id: "sheet:s2", patch: { label: "事项明细" } });
+    expect(store.sheets.map((s) => s.label)).toEqual(["工作表 1", "事项明细"]);
+    expect(snapshots.at(-1)!.sheets.map((s) => s.label)).toEqual(["工作表 1", "事项明细"]);
     expect(store.saveError).toBeNull();
   });
 
@@ -210,7 +210,7 @@ describe("renameWorkbook / renameSheet — 结构名称直连更新", () => {
     await store.loadWorkbook("workbook:wb1");
 
     expect(await store.renameWorkbook("项目总表")).toBe(false);
-    expect(await store.renameSheet("sheet:s1", "债权明细")).toBe(false);
+    expect(await store.renameSheet("sheet:s1", "事项明细")).toBe(false);
 
     expect(rec.updates).toHaveLength(0);
     expect(store.workbook?.name).toBe("项目台账");
@@ -221,14 +221,14 @@ describe("renameWorkbook / renameSheet — 结构名称直连更新", () => {
 
 describe("saveRows — 持久化行直连 UPDATE/CREATE", () => {
   test("带 id 走 updateRecord，合并进 rows", async () => {
-    const { store, rec } = setup({ rows: [{ id: "ent_claim:a", name: "张三", amount: 100 }] });
+    const { store, rec } = setup({ rows: [{ id: "ent_items:a", name: "张三", amount: 100 }] });
     await store.loadWorkbook("workbook:wb1");
 
-    const ok = await store.saveRows([{ id: "ent_claim:a", values: { amount: 200 } }]);
+    const ok = await store.saveRows([{ id: "ent_items:a", values: { amount: 200 } }]);
 
     expect(ok).toBe(true);
     // 完整记录只用于校验；数据库 MERGE 只写用户实际修改的字段，避免覆盖协作者的新值。
-    expect(rec.updates).toEqual([{ id: "ent_claim:a", patch: { amount: 200 } }]);
+    expect(rec.updates).toEqual([{ id: "ent_items:a", patch: { amount: 200 } }]);
   });
 
   test("校验失败（必填 name 缺）→ saveError 且不写库", async () => {
@@ -245,18 +245,18 @@ describe("saveRows — 持久化行直连 UPDATE/CREATE", () => {
 
 describe("deleteRows — 持久化删 DELETE，draft 本地丢弃", () => {
   test("持久化 id 走 deleteRecord 并从 rows 移除", async () => {
-    const { store, rec } = setup({ rows: [{ id: "ent_claim:a", name: "甲" }, { id: "ent_claim:b", name: "乙" }] });
+    const { store, rec } = setup({ rows: [{ id: "ent_items:a", name: "甲" }, { id: "ent_items:b", name: "乙" }] });
     await store.loadWorkbook("workbook:wb1");
 
-    const ok = await store.deleteRows(["ent_claim:a"]);
+    const ok = await store.deleteRows(["ent_items:a"]);
 
     expect(ok).toBe(true);
-    expect(rec.deletes).toEqual(["ent_claim:a"]);
-    expect(store.rows.map((r) => r.id)).toEqual(["ent_claim:b"]);
+    expect(rec.deletes).toEqual(["ent_items:a"]);
+    expect(store.rows.map((r) => r.id)).toEqual(["ent_items:b"]);
   });
 
   test("draft id 不下发删除，仅本地移除", async () => {
-    const { store, rec } = setup({ rows: [{ id: "ent_claim:a", name: "甲" }] });
+    const { store, rec } = setup({ rows: [{ id: "ent_items:a", name: "甲" }] });
     await store.loadWorkbook("workbook:wb1");
     store.insertBlankRows(null, 1, "end");
     const draftId = store.rows[store.rows.length - 1].id;
@@ -265,7 +265,7 @@ describe("deleteRows — 持久化删 DELETE，draft 本地丢弃", () => {
 
     expect(ok).toBe(true);
     expect(rec.deletes).toHaveLength(0);
-    expect(store.rows.map((r) => r.id)).toEqual(["ent_claim:a"]);
+    expect(store.rows.map((r) => r.id)).toEqual(["ent_items:a"]);
   });
 });
 
@@ -280,7 +280,7 @@ describe("draft 晋升 — saveFromSource 把填齐的 draft 写库换真实 id"
 
     expect(rec.creates).toHaveLength(1);
     expect(rec.creates[0].data).toMatchObject({ name: "新行", amount: 9 });
-    expect(store.rows.map((r) => r.id)).toEqual(["ent_claim:new1"]);
+    expect(store.rows.map((r) => r.id)).toEqual(["ent_items:new1"]);
     expect(store.pendingDraftCount).toBe(0);
   });
 
@@ -299,7 +299,7 @@ describe("draft 晋升 — saveFromSource 把填齐的 draft 写库换真实 id"
 
 describe("viewParams 变更 → reloadRows 重新查询", () => {
   test("setFilters 把过滤编进 SELECT 并刷新 rows", async () => {
-    const { store, rec } = setup({ rows: [{ id: "ent_claim:a", name: "张三" }] });
+    const { store, rec } = setup({ rows: [{ id: "ent_items:a", name: "张三" }] });
     await store.loadWorkbook("workbook:wb1");
     const before = rec.queries.length;
 
@@ -326,17 +326,17 @@ describe("viewParams 变更 → reloadRows 重新查询", () => {
 
 describe("LIVE 推送驱动 rows", () => {
   test("CREATE/UPDATE upsert，DELETE 移除", async () => {
-    const { store, rec } = setup({ rows: [{ id: "ent_claim:a", name: "甲" }] });
+    const { store, rec } = setup({ rows: [{ id: "ent_items:a", name: "甲" }] });
     await store.loadWorkbook("workbook:wb1");
 
-    rec.live?.({ action: "UPDATE", value: { id: "ent_claim:a", name: "甲改" } });
-    expect(store.rows.find((r) => r.id === "ent_claim:a")?.values.name).toBe("甲改");
+    rec.live?.({ action: "UPDATE", value: { id: "ent_items:a", name: "甲改" } });
+    expect(store.rows.find((r) => r.id === "ent_items:a")?.values.name).toBe("甲改");
 
-    rec.live?.({ action: "CREATE", value: { id: "ent_claim:c", name: "丙" } });
-    expect(store.rows.map((r) => r.id)).toContain("ent_claim:c");
+    rec.live?.({ action: "CREATE", value: { id: "ent_items:c", name: "丙" } });
+    expect(store.rows.map((r) => r.id)).toContain("ent_items:c");
 
-    rec.live?.({ action: "DELETE", value: { id: "ent_claim:a" } });
-    expect(store.rows.map((r) => r.id)).not.toContain("ent_claim:a");
+    rec.live?.({ action: "DELETE", value: { id: "ent_items:a" } });
+    expect(store.rows.map((r) => r.id)).not.toContain("ent_items:a");
   });
 });
 
@@ -381,7 +381,7 @@ function setupWithUnsub(onUnsub: () => void) {
 describe("updateFields — 字段集合 DDL 编排（浏览器直连，替代 legacy updateSheetFields RPC）", () => {
   test("成功：保留/新增列 OVERWRITE、column_defs 写回，内存 columns/sheets/rows 同步", async () => {
     const { store, rec } = setup({
-      rows: [{ id: "ent_claim:a", name: "张三", amount: 100 }],
+      rows: [{ id: "ent_items:a", name: "张三", amount: 100 }],
     });
     await store.loadWorkbook("workbook:wb1");
 
@@ -394,9 +394,9 @@ describe("updateFields — 字段集合 DDL 编排（浏览器直连，替代 le
     expect(ok).toBe(true);
     const ddl = rec.queries.map((q) => q.sql).filter((s) => /DEFINE FIELD|REMOVE FIELD/.test(s));
     expect(ddl).toEqual([
-      expect.stringContaining("DEFINE FIELD OVERWRITE name ON TABLE ent_claim"),
-      expect.stringContaining("DEFINE FIELD OVERWRITE amount ON TABLE ent_claim"),
-      expect.stringContaining("DEFINE FIELD OVERWRITE note ON TABLE ent_claim"),
+      expect.stringContaining("DEFINE FIELD OVERWRITE name ON TABLE ent_items"),
+      expect.stringContaining("DEFINE FIELD OVERWRITE amount ON TABLE ent_items"),
+      expect.stringContaining("DEFINE FIELD OVERWRITE note ON TABLE ent_items"),
     ]);
     expect(rec.updates).toHaveLength(1);
     expect(rec.updates[0].id).toBe("sheet:s1");
@@ -412,7 +412,7 @@ describe("updateFields — 字段集合 DDL 编排（浏览器直连，替代 le
 describe("updateFields — 引擎拒绝（普通成员无 DDL 权限）", () => {
   test("saveError 给出中文提示，内存 columns / rows 不变", async () => {
     const { store, conn, rec } = setup({
-      rows: [{ id: "ent_claim:a", name: "张三", amount: 100 }],
+      rows: [{ id: "ent_items:a", name: "张三", amount: 100 }],
     });
     await store.loadWorkbook("workbook:wb1");
 
@@ -465,7 +465,7 @@ describe("addField / removeFieldByKey / reorderFields — 字段编排入口", (
 
     expect(await store.removeFieldByKey("amount")).toBe(true);
     expect(store.columns.map((c) => c.key)).toEqual(["name"]);
-    expect(rec.queries.some((q) => q.sql === "REMOVE FIELD IF EXISTS amount ON TABLE ent_claim")).toBe(true);
+    expect(rec.queries.some((q) => q.sql === "REMOVE FIELD IF EXISTS amount ON TABLE ent_items")).toBe(true);
 
     expect(await store.removeFieldByKey("name")).toBe(false);
     expect(store.saveError).toContain("至少保留一个字段");

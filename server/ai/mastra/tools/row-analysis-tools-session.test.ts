@@ -20,10 +20,10 @@ function ctxWithSession(session: unknown): { requestContext: RequestContext } {
   return { requestContext };
 }
 
-describe("claim-analysis tools — 走调用者 session", () => {
-  test("analyzeClaimRow 传入 values+fields 时纯构造提案（不碰 session/DB）", async () => {
-    const { analyzeClaimRowTool } = await import("./claim-analysis-tools");
-    const execute = analyzeClaimRowTool.execute as unknown as (input: {
+describe("row-analysis tools — 走调用者 session", () => {
+  test("analyzeRow 传入 values+fields 时纯构造提案（不碰 session/DB）", async () => {
+    const { analyzeRowTool } = await import("./row-analysis-tools");
+    const execute = analyzeRowTool.execute as unknown as (input: {
       sheetId: string;
       recordId: string;
       values: Record<string, unknown>;
@@ -32,8 +32,8 @@ describe("claim-analysis tools — 走调用者 session", () => {
     }) => Promise<{ intent: { type: string; proposals: { field: string }[] } }>;
 
     const result = await execute({
-      sheetId: "sheet:claims",
-      recordId: "ent_claim:abc",
+      sheetId: "sheet:devices",
+      recordId: "ent_devices:abc",
       values: { name: "张三", amount: 100 },
       fields: [
         { key: "name", label: "名称", fieldType: "text" },
@@ -48,17 +48,17 @@ describe("claim-analysis tools — 走调用者 session", () => {
     expect(result.intent.proposals[0].field).toBe("amount");
   });
 
-  test("analyzeClaimRow 缺 values/fields 时用 session 读当前行和列定义", async () => {
+  test("analyzeRow 缺 values/fields 时用 session 读当前行和列定义", async () => {
     // 第一条 query：读 sheet 拿 table_name + column_defs；第二条：读 record
     const session = makeFakeSession([
-      [[{ id: "sheet:claims", table_name: "ent_claim", column_defs: [
+      [[{ id: "sheet:devices", table_name: "ent_devices", column_defs: [
         { key: "name", label: "名称", fieldType: "text" },
         { key: "amount", label: "金额", fieldType: "number" },
       ] }]],
-      [[{ id: "ent_claim:abc", name: "张三", amount: 100 }]],
+      [[{ id: "ent_devices:abc", name: "冷却泵", amount: 100 }]],
     ]);
-    const { analyzeClaimRowTool } = await import("./claim-analysis-tools");
-    const execute = analyzeClaimRowTool.execute as unknown as (
+    const { analyzeRowTool } = await import("./row-analysis-tools");
+    const execute = analyzeRowTool.execute as unknown as (
       input: {
         workbookId: string;
         sheetId: string;
@@ -70,8 +70,8 @@ describe("claim-analysis tools — 走调用者 session", () => {
 
     const result = await execute({
       workbookId: "workbook:1",
-      sheetId: "sheet:claims",
-      recordId: "ent_claim:abc",
+      sheetId: "sheet:devices",
+      recordId: "ent_devices:abc",
       suggestions: [{ field: "amount", suggestedValue: 200, basis: "据证据", confidence: "high" }],
     }, ctxWithSession(session));
 
@@ -83,13 +83,13 @@ describe("claim-analysis tools — 走调用者 session", () => {
     const session = makeFakeSession([
       [[{
         resource_id: "resource_item:r1",
-        title: "网页判例",
-        summary: "判例摘要",
+        title: "巡检规程文档",
+        summary: "规程摘要",
         source_url: "https://example.test/case",
-        evidence: [{ order: 0, text: "法院认为担保债权应单独审查。" }],
+        evidence: [{ order: 0, text: "读数超过阈值时应复核。" }],
       }]],
     ]);
-    const { fetchRelatedRecordsTool } = await import("./claim-analysis-tools");
+    const { fetchRelatedRecordsTool } = await import("./row-analysis-tools");
     const execute = fetchRelatedRecordsTool.execute as unknown as (
       input: {
         recordId: string;
@@ -104,9 +104,9 @@ describe("claim-analysis tools — 走调用者 session", () => {
     }>;
 
     const result = await execute({
-      recordId: "ent_claim:c1",
-      values: { creditor: "ent_creditor:a" },
-      fields: [{ key: "creditor", label: "债权人", fieldType: "reference" }],
+      recordId: "ent_devices:c1",
+      values: { vendor: "ent_vendor:a" },
+      fields: [{ key: "vendor", label: "供应商", fieldType: "reference" }],
     }, ctxWithSession(session));
 
     expect(session.calls).toHaveLength(1);
@@ -115,18 +115,18 @@ describe("claim-analysis tools — 走调用者 session", () => {
     expect(result.citations).toEqual([{
       index: 1,
       resourceId: "resource_item:r1",
-      title: "网页判例",
+      title: "巡检规程文档",
       sourceUrl: "https://example.test/case",
-      evidence: [{ order: 0, text: "法院认为担保债权应单独审查。" }],
+      evidence: [{ order: 0, text: "读数超过阈值时应复核。" }],
     }]);
   });
 
   test("当前记录无关联资源时回退读取普通 reference 字段", async () => {
     const session = makeFakeSession([
       [[]],
-      [[{ id: "ent_creditor:a", name: "甲公司" }]],
+      [[{ id: "ent_vendor:a", name: "甲公司" }]],
     ]);
-    const { fetchRelatedRecordsTool } = await import("./claim-analysis-tools");
+    const { fetchRelatedRecordsTool } = await import("./row-analysis-tools");
     const execute = fetchRelatedRecordsTool.execute as unknown as (
       input: {
         recordId: string;
@@ -137,16 +137,16 @@ describe("claim-analysis tools — 走调用者 session", () => {
     ) => Promise<{ source: string; items: unknown[]; citations: unknown[] }>;
 
     const result = await execute({
-      recordId: "ent_claim:c1",
-      values: { creditor: "ent_creditor:a" },
-      fields: [{ key: "creditor", label: "债权人", fieldType: "reference" }],
+      recordId: "ent_devices:c1",
+      values: { vendor: "ent_vendor:a" },
+      fields: [{ key: "vendor", label: "供应商", fieldType: "reference" }],
     }, ctxWithSession(session));
 
     expect(session.calls).toHaveLength(2);
     expect(session.calls[1]!.sql).toBe("SELECT * FROM $ids");
     expect(result).toEqual({
       source: "related-records",
-      items: [{ id: "ent_creditor:a", name: "甲公司" }],
+      items: [{ id: "ent_vendor:a", name: "甲公司" }],
       citations: [],
     });
   });

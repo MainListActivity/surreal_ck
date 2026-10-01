@@ -13,9 +13,9 @@ import {
 
 const kpiWidget: DashboardWidget = {
   id: "w1",
-  title: "债权总额",
+  title: "事项总额",
   viewType: "kpi",
-  spec: { sourceTables: ["ent_claim"], baseTable: "ent_claim", metric: { op: "sum", field: "amount" } },
+  spec: { sourceTables: ["ent_items"], baseTable: "ent_items", metric: { op: "sum", field: "amount" } },
   grid: { x: 0, y: 0, w: 4, h: 2 },
 };
 
@@ -82,8 +82,8 @@ describe("listDashboardPages — 直连 SELECT 列出 dashboard 页", () => {
         return [
           {
             id: new RecordId("dashboard_page", "p2"),
-            title: "债权统计",
-            slug: "claims",
+            title: "事项统计",
+            slug: "items",
             workbook: new RecordId("workbook", "wb1"),
             widgets: [],
             updated_at: new Date("2026-06-02T00:00:00Z"),
@@ -102,8 +102,8 @@ describe("listDashboardPages — 直连 SELECT 列出 dashboard 页", () => {
     expect(pages).toEqual([
       {
         id: "dashboard_page:p2",
-        title: "债权统计",
-        slug: "claims",
+        title: "事项统计",
+        slug: "items",
         workbookId: "workbook:wb1",
         updatedAt: "2026-06-02T00:00:00.000Z",
       },

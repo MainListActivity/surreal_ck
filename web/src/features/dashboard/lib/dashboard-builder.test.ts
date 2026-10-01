@@ -12,7 +12,7 @@ import {
 const barDraft: BuilderDraft = {
   title: "",
   chartType: "bar",
-  baseTable: "ent_claim",
+  baseTable: "ent_items",
   metricOp: "sum",
   metricField: "amount",
   dimensionField: "status",
@@ -24,8 +24,8 @@ const barDraft: BuilderDraft = {
 describe("specFromDraft — builder 草稿编译成 shared BuilderSpec", () => {
   test("柱状图：分组维度无时间桶，指标带字段", () => {
     expect(specFromDraft(barDraft)).toEqual({
-      sourceTables: ["ent_claim"],
-      baseTable: "ent_claim",
+      sourceTables: ["ent_items"],
+      baseTable: "ent_items",
       metric: { op: "sum", field: "amount" },
       dimensions: [{ field: "status" }],
       limit: 12,
@@ -34,8 +34,8 @@ describe("specFromDraft — builder 草稿编译成 shared BuilderSpec", () => {
 
   test("数字卡：不带维度；count 指标不带字段", () => {
     expect(specFromDraft({ ...barDraft, chartType: "kpi", metricOp: "count" })).toEqual({
-      sourceTables: ["ent_claim"],
-      baseTable: "ent_claim",
+      sourceTables: ["ent_items"],
+      baseTable: "ent_items",
       metric: { op: "count" },
       limit: 12,
     });
@@ -115,8 +115,8 @@ describe("widgetFromDraft — 草稿落成 dashboard_page.widgets[] 同口径的
   });
 
   test("新建：标题留空时自动生成「表 维度 指标」标题", () => {
-    const widget = widgetFromDraft(barDraft, { widgets: [], tableLabel: "债权表" });
-    expect(widget.title).toBe("债权表 status amount 总和");
+    const widget = widgetFromDraft(barDraft, { widgets: [], tableLabel: "事项表" });
+    expect(widget.title).toBe("事项表 status amount 总和");
   });
 
   test("编辑：保留原 id 与 grid，标题/类型/spec 取草稿", () => {
@@ -152,7 +152,7 @@ describe("draftFromWidget — 编辑既有 widget 时回填表单（AI 与手工
     );
     const draft = draftFromWidget(widget);
     expect(draft.chartType).toBe("line");
-    expect(draft.baseTable).toBe("ent_claim");
+    expect(draft.baseTable).toBe("ent_items");
     expect(draft.metricOp).toBe("sum");
     expect(draft.metricField).toBe("amount");
     expect(draft.dimensionField).toBe("created_at");
@@ -174,10 +174,10 @@ describe("blankBuilderDraft / builderFieldOptions — 表单初值与字段选�
   ];
 
   test("空白草稿默认柱状图 + 首表 + count + limit 12", () => {
-    expect(blankBuilderDraft("ent_claim")).toEqual({
+    expect(blankBuilderDraft("ent_items")).toEqual({
       title: "",
       chartType: "bar",
-      baseTable: "ent_claim",
+      baseTable: "ent_items",
       metricOp: "count",
       metricField: "",
       dimensionField: "",

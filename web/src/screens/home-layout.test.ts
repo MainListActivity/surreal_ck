@@ -131,7 +131,7 @@ describe("HR-05 首页快捷操作与 AI 入口", () => {
     expect(home).toMatch(/onopenaichat\?:\s*\(\)\s*=>\s*void/);
     expect(home).toContain('class="ai-banner"');
     expect(home).toContain("卯豆 AI 助手");
-    expect(home).toContain("用自然语言查询数据、生成报表、自动整理案件台账");
+    expect(home).toContain("用自然语言查询数据、生成报表、自动整理数据台账");
     expect(home).toContain("开始对话");
     expect(home).toContain("onopenaichat?.()");
   });

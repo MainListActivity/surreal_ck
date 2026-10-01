@@ -56,7 +56,7 @@ describe("SurrealMemoryStorage（绑定调用者 surrealSession）", () => {
   test("saveThread 走注入会话写入 memory_thread 表，而不是 getLocalDb", async () => {
     const createdAt = new Date("2026-05-09T08:00:00.000Z");
     await storage.saveThread({
-      thread: { id: "thread-1", resourceId: "user:abc", title: "债权分析", createdAt, updatedAt: createdAt },
+      thread: { id: "thread-1", resourceId: "user:abc", title: "行分析", createdAt, updatedAt: createdAt },
     });
 
     const memoryTable = Array.from(session.tables.keys()).find((t) => t.includes("memory"));

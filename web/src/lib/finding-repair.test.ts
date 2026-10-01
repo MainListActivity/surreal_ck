@@ -23,8 +23,8 @@ describe("体检问题不适用处理", () => {
     await expect(markFindingNotApplicable(conn, { findingId: "data_check_finding:f1", reason: " ", idempotencyKey: "k1" })).rejects.toThrow("必须填写理由");
     expect(await startFindingProcessing(conn, { findingId: "data_check_finding:f1", idempotencyKey: "processing-1" })).toMatchObject({ status: "processing", alreadyApplied: false });
     expect(await startFindingProcessing(conn, { findingId: "data_check_finding:f1", idempotencyKey: "processing-1" })).toMatchObject({ status: "processing", alreadyApplied: true });
-    const first = await markFindingNotApplicable(conn, { findingId: "data_check_finding:f1", reason: "合法的多条申报", idempotencyKey: "k1" });
-    const second = await markFindingNotApplicable(conn, { findingId: "data_check_finding:f1", reason: "合法的多条申报", idempotencyKey: "k1" });
+    const first = await markFindingNotApplicable(conn, { findingId: "data_check_finding:f1", reason: "合法的多条登记", idempotencyKey: "k1" });
+    const second = await markFindingNotApplicable(conn, { findingId: "data_check_finding:f1", reason: "合法的多条登记", idempotencyKey: "k1" });
 
     expect(first.alreadyApplied).toBe(false);
     expect(second.alreadyApplied).toBe(true);

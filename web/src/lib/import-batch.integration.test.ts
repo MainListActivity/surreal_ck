@@ -61,25 +61,25 @@ describe("导入批次真实 SurrealDB 契约", () => {
       DEFINE FIELD label ON sheet TYPE string;
       DEFINE FIELD table_name ON sheet TYPE string;
       DEFINE FIELD column_defs ON sheet TYPE any;
-      DEFINE TABLE ent_claim SCHEMAFULL CHANGEFEED 7d
+      DEFINE TABLE ent_items SCHEMAFULL CHANGEFEED 7d
         PERMISSIONS
           FOR select, create, update WHERE $auth != NONE,
           FOR delete WHERE $auth.is_admin = true;
-      DEFINE FIELD name ON ent_claim TYPE string;
-      DEFINE FIELD amount ON ent_claim TYPE decimal;
-      DEFINE FIELD updated_at ON ent_claim TYPE datetime VALUE time::now();
+      DEFINE FIELD name ON ent_items TYPE string;
+      DEFINE FIELD amount ON ent_items TYPE decimal;
+      DEFINE FIELD updated_at ON ent_items TYPE datetime VALUE time::now();
       DEFINE TABLE ent_note SCHEMAFULL
         PERMISSIONS
           FOR select, create, update WHERE $auth != NONE,
           FOR delete WHERE $auth.is_admin = true;
-      DEFINE FIELD claim ON ent_note TYPE record<ent_claim>;
+      DEFINE FIELD claim ON ent_note TYPE record<ent_items>;
       CREATE workbook:w SET name = "测试台账";
-      CREATE sheet:s SET workbook = workbook:w, label = "债权", table_name = "ent_claim", column_defs = [
+      CREATE sheet:s SET workbook = workbook:w, label = "事项", table_name = "ent_items", column_defs = [
         { key: "name", label: "名称", field_type: "text", required: true },
         { key: "amount", label: "金额", field_type: "decimal" }
       ];
       CREATE sheet:notes SET workbook = workbook:w, label = "备注", table_name = "ent_note", column_defs = [
-        { key: "claim", label: "债权", field_type: "reference", reference_table: "ent_claim", reference_multiple: false }
+        { key: "item", label: "事项", field_type: "reference", reference_table: "ent_items", reference_multiple: false }
       ];
       ${migration}
       ${undoMigration}
@@ -104,7 +104,7 @@ describe("导入批次真实 SurrealDB 契约", () => {
       mode: "existing_tables",
       workbookId: "workbook:w",
       sheets: [{
-        sheetName: "债权",
+        sheetName: "事项",
         targetSheetId: "sheet:s",
         mappings: [{ sourceIndex: 0, sourceLabel: "名称", targetKey: "name", matchedBy: "field-name" }],
       }],
@@ -123,18 +123,18 @@ describe("导入批次真实 SurrealDB 契约", () => {
       rows: [["甲", "100"]],
       rowNumbers: [8],
       mappings,
-      batch: { id: batch.id, sheetName: "债权" },
+      batch: { id: batch.id, sheetName: "事项" },
     };
 
     expect(await runtime.importCsvRows(input)).toMatchObject({ importedCount: 1, replayedCount: 0 });
     expect(await runtime.importCsvRows(input)).toMatchObject({ importedCount: 1, replayedCount: 1 });
-    await batchService.finishSheet(batch.id, "债权", {
+    await batchService.finishSheet(batch.id, "事项", {
       status: "completed",
       importedCount: 1,
       rejectedCount: 0,
     });
     await batchService.finish(batch.id, "completed");
-    expect(await conn.query("SELECT * FROM ent_claim")).toHaveLength(1);
+    expect(await conn.query("SELECT * FROM ent_items")).toHaveLength(1);
     expect(await conn.query("SELECT * FROM import_batch_row")).toHaveLength(1);
     expect((await batchService.load(batch.id))?.sheets[0]?.targetSheetId).toBe("sheet:s");
     await runtime.close();
@@ -159,14 +159,14 @@ describe("导入批次真实 SurrealDB 契约", () => {
     await adminConn.updateRecord(targetId, { name: "后续修改" });
     const concurrent = await undoService.undo(batch.id, ready.token);
     expect(concurrent.status).toBe("conflict");
-    expect(await adminConn.query("SELECT * FROM ent_claim")).toHaveLength(1);
+    expect(await adminConn.query("SELECT * FROM ent_items")).toHaveLength(1);
 
     const externalBatch = await batchService.start({
       fileName: "外部引用.csv",
       fileDigest: "external",
       mappingVersion: "mapping",
       mode: "existing_tables",
-      sheets: [{ sheetName: "债权", targetSheetId: "sheet:s", mappings }],
+      sheets: [{ sheetName: "事项", targetSheetId: "sheet:s", mappings }],
     });
     const externalRuntime = await openDataTableRuntime({
       conn,
@@ -174,10 +174,10 @@ describe("导入批次真实 SurrealDB 契约", () => {
       dataTableId: "sheet:s",
       query: { filters: [], filterMode: "and", sorts: [], hiddenFields: [], groupBy: null },
     });
-    await externalRuntime.importCsvRows({ ...input, rows: [["乙", "200"]], rowNumbers: [9], batch: { id: externalBatch.id, sheetName: "债权" } });
+    await externalRuntime.importCsvRows({ ...input, rows: [["乙", "200"]], rowNumbers: [9], batch: { id: externalBatch.id, sheetName: "事项" } });
     await batchService.finish(externalBatch.id, "completed");
     const externalTarget = (await batchService.load(externalBatch.id))!.rows[0]!.targetRecordId!;
-    await conn.createRecord("ent_note", { claim: new StringRecordId(externalTarget) });
+    await conn.createRecord("ent_note", { item: new StringRecordId(externalTarget) });
     const externallyReferenced = await undoService.preview(externalBatch.id);
     expect(externallyReferenced.blockers.some((blocker) => blocker.kind === "external_reference")).toBe(true);
     await externalRuntime.close();
@@ -187,7 +187,7 @@ describe("导入批次真实 SurrealDB 契约", () => {
       fileDigest: "clean",
       mappingVersion: "mapping",
       mode: "existing_tables",
-      sheets: [{ sheetName: "债权", targetSheetId: "sheet:s", mappings }],
+      sheets: [{ sheetName: "事项", targetSheetId: "sheet:s", mappings }],
     });
     const cleanRuntime = await openDataTableRuntime({
       conn,
@@ -195,7 +195,7 @@ describe("导入批次真实 SurrealDB 契约", () => {
       dataTableId: "sheet:s",
       query: { filters: [], filterMode: "and", sorts: [], hiddenFields: [], groupBy: null },
     });
-    await cleanRuntime.importCsvRows({ ...input, rows: [["丙", "300"]], rowNumbers: [10], batch: { id: cleanBatch.id, sheetName: "债权" } });
+    await cleanRuntime.importCsvRows({ ...input, rows: [["丙", "300"]], rowNumbers: [10], batch: { id: cleanBatch.id, sheetName: "事项" } });
     await batchService.finish(cleanBatch.id, "completed");
     const cleanPreview = await undoService.preview(cleanBatch.id);
     const undone = await undoService.undo(cleanBatch.id, cleanPreview.token);
