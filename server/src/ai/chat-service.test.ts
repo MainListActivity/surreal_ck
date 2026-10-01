@@ -164,8 +164,7 @@ describe("AiChatService.startChat", () => {
     expect(closed).toEqual(["closed"]);
   });
 
-  test("resumeChat 用新 session 走 resumer，事件桥接同样有效", async () => {
-    const bus = createRunBus();
+  test("resumeChat 用新 session 走 resumer，事件桥接同样有效", async () => {    const bus = createRunBus();
     let capturedResume: { surrealSession: Surreal; decision: ResumeDecision; runId: string } | undefined;
     const resumer = (async (input) => {
       capturedResume = { surrealSession: input.surrealSession, decision: input.decision, runId: input.runId };
@@ -195,6 +194,48 @@ describe("AiChatService.startChat", () => {
     expect(events.some((e) => e.kind === "chunk" && e.text === "继续")).toBe(true);
   });
 
+  test("resume 后新订阅不回放已消费的 suspend（LCA07 QA 回归：回放 suspend 曾令前端自关新流）", async () => {
+    const bus = createRunBus();
+    const { session } = closableSession();
+    const runner: ChatRunner = async (input) => {
+      input.pushProgress({ kind: "routing", runId: input.runId });
+      input.onSuspend({
+        kind: "resource-candidates",
+        runId: input.runId,
+        candidates: [{ id: "r1", label: "候选一" }],
+      });
+      return { runId: input.runId, finalText: "", status: "suspended" };
+    };
+    const resumer = (async (input) => {
+      input.pushProgress({ kind: "agent-step", runId: input.runId, step: "answer" });
+      input.pushChunk({ streamId: input.streamId, type: "delta", text: "续跑答案" });
+      return { runId: input.runId, finalText: "续跑答案", status: "success" as const };
+    }) satisfies import("./chat-service").ChatResumer;
+    const service = createAiChatService({ runBus: bus, runner, resumer });
+
+    await service.startChat({ runId: "run-1", message: "交付排期", userContext: ctx, surrealSession: session });
+    await new Promise((r) => setTimeout(r, 0));
+
+    // 首次订阅（suspend 阶段）回放完整 backlog——断网重连语义。
+    const before: ChatStreamEvent[] = [];
+    const unsubscribe = bus.subscribe("run-1", (e) => before.push(e));
+    expect(before.map((e) => e.kind)).toEqual(["progress", "suspend"]);
+    unsubscribe();
+
+    // 用户点了候选 → resume → 新流订阅：旧 suspend 不得再回放。
+    await service.resumeChat({
+      runId: "run-1",
+      decision: { kind: "resource-candidates-chosen", resourceIds: ["r1"] },
+      surrealSession: fakeSession,
+      ownerSubject: "user-123",
+    });
+    const after = collect(bus, "run-1");
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(after.some((e) => e.kind === "suspend")).toBe(false);
+    expect(after.some((e) => e.kind === "chunk" && e.text === "续跑答案")).toBe(true);
+    expect(after.at(-1)).toMatchObject({ kind: "done" });
+  });
   test("resume workflow 完成后关闭本次 resume 的 caller session", async () => {
     const bus = createRunBus();
     const { session, closed } = closableSession();
