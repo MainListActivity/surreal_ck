@@ -9,13 +9,21 @@ function deferred() {
   const promise = new Promise<void>((r) => { resolve = r; });
   return { promise, resolve };
 }
-function fixture(options: { signin?: () => Promise<void>; close?: () => Promise<void>; auth?: () => Promise<unknown> } = {}) {
+function fixture(options: {
+  signin?: () => Promise<void>;
+  close?: () => Promise<void>;
+  auth?: () => Promise<unknown>;
+  closeTimeoutMs?: number;
+  onSessionClosed?: (database: string, employeeId: string) => void;
+} = {}) {
   let connects = 0;
   let live = 0;
   let peak = 0;
   let probes = 0;
   const runtime = createEmployeeRuntime({
     surrealUrl: "wss://example.test/rpc", namespace: "main", probeTimeoutMs: 10,
+    ...(options.closeTimeoutMs !== undefined ? { closeTimeoutMs: options.closeTimeoutMs } : {}),
+    ...(options.onSessionClosed ? { onSessionClosed: options.onSessionClosed } : {}),
     connect: () => {
       connects++;
       let closed = false;
@@ -189,5 +197,51 @@ describe("employee runtime controlled observation", () => {
       expect(JSON.stringify(logs)).not.toContain(target.subject);
       await f.runtime.stop();
     } finally { spy.mockRestore(); }
+  });
+
+  test("D1：僵尸连接的 close 悬挂时有界收敛——注册表摘除、观测不再假健康", async () => {
+    const logs: unknown[] = [];
+    const spy = spyOn(console, "info").mockImplementation((...args) => { logs.push(args); });
+    try {
+      const f = fixture({ close: () => new Promise<never>(() => {}), closeTimeoutMs: 20 });
+      await f.runtime.register(target);
+      // 生命周期关闭：close 悬挂，但有界超时后如实失败，绝不定卡。
+      await expect(
+        f.runtime.close(target.database, target.employeeId, { deactivate: true }),
+      ).rejects.toThrow("employee-close-failed");
+      // 注册表已同步摘除：观测立即如实（sessionPresent=false → usable=false），
+      // closeConfirmed=false 标记关闭未确认——不再报 usable=true 假健康。
+      expect(await f.inspect()).toMatchObject({
+        sessionPresent: false,
+        usable: false,
+        closeConfirmed: false,
+        connectionCount: 1, // 关闭失败的连接仍计数（含连接中/关闭失败语义）
+      });
+      // stop 对僵尸连接的关闭同样有界失败（既有 throw 语义），不再悬挂。
+      await expect(f.runtime.stop()).rejects.toThrow("employee-close-failed");
+    } finally { spy.mockRestore(); }
+  });
+
+  test("D1：会话失效通知——有真实会话被拆除/替换时触发；通知条件随会话存在性", async () => {
+    const notified: Array<[string, string]> = [];
+    const f = fixture({
+      onSessionClosed: (database, employeeId) => notified.push([database, employeeId]),
+    });
+    // 首次注册（无旧会话可拆）：不通知。
+    await f.runtime.register(target);
+    expect(notified).toHaveLength(0);
+    // 有会话的拆除（lane 空闲收尾或生命周期都走这里）：通知——
+    // 回调动作（清 lane 缓存/中止在途窗口）对两种来源都安全。
+    await f.runtime.close(target.database, target.employeeId);
+    expect(notified).toEqual([["ws_test", "user:ve_test"]]);
+    // 无会话可拆（已关闭）：不重复通知。
+    await f.runtime.close(target.database, target.employeeId, { deactivate: true });
+    expect(notified).toHaveLength(1);
+    // register 换代次（有活跃会话被替换）：通知。
+    await f.runtime.register(target, { activate: true });
+    expect(notified).toHaveLength(1);
+    await f.runtime.register(target);
+    expect(notified).toHaveLength(2);
+    await f.runtime.stop();
   });
 });
