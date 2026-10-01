@@ -34,36 +34,42 @@ point_to() {
   mv -T "$root/current.next" "$root/current"
 }
 
-# LCA13 撤销兼容门禁：content_grant_revocation 是追加式撤销事实，不含撤销
-# 过滤的代码会把已撤销赠送静默复活（越权）。任何激活目标（新发布或回退的
-# previous）若不含撤销过滤，必须先证明 _system 里尚无撤销记录；判定紧邻
-# point_to，覆盖「事前检查与实际切换之间」的新撤销。
+# LCA13 撤销兼容门禁：content_grant_revocation 是追加式撤销事实，只能由
+# 含本门禁代码的 origin 进程经 entitlement.gift 能力端点写入。不含撤销
+# 过滤的目标会把已撤销赠送静默复活（越权）。
+#
+# 语义：目标含过滤 → 放行。否则停掉 origin 服务（冻结唯一撤销写入路径），
+# 静置 DRAIN_SEC 排空停服前已被引擎接收的 in-flight 写入，再用受控检查器
+# 读 _system 撤销计数 → 有撤销或无法证明为空即拒绝；服务在「检查→调用方
+# 完成切换并重启」全程保持停止。拒绝时本函数把服务拉回运行，调用方直接退出。
 target_has_revocation_filter() {
   grep -rqs "content_grant_revocation" "$1/server/src/product-entitlement"
 }
 
-# 撤销存在性受控检查：0=无撤销、1=有撤销、2=无法证明（查询失败按不安全处理）。
-# 检查器来自当前部署包；目标与 current 均为门禁前代码时写入路径在结构上不
-# 存在，无需查询即可判定安全。
-grant_revocations_present() {
-  local checker=""
-  local candidate
-  for candidate in \
-    "$release/server/src/db/grant-revocation-check-cli.ts" \
-    "$previous/server/src/db/grant-revocation-check-cli.ts"; do
-    if [ -f "$candidate" ]; then
-      checker="$candidate"
-      break
+# 受控检查器定位：优先本次发布包，其次回退目标/current，再其次任何留存
+# （keep 窗口内）的含门禁发布目录。全都没有 → 无法证明安全 → 拒绝。
+find_revocation_checker_dir() {
+  local d
+  for d in "$release" "$previous" "$(readlink -f "$root/current" 2>/dev/null)" \
+           $(ls -1dt "$root"/releases/*/ 2>/dev/null); do
+    if [ -n "$d" ] && [ -f "$d/server/src/db/grant-revocation-check-cli.ts" ]; then
+      printf '%s\n' "$d/server"
+      return 0
     fi
   done
-  [ -n "$checker" ] || return 0
+  return 1
+}
+
+# 撤销存在性受控检查：0=无撤销、1=有撤销、2=无法证明（失败按不安全处理）。
+grant_revocations_present() {
+  local server_dir="$1"
   local output
-  if ! output=$(cd "$(dirname "$checker")/../.." \
+  if ! output=$(cd "$server_dir" \
     && bun run --env-file="$env_file" src/db/grant-revocation-check-cli.ts 2>&1); then
     echo "revocation gate: check command failed: $output" >&2
     return 2
   fi
-  echo "revocation gate: $output (checker: $checker)" >&2
+  echo "revocation gate: $output (checker dir: $server_dir)" >&2
   case "$output" in
     *grant_revocations=0*) return 0 ;;
     *grant_revocations=[1-9]*) return 1 ;;
@@ -76,16 +82,26 @@ require_revocation_compat() {
   if target_has_revocation_filter "$target"; then
     return 0
   fi
+  echo "revocation gate: $target lacks revocation filtering; freezing writes (systemctl stop $service)" >&2
+  sudo -n systemctl stop "$service"
+  # 排空窗口：进程停止前已被引擎接收的撤销写入可能在停服后落库
+  # （响应丢失但提交成功）。停服后先静置再查计数，覆盖该 in-flight 窗口。
+  sleep "${REVOCATION_GATE_DRAIN_SEC:-3}"
+  local server_dir=""
   local verdict=0
-  grant_revocations_present || verdict=$?
-  if [ "$verdict" -eq 2 ]; then
-    echo "revocation gate: cannot prove _system has no grant revocations; refusing to activate $target" >&2
+  if server_dir=$(find_revocation_checker_dir); then
+    grant_revocations_present "$server_dir" || verdict=$?
+  else
+    echo "revocation gate: no revocation checker available on this host; cannot prove safety" >&2
+    verdict=2
+  fi
+  if [ "$verdict" -ne 0 ]; then
+    echo "revocation gate: refusing to activate $target" >&2
+    # 拒绝激活：服务保持原 current 指向，拉回运行（即使带病也好过授权语义回退）。
+    sudo -n systemctl start "$service" || true
     return 1
   fi
-  if [ "$verdict" -eq 1 ]; then
-    echo "revocation gate: grant revocations exist; $target lacks revocation filtering — refusing to activate (deploy a revocation-aware commit instead)" >&2
-    return 1
-  fi
+  # 服务保持停止：调用方随即完成 point_to + restart；冻结覆盖检查到切换全程。
 }
 
 rollback() {
