@@ -473,6 +473,19 @@ describe("workspace template scripts", () => {
     expect(sql).toContain('"pending", "leased", "running", "waiting", "completed", "failed"');
   });
 
+  test("043 通知 purpose 默认桶通用化：DEFAULT info、枚举不变、READONLY 保留", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.name === "043-notification-generic-purpose.surql");
+
+    expect(migration?.version).toBe(43);
+    const sql = migration?.sql ?? "";
+    expect(sql).toContain("DEFINE FIELD OVERWRITE purpose ON TABLE user_notification");
+    expect(sql).toContain('DEFAULT "info"');
+    expect(sql).toContain("READONLY");
+    expect(sql).toContain('"claims-risk", "office-request", "info"');
+    expect(sql).not.toContain('DEFAULT "claims-risk"');
+  });
+
   test("VER05 用量账本按 (employee, day) 唯一、计量来源分列且含 signal CAS 位", async () => {
     const scripts = await loadTemplateScripts();
     const migration = scripts.find((script) => script.name === "037-employee-budget-gates.surql");

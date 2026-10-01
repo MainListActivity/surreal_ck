@@ -121,9 +121,9 @@ function renderShell() {
           <div class="panel-heading"><h2>来源登记与许可</h2><button id="content-refresh" class="ghost">刷新</button></div>
           <p class="muted content-help">来源的许可修订独立留痕；采集包不能自行改变许可。保存新许可会产生下一版修订。</p>
           <form id="source-form" class="source-form">
-            <label>来源标识<input name="sourceKey" required maxlength="256" placeholder="司法公开网.cn" /></label>
-            <label>显示名称<input name="label" required maxlength="512" placeholder="最高人民法院公开文书" /></label>
-            <label>辖区<input name="jurisdiction" maxlength="128" placeholder="中国大陆" /></label>
+            <label>来源标识<input name="sourceKey" required maxlength="256" placeholder="官方公开库.example" /></label>
+            <label>显示名称<input name="label" required maxlength="512" placeholder="官方公开资料库" /></label>
+            <label>辖区<input name="jurisdiction" maxlength="128" placeholder="如：省级 / 全国" /></label>
             <label>基础 URL<input name="baseUrl" type="url" required placeholder="https://example.gov.cn" /></label>
             <label>状态<select name="status"><option value="active">active · 可采集</option><option value="inactive">inactive · 暂停</option></select></label>
             <label>来源动作<input name="allowedActions" value="submit,publish" required placeholder="submit,publish" /></label>

@@ -93,6 +93,8 @@ export function createSurrealClaimsRiskStore(session: EmployeeQuerySession): Cla
           content: {
             dedupe_key: reminder.dedupeKey,
             to_user: toUser,
+            // purpose 显式归因，不再依赖 schema 默认值（043 起默认桶为 "info"）。
+            purpose: "claims-risk",
             workbook: new StringRecordId(reminder.workbookId),
             related_record: new StringRecordId(reminder.recordId),
             risk_type: reminder.riskType,

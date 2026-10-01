@@ -234,7 +234,9 @@ function platformContentToResource(item: SearchContentItem): CitableResource {
   ].filter(Boolean);
   return {
     id: item.itemId,
-    resourceType: item.kind === "judicial_document" ? "legal_judgment" : "legislation",
+    // 直通平台内容契约 kind（legislation / judicial_document / 未来域），
+    // 不在此发明另一套资源类型标签。
+    resourceType: item.kind,
     title: item.title,
     summary: summaryParts.join(" · ") || bodyExcerpt || "平台已发布内容",
     sourceUrl: item.version.sourceUrl,

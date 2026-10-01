@@ -43,10 +43,10 @@ export const workbookRows: ReadonlyArray<{
   owner: string;
   tone: ProductTone;
 }> = [
-  { name: "华远供应链", amount: "¥ 680,000", status: "待核验", owner: "林澈", tone: "sand" },
-  { name: "北辰实业", amount: "¥ 1,240,000", status: "复核中", owner: "陈越", tone: "orange" },
-  { name: "知行科技", amount: "¥ 420,000", status: "已确认", owner: "周宁", tone: "green" },
-  { name: "合信商贸", amount: "¥ 298,000", status: "材料补充", owner: "林澈", tone: "purple" },
+  { name: "华远供应链", amount: "¥ 680,000", status: "待下单", owner: "林澈", tone: "sand" },
+  { name: "北辰实业", amount: "¥ 1,240,000", status: "备货中", owner: "陈越", tone: "orange" },
+  { name: "知行科技", amount: "¥ 420,000", status: "已到货", owner: "周宁", tone: "green" },
+  { name: "合信商贸", amount: "¥ 298,000", status: "待补货", owner: "林澈", tone: "purple" },
 ];
 
 export const templateCards: ReadonlyArray<{
@@ -55,7 +55,7 @@ export const templateCards: ReadonlyArray<{
   meta: string;
   tone: ProductTone;
 }> = [
-  { number: "01", name: "破产债权管理", meta: "债权申报 · 材料审查 · 清偿测算", tone: "green" },
+  { number: "01", name: "采购与供应商管理", meta: "订单跟踪 · 到货验收 · 对账结算", tone: "green" },
   { number: "02", name: "项目交付管理", meta: "任务进度 · 团队协作 · 风险跟踪", tone: "orange" },
   { number: "03", name: "客户与线索管理", meta: "客户档案 · 跟进记录 · 转化分析", tone: "purple" },
   { number: "04", name: "研究资料库", meta: "文档归档 · 重点摘录 · 关联记录", tone: "sand" },
