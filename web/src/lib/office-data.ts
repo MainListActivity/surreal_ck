@@ -1,3 +1,4 @@
+import { DateTime } from "surrealdb";
 import { recordValueToString } from "./record-id";
 
 /**
@@ -6,9 +7,9 @@ import { recordValueToString } from "./record-id";
  * 并把任务、消息、报告和通知投影成一条排序稳定的活动时间线。
  *
  * RecordId / datetime 的边界转换只在这一层发生：入参是 SDK 返回的原始
- * `Record<string, unknown>`（record 字段是 RecordId 实例、datetime 是 Date），
- * 出参一律 `table:id` 字符串与 ISO 时间。内存态不持有 SDK 对象，
- * 重复 upsert / 快照重查因此天然幂等可比。
+ * `Record<string, unknown>`（record 字段是 RecordId 实例、datetime 是 SDK
+ * `DateTime` 实例——连接未开 useNativeDates），出参一律 `table:id` 字符串与
+ * ISO 时间。内存态不持有 SDK 对象，重复 upsert / 快照重查因此天然幂等可比。
  */
 
 export type OfficeLifecycleStatus = "provisioning" | "active" | "paused" | "retired";
@@ -113,10 +114,13 @@ function text(value: unknown): string {
 }
 
 function isoTime(value: unknown): string | null {
-  if (value instanceof Date) {
-    return Number.isNaN(value.getTime()) ? null : value.toISOString();
+  // SDK 2.x 将 datetime 解码成 DateTime（Value 子类）而非 Date：先还原，否则
+  // 所有时间字段被归一成 null（b09c87b1 QA 退回：活动时间全空、resolved_at 失效）。
+  const date = value instanceof DateTime ? value.toDate() : value;
+  if (date instanceof Date) {
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
   }
-  const raw = recordValueToString(value);
+  const raw = recordValueToString(date);
   if (typeof raw !== "string" || !raw) return null;
   const parsed = new Date(raw);
   return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
