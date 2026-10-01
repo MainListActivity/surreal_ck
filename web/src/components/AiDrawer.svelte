@@ -32,8 +32,9 @@
   import { getSurreal } from "../lib/surreal";
   import { researchCitationHref } from "../lib/research-citation";
   import {
-    citableVersionPublicIds,
-    loadCitationStatuses,
+    citationProbeKey,
+    citableCitations,
+    createCitationStatusStore,
     rerunQuestionFor,
     summarizeCitationStates,
   } from "../lib/citation-status";
@@ -94,35 +95,46 @@
   // ── LCA09：历史平台引用按当前权限展示 ──────────────────────────────────────
   // 报告可见性属于用户数据（永不因平台失权隐藏）；这里只加载平台引用的当前权限
   // 四态（可核验/锁定/墓碑/不可用），加载失败 fail closed（暂不可核验）。
+  // 状态必须始终是“当前”权限：会话按抽屉打开周期 × 工作区隔离，关闭/切换即失效
+  // 重查；导出前强制重新核验；迟到/跨上下文结果按代丢弃。
+  const citationStore = createCitationStatusStore();
   let citationStatuses: Map<string, CitationStatusEntry> = $state(new Map());
-  const requestedCitationIds = new Set<string>();
 
   $effect(() => {
-    if (!open) return;
+    if (!open) {
+      citationStore.endSession();
+      return;
+    }
+    const contextKey = workspaceSlug ?? "";
     const platformCitations = drawerState.messages
       .flatMap((message) => message.role === "assistant" ? message.citations ?? [] : []);
-    const pending = citableVersionPublicIds(platformCitations).filter((id) => !requestedCitationIds.has(id));
-    if (pending.length === 0) return;
-    for (const id of pending) requestedCitationIds.add(id);
-    void loadCitationStatuses(pending).then((loaded) => {
-      citationStatuses = new Map([...citationStatuses, ...loaded]);
+    const probes = citableCitations(platformCitations);
+    if (probes.length === 0) return;
+    citationStore.beginSession(contextKey);
+    void citationStore.ensure(probes).then((fresh) => {
+      if (fresh) citationStatuses = fresh;
     });
   });
 
-  function citationStatusFor(message: AiChatMessage, citation: ResourceCitationDTO): CitationStatusEntry | undefined {
-    return citation.platformContent?.versionPublicId
-      ? citationStatuses.get(citation.platformContent.versionPublicId)
-      : undefined;
+  function citationStatusFor(citation: ResourceCitationDTO): CitationStatusEntry | undefined {
+    const versionPublicId = citation.platformContent?.versionPublicId;
+    if (!versionPublicId) return undefined;
+    return citationStatuses.get(citationProbeKey({
+      versionPublicId,
+      captureEntitlementRevision: citation.platformContent?.entitlementRevision,
+    }));
   }
 
-  function exportReport(message: AiChatMessage): void {
+  async function exportReport(message: AiChatMessage): Promise<void> {
     if (!message.citations?.length) return;
+    // 导出前强制重新核验：摘录展示判定不用陈旧缓存（当前权限口径）。
+    const statuses = await citationStore.refresh(citableCitations(message.citations));
     const markdown = buildReportMarkdown({
       workspaceSlug,
       question: rerunQuestionFor(drawerState.messages, message.id) ?? "",
       answerText: message.content,
       citations: message.citations,
-      statuses: citationStatuses,
+      statuses: statuses ?? citationStatuses,
       capturedAt: message.createdAt,
       exportedAt: new Date().toISOString(),
     });
@@ -460,7 +472,7 @@
                       <li value={citation.index}>
                         {#if citation.platformContent}
                           {@const href = researchCitationHref(workspaceSlug, citation)}
-                          {@const status = citationStatusFor(message, citation)}
+                          {@const status = citationStatusFor(citation)}
                           {#if status?.state === "verifiable" && href}
                             <a {href} target="_blank" rel="noreferrer">{citation.title} · 可核验 · 精确版本与位置</a>
                           {:else if status?.state === "locked"}
@@ -483,7 +495,7 @@
                     {/each}
                   </ol>
                   <div class="report-actions">
-                    <button type="button" class="report-action" onclick={() => exportReport(message)}>导出报告</button>
+                    <button type="button" class="report-action" onclick={() => void exportReport(message)}>导出报告</button>
                     <button type="button" class="report-action" disabled={drawerState.sending} onclick={() => void rerunResearch(message)}>
                       按当前语料重跑
                     </button>

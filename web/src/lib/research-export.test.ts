@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
 import type { CitationStatusEntry, ResourceCitationDTO } from "@surreal-ck/shared";
+import { citationProbeKey } from "./citation-status";
 import { buildReportMarkdown } from "./research-export";
 
 const entry = (overrides: Partial<CitationStatusEntry>): CitationStatusEntry => ({
@@ -17,13 +18,15 @@ const platformCitation = (index: number, versionPublicId = "a-v1"): ResourceCita
   },
 });
 
+const keyFor = (versionPublicId = "a-v1"): string => citationProbeKey({ versionPublicId, captureEntitlementRevision: "7" });
+
 test("可核验引用导出：版本、定位、哈希、捕获时间与全文指针齐备", () => {
   const markdown = buildReportMarkdown({
     workspaceSlug: "甲",
     question: "问题 Q",
     answerText: "结论 [1]",
     citations: [platformCitation(1)],
-    statuses: new Map([["a-v1", entry({})]]),
+    statuses: new Map([[keyFor(), entry({})]]),
     capturedAt: "2026-10-01T00:00:00Z",
     exportedAt: "2026-10-02T00:00:00Z",
   });
@@ -37,11 +40,26 @@ test("可核验引用导出：版本、定位、哈希、捕获时间与全文�
   expect(markdown).toContain("打开时经当前授权核验");
 });
 
-test("锁定引用导出：摘录保留、全文不嵌入并注明原因", () => {
+test("可核验但无捕获授权记录：摘录不展示", () => {
   const markdown = buildReportMarkdown({
     workspaceSlug: "甲",
     question: "Q", answerText: "回答", citations: [platformCitation(1)],
-    statuses: new Map([["a-v1", entry({ state: "locked", reason: "collection_not_covered", fulltextOpenable: false })]]),
+    statuses: new Map([[keyFor(), entry({ excerptDisplayable: false })]]),
+    exportedAt: "2026-10-02T00:00:00Z",
+  });
+  expect(markdown).toContain("状态：可核验");
+  expect(markdown).not.toContain("> 捕获的摘录原文");
+  expect(markdown).toContain("摘录未展示");
+});
+
+test("锁定引用导出：摘录按服务端判定保留、全文不嵌入并注明原因", () => {
+  const markdown = buildReportMarkdown({
+    workspaceSlug: "甲",
+    question: "Q", answerText: "回答", citations: [platformCitation(1)],
+    statuses: new Map([[
+      keyFor(),
+      entry({ state: "locked", reason: "collection_not_covered", fulltextOpenable: false, excerptDisplayable: true }),
+    ]]),
     exportedAt: "2026-10-02T00:00:00Z",
   });
   expect(markdown).toContain("全文已锁定");
@@ -50,12 +68,27 @@ test("锁定引用导出：摘录保留、全文不嵌入并注明原因", () =>
   expect(markdown).not.toContain("全文指针");
 });
 
+test("锁定且不可留存摘录（无捕获授权记录）导出：摘录不展示并说明", () => {
+  const markdown = buildReportMarkdown({
+    workspaceSlug: "甲",
+    question: "Q", answerText: "回答", citations: [platformCitation(1)],
+    statuses: new Map([[
+      keyFor(),
+      entry({ state: "locked", reason: "entitlement_absent", fulltextOpenable: false, excerptDisplayable: false }),
+    ]]),
+    exportedAt: "2026-10-02T00:00:00Z",
+  });
+  expect(markdown).toContain("全文已锁定");
+  expect(markdown).not.toContain("> 捕获的摘录原文");
+  expect(markdown).toContain("摘录当前不可展示");
+});
+
 test("墓碑与不可核验引用导出：不展示摘录，只给 tombstone 与原因", () => {
   const markdown = buildReportMarkdown({
     workspaceSlug: "甲",
     question: "Q", answerText: "回答", citations: [platformCitation(1), platformCitation(2, "b-v1")],
     statuses: new Map([
-      ["a-v1", entry({ state: "tombstoned", reason: "unpublished", fulltextOpenable: false, excerptDisplayable: false })],
+      [keyFor(), entry({ state: "tombstoned", reason: "unpublished", fulltextOpenable: false, excerptDisplayable: false })],
     ]),
     exportedAt: "2026-10-02T00:00:00Z",
   });

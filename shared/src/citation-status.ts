@@ -2,8 +2,10 @@
  * LCA09 历史引用按当前权限展示的传输契约。
  *
  * 报告（用户成果）永远可见；平台引用逐项给出当前权限状态，只回状态与原因类别，
- * 绝不回传正文、摘录以外的内容或授权投影细节。摘录是捕获时已合法保留的成果：
- * 仅在来源撤回/许可终止/删除要求或权限未知时不展示。
+ * 绝不回传正文、摘录以外的内容或授权投影细节。
+ * 摘录展示 = 捕获许可（引用登记的捕获时授权修订，经授权管道写入）∧ 当前留存
+ * 展示约束（来源未撤回/许可未终止/删除要求，锁定态按保留模式保留已捕获摘录）；
+ * 任一条件缺失或权限未知时不展示摘录。
  */
 import { z } from "zod";
 
@@ -17,6 +19,8 @@ export const citationStatusRequestSchema = z.strictObject({
         /** 前端引用列表里的 index（原样返回，便于回填）。 */
         index: z.number().int().positive(),
         versionPublicId: z.string().trim().min(1).max(160),
+        /** 捕获时登记的授权修订（捕获许可依据）；缺失视为无留存依据。 */
+        captureEntitlementRevision: z.string().regex(/^[1-9][0-9]*$/u).optional(),
       }),
     )
     .min(1)
@@ -46,9 +50,9 @@ export type CitationStatusEntry = {
   versionPublicId: string;
   state: CitationDisplayState;
   reason: CitationStatusReason | null;
-  /** 当前授权覆盖该版本 → 全文可打开（真正打开仍走当时的授权换票）。 */
+  /** 当前授权含 read → 全文可打开（真正打开仍走当时的授权换票）。 */
   fulltextOpenable: boolean;
-  /** 摘录当前可展示：捕获合法且未被撤回/许可终止/删除要求/未知权限拦截。 */
+  /** 摘录当前可展示：捕获依据已登记 ∧ 来源未撤回/删除 ∧ 当前展示许可（cite）允许。 */
   excerptDisplayable: boolean;
 };
 

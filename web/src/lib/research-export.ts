@@ -2,12 +2,14 @@
  * LCA09 研究报告导出：仅包含当前可展示的引用信息。
  *
  * 导出在前端完成，不重新读取或嵌入锁定正文（不发起任何平台内容请求）；
- * 引用按当前权限状态分级呈现：可核验 → 版本/定位/哈希/时间；锁定 → 摘录保留、
- * 全文注明锁定；墓碑（撤回/许可终止/删除）→ 只显示 tombstone 与原因类别；
- * 不可核验 → 说明原因。此前已合法交付的本地导出不宣称远程回收。
+ * 引用按当前权限状态分级呈现：可核验 → 版本/定位/哈希/时间；锁定 → 摘录按
+ * 服务端判定（捕获依据 ∧ 当前展示许可）保留、全文注明锁定；墓碑（撤回/许可
+ * 终止/删除）→ 只显示 tombstone 与原因类别；不可核验 → 说明原因。
+ * 此前已合法交付的本地导出不宣称远程回收。
  */
 import { citationStatusReasonLabel, type CitationStatusEntry } from "@surreal-ck/shared";
 import type { ResourceCitationDTO } from "@surreal-ck/shared";
+import { citationProbeKey } from "./citation-status";
 import { researchCitationHref } from "./research-citation";
 
 export type ReportExportInput = {
@@ -45,7 +47,9 @@ export function buildReportMarkdown(input: ReportExportInput): string {
 
   for (const citation of input.citations) {
     const platform = citation.platformContent;
-    const status = platform?.versionPublicId ? input.statuses.get(platform.versionPublicId) : undefined;
+    const status = platform?.versionPublicId
+      ? input.statuses.get(citationProbeKey({ versionPublicId: platform.versionPublicId, captureEntitlementRevision: platform.entitlementRevision }))
+      : undefined;
     if (!platform) {
       // 工作区资料引用：按其原有 workspace 权限继续可用。
       lines.push(`### [${citation.index}] ${citation.title}`);
@@ -75,12 +79,14 @@ export function buildReportMarkdown(input: ReportExportInput): string {
       if (platform.entitlementRevision) lines.push(`- 捕获时授权修订：${platform.entitlementRevision}`);
       const href = researchCitationHref(input.workspaceSlug, citation);
       if (href) lines.push(`- 全文指针：${href}（打开时经当前授权核验）`);
-      appendExcerpt(lines, citation);
+      appendDisplayableExcerpt(lines, citation, status, "摘录未展示：缺少捕获授权记录或当前许可不含摘录引用。");
     } else if (status.state === "locked") {
       lines.push(`- 状态：全文已锁定${capturedLine}——${citationStatusReasonLabel(status.reason)}`);
       if (platform.versionPublicId) lines.push(`- 捕获版本：${platform.versionPublicId}`);
-      lines.push("- 摘录为捕获时合法保留的成果；全文在恢复相应授权后可重新打开。");
-      appendExcerpt(lines, citation);
+      appendDisplayableExcerpt(lines, citation, status, "摘录当前不可展示：缺少捕获授权记录，或当前留存展示约束不允许。");
+      if (status.excerptDisplayable) {
+        lines.push("- 摘录为捕获时合法保留的成果；全文在恢复相应授权后可重新打开。");
+      }
     } else if (status.state === "tombstoned") {
       lines.push(`- 状态：内容已不可用${capturedLine}——${citationStatusReasonLabel(status.reason)}`);
       lines.push("- 摘录不再展示；此处仅保留 tombstone 与原因类别，不替代被要求删除的实质内容。");
@@ -90,6 +96,20 @@ export function buildReportMarkdown(input: ReportExportInput): string {
     }
   }
   return lines.join("\n");
+}
+
+/** 摘录只在服务端判定可展示（捕获依据 ∧ 当前留存展示约束）时进入导出。 */
+function appendDisplayableExcerpt(
+  lines: string[],
+  citation: ResourceCitationDTO,
+  status: CitationStatusEntry,
+  hiddenNote: string,
+): void {
+  if (!status.excerptDisplayable) {
+    lines.push(`- ${hiddenNote}`);
+    return;
+  }
+  appendExcerpt(lines, citation);
 }
 
 function appendExcerpt(lines: string[], citation: ResourceCitationDTO): void {
