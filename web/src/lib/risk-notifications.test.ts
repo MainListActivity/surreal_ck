@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { SurrealConn } from "./surreal";
+import { createApiClient } from "./api";
 import {
   buildRiskReminderAiContext,
   loadRiskNotifications,
@@ -274,5 +275,22 @@ describe("VO03 人类请求收件箱", () => {
     };
     await expect(wakeOfficeRequest("acme", "user_notification:ofreq_t1_x", failing))
       .rejects.toThrow("唤醒失败（409）");
+  });
+
+  test("真实 hc 客户端构造的唤醒 URL 必须带 /api 前缀（回归：QA 实测恒 405）", async () => {
+    const calls: { url: string; init: RequestInit }[] = [];
+    const fetchStub: typeof fetch = async (input, init = {}) => {
+      calls.push({ url: typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url, init });
+      return new Response(JSON.stringify({ outcome: "completed" }), { status: 200 });
+    };
+    const client = createApiClient({ baseUrl: "https://api.test", getToken: () => null, fetch: fetchStub }).api;
+
+    const result = await wakeOfficeRequest("acme", "user_notification:ofreq_t1_x", client);
+    expect(result.outcome).toBe("completed");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].init.method).toBe("POST");
+    expect(calls[0].url).toBe(
+      "https://api.test/api/workspaces/acme/office/requests/user_notification%3Aofreq_t1_x/wake",
+    );
   });
 });

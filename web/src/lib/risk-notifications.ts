@@ -1,7 +1,7 @@
 import type { AiContextSnapshot, RecordIdString } from "@surreal-ck/shared";
 import type { SurrealConn } from "./surreal";
 import { recordValueToString, toRecordId } from "./record-id";
-import { createApiClient } from "./api";
+import { api as defaultHcApi } from "./api";
 
 export type NotificationPurpose = "claims-risk" | "office-request" | "info";
 
@@ -190,9 +190,11 @@ export async function resolveOfficeRequest(
 type WakeEndpoint = {
   $post(input: { param: { slug: string; notificationId: string } }): Promise<Response>;
 };
+// client 是 hc<AppType> 实例（lib/api 导出的 api 或 createApiClient().api）；
+// 其 .api 对应 AppType 里的 /api 路由段，缺了这一层 URL 会少掉 /api 前缀（VO03 QA 退回缺陷）。
 type WakeClient = { api: { workspaces: Record<string, { office: { requests: Record<string, { wake: WakeEndpoint }> } }> } };
 
-const defaultApi = createApiClient();
+const defaultApi = defaultHcApi;
 
 /**
  * 唤醒请求员工：resolution 已落库后调用后端端点，服务端以稳定幂等键投递
