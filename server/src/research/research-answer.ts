@@ -109,14 +109,14 @@ export function buildResearchPrompt(input: ResearchPromptInput): string {
   const referenceOnly = platform.filter((entry) => !entry.quoteAllowed);
 
   const lines: string[] = [
-    "你是法律研究助手。回答必须满足：",
-    "1. 只使用下方【平台法律语料】与【工作区私有材料】中列出的片段，引用时只写对应句柄编号，如 [1]、[2]。",
+    "你是授权内容研究助手。回答必须满足：",
+    "1. 只使用下方【平台授权语料】与【工作区私有材料】中列出的片段，引用时只写对应句柄编号，如 [1]、[2]。",
     "2. 禁止编造句柄编号、版本号或任何未列出的条文文本；没有证据支撑的结论必须明确写“证据不足”。",
     "3. 标注“仅参考、不可引用”的片段只能用于理解背景，禁止在回答中引用。",
     "4. 不要输出平台全文、令牌、密钥或授权状态细节。",
     `5. 当前平台语料状态：${corpusLine}${priv.length === 0 ? "工作区无相关私有材料。" : ""}`,
     "",
-    "【平台法律语料】",
+    "【平台授权语料】",
     ...(quotable.length === 0 ? ["（无可引用片段）"] : quotable.map((entry) => formatPlatformEntry(entry))),
     ...(referenceOnly.length === 0
       ? []
@@ -259,7 +259,7 @@ export function assembleResearchAnswerText(input: ResearchAnswerAssemblyInput): 
   const priv = entries.filter((entry) => entry.sourceType === "private");
 
   const sections: string[] = [];
-  sections.push("【来源事实】（平台法律语料，精确版本）");
+  sections.push("【来源事实】（平台授权语料，精确版本）");
   sections.push(...(quotablePlatform.length === 0
     ? ["（无）"]
     : quotablePlatform.map((entry) => `[${entry.handle}] ${entry.title}${entry.platform?.versionLabel ? `（版本 ${entry.platform.versionLabel}）` : ""}：${entry.quote}`)));
@@ -283,7 +283,7 @@ export function assembleResearchAnswerText(input: ResearchAnswerAssemblyInput): 
         : "平台语料暂不可用，本回答仅基于工作区私有资料（partial）。"));
   }
   if (entries.length === 0) {
-    gaps.push("未登记到任何可用证据；本回答不构成有来源的法律结论，请补充材料或稍后重试。");
+    gaps.push("未登记到任何可用证据；本回答不构成有来源的结论，请补充材料或稍后重试。");
   }
   if (referenceOnly.length > 0) {
     gaps.push(`有 ${referenceOnly.length} 条平台片段仅可参考、缺少引用许可，未作为来源事实列出。`);

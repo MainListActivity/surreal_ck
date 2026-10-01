@@ -127,7 +127,7 @@ export async function retrievePlatformCandidates(input: {
           }
           capability = "hybrid";
           indexVersion = JSON.stringify([vars.profileKey, profile.release]);
-          notice = "关键词与语义混合检索；排序解释仅说明相关性，不构成法律结论。";
+          notice = "关键词与语义混合检索；排序解释仅说明相关性，不构成结论性意见。";
         }
       }
     } catch {

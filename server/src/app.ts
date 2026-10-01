@@ -148,7 +148,7 @@ export type AppOptions = {
   quotaNotifications?: QuotaNotificationService;
   quotaOpsConsole?: QuotaOpsConsolePort;
   quotaOpsPreflight?: QuotaOpsPreflightPort;
-  /** 平台法律内容维护服务；生产默认使用独立内容库的 publisher 会话。 */
+  /** 平台内容维护服务；生产默认使用独立内容库的 publisher 会话。 */
   platformContentService?: PlatformContentService;
   /** 团队主动共享的启用摘要服务；运营页面与 MCP 复用。 */
   activationSummaryService?: ActivationSummaryService;
@@ -222,7 +222,7 @@ function buildAutoAiChatService(
     jevConfidenceThreshold: env.JEV_CONFIDENCE_THRESHOLD,
     // 资源检索查询向量与保存路径共用同一服务端 embedding key（RR-014）
     embeddingProvider,
-    // LCA06：授权法律研究窗口（content_reader 会话服务端自持；复用 LCA04 search exchange）
+    // LCA06：授权内容研究窗口（content_reader 会话服务端自持；复用 LCA04 search exchange）
     createContentResearchSession: createContentResearchSessionFactory(),
   });
   return createAiChatService({ runBus, runner, resumer });

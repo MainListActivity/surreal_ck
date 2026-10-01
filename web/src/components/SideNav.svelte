@@ -108,7 +108,7 @@
         <Folder size={16} />我的文档
       </button>
       <button class:active={page === "content"} onclick={() => go("content")}>
-        <BookOpen size={16} />法律内容
+        <BookOpen size={16} />内容库
       </button>
       <button class:active={page === "templates"} onclick={() => go("templates")}>
         <Tag size={16} />模板库

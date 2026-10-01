@@ -76,14 +76,14 @@
 
 <section class="entry">
   <span class="eyebrow">工作区内容</span>
-  <h1>检索授权法律内容</h1>
+  <h1>检索授权内容</h1>
   <p>检索只在当前工作区授权的内容范围内执行。打开正文时再次核验成员、来源许可与精确版本；检索和阅读不扣 AI 额度。</p>
   {#if searchStatus === "loading"}
     <p role="status">正在建立短期内容检索会话…</p>
   {:else if searchStatus === "not_member"}
     <p role="alert">当前身份不是工作区有效成员，无法检索内容。</p>
   {:else if searchStatus === "not_authorized"}
-    <p role="alert">当前工作区缺少法律内容检索授权。</p>
+    <p role="alert">当前工作区缺少内容检索授权。</p>
   {:else if searchStatus === "unavailable"}
     <p role="alert">内容平台暂不可用，请稍后重试。</p>
     <button type="button" onclick={() => void openSearch()}>重试</button>

@@ -263,7 +263,7 @@ export async function retrieveAuthorizedCorpus(input: {
 
     const registeredBefore = evidence.length;
 
-    // 4a) 法规：按条登记（locator 指向版本正文的精确位置）。
+    // 4a) 法规类内容：按条登记（locator 指向版本正文的精确位置）。
     if (candidate.kind === "legislation") {
       const articleRows = await queryRows(
         session,

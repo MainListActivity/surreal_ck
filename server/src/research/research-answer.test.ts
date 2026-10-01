@@ -208,7 +208,7 @@ describe("assembleResearchAnswerText", () => {
     });
     expect(unavailable).toContain("【覆盖说明】");
     expect(unavailable).toContain("仅基于工作区私有资料（partial）");
-    expect(unavailable).toContain("未登记到任何可用证据；本回答不构成有来源的法律结论");
+    expect(unavailable).toContain("未登记到任何可用证据；本回答不构成有来源的结论");
     expect(unavailable).toContain("引用 [5] 未通过核验（句柄未登记），已从引用中移除。");
     expect(unavailable).toContain("引用 [6] 缺少引用许可，已从引用中移除。");
     expect(unavailable).toContain("有 2 条平台候选因授权不足未纳入（未进入模型上下文）。");

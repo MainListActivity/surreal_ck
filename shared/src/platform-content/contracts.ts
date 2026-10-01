@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { SOURCE_LICENSE_ACTIONS } from "../product-entitlement";
 
-/** 平台法律内容 MCP 的稳定协议版本。 */
+/** 平台内容 MCP 的稳定协议版本。 */
 export const PLATFORM_CONTENT_CONTRACT_VERSION = "1" as const;
 
 export const PLATFORM_CONTENT_LIMITS = {
@@ -423,7 +423,7 @@ export const SearchContentRequestSchema = z.strictObject({
 export type SearchContentRequest = z.infer<typeof SearchContentRequestSchema>;
 
 /**
- * 面向已登录产品用户的只读法律库检索参数。
+ * 面向已登录产品用户的只读内容库检索参数。
  * 发布状态不暴露给调用方，由服务端固定为 published，防止读到撤回内容。
  */
 export const PublicLegalSearchRequestSchema = z.strictObject({

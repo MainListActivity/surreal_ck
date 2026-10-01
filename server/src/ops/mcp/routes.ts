@@ -191,7 +191,7 @@ function buildServer(
     {
       capabilities: { tools: { listChanged: false } },
       instructions:
-        "平台法律内容维护工具。先 get_data_contract，提交后先 inspect_batch，再由人工审阅结果决定 publish_batch。",
+        "平台内容维护工具。先 get_data_contract，提交后先 inspect_batch，再由人工审阅结果决定 publish_batch。",
     },
   );
 
@@ -199,7 +199,7 @@ function buildServer(
     "get_data_contract",
     {
       title: "获取内容数据契约",
-      description: "返回平台法律内容五工具的版本、来源与限制。",
+      description: "返回平台内容五工具的版本、来源与限制。",
       inputSchema: toolInputSchema,
     },
     async (args) => {
@@ -439,7 +439,7 @@ function buildServer(
   server.registerTool(
     "search_content",
     {
-      title: "检索已发布法律内容",
+      title: "检索已发布内容",
       description: "按关键词、内容类型、来源、案号或发布状态检索平台内容。",
       inputSchema: toolInputSchema,
     },
