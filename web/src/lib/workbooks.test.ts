@@ -133,6 +133,10 @@ describe("createBlank — 管理员建空白 workbook", () => {
     const sql = txQuery!.sql;
     // DDL：建实体表 + 默认 name 列，都在同一事务里
     expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS ent_[0-9a-f]+_main SCHEMALESS/);
+    // 成员 DML 权限：participant/employee 凭 fn::current_user() 活跃判定获 CRUD，
+    // 已移除成员（disabled_at）立即失去通路；绝不出现 PERMISSIONS FULL。
+    expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS ent_[0-9a-f]+_main SCHEMALESS CHANGEFEED 7d\n\s+PERMISSIONS FOR select, create, update, delete WHERE fn::current_user\(\) != NONE AND fn::current_user\(\)\.disabled_at = NONE;/);
+    expect(sql).not.toMatch(/PERMISSIONS FULL/);
     expect(sql).toMatch(/DEFINE FIELD IF NOT EXISTS name ON TABLE ent_[0-9a-f]+_main TYPE string/);
     // workbook + sheet 两条 CREATE
     expect(sql).toMatch(/CREATE workbook:[0-9a-f]+ CONTENT/);
@@ -523,6 +527,8 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
       .map((match) => match[1]);
     expect(entityTables).toHaveLength(2);
     expect(new Set(entityTables).size).toBe(2);
+    // 模板包多 sheet 建表同样带成员 DML 权限（与空白建表同一共享谓词）。
+    expect(transaction.sql.match(/PERMISSIONS FOR select, create, update, delete WHERE fn::current_user\(\) != NONE/g)).toHaveLength(2);
     expect(transaction.sql.match(/CREATE sheet:[0-9a-f]+ CONTENT/g)).toHaveLength(2);
     expect(transaction.bindings).toEqual(expect.objectContaining({
       name: "设备巡检台账",
