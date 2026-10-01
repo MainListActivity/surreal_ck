@@ -19,6 +19,10 @@ function setup(opts: {
   workbooks?: Array<Record<string, unknown>>;
   createThrows?: unknown;
   updateThrows?: unknown;
+  /** RETURN record::exists 探针的返回值（形状忠实：conn.query 对 RETURN 标量返回标量本身）。 */
+  probeValue?: boolean;
+  /** 探针抛错（模拟引擎异常）。 */
+  probeError?: unknown;
 } = {}) {
   const rec: Recorder = { queries: [], creates: [], updates: [] };
   const rows = opts.workbooks ?? [];
@@ -32,6 +36,11 @@ function setup(opts: {
     subscribe: () => () => {},
     query: (async (sql: string, bindings?: Record<string, unknown>) => {
       rec.queries.push({ sql, bindings });
+      // 形状忠实分叉：探针是 RETURN 标量，conn.query 契约返回标量本身（非数组）。
+      if (/RETURN record::exists/i.test(sql)) {
+        if (opts.probeError) throw opts.probeError;
+        return opts.probeValue as unknown;
+      }
       // createBlank 走多语句事务（BEGIN TRANSACTION）；用 createThrows 模拟引擎拒绝。
       if (/BEGIN TRANSACTION/i.test(sql) && opts.createThrows) throw opts.createThrows;
       return rows;
@@ -657,6 +666,41 @@ describe("buildCreateWorkbookTransaction — 纯 SurrealQL 构造", () => {
     expect(sql).not.toContain("sheet_resource_usage");
     // record_activity 事件不依赖 legacy 记账表，两种模式下都应安装。
     expect(sql).toContain("DEFINE EVENT OVERWRITE record_activity ON TABLE ent_1111111111111111_main");
+  });
+
+  // ── 探针形状回归（native 工作区误装 guard 的根因）：conn.query 对
+  // RETURN 标量返回标量本身，旧代码无条件解构抛 TypeError 落 catch 恒 true。
+  describe("detectLegacyRecordQuota — 探针形状决定 guard 装配", () => {
+    test("native 工作区（021 清理后记账表已删，探针标量 false）→ 建表事务不装 resource_quota_guard", async () => {
+      const { store, rec } = setup({ workbooks: [], probeValue: false });
+
+      const created = await store.createBlank("native 表");
+
+      expect(created).not.toBeNull();
+      const tx = rec.queries.find((q) => /BEGIN TRANSACTION/i.test(q.sql))!;
+      expect(tx.sql).not.toContain("resource_quota_guard");
+      expect(tx.sql).not.toContain("sheet_resource_usage");
+    });
+
+    test("legacy 工作区（记账行在，探针标量 true）→ 事务照装 resource_quota_guard（行为不变）", async () => {
+      const { store, rec } = setup({ workbooks: [], probeValue: true });
+
+      const created = await store.createBlank("legacy 表");
+
+      expect(created).not.toBeNull();
+      const tx = rec.queries.find((q) => /BEGIN TRANSACTION/i.test(q.sql))!;
+      expect(tx.sql).toContain("DEFINE EVENT OVERWRITE resource_quota_guard");
+    });
+
+    test("探针异常 → 保守按在线处理（guard 照装，语义不变）", async () => {
+      const { store, rec } = setup({ workbooks: [], probeError: new Error("engine down") });
+
+      const created = await store.createBlank("err 表");
+
+      expect(created).not.toBeNull();
+      const tx = rec.queries.find((q) => /BEGIN TRANSACTION/i.test(q.sql))!;
+      expect(tx.sql).toContain("resource_quota_guard");
+    });
   });
 
   test("用户输入只进 bindings，不拼进 SQL 文本（防注入）", () => {

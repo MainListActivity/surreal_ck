@@ -593,10 +593,17 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
    */
   async function detectLegacyRecordQuota(): Promise<boolean> {
     try {
-      const [exists] = await deps.getConn().query<boolean>(
+      const result = await deps.getConn().query<boolean>(
         "RETURN record::exists(workspace_resource_quota:current);",
       );
-      return exists !== false;
+      // query 契约（surreal.ts）：collect()[0] 是首个语句的结果——SELECT 是
+      // 行数组，RETURN 标量是标量本身。旧代码无条件解构，RETURN 标量形状
+      // 下解构布尔抛 TypeError 落进 catch 恒 true，native 工作区（021 清理
+      // 后记账表已删）建表也因此误装 legacy resource_quota_guard。两种形状
+      // 都收敛为布尔：仅当记账行确认存在（legacy 配额仍在线）才装 guard；
+      // 表在行缺（guard 会打断写入）与表已删（native 收口）都跳过。
+      const exists = Array.isArray(result) ? result[0] : result;
+      return exists === true;
     } catch {
       return true;
     }
