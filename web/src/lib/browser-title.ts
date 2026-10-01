@@ -7,6 +7,7 @@ const WORKSPACE_PAGE_TITLES: Record<Exclude<WorkspacePage, "home">, string> = {
   content: "法律内容",
   templates: "模板库",
   dashboard: "仪表盘",
+  office: "办公室",
   admin: "工作区设置",
   "admin-console": "SQL 控制台",
   settings: "个人设置",

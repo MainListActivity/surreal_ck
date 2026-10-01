@@ -10,7 +10,7 @@
  * - `/ops`                                         → 平台配额运营台
  * - `/billing/:accountKey/quota`                   → 计费账户配额
  * - `/w/:slug`                                     → workspace（首页 shell）
- * - `/w/:slug/{docs|templates|dashboard|admin|admin-console|settings|trash}` → workspace 子页面
+ * - `/w/:slug/{docs|templates|dashboard|office|admin|admin-console|settings|trash}` → workspace 子页面
  * - `/w/:slug/wb/:workbookId`                      → editor（默认 sheet）
  * - `/w/:slug/wb/:workbookId/sheet/:sheetId`       → editor（指定 sheet）
  * - `/form` / `/form-success`                      → 公开表单占位页
@@ -23,6 +23,7 @@ export type WorkspacePage =
   | "content"
   | "templates"
   | "dashboard"
+  | "office"
   | "admin"
   | "admin-console"
   | "settings"
@@ -47,6 +48,7 @@ const WORKSPACE_PAGES: readonly WorkspacePage[] = [
   "content",
   "templates",
   "dashboard",
+  "office",
   "admin",
   "admin-console",
   "settings",
