@@ -66,3 +66,17 @@ export function requireQualifiedSource(url: string): QualifiedSourceConfig {
 
 /** 访问限制或许可边界触发时抛出：采集必须立即停止，而不是重试或绕过。 */
 export class AccessRestrictedError extends Error {}
+
+/** 从详情页 URL 推导稳定记录键（法规取内容 id，文书取末段数字）。 */
+export function recordKeyForUrl(url: string, kind: "legislation" | "judicial_document"): string {
+  const path = new URL(url).pathname;
+  const segments = path.split("/").filter(Boolean);
+  if (kind === "legislation") {
+    // /zcfgk/c100009/c5233383/content.html → c5233383
+    const contentId = segments.filter((segment) => /^c\d+$/u.test(segment)).at(-1);
+    if (contentId) return contentId;
+  }
+  const last = segments.at(-1)?.replace(/\.html?$/u, "");
+  if (last && /^\d+$/u.test(last)) return last;
+  throw new Error(`无法从 URL 确定稳定记录键：${url}`);
+}
