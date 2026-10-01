@@ -50,8 +50,8 @@ export type ResourceRetrievalExecutorDeps = {
   /** 默认：用调用者 session 查 session::db()（workspace db 名即 workspace 标识）。 */
   resolveWorkspaceId?(context: AiContextSnapshot, session?: Surreal): Promise<string>;
   searchResources(req: SearchResourcesRequest, session?: Surreal): Promise<SearchResourcesResponse>;
-  /** workspace 资源未命中后，查询平台已发布法律库。 */
-  searchLegalContent?(req: Readonly<{ query: string; limit: number }>): Promise<SearchContentResponse>;
+  /** workspace 资源未命中后，查询平台已发布内容库。 */
+  searchPlatformContent?(req: Readonly<{ query: string; limit: number }>): Promise<SearchContentResponse>;
   createResearchSession?(req: CreateResearchSessionRequest, session?: Surreal): Promise<ResearchSessionResponse>;
 };
 
@@ -105,9 +105,9 @@ export function makeResourceRetrievalExecutor(
 ): SubAgentExecutor {
   const resolveWorkspaceId = deps.resolveWorkspaceId ?? resolveWorkspaceIdFromSession;
   const searchResources = deps.searchResources;
-  const searchLegalContent = deps.searchLegalContent;
+  const searchPlatformContent = deps.searchPlatformContent;
   const createResearchSession = deps.createResearchSession;
-  const coverageNotice = searchLegalContent ? "" : "平台法律库授权检索暂不可用，本次仅检查了工作区资源。";
+  const coverageNotice = searchPlatformContent ? "" : "平台已发布内容库授权检索暂不可用，本次仅检查了工作区资源。";
 
   return async ({ taskText, shared, runId, surrealSession }): Promise<SubAgentOutput> => {
     const workspaceId = await resolveWorkspaceId(shared.userContext, surrealSession);
@@ -144,12 +144,12 @@ export function makeResourceRetrievalExecutor(
       };
     }
 
-    if (response.status === "miss" && searchLegalContent) {
-      const legal = await searchLegalContent({ query: taskText, limit: 5 });
+    if (response.status === "miss" && searchPlatformContent) {
+      const legal = await searchPlatformContent({ query: taskText, limit: 5 });
       if (legal.items.length > 0) {
         const answer = createResourceCitationAnswer({
           question: taskText,
-          resources: legal.items.map(legalContentToResource),
+          resources: legal.items.map(platformContentToResource),
         });
         answer.citations = answer.citations.map((citation, index) => {
           const item = legal.items[index]!;
@@ -165,7 +165,7 @@ export function makeResourceRetrievalExecutor(
           };
         });
         return {
-          text: `已从平台已发布法律库检索到结果。\n${answer.text}`,
+          text: `已从平台已发布内容库检索到结果。\n${answer.text}`,
           citations: answer.citations,
           confirmed: {},
         };
@@ -201,7 +201,7 @@ export function makeResourceRetrievalExecutor(
   };
 }
 
-function legalContentToResource(item: SearchContentItem): CitableResource {
+function platformContentToResource(item: SearchContentItem): CitableResource {
   const citations = orderCitationsForEvidence(item.judgment?.citations ?? []);
   const citationEvidence = citations.slice(0, 3).map((citation, order) => {
     const reference = [citation.rawLawName, citation.rawArticleLabel].filter(Boolean).join(" ");
@@ -236,7 +236,7 @@ function legalContentToResource(item: SearchContentItem): CitableResource {
     id: item.itemId,
     resourceType: item.kind === "judicial_document" ? "legal_judgment" : "legislation",
     title: item.title,
-    summary: summaryParts.join(" · ") || bodyExcerpt || "平台已发布法律内容",
+    summary: summaryParts.join(" · ") || bodyExcerpt || "平台已发布内容",
     sourceUrl: item.version.sourceUrl,
     sourceTitle: item.version.sourceKey,
     evidence,
@@ -270,13 +270,13 @@ export function orderCitationsForEvidence<
 function describeCitationResolution(resolution: "unresolved" | "ambiguous" | "proposed" | "verified"): string {
   switch (resolution) {
     case "verified":
-      return "法条版本已核验";
+      return "所引版本已核验";
     case "proposed":
-      return "已匹配候选法条，待核验";
+      return "已匹配候选引用，待核验";
     case "ambiguous":
-      return "匹配到多个法规版本，待确认";
+      return "匹配到多个内容版本，待确认";
     case "unresolved":
-      return "法条版本尚未绑定";
+      return "所引版本尚未绑定";
   }
 }
 

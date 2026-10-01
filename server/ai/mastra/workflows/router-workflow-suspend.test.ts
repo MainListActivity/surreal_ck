@@ -581,14 +581,14 @@ describe("router workflow suspend & resume", () => {
 
 test("LCA07：研究暂停跨进程恢复重新开窗口，快照不含证据文本和会话", async () => {
   workflowRows.clear();
-  const { makeLegalResearchExecutor } = await import("../agents/legal-research-agent");
+  const { makeResearchExecutor } = await import("../agents/research-agent");
   let revision = "1";
   let opens = 0;
   const prompts: string[] = [];
   const resource = { id: "resource_item:one", workspaceId: "ws_demo", resourceType: "generic_note", title: "当前私有材料", summary: "meta",
     evidence: [{ order: 0, text: "PRIVATE-CURRENT-CANARY", sourceUrl: "", sourceTitle: "", capturedAt: new Date().toISOString() }],
     sourceUrl: "", tags: [], structuredPayload: {}, quality: "user-confirmed", createdAt: "", updatedAt: "" } as const;
-  const research = makeLegalResearchExecutor({ resolveWorkspaceId: async () => "ws_demo",
+  const research = makeResearchExecutor({ resolveWorkspaceId: async () => "ws_demo",
     searchResources: async () => ({ status: "candidates", indexStatus: "index-disabled", queryText: "合同", results: [{ resource: { ...resource, evidence: [...resource.evidence], tags: [] }, score: .4, vectorScore: 0, keywordScore: 0, qualityScore: 0, recencyScore: 0 }] }),
     loadResource: async () => ({ ...resource, evidence: [...resource.evidence], tags: [] }),
     answerModel: async p => { prompts.push(p); return "合法资料分析 [1]"; } });
