@@ -168,7 +168,7 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
 
     expect(workbook).toBeNull();
     expect(store.error).toContain("列表组件至少需要一个展示字段");
-    expect(rec.queries).toEqual([]);
+    expect(rec.queries.filter((query) => /BEGIN TRANSACTION/i.test(query.sql))).toEqual([]);
   });
 
   test("默认包含模板样例记录，并把跨表样例引用解析为本次实例的 RecordId", async () => {
@@ -215,11 +215,12 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
     });
 
     expect(workbook).not.toBeNull();
-    expect(queries).toHaveLength(1);
-    expect(queries[0]!.sql).toContain("CREATE ent_1111111111111111_2222222222222222:4444444444444444 CONTENT $sampleRecord0");
-    expect(queries[0]!.sql).toContain("CREATE ent_1111111111111111_3333333333333333:5555555555555555 CONTENT $sampleRecord1");
-    expect(queries[0]!.bindings?.sampleRecord0).toEqual({ name: "甲公司" });
-    expect(String((queries[0]!.bindings?.sampleRecord1 as Record<string, unknown>).creditor))
+    const [txn] = queries.filter((query) => /BEGIN TRANSACTION/i.test(query.sql));
+    expect(queries.filter((query) => /BEGIN TRANSACTION/i.test(query.sql))).toHaveLength(1);
+    expect(txn!.sql).toContain("CREATE ent_1111111111111111_2222222222222222:4444444444444444 CONTENT $sampleRecord0");
+    expect(txn!.sql).toContain("CREATE ent_1111111111111111_3333333333333333:5555555555555555 CONTENT $sampleRecord1");
+    expect(txn!.bindings?.sampleRecord0).toEqual({ name: "甲公司" });
+    expect(String((txn!.bindings?.sampleRecord1 as Record<string, unknown>).creditor))
       .toBe("ent_1111111111111111_2222222222222222:4444444444444444");
   });
 
@@ -245,9 +246,9 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
     }, undefined, { includeSampleData: false });
 
     expect(workbook).not.toBeNull();
-    expect(queries).toHaveLength(1);
-    expect(queries[0]!.sql).not.toContain("$sampleRecord");
-    expect(Object.keys(queries[0]!.bindings ?? {})).not.toContain("sampleRecord0");
+    const [txn] = queries.filter((query) => /BEGIN TRANSACTION/i.test(query.sql));
+    expect(txn!.sql).not.toContain("$sampleRecord");
+    expect(Object.keys(txn!.bindings ?? {})).not.toContain("sampleRecord0");
   });
 
   test("样例字段类型被数据库拒绝时返回中文回滚错误，且不加入工作簿列表", async () => {
@@ -268,6 +269,31 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
     expect(store.error).toBe("模板样例数据不符合字段定义，工作簿未创建：Expected bool but found '错误值'");
   });
 
+  test("配额基础设施错误透传原文，不被误标为样例字段错误", async () => {
+    const { store } = setup({
+      createThrows: new Error(
+        "Error while processing event resource_quota_guard: The table 'sheet_resource_usage' does not exist",
+      ),
+    });
+
+    const workbook = await store.createFromTemplate({
+      id: "workbook_template:claims",
+      sheets: [{
+        key: "creditors",
+        label: "债权人表",
+        columns: [{ key: "name", label: "名称", fieldType: "text" }],
+        sampleRecords: [{ key: "creditor-a", values: { name: "甲公司" } }],
+      }],
+    });
+
+    expect(workbook).toBeNull();
+    expect(store.error).toBe(
+      "Error while processing event resource_quota_guard: The table 'sheet_resource_usage' does not exist",
+    );
+    expect(store.error).not.toContain("模板样例数据不符合字段定义");
+  });
+
+
   test("同一数据表的样例记录 key 重复时在事务前拒绝，避免引用歧义", async () => {
     const { store, rec } = setup();
 
@@ -286,7 +312,7 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
 
     expect(workbook).toBeNull();
     expect(store.error).toBe("模板样例数据不符合字段定义，工作簿未创建：样例记录 key 重复：creditors/creditor-a");
-    expect(rec.queries).toHaveLength(0);
+    expect(rec.queries.filter((query) => /BEGIN TRANSACTION/i.test(query.sql))).toHaveLength(0);
   });
 
   test("样例引用找不到目标稳定 key 时在事务前返回中文错误", async () => {
@@ -307,7 +333,7 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
 
     expect(workbook).toBeNull();
     expect(store.error).toContain("样例数据引用无法解析：materials/missing");
-    expect(rec.queries).toHaveLength(0);
+    expect(rec.queries.filter((query) => /BEGIN TRANSACTION/i.test(query.sql))).toHaveLength(0);
   });
 
   test("模板字段通过稳定数据表 key 引用本次实例化的真实实体表", async () => {
@@ -346,7 +372,7 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
     });
 
     expect(workbook).not.toBeNull();
-    const transaction = queries[0]!;
+    const transaction = queries.find((query) => /BEGIN TRANSACTION/i.test(query.sql))!;
     const creditorTable = "ent_1111111111111111_2222222222222222";
     expect(transaction.sql).toContain(
       `DEFINE FIELD IF NOT EXISTS creditor ON TABLE ent_1111111111111111_3333333333333333 TYPE option<record<${creditorTable}>>`,
@@ -400,10 +426,10 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
 
     expect(workbook).toBeNull();
     expect(store.error).toBe("引用目标数据表不存在：creditors");
-    expect(rec.queries).toHaveLength(0);
+    expect(rec.queries.filter((query) => /BEGIN TRANSACTION/i.test(query.sql))).toHaveLength(0);
   });
 
-  test("模板数据表 key 重复时在 DDL 前返回中文错误且不发查询", async () => {
+  test("模板数据表 key 重复时在 DDL 前返回中文错误且不发事务", async () => {
     const { store, rec } = setup();
 
     const workbook = await store.createFromTemplate({
@@ -416,7 +442,7 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
 
     expect(workbook).toBeNull();
     expect(store.error).toBe("模板数据表 key 重复：creditors");
-    expect(rec.queries).toHaveLength(0);
+    expect(rec.queries.filter((query) => /BEGIN TRANSACTION/i.test(query.sql))).toHaveLength(0);
   });
 
   test("非引用字段声明目标数据表时在 DDL 前返回中文错误", async () => {
@@ -441,7 +467,7 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
 
     expect(workbook).toBeNull();
     expect(store.error).toBe("字段“备注”不是引用字段，不能声明目标数据表");
-    expect(rec.queries).toHaveLength(0);
+    expect(rec.queries.filter((query) => /BEGIN TRANSACTION/i.test(query.sql))).toHaveLength(0);
   });
 
   test("双数据表模板在同一事务中创建两张独立实体表和数据表元数据", async () => {
@@ -576,8 +602,9 @@ describe("buildCreateWorkbookTransaction — 纯 SurrealQL 构造", () => {
     });
 
     expect(workbook?.id).toBe("workbook:1111111111111111");
-    expect(queries[0]).toContain("CREATE sheet:2222222222222222 CONTENT");
-    expect(queries[0]).toContain("CREATE sheet:3333333333333333 CONTENT");
+    const txnSql = queries.find((sql) => /BEGIN TRANSACTION/i.test(sql))!;
+    expect(txnSql).toContain("CREATE sheet:2222222222222222 CONTENT");
+    expect(txnSql).toContain("CREATE sheet:3333333333333333 CONTENT");
   });
 
   test("表名 / workbook id / sheet 三者 key 一致且引用闭环", () => {
@@ -616,6 +643,20 @@ describe("buildCreateWorkbookTransaction — 纯 SurrealQL 构造", () => {
     );
     expect(sql).toContain("sheet = sheet:2222222222222222");
     expect(sql).toContain('"quota-records-exceeded"');
+  });
+
+  test("legacyRecordQuota=false 时新实体表不安装 legacy 配额事件", () => {
+    const keys = ["1111111111111111", "2222222222222222"];
+    const { sql } = buildCreateWorkbookTransaction(
+      "台账",
+      { legacyRecordQuota: false },
+      () => keys.shift()!,
+    );
+
+    expect(sql).not.toContain("resource_quota_guard");
+    expect(sql).not.toContain("sheet_resource_usage");
+    // record_activity 事件不依赖 legacy 记账表，两种模式下都应安装。
+    expect(sql).toContain("DEFINE EVENT OVERWRITE record_activity ON TABLE ent_1111111111111111_main");
   });
 
   test("用户输入只进 bindings，不拼进 SQL 文本（防注入）", () => {

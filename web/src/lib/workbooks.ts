@@ -157,6 +157,13 @@ export type CreateWorkbookOptions = {
     id: string;
     receipts: ImportReceiptForCreate[];
   };
+  /**
+   * 工作区仍在线的 legacy 记录配额（021 清理前）。false 时新实体表不安装
+   * resource_quota_guard——native quota 工作区已删除其依赖的记账表，装上的
+   * 事件会让所有写入抛 "table does not exist"。缺省 true 保持旧行为；生产
+   * 路径由 create() 里的 record::exists 探针显式赋值。
+   */
+  legacyRecordQuota?: boolean;
 };
 
 type ImportReceiptForCreate = {
@@ -456,7 +463,7 @@ export function buildCreateWorkbookTransaction(
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE ${sheet.tableName} TYPE datetime VALUE time::now() READONLY;
 DEFINE FIELD IF NOT EXISTS updated_at ON TABLE ${sheet.tableName} TYPE datetime VALUE time::now();
 ${fieldDdl}
-${buildRecordQuotaGuardSurql({ tableName: sheet.tableName, sheetId: toRecordId(sheet.id) })}
+${options.legacyRecordQuota === false ? "" : buildRecordQuotaGuardSurql({ tableName: sheet.tableName, sheetId: toRecordId(sheet.id) })}
 DEFINE EVENT OVERWRITE record_activity ON TABLE ${sheet.tableName} WHEN $event = "CREATE" OR $event = "UPDATE" OR $event = "DELETE" THEN { LET $verb = IF $event = "DELETE" { "record.delete" } ELSE { "record.write" }; LET $rec = IF $event = "DELETE" { $before } ELSE { $after }; CREATE activity_event CONTENT { verb: $verb, target_kind: "record", target: $rec.id }; };
 CREATE ${sheet.id} CONTENT { workbook: ${wbId}, label: ${labelBinding}, table_name: ${tableBinding}, column_defs: ${columnsBinding}${templateKeyClause} };`;
   }).join("\n");
@@ -579,6 +586,23 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
   }
 
   /**
+   * 探测本工作区 legacy 记录配额是否仍在线。021 清理后记账表被移除，事件
+   * 引用缺失表会导致所有写入抛错；`record::exists` 是点查，不命中表定义
+   * 检查，表不存在时返回 false 而不抛错。探测失败按在线处理：装配的硬化
+   * 事件在表缺失时自动失效，安全方向偏向保守。
+   */
+  async function detectLegacyRecordQuota(): Promise<boolean> {
+    try {
+      const [exists] = await deps.getConn().query<boolean>(
+        "RETURN record::exists(workspace_resource_quota:current);",
+      );
+      return exists !== false;
+    } catch {
+      return true;
+    }
+  }
+
+  /**
    * 建工作簿 = 一次事务内建全部实体表（DDL）+ workbook + 全部 sheet，整体原子
    * （{@link buildCreateWorkbookTransaction}）。新工作簿打开即可用，不会出现
    * 「workbook 已建但无 sheet / sheet 指向不存在表」的中间态。
@@ -588,15 +612,18 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
     state.error = null;
     let workbookId: RecordIdString;
     try {
-      const transaction = buildCreateWorkbookTransaction(name, options, deps.generateKey);
+      // 先探测配额模式（只读点查），再一次性构造事务；构造错误会在写入前抛出。
+      const legacyRecordQuota = await detectLegacyRecordQuota();
+      const transaction = buildCreateWorkbookTransaction(name, { ...options, legacyRecordQuota }, deps.generateKey);
       workbookId = transaction.workbookId;
       const { sql, bindings } = transaction;
       await deps.getConn().query(sql, bindings);
     } catch (err) {
       const message = describeWriteError(err);
-      state.error = options.includesTemplateDashboard && !message.startsWith("没有权限")
+      const isInfraFailure = /processing event|does not exist|quota/i.test(message);
+      state.error = options.includesTemplateDashboard && !message.startsWith("没有权限") && !isInfraFailure
         ? `模板默认仪表盘无效，工作簿未创建：${message}`
-        : options.includesTemplateSamples && !message.startsWith("没有权限")
+        : options.includesTemplateSamples && !message.startsWith("没有权限") && !isInfraFailure
           ? `模板样例数据不符合字段定义，工作簿未创建：${message}`
           : message;
       emit();
