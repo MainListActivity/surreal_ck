@@ -21,7 +21,7 @@ function useUser(subject = testUser.subject): MiddlewareHandler<AppBindings> {
   };
 }
 
-const fakeSession = { close: async () => {} } as unknown as Surreal;
+const fakeSession = { close: async () => {}, query: async (_sql: string, params: Record<string, unknown>) => [[{ id: "workflow_run:fixture", resume_fence: params?.fence }]] } as unknown as Surreal;
 
 // 永远成功的会话工厂：把 rawToken authenticate 后的会话交给 service。
 const okSessionFactory: CallerSessionFactory = async () => fakeSession;

@@ -68,6 +68,7 @@ describe("LCA05 AI 额度快照与展示", () => {
     expect(snapshot.reserved).toBe(10);
     // 暂停桶的 available+reserved 全部计入"暂停"，到期桶计入"已过期"
     expect(snapshot.suspended).toBe(25);
+    expect(snapshot.terminated).toBe(0);
     expect(snapshot.expired).toBe(15);
     expect(snapshot.entries.map((entry) => entry.kind)).toEqual(["settle", "grant"]);
     expect(snapshot.notices[0]?.message).toBe("AI 额度已用过半");
@@ -91,10 +92,43 @@ describe("LCA05 AI 额度快照与展示", () => {
     expect(aiAllowanceLedgerKindLabels.settle).toBe("结算");
   });
 
-  test("桶状态标签：已过期优先于已暂停", () => {
-    expect(aiAllowanceBucketStatusLabel({ expired: true, status: "suspended" })).toBe("已过期");
-    expect(aiAllowanceBucketStatusLabel({ expired: false, status: "suspended" })).toBe("已暂停");
-    expect(aiAllowanceBucketStatusLabel({ expired: false, status: "active" })).toBe("生效中");
+  test("桶状态标签：已过期 > 已终止 > 已暂停 > 生效中", () => {
+    expect(aiAllowanceBucketStatusLabel({ expired: true, status: "suspended", terminated: true })).toBe("已过期");
+    expect(aiAllowanceBucketStatusLabel({ expired: true, status: "suspended", terminated: false })).toBe("已过期");
+    expect(aiAllowanceBucketStatusLabel({ expired: false, status: "active", terminated: true })).toBe("已终止");
+    expect(aiAllowanceBucketStatusLabel({ expired: false, status: "suspended", terminated: false })).toBe("已暂停");
+    expect(aiAllowanceBucketStatusLabel({ expired: false, status: "active", terminated: false })).toBe("生效中");
+  });
+
+  test("LCA08：已终止桶（试用转付费）离开可消费余额，计入 terminated", async () => {
+    const now = Date.now();
+    const conn = fakeConn({
+      ai_rate_card: [
+        { id: "ai_rate_card:research_test_v1", amount: 5, revision: 1, revision_label: "test-rate-v1", tier_label: "t" },
+      ],
+      ai_allowance_bucket: [
+        {
+          id: "ai_allowance_bucket:trial_old", kind: "plan_cycle", label: "旧试用",
+          period_key: "trial:sub:2026-09", total: 40, available: 30, reserved: 0, settled: 10,
+          status: "active", terminated_at: new Date(now - 60_000).toISOString(),
+          effective_from: new Date(now - 86400_000).toISOString(),
+          expires_at: new Date(now + 86400_000).toISOString(),
+        },
+        {
+          id: "ai_allowance_bucket:paid_new", kind: "plan_cycle", label: "付费周期",
+          period_key: "subscription:sub:2026-09", total: 200, available: 200, reserved: 0, settled: 0,
+          status: "active",
+          effective_from: new Date(now - 60_000).toISOString(),
+          expires_at: new Date(now + 86400_000).toISOString(),
+        },
+      ],
+      ai_ledger_entry: [],
+      ai_allowance_notice: [],
+    });
+    const snapshot = await loadAiAllowanceSnapshot(conn);
+    expect(snapshot.available).toBe(200);
+    expect(snapshot.terminated).toBe(30);
+    expect(snapshot.expired).toBe(0);
   });
 
   test("时间格式：非法输入返回空串", () => {

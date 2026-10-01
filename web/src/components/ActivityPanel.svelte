@@ -2,7 +2,11 @@
   import { onDestroy, onMount } from "svelte";
   import Avatar from "./Avatar.svelte";
   import RiskNotificationInbox from "./RiskNotificationInbox.svelte";
-  import { loadRiskNotifications, type RiskNotification } from "$lib/risk-notifications";
+  import {
+    loadRiskNotifications,
+    watchNotificationInbox,
+    type RiskNotification,
+  } from "$lib/risk-notifications";
   import {
     type ActivityTab,
     type ChartBar,
@@ -14,9 +18,11 @@
   import { getSurreal } from "$lib/surreal";
 
   let {
+    slug,
     onopenrecord,
     onaskai,
   }: {
+    slug?: string;
     onopenrecord?: (target: { workbookId: string; sheetId: string; recordId: string }) => void;
     onaskai?: (notification: RiskNotification) => void;
   } = $props();
@@ -39,9 +45,7 @@
   onMount(() => {
     void activityFeed.start();
     void refreshNotificationCount();
-    void getSurreal().liveTable("user_notification", () => void refreshNotificationCount())
-      .then((stop) => { stopNotificationLive = stop; })
-      .catch(() => undefined);
+    stopNotificationLive = watchNotificationInbox(getSurreal(), () => void refreshNotificationCount());
     if (activeTab === "overview") loadOverview();
   });
 
@@ -148,7 +152,7 @@
         </div>
       </div>
     {:else if activeTab === "notifications"}
-      <RiskNotificationInbox {onopenrecord} {onaskai} />
+      <RiskNotificationInbox {slug} {onopenrecord} {onaskai} />
     {/if}
   </div>
 </aside>

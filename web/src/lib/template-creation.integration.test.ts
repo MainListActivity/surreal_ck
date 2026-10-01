@@ -3,6 +3,10 @@ import { generateKeyPairSync, sign } from "node:crypto";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { StringRecordId, Surreal, Table } from "surrealdb";
+import {
+  buildLegacyQuotaCleanupSurql,
+  buildRecordQuotaGuardSurql,
+} from "@surreal-ck/shared";
 import { loadTemplateScripts } from "@surreal-ck/shared/workspace-template";
 import { createBrowserConn, type SurrealConn } from "./surreal";
 import { recordToTemplate, templateColumnDefs, templateSheetsForCreate } from "./workbook-templates";
@@ -214,5 +218,51 @@ describe("模板创建：真实管理员事务与成员边界", () => {
     expect(await store.createBlank("尝试绕过入口")).toBeNull();
     expect(store.error).toContain("没有权限");
     expect(await snapshot(root)).toEqual(before);
+  }, 30_000);
+
+  test("021 清理后的工作区建簿不再安装 legacy guard，样例与后续写入均成功", async () => {
+    const { root, conn, template } = await setup();
+    // 复现生产的 native 清理后状态：移除全部 resource_quota_guard 与三张记账表。
+    const entityTables = (await root.query<string>("SELECT VALUE table_name FROM sheet").collect())
+      .flat().filter((name): name is string => typeof name === "string");
+    await root.query(buildLegacyQuotaCleanupSurql(entityTables)).collect();
+
+    const store = createWorkbooksStore({ getConn: () => conn });
+    const workbook = await store.createFromTemplate(template);
+    expect(store.error).toBeNull();
+    expect(workbook).not.toBeNull();
+
+    const sheets = await conn.query<{ table_name: string }>("SELECT VALUE table_name FROM sheet WHERE workbook = $wb", {
+      wb: new StringRecordId(workbook!.id),
+    });
+    expect(sheets).toHaveLength(2);
+    for (const sheet of sheets) {
+      // 新实体表上没有 quota guard；样例与后续 INSERT 都不再被缺失表事件阻断。
+      const info = await root.query<Record<string, unknown>>(`RETURN (INFO FOR TABLE ${sheet.table_name}).events`).collect();
+      expect(JSON.stringify(info)).not.toContain("resource_quota_guard");
+      const [inserted] = await conn.query<Record<string, unknown>>(
+        `CREATE ${sheet.table_name} CONTENT { name: "后续写入" }`,
+      );
+      expect(inserted?.id).toBeDefined();
+    }
+  }, 30_000);
+
+  test("残留的硬化 guard 在记账表缺失时自动失效，不再阻断写入", async () => {
+    const { root, conn } = await setup();
+    // 模拟清理后由旧实现安装的事件：升级后的守卫体先查 record::exists 哨兵。
+    await root.query(buildLegacyQuotaCleanupSurql([])).collect();
+    await root.query("CREATE sheet:orphaned CONTENT { workbook: workbook:none, label: '孤儿', table_name: 'ent_orphaned_main', column_defs: [] }").collect();
+    await root.query("DEFINE TABLE ent_orphaned_main SCHEMALESS;").collect();
+    await root.query(buildRecordQuotaGuardSurql({
+      tableName: "ent_orphaned_main",
+      sheetId: new StringRecordId("sheet:orphaned"),
+    })).collect();
+
+    const [created] = await conn.query<Record<string, unknown>>(
+      "CREATE ent_orphaned_main CONTENT { name: '写入成功' }",
+    );
+    expect(created?.id).toBeDefined();
+    const rows = await conn.query<Record<string, unknown>>("SELECT * FROM ent_orphaned_main");
+    expect(rows).toHaveLength(1);
   }, 30_000);
 });

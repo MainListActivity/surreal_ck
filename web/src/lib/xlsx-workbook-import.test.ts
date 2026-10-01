@@ -63,11 +63,11 @@ describe("OIP-13 workbooksStore.importXlsxWorkbook", () => {
         rejected: [{ rowNumber: 3, field: "整条记录", reason: "空白记录", sourceCells: [""] }],
       },
     ]);
-    expect(queries).toHaveLength(1);
-    expect(queries[0]!.sql).toMatch(/^BEGIN TRANSACTION;/u);
-    expect(queries[0]!.sql.match(/DEFINE TABLE IF NOT EXISTS ent_/gu)).toHaveLength(2);
-    expect(queries[0]!.sql).toMatch(/COMMIT TRANSACTION;$/u);
-    expect(Object.values(queries[0]!.bindings ?? {}).filter((value) =>
+    expect(queries.filter((query) => /BEGIN TRANSACTION/i.test(query.sql))).toHaveLength(1);
+    expect(queries.find((query) => /BEGIN TRANSACTION/i.test(query.sql))!.sql).toMatch(/^BEGIN TRANSACTION;/u);
+    expect(queries.find((query) => /BEGIN TRANSACTION/i.test(query.sql))!.sql.match(/DEFINE TABLE IF NOT EXISTS ent_/gu)).toHaveLength(2);
+    expect(queries.find((query) => /BEGIN TRANSACTION/i.test(query.sql))!.sql).toMatch(/COMMIT TRANSACTION;$/u);
+    expect(Object.values(queries.find((query) => /BEGIN TRANSACTION/i.test(query.sql))!.bindings ?? {}).filter((value) =>
       typeof value === "object" && value !== null && "field_1" in value)).toEqual([
       { field_1: "甲公司", field_2: 1000 },
       { field_1: "事项" },
@@ -100,7 +100,7 @@ describe("OIP-13 workbooksStore.importXlsxWorkbook", () => {
     });
 
     expect(result?.sheets[0]).toMatchObject({ importedCount: 1, skippedCount: 1 });
-    const transaction = queries[0]!;
+    const transaction = queries.find((query) => /BEGIN TRANSACTION/i.test(query.sql))!;
     expect(transaction.sql.match(/INSERT INTO import_batch_row/gu)).toHaveLength(2);
     expect(transaction.sql).toContain("ON DUPLICATE KEY UPDATE");
     expect(transaction.sql).toContain("UPDATE import_batch SET workbook = workbook:");

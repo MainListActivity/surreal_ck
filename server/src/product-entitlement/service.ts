@@ -4,6 +4,8 @@ import type {
   ProductEntitlementView,
   PublishProductRevision,
 } from "@surreal-ck/shared";
+import type { PlanCycleDirective } from "../ai-allowance/plan-cycle";
+import { planCycleDirective } from "../ai-allowance/plan-cycle";
 import { resolveEntitlement, toView, type ContentGrantFact, type EntitlementDraft, type ProductRevisionBody, type ResourceFact, type SubscriptionFact } from "./resolve";
 
 export class ProductEntitlementError extends Error {
@@ -19,6 +21,8 @@ export class ProductEntitlementError extends Error {
 export type ProductActor = { subject: string; capabilities: readonly string[] };
 
 export type WorkspaceRef = { id: string; slug: string };
+/** 订阅生命周期刷新需要 workspace 的 runtime 数据库名来触达 AI 额度账本。 */
+export type WorkspaceRuntimeRef = WorkspaceRef & { dbName: string };
 export type SnapshotRecord = EntitlementDraft & { id: string; workspaceId: string; workspaceSlug: string; revision: number };
 export type AuditRecord = {
   action: "publish" | "assign" | "grant";
@@ -29,6 +33,7 @@ export type AuditRecord = {
 
 export interface ProductEntitlementStore {
   workspaceBySlug(slug: string): Promise<WorkspaceRef | null>;
+  workspaceById(id: string): Promise<WorkspaceRuntimeRef | null>;
   membership(subject: string, workspaceId: string): Promise<"admin" | "participant" | null>;
   activeItem(workspaceId: string): Promise<SubscriptionFact | null>;
   bindProductRevision(itemId: string, productPlanRevisionId: string): Promise<void>;
@@ -195,6 +200,36 @@ export class ProductEntitlementService {
     return (await this.storedView(actor.subject, input.idempotencyKey, requestDigest)) ?? materialized.view;
   }
 
+  /**
+   * LCA08：订阅生命周期事件（provider 事件、运营意图、时间边界 sweep）
+   * 驱动的权益快照重算。digest 未变则不动快照；变化时复用 materialize 的
+   * digest 去重 / 旧快照回指 / 并发重试语义。同时返回 AI 周期额度指令，
+   * 由调用方落到目标 workspace 账本（本方法不写 workspace database）。
+   */
+  async refreshSubscriptionDriven(
+    workspaceId: string,
+    ctx: { correlationId: string; reason?: string },
+  ): Promise<{ changed: boolean; planCycle: PlanCycleDirective | null }> {
+    const workspace = await this.store.workspaceById(workspaceId);
+    if (!workspace) throw new ProductEntitlementError("not_found", "工作区不存在");
+    const { draft, subscription } = await this.resolveFor(workspace);
+    // 周期身份来自订阅事实（订阅级付费窗口），与 item 生效时间解耦；
+    // 事件身份（item id + item 生效时间）来自当前已确认商业事件，是升级
+    // 补发的事件键与折算时点，重试不使用 now。
+    const planCycle = planCycleDirective(
+      workspace.dbName,
+      draft,
+      subscription ? { cycleFrom: subscription.cycleFrom, cycleUntil: subscription.cycleUntil } : null,
+      subscription ? { key: subscription.itemId, effectiveAt: subscription.effectiveFrom } : null,
+    );
+    const current = await this.store.currentSnapshot(workspace.id);
+    if (current && current.digest === draft.digest) {
+      return { changed: false, planCycle };
+    }
+    await this.materialize(workspace, `lifecycle:${ctx.correlationId}`);
+    return { changed: true, planCycle };
+  }
+
   async getForOperator(actor: ProductActor, workspaceSlug: string): Promise<ProductEntitlementView> {
     denyUnless(actor, "quota.read");
     const workspace = await this.requireWorkspace(workspaceSlug);
@@ -332,17 +367,27 @@ export class ProductEntitlementService {
   }
 
   private async draftFor(workspace: WorkspaceRef, revisionOverride?: ProductRevisionBody): Promise<EntitlementDraft> {
+    return (await this.resolveFor(workspace, revisionOverride)).draft;
+  }
+
+  private async resolveFor(workspace: WorkspaceRef, revisionOverride?: ProductRevisionBody): Promise<{
+    draft: EntitlementDraft;
+    subscription: SubscriptionFact | null;
+  }> {
     const subscription = await this.store.activeItem(workspace.id);
     const subscriptionForResolve = subscription && revisionOverride
       ? { ...subscription, productPlanRevisionId: revisionOverride.id }
       : subscription;
     const productRevision = revisionOverride
       ?? (subscription?.productPlanRevisionId ? await this.store.productRevision(subscription.productPlanRevisionId) : null);
-    return resolveEntitlement({
-      now: this.now().toISOString(),
-      subscription: subscriptionForResolve,
-      productRevision,
-      grants: await this.store.grants(workspace.id),
-    });
+    return {
+      draft: resolveEntitlement({
+        now: this.now().toISOString(),
+        subscription: subscriptionForResolve,
+        productRevision,
+        grants: await this.store.grants(workspace.id),
+      }),
+      subscription,
+    };
   }
 }

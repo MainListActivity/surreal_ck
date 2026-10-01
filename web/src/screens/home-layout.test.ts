@@ -36,7 +36,7 @@ describe("HR-01 workspace 首页布局骨架", () => {
 
     expect(workspace).toMatch(/import ActivityPanel from "\.\.\/components\/ActivityPanel\.svelte";/);
     expect(workspace).toMatch(
-      /\{#if page === "home"\}\s*<ActivityPanel \{onopenrecord\} onaskai=\{onasknotification\} \/>\s*\{\/if\}/,
+      /\{#if page === "home"\}\s*<ActivityPanel \{slug\} \{onopenrecord\} onaskai=\{onasknotification\} \/>\s*\{\/if\}/,
     );
     expect(workspace.match(/<ActivityPanel/g)).toHaveLength(1);
 
@@ -118,7 +118,9 @@ describe("HR-05 首页快捷操作与 AI 入口", () => {
     expect(home).toContain('workbooksStore.createBlank("未命名工作簿")');
     expect(home).toContain("onopen?.(wb.id)");
     expect(home).toContain("handleImportClick");
-    expect(home).toContain('accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"');
+    expect(home).toContain('accept=".csv,.xls,.xlsx,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"');
+    expect(home).toContain("/\\.(?:csv|xls|xlsx)$/iu");
+    expect(home).toContain("/\\.(?:xlsx|xls)$/iu");
     expect(home).toContain("parseCsvImport(source, file.name)");
     expect(home).toContain("<CsvImportDialog");
   });

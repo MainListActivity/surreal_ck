@@ -42,6 +42,27 @@ import {
  *   跨进程互斥；进程内同 (database, employeeId) 共用一条 lane——窗口按
  *   FIFO drain 该员工的 pending/过期触发，事件风暴下同一员工最多有
  *   「当前窗口 + 至多一个合并后的后续窗口」，不为每条触发各开窗口。
+ * - 窗口有界收敛（D1 返工）：窗口按 abort 收敛，三个来源共用同一条路径——
+ *   ① stop() 到点关停（"window-aborted"）；② 看门狗（窗口超过
+ *   windowDeadlineMs，缺省 leaseTtlMs + 5s 宽限，VER04 lease 语义：窗口
+ *   超过自己租约即按孤儿处理，触发清回可回收态，游离 driveRun 的写库
+ *   结果如实落库）→ "window-lease-expired"；③ 生命周期关闭会话
+ *   （pause/retire 的 sessions close 经 invalidateSession 同步通知）→
+ *   "employee-session-closed"。abort 后窗口 finally 必跑：windowPlanned
+ *   复位、waiter 按归一化错误码结算、lane 会话缓存交 housekeeping 清理，
+ *   不存在「悬挂窗口卡死 lane」的状态（VER 联验 D1 缺陷的根因即此）。
+ * - 死会话护栏（D1 二次返工）：SDK 对被关闭/僵尸连接上的 query 可能永不
+ *   settle，abort 信号打不断已在途的裸 await（PR #93 后 QA 复现的残余洞：
+ *   pause 落在 claim/persist/sweep 等非 driveRun 段时窗口仍会楔死）。
+ *   guardSession 对 lane 会话的每次查询统一有界竞速——会话失效中止立即
+ *   拒绝、sessionOpDeadlineMs 硬截止兜底——窗口 finally 必然有界完成，
+ *   windowPlanned/tail/persistTail/全局槽位自愈；迟到的底层结果被丢弃，
+ *   不产生 unhandled rejection 或僵尸窗口二次驱动。
+ * - lane 会话缓存失效（D1 返工）：生命周期 close/register 替换会话时，
+ *   会话管理器同步回调 invalidateSession，lane 立即丢弃旧会话对象——
+ *   ensureLaneSession 绝不复用已关闭/已失效的会话；resume 后的下一个
+ *   窗口以全新代次建立会话并正常投递。pause 中投递：SIGNIN 被员工
+ *   access 拒绝，保持快速 failed("employee-session-blocked") 不落库。
  * - 全局背压：进程级信号量限制同时在跑的执行窗口数；拿槽的窗口才有
  *   employee 会话，等待中的触发保持 pending 由 drain/回收接手。
  * - 闸门（详见 employee-gates）：每次模型调用经 ctx.model 计量闸门
@@ -58,10 +79,23 @@ export type TriggerSession = {
   query<R extends unknown[] = unknown[]>(sql: string, params?: Record<string, unknown>): PromiseLike<R>;
 };
 
+/** 连接层观测计数（生产由 EmployeeRuntime.sessionStats() 提供）；只含计数，无凭证。 */
+export type SessionManagerStats = {
+  activeSessions: number;
+  connects: number;
+  reconnects: number;
+  disconnects: number;
+  renewals: number;
+  renewalFailures: number;
+  invalidated: number;
+};
+
 /** 会话来源 seam：生产是 EmployeeRuntime，测试注入替身。 */
 export type TriggerSessionManager = {
   openSession(database: string, employeeId: string): Promise<TriggerSession>;
   close(database: string, employeeId: string): Promise<void>;
+  /** 可选：连接监督计数（重连/续约/断开），runtime.metrics() 聚合上报。 */
+  sessionStats?(): SessionManagerStats;
 };
 
 export type TriggerDelivery = {
@@ -87,6 +121,8 @@ export type TriggerEnvelope = {
   payloadRef: string | null;
   chainDepth: number;
   idempotencyKey: string;
+  /** 认领时绑定的 durable run id（er-<triggerId>）；handler 可用它做 run 关联追溯。 */
+  runId: string | null;
 };
 
 export type TriggerHandlerContext = {
@@ -166,6 +202,12 @@ export type EmployeeRunDriver = {
   restart(input: { runId: string; trigger: TriggerEnvelope }): Promise<EmployeeRunResult>;
   /** 显式 suspended run 的唯一恢复路径。 */
   resume(input: { runId: string; trigger: TriggerEnvelope; resumeData?: unknown }): Promise<EmployeeRunResult>;
+  /**
+   * 关停到点中止：生产实现调用 Mastra run.cancel()（snapshot 落 canceled），
+   * 之后 reconcile 按终态把触发收敛为 failed。可选；缺失时窗口只靠
+   * lease 到期/下次扫描回收。
+   */
+  abort?(): void | Promise<void>;
 };
 
 export type EmployeeRunDriverFactory = (ctx: {
@@ -191,6 +233,68 @@ export type ReconcileResult = {
   completed: number;
   waiting: number;
   failed: number;
+};
+
+/**
+ * 运行时健康/容量指标快照（VER06）：只有计数、时间戳与毫秒数，
+ * 绝不含 secret/token/payload。pendingApprox 是进程内观测近似值
+ * （新增 pending +1、本进程认领 -1、重启后由 reconcile 扫描校准），
+ * 精确 pending 数以员工会话查库为准。
+ */
+export type EmployeeRuntimeMetrics = {
+  started: boolean;
+  startedAt: string | null;
+  uptimeMs: number;
+  sessions: {
+    open: number;
+    openRetries: number;
+    openFailures: number;
+  };
+  windows: {
+    running: number;
+    queued: number;
+    completed: number;
+    crashed: number;
+    aborted: number;
+  };
+  triggers: {
+    enqueued: number;
+    coalesced: number;
+    pendingApprox: number;
+    running: number;
+    completed: number;
+    failed: number;
+    waiting: number;
+  };
+  /** 有界重试总次数（会话打开 + 模型调用）。 */
+  retries: number;
+  tokenUsage: {
+    providerInputTokens: number;
+    providerOutputTokens: number;
+    estimatedInputTokens: number;
+    estimatedOutputTokens: number;
+    calls: number;
+  };
+  /** 执行窗口 lease 观测：当前活跃窗口数与最老窗口已持有时长。 */
+  lease: {
+    activeWindows: number;
+    oldestWindowAgeMs: number | null;
+  };
+  /** 连接监督计数（来自会话管理器；缺省会话源时为全零）。 */
+  connections: SessionManagerStats;
+  reconcile: {
+    runs: number;
+    scanned: number;
+    reclaimed: number;
+    lastRunAt: string | null;
+  };
+  shutdown: {
+    runs: number;
+    timedOut: boolean;
+    abortedWindows: number;
+    durationMs: number | null;
+  };
+  signals: number;
 };
 
 export type EmployeeTriggerRuntime = {
@@ -224,8 +328,24 @@ export type EmployeeTriggerRuntime = {
   /**
    * 关闭闸门并等待在途窗口排空：之后 enqueue 一律拒绝；
    * 窗口内打开的员工会话随窗口结束全部关闭。
+   *
+   * VER06 起限时：先停收（enqueue 立即拒绝、waiter 如实失败），再等
+   * deadlineMs 内的窗口排空；到点仍未排空的窗口收到 abort（driver.abort
+   * → Mastra run.cancel），触发 lease 被清回可立即回收态，窗口 lease
+   * 由 finally 正常释放；再过 abortGraceMs 宽限后强制收尾——过程不会
+   * 无限等待。deadlineMs 缺省用 deps.shutdownDeadlineMs（默认 30s）。
    */
-  stop(): Promise<void>;
+  stop(options?: { deadlineMs?: number }): Promise<void>;
+  /**
+   * 会话失效通知（D1 返工）：会话管理器在生命周期关闭/替换员工会话时
+   * 同步调用。lane 立即丢弃缓存的会话对象（ensureLaneSession 绝不复用
+   * 死会话），在途窗口经 abort 收敛路径有界结束（waiter 结算为
+   * failed("employee-session-closed")，触发清回可回收态）。同步执行、
+   * 不 await 任何关闭动作，避免与 persist 互斥链互等。
+   */
+  invalidateSession(input: { database: string; employeeId: string }): void;
+  /** 健康/容量指标快照：纯进程内计数 + 时间戳，无 secret/token/payload。 */
+  metrics(): EmployeeRuntimeMetrics;
 };
 
 type TriggerRow = {
@@ -244,6 +364,42 @@ type TriggerRow = {
 function errorMessage(cause: unknown): string {
   const message = cause instanceof Error ? cause.message : String(cause);
   return message.slice(0, 500);
+}
+
+/**
+ * waiter/投递失败的归一化（D1 返工）：已知运行时错误码原样通过；SDK /
+ * 存储层的原始错误串不进入 EnqueueResult（诊断端点据此不再透出裸串），
+ * 原始信息只进服务端日志。会话层失效统一归为 "employee-session-closed"。
+ */
+const KNOWN_DELIVERY_ERROR_CODES = new Set([
+  "employee-session-blocked",
+  "employee-session-closed",
+  "employee-session-unavailable",
+  "employee-signin-failed",
+  "employee-credential-missing",
+  "employee-runtime-stopped",
+  "employee-trigger-persist-failed",
+  "employee-delivery-failed",
+  "window-aborted",
+  "window-lease-expired",
+  "snapshot-missing",
+  "trigger-failed",
+  "attempts-exhausted",
+]);
+const KNOWN_DELIVERY_ERROR_PREFIXES = [
+  "chain-depth-exceeded:",
+  "trigger-not-found:",
+  "trigger-not-waiting:",
+  "run-not-suspended:",
+  "unsupported-snapshot-status:",
+  "attempts-exhausted:",
+];
+
+export function normalizeDeliveryError(message: string): string {
+  if (KNOWN_DELIVERY_ERROR_CODES.has(message)) return message;
+  if (KNOWN_DELIVERY_ERROR_PREFIXES.some((prefix) => message.startsWith(prefix))) return message;
+  console.warn("[employee-trigger] delivery error normalized", { message });
+  return "employee-session-closed";
 }
 
 /** handler 返回值落 result（option<object>）：非对象包一层，undefined 记 null。 */
@@ -278,6 +434,16 @@ type LaneWaiter = {
   resolve: (result: EnqueueResult) => void;
 };
 
+/**
+ * 窗口中止原因 = waiter 结算用的归一化错误码（诊断端点只透出这些码，
+ * 不透出 SDK 原始错误串）：
+ * - "window-aborted"：stop() 关停到点；
+ * - "window-lease-expired"：窗口超过自身 lease 的看门狗到点（孤儿窗口）；
+ * - "employee-session-closed"：生命周期关闭/替换会话（pause/retire/resume
+ *   换代次）使在途窗口失去执行载体。
+ */
+export type WindowAbortReason = "window-aborted" | "window-lease-expired" | "employee-session-closed";
+
 type Lane = {
   database: string;
   employeeId: string;
@@ -292,6 +458,12 @@ type Lane = {
   windowPlanned: boolean;
   /** 有 handler 级联投递进来：窗口结束时无论如何排一个后续窗口兜底。 */
   followupWanted: boolean;
+  /** 当前在途窗口的中止开关（窗口期间设置；stop 到点后触发）。 */
+  windowAbort?: AbortController;
+  /** 本窗口的中止原因（abortWindow 设置；waiter 结算用）。 */
+  windowAbortReason?: WindowAbortReason;
+  /** 当前窗口开始时间戳（lease age 指标）。 */
+  windowStartedAt?: number;
   /** triggerId → 等待其终态的 enqueue 调用方。 */
   waiters: Map<string, LaneWaiter>;
 };
@@ -301,6 +473,22 @@ export function createEmployeeTriggerRuntime(deps: {
   driver: EmployeeRunDriverFactory;
   /** 执行窗口 lease 时长；默认 60s。 */
   leaseTtlMs?: number;
+  /**
+   * 执行窗口硬截止（毫秒）：窗口单次触发的 driving 超过此时限由看门狗
+   * abort 收敛（waiter 结算 failed("window-lease-expired")，触发清回可
+   * 回收态，游离 driveRun 的写库结果如实落库）。缺省 leaseTtlMs + 5s
+   * 宽限；每次触发结算后重新武装。D1 返工：保证 pause 等会话失效落在
+   * 窗口内时 lane 有界收敛，不依赖 SDK 对死会话的报错行为。
+   */
+  windowDeadlineMs?: number;
+  /**
+   * 单次会话查询的硬截止（毫秒，D1 返工）：SDK 对被关闭/僵尸连接上的
+   * query 可能永不 settle（D1 原始缺陷 126s 无终态的根源）。guardSession
+   * 对 lane 会话的每次查询统一竞速：超时按可归一化错误抛出（调用方既有
+   * catch/崩溃路径据此有界收敛），底层 promise 的迟到结果被丢弃、不产生
+   * unhandled rejection。缺省 15s；必须小于窗口看门狗时限才有意义。
+   */
+  sessionOpDeadlineMs?: number;
   /** 时钟 seam（lease 判定写进 SQL 参数，测试可注入确定性时间）。 */
   now?: () => Date;
   /** 闸门限额覆盖（默认见 DEFAULT_GATE_LIMITS）。 */
@@ -315,19 +503,61 @@ export function createEmployeeTriggerRuntime(deps: {
   retryPolicy?: Partial<RetryPolicy>;
   /** 退避 sleep seam（测试注入虚拟时钟）。 */
   sleep?: (ms: number) => Promise<void>;
+  /** stop() 的默认截止时间（毫秒）；stop(options.deadlineMs) 优先。默认 30s。 */
+  shutdownDeadlineMs?: number;
+  /** 到点 abort 后等待窗口收尾的宽限（毫秒）；默认 5s。 */
+  abortGraceMs?: number;
 }): EmployeeTriggerRuntime {
   const handlers = new Map<string, TriggerHandler>();
   const lanes = new Map<string, Lane>();
   const signalSubscribers: RuntimeSignalEmitter[] = [];
   let started = false;
+  let stopping: Promise<void> | null = null;
   const leaseTtlMs = deps.leaseTtlMs ?? 60_000;
+  const windowDeadlineMs = deps.windowDeadlineMs ?? leaseTtlMs + 5_000;
+  const sessionOpDeadlineMs = deps.sessionOpDeadlineMs ?? 15_000;
+  const shutdownDeadlineMs = deps.shutdownDeadlineMs ?? 30_000;
+  const abortGraceMs = deps.abortGraceMs ?? 5_000;
   const now = deps.now ?? (() => new Date());
   const limits: GateLimits = { ...DEFAULT_GATE_LIMITS, ...deps.limits };
-  const meter = deps.meter ?? createSurrealUsageMeter();
   const retryPolicy: RetryPolicy = { ...DEFAULT_RETRY_POLICY, ...deps.retryPolicy };
   const classify = deps.classifyError ?? defaultErrorClassifier;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const emitSignalDep = deps.emitSignal ?? defaultSignalLogger;
+
+  // ── 指标收集（VER06）：纯内存计数，快照由 metrics() 组装 ────────────────
+  const metricsState = {
+    startedAt: null as Date | null,
+    sessionOpenRetries: 0,
+    sessionOpenFailures: 0,
+    windows: { completed: 0, crashed: 0, aborted: 0 },
+    triggers: { enqueued: 0, coalesced: 0, pendingApprox: 0, completed: 0, failed: 0, waiting: 0 },
+    retries: 0,
+    tokenUsage: { providerIn: 0, providerOut: 0, estIn: 0, estOut: 0, calls: 0 },
+    reconcile: { runs: 0, scanned: 0, reclaimed: 0, lastRunAt: null as string | null },
+    shutdowns: [] as Array<{ at: string; durationMs: number; timedOut: boolean; abortedWindows: number }>,
+    signals: 0,
+  };
+  /** 本进程标记 running 的触发集合：供 running 计数在终态转换时精确归零。 */
+  const runningTriggers = new Set<string>();
+
+  /** 计量包装：在原有 meter 之上累计进程内 token 总量供 metrics() 上报。 */
+  const baseMeter = deps.meter ?? createSurrealUsageMeter();
+  const meter: EmployeeUsageMeter = {
+    usedTokens: (s, e, d) => baseMeter.usedTokens(s, e, d),
+    claimBudgetSignal: (s, e, d) => baseMeter.claimBudgetSignal(s, e, d),
+    async recordUsage(session, employeeId, day, delta) {
+      await baseMeter.recordUsage(session, employeeId, day, delta);
+      metricsState.tokenUsage.calls += 1;
+      if (delta.estimated) {
+        metricsState.tokenUsage.estIn += delta.inputTokens;
+        metricsState.tokenUsage.estOut += delta.outputTokens;
+      } else {
+        metricsState.tokenUsage.providerIn += delta.inputTokens;
+        metricsState.tokenUsage.providerOut += delta.outputTokens;
+      }
+    },
+  };
 
   // ── 进程级窗口并发信号量（全局背压上限）────────────────────────────────
   let activeWindows = 0;
@@ -378,6 +608,7 @@ export function createEmployeeTriggerRuntime(deps: {
     signal: Omit<RuntimeSignal, "at"> & { at?: Date },
   ): Promise<void> {
     const full: RuntimeSignal = { ...signal, at: signal.at ?? now() };
+    metricsState.signals += 1;
     for (const emit of [emitSignalDep, ...signalSubscribers]) {
       try {
         await emit(full);
@@ -401,16 +632,82 @@ export function createEmployeeTriggerRuntime(deps: {
     return next;
   }
 
+  /**
+   * 死会话护栏（D1 返工核心）：SDK 对被关闭/僵尸连接上的 query 可能永不
+   * settle，任何裸 await 都会把 runWindow/persistTail/lane.tail 永久楔死
+   * （pause 落在 claim/persist/sweep 等非 driveRun 段时 PR #93 的 abort
+   * 竞速观测不到）。guardSession 给会话的每次查询加两道有界竞速：
+   * - 失效即拒：本 lane 窗口因会话失效被中止
+   *   （windowAbortReason === "employee-session-closed"）时，在途与后续
+   *   查询立即失败——会话已死，不可能再有真实写库（其余中止原因不拦，
+   *   保持游离 driveRun 写库如实落库的语义）；
+   * - 硬截止兜底：超过 sessionOpDeadlineMs 仍无结果（如无失效通知的
+   *   网络死亡）按超时失败；调用方的既有 catch/崩溃路径据此有界收敛，
+   *   waiter 归一化结算为 "employee-session-closed"。
+   * 底层 promise 的迟到结果被丢弃且已挂 catch，不产生 unhandled rejection；
+   * 窗口 finally（releaseWindow 等）因此在有界时间内必然完成，
+   * windowPlanned/lane.tail/persistTail/全局槽位全部自愈。
+   */
+  function guardSession(lane: Lane, session: TriggerSession): TriggerSession {
+    return {
+      query<R extends unknown[] = unknown[]>(sql: string, params?: Record<string, unknown>): Promise<R> {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const abortSignal = lane.windowAbort?.signal;
+        let onSessionClosed: (() => void) | undefined;
+        const deadline = new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("employee-session-deadline")),
+            sessionOpDeadlineMs,
+          );
+        });
+        const sessionDied = new Promise<never>((_, reject) => {
+          if (!abortSignal) return;
+          const fire = () => {
+            if (lane.windowAbortReason === "employee-session-closed") {
+              reject(new Error("employee-session-closed"));
+            }
+          };
+          if (abortSignal.aborted) {
+            fire();
+            return;
+          }
+          onSessionClosed = fire;
+          abortSignal.addEventListener("abort", fire, { once: true });
+        });
+        return Promise.race([
+          Promise.resolve(session.query<R>(sql, params)),
+          deadline,
+          sessionDied,
+        ]).finally(() => {
+          if (timer) clearTimeout(timer);
+          if (onSessionClosed && abortSignal) abortSignal.removeEventListener("abort", onSessionClosed);
+        });
+      },
+    };
+  }
+
   /** lane 会话：窗口与投递共享同一条；openSession 带 transient 重试。 */
   async function ensureLaneSession(lane: Lane): Promise<TriggerSession> {
     if (lane.session) return lane.session;
     lane.sessionOpening ??= withBoundedRetry(
       () => deps.sessions.openSession(lane.database, lane.employeeId),
-      { policy: retryPolicy, classify, sleep },
+      {
+        policy: retryPolicy,
+        classify,
+        sleep,
+        onRetry: () => {
+          metricsState.sessionOpenRetries += 1;
+          metricsState.retries += 1;
+        },
+      },
     )
       .then((session) => {
-        lane.session = session;
-        return session;
+        lane.session = guardSession(lane, session);
+        return lane.session;
+      })
+      .catch((cause) => {
+        metricsState.sessionOpenFailures += 1;
+        throw cause;
       })
       .finally(() => {
         lane.sessionOpening = undefined;
@@ -450,6 +747,22 @@ export function createEmployeeTriggerRuntime(deps: {
   function hasUnsettledWaiters(lane: Lane): boolean {
     for (const waiter of lane.waiters.values()) if (!waiter.settled) return true;
     return false;
+  }
+
+  // ── 窗口有界收敛（D1 返工）──────────────────────────────────────────────
+
+  /** 中止在途窗口：reason 成为 waiter 的归一化结算错误码；重复中止幂等。 */
+  function abortWindow(lane: Lane, reason: WindowAbortReason): void {
+    const abort = lane.windowAbort;
+    if (!abort || abort.signal.aborted) return;
+    lane.windowAbortReason = reason;
+    abort.abort();
+  }
+
+  /** 看门狗：窗口超过硬截止（windowDeadlineMs）按孤儿窗口收敛。返回解除函数。 */
+  function armWindowWatchdog(lane: Lane): () => void {
+    const timer = setTimeout(() => abortWindow(lane, "window-lease-expired"), windowDeadlineMs);
+    return () => clearTimeout(timer);
   }
 
   /**
@@ -649,7 +962,26 @@ export function createEmployeeTriggerRuntime(deps: {
         claimable: allowed,
       },
     );
-    return rows?.[0] ?? null;
+    const row = rows?.[0] ?? null;
+    if (row) metricsState.triggers.pendingApprox = Math.max(0, metricsState.triggers.pendingApprox - 1);
+    return row;
+  }
+
+  /**
+   * 中止路径的触发 lease 释放（best-effort）：窗口被 abort 后把行清回
+   * "leased/running 但 lease 缺失"态，让 reconcile 不必等 TTL 到期即可
+   * 原子回收并按 run snapshot 收敛；失败只意味着退回 TTL 到期回收路径。
+   */
+  async function clearTriggerLease(session: TriggerSession, triggerId: string): Promise<void> {
+    try {
+      await session.query(
+        `UPDATE $trigger SET lease_expires_at = NONE
+         WHERE id = $trigger AND status INSIDE ["leased", "running"];`,
+        { trigger: new StringRecordId(triggerId) },
+      );
+    } catch {
+      // 回收兜底仍是 lease 到期，无需上报
+    }
   }
 
   /** drain 取件：按 created_at FIFO 找最早可认领触发并原子认领；撞车重找。 */
@@ -691,6 +1023,13 @@ export function createEmployeeTriggerRuntime(deps: {
       params.message = extra.message ?? "unknown";
     }
     await session.query(`UPDATE $trigger SET ${assignments.join(", ")};`, params);
+    if (status === "running") {
+      runningTriggers.add(triggerId);
+    } else if (runningTriggers.delete(triggerId)) {
+      if (status === "completed") metricsState.triggers.completed += 1;
+      else if (status === "failed") metricsState.triggers.failed += 1;
+      else metricsState.triggers.waiting += 1;
+    }
   }
 
   function envelopeOf(row: TriggerRow, delivery: {
@@ -707,6 +1046,7 @@ export function createEmployeeTriggerRuntime(deps: {
       payloadRef: typeof row.payload_ref === "string" ? row.payload_ref : null,
       chainDepth: typeof row.chain_depth === "number" ? row.chain_depth : 0,
       idempotencyKey: delivery.idempotencyKey,
+      runId: typeof row.run_id === "string" ? row.run_id : null,
     };
   }
 
@@ -729,7 +1069,14 @@ export function createEmployeeTriggerRuntime(deps: {
               emitRuntimeSignal({ ...partial, database: lane.database, employeeId: lane.employeeId }),
             now,
             steps,
-            retry: { policy: retryPolicy, classify, sleep },
+            retry: {
+              policy: retryPolicy,
+              classify,
+              sleep,
+              onRetry: () => {
+                metricsState.retries += 1;
+              },
+            },
           }),
           emit: (input) => emitCascade(lane, trigger, input),
         };
@@ -809,6 +1156,7 @@ export function createEmployeeTriggerRuntime(deps: {
     envelope: TriggerEnvelope,
     lane: Lane,
     steps: { count: number },
+    abortSignal?: AbortSignal,
   ): Promise<EnqueueResult> {
     const triggerId = String(row.id);
     const runId = typeof row.run_id === "string" && row.run_id ? row.run_id : `er-${triggerId}`;
@@ -819,6 +1167,17 @@ export function createEmployeeTriggerRuntime(deps: {
       resolveHandler: (reason) => handlers.get(reason),
       gates: gatesFor(lane, session, steps),
     });
+    // 窗口被 abort（关停到点）→ 尽力把中止传到 workflow 层（run.cancel），
+    // 之后 reconcile 看到 canceled snapshot 会把触发收敛为 failed。
+    if (abortSignal) {
+      const kick = () => {
+        void Promise.resolve()
+          .then(() => driver.abort?.())
+          .catch(() => undefined);
+      };
+      if (abortSignal.aborted) kick();
+      else abortSignal.addEventListener("abort", kick, { once: true });
+    }
     const state = await driver.loadRunState(runId);
 
     if (state && state.status === "suspended") {
@@ -885,11 +1244,35 @@ export function createEmployeeTriggerRuntime(deps: {
   }
 
   /**
+   * 窗口 abort 竞速件：signal 触发即返回带归一化原因的失败结果
+   * （lane.windowAbortReason 由 abortWindow 设置）。游离的 driveRun 由
+   * 调用方挂 catch 吞 rejection，其后续写库行为如实（abort → run.cancel
+   * 后通常立即 failed；若 handler 已收尾则 completed）。
+   */
+  function abortedOutcome(lane: Lane, signal: AbortSignal): Promise<EnqueueResult> {
+    return new Promise((resolve) => {
+      const done = () =>
+        resolve({ outcome: "failed", error: lane.windowAbortReason ?? "window-aborted" });
+      if (signal.aborted) done();
+      else signal.addEventListener("abort", done, { once: true });
+    });
+  }
+
+  /**
    * drain 窗口：全局信号量槽位 → 员工互斥行 → FIFO 认领驱动触发，
-   * 直到排空、步数截断（maxTriggersPerWindow）或进程停闸。
+   * 直到排空、步数截断（maxTriggersPerWindow）、进程停闸或关停到点 abort。
    */
   async function runWindow(lane: Lane): Promise<void> {
     const release = await acquireWindowSlot();
+    const abort = new AbortController();
+    lane.windowAbort = abort;
+    lane.windowAbortReason = undefined;
+    lane.windowStartedAt = now().getTime();
+    // 看门狗：窗口整体超过硬截止（首触发前已武装；每条触发结算后重置）
+    // 按孤儿窗口收敛——会话死挂（SDK 不报错）也在时限内结束。
+    let disarmWatchdog = armWindowWatchdog(lane);
+    let crashed = false;
+    let aborted = false;
     try {
       if (!started) return;
       let session: TriggerSession;
@@ -914,14 +1297,15 @@ export function createEmployeeTriggerRuntime(deps: {
       try {
         const steps = { count: 0 };
         let processed = 0;
-        while (started && processed < limits.maxTriggersPerWindow) {
+        while (started && !abort.signal.aborted && processed < limits.maxTriggersPerWindow) {
           let claimed: TriggerRow | null;
           try {
             claimed = await claimNextPending(session, lane);
           } catch (cause) {
             // 取件本身故障（会话断开/存储异常）= 窗口级崩溃：行保持 pending，
             // waiter 如实失败，交给下投递或 reconcile 重启窗口。
-            const error = errorMessage(cause);
+            crashed = true;
+            const error = normalizeDeliveryError(errorMessage(cause));
             console.error("[employee-trigger] window crashed", {
               database: lane.database,
               employeeId: lane.employeeId,
@@ -945,19 +1329,43 @@ export function createEmployeeTriggerRuntime(deps: {
           });
           if (await exhaustAttempts(lane, session, claimed)) continue;
           try {
-            const outcome = await driveRun(session, claimed, envelope, lane, steps);
+            const driving = driveRun(session, claimed, envelope, lane, steps, abort.signal);
+            driving.catch(() => undefined);
+            const outcome = await Promise.race([driving, abortedOutcome(lane, abort.signal)]);
+            if (abort.signal.aborted) {
+              // 窗口被中止（stop 到点 / 看门狗 / 会话失效）：abort 已下发给
+              // driver（run.cancel），清回触发 lease 供 reconcile 立即回收；
+              // 游离 driveRun 的写库结果如实落库。
+              aborted = true;
+              const reason = lane.windowAbortReason ?? "window-aborted";
+              console.warn("[employee-trigger] window aborted", {
+                database: lane.database,
+                employeeId: lane.employeeId,
+                triggerId,
+                runId: `er-${triggerId}`,
+                reason,
+              });
+              settleWaiter(lane, triggerId, { outcome: "failed", triggerId, error: reason });
+              await clearTriggerLease(session, triggerId);
+              break;
+            }
             settleWaiter(lane, triggerId, outcome);
+            // 本触发已收敛：看门狗重置，给下一条触发完整时限。
+            disarmWatchdog();
+            disarmWatchdog = armWindowWatchdog(lane);
           } catch (cause) {
             // 基础设施异常（storage 读写失败、驱动崩溃、会话断开）：不打 failed——
             // 该行保留 leased/running 与 lease 到期时间，交给 reconcile/下次投递
             // 按 durable 语义回收。本窗口如实上报这次尝试失败并停止 drain。
-            const error = errorMessage(cause);
+            crashed = true;
+            const error = normalizeDeliveryError(errorMessage(cause));
             console.error("[employee-trigger] window crashed", {
               database: lane.database,
               employeeId: lane.employeeId,
               reason,
               idempotencyKey,
               triggerId,
+              runId: `er-${triggerId}`,
               message: error,
             });
             settleWaiter(lane, triggerId, { outcome: "failed", triggerId, error });
@@ -968,7 +1376,8 @@ export function createEmployeeTriggerRuntime(deps: {
       } catch (cause) {
         // drain 中其余基础设施异常（标记/收尾读写失败）：waiter 一律如实失败，
         // 触发保留 lease 供 reconcile 回收，互斥行由 finally 释放。
-        const error = errorMessage(cause);
+        crashed = true;
+        const error = normalizeDeliveryError(errorMessage(cause));
         console.error("[employee-trigger] window crashed", {
           database: lane.database,
           employeeId: lane.employeeId,
@@ -979,6 +1388,13 @@ export function createEmployeeTriggerRuntime(deps: {
         await releaseWindow(session, lane.employeeId, holder).catch(() => undefined);
       }
     } finally {
+      disarmWatchdog();
+      if (aborted) metricsState.windows.aborted += 1;
+      else if (crashed) metricsState.windows.crashed += 1;
+      else if (started || abort.signal.aborted) metricsState.windows.completed += 1;
+      lane.windowAbort = undefined;
+      lane.windowAbortReason = undefined;
+      lane.windowStartedAt = undefined;
       release();
       lane.windowPlanned = false;
       await housekeeping(lane);
@@ -987,6 +1403,7 @@ export function createEmployeeTriggerRuntime(deps: {
 
   return {
     start() {
+      metricsState.startedAt ??= now();
       started = true;
     },
 
@@ -1019,23 +1436,32 @@ export function createEmployeeTriggerRuntime(deps: {
         );
       } catch (cause) {
         // 员工暂停/退休或凭证缺失时连 SIGNIN 都过不去：触发不落库，返回失败由 adapter 决定。
-        return { outcome: "failed", error: errorMessage(cause) };
+        // D1 返工：死会话上的查询异常同样收敛到这里——归一化错误码，不透出 SDK 原始串。
+        return { outcome: "failed", error: normalizeDeliveryError(errorMessage(cause)) };
       }
+      metricsState.triggers.enqueued += 1;
       const triggerId = row?.id == null ? undefined : String(row.id);
       if (!triggerId) return { outcome: "failed", error: "employee-trigger-persist-failed" };
       if (row?.status === "completed") {
+        metricsState.triggers.coalesced += 1;
         await housekeeping(lane);
         return { outcome: "coalesced", triggerId };
       }
       if (row?.status === "waiting") {
+        metricsState.triggers.coalesced += 1;
         await housekeeping(lane);
         return { outcome: "waiting", triggerId };
       }
       if (row?.status === "failed") {
         // failed 是同键终态：如实回报既有失败，不隐式重跑。
+        metricsState.triggers.coalesced += 1;
         await housekeeping(lane);
         const message = typeof row.error_message === "string" ? row.error_message : "trigger-failed";
         return { outcome: "failed", triggerId, error: message };
+      }
+      // 全新 pending 行（未被认领过）计入 pending 观测近似值。
+      if (row?.status === "pending" && !row.lease_expires_at && !row.attempts) {
+        metricsState.triggers.pendingApprox += 1;
       }
 
       const waiter: LaneWaiter = {
@@ -1055,6 +1481,8 @@ export function createEmployeeTriggerRuntime(deps: {
       const lane = laneOf(database, employeeId);
       return laneTask(lane, async (): Promise<ReconcileResult> => {
         const summary: ReconcileResult = { scanned: 0, reclaimed: 0, completed: 0, waiting: 0, failed: 0 };
+        metricsState.reconcile.runs += 1;
+        metricsState.reconcile.lastRunAt = now().toISOString();
         if (!started) return summary;
         let session: TriggerSession;
         try {
@@ -1074,11 +1502,17 @@ export function createEmployeeTriggerRuntime(deps: {
           { employee: new StringRecordId(employeeId), now: now() },
         );
         summary.scanned = rows?.length ?? 0;
+        metricsState.reconcile.scanned += summary.scanned;
         if (!rows || rows.length === 0) {
           await housekeeping(lane);
           return summary;
         }
         const release = await acquireWindowSlot();
+        const abort = new AbortController();
+        lane.windowAbort = abort;
+        lane.windowAbortReason = undefined;
+        lane.windowStartedAt = now().getTime();
+        const disarmWatchdog = armWindowWatchdog(lane);
         try {
           // 活跃窗口期互斥：本进程串行 + employee_window 跨进程守门。
           const holder = await acquireWindow(session, employeeId).catch(() => null);
@@ -1089,11 +1523,12 @@ export function createEmployeeTriggerRuntime(deps: {
           try {
             const steps = { count: 0 };
             for (const row of rows) {
-              if (!started) break;
+              if (!started || abort.signal.aborted) break;
               const triggerId = String(row.id);
               const claimed = await claimLease(session, triggerId);
               if (!claimed) continue;
               summary.reclaimed += 1;
+              metricsState.reconcile.reclaimed += 1;
               await markWindowTrigger(session, employeeId, holder, triggerId);
               if (await exhaustAttempts(lane, session, claimed)) {
                 summary.failed += 1;
@@ -1104,7 +1539,17 @@ export function createEmployeeTriggerRuntime(deps: {
                 typeof claimed.idempotency_key === "string" ? claimed.idempotency_key : triggerId;
               const envelope = envelopeOf(claimed, { database, employeeId, reason, idempotencyKey });
               try {
-                const outcome = await driveRun(session, claimed, envelope, lane, steps);
+                const driving = driveRun(session, claimed, envelope, lane, steps, abort.signal);
+                driving.catch(() => undefined);
+                const outcome = await Promise.race([driving, abortedOutcome(lane, abort.signal)]);
+                if (abort.signal.aborted) {
+                  const reason = lane.windowAbortReason ?? "window-aborted";
+                  metricsState.windows.aborted += 1;
+                  summary.failed += 1;
+                  settleWaiter(lane, triggerId, { outcome: "failed", triggerId, error: reason });
+                  await clearTriggerLease(session, triggerId);
+                  break;
+                }
                 if (outcome.outcome === "completed") summary.completed += 1;
                 else if (outcome.outcome === "waiting") summary.waiting += 1;
                 else summary.failed += 1;
@@ -1114,7 +1559,7 @@ export function createEmployeeTriggerRuntime(deps: {
                 settleWaiter(lane, triggerId, {
                   outcome: "failed",
                   triggerId,
-                  error: errorMessage(cause),
+                  error: normalizeDeliveryError(errorMessage(cause)),
                 });
                 break;
               }
@@ -1124,6 +1569,10 @@ export function createEmployeeTriggerRuntime(deps: {
             await releaseWindow(session, employeeId, holder).catch(() => undefined);
           }
         } finally {
+          disarmWatchdog();
+          lane.windowAbort = undefined;
+          lane.windowAbortReason = undefined;
+          lane.windowStartedAt = undefined;
           release();
           await housekeeping(lane);
         }
@@ -1141,6 +1590,7 @@ export function createEmployeeTriggerRuntime(deps: {
         } catch (cause) {
           return { outcome: "failed", error: errorMessage(cause) };
         }
+        let disarmWatchdog: (() => void) | null = null;
         let release: (() => void) | null = null;
         try {
           const [rows] = await session.query<[TriggerRow[]]>(
@@ -1154,6 +1604,11 @@ export function createEmployeeTriggerRuntime(deps: {
             return { outcome: "failed", triggerId, error: `trigger-not-waiting:${String(row.status)}` };
           }
           release = await acquireWindowSlot();
+          const abort = new AbortController();
+          lane.windowAbort = abort;
+          lane.windowAbortReason = undefined;
+          lane.windowStartedAt = now().getTime();
+          disarmWatchdog = armWindowWatchdog(lane);
           // resume 也经窗口互斥 + lease：同一时刻只允许一个窗口碰这条触发。
           const holder = await acquireWindow(session, employeeId);
           if (!holder) return { outcome: "coalesced", triggerId };
@@ -1177,6 +1632,17 @@ export function createEmployeeTriggerRuntime(deps: {
               resolveHandler: (r) => handlers.get(r),
               gates: gatesFor(lane, session, { count: 0 }),
             });
+            if (driver.abort) {
+              abort.signal.addEventListener(
+                "abort",
+                () => {
+                  void Promise.resolve()
+                    .then(() => driver.abort?.())
+                    .catch(() => undefined);
+                },
+                { once: true },
+              );
+            }
             const state = await driver.loadRunState(runId);
             if (!state) {
               // 显式 suspended 的触发缺 snapshot = 持久层不一致，fail-closed。
@@ -1187,7 +1653,22 @@ export function createEmployeeTriggerRuntime(deps: {
               return { outcome: "failed", triggerId, error: `run-not-suspended:${state.status}` };
             }
             await setStatus(session, triggerId, "running");
-            const result = await driver.resume({ runId, trigger: envelope, resumeData });
+            const resuming = driver.resume({ runId, trigger: envelope, resumeData });
+            resuming.catch(() => undefined);
+            const raced = await Promise.race<EmployeeRunResult | "aborted">([
+              resuming.then((r) => r),
+              abortedOutcome(lane, abort.signal).then(() => "aborted" as const),
+            ]);
+            if (raced === "aborted") {
+              metricsState.windows.aborted += 1;
+              await clearTriggerLease(session, triggerId);
+              return {
+                outcome: "failed",
+                triggerId,
+                error: lane.windowAbortReason ?? "window-aborted",
+              };
+            }
+            const result = raced;
             if (result.status === "success") {
               await setStatus(session, triggerId, "completed", { result: result.output });
               return { outcome: "completed", triggerId };
@@ -1202,10 +1683,14 @@ export function createEmployeeTriggerRuntime(deps: {
             await releaseWindow(session, employeeId, holder).catch(() => undefined);
           }
         } catch (cause) {
-          const error = errorMessage(cause);
-          console.error("[employee-trigger] resume crashed", { database, employeeId, triggerId, message: error });
-          return { outcome: "failed", triggerId, error };
+          const raw = errorMessage(cause);
+          console.error("[employee-trigger] resume crashed", { database, employeeId, triggerId, message: raw });
+          return { outcome: "failed", triggerId, error: normalizeDeliveryError(raw) };
         } finally {
+          disarmWatchdog?.();
+          lane.windowAbort = undefined;
+          lane.windowAbortReason = undefined;
+          lane.windowStartedAt = undefined;
           release?.();
           await housekeeping(lane);
         }
@@ -1216,17 +1701,129 @@ export function createEmployeeTriggerRuntime(deps: {
       signalSubscribers.push(emitter);
     },
 
-    async stop() {
-      started = false;
-      for (const lane of lanes.values()) {
-        settleAllWaiters(lane, "failed", "employee-trigger-runtime-stopped");
+    stop(options) {
+      if (!stopping) {
+        stopping = (async () => {
+        const t0 = now().getTime();
+        started = false;
+        // 先停收：新投递拒绝、未决 waiter 如实失败，窗口内级联投递因
+        // started=false 不再排新窗口。
+        for (const lane of lanes.values()) {
+          settleAllWaiters(lane, "failed", "employee-trigger-runtime-stopped");
+        }
+        const tails = () =>
+          Promise.allSettled([...lanes.values()].map((lane) => lane.tail));
+        // 等待排空，带截止：返回 true=排空 / false=到点。
+        const deadline = (ms: number): Promise<boolean> =>
+          Number.isFinite(ms)
+            ? Promise.race([tails().then(() => true), sleep(ms).then(() => false)])
+            : tails().then(() => true);
+        let timedOut = false;
+        let abortedWindows = 0;
+        const deadlineMs = options?.deadlineMs ?? shutdownDeadlineMs;
+        if (!(await deadline(deadlineMs))) {
+          timedOut = true;
+          // 到点：对在途窗口发 abort（窗口任务竞速收尾 + driver.abort →
+          // run.cancel），再宽限 abortGraceMs；仍排不完的不再等。
+          for (const lane of lanes.values()) {
+            if (lane.windowAbort && !lane.windowAbort.signal.aborted) {
+              abortWindow(lane, "window-aborted");
+              abortedWindows += 1;
+            }
+          }
+          await deadline(abortGraceMs);
+        }
+        for (const lane of lanes.values()) {
+          await inPersist(lane, () => closeLaneSession(lane)).catch(() => undefined);
+        }
+        lanes.clear();
+        metricsState.shutdowns.push({
+          at: now().toISOString(),
+          durationMs: now().getTime() - t0,
+          timedOut,
+          abortedWindows,
+        });
+        })();
       }
-      // 等在途窗口排空（drain 循环在每条边界检查 started，跑完当前触发即退出）。
-      await Promise.allSettled([...lanes.values()].map((lane) => lane.tail));
+      return stopping;
+    },
+
+    invalidateSession(input) {
+      // 只取既有 lane，不为未知员工凭空创建；同步清缓存 + 中止在途窗口，
+      // 不 await 任何关闭动作（避免与 persist 互斥链互等死锁）。
+      const lane = lanes.get(keyOf(input.database, input.employeeId));
+      if (!lane) return;
+      lane.session = undefined;
+      abortWindow(lane, "employee-session-closed");
+    },
+
+    metrics() {
+      const connectionStats = deps.sessions.sessionStats?.() ?? {
+        activeSessions: 0,
+        connects: 0,
+        reconnects: 0,
+        disconnects: 0,
+        renewals: 0,
+        renewalFailures: 0,
+        invalidated: 0,
+      };
+      const nowMs = now().getTime();
+      let oldestWindowAgeMs: number | null = null;
       for (const lane of lanes.values()) {
-        await inPersist(lane, () => closeLaneSession(lane)).catch(() => undefined);
+        if (lane.windowStartedAt == null) continue;
+        const age = Math.max(0, nowMs - lane.windowStartedAt);
+        oldestWindowAgeMs = oldestWindowAgeMs == null ? age : Math.max(oldestWindowAgeMs, age);
       }
-      lanes.clear();
+      const last = metricsState.shutdowns.at(-1);
+      return {
+        started,
+        startedAt: metricsState.startedAt?.toISOString() ?? null,
+        uptimeMs: metricsState.startedAt ? Math.max(0, nowMs - metricsState.startedAt.getTime()) : 0,
+        sessions: {
+          open: connectionStats.activeSessions,
+          openRetries: metricsState.sessionOpenRetries,
+          openFailures: metricsState.sessionOpenFailures,
+        },
+        windows: {
+          running: activeWindows,
+          queued: windowQueue.length,
+          completed: metricsState.windows.completed,
+          crashed: metricsState.windows.crashed,
+          aborted: metricsState.windows.aborted,
+        },
+        triggers: {
+          enqueued: metricsState.triggers.enqueued,
+          coalesced: metricsState.triggers.coalesced,
+          pendingApprox: metricsState.triggers.pendingApprox,
+          running: runningTriggers.size,
+          completed: metricsState.triggers.completed,
+          failed: metricsState.triggers.failed,
+          waiting: metricsState.triggers.waiting,
+        },
+        retries: metricsState.retries,
+        tokenUsage: {
+          providerInputTokens: metricsState.tokenUsage.providerIn,
+          providerOutputTokens: metricsState.tokenUsage.providerOut,
+          estimatedInputTokens: metricsState.tokenUsage.estIn,
+          estimatedOutputTokens: metricsState.tokenUsage.estOut,
+          calls: metricsState.tokenUsage.calls,
+        },
+        lease: { activeWindows, oldestWindowAgeMs },
+        connections: connectionStats,
+        reconcile: {
+          runs: metricsState.reconcile.runs,
+          scanned: metricsState.reconcile.scanned,
+          reclaimed: metricsState.reconcile.reclaimed,
+          lastRunAt: metricsState.reconcile.lastRunAt,
+        },
+        shutdown: {
+          runs: metricsState.shutdowns.length,
+          timedOut: last?.timedOut ?? false,
+          abortedWindows: last?.abortedWindows ?? 0,
+          durationMs: last?.durationMs ?? null,
+        },
+        signals: metricsState.signals,
+      };
     },
   };
 }

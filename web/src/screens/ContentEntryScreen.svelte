@@ -2,7 +2,8 @@
   import { onMount } from "svelte";
   import { contentReaderExchangeRequestSchema } from "@surreal-ck/shared";
   import { type LegalSearchFilters, type LegalSearchResult, type LegalSearchState } from "../lib/content-search";
-  import { createBrowserContentSearch } from "../lib/content-search-browser";
+  import { createBrowserContentSearch, searchBrowserLegalSemantics } from "../lib/content-search-browser";
+  import type { LegalRetrievalHit } from "@surreal-ck/shared";
   import { getSurreal } from "../lib/surreal";
 
   let { onopen }: { onopen: (publicId: string) => void } = $props();
@@ -15,6 +16,9 @@
   let total = $state(0);
   let cursor = $state<string | null>(null);
   let busy = $state(false);
+  let semantic = $state(false);
+  let semanticHits = $state<LegalRetrievalHit[]>([]);
+  let retrievalNotice = $state("");
   let error = $state(false);
   let expiryTimer: ReturnType<typeof setTimeout> | undefined;
   let saved = $state<Array<{ id: string; content_public_id: string; content_version_id: string; title: string; locator?: string; note?: string }>>([]);
@@ -35,7 +39,7 @@
       if (searchStatus === "ready") {
         const remaining = Math.max(0, searcher.deadlineSeconds() * 1000 - Date.now());
         expiryTimer = setTimeout(() => {
-          results = []; cursor = null; searchStatus = "unavailable";
+          results = []; semanticHits = []; cursor = null; searchStatus = "unavailable";
           void searcher.close();
         }, remaining);
         await runSearch(false);
@@ -45,10 +49,20 @@
   async function runSearch(append: boolean) {
     busy = true; error = false;
     try {
+      semanticHits = []; retrievalNotice = "";
+      if (semantic && filters.keyword.trim()) {
+        const page = await searchBrowserLegalSemantics({
+          query: filters.keyword, kind: filters.kind, jurisdiction: filters.jurisdiction,
+          effectiveOn: filters.effectiveOn, publishedFrom: filters.publishedFrom, publishedUntil: filters.publishedUntil,
+        });
+        results = []; semanticHits = page.items; retrievalNotice = page.notice;
+        total = page.items.length; cursor = null;
+        return;
+      }
       const page = await searcher.search(filters, append ? cursor : null);
       results = append ? [...results, ...page.items] : page.items;
       total = page.total; cursor = page.nextCursor;
-    } catch { error = true; if (!append) results = []; }
+    } catch { error = true; semanticHits = []; if (!append) results = []; }
     finally { busy = false; }
   }
   function submitPointer(event: SubmitEvent) {
@@ -78,7 +92,8 @@
     <button type="button" onclick={() => void openSearch()}>刷新发布内容</button>
   {:else}
     <form class="filters" onsubmit={(event) => { event.preventDefault(); void runSearch(false); }}>
-      <label>关键词<input bind:value={filters.keyword} placeholder="标题、正文或法条" /></label>
+      <label>问题或关键词<input bind:value={filters.keyword} placeholder="例如：合同未签字，履行后是否成立？" /></label>
+      <label><span>检索方式</span><select bind:value={semantic}><option value={false}>关键词</option><option value={true}>关键词 + 语义</option></select></label>
       <label>类型<select bind:value={filters.kind}><option value="all">全部</option><option value="legislation">法规</option><option value="judicial_document">案例</option></select></label>
       <label>发布起日<input type="date" bind:value={filters.publishedFrom} /></label>
       <label>发布止日<input type="date" bind:value={filters.publishedUntil} /></label>
@@ -89,11 +104,22 @@
     {#if error}
       <p role="alert">检索失败或会话已到期；结果可能不完整。请重新建立授权会话。</p>
       <button type="button" onclick={() => void openSearch()}>重新验证</button>
-    {:else if !busy && results.length === 0}
+    {:else if !busy && results.length === 0 && semanticHits.length === 0}
       <p role="status">没有符合条件的授权内容。</p>
+      {#if retrievalNotice}<p role="status">{retrievalNotice}</p>{/if}
     {:else}
       <p role="status">授权范围内共 {total} 条结果。</p>
+      {#if retrievalNotice}<p role="status">{retrievalNotice}</p>{/if}
       <ul class="results">
+        {#each semanticHits as hit (hit.versionId)}
+          <li>
+            <button type="button" onclick={() => onopen(hit.publicId)}>{hit.title}</button>
+            <small>{hit.versionLabel ?? `修订 ${hit.revision}`} · {hit.explanation.join(" · ")}</small>
+            {#each hit.sources as source (source.versionId)}
+              <small>来源：{source.sourceUrl} · <button type="button" onclick={() => onopen(source.publicId)}>打开精确版本</button></small>
+            {/each}
+          </li>
+        {/each}
         {#each results as item (item.id)}
           <li>
             <button type="button" onclick={() => onopen(item.publicId)}>{item.title}</button>

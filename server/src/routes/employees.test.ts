@@ -79,11 +79,11 @@ type TriggerCall = {
   idempotencyKey: string;
 };
 
-function stubTriggerRuntime(outcome: "completed" | "coalesced" | "waiting" | "failed" = "completed") {
+function stubTriggerRuntime(outcome: "completed" | "coalesced" | "waiting" | "failed" = "completed", error?: string) {
   const calls: TriggerCall[] = [];
   const result =
     outcome === "failed"
-      ? { outcome, error: "employee-signin-failed" as string }
+      ? { outcome, error: error ?? "employee-signin-failed" }
       : { outcome, triggerId: "employee_trigger:probe1" };
   return {
     calls,
@@ -259,8 +259,12 @@ describe("GET controlled employee runtime observation", () => {
 describe("POST /api/internal/workspaces/:slug/employees/:employeeKey/triggers (qa-probe)", () => {
   const path = "/api/internal/workspaces/acme/employees/ve_ab12/triggers";
 
-  function probeApp(result: Parameters<typeof stubTriggerRuntime>[0] = "completed", user = adminUser) {
-    const stub = stubTriggerRuntime(result);
+  function probeApp(
+    result: Parameters<typeof stubTriggerRuntime>[0] = "completed",
+    user = adminUser,
+    error?: string,
+  ) {
+    const stub = stubTriggerRuntime(result, error);
     const app = createApp({
       employeeLifecycle: stubLifecycle({ kind: "ok", employee: okEmployee, created: false }).lifecycle,
       employeeTriggerRuntime: stub.runtime,
@@ -338,6 +342,22 @@ describe("POST /api/internal/workspaces/:slug/employees/:employeeKey/triggers (q
       expect(body.outcome).toBe(outcome);
       if (outcome === "failed") expect(body.error).toBe("employee-signin-failed");
     }
+  });
+
+  test("失败错误归一化：SDK 原始串收敛为 employee-delivery-failed，已知运行时码原样透出（D1）", async () => {
+    const raw = probeApp("failed", adminUser, "SurrealError: The access method cannot be used in the requested operation (code -32000)");
+    const rawRes = await raw.app.fetch(post(path, { idempotencyKey: "qa-probe-raw" }));
+    const rawBody = await rawRes.json() as Record<string, unknown>;
+    expect(rawBody.outcome).toBe("failed");
+    expect(rawBody.error).toBe("employee-delivery-failed");
+
+    const normalized = probeApp("failed", adminUser, "employee-session-closed");
+    const body = await (await normalized.app.fetch(post(path, { idempotencyKey: "qa-probe-closed" }))).json() as Record<string, unknown>;
+    expect(body.error).toBe("employee-session-closed");
+
+    const prefixed = probeApp("failed", adminUser, "attempts-exhausted:4>3");
+    const prefixedBody = await (await prefixed.app.fetch(post(path, { idempotencyKey: "qa-probe-prefix" }))).json() as Record<string, unknown>;
+    expect(prefixedBody.error).toBe("attempts-exhausted:4>3");
   });
 
   test("响应不泄漏内部对象/凭证/堆栈", async () => {

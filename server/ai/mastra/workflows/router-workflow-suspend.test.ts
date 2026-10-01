@@ -362,6 +362,7 @@ describe("router workflow suspend & resume", () => {
     await run.start({ inputData: { text: "..." }, requestContext: rc });
     const resumed = await run.resume({
       resumeData: { decision: { kind: "candidate-cancelled" } },
+      requestContext: rc,
     });
     expect(dashboardCalls).toEqual([]);
     expect(["success", "cancelled"]).toContain(resumed.status);
@@ -391,6 +392,7 @@ describe("router workflow suspend & resume", () => {
 
     const resumed = await run.resume({
       resumeData: { decision: { kind: "write-confirmed" } },
+      requestContext: rc,
     });
     expect(resumed.status).toBe("success");
   });
@@ -476,6 +478,7 @@ describe("router workflow suspend & resume", () => {
     await run.start({ inputData: { text: "..." }, requestContext: rc });
     const resumed = await run.resume({
       resumeData: { decision: { kind: "candidate-chosen", candidateId: "x:1" } },
+      requestContext: rc,
     });
     // 第二步未执行 = 校验失败被当作取消
     expect(dashCalls).toEqual([]);
@@ -614,4 +617,46 @@ describe("router workflow suspend & resume", () => {
     expect(resumed.status).toBe("success");
     expect(calls).toEqual(["分析该行"]);
   });
+});
+
+
+test("LCA07：研究暂停跨进程恢复重新开窗口，快照不含证据文本和会话", async () => {
+  workflowRows.clear();
+  const { makeLegalResearchExecutor } = await import("../agents/legal-research-agent");
+  let revision = "1";
+  let opens = 0;
+  const prompts: string[] = [];
+  const resource = { id: "resource_item:one", workspaceId: "ws_demo", resourceType: "generic_note", title: "当前私有材料", summary: "meta",
+    evidence: [{ order: 0, text: "PRIVATE-CURRENT-CANARY", sourceUrl: "", sourceTitle: "", capturedAt: new Date().toISOString() }],
+    sourceUrl: "", tags: [], structuredPayload: {}, quality: "user-confirmed", createdAt: "", updatedAt: "" } as const;
+  const research = makeLegalResearchExecutor({ resolveWorkspaceId: async () => "ws_demo",
+    searchResources: async () => ({ status: "candidates", indexStatus: "index-disabled", queryText: "合同", results: [{ resource: { ...resource, evidence: [...resource.evidence], tags: [] }, score: .4, vectorScore: 0, keywordScore: 0, qualityScore: 0, recencyScore: 0 }] }),
+    loadResource: async () => ({ ...resource, evidence: [...resource.evidence], tags: [] }),
+    answerModel: async p => { prompts.push(p); return "合法资料分析 [1]"; } });
+  const executor = async () => ({ text: "", confirmed: {} });
+  const executors: SubAgentExecutors = { navigation: executor, dashboard: executor, "claim-analysis": executor, chitchat: executor, "resource-retrieval": research };
+  const events: unknown[] = [];
+  const openContentSession = async () => {
+    opens++;
+    return { kind: "ready" as const, namespace: "main", database: "content", entitlementRevision: revision, digest: "digest",
+      leaseEndSeconds: Date.now()/1000 + 300, session: { query: async () => [[]] } as never, close: async () => {} };
+  };
+  const context = () => { const rc = new RequestContext(); rc.set(ROUTER_RUNTIME_KEY, makeRuntime({ executors, llmCaller: async () => "[]",
+    planOverride: [{ category: "resource-retrieval", taskText: "合同" }], openContentSession, onSuspend: e => events.push(e) })); return rc; };
+  const run = await buildMastra().getWorkflow(ROUTER_WORKFLOW_ID).createRun({ runId: "lca07-restart" });
+  expect((await run.start({ inputData: { text: "合同" }, requestContext: context() })).status).toBe("suspended");
+  expect(JSON.stringify(workflowRows.get("lca07-restart"))).not.toContain("PRIVATE-CURRENT-CANARY");
+  expect(JSON.stringify(workflowRows.get("lca07-restart"))).not.toContain("surrealSession");
+  revision = "2";
+  const resumed = await buildMastra().getWorkflow(ROUTER_WORKFLOW_ID).createRun({ runId: "lca07-restart" });
+  expect((await resumed.resume({ resumeData: { decision: { kind: "resource-candidates-chosen", resourceIds: [resource.id] } }, requestContext: context() })).status).toBe("suspended");
+  expect(events.at(-1)).toMatchObject({ kind: "authorization_changed" });
+  expect(prompts).toEqual([]);
+  expect((await resumed.resume({ resumeData: { decision: { kind: "research-continue-current" } }, requestContext: context() })).status).toBe("success");
+  expect(prompts).toHaveLength(1);
+  expect(prompts[0]).toContain("PRIVATE-CURRENT-CANARY");
+  const persisted = JSON.stringify(workflowRows.get("lca07-restart"));
+  expect(persisted).not.toContain("PRIVATE-CURRENT-CANARY");
+  expect(persisted).not.toContain("surrealSession");
+  expect(opens).toBe(3);
 });

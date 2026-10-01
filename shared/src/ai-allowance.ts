@@ -24,6 +24,8 @@ export type AiAllowanceBucketView = {
   effective_from: string;
   expires_at: string;
   expired: boolean;
+  /** LCA08：商业来源终止标记（试用转付费），余额不再可消费、不复活。 */
+  terminated: boolean;
 };
 
 export type AiAllowanceLedgerView = {
@@ -48,6 +50,8 @@ export type AiAllowanceSnapshot = {
   available: number;
   reserved: number;
   suspended: number;
+  /** 已终止桶（试用转付费等商业来源终止）内仍有余额，不再可消费。 */
+  terminated: number;
   expired: number;
   buckets: AiAllowanceBucketView[];
   entries: AiAllowanceLedgerView[];

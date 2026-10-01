@@ -1,13 +1,22 @@
-import { StringRecordId, Surreal } from "surrealdb";
+import { StringRecordId, Surreal, type ReconnectOptions } from "surrealdb";
+import { withBoundedRetry, type RetryContext } from "./employee-gates";
+import type {
+  SessionManagerStats,
+  TriggerSessionManager,
+} from "./employee-trigger-runtime";
 
 /**
  * 虚拟员工会话 runtime（VER02）：进程内的 employee access 会话注册表 + secret 缓存。
+ * VER06 起叠加连接监督：SDK 自动重连、token 到期前续约、失效重签与连接计数。
  *
  * - 会话即执行窗口的载体：register() 立即 SIGNIN 并登记；close() 关闭并摘除。
  *   暂停/退休的员工在 DB 层由 employee access 的 SIGNIN query 拒绝（status != "active"），
  *   close 立即封住会话获取并作废旧注册，直到生命周期显式 activate。
- * - secret 只进不出：缓存仅供 SIGNIN，绝不出现在返回值或日志里；日志只带
- *   白名单事件 / 随机实例标识。
+ * - 每条会话只有一个 Surreal 连接与一组事件监听：续约是同一连接上的再次
+ *   SIGNIN（不重连、不重复订阅），重连由 SDK 的 reconnect 策略负责；token 失效
+ *   （auth 事件为 null）时立即用缓存凭证重签。
+ * - secret 只进不出：缓存仅供 SIGNIN，绝不出现在返回值、日志或统计里；日志只带
+ *   白名单事件 / 随机实例标识 / database / employeeId。
  * - 重启后注册表为空：warmup() 遍历 active workspace 把 employee_credential 重新
  *   装载进 secret 缓存（不开会话）；会话按需由调用方再次 register。
  */
@@ -36,15 +45,40 @@ export type EmployeeRuntimeDeps = {
   connect?: () => Surreal;
   /** 固定探测超时；生产默认 1500ms。 */
   probeTimeoutMs?: number;
+  /**
+   * SIGNIN 后多久主动续约会话 token（毫秒）。必须低于 employee access 的
+   * session DURATION（当前 1h），默认 45min；续约在原连接上再次 SIGNIN。
+   */
+  renewAfterMs?: number;
+  /** SDK 连接级自动重连策略；默认启用无限重试 + 指数退避。false 关闭。 */
+  reconnect?: boolean | Partial<ReconnectOptions>;
+  /** 计时器 seam：确定性测试可注入虚拟时钟。 */
+  schedule?: (fn: () => void, ms: number) => unknown;
+  cancelScheduled?: (handle: unknown) => void;
+  /** 续约失败的有界重试策略（复用 gates 的 RetryContext）。 */
+  retry?: RetryContext;
   /** root 会话工厂（读 employee_credential；凭证表 PERMISSIONS NONE，只有 root 能读）。 */
   rootSession?: (database: string) => Promise<Queryable>;
   /** _system 会话工厂（warmup 遍历 workspace 索引）。 */
   systemSession?: () => Promise<Queryable>;
+  /**
+   * 会话失效通知（D1 返工）：任何会话被关闭/替换（生命周期 pause/retire、
+   * register 换代次、进程停机）时同步调用。生产装配里由 trigger runtime
+   * 订阅：丢弃 lane 会话缓存并中止在途窗口，保证死会话不被复用。
+   * 回调必须同步返回、不得 await 本 runtime 的任何方法（会与关闭路径互等）。
+   */
+  onSessionClosed?: (database: string, employeeId: string) => void;
+  /**
+   * 单个连接 close() 的超时（毫秒），默认 3000：SDK 对僵尸连接的 close 可能
+   * 悬挂（联验 D1 的假健康即来源于此），超时按关闭失败如实上报，注册表
+   * 照常摘除，观测不再被卡死的关闭阻塞。
+   */
+  closeTimeoutMs?: number;
 };
 
 export type EmployeeCredential = { subject: string; secret: string };
 
-export type EmployeeRuntime = {
+export type EmployeeRuntime = TriggerSessionManager & {
   /** 注册并 SIGNIN；先确认关闭旧连接。activate 仅供生命周期确认 active 后解除暂停。 */
   register(target: EmployeeSessionTarget, options?: { activate?: boolean }): Promise<void>;
   /** 关闭并移除会话；deactivate 持续封禁（暂停），forgetSecret 永久封禁（退休）。 */
@@ -63,6 +97,8 @@ export type EmployeeRuntime = {
   /** 进程启动后回装凭证缓存（遍历 active workspace → employee_credential，不开会话）。 */
   warmup(): Promise<{ databases: number; credentials: number }>;
   inspect(database: string, employeeId: string): Promise<EmployeeRuntimeObservation>;
+  /** 连接监督计数（activeSessions/reconnect/renewal/disconnect），不含任何凭证。 */
+  sessionStats(): SessionManagerStats;
   activeSessions(): number;
   stop(): Promise<void>;
 };
@@ -86,10 +122,29 @@ export type EmployeeRuntimeObservation = {
 type ObservationState = Pick<EmployeeRuntimeObservation,
   "generation" | "lastRegisteredAt" | "lastClosedAt" | "closeConfirmed">;
 
+/** employee access session DURATION 为 1h，默认在 45min 时续约（保留余量）。 */
+const DEFAULT_RENEW_AFTER_MS = 45 * 60_000;
+
+/** SDK 托管的 WS 自动重连：无限重试、500ms 起步指数退避到 30s。 */
+const DEFAULT_RECONNECT: Partial<ReconnectOptions> = {
+  enabled: true,
+  attempts: -1,
+  retryDelay: 500,
+  retryDelayMax: 30_000,
+  retryDelayMultiplier: 2,
+  retryDelayJitter: 0.25,
+};
+
+type SessionEntry = {
+  db: Surreal;
+  renewTimer: unknown;
+  renewing: Promise<void> | null;
+};
+
 const keyOf = (database: string, employeeId: string): EmployeeKey => `${database}::${employeeId}`;
 
 export function createEmployeeRuntime(deps: EmployeeRuntimeDeps): EmployeeRuntime {
-  const sessions = new Map<EmployeeKey, Surreal>();
+  const sessions = new Map<EmployeeKey, SessionEntry>();
   const secrets = new Map<EmployeeKey, string>();
   const subjects = new Map<EmployeeKey, string>();
   const inflight = new Map<EmployeeKey, Promise<void>>();
@@ -101,7 +156,16 @@ export function createEmployeeRuntime(deps: EmployeeRuntimeDeps): EmployeeRuntim
   const closing = new Map<EmployeeKey, Set<Surreal>>();
   const observations = new Map<EmployeeKey, ObservationState>();
   const instanceId = crypto.randomUUID();
+  const counters = { connects: 0, reconnects: 0, disconnects: 0, renewals: 0, renewalFailures: 0, invalidated: 0 };
   let stopped = false;
+
+  const schedule = deps.schedule ?? ((fn: () => void, ms: number) => setTimeout(fn, ms));
+  const cancelScheduled = deps.cancelScheduled ?? ((handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>));
+
+  const splitKey = (key: EmployeeKey): { database: string; employeeId: string } => {
+    const [database = "", employeeId = ""] = key.split("::");
+    return { database, employeeId };
+  };
 
   const emptyState = (): ObservationState => ({ generation: 0, lastRegisteredAt: null, lastClosedAt: null, closeConfirmed: null });
 
@@ -133,12 +197,27 @@ export function createEmployeeRuntime(deps: EmployeeRuntimeDeps): EmployeeRuntim
     pending.add(db);
     closing.set(key, pending);
     state(key).closeConfirmed = null;
+    // 有界关闭（D1 返工）：僵尸连接的 db.close() 可能悬挂，超时按关闭失败
+    // 如实收敛（closeConfirmed=false），注册表已同步摘除，观测不再被阻塞。
+    const closeTimeoutMs = deps.closeTimeoutMs ?? 3_000;
+    let timerHandle: unknown = null;
     try {
-      await db.close();
-    } catch {
-      state(key).closeConfirmed = false;
-      event("close-failed");
-      throw new Error("employee-close-failed");
+      const outcome = await Promise.race([
+        db.close().then(
+          () => "ok" as const,
+          () => "error" as const,
+        ),
+        new Promise<"timeout">((resolve) => {
+          timerHandle = schedule(() => resolve("timeout"), closeTimeoutMs);
+        }),
+      ]);
+      if (outcome !== "ok") {
+        state(key).closeConfirmed = false;
+        event("close-failed");
+        throw new Error("employee-close-failed");
+      }
+    } finally {
+      if (timerHandle != null) cancelScheduled(timerHandle);
     }
     connections.get(key)?.delete(db);
     if (connections.get(key)?.size === 0) connections.delete(key);
@@ -152,9 +231,104 @@ export function createEmployeeRuntime(deps: EmployeeRuntimeDeps): EmployeeRuntim
   async function closeSession(key: EmployeeKey): Promise<void> {
     const previous = sessions.get(key);
     sessions.delete(key);
+    // 摘表即停续约：即使 closeConnection 失败，遗留定时器也不再触碰旧会话。
+    if (previous?.renewTimer != null) cancelScheduled(previous.renewTimer);
+    // 同步通知会话失效（D1 返工）：有真实会话被拆除/替换（生命周期关闭、
+    // register 换代次、lane 空闲收尾、停机）时通知 trigger runtime——丢弃
+    // lane 会话缓存并中止在途窗口。必须不阻塞本关闭路径——回调内部不得
+    // await 本 runtime。
+    if (previous) {
+      const { database, employeeId } = splitKey(key);
+      try {
+        deps.onSessionClosed?.(database, employeeId);
+      } catch {
+        // 通知失败不影响关闭
+      }
+    }
     const all = new Set(closing.get(key));
-    if (previous) all.add(previous);
+    if (previous) all.add(previous.db);
     for (const db of all) await closeConnection(key, db);
+  }
+
+  /**
+   * 会话监督：给连接挂一组一次性事件监听（重连/断开/token 失效计数与日志），
+   * 并按 renewAfterMs 调度续约。同一 Surreal 连接生命周期内只挂一次，续约
+   * 通过重签复用同一会话，不会产生重复监听或第二条连接。
+   */
+  function supervise(key: EmployeeKey, entry: SessionEntry): void {
+    const { database, employeeId } = splitKey(key);
+    const db = entry.db as Surreal & {
+      subscribe?: (event: string, listener: (...args: never[]) => void) => unknown;
+    };
+    db.subscribe?.("reconnecting", () => {
+      counters.reconnects += 1;
+      console.warn("[employee-runtime] session reconnecting", { database, employeeId });
+    });
+    db.subscribe?.("disconnected", () => {
+      counters.disconnects += 1;
+      console.warn("[employee-runtime] session disconnected", { database, employeeId });
+    });
+    // token 失效（过期或服务端 invalidate）：SDK 发 auth(null)，立即用缓存凭证重签。
+    db.subscribe?.("auth", (tokens: unknown) => {
+      if (tokens != null) return;
+      counters.invalidated += 1;
+      console.warn("[employee-runtime] session token invalidated; re-signing", { database, employeeId });
+      void renewSession(key);
+    });
+    scheduleRenewal(key);
+  }
+
+  function scheduleRenewal(key: EmployeeKey): void {
+    const entry = sessions.get(key);
+    if (!entry || stopped) return;
+    if (entry.renewTimer != null) cancelScheduled(entry.renewTimer);
+    entry.renewTimer = schedule(() => {
+      entry.renewTimer = null;
+      void renewSession(key);
+    }, deps.renewAfterMs ?? DEFAULT_RENEW_AFTER_MS);
+  }
+
+  /**
+   * 到期前续约 / 失效后重签：同一连接上再次 SIGNIN，token 与监听组都只有一份。
+   * transient 失败走有界重试；彻底失败只计数+日志，会话仍挂在注册表上，由
+   * lane 的会话重建路径或下一次续约兜底。串行化由 entry.renewing 保证。
+   */
+  function renewSession(key: EmployeeKey): Promise<void> {
+    const entry = sessions.get(key);
+    if (!entry || stopped) return Promise.resolve();
+    if (entry.renewing) return entry.renewing;
+    const { database, employeeId } = splitKey(key);
+    entry.renewing = (async () => {
+      try {
+        const credential = await runtime.credentialFor(database, employeeId);
+        if (!credential) {
+          counters.renewalFailures += 1;
+          console.error("[employee-runtime] renewal skipped: credential missing", { database, employeeId });
+          return;
+        }
+        await withBoundedRetry(
+          () => entry.db.signin({
+            namespace: deps.namespace,
+            database,
+            access: "employee",
+            variables: { subject: credential.subject, pass: credential.secret },
+          }).then(() => undefined),
+          deps.retry,
+        );
+        counters.renewals += 1;
+      } catch (cause) {
+        counters.renewalFailures += 1;
+        console.error("[employee-runtime] session renewal failed", {
+          database,
+          employeeId,
+          message: cause instanceof Error ? cause.message : String(cause),
+        });
+      } finally {
+        entry.renewing = null;
+        scheduleRenewal(key);
+      }
+    })();
+    return entry.renewing;
   }
 
   function allowed(key: EmployeeKey, epoch: number): boolean {
@@ -172,7 +346,7 @@ export function createEmployeeRuntime(deps: EmployeeRuntimeDeps): EmployeeRuntim
     connections.set(key, owned);
     try {
       await db.connect(deps.surrealUrl, {
-        reconnect: false,
+        reconnect: deps.reconnect ?? DEFAULT_RECONNECT,
         namespace: deps.namespace,
         database: target.database,
       });
@@ -191,15 +365,18 @@ export function createEmployeeRuntime(deps: EmployeeRuntimeDeps): EmployeeRuntim
       await closeConnection(key, db);
       throw new Error(stopped ? "employee-runtime-stopped" : "employee-session-blocked");
     }
-    sessions.set(key, db);
+    counters.connects += 1;
+    const entry: SessionEntry = { db, renewTimer: null, renewing: null };
+    sessions.set(key, entry);
     secrets.set(key, target.secret);
     subjects.set(key, target.subject);
+    supervise(key, entry);
     state(key).generation += 1;
     state(key).lastRegisteredAt = new Date().toISOString();
     event("registered");
   }
 
-  return {
+  const runtime: EmployeeRuntime = {
     async register(target, options) {
       const key = keyOf(target.database, target.employeeId);
       // 只有生命周期服务在确认 active 后可解除暂停；执行窗口不能隐式复活。
@@ -211,7 +388,7 @@ export function createEmployeeRuntime(deps: EmployeeRuntimeDeps): EmployeeRuntim
       await serialized(key, () => doRegister(target, epoch));
     },
 
-    async close(database, employeeId, options) {
+    async close(database, employeeId, options?: { forgetSecret?: boolean; deactivate?: boolean }) {
       const key = keyOf(database, employeeId);
       blocked.add(key);
       if (connections.get(key)?.size) state(key).closeConfirmed = null;
@@ -232,7 +409,7 @@ export function createEmployeeRuntime(deps: EmployeeRuntimeDeps): EmployeeRuntim
 
     session(database, employeeId) {
       const key = keyOf(database, employeeId);
-      return stopped || blocked.has(key) ? undefined : sessions.get(key);
+      return stopped || blocked.has(key) ? undefined : sessions.get(key)?.db;
     },
 
     async inspect(database, employeeId) {
@@ -340,6 +517,10 @@ export function createEmployeeRuntime(deps: EmployeeRuntimeDeps): EmployeeRuntim
       return { databases: (workspaces ?? []).length, credentials };
     },
 
+    sessionStats() {
+      return { activeSessions: sessions.size, ...counters };
+    },
+
     activeSessions() {
       return sessions.size;
     },
@@ -354,4 +535,5 @@ export function createEmployeeRuntime(deps: EmployeeRuntimeDeps): EmployeeRuntim
       if (results.some((result) => result.status === "rejected")) throw new Error("employee-close-failed");
     },
   };
+  return runtime;
 }

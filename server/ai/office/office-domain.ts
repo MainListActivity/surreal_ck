@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { StringRecordId } from "surrealdb";
 import type { TriggerSession } from "./employee-trigger-runtime";
 
@@ -75,6 +76,7 @@ export type OfficeTaskRow = {
   status: string;
   completion: string | null;
   brief: Record<string, unknown> | null;
+  result: Record<string, unknown> | null;
 };
 
 type RawTaskRow = {
@@ -87,6 +89,7 @@ type RawTaskRow = {
   status?: unknown;
   completion?: unknown;
   brief?: unknown;
+  result?: unknown;
 };
 
 function mapTask(row: RawTaskRow): OfficeTaskRow {
@@ -100,6 +103,7 @@ function mapTask(row: RawTaskRow): OfficeTaskRow {
     status: typeof row.status === "string" ? row.status : "open",
     completion: typeof row.completion === "string" ? row.completion : null,
     brief: row.brief && typeof row.brief === "object" ? (row.brief as Record<string, unknown>) : null,
+    result: row.result && typeof row.result === "object" ? (row.result as Record<string, unknown>) : null,
   };
 }
 
@@ -108,7 +112,7 @@ export async function getOfficeTask(
   taskId: string,
 ): Promise<OfficeTaskRow | null> {
   const [rows] = await session.query<[RawTaskRow[]]>(
-    `SELECT id, goal, assigner, assignee, parent, depth, status, completion, brief
+    `SELECT id, goal, assigner, assignee, parent, depth, status, completion, brief, result
      FROM $task;`,
     { task: new StringRecordId(taskId) },
   );
@@ -251,4 +255,131 @@ export async function setOfficeTaskStatus(
     `UPDATE $task SET ${sets} WHERE status != $status;`,
     { task: new StringRecordId(taskId), status, result },
   );
+}
+
+// ── 人类请求（VO03）：员工向收件人发结构化问题，答复经同一收件箱回流 ─────────
+
+export type OfficeRequestInput = {
+  /** 确定性 record id（officeRequestId 生成），重试收敛同一行。 */
+  id: string;
+  /** 去重键：与 record id 同源，dedupe_key 唯一索引兜底并发重复。 */
+  dedupeKey: string;
+  /** 目标收件人（真人 user record id）。 */
+  to: string;
+  /** 关联的 office_task record id。 */
+  task?: string;
+  /** 问题类型（free-text / confirm / choice），仅作呈现提示。 */
+  questionType?: string;
+  /** 提示内容（问题正文）。 */
+  prompt: string;
+  /** choice 类型的可选项。 */
+  options?: string[];
+  /** 发起请求的 trigger id 与窗口 run id（追溯关联，非安全语义）。 */
+  requestTrigger?: string;
+  runId?: string;
+};
+
+const OFFICE_REQUEST_TITLE: Record<string, string> = {
+  "free-text": "员工向你提问",
+  confirm: "员工请求确认",
+  choice: "员工请你选择",
+};
+
+/** 人类请求的稳定 record id：同一任务同一问题的重试收敛到同一行。 */
+export function officeRequestId(taskId: string, seed: string): string {
+  const hash = createHash("sha256").update(seed).digest("hex").slice(0, 10);
+  return `user_notification:ofreq_${taskId.replace(/[^a-zA-Z0-9_]/g, "_")}_${hash}`;
+}
+
+/**
+ * 创建结构化人类请求：写入通用 user_notification（purpose=office-request），
+ * 收件人是唯一可写终态的人；确定性 id + dedupe_key 让重试与并发投递收敛。
+ * 发送者即 $auth（employee 会话），payload 携带问题与 run/trigger 追溯。
+ */
+export async function createOfficeRequest(
+  session: TriggerSession,
+  input: OfficeRequestInput,
+): Promise<{ id: string; dedupeKey: string }> {
+  const payload: Record<string, unknown> = {
+    question_type: input.questionType ?? "free-text",
+    prompt: input.prompt,
+  };
+  if (input.options?.length) payload.options = input.options;
+  if (input.requestTrigger) payload.request_trigger = input.requestTrigger;
+  if (input.runId) payload.run_id = input.runId;
+  const content: Record<string, unknown> = {
+    id: new StringRecordId(input.id),
+    dedupe_key: input.dedupeKey,
+    to_user: new StringRecordId(input.to),
+    purpose: "office-request",
+    title: OFFICE_REQUEST_TITLE[input.questionType ?? "free-text"] ?? "员工向你提问",
+    body: input.prompt,
+    severity: "info",
+    payload,
+  };
+  if (input.task) content.task = new StringRecordId(input.task);
+  // 撞 id 或撞 dedupe_key 都静默收敛；随后读回校验——权限拒绝不会伪装成成功。
+  await session.query(
+    `INSERT INTO user_notification $content
+     ON DUPLICATE KEY UPDATE dedupe_key = $content.dedupe_key;`,
+    { content },
+  );
+  const [rows] = await session.query<[{ id?: unknown }[]]>(
+    `SELECT id FROM $request;`,
+    { request: new StringRecordId(input.id) },
+  );
+  if (!rows?.[0]) throw new OfficeDomainError("office-request-create-failed", input.id);
+  return { id: input.id, dedupeKey: input.dedupeKey };
+}
+
+export type OfficeRequestRow = {
+  id: string;
+  purpose: string | null;
+  task: string | null;
+  toUser: string | null;
+  fromEmployee: string | null;
+  resolvedAt: string | null;
+  resolution: string | null;
+  answer: Record<string, unknown> | null;
+  payload: Record<string, unknown> | null;
+};
+
+type RawRequestRow = {
+  id?: unknown;
+  purpose?: unknown;
+  task?: unknown;
+  to_user?: unknown;
+  from_employee?: unknown;
+  resolved_at?: unknown;
+  resolution?: unknown;
+  answer?: unknown;
+  payload?: unknown;
+};
+
+/**
+ * 读回一条人类请求：员工会话只能读到 from_employee = 自己的行（schema select
+ * 权限），收件人/admin 读自己收件箱的行；越权读到空集。
+ */
+export async function getOfficeRequest(
+  session: TriggerSession,
+  requestId: string,
+): Promise<OfficeRequestRow | null> {
+  const [rows] = await session.query<[RawRequestRow[]]>(
+    `SELECT id, purpose, task, to_user, from_employee, resolved_at, resolution, answer, payload
+     FROM $request;`,
+    { request: new StringRecordId(requestId) },
+  );
+  const row = rows?.[0];
+  if (!row) return null;
+  return {
+    id: String(row.id),
+    purpose: typeof row.purpose === "string" ? row.purpose : null,
+    task: row.task == null ? null : String(row.task),
+    toUser: row.to_user == null ? null : String(row.to_user),
+    fromEmployee: row.from_employee == null ? null : String(row.from_employee),
+    resolvedAt: row.resolved_at == null ? null : String(row.resolved_at),
+    resolution: typeof row.resolution === "string" ? row.resolution : null,
+    answer: row.answer && typeof row.answer === "object" ? (row.answer as Record<string, unknown>) : null,
+    payload: row.payload && typeof row.payload === "object" ? (row.payload as Record<string, unknown>) : null,
+  };
 }

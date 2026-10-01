@@ -58,6 +58,29 @@ describe("workspace migration manifest", () => {
     ).toEqual({ kind: "eligible" });
   });
 
+  test("residual guard sweep only runs once legacy quota tables are gone", () => {
+    // 39 门控：native_verified（021 即将在同一批先跑）或 cleanup_done 才放行；
+    // legacy 在线状态下绝不移除仍在执行配额的 guard。
+    for (const state of ["not_started", "native_applied", "native_policy_active"] as const) {
+      expect(
+        evaluateWorkspaceMigrationEligibility(39, {
+          engineCapabilities: [NATIVE_QUOTA_EXPECTED_CONTRACT.capabilityName],
+          quotaMigrationState: state,
+          legacyCleanupEligible: true,
+        }).kind,
+      ).toBe("blocked");
+    }
+    for (const state of ["native_verified", "cleanup_done"] as const) {
+      expect(
+        evaluateWorkspaceMigrationEligibility(39, {
+          engineCapabilities: [],
+          quotaMigrationState: state,
+          legacyCleanupEligible: false,
+        }),
+      ).toEqual({ kind: "eligible" });
+    }
+  });
+
   test("selectContinuousEligibleMigrations stops before the first blocked version", () => {
     const pending = [19, 20, 21, 22].map((version) => ({
       version,

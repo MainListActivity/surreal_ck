@@ -95,6 +95,8 @@ export type AllowanceBucketRow = {
   reserved: number;
   settled: number;
   status: "active" | "suspended";
+  /** LCA08：商业来源终止标记（试用转付费），旧记录上为 NONE。 */
+  terminated_at?: unknown;
   effective_from: unknown;
   expires_at: unknown;
 };
@@ -117,12 +119,14 @@ export type ReservationRow = {
 };
 
 export type AllowanceBalance = {
-  /** 可用总额（未到期、未暂停）。 */
+  /** 可用总额（未到期、未暂停、未终止）。 */
   available: number;
   /** 进行中预留总额（未到期桶上）。 */
   reserved: number;
   /** 暂停桶内仍有余额。 */
   suspended: number;
+  /** 已终止桶（试用转付费等商业来源终止）内仍有余额，不再可消费、不复活。 */
+  terminated: number;
   /** 已到期桶里的剩余可用。 */
   expired: number;
   buckets: AllowanceBucketRow[];
@@ -174,17 +178,39 @@ export class AiAllowanceService {
 
   /** workspace db_name → 产品权益快照里的 ai_actions；无快照返回 null（遗留未计量路径）。 */
   async entitledActions(dbName: string): Promise<readonly string[] | null> {
+    const gate = await this.entitlementGate(dbName);
+    return gate ? gate.actions : null;
+  }
+
+  /**
+   * LCA08 读端门禁：权益动作 + 当前有效商业来源前缀（`<kind>:<sourceId>:`）。
+   * plan_cycle 桶的可消费资格必须对齐当前商业来源：试用转付费后旧试用桶立即
+   * 失去资格（即便 terminated_at 标记尚未落库，读端也按当前来源 fail-closed）；
+   * 快照缺失或 base_source_kind = none 时 plan_cycle 桶一律不可消费（保留模式
+   * 停止新的计量动作，不扩大访问）。购买/补偿桶不受来源更替影响。
+   */
+  private async entitlementGate(dbName: string): Promise<{
+    actions: readonly string[];
+    planCyclePrefix: string | null;
+  } | null> {
     const sys = await this.deps.systemSession();
-    const row = first<{ ai_actions?: unknown }>(
+    const row = first<{ ai_actions?: unknown; base_kind?: unknown; base_id?: unknown }>(
       await collect(
         sys,
-        `SELECT current_product_entitlement.ai_actions AS ai_actions
+        `SELECT current_product_entitlement.ai_actions AS ai_actions,
+                current_product_entitlement.base_source_kind AS base_kind,
+                current_product_entitlement.base_source_id AS base_id
          FROM workspace WHERE db_name = $db LIMIT 1`,
         { db: dbName },
       ),
     );
     if (!row || !Array.isArray(row.ai_actions)) return null;
-    return row.ai_actions.map(String);
+    const baseKind = row.base_kind;
+    const baseId = typeof row.base_id === "string" ? row.base_id : null;
+    const planCyclePrefix = (baseKind === "trial" || baseKind === "subscription") && baseId
+      ? `${String(baseKind)}:${baseId}:`
+      : null;
+    return { actions: row.ai_actions.map(String), planCyclePrefix };
   }
 
   /**
@@ -199,9 +225,9 @@ export class AiAllowanceService {
     idempotencyKey: string;
     runId: string;
   }): Promise<{ metered: false } | { metered: true; reservation: ReservationRow; reused: boolean }> {
-    const actions = await this.entitledActions(input.db);
-    if (actions === null) return { metered: false };
-    if (!actions.includes(input.actionKey)) {
+    const gate = await this.entitlementGate(input.db);
+    if (!gate) return { metered: false };
+    if (!gate.actions.includes(input.actionKey)) {
       throw new AiAllowanceError("ai-action-not-entitled", `AI action ${input.actionKey} is not in the workspace entitlement`, { actionKey: input.actionKey });
     }
 
@@ -231,14 +257,17 @@ export class AiAllowanceService {
     // 每轮重取候选桶（余额可能已被别路消耗→自然落到 insufficient）。
     for (let attempt = 0; ; attempt += 1) {
       // 消费顺序：最早到期 → 同到期套餐/补偿先于购买 → 创建序（ORDER BY 只接 idiom，先投影再排）。
+      // LCA08 读端 fail-closed：已终止桶（试用转付费）不参与新预留；plan_cycle 桶
+      // 还必须对齐当前有效商业来源前缀，快照缺失/来源翻转发时不复活旧资格。
       const candidates = rows<{ id: unknown }>(
         await collect(
           session,
           `SELECT id, expires_at, created_at, (kind = "purchased") AS purchased_last FROM ai_allowance_bucket
            WHERE status = "active" AND effective_from <= time::now() AND expires_at > time::now()
-             AND available >= $amt
+             AND available >= $amt AND terminated_at = NONE
+             AND (kind != "plan_cycle" OR string::starts_with(period_key, $planPrefix))
            ORDER BY expires_at ASC, purchased_last ASC, created_at ASC`,
-          { amt: amount },
+          { amt: amount, planPrefix: gate.planCyclePrefix ?? "\u0000no-valid-plan-source" },
         ),
       );
 
@@ -249,7 +278,8 @@ export class AiAllowanceService {
             session,
             `BEGIN;
              LET $u = (UPDATE $bucket SET available -= $amt, reserved += $amt
-                       WHERE available >= $amt AND status = "active" AND expires_at > time::now());
+                       WHERE available >= $amt AND status = "active" AND expires_at > time::now()
+                         AND terminated_at = NONE);
              IF array::len($u) > 0 {
                LET $res = (CREATE ONLY ai_reservation CONTENT {
                  actor: $actor, channel: $channel, action_key: $action, rate: $rate,
@@ -307,6 +337,22 @@ export class AiAllowanceService {
     });
   }
 
+  /** 恢复重新检查当前动作权益；只延续仍有效的预留。新窗口按原预留身份派生幂等键。 */
+  async resume(input: { db: string; actor: StringRecordId; runId: string; actionKey: string; idempotencyKey: string }): Promise<{ metered: boolean }> {
+    const actions = await this.entitledActions(input.db);
+    if (actions === null) return { metered: false };
+    if (!actions.includes(input.actionKey)) throw new AiAllowanceError("ai-action-not-entitled", "当前权益不允许继续此 AI 动作");
+    const session = await this.deps.workspaceSession(input.db);
+    await this.sweepExpired(session);
+    const latest = first<ReservationRow>(await collect(session,
+      `SELECT * FROM ai_reservation WHERE run_id = $run ORDER BY created_at DESC LIMIT 1`, { run: input.runId }));
+    if (latest && String(latest.actor) !== String(input.actor)) throw new AiAllowanceError("ai-action-not-entitled", "运行不属于当前调用者");
+    if (latest?.status === "reserved") return { metered: true };
+    // 已交付动作的断线重试不另扣款；再次研究从新 run 开始。
+    if (latest?.status === "settled") return { metered: true };
+    return this.reserve({ ...input, channel: "interactive", idempotencyKey: `${input.idempotencyKey}:after:${String(latest?.id ?? "initial")}` });
+  }
+
   /** 结算：charge ≤ 预留披露上限；缺省按上限全额。幂等（终态直返）。 */
   async settle(input: { db: string; idempotencyKey: string; amount?: number; note?: string }): Promise<void> {
     const session = await this.deps.workspaceSession(input.db);
@@ -330,14 +376,15 @@ export class AiAllowanceService {
          UPDATE ONLY $r.id SET status = "settled", settled_amount = $charge,
            outcome = $outcome, resolved_at = time::now();
          UPDATE ONLY $r.bucket SET reserved -= $r.max_amount, settled += $charge;
-         LET $b = (SELECT expires_at FROM ONLY $r.bucket);
+         LET $b = (SELECT expires_at, terminated_at FROM ONLY $r.bucket);
          LET $excess = $r.max_amount - $charge;
          CREATE ai_ledger_entry CONTENT {
            kind: "settle", bucket: $r.bucket, reservation: $r.id, amount: $charge,
            note: $note, resulting_available: (SELECT VALUE available FROM ONLY $r.bucket)[0]
          };
+         // LCA08：已终止桶（试用转付费）的未用预留只冲销，不返还可消费余额。
          IF $excess > 0 {
-           IF $b.expires_at > time::now() {
+           IF $b.expires_at > time::now() AND $b.terminated_at = NONE {
              UPDATE ONLY $r.bucket SET available += $excess;
              CREATE ai_ledger_entry CONTENT {
                kind: "release", bucket: $r.bucket, reservation: $r.id, amount: $excess,
@@ -365,7 +412,7 @@ export class AiAllowanceService {
     await this.emitThresholdNotices(session, rid(reservation.bucket));
   }
 
-  /** 释放：回原桶；原桶已到期 → 只记 writeoff 不恢复可用。幂等。 */
+  /** 释放：回原桶；原桶已到期或已终止（试用转付费）→ 只记 writeoff 不恢复可用。幂等。 */
   async release(input: { db: string; idempotencyKey: string; reason: string }): Promise<void> {
     const session = await this.deps.workspaceSession(input.db);
     await collect(
@@ -375,8 +422,8 @@ export class AiAllowanceService {
        IF $r != NONE {
          UPDATE ONLY $r.id SET status = "released", outcome = $reason, resolved_at = time::now();
          UPDATE ONLY $r.bucket SET reserved -= $r.max_amount;
-         LET $b = (SELECT expires_at FROM ONLY $r.bucket);
-         IF $b.expires_at > time::now() {
+         LET $b = (SELECT expires_at, terminated_at FROM ONLY $r.bucket);
+         IF $b.expires_at > time::now() AND $b.terminated_at = NONE {
            UPDATE ONLY $r.bucket SET available += $r.max_amount;
            CREATE ai_ledger_entry CONTENT {
              kind: "release", bucket: $r.bucket, reservation: $r.id, amount: $r.max_amount,
@@ -431,8 +478,8 @@ export class AiAllowanceService {
            IF $r != NONE AND $r.status = "reserved" {
              UPDATE ONLY $r.id SET status = "expired", outcome = "execution_window_expired", resolved_at = time::now();
              UPDATE ONLY $r.bucket SET reserved -= $r.max_amount;
-             LET $b = (SELECT expires_at FROM ONLY $r.bucket);
-             IF $b.expires_at > time::now() {
+             LET $b = (SELECT expires_at, terminated_at FROM ONLY $r.bucket);
+             IF $b.expires_at > time::now() AND $b.terminated_at = NONE {
                UPDATE ONLY $r.bucket SET available += $r.max_amount;
                CREATE ai_ledger_entry CONTENT {
                  kind: "expire", bucket: $r.bucket, reservation: $r.id, amount: $r.max_amount,
@@ -452,21 +499,27 @@ export class AiAllowanceService {
     return overdue.length;
   }
 
-  /** 客户余额视图：可用 / 预留 / 暂停 / 已过期 + 桶明细。 */
+  /** 客户余额视图：可用 / 预留 / 暂停 / 已终止 / 已过期 + 桶明细。 */
   async balance(db: string): Promise<AllowanceBalance> {
     const session = await this.deps.workspaceSession(db);
     await this.sweepExpired(session);
+    const gate = await this.entitlementGate(db);
     const buckets = rows<AllowanceBucketRow>(
       await collect(session, `SELECT * FROM ai_allowance_bucket ORDER BY expires_at ASC`),
     );
     const now = this.nowMs;
     const ts = (v: unknown) => (v instanceof Date ? v.getTime() : new Date(String(v)).getTime());
-    const balance: AllowanceBalance = { available: 0, reserved: 0, suspended: 0, expired: 0, buckets };
+    const balance: AllowanceBalance = { available: 0, reserved: 0, suspended: 0, terminated: 0, expired: 0, buckets };
     for (const b of buckets) {
       const expired = ts(b.expires_at) <= now;
-      const suspended = b.status === "suspended";
+      // LCA08：终止标记（试用转付费）或不再对齐当前商业来源的 plan_cycle 桶
+      // 立即离开可消费余额，不复活（fail-closed，不事后改写桶记录）。
+      const terminated = b.terminated_at != null;
+      const stalePlanSource = b.kind === "plan_cycle"
+        && !(typeof gate?.planCyclePrefix === "string" && String(b.period_key).startsWith(gate.planCyclePrefix));
       if (expired) balance.expired += b.available + b.reserved;
-      else if (suspended) balance.suspended += b.available + b.reserved;
+      else if (terminated || stalePlanSource) balance.terminated += b.available + b.reserved;
+      else if (b.status === "suspended") balance.suspended += b.available + b.reserved;
       else {
         balance.available += b.available;
         balance.reserved += b.reserved;

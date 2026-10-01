@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 Label: ready-for-agent
 ID: SCK-LCAQ-03
 Repository: surreal_ck
@@ -28,3 +28,26 @@ Repository: surreal_ck
 ## Blocked by
 
 - [SCK-LCAQ-02](02-local-acquisition.md)
+
+## 实施记录（2026-09-30）
+
+- 新增 `adapter/incremental.ts`（增量引擎）+ `adapter/incremental-run.ts`（单次 CLI）+ `adapter/incremental.test.ts`（16 测试）。
+- **每来源持久化状态**（`runs/incremental-state.json`，tmp+rename 原子写）：发现游标（seen：recordKey → 快照摘要/路径/fetchedAt/已提交摘要）、失败重试状态（attempts/错误类别）、预算顺延队列、最近成功检查时间、待提交批次、停用与授权停止标记。状态只含键/URL/摘要/计数，不含 token 或正文。
+- **可重放边界**：证据获取（快照按内容寻址落盘，恢复不重抓）→ 成品落盘（确定性重建，同键同内容复用）→ MCP 提交（复用 LCM-09 runner：`scripts/platform-content-runner.ts` export 化 `submitAndInspectBatch`，CLI 行为不变，401/网络失败类型化为 `McpHttpError`）→ 检查点推进（每阶段边界后原子持久化）。提交边界后中断 → 恢复 pass 原样重放同一幂等键（服务端幂等，不重复出版本）；证据边界后中断 → 从快照重建批次，零抓取。
+- **冲突语义**：同幂等键 + 磁盘内容变化 → `BatchKeyConflictError`（pass 前预检，全停待运营处置），运营确认后 `--new-batch-key` 开新批次。
+- **有界重叠窗口**：每 pass 复查最近 N 条（默认 5）已提交记录，内容变化判「更新」重新提交（迟到文书/修订由此发现）；无游标时报告 `provided-candidates` 模式并注明「不宣称全量覆盖」。
+- **失败重试**：单条失败记 request/parse 类别与 attempts，不阻塞其它候选；重试遵守每来源抓取预算（默认 12/pass，超限顺延入队不丢失）；耗尽（默认 3 次）后保留待办可见。
+- **停止条件**：来源访问限制/许可边界变化（robots/登录/验证码/403，AccessRestrictedError）→ 来源停用、未处理候选保留排队，恢复需 `--readmit <sourceKey>`；MCP 401/403 → 全局授权停止（后续 pass 拒绝远端，批次保留），恢复需运营重新完成 OAuth 后 `--reauthorized`。
+- **可见性**：每来源报告 outcome（ok/empty/request_failure/parse_failure/blocked/conflict，空结果与失败区分）、最近成功检查时间、扫描范围与诚实说明、候选/重复/更新/失败/重试/顺延/待核验/暂存/失败活跃/耗尽计数、停用原因；报告落盘 `runs/last-pass-report.json` 并输出 JSON。
+- **无调度**：本工具单次运行，不创建任何默认定时器；周期运行须运营显式配置本地 scheduler 调用。自动运行只 submit+inspect，代码中无发布通路（`publish_batch` 仅存在于 runner CLI 的显式 `--publish` + `CONTENT_PUBLISH_CONFIRM=YES` 分支）；OAuth 同意不构成任何批次的发布批准。
+- **验证**：`bun test ./.scratch/legal-content-acquisition/adapter/` → 41 pass（20 增量 + 21 既有适配器无回归）；`bunx tsc --noEmit --strict`（适配器/runner/测试，带 bun-types 零错误）；`bun build scripts/platform-content-runner.ts --target bun`（LCM-09 验证命令）通过；`pnpm typecheck` / `pnpm lint` 全 workspace 干净。
+- **限制**：真实来源的列表页发现（自动发现新详情页 URL）仍不在适配器内——候选 URL 由运营/上游清单提供，重叠复查只覆盖已见记录；DB 迁移：无；新环境变量：无（沿用 CONTENT_MCP_URL/CONTENT_ACCESS_TOKEN/CONTENT_BATCH 既有约定）。
+
+## 返工记录（2026-09-30，验收退回修复）
+
+- **修复 runner 检查点守卫楔死**（验收阻断项）：`submitAndInspectBatch` 的「检查点幂等键 ≠ 批次键即拒绝」守卫与引擎每 pass 新键 `lcaq03-<source>-p<seq>` 冲突，来源首笔提交成功后第二笔起永久被拒。修复：`incremental-run.ts` 导出 `makeSubmitRemote`（生产装配与测试共用），per-source 检查点 + `force: true`——批次键生命周期由引擎 `pendingBatch` 自管（同键同内容复用、同键不同内容报冲突），runner 检查点退化为「最近提交进度」指针；独立 CLI 模式守卫语义不变（`main()` 仍不传 force）。
+- **补真实通道接线测试**：新增 `makeSubmitRemote` × 真实 `submitAndInspectBatch`（假 MCP fetch）接线回归 4 条——连续新批次键可提交、同键重放复用服务端批次、重放期候选排队、重叠窗口轮换；负向验证：去掉 `force` 立即失败。
+- **重叠窗口轮换**：复查排序由 lastCheckedAt 降序（窗口自锁在最新 N 条）改为升序最久未查优先，窗口逐 pass 轮换覆盖全部已提交记录。
+- **重放期候选不丢**：`pendingBatch` 重放前把本 pass 提供且未入库的候选先入 `pending` 排队并持久化；`SourceCounts` 新增 `queued` 字段暴露遗留排队长度。
+- **可见性修正**：零失败全顺延（如 `--fetch-budget 0`）的 outcome 由误标 `parse_failure` 改为 `empty`（顺延计数仍在 `deferred`/`queued` 可见）。
+- **健壮性**：数字 flag（`--overlap-limit/--max-attempts/--fetch-budget`）经 `numericFlag` 解析，缺值/非法值回退默认而非 NaN；`incremental-run.ts` 加 `import.meta.main` 守卫（可被测试 import 而不执行 CLI）。

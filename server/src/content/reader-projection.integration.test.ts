@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { Surreal } from "surrealdb";
 import { SignJWT, generateKeyPair, exportJWK } from "jose";
 import { loadPlatformContentScripts } from "@surreal-ck/shared/platform-content-schema";
-import { defineContentReaderAccess } from "./reader-access";
+import { defineReaderFixture } from "../../test/define-reader-fixture";
 import { fetchContentReaderTarget, writeContentReaderProjection } from "./reader-projection";
 import type { ContentReaderProjectionWrite } from "./reader-exchange";
 import { homedir } from "node:os";
@@ -52,7 +52,7 @@ test("content projection sync writes converge and gate a real content_reader ses
     await root.query("DEFINE NAMESPACE test; USE NS test; DEFINE DATABASE content; USE DB content;");
     await root.use({ namespace: "test", database: "content" });
     for (const script of await loadPlatformContentScripts()) await root.query(script.sql);
-    await defineContentReaderAccess(root, { jwksUrl: `${issuer}/jwks`, issuer, audience: "fixture" });
+    await defineReaderFixture(root, { jwksUrl: `${issuer}/jwks`, issuer, audience: "fixture" }, keys.publicKey);
 
     const syncPass = crypto.randomUUID();
     await root.query(`

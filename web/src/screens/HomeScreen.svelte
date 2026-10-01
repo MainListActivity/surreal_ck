@@ -155,12 +155,12 @@
     const file = input.files?.[0];
     input.value = "";
     if (!file) return;
-    if (!/\.(?:csv|xlsx)$/iu.test(file.name)) {
-      importStatus = "请选择 .csv 或 .xlsx 文件";
+    if (!/\.(?:csv|xls|xlsx)$/iu.test(file.name)) {
+      importStatus = "请选择 .csv、.xls 或 .xlsx 文件";
       return;
     }
     try {
-      if (/\.xlsx$/iu.test(file.name)) {
+      if (/\.(?:xlsx|xls)$/iu.test(file.name)) {
         importStatus = "正在解析 Excel 文件…";
         xlsxParseTask = createXlsxParseTask(file);
         xlsxImport = await xlsxParseTask.promise;
@@ -266,7 +266,7 @@
           class="file-input"
           bind:this={fileInput}
           type="file"
-          accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          accept=".csv,.xls,.xlsx,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
           onchange={(event) => void handleImportFile(event)}
         />
         <button type="button" class="qa qa-neutral" onclick={handleImportClick}>

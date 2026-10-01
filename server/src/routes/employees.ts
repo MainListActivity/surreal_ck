@@ -24,6 +24,42 @@ const EMPLOYEE_KEY_PATTERN = /^[a-z][a-z0-9_]{0,62}$/i;
 // qa-probe 投递的 payloadRef 只作回显/关联，限制长度避免滥用。
 const QA_PROBE_PAYLOAD_REF_MAX = 200;
 
+/**
+ * 诊断端点的错误归一化（D1 返工）：已知运行时错误码原样透出；SDK/存储层
+ * 原始错误串不进 HTTP 响应，统一收敛为 employee-delivery-failed（原始信息
+ * 已在 runtime 侧结构化日志留痕）。
+ */
+const TRIGGER_ERROR_CODES = new Set([
+  "employee-session-blocked",
+  "employee-session-closed",
+  "employee-session-unavailable",
+  "employee-signin-failed",
+  "employee-credential-missing",
+  "employee-runtime-stopped",
+  "employee-trigger-persist-failed",
+  "employee-delivery-failed",
+  "window-aborted",
+  "window-lease-expired",
+  "snapshot-missing",
+  "trigger-failed",
+  "attempts-exhausted",
+]);
+const TRIGGER_ERROR_PREFIXES = [
+  "chain-depth-exceeded:",
+  "trigger-not-found:",
+  "trigger-not-waiting:",
+  "run-not-suspended:",
+  "unsupported-snapshot-status:",
+  "attempts-exhausted:",
+];
+
+function diagnosticError(error: string | undefined): string {
+  if (!error) return "employee-delivery-failed";
+  if (TRIGGER_ERROR_CODES.has(error)) return error;
+  if (TRIGGER_ERROR_PREFIXES.some((prefix) => error.startsWith(prefix))) return error;
+  return "employee-delivery-failed";
+}
+
 function resultToResponse(result: Exclude<EmployeeLifecycleResult, { kind: "ok" }>): HttpError {
   switch (result.kind) {
     case "caller-denied":
@@ -135,7 +171,7 @@ export function createEmployeeRoutes(input: {
       ok: true,
       outcome: result.outcome,
       ...(result.triggerId !== undefined ? { triggerId: result.triggerId } : {}),
-      ...(result.outcome === "failed" ? { error: result.error } : {}),
+      ...(result.outcome === "failed" ? { error: diagnosticError(result.error) } : {}),
     });
   });
 
