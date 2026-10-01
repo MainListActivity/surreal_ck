@@ -249,7 +249,7 @@ async function terminateTrialSourceBuckets(
       terminated_at = $terminatedAt,
       terminated_note = $note,
       updated_at = time::now()
-    WHERE kind = "plan_cycle" AND string::startsWith(period_key, $trialPrefix) AND terminated_at = NONE;
+    WHERE kind = "plan_cycle" AND string::starts_with(period_key, $trialPrefix) AND terminated_at = NONE;
     `,
     {
       trialPrefix,
@@ -295,25 +295,37 @@ export async function syncPlanCycleAllowance(input: {
   };
   const baseBefore = await readBucket(input.session, baseBucket);
   if (baseBefore === null) {
-    await input.session.query(
-      `
-      BEGIN;
-      LET $pre = (SELECT total FROM ONLY $bucket);
-      IF $pre = NONE {
-        CREATE $bucket CONTENT {
-          kind: "plan_cycle", label: $label, source: $source, period_key: $period,
-          total: $target, available: $target, reserved: 0, settled: 0,
-          effective_from: $from, expires_at: $until
-        };
-        CREATE ai_ledger_entry CONTENT {
-          kind: "grant", bucket: $bucket, amount: $target,
-          note: $note, resulting_available: $target
-        };
-      };
-      COMMIT;
-      `,
-      baseBindings,
-    );
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await input.session.query(
+          `
+          BEGIN;
+          LET $pre = (SELECT total FROM ONLY $bucket);
+          IF $pre = NONE {
+            CREATE $bucket CONTENT {
+              kind: "plan_cycle", label: $label, source: $source, period_key: $period,
+              total: $target, available: $target, reserved: 0, settled: 0,
+              effective_from: $from, expires_at: $until
+            };
+            CREATE ai_ledger_entry CONTENT {
+              kind: "grant", bucket: $bucket, amount: $target,
+              note: $note, resulting_available: $target
+            };
+          };
+          COMMIT;
+          `,
+          baseBindings,
+        );
+        break;
+      } catch (error) {
+        // 并发对手先建了同 id 桶 → 重读后按存在跳过；可重试事务冲突 → 退避重试。
+        if ((isConflict(error) || isRetryableTxnError(error)) && attempt + 1 < MAX_ATTEMPTS) {
+          await sleep(5 + Math.random() * 20 * (attempt + 1));
+          continue;
+        }
+        throw error;
+      }
+    }
   }
 
   const supplement = await syncUpgradeSupplement(input);

@@ -265,7 +265,7 @@ export class AiAllowanceService {
           `SELECT id, expires_at, created_at, (kind = "purchased") AS purchased_last FROM ai_allowance_bucket
            WHERE status = "active" AND effective_from <= time::now() AND expires_at > time::now()
              AND available >= $amt AND terminated_at = NONE
-             AND (kind != "plan_cycle" OR string::startsWith(period_key, $planPrefix))
+             AND (kind != "plan_cycle" OR string::starts_with(period_key, $planPrefix))
            ORDER BY expires_at ASC, purchased_last ASC, created_at ASC`,
           { amt: amount, planPrefix: gate.planCyclePrefix ?? "\u0000no-valid-plan-source" },
         ),
