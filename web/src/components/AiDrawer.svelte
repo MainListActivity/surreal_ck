@@ -445,6 +445,10 @@
                       </button>
                     {/each}
                   </div>
+                {:else if pending.kind === "authorization_changed"}
+                  <span>{pending.authorizationChange?.message}</span>
+                  <button type="button" onclick={() => void session.continueResearch(pending.messageId, "research-retry")}>重新检索</button>
+                  <button type="button" onclick={() => void session.continueResearch(pending.messageId, "research-continue-current")}>继续当前合法材料</button>
                 {:else if pending.kind === "manual-research" && pending.research}
                   <ResearchPanel
                     sessionId={pending.research.sessionId}

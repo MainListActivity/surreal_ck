@@ -307,6 +307,22 @@ export class AiAllowanceService {
     });
   }
 
+  /** 恢复重新检查当前动作权益；只延续仍有效的预留。新窗口按原预留身份派生幂等键。 */
+  async resume(input: { db: string; actor: StringRecordId; runId: string; actionKey: string; idempotencyKey: string }): Promise<{ metered: boolean }> {
+    const actions = await this.entitledActions(input.db);
+    if (actions === null) return { metered: false };
+    if (!actions.includes(input.actionKey)) throw new AiAllowanceError("ai-action-not-entitled", "当前权益不允许继续此 AI 动作");
+    const session = await this.deps.workspaceSession(input.db);
+    await this.sweepExpired(session);
+    const latest = first<ReservationRow>(await collect(session,
+      `SELECT * FROM ai_reservation WHERE run_id = $run ORDER BY created_at DESC LIMIT 1`, { run: input.runId }));
+    if (latest && String(latest.actor) !== String(input.actor)) throw new AiAllowanceError("ai-action-not-entitled", "运行不属于当前调用者");
+    if (latest?.status === "reserved") return { metered: true };
+    // 已交付动作的断线重试不另扣款；再次研究从新 run 开始。
+    if (latest?.status === "settled") return { metered: true };
+    return this.reserve({ ...input, channel: "interactive", idempotencyKey: `${input.idempotencyKey}:after:${String(latest?.id ?? "initial")}` });
+  }
+
   /** 结算：charge ≤ 预留披露上限；缺省按上限全额。幂等（终态直返）。 */
   async settle(input: { db: string; idempotencyKey: string; amount?: number; note?: string }): Promise<void> {
     const session = await this.deps.workspaceSession(input.db);
