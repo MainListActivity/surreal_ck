@@ -138,6 +138,43 @@ export function getRootConnection(): Surreal {
   return rootConnection;
 }
 
+/**
+ * 长生命周期消费者的稳定根连接引用：每次调用都转发到**当前**连接实例。
+ *
+ * startNativeQuotaRuntime 等启动期捕获连接对象的消费方，若直接持有实例，
+ * 断线重连（rootConnection 被替换、旧实例 close）后它们会永远打到已关闭的
+ * 旧连接上——HTTP /health 走实时查找仍显示正常，控制面 worker 全部静默失活。
+ * 稳定引用按调用时刻解析，重连后下一 tick 即恢复。
+ */
+export function getStableRootConnection(): Surreal {
+  return new Proxy({} as Surreal, {
+    get(_target, prop) {
+      const resolve = () => getRootConnection() as unknown as Record<PropertyKey, unknown>;
+      const current = resolve();
+      const value = current[prop];
+      if (typeof value !== "function") return value;
+      return (...args: unknown[]) => {
+        const latest = resolve();
+        const fn = latest[prop] as (...a: unknown[]) => unknown;
+        return fn.apply(latest, args);
+      };
+    },
+  });
+}
+
+let lastProbeAt = 0;
+
+/**
+ * worker 环路报错后的节流探针：真实查询一次根连接，失败即调度重连。
+ * 覆盖 SDK 未发 disconnected 事件的半开连接（只有真实往返才会暴露）。
+ */
+export function probeRootConnectionAfterWorkerError(): void {
+  const now = Date.now();
+  if (now - lastProbeAt < 10_000) return;
+  lastProbeAt = now;
+  void checkRootConnection(3_000).catch(() => undefined);
+}
+
 export async function getRootDatabaseSession(database: string, namespace = env.SURREAL_NS) {
   return rootSessionPool.get(database, namespace);
 }
