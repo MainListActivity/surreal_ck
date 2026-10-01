@@ -658,13 +658,23 @@ function renderProjectionVerification(projection) {
     license_not_started: "许可未生效",
     license_expired: "许可已过期",
     action_denied: "许可不含授权动作",
+    read_denied: "许可未含 read（仅目录可见）",
   };
   const ws = projection.workspace;
   const stateLabel = { absent: "尚无投影行（首次换票创建）", active: "active", closed: "已关闭", expired: "已过期" };
   const wsLine = ws ? `<div class="muted">工作区授权投影：${escapeHtml(stateLabel[ws.state] || ws.state)}${ws.revisionNumber !== null ? ` · 修订 v${escapeHtml(String(ws.revisionNumber))}` : ""}${ws.matchesExpected === false ? " · 与当前快照不一致" : ""}${ws.confirmedUntil ? ` · 有效至 ${escapeHtml(ws.confirmedUntil.slice(0, 19))}` : ""}</div>` : "";
   const rows = (projection.collections || []).map((item) => {
-    const sources = (item.sources || []).map((s) => `${escapeHtml(s.sourceId)} ${s.valid ? "✓" : `✗ ${escapeHtml(reasonLabel[s.reason] || s.reason || "")}`}`).join("、");
-    return `<li><span>${escapeHtml(item.label || item.key)}</span><span class="muted">已发布 ${valueOrDash(item.publishedItems)} · 可读 ${valueOrDash(item.readableItems)}${item.blockedItems ? ` · 阻断 ${escapeHtml(String(item.blockedItems))}` : ""}${sources ? ` · ${sources}` : ""}</span></li>`;
+    // "可读"只由 read 双侧成立决定（与 reader gate 同口径）；browse/search 交集
+    // 如实展示为"仅目录可见"，绝不冒充可读。
+    const parts = [`已发布 ${valueOrDash(item.publishedItems)}`, `可读 ${valueOrDash(item.readableItems)}`];
+    if (item.metadataItems) parts.push(`仅目录可见 ${escapeHtml(String(item.metadataItems))}`);
+    if (item.blockedItems) parts.push(`阻断 ${escapeHtml(String(item.blockedItems))}`);
+    const sources = (item.sources || []).map((s) => {
+      if (s.valid) return `${escapeHtml(s.sourceId)} ✓`;
+      if (s.reason === "read_denied") return `${escapeHtml(s.sourceId)} ⚠ ${escapeHtml(reasonLabel[s.reason] || s.reason || "")}`;
+      return `${escapeHtml(s.sourceId)} ✗ ${escapeHtml(reasonLabel[s.reason] || s.reason || "")}`;
+    }).join("、");
+    return `<li><span>${escapeHtml(item.label || item.key)}</span><span class="muted">${parts.map((part) => escapeHtml(part)).join(" · ")}${sources ? ` · ${sources}` : ""}</span></li>`;
   }).join("");
   return `<div><span class="badge ${projection.verdict === "ok" ? "success" : "muted-badge"}">${escapeHtml(verdictLabel[projection.verdict] || projection.verdict)}</span> <span class="muted">${escapeHtml(projection.checkedAt || "")}</span></div>${wsLine}<ul class="timeline">${rows || `<li class="muted">无集合核验数据。</li>`}</ul>`;
 }

@@ -62,4 +62,15 @@ describe("LCA13 运营解释与交付修复界面", () => {
     expect(source).toContain("结算异常：");
     expect(source).toContain("内容投影核验");
   });
+
+  test("可读只由 read 成立：metadata 交集展示为仅目录可见而非可读", () => {
+    // 口径与 fn::content_reader_action 一致：read 双侧才计"可读"；
+    // browse/search 交集单独计数并如实标注"仅目录可见"，不冒充可读。
+    expect(source).toContain("`可读 ${valueOrDash(item.readableItems)}`");
+    expect(source).toContain('"仅目录可见"');
+    expect(source).toContain("item.metadataItems");
+    expect(source).toContain('read_denied: "许可未含 read（仅目录可见）"');
+    // read_denied 是许可事实（⚠ 中性标注），不得渲染成系统故障（✗）。
+    expect(source).toContain('s.reason === "read_denied"');
+  });
 });

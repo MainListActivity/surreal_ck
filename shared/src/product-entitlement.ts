@@ -97,11 +97,15 @@ export type WorkspaceProjectionFact = {
 
 /**
  * LCA13：内容投影核验（复用 content_projection_sync 同款受限会话，运营无额外权力）。
- * verdict 语义：ok=集合可读且已有投影行与当前快照一致；empty_collection=集合没有
- * 任何已发布条目（内容侧未供稿，不算系统交付失败）；license_blocked=集合有已发布
- * 条目但因来源停用/许可窗口/动作交集全部不可读；projection_stale=已有投影行与
- * 当前已交付快照不一致或已关闭/过期；projection_error=目录或投影事实异常（如
- * 已发布条目缺当前版本）；unavailable=核验会话不可用，无结论。
+ * verdict 语义：ok=集合按许可如实服务（含合法 metadata-only：权益动作不含 read、
+ * 许可也不含 read，此时仅目录可见不算故障）且已有投影行与当前快照一致；
+ * empty_collection=集合没有任何已发布条目（内容侧未供稿，不算系统交付失败）；
+ * license_blocked=集合有已发布条目但全部不可读——许可收紧（权益要求 read 而许可
+ * 不含 read）或动作完全无交集（来源停用/许可窗口/动作拒绝）；projection_stale=
+ * 已有投影行与当前已交付快照不一致或已关闭/过期；projection_error=目录或投影
+ * 事实异常（如已发布条目缺当前版本）；unavailable=核验会话不可用，无结论。
+ * 动作口径与 fn::content_reader_action 一致：readable 必须由 `read` 双侧
+ * （权益动作 ∩ 许可动作）成立，browse/search 仅构成 metadata 可见，不构成可读。
  */
 export type ProjectionVerification = {
   checkedAt: string;
@@ -111,8 +115,11 @@ export type ProjectionVerification = {
     key: string;
     label: string;
     publishedItems: number;
-    /** 按逐来源许可矩阵判定可读的条目数。 */
+    /** `read` 双侧成立的条目数（唯一构成"可读"）。 */
     readableItems: number;
+    /** browse/search 双侧成立但不可读的条目数（合法 metadata-only 服务）。 */
+    metadataItems: number;
+    /** 不可读且不可元数据可见的条目数（含仅可引用/导出与完全无交集）。 */
     blockedItems: number;
     sources: {
       sourceId: string;
@@ -129,6 +136,7 @@ export type ProjectionVerification = {
         | "license_not_started"
         | "license_expired"
         | "action_denied"
+        | "read_denied"
         | null;
     }[];
   }[];

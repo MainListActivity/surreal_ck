@@ -88,21 +88,42 @@ function parseResult(result: unknown): VerifyOut {
   return { items, sources, licenses, projection };
 }
 
-/** 逐来源许可矩阵：与 fn::content_reader_visible 的判定口径一致（fail closed）。 */
-function reasonForItem(item: Row, sourceById: Map<string, Row>, licenseBySource: Map<string, Row>, now: number, entitledActions: string[]): SourceReason {
-  if (!recordId(item.version)) return "version_missing";
+/**
+ * 与 fn::content_reader_action 同口径的单条目判定（fail closed）：
+ * - readable：`read` 在权益动作与许可动作**双侧**成立；
+ * - metadata 可见：`browse` 或 `search` 双侧成立（仅目录可见，不构成可读）；
+ * - 返回 reason：事实失败/完全无交集（action_denied）/有交集但不可读（read_denied）。
+ */
+const METADATA_ACTIONS = ["browse", "search"] as const;
+
+function reasonForItem(
+  item: Row,
+  sourceById: Map<string, Row>,
+  licenseBySource: Map<string, Row>,
+  now: number,
+  entitledActions: string[],
+): { reason: SourceReason; metadataVisible: boolean } {
+  const fail = (reason: SourceReason) => ({ reason, metadataVisible: false });
+  if (!recordId(item.version)) return fail("version_missing");
   const sourceId = recordId(item.source);
   const source = sourceId ? sourceById.get(sourceId) : null;
-  if (!source || asString(source.status) !== "active") return "source_inactive";
+  if (!source || asString(source.status) !== "active") return fail("source_inactive");
   const license = sourceId ? licenseBySource.get(sourceId) : null;
-  if (!license) return "license_missing";
+  if (!license) return fail("license_missing");
   const from = millisOf(license.effective_from);
-  if (from === null || from > now) return "license_not_started";
+  if (from === null || from > now) return fail("license_not_started");
   const until = millisOf(license.effective_until);
-  if (until !== null && until <= now) return "license_expired";
+  if (until !== null && until <= now) return fail("license_expired");
   const licensed = stringsOf(license.allowed_actions);
-  if (!entitledActions.some((action) => licensed.includes(action))) return "action_denied";
-  return null;
+  const granted = (action: string) =>
+    entitledActions.includes(action) && licensed.includes(action);
+  if (granted("read")) return { reason: null, metadataVisible: false };
+  const metadataVisible = METADATA_ACTIONS.some((action) => granted(action));
+  if (metadataVisible || entitledActions.some((action) => licensed.includes(action))) {
+    // 有任意交集但 read 未双侧成立：如实记"不可读"，绝不冒充可读。
+    return { reason: "read_denied", metadataVisible };
+  }
+  return fail("action_denied");
 }
 
 function evalCollection(out: VerifyOut, collection: { key: string; label: string }, now: number, entitledActions: string[]): CollectionResult {
@@ -115,10 +136,15 @@ function evalCollection(out: VerifyOut, collection: { key: string; label: string
   }
   const bySource = new Map<string, SourceVerdict & { sourceRow: Row | null }>();
   let readable = 0;
+  let metadataOnly = 0;
+  let fullyDenied = 0;
   for (const item of out.items) {
     const sourceId = recordId(item.source) ?? "";
-    const reason = reasonForItem(item, sourceById, licenseBySource, now, entitledActions);
-    if (reason === null) readable += 1;
+    const { reason, metadataVisible } = reasonForItem(item, sourceById, licenseBySource, now, entitledActions);
+    const readableItem = reason === null;
+    if (readableItem) readable += 1;
+    else if (metadataVisible) metadataOnly += 1;
+    else fullyDenied += 1;
     let entry = bySource.get(sourceId);
     if (!entry) {
       const source = sourceById.get(sourceId) ?? null;
@@ -145,7 +171,8 @@ function evalCollection(out: VerifyOut, collection: { key: string; label: string
     label: collection.label,
     publishedItems: out.items.length,
     readableItems: readable,
-    blockedItems: out.items.length - readable,
+    metadataItems: metadataOnly,
+    blockedItems: fullyDenied,
     sources,
   };
 }
@@ -224,7 +251,13 @@ export async function verifyContentProjection(input: ProjectionVerifyInput, clie
   }
   const error = collections.some((item) => item.publishedItems > 0 && item.readableItems === 0
     && item.sources.every((source) => source.reason === "version_missing"));
-  const blocked = collections.some((item) => item.publishedItems > 0 && item.readableItems === 0);
+  // license_blocked = 许可收紧（权益要求 read 而集合不可读）或存在完全无交集条目
+  // （action_denied）；合法 metadata-only / cite-only（权益本身不含 read）是如实
+  // 服务，不算故障、不入异常队列。
+  const expectedRead = entitledActions.includes("read");
+  const blocked = collections.some((item) => item.publishedItems > 0
+    && item.readableItems === 0
+    && (expectedRead || item.sources.some((source) => source.reason === "action_denied")));
   const empty = collections.some((item) => item.publishedItems === 0);
   const stale = sawProjectionRow && input.expected
     ? workspace.state !== "active" || workspace.matchesExpected !== true
