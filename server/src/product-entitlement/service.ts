@@ -213,11 +213,14 @@ export class ProductEntitlementService {
     const workspace = await this.store.workspaceById(workspaceId);
     if (!workspace) throw new ProductEntitlementError("not_found", "工作区不存在");
     const { draft, subscription } = await this.resolveFor(workspace);
-    // 周期身份来自订阅事实（订阅级付费窗口），与 item 生效时间解耦。
+    // 周期身份来自订阅事实（订阅级付费窗口），与 item 生效时间解耦；
+    // 事件身份（item id + item 生效时间）来自当前已确认商业事件，是升级
+    // 补发的事件键与折算时点，重试不使用 now。
     const planCycle = planCycleDirective(
       workspace.dbName,
       draft,
       subscription ? { cycleFrom: subscription.cycleFrom, cycleUntil: subscription.cycleUntil } : null,
+      subscription ? { key: subscription.itemId, effectiveAt: subscription.effectiveFrom } : null,
     );
     const current = await this.store.currentSnapshot(workspace.id);
     if (current && current.digest === draft.digest) {

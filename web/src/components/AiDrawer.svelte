@@ -487,6 +487,7 @@
         本次预计消耗 {allowance.quote.amount} AI 额度 · 可用 {allowance.available}
         {#if allowance.reserved > 0}· 预留中 {allowance.reserved}{/if}
         {#if allowance.suspended > 0}· 暂停 {allowance.suspended}{/if}
+        {#if allowance.terminated > 0}· 已终止 {allowance.terminated}{/if}
         {#if allowance.expired > 0}· 已过期 {allowance.expired}{/if}
         {#if allowance.available < allowance.quote.amount}
           <span class="allowance-low">额度不足</span>
