@@ -7,7 +7,9 @@ describe("OIP-13 XLSX 多 Sheet 导入向导 UI", () => {
     const dialog = readFileSync(new URL("../../components/XlsxImportDialog.svelte", import.meta.url), "utf8");
     const editorDialog = readFileSync(new URL("./modals/TemplateSheetImportDialog.svelte", import.meta.url), "utf8");
 
-    expect(home).toContain('accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"');
+    expect(home).toContain('accept=".csv,.xls,.xlsx,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"');
+    expect(home).toContain("/\\.(?:csv|xls|xlsx)$/iu");
+    expect(home).toContain("/\\.(?:xlsx|xls)$/iu");
     expect(home).toContain("createXlsxParseTask(file)");
     expect(home).toContain("<XlsxImportDialog");
     expect(dialog).toContain("逐 Sheet 设置");
@@ -25,7 +27,7 @@ describe("OIP-13 XLSX 多 Sheet 导入向导 UI", () => {
     expect(dialog).toContain("成功记录");
     expect(dialog).toContain("跳过记录");
     expect(dialog).toContain("逐 Sheet 结果");
-    expect(editorDialog).toContain('accept=".csv,.xlsx');
+    expect(editorDialog).toContain('accept=".csv,.xls,.xlsx');
     expect(editorDialog).toContain("newWorkbookAllowed={false}");
     expect(editorDialog).toContain("importXlsxSheetIntoTemplate");
   });

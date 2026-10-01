@@ -239,7 +239,7 @@
 <div class="overlay" role="presentation">
   <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="xlsx-import-title">
     <header>
-      <div class="title"><FileSpreadsheet size={20} /><div><h2 id="xlsx-import-title">{finished ? "XLSX 导入完成" : "导入 XLSX"}</h2><p>{parsed.fileName}</p></div></div>
+      <div class="title"><FileSpreadsheet size={20} /><div><h2 id="xlsx-import-title">{finished ? "Excel 导入完成" : "导入 Excel"}</h2><p>{parsed.fileName}</p></div></div>
       <button class="icon" type="button" aria-label="关闭导入向导" onclick={close}><X size={18} /></button>
     </header>
 
