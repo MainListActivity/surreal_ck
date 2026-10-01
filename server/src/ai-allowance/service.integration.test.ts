@@ -46,13 +46,15 @@ async function provision(database: string): Promise<{ session: Queryable }> {
   return { session: db as unknown as Queryable };
 }
 
-/** 权益快照 stub：entitled 集合返回 ai_actions，其余 db 返回 null（遗留未计量）。 */
+/** 权益快照 stub：entitled 集合返回 ai_actions 与当前商业来源，其余 db 返回 null（遗留未计量）。 */
 function fakeSystem(entitled: Readonly<Record<string, readonly string[]>>): Queryable {
   return {
     query: async (sql: string, bindings?: Record<string, unknown>) => {
       const db = String(bindings?.db ?? bindings?.w ?? "");
       if (sql.includes("current_product_entitlement")) {
-        return [[entitled[db] ? { ai_actions: [...entitled[db]] } : null]];
+        return [[entitled[db]
+          ? { ai_actions: [...entitled[db]], base_kind: "subscription", base_id: "sub_lca05" }
+          : null]];
       }
       if (sql.includes("db_name") || sql.includes("slug")) {
         return [[{ db_name: db }]];
@@ -80,7 +82,7 @@ async function grantBucket(
     kind: input.kind,
     amount: input.amount,
     label: input.label ?? `${input.kind} bucket`,
-    periodKey: input.periodKey ?? "test-period",
+    periodKey: input.periodKey ?? (input.kind === "plan_cycle" ? "subscription:sub_lca05:cycle" : "test-period"),
     effectiveFrom: new Date(Date.now() - 60_000),
     expiresAt: input.expiresAt ?? new Date(Date.now() + 3_600_000),
     operatorSubject: "ops-test",
@@ -195,7 +197,7 @@ describe("LCA05 共享 AI 额度账本（真实 SurrealDB）", () => {
     const later = new Date(Date.now() + 7_200_000);
     const sooner = new Date(Date.now() + 3_600_000);
     await svc2.grant({ db: database2, kind: "purchased", amount: 50, label: "purchased", periodKey: "p", effectiveFrom: new Date(Date.now() - 60_000), expiresAt: later, operatorSubject: "ops" });
-    await svc2.grant({ db: database2, kind: "plan_cycle", amount: 50, label: "cycle", periodKey: "2026-09", effectiveFrom: new Date(Date.now() - 60_000), expiresAt: sooner, operatorSubject: "ops" });
+    await svc2.grant({ db: database2, kind: "plan_cycle", amount: 50, label: "cycle", periodKey: "subscription:sub_lca05:2026-09", effectiveFrom: new Date(Date.now() - 60_000), expiresAt: sooner, operatorSubject: "ops" });
     await svc2.reserve({ db: database2, actor, channel: "interactive", actionKey: "research", idempotencyKey: "ord-1", runId: "ord-1" });
     const cycle = rows<{ available: number }>(
       await session2.query(`SELECT available FROM ai_allowance_bucket WHERE kind = "plan_cycle"`).collect(),
@@ -226,12 +228,12 @@ describe("LCA05 共享 AI 额度账本（真实 SurrealDB）", () => {
     const svc = serviceFor(database, session, { [database]: ["research"] });
     // 已到期桶
     await svc.grant({
-      db: database, kind: "plan_cycle", amount: 50, label: "old cycle", periodKey: "2026-08",
+      db: database, kind: "plan_cycle", amount: 50, label: "old cycle", periodKey: "subscription:sub_lca05:2026-08",
       effectiveFrom: new Date(Date.now() - 86_400_000), expiresAt: new Date(Date.now() - 3_600_000),
       operatorSubject: "ops",
     });
     await svc.grant({
-      db: database, kind: "plan_cycle", amount: 50, label: "current cycle", periodKey: "2026-09",
+      db: database, kind: "plan_cycle", amount: 50, label: "current cycle", periodKey: "subscription:sub_lca05:2026-09",
       effectiveFrom: new Date(Date.now() - 60_000), expiresAt: new Date(Date.now() + 3_600_000),
       operatorSubject: "ops",
     });
@@ -244,12 +246,12 @@ describe("LCA05 共享 AI 额度账本（真实 SurrealDB）", () => {
     expect(balance.expired).toBe(50);   // 旧桶整体计入已过期
 
     // 跨周期结算规则：桶到期后 release 只冲销不恢复可用
-    await session.query(`UPDATE ai_allowance_bucket SET expires_at = time::now() - 1s WHERE period_key = "2026-09"`).collect();
+    await session.query(`UPDATE ai_allowance_bucket SET expires_at = time::now() - 1s WHERE period_key = "subscription:sub_lca05:2026-09"`).collect();
     await svc.release({ db: database, idempotencyKey: "exp-1", reason: "run_failed" });
     const buckets = rows<{ period_key: string; available: number; reserved: number }>(
       await session.query(`SELECT period_key, available, reserved FROM ai_allowance_bucket ORDER BY period_key`).collect(),
     );
-    const current = buckets.find((b) => b.period_key === "2026-09");
+    const current = buckets.find((b) => b.period_key === "subscription:sub_lca05:2026-09");
     expect(current?.reserved).toBe(0);
     expect(current?.available).toBe(45); // 过期桶不恢复可用
     const writeoff = rows<{ kind: string }>(
@@ -312,7 +314,7 @@ describe("LCA05 共享 AI 额度账本（真实 SurrealDB）", () => {
     const database = `lca05_alert_${Date.now().toString(36)}`;
     const { session } = await provision(database);
     const svc = serviceFor(database, session, { [database]: ["research"] });
-    await grantBucket(svc, database, { kind: "plan_cycle", amount: 10, periodKey: "2026-09" });
+    await grantBucket(svc, database, { kind: "plan_cycle", amount: 10, periodKey: "subscription:sub_lca05:2026-09" });
 
     const { StringRecordId } = await import("surrealdb");
     const actor = new StringRecordId("user:member");

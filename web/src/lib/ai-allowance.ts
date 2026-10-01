@@ -41,9 +41,12 @@ export function formatAllowanceTime(iso: string): string {
   }).format(new Date(time));
 }
 
-/** 桶当前状态的可读标签：已过期 > 已暂停 > 生效中。 */
-export function aiAllowanceBucketStatusLabel(bucket: Pick<AiAllowanceBucketView, "expired" | "status">): string {
+/** 桶当前状态的可读标签：已过期 > 已终止 > 已暂停 > 生效中。 */
+export function aiAllowanceBucketStatusLabel(
+  bucket: Pick<AiAllowanceBucketView, "expired" | "status" | "terminated">,
+): string {
   if (bucket.expired) return "已过期";
+  if (bucket.terminated) return "已终止";
   if (bucket.status === "suspended") return "已暂停";
   return "生效中";
 }
@@ -83,7 +86,7 @@ export async function loadAiAllowanceSnapshot(
     ),
     conn.query<Record<string, unknown>>(
       `SELECT id, kind, label, period_key, total, available, reserved, settled, status,
-              effective_from, expires_at
+              terminated_at, effective_from, expires_at
        FROM ai_allowance_bucket ORDER BY expires_at ASC`,
     ),
     conn.query<Record<string, unknown>>(
@@ -110,6 +113,7 @@ export async function loadAiAllowanceSnapshot(
       effective_from: asIso(row.effective_from),
       expires_at: expiresAt,
       expired: asDateMs(row.expires_at) <= now,
+      terminated: row.terminated_at != null,
     };
   });
 
@@ -127,6 +131,7 @@ export async function loadAiAllowanceSnapshot(
     available: 0,
     reserved: 0,
     suspended: 0,
+    terminated: 0,
     expired: 0,
     buckets,
     entries: entryRows.map((row) => ({
@@ -147,6 +152,7 @@ export async function loadAiAllowanceSnapshot(
 
   for (const bucket of buckets) {
     if (bucket.expired) snapshot.expired += bucket.available + bucket.reserved;
+    else if (bucket.terminated) snapshot.terminated += bucket.available + bucket.reserved;
     else if (bucket.status === "suspended") snapshot.suspended += bucket.available + bucket.reserved;
     else {
       snapshot.available += bucket.available;
