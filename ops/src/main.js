@@ -643,9 +643,30 @@ function sourceLine(source) {
 
 function renderProjectionVerification(projection) {
   if (!projection) return `<div class="muted">投影核验未启用。</div>`;
-  const verdictLabel = { ok: "核验通过", empty_collection: "集合无可读条目", projection_error: "投影故障", unavailable: "核验暂不可用" };
-  const rows = (projection.collections || []).map((item) => `<li><span>${escapeHtml(item.label || item.key)}</span><span class="muted">已发布 ${valueOrDash(item.publishedItems)} · 许可动作 ${escapeHtml((item.licenseActions || []).join("/") || "—")}${item.licenseUntil ? ` · 至 ${item.licenseUntil.slice(0, 10)}` : ""}</span></li>`).join("");
-  return `<div><span class="badge ${projection.verdict === "ok" ? "success" : "muted-badge"}">${escapeHtml(verdictLabel[projection.verdict] || projection.verdict)}</span> <span class="muted">${escapeHtml(projection.checkedAt || "")}</span></div><ul class="timeline">${rows || `<li class="muted">无集合核验数据。</li>`}</ul>`;
+  const verdictLabel = {
+    ok: "核验通过",
+    empty_collection: "集合无已发布条目",
+    license_blocked: "许可收紧/失效",
+    projection_stale: "投影与当前权益不一致",
+    projection_error: "投影事实异常",
+    unavailable: "核验暂不可用",
+  };
+  const reasonLabel = {
+    version_missing: "缺当前版本",
+    source_inactive: "来源停用",
+    license_missing: "无许可",
+    license_not_started: "许可未生效",
+    license_expired: "许可已过期",
+    action_denied: "许可不含授权动作",
+  };
+  const ws = projection.workspace;
+  const stateLabel = { absent: "尚无投影行（首次换票创建）", active: "active", closed: "已关闭", expired: "已过期" };
+  const wsLine = ws ? `<div class="muted">工作区授权投影：${escapeHtml(stateLabel[ws.state] || ws.state)}${ws.revisionNumber !== null ? ` · 修订 v${escapeHtml(String(ws.revisionNumber))}` : ""}${ws.matchesExpected === false ? " · 与当前快照不一致" : ""}${ws.confirmedUntil ? ` · 有效至 ${escapeHtml(ws.confirmedUntil.slice(0, 19))}` : ""}</div>` : "";
+  const rows = (projection.collections || []).map((item) => {
+    const sources = (item.sources || []).map((s) => `${escapeHtml(s.sourceId)} ${s.valid ? "✓" : `✗ ${escapeHtml(reasonLabel[s.reason] || s.reason || "")}`}`).join("、");
+    return `<li><span>${escapeHtml(item.label || item.key)}</span><span class="muted">已发布 ${valueOrDash(item.publishedItems)} · 可读 ${valueOrDash(item.readableItems)}${item.blockedItems ? ` · 阻断 ${escapeHtml(String(item.blockedItems))}` : ""}${sources ? ` · ${sources}` : ""}</span></li>`;
+  }).join("");
+  return `<div><span class="badge ${projection.verdict === "ok" ? "success" : "muted-badge"}">${escapeHtml(verdictLabel[projection.verdict] || projection.verdict)}</span> <span class="muted">${escapeHtml(projection.checkedAt || "")}</span></div>${wsLine}<ul class="timeline">${rows || `<li class="muted">无集合核验数据。</li>`}</ul>`;
 }
 
 function renderAiStatus(ai) {

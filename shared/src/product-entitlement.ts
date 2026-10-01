@@ -83,16 +83,54 @@ export const repairContentDeliverySchema = z.object({
 
 export type RepairContentDelivery = z.infer<typeof repairContentDeliverySchema>;
 
-/** LCA13：内容投影核验（复用 reader gate 同款受限会话，运营无额外权力）。 */
+/** LCA13：工作区级授权投影事实（content_authorization_projection 行，懒投影）。 */
+export type WorkspaceProjectionFact = {
+  /** absent=尚无投影行（首次换票时才创建，不算故障）。 */
+  state: "absent" | "active" | "closed" | "expired";
+  revision: string | null;
+  revisionNumber: number | null;
+  /** 投影行与当前已交付快照比对（revisionNumber+digest）；absent 或无已交付快照时为 null。 */
+  matchesExpected: boolean | null;
+  confirmedUntil: string | null;
+  expectedRevisionNumber: number | null;
+};
+
+/**
+ * LCA13：内容投影核验（复用 content_projection_sync 同款受限会话，运营无额外权力）。
+ * verdict 语义：ok=集合可读且已有投影行与当前快照一致；empty_collection=集合没有
+ * 任何已发布条目（内容侧未供稿，不算系统交付失败）；license_blocked=集合有已发布
+ * 条目但因来源停用/许可窗口/动作交集全部不可读；projection_stale=已有投影行与
+ * 当前已交付快照不一致或已关闭/过期；projection_error=目录或投影事实异常（如
+ * 已发布条目缺当前版本）；unavailable=核验会话不可用，无结论。
+ */
 export type ProjectionVerification = {
   checkedAt: string;
-  verdict: "ok" | "empty_collection" | "projection_error" | "unavailable";
+  verdict: "ok" | "empty_collection" | "license_blocked" | "projection_stale" | "projection_error" | "unavailable";
+  workspace: WorkspaceProjectionFact;
   collections: {
     key: string;
     label: string;
     publishedItems: number;
-    licenseUntil: string | null;
-    licenseActions: string[];
+    /** 按逐来源许可矩阵判定可读的条目数。 */
+    readableItems: number;
+    blockedItems: number;
+    sources: {
+      sourceId: string;
+      sourceStatus: string;
+      licenseFrom: string | null;
+      licenseUntil: string | null;
+      licenseActions: string[];
+      items: number;
+      valid: boolean;
+      reason:
+        | "version_missing"
+        | "source_inactive"
+        | "license_missing"
+        | "license_not_started"
+        | "license_expired"
+        | "action_denied"
+        | null;
+    }[];
   }[];
 };
 

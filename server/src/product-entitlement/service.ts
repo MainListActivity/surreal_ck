@@ -12,6 +12,7 @@ import type {
 import type { PlanCycleDirective } from "../ai-allowance/plan-cycle";
 import { planCycleDirective } from "../ai-allowance/plan-cycle";
 import type { AiAllowanceOpsStatus } from "../ai-allowance/ops-status";
+import type { ProjectionVerifyInput } from "../content/projection-verify";
 import { resolveEntitlement, toView, type ContentGrantFact, type EntitlementDraft, type ProductRevisionBody, type ResourceFact, type SubscriptionFact } from "./resolve";
 
 export class ProductEntitlementError extends Error {
@@ -135,7 +136,7 @@ export class ProductEntitlementService {
       /** LCA13：AI 预留/结算状态（按 workspace db 名读取真实账本事实）。 */
       aiStatus?: (dbName: string) => Promise<AiAllowanceOpsStatus | null>;
       /** LCA13：内容投影核验（与 reader gate 同款受限会话，运营无额外权力）。 */
-      projectionVerify?: (collections: { key: string; label: string }[]) => Promise<ProjectionVerification | null>;
+      projectionVerify?: (input: ProjectionVerifyInput) => Promise<ProjectionVerification | null>;
       /** LCA13：plan-cycle 指令幂等同步（修复重试顺带重驱，不新增授予语义）。 */
       syncPlanCycle?: (directive: PlanCycleDirective, correlationId: string) => Promise<void>;
     },
@@ -368,6 +369,18 @@ export class ProductEntitlementService {
     return toView(workspace.slug, 0, draft, resource);
   }
 
+  /**
+   * 只读视图：如实呈现当前已交付快照（或纯草稿视图），绝不触发 read-heal。
+   * 交付预览、修复护栏与审计 before 必须用这条路径——读取不能改变状态。
+   */
+  private async readOnlyView(workspace: WorkspaceRef): Promise<{ view: ProductEntitlementView; snapshot: SnapshotRecord | null }> {
+    const current = await this.store.currentSnapshot(workspace.id);
+    const resource = await this.store.resourceStatus(workspace.id);
+    if (current) return { view: toView(workspace.slug, current.revision, current, resource), snapshot: current };
+    const draft = await this.draftFor(workspace);
+    return { view: toView(workspace.slug, 0, draft, resource), snapshot: null };
+  }
+
   private async materialize(
     workspace: WorkspaceRef,
     causationId: string,
@@ -447,17 +460,23 @@ export class ProductEntitlementService {
     return { before, after };
   }
 
-  /** LCA13：交付修复影响预览（只读，不下单、不写快照）。 */
+  /**
+   * LCA13：交付修复影响预览。严格只读：current 取当前已交付快照本身
+   * （指针损坏/缺失/快照落后时如实呈现，不 read-heal），target 由
+   * materializePreview 纯计算得出；整个过程不插入快照、不移动指针、
+   * 不写审计。
+   */
   async describeDeliveryRepair(actor: ProductActor, workspaceSlug: string): Promise<{ current: ProductEntitlementView; target: ProductEntitlementView; boundRevisionId: string | null }> {
     denyUnless(actor, "entitlement.repair");
     const workspace = await this.requireWorkspace(workspaceSlug);
     const subscription = await this.store.activeItem(workspace.id);
-    const boundRevision = subscription?.productPlanRevisionId
+    // 只有仍可修复的活跃订阅才有目标修订；到期/结束的订阅预览不指向修复目标。
+    const boundRevision = subscription?.status === "active" && subscription.productPlanRevisionId
       ? await this.store.productRevision(subscription.productPlanRevisionId) : null;
-    if (subscription?.productPlanRevisionId && !boundRevision) {
+    if (subscription?.status === "active" && subscription.productPlanRevisionId && !boundRevision) {
       throw new ProductEntitlementError("invalid_request", "订阅绑定的产品版本不存在");
     }
-    const current = await this.viewFor(workspace);
+    const { view: current } = await this.readOnlyView(workspace);
     const target = boundRevision
       ? (await this.materializePreview(workspace, boundRevision))
       : current;
@@ -484,14 +503,12 @@ export class ProductEntitlementService {
     if (subscription.productPlanRevisionId && !boundRevision) {
       throw new ProductEntitlementError("invalid_request", "订阅绑定的产品版本不存在");
     }
-    const current = await this.viewFor(workspace);
-    const currentSnapshotRecord = await this.store.currentSnapshot(workspace.id);
-    // 限定修订护栏只拦「快照仍在但已被别人推进」的盲目重试；指针丢失/损坏
-    // （currentSnapshotRecord 缺失）正是要修复的投影故障本身，不拦。
-    if (currentSnapshotRecord && input.expectedCurrentRevision !== null && input.expectedCurrentRevision !== current.revision) {
+    // 护栏先于任何写入：只读当前已交付快照做比对，读取本身绝不修复状态。
+    // 指针丢失/损坏（snapshot 缺失）正是要修复的故障本身，不拦。
+    const { view: before, snapshot: currentSnapshotRecord } = await this.readOnlyView(workspace);
+    if (currentSnapshotRecord && input.expectedCurrentRevision !== null && input.expectedCurrentRevision !== currentSnapshotRecord.revision) {
       throw new ProductEntitlementError("conflict", "限定修订与当前快照不一致，请刷新预览后重试");
     }
-    const before = current;
     const replay = await this.claim(actor, "repair", input.reason, input.idempotencyKey, requestDigest, workspace.id, boundRevision?.id ?? null);
     let after = before;
     let changed = false;
@@ -563,8 +580,15 @@ export class ProductEntitlementService {
         kinds.push("delivery_pending");
       }
       if (current && current.collections.length > 0 && this.ops?.projectionVerify) {
-        const verification = await this.ops.projectionVerify(current.collections);
-        if (verification && (verification.verdict === "empty_collection" || verification.verdict === "projection_error")) {
+        const verification = await this.ops.projectionVerify({
+          workspaceDb: workspace.dbName,
+          expected: { revisionNumber: current.revision, digest: current.digest },
+          collections: current.collections,
+          actions: current.actions,
+        });
+        // 空集合（empty_collection）是内容侧未供稿、unavailable 是核验不可用，
+        // 都不算系统交付失败；许可收紧/投影过期/事实异常才是 projection_failure。
+        if (verification && (verification.verdict === "license_blocked" || verification.verdict === "projection_stale" || verification.verdict === "projection_error")) {
           kinds.push("projection_failure");
           detail.projectionVerdict = verification.verdict;
         }
@@ -582,13 +606,19 @@ export class ProductEntitlementService {
   /** LCA13：运营解释视图增强——来源理由/操作者、投影核验、AI 账本事实。 */
   private async enrichOperatorView(workspace: WorkspaceRef, view: ProductEntitlementView): Promise<ProductEntitlementView> {
     const runtime = await this.store.workspaceById(workspace.id);
-    const [facts, projection, ai] = await Promise.all([
+    const [facts, current, ai] = await Promise.all([
       this.store.grantFacts(workspace.id),
-      view.content.collections.length > 0 && this.ops?.projectionVerify
-        ? this.ops.projectionVerify(view.content.collections)
-        : Promise.resolve(null),
+      this.store.currentSnapshot(workspace.id),
       runtime && this.ops?.aiStatus ? this.ops.aiStatus(runtime.dbName) : Promise.resolve(null),
     ]);
+    const projection = runtime && view.content.collections.length > 0 && this.ops?.projectionVerify
+      ? await this.ops.projectionVerify({
+          workspaceDb: runtime.dbName,
+          expected: current ? { revisionNumber: current.revision, digest: current.digest } : null,
+          collections: view.content.collections,
+          actions: view.content.actions,
+        })
+      : null;
     const factById = new Map(facts.map((fact) => [fact.id, fact]));
     const sources = view.content.sources.map((source) => {
       const fact = factById.get(source.sourceId);

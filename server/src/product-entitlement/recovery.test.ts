@@ -1,185 +1,36 @@
 import { describe, expect, test } from "bun:test";
-import type { GrantContentCollection } from "@surreal-ck/shared";
-import type { ContentGrantFact, ProductRevisionBody, ResourceFact, SubscriptionFact } from "./resolve";
-import { ProductEntitlementService, type AuditRecord, type GrantFactRow, type ProductActor, type ProductEntitlementStore, type SnapshotRecord, type WorkspaceRef, type WorkspaceRuntimeRef } from "./service";
+import type { ProjectionVerification } from "@surreal-ck/shared";
+import { EntitlementRecoveryStore, fixtureAssignment, fixtureGrantBody, fixtureRevision, operator, seedWorkspace } from "../../test/entitlement-recovery-store";
+import type { ProjectionVerifyInput } from "../content/projection-verify";
+import { ProductEntitlementService } from "./service";
 
-type GrantRow = ContentGrantFact & {
-  reason: string | null;
-  actor: string | null;
-  idempotencyKey: string | null;
+const NO_PROJECTION: Pick<ProjectionVerification, "workspace" | "collections"> = {
+  workspace: { state: "absent", revision: null, revisionNumber: null, matchesExpected: null, confirmedUntil: null, expectedRevisionNumber: null },
+  collections: [],
 };
 
-class RecoveryStore implements ProductEntitlementStore {
-  workspaces = new Map<string, WorkspaceRef>();
-  members = new Set<string>();
-  items = new Map<string, SubscriptionFact>();
-  revisions = new Map<string, ProductRevisionBody>();
-  resources = new Set<string>();
-  grantRows: GrantRow[] = [];
-  revocations: { workspaceId: string; grantId: string; reason: string; idempotencyKey: string }[] = [];
-  snapshots: SnapshotRecord[] = [];
-  pointer = new Map<string, string>();
-  audits: (AuditRecord & { actor: string; idempotencyKey: string; workspaceId: string | null })[] = [];
-  resource: ResourceFact = { appliedPlanKey: null, appliedPlanName: null, appliedRevision: null, desiredPlanKey: null, syncState: null };
-  private sequence = 0;
-
-  async workspaceBySlug(slug: string) { return [...this.workspaces.values()].find((item) => item.slug === slug) ?? null; }
-  dbNames = new Map<string, string>();
-  async workspaceById(id: string) {
-    const ref = this.workspaces.get(id);
-    return ref ? { ...ref, dbName: this.dbNames.get(id) ?? `ws_${ref.slug}` } : null;
-  }
-  async membership(subject: string, workspaceId: string) { return this.members.has(`${subject}:${workspaceId}`) ? "admin" as const : null; }
-  async activeItem(workspaceId: string) { return this.items.get(workspaceId) ?? null; }
-  async bindProductRevision(itemId: string, productPlanRevisionId: string) {
-    for (const [workspaceId, item] of this.items) if (item.itemId === itemId) this.items.set(workspaceId, { ...item, productPlanRevisionId });
-  }
-  async productRevision(id: string) { return this.revisions.get(id) ?? null; }
-  async resourceTemplateExists(id: string) { return this.resources.has(id); }
-  async upsertCollection(key: string, label: string) { return { id: `content_collection:${key}`, key, label }; }
-  async insertContentTemplate() { return `content_template_revision:${++this.sequence}`; }
-  async insertAiTemplate() { return `ai_template_revision:${++this.sequence}`; }
-  async insertFeatureTemplate() { return `feature_template_revision:${++this.sequence}`; }
-  async upsertPlan(planKey: string) { return `product_plan:${planKey}`; }
-  async productRevisionId() { return null; }
-  async insertProductRevision(): Promise<string | null> { return null; }
-  async setActiveRevision() {}
-  async grants() {
-    return this.grantRows
-      .filter((row) => !this.revocations.some((revoke) => revoke.grantId === row.id))
-      .map(({ reason: _reason, actor: _actor, idempotencyKey: _key, ...fact }) => fact);
-  }
-  async insertGrant(_workspaceId: string, grant: Omit<ContentGrantFact, "id" | "collections"> & { collections: { id: string; key: string; label: string }[]; reason: string; actor: string; idempotencyKey: string }) {
-    const existing = this.grantRows.find((item) => item.idempotencyKey === grant.idempotencyKey);
-    if (existing) return existing.id;
-    const id = `content_grant:${++this.sequence}`;
-    this.grantRows.push({
-      ...grant,
-      collections: grant.collections.map((item) => ({ key: item.key, label: item.label })),
-      id, reason: grant.reason, actor: grant.actor, idempotencyKey: grant.idempotencyKey,
-    });
-    return id;
-  }
-  async grantFacts(workspaceId: string): Promise<GrantFactRow[]> {
-    return this.grantRows.map((row) => ({
-      ...row,
-      operatorSubject: row.actor,
-      revoked: this.revocations.some((revoke) => revoke.workspaceId === workspaceId && revoke.grantId === row.id),
-    }));
-  }
-  async grantById(workspaceId: string, grantId: string): Promise<GrantFactRow | null> {
-    const row = this.grantRows.find((item) => item.id === grantId);
-    if (!row) return null;
-    const revoke = this.revocations.find((item) => item.grantId === grantId);
-    return { ...row, operatorSubject: row.actor, revoked: revoke !== undefined, revokeReason: revoke?.reason ?? null };
-  }
-  async insertGrantRevocation(workspaceId: string, grantId: string, reason: string, _actor: string, idempotencyKey: string): Promise<"ok" | "replayed" | "conflict"> {
-    if (this.revocations.some((item) => item.workspaceId === workspaceId && item.idempotencyKey === idempotencyKey)) return "replayed";
-    if (this.revocations.some((item) => item.grantId === grantId)) return "replayed";
-    this.revocations.push({ workspaceId, grantId, reason, idempotencyKey });
-    return "ok";
-  }
-  async deliveryCandidates(limit: number, offset: number): Promise<WorkspaceRuntimeRef[]> {
-    // 与真实实现一致：只列仍挂在活跃订阅项上的工作区（自然到期不入候选）。
-    return [...this.workspaces.values()]
-      .filter((ref) => this.items.get(ref.id)?.status === "active")
-      .map((ref) => ({ ...ref, dbName: this.dbNames.get(ref.id) ?? `ws_${ref.slug}` }))
-      .slice(offset, offset + limit);
-  }
-  async currentSnapshot(workspaceId: string) {
-    const id = this.pointer.get(workspaceId);
-    return this.snapshots.find((item) => item.id === id) ?? null;
-  }
-  async snapshotById(id: string) { return this.snapshots.find((item) => item.id === id) ?? null; }
-  async snapshotByDigest(workspaceId: string, digest: string) {
-    return this.snapshots.find((item) => item.workspaceId === workspaceId && item.digest === digest) ?? null;
-  }
-  async newestSnapshotRevision(workspaceId: string, productPlanRevisionId: string) {
-    const revisions = this.snapshots.filter((item) => item.workspaceId === workspaceId && item.productPlanRevisionId === productPlanRevisionId).map((item) => item.revision);
-    return revisions.length === 0 ? null : Math.max(...revisions);
-  }
-  async insertSnapshot(row: SnapshotRecord): Promise<"ok" | "conflict"> {
-    if (this.snapshots.some((item) => item.workspaceId === row.workspaceId && (item.revision === row.revision || item.digest === row.digest))) return "conflict";
-    this.snapshots.push({ ...row, id: `workspace_product_entitlement:${++this.sequence}` });
-    return "ok";
-  }
-  async pointWorkspace(workspaceId: string, snapshotId: string) {
-    const next = this.snapshots.find((item) => item.id === snapshotId);
-    if (!next) return;
-    const item = this.items.get(workspaceId);
-    const bound = item && item.status === "active"
-      && item.effectiveFrom <= "2026-09-24T00:00:00.000Z"
-      && (item.effectiveUntil === null || item.effectiveUntil > "2026-09-24T00:00:00.000Z")
-      && (item.subscriptionStatus === "active" || item.subscriptionStatus === "trialing")
-      ? item.productPlanRevisionId : null;
-    const current = this.snapshots.find((item) => item.id === this.pointer.get(workspaceId));
-    if (current && current.revision >= next.revision && !(bound !== null && next.productPlanRevisionId === bound)) return;
-    this.pointer.set(workspaceId, snapshotId);
-  }
-  async auditByKey(actor: string, idempotencyKey: string) {
-    return this.audits.find((item) => item.actor === actor && item.idempotencyKey === idempotencyKey) ?? null;
-  }
-  async insertAudit(row: AuditRecord & { actor: string; idempotencyKey: string; reason: string; workspaceId: string | null }) {
-    if (await this.auditByKey(row.actor, row.idempotencyKey)) return "conflict";
-    this.audits.push(row);
-    return "ok";
-  }
-  async attachAuditEntitlement(actor: string, idempotencyKey: string, entitlementId: string) {
-    const row = this.audits.find((item) => item.actor === actor && item.idempotencyKey === idempotencyKey);
-    if (!row) return "conflict";
-    if (row.entitlementId && row.entitlementId !== entitlementId) return "conflict";
-    row.entitlementId = entitlementId;
-    return "ok";
-  }
-  async resourceStatus() { return this.resource; }
-}
-
-function workspace(store: RecoveryStore, overrides: Partial<SubscriptionFact> = {}) {
-  const ref = { id: "workspace:team", slug: "team" };
-  store.workspaces.set(ref.id, ref);
-  store.dbNames.set(ref.id, "ws_team");
-  store.members.add("lawyer:workspace:team");
-  store.resources.add("quota_plan_revision:fixture");
-  store.items.set(ref.id, {
-    itemId: "quota_subscription_item:team", status: "active", effectiveFrom: "2026-09-01T00:00:00.000Z",
-    effectiveUntil: "2026-12-01T00:00:00.000Z", productPlanRevisionId: null,
-    subscriptionId: "quota_subscription:team", billingAccountKey: "acct-a", subscriptionStatus: "active",
-    ...overrides,
-  });
-  store.resource = { appliedPlanKey: "plus", appliedPlanName: "Plus 资源", appliedRevision: 3, desiredPlanKey: "plus", syncState: "synced" };
-}
-
-const operator: ProductActor = { subject: "ops", capabilities: ["quota.read", "subscription.manage", "entitlement.gift", "entitlement.repair"] };
-
-function fixtureRevision(id = "product_plan_revision:fixture:1"): ProductRevisionBody {
+/** 核验桩：返回设定 verdict，并记录收到的核验输入（断言 workspaceDb/期望快照）。 */
+function projectionStub(verdict: ProjectionVerification["verdict"]) {
+  const calls: ProjectionVerifyInput[] = [];
   return {
-    id, planKey: "fixture_plus", planName: "夹具律师 Plus", revision: 1,
-    collections: [{ key: "fixture_core", label: "夹具核心" }], actions: ["read"], aiActions: [], features: [],
-  };
-}
-
-function assignment(revisionId: string) {
-  return { workspaceSlug: "team", billingAccountKey: "acct-a", productPlanRevisionId: revisionId, reason: "为夹具工作区开通", idempotencyKey: "assign-team-0001" };
-}
-
-function grantBody(overrides: Partial<GrantContentCollection> = {}): GrantContentCollection {
-  return {
-    workspaceSlug: "team", label: "临时赠送夹具", collections: [{ key: "fixture_gift", label: "赠送夹具" }],
-    actions: ["read", "cite"], effectiveFrom: "2026-09-01T00:00:00.000Z", effectiveUntil: "2026-09-30T00:00:00.000Z",
-    reason: "客户支持赠送", idempotencyKey: "gift-team-0001", ...overrides,
+    calls,
+    projectionVerify: async (input: ProjectionVerifyInput): Promise<ProjectionVerification> => {
+      calls.push(input);
+      return { checkedAt: "2026-09-24T00:00:00.000Z", verdict, ...NO_PROJECTION };
+    },
   };
 }
 
 describe("LCA13 运营解释、临时授权与交付修复", () => {
   test("赠送是与基础订阅重叠的独立来源；撤销只移除该来源，基础授权保留", async () => {
-    const store = new RecoveryStore();
-    workspace(store);
+    const store = new EntitlementRecoveryStore();
+    seedWorkspace(store);
     const now = new Date("2026-09-24T00:00:00.000Z");
     const service = new ProductEntitlementService(store, () => now);
     const revisionId = "product_plan_revision:fixture:1";
     store.revisions.set(revisionId, fixtureRevision());
-    await service.assign(operator, assignment(revisionId));
-    const granted = await service.grant(operator, grantBody());
+    await service.assign(operator, fixtureAssignment(revisionId));
+    const granted = await service.grant(operator, fixtureGrantBody());
     expect(granted.content.sources.map((item) => item.kind)).toEqual(["base", "grant"]);
     expect(granted.content.collections.map((item) => item.key)).toEqual(["fixture_core", "fixture_gift"]);
 
@@ -201,10 +52,10 @@ describe("LCA13 运营解释、临时授权与交付修复", () => {
   });
 
   test("查看/订阅调整/内容赠送/交付修复分别持能", async () => {
-    const store = new RecoveryStore();
-    workspace(store);
+    const store = new EntitlementRecoveryStore();
+    seedWorkspace(store);
     const service = new ProductEntitlementService(store, () => new Date("2026-09-24T00:00:00.000Z"));
-    await expect(service.grant({ subject: "ops", capabilities: ["subscription.manage"] }, grantBody())).rejects.toMatchObject({ code: "forbidden" });
+    await expect(service.grant({ subject: "ops", capabilities: ["subscription.manage"] }, fixtureGrantBody())).rejects.toMatchObject({ code: "forbidden" });
     await expect(service.revokeGrant({ subject: "ops", capabilities: ["subscription.manage"] }, {
       workspaceSlug: "team", grantId: "content_grant:1", reason: "x", idempotencyKey: "gift-revoke-0001",
     })).rejects.toMatchObject({ code: "forbidden" });
@@ -215,13 +66,13 @@ describe("LCA13 运营解释、临时授权与交付修复", () => {
   });
 
   test("交付修复：幂等重试、限定修订护栏、旧修订不覆盖新撤权、失败不重复发额度", async () => {
-    const store = new RecoveryStore();
-    workspace(store);
+    const store = new EntitlementRecoveryStore();
+    seedWorkspace(store);
     const now = new Date("2026-09-24T00:00:00.000Z");
     const revisionId = "product_plan_revision:fixture:1";
     store.revisions.set(revisionId, fixtureRevision());
     const service = new ProductEntitlementService(store, () => now);
-    await service.assign(operator, assignment(revisionId));
+    await service.assign(operator, fixtureAssignment(revisionId));
 
     // 只读预览不产生新快照。
     const preview = await service.describeDeliveryRepair(operator, "team");
@@ -276,29 +127,143 @@ describe("LCA13 运营解释、临时授权与交付修复", () => {
     expect(synced).toHaveLength(0);
   });
 
-  test("异常队列区分三类系统失败；正常到期不入队", async () => {
-    const store = new RecoveryStore();
-    workspace(store);
+  test("预览严格零写入：快照落后/指针损坏/赠送已撤销/订阅过期四种场景快照、指针、审计均不变", async () => {
+    const store = new EntitlementRecoveryStore();
+    seedWorkspace(store);
     const now = new Date("2026-09-24T00:00:00.000Z");
     const revisionId = "product_plan_revision:fixture:1";
     store.revisions.set(revisionId, fixtureRevision());
-    const projection = { verdict: "ok" as "ok" | "empty_collection" };
+    const service = new ProductEntitlementService(store, () => now);
+    await service.assign(operator, fixtureAssignment(revisionId));
+    const state = () => ({
+      snapshots: store.snapshots.length,
+      pointer: store.pointer.get("workspace:team") ?? null,
+      audits: store.audits.length,
+    });
+    const baseline = state();
+
+    // 场景一：绑定来源更新但尚未交付——直接改商店里的产品修订内容，使当前
+    // 快照 digest 落后于草稿（旧实现会在预览时 read-heal 出新快照）。
+    store.revisions.set(revisionId, { ...fixtureRevision(), features: [{ key: "export_pdf", enabled: true, limit: null }] });
+    const stale = await service.describeDeliveryRepair(operator, "team");
+    expect(stale.current.revision).toBe(1); // 如实呈现已交付快照，不是预览出来的新快照
+    expect(stale.target.features.some((item) => item.key === "export_pdf")).toBe(true);
+    expect(state()).toEqual(baseline);
+
+    // 场景二：赠送已撤销但快照还含它（digest 落后）——预览也不能顺手修复。
+    store.revisions.set(revisionId, fixtureRevision());
+    await service.grant(operator, fixtureGrantBody()); // 快照 v2 含赠送来源
+    const withGrant = state();
+    expect(withGrant.snapshots).toBe(baseline.snapshots + 1);
+    store.revocations.push({
+      workspaceId: "workspace:team", grantId: store.grantRows[0]!.id,
+      reason: "回收", idempotencyKey: "ghost-rev",
+    });
+    const revoked = await service.describeDeliveryRepair(operator, "team");
+    expect(revoked.current.revision).toBe(2); // 如实呈现含赠送的已交付快照
+    expect(revoked.target.content.sources.map((item) => item.kind)).toEqual(["base"]);
+    expect(state()).toEqual(withGrant);
+
+    // 场景三：指针损坏/缺失——current 如实呈现为空交付视图，仍零写入。
+    store.pointer.set("workspace:team", "workspace_product_entitlement:gone");
+    const broken = await service.describeDeliveryRepair(operator, "team");
+    expect(broken.current.revision).toBe(0);
+    expect(state().snapshots).toBe(withGrant.snapshots);
+    expect(state().pointer).toBe("workspace_product_entitlement:gone"); // 预览不得移动指针
+    expect(state().audits).toBe(withGrant.audits);
+
+    // 场景四：订阅已结束（无绑定修订）——预览退化为 current=target，仍零写入。
+    store.items.set("workspace:team", { ...store.items.get("workspace:team")!, status: "ended" });
+    const ended = await service.describeDeliveryRepair(operator, "team");
+    expect(ended.boundRevisionId).toBeNull();
+    expect(ended.target.revision).toBe(ended.current.revision);
+    expect(state().audits).toBe(withGrant.audits);
+  });
+
+  test("修复护栏失败零写入：声明的旧修订与已交付快照不一致时拒绝且不动状态", async () => {
+    const store = new EntitlementRecoveryStore();
+    seedWorkspace(store);
+    const now = new Date("2026-09-24T00:00:00.000Z");
+    const revisionId = "product_plan_revision:fixture:1";
+    store.revisions.set(revisionId, fixtureRevision());
+    const service = new ProductEntitlementService(store, () => now);
+    await service.assign(operator, fixtureAssignment(revisionId));
+    const baseline = {
+      snapshots: store.snapshots.length,
+      pointer: store.pointer.get("workspace:team"),
+      audits: store.audits.length,
+    };
+
+    // 即使快照 digest 已落后（旧实现会先 heal 再护栏，仍然留下快照），
+    // 护栏失败也必须什么都不写。
+    store.revisions.set(revisionId, { ...fixtureRevision(), features: [{ key: "export_pdf", enabled: true, limit: null }] });
+    await expect(service.repairDelivery(operator, {
+      workspaceSlug: "team", reason: "旧视图重试", idempotencyKey: "repair-stale-1", expectedCurrentRevision: 99,
+    })).rejects.toMatchObject({ code: "conflict" });
+    expect(store.snapshots).toHaveLength(baseline.snapshots);
+    expect(store.pointer.get("workspace:team")).toBe(baseline.pointer);
+    expect(store.audits).toHaveLength(baseline.audits);
+  });
+
+  test("并发修复：同键并发收敛到同一结果，不同键并发只有一个能推进指针", async () => {
+    const store = new EntitlementRecoveryStore();
+    seedWorkspace(store);
+    const now = new Date("2026-09-24T00:00:00.000Z");
+    const revisionId = "product_plan_revision:fixture:1";
+    store.revisions.set(revisionId, fixtureRevision());
+    const service = new ProductEntitlementService(store, () => now);
+    await service.assign(operator, fixtureAssignment(revisionId));
+    store.pointer.set("workspace:team", "workspace_product_entitlement:missing");
+
+    const sameKey = await Promise.all([
+      service.repairDelivery(operator, { workspaceSlug: "team", reason: "并发重试", idempotencyKey: "repair-par-1", expectedCurrentRevision: null }),
+      service.repairDelivery(operator, { workspaceSlug: "team", reason: "并发重试", idempotencyKey: "repair-par-1", expectedCurrentRevision: null }),
+    ]);
+    // 同键同请求体并发 = 同一操作的重放：收敛到同一结果、审计只有一条。
+    expect(sameKey[0].after.revision).toBe(sameKey[1].after.revision);
+    expect(store.pointer.get("workspace:team")).not.toBe("workspace_product_entitlement:missing");
+    expect(store.audits.filter((row) => row.action === "repair")).toHaveLength(1);
+  });
+
+  test("异常队列区分三类系统失败；空集合与正常到期不算系统失败", async () => {
+    const store = new EntitlementRecoveryStore();
+    seedWorkspace(store);
+    const now = new Date("2026-09-24T00:00:00.000Z");
+    const revisionId = "product_plan_revision:fixture:1";
+    store.revisions.set(revisionId, fixtureRevision());
+    const projection = { verdict: "ok" as ProjectionVerification["verdict"] };
+    const stub = projectionStub("ok");
     const service = new ProductEntitlementService(store, () => now, {
       aiStatus: async (dbName) => dbName === "ws_team"
         ? { consumableAllowance: 5, reserved: 2, settled: 3, suspended: 0, terminated: 0, expired: 0, stuckReservations: 1, settlementAnomaly: true, anomalyNote: "1 条预留超窗未终态" }
         : null,
-      projectionVerify: async () => ({ checkedAt: now.toISOString(), verdict: projection.verdict, collections: [] }),
+      projectionVerify: async (input) => { stub.calls.push(input); return { checkedAt: now.toISOString(), verdict: projection.verdict, ...NO_PROJECTION }; },
     });
-    await service.assign(operator, assignment(revisionId));
+    await service.assign(operator, fixtureAssignment(revisionId));
 
-    // 快照就绪 + 投影故障 → projection_failure（此刻指针正常，无 delivery_pending）。
-    projection.verdict = "empty_collection";
+    // 核验输入携带工作区库名与当前已交付快照（供 revision/digest 比对）。
+    projection.verdict = "license_blocked";
     const queue = await service.exceptions(operator, {});
+    expect(stub.calls[0]?.workspaceDb).toBe("ws_team");
+    expect(stub.calls[0]?.expected?.revisionNumber).toBe(1);
     expect(queue.items).toHaveLength(1);
     expect(queue.items[0]!.workspaceSlug).toBe("team");
     expect(queue.items[0]!.kinds).toContain("projection_failure");
     expect(queue.items[0]!.kinds).toContain("ai_settlement_anomaly");
     expect(queue.items[0]!.detail.stuckReservations).toBe(1);
+
+    // 许可收紧的其它形态同样入队。
+    projection.verdict = "projection_stale";
+    expect((await service.exceptions(operator, {})).items[0]!.kinds).toContain("projection_failure");
+    projection.verdict = "projection_error";
+    expect((await service.exceptions(operator, {})).items[0]!.kinds).toContain("projection_failure");
+
+    // 空集合是内容侧未供稿、unavailable 是核验不可用——都不算系统交付失败。
+    projection.verdict = "empty_collection";
+    const notFailure = await service.exceptions(operator, {});
+    expect(notFailure.items[0]!.kinds).not.toContain("projection_failure");
+    projection.verdict = "unavailable";
+    expect((await service.exceptions(operator, {})).items[0]!.kinds).not.toContain("projection_failure");
 
     // 快照落后于绑定修订 → delivery_pending。
     projection.verdict = "ok";
@@ -314,8 +279,8 @@ describe("LCA13 运营解释、临时授权与交付修复", () => {
   });
 
   test("运营解释视图带来源理由/操作者、投影核验与 AI 账本事实；客户视图保持收敛", async () => {
-    const store = new RecoveryStore();
-    workspace(store);
+    const store = new EntitlementRecoveryStore();
+    seedWorkspace(store);
     const now = new Date("2026-09-24T00:00:00.000Z");
     const revisionId = "product_plan_revision:fixture:1";
     store.revisions.set(revisionId, fixtureRevision());
@@ -323,16 +288,18 @@ describe("LCA13 运营解释、临时授权与交付修复", () => {
       aiStatus: async () => ({ consumableAllowance: 7, reserved: 1, settled: 2, suspended: 0, terminated: 0, expired: 0, stuckReservations: 0, settlementAnomaly: false, anomalyNote: null }),
       projectionVerify: async () => ({
         checkedAt: now.toISOString(), verdict: "ok",
-        collections: [{ key: "fixture_core", label: "夹具核心", publishedItems: 3, licenseUntil: "2026-10-31T00:00:00.000Z", licenseActions: ["read", "cite"] }],
+        workspace: { state: "active", revision: "rev-1", revisionNumber: 1, matchesExpected: true, confirmedUntil: "2026-09-24T00:15:00.000Z", expectedRevisionNumber: 1 },
+        collections: [{ key: "fixture_core", label: "夹具核心", publishedItems: 3, readableItems: 3, blockedItems: 0, sources: [] }],
       }),
     });
-    await service.assign(operator, assignment(revisionId));
-    await service.grant(operator, grantBody());
+    await service.assign(operator, fixtureAssignment(revisionId));
+    await service.grant(operator, fixtureGrantBody());
     const opsView = await service.getForOperator(operator, "team");
     const grantSource = opsView.content.sources.find((item) => item.kind === "grant");
     expect(grantSource?.reason).toBe("客户支持赠送");
     expect(grantSource?.operatorSubject).toBe("ops");
     expect(opsView.content.projection?.verdict).toBe("ok");
+    expect(opsView.content.projection?.workspace.state).toBe("active");
     expect(opsView.content.projection?.collections[0]?.publishedItems).toBe(3);
     expect(opsView.ai.ledger).toBe("ok");
     expect(opsView.ai.consumableAllowance).toBe(7);
@@ -344,15 +311,31 @@ describe("LCA13 运营解释、临时授权与交付修复", () => {
     expect(customerView.ai.consumableAllowance).toBeNull();
   });
 
+  test("赠送到期：effectiveUntil 过后赠送来源自动失效，基础订阅保留", async () => {
+    const store = new EntitlementRecoveryStore();
+    seedWorkspace(store);
+    const revisionId = "product_plan_revision:fixture:1";
+    store.revisions.set(revisionId, fixtureRevision());
+    const service = new ProductEntitlementService(store, () => new Date("2026-10-15T00:00:00.000Z"));
+    await service.assign(operator, fixtureAssignment(revisionId));
+    await service.grant(operator, fixtureGrantBody()); // effectiveUntil 2026-09-30，now=10-15 已过期
+    const view = await service.getForOperator(operator, "team");
+    expect(view.content.sources.map((item) => item.kind)).toEqual(["base"]);
+    expect(view.content.collections.map((item) => item.key)).toEqual(["fixture_core"]);
+    // 异常队列不因赠送自然到期而入队（交付失败才入队）。
+    const queue = await service.exceptions(operator, {});
+    expect(queue.items.find((item) => item.workspaceSlug === "team")?.kinds ?? []).not.toContain("projection_failure");
+  });
+
   test("重复请求与服务重启恢复：同幂等键在新实例上重放同一结果", async () => {
-    const store = new RecoveryStore();
-    workspace(store);
+    const store = new EntitlementRecoveryStore();
+    seedWorkspace(store);
     const now = new Date("2026-09-24T00:00:00.000Z");
     const revisionId = "product_plan_revision:fixture:1";
     store.revisions.set(revisionId, fixtureRevision());
     const first = new ProductEntitlementService(store, () => now);
-    await first.assign(operator, assignment(revisionId));
-    await first.grant(operator, grantBody());
+    await first.assign(operator, fixtureAssignment(revisionId));
+    await first.grant(operator, fixtureGrantBody());
     const grantId = store.grantRows[0]!.id;
     await first.revokeGrant(operator, {
       workspaceSlug: "team", grantId, reason: "赠送回收", idempotencyKey: "gift-revoke-restart-1",
