@@ -9,6 +9,7 @@ import {
   type SearchContentRequest,
 } from "@surreal-ck/shared/platform-content";
 import { sha256Hex } from "@surreal-ck/shared/platform-content";
+import { indexPublishedVersion } from "./semantic-index";
 import {
   applyCitationResolutionOverlays,
   loadCitationResolutionOverlays,
@@ -656,7 +657,14 @@ export class SurrealPlatformContentStore implements PlatformContentStore {
   }): Promise<PublicationApplyResult> {
     const requestEntry = input.batch.request.items.find((candidate) => candidate.entryKey === input.entryKey);
     if (!requestEntry) return { status: "blocked", versionId: null, issues: [issue("identity_ambiguous", "发布条目不存在")] };
-    if (requestEntry.operation === "upsert") return this.applyUpsert(input, requestEntry);
+    if (requestEntry.operation === "upsert") {
+      const result = await this.applyUpsert(input, requestEntry);
+      if (result.versionId && (result.status === "published" || result.status === "unchanged")) {
+        // Derived indexing failures never invalidate a committed publication.
+        await indexPublishedVersion(this.db as Pick<import("surrealdb").Surreal, "query">, result.versionId);
+      }
+      return result;
+    }
     return this.applyPublicationState(input, requestEntry);
   }
 
@@ -779,6 +787,11 @@ export class SurrealPlatformContentStore implements PlatformContentStore {
         ? { kind: payload.kind, legislation: payload.legislation }
         : { kind: payload.kind, judgment: payload.judgment },
       kind: payload.kind,
+      retrievalProcedure: payload.kind === "judicial_document" ? payload.judgment.procedure ?? undefined : undefined,
+      retrievalIssue: payload.kind === "judicial_document" ? payload.judgment.causeOfAction ?? undefined : undefined,
+      // Known legislation is a legal source; court/instance names are not guessed into hierarchy.
+      retrievalAuthority: payload.kind === "legislation" ? 1 : 0,
+      retrievalQuality: payload.document.fieldIssues.length === 0 ? 1 : 0,
       actorSubject: input.actorSubject,
       entry: entryRecord,
       publicationRequest: input.publicationId ? publicationRequestId(input.publicationId) : undefined,
@@ -847,6 +860,7 @@ export class SurrealPlatformContentStore implements PlatformContentStore {
       "IF $projection = [] { CREATE content_publication_projection CONTENT { item: $item, version: $version, searchable_text: $searchableText, indexed_at: time::now(), publication_revision: $revision, created_at: time::now() }; } ELSE { UPDATE $projection[0] SET item = $item, version = $version, searchable_text = $searchableText, indexed_at = time::now(), publication_revision = $revision; };",
       "LET $facet = SELECT VALUE id FROM content_search_facet WHERE item = $item LIMIT 1;",
       "IF $facet = [] { CREATE content_search_facet CONTENT { item: $item, version: $version, kind: $kind, jurisdiction: $source.jurisdiction, published_on: $publishedOn, effective_on: $version.content_kind_payload.legislation.effectiveOn }; } ELSE { UPDATE $facet[0] SET version = $version, kind = $kind, jurisdiction = $source.jurisdiction, published_on = $publishedOn, effective_on = $version.content_kind_payload.legislation.effectiveOn; };",
+      "UPDATE content_search_facet SET procedure = $retrievalProcedure, issue = $retrievalIssue, authority = $retrievalAuthority, quality = $retrievalQuality WHERE item = $item;",
       "CREATE publication_event CONTENT { request: $publicationRequest, entry: $entry, item: $item, version: $version, event_kind: IF $revision = 1 THEN \"published\" ELSE \"corrected\" END, actor_subject: $actorSubject, reason: NONE, occurred_at: time::now() };",
       "UPSERT publication_item_result CONTENT { request: $publicationRequest, entry_key: $entryKey, status: \"published\", version: $version, issues: [], created_at: time::now() };",
       "UPDATE $entryRecord SET status = \"published\", publication_status = \"published\";",

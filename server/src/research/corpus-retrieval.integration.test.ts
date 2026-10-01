@@ -4,11 +4,14 @@ import { SignJWT, generateKeyPair, exportJWK } from "jose";
 import { CONTENT_SEARCH_QUERY } from "@surreal-ck/shared";
 import { loadPlatformContentScripts } from "@surreal-ck/shared/platform-content-schema";
 import { homedir } from "node:os";
-import { defineContentReaderAccess } from "../content/reader-access";
+import { defineReaderFixture } from "../../test/define-reader-fixture";
 import { ensurePlatformContentSchema } from "../content/schema";
 import { writeContentReaderProjection } from "../content/reader-projection";
 import type { ContentReaderProjectionWrite } from "../content/reader-exchange";
 import { retrieveAuthorizedCorpus } from "./corpus-retrieval";
+import { LegalRetrievalRequestSchema } from "@surreal-ck/shared";
+import { retrievePlatformCandidates, PLATFORM_HNSW_QUERY, PLATFORM_EXACT_QUERY } from "./platform-retrieval";
+import { createEmbeddingProfileKey } from "../resources/research-save";
 
 /**
  * LCA06 联调（真实引擎）：授权候选登记为证据、授权外候选（无 gate / 撤回）被拒，
@@ -43,7 +46,7 @@ localTest("授权语料检索在真实引擎上按 gate 强制授权", async () 
     await root.query("DEFINE NAMESPACE test; USE NS test; DEFINE DATABASE content; USE DB content;");
     await root.use({ namespace: "test", database: "content" });
     for (const script of (await loadPlatformContentScripts()).filter((entry) => entry.version <= 6)) await root.query(script.sql);
-    await defineContentReaderAccess(root, { jwksUrl: `${issuer}/jwks`, issuer, audience: "fixture" });
+    await defineReaderFixture(root, { jwksUrl: `${issuer}/jwks`, issuer, audience: "fixture" }, keys.publicKey);
     const pass = crypto.randomUUID();
     await root.query(`CREATE content_projection_identity:server SET active = true;
       CREATE content_projection_credential:server SET secret_hash = crypto::argon2::generate($pass);`, { pass });
@@ -62,9 +65,10 @@ localTest("授权语料检索在真实引擎上按 gate 强制授权", async () 
       CREATE content_publication_projection:b SET item=content_item:b, version=content_version:b, searchable_text='乙法', indexed_at=time::now(), publication_revision=1;
     `, { body, bodyHash: digestOf(body) });
     await root.query("UPSERT platform_content_schema_version:current CONTENT { version: 6, applied_at: time::now() };");
-    expect((await ensurePlatformContentSchema(root, { namespace: "test", database: "content" })).appliedVersions).toEqual([7, 8]);
+    expect((await ensurePlatformContentSchema(root, { namespace: "test", database: "content" })).appliedVersions).toEqual([7, 8, 9]);
     await sync.connect(url, { namespace: "test", database: "content" });
-    await sync.signin({ namespace: "test", database: "content", access: "content_projection_sync", variables: { pass } });
+    await sync.signin({ namespace: "test", database: "content", access: "content_projection_sync", variables: { pass } })
+      .catch((error: unknown) => { throw new Error("fixture projection SIGNIN failed", { cause: error }); });
 
     // workspace 只授权 core 集合：甲法（core）可检索可引用；乙法（premium）无 gate。
     const write: ContentReaderProjectionWrite = {
@@ -81,7 +85,48 @@ localTest("授权语料检索在真实引擎上按 gate 强制授权", async () 
       .setSubject(subject).setIssuer(issuer).setAudience("fixture").setExpirationTime("300s").setIssuedAt()
       .setProtectedHeader({ alg: "ES256", kid: "fixture" }).sign(keys.privateKey);
     await reader.connect(url, { namespace: "test", database: "content" });
-    await reader.authenticate(await issue("human"));
+    await reader.authenticate(await issue("human"))
+      .catch((error: unknown) => { throw new Error("fixture content_reader JWT authentication failed", { cause: error }); });
+
+    const vector = [1, ...Array<number>(1535).fill(0)];
+    const profile = { provider: "fixture", model: "legal-topics", dimensions: 1536, version: "v1", release: "release-1" };
+    const profileKey = createEmbeddingProfileKey(profile);
+    await root.query(`CREATE content_embedding_profile:default CONTENT $profile;
+      CREATE content_search_embedding:a SET item=content_item:a, version=content_version:a,
+       profile_key=$profileKey, release='release-1', body_sha256=$bodyHash, vector=$vector;
+      CREATE content_search_embedding:b SET item=content_item:b, version=content_version:b,
+       profile_key=$profileKey, release='release-1', body_sha256='b', vector=$vector;`,
+    { profile, profileKey, bodyHash: digestOf(body), vector });
+    const provider = { async embed() { return vector; } };
+    const request = LegalRetrievalRequestSchema.parse({ query: "墨迹欠缺", limit: 5 });
+    const baseline = await retrievePlatformCandidates({ session: reader, request: { ...request, mode: "keyword" } });
+    expect(baseline.items).toEqual([]);
+    // Both approximate and exact queries execute as content_reader, never root.
+    for (const sql of [PLATFORM_HNSW_QUERY, PLATFORM_EXACT_QUERY]) {
+      const values = await reader.query(sql, { vector, profileKey, release: "release-1", ai: false });
+      expect(JSON.stringify(values)).not.toContain("content_version:b");
+      expect(JSON.stringify(values)).not.toContain("CANARY-DENIED");
+    }
+    const hybrid = await retrievePlatformCandidates({ session: reader, request, embeddingProvider: provider });
+    expect(hybrid.capability).toBe("hybrid");
+    expect(hybrid.items.map((hit) => hit.publicId)).toEqual(["a-v1"]);
+    expect(hybrid.items[0]?.explanation).toContain("语义相关");
+    expect(JSON.stringify(hybrid)).not.toContain("CANARY-DENIED");
+    expect(JSON.stringify(hybrid)).not.toContain('"vector"');
+    const semanticEvidence = await retrieveAuthorizedCorpus({ session: reader, query: request.query, embeddingProvider: provider });
+    expect(semanticEvidence.evidence[0]?.bodySha256).toBe(digestOf(body));
+
+    const degraded = await retrievePlatformCandidates({
+      session: reader, request: { ...request, query: "合同" },
+      embeddingProvider: { async embed(): Promise<number[]> { throw new Error("fixture-index-unavailable"); } },
+    });
+    expect(degraded.capability).toBe("keyword");
+    expect(degraded.items[0]?.publicId).toBe("a-v1");
+    expect(degraded.notice).toContain("降级");
+
+    await root.query("UPDATE content_embedding_profile:default SET release = 'release-2';");
+    expect((await retrievePlatformCandidates({ session: reader, request, embeddingProvider: provider })).items).toEqual([]);
+    await root.query("UPDATE content_embedding_profile:default SET release = 'release-1';");
 
     const result = await retrieveAuthorizedCorpus({ session: reader as unknown as Pick<Surreal, "query">, query: "合同" });
     // 只有获授权且有 gate 的甲法登记为证据；乙法（premium 集合）在库层就不出现在候选里。
@@ -102,6 +147,9 @@ localTest("授权语料检索在真实引擎上按 gate 强制授权", async () 
 
     // AI 使用许可与普通 read/cite 分别生效，不因可阅读就进入模型证据。
     await root.query("UPDATE content_read_gate SET ai_actions = [];");
+    // Ordinary semantic search is not an AI allowance action and remains allowed.
+    expect((await retrievePlatformCandidates({ session: reader, request, embeddingProvider: provider })).items).toHaveLength(1);
+    expect((await retrieveAuthorizedCorpus({ session: reader, query: request.query, embeddingProvider: provider })).evidence).toEqual([]);
     const noAi = await retrieveAuthorizedCorpus({ session: reader, query: "合同" });
     expect(noAi.evidence).toEqual([]);
     expect(noAi.rejected[0]?.reason).toBe("ai_use_denied");
@@ -117,6 +165,9 @@ localTest("授权语料检索在真实引擎上按 gate 强制授权", async () 
     });
     expect(afterWithdraw[0]).toHaveLength(0);
     expect((await retrieveAuthorizedCorpus({ session: reader, query: "合同" })).evidence).toEqual([]);
+    expect((await retrievePlatformCandidates({ session: reader, request, embeddingProvider: provider })).items).toEqual([]);
+    await root.query("UPDATE content_item:a SET publication_status='published'; UPDATE content_authorization_projection SET revision='new-revision';");
+    expect((await retrievePlatformCandidates({ session: reader, request, embeddingProvider: provider })).items).toEqual([]);
   } finally {
     await reader.close().catch(() => undefined);
     await sync.close().catch(() => undefined);
