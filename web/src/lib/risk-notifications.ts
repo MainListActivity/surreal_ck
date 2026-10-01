@@ -101,6 +101,32 @@ export async function loadRiskNotifications(conn: Pick<SurrealConn, "query">): P
   return rows.map(normalizeNotification);
 }
 
+/**
+ * 收件箱数据通道：LIVE 推送刷新 + 断线重连后补一次快照。
+ *
+ * SDK 的 managed live 订阅在 connected 时会自动重注册 LIVE，但服务器不重放
+ * 断开窗口内的变更——只在 connected（此时会话已恢复）再读一次快照才能让
+ * 收件箱收敛到数据库真相。`refresh` 由调用方提供（重新加载并渲染快照）；
+ * 返回的清理函数摘除 LIVE 订阅与 connected 监听。
+ */
+export function watchNotificationInbox(
+  conn: Pick<SurrealConn, "liveTable" | "subscribe">,
+  refresh: () => void,
+): () => void {
+  let disposed = false;
+  let stopLive: (() => void) | undefined;
+  void conn.liveTable("user_notification", () => refresh()).then((stop) => {
+    if (disposed) stop();
+    else stopLive = stop;
+  }).catch(() => undefined);
+  const offConnected = conn.subscribe("connected", () => refresh());
+  return () => {
+    disposed = true;
+    stopLive?.();
+    offConnected();
+  };
+}
+
 const REQUEST_ACTION_LABELS: Record<OfficeRequestAction, string> = {
   answered: "已答复",
   rejected: "已拒绝",

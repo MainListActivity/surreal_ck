@@ -10,6 +10,7 @@
     resolveRiskNotificationTarget,
     setClaimsReminderEnabled,
     wakeOfficeRequest,
+    watchNotificationInbox,
     type ClaimsReminderSetting,
     type OfficeRequestAction,
     type RiskNotification,
@@ -53,9 +54,8 @@
 
   onMount(() => {
     void load();
-    void getSurreal().liveTable("user_notification", () => void load()).then((stop) => {
-      unsubscribe = stop;
-    }).catch(() => undefined);
+    // LIVE 推送 + connected 重连后补快照：断线窗口的变更不会重推。
+    unsubscribe = watchNotificationInbox(getSurreal(), () => void load());
   });
 
   onDestroy(() => unsubscribe?.());

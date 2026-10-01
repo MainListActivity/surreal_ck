@@ -2,7 +2,11 @@
   import { onDestroy, onMount } from "svelte";
   import Avatar from "./Avatar.svelte";
   import RiskNotificationInbox from "./RiskNotificationInbox.svelte";
-  import { loadRiskNotifications, type RiskNotification } from "$lib/risk-notifications";
+  import {
+    loadRiskNotifications,
+    watchNotificationInbox,
+    type RiskNotification,
+  } from "$lib/risk-notifications";
   import {
     type ActivityTab,
     type ChartBar,
@@ -41,9 +45,7 @@
   onMount(() => {
     void activityFeed.start();
     void refreshNotificationCount();
-    void getSurreal().liveTable("user_notification", () => void refreshNotificationCount())
-      .then((stop) => { stopNotificationLive = stop; })
-      .catch(() => undefined);
+    stopNotificationLive = watchNotificationInbox(getSurreal(), () => void refreshNotificationCount());
     if (activeTab === "overview") loadOverview();
   });
 
