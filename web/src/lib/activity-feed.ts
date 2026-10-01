@@ -28,7 +28,7 @@ export type ActivityFeedItem = {
   /** actor 的 user record id（string 形态）；用于解析显示名 / 头像。 */
   actorId?: string;
   verb: string;
-  /** 已拼好的中文动作描述，如「新建了工作簿「债权台账」」「添加了 12 条记录」。 */
+  /** 已拼好的中文动作描述，如「新建了工作簿「巡检台账」」「添加了 12 条记录」。 */
   action: string;
   timestamp: Date;
   /** 该条聚合自多少个原始事件（record.write 聚合用；>1 时文案显示数量）。 */

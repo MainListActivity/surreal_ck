@@ -26,7 +26,7 @@ describe("resource-record associations browser boundary", () => {
       [{ id: "resource_record_link:l1" }],
     ]);
 
-    await linkResourceToRecord(conn, "resource_item:r1", "ent_claim:c1");
+    await linkResourceToRecord(conn, "resource_item:r1", "ent_item:c1");
     await unlinkResourceFromRecord(conn, "resource_record_link:l1");
 
     expect(calls[0]!.sql).toContain("RELATE $resource->resource_record_link->$record");
@@ -54,7 +54,7 @@ describe("resource-record associations browser boundary", () => {
       },
     ]]);
 
-    const resources = await listResourcesForRecord(conn, "ent_claim:c1");
+    const resources = await listResourcesForRecord(conn, "ent_item:c1");
 
     expect(calls[0]!.sql).toContain("FROM $record<-resource_record_link");
     expect(calls[0]!.bindings?.record).toBeInstanceOf(StringRecordId);

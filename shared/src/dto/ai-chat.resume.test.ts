@@ -7,7 +7,7 @@ import {
 
 describe("ResolvedRecordSchema", () => {
   test("接受合法的 id+label", () => {
-    expect(ResolvedRecordSchema.safeParse({ id: "claim:abc123", label: "张三 / ZQ-2026-001" }).success).toBe(true);
+    expect(ResolvedRecordSchema.safeParse({ id: "item:abc123", label: "张三 / JL-2026-001" }).success).toBe(true);
   });
 
   test("拒绝缺 id 或 label", () => {
@@ -21,7 +21,7 @@ describe("ResumeAiWorkflowRequestSchema", () => {
   test("candidate-chosen 必须带 candidateId", () => {
     const ok = ResumeAiWorkflowRequestSchema.safeParse({
       runId: "r1",
-      decision: { kind: "candidate-chosen", candidateId: "claim:abc" },
+      decision: { kind: "candidate-chosen", candidateId: "item:abc" },
     });
     expect(ok.success).toBe(true);
     const bad = ResumeAiWorkflowRequestSchema.safeParse({

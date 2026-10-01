@@ -289,7 +289,7 @@
       <div class="section-head">
         <div>
           <h2>运营摘要共享</h2>
-          <p>预览并主动共享最小启用信息；不会共享文件名、案件、正文、材料或成员邮箱。</p>
+          <p>预览并主动共享最小启用信息；不会共享文件名、记录、正文、材料或成员邮箱。</p>
         </div>
         <span class="readonly-badge">契约 v2</span>
       </div>

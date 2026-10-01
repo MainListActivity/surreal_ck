@@ -81,7 +81,7 @@ describe("AiChatService.startChat", () => {
 
     await service.startChat({
       runId: "run-rs",
-      message: "查找合同解除案例",
+      message: "查找设备故障案例",
       userContext: ctx,
       surrealSession: fakeSession,
       composerMode: "resource-search",
@@ -89,7 +89,7 @@ describe("AiChatService.startChat", () => {
     await new Promise((r) => setTimeout(r, 0));
 
     expect(capturedInput?.planOverride).toEqual([
-      { category: "resource-retrieval", taskText: "查找合同解除案例" },
+      { category: "resource-retrieval", taskText: "查找设备故障案例" },
     ]);
   });
 

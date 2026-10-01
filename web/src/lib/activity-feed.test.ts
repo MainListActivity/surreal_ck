@@ -68,7 +68,7 @@ describe("loadActivityRows — 读最近动态", () => {
 
 describe("describeActivity — verb → 中文文案", () => {
   test("有 target_name 时填入名字", () => {
-    expect(describeActivity("workbook.create", "债权台账", 1)).toBe("新建了工作簿「债权台账」");
+    expect(describeActivity("workbook.create", "巡检台账", 1)).toBe("新建了工作簿「巡检台账」");
     expect(describeActivity("field.remove", "状态", 1)).toBe("删除了字段「状态」");
   });
 

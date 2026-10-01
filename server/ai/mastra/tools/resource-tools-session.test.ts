@@ -38,7 +38,7 @@ describe("resource tools — 走调用者 session / 不碰 root", () => {
           return [[{
             id: "resource_item:r1",
             resource_type: "generic_note",
-            title: "合同解除案例",
+            title: "设备故障案例",
             summary: "解除通知到达即生效。",
             evidence: [],
             tags: [],
@@ -58,7 +58,7 @@ describe("resource tools — 走调用者 session / 不碰 root", () => {
     ) => Promise<{ status: string; indexStatus: string; results: Array<{ resource: { id: string } }> }>;
 
     const result = await execute(
-      { workspaceId: "workspace:demo", query: "合同解除案例", answerThreshold: 0.3 },
+      { workspaceId: "workspace:demo", query: "设备故障案例", answerThreshold: 0.3 },
       ctxWithSession(session),
     );
 
@@ -87,7 +87,7 @@ describe("resource tools — 走调用者 session / 不碰 root", () => {
           return [{
             id: "resource_item:r1",
             resource_type: "generic_note",
-            title: "合同解除案例",
+            title: "设备故障案例",
             summary: "解除通知到达即生效。",
             evidence: [{ text: "通知到达生效。", capturedAt: "2026-06-01T08:00:00.000Z", order: 0 }],
             tags: [],
@@ -109,6 +109,6 @@ describe("resource tools — 走调用者 session / 不碰 root", () => {
     const result = await execute({ resourceId: "resource_item:r1" }, ctxWithSession(session));
 
     expect(result.resource.id).toBe("resource_item:r1");
-    expect(result.resource.title).toBe("合同解除案例");
+    expect(result.resource.title).toBe("设备故障案例");
   });
 });

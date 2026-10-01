@@ -7,8 +7,8 @@ const parsed: ParsedXlsxImport = {
   fileName: "历史台账.xlsx",
   workbookName: "历史台账",
   sheets: [
-    { name: "债权", status: "ready", issue: null, fields: [], rows: [["甲"], ["乙"]], previewRows: [] },
-    { name: "材料", status: "ready", issue: null, fields: [], rows: [["合同"]], previewRows: [] },
+    { name: "事项", status: "ready", issue: null, fields: [], rows: [["甲"], ["乙"]], previewRows: [] },
+    { name: "材料", status: "ready", issue: null, fields: [], rows: [["事项"]], previewRows: [] },
     { name: "待办", status: "ready", issue: null, fields: [], rows: [["催收"]], previewRows: [] },
     { name: "空表", status: "empty", issue: "Sheet 为空", fields: [], rows: [], previewRows: [] },
   ],
@@ -42,7 +42,7 @@ describe("OIP-13 多 Sheet 导入控制器", () => {
     controller.setAction("待办", { kind: "map-existing", targetSheetId: "sheet:tasks" });
     await controller.confirm();
 
-    expect(newWorkbookCalls).toEqual([["债权"]]);
+    expect(newWorkbookCalls).toEqual([["事项"]]);
     expect(mappedCalls).toEqual([
       { sheet: "材料", target: "sheet:evidence" },
       { sheet: "待办", target: "sheet:tasks" },
@@ -55,7 +55,7 @@ describe("OIP-13 多 Sheet 导入控制器", () => {
       ignoredSheetCount: 1,
     });
     expect(controller.snapshot.results).toEqual([
-      { sheetName: "债权", status: "success", importedCount: 2, skippedCount: 0, error: null },
+      { sheetName: "事项", status: "success", importedCount: 2, skippedCount: 0, error: null },
       { sheetName: "材料", status: "success", importedCount: 1, skippedCount: 0, error: null },
       {
         sheetName: "待办",
@@ -98,7 +98,7 @@ describe("OIP-13 多 Sheet 导入控制器", () => {
     };
     const controller = createXlsxImportController({
       parsed: reordered,
-      existingTargetOrder: ["sheet:creditors", "sheet:materials", "sheet:tasks"],
+      existingTargetOrder: ["sheet:owners", "sheet:materials", "sheet:tasks"],
       importNewWorkbook: async () => ({ workbookId: "workbook:new", sheets: [] }),
       importExistingSheet: async ({ targetSheetId }) => {
         importOrder.push(targetSheetId);
@@ -106,14 +106,14 @@ describe("OIP-13 多 Sheet 导入控制器", () => {
       },
     });
 
-    controller.setAction("债权", { kind: "map-existing", targetSheetId: "sheet:creditors" });
+    controller.setAction("事项", { kind: "map-existing", targetSheetId: "sheet:owners" });
     controller.setAction("材料", { kind: "map-existing", targetSheetId: "sheet:materials" });
     controller.setAction("待办", { kind: "map-existing", targetSheetId: "sheet:tasks" });
     await controller.confirm();
 
-    expect(importOrder).toEqual(["sheet:creditors", "sheet:materials", "sheet:tasks"]);
-    expect(controller.snapshot.results.map((result) => result.sheetName)).toEqual(["材料", "债权", "待办"]);
-    expect(controller.snapshot.firstImportedTargetId).toBe("sheet:creditors");
+    expect(importOrder).toEqual(["sheet:owners", "sheet:materials", "sheet:tasks"]);
+    expect(controller.snapshot.results.map((result) => result.sheetName)).toEqual(["材料", "事项", "待办"]);
+    expect(controller.snapshot.firstImportedTargetId).toBe("sheet:owners");
   });
 
   test("确认后持久化批次，逐表写入携带批次身份并可从持久结果恢复", async () => {
@@ -130,10 +130,10 @@ describe("OIP-13 多 Sheet 导入控制器", () => {
       completedAt: "2026-09-22T10:01:00Z",
       updatedAt: "2026-09-22T10:01:00Z",
       sheets: [
-        { sheetName: "债权", targetSheetId: "sheet:claims", mappingVersion: "mapping", status: "completed", importedCount: 2, rejectedCount: 0, error: null },
+        { sheetName: "事项", targetSheetId: "sheet:items", mappingVersion: "mapping", status: "completed", importedCount: 2, rejectedCount: 0, error: null },
         { sheetName: "材料", targetSheetId: "sheet:evidence", mappingVersion: "mapping", status: "failed", importedCount: 0, rejectedCount: 1, error: "写入失败" },
       ],
-      rows: [{ sheetName: "材料", rowNumber: 3, status: "rejected", targetRecordId: null, targetUpdatedAt: null, field: "整条记录", reason: "写入失败", sourceCells: ["合同"] }],
+      rows: [{ sheetName: "材料", rowNumber: 3, status: "rejected", targetRecordId: null, targetUpdatedAt: null, field: "整条记录", reason: "写入失败", sourceCells: ["事项"] }],
     };
     const batchService = {
       start: async () => { events.push("start"); return { id: "import_batch:b1" }; },
@@ -151,15 +151,15 @@ describe("OIP-13 多 Sheet 导入控制器", () => {
         return { importedCount: sheet.rows.length, skippedCount: 0 };
       },
     });
-    controller.setAction("债权", { kind: "map-existing", targetSheetId: "sheet:claims" });
+    controller.setAction("事项", { kind: "map-existing", targetSheetId: "sheet:items" });
     controller.setAction("材料", { kind: "map-existing", targetSheetId: "sheet:evidence" });
     controller.setAction("待办", { kind: "ignore" });
 
     await controller.confirm();
     expect(events).toEqual([
       "start",
-      "write:债权:import_batch:b1",
-      "sheet:债权",
+      "write:事项:import_batch:b1",
+      "sheet:事项",
       "write:材料:import_batch:b1",
       "sheet:材料",
       "sheet:待办",
@@ -170,8 +170,8 @@ describe("OIP-13 多 Sheet 导入控制器", () => {
 
     await controller.recover("import_batch:b1");
     expect(controller.snapshot.results).toEqual([
-      { sheetName: "债权", status: "success", importedCount: 2, skippedCount: 0, error: null },
-      { sheetName: "材料", status: "failed", importedCount: 0, skippedCount: 1, error: "写入失败", rejected: [{ rowNumber: 3, field: "整条记录", reason: "写入失败", sourceCells: ["合同"] }] },
+      { sheetName: "事项", status: "success", importedCount: 2, skippedCount: 0, error: null },
+      { sheetName: "材料", status: "failed", importedCount: 0, skippedCount: 1, error: "写入失败", rejected: [{ rowNumber: 3, field: "整条记录", reason: "写入失败", sourceCells: ["事项"] }] },
     ]);
   });
 
@@ -189,12 +189,12 @@ describe("OIP-13 多 Sheet 导入控制器", () => {
       importNewWorkbook: async () => ({ workbookId: "workbook:new", sheets: [] }),
       importExistingSheet: async () => ({ importedCount: 2, skippedCount: 0 }),
     });
-    controller.setAction("债权", { kind: "map-existing", targetSheetId: "sheet:claims" });
+    controller.setAction("事项", { kind: "map-existing", targetSheetId: "sheet:items" });
 
     await controller.confirm();
 
     expect(controller.snapshot.results).toEqual([
-      { sheetName: "债权", status: "success", importedCount: 2, skippedCount: 0, error: null },
+      { sheetName: "事项", status: "success", importedCount: 2, skippedCount: 0, error: null },
     ]);
     expect(controller.snapshot).toMatchObject({
       batchStatus: "outcome_unknown",
@@ -216,8 +216,8 @@ describe("OIP-13 多 Sheet 导入控制器", () => {
         completedAt: null,
         updatedAt: "2026-09-22T10:01:00Z",
         sheets: [{
-          sheetName: "债权",
-          targetSheetId: "sheet:claims",
+          sheetName: "事项",
+          targetSheetId: "sheet:items",
           mappingVersion: "mapping",
           status: "processing",
           importedCount: 0,
@@ -257,8 +257,8 @@ describe("OIP-13 多 Sheet 导入控制器", () => {
         updatedAt: "2026-09-22T10:01:00Z",
         sheets: [],
         rows: [
-          { sheetName: "债权", rowNumber: 2, status: "success", targetRecordId: "ent_claim:a", targetUpdatedAt: "2026-09-22T10:00:00Z", field: null, reason: null, sourceCells: [] },
-          { sheetName: "债权", rowNumber: 3, status: "success", targetRecordId: "ent_claim:b", targetUpdatedAt: "2026-09-22T10:00:00Z", field: null, reason: null, sourceCells: [] },
+          { sheetName: "事项", rowNumber: 2, status: "success", targetRecordId: "ent_items:a", targetUpdatedAt: "2026-09-22T10:00:00Z", field: null, reason: null, sourceCells: [] },
+          { sheetName: "事项", rowNumber: 3, status: "success", targetRecordId: "ent_items:b", targetUpdatedAt: "2026-09-22T10:00:00Z", field: null, reason: null, sourceCells: [] },
         ],
       }),
     } as ImportBatchService;
@@ -274,7 +274,7 @@ describe("OIP-13 多 Sheet 导入控制器", () => {
     expect(controller.snapshot).toMatchObject({
       workbookId: "workbook:created",
       batchStatus: "completed",
-      results: [{ sheetName: "债权", status: "success", importedCount: 2, skippedCount: 0 }],
+      results: [{ sheetName: "事项", status: "success", importedCount: 2, skippedCount: 0 }],
     });
   });
 });

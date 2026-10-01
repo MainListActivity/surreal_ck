@@ -98,7 +98,7 @@ async function applyWorkspaceTemplate(
   }
 }
 
-describe("律师团队与主动运营联合验收", () => {
+describe("协作团队与主动运营联合验收", () => {
   afterAll(async () => {
     await Promise.all(sessions.map((db) => db.close()));
     jwksServer?.stop(true);
@@ -189,37 +189,37 @@ describe("律师团队与主动运营联合验收", () => {
     const workspace = await rootSession("ws_joint");
     await workspace.query(`
       CREATE user:admin SET subject = "admin-joint", email = "admin@joint.test", display_name = "管理员", kind = "human", is_admin = true;
-      CREATE user:member SET subject = "member-joint", email = "member@joint.test", display_name = "律师", kind = "human", is_admin = false;
+      CREATE user:member SET subject = "member-joint", email = "member@joint.test", display_name = "专员", kind = "human", is_admin = false;
       CREATE user:reviewer SET subject = "reviewer-joint", email = "reviewer@joint.test", display_name = "复核人", kind = "human", is_admin = false;
       CREATE workbook_template:joint SET key = "joint", label = "联合验收模板", sheet_defs = [
-        { key: "claims", label: "债权", column_defs: [
+        { key: "items", label: "事项", column_defs: [
           { key: "name", label: "名称", field_type: "text" },
           { key: "amount", label: "金额", field_type: "decimal" },
-          { key: "case_no", label: "案号", field_type: "text" },
-          { key: "creditor", label: "债权人", field_type: "reference" }
+          { key: "case_no", label: "编号", field_type: "text" },
+          { key: "owner", label: "负责人", field_type: "reference" }
         ] },
-        { key: "creditors", label: "债权人", column_defs: [
+        { key: "owners", label: "负责人", column_defs: [
           { key: "name", label: "名称", field_type: "text" }
         ] }
       ], check_rules = { version: "joint-v1", rules: [
-        { key: "same_name", type: "duplicate", sheet_key: "claims", fields: ["name"], minimum_group_size: 2, explanation: "名称规范化后相同，仅供核验，不自动合并" },
-        { key: "creditor_exists", type: "reference_exists", sheet_key: "claims", field: "creditor", target_sheet_key: "creditors", explanation: "债权人引用不存在" }
+        { key: "same_name", type: "duplicate", sheet_key: "items", fields: ["name"], minimum_group_size: 2, explanation: "名称规范化后相同，仅供核验，不自动合并" },
+        { key: "owner_exists", type: "reference_exists", sheet_key: "items", field: "owner", target_sheet_key: "owners", explanation: "负责人引用不存在" }
       ] };
-      DEFINE TABLE ent_claim SCHEMALESS PERMISSIONS FOR select, create, update WHERE $auth != NONE, FOR delete WHERE $auth.is_admin = true;
-      DEFINE FIELD updated_at ON ent_claim TYPE datetime VALUE time::now();
-      DEFINE TABLE ent_creditor SCHEMALESS PERMISSIONS FOR select, create, update WHERE $auth != NONE, FOR delete WHERE $auth.is_admin = true;
-      DEFINE FIELD updated_at ON ent_creditor TYPE datetime VALUE time::now();
+      DEFINE TABLE ent_items SCHEMALESS PERMISSIONS FOR select, create, update WHERE $auth != NONE, FOR delete WHERE $auth.is_admin = true;
+      DEFINE FIELD updated_at ON ent_items TYPE datetime VALUE time::now();
+      DEFINE TABLE ent_owner SCHEMALESS PERMISSIONS FOR select, create, update WHERE $auth != NONE, FOR delete WHERE $auth.is_admin = true;
+      DEFINE FIELD updated_at ON ent_owner TYPE datetime VALUE time::now();
       DEFINE TABLE ent_clean SCHEMALESS PERMISSIONS FOR select, create, update WHERE $auth != NONE, FOR delete WHERE $auth.is_admin = true;
       DEFINE FIELD updated_at ON ent_clean TYPE datetime VALUE time::now();
       UPDATE workspace_resource_quota:current SET plan = resource_quota_plan:max, sheet_count = 0;
-      CREATE workbook:claims SET name = "债权台账", template = workbook_template:joint;
-      CREATE sheet:claims SET workbook = workbook:claims, label = "债权", table_name = "ent_claim", template_sheet_key = "claims", column_defs = [
+      CREATE workbook:items SET name = "巡检台账", template = workbook_template:joint;
+      CREATE sheet:items SET workbook = workbook:items, label = "事项", table_name = "ent_items", template_sheet_key = "items", column_defs = [
         { key: "name", label: "名称", field_type: "text", required: true },
         { key: "amount", label: "金额", field_type: "decimal" },
-        { key: "case_no", label: "案号", field_type: "text" },
-        { key: "creditor", label: "债权人", field_type: "reference", reference_table: "ent_creditor", reference_display_key: "name", reference_multiple: false }
+        { key: "case_no", label: "编号", field_type: "text" },
+        { key: "owner", label: "负责人", field_type: "reference", reference_table: "ent_owner", reference_display_key: "name", reference_multiple: false }
       ];
-      CREATE sheet:creditors SET workbook = workbook:claims, label = "债权人", table_name = "ent_creditor", template_sheet_key = "creditors", column_defs = [
+      CREATE sheet:owners SET workbook = workbook:items, label = "负责人", table_name = "ent_owner", template_sheet_key = "owners", column_defs = [
         { key: "name", label: "名称", field_type: "text", required: true }
       ];
       CREATE workbook:clean SET name = "零问题台账";
@@ -239,67 +239,67 @@ describe("律师团队与主动运营联合验收", () => {
     const mappings: TemplateImportMapping[] = [
       { sourceIndex: 0, sourceLabel: "名称", targetKey: "name", matchedBy: "field-name" },
       { sourceIndex: 1, sourceLabel: "金额", targetKey: "amount", matchedBy: "field-name" },
-      { sourceIndex: 2, sourceLabel: "案号", targetKey: "case_no", matchedBy: "field-name" },
+      { sourceIndex: 2, sourceLabel: "编号", targetKey: "case_no", matchedBy: "field-name" },
     ];
     const storedRows = Array.from({ length: 501 }, (_, index) => [
-      index === 0 || index === 500 ? "甲公司" : `债权人 ${index + 1}`,
+      index === 0 || index === 500 ? "甲公司" : `负责人 ${index + 1}`,
       "100.00",
-      `案号-${index + 1}`,
+      `编号-${index + 1}`,
     ]);
-    const sourceRows = [...storedRows, ["", "100.00", "案号-缺"], ["坏格式", "不是金额", "案号-坏"], ["待恢复", "还不是金额", "案号-恢复"]];
+    const sourceRows = [...storedRows, ["", "100.00", "编号-缺"], ["坏格式", "不是金额", "编号-坏"], ["待恢复", "还不是金额", "编号-恢复"]];
     const rowNumbers = sourceRows.map((_, index) => index + 2);
     const batches = createImportBatchService(member);
     const batch = await batches.start({
       fileName: "脱敏台账.csv", fileDigest: "joint-ledger", mappingVersion: "joint-v1", mode: "existing_tables",
-      workbookId: "workbook:claims",
+      workbookId: "workbook:items",
       sheets: [
-        { sheetName: "债权", targetSheetId: "sheet:claims", mappings },
-        { sheetName: "债权人", targetSheetId: "sheet:creditors", mappings: [mappings[0]!] },
+        { sheetName: "事项", targetSheetId: "sheet:items", mappings },
+        { sheetName: "负责人", targetSheetId: "sheet:owners", mappings: [mappings[0]!] },
       ],
     });
     const runtime = await openDataTableRuntime({
-      conn: member, workbookId: "workbook:claims", dataTableId: "sheet:claims",
+      conn: member, workbookId: "workbook:items", dataTableId: "sheet:items",
       query: { filters: [], filterMode: "and", sorts: [], hiddenFields: [], groupBy: null },
     });
-    const firstImport = await runtime.importCsvRows({ rows: sourceRows, rowNumbers, mappings, batch: { id: batch.id, sheetName: "债权" } });
+    const firstImport = await runtime.importCsvRows({ rows: sourceRows, rowNumbers, mappings, batch: { id: batch.id, sheetName: "事项" } });
     expect(firstImport.importedCount).toBe(501);
     expect(firstImport.rejected.map((row) => row.field).sort()).toEqual(["名称", "金额", "金额"]);
     const recovered = await runtime.importCsvRows({
-      rows: [["待恢复", "80.00", "案号-恢复"]],
+      rows: [["待恢复", "80.00", "编号-恢复"]],
       rowNumbers: [rowNumbers.at(-1)!],
       mappings,
-      batch: { id: batch.id, sheetName: "债权" },
+      batch: { id: batch.id, sheetName: "事项" },
     });
     expect(recovered).toMatchObject({ importedCount: 1, replayedCount: 0, rejected: [] });
-    const replay = await runtime.importCsvRows({ rows: storedRows, rowNumbers: rowNumbers.slice(0, 501), mappings, batch: { id: batch.id, sheetName: "债权" } });
+    const replay = await runtime.importCsvRows({ rows: storedRows, rowNumbers: rowNumbers.slice(0, 501), mappings, batch: { id: batch.id, sheetName: "事项" } });
     expect(replay.replayedCount).toBe(501);
-    const creditorRuntime = await openDataTableRuntime({
-      conn: member, workbookId: "workbook:claims", dataTableId: "sheet:creditors",
+    const ownerRuntime = await openDataTableRuntime({
+      conn: member, workbookId: "workbook:items", dataTableId: "sheet:owners",
       query: { filters: [], filterMode: "and", sorts: [], hiddenFields: [], groupBy: null },
     });
-    expect(await creditorRuntime.importCsvRows({
-      rows: [["乙公司"]], rowNumbers: [2], mappings: [mappings[0]!], batch: { id: batch.id, sheetName: "债权人" },
+    expect(await ownerRuntime.importCsvRows({
+      rows: [["乙公司"]], rowNumbers: [2], mappings: [mappings[0]!], batch: { id: batch.id, sheetName: "负责人" },
     })).toMatchObject({ importedCount: 1, rejected: [] });
-    await creditorRuntime.close();
-    await batches.finishSheet(batch.id, "债权", { status: "completed", importedCount: 502, rejectedCount: 2 });
-    await batches.finishSheet(batch.id, "债权人", { status: "completed", importedCount: 1, rejectedCount: 0 });
+    await ownerRuntime.close();
+    await batches.finishSheet(batch.id, "事项", { status: "completed", importedCount: 502, rejectedCount: 2 });
+    await batches.finishSheet(batch.id, "负责人", { status: "completed", importedCount: 1, rejectedCount: 0 });
     await batches.finish(batch.id, "partial_failure");
     expect((await batches.load(batch.id))?.status).toBe("partial_failure");
-    expect(await member.query("SELECT * FROM ent_claim")).toHaveLength(502);
+    expect(await member.query("SELECT * FROM ent_items")).toHaveLength(502);
     await (await rootSession("ws_other")).query(`CREATE workbook:otheronly SET name = "另一工作区台账"`).collect();
     const crossed = await openCaller("ws_other", memberToken);
     const sawOther = await crossed.query("SELECT name FROM workbook:otheronly");
-    const sawJoint = await crossed.query<{ count?: number }>("SELECT count() AS count FROM ent_claim GROUP ALL");
+    const sawJoint = await crossed.query<{ count?: number }>("SELECT count() AS count FROM ent_items GROUP ALL");
     expect(sawOther).toHaveLength(0);
     expect(sawJoint[0]?.count).toBe(502);
     await runtime.close();
 
-    const named = await member.query<{ id: unknown }>("SELECT id FROM ent_claim WHERE name = '甲公司' LIMIT 1");
+    const named = await member.query<{ id: unknown }>("SELECT id FROM ent_items WHERE name = '甲公司' LIMIT 1");
     expect(named[0]?.id).toBeTruthy();
-    await member.updateRecord(String(named[0]!.id), { creditor: "ent_creditor:missing" });
+    await member.updateRecord(String(named[0]!.id), { owner: "ent_owner:missing" });
 
     const checks = createDataCheckService(member);
-    const checked = await checks.start({ workbookId: "workbook:claims" });
+    const checked = await checks.start({ workbookId: "workbook:items" });
     expect(checked.scannedCount).toBeGreaterThanOrEqual(501);
     expect(checked.status).toBe("completed");
     const duplicates = checked.findings.filter((finding) => finding.category === "duplicate_candidate");
@@ -308,9 +308,9 @@ describe("律师团队与主动运营联合验收", () => {
     expect(missingRefs.length).toBeGreaterThan(0);
     const duplicate = duplicates[0]!;
     await markFindingNotApplicable(member, {
-      findingId: duplicate.id, reason: "不同案号的合法重复申报，不合并", idempotencyKey: "joint-not-applicable",
+      findingId: duplicate.id, reason: "不同编号的合法重复登记，不合并", idempotencyKey: "joint-not-applicable",
     });
-    expect(await member.query("SELECT count() AS count FROM ent_claim GROUP ALL")).toEqual([expect.objectContaining({ count: 502 })]);
+    expect(await member.query("SELECT count() AS count FROM ent_items GROUP ALL")).toEqual([expect.objectContaining({ count: 502 })]);
 
     const cleanBatch = await batches.start({
       fileName: "零问题.csv", fileDigest: "joint-clean", mappingVersion: "joint-v1", mode: "existing_tables",
@@ -330,10 +330,10 @@ describe("律师团队与主动运营联合验收", () => {
 
     const repairTarget = missingRefs[0]!;
     const repairRuntime = await openDataTableRuntime({
-      conn: member, workbookId: "workbook:claims", dataTableId: "sheet:claims",
+      conn: member, workbookId: "workbook:items", dataTableId: "sheet:items",
       query: { filters: [], filterMode: "and", sorts: [], hiddenFields: [], groupBy: null },
     });
-    const preview = await repairRuntime.planRecordFieldRepair({ recordId: repairTarget.recordId, fieldKey: "creditor", value: null });
+    const preview = await repairRuntime.planRecordFieldRepair({ recordId: repairTarget.recordId, fieldKey: "owner", value: null });
     expect(preview.ok).toBe(true);
     if (!preview.ok) throw new Error("修正预览失败");
     expect(await repairRuntime.confirmRecordFieldRepair({
@@ -343,10 +343,10 @@ describe("律师团队与主动运营联合验收", () => {
 
     const assignment = await createFindingAssignment(member, {
       findingIds: [duplicates[1]!.id], assigneeId: "user:member", reviewerId: "user:admin",
-      dueAt: "2026-10-01T00:00:00.000Z", completionCondition: "确认是否为不同申报", idempotencyKey: "joint-assignment",
+      dueAt: "2026-10-01T00:00:00.000Z", completionCondition: "确认是否为不同登记", idempotencyKey: "joint-assignment",
     });
     const submitted = await submitFindingAssignment(member, {
-      assignmentId: assignment.id, expectedVersion: assignment.version, note: "已核对案号，待另一律师复核",
+      assignmentId: assignment.id, expectedVersion: assignment.version, note: "已核对编号，待另一专员复核",
       resourceIds: [], idempotencyKey: "joint-submit",
     });
     await expect(reviewFindingAssignment(admin, {
@@ -354,11 +354,11 @@ describe("律师团队与主动运营联合验收", () => {
       idempotencyKey: "joint-stale-review",
     })).rejects.toThrow("派单已被他人更新");
     await Bun.sleep(1100);
-    const freshCheck = await checks.start({ workbookId: "workbook:claims" });
+    const freshCheck = await checks.start({ workbookId: "workbook:items" });
     expect(freshCheck).toMatchObject({ status: "completed", stale: false });
     const approved = await reviewFindingAssignment(admin, {
       assignmentId: assignment.id, expectedVersion: submitted.version, decision: "approve",
-      reason: "不同案号，确认为例外", idempotencyKey: "joint-approve",
+      reason: "不同编号，确认为例外", idempotencyKey: "joint-approve",
     });
     expect(approved.status).toBe("completed");
 

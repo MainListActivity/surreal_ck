@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 Label: ready-for-agent
 
 # CV-05 — 行分析领域提示与通用命名收口

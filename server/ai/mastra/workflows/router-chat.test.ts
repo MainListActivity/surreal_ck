@@ -28,7 +28,7 @@ function makeExecutors(overrides: Partial<SubAgentExecutors> = {}): SubAgentExec
   return {
     navigation: empty,
     dashboard: empty,
-    "claim-analysis": empty,
+    "row-analysis": empty,
     chitchat: empty,
     ...overrides,
   };
@@ -42,31 +42,31 @@ function makeMastra() {
 }
 
 describe("runRouterChat 端到端", () => {
-  test("选中记录的审核摘要与关联资源 citation 到达最终用户消息", async () => {
+  test("选中记录的摘要与关联资源 citation 到达最终用户消息", async () => {
     const mastra = makeMastra();
     const userContext: AiContextSnapshot = {
-      route: { screen: "editor", workbookId: "workbook:claims", sheetId: "sheet:creditors" },
-      workbook: { id: "workbook:claims", name: "债权台账" },
-      sheet: { id: "sheet:creditors", label: "债权人", tableName: "ent_creditors" },
+      route: { screen: "editor", workbookId: "workbook:inspection", sheetId: "sheet:devices" },
+      workbook: { id: "workbook:inspection", name: "巡检台账" },
+      sheet: { id: "sheet:devices", label: "设备", tableName: "ent_devices" },
       selectedRow: {
-        id: "ent_creditors:yuanhang",
-        label: "远航供应链有限公司",
-        visibleValues: { declared_amount: 1_200_000, review_status: "部分确认", evidence_status: "待补充" },
+        id: "ent_devices:pump-7",
+        label: "冷却泵 7 号",
+        visibleValues: { last_reading: 42, check_status: "待复核", evidence_status: "待补充" },
       },
-      contextHint: "债权人 / 远航供应链有限公司",
+      contextHint: "设备 / 冷却泵 7 号",
     };
     const executors = makeExecutors({
-      "claim-analysis": async ({ taskText, shared }) => {
-        expect(taskText).toBe("生成当前债权审核摘要");
-        expect(shared.userContext.selectedRow?.id).toBe("ent_creditors:yuanhang");
+      "row-analysis": async ({ taskText, shared }) => {
+        expect(taskText).toBe("生成当前记录的巡检摘要");
+        expect(shared.userContext.selectedRow?.id).toBe("ent_devices:pump-7");
         return {
-          text: "申报金额 120 万元；审核状态为部分确认；材料待补充。合同依据见 [1]。",
+          text: "上次读数 42；复核状态为待复核；材料待补充。规程依据见 [1]。",
           confirmed: {},
           citations: [{
             index: 1,
-            resourceId: "resource_item:contract",
-            title: "供货合同",
-            sourceUrl: "https://example.com/contract",
+            resourceId: "resource_item:manual",
+            title: "巡检规程",
+            sourceUrl: "https://example.com/manual",
           }],
         };
       },
@@ -75,12 +75,12 @@ describe("runRouterChat 端到端", () => {
 
     const result = await runRouterChat({
       mastra,
-      text: "生成当前债权审核摘要",
+      text: "生成当前记录的巡检摘要",
       userContext,
       surrealSession: fakeSession,
       executors,
       llmCaller: async () => "不应调用",
-      planOverride: [{ category: "claim-analysis", taskText: "生成当前债权审核摘要" }],
+      planOverride: [{ category: "row-analysis", taskText: "生成当前记录的巡检摘要" }],
       streamId: "summary-with-citation",
       pushChunk: (event) => {
         if (event.type !== "done") return;
@@ -90,8 +90,8 @@ describe("runRouterChat 端到端", () => {
 
     expect(result.status).toBe("success");
     expect(done).toEqual([{
-      content: "申报金额 120 万元；审核状态为部分确认；材料待补充。合同依据见 [1]。",
-      citationTitle: "供货合同",
+      content: "上次读数 42；复核状态为待复核；材料待补充。规程依据见 [1]。",
+      citationTitle: "巡检规程",
     }]);
   });
 
@@ -169,7 +169,7 @@ describe("runRouterChat 端到端", () => {
 
     await runRouterChat({
       mastra,
-      text: "帮我找合同解除相关资料",
+      text: "帮我找设备故障相关资料",
       userContext: ctx,
       surrealSession: fakeSession,
       executors,
@@ -178,11 +178,11 @@ describe("runRouterChat 端到端", () => {
       pushChunk: (e) => {
         if (e.type === "done") doneMessages.push(e.message.content);
       },
-      planOverride: [{ category: "resource-retrieval", taskText: "帮我找合同解除相关资料" }],
+      planOverride: [{ category: "resource-retrieval", taskText: "帮我找设备故障相关资料" }],
     });
 
     expect(llmCalled).toBe(false);
-    expect(seenTaskTexts).toEqual(["帮我找合同解除相关资料"]);
+    expect(seenTaskTexts).toEqual(["帮我找设备故障相关资料"]);
     expect(doneMessages).toEqual(["资源答案"]);
   });
 

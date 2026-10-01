@@ -89,7 +89,7 @@ describe("POST /api/chat", () => {
     const ok = await app.request("/api/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ message: "查找合同解除案例", composerMode: "resource-search" }),
+      body: JSON.stringify({ message: "查找设备故障案例", composerMode: "resource-search" }),
     });
     expect(ok.status).toBe(200);
     expect(service.startCalls[0]?.composerMode).toBe("resource-search");
@@ -110,7 +110,7 @@ describe("POST /api/chat", () => {
     const res = await app.request("/api/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ message: "打开债权工作簿" }),
+      body: JSON.stringify({ message: "打开巡检工作簿" }),
     });
 
     expect(res.status).toBe(200);
@@ -121,7 +121,7 @@ describe("POST /api/chat", () => {
 
     // workflow 已用调用者 session + message + 同一 runId 在后台启动
     expect(service.startCalls).toHaveLength(1);
-    expect(service.startCalls[0].message).toBe("打开债权工作簿");
+    expect(service.startCalls[0].message).toBe("打开巡检工作簿");
     expect(service.startCalls[0].session).toBe(fakeSession);
     expect(service.startCalls[0].runId).toBe(body.runId);
   });
@@ -140,7 +140,7 @@ describe("POST /api/chat", () => {
     const ok = await app.request("/api/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ message: "打开债权工作簿" }),
+      body: JSON.stringify({ message: "打开巡检工作簿" }),
     });
     expect(ok.status).toBe(200);
     expect(service.startCalls).toHaveLength(1);
@@ -285,7 +285,7 @@ describe("POST /api/chat", () => {
     const start = await app.request("/api/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ message: "找张三的债权" }),
+      body: JSON.stringify({ message: "找张三的记录" }),
     });
     const { runId } = (await start.json()) as { runId: string };
 
@@ -293,7 +293,7 @@ describe("POST /api/chat", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        resume: { runId, decision: { kind: "candidate-chosen", candidateId: "claim:abc" } },
+        resume: { runId, decision: { kind: "candidate-chosen", candidateId: "record:abc" } },
       }),
     });
 
@@ -304,7 +304,7 @@ describe("POST /api/chat", () => {
 
     expect(service.resumeCalls).toHaveLength(1);
     expect(service.resumeCalls[0].runId).toBe(runId);
-    expect(service.resumeCalls[0].decision).toEqual({ kind: "candidate-chosen", candidateId: "claim:abc" });
+    expect(service.resumeCalls[0].decision).toEqual({ kind: "candidate-chosen", candidateId: "record:abc" });
     // 用新建的 session（workflow state 不持有旧 session）
     expect(service.resumeCalls[0].session).toBe(fakeSession);
   });
@@ -317,14 +317,14 @@ describe("POST /api/chat", () => {
     const start = await app.request("/api/chat", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ message: "找张三的债权" }),
+      body: JSON.stringify({ message: "找张三的记录" }),
     });
     const { runId, streamToken: firstToken } = (await start.json()) as { runId: string; streamToken: string };
 
     const res = await app.request(`/api/chat/runs/${runId}/resume`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ decision: { kind: "candidate-chosen", candidateId: "claim:abc" } }),
+      body: JSON.stringify({ decision: { kind: "candidate-chosen", candidateId: "record:abc" } }),
     });
 
     expect(res.status).toBe(200);
@@ -337,7 +337,7 @@ describe("POST /api/chat", () => {
     expect(body.streamToken).not.toBe(firstToken);
     expect(registry.resolveStreamToken({ runId, streamToken: body.streamToken })?.ownerSubject).toBe(testUser.subject);
     expect(service.resumeCalls).toHaveLength(1);
-    expect(service.resumeCalls[0].decision).toEqual({ kind: "candidate-chosen", candidateId: "claim:abc" });
+    expect(service.resumeCalls[0].decision).toEqual({ kind: "candidate-chosen", candidateId: "record:abc" });
   });
 
   test("resume：用别人的 runId → 403，不调用 resumeChat", async () => {

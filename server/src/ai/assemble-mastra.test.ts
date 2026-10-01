@@ -26,12 +26,12 @@ describe("buildExecutors", () => {
     const executors = buildExecutors({
       navigationAgent: fakeAgent,
       dashboardAgent: fakeAgent,
-      claimAnalysisAgent: fakeAgent,
+      rowAnalysisAgent: fakeAgent,
       chitchatAgent: fakeAgent,
     });
     expect(typeof executors.navigation).toBe("function");
     expect(typeof executors.dashboard).toBe("function");
-    expect(typeof executors["claim-analysis"]).toBe("function");
+    expect(typeof executors["row-analysis"]).toBe("function");
     expect(typeof executors.chitchat).toBe("function");
     expect(executors["resource-retrieval"]).toBeUndefined();
   });
@@ -41,7 +41,7 @@ describe("buildExecutors", () => {
       {
         navigationAgent: fakeAgent,
         dashboardAgent: fakeAgent,
-        claimAnalysisAgent: fakeAgent,
+        rowAnalysisAgent: fakeAgent,
         chitchatAgent: fakeAgent,
       },
       {
@@ -70,7 +70,7 @@ describe("createMastraRunner", () => {
       buildAgents: () => ({
         navigationAgent: {} as never,
         dashboardAgent: {} as never,
-        claimAnalysisAgent: {} as never,
+        rowAnalysisAgent: {} as never,
         chitchatAgent: {} as never,
       }),
       buildLlmCaller: () => async () => `[{"category":"chitchat","taskText":"x"}]`,
@@ -105,7 +105,7 @@ describe("createMastraRunner", () => {
     expect(captured?.executorsKind).toEqual([
       "navigation",
       "dashboard",
-      "claim-analysis",
+      "row-analysis",
       "chitchat",
       "resource-retrieval",
     ]);
@@ -123,7 +123,7 @@ describe("createMastraRunner", () => {
       buildAgents: () => ({
         navigationAgent: {} as never,
         dashboardAgent: {} as never,
-        claimAnalysisAgent: {} as never,
+        rowAnalysisAgent: {} as never,
         chitchatAgent: {} as never,
       }),
       buildLlmCaller: () => async () => "[]",
@@ -141,7 +141,7 @@ describe("createMastraRunner", () => {
           return [{
             id: "resource_item:r1",
             resource_type: "generic_note",
-            title: "合同解除案例",
+            title: "设备故障案例",
             summary: "解除通知到达即生效。",
             evidence: [{ text: "通知到达生效。", capturedAt: "2026-06-01T08:00:00.000Z", order: 0 }],
             tags: [],
@@ -156,7 +156,7 @@ describe("createMastraRunner", () => {
     } as never;
 
     await runner.runner({
-      text: "查找合同解除案例",
+      text: "查找设备故障案例",
       runId: "run-1",
       streamId: "run-1",
       surrealSession: session,
@@ -169,7 +169,7 @@ describe("createMastraRunner", () => {
     expect(typeof capturedAnswer).toBe("function");
     const answer = await capturedAnswer!({
       resourceIds: ["resource_item:r1"],
-      taskText: "查找合同解除案例",
+      taskText: "查找设备故障案例",
       userContext: {} as never,
     });
     expect(answer.text).toContain("[1]");
@@ -184,7 +184,7 @@ describe("createMastraRunner", () => {
       buildAgents: () => ({
         navigationAgent: {} as never,
         dashboardAgent: {} as never,
-        claimAnalysisAgent: {} as never,
+        rowAnalysisAgent: {} as never,
         chitchatAgent: {} as never,
       }),
       buildLlmCaller: () => async () => "[]",
@@ -232,7 +232,7 @@ describe("createMastraRunner", () => {
       buildAgents: () => ({
         navigationAgent: {} as never,
         dashboardAgent: {} as never,
-        claimAnalysisAgent: {} as never,
+        rowAnalysisAgent: {} as never,
         chitchatAgent: {} as never,
       }),
       buildLlmCaller: () => async () => "[]",

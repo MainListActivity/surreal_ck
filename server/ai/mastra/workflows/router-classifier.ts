@@ -2,14 +2,34 @@ import { z } from "zod";
 import type { AiContextSnapshot } from "@surreal-ck/shared";
 import { DecisionModelError, type DecisionCaller, type DecisionRequest } from "../../decision/model";
 
-export const RouterCategorySchema = z.enum([
+const CanonicalRouterCategorySchema = z.enum([
   "navigation",
   "dashboard",
-  "claim-analysis",
+  "row-analysis",
   "resource-retrieval",
   "chitchat",
 ]);
-export type RouterCategory = z.infer<typeof RouterCategorySchema>;
+export type RouterCategory = z.infer<typeof CanonicalRouterCategorySchema>;
+
+/** 旧类目仅作为输入别名归一化到现行类目；归一化后的输出不再携带旧名。 */
+const LEGACY_ROUTER_CATEGORY_ALIASES: Record<string, RouterCategory> = {
+  "claim-analysis": "row-analysis",
+};
+
+export function normalizeRouterCategory(value: unknown): RouterCategory | null {
+  if (typeof value !== "string") return null;
+  const parsed = CanonicalRouterCategorySchema.safeParse(LEGACY_ROUTER_CATEGORY_ALIASES[value] ?? value);
+  return parsed.success ? parsed.data : null;
+}
+
+export const RouterCategorySchema = z.string().transform((value, ctx) => {
+  const normalized = normalizeRouterCategory(value);
+  if (!normalized) {
+    ctx.addIssue({ code: "custom", message: `未知路由类目: ${value}` });
+    return z.NEVER;
+  }
+  return normalized;
+});
 
 const RouterPlanItemSchema = z.object({
   category: RouterCategorySchema,
@@ -27,7 +47,7 @@ const ROUTER_SYSTEM_PROMPT = `你是 Surreal CK 的意图路由器。把用户�
 可选 category：
 - navigation：浏览/跳转/打开/搜索工作簿、Sheet、记录、仪表盘
 - dashboard：让 AI 分析数据并生成统计图、图表、看板
-- claim-analysis：分析具体某条记录（保单/案件等业务记录）
+- row-analysis：分析具体某条记录（当前选中行的字段值、关联记录与缺失项）
 - resource-retrieval：检索、查找、引用已有资源/资料/知识库内容，或基于当前上下文找相似资料
 - chitchat：闲聊、自我介绍、无法归入以上任一类的兜底
 
@@ -38,7 +58,7 @@ const ROUTER_SYSTEM_PROMPT = `你是 Surreal CK 的意图路由器。把用户�
 const JEV_CATEGORY_CRITERIA: Record<RouterCategory, string> = {
   navigation: "浏览/跳转/打开/搜索工作簿、数据表、记录、仪表盘",
   dashboard: "让 AI 分析数据并生成统计图、图表、看板",
-  "claim-analysis": "分析具体某条记录（保单/案件等业务记录）",
+  "row-analysis": "分析具体某条记录（当前选中行的字段值、关联记录与缺失项）",
   "resource-retrieval": "检索、查找、引用已有资源/资料/知识库内容，或基于当前上下文找相似资料",
   chitchat: "闲聊、自我介绍、无法归入以上任一类的兜底",
 };

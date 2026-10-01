@@ -18,7 +18,7 @@ describe("agent executor tool result translation", () => {
           resourceId: "resource_item:r1",
           title: "网页判例",
           sourceUrl: "https://example.test/case",
-          evidence: [{ order: 0, text: "法院认为担保债权应单独审查。" }],
+          evidence: [{ order: 0, text: "巡检记录显示该设备需要复检。" }],
         }],
       },
     }]);
@@ -28,7 +28,7 @@ describe("agent executor tool result translation", () => {
       resourceId: "resource_item:r1",
       title: "网页判例",
       sourceUrl: "https://example.test/case",
-      evidence: [{ order: 0, text: "法院认为担保债权应单独审查。" }],
+      evidence: [{ order: 0, text: "巡检记录显示该设备需要复检。" }],
     }]);
   });
 
@@ -40,8 +40,8 @@ describe("agent executor tool result translation", () => {
           intent: {
             type: "ambiguous",
             candidates: [
-              { id: "ent_claim:1", label: "张三 / ZQ-1" },
-              { id: "ent_claim:2", label: "张三 / ZQ-2" },
+              { id: "ent_items:1", label: "张三 / XJ-1" },
+              { id: "ent_items:2", label: "张三 / XJ-2" },
             ],
           },
         },
@@ -51,8 +51,8 @@ describe("agent executor tool result translation", () => {
     expect(signal).toEqual({
       kind: "ambiguous",
       candidates: [
-        { id: "ent_claim:1", label: "张三 / ZQ-1" },
-        { id: "ent_claim:2", label: "张三 / ZQ-2" },
+        { id: "ent_items:1", label: "张三 / XJ-1" },
+        { id: "ent_items:2", label: "张三 / XJ-2" },
       ],
     });
   });
@@ -64,23 +64,23 @@ describe("agent executor tool result translation", () => {
         result: {
           intent: {
             type: "dashboard-draft",
-            title: "债权趋势",
-            description: "按月统计债权",
+            title: "故障趋势",
+            description: "按月统计故障",
             explanation: "按月汇总。",
             widgetSpec: {
-              sourceTables: ["ent_claim"],
-              baseTable: "ent_claim",
+              sourceTables: ["ent_items"],
+              baseTable: "ent_items",
               metric: { op: "sum", field: "amount" },
             },
             draft: {
               workspaceId: "workspace:demo",
-              title: "债权趋势",
+              title: "故障趋势",
               queryMode: "builder",
               viewType: "line",
               resultContract: "time_series",
               builderSpec: {
-                sourceTables: ["ent_claim"],
-                baseTable: "ent_claim",
+                sourceTables: ["ent_items"],
+                baseTable: "ent_items",
                 metric: { op: "sum", field: "amount" },
               },
             },
@@ -99,8 +99,8 @@ describe("agent executor tool result translation", () => {
         toolName: "inspectSchema",
         result: {
           schemaSummary: {
-            tables: ["ent_claim"],
-            fieldsByTable: { ent_claim: ["name", "amount"] },
+            tables: ["ent_items"],
+            fieldsByTable: { ent_items: ["name", "amount"] },
           },
         },
       },
@@ -110,9 +110,9 @@ describe("agent executor tool result translation", () => {
           intent: {
             type: "open-record",
             workbookId: "workbook:demo",
-            sheetId: "sheet:claims",
-            recordId: "ent_claim:abc",
-            label: "张三 / ZQ-1",
+            sheetId: "sheet:items",
+            recordId: "ent_items:abc",
+            label: "张三 / XJ-1",
           },
         },
       },
@@ -120,10 +120,10 @@ describe("agent executor tool result translation", () => {
 
     expect(deriveConfirmedFromToolCalls(calls)).toEqual({
       schemaSummary: {
-        tables: ["ent_claim"],
-        fieldsByTable: { ent_claim: ["name", "amount"] },
+        tables: ["ent_items"],
+        fieldsByTable: { ent_items: ["name", "amount"] },
       },
-      resolvedRecord: { id: "ent_claim:abc", label: "张三 / ZQ-1" },
+      resolvedRecord: { id: "ent_items:abc", label: "张三 / XJ-1" },
     });
   });
 });

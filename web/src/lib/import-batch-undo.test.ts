@@ -3,7 +3,7 @@ import type { SurrealConn, SurrealTransactionWriter } from "./surreal";
 import { createImportBatchUndoService } from "./import-batch-undo";
 
 function harness(options: { canDelete?: boolean; externalReference?: boolean } = {}) {
-  let target = { id: "ent_claim:a", updated_at: "2026-09-22T10:00:00Z" } as Record<string, unknown> | null;
+  let target = { id: "ent_items:a", updated_at: "2026-09-22T10:00:00Z" } as Record<string, unknown> | null;
   let undo: Record<string, unknown> | null = null;
   let batchStatus = "completed";
 
@@ -11,12 +11,12 @@ function harness(options: { canDelete?: boolean; externalReference?: boolean } =
     if (/FROM import_batch_undo/i.test(sql)) return undo ? [{ ...undo }] : [];
     if (/FROM import_batch WHERE/i.test(sql)) return [{ status: batchStatus }];
     if (/FROM import_batch_row/i.test(sql)) {
-      return [{ target_record: "ent_claim:a", target_updated_at: "2026-09-22T10:00:00Z" }];
+      return [{ target_record: "ent_items:a", target_updated_at: "2026-09-22T10:00:00Z" }];
     }
     if (/FROM sheet/i.test(sql)) {
       return options.externalReference ? [{
         table_name: "ent_note",
-        column_defs: [{ key: "claim", field_type: "reference", reference_table: "ent_claim", reference_multiple: false }],
+        column_defs: [{ key: "item", field_type: "reference", reference_table: "ent_items", reference_multiple: false }],
       }] : [];
     }
     if (/SELECT id FROM ent_note/i.test(sql)) return [{ id: "ent_note:outside" }];

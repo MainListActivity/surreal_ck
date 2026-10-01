@@ -10,10 +10,10 @@ import {
 function proposal(over: Partial<RowPatchProposal> = {}): RowPatchProposal {
   return {
     type: "row-patch-proposal",
-    sheetId: "sheet:claims",
-    recordId: "ent_claim:one",
+    sheetId: "sheet:items",
+    recordId: "ent_items:one",
     proposals: [
-      { field: "amount", currentValue: 100, suggestedValue: 250, basis: "依据合同附件二", confidence: "high" },
+      { field: "amount", currentValue: 100, suggestedValue: 250, basis: "依据巡检附件二", confidence: "high" },
       { field: "status", currentValue: "新", suggestedValue: "已确认", basis: "对账单已盖章", confidence: "low" },
     ],
     ...over,
@@ -70,7 +70,7 @@ describe("行分析提案卡状态机", () => {
     expect(state.status).toBe("pending");
     expect(state.error).toBeNull();
     expect(state.fields).toEqual([
-      { field: "amount", currentValue: 100, suggestedValue: 250, basis: "依据合同附件二", confidence: "high", accepted: true },
+      { field: "amount", currentValue: 100, suggestedValue: 250, basis: "依据巡检附件二", confidence: "high", accepted: true },
       { field: "status", currentValue: "新", suggestedValue: "已确认", basis: "对账单已盖章", confidence: "low", accepted: true },
     ]);
   });

@@ -29,12 +29,12 @@ function setup(rows: Array<Record<string, unknown>>) {
 const caseRow = {
   id: "workbook_template:case",
   key: "case",
-  label: "案件管理",
-  description: "诉讼 / 破产案件全流程台账",
+  label: "事项管理",
+  description: "巡检 / 维保事项全流程台账",
   icon: "scale",
   accent: "#CC6B3A",
-  default_name: "未命名案件库",
-  column_defs: [{ key: "name", label: "案件名", field_type: "text", required: true }],
+  default_name: "未命名事项库",
+  column_defs: [{ key: "name", label: "事项名", field_type: "text", required: true }],
   builtin: true,
   sort_order: 10,
 };
@@ -68,24 +68,24 @@ describe("recordToTemplate — snake_case → camelCase", () => {
 
   test("默认仪表盘声明保留稳定数据表 key 与 DashboardWidget 结构", () => {
     const template = recordToTemplate({
-      id: "workbook_template:claims",
-      key: "claims",
-      label: "破产债权管理",
+      id: "workbook_template:items",
+      key: "items",
+      label: "设备巡检管理",
       sheet_defs: [{
-        key: "creditors",
-        label: "债权人表",
-        column_defs: [{ key: "claim_amount", label: "申报金额", field_type: "currency" }],
+        key: "owners",
+        label: "负责人表",
+        column_defs: [{ key: "claim_amount", label: "登记金额", field_type: "currency" }],
       }],
       default_dashboard: {
-        title: "债权审核概览",
+        title: "事项审核概览",
         slug: "claims-overview",
         widgets: [{
           id: "total-claims",
-          title: "总申报金额",
+          title: "总登记金额",
           viewType: "kpi",
           spec: {
-            sourceTables: ["creditors"],
-            baseTable: "creditors",
+            sourceTables: ["owners"],
+            baseTable: "owners",
             metric: { op: "sum", field: "claim_amount" },
           },
           grid: { x: 0, y: 0, w: 6, h: 1 },
@@ -94,15 +94,15 @@ describe("recordToTemplate — snake_case → camelCase", () => {
     });
 
     expect(template.defaultDashboard).toEqual({
-      title: "债权审核概览",
+      title: "事项审核概览",
       slug: "claims-overview",
       widgets: [{
         id: "total-claims",
-        title: "总申报金额",
+        title: "总登记金额",
         viewType: "kpi",
         spec: {
-          sourceTables: ["creditors"],
-          baseTable: "creditors",
+          sourceTables: ["owners"],
+          baseTable: "owners",
           metric: { op: "sum", field: "claim_amount" },
         },
         grid: { x: 0, y: 0, w: 6, h: 1 },
@@ -112,31 +112,31 @@ describe("recordToTemplate — snake_case → camelCase", () => {
 
   test("新模板包保留单数据表的稳定 key、展示名、字段和 Excel 列别名", () => {
     const template = recordToTemplate({
-      id: "workbook_template:claims",
-      key: "claims",
-      label: "破产债权管理",
+      id: "workbook_template:items",
+      key: "items",
+      label: "设备巡检管理",
       sheet_defs: [{
-        key: "creditors",
-        label: "债权人表",
+        key: "owners",
+        label: "负责人表",
         column_defs: [{
-          key: "creditor_name",
-          label: "债权人名称",
+          key: "owner_name",
+          label: "负责人姓名",
           field_type: "text",
           required: true,
-          aliases: ["申报人", "债权人"],
+          aliases: ["填报人", "负责人"],
         }],
       }],
     });
 
     expect(template.sheets).toEqual([{
-      key: "creditors",
-      label: "债权人表",
+      key: "owners",
+      label: "负责人表",
       columnDefs: [{
-        key: "creditor_name",
-        label: "债权人名称",
+        key: "owner_name",
+        label: "负责人姓名",
         field_type: "text",
         required: true,
-        aliases: ["申报人", "债权人"],
+        aliases: ["填报人", "负责人"],
       }],
     }]);
   });
@@ -145,12 +145,12 @@ describe("recordToTemplate — snake_case → camelCase", () => {
     expect(recordToTemplate(caseRow)).toEqual({
       id: "workbook_template:case",
       key: "case",
-      label: "案件管理",
-      description: "诉讼 / 破产案件全流程台账",
+      label: "事项管理",
+      description: "巡检 / 维保事项全流程台账",
       icon: "scale",
       accent: "#CC6B3A",
-      defaultName: "未命名案件库",
-      columnDefs: [{ key: "name", label: "案件名", field_type: "text", required: true }],
+      defaultName: "未命名事项库",
+      columnDefs: [{ key: "name", label: "事项名", field_type: "text", required: true }],
       sheets: [],
       builtin: true,
       sortOrder: 10,
@@ -194,14 +194,14 @@ describe("templateColumnDefs — stored → GridColumnDef", () => {
 
   test("多数据表模板把每张表的展示名和字段都转为创建输入", () => {
     const template = recordToTemplate({
-      id: "workbook_template:claims",
-      key: "claims",
-      label: "破产债权管理",
+      id: "workbook_template:items",
+      key: "items",
+      label: "设备巡检管理",
       sheet_defs: [
         {
-          key: "creditors",
-          label: "债权人表",
-          column_defs: [{ key: "creditor_name", label: "债权人名称", field_type: "text" }],
+          key: "owners",
+          label: "负责人表",
+          column_defs: [{ key: "owner_name", label: "负责人姓名", field_type: "text" }],
         },
         {
           key: "materials",
@@ -213,9 +213,9 @@ describe("templateColumnDefs — stored → GridColumnDef", () => {
 
     expect(templateSheetsForCreate(template)).toEqual([
       {
-        key: "creditors",
-        label: "债权人表",
-        columns: [expect.objectContaining({ key: "creditor_name", fieldType: "text" })],
+        key: "owners",
+        label: "负责人表",
+        columns: [expect.objectContaining({ key: "owner_name", fieldType: "text" })],
       },
       {
         key: "materials",
@@ -227,23 +227,23 @@ describe("templateColumnDefs — stored → GridColumnDef", () => {
 
   test("跨数据表引用声明转换为实例化专用 key，不伪装成运行时目标表", () => {
     const template = recordToTemplate({
-      id: "workbook_template:claims",
-      key: "claims",
-      label: "破产债权管理",
+      id: "workbook_template:items",
+      key: "items",
+      label: "设备巡检管理",
       sheet_defs: [
         {
-          key: "creditors",
-          label: "债权人表",
+          key: "owners",
+          label: "负责人表",
           column_defs: [{ key: "name", label: "名称", field_type: "text" }],
         },
         {
           key: "materials",
           label: "证据材料表",
           column_defs: [{
-            key: "creditor",
-            label: "关联债权人",
+            key: "owner",
+            label: "关联负责人",
             field_type: "reference",
-            reference_sheet_key: "creditors",
+            reference_sheet_key: "owners",
           }],
         },
       ],
@@ -251,35 +251,35 @@ describe("templateColumnDefs — stored → GridColumnDef", () => {
 
     expect(templateSheetsForCreate(template)[1]?.columns[0]).toEqual(expect.objectContaining({
       fieldType: "reference",
-      referenceSheetKey: "creditors",
+      referenceSheetKey: "owners",
       referenceTable: undefined,
     }));
   });
 
   test("每张数据表的样例记录与稳定跨表引用被转换为创建输入", () => {
     const template = recordToTemplate({
-      id: "workbook_template:claims",
-      key: "claims",
-      label: "破产债权管理",
+      id: "workbook_template:items",
+      key: "items",
+      label: "设备巡检管理",
       sheet_defs: [
         {
-          key: "creditors",
-          label: "债权人表",
+          key: "owners",
+          label: "负责人表",
           column_defs: [{ key: "name", label: "名称", field_type: "text" }],
-          sample_records: [{ key: "creditor-a", values: { name: "甲公司" } }],
+          sample_records: [{ key: "owner-a", values: { name: "甲公司" } }],
         },
         {
           key: "materials",
           label: "证据材料表",
           column_defs: [{
-            key: "creditor",
-            label: "关联债权人",
+            key: "owner",
+            label: "关联负责人",
             field_type: "reference",
-            reference_sheet_key: "creditors",
+            reference_sheet_key: "owners",
           }],
           sample_records: [{
             key: "material-a",
-            values: { creditor: { sheet_key: "creditors", record_key: "creditor-a" } },
+            values: { owner: { sheet_key: "owners", record_key: "owner-a" } },
           }],
         },
       ],
@@ -287,14 +287,14 @@ describe("templateColumnDefs — stored → GridColumnDef", () => {
 
     expect(templateSheetsForCreate(template)).toEqual([
       expect.objectContaining({
-        key: "creditors",
-        sampleRecords: [{ key: "creditor-a", values: { name: "甲公司" } }],
+        key: "owners",
+        sampleRecords: [{ key: "owner-a", values: { name: "甲公司" } }],
       }),
       expect.objectContaining({
         key: "materials",
         sampleRecords: [{
           key: "material-a",
-          values: { creditor: { sheetKey: "creditors", recordKey: "creditor-a" } },
+          values: { owner: { sheetKey: "owners", recordKey: "owner-a" } },
         }],
       }),
     ]);
@@ -302,30 +302,30 @@ describe("templateColumnDefs — stored → GridColumnDef", () => {
 
   test("新模板包从首个数据表取实例化字段", () => {
     const template = recordToTemplate({
-      id: "workbook_template:claims",
-      key: "claims",
-      label: "破产债权管理",
+      id: "workbook_template:items",
+      key: "items",
+      label: "设备巡检管理",
       column_defs: [],
       sheet_defs: [{
-        key: "creditors",
-        label: "债权人表",
+        key: "owners",
+        label: "负责人表",
         column_defs: [
-          { key: "creditor_name", label: "债权人名称", field_type: "text", required: true },
-          { key: "claim_amount", label: "申报金额", field_type: "decimal" },
+          { key: "owner_name", label: "负责人姓名", field_type: "text", required: true },
+          { key: "claim_amount", label: "登记金额", field_type: "decimal" },
         ],
       }],
     });
 
     expect(templateColumnDefs(template)).toEqual([
-      expect.objectContaining({ key: "creditor_name", label: "债权人名称", fieldType: "text", required: true }),
-      expect.objectContaining({ key: "claim_amount", label: "申报金额", fieldType: "decimal" }),
+      expect.objectContaining({ key: "owner_name", label: "负责人姓名", fieldType: "text", required: true }),
+      expect.objectContaining({ key: "claim_amount", label: "登记金额", fieldType: "decimal" }),
     ]);
   });
 
   test("把模板存储列定义转成建表用的 camelCase 列", () => {
     const t = recordToTemplate(caseRow);
     expect(templateColumnDefs(t)).toEqual([
-      expect.objectContaining({ key: "name", label: "案件名", fieldType: "text", required: true }),
+      expect.objectContaining({ key: "name", label: "事项名", fieldType: "text", required: true }),
     ]);
   });
 });
@@ -337,7 +337,7 @@ describe("createWorkbookTemplatesStore — 直连读模板", () => {
     expect(queries[0]).toMatch(/FROM workbook_template/i);
     expect(queries[0]).toMatch(/ORDER BY sort_order/i);
     expect(store.templates).toHaveLength(1);
-    expect(store.byKey("case")?.label).toBe("案件管理");
+    expect(store.byKey("case")?.label).toBe("事项管理");
     expect(store.byKey("missing")).toBeUndefined();
   });
 
@@ -353,13 +353,13 @@ describe("createWorkbookTemplatesStore — 直连读模板", () => {
   test("管理员保存前校验规则字段，并把受限配置写回模板记录", async () => {
     const row = {
       ...caseRow,
-      sheet_defs: [{ key: "cases", label: "案件", column_defs: caseRow.column_defs }],
+      sheet_defs: [{ key: "cases", label: "事项", column_defs: caseRow.column_defs }],
     };
     const { store, updates } = setup([row]);
     await store.load();
     await store.saveCheckRules(caseRow.id, { version: "v2", rules: [{
       key: "same_name", type: "duplicate", sheetKey: "cases", fields: ["name"],
-      minimumGroupSize: 2, explanation: "案件名相同，需人工核验",
+      minimumGroupSize: 2, explanation: "事项名相同，需人工核验",
     }] });
 
     expect(updates[0]).toMatchObject({ id: caseRow.id, patch: { check_rules: { version: "v2" } } });

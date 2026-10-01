@@ -5,9 +5,9 @@ import { createResearchPanelSession, type ResearchPanelOptions } from "./researc
 const context = {
   sessionId: "research_session:s1",
   runId: "run-1",
-  query: "合同无效再审案例",
+  query: "设备故障复检案例",
   resourceType: "generic_note",
-  recordId: "ent_claim:c1",
+  recordId: "ent_item:c1",
 };
 
 function makeSession(overrides: Partial<ResearchPanelOptions> = {}) {
@@ -101,14 +101,14 @@ describe("research panel session", () => {
 
   test("保存到当前选中记录：资源落库后使用当前 workspace session 建立关联", async () => {
     const { session, associationCalls } = makeSession();
-    session.addEvidence({ text: "借款合同载明本金 100 万元" });
-    session.updateDraft({ title: "借款合同摘要", summary: "合同本金与期限摘要" });
+    session.addEvidence({ text: "设备档案载明本金 100 万元" });
+    session.updateDraft({ title: "设备档案摘要", summary: "设备型号与巡检摘要" });
 
     await session.save();
 
     expect(associationCalls).toEqual([{
       resourceId: "resource_item:r1",
-      recordId: "ent_claim:c1",
+      recordId: "ent_item:c1",
     }]);
     expect(session.snapshot().associatedResourceIds).toEqual(["resource_item:r1"]);
   });

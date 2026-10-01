@@ -56,10 +56,10 @@ const RecordWriteProposalIntentSchema = z.object({
   }),
 });
 
-const AnalyzeClaimRowInputSchema = z.object({
+const AnalyzeRowInputSchema = z.object({
   workbookId: z.string().optional().describe("当前工作簿 record id，例如 workbook:demo；当未直接提供 values/fields 时必填"),
-  sheetId: z.string().describe("当前数据表 record id，例如 sheet:claims"),
-  recordId: z.string().describe("当前选中记录 record id，例如 ent_claim:abc"),
+  sheetId: z.string().describe("当前数据表 record id，例如 sheet:items"),
+  recordId: z.string().describe("当前选中记录 record id，例如 ent_item:abc"),
   values: z.record(z.string(), z.unknown()).optional().describe("当前选中记录的字段值；缺省时 tool 通过 workbookId/sheetId/recordId 读取"),
   fields: z.array(GridColumnDefSchema).optional().describe("当前数据表字段定义；缺省时 tool 通过 workbookId/sheetId 读取"),
   suggestions: z.array(z.object({
@@ -70,9 +70,9 @@ const AnalyzeClaimRowInputSchema = z.object({
   })).describe("基于当前记录和关联上下文生成的字段补全建议"),
 });
 
-export type ClaimRowSuggestion = z.infer<typeof AnalyzeClaimRowInputSchema>["suggestions"][number];
+export type RowSuggestion = z.infer<typeof AnalyzeRowInputSchema>["suggestions"][number];
 
-type ClaimRowContextInput = {
+type RowContextInput = {
   workbookId?: string;
   sheetId: string;
   recordId: string;
@@ -81,12 +81,12 @@ type ClaimRowContextInput = {
 };
 
 /**
- * 读取当前债权行的 values + 字段定义。
+ * 读取当前行的 values + 字段定义。
  * - 调用方已传 values+fields 时纯返回，不碰 DB；
  * - 否则用调用者 session 读 sheet.column_defs（字段定义）和真实数据表里的当前记录。
  */
-async function resolveClaimRowContext(
-  input: ClaimRowContextInput,
+async function resolveRowContext(
+  input: RowContextInput,
   session?: Surreal,
 ): Promise<{ values: Record<string, unknown>; fields: GridColumnDef[] }> {
   if (input.values && input.fields) {
@@ -94,7 +94,7 @@ async function resolveClaimRowContext(
   }
 
   if (!session) {
-    throw new Error("analyzeClaimRow 需要调用者 session 才能读取当前记录和字段定义");
+    throw new Error("analyzeRow 需要调用者 session 才能读取当前记录和字段定义");
   }
 
   const sheetResult = await session.query(
@@ -191,7 +191,7 @@ function buildRowPatchProposal(input: {
   recordId: string;
   values: Record<string, unknown>;
   fields: GridColumnDef[];
-  suggestions: ClaimRowSuggestion[];
+  suggestions: RowSuggestion[];
 }): z.infer<typeof RowPatchProposalIntentSchema>["intent"] {
   const editableFields = new Set(
     input.fields
@@ -220,20 +220,20 @@ function isEditableField(field: GridColumnDef): boolean {
   return field.fieldType !== "unknown";
 }
 
-export const analyzeClaimRowTool = createTool({
-  id: "analyzeClaimRow",
+export const analyzeRowTool = createTool({
+  id: "analyzeRow",
   description: [
-    "为当前选中债权记录生成字段补全提案。",
+    "为当前选中记录生成字段补全提案。",
     "调用时传入用户上下文中的 workbookId、sheetId、recordId；tool 会通过主进程服务读取当前行 values 和字段定义。",
     "只返回需要用户确认的 row-patch-proposal，不直接写入数据库。",
   ].join(" "),
-  inputSchema: AnalyzeClaimRowInputSchema,
+  inputSchema: AnalyzeRowInputSchema,
   outputSchema: RowPatchProposalIntentSchema,
   execute: async (input, ctx) => {
-    const parsed = input as z.infer<typeof AnalyzeClaimRowInputSchema>;
+    const parsed = input as z.infer<typeof AnalyzeRowInputSchema>;
     // values+fields 已齐时不需要 session；否则取调用者 session 读取
     const session = (parsed.values && parsed.fields) ? undefined : getSurrealSession(ctx as ToolRequestContext);
-    const context = await resolveClaimRowContext(parsed, session);
+    const context = await resolveRowContext(parsed, session);
     return {
       intent: buildRowPatchProposal({
         sheetId: parsed.sheetId,
@@ -301,7 +301,7 @@ export const fetchRelatedRecordsTool = createTool({
   execute: async ({ workbookId, sheetId, recordId, values, fields }, ctx) => {
     const db = getSurrealSession(ctx as ToolRequestContext);
     const context = sheetId && recordId
-      ? await resolveClaimRowContext({
+      ? await resolveRowContext({
           workbookId,
           sheetId,
           recordId,
@@ -337,8 +337,8 @@ function collectReferenceIds(values: Record<string, unknown>, fields: GridColumn
   return Array.from(new Set(ids));
 }
 
-export const CLAIM_ANALYSIS_TOOLS = {
-  analyzeClaimRow: analyzeClaimRowTool,
+export const ROW_ANALYSIS_TOOLS = {
+  analyzeRow: analyzeRowTool,
   fetchRelatedRecords: fetchRelatedRecordsTool,
   proposeRecordWrite: proposeRecordWriteTool,
 } as const;

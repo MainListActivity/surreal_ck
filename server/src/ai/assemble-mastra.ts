@@ -11,7 +11,7 @@
 import type { Mastra } from "@mastra/core";
 import type { Agent } from "@mastra/core/agent";
 import { createChitchatAgent } from "../../ai/mastra/agents/chitchat-agent";
-import { createClaimAnalysisAgent } from "../../ai/mastra/agents/claim-analysis-agent";
+import { createRowAnalysisAgent } from "../../ai/mastra/agents/row-analysis-agent";
 import { createDashboardAgent } from "../../ai/mastra/agents/dashboard-agent";
 import {
   answerSelectedResourceIds,
@@ -57,7 +57,7 @@ export function buildRouterLlmCaller(agent: Agent): RouterLlmCaller {
 export type AssembleAgents = {
   navigationAgent: Agent;
   dashboardAgent: Agent;
-  claimAnalysisAgent: Agent;
+  rowAnalysisAgent: Agent;
   chitchatAgent: Agent;
 };
 
@@ -112,7 +112,7 @@ export function buildExecutors(agents: AssembleAgents, deps: AssembleExecutorDep
   const executors: SubAgentExecutors = {
     navigation: makeAgentExecutor(agents.navigationAgent),
     dashboard: makeAgentExecutor(agents.dashboardAgent),
-    "claim-analysis": makeAgentExecutor(agents.claimAnalysisAgent),
+    "row-analysis": makeAgentExecutor(agents.rowAnalysisAgent),
     chitchat: makeAgentExecutor(agents.chitchatAgent),
   };
   if (deps.resource) {
@@ -168,7 +168,7 @@ export type ResumeWorkflowInput = {
 const defaultBuildAgents: NonNullable<CreateMastraRunnerOptions["buildAgents"]> = (settings) => ({
   navigationAgent: createNavigationAgent(settings),
   dashboardAgent: createDashboardAgent(settings),
-  claimAnalysisAgent: createClaimAnalysisAgent(settings),
+  rowAnalysisAgent: createRowAnalysisAgent(settings),
   chitchatAgent: createChitchatAgent(settings),
 });
 

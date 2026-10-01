@@ -66,7 +66,7 @@ function snapshot(runId: string, status: WorkflowRunState["status"] = "suspended
     runId,
     status,
     value: {},
-    context: { input: { prompt: "打开合同管理工作簿" } } as unknown as WorkflowRunState["context"],
+    context: { input: { prompt: "打开巡检工作簿" } } as unknown as WorkflowRunState["context"],
     serializedStepGraph: [],
     activePaths: [],
     activeStepsPath: {},

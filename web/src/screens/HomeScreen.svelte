@@ -259,7 +259,7 @@
           <span class="qa-icon"><LayoutTemplate size={21} /></span>
           <span class="qa-text">
             <strong>从模板创建</strong>
-            <small>案件管理 · 实体追踪</small>
+            <small>台账管理 · 实体追踪</small>
           </span>
         </button>
         <input
@@ -289,7 +289,7 @@
           <strong>卯豆 AI 助手</strong>
           <span class="ai-beta">BETA</span>
         </div>
-        <p>用自然语言查询数据、生成报表、自动整理案件台账——试试「列出本月即将到期的合同」。</p>
+        <p>用自然语言查询数据、生成报表、自动整理数据台账——试试「列出本月即将到期的任务」。</p>
       </div>
       <button type="button" class="ai-action" onclick={() => onopenaichat?.()}>
         开始对话

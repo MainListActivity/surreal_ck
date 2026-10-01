@@ -32,29 +32,29 @@ describe("OIP-13 workbooksStore.importXlsxWorkbook", () => {
   test("一个事务原子创建工作簿、多个数据表及各自合法记录", async () => {
     const { queries, store } = setup();
     const result = await store.importXlsxWorkbook({
-      workbookName: "历史案件",
+      workbookName: "历史事项",
       sheets: [
-        readySheet("债权", [
-          { key: "field_1", label: "债权人", fieldType: "text", sourceIndex: 0 },
-          { key: "field_2", label: "申报金额", fieldType: "decimal", sourceIndex: 1 },
+        readySheet("事项", [
+          { key: "field_1", label: "负责人", fieldType: "text", sourceIndex: 0 },
+          { key: "field_2", label: "登记金额", fieldType: "decimal", sourceIndex: 1 },
         ], [["甲公司", "1,000"], ["乙公司", "待核"]]),
         readySheet("材料", [
           { key: "field_1", label: "材料名称", fieldType: "text", sourceIndex: 0 },
-        ], [["合同"], [""]]),
+        ], [["事项"], [""]]),
       ],
     });
 
     expect(result?.workbook).toEqual({
       id: "workbook:0000000000000001",
-      name: "历史案件",
+      name: "历史事项",
       templateRef: undefined,
     });
     expect(result?.sheets).toEqual([
       {
-        sheetName: "债权",
+        sheetName: "事项",
         importedCount: 1,
         skippedCount: 1,
-        rejected: [{ rowNumber: 3, field: "整条记录", reason: "字段“申报金额”不是有效金额/小数", sourceCells: ["乙公司", "待核"] }],
+        rejected: [{ rowNumber: 3, field: "整条记录", reason: "字段“登记金额”不是有效金额/小数", sourceCells: ["乙公司", "待核"] }],
       },
       {
         sheetName: "材料",
@@ -70,15 +70,15 @@ describe("OIP-13 workbooksStore.importXlsxWorkbook", () => {
     expect(Object.values(queries[0]!.bindings ?? {}).filter((value) =>
       typeof value === "object" && value !== null && "field_1" in value)).toEqual([
       { field_1: "甲公司", field_2: 1000 },
-      { field_1: "合同" },
+      { field_1: "事项" },
     ]);
   });
 
   test("任一结构创建失败时不暴露半成品工作簿", async () => {
     const { store } = setup(new Error("Not allowed to define table"));
     const result = await store.importXlsxWorkbook({
-      workbookName: "历史案件",
-      sheets: [readySheet("债权", [
+      workbookName: "历史事项",
+      sheets: [readySheet("事项", [
         { key: "field_1", label: "名称", fieldType: "text", sourceIndex: 0 },
       ], [["甲公司"]])],
     });
@@ -91,9 +91,9 @@ describe("OIP-13 workbooksStore.importXlsxWorkbook", () => {
   test("持久批次的新工作簿在同一原子事务写业务记录与逐行回执", async () => {
     const { queries, store } = setup();
     const result = await store.importXlsxWorkbook({
-      workbookName: "历史案件",
+      workbookName: "历史事项",
       batch: { id: "import_batch:b1" },
-      sheets: [readySheet("债权", [
+      sheets: [readySheet("事项", [
         { key: "field_1", label: "名称", fieldType: "text", sourceIndex: 0 },
         { key: "field_2", label: "金额", fieldType: "decimal", sourceIndex: 1 },
       ], [["甲公司", "100"], ["乙公司", "待核"]])],
@@ -107,12 +107,12 @@ describe("OIP-13 workbooksStore.importXlsxWorkbook", () => {
     expect(transaction.sql).toContain("UPDATE import_batch_sheet SET target_sheet = sheet:");
     expect(transaction.bindings).toEqual(expect.objectContaining({
       importBatchWorkbook: expect.anything(),
-      importBatchSheetName0: "债权",
+      importBatchSheetName0: "事项",
       importBatch0: expect.anything(),
-      importSheetName0: "债权",
+      importSheetName0: "事项",
       importRowNumber0: 2,
       importRowStatus0: "success",
-      importSheetName1: "债权",
+      importSheetName1: "事项",
       importRowNumber1: 3,
       importRowStatus1: "rejected",
       importRowReason1: expect.stringContaining("金额"),

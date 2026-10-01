@@ -13,10 +13,10 @@ describe("dashboard widget view models", () => {
     const result: DashboardNormalizedResult = { value: 42, label: "记录数", unit: "件" };
 
     expect(toKpiWidgetModel(result, {
-      title: "债权数",
-      displaySpec: { metricLabel: "已确认债权" },
+      title: "事项数",
+      displaySpec: { metricLabel: "已确认事项" },
     })).toEqual({
-      label: "已确认债权",
+      label: "已确认事项",
       value: "42",
       unit: "件",
     });
@@ -39,13 +39,13 @@ describe("dashboard widget view models", () => {
   test("pie chart renders category rows with percentage labels", () => {
     const result: DashboardNormalizedResult = {
       rows: [
-        { key: "secured", label: "有担保", value: 120 },
+        { key: "secured", label: "有复核", value: 120 },
         { key: "ordinary", label: "普通", value: 80 },
       ],
     };
 
     expect(toPieChartModel(result).rows).toEqual([
-      { key: "secured", label: "有担保", value: 120, share: 0.6, shareLabel: "60%" },
+      { key: "secured", label: "有复核", value: 120, share: 0.6, shareLabel: "60%" },
       { key: "ordinary", label: "普通", value: 80, share: 0.4, shareLabel: "40%" },
     ]);
   });
@@ -67,7 +67,7 @@ describe("dashboard widget view models", () => {
   test("table renders rows in declared column order with blank missing cells", () => {
     const result: DashboardNormalizedResult = {
       columns: [
-        { key: "name", label: "债权人" },
+        { key: "name", label: "负责人" },
         { key: "amount", label: "金额" },
       ],
       rows: [
@@ -78,7 +78,7 @@ describe("dashboard widget view models", () => {
 
     expect(toTableWidgetModel(result)).toEqual({
       columns: [
-        { key: "name", label: "债权人" },
+        { key: "name", label: "负责人" },
         { key: "amount", label: "金额" },
       ],
       rows: [

@@ -4,7 +4,7 @@ import { createDataCheckService } from "./data-check-runtime";
 
 function harness(options: { stale?: boolean; templateVersion?: { current: string } } = {}) {
   const records = Array.from({ length: 501 }, (_, index) => ({
-    id: `ent_claim:r${index + 1}`,
+    id: `ent_items:r${index + 1}`,
     name: index === 500 ? null : `记录 ${index + 1}`,
     updated_at: "2026-09-22T00:00:00Z",
     legal_name: index === 0 ? " ACME " : index === 500 ? "acme" : `主体 ${index}`,
@@ -14,8 +14,8 @@ function harness(options: { stale?: boolean; templateVersion?: { current: string
   let runSeq = 0;
   let latestReads = 0;
   const sheet = {
-    id: "sheet:s1", workbook: "workbook:w1", label: "债权",
-    table_name: "ent_claim", template_sheet_key: "claims",
+    id: "sheet:s1", workbook: "workbook:w1", label: "事项",
+    table_name: "ent_items", template_sheet_key: "items",
     column_defs: [
       { key: "name", label: "名称", field_type: "text", required: true },
       { key: "legal_name", label: "主体", field_type: "text" },
@@ -38,14 +38,14 @@ function harness(options: { stale?: boolean; templateVersion?: { current: string
     query: async (sql: string, bindings?: Record<string, unknown>) => {
       if (/FROM sheet WHERE workbook/i.test(sql)) return [sheet];
       if (/SELECT template FROM workbook/i.test(sql)) {
-        return options.templateVersion ? [{ template: "workbook_template:claims" }] : [];
+        return options.templateVersion ? [{ template: "workbook_template:items" }] : [];
       }
       if (/FROM workbook_template/i.test(sql)) return [{
-        sheet_defs: [{ key: "claims", label: "债权", column_defs: sheet.column_defs }],
+        sheet_defs: [{ key: "items", label: "事项", column_defs: sheet.column_defs }],
         check_rules: {
           version: options.templateVersion?.current,
           rules: [{
-            key: "same_legal_name", type: "duplicate", sheet_key: "claims",
+            key: "same_legal_name", type: "duplicate", sheet_key: "items",
             fields: ["legal_name"], minimum_group_size: 2, explanation: "主体名称相同",
           }],
         },
@@ -98,7 +98,7 @@ describe("全范围数据体检公开接口", () => {
     const recovered = await service.load(result.id);
 
     expect(result).toMatchObject({ status: "completed", scannedCount: 501, findingCount: 1, stale: false });
-    expect(result.findings[0]).toMatchObject({ category: "required", recordId: "ent_claim:r501", field: "name" });
+    expect(result.findings[0]).toMatchObject({ category: "required", recordId: "ent_items:r501", field: "name" });
     expect(recovered).toMatchObject({ id: result.id, status: "completed", findingCount: 1 });
     expect(await service.loadLatest("workbook:w1")).toMatchObject({ id: result.id, findingCount: 1 });
   });
@@ -134,7 +134,7 @@ describe("全范围数据体检公开接口", () => {
     const secondDuplicates = second.findings.filter((finding) => finding.category === "duplicate_candidate");
 
     expect(first.rulesVersion).toContain("template:v1");
-    expect(firstDuplicates.map((finding) => finding.recordId)).toEqual(["ent_claim:r1", "ent_claim:r501"]);
+    expect(firstDuplicates.map((finding) => finding.recordId)).toEqual(["ent_items:r1", "ent_items:r501"]);
     expect(second.rulesVersion).toContain("template:v2");
     expect(secondDuplicates[0]?.id).not.toBe(firstDuplicates[0]?.id);
     expect(firstDuplicates.every((finding) => finding.explanation.includes("仅供核验"))).toBe(true);

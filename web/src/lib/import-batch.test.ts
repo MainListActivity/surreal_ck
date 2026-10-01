@@ -19,7 +19,7 @@ describe("导入批次公开接口", () => {
       query: async (sql: string) => {
         if (/FROM import_batch_sheet/i.test(sql)) {
           return [{
-            sheet_name: "债权",
+            sheet_name: "事项",
             target_sheet: "sheet:s1",
             mapping_version: "map-v1",
             status: "completed",
@@ -30,7 +30,7 @@ describe("导入批次公开接口", () => {
         }
         if (/FROM import_batch_row/i.test(sql)) {
           return [{
-            sheet_name: "债权",
+            sheet_name: "事项",
             source_row_number: 4,
             status: "rejected",
             target_record: null,
@@ -62,9 +62,9 @@ describe("导入批次公开接口", () => {
       fileDigest: "digest-1",
       mappingVersion: "map-v1",
       mode: "existing_tables",
-      sheets: [{ sheetName: "债权", targetSheetId: "sheet:s1", mappings: [] }],
+      sheets: [{ sheetName: "事项", targetSheetId: "sheet:s1", mappings: [] }],
     });
-    await service.finishSheet(started.id, "债权", {
+    await service.finishSheet(started.id, "事项", {
       status: "completed",
       importedCount: 2,
       rejectedCount: 1,
@@ -80,18 +80,18 @@ describe("导入批次公开接口", () => {
     expect(recovered).toMatchObject({
       id: "import_batch:b1",
       status: "partial_failure",
-      sheets: [{ sheetName: "债权", importedCount: 2, rejectedCount: 1 }],
-      rows: [{ sheetName: "债权", rowNumber: 4, status: "rejected", sourceCells: ["甲", "待核"] }],
+      sheets: [{ sheetName: "事项", importedCount: 2, rejectedCount: 1 }],
+      rows: [{ sheetName: "事项", rowNumber: 4, status: "rejected", sourceCells: ["甲", "待核"] }],
     });
   });
 
   test("失败行 CSV 保留原始行号，并安全编码可能触发表格公式的文本", () => {
     const csv = rejectedRowsToCsv(
-      ["债权人", "说明"],
+      ["负责人", "说明"],
       [{ rowNumber: 8, field: "说明", reason: "待修正", sourceCells: ["=HYPERLINK(\"x\")", "+SUM(1,2)"] }],
     );
 
-    expect(csv).toContain("原始行号,失败字段,失败原因,债权人,说明");
+    expect(csv).toContain("原始行号,失败字段,失败原因,负责人,说明");
     expect(csv).toContain(`8,说明,待修正,"'=HYPERLINK(""x"")","'+SUM(1,2)"`);
   });
 });

@@ -14,7 +14,14 @@ import type {
   WorkflowSuspendedEvent,
 } from "@surreal-ck/shared";
 import { AiContextSnapshotSchema, ResolvedRecordSchema } from "@surreal-ck/shared";
-import { classifyTask, type RouterCategory, type RouterLlmCaller, type RouterPlan } from "./router-classifier";
+import {
+  classifyTask,
+  normalizeRouterCategory,
+  RouterCategorySchema,
+  type RouterCategory,
+  type RouterLlmCaller,
+  type RouterPlan,
+} from "./router-classifier";
 import type { DecisionCaller } from "../../decision/model";
 
 export const ROUTER_WORKFLOW_ID = "routerWorkflow";
@@ -132,16 +139,18 @@ export async function runRouterDispatch(input: RouterDispatchInput): Promise<Rou
 
   const steps: RouterStepResult[] = [];
   for (const item of plan) {
-    const executor = executors[item.category];
+    // 归一化旧类目（如历史快照中的 claim-analysis）后再查 executor
+    const category = normalizeRouterCategory(item.category) ?? item.category;
+    const executor = executors[category];
     if (!executor) {
-      throw new Error(`router-workflow: 缺少 ${item.category} executor`);
+      throw new Error(`router-workflow: 缺少 ${category} executor`);
     }
     const out = await executor({
       taskText: item.taskText,
       shared: { userContext: shared.userContext, confirmed: shared.confirmed },
     });
     mergeConfirmed(shared.confirmed, out.confirmed);
-    steps.push({ category: item.category, taskText: item.taskText, text: out.text, citations: out.citations });
+    steps.push({ category, taskText: item.taskText, text: out.text, citations: out.citations });
   }
 
   shared.userContext = JSON.parse(JSON.stringify(frozenUserContext)) as AiContextSnapshot;
@@ -183,7 +192,9 @@ export async function routeAndDispatch(input: RouteAndDispatchInput): Promise<Ro
 
 // ─── Mastra createWorkflow 包装（含 suspend/resume） ─────────────────────────
 
-const RouterCategoryEnum = z.enum(["navigation", "dashboard", "claim-analysis", "resource-retrieval", "chitchat"]);
+// 持久化快照里的 plan/steps 类目也走同一归一化 schema：旧运行记录中的
+// claim-analysis 在 resume 时被读回并归一化为 row-analysis，路由兼容不丢历史。
+const RouterCategoryEnum = RouterCategorySchema;
 
 const RouterStepResultSchema = z.object({
   category: RouterCategoryEnum,
@@ -286,7 +297,7 @@ const SuspendPayloadSchema = z.discriminatedUnion("kind", [
 const CATEGORY_TO_AGENT_NAME: Record<RouterCategory, string> = {
   navigation: "navigationAgent",
   dashboard: "dashboardAgent",
-  "claim-analysis": "claimAnalysisAgent",
+  "row-analysis": "rowAnalysisAgent",
   "resource-retrieval": "resourceAgent",
   chitchat: "chitchatAgent",
 };
@@ -381,6 +392,14 @@ export function createRouterWorkflow() {
         let cancelled = false;
         let resumedStep: RouterStepResult | null = null;
 
+        // 持久化快照可能携带旧类目名；这里统一归一化后再读 executor/写 steps。
+        const planItemAt = (index: number) => {
+          const item = state.plan[index];
+          return item
+            ? { category: normalizeRouterCategory(item.category) ?? item.category, taskText: item.taskText }
+            : undefined;
+        };
+
         if (decision.kind === "candidate-cancelled" || decision.kind === "write-rejected") {
           cancelled = true;
         } else if (decision.kind === "candidate-chosen" && sus?.kind === "ambiguous") {
@@ -393,7 +412,7 @@ export function createRouterWorkflow() {
           }
         } else if (decision.kind === "resource-candidates-chosen" && sus?.kind === "resource-candidates") {
           const cursor = state.cursor;
-          const planItem = state.plan[cursor];
+          const planItem = planItemAt(cursor);
           const answer = await runtime.answerResourceSelection?.({
             resourceIds: decision.resourceIds,
             taskText: planItem?.taskText ?? "",
@@ -407,7 +426,7 @@ export function createRouterWorkflow() {
           };
         } else if (decision.kind === "resource-candidates-manual-research" && sus?.kind === "resource-candidates") {
           const cursor = state.cursor;
-          const planItem = state.plan[cursor];
+          const planItem = planItemAt(cursor);
           resumedStep = {
             category: planItem!.category,
             taskText: planItem!.taskText,
@@ -415,7 +434,7 @@ export function createRouterWorkflow() {
           };
         } else if (decision.kind === "manual-research-completed" && sus?.kind === "manual-research") {
           const cursor = state.cursor;
-          const planItem = state.plan[cursor];
+          const planItem = planItemAt(cursor);
           const answer = await runtime.answerResourceSelection?.({
             resourceIds: decision.resourceIds,
             taskText: planItem?.taskText ?? sus.query,
@@ -432,7 +451,7 @@ export function createRouterWorkflow() {
 
         // 写入第 cursor 步的结果记录（如果不是取消）
         const cursor = state.cursor;
-        const planItem = state.plan[cursor];
+        const planItem = planItemAt(cursor);
         const newSteps = cancelled
           ? state.steps
           : resumedStep
@@ -458,10 +477,15 @@ export function createRouterWorkflow() {
 
       // —— 正常分支：跑下一步 executor ——
       const cursor = state.cursor;
-      const planItem = state.plan[cursor];
-      if (!planItem) {
+      const rawPlanItem = state.plan[cursor];
+      if (!rawPlanItem) {
         return { plan: inputData.plan };
       }
+      // 持久化快照可能携带旧类目名（claim-analysis）；归一化后再查 executor
+      const planItem = {
+        category: normalizeRouterCategory(rawPlanItem.category) ?? rawPlanItem.category,
+        taskText: rawPlanItem.taskText,
+      };
 
       runtime.pushProgress?.({
         kind: "agent-step",
