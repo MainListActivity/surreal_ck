@@ -72,6 +72,16 @@ function iso(value: unknown): string {
   throw new Error("platform content row contains an invalid timestamp");
 }
 
+/** 可空 datetime 读回：null/undefined 与解析失败都为 null；DateTime 等 SDK 对象经 iso() 序列化。 */
+function nullableIso(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  try {
+    return iso(value);
+  } catch {
+    return null;
+  }
+}
+
 function asObject(value: unknown): Row | null {
   return isRow(value) ? value : null;
 }
@@ -102,13 +112,7 @@ function parseLicense(value: unknown): ContentSourceLicenseRevision | null {
   if (!isRow(value)) return null;
   const revision = typeof value.revision === "number" ? value.revision : Number(value.revision);
   const licenseKind = asString(value.license_kind) ?? asString(value.licenseKind);
-  let effectiveFrom: string | null = null;
-  try {
-    const rawEffectiveFrom = value.effective_from ?? value.effectiveFrom;
-    effectiveFrom = rawEffectiveFrom === undefined || rawEffectiveFrom === null ? null : iso(rawEffectiveFrom);
-  } catch {
-    effectiveFrom = null;
-  }
+  const effectiveFrom = nullableIso(value.effective_from ?? value.effectiveFrom);
   if (!Number.isSafeInteger(revision) || revision < 1 || !licenseKind || !effectiveFrom) return null;
   const rawAllowedActions = value.allowed_actions ?? value.allowedActions;
   const allowedActions = Array.isArray(rawAllowedActions)
@@ -119,7 +123,7 @@ function parseLicense(value: unknown): ContentSourceLicenseRevision | null {
     licenseKind,
     allowedActions,
     effectiveFrom,
-    effectiveUntil: asNullableString(value.effective_until ?? value.effectiveUntil),
+    effectiveUntil: nullableIso(value.effective_until ?? value.effectiveUntil),
     evidenceUrl: asNullableString(value.evidence_url ?? value.evidenceUrl),
     evidenceText: asNullableString(value.evidence_text ?? value.evidenceText),
     ...(asString(value.created_by_subject ?? value.createdBySubject) ? { createdBySubject: asString(value.created_by_subject ?? value.createdBySubject)! } : {}),
@@ -988,8 +992,8 @@ function parsePublished(row: Row | undefined): StoredPublishedContent | null {
     versionLabel: asString(version.version_label),
     sourceKey,
     sourceUrl: asString(version.source_url) ?? "https://example.invalid/unknown",
-    publishedAt: asString(version.published_at),
-    updatedAt: asString(version.updated_at_source),
+    publishedAt: nullableIso(version.published_at),
+    updatedAt: nullableIso(version.updated_at_source),
     bodyBytes: typeof version.body_text_bytes === "number" ? version.body_text_bytes : new TextEncoder().encode(bodyText).byteLength,
     publicationStatus: item.publication_status === "withdrawn" ? "withdrawn" : "published",
   };
