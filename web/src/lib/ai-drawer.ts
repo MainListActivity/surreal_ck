@@ -423,6 +423,16 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
     }
   }
 
+  function recordAuthorizationChange(messageId: string, error: unknown): void {
+    if (errorCode(error) !== "authorization_changed") return;
+    const index = state.messages.findIndex(m => m.id === messageId);
+    // 只带用户问题开启新窗口；历史助手答案和引用从不自动成为研究输入。
+    const query = state.messages.slice(0, index).reverse().find(m => m.role === "user")?.content ?? "";
+    markPendingDismissed(messageId);
+    state.pendingIntents.push({ messageId, runId: state.activeRun?.runId ?? "", kind: "authorization_changed", dismissed: false,
+      authorizationChange: { query, restart: true, message: "当前授权或运行状态已变化，请重新检索当前合法材料。" } });
+  }
+
   async function continueResearch(messageId: string, action: "research-retry" | "research-continue-current"): Promise<void> {
     const pending = state.pendingIntents.find(i => i.messageId === messageId && !i.dismissed && i.kind === "authorization_changed");
     if (!pending?.authorizationChange) return;
@@ -432,7 +442,9 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
     try {
       if (pending.authorizationChange.restart) {
         const context = state.messages.find(m => m.id === messageId)?.context ?? createDefaultAiContextSnapshot();
+        if (state.activeRun) clearRun(state.activeRun.runId);
         await sendMessage(pending.authorizationChange.query, context, { composerMode: "resource-search" });
+        if (state.sendError) throw new Error(state.sendError);
       } else {
         const run = await options.chatClient.resumeChat(pending.runId, { kind: action });
         connectRun(run, messageId);
@@ -467,6 +479,7 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
       const run = await options.chatClient.resumeChat(pending.runId, decision);
       connectRun(run, messageId);
     } catch (error) {
+      recordAuthorizationChange(messageId, error);
       state.sending = false;
       state.progressHint = null;
       state.sendError = aiErrorMessage(error);
@@ -497,6 +510,7 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
       connectRun(run, messageId);
       await completion;
     } catch (error) {
+      recordAuthorizationChange(messageId, error);
       state.sending = false;
       state.progressHint = null;
       emitChange();
@@ -524,6 +538,7 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
       markPendingDismissed(messageId);
       connectRun(run, messageId);
     } catch (error) {
+      recordAuthorizationChange(messageId, error);
       state.sending = false;
       state.progressHint = null;
       emitChange();

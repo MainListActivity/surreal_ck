@@ -699,7 +699,7 @@ export function createRouterWorkflow() {
             shared: { userContext, confirmed: state.confirmed }, surrealSession: runtime.surrealSession,
             openContentSession: runtime.openContentSession, selectedResourceIds: step.selectedResourceIds,
             expectedAuthorization: step.researchAuthorization,
-            expectedPlatformVersionIds: step.citations?.flatMap(c => c.platformContent ? [c.platformContent.versionPublicId] : []),
+            expectedPlatformVersionIds: step.citations?.flatMap(c => c.platformContent?.versionPublicId ? [c.platformContent.versionPublicId] : []),
             acceptAuthorizationChange: ctx.resumeData?.decision.kind === "research-retry" || ctx.resumeData?.decision.kind === "research-continue-current" });
           if (out.suspend) {
             runtime.onSuspend?.({ kind: "authorization_changed", runId: runtime.runId, query: step.taskText,

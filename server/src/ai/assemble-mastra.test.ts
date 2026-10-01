@@ -286,3 +286,23 @@ describe("createMastraRunner", () => {
     expect(done?.message?.citations).toEqual([{ title: "民法典" }]);
   });
 });
+
+
+test("LCA07 已完成研究重试不回放历史平台文本；新的授权窗口必须重新研究", async () => {
+  const { createMastraRunner } = await import("./assemble-mastra");
+  const events: unknown[] = [];
+  let resumed = 0;
+  const { resumer } = createMastraRunner({
+    buildAgents: () => ({ navigationAgent: {} as never, dashboardAgent: {} as never, claimAnalysisAgent: {} as never, chitchatAgent: {} as never }),
+    buildLlmCaller: () => async () => "[]",
+    buildMastra: () => ({ getWorkflow: () => ({ createRun: async () => ({ resume: async () => { resumed++; } }) }),
+      getStorage: () => ({ stores: { workflows: { getWorkflowRunById: async () => ({ snapshot: { status: "success", result: {
+        finalText: "REVOKED-OLD-CANARY", steps: [{ category: "resource-retrieval", taskText: "合同", text: "REVOKED-OLD-CANARY" }] } } }) } } }) } as never),
+  });
+  const result = await resumer({ runId: "complete", streamId: "complete", decision: { kind: "research-retry" }, surrealSession: {} as never,
+    ownerSubject: "human", userContext: { route: { screen: "home" }, workbook: null, sheet: null, selectedRow: null, contextHint: "" },
+    pushChunk: e => events.push(e), pushProgress: () => {}, onSuspend: e => events.push(e) });
+  expect(result.status).toBe("suspended"); expect(resumed).toBe(0);
+  expect(events[0]).toMatchObject({ kind: "authorization_changed", restart: true, query: "合同" });
+  expect(JSON.stringify(events)).not.toContain("REVOKED-OLD-CANARY");
+});

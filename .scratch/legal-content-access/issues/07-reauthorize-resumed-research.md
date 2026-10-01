@@ -4,7 +4,7 @@
 
 **Blocked by:** [06 — AI 使用平台内容与私有资料生成可核验回答](06-authorized-ai-research.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **ID:** SCK-LCA-07
 **确认时序号:** 8
@@ -31,4 +31,5 @@
 ## Comments
 
 - 2026-09-24：用户确认拆分后发布；当前为实施规格，尚未执行实现与验收。
+- 2026-10-01：实现完成（分支 `task/40f047f5`）。范围：恢复/候选/追问三条入口在继续使用平台证据前重建内容窗口并重读当前候选，授权变化返回结构化 `authorization_changed` 并在页面提供「重新检索 / 继续当前合法材料」动作；workflow 快照持久化只保留元数据（`researchSnapshot` 三处加载路径统一过滤，含跨进程恢复）；新增迁移 `040-research-resume-window.surql`（只新增 `resume_fence`/`resume_until` 两个 option 字段）做持久化并发 fence，进程重启后旧 fence 失效，迁移未应用时拒绝恢复；额度幂等键区分恢复重试与新收费动作。验证：相关测试 71 pass（另 7 项环境门控跳过）、全仓 typecheck 0 错、oxlint 0 错；全仓测试中的 15 个 server 失败与 8 个 web 失败已在 origin/main（37be56f）基线逐项复现，属本地 fork 二进制引擎行为（access method 报错），非本分支引入。未解决限制：本地引擎导致的既有集成测试失败不在本票处理；历史成果展示细化由 09 扩展。
 

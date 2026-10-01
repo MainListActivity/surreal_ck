@@ -181,7 +181,7 @@ export class SurrealWorkflowsStorage extends WorkflowsStorage {
         { runId, workflowName },
       );
       const row = rows[0]?.[0];
-      return row?.state ? parseState(row.state) : null;
+      return row?.state ? (workflowName === "routerWorkflow" ? researchSnapshot(parseState(row.state)) : parseState(row.state)) : null;
     } catch (err) {
       if (this.options.strict) throw this.strictFail("load workflow snapshot", err);
       console.warn("[mastra] load workflow snapshot 失败，降级为内存态:", err);

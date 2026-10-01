@@ -8,7 +8,7 @@ import { claimResumeWindow } from "./resume-window";
 test("LCA07 fork：恢复 owner/workspace/disabled 边界、并发 fence 与重启窗口", async () => {
   const port = 19000 + Math.floor(Math.random() * 10000);
   const password = crypto.randomUUID();
-  const process = Bun.spawn([process.env.SURREAL_BINARY ?? `${homedir()}/.surrealdb/surreal`, "start", "--allow-all", "--bind", `127.0.0.1:${port}`, "--user", "test", "--pass", password, "memory"], { stdout: "ignore", stderr: "ignore" });
+  const proc = Bun.spawn([process.env.SURREAL_BINARY ?? `${homedir()}/.surrealdb/surreal`, "start", "--allow-all", "--bind", `127.0.0.1:${port}`, "--user", "test", "--pass", password, "memory"], { stdout: "ignore", stderr: "ignore" });
   const root = new Surreal();
   const callers: Surreal[] = [];
   try {
@@ -31,10 +31,11 @@ test("LCA07 fork：恢复 owner/workspace/disabled 边界、并发 fence 与重�
     async function caller(db: string, name="human") { const session=new Surreal(); callers.push(session); await session.connect(url, { namespace:"test", database: db });
       await session.signin({ namespace:"test", database:db, access:"caller", variables:{ name } }); return session; }
     const a = await caller("ws_a");
-    await expect(claimResumeWindow(await caller("ws_a", "other"), "research")).rejects.toMatchObject({ code: "chat-resume-unavailable" });
-    await expect(claimResumeWindow(await caller("ws_b"), "research")).rejects.toMatchObject({ code: "chat-resume-unavailable" });
+    await expect(claimResumeWindow(await caller("ws_a", "other"), "research")).rejects.toMatchObject({ code: "authorization_changed" });
+    await expect(claimResumeWindow(await caller("ws_b"), "research")).rejects.toMatchObject({ code: "authorization_changed" });
     const results = await Promise.allSettled([claimResumeWindow(a, "research"), claimResumeWindow(await caller("ws_a"), "research")]);
     expect(results.filter(r => r.status === "fulfilled")).toHaveLength(1);
+    for (const result of results) if (result.status === "rejected") expect(result.reason).toMatchObject({ code: "authorization_changed" });
     const winner = results.find(r => r.status === "fulfilled");
     if (winner?.status !== "fulfilled") throw new Error("no winner");
     const oldRelease = winner.value;
@@ -42,9 +43,9 @@ test("LCA07 fork：恢复 owner/workspace/disabled 边界、并发 fence 与重�
     await root.query("UPDATE workflow_run:r SET resume_until=time::now()-1s;");
     const release = await claimResumeWindow(await caller("ws_a"), "research");
     await oldRelease();
-    await expect(claimResumeWindow(a, "research")).rejects.toMatchObject({ code: "chat-resume-unavailable" });
+    await expect(claimResumeWindow(a, "research")).rejects.toMatchObject({ code: "authorization_changed" });
     await release();
     await root.query("UPDATE user:a SET disabled_at=time::now();");
-    await expect(claimResumeWindow(a, "research")).rejects.toMatchObject({ code: "chat-resume-unavailable" });
-  } finally { await Promise.all(callers.map(c=>c.close().catch(()=>{}))); await root.close().catch(()=>{}); process.kill(); await process.exited; }
+    await expect(claimResumeWindow(a, "research")).rejects.toMatchObject({ code: "authorization_changed" });
+  } finally { await Promise.all(callers.map(c=>c.close().catch(()=>{}))); await root.close().catch(()=>{}); proc.kill(); await proc.exited; }
 }, 60000);
