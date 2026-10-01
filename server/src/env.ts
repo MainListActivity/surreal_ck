@@ -50,6 +50,13 @@ const EnvSchema = z.object({
 
   RECONCILE_INTERVAL_SEC: z.coerce.number().int().positive().default(3600),
 
+  // 虚拟员工 runtime（VER06）：会话续约点必须低于 employee access 的 session
+  // DURATION（1h）；关停 deadline 之外另给 abort 宽限；启动 reconcile 有界并发。
+  EMPLOYEE_SESSION_RENEW_AFTER_SEC: z.coerce.number().int().positive().default(2700),
+  EMPLOYEE_RUNTIME_SHUTDOWN_DEADLINE_MS: z.coerce.number().int().positive().default(30000),
+  EMPLOYEE_SHUTDOWN_ABORT_GRACE_MS: z.coerce.number().int().positive().default(5000),
+  EMPLOYEE_STARTUP_RECONCILE_CONCURRENCY: z.coerce.number().int().positive().default(4),
+
   MASTRA_OBSERVABILITY_RETENTION_DAYS: z.coerce.number().int().positive().max(3650).default(30),
 
   // AI 模型 provider / model / key（生产装配 AiChatService 用；三个齐备才接线，否则 /api/chat 返回 501）。

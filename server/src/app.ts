@@ -93,6 +93,7 @@ import { createOpsAutonomyRoutes } from "./routes/ops-autonomy";
 import { OpsRunService } from "./ops-run/service";
 import { SurrealOpsRunStore } from "./ops-run/store";
 import { createOpsRunRoutes } from "./routes/ops-run";
+import { createOpsEmployeeRuntimeRoutes } from "./routes/ops-employee-runtime";
 import { ProductEntitlementService } from "./product-entitlement/service";
 import { SurrealProductEntitlementStore } from "./product-entitlement/store";
 import { createDiscoverService, type DiscoverService } from "./discover/service";
@@ -113,6 +114,8 @@ import type { EmployeeTriggerRuntime } from "../ai/office/employee-trigger-runti
 import type { EmployeeRuntime } from "../ai/office/employee-runtime";
 import { createProductionOfficeBootstrap } from "../ai/office/office-trigger-adapter";
 import type { EmployeeLifecycle } from "../ai/office/employee-lifecycle";
+import type { EmployeeRuntimeMetrics } from "../ai/office/employee-trigger-runtime";
+import type { EmployeeStartupProgress } from "../ai/office/employee-supervisor";
 import { AiAllowanceService, type Queryable as AllowanceQueryable } from "./ai-allowance/service";
 import { createOpsAiAllowanceRoutes } from "./routes/ops-ai-allowance";
 import { createContentResearchSessionFactory, type ContentResearchSessionFactory } from "./research/window";
@@ -166,6 +169,10 @@ export type AppOptions = {
   officeBootstrap?: OfficeBootstrapAction;
   /** LCA05 共享 AI 额度门禁；注入后 /api/chat 新 run 在启动 workflow 前原子预留。 */
   aiAllowance?: AiAllowanceService;
+  /** 虚拟员工 runtime 健康/容量快照（VER06）；默认读进程内 runtime 指标。 */
+  employeeRuntimeHealth?: () => EmployeeRuntimeMetrics & { startup: EmployeeStartupProgress };
+  /** ops 路由鉴权 seam；默认 requirePlatformOperator。 */
+  requireOperator?: () => MiddlewareHandler<AppBindings>;
   /** LCA06：调用者 content_reader 研究窗口工厂；默认生产装配（search exchange 复用）。 */
   createContentResearchSession?: ContentResearchSessionFactory;
 };
@@ -379,6 +386,10 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     .route("/", createOpsProposalRoutes({ service: opsProposalService }))
     .route("/", createOpsAutonomyRoutes({ service: opsAutonomyService }))
     .route("/", createOpsRunRoutes({ service: opsRunService }))
+    .route("/", createOpsEmployeeRuntimeRoutes({
+      health: options.employeeRuntimeHealth,
+      requireOperator: options.requireOperator,
+    }))
     .route("/", createProductEntitlementRoutes({ service: productEntitlementService, requireCustomer: options.requireUser }))
     .route("/", createContentMcpRoutes({
       service: platformContentService,
