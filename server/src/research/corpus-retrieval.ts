@@ -8,7 +8,6 @@
  */
 import { createHash } from "node:crypto";
 import { StringRecordId, type Surreal } from "surrealdb";
-import { CONTENT_SEARCH_QUERY } from "@surreal-ck/shared";
 import { LegalRetrievalRequestSchema } from "@surreal-ck/shared";
 import { retrievePlatformCandidates } from "./platform-retrieval";
 import type { EmbeddingProvider } from "../resources/research-save";
@@ -147,20 +146,14 @@ export async function retrieveAuthorizedCorpus(input: {
   if (!keyword) return { evidence: [], rejected: [], candidatesSeen: 0 };
   const limit = input.limit ?? 5;
 
-  // 1) 召回：关键词 + 结构化 facet（数据库只返回当前已发布且 search 获准的行）。
-  const facetRows = input.embeddingProvider ? (await retrievePlatformCandidates({
+  // 1) 召回：词项（legalQueryTerms 分词 + 中文 bigram）+ 结构化 facet，配 embedding 时叠加语义召回。
+  //    统一走 retrievePlatformCandidates：缺席 embeddingProvider 时自动退化为关键词检索；
+  //    ai:true 让库层在召回即按 ai_use 收紧，登记层再做二次校验（fail closed）。
+  //    注意不能把整句问题当作单个子串匹配（原 CONTENT_SEARCH_QUERY 路径对自然语言问句必然零召回）。
+  const facetRows = (await retrievePlatformCandidates({
     session, embeddingProvider: input.embeddingProvider, ai: true,
     request: LegalRetrievalRequestSchema.parse({ query: keyword, limit: Math.min(20, limit) }),
-  })).items.map((hit) => ({ version_id: hit.versionId, public_id: hit.publicId, title: hit.title, kind: hit.kind }))
-    : await queryRows(session, CONTENT_SEARCH_QUERY, {
-    keyword,
-    kind: "all",
-    from: "",
-    until: "",
-    jurisdiction: "",
-    effective: "",
-    cursor: undefined,
-  });
+  })).items.map((hit) => ({ version_id: hit.versionId, public_id: hit.publicId, title: hit.title, kind: hit.kind }));
   const candidates: PlatformCandidate[] = facetRows
     .slice(0, limit)
     .map((row) => ({

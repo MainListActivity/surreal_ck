@@ -24,8 +24,8 @@ function fakeContentSession(): Pick<Surreal, "query"> {
   const query = (sql: string): Promise<unknown> => {
     if (sql.includes("content_search_facet")) {
       return Promise.resolve([[
-        { id: "facet:a", version_id: "content_version:v-auth", public_id: "a-v1", title: "甲法", kind: "legislation", source_url: "https://example.invalid/a", version_label: "2026 修订", published_on: "2026-01-01" },
-        { id: "facet:b", version_id: "content_version:v-denied", public_id: "b-v1", title: "乙法", kind: "legislation", source_url: "https://example.invalid/b", version_label: null, published_on: "2026-01-02" },
+        { id: "facet:a", version_id: "content_version:v-auth", public_id: "a-v1", title: "甲法", kind: "legislation", source_url: "https://example.invalid/a", version_label: "2026 修订", published_on: "2026-01-01", keyword_score: 2, item_id: "content_item:i-auth" },
+        { id: "facet:b", version_id: "content_version:v-denied", public_id: "b-v1", title: "乙法", kind: "legislation", source_url: "https://example.invalid/b", version_label: null, published_on: "2026-01-02", keyword_score: 1, item_id: "content_item:i-denied" },
       ]]);
     }
     if (sql.includes("content_read_gate")) {

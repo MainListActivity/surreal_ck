@@ -170,7 +170,9 @@ localTest("授权语料检索在真实引擎上按 gate 强制授权", async () 
     expect((await retrieveAuthorizedCorpus({ session: reader, query: request.query, embeddingProvider: provider })).evidence).toEqual([]);
     const noAi = await retrieveAuthorizedCorpus({ session: reader, query: "合同" });
     expect(noAi.evidence).toEqual([]);
-    expect(noAi.rejected[0]?.reason).toBe("ai_use_denied");
+    // ai_use 拒绝现在在库层召回即生效（fn::content_reader_action），候选根本不出库。
+    expect(noAi.candidatesSeen).toBe(0);
+    expect(noAi.rejected).toEqual([]);
     await root.query("UPDATE content_read_gate SET ai_actions = ['research'], actions = ['browse', 'search', 'read'];");
     const noCite = await retrieveAuthorizedCorpus({ session: reader, query: "合同" });
     expect(noCite.evidence).toHaveLength(1);
