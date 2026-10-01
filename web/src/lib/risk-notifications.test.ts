@@ -3,9 +3,12 @@ import type { SurrealConn } from "./surreal";
 import {
   buildRiskReminderAiContext,
   loadRiskNotifications,
+  resolveOfficeRequest,
   resolveRiskNotificationTarget,
   loadClaimsReminderSettings,
   setClaimsReminderEnabled,
+  wakeOfficeRequest,
+  type RiskNotification,
 } from "./risk-notifications";
 
 describe("OIP-18 风险提醒收件箱", () => {
@@ -42,7 +45,7 @@ describe("OIP-18 风险提醒收件箱", () => {
   });
 
   test("继续询问 AI 的上下文只包含已读取的命中事实和规则", () => {
-    const context = buildRiskReminderAiContext({
+    const notification: RiskNotification = {
       id: "user_notification:n1",
       workbookId: "workbook:claims",
       workbookName: "债权台账",
@@ -55,7 +58,17 @@ describe("OIP-18 风险提醒收件箱", () => {
       rule: "证据材料记录的“是否缺失”为是",
       checkedAt: "2026-07-17T01:00:00.000Z",
       createdAt: "2026-07-17T01:00:01.000Z",
-    });
+      purpose: "claims-risk",
+      fromEmployee: "",
+      taskId: "",
+      questionType: "free-text",
+      options: [],
+      resolvedAt: "",
+      resolution: "",
+      answerAction: null,
+      answerText: "",
+    };
+    const context = buildRiskReminderAiContext(notification);
 
     expect(context.selectedRow?.visibleValues).toEqual({
       is_missing: true,
@@ -100,5 +113,166 @@ describe("OIP-18 风险提醒收件箱", () => {
       id: "workbook:claims",
       patch: { risk_reminders_enabled: true },
     }]);
+  });
+});
+
+describe("VO03 人类请求收件箱", () => {
+  test("office-request 行映射出问题类型、选项、发起员工与终态字段", async () => {
+    const conn = {
+      async query() {
+        return [{
+          id: "user_notification:ofreq_t1_ab12cd34ef",
+          purpose: "office-request",
+          title: "员工请你选择",
+          body: "采用哪种口径合并重复债权？",
+          severity: "info",
+          created_at: "2026-07-20T02:00:00.000Z",
+          from_employee: "user:pm_9f",
+          task: "office_task:pm_initial",
+          payload: { question_type: "choice", options: ["按金额", "按日期"], run_id: "er-x" },
+        }];
+      },
+    } as unknown as SurrealConn;
+
+    const [notification] = await loadRiskNotifications(conn);
+
+    expect(notification).toMatchObject({
+      id: "user_notification:ofreq_t1_ab12cd34ef",
+      purpose: "office-request",
+      fromEmployee: "user:pm_9f",
+      taskId: "office_task:pm_initial",
+      questionType: "choice",
+      options: ["按金额", "按日期"],
+      resolvedAt: "",
+      answerAction: null,
+    });
+  });
+
+  test("已终态的请求读回答案与解决时间，缺省 purpose 的老行仍按债权提醒呈现", async () => {
+    const conn = {
+      async query() {
+        return [
+          {
+            id: "user_notification:ofreq_t1_x",
+            purpose: "office-request",
+            title: "员工向你提问",
+            body: "三月签收单是否已补齐？",
+            resolved_at: "2026-07-20T03:00:00.000Z",
+            resolution: "已补齐并上传",
+            answer: { action: "answered", text: "已补齐并上传" },
+          },
+          {
+            id: "user_notification:n9",
+            title: "材料缺失：发票",
+            severity: "warning",
+            risk_type: "missing-material",
+          },
+        ];
+      },
+    } as unknown as SurrealConn;
+
+    const [request, risk] = await loadRiskNotifications(conn);
+
+    expect(request.purpose).toBe("office-request");
+    expect(request.answerAction).toBe("answered");
+    expect(request.answerText).toBe("已补齐并上传");
+    expect(request.resolvedAt).toBe("2026-07-20T03:00:00.000Z");
+    expect(risk.purpose).toBe("claims-risk");
+    expect(risk.riskType).toBe("missing-material");
+  });
+
+  test("答复先以 CAS 落库再返回 resolved，重复提交读回 already-resolved", async () => {
+    const calls: { sql: string; bindings?: Record<string, unknown> }[] = [];
+    let resolved = false;
+    const conn = {
+      async query(sql: string, bindings?: Record<string, unknown>) {
+        calls.push({ sql, bindings });
+        if (sql.includes("UPDATE")) {
+          if (resolved) return [];
+          resolved = true;
+          return [{ id: "user_notification:ofreq_t1_x" }];
+        }
+        return [{
+          resolved_at: resolved ? "2026-07-20T03:00:00.000Z" : null,
+          answer: resolved ? { action: "answered", text: "已补齐" } : null,
+          resolution: resolved ? "已补齐" : null,
+        }];
+      },
+    } as unknown as SurrealConn;
+
+    const first = await resolveOfficeRequest(conn, "user_notification:ofreq_t1_x", {
+      action: "answered",
+      text: "已补齐",
+    });
+    expect(first.status).toBe("resolved");
+    expect(calls[0].sql).toContain("WHERE resolved_at = NONE");
+    expect(calls[0].bindings?.answer).toMatchObject({ action: "answered", text: "已补齐" });
+
+    const second = await resolveOfficeRequest(conn, "user_notification:ofreq_t1_x", {
+      action: "rejected",
+      text: "改口拒绝",
+    });
+    expect(second).toMatchObject({ status: "already-resolved", answerAction: "answered" });
+  });
+
+  test("通知不可见时如实返回 not-visible，不伪装成功", async () => {
+    const conn = {
+      async query() { return []; },
+    } as unknown as SurrealConn;
+    const outcome = await resolveOfficeRequest(conn, "user_notification:ghost", {
+      action: "answered",
+      text: "x",
+    });
+    expect(outcome.status).toBe("not-visible");
+  });
+
+  test("唤醒调用打向 wake 端点并编码记录 id；非 2xx 抛出带状态的错误", async () => {
+    const posts: { param: { slug: string; notificationId: string } }[] = [];
+    const client = {
+      api: {
+        workspaces: {
+          ":slug": {
+            office: {
+              requests: {
+                ":notificationId": {
+                  wake: {
+                    async $post(input: { param: { slug: string; notificationId: string } }) {
+                      posts.push(input);
+                      return new Response(JSON.stringify({ outcome: "completed" }), { status: 200 });
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+
+    const result = await wakeOfficeRequest("acme", "user_notification:ofreq_t1_x", client);
+    expect(result.outcome).toBe("completed");
+    expect(posts[0].param.notificationId).toBe("user_notification%3Aofreq_t1_x");
+
+    const failing = {
+      api: {
+        workspaces: {
+          ":slug": {
+            office: {
+              requests: {
+                ":notificationId": {
+                  wake: {
+                    async $post() {
+                      return new Response("boom", { status: 409 });
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+    await expect(wakeOfficeRequest("acme", "user_notification:ofreq_t1_x", failing))
+      .rejects.toThrow("唤醒失败（409）");
   });
 });

@@ -100,6 +100,8 @@ export type TriggerEnvelope = {
   payloadRef: string | null;
   chainDepth: number;
   idempotencyKey: string;
+  /** 认领时绑定的 durable run id（er-<triggerId>）；handler 可用它做 run 关联追溯。 */
+  runId: string | null;
 };
 
 export type TriggerHandlerContext = {
@@ -879,6 +881,7 @@ export function createEmployeeTriggerRuntime(deps: {
       payloadRef: typeof row.payload_ref === "string" ? row.payload_ref : null,
       chainDepth: typeof row.chain_depth === "number" ? row.chain_depth : 0,
       idempotencyKey: delivery.idempotencyKey,
+      runId: typeof row.run_id === "string" ? row.run_id : null,
     };
   }
 
