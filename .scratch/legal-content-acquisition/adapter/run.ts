@@ -17,7 +17,7 @@ import { extractLegislationPage, type LegislationExtraction } from "./legislatio
 import { extractJudgmentPage, type JudgmentExtraction } from "./judgment";
 import { buildJudgmentEntry, buildLegislationEntry, validateBatch } from "./emit";
 import { PLATFORM_CONTENT_CONTRACT_VERSION, type IngestionBatch, type IngestionEntry } from "./deps";
-import { QUALIFIED_SOURCES, requireQualifiedSource, AccessRestrictedError } from "./sources";
+import { QUALIFIED_SOURCES, requireQualifiedSource, AccessRestrictedError, recordKeyForUrl } from "./sources";
 
 function flagValue(name: string): string | undefined {
   const index = Bun.argv.indexOf(name);
@@ -26,19 +26,6 @@ function flagValue(name: string): string | undefined {
 
 function flag(name: string): boolean {
   return Bun.argv.includes(name);
-}
-
-function recordKeyForUrl(url: string, kind: string): string {
-  const path = new URL(url).pathname;
-  const segments = path.split("/").filter(Boolean);
-  if (kind === "legislation") {
-    // /zcfgk/c100009/c5233383/content.html → c5233383
-    const contentId = segments.filter((segment) => /^c\d+$/u.test(segment)).at(-1);
-    if (contentId) return contentId;
-  }
-  const last = segments.at(-1)?.replace(/\.html?$/u, "");
-  if (last && /^\d+$/u.test(last)) return last;
-  throw new Error(`无法从 URL 确定稳定记录键：${url}`);
 }
 
 async function main(): Promise<void> {
