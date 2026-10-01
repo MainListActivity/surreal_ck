@@ -1,5 +1,7 @@
 import type { RecordIdString } from "@surreal-ck/shared/dto";
 import { getSurreal } from "./surreal";
+import { getCurrentWorkspace } from "./workspace-store.svelte";
+import { loadWorkspaceQuota } from "./quota/client";
 import {
   createWorkbooksStore,
   type CreateFromTemplateOptions,
@@ -23,6 +25,13 @@ const reactive = $state<WorkbooksSnapshot>({
 
 const store = createWorkbooksStore({
   getConn: getSurreal,
+  // CV02：建簿前按工作区配额视图预检实体表容量（所需/缺口提示）。
+  // 读数不可得时返回 null，由引擎配额原子兜底。
+  getWorkspaceQuotaView: async () => {
+    const slug = getCurrentWorkspace()?.slug;
+    if (!slug) return null;
+    return loadWorkspaceQuota(slug);
+  },
   onChange(snapshot) {
     reactive.loading = snapshot.loading;
     reactive.error = snapshot.error;
