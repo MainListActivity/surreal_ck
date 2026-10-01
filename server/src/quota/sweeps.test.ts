@@ -322,11 +322,12 @@ describe("MaterializationWorker and loop scheduling", () => {
     });
   });
 
-  test("loop runs immediately, repeats, and can be stopped", () => {
+  test("loop runs immediately, repeats, and can be stopped", async () => {
     let runs = 0;
     let tick: (() => void) | undefined;
     let cleared = false;
     const handle = startQuotaLoop({
+      name: "unit-scheduling",
       async runOnce() {
         runs += 1;
       },
@@ -341,7 +342,9 @@ describe("MaterializationWorker and loop scheduling", () => {
     });
 
     expect(runs).toBe(1);
+    await Bun.sleep(0); // 首个 tick 记账落地（防重入窗口）
     tick?.();
+    await Bun.sleep(0);
     expect(runs).toBe(2);
     handle.stop();
     expect(cleared).toBeTrue();
