@@ -4,7 +4,7 @@ const BRAND = "卯豆";
 
 const WORKSPACE_PAGE_TITLES: Record<Exclude<WorkspacePage, "home">, string> = {
   docs: "我的文档",
-  content: "法律内容",
+  content: "内容库",
   templates: "模板库",
   dashboard: "仪表盘",
   office: "办公室",
