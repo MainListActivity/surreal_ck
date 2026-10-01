@@ -84,19 +84,47 @@ function unavailableEntry(versionPublicId: string): CitationStatusEntry {
   };
 }
 
-/** 报告级四态汇总：报告可见（用户数据恒成立）+ 引用可核验/全文可打开/可重跑。 */
+/** 报告级汇总口径（与导出一致）：四态只统计平台引用；工作区资料与指针不完整单列。 */
+export type CitationSummary = {
+  /** 平台引用：当前授权可核验（全文可打开）。 */
+  verifiable: number;
+  /** 平台引用：全文锁定（降 Plus/保留模式），摘录保留。 */
+  locked: number;
+  /** 平台引用：撤回/许可终止/删除，摘录隐藏。 */
+  tombstoned: number;
+  /** 平台引用：核验失败或状态未知（fail closed，暂不可核验）。 */
+  unavailable: number;
+  /** 工作区资料引用（无 platformContent）：按原 workspace 权限继续可用，不走平台 gate。 */
+  workspace: number;
+  /** 平台引用但缺 versionPublicId：历史指针不完整，需重新研究。 */
+  incompletePointer: number;
+  /** 可重跑 ≠ 旧引用快照可复用：重跑是新成果版本，用当前授权与收费规则。 */
+  rerunnable: boolean;
+};
+
 export function summarizeCitationStates(
   citations: ResourceCitationDTO[],
   statuses: Map<string, CitationStatusEntry>,
-): { verifiable: number; locked: number; tombstoned: number; unavailable: number; rerunnable: boolean } {
+): CitationSummary {
   let verifiable = 0;
   let locked = 0;
   let tombstoned = 0;
   let unavailable = 0;
+  let workspace = 0;
+  let incompletePointer = 0;
   for (const citation of citations) {
-    const entry = citation.platformContent?.versionPublicId
-      ? statuses.get(citation.platformContent.versionPublicId)
-      : undefined;
+    const versionPublicId = citation.platformContent?.versionPublicId;
+    if (!citation.platformContent) {
+      // 工作区资料/外部来源引用：不属于平台内容 gate，导出按原 workspace 权限标注。
+      workspace += 1;
+      continue;
+    }
+    if (!versionPublicId) {
+      // 历史指针不完整：与“平台不可核验”分开计数，避免夸大平台失权。
+      incompletePointer += 1;
+      continue;
+    }
+    const entry = statuses.get(versionPublicId);
     if (!entry) {
       unavailable += 1;
       continue;
@@ -106,9 +134,7 @@ export function summarizeCitationStates(
     else if (entry.state === "tombstoned") tombstoned += 1;
     else unavailable += 1;
   }
-  // 可重跑 ≠ 旧引用快照可复用：重跑是新成果版本，用当前授权与收费规则。
-  const rerunnable = citations.length > 0;
-  return { verifiable, locked, tombstoned, unavailable, rerunnable };
+  return { verifiable, locked, tombstoned, unavailable, workspace, incompletePointer, rerunnable: citations.length > 0 };
 }
 
 /** 历史消息的原始问题（重跑用）：取该助手消息前最近一条用户消息。 */

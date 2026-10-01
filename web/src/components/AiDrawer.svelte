@@ -452,6 +452,8 @@
                     {summary.locked > 0 ? ` · ${summary.locked} 条全文锁定` : ""}
                     {summary.tombstoned > 0 ? ` · ${summary.tombstoned} 条已撤回/删除` : ""}
                     {summary.unavailable > 0 ? ` · ${summary.unavailable} 条暂不可核验` : ""}
+                    {summary.workspace > 0 ? ` · ${summary.workspace} 条工作区资料按原权限可见` : ""}
+                    {summary.incompletePointer > 0 ? ` · ${summary.incompletePointer} 条指针不完整需重新研究` : ""}
                   </p>
                   <ol class="citations" aria-label="引用">
                     {#each message.citations as citation (citation.index)}
