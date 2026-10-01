@@ -61,19 +61,23 @@ export function makeAgentExecutor(agent: Agent, options: AgentExecutorOptions = 
         maxSteps: options.maxSteps ?? 4,
         onStepFinish: ({ toolCalls, toolResults }) => {
           if (!toolResults?.length) return;
-          const stepResults = toolResults as unknown as Array<{
-            toolCallId: string;
-            toolName: string;
-            args?: unknown;
-            result: unknown;
-          }>;
-          const callList = toolCalls as unknown as Array<{ toolCallId: string; args?: unknown }>;
-          for (const tr of stepResults) {
-            const call = callList?.find((tc) => tc.toolCallId === tr.toolCallId);
+          // Mastra 回调里 toolCalls/toolResults 是 ChunkType：字段在 payload 内。
+          // 同时容忍顶层平铺与 input/output 命名，避免上游再改形状时静默丢结果。
+          const callArgsById = new Map<string, unknown>();
+          for (const tc of toolCalls ?? []) {
+            const payload = stepChunkFields(tc);
+            if (typeof payload?.toolCallId === "string") {
+              callArgsById.set(payload.toolCallId, payload.args ?? payload.input);
+            }
+          }
+          for (const tr of toolResults as unknown[]) {
+            const payload = stepChunkFields(tr);
+            if (typeof payload?.toolName !== "string") continue;
             const record: AiToolCallRecord = {
-              toolName: tr.toolName,
-              args: call?.args ?? tr.args,
-              result: tr.result,
+              toolName: payload.toolName,
+              args: (typeof payload.toolCallId === "string" ? callArgsById.get(payload.toolCallId) : undefined)
+                ?? payload.args ?? payload.input,
+              result: payload.result ?? payload.output,
             };
             observedToolCalls.push(record);
             options.onToolCall?.(record);
@@ -150,9 +154,30 @@ export function deriveSuspendSignalFromToolCalls(toolCalls: AiToolCallRecord[]):
     if (intent.type === "ambiguous") {
       return { kind: "ambiguous", candidates: intent.candidates };
     }
+    // 空提案不 suspend：无可确认字段时出空卡片等于伪造提案，run 以文本如实收尾。
+    if ((intent.type === "row-patch-proposal" || intent.type === "record-write-proposal")
+      && (!Array.isArray(intent.proposals) || intent.proposals.length === 0)) {
+      continue;
+    }
     return { kind: "await-write-confirm", intent };
   }
   return undefined;
+}
+
+type StepChunkFields = {
+  toolCallId?: unknown;
+  toolName?: unknown;
+  args?: unknown;
+  input?: unknown;
+  result?: unknown;
+  output?: unknown;
+};
+
+/** 归一化 Mastra step chunk：有 payload 取 payload，否则按平铺 part 读。 */
+function stepChunkFields(chunk: unknown): StepChunkFields | null {
+  const record = asRecord(chunk);
+  if (!record) return null;
+  return (asRecord(record.payload) ?? record) as StepChunkFields;
 }
 
 function readToolIntent(call: AiToolCallRecord): AiStructuredIntent | null {
