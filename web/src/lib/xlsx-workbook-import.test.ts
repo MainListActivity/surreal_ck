@@ -66,6 +66,8 @@ describe("OIP-13 workbooksStore.importXlsxWorkbook", () => {
     expect(queries.filter((query) => /BEGIN TRANSACTION/i.test(query.sql))).toHaveLength(1);
     expect(queries.find((query) => /BEGIN TRANSACTION/i.test(query.sql))!.sql).toMatch(/^BEGIN TRANSACTION;/u);
     expect(queries.find((query) => /BEGIN TRANSACTION/i.test(query.sql))!.sql.match(/DEFINE TABLE IF NOT EXISTS ent_/gu)).toHaveLength(2);
+    // Excel 建表与空白/模板建表走同一 DDL 构造器，同样带成员 DML 权限。
+    expect(queries.find((query) => /BEGIN TRANSACTION/i.test(query.sql))!.sql.match(/PERMISSIONS FOR select, create, update, delete WHERE fn::current_user\(\) != NONE/gu)).toHaveLength(2);
     expect(queries.find((query) => /BEGIN TRANSACTION/i.test(query.sql))!.sql).toMatch(/COMMIT TRANSACTION;$/u);
     expect(Object.values(queries.find((query) => /BEGIN TRANSACTION/i.test(query.sql))!.bindings ?? {}).filter((value) =>
       typeof value === "object" && value !== null && "field_1" in value)).toEqual([

@@ -1,5 +1,6 @@
 import { buildSurrealFieldSchema, gridColumnToStoredDef } from "@surreal-ck/shared/field-schema";
 import { buildRecordQuotaGuardSurql } from "@surreal-ck/shared/resource-quota";
+import { ENTITY_TABLE_MEMBER_PERMISSIONS } from "@surreal-ck/shared/entity-table-permissions";
 import type {
   DashboardBuilderSpec,
   GridColumnDef,
@@ -459,7 +460,8 @@ export function buildCreateWorkbookTransaction(
     const columnsBinding = createdSheets.length === 1 ? "$columnDefs" : `$sheetColumnDefs${bindingSuffix}`;
     const templateKeyBinding = createdSheets.length === 1 ? "$sheetTemplateKey" : `$sheetTemplateKey${bindingSuffix}`;
     const templateKeyClause = sheet.key ? `, template_sheet_key: ${templateKeyBinding}` : "";
-    return `DEFINE TABLE IF NOT EXISTS ${sheet.tableName} SCHEMALESS CHANGEFEED 7d;
+    return `DEFINE TABLE IF NOT EXISTS ${sheet.tableName} SCHEMALESS CHANGEFEED 7d
+  ${ENTITY_TABLE_MEMBER_PERMISSIONS};
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE ${sheet.tableName} TYPE datetime VALUE time::now() READONLY;
 DEFINE FIELD IF NOT EXISTS updated_at ON TABLE ${sheet.tableName} TYPE datetime VALUE time::now();
 ${fieldDdl}
