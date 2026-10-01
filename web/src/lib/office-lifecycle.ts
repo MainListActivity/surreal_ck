@@ -58,8 +58,15 @@ async function parseOutcome(response: LifecycleResponse): Promise<OfficeActionRe
   return { ok: false, message };
 }
 
-export function createOfficeLifecycleClient(): OfficeLifecycleClient {
-  const client = api as unknown as LifecycleRouteClient;
+/**
+ * hc client 的路由类型以 `api` 为根键（服务端把全部业务路由挂在 `/api` 下）：
+ * 少了这一层请求会发到 `/workspaces/...` 而非 `/api/workspaces/...`，生产返回
+ * 405（b09c87b1 QA 退回）。`root` 仅测试注入用。
+ */
+export function createOfficeLifecycleClient(
+  root: { api: LifecycleRouteClient } = api as unknown as { api: LifecycleRouteClient },
+): OfficeLifecycleClient {
+  const client = root.api;
   return async ({ slug, employeeKey, action }) => {
     try {
       const response = await client.workspaces[":slug"].employees[":employeeKey"][action].$post({
