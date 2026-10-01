@@ -1,5 +1,6 @@
 import { api, OidcExpiredError } from "./api";
 import { refresh, storeAccessToken } from "./auth";
+import { createBrowserNavigate } from "./browser-navigate";
 import { enterWorkspace } from "./workspace-store.svelte";
 import {
   createWorkspaceCreator,
@@ -13,9 +14,11 @@ import {
  * api client / OIDC refresh / 响应式 workspace store / URL。
  * 逻辑与编排在 `create-workspace.ts`（单测覆盖），这里只接线。
  */
-function browserNavigate(url: string): void {
-  if (typeof window !== "undefined") window.history.pushState({}, "", url);
-}
+// pushState 必须补发 popstate 才会同步 App 路由（见 browser-navigate.ts）。
+const browserNavigate = (url: string): void => {
+  if (typeof window === "undefined") return;
+  createBrowserNavigate(window)(url);
+};
 
 async function ensureFreshSession(): Promise<void> {
   const token = await refresh();
