@@ -76,6 +76,7 @@ export type OfficeTaskRow = {
   status: string;
   completion: string | null;
   brief: Record<string, unknown> | null;
+  result: Record<string, unknown> | null;
 };
 
 type RawTaskRow = {
@@ -88,6 +89,7 @@ type RawTaskRow = {
   status?: unknown;
   completion?: unknown;
   brief?: unknown;
+  result?: unknown;
 };
 
 function mapTask(row: RawTaskRow): OfficeTaskRow {
@@ -101,6 +103,7 @@ function mapTask(row: RawTaskRow): OfficeTaskRow {
     status: typeof row.status === "string" ? row.status : "open",
     completion: typeof row.completion === "string" ? row.completion : null,
     brief: row.brief && typeof row.brief === "object" ? (row.brief as Record<string, unknown>) : null,
+    result: row.result && typeof row.result === "object" ? (row.result as Record<string, unknown>) : null,
   };
 }
 
@@ -109,7 +112,7 @@ export async function getOfficeTask(
   taskId: string,
 ): Promise<OfficeTaskRow | null> {
   const [rows] = await session.query<[RawTaskRow[]]>(
-    `SELECT id, goal, assigner, assignee, parent, depth, status, completion, brief
+    `SELECT id, goal, assigner, assignee, parent, depth, status, completion, brief, result
      FROM $task;`,
     { task: new StringRecordId(taskId) },
   );

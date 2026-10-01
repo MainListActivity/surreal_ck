@@ -327,12 +327,21 @@ async function handleOfficeRequestResolved(ctx: TriggerHandlerContext): Promise<
     }),
   );
 
-  // 被该请求阻塞的任务：继续推进——交付含人类终态的报告并收 done。
-  // 非 blocked（未等待/已终态）只留答复消息，不强行改状态。
-  if (task && task.status === "blocked") {
-    await ctx.effects.runEffect("resume-task", () =>
-      setOfficeTaskStatus(ctx.session, task.id, "in_progress"),
-    );
+  // waiting_on 在 resume-task 后保留：restart 不能因为 status 已变
+  // in_progress 就跳过尚未提交的报告/收尾效果。done + requestId 则覆盖
+  // finish-task 已落库、effect 尚未 committed 的窄窗口，不重开终态。
+  // 同时验证请求归属与等待关联，不能替其他请求/员工收尾派单。
+  const ownsTask = task?.assignee === ctx.trigger.employeeId &&
+    request.fromEmployee === ctx.trigger.employeeId;
+  const waitingForThisRequest = task?.result?.waiting_on === notificationId &&
+    (task.status === "blocked" || task.status === "in_progress");
+  const finishedThisRequest = task?.status === "done" && task.result?.requestId === notificationId;
+  if (task && ownsTask && (waitingForThisRequest || finishedThisRequest)) {
+    if (task.status !== "done") {
+      await ctx.effects.runEffect("resume-task", () =>
+        setOfficeTaskStatus(ctx.session, task.id, "in_progress"),
+      );
+    }
     const reportTo = meta?.primaryContact ?? request.toUser;
     if (reportTo) {
       await ctx.effects.runEffect("answer-report", () =>

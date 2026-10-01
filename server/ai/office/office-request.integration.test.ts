@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { loadTemplateScripts } from "@surreal-ck/shared/workspace-template";
 import { StringRecordId, Surreal } from "surrealdb";
-import { SignJWT, exportJWK, generateKeyPair } from "jose";
+import { SignJWT, exportSPKI, generateKeyPair } from "jose";
 import { homedir } from "node:os";
 import { createEmployeeLifecycle } from "./employee-lifecycle";
 import { createEmployeeRuntime, type EmployeeRuntime } from "./employee-runtime";
@@ -15,8 +15,10 @@ import {
   wakeResolvedOfficeRequest,
   type OfficeBootstrapResult,
   type OfficeRequestWakeResult,
+  notifyOfficeRequestResolved,
 } from "./office-trigger-adapter";
 import { registerProjectManagerHandlers } from "./project-manager";
+import { createOfficeRequest } from "./office-domain";
 
 /**
  * VO03 真实 SurrealDB 纵切：PM 经 ask_human brief 发起结构化人类请求 → 通知落
@@ -51,13 +53,8 @@ async function setupFixture(database: string): Promise<Fixture> {
   const port = 23000 + Math.floor(Math.random() * 10000);
   const password = crypto.randomUUID();
   const keys = await generateKeyPair("ES256");
-  const publicKey = await exportJWK(keys.publicKey);
-  const jwks = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    fetch: () => Response.json({ keys: [{ ...publicKey, kid: "fixture", alg: "ES256", use: "sig" }] }),
-  });
-  const issuer = `http://127.0.0.1:${jwks.port}`;
+  const publicKey = await exportSPKI(keys.publicKey);
+  const issuer = "https://vo03-fixture.example.test";
   const binary = process.env.SURREAL_BINARY ?? `${homedir()}/.surrealdb/surreal`;
   const proc = Bun.spawn(
     [binary, "start", "--allow-all", "--bind", `127.0.0.1:${port}`, "--user", "test", "--pass", password, "memory"],
@@ -79,7 +76,13 @@ async function setupFixture(database: string): Promise<Fixture> {
     ).collect();
     await root.use({ namespace, database });
     for (const script of await loadTemplateScripts({ oidcJwksUrl: `${issuer}/jwks` })) {
-      await root.query(script.sql).collect();
+      // 本地 fork 可能未启用 jwks feature；只替换 fixture 的签名验证来源，
+      // 保留生产 admin/participant access 类型、AUTHENTICATE 与真实 ES256 JWT。
+      const sql = script.sql.replaceAll(
+        `JWT URL "${issuer}/jwks"`,
+        `JWT ALGORITHM ES256 KEY ${JSON.stringify(publicKey)}`,
+      );
+      await root.query(sql).collect();
     }
     await root.query(`
       CREATE user:owner CONTENT {
@@ -95,11 +98,10 @@ async function setupFixture(database: string): Promise<Fixture> {
         kind: "human", is_admin: false
       };
     `).collect();
-    fixtureCleanup.push(() => { proc.kill(); jwks.stop(true); });
+    fixtureCleanup.push(() => { proc.kill(); });
     return { url, namespace, database, issuer, privateKey: keys.privateKey, root };
   } catch (cause) {
     proc.kill();
-    jwks.stop(true);
     throw cause;
   }
 }
@@ -148,7 +150,13 @@ function callerSessionFor(fixture: Fixture) {
   };
 }
 
-function buildStack(fixture: Fixture): Stack {
+type QueryInterruption = {
+  phase: "before" | "after";
+  matches(sql: string, params: Record<string, unknown>): boolean;
+  reached: boolean;
+};
+
+function buildStack(fixture: Fixture, interruption?: QueryInterruption): Stack {
   const employeeRuntime = createEmployeeRuntime({
     surrealUrl: fixture.url,
     namespace: fixture.namespace,
@@ -167,7 +175,27 @@ function buildStack(fixture: Fixture): Stack {
     runtime: employeeRuntime,
   });
   const triggerRuntime = createEmployeeTriggerRuntime({
-    sessions: employeeRuntime,
+    sessions: interruption ? {
+      async openSession(database, employeeId) {
+        const session = await employeeRuntime.openSession(database, employeeId);
+        return {
+          async query<R extends unknown[] = unknown[]>(sql: string, params: Record<string, unknown> = {}): Promise<R> {
+            const interrupt = async (phase: "before" | "after") => {
+              if (!interruption.reached && interruption.phase === phase && interruption.matches(sql, params)) {
+                interruption.reached = true;
+                // 模拟进程消失：旧窗口不再提交任何状态；新 runtime 从过期租约恢复。
+                await new Promise<never>(() => {});
+              }
+            };
+            await interrupt("before");
+            const result = await session.query<R>(sql, params);
+            await interrupt("after");
+            return result;
+          },
+        };
+      },
+      close: (database, employeeId) => employeeRuntime.close(database, employeeId),
+    } : employeeRuntime,
     driver: createMastraEmployeeDriver,
     sleep: () => Promise.resolve(),
   });
@@ -310,6 +338,11 @@ describe("VO03 人类请求一次性解决闭环（真实 SurrealDB）", () => {
     const member = await jwtSession(fixture, { sub: "member-sub", ac: "participant" });
     expect(await memberResolve(member, notificationId, { action: "answered", text: "以先到期的为准" }))
       .toBe(1);
+    // 直接绕过浏览器 CAS 也不能改写/清空首个终态。
+    await expect(member.query(
+      `UPDATE $notification SET answer = { action: "rejected", text: "改口" };`,
+      { notification: new StringRecordId(notificationId) },
+    ).collect()).rejects.toThrow("resolution is terminal");
     // 重复提交（重复点击/刷新重试）：CAS 写不到行，首个终态不被改写。
     expect(await memberResolve(member, notificationId, { action: "rejected", text: "改口" }))
       .toBe(0);
@@ -499,3 +532,150 @@ describe("VO03 人类请求一次性解决闭环（真实 SurrealDB）", () => {
     await stack.employeeRuntime.stop();
   }, 120_000);
 });
+
+
+describe("VO03 续跑中断恢复（真实 fork + Mastra + effect 账本）", () => {
+  const boundaries = ["resume-committed", "report-written", "before-finish", "finish-written"] as const;
+  for (const boundary of boundaries) {
+    test(`${boundary} 中断后续跑收尾，重复 wake 不重复业务效果`, async () => {
+      const fixture = await setupFixture("ws_vo03_recovery");
+      const interruption: QueryInterruption = {
+        reached: false,
+        phase: boundary === "before-finish" ? "before" : "after",
+        matches(sql, params) {
+          if (boundary === "resume-committed") {
+            return sql.includes("UPDATE employee_effect") &&
+              String(params.effectKey).endsWith(":resume-task");
+          }
+          if (boundary === "report-written") {
+            const content = params.content as Record<string, unknown> | undefined;
+            return sql.includes("INSERT IGNORE INTO office_report") &&
+              String(content?.id).startsWith("office_report:pm_answer_");
+          }
+          const result = params.result as Record<string, unknown> | undefined;
+          return sql.includes("UPDATE $task") && params.status === "done" && !!result?.requestId;
+        },
+      };
+      const stack = buildStack(fixture, interruption);
+      const admin = await jwtSession(fixture, { sub: "owner-sub", ac: "admin" });
+      await admin.query(`CREATE office_meta:office CONTENT {
+        goal: "恢复派单", primary_contact: user:member, state: "onboarding"
+      };`).collect();
+      expect((await stack.bootstrap({ slug: "acme", callerToken: "owner-sub:admin" })).kind).toBe("ok");
+      const pmId = officeManagerEmployeeId(fixture.database);
+      await waitFor(async () => {
+        const [t] = await rows<{ status: string }>(fixture, "SELECT status FROM office_task:pm_initial");
+        return t?.status === "done" ? true : null;
+      });
+      await admin.query(`CREATE office_task:recover CONTENT {
+        goal: "按答复交付报告", assignee: ${pmId},
+        brief: { ask_human: { prompt: "采用哪个口径？", to: "user:member" } }
+      };`).collect();
+      expect((await notifyOfficeTask(stack.triggerRuntime, {
+        database: fixture.database, assigneeId: pmId, taskId: "office_task:recover",
+      })).outcome).toBe("completed");
+      const [request] = await rows<{ id: unknown }>(fixture,
+        'SELECT id FROM user_notification WHERE purpose = "office-request"');
+      const notificationId = String(request!.id);
+      const member = await jwtSession(fixture, { sub: "member-sub", ac: "participant" });
+      expect(await memberResolve(member, notificationId, { action: "answered", text: "口径A" })).toBe(1);
+      void stack.wake({ slug: "acme", callerToken: "member-sub:participant", notificationId });
+      await waitFor(async () => interruption.reached ? true : null);
+      const [before] = await rows<{ status: string }>(fixture, "SELECT status FROM office_task:recover");
+      expect(before!.status).toBe(boundary === "finish-written" ? "done" : "in_progress");
+      // 拨快租约时钟；旧窗口被悬停，新 runtime 使用真实持久 snapshot restart。
+      await fixture.root.query(`
+        UPDATE employee_trigger SET lease_expires_at = time::now() - 1s WHERE status = "running";
+        UPDATE employee_window SET lease_expires_at = time::now() - 1s;
+      `).collect();
+      const recovery = createEmployeeTriggerRuntime({
+        sessions: stack.employeeRuntime, driver: createMastraEmployeeDriver,
+        sleep: () => Promise.resolve(),
+      });
+      registerProjectManagerHandlers(recovery);
+      recovery.start();
+      try {
+        const summary = await recovery.reconcile({ database: fixture.database, employeeId: pmId });
+        expect(summary).toMatchObject({ reclaimed: 1, completed: 1 });
+        const [after] = await rows<{ status: string; result: { requestId: string } }>(fixture,
+          "SELECT status, result FROM office_task:recover");
+        expect(after).toMatchObject({ status: "done", result: { requestId: notificationId } });
+        const reports = await rows<{ summary: string }>(fixture,
+          'SELECT summary FROM office_report WHERE task = office_task:recover');
+        expect(reports).toHaveLength(1);
+        expect(reports[0]!.summary).toContain("口径A");
+        const key = notificationId.replace(/[^a-zA-Z0-9_]/g, "_");
+        expect(await rows(fixture, `SELECT id FROM office_message:pm_answer_${key}`)).toHaveLength(1);
+        const triggers = await rows<{ id: unknown; status: string; attempts: number }>(fixture,
+          'SELECT id, status, attempts FROM employee_trigger WHERE reason = "office-request-resolved"');
+        expect(triggers).toHaveLength(1);
+        expect(triggers[0]).toMatchObject({ status: "completed", attempts: 2 });
+        const effects = await rows<{ status: string }>(fixture,
+          'SELECT status FROM employee_effect WHERE trigger = $trigger',
+          { trigger: new StringRecordId(String(triggers[0]!.id)) });
+        expect(effects).toHaveLength(4);
+        expect(effects.every((effect) => effect.status === "committed")).toBe(true);
+        expect((await notifyOfficeRequestResolved(recovery, {
+          database: fixture.database, notificationId, employeeId: pmId,
+        })).outcome).toBe("coalesced");
+        expect(await rows(fixture, 'SELECT id FROM office_report WHERE task = office_task:recover')).toHaveLength(1);
+      } finally {
+        await recovery.stop();
+        // 旧进程的 promise 被刻意悬停，不能 await 排空；关闭实际员工会话。
+        void stack.triggerRuntime.stop();
+        await stack.employeeRuntime.stop();
+      }
+    }, 60_000);
+  }
+});
+
+
+test("VO03 续跑关联守卫：其他请求、其他 assignee 和取消终态均不收尾", async () => {
+  const fixture = await setupFixture("ws_vo03_unrelated");
+  const stack = buildStack(fixture);
+  const admin = await jwtSession(fixture, { sub: "owner-sub", ac: "admin" });
+  await admin.query(`CREATE office_meta:office CONTENT {
+    goal: "关联守卫", primary_contact: user:member, state: "onboarding"
+  };`).collect();
+  expect((await stack.bootstrap({ slug: "acme", callerToken: "owner-sub:admin" })).kind).toBe("ok");
+  const pmId = officeManagerEmployeeId(fixture.database);
+  await waitFor(async () => {
+    const [t] = await rows<{ status: string }>(fixture, "SELECT status FROM office_task:pm_initial");
+    return t?.status === "done" ? true : null;
+  });
+  const member = await jwtSession(fixture, { sub: "member-sub", ac: "participant" });
+  for (const caseName of ["blocked", "in_progress", "other-assignee", "cancelled"] as const) {
+    const taskId = `office_task:unrelated_${caseName.replaceAll("-", "_")}`;
+    const notificationId = `user_notification:unrelated_${caseName.replaceAll("-", "_")}`;
+    const status = caseName === "other-assignee" ? "blocked" : caseName;
+    await admin.query(`CREATE $task CONTENT {
+      goal: "不得被本请求收尾", assignee: $assignee
+    }; UPDATE $task SET status = $status, result = $result;`, {
+      task: new StringRecordId(taskId),
+      assignee: new StringRecordId(caseName === "other-assignee" ? "user:member" : pmId),
+      status,
+      result: { waiting_on: caseName === "other-assignee" ? notificationId : "user_notification:different" },
+    }).collect();
+    const pm = await stack.employeeRuntime.openSession(fixture.database, pmId);
+    try {
+      await createOfficeRequest(pm, {
+        id: notificationId, dedupeKey: notificationId, task: taskId,
+        to: "user:member", prompt: "独立请求",
+      });
+    } finally {
+      await stack.employeeRuntime.close(fixture.database, pmId);
+    }
+    expect(await memberResolve(member, notificationId, { action: "answered", text: "答复" })).toBe(1);
+    expect(await stack.wake({ slug: "acme", callerToken: "member-sub:participant", notificationId }))
+      .toMatchObject({ kind: "ok", outcome: "completed" });
+    const [task] = await rows<{ status: string }>(fixture, "SELECT status FROM $task", {
+      task: new StringRecordId(taskId),
+    });
+    expect(task!.status).toBe(status);
+    expect(await rows(fixture, "SELECT id FROM office_report WHERE task = $task", {
+      task: new StringRecordId(taskId),
+    })).toHaveLength(0);
+  }
+  await stack.triggerRuntime.stop();
+  await stack.employeeRuntime.stop();
+}, 60_000);

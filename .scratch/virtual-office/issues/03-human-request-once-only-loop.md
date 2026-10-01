@@ -18,3 +18,7 @@ Label: done
 - [x] UI 显示待处理、已解决和失败状态；结构化错误不会把实际未提交的答案显示为成功。
 - [x] 集成测试覆盖 employee 提问、participant 回答、非 recipient 越权、断线重连和债权风险通知兼容。
 
+
+## Comments
+
+- 2026-10-01：工程复核退回的续跑恢复缺陷已修复。新增真实 fork + Mastra snapshot 的四个中断点回归，使用 waiting_on/requestId 识别同一请求的持久中间态；其他请求、assignee 或取消终态不可被收尾。测试 fixture 使用 ES256 静态公钥以兼容本机未启用 JWKS 的 fork 构建，生产 JWT/JWKS access 定义保持原样。
