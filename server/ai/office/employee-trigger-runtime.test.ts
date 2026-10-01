@@ -590,7 +590,9 @@ describe("employee trigger runtime（VER04 lease/durable run/幂等副作用）"
     const runtime2 = createEmployeeTriggerRuntime({ sessions: dead, driver: factory });
     runtime2.start();
     runtime2.registerHandler("daily-claims-risk", async () => ({}));
-    expect(await runtime2.enqueue(delivery())).toEqual({ outcome: "failed", error: "no such employee" });
+    // D1 返工：会话层失败的原始串不进 EnqueueResult，归一化为
+    // employee-session-closed（原始信息在服务端日志）。
+    expect(await runtime2.enqueue(delivery())).toEqual({ outcome: "failed", error: "employee-session-closed" });
 
     runtime.start();
     runtime.registerHandler("daily-claims-risk", async () => ({ ok: true }));

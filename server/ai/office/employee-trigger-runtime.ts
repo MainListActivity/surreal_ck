@@ -42,6 +42,20 @@ import {
  *   跨进程互斥；进程内同 (database, employeeId) 共用一条 lane——窗口按
  *   FIFO drain 该员工的 pending/过期触发，事件风暴下同一员工最多有
  *   「当前窗口 + 至多一个合并后的后续窗口」，不为每条触发各开窗口。
+ * - 窗口有界收敛（D1 返工）：窗口按 abort 收敛，三个来源共用同一条路径——
+ *   ① stop() 到点关停（"window-aborted"）；② 看门狗（窗口超过
+ *   windowDeadlineMs，缺省 leaseTtlMs + 5s 宽限，VER04 lease 语义：窗口
+ *   超过自己租约即按孤儿处理，触发清回可回收态，游离 driveRun 的写库
+ *   结果如实落库）→ "window-lease-expired"；③ 生命周期关闭会话
+ *   （pause/retire 的 sessions close 经 invalidateSession 同步通知）→
+ *   "employee-session-closed"。abort 后窗口 finally 必跑：windowPlanned
+ *   复位、waiter 按归一化错误码结算、lane 会话缓存交 housekeeping 清理，
+ *   不存在「悬挂窗口卡死 lane」的状态（VER 联验 D1 缺陷的根因即此）。
+ * - lane 会话缓存失效（D1 返工）：生命周期 close/register 替换会话时，
+ *   会话管理器同步回调 invalidateSession，lane 立即丢弃旧会话对象——
+ *   ensureLaneSession 绝不复用已关闭/已失效的会话；resume 后的下一个
+ *   窗口以全新代次建立会话并正常投递。pause 中投递：SIGNIN 被员工
+ *   access 拒绝，保持快速 failed("employee-session-blocked") 不落库。
  * - 全局背压：进程级信号量限制同时在跑的执行窗口数；拿槽的窗口才有
  *   employee 会话，等待中的触发保持 pending 由 drain/回收接手。
  * - 闸门（详见 employee-gates）：每次模型调用经 ctx.model 计量闸门
@@ -315,6 +329,14 @@ export type EmployeeTriggerRuntime = {
    * 无限等待。deadlineMs 缺省用 deps.shutdownDeadlineMs（默认 30s）。
    */
   stop(options?: { deadlineMs?: number }): Promise<void>;
+  /**
+   * 会话失效通知（D1 返工）：会话管理器在生命周期关闭/替换员工会话时
+   * 同步调用。lane 立即丢弃缓存的会话对象（ensureLaneSession 绝不复用
+   * 死会话），在途窗口经 abort 收敛路径有界结束（waiter 结算为
+   * failed("employee-session-closed")，触发清回可回收态）。同步执行、
+   * 不 await 任何关闭动作，避免与 persist 互斥链互等。
+   */
+  invalidateSession(input: { database: string; employeeId: string }): void;
   /** 健康/容量指标快照：纯进程内计数 + 时间戳，无 secret/token/payload。 */
   metrics(): EmployeeRuntimeMetrics;
 };
@@ -335,6 +357,42 @@ type TriggerRow = {
 function errorMessage(cause: unknown): string {
   const message = cause instanceof Error ? cause.message : String(cause);
   return message.slice(0, 500);
+}
+
+/**
+ * waiter/投递失败的归一化（D1 返工）：已知运行时错误码原样通过；SDK /
+ * 存储层的原始错误串不进入 EnqueueResult（诊断端点据此不再透出裸串），
+ * 原始信息只进服务端日志。会话层失效统一归为 "employee-session-closed"。
+ */
+const KNOWN_DELIVERY_ERROR_CODES = new Set([
+  "employee-session-blocked",
+  "employee-session-closed",
+  "employee-session-unavailable",
+  "employee-signin-failed",
+  "employee-credential-missing",
+  "employee-runtime-stopped",
+  "employee-trigger-persist-failed",
+  "employee-delivery-failed",
+  "window-aborted",
+  "window-lease-expired",
+  "snapshot-missing",
+  "trigger-failed",
+  "attempts-exhausted",
+]);
+const KNOWN_DELIVERY_ERROR_PREFIXES = [
+  "chain-depth-exceeded:",
+  "trigger-not-found:",
+  "trigger-not-waiting:",
+  "run-not-suspended:",
+  "unsupported-snapshot-status:",
+  "attempts-exhausted:",
+];
+
+export function normalizeDeliveryError(message: string): string {
+  if (KNOWN_DELIVERY_ERROR_CODES.has(message)) return message;
+  if (KNOWN_DELIVERY_ERROR_PREFIXES.some((prefix) => message.startsWith(prefix))) return message;
+  console.warn("[employee-trigger] delivery error normalized", { message });
+  return "employee-session-closed";
 }
 
 /** handler 返回值落 result（option<object>）：非对象包一层，undefined 记 null。 */
@@ -369,6 +427,16 @@ type LaneWaiter = {
   resolve: (result: EnqueueResult) => void;
 };
 
+/**
+ * 窗口中止原因 = waiter 结算用的归一化错误码（诊断端点只透出这些码，
+ * 不透出 SDK 原始错误串）：
+ * - "window-aborted"：stop() 关停到点；
+ * - "window-lease-expired"：窗口超过自身 lease 的看门狗到点（孤儿窗口）；
+ * - "employee-session-closed"：生命周期关闭/替换会话（pause/retire/resume
+ *   换代次）使在途窗口失去执行载体。
+ */
+export type WindowAbortReason = "window-aborted" | "window-lease-expired" | "employee-session-closed";
+
 type Lane = {
   database: string;
   employeeId: string;
@@ -385,6 +453,8 @@ type Lane = {
   followupWanted: boolean;
   /** 当前在途窗口的中止开关（窗口期间设置；stop 到点后触发）。 */
   windowAbort?: AbortController;
+  /** 本窗口的中止原因（abortWindow 设置；waiter 结算用）。 */
+  windowAbortReason?: WindowAbortReason;
   /** 当前窗口开始时间戳（lease age 指标）。 */
   windowStartedAt?: number;
   /** triggerId → 等待其终态的 enqueue 调用方。 */
@@ -396,6 +466,14 @@ export function createEmployeeTriggerRuntime(deps: {
   driver: EmployeeRunDriverFactory;
   /** 执行窗口 lease 时长；默认 60s。 */
   leaseTtlMs?: number;
+  /**
+   * 执行窗口硬截止（毫秒）：窗口单次触发的 driving 超过此时限由看门狗
+   * abort 收敛（waiter 结算 failed("window-lease-expired")，触发清回可
+   * 回收态，游离 driveRun 的写库结果如实落库）。缺省 leaseTtlMs + 5s
+   * 宽限；每次触发结算后重新武装。D1 返工：保证 pause 等会话失效落在
+   * 窗口内时 lane 有界收敛，不依赖 SDK 对死会话的报错行为。
+   */
+  windowDeadlineMs?: number;
   /** 时钟 seam（lease 判定写进 SQL 参数，测试可注入确定性时间）。 */
   now?: () => Date;
   /** 闸门限额覆盖（默认见 DEFAULT_GATE_LIMITS）。 */
@@ -421,6 +499,7 @@ export function createEmployeeTriggerRuntime(deps: {
   let started = false;
   let stopping: Promise<void> | null = null;
   const leaseTtlMs = deps.leaseTtlMs ?? 60_000;
+  const windowDeadlineMs = deps.windowDeadlineMs ?? leaseTtlMs + 5_000;
   const shutdownDeadlineMs = deps.shutdownDeadlineMs ?? 30_000;
   const abortGraceMs = deps.abortGraceMs ?? 5_000;
   const now = deps.now ?? (() => new Date());
@@ -598,6 +677,22 @@ export function createEmployeeTriggerRuntime(deps: {
   function hasUnsettledWaiters(lane: Lane): boolean {
     for (const waiter of lane.waiters.values()) if (!waiter.settled) return true;
     return false;
+  }
+
+  // ── 窗口有界收敛（D1 返工）──────────────────────────────────────────────
+
+  /** 中止在途窗口：reason 成为 waiter 的归一化结算错误码；重复中止幂等。 */
+  function abortWindow(lane: Lane, reason: WindowAbortReason): void {
+    const abort = lane.windowAbort;
+    if (!abort || abort.signal.aborted) return;
+    lane.windowAbortReason = reason;
+    abort.abort();
+  }
+
+  /** 看门狗：窗口超过硬截止（windowDeadlineMs）按孤儿窗口收敛。返回解除函数。 */
+  function armWindowWatchdog(lane: Lane): () => void {
+    const timer = setTimeout(() => abortWindow(lane, "window-lease-expired"), windowDeadlineMs);
+    return () => clearTimeout(timer);
   }
 
   /**
@@ -1079,13 +1174,15 @@ export function createEmployeeTriggerRuntime(deps: {
   }
 
   /**
-   * 窗口 abort 竞速件：signal 触发即返回 "window-aborted" 标记结果。
-   * 游离的 driveRun 由调用方挂 catch 吞 rejection，其后续写库行为如实
-   * （abort → run.cancel 后通常立即 failed；若 handler 已收尾则 completed）。
+   * 窗口 abort 竞速件：signal 触发即返回带归一化原因的失败结果
+   * （lane.windowAbortReason 由 abortWindow 设置）。游离的 driveRun 由
+   * 调用方挂 catch 吞 rejection，其后续写库行为如实（abort → run.cancel
+   * 后通常立即 failed；若 handler 已收尾则 completed）。
    */
-  function abortedOutcome(signal: AbortSignal): Promise<EnqueueResult> {
+  function abortedOutcome(lane: Lane, signal: AbortSignal): Promise<EnqueueResult> {
     return new Promise((resolve) => {
-      const done = () => resolve({ outcome: "failed", error: "window-aborted" });
+      const done = () =>
+        resolve({ outcome: "failed", error: lane.windowAbortReason ?? "window-aborted" });
       if (signal.aborted) done();
       else signal.addEventListener("abort", done, { once: true });
     });
@@ -1099,7 +1196,11 @@ export function createEmployeeTriggerRuntime(deps: {
     const release = await acquireWindowSlot();
     const abort = new AbortController();
     lane.windowAbort = abort;
+    lane.windowAbortReason = undefined;
     lane.windowStartedAt = now().getTime();
+    // 看门狗：窗口整体超过硬截止（首触发前已武装；每条触发结算后重置）
+    // 按孤儿窗口收敛——会话死挂（SDK 不报错）也在时限内结束。
+    let disarmWatchdog = armWindowWatchdog(lane);
     let crashed = false;
     let aborted = false;
     try {
@@ -1134,7 +1235,7 @@ export function createEmployeeTriggerRuntime(deps: {
             // 取件本身故障（会话断开/存储异常）= 窗口级崩溃：行保持 pending，
             // waiter 如实失败，交给下投递或 reconcile 重启窗口。
             crashed = true;
-            const error = errorMessage(cause);
+            const error = normalizeDeliveryError(errorMessage(cause));
             console.error("[employee-trigger] window crashed", {
               database: lane.database,
               employeeId: lane.employeeId,
@@ -1160,28 +1261,34 @@ export function createEmployeeTriggerRuntime(deps: {
           try {
             const driving = driveRun(session, claimed, envelope, lane, steps, abort.signal);
             driving.catch(() => undefined);
-            const outcome = await Promise.race([driving, abortedOutcome(abort.signal)]);
-            if (outcome.outcome === "failed" && outcome.error === "window-aborted") {
-              // 关停到点：abort 已下发给 driver（run.cancel），清回触发 lease
-              // 供 reconcile 立即回收；游离 driveRun 的写库结果如实落库。
+            const outcome = await Promise.race([driving, abortedOutcome(lane, abort.signal)]);
+            if (abort.signal.aborted) {
+              // 窗口被中止（stop 到点 / 看门狗 / 会话失效）：abort 已下发给
+              // driver（run.cancel），清回触发 lease 供 reconcile 立即回收；
+              // 游离 driveRun 的写库结果如实落库。
               aborted = true;
-              console.warn("[employee-trigger] window aborted at shutdown deadline", {
+              const reason = lane.windowAbortReason ?? "window-aborted";
+              console.warn("[employee-trigger] window aborted", {
                 database: lane.database,
                 employeeId: lane.employeeId,
                 triggerId,
                 runId: `er-${triggerId}`,
+                reason,
               });
-              settleWaiter(lane, triggerId, { outcome: "failed", triggerId, error: "window-aborted" });
+              settleWaiter(lane, triggerId, { outcome: "failed", triggerId, error: reason });
               await clearTriggerLease(session, triggerId);
               break;
             }
             settleWaiter(lane, triggerId, outcome);
+            // 本触发已收敛：看门狗重置，给下一条触发完整时限。
+            disarmWatchdog();
+            disarmWatchdog = armWindowWatchdog(lane);
           } catch (cause) {
             // 基础设施异常（storage 读写失败、驱动崩溃、会话断开）：不打 failed——
             // 该行保留 leased/running 与 lease 到期时间，交给 reconcile/下次投递
             // 按 durable 语义回收。本窗口如实上报这次尝试失败并停止 drain。
             crashed = true;
-            const error = errorMessage(cause);
+            const error = normalizeDeliveryError(errorMessage(cause));
             console.error("[employee-trigger] window crashed", {
               database: lane.database,
               employeeId: lane.employeeId,
@@ -1200,7 +1307,7 @@ export function createEmployeeTriggerRuntime(deps: {
         // drain 中其余基础设施异常（标记/收尾读写失败）：waiter 一律如实失败，
         // 触发保留 lease 供 reconcile 回收，互斥行由 finally 释放。
         crashed = true;
-        const error = errorMessage(cause);
+        const error = normalizeDeliveryError(errorMessage(cause));
         console.error("[employee-trigger] window crashed", {
           database: lane.database,
           employeeId: lane.employeeId,
@@ -1211,10 +1318,12 @@ export function createEmployeeTriggerRuntime(deps: {
         await releaseWindow(session, lane.employeeId, holder).catch(() => undefined);
       }
     } finally {
+      disarmWatchdog();
       if (aborted) metricsState.windows.aborted += 1;
       else if (crashed) metricsState.windows.crashed += 1;
       else if (started || abort.signal.aborted) metricsState.windows.completed += 1;
       lane.windowAbort = undefined;
+      lane.windowAbortReason = undefined;
       lane.windowStartedAt = undefined;
       release();
       lane.windowPlanned = false;
@@ -1257,7 +1366,8 @@ export function createEmployeeTriggerRuntime(deps: {
         );
       } catch (cause) {
         // 员工暂停/退休或凭证缺失时连 SIGNIN 都过不去：触发不落库，返回失败由 adapter 决定。
-        return { outcome: "failed", error: errorMessage(cause) };
+        // D1 返工：死会话上的查询异常同样收敛到这里——归一化错误码，不透出 SDK 原始串。
+        return { outcome: "failed", error: normalizeDeliveryError(errorMessage(cause)) };
       }
       metricsState.triggers.enqueued += 1;
       const triggerId = row?.id == null ? undefined : String(row.id);
@@ -1330,7 +1440,9 @@ export function createEmployeeTriggerRuntime(deps: {
         const release = await acquireWindowSlot();
         const abort = new AbortController();
         lane.windowAbort = abort;
+        lane.windowAbortReason = undefined;
         lane.windowStartedAt = now().getTime();
+        const disarmWatchdog = armWindowWatchdog(lane);
         try {
           // 活跃窗口期互斥：本进程串行 + employee_window 跨进程守门。
           const holder = await acquireWindow(session, employeeId).catch(() => null);
@@ -1359,11 +1471,12 @@ export function createEmployeeTriggerRuntime(deps: {
               try {
                 const driving = driveRun(session, claimed, envelope, lane, steps, abort.signal);
                 driving.catch(() => undefined);
-                const outcome = await Promise.race([driving, abortedOutcome(abort.signal)]);
-                if (outcome.outcome === "failed" && outcome.error === "window-aborted") {
+                const outcome = await Promise.race([driving, abortedOutcome(lane, abort.signal)]);
+                if (abort.signal.aborted) {
+                  const reason = lane.windowAbortReason ?? "window-aborted";
                   metricsState.windows.aborted += 1;
                   summary.failed += 1;
-                  settleWaiter(lane, triggerId, { outcome: "failed", triggerId, error: "window-aborted" });
+                  settleWaiter(lane, triggerId, { outcome: "failed", triggerId, error: reason });
                   await clearTriggerLease(session, triggerId);
                   break;
                 }
@@ -1376,7 +1489,7 @@ export function createEmployeeTriggerRuntime(deps: {
                 settleWaiter(lane, triggerId, {
                   outcome: "failed",
                   triggerId,
-                  error: errorMessage(cause),
+                  error: normalizeDeliveryError(errorMessage(cause)),
                 });
                 break;
               }
@@ -1386,7 +1499,9 @@ export function createEmployeeTriggerRuntime(deps: {
             await releaseWindow(session, employeeId, holder).catch(() => undefined);
           }
         } finally {
+          disarmWatchdog();
           lane.windowAbort = undefined;
+          lane.windowAbortReason = undefined;
           lane.windowStartedAt = undefined;
           release();
           await housekeeping(lane);
@@ -1405,6 +1520,7 @@ export function createEmployeeTriggerRuntime(deps: {
         } catch (cause) {
           return { outcome: "failed", error: errorMessage(cause) };
         }
+        let disarmWatchdog: (() => void) | null = null;
         let release: (() => void) | null = null;
         try {
           const [rows] = await session.query<[TriggerRow[]]>(
@@ -1420,7 +1536,9 @@ export function createEmployeeTriggerRuntime(deps: {
           release = await acquireWindowSlot();
           const abort = new AbortController();
           lane.windowAbort = abort;
+          lane.windowAbortReason = undefined;
           lane.windowStartedAt = now().getTime();
+          disarmWatchdog = armWindowWatchdog(lane);
           // resume 也经窗口互斥 + lease：同一时刻只允许一个窗口碰这条触发。
           const holder = await acquireWindow(session, employeeId);
           if (!holder) return { outcome: "coalesced", triggerId };
@@ -1469,12 +1587,16 @@ export function createEmployeeTriggerRuntime(deps: {
             resuming.catch(() => undefined);
             const raced = await Promise.race<EmployeeRunResult | "aborted">([
               resuming.then((r) => r),
-              abortedOutcome(abort.signal).then(() => "aborted" as const),
+              abortedOutcome(lane, abort.signal).then(() => "aborted" as const),
             ]);
             if (raced === "aborted") {
               metricsState.windows.aborted += 1;
               await clearTriggerLease(session, triggerId);
-              return { outcome: "failed", triggerId, error: "window-aborted" };
+              return {
+                outcome: "failed",
+                triggerId,
+                error: lane.windowAbortReason ?? "window-aborted",
+              };
             }
             const result = raced;
             if (result.status === "success") {
@@ -1491,11 +1613,13 @@ export function createEmployeeTriggerRuntime(deps: {
             await releaseWindow(session, employeeId, holder).catch(() => undefined);
           }
         } catch (cause) {
-          const error = errorMessage(cause);
-          console.error("[employee-trigger] resume crashed", { database, employeeId, triggerId, message: error });
-          return { outcome: "failed", triggerId, error };
+          const raw = errorMessage(cause);
+          console.error("[employee-trigger] resume crashed", { database, employeeId, triggerId, message: raw });
+          return { outcome: "failed", triggerId, error: normalizeDeliveryError(raw) };
         } finally {
+          disarmWatchdog?.();
           lane.windowAbort = undefined;
+          lane.windowAbortReason = undefined;
           lane.windowStartedAt = undefined;
           release?.();
           await housekeeping(lane);
@@ -1533,7 +1657,7 @@ export function createEmployeeTriggerRuntime(deps: {
           // run.cancel），再宽限 abortGraceMs；仍排不完的不再等。
           for (const lane of lanes.values()) {
             if (lane.windowAbort && !lane.windowAbort.signal.aborted) {
-              lane.windowAbort.abort();
+              abortWindow(lane, "window-aborted");
               abortedWindows += 1;
             }
           }
@@ -1552,6 +1676,15 @@ export function createEmployeeTriggerRuntime(deps: {
         })();
       }
       return stopping;
+    },
+
+    invalidateSession(input) {
+      // 只取既有 lane，不为未知员工凭空创建；同步清缓存 + 中止在途窗口，
+      // 不 await 任何关闭动作（避免与 persist 互斥链互等死锁）。
+      const lane = lanes.get(keyOf(input.database, input.employeeId));
+      if (!lane) return;
+      lane.session = undefined;
+      abortWindow(lane, "employee-session-closed");
     },
 
     metrics() {
