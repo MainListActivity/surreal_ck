@@ -1,3 +1,4 @@
+import { createDefaultAiContextSnapshot } from "@surreal-ck/shared";
 import type {
   AiChatMessage,
   AiContextSnapshot,
@@ -55,7 +56,8 @@ export type ActiveAiRun = {
 export type PendingAiIntent = {
   messageId: string;
   runId: string;
-  kind: "ambiguous-candidates" | "resource-candidates" | "await-write-confirm" | "manual-research";
+  kind: "authorization_changed" | "ambiguous-candidates" | "resource-candidates" | "await-write-confirm" | "manual-research";
+  authorizationChange?: { query: string; message: string; restart?: boolean };
   candidates?: Array<{
     id: string;
     label: string;
@@ -105,6 +107,7 @@ export type AiDrawerSession = {
     contextSnapshot: AiDrawerContextSnapshot,
     options?: { composerMode?: AiComposerMode },
   ): Promise<void>;
+  continueResearch(messageId: string, action: "research-retry" | "research-continue-current"): Promise<void>;
   chooseCandidate(messageId: string, candidateId: string): Promise<void>;
   resumeWrite(messageId: string, decision: "write-confirmed" | "write-rejected"): Promise<void>;
   /** 人工检索完成：用已保存的资源 id resume workflow。成功才 dismiss 检索卡，失败上抛可重试。 */
@@ -341,7 +344,11 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
 
     if (event.kind === "suspend") {
       settleRunCompletion(event.runId);
-      if (event.payload.kind === "ambiguous-candidates" || event.payload.kind === "resource-candidates") {
+      if (event.payload.kind === "authorization_changed") {
+        state.pendingIntents = [...state.pendingIntents, { messageId, runId: event.runId, kind: "authorization_changed",
+          authorizationChange: { query: event.payload.query, message: event.payload.message, restart: event.payload.restart }, dismissed: false }];
+        patchMessage(messageId, { content: event.payload.message });
+      } else if (event.payload.kind === "ambiguous-candidates" || event.payload.kind === "resource-candidates") {
         state.pendingIntents = [
           ...state.pendingIntents,
           {
@@ -414,6 +421,28 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
       closeActiveStream();
       emitChange();
     }
+  }
+
+  async function continueResearch(messageId: string, action: "research-retry" | "research-continue-current"): Promise<void> {
+    const pending = state.pendingIntents.find(i => i.messageId === messageId && !i.dismissed && i.kind === "authorization_changed");
+    if (!pending?.authorizationChange) return;
+    state.sending = true;
+    state.sendError = null;
+    emitChange();
+    try {
+      if (pending.authorizationChange.restart) {
+        const context = state.messages.find(m => m.id === messageId)?.context ?? createDefaultAiContextSnapshot();
+        await sendMessage(pending.authorizationChange.query, context, { composerMode: "resource-search" });
+      } else {
+        const run = await options.chatClient.resumeChat(pending.runId, { kind: action });
+        connectRun(run, messageId);
+      }
+      markIntentDismissed(pending);
+    } catch (error) {
+      state.sending = false;
+      state.sendError = aiErrorMessage(error);
+    }
+    emitChange();
   }
 
   async function chooseCandidate(messageId: string, candidateId: string): Promise<void> {
@@ -616,6 +645,7 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
     sendMessage,
     chooseCandidate,
     resumeWrite,
+    continueResearch,
     finishResearch,
     retryMessage,
     syncWorkspace,

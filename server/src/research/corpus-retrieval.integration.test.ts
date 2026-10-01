@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { Surreal } from "surrealdb";
-import { SignJWT, generateKeyPair, exportJWK } from "jose";
+import { SignJWT, generateKeyPair, exportJWK, exportSPKI } from "jose";
 import { CONTENT_SEARCH_QUERY } from "@surreal-ck/shared";
 import { loadPlatformContentScripts } from "@surreal-ck/shared/platform-content-schema";
 import { homedir } from "node:os";
@@ -43,7 +43,10 @@ localTest("授权语料检索在真实引擎上按 gate 强制授权", async () 
     await root.query("DEFINE NAMESPACE test; USE NS test; DEFINE DATABASE content; USE DB content;");
     await root.use({ namespace: "test", database: "content" });
     for (const script of (await loadPlatformContentScripts()).filter((entry) => entry.version <= 6)) await root.query(script.sql);
-    await defineContentReaderAccess(root, { jwksUrl: `${issuer}/jwks`, issuer, audience: "fixture" });
+    // 测试使用同一 AUTHENTICATE 规则 + ES256 公钥；公司 fork 本地构建未包含 JWKS HTTP feature。
+    const verificationKey = await exportSPKI(keys.publicKey);
+    await defineContentReaderAccess({ query: async (sql: string) => root.query(sql.replace(/URL "[^"]+"/, () => `ALGORITHM ES256 KEY ${JSON.stringify(verificationKey)}`)) },
+      { jwksUrl: `${issuer}/jwks`, issuer, audience: "fixture" });
     const pass = crypto.randomUUID();
     await root.query(`CREATE content_projection_identity:server SET active = true;
       CREATE content_projection_credential:server SET secret_hash = crypto::argon2::generate($pass);`, { pass });
@@ -100,6 +103,24 @@ localTest("授权语料检索在真实引擎上按 gate 强制授权", async () 
     expect(JSON.stringify(result)).not.toContain("CANARY-DENIED");
     expect(JSON.stringify(result)).not.toContain("b-v1");
 
+    // LCA07：每次研究都建立新的 RECORD 租约会话，不缓存检索结果或复用旧证据。
+    const { makeLegalResearchExecutor } = await import("../../ai/mastra/agents/legal-research-agent");
+    const { createDefaultAiContextSnapshot } = await import("@surreal-ck/shared");
+    const prompts: string[] = [];
+    let windows = 0;
+    const executor = makeLegalResearchExecutor({ resolveWorkspaceId: async () => "ws_test", searchResources: async () => ({
+      status: "miss", indexStatus: "index-disabled", queryText: "合同", results: [] }), answerModel: async p => { prompts.push(p); return "合法依据 [1]"; } });
+    const openContentSession = async () => {
+      windows++;
+      const fresh = new Surreal();
+      await fresh.connect(url, { namespace: "test", database: "content" }); await fresh.authenticate(await issue("human"));
+      return { kind: "ready" as const, namespace: "test", database: "content", session: fresh, entitlementRevision: "1",
+        digest: "sha256:fixture", leaseEndSeconds: Date.now()/1000 + 300, close: async () => { await fresh.close(); } };
+    };
+    const researchInput = { taskText: "合同", shared: { userContext: createDefaultAiContextSnapshot(), confirmed: {} }, openContentSession };
+    const firstResearch = await executor(researchInput);
+    expect(prompts[0]).toContain("第一条 合同自成立时生效");
+
     // AI 使用许可与普通 read/cite 分别生效，不因可阅读就进入模型证据。
     await root.query("UPDATE content_read_gate SET ai_actions = [];");
     const noAi = await retrieveAuthorizedCorpus({ session: reader, query: "合同" });
@@ -117,6 +138,14 @@ localTest("授权语料检索在真实引擎上按 gate 强制授权", async () 
     });
     expect(afterWithdraw[0]).toHaveLength(0);
     expect((await retrieveAuthorizedCorpus({ session: reader, query: "合同" })).evidence).toEqual([]);
+    const withdrawnResearch = await executor({ ...researchInput, expectedAuthorization: firstResearch.researchAuthorization,
+      expectedPlatformVersionIds: ["a-v1"] });
+    expect(withdrawnResearch.suspend?.kind).toBe("authorization_changed");
+    expect(prompts).toHaveLength(1); // 旧报告/引用不会送给模型
+    await executor({ ...researchInput, acceptAuthorizationChange: true });
+    expect(prompts).toHaveLength(1); // 当前无合法证据：不调用模型
+    expect(windows).toBe(3);
+
   } finally {
     await reader.close().catch(() => undefined);
     await sync.close().catch(() => undefined);
