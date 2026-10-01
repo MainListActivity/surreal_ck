@@ -203,7 +203,7 @@ class FakeLedger implements Queryable {
     if (sql.includes("UPDATE ai_allowance_bucket SET")) {
       let count = 0;
       const prefix = String(params.trialPrefix);
-      for (const [id, bucket] of this.buckets) {
+      for (const bucket of this.buckets.values()) {
         if (bucket.period_key.startsWith(prefix) && bucket.terminated_at == null) {
           bucket.terminated_at = params.terminatedAt;
           count += 1;
@@ -327,6 +327,10 @@ describe("syncPlanCycleAllowance（LCA08 周期额度规则流程）", () => {
     expect(upgraded.delta).toBe(75);
     const grants = ledger.grants.map((grant) => grant.amount);
     expect(grants).toEqual([200, 75]);
+    // 补发审计：grant 账本 note 携带折算规则版本、事件键与折算分子/分母。
+    expect(ledger.grants[1]!.note).toContain(AI_UPGRADE_PRORATION_RULE_VERSION);
+    expect(ledger.grants[1]!.note).toContain("quota_subscription_item:team_item2");
+    expect(ledger.grants[1]!.note).toContain("remaining 1296000000/2592000000");
     const baseBucket = [...ledger.buckets.values()].find((b) => b.total === 200)!;
     expect(baseBucket.total).toBe(200);
 
