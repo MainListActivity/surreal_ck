@@ -31,8 +31,11 @@ export type WorkspaceRef = { id: string; slug: string };
 /** 订阅生命周期刷新需要 workspace 的 runtime 数据库名来触达 AI 额度账本。 */
 export type WorkspaceRuntimeRef = WorkspaceRef & { dbName: string };
 export type SnapshotRecord = EntitlementDraft & { id: string; workspaceId: string; workspaceSlug: string; revision: number };
+/** 审计动作全集：须与 system 迁移中 product_entitlement_audit.action 的 ASSERT 白名单一致。 */
+export const AUDIT_ACTIONS = ["publish", "assign", "grant", "revoke", "repair"] as const;
+export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 export type AuditRecord = {
-  action: "publish" | "assign" | "grant" | "revoke" | "repair";
+  action: AuditAction;
   requestDigest: string;
   entitlementId: string | null;
   productPlanRevisionId: string | null;
@@ -308,7 +311,7 @@ export class ProductEntitlementService {
 
   private async claim(
     actor: ProductActor,
-    action: "assign" | "grant" | "revoke" | "repair",
+    action: Exclude<AuditAction, "publish">,
     reason: string,
     idempotencyKey: string,
     requestDigest: string,
