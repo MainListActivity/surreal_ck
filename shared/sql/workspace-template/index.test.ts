@@ -520,4 +520,16 @@ describe("workspace template scripts", () => {
     expect(renderedSql).not.toContain("<__OIDC_JWKS_URL__>");
     expect(renderedSql.match(/https:\/\/issuer\.example\.test\/jwks\.json/g)?.length).toBe(4);
   });
+
+  test("LCA14 返工：049 增量为 resource_item.evidence 补 FLEXIBLE 子定义并修复既有隐式子字段", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.name === "049-resource-item-evidence-flexible.surql");
+
+    expect(migration?.version).toBe(49);
+    const sql = migration?.sql ?? "";
+    expect(sql).toMatch(/DEFINE FIELD IF NOT EXISTS evidence\.\* ON TABLE resource_item TYPE object FLEXIBLE/);
+    expect(sql).toMatch(/ALTER FIELD evidence\.\* ON TABLE resource_item FLEXIBLE/);
+    // 只加字段定义：不改写、不删除任何已有数据行或既有字段。
+    expect(sql).not.toMatch(/UPDATE |DELETE |REMOVE /i);
+  });
 });
