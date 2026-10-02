@@ -14,7 +14,7 @@ import { NATIVE_QUOTA_EXPECTED_CONTRACT } from "@surreal-ck/shared/native-quota"
 import { DateTime, StringRecordId } from "surrealdb";
 import { env } from "../env";
 import { getRootDatabaseSession } from "../db/root-connection";
-import { toSurrealNone } from "../db/surreal-values";
+import { toSurrealNone, toIsoDateTimeString } from "../db/surreal-values";
 import { materializeWorkspaceMigrationSql } from "../db/workspace-migration-execution";
 import {
   SurrealNativeQuotaClient,
@@ -96,6 +96,7 @@ export type CreateWorkspaceCreatorOptions = {
   nativeQuotaClient?: NativeQuotaClient;
   engineCapabilities?: readonly string[];
   controlPlane?: ProvisioningControlPlane;
+  deliverTrial?: (input: { workspaceId: string; dbName: string; subject: string; trial: NonNullable<ExplicitResourceSource["trial"]> }) => Promise<void>;
 };
 
 const SYSTEM_DATABASE = "_system";
@@ -206,6 +207,7 @@ function provisioningWorkspaceFromRow(
 
 function createSurrealControlPlane(
   systemDb: CreateWorkspaceClient,
+  trial?: ExplicitResourceSource["trial"],
 ): ProvisioningControlPlane {
   return {
     async reserveWorkspace(input) {
@@ -304,7 +306,7 @@ function createSurrealControlPlane(
       }
     },
 
-    async loadPlan(planKey) {
+    async loadPlan(planKey, revisionId) {
       const result = await systemDb.query(
         `
           SELECT id, active_revision
@@ -315,11 +317,11 @@ function createSurrealControlPlane(
         { planKey },
       );
       const planRow = firstRow(result);
-      if (!planRow?.active_revision) return null;
+      if (!planRow?.active_revision && !revisionId) return null;
 
       const revisionResult = await systemDb.query(
         "SELECT * FROM ONLY $revision;",
-        { revision: planRow.active_revision },
+        { revision: revisionId ? new StringRecordId(revisionId) : planRow!.active_revision },
       );
       const revisionRow = firstRow(revisionResult);
       if (!revisionRow) return null;
@@ -367,6 +369,14 @@ function createSurrealControlPlane(
         if (!subRow) {
           throw new Error("provisioning subscription item has no subscription");
         }
+        if (input.trial && (
+          String(subRow.billing_account) !== input.trial.billingAccountId
+          || subRow.status !== "trialing"
+          || String(itemRow.product_plan_revision) !== input.trial.productRevisionId
+          || toIsoDateTimeString(subRow.trial_start) !== input.trial.startsAt
+          || toIsoDateTimeString(subRow.trial_end) !== input.trial.endsAt
+          || toIsoDateTimeString(itemRow.effective_until) !== input.trial.endsAt
+        )) throw new Error("existing-trial-source-does-not-match-claim");
         const asOptionalDateTime = (value: unknown): DateTime | undefined => {
           if (value instanceof DateTime) return value;
           if (typeof value === "string") return new DateTime(value);
@@ -397,6 +407,7 @@ function createSurrealControlPlane(
             status: "active",
             effective_from:
               asOptionalDateTime(itemRow.effective_from) ?? DateTime.now(),
+            effective_until: asOptionalDateTime(itemRow.effective_until),
           },
           planRevision: input.planRevision,
         };
@@ -406,6 +417,7 @@ function createSurrealControlPlane(
       if (existing) return existing;
 
       const accountKey = `personal:${input.ownerSubject}`;
+      if (input.sourceKind === "trial" && !input.trial) throw new Error("explicit-pro-trial-claim-required");
       const subscriptionSource =
         input.sourceKind === "trial"
           ? "manual"
@@ -417,7 +429,9 @@ function createSurrealControlPlane(
         `
           BEGIN TRANSACTION;
 
-          LET $billing = (
+          LET $billing = IF $billingAccount != NONE {
+            SELECT * FROM ONLY $billingAccount
+          } ELSE { (
             INSERT INTO billing_account {
               account_key: $accountKey,
               name: $accountName,
@@ -427,15 +441,15 @@ function createSurrealControlPlane(
             ON DUPLICATE KEY UPDATE
               name = $input.name,
               status = "active"
-          )[0];
+          )[0] };
 
-          INSERT INTO billing_account_member {
+          IF $billingAccount = NONE { INSERT INTO billing_account_member {
             billing_account: $billing.id,
             subject: $subject,
             role: "owner",
             status: "active"
           }
-          ON DUPLICATE KEY UPDATE role = "owner", status = "active";
+          ON DUPLICATE KEY UPDATE role = "owner", status = "active"; };
 
           LET $subscription = CREATE ONLY type::record(
             "quota_subscription",
@@ -457,6 +471,8 @@ function createSurrealControlPlane(
             subscription: $subscription.id,
             workspace: $workspace,
             plan_revision: $planRevision,
+            product_plan_revision: $productRevision,
+            effective_until: $trialEnd,
             revision: 1,
             status: "active",
             effective_from: $effectiveAt,
@@ -467,21 +483,17 @@ function createSurrealControlPlane(
           COMMIT TRANSACTION;
         `,
         {
+          billingAccount: toSurrealNone(input.trial ? new StringRecordId(input.trial.billingAccountId) : null),
+          productRevision: toSurrealNone(input.trial ? new StringRecordId(input.trial.productRevisionId) : null),
           accountKey,
           accountName: input.email || input.ownerSubject,
           subject: input.ownerSubject,
           subscriptionSource,
           subscriptionStatus: input.sourceKind === "trial" ? "trialing" : "active",
           trialStart:
-            input.sourceKind === "trial" ? input.effectiveAt : undefined,
-          trialEnd:
-            input.sourceKind === "trial"
-              ? DateTime.fromEpochNanoseconds(
-                  input.effectiveAt.nanoseconds
-                    + 14n * 24n * 60n * 60n * 1_000_000_000n,
-                )
-              : undefined,
-          effectiveAt: input.effectiveAt,
+            input.trial ? new DateTime(input.trial.startsAt) : undefined,
+          trialEnd: input.trial ? new DateTime(input.trial.endsAt) : undefined,
+          effectiveAt: input.trial ? new DateTime(input.trial.startsAt) : input.effectiveAt,
           correlationId: input.correlationId,
           subscriptionKey: `provision_${input.workspace.dbName}`,
           itemKey: `provision_${input.workspace.dbName}`,
@@ -642,6 +654,18 @@ function createSurrealControlPlane(
     async markStage(input) {
       await systemDb.query(
         `
+          BEGIN;
+          IF $activateTrial {
+            LET $claim = (SELECT * FROM ONLY $trialClaim);
+            IF $claim = NONE OR $claim.lease != $trialLease OR $claim.lease_until <= time::now() OR $claim.ends_at <= time::now() {
+              THROW "trial-activation-fence-lost";
+            };
+            LET $authorized = (SELECT id FROM billing_account_member WHERE billing_account = $claim.billing_account
+              AND subject = $claim.subject AND status = "active" AND role INSIDE ["owner", "admin"]
+              AND billing_account.status = "active"
+              AND billing_account IN (SELECT VALUE billing_account FROM pro_trial_eligibility WHERE enabled = true) LIMIT 1)[0];
+            IF $authorized = NONE { THROW "trial-billing-authority-revoked"; };
+          };
           UPDATE $workspace SET
             provisioning_stage = $stage,
             status = IF $status = NONE THEN status ELSE $status END,
@@ -654,8 +678,15 @@ function createSurrealControlPlane(
             applied_quota_projection = IF $appliedQuotaProjection = NONE THEN applied_quota_projection ELSE $appliedQuotaProjection END,
             legacy_cleanup_after = IF $legacyCleanupAfter = NONE THEN legacy_cleanup_after ELSE $legacyCleanupAfter END,
             updated_at = time::now();
+          IF $activateTrial {
+            UPDATE $trialClaim SET state = "active", lease = NONE, lease_until = NONE;
+          };
+          COMMIT;
         `,
         {
+          activateTrial: Boolean(trial && input.stage === "completed" && input.status === "active"),
+          trialClaim: toSurrealNone(trial ? new StringRecordId(trial.claimId) : null),
+          trialLease: toSurrealNone(trial?.leaseId),
           workspace: input.workspaceId,
           stage: input.stage,
           status: toSurrealNone(input.status),
@@ -800,6 +831,7 @@ export function createWorkspaceCreator(
           nativeQuotaClient: options.nativeQuotaClient,
           engineCapabilities,
           controlPlane: options.controlPlane,
+          deliverTrial: options.deliverTrial,
         });
 
         if (result.kind !== "db-name-conflict") {
@@ -826,6 +858,7 @@ type TryCreateWorkspaceInput = {
   nativeQuotaClient?: NativeQuotaClient;
   engineCapabilities: readonly string[];
   controlPlane?: ProvisioningControlPlane;
+  deliverTrial?: (input: { workspaceId: string; dbName: string; subject: string; trial: NonNullable<ExplicitResourceSource["trial"]> }) => Promise<void>;
 };
 
 type TryCreateWorkspaceResult =
@@ -844,10 +877,11 @@ async function tryCreateWorkspace({
   nativeQuotaClient,
   engineCapabilities,
   controlPlane: injectedControlPlane,
+  deliverTrial,
 }: TryCreateWorkspaceInput): Promise<TryCreateWorkspaceResult> {
   const controlPlane =
     injectedControlPlane
-    ?? createSurrealControlPlane(systemDb);
+    ?? createSurrealControlPlane(systemDb, input.resourceSource.trial);
 
   const native =
     nativeQuotaClient
@@ -861,6 +895,16 @@ async function tryCreateWorkspace({
       },
     });
 
+  // Trial boundary is claimed by the authoritative DB clock. Use that clock
+  // for eligibility too: SDK DateTime.now() uses a process hrtime anchor and
+  // can lag wall-clock time after an adjustment (new claims otherwise flake).
+  let trialNow: DateTime | undefined;
+  if (input.resourceSource.trial) {
+    const clock = await systemDb.query("RETURN time::now();");
+    const value = Array.isArray(clock) ? clock[0] : undefined;
+    if (!(value instanceof DateTime)) throw new Error("trial-authoritative-clock-unavailable");
+    trialNow = value;
+  }
   const sagaResult = await runProvisioningQuotaSaga(controlPlane, native, {
     subject: input.subject,
     email: input.email,
@@ -868,7 +912,7 @@ async function tryCreateWorkspace({
     slug: input.slug,
     dbName,
     resourceSource: input.resourceSource,
-  });
+  }, { now: trialNow });
 
   if (sagaResult.kind === "slug-conflict") return { kind: "slug-conflict" };
   if (sagaResult.kind === "db-name-conflict") return { kind: "db-name-conflict" };
@@ -1043,6 +1087,16 @@ async function tryCreateWorkspace({
       slug: input.slug,
       dbName: provisionedDbName,
     };
+  }
+
+  if (input.resourceSource.trial) {
+    try {
+      if (!deliverTrial) throw new Error("trial-product-delivery-not-wired");
+      await deliverTrial({ workspaceId: workspace.id.toString(), dbName: provisionedDbName, subject: input.subject, trial: input.resourceSource.trial });
+    } catch {
+      await controlPlane.markStage({ workspaceId: workspace.id, stage: "index_ready", status: "provisioning_error", errorCode: "trial-delivery-pending", error: "trial product/content/allowance delivery incomplete" });
+      return { kind: "provisioning_error", code: "trial-delivery-pending", message: "trial delivery incomplete", slug: input.slug, dbName: provisionedDbName };
+    }
   }
 
   await controlPlane.markStage({

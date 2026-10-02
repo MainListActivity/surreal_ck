@@ -44,7 +44,7 @@ const creator = createWorkspaceCreator({
       err.details = body?.error?.details;
       throw err;
     }
-    return (await res.json()) as CreateResponse;
+    throw new Error("新工作区需要有效商业来源，请使用显式 Pro 试用入口");
   },
   storeAccessToken,
   enterWorkspace,

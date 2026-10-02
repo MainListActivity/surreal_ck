@@ -1,3 +1,7 @@
+import { ProTrialService } from "./workspaces/pro-trial";
+import { SurrealTrialStore } from "./workspaces/pro-trial-store";
+import { deliverProTrial } from "./workspaces/pro-trial-delivery";
+import { createProTrialRoutes } from "./routes/pro-trial";
 import { Hono } from "hono";
 import { handleError } from "./middleware/error";
 import { requestLogger } from "./middleware/logger";
@@ -130,6 +134,7 @@ export type AppOptions = {
   workspaceScope?: WorkspaceScopeModule;
   idpTokenScopeAdapter?: IdpTokenScopeAdapter;
   workspaceCreator?: WorkspaceCreator;
+  proTrialService?: ProTrialService;
   workspaceSettingsManager?: WorkspaceSettingsManager;
   memberManager?: MemberManager;
   oidcTokenExchange?: OidcTokenExchangeOptions;
@@ -283,7 +288,7 @@ const NOT_WIRED_AI_SERVICE: AiChatService = {
 function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiStreamRoutes>) {
   const workspaceScope = options.workspaceScope ?? createWorkspaceScopeModule();
   const idpTokenScopeAdapter = options.idpTokenScopeAdapter ?? createIdpTokenScopeAdapter();
-  const workspaceCreator = options.workspaceCreator ?? createWorkspaceCreator({ idpTokenScopeAdapter });
+  const workspaceCreator = options.workspaceCreator ?? createWorkspaceCreator({ idpTokenScopeAdapter, deliverTrial: deliverProTrial });
   const workspaceSettingsManager = options.workspaceSettingsManager ?? createWorkspaceSettingsManager();
   const memberManager = options.memberManager ?? createMemberManager();
   const runRegistry = options.runRegistry ?? createRunRegistry();
@@ -361,6 +366,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
       searchExchange: createContentSearchExchangeHandler(),
       requireUser: options.requireUser,
     }))
+    .route("/", createProTrialRoutes(options.proTrialService ?? new ProTrialService(new SurrealTrialStore(), workspaceCreator), options.requireUser))
     .route("/", createWorkspaceRoutes(workspaceCreator, workspaceScope, options.requireUser, workspaceSettingsManager))
     .route("/", createMemberRoutes(memberManager, options.requireUser))
     .route("/", createEmployeeRoutes({

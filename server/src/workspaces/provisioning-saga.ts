@@ -46,6 +46,8 @@ export type ProvisioningWorkspaceRecord = Readonly<{
 export type ExplicitResourceSource = Readonly<{
   /** Seeded or published plan key (trial / plus / pro / max). */
   planKey: string;
+  /** Server-owned claimed trial only; never parsed from a customer body. */
+  trial?: { claimId: string; billingAccountId: string; productRevisionId: string; resourceRevisionId: string; researchRate: number; rateRevision: number; fixture: boolean; leaseId: string; startsAt: string; endsAt: string };
   /**
    * commercial paid/manual/contract or trial. Defaults:
    * trial plan → trial; others → manual (explicit assignment).
@@ -74,7 +76,7 @@ export type ProvisioningControlPlane = {
     | { kind: "slug-conflict" }
     | { kind: "db-name-conflict" }
   >;
-  loadPlan(planKey: string): Promise<ProvisioningPlanLookup | null>;
+  loadPlan(planKey: string, revisionId?: string): Promise<ProvisioningPlanLookup | null>;
   persistResourceSource(input: {
     workspace: ProvisioningWorkspaceRecord;
     planKey: string;
@@ -85,6 +87,7 @@ export type ProvisioningControlPlane = {
     /** Same effective timestamp used by entitlement resolution. */
     effectiveAt: DateTime;
     correlationId: string;
+    trial?: ExplicitResourceSource["trial"];
   }): Promise<EntitlementBaseCandidate>;
   persistEntitlementAndProjection(input: {
     workspace: ProvisioningWorkspaceRecord;
@@ -224,7 +227,7 @@ export async function runProvisioningQuotaSaga(
   if (reserved.kind !== "reserved") return reserved;
 
   let workspace = reserved.workspace;
-  const plan = await controlPlane.loadPlan(input.resourceSource.planKey);
+  const plan = await controlPlane.loadPlan(input.resourceSource.planKey, input.resourceSource.trial?.resourceRevisionId);
   if (!plan) {
     await controlPlane.markStage({
       workspaceId: workspace.id,
@@ -279,6 +282,7 @@ export async function runProvisioningQuotaSaga(
       email: input.email,
       effectiveAt: now,
       correlationId,
+      trial: input.resourceSource.trial,
     });
 
     const ids = options.nextIds?.() ?? {
