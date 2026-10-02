@@ -376,7 +376,7 @@ export class SurrealQuotaOpsConsole implements QuotaOpsConsolePort {
             SELECT subject, workspace
             FROM user_workspace_index
             WHERE disabled_at = NONE
-              AND string::lowercase(subject) CONTAINS string::lowercase($query)
+              AND string::lowercase(subject ?? "") CONTAINS string::lowercase($query)
             LIMIT $limit
             FETCH workspace;
           `,
@@ -387,7 +387,7 @@ export class SurrealQuotaOpsConsole implements QuotaOpsConsolePort {
             SELECT subject, billing_account
             FROM billing_account_member
             WHERE status = "active"
-              AND string::lowercase(subject) CONTAINS string::lowercase($query)
+              AND string::lowercase(subject ?? "") CONTAINS string::lowercase($query)
             LIMIT $limit
             FETCH billing_account;
           `,

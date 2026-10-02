@@ -173,6 +173,11 @@ beforeAll(async () => {
       db_name: "ws_acme",
       role: "admin"
     };
+    CREATE user_workspace_index:precreated CONTENT {
+      workspace: workspace:acme,
+      db_name: "ws_acme",
+      role: "participant"
+    };
     CREATE platform_operator:alice CONTENT {
       subject: "operator:alice",
       display_name: "Alice",
