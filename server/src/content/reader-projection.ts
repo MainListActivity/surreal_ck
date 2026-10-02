@@ -64,6 +64,62 @@ export async function fetchContentReaderTarget(
   };
 }
 
+export type ContentReaderFacts = ContentReaderTarget & { publicId: string | null; bodySha256: string | null };
+
+/**
+ * 与 fetchContentReaderTarget 同一事实面，但按版本记录 ID 直取并带回 body_sha256：
+ * 交付复核（recover/WS 补取）只需要既有 versionId，不经目录扫描也不签发租约。
+ */
+export async function fetchContentReaderFactsByVersion(
+  db: ContentProjectionClient,
+  versionId: string,
+): Promise<ContentReaderFacts | null> {
+  const result = await db.query(
+    `
+    LET $v = (SELECT id, item, source, public_id, body_sha256 FROM content_version WHERE id = $version LIMIT 1)[0];
+    IF $v = NONE { RETURN NONE; };
+    LET $item = (SELECT id, publication_status FROM content_item WHERE id = $v.item LIMIT 1)[0];
+    IF $item = NONE { RETURN NONE; };
+    LET $src = (SELECT id, status FROM content_source WHERE id = $v.source LIMIT 1)[0];
+    LET $lic = (SELECT id, allowed_actions, effective_from, effective_until, \`revision\`
+      FROM source_license_revision WHERE source = $v.source ORDER BY \`revision\` DESC LIMIT 1)[0];
+    LET $bind = (SELECT collections FROM content_collection_binding WHERE item = $v.item LIMIT 1)[0];
+    RETURN {
+      version: $v.id,
+      item: $v.item,
+      public_id: $v.public_id,
+      body_sha256: $v.body_sha256,
+      source_status: $src.status ?? "inactive",
+      publication_status: $item.publication_status ?? "unknown",
+      license: $lic.id,
+      license_actions: $lic.allowed_actions ?? [],
+      license_from: $lic.effective_from,
+      license_until: $lic.effective_until,
+      collections: $bind.collections ?? []
+    };
+    `,
+    { version: new StringRecordId(versionId) },
+  );
+  const row = (Array.isArray(result) ? result.at(-1) : result) as Row | null | undefined;
+  if (!row || typeof row !== "object") return null;
+  const resolvedVersionId = recordId(row.version);
+  const itemId = recordId(row.item);
+  if (!resolvedVersionId || !itemId) return null;
+  return {
+    versionId: resolvedVersionId,
+    itemId,
+    licenseId: recordId(row.license) ?? "",
+    sourceActive: row.source_status === "active",
+    publicationStatus: asString(row.publication_status) ?? "unknown",
+    collectionKeys: stringsOf(row.collections),
+    licenseFromSeconds: secondsOf(row.license_from),
+    licenseUntilSeconds: secondsOf(row.license_until),
+    licenseActions: stringsOf(row.license_actions),
+    publicId: asString(row.public_id),
+    bodySha256: asString(row.body_sha256),
+  };
+}
+
 const PROJECTION_SQL = `
 BEGIN;
 UPSERT $projectionId CONTENT {

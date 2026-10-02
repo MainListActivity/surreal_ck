@@ -16,8 +16,8 @@ import { AiAllowanceError } from "../ai-allowance/service";
 import type { ContentResearchSessionFactory } from "../research/window";
 import type { OpenContentResearchSession } from "../../ai/mastra/workflows/router-workflow";
 import { claimResumeWindow } from "../research/resume-window";
-import { ChatDeliveryStore, authorizeDelivery, requestDigest } from "../ai/delivery-store";
-import type { AiDeliveryProof, ChatStreamEvent } from "@surreal-ck/shared";
+import { ChatDeliveryStore, authorizeDelivery, requestDigest, type DeliveryPlatformVerifier } from "../ai/delivery-store";
+import type { AiDeliveryProof, ChatStreamEvent, SessionUser } from "@surreal-ck/shared";
 import type { RunRegistry } from "../ai/run-registry";
 import { createRolloutGateChecker, type RolloutGateChecker } from "../rollout/gate-check";
 
@@ -81,6 +81,11 @@ export type AiChatRoutesDeps = {
   deliveries?: ChatDeliveryStore;
   /** LCA06：为调用者开设 content_reader 研究窗口的工厂；注入后 AI 研究可联合平台授权语料。 */
   createContentResearchSession?: ContentResearchSessionFactory;
+  /**
+   * LCA14/D1：已完成交付的平台证据复核器——只读当前事实与权益快照，不开 content_reader
+   * 会话、不经 IdP 换票（生产 AC2：IdP 降级时窗口路径把 recover 拖到连接层 502）。
+   */
+  createDeliveryVerifier?: (user: SessionUser) => DeliveryPlatformVerifier;
   /** LCA14：legal_research_ai 灰度开关；默认真实实现（_system 每请求新读，无缓存）。 */
   rolloutGates?: RolloutGateChecker;
   requireUser?: () => MiddlewareHandler<AppBindings>;
@@ -195,8 +200,12 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
     }
   }
 
-  function contentWindow(user: AppBindings["Variables"]["user"]): OpenContentResearchSession | undefined {
-    return deps.createContentResearchSession ? () => deps.createContentResearchSession!(user) : undefined;
+  /**
+   * 交付复核器：recover/WS 补取只读当前授权事实与快照（不经 IdP、不开研究窗口），
+   * IdP 降级不再把同步请求拖到连接超时。未注入时不具备平台证据复核能力 → fail closed。
+   */
+  function platformVerifier(user: AppBindings["Variables"]["user"]): DeliveryPlatformVerifier | undefined {
+    return deps.createDeliveryVerifier?.(user);
   }
   function registerRun(runId: string, user: AppBindings["Variables"]["user"]): { streamToken: string } {
     return deps.registry.register({ runId, ownerSubject: user.subject, authorize: deps.deliveries ? async () => {
@@ -205,9 +214,9 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
         const row = await deps.deliveries!.read(session, runId);
         if (row.status === "complete") {
           const payload = deps.deliveries!.decrypt(row, workspaceDb(user)!, user.subject);
-          await authorizeDelivery(session, payload.proofs, contentWindow(user));
+          await authorizeDelivery(session, payload.proofs, platformVerifier(user));
         } else {
-          await authorizeDelivery(session, [], contentWindow(user));
+          await authorizeDelivery(session, [], platformVerifier(user));
         }
       } finally { await closeCallerSessionQuietly(session); }
     } : undefined });
@@ -215,7 +224,7 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
   function deliveryHooks(session: Surreal, runId: string, user: AppBindings["Variables"]["user"], meteredDb?: string) {
     return {
       onResult: deps.deliveries ? async (event: Extract<ChatStreamEvent, { kind: "done" }>, proofs: AiDeliveryProof[]) => {
-        await authorizeDelivery(session, proofs, contentWindow(user));
+        await authorizeDelivery(session, proofs, platformVerifier(user));
         await deps.deliveries!.save(session, workspaceDb(user)!, user.subject, { event, proofs });
       } : undefined,
       onTerminal: async (outcome: RunTerminalOutcome) => {
@@ -232,7 +241,7 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
     const row = await deps.deliveries!.read(session, runId);
     if (row.status === "complete") {
       const payload = deps.deliveries!.decrypt(row, workspaceDb(user)!, user.subject);
-      await authorizeDelivery(session, payload.proofs, contentWindow(user));
+      await authorizeDelivery(session, payload.proofs, platformVerifier(user));
       // Idempotent reconciliation: never reserve or call the model for a completed delivery.
       const db = workspaceDb(user);
       if (deps.allowance && db) await deps.allowance.finishByRun({ db, runId, outcome: "success" });
@@ -246,7 +255,7 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
       }
       throw new HttpError(409, "chat-run-not-running", row.status === "suspended" ? "研究已暂停，请提交原决策继续" : "该运行已中断且未交付结果，请重新提交研究");
     }
-    await authorizeDelivery(session, [], contentWindow(user));
+    await authorizeDelivery(session, [], platformVerifier(user));
     const { streamToken } = registerRun(runId, user);
     return { runId, streamUrl: `/api/chat/stream?runId=${runId}`, streamToken };
   }

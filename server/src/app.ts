@@ -8,7 +8,9 @@ import { requestLogger } from "./middleware/logger";
 import { healthRoutes } from "./routes/health";
 import { createAiChatRoutes, type AiChatService, type CallerSessionFactory } from "./routes/ai-chat";
 import { createAiStreamRoutes } from "./routes/ai-stream";
-import { ChatDeliveryStore } from "./ai/delivery-store";
+import type { SessionUser } from "@surreal-ck/shared";
+import { ChatDeliveryStore, type DeliveryPlatformVerifier } from "./ai/delivery-store";
+import { createDeliveryVerifierFactory } from "./ai/delivery-verify";
 import { createAiChatService } from "./ai/chat-service";
 import { createMastraRunner } from "./ai/assemble-mastra";
 import { env } from "./env";
@@ -204,6 +206,8 @@ export type AppOptions = {
   requireOperator?: () => MiddlewareHandler<AppBindings>;
   /** LCA06：调用者 content_reader 研究窗口工厂；默认生产装配（search exchange 复用）。 */
   createContentResearchSession?: ContentResearchSessionFactory;
+  /** LCA14/D1：recover/WS 补取的交付复核器工厂；默认生产实现（事实+快照重算，不经 IdP）。 */
+  createDeliveryVerifier?: (user: SessionUser) => DeliveryPlatformVerifier;
   /** LCA14：灰度开关控制面服务；注入替身供测试，默认生产 Surreal store。挂载 /api/ops/rollout/*。 */
   rolloutGateService?: RolloutGateService;
   /** LCA14：内容/AI 灰度开关检查器；content-reader、search、legal 检索与 AI chat 共用。默认真实实现（每请求读 _system）。 */
@@ -472,6 +476,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
         registry: runRegistry,
         allowance: aiAllowanceService,
         createContentResearchSession: contentResearchSession,
+        createDeliveryVerifier: options.createDeliveryVerifier ?? createDeliveryVerifierFactory({ rolloutGates }),
         rolloutGates,
         requireUser: options.requireUser,
       }),
