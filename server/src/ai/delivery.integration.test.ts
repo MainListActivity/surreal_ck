@@ -79,7 +79,9 @@ beforeAll(async () => {
     CREATE user:other CONTENT { subject: "other", kind: "human", email: "other@fixture.test", is_admin: false };
     DEFINE ACCESS test_member ON DATABASE TYPE RECORD SIGNIN (SELECT * FROM user WHERE subject = $subject AND kind = "human") DURATION FOR SESSION 1h;`);
   const system: Queryable = { query: async sql => sql.includes("current_product_entitlement")
-    ? [[{ ai_actions: ["research"], base_kind: "subscription", base_id: "fixture" }]] : [[{ db_name: db }]] };
+    // LCA14 D2 口径：plan_cycle 桶只在权益窗口有效（effective_from <= now < effective_until）时对应当前商业来源。
+    ? [[{ ai_actions: ["research"], base_kind: "subscription", base_id: "fixture",
+      effective_from: new Date(Date.now() - 60_000).toISOString(), effective_until: new Date(Date.now() + 3_600_000).toISOString() }]] : [[{ db_name: db }]] };
   allowance = new AiAllowanceService({ workspaceSession: async () => root, systemSession: async () => system });
   await allowance.grant({ db, kind: "plan_cycle", amount: 100, label: "D1 fixture", periodKey: "subscription:fixture:cycle",
     effectiveFrom: new Date(Date.now() - 1000), expiresAt: new Date(Date.now() + 3600000), operatorSubject: "fixture" });
