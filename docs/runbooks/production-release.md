@@ -14,7 +14,16 @@
 | --- | --- | --- |
 | Svelte 应用 | Pages `surreal-ck-app` | `https://l.maplayer.top` |
 | Astro 营销站 | Pages `surreal-ck` | `https://www.maplayer.top` |
+| ops 运营控制台 | 并入 Pages `surreal-ck-app` 的 `/ops/` 子路径（与运营 API 同源） | `https://l.maplayer.top/ops/` |
 | Hono 边缘代理 | Worker `surreal-ck-hono-edge` | `l.maplayer.top` 的 API / WS 路由 |
+
+ops 控制台选择同域子路径而非独立子域：运营 API 只认 `l.maplayer.top` 同源请求，静态产物打进 `web/dist/ops/` 随应用一起 `pages deploy`，不新增跨域面与 DNS 记录。构建时用 `VITE_OPS_BASE=/ops/` 注入 base；`/ops/` 验证以页面标题「运营控制台」为准，防止 SPA fallback 假阳性。
+
+ops 上线一次性前置（不属于自动发布，需要 IdP 管理凭证执行）：
+
+1. 在 IdP `ck` 租户登记 ops 浏览器 public client（admin 通道，`client_profile=spa`、`token_endpoint_auth_method=none`、`application_type=web`）：`redirect_uris=["https://l.maplayer.top/ops/auth/callback.html"]`、`access_token_audience` 与 `OIDC_OPS_AUDIENCE` 一致。
+2. `gh secret set ORIGIN_ENV_OIDC_OPS_CLIENT_ID --env production` 硬绑定该 client_id（可选但建议，防代理被其他 client 借用）。
+3. `production` Environment 配齐 `VITE_OPS_OIDC_ISSUER`、`VITE_OPS_OIDC_CLIENT_ID`、`VITE_OPS_OIDC_AUDIENCE`、`VITE_OPS_API_BASE_URL=https://l.maplayer.top/api`。
 
 Worker 的 `EDGE_PROXY_SECRET` 已由 Cloudflare Worker Secret 管理。普通 `wrangler deploy` 会保留它；不要把该值放进仓库或 GitHub Variables。
 
@@ -35,8 +44,12 @@ Variables：
 - `VITE_OIDC_CLIENT_ID=b10df483-1cd4-4beb-8a01-92e8f4b3fdf4`
 - `VITE_OIDC_REDIRECT_URI=https://l.maplayer.top/auth/callback`
 - `VITE_OIDC_AUDIENCE=https://auth.maplayer.top`
+- `VITE_OPS_OIDC_ISSUER=https://o.maplayer.top/t/ck`
+- `VITE_OPS_OIDC_CLIENT_ID=<ops 控制台 client_id，IdP 登记产物>`
+- `VITE_OPS_OIDC_AUDIENCE=https://l.maplayer.top/api/ops/mcp`
+- `VITE_OPS_API_BASE_URL=https://l.maplayer.top/api`
 
-这些 `VITE_*` 值会进入公开的浏览器 bundle，因此只能放公开配置；OIDC client secret、SurrealDB root 密码、模型 key 等服务端凭证绝不能放在这里。
+这些 `VITE_*` 值会进入公开的浏览器 bundle，因此只能放公开配置；OIDC client secret、SurrealDB root 密码、模型 key 等服务端凭证绝不能放在这里。ops SPA 是纯 public client（PKCE），`VITE_OPS_OIDC_CLIENT_ID` 只是公开标识符而非凭证。
 
 ## 手动重发
 

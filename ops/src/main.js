@@ -1,5 +1,5 @@
 import "./style.css";
-import { authConfig as config, createOpsUserManager } from "./auth.js";
+import { authConfig as config, createOpsUserManager, signOutOps } from "./auth.js";
 
 const app = document.querySelector("#app");
 let userManager;
@@ -557,7 +557,7 @@ function renderAuth() {
   const slot = document.querySelector("#auth-slot");
   if (user) {
     slot.innerHTML = `<div class="identity"><span>${escapeHtml(user.profile?.email || user.profile?.sub || "运营账号")}</span><button id="logout" class="ghost">退出</button></div>`;
-    document.querySelector("#logout").addEventListener("click", () => void userManager?.removeUser().then(() => window.location.replace("/")));
+    document.querySelector("#logout").addEventListener("click", () => void signOutOps(userManager, user).finally(() => window.location.replace(import.meta.env.BASE_URL)));
     return;
   }
   const label = config.issuer && config.clientId ? "运营登录" : "未配置 OIDC";

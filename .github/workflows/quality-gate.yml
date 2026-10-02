@@ -77,5 +77,8 @@ jobs:
       - name: Build marketing site
         run: pnpm build:marketing
 
+      - name: Build ops console
+        run: pnpm build:ops
+
       - name: Build deployable server image
         run: docker build --tag surreal-ck:quality .
