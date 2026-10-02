@@ -446,7 +446,10 @@ export const ResumeAiWorkflowRequestSchema = z.object({
 // chunk：LLM 流式增量文本。
 // suspend：复用 WorkflowSuspendedEvent（候选 / 写确认等待用户决策）。
 // done / error：终态，服务端随后关闭 WS（后台 workflow 不受影响）。
-// ping：服务端保活心跳，客户端可忽略。
+// ping：服务端 WS 层保活心跳，客户端可忽略。
+// keepalive：run 级活性信号——长模型调用不产生业务事件期间由服务端按固定间隔
+// 发布，证明该 run 仍在推进；客户端据此重置空闲超时（ping 只证明传输存活，
+// 不重置）。区别于 ping 的关键：run 终态后 keepalive 停发，真静默才会超时。
 
 export type ChatStreamEvent =
   | { kind: "progress"; runId: string; progress: AiProgressEvent }
@@ -454,6 +457,7 @@ export type ChatStreamEvent =
   | { kind: "suspend"; runId: string; payload: WorkflowSuspendedEvent }
   | { kind: "done"; runId: string; message: AiChatMessage; toolCalls: AiToolCallRecord[] }
   | { kind: "error"; runId: string; code: string; message: string }
+  | { kind: "keepalive"; runId: string }
   | { kind: "ping"; runId: string };
 
 /** done / error 之后 RunBus 仍保留事件供迟到订阅重放的窗口。 */

@@ -131,6 +131,57 @@ describe("LCA05 AI 额度快照与展示", () => {
     expect(snapshot.expired).toBe(0);
   });
 
+  test("LCA-14 D2：plan_cycle 桶按当前商业来源前缀门禁过滤（与服务端 reserve 同口径）", async () => {
+    const now = Date.now();
+    const conn = fakeConn({
+      ai_rate_card: [
+        { id: "ai_rate_card:research_test_v1", amount: 5, revision: 1, revision_label: "t", tier_label: "t" },
+      ],
+      ai_allowance_bucket: [
+        // 生产实测场景：转付费后残留 trial 桶（terminated_at 尚未落库）
+        {
+          id: "ai_allowance_bucket:trial", kind: "plan_cycle", label: "试用",
+          period_key: "trial:quota_subscription:provision_ws_x:2026-10-02T07:50:00.000Z",
+          total: 40, available: 28, reserved: 0, settled: 12, status: "active",
+          effective_from: new Date(now - 3600_000).toISOString(),
+          expires_at: new Date(now + 86400_000).toISOString(),
+        },
+        {
+          id: "ai_allowance_bucket:paid", kind: "plan_cycle", label: "付费",
+          period_key: "subscription:quota_subscription:q_paid:2026-10-02T08:00:00.000Z",
+          total: 100, available: 100, reserved: 0, settled: 0, status: "active",
+          effective_from: new Date(now - 3600_000).toISOString(),
+          expires_at: new Date(now + 86400_000).toISOString(),
+        },
+        {
+          id: "ai_allowance_bucket:topup", kind: "purchased", label: "加量",
+          period_key: "purchased-2026-10", total: 50, available: 50, reserved: 0, settled: 0, status: "active",
+          effective_from: new Date(now - 3600_000).toISOString(),
+          expires_at: new Date(now + 86400_000).toISOString(),
+        },
+      ],
+      ai_ledger_entry: [],
+      ai_allowance_notice: [],
+    });
+
+    // 转付费后来源 = subscription:q_paid → 旧 trial 桶不计入可用（服务端会 402）。
+    const gated = await loadAiAllowanceSnapshot(conn, { planCyclePrefix: "subscription:quota_subscription:q_paid:" });
+    expect(gated.available).toBe(150);
+    expect(gated.terminated).toBe(28);
+    const trialBucket = gated.buckets.find((b) => b.id === "ai_allowance_bucket:trial")!;
+    expect(trialBucket.unusableBySource).toBe(true);
+    expect(aiAllowanceBucketStatusLabel(trialBucket)).toBe("已终止");
+
+    // 快照缺失/来源为 none → 全部 plan_cycle 失格；购买桶不受影响。
+    const none = await loadAiAllowanceSnapshot(conn, { planCyclePrefix: null });
+    expect(none.available).toBe(50);
+    expect(none.terminated).toBe(128);
+
+    // 不传 gate（旧行为）→ 不过滤。
+    const ungated = await loadAiAllowanceSnapshot(conn);
+    expect(ungated.available).toBe(178);
+  });
+
   test("时间格式：非法输入返回空串", () => {
     expect(formatAllowanceTime("not-a-date")).toBe("");
     expect(formatAllowanceTime("2026-09-30T02:00:00.000Z")).not.toBe("");

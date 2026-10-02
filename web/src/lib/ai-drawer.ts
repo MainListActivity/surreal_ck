@@ -172,6 +172,8 @@ function aiErrorMessage(error: unknown): string {
     return "当前套餐未开通该 AI 能力，请联系工作区管理员。";
   }
   if (code === "ai-allowance-unavailable") return "AI 额度账本暂不可用，请稍后重试。";
+  if (code === "ai-capability-disabled") return "AI 能力已临时关闭或本工作区不在灰度批次内。";
+  if (code === "ai-capability-unavailable") return "AI 能力开关状态暂不可读，请稍后重试。";
   if (code === "stream-timeout") return STREAM_TIMEOUT_MESSAGE;
   if (/forbidden|unauthori[sz]ed|permission|signin-failed|access denied/u.test(searchable)) {
     return "没有权限执行此操作，请联系工作区管理员。";
@@ -312,7 +314,8 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
   }
 
   function handleStreamEvent(event: ChatStreamEvent, messageId: string, allowRequestRetry = false): void {
-    if (event.kind === "ping") return;
+    // ping（传输保活）与 keepalive（run 级活性）都不驱动 UI；空闲计时由 ws 层重置。
+    if (event.kind === "ping" || event.kind === "keepalive") return;
     if (!state.activeRun || event.runId !== state.activeRun.runId) return;
 
     if (event.kind === "progress") {

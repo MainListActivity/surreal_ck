@@ -7,6 +7,7 @@ import {
   type SessionUser,
 } from "@surreal-ck/shared";
 import { env } from "../env";
+import { evaluateCapabilitySwitch, type CapabilitySwitchDecision } from "../capability/switch";
 import { getRootDatabaseSession } from "../db/root-connection";
 import { HttpError } from "../http-error";
 import { SurrealProductEntitlementStore } from "../product-entitlement/store";
@@ -97,6 +98,18 @@ export function createContentReaderExchangeHandler(deps: ContentReaderExchangeDe
       [systemDb, contentDb] = await Promise.all([getSystemDb(), getContentDb()]);
     } catch {
       throw new HttpError(503, "content-reader-unavailable", "内容读取控制面暂不可用");
+    }
+
+    // LCA-14：内容能力灰度开关——off / 未入 cohort 白名单时拒绝签发新会话
+    // （已有会话与成果不受影响）。开关读失败按不可用 fail closed。
+    if (workspaceDb) {
+      let decision: CapabilitySwitchDecision;
+      try {
+        decision = await evaluateCapabilitySwitch(systemDb, "content", workspaceDb);
+      } catch {
+        throw new HttpError(503, "content-reader-unavailable", "能力开关状态暂不可读");
+      }
+      if (!decision.allowed) return { ok: false, error: "capability_disabled" };
     }
 
     let indexRows: WorkspaceIndexRow[];

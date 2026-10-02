@@ -459,6 +459,8 @@ export const PLATFORM_OPERATOR_CAPABILITIES = [
   "activation.proposal.takeover",
   "activation.autonomy.read",
   "activation.autonomy.manage",
+  // LCA-14：灰度开关管理（platform_capability_switch 读写）独立分权。
+  "capability.switch",
 ] as const;
 export type PlatformOperatorCapability =
   (typeof PLATFORM_OPERATOR_CAPABILITIES)[number];

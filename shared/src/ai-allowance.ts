@@ -26,6 +26,13 @@ export type AiAllowanceBucketView = {
   expired: boolean;
   /** LCA08：商业来源终止标记（试用转付费），余额不再可消费、不复活。 */
   terminated: boolean;
+  /**
+   * LCA-14 返工 D2：读端门禁派生——plan_cycle 桶的 period_key 未对齐当前
+   * 有效商业来源前缀（<baseKind>:<baseId>:）时置真。服务端 reserve 同样
+   * fail-closed；terminated_at 标记未落库前该桶已失去可消费资格，前端汇总
+   * 口径与服务端保持一致（余额计入 terminated，不计入 available）。
+   */
+  unusableBySource: boolean;
 };
 
 export type AiAllowanceLedgerView = {

@@ -70,6 +70,8 @@ export type CreateAiChatServiceOptions = {
   resumer?: ChatResumer;
   /** resume 时 userContext 的回填策略；默认空快照（workflow 已持久化 state，runtime userContext 仅兜底）。 */
   resumeUserContextFallback?: AiContextSnapshot;
+  /** run 级 keepalive 发布间隔（默认 15s；单测可注入更小值）。 */
+  keepaliveMs?: number;
 };
 
 /** 把 router workflow runtime 事件桥接到 RunBus。返回三个 pusher + 一个 done/error 终态广播。 */
@@ -130,8 +132,26 @@ async function closeCallerSession(session: Surreal): Promise<void> {
   }
 }
 
+const DEFAULT_KEEPALIVE_MS = 15_000;
+
 export function createAiChatService(options: CreateAiChatServiceOptions): AiChatService {
   const { runBus, runner, resumer } = options;
+  const keepaliveMs = options.keepaliveMs ?? DEFAULT_KEEPALIVE_MS;
+
+  /**
+   * LCA-14 返工 D1：长模型调用期间 workflow 不产生业务事件，客户端 45s 空闲
+   * 超时会把仍健康的 run 误杀（答案已结算但未展示）。run 存活期间按固定间隔
+   * 发布 keepalive 进 RunBus——它随终态停止，因此客户端空闲超时只在真静默
+   * （进程死/事件泵卡）时触发。keepalive 进回放 backlog 无害：迟到订阅
+   * 回放它只会重置空闲计时。
+   */
+  function startKeepalive(runId: string): () => void {
+    const timer = setInterval(() => {
+      runBus.publish(runId, { kind: "keepalive", runId });
+    }, keepaliveMs);
+    timer.unref?.();
+    return () => clearInterval(timer);
+  }
 
   return {
     async startChat({ runId, message, userContext, surrealSession, ownerSubject, composerMode, openContentSession, onTerminal }) {
@@ -142,6 +162,7 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
         : undefined;
       // 后台启动：startChat 必须立即 resolve（D1-04 契约），workflow 异步跑完。
       void (async () => {
+        const stopKeepalive = startKeepalive(runId);
         let outcome: RunTerminalOutcome = "failed";
         try {
           const result = await runner({
@@ -164,6 +185,8 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
           outcome = "failed";
           bridge.publishErrorIfNotTerminal(cause instanceof Error ? cause.message : String(cause));
         } finally {
+          // 终态（含 failed）后停发 keepalive——此后客户端静默才允许触发空闲超时。
+          stopKeepalive();
           // 计量收口（结算/释放预留）不依赖 WS 是否仍连着。
           try {
             await onTerminal?.(outcome);
@@ -187,6 +210,7 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
       const bridge = bridgeToBus(runBus, runId);
       const userContext = options.resumeUserContextFallback ?? createDefaultAiContextSnapshot();
       void (async () => {
+        const stopKeepalive = startKeepalive(runId);
         let outcome: RunTerminalOutcome = "failed";
         try {
           const result = await resumer({
@@ -207,6 +231,7 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
           outcome = "failed";
           bridge.publishErrorIfNotTerminal(cause instanceof Error ? cause.message : String(cause));
         } finally {
+          stopKeepalive();
           try {
             await onTerminal?.(outcome);
           } catch {

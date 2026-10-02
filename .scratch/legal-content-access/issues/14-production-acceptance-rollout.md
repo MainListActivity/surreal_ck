@@ -32,4 +32,11 @@
 ## Comments
 
 - 2026-09-24：用户确认拆分后发布；当前为实施规格，尚未执行实现与验收。
+- 2026-10-02（LCA-14 返工）：灰度开关/批次记录/回滚演练的操作手册落在
+  [docs/runbooks/capability-rollout-switch.md](../../../docs/runbooks/capability-rollout-switch.md)。
+  开关行 `_system.platform_capability_switch:{content,ai}`（on/cohort/off，
+  行缺失=on），写端 `/api/ops/capability-switches*`（capability.switch 能力位），
+  批次审计 `_system.platform_rollout_batch`；强制点在新会话签发入口
+  （ai-chat 新 run 早于计量、content-search、content-reader），关闭不追溯
+  已下发会话。演练步骤与期望错误码见 runbook「回滚演练」节。
 

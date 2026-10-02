@@ -73,6 +73,8 @@ export const CONTENT_READER_ERRORS = [
   "projection_stale",
   "projection_closed",
   "idp_rejected",
+  // LCA-14：能力灰度开关关闭/未入灰度批次时拒绝签发新会话。
+  "capability_disabled",
 ] as const;
 
 export type ContentReaderError = (typeof CONTENT_READER_ERRORS)[number];

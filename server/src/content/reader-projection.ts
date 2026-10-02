@@ -100,18 +100,47 @@ UPSERT $gateId CONTENT {
 COMMIT;
 `;
 
+const AUTHORIZATION_SQL = `
+UPSERT $projectionId CONTENT {
+  workspace_id: $workspaceId,
+  revision: $revision,
+  revision_number: $revisionNumber,
+  digest: $digest,
+  resolver_version: $resolverVersion,
+  collections: $collections,
+  content_actions: $contentActions,
+  ai_actions: $aiActions,
+  allowed_subjects: $allowedSubjects,
+  confirmed_at: time::now(),
+  confirmed_until: $confirmedUntil,
+  status: "active"
+};
+`;
+
+const GATE_SQL = `
+UPSERT $gateId CONTENT {
+  version: $version,
+  item: $item,
+  license: $license,
+  workspace_id: $workspaceId,
+  revision: $revision,
+  actions: $gateActions,
+  ai_actions: $gateAiActions,
+  source_status: $sourceStatus,
+  publication_status: $publicationStatus,
+  license_from: $licenseFrom,
+  license_until: $licenseUntil,
+  license_actions: $licenseActions,
+  collection_matched: $collectionMatched,
+  allowed_subjects: $allowedSubjects,
+  status: "active"
+};
+`;
+
 const MAX_ATTEMPTS = 3;
 
-/**
- * 由 content_projection_sync 受限会话把一次成功换票投影到内容库。
- * 记录 ID 由 workspace（+version）派生：同 workspace 的重复/并发换票原子收敛到
- * 同一行 active 投影，同一内容版本收敛到同一行门禁；写失败整体回滚、不扩大访问。
- */
-export async function writeContentReaderProjection(
-  db: ContentProjectionClient,
-  write: ContentReaderProjectionWrite,
-): Promise<void> {
-  const params = {
+function projectionParams(write: ContentReaderProjectionWrite) {
+  return {
     projectionId: new RecordId("content_authorization_projection", [write.workspaceId]),
     gateId: new RecordId("content_read_gate", [write.workspaceId, write.versionId]),
     workspaceId: write.workspaceId,
@@ -138,14 +167,49 @@ export async function writeContentReaderProjection(
     licenseActions: [...write.licenseActions],
     collectionMatched: true,
   };
+}
+
+async function queryWithRetry(db: ContentProjectionClient, sql: string, params: Record<string, unknown>): Promise<void> {
   let lastError: unknown;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
     try {
-      await db.query(PROJECTION_SQL, params);
+      await db.query(sql, params);
       return;
     } catch (error) {
       lastError = error;
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+/**
+ * 由 content_projection_sync 受限会话把一次成功换票投影到内容库。
+ * 记录 ID 由 workspace（+version）派生：同 workspace 的重复/并发换票原子收敛到
+ * 同一行 active 投影，同一内容版本收敛到同一行门禁；写失败整体回滚、不扩大访问。
+ */
+export async function writeContentReaderProjection(
+  db: ContentProjectionClient,
+  write: ContentReaderProjectionWrite,
+): Promise<void> {
+  await queryWithRetry(db, PROJECTION_SQL, projectionParams(write));
+}
+
+/**
+ * LCA-14 返工 D4：检索换票的批量投影写。授权投影行按 workspace 派生——同一
+ * 换票内所有 plan 写入的是同一行同内容，先单独落一次，再把各内容版本的门禁行
+ * （id 按 workspace+version 派生，互不冲突）交由调用方并行写。门禁行缺失时
+ * 该版本 fail closed（不可读），不产生半开放授权。
+ */
+export async function writeSearchAuthorizationRow(
+  db: ContentProjectionClient,
+  write: ContentReaderProjectionWrite,
+): Promise<void> {
+  await queryWithRetry(db, AUTHORIZATION_SQL, projectionParams(write));
+}
+
+export async function writeSearchGateRow(
+  db: ContentProjectionClient,
+  write: ContentReaderProjectionWrite,
+): Promise<void> {
+  await queryWithRetry(db, GATE_SQL, projectionParams(write));
 }

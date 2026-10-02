@@ -35,12 +35,14 @@ import { isRetryableTxnError, type Queryable } from "./service";
  *   既有桶（保留模式暂停的是新的收费动作，不重置桶到期时间，也不暂停
  *   既有余额的消费）。
  * - 试用终止（AC5）：商业确认转付费生效时（baseSourceKind 翻转为
- *   subscription），当次关联旧试用桶（period_key 前缀 trial:<订阅ID>:）立即
- *   失去新 reserve 与可消费 balance 资格：写入幂等终止标记（terminated_at/
- *   terminated_note），不改金额、不延长期限、不删除或改写旧账本。其上既有
- *   预留仍可在有限执行窗口内按原桶/原费率结算；超时/取消/部分交付释放时
- *   只记 writeoff 冲销，绝不返成可消费余额（见 service.ts）。重复转换、
- *   恢复订阅、乱序旧事件不撤销标记、不复活试用。
+ *   subscription），当次关联旧试用桶（period_key 前缀 trial:<试用来源ID>:，
+ *   其中试用来源ID是试用期的 quota_subscription 记录，与转付费后的新
+ *   baseSourceId 不是同一行）立即失去新 reserve 与可消费 balance 资格：
+ *   本工作区账本内一切未终止的 trial: 前缀 plan_cycle 桶写入幂等终止标记
+ *   （terminated_at/terminated_note），不改金额、不延长期限、不删除或改写
+ *   旧账本。其上既有预留仍可在有限执行窗口内按原桶/原费率结算；超时/取消/
+ *   部分交付释放时只记 writeoff 冲销，绝不返成可消费余额（见 service.ts）。
+ *   重复转换、恢复订阅、乱序旧事件不撤销标记、不复活试用。
  * - 幂等：基础桶 id 由 period_key 派生、补发桶 id 由 (period_key, 事件键)
  *   派生；重复同步最多建一次桶、补一次差额。
  */
@@ -236,23 +238,27 @@ async function readUpgradeState(session: Queryable, state: StringRecordId): Prom
  * AC5：转付费商业确认生效时终止关联旧试用桶。只写幂等终止标记（含商业
  * 事件审计），不改金额、不延长期限、不删除或改写旧账本；购买/补偿桶与
  * 付费周期桶一概不触碰。返回本次新标记的桶数量。
+ *
+ * LCA-14 返工 D3：试用桶 period_key 内嵌的是试用期 quota_subscription
+ * 记录 id（trial:<试用来源ID>:…），转付费后 directive.baseSourceId 已是新
+ * 付费订阅 id——按 `trial:<新订阅ID>:` 过滤永远不匹配（生产实测残留
+ * active 试用桶）。工作区账本内至多一条试用来源血统，凡未终止的 trial:
+ * 前缀 plan_cycle 桶即"当次关联旧试用桶"，全部标记终止。
  */
 async function terminateTrialSourceBuckets(
   session: Queryable,
   directive: PlanCycleDirective,
   correlationId: string,
 ): Promise<number> {
-  const trialPrefix = `trial:${directive.baseSourceId}:`;
   const result = await session.query(
     `
     UPDATE ai_allowance_bucket SET
       terminated_at = $terminatedAt,
       terminated_note = $note,
       updated_at = time::now()
-    WHERE kind = "plan_cycle" AND string::starts_with(period_key, $trialPrefix) AND terminated_at = NONE;
+    WHERE kind = "plan_cycle" AND string::starts_with(period_key, "trial:") AND terminated_at = NONE;
     `,
     {
-      trialPrefix,
       terminatedAt: new DateTime(directive.periodStart),
       note: `${AI_PLAN_CYCLE_RULE_VERSION} trial source terminated on paid conversion; event ${directive.eventKey}; correlation ${correlationId}`,
     },

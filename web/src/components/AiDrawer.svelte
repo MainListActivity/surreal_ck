@@ -47,6 +47,7 @@
     aiAllowanceLedgerSign,
     formatAllowanceTime,
     loadAiAllowanceSnapshot,
+    planCyclePrefixFor,
   } from "../lib/ai-allowance";
   import type { AiAllowanceSnapshot, AiChatMessage, ResourceCitationDTO } from "@surreal-ck/shared";
   import type {
@@ -219,7 +220,20 @@
       return;
     }
     try {
-      allowance = await loadAiAllowanceSnapshot(getSurreal());
+      // LCA-14 返工 D2：plan_cycle 桶的可消费口径必须对齐当前商业来源
+      // （服务端 reserve 的同口径前缀门禁），否则试用转付费后旧试用桶的
+      // 余额被错误显示为"可用"，与服务端 402 相矛盾。权益视图取不到时
+      // fail-closed：planCyclePrefix = null → plan_cycle 桶一律不可消费。
+      const entitlement = await api.api.workspaces[":slug"]["product-entitlement"].$get({
+        param: { slug: workspaceSlug },
+      }).then((res) => (res.ok ? res.json() : null)).catch(() => null);
+      const baseSource = (entitlement as { baseSource?: { kind?: string; sourceId?: string | null } } | null)?.baseSource;
+      const planCyclePrefix = planCyclePrefixFor(
+        typeof baseSource?.kind === "string"
+          ? { kind: baseSource.kind, sourceId: baseSource.sourceId ?? null }
+          : null,
+      );
+      allowance = await loadAiAllowanceSnapshot(getSurreal(), { planCyclePrefix });
     } catch {
       allowance = null;
     }

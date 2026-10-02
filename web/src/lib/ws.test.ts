@@ -183,4 +183,41 @@ describe("WS 客户端", () => {
     expect(sock.closed).toBe(true);
     expect(sock.closeCode).toBe(4000);
   });
+
+  test("LCA-14 D1：run 级 keepalive 重置空闲计时——长模型调用期间不超时", () => {
+    let idleTimeouts = 0;
+    const { clock, messages } = setup({ onIdleTimeout: () => { idleTimeouts += 1; } });
+    const sock = FakeSocket.instances[0];
+    sock.open();
+
+    // 模拟 117s 模型静默：服务端每 15s 发一次 keepalive（业务事件零产出）。
+    for (let i = 0; i < 7; i++) {
+      clock.advance(15_000);
+      sock.message('{"kind":"keepalive","runId":"r1"}\n');
+      expect(idleTimeouts).toBe(0);
+      expect(sock.closed).toBe(false);
+    }
+    // keepalive 也被投递给上层（ai-drawer 会忽略它，仅 ws 层用于重置计时）。
+    expect(messages.filter((m) => (m as { kind: string }).kind === "keepalive")).toHaveLength(7);
+
+    // 终态事件照常到达并投递。
+    sock.message('{"kind":"done","runId":"r1","finalText":"ok"}\n');
+    expect(messages.at(-1)).toMatchObject({ kind: "done", runId: "r1" });
+    expect(idleTimeouts).toBe(0);
+  });
+
+  test("LCA-14 D1：终态后 keepalive 停发、再无可达事件 → 真静默仍按窗口超时", () => {
+    let idleTimeouts = 0;
+    const { clock } = setup({ onIdleTimeout: () => { idleTimeouts += 1; } });
+    const sock = FakeSocket.instances[0];
+    sock.open();
+
+    sock.message('{"kind":"keepalive","runId":"r1"}\n');
+    clock.advance(15_000);
+    sock.message('{"kind":"done","runId":"r1"}\n');
+    // done 重置计时；此后服务端不再发任何 run 事件（keepalive 已停发）。
+    clock.advance(45_000);
+    expect(idleTimeouts).toBe(1);
+    expect(sock.closed).toBe(true);
+  });
 });

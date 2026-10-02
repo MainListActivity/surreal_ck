@@ -129,6 +129,8 @@ import { createAiAllowanceOpsStatus } from "./ai-allowance/ops-status";
 import { AiAllowancePlanCycleSynchronizer } from "./ai-allowance/plan-cycle";
 import { createProjectionVerifier } from "./content/projection-verify";
 import { createOpsAiAllowanceRoutes } from "./routes/ops-ai-allowance";
+import { createOpsCapabilitySwitchRoutes } from "./routes/ops-capability-switch";
+import { evaluateCapabilitySwitch } from "./capability/switch";
 import { createContentResearchSessionFactory, type ContentResearchSessionFactory } from "./research/window";
 
 export type AppOptions = {
@@ -453,10 +455,16 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
         allowance: aiAllowanceService,
         createContentResearchSession:
           options.createContentResearchSession ?? createContentResearchSessionFactory(),
+        // LCA-14：AI 能力灰度开关（_system.platform_capability_switch:ai）。
+        checkAiCapability: async (workspaceDb) => {
+          const system = await getRootDatabaseSession("_system", env.SURREAL_NS);
+          return (await evaluateCapabilitySwitch(system, "ai", workspaceDb)).allowed;
+        },
         requireUser: options.requireUser,
       }),
     )
     .route("/", createOpsAiAllowanceRoutes({ service: aiAllowanceService }))
+    .route("/", createOpsCapabilitySwitchRoutes())
     .route("/", aiStream.routes)
     .route(
       "/",
