@@ -1304,11 +1304,11 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
             };
             CREATE $item CONTENT {
               converted_trial_source: IF $convertingTrial { $oldSubscription.id }
-                ELSE IF $current.subscription = $targetSubscription { $current.converted_trial_source } ELSE { NONE },
+                ELSE { $current.converted_trial_source },
               converted_trial_at: IF $convertingTrial { $effectiveAt }
-                ELSE IF $current.subscription = $targetSubscription { $current.converted_trial_at } ELSE { NONE },
+                ELSE { $current.converted_trial_at },
               converted_trial_event: IF $convertingTrial { $intent }
-                ELSE IF $current.subscription = $targetSubscription { $current.converted_trial_event } ELSE { NONE },
+                ELSE { $current.converted_trial_event },
               subscription: $targetSubscription,
               workspace: $workspace,
               plan_revision: $planRevision,

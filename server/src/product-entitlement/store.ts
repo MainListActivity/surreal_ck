@@ -95,9 +95,34 @@ export class SurrealProductEntitlementStore implements ProductEntitlementStore {
     const oldSourceId = idOf(item.converted_trial_source);
     const convertedAt = when(item.converted_trial_at);
     const oldSource = oldSourceId ? first(await db.query("SELECT billing_account FROM $id;", { id: new StringRecordId(oldSourceId) })) : null;
-    const trialConversion = oldSourceId && convertedAt && typeof item.converted_trial_event === "string"
+    let trialConversion = oldSourceId && convertedAt && typeof item.converted_trial_event === "string"
       && idOf(oldSource?.billing_account) === accountId
       ? { sourceId: oldSourceId, at: convertedAt, eventKey: item.converted_trial_event } : undefined;
+    // 转换身份优先取事件写入的显式戳；戳缺失时按合法商业状态派生——
+    // 同一 workspace + 同一 billing account 下，当前付费来源之前最近一条
+    // 被商业指派结束的 trialing item 即被替换的旧试用来源（LCA14 D3）。
+    if (!trialConversion && accountId) {
+      const ended = first(await db.query(
+        `SELECT subscription, effective_until, causation_id FROM quota_subscription_item
+         WHERE workspace = $workspace AND status = "ended"
+           AND subscription.status = "trialing"
+           AND subscription.billing_account = $account
+           AND ended_reason INSIDE ["manual_assignment", "contract_assignment", "payer_switch"]
+         ORDER BY effective_until DESC LIMIT 1;`,
+        {
+          workspace: new StringRecordId(workspaceId),
+          account: new StringRecordId(accountId),
+        },
+      ));
+      const derivedSourceId = idOf(ended?.subscription);
+      const derivedAt = when(ended?.effective_until);
+      const derivedEvent = typeof ended?.causation_id === "string" && ended.causation_id.length > 0
+        ? ended.causation_id
+        : null;
+      if (derivedSourceId && derivedAt && derivedEvent) {
+        trialConversion = { sourceId: derivedSourceId, at: derivedAt, eventKey: derivedEvent };
+      }
+    }
     return {
       itemId,
       status: item.status as SubscriptionFact["status"],
