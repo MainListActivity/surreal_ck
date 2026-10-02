@@ -16,6 +16,7 @@ export * from "./legal-retrieval";
 export * from "./discover";
 export * from "./platform-content";
 export * from "./product-entitlement";
+export * from "./rollout";
 export * from "./research-save";
 export * from "./research-url";
 export * from "./resource-quota";

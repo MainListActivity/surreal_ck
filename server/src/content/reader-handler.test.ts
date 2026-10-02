@@ -48,6 +48,7 @@ function fixture(overrides: {
   content?: unknown;
   idpResult?: unknown;
   caller?: SessionUser;
+  rolloutGates?: import("../rollout/gate-check").RolloutGateChecker;
 } = {}) {
   const queries: string[] = [];
   const writes: ContentReaderProjectionWrite[] = [];
@@ -55,6 +56,7 @@ function fixture(overrides: {
     nowSeconds: () => NOW,
     database: "platform_content",
     namespace: "main",
+    rolloutGates: overrides.rolloutGates,
     getSystemDb: async () => ({
       async query(sql: string) {
         queries.push(sql);
@@ -154,5 +156,21 @@ describe("content reader exchange handler wiring", () => {
   test("IdP 拒绝时不写投影", async () => {
     const result = await fixture({ idpResult: { error: "invalid_scope" } }).handler(caller, { contentPublicId: "law-1" });
     expect(result).toEqual({ ok: false, error: "idp_rejected", idpError: "invalid_scope" });
+  });
+
+  test("LCA14：legal_content_access 开关关闭 → feature_suspended，不进入换票与投影", async () => {
+    const { handler, writes } = fixture({ rolloutGates: async () => "disabled" });
+    const result = await handler(caller, { contentPublicId: "law-1" });
+    expect(result).toEqual({ ok: false, error: "feature_suspended" });
+    expect(writes).toHaveLength(0);
+  });
+
+  test("LCA14：开关状态读失败 → 503 fail closed；非成员路径不受影响", async () => {
+    const failing = async () => { throw new Error("gate store down"); };
+    const { handler } = fixture({ rolloutGates: failing });
+    await expect(handler(caller, { contentPublicId: "law-1" })).rejects.toMatchObject({ status: 503, code: "content-reader-unavailable" });
+    // 非成员在开关之前已被拒，错误语义不变。
+    expect(await fixture({ indexRows: [], rolloutGates: failing }).handler(caller, { contentPublicId: "law-1" }))
+      .toEqual({ ok: false, error: "workspace_inactive" });
   });
 });

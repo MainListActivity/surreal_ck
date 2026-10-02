@@ -31,6 +31,10 @@ export function createLegalContentRoutes(input: Readonly<{
     if (window.kind === "empty") return c.json({
       items: [], capability: "keyword", notice: "当前授权范围内暂无内容。", rankingVersion: "legal-rrf-v1", indexVersion: null,
     });
+    // LCA14：开关关闭是确定性暂停（403+明示），区别于授权链路的暂态不可用（503）。
+    if (window.kind === "unavailable" && window.reason === "feature_suspended") {
+      throw new HttpError(403, "legal-content-suspended", "法律内容访问已由平台运营暂停");
+    }
     if (window.kind !== "ready") throw new HttpError(503, "content_authorization_unavailable", "内容授权暂不可用，请重新验证");
     try {
       if (window.leaseEndSeconds <= Date.now() / 1000) throw new HttpError(403, "content_session_expired", "内容会话已到期");

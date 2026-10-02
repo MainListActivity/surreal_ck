@@ -73,6 +73,8 @@ export const CONTENT_READER_ERRORS = [
   "projection_stale",
   "projection_closed",
   "idp_rejected",
+  // LCA14：运营灰度开关已暂停该 workspace 的新内容访问（区别于 entitlement 否决）。
+  "feature_suspended",
 ] as const;
 
 export type ContentReaderError = (typeof CONTENT_READER_ERRORS)[number];

@@ -19,6 +19,7 @@ import { claimResumeWindow } from "../research/resume-window";
 import { ChatDeliveryStore, authorizeDelivery, requestDigest } from "../ai/delivery-store";
 import type { AiDeliveryProof, ChatStreamEvent } from "@surreal-ck/shared";
 import type { RunRegistry } from "../ai/run-registry";
+import { createRolloutGateChecker, type RolloutGateChecker } from "../rollout/gate-check";
 
 /** 用调用者 OIDC token 在 SurrealDB 上 authenticate 出一条会话（admin / participant access）。失败即抛。 */
 export type CallerSessionFactory = (rawToken: string) => Promise<Surreal>;
@@ -80,6 +81,8 @@ export type AiChatRoutesDeps = {
   deliveries?: ChatDeliveryStore;
   /** LCA06：为调用者开设 content_reader 研究窗口的工厂；注入后 AI 研究可联合平台授权语料。 */
   createContentResearchSession?: ContentResearchSessionFactory;
+  /** LCA14：legal_research_ai 灰度开关；默认真实实现（_system 每请求新读，无缓存）。 */
+  rolloutGates?: RolloutGateChecker;
   requireUser?: () => MiddlewareHandler<AppBindings>;
 };
 
@@ -111,6 +114,26 @@ const resumeDecisionJson = validator("json", (value: { decision?: unknown }, c) 
 
 export function createAiChatRoutes(deps: AiChatRoutesDeps) {
   const requireUser = deps.requireUser ?? requireOidc;
+  const rolloutGates = deps.rolloutGates ?? createRolloutGateChecker();
+
+  /**
+   * LCA14：法律研究 AI 灰度开关在每次新模型调用（新 run 与暂停续跑）前强制；
+   * 关闭 → 403 拒绝；开关状态读失败 → 503 fail closed。token 无 db claim
+   * 时无 workspace 归属可查——该请求会在后续 signin/计量阶段被拒，安全。
+   */
+  async function assertResearchAiEnabled(user: AppBindings["Variables"]["user"]): Promise<void> {
+    const db = workspaceDb(user);
+    if (!db) return;
+    let state: "enabled" | "disabled";
+    try {
+      state = await rolloutGates(db, "legal_research_ai");
+    } catch {
+      throw new HttpError(503, "legal-research-ai-unavailable", "灰度开关状态暂不可读，请稍后重试");
+    }
+    if (state === "disabled") {
+      throw new HttpError(403, "legal-research-ai-suspended", "法律研究 AI 已由平台运营暂停");
+    }
+  }
 
   /**
    * token 的 `db` scope claim = 目标 workspace database 名；缺失时返回 undefined。
@@ -236,6 +259,8 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
     const { runId, decision, user } = input;
     const known = deps.registry.get(runId);
     if (known && known.ownerSubject !== user.subject) throw new HttpError(403, "chat-run-forbidden", "Run is not owned by caller");
+    // LCA14：续跑=新模型调用，同样受法律研究 AI 开关约束（先查再签会话）。
+    await assertResearchAiEnabled(user);
     // 内存 registry 只负责 stream；运行归属和并发窗口由当前 workspace 的持久化记录决定。
     const session = await signIn(user.rawToken);
     let release: (() => Promise<void>) | undefined;
@@ -321,6 +346,9 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
       const composerMode = body?.composerMode === "resource-search" || body?.composerMode === "chat"
         ? (body.composerMode as "chat" | "resource-search")
         : undefined;
+
+      // LCA14：启动 workflow（调用模型）前强制法律研究 AI 开关。
+      await assertResearchAiEnabled(user);
 
       const session = await signIn(user.rawToken);
 
