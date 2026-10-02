@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
 const source = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+const authSource = readFileSync(new URL("./auth.js", import.meta.url), "utf8");
+const callbackSource = readFileSync(new URL("./callback.js", import.meta.url), "utf8");
 
 describe("运营启用摘要页面", () => {
   test("复用授权摘要 API，支持详情、分页与明确数据来源", () => {
@@ -72,5 +74,18 @@ describe("LCA13 运营解释与交付修复界面", () => {
     expect(source).toContain('read_denied: "许可未含 read（仅目录可见）"');
     // read_denied 是许可事实（⚠ 中性标注），不得渲染成系统故障（✗）。
     expect(source).toContain('s.reason === "read_denied"');
+  });
+});
+
+describe("同域子路径生产发布", () => {
+  // 生产挂在 https://l.maplayer.top/ops/（VITE_OPS_BASE=/ops/），
+  // 所有回跳/登出/重定向必须跟随 BASE_URL，不能写死根路径。
+  test("OIDC redirect 与登出回跳跟随 BASE_URL", () => {
+    expect(authSource).toContain('new URL("auth/callback.html", window.location.origin + import.meta.env.BASE_URL)');
+    expect(authSource).toContain("post_logout_redirect_uri: window.location.origin + import.meta.env.BASE_URL");
+    expect(authSource).not.toContain('`${window.location.origin}/auth/callback.html`');
+    expect(callbackSource).toContain("window.location.replace(import.meta.env.BASE_URL)");
+    expect(source).toContain("window.location.replace(import.meta.env.BASE_URL)");
+    expect(source).not.toContain('window.location.replace("/")');
   });
 });

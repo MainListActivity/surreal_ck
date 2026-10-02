@@ -57,6 +57,10 @@ jobs:
       VITE_OIDC_CLIENT_ID: ${{ vars.VITE_OIDC_CLIENT_ID }}
       VITE_OIDC_REDIRECT_URI: ${{ vars.VITE_OIDC_REDIRECT_URI }}
       VITE_OIDC_AUDIENCE: ${{ vars.VITE_OIDC_AUDIENCE }}
+      VITE_OPS_OIDC_ISSUER: ${{ vars.VITE_OPS_OIDC_ISSUER }}
+      VITE_OPS_OIDC_CLIENT_ID: ${{ vars.VITE_OPS_OIDC_CLIENT_ID }}
+      VITE_OPS_OIDC_AUDIENCE: ${{ vars.VITE_OPS_OIDC_AUDIENCE }}
+      VITE_OPS_API_BASE_URL: ${{ vars.VITE_OPS_API_BASE_URL }}
     steps:
       - name: Harden the runner
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
@@ -94,6 +98,10 @@ jobs:
             VITE_OIDC_CLIENT_ID
             VITE_OIDC_REDIRECT_URI
             VITE_OIDC_AUDIENCE
+            VITE_OPS_OIDC_ISSUER
+            VITE_OPS_OIDC_CLIENT_ID
+            VITE_OPS_OIDC_AUDIENCE
+            VITE_OPS_API_BASE_URL
           )
           for name in "${required[@]}"; do
             if [ -z "${!name:-}" ]; then
@@ -126,6 +134,12 @@ jobs:
           set -euo pipefail
           pnpm --filter @surreal-ck/web build
           pnpm build:marketing
+          # ops 控制台同域子路径发布：产物挂到应用 Pages 项目的 /ops/ 目录，
+          # 与运营 API 同源，不引入跨域面。
+          VITE_OPS_BASE=/ops/ pnpm build:ops
+          mkdir -p web/dist
+          rm -rf web/dist/ops
+          cp -r ops/dist web/dist/ops
 
       - name: Deploy Hono edge proxy
         run: pnpm dlx wrangler@4.135.0 deploy
@@ -160,3 +174,8 @@ jobs:
             | jq -e '.status == "ok" and .surrealdb == "up"' >/dev/null
           curl --fail --silent --show-error --retry 8 --retry-all-errors \
             --retry-delay 5 https://www.maplayer.top/ >/dev/null
+          # /ops/ 必须是 ops 控制台页面；未发布时 SPA fallback 会返回客户应用壳，
+          # 用标题区分两者。
+          curl --fail --silent --show-error --retry 8 --retry-all-errors \
+            --retry-delay 5 https://l.maplayer.top/ops/ \
+            | grep -q '运营控制台'

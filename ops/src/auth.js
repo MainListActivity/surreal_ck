@@ -5,7 +5,9 @@ export const authConfig = {
   clientId: import.meta.env.VITE_OPS_OIDC_CLIENT_ID || "",
   audience: import.meta.env.VITE_OPS_OIDC_AUDIENCE || "",
   apiBase: (import.meta.env.VITE_OPS_API_BASE_URL || "/api").replace(/\/$/u, ""),
-  redirectUri: import.meta.env.VITE_OPS_OIDC_REDIRECT_URI || `${window.location.origin}/auth/callback.html`,
+  redirectUri:
+    import.meta.env.VITE_OPS_OIDC_REDIRECT_URI ||
+    new URL("auth/callback.html", window.location.origin + import.meta.env.BASE_URL).href,
 };
 
 export function createOpsUserManager() {
@@ -16,7 +18,7 @@ export function createOpsUserManager() {
     authority: authConfig.issuer,
     client_id: authConfig.clientId,
     redirect_uri: authConfig.redirectUri,
-    post_logout_redirect_uri: window.location.origin,
+    post_logout_redirect_uri: window.location.origin + import.meta.env.BASE_URL,
     response_type: "code",
     scope: "openid",
     filterProtocolClaims: true,
