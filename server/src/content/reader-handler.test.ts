@@ -48,6 +48,8 @@ function fixture(overrides: {
   content?: unknown;
   idpResult?: unknown;
   caller?: SessionUser;
+  /** LCA-14：灰度开关行（undefined = 行缺失 = on）。 */
+  capabilitySwitch?: { mode: "on" | "cohort" | "off"; workspaces?: string[] };
 } = {}) {
   const queries: string[] = [];
   const writes: ContentReaderProjectionWrite[] = [];
@@ -58,6 +60,14 @@ function fixture(overrides: {
     getSystemDb: async () => ({
       async query(sql: string) {
         queries.push(sql);
+        if (sql.includes("LET $sw")) {
+          const sw = overrides.capabilitySwitch;
+          return [null, null, {
+            mode: sw?.mode ?? "on",
+            workspaces: sw?.workspaces ?? [],
+            slug: "ws-alpha",
+          }];
+        }
         return [overrides.indexRows ?? indexRows];
       },
     }),
@@ -154,5 +164,19 @@ describe("content reader exchange handler wiring", () => {
   test("IdP 拒绝时不写投影", async () => {
     const result = await fixture({ idpResult: { error: "invalid_scope" } }).handler(caller, { contentPublicId: "law-1" });
     expect(result).toEqual({ ok: false, error: "idp_rejected", idpError: "invalid_scope" });
+  });
+
+  test("LCA-14：内容灰度开关 off / cohort 未命中 → capability_disabled，不查成员不换票", async () => {
+    const off = await fixture({ capabilitySwitch: { mode: "off" } }).handler(caller, { contentPublicId: "law-1" });
+    expect(off).toEqual({ ok: false, error: "capability_disabled" });
+
+    const cohortMiss = await fixture({ capabilitySwitch: { mode: "cohort", workspaces: ["other-ws"] } })
+      .handler(caller, { contentPublicId: "law-1" });
+    expect(cohortMiss).toEqual({ ok: false, error: "capability_disabled" });
+
+    // cohort 命中照常走完整链路。
+    const cohortHit = await fixture({ capabilitySwitch: { mode: "cohort", workspaces: ["ws-alpha"] } })
+      .handler(caller, { contentPublicId: "law-1" });
+    expect(cohortHit).toMatchObject({ contractId: "content_reader.v1" });
   });
 });

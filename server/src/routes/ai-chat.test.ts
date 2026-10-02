@@ -66,6 +66,8 @@ function makeApp(opts: {
   registry?: ReturnType<typeof createRunRegistry>;
   /** 传 undefined 时用真实 requireOidc（用于鉴权失败用例）。 */
   requireUser?: (() => MiddlewareHandler<AppBindings>) | "real";
+  /** LCA-14：AI 灰度开关判定；注入 false 时新 run 与 resume 一律 503。 */
+  checkAiCapability?: (workspaceDb: string) => Promise<boolean>;
 }) {
   const app = new Hono<AppBindings>();
   app.onError(handleError);
@@ -76,6 +78,7 @@ function makeApp(opts: {
       createCallerSession: opts.sessionFactory ?? okSessionFactory,
       registry: opts.registry ?? createRunRegistry(),
       requireUser: opts.requireUser === "real" ? undefined : (opts.requireUser ?? (() => useUser())),
+      ...(opts.checkAiCapability ? { checkAiCapability: opts.checkAiCapability } : {}),
     }),
   );
   return app;
@@ -124,6 +127,50 @@ describe("POST /api/chat", () => {
     expect(service.startCalls[0].message).toBe("打开巡检工作簿");
     expect(service.startCalls[0].session).toBe(fakeSession);
     expect(service.startCalls[0].runId).toBe(body.runId);
+  });
+
+  test("LCA-14：AI 灰度开关拒绝 → 503 ai-capability-disabled，不建 run 不计量", async () => {
+    const service = stubService();
+    const app = makeApp({ service, checkAiCapability: async () => false });
+
+    const res = await app.request("/api/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "打开巡检工作簿" }),
+    });
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("ai-capability-disabled");
+    expect(service.startCalls).toHaveLength(0);
+
+    // resume 路径同样被拒。
+    const resume = await app.request("/api/chat/runs/run-x/resume", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: { kind: "candidate-chosen", candidateId: "c1" } }),
+    });
+    expect(resume.status).toBe(503);
+    expect(service.resumeCalls).toHaveLength(0);
+  });
+
+  test("LCA-14：开关放行 → 正常受理；开关读失败 → 503 而非放行", async () => {
+    const service = stubService();
+    const app = makeApp({ service, checkAiCapability: async () => true });
+    const ok = await app.request("/api/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "嗨" }),
+    });
+    expect(ok.status).toBe(200);
+
+    const broken = makeApp({ service, checkAiCapability: async () => { throw new Error("switch read failed"); } });
+    const res = await broken.request("/api/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "嗨" }),
+    });
+    expect(res.status).toBe(503);
+    expect(service.startCalls).toHaveLength(1);
   });
 
   test("省略 contextSnapshot → 照常受理，service 层注入合法默认快照；提供了非法快照则 400 且不建会话", async () => {

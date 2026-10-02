@@ -41,12 +41,13 @@ export function formatAllowanceTime(iso: string): string {
   }).format(new Date(time));
 }
 
-/** 桶当前状态的可读标签：已过期 > 已终止 > 已暂停 > 生效中。 */
+/** 桶当前状态的可读标签：已过期 > 已终止（含来源切换失格）> 已暂停 > 生效中。 */
 export function aiAllowanceBucketStatusLabel(
-  bucket: Pick<AiAllowanceBucketView, "expired" | "status" | "terminated">,
+  bucket: Pick<AiAllowanceBucketView, "expired" | "status" | "terminated">
+    & { unusableBySource?: boolean },
 ): string {
   if (bucket.expired) return "已过期";
-  if (bucket.terminated) return "已终止";
+  if (bucket.terminated || bucket.unusableBySource === true) return "已终止";
   if (bucket.status === "suspended") return "已暂停";
   return "生效中";
 }
@@ -75,8 +76,28 @@ function asDateMs(value: unknown): number {
   return Number.isFinite(t) ? t : 0;
 }
 
+/**
+ * LCA-14 返工 D2：与服务端 reserve（server/src/ai-allowance/service.ts
+ * entitlementGate）同口径的读端门禁。plan_cycle 桶只有 period_key 以
+ * `<baseKind>:<baseId>:` 开头才对齐当前有效商业来源；来源为 none 或快照
+ * 缺失时传 planCyclePrefix = null——全部 plan_cycle 桶按不可消费计。
+ * 未传 gate 时保持旧行为（不过滤），调用方应总是提供。
+ */
+export type AiAllowanceSourceGate = Readonly<{
+  planCyclePrefix: string | null;
+}>;
+
+export function planCyclePrefixFor(baseSource: { kind: string; sourceId: string | null } | null | undefined): string | null {
+  if (!baseSource) return null;
+  if ((baseSource.kind === "trial" || baseSource.kind === "subscription") && baseSource.sourceId) {
+    return `${baseSource.kind}:${baseSource.sourceId}:`;
+  }
+  return null;
+}
+
 export async function loadAiAllowanceSnapshot(
   conn: Pick<SurrealConn, "query">,
+  gate?: AiAllowanceSourceGate,
 ): Promise<AiAllowanceSnapshot> {
   const [rateRows, bucketRows, entryRows, noticeRows] = await Promise.all([
     conn.query<Record<string, unknown>>(
@@ -100,11 +121,16 @@ export async function loadAiAllowanceSnapshot(
   const now = Date.now();
   const buckets: AiAllowanceBucketView[] = bucketRows.map((row) => {
     const expiresAt = asIso(row.expires_at);
+    const kind = String(row.kind) as AiAllowanceBucketView["kind"];
+    const periodKey = asString(row.period_key);
+    const unusableBySource = gate !== undefined
+      && kind === "plan_cycle"
+      && !(gate.planCyclePrefix !== null && periodKey.startsWith(gate.planCyclePrefix));
     return {
       id: asString(row.id),
-      kind: String(row.kind) as AiAllowanceBucketView["kind"],
+      kind,
       label: typeof row.label === "string" ? row.label : "",
-      period_key: asString(row.period_key),
+      period_key: periodKey,
       total: asNumber(row.total),
       available: asNumber(row.available),
       reserved: asNumber(row.reserved),
@@ -114,6 +140,7 @@ export async function loadAiAllowanceSnapshot(
       expires_at: expiresAt,
       expired: asDateMs(row.expires_at) <= now,
       terminated: row.terminated_at != null,
+      unusableBySource,
     };
   });
 
@@ -152,7 +179,7 @@ export async function loadAiAllowanceSnapshot(
 
   for (const bucket of buckets) {
     if (bucket.expired) snapshot.expired += bucket.available + bucket.reserved;
-    else if (bucket.terminated) snapshot.terminated += bucket.available + bucket.reserved;
+    else if (bucket.terminated || bucket.unusableBySource) snapshot.terminated += bucket.available + bucket.reserved;
     else if (bucket.status === "suspended") snapshot.suspended += bucket.available + bucket.reserved;
     else {
       snapshot.available += bucket.available;

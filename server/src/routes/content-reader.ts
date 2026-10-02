@@ -13,7 +13,7 @@ export type ContentReaderExchangeHandler = (
 function statusFor(error: ContentReaderFailure["error"]): number {
   // Cloudflare 会把源站 HTTP 502 换成 origin_bad_gateway 并丢掉 JSON。
   // 换票失败必须仍是完整应用响应，所以用 503。
-  if (error === "idp_rejected" || error === "invalid_lifetime") return 503;
+  if (error === "idp_rejected" || error === "invalid_lifetime" || error === "capability_disabled") return 503;
   if (error === "client_authority_rejected" || error === "action_denied") return 400;
   return 403;
 }

@@ -202,9 +202,9 @@ class FakeLedger implements Queryable {
   async query(sql: string, params: Record<string, unknown> = {}): Promise<unknown> {
     if (sql.includes("UPDATE ai_allowance_bucket SET")) {
       let count = 0;
-      const prefix = String(params.trialPrefix);
+      // D3 修复后过滤条件是字面量 "trial:" 前缀（不再以新订阅 id 组前缀）。
       for (const bucket of this.buckets.values()) {
-        if (bucket.period_key.startsWith(prefix) && bucket.terminated_at == null) {
+        if (bucket.period_key.startsWith("trial:") && bucket.terminated_at == null) {
           bucket.terminated_at = params.terminatedAt;
           count += 1;
         }
@@ -311,6 +311,24 @@ describe("syncPlanCycleAllowance（LCA08 周期额度规则流程）", () => {
     const again = await syncPlanCycleAllowance({ session: ledger, directive: directive(), correlationId: "c2" });
     expect(again.trialTerminated).toBe(0);
     expect(ledger.grants).toHaveLength(1);
+  });
+
+  test("AC5 回归（LCA-14 D3）：试用桶内嵌的是试用来源 id，与新付费 baseSourceId 不同也必须终止", async () => {
+    // 生产实测场景：转付费后 directive.baseSourceId = 新付费订阅 id（q_paid），
+    // 而试用桶 period_key = trial:quota_subscription:provision_ws_x:<from>。
+    // 旧实现按 trial:<新订阅id>: 过滤永不匹配，残留可消费试用桶。
+    const ledger = new FakeLedger();
+    ledger.buckets.set("ai_allowance_bucket:trial_real", {
+      total: 40, available: 28, period_key: "trial:quota_subscription:provision_ws_x:2026-10-02T07:50:00.000Z",
+    });
+
+    const outcome = await syncPlanCycleAllowance({
+      session: ledger,
+      directive: directive({ baseSourceId: "quota_subscription:q_paid", periodKey: "subscription:quota_subscription:q_paid:2026-10-02T08:00:00.000Z" }),
+      correlationId: "convert-paid",
+    });
+    expect(outcome.trialTerminated).toBe(1);
+    expect(ledger.buckets.get("ai_allowance_bucket:trial_real")!.terminated_at).not.toBeNull();
   });
 
   test("AC6：周期内升级形成独立补发桶（基础桶不动），重放与重复刷新不重授", async () => {

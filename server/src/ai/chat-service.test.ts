@@ -380,4 +380,47 @@ describe("AiChatService.startChat", () => {
     expect((err as { message: string }).message).toBe("LLM provider 500");
     expect(closed).toEqual(["closed"]);
   });
+
+  test("LCA-14 D1：长 run 期间按间隔发布 keepalive，终态后停发", async () => {
+    const bus = createRunBus();
+    const runner: ChatRunner = async (input) => {
+      // 模拟 60ms 模型调用——期间无任何业务事件，恰是生产超时的场景。
+      await new Promise((r) => setTimeout(r, 60));
+      input.pushChunk({ streamId: input.streamId, type: "delta", text: "done" });
+      return { runId: input.runId!, finalText: "done", status: "success" };
+    };
+    const service = createAiChatService({ runBus: bus, runner, keepaliveMs: 8 });
+
+    const events: ChatStreamEvent[] = [];
+    bus.subscribe("run-ka", (e) => events.push(e));
+    await service.startChat({ runId: "run-ka", message: "x", userContext: ctx, surrealSession: fakeSession });
+    // 等 runner 跑完（60ms）+ 余量
+    await new Promise((r) => setTimeout(r, 140));
+
+    const keepalives = events.filter((e) => e.kind === "keepalive");
+    expect(keepalives.length).toBeGreaterThanOrEqual(3);
+    expect(keepalives.every((e) => e.runId === "run-ka")).toBe(true);
+    expect(events.some((e) => e.kind === "done")).toBe(true);
+    // 终态后不再发 keepalive：同一订阅上计数在数倍间隔内不再增长。
+    const atRest = keepalives.length;
+    await new Promise((r) => setTimeout(r, 40));
+    expect(events.filter((e) => e.kind === "keepalive").length).toBe(atRest);
+  });
+
+  test("LCA-14 D1：迟到订阅者重放 backlog 含 keepalive——重连客户端能恢复活性判定", async () => {
+    const bus = createRunBus();
+    const runner: ChatRunner = async (input) => {
+      await new Promise((r) => setTimeout(r, 40));
+      return { runId: input.runId!, finalText: "ok", status: "success" };
+    };
+    const service = createAiChatService({ runBus: bus, runner, keepaliveMs: 8 });
+    await service.startChat({ runId: "run-replay", message: "x", userContext: ctx, surrealSession: fakeSession });
+    await new Promise((r) => setTimeout(r, 100));
+
+    // 连接断开后重连的订阅者：backlog 重放给出 keepalive + done 的完整序列。
+    const replayed: ChatStreamEvent[] = [];
+    bus.subscribe("run-replay", (e) => replayed.push(e));
+    expect(replayed.some((e) => e.kind === "keepalive")).toBe(true);
+    expect(replayed.some((e) => e.kind === "done")).toBe(true);
+  });
 });

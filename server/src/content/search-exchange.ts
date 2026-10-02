@@ -6,15 +6,40 @@ import {
 } from "@surreal-ck/shared";
 import { env } from "../env";
 import { getRootDatabaseSession } from "../db/root-connection";
+import { evaluateCapabilitySwitch } from "../capability/switch";
 import { HttpError } from "../http-error";
 import { SurrealProductEntitlementStore } from "../product-entitlement/store";
 import { createIdpContentReaderScopeAdapter } from "../workspaces/idp-scope-adapter";
 import { planContentReaderExchange, type ContentReaderEntitlement, type PlannedContentReaderExchange } from "./reader-exchange";
-import { fetchContentReaderTarget, writeContentReaderProjection } from "./reader-projection";
+import { fetchContentReaderTarget, writeSearchAuthorizationRow, writeSearchGateRow } from "./reader-projection";
 import { getContentProjectionSession } from "./reader-session";
 
 type Row = Record<string, unknown>;
 const rows = (value: unknown): Row[] => Array.isArray(value) && Array.isArray(value[0]) ? value[0] as Row[] : [];
+
+/**
+ * LCA-14 返工 D4：有界并发 map。目录项的逐条门禁事实读取与门禁行写入原先
+ * 全部串行 await——每条内容一次 DB 往返，O(N) 线性放大（生产实测 ~25s）。
+ * 限制并发上限避免把投影会话的 WS 通道打满。
+ */
+const EXCHANGE_CONCURRENCY = 32;
+
+/** 供单测验证有界并发语义；生产调用方见 catalog/gate 写路径。 */
+export async function mapWithConcurrency<I, O>(items: readonly I[], fn: (item: I) => Promise<O>): Promise<O[]> {
+  const out = Array.from({ length: items.length }) as O[];
+  let cursor = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(EXCHANGE_CONCURRENCY, items.length) }, async () => {
+      for (;;) {
+        const index = cursor;
+        cursor += 1;
+        if (index >= items.length) return;
+        out[index] = await fn(items[index]!);
+      }
+    }),
+  );
+  return out;
+}
 
 // 3.3 引擎要求 ORDER BY 字段必须出现在 SELECT 投影（"Missing order idiom"），
 // id 一并选出不改变下游（只读 public_id）。
@@ -44,6 +69,11 @@ export function createContentSearchExchangeHandler() {
         getRootDatabaseSession("_system", env.SURREAL_NS),
         getContentProjectionSession(),
       ]);
+      // LCA-14：内容能力灰度开关——off / 未入 cohort 白名单时拒绝签发新检索
+      // 会话；开关读失败按不可用 fail closed（既有会话不受影响）。
+      if (!(await evaluateCapabilitySwitch(system, "content", workspaceDb)).allowed) {
+        return { ok: false, error: "capability_disabled" };
+      }
       const index = rows(await system.query(
         "SELECT subject, disabled_at, workspace FROM user_workspace_index WHERE db_name = $db FETCH workspace;",
         { db: workspaceDb },
@@ -81,15 +111,20 @@ export function createContentSearchExchangeHandler() {
       if (subjectExpiresAtSeconds <= nowSeconds) return { ok: false, error: "invalid_lifetime" };
 
       // A bounded scan fails closed instead of silently providing partial coverage.
+      const catalogStartedAt = Date.now();
       const catalog = rows(await content.query(CONTENT_CATALOG_SCAN_QUERY));
       if (catalog.length > 5000) throw new Error("content search catalog exceeds safe scan bound");
       const activeSubjects = index.flatMap((row) => row.disabled_at == null && typeof row.subject === "string" ? [row.subject] : []);
-      const plans: PlannedContentReaderExchange[] = [];
-      for (const row of catalog) {
+      // D4：逐条事实读取改有界并发——同一份投影会话上多路复用，O(N) 串行往返
+      // 是生产 ~25s 会话建立延迟的主因。
+      const targets = await mapWithConcurrency(catalog, async (row) => {
         if (typeof row.public_id !== "string") throw new Error("content search catalog has no public pointer");
-        const target = await fetchContentReaderTarget(content, row.public_id);
+        return { publicId: row.public_id, target: await fetchContentReaderTarget(content, row.public_id) };
+      });
+      const plans: PlannedContentReaderExchange[] = [];
+      for (const { publicId, target } of targets) {
         const planned = planContentReaderExchange({
-          body: { contentPublicId: row.public_id }, subject: caller.subject, workspaceDb,
+          body: { contentPublicId: publicId }, subject: caller.subject, workspaceDb,
           workspaceActive: true, membership: "active", activeSubjects, subjectExpiresAtSeconds,
           nowSeconds, subjectIsContentReader: false, database: env.CONTENT_DATABASE,
           namespace: env.SURREAL_NS, entitlement, content: target,
@@ -110,9 +145,18 @@ export function createContentSearchExchangeHandler() {
       if (issued.expiresIn <= 0 || issued.expiresIn > leaseEndSeconds - nowSeconds) {
         return { ok: false, error: "invalid_lifetime" };
       }
-      for (const plan of plans) {
-        await writeContentReaderProjection(content, { ...plan.write, confirmedUntilSeconds: leaseEndSeconds });
-      }
+      // D4：授权投影行按 workspace 派生（全 plan 同一行同内容），先落一次；
+      // 门禁行按 workspace+version 派生互不冲突，有界并发写。
+      await writeSearchAuthorizationRow(content, { ...first.write, confirmedUntilSeconds: leaseEndSeconds });
+      await mapWithConcurrency(plans, async (plan) => {
+        await writeSearchGateRow(content, { ...plan.write, confirmedUntilSeconds: leaseEndSeconds });
+      });
+      console.info("[content-search] exchange issued", {
+        workspaceDb,
+        catalogItems: catalog.length,
+        gatedPlans: plans.length,
+        elapsedMs: Date.now() - catalogStartedAt,
+      });
       return {
         status: "ready", contractId: first.success.contractId, tokenType: "Bearer",
         accessToken: issued.accessToken, expiresInSeconds: issued.expiresIn,

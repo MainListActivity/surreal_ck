@@ -75,6 +75,12 @@ export type AiChatRoutesDeps = {
   allowance?: AiAllowanceGate;
   /** LCA06：为调用者开设 content_reader 研究窗口的工厂；注入后 AI 研究可联合平台授权语料。 */
   createContentResearchSession?: ContentResearchSessionFactory;
+  /**
+   * LCA-14：AI 能力灰度开关。返回 false 时拒绝新 run 与 resume
+   * （503 ai-capability-disabled）；已运行中的 run 不追溯。
+   * 未注入时默认放行（开关行缺失同语义）。
+   */
+  checkAiCapability?: (workspaceDb: string) => Promise<boolean>;
   requireUser?: () => MiddlewareHandler<AppBindings>;
 };
 
@@ -174,6 +180,19 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
     }
   }
 
+  /** LCA-14：AI 开关关闭/未入灰度批次时拒绝（计量预留之前）。 */
+  async function requireAiCapability(user: AppBindings["Variables"]["user"]): Promise<void> {
+    const db = workspaceDb(user);
+    if (!db || !deps.checkAiCapability) return;
+    let allowed: boolean;
+    try {
+      allowed = await deps.checkAiCapability(db);
+    } catch {
+      throw new HttpError(503, "ai-capability-unavailable", "AI 能力开关状态暂不可读");
+    }
+    if (!allowed) throw new HttpError(503, "ai-capability-disabled", "AI 能力已临时关闭或本工作区不在灰度批次内");
+  }
+
   async function resumeRun(input: {
     runId: string;
     decision: ResumeDecision;
@@ -182,6 +201,7 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
     const { runId, decision, user } = input;
     const known = deps.registry.get(runId);
     if (known && known.ownerSubject !== user.subject) throw new HttpError(403, "chat-run-forbidden", "Run is not owned by caller");
+    await requireAiCapability(user);
     // 内存 registry 只负责 stream；运行归属和并发窗口由当前 workspace 的持久化记录决定。
     const session = await signIn(user.rawToken);
     let release: (() => Promise<void>) | undefined;
@@ -241,6 +261,8 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
       if (!message) {
         throw new HttpError(400, "chat-message-required", "message is required");
       }
+      // LCA-14：开关判定早于 caller session / 额度预留——关闭期间不产生计费。
+      await requireAiCapability(user);
       // contextSnapshot 可省略（service 会注入合法默认快照）；一旦提供就必须满足 schema，
       // 在 signIn 之前 fail-fast——不能先 200 受理再让 workflow 内部炸出不透明错误。
       let userContext: AiContextSnapshot | undefined;
