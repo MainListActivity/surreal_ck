@@ -212,6 +212,18 @@ DEFINE INDEX office_role_key_unique ON office_role COLUMNS key UNIQUE;
 - **AI 抽屉**：Router workflow 入口，调后端 `/api/chat` + WS `/api/chat/stream`。与办公室视图正交。
 - **退休员工 / 改员工 secret 等**：调后端 `POST /api/workspaces/:slug/employees/:id/retire` 等员工管理 endpoint（dispatcher 需要同步清缓存 + 关 LIVE 会话），不能让浏览器直接改 `employee_credential`（该表 PERMISSIONS NONE）。
 
+### 9. 首次进入的幂等 onboarding（VO06）
+
+需求拆分后（VO01–VO05 已把 schema、PM tracer、人类请求、实时视图、DDL 确认落进各层），剩下的「目标 → 导入 → 开岗 → 首报」由一层薄的编排完成，不加第二套 runtime：
+
+- **状态真源在 db，不在浏览器**。onboarding 没有任何本地步骤标记；`office_meta`（goal / primary_contact / import_state / state）、`office_task:pm_initial`、`office_report`、`employee_trigger`（幂等键 `office-bootstrap`）共同推导当前阶段。刷新、断线重连、切换 workspace 后重进同一 db 读到同一进度。
+- **目标保存即登记首位联系人**：`UPSERT office_meta:office SET primary_contact = primary_contact ?? fn::current_user()`——RHS 引用先评估旧值，刷新/重试/换管理员都不会静默换掉 first contact（schema 另以 `kind = "human"` 守住合法性）。
+- **导入门禁**：`office_meta.import_state ∈ {"imported","skipped"}` 是 bootstrap 的前置（`meta-incomplete` 的 missing 里出现 `import_state`）；`"failed"` 可重试、`NONE` 表示未决议。已 `active` 的历史办公室不受门禁影响——bootstrap 重放本来就幂等，新入口不得回头阻断。
+- **管理员派单**：`office_task` 由浏览器 admin 直连创建（schema 已约束 `assigner = fn::current_user()`），但浏览器无权限写 `employee_trigger`；新增的 `POST /api/workspaces/:slug/office/tasks/:taskId/dispatch` 只做读校验（任务开放、assignee 为 active 虚拟员工）并把任务翻译成 `office-task:<taskId>` 幂等键的通用触发——仍是投递翻译，不是 office CRUD 代理。
+- **分析师续建共用稳定 requestKey**：`office-role:data-analyst` 与 PM 内部委派路径同键，人工开岗与委派开岗收敛到同一员工行；onboarding UI 只暴露 project-manager / data-analyst 两个岗位（`office_role` 种子也只有这两个，不存在表单专员占位）。
+- **停滞可诊断**：30s 无活动 / 5min 无报告时，UI 读 `employee_trigger`（`idempotency_key = "office-bootstrap"`）与员工 `virtual_profile.status` 把根因分四级给用户：模型 / 数据库 / 预算限额 / 员工状态。
+- **DDL 确认链不变**：分析任务 → `office_ddl_intent` → 浏览器 admin 确认 → 分析师报告，继续走 VO05 的浏览器确认决策，onboarding 只负责把分析任务送达。
+
 ## Consequences
 
 ### 正面

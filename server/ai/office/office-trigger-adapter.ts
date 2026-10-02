@@ -84,13 +84,13 @@ export type OfficeBootstrapResult =
   | { kind: "provision-failed"; reason: string }
   | { kind: "trigger-failed"; error: string };
 
-type MetaRow = { goal?: unknown; primary_contact?: unknown; state?: unknown };
+type MetaRow = { goal?: unknown; primary_contact?: unknown; state?: unknown; import_state?: unknown };
 
 async function readMetaAsCaller(
   session: Queryable,
-): Promise<{ goal: string; primaryContact: string | null; state: string } | null> {
+): Promise<{ goal: string; primaryContact: string | null; state: string; importState: string | null } | null> {
   const [rows] = await session.query<[MetaRow[]]>(
-    `SELECT goal, primary_contact, state FROM ${OFFICE_META_ID};`,
+    `SELECT goal, primary_contact, state, import_state FROM ${OFFICE_META_ID};`,
   );
   const row = rows?.[0];
   if (!row) return null;
@@ -98,7 +98,18 @@ async function readMetaAsCaller(
     goal: typeof row.goal === "string" ? row.goal : "",
     primaryContact: row.primary_contact == null ? null : String(row.primary_contact),
     state: typeof row.state === "string" ? row.state : "pending",
+    importState: row.import_state == null ? null : String(row.import_state),
   };
+}
+
+/**
+ * VO06 导入门禁：Excel 导入成功或管理员明确 skip 之前不允许开岗
+ * （import_state 必须是 imported / skipped）；已 active 的办公室不受门禁影响
+ * ——bootstrap 重放天然幂等，追加入口不得回头阻断既有办公室。
+ */
+function metaReadyForBootstrap(meta: { state: string; importState: string | null }): boolean {
+  if (meta.state === "active") return true;
+  return meta.importState === "imported" || meta.importState === "skipped";
 }
 
 /**
@@ -129,6 +140,7 @@ export async function bootstrapOffice(
     const missing: string[] = [];
     if (!meta?.goal.trim()) missing.push("goal");
     if (!meta?.primaryContact) missing.push("primary_contact");
+    if (meta && !metaReadyForBootstrap(meta)) missing.push("import_state");
     if (missing.length) return { kind: "meta-incomplete", missing };
 
     const provisioned = await deps.lifecycle.provision({
@@ -301,6 +313,102 @@ export async function wakeResolvedOfficeRequest(
   } finally {
     await caller.close?.().catch(() => undefined);
   }
+}
+
+// ── 管理员发起的任务投递（VO06） ─────────────────────────────────────────
+//
+// onboarding 之后管理员在浏览器里直接创建 office_task（schema 约束
+// assigner = fn::current_user()），但浏览器会话无权限写 employee_trigger——
+// 投递必须经服务端把"任务落到员工名下"翻译成通用触发。本动作只做读校验 +
+// 幂等投递（office-task:<taskId> 键恒定），不产生业务写。
+
+export type OfficeTaskDispatchDeps = {
+  triggerRuntime: Pick<EmployeeTriggerRuntime, "enqueue" | "start" | "registerHandler">;
+  resolveWorkspace(slug: string): Promise<{ dbName: string } | null>;
+  /** 调用者会话：读任务行（admin scope 由路由层先行把关）。 */
+  callerSession(database: string, rawToken: string): Promise<ClosableQueryable>;
+};
+
+export type OfficeTaskDispatchResult =
+  | { kind: "ok"; outcome: string; triggerId: string }
+  | { kind: "workspace-not-found" }
+  | { kind: "caller-denied" }
+  | { kind: "task-not-found" }
+  | { kind: "task-terminal"; status: string }
+  | { kind: "assignee-not-virtual" }
+  | { kind: "assignee-inactive"; status: string }
+  | { kind: "trigger-failed"; error: string };
+
+type DispatchTaskRow = {
+  id?: unknown;
+  status?: unknown;
+  assignee?: unknown;
+  assignee_kind?: unknown;
+  assignee_status?: unknown;
+};
+
+export async function dispatchOfficeTask(
+  deps: OfficeTaskDispatchDeps,
+  input: { slug: string; callerToken: string; taskId: string },
+): Promise<OfficeTaskDispatchResult> {
+  const workspace = await deps.resolveWorkspace(input.slug);
+  if (!workspace) return { kind: "workspace-not-found" };
+  const database = workspace.dbName;
+
+  let caller: ClosableQueryable;
+  try {
+    caller = await deps.callerSession(database, input.callerToken);
+  } catch {
+    return { kind: "caller-denied" };
+  }
+  try {
+    const [rows] = await caller.query<[DispatchTaskRow[]]>(
+      `SELECT id, status, assignee,
+        assignee.kind AS assignee_kind,
+        assignee.virtual_profile.status AS assignee_status
+       FROM $task;`,
+      { task: new StringRecordId(input.taskId) },
+    );
+    const task = rows?.[0];
+    if (!task) return { kind: "task-not-found" };
+    const status = typeof task.status === "string" ? task.status : "";
+    if (status === "done" || status === "cancelled") {
+      return { kind: "task-terminal", status };
+    }
+    if (task.assignee_kind !== "virtual") return { kind: "assignee-not-virtual" };
+    const assigneeStatus = typeof task.assignee_status === "string" ? task.assignee_status : "";
+    if (assigneeStatus !== "active") {
+      return { kind: "assignee-inactive", status: assigneeStatus || "none" };
+    }
+    const assigneeId = task.assignee == null ? "" : String(task.assignee);
+    if (!assigneeId) return { kind: "assignee-not-virtual" };
+
+    const result = await notifyOfficeTask(deps.triggerRuntime, {
+      database,
+      assigneeId,
+      taskId: String(task.id),
+    });
+    if (result.outcome === "failed") {
+      return { kind: "trigger-failed", error: result.error };
+    }
+    return { kind: "ok", outcome: result.outcome, triggerId: result.triggerId };
+  } finally {
+    await caller.close?.().catch(() => undefined);
+  }
+}
+
+export function createProductionOfficeTaskDispatch(): (
+  input: { slug: string; callerToken: string; taskId: string },
+) => Promise<OfficeTaskDispatchResult> {
+  return (input) =>
+    dispatchOfficeTask(
+      {
+        triggerRuntime: getEmployeeTriggerRuntime(),
+        resolveWorkspace: resolveWorkspaceBySlug,
+        callerSession: (_database, rawToken) => createCallerSession(rawToken),
+      },
+      input,
+    );
 }
 
 export function createProductionOfficeRequestWake(): (

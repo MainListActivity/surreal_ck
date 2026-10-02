@@ -202,7 +202,7 @@ describe("VO02 项目经理纵切（真实 SurrealDB）", () => {
       `CREATE office_meta:office CONTENT {
         goal: "把债权台账跑出风险清单",
         primary_contact: user:member,
-        state: "onboarding"
+        state: "onboarding", import_state: "skipped"
       };`,
     ).collect();
 
@@ -319,6 +319,22 @@ describe("VO02 项目经理纵切（真实 SurrealDB）", () => {
     expect(await rows(fixture, "SELECT id FROM employee_trigger")).toHaveLength(0);
     expect(await rows(fixture, 'SELECT id FROM user WHERE kind = "virtual"')).toHaveLength(0);
 
+    // VO06 导入门禁：goal/contact 齐备但 import_state 未决议 → 同样拒绝，
+    // 决议落地后才放行（刷新/重试收敛到同一结果）。
+    const admin = await jwtSession(fixture, { sub: "owner-sub", ac: "admin" });
+    await admin.query(
+      `CREATE office_meta:office CONTENT {
+        goal: "门禁", primary_contact: user:member, state: "onboarding"
+      };`,
+    ).collect();
+    const gated = await stack.bootstrap({ slug: "acme", callerToken: "owner-sub" });
+    expect(gated).toEqual({ kind: "meta-incomplete", missing: ["import_state"] });
+    expect(await rows(fixture, "SELECT id FROM employee_trigger")).toHaveLength(0);
+
+    await admin.query(`UPDATE office_meta:office SET import_state = "skipped"`).collect();
+    const allowed = await stack.bootstrap({ slug: "acme", callerToken: "owner-sub" });
+    expect(allowed.kind).toBe("ok");
+
     await stack.triggerRuntime.stop();
     await stack.employeeRuntime.stop();
   }, 90_000);
@@ -329,7 +345,7 @@ describe("VO02 项目经理纵切（真实 SurrealDB）", () => {
     const admin = await jwtSession(fixture, { sub: "owner-sub", ac: "admin" });
     await admin.query(
       `CREATE office_meta:office CONTENT {
-        goal: "边界诊断", primary_contact: user:member, state: "onboarding"
+        goal: "边界诊断", primary_contact: user:member, state: "onboarding", import_state: "skipped"
       };`,
     ).collect();
     expect((await stack.bootstrap({ slug: "acme", callerToken: "owner-sub" })).kind).toBe("ok");
@@ -427,7 +443,7 @@ describe("VO02 项目经理纵切（真实 SurrealDB）", () => {
     const admin = await jwtSession(fixture, { sub: "owner-sub", ac: "admin" });
     await admin.query(
       `CREATE office_meta:office CONTENT {
-        goal: "完整 meta 但无员工", primary_contact: user:member, state: "onboarding"
+        goal: "完整 meta 但无员工", primary_contact: user:member, state: "onboarding", import_state: "skipped"
       };`,
     ).collect();
 
@@ -461,7 +477,7 @@ describe("VO02 项目经理纵切（真实 SurrealDB）", () => {
     const admin = await jwtSession(fixture, { sub: "owner-sub", ac: "admin" });
     await admin.query(
       `CREATE office_meta:office CONTENT {
-        goal: "reconcile 补投", primary_contact: user:member, state: "onboarding"
+        goal: "reconcile 补投", primary_contact: user:member, state: "onboarding", import_state: "skipped"
       };`,
     ).collect();
     expect((await stack.bootstrap({ slug: "acme", callerToken: "owner-sub" })).kind).toBe("ok");
