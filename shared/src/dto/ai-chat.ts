@@ -315,7 +315,7 @@ export type AiToolCallRecord = {
 export type AiMessageChunkEvent =
   | { streamId: string; type: "delta"; text: string }
   | { streamId: string; type: "error"; message: string }
-  | { streamId: string; type: "done"; message: AiChatMessage; toolCalls: AiToolCallRecord[] };
+  | { streamId: string; type: "done"; message: AiChatMessage; toolCalls: AiToolCallRecord[]; deliveryProof?: AiDeliveryProof[] };
 
 // ─── ai.progressStream 进度事件 ──────────────────────────────────────────────
 //
@@ -397,6 +397,13 @@ export const ResearchAuthorizationSchema = z.object({
   leaseEndSeconds: z.number().optional(),
 });
 export type ResearchAuthorization = z.infer<typeof ResearchAuthorizationSchema>;
+/** 仅服务端交付使用；不进入 WS DTO 或 workflow 明文快照。 */
+export type AiDeliveryProof = {
+  authorization: ResearchAuthorization;
+  platform: Array<{ versionId: string; bodySha256: string; cite: boolean }>;
+  private: Array<{ resourceId: string; quoteSha256: string }>;
+};
+
 
 const AuthorizationChangedEventSchema = z.object({
   kind: z.literal("authorization_changed"),

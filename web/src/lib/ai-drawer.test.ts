@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { AiChatMessage, AiContextSnapshot } from "@surreal-ck/shared";
 import type { ChatStreamEvent, ResumeDecision } from "@surreal-ck/shared";
-import { createAiDrawerSession, type AiDrawerStreamHandle } from "./ai-drawer";
+import { createAiDrawerSession, type AiDrawerStreamHandle, type ChatRunStart } from "./ai-drawer";
 
 function context(workspaceSlug = "acme"): AiContextSnapshot & { workspaceSlug: string } {
   return {
@@ -47,6 +47,8 @@ function harness(over: {
     contextSnapshot?: AiContextSnapshot;
     composerMode?: "chat" | "resource-search";
   }) => Promise<{ runId: string; streamUrl: string; streamToken: string }>;
+  pendingStorage?: Pick<Storage, "getItem" | "setItem" | "removeItem">;
+  recoverChat?: (runId: string) => Promise<ChatRunStart>;
   resumeChat?: (runId: string, decision: ResumeDecision) => Promise<{ runId: string; streamUrl: string; streamToken: string }>;
 } = {}) {
   const start = deferred<{ runId: string; streamUrl: string; streamToken: string }>();
@@ -63,7 +65,9 @@ function harness(over: {
   const closeListeners: Array<(code: number) => void> = [];
 
   const session = createAiDrawerSession({
+    pendingStorage: over.pendingStorage,
     chatClient: {
+      recoverChat: over.recoverChat,
       startChat(input) {
         starts.push(input);
         if (over.startChat) return over.startChat(input);
@@ -242,7 +246,7 @@ describe("AI 抽屉会话", () => {
     expect(h.session.snapshot()).toMatchObject({
       sending: false,
       activeRun: null,
-      sendError: "AI 连接已中断，请检查网络后重试。",
+      sendError: "AI 连接已中断，任务可能仍在运行。检查网络后恢复原结果。",
       retryableMessageId: "id-1",
     });
     expect(h.session.snapshot().messages[0]).toMatchObject({ role: "user", content: "读取当前记录" });
@@ -662,4 +666,25 @@ test("LCA07 已结束研究重新检索：新 run 只发送用户问题，不带
   expect(h.starts[1]?.composerMode).toBe("resource-search");
   expect(h.starts[1]?.idempotencyKey).not.toBe(h.starts[0]?.idempotencyKey);
   expect(h.session.snapshot().activeRun?.runId).toBe("run-2");
+});
+
+
+test("断线与页面刷新按原 run 补取完整结果，不调用 startChat；成功清除恢复指针", async () => {
+  const values = new Map<string, string>();
+  const pendingStorage = { getItem: (k: string) => values.get(k) ?? null, setItem: (k: string, v: string) => { values.set(k, v); }, removeItem: (k: string) => { values.delete(k); } };
+  const recovered: string[] = [];
+  const recoverChat = async (runId: string): Promise<ChatRunStart> => { recovered.push(runId); return { runId, streamUrl: "/stream", streamToken: "", result: { kind: "done", runId, message: assistantMessage("完整授权答案"), toolCalls: [] } }; };
+  const h = harness({ pendingStorage, recoverChat });
+  h.session.syncWorkspace("acme");
+  const sent = h.session.sendMessage("合同研究", context());
+  h.start.resolve({ runId: "run-original", streamUrl: "/stream", streamToken: "token" }); await sent;
+  h.disconnect();
+  expect(values.get("sck.ai.pending:acme")).toBe("run-original");
+  const reload = harness({ pendingStorage, recoverChat });
+  reload.session.syncWorkspace("beta"); expect(reload.session.snapshot().retryableMessageId).toBeNull();
+  reload.session.syncWorkspace("acme");
+  await reload.session.retryMessage(reload.session.snapshot().retryableMessageId!);
+  expect(recovered).toEqual(["run-original"]); expect(reload.starts).toHaveLength(0); expect(reload.handles).toHaveLength(0);
+  expect(reload.session.snapshot().messages.at(-1)?.content).toBe("完整授权答案"); expect(values.has("sck.ai.pending:acme")).toBe(false);
+  await h.session.retryMessage("id-1"); expect(h.starts).toHaveLength(1); expect(recovered).toEqual(["run-original", "run-original"]);
 });

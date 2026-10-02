@@ -8,6 +8,7 @@ import { requestLogger } from "./middleware/logger";
 import { healthRoutes } from "./routes/health";
 import { createAiChatRoutes, type AiChatService, type CallerSessionFactory } from "./routes/ai-chat";
 import { createAiStreamRoutes } from "./routes/ai-stream";
+import { ChatDeliveryStore } from "./ai/delivery-store";
 import { createAiChatService } from "./ai/chat-service";
 import { createMastraRunner } from "./ai/assemble-mastra";
 import { env } from "./env";
@@ -226,7 +227,7 @@ function buildAutoAiChatService(
   embeddingProvider: EmbeddingProvider | undefined,
   createContentResearchSession: ContentResearchSessionFactory,
 ): AiChatService | undefined {
-  if (!env.AI_PROVIDER || !env.AI_MODEL || !env.AI_API_KEY) return undefined;
+  if (!env.AI_PROVIDER || !env.AI_MODEL || !env.AI_API_KEY || !env.AI_DELIVERY_KEY) return undefined;
   // TYPESAFE_API_KEY 缺省 → decisionModel 为 undefined，意图分类保持纯 LLM 路径。
   const decisionModel = env.TYPESAFE_API_KEY
     ? createTypeSafeDecisionModel({
@@ -465,6 +466,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     .route(
       "/",
       createAiChatRoutes({
+      deliveries: env.AI_DELIVERY_KEY ? new ChatDeliveryStore(env.AI_DELIVERY_KEY) : undefined,
         service: autoAiChatService ?? NOT_WIRED_AI_SERVICE,
         createCallerSession: options.createCallerSession ?? ((rawToken) => createCallerSession(rawToken)),
         registry: runRegistry,

@@ -35,6 +35,7 @@ import type { RunBus } from "./run-bus";
 export type ChatRunner = (input: {
   text: string;
   runId: string;
+  signal?: AbortSignal;
   streamId: string;
   surrealSession: Surreal;
   /** 调用者 OIDC subject；stream 授权和 Mastra 上下文识别用，DB 归因走 caller session 的 $auth。 */
@@ -51,6 +52,7 @@ export type ChatRunner = (input: {
 
 export type ChatResumer = (input: {
   runId: string;
+  signal?: AbortSignal;
   streamId: string;
   decision: ResumeDecision;
   surrealSession: Surreal;
@@ -66,6 +68,7 @@ export type ChatResumer = (input: {
 export type CreateAiChatServiceOptions = {
   runBus: RunBus;
   runner: ChatRunner;
+  maxRunMs?: number;
   /** 可选：resume 用；未注入时 resumeChat 抛 not-implemented。 */
   resumer?: ChatResumer;
   /** resume 时 userContext 的回填策略；默认空快照（workflow 已持久化 state，runtime userContext 仅兜底）。 */
@@ -75,16 +78,32 @@ export type CreateAiChatServiceOptions = {
 /** 把 router workflow runtime 事件桥接到 RunBus。返回三个 pusher + 一个 done/error 终态广播。 */
 function bridgeToBus(bus: RunBus, runId: string) {
   let terminalPublished = false;
+  let finalEvent: Extract<ChatStreamEvent, { kind: "done" }> | undefined;
+  let proofs: import("@surreal-ck/shared").AiDeliveryProof[] = [];
+  let active = true;
   const emit = (event: ChatStreamEvent) => {
-    if (event.kind === "done" || event.kind === "error") terminalPublished = true;
+    if (!active) return;
+    if (event.kind === "done") { terminalPublished = true; finalEvent = event; return; }
+    if (event.kind === "error") { terminalPublished = true; finalEvent = undefined; }
     bus.publish(runId, event);
   };
   return {
+    async commit(onResult?: (event: Extract<ChatStreamEvent, { kind: "done" }>, proofs: import("@surreal-ck/shared").AiDeliveryProof[]) => Promise<void>, onTerminal?: (outcome: RunTerminalOutcome) => void | Promise<void>) {
+      if (!finalEvent) throw new Error("chat completed without a deliverable result");
+      await onResult?.(finalEvent, proofs);
+      if (!active) throw new Error("chat-run-deadline");
+      await onTerminal?.("success");
+      if (!active) return;
+      bus.publish(runId, finalEvent);
+      active = false;
+    },
+    stop() { active = false; },
     pushChunk(e: AiMessageChunkEvent) {
       // workflow 的 chunk 有三种 type：delta / error / done。各自映射成 ChatStreamEvent kind。
       if (e.type === "delta") {
         emit({ kind: "chunk", runId, text: e.text });
       } else if (e.type === "done") {
+        proofs = e.deliveryProof ?? [];
         emit({ kind: "done", runId, message: e.message, toolCalls: e.toolCalls });
       } else if (e.type === "error") {
         emit({ kind: "error", runId, code: "chat-error", message: e.message });
@@ -134,7 +153,7 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
   const { runBus, runner, resumer } = options;
 
   return {
-    async startChat({ runId, message, userContext, surrealSession, ownerSubject, composerMode, openContentSession, onTerminal }) {
+    async startChat({ runId, message, userContext, surrealSession, ownerSubject, composerMode, openContentSession, onTerminal, onResult }) {
       const bridge = bridgeToBus(runBus, runId);
       // composer 的「搜索资源」模式 = 确定性单步 plan，不经 LLM 路由（RR-011/RR-014 契约）。
       const planOverride: RouterPlan | undefined = composerMode === "resource-search"
@@ -143,8 +162,13 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
       // 后台启动：startChat 必须立即 resolve（D1-04 契约），workflow 异步跑完。
       void (async () => {
         let outcome: RunTerminalOutcome = "failed";
+        let committed = false;
+        const controller = new AbortController();
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        const deadline = new Promise<never>((_, reject) => { timeout = setTimeout(() => { controller.abort(); reject(new Error("chat-run-deadline")); }, options.maxRunMs ?? 10 * 60_000); });
         try {
-          const result = await runner({
+          const result = await Promise.race([deadline, runner({
+            signal: controller.signal,
             text: message,
             runId,
             streamId: runId, // streamId 与 runId 同步，前端无需再额外配对
@@ -156,17 +180,24 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
             pushChunk: bridge.pushChunk,
             pushProgress: bridge.pushProgress,
             onSuspend: bridge.onSuspend,
-          });
+          })]);
+          // 执行窗（模型调用）结束即解除 deadline：收口只是落账，不能再被 deadline 抢跑——
+          // 否则持久化/结算在飞行中又被判失败，会出现「已交付却释放、或重复收口」的账本错位。
+          if (timeout) clearTimeout(timeout);
           // success / suspended：workflow 自己已 publish done（finalize step）；suspended 不发 done。
           bridge.ensureTerminal(result, userContext ?? createDefaultAiContextSnapshot());
           outcome = result.status === "success" ? "success" : "suspended";
+          if (outcome === "success") { await bridge.commit(onResult, onTerminal); committed = true; }
         } catch (cause) {
           outcome = "failed";
           bridge.publishErrorIfNotTerminal(cause instanceof Error ? cause.message : String(cause));
+          bridge.stop();
         } finally {
+          if (timeout) clearTimeout(timeout);
+          bridge.stop();
           // 计量收口（结算/释放预留）不依赖 WS 是否仍连着。
           try {
-            await onTerminal?.(outcome);
+            if (!committed) await onTerminal?.(outcome);
           } catch {
             // 终态回调失败不回写 run 结果；失联预留由 deadline 清扫兜底。
           }
@@ -175,7 +206,7 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
       })();
     },
 
-    async resumeChat({ runId, decision, surrealSession, ownerSubject, openContentSession, onTerminal }) {
+    async resumeChat({ runId, decision, surrealSession, ownerSubject, openContentSession, onTerminal, onResult }) {
       if (!resumer) {
         throw new Error("AiChatService: resumer not configured");
       }
@@ -188,8 +219,13 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
       const userContext = options.resumeUserContextFallback ?? createDefaultAiContextSnapshot();
       void (async () => {
         let outcome: RunTerminalOutcome = "failed";
+        let committed = false;
+        const controller = new AbortController();
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        const deadline = new Promise<never>((_, reject) => { timeout = setTimeout(() => { controller.abort(); reject(new Error("chat-run-deadline")); }, options.maxRunMs ?? 10 * 60_000); });
         try {
-          const result = await resumer({
+          const result = await Promise.race([deadline, resumer({
+            signal: controller.signal,
             runId,
             streamId: runId,
             decision,
@@ -200,15 +236,20 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
             pushChunk: bridge.pushChunk,
             pushProgress: bridge.pushProgress,
             onSuspend: bridge.onSuspend,
-          });
+          })]);
+          if (timeout) clearTimeout(timeout);
           bridge.ensureTerminal(result, userContext);
           outcome = result.status === "success" ? "success" : result.status === "cancelled" ? "cancelled" : "suspended";
+          if (outcome === "success") { await bridge.commit(onResult, onTerminal); committed = true; }
         } catch (cause) {
           outcome = "failed";
           bridge.publishErrorIfNotTerminal(cause instanceof Error ? cause.message : String(cause));
+          bridge.stop();
         } finally {
+          if (timeout) clearTimeout(timeout);
+          bridge.stop();
           try {
-            await onTerminal?.(outcome);
+            if (!committed) await onTerminal?.(outcome);
           } catch {
             // 同上：收口失败不影响 run 结果，deadline 清扫兜底。
           }

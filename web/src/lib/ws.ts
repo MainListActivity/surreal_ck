@@ -29,9 +29,12 @@ export type ConnectWsInput = {
   onMessage: (message: unknown) => void;
   /** 重连次数耗尽后回调，附带最后一次的 close code，让上层决定是否重登 / 提示。 */
   onClose?: (code: number) => void;
-  /** 建连后长时间没有非 ping 业务事件时触发，让上层退出 loading。 */
+  /** 建连后长时间没有有效服务端事件时触发，让上层退出 loading。 */
   onIdleTimeout?: () => void;
   idleTimeoutMs?: number;
+  /** 单次任务含重连的等待上限，心跳不能无限续期。 */
+  lifetimeMs?: number;
+  maxReconnects?: number;
   socketFactory?: WsSocketFactory;
   timers?: WsTimers;
 };
@@ -88,6 +91,15 @@ export function connectWs(input: ConnectWsInput): WsHandle {
   let reconnectTimer: number | null = null;
   let reconnects = 0;
   let stopped = false;
+  const lifetimeTimer = timers.setTimeout(() => {
+    if (stopped) return;
+    stopped = true;
+    stopHeartbeat();
+    stopIdleTimer();
+    if (reconnectTimer !== null) timers.clearTimeout(reconnectTimer);
+    input.onIdleTimeout?.();
+    socket?.close(IDLE_TIMEOUT_CLOSE_CODE);
+  }, input.lifetimeMs ?? 10 * 60_000);
 
   function stopHeartbeat(): void {
     if (heartbeat !== null) {
@@ -103,8 +115,11 @@ export function connectWs(input: ConnectWsInput): WsHandle {
     }
   }
 
-  function isPing(message: unknown): boolean {
-    return typeof message === "object" && message !== null && (message as { kind?: unknown }).kind === "ping";
+  function isActiveEvent(message: unknown): boolean {
+    if (typeof message !== "object" || message === null) return false;
+    const event = message as { kind?: unknown; runId?: unknown };
+    return ["ping", "progress", "chunk", "done", "error", "suspend"].includes(String(event.kind))
+      && typeof event.runId === "string" && (!input.params?.runId || event.runId === input.params.runId);
   }
 
   function armIdleTimer(): void {
@@ -113,6 +128,7 @@ export function connectWs(input: ConnectWsInput): WsHandle {
     idleTimer = timers.setTimeout(() => {
       if (stopped) return;
       stopped = true;
+      timers.clearTimeout(lifetimeTimer);
       stopHeartbeat();
       input.onIdleTimeout?.();
       socket?.close(IDLE_TIMEOUT_CLOSE_CODE);
@@ -125,8 +141,9 @@ export function connectWs(input: ConnectWsInput): WsHandle {
       if (!trimmed) continue;
       try {
         const message = JSON.parse(trimmed) as unknown;
+        if (!isActiveEvent(message) || stopped) continue;
+        armIdleTimer();
         input.onMessage(message);
-        if (!isPing(message)) armIdleTimer();
       } catch {
         // 非 JSON 行忽略，避免一条坏帧打断整条流。
       }
@@ -138,22 +155,24 @@ export function connectWs(input: ConnectWsInput): WsHandle {
     socket = sock;
 
     sock.onopen = () => {
-      reconnects = 0; // 成功连上后重置重连预算
+      if (stopped || socket !== sock) return;
       heartbeat = timers.setInterval(() => sock.send('{"type":"ping"}'), HEARTBEAT_MS);
       armIdleTimer();
     };
-    sock.onmessage = (data) => deliver(data);
+    sock.onmessage = (data) => { if (socket === sock) deliver(data); };
     sock.onclose = (code) => {
+      if (socket !== sock || stopped) return;
       stopHeartbeat();
       stopIdleTimer();
       if (stopped) return;
-      if (reconnects < MAX_RECONNECTS) {
+      if (reconnects < (input.maxReconnects ?? MAX_RECONNECTS)) {
         const delay = RECONNECT_BASE_MS * 2 ** reconnects;
         reconnects += 1;
         reconnectTimer = timers.setTimeout(open, delay);
       } else {
         // 重连预算耗尽，终止本连接并交给上层决定（重登 / 提示）。
         stopped = true;
+        timers.clearTimeout(lifetimeTimer);
         input.onClose?.(code);
       }
     };
@@ -165,6 +184,7 @@ export function connectWs(input: ConnectWsInput): WsHandle {
   return {
     close() {
       stopped = true;
+      timers.clearTimeout(lifetimeTimer);
       stopHeartbeat();
       stopIdleTimer();
       if (reconnectTimer !== null) {

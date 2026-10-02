@@ -60,6 +60,7 @@ export function attachStream(input: AttachStreamInput): AttachStreamResult {
     }
   });
 
+  if (closed) detach();
   return { ok: true, detach };
 }
 
@@ -89,14 +90,22 @@ export function createAiStreamRoutes(deps: AiStreamRoutesDeps): {
     upgradeWebSocket((c) => {
       const runId = c.req.query("runId") ?? "";
       const streamToken = c.req.query("streamToken") ?? "";
+      let disconnected = false;
       let attached: AttachStreamResult | undefined;
       let heartbeat: ReturnType<typeof setInterval> | undefined;
 
       return {
-        onOpen(_evt, ws) {
+        async onOpen(_evt, ws) {
+          const record = deps.registry.resolveStreamToken({ runId, streamToken });
+          try {
+            if (!record) throw new Error("stream-forbidden");
+            await record.authorize?.();
+            if (disconnected) return;
+          } catch { ws.close(1008, "stream-forbidden"); return; }
+          let completed = false;
           const sink: StreamSink = {
             send: (data) => ws.send(data),
-            close: (code, reason) => ws.close(code, reason),
+            close: (code, reason) => { completed = true; ws.close(code, reason); },
           };
           attached = attachStream({ runId, streamToken, registry: deps.registry, bus: deps.bus, sink });
           if (!attached.ok) {
@@ -104,11 +113,13 @@ export function createAiStreamRoutes(deps: AiStreamRoutesDeps): {
             ws.close(1008, attached.code);
             return;
           }
+          if (completed) return;
           heartbeat = setInterval(() => {
             ws.send(JSON.stringify({ kind: "ping", runId } satisfies ChatStreamEvent));
           }, HEARTBEAT_MS);
         },
         onClose() {
+          disconnected = true;
           if (heartbeat) clearInterval(heartbeat);
           if (attached?.ok) attached.detach();
         },

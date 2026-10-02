@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { ChatStreamEvent } from "@surreal-ck/shared";
 import { createRunBus } from "../ai/run-bus";
 import { createRunRegistry } from "../ai/run-registry";
-import { attachStream, type StreamSink } from "./ai-stream";
+import { attachStream, createAiStreamRoutes, type StreamSink } from "./ai-stream";
 
 function fakeSink() {
   const sent: string[] = [];
@@ -90,4 +90,50 @@ describe("attachStream", () => {
     expect(f.events()).toEqual([{ kind: "error", runId: "run-1", code: "chat-failed", message: "storage failed" }]);
     expect(f.closed).toBeDefined();
   });
+});
+
+
+test("installed Bun/Hono WS sends a real 25s heartbeat, then closes exactly after done", async () => {
+  const registry = createRunRegistry(); const bus = createRunBus();
+  const { streamToken } = registry.register({ runId: "long", ownerSubject: "member", authorize: async () => {} });
+  const { routes, websocket } = createAiStreamRoutes({ registry, bus });
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: routes.fetch, websocket });
+  const frames: ChatStreamEvent[] = [];
+  const socket = new WebSocket(`ws://127.0.0.1:${server.port}/api/chat/stream?runId=long&streamToken=${streamToken}`);
+  try {
+    await new Promise<void>((resolve, reject) => { socket.onerror = () => reject(new Error("local WS failed")); socket.onmessage = e => {
+      const frame = JSON.parse(String(e.data)) as ChatStreamEvent; frames.push(frame);
+      if (frame.kind === "ping") { bus.publish("long", { kind: "done", runId: "long", message: {} as never, toolCalls: [] }); }
+    }; socket.onclose = e => { expect(e.code).toBe(1000); resolve(); }; });
+    expect(frames.map(e => e.kind)).toEqual(["ping", "done"]);
+  } finally { socket.close(); server.stop(true); }
+}, 35_000);
+
+test("cached result is not sent when current WS authorization rejects", async () => {
+  const registry = createRunRegistry(); const bus = createRunBus();
+  const { streamToken } = registry.register({ runId: "revoked", ownerSubject: "member", authorize: async () => { throw new Error("revoked"); } });
+  bus.publish("revoked", { kind: "done", runId: "revoked", message: {} as never, toolCalls: [] });
+  const { routes, websocket } = createAiStreamRoutes({ registry, bus });
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: routes.fetch, websocket });
+  const socket = new WebSocket(`ws://127.0.0.1:${server.port}/api/chat/stream?runId=revoked&streamToken=${streamToken}`);
+  let frames = 0;
+  try { await new Promise<void>(resolve => { socket.onmessage = () => frames++; socket.onclose = e => { expect(e.code).toBe(1008); resolve(); }; }); expect(frames).toBe(0); }
+  finally { socket.close(); server.stop(true); }
+});
+
+test("WS closed while authorization is pending does not attach late or send cached result", async () => {
+  const registry = createRunRegistry(); const bus = createRunBus();
+  let release!: () => void; let entered!: () => void;
+  const started = new Promise<void>(r => { entered = r; }); const held = new Promise<void>(r => { release = r; });
+  const { streamToken } = registry.register({ runId: "closing", ownerSubject: "member", authorize: async () => { entered(); await held; } });
+  const { routes, websocket } = createAiStreamRoutes({ registry, bus });
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: routes.fetch, websocket });
+  const socket = new WebSocket(`ws://127.0.0.1:${server.port}/api/chat/stream?runId=closing&streamToken=${streamToken}`);
+  try {
+    await Promise.all([started, new Promise<void>(r => { if (socket.readyState === WebSocket.OPEN) r(); else socket.onopen = () => r(); })]);
+    const closed = new Promise<void>(r => { socket.onclose = () => r(); }); socket.close(); await closed; release();
+    await Bun.sleep(10);
+    bus.publish("closing", { kind: "done", runId: "closing", message: {} as never, toolCalls: [] });
+    expect(socket.readyState).toBe(WebSocket.CLOSED);
+  } finally { release(); socket.close(); server.stop(true); }
 });

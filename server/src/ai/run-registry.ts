@@ -15,11 +15,13 @@ export type RunRecord = {
   ownerSubject: string;
   streamToken: string;
   expiresAt: number;
+  retainUntil: number;
+  authorize?: () => Promise<void>;
 };
 
 export type RunRegistry = {
   /** 注册一个新 run；返回 mint 出的 streamToken。 */
-  register(input: { runId: string; ownerSubject: string }): { streamToken: string };
+  register(input: { runId: string; ownerSubject: string; authorize?: () => Promise<void> }): { streamToken: string };
   /** 按 runId 取记录（resume / owner 校验用）；不存在或已过期返回 undefined。 */
   get(runId: string): RunRecord | undefined;
   /** WS 握手：streamToken + runId 同时匹配且未过期才返回记录。 */
@@ -32,21 +34,23 @@ export function createRunRegistry(now: () => number = Date.now): RunRegistry {
   function live(record: RunRecord | undefined): RunRecord | undefined {
     if (!record) return undefined;
     if (record.expiresAt <= now()) {
-      runs.delete(record.runId);
       return undefined;
     }
     return record;
   }
 
   return {
-    register({ runId, ownerSubject }) {
+    register({ runId, ownerSubject, authorize }) {
       const streamToken = crypto.randomUUID().replace(/-/g, "");
-      runs.set(runId, { runId, ownerSubject, streamToken, expiresAt: now() + STREAM_TOKEN_TTL_MS });
+      runs.set(runId, { runId, ownerSubject, streamToken, authorize, expiresAt: now() + STREAM_TOKEN_TTL_MS, retainUntil: now() + 10 * 60_000 });
       return { streamToken };
     },
 
     get(runId) {
-      return live(runs.get(runId));
+      const record = runs.get(runId);
+      if (record && record.retainUntil > now()) return record;
+      runs.delete(runId);
+      return undefined;
     },
 
     resolveStreamToken({ runId, streamToken }) {
