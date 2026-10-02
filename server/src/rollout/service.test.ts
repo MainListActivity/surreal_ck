@@ -157,7 +157,7 @@ const batchInput = (overrides: Partial<RegisterRolloutBatch> = {}): RegisterRoll
   label: "LCA14 验收批次一",
   appRelease: "81fdc1b",
   idpRelease: "ma_hono@1.2.3",
-  schemaRevision: "system-027",
+  schemaRevision: "system-028",
   legalSources: [{ sourceKey: "flk", label: "法规库", licenseNote: "商用许可协议 X-1" }],
   planMapping: [
     { planKey: "pro", displayName: "Pro", aiRate: "每 run 预留 1", trialAllowance: 50, legacySubscriptionMap: "quota_plan_revision:legacy:pro" },

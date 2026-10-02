@@ -7,7 +7,7 @@ import { SurrealRolloutStore } from "./store";
 
 /**
  * LCA14 灰度控制面集成测试：真实 SurrealDB fork（本地实例）跑通
- * 027 迁移 + SurrealRolloutStore + RolloutGateService + gate checker。
+ * 028 迁移 + SurrealRolloutStore + RolloutGateService + gate checker。
  * 默认跳过；RUN_LOCAL_SURREALDB_ROLLOUT_TESTS=1 且 LOCAL_SURREAL_URL
  * 指向本地 fork（默认 ws://127.0.0.1:8999/rpc）时执行。
  */
@@ -28,11 +28,11 @@ async function connect() {
 }
 
 describe("LCA14 rollout store 集成（真实 fork）", () => {
-  localTest("027 迁移可应用；store+service 完成登记/开关/审计闭环；事件不可变", async () => {
+  localTest("028 迁移可应用；store+service 完成登记/开关/审计闭环；事件不可变", async () => {
     const { db, namespace } = await connect();
     try {
       const schema = await ensureSystemSchema(db, { namespace });
-      expect(schema.toVersion).toBeGreaterThanOrEqual(27);
+      expect(schema.toVersion).toBeGreaterThanOrEqual(28);
 
       const store = new SurrealRolloutStore(async () => db as never, namespace);
       const service = new RolloutGateService(store);
@@ -52,7 +52,7 @@ describe("LCA14 rollout store 集成（真实 fork）", () => {
         label: "集成验收批次",
         appRelease: "test-sha",
         idpRelease: "test-idp",
-        schemaRevision: "system-027",
+        schemaRevision: "system-028",
         legalSources: [{ sourceKey: "s1", label: "来源一", licenseNote: "许可依据" }],
         planMapping: [{ planKey: "pro", displayName: "Pro", aiRate: "1/run", trialAllowance: null, legacySubscriptionMap: "无" }],
         allowedWorkspaces: ["accept-a"],
@@ -69,7 +69,7 @@ describe("LCA14 rollout store 集成（真实 fork）", () => {
         label: "集成验收批次",
         appRelease: "test-sha",
         idpRelease: "test-idp",
-        schemaRevision: "system-027",
+        schemaRevision: "system-028",
         legalSources: [{ sourceKey: "s1", label: "来源一", licenseNote: "许可依据" }],
         planMapping: [{ planKey: "pro", displayName: "Pro", aiRate: "1/run", trialAllowance: null, legacySubscriptionMap: "无" }],
         allowedWorkspaces: ["accept-a"],

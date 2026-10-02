@@ -1,6 +1,6 @@
 # LCA14 受控法律内容与 AI 灰度开关 Runbook
 
-适用：`task/e71063b2` 起引入的 `_system` 灰度控制面（migration `027-legal-rollout-gates.surql`）。
+适用：`task/e71063b2` 起引入的 `_system` 灰度控制面（migration `028-legal-rollout-gates.surql`）。
 本手册面向平台运营与 QA，不授权任何直接 DDL/DML、SSH 或服务重启；所有操作经
 `/api/ops/rollout/*`（ops token + 运营能力）或 `ops_request` 运维代理完成。
 
@@ -47,7 +47,7 @@ POST /api/ops/rollout/workspaces/:slug/gates         关闭/恢复单枚开关�
   "label": "LCA14 首批受控验收",
   "appRelease": "<git SHA 或 Deploy run id>",
   "idpRelease": "<ma_hono 发布版本>",
-  "schemaRevision": "system-027 / 权益修订说明",
+  "schemaRevision": "system-028 / 权益修订说明",
   "legalSources": [{ "sourceKey": "flk", "label": "法规库", "licenseNote": "商用许可/批准验收的依据" }],
   "planMapping": [{ "planKey": "pro", "displayName": "Pro", "aiRate": "每 run 预留口径", "trialAllowance": 50, "legacySubscriptionMap": "历史订阅→修订映射或“无”" }],
   "allowedWorkspaces": ["<company 专用验收 workspace slug>"],
@@ -90,4 +90,4 @@ POST /api/ops/rollout/workspaces/:slug/gates
 ## 发布与重启窗口
 
 - 生产 origin 重启/发版只走已批准 CI 部署（`production-release.md`），不允许 SSH 或重启 `surrealdb.service`。
-- 开关本身是运行时状态，无需重启即生效；schema 027 随 origin 启动的 `ensureSystemSchema` 自动应用。
+- 开关本身是运行时状态，无需重启即生效；schema 028 随 origin 启动的 `ensureSystemSchema` 自动应用。
