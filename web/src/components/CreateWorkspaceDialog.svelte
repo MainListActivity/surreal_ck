@@ -23,7 +23,7 @@
     } catch { return null; }
   })();
   let requestLocked = $state(savedRequest !== null);
-  let requestKey = $state(savedRequest?.key ?? sessionStorage.getItem("pro-trial-request-key") ?? crypto.randomUUID());
+  let requestKey = savedRequest?.key ?? sessionStorage.getItem("pro-trial-request-key") ?? crypto.randomUUID();
   sessionStorage.setItem("pro-trial-request-key", requestKey);
   onMount(() => { void loadAccounts(); });
   async function loadAccounts() {
