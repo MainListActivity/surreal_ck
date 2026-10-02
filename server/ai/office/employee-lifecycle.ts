@@ -190,6 +190,8 @@ export function createEmployeeLifecycle(deps: EmployeeLifecycleDeps) {
     requestKey: string;
     displayName?: string;
     roleKey?: string;
+    /** 受限 PM 开岗路径：归属由员工会话 + schema 校验，不传入真人会话。 */
+    supervisor?: string;
   }): Promise<EmployeeLifecycleResult> {
     const workspace = await deps.resolveWorkspace(input.slug);
     if (!workspace) return { kind: "workspace-not-found" };
@@ -224,7 +226,7 @@ export function createEmployeeLifecycle(deps: EmployeeLifecycleDeps) {
           // option 字段不能绑 JS null——引擎把 null 当 NULL 而非 NONE，类型强转
           // 直接拒收（"Expected none | record<…> but found NULL"）；无岗位时整段省略。
           const virtualProfile = input.roleKey && role
-            ? { role_key: input.roleKey, role }
+            ? { role_key: input.roleKey, role, ...(input.supervisor ? { supervisor: new StringRecordId(input.supervisor) } : {}) }
             : {};
           await admin.query(
             `CREATE ${identity.recordId} CONTENT {

@@ -126,11 +126,11 @@ describe("employee runtime session registry", () => {
     expect(session).toBe(runtime.session("ws_a", "user:ve_1"));
     expect(log).toEqual(["connect:ws_a", "signin:employee:ve-1"]);
     expect(rootQueries.join("")).toContain("employee_credential");
-    // 凭证已缓存：再次 openSession 不再回源 root，但会换新会话
+    // 已注册连接直接复用：不重新 SIGNIN，也不触发窗口失效通知
     const again = await runtime.openSession("ws_a", "user:ve_1");
     expect(rootQueries).toHaveLength(1);
-    expect(again).not.toBe(session);
-    expect(log.filter((l) => l === "signin:employee:ve-1")).toHaveLength(2);
+    expect(again).toBe(session);
+    expect(log.filter((l) => l === "signin:employee:ve-1")).toHaveLength(1);
     await runtime.stop();
   });
 

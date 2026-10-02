@@ -277,6 +277,7 @@ export type OfficeRequestInput = {
   /** 发起请求的 trigger id 与窗口 run id（追溯关联，非安全语义）。 */
   requestTrigger?: string;
   runId?: string;
+  ddlIntent?: string;
 };
 
 const OFFICE_REQUEST_TITLE: Record<string, string> = {
@@ -307,6 +308,7 @@ export async function createOfficeRequest(
   if (input.options?.length) payload.options = input.options;
   if (input.requestTrigger) payload.request_trigger = input.requestTrigger;
   if (input.runId) payload.run_id = input.runId;
+  if (input.ddlIntent) payload.ddl_intent = input.ddlIntent;
   const content: Record<string, unknown> = {
     id: new StringRecordId(input.id),
     dedupe_key: input.dedupeKey,

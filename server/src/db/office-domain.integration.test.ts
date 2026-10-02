@@ -68,11 +68,11 @@ async function seedPrincipals(root: Surreal): Promise<void> {
     };
     CREATE user:pm CONTENT {
       subject: "pm", email: "pm@virtual.local", kind: "virtual", is_admin: false,
-      virtual_profile: { status: "active", role: office_role:project_manager }
+      virtual_profile: { status: "active", role: office_role:project_manager, role_key: "project-manager" }
     };
     CREATE user:analyst CONTENT {
       subject: "analyst", email: "analyst@virtual.local", kind: "virtual", is_admin: false,
-      virtual_profile: { status: "active", role: office_role:data_analyst }
+      virtual_profile: { status: "active", role: office_role:data_analyst, role_key: "data-analyst" }
     };
     CREATE employee_credential:pm CONTENT { employee: user:pm, secret: "pm-pass" };
     CREATE employee_credential:analyst CONTENT { employee: user:analyst, secret: "analyst-pass" };
@@ -312,11 +312,13 @@ describe("VO01 办公室领域 schema 合约（真实三类会话）", () => {
       await analystSession.query(
         `CREATE office_ddl_intent CONTENT {
           op: "define_field",
+          task: $task,
           spec: { table: "ent_claim", field: "review_note", type: "option<string>" },
           rationale: "分析产出需要沉淀审核备注字段",
           impact: "新增可选字段，不改写存量数据",
           fingerprint: "fp-add-review-note-v1"
         } RETURN AFTER`,
+        { task: task.id },
       ).collect(),
     );
     expect(String(intentRows[0]?.author)).toBe("user:analyst");
@@ -402,8 +404,9 @@ describe("VO01 办公室领域 schema 合约（真实三类会话）", () => {
     const intent = rows<{ id: unknown }>(
       await analystSession.query(
         `CREATE office_ddl_intent CONTENT {
-          op: "define_table", spec: { table: "ent_x" }, rationale: "r", impact: "i", fingerprint: "fp-1"
+          op: "define_table", task: $task, spec: { table: "ent_x" }, rationale: "r", impact: "i", fingerprint: "fp-1"
         } RETURN AFTER`,
+        { task: task.id },
       ).collect(),
     )[0]!;
     const employeeUpdate = await analystSession.query(
@@ -411,19 +414,16 @@ describe("VO01 办公室领域 schema 合约（真实三类会话）", () => {
     ).collect();
     expect(rows(employeeUpdate)).toHaveLength(0);
 
-    await owner.query(
+    const recordAdminUpdate = await owner.query(
       `UPDATE $intent SET status = "approved", decided_by = user:owner, decided_at = time::now()`,
       { intent: intent.id },
     ).collect();
-    // requested 不能直接跳 succeeded；终态不可回退；decided_by 不可换
-    await owner.query(`UPDATE $intent SET status = "executing"`, { intent: intent.id }).collect();
-    await owner.query(`UPDATE $intent SET status = "succeeded", result = { applied: true }`, { intent: intent.id }).collect();
+    // VO05 要求当前 admin JWT access；is_admin=true 的 RECORD 同样不可推进。
+    expect(rows(recordAdminUpdate)).toHaveLength(0);
+    // 真正 admin JWT 与 DDL 状态机纵切由 analyst-ddl.integration.test.ts 覆盖。
     await expect(
-      owner.query(`UPDATE $intent SET status = "approved"`, { intent: intent.id }).collect(),
+      root.query(`UPDATE $intent SET status = "succeeded"`, { intent: intent.id }).collect(),
     ).rejects.toThrow(/transition/i);
-    await expect(
-      owner.query(`UPDATE $intent SET decided_by = user:member`, { intent: intent.id }).collect(),
-    ).rejects.toThrow(/terminal/i);
   });
 
   localSurrealTest("结构化 answer 与 resolution 同属终态：收件人首答幂等，改口被守卫回滚", async () => {
