@@ -1687,4 +1687,275 @@ describe("subscription cascade against local SurrealDB (LCA08)", () => {
     },
     120_000,
   );
+
+  localTest(
+    "LCA14 D3 return fix: conversion linkage survives intermediate subscription switch and is derivable from commercial state",
+    async () => {
+      // 生产 sck-lca10-qa-ui01 缺陷复现：-01 试用→中间订阅（无周期字段、无新桶），
+      // -03 中间订阅→正式付费订阅。旧实现 carry-over 只在同订阅内保留
+      // converted_trial_*（$current.subscription = $targetSubscription），换订阅
+      // 即丢链：旧试用桶 terminated_at 永远为空且无终止审计。
+      await db!.query(`DEFINE DATABASE IF NOT EXISTS ws_d3seq;`);
+      const wsQ = await connect("ws_d3seq");
+      for (const script of ["035-ai-allowance.surql", "042-ai-plan-upgrade-proration.surql", "047-ai-source-termination.surql"]) {
+        await wsQ.query(
+          await readFile(
+            new URL(`../../../shared/sql/workspace-template/${script}`, import.meta.url),
+            "utf8",
+          ),
+        );
+      }
+      const nowMs = Date.now();
+      const iso = (ms: number) => new Date(ms).toISOString();
+      const trialStart = iso(nowMs - 2 * 86_400_000);
+      const trialEnd = iso(nowMs + 5 * 86_400_000);
+      const paidStart = iso(nowMs);
+      const paidEnd = iso(nowMs + 30 * 86_400_000);
+      await db!.query(`
+        CREATE billing_account:d3seq CONTENT {
+          account_key: "d3seq", name: "D3SEQ Billing", kind: "team", status: "active"
+        };
+        CREATE workspace:d3seq CONTENT {
+          db_name: "ws_d3seq", owner_subject: "operator:elena", slug: "d3seq",
+          name: "D3SEQ", status: "active"
+        };
+        CREATE platform_operator:elena CONTENT {
+          subject: "operator:elena", display_name: "Elena", status: "active"
+        };
+        CREATE platform_operator_capability:elena_subscription CONTENT {
+          operator: platform_operator:elena, capability: "subscription.manage",
+          status: "active", granted_by_subject: "system:test"
+        };
+        CREATE quota_subscription:d3trial CONTENT {
+          billing_account: billing_account:d3seq, source: "manual", status: "trialing",
+          revision: 1, trial_start: <datetime> "${trialStart}", trial_end: <datetime> "${trialEnd}",
+          current_period_start: <datetime> "${trialStart}", current_period_end: <datetime> "${trialEnd}",
+          cancel_at_period_end: false, correlation_id: "fixture-d3seq"
+        };
+        CREATE quota_subscription_item:d3trialitem CONTENT {
+          subscription: quota_subscription:d3trial, workspace: workspace:d3seq,
+          plan_revision: quota_plan_revision:plus_v1, revision: 1, status: "active",
+          effective_from: <datetime> "${trialStart}", effective_until: <datetime> "${trialEnd}",
+          active_workspace: workspace:d3seq, correlation_id: "fixture-d3seq"
+        };
+      `);
+
+      const client = queryClient();
+      const products = new ProductEntitlementService(
+        new SurrealProductEntitlementStore(async () => client, namespace),
+        () => new Date(),
+      );
+      const operator: ProductActor = {
+        subject: "operator:elena",
+        capabilities: ["subscription.manage", "quota.read"],
+      };
+      const synchronizer = new AiAllowancePlanCycleSynchronizer({
+        workspaceSession: async (dbName) => {
+          if (dbName === "ws_d3seq") return wsQ;
+          throw new Error(`unexpected workspace db ${dbName}`);
+        },
+      });
+      const cascade = new SubscriptionEntitlementCascade(
+        new SurrealEntitlementRefreshService(client),
+        products,
+        synchronizer,
+      );
+      const refreshQ = (correlationId: string) =>
+        cascade.refreshWorkspace({
+          workspace: id("workspace:d3seq"),
+          at: new DateTime(new Date().toISOString()),
+          operationKind: "manual_assignment",
+          actorKind: "operator",
+          actorSubject: "operator:elena",
+          authorizedCapability: "subscription.manage",
+          correlationId,
+          causationId: `causation:${correlationId}`,
+        });
+      const coordinator = new QuotaLifecycleCoordinator(
+        new SurrealQuotaLifecycleStore(client),
+        cascade,
+        "worker-d3seq",
+      );
+
+      // ── 1. 试用期：产品绑定 + 试用周期桶落地 ────────────────────────────
+      const rev1 = await products.publishRevision(operator, {
+        planKey: "fixture_d3seq",
+        displayName: "夹具 D3SEQ",
+        revision: 1,
+        resourceTemplateId: "quota_plan_revision:plus_v1",
+        collections: [{ key: "d3_core", label: "D3 核心" }],
+        actions: ["browse", "search", "read"],
+        aiActions: ["research"],
+        features: [{ key: "ai_cycle_allowance", enabled: true, limit: 100 }],
+        reason: "D3SEQ 夹具发布",
+        idempotencyKey: "d3seq-publish-1",
+      });
+      await products.assign(operator, {
+        workspaceSlug: "d3seq",
+        billingAccountKey: "d3seq",
+        productPlanRevisionId: rev1.productPlanRevisionId,
+        reason: "D3SEQ 夹具指派",
+        idempotencyKey: "d3seq-assign-1",
+      });
+      await refreshQ("d3seq-trial-grant");
+      const trialBucket = rows<{ id: unknown; period_key: string; terminated_at: unknown }>(
+        await wsQ.query(`SELECT id, period_key, terminated_at FROM ai_allowance_bucket WHERE kind = "plan_cycle";`).collect(),
+      )[0]!;
+      expect(trialBucket.period_key).toBe(
+        `trial:quota_subscription:d3trial:${trialStart}`,
+      );
+      expect(trialBucket.terminated_at ?? null).toBeNull();
+
+      // ── 2. -01 等价：试用→中间订阅（无周期字段 → 不产生周期指令/新桶，
+      //      但转换戳应写入中间 item）───────────────────────────────────
+      await coordinator.submitOperatorIntent({
+        kind: "subscription_upsert", actorSubject: "operator:elena", actorCapability: "subscription.manage",
+        requestId: "d3seq-step-01", workspace: id("workspace:d3seq"), billingAccount: id("billing_account:d3seq"),
+        customerReason: "试用转付费第一步", operatorReason: "D3SEQ 复现",
+        effectiveAt: new DateTime(paidStart),
+        input: { mode: "manual_assignment", source: "manual",
+          subscription: "quota_subscription:d3int", plan_revision: "quota_plan_revision:pro_v1",
+          status: "active" },
+        impactPreview: { fixture: true }, correlationId: "corr-d3seq-01",
+      });
+      await expect(coordinator.processNextOperatorIntent()).resolves.toBe("processed");
+      const middleItem = rows<{ converted_trial_source: unknown; subscription: unknown }>(
+        await db!.query(`SELECT converted_trial_source, subscription FROM quota_subscription_item
+          WHERE workspace = workspace:d3seq AND status = "active";`).collect(),
+      )[0]!;
+      expect(String(middleItem.subscription)).toBe("quota_subscription:d3int");
+      expect(String(middleItem.converted_trial_source)).toBe("quota_subscription:d3trial");
+      expect(rows(await wsQ.query(`SELECT id FROM ai_allowance_bucket;`).collect())).toHaveLength(1);
+
+      // ── 3. -03 等价：中间订阅→正式付费订阅。关键断言：转换链不得因
+      //      换订阅而丢失——旧试用桶必须终止并留终止审计 ────────────────
+      await coordinator.submitOperatorIntent({
+        kind: "subscription_upsert", actorSubject: "operator:elena", actorCapability: "subscription.manage",
+        requestId: "d3seq-step-02", workspace: id("workspace:d3seq"), billingAccount: id("billing_account:d3seq"),
+        customerReason: "试用转付费确认", operatorReason: "D3SEQ 复现",
+        effectiveAt: new DateTime(iso(Date.now())),
+        input: { mode: "manual_assignment", source: "manual",
+          subscription: "quota_subscription:d3paid", plan_revision: "quota_plan_revision:pro_v1",
+          status: "active",
+          current_period_start: paidStart, current_period_end: paidEnd,
+          product_plan_revision: rev1.productPlanRevisionId },
+        impactPreview: { fixture: true }, correlationId: "corr-d3seq-02",
+      });
+      await expect(coordinator.processNextOperatorIntent()).resolves.toBe("processed");
+      const paidItem = rows<{ converted_trial_source: unknown; subscription: unknown }>(
+        await db!.query(`SELECT converted_trial_source, subscription FROM quota_subscription_item
+          WHERE workspace = workspace:d3seq AND status = "active";`).collect(),
+      )[0]!;
+      expect(String(paidItem.subscription)).toBe("quota_subscription:d3paid");
+      expect(String(paidItem.converted_trial_source)).toBe("quota_subscription:d3trial");
+
+      const planBuckets = rows<{ period_key: string; total: number; terminated_at: unknown }>(
+        await wsQ.query(`SELECT period_key, total, terminated_at, created_at FROM ai_allowance_bucket WHERE kind = "plan_cycle" ORDER BY created_at;`).collect(),
+      );
+      expect(planBuckets).toHaveLength(2);
+      expect(planBuckets.find((b) => b.period_key.startsWith("trial:"))!.terminated_at != null).toBe(true);
+      expect(planBuckets.find((b) => b.period_key.startsWith("subscription:"))!.period_key).toBe(
+        `subscription:quota_subscription:d3paid:${paidStart}`,
+      );
+      const markers = rows(
+        await wsQ.query(`SELECT source_prefix, event_key FROM ai_allowance_source_termination;`).collect(),
+      );
+      expect(markers).toHaveLength(1);
+      expect(markers[0]!.source_prefix).toBe("trial:quota_subscription:d3trial:");
+
+      // ── 4. 派生路径：转换戳完全缺失时，从合法商业状态（已结束的三方
+      //      试用 item）仍应读出旧试用 source 并终止 ──────────────────────
+      await db!.query(`DEFINE DATABASE IF NOT EXISTS ws_d3der;`);
+      const wsR = await connect("ws_d3der");
+      for (const script of ["035-ai-allowance.surql", "042-ai-plan-upgrade-proration.surql", "047-ai-source-termination.surql"]) {
+        await wsR.query(
+          await readFile(
+            new URL(`../../../shared/sql/workspace-template/${script}`, import.meta.url),
+            "utf8",
+          ),
+        );
+      }
+      await db!.query(`
+        CREATE billing_account:d3der CONTENT {
+          account_key: "d3der", name: "D3DER Billing", kind: "team", status: "active"
+        };
+        CREATE workspace:d3der CONTENT {
+          db_name: "ws_d3der", owner_subject: "operator:elena", slug: "d3der",
+          name: "D3DER", status: "active"
+        };
+        CREATE quota_subscription:d3dertrial CONTENT {
+          billing_account: billing_account:d3der, source: "manual", status: "trialing",
+          revision: 1, trial_start: <datetime> "${trialStart}", trial_end: <datetime> "${trialEnd}",
+          current_period_start: <datetime> "${trialStart}", current_period_end: <datetime> "${trialEnd}",
+          cancel_at_period_end: false, correlation_id: "fixture-d3der"
+        };
+        CREATE quota_subscription_item:d3dertrialitem CONTENT {
+          subscription: quota_subscription:d3dertrial, workspace: workspace:d3der,
+          plan_revision: quota_plan_revision:plus_v1, revision: 1, status: "ended",
+          ended_reason: "manual_assignment",
+          effective_from: <datetime> "${trialStart}", effective_until: <datetime> "${paidStart}",
+          correlation_id: "fixture-d3der", causation_id: "quota_operator_intent:d3der-ended"
+        };
+        CREATE quota_subscription:d3derpaid CONTENT {
+          billing_account: billing_account:d3der, source: "manual", status: "active",
+          revision: 1, current_period_start: <datetime> "${paidStart}",
+          current_period_end: <datetime> "${paidEnd}", cancel_at_period_end: false,
+          correlation_id: "fixture-d3der"
+        };
+        CREATE quota_subscription_item:d3derpaiditem CONTENT {
+          subscription: quota_subscription:d3derpaid, workspace: workspace:d3der,
+          plan_revision: quota_plan_revision:pro_v1, revision: 1, status: "active",
+          product_plan_revision: ${rev1.productPlanRevisionId},
+          effective_from: <datetime> "${paidStart}", effective_until: <datetime> "${paidEnd}",
+          correlation_id: "fixture-d3der", causation_id: "quota_operator_intent:d3der-paid"
+        };
+      `);
+      await wsR.query(`
+        CREATE ai_allowance_bucket CONTENT {
+          kind: "plan_cycle", label: "D3DER 试用桶", source: "fixture",
+          period_key: "trial:quota_subscription:d3dertrial:${trialStart}",
+          total: 40, available: 32, reserved: 0, settled: 8,
+          effective_from: <datetime> "${trialStart}", expires_at: <datetime> "${trialEnd}"
+        };
+      `);
+      const productsR = new ProductEntitlementService(
+        new SurrealProductEntitlementStore(async () => client, namespace),
+        () => new Date(),
+      );
+      const synchronizerR = new AiAllowancePlanCycleSynchronizer({
+        workspaceSession: async (dbName) => {
+          if (dbName === "ws_d3der") return wsR;
+          throw new Error(`unexpected workspace db ${dbName}`);
+        },
+      });
+      const cascadeR = new SubscriptionEntitlementCascade(
+        new SurrealEntitlementRefreshService(client),
+        productsR,
+        synchronizerR,
+      );
+      await cascadeR.refreshWorkspace({
+        workspace: id("workspace:d3der"),
+        at: new DateTime(new Date().toISOString()),
+        operationKind: "manual_assignment",
+        actorKind: "operator",
+        actorSubject: "operator:elena",
+        authorizedCapability: "subscription.manage",
+        correlationId: "d3der-refresh",
+        causationId: "causation:d3der-refresh",
+      });
+      const derMarkers = rows(
+        await wsR.query(`SELECT source_prefix FROM ai_allowance_source_termination;`).collect(),
+      );
+      expect(derMarkers.map((m) => m.source_prefix)).toEqual(["trial:quota_subscription:d3dertrial:"]);
+      const derBuckets = rows<{ period_key: string; terminated_at: unknown }>(
+        await wsR.query(`SELECT period_key, terminated_at FROM ai_allowance_bucket WHERE kind = "plan_cycle" ORDER BY period_key;`).collect(),
+      );
+      expect(derBuckets.find((b) => b.period_key.startsWith("trial:"))!.terminated_at != null).toBe(true);
+      expect(derBuckets.find((b) => b.period_key.startsWith("subscription:"))!.terminated_at ?? null).toBeNull();
+
+      await wsQ.close();
+      await wsR.close();
+    },
+    120_000,
+  );
 });
