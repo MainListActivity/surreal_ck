@@ -11,7 +11,7 @@ import { ChatDeliveryStore, requestDigest, authorizeDelivery } from "./delivery-
 import { createRunBus } from "./run-bus";
 import { createRunRegistry } from "./run-registry";
 import { createAiChatService, type ChatRunner } from "./chat-service";
-import { createAiChatRoutes } from "../routes/ai-chat";
+import { createAiChatRoutes, type AiAllowanceGate } from "../routes/ai-chat";
 import { AiAllowanceService, type Queryable } from "../ai-allowance/service";
 import type { AppBindings } from "../hono-types";
 import { HttpError } from "../http-error";
@@ -33,12 +33,27 @@ async function caller() {
   await session.signin({ namespace: "d1_test", database: db, access: "test_member", variables: { subject } });
   return session;
 }
-function makeApp(runner: ChatRunner, opts: { registry?: ReturnType<typeof createRunRegistry>; maxRunMs?: number; content?: ContentResearchSessionFactory } = {}) {
+function makeApp(runner: ChatRunner, opts: { registry?: ReturnType<typeof createRunRegistry>; maxRunMs?: number; content?: ContentResearchSessionFactory; saveDelayMs?: number; settleDelayMs?: number } = {}) {
   const bus = createRunBus();
   const registry = opts.registry ?? createRunRegistry();
   const service = createAiChatService({ runBus: bus, runner, maxRunMs: opts.maxRunMs });
+  const gate: AiAllowanceGate = opts.settleDelayMs ? {
+    reserve: (input) => allowance.reserve(input),
+    async finishByRun(input) {
+      await new Promise(resolve => setTimeout(resolve, opts.settleDelayMs));
+      return allowance.finishByRun(input);
+    },
+  } : allowance;
+  const deliveries: ChatDeliveryStore = opts.saveDelayMs === undefined ? store : {
+    claim: (session, input) => store.claim(session, input),
+    find: (session, runId) => store.find(session, runId),
+    read: (session, runId) => store.read(session, runId),
+    save: async (session, database, subject, payload) => { await new Promise(resolve => setTimeout(resolve, opts.saveDelayMs)); return store.save(session, database, subject, payload); },
+    decrypt: (row, database, subject) => store.decrypt(row, database, subject),
+    status: (session, runId, status) => store.status(session, runId, status),
+  };
   const app = new Hono<AppBindings>().onError((error, c) => { return c.json({ code: error instanceof HttpError ? error.code : "internal" }, error instanceof HttpError ? error.status : 500); });
-  app.route("/", createAiChatRoutes({ service, registry, deliveries: store, allowance,
+  app.route("/", createAiChatRoutes({ service, registry, deliveries, allowance: gate,
     createCallerSession: caller, createContentResearchSession: opts.content,
     requireUser: () => async (c, next) => {
       c.set("user", { subject, rawToken: "local-fixture-token", raw: { db } } as AppBindings["Variables"]["user"]);
@@ -137,6 +152,29 @@ local("bounded execution releases reservation and suppresses late model completi
   finish(); await new Promise(r => setTimeout(r, 10));
   expect((await ledger(run.runId)).some(e => e.kind === "settle")).toBe(false);
   expect((await h.post(`/api/chat/runs/${run.runId}/recover`)).status).toBe(409);
+});
+
+local("execution window ends before settlement: slow persistence still settles once, never released then re-settled", async () => {
+  // 执行窗（maxRunMs）只约束模型调用；收口落账慢于执行窗时不得被 deadline 抢跑成失败，
+  // 否则会出现「release 之后行又落成 complete、恢复时再 settle」的账本错位。
+  const h = makeApp(async i => {
+    i.pushChunk({ streamId: i.streamId, type: "done", message: { id: "slow-persist", role: "assistant", content: "SLOW_PERSIST_RESULT", context, createdAt: new Date().toISOString() }, toolCalls: [] });
+    return { runId: i.runId, finalText: "SLOW_PERSIST_RESULT", status: "success" };
+  }, { maxRunMs: 20, saveDelayMs: 120, settleDelayMs: 120 });
+  const r = await h.post("/api/chat", { message: "slow settle", idempotencyKey: "slow-settle" });
+  expect(r.status).toBe(200);
+  const run = await r.json() as { runId: string };
+  await until(async () => (await ledger(run.runId)).some(e => e.kind === "settle"));
+  const entries = await ledger(run.runId);
+  expect(entries.filter(e => e.kind === "reserve")).toHaveLength(1);
+  expect(entries.filter(e => e.kind === "settle")).toHaveLength(1);
+  expect(entries.filter(e => e.kind === "release")).toHaveLength(0);
+  const row = (await root.query<[Array<{ status: string }>]>("SELECT status FROM chat_delivery WHERE run_id = $run", { run: run.runId }))[0][0]!;
+  expect(row.status).toBe("complete");
+  const recovered = await h.post(`/api/chat/runs/${run.runId}/recover`);
+  expect(recovered.status).toBe(200);
+  expect((await recovered.json()).result.message.content).toBe("SLOW_PERSIST_RESULT");
+  expect((await ledger(run.runId)).filter(e => e.kind === "settle")).toHaveLength(1);
 });
 
 

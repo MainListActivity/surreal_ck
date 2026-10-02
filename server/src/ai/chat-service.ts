@@ -181,10 +181,13 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
             pushProgress: bridge.pushProgress,
             onSuspend: bridge.onSuspend,
           })]);
+          // 执行窗（模型调用）结束即解除 deadline：收口只是落账，不能再被 deadline 抢跑——
+          // 否则持久化/结算在飞行中又被判失败，会出现「已交付却释放、或重复收口」的账本错位。
+          if (timeout) clearTimeout(timeout);
           // success / suspended：workflow 自己已 publish done（finalize step）；suspended 不发 done。
           bridge.ensureTerminal(result, userContext ?? createDefaultAiContextSnapshot());
           outcome = result.status === "success" ? "success" : "suspended";
-          if (outcome === "success") { await Promise.race([deadline, bridge.commit(onResult, onTerminal)]); committed = true; }
+          if (outcome === "success") { await bridge.commit(onResult, onTerminal); committed = true; }
         } catch (cause) {
           outcome = "failed";
           bridge.publishErrorIfNotTerminal(cause instanceof Error ? cause.message : String(cause));
@@ -234,9 +237,10 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
             pushProgress: bridge.pushProgress,
             onSuspend: bridge.onSuspend,
           })]);
+          if (timeout) clearTimeout(timeout);
           bridge.ensureTerminal(result, userContext);
           outcome = result.status === "success" ? "success" : result.status === "cancelled" ? "cancelled" : "suspended";
-          if (outcome === "success") { await Promise.race([deadline, bridge.commit(onResult, onTerminal)]); committed = true; }
+          if (outcome === "success") { await bridge.commit(onResult, onTerminal); committed = true; }
         } catch (cause) {
           outcome = "failed";
           bridge.publishErrorIfNotTerminal(cause instanceof Error ? cause.message : String(cause));
