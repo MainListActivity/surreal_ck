@@ -31,7 +31,7 @@ beforeAll(async () => {
   await db.use({ namespace: "main" });
   await db.query("DEFINE DATABASE IF NOT EXISTS _system;");
   await db.use({ namespace: "main", database: "_system" });
-  for (const file of ["004-quota-commercial-authority.surql", "023-explicit-pro-trial.surql"]) await db.query(await readFile(new URL(`../../../shared/sql/system/${file}`, import.meta.url), "utf8"));
+  for (const file of ["001-init.surql", "004-quota-commercial-authority.surql", "023-explicit-pro-trial.surql"]) await db.query(await readFile(new URL(`../../../shared/sql/system/${file}`, import.meta.url), "utf8"));
   await db.query(`CREATE billing_account:a CONTENT { account_key: "a", name: "Synthetic", kind: "personal", status: "active" };
     CREATE billing_account:b CONTENT { account_key: "b", name: "Synthetic B", kind: "personal", status: "active" };
     CREATE pro_trial_revision:test CONTENT { product_revision: product_plan_revision:test, duration_days: 7, research_rate: 2, rate_revision: 2, reminder_hours: [24], fixture: true, approved_by: "test", approval_reason: "synthetic" };
@@ -61,7 +61,18 @@ localTest("parallel same request produces one claim/workspace identity; changed 
   expect(retried.lease).not.toBeNull();
   await store.finish(retried.claim, retried.lease!, true);
   expect((await store.claim(input)).claim.state).toBe("active");
+  await db.query("UPDATE pro_trial_configuration:current SET enabled = false;");
+  const realStore = new SurrealTrialStore(async () => db);
+  expect((await realStore.claim(input)).claim.offer).toEqual(offer);
+  await expect(realStore.claim({ ...input, subject: "workspace-admin" })).rejects.toMatchObject({ status: 403 });
+  await db.query("UPDATE pro_trial_configuration:current SET enabled = true;");
 });
+localTest("stale offer and exact expiry fail without extending the original period", async () => {
+  await expect(store.claim({ subject: "owner", accountKey: "a", name: "A", slug: "trial-a", key: "parallel", offerRevision: "pro_trial_revision:stale" })).rejects.toMatchObject({ status: 409 });
+  await db.query("LET $end = time::now(); UPDATE pro_trial_claim SET started_at = $end - 7d, ends_at = $end WHERE slug = 'trial-a';");
+  await expect(store.claim({ subject: "owner", accountKey: "a", name: "A", slug: "trial-a", key: "parallel", offerRevision: offer.revision })).rejects.toMatchObject({ status: 409 });
+});
+
 localTest("accounts isolate eligibility and revoke authority on replay", async () => {
   const independent = await store.claim({ subject: "owner", accountKey: "b", name: "B", slug: "trial-b", offerRevision: offer.revision, key: "parallel" });
   expect(independent.claim.slug).toBe("trial-b");

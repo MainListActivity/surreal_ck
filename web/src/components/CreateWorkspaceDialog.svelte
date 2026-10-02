@@ -13,8 +13,17 @@
   let preview = $state<{ revision: string; researchRate: number; startedAt: string; endsAt: string; allowance: number; collections: { key: string; label: string }[]; capacity: { label: string; limit: number }[]; reminderHours: number[]; excludes: string[]; expiry: string; fixture: boolean } | null>(null);
   let confirmed = $state(false);
   let loading = $state(true);
-  // 持久请求键只含幂等键，不保存凭证；刷新后仍可重试同一个显式启动请求。
-  const requestKey = sessionStorage.getItem("pro-trial-request-key") ?? crypto.randomUUID();
+  // 保存原请求的公开字段，恢复时锁定名称/账户，避免同一幂等键改成另一请求。
+  const savedRequest = (() => {
+    try {
+      const v: unknown = JSON.parse(sessionStorage.getItem("pro-trial-pending-request") ?? "null");
+      if (typeof v !== "object" || v === null || !("name" in v) || !("slug" in v) || !("accountKey" in v) || !("key" in v)) return null;
+      if (typeof v.name !== "string" || typeof v.slug !== "string" || typeof v.accountKey !== "string" || typeof v.key !== "string") return null;
+      return { name: v.name, slug: v.slug, accountKey: v.accountKey, key: v.key };
+    } catch { return null; }
+  })();
+  let requestLocked = $state(savedRequest !== null);
+  const requestKey = savedRequest?.key ?? sessionStorage.getItem("pro-trial-request-key") ?? crypto.randomUUID();
   sessionStorage.setItem("pro-trial-request-key", requestKey);
   onMount(() => { void loadAccounts(); });
   async function loadAccounts() {
@@ -23,7 +32,7 @@
       const res = await api.api["pro-trial"].accounts.$get();
       if (!res.ok) throw new Error("无法读取试用资格");
       accounts = await res.json();
-      accountKey = accounts[0]?.key ?? "";
+      accountKey = savedRequest?.accountKey ?? accounts[0]?.key ?? "";
       if (accountKey) await loadPreview();
     } catch (e) { error = e instanceof Error ? e.message : "试用暂不可用"; }
     finally { loading = false; }
@@ -32,14 +41,14 @@
     const requestedAccount = accountKey;
     preview = null; confirmed = false;
     try {
-      const res = await api.api["pro-trial"].preview.$get({ query: { accountKey } });
+      const res = await api.api["pro-trial"].preview.$get({ query: { accountKey, key: requestKey } });
       if (!res.ok) throw new Error("试用配置尚未获批或账户没有资格");
       const offered = await res.json();
       if (accountKey === requestedAccount) preview = offered;
     } catch (e) { error = e instanceof Error ? e.message : "试用暂不可用"; }
   }
-  let name = $state("");
-  let slug = $state("");
+  let name = $state(savedRequest?.name ?? "");
+  let slug = $state(savedRequest?.slug ?? "");
   let submitting = $state(false);
   let error = $state<string | null>(null);
   /** 非空时表示 workspace 已建但 token scope 没切，展示「重试进入」按钮。 */
@@ -70,7 +79,7 @@
   }
 
   // slug 未被用户手动编辑时，跟随 name 自动派生。
-  let slugTouched = $state(false);
+  let slugTouched = $state(savedRequest !== null);
   $effect(() => {
     if (!slugTouched) slug = slugify(name);
   });
@@ -86,14 +95,22 @@
     submitting = true;
     try {
       if (!await refresh()) throw new Error("会话已过期，请重新登录");
-      const res = await api.api["pro-trial"].start.$post({ json: { name: name.trim(), slug, accountKey, key: requestKey, offerRevision: preview!.revision } });
+      const original = { name: name.trim(), slug, accountKey, key: requestKey };
+      sessionStorage.setItem("pro-trial-pending-request", JSON.stringify(original));
+      requestLocked = true;
+      const res = await api.api["pro-trial"].start.$post({ json: { ...original, offerRevision: preview!.revision } });
       if (!res.ok) {
         const body = await res.json();
+        if (res.status === 400 || ("error" in body && typeof body.error === "object" && body.error && "code" in body.error && body.error.code === "trial-slug-conflict")) {
+          sessionStorage.removeItem("pro-trial-pending-request");
+          requestLocked = false;
+        }
         throw new Error("error" in body && typeof body.error === "object" && body.error && "message" in body.error ? String(body.error.message) : "试用交付未完成，请使用相同名称与标识重试");
       }
       const result = await res.json();
       pendingEnter = result.slug;
       sessionStorage.removeItem("pro-trial-request-key");
+      sessionStorage.removeItem("pro-trial-pending-request");
       await retryEnter();
     } catch (e) {
       error = e instanceof Error ? e.message : "试用交付未完成，请重试";
@@ -131,10 +148,11 @@
       {#if loading}<p>正在核对试用资格…</p>
       {:else if accounts.length === 0}<p>仅有资格的计费账户管理员可以启动试用。请联系计费管理员；普通创建不会启动倒计时。</p>
       {:else}
-        <label class="field"><span>计费账户</span><select bind:value={accountKey} onchange={() => void loadPreview()} disabled={submitting}>
+        <label class="field"><span>计费账户</span><select bind:value={accountKey} onchange={() => void loadPreview()} disabled={submitting || requestLocked}>
           {#each accounts as account}<option value={account.key}>{account.name}</option>{/each}
         </select></label>
       {/if}
+      {#if requestLocked}<p>正在恢复原启动请求；账户、名称与标识保持原值，重试不会重新计时。</p>{/if}
       {#if preview}
         <div aria-label="试用范围确认">
           {#if preview.fixture}<p>内部验收配置，不代表正式商业承诺。</p>{/if}
@@ -155,7 +173,7 @@
           bind:value={name}
           placeholder="例如：诉讼部"
           autocomplete="off"
-          disabled={submitting}
+          disabled={submitting || requestLocked}
         />
       </label>
 
@@ -170,7 +188,7 @@
           }}
           placeholder="litigation"
           autocomplete="off"
-          disabled={submitting}
+          disabled={submitting || requestLocked}
         />
         <small>1–40 位小写字母、数字或连字符；用于 URL，创建后不可改</small>
       </label>

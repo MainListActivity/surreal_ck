@@ -12,14 +12,14 @@ import type { ProTrialService } from "../workspaces/pro-trial";
 const startSchema = z.object({ accountKey: z.string().min(1).max(200), name: z.string().trim().min(1).max(80),
   slug: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/), key: z.string().min(1).max(128), offerRevision: z.string().startsWith("pro_trial_revision:") }).strict();
 const configSchema = z.object({ revisionKey: z.string().regex(/^[a-zA-Z0-9_-]{1,80}$/), productRevision: z.string().startsWith("product_plan_revision:"),
-  researchRate: z.number().int().positive(), rateRevision: z.number().int().min(2), reminderHours: z.array(z.number().int().min(1).max(167)).max(10), fixture: z.boolean(), reason: z.string().trim().min(1).max(1000) }).strict();
+  researchRate: z.number().int().positive(), rateRevision: z.number().int().min(2), reminderHours: z.array(z.number().int().min(1).max(167)).max(10), fixture: z.boolean(), enabled: z.boolean().default(true), reason: z.string().trim().min(1).max(1000) }).strict();
 const eligibilitySchema = z.object({ accountKey: z.string().min(1).max(200), enabled: z.boolean(), reason: z.string().trim().min(1).max(1000) }).strict();
 
 export function createProTrialRoutes(service: ProTrialService, requireUser: () => MiddlewareHandler<AppBindings> = requireOidc) {
   return new Hono<AppBindings>()
     .get("/api/workspaces/:slug/pro-trial", requireUser(), async c => c.json(await service.status(c.var.user.subject, c.req.param("slug"))))
     .get("/api/pro-trial/accounts", requireUser(), async c => c.json(await service.accounts(c.var.user.subject)))
-    .get("/api/pro-trial/preview", requireUser(), async c => c.json(await service.preview(c.var.user.subject, c.req.query("accountKey") ?? "")))
+    .get("/api/pro-trial/preview", requireUser(), async c => c.json(await service.preview(c.var.user.subject, c.req.query("accountKey") ?? "", c.req.query("key"))))
     .post("/api/pro-trial/start", requireUser(), async c => {
       const parsed = startSchema.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) throw new HttpError(400, "trial-input-invalid", "试用请求无效，时长与商品版本由服务端配置决定");
@@ -40,9 +40,9 @@ export function createProTrialRoutes(service: ProTrialService, requireUser: () =
             THROW "trial-configuration-conflict";
           };
         };
-        UPSERT pro_trial_configuration:current CONTENT { revision: $id, enabled: true, updated_by: $subject };
+        UPSERT pro_trial_configuration:current CONTENT { revision: $id, enabled: $enabled, updated_by: $subject };
         COMMIT;`, { id: new RecordId("pro_trial_revision", v.revisionKey), product: new StringRecordId(v.productRevision),
-          rate: v.researchRate, rateRevision: v.rateRevision, hours: v.reminderHours, fixture: v.fixture, reason: v.reason, subject: c.var.user.subject });
+          rate: v.researchRate, rateRevision: v.rateRevision, hours: v.reminderHours, fixture: v.fixture, enabled: v.enabled, reason: v.reason, subject: c.var.user.subject });
       return c.json({ revision: `pro_trial_revision:${v.revisionKey}` });
     })
     .post("/api/ops/pro-trial/eligibility", requirePlatformOperator("subscription.manage"), async c => {

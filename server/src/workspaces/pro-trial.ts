@@ -28,7 +28,7 @@ export type TrialClaim = {
 export interface TrialStore {
 
   accounts(subject: string): Promise<{ key: string; name: string }[]>;
-  offer(subject: string, accountKey: string): Promise<TrialOffer>;
+  offer(subject: string, accountKey: string, requestKey?: string): Promise<TrialOffer>;
   claim(input: { subject: string; accountKey: string; name: string; slug: string; key: string; offerRevision: string }): Promise<{ claim: TrialClaim; lease: string | null }>;
   status(subject: string, slug: string): Promise<{ state: string; remainingSeconds: number; startedAt: string; endsAt: string; allowance: number; collections: { key: string; label: string }[]; fixture: boolean; reminder: boolean; retention: string } | null>;
   finish(claim: TrialClaim, lease: string, success: boolean): Promise<void>;
@@ -44,8 +44,8 @@ export class ProTrialService {
 
   accounts(subject: string) { return this.store.accounts(subject); }
 
-  async preview(subject: string, accountKey: string) {
-    const offer = await this.store.offer(subject, accountKey);
+  async preview(subject: string, accountKey: string, requestKey?: string) {
+    const offer = await this.store.offer(subject, accountKey, requestKey);
     const start = this.now();
     return { ...offer, startedAt: start.toISOString(), endsAt: new Date(start.getTime() + 7 * 86400000).toISOString(), durationDays: 7,
       timezone: "UTC", excludes: ["专业模块", "Max API/MCP 与批量复制", "自动充值和自动转付费"],

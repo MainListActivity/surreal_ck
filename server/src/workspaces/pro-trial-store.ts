@@ -37,12 +37,16 @@ LET $claim = type::record("pro_trial_claim", $claimKey);
 LET $old = (SELECT * FROM ONLY $claim);
 LET $busyId = (SELECT current_claim FROM ONLY $slot).current_claim;
 LET $busy = IF $busyId != NONE { SELECT * FROM ONLY $busyId } ELSE { NONE };
+LET $existingTrial = (SELECT id FROM quota_subscription WHERE billing_account = $account.id AND status = "trialing" AND trial_start <= $now AND trial_end > $now LIMIT 1)[0];
+LET $workspaceSlug = (SELECT id FROM workspace WHERE slug = $slug LIMIT 1)[0];
 LET $otherSlug = (SELECT id FROM pro_trial_claim WHERE slug = $slug AND id != $claim LIMIT 1)[0];
 LET $error = IF $account = NONE OR $member = NONE OR $eligible = NONE { "trial-forbidden" }
   ELSE IF $old = NONE AND (SELECT revision FROM ONLY pro_trial_configuration:current).revision != $offerId { "trial-offer-changed" }
   ELSE IF $old != NONE AND ($old.subject != $subject OR $old.slug != $slug OR $old.name != $name) { "trial-request-conflict" }
   ELSE IF $old != NONE AND $old.ends_at <= $now { "trial-expired" }
+  ELSE IF $old = NONE AND $existingTrial != NONE { "trial-already-started" }
   ELSE IF $old = NONE AND $busy != NONE AND $busy.ends_at > $now { "trial-already-started" }
+  ELSE IF $old = NONE AND $workspaceSlug != NONE { "trial-slug-conflict" }
   ELSE IF $otherSlug != NONE { "trial-request-conflict" } ELSE { NONE };
 IF $error = NONE {
   IF $old = NONE {
@@ -75,10 +79,20 @@ export class SurrealTrialStore implements TrialStore {
       .map(r => ({ key: String(r.key), name: String(r.name) }));
   }
 
-  async offer(subject: string, accountKey: string): Promise<TrialOffer> {
+  async offer(subject: string, accountKey: string, requestKey?: string): Promise<TrialOffer> {
     const db = await this.getDb();
     const authorized = (await this.accounts(subject)).some(a => a.key === accountKey);
     if (!authorized) throw new HttpError(403, "trial-forbidden", "仅有资格的计费账户管理员可开始试用");
+    // A retry must recover its approved immutable version even after the current
+    // offer rolls forward. Current account role/eligibility is still rechecked.
+    if (requestKey) {
+      const claimId = new StringRecordId(`pro_trial_claim:${stableSha256(JSON.stringify([accountKey, requestKey]))}`);
+      const existing = first(await db.query("SELECT * FROM ONLY $id;", { id: claimId }));
+      if (existing) {
+        if (existing.subject !== subject) throw new HttpError(403, "trial-forbidden", "原试用请求属于其他管理员");
+        return parseClaim(existing).offer;
+      }
+    }
     const config = first(await db.query("SELECT * FROM ONLY pro_trial_configuration:current FETCH revision;"));
     const revision = config?.revision as Row | undefined;
     if (!revision || config?.enabled !== true) throw new HttpError(503, "trial-not-configured", "试用配置尚未获批启用");
@@ -96,22 +110,24 @@ export class SurrealTrialStore implements TrialStore {
       || product.features.some(f => f.enabled && f.key !== "ai_cycle_allowance")) {
       throw new HttpError(503, "trial-configuration-invalid", "试用配置未满足核心研究范围与容量限制");
     }
-    const rules = resource.rules as { customer_label: string; limit: { kind: string; value?: number } }[];
-    if (!rules.length || rules.some(r => r.limit.kind !== "finite" || !Number.isSafeInteger(r.limit.value))) {
-      throw new HttpError(503, "trial-capacity-invalid", "试用必须使用获批有限容量");
+    const rules = resource.rules as { customer_label: string; resource: string; selector: { kind: string; value: string }; limit: { kind: string; value?: number } }[];
+    const managed = rules.filter(r => r.selector.kind === "regex" && r.selector.value === "^ent_");
+    if (!["table", "field", "record"].every(resource => managed.some(r => r.resource === resource))
+      || managed.some(r => r.limit.kind !== "finite" || !Number.isSafeInteger(r.limit.value))) {
+      throw new HttpError(503, "trial-capacity-invalid", "试用必须使用获批有限业务容量");
     }
     return {
       revision: String(revision.id), productRevision: product.id, resourceRevision: String(resource.id),
       resourcePlanKey: String((resource.plan as Row).plan_key), collections: product.collections, allowance,
       researchRate: Number(revision.research_rate), rateRevision: Number(revision.rate_revision),
-      capacity: rules.map(r => ({ label: r.customer_label, limit: r.limit.value! })),
+      capacity: managed.map(r => ({ label: r.customer_label, limit: r.limit.value! })),
       reminderHours: revision.reminder_hours as number[], fixture: revision.fixture === true,
     };
   }
 
   async claim(input: { subject: string; accountKey: string; name: string; slug: string; key: string; offerRevision: string }) {
     const db = await this.getDb();
-    const offer = await this.offer(input.subject, input.accountKey);
+    const offer = await this.offer(input.subject, input.accountKey, input.key);
     if (offer.revision !== input.offerRevision) throw new HttpError(409, "trial-offer-changed", "试用配置已变更，请重新核对范围");
     const claimKey = stableSha256(JSON.stringify([input.accountKey, input.key]));
     const lease = crypto.randomUUID();

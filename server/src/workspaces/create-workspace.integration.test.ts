@@ -1,9 +1,14 @@
+import { createProTrialDelivery } from "./pro-trial-delivery";
+import { SurrealTrialStore } from "./pro-trial-store";
+import { ProTrialService } from "./pro-trial";
+import { ProductEntitlementService } from "../product-entitlement/service";
+import { SurrealProductEntitlementStore } from "../product-entitlement/store";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Surreal } from "surrealdb";
+import { Surreal, DateTime, StringRecordId } from "surrealdb";
 import { seedQuotaPlans } from "../db/quota-plan-seed";
 import { SurrealNativeQuotaClient } from "../db/native-quota/client";
 import {
@@ -261,6 +266,62 @@ describe("workspace provisioning against local SurrealDB", () => {
     expect(String(item.product_plan_revision)).toBe("product_plan_revision:synthetic");
     expect(String(item.end)).toBe(String(item.effective_until));
     expect(readback[2]).toHaveLength(0);
+  }, 30000);
+
+  localTest("real product/bucket + controlled content fixture: failed projection retries without a second grant", async () => {
+    const systemDb = await getDbSession("_system");
+    const productStore = new SurrealProductEntitlementStore(getDbSession);
+    const products = new ProductEntitlementService(productStore);
+    const resource = await systemDb.query("SELECT VALUE active_revision FROM quota_plan WHERE plan_key = 'trial';");
+    const published = await products.publishRevision({ subject: "test-operator", capabilities: ["subscription.manage"] }, {
+      planKey: "trial_fixture", displayName: "合成 Pro 试用，不可售", revision: 1, resourceTemplateId: String((resource as unknown[][])[0]![0]),
+      collections: [{ key: "trial_synthetic", label: "不可售合成资料" }], actions: ["browse", "search", "read", "cite"], aiActions: ["research"],
+      features: [{ key: "ai_cycle_allowance", enabled: true, limit: 10 }], reason: "local fixture only", idempotencyKey: "local-trial-product-1",
+    });
+    await systemDb.query(`CREATE billing_account:positive CONTENT { account_key: "positive", name: "Synthetic positive", kind: "personal", status: "active" };
+      CREATE billing_account_member CONTENT { billing_account: billing_account:positive, subject: "trial-owner", role: "owner", status: "active" };
+      CREATE pro_trial_eligibility CONTENT { billing_account: billing_account:positive, enabled: true, reason: "local fixture", approved_by: "test" };
+      CREATE pro_trial_revision:positive CONTENT { product_revision: $product, duration_days: 7, reminder_hours: [24], research_rate: 2, rate_revision: 2,
+        fixture: true, approval_reason: "local fixture", approved_by: "test" };
+      UPSERT pro_trial_configuration:current CONTENT { revision: pro_trial_revision:positive, enabled: true, updated_by: "test" };`, { product: new StringRecordId(published.productPlanRevisionId) });
+    const store = new SurrealTrialStore(async () => systemDb);
+    const preview = await store.offer("trial-owner", "positive");
+    expect(preview.allowance).toBe(10);
+    // Content-side local surrogate: metadata/gate writes only, not a production RECORD-identity proof.
+    await systemDb.query("DEFINE DATABASE IF NOT EXISTS trial_content_fixture;");
+    await getDbSession("trial_content_fixture");
+    const content = sessions.get("trial_content_fixture")!;
+    await content.query(`CREATE content_source:synthetic CONTENT { status: "active" };
+      CREATE content_item:synthetic CONTENT { publication_status: "published", current_version: content_version:synthetic };
+      CREATE content_version:synthetic CONTENT { item: content_item:synthetic, source: content_source:synthetic, public_id: "local-synthetic-v1" };
+      CREATE source_license_revision:synthetic CONTENT { source: content_source:synthetic, revision: 1, allowed_actions: ["browse", "search", "read", "cite", "research"], effective_from: $from, effective_until: $until };
+      CREATE content_collection_binding:synthetic CONTENT { item: content_item:synthetic, collections: ["trial_synthetic"] };
+      CREATE content_publication_projection:synthetic CONTENT { item: content_item:synthetic, version: content_version:synthetic };`, { from: new DateTime(new Date(Date.now() - 60000)), until: new DateTime(new Date(Date.now() + 10 * 86400000)) });
+    let unavailable = true;
+    const deliver = createProTrialDelivery({ session: getDbSession,
+      content: async () => { if (unavailable) throw new Error("controlled content outage"); return content; },
+    });
+    const creator = createWorkspaceCreator({ getDbSession, namespace, generateId: () => "positive001",
+      nativeQuotaClient: new SurrealNativeQuotaClient(systemDb), loadTemplatePackScripts: async () => [],
+      loadTemplateScripts: async () => [{ version: 1, name: "test-ai-tables", sql: await readFile(new URL("../../../shared/sql/workspace-template/035-ai-allowance.surql", import.meta.url), "utf8") },
+        { version: 2, name: "test-upgrade-tables", sql: await readFile(new URL("../../../shared/sql/workspace-template/042-ai-plan-upgrade-proration.surql", import.meta.url), "utf8") }],
+      idpTokenScopeAdapter: { async updateUserScope() { return { accessToken: "local-scope-fixture", expiresIn: 3600 }; } }, deliverTrial: deliver,
+    });
+    const service = new ProTrialService(store, creator);
+    const input = { subject: "trial-owner", subjectToken: "local-subject-fixture", email: "local@example.invalid", accountKey: "positive", name: "Synthetic", slug: "positive-trial", key: "local-positive", offerRevision: preview.revision };
+    await expect(service.start(input)).rejects.toMatchObject({ status: 503 });
+    const workspaceDb = await getDbSession("ws_positive001");
+    const before = await workspaceDb.query<unknown[][]>("SELECT total, available FROM ai_allowance_bucket; SELECT id FROM ai_ledger_entry WHERE kind = 'grant';");
+    expect(before[0]?.[0]).toMatchObject({ total: 10, available: 10 }); expect(before[1]).toHaveLength(1);
+    unavailable = false;
+    const active = await service.start(input);
+    expect(active.state).toBe("active");
+    expect(await service.start(input)).toEqual(active);
+    const after = await workspaceDb.query<unknown[][]>("SELECT total, available FROM ai_allowance_bucket; SELECT id FROM ai_ledger_entry WHERE kind = 'grant';");
+    expect(after).toEqual(before);
+    const snapshot = await productStore.currentSnapshot(String((await productStore.workspaceBySlug("positive-trial"))!.id));
+    expect(snapshot?.baseSourceKind).toBe("trial"); expect(snapshot?.effectiveUntil).toBe(active.endsAt);
+    expect((await content.query<unknown[][]>("SELECT status, digest FROM content_authorization_projection;"))[0]?.[0]).toMatchObject({ status: "active", digest: snapshot?.digest });
   }, 30000);
 
 });

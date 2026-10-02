@@ -8,19 +8,27 @@ import { fetchContentReaderTarget, writeContentReaderProjection } from "../conte
 import { planContentReaderExchange } from "../content/reader-exchange";
 import { CONTENT_CATALOG_SCAN_QUERY } from "../content/search-exchange";
 import { env } from "../env";
+import { toIsoDateTimeString } from "../db/surreal-values";
+import type { ContentProjectionClient } from "../content/reader-session";
 import type { ExplicitResourceSource } from "./provisioning-saga";
 
 type Row = Record<string, unknown>;
 const rows = (v: unknown): Row[] => Array.isArray(v) && Array.isArray(v[0]) ? v[0] as Row[] : [];
 
 /** activate 前的控制面交付。仅声明来源的 creator 可调用；无业务正文读取、无用户 token。 */
-export async function deliverProTrial(input: { workspaceId: string; dbName: string; subject: string; trial: NonNullable<ExplicitResourceSource["trial"]> }) {
+export function createProTrialDelivery(deps: {
+  session?: (database: string, namespace?: string) => Promise<{ query(sql: string, vars?: Record<string, unknown>): Promise<unknown> }>;
+  content?: () => Promise<ContentProjectionClient>;
+} = {}) {
+  const session = deps.session ?? getRootDatabaseSession;
+  const getContent = deps.content ?? getContentProjectionSession;
+  return async (input: { workspaceId: string; dbName: string; subject: string; trial: NonNullable<ExplicitResourceSource["trial"]> }) => {
   if (Date.parse(input.trial.endsAt) <= Date.now()) throw new Error("trial-expired");
-  const store = new SurrealProductEntitlementStore();
+  const store = new SurrealProductEntitlementStore(session);
   const products = new ProductEntitlementService(store);
   const { planCycle } = await products.refreshSubscriptionDriven(input.workspaceId, { correlationId: input.trial.claimId });
   if (!planCycle || planCycle.baseSourceKind !== "trial" || planCycle.expiresAt !== input.trial.endsAt) throw new Error("trial-product-not-ready");
-  const db = await getRootDatabaseSession(input.dbName);
+  const db = await session(input.dbName);
   await db.query(`INSERT INTO ai_rate_card {
     id: $id, action_key: "research", revision: $revision, amount: $amount,
     revision_label: $label, tier_label: "Pro 试用研究", status: "active"
@@ -35,7 +43,7 @@ export async function deliverProTrial(input: { workspaceId: string; dbName: stri
   if (!bucket || bucket.total !== planCycle.cycleAllowance) throw new Error("trial-allowance-readback-failed");
   const snapshot = await store.currentSnapshot(input.workspaceId);
   if (!snapshot || snapshot.productPlanRevisionId !== input.trial.productRevisionId) throw new Error("trial-snapshot-mismatch");
-  const content = await getContentProjectionSession();
+  const content = await getContent();
   const catalog = rows(await content.query(CONTENT_CATALOG_SCAN_QUERY));
   if (catalog.length > 5000) throw new Error("trial-content-catalog-too-large");
   const nowSeconds = Math.floor(Date.now() / 1000);
@@ -62,8 +70,14 @@ export async function deliverProTrial(input: { workspaceId: string; dbName: stri
   for (const plan of plans) await writeContentReaderProjection(content, plan.write);
   const projection = rows(await content.query("SELECT digest, status FROM $id;", { id: new RecordId("content_authorization_projection", [input.dbName]) }))[0];
   if (projection?.digest !== snapshot.digest || projection.status !== "active") throw new Error("trial-content-readback-failed");
-  const system = await getRootDatabaseSession("_system");
+  const system = await session("_system");
   const claim = rows(await system.query("SELECT lease, lease_until, ends_at FROM $id;", { id: new StringRecordId(input.trial.claimId) }))[0];
-  if (claim?.lease !== input.trial.leaseId) throw new Error("trial-provisioning-fence-lost");
+  if (claim?.lease !== input.trial.leaseId || !toIsoDateTimeString(claim.lease_until) || Date.parse(toIsoDateTimeString(claim.lease_until)!) <= Date.now()) throw new Error("trial-provisioning-fence-lost");
+  const rights = rows(await system.query(`SELECT id FROM billing_account_member WHERE billing_account = $account AND subject = $subject AND status = "active" AND role INSIDE ["owner", "admin"]
+    AND billing_account.status = "active" AND billing_account IN (SELECT VALUE billing_account FROM pro_trial_eligibility WHERE enabled = true);`, { account: new StringRecordId(input.trial.billingAccountId), subject: input.subject }));
+  if (!rights.length) throw new Error("trial-billing-authority-revoked");
   if (Date.parse(input.trial.endsAt) <= Date.now()) throw new Error("trial-expired");
+  };
 }
+
+export const deliverProTrial = createProTrialDelivery();

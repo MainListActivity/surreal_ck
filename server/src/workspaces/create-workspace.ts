@@ -14,7 +14,7 @@ import { NATIVE_QUOTA_EXPECTED_CONTRACT } from "@surreal-ck/shared/native-quota"
 import { DateTime, StringRecordId } from "surrealdb";
 import { env } from "../env";
 import { getRootDatabaseSession } from "../db/root-connection";
-import { toSurrealNone } from "../db/surreal-values";
+import { toSurrealNone, toIsoDateTimeString } from "../db/surreal-values";
 import { materializeWorkspaceMigrationSql } from "../db/workspace-migration-execution";
 import {
   SurrealNativeQuotaClient,
@@ -207,6 +207,7 @@ function provisioningWorkspaceFromRow(
 
 function createSurrealControlPlane(
   systemDb: CreateWorkspaceClient,
+  trial?: ExplicitResourceSource["trial"],
 ): ProvisioningControlPlane {
   return {
     async reserveWorkspace(input) {
@@ -368,6 +369,14 @@ function createSurrealControlPlane(
         if (!subRow) {
           throw new Error("provisioning subscription item has no subscription");
         }
+        if (input.trial && (
+          String(subRow.billing_account) !== input.trial.billingAccountId
+          || subRow.status !== "trialing"
+          || String(itemRow.product_plan_revision) !== input.trial.productRevisionId
+          || toIsoDateTimeString(subRow.trial_start) !== input.trial.startsAt
+          || toIsoDateTimeString(subRow.trial_end) !== input.trial.endsAt
+          || toIsoDateTimeString(itemRow.effective_until) !== input.trial.endsAt
+        )) throw new Error("existing-trial-source-does-not-match-claim");
         const asOptionalDateTime = (value: unknown): DateTime | undefined => {
           if (value instanceof DateTime) return value;
           if (typeof value === "string") return new DateTime(value);
@@ -645,6 +654,18 @@ function createSurrealControlPlane(
     async markStage(input) {
       await systemDb.query(
         `
+          BEGIN;
+          IF $activateTrial {
+            LET $claim = (SELECT * FROM ONLY $trialClaim);
+            IF $claim = NONE OR $claim.lease != $trialLease OR $claim.lease_until <= time::now() OR $claim.ends_at <= time::now() {
+              THROW "trial-activation-fence-lost";
+            };
+            LET $authorized = (SELECT id FROM billing_account_member WHERE billing_account = $claim.billing_account
+              AND subject = $claim.subject AND status = "active" AND role INSIDE ["owner", "admin"]
+              AND billing_account.status = "active"
+              AND billing_account IN (SELECT VALUE billing_account FROM pro_trial_eligibility WHERE enabled = true) LIMIT 1)[0];
+            IF $authorized = NONE { THROW "trial-billing-authority-revoked"; };
+          };
           UPDATE $workspace SET
             provisioning_stage = $stage,
             status = IF $status = NONE THEN status ELSE $status END,
@@ -657,8 +678,15 @@ function createSurrealControlPlane(
             applied_quota_projection = IF $appliedQuotaProjection = NONE THEN applied_quota_projection ELSE $appliedQuotaProjection END,
             legacy_cleanup_after = IF $legacyCleanupAfter = NONE THEN legacy_cleanup_after ELSE $legacyCleanupAfter END,
             updated_at = time::now();
+          IF $activateTrial {
+            UPDATE $trialClaim SET state = "active", lease = NONE, lease_until = NONE;
+          };
+          COMMIT;
         `,
         {
+          activateTrial: Boolean(trial && input.stage === "completed" && input.status === "active"),
+          trialClaim: toSurrealNone(trial ? new StringRecordId(trial.claimId) : null),
+          trialLease: toSurrealNone(trial?.leaseId),
           workspace: input.workspaceId,
           stage: input.stage,
           status: toSurrealNone(input.status),
@@ -853,7 +881,7 @@ async function tryCreateWorkspace({
 }: TryCreateWorkspaceInput): Promise<TryCreateWorkspaceResult> {
   const controlPlane =
     injectedControlPlane
-    ?? createSurrealControlPlane(systemDb);
+    ?? createSurrealControlPlane(systemDb, input.resourceSource.trial);
 
   const native =
     nativeQuotaClient
@@ -867,6 +895,16 @@ async function tryCreateWorkspace({
       },
     });
 
+  // Trial boundary is claimed by the authoritative DB clock. Use that clock
+  // for eligibility too: SDK DateTime.now() uses a process hrtime anchor and
+  // can lag wall-clock time after an adjustment (new claims otherwise flake).
+  let trialNow: DateTime | undefined;
+  if (input.resourceSource.trial) {
+    const clock = await systemDb.query("RETURN time::now();");
+    const value = Array.isArray(clock) ? clock[0] : undefined;
+    if (!(value instanceof DateTime)) throw new Error("trial-authoritative-clock-unavailable");
+    trialNow = value;
+  }
   const sagaResult = await runProvisioningQuotaSaga(controlPlane, native, {
     subject: input.subject,
     email: input.email,
@@ -874,7 +912,7 @@ async function tryCreateWorkspace({
     slug: input.slug,
     dbName,
     resourceSource: input.resourceSource,
-  });
+  }, { now: trialNow });
 
   if (sagaResult.kind === "slug-conflict") return { kind: "slug-conflict" };
   if (sagaResult.kind === "db-name-conflict") return { kind: "db-name-conflict" };
