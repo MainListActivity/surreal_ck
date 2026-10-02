@@ -91,7 +91,9 @@ function bridgeToBus(bus: RunBus, runId: string) {
     async commit(onResult?: (event: Extract<ChatStreamEvent, { kind: "done" }>, proofs: import("@surreal-ck/shared").AiDeliveryProof[]) => Promise<void>, onTerminal?: (outcome: RunTerminalOutcome) => void | Promise<void>) {
       if (!finalEvent) throw new Error("chat completed without a deliverable result");
       await onResult?.(finalEvent, proofs);
+      if (!active) throw new Error("chat-run-deadline");
       await onTerminal?.("success");
+      if (!active) return;
       bus.publish(runId, finalEvent);
       active = false;
     },
@@ -182,10 +184,11 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
           // success / suspended：workflow 自己已 publish done（finalize step）；suspended 不发 done。
           bridge.ensureTerminal(result, userContext ?? createDefaultAiContextSnapshot());
           outcome = result.status === "success" ? "success" : "suspended";
-          if (outcome === "success") { await bridge.commit(onResult, onTerminal); committed = true; }
+          if (outcome === "success") { await Promise.race([deadline, bridge.commit(onResult, onTerminal)]); committed = true; }
         } catch (cause) {
           outcome = "failed";
           bridge.publishErrorIfNotTerminal(cause instanceof Error ? cause.message : String(cause));
+          bridge.stop();
         } finally {
           if (timeout) clearTimeout(timeout);
           bridge.stop();
@@ -233,10 +236,11 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
           })]);
           bridge.ensureTerminal(result, userContext);
           outcome = result.status === "success" ? "success" : result.status === "cancelled" ? "cancelled" : "suspended";
-          if (outcome === "success") { await bridge.commit(onResult, onTerminal); committed = true; }
+          if (outcome === "success") { await Promise.race([deadline, bridge.commit(onResult, onTerminal)]); committed = true; }
         } catch (cause) {
           outcome = "failed";
           bridge.publishErrorIfNotTerminal(cause instanceof Error ? cause.message : String(cause));
+          bridge.stop();
         } finally {
           if (timeout) clearTimeout(timeout);
           bridge.stop();

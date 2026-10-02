@@ -177,6 +177,10 @@ function aiErrorMessage(error: unknown): string {
     return "当前套餐未开通该 AI 能力，请联系工作区管理员。";
   }
   if (code === "ai-allowance-unavailable") return "AI 额度账本暂不可用，请稍后重试。";
+  if (code === "authorization_changed") return "当前材料或授权已变化，不能恢复旧答案。请重新研究。";
+  if (code === "chat-run-interrupted") return "该研究已中断且没有可恢复结果。请发起新研究。";
+  if (code === "chat-run-not-running") return "该研究已暂停或中断。请回到原操作卡继续，或发起新研究。";
+  if (code === "chat-run-ended") return "该研究已结束且没有可恢复结果。请发起新研究。";
   if (code === "stream-timeout") return STREAM_TIMEOUT_MESSAGE;
   if (/forbidden|unauthori[sz]ed|permission|signin-failed|access denied/u.test(searchable)) {
     return "没有权限执行此操作，请联系工作区管理员。";

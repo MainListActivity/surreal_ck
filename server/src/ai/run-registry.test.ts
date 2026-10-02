@@ -31,6 +31,7 @@ describe("RunRegistry", () => {
     now += 2; // 越过 TTL
     expect(reg.get("run-1")).toBeDefined();
     expect(reg.resolveStreamToken({ runId: "run-1", streamToken })).toBeUndefined();
+    now += 5 * 60_000; expect(reg.get("run-1")).toBeUndefined();
   });
 
   test("同一 runId 再次 register（resume 刷新）会换发新 token 并续 TTL", () => {

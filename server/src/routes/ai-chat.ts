@@ -157,8 +157,7 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
           db,
           runId,
           outcome: outcome === "success" ? "success" : outcome === "cancelled" ? "cancelled" : "failure",
-        })
-;
+        });
     };
   }
 

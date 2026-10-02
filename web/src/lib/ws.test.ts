@@ -183,7 +183,7 @@ describe("WS 客户端", () => {
     expect(messages.at(-1)).toMatchObject({ kind: "done" });
   });
 
-  test("连接只收到服务端 ping 超过等待窗口 → 触发 idle timeout 并关闭 socket", () => {
+  test("最后一个有效 ping 后静默45s → 真正超时并关闭 socket", () => {
     let idleTimeouts = 0;
     const { clock } = setup({ onIdleTimeout: () => { idleTimeouts += 1; } });
     const sock = FakeSocket.instances[0];
@@ -199,4 +199,39 @@ describe("WS 客户端", () => {
     expect(sock.closed).toBe(true);
     expect(sock.closeCode).toBe(4000);
   });
+});
+
+
+test("68s 追问进度维持连接；错误或旧 run 心跳不能延长静默窗口", () => {
+  let timeouts = 0;
+  const h = setup({ onIdleTimeout: () => timeouts++ });
+  const socket = FakeSocket.instances[0]!; socket.open();
+  h.clock.advance(30_000); socket.message('{"kind":"progress","runId":"r1"}');
+  h.clock.advance(38_000); socket.message('{"kind":"done","runId":"r1"}');
+  expect(timeouts).toBe(0);
+  h.handle.close();
+  const stale = setup({ onIdleTimeout: () => timeouts++ });
+  const old = FakeSocket.instances[0]!; old.open();
+  stale.clock.advance(30_000);
+  old.message('{"kind":"ping","runId":"other"}'); old.message('bad json');
+  stale.clock.advance(15_000); expect(timeouts).toBe(1);
+});
+
+test("持续心跳仍受10分钟总上限约束；关闭后晚到 open/message 不复活", () => {
+  let timeouts = 0;
+  const h = setup({ onIdleTimeout: () => timeouts++ });
+  const socket = FakeSocket.instances[0]!; socket.open();
+  for (let i = 0; i < 23; i++) { h.clock.advance(25_000); socket.message('{"kind":"ping","runId":"r1"}'); }
+  h.clock.advance(25_000); expect(timeouts).toBe(1); expect(socket.closed).toBe(true);
+  socket.open(); socket.message('{"kind":"done","runId":"r1"}');
+  h.clock.advance(25_000); expect(h.messages.some(e => typeof e === "object" && e !== null && "kind" in e && e.kind === "done")).toBe(false);
+});
+
+test("反复成功建连也不刷新五次重连预算；旧 socket 关闭不影响新连接", () => {
+  const h = setup();
+  const old = FakeSocket.instances[0]!; old.open(); old.serverClose(); h.clock.advance(1000);
+  const fresh = FakeSocket.instances[1]!; fresh.open(); old.serverClose(); h.clock.advance(1000);
+  expect(FakeSocket.instances).toHaveLength(2);
+  for (let i = 1; i < 6; i++) { FakeSocket.instances.at(-1)!.open(); FakeSocket.instances.at(-1)!.serverClose(); h.clock.advance(32_000); }
+  expect(FakeSocket.instances).toHaveLength(6); expect(h.closes).toEqual([1006]);
 });

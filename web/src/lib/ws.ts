@@ -130,7 +130,6 @@ export function connectWs(input: ConnectWsInput): WsHandle {
       stopped = true;
       timers.clearTimeout(lifetimeTimer);
       stopHeartbeat();
-      timers.clearTimeout(lifetimeTimer);
       input.onIdleTimeout?.();
       socket?.close(IDLE_TIMEOUT_CLOSE_CODE);
     }, input.idleTimeoutMs ?? IDLE_TIMEOUT_MS);
@@ -156,6 +155,7 @@ export function connectWs(input: ConnectWsInput): WsHandle {
     socket = sock;
 
     sock.onopen = () => {
+      if (stopped || socket !== sock) return;
       heartbeat = timers.setInterval(() => sock.send('{"type":"ping"}'), HEARTBEAT_MS);
       armIdleTimer();
     };

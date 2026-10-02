@@ -71,9 +71,9 @@ describe("Hono app", () => {
 });
 
 describe("createApp AI 自动装配", () => {
-  test("env 提供 AI provider/model/apiKey → /api/chat 不再返回 501（生产 AiChatService 自动装配）", async () => {
+  test("env 提供 AI provider/model/apiKey/deliveryKey → /api/chat 不再返回 501（生产 AiChatService 自动装配）", async () => {
     const { overrideEnv } = await import("./env");
-    overrideEnv({ AI_PROVIDER: "openai", AI_MODEL: "gpt-4o-mini", AI_API_KEY: "sk-test" });
+    overrideEnv({ AI_PROVIDER: "openai", AI_MODEL: "gpt-4o-mini", AI_API_KEY: "sk-test", AI_DELIVERY_KEY: "11".repeat(32) });
     try {
       const app = createApp({
         requireUser: () => useTestUser,
@@ -86,7 +86,7 @@ describe("createApp AI 自动装配", () => {
       });
       expect(res.status).not.toBe(501);
     } finally {
-      overrideEnv({ AI_PROVIDER: undefined, AI_MODEL: undefined, AI_API_KEY: undefined });
+      overrideEnv({ AI_PROVIDER: undefined, AI_MODEL: undefined, AI_API_KEY: undefined, AI_DELIVERY_KEY: undefined });
     }
   });
 });

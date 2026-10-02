@@ -12,6 +12,5 @@ DEFINE FIELD IF NOT EXISTS nonce ON chat_delivery TYPE string;
 DEFINE FIELD IF NOT EXISTS status ON chat_delivery TYPE string ASSERT $value INSIDE ["running", "suspended", "complete", "failed"];
 DEFINE FIELD IF NOT EXISTS envelope ON chat_delivery TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS created_at ON chat_delivery TYPE datetime VALUE time::now() READONLY;
-DEFINE FIELD IF NOT EXISTS deadline ON chat_delivery TYPE datetime DEFAULT time::now() + 10m;
 DEFINE INDEX IF NOT EXISTS chat_delivery_request ON chat_delivery COLUMNS owner_user, request_key UNIQUE;
 DEFINE INDEX IF NOT EXISTS chat_delivery_run ON chat_delivery COLUMNS run_id UNIQUE;
