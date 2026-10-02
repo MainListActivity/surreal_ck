@@ -213,7 +213,10 @@
   // LCA05：共享 AI 额度只读快照——打开抽屉/切换工作区时加载，run 终态后刷新。
   let allowance = $state<AiAllowanceSnapshot | null>(null);
   let allowanceTimer: ReturnType<typeof setTimeout> | null = null;
+  let allowanceGeneration = 0;
   async function refreshAllowance() {
+    const generation = ++allowanceGeneration;
+    allowance = null;
     if (!open || !workspaceSlug) {
       allowance = null;
       return;
@@ -227,13 +230,14 @@
       if (product.workspaceSlug !== slug) throw new Error("额度来源工作区不匹配");
       const next = await loadAiAllowanceSnapshot(conn, { ...product.baseSource,
         effectiveFrom: product.effectiveFrom, effectiveUntil: product.effectiveUntil });
-      if (open && workspaceSlug === slug && conn === getSurreal()) allowance = next;
+      if (generation === allowanceGeneration && open && workspaceSlug === slug && conn === getSurreal()) allowance = next;
     } catch {
-      if (workspaceSlug === slug) allowance = null;
+      if (generation === allowanceGeneration && workspaceSlug === slug) allowance = null;
     }
   }
   $effect(() => {
     if (!open || !workspaceSlug) {
+      allowanceGeneration += 1;
       allowance = null;
       return;
     }

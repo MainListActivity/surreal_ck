@@ -30,3 +30,21 @@ fixture:true 显示内部验收说明，不能作为正式商业承诺；语义�
 实现阶段本地数据库供应/并发和受控页面检查，不替代生产用户身份与真实内容研究实测。独立验收后另开合入部署任务，在获批 fixture 配置下记录：显式启动回执、邀请成员后共享范围/余额、一项关键词/语义研究、引用打开、成果保存、准确截止权限收回、保留成果、Plus/Pro/Max 新来源及周期不继承旧余额。测成员/仅 workspace admin 拒绝、跨账户隔离、并发与中断恢复。生产模型调用或计费操作按受控运维授权范围执行。
 
 回滚先禁用当前配置并撤销未完成测试账户资格，再回滚应用提交。新增控制面结构和已发 trial 不删除。回滚/恢复目标的入口语义由发布脚本门禁强制执行（见 production-release.md「切换与回滚的可执行门禁」）：目标是会恢复隐式试用创建的旧 origin（LCA10 之前，公共创建入口自授 trial）时，发布与自动回滚都会被拒绝，不会在人工处置前静默恢复旧入口。保留已有 workspace 和成果，继续使用订阅有效期与当前权限约束。
+
+
+## LCA14 D2–D3：消费口径与精确来源终止
+
+消费口径以当前 workspace 的商业快照为准：有效的 trial/subscription 来源 ID、有效起止时间、active 状态、未到期及无终止标记共同决定套餐桶是否可消费。购买/补偿桶按自身状态与时间核验，不依附套餐来源；动作权限仍由服务端独立核验。抽屉通过既有 product-entitlement API 获取来源，再浏览器直连读取账本；请求失败、工作区不匹配或来源无法核验时关闭套餐可消费显示。未来生效桶显示“尚未生效”；旧 trial 来源不匹配显示“来源已失效，不可消费”。账面余额与可消费总额分开，不把无物理终止标记的旧桶伪装成已回填。
+
+`027-ai-trial-conversion-source.surql` 与 `047-ai-source-termination.surql` 只追加结构、索引及事件，不扫描/回填旧订阅或旧额度桶。正常 provider trialing→active 或运营 subscription_upsert 转换，在同一商业事务冻结当前 workspace、同一 billing account 的旧 source ID、转换时间和事件键；套餐投放只用这一精确身份终止关联 trial 前缀，不宽扫所有试用桶。终止事实存 workspace 的 `ai_allowance_source_termination`，桶的 `terminated_at/terminated_note` 对应同一商业事件；迟到的同来源桶 CREATE 会继承终止事实。旧金额/期限/历史流水不改。在途预留依既有规则按原桶结算；终止后的取消释放只冲销，不恢复可消费额度。
+
+独立 QA 在受控发布后按以下步骤验收（只用 ops_* 会话，不取 token）：
+
+1. 确认 origin 与 web 均为获准提交；现存 `sck-lca10-qa-02` 仅只读。原试用桶账面28且缺少终止标记是历史状态，不直接 UPDATE。以原授权成员查看抽屉：可消费0、旧桶原因“来源已失效”；与同账号真实研究预留响应及运营 GET `/api/ops/product-entitlements/workspaces/:slug` 的 consumableAllowance 对账。没有该成员身份时记录缺项，不能替换身份声称完成。
+2. 新隔离夹具复用获批的不可售试用配置与有效许可内容。计费 owner/admin 通过 preview/start 启动七日试用，记录 claim、workspace、billing account、实际 `quota_subscription:provision_<db>` 与试用 period_key；转换前预留应命中旧试用桶。不要手工 CREATE/UPDATE 生产试用桶。
+3. 运营先调用 `/api/ops/quota/preflight`，再 `/api/ops/quota/intents` 提交 `subscription_upsert`，mode=manual_assignment、source=manual、status=active，选择获准的新商业 subscription 与套餐，effectiveAt 在试用启动之后，携带 requestId/customerReason/operatorReason。仅此夹具模拟确认，不调用付款/provider 收款。轮询 `/api/ops/quota/intents/:intentId` 至完成，再读双方来源、桶与终止审计。断言旧 source 与新 source 不同、旧桶标记存在、新桶前缀只属新 source。
+4. 同请求重放、并发刷新、在途结算与取消释放、另一 workspace 及其他来源/购买/补偿均须核对。各桶赋相等测试余额，分别检验未来生效、到期、暂停、显式终止、非当前套餐来源，避免余额巧合掩盖过滤错误。受控业务操作造状态，不能让 QA 直接更新旧生产账本。
+
+发布兼容下限由 `origin-release.sh` 的 `require_allowance_source_compat` 强制执行：候选与自动回滚目标必须同时包含共享消费谓词、候选读取与原子扣减的同谓词、v4 精确转换及两份新增结构。缺文件、旧代码或检查失败均在 env/服务切换前拒绝。保留已落地的新增 schema、审计和桶；不得回滚结构或删除事实。首次发布若 previous 未满足下限，自动回滚会被拒绝，应提前准备通过 Quality gate 的兼容回滚提交；健康失败时禁止改脚本绕过门禁启动旧代码。后续规则升级须同时维护这一兼容断言。前端回滚也必须保留来源显示规则，选取同一已验证兼容提交重跑 Deploy production。
+
+此链不修复既有生产历史桶的物理终止标记，也不批准客户灰度。若验收坚持补全历史审计，需另报 owner 红线请求、精确影响范围与只读方案，获准前不执行补账或迁移。

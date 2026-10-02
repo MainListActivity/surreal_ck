@@ -216,12 +216,39 @@ require_trial_source_compat() {
   return 1
 }
 
+# LCA14 D2–D3 兼容下限：统一来源消费规则及转换终止协议必须一起在场。
+# 只检查发布树，不读数据库。缺失即拒绝；禁止以旧 origin 恢复试用消费。
+# 留存新增 schema/终止审计，不随代码回滚删除。首发若无兼容 previous，
+# 健康失败保持当前安全版本/停写状态，不能自动启动不兼容版本。
+require_allowance_source_compat() {
+  local target="$1"
+  local shared="$target/shared/src/ai-allowance.ts"
+  local service="$target/server/src/ai-allowance/service.ts"
+  local cycle="$target/server/src/ai-allowance/plan-cycle.ts"
+  if [ -f "$shared" ] && [ -f "$service" ] && [ -f "$cycle" ] \
+    && [ -f "$target/shared/sql/system/027-ai-trial-conversion-source.surql" ] \
+    && [ -f "$target/shared/sql/workspace-template/047-ai-source-termination.surql" ] \
+    && grep -q 'AI_ALLOWANCE_CONSUMABLE_SQL' "$shared" \
+    && grep -q 'aiAllowancePlanPrefix' "$service" \
+    && [ "$(grep -c 'WHERE.*AI_ALLOWANCE_CONSUMABLE_SQL' "$service")" -ge 2 ] \
+    && grep -q 'plan-cycle-rules-v4' "$cycle" \
+    && grep -q 'conversion.sourceId' "$cycle"; then
+    return 0
+  fi
+  echo "allowance source gate: refusing to activate $target (missing LCA14 consumption/termination compatibility)" >&2
+  return 1
+}
+
 rollback() {
   echo "release $release_id failed: $1; restoring $previous" >&2
   sudo -n journalctl -u "$service" -n 40 --no-pager >&2 || true
   # 先做纯静态的试用来源检查（无副作用）：拒绝时 env/current/服务均未被触碰。
   if ! require_trial_source_compat "$previous"; then
     echo "automatic rollback refused: $previous would restore implicit trial creation" >&2
+    exit 1
+  fi
+  if ! require_allowance_source_compat "$previous"; then
+    echo "automatic rollback refused: $previous is not allowance-source-compatible" >&2
     exit 1
   fi
   if ! require_revocation_compat "$previous"; then
@@ -252,6 +279,9 @@ rm -f "$archive"
 # 必须先于任何主机状态变更（env 增改/停服/切换）执行——拒绝时
 # env/current/服务均未被动过，不存在需要恢复的中间态。
 if ! require_trial_source_compat "$release"; then
+  exit 1
+fi
+if ! require_allowance_source_compat "$release"; then
   exit 1
 fi
 

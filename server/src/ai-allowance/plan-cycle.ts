@@ -249,29 +249,39 @@ async function terminateTrialSourceBuckets(
   if (!conversion || !conversion.sourceId || !conversion.eventKey || !Number.isFinite(Date.parse(conversion.at))) return 0;
   const trialPrefix = `trial:${conversion.sourceId}:`;
   const note = `${AI_PLAN_CYCLE_RULE_VERSION} trial source ${conversion.sourceId} terminated on paid conversion to ${directive.baseSourceId}; event ${conversion.eventKey}; correlation ${correlationId}`;
-  await session.query(`INSERT INTO ai_allowance_source_termination {
-    source_prefix: $trialPrefix, terminated_at: $terminatedAt, paid_source: $paidSource,
-    event_key: $eventKey, note: $note
-  } ON DUPLICATE KEY UPDATE source_prefix = $trialPrefix;`, {
-    trialPrefix, terminatedAt: new DateTime(conversion.at), paidSource: directive.baseSourceId,
-    eventKey: conversion.eventKey, note,
-  });
-  const result = await session.query(
-    `
-    UPDATE ai_allowance_bucket SET
-      terminated_at = $terminatedAt,
-      terminated_note = $note,
-      updated_at = time::now()
-    WHERE kind = "plan_cycle" AND string::starts_with(period_key, $trialPrefix) AND terminated_at = NONE;
-    `,
-    {
-      trialPrefix,
-      terminatedAt: new DateTime(conversion.at),
-      note,
-    },
-  );
-  const statement = Array.isArray(result) ? result[0] : result;
-  return Array.isArray(statement) ? statement.length : 0;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await session.query(`INSERT INTO ai_allowance_source_termination {
+        source_prefix: $trialPrefix, terminated_at: $terminatedAt, paid_source: $paidSource,
+        event_key: $eventKey, note: $note
+      } ON DUPLICATE KEY UPDATE source_prefix = $trialPrefix;`, {
+        trialPrefix, terminatedAt: new DateTime(conversion.at), paidSource: directive.baseSourceId,
+        eventKey: conversion.eventKey, note,
+      });
+      const result = await session.query(
+        `
+        UPDATE ai_allowance_bucket SET
+          terminated_at = $terminatedAt,
+          terminated_note = $note,
+          updated_at = time::now()
+        WHERE kind = "plan_cycle" AND string::starts_with(period_key, $trialPrefix) AND terminated_at = NONE;
+        `,
+        {
+          trialPrefix,
+          terminatedAt: new DateTime(conversion.at),
+          note,
+        },
+      );
+      const statement = Array.isArray(result) ? result[0] : result;
+      return Array.isArray(statement) ? statement.length : 0;
+    } catch (error) {
+      if ((isConflict(error) || isRetryableTxnError(error)) && attempt + 1 < MAX_ATTEMPTS) {
+        await sleep(5 + Math.random() * 20 * (attempt + 1));
+        continue;
+      }
+      throw error;
+    }
+  }
 }
 
 /**
