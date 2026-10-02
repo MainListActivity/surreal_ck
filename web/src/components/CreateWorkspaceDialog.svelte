@@ -23,7 +23,7 @@
     } catch { return null; }
   })();
   let requestLocked = $state(savedRequest !== null);
-  const requestKey = savedRequest?.key ?? sessionStorage.getItem("pro-trial-request-key") ?? crypto.randomUUID();
+  let requestKey = $state(savedRequest?.key ?? sessionStorage.getItem("pro-trial-request-key") ?? crypto.randomUUID());
   sessionStorage.setItem("pro-trial-request-key", requestKey);
   onMount(() => { void loadAccounts(); });
   async function loadAccounts() {
@@ -101,6 +101,16 @@
       const res = await api.api["pro-trial"].start.$post({ json: { ...original, offerRevision: preview!.revision } });
       if (!res.ok) {
         const body = await res.json();
+        const code = "error" in body && typeof body.error === "object" && body.error && "code" in body.error ? String(body.error.code) : "";
+        if (code === "trial-expired") {
+          sessionStorage.removeItem("pro-trial-pending-request");
+          requestKey = crypto.randomUUID();
+          sessionStorage.setItem("pro-trial-request-key", requestKey);
+          requestLocked = false;
+          await loadPreview();
+        } else if (code === "trial-offer-changed") {
+          await loadPreview();
+        }
         if (res.status === 400 || ("error" in body && typeof body.error === "object" && body.error && "code" in body.error && body.error.code === "trial-slug-conflict")) {
           sessionStorage.removeItem("pro-trial-pending-request");
           requestLocked = false;
