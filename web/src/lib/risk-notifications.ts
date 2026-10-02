@@ -20,7 +20,7 @@ export type RiskNotification = {
   rule: string;
   checkedAt: string;
   createdAt: string;
-  /** 通知用途；缺省 claims-risk（存量行无 purpose 字段也按此呈现）。 */
+  /** 通知用途；缺省按数据归因——带 risk_type 的老行归 claims-risk，其余归通用桶 info。 */
   purpose: NotificationPurpose;
   /** office-request：发起员工 / 关联任务 / 结构化问题载荷。 */
   fromEmployee: string;
@@ -55,7 +55,7 @@ function normalizeNotification(row: Record<string, unknown>): RiskNotification {
     : null;
   const purpose = NOTIFICATION_PURPOSES.has(row.purpose as NotificationPurpose)
     ? row.purpose as NotificationPurpose
-    : "claims-risk";
+    : row.risk_type != null ? "claims-risk" : "info";
   return {
     id: stringRecord(row.id),
     workbookId: stringRecord(row.workbook),

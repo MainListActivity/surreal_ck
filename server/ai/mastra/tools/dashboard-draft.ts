@@ -94,7 +94,7 @@ function pickMetric(
 function pickDimension(description: string, fields: TableSchemaField[]): TableSchemaField | null {
   const dateFields = fields.filter((field) => field.fieldType === "date");
   if (/趋势|按月|每月|按日|每天|按年|年度|时间|日期/.test(description) && dateFields.length > 0) {
-    return pickField(description, dateFields, ["申报", "提交", "创建", "更新", "日期", "时间", "date", "time", "created"]);
+    return pickField(description, dateFields, ["截止", "提交", "创建", "更新", "日期", "时间", "date", "time", "created"]);
   }
 
   const categoryFields = fields.filter((field) =>
