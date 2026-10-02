@@ -181,7 +181,7 @@
         <input
           type="text"
           bind:value={name}
-          placeholder="例如：诉讼部"
+          placeholder="例如：运营部"
           autocomplete="off"
           disabled={submitting || requestLocked}
         />

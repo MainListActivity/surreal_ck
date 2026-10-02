@@ -3,7 +3,7 @@ import { getRootDatabaseSession } from "../db/root-connection";
 import { toIsoDateTimeString, toStringRecordId, toSurrealNone } from "../db/surreal-values";
 import { env } from "../env";
 import type { ContentGrantFact, FeatureValue, NamedCollection, ProductRevisionBody, ResourceFact, SubscriptionFact } from "./resolve";
-import type { AuditRecord, ProductEntitlementStore, SnapshotRecord, WorkspaceRef, WorkspaceRuntimeRef } from "./service";
+import type { AuditRecord, GrantFactRow, ProductEntitlementStore, SnapshotRecord, WorkspaceRef, WorkspaceRuntimeRef } from "./service";
 
 type Queryable = { query(sql: string, params?: Record<string, unknown>): Promise<unknown> };
 type SessionFactory = (database: string, namespace: string) => Promise<Queryable>;
@@ -233,7 +233,9 @@ export class SurrealProductEntitlementStore implements ProductEntitlementStore {
   }
 
   async grants(workspaceId: string): Promise<ContentGrantFact[]> {
-    return rows(await (await this.db()).query(`SELECT * FROM content_grant WHERE workspace = $workspace ORDER BY id;`, {
+    return rows(await (await this.db()).query(`SELECT * FROM content_grant WHERE workspace = $workspace
+      AND id NOT IN (SELECT VALUE grant FROM content_grant_revocation WHERE workspace = $workspace)
+      ORDER BY id;`, {
       workspace: new StringRecordId(workspaceId),
     })).flatMap((row) => {
       const id = idOf(row.id);
@@ -243,6 +245,98 @@ export class SurrealProductEntitlementStore implements ProductEntitlementStore {
         id, label: row.label, collections: collectionsOf(row.collections), actions: stringsOf(row.actions),
         effectiveFrom, effectiveUntil: when(row.effective_until),
       }];
+    });
+  }
+
+  /** LCA13：含已撤销标记的完整赠送事实（运营解释视图与历史列表用）。 */
+  async grantFacts(workspaceId: string): Promise<GrantFactRow[]> {
+    const db = await this.db();
+    const revokedIds = new Set(rows(await db.query(
+      `SELECT id, grant FROM content_grant_revocation WHERE workspace = $workspace;`,
+      { workspace: new StringRecordId(workspaceId) },
+    )).flatMap((row) => {
+      const grantId = idOf(row.grant);
+      return grantId ? [grantId] : [];
+    }));
+    return rows(await db.query(`SELECT * FROM content_grant WHERE workspace = $workspace ORDER BY id;`, {
+      workspace: new StringRecordId(workspaceId),
+    })).flatMap((row) => {
+      const id = idOf(row.id);
+      const effectiveFrom = when(row.effective_from);
+      if (!id || !effectiveFrom || typeof row.label !== "string") return [];
+      const idempotencyKey = typeof row.idempotency_key === "string" ? row.idempotency_key : null;
+      return [{
+        id, label: row.label, collections: collectionsOf(row.collections), actions: stringsOf(row.actions),
+        effectiveFrom, effectiveUntil: when(row.effective_until),
+        reason: typeof row.reason === "string" ? row.reason : null,
+        operatorSubject: typeof row.created_by_subject === "string" ? row.created_by_subject : null,
+        idempotencyKey,
+        revoked: revokedIds.has(id),
+      }];
+    });
+  }
+
+  async grantById(workspaceId: string, grantId: string): Promise<GrantFactRow | null> {
+    if (!grantId.startsWith("content_grant:")) return null;
+    const row = first(await (await this.db()).query(`SELECT * FROM content_grant WHERE id = $id AND workspace = $workspace LIMIT 1;`, {
+      id: new StringRecordId(grantId), workspace: new StringRecordId(workspaceId),
+    }));
+    if (!row) return null;
+    const effectiveFrom = when(row.effective_from);
+    if (!effectiveFrom || typeof row.label !== "string") return null;
+    const revocation = first(await (await this.db()).query(
+      `SELECT id, reason FROM content_grant_revocation WHERE grant = $grant LIMIT 1;`,
+      { grant: new StringRecordId(grantId) },
+    ));
+    return {
+      id: grantId, label: row.label, collections: collectionsOf(row.collections), actions: stringsOf(row.actions),
+      effectiveFrom, effectiveUntil: when(row.effective_until),
+      reason: typeof row.reason === "string" ? row.reason : null,
+      operatorSubject: typeof row.created_by_subject === "string" ? row.created_by_subject : null,
+      idempotencyKey: typeof row.idempotency_key === "string" ? row.idempotency_key : null,
+      revoked: revocation !== null && revocation !== undefined,
+      revokeReason: revocation && typeof revocation.reason === "string" ? revocation.reason : null,
+    };
+  }
+
+  async insertGrantRevocation(workspaceId: string, grantId: string, reason: string, actor: string, idempotencyKey: string): Promise<"ok" | "replayed" | "conflict"> {
+    try {
+      await (await this.db()).query(`INSERT INTO content_grant_revocation {
+        workspace: $workspace, grant: $grant, reason: $reason,
+        created_by_subject: $actor, idempotency_key: $idempotencyKey
+      };`, {
+        workspace: new StringRecordId(workspaceId), grant: new StringRecordId(grantId),
+        reason, actor, idempotencyKey,
+      });
+      return "ok";
+    } catch (error) {
+      if (!isConflict(error)) throw error;
+      const existing = first(await (await this.db()).query(
+        `SELECT id FROM content_grant_revocation WHERE workspace = $workspace AND idempotency_key = $key LIMIT 1;`,
+        { workspace: new StringRecordId(workspaceId), key: idempotencyKey },
+      ));
+      if (existing) return "replayed";
+      const sameGrant = first(await (await this.db()).query(
+        `SELECT id FROM content_grant_revocation WHERE grant = $grant LIMIT 1;`,
+        { grant: new StringRecordId(grantId) },
+      ));
+      // 同一 grant 已被别的幂等键撤销过：语义重复，按幂等成功返回。
+      return sameGrant ? "replayed" : "conflict";
+    }
+  }
+
+  /** LCA13：异常队列候选工作区（有活跃订阅项的），按 slug 稳定排序分页。 */
+  async deliveryCandidates(limit: number, offset: number): Promise<WorkspaceRuntimeRef[]> {
+    const rowsOut = rows(await (await this.db()).query(
+      `SELECT id, slug, db_name FROM workspace
+        WHERE id IN (SELECT VALUE active_workspace FROM quota_subscription_item WHERE status = "active")
+        ORDER BY slug LIMIT $limit START $offset;`,
+      { limit, offset },
+    ));
+    return rowsOut.flatMap((row) => {
+      const id = idOf(row.id);
+      if (!id || typeof row.slug !== "string" || typeof row.db_name !== "string") return [];
+      return [{ id, slug: row.slug, dbName: row.db_name }];
     });
   }
 
@@ -288,6 +382,15 @@ export class SurrealProductEntitlementStore implements ProductEntitlementStore {
 
   async snapshotById(id: string): Promise<SnapshotRecord | null> {
     return await this.mapSnapshot(first(await (await this.db()).query(`SELECT * FROM $id;`, { id: new StringRecordId(id) })));
+  }
+
+  async maxSnapshotRevision(workspaceId: string): Promise<number | null> {
+    const row = first(await (await this.db()).query(`SELECT revision FROM workspace_product_entitlement
+      WHERE workspace = $workspace
+      ORDER BY revision DESC LIMIT 1;`, {
+      workspace: new StringRecordId(workspaceId),
+    }));
+    return asNumber(row?.revision);
   }
 
   async newestSnapshotRevision(workspaceId: string, productPlanRevisionId: string): Promise<number | null> {

@@ -60,6 +60,119 @@ export type PublishProductRevision = z.infer<typeof publishProductRevisionSchema
 export type AssignProductEntitlement = z.infer<typeof assignProductEntitlementSchema>;
 export type GrantContentCollection = z.infer<typeof grantContentCollectionSchema>;
 
+/** LCA13：撤销临时内容赠送（只移除该来源，基础订阅不受影响）。 */
+export const revokeContentGrantSchema = z.object({
+  workspaceSlug: z.string().trim().min(1).max(128),
+  grantId: z.string().startsWith("content_grant:"),
+  reason: z.string().trim().min(1).max(500),
+  idempotencyKey: z.string().min(8).max(200),
+}).strict();
+
+export type RevokeContentGrant = z.infer<typeof revokeContentGrantSchema>;
+
+/**
+ * LCA13：内容交付修复。expectedCurrentRevision 是限定修订护栏——运营声明
+ * 其看到的当前快照修订；不匹配即冲突（新版快照已出现，旧重试不得覆盖新撤权）。
+ */
+export const repairContentDeliverySchema = z.object({
+  workspaceSlug: z.string().trim().min(1).max(128),
+  reason: z.string().trim().min(1).max(500),
+  idempotencyKey: z.string().min(8).max(200),
+  expectedCurrentRevision: z.number().int().nonnegative().nullable(),
+}).strict();
+
+export type RepairContentDelivery = z.infer<typeof repairContentDeliverySchema>;
+
+/** LCA13：工作区级授权投影事实（content_authorization_projection 行，懒投影）。 */
+export type WorkspaceProjectionFact = {
+  /** absent=尚无投影行（首次换票时才创建，不算故障）。 */
+  state: "absent" | "active" | "closed" | "expired";
+  revision: string | null;
+  revisionNumber: number | null;
+  /** 投影行与当前已交付快照比对（revisionNumber+digest）；absent 或无已交付快照时为 null。 */
+  matchesExpected: boolean | null;
+  confirmedUntil: string | null;
+  expectedRevisionNumber: number | null;
+};
+
+/**
+ * LCA13：内容投影核验（复用 content_projection_sync 同款受限会话，运营无额外权力）。
+ * verdict 语义：ok=集合按许可如实服务（含合法 metadata-only：权益动作不含 read、
+ * 许可也不含 read，此时仅目录可见不算故障）且已有投影行与当前快照一致；
+ * empty_collection=集合没有任何已发布条目（内容侧未供稿，不算系统交付失败）；
+ * license_blocked=集合有已发布条目但全部不可读——许可收紧（权益要求 read 而许可
+ * 不含 read）或动作完全无交集（来源停用/许可窗口/动作拒绝）；projection_stale=
+ * 已有投影行与当前已交付快照不一致或已关闭/过期；projection_error=目录或投影
+ * 事实异常（如已发布条目缺当前版本）；unavailable=核验会话不可用，无结论。
+ * 动作口径与 fn::content_reader_action 一致：readable 必须由 `read` 双侧
+ * （权益动作 ∩ 许可动作）成立，browse/search 仅构成 metadata 可见，不构成可读。
+ */
+export type ProjectionVerification = {
+  checkedAt: string;
+  verdict: "ok" | "empty_collection" | "license_blocked" | "projection_stale" | "projection_error" | "unavailable";
+  workspace: WorkspaceProjectionFact;
+  collections: {
+    key: string;
+    label: string;
+    publishedItems: number;
+    /** `read` 双侧成立的条目数（唯一构成"可读"）。 */
+    readableItems: number;
+    /** browse/search 双侧成立但不可读的条目数（合法 metadata-only 服务）。 */
+    metadataItems: number;
+    /** 不可读且不可元数据可见的条目数（含仅可引用/导出与完全无交集）。 */
+    blockedItems: number;
+    sources: {
+      sourceId: string;
+      sourceStatus: string;
+      licenseFrom: string | null;
+      licenseUntil: string | null;
+      licenseActions: string[];
+      items: number;
+      valid: boolean;
+      reason:
+        | "version_missing"
+        | "source_inactive"
+        | "license_missing"
+        | "license_not_started"
+        | "license_expired"
+        | "action_denied"
+        | "read_denied"
+        | null;
+    }[];
+  }[];
+};
+
+/** LCA13：异常队列条目。正常到期与合法 over_limit 不属于系统失败，不入队。 */
+export type EntitlementExceptionKind =
+  | "delivery_pending"
+  | "projection_failure"
+  | "ai_settlement_anomaly";
+
+export type EntitlementExceptionItem = {
+  workspaceSlug: string;
+  kinds: EntitlementExceptionKind[];
+  detail: {
+    /** delivery_pending：已确认商业来源绑定的修订与当前快照修订不一致。 */
+    boundRevisionId: string | null;
+    currentRevisionId: string | null;
+    currentRevision: number | null;
+    /** projection_failure：投影核验结论。 */
+    projectionVerdict: ProjectionVerification["verdict"] | null;
+    /** ai_settlement_anomaly：卡死预留数与说明。 */
+    stuckReservations: number;
+    anomalyNote: string | null;
+  };
+};
+
+export type DeliveryRepairResult = {
+  before: ProductEntitlementView;
+  after: ProductEntitlementView;
+  changed: boolean;
+  /** 修复顺带重驱的 AI 周期额度指令（幂等同步，不新增授予语义）。 */
+  planCycleSynced: boolean;
+  note: string;
+};
+
 export type ProductEntitlementView = {
   workspaceSlug: string;
   revision: number;
@@ -86,13 +199,27 @@ export type ProductEntitlementView = {
       label: string;
       effectiveFrom: string;
       effectiveUntil: string | null;
+      /** LCA13：赠送来源的解释性事实（仅 grant 来源，运营/客户视图均可读）。 */
+      reason?: string | null;
+      operatorSubject?: string | null;
+      revoked?: boolean;
     }[];
+    /** LCA13：内容投影核验结果（运营视图注入；客户视图为 null）。 */
+    projection?: ProjectionVerification | null;
   };
   ai: {
     actions: string[];
-    consumableAllowance: null;
-    ledger: "unavailable";
+    consumableAllowance: number | null;
+    ledger: "unavailable" | "ok";
     ledgerLabel: string;
+    /** LCA13：AI 预留/结算状态（运营视图注入真实账本事实；客户视图为 null）。 */
+    reserved?: number | null;
+    settled?: number | null;
+    suspended?: number | null;
+    terminated?: number | null;
+    expired?: number | null;
+    /** 超过结算窗口仍未终态的预留数（异常队列与运营解释共用）。 */
+    stuckReservations?: number | null;
   };
   features: { key: string; enabled: boolean; limit: number | null }[];
   resource: {

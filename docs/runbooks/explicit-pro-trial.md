@@ -4,7 +4,7 @@
 
 ## 发布准备
 
-`shared/sql/system/023-explicit-pro-trial.surql` 仅新增控制面表、字段、唯一索引和不可变事件，无存量数据改写、无默认商业配置/资格/额度。无新增环境变量或主机准备；沿用现有 system migration 发布入口和自有 native quota fork。
+`shared/sql/system/026-explicit-pro-trial.surql` 仅新增控制面表、字段、唯一索引和不可变事件，无存量数据改写、无默认商业配置/资格/额度。无新增环境变量或主机准备；沿用现有 system migration 发布入口和自有 native quota fork。
 
 上线前审批 Pro 核心 product revision：仅 search/read/cite、research 与共享 `ai_cycle_allowance`，不含 export/专业模块/Max 通道；引用 trial 类型且 `^ent_` table/field/record 有限容量的不可变资源模板。每个 collection 必须有至少一条许可有效、发布状态有效且支持研究的内容，供应才可激活。容量、额度、研究费率、提醒时点由审批版本给出，本文不提供商业数值。
 

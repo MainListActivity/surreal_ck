@@ -1,11 +1,18 @@
 import type {
   AssignProductEntitlement,
+  DeliveryRepairResult,
+  EntitlementExceptionItem,
   GrantContentCollection,
   ProductEntitlementView,
+  ProjectionVerification,
   PublishProductRevision,
+  RevokeContentGrant,
+  RepairContentDelivery,
 } from "@surreal-ck/shared";
 import type { PlanCycleDirective } from "../ai-allowance/plan-cycle";
 import { planCycleDirective } from "../ai-allowance/plan-cycle";
+import type { AiAllowanceOpsStatus } from "../ai-allowance/ops-status";
+import type { ProjectionVerifyInput } from "../content/projection-verify";
 import { resolveEntitlement, toView, type ContentGrantFact, type EntitlementDraft, type ProductRevisionBody, type ResourceFact, type SubscriptionFact } from "./resolve";
 
 export class ProductEntitlementError extends Error {
@@ -24,11 +31,23 @@ export type WorkspaceRef = { id: string; slug: string };
 /** 订阅生命周期刷新需要 workspace 的 runtime 数据库名来触达 AI 额度账本。 */
 export type WorkspaceRuntimeRef = WorkspaceRef & { dbName: string };
 export type SnapshotRecord = EntitlementDraft & { id: string; workspaceId: string; workspaceSlug: string; revision: number };
+/** 审计动作全集：须与 system 迁移中 product_entitlement_audit.action 的 ASSERT 白名单一致。 */
+export const AUDIT_ACTIONS = ["publish", "assign", "grant", "revoke", "repair"] as const;
+export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 export type AuditRecord = {
-  action: "publish" | "assign" | "grant";
+  action: AuditAction;
   requestDigest: string;
   entitlementId: string | null;
   productPlanRevisionId: string | null;
+};
+
+/** LCA13：运营解释用的完整赠送事实（含撤销状态与理由）。 */
+export type GrantFactRow = ContentGrantFact & {
+  reason: string | null;
+  operatorSubject: string | null;
+  idempotencyKey: string | null;
+  revoked: boolean;
+  revokeReason?: string | null;
 };
 
 export interface ProductEntitlementStore {
@@ -57,6 +76,10 @@ export interface ProductEntitlementStore {
   }): Promise<string | null>;
   setActiveRevision(planId: string, revisionId: string): Promise<void>;
   grants(workspaceId: string): Promise<ContentGrantFact[]>;
+  grantFacts(workspaceId: string): Promise<GrantFactRow[]>;
+  grantById(workspaceId: string, grantId: string): Promise<GrantFactRow | null>;
+  insertGrantRevocation(workspaceId: string, grantId: string, reason: string, actor: string, idempotencyKey: string): Promise<"ok" | "replayed" | "conflict">;
+  deliveryCandidates(limit: number, offset: number): Promise<WorkspaceRuntimeRef[]>;
   insertGrant(workspaceId: string, grant: Omit<ContentGrantFact, "id" | "collections"> & {
     collections: { id: string; key: string; label: string }[];
     reason: string;
@@ -67,6 +90,8 @@ export interface ProductEntitlementStore {
   snapshotById(id: string): Promise<SnapshotRecord | null>;
   snapshotByDigest(workspaceId: string, digest: string): Promise<SnapshotRecord | null>;
   newestSnapshotRevision(workspaceId: string, productPlanRevisionId: string): Promise<number | null>;
+  /** 全部快照的最大序位（不分产品）：指针回指旧快照后，新快照序位必须从它继续。 */
+  maxSnapshotRevision(workspaceId: string): Promise<number | null>;
   insertSnapshot(row: SnapshotRecord): Promise<"ok" | "conflict">;
   pointWorkspace(workspaceId: string, snapshotId: string): Promise<void>;
   auditByKey(actor: string, idempotencyKey: string): Promise<AuditRecord | null>;
@@ -109,7 +134,18 @@ function assertActions(actions: readonly string[]): void {
 }
 
 export class ProductEntitlementService {
-  constructor(private readonly store: ProductEntitlementStore, private readonly now: () => Date = () => new Date()) {}
+  constructor(
+    private readonly store: ProductEntitlementStore,
+    private readonly now: () => Date = () => new Date(),
+    private readonly ops?: {
+      /** LCA13：AI 预留/结算状态（按 workspace db 名读取真实账本事实）。 */
+      aiStatus?: (dbName: string) => Promise<AiAllowanceOpsStatus | null>;
+      /** LCA13：内容投影核验（与 reader gate 同款受限会话，运营无额外权力）。 */
+      projectionVerify?: (input: ProjectionVerifyInput) => Promise<ProjectionVerification | null>;
+      /** LCA13：plan-cycle 指令幂等同步（修复重试顺带重驱，不新增授予语义）。 */
+      syncPlanCycle?: (directive: PlanCycleDirective, correlationId: string) => Promise<void>;
+    },
+  ) {}
 
   async publishRevision(actor: ProductActor, input: PublishProductRevision): Promise<{ productPlanRevisionId: string }> {
     denyUnless(actor, "subscription.manage");
@@ -179,7 +215,8 @@ export class ProductEntitlementService {
   }
 
   async grant(actor: ProductActor, input: GrantContentCollection): Promise<ProductEntitlementView> {
-    denyUnless(actor, "subscription.manage");
+    // LCA13：内容赠送独立持能（entitlement.gift），与订阅调整（subscription.manage）分离。
+    denyUnless(actor, "entitlement.gift");
     if (input.effectiveUntil && input.effectiveUntil <= input.effectiveFrom) {
       throw new ProductEntitlementError("invalid_request", "增量授权的结束时间必须晚于开始时间");
     }
@@ -233,7 +270,8 @@ export class ProductEntitlementService {
   async getForOperator(actor: ProductActor, workspaceSlug: string): Promise<ProductEntitlementView> {
     denyUnless(actor, "quota.read");
     const workspace = await this.requireWorkspace(workspaceSlug);
-    return this.viewFor(workspace);
+    const view = await this.viewFor(workspace);
+    return await this.enrichOperatorView(workspace, view);
   }
 
   async getForCustomer(subject: string, workspaceSlug: string): Promise<ProductEntitlementView> {
@@ -275,7 +313,7 @@ export class ProductEntitlementService {
 
   private async claim(
     actor: ProductActor,
-    action: "assign" | "grant",
+    action: Exclude<AuditAction, "publish">,
     reason: string,
     idempotencyKey: string,
     requestDigest: string,
@@ -336,6 +374,18 @@ export class ProductEntitlementService {
     return toView(workspace.slug, 0, draft, resource);
   }
 
+  /**
+   * 只读视图：如实呈现当前已交付快照（或纯草稿视图），绝不触发 read-heal。
+   * 交付预览、修复护栏与审计 before 必须用这条路径——读取不能改变状态。
+   */
+  private async readOnlyView(workspace: WorkspaceRef): Promise<{ view: ProductEntitlementView; snapshot: SnapshotRecord | null }> {
+    const current = await this.store.currentSnapshot(workspace.id);
+    const resource = await this.store.resourceStatus(workspace.id);
+    if (current) return { view: toView(workspace.slug, current.revision, current, resource), snapshot: current };
+    const draft = await this.draftFor(workspace);
+    return { view: toView(workspace.slug, 0, draft, resource), snapshot: null };
+  }
+
   private async materialize(
     workspace: WorkspaceRef,
     causationId: string,
@@ -350,8 +400,14 @@ export class ProductEntitlementService {
         if (point) await this.store.pointWorkspace(workspace.id, same.id);
         return { snapshot: same, view: toView(workspace.slug, same.revision, same, resource) };
       }
-      const current = await this.store.currentSnapshot(workspace.id);
-      const revision = (current?.revision ?? 0) + 1;
+      const [current, newest] = await Promise.all([
+        this.store.currentSnapshot(workspace.id),
+        this.store.maxSnapshotRevision(workspace.id),
+      ]);
+      // 指针可能因赠送到期/降级恢复回指旧快照（落后于最大已存在序位）；
+      // 新序位必须从最大已存在序位继续，否则会在 (workspace,revision) 唯一索引上
+      // 撞冲突耗尽重试，工作区视图/撤销/修复全部 409 死锁。
+      const revision = Math.max(current?.revision ?? 0, newest ?? 0) + 1;
       const row: SnapshotRecord = {
         ...draft, id: "", workspaceId: workspace.id, workspaceSlug: workspace.slug, revision, correlationId: causationId,
       };
@@ -389,5 +445,219 @@ export class ProductEntitlementService {
       }),
       subscription,
     };
+  }
+
+  /**
+   * LCA13：撤销临时内容赠送。只移除该赠送来源（content_grant 行不可变，
+   * 撤销是追加记录）；基础订阅来源与其余授权保持不变。幂等：同键重放返回
+   * 同一结果；同一赠送被其他键撤销过也按成功收敛。
+   */
+  async revokeGrant(actor: ProductActor, input: RevokeContentGrant): Promise<{ before: ProductEntitlementView; after: ProductEntitlementView }> {
+    denyUnless(actor, "entitlement.gift");
+    const requestDigest = digestOf(input);
+    const workspace = await this.requireWorkspace(input.workspaceSlug);
+    const grant = await this.store.grantById(workspace.id, input.grantId);
+    if (!grant) throw new ProductEntitlementError("not_found", "赠送授权不存在或不属于该工作区");
+    const before = await this.viewFor(workspace);
+    const replay = await this.claim(actor, "revoke", input.reason, input.idempotencyKey, requestDigest, workspace.id, null);
+    if (!replay) {
+      const wrote = await this.store.insertGrantRevocation(workspace.id, input.grantId, input.reason, actor.subject, input.idempotencyKey);
+      if (wrote === "conflict") throw new ProductEntitlementError("conflict", "撤销请求与既有撤销冲突");
+      await this.materialize(workspace, `revoke:${input.idempotencyKey}`);
+      await this.store.attachAuditEntitlement(actor.subject, input.idempotencyKey, (await this.store.currentSnapshot(workspace.id))?.id ?? "");
+    }
+    const after = (await this.storedView(actor.subject, input.idempotencyKey, requestDigest))
+      ?? await this.viewFor(workspace);
+    return { before, after };
+  }
+
+  /**
+   * LCA13：交付修复影响预览。严格只读：current 取当前已交付快照本身
+   * （指针损坏/缺失/快照落后时如实呈现，不 read-heal），target 由
+   * materializePreview 纯计算得出；整个过程不插入快照、不移动指针、
+   * 不写审计。
+   */
+  async describeDeliveryRepair(actor: ProductActor, workspaceSlug: string): Promise<{ current: ProductEntitlementView; target: ProductEntitlementView; boundRevisionId: string | null }> {
+    denyUnless(actor, "entitlement.repair");
+    const workspace = await this.requireWorkspace(workspaceSlug);
+    const subscription = await this.store.activeItem(workspace.id);
+    // 只有仍可修复的活跃订阅才有目标修订；到期/结束的订阅预览不指向修复目标。
+    const boundRevision = subscription?.status === "active" && subscription.productPlanRevisionId
+      ? await this.store.productRevision(subscription.productPlanRevisionId) : null;
+    if (subscription?.status === "active" && subscription.productPlanRevisionId && !boundRevision) {
+      throw new ProductEntitlementError("invalid_request", "订阅绑定的产品版本不存在");
+    }
+    const { view: current } = await this.readOnlyView(workspace);
+    const target = boundRevision
+      ? (await this.materializePreview(workspace, boundRevision))
+      : current;
+    return { current, target, boundRevisionId: boundRevision?.id ?? null };
+  }
+
+  /**
+   * LCA13：对投影失败的工作区做限定修订的幂等交付重试。重试目标始终是
+   * 当前绑定的产品修订（重算当时事实），配合 expectedCurrentRevision 护栏：
+   * 快照已前进即冲突，绝不盲目覆盖新撤权；pointWorkspace 的绑定产品保护
+   * 保证旧修订快照不能移动指针。失败不重复下单（本子系统无订单写入）、
+   * 不重复发额度（plan-cycle 同步按 period_key/事件键幂等）。
+   */
+  async repairDelivery(actor: ProductActor, input: RepairContentDelivery): Promise<DeliveryRepairResult> {
+    denyUnless(actor, "entitlement.repair");
+    const requestDigest = digestOf(input);
+    const workspace = await this.requireWorkspace(input.workspaceSlug);
+    const subscription = await this.store.activeItem(workspace.id);
+    if (!subscription || subscription.status !== "active") {
+      throw new ProductEntitlementError("no_subscription", "工作区没有可修复的有效订阅");
+    }
+    const boundRevision = subscription.productPlanRevisionId
+      ? await this.store.productRevision(subscription.productPlanRevisionId) : null;
+    if (subscription.productPlanRevisionId && !boundRevision) {
+      throw new ProductEntitlementError("invalid_request", "订阅绑定的产品版本不存在");
+    }
+    // 护栏先于任何写入：只读当前已交付快照做比对，读取本身绝不修复状态。
+    // 指针丢失/损坏（snapshot 缺失）正是要修复的故障本身，不拦。
+    const { view: before, snapshot: currentSnapshotRecord } = await this.readOnlyView(workspace);
+    if (currentSnapshotRecord && input.expectedCurrentRevision !== null && input.expectedCurrentRevision !== currentSnapshotRecord.revision) {
+      throw new ProductEntitlementError("conflict", "限定修订与当前快照不一致，请刷新预览后重试");
+    }
+    const replay = await this.claim(actor, "repair", input.reason, input.idempotencyKey, requestDigest, workspace.id, boundRevision?.id ?? null);
+    let after = before;
+    let changed = false;
+    if (!replay) {
+      const beforeSnapshot = await this.store.currentSnapshot(workspace.id);
+      const materialized = await this.materialize(workspace, `repair:${input.idempotencyKey}`, boundRevision ?? undefined);
+      after = materialized.view;
+      changed = materialized.snapshot.id !== beforeSnapshot?.id;
+      await this.store.attachAuditEntitlement(actor.subject, input.idempotencyKey, materialized.snapshot.id);
+    } else {
+      after = replay;
+      changed = replay.revision !== before.revision;
+    }
+    let planCycleSynced = false;
+    if (this.ops?.syncPlanCycle) {
+      const runtime = await this.store.workspaceById(workspace.id);
+      const { draft, subscription } = await this.resolveFor(workspace, boundRevision ?? undefined);
+      if (runtime && draft.baseSourceKind !== "none") {
+        const planCycle = planCycleDirective(
+          runtime.dbName,
+          draft,
+          subscription ? { cycleFrom: subscription.cycleFrom, cycleUntil: subscription.cycleUntil } : null,
+          subscription ? { key: subscription.itemId, effectiveAt: subscription.effectiveFrom } : null,
+        );
+        if (planCycle) {
+          await this.ops.syncPlanCycle(planCycle, `repair:${input.idempotencyKey}`);
+          planCycleSynced = true;
+        }
+      }
+    }
+    return {
+      before,
+      after: await this.enrichOperatorView(workspace, after),
+      changed,
+      planCycleSynced,
+      note: changed ? "权益快照已重算并重新指向绑定修订" : "快照未变化（digest 一致或幂等重放）",
+    };
+  }
+
+  /**
+   * LCA13：异常队列。只列已确认商业来源（活跃订阅项）的工作区：
+   - delivery_pending = 快照落后于绑定修订（尚未交付）；
+   - projection_failure = 快照就绪但内容投影核验不通过；
+   - ai_settlement_anomaly = AI 账本出现卡死预留等结算异常。
+   - 正常到期（订阅过期/结束）与合法 over_limit 不入队。
+   */
+  async exceptions(actor: ProductActor, options: { limit?: number; offset?: number } = {}): Promise<{ items: EntitlementExceptionItem[]; total: number | null }> {
+    denyUnless(actor, "quota.read");
+    const limit = Math.min(Math.max(options.limit ?? 20, 1), 100);
+    const offset = Math.max(options.offset ?? 0, 0);
+    const candidates = await this.store.deliveryCandidates(limit, offset);
+    const items: EntitlementExceptionItem[] = [];
+    for (const workspace of candidates) {
+      const [subscription, current, ai] = await Promise.all([
+        this.store.activeItem(workspace.id),
+        this.store.currentSnapshot(workspace.id),
+        this.ops?.aiStatus ? this.ops.aiStatus(workspace.dbName) : Promise.resolve(null),
+      ]);
+      const kinds: EntitlementExceptionItem["kinds"] = [];
+      const detail: EntitlementExceptionItem["detail"] = {
+        boundRevisionId: subscription?.productPlanRevisionId ?? null,
+        currentRevisionId: current?.id ?? null,
+        currentRevision: current?.revision ?? null,
+        projectionVerdict: null,
+        stuckReservations: 0,
+        anomalyNote: null,
+      };
+      if (subscription?.productPlanRevisionId && (!current || current.productPlanRevisionId !== subscription.productPlanRevisionId)) {
+        kinds.push("delivery_pending");
+      }
+      if (current && current.collections.length > 0 && this.ops?.projectionVerify) {
+        const verification = await this.ops.projectionVerify({
+          workspaceDb: workspace.dbName,
+          expected: { revisionNumber: current.revision, digest: current.digest },
+          collections: current.collections,
+          actions: current.actions,
+        });
+        // 空集合（empty_collection）是内容侧未供稿、unavailable 是核验不可用，
+        // 都不算系统交付失败；许可收紧/投影过期/事实异常才是 projection_failure。
+        if (verification && (verification.verdict === "license_blocked" || verification.verdict === "projection_stale" || verification.verdict === "projection_error")) {
+          kinds.push("projection_failure");
+          detail.projectionVerdict = verification.verdict;
+        }
+      }
+      if (ai?.settlementAnomaly) {
+        kinds.push("ai_settlement_anomaly");
+        detail.stuckReservations = ai.stuckReservations ?? 0;
+        detail.anomalyNote = ai.anomalyNote;
+      }
+      if (kinds.length > 0) items.push({ workspaceSlug: workspace.slug, kinds, detail });
+    }
+    return { items, total: null };
+  }
+
+  /** LCA13：运营解释视图增强——来源理由/操作者、投影核验、AI 账本事实。 */
+  private async enrichOperatorView(workspace: WorkspaceRef, view: ProductEntitlementView): Promise<ProductEntitlementView> {
+    const runtime = await this.store.workspaceById(workspace.id);
+    const [facts, current, ai] = await Promise.all([
+      this.store.grantFacts(workspace.id),
+      this.store.currentSnapshot(workspace.id),
+      runtime && this.ops?.aiStatus ? this.ops.aiStatus(runtime.dbName) : Promise.resolve(null),
+    ]);
+    const projection = runtime && view.content.collections.length > 0 && this.ops?.projectionVerify
+      ? await this.ops.projectionVerify({
+          workspaceDb: runtime.dbName,
+          expected: current ? { revisionNumber: current.revision, digest: current.digest } : null,
+          collections: view.content.collections,
+          actions: view.content.actions,
+        })
+      : null;
+    const factById = new Map(facts.map((fact) => [fact.id, fact]));
+    const sources = view.content.sources.map((source) => {
+      const fact = factById.get(source.sourceId);
+      return fact ? { ...source, reason: fact.reason, operatorSubject: fact.operatorSubject, revoked: fact.revoked } : source;
+    });
+    return {
+      ...view,
+      content: { ...view.content, sources, projection: projection ?? null },
+      ai: ai ? {
+        ...view.ai,
+        consumableAllowance: ai.consumableAllowance,
+        ledger: ai.consumableAllowance === null ? view.ai.ledger : "ok",
+        ledgerLabel: ai.consumableAllowance === null ? view.ai.ledgerLabel : "账本可用",
+        reserved: ai.reserved,
+        settled: ai.settled,
+        suspended: ai.suspended,
+        terminated: ai.terminated,
+        expired: ai.expired,
+        stuckReservations: ai.stuckReservations,
+      } : view.ai,
+    };
+  }
+
+  /** 只读预览：按目标修订计算草稿视图，不写快照、不移动指针。 */
+  private async materializePreview(workspace: WorkspaceRef, revision: ProductRevisionBody): Promise<ProductEntitlementView> {
+    const { draft } = await this.resolveFor(workspace, revision);
+    const resource = await this.store.resourceStatus(workspace.id);
+    const current = await this.store.currentSnapshot(workspace.id);
+    return toView(workspace.slug, current?.revision ?? 0, draft, resource);
   }
 }

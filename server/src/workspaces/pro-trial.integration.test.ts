@@ -31,7 +31,7 @@ beforeAll(async () => {
   await db.use({ namespace: "main" });
   await db.query("DEFINE DATABASE IF NOT EXISTS _system;");
   await db.use({ namespace: "main", database: "_system" });
-  for (const file of ["001-init.surql", "004-quota-commercial-authority.surql", "023-explicit-pro-trial.surql"]) await db.query(await readFile(new URL(`../../../shared/sql/system/${file}`, import.meta.url), "utf8"));
+  for (const file of ["001-init.surql", "004-quota-commercial-authority.surql", "026-explicit-pro-trial.surql"]) await db.query(await readFile(new URL(`../../../shared/sql/system/${file}`, import.meta.url), "utf8"));
   await db.query(`CREATE billing_account:a CONTENT { account_key: "a", name: "Synthetic", kind: "personal", status: "active" };
     CREATE billing_account:b CONTENT { account_key: "b", name: "Synthetic B", kind: "personal", status: "active" };
     CREATE pro_trial_revision:test CONTENT { product_revision: product_plan_revision:test, duration_days: 7, research_rate: 2, rate_revision: 2, reminder_hours: [24], fixture: true, approved_by: "test", approval_reason: "synthetic" };

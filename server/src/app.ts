@@ -124,6 +124,9 @@ import type { EmployeeLifecycle } from "../ai/office/employee-lifecycle";
 import type { EmployeeRuntimeMetrics } from "../ai/office/employee-trigger-runtime";
 import type { EmployeeStartupProgress } from "../ai/office/employee-supervisor";
 import { AiAllowanceService, type Queryable as AllowanceQueryable } from "./ai-allowance/service";
+import { createAiAllowanceOpsStatus } from "./ai-allowance/ops-status";
+import { AiAllowancePlanCycleSynchronizer } from "./ai-allowance/plan-cycle";
+import { createProjectionVerifier } from "./content/projection-verify";
 import { createOpsAiAllowanceRoutes } from "./routes/ops-ai-allowance";
 import { createContentResearchSessionFactory, type ContentResearchSessionFactory } from "./research/window";
 
@@ -305,13 +308,27 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
   const opsProposalService = options.opsProposalService
     ?? new OpsProposalService(new SurrealOpsProposalStore(), opsFollowUpService, opsAutonomyService);
   const opsRunService = options.opsRunService ?? new OpsRunService(new SurrealOpsRunStore(), opsAutonomyService);
-  const productEntitlementService = options.productEntitlementService
-    ?? new ProductEntitlementService(new SurrealProductEntitlementStore());
   const autoAiChatService = options.aiChatService ?? buildAutoAiChatService(runBus, platformContentService, embeddingProvider);
   const aiAllowanceService = options.aiAllowance ?? new AiAllowanceService({
     workspaceSession: async (db) => (await getRootDatabaseSession(db)) as unknown as AllowanceQueryable,
     systemSession: async () => (await getRootDatabaseSession("_system")) as unknown as AllowanceQueryable,
   });
+  // LCA13：运营解释视图注入真实账本事实、投影核验与幂等 plan-cycle 同步。
+  const aiAllowancePlanCycle = new AiAllowancePlanCycleSynchronizer({
+    workspaceSession: async (db) => (await getRootDatabaseSession(db)) as unknown as AllowanceQueryable,
+  });
+  const productEntitlementService = options.productEntitlementService
+    ?? new ProductEntitlementService(
+      new SurrealProductEntitlementStore(),
+      undefined,
+      {
+        aiStatus: createAiAllowanceOpsStatus(aiAllowanceService),
+        projectionVerify: createProjectionVerifier(),
+        syncPlanCycle: async (directive, correlationId) => {
+          await aiAllowancePlanCycle.sync(directive, correlationId);
+        },
+      },
+    );
   const discoverService = options.discoverService ?? createDiscoverService({
     content: contentPublisherQuery,
     system: {

@@ -65,7 +65,40 @@ class MemoryStore implements ProductEntitlementStore {
       plan.active = revisionId;
     }
   }
-  async grants() { return this.grantRows; }
+  async grants() { return this.grantRows.filter((row) => !this.revocations.some((revoke) => revoke.grantId === row.id)); }
+  revocations: { workspaceId: string; grantId: string; reason: string; idempotencyKey: string }[] = [];
+  async grantFacts(workspaceId: string) {
+    return this.grantRows.map((row) => ({
+      ...row,
+      reason: typeof row.reason === "string" ? row.reason : null,
+      operatorSubject: typeof row.actor === "string" ? row.actor : null,
+      idempotencyKey: row.idempotencyKey ?? null,
+      revoked: this.revocations.some((revoke) => revoke.workspaceId === workspaceId && revoke.grantId === row.id),
+    }));
+  }
+  async grantById(workspaceId: string, grantId: string) {
+    const row = this.grantRows.find((item) => item.id === grantId);
+    if (!row) return null;
+    const revoke = this.revocations.find((item) => item.grantId === grantId);
+    return {
+      ...row,
+      reason: typeof row.reason === "string" ? row.reason : null,
+      operatorSubject: typeof row.actor === "string" ? row.actor : null,
+      idempotencyKey: row.idempotencyKey ?? null,
+      revoked: revoke !== undefined,
+      revokeReason: revoke?.reason ?? null,
+    };
+  }
+  async insertGrantRevocation(workspaceId: string, grantId: string, reason: string, _actor: string, idempotencyKey: string) {
+    if (this.revocations.some((item) => item.workspaceId === workspaceId && item.idempotencyKey === idempotencyKey)) return "replayed" as const;
+    if (this.revocations.some((item) => item.grantId === grantId)) return "replayed" as const;
+    this.revocations.push({ workspaceId, grantId, reason, idempotencyKey });
+    return "ok" as const;
+  }
+  async deliveryCandidates(limit: number, offset: number) {
+    const all = [...this.workspaces.values()].map((ref) => ({ ...ref, dbName: this.dbNames.get(ref.id) ?? `ws_${ref.slug}` }));
+    return all.slice(offset, offset + limit);
+  }
   async insertGrant(_workspaceId: string, grant: ContentGrantFact & { idempotencyKey: string }) {
     const existing = this.grantRows.find((item) => item.idempotencyKey === grant.idempotencyKey);
     if (existing) return existing.id;
@@ -85,6 +118,10 @@ class MemoryStore implements ProductEntitlementStore {
     const revisions = this.snapshots
       .filter((item) => item.workspaceId === workspaceId && item.productPlanRevisionId === productPlanRevisionId)
       .map((item) => item.revision);
+    return revisions.length === 0 ? null : Math.max(...revisions);
+  }
+  async maxSnapshotRevision(workspaceId: string) {
+    const revisions = this.snapshots.filter((item) => item.workspaceId === workspaceId).map((item) => item.revision);
     return revisions.length === 0 ? null : Math.max(...revisions);
   }
   async insertSnapshot(row: SnapshotRecord) {
@@ -142,7 +179,7 @@ function workspace(store: MemoryStore) {
   store.resource = { appliedPlanKey: "plus", appliedPlanName: "Plus 资源", appliedRevision: 3, desiredPlanKey: "plus", syncState: "synced" };
 }
 
-const operator: ProductActor = { subject: "ops", capabilities: ["subscription.manage", "quota.read"] };
+const operator: ProductActor = { subject: "ops", capabilities: ["subscription.manage", "quota.read", "entitlement.gift", "entitlement.repair"] };
 
 function publishBody(revision: number, key: string, label: string): PublishProductRevision {
   return {
@@ -445,6 +482,40 @@ describe("product entitlement", () => {
     expect(ended.content.projectionLabel).toBe("待交付");
     expect(ended.ai.consumableAllowance).toBeNull();
     expect(store.snapshots.find((item) => item.revision === started.revision)?.collections.map((item) => item.key)).toEqual(["fixture_core", "fixture_later"]);
+  });
+
+  test("赠送到期回指旧快照后，新快照从最大序位继续前进（不撞唯一序位死锁）", async () => {
+    const store = new MemoryStore();
+    workspace(store);
+    const service = new ProductEntitlementService(store, () => new Date("2026-09-24T00:00:00.000Z"));
+    const revisionId = "product_plan_revision:fixture:1";
+    store.revisions.set(revisionId, {
+      id: revisionId, planKey: "fixture_plus", planName: "夹具律师 Plus", revision: 1,
+      collections: [{ key: "fixture_core", label: "夹具核心" }], actions: ["read"], aiActions: [], features: [],
+    });
+    await service.assign(operator, assignment(revisionId));
+    const grant: GrantContentCollection = {
+      workspaceSlug: "team", label: "临时专题", collections: [{ key: "fixture_topic", label: "临时专题" }],
+      actions: ["cite"], effectiveFrom: "2026-09-01T00:00:00.000Z", effectiveUntil: "2026-10-01T00:00:00.000Z",
+      reason: "临时开放", idempotencyKey: "grant-cycle-001",
+    };
+    const granted = await service.grant(operator, grant);
+    expect(granted.revision).toBe(2);
+
+    // 赠送到期：解析回退 → digest 命中既有快照，指针回指 rev 1（最大已存在序位仍为 2）。
+    store.grantRows[0]!.effectiveUntil = "2026-09-20T00:00:00.000Z";
+    const reverted = await service.getForCustomer("lawyer", "team");
+    expect(reverted.revision).toBe(1);
+    expect(store.pointer.get("workspace:team")).toBe(store.snapshots[0]!.id);
+
+    // 再次赠送：新序位必须从最大已存在序位（2）+1 继续；若按指针（1）+1 计算，
+    // 会在 (workspace,revision) 唯一索引上反复冲突，视图/撤销/修复全部 409 死锁。
+    const again = await service.grant(operator, {
+      ...grant, collections: [{ key: "fixture_topic2", label: "再次专题" }], idempotencyKey: "grant-cycle-002",
+    });
+    expect(again.revision).toBe(3);
+    expect(store.snapshots).toHaveLength(3);
+    expect((await store.currentSnapshot("workspace:team"))?.revision).toBe(3);
   });
 
   test("重放旧分配不会退回产品版本，未绑定的崩溃可以补绑", async () => {
