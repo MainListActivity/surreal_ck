@@ -88,4 +88,14 @@ describe("同域子路径生产发布", () => {
     expect(source).toContain("window.location.replace(import.meta.env.BASE_URL)");
     expect(source).not.toContain('window.location.replace("/")');
   });
+
+  // IdP 无 end_session 端点：登出 = 本地 removeUser + 同源窄代理
+  // RFC 7009 撤销 access/refresh token + /ops/ 回跳，三者缺一不可。
+  test("登出经窄代理撤销 token 而不只是本地清理", () => {
+    expect(source).toContain("signOutOps(userManager, user)");
+    expect(authSource).toContain("/auth/ops/revoke");
+    expect(authSource).toContain("removeUser");
+    expect(authSource).toContain('token_type_hint');
+    expect(authSource).not.toContain("end_session_endpoint");
+  });
 });

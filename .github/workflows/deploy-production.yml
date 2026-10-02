@@ -20,8 +20,60 @@ defaults:
 permissions: {}
 
 jobs:
+  precheck:
+    name: Validate production configuration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment:
+      name: production
+    permissions: {}
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      WEB_PAGES_PROJECT: ${{ vars.WEB_PAGES_PROJECT }}
+      MARKETING_PAGES_PROJECT: ${{ vars.MARKETING_PAGES_PROJECT }}
+      VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+      VITE_SURREAL_URL: ${{ vars.VITE_SURREAL_URL }}
+      VITE_OIDC_ISSUER: ${{ vars.VITE_OIDC_ISSUER }}
+      VITE_OIDC_CLIENT_ID: ${{ vars.VITE_OIDC_CLIENT_ID }}
+      VITE_OIDC_REDIRECT_URI: ${{ vars.VITE_OIDC_REDIRECT_URI }}
+      VITE_OIDC_AUDIENCE: ${{ vars.VITE_OIDC_AUDIENCE }}
+      VITE_OPS_OIDC_ISSUER: ${{ vars.VITE_OPS_OIDC_ISSUER }}
+      VITE_OPS_OIDC_CLIENT_ID: ${{ vars.VITE_OPS_OIDC_CLIENT_ID }}
+      VITE_OPS_OIDC_AUDIENCE: ${{ vars.VITE_OPS_OIDC_AUDIENCE }}
+      VITE_OPS_API_BASE_URL: ${{ vars.VITE_OPS_API_BASE_URL }}
+    steps:
+      - name: Validate required configuration
+        run: |
+          set -euo pipefail
+          # 在 origin 更新前做全量配置预检，避免「origin 已换版、静态发布缺参」的
+          # 分裂发布。deploy job 内保留同名校验作为兜底。
+          required=(
+            CLOUDFLARE_API_TOKEN
+            CLOUDFLARE_ACCOUNT_ID
+            WEB_PAGES_PROJECT
+            MARKETING_PAGES_PROJECT
+            VITE_API_BASE_URL
+            VITE_SURREAL_URL
+            VITE_OIDC_ISSUER
+            VITE_OIDC_CLIENT_ID
+            VITE_OIDC_REDIRECT_URI
+            VITE_OIDC_AUDIENCE
+            VITE_OPS_OIDC_ISSUER
+            VITE_OPS_OIDC_CLIENT_ID
+            VITE_OPS_OIDC_AUDIENCE
+            VITE_OPS_API_BASE_URL
+          )
+          for name in "${required[@]}"; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name is not configured in the production environment"
+              exit 1
+            fi
+          done
+
   origin:
     name: Hono origin
+    needs: precheck
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.event == 'push' &&
