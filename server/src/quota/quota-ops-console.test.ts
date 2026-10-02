@@ -83,7 +83,7 @@ describe("SurrealQuotaOpsConsole", () => {
           if (granted) return granted;
           if (
             sql.includes("FROM workspace\n")
-            && sql.includes("string::lowercase(slug)")
+            && sql.includes('string::lowercase(<string> (slug ?? ""))')
           ) {
             return [[{
               id: "workspace:demo",
@@ -96,7 +96,7 @@ describe("SurrealQuotaOpsConsole", () => {
           }
           if (
             sql.includes("FROM billing_account\n")
-            && sql.includes("string::lowercase(account_key)")
+            && sql.includes('string::lowercase(<string> (account_key ?? ""))')
           ) {
             return [[{
               id: "billing_account:acme",
@@ -108,11 +108,14 @@ describe("SurrealQuotaOpsConsole", () => {
             return [[{
               subject: "alice",
               workspace: { slug: "demo" },
+            }, {
+              subject: null,
+              workspace: { slug: "demo" },
             }]];
           }
           if (
             sql.includes("FROM billing_account_member")
-            && sql.includes("string::lowercase(subject)")
+            && sql.includes('string::lowercase(<string> (subject ?? ""))')
           ) {
             return [[{
               subject: "alice",
@@ -184,6 +187,32 @@ describe("SurrealQuotaOpsConsole", () => {
     ]);
   });
 
+  test("search guards optional member subjects against NONE", async () => {
+    const seen: string[] = [];
+    const reader = new SurrealQuotaOpsConsole({
+      db: {
+        async query(sql) {
+          const granted = capabilities(sql);
+          if (granted) return granted;
+          seen.push(sql);
+          return [[]];
+        },
+      },
+    });
+    await expect(reader.search({
+      actor: { subject: "operator" },
+      query: "a",
+      limit: 25,
+    })).resolves.toMatchObject({ results: [] });
+    const subjectFilters = seen.filter((sql) =>
+      sql.includes('(subject ?? "")')
+    );
+    expect(subjectFilters.length).toBe(2);
+    for (const sql of subjectFilters) {
+      expect(sql).toContain('string::lowercase(<string> (subject ?? ""))');
+    }
+  });
+
   test("malformed record-id-shaped search falls back to text search", async () => {
     const seen: string[] = [];
     const reader = new SurrealQuotaOpsConsole({
@@ -207,7 +236,7 @@ describe("SurrealQuotaOpsConsole", () => {
       limit: 25,
     })).resolves.toMatchObject({ results: [] });
     expect(seen.some((sql) =>
-      sql.includes("string::lowercase(slug)")
+      sql.includes('string::lowercase(<string> (slug ?? ""))')
     )).toBe(true);
   });
 
