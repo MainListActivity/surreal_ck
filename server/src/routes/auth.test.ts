@@ -47,6 +47,71 @@ describe("POST /api/auth/token", () => {
     expect(jwks.headers.get("cache-control")).toBe("public, max-age=300");
   });
 
+  test("revokes operations tokens upstream with pinned client id and no client secret", async () => {
+    const upstream: Array<{ url: string; body: string }> = [];
+    const app = createApp({
+      oidcOpsBrowserProxy: {
+        clientId: "ops-public-client",
+        tokenEndpoint: "https://idp.example.test/token",
+        jwksUrl: "https://idp.example.test/jwks.json",
+        revokeEndpoint: "https://idp.example.test/revoke",
+        fetch: async (input, init = {}) => {
+          upstream.push({ url: String(input), body: String(init?.body ?? "") });
+          return new Response(null, { status: 200 });
+        },
+      },
+    });
+
+    const revoked = await app.request("/api/auth/ops/revoke", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        token: "ops-access-token",
+        token_type_hint: "access_token",
+        client_id: "forged-client",
+        client_secret: "forged-secret",
+      }),
+    });
+    expect(revoked.status).toBe(200);
+    expect(upstream[0]?.url).toBe("https://idp.example.test/revoke");
+    expect(upstream[0]?.body).toContain("token=ops-access-token");
+    expect(upstream[0]?.body).toContain("client_id=ops-public-client");
+    expect(upstream[0]?.body).not.toContain("forged-secret");
+  });
+
+  test("revoke requires a token and rejects empty bodies", async () => {
+    const app = createApp({
+      oidcOpsBrowserProxy: {
+        clientId: "ops-public-client",
+        tokenEndpoint: "https://idp.example.test/token",
+        jwksUrl: "https://idp.example.test/jwks.json",
+        revokeEndpoint: "https://idp.example.test/revoke",
+      },
+    });
+    const response = await app.request("/api/auth/ops/revoke", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "",
+    });
+    expect(response.status).toBe(400);
+  });
+
+  test("revoke fails closed when the ops client id is not pinned", async () => {
+    const app = createApp({
+      oidcOpsBrowserProxy: {
+        tokenEndpoint: "https://idp.example.test/token",
+        jwksUrl: "https://idp.example.test/jwks.json",
+        revokeEndpoint: "https://idp.example.test/revoke",
+      },
+    });
+    const response = await app.request("/api/auth/ops/revoke", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ token: "t", client_id: "forged-client" }).toString(),
+    });
+    expect(response.status).toBe(501);
+  });
+
   test("exchanges an authorization code through the backend confidential client using client_secret_basic", async () => {
     let upstreamRequest: { url: string; method: string; body: string; authorization: string | null } | undefined;
     const app = createApp({

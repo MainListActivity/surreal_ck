@@ -20,6 +20,8 @@ const EnvSchema = z.object({
   OIDC_OPS_AUDIENCE: z.string().min(1).optional(),
   /** 运营 SPA 的 public client；后端只代理该 client 的 PKCE token exchange。 */
   OIDC_OPS_CLIENT_ID: z.string().min(1).optional(),
+  // 运营端登出撤销 access/refresh token 的 RFC 7009 端点；缺省按 issuer 推导 /revoke。
+  OIDC_REVOKE_ENDPOINT: z.string().url().optional(),
   OIDC_CLIENT_ID: z.string().min(1).optional(),
   OIDC_CLIENT_SECRET: z.string().min(1).optional(),
   OIDC_TOKEN_ENDPOINT: z.string().url().optional(),
