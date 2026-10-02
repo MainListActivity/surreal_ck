@@ -90,6 +90,8 @@ export interface ProductEntitlementStore {
   snapshotById(id: string): Promise<SnapshotRecord | null>;
   snapshotByDigest(workspaceId: string, digest: string): Promise<SnapshotRecord | null>;
   newestSnapshotRevision(workspaceId: string, productPlanRevisionId: string): Promise<number | null>;
+  /** 全部快照的最大序位（不分产品）：指针回指旧快照后，新快照序位必须从它继续。 */
+  maxSnapshotRevision(workspaceId: string): Promise<number | null>;
   insertSnapshot(row: SnapshotRecord): Promise<"ok" | "conflict">;
   pointWorkspace(workspaceId: string, snapshotId: string): Promise<void>;
   auditByKey(actor: string, idempotencyKey: string): Promise<AuditRecord | null>;
@@ -398,8 +400,14 @@ export class ProductEntitlementService {
         if (point) await this.store.pointWorkspace(workspace.id, same.id);
         return { snapshot: same, view: toView(workspace.slug, same.revision, same, resource) };
       }
-      const current = await this.store.currentSnapshot(workspace.id);
-      const revision = (current?.revision ?? 0) + 1;
+      const [current, newest] = await Promise.all([
+        this.store.currentSnapshot(workspace.id),
+        this.store.maxSnapshotRevision(workspace.id),
+      ]);
+      // 指针可能因赠送到期/降级恢复回指旧快照（落后于最大已存在序位）；
+      // 新序位必须从最大已存在序位继续，否则会在 (workspace,revision) 唯一索引上
+      // 撞冲突耗尽重试，工作区视图/撤销/修复全部 409 死锁。
+      const revision = Math.max(current?.revision ?? 0, newest ?? 0) + 1;
       const row: SnapshotRecord = {
         ...draft, id: "", workspaceId: workspace.id, workspaceSlug: workspace.slug, revision, correlationId: causationId,
       };
