@@ -206,7 +206,7 @@ test("VO05 实际 fork + admin/participant/employee + Mastra：开岗、DDL、�
   runtime.start();
   try {
     await admin.query(`CREATE office_meta:office CONTENT {
-      goal: "分析销售数据", primary_contact: user:owner, state: "onboarding"
+      goal: "分析销售数据", primary_contact: user:owner, state: "onboarding", import_state: "skipped"
     }; DEFINE TABLE ent_sales SCHEMAFULL PERMISSIONS FULL;
     DEFINE FIELD amount ON ent_sales TYPE option<int>;
     CREATE ent_sales:first SET amount = 42;`).collect();
@@ -394,7 +394,7 @@ for (const boundary of ["resume", "report", "before-finish", "finish"] as const)
     if (provision.kind !== "ok") throw new Error(provision.kind);
     const employeeId = provision.employee.id;
     const analyst = await employeeSession(fixture, employeeId);
-    await admin.query(`CREATE office_meta:office CONTENT {goal:'恢复', primary_contact:user:owner, state:'onboarding'};
+    await admin.query(`CREATE office_meta:office CONTENT {goal:'恢复', primary_contact:user:owner, state:'onboarding', import_state: "skipped"};
       CREATE office_task:recover CONTENT {goal:'恢复报告', assignee:$employee}`, { employee: new StringRecordId(employeeId) }).collect();
     const proposal = await proposeOfficeDdl(analyst, { task: "office_task:recover", author: employeeId, to: "user:owner",
       change: { op: "define_table", table: "ent_recover" }, rationale: "恢复测试", impact: "只新增表" });

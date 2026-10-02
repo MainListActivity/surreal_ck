@@ -15,6 +15,7 @@
     Users,
   } from "@lucide/svelte";
   import RiskNotificationInbox from "../components/RiskNotificationInbox.svelte";
+  import OfficeOnboardingPanel from "../components/OfficeOnboardingPanel.svelte";
   import { getSurreal } from "../lib/surreal";
   import {
     openOfficeRuntime,
@@ -50,6 +51,9 @@
   const virtualEmployees = $derived(snap?.employees.filter((member) => member.isVirtual) ?? []);
   const humanMembers = $derived(snap?.employees.filter((member) => !member.isVirtual) ?? []);
   const pendingNotifications = $derived(snap?.notifications.filter((item) => !item.resolvedAt) ?? []);
+  const analystId = $derived(
+    virtualEmployees.find((member) => member.roleKey === "data-analyst")?.id ?? null,
+  );
 
   const CONNECTION_LABELS: Record<OfficeSnapshot["connection"], string> = {
     connected: "实时",
@@ -210,6 +214,15 @@
   {:else if snap.status === "closed"}
     <div class="state"><span>办公室已关闭。</span></div>
   {:else}
+    <!-- VO06 onboarding：目标 → 导入/skip → 幂等 bootstrap → 分析师续建，
+         状态全从 db 推导，刷新/重连回到同一进度。 -->
+    <OfficeOnboardingPanel
+      {slug}
+      {isAdmin}
+      hasReport={(snap.reports.length ?? 0) > 0}
+      hasInitialTask={snap.tasks.some((task) => task.id === "office_task:pm_initial")}
+      {analystId}
+    />
     <div class="office-grid">
       <!-- 左：花名册 -->
       <section class="panel" aria-label="员工花名册">

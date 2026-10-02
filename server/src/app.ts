@@ -119,6 +119,7 @@ import type { EmployeeRuntime } from "../ai/office/employee-runtime";
 import {
   createProductionOfficeBootstrap,
   createProductionOfficeRequestWake,
+  createProductionOfficeTaskDispatch,
 } from "../ai/office/office-trigger-adapter";
 import type { EmployeeLifecycle } from "../ai/office/employee-lifecycle";
 import type { EmployeeRuntimeMetrics } from "../ai/office/employee-trigger-runtime";
@@ -184,6 +185,12 @@ export type AppOptions = {
     callerToken: string;
     notificationId: string;
   }) => Promise<import("../ai/office/office-trigger-adapter").OfficeRequestWakeResult>;
+  /** VO06：管理员任务投递（assignee=虚拟员工的 office_task → 通用触发）。 */
+  officeTaskDispatch?: (input: {
+    slug: string;
+    callerToken: string;
+    taskId: string;
+  }) => Promise<import("../ai/office/office-trigger-adapter").OfficeTaskDispatchResult>;
   /** LCA05 共享 AI 额度门禁；注入后 /api/chat 新 run 在启动 workflow 前原子预留。 */
   aiAllowance?: AiAllowanceService;
   /** 虚拟员工 runtime 健康/容量快照（VER06）；默认读进程内 runtime 指标。 */
@@ -379,6 +386,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     .route("/", createOfficeRoutes({
       bootstrap: options.officeBootstrap ?? createProductionOfficeBootstrap(),
       wakeRequest: options.officeRequestWake ?? createProductionOfficeRequestWake(),
+      dispatchTask: options.officeTaskDispatch ?? createProductionOfficeTaskDispatch(),
       resolveWorkspace: options.employeeWorkspaceResolver ?? resolveWorkspaceBySlug,
       requireUser: options.requireUser,
     }))

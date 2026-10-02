@@ -7,6 +7,7 @@ import type {
 import type { EmployeeTriggerRuntime, EnqueueResult } from "./employee-trigger-runtime";
 import {
   bootstrapOffice,
+  dispatchOfficeTask,
   notifyOfficeTask,
   OFFICE_BOOTSTRAP_KEY,
   OFFICE_MANAGER_REQUEST_KEY,
@@ -61,14 +62,19 @@ function fakeRuntime(outcome: EnqueueResult["outcome"] = "completed") {
   return { runtime, enqueued, reconciled, handlers, started: () => started };
 }
 
-function fakeCallerSession(meta: { goal?: string; primary_contact?: unknown; state?: string } | null | "deny") {
+function fakeCallerSession(meta: { goal?: string; primary_contact?: unknown; state?: string; import_state?: string } | null | "deny") {
   const queries: string[] = [];
   const session = {
     async query(sql: string) {
       queries.push(sql);
       if (meta === "deny") throw new Error("auth-failed");
       if (sql.includes("FROM office_meta:office")) {
-        return [meta ? [{ goal: meta.goal, primary_contact: meta.primary_contact, state: meta.state }] : []];
+        return [meta ? [{
+          goal: meta.goal,
+          primary_contact: meta.primary_contact,
+          state: meta.state,
+          import_state: meta.import_state,
+        }] : []];
       }
       return [[]];
     },
@@ -82,7 +88,11 @@ function deps(over: Partial<OfficeBootstrapDeps> = {}): OfficeBootstrapDeps {
     lifecycle: fakeLifecycle().lifecycle,
     triggerRuntime: fakeRuntime().runtime,
     resolveWorkspace: async (slug) => (slug === "acme" ? { dbName: "ws_acme" } : null),
-    callerSession: async () => fakeCallerSession({ goal: "g", primary_contact: "user:owner" }).session,
+    callerSession: async () => fakeCallerSession({
+      goal: "g",
+      primary_contact: "user:owner",
+      import_state: "skipped",
+    }).session,
     ...over,
   };
 }
@@ -96,9 +106,46 @@ describe("office bootstrap", () => {
       deps({ lifecycle, triggerRuntime: runtime, callerSession: async () => session }),
       { slug: "acme", callerToken: "t" },
     );
-    expect(result).toEqual({ kind: "meta-incomplete", missing: ["goal", "primary_contact"] });
+    expect(result).toEqual({ kind: "meta-incomplete", missing: ["goal", "primary_contact", "import_state"] });
     expect(calls).toHaveLength(0);
     expect(enqueued).toHaveLength(0);
+  });
+
+  test("VO06 导入门禁：goal/contact 就绪但 import 未决议 → meta-incomplete，不开岗不投递", async () => {
+    const { lifecycle, calls } = fakeLifecycle();
+    const { runtime, enqueued } = fakeRuntime();
+    for (const importState of [undefined, "failed"]) {
+      const { session } = fakeCallerSession({
+        goal: "跑出风险清单",
+        primary_contact: "user:owner",
+        state: "onboarding",
+        import_state: importState,
+      });
+      const result = await bootstrapOffice(
+        deps({ lifecycle, triggerRuntime: runtime, callerSession: async () => session }),
+        { slug: "acme", callerToken: "t" },
+      );
+      expect(result).toEqual({ kind: "meta-incomplete", missing: ["import_state"] });
+    }
+    expect(calls).toHaveLength(0);
+    expect(enqueued).toHaveLength(0);
+  });
+
+  test("已 active 的办公室不受导入门禁：bootstrap 重放幂等放行", async () => {
+    const { lifecycle } = fakeLifecycle();
+    const { runtime, enqueued } = fakeRuntime();
+    const { session } = fakeCallerSession({
+      goal: "跑出风险清单",
+      primary_contact: "user:owner",
+      state: "active",
+      // 历史库没有 import_state 字段值。
+    });
+    const result = await bootstrapOffice(
+      deps({ lifecycle, triggerRuntime: runtime, callerSession: async () => session }),
+      { slug: "acme", callerToken: "t" },
+    );
+    expect(result).toMatchObject({ kind: "ok", employeeId: "user:ve_pm" });
+    expect(enqueued).toHaveLength(1);
   });
 
   test("meta 就绪 → 稳定 requestKey 开岗 + 恒定幂等键投递；重试收敛", async () => {
@@ -108,6 +155,7 @@ describe("office bootstrap", () => {
       goal: "跑出风险清单",
       primary_contact: "user:owner",
       state: "onboarding",
+      import_state: "skipped",
     });
     const d = deps({ lifecycle, triggerRuntime: runtime, callerSession: async () => session });
 
@@ -250,5 +298,105 @@ describe("office task dispatch + reconcile", () => {
     expect(summary.failed).toBe(0);
     expect(enqueued).toHaveLength(0);
     expect(reconciled).toHaveLength(0);
+  });
+});
+
+describe("office task dispatch（VO06 管理员派发）", () => {
+  type TaskRow = Record<string, unknown>;
+
+  function taskSession(task: TaskRow | null) {
+    return {
+      async query(sql: string) {
+        if (sql.includes("FROM $task")) return [task ? [task] : []];
+        return [[]];
+      },
+      async close() {},
+    };
+  }
+
+  function dispatchDeps(task: TaskRow | null | "deny", runtime: EmployeeTriggerRuntime) {
+    return {
+      triggerRuntime: runtime,
+      resolveWorkspace: async (slug: string) => (slug === "acme" ? { dbName: "ws_acme" } : null),
+      // caller-denied 对应 SIGNIN 阶段失败（会话建不起来），而非查询抛错。
+      callerSession: async () => {
+        if (task === "deny") throw new Error("auth-failed");
+        return taskSession(task);
+      },
+    };
+  }
+
+  const openAnalystTask: TaskRow = {
+    id: "office_task:utask_abcd",
+    status: "open",
+    assignee: "user:ve_analyst",
+    assignee_kind: "virtual",
+    assignee_status: "active",
+  };
+
+  test("开放任务 + active 虚拟员工 assignee → office-task 触发投递", async () => {
+    const { runtime, enqueued } = fakeRuntime("completed");
+    const result = await dispatchOfficeTask(
+      dispatchDeps(openAnalystTask, runtime),
+      { slug: "acme", callerToken: "t", taskId: "office_task:utask_abcd" },
+    );
+    expect(result).toMatchObject({ kind: "ok", outcome: "completed" });
+    expect(enqueued).toEqual([
+      expect.objectContaining({
+        employeeId: "user:ve_analyst",
+        reason: OFFICE_TASK_REASON,
+        payloadRef: "office_task:utask_abcd",
+        idempotencyKey: "office-task:office_task:utask_abcd",
+      }),
+    ]);
+  });
+
+  test("workspace 不存在 / 调用者被拒 / 任务不存在 各有结构化结果", async () => {
+    const { runtime } = fakeRuntime();
+    expect(
+      await dispatchOfficeTask(dispatchDeps(openAnalystTask, runtime),
+        { slug: "gone", callerToken: "t", taskId: "office_task:x" }),
+    ).toEqual({ kind: "workspace-not-found" });
+    expect(
+      await dispatchOfficeTask(dispatchDeps("deny", runtime),
+        { slug: "acme", callerToken: "t", taskId: "office_task:x" }),
+    ).toEqual({ kind: "caller-denied" });
+    expect(
+      await dispatchOfficeTask(dispatchDeps(null, runtime),
+        { slug: "acme", callerToken: "t", taskId: "office_task:x" }),
+    ).toEqual({ kind: "task-not-found" });
+  });
+
+  test("终态任务 / 真人 assignee / 未激活员工 拒绝投递", async () => {
+    const { runtime, enqueued } = fakeRuntime();
+    expect(
+      await dispatchOfficeTask(
+        dispatchDeps({ ...openAnalystTask, status: "done" }, runtime),
+        { slug: "acme", callerToken: "t", taskId: "office_task:x" },
+      ),
+    ).toEqual({ kind: "task-terminal", status: "done" });
+    expect(
+      await dispatchOfficeTask(
+        dispatchDeps({ ...openAnalystTask, assignee_kind: "human" }, runtime),
+        { slug: "acme", callerToken: "t", taskId: "office_task:x" },
+      ),
+    ).toEqual({ kind: "assignee-not-virtual" });
+    expect(
+      await dispatchOfficeTask(
+        dispatchDeps({ ...openAnalystTask, assignee_status: "paused" }, runtime),
+        { slug: "acme", callerToken: "t", taskId: "office_task:x" },
+      ),
+    ).toEqual({ kind: "assignee-inactive", status: "paused" });
+    expect(enqueued).toHaveLength(0);
+  });
+
+  test("重复派发收敛到同一 office-task 幂等键", async () => {
+    const { runtime, enqueued } = fakeRuntime("coalesced");
+    const d = dispatchDeps(openAnalystTask, runtime);
+    await dispatchOfficeTask(d, { slug: "acme", callerToken: "t", taskId: "office_task:utask_abcd" });
+    await dispatchOfficeTask(d, { slug: "acme", callerToken: "t", taskId: "office_task:utask_abcd" });
+    const keys = enqueued.map((e) => e.idempotencyKey);
+    expect(new Set(keys).size).toBe(1);
+    expect(keys[0]).toBe("office-task:office_task:utask_abcd");
   });
 });

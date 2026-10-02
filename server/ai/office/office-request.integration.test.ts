@@ -328,7 +328,7 @@ describe("VO03 人类请求一次性解决闭环（真实 SurrealDB）", () => {
       `CREATE office_meta:office CONTENT {
         goal: "合并重复债权行",
         primary_contact: user:member,
-        state: "onboarding"
+        state: "onboarding", import_state: "skipped"
       };`,
     ).collect();
     expect((await stack.bootstrap({ slug: "acme", callerToken: "owner-sub:admin" })).kind).toBe("ok");
@@ -462,7 +462,7 @@ describe("VO03 人类请求一次性解决闭环（真实 SurrealDB）", () => {
     const admin = await jwtSession(fixture, { sub: "owner-sub", ac: "admin" });
     await admin.query(
       `CREATE office_meta:office CONTENT {
-        goal: "权限与补投", primary_contact: user:member, state: "onboarding"
+        goal: "权限与补投", primary_contact: user:member, state: "onboarding", import_state: "skipped"
       };`,
     ).collect();
     expect((await stack.bootstrap({ slug: "acme", callerToken: "owner-sub:admin" })).kind).toBe("ok");
@@ -610,7 +610,7 @@ describe("VO03 续跑中断恢复（真实 fork + Mastra + effect 账本）", ()
       const stack = buildStack(fixture, interruption);
       const admin = await jwtSession(fixture, { sub: "owner-sub", ac: "admin" });
       await admin.query(`CREATE office_meta:office CONTENT {
-        goal: "恢复派单", primary_contact: user:member, state: "onboarding"
+        goal: "恢复派单", primary_contact: user:member, state: "onboarding", import_state: "skipped"
       };`).collect();
       expect((await stack.bootstrap({ slug: "acme", callerToken: "owner-sub:admin" })).kind).toBe("ok");
       const pmId = officeManagerEmployeeId(fixture.database);
@@ -686,7 +686,7 @@ test("VO03 续跑关联守卫：其他请求、其他 assignee 和取消终态�
   const stack = buildStack(fixture);
   const admin = await jwtSession(fixture, { sub: "owner-sub", ac: "admin" });
   await admin.query(`CREATE office_meta:office CONTENT {
-    goal: "关联守卫", primary_contact: user:member, state: "onboarding"
+    goal: "关联守卫", primary_contact: user:member, state: "onboarding", import_state: "skipped"
   };`).collect();
   expect((await stack.bootstrap({ slug: "acme", callerToken: "owner-sub:admin" })).kind).toBe("ok");
   const pmId = officeManagerEmployeeId(fixture.database);
@@ -738,7 +738,7 @@ describe("VO03 断线重连（真实 WS 中断与 SDK 自动恢复）", () => {
     const stack = buildStack(fixture);
     const admin = await jwtSession(fixture, { sub: "owner-sub", ac: "admin" });
     await admin.query(`CREATE office_meta:office CONTENT {
-      goal: "断线重连闭环", primary_contact: user:member, state: "onboarding"
+      goal: "断线重连闭环", primary_contact: user:member, state: "onboarding", import_state: "skipped"
     };`).collect();
     expect((await stack.bootstrap({ slug: "acme", callerToken: "owner-sub:admin" })).kind).toBe("ok");
     const pmId = officeManagerEmployeeId(fixture.database);
