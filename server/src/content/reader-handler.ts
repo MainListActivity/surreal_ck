@@ -10,6 +10,7 @@ import { env } from "../env";
 import { getRootDatabaseSession } from "../db/root-connection";
 import { HttpError } from "../http-error";
 import { SurrealProductEntitlementStore } from "../product-entitlement/store";
+import { createRolloutGateChecker, type RolloutGateChecker } from "../rollout/gate-check";
 import { createIdpContentReaderScopeAdapter, type IdpContentReaderScopeAdapter } from "../workspaces/idp-scope-adapter";
 import { exchangeContentReader, type ContentReaderEntitlement } from "./reader-exchange";
 import { fetchContentReaderTarget, writeContentReaderProjection } from "./reader-projection";
@@ -28,6 +29,8 @@ export type ContentReaderExchangeDeps = {
   getContentDb?: () => Promise<ContentProjectionClient>;
   entitlementStore?: Pick<SurrealProductEntitlementStore, "currentSnapshot">;
   idpContentReader?: IdpContentReaderScopeAdapter;
+  /** LCA14 灰度开关检查；默认共享 getSystemDb 接缝的真实实现（每请求新读）。 */
+  rolloutGates?: RolloutGateChecker;
   /** 内容库名（默认 env.CONTENT_DATABASE）。 */
   database?: string;
   namespace?: string;
@@ -82,6 +85,7 @@ export function createContentReaderExchangeHandler(deps: ContentReaderExchangeDe
   const getContentDb = deps.getContentDb ?? (() => getContentProjectionSession());
   const entitlementStore = deps.entitlementStore ?? new SurrealProductEntitlementStore();
   const idp = deps.idpContentReader ?? createIdpContentReaderScopeAdapter();
+  const rolloutGates = deps.rolloutGates ?? createRolloutGateChecker({ getSystemDb });
   const database = deps.database ?? env.CONTENT_DATABASE;
   const namespace = ns;
   const nowSeconds = deps.nowSeconds ?? (() => Math.floor(Date.now() / 1000));
@@ -130,6 +134,19 @@ export function createContentReaderExchangeHandler(deps: ContentReaderExchangeDe
     }
     const workspaceActive = workspace?.status === "active";
     const workspaceRecordId = workspace?.id == null ? null : String(workspace.id);
+
+    // LCA14：成员与 workspace 有效后再查灰度开关——非成员拿不到开关状态（不泄漏）；
+    // 开关读失败 fail closed（503），关闭态返回 feature_suspended 拒绝新会话。
+    if (membership === "active" && workspaceActive) {
+      let gateState: "enabled" | "disabled";
+      try {
+        gateState = await rolloutGates(workspaceDb, "legal_content_access");
+      } catch {
+        throw new HttpError(503, "content-reader-unavailable", "灰度开关状态暂不可读");
+      }
+      if (gateState === "disabled") return { ok: false, error: "feature_suspended" };
+    }
+
     const activeSubjects = indexRows.flatMap((row) =>
       row.disabled_at == null && typeof row.subject === "string" ? [row.subject] : []);
 

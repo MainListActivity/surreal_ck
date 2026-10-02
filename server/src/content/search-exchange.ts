@@ -8,6 +8,7 @@ import { env } from "../env";
 import { getRootDatabaseSession } from "../db/root-connection";
 import { HttpError } from "../http-error";
 import { SurrealProductEntitlementStore } from "../product-entitlement/store";
+import { createRolloutGateChecker, type RolloutGateChecker } from "../rollout/gate-check";
 import { createIdpContentReaderScopeAdapter } from "../workspaces/idp-scope-adapter";
 import { planContentReaderExchange, type ContentReaderEntitlement, type PlannedContentReaderExchange } from "./reader-exchange";
 import { fetchContentReaderTarget, writeContentReaderProjection } from "./reader-projection";
@@ -28,9 +29,13 @@ export const CONTENT_CATALOG_SCAN_QUERY = `SELECT id, version.public_id AS publi
  * facts are inspected through content_projection_sync; the response contains
  * no unlicensed content metadata. The browser searches with this RECORD lease.
  */
-export function createContentSearchExchangeHandler() {
+export function createContentSearchExchangeHandler(deps: {
+  /** LCA14 灰度开关检查；默认真实实现（_system 每请求新读，无缓存）。 */
+  rolloutGates?: RolloutGateChecker;
+} = {}) {
   const entitlementStore = new SurrealProductEntitlementStore();
   const idp = createIdpContentReaderScopeAdapter();
+  const rolloutGates = deps.rolloutGates ?? createRolloutGateChecker();
   return async (caller: SessionUser, body: unknown): Promise<ContentSearchExchangeSuccess | ContentReaderFailure> => {
     if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length !== 0) {
       return { ok: false, error: "client_authority_rejected" };
@@ -59,6 +64,11 @@ export function createContentSearchExchangeHandler() {
         { subject: caller.subject, ...(caller.email ? { email: caller.email } : {}) },
       ));
       if (!human.some((row) => row.disabled_at == null)) return { ok: false, error: "member_removed" };
+
+      // LCA14：运营灰度开关优先于权益签发新会话；读失败由外层 catch 归一为 503。
+      if (await rolloutGates(workspaceDb, "legal_content_access") === "disabled") {
+        return { ok: false, error: "feature_suspended" };
+      }
 
       const snapshot = await entitlementStore.currentSnapshot(String(workspace.id));
       if (!snapshot || !snapshot.digest.startsWith("sha256:")) return { ok: false, error: "entitlement_absent" };

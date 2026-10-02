@@ -64,6 +64,8 @@ function makeApp(opts: {
   service?: AiChatService;
   sessionFactory?: CallerSessionFactory;
   registry?: ReturnType<typeof createRunRegistry>;
+  /** LCA14：默认放行；注入 disabled/抛错替身覆盖开关拒绝与 fail closed 路径。 */
+  rolloutGates?: import("../rollout/gate-check").RolloutGateChecker;
   /** 传 undefined 时用真实 requireOidc（用于鉴权失败用例）。 */
   requireUser?: (() => MiddlewareHandler<AppBindings>) | "real";
 }) {
@@ -75,6 +77,7 @@ function makeApp(opts: {
       service: opts.service ?? stubService(),
       createCallerSession: opts.sessionFactory ?? okSessionFactory,
       registry: opts.registry ?? createRunRegistry(),
+      rolloutGates: opts.rolloutGates ?? (async () => "enabled"),
       requireUser: opts.requireUser === "real" ? undefined : (opts.requireUser ?? (() => useUser())),
     }),
   );
@@ -362,6 +365,69 @@ describe("POST /api/chat", () => {
     });
 
     expect(res.status).toBe(403);
+    expect(service.resumeCalls).toHaveLength(0);
+  });
+});
+
+describe("LCA14 legal_research_ai 灰度开关", () => {
+  test("开关 disabled → 新 run 403（legal-research-ai-suspended），不签会话不启动 workflow", async () => {
+    const service = stubService();
+    let sessions = 0;
+    const app = makeApp({
+      service,
+      rolloutGates: async () => "disabled",
+      sessionFactory: async () => {
+        sessions += 1;
+        return fakeSession;
+      },
+    });
+    const res = await app.request("/api/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "检索案例" }),
+    });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error.code).toBe("legal-research-ai-suspended");
+    expect(sessions).toBe(0);
+    expect(service.startCalls).toHaveLength(0);
+  });
+
+  test("开关读失败 → 503 fail closed，不启动 workflow", async () => {
+    const service = stubService();
+    const app = makeApp({
+      service,
+      rolloutGates: async () => { throw new Error("control plane down"); },
+    });
+    const res = await app.request("/api/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "x" }),
+    });
+    expect(res.status).toBe(503);
+    expect((await res.json()).error.code).toBe("legal-research-ai-unavailable");
+    expect(service.startCalls).toHaveLength(0);
+  });
+
+  test("开关 disabled → 暂停 run 续跑也被拒（resume = 新模型调用）", async () => {
+    const registry = createRunRegistry();
+    const service = stubService();
+    // 开启态启动 run，随后关闭开关再续跑。
+    const gate = { state: "enabled" as "enabled" | "disabled" };
+    const app = makeApp({ registry, service, rolloutGates: async () => gate.state });
+    const start = await app.request("/api/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "x" }),
+    });
+    const { runId } = (await start.json()) as { runId: string };
+    gate.state = "disabled";
+    const res = await app.request(`/api/chat/runs/${runId}/resume`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: { kind: "write-confirmed" } }),
+    });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error.code).toBe("legal-research-ai-suspended");
     expect(service.resumeCalls).toHaveLength(0);
   });
 });
