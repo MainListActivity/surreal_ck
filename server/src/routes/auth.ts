@@ -162,22 +162,18 @@ export function createAuthRoutes(
   });
 
   // RFC 7009 窄代理：ops SPA 登出撤销自己的 access/refresh token。
-  // 转发令牌本体 + 钉死/透传 public client_id，剥离 client_secret；
-  // IdP 按 client 归属校验，拿到他人令牌也无法代撤。
+  // 转发令牌本体、client_id 只取服务端钉死的 OIDC_OPS_CLIENT_ID、
+  // 剥离 client_secret；浏览器无法借道撤销其他 client 的令牌。
   routes.post("/api/auth/ops/revoke", async (c) => {
-    if (!opsBrowser?.revokeEndpoint) {
+    if (!opsBrowser?.revokeEndpoint || !opsBrowser.clientId) {
       throw new HttpError(501, "oidc-ops-revoke-not-configured", "Operations OIDC revoke is not configured");
     }
     const params = new URLSearchParams(await c.req.text());
     if (!params.get("token")?.trim()) {
       throw new HttpError(400, "oidc-ops-token-required", "Token is required");
     }
-    const clientId = opsBrowser.clientId ?? params.get("client_id")?.trim();
-    if (!clientId) {
-      throw new HttpError(400, "oidc-ops-client-required", "Operations OIDC client id is required");
-    }
     params.delete("client_secret");
-    params.set("client_id", clientId);
+    params.set("client_id", opsBrowser.clientId);
     let upstream: Response;
     try {
       upstream = await (opsBrowser.fetch ?? fetch)(opsBrowser.revokeEndpoint, {

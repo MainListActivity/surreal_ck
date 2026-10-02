@@ -96,6 +96,22 @@ describe("POST /api/auth/token", () => {
     expect(response.status).toBe(400);
   });
 
+  test("revoke fails closed when the ops client id is not pinned", async () => {
+    const app = createApp({
+      oidcOpsBrowserProxy: {
+        tokenEndpoint: "https://idp.example.test/token",
+        jwksUrl: "https://idp.example.test/jwks.json",
+        revokeEndpoint: "https://idp.example.test/revoke",
+      },
+    });
+    const response = await app.request("/api/auth/ops/revoke", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ token: "t", client_id: "forged-client" }).toString(),
+    });
+    expect(response.status).toBe(501);
+  });
+
   test("exchanges an authorization code through the backend confidential client using client_secret_basic", async () => {
     let upstreamRequest: { url: string; method: string; body: string; authorization: string | null } | undefined;
     const app = createApp({
