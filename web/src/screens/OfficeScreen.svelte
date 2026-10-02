@@ -377,7 +377,7 @@
         {#if pendingNotifications.length > 0}
           <p class="inbox-hint">{pendingNotifications.length} 条待处理：员工请求会在这里等待回答，处理结果会唤醒请求者。</p>
         {/if}
-        <RiskNotificationInbox />
+        <RiskNotificationInbox {slug} />
       </section>
     </div>
   {/if}

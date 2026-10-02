@@ -26,6 +26,7 @@ export type RiskNotification = {
   fromEmployee: string;
   taskId: string;
   questionType: string;
+  ddlIntent?: string;
   options: string[];
   /** 终态：resolved_at / resolution / answer 三件套同读，便于 UI 与审计一致。 */
   resolvedAt: string;
@@ -75,6 +76,7 @@ function normalizeNotification(row: Record<string, unknown>): RiskNotification {
     fromEmployee: stringRecord(row.from_employee),
     taskId: stringRecord(row.task),
     questionType: typeof payload.question_type === "string" ? payload.question_type : "free-text",
+    ddlIntent: typeof payload.ddl_intent === "string" ? payload.ddl_intent : undefined,
     options: Array.isArray(payload.options)
       ? payload.options.filter((o): o is string => typeof o === "string")
       : [],

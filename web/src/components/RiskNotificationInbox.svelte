@@ -2,6 +2,7 @@
   import { onDestroy, onMount } from "svelte";
   import { Bell, Check, ExternalLink, MessageCircleQuestion, Sparkles, X } from "@lucide/svelte";
   import { getSurreal } from "$lib/surreal";
+  import OfficeDdlCard from "./OfficeDdlCard.svelte";
   import {
     loadClaimsReminderSettings,
     loadRiskNotifications,
@@ -176,7 +177,13 @@
           {#if expanded === notification.id}
             <div class="detail">
               <p>{notification.body}</p>
-              {#if notification.resolvedAt}
+              {#if notification.questionType === "ddl" && notification.ddlIntent}
+                <OfficeDdlCard id={notification.ddlIntent} onresolved={async () => { await retryWake(notification); await load(); }} />
+                {#if wakeErrors[notification.id]}
+                  <p class="request-error" role="alert">{wakeErrors[notification.id]}</p>
+                  <button onclick={() => void retryWake(notification)}>重试唤醒员工</button>
+                {/if}
+              {:else if notification.resolvedAt}
                 <dl>
                   <div><dt>处理结果</dt><dd>{requestLabel(notification.answerAction, notification.resolution)}</dd></div>
                   <div><dt>处理时间</dt><dd>{formatTime(notification.resolvedAt)}</dd></div>
