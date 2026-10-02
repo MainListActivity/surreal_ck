@@ -58,6 +58,7 @@ function makeApp(allowance: AiAllowanceGate, captured: { terminal?: (o: RunTermi
       createCallerSession: async () => fakeSession,
       registry: createRunRegistry(),
       allowance,
+      rolloutGates: async () => "enabled",
       requireUser: () => useUser(),
     }),
   );
@@ -183,6 +184,7 @@ describe("/api/chat AI 额度门禁", () => {
         createCallerSession: async () => brokenSession,
         registry: createRunRegistry(),
         allowance,
+        rolloutGates: async () => "enabled",
         requireUser: () => useUser(),
       }),
     );
@@ -209,6 +211,7 @@ describe("/api/chat AI 额度门禁", () => {
         service,
         createCallerSession: async () => fakeSession,
         registry: createRunRegistry(),
+        rolloutGates: async () => "enabled",
         requireUser: () => useUser(),
       }),
     );

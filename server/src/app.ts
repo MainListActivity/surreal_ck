@@ -130,6 +130,10 @@ import { AiAllowancePlanCycleSynchronizer } from "./ai-allowance/plan-cycle";
 import { createProjectionVerifier } from "./content/projection-verify";
 import { createOpsAiAllowanceRoutes } from "./routes/ops-ai-allowance";
 import { createContentResearchSessionFactory, type ContentResearchSessionFactory } from "./research/window";
+import { createOpsRolloutRoutes } from "./routes/ops-rollout";
+import { RolloutGateService } from "./rollout/service";
+import { SurrealRolloutStore } from "./rollout/store";
+import { createRolloutGateChecker, type RolloutGateChecker } from "./rollout/gate-check";
 
 export type AppOptions = {
   workspaceScope?: WorkspaceScopeModule;
@@ -199,6 +203,10 @@ export type AppOptions = {
   requireOperator?: () => MiddlewareHandler<AppBindings>;
   /** LCA06：调用者 content_reader 研究窗口工厂；默认生产装配（search exchange 复用）。 */
   createContentResearchSession?: ContentResearchSessionFactory;
+  /** LCA14：灰度开关控制面服务；注入替身供测试，默认生产 Surreal store。挂载 /api/ops/rollout/*。 */
+  rolloutGateService?: RolloutGateService;
+  /** LCA14：内容/AI 灰度开关检查器；content-reader、search、legal 检索与 AI chat 共用。默认真实实现（每请求读 _system）。 */
+  rolloutGates?: RolloutGateChecker;
 };
 
 type AiStreamWebSocket = ReturnType<typeof createAiStreamRoutes>["websocket"];
@@ -215,7 +223,8 @@ export type AppWithWebSocket = Hono<AppBindings> & {
 function buildAutoAiChatService(
   runBus: RunBus,
   platformContentService: PlatformContentService,
-  embeddingProvider?: EmbeddingProvider,
+  embeddingProvider: EmbeddingProvider | undefined,
+  createContentResearchSession: ContentResearchSessionFactory,
 ): AiChatService | undefined {
   if (!env.AI_PROVIDER || !env.AI_MODEL || !env.AI_API_KEY) return undefined;
   // TYPESAFE_API_KEY 缺省 → decisionModel 为 undefined，意图分类保持纯 LLM 路径。
@@ -238,7 +247,8 @@ function buildAutoAiChatService(
     // 资源检索查询向量与保存路径共用同一服务端 embedding key（RR-014）
     embeddingProvider,
     // LCA06：授权内容研究窗口（content_reader 会话服务端自持；复用 LCA04 search exchange）
-    createContentResearchSession: createContentResearchSessionFactory(),
+    // LCA14：与 HTTP 路径共用同一开关接线（search exchange 内嵌 legal_content_access 检查）。
+    createContentResearchSession,
   });
   return createAiChatService({ runBus, runner, resumer });
 }
@@ -315,7 +325,15 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
   const opsProposalService = options.opsProposalService
     ?? new OpsProposalService(new SurrealOpsProposalStore(), opsFollowUpService, opsAutonomyService);
   const opsRunService = options.opsRunService ?? new OpsRunService(new SurrealOpsRunStore(), opsAutonomyService);
-  const autoAiChatService = options.aiChatService ?? buildAutoAiChatService(runBus, platformContentService, embeddingProvider);
+  // LCA14：全链路共用同一开关检查器（每请求读 _system，无缓存）；默认生产实现。
+  const rolloutGates = options.rolloutGates ?? createRolloutGateChecker();
+  const contentSearchExchange = createContentSearchExchangeHandler({ rolloutGates });
+  const contentResearchSession = options.createContentResearchSession
+    ?? createContentResearchSessionFactory({ searchExchange: contentSearchExchange });
+  const rolloutGateService = options.rolloutGateService
+    ?? new RolloutGateService(new SurrealRolloutStore());
+  const autoAiChatService = options.aiChatService
+    ?? buildAutoAiChatService(runBus, platformContentService, embeddingProvider, contentResearchSession);
   const aiAllowanceService = options.aiAllowance ?? new AiAllowanceService({
     workspaceSession: async (db) => (await getRootDatabaseSession(db)) as unknown as AllowanceQueryable,
     systemSession: async () => (await getRootDatabaseSession("_system")) as unknown as AllowanceQueryable,
@@ -369,8 +387,8 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     .route("/", createInternalIdpRoutes(workspaceScope))
     .route("/", createSessionRoutes(workspaceScope, idpTokenScopeAdapter, options.requireUser))
     .route("/", createContentReaderRoutes({
-      exchange: options.contentReaderExchange ?? createContentReaderExchangeHandler(),
-      searchExchange: createContentSearchExchangeHandler(),
+      exchange: options.contentReaderExchange ?? createContentReaderExchangeHandler({ rolloutGates }),
+      searchExchange: contentSearchExchange,
       requireUser: options.requireUser,
     }))
     .route("/", createProTrialRoutes(options.proTrialService ?? new ProTrialService(new SurrealTrialStore(), workspaceCreator), options.requireUser))
@@ -420,7 +438,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     .route("/", createDiscoverRoutes({ service: discoverService, requireUser: options.requireUser }))
     .route("/", createLegalContentRoutes({
       requireUser: options.requireUser,
-      openContentSession: options.createContentResearchSession ?? createContentResearchSessionFactory(),
+      openContentSession: contentResearchSession,
       embeddingProvider,
     }))
     .route("/", createActivationSummaryRoutes({
@@ -451,12 +469,13 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
         createCallerSession: options.createCallerSession ?? ((rawToken) => createCallerSession(rawToken)),
         registry: runRegistry,
         allowance: aiAllowanceService,
-        createContentResearchSession:
-          options.createContentResearchSession ?? createContentResearchSessionFactory(),
+        createContentResearchSession: contentResearchSession,
+        rolloutGates,
         requireUser: options.requireUser,
       }),
     )
     .route("/", createOpsAiAllowanceRoutes({ service: aiAllowanceService }))
+    .route("/", createOpsRolloutRoutes({ service: rolloutGateService }))
     .route("/", aiStream.routes)
     .route(
       "/",
