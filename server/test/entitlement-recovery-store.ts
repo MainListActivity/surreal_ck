@@ -99,6 +99,10 @@ export class EntitlementRecoveryStore implements ProductEntitlementStore {
     const revisions = this.snapshots.filter((item) => item.workspaceId === workspaceId && item.productPlanRevisionId === productPlanRevisionId).map((item) => item.revision);
     return revisions.length === 0 ? null : Math.max(...revisions);
   }
+  async maxSnapshotRevision(workspaceId: string) {
+    const revisions = this.snapshots.filter((item) => item.workspaceId === workspaceId).map((item) => item.revision);
+    return revisions.length === 0 ? null : Math.max(...revisions);
+  }
   async insertSnapshot(row: SnapshotRecord): Promise<"ok" | "conflict"> {
     if (this.snapshots.some((item) => item.workspaceId === row.workspaceId && (item.revision === row.revision || item.digest === row.digest))) return "conflict";
     this.snapshots.push({ ...row, id: `workspace_product_entitlement:${++this.sequence}` });

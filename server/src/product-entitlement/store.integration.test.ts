@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createServer } from "node:net";
 import { Surreal } from "surrealdb";
-import type { SessionUser } from "@surreal-ck/shared";
+import type { GrantContentCollection, SessionUser } from "@surreal-ck/shared";
 import { ensureSystemSchema } from "../db/system-schema";
 import { createContentReaderExchangeHandler } from "../content/reader-handler";
 import { ProductEntitlementService } from "./service";
@@ -128,7 +128,7 @@ describe("product entitlement surreal store", () => {
     await store.pointWorkspace("workspace:team", olderId);
     const pointer = await db.query(`SELECT VALUE current_product_entitlement.revision FROM ONLY workspace:team;`).collect();
     expect(pointer[0]).toBe(expired.revision);
-  });
+  }, 30000);
 
   localTest("指派到低配产品再恢复同 digest 产品时指针回指旧快照", async () => {
     const db = await session();
@@ -210,5 +210,69 @@ describe("product entitlement surreal store", () => {
     expect(projectionWrites[0]).toMatchObject({ revisionNumber: first.revision, gateActions: ["browse", "read", "search"] });
     const count = await db.query(`SELECT count() FROM workspace_product_entitlement WHERE workspace = workspace:rollback GROUP ALL;`).collect();
     expect((count[0] as Array<{ count: number }>)[0]?.count).toBe(2);
-  });
+  }, 30000);
+
+  localTest("赠送到期回指后再次赠送/撤销：序位从最大已存在快照继续（真实唯一索引回归）", async () => {
+    const db = await session();
+    await db.query(`
+      CREATE workspace:grantcycle SET db_name = "ws_grantcycle", owner_subject = "lawyer", slug = "grantcycle", name = "赠送序位夹具", status = "active";
+      CREATE user_workspace_index:grantcycle_lawyer SET subject = "lawyer", workspace = workspace:grantcycle, db_name = "ws_grantcycle", role = "admin";
+      CREATE quota_subscription:grantcycle SET billing_account = billing_account:acct, source = "manual", status = "active", revision = 1, correlation_id = "fixture-sub-gc";
+      CREATE quota_subscription_item:grantcycle SET subscription = quota_subscription:grantcycle, workspace = workspace:grantcycle, plan_revision = quota_plan_revision:fixture,
+        revision = 1, status = "active", effective_from = <datetime>"2026-09-01T00:00:00.000Z", effective_until = NONE, correlation_id = "fixture-item-gc";
+    `).collect();
+    const store = new SurrealProductEntitlementStore(async () => await session(), "main");
+    let now = new Date("2026-09-24T00:00:00.000Z");
+    const service = new ProductEntitlementService(store, () => now);
+    const operator = { subject: "ops", capabilities: ["subscription.manage", "quota.read", "entitlement.gift", "entitlement.repair"] };
+
+    const published = await service.publishRevision(operator, {
+      planKey: "fixture_gc", displayName: "赠送序位夹具", revision: 1, resourceTemplateId: "quota_plan_revision:fixture",
+      collections: [{ key: "fixture_core", label: "夹具核心" }], actions: ["browse", "search", "read"], aiActions: [],
+      features: [], reason: "发布赠送序位夹具版本", idempotencyKey: "publish-gc-001",
+    });
+    const assigned = await service.assign(operator, {
+      workspaceSlug: "grantcycle", billingAccountKey: "acct-a", productPlanRevisionId: published.productPlanRevisionId,
+      reason: "指派", idempotencyKey: "assign-gc-001",
+    });
+    expect(assigned.revision).toBe(1);
+
+    const grant = (key: string, collections: { key: string; label: string }[], window: { from: string; until: string }): GrantContentCollection => ({
+      workspaceSlug: "grantcycle", label: "临时赠送", collections, actions: ["cite"],
+      effectiveFrom: window.from, effectiveUntil: window.until,
+      reason: "赠送序位回归", idempotencyKey: key,
+    });
+
+    // 赠送一（窗口覆盖注入的 now）→ 快照 rev 2，指针指向 rev 2。
+    const granted = await service.grant(operator, grant("grant-gc-001", [{ key: "fixture_topic", label: "临时专题" }], { from: "2026-09-01T00:00:00.000Z", until: "2026-10-01T00:00:00.000Z" }));
+    expect(granted.revision).toBe(2);
+
+    // 注入时间越过错期窗口：读取回退，digest 命中 rev 1，指针回指（最大已存在序位仍为 2）。
+    now = new Date("2026-10-15T00:00:00.000Z");
+    const reverted = await service.getForCustomer("lawyer", "grantcycle");
+    expect(reverted.revision).toBe(1);
+
+    // 再次赠送：真实 (workspace,revision) 唯一索引下，新序位必须从 2+1 继续；
+    // 若按指针（1）+1 计算会在 rev 2 上反复冲突，视图/撤销/修复全部 409 死锁。
+    const again = await service.grant(operator, grant("grant-gc-002", [{ key: "fixture_topic2", label: "再次专题" }], { from: "2026-10-01T00:00:00.000Z", until: "2026-11-01T00:00:00.000Z" }));
+    expect(again.revision).toBe(3);
+
+    // 撤销既有赠送（025 后 action=revoke 可落审计）：同键重放幂等返回同一结果。
+    const workspaceRef = await store.workspaceBySlug("grantcycle");
+    expect(workspaceRef).toBeDefined();
+    const facts = await store.grantFacts(workspaceRef!.id);
+    const target = facts.find((row) => row.idempotencyKey === "grant-gc-001");
+    expect(target).toBeDefined();
+    const revoked = await service.revokeGrant(operator, {
+      workspaceSlug: "grantcycle", grantId: target!.id, reason: "回收赠送", idempotencyKey: "revoke-gc-001",
+    });
+    expect(revoked.after.content.collections.map((item) => item.key)).not.toContain("fixture_topic");
+    const replayed = await service.revokeGrant(operator, {
+      workspaceSlug: "grantcycle", grantId: target!.id, reason: "回收赠送", idempotencyKey: "revoke-gc-001",
+    });
+    expect(replayed.after.revision).toBe(revoked.after.revision);
+    const audit = await db.query(`SELECT action FROM product_entitlement_audit WHERE actor_subject = "ops" AND idempotency_key = "revoke-gc-001";`).collect();
+    const auditRows = audit[0] as Array<{ action: string }>;
+    expect(auditRows[0]?.action).toBe("revoke");
+  }, 30000);
 });

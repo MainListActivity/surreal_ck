@@ -384,6 +384,15 @@ export class SurrealProductEntitlementStore implements ProductEntitlementStore {
     return await this.mapSnapshot(first(await (await this.db()).query(`SELECT * FROM $id;`, { id: new StringRecordId(id) })));
   }
 
+  async maxSnapshotRevision(workspaceId: string): Promise<number | null> {
+    const row = first(await (await this.db()).query(`SELECT revision FROM workspace_product_entitlement
+      WHERE workspace = $workspace
+      ORDER BY revision DESC LIMIT 1;`, {
+      workspace: new StringRecordId(workspaceId),
+    }));
+    return asNumber(row?.revision);
+  }
+
   async newestSnapshotRevision(workspaceId: string, productPlanRevisionId: string): Promise<number | null> {
     const row = first(await (await this.db()).query(`SELECT revision FROM workspace_product_entitlement
       WHERE workspace = $workspace AND product_plan_revision = $product
