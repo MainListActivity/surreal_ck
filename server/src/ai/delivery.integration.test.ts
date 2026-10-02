@@ -1,13 +1,12 @@
 import { beforeAll, afterAll, test, expect } from "bun:test";
-import { SignJWT, generateKeyPair } from "jose";
 import { loadPlatformContentScripts } from "@surreal-ck/shared/platform-content-schema";
-import { defineReaderFixture } from "../../test/define-reader-fixture";
 import type { ContentResearchSessionFactory } from "../research/window";
 import { Hono } from "hono";
 import { Surreal, StringRecordId } from "surrealdb";
 import { loadTemplateScripts } from "@surreal-ck/shared/workspace-template";
 import { createDefaultAiContextSnapshot, type ChatStreamEvent } from "@surreal-ck/shared";
-import { ChatDeliveryStore, requestDigest, authorizeDelivery } from "./delivery-store";
+import { ChatDeliveryStore, requestDigest, authorizeDelivery, type DeliveryPlatformVerifier } from "./delivery-store";
+import { createDeliveryVerifierFactory } from "./delivery-verify";
 import { createRunBus } from "./run-bus";
 import { createRunRegistry } from "./run-registry";
 import { createAiChatService, type ChatRunner } from "./chat-service";
@@ -33,7 +32,7 @@ async function caller() {
   await session.signin({ namespace: "d1_test", database: db, access: "test_member", variables: { subject } });
   return session;
 }
-function makeApp(runner: ChatRunner, opts: { registry?: ReturnType<typeof createRunRegistry>; maxRunMs?: number; content?: ContentResearchSessionFactory; saveDelayMs?: number; settleDelayMs?: number } = {}) {
+function makeApp(runner: ChatRunner, opts: { registry?: ReturnType<typeof createRunRegistry>; maxRunMs?: number; content?: ContentResearchSessionFactory; verifier?: (user: AppBindings["Variables"]["user"]) => DeliveryPlatformVerifier; saveDelayMs?: number; settleDelayMs?: number } = {}) {
   const bus = createRunBus();
   const registry = opts.registry ?? createRunRegistry();
   const service = createAiChatService({ runBus: bus, runner, maxRunMs: opts.maxRunMs });
@@ -54,9 +53,10 @@ function makeApp(runner: ChatRunner, opts: { registry?: ReturnType<typeof create
   };
   const app = new Hono<AppBindings>().onError((error, c) => { return c.json({ code: error instanceof HttpError ? error.code : "internal" }, error instanceof HttpError ? error.status : 500); });
   app.route("/", createAiChatRoutes({ service, registry, deliveries, allowance: gate,
-    createCallerSession: caller, createContentResearchSession: opts.content,
+    createCallerSession: caller, createContentResearchSession: opts.content, createDeliveryVerifier: opts.verifier,
+    rolloutGates: async () => "enabled",
     requireUser: () => async (c, next) => {
-      c.set("user", { subject, rawToken: "local-fixture-token", raw: { db } } as AppBindings["Variables"]["user"]);
+      c.set("user", { subject, rawToken: "local-fixture-token", raw: { db, exp: Math.floor(Date.now() / 1000) + 3600 } } as AppBindings["Variables"]["user"]);
       await next();
     },
   }));
@@ -180,44 +180,64 @@ local("execution window ends before settlement: slow persistence still settles o
 });
 
 
-local("real content_reader revocation blocks HTTP recovery and cached stream authorization without another charge", async () => {
+local("platform evidence re-verification reads current facts: license/item/collection/body mutations block recovery without another charge", async () => {
+  // 交付复核不再开 content_reader 会话（IdP 换票是同步 recover 的生产超时源）；
+  // 改为读底层事实（版本/条款/集合/正文哈希）+ 当前权益快照，复用换票谓词重算门禁。
   const contentDb = `${db}_content`;
   await root.query(`DEFINE DATABASE ${contentDb};`);
   const contentRoot = new Surreal(); connections.push(contentRoot);
   await contentRoot.connect(url, { authentication: { username: "root", password: "root" }, namespace: "d1_test", database: contentDb });
   for (const script of await loadPlatformContentScripts()) await contentRoot.query(script.sql);
-  const keys = await generateKeyPair("ES256");
-  await defineReaderFixture(contentRoot, { jwksUrl: "https://fixture.invalid/jwks", issuer: "https://fixture.invalid", audience: "fixture" }, keys.publicKey);
   await contentRoot.query(`
     CREATE content_source:s SET source_key='s', label='synthetic', base_url='https://example.invalid', status='active', allowed_actions=['publish'];
     CREATE source_license_revision:l SET source=content_source:s, revision=1, license_kind='synthetic', allowed_actions=['browse','search','read','cite','export','research','generate'], effective_from=time::now()-1h, created_by_subject='fixture';
     CREATE content_item:i SET public_id='i', kind='legislation', publication_status='published';
     CREATE content_version:v SET public_id='v', item=content_item:i, revision=1, source=content_source:s, source_url='https://example.invalid', fetched_at=time::now(), title='synthetic', body_text='synthetic body', body_sha256='fixture', source_form='full_text', evidence=[], field_issues=[], processing={}, content_kind_payload={}, created_by_subject='fixture';
     CREATE content_collection_binding:b SET item=content_item:i, collections=['core'];
-    CREATE content_authorization_projection:p SET workspace_id='ws_test', revision='1', revision_number=1, digest='sha256:fixture', resolver_version='test', collections=['core'], content_actions=['browse','read','cite'], ai_actions=['research'], allowed_subjects=['member'], confirmed_at=time::now(), confirmed_until=time::now()+5m, status='active';
-    CREATE content_read_gate:g SET version=content_version:v, item=content_item:i, license=source_license_revision:l, workspace_id='ws_test', revision='1', actions=['browse','read','cite'], ai_actions=['research'], source_status='active', publication_status='published', license_from=time::now()-1h, license_until=NONE, license_actions=['browse','search','read','cite','export','research','generate'], collection_matched=true, allowed_subjects=['member'], status='active';
   `);
-  const content: ContentResearchSessionFactory = async () => {
-    const reader = new Surreal(); connections.push(reader);
-    const token = await new SignJWT({ ns: "d1_test", db: contentDb, ac: "content_reader", workspace_id: "ws_test", entitlement_revision: "1" })
-      .setSubject("member").setIssuer("https://fixture.invalid").setAudience("fixture").setExpirationTime("120s").setIssuedAt().setProtectedHeader({ alg: "ES256" }).sign(keys.privateKey);
-    await reader.connect(url, { namespace: "d1_test", database: contentDb }); await reader.authenticate(token);
-    return { kind: "ready", session: reader, namespace: "d1_test", database: contentDb, entitlementRevision: "1", digest: "sha256:fixture", leaseEndSeconds: Date.now()/1000+120, close: async () => { await reader.close(); } };
-  };
+  // _system 成员索引与权益快照用存根（夹具无 _system 库）；平台事实用真实 schema 库查询。
+  const verifier = createDeliveryVerifierFactory({
+    systemSession: async () => ({ query: async () => [[{ subject: "member", disabled_at: null, workspace: { id: "workspace:ws_test", status: "active" } }]] }),
+    workspaceSession: async () => ({ query: async () => [[{ id: "user:member", disabled_at: null }]] }),
+    contentSession: async () => contentRoot,
+    currentSnapshot: async () => ({
+      id: "workspace_product_entitlement:fixture", workspaceId: "workspace:ws_test", workspaceSlug: "ws_test",
+      revision: 1, digest: "sha256:fixture", summary: "fixture", resolverVersion: "test",
+      baseSourceKind: "subscription", baseSourceId: "fixture", productPlanRevisionId: null,
+      productPlanKey: null, productPlanName: null, productRevisionNumber: null,
+      effectiveFrom: new Date(Date.now() - 60_000).toISOString(), effectiveUntil: null,
+      collections: [{ key: "core", label: "core" }], actions: ["browse", "read", "cite"],
+      sources: [], aiActions: ["research"], features: [], correlationId: "fixture",
+    }),
+    rolloutGates: async () => "enabled",
+  });
   const h = makeApp(async i => {
-    i.pushChunk({ streamId: i.streamId, type: "done", message: { id: "licensed", role: "assistant", content: "licensed result", context, createdAt: new Date().toISOString() }, toolCalls: [], deliveryProof: [{ authorization: { workspaceId: "ws_test", kind: "ready", revision: "1", digest: "sha256:fixture", leaseEndSeconds: Date.now()/1000+60 }, platform: [{ versionId: "content_version:v", bodySha256: "fixture", cite: true }], private: [] }] });
+    i.pushChunk({ streamId: i.streamId, type: "done", message: { id: "licensed", role: "assistant", content: "licensed result", context, createdAt: new Date().toISOString() }, toolCalls: [], deliveryProof: [{ authorization: { workspaceId: db, kind: "ready", revision: "1", digest: "sha256:fixture", leaseEndSeconds: Date.now()/1000+60 }, platform: [{ versionId: "content_version:v", bodySha256: "fixture", cite: true }], private: [] }] });
     return { runId: i.runId, finalText: "licensed result", status: "success" };
-  }, { content });
+  }, { verifier });
   const r = await h.post("/api/chat", { message: "licensed research", idempotencyKey: "licensed" }); expect(r.status).toBe(200);
   const { runId } = await r.json() as { runId: string };
   await until(async () => (await ledger(runId)).some(e => e.kind === "settle"));
   expect((await h.post(`/api/chat/runs/${runId}/recover`)).status).toBe(200);
-  for (const revoke of ["UPDATE content_read_gate:g SET license_until=time::now()-1s", "UPDATE content_read_gate:g SET publication_status='withdrawn'", "UPDATE content_authorization_projection:p SET ai_actions=[]; UPDATE content_read_gate:g SET ai_actions=[]"]) {
+  // 许可修订与内容版本在引擎层不可变：撤权 = 更高 revision 行；正文哈希篡改只可能经单测桩覆盖。
+  let licRev = 1;
+  const ALL_ACTIONS = "'browse','search','read','cite','export','research','generate'";
+  const license = (actions: string, until: string | null) =>
+    `CREATE source_license_revision SET source=content_source:s, revision=${++licRev}, license_kind='synthetic', allowed_actions=[${actions}], effective_from=time::now()-1h, created_by_subject='fixture'${until === null ? "" : `, effective_until=${until}`};`;
+  for (const [revoke, restore] of [
+    [license(ALL_ACTIONS, "time::now()-1s"), license(ALL_ACTIONS, null)],            // 许可到期
+    ["UPDATE content_item:i SET publication_status='withdrawn';", "UPDATE content_item:i SET publication_status='published';"],
+    ["UPDATE content_source:s SET status='inactive';", "UPDATE content_source:s SET status='active';"],
+    ["UPDATE content_collection_binding:b SET collections=['other'];", "UPDATE content_collection_binding:b SET collections=['core'];"],
+    [license("'browse','search','read','cite','export'", null), license(ALL_ACTIONS, null)],   // AI 动作被吊销
+    [license("'read','research'", null), license(ALL_ACTIONS, null)],                          // cite 证据但许可不再授引用
+  ] as Array<[string, string]>) {
     await contentRoot.query(revoke);
     expect((await h.post(`/api/chat/runs/${runId}/recover`)).status).not.toBe(200);
     await expect(h.registry.get(runId)!.authorize!()).rejects.toThrow();
-    await contentRoot.query("UPDATE content_read_gate:g SET license_until=NONE, publication_status='published', ai_actions=['research']; UPDATE content_authorization_projection:p SET ai_actions=['research'];");
+    await contentRoot.query(restore);
   }
+  expect((await h.post(`/api/chat/runs/${runId}/recover`)).status).toBe(200);
   expect((await ledger(runId)).filter(e => e.kind === "settle")).toHaveLength(1);
   expect((await ledger(runId)).filter(e => e.kind === "reserve")).toHaveLength(1);
 });

@@ -1,7 +1,6 @@
 import { createCipheriv, createDecipheriv, randomBytes, createHash } from "node:crypto";
 import { StringRecordId, type Surreal } from "surrealdb";
 import type { AiDeliveryProof, ChatStreamEvent } from "@surreal-ck/shared";
-import type { OpenContentResearchSession } from "../../ai/mastra/workflows/router-workflow";
 import { isRetryableTxnError } from "../ai-allowance/service";
 import { HttpError } from "../http-error";
 
@@ -15,7 +14,8 @@ export const requestDigest = digest;
 function first<T>(value: unknown): T | undefined {
   return Array.isArray(value) && Array.isArray(value[0]) ? value[0][0] as T | undefined : undefined;
 }
-function denied(): never { throw new HttpError(409, "authorization_changed", "当前材料或授权已变化，不能补取旧答案，请重新研究。"); }
+/** 撤权/证据变化统一出口：recover 与 WS 补取按此 409 提示重新研究。 */
+export function deniedDelivery(): never { throw new HttpError(409, "authorization_changed", "当前材料或授权已变化，不能补取旧答案，请重新研究。"); }
 
 /** Caller session persists an authenticated ciphertext; no root business access or plaintext snapshot. */
 export class ChatDeliveryStore {
@@ -68,14 +68,14 @@ export class ChatDeliveryStore {
   decrypt(row: DeliveryRow, db: string, subject: string): DeliveryPayload {
     try {
       const envelope = JSON.parse(row.envelope ?? "") as { v: number; iv: string; tag: string; data: string };
-      if (envelope.v !== 1) return denied();
+      if (envelope.v !== 1) return deniedDelivery();
       const decipher = createDecipheriv("aes-256-gcm", this.key, Buffer.from(envelope.iv, "base64"));
       decipher.setAAD(this.aad(db, subject, row.run_id));
       decipher.setAuthTag(Buffer.from(envelope.tag, "base64"));
       const payload = JSON.parse(Buffer.concat([decipher.update(Buffer.from(envelope.data, "base64")), decipher.final()]).toString()) as DeliveryPayload;
-      if (payload.event.kind !== "done" || payload.event.runId !== row.run_id || !Array.isArray(payload.proofs)) return denied();
+      if (payload.event.kind !== "done" || payload.event.runId !== row.run_id || !Array.isArray(payload.proofs)) return deniedDelivery();
       return payload;
-    } catch { return denied(); }
+    } catch { return deniedDelivery(); }
   }
   async status(session: Session, runId: string, status: "failed" | "suspended"): Promise<void> {
     await session.query(`UPDATE chat_delivery SET status = $status WHERE run_id = $runId
@@ -83,28 +83,25 @@ export class ChatDeliveryStore {
   }
 }
 
-/** Re-open current RECORD authorization and verify all prompt evidence, including uncited material. */
-export async function authorizeDelivery(session: Session, proofs: readonly AiDeliveryProof[], openContentSession?: OpenContentResearchSession): Promise<void> {
+/**
+ * 平台证据复核回调：校验存储答案引用的平台内容在当前授权/许可下仍可交付。
+ * 实现必须只读当前事实与快照、快速返回（recover/WS 补取是同步请求路径），不得发起 IdP 换票。
+ */
+export type DeliveryPlatformVerifier = (proofs: readonly AiDeliveryProof[]) => Promise<void>;
+
+/** Re-verify caller RECORD session and all prompt evidence, including uncited material. */
+export async function authorizeDelivery(session: Session, proofs: readonly AiDeliveryProof[], verifyPlatform?: DeliveryPlatformVerifier): Promise<void> {
   const current = await session.query(`RETURN fn::current_user() != NONE AND (SELECT VALUE disabled_at FROM ONLY fn::current_user()) = NONE;`);
-  if (!Array.isArray(current) || current[0] !== true) return denied();
+  if (!Array.isArray(current) || current[0] !== true) return deniedDelivery();
+  const platformProofs = proofs.filter((proof) => proof.platform.length > 0 || proof.authorization.kind === "ready");
+  if (platformProofs.length > 0) {
+    if (!verifyPlatform) return deniedDelivery();
+    await verifyPlatform(platformProofs);
+  }
   for (const proof of proofs) {
-    if (proof.platform.length || proof.authorization.kind === "ready") {
-      const window = await openContentSession?.();
-      if (!window || window.kind !== "ready") return denied();
-      try {
-        if (window.entitlementRevision !== proof.authorization.revision || window.digest !== proof.authorization.digest
-          || window.leaseEndSeconds <= Date.now() / 1000) return denied();
-        for (const item of proof.platform) {
-          const row = first<{ body_sha256?: string; ai?: boolean; read?: boolean; cite?: boolean }>(await window.session.query(`SELECT body_sha256,
-            fn::content_reader_action(id, 'ai_use') AS ai, fn::content_reader_action(id, 'read') AS read,
-            fn::content_reader_action(id, 'cite') AS cite FROM $version;`, { version: new StringRecordId(item.versionId) }));
-          if (!row || row.body_sha256 !== item.bodySha256 || row.ai !== true || row.read !== true || (item.cite && row.cite !== true)) return denied();
-        }
-      } finally { await window.close(); }
-    }
     for (const item of proof.private) {
       const row = first<{ evidence?: Array<{ text?: string }> }>(await session.query("SELECT evidence FROM $resource;", { resource: new StringRecordId(item.resourceId) }));
-      if (!row?.evidence?.some(e => typeof e.text === "string" && digest(e.text.trim()) === item.quoteSha256)) return denied();
+      if (!row?.evidence?.some(e => typeof e.text === "string" && digest(e.text.trim()) === item.quoteSha256)) return deniedDelivery();
     }
   }
 }
