@@ -83,7 +83,19 @@ require_revocation_compat() {
     return 0
   fi
   echo "revocation gate: $target lacks revocation filtering; freezing writes (systemctl stop $service)" >&2
-  sudo -n systemctl stop "$service"
+  # 本函数在 if 条件中被调用，errexit 被抑制：stop 失败不会中断脚本，必须显式检查。
+  # stop 报错但服务已不活跃（进程已死/已失败）同样是成立的冻结态可放行；
+  # 服务仍活跃、或状态不可证明（is-active 查询失败/异常态）→ 冻结不成立 → 拒绝。
+  if ! sudo -n systemctl stop "$service"; then
+    local state
+    state=$(systemctl is-active "$service" 2>/dev/null || true)
+    if [ "$state" != "inactive" ] && [ "$state" != "failed" ]; then
+      echo "revocation gate: systemctl stop $service failed and state='$state' (not confirmed stopped); refusing" >&2
+      sudo -n systemctl start "$service" || echo "revocation gate: WARN failed to restore $service" >&2
+      return 1
+    fi
+    echo "revocation gate: stop reported failure but $service is already $state; freeze holds" >&2
+  fi
   # 排空窗口：进程停止前已被引擎接收的撤销写入可能在停服后落库
   # （响应丢失但提交成功）。停服后先静置再查计数，覆盖该 in-flight 窗口。
   sleep "${REVOCATION_GATE_DRAIN_SEC:-3}"
@@ -98,7 +110,7 @@ require_revocation_compat() {
   if [ "$verdict" -ne 0 ]; then
     echo "revocation gate: refusing to activate $target" >&2
     # 拒绝激活：服务保持原 current 指向，拉回运行（即使带病也好过授权语义回退）。
-    sudo -n systemctl start "$service" || true
+    sudo -n systemctl start "$service" || echo "revocation gate: WARN failed to restore $service" >&2
     return 1
   fi
   # 服务保持停止：调用方随即完成 point_to + restart；冻结覆盖检查到切换全程。
@@ -111,10 +123,16 @@ rollback() {
     echo "automatic rollback refused: $previous is not revocation-compatible" >&2
     exit 1
   fi
-  cat "$env_backup" > "$env_file"
-  point_to "$previous"
-  sudo -n systemctl restart "$service"
-  healthy && echo "restored $previous" >&2
+  # 本函数经 || 调用，errexit 全程被抑制：以下每步失败不会中断脚本，
+  # 必须显式中止，避免把 env/current 不一致的中间态推进到 restart。
+  cat "$env_backup" > "$env_file" || { echo "rollback failed: env restore failed; aborting" >&2; exit 1; }
+  point_to "$previous" || { echo "rollback failed: point_to $previous failed; aborting" >&2; exit 1; }
+  sudo -n systemctl restart "$service" || { echo "rollback failed: restart $service failed; aborting" >&2; exit 1; }
+  if ! healthy; then
+    echo "rollback failed: $previous did not become healthy" >&2
+    exit 1
+  fi
+  echo "restored $previous" >&2
   exit 1
 }
 
