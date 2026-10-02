@@ -32,6 +32,7 @@ export type SubscriptionFact = {
    */
   cycleFrom: string | null;
   cycleUntil: string | null;
+  trialConversion?: { sourceId: string; at: string; eventKey: string };
 };
 
 export type ContentGrantFact = {
@@ -218,4 +219,3 @@ export function toView(workspaceSlug: string, revision: number, draft: Entitleme
     },
   };
 }
-

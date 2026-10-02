@@ -200,6 +200,7 @@ class FakeLedger implements Queryable {
   }
 
   async query(sql: string, params: Record<string, unknown> = {}): Promise<unknown> {
+    if (sql.includes("INSERT INTO ai_allowance_source_termination")) return [];
     if (sql.includes("UPDATE ai_allowance_bucket SET")) {
       let count = 0;
       const prefix = String(params.trialPrefix);
@@ -297,7 +298,8 @@ describe("syncPlanCycleAllowance（LCA08 周期额度规则流程）", () => {
       total: 50, available: 50, period_key: "purchased-2026",
     });
 
-    const first = await syncPlanCycleAllowance({ session: ledger, directive: directive(), correlationId: "c1" });
+    const converted = { ...directive(), trialConversion: { sourceId: "quota_subscription:team", at: "2026-09-01T00:00:00.000Z", eventKey: "conversion" } };
+    const first = await syncPlanCycleAllowance({ session: ledger, directive: converted, correlationId: "c1" });
     expect(first.trialTerminated).toBe(1);
     const trial = ledger.buckets.get("ai_allowance_bucket:trial_old")!;
     expect(trial.terminated_at).not.toBeNull();
@@ -308,7 +310,7 @@ describe("syncPlanCycleAllowance（LCA08 周期额度规则流程）", () => {
     expect(ledger.buckets.get("ai_allowance_bucket:purchased_keep")?.terminated_at ?? null).toBeNull();
 
     // 重复转换/刷新：标记幂等，不再计数，不重复授予。
-    const again = await syncPlanCycleAllowance({ session: ledger, directive: directive(), correlationId: "c2" });
+    const again = await syncPlanCycleAllowance({ session: ledger, directive: converted, correlationId: "c2" });
     expect(again.trialTerminated).toBe(0);
     expect(ledger.grants).toHaveLength(1);
   });

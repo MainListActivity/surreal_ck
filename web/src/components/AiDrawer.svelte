@@ -48,7 +48,7 @@
     formatAllowanceTime,
     loadAiAllowanceSnapshot,
   } from "../lib/ai-allowance";
-  import type { AiAllowanceSnapshot, AiChatMessage, ResourceCitationDTO } from "@surreal-ck/shared";
+  import type { AiAllowanceSnapshot, AiChatMessage, ResourceCitationDTO, ProductEntitlementView } from "@surreal-ck/shared";
   import type {
     ChatStreamEvent,
     DashboardDraftIntent,
@@ -218,10 +218,18 @@
       allowance = null;
       return;
     }
+    const slug = workspaceSlug;
+    const conn = getSurreal();
     try {
-      allowance = await loadAiAllowanceSnapshot(getSurreal());
+      const response = await api.api.workspaces[":slug"]["product-entitlement"].$get({ param: { slug } });
+      if (!response.ok) throw new Error("无法核验当前额度来源");
+      const product = await response.json() as ProductEntitlementView;
+      if (product.workspaceSlug !== slug) throw new Error("额度来源工作区不匹配");
+      const next = await loadAiAllowanceSnapshot(conn, { ...product.baseSource,
+        effectiveFrom: product.effectiveFrom, effectiveUntil: product.effectiveUntil });
+      if (open && workspaceSlug === slug && conn === getSurreal()) allowance = next;
     } catch {
-      allowance = null;
+      if (workspaceSlug === slug) allowance = null;
     }
   }
   $effect(() => {
@@ -579,7 +587,9 @@
         本次预计消耗 {allowance.quote.amount} AI 额度 · 可用 {allowance.available}
         {#if allowance.reserved > 0}· 预留中 {allowance.reserved}{/if}
         {#if allowance.suspended > 0}· 暂停 {allowance.suspended}{/if}
-        {#if allowance.terminated > 0}· 已终止 {allowance.terminated}{/if}
+        {#if allowance.terminated > 0}· 来源失效或已终止 {allowance.terminated}{/if}
+        {#if allowance.pending > 0}· 尚未生效 {allowance.pending}{/if}
+        {#if allowance.unavailable > 0}· 无法核验 {allowance.unavailable}{/if}
         {#if allowance.expired > 0}· 已过期 {allowance.expired}{/if}
         {#if allowance.available < allowance.quote.amount}
           <span class="allowance-low">额度不足</span>

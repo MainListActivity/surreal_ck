@@ -135,7 +135,7 @@ beforeAll(async () => {
   });
 
   workspaceDb = await connect("ws_lca08");
-  for (const script of ["035-ai-allowance.surql", "042-ai-plan-upgrade-proration.surql"]) {
+  for (const script of ["035-ai-allowance.surql", "042-ai-plan-upgrade-proration.surql", "047-ai-source-termination.surql"]) {
     await workspaceDb.query(
       await readFile(
         new URL(`../../../shared/sql/workspace-template/${script}`, import.meta.url),
@@ -512,7 +512,7 @@ describe("subscription cascade against local SurrealDB (LCA08)", () => {
       // ── 0. 夹具：provider 关联订阅 + 首个 item（root 造初始态）────────────
       await db!.query(`DEFINE DATABASE IF NOT EXISTS ws_lca08b;`);
       const wsB = await connect("ws_lca08b");
-      for (const script of ["035-ai-allowance.surql", "042-ai-plan-upgrade-proration.surql"]) {
+      for (const script of ["035-ai-allowance.surql", "042-ai-plan-upgrade-proration.surql", "047-ai-source-termination.surql"]) {
         await wsB.query(
           await readFile(
             new URL(`../../../shared/sql/workspace-template/${script}`, import.meta.url),
@@ -973,7 +973,7 @@ describe("subscription cascade against local SurrealDB (LCA08)", () => {
       // ── 0. 夹具：provider 试用订阅（trialing），相对当前时间的未来窗口 ────
       await db!.query(`DEFINE DATABASE IF NOT EXISTS ws_lca08c;`);
       const wsC = await connect("ws_lca08c");
-      for (const script of ["035-ai-allowance.surql", "042-ai-plan-upgrade-proration.surql"]) {
+      for (const script of ["035-ai-allowance.surql", "042-ai-plan-upgrade-proration.surql", "047-ai-source-termination.surql"]) {
         await wsC.query(
           await readFile(
             new URL(`../../../shared/sql/workspace-template/${script}`, import.meta.url),
@@ -1207,6 +1207,249 @@ describe("subscription cascade against local SurrealDB (LCA08)", () => {
   );
 
   localTest(
+    "LCA14 D3: different trial/paid source IDs terminate only the linked trial through the operator lifecycle",
+    async () => {
+      // ── 0. 夹具：provider 试用订阅（trialing），相对当前时间的未来窗口 ────
+      await db!.query(`DEFINE DATABASE IF NOT EXISTS ws_lca14newsource;`);
+      const wsC = await connect("ws_lca14newsource");
+      for (const script of ["035-ai-allowance.surql", "042-ai-plan-upgrade-proration.surql", "047-ai-source-termination.surql"]) {
+        await wsC.query(
+          await readFile(
+            new URL(`../../../shared/sql/workspace-template/${script}`, import.meta.url),
+            "utf8",
+          ),
+        );
+      }
+      const nowMs = Date.now();
+      const iso = (ms: number) => new Date(ms).toISOString();
+      const trialStart = iso(nowMs - 10 * 86_400_000);
+      const trialEnd = iso(nowMs + 20 * 86_400_000);
+      const paidStart = iso(nowMs);
+      const paidEnd = iso(nowMs + 30 * 86_400_000);
+      const purchasedEnd = iso(nowMs + 90 * 86_400_000);
+      await db!.query(`
+        CREATE billing_account:lca14newsource CONTENT {
+          account_key: "lca14newsource", name: "LCA08C Billing", kind: "team", status: "active"
+        };
+        CREATE workspace:lca14newsource CONTENT {
+          db_name: "ws_lca14newsource", owner_subject: "operator:carol", slug: "lca14newsource",
+          name: "LCA08C", status: "active"
+        };
+        CREATE user:member_new CONTENT { subject: "member_new", email: "mnew@x", kind: "human", is_admin: false };
+        CREATE quota_subscription:lca14newsourcesub CONTENT {
+          billing_account: billing_account:lca14newsource, source: "provider", status: "trialing",
+          revision: 1, provider: "fixture_provider", provider_customer_id: "cus_lca14newsource",
+          provider_subscription_id: "sub_lca14newsource_1", provider_source_revision: 1,
+          trial_start: <datetime> "${trialStart}", trial_end: <datetime> "${trialEnd}",
+          current_period_start: <datetime> "${trialStart}", current_period_end: <datetime> "${trialEnd}",
+          cancel_at_period_end: false, correlation_id: "fixture-lca14newsource"
+        };
+        CREATE quota_subscription_item:lca14newsourceitem CONTENT {
+          subscription: quota_subscription:lca14newsourcesub, workspace: workspace:lca14newsource,
+          plan_revision: quota_plan_revision:plus_v1, revision: 1, status: "active",
+          effective_from: <datetime> "${trialStart}", effective_until: <datetime> "${trialEnd}",
+          active_workspace: workspace:lca14newsource, correlation_id: "fixture-lca14newsource"
+        };
+      `);
+
+      const client = queryClient();
+      const products = new ProductEntitlementService(
+        new SurrealProductEntitlementStore(async () => client, namespace),
+        () => new Date(),
+      );
+      const operator: ProductActor = {
+        subject: "operator:carol",
+        capabilities: ["subscription.manage", "quota.read"],
+      };
+      const synchronizer = new AiAllowancePlanCycleSynchronizer({
+        workspaceSession: async (dbName) => {
+          if (dbName === "ws_lca14newsource") return wsC;
+          throw new Error(`unexpected workspace db ${dbName}`);
+        },
+      });
+      const cascade = new SubscriptionEntitlementCascade(
+        new SurrealEntitlementRefreshService(client),
+        products,
+        synchronizer,
+      );
+      const refreshC = (correlationId: string) =>
+        cascade.refreshWorkspace({
+          workspace: id("workspace:lca14newsource"),
+          at: new DateTime(new Date().toISOString()),
+          operationKind: "manual_assignment",
+          actorKind: "operator",
+          actorSubject: "operator:carol",
+          authorizedCapability: "subscription.manage",
+          correlationId,
+          causationId: `causation:${correlationId}`,
+        });
+      const allowance = new AiAllowanceService({
+        workspaceSession: async () => wsC,
+        systemSession: async () => client,
+      });
+      const actor = id("user:member_new");
+
+      // ── 1. 试用期指派：trial 周期桶落地，试用余额可预留 ──────────────────
+      const rev1 = await products.publishRevision(operator, {
+        planKey: "fixture_plus_new",
+        displayName: "夹具律师 Plus C",
+        revision: 1,
+        resourceTemplateId: "quota_plan_revision:plus_v1",
+        collections: [{ key: "new_core", label: "C 核心" }],
+        actions: ["browse", "search", "read"],
+        aiActions: ["research"],
+        features: [{ key: "ai_cycle_allowance", enabled: true, limit: 200 }],
+        reason: "LCA08 AC5 夹具发布",
+        idempotencyKey: "lca14newsource-publish-1",
+      });
+      await products.assign(operator, {
+        workspaceSlug: "lca14newsource",
+        billingAccountKey: "lca14newsource",
+        productPlanRevisionId: rev1.productPlanRevisionId,
+        reason: "LCA08 AC5 夹具指派",
+        idempotencyKey: "lca14newsource-assign-1",
+      });
+      await refreshC("lca14newsource-cascade-trial");
+      // 独立购买加量包：试用期自带的独立有效期，不受转换影响。
+      await allowance.grant({
+        db: "ws_lca14newsource", kind: "purchased", amount: 50, label: "purchased keep",
+        periodKey: `purchased:${nowMs}`, effectiveFrom: new Date(nowMs - 60_000),
+        expiresAt: new Date(purchasedEnd), operatorSubject: "ops-test",
+      });
+      let trialBuckets = rows<{ id: unknown; period_key: string; total: number; available: number; reserved: number; expires_at: unknown; terminated_at: unknown }>(
+        await wsC.query(`SELECT id, period_key, total, available, reserved, expires_at, terminated_at FROM ai_allowance_bucket WHERE kind = "plan_cycle";`).collect(),
+      );
+      expect(trialBuckets).toHaveLength(1);
+      const trialBucketId = String(trialBuckets[0]!.id);
+      expect(trialBuckets[0]!.period_key).toBe(
+        `trial:quota_subscription:lca14newsourcesub:${trialStart}`,
+      );
+      expect(trialBuckets[0]!.terminated_at ?? null).toBeNull();
+
+      const r1 = await allowance.reserve({
+        db: "ws_lca14newsource", actor, channel: "interactive", actionKey: "research",
+        idempotencyKey: "c-pre-1", runId: "c-run-1",
+      });
+      const r2 = await allowance.reserve({
+        db: "ws_lca14newsource", actor, channel: "interactive", actionKey: "research",
+        idempotencyKey: "c-pre-2", runId: "c-run-2",
+      });
+      expect(r1.metered && r2.metered).toBe(true);
+      if (r1.metered && r2.metered) {
+        expect(String(r1.reservation.bucket)).toBe(trialBucketId);
+        expect(String(r2.reservation.bucket)).toBe(trialBucketId);
+      }
+
+      // ── 2. 转付费商业确认（provider 事件 trialing→active）：旧试用桶立即
+      //      终止，付费周期独立新桶；并发刷新不重复发放 ───────────────────
+      const coordinator = new QuotaLifecycleCoordinator(
+        new SurrealQuotaLifecycleStore(client),
+        cascade,
+        "worker-lca14newsource",
+      );
+      await coordinator.submitOperatorIntent({
+        kind: "subscription_upsert", actorSubject: "operator:carol", actorCapability: "subscription.manage",
+        requestId: "convert-new-source", workspace: id("workspace:lca14newsource"), billingAccount: id("billing_account:lca14newsource"),
+        customerReason: "隔离夹具转换", operatorReason: "LCA14 不触发商业付款", effectiveAt: new DateTime(paidStart),
+        input: { mode: "manual_assignment", source: "manual", subscription: "quota_subscription:lca14paid",
+          plan_revision: "quota_plan_revision:plus_v1", status: "active",
+          current_period_start: paidStart, current_period_end: paidEnd },
+        impactPreview: { fixture: true }, correlationId: "corr-new-source-convert",
+      });
+      await expect(coordinator.processNextOperatorIntent()).resolves.toBe("processed");
+      // 紧接一次重复刷新：与转换事件同一商业终态，级联幂等收敛。
+      await refreshC("lca14newsource-cascade-convert-concurrent");
+
+      trialBuckets = rows(
+        await wsC.query(`SELECT id, period_key, total, available, reserved, terminated_at, expires_at, created_at FROM ai_allowance_bucket WHERE kind = "plan_cycle" ORDER BY created_at;`).collect(),
+      );
+      expect(trialBuckets).toHaveLength(2);
+      const terminatedTrial = trialBuckets.find((bucket) => String(bucket.id) === trialBucketId)!;
+      const paidBucket = trialBuckets.find((bucket) => String(bucket.id) !== trialBucketId)!;
+      // 终止标记落在试用桶上：金额与期限不动，不删除、不改写账本。
+      expect(terminatedTrial.terminated_at != null).toBe(true);
+      expect(terminatedTrial.total).toBe(200);
+      expect(terminatedTrial.available).toBe(190);
+      expect(terminatedTrial.reserved).toBe(10);
+      expect(new Date(String(terminatedTrial.expires_at)).toISOString()).toBe(trialEnd);
+      // 付费新桶独立成桶：新周期键、原授予、独立到期边界。
+      expect(paidBucket.period_key).toBe(
+        "subscription:quota_subscription:lca14paid:" + paidStart,
+      );
+      expect(paidBucket.total).toBe(200);
+      expect(paidBucket.available).toBe(200);
+      expect(new Date(String(paidBucket.expires_at)).toISOString()).toBe(paidEnd);
+
+      // ── 3. 转换后新预留只能用付费桶：旧试用余额不可选（fail-closed）──────
+      const r3 = await allowance.reserve({
+        db: "ws_lca14newsource", actor, channel: "interactive", actionKey: "research",
+        idempotencyKey: "c-post-1", runId: "c-run-3",
+      });
+      expect(r3.metered).toBe(true);
+      if (r3.metered) expect(String(r3.reservation.bucket)).toBe(String(paidBucket.id));
+
+      // ── 4. 转换前预留：deadline 内按原桶结算；取消/超时释放只冲销 ────────
+      await allowance.settle({ db: "ws_lca14newsource", idempotencyKey: "c-pre-2" });
+      await allowance.release({ db: "ws_lca14newsource", idempotencyKey: "c-pre-1", reason: "cancelled_before_terminal" });
+      const afterRelease = rows<{ available: number; reserved: number; settled: number; terminated_at: unknown }>(
+        await wsC.query(`SELECT available, reserved, settled, terminated_at FROM ONLY $bid;`, { bid: id(trialBucketId) }).collect(),
+      )[0]!;
+      // 释放只记冲销：available 不回升（190 = 200 − 2×5 预留，其中 5 结算、5 冲销）。
+      expect(afterRelease.available).toBe(190);
+      expect(afterRelease.reserved).toBe(0);
+      expect(afterRelease.settled).toBe(5);
+      expect(afterRelease.terminated_at != null).toBe(true);
+      const writeoffs = rows<{ amount: number }>(
+        await wsC.query(`SELECT amount FROM ai_ledger_entry WHERE kind = "writeoff";`).collect(),
+      );
+      expect(writeoffs.map((w) => w.amount)).toEqual([5]);
+
+      // ── 5. 重复转换/刷新：不重复发放、不撤销终止、不复活试用 ────────────
+      await refreshC("lca14newsource-cascade-convert-repeat");
+      const afterRepeat = rows<{ period_key: string; total: number; terminated_at: unknown }>(
+        await wsC.query(`SELECT period_key, total, terminated_at, created_at FROM ai_allowance_bucket WHERE kind = "plan_cycle" ORDER BY created_at;`).collect(),
+      );
+      expect(afterRepeat).toHaveLength(2);
+      expect(afterRepeat.map((bucket) => bucket.total)).toEqual([200, 200]);
+      expect(afterRepeat[0]!.terminated_at != null).toBe(true);
+      const allGrants = rows<{ amount: number }>(
+        await wsC.query(`SELECT amount, created_at FROM ai_ledger_entry WHERE kind = "grant" ORDER BY created_at;`).collect(),
+      );
+      expect(allGrants.map((grant) => grant.amount)).toEqual([200, 50, 200]);
+
+      // ── 6. 余额视图：终止桶离开可消费余额，购买包独立有效期不动 ─────────
+      const balance = await allowance.balance("ws_lca14newsource");
+      expect(balance.available).toBe(245); // 付费 200−5 预留 + 购买 50
+      expect(balance.reserved).toBe(5);
+      expect(balance.terminated).toBe(190);
+      const purchasedRow = balance.buckets.find((bucket) => bucket.kind === "purchased")!;
+      expect(purchasedRow.available).toBe(50);
+      expect(new Date(String(purchasedRow.expires_at)).toISOString()).toBe(purchasedEnd);
+      expect(purchasedRow.terminated_at ?? null).toBeNull();
+
+      const markers = rows(await wsC.query("SELECT source_prefix,paid_source,event_key FROM ai_allowance_source_termination").collect());
+      expect(markers).toHaveLength(1);
+      expect(markers[0]!.source_prefix).toBe("trial:quota_subscription:lca14newsourcesub:");
+      expect(markers[0]!.paid_source).toBe("quota_subscription:lca14paid");
+      await wsC.query(`CREATE ai_allowance_bucket:late_trial CONTENT {
+        kind:"plan_cycle", label:"迟到试用", period_key:$latePeriod, total:10,available:10,reserved:0,settled:0,
+        effective_from:$from,expires_at:$until };
+        CREATE ai_allowance_bucket:unrelated_trial CONTENT {
+        kind:"plan_cycle", label:"其他来源", period_key:"trial:quota_subscription:other:cycle", total:12,available:12,reserved:0,settled:0,
+        effective_from:$from,expires_at:$until };`, {
+        latePeriod: `trial:quota_subscription:lca14newsourcesub:${trialStart}:late`,
+        from: new DateTime(trialStart), until: new DateTime(trialEnd),
+      }).collect();
+      const late = rows(await wsC.query("SELECT terminated_at FROM ai_allowance_bucket:late_trial").collect())[0]!;
+      const unrelated = rows(await wsC.query("SELECT terminated_at FROM ai_allowance_bucket:unrelated_trial").collect())[0]!;
+      expect(late.terminated_at != null).toBe(true);
+      expect(unrelated.terminated_at ?? null).toBeNull();
+      await wsC.close();
+    },
+    120_000,
+  );
+
+  localTest(
     "operator renewal extends the active item window and replay conflict maps to an idempotency-conflict code",
     async () => {
       // QA 退回缺陷回归：运营路径同套餐同产品续费（$same 分支）必须随
@@ -1215,7 +1458,7 @@ describe("subscription cascade against local SurrealDB (LCA08)", () => {
       // 已有同语义（本文件上一用例第 3 段），本用例覆盖运营入口。
       await db!.query(`DEFINE DATABASE IF NOT EXISTS ws_lca08d;`);
       const wsD = await connect("ws_lca08d");
-      for (const script of ["035-ai-allowance.surql", "042-ai-plan-upgrade-proration.surql"]) {
+      for (const script of ["035-ai-allowance.surql", "042-ai-plan-upgrade-proration.surql", "047-ai-source-termination.surql"]) {
         await wsD.query(
           await readFile(
             new URL(`../../../shared/sql/workspace-template/${script}`, import.meta.url),
