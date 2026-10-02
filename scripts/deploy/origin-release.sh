@@ -116,9 +116,52 @@ require_revocation_compat() {
   # 服务保持停止：调用方随即完成 point_to + restart；冻结覆盖检查到切换全程。
 }
 
+# LCA10 试用来源门禁：POST /api/workspaces 是公共创建入口。LCA10 之前的 origin
+# 在 canCreate 成立后直接以隐式 trial 来源供应（路由内硬编码 resourceSource，
+# 不读 pro_trial_configuration/pro_trial_eligibility）；把这样的旧 origin 回滚/
+# 恢复为 current，会在人工处置前重新打开隐式试用创建。
+#
+# 语义断言（可执行、纯静态）：目标必须同时满足
+#   1) 公共创建入口不再自授 trial 来源；
+#   2) 显式受控试用入口存在（routes/pro-trial.ts，配置/资格驱动）。
+# 目标树缺失/不可读/检查命令出错一律 fail-closed 拒绝。本门禁不做存活探测、
+# 不停服、无副作用：放在撤销门禁（可能停服冻结）之前执行，拒绝时调用方
+# 尚未发生任何状态变更，无需恢复。
+target_has_explicit_trial_source() {
+  local target="$1"
+  local route="$target/server/src/routes/workspaces.ts"
+  local trial_entry="$target/server/src/routes/pro-trial.ts"
+  [ -f "$route" ] || { echo "trial gate: $route missing; cannot prove creation semantics" >&2; return 1; }
+  [ -f "$trial_entry" ] || { echo "trial gate: $trial_entry missing; target has no explicit trial entry" >&2; return 1; }
+  local verdict=0
+  grep -Eq 'planKey:[[:space:]]*["'\'']trial["'\'']' "$route" || verdict=$?
+  if [ "$verdict" -ge 2 ]; then
+    echo "trial gate: grep failed (rc=$verdict) on $route; cannot prove creation semantics" >&2
+    return 1
+  fi
+  if [ "$verdict" -eq 0 ]; then
+    echo "trial gate: $route self-issues an implicit trial source" >&2
+    return 1
+  fi
+  return 0
+}
+
+require_trial_source_compat() {
+  if target_has_explicit_trial_source "$1"; then
+    return 0
+  fi
+  echo "trial gate: refusing to activate $1 (would restore implicit trial creation)" >&2
+  return 1
+}
+
 rollback() {
   echo "release $release_id failed: $1; restoring $previous" >&2
   sudo -n journalctl -u "$service" -n 40 --no-pager >&2 || true
+  # 先做纯静态的试用来源检查（无副作用）：拒绝时 env/current/服务均未被触碰。
+  if ! require_trial_source_compat "$previous"; then
+    echo "automatic rollback refused: $previous would restore implicit trial creation" >&2
+    exit 1
+  fi
   if ! require_revocation_compat "$previous"; then
     echo "automatic rollback refused: $previous is not revocation-compatible" >&2
     exit 1
@@ -157,6 +200,12 @@ if [ -n "$env_additions" ] && [ -s "$env_additions" ]; then
   done < "$env_additions"
 fi
 [ -n "$env_additions" ] && rm -f "$env_additions"
+
+# 试用来源门禁：LCA10 起，进入生产的 origin（含手动 Deploy origin 旧 sha 恢复）
+# 必须携带显式创建来源语义；目标缺失即拒绝发布，不动运行中服务。
+if ! require_trial_source_compat "$release"; then
+  exit 1
+fi
 
 # 撤销兼容门禁：发布（含手动 Deploy origin 旧 sha）若目标不含撤销过滤，
 # 仅在 _system 无撤销记录时才放行；判定拒绝时不动运行中服务直接退出。

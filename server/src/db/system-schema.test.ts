@@ -141,7 +141,6 @@ describe("system schema seed", () => {
       fromVersion: 26,
       toVersion: 26,
       appliedVersions: [],
-      appliedVersions: [],
     });
     expect(db.queryCalls.slice(callsAfterFirstRun).map((call) => call.sql.trim())).toEqual([
       "DEFINE DATABASE IF NOT EXISTS _system;",
