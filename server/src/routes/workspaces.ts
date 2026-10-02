@@ -32,6 +32,8 @@ export function createWorkspaceRoutes(
 ) {
   return new Hono<AppBindings>()
     .post("/api/workspaces", requireUser(), async c => {
+      // workspace-commercial-source-required 是 origin-release.sh 试用来源门禁
+      // 的正向关闭契约：改名或移除会让发布/回滚被 fail-closed 拒绝。
       c.status(409);
       return c.json({ error: { code: "workspace-commercial-source-required", message: "新工作区需要有效商业来源；请使用显式 Pro 试用入口或联系计费管理员" } });
     })

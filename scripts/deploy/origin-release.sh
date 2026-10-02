@@ -34,6 +34,21 @@ point_to() {
   mv -T "$root/current.next" "$root/current"
 }
 
+# 拒绝/中止路径统一恢复 live env：先写临时文件再 mv 覆盖——若直接
+# cat > $env_file，重定向会先于 cat 失败截断目标，把 env 清成空文件。
+# 恢复失败显式中止（备份仍在 $env_backup 供人工排查），不静默留下
+# 被增改的 env，否则原服务下次重启会读到一次被拒绝发布的配置。
+restore_env() {
+  local tmp="$env_file.restore.$$"
+  # tmp 以默认 umask 创建；env_file 含密钥，恢复后权限收紧到与备份一致。
+  if cat "$env_backup" > "$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$env_file"; then
+    return 0
+  fi
+  rm -f "$tmp"
+  echo "release aborted: env restore failed; backup kept at $env_backup" >&2
+  exit 1
+}
+
 # LCA13 撤销兼容门禁：content_grant_revocation 是追加式撤销事实，只能由
 # 含本门禁代码的 origin 进程经 entitlement.gift 能力端点写入。不含撤销
 # 过滤的目标会把已撤销赠送静默复活（越权）。
@@ -121,26 +136,73 @@ require_revocation_compat() {
 # 不读 pro_trial_configuration/pro_trial_eligibility）；把这样的旧 origin 回滚/
 # 恢复为 current，会在人工处置前重新打开隐式试用创建。
 #
-# 语义断言（可执行、纯静态）：目标必须同时满足
-#   1) 公共创建入口不再自授 trial 来源；
-#   2) 显式受控试用入口存在（routes/pro-trial.ts，配置/资格驱动）。
+# 语义断言（可执行、纯静态）——以正向契约为准，不是「没命中某种危险拼写」：
+#   1) 公共创建入口处于显式关闭契约：workspaces.ts 必须命中
+#      workspace-commercial-source-required（LCA10 起公共入口对创建一律 409
+#      拒绝并指向显式入口）；
+#   2) 公共创建入口不再发起任何工作区供应调用（直接/间接来源赋值都涵盖）；
+#   3) 纵深防御：已知 trial 来源键值拼写（含冒号前后空白、引号/模板串变体）一律拒绝；
+#   4) 显式受控试用入口在场且为配置驱动实现（pro-trial.ts 必须引用
+#      pro_trial_configuration，占位文件不算），并被 app.ts 挂载。
 # 目标树缺失/不可读/检查命令出错一律 fail-closed 拒绝。本门禁不做存活探测、
-# 不停服、无副作用：放在撤销门禁（可能停服冻结）之前执行，拒绝时调用方
-# 尚未发生任何状态变更，无需恢复。
+# 不停服、无副作用：必须先于任何主机状态变更（env 增改/停服/切换）执行，
+# 拒绝时 env/current/服务保持原状。
 target_has_explicit_trial_source() {
   local target="$1"
   local route="$target/server/src/routes/workspaces.ts"
   local trial_entry="$target/server/src/routes/pro-trial.ts"
+  local app_entry="$target/server/src/app.ts"
   [ -f "$route" ] || { echo "trial gate: $route missing; cannot prove creation semantics" >&2; return 1; }
   [ -f "$trial_entry" ] || { echo "trial gate: $trial_entry missing; target has no explicit trial entry" >&2; return 1; }
+  [ -f "$app_entry" ] || { echo "trial gate: $app_entry missing; cannot prove trial entry is mounted" >&2; return 1; }
   local verdict=0
-  grep -Eq 'planKey:[[:space:]]*["'\'']trial["'\'']' "$route" || verdict=$?
+  grep -Eq 'workspace-commercial-source-required' "$route" || verdict=$?
+  if [ "$verdict" -ge 2 ]; then
+    echo "trial gate: grep failed (rc=$verdict) on $route; cannot prove creation semantics" >&2
+    return 1
+  fi
+  if [ "$verdict" -eq 1 ]; then
+    echo "trial gate: $route lacks the explicit closure contract (workspace-commercial-source-required)" >&2
+    return 1
+  fi
+  verdict=0
+  grep -Eq '(^|[^A-Za-z0-9_])createWorkspace[[:space:]]*\(' "$route" || verdict=$?
   if [ "$verdict" -ge 2 ]; then
     echo "trial gate: grep failed (rc=$verdict) on $route; cannot prove creation semantics" >&2
     return 1
   fi
   if [ "$verdict" -eq 0 ]; then
-    echo "trial gate: $route self-issues an implicit trial source" >&2
+    echo "trial gate: $route still issues workspace provisioning calls from the public entry" >&2
+    return 1
+  fi
+  verdict=0
+  grep -Eq '(planKey|sourceKind|resourceSource)[[:space:]]*:[[:space:]]*["'"'"'`]trial["'"'"'`]' "$route" || verdict=$?
+  if [ "$verdict" -ge 2 ]; then
+    echo "trial gate: grep failed (rc=$verdict) on $route; cannot prove creation semantics" >&2
+    return 1
+  fi
+  if [ "$verdict" -eq 0 ]; then
+    echo "trial gate: $route carries a trial source literal" >&2
+    return 1
+  fi
+  verdict=0
+  grep -Eq 'pro_trial_configuration' "$trial_entry" || verdict=$?
+  if [ "$verdict" -ge 2 ]; then
+    echo "trial gate: grep failed (rc=$verdict) on $trial_entry; cannot prove trial entry semantics" >&2
+    return 1
+  fi
+  if [ "$verdict" -eq 1 ]; then
+    echo "trial gate: $trial_entry is not configuration-driven (pro_trial_configuration absent)" >&2
+    return 1
+  fi
+  verdict=0
+  grep -Eq 'createProTrialRoutes' "$app_entry" || verdict=$?
+  if [ "$verdict" -ge 2 ]; then
+    echo "trial gate: grep failed (rc=$verdict) on $app_entry; cannot prove trial entry is mounted" >&2
+    return 1
+  fi
+  if [ "$verdict" -eq 1 ]; then
+    echo "trial gate: $trial_entry exists but app.ts does not mount it" >&2
     return 1
   fi
   return 0
@@ -168,7 +230,7 @@ rollback() {
   fi
   # 本函数经 || 调用，errexit 全程被抑制：以下每步失败不会中断脚本，
   # 必须显式中止，避免把 env/current 不一致的中间态推进到 restart。
-  cat "$env_backup" > "$env_file" || { echo "rollback failed: env restore failed; aborting" >&2; exit 1; }
+  restore_env || { echo "rollback failed: env restore failed; aborting" >&2; exit 1; }
   point_to "$previous" || { echo "rollback failed: point_to $previous failed; aborting" >&2; exit 1; }
   sudo -n systemctl restart "$service" || { echo "rollback failed: restart $service failed; aborting" >&2; exit 1; }
   if ! healthy; then
@@ -185,13 +247,21 @@ tar -xzf "$archive" -C "$release"
 rm -f "$archive"
 (cd "$release" && bunx pnpm@10.32.1 install --frozen-lockfile --prod --config.confirmModulesPurge=false)
 
+# 试用来源门禁：LCA10 起，进入生产的 origin（含手动 Deploy origin 旧 sha 恢复）
+# 必须携带显式创建来源语义；目标缺失即拒绝发布。本门禁纯静态、无副作用，
+# 必须先于任何主机状态变更（env 增改/停服/切换）执行——拒绝时
+# env/current/服务均未被动过，不存在需要恢复的中间态。
+if ! require_trial_source_compat "$release"; then
+  exit 1
+fi
+
 # 环境变量：GitHub production Environment 里的 ORIGIN_ENV_<NAME> secret 写入 server.env 的 <NAME>，只增改这些键。
 mkdir -p "$env_dir" && chmod 700 "$env_dir"
 cat "$env_file" > "$env_backup" && chmod 600 "$env_backup"
 if [ -n "$env_additions" ] && [ -s "$env_additions" ]; then
   while IFS= read -r line; do
     key=${line%%=*}
-    [[ "$key" =~ ^[A-Z][A-Z0-9_]*$ ]] || { echo "invalid env key" >&2; exit 1; }
+    [[ "$key" =~ ^[A-Z][A-Z0-9_]*$ ]] || { echo "invalid env key" >&2; restore_env; exit 1; }
     next="$env_dir/server.env.next"
     (umask 077; { grep -v "^${key}=" "$env_file" || true; printf '%s\n' "$line"; } > "$next")
     cat "$next" > "$env_file"
@@ -201,15 +271,11 @@ if [ -n "$env_additions" ] && [ -s "$env_additions" ]; then
 fi
 [ -n "$env_additions" ] && rm -f "$env_additions"
 
-# 试用来源门禁：LCA10 起，进入生产的 origin（含手动 Deploy origin 旧 sha 恢复）
-# 必须携带显式创建来源语义；目标缺失即拒绝发布，不动运行中服务。
-if ! require_trial_source_compat "$release"; then
-  exit 1
-fi
-
 # 撤销兼容门禁：发布（含手动 Deploy origin 旧 sha）若目标不含撤销过滤，
-# 仅在 _system 无撤销记录时才放行；判定拒绝时不动运行中服务直接退出。
+# 仅在 _system 无撤销记录时才放行；判定拒绝时恢复已写入的 env 增改并退出，
+# 运行中服务由门禁自身拉回。
 if ! require_revocation_compat "$release"; then
+  restore_env
   exit 1
 fi
 
