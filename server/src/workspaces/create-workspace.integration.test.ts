@@ -163,8 +163,8 @@ describe("workspace provisioning against local SurrealDB", () => {
         name: "Recovery",
         slug: "recovery",
         resourceSource: {
-          planKey: "trial",
-          sourceKind: "trial" as const,
+          planKey: "pro",
+          sourceKind: "manual" as const,
         },
       };
 
@@ -230,4 +230,37 @@ describe("workspace provisioning against local SurrealDB", () => {
     },
     30_000,
   );
+  localTest("claimed trial pins billing/product/window and incomplete delivery never activates", async () => {
+    const systemDb = await getDbSession("_system");
+    await systemDb.query(`CREATE billing_account:trial_control CONTENT { account_key: "trial-control", name: "Controlled fixture", kind: "personal", status: "active" };
+      CREATE billing_account_member CONTENT { billing_account: billing_account:trial_control, subject: "billing-owner", role: "owner", status: "active" };`);
+    const plan = await systemDb.query("SELECT VALUE active_revision FROM quota_plan WHERE plan_key = 'trial';");
+    const revision = String((plan as unknown[][])[0]![0]);
+    let calls = 0;
+    const creator = createWorkspaceCreator({ getDbSession, namespace, generateId: () => "trial0000001",
+      nativeQuotaClient: new SurrealNativeQuotaClient(systemDb), loadTemplateScripts: async () => [], loadTemplatePackScripts: async () => [],
+      idpTokenScopeAdapter: { async updateUserScope() { throw new Error("must not issue scope"); } },
+      deliverTrial: async () => { calls++; throw new Error("injected content delivery failure"); },
+    });
+    const startsAt = new Date().toISOString();
+    const endsAt = new Date(Date.parse(startsAt) + 7 * 86400000).toISOString();
+    const result = await creator.createWorkspace({ subject: "billing-owner", subjectToken: "local-fixture", email: "fixture@example.invalid",
+      name: "Synthetic trial", slug: "synthetic-trial", resourceSource: { planKey: "trial", sourceKind: "trial", trial: {
+        claimId: "pro_trial_claim:synthetic", billingAccountId: "billing_account:trial_control", productRevisionId: "product_plan_revision:synthetic",
+        resourceRevisionId: revision, researchRate: 2, rateRevision: 2, fixture: true, leaseId: "local", startsAt, endsAt,
+      } } });
+    expect(result).toMatchObject({ kind: "provisioning_error", code: "trial-delivery-pending" });
+    expect(calls).toBe(1);
+    const readback = await systemDb.query<unknown[][]>(`SELECT status FROM workspace WHERE slug = 'synthetic-trial';
+      SELECT subscription.billing_account AS account, subscription.trial_start AS start, subscription.trial_end AS end,
+        product_plan_revision, effective_until FROM quota_subscription_item WHERE workspace.slug = 'synthetic-trial';
+      SELECT id FROM billing_account WHERE account_key = 'personal:billing-owner';`);
+    expect(readback[0]?.[0]).toMatchObject({ status: "provisioning_error" });
+    const item = readback[1]?.[0] as Record<string, unknown>;
+    expect(String(item.account)).toBe("billing_account:trial_control");
+    expect(String(item.product_plan_revision)).toBe("product_plan_revision:synthetic");
+    expect(String(item.end)).toBe(String(item.effective_until));
+    expect(readback[2]).toHaveLength(0);
+  }, 30000);
+
 });

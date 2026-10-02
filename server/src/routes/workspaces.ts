@@ -10,7 +10,6 @@ import {
 } from "../workspaces/workspace-settings-manager";
 import type { WorkspaceScopeModule } from "../workspaces/workspace-scope";
 
-const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
 const MAX_WORKSPACE_NAME_LENGTH = 80;
 
 function workspaceRenameErrorToHttp(kind: "forbidden" | "workspace-not-found"): HttpError {
@@ -26,92 +25,15 @@ function workspaceRenameErrorToHttp(kind: "forbidden" | "workspace-not-found"): 
 // 也不要先 `const routes` 再逐条 in-place 注册），否则 /api/workspaces 的
 // schema 会被丢弃，web 端 hc<AppType> 拿不到该 path（D2-05 的同款坑）。
 export function createWorkspaceRoutes(
-  workspaceCreator: WorkspaceCreator,
-  workspaceScope: WorkspaceScopeModule,
+  _workspaceCreator: WorkspaceCreator,
+  _workspaceScope: WorkspaceScopeModule,
   requireUser: () => MiddlewareHandler<AppBindings> = requireOidc,
   workspaceSettingsManager: WorkspaceSettingsManager = createWorkspaceSettingsManager(),
 ) {
   return new Hono<AppBindings>()
-    .post("/api/workspaces", requireUser(), async (c) => {
-      const body = await c.req.json().catch(() => null);
-      const name = typeof body?.name === "string" ? body.name.trim() : "";
-      const slug = typeof body?.slug === "string" ? body.slug.trim().toLowerCase() : "";
-      const requestedPlanKey =
-        typeof body?.planKey === "string"
-          ? body.planKey.trim().toLowerCase()
-          : typeof body?.resourceSource?.planKey === "string"
-            ? body.resourceSource.planKey.trim().toLowerCase()
-            : "";
-      const requestedSourceKind =
-        typeof body?.resourceSource?.sourceKind === "string"
-          ? body.resourceSource.sourceKind
-          : typeof body?.sourceKind === "string"
-            ? body.sourceKind
-            : undefined;
-
-      if (!name) {
-        throw new HttpError(400, "workspace-name-required", "name is required");
-      }
-      if (!SLUG_PATTERN.test(slug)) {
-        throw new HttpError(400, "workspace-slug-invalid", "slug must be 1-40 lowercase alphanumeric or hyphen characters");
-      }
-      if (
-        (requestedPlanKey && requestedPlanKey !== "trial")
-        || (requestedSourceKind && requestedSourceKind !== "trial")
-      ) {
-        throw new HttpError(
-          403,
-          "workspace-plan-selection-not-allowed",
-          "workspace creation cannot assign paid, contract, or manual plans",
-        );
-      }
-      const { canCreate } = await workspaceScope.listWorkspaces({
-        subject: c.var.user.subject,
-        email: c.var.user.email,
-      });
-      if (!canCreate) {
-        throw new HttpError(403, "workspace-create-forbidden", "Workspace creation is not allowed for this user");
-      }
-
-      const result = await workspaceCreator.createWorkspace({
-        subject: c.var.user.subject,
-        subjectToken: c.var.user.rawToken,
-        email: c.var.user.email ?? "",
-        name,
-        slug,
-        // This public endpoint can issue only the server-owned trial source.
-        // Paid/manual/contract assignment belongs to audited NQ-06 intents.
-        resourceSource: { planKey: "trial", sourceKind: "trial" },
-      });
-
-      if (result.kind === "slug-conflict") {
-        throw new HttpError(409, "workspace-slug-conflict", "Workspace slug already exists");
-      }
-
-      if (result.kind === "no-resource-source") {
-        throw new HttpError(400, result.code, result.message);
-      }
-
-      if (result.kind === "provisioning_error") {
-        throw new HttpError(503, result.code, result.message, {
-          slug: result.slug,
-          dbName: result.dbName,
-        });
-      }
-
-      if (result.kind === "scope-update-failed") {
-        throw new HttpError(502, "scope-update-failed", "Workspace created but token scope update failed; retry switch-workspace", {
-          slug: result.slug,
-          dbName: result.dbName,
-        });
-      }
-
-      return c.json({
-        slug: result.slug,
-        dbName: result.dbName,
-        accessToken: result.accessToken,
-        expiresIn: result.expiresIn,
-      });
+    .post("/api/workspaces", requireUser(), async c => {
+      c.status(409);
+      return c.json({ error: { code: "workspace-commercial-source-required", message: "新工作区需要有效商业来源；请使用显式 Pro 试用入口或联系计费管理员" } });
     })
     .patch("/api/workspaces/:slug", requireUser(), async (c) => {
       const slug = c.req.param("slug");

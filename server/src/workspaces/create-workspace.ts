@@ -96,6 +96,7 @@ export type CreateWorkspaceCreatorOptions = {
   nativeQuotaClient?: NativeQuotaClient;
   engineCapabilities?: readonly string[];
   controlPlane?: ProvisioningControlPlane;
+  deliverTrial?: (input: { workspaceId: string; dbName: string; subject: string; trial: NonNullable<ExplicitResourceSource["trial"]> }) => Promise<void>;
 };
 
 const SYSTEM_DATABASE = "_system";
@@ -304,7 +305,7 @@ function createSurrealControlPlane(
       }
     },
 
-    async loadPlan(planKey) {
+    async loadPlan(planKey, revisionId) {
       const result = await systemDb.query(
         `
           SELECT id, active_revision
@@ -315,11 +316,11 @@ function createSurrealControlPlane(
         { planKey },
       );
       const planRow = firstRow(result);
-      if (!planRow?.active_revision) return null;
+      if (!planRow?.active_revision && !revisionId) return null;
 
       const revisionResult = await systemDb.query(
         "SELECT * FROM ONLY $revision;",
-        { revision: planRow.active_revision },
+        { revision: revisionId ? new StringRecordId(revisionId) : planRow!.active_revision },
       );
       const revisionRow = firstRow(revisionResult);
       if (!revisionRow) return null;
@@ -397,6 +398,7 @@ function createSurrealControlPlane(
             status: "active",
             effective_from:
               asOptionalDateTime(itemRow.effective_from) ?? DateTime.now(),
+            effective_until: asOptionalDateTime(itemRow.effective_until),
           },
           planRevision: input.planRevision,
         };
@@ -406,6 +408,7 @@ function createSurrealControlPlane(
       if (existing) return existing;
 
       const accountKey = `personal:${input.ownerSubject}`;
+      if (input.sourceKind === "trial" && !input.trial) throw new Error("explicit-pro-trial-claim-required");
       const subscriptionSource =
         input.sourceKind === "trial"
           ? "manual"
@@ -417,7 +420,9 @@ function createSurrealControlPlane(
         `
           BEGIN TRANSACTION;
 
-          LET $billing = (
+          LET $billing = IF $billingAccount != NONE {
+            SELECT * FROM ONLY $billingAccount
+          } ELSE { (
             INSERT INTO billing_account {
               account_key: $accountKey,
               name: $accountName,
@@ -427,15 +432,15 @@ function createSurrealControlPlane(
             ON DUPLICATE KEY UPDATE
               name = $input.name,
               status = "active"
-          )[0];
+          )[0] };
 
-          INSERT INTO billing_account_member {
+          IF $billingAccount = NONE { INSERT INTO billing_account_member {
             billing_account: $billing.id,
             subject: $subject,
             role: "owner",
             status: "active"
           }
-          ON DUPLICATE KEY UPDATE role = "owner", status = "active";
+          ON DUPLICATE KEY UPDATE role = "owner", status = "active"; };
 
           LET $subscription = CREATE ONLY type::record(
             "quota_subscription",
@@ -457,6 +462,8 @@ function createSurrealControlPlane(
             subscription: $subscription.id,
             workspace: $workspace,
             plan_revision: $planRevision,
+            product_plan_revision: $productRevision,
+            effective_until: $trialEnd,
             revision: 1,
             status: "active",
             effective_from: $effectiveAt,
@@ -467,21 +474,17 @@ function createSurrealControlPlane(
           COMMIT TRANSACTION;
         `,
         {
+          billingAccount: toSurrealNone(input.trial ? new StringRecordId(input.trial.billingAccountId) : null),
+          productRevision: toSurrealNone(input.trial ? new StringRecordId(input.trial.productRevisionId) : null),
           accountKey,
           accountName: input.email || input.ownerSubject,
           subject: input.ownerSubject,
           subscriptionSource,
           subscriptionStatus: input.sourceKind === "trial" ? "trialing" : "active",
           trialStart:
-            input.sourceKind === "trial" ? input.effectiveAt : undefined,
-          trialEnd:
-            input.sourceKind === "trial"
-              ? DateTime.fromEpochNanoseconds(
-                  input.effectiveAt.nanoseconds
-                    + 14n * 24n * 60n * 60n * 1_000_000_000n,
-                )
-              : undefined,
-          effectiveAt: input.effectiveAt,
+            input.trial ? new DateTime(input.trial.startsAt) : undefined,
+          trialEnd: input.trial ? new DateTime(input.trial.endsAt) : undefined,
+          effectiveAt: input.trial ? new DateTime(input.trial.startsAt) : input.effectiveAt,
           correlationId: input.correlationId,
           subscriptionKey: `provision_${input.workspace.dbName}`,
           itemKey: `provision_${input.workspace.dbName}`,
@@ -800,6 +803,7 @@ export function createWorkspaceCreator(
           nativeQuotaClient: options.nativeQuotaClient,
           engineCapabilities,
           controlPlane: options.controlPlane,
+          deliverTrial: options.deliverTrial,
         });
 
         if (result.kind !== "db-name-conflict") {
@@ -826,6 +830,7 @@ type TryCreateWorkspaceInput = {
   nativeQuotaClient?: NativeQuotaClient;
   engineCapabilities: readonly string[];
   controlPlane?: ProvisioningControlPlane;
+  deliverTrial?: (input: { workspaceId: string; dbName: string; subject: string; trial: NonNullable<ExplicitResourceSource["trial"]> }) => Promise<void>;
 };
 
 type TryCreateWorkspaceResult =
@@ -844,6 +849,7 @@ async function tryCreateWorkspace({
   nativeQuotaClient,
   engineCapabilities,
   controlPlane: injectedControlPlane,
+  deliverTrial,
 }: TryCreateWorkspaceInput): Promise<TryCreateWorkspaceResult> {
   const controlPlane =
     injectedControlPlane
@@ -1043,6 +1049,16 @@ async function tryCreateWorkspace({
       slug: input.slug,
       dbName: provisionedDbName,
     };
+  }
+
+  if (input.resourceSource.trial) {
+    try {
+      if (!deliverTrial) throw new Error("trial-product-delivery-not-wired");
+      await deliverTrial({ workspaceId: workspace.id.toString(), dbName: provisionedDbName, subject: input.subject, trial: input.resourceSource.trial });
+    } catch {
+      await controlPlane.markStage({ workspaceId: workspace.id, stage: "index_ready", status: "provisioning_error", errorCode: "trial-delivery-pending", error: "trial product/content/allowance delivery incomplete" });
+      return { kind: "provisioning_error", code: "trial-delivery-pending", message: "trial delivery incomplete", slug: input.slug, dbName: provisionedDbName };
+    }
   }
 
   await controlPlane.markStage({

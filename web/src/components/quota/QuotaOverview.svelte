@@ -36,6 +36,15 @@
   let loadedSlug = $state("");
   let product = $state<ProductEntitlementView | null>(null);
   let productError = $state("");
+  let trial = $state<{ state: string; remainingSeconds: number; endsAt: string; allowance: number; collections: { key: string; label: string }[]; reminder: boolean; retention: string; fixture: boolean } | null>(null);
+  let trialError = $state("");
+  async function loadTrial() {
+    try {
+      const response = await api.api.workspaces[":slug"]["pro-trial"].$get({ param: { slug } });
+      if (!response.ok) throw new Error("无法核对试用状态");
+      trial = await response.json(); trialError = "";
+    } catch { trial = null; trialError = "试用状态暂不可确认，请刷新；未知不代表可用。"; }
+  }
 
   const detailed = $derived<
     QuotaApiCustomerView | QuotaApiOperatorView | null
@@ -64,6 +73,7 @@
     error = "";
     try {
       view = await loadWorkspaceQuota(slug, force);
+      await loadTrial();
       loadedSlug = slug;
     } catch (cause) {
       error = quotaApiErrorMessage(cause);
@@ -114,6 +124,18 @@
 </script>
 
 <section class="quota-section" aria-label="资源配额">
+  {#if trial}
+    <aside aria-label="共享 Pro 试用状态" class="notice">
+      <div>
+        <strong>{trial.state === "active" ? "共享 Pro 试用" : trial.state === "converted" ? "已转付费来源" : trial.state === "ended" ? "试用已到期" : "试用交付中"}</strong>
+        {#if trial.fixture}<span>内部验收配置，不代表正式商业承诺</span>{/if}
+        <span>截止 {trial.endsAt}（UTC）；剩余 {Math.ceil(trial.remainingSeconds / 3600)} 小时；全体成员共享可用 AI 额度 {trial.allowance}</span>
+        <span>试用内容：{trial.collections.map(c => c.label).join("、")}。不含专业模块、Max 机器通道和批量复制。</span>
+        {#if trial.reminder}<span role="status">试用即将结束，无需绑卡，不会自动扣款；可由计费管理员选择 Plus / Pro / Max。</span>{/if}
+        <span>{trial.retention}</span>
+      </div>
+    </aside>
+  {:else if trialError}<p role="status">{trialError}</p>{/if}
   <header class="quota-head">
     <div>
       <span class="eyebrow"><Gauge size={13} />原生资源配额</span>

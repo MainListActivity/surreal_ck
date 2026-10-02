@@ -1,11 +1,43 @@
 <script lang="ts">
   import * as Dialog from "$lib/components/ui/dialog/index.js";
-  import { createWorkspace } from "../lib/create-workspace.svelte";
+  import { api } from "../lib/api";
+  import { refresh } from "../lib/auth";
+  import { onMount } from "svelte";
   import { switchWorkspace } from "../lib/switch-workspace.svelte";
 
   /** 关闭对话框（取消或成功后）；由父组件控制可见性（父用 {#if} 挂载）。 */
   let { onclose, oncreated }: { onclose?: () => void; oncreated?: () => void } = $props();
 
+  let accounts = $state<{ key: string; name: string }[]>([]);
+  let accountKey = $state("");
+  let preview = $state<{ revision: string; researchRate: number; startedAt: string; endsAt: string; allowance: number; collections: { key: string; label: string }[]; capacity: { label: string; limit: number }[]; reminderHours: number[]; excludes: string[]; expiry: string; fixture: boolean } | null>(null);
+  let confirmed = $state(false);
+  let loading = $state(true);
+  // 持久请求键只含幂等键，不保存凭证；刷新后仍可重试同一个显式启动请求。
+  const requestKey = sessionStorage.getItem("pro-trial-request-key") ?? crypto.randomUUID();
+  sessionStorage.setItem("pro-trial-request-key", requestKey);
+  onMount(() => { void loadAccounts(); });
+  async function loadAccounts() {
+    try {
+      if (!await refresh()) throw new Error("请先登录");
+      const res = await api.api["pro-trial"].accounts.$get();
+      if (!res.ok) throw new Error("无法读取试用资格");
+      accounts = await res.json();
+      accountKey = accounts[0]?.key ?? "";
+      if (accountKey) await loadPreview();
+    } catch (e) { error = e instanceof Error ? e.message : "试用暂不可用"; }
+    finally { loading = false; }
+  }
+  async function loadPreview() {
+    const requestedAccount = accountKey;
+    preview = null; confirmed = false;
+    try {
+      const res = await api.api["pro-trial"].preview.$get({ query: { accountKey } });
+      if (!res.ok) throw new Error("试用配置尚未获批或账户没有资格");
+      const offered = await res.json();
+      if (accountKey === requestedAccount) preview = offered;
+    } catch (e) { error = e instanceof Error ? e.message : "试用暂不可用"; }
+  }
   let name = $state("");
   let slug = $state("");
   let submitting = $state(false);
@@ -43,7 +75,7 @@
     if (!slugTouched) slug = slugify(name);
   });
 
-  const canSubmit = $derived(name.trim().length > 0 && slug.length > 0 && !submitting);
+  const canSubmit = $derived(name.trim().length > 0 && slug.length > 0 && !submitting && preview !== null && confirmed && !loading);
 
   async function submit(event: SubmitEvent): Promise<void> {
     event.preventDefault();
@@ -53,30 +85,18 @@
     pendingEnter = null;
     submitting = true;
     try {
-      const result = await createWorkspace({ name: name.trim(), slug });
-      if (result.ok) {
-        oncreated?.();
-        onclose?.();
-        return;
+      if (!await refresh()) throw new Error("会话已过期，请重新登录");
+      const res = await api.api["pro-trial"].start.$post({ json: { name: name.trim(), slug, accountKey, key: requestKey, offerRevision: preview!.revision } });
+      if (!res.ok) {
+        const body = await res.json();
+        throw new Error("error" in body && typeof body.error === "object" && body.error && "message" in body.error ? String(body.error.message) : "试用交付未完成，请使用相同名称与标识重试");
       }
-      switch (result.reason) {
-        case "slug-conflict":
-          error = "该标识已被占用，请换一个";
-          break;
-        case "forbidden":
-          error = "你没有创建工作区的权限";
-          break;
-        case "refresh-failed":
-          error = "工作区已创建，但会话已过期，请重新登录后进入";
-          break;
-        case "scope-update-failed":
-          // workspace 已建，只是 token scope 没切；保留 slug 供「重试进入」走 D2-05 switch flow。
-          pendingEnter = result.slug;
-          error = "工作区已创建，但切换失败，可点「重试进入」";
-          break;
-        default:
-          error = result.message ?? "创建失败，请重试";
-      }
+      const result = await res.json();
+      pendingEnter = result.slug;
+      sessionStorage.removeItem("pro-trial-request-key");
+      await retryEnter();
+    } catch (e) {
+      error = e instanceof Error ? e.message : "试用交付未完成，请重试";
     } finally {
       submitting = false;
     }
@@ -104,10 +124,30 @@
 <Dialog.Root bind:open onOpenChange={handleOpenChange}>
   <Dialog.Content class="create-workspace">
     <Dialog.Header>
-      <Dialog.Title>新建工作区</Dialog.Title>
+      <Dialog.Title>显式开始七日 Pro 试用</Dialog.Title>
     </Dialog.Header>
 
     <form onsubmit={submit}>
+      {#if loading}<p>正在核对试用资格…</p>
+      {:else if accounts.length === 0}<p>仅有资格的计费账户管理员可以启动试用。请联系计费管理员；普通创建不会启动倒计时。</p>
+      {:else}
+        <label class="field"><span>计费账户</span><select bind:value={accountKey} onchange={() => void loadPreview()} disabled={submitting}>
+          {#each accounts as account}<option value={account.key}>{account.name}</option>{/each}
+        </select></label>
+      {/if}
+      {#if preview}
+        <div aria-label="试用范围确认">
+          {#if preview.fixture}<p>内部验收配置，不代表正式商业承诺。</p>{/if}
+          <p>七个自然日（UTC），预计开始 {preview.startedAt}，结束 {preview.endsAt}。实际边界以服务端启动回执为准。</p>
+          <p>Pro 核心内容：{preview.collections.map(c => c.label).join("、")}</p>
+          <p>所有成员共享 {preview.allowance} AI 单位，每次研究最多预留 {preview.researchRate} 单位；打开正文和引用不扣 AI 额度。</p>
+          <p>容量：{preview.capacity.map(c => `${c.label} ${c.limit}`).join("、")}</p>
+          <p>不包含：{preview.excludes.join("、")}</p>
+          <p>{preview.expiry}无需信用卡，不自动转付费。可以按新商业来源转 Plus / Pro / Max。</p>
+          <p>到期前提醒：{preview.reminderHours.join("、")} 小时。语义检索销售范围需另行获批。</p>
+          <label><input type="checkbox" bind:checked={confirmed} disabled={submitting} />我确认范围并主动启动七日试用</label>
+        </div>
+      {/if}
       <label class="field">
         <span>名称</span>
         <input
@@ -149,7 +189,7 @@
           取消
         </button>
         <button type="submit" class="confirm" disabled={!canSubmit}>
-          {submitting ? "创建中…" : "创建"}
+          {submitting ? "交付试用中…" : "开始七日 Pro 试用"}
         </button>
       </div>
     </form>
@@ -160,6 +200,8 @@
   :global(.create-workspace) {
     width: min(28rem, calc(100vw - 2rem));
     max-width: min(28rem, calc(100vw - 2rem));
+    max-height: 90vh;
+    overflow-y: auto;
     font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   }
 
