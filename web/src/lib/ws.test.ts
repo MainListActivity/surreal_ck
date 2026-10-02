@@ -167,6 +167,22 @@ describe("WS 客户端", () => {
     expect(closes).toEqual([]);
   });
 
+  test("117s 研究的有效服务端心跳维持连接，完整终态交付", () => {
+    let timeouts = 0;
+    const { clock, messages } = setup({ onIdleTimeout: () => { timeouts += 1; } });
+    const socket = FakeSocket.instances[0]!;
+    socket.open();
+    for (let i = 0; i < 4; i++) {
+      clock.advance(25_000);
+      socket.message('{"kind":"ping","runId":"r1"}');
+    }
+    clock.advance(17_000);
+    socket.message('{"kind":"done","runId":"r1","message":{"content":"完整结果"},"toolCalls":[]}');
+    expect(timeouts).toBe(0);
+    expect(socket.closed).toBe(false);
+    expect(messages.at(-1)).toMatchObject({ kind: "done" });
+  });
+
   test("连接只收到服务端 ping 超过等待窗口 → 触发 idle timeout 并关闭 socket", () => {
     let idleTimeouts = 0;
     const { clock } = setup({ onIdleTimeout: () => { idleTimeouts += 1; } });

@@ -20,7 +20,7 @@ describe("RunRegistry", () => {
     expect(reg.resolveStreamToken({ runId: "other", streamToken })).toBeUndefined();
   });
 
-  test("streamToken 超过 TTL 后视为过期：get / resolve 都返回 undefined", () => {
+  test("streamToken 超过 TTL 后视为过期：短 token 失效但保留有界运行归属供恢复", () => {
     let now = 1_000_000;
     const reg = createRunRegistry(() => now);
     const { streamToken } = reg.register({ runId: "run-1", ownerSubject: "alice" });
@@ -29,7 +29,7 @@ describe("RunRegistry", () => {
     expect(reg.get("run-1")).toBeDefined();
 
     now += 2; // 越过 TTL
-    expect(reg.get("run-1")).toBeUndefined();
+    expect(reg.get("run-1")).toBeDefined();
     expect(reg.resolveStreamToken({ runId: "run-1", streamToken })).toBeUndefined();
   });
 

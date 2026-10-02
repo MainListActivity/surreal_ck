@@ -19,6 +19,7 @@ export type ChatRunStart = {
   runId: string;
   streamUrl: string;
   streamToken: string;
+  result?: Extract<ChatStreamEvent, { kind: "done" }>;
 };
 
 export type AiComposerMode = "chat" | "resource-search";
@@ -32,6 +33,7 @@ export type AiDrawerChatClient = {
     /** 提交级幂等键：重试复用同一键，服务端预留不重复扣款（LCA05）。 */
     idempotencyKey?: string;
   }): Promise<ChatRunStart>;
+  recoverChat?(runId: string): Promise<ChatRunStart>;
   resumeChat(runId: string, decision: ResumeDecision): Promise<ChatRunStart>;
 };
 
@@ -95,6 +97,8 @@ export type AiDrawerState = {
 export type AiDrawerSessionOptions = {
   chatClient: AiDrawerChatClient;
   connectStream: (input: AiDrawerStreamInput) => AiDrawerStreamHandle;
+  /** Only run pointers, never tokens, answers or prompts. Server rechecks identity on recovery. */
+  pendingStorage?: Pick<Storage, "getItem" | "setItem" | "removeItem">;
   createId?: () => string;
   now?: () => string;
   onChange?: (state: AiDrawerState) => void;
@@ -119,11 +123,11 @@ export type AiDrawerSession = {
 };
 
 const ROUTING_HINT = "路由中…";
-const STREAM_TIMEOUT_MESSAGE = "AI 响应超时，请重试。";
+const STREAM_TIMEOUT_MESSAGE = "AI 连接等待超时，任务状态尚未确认。请恢复原结果。";
 const AI_USER_MESSAGES = new Set([
   "当前环境未配置 AI 服务",
   STREAM_TIMEOUT_MESSAGE,
-  "AI 连接已中断，请检查网络后重试。",
+  "AI 连接已中断，任务可能仍在运行。检查网络后恢复原结果。",
   "没有权限执行此操作，请联系工作区管理员。",
   "请求内容未通过校验，请检查后重试。",
   "网络连接异常，请检查网络后重试。",
@@ -135,6 +139,7 @@ type RetryableRequest = {
   contextSnapshot: AiDrawerContextSnapshot;
   composerMode?: AiComposerMode;
   assistantMessageId: string;
+  runId?: string;
   /** 提交级幂等键：发送与重试共用，服务端据此复用同一预留。 */
   idempotencyKey: string;
 };
@@ -284,6 +289,10 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
   function connectRun(run: ChatRunStart, messageId: string, allowRequestRetry = false): void {
     closeActiveStream();
     state.activeRun = { runId: run.runId, messageId };
+    if (state.workspaceSlug) {
+      try { options.pendingStorage?.setItem(`sck.ai.pending:${state.workspaceSlug}`, run.runId); } catch { /* Storage may be disabled. */ }
+    }
+    if (run.result) { handleStreamEvent(run.result, messageId, allowRequestRetry); return; }
     activeStream = options.connectStream({
       url: run.streamUrl,
       streamToken: run.streamToken,
@@ -292,7 +301,7 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
         if (state.activeRun?.runId === run.runId) {
           state.sending = false;
           state.progressHint = null;
-          state.sendError = "AI 连接已中断，请检查网络后重试。";
+          state.sendError = "AI 连接已中断，任务可能仍在运行。检查网络后恢复原结果。";
           state.retryableMessageId = allowRequestRetry ? userMessageIdForAssistant(messageId) : null;
           settleRunCompletion(run.runId, new Error(state.sendError));
           clearRun(run.runId);
@@ -329,6 +338,7 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
     }
 
     if (event.kind === "done") {
+      if (state.workspaceSlug) { try { options.pendingStorage?.removeItem(`sck.ai.pending:${state.workspaceSlug}`); } catch { /* Storage may be disabled. */ } }
       replaceMessage(messageId, event.message);
       if (event.toolCalls.length > 0) {
         state.toolCallsByMessageId = { ...state.toolCallsByMessageId, [event.message.id]: event.toolCalls };
@@ -591,6 +601,7 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
         ...(sendOptions?.composerMode ? { composerMode: sendOptions.composerMode } : {}),
         idempotencyKey: retryableRequests.get(userMessage.id)?.idempotencyKey,
       });
+      retryableRequests.get(userMessage.id)!.runId = run.runId;
       connectRun(run, assistantMessage.id, true);
     } catch (error) {
       state.sending = false;
@@ -623,12 +634,15 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
     emitChange();
 
     try {
-      const run = await options.chatClient.startChat({
+      const run = request.runId && options.chatClient.recoverChat
+        ? await options.chatClient.recoverChat(request.runId)
+        : await options.chatClient.startChat({
         message: request.message,
         contextSnapshot: request.contextSnapshot,
         ...(request.composerMode ? { composerMode: request.composerMode } : {}),
         idempotencyKey: request.idempotencyKey,
       });
+      request.runId = run.runId;
       connectRun(run, assistantMessage.id, true);
     } catch (error) {
       state.sending = false;
@@ -645,13 +659,23 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
     if (state.workspaceSlug === nextSlug) return;
     const hadWorkspace = state.workspaceSlug !== null;
     state.workspaceSlug = nextSlug;
-    if (!hadWorkspace) return;
-
-    closeActiveStream();
-    state.activeRun = null;
-    state.sending = false;
-    state.progressHint = null;
-    state.pendingIntents = state.pendingIntents.map((intent) => ({ ...intent, dismissed: true }));
+    if (hadWorkspace) {
+      closeActiveStream();
+      state.activeRun = null;
+      state.sending = false;
+      state.progressHint = null;
+      state.pendingIntents = state.pendingIntents.map((intent) => ({ ...intent, dismissed: true }));
+      state.retryableMessageId = null;
+    }
+    let runId: string | null = null;
+    try { runId = nextSlug ? options.pendingStorage?.getItem(`sck.ai.pending:${nextSlug}`) ?? null : null; } catch { /* Storage may be disabled. */ }
+    if (runId && options.chatClient.recoverChat) {
+      const id = createId();
+      const contextSnapshot = { ...createDefaultAiContextSnapshot(), workspaceSlug: nextSlug ?? undefined };
+      retryableRequests.set(id, { runId, message: "", contextSnapshot, assistantMessageId: createId(), idempotencyKey: createId() });
+      state.retryableMessageId = id;
+      state.sendError = "发现上次研究的运行记录，可恢复结果或查看当前状态。";
+    }
     emitChange();
   }
 

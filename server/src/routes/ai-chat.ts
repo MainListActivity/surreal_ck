@@ -16,6 +16,8 @@ import { AiAllowanceError } from "../ai-allowance/service";
 import type { ContentResearchSessionFactory } from "../research/window";
 import type { OpenContentResearchSession } from "../../ai/mastra/workflows/router-workflow";
 import { claimResumeWindow } from "../research/resume-window";
+import { ChatDeliveryStore, authorizeDelivery, requestDigest } from "../ai/delivery-store";
+import type { AiDeliveryProof, ChatStreamEvent } from "@surreal-ck/shared";
 import type { RunRegistry } from "../ai/run-registry";
 
 /** 用调用者 OIDC token 在 SurrealDB 上 authenticate 出一条会话（admin / participant access）。失败即抛。 */
@@ -39,6 +41,7 @@ export type AiChatService = {
     /** LCA06：调用者 content_reader 窗口工厂（路由层用调用者 token 构造；模型不可自选上下文）。 */
     openContentSession?: OpenContentResearchSession;
     /** run 到达终态时回调一次（suspended 也回调——门禁据此决定释放还是保留预留）。 */
+    onResult?: (event: Extract<ChatStreamEvent, { kind: "done" }>, proofs: AiDeliveryProof[]) => Promise<void>;
     onTerminal?: (outcome: RunTerminalOutcome) => void | Promise<void>;
   }): Promise<void>;
   /** 后台续跑一个已 suspend 的 run：用（可能已刷新的）新 session 提交 decision；workflow state 不持有 session。 */
@@ -49,6 +52,7 @@ export type AiChatService = {
     /** 调用者 OIDC subject；stream 授权和 Mastra 上下文识别用，DB 归因走 caller session 的 $auth。 */
     ownerSubject: string;
     openContentSession?: OpenContentResearchSession;
+    onResult?: (event: Extract<ChatStreamEvent, { kind: "done" }>, proofs: AiDeliveryProof[]) => Promise<void>;
     onTerminal?: (outcome: RunTerminalOutcome) => void | Promise<void>;
   }): Promise<void>;
 };
@@ -73,6 +77,7 @@ export type AiChatRoutesDeps = {
   registry: RunRegistry;
   /** LCA05 共享 AI 额度门禁；未注入时 /api/chat 不计量（向后兼容）。 */
   allowance?: AiAllowanceGate;
+  deliveries?: ChatDeliveryStore;
   /** LCA06：为调用者开设 content_reader 研究窗口的工厂；注入后 AI 研究可联合平台授权语料。 */
   createContentResearchSession?: ContentResearchSessionFactory;
   requireUser?: () => MiddlewareHandler<AppBindings>;
@@ -144,22 +149,16 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
   }
 
   /** 计量过的 run：终态回调把预留结算/释放；suspended 不收口（预留跨 resume 保留到 deadline）。 */
-  function meteredTerminalHandler(db: string, runId: string): (outcome: RunTerminalOutcome) => void {
-    return (outcome) => {
+  function meteredTerminalHandler(db: string, runId: string): (outcome: RunTerminalOutcome) => Promise<void> {
+    return async (outcome) => {
       if (outcome === "suspended") return;
-      void deps.allowance
+      await deps.allowance
         ?.finishByRun({
           db,
           runId,
           outcome: outcome === "success" ? "success" : outcome === "cancelled" ? "cancelled" : "failure",
         })
-        .catch((error) => {
-          console.warn("[ai-chat] allowance finish failed", {
-            runId,
-            outcome,
-            message: error instanceof Error ? error.message : String(error),
-          });
-        });
+;
     };
   }
 
@@ -174,11 +173,67 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
     }
   }
 
+  function contentWindow(user: AppBindings["Variables"]["user"]): OpenContentResearchSession | undefined {
+    return deps.createContentResearchSession ? () => deps.createContentResearchSession!(user) : undefined;
+  }
+  function registerRun(runId: string, user: AppBindings["Variables"]["user"]): { streamToken: string } {
+    return deps.registry.register({ runId, ownerSubject: user.subject, authorize: deps.deliveries ? async () => {
+      const session = await signIn(user.rawToken);
+      try {
+        const row = await deps.deliveries!.read(session, runId);
+        if (row.status === "complete") {
+          const payload = deps.deliveries!.decrypt(row, workspaceDb(user)!, user.subject);
+          await authorizeDelivery(session, payload.proofs, contentWindow(user));
+        } else {
+          await authorizeDelivery(session, [], contentWindow(user));
+        }
+      } finally { await closeCallerSessionQuietly(session); }
+    } : undefined });
+  }
+  function deliveryHooks(session: Surreal, runId: string, user: AppBindings["Variables"]["user"], meteredDb?: string) {
+    return {
+      onResult: deps.deliveries ? async (event: Extract<ChatStreamEvent, { kind: "done" }>, proofs: AiDeliveryProof[]) => {
+        await authorizeDelivery(session, proofs, contentWindow(user));
+        await deps.deliveries!.save(session, workspaceDb(user)!, user.subject, { event, proofs });
+      } : undefined,
+      onTerminal: async (outcome: RunTerminalOutcome) => {
+        const row = await deps.deliveries?.find(session, runId);
+        // Persistence survived a settlement/network failure: keep the successful result authoritative.
+        const durableSuccess = row?.status === "complete";
+        if (durableSuccess) deps.deliveries!.decrypt(row!, workspaceDb(user)!, user.subject);
+        if (deps.deliveries && !durableSuccess) await deps.deliveries.status(session, runId, outcome === "suspended" ? "suspended" : "failed");
+        if (meteredDb) await meteredTerminalHandler(meteredDb, runId)(durableSuccess ? "success" : outcome);
+      },
+    };
+  }
+  async function recoverRun(session: Surreal, runId: string, user: AppBindings["Variables"]["user"]) {
+    const row = await deps.deliveries!.read(session, runId);
+    if (row.status === "complete") {
+      const payload = deps.deliveries!.decrypt(row, workspaceDb(user)!, user.subject);
+      await authorizeDelivery(session, payload.proofs, contentWindow(user));
+      // Idempotent reconciliation: never reserve or call the model for a completed delivery.
+      const db = workspaceDb(user);
+      if (deps.allowance && db) await deps.allowance.finishByRun({ db, runId, outcome: "success" });
+      return { runId, streamUrl: `/api/chat/stream?runId=${runId}`, streamToken: "", result: payload.event };
+    }
+    if (row.status !== "running" || !deps.registry.get(runId)) {
+      if (row.status === "running") {
+        await deps.deliveries!.status(session, runId, "failed");
+        const db = workspaceDb(user);
+        if (deps.allowance && db) await deps.allowance.finishByRun({ db, runId, outcome: "failure" });
+      }
+      throw new HttpError(409, "chat-run-not-running", row.status === "suspended" ? "研究已暂停，请提交原决策继续" : "该运行已中断且未交付结果，请重新提交研究");
+    }
+    await authorizeDelivery(session, [], contentWindow(user));
+    const { streamToken } = registerRun(runId, user);
+    return { runId, streamUrl: `/api/chat/stream?runId=${runId}`, streamToken };
+  }
+
   async function resumeRun(input: {
     runId: string;
     decision: ResumeDecision;
     user: AppBindings["Variables"]["user"];
-  }): Promise<{ runId: string; streamUrl: string; streamToken: string }> {
+  }): Promise<{ runId: string; streamUrl: string; streamToken: string; result?: Extract<ChatStreamEvent, { kind: "done" }> }> {
     const { runId, decision, user } = input;
     const known = deps.registry.get(runId);
     if (known && known.ownerSubject !== user.subject) throw new HttpError(403, "chat-run-forbidden", "Run is not owned by caller");
@@ -186,6 +241,12 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
     const session = await signIn(user.rawToken);
     let release: (() => Promise<void>) | undefined;
     try {
+      const delivered = await deps.deliveries?.find(session, runId);
+      if (delivered?.status === "complete") {
+        const recovered = await recoverRun(session, runId, user);
+        await closeCallerSessionQuietly(session);
+        return recovered;
+      }
       release = await claimResumeWindow(session, runId);
       const resumeDb = workspaceDb(user);
       if (deps.allowance?.resume && resumeDb) {
@@ -194,15 +255,16 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
             runId, actionKey: AI_CHAT_ACTION_KEY, idempotencyKey: `${runId}:resume:${JSON.stringify(decision)}` });
         } catch (error) { allowanceFail(error); }
       }
-      const finish = deps.allowance && resumeDb ? meteredTerminalHandler(resumeDb, runId) : undefined;
+      const hooks = delivered ? deliveryHooks(session, runId, user, resumeDb) : undefined;
+      const finish = hooks?.onTerminal ?? (deps.allowance && resumeDb ? meteredTerminalHandler(resumeDb, runId) : undefined);
       const onTerminal = async (outcome: RunTerminalOutcome) => {
-        finish?.(outcome);
+        await finish?.(outcome);
         await release?.();
       };
-      const { streamToken } = deps.registry.register({ runId, ownerSubject: user.subject });
+      const { streamToken } = delivered ? registerRun(runId, user) : deps.registry.register({ runId, ownerSubject: user.subject });
       await deps.service.resumeChat({ runId, decision, surrealSession: session, ownerSubject: user.subject,
         openContentSession: deps.createContentResearchSession ? () => deps.createContentResearchSession!(user) : undefined,
-        onTerminal });
+        onResult: hooks?.onResult, onTerminal });
       return { runId, streamUrl: `/api/chat/stream?runId=${runId}`, streamToken };
     } catch (error) {
       await release?.();
@@ -213,6 +275,12 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
   }
 
   return new Hono<AppBindings>()
+    .post("/api/chat/runs/:runId/recover", requireUser(), async (c) => {
+      if (!deps.deliveries) throw new HttpError(503, "chat-recovery-unavailable", "研究恢复尚未配置");
+      const session = await signIn(c.var.user.rawToken);
+      try { return c.json(await recoverRun(session, c.req.param("runId"), c.var.user)); }
+      finally { await closeCallerSessionQuietly(session); }
+    })
     .post("/api/chat/runs/:runId/resume", requireUser(), resumeDecisionJson, async (c) => {
       const parsed = c.req.valid("json");
       const result = await resumeRun({
@@ -257,11 +325,28 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
 
       const session = await signIn(user.rawToken);
 
-      const runId = crypto.randomUUID();
+      let runId: string = crypto.randomUUID();
       // 客户端可带幂等键：同一次提交的网络重试不会重复预留/扣款。
       const idempotencyKey = typeof body?.idempotencyKey === "string" && body.idempotencyKey.length > 0
         ? body.idempotencyKey
         : runId;
+
+      if (deps.deliveries) {
+        if (!workspaceDb(user)) { await closeCallerSessionQuietly(session); throw new HttpError(403, "chat-workspace-required", "研究必须绑定当前工作区"); }
+        try {
+          const claim = await deps.deliveries.claim(session, {
+            runId, requestKey: idempotencyKey,
+            requestHash: requestDigest(JSON.stringify([message, userContext ?? null, composerMode ?? null])),
+          });
+          runId = claim.row.run_id;
+          if (!claim.fresh) {
+            try { return c.json(await recoverRun(session, runId, user)); }
+            finally { await closeCallerSessionQuietly(session); }
+          }
+          // Register before the first awaited reserve, so concurrent retries never start another runner.
+          registerRun(runId, user);
+        } catch (error) { await closeCallerSessionQuietly(session); throw error; }
+      }
 
       // 计量门禁：在启动 workflow（调用模型）之前原子预留披露上限。
       let meteredDb: string | undefined;
@@ -274,17 +359,18 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
             actor,
             channel: "interactive",
             actionKey: AI_CHAT_ACTION_KEY,
-            idempotencyKey,
+            idempotencyKey: deps.deliveries ? `chat:${requestDigest(JSON.stringify([user.subject, idempotencyKey]))}` : idempotencyKey,
             runId,
           });
           if (begun.metered) meteredDb = gateDb;
         } catch (error) {
+          await deps.deliveries?.status(session, runId, "failed");
           await closeCallerSessionQuietly(session);
           return allowanceFail(error);
         }
       }
 
-      const { streamToken } = deps.registry.register({ runId, ownerSubject: user.subject });
+      const { streamToken } = deps.deliveries ? registerRun(runId, user) : deps.registry.register({ runId, ownerSubject: user.subject });
 
       try {
         await deps.service.startChat({
@@ -299,9 +385,10 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
           openContentSession: deps.createContentResearchSession
             ? () => deps.createContentResearchSession!(user)
             : undefined,
-          onTerminal: meteredDb ? meteredTerminalHandler(meteredDb, runId) : undefined,
+          ...(deps.deliveries ? deliveryHooks(session, runId, user, meteredDb) : { onTerminal: meteredDb ? meteredTerminalHandler(meteredDb, runId) : undefined }),
         });
       } catch (error) {
+        await deps.deliveries?.status(session, runId, "failed");
         if (meteredDb) {
           await deps.allowance
             ?.finishByRun({ db: meteredDb, runId, outcome: "failure" })

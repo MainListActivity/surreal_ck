@@ -167,6 +167,7 @@ export type CreateMastraRunnerOptions = {
 };
 
 export type ResumeWorkflowInput = {
+  signal?: AbortSignal;
   mastra: Mastra;
   runId: string;
   decision: import("@surreal-ck/shared").ResumeDecision;
@@ -262,7 +263,10 @@ const defaultResumeWorkflow: NonNullable<CreateMastraRunnerOptions["resumeWorkfl
   setExecutionContext(requestContext, { surrealSession: input.surrealSession });
   requestContext.set(ROUTER_RUNTIME_KEY, runtime);
 
-  const result = await run.resume({ resumeData: { decision: input.decision }, requestContext });
+  const abort = () => { void run.cancel().catch(() => undefined); };
+  input.signal?.addEventListener("abort", abort, { once: true });
+  if (input.signal?.aborted) abort();
+  const result = await run.resume({ resumeData: { decision: input.decision }, requestContext }).finally(() => input.signal?.removeEventListener("abort", abort));
   if (result.status === "success") {
     const finalText = (result.result as { finalText?: string } | undefined)?.finalText ?? "";
     return { runId: input.runId, finalText, status: "success" };
@@ -329,6 +333,7 @@ export function createMastraRunner(options: CreateMastraRunnerOptions = {}): { r
       const mastra = buildMastra(input.surrealSession, input.ownerSubject);
       return runRouterChatImpl({
         mastra,
+        signal: input.signal,
         text: input.text,
         userContext: input.userContext,
         surrealSession: input.surrealSession,

@@ -242,7 +242,7 @@ describe("AI 抽屉会话", () => {
     expect(h.session.snapshot()).toMatchObject({
       sending: false,
       activeRun: null,
-      sendError: "AI 连接已中断，请检查网络后重试。",
+      sendError: "AI 连接已中断，任务可能仍在运行。检查网络后恢复原结果。",
       retryableMessageId: "id-1",
     });
     expect(h.session.snapshot().messages[0]).toMatchObject({ role: "user", content: "读取当前记录" });

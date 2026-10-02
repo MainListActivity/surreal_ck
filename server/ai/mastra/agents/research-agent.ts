@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 /**
  * LCA06 授权内容研究 agent：联合平台授权语料与工作区私有材料生成可核验回答。
  *
@@ -231,7 +232,7 @@ export function makeResearchExecutor(deps: ResearchExecutorDeps): SubAgentExecut
           rejected: [],
           citedHandles: [],
         });
-        return { text: gapText, confirmed: {}, researchAuthorization: authorization };
+        return { text: gapText, confirmed: {}, researchAuthorization: authorization, deliveryProof: { authorization, platform: [], private: [] } };
       }
 
       // ── 模型分析：提示词只含登记证据；替身/真实模型都从同一入口注入 ──
@@ -272,6 +273,11 @@ export function makeResearchExecutor(deps: ResearchExecutorDeps): SubAgentExecut
       return {
         text,
         researchAuthorization: authorization,
+        deliveryProof: {
+          authorization,
+          platform: registry.entries.flatMap(e => e.platform ? [{ versionId: e.platform.versionId, bodySha256: e.platform.bodySha256 ?? "", cite: e.quoteAllowed }] : []),
+          private: registry.entries.flatMap(e => e.private ? [{ resourceId: e.private.resourceId, quoteSha256: createHash("sha256").update(e.quote).digest("hex") }] : []),
+        },
         confirmed: {},
         ...(citations.length > 0 ? { citations } : {}),
       };

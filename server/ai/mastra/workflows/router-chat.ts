@@ -26,6 +26,7 @@ export type RouterChatProgressPusher = (event: AiProgressEvent) => void;
 export type RouterChatSuspendPusher = (event: WorkflowSuspendedEvent) => void;
 
 export type RunRouterChatInput = {
+  signal?: AbortSignal;
   /** Mastra 实例：必须已通过 new Mastra({ workflows: { routerWorkflow } }) 注册了 router workflow */
   mastra: Mastra;
   text: string;
@@ -110,10 +111,13 @@ export async function runRouterChat(input: RunRouterChatInput): Promise<RunRoute
 
   const workflow = input.mastra.getWorkflow(ROUTER_WORKFLOW_ID);
   const run = await workflow.createRun({ runId: businessRunId });
+  const abort = () => { void run.cancel().catch(() => undefined); };
+  input.signal?.addEventListener("abort", abort, { once: true });
+  if (input.signal?.aborted) abort();
   const result = await run.start({
     inputData: { text: input.text },
     requestContext,
-  });
+  }).finally(() => input.signal?.removeEventListener("abort", abort));
 
   if (result.status === "failed") {
     throw new Error(describeRunFailure(result.error));

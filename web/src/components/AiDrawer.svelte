@@ -169,6 +169,7 @@
   }
 
   const session = createAiDrawerSession({
+    pendingStorage: typeof window === "undefined" ? undefined : window.sessionStorage,
     chatClient: {
       async startChat(input) {
         const res = await api.api.chat.$post({
@@ -180,6 +181,10 @@
           },
         });
         return expectJson<ChatRunStart>(res, "AI 消息发送失败。");
+      },
+      async recoverChat(runId: string) {
+        const res = await api.api.chat.runs[":runId"].recover.$post({ param: { runId } });
+        return expectJson<ChatRunStart>(res, "研究结果恢复失败。");
       },
       async resumeChat(runId: string, decision: ResumeDecision) {
         const res = await api.api.chat.runs[":runId"].resume.$post({
@@ -193,6 +198,8 @@
       return connectWs({
         url: resolveStreamUrl(input.url),
         params: { streamToken: input.streamToken },
+        // 断链由恢复端点重新鉴权并换新 stream token，不重用旧许可回放。
+        maxReconnects: 0,
         onMessage(message) {
           input.onEvent(message as ChatStreamEvent);
         },
@@ -445,7 +452,7 @@
             class="retry-message"
             disabled={drawerState.sending}
             onclick={() => void session.retryMessage(drawerState.retryableMessageId!)}
-          >重试</button>
+          >恢复 / 重试</button>
         {/if}
       </div>
     {/if}

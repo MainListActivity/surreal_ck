@@ -62,7 +62,9 @@ export function createRunBus(now: () => number = Date.now): RunBus {
       const ch = channel(runId);
       ch.backlog.push(event);
       if (isTerminal(event)) ch.terminalAt = now();
-      for (const listener of ch.listeners) listener(event);
+      for (const listener of ch.listeners) {
+        try { listener(event); } catch { ch.listeners.delete(listener); }
+      }
     },
 
     subscribe(runId, listener) {

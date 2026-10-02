@@ -117,6 +117,7 @@ export type SubAgentInput = {
 };
 
 export type SubAgentOutput = {
+  deliveryProof?: import("@surreal-ck/shared").AiDeliveryProof;
   researchAuthorization?: ResearchAuthorization;
   text: string;
   confirmed: SharedConfirmed;
@@ -715,6 +716,7 @@ export function createRouterWorkflow() {
       const runtime = getRuntime(requestContext);
       const userContext = state.userContext ?? runtime.userContext;
       const currentSteps: RouterStepResult[] = [];
+      const deliveryProof: import("@surreal-ck/shared").AiDeliveryProof[] = [];
       for (const [index, step] of state.steps.entries()) {
         if (!step.researchAuthorization) { currentSteps.push(step); continue; }
         let out = runtime.researchOutputs?.get(index);
@@ -733,6 +735,8 @@ export function createRouterWorkflow() {
             return { steps: state.steps, finalText: "" };
           }
         }
+        if (!out.deliveryProof) throw new Error("research delivery proof unavailable");
+        deliveryProof.push(out.deliveryProof);
         currentSteps.push({ ...step, text: out.text, citations: out.citations });
       }
       const finalText = currentSteps.map((s) => s.text).filter(Boolean).join("\n\n");
@@ -749,6 +753,7 @@ export function createRouterWorkflow() {
           citations: citations.length ? citations : undefined,
         },
         toolCalls: runtime.toolCalls ?? [],
+        deliveryProof,
       });
       return { steps: state.steps, finalText: state.steps.some(s => s.researchAuthorization) ? "研究结果需在新的授权窗口重新读取。" : finalText };
     },
