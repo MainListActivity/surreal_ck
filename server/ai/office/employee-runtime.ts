@@ -477,6 +477,9 @@ export function createEmployeeRuntime(deps: EmployeeRuntimeDeps): EmployeeRuntim
       const key = keyOf(database, employeeId);
       const epoch = epochs.get(key) ?? 0;
       if (!allowed(key, epoch)) throw new Error("employee-session-blocked");
+      // 开岗已注册的有效连接直接复用，避免窗口开启时换连接反向中止自身。
+      const existing = this.session(database, employeeId);
+      if (existing) return existing;
       const credential = await this.credentialFor(database, employeeId);
       if (!allowed(key, epoch)) throw new Error("employee-session-blocked");
       if (!credential) throw new Error("employee-credential-missing");

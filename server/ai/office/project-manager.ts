@@ -17,6 +17,7 @@ import type {
   EmployeeTriggerRuntime,
   TriggerHandlerContext,
 } from "./employee-trigger-runtime";
+import { delegateToAnalyst, handleAnalystDdlResult, handleAnalystTask, type AnalystProvisioner } from "./data-analyst";
 
 /**
  * 虚拟项目经理的岗位实现（VO02 tracer）。
@@ -125,7 +126,7 @@ async function handleBootstrap(ctx: TriggerHandlerContext): Promise<unknown> {
   return { taskId: task.id, taskTrigger: emitted.triggerId };
 }
 
-async function handleOfficeTask(ctx: TriggerHandlerContext): Promise<unknown> {
+async function handleOfficeTask(ctx: TriggerHandlerContext, provision?: AnalystProvisioner): Promise<unknown> {
   const taskId = ctx.trigger.payloadRef;
   if (!taskId) throw new Error("office-task-missing-ref");
   const task = await getOfficeTask(ctx.session, taskId);
@@ -137,6 +138,10 @@ async function handleOfficeTask(ctx: TriggerHandlerContext): Promise<unknown> {
   if (task.status === "done" || task.status === "cancelled") {
     return { skipped: "task-terminal", status: task.status };
   }
+  const [[self]] = await ctx.session.query<[{ role?: string }[]]>(
+    "SELECT virtual_profile.role_key AS role FROM fn::current_user()",
+  );
+  if (self?.role === "data-analyst") return handleAnalystTask(ctx, task);
   const meta = requireOfficeMeta(await readOfficeMeta(ctx.session));
   const brief = parseBrief(task);
 
@@ -154,6 +159,9 @@ async function handleOfficeTask(ctx: TriggerHandlerContext): Promise<unknown> {
 
   const rejections: string[] = [];
   let delegatedTo: string | null = null;
+  if (task.brief?.analysis) {
+    delegatedTo = await ctx.effects.runEffect("delegate-analyst", () => delegateToAnalyst(ctx, task, provision));
+  }
 
   // 人类请求：建结构化通知（确定性 id，重试收敛）→ 进度消息 → 任务 blocked。
   // 本次 run 到此结束；收件人答复/拒绝/取消落库后由 office-request-resolved
@@ -302,6 +310,7 @@ async function handleOfficeRequestResolved(ctx: TriggerHandlerContext): Promise<
   if (request.purpose !== "office-request") {
     return { skipped: "not-office-request", purpose: request.purpose };
   }
+  if (request.payload?.question_type === "ddl") return handleAnalystDdlResult(ctx, request);
   // 唤醒只应发生在终态之后；未解决的记录如实跳过（reconcile 不会补投它们）。
   if (!request.resolvedAt) return { skipped: "unresolved" };
 
@@ -369,10 +378,13 @@ async function handleOfficeRequestResolved(ctx: TriggerHandlerContext): Promise<
 }
 
 /** 把 PM 的 reason 挂到通用 runtime；重复调用幂等（map 覆盖语义）。 */
+const analystProvisioners = new WeakMap<object, AnalystProvisioner>();
 export function registerProjectManagerHandlers(
   runtime: Pick<EmployeeTriggerRuntime, "registerHandler">,
+  options: { provisionAnalyst?: AnalystProvisioner } = {},
 ): void {
+  if (options.provisionAnalyst) analystProvisioners.set(runtime, options.provisionAnalyst);
   runtime.registerHandler(OFFICE_BOOTSTRAP_REASON, handleBootstrap);
-  runtime.registerHandler(OFFICE_TASK_REASON, handleOfficeTask);
+  runtime.registerHandler(OFFICE_TASK_REASON, (ctx) => handleOfficeTask(ctx, analystProvisioners.get(runtime)));
   runtime.registerHandler(OFFICE_REQUEST_REASON, handleOfficeRequestResolved);
 }
