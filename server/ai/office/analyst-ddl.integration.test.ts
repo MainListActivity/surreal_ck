@@ -250,6 +250,9 @@ test("VO05 实际 fork + admin/participant/employee + Mastra：开岗、DDL、�
       employee: new StringRecordId(analystId) }).collect()).rejects.toThrow(/provisioning/);
     const [secrets] = await analyst.query<[unknown[]]>("SELECT id FROM employee_credential");
     expect(secrets).toHaveLength(0);
+    const [human] = await managerSession.query<[unknown[]]>(`CREATE user:forbidden CONTENT {
+      email:'forbidden@example.test', kind:'human', is_admin:false } RETURN AFTER`);
+    expect(human).toHaveLength(0);
     // 真正的 employee DML；不会借用 admin 执行业务读取或写入。
     await analyst.query("UPDATE ent_sales:first SET amount = 43").collect();
     const [[sale]] = await analyst.query<[{ amount: number }[]]>("SELECT amount FROM ent_sales:first");
@@ -283,14 +286,15 @@ test("VO05 实际 fork + admin/participant/employee + Mastra：开岗、DDL、�
     const [reports] = await fixture.root.query<[unknown[]]>("SELECT id FROM office_report WHERE task = $task", { task: new StringRecordId(intent.task) });
     expect(reports).toHaveLength(1);
 
-    for (const scenario of ["reject", "failure", "refresh", "lost-response"] as const) {
+    for (const scenario of ["reject", "failure", "refresh", "lost-response", "index"] as const) {
       analyst = await employeeSession(fixture, analystId);
       managerSession = await employeeSession(fixture, managerId);
       const taskId = `office_task:${scenario.replaceAll("-", "_")}`;
       await createOfficeTaskOnce(managerSession, taskId, { goal: `验证 ${scenario}`, assignee: analystId });
       const proposal = await proposeOfficeDdl(analyst, {
         task: taskId, author: analystId, to: "user:owner",
-        change: scenario === "failure" ? { op: "define_field", table: "ent_sales", field: "amount", type: "string" }
+        change: scenario === "index" ? { op: "define_index", table: "ent_sales", index: "by_amount", fields: ["amount"] }
+          : scenario === "failure" ? { op: "define_field", table: "ent_sales", field: "amount", type: "string" }
           : { op: "define_table", table: `ent_${scenario.replaceAll("-", "_")}` },
         rationale: "边界验证", impact: "只新增结构",
       });
@@ -308,6 +312,10 @@ test("VO05 实际 fork + admin/participant/employee + Mastra：开岗、DDL、�
         expect((await reconcileOfficeDdl(connection, proposal.id)).status).toBe("reconciled");
         const [tables] = await admin.query<[Record<string, string>]>("RETURN (INFO FOR DB).tables");
         expect(tables?.ent_refresh).toBeUndefined();
+      } else if (scenario === "index") {
+        expect((await decideOfficeDdl(connection, proposal.id, "approve")).status).toBe("succeeded");
+        const [indexes] = await admin.query<[Record<string, string>]>("RETURN (INFO FOR TABLE ent_sales).indexes");
+        expect(indexes.by_amount).toContain("FIELDS amount");
       } else {
         const lost: DdlConnection = { ...connection, transaction: async (run) => {
           await connection.transaction(run);
@@ -322,7 +330,7 @@ test("VO05 实际 fork + admin/participant/employee + Mastra：开岗、DDL、�
     const summary = await reconcileOfficeWorkspace({ runtime, root: fixture.root, database: fixture.database });
     expect(summary.failed).toBe(0);
     const [results] = await fixture.root.query<[{ status: string }[]]>("SELECT status FROM office_ddl_intent");
-    expect(results.map((result) => result.status).sort()).toEqual(["succeeded", "succeeded", "failed", "rejected", "reconciled"].sort());
+    expect(results.map((result) => result.status).sort()).toEqual(["succeeded", "succeeded", "succeeded", "failed", "rejected", "reconciled"].sort());
   } finally { await runtime.stop(); await employeeRuntime.stop(); }
 }, 120_000);
 

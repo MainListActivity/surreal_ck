@@ -1,5 +1,5 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: done
+Label: done
 
 # 05 — 数据分析师提出、浏览器管理员确认 DDL
 
@@ -7,14 +7,14 @@ Label: ready-for-agent
 
 **Blocked by:** virtual-office/03 — 人类请求一次性解决闭环；virtual-office/04 — 办公室实时花名册与活动页。
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] 项目经理能按稳定请求键幂等开岗一个数据分析师并指派真实分析任务；重试不产生重复员工。
-- [ ] 分析师的读写和 permitted DML 使用自身 employee session；分析师无法直接执行 DDL 或获得任何真人/root 凭证。
-- [ ] 第一版 DDL intent 只允许明确列出的非破坏性表、字段和索引定义操作，保存规范化变更、可读理由、预期影响和稳定 fingerprint；任意原始批量语句与 REMOVE 不在范围内。
-- [ ] DDL intent 与通用 notification 关联，只有当前 workspace 的 admin access 能进入确认执行；participant 绕过 UI 仍被数据库拒绝。
-- [ ] 浏览器通过当前数据库/数据表 runtime 使用现有 SurrealDB 连接执行确认后的 DDL，不新增后端 DDL 代理，也不把 issuer session 传给 dispatcher。
-- [ ] approved、executing、succeeded、rejected、failed 和 ambiguous/reconciled 路径都有持久结果；终态 intent 刷新或重试不会执行第二次。
-- [ ] 执行结果通过 office trigger adapter 以稳定幂等键唤醒分析师；分析师据此提交报告或提出修订 intent。
-- [ ] 端到端测试覆盖 admin 成功、participant 被拒、用户拒绝、数据库失败、执行中刷新和结果后 workflow 恢复。
+- [x] 项目经理能按稳定请求键幂等开岗一个数据分析师并指派真实分析任务；重试不产生重复员工。
+- [x] 分析师的读写和 permitted DML 使用自身 employee session；分析师无法直接执行 DDL 或获得任何真人/root 凭证。
+- [x] 第一版 DDL intent 只允许明确列出的非破坏性表、字段和索引定义操作，保存规范化变更、可读理由、预期影响和稳定 fingerprint；任意原始批量语句与 REMOVE 不在范围内。
+- [x] DDL intent 与通用 notification 关联，只有当前 workspace 的 admin access 能进入确认执行；participant 绕过 UI 仍被数据库拒绝。
+- [x] 浏览器通过当前数据库/数据表 runtime 使用现有 SurrealDB 连接执行确认后的 DDL，不新增后端 DDL 代理，也不把 issuer session 传给 dispatcher。
+- [x] approved、executing、succeeded、rejected、failed 和 ambiguous/reconciled 路径都有持久结果；终态 intent 刷新或重试不会执行第二次。
+- [x] 执行结果通过 office trigger adapter 以稳定幂等键唤醒分析师；分析师据此提交报告或提出修订 intent。
+- [x] 端到端测试覆盖 admin 成功、participant 被拒、用户拒绝、数据库失败、执行中刷新和结果后 workflow 恢复。
 
