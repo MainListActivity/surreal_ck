@@ -348,7 +348,7 @@
                             <div><dt>{key}</dt><dd>{String(value)}</dd></div>
                           {/each}
                         </dl>
-                        {#if !notification.resolvedAt}
+                        {#if !notification.resolvedAt && notification.payload.question_type !== "ddl"}
                           <button
                             type="button"
                             class="secondary-btn"

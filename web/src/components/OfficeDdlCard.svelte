@@ -8,6 +8,7 @@
   let intent = $state<OfficeDdlIntent | null>(null);
   let error = $state<string | null>(null);
   let busy = $state(false);
+  let generation = 0;
   const admin = $derived(isWorkspaceAdmin());
   const labels: Record<OfficeDdlIntent["status"], string> = {
     requested: "待管理员确认", approved: "已确认，待执行", executing: "执行中，等待持久结果",
@@ -17,6 +18,8 @@
   // 每个请求绑定打开时的连接；卸载/换 workspace 后迟到结果不更新新界面。
   $effect(() => {
     const target = id;
+    generation += 1;
+    busy = false;
     const conn = getSurreal();
     let disposed = false;
     let stop: (() => void) | undefined;
@@ -45,15 +48,19 @@
     if (action === "approve" && !window.confirm("确认按显示的结构变更执行？不会覆盖已有定义。")) return;
     busy = true;
     error = null;
+    const target = id;
+    const conn = getSurreal();
+    const started = generation;
     try {
       const next = action === "reconcile"
-        ? await reconcileOfficeDdl(getSurreal(), id)
-        : await decideOfficeDdl(getSurreal(), id, action);
+        ? await reconcileOfficeDdl(conn, target)
+        : await decideOfficeDdl(conn, target, action);
+      if (started !== generation || target !== id || conn !== getSurreal()) return;
       intent = next;
       if (DDL_TERMINAL.has(next.status)) await onresolved?.();
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : String(cause);
-    } finally { busy = false; }
+      if (started === generation) error = cause instanceof Error ? cause.message : String(cause);
+    } finally { if (started === generation) busy = false; }
   }
 </script>
 

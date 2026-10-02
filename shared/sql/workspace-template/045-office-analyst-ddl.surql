@@ -27,7 +27,8 @@ DEFINE EVENT OVERWRITE office_ddl_intent_status_guard ON TABLE office_ddl_intent
         OR $before.status = "executing" AND $after.status INSIDE ["succeeded", "failed", "ambiguous"]
         OR $before.status = "ambiguous" AND $after.status = "reconciled";
       IF !$allowed { THROW "office_ddl_intent: invalid status transition"; };
-      IF $token.ac != "admin" { THROW "office_ddl_intent: current admin access required"; };
+      -- RECORD 侧 FOR update NONE；只有 admin JWT 的 system role 可推进。
+      -- EVENT 不读取 token：事件的执行上下文不保证传入调用者 JWT claim。
       IF $after.result = NONE { THROW "office_ddl_intent: durable result required"; };
     };
     IF $before.decided_by != NONE AND $after.decided_by != $before.decided_by {
@@ -35,10 +36,26 @@ DEFINE EVENT OVERWRITE office_ddl_intent_status_guard ON TABLE office_ddl_intent
     };
   };
 
+-- 员工可编辑展示信息，不能把 DML 会话变为管理员或更换岗位身份。
+DEFINE EVENT OVERWRITE office_employee_identity_guard ON TABLE user
+  WHEN $event = "UPDATE" AND $auth.kind = "virtual" AND $auth.id = $after.id
+  THEN {
+    IF $after.kind != $before.kind OR $after.is_admin != $before.is_admin
+      OR $after.subject != $before.subject OR $after.email != $before.email
+      OR $after.disabled_at != $before.disabled_at
+      OR $after.virtual_profile.role != $before.virtual_profile.role
+      OR $after.virtual_profile.role_key != $before.virtual_profile.role_key
+      OR $after.virtual_profile.supervisor != $before.virtual_profile.supervisor
+      OR $after.virtual_profile.status != $before.virtual_profile.status {
+      THROW "office employee: identity cannot change";
+    };
+  };
+
 -- intent 与通知结果同一事务落库；普通收件人不能仅通过 answer 越过 DDL 确认。
 DEFINE EVENT OVERWRITE office_ddl_intent_notification_result ON TABLE office_ddl_intent
   WHEN $event = "UPDATE" AND $after.status != $before.status
     AND $after.status INSIDE ["succeeded", "rejected", "failed", "reconciled"]
+    AND $after.notification != NONE
   THEN {
     UPDATE $after.notification SET resolved_at = time::now(),
       resolution = $after.result.message,
@@ -52,7 +69,6 @@ DEFINE EVENT OVERWRITE office_ddl_notification_guard ON TABLE user_notification
     AND ($after.resolved_at != $before.resolved_at OR $after.answer != $before.answer
       OR $after.resolution != $before.resolution)
   THEN {
-    IF $token.ac != "admin" { THROW "DDL notification: current admin access required"; };
     LET $intent = type::record($before.payload.ddl_intent);
     IF $intent.status NOTINSIDE ["succeeded", "rejected", "failed", "reconciled"] {
       THROW "DDL notification: intent must be terminal first";
