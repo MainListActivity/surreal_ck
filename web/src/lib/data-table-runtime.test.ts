@@ -77,7 +77,7 @@ function runtimeHarness(
           id: "sheet:s1",
           workbook: "workbook:w1",
           label: "数据表 1",
-          table_name: "ent_claim",
+          table_name: "ent_items",
           column_defs: runtimeColumns,
         }];
       }
@@ -118,7 +118,7 @@ function runtimeHarness(
           }
           if (/CREATE \$targetRecord/i.test(sql)) {
             const created = { id: bindings?.targetRecord, ...(bindings?.data as Record<string, unknown>) };
-            creates.push({ table: "ent_claim", data: bindings?.data as Record<string, unknown> });
+            creates.push({ table: "ent_items", data: bindings?.data as Record<string, unknown> });
             rows.push(created);
             return [created];
           }
@@ -160,11 +160,11 @@ function runtimeHarness(
 
 describe("数据表运行时打开与记录入口", () => {
   test("字段修正先只生成差异预览，确认时事务重验并幂等记录审计", async () => {
-    const h = runtimeHarness([{ id: "ent_claim:a", name: "旧名称", amount: 1 }]);
+    const h = runtimeHarness([{ id: "ent_items:a", name: "旧名称", amount: 1 }]);
     const runtime = await openDataTableRuntime({
       conn: h.conn, workbookId: "workbook:w1", dataTableId: "sheet:s1", query: emptyView,
     });
-    const preview = await runtime.planRecordFieldRepair({ recordId: "ent_claim:a", fieldKey: "name", value: "新名称" });
+    const preview = await runtime.planRecordFieldRepair({ recordId: "ent_items:a", fieldKey: "name", value: "新名称" });
     expect(preview).toMatchObject({ ok: true, value: { before: "旧名称", after: "新名称", fieldLabel: "名称" } });
     expect(h.updates).toEqual([]);
     if (!preview.ok) throw new Error("预览失败");
@@ -179,18 +179,18 @@ describe("数据表运行时打开与记录入口", () => {
     expect(confirmed).toMatchObject({ ok: true, value: { alreadyConfirmed: false, record: { values: { name: "新名称" } } } });
     expect(repeated).toMatchObject({ ok: true, value: { alreadyConfirmed: true } });
     expect(h.findingEvents.size).toBe(1);
-    expect(h.updates.filter((update) => update.id === "ent_claim:a")).toHaveLength(1);
+    expect(h.updates.filter((update) => update.id === "ent_items:a")).toHaveLength(1);
     expect(h.updates).toContainEqual(expect.objectContaining({ id: "data_check_finding:f1", patch: { status: "pending_review" } }));
   });
 
   test("字段修正确认发现预览后并发变化时零覆盖", async () => {
-    const h = runtimeHarness([{ id: "ent_claim:a", name: "旧名称", amount: 1 }]);
+    const h = runtimeHarness([{ id: "ent_items:a", name: "旧名称", amount: 1 }]);
     const runtime = await openDataTableRuntime({
       conn: h.conn, workbookId: "workbook:w1", dataTableId: "sheet:s1", query: emptyView,
     });
-    const preview = await runtime.planRecordFieldRepair({ recordId: "ent_claim:a", fieldKey: "name", value: "新名称" });
+    const preview = await runtime.planRecordFieldRepair({ recordId: "ent_items:a", fieldKey: "name", value: "新名称" });
     if (!preview.ok) throw new Error("预览失败");
-    h.setRows([{ id: "ent_claim:a", name: "他人修改", amount: 1 }]);
+    h.setRows([{ id: "ent_items:a", name: "他人修改", amount: 1 }]);
     const result = await runtime.confirmRecordFieldRepair({
       token: preview.value.token, findingId: "data_check_finding:f1", idempotencyKey: "repair:f1:conflict",
     });
@@ -202,7 +202,7 @@ describe("数据表运行时打开与记录入口", () => {
 
   test("全范围扫描跨过默认 500 条窗口并保留末尾记录", async () => {
     const rows = Array.from({ length: 501 }, (_, index) => ({
-      id: `ent_claim:r${index + 1}`,
+      id: `ent_items:r${index + 1}`,
       name: index === 500 ? null : `记录 ${index + 1}`,
       amount: index,
       updated_at: "2026-09-22T00:00:00Z",
@@ -215,12 +215,12 @@ describe("数据表运行时打开与记录入口", () => {
     const scanned = await runtime.scanAllRecords();
 
     expect(scanned.scannedCount).toBe(501);
-    expect(scanned.records.at(-1)).toMatchObject({ id: "ent_claim:r501", values: { name: null } });
+    expect(scanned.records.at(-1)).toMatchObject({ id: "ent_items:r501", values: { name: null } });
     expect(scanned.stale).toBe(false);
   });
 
   test("先建立 LIVE 再查询正式记录，并验证工作簿 + 数据表归属", async () => {
-    const h = runtimeHarness([{ id: "ent_claim:a", name: "甲", amount: 1 }]);
+    const h = runtimeHarness([{ id: "ent_items:a", name: "甲", amount: 1 }]);
     const runtime = await openDataTableRuntime({
       conn: h.conn,
       workbookId: "workbook:w1",
@@ -234,11 +234,11 @@ describe("数据表运行时打开与记录入口", () => {
     expect(metadataIndex).toBeGreaterThanOrEqual(0);
     expect(liveIndex).toBeGreaterThan(metadataIndex);
     expect(recordsIndex).toBeGreaterThan(liveIndex);
-    expect(runtime.snapshot.records).toEqual([{ id: "ent_claim:a", values: { name: "甲", amount: 1 } }]);
+    expect(runtime.snapshot.records).toEqual([{ id: "ent_items:a", values: { name: "甲", amount: 1 } }]);
   });
 
   test("完整记录用于校验，数据库 MERGE 只携带实际变化字段", async () => {
-    const h = runtimeHarness([{ id: "ent_claim:a", name: "甲", amount: 1 }]);
+    const h = runtimeHarness([{ id: "ent_items:a", name: "甲", amount: 1 }]);
     const runtime = await openDataTableRuntime({
       conn: h.conn,
       workbookId: "workbook:w1",
@@ -246,14 +246,14 @@ describe("数据表运行时打开与记录入口", () => {
       query: emptyView,
     });
 
-    const result = await runtime.updateRecords([{ id: "ent_claim:a", values: { amount: 2 } }]);
+    const result = await runtime.updateRecords([{ id: "ent_items:a", values: { amount: 2 } }]);
     expect(result.ok).toBe(true);
-    expect(h.updates).toEqual([{ id: "ent_claim:a", patch: { amount: 2 } }]);
+    expect(h.updates).toEqual([{ id: "ent_items:a", patch: { amount: 2 } }]);
     expect(runtime.snapshot.records[0].values).toEqual({ name: "甲", amount: 2 });
   });
 
   test("patch 按 schema coerce，清空值保留到 SDK 边界，未知字段被拒绝", async () => {
-    const h = runtimeHarness([{ id: "ent_claim:a", name: "甲", amount: 1 }]);
+    const h = runtimeHarness([{ id: "ent_items:a", name: "甲", amount: 1 }]);
     const runtime = await openDataTableRuntime({
       conn: h.conn,
       workbookId: "workbook:w1",
@@ -262,20 +262,20 @@ describe("数据表运行时打开与记录入口", () => {
     });
 
     expect((await runtime.updateRecords([{
-      id: "ent_claim:a",
+      id: "ent_items:a",
       values: { amount: "2" },
     }])).ok).toBe(true);
     expect(h.updates.at(-1)?.patch.amount).toBe(2);
 
     expect((await runtime.updateRecords([{
-      id: "ent_claim:a",
+      id: "ent_items:a",
       values: { amount: "" },
     }])).ok).toBe(true);
     expect(h.updates.at(-1)?.patch).toHaveProperty("amount");
     expect(h.updates.at(-1)?.patch.amount).toBeUndefined();
 
     const unknown = await runtime.updateRecords([{
-      id: "ent_claim:a",
+      id: "ent_items:a",
       values: { injected: true },
     }]);
     expect(unknown.ok).toBe(false);
@@ -294,7 +294,7 @@ describe("数据表运行时打开与记录入口", () => {
     expect((await runtime.promoteDraft({ amount: 1 })).status).toBe("incomplete");
     const promoted = await runtime.promoteDraft({ name: "乙", amount: 2 });
     expect(promoted.status).toBe("promoted");
-    if (promoted.status === "promoted") expect(promoted.record.id).toBe("ent_claim:new1");
+    if (promoted.status === "promoted") expect(promoted.record.id).toBe("ent_items:new1");
   });
 
   test("原生 quota error 保留草稿语义并按 participant 裁剪全表计数", async () => {
@@ -309,7 +309,7 @@ describe("数据表运行时打开与记录入口", () => {
             violations: [
               {
                 resource: "record",
-                table: "ent_claim",
+                table: "ent_items",
                 rule_ids: ["secret-rule"],
                 limit: 10,
                 current: 10,
@@ -350,7 +350,7 @@ describe("数据表运行时打开与记录入口", () => {
         kind: "exceeded",
         preserve_draft: true,
         transaction_committed: false,
-        violations: [{ resource: "record", table: "ent_claim" }],
+        violations: [{ resource: "record", table: "ent_items" }],
       },
     });
     expect(JSON.stringify(result.error)).not.toContain("private_table");
@@ -362,22 +362,22 @@ describe("数据表运行时打开与记录入口", () => {
     const h = runtimeHarness([], [
       { key: "material_name", label: "材料名称", field_type: "text", required: true },
       {
-        key: "creditor",
-        label: "关联债权人",
+        key: "owner",
+        label: "关联负责人",
         field_type: "reference",
         required: true,
-        reference_table: "ent_creditor",
-        reference_display_key: "creditor_name",
+        reference_table: "ent_owner",
+        reference_display_key: "owner_name",
       },
     ]);
     const baseQuery = h.conn.query.bind(h.conn);
     const referenceQueries: string[] = [];
     h.conn.query = (async (sql: string, bindings?: Record<string, unknown>) => {
-      if (/FROM ent_creditor/i.test(sql)) {
+      if (/FROM ent_owner/i.test(sql)) {
         referenceQueries.push(sql);
         return [
-          { id: "ent_creditor:c1", creditor_name: "远航供应链有限公司" },
-          { id: "ent_creditor:c2", creditor_name: "华辰建设有限公司" },
+          { id: "ent_owner:c1", owner_name: "远航供应链有限公司" },
+          { id: "ent_owner:c2", owner_name: "华辰建设有限公司" },
         ];
       }
       return baseQuery(sql, bindings);
@@ -390,13 +390,13 @@ describe("数据表运行时打开与记录入口", () => {
     });
     const mappings: TemplateImportMapping[] = [
       { sourceIndex: 0, sourceLabel: "材料名称", targetKey: "material_name", matchedBy: "field-name" },
-      { sourceIndex: 1, sourceLabel: "债权人", targetKey: "creditor", matchedBy: "alias" },
+      { sourceIndex: 1, sourceLabel: "负责人", targetKey: "owner", matchedBy: "alias" },
     ];
 
     const first = await runtime.importCsvRows({
       rows: [
         ["送货签收单", "远航供应链有限公司"],
-        ["抵押登记", "未登记债权人"],
+        ["抵押登记", "未登记负责人"],
       ],
       mappings,
     });
@@ -405,15 +405,15 @@ describe("数据表运行时打开与记录入口", () => {
       importedCount: 1,
       rejected: [{
         rowNumber: 3,
-        field: "关联债权人",
-        reason: "未找到显示值为“未登记债权人”的引用记录",
-        sourceCells: ["抵押登记", "未登记债权人"],
+        field: "关联负责人",
+        reason: "未找到显示值为“未登记负责人”的引用记录",
+        sourceCells: ["抵押登记", "未登记负责人"],
       }],
     });
     expect(h.creates).toHaveLength(1);
-    expect(referenceQueries).toEqual(["SELECT id, creditor_name FROM ent_creditor"]);
-    expect(h.creates[0]!.table).toBe("ent_claim");
-    expect(String(h.creates[0]!.data.creditor)).toBe("ent_creditor:c1");
+    expect(referenceQueries).toEqual(["SELECT id, owner_name FROM ent_owner"]);
+    expect(h.creates[0]!.table).toBe("ent_items");
+    expect(String(h.creates[0]!.data.owner)).toBe("ent_owner:c1");
 
     const retry = await runtime.importCsvRows({
       rows: [["抵押登记", "华辰建设有限公司"]],
@@ -422,11 +422,11 @@ describe("数据表运行时打开与记录入口", () => {
     });
     expect(retry).toEqual({ importedCount: 1, rejected: [] });
     expect(referenceQueries).toEqual([
-      "SELECT id, creditor_name FROM ent_creditor",
-      "SELECT id, creditor_name FROM ent_creditor",
+      "SELECT id, owner_name FROM ent_owner",
+      "SELECT id, owner_name FROM ent_owner",
     ]);
     expect(h.creates).toHaveLength(2);
-    expect(String(h.creates[1]!.data.creditor)).toBe("ent_creditor:c2");
+    expect(String(h.creates[1]!.data.owner)).toBe("ent_owner:c2");
   });
 
   test("持久批次把业务记录与成功回执同事务提交，并在重放前核实回执", async () => {
@@ -444,7 +444,7 @@ describe("数据表运行时打开与记录入口", () => {
         { sourceIndex: 0, sourceLabel: "名称", targetKey: "name", matchedBy: "field-name" },
         { sourceIndex: 1, sourceLabel: "金额", targetKey: "amount", matchedBy: "field-name" },
       ] satisfies TemplateImportMapping[],
-      batch: { id: "import_batch:b1", sheetName: "债权" },
+      batch: { id: "import_batch:b1", sheetName: "事项" },
     };
 
     const first = await runtime.importCsvRows(input);
@@ -461,7 +461,7 @@ describe("数据表运行时打开与记录入口", () => {
 
 describe("数据表运行时 schema mutation", () => {
   test("字段 DDL 与 column_defs 更新使用同一事务", async () => {
-    const h = runtimeHarness([{ id: "ent_claim:a", name: "甲", amount: 1 }]);
+    const h = runtimeHarness([{ id: "ent_items:a", name: "甲", amount: 1 }]);
     const runtime = await openDataTableRuntime({
       conn: h.conn,
       workbookId: "workbook:w1",
@@ -500,7 +500,7 @@ describe("数据表运行时 schema mutation", () => {
   });
 
   test("删除字段必须先预检确认，并在同一事务清值、删 schema、更新元数据", async () => {
-    const h = runtimeHarness([{ id: "ent_claim:a", name: "甲", amount: 1 }]);
+    const h = runtimeHarness([{ id: "ent_items:a", name: "甲", amount: 1 }]);
     const runtime = await openDataTableRuntime({
       conn: h.conn,
       workbookId: "workbook:w1",
@@ -519,7 +519,7 @@ describe("数据表运行时 schema mutation", () => {
 
     const confirmed = await runtime.confirmFieldRemoval(planned.value.token);
     expect(confirmed.ok).toBe(true);
-    expect(h.txCalls.some((sql) => /UPDATE ent_claim UNSET amount/.test(sql))).toBe(true);
+    expect(h.txCalls.some((sql) => /UPDATE ent_items UNSET amount/.test(sql))).toBe(true);
     expect(h.txCalls.some((sql) => /REMOVE FIELD IF EXISTS amount/.test(sql))).toBe(true);
     expect(h.updates.at(-1)?.id).toBe("sheet:s1");
     expect(h.txCalls.at(-1)).toBe("COMMIT");
@@ -538,7 +538,7 @@ describe("数据表运行时关闭", () => {
 
     await runtime.close();
     expect(h.unsubscribed).toBe(true);
-    const result = await runtime.updateRecords([{ id: "ent_claim:a", values: { name: "x" } }]);
+    const result = await runtime.updateRecords([{ id: "ent_items:a", values: { name: "x" } }]);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("closed");
   });

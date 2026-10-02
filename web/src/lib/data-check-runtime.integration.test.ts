@@ -93,10 +93,10 @@ describe("数据体检真实 SurrealDB 契约", () => {
     expect(await conn.query("SELECT status FROM data_check_finding")).toEqual([expect.objectContaining({ status: "pending_review" })]);
 
     await markFindingNotApplicable(conn, {
-      findingId: finding.id, reason: "经律师确认属于合法例外", idempotencyKey: "not-applicable-real-1",
+      findingId: finding.id, reason: "经专员确认属于合法例外", idempotencyKey: "not-applicable-real-1",
     });
     expect(await conn.query("SELECT status, resolution_reason FROM data_check_finding")).toEqual([
-      expect.objectContaining({ status: "not_applicable", resolution_reason: "经律师确认属于合法例外" }),
+      expect.objectContaining({ status: "not_applicable", resolution_reason: "经专员确认属于合法例外" }),
     ]);
     expect(await conn.query("SELECT * FROM data_check_finding_event")).toHaveLength(2);
     await runtime.close();

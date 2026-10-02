@@ -1,5 +1,5 @@
 /**
- * LCA06 授权法律研究 agent：联合平台授权语料与工作区私有材料生成可核验回答。
+ * LCA06 授权内容研究 agent：联合平台授权语料与工作区私有材料生成可核验回答。
  *
  * 与 resource-agent 的差异：
  * - 执行窗口内同时持有调用者 workspace session 与 content_reader session
@@ -18,6 +18,7 @@ import type { SearchResourcesRequest, SearchResourcesResponse, ResourceDTO } fro
 import type { SubAgentExecutor, SubAgentOutput } from "../workflows/router-workflow";
 import { buildModelConfig, type AiSettings } from "./model-config";
 import type { ContentResearchWindow } from "../../../src/research/window";
+import type { EmbeddingProvider } from "../../../src/resources/research-save";
 import {
   RESEARCH_EVIDENCE_LIMIT,
   retrieveAuthorizedCorpus,
@@ -31,18 +32,18 @@ import {
   type CorpusAvailability,
 } from "../../../src/research/research-answer";
 
-export const LEGAL_RESEARCH_AGENT_ID = "legalResearchAgent";
+export const RESEARCH_AGENT_ID = "researchAgent";
 
-export const LEGAL_RESEARCH_INSTRUCTIONS = `你是 Surreal CK 的授权法律研究助手。
+export const RESEARCH_INSTRUCTIONS = `你是 Surreal CK 的授权内容研究助手。
 始终使用简体中文回答。
 你收到的提示词里只会包含已登记的授权证据片段；只允许引用其中标注的句柄编号。
 绝不编造句柄、版本号或条文文本；证据不足时明确说明缺口。`;
 
-export function createLegalResearchAgent(settings: AiSettings): Agent {
+export function createResearchAgent(settings: AiSettings): Agent {
   return new Agent({
-    name: "Legal Research Agent",
-    id: LEGAL_RESEARCH_AGENT_ID,
-    instructions: LEGAL_RESEARCH_INSTRUCTIONS,
+    name: "Research Agent",
+    id: RESEARCH_AGENT_ID,
+    instructions: RESEARCH_INSTRUCTIONS,
     model: new ModelRouterLanguageModel(buildModelConfig(settings)),
   });
 }
@@ -50,7 +51,8 @@ export function createLegalResearchAgent(settings: AiSettings): Agent {
 /** 生产/测试共用的回答模型：输入提示词，输出模型文本。 */
 export type ResearchAnswerModel = (prompt: string) => Promise<string>;
 
-export type LegalResearchExecutorDeps = {
+export type ResearchExecutorDeps = {
+  embeddingProvider?: EmbeddingProvider;
   /** 默认：用调用者 session 查 session::db()（workspace db 名即 workspace 标识）。 */
   resolveWorkspaceId?(context: AiContextSnapshot, session?: Surreal): Promise<string>;
   /** 工作区私有材料检索（调用者 workspace session；授权由 db 边界与 schema PERMISSIONS 保证）。 */
@@ -60,7 +62,7 @@ export type LegalResearchExecutorDeps = {
   loadResource?(resourceId: string, session?: Surreal): Promise<ResourceDTO>;
 };
 
-export function makeLegalResearchExecutor(deps: LegalResearchExecutorDeps): SubAgentExecutor {
+export function makeResearchExecutor(deps: ResearchExecutorDeps): SubAgentExecutor {
   const resolveWorkspaceId = deps.resolveWorkspaceId ?? resolveWorkspaceIdFromSession;
   const searchResources = deps.searchResources;
 
@@ -135,7 +137,9 @@ export function makeLegalResearchExecutor(deps: LegalResearchExecutorDeps): SubA
         corpusNotice = "平台授权窗口已到期，请重新开始研究；本回答仅基于工作区私有资料（partial）。";
       } else if (corpusWindow.kind === "ready") {
         try {
-          platformEvidence = await retrieveAuthorizedCorpus({ session: corpusWindow.session, query: taskText });
+          platformEvidence = await retrieveAuthorizedCorpus({
+            session: corpusWindow.session, query: taskText, embeddingProvider: deps.embeddingProvider,
+          });
         } catch {
           // 检索失败按平台不可用处理：不把原始错误带进模型上下文或日志。
           platformEvidence = { evidence: [], rejected: [], candidatesSeen: 0 };
@@ -215,7 +219,7 @@ export function makeLegalResearchExecutor(deps: LegalResearchExecutorDeps): SubA
         };
       }
 
-      // ── 无任何证据：说明缺口，不调用模型生成假装有来源的法律结论 ──
+      // ── 无任何证据：说明缺口，不调用模型生成假装有来源的结论 ──
       if (!hasAnyEvidence) {
         const gapText = assembleResearchAnswerText({
           question: taskText,
@@ -304,7 +308,7 @@ async function resolveWorkspaceIdFromSession(
   session?: Surreal,
 ): Promise<string> {
   if (!session) {
-    throw new Error("legal-research executor 缺少调用者 surrealSession，无法解析 workspace");
+    throw new Error("research executor 缺少调用者 surrealSession，无法解析 workspace");
   }
   const results = await session.query<[string | null]>("RETURN session::db();");
   const db = results[0];

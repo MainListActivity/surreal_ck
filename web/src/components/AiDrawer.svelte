@@ -32,6 +32,15 @@
   import { getSurreal } from "../lib/surreal";
   import { researchCitationHref } from "../lib/research-citation";
   import {
+    citationProbeKey,
+    citableCitations,
+    createCitationStatusStore,
+    rerunQuestionFor,
+    summarizeCitationStates,
+  } from "../lib/citation-status";
+  import { buildReportMarkdown, downloadReportMarkdown } from "../lib/research-export";
+  import { citationStatusReasonLabel, type CitationStatusEntry } from "@surreal-ck/shared";
+  import {
     aiAllowanceBucketKindLabels,
     aiAllowanceBucketStatusLabel,
     aiAllowanceLedgerKindLabels,
@@ -39,7 +48,7 @@
     formatAllowanceTime,
     loadAiAllowanceSnapshot,
   } from "../lib/ai-allowance";
-  import type { AiAllowanceSnapshot } from "@surreal-ck/shared";
+  import type { AiAllowanceSnapshot, AiChatMessage, ResourceCitationDTO } from "@surreal-ck/shared";
   import type {
     ChatStreamEvent,
     DashboardDraftIntent,
@@ -82,6 +91,62 @@
   let prompt: string = $state("");
   // composer 显式提交模式：「搜索资源」确定性进入资源检索子 agent（RR-011/RR-014）
   let composerMode: "chat" | "resource-search" = $state("chat");
+
+  // ── LCA09：历史平台引用按当前权限展示 ──────────────────────────────────────
+  // 报告可见性属于用户数据（永不因平台失权隐藏）；这里只加载平台引用的当前权限
+  // 四态（可核验/锁定/墓碑/不可用），加载失败 fail closed（暂不可核验）。
+  // 状态必须始终是“当前”权限：会话按抽屉打开周期 × 工作区隔离，关闭/切换即失效
+  // 重查；导出前强制重新核验；迟到/跨上下文结果按代丢弃。
+  const citationStore = createCitationStatusStore();
+  let citationStatuses: Map<string, CitationStatusEntry> = $state(new Map());
+
+  $effect(() => {
+    if (!open) {
+      citationStore.endSession();
+      return;
+    }
+    const contextKey = workspaceSlug ?? "";
+    const platformCitations = drawerState.messages
+      .flatMap((message) => message.role === "assistant" ? message.citations ?? [] : []);
+    const probes = citableCitations(platformCitations);
+    if (probes.length === 0) return;
+    citationStore.beginSession(contextKey);
+    void citationStore.ensure(probes).then((fresh) => {
+      if (fresh) citationStatuses = fresh;
+    });
+  });
+
+  function citationStatusFor(citation: ResourceCitationDTO): CitationStatusEntry | undefined {
+    const versionPublicId = citation.platformContent?.versionPublicId;
+    if (!versionPublicId) return undefined;
+    return citationStatuses.get(citationProbeKey({
+      versionPublicId,
+      captureEntitlementRevision: citation.platformContent?.entitlementRevision,
+    }));
+  }
+
+  async function exportReport(message: AiChatMessage): Promise<void> {
+    if (!message.citations?.length) return;
+    // 导出前强制重新核验：摘录展示判定不用陈旧缓存（当前权限口径）。
+    const statuses = await citationStore.refresh(citableCitations(message.citations));
+    const markdown = buildReportMarkdown({
+      workspaceSlug,
+      question: rerunQuestionFor(drawerState.messages, message.id) ?? "",
+      answerText: message.content,
+      citations: message.citations,
+      statuses: statuses ?? citationStatuses,
+      capturedAt: message.createdAt,
+      exportedAt: new Date().toISOString(),
+    });
+    downloadReportMarkdown(`研究报告导出-${new Date().toISOString().slice(0, 10)}.md`, markdown);
+  }
+
+  async function rerunResearch(message: AiChatMessage): Promise<void> {
+    // 重跑 = 新成果版本：当前授权与收费规则下的全新 run；旧报告原样保留。
+    const question = rerunQuestionFor(drawerState.messages, message.id);
+    if (!question || drawerState.sending) return;
+    await session.sendMessage(question, contextSnapshot(), { composerMode });
+  }
 
   function resolveStreamUrl(streamUrl: string): string {
     if (streamUrl.startsWith("ws://") || streamUrl.startsWith("wss://")) return streamUrl;
@@ -393,13 +458,34 @@
               {:else if message.role === "assistant"}
                 <div class="md-content">{@html renderMarkdown(message.content)}</div>
                 {#if message.citations?.length}
+                  {@const summary = summarizeCitationStates(message.citations, citationStatuses)}
+                  <p class="citation-states" role="status">
+                    报告可见{summary.verifiable > 0 ? ` · ${summary.verifiable} 条引用可核验` : ""}
+                    {summary.locked > 0 ? ` · ${summary.locked} 条全文锁定` : ""}
+                    {summary.tombstoned > 0 ? ` · ${summary.tombstoned} 条已撤回/删除` : ""}
+                    {summary.unavailable > 0 ? ` · ${summary.unavailable} 条暂不可核验` : ""}
+                    {summary.workspace > 0 ? ` · ${summary.workspace} 条工作区资料按原权限可见` : ""}
+                    {summary.incompletePointer > 0 ? ` · ${summary.incompletePointer} 条指针不完整需重新研究` : ""}
+                  </p>
                   <ol class="citations" aria-label="引用">
                     {#each message.citations as citation (citation.index)}
                       <li value={citation.index}>
                         {#if citation.platformContent}
                           {@const href = researchCitationHref(workspaceSlug, citation)}
-                          {#if href}<a {href} target="_blank" rel="noreferrer">{citation.title} · 精确版本与位置</a>
-                          {:else}<span>{citation.title} · 历史引用指针不完整，需重新研究</span>{/if}
+                          {@const status = citationStatusFor(citation)}
+                          {#if status?.state === "verifiable" && href}
+                            <a {href} target="_blank" rel="noreferrer">{citation.title} · 可核验 · 精确版本与位置</a>
+                          {:else if status?.state === "locked"}
+                            <span>{citation.title} · 全文已锁定（{citationStatusReasonLabel(status.reason)}），摘录保留</span>
+                          {:else if status?.state === "tombstoned"}
+                            <span>{citation.title} · 已撤回或删除（{citationStatusReasonLabel(status.reason)}），摘录不再展示</span>
+                          {:else if status?.state === "unavailable"}
+                            <span>{citation.title} · 暂不可核验（{citationStatusReasonLabel(status.reason)}）</span>
+                          {:else if href}
+                            <a {href} target="_blank" rel="noreferrer">{citation.title} · 精确版本与位置</a>
+                          {:else}
+                            <span>{citation.title} · 历史引用指针不完整，需重新研究</span>
+                          {/if}
                         {:else if citation.sourceUrl}
                           <a href={citation.sourceUrl} target="_blank" rel="noreferrer">{citation.title}</a>
                         {:else}
@@ -408,6 +494,12 @@
                       </li>
                     {/each}
                   </ol>
+                  <div class="report-actions">
+                    <button type="button" class="report-action" onclick={() => void exportReport(message)}>导出报告</button>
+                    <button type="button" class="report-action" disabled={drawerState.sending} onclick={() => void rerunResearch(message)}>
+                      按当前语料重跑
+                    </button>
+                  </div>
                 {/if}
                 {@const toolCalls = drawerState.toolCallsByMessageId[message.id] ?? []}
                 {#if toolCalls.length}
@@ -487,6 +579,7 @@
         本次预计消耗 {allowance.quote.amount} AI 额度 · 可用 {allowance.available}
         {#if allowance.reserved > 0}· 预留中 {allowance.reserved}{/if}
         {#if allowance.suspended > 0}· 暂停 {allowance.suspended}{/if}
+        {#if allowance.terminated > 0}· 已终止 {allowance.terminated}{/if}
         {#if allowance.expired > 0}· 已过期 {allowance.expired}{/if}
         {#if allowance.available < allowance.quote.amount}
           <span class="allowance-low">额度不足</span>
@@ -764,6 +857,35 @@
   .citations a {
     color: var(--primary);
     text-decoration: none;
+  }
+
+  /* LCA09：引用当前权限四态摘要与报告动作 */
+  .citation-states {
+    margin: 4px 0 0;
+    color: var(--text-3);
+    font-size: 11.5px;
+  }
+
+  .report-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 6px;
+  }
+
+  .report-action {
+    height: 26px;
+    padding: 0 10px;
+    border: 1px solid var(--border-dark);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text-2);
+    cursor: pointer;
+    font-size: 11.5px;
+  }
+
+  .report-action:disabled {
+    cursor: not-allowed;
+    opacity: .55;
   }
 
   .tool-trace {

@@ -61,6 +61,19 @@ export type EmployeeRuntimeDeps = {
   rootSession?: (database: string) => Promise<Queryable>;
   /** _system 会话工厂（warmup 遍历 workspace 索引）。 */
   systemSession?: () => Promise<Queryable>;
+  /**
+   * 会话失效通知（D1 返工）：任何会话被关闭/替换（生命周期 pause/retire、
+   * register 换代次、进程停机）时同步调用。生产装配里由 trigger runtime
+   * 订阅：丢弃 lane 会话缓存并中止在途窗口，保证死会话不被复用。
+   * 回调必须同步返回、不得 await 本 runtime 的任何方法（会与关闭路径互等）。
+   */
+  onSessionClosed?: (database: string, employeeId: string) => void;
+  /**
+   * 单个连接 close() 的超时（毫秒），默认 3000：SDK 对僵尸连接的 close 可能
+   * 悬挂（联验 D1 的假健康即来源于此），超时按关闭失败如实上报，注册表
+   * 照常摘除，观测不再被卡死的关闭阻塞。
+   */
+  closeTimeoutMs?: number;
 };
 
 export type EmployeeCredential = { subject: string; secret: string };
@@ -184,12 +197,27 @@ export function createEmployeeRuntime(deps: EmployeeRuntimeDeps): EmployeeRuntim
     pending.add(db);
     closing.set(key, pending);
     state(key).closeConfirmed = null;
+    // 有界关闭（D1 返工）：僵尸连接的 db.close() 可能悬挂，超时按关闭失败
+    // 如实收敛（closeConfirmed=false），注册表已同步摘除，观测不再被阻塞。
+    const closeTimeoutMs = deps.closeTimeoutMs ?? 3_000;
+    let timerHandle: unknown = null;
     try {
-      await db.close();
-    } catch {
-      state(key).closeConfirmed = false;
-      event("close-failed");
-      throw new Error("employee-close-failed");
+      const outcome = await Promise.race([
+        db.close().then(
+          () => "ok" as const,
+          () => "error" as const,
+        ),
+        new Promise<"timeout">((resolve) => {
+          timerHandle = schedule(() => resolve("timeout"), closeTimeoutMs);
+        }),
+      ]);
+      if (outcome !== "ok") {
+        state(key).closeConfirmed = false;
+        event("close-failed");
+        throw new Error("employee-close-failed");
+      }
+    } finally {
+      if (timerHandle != null) cancelScheduled(timerHandle);
     }
     connections.get(key)?.delete(db);
     if (connections.get(key)?.size === 0) connections.delete(key);
@@ -205,6 +233,18 @@ export function createEmployeeRuntime(deps: EmployeeRuntimeDeps): EmployeeRuntim
     sessions.delete(key);
     // 摘表即停续约：即使 closeConnection 失败，遗留定时器也不再触碰旧会话。
     if (previous?.renewTimer != null) cancelScheduled(previous.renewTimer);
+    // 同步通知会话失效（D1 返工）：有真实会话被拆除/替换（生命周期关闭、
+    // register 换代次、lane 空闲收尾、停机）时通知 trigger runtime——丢弃
+    // lane 会话缓存并中止在途窗口。必须不阻塞本关闭路径——回调内部不得
+    // await 本 runtime。
+    if (previous) {
+      const { database, employeeId } = splitKey(key);
+      try {
+        deps.onSessionClosed?.(database, employeeId);
+      } catch {
+        // 通知失败不影响关闭
+      }
+    }
     const all = new Set(closing.get(key));
     if (previous) all.add(previous.db);
     for (const db of all) await closeConnection(key, db);

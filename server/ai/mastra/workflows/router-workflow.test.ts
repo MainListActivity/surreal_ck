@@ -36,8 +36,8 @@ describe("router-workflow 调度", () => {
         calls.push("dashboard");
         return { text: "", confirmed: {} };
       },
-      "claim-analysis": async () => {
-        calls.push("claim-analysis");
+      "row-analysis": async () => {
+        calls.push("row-analysis");
         return { text: "", confirmed: {} };
       },
       chitchat: async () => {
@@ -69,8 +69,8 @@ describe("router-workflow 调度", () => {
         order.push("dash");
         return { text: "d", confirmed: {} };
       },
-      "claim-analysis": async () => {
-        order.push("claim");
+      "row-analysis": async () => {
+        order.push("row");
         return { text: "c", confirmed: {} };
       },
       chitchat: async () => {
@@ -101,7 +101,7 @@ describe("router-workflow 调度", () => {
         seenByDashboard.push({ ...shared.confirmed });
         return { text: "ok", confirmed: {} };
       },
-      "claim-analysis": async () => ({ text: "", confirmed: {} }),
+      "row-analysis": async () => ({ text: "", confirmed: {} }),
       chitchat: async () => ({ text: "", confirmed: {} }),
     };
 
@@ -123,7 +123,7 @@ describe("router-workflow 调度", () => {
         return { text: "x", confirmed: {} };
       },
       dashboard: async () => ({ text: "", confirmed: {} }),
-      "claim-analysis": async () => ({ text: "", confirmed: {} }),
+      "row-analysis": async () => ({ text: "", confirmed: {} }),
       chitchat: async () => ({ text: "", confirmed: {} }),
     };
     const shared = makeShared();
@@ -145,7 +145,7 @@ describe("router-workflow 调度", () => {
         confirmed: { resolvedRecord: { id: "wb:x", label: "X" } },
       }),
       dashboard: async () => ({ text: "", confirmed: {} }),
-      "claim-analysis": async () => ({ text: "", confirmed: {} }),
+      "row-analysis": async () => ({ text: "", confirmed: {} }),
       chitchat: async () => ({ text: "", confirmed: {} }),
     };
     const result = await routeAndDispatch({
@@ -172,8 +172,8 @@ describe("router-workflow 调度", () => {
         calls.push("dash");
         return { text: "", confirmed: {} };
       },
-      "claim-analysis": async () => {
-        calls.push("claim");
+      "row-analysis": async () => {
+        calls.push("row");
         return { text: "", confirmed: {} };
       },
       chitchat: async ({ taskText }) => {
@@ -191,6 +191,24 @@ describe("router-workflow 调度", () => {
     expect(result.steps[0].text).toBe("你好～");
   });
 
+  test("旧版 claim-analysis 类目的 plan 归一化到 row-analysis executor", async () => {
+    const calls: string[] = [];
+    const executors: SubAgentExecutors = {
+      navigation: async () => ({ text: "", confirmed: {} }),
+      dashboard: async () => ({ text: "", confirmed: {} }),
+      "row-analysis": async ({ taskText }) => {
+        calls.push(`row:${taskText}`);
+        return { text: "行分析结果", confirmed: {} };
+      },
+      chitchat: async () => ({ text: "", confirmed: {} }),
+    };
+    // 模拟旧版本写出的 plan（构造期未过 schema 的原始串）
+    const plan = [{ category: "claim-analysis", taskText: "分析这条记录" }] as unknown as RouterPlan;
+    const result = await runRouterDispatch({ plan, shared: makeShared(), executors });
+    expect(calls).toEqual(["row:分析这条记录"]);
+    expect(result.steps[0].category).toBe("row-analysis");
+  });
+
   test("confirmed 字段只能写入 executor 显式声明的产出", async () => {
     // 即使 executor 误返回了未声明的字段，也只有声明字段（通过类型）能到 confirmed。
     // 这里通过断言 confirmed 字段集合验证调度器只合并已知字段。
@@ -203,7 +221,7 @@ describe("router-workflow 调度", () => {
         text: "y",
         confirmed: { schemaSummary: { tables: ["t"], fieldsByTable: { t: ["f"] } } },
       }),
-      "claim-analysis": async () => ({ text: "", confirmed: {} }),
+      "row-analysis": async () => ({ text: "", confirmed: {} }),
       chitchat: async () => ({ text: "", confirmed: {} }),
     };
     const plan: RouterPlan = [

@@ -24,4 +24,6 @@ pnpm --filter @surreal-ck/ops dev
 pnpm --filter @surreal-ck/ops build
 ```
 
-生产环境配置 `VITE_OPS_OIDC_ISSUER`、`VITE_OPS_OIDC_CLIENT_ID`、`VITE_OPS_OIDC_AUDIENCE` 和 `VITE_OPS_API_BASE_URL`。后端可选配置同一个 `OIDC_OPS_CLIENT_ID` 做硬绑定；未配置时仍由 IdP 校验 public client、redirect URI 与 PKCE。运营 API 仍在 `surreal_ck/server`，页面可部署到独立静态站点或同域反向代理路径。
+生产环境配置 `VITE_OPS_OIDC_ISSUER`、`VITE_OPS_OIDC_CLIENT_ID`、`VITE_OPS_OIDC_AUDIENCE` 和 `VITE_OPS_API_BASE_URL`。后端可选配置同一个 `OIDC_OPS_CLIENT_ID` 做硬绑定；未配置时仍由 IdP 校验 public client、redirect URI 与 PKCE。运营 API 仍在 `surreal_ck/server`。
+
+生产发布走同域子路径：`deploy-production.yml` 用 `VITE_OPS_BASE=/ops/` 构建，产物打进应用 Pages 项目的 `web/dist/ops/`，线上地址 `https://l.maplayer.top/ops/`；`VITE_OPS_OIDC_REDIRECT_URI` 缺省按 `BASE_URL` 推导为 `https://l.maplayer.top/ops/auth/callback.html`。前置的 IdP client 登记与环境变量见 `docs/runbooks/production-release.md`。本地 dev/preview 的 base 仍为 `/`。

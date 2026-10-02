@@ -1,5 +1,12 @@
 import { buildSurrealFieldSchema, gridColumnToStoredDef } from "@surreal-ck/shared/field-schema";
+import {
+  computeEntityCapacityNeed,
+  describeCapacityGaps,
+  evaluateEntityCapacity,
+} from "@surreal-ck/shared/native-quota";
+import type { QuotaApiWorkspaceView } from "@surreal-ck/shared/native-quota";
 import { buildRecordQuotaGuardSurql } from "@surreal-ck/shared/resource-quota";
+import { ENTITY_TABLE_MEMBER_PERMISSIONS } from "@surreal-ck/shared/entity-table-permissions";
 import type {
   DashboardBuilderSpec,
   GridColumnDef,
@@ -50,6 +57,13 @@ export type WorkbooksDeps = {
   getConn: () => SurrealConn;
   /** 随机 key 系统边界；生产环境使用 Web Crypto，集成测试可注入确定序列。 */
   generateKey?: () => string;
+  /**
+   * 工作区配额视图（可选）。提供时 create() 先按 INFO FOR QUOTA 读回的规则
+   * 预检实体表容量：可判定的不足给出所需/缺口提示且不发起写入；视图缺失、
+   * selector 细节不回（participant）或账本不可信时照常写入，由引擎配额原子
+   * 兜底——预检只是友好提示，永远不放宽边界。
+   */
+  getWorkspaceQuotaView?: () => Promise<QuotaApiWorkspaceView | null>;
   /** 镜像进 runes，使组件响应式更新。纯逻辑层不依赖它。 */
   onChange?: (snapshot: WorkbooksSnapshot) => void;
 };
@@ -329,6 +343,25 @@ function validateDashboardWidgetFields(
   }
 }
 
+/**
+ * 建簿事务将创建的实体表容量需求。与 {@link buildCreateWorkbookTransaction}
+ * 的 sheet 展开保持一致：缺省 sheets 时回退单表 + 默认列。
+ */
+function entitySheetDemands(options: CreateWorkbookOptions) {
+  const requested: ReadonlyArray<{
+    label?: string;
+    columns: readonly unknown[];
+    sampleRecords?: readonly unknown[];
+  }> = options.sheets?.length
+    ? options.sheets
+    : [{ columns: options.columns?.length ? options.columns : [DEFAULT_BLANK_COLUMN] }];
+  return requested.map((sheet) => ({
+    label: sheet.label ?? "",
+    businessFields: sheet.columns.length,
+    initialRecords: sheet.sampleRecords?.length ?? 0,
+  }));
+}
+
 export function buildCreateWorkbookTransaction(
   name: string,
   options: CreateWorkbookOptions = {},
@@ -459,7 +492,8 @@ export function buildCreateWorkbookTransaction(
     const columnsBinding = createdSheets.length === 1 ? "$columnDefs" : `$sheetColumnDefs${bindingSuffix}`;
     const templateKeyBinding = createdSheets.length === 1 ? "$sheetTemplateKey" : `$sheetTemplateKey${bindingSuffix}`;
     const templateKeyClause = sheet.key ? `, template_sheet_key: ${templateKeyBinding}` : "";
-    return `DEFINE TABLE IF NOT EXISTS ${sheet.tableName} SCHEMALESS CHANGEFEED 7d;
+    return `DEFINE TABLE IF NOT EXISTS ${sheet.tableName} SCHEMALESS CHANGEFEED 7d
+  ${ENTITY_TABLE_MEMBER_PERMISSIONS};
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE ${sheet.tableName} TYPE datetime VALUE time::now() READONLY;
 DEFINE FIELD IF NOT EXISTS updated_at ON TABLE ${sheet.tableName} TYPE datetime VALUE time::now();
 ${fieldDdl}
@@ -593,10 +627,17 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
    */
   async function detectLegacyRecordQuota(): Promise<boolean> {
     try {
-      const [exists] = await deps.getConn().query<boolean>(
+      const result = await deps.getConn().query<boolean>(
         "RETURN record::exists(workspace_resource_quota:current);",
       );
-      return exists !== false;
+      // query 契约（surreal.ts）：collect()[0] 是首个语句的结果——SELECT 是
+      // 行数组，RETURN 标量是标量本身。旧代码无条件解构，RETURN 标量形状
+      // 下解构布尔抛 TypeError 落进 catch 恒 true，native 工作区（021 清理
+      // 后记账表已删）建表也因此误装 legacy resource_quota_guard。两种形状
+      // 都收敛为布尔：仅当记账行确认存在（legacy 配额仍在线）才装 guard；
+      // 表在行缺（guard 会打断写入）与表已删（native 收口）都跳过。
+      const exists = Array.isArray(result) ? result[0] : result;
+      return exists === true;
     } catch {
       return true;
     }
@@ -617,6 +658,26 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
       const transaction = buildCreateWorkbookTransaction(name, { ...options, legacyRecordQuota }, deps.generateKey);
       workbookId = transaction.workbookId;
       const { sql, bindings } = transaction;
+      // 入口容量预检（CV02）：模板形状先校验，配额视图可判定时提前给出
+      // 所需/缺口，不发写入；不可判定（participant 视图、账本不可信、API
+      // 不可用）照常提交事务，由引擎配额原子兜底。
+      if (deps.getWorkspaceQuotaView) {
+        try {
+          const view = await deps.getWorkspaceQuotaView();
+          if (view && "resources" in view) {
+            const verdict = evaluateEntityCapacity(
+              computeEntityCapacityNeed(entitySheetDemands(options)),
+              view.resources,
+              "ent_probe",
+            );
+            if (verdict.kind === "insufficient") {
+              state.error = describeCapacityGaps(verdict.gaps);
+              emit();
+              return null;
+            }
+          }
+        } catch { /* 配额读数不可用 → 引擎兜底 */ }
+      }
       await deps.getConn().query(sql, bindings);
     } catch (err) {
       const message = describeWriteError(err);

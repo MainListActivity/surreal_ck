@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { StringRecordId } from "surrealdb";
 import { getRootDatabaseSession } from "../../src/db/root-connection";
 import { createCallerSession } from "../../src/ai/caller-session";
 import {
@@ -10,7 +11,9 @@ import type { EmployeeLifecycle } from "./employee-lifecycle";
 import type { EmployeeTriggerRuntime } from "./employee-trigger-runtime";
 import {
   OFFICE_BOOTSTRAP_REASON,
+  OFFICE_REQUEST_REASON,
   OFFICE_TASK_REASON,
+  officeRequestTriggerKey,
   officeTaskTriggerKey,
   registerProjectManagerHandlers,
 } from "./project-manager";
@@ -207,6 +210,113 @@ export async function notifyOfficeTask(
   });
 }
 
+// ── 人类请求终态唤醒（VO03） ────────────────────────────────────────────────
+
+/**
+ * 把"请求已在收件箱落终态"翻译成通用触发：幂等键 = office-request:<通知 id>，
+ * 同一通知的重复唤醒（重复点击、重试、reconcile 补投）都收敛到同一触发。
+ */
+export async function notifyOfficeRequestResolved(
+  runtime: Pick<EmployeeTriggerRuntime, "enqueue" | "start" | "registerHandler">,
+  input: { database: string; notificationId: string; employeeId: string },
+) {
+  registerProjectManagerHandlers(runtime);
+  runtime.start();
+  return runtime.enqueue({
+    database: input.database,
+    employeeId: input.employeeId,
+    reason: OFFICE_REQUEST_REASON,
+    payloadRef: input.notificationId,
+    chainDepth: 0,
+    idempotencyKey: officeRequestTriggerKey(input.notificationId),
+  });
+}
+
+export type OfficeRequestWakeDeps = {
+  triggerRuntime: Pick<EmployeeTriggerRuntime, "enqueue" | "start" | "registerHandler">;
+  resolveWorkspace(slug: string): Promise<{ dbName: string } | null>;
+  /** 调用者会话：读通知时被表权限天然限定为收件人/admin 可见。 */
+  callerSession(database: string, rawToken: string): Promise<ClosableQueryable>;
+};
+
+export type OfficeRequestWakeResult =
+  | { kind: "ok"; outcome: string; triggerId: string }
+  | { kind: "workspace-not-found" }
+  | { kind: "caller-denied" }
+  | { kind: "not-found" }
+  | { kind: "not-request" }
+  | { kind: "unresolved" }
+  | { kind: "no-requester" }
+  | { kind: "trigger-failed"; error: string };
+
+type RequestRow = {
+  id?: unknown;
+  purpose?: unknown;
+  resolved_at?: unknown;
+  from_employee?: unknown;
+};
+
+/**
+ * 唤醒编排：resolution 已在浏览器侧落库之后调用。
+ * 1. 调用者会话读通知——非收件人/非 admin 读不到行，天然鉴权；
+ * 2. 校验 purpose/终态/请求员工，未落终态不消耗触发键；
+ * 3. 以稳定幂等键投递，恰好一次后续执行。
+ */
+export async function wakeResolvedOfficeRequest(
+  deps: OfficeRequestWakeDeps,
+  input: { slug: string; callerToken: string; notificationId: string },
+): Promise<OfficeRequestWakeResult> {
+  const workspace = await deps.resolveWorkspace(input.slug);
+  if (!workspace) return { kind: "workspace-not-found" };
+  const database = workspace.dbName;
+
+  let caller: ClosableQueryable;
+  try {
+    caller = await deps.callerSession(database, input.callerToken);
+  } catch {
+    return { kind: "caller-denied" };
+  }
+  try {
+    const [rows] = await caller.query<[RequestRow[]]>(
+      `SELECT id, purpose, resolved_at, from_employee FROM $notification;`,
+      { notification: new StringRecordId(input.notificationId) },
+    );
+    const row = rows?.[0];
+    if (!row) return { kind: "not-found" };
+    if (row.purpose !== "office-request") return { kind: "not-request" };
+    if (row.resolved_at == null) return { kind: "unresolved" };
+    const employee = row.from_employee == null ? "" : String(row.from_employee);
+    if (!employee) return { kind: "no-requester" };
+
+    const notificationId = String(row.id);
+    const result = await notifyOfficeRequestResolved(deps.triggerRuntime, {
+      database,
+      notificationId,
+      employeeId: employee,
+    });
+    if (result.outcome === "failed") {
+      return { kind: "trigger-failed", error: result.error };
+    }
+    return { kind: "ok", outcome: result.outcome, triggerId: result.triggerId };
+  } finally {
+    await caller.close?.().catch(() => undefined);
+  }
+}
+
+export function createProductionOfficeRequestWake(): (
+  input: { slug: string; callerToken: string; notificationId: string },
+) => Promise<OfficeRequestWakeResult> {
+  return (input) =>
+    wakeResolvedOfficeRequest(
+      {
+        triggerRuntime: getEmployeeTriggerRuntime(),
+        resolveWorkspace: resolveWorkspaceBySlug,
+        callerSession: (_database, rawToken) => createCallerSession(rawToken),
+      },
+      input,
+    );
+}
+
 // ── 定期 reconciliation ──────────────────────────────────────────────────
 
 export type OfficeReconcileResult = {
@@ -290,6 +400,28 @@ export async function reconcileOfficeWorkspace(deps: {
     else if (result.outcome === "coalesced") summary.coalesced += 1;
     else summary.failed += 1;
     await runtime.reconcile({ database, employeeId: assignee }).catch(() => undefined);
+  }
+
+  // VO03 补投缝：resolution 已落库但唤醒丢失（浏览器/服务在提交与投递间崩溃）
+  // 的 office-request——同幂等键再投，已完成即 coalesced，收件人不需要重新回答。
+  const [resolved] = await root.query<[{ id?: unknown; from_employee?: unknown }[]]>(
+    `SELECT id, from_employee FROM user_notification
+      WHERE purpose = "office-request" AND resolved_at != NONE
+        AND from_employee.kind = "virtual";`,
+  );
+  for (const row of resolved ?? []) {
+    const notificationId = row.id == null ? "" : String(row.id);
+    const employee = row.from_employee == null ? "" : String(row.from_employee);
+    if (!notificationId || !employee) continue;
+    const result = await notifyOfficeRequestResolved(runtime, {
+      database,
+      notificationId,
+      employeeId: employee,
+    }).catch(() => null);
+    if (!result) summary.failed += 1;
+    else if (result.outcome === "completed" || result.outcome === "waiting") summary.dispatched += 1;
+    else if (result.outcome === "coalesced") summary.coalesced += 1;
+    else summary.failed += 1;
   }
   return summary;
 }

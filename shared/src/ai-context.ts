@@ -167,7 +167,7 @@ function cloneSnapshotValue(value: unknown): unknown {
 }
 
 function buildSelectedRowLabel(row: GridRow, visibleValues: Record<string, unknown>): string {
-  const primary = findStableValue(visibleValues, [/display/i, /name/i, /姓名|名称|申报人|债权人/]);
+  const primary = findStableValue(visibleValues, [/display/i, /name/i, /姓名|名称/]);
   const secondary = findStableValue(visibleValues, [/code/i, /number/i, /no$/i, /编号|编码|单号/]);
   return [primary, secondary, row.id].filter(Boolean).join(" || ");
 }

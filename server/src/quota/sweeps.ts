@@ -6,6 +6,13 @@ import type {
 import { DateTime } from "surrealdb";
 import type { MaterializationLease } from "./reconciler";
 import { QuotaReconciler } from "./reconciler";
+import {
+  beginWorkerLoopTick,
+  endWorkerLoopTick,
+  recordWorkerLoopTimeout,
+  registerWorkerLoop,
+  skipWorkerLoopTick,
+} from "./worker-liveness";
 
 const DEFAULT_SWEEP_LEASE_MS = 60_000;
 const DEFAULT_SWEEP_BACKOFF_MS = 5_000;
@@ -308,22 +315,71 @@ export class ProviderReconciliation {
 
 export type QuotaLoopHandle = Readonly<{ stop(): void }>;
 
+const DEFAULT_TICK_TIMEOUT_MS = 60_000;
+
 export function startQuotaLoop(input: Readonly<{
+  /** 环路名：liveness 记账与 /health 暴露的稳定标识。 */
+  name: string;
   runOnce(): Promise<unknown>;
   intervalMs: number;
+  /** 单次 runOnce 看门狗超时；挂起的查询按错误记账，环路继续心跳。 */
+  tickTimeoutMs?: number;
   setInterval?: (handler: () => void, ms: number) => unknown;
   clearInterval?: (handle: unknown) => void;
   onError?: (error: unknown) => void;
+  /** runOnce 正常落地（含 idle）后回调：持久化成功心跳。 */
+  onSuccess?: () => void;
 }>): QuotaLoopHandle {
-  const tick = () => {
-    void input.runOnce().catch((error) => input.onError?.(error));
+  registerWorkerLoop(input.name, input.intervalMs);
+  const tickTimeoutMs = input.tickTimeoutMs ?? DEFAULT_TICK_TIMEOUT_MS;
+  let inflight = false;
+
+  const runTick = () => {
+    // 防重入：上一 tick 未落地（含挂起查询）时不叠加新查询，避免请求堆积。
+    if (inflight) {
+      skipWorkerLoopTick(input.name);
+      return;
+    }
+    inflight = true;
+    const seq = beginWorkerLoopTick(input.name);
+    const started = Promise.resolve(input.runOnce());
+    let watchdogTimer: ReturnType<typeof setTimeout> | undefined;
+    const watchdog = new Promise<never>((_, reject) => {
+      watchdogTimer = setTimeout(
+        () => reject(new Error("quota_loop_tick_timeout")),
+        tickTimeoutMs,
+      );
+    });
+    void Promise.race([started, watchdog])
+      .catch((error) => {
+        if (
+          error instanceof Error
+          && error.message === "quota_loop_tick_timeout"
+        ) {
+          recordWorkerLoopTimeout(input.name);
+          // 挂起的 tick 按超时结算：失活可见，环路自身继续推进。
+          endWorkerLoopTick(input.name, error, seq);
+        }
+        throw error;
+      })
+      .catch((error) => input.onError?.(error))
+      .finally(() => {
+        inflight = false;
+        if (watchdogTimer) clearTimeout(watchdogTimer);
+      });
+    void started
+      .then(() => {
+        endWorkerLoopTick(input.name, undefined, seq);
+        input.onSuccess?.();
+      })
+      .catch((error) => endWorkerLoopTick(input.name, error, seq));
   };
-  tick();
+  runTick();
   const setIntervalFn =
     input.setInterval ?? ((handler, milliseconds) => setInterval(handler, milliseconds));
   const clearIntervalFn =
     input.clearInterval
     ?? ((handle) => clearInterval(handle as Parameters<typeof clearInterval>[0]));
-  const timer = setIntervalFn(tick, input.intervalMs);
+  const timer = setIntervalFn(runTick, input.intervalMs);
   return Object.freeze({ stop: () => clearIntervalFn(timer) });
 }

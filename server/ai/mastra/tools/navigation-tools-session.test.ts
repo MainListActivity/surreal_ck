@@ -44,7 +44,7 @@ describe("searchWorkbook tool — 走调用者 session", () => {
   test("唯一匹配时用 session SELECT workbook 并返回 open-workbook", async () => {
     // SurrealDB SDK query() 返回「每条语句结果」的数组：单条 SELECT → [[row, ...]]
     const session = makeFakeSession({
-      results: [[[{ id: "workbook:1", name: "合同管理" }]]],
+      results: [[[{ id: "workbook:1", name: "巡检管理" }]]],
     });
     const { searchWorkbookTool } = await import("./navigation-tools");
     const execute = searchWorkbookTool.execute as unknown as (
@@ -52,7 +52,7 @@ describe("searchWorkbook tool — 走调用者 session", () => {
       ctx: { requestContext: RequestContext },
     ) => Promise<SearchWorkbookResult>;
 
-    const result = await execute({ query: "合同" }, ctxWithSession(session));
+    const result = await execute({ query: "设备" }, ctxWithSession(session));
 
     // 走的是注入的 session，而不是 legacy 全局连接
     expect(session.calls.length).toBeGreaterThan(0);
@@ -64,8 +64,8 @@ describe("searchWorkbook tool — 走调用者 session", () => {
   test("多个匹配时返回 ambiguous 候选列表", async () => {
     const session = makeFakeSession({
       results: [[[
-        { id: "workbook:1", name: "债权台账A" },
-        { id: "workbook:2", name: "债权台账B" },
+        { id: "workbook:1", name: "巡检台账A" },
+        { id: "workbook:2", name: "巡检台账B" },
       ]]],
     });
     const { searchWorkbookTool } = await import("./navigation-tools");
@@ -74,7 +74,7 @@ describe("searchWorkbook tool — 走调用者 session", () => {
       ctx: { requestContext: RequestContext },
     ) => Promise<SearchWorkbookResult>;
 
-    const result = await execute({ query: "债权台账" }, ctxWithSession(session));
+    const result = await execute({ query: "巡检台账" }, ctxWithSession(session));
     expect(result.intent.type).toBe("ambiguous");
     expect((result.intent as { type: "ambiguous"; candidates: unknown[] }).candidates).toHaveLength(2);
   });

@@ -25,6 +25,13 @@ export type SubscriptionFact = {
   subscriptionId: string;
   billingAccountKey: string;
   subscriptionStatus: "pending" | "trialing" | "active" | "past_due" | "paused" | "canceled" | "expired";
+  /**
+   * 订阅级付费周期身份（LCA08 R2）：取订阅自身的 current_period_start /
+   * current_period_end（缺省回退 paid_through / item 窗口）。周期身份独立于
+   * 周期内升级产生的订阅项窗口，保证周期内升级不换周期键。
+   */
+  cycleFrom: string | null;
+  cycleUntil: string | null;
 };
 
 export type ContentGrantFact = {
@@ -190,6 +197,8 @@ export function toView(workspaceSlug: string, revision: number, draft: Entitleme
       collections: draft.collections,
       actions: draft.actions,
       sources: draft.sources,
+      // LCA13：核验由运营视图注入（getForOperator）；基础视图显式为 null。
+      projection: null,
     },
     ai: {
       actions: draft.aiActions,

@@ -2,18 +2,18 @@ import { Agent } from "@mastra/core/agent";
 import { ModelRouterLanguageModel, type MastraModelConfig } from "@mastra/core/llm";
 import type { AiContextSnapshot } from "@surreal-ck/shared";
 import { StringRecordId, type Surreal } from "surrealdb";
-import { CLAIM_ANALYSIS_TOOLS } from "../tools/claim-analysis-tools";
+import { ROW_ANALYSIS_TOOLS } from "../tools/row-analysis-tools";
 import { ROUTER_RUNTIME_KEY } from "../workflows/router-workflow";
 import { getExecutionContext } from "../execution-context";
 import { buildModelConfig, type AiSettings } from "./model-config";
 
-export const CLAIM_ANALYSIS_AGENT_ID = "claimAnalysisAgent";
+export const ROW_ANALYSIS_AGENT_ID = "rowAnalysisAgent";
 
-export const CLAIM_ANALYSIS_INSTRUCTIONS = `你是 Surreal CK 的通用记录分析 AI 助手。
+export const ROW_ANALYSIS_INSTRUCTIONS = `你是 Surreal CK 的通用记录分析 AI 助手。
 始终使用简体中文回答。
-你的职责只有两类：
+你的职责只有三类：
 1. 使用 fetchRelatedRecords 获取分析上下文：优先使用当前记录的关联资源；有资源时在回答中用 [1] 这类编号引用依据。无关联资源时，工具会回退读取当前行 reference 字段指向的普通关联记录。
-2. 使用 analyzeClaimRow 为当前选中记录生成 row-patch-proposal 字段补全提案。
+2. 使用 analyzeRow 为当前选中记录生成 row-patch-proposal 字段补全提案。
 3. 使用 proposeRecordWrite 为其它数据表生成 record-write-proposal 创建/更新提案。
 调用工具时优先传入用户上下文里的 workbookId、sheetId、recordId；工具会通过调用者会话读取真实字段定义和记录值。
 不要直接写入数据库；所有字段变更必须作为提案等待用户逐字段确认。
@@ -34,11 +34,11 @@ type StoredTemplateRowAnalysis = {
   output_guidance?: unknown;
 };
 
-type ClaimAnalysisRuntime = {
+type RowAnalysisRuntime = {
   userContext?: AiContextSnapshot;
 };
 
-export type ClaimAnalysisAgentDeps = {
+export type RowAnalysisAgentDeps = {
   model?: MastraModelConfig;
   loadTemplateRowAnalysis?: typeof loadTemplateRowAnalysis;
 };
@@ -76,10 +76,10 @@ async function loadTemplateRowAnalysis(
   };
 }
 
-function buildClaimAnalysisInstructions(analysis: TemplateRowAnalysis | null): string {
-  if (!analysis) return CLAIM_ANALYSIS_INSTRUCTIONS;
+function buildRowAnalysisInstructions(analysis: TemplateRowAnalysis | null): string {
+  if (!analysis) return ROW_ANALYSIS_INSTRUCTIONS;
   const sections = [
-    CLAIM_ANALYSIS_INSTRUCTIONS,
+    ROW_ANALYSIS_INSTRUCTIONS,
     "",
     "当前工作簿模板提供的领域分析说明（仅适用于本次运行）：",
     `领域背景：${analysis.background}`,
@@ -96,22 +96,22 @@ function buildClaimAnalysisInstructions(analysis: TemplateRowAnalysis | null): s
   return sections.join("\n");
 }
 
-export { CLAIM_ANALYSIS_TOOLS } from "../tools/claim-analysis-tools";
+export { ROW_ANALYSIS_TOOLS } from "../tools/row-analysis-tools";
 
-export function createClaimAnalysisAgent(settings: AiSettings, deps: ClaimAnalysisAgentDeps = {}): Agent {
+export function createRowAnalysisAgent(settings: AiSettings, deps: RowAnalysisAgentDeps = {}): Agent {
   const loadAnalysis = deps.loadTemplateRowAnalysis ?? loadTemplateRowAnalysis;
   return new Agent({
-    name: "Claim Analysis Agent",
-    id: CLAIM_ANALYSIS_AGENT_ID,
+    name: "Row Analysis Agent",
+    id: ROW_ANALYSIS_AGENT_ID,
     instructions: async ({ requestContext }) => {
-      const runtime = requestContext?.get(ROUTER_RUNTIME_KEY) as ClaimAnalysisRuntime | undefined;
+      const runtime = requestContext?.get(ROUTER_RUNTIME_KEY) as RowAnalysisRuntime | undefined;
       // 会话只从共享执行上下文取；缺席时 fail-soft 回退到通用 instructions。
       const surrealSession = getExecutionContext(requestContext)?.surrealSession;
       const workbookId = runtime?.userContext?.workbook?.id ?? runtime?.userContext?.route.workbookId;
-      if (!surrealSession || !workbookId) return CLAIM_ANALYSIS_INSTRUCTIONS;
-      return buildClaimAnalysisInstructions(await loadAnalysis(surrealSession, workbookId));
+      if (!surrealSession || !workbookId) return ROW_ANALYSIS_INSTRUCTIONS;
+      return buildRowAnalysisInstructions(await loadAnalysis(surrealSession, workbookId));
     },
     model: deps.model ?? new ModelRouterLanguageModel(buildModelConfig(settings)),
-    tools: CLAIM_ANALYSIS_TOOLS,
+    tools: ROW_ANALYSIS_TOOLS,
   });
 }

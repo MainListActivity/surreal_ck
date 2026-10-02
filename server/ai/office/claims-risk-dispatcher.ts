@@ -104,8 +104,16 @@ function shanghaiDateKey(date: Date): string {
   return `${part("year")}-${part("month")}-${part("day")}`;
 }
 
-async function listClaimsRiskEmployees(): Promise<ClaimsRiskEmployeeTarget[]> {
-  const system = await getRootDatabaseSession("_system");
+/**
+ * 债权提醒是可选模板包能力（bankruptcy-claims）：只在工作区真实启用了该包
+ * 工作簿（risk_reminders_enabled = true）时才 provision 专用员工身份/凭证。
+ * 通用工作区连门控检查都发生在其自身库内一次轻量 SELECT——不创建
+ * claims-risk 员工、凭证或触发，默认产品不留法律域尾迹。
+ */
+export async function listClaimsRiskEmployees(
+  getSession: typeof getRootDatabaseSession = getRootDatabaseSession,
+): Promise<ClaimsRiskEmployeeTarget[]> {
+  const system = await getSession("_system");
   const [workspaces] = await system.query<[{ db_name?: unknown }[]]>(
     'SELECT db_name FROM workspace WHERE status = "active"',
   );
@@ -113,7 +121,13 @@ async function listClaimsRiskEmployees(): Promise<ClaimsRiskEmployeeTarget[]> {
   for (const workspace of workspaces) {
     const database = typeof workspace.db_name === "string" ? workspace.db_name : "";
     if (!database) continue;
-    const root = await getRootDatabaseSession(database);
+    const root = await getSession(database);
+    const [enabledWorkbooks] = await root.query<[{ id?: unknown }[]]>(
+      `SELECT id FROM workbook
+       WHERE risk_reminders_enabled = true AND template.key = "bankruptcy-claims"
+       LIMIT 1`,
+    );
+    if (!enabledWorkbooks?.length) continue;
     const provisioningSession: RootEmployeeProvisioningSession = {
       async query<T = Record<string, unknown>>(sql: string, params?: Record<string, unknown>) {
         const [rows] = await root.query<[T[]]>(sql, params);

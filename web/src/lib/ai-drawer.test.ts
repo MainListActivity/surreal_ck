@@ -128,7 +128,7 @@ describe("AI 抽屉会话", () => {
       },
     });
 
-    await h.session.sendMessage("总结当前债权", context());
+    await h.session.sendMessage("总结当前记录", context());
 
     expect(h.session.snapshot()).toMatchObject({
       sending: false,
@@ -136,7 +136,7 @@ describe("AI 抽屉会话", () => {
       retryableMessageId: "id-1",
     });
     expect(h.session.snapshot().messages.map((message) => [message.id, message.role, message.content])).toEqual([
-      ["id-1", "user", "总结当前债权"],
+      ["id-1", "user", "总结当前记录"],
     ]);
 
     await h.session.retryMessage("id-1");
@@ -193,11 +193,11 @@ describe("AI 抽屉会话", () => {
   test("composer「搜索资源」模式：startChat 带 composerMode=resource-search（确定性进资源检索）", async () => {
     const h = harness();
 
-    const sending = h.session.sendMessage("合同解除案例", context(), { composerMode: "resource-search" });
+    const sending = h.session.sendMessage("设备故障案例", context(), { composerMode: "resource-search" });
 
     expect(h.starts).toEqual([
       {
-        message: "合同解除案例",
+        message: "设备故障案例",
         contextSnapshot: context(),
         composerMode: "resource-search",
         idempotencyKey: expect.any(String),
@@ -340,16 +340,16 @@ describe("AI 抽屉会话", () => {
   test("suspend await-write-confirm 携带 row-patch-proposal 时，pending intent 带上提案供卡片渲染", async () => {
     const h = harness();
 
-    const sending = h.session.sendMessage("分析这行债权", context());
+    const sending = h.session.sendMessage("分析这条记录", context());
     h.start.resolve({ runId: "run-1", streamUrl: "/api/chat/stream?runId=run-1", streamToken: "stream-token" });
     await sending;
 
     const proposal = {
       type: "row-patch-proposal" as const,
-      sheetId: "sheet:claims",
-      recordId: "ent_claim:one",
+      sheetId: "sheet:items",
+      recordId: "ent_items:one",
       proposals: [
-        { field: "amount", currentValue: 100, suggestedValue: 250, basis: "依据合同附件二", confidence: "high" as const },
+        { field: "amount", currentValue: 100, suggestedValue: 250, basis: "依据巡检附件二", confidence: "high" as const },
       ],
     };
     h.emit({
@@ -379,27 +379,27 @@ describe("AI 抽屉会话", () => {
     await sending;
 
     const widgetSpec = {
-      sourceTables: ["ent_claim"],
-      baseTable: "ent_claim",
+      sourceTables: ["ent_items"],
+      baseTable: "ent_items",
       metric: { op: "sum" as const, field: "amount" },
-      dimensions: [{ field: "declared_at", bucket: "month" as const }],
+      dimensions: [{ field: "occurred_at", bucket: "month" as const }],
       limit: 24,
     };
     const draftIntent = {
       type: "dashboard-draft" as const,
-      title: "申报金额月趋势",
-      description: "按月统计债权申报金额",
+      title: "故障次数月趋势",
+      description: "按月统计故障次数",
       widgetSpec,
       draft: {
         workspaceId: "workspace:main",
-        title: "申报金额月趋势",
+        title: "故障次数月趋势",
         queryMode: "builder" as const,
         viewType: "line" as const,
         resultContract: "time_series" as const,
         builderSpec: widgetSpec,
         status: "draft" as const,
       },
-      explanation: "基于债权表，按月对申报金额求和。",
+      explanation: "基于事项表，按月对故障次数求和。",
     };
     h.emit({
       kind: "suspend",
@@ -423,7 +423,7 @@ describe("AI 抽屉会话", () => {
   test("resumeWrite 成功：dismiss 提案卡、按 decision resume 并重连 stream 直到 done", async () => {
     const h = harness();
 
-    const sending = h.session.sendMessage("分析这行债权", context());
+    const sending = h.session.sendMessage("分析这条记录", context());
     h.start.resolve({ runId: "run-1", streamUrl: "/api/chat/stream?runId=run-1", streamToken: "stream-token" });
     await sending;
     h.emit({
@@ -434,8 +434,8 @@ describe("AI 抽屉会话", () => {
         runId: "run-1",
         intent: {
           type: "row-patch-proposal",
-          sheetId: "sheet:claims",
-          recordId: "ent_claim:one",
+          sheetId: "sheet:items",
+          recordId: "ent_items:one",
           proposals: [],
         },
       },
@@ -465,7 +465,7 @@ describe("AI 抽屉会话", () => {
       },
     });
 
-    const sending = h.session.sendMessage("分析这行债权", context());
+    const sending = h.session.sendMessage("分析这条记录", context());
     h.start.resolve({ runId: "run-1", streamUrl: "/api/chat/stream?runId=run-1", streamToken: "stream-token" });
     await sending;
     h.emit({
@@ -476,8 +476,8 @@ describe("AI 抽屉会话", () => {
         runId: "run-1",
         intent: {
           type: "row-patch-proposal",
-          sheetId: "sheet:claims",
-          recordId: "ent_claim:one",
+          sheetId: "sheet:items",
+          recordId: "ent_items:one",
           proposals: [],
         },
       },
@@ -493,7 +493,7 @@ describe("AI 抽屉会话", () => {
 
   test("resume stream 异步失败：同一确认卡保留，并以原 runId 再次提交同一决定", async () => {
     const h = harness();
-    const sending = h.session.sendMessage("分析这行债权", context());
+    const sending = h.session.sendMessage("分析这条记录", context());
     h.start.resolve({ runId: "run-1", streamUrl: "/api/chat/stream?runId=run-1", streamToken: "stream-token" });
     await sending;
     h.emit({
@@ -502,7 +502,7 @@ describe("AI 抽屉会话", () => {
       payload: {
         kind: "await-write-confirm",
         runId: "run-1",
-        intent: { type: "row-patch-proposal", sheetId: "sheet:claims", recordId: "ent_claim:one", proposals: [] },
+        intent: { type: "row-patch-proposal", sheetId: "sheet:items", recordId: "ent_items:one", proposals: [] },
       },
     });
 

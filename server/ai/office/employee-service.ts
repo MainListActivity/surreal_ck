@@ -33,6 +33,10 @@ export function getEmployeeRuntime(): EmployeeRuntime {
     renewAfterMs: env.EMPLOYEE_SESSION_RENEW_AFTER_SEC * 1000,
     rootSession: (database) => getRootDatabaseSession(database),
     systemSession: () => getRootDatabaseSession("_system"),
+    // D1 返工：生命周期关闭/换代次会话时同步通知 trigger runtime——丢弃
+    // lane 会话缓存并中止在途窗口（pause/retire 与窗口竞态的收敛入口）。
+    onSessionClosed: (database, employeeId) =>
+      sharedTriggerRuntime?.invalidateSession({ database, employeeId }),
   });
   return sharedRuntime;
 }

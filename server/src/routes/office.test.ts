@@ -2,8 +2,11 @@ import { describe, expect, test } from "bun:test";
 import type { MiddlewareHandler } from "hono";
 import { createApp } from "../app";
 import type { AppBindings } from "../hono-types";
-import type { OfficeBootstrapResult } from "../../ai/office/office-trigger-adapter";
-import type { OfficeBootstrapAction } from "./office";
+import type {
+  OfficeBootstrapResult,
+  OfficeRequestWakeResult,
+} from "../../ai/office/office-trigger-adapter";
+import type { OfficeBootstrapAction, OfficeRequestWakeAction } from "./office";
 
 /** 路由层测试：scope 校验、workspace 解析、结果→状态码映射、响应不泄漏凭证。 */
 
@@ -96,5 +99,69 @@ describe("POST /api/workspaces/:slug/office/bootstrap", () => {
 
     const failed = appWith({ kind: "trigger-failed", error: "boom" });
     expect((await failed.app.fetch(post("/api/workspaces/acme/office/bootstrap"))).status).toBe(409);
+  });
+});
+
+describe("POST /api/workspaces/:slug/office/requests/:notificationId/wake", () => {
+  const WAKE_PATH = "/api/workspaces/acme/office/requests/user_notification%3Aofreq_t1_x/wake";
+
+  function wakeApp(result: OfficeRequestWakeResult, user = participantUser) {
+    const calls: Array<{ slug: string; callerToken: string; notificationId: string }> = [];
+    const wakeRequest: OfficeRequestWakeAction = async (input) => {
+      calls.push(input);
+      return result;
+    };
+    const app = createApp({
+      officeBootstrap: async () => ({ kind: "meta-incomplete", missing: [] }),
+      officeRequestWake: wakeRequest,
+      employeeWorkspaceResolver: async (slug) => (slug === "acme" ? { dbName: "ws_acme" } : null),
+      requireUser: () => useUser(user),
+    });
+    return { app, calls };
+  }
+
+  test("收件人 token → 200 并透传通知 id 与触发终态", async () => {
+    const { app, calls } = wakeApp({ kind: "ok", outcome: "completed", triggerId: "employee_trigger:w1" });
+    const res = await app.fetch(post(WAKE_PATH));
+    expect(res.status).toBe(200);
+    const body = await res.json() as Record<string, unknown>;
+    expect(body).toMatchObject({ ok: true, outcome: "completed", triggerId: "employee_trigger:w1" });
+    expect(calls).toEqual([{
+      slug: "acme",
+      callerToken: "member-token",
+      notificationId: "user_notification:ofreq_t1_x",
+    }]);
+  });
+
+  test("其它 workspace token / 缺 db claim → 403 且不进 wake 动作", async () => {
+    for (const user of [foreignUser, { ...adminUser, raw: {} }]) {
+      const { app, calls } = wakeApp({ kind: "ok", outcome: "completed", triggerId: "t" }, user);
+      const res = await app.fetch(post(WAKE_PATH));
+      expect(res.status).toBe(403);
+      expect(calls).toHaveLength(0);
+    }
+  });
+
+  test("未知 workspace → 404；未落终态 → 409；通知不可见 → 404", async () => {
+    const ghost = wakeApp({ kind: "ok", outcome: "completed", triggerId: "t" });
+    expect((await ghost.app.fetch(post("/api/workspaces/ghost/office/requests/x/wake"))).status).toBe(404);
+
+    const unresolved = wakeApp({ kind: "unresolved" });
+    const res = await unresolved.app.fetch(post(WAKE_PATH));
+    expect(res.status).toBe(409);
+    expect(JSON.stringify(await res.json())).toContain("office-request-unresolved");
+
+    const missing = wakeApp({ kind: "not-found" });
+    expect((await missing.app.fetch(post(WAKE_PATH))).status).toBe(404);
+  });
+
+  test("非请求通知 / 投递失败 → 409；响应不携带凭证", async () => {
+    const notRequest = wakeApp({ kind: "not-request" });
+    const res1 = await notRequest.app.fetch(post(WAKE_PATH));
+    expect(res1.status).toBe(409);
+    expect(JSON.stringify(await res1.json())).not.toContain("token");
+
+    const failed = wakeApp({ kind: "trigger-failed", error: "lane-full" });
+    expect((await failed.app.fetch(post(WAKE_PATH))).status).toBe(409);
   });
 });

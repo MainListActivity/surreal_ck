@@ -33,8 +33,8 @@ function fakeConn(over: Partial<SurrealConn> = {}): SurrealConn {
 
 function draftSpec(over: Partial<DashboardBuilderSpec> = {}): DashboardBuilderSpec {
   return {
-    sourceTables: ["ent_claim"],
-    baseTable: "ent_claim",
+    sourceTables: ["ent_items"],
+    baseTable: "ent_items",
     metric: { op: "sum", field: "amount" },
     dimensions: [{ field: "declared_at", bucket: "month" }],
     limit: 24,
@@ -46,21 +46,21 @@ function draftIntent(over: Partial<DashboardDraftIntent> = {}): DashboardDraftIn
   const widgetSpec = draftSpec();
   return {
     type: "dashboard-draft",
-    title: "申报金额月趋势",
-    description: "按月统计债权申报金额",
+    title: "登记金额月趋势",
+    description: "按月统计事项登记金额",
     widgetSpec,
     draft: {
       workspaceId: "workspace:main",
-      workbookId: "workbook:claims",
-      title: "申报金额月趋势",
-      description: "按月统计债权申报金额",
+      workbookId: "workbook:items",
+      title: "登记金额月趋势",
+      description: "按月统计事项登记金额",
       queryMode: "builder",
       viewType: "line",
       resultContract: "time_series",
       builderSpec: widgetSpec,
       status: "draft",
     },
-    explanation: "基于债权表，按月对申报金额求和。",
+    explanation: "基于事项表，按月对登记金额求和。",
     ...over,
   };
 }
@@ -85,7 +85,7 @@ describe("草稿 → DashboardWidget 转换", () => {
     ]);
 
     expect(widget.id).toMatch(/^widget_/);
-    expect(widget.title).toBe("申报金额月趋势");
+    expect(widget.title).toBe("登记金额月趋势");
     expect(widget.viewType).toBe("line");
     expect(widget.spec).toEqual(intent.widgetSpec);
     expect(widget.grid).toEqual({ x: 6, y: 2, w: 6, h: 2 });
@@ -149,8 +149,8 @@ describe("草稿 → dashboard_page 持久化", () => {
     expect(queries[0].sql).toContain("workbook = $wb");
     expect(created).toHaveLength(1);
     expect(created[0].table).toBe("dashboard_page");
-    expect(created[0].data.title).toBe("申报金额月趋势");
-    expect(String(created[0].data.workbook)).toBe("workbook:claims");
+    expect(created[0].data.title).toBe("登记金额月趋势");
+    expect(String(created[0].data.workbook)).toBe("workbook:items");
     expect(merged).toHaveLength(1);
     expect(merged[0].id).toBe("dashboard_page:p1");
     const widgets = merged[0].patch.widgets as DashboardWidget[];
@@ -160,7 +160,7 @@ describe("草稿 → dashboard_page 持久化", () => {
     expect(result).toEqual({
       ok: true,
       pageId: "dashboard_page:p1",
-      pageTitle: "申报金额月趋势",
+      pageTitle: "登记金额月趋势",
       widgetId: widgets[0].id,
       createdPage: true,
     });
@@ -234,8 +234,8 @@ describe("草稿 → dashboard_page 持久化", () => {
 function previewResponse(): DashboardPreviewResponse {
   return {
     sql: "SELECT 1",
-    sourceTables: ["ent_claim"],
-    dependencies: ["ent_claim"],
+    sourceTables: ["ent_items"],
+    dependencies: ["ent_items"],
     durationMs: 5,
     rowsCount: 1,
     result: { rows: [{ x: "2026-01", y: 120 }] },

@@ -12,6 +12,17 @@ workspace database 的 `workspace_resource_quota:current`，因此不存在跨�
 | Pro | 2 | 6 | 4 |
 | Max | 3 | 9 | 6 |
 
+> 上表是 legacy 事件口径：字段按 `column_defs`（仅业务列，不含系统字段）
+> 计数，额度值留在工作区自己的 `resource_quota_plan` 记录内。
+>
+> 原生配额（fork 引擎）按**物理字段**计数——每张实体表固定带
+> `created_at`/`updated_at` 两个系统字段，且按 `INFO FOR QUOTA` 读回的
+> 规则执行。商业套餐修订见 `_system.quota_plan_revision`；CV02 起 Max 的
+> 默认供给修订为 `max_v2`（3 表 / 每张 11 物理字段 / 每张 12 记录，可容纳
+> 破产债权模板包：creditors 6+2 字段、claims 9+2 字段、12 条样例记录）。
+> `max_v1`（3/9/6）保持不可变留存，既有工作区订阅快照不受影响，经
+> `subscription_upsert` 指向 `max_v2` 完成升级。
+
 套餐记录位于 `resource_quota_plan:plus`、`:pro`、`:max`。数据表创建和字段变化由
 `sheet` 上的同步事件检查；记录创建和删除由每张动态实体表自己的
 `resource_quota_guard` 事件计量。任一闸门失败都会回滚当前事务。

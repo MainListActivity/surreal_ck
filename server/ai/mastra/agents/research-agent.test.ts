@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import type { Surreal } from "surrealdb";
 import type { AiContextSnapshot } from "@surreal-ck/shared";
 import type { ResourceDTO, SearchResourcesRequest, SearchResourcesResponse } from "@surreal-ck/shared/dto";
-import { createLegalResearchAgent, makeLegalResearchExecutor, type ResearchAnswerModel } from "./legal-research-agent";
+import { createResearchAgent, makeResearchExecutor, type ResearchAnswerModel } from "./research-agent";
 import type { ContentResearchWindow } from "../../../src/research/window";
 
 const digest = createHash("sha256").update("第一条 合同自成立时生效。（CANARY-AUTHORIZED）").digest("hex");
@@ -24,8 +24,8 @@ function fakeContentSession(): Pick<Surreal, "query"> {
   const query = (sql: string): Promise<unknown> => {
     if (sql.includes("content_search_facet")) {
       return Promise.resolve([[
-        { id: "facet:a", version_id: "content_version:v-auth", public_id: "a-v1", title: "甲法", kind: "legislation", source_url: "https://example.invalid/a", version_label: "2026 修订", published_on: "2026-01-01" },
-        { id: "facet:b", version_id: "content_version:v-denied", public_id: "b-v1", title: "乙法", kind: "legislation", source_url: "https://example.invalid/b", version_label: null, published_on: "2026-01-02" },
+        { id: "facet:a", version_id: "content_version:v-auth", public_id: "a-v1", title: "甲法", kind: "legislation", source_url: "https://example.invalid/a", version_label: "2026 修订", published_on: "2026-01-01", keyword_score: 2, item_id: "content_item:i-auth" },
+        { id: "facet:b", version_id: "content_version:v-denied", public_id: "b-v1", title: "乙法", kind: "legislation", source_url: "https://example.invalid/b", version_label: null, published_on: "2026-01-02", keyword_score: 1, item_id: "content_item:i-denied" },
       ]]);
     }
     if (sql.includes("content_read_gate")) {
@@ -101,7 +101,7 @@ function executorWith(input: {
     if (!input.model) return "根据证据 [1] 与 [2] 得出结论。";
     return await input.model(prompt);
   };
-  const executor = makeLegalResearchExecutor({
+  const executor = makeResearchExecutor({
     resolveWorkspaceId: async () => "ws_demo",
     searchResources: (async () => input.search ?? {
       status: "miss",
@@ -114,7 +114,7 @@ function executorWith(input: {
   return { executor, prompts };
 }
 
-function run(executor: ReturnType<typeof makeLegalResearchExecutor>, openContentSession?: () => Promise<ContentResearchWindow>) {
+function run(executor: ReturnType<typeof makeResearchExecutor>, openContentSession?: () => Promise<ContentResearchWindow>) {
   return executor({
     taskText: "合同什么时候生效？",
     shared: { userContext: emptyContext, confirmed: {} },
@@ -139,7 +139,7 @@ describe("legal research executor", () => {
   });
   test.skipIf(process.env.RUN_LIVE_RESEARCH_MODEL_TESTS !== "1")("真实模型只接收授权与私有证据片段", async () => {
     if (!process.env.AI_PROVIDER || !process.env.AI_MODEL || !process.env.AI_API_KEY) throw new Error("缺少真实模型配置");
-    const agent = createLegalResearchAgent({ provider: process.env.AI_PROVIDER, model: process.env.AI_MODEL,
+    const agent = createResearchAgent({ provider: process.env.AI_PROVIDER, model: process.env.AI_MODEL,
       apiKey: process.env.AI_API_KEY, baseUrl: process.env.AI_BASE_URL });
     let received = "";
     let modelText = "";
@@ -217,7 +217,7 @@ describe("legal research executor", () => {
     expect(out.text).not.toContain("internal-secret");
 
     closeCount = 0;
-    const failing = makeLegalResearchExecutor({
+    const failing = makeResearchExecutor({
       resolveWorkspaceId: async () => "ws_demo",
       searchResources: async () => { throw new Error("private query failed"); },
       answerModel: async () => "unused",
@@ -261,7 +261,7 @@ describe("legal research executor", () => {
 
   test("双语料皆空：只说明缺口，不调用模型", async () => {
     const modelCalls: string[] = [];
-    const executor = makeLegalResearchExecutor({
+    const executor = makeResearchExecutor({
       resolveWorkspaceId: async () => "ws_demo",
       searchResources: (async () => ({ status: "miss", indexStatus: "index-disabled", queryText: "q", results: [] })) as unknown as (req: SearchResourcesRequest, session?: Surreal) => Promise<SearchResourcesResponse>,
       answerModel: async (prompt) => {
@@ -271,7 +271,7 @@ describe("legal research executor", () => {
     });
     const out = await run(executor, () => Promise.resolve({ kind: "empty" }));
     expect(modelCalls).toHaveLength(0);
-    expect(out.text).toContain("未登记到任何可用证据；本回答不构成有来源的法律结论");
+    expect(out.text).toContain("未登记到任何可用证据；本回答不构成有来源的结论");
     expect(out.text).toContain("平台语料当前没有可授权集合");
     expect(out.citations).toBeUndefined();
   });
@@ -325,7 +325,7 @@ describe("LCA07 研究恢复重新鉴权（无缓存）", () => {
   test("许可撤回后相同 query 新窗口重读 gate；历史回答没有自动进入模型", async () => {
     const prompts: string[] = [];
     let revoked = false;
-    const executor = makeLegalResearchExecutor({ resolveWorkspaceId: async () => "ws_demo", searchResources: async () => hitResponse(),
+    const executor = makeResearchExecutor({ resolveWorkspaceId: async () => "ws_demo", searchResources: async () => hitResponse(),
       answerModel: async p => { prompts.push(p); return "当前证据 [1]"; } });
     const open = async (): Promise<ContentResearchWindow> => {
       const w = readyWindow();
@@ -343,7 +343,7 @@ describe("LCA07 研究恢复重新鉴权（无缓存）", () => {
   });
   test("所选私有材料用新调用者会话读明细；失效选择不得送入模型", async () => {
     const prompts: string[] = [];
-    const executor = makeLegalResearchExecutor({ resolveWorkspaceId: async () => "ws_demo", searchResources: async () => hitResponse("candidates"),
+    const executor = makeResearchExecutor({ resolveWorkspaceId: async () => "ws_demo", searchResources: async () => hitResponse("candidates"),
       loadResource: async () => { throw new Error("revoked/cross workspace"); }, answerModel: async p => { prompts.push(p); return ""; } });
     const out = await executor({ taskText: "合同", shared: { userContext: emptyContext, confirmed: {} }, selectedResourceIds: ["resource_item:revoked"],
       openContentSession: async () => ({ kind: "empty" }) });

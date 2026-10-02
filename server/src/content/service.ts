@@ -175,30 +175,22 @@ export type PublicationReservationResult =
   | Readonly<{ kind: "replay"; response: PublishBatchResponse }>
   | Readonly<{ kind: "conflict" }>;
 
-function legalFallbackQuery(query: string): string | null {
-  const legalTitle = Array.from(query.matchAll(/[\p{Script=Han}]{2,24}?(?:法|条例|规定|解释)/gu))
-    .map((match) => match[0]
-      ?.replace(/^(?:请|帮我|查找|查询|检索|搜索|寻找|查一下|查下|有关|关于|相关)+/u, "")
-      .trim())
-    .find((term) => term && term !== query);
-  return legalTitle ?? null;
-}
+// 请求语噪声（动词/客套/来源提示），语言层级而非领域词表——不含任何法律词。
+const REQUEST_QUERY_NOISE = /请|帮我|麻烦|想要|查找|查询|检索|搜索|寻找|查一下|查下|看看|有关|关于|相关|一下/gu;
+// 编号条目引用（第X条/款/项/号/章/节）是通用编号文档语法：剥离后留下主体名称，
+// 例如"合同法第四百条"→"合同法"，能命中写成《合同法》第四百条的语料。
+const ORDINAL_ITEM_SPAN = /第[\p{N}\p{Script=Han}]{1,8}[条款项号章节]/gu;
 
-const LEGAL_QUERY_NOISE = /请|帮我|麻烦|想要|查找|查询|检索|搜索|寻找|查一下|查下|看看|有关|关于|相关|一下/gu;
-const LEGAL_QUERY_GENERIC_NOUN = /(?:的)?(?:指导性案例|指导案例|典型案例|入库案例|案例|判决|裁定|法条)/gu;
-
-function stripLegalQueryNoise(query: string): string {
+function stripRequestQueryNoise(query: string): string {
   return query
-    .replace(LEGAL_QUERY_NOISE, " ")
+    .replace(REQUEST_QUERY_NOISE, " ")
     .replace(/(?:并)?给出官方来源链接/gu, " ")
-    .replace(/适用法条/gu, " ")
-    .replace(LEGAL_QUERY_GENERIC_NOUN, " ")
     .replace(/[，。？?、,.!！；;：:\s]+/g, " ")
     .trim();
 }
 
 /** 自然语言问句拆成可做 CONTAINS 的短语，避免整句检索零命中后误进人工检索。 */
-export function legalSearchQueryCandidates(query: string): string[] {
+export function searchQueryCandidates(query: string): string[] {
   const seen = new Set<string>();
   const add = (value: string | null | undefined) => {
     const next = value?.trim();
@@ -207,12 +199,19 @@ export function legalSearchQueryCandidates(query: string): string[] {
   };
 
   add(query);
-  const stripped = stripLegalQueryNoise(query);
+  const stripped = stripRequestQueryNoise(query);
   add(stripped);
-  add(legalFallbackQuery(query));
 
   for (const part of stripped.split(/的|和|与|及|或|\s+/u)) {
-    add(part.trim());
+    const trimmed = part.trim();
+    add(trimmed);
+    add(trimmed.replace(ORDINAL_ITEM_SPAN, " "));
+    // 中文复合名词末位多为类别词（案例/记录/办法……），渐进截尾提供召回兜底；
+    // 纯结构规则且只对纯汉字片段生效——含数字/括号的编号串截短只是噪声。
+    if (/^[\p{Script=Han}]+$/u.test(trimmed)) {
+      if (trimmed.length > 4) add(trimmed.slice(0, -1));
+      if (trimmed.length > 5) add(trimmed.slice(0, -2));
+    }
   }
   return [...seen];
 }
@@ -781,7 +780,7 @@ export class PlatformContentService {
   async searchPublishedForOperator(actor: ContentOperator, requestInput: unknown): Promise<SearchContentResponse> {
     requireCapability(actor, "content.read");
     const parsed = PublicLegalSearchRequestSchema.safeParse(requestInput);
-    if (!parsed.success) throw new ContentServiceError("invalid_request", "法律库检索参数不符合契约结构");
+    if (!parsed.success) throw new ContentServiceError("invalid_request", "内容库检索参数不符合契约结构");
     const request: SearchContentRequest = {
       filters: {
         query: parsed.data.query,
@@ -795,7 +794,7 @@ export class PlatformContentService {
     const exact = await this.search(request);
     if (exact.items.length > 0 || !parsed.data.query) return exact;
 
-    for (const fallbackQuery of legalSearchQueryCandidates(parsed.data.query).slice(1)) {
+    for (const fallbackQuery of searchQueryCandidates(parsed.data.query).slice(1)) {
       const fallback = await this.search({
         ...request,
         filters: { ...request.filters, query: fallbackQuery },

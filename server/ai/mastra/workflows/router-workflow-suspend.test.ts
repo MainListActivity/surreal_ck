@@ -96,7 +96,7 @@ describe("router workflow suspend & resume", () => {
 
   test("executor 返回 suspend.ambiguous 时 workflow 状态为 suspended，候选写入 storage", async () => {
     const llm: RouterLlmCaller = async () =>
-      `[{"category":"navigation","taskText":"找张三的债权"}]`;
+      `[{"category":"navigation","taskText":"找张三的记录"}]`;
     const executors: SubAgentExecutors = {
       navigation: async () => ({
         text: "",
@@ -104,13 +104,13 @@ describe("router workflow suspend & resume", () => {
         suspend: {
           kind: "ambiguous",
           candidates: [
-            { id: "claim:abc", label: "张三 / ZQ-2026-001" },
-            { id: "claim:def", label: "张三 / ZQ-2026-002" },
+            { id: "record:abc", label: "张三 / DEV-2026-001" },
+            { id: "record:def", label: "张三 / DEV-2026-002" },
           ],
         },
       }),
       dashboard: async () => ({ text: "x", confirmed: {} }),
-      "claim-analysis": async () => ({ text: "x", confirmed: {} }),
+      "row-analysis": async () => ({ text: "x", confirmed: {} }),
       chitchat: async () => ({ text: "x", confirmed: {} }),
     };
 
@@ -120,7 +120,7 @@ describe("router workflow suspend & resume", () => {
     const rc = new RequestContext();
     rc.set(ROUTER_RUNTIME_KEY, makeRuntime({ executors, llmCaller: llm }));
 
-    const result = await run.start({ inputData: { text: "找张三的债权" }, requestContext: rc });
+    const result = await run.start({ inputData: { text: "找张三的记录" }, requestContext: rc });
 
     expect(result.status).toBe("suspended");
     // storage 中能看到该 run，状态为 suspended
@@ -139,7 +139,7 @@ describe("router workflow suspend & resume", () => {
     const executors: SubAgentExecutors = {
       navigation: async () => ({ text: "", confirmed: {}, suspend: { kind: "ambiguous", candidates } }),
       dashboard: async () => ({ text: "", confirmed: {} }),
-      "claim-analysis": async () => ({ text: "", confirmed: {} }),
+      "row-analysis": async () => ({ text: "", confirmed: {} }),
       chitchat: async () => ({ text: "", confirmed: {} }),
     };
 
@@ -168,13 +168,13 @@ describe("router workflow suspend & resume", () => {
 
   test("resource-candidates 支持多选 resourceIds resume 并生成 citation answer", async () => {
     const llm: RouterLlmCaller = async () =>
-      `[{"category":"resource-retrieval","taskText":"查找合同解除案例"}]`;
+      `[{"category":"resource-retrieval","taskText":"查找设备故障案例"}]`;
     const events: Array<{ kind: string; count: number }> = [];
     const seenResourceIds: string[][] = [];
     const executors: SubAgentExecutors = {
       navigation: async () => ({ text: "", confirmed: {} }),
       dashboard: async () => ({ text: "", confirmed: {} }),
-      "claim-analysis": async () => ({ text: "", confirmed: {} }),
+      "row-analysis": async () => ({ text: "", confirmed: {} }),
       "resource-retrieval": async () => ({
         text: "",
         confirmed: {},
@@ -213,7 +213,7 @@ describe("router workflow suspend & resume", () => {
       },
     }));
 
-    const first = await run.start({ inputData: { text: "查找合同解除案例" }, requestContext: rc });
+    const first = await run.start({ inputData: { text: "查找设备故障案例" }, requestContext: rc });
     expect(first.status).toBe("suspended");
     expect(events).toEqual([{ kind: "resource-candidates", count: 2 }]);
 
@@ -251,12 +251,12 @@ describe("router workflow suspend & resume", () => {
 
   test("manual-research suspend 通过 onSuspend 暴露 sessionId", async () => {
     const llm: RouterLlmCaller = async () =>
-      `[{"category":"resource-retrieval","taskText":"查找合同解除案例"}]`;
+      `[{"category":"resource-retrieval","taskText":"查找设备故障案例"}]`;
     const events: Array<{ sessionId: string; query: string }> = [];
     const executors: SubAgentExecutors = {
       navigation: async () => ({ text: "", confirmed: {} }),
       dashboard: async () => ({ text: "", confirmed: {} }),
-      "claim-analysis": async () => ({ text: "", confirmed: {} }),
+      "row-analysis": async () => ({ text: "", confirmed: {} }),
       "resource-retrieval": async () => ({
         text: "",
         confirmed: {},
@@ -264,7 +264,7 @@ describe("router workflow suspend & resume", () => {
           kind: "manual-research",
           sessionId: "research_session:s1",
           workspaceId: "workspace:demo",
-          query: "查找合同解除案例",
+          query: "查找设备故障案例",
           resourceType: "generic_note",
         },
       }),
@@ -285,10 +285,10 @@ describe("router workflow suspend & resume", () => {
       },
     }));
 
-    const result = await run.start({ inputData: { text: "查找合同解除案例" }, requestContext: rc });
+    const result = await run.start({ inputData: { text: "查找设备故障案例" }, requestContext: rc });
 
     expect(result.status).toBe("suspended");
-    expect(events).toEqual([{ sessionId: "research_session:s1", query: "查找合同解除案例" }]);
+    expect(events).toEqual([{ sessionId: "research_session:s1", query: "查找设备故障案例" }]);
   });
 
   test("resume candidate-chosen 后第二步 executor 看到 confirmed.resolvedRecord", async () => {
@@ -302,8 +302,8 @@ describe("router workflow suspend & resume", () => {
         suspend: {
           kind: "ambiguous",
           candidates: [
-            { id: "claim:abc", label: "张三 / ZQ-1" },
-            { id: "claim:def", label: "张三 / ZQ-2" },
+            { id: "record:abc", label: "张三 / DEV-1" },
+            { id: "record:def", label: "张三 / DEV-2" },
           ],
         },
       }),
@@ -311,7 +311,7 @@ describe("router workflow suspend & resume", () => {
         seen.push({ confirmed: { ...shared.confirmed }, taskText });
         return { text: "已生成草稿", confirmed: {} };
       },
-      "claim-analysis": async () => ({ text: "", confirmed: {} }),
+      "row-analysis": async () => ({ text: "", confirmed: {} }),
       chitchat: async () => ({ text: "", confirmed: {} }),
     };
 
@@ -326,12 +326,12 @@ describe("router workflow suspend & resume", () => {
     const rc2 = new RequestContext();
     rc2.set(ROUTER_RUNTIME_KEY, makeRuntime({ executors, llmCaller: llm }));
     const resumed = await run.resume({
-      resumeData: { decision: { kind: "candidate-chosen", candidateId: "claim:abc" } },
+      resumeData: { decision: { kind: "candidate-chosen", candidateId: "record:abc" } },
       requestContext: rc2,
     });
     expect(resumed.status).toBe("success");
     expect(seen).toHaveLength(1);
-    expect(seen[0].confirmed).toEqual({ resolvedRecord: { id: "claim:abc", label: "张三 / ZQ-1" } });
+    expect(seen[0].confirmed).toEqual({ resolvedRecord: { id: "record:abc", label: "张三 / DEV-1" } });
   });
 
   test("candidate-cancelled 后续步骤不执行，workflow status=success（已取消）", async () => {
@@ -351,7 +351,7 @@ describe("router workflow suspend & resume", () => {
         dashboardCalls.push(1);
         return { text: "should-not-run", confirmed: {} };
       },
-      "claim-analysis": async () => ({ text: "", confirmed: {} }),
+      "row-analysis": async () => ({ text: "", confirmed: {} }),
       chitchat: async () => ({ text: "", confirmed: {} }),
     };
     const mastra = buildMastra();
@@ -378,7 +378,7 @@ describe("router workflow suspend & resume", () => {
         confirmed: {},
         suspend: { kind: "await-write-confirm", intent: writeIntent },
       }),
-      "claim-analysis": async () => ({ text: "", confirmed: {} }),
+      "row-analysis": async () => ({ text: "", confirmed: {} }),
       chitchat: async () => ({ text: "", confirmed: {} }),
     };
 
@@ -399,7 +399,7 @@ describe("router workflow suspend & resume", () => {
 
   test("待办创建提案通过公开暂停事件暴露，用户确认前不执行任何业务写入", async () => {
     const llm: RouterLlmCaller = async () =>
-      '[{"category":"claim-analysis","taskText":"提出审核待办"}]';
+      '[{"category":"row-analysis","taskText":"提出补全建议"}]';
     let businessQueries = 0;
     const businessSession = { query: async () => { businessQueries += 1; return [[]]; } } as never;
     const proposal = {
@@ -426,7 +426,7 @@ describe("router workflow suspend & resume", () => {
     const executors: SubAgentExecutors = {
       navigation: async () => ({ text: "", confirmed: {} }),
       dashboard: async () => ({ text: "", confirmed: {} }),
-      "claim-analysis": async () => ({
+      "row-analysis": async () => ({
         text: "已生成待办写入提案，等待确认。",
         confirmed: {},
         suspend: { kind: "await-write-confirm", intent: proposal },
@@ -444,7 +444,7 @@ describe("router workflow suspend & resume", () => {
       onSuspend: (event) => events.push(event),
     }));
 
-    const result = await run.start({ inputData: { text: "提出审核待办" }, requestContext: rc });
+    const result = await run.start({ inputData: { text: "提出补全建议" }, requestContext: rc });
 
     expect(result.status).toBe("suspended");
     expect(businessQueries).toBe(0);
@@ -467,7 +467,7 @@ describe("router workflow suspend & resume", () => {
         dashCalls.push(1);
         return { text: JSON.stringify(shared.confirmed), confirmed: {} };
       },
-      "claim-analysis": async () => ({ text: "", confirmed: {} }),
+      "row-analysis": async () => ({ text: "", confirmed: {} }),
       chitchat: async () => ({ text: "", confirmed: {} }),
     };
     const mastra = buildMastra();
@@ -497,8 +497,8 @@ describe("router workflow suspend & resume", () => {
         suspend: {
           kind: "ambiguous",
           candidates: [
-            { id: "claim:abc", label: "张三 / ZQ-1" },
-            { id: "claim:def", label: "张三 / ZQ-2" },
+            { id: "record:abc", label: "张三 / DEV-1" },
+            { id: "record:def", label: "张三 / DEV-2" },
           ],
         },
       }),
@@ -506,7 +506,7 @@ describe("router workflow suspend & resume", () => {
         seen.push({ ...shared.confirmed });
         return { text: "ok", confirmed: {} };
       },
-      "claim-analysis": async () => ({ text: "", confirmed: {} }),
+      "row-analysis": async () => ({ text: "", confirmed: {} }),
       chitchat: async () => ({ text: "", confirmed: {} }),
     };
 
@@ -525,20 +525,20 @@ describe("router workflow suspend & resume", () => {
     const rcB = new RequestContext();
     rcB.set(ROUTER_RUNTIME_KEY, makeRuntime({ executors: baseExecutors, llmCaller: llm, runId: persistedRunId }));
     const r2 = await runB.resume({
-      resumeData: { decision: { kind: "candidate-chosen", candidateId: "claim:abc" } },
+      resumeData: { decision: { kind: "candidate-chosen", candidateId: "record:abc" } },
       requestContext: rcB,
     });
     expect(r2.status).toBe("success");
-    expect(seen).toEqual([{ resolvedRecord: { id: "claim:abc", label: "张三 / ZQ-1" } }]);
+    expect(seen).toEqual([{ resolvedRecord: { id: "record:abc", label: "张三 / DEV-1" } }]);
   });
 
   test("跨进程 resume 后继续使用暂停前持久化的用户上下文", async () => {
     const originalContext: AiContextSnapshot = {
-      route: { screen: "editor", workbookId: "workbook:demo", sheetId: "sheet:claims" },
-      workbook: { id: "workbook:demo", name: "债权工作簿" },
-      sheet: { id: "sheet:claims", label: "债权申报表", tableName: "ent_claim" },
-      selectedRow: { id: "ent_claim:abc", label: "张三 / ZQ-1", visibleValues: { name: "张三" } },
-      contextHint: "债权申报表 / 张三 / ZQ-1",
+      route: { screen: "editor", workbookId: "workbook:demo", sheetId: "sheet:items" },
+      workbook: { id: "workbook:demo", name: "巡检工作簿" },
+      sheet: { id: "sheet:items", label: "事项表", tableName: "ent_items" },
+      selectedRow: { id: "ent_items:abc", label: "张三 / DEV-1", visibleValues: { name: "张三" } },
+      contextHint: "事项表 / 张三 / DEV-1",
     };
     const llm: RouterLlmCaller = async () =>
       `[{"category":"navigation","taskText":"a"},{"category":"dashboard","taskText":"b"}]`;
@@ -547,13 +547,13 @@ describe("router workflow suspend & resume", () => {
       navigation: async () => ({
         text: "",
         confirmed: {},
-        suspend: { kind: "ambiguous", candidates: [{ id: "claim:abc", label: "张三 / ZQ-1" }] },
+        suspend: { kind: "ambiguous", candidates: [{ id: "record:abc", label: "张三 / DEV-1" }] },
       }),
       dashboard: async ({ shared }) => {
         seenContexts.push(shared.userContext);
         return { text: "ok", confirmed: {} };
       },
-      "claim-analysis": async () => ({ text: "", confirmed: {} }),
+      "row-analysis": async () => ({ text: "", confirmed: {} }),
       chitchat: async () => ({ text: "", confirmed: {} }),
     };
 
@@ -569,26 +569,67 @@ describe("router workflow suspend & resume", () => {
     const rcB = new RequestContext();
     rcB.set(ROUTER_RUNTIME_KEY, makeRuntime({ executors, llmCaller: llm, runId: runA.runId, userContext: emptyContext }));
     const r2 = await runB.resume({
-      resumeData: { decision: { kind: "candidate-chosen", candidateId: "claim:abc" } },
+      resumeData: { decision: { kind: "candidate-chosen", candidateId: "record:abc" } },
       requestContext: rcB,
     });
 
     expect(r2.status).toBe("success");
     expect(seenContexts).toEqual([originalContext]);
   });
+
+  test("旧版本快照 plan 携带 claim-analysis 类目：resume 后归一化路由到 row-analysis", async () => {
+    const llm: RouterLlmCaller = async () =>
+      `[{"category":"navigation","taskText":"找记录"},{"category":"row-analysis","taskText":"分析该行"}]`;
+    const calls: string[] = [];
+    const executors: SubAgentExecutors = {
+      navigation: async () => ({
+        text: "",
+        confirmed: {},
+        suspend: { kind: "ambiguous", candidates: [{ id: "record:abc", label: "记录 A" }] },
+      }),
+      dashboard: async () => ({ text: "", confirmed: {} }),
+      "row-analysis": async ({ taskText }) => {
+        calls.push(taskText);
+        return { text: "行分析结果", confirmed: {} };
+      },
+      chitchat: async () => ({ text: "", confirmed: {} }),
+    };
+
+    const mastra = buildMastra();
+    const run = await mastra.getWorkflow(ROUTER_WORKFLOW_ID).createRun();
+    const rc = new RequestContext();
+    rc.set(ROUTER_RUNTIME_KEY, makeRuntime({ executors, llmCaller: llm }));
+    const r1 = await run.start({ inputData: { text: "..." }, requestContext: rc });
+    expect(r1.status).toBe("suspended");
+
+    // 直接改存储层快照，模拟旧版本写出的 plan（claim-analysis 是旧类目名）
+    const stored = workflowRows.get(run.runId);
+    const value = stored?.state.value as { plan: Array<{ category: string }> } | undefined;
+    value!.plan[1].category = "claim-analysis";
+
+    const rc2 = new RequestContext();
+    rc2.set(ROUTER_RUNTIME_KEY, makeRuntime({ executors, llmCaller: llm, runId: run.runId }));
+    const resumed = await run.resume({
+      resumeData: { decision: { kind: "candidate-chosen", candidateId: "record:abc" } },
+      requestContext: rc2,
+    });
+
+    expect(resumed.status).toBe("success");
+    expect(calls).toEqual(["分析该行"]);
+  });
 });
 
 
 test("LCA07：研究暂停跨进程恢复重新开窗口，快照不含证据文本和会话", async () => {
   workflowRows.clear();
-  const { makeLegalResearchExecutor } = await import("../agents/legal-research-agent");
+  const { makeResearchExecutor } = await import("../agents/research-agent");
   let revision = "1";
   let opens = 0;
   const prompts: string[] = [];
   const resource = { id: "resource_item:one", workspaceId: "ws_demo", resourceType: "generic_note", title: "当前私有材料", summary: "meta",
     evidence: [{ order: 0, text: "PRIVATE-CURRENT-CANARY", sourceUrl: "", sourceTitle: "", capturedAt: new Date().toISOString() }],
     sourceUrl: "", tags: [], structuredPayload: {}, quality: "user-confirmed", createdAt: "", updatedAt: "" } as const;
-  const research = makeLegalResearchExecutor({ resolveWorkspaceId: async () => "ws_demo",
+  const research = makeResearchExecutor({ resolveWorkspaceId: async () => "ws_demo",
     searchResources: async () => ({ status: "candidates", indexStatus: "index-disabled", queryText: "合同", results: [{ resource: { ...resource, evidence: [...resource.evidence], tags: [] }, score: .4, vectorScore: 0, keywordScore: 0, qualityScore: 0, recencyScore: 0 }] }),
     loadResource: async () => ({ ...resource, evidence: [...resource.evidence], tags: [] }),
     answerModel: async p => { prompts.push(p); return "合法资料分析 [1]"; } });

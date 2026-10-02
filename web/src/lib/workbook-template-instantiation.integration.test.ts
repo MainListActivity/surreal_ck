@@ -62,7 +62,7 @@ async function setupDatabase(): Promise<{ conn: SurrealConn; inspector: Surreal 
     DEFINE INDEX dashboard_page_slug_unique ON TABLE dashboard_page COLUMNS workbook, slug UNIQUE;
 
     DEFINE TABLE activity_event SCHEMALESS;
-    CREATE workbook_template:claims CONTENT { key: "claims" };
+    CREATE workbook_template:items CONTENT { key: "items" };
   `).collect();
 
   const browser = new Surreal();
@@ -78,12 +78,12 @@ describe("OIP-02 多数据表模板实例化", () => {
     const workbooks = createWorkbooksStore({ getConn: () => conn });
 
     const workbook = await workbooks.createFromTemplate({
-      id: "workbook_template:claims",
-      defaultName: "破产债权台账",
+      id: "workbook_template:items",
+      defaultName: "设备巡检台账",
       sheets: [
         {
-          label: "债权人表",
-          columns: [{ key: "creditor_name", label: "债权人名称", fieldType: "text", required: true }],
+          label: "负责人表",
+          columns: [{ key: "owner_name", label: "负责人姓名", fieldType: "text", required: true }],
         },
         {
           label: "证据材料表",
@@ -95,16 +95,16 @@ describe("OIP-02 多数据表模板实例化", () => {
 
     const editor = createEditorStore({ getConn: () => conn });
     await editor.loadWorkbook(workbook!.id);
-    expect(editor.sheets.map((sheet) => sheet.label)).toEqual(["债权人表", "证据材料表"]);
-    expect(await editor.saveRows([{ values: { creditor_name: "甲公司" } }])).toBe(true);
+    expect(editor.sheets.map((sheet) => sheet.label)).toEqual(["负责人表", "证据材料表"]);
+    expect(await editor.saveRows([{ values: { owner_name: "甲公司" } }])).toBe(true);
     await editor.reloadRows();
-    expect(editor.rows[0]?.values.creditor_name).toBe("甲公司");
+    expect(editor.rows[0]?.values.owner_name).toBe("甲公司");
 
     await editor.switchSheet(editor.sheets[1]!.id);
     expect(editor.columns.map((column) => column.key)).toEqual(["material_name"]);
-    expect(await editor.saveRows([{ values: { material_name: "借款合同" } }])).toBe(true);
+    expect(await editor.saveRows([{ values: { material_name: "设备档案" } }])).toBe(true);
     await editor.reloadRows();
-    expect(editor.rows[0]?.values.material_name).toBe("借款合同");
+    expect(editor.rows[0]?.values.material_name).toBe("设备档案");
     editor.reset();
   }, 15_000);
 
@@ -125,9 +125,9 @@ describe("OIP-02 多数据表模板实例化", () => {
     });
 
     const workbook = await workbooks.createFromTemplate({
-      id: "workbook_template:claims",
+      id: "workbook_template:items",
       sheets: [
-        { label: "债权人表", columns: [{ key: "name", label: "名称", fieldType: "text" }] },
+        { label: "负责人表", columns: [{ key: "name", label: "名称", fieldType: "text" }] },
         { label: "证据材料表", columns: [{ key: "title", label: "材料", fieldType: "text" }] },
       ],
     });
@@ -153,7 +153,7 @@ describe("OIP-02 多数据表模板实例化", () => {
     const { conn } = await setupDatabase();
     const workbooks = createWorkbooksStore({ getConn: () => conn });
     const workbook = await workbooks.createFromTemplate({
-      id: "workbook_template:claims",
+      id: "workbook_template:items",
       columns: [{ key: "name", label: "名称", fieldType: "text", required: true }],
     });
     expect(workbook).not.toBeNull();
@@ -178,11 +178,11 @@ describe("OIP-03 模板内跨数据表引用", () => {
       generateKey: () => keys.shift()!,
     });
     const workbook = await workbooks.createFromTemplate({
-      id: "workbook_template:claims",
+      id: "workbook_template:items",
       sheets: [
         {
-          key: "creditors",
-          label: "债权人表",
+          key: "owners",
+          label: "负责人表",
           columns: [{ key: "name", label: "名称", fieldType: "text", required: true }],
         },
         {
@@ -191,10 +191,10 @@ describe("OIP-03 模板内跨数据表引用", () => {
           columns: [
             { key: "title", label: "材料名称", fieldType: "text", required: true },
             {
-              key: "creditor",
-              label: "关联债权人",
+              key: "owner",
+              label: "关联负责人",
               fieldType: "reference",
-              referenceSheetKey: "creditors",
+              referenceSheetKey: "owners",
             },
           ],
         },
@@ -205,22 +205,22 @@ describe("OIP-03 模板内跨数据表引用", () => {
     const editor = createEditorStore({ getConn: () => conn });
     await editor.loadWorkbook(workbook!.id);
     expect(await editor.saveRows([{ values: { name: "甲公司" } }])).toBe(true);
-    const creditorId = editor.rows[0]!.id;
-    const creditorTable = editor.activeSheet!.tableName;
+    const ownerId = editor.rows[0]!.id;
+    const ownerTable = editor.activeSheet!.tableName;
 
-    const candidates = await searchReferenceCandidates(conn, creditorTable, {
+    const candidates = await searchReferenceCandidates(conn, ownerTable, {
       query: "甲公司",
       displayKey: "name",
     });
-    expect(candidates.map((candidate) => candidate.id)).toContain(creditorId);
+    expect(candidates.map((candidate) => candidate.id)).toContain(ownerId);
 
     await editor.switchSheet(editor.sheets[1]!.id);
-    const referenceColumn = editor.columns.find((column) => column.key === "creditor");
-    expect(referenceColumn?.referenceTable).toBe(creditorTable);
+    const referenceColumn = editor.columns.find((column) => column.key === "owner");
+    expect(referenceColumn?.referenceTable).toBe(ownerTable);
     expect(referenceColumn?.referenceSheetId).toBe(editor.sheets[0]!.id);
-    expect(await editor.saveRows([{ values: { title: "借款合同", creditor: creditorId } }])).toBe(true);
+    expect(await editor.saveRows([{ values: { title: "设备档案", owner: ownerId } }])).toBe(true);
     await editor.reloadRows();
-    expect(editor.rows[0]?.values.creditor).toBe(creditorId);
+    expect(editor.rows[0]?.values.owner).toBe(ownerId);
     editor.reset();
   }, 15_000);
 
@@ -235,21 +235,21 @@ describe("OIP-03 模板内跨数据表引用", () => {
       generateKey: () => keys.shift()!,
     });
     const template = {
-      id: "workbook_template:claims",
+      id: "workbook_template:items",
       sheets: [
         {
-          key: "creditors",
-          label: "债权人表",
+          key: "owners",
+          label: "负责人表",
           columns: [{ key: "name", label: "名称", fieldType: "text", required: true }],
         },
         {
           key: "materials",
           label: "证据材料表",
           columns: [{
-            key: "creditor",
-            label: "关联债权人",
+            key: "owner",
+            label: "关联负责人",
             fieldType: "reference",
-            referenceSheetKey: "creditors",
+            referenceSheetKey: "owners",
           }],
         },
       ],
@@ -264,18 +264,18 @@ describe("OIP-03 模板内跨数据表引用", () => {
     expect(await firstEditor.saveRows([{ values: { name: "甲公司" } }])).toBe(true);
     const firstCreditorId = firstEditor.rows[0]!.id;
     await firstEditor.switchSheet(firstEditor.sheets[1]!.id);
-    const firstTarget = firstEditor.columns.find((column) => column.key === "creditor")?.referenceTable;
+    const firstTarget = firstEditor.columns.find((column) => column.key === "owner")?.referenceTable;
 
     const secondEditor = createEditorStore({ getConn: () => conn });
     await secondEditor.loadWorkbook(second!.id);
     const secondCreditorTable = secondEditor.activeSheet!.tableName;
     await secondEditor.switchSheet(secondEditor.sheets[1]!.id);
-    const secondReference = secondEditor.columns.find((column) => column.key === "creditor");
+    const secondReference = secondEditor.columns.find((column) => column.key === "owner");
 
     expect(firstTarget).not.toBe(secondReference?.referenceTable);
     expect(secondReference?.referenceTable).toBe(secondCreditorTable);
     expect(secondReference?.referenceSheetId).toBe(secondEditor.sheets[0]!.id);
-    expect(await secondEditor.saveRows([{ values: { creditor: firstCreditorId } }])).toBe(false);
+    expect(await secondEditor.saveRows([{ values: { owner: firstCreditorId } }])).toBe(false);
     expect(secondEditor.saveError).toContain(`引用值必须属于 ${secondCreditorTable}`);
 
     firstEditor.reset();
@@ -295,13 +295,13 @@ describe("OIP-04 模板样例数据可选实例化", () => {
     ];
     const workbooks = createWorkbooksStore({ getConn: () => conn, generateKey: () => keys.shift()! });
     const workbook = await workbooks.createFromTemplate({
-      id: "workbook_template:claims",
+      id: "workbook_template:items",
       sheets: [
         {
-          key: "creditors",
-          label: "债权人表",
+          key: "owners",
+          label: "负责人表",
           columns: [{ key: "name", label: "名称", fieldType: "text", required: true }],
-          sampleRecords: [{ key: "creditor-a", values: { name: "甲公司" } }],
+          sampleRecords: [{ key: "owner-a", values: { name: "甲公司" } }],
         },
         {
           key: "materials",
@@ -309,17 +309,17 @@ describe("OIP-04 模板样例数据可选实例化", () => {
           columns: [
             { key: "title", label: "材料", fieldType: "text", required: true },
             {
-              key: "creditor",
-              label: "关联债权人",
+              key: "owner",
+              label: "关联负责人",
               fieldType: "reference",
-              referenceSheetKey: "creditors",
+              referenceSheetKey: "owners",
             },
           ],
           sampleRecords: [{
             key: "material-a",
             values: {
-              title: "借款合同",
-              creditor: { sheetKey: "creditors", recordKey: "creditor-a" },
+              title: "设备档案",
+              owner: { sheetKey: "owners", recordKey: "owner-a" },
             },
           }],
         },
@@ -330,12 +330,12 @@ describe("OIP-04 模板样例数据可选实例化", () => {
     const editor = createEditorStore({ getConn: () => conn });
     await editor.loadWorkbook(workbook!.id);
     expect(editor.rows.map((row) => row.values.name)).toEqual(["甲公司"]);
-    const creditorId = editor.rows[0]!.id;
+    const ownerId = editor.rows[0]!.id;
     await editor.switchSheet(editor.sheets[1]!.id);
     expect(editor.rows).toHaveLength(1);
     expect(editor.rows[0]!.values).toEqual(expect.objectContaining({
-      title: "借款合同",
-      creditor: creditorId,
+      title: "设备档案",
+      owner: ownerId,
     }));
     editor.reset();
   }, 15_000);
@@ -344,19 +344,19 @@ describe("OIP-04 模板样例数据可选实例化", () => {
     const { conn } = await setupDatabase();
     const workbooks = createWorkbooksStore({ getConn: () => conn });
     const workbook = await workbooks.createFromTemplate({
-      id: "workbook_template:claims",
+      id: "workbook_template:items",
       sheets: [
         {
-          key: "creditors",
-          label: "债权人表",
+          key: "owners",
+          label: "负责人表",
           columns: [{ key: "name", label: "名称", fieldType: "text" }],
-          sampleRecords: [{ key: "creditor-a", values: { name: "甲公司" } }],
+          sampleRecords: [{ key: "owner-a", values: { name: "甲公司" } }],
         },
         {
           key: "materials",
           label: "证据材料表",
           columns: [{ key: "title", label: "材料", fieldType: "text" }],
-          sampleRecords: [{ key: "material-a", values: { title: "借款合同" } }],
+          sampleRecords: [{ key: "material-a", values: { title: "设备档案" } }],
         },
       ],
     }, undefined, { includeSampleData: false });
@@ -364,7 +364,7 @@ describe("OIP-04 模板样例数据可选实例化", () => {
 
     const editor = createEditorStore({ getConn: () => conn });
     await editor.loadWorkbook(workbook!.id);
-    expect(editor.sheets.map((sheet) => sheet.label)).toEqual(["债权人表", "证据材料表"]);
+    expect(editor.sheets.map((sheet) => sheet.label)).toEqual(["负责人表", "证据材料表"]);
     expect(editor.rows).toEqual([]);
     await editor.switchSheet(editor.sheets[1]!.id);
     expect(editor.rows).toEqual([]);
@@ -376,12 +376,12 @@ describe("OIP-04 模板样例数据可选实例化", () => {
     const keys = ["1111111111111111", "2222222222222222", "3333333333333333"];
     const workbooks = createWorkbooksStore({ getConn: () => conn, generateKey: () => keys.shift()! });
     const workbook = await workbooks.createFromTemplate({
-      id: "workbook_template:claims",
+      id: "workbook_template:items",
       sheets: [{
-        key: "creditors",
-        label: "债权人表",
+        key: "owners",
+        label: "负责人表",
         columns: [{ key: "reviewed", label: "已审核", fieldType: "checkbox" }],
-        sampleRecords: [{ key: "creditor-a", values: { reviewed: "错误值" } }],
+        sampleRecords: [{ key: "owner-a", values: { reviewed: "错误值" } }],
       }],
     });
 
@@ -410,12 +410,12 @@ describe("OIP-04 模板样例数据可选实例化", () => {
     ];
     const workbooks = createWorkbooksStore({ getConn: () => conn, generateKey: () => keys.shift()! });
     const template = {
-      id: "workbook_template:claims",
+      id: "workbook_template:items",
       sheets: [{
-        key: "creditors",
-        label: "债权人表",
+        key: "owners",
+        label: "负责人表",
         columns: [{ key: "name", label: "名称", fieldType: "text" }],
-        sampleRecords: [{ key: "creditor-a", values: { name: "甲公司" } }],
+        sampleRecords: [{ key: "owner-a", values: { name: "甲公司" } }],
       }],
     };
     const first = await workbooks.createFromTemplate(template, "实例一");
@@ -444,50 +444,50 @@ describe("OIP-05 模板默认仪表盘实例化", () => {
     ];
     const workbooks = createWorkbooksStore({ getConn: () => conn, generateKey: () => keys.shift()! });
     const template = {
-      id: "workbook_template:claims",
+      id: "workbook_template:items",
       sheets: [{
-        key: "creditors",
-        label: "债权人表",
+        key: "owners",
+        label: "负责人表",
         columns: [
-          { key: "claim_amount", label: "申报金额", fieldType: "number" as const },
-          { key: "claim_type", label: "债权类型", fieldType: "text" as const },
+          { key: "claim_amount", label: "登记金额", fieldType: "number" as const },
+          { key: "claim_type", label: "事项类型", fieldType: "text" as const },
         ],
         sampleRecords: [
-          { key: "claim-a", values: { claim_amount: 100, claim_type: "普通债权" } },
-          { key: "claim-b", values: { claim_amount: 250, claim_type: "担保债权" } },
+          { key: "claim-a", values: { claim_amount: 100, claim_type: "普通事项" } },
+          { key: "claim-b", values: { claim_amount: 250, claim_type: "复核事项" } },
         ],
       }],
       defaultDashboard: {
-        title: "债权审核概览",
+        title: "事项审核概览",
         slug: "claims-overview",
         widgets: [{
           id: "total-claims",
-          title: "总申报金额",
+          title: "总登记金额",
           viewType: "kpi" as const,
           spec: {
-            sourceTables: ["creditors"],
-            baseTable: "creditors",
+            sourceTables: ["owners"],
+            baseTable: "owners",
             metric: { op: "sum" as const, field: "claim_amount" },
           },
           grid: { x: 0, y: 0, w: 6, h: 1 },
         }, {
           id: "claims-by-type",
-          title: "债权类型分布",
+          title: "事项类型分布",
           viewType: "bar" as const,
           spec: {
-            sourceTables: ["creditors"],
-            baseTable: "creditors",
+            sourceTables: ["owners"],
+            baseTable: "owners",
             metric: { op: "count" as const },
             dimensions: [{ field: "claim_type" }],
           },
           grid: { x: 0, y: 1, w: 6, h: 2 },
         }, {
           id: "largest-claims",
-          title: "债权列表",
+          title: "事项列表",
           viewType: "table" as const,
           spec: {
-            sourceTables: ["creditors"],
-            baseTable: "creditors",
+            sourceTables: ["owners"],
+            baseTable: "owners",
             metric: { op: "count" as const },
             sort: { field: "claim_amount", direction: "desc" as const },
             limit: 5,
@@ -495,8 +495,8 @@ describe("OIP-05 模板默认仪表盘实例化", () => {
           grid: { x: 6, y: 1, w: 6, h: 2 },
           display: {
             columns: [
-              { key: "claim_type", label: "债权类型" },
-              { key: "claim_amount", label: "申报金额" },
+              { key: "claim_type", label: "事项类型" },
+              { key: "claim_amount", label: "登记金额" },
             ],
           },
         }],
@@ -531,20 +531,20 @@ describe("OIP-05 模板默认仪表盘实例化", () => {
     expect(await runDashboardWidgetQuery(conn, barWidget)).toEqual(expect.objectContaining({
       result: expect.objectContaining({
         rows: expect.arrayContaining([
-          expect.objectContaining({ key: "普通债权", value: 1 }),
-          expect.objectContaining({ key: "担保债权", value: 1 }),
+          expect.objectContaining({ key: "普通事项", value: 1 }),
+          expect.objectContaining({ key: "复核事项", value: 1 }),
         ]),
       }),
     }));
     expect(await runDashboardWidgetQuery(conn, tableWidget)).toEqual(expect.objectContaining({
       result: {
         columns: [
-          { key: "claim_type", label: "债权类型" },
-          { key: "claim_amount", label: "申报金额" },
+          { key: "claim_type", label: "事项类型" },
+          { key: "claim_amount", label: "登记金额" },
         ],
         rows: [
-          expect.objectContaining({ claim_type: "担保债权", claim_amount: 250 }),
-          expect.objectContaining({ claim_type: "普通债权", claim_amount: 100 }),
+          expect.objectContaining({ claim_type: "复核事项", claim_amount: 250 }),
+          expect.objectContaining({ claim_type: "普通事项", claim_amount: 100 }),
         ],
       },
     }));
@@ -569,11 +569,11 @@ describe("OIP-05 模板默认仪表盘实例化", () => {
     const keys = ["1111111111111111", "2222222222222222", "3333333333333333"];
     const workbooks = createWorkbooksStore({ getConn: () => conn, generateKey: () => keys.shift()! });
     const workbook = await workbooks.createFromTemplate({
-      id: "workbook_template:claims",
+      id: "workbook_template:items",
       sheets: [{
-        key: "creditors",
-        label: "债权人表",
-        columns: [{ key: "claim_amount", label: "申报金额", fieldType: "number" }],
+        key: "owners",
+        label: "负责人表",
+        columns: [{ key: "claim_amount", label: "登记金额", fieldType: "number" }],
       }],
       defaultDashboard: {
         title: "错误仪表盘",

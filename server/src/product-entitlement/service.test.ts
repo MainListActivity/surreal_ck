@@ -20,6 +20,11 @@ class MemoryStore implements ProductEntitlementStore {
   private sequence = 0;
 
   async workspaceBySlug(slug: string) { return [...this.workspaces.values()].find((item) => item.slug === slug) ?? null; }
+  dbNames = new Map<string, string>();
+  async workspaceById(id: string) {
+    const ref = this.workspaces.get(id);
+    return ref ? { ...ref, dbName: this.dbNames.get(id) ?? `ws_${ref.slug}` } : null;
+  }
   async membership(subject: string, workspaceId: string) { return this.members.has(`${subject}:${workspaceId}`) ? "admin" as const : null; }
   async activeItem(workspaceId: string) { return this.items.get(workspaceId) ?? null; }
   async bindProductRevision(itemId: string, productPlanRevisionId: string) {
@@ -60,7 +65,40 @@ class MemoryStore implements ProductEntitlementStore {
       plan.active = revisionId;
     }
   }
-  async grants() { return this.grantRows; }
+  async grants() { return this.grantRows.filter((row) => !this.revocations.some((revoke) => revoke.grantId === row.id)); }
+  revocations: { workspaceId: string; grantId: string; reason: string; idempotencyKey: string }[] = [];
+  async grantFacts(workspaceId: string) {
+    return this.grantRows.map((row) => ({
+      ...row,
+      reason: typeof row.reason === "string" ? row.reason : null,
+      operatorSubject: typeof row.actor === "string" ? row.actor : null,
+      idempotencyKey: row.idempotencyKey ?? null,
+      revoked: this.revocations.some((revoke) => revoke.workspaceId === workspaceId && revoke.grantId === row.id),
+    }));
+  }
+  async grantById(workspaceId: string, grantId: string) {
+    const row = this.grantRows.find((item) => item.id === grantId);
+    if (!row) return null;
+    const revoke = this.revocations.find((item) => item.grantId === grantId);
+    return {
+      ...row,
+      reason: typeof row.reason === "string" ? row.reason : null,
+      operatorSubject: typeof row.actor === "string" ? row.actor : null,
+      idempotencyKey: row.idempotencyKey ?? null,
+      revoked: revoke !== undefined,
+      revokeReason: revoke?.reason ?? null,
+    };
+  }
+  async insertGrantRevocation(workspaceId: string, grantId: string, reason: string, _actor: string, idempotencyKey: string) {
+    if (this.revocations.some((item) => item.workspaceId === workspaceId && item.idempotencyKey === idempotencyKey)) return "replayed" as const;
+    if (this.revocations.some((item) => item.grantId === grantId)) return "replayed" as const;
+    this.revocations.push({ workspaceId, grantId, reason, idempotencyKey });
+    return "ok" as const;
+  }
+  async deliveryCandidates(limit: number, offset: number) {
+    const all = [...this.workspaces.values()].map((ref) => ({ ...ref, dbName: this.dbNames.get(ref.id) ?? `ws_${ref.slug}` }));
+    return all.slice(offset, offset + limit);
+  }
   async insertGrant(_workspaceId: string, grant: ContentGrantFact & { idempotencyKey: string }) {
     const existing = this.grantRows.find((item) => item.idempotencyKey === grant.idempotencyKey);
     if (existing) return existing.id;
@@ -80,6 +118,10 @@ class MemoryStore implements ProductEntitlementStore {
     const revisions = this.snapshots
       .filter((item) => item.workspaceId === workspaceId && item.productPlanRevisionId === productPlanRevisionId)
       .map((item) => item.revision);
+    return revisions.length === 0 ? null : Math.max(...revisions);
+  }
+  async maxSnapshotRevision(workspaceId: string) {
+    const revisions = this.snapshots.filter((item) => item.workspaceId === workspaceId).map((item) => item.revision);
     return revisions.length === 0 ? null : Math.max(...revisions);
   }
   async insertSnapshot(row: SnapshotRecord) {
@@ -137,7 +179,7 @@ function workspace(store: MemoryStore) {
   store.resource = { appliedPlanKey: "plus", appliedPlanName: "Plus 资源", appliedRevision: 3, desiredPlanKey: "plus", syncState: "synced" };
 }
 
-const operator: ProductActor = { subject: "ops", capabilities: ["subscription.manage", "quota.read"] };
+const operator: ProductActor = { subject: "ops", capabilities: ["subscription.manage", "quota.read", "entitlement.gift", "entitlement.repair"] };
 
 function publishBody(revision: number, key: string, label: string): PublishProductRevision {
   return {
@@ -442,6 +484,40 @@ describe("product entitlement", () => {
     expect(store.snapshots.find((item) => item.revision === started.revision)?.collections.map((item) => item.key)).toEqual(["fixture_core", "fixture_later"]);
   });
 
+  test("赠送到期回指旧快照后，新快照从最大序位继续前进（不撞唯一序位死锁）", async () => {
+    const store = new MemoryStore();
+    workspace(store);
+    const service = new ProductEntitlementService(store, () => new Date("2026-09-24T00:00:00.000Z"));
+    const revisionId = "product_plan_revision:fixture:1";
+    store.revisions.set(revisionId, {
+      id: revisionId, planKey: "fixture_plus", planName: "夹具律师 Plus", revision: 1,
+      collections: [{ key: "fixture_core", label: "夹具核心" }], actions: ["read"], aiActions: [], features: [],
+    });
+    await service.assign(operator, assignment(revisionId));
+    const grant: GrantContentCollection = {
+      workspaceSlug: "team", label: "临时专题", collections: [{ key: "fixture_topic", label: "临时专题" }],
+      actions: ["cite"], effectiveFrom: "2026-09-01T00:00:00.000Z", effectiveUntil: "2026-10-01T00:00:00.000Z",
+      reason: "临时开放", idempotencyKey: "grant-cycle-001",
+    };
+    const granted = await service.grant(operator, grant);
+    expect(granted.revision).toBe(2);
+
+    // 赠送到期：解析回退 → digest 命中既有快照，指针回指 rev 1（最大已存在序位仍为 2）。
+    store.grantRows[0]!.effectiveUntil = "2026-09-20T00:00:00.000Z";
+    const reverted = await service.getForCustomer("lawyer", "team");
+    expect(reverted.revision).toBe(1);
+    expect(store.pointer.get("workspace:team")).toBe(store.snapshots[0]!.id);
+
+    // 再次赠送：新序位必须从最大已存在序位（2）+1 继续；若按指针（1）+1 计算，
+    // 会在 (workspace,revision) 唯一索引上反复冲突，视图/撤销/修复全部 409 死锁。
+    const again = await service.grant(operator, {
+      ...grant, collections: [{ key: "fixture_topic2", label: "再次专题" }], idempotencyKey: "grant-cycle-002",
+    });
+    expect(again.revision).toBe(3);
+    expect(store.snapshots).toHaveLength(3);
+    expect((await store.currentSnapshot("workspace:team"))?.revision).toBe(3);
+  });
+
   test("重放旧分配不会退回产品版本，未绑定的崩溃可以补绑", async () => {
     const store = new MemoryStore();
     workspace(store);
@@ -612,3 +688,132 @@ function assignment(productPlanRevisionId: string): AssignProductEntitlement {
     reason: "为夹具工作区开通", idempotencyKey: "assign-team-0001",
   };
 }
+
+describe("refreshSubscriptionDriven（LCA08 订阅级联）", () => {
+  function lifecycleStore(): MemoryStore {
+    const store = new MemoryStore();
+    workspace(store);
+    store.dbNames.set("workspace:team", "ws_team");
+    const remember = store.insertProductRevision.bind(store);
+    store.insertProductRevision = async (input) => {
+      const id = `product_plan_revision:${input.planId}:${input.revision}`;
+      store.pendingRevision.set(id, {
+        planKey: "fixture_plus", planName: "夹具律师 Plus", revision: input.revision,
+        collections: [{ key: "fixture_core", label: "夹具核心" }],
+        actions: ["browse", "search", "read"], aiActions: ["research"],
+        features: [
+          { key: "audit_export", enabled: true, limit: null },
+          { key: "ai_cycle_allowance", enabled: input.revision > 0, limit: 200 },
+        ],
+      });
+      return remember(input);
+    };
+    return store;
+  }
+
+  function publishWithAllowance(revision: number, key: string, label: string, limit: number | null): PublishProductRevision {
+    return {
+      ...publishBody(revision, key, label),
+      features: [
+        { key: "audit_export", enabled: true, limit: null },
+        { key: "ai_cycle_allowance", enabled: limit !== null, limit },
+      ],
+      idempotencyKey: `publish-${revision}-allowance`,
+    };
+  }
+
+  test("事实未变时 digest 幂等不新建快照，并给出周期额度指令", async () => {
+    const store = lifecycleStore();
+    const service = new ProductEntitlementService(store, () => new Date("2026-09-24T00:00:00.000Z"));
+    const published = await service.publishRevision(operator, publishWithAllowance(1, "fixture_core", "夹具核心", 200));
+    await service.assign(operator, assignment(published.productPlanRevisionId));
+
+    const first = await service.refreshSubscriptionDriven("workspace:team", { correlationId: "lifecycle-1" });
+    expect(first.changed).toBe(false);
+    expect(store.snapshots).toHaveLength(1);
+    expect(first.planCycle).toMatchObject({
+      workspaceDb: "ws_team",
+      usable: true,
+      cycleAllowance: 200,
+      expiresAt: "2026-10-01T00:00:00.000Z",
+    });
+    expect(first.planCycle?.periodKey).toContain("quota_subscription:team");
+
+    const repeat = await service.refreshSubscriptionDriven("workspace:team", { correlationId: "lifecycle-2" });
+    expect(repeat.changed).toBe(false);
+    expect(repeat.planCycle).toEqual(first.planCycle);
+    expect(store.snapshots).toHaveLength(1);
+  });
+
+  test("事实变化（新增授权）时追加快照并移动指针", async () => {
+    const store = lifecycleStore();
+    const service = new ProductEntitlementService(store, () => new Date("2026-09-24T00:00:00.000Z"));
+    const published = await service.publishRevision(operator, publishWithAllowance(1, "fixture_core", "夹具核心", 200));
+    await service.assign(operator, assignment(published.productPlanRevisionId));
+
+    const before = await service.getForCustomer("lawyer", "team");
+    store.insertGrant("workspace:team", {
+      id: "", label: "临时授权", collections: [{ id: "c1", key: "fixture_bonus", label: "追加集" }],
+      actions: ["cite"], effectiveFrom: "2026-09-01T00:00:00.000Z", effectiveUntil: null,
+      reason: "投放补偿", actor: "ops", idempotencyKey: "grant-1",
+    });
+
+    const refreshed = await service.refreshSubscriptionDriven("workspace:team", { correlationId: "lifecycle-3" });
+    expect(refreshed.changed).toBe(true);
+    expect(store.snapshots).toHaveLength(2);
+    const after = await service.getForCustomer("lawyer", "team");
+    expect(after.revision).toBe(before.revision + 1);
+    expect(after.content.collections.map((item) => item.key)).toContain("fixture_bonus");
+    expect(refreshed.planCycle?.cycleAllowance).toBe(200);
+  });
+
+  test("订阅到期后快照变为无有效内容授权，周期额度指令消失", async () => {
+    const store = lifecycleStore();
+    const service = new ProductEntitlementService(store, () => new Date("2026-09-24T00:00:00.000Z"));
+    const published = await service.publishRevision(operator, publishWithAllowance(1, "fixture_core", "夹具核心", 200));
+    await service.assign(operator, assignment(published.productPlanRevisionId));
+
+    store.items.set("workspace:team", {
+      ...store.items.get("workspace:team")!,
+      subscriptionStatus: "expired",
+      effectiveUntil: "2026-09-20T00:00:00.000Z",
+    });
+    const refreshed = await service.refreshSubscriptionDriven("workspace:team", { correlationId: "lifecycle-4" });
+    expect(refreshed.changed).toBe(true);
+    expect(refreshed.planCycle).toBeNull();
+    const view = await service.getForCustomer("lawyer", "team");
+    expect(view.baseSource.kind).toBe("none");
+    expect(view.content.collections).toHaveLength(0);
+  });
+
+  test("恢复到既有 digest 时回指旧快照而不重复建快照", async () => {
+    const store = lifecycleStore();
+    const service = new ProductEntitlementService(store, () => new Date("2026-09-24T00:00:00.000Z"));
+    const published = await service.publishRevision(operator, publishWithAllowance(1, "fixture_core", "夹具核心", 200));
+    await service.assign(operator, assignment(published.productPlanRevisionId));
+    const originalSnapshot = store.snapshots[0]!;
+
+    // 到期 → none 快照
+    store.items.set("workspace:team", {
+      ...store.items.get("workspace:team")!,
+      subscriptionStatus: "expired",
+      effectiveUntil: "2026-09-20T00:00:00.000Z",
+    });
+    await service.refreshSubscriptionDriven("workspace:team", { correlationId: "lifecycle-5" });
+    expect(store.snapshots).toHaveLength(2);
+
+    // 续订恢复到与最初完全相同的窗口与产品（digest 一致）→ 回指旧快照
+    store.items.set("workspace:team", {
+      ...store.items.get("workspace:team")!,
+      subscriptionStatus: "active",
+      effectiveFrom: "2026-09-01T00:00:00.000Z",
+      effectiveUntil: "2026-10-01T00:00:00.000Z",
+    });
+    const restored = await service.refreshSubscriptionDriven("workspace:team", { correlationId: "lifecycle-6" });
+    expect(restored.changed).toBe(true);
+    expect(store.snapshots).toHaveLength(2);
+    const view = await service.getForCustomer("lawyer", "team");
+    expect(view.revision).toBe(originalSnapshot.revision);
+    expect(restored.planCycle?.periodKey).toContain("2026-09-01");
+  });
+});

@@ -9,6 +9,7 @@ import {
   type SearchContentRequest,
 } from "@surreal-ck/shared/platform-content";
 import { sha256Hex } from "@surreal-ck/shared/platform-content";
+import { indexPublishedVersion } from "./semantic-index";
 import {
   applyCitationResolutionOverlays,
   loadCitationResolutionOverlays,
@@ -71,6 +72,16 @@ function iso(value: unknown): string {
   throw new Error("platform content row contains an invalid timestamp");
 }
 
+/** 可空 datetime 读回：null/undefined 与解析失败都为 null；DateTime 等 SDK 对象经 iso() 序列化。 */
+function nullableIso(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  try {
+    return iso(value);
+  } catch {
+    return null;
+  }
+}
+
 function asObject(value: unknown): Row | null {
   return isRow(value) ? value : null;
 }
@@ -101,13 +112,7 @@ function parseLicense(value: unknown): ContentSourceLicenseRevision | null {
   if (!isRow(value)) return null;
   const revision = typeof value.revision === "number" ? value.revision : Number(value.revision);
   const licenseKind = asString(value.license_kind) ?? asString(value.licenseKind);
-  let effectiveFrom: string | null = null;
-  try {
-    const rawEffectiveFrom = value.effective_from ?? value.effectiveFrom;
-    effectiveFrom = rawEffectiveFrom === undefined || rawEffectiveFrom === null ? null : iso(rawEffectiveFrom);
-  } catch {
-    effectiveFrom = null;
-  }
+  const effectiveFrom = nullableIso(value.effective_from ?? value.effectiveFrom);
   if (!Number.isSafeInteger(revision) || revision < 1 || !licenseKind || !effectiveFrom) return null;
   const rawAllowedActions = value.allowed_actions ?? value.allowedActions;
   const allowedActions = Array.isArray(rawAllowedActions)
@@ -118,7 +123,7 @@ function parseLicense(value: unknown): ContentSourceLicenseRevision | null {
     licenseKind,
     allowedActions,
     effectiveFrom,
-    effectiveUntil: asNullableString(value.effective_until ?? value.effectiveUntil),
+    effectiveUntil: nullableIso(value.effective_until ?? value.effectiveUntil),
     evidenceUrl: asNullableString(value.evidence_url ?? value.evidenceUrl),
     evidenceText: asNullableString(value.evidence_text ?? value.evidenceText),
     ...(asString(value.created_by_subject ?? value.createdBySubject) ? { createdBySubject: asString(value.created_by_subject ?? value.createdBySubject)! } : {}),
@@ -656,7 +661,14 @@ export class SurrealPlatformContentStore implements PlatformContentStore {
   }): Promise<PublicationApplyResult> {
     const requestEntry = input.batch.request.items.find((candidate) => candidate.entryKey === input.entryKey);
     if (!requestEntry) return { status: "blocked", versionId: null, issues: [issue("identity_ambiguous", "发布条目不存在")] };
-    if (requestEntry.operation === "upsert") return this.applyUpsert(input, requestEntry);
+    if (requestEntry.operation === "upsert") {
+      const result = await this.applyUpsert(input, requestEntry);
+      if (result.versionId && (result.status === "published" || result.status === "unchanged")) {
+        // Derived indexing failures never invalidate a committed publication.
+        await indexPublishedVersion(this.db as Pick<import("surrealdb").Surreal, "query">, result.versionId);
+      }
+      return result;
+    }
     return this.applyPublicationState(input, requestEntry);
   }
 
@@ -779,6 +791,11 @@ export class SurrealPlatformContentStore implements PlatformContentStore {
         ? { kind: payload.kind, legislation: payload.legislation }
         : { kind: payload.kind, judgment: payload.judgment },
       kind: payload.kind,
+      retrievalProcedure: payload.kind === "judicial_document" ? payload.judgment.procedure ?? undefined : undefined,
+      retrievalIssue: payload.kind === "judicial_document" ? payload.judgment.causeOfAction ?? undefined : undefined,
+      // Known legislation is a legal source; court/instance names are not guessed into hierarchy.
+      retrievalAuthority: payload.kind === "legislation" ? 1 : 0,
+      retrievalQuality: payload.document.fieldIssues.length === 0 ? 1 : 0,
       actorSubject: input.actorSubject,
       entry: entryRecord,
       publicationRequest: input.publicationId ? publicationRequestId(input.publicationId) : undefined,
@@ -847,6 +864,7 @@ export class SurrealPlatformContentStore implements PlatformContentStore {
       "IF $projection = [] { CREATE content_publication_projection CONTENT { item: $item, version: $version, searchable_text: $searchableText, indexed_at: time::now(), publication_revision: $revision, created_at: time::now() }; } ELSE { UPDATE $projection[0] SET item = $item, version = $version, searchable_text = $searchableText, indexed_at = time::now(), publication_revision = $revision; };",
       "LET $facet = SELECT VALUE id FROM content_search_facet WHERE item = $item LIMIT 1;",
       "IF $facet = [] { CREATE content_search_facet CONTENT { item: $item, version: $version, kind: $kind, jurisdiction: $source.jurisdiction, published_on: $publishedOn, effective_on: $version.content_kind_payload.legislation.effectiveOn }; } ELSE { UPDATE $facet[0] SET version = $version, kind = $kind, jurisdiction = $source.jurisdiction, published_on = $publishedOn, effective_on = $version.content_kind_payload.legislation.effectiveOn; };",
+      "UPDATE content_search_facet SET procedure = $retrievalProcedure, issue = $retrievalIssue, authority = $retrievalAuthority, quality = $retrievalQuality WHERE item = $item;",
       "CREATE publication_event CONTENT { request: $publicationRequest, entry: $entry, item: $item, version: $version, event_kind: IF $revision = 1 THEN \"published\" ELSE \"corrected\" END, actor_subject: $actorSubject, reason: NONE, occurred_at: time::now() };",
       "UPSERT publication_item_result CONTENT { request: $publicationRequest, entry_key: $entryKey, status: \"published\", version: $version, issues: [], created_at: time::now() };",
       "UPDATE $entryRecord SET status = \"published\", publication_status = \"published\";",
@@ -974,8 +992,8 @@ function parsePublished(row: Row | undefined): StoredPublishedContent | null {
     versionLabel: asString(version.version_label),
     sourceKey,
     sourceUrl: asString(version.source_url) ?? "https://example.invalid/unknown",
-    publishedAt: asString(version.published_at),
-    updatedAt: asString(version.updated_at_source),
+    publishedAt: nullableIso(version.published_at),
+    updatedAt: nullableIso(version.updated_at_source),
     bodyBytes: typeof version.body_text_bytes === "number" ? version.body_text_bytes : new TextEncoder().encode(bodyText).byteLength,
     publicationStatus: item.publication_status === "withdrawn" ? "withdrawn" : "published",
   };

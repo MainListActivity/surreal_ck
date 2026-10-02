@@ -11,12 +11,15 @@ describe("OIP-12 编辑器模板数据表 CSV 导入", () => {
       read("modals/TemplateSheetImportDialog.svelte"),
     ]);
 
-    expect(toolbar).toContain("导入 CSV");
+    expect(toolbar).toContain("导入文件");
     expect(toolbar).toContain("editorUi.showTemplateImport = true");
     expect(screen).toContain("<TemplateSheetImportDialog />");
     expect(dialog).toContain("createTemplateSheetImportController");
     expect(dialog).toContain("editorStore.importCsvRows");
     expect(dialog).toContain("忽略该列");
     expect(dialog).toContain("仅重试失败记录");
+    expect(dialog).toContain('accept=".csv,.xls,.xlsx');
+    expect(dialog).toContain("/\\.(?:csv|xls|xlsx)$/i");
+    expect(dialog).toContain("/\\.(?:xlsx|xls)$/i");
   });
 });

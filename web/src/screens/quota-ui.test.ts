@@ -48,4 +48,11 @@ describe("SCK-NQ-08 quota UI wiring", () => {
     expect(billing).toContain("cancel_at");
     expect(navigation).toContain("<QuotaNotificationMenu");
   });
+
+  test("SCK-LCA-08 customer confirmation surface shows entitlement effective window", () => {
+    const quota = source("../components/quota/QuotaOverview.svelte");
+    expect(quota).toContain("生效 {product.effectiveFrom.slice(0, 10)}");
+    expect(quota).toContain("到期 {product.effectiveUntil.slice(0, 10)}");
+    expect(quota).toContain("pendingChange");
+  });
 });

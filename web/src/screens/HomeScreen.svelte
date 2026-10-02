@@ -155,12 +155,12 @@
     const file = input.files?.[0];
     input.value = "";
     if (!file) return;
-    if (!/\.(?:csv|xlsx)$/iu.test(file.name)) {
-      importStatus = "请选择 .csv 或 .xlsx 文件";
+    if (!/\.(?:csv|xls|xlsx)$/iu.test(file.name)) {
+      importStatus = "请选择 .csv、.xls 或 .xlsx 文件";
       return;
     }
     try {
-      if (/\.xlsx$/iu.test(file.name)) {
+      if (/\.(?:xlsx|xls)$/iu.test(file.name)) {
         importStatus = "正在解析 Excel 文件…";
         xlsxParseTask = createXlsxParseTask(file);
         xlsxImport = await xlsxParseTask.promise;
@@ -259,14 +259,14 @@
           <span class="qa-icon"><LayoutTemplate size={21} /></span>
           <span class="qa-text">
             <strong>从模板创建</strong>
-            <small>案件管理 · 实体追踪</small>
+            <small>台账管理 · 实体追踪</small>
           </span>
         </button>
         <input
           class="file-input"
           bind:this={fileInput}
           type="file"
-          accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          accept=".csv,.xls,.xlsx,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
           onchange={(event) => void handleImportFile(event)}
         />
         <button type="button" class="qa qa-neutral" onclick={handleImportClick}>
@@ -289,7 +289,7 @@
           <strong>卯豆 AI 助手</strong>
           <span class="ai-beta">BETA</span>
         </div>
-        <p>用自然语言查询数据、生成报表、自动整理案件台账——试试「列出本月即将到期的合同」。</p>
+        <p>用自然语言查询数据、生成报表、自动整理数据台账——试试「列出本月即将到期的任务」。</p>
       </div>
       <button type="button" class="ai-action" onclick={() => onopenaichat?.()}>
         开始对话

@@ -16,6 +16,8 @@ export type OidcTokenExchangeOptions = {
 export type OidcOpsBrowserProxyOptions = {
   tokenEndpoint: string;
   jwksUrl: string;
+  /** RFC 7009 撤销端点；登出时代理 ops SPA 的 access/refresh token 撤销。 */
+  revokeEndpoint?: string;
   /** 可选硬绑定；未配置时仍由上游 IdP 校验 public client、redirect URI 与 PKCE。 */
   clientId?: string;
   fetch?: typeof fetch;
@@ -37,6 +39,7 @@ export function createOidcOpsBrowserProxyFromEnv(): OidcOpsBrowserProxyOptions |
   return {
     tokenEndpoint: env.OIDC_TOKEN_ENDPOINT,
     jwksUrl: env.OIDC_JWKS_URL,
+    revokeEndpoint: env.OIDC_REVOKE_ENDPOINT ?? `${env.OIDC_ISSUER}/revoke`,
     ...(env.OIDC_OPS_CLIENT_ID ? { clientId: env.OIDC_OPS_CLIENT_ID } : {}),
   };
 }
@@ -156,6 +159,38 @@ export function createAuthRoutes(
       return c.json(browserTokenResponse, upstream.status as never);
     }
     return c.json(body, upstream.status as never);
+  });
+
+  // RFC 7009 窄代理：ops SPA 登出撤销自己的 access/refresh token。
+  // 转发令牌本体、client_id 只取服务端钉死的 OIDC_OPS_CLIENT_ID、
+  // 剥离 client_secret；浏览器无法借道撤销其他 client 的令牌。
+  routes.post("/api/auth/ops/revoke", async (c) => {
+    if (!opsBrowser?.revokeEndpoint || !opsBrowser.clientId) {
+      throw new HttpError(501, "oidc-ops-revoke-not-configured", "Operations OIDC revoke is not configured");
+    }
+    const params = new URLSearchParams(await c.req.text());
+    if (!params.get("token")?.trim()) {
+      throw new HttpError(400, "oidc-ops-token-required", "Token is required");
+    }
+    params.delete("client_secret");
+    params.set("client_id", opsBrowser.clientId);
+    let upstream: Response;
+    try {
+      upstream = await (opsBrowser.fetch ?? fetch)(opsBrowser.revokeEndpoint, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: params.toString(),
+      });
+    } catch {
+      throw new HttpError(502, "oidc-ops-revoke-failed", "Operations OIDC revoke failed");
+    }
+    if (!upstream.ok) {
+      throw new HttpError(502, "oidc-ops-revoke-failed", "Operations OIDC revoke failed", {
+        upstreamStatus: upstream.status,
+      });
+    }
+    // RFC 7009 成功响应为空体 200；不向上游透传任何载荷。
+    return c.body(null, 200);
   });
 
   return routes;

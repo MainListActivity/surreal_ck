@@ -170,7 +170,7 @@
     {/if}
   </div>
   {#if page === "home"}
-    <ActivityPanel {onopenrecord} onaskai={onasknotification} />
+    <ActivityPanel {slug} {onopenrecord} onaskai={onasknotification} />
   {/if}
 </div>
 

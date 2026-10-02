@@ -132,11 +132,11 @@
     if (!file) return;
     fileError = null;
     try {
-      if (!/\.(?:csv|xlsx)$/i.test(file.name)) throw new Error("请选择 CSV 或 XLSX 文件");
+      if (!/\.(?:csv|xls|xlsx)$/i.test(file.name)) throw new Error("请选择 CSV 或 Excel 文件");
       if (editorStore.workbook?.templateRef && workbookTemplatesStore.templates.length === 0) {
         await workbookTemplatesStore.load();
       }
-      if (/\.xlsx$/i.test(file.name)) {
+      if (/\.(?:xlsx|xls)$/i.test(file.name)) {
         xlsxParseTask = createXlsxParseTask(file);
         xlsxParsed = await xlsxParseTask.promise;
         return;
@@ -253,7 +253,7 @@
   <div class="overlay" role="presentation">
     <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="template-import-title">
       <header>
-        <div><h2 id="template-import-title">导入 CSV 到当前数据表</h2><p>不会创建工作簿、数据表或字段</p></div>
+        <div><h2 id="template-import-title">导入文件到当前数据表</h2><p>不会创建工作簿、数据表或字段</p></div>
         <button class="icon" type="button" aria-label="关闭导入" onclick={close}><X size={18} /></button>
       </header>
 
@@ -261,9 +261,9 @@
         {#if !parsed || !controller || !view}
           <label class="file-picker">
             <FileUp size={28} />
-            <strong>选择 CSV 文件或 Excel 工作簿</strong>
-            <span>使用模板数据表字段，支持中文表头与多 Sheet</span>
-            <input type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onchange={(event) => void chooseFile(event)} />
+            <strong>选择 CSV / Excel 文件</strong>
+            <span>支持 .csv、.xls、.xlsx，使用模板数据表字段，支持中文表头与多 Sheet</span>
+            <input type="file" accept=".csv,.xls,.xlsx,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onchange={(event) => void chooseFile(event)} />
           </label>
           {#if recentBatches.length > 0}
             <section class="recent-batches">

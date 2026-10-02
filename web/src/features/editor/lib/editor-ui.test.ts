@@ -92,8 +92,8 @@ describe("closeAllPopups", () => {
 describe("选中行 / 引用面板 / 离开确认", () => {
   test("selectRow 记录 id", () => {
     const { ui } = setup();
-    ui.selectRow("ent_claim:a");
-    expect(ui.selectedRowId).toBe("ent_claim:a");
+    ui.selectRow("ent_item:a");
+    expect(ui.selectedRowId).toBe("ent_item:a");
     ui.selectRow(null);
     expect(ui.selectedRowId).toBeNull();
   });

@@ -36,7 +36,7 @@ export type ResourceDTO = {
   updatedAt: ISODateTimeString;
 };
 
-/** 引用回答只依赖的资源子集；平台法律库条目也按此形状投影。 */
+/** 引用回答只依赖的资源子集；平台已发布内容库条目也按此形状投影。 */
 export type CitableResource = Pick<
   ResourceDTO,
   "id" | "resourceType" | "title" | "summary" | "sourceUrl" | "sourceTitle" | "evidence"

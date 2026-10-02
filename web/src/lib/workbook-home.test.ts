@@ -19,7 +19,7 @@ import {
 import type { SurrealConn } from "./surreal";
 
 const rows: WorkbookRow[] = [
-  { id: "workbook:a", name: "案件台账", templateRef: "workbook_template:case", createdBy: "user:alice" },
+  { id: "workbook:a", name: "事项台账", templateRef: "workbook_template:case", createdBy: "user:alice" },
   { id: "workbook:b", name: "财务汇总", createdBy: "user:bob" },
   { id: "workbook:c", name: "图谱分析", templateRef: "workbook_template:entity", createdBy: "user:alice" },
 ];
@@ -71,12 +71,12 @@ describe("workbook card presentation — 卡片展示模型", () => {
 
   test("展示从业务模板派生：模板的 icon/accent/label 驱动渲染，类型语义不在前端硬编码", () => {
     const caseTemplate: WorkbookTemplate = {
-      id: "workbook_template:case", key: "case", label: "案件管理",
+      id: "workbook_template:case", key: "case", label: "事项管理",
       icon: "scale", accent: "#CC6B3A", columnDefs: [], sheets: [], builtin: true, sortOrder: 10,
     };
     expect(workbookCardPresentation(caseTemplate)).toEqual({
       previewKind: "table",
-      templateLabel: "案件管理",
+      templateLabel: "事项管理",
       icon: "scale",
       accent: "#CC6B3A",
       soft: "#E7F0E4",

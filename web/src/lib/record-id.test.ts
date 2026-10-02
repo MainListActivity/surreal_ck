@@ -13,7 +13,7 @@ import {
 describe("isLikelyRecordId", () => {
   test("table:id 形态为真，其余为假", () => {
     expect(isLikelyRecordId("app_user:abc")).toBe(true);
-    expect(isLikelyRecordId("ent_claim:1")).toBe(true);
+    expect(isLikelyRecordId("ent_items:1")).toBe(true);
     expect(isLikelyRecordId("noColon")).toBe(false);
     expect(isLikelyRecordId(":leading")).toBe(false);
     expect(isLikelyRecordId("trailing:")).toBe(false);
@@ -59,7 +59,7 @@ describe("recordValueToString — 读边界把 RecordId 实例规整回 string",
     expect(recordValueToString(new RecordId("app_user", "u1"))).toBe("app_user:u1");
   });
   test("StringRecordId 实例 → 字符串", () => {
-    expect(recordValueToString(new StringRecordId("ent_claim:c1"))).toBe("ent_claim:c1");
+    expect(recordValueToString(new StringRecordId("ent_items:c1"))).toBe("ent_items:c1");
   });
   test("RecordId 数组逐项规整", () => {
     const out = recordValueToString([new RecordId("ent_p", "pa"), new RecordId("ent_p", "pb")]);
@@ -81,16 +81,16 @@ describe("recordValueToString — 读边界把 RecordId 实例规整回 string",
 
 describe("recordIdString — 只要非空字符串标识", () => {
   test("RecordId 与字符串保留，数字和空值视为缺失", () => {
-    expect(recordIdString(new RecordId("ent_claim", "r501"))).toBe("ent_claim:r501");
-    expect(recordIdString("sheet:claims")).toBe("sheet:claims");
+    expect(recordIdString(new RecordId("ent_items", "r501"))).toBe("ent_items:r501");
+    expect(recordIdString("sheet:items")).toBe("sheet:items");
     expect(recordIdString(100)).toBeNull();
     expect(recordIdString(null)).toBeNull();
     expect(recordIdString("")).toBeNull();
   });
   test("数组收成完整标识，不拆成字符", () => {
-    expect(recordIdStrings([new RecordId("ent_claim", "r1"), "ent_claim:r501", 100, null])).toEqual([
-      "ent_claim:r1",
-      "ent_claim:r501",
+    expect(recordIdStrings([new RecordId("ent_items", "r1"), "ent_items:r501", 100, null])).toEqual([
+      "ent_items:r1",
+      "ent_items:r501",
     ]);
   });
 });

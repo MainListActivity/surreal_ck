@@ -57,7 +57,7 @@ describe("运营摘要主动共享", () => {
     const settings = readScreen("WorkspaceSettingsScreen.svelte");
 
     expect(settings).toContain('aria-label="运营摘要共享"');
-    expect(settings).toContain("不会共享文件名、案件、正文、材料或成员邮箱");
+    expect(settings).toContain("不会共享文件名、记录、正文、材料或成员邮箱");
     expect(settings).toContain("确认共享");
     expect(settings).toContain("撤回共享");
     expect(settings).toContain("契约 v2");

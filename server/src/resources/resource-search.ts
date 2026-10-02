@@ -7,6 +7,7 @@
  * DIMENSION 由检索实现自建，见 008-resource-library.surql 注释），接口可替换。
  */
 import { DateTime, StringRecordId } from "surrealdb";
+import { retrievePrivateVectorScores } from "../research/private-retrieval";
 import type { Surreal } from "surrealdb";
 import type {
   CreateResearchSessionRequest,
@@ -126,9 +127,9 @@ function rankResourceSearchRows(req: {
       const keywordScore = scoreKeyword(row, req.queryText);
       const vectorScore = req.vectorScores.get(String(row.id)) ?? 0;
       const qualityScore = scoreQuality(row.quality);
-      const recencyScore = scoreRecency(row.created_at, req.now);
+      const recencyScore = 0;
       const score =
-        vectorScore * 0.45 + keywordScore * 0.35 + qualityScore * 0.12 + recencyScore * 0.08;
+        vectorScore * 0.45 + keywordScore * 0.43 + qualityScore * 0.12;
       return { row, score, vectorScore, keywordScore, qualityScore, recencyScore };
     });
 
@@ -205,12 +206,6 @@ function scoreQuality(quality: ResourceQuality): number {
   }
 }
 
-function scoreRecency(createdAt: Date | DateTime | string, reference: Date): number {
-  const ageMs = Math.max(0, reference.getTime() - toDate(createdAt).getTime());
-  const ageDays = ageMs / 86_400_000;
-  return 1 / (1 + ageDays / 180);
-}
-
 function resourceMatchesFilters(row: ResourceItemRow, filters: ResourceSearchFilters | undefined): boolean {
   if (!filters) return true;
   if (filters.tags?.length) {
@@ -241,23 +236,6 @@ function sourceDomain(sourceUrl: string | undefined): string | undefined {
 function clampPositiveInteger(value: number | undefined, fallback: number): number {
   if (!Number.isInteger(value) || (value ?? 0) <= 0) return fallback;
   return value as number;
-}
-
-function cosineSimilarity(left: number[], right: number[]): number {
-  const length = Math.min(left.length, right.length);
-  if (length === 0) return 0;
-  let dot = 0;
-  let leftMagnitude = 0;
-  let rightMagnitude = 0;
-  for (let index = 0; index < length; index += 1) {
-    const leftValue = left[index] ?? 0;
-    const rightValue = right[index] ?? 0;
-    dot += leftValue * rightValue;
-    leftMagnitude += leftValue * leftValue;
-    rightMagnitude += rightValue * rightValue;
-  }
-  if (leftMagnitude === 0 || rightMagnitude === 0) return 0;
-  return dot / (Math.sqrt(leftMagnitude) * Math.sqrt(rightMagnitude));
 }
 
 function toDate(value: Date | DateTime | string): Date {
@@ -331,15 +309,6 @@ async function listResourceRows(session: Surreal, resourceType?: string): Promis
 export function createResourceSearchService(deps: ResourceSearchServiceDeps) {
   const now = deps.now ?? (() => new Date());
 
-  /** profile 隔离：只读当前 profile_key 且 status='indexed' 的向量。 */
-  async function listIndexedEmbeddings(profileKey: string): Promise<ResourceEmbeddingRow[]> {
-    const results = await deps.session.query<[ResourceEmbeddingRow[]]>(
-      "SELECT * FROM resource_embedding WHERE profile_key = $profileKey AND status = 'indexed';",
-      { profileKey },
-    );
-    return results[0] ?? [];
-  }
-
   async function inferUnavailableIndexStatus(profileKey: string): Promise<ResourceSearchIndexStatus> {
     const results = await deps.session.query<[Array<Pick<ResourceEmbeddingRow, "status">>]>(
       "SELECT status FROM resource_embedding WHERE profile_key = $profileKey;",
@@ -361,16 +330,9 @@ export function createResourceSearchService(deps: ResourceSearchServiceDeps) {
     }
 
     try {
-      const queryVector = await deps.embeddingProvider.embed({
-        text: input.queryText,
-        profile: input.profile,
+      const scores = await retrievePrivateVectorScores({
+        session: deps.session, profile: input.profile, query: input.queryText, provider: deps.embeddingProvider,
       });
-      const embeddings = await listIndexedEmbeddings(profileKey);
-      const scores = new Map<string, number>();
-      for (const embedding of embeddings) {
-        if (!embedding.vector?.length) continue;
-        scores.set(String(embedding.resource), cosineSimilarity(queryVector, embedding.vector));
-      }
       return {
         indexStatus: scores.size > 0 ? "ready" : await inferUnavailableIndexStatus(profileKey),
         scores,

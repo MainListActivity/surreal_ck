@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { QuotaApiWorkspaceView } from "@surreal-ck/shared/native-quota";
 import type { SurrealConn } from "./surreal";
 import {
   buildCreateWorkbookTransaction,
@@ -19,6 +20,14 @@ function setup(opts: {
   workbooks?: Array<Record<string, unknown>>;
   createThrows?: unknown;
   updateThrows?: unknown;
+  /** RETURN record::exists 探针的返回值（形状忠实：conn.query 对 RETURN 标量返回标量本身）。 */
+  probeValue?: boolean;
+  /** 探针抛错（模拟引擎异常）。 */
+  probeError?: unknown;
+  /** 工作区配额视图；undefined = 不装配预检依赖（纯引擎强制路径）。 */
+  quotaView?: QuotaApiWorkspaceView | null;
+  /** 配额视图读取抛错（模拟 API 不可用）。 */
+  quotaViewError?: unknown;
 } = {}) {
   const rec: Recorder = { queries: [], creates: [], updates: [] };
   const rows = opts.workbooks ?? [];
@@ -32,6 +41,11 @@ function setup(opts: {
     subscribe: () => () => {},
     query: (async (sql: string, bindings?: Record<string, unknown>) => {
       rec.queries.push({ sql, bindings });
+      // 形状忠实分叉：探针是 RETURN 标量，conn.query 契约返回标量本身（非数组）。
+      if (/RETURN record::exists/i.test(sql)) {
+        if (opts.probeError) throw opts.probeError;
+        return opts.probeValue as unknown;
+      }
       // createBlank 走多语句事务（BEGIN TRANSACTION）；用 createThrows 模拟引擎拒绝。
       if (/BEGIN TRANSACTION/i.test(sql) && opts.createThrows) throw opts.createThrows;
       return rows;
@@ -52,12 +66,22 @@ function setup(opts: {
     transaction: (async (run: (tx: SurrealConn) => Promise<unknown>) => run(conn)) as SurrealConn["transaction"],
   } as SurrealConn;
 
-  const store = createWorkbooksStore({ getConn: () => conn });
+  const store = createWorkbooksStore({
+    getConn: () => conn,
+    ...(opts.quotaView !== undefined || opts.quotaViewError !== undefined
+      ? {
+          getWorkspaceQuotaView: async () => {
+            if (opts.quotaViewError) throw opts.quotaViewError;
+            return opts.quotaView ?? null;
+          },
+        }
+      : {}),
+  });
   return { store, conn, rec };
 }
 
 const sampleRows = [
-  { id: "workbook:wb1", name: "案件台账", template: "workbook_template:case", updated_at: "2026-05-20" },
+  { id: "workbook:wb1", name: "事项台账", template: "workbook_template:case", updated_at: "2026-05-20" },
   { id: "workbook:wb2", name: "财务汇总", updated_at: "2026-05-19" },
 ];
 
@@ -72,7 +96,7 @@ describe("load — 直连读 workbook 列表", () => {
     expect(store.loading).toBe(false);
     expect(store.error).toBeNull();
     expect(store.workbooks).toEqual([
-      { id: "workbook:wb1", name: "案件台账", templateRef: "workbook_template:case", updatedAt: "2026-05-20" },
+      { id: "workbook:wb1", name: "事项台账", templateRef: "workbook_template:case", updatedAt: "2026-05-20" },
       { id: "workbook:wb2", name: "财务汇总", templateRef: undefined, updatedAt: "2026-05-19" },
     ]);
   });
@@ -109,6 +133,10 @@ describe("createBlank — 管理员建空白 workbook", () => {
     const sql = txQuery!.sql;
     // DDL：建实体表 + 默认 name 列，都在同一事务里
     expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS ent_[0-9a-f]+_main SCHEMALESS/);
+    // 成员 DML 权限：participant/employee 凭 fn::current_user() 活跃判定获 CRUD，
+    // 已移除成员（disabled_at）立即失去通路；绝不出现 PERMISSIONS FULL。
+    expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS ent_[0-9a-f]+_main SCHEMALESS CHANGEFEED 7d\n\s+PERMISSIONS FOR select, create, update, delete WHERE fn::current_user\(\) != NONE AND fn::current_user\(\)\.disabled_at = NONE;/);
+    expect(sql).not.toMatch(/PERMISSIONS FULL/);
     expect(sql).toMatch(/DEFINE FIELD IF NOT EXISTS name ON TABLE ent_[0-9a-f]+_main TYPE string/);
     // workbook + sheet 两条 CREATE
     expect(sql).toMatch(/CREATE workbook:[0-9a-f]+ CONTENT/);
@@ -143,22 +171,22 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
     const { store, rec } = setup();
 
     const workbook = await store.createFromTemplate({
-      id: "workbook_template:claims",
+      id: "workbook_template:items",
       sheets: [{
-        key: "creditors",
-        label: "债权人表",
+        key: "owners",
+        label: "负责人表",
         columns: [{ key: "name", label: "名称", fieldType: "text" }],
       }],
       defaultDashboard: {
-        title: "债权概览",
+        title: "事项概览",
         slug: "claims-overview",
         widgets: [{
           id: "claim-list",
-          title: "债权列表",
+          title: "事项列表",
           viewType: "table",
           spec: {
-            sourceTables: ["creditors"],
-            baseTable: "creditors",
+            sourceTables: ["owners"],
+            baseTable: "owners",
             metric: { op: "count" },
           },
           grid: { x: 0, y: 0, w: 12, h: 2 },
@@ -189,26 +217,26 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
     const store = createWorkbooksStore({ getConn: () => conn, generateKey: () => keys.shift()! });
 
     const workbook = await store.createFromTemplate({
-      id: "workbook_template:claims",
+      id: "workbook_template:items",
       sheets: [
         {
-          key: "creditors",
-          label: "债权人表",
+          key: "owners",
+          label: "负责人表",
           columns: [{ key: "name", label: "名称", fieldType: "text" }],
-          sampleRecords: [{ key: "creditor-a", values: { name: "甲公司" } }],
+          sampleRecords: [{ key: "owner-a", values: { name: "甲公司" } }],
         },
         {
           key: "materials",
           label: "证据材料表",
           columns: [{
-            key: "creditor",
-            label: "关联债权人",
+            key: "owner",
+            label: "关联负责人",
             fieldType: "reference",
-            referenceSheetKey: "creditors",
+            referenceSheetKey: "owners",
           }],
           sampleRecords: [{
             key: "material-a",
-            values: { creditor: { sheetKey: "creditors", recordKey: "creditor-a" } },
+            values: { owner: { sheetKey: "owners", recordKey: "owner-a" } },
           }],
         },
       ],
@@ -220,7 +248,7 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
     expect(txn!.sql).toContain("CREATE ent_1111111111111111_2222222222222222:4444444444444444 CONTENT $sampleRecord0");
     expect(txn!.sql).toContain("CREATE ent_1111111111111111_3333333333333333:5555555555555555 CONTENT $sampleRecord1");
     expect(txn!.bindings?.sampleRecord0).toEqual({ name: "甲公司" });
-    expect(String((txn!.bindings?.sampleRecord1 as Record<string, unknown>).creditor))
+    expect(String((txn!.bindings?.sampleRecord1 as Record<string, unknown>).owner))
       .toBe("ent_1111111111111111_2222222222222222:4444444444444444");
   });
 
@@ -236,12 +264,12 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
     const store = createWorkbooksStore({ getConn: () => conn, generateKey: () => keys.shift()! });
 
     const workbook = await store.createFromTemplate({
-      id: "workbook_template:claims",
+      id: "workbook_template:items",
       sheets: [{
-        key: "creditors",
-        label: "债权人表",
+        key: "owners",
+        label: "负责人表",
         columns: [{ key: "name", label: "名称", fieldType: "text" }],
-        sampleRecords: [{ key: "creditor-a", values: { name: "甲公司" } }],
+        sampleRecords: [{ key: "owner-a", values: { name: "甲公司" } }],
       }],
     }, undefined, { includeSampleData: false });
 
@@ -255,12 +283,12 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
     const { store } = setup({ createThrows: new Error("Expected bool but found '错误值'") });
 
     const workbook = await store.createFromTemplate({
-      id: "workbook_template:claims",
+      id: "workbook_template:items",
       sheets: [{
-        key: "creditors",
-        label: "债权人表",
+        key: "owners",
+        label: "负责人表",
         columns: [{ key: "reviewed", label: "已审核", fieldType: "checkbox" }],
-        sampleRecords: [{ key: "creditor-a", values: { reviewed: "错误值" } }],
+        sampleRecords: [{ key: "owner-a", values: { reviewed: "错误值" } }],
       }],
     });
 
@@ -277,12 +305,12 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
     });
 
     const workbook = await store.createFromTemplate({
-      id: "workbook_template:claims",
+      id: "workbook_template:items",
       sheets: [{
-        key: "creditors",
-        label: "债权人表",
+        key: "owners",
+        label: "负责人表",
         columns: [{ key: "name", label: "名称", fieldType: "text" }],
-        sampleRecords: [{ key: "creditor-a", values: { name: "甲公司" } }],
+        sampleRecords: [{ key: "owner-a", values: { name: "甲公司" } }],
       }],
     });
 
@@ -298,20 +326,20 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
     const { store, rec } = setup();
 
     const workbook = await store.createFromTemplate({
-      id: "workbook_template:claims",
+      id: "workbook_template:items",
       sheets: [{
-        key: "creditors",
-        label: "债权人表",
+        key: "owners",
+        label: "负责人表",
         columns: [{ key: "name", label: "名称", fieldType: "text" }],
         sampleRecords: [
-          { key: "creditor-a", values: { name: "甲公司" } },
-          { key: "creditor-a", values: { name: "乙公司" } },
+          { key: "owner-a", values: { name: "甲公司" } },
+          { key: "owner-a", values: { name: "乙公司" } },
         ],
       }],
     });
 
     expect(workbook).toBeNull();
-    expect(store.error).toBe("模板样例数据不符合字段定义，工作簿未创建：样例记录 key 重复：creditors/creditor-a");
+    expect(store.error).toBe("模板样例数据不符合字段定义，工作簿未创建：样例记录 key 重复：owners/owner-a");
     expect(rec.queries.filter((query) => /BEGIN TRANSACTION/i.test(query.sql))).toHaveLength(0);
   });
 
@@ -319,14 +347,14 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
     const { store, rec } = setup();
 
     const workbook = await store.createFromTemplate({
-      id: "workbook_template:claims",
+      id: "workbook_template:items",
       sheets: [{
         key: "materials",
         label: "证据材料表",
-        columns: [{ key: "creditor", label: "关联债权人", fieldType: "reference", referenceSheetKey: "materials" }],
+        columns: [{ key: "owner", label: "关联负责人", fieldType: "reference", referenceSheetKey: "materials" }],
         sampleRecords: [{
           key: "material-a",
-          values: { creditor: { sheetKey: "materials", recordKey: "missing" } },
+          values: { owner: { sheetKey: "materials", recordKey: "missing" } },
         }],
       }],
     });
@@ -351,21 +379,21 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
     });
 
     const workbook = await store.createFromTemplate({
-      id: "workbook_template:claims",
+      id: "workbook_template:items",
       sheets: [
         {
-          key: "creditors",
-          label: "债权人表",
+          key: "owners",
+          label: "负责人表",
           columns: [{ key: "name", label: "名称", fieldType: "text" }],
         },
         {
           key: "materials",
           label: "证据材料表",
           columns: [{
-            key: "creditor",
-            label: "关联债权人",
+            key: "owner",
+            label: "关联负责人",
             fieldType: "reference",
-            referenceSheetKey: "creditors",
+            referenceSheetKey: "owners",
           }],
         },
       ],
@@ -373,18 +401,18 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
 
     expect(workbook).not.toBeNull();
     const transaction = queries.find((query) => /BEGIN TRANSACTION/i.test(query.sql))!;
-    const creditorTable = "ent_1111111111111111_2222222222222222";
+    const ownerTable = "ent_1111111111111111_2222222222222222";
     expect(transaction.sql).toContain(
-      `DEFINE FIELD IF NOT EXISTS creditor ON TABLE ent_1111111111111111_3333333333333333 TYPE option<record<${creditorTable}>>`,
+      `DEFINE FIELD IF NOT EXISTS owner ON TABLE ent_1111111111111111_3333333333333333 TYPE option<record<${ownerTable}>>`,
     );
     expect(transaction.bindings?.sheetColumnDefs1).toEqual([
       expect.objectContaining({
-        key: "creditor",
-        reference_table: creditorTable,
+        key: "owner",
+        reference_table: ownerTable,
         reference_sheet_id: "sheet:2222222222222222",
       }),
     ]);
-    expect(JSON.stringify(transaction.bindings?.sheetColumnDefs1)).not.toContain("creditors");
+    expect(JSON.stringify(transaction.bindings?.sheetColumnDefs1)).not.toContain("owners");
   });
 
   test("模板实例化把每张数据表的稳定模板 key 写入数据表元数据", async () => {
@@ -411,21 +439,21 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
     const { store, rec } = setup();
 
     const workbook = await store.createFromTemplate({
-      id: "workbook_template:claims",
+      id: "workbook_template:items",
       sheets: [{
         key: "materials",
         label: "证据材料表",
         columns: [{
-          key: "creditor",
-          label: "关联债权人",
+          key: "owner",
+          label: "关联负责人",
           fieldType: "reference",
-          referenceSheetKey: "creditors",
+          referenceSheetKey: "owners",
         }],
       }],
     });
 
     expect(workbook).toBeNull();
-    expect(store.error).toBe("引用目标数据表不存在：creditors");
+    expect(store.error).toBe("引用目标数据表不存在：owners");
     expect(rec.queries.filter((query) => /BEGIN TRANSACTION/i.test(query.sql))).toHaveLength(0);
   });
 
@@ -433,15 +461,15 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
     const { store, rec } = setup();
 
     const workbook = await store.createFromTemplate({
-      id: "workbook_template:claims",
+      id: "workbook_template:items",
       sheets: [
-        { key: "creditors", label: "债权人表", columns: [{ key: "name", label: "名称", fieldType: "text" }] },
-        { key: "creditors", label: "重复表", columns: [{ key: "title", label: "标题", fieldType: "text" }] },
+        { key: "owners", label: "负责人表", columns: [{ key: "name", label: "名称", fieldType: "text" }] },
+        { key: "owners", label: "重复表", columns: [{ key: "title", label: "标题", fieldType: "text" }] },
       ],
     });
 
     expect(workbook).toBeNull();
-    expect(store.error).toBe("模板数据表 key 重复：creditors");
+    expect(store.error).toBe("模板数据表 key 重复：owners");
     expect(rec.queries.filter((query) => /BEGIN TRANSACTION/i.test(query.sql))).toHaveLength(0);
   });
 
@@ -449,9 +477,9 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
     const { store, rec } = setup();
 
     const workbook = await store.createFromTemplate({
-      id: "workbook_template:claims",
+      id: "workbook_template:items",
       sheets: [
-        { key: "creditors", label: "债权人表", columns: [{ key: "name", label: "名称", fieldType: "text" }] },
+        { key: "owners", label: "负责人表", columns: [{ key: "name", label: "名称", fieldType: "text" }] },
         {
           key: "materials",
           label: "证据材料表",
@@ -459,7 +487,7 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
             key: "note",
             label: "备注",
             fieldType: "text",
-            referenceSheetKey: "creditors",
+            referenceSheetKey: "owners",
           }],
         },
       ],
@@ -474,13 +502,13 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
     const { store, rec } = setup();
 
     const created = await store.createFromTemplate({
-      id: "workbook_template:claims",
-      defaultName: "破产债权台账",
+      id: "workbook_template:items",
+      defaultName: "设备巡检台账",
       sheets: [
         {
-          label: "债权人表",
+          label: "负责人表",
           columns: [
-            { key: "creditor_name", label: "债权人名称", fieldType: "text", required: true },
+            { key: "owner_name", label: "负责人姓名", fieldType: "text", required: true },
           ],
         },
         {
@@ -499,42 +527,44 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
       .map((match) => match[1]);
     expect(entityTables).toHaveLength(2);
     expect(new Set(entityTables).size).toBe(2);
+    // 模板包多 sheet 建表同样带成员 DML 权限（与空白建表同一共享谓词）。
+    expect(transaction.sql.match(/PERMISSIONS FOR select, create, update, delete WHERE fn::current_user\(\) != NONE/g)).toHaveLength(2);
     expect(transaction.sql.match(/CREATE sheet:[0-9a-f]+ CONTENT/g)).toHaveLength(2);
     expect(transaction.bindings).toEqual(expect.objectContaining({
-      name: "破产债权台账",
-      sheetLabel0: "债权人表",
-      sheetColumnDefs0: [expect.objectContaining({ key: "creditor_name" })],
+      name: "设备巡检台账",
+      sheetLabel0: "负责人表",
+      sheetColumnDefs0: [expect.objectContaining({ key: "owner_name" })],
       sheetLabel1: "证据材料表",
       sheetColumnDefs1: [expect.objectContaining({ key: "material_name" })],
     }));
-    expect(created?.templateRef).toBe("workbook_template:claims");
+    expect(created?.templateRef).toBe("workbook_template:items");
   });
 
   test("新模板包的首个数据表展示名和字段进入创建事务", async () => {
     const { store, rec } = setup();
 
     const created = await store.createFromTemplate({
-      id: "workbook_template:claims",
-      defaultName: "破产债权台账",
+      id: "workbook_template:items",
+      defaultName: "设备巡检台账",
       sheet: {
-        label: "债权人表",
+        label: "负责人表",
         columns: [
-          { key: "creditor_name", label: "债权人名称", fieldType: "text", required: true },
-          { key: "claim_amount", label: "申报金额", fieldType: "decimal" },
+          { key: "owner_name", label: "负责人姓名", fieldType: "text", required: true },
+          { key: "claim_amount", label: "登记金额", fieldType: "decimal" },
         ],
       },
     });
 
     const txQuery = rec.queries.find((query) => /BEGIN TRANSACTION/i.test(query.sql));
     expect(txQuery?.bindings).toEqual(expect.objectContaining({
-      name: "破产债权台账",
-      label: "债权人表",
+      name: "设备巡检台账",
+      label: "负责人表",
       columnDefs: [
-        expect.objectContaining({ key: "creditor_name", field_type: "text", required: true }),
+        expect.objectContaining({ key: "owner_name", field_type: "text", required: true }),
         expect.objectContaining({ key: "claim_amount", field_type: "decimal" }),
       ],
     }));
-    expect(created?.templateRef).toBe("workbook_template:claims");
+    expect(created?.templateRef).toBe("workbook_template:items");
   });
 
   test("workbook CREATE 带 template 引用，实体表按模板列定义建列，默认名回退模板 defaultName", async () => {
@@ -543,9 +573,9 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
 
     const created = await store.createFromTemplate({
       id: "workbook_template:case",
-      defaultName: "未命名案件库",
+      defaultName: "未命名事项库",
       columns: [
-        { key: "name", label: "案件名", fieldType: "text", required: true },
+        { key: "name", label: "事项名", fieldType: "text", required: true },
         { key: "amount", label: "金额", fieldType: "decimal" },
       ],
     });
@@ -561,10 +591,10 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
     // 列定义存进 sheet.column_defs（stored 形态）
     const b = txQuery!.bindings as Record<string, unknown>;
     expect(b.columnDefs).toEqual([
-      { key: "name", label: "案件名", field_type: "text", required: true, options: undefined, constraints: undefined, date_format: undefined, reference_table: undefined, reference_sheet_id: undefined, reference_multiple: undefined, reference_display_key: undefined },
+      { key: "name", label: "事项名", field_type: "text", required: true, options: undefined, constraints: undefined, date_format: undefined, reference_table: undefined, reference_sheet_id: undefined, reference_multiple: undefined, reference_display_key: undefined },
       { key: "amount", label: "金额", field_type: "decimal", required: undefined, options: undefined, constraints: undefined, date_format: undefined, reference_table: undefined, reference_sheet_id: undefined, reference_multiple: undefined, reference_display_key: undefined },
     ]);
-    expect(b.name).toBe("未命名案件库");
+    expect(b.name).toBe("未命名事项库");
     expect(created?.templateRef).toBe("workbook_template:case");
   });
 });
@@ -594,7 +624,7 @@ describe("buildCreateWorkbookTransaction — 纯 SurrealQL 构造", () => {
     });
 
     const workbook = await store.createFromTemplate({
-      id: "workbook_template:claims",
+      id: "workbook_template:items",
       sheets: [
         { label: "A", columns: [{ key: "name", label: "名称", fieldType: "text" }] },
         { label: "B", columns: [{ key: "title", label: "标题", fieldType: "text" }] },
@@ -659,11 +689,220 @@ describe("buildCreateWorkbookTransaction — 纯 SurrealQL 构造", () => {
     expect(sql).toContain("DEFINE EVENT OVERWRITE record_activity ON TABLE ent_1111111111111111_main");
   });
 
+  // ── 探针形状回归（native 工作区误装 guard 的根因）：conn.query 对
+  // RETURN 标量返回标量本身，旧代码无条件解构抛 TypeError 落 catch 恒 true。
+  describe("detectLegacyRecordQuota — 探针形状决定 guard 装配", () => {
+    test("native 工作区（021 清理后记账表已删，探针标量 false）→ 建表事务不装 resource_quota_guard", async () => {
+      const { store, rec } = setup({ workbooks: [], probeValue: false });
+
+      const created = await store.createBlank("native 表");
+
+      expect(created).not.toBeNull();
+      const tx = rec.queries.find((q) => /BEGIN TRANSACTION/i.test(q.sql))!;
+      expect(tx.sql).not.toContain("resource_quota_guard");
+      expect(tx.sql).not.toContain("sheet_resource_usage");
+    });
+
+    test("legacy 工作区（记账行在，探针标量 true）→ 事务照装 resource_quota_guard（行为不变）", async () => {
+      const { store, rec } = setup({ workbooks: [], probeValue: true });
+
+      const created = await store.createBlank("legacy 表");
+
+      expect(created).not.toBeNull();
+      const tx = rec.queries.find((q) => /BEGIN TRANSACTION/i.test(q.sql))!;
+      expect(tx.sql).toContain("DEFINE EVENT OVERWRITE resource_quota_guard");
+    });
+
+    test("探针异常 → 保守按在线处理（guard 照装，语义不变）", async () => {
+      const { store, rec } = setup({ workbooks: [], probeError: new Error("engine down") });
+
+      const created = await store.createBlank("err 表");
+
+      expect(created).not.toBeNull();
+      const tx = rec.queries.find((q) => /BEGIN TRANSACTION/i.test(q.sql))!;
+      expect(tx.sql).toContain("resource_quota_guard");
+    });
+  });
+
   test("用户输入只进 bindings，不拼进 SQL 文本（防注入）", () => {
     const { sql, bindings } = buildCreateWorkbookTransaction("'; DROP TABLE workbook; --");
     expect(sql).not.toContain("DROP TABLE workbook");
     expect(bindings.name).toBe("'; DROP TABLE workbook; --");
     expect(sql).toContain("name: $name");
+  });
+});
+
+// ── CV02：建簿入口容量预检（读 INFO FOR QUOTA 投影的工作区配额视图）。──
+function quotaWorkspaceView(
+  limits: { tables: number; fields: number; records: number },
+  entUsed = 0,
+): QuotaApiWorkspaceView {
+  const rule = (resource: "table" | "field" | "record", label: string, limit: number, used: number | null) => ({
+    key: `entity-${resource}s`,
+    resource,
+    label,
+    selector: { kind: "regex" as const, description: label, pattern: "^ent_", matched_tables: [] },
+    usage: {
+      kind: "finite" as const,
+      limit,
+      used,
+      remaining: used === null ? null : limit - used,
+      over_by: null,
+      utilization_percent: null,
+      at_limit: null,
+      over_limit: null,
+    },
+  });
+  return {
+    format_version: 1,
+    view: "workspace_admin",
+    viewer: { subject: "user:admin", capabilities: ["workspace_quota.read"] },
+    workspace: { id: "workspace:w", slug: "w", name: "W" },
+    statuses: {
+      sync: "in_sync",
+      compliance: "compliant",
+      capacity: "normal",
+      service_mode: "standard",
+      ledger: "ready",
+    },
+    observed_at: null,
+    commercial_state_at: "2026-10-01T00:00:00.000Z",
+    cache_age_ms: null,
+    usage_trusted: true,
+    stale: false,
+    applied: null,
+    desired: null,
+    billing_account: null,
+    resources: [
+      rule("table", "实体数据表数", limits.tables, entUsed),
+      rule("field", "每张实体表字段数", limits.fields, null),
+      rule("record", "每张实体表记录数", limits.records, null),
+    ],
+    actions: ["refresh"],
+  };
+}
+
+const claimsPackSheets = [
+  {
+    key: "creditors",
+    label: "债权人",
+    columns: [
+      { key: "creditor_name", label: "债权人名称", fieldType: "text" as const },
+      { key: "identity_type", label: "证件类型", fieldType: "text" as const },
+      { key: "identity_number", label: "证件号码", fieldType: "text" as const },
+      { key: "contact_name", label: "联系人", fieldType: "text" as const },
+      { key: "contact_phone", label: "联系方式", fieldType: "text" as const },
+      { key: "address", label: "地址", fieldType: "text" as const },
+    ],
+    sampleRecords: [{ key: "a", values: {} }],
+  },
+  {
+    key: "claims",
+    label: "债权申报",
+    columns: [
+      { key: "creditor", label: "债权人", fieldType: "reference" as const, referenceSheetKey: "creditors" },
+      { key: "principal", label: "本金", fieldType: "decimal" as const },
+      { key: "interest", label: "利息", fieldType: "decimal" as const },
+      { key: "nature", label: "性质", fieldType: "single_select" as const },
+      { key: "filing_date", label: "申报日期", fieldType: "date" as const },
+      { key: "evidence", label: "证据", fieldType: "text" as const },
+      { key: "status", label: "状态", fieldType: "single_select" as const },
+      { key: "amount", label: "金额", fieldType: "decimal" as const },
+      { key: "review", label: "审查意见", fieldType: "text" as const },
+    ],
+    sampleRecords: Array.from({ length: 12 }, (_, index) => ({
+      key: `claim-${index}`,
+      values: {},
+    })),
+  },
+];
+
+describe("CV02 — 建簿入口容量预检", () => {
+  test("v1 Max（3/9/6）下含样例模板被预检拒绝：准确提示所需/上限，不发起写入", async () => {
+    const { store, rec } = setup({ quotaView: quotaWorkspaceView({ tables: 3, fields: 9, records: 6 }) });
+
+    const workbook = await store.createFromTemplate({ id: "workbook_template:claims", sheets: claimsPackSheets });
+
+    expect(workbook).toBeNull();
+    expect(store.error).toContain("需要 11");
+    expect(store.error).toContain("上限 9");
+    expect(store.error).toContain("需要 12");
+    expect(store.error).toContain("上限 6");
+    // 预检在写入前短路：只有 legacy 探针点查，没有建簿事务。
+    expect(rec.queries.filter((query) => /BEGIN TRANSACTION/i.test(query.sql))).toEqual([]);
+  });
+
+  test("v2 Max（3/11/12）下同一模板正常创建", async () => {
+    const { store, rec } = setup({ quotaView: quotaWorkspaceView({ tables: 3, fields: 11, records: 12 }) });
+
+    const workbook = await store.createFromTemplate({ id: "workbook_template:claims", sheets: claimsPackSheets });
+
+    expect(workbook).not.toBeNull();
+    expect(rec.queries.some((query) => /BEGIN TRANSACTION/i.test(query.sql))).toBe(true);
+  });
+
+  test("表桶占用计入：3 上限已用 2，新建 2 张表被拒", async () => {
+    const { store } = setup({ quotaView: quotaWorkspaceView({ tables: 3, fields: 11, records: 12 }, 2) });
+
+    const workbook = await store.createFromTemplate({ id: "workbook_template:claims", sheets: claimsPackSheets });
+
+    expect(workbook).toBeNull();
+    expect(store.error).toContain("需要 2");
+    expect(store.error).toContain("剩余 1");
+  });
+
+  test("空台账（不含样例）只做表/字段判定", async () => {
+    const { store } = setup({ quotaView: quotaWorkspaceView({ tables: 3, fields: 11, records: 0 }) });
+
+    const workbook = await store.createFromTemplate(
+      { id: "workbook_template:claims", sheets: claimsPackSheets },
+      undefined,
+      { includeSampleData: false },
+    );
+
+    expect(workbook).not.toBeNull();
+  });
+
+  test("participant 视图（无 resources）→ 预检不判定，照常发起写入由引擎强制", async () => {
+    const participantView = {
+      format_version: 1,
+      view: "participant",
+      viewer: { subject: "user:m", capabilities: [] },
+      workspace: { id: "workspace:w", slug: "w", name: "W" },
+      actions: ["contact_workspace_admin"],
+    } as unknown as QuotaApiWorkspaceView;
+    const { store, rec } = setup({ quotaView: participantView });
+
+    const workbook = await store.createFromTemplate({ id: "workbook_template:claims", sheets: claimsPackSheets });
+
+    expect(workbook).not.toBeNull();
+    expect(rec.queries.some((query) => /BEGIN TRANSACTION/i.test(query.sql))).toBe(true);
+  });
+
+  test("配额 API 不可用 → 预检降级，照常写入由引擎兜底", async () => {
+    const { store, rec } = setup({ quotaViewError: new Error("quota api down") });
+
+    const workbook = await store.createFromTemplate({ id: "workbook_template:claims", sheets: claimsPackSheets });
+
+    expect(workbook).not.toBeNull();
+    expect(rec.queries.some((query) => /BEGIN TRANSACTION/i.test(query.sql))).toBe(true);
+  });
+
+  test("账本不可信（used 为 null）→ 不阻断，交由引擎判定", async () => {
+    const view = quotaWorkspaceView({ tables: 3, fields: 11, records: 12 });
+    const adminView = {
+      ...view,
+      usage_trusted: false,
+      resources: view.resources.map((resource) => resource.resource === "table"
+        ? { ...resource, usage: { ...resource.usage, used: null, remaining: null } }
+        : resource),
+    } as QuotaApiWorkspaceView;
+    const { store, rec } = setup({ quotaView: adminView });
+
+    const workbook = await store.createFromTemplate({ id: "workbook_template:claims", sheets: claimsPackSheets });
+
+    expect(workbook).not.toBeNull();
+    expect(rec.queries.some((query) => /BEGIN TRANSACTION/i.test(query.sql))).toBe(true);
   });
 });
 
@@ -695,7 +934,7 @@ describe("rename — 改 workbook 名", () => {
 
 describe("filterWorkbooksByQuery — 纯过滤", () => {
   const list: WorkbookRow[] = [
-    { id: "workbook:wb1", name: "案件台账", templateRef: "workbook_template:case" },
+    { id: "workbook:wb1", name: "事项台账", templateRef: "workbook_template:case" },
     { id: "workbook:wb2", name: "财务汇总" },
   ];
 
@@ -704,7 +943,7 @@ describe("filterWorkbooksByQuery — 纯过滤", () => {
   });
 
   test("按 name 大小写不敏感匹配", () => {
-    expect(filterWorkbooksByQuery(list, "案件").map((w) => w.id)).toEqual(["workbook:wb1"]);
+    expect(filterWorkbooksByQuery(list, "事项").map((w) => w.id)).toEqual(["workbook:wb1"]);
     expect(filterWorkbooksByQuery(list, "汇总").map((w) => w.id)).toEqual(["workbook:wb2"]);
     expect(filterWorkbooksByQuery(list, "xyz")).toEqual([]);
   });

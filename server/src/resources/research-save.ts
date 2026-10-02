@@ -205,7 +205,9 @@ export async function* runResearchSave(
       model: profile.model,
       dimensions: profile.dimensions,
       profile_version: profile.version,
-      embedding_text_hash: stableHash(embeddingText),
+      // Must match the raw text re-computed inside PRIVATE_VECTOR_QUERY
+      // (crypto::sha256 over the joined UTF-8 string, not a JSON literal).
+      embedding_text_hash: createHash("sha256").update(embeddingText, "utf8").digest("hex"),
       vector,
       status: "indexed",
       indexed_at: new Date(),

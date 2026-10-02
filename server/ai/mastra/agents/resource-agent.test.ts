@@ -21,8 +21,8 @@ const resource: ResourceDTO = {
   id: "resource_item:r1",
   workspaceId: "workspace:demo",
   resourceType: "generic_note",
-  title: "合同解除案例",
-  summary: "法院认为解除通知到达后合同解除发生效力。",
+  title: "设备故障案例",
+  summary: "巡检记录显示故障由过载引起。",
   sourceUrl: "https://example.com/case",
   sourceTitle: "案例来源",
   evidence: [
@@ -34,7 +34,7 @@ const resource: ResourceDTO = {
       order: 0,
     },
   ],
-  tags: ["合同"],
+  tags: ["设备"],
   structuredPayload: {},
   quality: "user-confirmed",
   createdBy: "app_user:u1",
@@ -43,7 +43,7 @@ const resource: ResourceDTO = {
 };
 
 describe("resource retrieval executor", () => {
-  test("法律证据优先展示已核验引用并保持同状态原始顺序", () => {
+  test("平台证据优先展示已核验引用并保持同状态原始顺序", () => {
     const ordered = orderCitationsForEvidence([
       { id: "u1", resolution: "unresolved" as const },
       { id: "a1", resolution: "ambiguous" as const },
@@ -56,7 +56,7 @@ describe("resource retrieval executor", () => {
 
   test("高置信命中时生成带文本引用和结构化 citations 的回答", async () => {
     const answer = createResourceCitationAnswer({
-      question: "查找合同解除案例",
+      question: "查找设备故障案例",
       resources: [resource],
     });
 
@@ -65,7 +65,7 @@ describe("resource retrieval executor", () => {
       {
         index: 1,
         resourceId: "resource_item:r1",
-        title: "合同解除案例",
+        title: "设备故障案例",
         sourceUrl: "https://example.com/case",
         evidence: [{ order: 0, text: "解除通知到达相对方后产生解除效力。" }],
       },
@@ -78,7 +78,7 @@ describe("resource retrieval executor", () => {
       searchResources: async () => ({
         status: "hit",
         indexStatus: "ready",
-        queryText: "查找合同解除案例",
+        queryText: "查找设备故障案例",
         results: [{
           resource,
           score: 0.92,
@@ -91,7 +91,7 @@ describe("resource retrieval executor", () => {
     });
 
     const out = await executor({
-      taskText: "查找合同解除案例",
+      taskText: "查找设备故障案例",
       shared: { userContext: emptyContext, confirmed: {} },
       runId: "run-1",
     });
@@ -107,7 +107,7 @@ describe("resource retrieval executor", () => {
       searchResources: async () => ({
         status: "candidates",
         indexStatus: "ready",
-        queryText: "查找合同解除案例",
+        queryText: "查找设备故障案例",
         results: [{
           resource,
           score: 0.42,
@@ -120,7 +120,7 @@ describe("resource retrieval executor", () => {
     });
 
     const out = await executor({
-      taskText: "查找合同解除案例",
+      taskText: "查找设备故障案例",
       shared: { userContext: emptyContext, confirmed: {} },
       runId: "run-1",
     });
@@ -129,8 +129,8 @@ describe("resource retrieval executor", () => {
       kind: "resource-candidates",
       candidates: [{
         id: "resource_item:r1",
-        label: "合同解除案例",
-        summary: "法院认为解除通知到达后合同解除发生效力。",
+        label: "设备故障案例",
+        summary: "巡检记录显示故障由过载引起。",
         score: 0.42,
         resourceType: "generic_note",
         sourceUrl: "https://example.com/case",
@@ -145,19 +145,19 @@ describe("resource retrieval executor", () => {
       searchResources: async () => ({
         status: "miss",
         indexStatus: "index-error",
-        queryText: "查找合同解除案例",
+        queryText: "查找设备故障案例",
         results: [],
       }),
     });
 
     const out = await executor({
-      taskText: "查找合同解除案例",
+      taskText: "查找设备故障案例",
       shared: { userContext: emptyContext, confirmed: {} },
       runId: "run-1",
     });
 
     expect(out.text).toContain("语义索引存在失败状态");
-    expect(out.text).toContain("平台法律库授权检索暂不可用");
+    expect(out.text).toContain("平台已发布内容库授权检索暂不可用");
     expect(out.suspend).toBeUndefined();
   });
 
@@ -168,7 +168,7 @@ describe("resource retrieval executor", () => {
       searchResources: async () => ({
         status: "miss",
         indexStatus: "ready",
-        queryText: "查找合同解除案例",
+        queryText: "查找设备故障案例",
         results: [],
       }),
       createResearchSession: async (req) => {
@@ -191,7 +191,7 @@ describe("resource retrieval executor", () => {
     });
 
     const out = await executor({
-      taskText: "查找合同解除案例",
+      taskText: "查找设备故障案例",
       shared: { userContext: emptyContext, confirmed: {} },
       runId: "run-1",
     });
@@ -199,7 +199,7 @@ describe("resource retrieval executor", () => {
     expect(created).toHaveLength(1);
     expect(created[0]).toMatchObject({
       workspaceId: "workspace:demo",
-      query: "查找合同解除案例",
+      query: "查找设备故障案例",
       resourceType: "generic_note",
       originatingRunId: "run-1",
     });
@@ -207,12 +207,12 @@ describe("resource retrieval executor", () => {
       kind: "manual-research",
       sessionId: "research_session:s1",
       workspaceId: "workspace:demo",
-      query: "查找合同解除案例",
+      query: "查找设备故障案例",
       resourceType: "generic_note",
     });
   });
 
-  test("workspace miss 后检索平台已发布法律库，并用面向用户的中文说明未绑定法条版本", async () => {
+  test("workspace miss 后检索平台已发布内容库，并用面向用户的中文说明未绑定引用版本", async () => {
     let researchCreated = false;
     const executor = makeResourceRetrievalExecutor({
       resolveWorkspaceId: async () => "workspace:demo",
@@ -222,7 +222,7 @@ describe("resource retrieval executor", () => {
         queryText: "著作权法第十条案例",
         results: [],
       }),
-      searchLegalContent: async () => ({
+      searchPlatformContent: async () => ({
         items: [{
           itemId: "content_item:case-269",
           kind: "judicial_document",
@@ -272,9 +272,9 @@ describe("resource retrieval executor", () => {
 
     expect(researchCreated).toBe(false);
     expect(out.suspend).toBeUndefined();
-    expect(out.text).toContain("平台已发布法律库");
+    expect(out.text).toContain("平台已发布内容库");
     expect(out.citations?.[0]?.sourceUrl).toContain("court.gov.cn");
-    expect(out.citations?.[0]?.evidence[0]?.text).toContain("法条版本尚未绑定");
+    expect(out.citations?.[0]?.evidence[0]?.text).toContain("所引版本尚未绑定");
     expect(out.citations?.[0]?.evidence[0]?.text).not.toContain("unresolved");
     expect(out.citations?.[0]?.platformContent).toEqual({
       itemId: "content_item:case-269",
@@ -313,7 +313,7 @@ describe("resource retrieval executor", () => {
     });
 
     const out = await executor({
-      taskText: "查找合同解除案例",
+      taskText: "查找设备故障案例",
       shared: { userContext: emptyContext, confirmed: {} },
       runId: "run-1",
       surrealSession: fakeSession,
@@ -332,7 +332,7 @@ describe("resource retrieval executor", () => {
   test("answerSelectedResourceIds 只接收 resourceIds 并回查资源详情生成回答", async () => {
     const seenIds: string[] = [];
     const answer = await answerSelectedResourceIds({
-      question: "查找合同解除案例",
+      question: "查找设备故障案例",
       resourceIds: ["resource_item:r1"],
       getResourceDetail: async ({ resourceId }) => {
         seenIds.push(resourceId);

@@ -26,28 +26,28 @@ describe("workbooksStore.importCsvWorkbook — CSV 新工作簿原子导入", ()
   test("只提交一个事务并返回成功、跳过和字段识别结果", async () => {
     const { queries, store } = setup();
     const parsed = parseCsvImport(
-      "债权人名称,申报金额,申报日期\n甲公司,1000,2026-07-01\n乙公司,待确认,2026-07-02\n,,",
-      "历史债权.csv",
+      "负责人姓名,登记金额,登记日期\n甲公司,1000,2026-07-01\n乙公司,待确认,2026-07-02\n,,",
+      "历史事项.csv",
     );
     const fields = parsed.fields.map((field) =>
-      field.label === "申报金额" ? { ...field, fieldType: "decimal" as const } : field
+      field.label === "登记金额" ? { ...field, fieldType: "decimal" as const } : field
     );
 
     const result = await store.importCsvWorkbook({
       workbookName: parsed.workbookName,
-      sheetLabel: "历史债权",
+      sheetLabel: "历史事项",
       fields,
       rows: parsed.rows,
     });
 
     expect(result).toEqual({
-      workbook: { id: "workbook:1111111111111111", name: "历史债权", templateRef: undefined },
+      workbook: { id: "workbook:1111111111111111", name: "历史事项", templateRef: undefined },
       importedCount: 1,
       skippedCount: 2,
       fields: [
-        { label: "债权人名称", fieldType: "text" },
-        { label: "申报金额", fieldType: "decimal" },
-        { label: "申报日期", fieldType: "date" },
+        { label: "负责人姓名", fieldType: "text" },
+        { label: "登记金额", fieldType: "decimal" },
+        { label: "登记日期", fieldType: "date" },
       ],
     });
     expect(queries.filter((query) => /BEGIN TRANSACTION/i.test(query.sql))).toHaveLength(1);
@@ -64,11 +64,11 @@ describe("workbooksStore.importCsvWorkbook — CSV 新工作簿原子导入", ()
 
   test("数据库拒绝 participant DDL 时显示管理员权限提示且不加入工作簿列表", async () => {
     const { queries, store } = setup(new Error("IAM error: Not allowed to define table"));
-    const parsed = parseCsvImport("名称\n甲公司", "债权.csv");
+    const parsed = parseCsvImport("名称\n甲公司", "事项.csv");
 
     const result = await store.importCsvWorkbook({
       workbookName: parsed.workbookName,
-      sheetLabel: "债权",
+      sheetLabel: "事项",
       fields: parsed.fields,
       rows: parsed.rows,
     });

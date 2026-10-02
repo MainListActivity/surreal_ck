@@ -35,7 +35,12 @@ const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 const mainBody = "第一条 合同自成立时生效。第二条 当事人应当遵循诚信原则。";
 const digest = sha(mainBody);
 
-const baseFacet = { id: "content_search_facet:x", kind: "legislation", jurisdiction: "CN", published_on: "2026-01-01" };
+// PLATFORM_KEYWORD_QUERY 召回行形：keyword_score>0 才能进入排序，source_url 必填，
+// item_id/body_sha256 作为去重身份（多候选测试需逐行区分）。
+const baseFacet = {
+  id: "content_search_facet:x", kind: "legislation", jurisdiction: "CN", published_on: "2026-01-01",
+  source_url: "https://example.invalid/src", keyword_score: 1, item_id: "content_item:x",
+};
 const baseGate = {
   actions: ["browse", "search", "read", "cite"],
   ai_actions: ["research"],
@@ -182,11 +187,13 @@ describe("retrieveAuthorizedCorpus", () => {
   });
 
   test("证据登记到达上限后其余候选记 evidence_overflow", async () => {
+    // keyword_score 并列时按 versionId 字典序排序；零填充保持数值序，溢出仍落在 v12/v13。
     const candidates = Array.from({ length: RESEARCH_EVIDENCE_LIMIT + 2 }, (_, i) => ({
       ...baseFacet,
-      version_id: `content_version:v${i}`,
+      version_id: `content_version:v${String(i).padStart(2, "0")}`,
       public_id: `v${i}-1`,
       title: `法${i}`,
+      item_id: `content_item:i${i}`,
     }));
     const session = fakeContentSession({
       facet: candidates,
@@ -213,5 +220,39 @@ describe("retrieveAuthorizedCorpus", () => {
       .toEqual({ evidence: [], rejected: [], candidatesSeen: 0 });
     const noHit = await retrieveAuthorizedCorpus({ session: fakeContentSession({ facet: [] }), query: "q" });
     expect(noHit).toEqual({ evidence: [], rejected: [], candidatesSeen: 0 });
+  });
+
+  // 回归（生产事故）：无 embeddingProvider 时召回曾把整句问题当单个 CONTAINS 字面量，
+  // 自然语言问句必然零命中 → 研究回答零引用。必须走词项召回（$terms 绑定）。
+  test("无 embedding 时按词项召回：整句问题不当子串字面量匹配", async () => {
+    const body = "仓储霜层检查应当每月执行并留存记录。";
+    const termBoundOnly = {
+      query(sql: string, bindings?: Record<string, unknown>) {
+        if (sql.includes("content_search_facet")) {
+          // 只有词项召回（绑定 terms）才模拟命中；整句关键字绑定（keyword）视为零召回。
+          if (!Array.isArray(bindings?.terms)) return Promise.resolve([[]]);
+          expect(bindings.terms).toContain("霜层");
+          return Promise.resolve([[{ ...baseFacet, item_id: "content_item:a",
+            version_id: "content_version:v1", public_id: "a-v1", title: "联验合成条例A" }]]);
+        }
+        if (sql.includes("content_read_gate")) {
+          return Promise.resolve([[{ version: "content_version:v1", ...baseGate }]]);
+        }
+        if (sql.includes("legal_article_version")) return Promise.resolve([[]]);
+        if (sql.includes("FROM content_version")) {
+          return Promise.resolve([[{ id: "content_version:v1", item: "content_item:a", public_id: "a-v1",
+            title: "联验合成条例A", body_text: body, body_sha256: sha(body), source_url: "https://example.invalid/a" }]]);
+        }
+        return Promise.resolve([[]]);
+      },
+    } as unknown as Pick<Surreal, "query">;
+
+    const result = await retrieveAuthorizedCorpus({
+      session: termBoundOnly, query: "请概述《联验合成条例A》对仓储霜层检查的要求并列出可核验引用",
+    });
+    expect(result.candidatesSeen).toBe(1);
+    expect(result.evidence).toHaveLength(1);
+    expect(result.evidence[0]!.quoteAllowed).toBe(true);
+    expect(result.evidence[0]!.bodySha256).toBe(sha(body));
   });
 });

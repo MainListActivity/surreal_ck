@@ -149,6 +149,18 @@ function addMilliseconds(value: DateTime, milliseconds: number): DateTime {
   );
 }
 
+// 提交事务里剩余的查询错误只剩真实的基础设施/事务失败（业务拒绝都经
+// $failure RETURN 传出）；统一落成可重试的 lifecycle 错误，HTTP 层映射
+// 503 而不是裸 500。
+function operatorIntentSubmitError(error: unknown): QuotaLifecycleError {
+  if (error instanceof QuotaLifecycleError) return error;
+  return new QuotaLifecycleError(
+    "operator_intent_persist_failed",
+    error instanceof Error ? error.message : "operator intent persistence failed",
+    true,
+  );
+}
+
 function snapshotObject(
   snapshot: ProviderSubscriptionSnapshot,
 ): ControlPlaneObject {
@@ -492,6 +504,19 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
             applied_provider_revision = $sourceRevision;
         };
         LET $target = IF $existing = NONE { $subscription } ELSE { $existing.id };
+        // LCA08 R1：provider 快照推进付费窗口（续期）时，同步延长活跃
+        // item 的产品窗口，避免续期后 item 在旧窗口结束、权益被级联清空。
+        // 只向前延长（不缩短）；订阅状态变化才是权益终止的开关。
+        IF !$replayed AND !$stale {
+          LET $windowEnd = $currentPeriodEnd ?? $paidThrough;
+          IF $windowEnd != NONE {
+            UPDATE quota_subscription_item SET
+              effective_until = $windowEnd
+            WHERE subscription = $target
+              AND status = "active"
+              AND (effective_until = NONE OR effective_until < $windowEnd);
+          };
+        };
         LET $workspaces = SELECT VALUE workspace
           FROM quota_subscription_item
           WHERE subscription = $target AND status = "active";
@@ -683,9 +708,6 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
           WHERE subject = $actorSubject AND status = "active"
           LIMIT 1
         )[0];
-        IF $operator = NONE {
-          THROW "operator-not-authorized";
-        };
         LET $capability = (
           SELECT *
           FROM platform_operator_capability
@@ -694,20 +716,26 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
             AND status = "active"
           LIMIT 1
         )[0];
-        IF $capability = NONE {
-          THROW "operator-capability-denied";
-        };
         LET $existing = (
           SELECT *
           FROM quota_operator_intent
           WHERE request_id = $requestId
           LIMIT 1
         )[0];
-        IF $existing != NONE
+        // 业务拒绝用 RETURN 而不是 THROW：事务内 THROW 的值不会随
+        // QueryError/NotExecuted 传到调用方（外层只剩通用事务失败
+        // 文案），HTTP 层无法区分 409/403 与真正的 500。
+        LET $failure = IF $operator = NONE {
+          "operator-not-authorized"
+        } ELSE IF $capability = NONE {
+          "operator-capability-denied"
+        } ELSE IF $existing != NONE
           AND $existing.input_digest != $inputDigest {
-          THROW "operator-intent-idempotency-conflict";
+          "operator-intent-idempotency-conflict"
+        } ELSE {
+          NONE
         };
-        IF $existing = NONE {
+        IF $failure = NONE AND $existing = NONE {
           CREATE $intent CONTENT {
             intent_kind: $intentKind,
             workspace: $workspace,
@@ -735,8 +763,9 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
           };
         };
         RETURN {
+          failure: $failure,
           intent: IF $existing = NONE { $intent } ELSE { $existing.id },
-          accepted: $existing = NONE
+          accepted: $existing = NONE AND $failure = NONE
         };
         COMMIT TRANSACTION;
       `,
@@ -760,13 +789,34 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
         correlationId: input.correlationId,
         causationId: input.causationId,
       },
-    );
+    ).catch((error: unknown) => {
+      throw operatorIntentSubmitError(error);
+    });
     const row = lastRecord(result);
     if (!row) {
       throw new QuotaLifecycleError(
         "operator_intent_persist_failed",
         "operator intent insert returned no result",
         true,
+      );
+    }
+    const failure = optionalString(row.failure);
+    if (failure === "operator-intent-idempotency-conflict") {
+      throw new QuotaLifecycleError(
+        "operator_intent_idempotency_conflict",
+        "requestId was already used with a different payload",
+      );
+    }
+    if (failure === "operator-capability-denied") {
+      throw new QuotaLifecycleError(
+        "operator_capability_mismatch",
+        "operator capability is insufficient",
+      );
+    }
+    if (failure === "operator-not-authorized") {
+      throw new QuotaLifecycleError(
+        "operator_not_authorized",
+        "operator is not authorized",
       );
     }
     return Object.freeze({
@@ -1088,6 +1138,9 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
     }
     const requestedSubscription = optionalRecordId(claim.input.subscription);
     const source = optionalString(claim.input.source);
+    // LCA08 R1：商业入口必须在意图里携带（或从旧 item 继承）产品修订绑定，
+    // 并把 item 的产品窗口对齐订阅付费窗口，避免新 item 丢失产品授权与结束时间。
+    const productRevision = optionalRecordId(claim.input.product_plan_revision);
     if (
       mode !== "plan_rollout"
       && source !== "manual"
@@ -1146,6 +1199,25 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
           WHERE active_workspace = $workspace
           LIMIT 1
         )[0];
+        IF $productInput != NONE
+          AND record::table($productInput) != "product_plan_revision" {
+          THROW "operator-subscription-product-revision-missing";
+        };
+        LET $product = IF $productInput != NONE {
+          SELECT * FROM ONLY $productInput
+        } ELSE {
+          NONE
+        };
+        IF $productInput != NONE AND $product = NONE {
+          THROW "operator-subscription-product-revision-missing";
+        };
+        LET $productBinding = IF $product != NONE {
+          $productInput
+        } ELSE IF $current != NONE {
+          $current.product_plan_revision
+        } ELSE {
+          NONE
+        };
         LET $targetSubscription = IF $mode = "plan_rollout" {
           IF $current = NONE {
             THROW "plan-rollout-requires-active-assignment";
@@ -1198,9 +1270,15 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
               correlation_id = $correlationId,
               causation_id = $intent;
           };
+          LET $subNow = SELECT * FROM ONLY $targetSubscription;
+          LET $windowEnd = $subNow.current_period_end
+            ?? $subNow.paid_through
+            ?? $subNow.trial_end;
           LET $same = $current != NONE
             AND $current.subscription = $targetSubscription
-            AND $current.plan_revision = $planRevision;
+            AND $current.plan_revision = $planRevision
+            AND ($productBinding = NONE
+              OR $current.product_plan_revision = $productBinding);
           IF !$same {
             IF $current != NONE {
               UPDATE $current.id SET
@@ -1210,15 +1288,32 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
                 correlation_id = $correlationId,
                 causation_id = $intent;
             };
+            IF $windowEnd != NONE AND $windowEnd <= $effectiveAt {
+              THROW "operator-subscription-item-window-invalid";
+            };
             CREATE $item CONTENT {
               subscription: $targetSubscription,
               workspace: $workspace,
               plan_revision: $planRevision,
+              product_plan_revision: $productBinding,
               revision: IF $current = NONE { 1 } ELSE { $current.revision + 1 },
               status: "active",
               effective_from: $effectiveAt,
+              effective_until: $windowEnd,
               correlation_id: $correlationId,
               causation_id: $intent
+            };
+          } ELSE {
+            // LCA08 续作：运营侧同套餐同产品续费（$same 分支不新建
+            // item）必须随订阅付费窗口向前延长活跃 item 窗口，与
+            // provider 快照路径一致（只延不缩）；否则续费后权益仍按旧
+            // 窗口到期，付费周期内误落 retention。
+            IF $windowEnd != NONE {
+              UPDATE quota_subscription_item SET
+                effective_until = $windowEnd
+              WHERE subscription = $targetSubscription
+                AND status = "active"
+                AND (effective_until = NONE OR effective_until < $windowEnd);
             };
           };
         };
@@ -1236,6 +1331,7 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
         mode,
         requestedSubscription,
         generatedSubscription,
+        productInput: productRevision,
         source,
         status,
         trialStart: optionalDateTime(claim.input.trial_start),

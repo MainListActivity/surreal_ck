@@ -112,11 +112,17 @@ import {
 } from "../ai/office/employee-service";
 import type { EmployeeTriggerRuntime } from "../ai/office/employee-trigger-runtime";
 import type { EmployeeRuntime } from "../ai/office/employee-runtime";
-import { createProductionOfficeBootstrap } from "../ai/office/office-trigger-adapter";
+import {
+  createProductionOfficeBootstrap,
+  createProductionOfficeRequestWake,
+} from "../ai/office/office-trigger-adapter";
 import type { EmployeeLifecycle } from "../ai/office/employee-lifecycle";
 import type { EmployeeRuntimeMetrics } from "../ai/office/employee-trigger-runtime";
 import type { EmployeeStartupProgress } from "../ai/office/employee-supervisor";
 import { AiAllowanceService, type Queryable as AllowanceQueryable } from "./ai-allowance/service";
+import { createAiAllowanceOpsStatus } from "./ai-allowance/ops-status";
+import { AiAllowancePlanCycleSynchronizer } from "./ai-allowance/plan-cycle";
+import { createProjectionVerifier } from "./content/projection-verify";
 import { createOpsAiAllowanceRoutes } from "./routes/ops-ai-allowance";
 import { createContentResearchSessionFactory, type ContentResearchSessionFactory } from "./research/window";
 
@@ -145,7 +151,7 @@ export type AppOptions = {
   quotaNotifications?: QuotaNotificationService;
   quotaOpsConsole?: QuotaOpsConsolePort;
   quotaOpsPreflight?: QuotaOpsPreflightPort;
-  /** 平台法律内容维护服务；生产默认使用独立内容库的 publisher 会话。 */
+  /** 平台内容维护服务；生产默认使用独立内容库的 publisher 会话。 */
   platformContentService?: PlatformContentService;
   /** 团队主动共享的启用摘要服务；运营页面与 MCP 复用。 */
   activationSummaryService?: ActivationSummaryService;
@@ -167,6 +173,12 @@ export type AppOptions = {
   employeeWorkspaceResolver?: (slug: string) => Promise<{ dbName: string } | null>;
   /** 虚拟办公室一次性 bootstrap（VO02）；默认生产装配（lifecycle + 通用 trigger runtime）。 */
   officeBootstrap?: OfficeBootstrapAction;
+  /** VO03：人类请求终态唤醒；默认生产装配（caller session 校验 + 通用 trigger runtime）。 */
+  officeRequestWake?: (input: {
+    slug: string;
+    callerToken: string;
+    notificationId: string;
+  }) => Promise<import("../ai/office/office-trigger-adapter").OfficeRequestWakeResult>;
   /** LCA05 共享 AI 额度门禁；注入后 /api/chat 新 run 在启动 workflow 前原子预留。 */
   aiAllowance?: AiAllowanceService;
   /** 虚拟员工 runtime 健康/容量快照（VER06）；默认读进程内 runtime 指标。 */
@@ -213,7 +225,7 @@ function buildAutoAiChatService(
     jevConfidenceThreshold: env.JEV_CONFIDENCE_THRESHOLD,
     // 资源检索查询向量与保存路径共用同一服务端 embedding key（RR-014）
     embeddingProvider,
-    // LCA06：授权法律研究窗口（content_reader 会话服务端自持；复用 LCA04 search exchange）
+    // LCA06：授权内容研究窗口（content_reader 会话服务端自持；复用 LCA04 search exchange）
     createContentResearchSession: createContentResearchSessionFactory(),
   });
   return createAiChatService({ runBus, runner, resumer });
@@ -291,13 +303,27 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
   const opsProposalService = options.opsProposalService
     ?? new OpsProposalService(new SurrealOpsProposalStore(), opsFollowUpService, opsAutonomyService);
   const opsRunService = options.opsRunService ?? new OpsRunService(new SurrealOpsRunStore(), opsAutonomyService);
-  const productEntitlementService = options.productEntitlementService
-    ?? new ProductEntitlementService(new SurrealProductEntitlementStore());
   const autoAiChatService = options.aiChatService ?? buildAutoAiChatService(runBus, platformContentService, embeddingProvider);
   const aiAllowanceService = options.aiAllowance ?? new AiAllowanceService({
     workspaceSession: async (db) => (await getRootDatabaseSession(db)) as unknown as AllowanceQueryable,
     systemSession: async () => (await getRootDatabaseSession("_system")) as unknown as AllowanceQueryable,
   });
+  // LCA13：运营解释视图注入真实账本事实、投影核验与幂等 plan-cycle 同步。
+  const aiAllowancePlanCycle = new AiAllowancePlanCycleSynchronizer({
+    workspaceSession: async (db) => (await getRootDatabaseSession(db)) as unknown as AllowanceQueryable,
+  });
+  const productEntitlementService = options.productEntitlementService
+    ?? new ProductEntitlementService(
+      new SurrealProductEntitlementStore(),
+      undefined,
+      {
+        aiStatus: createAiAllowanceOpsStatus(aiAllowanceService),
+        projectionVerify: createProjectionVerifier(),
+        syncPlanCycle: async (directive, correlationId) => {
+          await aiAllowancePlanCycle.sync(directive, correlationId);
+        },
+      },
+    );
   const discoverService = options.discoverService ?? createDiscoverService({
     content: contentPublisherQuery,
     system: {
@@ -346,6 +372,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     }))
     .route("/", createOfficeRoutes({
       bootstrap: options.officeBootstrap ?? createProductionOfficeBootstrap(),
+      wakeRequest: options.officeRequestWake ?? createProductionOfficeRequestWake(),
       resolveWorkspace: options.employeeWorkspaceResolver ?? resolveWorkspaceBySlug,
       requireUser: options.requireUser,
     }))
@@ -377,7 +404,11 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     )
     .route("/", createContentRoutes({ service: platformContentService, requireUser: options.requireUser }))
     .route("/", createDiscoverRoutes({ service: discoverService, requireUser: options.requireUser }))
-    .route("/", createLegalContentRoutes({ requireUser: options.requireUser }))
+    .route("/", createLegalContentRoutes({
+      requireUser: options.requireUser,
+      openContentSession: options.createContentResearchSession ?? createContentResearchSessionFactory(),
+      embeddingProvider,
+    }))
     .route("/", createActivationSummaryRoutes({
       service: activationSummaryService,
       requireUser: options.requireUser,

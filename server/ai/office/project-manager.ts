@@ -1,9 +1,12 @@
 import {
+  createOfficeRequest,
   createOfficeTaskOnce,
   delegateOfficeTask,
   deliverOfficeReport,
+  getOfficeRequest,
   getOfficeTask,
   OFFICE_INITIAL_TASK_ID,
+  officeRequestId,
   postOfficeMessage,
   readOfficeMeta,
   requireOfficeMeta,
@@ -39,10 +42,17 @@ import type {
 
 export const OFFICE_BOOTSTRAP_REASON = "office-bootstrap";
 export const OFFICE_TASK_REASON = "office-task";
+/** 人类请求终态回流：收件人答复/拒绝/取消落库后，adapter 以此 reason 唤醒请求员工。 */
+export const OFFICE_REQUEST_REASON = "office-request-resolved";
 
 /** 初始任务的幂等投递键：同一任务无论经哪条路径投递都撞同一键。 */
 export function officeTaskTriggerKey(taskId: string): string {
   return `office-task:${taskId}`;
+}
+
+/** 人类请求的幂等投递键：一条通知的解决只唤醒一次逻辑后续执行。 */
+export function officeRequestTriggerKey(notificationId: string): string {
+  return `office-request:${notificationId}`;
 }
 
 function recordKey(recordId: string): string {
@@ -55,14 +65,27 @@ type OfficeTaskBrief = {
   delegate_goal?: string;
   /** DDL 尝试指令（诊断边界用）：PM 拿自己会话直接执行这条语句，必被拒。 */
   attempt_ddl?: string;
+  /** 人类请求指令：先向收件人发结构化问题并把任务挂 blocked，终态回流后继续。 */
+  ask_human?: { prompt?: unknown; to?: unknown; question_type?: unknown; options?: unknown };
 };
 
 function parseBrief(task: OfficeTaskRow): OfficeTaskBrief {
   const brief = task.brief ?? {};
+  const ask = brief.ask_human && typeof brief.ask_human === "object"
+    ? (brief.ask_human as Record<string, unknown>)
+    : undefined;
   return {
     delegate_to: typeof brief.delegate_to === "string" ? brief.delegate_to : undefined,
     delegate_goal: typeof brief.delegate_goal === "string" ? brief.delegate_goal : undefined,
     attempt_ddl: typeof brief.attempt_ddl === "string" ? brief.attempt_ddl : undefined,
+    ask_human: ask
+      ? {
+          prompt: ask.prompt,
+          to: ask.to,
+          question_type: ask.question_type,
+          options: ask.options,
+        }
+      : undefined,
   };
 }
 
@@ -131,6 +154,46 @@ async function handleOfficeTask(ctx: TriggerHandlerContext): Promise<unknown> {
 
   const rejections: string[] = [];
   let delegatedTo: string | null = null;
+
+  // 人类请求：建结构化通知（确定性 id，重试收敛）→ 进度消息 → 任务 blocked。
+  // 本次 run 到此结束；收件人答复/拒绝/取消落库后由 office-request-resolved
+  // 触发续跑（幂等键 = office-request:<notificationId>，恰好一次后续执行）。
+  const askPrompt = typeof brief.ask_human?.prompt === "string" ? brief.ask_human.prompt.trim() : "";
+  if (brief.ask_human && askPrompt) {
+    const asked = await ctx.effects.runEffect("ask-human", async () => {
+      const recipient = typeof brief.ask_human!.to === "string" && brief.ask_human!.to
+        ? brief.ask_human!.to
+        : meta.primaryContact;
+      const requestId = officeRequestId(task.id, askPrompt);
+      const questionType =
+        typeof brief.ask_human!.question_type === "string" && brief.ask_human!.question_type
+          ? brief.ask_human!.question_type
+          : "free-text";
+      const options = Array.isArray(brief.ask_human!.options)
+        ? brief.ask_human!.options.filter((o): o is string => typeof o === "string")
+        : undefined;
+      await createOfficeRequest(ctx.session, {
+        id: requestId,
+        dedupeKey: requestId,
+        to: recipient,
+        task: task.id,
+        questionType,
+        prompt: askPrompt,
+        options,
+        requestTrigger: ctx.trigger.id,
+        runId: ctx.trigger.runId ?? undefined,
+      });
+      await postOfficeMessage(ctx.session, {
+        id: `office_message:pm_ask_${recordKey(task.id)}`,
+        task: task.id,
+        to: meta.primaryContact,
+        body: `已就任务「${task.goal}」向 ${recipient} 发起人类请求 ${requestId}：${askPrompt}`,
+      });
+      await setOfficeTaskStatus(ctx.session, task.id, "blocked", { waiting_on: requestId });
+      return { requestId, recipient };
+    });
+    return { taskId: task.id, waiting: asked.requestId, rejections };
+  }
 
   if (brief.delegate_to) {
     const outcome = await ctx.effects.runEffect("delegate", async () => {
@@ -219,10 +282,97 @@ async function handleOfficeTask(ctx: TriggerHandlerContext): Promise<unknown> {
   return { taskId: task.id, delegatedTo, rejections };
 }
 
-/** 把 PM 的两个 reason 挂到通用 runtime；重复调用幂等（map 覆盖语义）。 */
+const REQUEST_ACTION_LABEL: Record<string, string> = {
+  answered: "已答复",
+  rejected: "已拒绝",
+  cancelled: "已取消",
+};
+
+/**
+ * 人类请求终态回流（VO03）：收件人把 resolution/answer/resolved_at 写进
+ * user_notification 后，adapter 以 office-request:<notificationId> 幂等键投递
+ * 本触发。员工在自己的会话里读回终态（select 放行 from_employee），把答复落
+ * 成可见消息并继续被 blocked 的任务；重复唤醒撞同一幂等键被 runtime 收敛。
+ */
+async function handleOfficeRequestResolved(ctx: TriggerHandlerContext): Promise<unknown> {
+  const notificationId = ctx.trigger.payloadRef;
+  if (!notificationId) throw new Error("office-request-missing-ref");
+  const request = await getOfficeRequest(ctx.session, notificationId);
+  if (!request) throw new Error(`office-request-not-found:${notificationId}`);
+  if (request.purpose !== "office-request") {
+    return { skipped: "not-office-request", purpose: request.purpose };
+  }
+  // 唤醒只应发生在终态之后；未解决的记录如实跳过（reconcile 不会补投它们）。
+  if (!request.resolvedAt) return { skipped: "unresolved" };
+
+  const action = typeof request.answer?.action === "string" ? request.answer.action : "answered";
+  const note = typeof request.answer?.text === "string" && request.answer.text
+    ? request.answer.text
+    : request.resolution ?? "";
+  const actionLabel = REQUEST_ACTION_LABEL[action] ?? action;
+  const task = request.task ? await getOfficeTask(ctx.session, request.task) : null;
+  const meta = await readOfficeMeta(ctx.session);
+  const audience = meta?.primaryContact ?? request.toUser ?? undefined;
+
+  const key = recordKey(notificationId);
+  await ctx.effects.runEffect("answer-message", () =>
+    postOfficeMessage(ctx.session, {
+      id: `office_message:pm_answer_${key}`,
+      task: task?.id,
+      to: audience,
+      body:
+        `人类请求 ${notificationId} ${actionLabel}` +
+        (note ? `：${note}` : "。") +
+        (task ? `（关联任务「${task.goal}」）` : ""),
+    }),
+  );
+
+  // waiting_on 在 resume-task 后保留：restart 不能因为 status 已变
+  // in_progress 就跳过尚未提交的报告/收尾效果。done + requestId 则覆盖
+  // finish-task 已落库、effect 尚未 committed 的窄窗口，不重开终态。
+  // 同时验证请求归属与等待关联，不能替其他请求/员工收尾派单。
+  const ownsTask = task?.assignee === ctx.trigger.employeeId &&
+    request.fromEmployee === ctx.trigger.employeeId;
+  const waitingForThisRequest = task?.result?.waiting_on === notificationId &&
+    (task.status === "blocked" || task.status === "in_progress");
+  const finishedThisRequest = task?.status === "done" && task.result?.requestId === notificationId;
+  if (task && ownsTask && (waitingForThisRequest || finishedThisRequest)) {
+    if (task.status !== "done") {
+      await ctx.effects.runEffect("resume-task", () =>
+        setOfficeTaskStatus(ctx.session, task.id, "in_progress"),
+      );
+    }
+    const reportTo = meta?.primaryContact ?? request.toUser;
+    if (reportTo) {
+      await ctx.effects.runEffect("answer-report", () =>
+        deliverOfficeReport(ctx.session, {
+          id: `office_report:pm_answer_${recordKey(task.id)}`,
+          task: task.id,
+          to: reportTo,
+          summary:
+            `任务「${task.goal}」等待的人类请求${actionLabel}` +
+            (note ? `：${note}` : "。") +
+            "据此完成后续执行并交付本报告。",
+          nextSteps: ["如需进一步澄清，可发起新的人类请求或直接修订任务"],
+        }),
+      );
+    }
+    await ctx.effects.runEffect("finish-task", () =>
+      setOfficeTaskStatus(ctx.session, task.id, "done", {
+        requestId: notificationId,
+        answerAction: action,
+      }),
+    );
+    return { notificationId, taskId: task.id, action, continued: true };
+  }
+  return { notificationId, taskId: task?.id ?? null, action, continued: false };
+}
+
+/** 把 PM 的 reason 挂到通用 runtime；重复调用幂等（map 覆盖语义）。 */
 export function registerProjectManagerHandlers(
   runtime: Pick<EmployeeTriggerRuntime, "registerHandler">,
 ): void {
   runtime.registerHandler(OFFICE_BOOTSTRAP_REASON, handleBootstrap);
   runtime.registerHandler(OFFICE_TASK_REASON, handleOfficeTask);
+  runtime.registerHandler(OFFICE_REQUEST_REASON, handleOfficeRequestResolved);
 }

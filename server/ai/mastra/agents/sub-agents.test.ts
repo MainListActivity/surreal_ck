@@ -30,23 +30,23 @@ describe("dashboard agent", () => {
   });
 });
 
-describe("claim-analysis agent 占位", () => {
-  test("createClaimAnalysisAgent 工厂存在", async () => {
-    const mod = await import("./claim-analysis-agent");
-    expect(typeof mod.createClaimAnalysisAgent).toBe("function");
-    expect(typeof mod.CLAIM_ANALYSIS_AGENT_ID).toBe("string");
+describe("row-analysis agent", () => {
+  test("createRowAnalysisAgent 工厂存在", async () => {
+    const mod = await import("./row-analysis-agent");
+    expect(typeof mod.createRowAnalysisAgent).toBe("function");
+    expect(typeof mod.ROW_ANALYSIS_AGENT_ID).toBe("string");
   });
 
-  test("claim-analysis agent 注册债权行分析工具", async () => {
-    const { CLAIM_ANALYSIS_INSTRUCTIONS, CLAIM_ANALYSIS_TOOLS } = await import("./claim-analysis-agent");
-    expect(Object.keys(CLAIM_ANALYSIS_TOOLS).sort()).toEqual([
-      "analyzeClaimRow",
+  test("row-analysis agent 注册行分析工具", async () => {
+    const { ROW_ANALYSIS_INSTRUCTIONS, ROW_ANALYSIS_TOOLS } = await import("./row-analysis-agent");
+    expect(Object.keys(ROW_ANALYSIS_TOOLS).sort()).toEqual([
+      "analyzeRow",
       "fetchRelatedRecords",
       "proposeRecordWrite",
     ]);
-    expect(CLAIM_ANALYSIS_INSTRUCTIONS).toContain("优先使用当前记录的关联资源");
-    expect(CLAIM_ANALYSIS_INSTRUCTIONS).toContain("[1]");
-    expect(CLAIM_ANALYSIS_INSTRUCTIONS).toContain("无关联资源");
+    expect(ROW_ANALYSIS_INSTRUCTIONS).toContain("优先使用当前记录的关联资源");
+    expect(ROW_ANALYSIS_INSTRUCTIONS).toContain("[1]");
+    expect(ROW_ANALYSIS_INSTRUCTIONS).toContain("无关联资源");
   });
 });
 

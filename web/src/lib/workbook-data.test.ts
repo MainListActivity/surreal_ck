@@ -16,9 +16,9 @@ const columns: GridColumnDef[] = [
 
 describe("buildSelect", () => {
   test("无过滤时只生成参数化表名与分页", () => {
-    const built = buildSelect("ent_claim", {}, columns, { limit: 100, start: 0 });
+    const built = buildSelect("ent_items", {}, columns, { limit: 100, start: 0 });
     expect(built.sql).toBe("SELECT * FROM type::table($tb) LIMIT 100 START 0");
-    expect(built.bindings).toEqual({ tb: "ent_claim" });
+    expect(built.bindings).toEqual({ tb: "ent_items" });
   });
 
   test("过滤值参数化，多条件支持 OR", () => {
@@ -29,16 +29,16 @@ describe("buildSelect", () => {
       ],
       filterMode: "or",
     };
-    const built = buildSelect("ent_claim", view, columns, { limit: 50, start: 0 });
+    const built = buildSelect("ent_items", view, columns, { limit: 50, start: 0 });
     expect(built.sql).toBe(
       "SELECT * FROM type::table($tb) WHERE name CONTAINS $f0 OR amount >= $f1 LIMIT 50 START 0",
     );
-    expect(built.bindings).toEqual({ tb: "ent_claim", f0: "李", f1: 100 });
+    expect(built.bindings).toEqual({ tb: "ent_items", f0: "李", f1: 100 });
   });
 
   test("排序仅接受 schema 中存在的字段", () => {
     const built = buildSelect(
-      "ent_claim",
+      "ent_items",
       { sorts: [{ key: "status", direction: "asc" }, { key: "evil; DROP TABLE x", direction: "desc" }] },
       columns,
       { limit: 50, start: 0 },
@@ -48,7 +48,7 @@ describe("buildSelect", () => {
 
   test("reference 过滤绑定 RecordId，普通文本保持 string", () => {
     const built = buildSelect(
-      "ent_claim",
+      "ent_items",
       { filters: [
         { key: "owner", op: "eq", value: "app_user:u1" },
         { key: "name", op: "eq", value: "app_user:not-id" },
@@ -65,10 +65,10 @@ describe("buildSelect", () => {
 describe("DataTableRuntime 共用的纯边界辅助", () => {
   test("prepareRecordFields 包装 reference 并省略 nullish 字段", () => {
     const result = prepareRecordFields(
-      { name: "案件 A", owner: "app_user:u1", amount: null },
+      { name: "事项 A", owner: "app_user:u1", amount: null },
       columns,
     );
-    expect(result.name).toBe("案件 A");
+    expect(result.name).toBe("事项 A");
     expect(result.owner).toBeInstanceOf(StringRecordId);
     expect(String(result.owner)).toBe("app_user:u1");
     expect("amount" in result).toBe(false);
