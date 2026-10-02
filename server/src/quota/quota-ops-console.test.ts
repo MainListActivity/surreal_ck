@@ -83,7 +83,7 @@ describe("SurrealQuotaOpsConsole", () => {
           if (granted) return granted;
           if (
             sql.includes("FROM workspace\n")
-            && sql.includes("string::lowercase(slug)")
+            && sql.includes('string::lowercase(<string> (slug ?? ""))')
           ) {
             return [[{
               id: "workspace:demo",
@@ -96,7 +96,7 @@ describe("SurrealQuotaOpsConsole", () => {
           }
           if (
             sql.includes("FROM billing_account\n")
-            && sql.includes("string::lowercase(account_key)")
+            && sql.includes('string::lowercase(<string> (account_key ?? ""))')
           ) {
             return [[{
               id: "billing_account:acme",
@@ -115,7 +115,7 @@ describe("SurrealQuotaOpsConsole", () => {
           }
           if (
             sql.includes("FROM billing_account_member")
-            && sql.includes("string::lowercase(subject ?? \"\")")
+            && sql.includes('string::lowercase(<string> (subject ?? ""))')
           ) {
             return [[{
               subject: "alice",
@@ -205,11 +205,11 @@ describe("SurrealQuotaOpsConsole", () => {
       limit: 25,
     })).resolves.toMatchObject({ results: [] });
     const subjectFilters = seen.filter((sql) =>
-      sql.includes("string::lowercase(subject")
+      sql.includes('(subject ?? "")')
     );
     expect(subjectFilters.length).toBe(2);
     for (const sql of subjectFilters) {
-      expect(sql).toContain('string::lowercase(subject ?? "")');
+      expect(sql).toContain('string::lowercase(<string> (subject ?? ""))');
     }
   });
 
@@ -236,7 +236,7 @@ describe("SurrealQuotaOpsConsole", () => {
       limit: 25,
     })).resolves.toMatchObject({ results: [] });
     expect(seen.some((sql) =>
-      sql.includes("string::lowercase(slug)")
+      sql.includes('string::lowercase(<string> (slug ?? ""))')
     )).toBe(true);
   });
 

@@ -178,6 +178,23 @@ beforeAll(async () => {
       db_name: "ws_acme",
       role: "participant"
     };
+    -- 生产遗留坏行形态：name 非字符串（行先于严格字段类型写入）。
+    DEFINE FIELD OVERWRITE name ON TABLE workspace TYPE any;
+    DEFINE FIELD OVERWRITE name ON TABLE billing_account TYPE any;
+    CREATE workspace:badname CONTENT {
+      slug: "badname",
+      name: { broken: true },
+      status: "active",
+      db_name: "ws_badname",
+      owner_subject: "owner:bad"
+    };
+    CREATE billing_account:badacct CONTENT {
+      account_key: "badacct",
+      status: "active",
+      kind: "team"
+    };
+    DEFINE FIELD OVERWRITE name ON TABLE workspace TYPE string;
+    DEFINE FIELD OVERWRITE name ON TABLE billing_account TYPE string;
     CREATE platform_operator:alice CONTENT {
       subject: "operator:alice",
       display_name: "Alice",
@@ -458,6 +475,24 @@ describe("quota subscription lifecycle against local SurrealDB", () => {
         result.kind === "billing_account"
         && result.billing_account.account_key === "acme"
       )).toBeTrue();
+      // 坏行（name 非字符串/缺失）不得让 search 抛错，行本身可检索且 name 降级为空。
+      const badSearch = await opsConsole.search({
+        actor: { subject: "operator:alice" },
+        query: "bad",
+        limit: 100,
+      });
+      const badWorkspace = badSearch?.results.find((result) =>
+        result.kind === "workspace" && result.workspace.slug === "badname"
+      );
+      expect(badWorkspace && badWorkspace.kind === "workspace"
+        ? badWorkspace.workspace.name
+        : undefined).toBe("");
+      const emptySearch = await opsConsole.search({
+        actor: { subject: "operator:alice" },
+        query: "",
+        limit: 100,
+      });
+      expect(emptySearch?.results.length).toBeGreaterThan(0);
       const opsTimeline = await opsConsole.getTimeline({
         actor: { subject: "operator:alice" },
         slug: "acme",

@@ -83,6 +83,12 @@ function optionalString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+// 搜索目录是运维排障面：单行坏数据（缺失/非字符串）只降级该条显示，不应把整个
+// 结果集变成 500。
+function displayString(value: unknown, fallback = ""): string {
+  return typeof value === "string" ? value : fallback;
+}
+
 function recordString(value: unknown, field: string): string {
   const id = toStringRecordId(value);
   if (!id) throw new Error(`quota ops row is missing ${field}`);
@@ -339,8 +345,8 @@ export class SurrealQuotaOpsConsole implements QuotaOpsConsolePort {
                 FROM workspace
                 WHERE status != "archived"
                   AND (
-                    string::lowercase(slug) CONTAINS string::lowercase($query)
-                    OR string::lowercase(name) CONTAINS string::lowercase($query)
+                    string::lowercase(<string> (slug ?? "")) CONTAINS string::lowercase($query)
+                    OR string::lowercase(<string> (name ?? "")) CONTAINS string::lowercase($query)
                   )
                 ORDER BY updated_at DESC
                 LIMIT $limit
@@ -361,8 +367,8 @@ export class SurrealQuotaOpsConsole implements QuotaOpsConsolePort {
                 FROM billing_account
                 WHERE status = "active"
                   AND (
-                    string::lowercase(account_key) CONTAINS string::lowercase($query)
-                    OR string::lowercase(name) CONTAINS string::lowercase($query)
+                    string::lowercase(<string> (account_key ?? "")) CONTAINS string::lowercase($query)
+                    OR string::lowercase(<string> (name ?? "")) CONTAINS string::lowercase($query)
                   )
                 ORDER BY updated_at DESC
                 LIMIT $limit;
@@ -376,7 +382,7 @@ export class SurrealQuotaOpsConsole implements QuotaOpsConsolePort {
             SELECT subject, workspace
             FROM user_workspace_index
             WHERE disabled_at = NONE
-              AND string::lowercase(subject ?? "") CONTAINS string::lowercase($query)
+              AND string::lowercase(<string> (subject ?? "")) CONTAINS string::lowercase($query)
             LIMIT $limit
             FETCH workspace;
           `,
@@ -387,7 +393,7 @@ export class SurrealQuotaOpsConsole implements QuotaOpsConsolePort {
             SELECT subject, billing_account
             FROM billing_account_member
             WHERE status = "active"
-              AND string::lowercase(subject ?? "") CONTAINS string::lowercase($query)
+              AND string::lowercase(<string> (subject ?? "")) CONTAINS string::lowercase($query)
             LIMIT $limit
             FETCH billing_account;
           `,
@@ -430,17 +436,17 @@ export class SurrealQuotaOpsConsole implements QuotaOpsConsolePort {
           kind: "workspace",
           workspace: {
             id: workspaceRecord.toString(),
-            slug: requiredString(workspace.slug, "workspace slug"),
-            name: requiredString(workspace.name, "workspace name"),
+            slug: displayString(workspace.slug, workspaceRecord.toString()),
+            name: displayString(workspace.name),
           },
           billing_account: account
             ? {
                 id: recordString(account.id, "billing account id"),
-                account_key: requiredString(
+                account_key: displayString(
                   account.account_key,
-                  "billing account key",
+                  recordString(account.id, "billing account id"),
                 ),
-                name: requiredString(account.name, "billing account name"),
+                name: displayString(account.name),
               }
             : null,
           applied_plan_name: optionalString(plan?.display_name),
@@ -476,8 +482,11 @@ export class SurrealQuotaOpsConsole implements QuotaOpsConsolePort {
           kind: "billing_account",
           billing_account: {
             id: accountRecord.toString(),
-            account_key: requiredString(account.account_key, "account key"),
-            name: requiredString(account.name, "account name"),
+            account_key: displayString(
+              account.account_key,
+              accountRecord.toString(),
+            ),
+            name: displayString(account.name),
           },
           workspace_count: workspaceSlugs.length,
           workspace_slugs: workspaceSlugs,
