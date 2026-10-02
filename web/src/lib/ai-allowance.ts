@@ -3,6 +3,8 @@ import {
   type AiAllowanceBucketView,
   type AiAllowanceLedgerView,
   type AiAllowanceSnapshot,
+  type AiAllowanceSource, aiAllowancePlanPrefix, aiAllowanceConsumptionReason,
+  emptyAiAllowanceBalance, addAiAllowanceBalance,
 } from "@surreal-ck/shared";
 import type { SurrealConn } from "./surreal";
 import { recordValueToString } from "./record-id";
@@ -43,8 +45,11 @@ export function formatAllowanceTime(iso: string): string {
 
 /** 桶当前状态的可读标签：已过期 > 已终止 > 已暂停 > 生效中。 */
 export function aiAllowanceBucketStatusLabel(
-  bucket: Pick<AiAllowanceBucketView, "expired" | "status" | "terminated">,
+  bucket: Pick<AiAllowanceBucketView, "expired" | "status" | "terminated" | "consumptionReason">,
 ): string {
+  if (bucket.consumptionReason === "source_mismatch") return "来源已失效，不可消费";
+  if (bucket.consumptionReason === "pending") return "尚未生效";
+  if (bucket.consumptionReason === "invalid") return "额度状态无法核验，不可消费";
   if (bucket.expired) return "已过期";
   if (bucket.terminated) return "已终止";
   if (bucket.status === "suspended") return "已暂停";
@@ -77,6 +82,7 @@ function asDateMs(value: unknown): number {
 
 export async function loadAiAllowanceSnapshot(
   conn: Pick<SurrealConn, "query">,
+  source: AiAllowanceSource | null = null,
 ): Promise<AiAllowanceSnapshot> {
   const [rateRows, bucketRows, entryRows, noticeRows] = await Promise.all([
     conn.query<Record<string, unknown>>(
@@ -98,6 +104,7 @@ export async function loadAiAllowanceSnapshot(
   ]);
 
   const now = Date.now();
+  const prefix = aiAllowancePlanPrefix(source, now);
   const buckets: AiAllowanceBucketView[] = bucketRows.map((row) => {
     const expiresAt = asIso(row.expires_at);
     return {
@@ -114,6 +121,10 @@ export async function loadAiAllowanceSnapshot(
       expires_at: expiresAt,
       expired: asDateMs(row.expires_at) <= now,
       terminated: row.terminated_at != null,
+      consumptionReason: aiAllowanceConsumptionReason({
+        kind: String(row.kind), period_key: asString(row.period_key), status: String(row.status),
+        terminated_at: row.terminated_at, effective_from: asIso(row.effective_from), expires_at: expiresAt,
+      }, prefix, now),
     };
   });
 
@@ -128,11 +139,7 @@ export async function loadAiAllowanceSnapshot(
           tierLabel: typeof rate.tier_label === "string" ? rate.tier_label : "",
         }
       : null,
-    available: 0,
-    reserved: 0,
-    suspended: 0,
-    terminated: 0,
-    expired: 0,
+    ...emptyAiAllowanceBalance(),
     buckets,
     entries: entryRows.map((row) => ({
       id: asString(row.id),
@@ -151,13 +158,7 @@ export async function loadAiAllowanceSnapshot(
   };
 
   for (const bucket of buckets) {
-    if (bucket.expired) snapshot.expired += bucket.available + bucket.reserved;
-    else if (bucket.terminated) snapshot.terminated += bucket.available + bucket.reserved;
-    else if (bucket.status === "suspended") snapshot.suspended += bucket.available + bucket.reserved;
-    else {
-      snapshot.available += bucket.available;
-      snapshot.reserved += bucket.reserved;
-    }
+    addAiAllowanceBalance(snapshot, bucket.consumptionReason ?? "invalid", bucket.available, bucket.reserved);
   }
   return snapshot;
 }

@@ -53,7 +53,7 @@ function fakeSystem(entitled: Readonly<Record<string, readonly string[]>>): Quer
       const db = String(bindings?.db ?? bindings?.w ?? "");
       if (sql.includes("current_product_entitlement")) {
         return [[entitled[db]
-          ? { ai_actions: [...entitled[db]], base_kind: "subscription", base_id: "sub_lca05" }
+          ? { ai_actions: [...entitled[db]], base_kind: "subscription", base_id: "sub_lca05", effective_from: "2020-01-01T00:00:00Z", effective_until: null }
           : null]];
       }
       if (sql.includes("db_name") || sql.includes("slug")) {

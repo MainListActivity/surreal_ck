@@ -1,4 +1,6 @@
 import { isRetryableConflict, QueryError, StringRecordId, SurrealError } from "surrealdb";
+import { aiAllowancePlanPrefix, aiAllowanceConsumptionReason, AI_ALLOWANCE_CONSUMABLE_SQL,
+  emptyAiAllowanceBalance, addAiAllowanceBalance } from "@surreal-ck/shared";
 
 /**
  * LCA05 工作区共享 AI 额度账本服务。
@@ -119,6 +121,8 @@ export type ReservationRow = {
 };
 
 export type AllowanceBalance = {
+  pending: number;
+  unavailable: number;
   /** 可用总额（未到期、未暂停、未终止）。 */
   available: number;
   /** 进行中预留总额（未到期桶上）。 */
@@ -194,12 +198,14 @@ export class AiAllowanceService {
     planCyclePrefix: string | null;
   } | null> {
     const sys = await this.deps.systemSession();
-    const row = first<{ ai_actions?: unknown; base_kind?: unknown; base_id?: unknown }>(
+    const row = first<{ ai_actions?: unknown; base_kind?: unknown; base_id?: unknown; effective_from?: unknown; effective_until?: unknown }>(
       await collect(
         sys,
         `SELECT current_product_entitlement.ai_actions AS ai_actions,
                 current_product_entitlement.base_source_kind AS base_kind,
-                current_product_entitlement.base_source_id AS base_id
+                current_product_entitlement.base_source_id AS base_id,
+                current_product_entitlement.effective_from AS effective_from,
+                current_product_entitlement.effective_until AS effective_until
          FROM workspace WHERE db_name = $db LIMIT 1`,
         { db: dbName },
       ),
@@ -207,9 +213,11 @@ export class AiAllowanceService {
     if (!row || !Array.isArray(row.ai_actions)) return null;
     const baseKind = row.base_kind;
     const baseId = typeof row.base_id === "string" ? row.base_id : null;
-    const planCyclePrefix = (baseKind === "trial" || baseKind === "subscription") && baseId
-      ? `${String(baseKind)}:${baseId}:`
-      : null;
+    const planCyclePrefix = aiAllowancePlanPrefix({
+      kind: baseKind === "trial" || baseKind === "subscription" ? baseKind : "none", sourceId: baseId,
+      effectiveFrom: row.effective_from == null ? null : String(row.effective_from),
+      effectiveUntil: row.effective_until == null ? null : String(row.effective_until),
+    }, this.nowMs);
     return { actions: row.ai_actions.map(String), planCyclePrefix };
   }
 
@@ -263,9 +271,7 @@ export class AiAllowanceService {
         await collect(
           session,
           `SELECT id, expires_at, created_at, (kind = "purchased") AS purchased_last FROM ai_allowance_bucket
-           WHERE status = "active" AND effective_from <= time::now() AND expires_at > time::now()
-             AND available >= $amt AND terminated_at = NONE
-             AND (kind != "plan_cycle" OR string::starts_with(period_key, $planPrefix))
+           WHERE ${AI_ALLOWANCE_CONSUMABLE_SQL} AND available >= $amt
            ORDER BY expires_at ASC, purchased_last ASC, created_at ASC`,
           { amt: amount, planPrefix: gate.planCyclePrefix ?? "\u0000no-valid-plan-source" },
         ),
@@ -278,8 +284,7 @@ export class AiAllowanceService {
             session,
             `BEGIN;
              LET $u = (UPDATE $bucket SET available -= $amt, reserved += $amt
-                       WHERE available >= $amt AND status = "active" AND expires_at > time::now()
-                         AND terminated_at = NONE);
+                       WHERE available >= $amt AND ${AI_ALLOWANCE_CONSUMABLE_SQL});
              IF array::len($u) > 0 {
                LET $res = (CREATE ONLY ai_reservation CONTENT {
                  actor: $actor, channel: $channel, action_key: $action, rate: $rate,
@@ -294,6 +299,7 @@ export class AiAllowanceService {
              COMMIT;`,
             {
               bucket: rid(candidate.id),
+              planPrefix: gate.planCyclePrefix ?? "\u0000no-valid-plan-source",
               actor: input.actor,
               channel: input.channel,
               action: input.actionKey,
@@ -521,22 +527,10 @@ export class AiAllowanceService {
       await collect(session, `SELECT * FROM ai_allowance_bucket ORDER BY expires_at ASC`),
     );
     const now = this.nowMs;
-    const ts = (v: unknown) => (v instanceof Date ? v.getTime() : new Date(String(v)).getTime());
-    const balance: AllowanceBalance = { available: 0, reserved: 0, suspended: 0, terminated: 0, expired: 0, buckets };
+    const balance: AllowanceBalance = { ...emptyAiAllowanceBalance(), buckets };
     for (const b of buckets) {
-      const expired = ts(b.expires_at) <= now;
-      // LCA08：终止标记（试用转付费）或不再对齐当前商业来源的 plan_cycle 桶
-      // 立即离开可消费余额，不复活（fail-closed，不事后改写桶记录）。
-      const terminated = b.terminated_at != null;
-      const stalePlanSource = b.kind === "plan_cycle"
-        && !(typeof gate?.planCyclePrefix === "string" && String(b.period_key).startsWith(gate.planCyclePrefix));
-      if (expired) balance.expired += b.available + b.reserved;
-      else if (terminated || stalePlanSource) balance.terminated += b.available + b.reserved;
-      else if (b.status === "suspended") balance.suspended += b.available + b.reserved;
-      else {
-        balance.available += b.available;
-        balance.reserved += b.reserved;
-      }
+      const reason = aiAllowanceConsumptionReason({ ...b, effective_from: String(b.effective_from), expires_at: String(b.expires_at) }, gate?.planCyclePrefix ?? null, now);
+      addAiAllowanceBalance(balance, reason, b.available, b.reserved);
     }
     return balance;
   }
