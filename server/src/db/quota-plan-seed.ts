@@ -2,6 +2,8 @@ import { env } from "../env";
 import { getRootDatabaseSession } from "./root-connection";
 import {
   commercialProductRules,
+  MAX_V2_LIMITS,
+  MAX_V2_REVISION_KEY,
   SEEDED_PLAN_LIMITS,
   type SeededPlanKey,
 } from "./quota-plan-rules";
@@ -112,6 +114,38 @@ export async function seedQuotaPlans(
       },
     );
   }
+
+  // CV02：不可变的 Max 第二修订（物理口径 3/11/12），v1 保持不碰；随后把
+  // quota_plan:max 的 active_revision 收敛到 v2，使新供给工作区直接获得
+  // 可容纳破产债权模板包的额度。既有 workspace 的订阅项仍指向各自
+  // plan_revision 快照，由正常运营事件（subscription_upsert）升级。
+  const maxV2Rules = commercialProductRules(MAX_V2_LIMITS);
+  await systemDb.query(
+    `
+      LET $existing = (
+        SELECT VALUE id FROM type::record("quota_plan_revision", $revisionKey) LIMIT 1
+      );
+      IF array::len($existing) = 0 {
+        CREATE type::record("quota_plan_revision", $revisionKey) CONTENT {
+          plan: type::record("quota_plan", "max"),
+          revision: 2,
+          template_kind: "commercial",
+          rules: $rules,
+          created_by_subject: $createdBySubject,
+          published_at: time::now(),
+          correlation_id: $correlationId
+        };
+      };
+      UPDATE type::record("quota_plan", "max") SET
+        active_revision = type::record("quota_plan_revision", $revisionKey);
+    `,
+    {
+      revisionKey: MAX_V2_REVISION_KEY,
+      rules: maxV2Rules,
+      createdBySubject,
+      correlationId: `seed-plan-max-v2`,
+    },
+  );
 
   return { planKeys: PLAN_SPECS.map((spec) => spec.planKey) };
 }

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { QuotaApiWorkspaceView } from "@surreal-ck/shared/native-quota";
 import type { SurrealConn } from "./surreal";
 import {
   buildCreateWorkbookTransaction,
@@ -23,6 +24,10 @@ function setup(opts: {
   probeValue?: boolean;
   /** 探针抛错（模拟引擎异常）。 */
   probeError?: unknown;
+  /** 工作区配额视图；undefined = 不装配预检依赖（纯引擎强制路径）。 */
+  quotaView?: QuotaApiWorkspaceView | null;
+  /** 配额视图读取抛错（模拟 API 不可用）。 */
+  quotaViewError?: unknown;
 } = {}) {
   const rec: Recorder = { queries: [], creates: [], updates: [] };
   const rows = opts.workbooks ?? [];
@@ -61,7 +66,17 @@ function setup(opts: {
     transaction: (async (run: (tx: SurrealConn) => Promise<unknown>) => run(conn)) as SurrealConn["transaction"],
   } as SurrealConn;
 
-  const store = createWorkbooksStore({ getConn: () => conn });
+  const store = createWorkbooksStore({
+    getConn: () => conn,
+    ...(opts.quotaView !== undefined || opts.quotaViewError !== undefined
+      ? {
+          getWorkspaceQuotaView: async () => {
+            if (opts.quotaViewError) throw opts.quotaViewError;
+            return opts.quotaView ?? null;
+          },
+        }
+      : {}),
+  });
   return { store, conn, rec };
 }
 
@@ -714,6 +729,180 @@ describe("buildCreateWorkbookTransaction — 纯 SurrealQL 构造", () => {
     expect(sql).not.toContain("DROP TABLE workbook");
     expect(bindings.name).toBe("'; DROP TABLE workbook; --");
     expect(sql).toContain("name: $name");
+  });
+});
+
+// ── CV02：建簿入口容量预检（读 INFO FOR QUOTA 投影的工作区配额视图）。──
+function quotaWorkspaceView(
+  limits: { tables: number; fields: number; records: number },
+  entUsed = 0,
+): QuotaApiWorkspaceView {
+  const rule = (resource: "table" | "field" | "record", label: string, limit: number, used: number | null) => ({
+    key: `entity-${resource}s`,
+    resource,
+    label,
+    selector: { kind: "regex" as const, description: label, pattern: "^ent_", matched_tables: [] },
+    usage: {
+      kind: "finite" as const,
+      limit,
+      used,
+      remaining: used === null ? null : limit - used,
+      over_by: null,
+      utilization_percent: null,
+      at_limit: null,
+      over_limit: null,
+    },
+  });
+  return {
+    format_version: 1,
+    view: "workspace_admin",
+    viewer: { subject: "user:admin", capabilities: ["workspace_quota.read"] },
+    workspace: { id: "workspace:w", slug: "w", name: "W" },
+    statuses: {
+      sync: "in_sync",
+      compliance: "compliant",
+      capacity: "normal",
+      service_mode: "standard",
+      ledger: "ready",
+    },
+    observed_at: null,
+    commercial_state_at: "2026-10-01T00:00:00.000Z",
+    cache_age_ms: null,
+    usage_trusted: true,
+    stale: false,
+    applied: null,
+    desired: null,
+    billing_account: null,
+    resources: [
+      rule("table", "实体数据表数", limits.tables, entUsed),
+      rule("field", "每张实体表字段数", limits.fields, null),
+      rule("record", "每张实体表记录数", limits.records, null),
+    ],
+    actions: ["refresh"],
+  };
+}
+
+const claimsPackSheets = [
+  {
+    key: "creditors",
+    label: "债权人",
+    columns: [
+      { key: "creditor_name", label: "债权人名称", fieldType: "text" as const },
+      { key: "identity_type", label: "证件类型", fieldType: "text" as const },
+      { key: "identity_number", label: "证件号码", fieldType: "text" as const },
+      { key: "contact_name", label: "联系人", fieldType: "text" as const },
+      { key: "contact_phone", label: "联系方式", fieldType: "text" as const },
+      { key: "address", label: "地址", fieldType: "text" as const },
+    ],
+    sampleRecords: [{ key: "a", values: {} }],
+  },
+  {
+    key: "claims",
+    label: "债权申报",
+    columns: [
+      { key: "creditor", label: "债权人", fieldType: "reference" as const, referenceSheetKey: "creditors" },
+      { key: "principal", label: "本金", fieldType: "decimal" as const },
+      { key: "interest", label: "利息", fieldType: "decimal" as const },
+      { key: "nature", label: "性质", fieldType: "single_select" as const },
+      { key: "filing_date", label: "申报日期", fieldType: "date" as const },
+      { key: "evidence", label: "证据", fieldType: "text" as const },
+      { key: "status", label: "状态", fieldType: "single_select" as const },
+      { key: "amount", label: "金额", fieldType: "decimal" as const },
+      { key: "review", label: "审查意见", fieldType: "text" as const },
+    ],
+    sampleRecords: Array.from({ length: 12 }, (_, index) => ({
+      key: `claim-${index}`,
+      values: {},
+    })),
+  },
+];
+
+describe("CV02 — 建簿入口容量预检", () => {
+  test("v1 Max（3/9/6）下含样例模板被预检拒绝：准确提示所需/上限，不发起写入", async () => {
+    const { store, rec } = setup({ quotaView: quotaWorkspaceView({ tables: 3, fields: 9, records: 6 }) });
+
+    const workbook = await store.createFromTemplate({ id: "workbook_template:claims", sheets: claimsPackSheets });
+
+    expect(workbook).toBeNull();
+    expect(store.error).toContain("需要 11");
+    expect(store.error).toContain("上限 9");
+    expect(store.error).toContain("需要 12");
+    expect(store.error).toContain("上限 6");
+    // 预检在写入前短路：只有 legacy 探针点查，没有建簿事务。
+    expect(rec.queries.filter((query) => /BEGIN TRANSACTION/i.test(query.sql))).toEqual([]);
+  });
+
+  test("v2 Max（3/11/12）下同一模板正常创建", async () => {
+    const { store, rec } = setup({ quotaView: quotaWorkspaceView({ tables: 3, fields: 11, records: 12 }) });
+
+    const workbook = await store.createFromTemplate({ id: "workbook_template:claims", sheets: claimsPackSheets });
+
+    expect(workbook).not.toBeNull();
+    expect(rec.queries.some((query) => /BEGIN TRANSACTION/i.test(query.sql))).toBe(true);
+  });
+
+  test("表桶占用计入：3 上限已用 2，新建 2 张表被拒", async () => {
+    const { store } = setup({ quotaView: quotaWorkspaceView({ tables: 3, fields: 11, records: 12 }, 2) });
+
+    const workbook = await store.createFromTemplate({ id: "workbook_template:claims", sheets: claimsPackSheets });
+
+    expect(workbook).toBeNull();
+    expect(store.error).toContain("需要 2");
+    expect(store.error).toContain("剩余 1");
+  });
+
+  test("空台账（不含样例）只做表/字段判定", async () => {
+    const { store } = setup({ quotaView: quotaWorkspaceView({ tables: 3, fields: 11, records: 0 }) });
+
+    const workbook = await store.createFromTemplate(
+      { id: "workbook_template:claims", sheets: claimsPackSheets },
+      undefined,
+      { includeSampleData: false },
+    );
+
+    expect(workbook).not.toBeNull();
+  });
+
+  test("participant 视图（无 resources）→ 预检不判定，照常发起写入由引擎强制", async () => {
+    const participantView = {
+      format_version: 1,
+      view: "participant",
+      viewer: { subject: "user:m", capabilities: [] },
+      workspace: { id: "workspace:w", slug: "w", name: "W" },
+      actions: ["contact_workspace_admin"],
+    } as unknown as QuotaApiWorkspaceView;
+    const { store, rec } = setup({ quotaView: participantView });
+
+    const workbook = await store.createFromTemplate({ id: "workbook_template:claims", sheets: claimsPackSheets });
+
+    expect(workbook).not.toBeNull();
+    expect(rec.queries.some((query) => /BEGIN TRANSACTION/i.test(query.sql))).toBe(true);
+  });
+
+  test("配额 API 不可用 → 预检降级，照常写入由引擎兜底", async () => {
+    const { store, rec } = setup({ quotaViewError: new Error("quota api down") });
+
+    const workbook = await store.createFromTemplate({ id: "workbook_template:claims", sheets: claimsPackSheets });
+
+    expect(workbook).not.toBeNull();
+    expect(rec.queries.some((query) => /BEGIN TRANSACTION/i.test(query.sql))).toBe(true);
+  });
+
+  test("账本不可信（used 为 null）→ 不阻断，交由引擎判定", async () => {
+    const view = quotaWorkspaceView({ tables: 3, fields: 11, records: 12 });
+    const adminView = {
+      ...view,
+      usage_trusted: false,
+      resources: view.resources.map((resource) => resource.resource === "table"
+        ? { ...resource, usage: { ...resource.usage, used: null, remaining: null } }
+        : resource),
+    } as QuotaApiWorkspaceView;
+    const { store, rec } = setup({ quotaView: adminView });
+
+    const workbook = await store.createFromTemplate({ id: "workbook_template:claims", sheets: claimsPackSheets });
+
+    expect(workbook).not.toBeNull();
+    expect(rec.queries.some((query) => /BEGIN TRANSACTION/i.test(query.sql))).toBe(true);
   });
 });
 

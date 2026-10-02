@@ -1,4 +1,10 @@
 import { buildSurrealFieldSchema, gridColumnToStoredDef } from "@surreal-ck/shared/field-schema";
+import {
+  computeEntityCapacityNeed,
+  describeCapacityGaps,
+  evaluateEntityCapacity,
+} from "@surreal-ck/shared/native-quota";
+import type { QuotaApiWorkspaceView } from "@surreal-ck/shared/native-quota";
 import { buildRecordQuotaGuardSurql } from "@surreal-ck/shared/resource-quota";
 import { ENTITY_TABLE_MEMBER_PERMISSIONS } from "@surreal-ck/shared/entity-table-permissions";
 import type {
@@ -51,6 +57,13 @@ export type WorkbooksDeps = {
   getConn: () => SurrealConn;
   /** 随机 key 系统边界；生产环境使用 Web Crypto，集成测试可注入确定序列。 */
   generateKey?: () => string;
+  /**
+   * 工作区配额视图（可选）。提供时 create() 先按 INFO FOR QUOTA 读回的规则
+   * 预检实体表容量：可判定的不足给出所需/缺口提示且不发起写入；视图缺失、
+   * selector 细节不回（participant）或账本不可信时照常写入，由引擎配额原子
+   * 兜底——预检只是友好提示，永远不放宽边界。
+   */
+  getWorkspaceQuotaView?: () => Promise<QuotaApiWorkspaceView | null>;
   /** 镜像进 runes，使组件响应式更新。纯逻辑层不依赖它。 */
   onChange?: (snapshot: WorkbooksSnapshot) => void;
 };
@@ -328,6 +341,25 @@ function validateDashboardWidgetFields(
   if (sortField && !fields.has(sortField) && !["value", "x", "y"].includes(sortField)) {
     throw new Error(`默认仪表盘组件“${widget.id}”引用的排序字段不存在：${sortField}`);
   }
+}
+
+/**
+ * 建簿事务将创建的实体表容量需求。与 {@link buildCreateWorkbookTransaction}
+ * 的 sheet 展开保持一致：缺省 sheets 时回退单表 + 默认列。
+ */
+function entitySheetDemands(options: CreateWorkbookOptions) {
+  const requested: ReadonlyArray<{
+    label?: string;
+    columns: readonly unknown[];
+    sampleRecords?: readonly unknown[];
+  }> = options.sheets?.length
+    ? options.sheets
+    : [{ columns: options.columns?.length ? options.columns : [DEFAULT_BLANK_COLUMN] }];
+  return requested.map((sheet) => ({
+    label: sheet.label ?? "",
+    businessFields: sheet.columns.length,
+    initialRecords: sheet.sampleRecords?.length ?? 0,
+  }));
 }
 
 export function buildCreateWorkbookTransaction(
@@ -626,6 +658,26 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
       const transaction = buildCreateWorkbookTransaction(name, { ...options, legacyRecordQuota }, deps.generateKey);
       workbookId = transaction.workbookId;
       const { sql, bindings } = transaction;
+      // 入口容量预检（CV02）：模板形状先校验，配额视图可判定时提前给出
+      // 所需/缺口，不发写入；不可判定（participant 视图、账本不可信、API
+      // 不可用）照常提交事务，由引擎配额原子兜底。
+      if (deps.getWorkspaceQuotaView) {
+        try {
+          const view = await deps.getWorkspaceQuotaView();
+          if (view && "resources" in view) {
+            const verdict = evaluateEntityCapacity(
+              computeEntityCapacityNeed(entitySheetDemands(options)),
+              view.resources,
+              "ent_probe",
+            );
+            if (verdict.kind === "insufficient") {
+              state.error = describeCapacityGaps(verdict.gaps);
+              emit();
+              return null;
+            }
+          }
+        } catch { /* 配额读数不可用 → 引擎兜底 */ }
+      }
       await deps.getConn().query(sql, bindings);
     } catch (err) {
       const message = describeWriteError(err);
