@@ -32,6 +32,42 @@ describe("OIP-18 employee SurrealDB store", () => {
     }]);
   });
 
+  test("提醒显式写 purpose=claims-risk，不依赖 schema 默认值（044 默认桶为 info）", async () => {
+    let inserted: Record<string, unknown> | undefined;
+    const session: EmployeeQuerySession = {
+      async query(sql, params) {
+        if (sql.includes("FROM user WHERE")) {
+          return [{ id: "user:owner" }];
+        }
+        if (sql.includes("INSERT INTO user_notification")) {
+          inserted = params?.content as Record<string, unknown>;
+          return [];
+        }
+        return [];
+      },
+    };
+    const store = createSurrealClaimsRiskStore(session);
+
+    const saved = await store.saveReminder({
+      dedupeKey: "2026-09-30|workbook:claims|ent_claims_materials:m1|missing-material",
+      checkDate: "2026-09-30",
+      checkedAt: new Date("2026-09-30T01:00:00.000Z"),
+      workbookId: "workbook:claims",
+      workbookName: "债权台账",
+      recordId: "ent_claims_materials:m1",
+      riskType: "missing-material",
+      title: "材料缺失：签收单",
+      body: "缺少三月份签收单",
+      severity: "warning",
+      matchedFields: { is_missing: true },
+      rule: "证据材料记录的“是否缺失”为是",
+    });
+
+    expect(saved).toBe(true);
+    expect(inserted?.purpose).toBe("claims-risk");
+    expect(inserted?.risk_type).toBe("missing-material");
+  });
+
   test("已完成的检查日返回 completed，阻止 runner 再读业务记录", async () => {
     // UPSERT ... WHERE status != "completed"：completed 行不命中 WHERE → 空集 = 已完成。
     const session: EmployeeQuerySession = {

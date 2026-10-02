@@ -3,11 +3,13 @@ import type { ClaimsRiskStore } from "./daily-claims-risk";
 import {
   CLAIMS_RISK_REASON,
   ensureClaimsRiskEmployee,
+  listClaimsRiskEmployees,
   registerClaimsRiskHandler,
   runClaimsRiskReminderDispatch,
   type ClaimsRiskTriggerQueue,
   type RootEmployeeProvisioningSession,
 } from "./claims-risk-dispatcher";
+import type { getRootDatabaseSession } from "../../src/db/root-connection";
 import type {
   EnqueueResult,
   TriggerDelivery,
@@ -98,6 +100,38 @@ describe("OIP-18 风险提醒 trigger adapter", () => {
       subject: "claims-risk-reminder",
       secret: "generated-secret",
     });
+  });
+
+  test("门控：只有存在已启用债权工作簿的 workspace 才 provision 员工并进入投递名单", async () => {
+    const queried: { db: string; sql: string }[] = [];
+    const getSession = (async (database: string) => ({
+      async query(sql: string) {
+        queried.push({ db: database, sql });
+        if (database === "_system") {
+          return [[{ db_name: "ws_generic" }, { db_name: "ws_claims" }]];
+        }
+        if (sql.includes("FROM workbook")) {
+          // ws_generic 无债权包/未启用 → 空；ws_claims 已启用。
+          return [[...(database === "ws_claims" ? [{ id: "workbook:c1" }] : [])]];
+        }
+        if (sql.includes("FROM user:claims_risk_reminder")) {
+          return [[{ id: "user:claims_risk_reminder", subject: "claims-risk-reminder" }]];
+        }
+        if (sql.includes("FROM employee_credential")) {
+          return [[{ secret: "existing-secret" }]];
+        }
+        return [[]];
+      },
+    })) as unknown as typeof getRootDatabaseSession;
+
+    const targets = await listClaimsRiskEmployees(getSession);
+
+    expect(targets).toEqual([{ database: "ws_claims", employeeId: "user:claims_risk_reminder" }]);
+    // 通用工作区只做了一次门控 SELECT，不触碰 user / employee_credential。
+    const genericQueries = queried.filter((entry) => entry.db === "ws_generic").map((entry) => entry.sql);
+    expect(genericQueries).toHaveLength(1);
+    expect(genericQueries[0]).toContain("FROM workbook");
+    expect(queried.some((entry) => entry.db === "ws_generic" && entry.sql.includes("employee_credential"))).toBe(false);
   });
 
   test("dispatch 为每个 workspace 投递持久化触发，幂等键含员工与日期", async () => {

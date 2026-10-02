@@ -8,7 +8,7 @@ import { views, workbookRows } from "../data/product";
   <div class="stage">
     <div class="window-bar">
       <div class="window-dots" aria-hidden="true"><i></i><i></i><i></i></div>
-      <span>破产债权工作空间</span>
+      <span>采购协同工作空间</span>
       <div class="window-members"><b>林</b><b>陈</b><b>周</b><em>+4</em></div>
     </div>
     <div class="product-shell">
@@ -17,15 +17,15 @@ import { views, workbookRows } from "../data/product";
         <div class="rail-search"><Search size={11} /><span>搜索工作簿</span></div>
         <nav aria-label="产品界面示意导航">
           <span><LayoutDashboard size={12} />首页</span>
-          <span class="active"><Table2 size={12} />债权申报台账</span>
-          <span><CircleDollarSign size={12} />清偿测算</span>
+          <span class="active"><Table2 size={12} />采购订单台账</span>
+          <span><CircleDollarSign size={12} />到货对账</span>
         </nav>
-        <div class="rail-bottom"><i>林</i><span><strong>澄明律所</strong><small>案件工作区</small></span></div>
+        <div class="rail-bottom"><i>林</i><span><strong>启明制造</strong><small>采购工作区</small></span></div>
       </aside>
 
       <div class="workbook">
         <header class="book-head">
-          <div><span class="book-kicker">工作簿</span><h3>债权申报台账</h3></div>
+          <div><span class="book-kicker">工作簿</span><h3>采购订单台账</h3></div>
           <button type="button">共享 <ChevronDown size={11} /></button>
         </header>
         <div class="viewbar">
@@ -35,7 +35,7 @@ import { views, workbookRows } from "../data/product";
           <div class="view-tools"><span><ListFilter size={11} />筛选</span><span>排序</span><b>＋ 新记录</b></div>
         </div>
         <div class="sheet">
-          <div class="sheet-row sheet-head"><span>#</span><span>债权人</span><span>申报金额</span><span>审查状态</span><span>负责人</span></div>
+          <div class="sheet-row sheet-head"><span>#</span><span>供应商</span><span>订单金额</span><span>交付状态</span><span>负责人</span></div>
           {workbookRows.map((row, index) => (
             <div class="sheet-row">
               <span>{index + 1}</span>
@@ -51,10 +51,10 @@ import { views, workbookRows } from "../data/product";
 
     <div class="ai-card">
       <div class="ai-head"><span><Sparkles size={13} />卯豆 AI</span><em>理解当前工作簿</em></div>
-      <p>找出本周需要优先处理的债权，并说明原因。</p>
+      <p>找出本周需要优先处理的订单，并说明原因。</p>
       <div class="ai-answer">
         <span><Bot size={14} /></span>
-        <div><strong>已找到 3 条高优先级记录</strong><small>综合材料完整度、异议状态与截止日期排序</small></div>
+        <div><strong>已找到 3 条高优先级记录</strong><small>综合到货进度、金额与交付日期排序</small></div>
       </div>
       <div class="ai-action"><span>已生成优先级视图</span><button type="button">打开视图 →</button></div>
     </div>

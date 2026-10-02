@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createSyntheticJudgmentBatch } from "@surreal-ck/shared/platform-content";
-import { ContentServiceError, InMemoryPlatformContentStore, PlatformContentService, legalSearchQueryCandidates } from "./service";
+import { ContentServiceError, InMemoryPlatformContentStore, PlatformContentService, searchQueryCandidates } from "./service";
 
 const operator = { subject: "operator:ada", capabilities: ["content.submit", "content.read", "content.publish", "content.withdraw", "content.restore", "content.source.manage"] } as const;
 const source = {
@@ -342,15 +342,18 @@ describe("platform content ingestion service", () => {
     expect((await service.searchContent(operator, { limit: 20 })).items).toHaveLength(2);
   });
 
-  test("legalSearchQueryCandidates 从自然语言问句抽出可检索短语", () => {
-    expect(legalSearchQueryCandidates("查找合同解除案例")).toContain("合同解除");
-    expect(legalSearchQueryCandidates("帮我查一下最高法关于专利侵权许诺销售的指导案例和适用法条")).toEqual(
-      expect.arrayContaining(["最高法", "专利侵权许诺销售"]),
+  test("searchQueryCandidates 从自然语言问句抽出可检索短语（通用，无领域词表）", () => {
+    expect(searchQueryCandidates("查找合同解除案例")).toContain("合同解除案例");
+    expect(searchQueryCandidates("帮我查一下最高法关于专利侵权许诺销售的指导案例和适用法条")).toEqual(
+      expect.arrayContaining(["最高法", "专利侵权许诺销售", "指导案例"]),
     );
-    expect(legalSearchQueryCandidates("查找（2023）最高法知民终113号并给出官方来源链接")).toEqual([
+    expect(searchQueryCandidates("查找（2023）最高法知民终113号并给出官方来源链接")).toEqual([
       "查找（2023）最高法知民终113号并给出官方来源链接",
       "（2023）最高法知民终113号",
-      "最高法",
     ]);
+    // 通用域样例：非法律问句同样按请求噪声/连接词结构拆分。
+    expect(searchQueryCandidates("帮我查一下泵房设备的本月巡检记录")).toEqual(
+      expect.arrayContaining(["泵房设备", "本月巡检记录"]),
+    );
   });
 });

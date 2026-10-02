@@ -133,11 +133,11 @@ const iconByName = {
                 <p>在表格、看板、画廊与表单之间自由切换，每个人都用适合自己的方式完成工作。</p>
               </div>
               <div class="kanban-demo" aria-label="看板视图示意">
-                <div class="kanban-top"><strong>债权审查进度</strong><span><Table2 size={11} /> 表格</span><span class="active"><Rows3 size={11} /> 看板</span></div>
+                <div class="kanban-top"><strong>采购订单进度</strong><span><Table2 size={11} /> 表格</span><span class="active"><Rows3 size={11} /> 看板</span></div>
                 <div class="kanban-columns">
-                  <div><p><i class="dot sand"></i>待核验 <em>8</em></p><span><b>华远供应链</b><small>¥ 680,000 · 林澈</small></span><span><b>合信商贸</b><small>缺少付款凭证</small></span></div>
-                  <div><p><i class="dot orange"></i>复核中 <em>5</em></p><span><b>北辰实业</b><small>存在金额异议</small></span><span><b>启航物流</b><small>今日更新</small></span></div>
-                  <div><p><i class="dot green"></i>已确认 <em>24</em></p><span><b>知行科技</b><small>材料完整</small></span><span class="ghost-card"><b>+ 新建记录</b></span></div>
+                  <div><p><i class="dot sand"></i>待下单 <em>8</em></p><span><b>华远供应链</b><small>¥ 680,000 · 林澈</small></span><span><b>合信商贸</b><small>待确认交期</small></span></div>
+                  <div><p><i class="dot orange"></i>备货中 <em>5</em></p><span><b>北辰实业</b><small>价格波动待确认</small></span><span><b>启航物流</b><small>今日更新</small></span></div>
+                  <div><p><i class="dot green"></i>已到货 <em>24</em></p><span><b>知行科技</b><small>已排产</small></span><span class="ghost-card"><b>+ 新建记录</b></span></div>
                 </div>
               </div>
             </article>
@@ -148,7 +148,7 @@ const iconByName = {
               <h3>把问题说出来，<br />让答案回到工作里。</h3>
               <p>AI 会理解当前工作簿、筛选条件与记录关联，不只回答问题，还能生成视图、图表与下一步动作。</p>
               <div class="prompt-card">
-                <p>“按负责人汇总有异议的债权，并生成本周复核计划。”</p>
+                <p>“按负责人汇总延期的订单，并生成本周跟进计划。”</p>
                 <div><span><Bot size={14} /> 正在分析 126 条记录</span><i></i><i></i><i></i></div>
               </div>
             </article>
@@ -160,7 +160,7 @@ const iconByName = {
                 <p>无需维护另一份报表，图表始终基于最新数据。</p>
               </div>
               <div class="chart-demo" aria-label="仪表盘图表示意">
-                <header><span><small>申报总额</small><strong>¥12.84M</strong></span><em>较上周 +8.2%</em></header>
+                <header><span><small>采购总额</small><strong>¥12.84M</strong></span><em>较上周 +8.2%</em></header>
                 <div class="chart-body">
                   <div class="y-axis"><span>12M</span><span>8M</span><span>4M</span><span>0</span></div>
                   <div class="bars"><i style="--bar:35%"></i><i style="--bar:52%"></i><i style="--bar:43%"></i><i style="--bar:68%"></i><i style="--bar:61%"></i><i class="active" style="--bar:84%"></i><i style="--bar:74%"></i></div>
@@ -176,9 +176,9 @@ const iconByName = {
                 <p>把研究资料、证据与业务记录连接起来，随时追溯判断依据。</p>
               </div>
               <div class="link-demo">
-                <div class="doc-card"><span>PDF</span><p><strong>债权申报书.pdf</strong><small>12 页 · 已提取</small></p><CircleCheck size={15} /></div>
+                <div class="doc-card"><span>PDF</span><p><strong>采购合同.pdf</strong><small>12 页 · 已提取</small></p><CircleCheck size={15} /></div>
                 <div class="connector"><i></i><Link2 size={14} /><i></i></div>
-                <div class="record-card"><span>记录</span><p><small>债权人</small><strong>华远供应链</strong></p><p><small>申报金额</small><strong>¥ 680,000</strong></p></div>
+                <div class="record-card"><span>记录</span><p><small>供应商</small><strong>华远供应链</strong></p><p><small>订单金额</small><strong>¥ 680,000</strong></p></div>
               </div>
             </article>
           </div>
