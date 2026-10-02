@@ -34,13 +34,105 @@ point_to() {
   mv -T "$root/current.next" "$root/current"
 }
 
+# LCA13 撤销兼容门禁：content_grant_revocation 是追加式撤销事实，只能由
+# 含本门禁代码的 origin 进程经 entitlement.gift 能力端点写入。不含撤销
+# 过滤的目标会把已撤销赠送静默复活（越权）。
+#
+# 语义：目标含过滤 → 放行。否则停掉 origin 服务（冻结唯一撤销写入路径），
+# 静置 DRAIN_SEC 排空停服前已被引擎接收的 in-flight 写入，再用受控检查器
+# 读 _system 撤销计数 → 有撤销或无法证明为空即拒绝；服务在「检查→调用方
+# 完成切换并重启」全程保持停止。拒绝时本函数把服务拉回运行，调用方直接退出。
+target_has_revocation_filter() {
+  grep -rqs "content_grant_revocation" "$1/server/src/product-entitlement"
+}
+
+# 受控检查器定位：优先本次发布包，其次回退目标/current，再其次任何留存
+# （keep 窗口内）的含门禁发布目录。全都没有 → 无法证明安全 → 拒绝。
+find_revocation_checker_dir() {
+  local d
+  for d in "$release" "$previous" "$(readlink -f "$root/current" 2>/dev/null)" \
+           $(ls -1dt "$root"/releases/*/ 2>/dev/null); do
+    if [ -n "$d" ] && [ -f "$d/server/src/db/grant-revocation-check-cli.ts" ]; then
+      printf '%s\n' "$d/server"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# 撤销存在性受控检查：0=无撤销、1=有撤销、2=无法证明（失败按不安全处理）。
+grant_revocations_present() {
+  local server_dir="$1"
+  local output
+  if ! output=$(cd "$server_dir" \
+    && bun run --env-file="$env_file" src/db/grant-revocation-check-cli.ts 2>&1); then
+    echo "revocation gate: check command failed: $output" >&2
+    return 2
+  fi
+  echo "revocation gate: $output (checker dir: $server_dir)" >&2
+  case "$output" in
+    *grant_revocations=0*) return 0 ;;
+    *grant_revocations=[1-9]*) return 1 ;;
+    *) return 2 ;;
+  esac
+}
+
+require_revocation_compat() {
+  local target="$1"
+  if target_has_revocation_filter "$target"; then
+    return 0
+  fi
+  echo "revocation gate: $target lacks revocation filtering; freezing writes (systemctl stop $service)" >&2
+  # 本函数在 if 条件中被调用，errexit 被抑制：stop 失败不会中断脚本，必须显式检查。
+  # stop 报错但服务已不活跃（进程已死/已失败）同样是成立的冻结态可放行；
+  # 服务仍活跃、或状态不可证明（is-active 查询失败/异常态）→ 冻结不成立 → 拒绝。
+  if ! sudo -n systemctl stop "$service"; then
+    local state
+    state=$(systemctl is-active "$service" 2>/dev/null || true)
+    if [ "$state" != "inactive" ] && [ "$state" != "failed" ]; then
+      echo "revocation gate: systemctl stop $service failed and state='$state' (not confirmed stopped); refusing" >&2
+      sudo -n systemctl start "$service" || echo "revocation gate: WARN failed to restore $service" >&2
+      return 1
+    fi
+    echo "revocation gate: stop reported failure but $service is already $state; freeze holds" >&2
+  fi
+  # 排空窗口：进程停止前已被引擎接收的撤销写入可能在停服后落库
+  # （响应丢失但提交成功）。停服后先静置再查计数，覆盖该 in-flight 窗口。
+  sleep "${REVOCATION_GATE_DRAIN_SEC:-3}"
+  local server_dir=""
+  local verdict=0
+  if server_dir=$(find_revocation_checker_dir); then
+    grant_revocations_present "$server_dir" || verdict=$?
+  else
+    echo "revocation gate: no revocation checker available on this host; cannot prove safety" >&2
+    verdict=2
+  fi
+  if [ "$verdict" -ne 0 ]; then
+    echo "revocation gate: refusing to activate $target" >&2
+    # 拒绝激活：服务保持原 current 指向，拉回运行（即使带病也好过授权语义回退）。
+    sudo -n systemctl start "$service" || echo "revocation gate: WARN failed to restore $service" >&2
+    return 1
+  fi
+  # 服务保持停止：调用方随即完成 point_to + restart；冻结覆盖检查到切换全程。
+}
+
 rollback() {
   echo "release $release_id failed: $1; restoring $previous" >&2
   sudo -n journalctl -u "$service" -n 40 --no-pager >&2 || true
-  cat "$env_backup" > "$env_file"
-  point_to "$previous"
-  sudo -n systemctl restart "$service"
-  healthy && echo "restored $previous" >&2
+  if ! require_revocation_compat "$previous"; then
+    echo "automatic rollback refused: $previous is not revocation-compatible" >&2
+    exit 1
+  fi
+  # 本函数经 || 调用，errexit 全程被抑制：以下每步失败不会中断脚本，
+  # 必须显式中止，避免把 env/current 不一致的中间态推进到 restart。
+  cat "$env_backup" > "$env_file" || { echo "rollback failed: env restore failed; aborting" >&2; exit 1; }
+  point_to "$previous" || { echo "rollback failed: point_to $previous failed; aborting" >&2; exit 1; }
+  sudo -n systemctl restart "$service" || { echo "rollback failed: restart $service failed; aborting" >&2; exit 1; }
+  if ! healthy; then
+    echo "rollback failed: $previous did not become healthy" >&2
+    exit 1
+  fi
+  echo "restored $previous" >&2
   exit 1
 }
 
@@ -65,6 +157,12 @@ if [ -n "$env_additions" ] && [ -s "$env_additions" ]; then
   done < "$env_additions"
 fi
 [ -n "$env_additions" ] && rm -f "$env_additions"
+
+# 撤销兼容门禁：发布（含手动 Deploy origin 旧 sha）若目标不含撤销过滤，
+# 仅在 _system 无撤销记录时才放行；判定拒绝时不动运行中服务直接退出。
+if ! require_revocation_compat "$release"; then
+  exit 1
+fi
 
 # 发布钩子：发布代码里有 scripts/deploy/origin-pre-start.sh 时，停掉旧服务（冻结写入）后在新版本目录执行，
 # 例如一次性数据复制迁移。钩子必须幂等，读取 $ORIGIN_ENV_FILE。

@@ -499,6 +499,19 @@ export class AiAllowanceService {
     return overdue.length;
   }
 
+  /**
+   * LCA13：结算异常检测——sweep 之后仍处 reserved 且已过结算窗口的预留。
+   * 正常情况下 sweepExpired 会把它们收敛为 expired；非空即 sweep/结算链路
+   * 未收敛（服务重启恢复或账本故障）。合法 over_limit 与自然到期不算异常。
+   */
+  async stuckReservations(db: string): Promise<ReservationRow[]> {
+    const session = await this.deps.workspaceSession(db);
+    await this.sweepExpired(session);
+    return rows<ReservationRow>(
+      await collect(session, `SELECT * FROM ai_reservation WHERE status = "reserved" AND deadline <= time::now()`),
+    );
+  }
+
   /** 客户余额视图：可用 / 预留 / 暂停 / 已终止 / 已过期 + 桶明细。 */
   async balance(db: string): Promise<AllowanceBalance> {
     const session = await this.deps.workspaceSession(db);
