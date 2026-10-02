@@ -257,7 +257,7 @@ export class ProductEntitlementService {
       workspace.dbName,
       draft,
       subscription ? { cycleFrom: subscription.cycleFrom, cycleUntil: subscription.cycleUntil } : null,
-      subscription ? { key: subscription.itemId, effectiveAt: subscription.effectiveFrom } : null,
+      subscription ? { key: subscription.itemId, effectiveAt: subscription.effectiveFrom, trialConversion: subscription.trialConversion } : null,
     );
     const current = await this.store.currentSnapshot(workspace.id);
     if (current && current.digest === draft.digest) {
@@ -542,7 +542,7 @@ export class ProductEntitlementService {
           runtime.dbName,
           draft,
           subscription ? { cycleFrom: subscription.cycleFrom, cycleUntil: subscription.cycleUntil } : null,
-          subscription ? { key: subscription.itemId, effectiveAt: subscription.effectiveFrom } : null,
+          subscription ? { key: subscription.itemId, effectiveAt: subscription.effectiveFrom, trialConversion: subscription.trialConversion } : null,
         );
         if (planCycle) {
           await this.ops.syncPlanCycle(planCycle, `repair:${input.idempotencyKey}`);

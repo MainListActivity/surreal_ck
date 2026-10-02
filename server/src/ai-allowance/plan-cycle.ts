@@ -6,7 +6,7 @@ import { isRetryableTxnError, type Queryable } from "./service";
 /**
  * LCA08 订阅驱动的套餐周期 AI 额度同步规则（版本化、不可变）。
  *
- * 规则版本 plan-cycle-rules-v3（相对 v2 的变化见"升级补发"与"试用终止"）：
+ * 规则版本 plan-cycle-rules-v4（相对 v2 的变化见"升级补发"与"试用终止"）：
  * - 额度来源：工作区当前绑定产品修订的 feature `ai_cycle_allowance`
  *   （enabled 且 limit_value > 0）。数值只来自已发布的不可变产品修订，
  *   生产启用必须使用获批修订，不从测试默认值推定。
@@ -35,7 +35,7 @@ import { isRetryableTxnError, type Queryable } from "./service";
  *   既有桶（保留模式暂停的是新的收费动作，不重置桶到期时间，也不暂停
  *   既有余额的消费）。
  * - 试用终止（AC5）：商业确认转付费生效时（baseSourceKind 翻转为
- *   subscription），当次关联旧试用桶（period_key 前缀 trial:<订阅ID>:）立即
+ *   subscription），当次关联旧试用桶（转换事务持久的旧来源 period_key 前缀 trial:<旧sourceId>:）立即
  *   失去新 reserve 与可消费 balance 资格：写入幂等终止标记（terminated_at/
  *   terminated_note），不改金额、不延长期限、不删除或改写旧账本。其上既有
  *   预留仍可在有限执行窗口内按原桶/原费率结算；超时/取消/部分交付释放时
@@ -44,7 +44,7 @@ import { isRetryableTxnError, type Queryable } from "./service";
  * - 幂等：基础桶 id 由 period_key 派生、补发桶 id 由 (period_key, 事件键)
  *   派生；重复同步最多建一次桶、补一次差额。
  */
-export const AI_PLAN_CYCLE_RULE_VERSION = "plan-cycle-rules-v3" as const;
+export const AI_PLAN_CYCLE_RULE_VERSION = "plan-cycle-rules-v4" as const;
 
 /** 升级折算规则版本：经理批准的不可变测试报价规则（非生产商品数值）。 */
 export const AI_UPGRADE_PRORATION_RULE_VERSION = "lca08-upgrade-proration-test-v1" as const;
@@ -70,6 +70,7 @@ export type PlanCycleDirective = Readonly<{
   eventKey: string;
   eventEffectiveAt: string;
   label: string;
+  trialConversion?: Readonly<{ sourceId: string; at: string; eventKey: string }>;
 }>;
 
 export type PlanCycleSyncOutcome = Readonly<{
@@ -96,6 +97,7 @@ export type CycleIdentity = Readonly<{
 export type CycleEventIdentity = Readonly<{
   key: string;
   effectiveAt: string;
+  trialConversion?: Readonly<{ sourceId: string; at: string; eventKey: string }>;
 }>;
 
 /**
@@ -132,6 +134,7 @@ export function planCycleDirective(
     eventKey: event.key,
     eventEffectiveAt: event.effectiveAt,
     label: `${draft.productPlanName ?? "套餐"}周期 AI 额度`,
+    trialConversion: draft.baseSourceKind === "subscription" ? event.trialConversion : undefined,
   });
 }
 
@@ -242,23 +245,43 @@ async function terminateTrialSourceBuckets(
   directive: PlanCycleDirective,
   correlationId: string,
 ): Promise<number> {
-  const trialPrefix = `trial:${directive.baseSourceId}:`;
-  const result = await session.query(
-    `
-    UPDATE ai_allowance_bucket SET
-      terminated_at = $terminatedAt,
-      terminated_note = $note,
-      updated_at = time::now()
-    WHERE kind = "plan_cycle" AND string::starts_with(period_key, $trialPrefix) AND terminated_at = NONE;
-    `,
-    {
-      trialPrefix,
-      terminatedAt: new DateTime(directive.periodStart),
-      note: `${AI_PLAN_CYCLE_RULE_VERSION} trial source terminated on paid conversion; event ${directive.eventKey}; correlation ${correlationId}`,
-    },
-  );
-  const statement = Array.isArray(result) ? result[0] : result;
-  return Array.isArray(statement) ? statement.length : 0;
+  const conversion = directive.trialConversion;
+  if (!conversion || !conversion.sourceId || !conversion.eventKey || !Number.isFinite(Date.parse(conversion.at))) return 0;
+  const trialPrefix = `trial:${conversion.sourceId}:`;
+  const note = `${AI_PLAN_CYCLE_RULE_VERSION} trial source ${conversion.sourceId} terminated on paid conversion to ${directive.baseSourceId}; event ${conversion.eventKey}; correlation ${correlationId}`;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await session.query(`INSERT INTO ai_allowance_source_termination {
+        source_prefix: $trialPrefix, terminated_at: $terminatedAt, paid_source: $paidSource,
+        event_key: $eventKey, note: $note
+      } ON DUPLICATE KEY UPDATE source_prefix = $trialPrefix;`, {
+        trialPrefix, terminatedAt: new DateTime(conversion.at), paidSource: directive.baseSourceId,
+        eventKey: conversion.eventKey, note,
+      });
+      const result = await session.query(
+        `
+        UPDATE ai_allowance_bucket SET
+          terminated_at = $terminatedAt,
+          terminated_note = $note,
+          updated_at = time::now()
+        WHERE kind = "plan_cycle" AND string::starts_with(period_key, $trialPrefix) AND terminated_at = NONE;
+        `,
+        {
+          trialPrefix,
+          terminatedAt: new DateTime(conversion.at),
+          note,
+        },
+      );
+      const statement = Array.isArray(result) ? result[0] : result;
+      return Array.isArray(statement) ? statement.length : 0;
+    } catch (error) {
+      if ((isConflict(error) || isRetryableTxnError(error)) && attempt + 1 < MAX_ATTEMPTS) {
+        await sleep(5 + Math.random() * 20 * (attempt + 1));
+        continue;
+      }
+      throw error;
+    }
+  }
 }
 
 /**

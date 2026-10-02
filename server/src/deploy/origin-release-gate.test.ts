@@ -37,6 +37,7 @@ const EXTRACTED = [
   "require_revocation_compat",
   "target_has_explicit_trial_source",
   "require_trial_source_compat",
+  "require_allowance_source_compat",
   "rollback",
 ]
   .map((name) => {
@@ -89,7 +90,17 @@ const ENTRY_STUB = "export function createProTrialRoutes() {}\n";
 const APP_MOUNTED = '.route("/", createProTrialRoutes(service));\n';
 const APP_UNMOUNTED = '.route("/", createWorkspaceRoutes());\n';
 
+function writeAllowanceTree(base: string, compatible = true) {
+  for (const path of ["shared/src", "shared/sql/system", "shared/sql/workspace-template", "server/src/ai-allowance"]) mkdirSync(join(base, path), { recursive: true });
+  writeFileSync(join(base, "shared/src/ai-allowance.ts"), "AI_ALLOWANCE_CONSUMABLE_SQL");
+  writeFileSync(join(base, "shared/sql/system/027-ai-trial-conversion-source.surql"), "// structure");
+  writeFileSync(join(base, "shared/sql/workspace-template/047-ai-source-termination.surql"), "// structure");
+  writeFileSync(join(base, "server/src/ai-allowance/service.ts"), compatible ? "aiAllowancePlanPrefix\nWHERE AI_ALLOWANCE_CONSUMABLE_SQL\nWHERE AI_ALLOWANCE_CONSUMABLE_SQL\n" : "// old unrestricted consumption");
+  writeFileSync(join(base, "server/src/ai-allowance/plan-cycle.ts"), "plan-cycle-rules-v4 conversion.sourceId");
+}
+
 function writeTrialTree(base: string, compat: TrialCompat) {
+  writeAllowanceTree(base);
   const routes = join(base, "server", "src", "routes");
   mkdirSync(routes, { recursive: true });
   const routeByCompat: Partial<Record<TrialCompat, string>> = {
@@ -131,7 +142,7 @@ type SimResult = { stdout: string; stderr: string; exitCode: number; calls: stri
 
 function runSim(
   env: SimEnv,
-  opts: { filteredTarget?: boolean; mode?: "gate" | "rollback" | "trial-gate"; trialCompat?: TrialCompat } = {},
+  opts: { filteredTarget?: boolean; mode?: "gate" | "rollback" | "trial-gate" | "allowance-gate"; trialCompat?: TrialCompat; allowanceCompat?: boolean } = {},
 ): SimResult {
   const dir = mkdtempSync(join(tmpdir(), "gate-sim-"));
   const root = join(dir, "root");
@@ -167,6 +178,7 @@ function runSim(
   for (const base of [release, previous, target]) {
     writeTrialTree(base, trialCompat);
   }
+  for (const base of [release, previous, target]) writeAllowanceTree(base, opts.allowanceCompat !== false);
   writeFileSync(join(envDir, "server.env"), "SURREAL_URL=memory://x\n");
   writeFileSync(join(envDir, "server.env.bak"), "SURREAL_URL=memory://bak\n");
 
@@ -174,6 +186,8 @@ function runSim(
     opts.mode === "rollback"
       ? // 与生产调用点一致：rollback 经 || 调用，函数体内 errexit 被抑制。
         `prelude_failed() { return 1; }\nprelude_failed || rollback "simulated health check failure"\necho "UNREACHABLE: rollback returned"`
+      : opts.mode === "allowance-gate"
+        ? `if require_allowance_source_compat "${target}"; then\n  echo "RESULT:pass"\nelse\n  echo "RESULT:refuse"\nfi`
       : opts.mode === "trial-gate"
         ? // 与生产调用点一致：门禁经 if 条件调用，函数体内 errexit 被抑制。
           `if require_trial_source_compat "${target}"; then\n  echo "RESULT:pass"\nelse\n  echo "RESULT:refuse"\nfi`
@@ -486,6 +500,7 @@ type FullSimResult = {
 
 function runFullRelease(opts: {
   target: TrialCompat;
+  allowanceCompat?: boolean;
   filteredTarget?: boolean;
   additions?: string;
   healthyBody?: string;
@@ -511,10 +526,11 @@ function runFullRelease(opts: {
   // 发布负载：git archive 风格的全树 server/ 目录。
   const payload = join(dir, "payload");
   writeTrialTree(payload, opts.target);
+  writeAllowanceTree(payload, opts.allowanceCompat !== false);
   mkdirSync(join(payload, "server", "src", "product-entitlement"), { recursive: true });
   writeFileSync(join(payload, "server", "src", "product-entitlement", "store.ts"), opts.filteredTarget ? "content_grant_revocation\n" : "content_grant\n");
   const archive = join(dir, "payload.tar.gz");
-  Bun.spawnSync(["tar", "-czf", archive, "-C", payload, "server"]);
+  Bun.spawnSync(["tar", "-czf", archive, "-C", payload, "server", "shared"]);
 
   // 外部命令桩：只替换特权/网络/包管理行为，脚本主体逻辑原样执行。
   const prelude = join(dir, "prelude.sh");
@@ -614,5 +630,34 @@ describe("origin-release.sh 整段发布流：env 顺序与门禁拒绝恢复原
     expect(r.envAfter).toBe("BASE_KEY=keep\nREVIEW_FIXTURE=after\n");
     expect(r.currentTarget).toContain("lca10-ci7");
     expect(r.calls.some((c) => c === "systemctl:restart fixture-svc")).toBe(true);
+  });
+});
+
+
+describe("LCA14 allowance source compatibility", () => {
+  test("current repository satisfies the compatibility floor", () => {
+    const harness = `${EXTRACTED}\nrequire_allowance_source_compat "$1"`;
+    const result = Bun.spawnSync(["bash", "-c", harness, "gate", join(import.meta.dir, "../../..")]);
+    expect(result.exitCode).toBe(0);
+  });
+  test("old consumption target is refused without host mutations", () => {
+    const r = runSim({}, { mode: "allowance-gate", allowanceCompat: false });
+    expect(r.stdout).toContain("RESULT:refuse");
+    expect(r.calls).toEqual([]);
+  });
+  test("automatic rollback refuses the old allowance implementation", () => {
+    const r = runSim({}, { mode: "rollback", allowanceCompat: false });
+    expect(r.stderr).toContain("not allowance-source-compatible");
+    expect(has(r, "point_to:")).toBe(false);
+    expect(has(r, "systemctl:")).toBe(false);
+  });
+  test("forward release refusal precedes env writes and service changes", () => {
+    const r = runFullRelease({ target: "explicit", allowanceCompat: false, additions: "REVIEW_FIXTURE=after\n" });
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr).toContain("allowance source gate");
+    expect(r.envAfter).toBe("REVIEW_FIXTURE=before\nBASE_KEY=keep\n");
+    expect(r.envBackupExists).toBe(false);
+    expect(r.currentTarget).toContain("rel-old");
+    expect(r.calls.some(c => c.startsWith("systemctl:"))).toBe(false);
   });
 });

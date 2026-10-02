@@ -508,6 +508,14 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
         // item 的产品窗口，避免续期后 item 在旧窗口结束、权益被级联清空。
         // 只向前延长（不缩短）；订阅状态变化才是权益终止的开关。
         IF !$replayed AND !$stale {
+          IF $existing != NONE AND $existing.status = "trialing" AND $status = "active"
+            AND $existing.billing_account = $billingAccount {
+            UPDATE quota_subscription_item SET
+              converted_trial_source = $existing.id,
+              converted_trial_at = $currentPeriodStart ?? time::now(),
+              converted_trial_event = $event
+            WHERE subscription = $target AND status = "active" AND converted_trial_source = NONE;
+          };
           LET $windowEnd = $currentPeriodEnd ?? $paidThrough;
           IF $windowEnd != NONE {
             UPDATE quota_subscription_item SET
@@ -1199,6 +1207,9 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
           WHERE active_workspace = $workspace
           LIMIT 1
         )[0];
+        LET $oldSubscription = IF $current != NONE { SELECT * FROM ONLY $current.subscription } ELSE { NONE };
+        LET $convertingTrial = $current != NONE AND $oldSubscription.status = "trialing"
+          AND $oldSubscription.billing_account = $billingAccount AND $status = "active" AND $mode != "plan_rollout";
         IF $productInput != NONE
           AND record::table($productInput) != "product_plan_revision" {
           THROW "operator-subscription-product-revision-missing";
@@ -1292,6 +1303,12 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
               THROW "operator-subscription-item-window-invalid";
             };
             CREATE $item CONTENT {
+              converted_trial_source: IF $convertingTrial { $oldSubscription.id }
+                ELSE IF $current.subscription = $targetSubscription { $current.converted_trial_source } ELSE { NONE },
+              converted_trial_at: IF $convertingTrial { $effectiveAt }
+                ELSE IF $current.subscription = $targetSubscription { $current.converted_trial_at } ELSE { NONE },
+              converted_trial_event: IF $convertingTrial { $intent }
+                ELSE IF $current.subscription = $targetSubscription { $current.converted_trial_event } ELSE { NONE },
               subscription: $targetSubscription,
               workspace: $workspace,
               plan_revision: $planRevision,
@@ -1304,6 +1321,11 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
               causation_id: $intent
             };
           } ELSE {
+            IF $convertingTrial {
+              UPDATE $current.id SET converted_trial_source = $oldSubscription.id,
+                converted_trial_at = $effectiveAt, converted_trial_event = $intent
+                WHERE converted_trial_source = NONE;
+            };
             // LCA08 续作：运营侧同套餐同产品续费（$same 分支不新建
             // item）必须随订阅付费窗口向前延长活跃 item 窗口，与
             // provider 快照路径一致（只延不缩）；否则续费后权益仍按旧

@@ -92,6 +92,12 @@ export class SurrealProductEntitlementStore implements ProductEntitlementStore {
     const accountId = idOf(subscription?.billing_account);
     const account = accountId ? first(await db.query(`SELECT account_key FROM $id;`, { id: new StringRecordId(accountId) })) : null;
     if (!subscription || typeof account?.account_key !== "string" || typeof subscription.status !== "string") return null;
+    const oldSourceId = idOf(item.converted_trial_source);
+    const convertedAt = when(item.converted_trial_at);
+    const oldSource = oldSourceId ? first(await db.query("SELECT billing_account FROM $id;", { id: new StringRecordId(oldSourceId) })) : null;
+    const trialConversion = oldSourceId && convertedAt && typeof item.converted_trial_event === "string"
+      && idOf(oldSource?.billing_account) === accountId
+      ? { sourceId: oldSourceId, at: convertedAt, eventKey: item.converted_trial_event } : undefined;
     return {
       itemId,
       status: item.status as SubscriptionFact["status"],
@@ -101,6 +107,7 @@ export class SurrealProductEntitlementStore implements ProductEntitlementStore {
       subscriptionId,
       billingAccountKey: account.account_key,
       subscriptionStatus: subscription.status as SubscriptionFact["subscriptionStatus"],
+      trialConversion,
       // 周期身份取订阅自身的付费窗口，缺省回退 paid_through / item 窗口：
       // 周期内升级（换 item）不改变周期身份，续期（推进订阅周期）才换。
       cycleFrom: when(subscription.current_period_start) ?? effectiveFrom,

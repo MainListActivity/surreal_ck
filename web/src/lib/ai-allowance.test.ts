@@ -23,6 +23,23 @@ function fakeConn(rows: Record<string, Array<Record<string, unknown>>>) {
 }
 
 describe("LCA05 AI 额度快照与展示", () => {
+  test("LCA14 旧试用无终止标记也不可消费；未来加量不误计，补偿保持独立", async () => {
+    const now = Date.now();
+    const from = new Date(now - 60_000).toISOString(), until = new Date(now + 86400_000).toISOString();
+    const base = { total: 28, available: 28, reserved: 0, settled: 0, status: "active", effective_from: from, expires_at: until };
+    const conn = fakeConn({ ai_rate_card: [], ai_ledger_entry: [], ai_allowance_notice: [], ai_allowance_bucket: [
+      { ...base, id: "ai_allowance_bucket:legacy", kind: "plan_cycle", period_key: "trial:quota_subscription:provision:cycle" },
+      { ...base, id: "ai_allowance_bucket:future", kind: "purchased", period_key: "independent", effective_from: new Date(now + 60_000).toISOString() },
+      { ...base, id: "ai_allowance_bucket:compensation", kind: "compensation", period_key: "independent" },
+    ] });
+    const snapshot = await loadAiAllowanceSnapshot(conn, { kind: "subscription", sourceId: "quota_subscription:new", effectiveFrom: from, effectiveUntil: until });
+    expect(snapshot.available).toBe(28); // 仅补偿。
+    expect(snapshot.terminated).toBe(28);
+    expect(snapshot.pending).toBe(28);
+    expect(snapshot.buckets[0]?.terminated).toBe(false); // 不伪造旧样本已补标记。
+    expect(aiAllowanceBucketStatusLabel(snapshot.buckets[0]!)).toBe("来源已失效，不可消费");
+    expect(snapshot.buckets[0]?.consumptionReason).toBe("source_mismatch");
+  });
   test("聚合可用 / 预留 / 暂停 / 已过期余额并带出消费记录", async () => {
     const now = Date.now();
     const conn = fakeConn({
@@ -32,7 +49,7 @@ describe("LCA05 AI 额度快照与展示", () => {
       ai_allowance_bucket: [
         {
           id: "ai_allowance_bucket:active", kind: "plan_cycle", label: "月度套餐",
-          period_key: "2026-09", total: 100, available: 60, reserved: 10, settled: 30,
+          period_key: "subscription:sub:2026-09", total: 100, available: 60, reserved: 10, settled: 30,
           status: "active",
           effective_from: new Date(now - 86400_000).toISOString(),
           expires_at: new Date(now + 86400_000).toISOString(),
@@ -61,7 +78,7 @@ describe("LCA05 AI 额度快照与展示", () => {
       ],
     });
 
-    const snapshot = await loadAiAllowanceSnapshot(conn);
+    const snapshot = await loadAiAllowanceSnapshot(conn, { kind: "subscription", sourceId: "sub", effectiveFrom: new Date(Date.now() - 86400_000).toISOString(), effectiveUntil: new Date(Date.now() + 86400_000).toISOString() });
     expect(snapshot.metered).toBe(true);
     expect(snapshot.quote).toMatchObject({ amount: 5, revisionLabel: "test-rate-v1" });
     expect(snapshot.available).toBe(60);
@@ -76,7 +93,7 @@ describe("LCA05 AI 额度快照与展示", () => {
 
   test("无费率卡时 metered=false 且 quote 为空", async () => {
     const conn = fakeConn({ ai_rate_card: [], ai_allowance_bucket: [], ai_ledger_entry: [], ai_allowance_notice: [] });
-    const snapshot = await loadAiAllowanceSnapshot(conn);
+    const snapshot = await loadAiAllowanceSnapshot(conn, { kind: "subscription", sourceId: "sub", effectiveFrom: new Date(Date.now() - 86400_000).toISOString(), effectiveUntil: new Date(Date.now() + 86400_000).toISOString() });
     expect(snapshot.metered).toBe(false);
     expect(snapshot.quote).toBeNull();
     expect(snapshot.available + snapshot.reserved + snapshot.suspended + snapshot.expired).toBe(0);
@@ -125,7 +142,7 @@ describe("LCA05 AI 额度快照与展示", () => {
       ai_ledger_entry: [],
       ai_allowance_notice: [],
     });
-    const snapshot = await loadAiAllowanceSnapshot(conn);
+    const snapshot = await loadAiAllowanceSnapshot(conn, { kind: "subscription", sourceId: "sub", effectiveFrom: new Date(Date.now() - 86400_000).toISOString(), effectiveUntil: new Date(Date.now() + 86400_000).toISOString() });
     expect(snapshot.available).toBe(200);
     expect(snapshot.terminated).toBe(30);
     expect(snapshot.expired).toBe(0);
