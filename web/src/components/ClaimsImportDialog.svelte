@@ -39,7 +39,7 @@
         ? await importCreditorRoster(conn, data)
         : await importEnterpriseLedger(conn, data);
       lastResult = result;
-      await workbooksStore.refresh();
+      await workbooksStore.load();
       if (result.importedCount > 0 && result.workbookId) {
         // 保留对话框展示拒绝摘要，用户可手动打开工作簿。
       }
