@@ -45,7 +45,13 @@ export type CreateWorkspaceSessionFactory = (
 
 export type CreateWorkspaceInput = {
   subject: string;
-  subjectToken: string;
+  /**
+   * 当前用户 access token，用于建簿完成后立刻换发带 workspace scope 的新 token。
+   * 运营代办开通（/api/ops/invitations）拿不到目标用户会话，缺省时跳过
+   * scope 换发：workspace 已 active + 成员索引就绪，用户登录后走常规 scope
+   * 交换即可进入。
+   */
+  subjectToken?: string;
   email: string;
   name: string;
   slug: string;
@@ -58,7 +64,8 @@ export type CreateWorkspaceResult =
       kind: "created";
       slug: string;
       dbName: string;
-      accessToken: string;
+      /** subjectToken 缺省（代办开通）时为 null。 */
+      accessToken: string | null;
       expiresIn: number | null;
     }
   | {
@@ -1108,6 +1115,17 @@ async function tryCreateWorkspace({
   });
 
   try {
+    if (!input.subjectToken) {
+      // 代办开通：无目标用户会话可换票；workspace 已 active，成员索引已建，
+      // 用户自行登录后按既有 scope 交换进入。
+      return {
+        kind: "created",
+        slug: input.slug,
+        dbName: provisionedDbName,
+        accessToken: null,
+        expiresIn: null,
+      };
+    }
     const scopeToken = await idpTokenScopeAdapter.updateUserScope({
       subjectToken: input.subjectToken,
       scope: { db: provisionedDbName, ac: "admin" },

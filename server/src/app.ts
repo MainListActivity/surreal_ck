@@ -137,6 +137,10 @@ import { createOpsRolloutRoutes } from "./routes/ops-rollout";
 import { RolloutGateService } from "./rollout/service";
 import { SurrealRolloutStore } from "./rollout/store";
 import { createRolloutGateChecker, type RolloutGateChecker } from "./rollout/gate-check";
+import { createOpsInvitationRoutes } from "./routes/ops-invitations";
+import { InviteService } from "./invitations/invite-service";
+import { SurrealInviteAuditStore } from "./invitations/invite-store";
+import { createIdpAdminClientFromEnv } from "./invitations/idp-admin-client";
 
 export type AppOptions = {
   workspaceScope?: WorkspaceScopeModule;
@@ -212,6 +216,8 @@ export type AppOptions = {
   rolloutGateService?: RolloutGateService;
   /** LCA14：内容/AI 灰度开关检查器；content-reader、search、legal 检索与 AI chat 共用。默认真实实现（每请求读 _system）。 */
   rolloutGates?: RolloutGateChecker;
+  /** G2：运营代办开通服务；默认生产装配（IdP admin client + workspace creator + 权益/额度）。 */
+  inviteService?: InviteService;
 };
 
 type AiStreamWebSocket = ReturnType<typeof createAiStreamRoutes>["websocket"];
@@ -359,6 +365,21 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
         },
       },
     );
+  const inviteService = options.inviteService ?? new InviteService({
+    idp: createIdpAdminClientFromEnv(),
+    workspaceCreator,
+    products: productEntitlementService,
+    allowance: aiAllowanceService,
+    store: new SurrealInviteAuditStore(),
+    defaultProductRevision: async () => {
+      const db = await getRootDatabaseSession("_system");
+      const row = (await db.query(
+        "SELECT VALUE revision.product_revision FROM ONLY pro_trial_configuration:current;",
+      )) as unknown;
+      const value = (Array.isArray(row) ? row : [row]).find((v) => v != null);
+      return value == null ? null : String(value);
+    },
+  });
   const discoverService = options.discoverService ?? createDiscoverService({
     content: contentPublisherQuery,
     system: {
@@ -483,6 +504,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     )
     .route("/", createOpsAiAllowanceRoutes({ service: aiAllowanceService }))
     .route("/", createOpsRolloutRoutes({ service: rolloutGateService }))
+    .route("/", createOpsInvitationRoutes({ service: inviteService, requireOperator: options.requireOperator }))
     .route("/", aiStream.routes)
     .route(
       "/",
