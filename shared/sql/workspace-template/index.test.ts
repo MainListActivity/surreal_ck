@@ -532,4 +532,18 @@ describe("workspace template scripts", () => {
     // 只加字段定义：不改写、不删除任何已有数据行或既有字段。
     expect(sql).not.toMatch(/UPDATE |DELETE |REMOVE /i);
   });
+
+  test("11.1：050 只新增 creditor_roster / enterprise_ledger 结构", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.name === "050-claims-reconciliation.surql");
+
+    expect(migration?.version).toBe(50);
+    expect(WORKSPACE_TEMPLATE_VERSION).toBe(50);
+    const sql = migration?.sql ?? "";
+    expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS creditor_roster SCHEMAFULL/);
+    expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS enterprise_ledger SCHEMAFULL/);
+    expect(sql).toMatch(/creditor_roster_identity_code_unique/);
+    expect(sql).toMatch(/fn::current_user\(\) != NONE/);
+    expect(sql).not.toMatch(/UPDATE |DELETE |REMOVE /i);
+  });
 });

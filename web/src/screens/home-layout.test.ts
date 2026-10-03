@@ -107,13 +107,15 @@ describe("HR-02 首页搜索状态提升", () => {
 });
 
 describe("HR-05 首页快捷操作与 AI 入口", () => {
-  test("HomeScreen 渲染三张快捷操作卡片，空白工作簿与 CSV 导入都有可用入口", () => {
+  test("HomeScreen 渲染快捷操作卡片，空白工作簿、CSV/XLSX 与债权对账导入都有可用入口", () => {
     const home = readScreen("HomeScreen.svelte");
 
     expect(home).toContain('class="quick-actions"');
     expect(home).toContain("空白工作簿");
     expect(home).toContain("从模板创建");
     expect(home).toContain("导入文件");
+    expect(home).toContain("债权对账导入");
+    expect(home).toContain("<ClaimsImportDialog");
     expect(home).not.toContain("导入文件功能尚未迁移");
     expect(home).toContain('workbooksStore.createBlank("未命名工作簿")');
     expect(home).toContain("onopen?.(wb.id)");
