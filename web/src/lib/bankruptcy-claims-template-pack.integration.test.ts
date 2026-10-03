@@ -163,6 +163,35 @@ describe("CV-02 破产债权管理模板包（两表形状）", () => {
     editor.reset();
   }, 15_000);
 
+  localSurrealTest("CV-06 回归：样例值经 JSON 边界退化为字符串后，含样例数据建簿仍成功且 datetime 值正确", async () => {
+    const conn = await setupDatabase();
+    const templates = createWorkbookTemplatesStore({ getConn: () => conn });
+    await templates.load();
+    const template = templates.byKey("bankruptcy-claims")!;
+    const workbooks = createWorkbooksStore({ getConn: () => conn });
+
+    // 生产阻断形态：模板样例里的 datetime 经 JSON 序列化边界后到达建簿路径时
+    // 已是 ISO 字符串（QA 复现的 .000Z 报错值）。这里对 sheets 做 JSON 往返模拟。
+    const degradedSheets = JSON.parse(
+      JSON.stringify(templateSheetsForCreate(template)),
+    ) as ReturnType<typeof templateSheetsForCreate>;
+    const workbook = await workbooks.createFromTemplate({ ...template, sheets: degradedSheets });
+
+    expect(workbook).not.toBeNull();
+    const editor = createEditorStore({ getConn: () => conn });
+    await editor.loadWorkbook(workbook!.id);
+    await editor.switchSheet(editor.sheets[1]!.id);
+    expect(editor.rows).toHaveLength(12);
+    // 直查引擎层：落库值必须是 datetime 类型且值正确（最早申报日 2026-06-02）。
+    const claimsTable = editor.sheets[1]!.tableName;
+    const typed = await conn.query<{ declared_date: unknown; t: string }>(
+      `SELECT declared_date, type::of(declared_date) AS t FROM ${claimsTable} ORDER BY declared_date LIMIT 1`,
+    );
+    expect(typed[0]?.t).toBe("datetime");
+    expect(String(typed[0]?.declared_date)).toContain("2026-06-02");
+    editor.reset();
+  }, 15_000);
+
   localSurrealTest("模板创建后默认仪表盘组件对演示记录执行真实查询", async () => {
     const conn = await setupDatabase();
     const templates = createWorkbookTemplatesStore({ getConn: () => conn });

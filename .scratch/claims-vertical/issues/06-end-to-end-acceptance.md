@@ -1,5 +1,5 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: done
+Label: done
 
 # CV-06 — 模板到人工确认写回的端到端收口
 
@@ -33,3 +33,7 @@ Label: ready-for-agent
 - `.scratch/claims-vertical/issues/03-multi-sheet-instantiation.md`
 - `.scratch/claims-vertical/issues/04-excel-import.md`
 - `.scratch/claims-vertical/issues/05-row-analysis-domain-hints.md`
+
+## Comments
+
+- 2026-10-02：端到端收口复测唯一阻断项「含样例数据建簿 datetime 强转失败」经任务 2ffbc97b 修复（web/src/lib/workbooks.ts 按列 field_type 还原退化值），生产部署腿复测为最终确认步骤；其余 AC 已由 CLAIMSE2E 验收链完成，状态收口为 done。
