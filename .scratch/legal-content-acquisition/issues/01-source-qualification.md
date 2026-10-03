@@ -1,5 +1,5 @@
-Status: ready-for-agent
-Label: ready-for-agent
+Status: done
+Label: done
 ID: SCK-LCAQ-01
 Repository: surreal_ck
 
@@ -27,3 +27,7 @@ Repository: surreal_ck
 ## Blocked by
 
 None - can start immediately
+
+## Comments
+
+- 2026-10-02：经任务 ea2c110c 与 5df391a7 完成来源准入与样本证据收口，状态补记为 done。

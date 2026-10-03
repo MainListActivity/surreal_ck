@@ -4,7 +4,7 @@
 
 **Blocked by:** [07 — 暂停恢复、缓存和追问重新鉴权](07-reauthorize-resumed-research.md)；[09 — 到期后保留成果，引用按当前权限展示](09-historical-results-and-citations.md)；[10 — 显式启动七日 Pro 受控试用](10-explicit-pro-trial.md)；[11 — 公开预览与安全的覆盖缺口提示](11-safe-discovery-and-coverage.md)；[12 — 授权范围内的语义类案检索](12-authorized-semantic-retrieval.md)；[13 — 运营解释、临时授权与交付修复](13-operator-entitlement-recovery.md)
 
-**Status:** ready-for-agent
+**Status:** done
 
 **ID:** SCK-LCA-14
 **确认时序号:** 15
@@ -32,4 +32,5 @@
 ## Comments
 
 - 2026-09-24：用户确认拆分后发布；当前为实施规格，尚未执行实现与验收。
+- 2026-10-02：经任务 58726f15 全链（实现/部署/生产实测/QA 验收）完成，状态补记为 done。
 

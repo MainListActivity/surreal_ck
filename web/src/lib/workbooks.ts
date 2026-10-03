@@ -1,4 +1,8 @@
-import { buildSurrealFieldSchema, gridColumnToStoredDef } from "@surreal-ck/shared/field-schema";
+import {
+  buildSurrealFieldSchema,
+  coerceGridFieldValue,
+  gridColumnToStoredDef,
+} from "@surreal-ck/shared/field-schema";
 import {
   computeEntityCapacityNeed,
   describeCapacityGaps,
@@ -431,16 +435,23 @@ export function buildCreateWorkbookTransaction(
     }
   }
 
-  function resolveSampleValue(value: unknown): unknown {
-    if (Array.isArray(value)) return value.map(resolveSampleValue);
-    if (typeof value !== "object" || value === null) return value;
-    const candidate = value as Partial<TemplateSampleReferenceForCreate>;
-    if (typeof candidate.sheetKey !== "string" || typeof candidate.recordKey !== "string") return value;
-    const recordId = sampleIds.get(`${candidate.sheetKey}\u0000${candidate.recordKey}`);
-    if (!recordId) {
-      throw new Error(`样例数据引用无法解析：${candidate.sheetKey}/${candidate.recordKey}`);
+  function resolveSampleValue(value: unknown, column?: TemplateColumnForCreate): unknown {
+    if (Array.isArray(value)) return value.map((item) => resolveSampleValue(item, column));
+    if (typeof value === "object" && value !== null) {
+      const candidate = value as Partial<TemplateSampleReferenceForCreate>;
+      if (typeof candidate.sheetKey !== "string" || typeof candidate.recordKey !== "string") return value;
+      const recordId = sampleIds.get(`${candidate.sheetKey}\u0000${candidate.recordKey}`);
+      if (!recordId) {
+        throw new Error(`样例数据引用无法解析：${candidate.sheetKey}/${candidate.recordKey}`);
+      }
+      return toRecordId(recordId);
     }
-    return toRecordId(recordId);
+    // 模板行经 JSON 边界（读回降级、外部导入等）后，datetime 等强类型样例值退化
+    // 为 ISO 字符串——按列 field_type 还原，与 xlsx/csv 导入走同一套强转语义。
+    // reference 列已由上面的引用解析处理（字符串 RecordId 引擎自然收），跳过强转。
+    return column && column.fieldType !== "reference"
+      ? coerceGridFieldValue(value, column)
+      : value;
   }
 
   const resolvedDashboard = options.defaultDashboard
@@ -544,9 +555,13 @@ COMMIT TRANSACTION;`;
       bindings[createdSheets.length === 1 ? "sheetTemplateKey" : `sheetTemplateKey${suffix}`] = sheet.key;
     }
   }
-  samples.forEach(({ sample }, index) => {
+  samples.forEach(({ sheet, sample }, index) => {
+    const columnByKey = new Map(sheet.columns.map((column) => [column.key, column]));
     bindings[`sampleRecord${index}`] = Object.fromEntries(
-      Object.entries(sample.values).map(([field, value]) => [field, resolveSampleValue(value)]),
+      Object.entries(sample.values).map(([field, value]) => [
+        field,
+        resolveSampleValue(value, columnByKey.get(field)),
+      ]),
     );
   });
   (options.importBatch?.receipts ?? []).forEach((receipt, index) => {

@@ -252,6 +252,49 @@ describe("createFromTemplate — 从业务模板建工作簿（带类型）", ()
       .toBe("ent_1111111111111111_2222222222222222:4444444444444444");
   });
 
+  test("CV-06：样例值经 JSON 边界退化为 ISO 字符串时按列类型还原为 Date（datetime 修复回归）", async () => {
+    const keys = ["1111111111111111", "2222222222222222", "3333333333333333"];
+    const queries: Array<{ sql: string; bindings?: Record<string, unknown> }> = [];
+    const conn = {
+      query: async (sql: string, bindings?: Record<string, unknown>) => {
+        queries.push({ sql, bindings });
+        return [];
+      },
+    } as unknown as SurrealConn;
+    const store = createWorkbooksStore({ getConn: () => conn, generateKey: () => keys.shift()! });
+
+    const workbook = await store.createFromTemplate({
+      id: "workbook_template:claims",
+      sheets: [{
+        key: "claims",
+        label: "债权申报",
+        columns: [
+          { key: "declared_date", label: "申报日期", fieldType: "date" },
+          { key: "declared_amount", label: "申报金额", fieldType: "decimal" },
+          { key: "confirmed", label: "已确认", fieldType: "checkbox" },
+        ],
+        // 模拟生产退化形态：datetime 经 JSON 读回为字符串、布尔/数值也可能被外部
+        // 通道打成字符串——绑定层必须按列 field_type 还原，而不是裸写字符串。
+        sampleRecords: [{
+          key: "claim-a",
+          values: {
+            declared_date: "2026-06-02T00:00:00.000Z",
+            declared_amount: "2800000",
+            confirmed: "true",
+          },
+        }],
+      }],
+    });
+
+    expect(workbook).not.toBeNull();
+    const [txn] = queries.filter((query) => /BEGIN TRANSACTION/i.test(query.sql));
+    const bound = txn!.bindings?.sampleRecord0 as Record<string, unknown>;
+    expect(bound.declared_date).toBeInstanceOf(Date);
+    expect((bound.declared_date as Date).toISOString()).toBe("2026-06-02T00:00:00.000Z");
+    expect(bound.declared_amount).toBe(2800000);
+    expect(bound.confirmed).toBe(true);
+  });
+
   test("显式选择创建空台账时只创建结构，不写入样例业务记录", async () => {
     const keys = ["1111111111111111", "2222222222222222"];
     const queries: Array<{ sql: string; bindings?: Record<string, unknown> }> = [];
