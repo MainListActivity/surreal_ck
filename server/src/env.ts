@@ -77,6 +77,33 @@ const EnvSchema = z.object({
   JEV_MODEL: z.string().min(1).default("jev-latest"),
   JEV_CONFIDENCE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.75),
   JEV_TIMEOUT_MS: z.coerce.number().int().positive().default(1500),
+
+  // 债权人令牌入口：pepper 用于 token 哈希与门户会话 HMAC；缺省时 mint/open 返回 501。
+  CLAIMS_PORTAL_TOKEN_PEPPER: z.preprocess(
+    (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+    z.string().min(32).optional(),
+  ),
+  // 债权申报附件 R2（S3 兼容）。五个键必须齐备才算配置；缺任一则上传/下载 501。
+  CLAIMS_ATTACHMENT_ACCOUNT_ID: z.preprocess(
+    (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+    z.string().min(1).optional(),
+  ),
+  CLAIMS_ATTACHMENT_ACCESS_KEY_ID: z.preprocess(
+    (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+    z.string().min(1).optional(),
+  ),
+  CLAIMS_ATTACHMENT_SECRET_ACCESS_KEY: z.preprocess(
+    (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+    z.string().min(1).optional(),
+  ),
+  CLAIMS_ATTACHMENT_BUCKET: z.preprocess(
+    (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+    z.string().min(1).optional(),
+  ),
+  CLAIMS_ATTACHMENT_ENDPOINT: z.preprocess(
+    (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+    z.string().min(1).optional(),
+  ),
 });
 
 export type ServerEnv = z.infer<typeof EnvSchema>;

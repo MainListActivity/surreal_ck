@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   billingQuotaPath,
+  claimsPortalPath,
   contentReaderPath,
   editorPath,
   opsQuotaPath,
@@ -76,6 +77,21 @@ describe("parseRoute", () => {
     expect(parseRoute("/form")).toEqual({ kind: "form" });
     expect(parseRoute("/form-success")).toEqual({ kind: "form-success" });
     expect(parseRoute("/discover")).toEqual({ kind: "discover" });
+  });
+
+  test("债权人令牌填报公开路由", () => {
+    expect(parseRoute("/claims/case-a/tok_abc")).toEqual({
+      kind: "claims-portal",
+      slug: "case-a",
+      token: "tok_abc",
+    });
+    const path = claimsPortalPath("my case", "t/1");
+    expect(path).toBe("/claims/my%20case/t%2F1");
+    expect(parseRoute(path)).toEqual({
+      kind: "claims-portal",
+      slug: "my case",
+      token: "t/1",
+    });
   });
 
   test("workbook 路由（默认 sheet）", () => {
