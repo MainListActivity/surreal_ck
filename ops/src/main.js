@@ -1,5 +1,6 @@
 import "./style.css";
 import { authConfig as config, createOpsUserManager, signOutOps } from "./auth.js";
+import { capacityLabel, planLabel, timelineDetail, timelineTime, usageNumbers, workspaceRecordId } from "./quota-view.js";
 
 const app = document.querySelector("#app");
 let userManager;
@@ -846,13 +847,16 @@ async function loadExceptions() {
 function renderDetail(view, timeline, product) {
   selectedWorkspace = view;
   document.querySelector("#detail-badge").textContent = view.workspace.slug;
-  const resources = (view.resources || []).map((resource) => `
-    <div class="resource-row"><span>${escapeHtml(resource.label || resource.resource || "资源")}</span><strong>${valueOrDash(resource.used)} / ${valueOrDash(resource.limit)}</strong></div>`).join("");
+  const resources = (view.resources || []).map((resource) => {
+    // usage.used/usage.limit 才是真实字段；unlimited 只报 used，used=null 表示账本不可信。
+    const { used, limit, unlimited } = usageNumbers(resource.usage);
+    return `<div class="resource-row"><span>${escapeHtml(resource.label || resource.resource || "资源")}</span><strong>${valueOrDash(used)} / ${unlimited ? "不限" : valueOrDash(limit)}</strong></div>`;
+  }).join("");
   const events = (timeline?.items || []).slice(0, 8).map((item) => `
-    <li><time>${valueOrDash(item.occurred_at || item.created_at)}</time><span>${escapeHtml(item.event_kind || item.kind || "操作")}</span></li>`).join("");
+    <li><time>${valueOrDash(timelineTime(item.occurred_at) ?? item.occurred_at)}</time><span>${escapeHtml(timelineDetail(item) || "操作")}</span></li>`).join("");
   document.querySelector("#detail").innerHTML = `
     <div class="detail-head"><div><p class="eyebrow">${escapeHtml(view.workspace.slug)}</p><h3>${escapeHtml(view.workspace.name)}</h3></div><span class="badge">${escapeHtml(view.view)}</span></div>
-    <div class="metric-grid"><div><span class="muted">当前计划</span><strong>${valueOrDash(view.operator?.applied_plan_name)}</strong></div><div><span class="muted">配额状态</span><strong>${valueOrDash(view.statuses?.[0]?.capacity_state || "normal")}</strong></div><div><span class="muted">工作区 ID</span><strong class="mono">${valueOrDash(view.operator?.workspace_record)}</strong></div></div>
+    <div class="metric-grid"><div><span class="muted">当前计划</span><strong>${valueOrDash(planLabel(view.applied))}</strong></div><div><span class="muted">配额状态</span><strong>${escapeHtml(capacityLabel(view.statuses?.capacity))}</strong></div><div><span class="muted">工作区 ID</span><strong class="mono">${valueOrDash(workspaceRecordId(view))}</strong></div></div>
     <h4>资源使用</h4><div class="resource-list">${resources || `<div class="empty-state">暂无资源观测。</div>`}</div>
     <h4>内容权益</h4>${renderProductEntitlement(product)}
     <h4>最近操作</h4><ul class="timeline">${events || `<li class="muted">暂无时间线。</li>`}</ul>`;
