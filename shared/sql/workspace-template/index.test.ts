@@ -538,11 +538,27 @@ describe("workspace template scripts", () => {
     const migration = scripts.find((script) => script.name === "050-claims-reconciliation.surql");
 
     expect(migration?.version).toBe(50);
-    expect(WORKSPACE_TEMPLATE_VERSION).toBe(50);
     const sql = migration?.sql ?? "";
     expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS creditor_roster SCHEMAFULL/);
     expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS enterprise_ledger SCHEMAFULL/);
     expect(sql).toMatch(/creditor_roster_identity_code_unique/);
+    expect(sql).toMatch(/fn::current_user\(\) != NONE/);
+    expect(sql).not.toMatch(/UPDATE |DELETE |REMOVE /i);
+  });
+
+  test("11.1：051 只新增 claim_access_token / claim_submission / claim_attachment 结构", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.name === "051-claims-portal.surql");
+
+    expect(migration?.version).toBe(51);
+    expect(WORKSPACE_TEMPLATE_VERSION).toBe(51);
+    const sql = migration?.sql ?? "";
+    expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS claim_access_token SCHEMAFULL/);
+    expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS claim_submission SCHEMAFULL/);
+    expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS claim_attachment SCHEMAFULL/);
+    expect(sql).toMatch(/claim_access_token_hash_unique/);
+    expect(sql).toMatch(/claim_submission_roster_unique/);
+    expect(sql).toMatch(/FOR create, update, delete\s+WHERE false/);
     expect(sql).toMatch(/fn::current_user\(\) != NONE/);
     expect(sql).not.toMatch(/UPDATE |DELETE |REMOVE /i);
   });
