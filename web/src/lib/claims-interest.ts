@@ -128,8 +128,8 @@ export type ClaimSubmissionListItem = {
 
 /** 管理人对账入口：列出全部申报行（只读 claim_submission）。 */
 export async function listClaimSubmissions(conn: SurrealConn): Promise<ClaimSubmissionListItem[]> {
-  const rows = await conn.query<ClaimSubmissionRow & { identity_code?: unknown; status?: unknown; submitted_at?: unknown }>(
-    `SELECT id, identity_code, status, principal, submitted_at
+  const rows = await conn.query<ClaimSubmissionRow & { identity_code?: unknown; status?: unknown; submitted_at?: unknown; created_at?: unknown }>(
+    `SELECT id, identity_code, status, principal, submitted_at, created_at
      FROM claim_submission
      ORDER BY created_at DESC;`,
   );
