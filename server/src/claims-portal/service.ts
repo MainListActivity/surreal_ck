@@ -1,6 +1,6 @@
 import { StringRecordId } from "surrealdb";
 import { getRootDatabaseSession } from "../db/root-connection";
-import { toStringRecordId } from "../db/surreal-values";
+import { toIsoDateTimeString, toStringRecordId } from "../db/surreal-values";
 import { HttpError } from "../http-error";
 import { resolveWorkspaceBySlug } from "../../ai/office/employee-service";
 import { getClaimsAttachmentConfig, getClaimsPortalPepper } from "./config";
@@ -131,11 +131,12 @@ function toIso(ms: number): string {
 
 function asDateMs(value: unknown): number | null {
   if (value instanceof Date) return value.getTime();
-  if (typeof value === "string" || typeof value === "number") {
-    const ms = new Date(value).getTime();
-    return Number.isNaN(ms) ? null : ms;
-  }
-  return null;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  // Surreal DateTime 等需经 jsonify；仅认 Date/string 会让限速窗口永远失效。
+  const iso = toIsoDateTimeString(value);
+  if (iso === null) return null;
+  const ms = Date.parse(iso);
+  return Number.isNaN(ms) ? null : ms;
 }
 
 function portalPath(slug: string, token: string): string {
