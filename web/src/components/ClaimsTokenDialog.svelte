@@ -44,7 +44,7 @@
 
   async function loadRoster() {
     const db = getSurreal();
-    const [rows] = await db.query<Array<Array<{ id: unknown; name?: unknown; identity_code?: unknown }>>>(
+    const rows = await db.query<{ id: unknown; name?: unknown; identity_code?: unknown }>(
       "SELECT id, name, identity_code FROM creditor_roster ORDER BY name ASC;",
     );
     roster = (rows ?? []).flatMap((row) => {

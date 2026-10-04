@@ -637,6 +637,11 @@ export class ClaimsPortalService {
     return this.serializeAttachment(created);
   }
 
+  /** 附件存储配置门：路由在解析请求体之前调用，缺配置即 fail-closed。 */
+  assertAttachmentStorageConfigured(): void {
+    requireAttachmentConfig(this.getAttachmentConfig);
+  }
+
   /** 字节上传 stub：缺配置 → 501 attachment-storage-not-configured。 */
   async uploadBytes(_input: {
     workspaceDb: string;

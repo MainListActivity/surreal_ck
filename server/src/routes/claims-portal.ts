@@ -153,6 +153,8 @@ export function createClaimsPortalRoutes(
       rosterId: session.rosterId,
     });
 
+    // 缺附件存储配置时先 fail-closed，不把 multipart/字节体读入内存再 501。
+    service.assertAttachmentStorageConfigured();
     const contentType = c.req.header("content-type") ?? "";
     let attachmentType: unknown;
     let fileName: unknown;
