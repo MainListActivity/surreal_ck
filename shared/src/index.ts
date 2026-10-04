@@ -26,4 +26,5 @@ export * from "./entity-table-permissions";
 export * from "./server-types";
 export * from "./surreal-query-log";
 export * from "./surreal-values";
+export * from "./claims-interest";
 export * from "./workspace-migration-manifest";

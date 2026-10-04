@@ -567,12 +567,29 @@ describe("workspace template scripts", () => {
     const migration = scripts.find((script) => script.name === "052-claims-rate-segments-flexible.surql");
 
     expect(migration?.version).toBe(52);
-    expect(WORKSPACE_TEMPLATE_VERSION).toBe(52);
     const sql = migration?.sql ?? "";
     expect(sql).toMatch(
       /DEFINE FIELD IF NOT EXISTS rate_segments\.\* ON TABLE claim_submission TYPE object FLEXIBLE/,
     );
     expect(sql).toMatch(/ALTER FIELD rate_segments\.\* ON TABLE claim_submission FLEXIBLE/);
+    expect(sql).not.toMatch(/UPDATE |DELETE |REMOVE /i);
+  });
+
+  test("11.1：053 只新增 interest_calculation 追加式快照表", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.name === "053-interest-calculation.surql");
+
+    expect(migration?.version).toBe(53);
+    expect(WORKSPACE_TEMPLATE_VERSION).toBe(53);
+    const sql = migration?.sql ?? "";
+    expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS interest_calculation SCHEMAFULL/);
+    expect(sql).toMatch(/FOR select, create\s+WHERE fn::current_user\(\) != NONE/);
+    expect(sql).toMatch(/FOR update, delete\s+WHERE false/);
+    expect(sql).toMatch(/submission_id ON TABLE interest_calculation\s+TYPE record<claim_submission> READONLY/);
+    expect(sql).toMatch(/rule_version ON TABLE interest_calculation\s+TYPE string READONLY/);
+    expect(sql).toMatch(/segments\.\* ON TABLE interest_calculation\s+TYPE object FLEXIBLE/);
+    expect(sql).toMatch(/calculated_at ON TABLE interest_calculation\s+TYPE datetime READONLY/);
+    expect(sql).toMatch(/interest_calculation_submission/);
     expect(sql).not.toMatch(/UPDATE |DELETE |REMOVE /i);
   });
 });
