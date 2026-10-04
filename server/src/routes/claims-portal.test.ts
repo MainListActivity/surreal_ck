@@ -154,7 +154,35 @@ function createMemoryDb(store: Store): ClaimsQueryable {
         store.attachments.push(row);
         return [[row]];
       }
+      if (sql.includes("FROM $id") && sql.includes("storage_key")) {
+        const row = store.attachments.find((item) => String(item.id) === idStr);
+        return [[row].filter(Boolean)];
+      }
       throw new Error(`unhandled sql: ${sql.slice(0, 100)}`);
+    },
+  };
+}
+
+function makeMemoryStorage() {
+  const objects = new Map<string, { bytes: Uint8Array; contentType: string }>();
+  return {
+    objects,
+    storage: {
+      async putObject(input: { key: string; bytes: Uint8Array; contentType: string }) {
+        objects.set(input.key, { bytes: input.bytes, contentType: input.contentType });
+      },
+      async getObject(key: string) {
+        const hit = objects.get(key);
+        if (!hit) {
+          const { HttpError } = await import("../http-error");
+          throw new HttpError(404, "attachment-object-missing", "missing");
+        }
+        return {
+          body: hit.bytes,
+          contentType: hit.contentType,
+          contentLength: hit.bytes.byteLength,
+        };
+      },
     },
   };
 }
@@ -172,6 +200,7 @@ function makeApp(options?: {
     seq: 0,
   };
   const db = createMemoryDb(store);
+  const memoryStorage = makeMemoryStorage();
   const service = new ClaimsPortalService({
     getSession: async () => db,
     resolveWorkspace: async (slug) => (slug === "case-a" ? { dbName: "ws_case_a" } : null),
@@ -186,6 +215,7 @@ function makeApp(options?: {
             endpoint: "https://e",
           }
         : null,
+    createStorage: () => memoryStorage.storage,
   });
   const app = new Hono<AppBindings>();
   app.onError(handleError);
@@ -196,7 +226,7 @@ function makeApp(options?: {
       requireUser: () => useUser(options?.user ?? testUser),
     }),
   );
-  return { app, store, service };
+  return { app, store, service, memoryStorage };
 }
 
 describe("claims-portal routes", () => {
@@ -324,5 +354,56 @@ describe("claims-portal routes", () => {
     );
     expect(res.status).toBe(501);
     expect((await res.json()).error.code).toBe("attachment-storage-not-configured");
+  });
+
+  test("有附件配置：上传字节成功，管理人受控下载", async () => {
+    const { app, memoryStorage } = makeApp({ attachmentConfigured: true });
+    const mint = await app.request("/api/workspaces/case-a/claims-portal/tokens", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ rosterId: "creditor_roster:r1" }),
+    });
+    const minted = await mint.json();
+    const open = await app.request(
+      `/api/claims-portal/case-a/${minted.tokenPlaintext}/session`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "张三", identityCode: "ID-001" }),
+      },
+    );
+    const cookie = (open.headers.get("set-cookie") ?? "").split(";")[0]!;
+    const pdfBytes = new TextEncoder().encode("%PDF-1.4 mock");
+    const upload = await app.request(
+      `/api/claims-portal/case-a/${minted.tokenPlaintext}/attachments`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          cookie,
+        },
+        body: JSON.stringify({
+          attachmentType: "contract",
+          fileName: "a.pdf",
+          contentType: "application/pdf",
+          byteSize: pdfBytes.byteLength,
+          bytesBase64: Buffer.from(pdfBytes).toString("base64"),
+        }),
+      },
+    );
+    expect(upload.status).toBe(200);
+    const uploaded = await upload.json();
+    expect(uploaded.ok).toBe(true);
+    expect(uploaded.attachment.id).toBeTruthy();
+    expect(memoryStorage.objects.size).toBe(1);
+
+    const download = await app.request(
+      `/api/workspaces/case-a/claims-portal/attachments/${uploaded.attachment.id}/download`,
+    );
+    expect(download.status).toBe(200);
+    expect(download.headers.get("content-type")).toBe("application/pdf");
+    expect(download.headers.get("cache-control")).toContain("no-store");
+    expect(download.headers.get("content-disposition")).toContain("a.pdf");
+    expect(await download.text()).toBe("%PDF-1.4 mock");
   });
 });

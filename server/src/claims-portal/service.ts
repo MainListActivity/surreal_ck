@@ -13,6 +13,11 @@ import {
 } from "./constants";
 import { decodeSessionCookie, encodeSessionCookie, generateToken, hashToken } from "./crypto";
 import {
+  buildClaimsAttachmentKey,
+  createAttachmentStorage,
+  type ClaimsAttachmentStorage,
+} from "./storage";
+import {
   assertAttachmentMeta,
   normalizeDraft,
   type SubmissionDraftInput,
@@ -27,6 +32,8 @@ export type ClaimsPortalDeps = {
   resolveWorkspace?: (slug: string) => Promise<{ dbName: string } | null>;
   getPepper?: () => string | null;
   getAttachmentConfig?: () => ReturnType<typeof getClaimsAttachmentConfig>;
+  /** 注入存储实现；缺省按附件配置创建（CF API 或 S3）。 */
+  createStorage?: (config: NonNullable<ReturnType<typeof getClaimsAttachmentConfig>>) => ClaimsAttachmentStorage;
   now?: () => number;
 };
 
@@ -140,6 +147,9 @@ export class ClaimsPortalService {
   private readonly resolveWorkspace: (slug: string) => Promise<{ dbName: string } | null>;
   private readonly getPepper: () => string | null;
   private readonly getAttachmentConfig: () => ReturnType<typeof getClaimsAttachmentConfig>;
+  private readonly createStorage: (
+    config: NonNullable<ReturnType<typeof getClaimsAttachmentConfig>>,
+  ) => ClaimsAttachmentStorage;
   private readonly now: () => number;
 
   constructor(deps: ClaimsPortalDeps = {}) {
@@ -147,6 +157,7 @@ export class ClaimsPortalService {
     this.resolveWorkspace = deps.resolveWorkspace ?? resolveWorkspaceBySlug;
     this.getPepper = deps.getPepper ?? (() => getClaimsPortalPepper());
     this.getAttachmentConfig = deps.getAttachmentConfig ?? (() => getClaimsAttachmentConfig());
+    this.createStorage = deps.createStorage ?? createAttachmentStorage;
     this.now = deps.now ?? (() => Date.now());
   }
 
@@ -566,8 +577,7 @@ export class ClaimsPortalService {
   }
 
   /**
-   * 仅写附件元数据。真实字节上传本轮不做；无附件配置时 fail-closed。
-   * 有配置时本轮仍拒绝字节路径（not-implemented），但允许单测校验层。
+   * 仅写附件元数据（测试 / 无字节路径）。生产上传走 uploadBytes。
    */
   async registerAttachmentMetadata(input: {
     workspaceDb: string;
@@ -642,8 +652,11 @@ export class ClaimsPortalService {
     requireAttachmentConfig(this.getAttachmentConfig);
   }
 
-  /** 字节上传 stub：缺配置 → 501 attachment-storage-not-configured。 */
-  async uploadBytes(_input: {
+  /**
+   * 上传附件字节到 R2，并写入 claim_attachment 元数据。
+   * 缺配置 → 501；无字节 → 400；对象键 claims/{ws}/{submission}/{attachmentId}/{file}。
+   */
+  async uploadBytes(input: {
     workspaceDb: string;
     rosterId: string;
     attachmentType: unknown;
@@ -651,10 +664,78 @@ export class ClaimsPortalService {
     contentType: unknown;
     byteSize: unknown;
     bytes?: Uint8Array;
-  }): Promise<never> {
-    requireAttachmentConfig(this.getAttachmentConfig);
-    // 有配置时本轮仍未实现真实 PutObject。
-    throw new HttpError(501, "attachment-upload-not-implemented", "Attachment byte upload is not implemented yet");
+  }): Promise<Record<string, unknown>> {
+    const config = requireAttachmentConfig(this.getAttachmentConfig);
+    const meta = assertAttachmentMeta({
+      attachmentType: input.attachmentType,
+      fileName: input.fileName,
+      contentType: input.contentType,
+      byteSize: input.byteSize,
+    });
+    if (!input.bytes || input.bytes.byteLength === 0) {
+      throw new HttpError(400, "attachment-bytes-required", "Attachment bytes are required");
+    }
+    if (input.bytes.byteLength !== meta.byteSize) {
+      throw new HttpError(400, "claims-attachment-size-mismatch", "byte_size does not match uploaded bytes");
+    }
+
+    const db = await this.getSession(input.workspaceDb);
+    const submission = firstRow<SubmissionRow>(
+      await db.query(
+        `SELECT id, status FROM claim_submission WHERE roster_id = $roster LIMIT 1;`,
+        { roster: new StringRecordId(input.rosterId) },
+      ),
+    );
+    if (!submission?.id) {
+      throw new HttpError(404, "claims-submission-not-found", "Submission not found");
+    }
+    if (submission.status === "closed") {
+      throw new HttpError(409, "claims-submission-locked", "Closed submissions cannot accept attachments");
+    }
+    const submissionId = idOf(submission.id)!;
+    const attachmentId = crypto.randomUUID();
+    const storageKey = buildClaimsAttachmentKey({
+      workspaceDb: input.workspaceDb,
+      submissionId,
+      attachmentId,
+      fileName: meta.fileName,
+    });
+
+    const storage = this.createStorage(config);
+    await storage.putObject({
+      key: storageKey,
+      bytes: input.bytes,
+      contentType: meta.contentType,
+    });
+
+    const nowIso = toIso(this.now());
+    const created = firstRow<AttachmentRow>(
+      await db.query(
+        `CREATE claim_attachment CONTENT {
+          submission_id: $submission,
+          attachment_type: $attachmentType,
+          file_name: $fileName,
+          content_type: $contentType,
+          byte_size: $byteSize,
+          storage_key: $storageKey,
+          uploaded_at: type::datetime($uploadedAt),
+          created_at: time::now()
+        };`,
+        {
+          submission: new StringRecordId(submissionId),
+          attachmentType: meta.attachmentType,
+          fileName: meta.fileName,
+          contentType: meta.contentType,
+          byteSize: meta.byteSize,
+          storageKey,
+          uploadedAt: nowIso,
+        },
+      ),
+    );
+    if (!created?.id) {
+      throw new HttpError(500, "claims-attachment-create-failed", "Failed to register attachment metadata");
+    }
+    return this.serializeAttachment(created);
   }
 
   async managerListSubmissions(input: { workspaceDb: string }): Promise<Array<Record<string, unknown>>> {
@@ -666,13 +747,62 @@ export class ClaimsPortalService {
     return rows.map((row) => this.serializeSubmission(row));
   }
 
-  /** 管理人下载 stub：缺配置 fail-closed。 */
-  async managerPresignedDownload(_input: {
+  /**
+   * 管理人受控下载：经 Hono 代理读对象字节（非永久公开 URL）。
+   */
+  async managerDownload(input: {
     workspaceDb: string;
     attachmentId: string;
-  }): Promise<never> {
-    requireAttachmentConfig(this.getAttachmentConfig);
-    throw new HttpError(501, "attachment-download-not-implemented", "Attachment download is not implemented yet");
+  }): Promise<{
+    body: Uint8Array;
+    contentType: string;
+    fileName: string;
+    byteSize: number;
+  }> {
+    const config = requireAttachmentConfig(this.getAttachmentConfig);
+    const db = await this.getSession(input.workspaceDb);
+    const row = firstRow<AttachmentRow>(
+      await db.query(
+        `SELECT id, submission_id, attachment_type, file_name, content_type, byte_size, storage_key, uploaded_at, created_at
+         FROM $id;`,
+        { id: new StringRecordId(input.attachmentId) },
+      ),
+    );
+    if (!row?.id || typeof row.storage_key !== "string" || row.storage_key.length === 0) {
+      throw new HttpError(404, "claims-attachment-not-found", "Attachment not found");
+    }
+    // 对象键必须属于本 workspace，防止跨库串读。
+    const expectedPrefix = `claims/${input.workspaceDb}/`;
+    if (!row.storage_key.startsWith(expectedPrefix)) {
+      throw new HttpError(403, "claims-attachment-workspace-mismatch", "Attachment does not belong to this workspace");
+    }
+
+    const storage = this.createStorage(config);
+    const object = await storage.getObject(row.storage_key);
+    const fileName = typeof row.file_name === "string" && row.file_name.length > 0
+      ? row.file_name
+      : "attachment";
+    return {
+      body: object.body,
+      contentType: typeof row.content_type === "string" && row.content_type.length > 0
+        ? row.content_type
+        : object.contentType,
+      fileName,
+      byteSize: object.contentLength,
+    };
+  }
+
+  /** @deprecated 使用 managerDownload；保留别名兼容旧调用。 */
+  async managerPresignedDownload(input: {
+    workspaceDb: string;
+    attachmentId: string;
+  }): Promise<{
+    body: Uint8Array;
+    contentType: string;
+    fileName: string;
+    byteSize: number;
+  }> {
+    return this.managerDownload(input);
   }
 
   private serializeSubmission(row: SubmissionRow): Record<string, unknown> {

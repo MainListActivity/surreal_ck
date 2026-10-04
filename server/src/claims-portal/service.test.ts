@@ -172,12 +172,40 @@ function createMemoryDb(store: Store): ClaimsQueryable {
         return [[row]];
       }
 
+      if (sql.includes("FROM $id") && sql.includes("storage_key")) {
+        const row = store.attachments.find((item) => String(item.id) === String(vars.id));
+        return [[row].filter(Boolean)];
+      }
+
       if (sql.includes("SELECT id, roster_id, token_hash, status FROM $id")) {
         const token = store.tokens.find((row) => String(row.id) === String(vars.id));
         return [[token].filter(Boolean)];
       }
 
       throw new Error(`unhandled sql in memory db: ${sql.slice(0, 120)}`);
+    },
+  };
+}
+
+function makeMemoryStorage() {
+  const objects = new Map<string, { bytes: Uint8Array; contentType: string }>();
+  return {
+    objects,
+    storage: {
+      async putObject(input: { key: string; bytes: Uint8Array; contentType: string }) {
+        objects.set(input.key, { bytes: input.bytes, contentType: input.contentType });
+      },
+      async getObject(key: string) {
+        const hit = objects.get(key);
+        if (!hit) {
+          throw new HttpError(404, "attachment-object-missing", "Attachment object not found in storage");
+        }
+        return {
+          body: hit.bytes,
+          contentType: hit.contentType,
+          contentLength: hit.bytes.byteLength,
+        };
+      },
     },
   };
 }
@@ -200,6 +228,7 @@ function makeService(options?: {
     seq: 0,
   };
   const db = createMemoryDb(store);
+  const memoryStorage = makeMemoryStorage();
   const service = new ClaimsPortalService({
     getSession: async () => db,
     resolveWorkspace: async (slug) => (slug === "case-a" ? { dbName: "ws_case_a" } : null),
@@ -214,9 +243,10 @@ function makeService(options?: {
             endpoint: "https://e",
           }
         : null,
+    createStorage: () => memoryStorage.storage,
     now: options?.now,
   });
-  return { service, store, db };
+  return { service, store, db, memoryStorage };
 }
 
 describe("ClaimsPortalService", () => {
@@ -252,15 +282,77 @@ describe("ClaimsPortalService", () => {
         fileName: "a.pdf",
         contentType: "application/pdf",
         byteSize: 10,
+        bytes: new Uint8Array(10),
       }),
     ).rejects.toMatchObject({ status: 501, code: "attachment-storage-not-configured" });
 
     await expect(
-      service.managerPresignedDownload({
+      service.managerDownload({
         workspaceDb: "ws",
         attachmentId: "claim_attachment:a1",
       }),
     ).rejects.toMatchObject({ status: 501, code: "attachment-storage-not-configured" });
+  });
+
+  test("有配置时 uploadBytes 写入对象与元数据；managerDownload 受控读回", async () => {
+    const { service, store, memoryStorage } = makeService({ attachmentConfigured: true });
+    const minted = await service.mintToken({
+      workspaceDb: "ws_case_a",
+      slug: "case-a",
+      rosterId: "creditor_roster:r1",
+      createdBy: "user-1",
+    });
+    await service.openSession({
+      workspaceDb: "ws_case_a",
+      slug: "case-a",
+      tokenPlaintext: minted.tokenPlaintext,
+      name: "张三",
+      identityCode: "ID-001",
+    });
+
+    const bytes = new TextEncoder().encode("%PDF-mock");
+    const uploaded = await service.uploadBytes({
+      workspaceDb: "ws_case_a",
+      rosterId: "creditor_roster:r1",
+      attachmentType: "contract",
+      fileName: "合同.pdf",
+      contentType: "application/pdf",
+      byteSize: bytes.byteLength,
+      bytes,
+    });
+    expect(uploaded.id).toBeTruthy();
+    expect(String(uploaded.storageKey)).toMatch(/^claims\/ws_case_a\/.+\/.+\/合同\.pdf$/);
+    expect(memoryStorage.objects.has(String(uploaded.storageKey))).toBe(true);
+    expect(store.attachments).toHaveLength(1);
+
+    const downloaded = await service.managerDownload({
+      workspaceDb: "ws_case_a",
+      attachmentId: String(uploaded.id),
+    });
+    expect(downloaded.fileName).toBe("合同.pdf");
+    expect(downloaded.contentType).toBe("application/pdf");
+    expect(new TextDecoder().decode(downloaded.body)).toBe("%PDF-mock");
+
+    await expect(
+      service.managerDownload({
+        workspaceDb: "other_ws",
+        attachmentId: String(uploaded.id),
+      }),
+    ).rejects.toMatchObject({ status: 403, code: "claims-attachment-workspace-mismatch" });
+  });
+
+  test("有配置但无字节 → 400 attachment-bytes-required", async () => {
+    const { service } = makeService({ attachmentConfigured: true });
+    await expect(
+      service.uploadBytes({
+        workspaceDb: "ws_case_a",
+        rosterId: "creditor_roster:r1",
+        attachmentType: "contract",
+        fileName: "a.pdf",
+        contentType: "application/pdf",
+        byteSize: 10,
+      }),
+    ).rejects.toMatchObject({ status: 400, code: "attachment-bytes-required" });
   });
 
   test("mint 明文只返回一次；list 不含明文/hash", async () => {

@@ -189,8 +189,7 @@ export function createClaimsPortalRoutes(
       }
     }
 
-    // 有字节或无配置：统一走 uploadBytes stub（缺 env → attachment-storage-not-configured）。
-    await service.uploadBytes({
+    const attachment = await service.uploadBytes({
       workspaceDb,
       rosterId: session.rosterId,
       attachmentType,
@@ -199,6 +198,7 @@ export function createClaimsPortalRoutes(
       byteSize,
       bytes,
     });
+    return c.json({ ok: true, attachment });
   });
 
   // ── 管理人：OIDC + workspace admin ────────────────────────────────────
@@ -255,7 +255,17 @@ export function createClaimsPortalRoutes(
       const attachmentId = c.req.param("attachmentId");
       const workspaceDb = await service.resolveWorkspaceDb(slug);
       assertAdminScope(c.var.user, workspaceDb);
-      await service.managerPresignedDownload({ workspaceDb, attachmentId });
+      const downloaded = await service.managerDownload({ workspaceDb, attachmentId });
+      const safeName = downloaded.fileName.replace(/["\r\n]/g, "_");
+      return new Response(downloaded.body, {
+        status: 200,
+        headers: {
+          "content-type": downloaded.contentType,
+          "content-length": String(downloaded.byteSize),
+          "content-disposition": `attachment; filename="${safeName}"`,
+          "cache-control": "private, no-store",
+        },
+      });
     },
   );
 
