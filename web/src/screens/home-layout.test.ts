@@ -115,7 +115,9 @@ describe("HR-05 首页快捷操作与 AI 入口", () => {
     expect(home).toContain("从模板创建");
     expect(home).toContain("导入文件");
     expect(home).toContain("债权对账导入");
+    expect(home).toContain("债权人填报链接");
     expect(home).toContain("<ClaimsImportDialog");
+    expect(home).toContain("<ClaimsTokenDialog");
     expect(home).not.toContain("导入文件功能尚未迁移");
     expect(home).toContain('workbooksStore.createBlank("未命名工作簿")');
     expect(home).toContain("onopen?.(wb.id)");

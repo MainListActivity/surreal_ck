@@ -9,3 +9,5 @@ process.env.OIDC_ISSUER ??= "http://127.0.0.1:18081/issuer";
 process.env.OIDC_JWKS_URL ??= "http://127.0.0.1:18081/jwks";
 process.env.OIDC_AUDIENCE ??= "surreal-ck-test";
 process.env.IDP_HOOK_SECRET ??= "test-hook-secret";
+// 门户测试默认有 pepper；故意不设 CLAIMS_ATTACHMENT_*，以便测 fail-closed。
+process.env.CLAIMS_PORTAL_TOKEN_PEPPER ??= "test-claims-portal-pepper-32bytes-min!!";
