@@ -29,6 +29,7 @@ type Store = {
   tokens: Array<Record<string, unknown>>;
   submissions: Array<Record<string, unknown>>;
   attachments: Array<Record<string, unknown>>;
+  supplements: Array<Record<string, unknown>>;
   seq: number;
 };
 
@@ -158,6 +159,29 @@ function createMemoryDb(store: Store): ClaimsQueryable {
         const row = store.attachments.find((item) => String(item.id) === idStr);
         return [[row].filter(Boolean)];
       }
+      if (sql.includes("FROM claim_supplement WHERE submission_id")) {
+        const rows = store.supplements
+          .filter((item) => String(item.submission_id) === submissionStr)
+          .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+        return [rows];
+      }
+      if (sql.includes("FROM $roster")) {
+        const row = String(vars.roster) === rosterStr ? store.roster : null;
+        return [[row].filter(Boolean)];
+      }
+      if (sql.includes("INSERT INTO claim_supplement")) {
+        store.seq += 1;
+        const row = {
+          id: `claim_supplement:sp${store.seq}`,
+          submission_id: submissionStr,
+          direction: "creditor_reply",
+          body: vars.body,
+          actor: vars.actor,
+          created_at: new Date().toISOString(),
+        };
+        store.supplements.push(row);
+        return [[row]];
+      }
       throw new Error(`unhandled sql: ${sql.slice(0, 100)}`);
     },
   };
@@ -197,6 +221,7 @@ function makeApp(options?: {
     tokens: [],
     submissions: [],
     attachments: [],
+    supplements: [],
     seq: 0,
   };
   const db = createMemoryDb(store);
@@ -315,6 +340,59 @@ describe("claims-portal routes", () => {
     expect(get.status).toBe(200);
     const body = await get.json();
     expect(body.submission.status).toBe("draft");
+  });
+
+  test("债权人补充往返端点：回复落库为 creditor_reply，GET 可见往返且不含管理人笔记", async () => {
+    const { app, store } = makeApp();
+    const mint = await app.request("/api/workspaces/case-a/claims-portal/tokens", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ rosterId: "creditor_roster:r1" }),
+    });
+    const minted = await mint.json();
+
+    const open = await app.request(
+      `/api/claims-portal/case-a/${minted.tokenPlaintext}/session`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "张三", identityCode: "ID-001" }),
+      },
+    );
+    const cookie = (open.headers.get("set-cookie") ?? "").split(";")[0]!;
+    store.submissions[0]!.manager_note = "内部：勿回发给债权人";
+    store.supplements.push({
+      id: "claim_supplement:mgr1",
+      submission_id: String(store.submissions[0]!.id),
+      direction: "manager_request",
+      body: "请补充银行流水",
+      actor: "王管理人",
+      created_at: "2025-01-10T00:00:00.000Z",
+    });
+
+    const reply = await app.request(
+      `/api/claims-portal/case-a/${minted.tokenPlaintext}/submission/supplement`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ body: "流水已补传附件" }),
+      },
+    );
+    expect(reply.status).toBe(200);
+    const replyBody = await reply.json();
+    expect(replyBody.supplement.direction).toBe("creditor_reply");
+    expect(replyBody.supplement.actor).toBe("张三");
+    expect(store.supplements).toHaveLength(2);
+
+    const get = await app.request(
+      `/api/claims-portal/case-a/${minted.tokenPlaintext}/submission`,
+      { headers: { cookie } },
+    );
+    const body = await get.json();
+    expect(body.supplements).toHaveLength(2);
+    expect(body.supplements[0].direction).toBe("manager_request");
+    expect(JSON.stringify(body)).not.toContain("勿回发给债权人");
+    expect("managerNote" in body.submission).toBe(false);
   });
 
   test("跨 slug / 伪造令牌失败", async () => {

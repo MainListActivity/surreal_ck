@@ -15,6 +15,7 @@ type Store = {
   tokens: Array<Record<string, unknown>>;
   submissions: Array<Record<string, unknown>>;
   attachments: Array<Record<string, unknown>>;
+  supplements: Array<Record<string, unknown>>;
   seq: number;
 };
 
@@ -182,6 +183,32 @@ function createMemoryDb(store: Store): ClaimsQueryable {
         return [[token].filter(Boolean)];
       }
 
+      if (sql.includes("FROM claim_supplement WHERE submission_id")) {
+        const rows = store.supplements
+          .filter((item) => String(item.submission_id) === String(vars.submission))
+          .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+        return [rows];
+      }
+
+      if (sql.includes("INSERT INTO claim_supplement")) {
+        store.seq += 1;
+        const row = {
+          id: `claim_supplement:sp${store.seq}`,
+          submission_id: String(vars.submission),
+          direction: "creditor_reply",
+          body: vars.body,
+          actor: vars.actor,
+          created_at: new Date().toISOString(),
+        };
+        store.supplements.push(row);
+        return [[row]];
+      }
+
+      if (sql.includes("FROM $roster")) {
+        const row = String(vars.roster) === store.roster.id ? store.roster : null;
+        return [[row].filter(Boolean)];
+      }
+
       throw new Error(`unhandled sql in memory db: ${sql.slice(0, 120)}`);
     },
   };
@@ -225,6 +252,7 @@ function makeService(options?: {
     tokens: [],
     submissions: [],
     attachments: [],
+    supplements: [],
     seq: 0,
   };
   const db = createMemoryDb(store);
@@ -552,5 +580,109 @@ describe("ClaimsPortalService", () => {
       rosterId: "creditor_roster:r1",
     });
     expect(submitted.status).toBe("submitted");
+  });
+
+
+  test("债权人可见性：getSubmission/saveDraft/submit 序列化均不含 managerNote", async () => {
+    const { service, store } = makeService();
+    const minted = await service.mintToken({
+      workspaceDb: "ws_case_a",
+      slug: "case-a",
+      rosterId: "creditor_roster:r1",
+      createdBy: "user-1",
+    });
+    await service.openSession({
+      workspaceDb: "ws_case_a",
+      slug: "case-a",
+      tokenPlaintext: minted.tokenPlaintext,
+      name: "张三",
+      identityCode: "ID-001",
+    });
+    store.submissions[0]!.manager_note = "内部：疑似重复申报，勿外发";
+
+    const view = await service.getSubmission({ workspaceDb: "ws_case_a", rosterId: "creditor_roster:r1" });
+    expect(view.submission).not.toBeNull();
+    expect("managerNote" in view.submission!).toBe(false);
+    expect(JSON.stringify(view)).not.toContain("疑似重复申报");
+
+    const draft = await service.saveDraft({
+      workspaceDb: "ws_case_a",
+      rosterId: "creditor_roster:r1",
+      draft: { principal: 88 },
+    });
+    expect("managerNote" in draft).toBe(false);
+  });
+
+  test("补充往返：管理人要求对债权人可见；债权人回复追加为 creditor_reply 且 actor 记名册名", async () => {
+    const { service, store } = makeService();
+    const minted = await service.mintToken({
+      workspaceDb: "ws_case_a",
+      slug: "case-a",
+      rosterId: "creditor_roster:r1",
+      createdBy: "user-1",
+    });
+    await service.openSession({
+      workspaceDb: "ws_case_a",
+      slug: "case-a",
+      tokenPlaintext: minted.tokenPlaintext,
+      name: "张三",
+      identityCode: "ID-001",
+    });
+    const submissionId = String(store.submissions[0]!.id);
+    store.supplements.push({
+      id: "claim_supplement:mgr1",
+      submission_id: submissionId,
+      direction: "manager_request",
+      body: "请补充 2024-12 银行回单",
+      actor: "王管理人",
+      created_at: "2025-01-10T00:00:00.000Z",
+    });
+
+    const before = await service.getSubmission({ workspaceDb: "ws_case_a", rosterId: "creditor_roster:r1" });
+    expect(before.supplements).toHaveLength(1);
+    expect(before.supplements[0]!.direction).toBe("manager_request");
+
+    const reply = await service.addCreditorSupplementReply({
+      workspaceDb: "ws_case_a",
+      rosterId: "creditor_roster:r1",
+      body: "  回单已另传附件，请查收  ",
+    });
+    expect(reply.direction).toBe("creditor_reply");
+    expect(reply.body).toBe("回单已另传附件，请查收");
+    expect(reply.actor).toBe("张三");
+    expect(reply.submissionId).toBe(submissionId);
+    expect(store.supplements).toHaveLength(2);
+
+    const after = await service.getSubmission({ workspaceDb: "ws_case_a", rosterId: "creditor_roster:r1" });
+    expect(after.supplements).toHaveLength(2);
+    expect(after.supplements.map((item) => item.direction)).toEqual(["manager_request", "creditor_reply"]);
+  });
+
+  test("补充回复边界：空文本 400、无申报 404、closed 409", async () => {
+    const { service, store } = makeService();
+    store.submissions.push({
+      id: "claim_submission:s9",
+      roster_id: "creditor_roster:r1",
+      identity_code: "ID-001",
+      status: "draft",
+    });
+    await expect(
+      service.addCreditorSupplementReply({ workspaceDb: "ws_case_a", rosterId: "creditor_roster:r1", body: "" }),
+    ).rejects.toMatchObject({ status: 400, code: "claims-supplement-invalid" });
+    await expect(
+      service.addCreditorSupplementReply({ workspaceDb: "ws_case_a", rosterId: "creditor_roster:r1", body: "x".repeat(4001) }),
+    ).rejects.toMatchObject({ status: 400, code: "claims-supplement-invalid" });
+
+    const { service: empty } = makeService({
+      store: { roster: { id: "creditor_roster:r9", name: "李四", identity_code: "ID-009" }, tokens: [], submissions: [], attachments: [], supplements: [], seq: 0 },
+    });
+    await expect(
+      empty.addCreditorSupplementReply({ workspaceDb: "ws_case_a", rosterId: "creditor_roster:r9", body: "hi" }),
+    ).rejects.toMatchObject({ status: 404, code: "claims-submission-not-found" });
+
+    store.submissions[0]!.status = "closed";
+    await expect(
+      service.addCreditorSupplementReply({ workspaceDb: "ws_case_a", rosterId: "creditor_roster:r1", body: "hi" }),
+    ).rejects.toMatchObject({ status: 409, code: "claims-submission-locked" });
   });
 });
