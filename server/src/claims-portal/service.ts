@@ -389,19 +389,36 @@ export class ClaimsPortalService {
     const nextCount = inWindow ? prevCount + 1 : 1;
     const lockedUntil = nextCount >= FAIL_THRESHOLD ? toIso(nowMs + LOCK_MS) : null;
 
-    await db.query(
-      `UPDATE $id SET
-        last_attempt_at = type::datetime($now),
-        failure_count = $failureCount,
-        locked_until = IF $lockedUntil = NONE THEN NONE ELSE type::datetime($lockedUntil) END,
-        updated_at = time::now();`,
-      {
-        id: new StringRecordId(tokenId),
-        now: toIso(nowMs),
-        failureCount: nextCount,
-        lockedUntil,
-      },
-    );
+    // JS null 传入 Surreal 不会变成 NONE；IF $x = NONE ELSE type::datetime($x)
+    // 在 null 上会炸成 500。未锁定时写字面量 NONE，锁定时再传 ISO 字符串。
+    if (lockedUntil) {
+      await db.query(
+        `UPDATE $id SET
+          last_attempt_at = type::datetime($now),
+          failure_count = $failureCount,
+          locked_until = type::datetime($lockedUntil),
+          updated_at = time::now();`,
+        {
+          id: new StringRecordId(tokenId),
+          now: toIso(nowMs),
+          failureCount: nextCount,
+          lockedUntil,
+        },
+      );
+    } else {
+      await db.query(
+        `UPDATE $id SET
+          last_attempt_at = type::datetime($now),
+          failure_count = $failureCount,
+          locked_until = NONE,
+          updated_at = time::now();`,
+        {
+          id: new StringRecordId(tokenId),
+          now: toIso(nowMs),
+          failureCount: nextCount,
+        },
+      );
+    }
   }
 
   verifyPortalSession(input: {
