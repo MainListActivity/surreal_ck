@@ -551,7 +551,6 @@ describe("workspace template scripts", () => {
     const migration = scripts.find((script) => script.name === "051-claims-portal.surql");
 
     expect(migration?.version).toBe(51);
-    expect(WORKSPACE_TEMPLATE_VERSION).toBe(51);
     const sql = migration?.sql ?? "";
     expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS claim_access_token SCHEMAFULL/);
     expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS claim_submission SCHEMAFULL/);
@@ -560,6 +559,20 @@ describe("workspace template scripts", () => {
     expect(sql).toMatch(/claim_submission_roster_unique/);
     expect(sql).toMatch(/FOR create, update, delete\s+WHERE false/);
     expect(sql).toMatch(/fn::current_user\(\) != NONE/);
+    expect(sql).not.toMatch(/UPDATE |DELETE |REMOVE /i);
+  });
+
+  test("11.1：052 为 claim_submission.rate_segments 补 FLEXIBLE 子定义", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.name === "052-claims-rate-segments-flexible.surql");
+
+    expect(migration?.version).toBe(52);
+    expect(WORKSPACE_TEMPLATE_VERSION).toBe(52);
+    const sql = migration?.sql ?? "";
+    expect(sql).toMatch(
+      /DEFINE FIELD IF NOT EXISTS rate_segments\.\* ON TABLE claim_submission TYPE object FLEXIBLE/,
+    );
+    expect(sql).toMatch(/ALTER FIELD rate_segments\.\* ON TABLE claim_submission FLEXIBLE/);
     expect(sql).not.toMatch(/UPDATE |DELETE |REMOVE /i);
   });
 });
