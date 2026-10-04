@@ -1,6 +1,6 @@
-import { StringRecordId } from "surrealdb";
+import { DateTime, StringRecordId } from "surrealdb";
 import { getRootDatabaseSession } from "../db/root-connection";
-import { toIsoDateTimeString, toStringRecordId } from "../db/surreal-values";
+import { toIsoDateTimeString, toStringRecordId, toSurrealNone } from "../db/surreal-values";
 import { HttpError } from "../http-error";
 import { resolveWorkspaceBySlug } from "../../ai/office/employee-service";
 import { getClaimsAttachmentConfig, getClaimsPortalPepper } from "./config";
@@ -519,13 +519,14 @@ export class ClaimsPortalService {
       throw new HttpError(409, "claims-submission-locked", "Submitted claims cannot be edited as draft");
     }
 
+    // JS null → Surreal NULL，option<> 字段与 type::datetime 会 500；用 toSurrealNone → NONE。
     const updated = firstRow<SubmissionRow>(
       await db.query(
         `UPDATE $id SET
           principal = $principal,
           rate_segments = $rateSegments,
-          interest_start = IF $interestStart = NONE THEN NONE ELSE type::datetime($interestStart) END,
-          interest_end = IF $interestEnd = NONE THEN NONE ELSE type::datetime($interestEnd) END,
+          interest_start = $interestStart,
+          interest_end = $interestEnd,
           interest_method = $interestMethod,
           penalty = $penalty,
           statement = $statement,
@@ -534,13 +535,17 @@ export class ClaimsPortalService {
         RETURN AFTER;`,
         {
           id: new StringRecordId(idOf(existing.id)!),
-          principal: normalized.principal,
-          rateSegments: normalized.rate_segments,
-          interestStart: normalized.interest_start,
-          interestEnd: normalized.interest_end,
-          interestMethod: normalized.interest_method,
-          penalty: normalized.penalty,
-          statement: normalized.statement,
+          principal: toSurrealNone(normalized.principal),
+          rateSegments: toSurrealNone(normalized.rate_segments),
+          interestStart: toSurrealNone(
+            normalized.interest_start ? new DateTime(normalized.interest_start) : null,
+          ),
+          interestEnd: toSurrealNone(
+            normalized.interest_end ? new DateTime(normalized.interest_end) : null,
+          ),
+          interestMethod: toSurrealNone(normalized.interest_method),
+          penalty: toSurrealNone(normalized.penalty),
+          statement: toSurrealNone(normalized.statement),
         },
       ),
     );
