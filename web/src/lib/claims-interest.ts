@@ -117,3 +117,59 @@ export async function listInterestCalculations(
     { submission: new StringRecordId(submissionId) },
   );
 }
+
+export type ClaimSubmissionListItem = {
+  id: string;
+  identity_code: string;
+  status: string;
+  principal: number | null;
+  submitted_at: string | null;
+};
+
+/** 管理人对账入口：列出全部申报行（只读 claim_submission）。 */
+export async function listClaimSubmissions(conn: SurrealConn): Promise<ClaimSubmissionListItem[]> {
+  const rows = await conn.query<ClaimSubmissionRow & { identity_code?: unknown; status?: unknown; submitted_at?: unknown }>(
+    `SELECT id, identity_code, status, principal, submitted_at
+     FROM claim_submission
+     ORDER BY created_at DESC;`,
+  );
+  return rows.flatMap((row) => {
+    const id = typeof row.id === "string" ? row.id : row.id ? String(row.id) : "";
+    if (!id) return [];
+    const submittedAt = row.submitted_at instanceof DateTime
+      ? row.submitted_at.toDate().toISOString()
+      : typeof row.submitted_at === "string" ? row.submitted_at : null;
+    return [{
+      id,
+      identity_code: typeof row.identity_code === "string" ? row.identity_code : "",
+      status: typeof row.status === "string" ? row.status : "unknown",
+      principal: typeof row.principal === "number" ? row.principal : null,
+      submitted_at: submittedAt,
+    }];
+  });
+}
+
+/**
+ * 债权人门户「分段利率 JSON」输入解析：留空返回 null（走单段简表），
+ * 非法 JSON / 非数组 / 空数组返回错误——原始值直传服务端，形状由引擎在校验时报具体错误。
+ */
+export function parseRateSegmentsJson(
+  text: string,
+): { ok: true; segments: Array<Record<string, unknown>> | null } | { ok: false; error: string } {
+  const trimmed = text.trim();
+  if (trimmed === "") return { ok: true, segments: null };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return { ok: false, error: "分段利率 JSON 无法解析" };
+  }
+  if (!Array.isArray(parsed)) return { ok: false, error: "分段利率必须是 JSON 数组" };
+  if (parsed.length === 0) return { ok: false, error: "分段利率数组不能为空" };
+  for (const item of parsed) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      return { ok: false, error: "分段利率数组元素必须是对象" };
+    }
+  }
+  return { ok: true, segments: parsed as Array<Record<string, unknown>> };
+}

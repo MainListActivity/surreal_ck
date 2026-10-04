@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import {
     ArrowRight,
+    Calculator,
     Clock,
     Grid3x3,
     LayoutTemplate,
@@ -38,6 +39,7 @@
   import type { WorkbookRow } from "../lib/workbooks";
   import ClaimsImportDialog from "../components/ClaimsImportDialog.svelte";
   import ClaimsTokenDialog from "../components/ClaimsTokenDialog.svelte";
+  import ClaimsInterestDialog from "../components/ClaimsInterestDialog.svelte";
   import CsvImportDialog from "../components/CsvImportDialog.svelte";
   import XlsxImportDialog from "../components/XlsxImportDialog.svelte";
   import { parseCsvImport, type ParsedCsvImport } from "../lib/csv-import";
@@ -86,6 +88,7 @@
   let xlsxParseTask = $state<ReturnType<typeof createXlsxParseTask> | null>(null);
   let claimsImportOpen = $state(false);
   let claimsTokenOpen = $state(false);
+  let claimsInterestOpen = $state(false);
   let memberMetric = $state<HomeWorkspaceMetric | null>(null);
 
   const greeting = $derived(homeGreetingForDate());
@@ -306,6 +309,18 @@
             <small>{canWriteSharedStructure ? "生成令牌链接供债权人申报" : "需要管理员权限"}</small>
           </span>
         </button>
+        <button
+          type="button"
+          class="qa qa-neutral"
+          onclick={() => (claimsInterestOpen = true)}
+          disabled={!canWriteSharedStructure}
+        >
+          <span class="qa-icon"><Calculator size={21} /></span>
+          <span class="qa-text">
+            <strong>债权利息重算</strong>
+            <small>{canWriteSharedStructure ? "按合同分段单利重算并保存快照" : "需要管理员权限"}</small>
+          </span>
+        </button>
       </div>
       {#if importStatus}
         <div class="inline-note">{importStatus}{#if xlsxParseTask}<button type="button" onclick={cancelImportParsing}>取消解析</button>{/if}</div>
@@ -492,6 +507,10 @@
 
 {#if claimsTokenOpen}
   <ClaimsTokenDialog onclose={() => (claimsTokenOpen = false)} />
+{/if}
+
+{#if claimsInterestOpen}
+  <ClaimsInterestDialog onclose={() => (claimsInterestOpen = false)} />
 {/if}
 
 {#snippet tableMark(color: string)}
