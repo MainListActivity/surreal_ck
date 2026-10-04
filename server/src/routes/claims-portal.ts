@@ -137,6 +137,30 @@ export function createClaimsPortalRoutes(
     return c.json({ ok: true, submission });
   });
 
+  routes.post("/api/claims-portal/:slug/:token/submission/supplement", async (c) => {
+    const slug = c.req.param("slug");
+    const token = c.req.param("token");
+    const body = readJsonBody(await c.req.json().catch(() => null));
+    const workspaceDb = await service.resolveWorkspaceDb(slug);
+    const session = service.verifyPortalSession({
+      cookieRaw: getCookie(c, SESSION_COOKIE_NAME),
+      slug,
+      tokenPlaintext: token,
+    });
+    await service.assertTokenMatchesSession({
+      workspaceDb,
+      tokenPlaintext: token,
+      tokenId: session.tokenId,
+      rosterId: session.rosterId,
+    });
+    const supplement = await service.addCreditorSupplementReply({
+      workspaceDb,
+      rosterId: session.rosterId,
+      body: typeof body.body === "string" ? body.body : "",
+    });
+    return c.json({ ok: true, supplement });
+  });
+
   routes.post("/api/claims-portal/:slug/:token/attachments", async (c) => {
     const slug = c.req.param("slug");
     const token = c.req.param("token");

@@ -3,6 +3,7 @@
   import {
     ArrowRight,
     Calculator,
+    GitCompareArrows,
     Clock,
     Grid3x3,
     LayoutTemplate,
@@ -40,6 +41,7 @@
   import ClaimsImportDialog from "../components/ClaimsImportDialog.svelte";
   import ClaimsTokenDialog from "../components/ClaimsTokenDialog.svelte";
   import ClaimsInterestDialog from "../components/ClaimsInterestDialog.svelte";
+  import ClaimsReconcileDialog from "../components/ClaimsReconcileDialog.svelte";
   import CsvImportDialog from "../components/CsvImportDialog.svelte";
   import XlsxImportDialog from "../components/XlsxImportDialog.svelte";
   import { parseCsvImport, type ParsedCsvImport } from "../lib/csv-import";
@@ -89,6 +91,7 @@
   let claimsImportOpen = $state(false);
   let claimsTokenOpen = $state(false);
   let claimsInterestOpen = $state(false);
+  let claimsReconcileOpen = $state(false);
   let memberMetric = $state<HomeWorkspaceMetric | null>(null);
 
   const greeting = $derived(homeGreetingForDate());
@@ -321,6 +324,18 @@
             <small>{canWriteSharedStructure ? "按合同分段单利重算并保存快照" : "需要管理员权限"}</small>
           </span>
         </button>
+        <button
+          type="button"
+          class="qa qa-neutral"
+          onclick={() => (claimsReconcileOpen = true)}
+          disabled={!canWriteSharedStructure}
+        >
+          <span class="qa-icon"><GitCompareArrows size={21} /></span>
+          <span class="qa-text">
+            <strong>债权对账</strong>
+            <small>{canWriteSharedStructure ? "申报/账面/重算并排差异、结论、补充往返与导出" : "需要管理员权限"}</small>
+          </span>
+        </button>
       </div>
       {#if importStatus}
         <div class="inline-note">{importStatus}{#if xlsxParseTask}<button type="button" onclick={cancelImportParsing}>取消解析</button>{/if}</div>
@@ -511,6 +526,10 @@
 
 {#if claimsInterestOpen}
   <ClaimsInterestDialog onclose={() => (claimsInterestOpen = false)} />
+{/if}
+
+{#if claimsReconcileOpen}
+  <ClaimsReconcileDialog onclose={() => (claimsReconcileOpen = false)} />
 {/if}
 
 {#snippet tableMark(color: string)}

@@ -87,6 +87,15 @@ type AttachmentRow = {
   created_at?: unknown;
 };
 
+type SupplementRow = {
+  id?: unknown;
+  submission_id?: unknown;
+  direction?: unknown;
+  body?: unknown;
+  actor?: unknown;
+  created_at?: unknown;
+};
+
 function idOf(value: unknown): string | null {
   return toStringRecordId(value)?.toString() ?? (typeof value === "string" ? value : null);
 }
@@ -474,6 +483,7 @@ export class ClaimsPortalService {
   }): Promise<{
     submission: Record<string, unknown> | null;
     attachments: Array<Record<string, unknown>>;
+    supplements: Array<Record<string, unknown>>;
   }> {
     const db = await this.getSession(input.workspaceDb);
     const submission = firstRow<SubmissionRow>(
@@ -483,7 +493,7 @@ export class ClaimsPortalService {
       ),
     );
     if (!submission?.id) {
-      return { submission: null, attachments: [] };
+      return { submission: null, attachments: [], supplements: [] };
     }
     const submissionId = idOf(submission.id)!;
     const attachments = rowsOf<AttachmentRow>(
@@ -493,10 +503,78 @@ export class ClaimsPortalService {
         { submission: new StringRecordId(submissionId) },
       ),
     );
+    // 补充往返：只按本人 submission_id 过滤，债权人可见请求与本人回复；
+    // 管理人笔记 / 账面 / 重算快照不在本响应出现。
+    const supplements = rowsOf<SupplementRow>(
+      await db.query(
+        `SELECT id, submission_id, direction, body, actor, created_at
+         FROM claim_supplement WHERE submission_id = $submission
+         ORDER BY created_at ASC;`,
+        { submission: new StringRecordId(submissionId) },
+      ),
+    );
     return {
-      submission: this.serializeSubmission(submission),
+      submission: this.serializeSubmissionForCreditor(submission),
       attachments: attachments.map((row) => this.serializeAttachment(row)),
+      supplements: supplements.map((row) => this.serializeSupplement(row)),
     };
+  }
+
+  /**
+   * 债权人回复补充要求：追加式日志（direction=creditor_reply），
+   * actor 记名册名称便于管理人识别，仅写本人申报名下。
+   */
+  async addCreditorSupplementReply(input: {
+    workspaceDb: string;
+    rosterId: string;
+    body: string;
+  }): Promise<Record<string, unknown>> {
+    const body = typeof input.body === "string" ? input.body.trim() : "";
+    if (body.length === 0 || body.length > 4000) {
+      throw new HttpError(400, "claims-supplement-invalid", "Supplement reply must be 1-4000 characters");
+    }
+    const db = await this.getSession(input.workspaceDb);
+    const [submissionRows, rosterRows] = await Promise.all([
+      db.query(
+        `SELECT id, status FROM claim_submission WHERE roster_id = $roster LIMIT 1;`,
+        { roster: new StringRecordId(input.rosterId) },
+      ),
+      db.query(
+        `SELECT id, name, identity_code FROM $roster;`,
+        { roster: new StringRecordId(input.rosterId) },
+      ),
+    ]);
+    const submission = firstRow<SubmissionRow>(submissionRows);
+    const roster = firstRow<RosterRow>(rosterRows);
+    if (!submission?.id) {
+      throw new HttpError(404, "claims-submission-not-found", "Submission not found");
+    }
+    if (submission.status === "closed") {
+      throw new HttpError(409, "claims-submission-locked", "Closed submissions cannot accept supplement replies");
+    }
+    const actor = typeof roster?.name === "string" && roster.name.length > 0
+      ? roster.name
+      : (typeof roster?.identity_code === "string" ? roster.identity_code : "creditor");
+    const created = firstRow<SupplementRow>(
+      await db.query(
+        `INSERT INTO claim_supplement {
+          submission_id: $submission,
+          direction: "creditor_reply",
+          body: $body,
+          actor: $actor,
+          created_at: time::now()
+        } RETURN AFTER;`,
+        {
+          submission: new StringRecordId(idOf(submission.id)!),
+          body,
+          actor,
+        },
+      ),
+    );
+    if (!created?.id) {
+      throw new HttpError(500, "claims-supplement-failed", "Failed to record supplement reply");
+    }
+    return this.serializeSupplement(created);
   }
 
   async saveDraft(input: {
@@ -552,7 +630,7 @@ export class ClaimsPortalService {
     if (!updated) {
       throw new HttpError(500, "claims-draft-save-failed", "Failed to save draft");
     }
-    return this.serializeSubmission(updated);
+    return this.serializeSubmissionForCreditor(updated);
   }
 
   async submit(input: {
@@ -596,7 +674,7 @@ export class ClaimsPortalService {
     if (!updated) {
       throw new HttpError(500, "claims-submit-failed", "Failed to submit claim");
     }
-    return this.serializeSubmission(updated);
+    return this.serializeSubmissionForCreditor(updated);
   }
 
   /**
@@ -845,6 +923,27 @@ export class ClaimsPortalService {
       managerNote: typeof row.manager_note === "string" ? row.manager_note : null,
       createdAt: asDateMs(row.created_at) !== null ? toIso(asDateMs(row.created_at)!) : null,
       updatedAt: asDateMs(row.updated_at) !== null ? toIso(asDateMs(row.updated_at)!) : null,
+    };
+  }
+
+  /**
+   * 债权人可见的申报序列化：管理人笔记 managerNote 是内部字段，
+   * 与账面数据 / 重算快照一样不出现在债权人响应里。
+   */
+  private serializeSubmissionForCreditor(row: SubmissionRow): Record<string, unknown> {
+    const full = this.serializeSubmission(row);
+    delete full.managerNote;
+    return full;
+  }
+
+  private serializeSupplement(row: SupplementRow): Record<string, unknown> {
+    return {
+      id: idOf(row.id),
+      submissionId: idOf(row.submission_id),
+      direction: typeof row.direction === "string" ? row.direction : null,
+      body: typeof row.body === "string" ? row.body : null,
+      actor: typeof row.actor === "string" ? row.actor : null,
+      createdAt: asDateMs(row.created_at) !== null ? toIso(asDateMs(row.created_at)!) : null,
     };
   }
 

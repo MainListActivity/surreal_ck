@@ -12,6 +12,14 @@
     fileName?: string | null;
   };
 
+  type SupplementRow = {
+    id?: string | null;
+    direction?: string | null;
+    body?: string | null;
+    actor?: string | null;
+    createdAt?: string | null;
+  };
+
   type SubmissionRow = {
     id?: string | null;
     principal?: number | null;
@@ -40,6 +48,9 @@
   const SEGMENTS_PLACEHOLDER = '[{"start":"2024-01-01","end":"2024-07-01","annual_rate":0.06},{"start":"2024-07-01","end":"2025-01-01","annual_rate":0.08}]';
   let submission = $state<SubmissionRow | null>(null);
   let attachments = $state<AttachmentRow[]>([]);
+  let supplements = $state<SupplementRow[]>([]);
+  let supplementReply = $state("");
+  let supplementBusy = $state(false);
   let submitted = $state(false);
 
   function apiBase(): string {
@@ -95,9 +106,11 @@
     const body = await res.json() as {
       submission?: SubmissionRow | null;
       attachments?: AttachmentRow[];
+      supplements?: SupplementRow[];
     };
     submission = body.submission ?? null;
     attachments = body.attachments ?? [];
+    supplements = body.supplements ?? [];
     if (submission) {
       principal = submission.principal != null ? String(submission.principal) : "";
       interestStart = submission.interestStart?.slice(0, 10) ?? "";
@@ -157,8 +170,33 @@
     }
   }
 
+  async function sendSupplementReply() {
+    const text = supplementReply.trim();
+    if (supplementBusy || text.length === 0) return;
+    supplementBusy = true;
+    error = null;
+    try {
+      const res = await fetch(portalUrl("/submission/supplement"), {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ body: text }),
+      });
+      if (!res.ok) {
+        error = await readError(res);
+        return;
+      }
+      supplementReply = "";
+      await loadSubmission();
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      supplementBusy = false;
+    }
+  }
+
   async function uploadAttachment(file: File | undefined) {
-    if (!file || busy || submitted) return;
+    if (!file || busy) return;
     busy = true;
     error = null;
     try {
@@ -278,7 +316,7 @@
 
       <div class="attachments">
         <h2>附件</h2>
-        <p class="hint">至少一份（合同 / 对账单 / 判决书）。本轮若未配置对象存储，上传会返回明确错误。</p>
+        <p class="hint">至少一份（合同 / 对账单 / 判决书）。提交后仍可补传作为补充材料。本轮若未配置对象存储，上传会返回明确错误。</p>
         <ul>
           {#each attachments as item}
             <li>{item.attachmentType ?? "—"} · {item.fileName ?? item.id}</li>
@@ -289,7 +327,7 @@
         <input
           type="file"
           accept=".pdf,image/png,image/jpeg,application/pdf"
-          disabled={busy || submitted}
+          disabled={busy}
           onchange={(event) => {
             const input = event.currentTarget as HTMLInputElement;
             void uploadAttachment(input.files?.[0]);
@@ -297,6 +335,34 @@
           }}
         />
       </div>
+
+      {#if supplements.length > 0 || submission?.status === "submitted"}
+        <div class="supplements">
+          <h2>管理人补充要求</h2>
+          {#if supplements.length === 0}
+            <p class="muted">暂无补充要求。</p>
+          {:else}
+            <ul class="thread">
+              {#each supplements as msg}
+                <li class={msg.direction === "manager_request" ? "from-manager" : "from-creditor"}>
+                  <div class="meta">
+                    {msg.direction === "manager_request" ? "管理人要求" : "本人回复"}
+                    · {msg.actor ?? "?"} · {(msg.createdAt ?? "").replace("T", " ").slice(0, 19)}
+                  </div>
+                  <div class="msg">{msg.body}</div>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+          <label>
+            回复补充要求（可另传附件作补充材料）
+            <textarea rows="3" maxlength="4000" bind:value={supplementReply} disabled={supplementBusy}></textarea>
+          </label>
+          <button type="button" class="secondary" disabled={supplementBusy || supplementReply.trim().length === 0} onclick={() => void sendSupplementReply()}>
+            {supplementBusy ? "发送中…" : "发送回复"}
+          </button>
+        </div>
+      {/if}
 
       <div class="actions">
         <button type="button" class="secondary" disabled={busy || submitted} onclick={() => void saveDraft()}>保存草稿</button>
@@ -351,6 +417,39 @@
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 12px;
+  }
+  .supplements h2 {
+    margin: 0 0 8px;
+    font-size: 1rem;
+  }
+  .thread {
+    list-style: none;
+    margin: 0 0 12px;
+    padding: 0;
+    display: grid;
+    gap: 8px;
+  }
+  .thread li {
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-size: 0.85rem;
+  }
+  .thread .from-manager {
+    background: rgba(59, 130, 246, 0.08);
+    border-left: 3px solid #3b82f6;
+  }
+  .thread .from-creditor {
+    background: rgba(34, 197, 94, 0.08);
+    border-left: 3px solid #22c55e;
+  }
+  .thread .meta {
+    color: var(--text-2, #475569);
+    font-size: 0.75rem;
+    margin-bottom: 3px;
+  }
+  .thread .msg {
+    white-space: pre-wrap;
+    word-break: break-word;
   }
   .attachments h2 {
     margin: 0;

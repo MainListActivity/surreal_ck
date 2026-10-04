@@ -597,12 +597,27 @@ describe("workspace template scripts", () => {
     const migration = scripts.find((script) => script.name === "054-interest-calculation-segments-flexible.surql");
 
     expect(migration?.version).toBe(54);
-    expect(WORKSPACE_TEMPLATE_VERSION).toBe(54);
     const sql = migration?.sql ?? "";
     expect(sql).toMatch(
       /DEFINE FIELD IF NOT EXISTS segments\.\* ON TABLE interest_calculation TYPE object FLEXIBLE/,
     );
     expect(sql).toMatch(/ALTER FIELD segments\.\* ON TABLE interest_calculation FLEXIBLE/);
+    expect(sql).not.toMatch(/UPDATE |DELETE |REMOVE /i);
+  });
+
+  test("11.1：055 新增 reconciliation_finding 与 claim_supplement", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.name === "055-claims-reconciliation-finding.surql");
+
+    expect(migration?.version).toBe(55);
+    expect(WORKSPACE_TEMPLATE_VERSION).toBe(55);
+    const sql = migration?.sql ?? "";
+    expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS reconciliation_finding SCHEMAFULL/);
+    expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS claim_supplement SCHEMAFULL/);
+    expect(sql).toMatch(/reconciliation_finding_identity_unique/);
+    expect(sql).toMatch(/claim_supplement_submission/);
+    expect(sql).toMatch(/FOR update, delete\s+WHERE false/);
+    expect(sql).toMatch(/ALLINSIDE \["amount_mismatch", "interest_mismatch", "missing_evidence", "identity_mismatch"\]/);
     expect(sql).not.toMatch(/UPDATE |DELETE |REMOVE /i);
   });
 });
