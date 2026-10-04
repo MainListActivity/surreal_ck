@@ -81,7 +81,7 @@ function makeService(overrides: {
 } = {}) {
   const calls: Call[] = [];
   const store = overrides.store ?? new MemStore();
-  const idp = overrides.idpResult === null
+  const idp = async () => overrides.idpResult === null
     ? null
     : {
         ensureUser: async () => {

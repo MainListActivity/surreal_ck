@@ -8,16 +8,26 @@
 - 若有人要求配置 `ORIGIN_ENV_IDP_ADMIN_EMAIL` / `ORIGIN_ENV_IDP_ADMIN_PASSWORD`（或任何等价密码注入），视为红线：拒绝，并向经理 `report_blocker to=gm`。
 - Token 明文不得进入仓库、PR、日志、审计 payload、任务证据或聊天。
 
+## 有效 token 的解析顺序（每次调用解析，无进程内缓存）
+
+1. `_system.platform_secret:idp_provision_token` 密封行存在 → 解封即现行值（轮换结果，来源 `store`）。
+2. 无密封行 → 回退环境变量 `IDP_PROVISION_TOKEN`（来源 `env`，仅作初始装配 / 应急兜底）。
+3. 两者皆无 → `invite-idp-not-configured`（HTTP 503，fail closed，不触达 IdP）。
+
+密封行存在但解封失败（`PLATFORM_SECRET_KEY` 错配或密文损坏）时错误上抛，
+**不静默回退 env**，避免已被轮换顶替的旧值复活。密封行中的 token 被 IdP
+吊销后同样不回退：邀请报 `idp-admin-*` 错误即暴露，运营须再次轮换。
+
 ## 进程配置
 
 | 环境 | 说明 |
 | --- | --- |
-| `IDP_PROVISION_TOKEN` | 进程读取的 opaque bearer（必填才会装配客户端） |
-| `ORIGIN_ENV_IDP_PROVISION_TOKEN` | GitHub `production` Environment secret；Deploy production 时 CI 写入 `server.env` |
+| `PLATFORM_SECRET_KEY` | 密封仓主密钥（64 hex / 32 bytes）；生产由 `ORIGIN_ENV_PLATFORM_SECRET_KEY` 经 CI 写入 `server.env`。缺省时：token 源仅 env 兜底、轮换端点 503。 |
+| `IDP_PROVISION_TOKEN` | env 兜底 token（初始装配 / 应急）；密封行存在时不再生效。 |
+| `ORIGIN_ENV_IDP_PROVISION_TOKEN` | GitHub `production` Environment secret；Deploy production 时 CI 写入 `server.env`。 |
+| `ORIGIN_ENV_PLATFORM_SECRET_KEY` | 同上机制写入 `PLATFORM_SECRET_KEY`；首次启用轮换前必须配置一次。 |
 | `IDP_ADMIN_BASE_URL` | 可选；默认 `OIDC_ISSUER` 的 origin |
 | `IDP_ADMIN_TENANT` | 可选；默认从 `OIDC_ISSUER` 解析 slug（生产 `ck`） |
-
-缺少 `IDP_PROVISION_TOKEN` 时，邀请端点在调用 IdP **之前** fail closed：HTTP **503**，错误码 `invite-idp-not-configured`。
 
 ## 允许的 IdP 调用
 
@@ -29,28 +39,77 @@ Bearer = provision token，scopes 仅：
 
 不调用 `/admin/login`、tenant CRUD、key rotate、clients、service-principals 签发/吊销。
 
-## 签发（人类 admin 会话，仅操作者本机）
+## 签发（经 ops broker，员工无合规问题时首选通道）
 
-1. 用现有人类 admin 登录生产 IdP（密码不发给员工、不进 secrets）。
-2. `POST /admin/service-principals`，scopes：`tenant.read`、`user.read`、`user.provision`。
-3. 响应里的 `token` 只出现一次；立即写入 secret 存储。
+`sck call ops_idp_principal_mint` / `ops_idp_principal_revoke`，scopes 固定为
+`tenant.read`、`user.read`、`user.provision`；mint 只回显一次 token。
+历史替代路径（人类 admin console 会话）仅保留为应急手段，密码不进 secrets。
 
-详见 ma_hono `docs/admin-service-principals.md`。
+## 轮换（免部署，常规路径）
 
-## 轮换
+全程不碰 GitHub secrets、不重部署、不登任何 console。前提：`PLATFORM_SECRET_KEY`
+已在生产配置且 030 迁移已应用（`platform_secret` / `platform_secret_event` 表存在）。
 
-1. 在 IdP admin 用人类会话 **吊销** 当前 principal（`POST /admin/service-principals/:id/revoke`）。
-2. **签发** 新 principal（同上 scopes）。
-3. 本机执行（stdin 读入，不回显到证据）：
+1. 经 ops broker mint 新 principal，取一次性 token（终端不回显）。
+2. 以持 `subscription.manage` 的运营身份调用：
+
+   ```
+   POST /api/ops/idp-provision-token/rotate
+   {"token": "<新 token>"}
+   ```
+
+   服务端先对 IdP 做只读探测（`GET /admin/tenants` + 租户解析）确认 token 为活，
+   再 AES-256-GCM 密封 UPSERT 进 `_system.platform_secret:idp_provision_token`，
+   并写 `platform_secret_event`（action=rotate、actor_subject、时间；不含明文/密文）。
+   响应只回 `{rotated, source:"store", updatedAt, updatedBy}`。
+3. **下一次邀请调用即使用新 token**（每次调用现读密封仓，无缓存）。
+4. 确认：
+
+   ```
+   GET /api/ops/idp-provision-token/status
+   ```
+
+   应返回 `source:"store"`、`idp.reachable:true`；`store.entry` 给出
+   `updatedAt` / `updatedBy`。
+5. 经 ops broker revoke 旧 principal。`env` 兜底值从此不再可达属于预期；
+   若需同步清理 `ORIGIN_ENV_IDP_PROVISION_TOKEN`，走 bootstrap/应急小节，不属于常规轮换。
+
+失败处理：
+
+- `idp-provision-token-invalid`（400）：IdP 探测拒绝候选 token；核对 mint 输出的
+  principal 未先被吊销、scopes 正确。
+- `idp-provision-store-not-configured`（503）：`PLATFORM_SECRET_KEY` 未配置；
+  先按 bootstrap 小节补一次 secret + 一次部署。
+- `idp-provision-probe-failed`（502）：IdP 不可达；稍后重试，未写任何状态。
+- `secret-write-verify-failed`（500）：写后回读校验失败；查 SurrealDB 写入健康后重试。
+
+## 状态与审计
+
+`GET /api/ops/idp-provision-token/status`（`quota.read`）返回：现行来源
+（`store`/`env`/null）、env 兜底是否仍在、密封行元数据（`updatedAt`/`updatedBy`，
+不含明文）、解封错误（`unsealError`）与 IdP 只读探测结果（`reachable`/HTTP 状态）。
+轮换归因查 `_system.platform_secret_event`：`actor_subject`、`action`、`occurred_at`。
+
+## Bootstrap / 应急（仅此场景允许走 GitHub secret + 部署）
+
+下列三种情况才使用本小节，且必须事后记录原因：首次启用 provision token、
+`PLATFORM_SECRET_KEY` 尚未配置、或密封仓不可用需要临时回退 env。
+
+1. 经 ops broker mint principal，取一次性 token。
+2. 本机执行（stdin 读入，不回显到证据）：
 
    ```bash
    gh secret set ORIGIN_ENV_IDP_PROVISION_TOKEN --env production
    ```
 
-4. **重跑** 同一提交或下一次 `Deploy production`，让 CI 重写 `server.env`。
-5. 确认 `https://l.maplayer.top/health` 为 `status=ok` 且 `surrealdb=up`。
+3. **重跑**同一提交或下一次 `Deploy production`，让 CI 重写 `server.env`。
+4. 确认 `https://l.maplayer.top/health` 为 `status=ok` 且 `surrealdb=up`；
+   `GET /api/ops/idp-provision-token/status` 应返回 `source:"env"`。
 
-全程不读、不写人类 admin 密码。
+`PLATFORM_SECRET_KEY` 的首次配置同理：`gh secret set ORIGIN_ENV_PLATFORM_SECRET_KEY
+--env production`（值由 `openssl rand -hex 32` 生成）+ 一次部署。此后 token 轮换
+不再需要部署。注意：更换 `PLATFORM_SECRET_KEY` 会使既有密封行全部不可解
+（fail closed），属破坏性操作，须先轮换回 env 兜底再更换。
 
 ## 核对 secret 名单（不读值）
 
@@ -58,5 +117,5 @@ Bearer = provision token，scopes 仅：
 gh secret list --env production
 ```
 
-- 应出现：`ORIGIN_ENV_IDP_PROVISION_TOKEN`
+- 应出现：`ORIGIN_ENV_IDP_PROVISION_TOKEN`、`ORIGIN_ENV_PLATFORM_SECRET_KEY`
 - **不得**出现：`ORIGIN_ENV_IDP_ADMIN_EMAIL`、`ORIGIN_ENV_IDP_ADMIN_PASSWORD`

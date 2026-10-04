@@ -4,7 +4,7 @@ import type { PlatformOperatorCapability } from "@surreal-ck/shared/native-quota
 import type { WorkspaceCreator } from "../workspaces/create-workspace";
 import type { ProductEntitlementService } from "../product-entitlement/service";
 import type { AiAllowanceService } from "../ai-allowance/service";
-import type { EnsureUserResult, HttpIdpAdminClient } from "./idp-admin-client";
+import type { EnsureUserResult, HttpIdpAdminClient, IdpAdminClientSource } from "./idp-admin-client";
 import { IdpAdminError } from "./idp-admin-client";
 import type { InviteAuditStore, InviteAuditRow, InviteOutcome } from "./invite-store";
 
@@ -53,7 +53,9 @@ export type InviteResult = Readonly<{
 }>;
 
 type InviteDeps = Readonly<{
-  idp: HttpIdpAdminClient | null;
+  /** 懒解析的 IdP 客户端来源：每次 provision 调用解析现行 token（密封仓优先于
+      env 兜底），轮换无需重启即对下一次调用生效；解析为 null 表示未配置。 */
+  idp: IdpAdminClientSource;
   workspaceCreator: WorkspaceCreator;
   products: Pick<ProductEntitlementService, "assign">;
   allowance: Pick<AiAllowanceService, "grant" | "balance">;
@@ -103,8 +105,9 @@ export class InviteService {
   constructor(private readonly deps: InviteDeps) {}
 
   async provision(actor: InviteActor, input: CreateOpsInvitation): Promise<InviteResult> {
-    if (!this.deps.idp) {
-      throw new InviteError("invite-idp-not-configured", "IdP provision token 未配置（IDP_PROVISION_TOKEN），无法代办开通");
+    const idp = await this.deps.idp();
+    if (!idp) {
+      throw new InviteError("invite-idp-not-configured", "IdP provision token 未配置（密封仓与 IDP_PROVISION_TOKEN 兜底均为空），无法代办开通");
     }
     const expiresAt = Date.parse(input.aiAllowance.expiresAt);
     if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
@@ -140,7 +143,7 @@ export class InviteService {
     }
 
     try {
-      return await this.execute(actor, input, recordId, workspaceName, expiresAt);
+      return await this.execute(actor, input, recordId, workspaceName, expiresAt, idp);
     } catch (error) {
       const code = error instanceof InviteError ? error.code
         : error instanceof IdpAdminError ? error.code
@@ -159,9 +162,10 @@ export class InviteService {
     recordId: string,
     workspaceName: string,
     expiresAtMs: number,
+    idp: HttpIdpAdminClient,
   ): Promise<InviteResult> {
     // 1) IdP：建用户或幂等复用；仅新建返回一次性 activation_url。
-    const ensured: EnsureUserResult = await this.deps.idp!.ensureUser({
+    const ensured: EnsureUserResult = await idp.ensureUser({
       email: input.email,
       displayName: input.displayName,
     });
