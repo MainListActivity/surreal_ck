@@ -470,6 +470,47 @@ describe("ClaimsPortalService", () => {
     });
   });
 
+  test("saveDraft 只写本金或写齐字段均可（可选字段为 NONE）", async () => {
+    const { service, store } = makeService();
+    const minted = await service.mintToken({
+      workspaceDb: "ws_case_a",
+      slug: "case-a",
+      rosterId: "creditor_roster:r1",
+      createdBy: "user-1",
+    });
+    await service.openSession({
+      workspaceDb: "ws_case_a",
+      slug: "case-a",
+      tokenPlaintext: minted.tokenPlaintext,
+      name: "张三",
+      identityCode: "ID-001",
+    });
+    const onlyPrincipal = await service.saveDraft({
+      workspaceDb: "ws_case_a",
+      rosterId: "creditor_roster:r1",
+      draft: { principal: 100 },
+    });
+    expect(onlyPrincipal.principal).toBe(100);
+    expect(store.submissions[0]?.principal).toBe(100);
+
+    const full = await service.saveDraft({
+      workspaceDb: "ws_case_a",
+      rosterId: "creditor_roster:r1",
+      draft: {
+        principal: 200,
+        rate_segments: [{ annual_rate: 0.05, start: "2024-01-01", end: "2024-12-31" }],
+        interest_start: "2024-01-01T00:00:00.000Z",
+        interest_end: "2024-12-31T00:00:00.000Z",
+        interest_method: "simple",
+        penalty: 1,
+        statement: "说明",
+      },
+    });
+    expect(full.principal).toBe(200);
+    expect(full.interestMethod).toBe("simple");
+    expect(full.statement).toBe("说明");
+  });
+
   test("submit 无附件 → 拒绝；有附件可提交", async () => {
     const { service, store } = makeService();
     const minted = await service.mintToken({
