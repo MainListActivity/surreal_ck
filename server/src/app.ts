@@ -140,9 +140,15 @@ import { RolloutGateService } from "./rollout/service";
 import { SurrealRolloutStore } from "./rollout/store";
 import { createRolloutGateChecker, type RolloutGateChecker } from "./rollout/gate-check";
 import { createOpsInvitationRoutes } from "./routes/ops-invitations";
+import { createOpsProvisionTokenRoutes } from "./routes/ops-provision-token";
 import { InviteService } from "./invitations/invite-service";
 import { SurrealInviteAuditStore } from "./invitations/invite-store";
-import { createIdpAdminClientFromEnv } from "./invitations/idp-admin-client";
+import {
+  createIdpAdminClientSource,
+  createProvisionTokenSource,
+  type ProvisionTokenSource,
+} from "./invitations/idp-admin-client";
+import { createPlatformSecretStore, type PlatformSecretStore } from "./platform/secret-store";
 
 export type AppOptions = {
   workspaceScope?: WorkspaceScopeModule;
@@ -220,6 +226,10 @@ export type AppOptions = {
   rolloutGates?: RolloutGateChecker;
   /** G2：运营代办开通服务；默认生产装配（IdP provision token client + workspace creator + 权益/额度）。 */
   inviteService?: InviteService;
+  /** G2-rot：平台密封密钥仓；默认由 PLATFORM_SECRET_KEY 装配（缺省即 null，轮换端点 503、token 源回退 env）。 */
+  platformSecretStore?: PlatformSecretStore | null;
+  /** G2-rot：provision token 懒解析源；默认密封仓优先、IDP_PROVISION_TOKEN 兜底。 */
+  provisionTokenSource?: ProvisionTokenSource;
   /** 11.1 债权人令牌入口；默认生产 ClaimsPortalService。 */
   claimsPortalService?: ClaimsPortalService;
 };
@@ -369,8 +379,23 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
         },
       },
     );
+  const platformSecretStore = options.platformSecretStore !== undefined
+    ? options.platformSecretStore
+    : createPlatformSecretStore(env.PLATFORM_SECRET_KEY);
+  const provisionTokenSource = options.provisionTokenSource ?? createProvisionTokenSource({
+    secretStore: platformSecretStore,
+    envToken: env.IDP_PROVISION_TOKEN,
+  });
+  const idpBaseUrl = (env.IDP_ADMIN_BASE_URL ?? new URL(env.OIDC_ISSUER).origin).replace(/\/+$/, "");
+  const idpTenantSlug = env.IDP_ADMIN_TENANT
+    ?? env.OIDC_ISSUER.replace(/\/+$/, "").split("/").pop()
+    ?? "ck";
   const inviteService = options.inviteService ?? new InviteService({
-    idp: createIdpAdminClientFromEnv(),
+    idp: createIdpAdminClientSource({
+      tokenSource: provisionTokenSource,
+      baseUrl: idpBaseUrl,
+      tenantSlug: idpTenantSlug,
+    }),
     workspaceCreator,
     products: productEntitlementService,
     allowance: aiAllowanceService,
@@ -515,6 +540,14 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     .route("/", createOpsAiAllowanceRoutes({ service: aiAllowanceService }))
     .route("/", createOpsRolloutRoutes({ service: rolloutGateService }))
     .route("/", createOpsInvitationRoutes({ service: inviteService, requireOperator: options.requireOperator }))
+    .route("/", createOpsProvisionTokenRoutes({
+      tokenSource: provisionTokenSource,
+      secretStore: platformSecretStore,
+      envTokenConfigured: Boolean(env.IDP_PROVISION_TOKEN),
+      baseUrl: idpBaseUrl,
+      tenantSlug: idpTenantSlug,
+      requireOperator: options.requireOperator,
+    }))
     .route("/", aiStream.routes)
     .route(
       "/",

@@ -35,12 +35,19 @@ const EnvSchema = z.object({
 
   // G2 运营代办开通：server → IdP 可吊销 service principal（scopes:
   // tenant.read / user.read / user.provision）。生产由
-  // ORIGIN_ENV_IDP_PROVISION_TOKEN → server.env 的 IDP_PROVISION_TOKEN。
-  // 缺省时 /api/ops/invitations 返回 invite-idp-not-configured（fail closed）。
+  // ORIGIN_ENV_IDP_PROVISION_TOKEN → server.env 的 IDP_PROVISION_TOKEN，
+  // 仅作初始装配/应急兜底；_system.platform_secret 密封行存在时一律优先
+  //（免部署轮换的现行值）。两者皆无 /api/ops/invitations 返回
+  // invite-idp-not-configured（fail closed）。
   // 禁止配置人类 admin 密码（IDP_ADMIN_EMAIL / IDP_ADMIN_PASSWORD）。
   IDP_ADMIN_BASE_URL: z.string().url().optional(),
   IDP_PROVISION_TOKEN: z.string().min(1).optional(),
   IDP_ADMIN_TENANT: z.string().min(1).optional(),
+  // 平台密封密钥仓的 AES-256-GCM 主密钥（64 hex / 32 bytes）：解封 _system
+  // .platform_secret 中的运行时密文（如轮换后的 provision token）。只存在
+  // 于 server 进程环境（ORIGIN_ENV_PLATFORM_SECRET_KEY → server.env），
+  // 缺省时密封仓不可用：token 源回退 IDP_PROVISION_TOKEN，轮换端点返回 503。
+  PLATFORM_SECRET_KEY: z.string().regex(/^[a-fA-F0-9]{64}$/).optional(),
 
   // 逗号分隔的 OIDC subject 列表；启动时 upsert 进 _system.system_admin。
   // 当前 MVP 中该表非空即开启创建 workspace 能力，不做逐 subject 授权。

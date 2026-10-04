@@ -1,4 +1,5 @@
 import { env } from "../env";
+import type { PlatformSecretStore } from "../platform/secret-store";
 
 export type IdpAdminClientConfig = Readonly<{
   baseUrl: string;
@@ -89,6 +90,11 @@ export class HttpIdpAdminClient {
     return tenant.id;
   }
 
+  /** 只读连通性探测：GET /admin/tenants + 租户解析，验证 token 与 tenant.read 可用。 */
+  async probe(): Promise<string> {
+    return this.resolveTenantId();
+  }
+
   async findUserByEmail(email: string): Promise<IdpUser | null> {
     const tenantId = await this.resolveTenantId();
     const res = await this.admin(`/admin/tenants/${tenantId}/users`);
@@ -140,16 +146,72 @@ export class HttpIdpAdminClient {
   }
 }
 
-/** 由环境装配；缺少 IDP_PROVISION_TOKEN 时返回 null，invite 服务据此 fail closed。 */
-export function createIdpAdminClientFromEnv(): HttpIdpAdminClient | null {
-  if (!env.IDP_PROVISION_TOKEN) return null;
-  const baseUrl = env.IDP_ADMIN_BASE_URL ?? new URL(env.OIDC_ISSUER).origin;
-  const tenantSlug = env.IDP_ADMIN_TENANT
-    ?? env.OIDC_ISSUER.replace(/\/+$/, "").split("/").pop()
-    ?? "ck";
-  return new HttpIdpAdminClient({
-    baseUrl: baseUrl.replace(/\/+$/, ""),
-    provisionToken: env.IDP_PROVISION_TOKEN,
-    tenantSlug,
+export const IDP_PROVISION_TOKEN_SECRET_NAME = "idp_provision_token";
+
+export type ResolvedProvisionToken = Readonly<{
+  token: string;
+  /** store = 密封密钥仓（轮换后的现行值）；env = IDP_PROVISION_TOKEN 兜底/初始装配。 */
+  source: "store" | "env";
+}>;
+
+/**
+ * 每次调用解析一次有效 provision token：
+ * 1. _system.platform_secret:idp_provision_token 存在 → 解封即现行值（轮换结果）。
+ * 2. 无密封行 → 回退环境变量 IDP_PROVISION_TOKEN（bootstrap / 应急兜底）。
+ * 3. 两者皆无 → null（调用方 fail closed）。
+ *
+ * 密封行存在但解封失败（密钥错配/密文损坏）时向上抛错，不静默回退 env，
+ * 避免已被轮换顶替的旧值复活。密封行中已被 IdP 吊销的 token 同样不回退：
+ * IdP 返回 403 即由正常错误路径暴露，运营须再次轮换。
+ */
+export type ProvisionTokenSource = () => Promise<ResolvedProvisionToken | null>;
+
+export function createProvisionTokenSource(input: {
+  secretStore: Pick<PlatformSecretStore, "get"> | null;
+  envToken?: string;
+}): ProvisionTokenSource {
+  return async () => {
+    if (input.secretStore) {
+      const stored = await input.secretStore.get(IDP_PROVISION_TOKEN_SECRET_NAME);
+      if (stored) return { token: stored.value, source: "store" };
+    }
+    if (input.envToken) return { token: input.envToken, source: "env" };
+    return null;
+  };
+}
+
+/** 懒装配的 IdP admin 客户端来源：每次调用按现行 token 新建，轮换即刻生效。 */
+export type IdpAdminClientSource = () => Promise<HttpIdpAdminClient | null>;
+
+export function createIdpAdminClientSource(input: {
+  tokenSource: ProvisionTokenSource;
+  baseUrl?: string;
+  tenantSlug?: string;
+  fetchImpl?: FetchLike;
+}): IdpAdminClientSource {
+  return async () => {
+    const resolved = await input.tokenSource();
+    if (!resolved) return null;
+    const baseUrl = input.baseUrl ?? env.IDP_ADMIN_BASE_URL ?? new URL(env.OIDC_ISSUER).origin;
+    const tenantSlug = input.tenantSlug ?? env.IDP_ADMIN_TENANT
+      ?? env.OIDC_ISSUER.replace(/\/+$/, "").split("/").pop()
+      ?? "ck";
+    return new HttpIdpAdminClient({
+      baseUrl: baseUrl.replace(/\/+$/, ""),
+      provisionToken: resolved.token,
+      tenantSlug,
+    }, input.fetchImpl);
+  };
+}
+
+/** 由环境装配 token 源 + 客户端来源；token 缺失时解析为 null，invite 服务据此 fail closed。 */
+export function createIdpAdminClientFromEnv(input: {
+  secretStore?: Pick<PlatformSecretStore, "get"> | null;
+} = {}): IdpAdminClientSource {
+  return createIdpAdminClientSource({
+    tokenSource: createProvisionTokenSource({
+      secretStore: input.secretStore ?? null,
+      envToken: env.IDP_PROVISION_TOKEN,
+    }),
   });
 }
