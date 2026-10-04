@@ -23,11 +23,14 @@ function fakeFetch(handlers: Record<string, (req: Req) => { status: number; body
   return { impl: impl as typeof fetch, log };
 }
 
-const CONFIG = { baseUrl: "https://o.maplayer.top", email: "admin@x", password: "pw", tenantSlug: "ck" };
+const CONFIG = {
+  baseUrl: "https://o.maplayer.top",
+  provisionToken: "provision-token-fixture",
+  tenantSlug: "ck",
+};
 
 function baseHandlers(overrides: Record<string, (req: Req) => { status: number; body: unknown }> = {}) {
   return {
-    "POST /admin/login": () => ({ status: 200, body: { session_token: "sess-1" } }),
     "GET /admin/tenants": () => ({ status: 200, body: { tenants: [{ id: "t-1", slug: "ck" }] } }),
     "POST /admin/tenants/t-1/users": () => ({
       status: 201,
@@ -41,8 +44,8 @@ function baseHandlers(overrides: Record<string, (req: Req) => { status: number; 
   };
 }
 
-describe("G2 HttpIdpAdminClient", () => {
-  test("新建用户：login→tenants→POST users，回 activation_url", async () => {
+describe("G2 HttpIdpAdminClient (provision token)", () => {
+  test("新建用户：tenants→POST users，Bearer 为 provision token，不请求 /admin/login", async () => {
     const { impl, log } = fakeFetch(baseHandlers());
     const client = new HttpIdpAdminClient(CONFIG, impl);
     const result = await client.ensureUser({ email: "lawyer@example.com", displayName: "陈律师" });
@@ -50,15 +53,17 @@ describe("G2 HttpIdpAdminClient", () => {
     expect(result.user.id).toBe("u-1");
     expect(result.activationUrl).toContain("activate-account?token=");
     expect(log.map((r) => `${r.method} ${r.url}`)).toEqual([
-      "POST /admin/login", "GET /admin/tenants", "POST /admin/tenants/t-1/users",
+      "GET /admin/tenants",
+      "POST /admin/tenants/t-1/users",
     ]);
-    // admin 会话经 Bearer 携带；登录体含邮箱+密码，不出现在后续请求体里。
-    expect(log[0].body).toEqual({ email: "admin@x", password: "pw" });
-    expect(log[2].auth).toBe("Bearer sess-1");
+    expect(log.every((r) => r.url !== "/admin/login")).toBe(true);
+    expect(log.every((r) => r.auth === "Bearer provision-token-fixture")).toBe(true);
+    expect(JSON.stringify(log)).not.toContain("admin@");
+    expect(JSON.stringify(log)).not.toContain("password");
   });
 
   test("409 → 列表按邮箱幂等复用，不重发激活链接", async () => {
-    const { impl } = fakeFetch(baseHandlers({
+    const { impl, log } = fakeFetch(baseHandlers({
       "POST /admin/tenants/t-1/users": () => ({ status: 409, body: { error: "conflict" } }),
       "GET /admin/tenants/t-1/users": () => ({
         status: 200,
@@ -73,24 +78,22 @@ describe("G2 HttpIdpAdminClient", () => {
     expect(result.created).toBe(false);
     expect(result.user.id).toBe("u-9");
     expect(result.activationUrl).toBeNull();
-  });
-
-  test("admin 登录失败 → idp-admin-login-failed", async () => {
-    const { impl } = fakeFetch({
-      "POST /admin/login": () => ({ status: 401, body: { error: "invalid_credentials" } }),
-    });
-    const client = new HttpIdpAdminClient(CONFIG, impl);
-    await expect(client.ensureUser({ email: "a@b.c", displayName: "x" }))
-      .rejects.toMatchObject({ code: "idp-admin-login-failed" });
+    expect(log.map((r) => `${r.method} ${r.url}`)).toEqual([
+      "GET /admin/tenants",
+      "POST /admin/tenants/t-1/users",
+      "GET /admin/tenants/t-1/users",
+    ]);
+    expect(log.every((r) => r.auth === "Bearer provision-token-fixture")).toBe(true);
   });
 
   test("租户不存在 → idp-admin-tenant-missing", async () => {
-    const { impl } = fakeFetch(baseHandlers({
+    const { impl, log } = fakeFetch(baseHandlers({
       "GET /admin/tenants": () => ({ status: 200, body: { tenants: [{ id: "t-1", slug: "other" }] } }),
     }));
     const client = new HttpIdpAdminClient(CONFIG, impl);
     await expect(client.ensureUser({ email: "a@b.c", displayName: "x" }))
       .rejects.toMatchObject({ code: "idp-admin-tenant-missing" });
+    expect(log.map((r) => `${r.method} ${r.url}`)).toEqual(["GET /admin/tenants"]);
   });
 
   test("409 但查无此人 → idp-admin-user-conflict-unresolved", async () => {
@@ -103,22 +106,14 @@ describe("G2 HttpIdpAdminClient", () => {
       .rejects.toMatchObject({ code: "idp-admin-user-conflict-unresolved" });
   });
 
-  test("401 后清会话重登重试一次", async () => {
-    let logins = 0;
-    let attempts = 0;
-    const { impl } = fakeFetch({
-      "POST /admin/login": () => { logins += 1; return { status: 200, body: { session_token: `sess-${logins}` } }; },
-      "GET /admin/tenants": () => ({ status: 200, body: { tenants: [{ id: "t-1", slug: "ck" }] } }),
-      "POST /admin/tenants/t-1/users": (req) => {
-        attempts += 1;
-        if (attempts === 1) return { status: 401, body: { error: "unauthorized" } };
-        expect(req.auth).toBe("Bearer sess-2");
-        return { status: 201, body: { user: { id: "u-2", email: "a@b.c", display_name: "x", status: "provisioned" }, activation_url: null } };
-      },
-    });
+  test("401/403 不重试 login，直接 provision-failed", async () => {
+    const { impl, log } = fakeFetch(baseHandlers({
+      "POST /admin/tenants/t-1/users": () => ({ status: 403, body: { error: "forbidden" } }),
+    }));
     const client = new HttpIdpAdminClient(CONFIG, impl);
-    const result = await client.ensureUser({ email: "a@b.c", displayName: "x" });
-    expect(result.user.id).toBe("u-2");
-    expect(logins).toBe(2);
+    await expect(client.ensureUser({ email: "a@b.c", displayName: "x" }))
+      .rejects.toMatchObject({ code: "idp-admin-provision-failed", status: 403 });
+    expect(log.some((r) => r.url === "/admin/login")).toBe(false);
+    expect(log.filter((r) => r.method === "POST" && r.url.endsWith("/users"))).toHaveLength(1);
   });
 });

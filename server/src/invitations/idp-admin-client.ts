@@ -2,8 +2,8 @@ import { env } from "../env";
 
 export type IdpAdminClientConfig = Readonly<{
   baseUrl: string;
-  email: string;
-  password: string;
+  /** Opaque revocable service principal bearer (ma_hono admin_service_principals). */
+  provisionToken: string;
   tenantSlug: string;
 }>;
 
@@ -50,53 +50,26 @@ function asUser(value: unknown): IdpUser | null {
 }
 
 /**
- * ma_hono admin API 客户端：admin session（白名单邮箱 + bootstrap 密码，12h）→
- * POST /admin/tenants/{id}/users 建用户（409 = 邮箱已存在 → 经列表幂等复用）。
+ * ma_hono admin API 客户端：使用可吊销 service principal bearer
+ *（scopes: tenant.read / user.read / user.provision），不调用 /admin/login，
+ * 不缓存人类 admin session，不读取人类 admin 密码。
+ *
+ * 仅调用：GET /admin/tenants、GET .../users、POST .../users。
  * admin API 无邀请邮件通道：激活交接物恒为一次性 activation_url，由运营转交。
  */
 export class HttpIdpAdminClient {
-  private sessionToken: string | null = null;
-  private sessionExpiresAt = 0;
   private tenantId: string | null = null;
 
   constructor(
     private readonly config: IdpAdminClientConfig,
     private readonly fetchImpl: FetchLike = fetch,
-    private readonly sessionTtlMs = 11 * 60 * 60 * 1000,
   ) {}
 
-  private async login(): Promise<string> {
-    if (this.sessionToken && Date.now() < this.sessionExpiresAt) return this.sessionToken;
-    const res = await this.fetchImpl(`${this.config.baseUrl}/admin/login`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email: this.config.email, password: this.config.password }),
-    });
-    const body = await res.json().catch(() => null) as { session_token?: unknown; error?: unknown } | null;
-    if (!res.ok || typeof body?.session_token !== "string") {
-      throw new IdpAdminError(
-        "idp-admin-login-failed",
-        `IdP admin 登录失败（${res.status}）`,
-        res.status,
-      );
-    }
-    this.sessionToken = body.session_token;
-    this.sessionExpiresAt = Date.now() + this.sessionTtlMs;
-    return this.sessionToken;
-  }
-
-  private async admin(path: string, init?: RequestInit, retryOn401 = true): Promise<Response> {
-    const token = await this.login();
+  private async admin(path: string, init?: RequestInit): Promise<Response> {
     const headers = new Headers(init?.headers);
-    headers.set("authorization", `Bearer ${token}`);
+    headers.set("authorization", `Bearer ${this.config.provisionToken}`);
     if (init?.body && !headers.has("content-type")) headers.set("content-type", "application/json");
-    const res = await this.fetchImpl(`${this.config.baseUrl}${path}`, { ...init, headers });
-    if (res.status === 401 && retryOn401) {
-      this.sessionToken = null;
-      this.sessionExpiresAt = 0;
-      return this.admin(path, init, false);
-    }
-    return res;
+    return this.fetchImpl(`${this.config.baseUrl}${path}`, { ...init, headers });
   }
 
   private async resolveTenantId(): Promise<string> {
@@ -167,17 +140,16 @@ export class HttpIdpAdminClient {
   }
 }
 
-/** 由环境装配；凭证不全返回 null，invite 服务据此 fail closed。 */
+/** 由环境装配；缺少 IDP_PROVISION_TOKEN 时返回 null，invite 服务据此 fail closed。 */
 export function createIdpAdminClientFromEnv(): HttpIdpAdminClient | null {
-  if (!env.IDP_ADMIN_EMAIL || !env.IDP_ADMIN_PASSWORD) return null;
+  if (!env.IDP_PROVISION_TOKEN) return null;
   const baseUrl = env.IDP_ADMIN_BASE_URL ?? new URL(env.OIDC_ISSUER).origin;
   const tenantSlug = env.IDP_ADMIN_TENANT
     ?? env.OIDC_ISSUER.replace(/\/+$/, "").split("/").pop()
     ?? "ck";
   return new HttpIdpAdminClient({
     baseUrl: baseUrl.replace(/\/+$/, ""),
-    email: env.IDP_ADMIN_EMAIL,
-    password: env.IDP_ADMIN_PASSWORD,
+    provisionToken: env.IDP_PROVISION_TOKEN,
     tenantSlug,
   });
 }

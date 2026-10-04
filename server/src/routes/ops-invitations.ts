@@ -9,7 +9,7 @@ function fail(error: unknown): never {
   if (!(error instanceof InviteError)) throw error;
   const status = error.code === "invite-conflict" || error.code === "invite-in-progress" || error.code === "invite-slug-taken"
     ? 409
-    : error.code === "invite-idp-not-configured" || error.code === "idp-admin-login-failed"
+    : error.code === "invite-idp-not-configured"
       ? 503
       : error.code.startsWith("idp-admin-")
         ? 502

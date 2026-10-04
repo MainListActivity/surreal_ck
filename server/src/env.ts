@@ -33,11 +33,13 @@ const EnvSchema = z.object({
   IDP_HOOK_SECRET: z.string().min(8),
   IDP_SCOPE_API_URL: z.string().url().optional(),
 
-  // G2 运营代办开通：server → IdP admin API 的服务端凭证。缺省时 /api/ops/invitations
-  // 返回 invite-idp-not-configured（fail closed，不会半初始化用户）。
+  // G2 运营代办开通：server → IdP 可吊销 service principal（scopes:
+  // tenant.read / user.read / user.provision）。生产由
+  // ORIGIN_ENV_IDP_PROVISION_TOKEN → server.env 的 IDP_PROVISION_TOKEN。
+  // 缺省时 /api/ops/invitations 返回 invite-idp-not-configured（fail closed）。
+  // 禁止配置人类 admin 密码（IDP_ADMIN_EMAIL / IDP_ADMIN_PASSWORD）。
   IDP_ADMIN_BASE_URL: z.string().url().optional(),
-  IDP_ADMIN_EMAIL: z.string().email().optional(),
-  IDP_ADMIN_PASSWORD: z.string().min(1).optional(),
+  IDP_PROVISION_TOKEN: z.string().min(1).optional(),
   IDP_ADMIN_TENANT: z.string().min(1).optional(),
 
   // 逗号分隔的 OIDC subject 列表；启动时 upsert 进 _system.system_admin。

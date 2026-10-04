@@ -104,7 +104,7 @@ export class InviteService {
 
   async provision(actor: InviteActor, input: CreateOpsInvitation): Promise<InviteResult> {
     if (!this.deps.idp) {
-      throw new InviteError("invite-idp-not-configured", "IdP admin 凭证未配置（IDP_ADMIN_*），无法代办开通");
+      throw new InviteError("invite-idp-not-configured", "IdP provision token 未配置（IDP_PROVISION_TOKEN），无法代办开通");
     }
     const expiresAt = Date.parse(input.aiAllowance.expiresAt);
     if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
