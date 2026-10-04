@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { parseRateSegmentsJson } from "../lib/claims-interest";
+
   /**
    * 债权人令牌填报公开页：打开会话 → 申报草稿 → 附件（本轮 fail-closed）→ 提交。
    */
@@ -34,6 +36,8 @@
   let penalty = $state("");
   let statement = $state("");
   let rateAnnual = $state("0.06");
+  let rateSegmentsJson = $state("");
+  const SEGMENTS_PLACEHOLDER = '[{"start":"2024-01-01","end":"2024-07-01","annual_rate":0.06},{"start":"2024-07-01","end":"2025-01-01","annual_rate":0.08}]';
   let submission = $state<SubmissionRow | null>(null);
   let attachments = $state<AttachmentRow[]>([]);
   let submitted = $state(false);
@@ -103,12 +107,20 @@
       statement = submission.statement ?? "";
       const seg = submission.rateSegments?.[0];
       if (seg && typeof seg.annual_rate === "number") rateAnnual = String(seg.annual_rate);
+      if (Array.isArray(submission.rateSegments) && submission.rateSegments.length > 1 && rateSegmentsJson === "") {
+        rateSegmentsJson = JSON.stringify(submission.rateSegments, null, 2);
+      }
       if (submission.status === "submitted") submitted = true;
     }
   }
 
   async function saveDraft() {
     if (busy || submitted) return;
+    const parsed = parseRateSegmentsJson(rateSegmentsJson);
+    if (!parsed.ok) {
+      error = parsed.error;
+      return;
+    }
     busy = true;
     error = null;
     try {
@@ -118,7 +130,7 @@
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           principal: principal === "" ? null : Number(principal),
-          rate_segments: [
+          rate_segments: parsed.segments ?? [
             {
               annual_rate: Number(rateAnnual),
               start: interestStart || null,
@@ -236,6 +248,15 @@
           </select>
         </label>
       </div>
+      <label>
+        分段利率（可选；合同约定多段利率时用 JSON 覆盖上方单段）
+        <textarea
+          rows={3}
+          bind:value={rateSegmentsJson}
+          disabled={busy || submitted}
+          placeholder={SEGMENTS_PLACEHOLDER}
+        ></textarea>
+      </label>
       <div class="row">
         <label>
           计息起始日

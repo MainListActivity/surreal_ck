@@ -1,12 +1,18 @@
 import { describe, expect, test } from "bun:test";
 import { DateTime } from "surrealdb";
-import { listInterestCalculations, recalculateSubmission } from "./claims-interest";
+import {
+  listClaimSubmissions,
+  listInterestCalculations,
+  parseRateSegmentsJson,
+  recalculateSubmission,
+} from "./claims-interest";
 import type { SurrealConn } from "./surreal";
 
 type Call = { kind: "query"; sql: string } | { kind: "create"; table: string; data: Record<string, unknown> };
 
 function fakeConn(opts: {
   submission?: Record<string, unknown> | null;
+  submissions?: Array<Record<string, unknown>>;
   calculations?: Array<Record<string, unknown>>;
 }): { conn: SurrealConn; calls: Call[] } {
   const calls: Call[] = [];
@@ -18,6 +24,9 @@ function fakeConn(opts: {
       }
       if (sql.includes("FROM $submission")) {
         return (opts.submission ? [opts.submission] : []) as T[];
+      }
+      if (sql.includes("FROM claim_submission")) {
+        return (opts.submissions ?? []) as T[];
       }
       return [] as T[];
     },
@@ -94,6 +103,49 @@ describe("recalculateSubmission", () => {
     expect(sql).not.toContain("enterprise_ledger");
     expect(calls.filter((c) => c.kind === "create").map((c) => (c as { table: string }).table))
       .toEqual(["interest_calculation"]);
+  });
+});
+
+describe("listClaimSubmissions", () => {
+  test("只读列出申报行并规整字段", async () => {
+    const submissions = [{
+      id: "claim_submission:s1",
+      identity_code: "91320100MA01HC001X",
+      status: "draft",
+      principal: 100000,
+      submitted_at: new DateTime("2024-06-01T00:00:00Z"),
+    }];
+    const { conn } = fakeConn({ submissions });
+    const rows = await listClaimSubmissions(conn);
+    expect(rows).toEqual([{
+      id: "claim_submission:s1",
+      identity_code: "91320100MA01HC001X",
+      status: "draft",
+      principal: 100000,
+      submitted_at: "2024-06-01T00:00:00.000Z",
+    }]);
+  });
+});
+
+describe("parseRateSegmentsJson", () => {
+  test("留空 → null（走单段简表）", () => {
+    expect(parseRateSegmentsJson("")).toEqual({ ok: true, segments: null });
+    expect(parseRateSegmentsJson("   ")).toEqual({ ok: true, segments: null });
+  });
+
+  test("合法两段数组原样返回", () => {
+    const res = parseRateSegmentsJson(
+      '[{"start":"2024-01-01","end":"2024-07-01","annual_rate":0.06},{"start":"2024-07-01","end":"2025-01-01","annual_rate":0.08}]',
+    );
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.segments).toHaveLength(2);
+  });
+
+  test("非法 JSON / 非数组 / 空数组 / 非对象元素 → 错误", () => {
+    for (const bad of ["{", "123", "[]", "[1]", '"x"']) {
+      const res = parseRateSegmentsJson(bad);
+      expect(res.ok).toBe(false);
+    }
   });
 });
 
