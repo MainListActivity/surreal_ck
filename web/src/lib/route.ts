@@ -15,6 +15,7 @@
  * - `/w/:slug/wb/:workbookId/sheet/:sheetId`       → editor（指定 sheet）
  * - `/form` / `/form-success`                      → 公开表单占位页
  * - `/discover`                                    → 公开发现预览（访客可用）
+ * - `/claims/:slug/:token`                         → 债权人令牌填报入口（公开）
  * - 其余                                            → home
  */
 export type WorkspacePage =
@@ -36,6 +37,7 @@ export type Route =
   | { kind: "form" }
   | { kind: "form-success" }
   | { kind: "discover" }
+  | { kind: "claims-portal"; slug: string; token: string }
   | { kind: "ops" }
   | { kind: "billing-quota"; accountKey: string }
   | { kind: "workspace"; slug: string; page: WorkspacePage }
@@ -64,6 +66,13 @@ export function parseRoute(pathname: string): Route {
   if (pathname === "/discover") return { kind: "discover" };
 
   const segments = pathname.split("/").filter(Boolean);
+  if (segments[0] === "claims" && segments[1] && segments[2] && segments.length === 3) {
+    return {
+      kind: "claims-portal",
+      slug: decodeURIComponent(segments[1]),
+      token: decodeURIComponent(segments[2]),
+    };
+  }
   if (segments[0] === "ops" && segments.length <= 2) {
     return { kind: "ops" };
   }
@@ -130,4 +139,9 @@ export function opsQuotaPath(): string {
 
 export function discoverPath(): string {
   return "/discover";
+}
+
+/** 债权人令牌填报页路径。 */
+export function claimsPortalPath(slug: string, token: string): string {
+  return `/claims/${encodeURIComponent(slug)}/${encodeURIComponent(token)}`;
 }

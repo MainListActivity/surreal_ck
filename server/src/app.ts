@@ -17,6 +17,8 @@ import { env } from "./env";
 import { createTypeSafeDecisionModel } from "../ai/decision/model";
 import { createInternalIdpRoutes } from "./routes/internal-idp";
 import { createMemberRoutes } from "./routes/members";
+import { createClaimsPortalRoutes } from "./routes/claims-portal";
+import { ClaimsPortalService } from "./claims-portal/service";
 import { createSessionRoutes } from "./routes/session";
 import { createWorkspaceRoutes } from "./routes/workspaces";
 import {
@@ -216,8 +218,10 @@ export type AppOptions = {
   rolloutGateService?: RolloutGateService;
   /** LCA14：内容/AI 灰度开关检查器；content-reader、search、legal 检索与 AI chat 共用。默认真实实现（每请求读 _system）。 */
   rolloutGates?: RolloutGateChecker;
-  /** G2：运营代办开通服务；默认生产装配（IdP admin client + workspace creator + 权益/额度）。 */
+  /** G2：运营代办开通服务；默认生产装配（IdP provision token client + workspace creator + 权益/额度）。 */
   inviteService?: InviteService;
+  /** 11.1 债权人令牌入口；默认生产 ClaimsPortalService。 */
+  claimsPortalService?: ClaimsPortalService;
 };
 
 type AiStreamWebSocket = ReturnType<typeof createAiStreamRoutes>["websocket"];
@@ -420,6 +424,12 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     .route("/", createProTrialRoutes(options.proTrialService ?? new ProTrialService(new SurrealTrialStore(), workspaceCreator), options.requireUser))
     .route("/", createWorkspaceRoutes(workspaceCreator, workspaceScope, options.requireUser, workspaceSettingsManager))
     .route("/", createMemberRoutes(memberManager, options.requireUser))
+    .route("/", createClaimsPortalRoutes({
+      service: options.claimsPortalService ?? new ClaimsPortalService({
+        resolveWorkspace: options.employeeWorkspaceResolver ?? resolveWorkspaceBySlug,
+      }),
+      requireUser: options.requireUser,
+    }))
     .route("/", createEmployeeRoutes({
       lifecycle: options.employeeLifecycle ?? createProductionEmployeeLifecycle(),
       runtime: options.employeeRuntime ?? getEmployeeRuntime(),

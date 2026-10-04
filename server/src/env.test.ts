@@ -39,4 +39,19 @@ describe("loadEnv template pack selection", () => {
     expect(loaded.PLATFORM_OPERATOR_DISPLAY_NAME).toBe("Content Ops");
     expect(loaded.PLATFORM_OPERATOR_GRANTOR_SUBJECT).toBe("deploy-admin");
   });
+
+  test("债权人门户 pepper 与附件键均为可选", () => {
+    const loaded = loadEnv({
+      ...requiredEnv,
+      CLAIMS_PORTAL_TOKEN_PEPPER: "x".repeat(32),
+      CLAIMS_ATTACHMENT_ACCOUNT_ID: "acc",
+      CLAIMS_ATTACHMENT_ACCESS_KEY_ID: "key",
+      CLAIMS_ATTACHMENT_SECRET_ACCESS_KEY: "secret",
+      CLAIMS_ATTACHMENT_BUCKET: "bucket",
+      CLAIMS_ATTACHMENT_ENDPOINT: "https://r2.example",
+    });
+    expect(loaded.CLAIMS_PORTAL_TOKEN_PEPPER).toBe("x".repeat(32));
+    expect(loaded.CLAIMS_ATTACHMENT_BUCKET).toBe("bucket");
+    expect(loadEnv(requiredEnv).CLAIMS_PORTAL_TOKEN_PEPPER).toBeUndefined();
+  });
 });

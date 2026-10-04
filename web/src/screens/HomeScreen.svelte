@@ -6,12 +6,14 @@
     Grid3x3,
     LayoutTemplate,
     Leaf,
+    Link2,
     List,
     ListFilter,
     MoreHorizontal,
     Pin,
     Plus,
     Trash2,
+    Scale,
     Upload,
     UserPlus,
   } from "@lucide/svelte";
@@ -34,6 +36,8 @@
     type WorkbookViewMode,
   } from "../lib/workbook-home";
   import type { WorkbookRow } from "../lib/workbooks";
+  import ClaimsImportDialog from "../components/ClaimsImportDialog.svelte";
+  import ClaimsTokenDialog from "../components/ClaimsTokenDialog.svelte";
   import CsvImportDialog from "../components/CsvImportDialog.svelte";
   import XlsxImportDialog from "../components/XlsxImportDialog.svelte";
   import { parseCsvImport, type ParsedCsvImport } from "../lib/csv-import";
@@ -80,6 +84,8 @@
   let csvImport = $state<ParsedCsvImport | null>(null);
   let xlsxImport = $state<ParsedXlsxImport | null>(null);
   let xlsxParseTask = $state<ReturnType<typeof createXlsxParseTask> | null>(null);
+  let claimsImportOpen = $state(false);
+  let claimsTokenOpen = $state(false);
   let memberMetric = $state<HomeWorkspaceMetric | null>(null);
 
   const greeting = $derived(homeGreetingForDate());
@@ -276,6 +282,30 @@
             <small>Excel / CSV · 自动识别字段</small>
           </span>
         </button>
+        <button
+          type="button"
+          class="qa qa-neutral"
+          onclick={() => (claimsImportOpen = true)}
+          disabled={!canWriteSharedStructure}
+        >
+          <span class="qa-icon"><Scale size={21} /></span>
+          <span class="qa-text">
+            <strong>债权对账导入</strong>
+            <small>{canWriteSharedStructure ? "名册 / 账面模板与逐行校验" : "需要管理员权限"}</small>
+          </span>
+        </button>
+        <button
+          type="button"
+          class="qa qa-neutral"
+          onclick={() => (claimsTokenOpen = true)}
+          disabled={!canWriteSharedStructure}
+        >
+          <span class="qa-icon"><Link2 size={21} /></span>
+          <span class="qa-text">
+            <strong>债权人填报链接</strong>
+            <small>{canWriteSharedStructure ? "生成令牌链接供债权人申报" : "需要管理员权限"}</small>
+          </span>
+        </button>
       </div>
       {#if importStatus}
         <div class="inline-note">{importStatus}{#if xlsxParseTask}<button type="button" onclick={cancelImportParsing}>取消解析</button>{/if}</div>
@@ -451,6 +481,17 @@
     onclose={() => (xlsxImport = null)}
     onopen={(workbookId) => onopen?.(workbookId)}
   />
+{/if}
+
+{#if claimsImportOpen}
+  <ClaimsImportDialog
+    onclose={() => (claimsImportOpen = false)}
+    onopen={(workbookId) => onopen?.(workbookId)}
+  />
+{/if}
+
+{#if claimsTokenOpen}
+  <ClaimsTokenDialog onclose={() => (claimsTokenOpen = false)} />
 {/if}
 
 {#snippet tableMark(color: string)}

@@ -10,6 +10,7 @@
   import NoWorkspaceScreen from "./screens/NoWorkspaceScreen.svelte";
   import PlaceholderScreen from "./screens/PlaceholderScreen.svelte";
   import DiscoverScreen from "./screens/DiscoverScreen.svelte";
+  import ClaimsPortalScreen from "./screens/ClaimsPortalScreen.svelte";
   import BillingQuotaScreen from "./screens/BillingQuotaScreen.svelte";
   import QuotaOperationsScreen from "./screens/QuotaOperationsScreen.svelte";
   import { isAuthenticated, logout, refresh, requireAuthenticatedRoute } from "./lib/auth";
@@ -37,6 +38,7 @@
       || value.kind === "form"
       || value.kind === "form-success"
       || value.kind === "discover"
+      || value.kind === "claims-portal"
     );
   }
 
@@ -122,6 +124,7 @@
       || r.kind === "form"
       || r.kind === "form-success"
       || r.kind === "discover"
+      || r.kind === "claims-portal"
       || r.kind === "ops"
       || r.kind === "billing-quota"
     ) {
@@ -176,7 +179,12 @@
       return;
     }
 
-    if (route.kind === "form" || route.kind === "form-success" || route.kind === "discover") {
+    if (
+      route.kind === "form"
+      || route.kind === "form-success"
+      || route.kind === "discover"
+      || route.kind === "claims-portal"
+    ) {
       // 公开路由不强制登录；已登录访客静默刷新 token，让 evaluate 可走成员路径。
       ready = true;
       if (route.kind === "discover" && isAuthenticated()) void refreshSession();
@@ -230,6 +238,8 @@
   </main>
 {:else if route.kind === "discover"}
   <DiscoverScreen onlogin={() => navigateTo("/auth/login")} />
+{:else if route.kind === "claims-portal"}
+  <ClaimsPortalScreen slug={route.slug} token={route.token} />
 {:else if ready && isAuthenticated()}
   {#if route.kind === "ops"}
     <QuotaOperationsScreen
