@@ -47,6 +47,10 @@ export type InviteAuditRow = Readonly<{
   errorMessage: string | null;
   createdAt: string | null;
   completedAt: string | null;
+  /** 本轮执行开始的时刻（claim 或续跑刷新）；判断 processing 是否僵死用。 */
+  processingSince: string | null;
+  /** activation_url 暂存待收取（completed 且未 collect）；URL 本体不上读路径。 */
+  activationUrlPending: boolean;
 }>;
 
 export type InviteClaimInsert = Readonly<{
@@ -77,6 +81,20 @@ export interface InviteAuditStore {
   byKey(idempotencyKey: string): Promise<InviteAuditRow | null>;
   /** slug 冲突时判别「同一邀请人名下复用」还是「他人占用」。 */
   workspaceBySlug(slug: string): Promise<WorkspaceIndexRow | null>;
+  /**
+   * 僵死续跑闸门：仅当行仍是 processing 且本轮开始时间早于 staleBefore 时刷新
+   * processing_since 并返回 true；否则（在跑或已被别人续跑）返回 false。
+   */
+  markProcessing(recordId: string, staleBefore: Date): Promise<boolean>;
+  /** ensureUser 一拿到一次性激活链接就先落行——任务此后中断也能被续跑/收取救回。 */
+  saveActivationUrl(recordId: string, activationUrl: string): Promise<void>;
+  /** 续跑时读回上次已签发的链接（不读全新建时不签发）。 */
+  storedActivationUrl(recordId: string): Promise<string | null>;
+  /**
+   * 一次性收取：仅 completed 且未收取过才返回 URL 并随即从行中清除；
+   * 其他状态返回 null + 已知收取时刻。
+   */
+  collectActivationUrl(recordId: string): Promise<{ activationUrl: string | null; deliveredAt: string | null }>;
 }
 
 function parseOutcome(row: Row): InviteOutcome | null {
@@ -131,6 +149,9 @@ function parseRow(row: Row): InviteAuditRow {
     errorMessage: typeof row.error_message === "string" ? row.error_message : null,
     createdAt: toIsoDateTimeString(row.created_at),
     completedAt: toIsoDateTimeString(row.completed_at),
+    processingSince: toIsoDateTimeString(row.processing_since),
+    activationUrlPending: typeof row.activation_url === "string" && row.activation_url !== ""
+      && row.activation_url_delivered_at == null,
   };
 }
 
@@ -148,7 +169,8 @@ export class SurrealInviteAuditStore implements InviteAuditStore {
           idempotency_key: $key, operator_subject: $operator, authorized_capability: $cap,
           email: $email, display_name: $displayName, workspace_slug: $slug, workspace_name: $wsName,
           plan_key: $plan, reason: $reason, request_digest: $digest,
-          status: "processing", activation_url_issued: false, created_at: time::now()
+          status: "processing", activation_url_issued: false, created_at: time::now(),
+          processing_since: time::now()
         };`,
         {
           id: new StringRecordId(input.recordId),
@@ -209,6 +231,68 @@ export class SurrealInviteAuditStore implements InviteAuditStore {
       `UPDATE $id SET status = "failed", error_code = $code, error_message = $message, completed_at = time::now();`,
       { id: new StringRecordId(recordId), code, message: message.slice(0, 500) },
     );
+  }
+
+  async markProcessing(recordId: string, staleBefore: Date): Promise<boolean> {
+    const db = await this.session(this.database);
+    const updated = rows(
+      await db.query(
+        `UPDATE $id SET processing_since = time::now()
+         WHERE status = "processing"
+           AND ((processing_since IS NONE AND created_at < $stale)
+             OR (processing_since IS NOT NONE AND processing_since < $stale));`,
+        { id: new StringRecordId(recordId), stale: staleBefore },
+      ),
+    );
+    return updated.length > 0;
+  }
+
+  async saveActivationUrl(recordId: string, activationUrl: string): Promise<void> {
+    const db = await this.session(this.database);
+    await db.query(
+      `UPDATE $id SET activation_url = $url WHERE status = "processing";`,
+      { id: new StringRecordId(recordId), url: activationUrl },
+    );
+  }
+
+  async storedActivationUrl(recordId: string): Promise<string | null> {
+    const db = await this.session(this.database);
+    const found = rows(
+      await db.query(
+        "SELECT activation_url FROM $id LIMIT 1;",
+        { id: new StringRecordId(recordId) },
+      ),
+    )[0];
+    return found && typeof found.activation_url === "string" && found.activation_url !== ""
+      ? found.activation_url
+      : null;
+  }
+
+  async collectActivationUrl(recordId: string): Promise<{ activationUrl: string | null; deliveredAt: string | null }> {
+    const db = await this.session(this.database);
+    const current = rows(
+      await db.query(
+        "SELECT status, activation_url, activation_url_delivered_at FROM $id LIMIT 1;",
+        { id: new StringRecordId(recordId) },
+      ),
+    )[0];
+    if (!current || current.status !== "completed") return { activationUrl: null, deliveredAt: null };
+    const deliveredAt = toIsoDateTimeString(current.activation_url_delivered_at);
+    if (deliveredAt || typeof current.activation_url !== "string" || current.activation_url === "") {
+      return { activationUrl: null, deliveredAt };
+    }
+    // 收取即清除：条件更新把「首次收取者」语义交给库的写路径串行化。
+    const claimed = rows(
+      await db.query(
+        `UPDATE $id SET activation_url_delivered_at = time::now(), activation_url = NONE
+         WHERE status = "completed" AND activation_url IS NOT NONE AND activation_url_delivered_at IS NONE;`,
+        { id: new StringRecordId(recordId) },
+      ),
+    );
+    if (claimed.length === 0) {
+      return { activationUrl: null, deliveredAt: toIsoDateTimeString(current.activation_url_delivered_at) };
+    }
+    return { activationUrl: current.activation_url, deliveredAt: new Date().toISOString() };
   }
 
   async byKey(idempotencyKey: string): Promise<InviteAuditRow | null> {

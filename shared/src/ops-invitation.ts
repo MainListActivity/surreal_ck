@@ -3,8 +3,9 @@ import { z } from "zod";
 /**
  * G2 运营代办开通（POST /api/ops/invitations）请求体。
  * 组合动作：IdP 建用户（幂等复用）→ 以其为 owner 建 workspace → 绑定产品
- * 权益（内容访问）→ 授予 AI 额度桶。activation_url 属一次性凭证，只随
- * 首次响应返回，不写审计、不入证据。
+ * 权益（内容访问）→ 授予 AI 额度桶。链路为异步契约：POST 在同步窗口内
+ * 完成则直接返回结果，超时返回 processing 供轮询 GET；激活链接经
+ * collect-delivery 一次性收取。activation_url 属一次性凭证，不写审计、不入证据。
  */
 export const createOpsInvitationSchema = z.object({
   email: z.string().trim().email().max(200),

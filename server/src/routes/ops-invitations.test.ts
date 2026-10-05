@@ -9,6 +9,7 @@ import { InviteError, type InviteResult } from "../invitations/invite-service";
 function makeApp(overrides: {
   provision?: (input: unknown) => Promise<InviteResult>;
   get?: (key: string) => Promise<InviteResult | null>;
+  collect?: (key: string) => Promise<{ idempotencyKey: string; status: string; activationUrl: string | null } | null>;
   capabilities?: string[];
 } = {}) {
   const calls: { provision?: unknown } = {};
@@ -31,6 +32,7 @@ function makeApp(overrides: {
           return overrides.provision ? overrides.provision(input) : ({} as InviteResult);
         },
         get: async (key: string) => overrides.get ? overrides.get(key) : null,
+        collect: async (key: string) => overrides.collect ? overrides.collect(key) : null,
       } as never,
       requireOperator: requireOperator as never,
     }));
@@ -115,5 +117,43 @@ describe("G2 ops 邀请路由", () => {
     const res = await missing.app.request("/api/ops/invitations/none");
     expect(res.status).toBe(404);
     expect((await res.json() as { error: { code: string } }).error.code).toBe("invite-not-found");
+  });
+
+  test("POST 异步分支：新领取超窗 → 202；续跑/在跑 → 200", async () => {
+    const fresh = makeApp({ provision: async () => ({ status: "processing", replayed: false } as InviteResult) });
+    const res1 = await fresh.app.request("/api/ops/invitations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(BODY),
+    });
+    expect(res1.status).toBe(202);
+    const running = makeApp({ provision: async () => ({ status: "processing", replayed: true } as InviteResult) });
+    const res2 = await running.app.request("/api/ops/invitations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(BODY),
+    });
+    expect(res2.status).toBe(200);
+  });
+
+  test("collect-delivery：完成 → 一次性收取返回 URL；不存在 → 404；无 subscription.manage → 403", async () => {
+    const { app } = makeApp({
+      collect: async (key) => ({
+        idempotencyKey: key, status: "completed",
+        activationUrl: "https://o.maplayer.top/activate-account?token=X",
+      }),
+    });
+    const res = await app.request("/api/ops/invitations/k1/collect-delivery", { method: "POST" });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { activationUrl: string };
+    expect(body.activationUrl).toContain("activate-account?token=");
+
+    const missing = makeApp({ collect: async () => null });
+    const res2 = await missing.app.request("/api/ops/invitations/none/collect-delivery", { method: "POST" });
+    expect(res2.status).toBe(404);
+
+    const noCap = makeApp({ capabilities: ["quota.read"], collect: async () => null });
+    const res3 = await noCap.app.request("/api/ops/invitations/k1/collect-delivery", { method: "POST" });
+    expect(res3.status).toBe(403);
   });
 });
