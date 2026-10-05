@@ -107,6 +107,9 @@ function requestDigest(input: CreateOpsInvitation): string {
 
 const TIMED = "timed" as const;
 
+/** IdP 邀请 token 有效期（ma_hono provision/reissue 恒定 24h）。 */
+const ACTIVATION_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -401,6 +404,65 @@ export class InviteService {
       deliveredAt: res.deliveredAt,
       errorCode: row.errorCode,
       errorMessage: row.errorMessage,
+    };
+  }
+
+  /**
+   * 激活链接重签发（断链/24h 过期补救）：对 completed 行取其 IdP 用户调
+   * reissue-activation，新 URL 暂存回本行走 pendingCollect → collect-delivery
+   * 一次性收取的原语义不变；行落 resent_at/resent_by 归因。
+   * 重放去重：有未收取链接（pendingCollect）或上次重签发仍在 token 有效期内
+   * 时直接返回既有结果不再铸新链——IdP 重签发会作废旧 token，重放铸新链
+   * 只会把已交付的活链打死。收取后过期的重发属真实重签发，正常铸新链。
+   */
+  async resend(actor: InviteActor, idempotencyKey: string): Promise<InviteResult | null> {
+    const row = await this.deps.store.byKey(idempotencyKey);
+    if (!row) return null;
+    if (row.status === "processing") {
+      throw new InviteError("invite-resend-while-processing", "开通仍在进行：待其完成后才可重签发激活链接");
+    }
+    if (row.status !== "completed" || !row.outcome) {
+      throw new InviteError("invite-resend-invalid-state", `邀请状态 ${row.status} 无可重签发的交付物`);
+    }
+    if (row.activationUrlPending) {
+      return replayResult(row);
+    }
+    if (row.resentAt && Date.now() - Date.parse(row.resentAt) < ACTIVATION_TOKEN_TTL_MS) {
+      return replayResult(row);
+    }
+
+    const idp = await this.deps.idp();
+    if (!idp) {
+      throw new InviteError("invite-idp-not-configured", "IdP provision token 未配置（密封仓与 IDP_PROVISION_TOKEN 兜底均为空），无法代办开通");
+    }
+
+    let reissued: { user: { id: string; email: string; displayName: string; status: string }; activationUrl: string | null };
+    try {
+      reissued = await idp.reissueActivation(row.outcome.idpUserId);
+    } catch (error) {
+      if (error instanceof IdpAdminError && error.status === 409) {
+        throw new InviteError("invite-already-activated", "用户已激活或已停用，不可重签发激活链接");
+      }
+      if (error instanceof IdpAdminError && error.status === 404) {
+        throw new InviteError("invite-idp-user-missing", "IdP 侧查无该邀请用户（行内 idp_user_id 已失效）");
+      }
+      throw error;
+    }
+    if (!reissued.activationUrl) {
+      throw new InviteError("invite-resend-no-url", "IdP 重签发未返回激活链接");
+    }
+
+    await this.deps.store.saveResentActivationUrl(row.id, reissued.activationUrl, actor.subject);
+
+    const pending = replayResult({ ...row, activationUrlPending: true });
+    return {
+      ...pending,
+      replayed: true,
+      delivery: {
+        ...pending.delivery,
+        channel: "activation_url",
+        note: "激活链接已重签发：调用 collect-delivery 一次性收取（旧链接已由 IdP 作废）",
+      },
     };
   }
 }

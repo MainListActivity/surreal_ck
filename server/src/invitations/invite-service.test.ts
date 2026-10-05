@@ -52,6 +52,8 @@ class MemStore implements InviteAuditStore {
       completedAt: null,
       processingSince: new Date().toISOString(),
       activationUrlPending: false,
+      resentAt: null,
+      resentBy: null,
     });
     return { kind: "claimed" as const };
   }
@@ -110,12 +112,27 @@ class MemStore implements InviteAuditStore {
     this.rows.set(row.idempotencyKey, { ...row, activationUrlPending: false });
     return { activationUrl: url, deliveredAt: now };
   }
+
+  async saveResentActivationUrl(recordId: string, activationUrl: string, actorSubject: string) {
+    const row = [...this.rows.values()].find((r) => r.id === recordId);
+    if (!row || row.status !== "completed") return false;
+    this.storedUrls.set(recordId, activationUrl);
+    this.deliveredAt.delete(recordId);
+    this.rows.set(row.idempotencyKey, {
+      ...row,
+      activationUrlPending: true,
+      resentAt: new Date().toISOString(),
+      resentBy: actorSubject,
+    });
+    return true;
+  }
 }
 
 type Call = { name: string; detail?: unknown };
 
 function makeService(overrides: {
   idpResult?: EnsureUserResult | Error | null;
+  reissueResult?: { user: { id: string; email: string; displayName: string; status: string }; activationUrl: string | null } | Error;
   createResult?: CreateWorkspaceResult;
   assignError?: Error;
   grantError?: Error;
@@ -137,6 +154,15 @@ function makeService(overrides: {
             user: { id: "user-1", email: "lawyer@example.com", displayName: "陈律师", status: "provisioned" },
             created: true,
             activationUrl: "https://o.maplayer.top/activate-account?token=SECRET",
+          };
+          if (r instanceof Error) throw r;
+          return r;
+        },
+        reissueActivation: async (userId: string) => {
+          calls.push({ name: "idp.reissueActivation", detail: { userId } });
+          const r = overrides.reissueResult ?? {
+            user: { id: "user-1", email: "lawyer@example.com", displayName: "陈律师", status: "provisioned" },
+            activationUrl: "https://o.maplayer.top/activate-account?token=RESENT-SECRET",
           };
           if (r instanceof Error) throw r;
           return r;
@@ -282,6 +308,7 @@ describe("G2 InviteService", () => {
       status: "processing", outcome: null, errorCode: null, errorMessage: null,
       createdAt: null, completedAt: null,
       processingSince: new Date().toISOString(), activationUrlPending: false,
+      resentAt: null, resentBy: null,
     });
     const { service, calls } = makeService({ store });
     const result = await service.provision(ACTOR, input());
@@ -348,6 +375,7 @@ describe("G2 InviteService", () => {
       status: "processing", outcome: null, errorCode: null, errorMessage: null,
       createdAt: new Date(Date.now() - 10 * 60_000).toISOString(), completedAt: null,
       processingSince: new Date(Date.now() - 10 * 60_000).toISOString(), activationUrlPending: false,
+      resentAt: null, resentBy: null,
     });
     // 上轮已签发但随请求丢失的 URL 仍在行上
     store.storedUrls.set(recordId, "https://o.maplayer.top/activate-account?token=REVIVED");
@@ -390,6 +418,7 @@ describe("G2 InviteService", () => {
       status: "processing", outcome: null, errorCode: null, errorMessage: null,
       createdAt: new Date(Date.now() - 10 * 60_000).toISOString(), completedAt: null,
       processingSince: new Date(Date.now() - 10 * 60_000).toISOString(), activationUrlPending: false,
+      resentAt: null, resentBy: null,
     });
     store.markProcessingResult = false; // 另一实例已抢先续跑
     const { service, calls } = makeService({ store, staleProcessingMs: 60_000 });
@@ -425,5 +454,84 @@ describe("G2 InviteService", () => {
   test("无产品版本可用 → invite-product-revision-missing", async () => {
     const { service } = makeService({ defaultRevision: null });
     await expect(service.provision(ACTOR, input())).rejects.toMatchObject({ code: "invite-product-revision-missing" });
+  });
+
+  const completedRow = (overrides: Partial<InviteAuditRow> = {}): InviteAuditRow => ({
+    id: "ops_invitation:x", idempotencyKey: "invite-test-key-001", operatorSubject: "ops-subject",
+    email: "lawyer@example.com", displayName: "陈律师", workspaceSlug: "acme-bankruptcy",
+    workspaceName: "陈律师", planKey: "pro", reason: "G2 试点邀请", requestDigest: "d",
+    status: "completed", errorCode: null, errorMessage: null,
+    outcome: {
+      idpUserId: "user-1", idpUserStatus: "provisioned", userOutcome: "created",
+      workspaceDb: "ws_abc123", workspaceOutcome: "created",
+      productRevision: "product_plan_revision:trial_v1", contentAssigned: true,
+      aiAllowance: { kind: "compensation", amount: 500, periodKey: "invite:invite-test-key-001", expiresAt: "2099-01-01T00:00:00Z", bucket: "ai_allowance_bucket:xyz" },
+      deliveryChannel: "activation_url", activationUrlIssued: true,
+    },
+    createdAt: new Date(Date.now() - 3 * 24 * 60 * 60_000).toISOString(),
+    completedAt: new Date(Date.now() - 3 * 24 * 60 * 60_000).toISOString(),
+    processingSince: null, activationUrlPending: false, resentAt: null, resentBy: null,
+    ...overrides,
+  });
+
+  test("resend：completed 行 → IdP 重签发 → 暂存回行 → collect 一次性收取新链接", async () => {
+    const store = new MemStore();
+    store.rows.set("invite-test-key-001", completedRow());
+    const { service, calls } = makeService({ store });
+
+    const res = await service.resend(ACTOR, "invite-test-key-001");
+    expect(res?.status).toBe("completed");
+    expect(res?.delivery.pendingCollect).toBe(true);
+    expect(res?.delivery.activationUrl).toBeNull();
+    expect(calls.map((c) => c.name)).toEqual(["idp.reissueActivation"]);
+    expect(calls[0]?.detail).toEqual({ userId: "user-1" });
+
+    const audit = await store.byKey("invite-test-key-001");
+    expect(audit?.resentBy).toBe("ops-subject");
+    expect(audit?.resentAt).not.toBeNull();
+    expect(JSON.stringify(audit)).not.toContain("RESENT-SECRET");
+
+    const collected = await service.collect("invite-test-key-001");
+    expect(collected?.activationUrl).toContain("token=RESENT-SECRET");
+    expect((await service.collect("invite-test-key-001"))?.activationUrl).toBeNull();
+  });
+
+  test("resend 重放去重：未收取链接或 24h 有效期内不再铸新链", async () => {
+    const store = new MemStore();
+    store.rows.set("invite-test-key-001", completedRow({ activationUrlPending: true }));
+    store.storedUrls.set("ops_invitation:x", "https://o.maplayer.top/activate-account?token=OLD");
+    const { service, calls } = makeService({ store });
+    const res = await service.resend(ACTOR, "invite-test-key-001");
+    expect(res?.delivery.pendingCollect).toBe(true);
+    expect(calls).toEqual([]); // 未触达 IdP
+    // 待收链接仍是原来那条，未被新 token 打死
+    expect((await service.collect("invite-test-key-001"))?.activationUrl).toContain("token=OLD");
+
+    // 已收取但上次重签发仍在 24h 有效期内 → 同样不铸新链
+    store.rows.set("invite-test-key-001", completedRow({ resentAt: new Date().toISOString(), resentBy: "ops-subject" }));
+    const res2 = await service.resend(ACTOR, "invite-test-key-001");
+    expect(res2?.delivery.pendingCollect).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
+  test("resend 状态门：processing/failed → 409 语义；不存在 → null；IdP 409/404 → 邀请错误码", async () => {
+    const store = new MemStore();
+    store.rows.set("invite-test-key-001", completedRow({ status: "processing", outcome: null }));
+    const { service } = makeService({ store });
+    await expect(service.resend(ACTOR, "invite-test-key-001")).rejects.toMatchObject({ code: "invite-resend-while-processing" });
+
+    store.rows.set("invite-test-key-001", completedRow({ status: "failed", outcome: null }));
+    await expect(service.resend(ACTOR, "invite-test-key-001")).rejects.toMatchObject({ code: "invite-resend-invalid-state" });
+
+    expect(await service.resend(ACTOR, "missing-key")).toBeNull();
+
+    store.rows.set("invite-test-key-001", completedRow());
+    const { IdpAdminError } = await import("./idp-admin-client");
+    const conflicted = makeService({ store, reissueResult: new IdpAdminError("idp-admin-user-not-provisioned", "m", 409) });
+    await expect(conflicted.service.resend(ACTOR, "invite-test-key-001")).rejects.toMatchObject({ code: "invite-already-activated" });
+    const missing = makeService({ store, reissueResult: new IdpAdminError("idp-admin-user-not-found", "m", 404) });
+    await expect(missing.service.resend(ACTOR, "invite-test-key-001")).rejects.toMatchObject({ code: "invite-idp-user-missing" });
+    const noUrl = makeService({ store, reissueResult: { user: { id: "user-1", email: "e", displayName: "d", status: "provisioned" }, activationUrl: null } });
+    await expect(noUrl.service.resend(ACTOR, "invite-test-key-001")).rejects.toMatchObject({ code: "invite-resend-no-url" });
   });
 });
