@@ -9,8 +9,12 @@ type Queryable = {
 
 type Row = Record<string, unknown>;
 
-const rows = (v: unknown): Row[] =>
-  Array.isArray(v) && Array.isArray(v[0]) ? (v[0] as Row[]) : [];
+const rows = (v: unknown): Row[] => {
+  if (!Array.isArray(v)) return [];
+  const first = v[0];
+  if (Array.isArray(first)) return first as Row[];
+  return first !== null && typeof first === "object" ? [first as Row] : [];
+};
 
 export class PlatformSecretError extends Error {
   constructor(
@@ -143,11 +147,11 @@ export class PlatformSecretStore {
     try {
       await db.query(
         `UPSERT ONLY $id SET
-          name = $name, envelope = $envelope, purpose = $purpose,
+          name = $name, envelope = $envelope, purpose = $purpose ?? NONE,
           updated_by = $actor, updated_at = time::now();
         CREATE platform_secret_event CONTENT {
           secret_name: $name, action: $action, actor_subject: $actor,
-          source: $source, detail: $detail, occurred_at: time::now()
+          source: $source, detail: $detail ?? NONE, occurred_at: time::now()
         };`,
         {
           id: new StringRecordId(`platform_secret:${name}`),
