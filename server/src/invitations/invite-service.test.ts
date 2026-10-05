@@ -24,6 +24,11 @@ function input(overrides: Partial<CreateOpsInvitation> = {}): CreateOpsInvitatio
 class MemStore implements InviteAuditStore {
   rows = new Map<string, InviteAuditRow>();
   workspaces = new Map<string, WorkspaceIndexRow>();
+  /** 行级暂存的一次性激活链接（不入 InviteAuditRow 读路径）。 */
+  storedUrls = new Map<string, string>();
+  deliveredAt = new Map<string, string>();
+  markProcessingCalls = 0;
+  markProcessingResult: boolean | null = null;
 
   async claim(insert: InviteClaimInsert) {
     const existing = this.rows.get(insert.idempotencyKey);
@@ -45,13 +50,20 @@ class MemStore implements InviteAuditStore {
       errorMessage: null,
       createdAt: new Date().toISOString(),
       completedAt: null,
+      processingSince: new Date().toISOString(),
+      activationUrlPending: false,
     });
     return { kind: "claimed" as const };
   }
 
   async complete(recordId: string, outcome: InviteOutcome) {
     const row = [...this.rows.values()].find((r) => r.id === recordId);
-    if (row) this.rows.set(row.idempotencyKey, { ...row, status: "completed", outcome, completedAt: new Date().toISOString() });
+    if (row) {
+      this.rows.set(row.idempotencyKey, {
+        ...row, status: "completed", outcome, completedAt: new Date().toISOString(),
+        activationUrlPending: this.storedUrls.has(recordId),
+      });
+    }
   }
 
   async fail(recordId: string, code: string, message: string) {
@@ -66,6 +78,38 @@ class MemStore implements InviteAuditStore {
   async workspaceBySlug(slug: string) {
     return this.workspaces.get(slug) ?? null;
   }
+
+  async markProcessing(recordId: string, staleBefore: Date) {
+    this.markProcessingCalls += 1;
+    if (this.markProcessingResult !== null) return this.markProcessingResult;
+    const row = [...this.rows.values()].find((r) => r.id === recordId);
+    if (!row || row.status !== "processing") return false;
+    const startedAt = row.processingSince ?? row.createdAt;
+    if (startedAt && Date.parse(startedAt) >= staleBefore.getTime()) return false;
+    this.rows.set(row.idempotencyKey, { ...row, processingSince: new Date().toISOString() });
+    return true;
+  }
+
+  async saveActivationUrl(recordId: string, activationUrl: string) {
+    this.storedUrls.set(recordId, activationUrl);
+  }
+
+  async storedActivationUrl(recordId: string) {
+    return this.storedUrls.get(recordId) ?? null;
+  }
+
+  async collectActivationUrl(recordId: string) {
+    const row = [...this.rows.values()].find((r) => r.id === recordId);
+    if (!row || row.status !== "completed") return { activationUrl: null, deliveredAt: null };
+    const url = this.storedUrls.get(recordId) ?? null;
+    const delivered = this.deliveredAt.get(recordId) ?? null;
+    if (!url || delivered) return { activationUrl: null, deliveredAt: delivered };
+    const now = new Date().toISOString();
+    this.deliveredAt.set(recordId, now);
+    this.storedUrls.delete(recordId);
+    this.rows.set(row.idempotencyKey, { ...row, activationUrlPending: false });
+    return { activationUrl: url, deliveredAt: now };
+  }
 }
 
 type Call = { name: string; detail?: unknown };
@@ -78,6 +122,9 @@ function makeService(overrides: {
   existingBuckets?: { period_key: string; id: string }[];
   defaultRevision?: string | null;
   store?: MemStore;
+  syncWindowMs?: number;
+  staleProcessingMs?: number;
+  createDelayMs?: number;
 } = {}) {
   const calls: Call[] = [];
   const store = overrides.store ?? new MemStore();
@@ -97,9 +144,14 @@ function makeService(overrides: {
       } as unknown as HttpIdpAdminClient;
   const service = new InviteService({
     idp,
+    syncWindowMs: overrides.syncWindowMs,
+    staleProcessingMs: overrides.staleProcessingMs,
     workspaceCreator: {
       createWorkspace: async () => {
         calls.push({ name: "createWorkspace" });
+        if (overrides.createDelayMs) {
+          await new Promise((resolve) => setTimeout(resolve, overrides.createDelayMs));
+        }
         return overrides.createResult ?? { kind: "created", slug: "acme-bankruptcy", dbName: "ws_abc123", accessToken: null, expiresIn: null };
       },
     },
@@ -215,7 +267,7 @@ describe("G2 InviteService", () => {
     ).rejects.toMatchObject({ code: "invite-allowance-expiry-invalid" });
   });
 
-  test("processing 中的同键请求 → invite-in-progress", async () => {
+  test("processing 中的同键请求 → 返回 processing 供轮询（不再抛 invite-in-progress）", async () => {
     const store = new MemStore();
     const { stableSha256 } = await import("../quota/canonical");
     const digest = stableSha256(JSON.stringify({
@@ -227,10 +279,124 @@ describe("G2 InviteService", () => {
       id: "ops_invitation:x", idempotencyKey: "invite-test-key-001", operatorSubject: "ops-subject",
       email: "lawyer@example.com", displayName: "陈律师", workspaceSlug: "acme-bankruptcy",
       workspaceName: "陈律师", planKey: "pro", reason: "G2 试点邀请", requestDigest: digest,
-      status: "processing", outcome: null, errorCode: null, errorMessage: null, createdAt: null, completedAt: null,
+      status: "processing", outcome: null, errorCode: null, errorMessage: null,
+      createdAt: null, completedAt: null,
+      processingSince: new Date().toISOString(), activationUrlPending: false,
     });
-    const { service } = makeService({ store });
-    await expect(service.provision(ACTOR, input())).rejects.toMatchObject({ code: "invite-in-progress" });
+    const { service, calls } = makeService({ store });
+    const result = await service.provision(ACTOR, input());
+    expect(result.status).toBe("processing");
+    expect(result.replayed).toBe(true);
+    expect(calls).toEqual([]);
+    expect(store.markProcessingCalls).toBe(0);
+  });
+
+  test("同步窗内未完成的 POST → processing；后台任务跑完后 GET completed + collect 一次性收取", async () => {
+    const store = new MemStore();
+    const { service } = makeService({ store, syncWindowMs: 20, createDelayMs: 120 });
+    const first = await service.provision(ACTOR, input());
+    expect(first.status).toBe("processing");
+    expect(first.replayed).toBe(false);
+    expect(first.delivery.activationUrl).toBeNull();
+    // 后台任务仍在跑：GET 仍 processing（URL 已先落行待收取）
+    await new Promise((r) => setTimeout(r, 30));
+    const mid = await service.get("invite-test-key-001");
+    expect(mid?.status).toBe("processing");
+    // 收取不合法——未完成不返回 URL
+    const earlyCollect = await service.collect("invite-test-key-001");
+    expect(earlyCollect?.status).toBe("processing");
+    expect(earlyCollect?.activationUrl).toBeNull();
+    // 等后台任务跑完
+    await new Promise((r) => setTimeout(r, 150));
+    const done = await service.get("invite-test-key-001");
+    expect(done?.status).toBe("completed");
+    expect(done?.delivery.pendingCollect).toBe(true);
+    // 首次 collect → URL；二次 collect → 不再返回
+    const collect1 = await service.collect("invite-test-key-001");
+    expect(collect1?.activationUrl).toContain("activate-account?token=");
+    const collect2 = await service.collect("invite-test-key-001");
+    expect(collect2?.activationUrl).toBeNull();
+    expect(collect2?.deliveredAt).not.toBeNull();
+    // 审计行仍不含 URL 本体
+    const audit = await store.byKey("invite-test-key-001");
+    expect(JSON.stringify(audit)).not.toContain("SECRET");
+  });
+
+  test("同步窗内完成 → 响应携带 URL 且记为已收取，collect 不再返回", async () => {
+    const { service } = makeService({ syncWindowMs: 5_000 });
+    const result = await service.provision(ACTOR, input());
+    expect(result.status).toBe("completed");
+    expect(result.delivery.activationUrl).toContain("activate-account?token=");
+    const collect = await service.collect("invite-test-key-001");
+    expect(collect?.activationUrl).toBeNull();
+    expect(collect?.deliveredAt).not.toBeNull();
+  });
+
+  test("僵死 processing（上轮断连）→ 同参重发续跑并完成；读回首签 URL 一并下发", async () => {
+    const store = new MemStore();
+    const { stableSha256 } = await import("../quota/canonical");
+    const digest = stableSha256(JSON.stringify({
+      email: "lawyer@example.com", displayName: "陈律师", workspaceSlug: "acme-bankruptcy",
+      workspaceName: null, planKey: "pro", productPlanRevisionId: null,
+      aiAllowance: { amount: 500, expiresAt: "2099-01-01T00:00:00Z", label: "邀请试点 AI 额度" }, reason: "G2 试点邀请",
+    }));
+    const recordId = "ops_invitation:x";
+    store.rows.set("invite-test-key-001", {
+      id: recordId, idempotencyKey: "invite-test-key-001", operatorSubject: "ops-subject",
+      email: "lawyer@example.com", displayName: "陈律师", workspaceSlug: "acme-bankruptcy",
+      workspaceName: "陈律师", planKey: "pro", reason: "G2 试点邀请", requestDigest: digest,
+      status: "processing", outcome: null, errorCode: null, errorMessage: null,
+      createdAt: new Date(Date.now() - 10 * 60_000).toISOString(), completedAt: null,
+      processingSince: new Date(Date.now() - 10 * 60_000).toISOString(), activationUrlPending: false,
+    });
+    // 上轮已签发但随请求丢失的 URL 仍在行上
+    store.storedUrls.set(recordId, "https://o.maplayer.top/activate-account?token=REVIVED");
+    store.workspaces.set("acme-bankruptcy", { ownerSubject: "user-9", dbName: "ws_abc123", status: "active" });
+    const { service, calls } = makeService({
+      store,
+      staleProcessingMs: 60_000,
+      idpResult: {
+        user: { id: "user-9", email: "lawyer@example.com", displayName: "陈律师", status: "provisioned" },
+        created: false,
+        activationUrl: null,
+      },
+      createResult: { kind: "slug-conflict" },
+      existingBuckets: [{ period_key: "invite:invite-test-key-001", id: "ai_allowance_bucket:old" }],
+    });
+    const result = await service.provision(ACTOR, input());
+    expect(result.status).toBe("completed");
+    expect(result.replayed).toBe(true);
+    // 续跑全链路幂等：workspace 复用、授额查重不重复
+    expect(result.workspace?.outcome).toBe("reused");
+    expect(result.aiAllowance?.bucket).toBe("ai_allowance_bucket:old");
+    expect(calls.filter((c) => c.name === "grant")).toEqual([]);
+    // 上环签发的链接读回并随响应下发
+    expect(result.delivery.activationUrl).toBe("https://o.maplayer.top/activate-account?token=REVIVED");
+    expect(store.markProcessingCalls).toBe(1);
+  });
+
+  test("僵死行 CAS 续跑竞争失败 → 只回 processing（幂等竞态防护）", async () => {
+    const store = new MemStore();
+    const { stableSha256 } = await import("../quota/canonical");
+    const digest = stableSha256(JSON.stringify({
+      email: "lawyer@example.com", displayName: "陈律师", workspaceSlug: "acme-bankruptcy",
+      workspaceName: null, planKey: "pro", productPlanRevisionId: null,
+      aiAllowance: { amount: 500, expiresAt: "2099-01-01T00:00:00Z", label: "邀请试点 AI 额度" }, reason: "G2 试点邀请",
+    }));
+    store.rows.set("invite-test-key-001", {
+      id: "ops_invitation:x", idempotencyKey: "invite-test-key-001", operatorSubject: "ops-subject",
+      email: "lawyer@example.com", displayName: "陈律师", workspaceSlug: "acme-bankruptcy",
+      workspaceName: "陈律师", planKey: "pro", reason: "G2 试点邀请", requestDigest: digest,
+      status: "processing", outcome: null, errorCode: null, errorMessage: null,
+      createdAt: new Date(Date.now() - 10 * 60_000).toISOString(), completedAt: null,
+      processingSince: new Date(Date.now() - 10 * 60_000).toISOString(), activationUrlPending: false,
+    });
+    store.markProcessingResult = false; // 另一实例已抢先续跑
+    const { service, calls } = makeService({ store, staleProcessingMs: 60_000 });
+    const result = await service.provision(ACTOR, input());
+    expect(result.status).toBe("processing");
+    expect(result.replayed).toBe(true);
+    expect(calls).toEqual([]); // 未触发任何下游写
   });
 
   test("授额中途失败后同键换不来重试；period_key 查重防双桶", async () => {

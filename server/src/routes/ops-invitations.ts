@@ -22,7 +22,11 @@ function fail(error: unknown): never {
  * 一条链路完成 IdP 用户开通（幂等复用）→ workspace bootstrap（manual 套餐
  * 分配，不产生付费事实）→ 产品权益绑定（内容访问）→ AI 额度桶授予。
  * 写路径 = subscription.manage（subscription/权益组合操作）；读 = quota.read。
- * activation_url 仅首次响应返回一次，不落审计与日志。
+ *
+ * 异步契约：POST 在同步窗口内完成则返回 201/200 + 一次性 activation_url；
+ * 超时返回 202/200 status=processing（任务继续在后台执行），调用方轮询
+ * GET 至 completed，再经 POST .../collect-delivery 一次性收取激活链接。
+ * activation_url 不落审计与日志，仅首次成功收取返回。
  */
 export function createOpsInvitationRoutes(input: {
   service: InviteService;
@@ -41,13 +45,21 @@ export function createOpsInvitationRoutes(input: {
           { subject: operator?.subject ?? "unknown", capabilities: operator?.capabilities ?? [] },
           parsed.data,
         );
-        return c.json(result, result.replayed ? 200 : 201);
+        return c.json(
+          result,
+          result.status === "processing" ? (result.replayed ? 200 : 202) : result.replayed ? 200 : 201,
+        );
       } catch (error) {
         return fail(error);
       }
     })
     .get("/api/ops/invitations/:idempotencyKey", requireOperator("quota.read"), async (c) => {
       const result = await input.service.get(c.req.param("idempotencyKey"));
+      if (!result) throw new HttpError(404, "invite-not-found", "邀请记录不存在");
+      return c.json(result);
+    })
+    .post("/api/ops/invitations/:idempotencyKey/collect-delivery", requireOperator("subscription.manage"), async (c) => {
+      const result = await input.service.collect(c.req.param("idempotencyKey"));
       if (!result) throw new HttpError(404, "invite-not-found", "邀请记录不存在");
       return c.json(result);
     });

@@ -23,6 +23,17 @@ export type InviteActor = Readonly<{
   capabilities: readonly PlatformOperatorCapability[];
 }>;
 
+export type InviteCollect = Readonly<{
+  idempotencyKey: string;
+  status: "processing" | "completed" | "failed";
+  /** 一次性收取：仅首次成功 collect 返回 URL，其余情况为 null。 */
+  activationUrl: string | null;
+  /** 已被收取过的时刻；从未收取为 null。 */
+  deliveredAt: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+}>;
+
 export type InviteResult = Readonly<{
   idempotencyKey: string;
   status: "completed" | "failed" | "processing";
@@ -46,8 +57,10 @@ export type InviteResult = Readonly<{
   aiAllowance: InviteOutcome["aiAllowance"] | null;
   delivery: {
     channel: "activation_url" | "email" | "none";
-    /** 一次性激活链接：仅「新用户 + 本次调用」返回；审计与重放均不携带。 */
+    /** 一次性激活链接：仅「任务完成且链接尚未被收取」的本次响应携带；重放不携带。 */
     activationUrl: string | null;
+    /** completed 且链接仍在库中待收取（调用 collect-delivery 一次性取回）。 */
+    pendingCollect: boolean;
     note: string;
   };
 }>;
@@ -62,6 +75,17 @@ type InviteDeps = Readonly<{
   store: InviteAuditStore;
   /** 缺省产品版本：pro_trial_configuration:current 批准的产品修订；无配置时返回 null。 */
   defaultProductRevision: () => Promise<string | null>;
+  /**
+   * 同步响应窗口：任务在该窗口内完成则随 POST 一并返回（旧契约）；
+   * 超时返回 processing，任务继续在后台执行，调用方轮询 GET。
+   * 默认 60s（低于 broker 105s 与边缘代理 120s 的硬上限）。
+   */
+  syncWindowMs?: number;
+  /**
+   * processing 僵死阈值：行在该阈值前仍未完结视为上轮执行已断，允许同参重发续跑
+   * （execute 各步幂等）。默认 240s（= 同步窗 + 上游最坏耗时的余量）。
+   */
+  staleProcessingMs?: number;
 }>;
 
 function recordIdFor(idempotencyKey: string): string {
@@ -81,8 +105,22 @@ function requestDigest(input: CreateOpsInvitation): string {
   }));
 }
 
+const TIMED = "timed" as const;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function replayResult(row: InviteAuditRow): InviteResult {
   const o = row.outcome;
+  const pendingCollect = row.status === "completed" && row.activationUrlPending;
+  const note = row.status === "processing"
+    ? "开通仍在进行：轮询本端点；完成后经 collect-delivery 一次性收取激活链接"
+    : pendingCollect
+      ? "重放返回既有结果；激活链接尚未收取，调用 collect-delivery 一次性获取"
+      : row.status === "completed"
+        ? "重放返回既有结果；激活链接已收取或本未签发"
+        : "重放返回既有失败结果；换用新幂等键可重试";
   return {
     idempotencyKey: row.idempotencyKey,
     status: row.status,
@@ -96,13 +134,20 @@ function replayResult(row: InviteAuditRow): InviteResult {
     delivery: {
       channel: o?.deliveryChannel ?? "none",
       activationUrl: null,
-      note: "重放返回既有结果；激活链接仅在首次调用时下发一次",
+      pendingCollect,
+      note,
     },
   };
 }
 
 export class InviteService {
-  constructor(private readonly deps: InviteDeps) {}
+  private readonly syncWindowMs: number;
+  private readonly staleProcessingMs: number;
+
+  constructor(private readonly deps: InviteDeps) {
+    this.syncWindowMs = deps.syncWindowMs ?? 60_000;
+    this.staleProcessingMs = deps.staleProcessingMs ?? 240_000;
+  }
 
   async provision(actor: InviteActor, input: CreateOpsInvitation): Promise<InviteResult> {
     const idp = await this.deps.idp();
@@ -137,23 +182,71 @@ export class InviteService {
         throw new InviteError("invite-conflict", "幂等键已用于其他请求");
       }
       if (row.status === "processing") {
-        throw new InviteError("invite-in-progress", "同一幂等键的开通正在处理中，请稍后查询");
+        const startedAt = row.processingSince ?? row.createdAt;
+        const staleBefore = new Date(Date.now() - this.staleProcessingMs);
+        const stale = !startedAt || Date.parse(startedAt) < staleBefore.getTime();
+        // 仍在执行：直接回 processing 供轮询（旧契约的 invite-in-progress 409 改为可轮询 200）。
+        if (!stale) return replayResult(row);
+        // 僵死行（上轮请求被断连杀死）：CAS 抢续跑权，失败者只读不回写。
+        const resumed = await this.deps.store.markProcessing(row.id, staleBefore);
+        if (!resumed) return replayResult(row);
+        return this.runWithWindow(actor, input, row.id, workspaceName, expiresAt, idp, true);
       }
       return replayResult(row);
     }
 
-    try {
-      return await this.execute(actor, input, recordId, workspaceName, expiresAt, idp);
-    } catch (error) {
-      const code = error instanceof InviteError ? error.code
-        : error instanceof IdpAdminError ? error.code
-          : "invite-internal-error";
-      const message = error instanceof Error ? error.message : String(error);
-      await this.deps.store.fail(recordId, code, message).catch(() => undefined);
-      throw error instanceof InviteError || error instanceof IdpAdminError
-        ? new InviteError(code, message)
-        : error;
+    return this.runWithWindow(actor, input, recordId, workspaceName, expiresAt, idp, false);
+  }
+
+  /**
+   * 竞速窗：execute 全链路为幂等步骤，可安全地在「调用方断连后继续跑」。
+   * 窗口内完成 → 同步返回结果（旧契约）；超时 → 返回 processing，任务不脱管。
+   * 后台分支的错误只落库（status=failed），不再抛给已断开的响应。
+   */
+  private async runWithWindow(
+    actor: InviteActor,
+    input: CreateOpsInvitation,
+    recordId: string,
+    workspaceName: string,
+    expiresAtMs: number,
+    idp: HttpIdpAdminClient,
+    replayed: boolean,
+  ): Promise<InviteResult> {
+    const task = this.execute(actor, input, recordId, workspaceName, expiresAtMs, idp)
+      .catch(async (error: unknown) => {
+        const code = error instanceof InviteError ? error.code
+          : error instanceof IdpAdminError ? error.code
+            : "invite-internal-error";
+        const message = error instanceof Error ? error.message : String(error);
+        await this.deps.store.fail(recordId, code, message).catch(() => undefined);
+        throw error instanceof InviteError || error instanceof IdpAdminError
+          ? new InviteError(code, message)
+          : error;
+      });
+    const raced = await Promise.race([task, sleep(this.syncWindowMs).then(() => TIMED)]);
+    if (raced === TIMED) {
+      task.catch(() => undefined); // 后台分支的拒绝已被 catch 内落库，这里只抑制 unhandled
+      return {
+        idempotencyKey: input.idempotencyKey,
+        status: "processing",
+        replayed,
+        user: null,
+        workspace: null,
+        entitlement: null,
+        aiAllowance: null,
+        delivery: {
+          channel: "none",
+          activationUrl: null,
+          pendingCollect: false,
+          note: "开通仍在进行：轮询 GET /api/ops/invitations/:key；完成后经 collect-delivery 一次性收取激活链接",
+        },
+      };
     }
+    // 同步窗内完成且携带激活链接：标记为已收取，collect-delivery 不再重复下发。
+    if (raced.delivery.activationUrl) {
+      await this.deps.store.collectActivationUrl(recordId).catch(() => undefined);
+    }
+    return replayed ? { ...raced, replayed: true } : raced;
   }
 
   private async execute(
@@ -170,6 +263,15 @@ export class InviteService {
       displayName: input.displayName,
     });
     const user = ensured.user;
+    // 一次性激活链接：拿到就先落行——此后任务被断连/超时打断，续跑或
+    // collect-delivery 仍能救回（否则链接随请求死亡永久丢失）。
+    let activationUrl = ensured.activationUrl;
+    if (activationUrl) {
+      await this.deps.store.saveActivationUrl(recordId, activationUrl).catch(() => undefined);
+    } else {
+      // 续跑/复用：IdP 不重复签发，读回上环已签发暂存的链接。
+      activationUrl = await this.deps.store.storedActivationUrl(recordId).catch(() => null);
+    }
 
     // 2) workspace bootstrap：manual 商业套餐分配（非售假——不产生付费事实），
     //    subjectToken 缺省 → 跳过 scope 换发，用户激活后自行登录进入。
@@ -251,8 +353,8 @@ export class InviteService {
         expiresAt: new Date(expiresAtMs).toISOString(),
         bucket: bucketId,
       },
-      deliveryChannel: ensured.activationUrl ? "activation_url" : "none",
-      activationUrlIssued: ensured.activationUrl !== null,
+      deliveryChannel: activationUrl ? "activation_url" : "none",
+      activationUrlIssued: activationUrl !== null,
     };
     await this.deps.store.complete(recordId, outcome);
 
@@ -269,10 +371,11 @@ export class InviteService {
       },
       aiAllowance: outcome.aiAllowance,
       delivery: {
-        channel: ensured.activationUrl ? "activation_url" : "none",
-        activationUrl: ensured.activationUrl,
-        note: ensured.created
-          ? "IdP 未配置邀请邮件通道，请将 activation_url 经老板/邀请人转交用户激活"
+        channel: activationUrl ? "activation_url" : "none",
+        activationUrl,
+        pendingCollect: false,
+        note: activationUrl
+          ? "激活链接已随本响应一次性下发（转交用户激活；不再次返回）"
           : "用户已存在（幂等复用），不重复签发激活链接",
       },
     };
@@ -281,5 +384,23 @@ export class InviteService {
   async get(idempotencyKey: string): Promise<InviteResult | null> {
     const row = await this.deps.store.byKey(idempotencyKey);
     return row ? replayResult(row) : null;
+  }
+
+  /**
+   * 一次性收取激活链接：仅 completed 且尚未收取才返回 URL，随即从行中清除。
+   * processing → 返回空供继续轮询；failed → 附错误信息；重复收取 → 空 URL。
+   */
+  async collect(idempotencyKey: string): Promise<InviteCollect | null> {
+    const row = await this.deps.store.byKey(idempotencyKey);
+    if (!row) return null;
+    const res = await this.deps.store.collectActivationUrl(row.id);
+    return {
+      idempotencyKey,
+      status: row.status,
+      activationUrl: res.activationUrl,
+      deliveredAt: res.deliveredAt,
+      errorCode: row.errorCode,
+      errorMessage: row.errorMessage,
+    };
   }
 }
