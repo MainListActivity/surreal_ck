@@ -34,8 +34,9 @@ function fakeDb() {
         return [[]];
       }
       if (sql.includes("SELECT")) {
-        const row = rows.get(String(params.id));
-        return [[row].filter(Boolean)];
+        // 真实 surrealdb SDK：SELECT ... FROM ONLY $id 的语句结果是裸对象
+        // （不存在时为 null），不是包了一层数组的 [[row]]。
+        return [rows.get(String(params.id)) ?? null];
       }
       return [[]];
     },
