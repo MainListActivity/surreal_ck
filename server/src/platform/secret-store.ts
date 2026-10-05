@@ -16,8 +16,9 @@ export class PlatformSecretError extends Error {
   constructor(
     readonly code: string,
     message: string,
+    options?: ErrorOptions,
   ) {
-    super(message);
+    super(message, options);
     this.name = "PlatformSecretError";
   }
 }
@@ -139,25 +140,34 @@ export class PlatformSecretStore {
   }): Promise<PlatformSecretMeta> {
     const db = await this.session(this.database);
     const envelope = this.seal(name, plaintext);
-    await db.query(
-      `UPSERT ONLY $id SET
-        name = $name, envelope = $envelope, purpose = $purpose,
-        updated_by = $actor, updated_at = time::now();
-      CREATE platform_secret_event CONTENT {
-        secret_name: $name, action: $action, actor_subject: $actor,
-        source: $source, detail: $detail, occurred_at: time::now()
-      };`,
-      {
-        id: new StringRecordId(`platform_secret:${name}`),
-        name,
-        envelope,
-        purpose: input.purpose ?? null,
-        actor: input.actor,
-        action: input.action ?? "rotate",
-        source: input.source ?? "ops_api",
-        detail: input.detail ?? null,
-      },
-    );
+    try {
+      await db.query(
+        `UPSERT ONLY $id SET
+          name = $name, envelope = $envelope, purpose = $purpose,
+          updated_by = $actor, updated_at = time::now();
+        CREATE platform_secret_event CONTENT {
+          secret_name: $name, action: $action, actor_subject: $actor,
+          source: $source, detail: $detail, occurred_at: time::now()
+        };`,
+        {
+          id: new StringRecordId(`platform_secret:${name}`),
+          name,
+          envelope,
+          purpose: input.purpose ?? null,
+          actor: input.actor,
+          action: input.action ?? "rotate",
+          source: input.source ?? "ops_api",
+          detail: input.detail ?? null,
+        },
+      );
+    } catch (error) {
+      const cause = error instanceof Error ? error.message : String(error);
+      throw new PlatformSecretError(
+        "secret-write-failed",
+        `密封密钥 ${name} 写入失败：${cause}`,
+        { cause: error },
+      );
+    }
     const persisted = await this.get(name);
     if (!persisted || persisted.value !== plaintext) {
       throw new PlatformSecretError("secret-write-verify-failed", `密封密钥 ${name} 写后校验失败`);
