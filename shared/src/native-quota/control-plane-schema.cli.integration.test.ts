@@ -177,7 +177,7 @@ describe("_system native quota schema against local SurrealDB", () => {
     "upgrades existing data, enforces authority invariants, denies database users, and reruns safely",
     async () => {
       const migrations = await readMigrations();
-      expect(migrations).toHaveLength(16);
+      expect(migrations).toHaveLength(31);
 
       for (const sql of migrations.slice(0, 3)) {
         expectSuccessful(await runSurrealCli(sql));
@@ -535,6 +535,59 @@ describe("_system native quota schema against local SurrealDB", () => {
       expect(restartSnapshot).toContain('"workspaces":1');
       expect(restartSnapshot).toContain('"plans":1');
       expect(restartSnapshot).toContain('"attempts":1');
+    },
+    60_000,
+  );
+});
+
+describe("_system platform_secret sealed store against local SurrealDB", () => {
+  localSurrealTest(
+    "rotation write persists secret row and flexible audit detail (prod 030 schema regression)",
+    async () => {
+      for (const sql of await readMigrations()) {
+        expectSuccessful(await runSurrealCli(sql));
+      }
+      // PlatformSecretStore.put() 的写入形状：UPSERT 密文行 + CREATE 审计事件，
+      // detail 为开放元数据对象（031 前 SCHEMAFULL 严格 object 会拒绝
+      // detail.verifiedAgainst，导致生产 rotate 端点 500）。
+      expectSuccessful(await runSurrealCli(`
+        UPSERT ONLY platform_secret:idp_provision_token SET
+          name = "idp_provision_token",
+          envelope = "envelope-json",
+          purpose = "idp provision token",
+          updated_by = "ops:test",
+          updated_at = time::now();
+        CREATE platform_secret_event CONTENT {
+          secret_name: "idp_provision_token",
+          action: "rotate",
+          actor_subject: "ops:test",
+          source: "ops_api",
+          detail: { verifiedAgainst: "GET /admin/tenants" },
+          occurred_at: time::now()
+        };
+      `));
+      const secretRow = await runSurrealCli(
+        "SELECT name, envelope, updated_by FROM ONLY platform_secret:idp_provision_token;",
+      );
+      expect(secretRow).toContain('"name":"idp_provision_token"');
+      expect(secretRow).toContain('"updated_by":"ops:test"');
+      const eventRow = await runSurrealCli(
+        "SELECT secret_name, action, actor_subject, detail FROM platform_secret_event;",
+      );
+      expect(eventRow).toContain('"action":"rotate"');
+      expect(eventRow).toContain('"actor_subject":"ops:test"');
+      expect(eventRow).toContain('"verifiedAgainst":"GET /admin/tenants"');
+      // action 断言白名单仍然生效（FLEXIBLE 只放开 detail 子字段）。
+      const badAction = await runSurrealCli(`
+        CREATE platform_secret_event CONTENT {
+          secret_name: "idp_provision_token",
+          action: "steal",
+          actor_subject: "ops:test",
+          source: "ops_api",
+          occurred_at: time::now()
+        };
+      `);
+      expect(badAction).toMatch(/Found 'steal'/iu);
     },
     60_000,
   );

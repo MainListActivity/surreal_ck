@@ -123,6 +123,20 @@ describe("PlatformSecretStore 密封仓", () => {
     expect(f.events).toHaveLength(2);
   });
 
+  test("数据库写入失败 → secret-write-failed（保留底层错误为 cause）", async () => {
+    const f = fakeDb();
+    const failing = {
+      async query() {
+        throw new Error("Found field 'detail.verifiedAgainst', but no such field exists");
+      },
+    };
+    const s = store(failing);
+    const err = await s.put("idp_provision_token", "tok-x", { actor: "a" }).catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: "secret-write-failed" });
+    expect((err as Error).cause).toBeInstanceOf(Error);
+    expect(f.queries).toHaveLength(0);
+  });
+
   test("非法密钥格式 → 构造即抛错", () => {
     expect(() => new PlatformSecretStore("not-hex")).toThrow("PLATFORM_SECRET_KEY");
   });
