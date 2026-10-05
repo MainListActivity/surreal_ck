@@ -39,16 +39,29 @@ Bearer = provision token，scopes 仅：
 
 不调用 `/admin/login`、tenant CRUD、key rotate、clients、service-principals 签发/吊销。
 
-## 签发（经 ops broker，员工无合规问题时首选通道）
+## 签发（两条自动通道 + 一条手工通道）
 
-`sck call ops_idp_principal_mint` / `ops_idp_principal_revoke`，scopes 固定为
-`tenant.read`、`user.read`、`user.provision`；mint 只回显一次 token。
-历史替代路径（人类 admin console 会话）仅保留为应急手段，密码不进 secrets。
+1. **管线 bootstrap（首次/全新环境）**：ma_hono `deploy.yml` 在迁移后跑
+   `scripts/bootstrap-sck-provisioner.sh`——无 active principal 时以部署通道为
+   信任根 mint `sck-provisioner`（D1 只存 sha256），token 经 stdin 注入
+   `ORIGIN_ENV_IDP_PROVISION_TOKEN`；已有 active 则跳过。该 secret 是本产品的
+   env 兜底源，密封行建立后自动失效。
+2. **ops broker 一键轮换（日常轮换，含首次密封建仓）**：见下节。
+3. **手工 mint（排障/合规绕行）**：`sck call ops_idp_principal_mint` /
+   `ops_idp_principal_revoke` / `ops_idp_principal_list`，scopes 固定
+   `tenant.read`、`user.read`、`user.provision`；mint 只回显一次 token。
+   历史替代路径（人类 admin console 会话）仅保留为应急手段，密码不进 secrets。
 
 ## 轮换（免部署，常规路径）
 
-全程不碰 GitHub secrets、不重部署、不登任何 console。前提：`PLATFORM_SECRET_KEY`
-已在生产配置且 030 迁移已应用（`platform_secret` / `platform_secret_event` 表存在）。
+首选一条命令：`sck call ops_idp_provision_rotate`（ops broker 组合工具）。
+它自动完成「吊销旧 principal → mint 新 principal（token 密封在 broker）→
+经运营会话调本产品 rotate 端点注入密封仓 → status + 新旧 token IdP 双探针」，
+明文不出 broker 进程；多个 active principal 时必须显式传 `revokePrincipalId`
+（用 `ops_idp_principal_list` 选定）。注入失败会补偿吊销新 principal。
+
+分解动作（排障或 broker 不可用时手工执行）前提：`PLATFORM_SECRET_KEY`
+已在生产配置且 030/031 迁移已应用（`platform_secret` / `platform_secret_event` 表存在）。
 
 1. 经 ops broker mint 新 principal，取一次性 token（终端不回显）。
 2. 以持 `subscription.manage` 的运营身份调用：
@@ -90,9 +103,11 @@ Bearer = provision token，scopes 仅：
 不含明文）、解封错误（`unsealError`）与 IdP 只读探测结果（`reachable`/HTTP 状态）。
 轮换归因查 `_system.platform_secret_event`：`actor_subject`、`action`、`occurred_at`。
 
-## Bootstrap / 应急（仅此场景允许走 GitHub secret + 部署）
+## Bootstrap / 应急
 
-下列三种情况才使用本小节，且必须事后记录原因：首次启用 provision token、
+**常规 bootstrap 已由 ma_hono 部署管线自动完成**（见「签发」第 1 条），无需
+人工签发。下列三种情况才使用本小节的手工路径，且必须事后记录原因：
+管线 bootstrap 未生效（如 `SCK_REPO_TOKEN` 未配置）、
 `PLATFORM_SECRET_KEY` 尚未配置、或密封仓不可用需要临时回退 env。
 
 1. 经 ops broker mint principal，取一次性 token。
