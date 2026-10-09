@@ -1,5 +1,5 @@
+import { buildAgentModel } from "../../../src/internal-ai/model";
 import { Agent } from "@mastra/core/agent";
-import { ModelRouterLanguageModel } from "@mastra/core/llm";
 import type { Surreal } from "surrealdb";
 import type { AiContextSnapshot } from "@surreal-ck/shared";
 import type { ResourceCitationDTO } from "@surreal-ck/shared";
@@ -17,7 +17,7 @@ import type {
 import type { SearchContentItem, SearchContentResponse } from "@surreal-ck/shared/platform-content";
 import type { SubAgentExecutor, SubAgentOutput } from "../workflows/router-workflow";
 import { RESOURCE_TOOLS } from "../tools/resource-tools";
-import { buildModelConfig, type AiSettings } from "./model-config";
+import { type AiSettings } from "./model-config";
 
 export { RESOURCE_TOOLS } from "../tools/resource-tools";
 
@@ -36,7 +36,7 @@ export function createResourceAgent(settings: AiSettings): Agent {
     name: "Resource Agent",
     id: RESOURCE_AGENT_ID,
     instructions: RESOURCE_INSTRUCTIONS,
-    model: new ModelRouterLanguageModel(buildModelConfig(settings)),
+    model: buildAgentModel(settings, "resource-agent"),
     tools: RESOURCE_TOOLS,
   });
 }

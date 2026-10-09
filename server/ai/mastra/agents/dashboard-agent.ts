@@ -1,7 +1,7 @@
+import { buildAgentModel } from "../../../src/internal-ai/model";
 import { Agent } from "@mastra/core/agent";
-import { ModelRouterLanguageModel } from "@mastra/core/llm";
 import { DASHBOARD_TOOLS } from "../tools/dashboard-tools";
-import { buildModelConfig, type AiSettings } from "./model-config";
+import { type AiSettings } from "./model-config";
 
 export { DASHBOARD_TOOLS } from "../tools/dashboard-tools";
 
@@ -20,7 +20,7 @@ export function createDashboardAgent(settings: AiSettings): Agent {
     name: "Dashboard Agent",
     id: DASHBOARD_AGENT_ID,
     instructions: DASHBOARD_INSTRUCTIONS,
-    model: new ModelRouterLanguageModel(buildModelConfig(settings)),
+    model: buildAgentModel(settings, "dashboard-agent"),
     tools: DASHBOARD_TOOLS,
   });
 }

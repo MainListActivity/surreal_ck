@@ -1,3 +1,4 @@
+import { internalScope } from "../../../src/internal-ai/context";
 import type { Agent } from "@mastra/core/agent";
 import { RequestContext } from "@mastra/core/request-context";
 import { z } from "zod";
@@ -58,6 +59,7 @@ export function makeAgentExecutor(agent: Agent, options: AgentExecutorOptions = 
       [{ role: "user", content: prompt }],
       {
         requestContext,
+        ...(internalScope() ? { modelSettings: { maxRetries: 0 } } : {}),
         maxSteps: options.maxSteps ?? 4,
         onStepFinish: ({ toolCalls, toolResults }) => {
           if (!toolResults?.length) return;

@@ -1,3 +1,4 @@
+import { forbidUnmeteredPath } from "../internal-ai/context";
 /**
  * 生产 embedding 生成器：openai-compatible /embeddings 调用。
  *
@@ -30,6 +31,7 @@ export function createOpenAiCompatibleEmbeddingProvider(
 
   return {
     async embed({ text, profile }: { text: string; profile: EmbeddingProfile }): Promise<number[]> {
+      forbidUnmeteredPath();
       if (profile.api_format && profile.api_format !== "openai-compatible") {
         throw new Error(`embedding api_format ${profile.api_format} 尚未支持（V1 仅 openai-compatible）`);
       }

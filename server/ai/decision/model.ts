@@ -71,6 +71,7 @@ export type DecisionUsage = {
 };
 
 export type DecisionResult = {
+  requestId?: string;
   /** 实际回答的版本化模型 id（响应原样上报，供阈值调参与日志）。 */
   model: string;
   answers: Record<string, DecisionAnswer>;
@@ -187,6 +188,7 @@ export function createTypeSafeDecisionModel(options: TypeSafeDecisionModelOption
     }
 
     return {
+      requestId: response.headers.get("x-request-id") ?? undefined,
       model: parsed.data.model,
       answers: parsed.data.answers,
       usage: {

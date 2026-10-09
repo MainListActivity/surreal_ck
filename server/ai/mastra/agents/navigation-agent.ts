@@ -1,7 +1,7 @@
+import { buildAgentModel } from "../../../src/internal-ai/model";
 import { Agent } from "@mastra/core/agent";
-import { ModelRouterLanguageModel } from "@mastra/core/llm";
 import { navigateTool, searchWorkbookTool, searchDashboardTool, searchRecordTool } from "../tools/navigation-tools";
-import { buildModelConfig, type AiSettings } from "./model-config";
+import { type AiSettings } from "./model-config";
 
 const NAVIGATION_AGENT_ID = "navigationAgent";
 
@@ -28,7 +28,7 @@ export function createNavigationAgent(settings: AiSettings): Agent {
     name: "Navigation Agent",
     id: NAVIGATION_AGENT_ID,
     instructions: NAVIGATION_AGENT_INSTRUCTIONS,
-    model: new ModelRouterLanguageModel(buildModelConfig(settings)),
+    model: buildAgentModel(settings, "navigation-agent"),
     tools: NAVIGATION_TOOLS,
   });
 }

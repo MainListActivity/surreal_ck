@@ -1,3 +1,4 @@
+import { buildAgentModel } from "../../../src/internal-ai/model";
 import { createHash } from "node:crypto";
 /**
  * LCA06 授权内容研究 agent：联合平台授权语料与工作区私有材料生成可核验回答。
@@ -12,12 +13,11 @@ import { createHash } from "node:crypto";
  *   平台证据不进入 workflow state（LCA07 之前不沿用旧快照恢复）。
  */
 import { Agent } from "@mastra/core/agent";
-import { ModelRouterLanguageModel } from "@mastra/core/llm";
 import type { Surreal } from "surrealdb";
 import type { AiContextSnapshot, ResearchAuthorization } from "@surreal-ck/shared";
 import type { SearchResourcesRequest, SearchResourcesResponse, ResourceDTO } from "@surreal-ck/shared/dto";
 import type { SubAgentExecutor, SubAgentOutput } from "../workflows/router-workflow";
-import { buildModelConfig, type AiSettings } from "./model-config";
+import { type AiSettings } from "./model-config";
 import type { ContentResearchWindow } from "../../../src/research/window";
 import type { EmbeddingProvider } from "../../../src/resources/research-save";
 import {
@@ -45,7 +45,7 @@ export function createResearchAgent(settings: AiSettings): Agent {
     name: "Research Agent",
     id: RESEARCH_AGENT_ID,
     instructions: RESEARCH_INSTRUCTIONS,
-    model: new ModelRouterLanguageModel(buildModelConfig(settings)),
+    model: buildAgentModel(settings, "research-agent"),
   });
 }
 

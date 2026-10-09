@@ -1,4 +1,6 @@
+import type { InternalAiGate } from "../../../src/internal-ai/gate";
 export type AiSettings = {
+  internalAiGate?: InternalAiGate;
   provider: string;
   model: string;
   apiKey?: string;

@@ -1,6 +1,6 @@
+import { buildAgentModel } from "../../../src/internal-ai/model";
 import { Agent } from "@mastra/core/agent";
-import { ModelRouterLanguageModel } from "@mastra/core/llm";
-import { buildModelConfig, type AiSettings } from "./model-config";
+import { type AiSettings } from "./model-config";
 
 export const CHITCHAT_AGENT_ID = "chitchatAgent";
 
@@ -16,7 +16,7 @@ export function createChitchatAgent(settings: AiSettings): Agent {
     name: "Chitchat Agent",
     id: CHITCHAT_AGENT_ID,
     instructions: CHITCHAT_INSTRUCTIONS,
-    model: new ModelRouterLanguageModel(buildModelConfig(settings)),
+    model: buildAgentModel(settings, "chitchat-agent"),
     tools: CHITCHAT_TOOLS,
   });
 }
