@@ -9,6 +9,11 @@ export function meteredDecision(caller: DecisionCaller, gate: InternalAiGate, co
       const result = await caller(input);
       await gate.finish(ticket, normalizeUsage(result.usage), result.model, result.requestId ?? null, false);
       return result;
-    } catch (error) { await gate.finish(ticket, null, null, null, true); throw error; }
+    } catch (error) {
+      await gate.finish(ticket, null, null, null, true);
+      // 内部fallback日志不能携带供应商错误正文（可能回显输入）。
+      if (ticket) throw new Error("internal-ai-decision-provider-failed");
+      throw error;
+    }
   };
 }
