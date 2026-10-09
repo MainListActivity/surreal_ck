@@ -10,12 +10,20 @@ export type Activity = { goal: string; enabled: boolean; total_limit: number; pe
 export type Attempt = { id: RecordId; sequence: number; retry_index: number; state: string; reserved: number; cost: number | null; run_hash: string; key_hash: string; logical_hash: string; stage: string; provider: string; model: string; actual_model: string | null; request_id: string | null; usage: Usage | null; usage_source: string; price_revision: string; currency: string; started_at: unknown; ended_at: unknown };
 export class InternalAiStore {
   constructor(private readonly db: () => Promise<Queryable>) {}
-  async binding(subject: string, database: string): Promise<string | undefined> {
-    const found = rows<{ activity: string }>(await (await this.db()).query("SELECT activity FROM internal_ai_binding WHERE identity_hash = $identity LIMIT 1", { identity: hash(subject, database) }));
-    return found[0]?.activity;
+  async binding(subject: string, database: string): Promise<{ activity: string; revoked: boolean } | undefined> {
+    const found = rows<{ activity: string; revoked: boolean }>(await (await this.db()).query("SELECT activity, revoked FROM internal_ai_binding WHERE identity_hash = $identity LIMIT 1", { identity: hash(subject, database) }));
+    return found[0]?.activity === undefined ? undefined : { activity: found[0].activity, revoked: found[0].revoked === true };
+  }
+  /** 撤销是持久标记不是删除：被撤销身份的新旧run/key全部拒绝。 */
+  async revoke(subject: string, database: string): Promise<void> {
+    await (await this.db()).query("UPDATE internal_ai_binding SET revoked = true WHERE identity_hash = $identity", { identity: hash(subject, database) });
   }
   async runActivity(subject: string, database: string, runId: string): Promise<string | undefined> {
     return rows<{ activity: string }>(await (await this.db()).query("SELECT activity FROM ONLY $run", { run: new RecordId("internal_ai_run", hash(subject, database, runId)) }))[0]?.activity;
+  }
+  /** 曾参与内部活动的身份历史：binding 被删除后仍可核验，防止换run/key绕过。 */
+  async identityActivity(subject: string, database: string): Promise<string | undefined> {
+    return rows<{ activity: string }>(await (await this.db()).query("SELECT activity FROM internal_ai_run WHERE identity_hash = $identity LIMIT 1", { identity: hash(subject, database) }))[0]?.activity;
   }
   async scope(activity: string, subject: string, database: string, runId: string, key?: string): Promise<InternalScope> {
     const runHash = hash(subject, database, runId);

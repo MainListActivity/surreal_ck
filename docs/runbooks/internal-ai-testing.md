@@ -6,6 +6,8 @@
 
 `InternalAiGate.bind(subject, database, runId, key?)` 使用服务端已认证身份；客户端 body 中的 activity/budget/disable 等字段没有入口。身份授权与活动配置在 `_system.internal_ai_binding`，仅 root 控制面维护。业务 SurrealDB 查询仍使用原调用者会话；本模块 root 只操作匿名内部预算控制面。
 
+**撤销语义**：撤销是持久状态，不是删除。控制面用 `UPDATE internal_ai_binding SET revoked = true`（store.revoke）撤销身份；被撤销身份的旧 run、新 run、换 key 一律 `internal-ai-binding-revoked` 拒绝，重启后仍拒绝，不降级为非计量客户路径。即使 binding 行被直接删除，任何曾计量过的身份仍凭 `internal_ai_run` 的身份历史核验拒绝（该表只增不删）；仅删除 binding 且从未产生过任何计量 run 的身份不受账本保护，因此禁止用 DELETE 作为撤销手段。从未参与内部活动的客户身份维持原行为（非计量直传）。
+
 `inRun` 把绑定放入 AsyncLocalStorage，后台工作流、分类、工具往返、研究回答与暂停续跑共用它。`internal_ai_run` 固定 run/key/logical 关联；续跑必须找到既有记录，不能用新 key 改归属。所有关联用目标域分隔的SHA256，不记录 subject/database 原文。客户更换 run/key 不增加预算；即使不同内部活动，`internal_ai_target:2e2a6e41c1193595` 同一事务汇总现金和次数。内部身份绑定须由经过评审的服务器配置登记，不能由客户创建或切换。
 
 固定模型证书只覆盖直连、固定版本的文本/function调用：OpenAI `gpt-4o-mini-2024-07-18` 和 TypeSafe `jev-1.13.0`。这不是要求或允许切换生产模型；生产现有模型若不符合证书，内部活动拒绝发送。OpenAI-compatible 协议、其它模型、浮动 alias、非USD、无法认证的endpoint或价格一律不可放行。模型路由若缺显式 baseUrl，也拒绝内部调用，避免把推断的host当作实际传输地址。

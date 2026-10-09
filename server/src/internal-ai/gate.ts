@@ -7,14 +7,15 @@ export type AttemptTicket = { id: RecordId; tariff: Tariff };
 export class InternalAiGate {
   constructor(readonly store: InternalAiStore) {}
   async bind(subject: string, database: string, run: string, key?: string): Promise<InternalScope | undefined> {
-    const activity = await this.store.binding(subject, database);
-    // 恢复必须保留旧run活动绑定，撤销账号binding后也不能变成非计量run。
-    if (!activity) {
-      const previous = await this.store.runActivity(subject, database, run);
+    const bound = await this.store.binding(subject, database);
+    // 撤销身份保持拒绝：标记撤销或曾有内部run（含binding被删）的新旧run/key一律拒绝，不降级非计量run。
+    if (bound?.revoked) throw new Error("internal-ai-binding-revoked");
+    if (!bound) {
+      const previous = await this.store.runActivity(subject, database, run) ?? await this.store.identityActivity(subject, database);
       if (previous) throw new Error("internal-ai-binding-revoked");
       return undefined;
     }
-    return this.store.scope(activity, subject, database, run, key);
+    return this.store.scope(bound.activity, subject, database, run, key);
   }
   inRun<T>(scope: InternalScope | undefined, work: () => T): T { return scope ? inInternalScope(scope, work) : work(); }
   async begin(stage: string, provider: string, model: string, endpoint: string): Promise<AttemptTicket | undefined> {

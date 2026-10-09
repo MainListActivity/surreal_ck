@@ -21,6 +21,8 @@ DEFINE FIELD IF NOT EXISTS service_approved ON internal_ai_activity TYPE bool DE
 DEFINE TABLE IF NOT EXISTS internal_ai_binding SCHEMAFULL PERMISSIONS NONE;
 DEFINE FIELD IF NOT EXISTS identity_hash ON internal_ai_binding TYPE string;
 DEFINE FIELD IF NOT EXISTS activity ON internal_ai_binding TYPE string;
+-- 撤销是持久状态不是删除：撤销后同一身份新旧run/key一律拒绝，不降级客户路径。
+DEFINE FIELD IF NOT EXISTS revoked ON internal_ai_binding TYPE bool DEFAULT false;
 DEFINE INDEX IF NOT EXISTS internal_ai_identity ON internal_ai_binding COLUMNS identity_hash UNIQUE;
 DEFINE TABLE IF NOT EXISTS internal_ai_run SCHEMAFULL PERMISSIONS NONE;
 DEFINE FIELD IF NOT EXISTS activity ON internal_ai_run TYPE string READONLY;
@@ -28,6 +30,8 @@ DEFINE FIELD IF NOT EXISTS identity_hash ON internal_ai_run TYPE string READONLY
 DEFINE FIELD IF NOT EXISTS run_hash ON internal_ai_run TYPE string READONLY;
 DEFINE FIELD IF NOT EXISTS key_hash ON internal_ai_run TYPE string READONLY;
 DEFINE FIELD IF NOT EXISTS logical_hash ON internal_ai_run TYPE string READONLY;
+-- 身份历史核验：binding 被删除后仍能证明该身份曾参与内部活动。
+DEFINE INDEX IF NOT EXISTS internal_ai_run_identity ON internal_ai_run COLUMNS identity_hash;
 DEFINE TABLE IF NOT EXISTS internal_ai_attempt SCHEMAFULL PERMISSIONS NONE;
 DEFINE FIELD IF NOT EXISTS activity ON internal_ai_attempt TYPE record<internal_ai_activity>;
 DEFINE FIELD IF NOT EXISTS retry_index ON internal_ai_attempt TYPE int ASSERT $value = 0;

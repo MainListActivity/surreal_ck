@@ -136,6 +136,48 @@ localTest("server identity binding ignores run/key resets and resume uses persis
   expect(await gate.bind("subject", "ws_one", "run1")).toEqual(a);
 });
 
+localTest("revoked identity denies old and new run/key across restart; deleted binding denied by identity history; customer passthrough intact", async () => {
+  let sends = 0;
+  const mock = spyOn(ModelRouterLanguageModel.prototype, "doStream").mockImplementation(async () => { sends++; return { stream: new ReadableStream({ start(c) { c.close(); } }) }; });
+  try {
+    const model = new InternalBudgetModel({ provider: "openai", model: "gpt-4o-mini-2024-07-18", baseUrl: "https://api.openai.com/v1", apiKey: "synthetic-only", internalAiGate: gate }, "revocation-probe", gate);
+    const PROBE = { prompt: [{ role: "user" as const, content: [{ type: "text" as const, text: "synthetic-only" }] }] };
+    const chatAttempt = async (subject: string, ws: string, run: string, key?: string) => {
+      const scope = await gate.bind(subject, ws, run, key);
+      return gate.inRun(scope, async () => { await model.doStream(PROBE); return scope ? "metered" : "passthrough"; });
+    };
+    // 标记撤销：binding 持久 revoked 状态，撤销前已计量一次。
+    await activity("revocation");
+    await db.insert(new Table("internal_ai_binding"), { identity_hash: hash("revoked-subject", "ws_rev"), activity: "revocation" });
+    expect(await chatAttempt("revoked-subject", "ws_rev", "first-run", "first-key")).toBe("metered");
+    expect(sends).toBe(1);
+    await store.revoke("revoked-subject", "ws_rev");
+    for (const [run, key] of [["first-run", "first-key"], ["first-run", "swapped-key"], ["escape-run", "escape-key"], ["escape-run", undefined]] as const) {
+      await expect(chatAttempt("revoked-subject", "ws_rev", run, key)).rejects.toThrow("binding-revoked");
+    }
+    expect(sends).toBe(1);
+    await stop(); await start();
+    await expect(chatAttempt("revoked-subject", "ws_rev", "post-restart-run", "post-restart-key")).rejects.toThrow("binding-revoked");
+    expect(sends).toBe(1);
+    expect((await store.activity("revocation"))?.attempts).toBe(1);
+    // 删除式撤权：binding 被删后凭身份历史核验拒绝，换 run/key 不绕过。
+    await activity("revoked-delete");
+    await db.insert(new Table("internal_ai_binding"), { identity_hash: hash("deleted-subject", "ws_del"), activity: "revoked-delete" });
+    expect(await chatAttempt("deleted-subject", "ws_del", "metered-run", "metered-key")).toBe("metered");
+    expect(sends).toBe(2);
+    await db.query("DELETE internal_ai_binding WHERE identity_hash = $identity", { identity: hash("deleted-subject", "ws_del") });
+    await expect(chatAttempt("deleted-subject", "ws_del", "metered-run")).rejects.toThrow("binding-revoked");
+    await expect(chatAttempt("deleted-subject", "ws_del", "escape-run", "escape-key")).rejects.toThrow("binding-revoked");
+    expect(sends).toBe(2);
+    expect((await store.activity("revoked-delete"))?.attempts).toBe(1);
+    // 从未参与内部活动的客户维持原行为：passthrough 传输，无内部账本。
+    await activity("bystander");
+    expect(await chatAttempt("fresh-customer", "ws_fresh", "customer-run", "customer-key")).toBe("passthrough");
+    expect(sends).toBe(3);
+    expect((await store.activity("bystander"))?.attempts).toBe(0);
+  } finally { mock.mockRestore(); }
+}, 20000);
+
 localTest("each provider model step reserves before transport, captures finish usage only, rejects unmetered embedding", async () => {
   const scope = await activity("model-steps");
   let sends = 0;
