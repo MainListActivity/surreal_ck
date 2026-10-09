@@ -124,7 +124,13 @@ jobs:
           echo "env keys: $(cut -d= -f1 env.additions | tr '\n' ' ')"
           scp -q env.additions "origin:$env_additions"
           rm -f env.additions
-          git -C release archive --format=tar.gz -o "$PWD/release.tar.gz" "$RELEASE_SHA"
+          # Non-secret, release-local metadata rolls back with the artifact, never server.env.
+          mkdir -p runtime-metadata/server
+          jq -n --arg sha "$RELEASE_SHA" --arg deploymentId "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            '{sha: $sha, deploymentId: $deploymentId}' > runtime-metadata/server/runtime-release.json
+          git -C release archive --format=tar -o "$PWD/release.tar" "$RELEASE_SHA"
+          tar -rf release.tar -C runtime-metadata server/runtime-release.json
+          gzip release.tar
           scp -q release.tar.gz "origin:$archive"
           scp -q scripts/deploy/origin-release.sh "origin:/tmp/origin-release-${release_id}.sh"
           ssh origin "bash /tmp/origin-release-${release_id}.sh '$release_id' '$archive' '$env_additions'; status=\$?; rm -f /tmp/origin-release-${release_id}.sh '$env_additions'; exit \$status"
