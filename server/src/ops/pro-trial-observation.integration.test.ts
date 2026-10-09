@@ -72,10 +72,10 @@ localTest("real configuration and account read twice without changing any contro
     expect(account).toMatchObject({ active: true, administrator: true, eligible: true });
     expect(account.trials.map(t => t.id).sort()).toEqual(["quota_subscription:live", "quota_subscription:live2"]);
     expect(account.claims).toHaveLength(2);
-    expect(account.claims.find(c => c.id === "pro_trial_claim:live")).toMatchObject({ blocksNewClaim: true, leaseHeld: true, revision: "pro_trial_revision:test" });
+    expect(account.claims.find(c => c.id === "pro_trial_claim:live")).toMatchObject({ unexpired: true, leaseHeld: true, revision: "pro_trial_revision:test" });
     const expired = await observation.account("b", "owner");
     expect(expired.slots).toHaveLength(1);
-    expect(expired.claims[0]).toMatchObject({ blocksNewClaim: false, leaseHeld: false, revision: null });
+    expect(expired.claims[0]).toMatchObject({ unexpired: false, leaseHeld: false, revision: null });
     const serialized = JSON.stringify([config, account, expired]);
     for (const secret of ["private-key", "private-lease", "Private", "approval_reason", "request_key"]) expect(serialized).not.toContain(secret);
   }
@@ -87,6 +87,7 @@ localTest("missing, disabled, inactive and non-admin are distinguishable; no cro
   await db.query(`CREATE billing_account_member CONTENT { billing_account: billing_account:a, subject: "admin", role: "admin", status: "active" };
     CREATE billing_account_member CONTENT { billing_account: billing_account:a, subject: "viewer", role: "viewer", status: "active" };
     CREATE pro_trial_slot:dangling CONTENT { billing_account: billing_account:missing, current_claim: pro_trial_claim:missing };`);
+  expect(await observation.account("missing", "owner")).toMatchObject({ accountState: "missing", slots: [], trials: [], claims: [] });
   expect(await observation.account("a", "admin")).toMatchObject({ administrator: true, membership: { role: "admin", status: "active" } });
   expect(await observation.account("a", "viewer")).toMatchObject({ administrator: false, membership: { role: "viewer", status: "active" } });
   await db.query('UPDATE billing_account_member SET status = "revoked" WHERE subject = "admin";');
@@ -109,5 +110,5 @@ localTest("exact trial/lease boundary is expired on the database clock", async (
     UPDATE quota_subscription SET trial_end = $now WHERE id IN [quota_subscription:live, quota_subscription:live2];`);
   const result = await observation.account("a", "owner");
   expect(result.trials).toHaveLength(0);
-  expect(result.claims.find(c => c.id === "pro_trial_claim:live")).toMatchObject({ blocksNewClaim: false, leaseHeld: false });
+  expect(result.claims.find(c => c.id === "pro_trial_claim:live")).toMatchObject({ unexpired: false, leaseHeld: false });
 });

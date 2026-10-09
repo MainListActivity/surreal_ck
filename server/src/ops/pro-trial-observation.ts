@@ -15,7 +15,7 @@ const configuration = z.object({
 const configurationSnapshot = z.object({ serverTime: z.string(), configuration: configuration.nullable(), revision: revision.nullable() });
 const claim = z.object({
   id: z.string(), state: z.string(), slug: z.string(), started_at: z.string(), ends_at: z.string(),
-  lease_until: nullableString, leaseHeld: z.boolean(), blocksNewClaim: z.boolean(),
+  lease_until: nullableString, leaseHeld: z.boolean(), unexpired: z.boolean(),
   revision: nullableString, productRevision: nullableString, resourceRevision: nullableString,
 });
 const accountSnapshot = z.object({
@@ -57,7 +57,7 @@ LET $slots = (
 );
 LET $claims = (
   SELECT id, state, slug, started_at, ends_at, lease_until ?? NULL AS lease_until,
-    (lease != NONE AND lease_until > $now) AS leaseHeld, (ends_at > $now) AS blocksNewClaim,
+    (lease != NONE AND lease_until > $now) AS leaseHeld, (ends_at > $now) AS unexpired,
     offer.revision ?? NULL AS revision, offer.productRevision ?? NULL AS productRevision,
     offer.resourceRevision ?? NULL AS resourceRevision
   FROM pro_trial_claim WHERE $account != NONE AND billing_account = $account.id
@@ -85,7 +85,7 @@ export class ProTrialObservation {
     const snapshot = accountSnapshot.parse(resultValue(await (await this.getDb()).query(READ_TRIAL_ACCOUNT_SQL, { accountKey, subject })));
     const slots = snapshot.slots.map(slot => {
       const current = snapshot.claims.find(c => c.id === slot.current_claim);
-      return { ...slot, claimState: current ? "present" : "missing", blocksNewClaim: current?.blocksNewClaim ?? null };
+      return { ...slot, claimState: current ? "present" : "missing", blocksNewClaim: current?.unexpired ?? null };
     });
     return { ...snapshot, slots, subject, accountState: snapshot.account ? "present" : "missing",
       active: snapshot.account ? snapshot.account.status === "active" : null,
