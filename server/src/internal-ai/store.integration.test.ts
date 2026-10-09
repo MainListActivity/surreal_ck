@@ -43,7 +43,7 @@ beforeAll(async () => {
   const port = await new Promise<number>((resolve, reject) => { const listener = createServer(); listener.on("error", reject); listener.listen(0, "127.0.0.1", () => { const addr = listener.address(); if (!addr || typeof addr === "string") { reject(new Error("port")); return; } listener.close(() => resolve(addr.port)); }); });
   endpoint = `ws://127.0.0.1:${port}`;
   await start();
-  await db.query(await readFile(new URL("../../../shared/sql/system/033-internal-ai-budget.surql", import.meta.url), "utf8"));
+  await db.query(await readFile(new URL("../../../shared/sql/system/034-internal-ai-budget.surql", import.meta.url), "utf8"));
 }, 20000);
 afterAll(async () => { if (!enabled) return; await stop(); await rm(directory, { recursive: true, force: true }); });
 localTest("multi-connection concurrent reservations serialize shared cash; uncertain failures retain money", async () => {
@@ -172,7 +172,7 @@ localTest("each provider model step reserves before transport, captures finish u
 });
 
 localTest("target cash and attempt limits are shared by separate activities and cannot reset with new run/key", async () => {
-  const schema = await readFile(new URL("../../../shared/sql/system/033-internal-ai-budget.surql", import.meta.url), "utf8");
+  const schema = await readFile(new URL("../../../shared/sql/system/034-internal-ai-budget.surql", import.meta.url), "utf8");
   await db.query("DEFINE DATABASE IF NOT EXISTS limits_cash;"); await db.use({ namespace: "budget_test", database: "limits_cash" }); await db.query(schema);
   const t = TARIFFS[1]!;
   const a = await activity("target-a"); const b = await activity("target-b");
