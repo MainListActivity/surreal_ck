@@ -1,3 +1,4 @@
+import { internalScope } from "../internal-ai/context";
 /**
  * 生产 Mastra 装配：把 5 agents、llmCaller、SubAgentExecutors、per-run Mastra
  * 串成 ChatRunner / ChatResumer，供 createAiChatService 注入。
@@ -50,14 +51,14 @@ import type { ContentResearchSessionFactory } from "../research/window";
 
 /**
  * 把一个已构造好的 Mastra Agent 适配成 RouterLlmCaller：
- *   prompt → agent.generate(prompt) → response.text
+ *   prompt → agent.generate(prompt, internalScope() ? { modelSettings: { maxRetries: 0 } } : undefined) → response.text
  *
  * classifier 内部已对返回文本做 JSON.parse + zod 校验，解析失败兜底 chitchat plan，
  * 所以这里只关心「把 prompt 喂进去、把 text 拿出来」，不解析、不重试。
  */
 export function buildRouterLlmCaller(agent: Agent): RouterLlmCaller {
   return async (prompt: string): Promise<string> => {
-    const response = await agent.generate(prompt);
+    const response = await agent.generate(prompt, internalScope() ? { modelSettings: { maxRetries: 0 } } : {});
     return response.text ?? "";
   };
 }

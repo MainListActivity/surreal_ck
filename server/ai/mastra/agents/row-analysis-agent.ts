@@ -1,11 +1,12 @@
+import { buildAgentModel } from "../../../src/internal-ai/model";
 import { Agent } from "@mastra/core/agent";
-import { ModelRouterLanguageModel, type MastraModelConfig } from "@mastra/core/llm";
+import type { MastraModelConfig } from "@mastra/core/llm";
 import type { AiContextSnapshot } from "@surreal-ck/shared";
 import { StringRecordId, type Surreal } from "surrealdb";
 import { ROW_ANALYSIS_TOOLS } from "../tools/row-analysis-tools";
 import { ROUTER_RUNTIME_KEY } from "../workflows/router-workflow";
 import { getExecutionContext } from "../execution-context";
-import { buildModelConfig, type AiSettings } from "./model-config";
+import { type AiSettings } from "./model-config";
 
 export const ROW_ANALYSIS_AGENT_ID = "rowAnalysisAgent";
 
@@ -111,7 +112,7 @@ export function createRowAnalysisAgent(settings: AiSettings, deps: RowAnalysisAg
       if (!surrealSession || !workbookId) return ROW_ANALYSIS_INSTRUCTIONS;
       return buildRowAnalysisInstructions(await loadAnalysis(surrealSession, workbookId));
     },
-    model: deps.model ?? new ModelRouterLanguageModel(buildModelConfig(settings)),
+    model: deps.model ?? buildAgentModel(settings, "row-analysis-agent"),
     tools: ROW_ANALYSIS_TOOLS,
   });
 }

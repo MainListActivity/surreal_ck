@@ -1,0 +1,144 @@
+import { ModelRouterLanguageModel } from "@mastra/core/llm";
+import { InternalBudgetModel } from "./model";
+import { createOpenAiCompatibleEmbeddingProvider } from "../resources/embedding-provider";
+import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir, homedir } from "node:os";
+import { join } from "node:path";
+import { createServer } from "node:net";
+import { RecordId, Surreal, Table } from "surrealdb";
+import { InternalAiStore, GOAL, hash } from "./store";
+import { InternalAiGate } from "./gate";
+import { TARIFFS, worstCost } from "./pricing";
+import { inInternalScope } from "./context";
+import { meteredDecision } from "./decision";
+const enabled = process.env.RUN_INTERNAL_AI_FORK_TESTS === "1";
+const localTest = test.skipIf(!enabled);
+// 公司fork，绝不回退PATH中的上游CLI。
+const binary = join(homedir(), ".surrealdb/surreal");
+let directory = "";
+let endpoint = "";
+let child: ReturnType<typeof Bun.spawn>;
+let db: Surreal;
+let db2: Surreal;
+let store: InternalAiStore;
+let gate: InternalAiGate;
+async function start() {
+  child = Bun.spawn([binary, "start", "--no-banner", "--log", "none", "--bind", endpoint.replace("ws://", ""), "--user", "root", "--pass", "root", `rocksdb:${join(directory, "data")}`], { stdout: "ignore", stderr: "ignore" });
+  for (let i = 0; i < 80; i++) { const probe = Bun.spawn([binary, "is-ready", "--endpoint", endpoint], { stdout: "ignore", stderr: "ignore" }); if (await probe.exited === 0) break; if (i === 79) throw new Error("fork not ready"); await Bun.sleep(50); }
+  db = new Surreal(); await db.connect(`${endpoint}/rpc`, { authentication: { username: "root", password: "root" } });
+  await db.query("DEFINE NAMESPACE IF NOT EXISTS budget_test;"); await db.use({ namespace: "budget_test" });
+  await db.query("DEFINE DATABASE IF NOT EXISTS _system;"); await db.use({ namespace: "budget_test", database: "_system" });
+  db2 = new Surreal(); await db2.connect(`${endpoint}/rpc`, { authentication: { username: "root", password: "root" }, namespace: "budget_test", database: "_system" });
+  store = new InternalAiStore(async () => db); gate = new InternalAiGate(store);
+}
+async function stop() { try { await db2.close(); await db.close(); } finally { child.kill(); await child.exited; } }
+async function activity(id: string, limits: { total?: number; per?: number; count?: number } = {}) {
+  await db.insert(new Table("internal_ai_activity"), { id: new RecordId("internal_ai_activity", id), goal: GOAL, enabled: true, total_limit: limits.total ?? 1000000000, per_attempt_limit: limits.per ?? 100000000, attempt_limit: limits.count ?? 30, approval_revision: "synthetic-test-only", evidence_expires_at: "2099-01-01T00:00:00Z", price_revisions: TARIFFS.map(t => t.revision), balance_nano_usd: 1000000000, balance_currency: "USD", balance_source: "synthetic-local-fixture-not-supplier-balance", balance_sampled_at: "2026-10-09T00:00:00Z", balance_evidence_hash: "a".repeat(64), auto_topup_disabled: true, service_approved: true });
+  return { activity: id, runHash: hash(id, "run"), keyHash: hash(id, "key"), logicalHash: hash(id, "key") };
+}
+beforeAll(async () => {
+  if (!enabled) return;
+  directory = await mkdtemp(join(tmpdir(), "internal-ai-fork-"));
+  const port = await new Promise<number>((resolve, reject) => { const listener = createServer(); listener.on("error", reject); listener.listen(0, "127.0.0.1", () => { const addr = listener.address(); if (!addr || typeof addr === "string") { reject(new Error("port")); return; } listener.close(() => resolve(addr.port)); }); });
+  endpoint = `ws://127.0.0.1:${port}`;
+  await start();
+  await db.query(await readFile(new URL("../../../shared/sql/system/033-internal-ai-budget.surql", import.meta.url), "utf8"));
+}, 20000);
+afterAll(async () => { if (!enabled) return; await stop(); await rm(directory, { recursive: true, force: true }); });
+localTest("cross-process concurrent reservations serialize shared cash; uncertain failures retain money", async () => {
+  const tariff = TARIFFS[0]!;
+  const scope = await activity("concurrent", { total: 2 * worstCost(tariff) });
+  const other = new InternalAiStore(async () => db2);
+  const results = await Promise.allSettled(Array.from({ length: 12 }, (_, i) => (i % 2 ? store : other).reserve({ ...scope, runHash: hash(String(i)), keyHash: hash("key", String(i)) }, "proposal", tariff, worstCost(tariff))));
+  const successes = results.filter(r => r.status === "fulfilled");
+  expect(successes.length).toBe(2);
+  expect((await store.activity("concurrent"))?.attempts).toBe(2);
+  expect((await store.activity("concurrent"))?.reserved).toBe(2 * worstCost(tariff));
+  const ticket = successes[0]!;
+  if (ticket.status !== "fulfilled") throw new Error("test missing ticket");
+  await store.sent(ticket.value.id);
+  await store.finish(ticket.value.id, { usage: null, actualModel: null, requestId: null, cost: null, failed: true });
+  expect((await store.activity("concurrent"))?.reserved).toBe(2 * worstCost(tariff));
+  expect((await store.page("concurrent"))[0]?.usage_source).toBe("unknown");
+}, 20000);
+localTest("settlement idempotency, spend and model usage persist through actual server restart", async () => {
+  const t = TARIFFS[0]!;
+  const scope = await activity("restart");
+  const row = await store.reserve(scope, "llm-classify", t, worstCost(t)); await store.sent(row.id);
+  const finish = { usage: { inputTokens: 10, outputTokens: 20, cachedInputTokens: null, reasoningTokens: null }, actualModel: t.model, requestId: "fixture-only", cost: 13500, failed: false };
+  await store.finish(row.id, finish); await store.finish(row.id, finish);
+  expect((await store.activity("restart"))?.spent).toBe(13500);
+  const uncertain = await store.reserve(scope, "proposal", t, worstCost(t)); await store.sent(uncertain.id);
+  await stop(); await start();
+  expect((await store.activity("restart"))?.spent).toBe(13500);
+  expect((await store.activity("restart"))?.reserved).toBe(worstCost(t));
+  expect((await store.page("restart"))[0]?.usage?.inputTokens).toBe(10);
+  await expect(store.sent(uncertain.id)).rejects.toThrow("replayed");
+}, 20000);
+localTest("disabled, missing evidence, per-call cash and attempt thresholds deny before synthetic transport", async () => {
+  let sends = 0;
+  for (const id of ["disabled", "balance", "price", "per", "count"]) {
+    const scope = await activity(id, { per: id === "per" ? 1 : undefined, count: 1 });
+    if (id === "disabled") await db.query("UPDATE ONLY $id SET enabled = false", { id: new RecordId("internal_ai_activity", id) });
+    if (id === "balance") await db.query("UPDATE ONLY $id SET balance_nano_usd = NONE", { id: new RecordId("internal_ai_activity", id) });
+    if (id === "price") await db.query("UPDATE ONLY $id SET price_revisions = []", { id: new RecordId("internal_ai_activity", id) });
+    if (id === "count") await store.reserve(scope, "first", TARIFFS[1]!, worstCost(TARIFFS[1]!));
+    const caller = meteredDecision(async () => { sends++; throw new Error("transport should not run"); }, gate, "jev-1.13.0");
+    await expect(inInternalScope(scope, () => caller({ state: {}, questions: {} }))).rejects.toThrow();
+  }
+  expect(sends).toBe(0);
+});
+localTest("Jev fallback retains failed attempt, valid returned usage settles exactly once", async () => {
+  const scope = await activity("decision"); let calls = 0;
+  const caller = meteredDecision(async () => { calls++; return { model: "jev-1.13.0", answers: {}, usage: { inputTokens: 100, outputTokens: 20 } }; }, gate, "jev-1.13.0");
+  await inInternalScope(scope, () => caller({ state: {}, questions: {} }));
+  expect(calls).toBe(1); expect((await store.activity("decision"))?.spent).toBe(4200);
+  const failing = meteredDecision(async () => { calls++; throw new Error("synthetic timeout"); }, gate, "jev-1.13.0");
+  await expect(inInternalScope(scope, () => failing({ state: {}, questions: {} }))).rejects.toThrow();
+  expect(calls).toBe(2); expect((await store.activity("decision"))?.reserved).toBe(worstCost(TARIFFS[1]!));
+});
+localTest("server identity binding ignores run/key resets and resume uses persistent activity", async () => {
+  await activity("identity");
+  await db.insert(new Table("internal_ai_binding"), { identity_hash: hash("subject", "ws_one"), activity: "identity" });
+  const a = await gate.bind("subject", "ws_one", "run1", "key");
+  const b = await gate.bind("subject", "ws_one", "run2", "another-key");
+  expect(a?.activity).toBe(b?.activity);
+  expect(await gate.bind("customer", "ws_one", "run1", "key")).toBeUndefined();
+  expect(await gate.bind("subject", "ws_one", "run1")).toEqual(a);
+});
+
+localTest("each provider model step reserves before transport, captures finish usage only, rejects unmetered embedding", async () => {
+  const scope = await activity("model-steps");
+  let sends = 0;
+  const t = TARIFFS[0]!;
+  const model = new InternalBudgetModel({ provider: "openai", model: t.model, baseUrl: "https://api.openai.com/v1", apiKey: "synthetic-not-a-real-key" }, "proposal", gate);
+  const transport = spyOn(ModelRouterLanguageModel.prototype, "doStream").mockImplementation(async options => {
+    const a = await store.activity("model-steps");
+    expect(a?.attempts).toBe(sends + 1); expect(a!.reserved).toBeGreaterThanOrEqual(worstCost(t));
+    expect(options.maxOutputTokens).toBe(t.maxOutput);
+    sends++;
+    return { stream: new ReadableStream({ start(c) {
+      c.enqueue({ type: "response-metadata", id: "synthetic-request", modelId: t.model });
+      c.enqueue({ type: "text-start", id: "text" });
+      c.enqueue({ type: "text-delta", id: "text", delta: "fixture body must never enter ledger" });
+      c.enqueue({ type: "text-end", id: "text" });
+      c.enqueue({ type: "finish", finishReason: "stop", usage: { inputTokens: 100, outputTokens: 10, cachedInputTokens: 20 } }); c.close();
+    } }) };
+  });
+  try {
+    for (let step = 0; step < 2; step++) {
+      const result = await inInternalScope(scope, () => model.doStream({ prompt: [{ role: "user", content: [{ type: "text", text: "synthetic prompt must never enter ledger" }] }], maxOutputTokens: 100000 }));
+      const reader = result.stream.getReader(); while (!(await reader.read()).done) { /* consume stream */ }
+    }
+    const ledger = await store.page("model-steps");
+    expect(sends).toBe(2); expect(ledger).toHaveLength(2);
+    expect(ledger[0]?.usage).toEqual({ inputTokens: 100, outputTokens: 10, cachedInputTokens: 20, reasoningTokens: null });
+    expect((await store.activity("model-steps"))?.spent).toBe(39000);
+    expect(JSON.stringify(ledger)).not.toContain("fixture body"); expect(JSON.stringify(ledger)).not.toContain("synthetic prompt");
+    let embeds = 0;
+    const embeddings = createOpenAiCompatibleEmbeddingProvider({ apiKey: "fixture", fetchImpl: async () => { embeds++; throw new Error("should not send"); } });
+    await expect(inInternalScope(scope, () => embeddings.embed({ text: "fixture", profile: { provider: "openai", model: "fixture", dimensions: 1, version: "1" } }))).rejects.toThrow("path-unavailable");
+    expect(embeds).toBe(0);
+  } finally { transport.mockRestore(); }
+});

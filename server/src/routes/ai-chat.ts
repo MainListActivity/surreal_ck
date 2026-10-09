@@ -1,3 +1,4 @@
+import type { InternalAiGate } from "../internal-ai/gate";
 import { Hono } from "hono";
 import { validator } from "hono/validator";
 import type { MiddlewareHandler } from "hono";
@@ -73,6 +74,7 @@ export type AiAllowanceGate = {
 };
 
 export type AiChatRoutesDeps = {
+  internalAiGate?: InternalAiGate;
   service: AiChatService;
   createCallerSession: CallerSessionFactory;
   registry: RunRegistry;
@@ -295,9 +297,11 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
         await release?.();
       };
       const { streamToken } = delivered ? registerRun(runId, user) : deps.registry.register({ runId, ownerSubject: user.subject });
-      await deps.service.resumeChat({ runId, decision, surrealSession: session, ownerSubject: user.subject,
+      const internalScope = deps.internalAiGate && resumeDb
+        ? await deps.internalAiGate.bind(user.subject, resumeDb, runId) : undefined;
+      await (deps.internalAiGate?.inRun.bind(deps.internalAiGate) ?? ((_scope, work) => work()))(internalScope, () => deps.service.resumeChat({ runId, decision, surrealSession: session, ownerSubject: user.subject,
         openContentSession: deps.createContentResearchSession ? () => deps.createContentResearchSession!(user) : undefined,
-        onResult: hooks?.onResult, onTerminal });
+        onResult: hooks?.onResult, onTerminal }));
       return { runId, streamUrl: `/api/chat/stream?runId=${runId}`, streamToken };
     } catch (error) {
       await release?.();
@@ -409,7 +413,9 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
       const { streamToken } = deps.deliveries ? registerRun(runId, user) : deps.registry.register({ runId, ownerSubject: user.subject });
 
       try {
-        await deps.service.startChat({
+        const internalScope = deps.internalAiGate && gateDb
+          ? await deps.internalAiGate.bind(user.subject, gateDb, runId, idempotencyKey) : undefined;
+        await (deps.internalAiGate?.inRun.bind(deps.internalAiGate) ?? ((_scope, work) => work()))(internalScope, () => deps.service.startChat({
           runId,
           message,
           userContext,
@@ -422,7 +428,7 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
             ? () => deps.createContentResearchSession!(user)
             : undefined,
           ...(deps.deliveries ? deliveryHooks(session, runId, user, meteredDb) : { onTerminal: meteredDb ? meteredTerminalHandler(meteredDb, runId) : undefined }),
-        });
+        }));
       } catch (error) {
         await deps.deliveries?.status(session, runId, "failed");
         if (meteredDb) {

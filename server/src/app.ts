@@ -1,3 +1,7 @@
+import { InternalAiStore } from "./internal-ai/store";
+import { InternalAiGate } from "./internal-ai/gate";
+import { meteredDecision } from "./internal-ai/decision";
+import { createOpsInternalAiRoutes } from "./routes/ops-internal-ai";
 import { ProTrialService } from "./workspaces/pro-trial";
 import { SurrealTrialStore } from "./workspaces/pro-trial-store";
 import { deliverProTrial } from "./workspaces/pro-trial-delivery";
@@ -250,6 +254,7 @@ function buildAutoAiChatService(
   platformContentService: PlatformContentService,
   embeddingProvider: EmbeddingProvider | undefined,
   createContentResearchSession: ContentResearchSessionFactory,
+  internalAiGate: InternalAiGate,
 ): AiChatService | undefined {
   if (!env.AI_PROVIDER || !env.AI_MODEL || !env.AI_API_KEY || !env.AI_DELIVERY_KEY) return undefined;
   // TYPESAFE_API_KEY 缺省 → decisionModel 为 undefined，意图分类保持纯 LLM 路径。
@@ -262,12 +267,13 @@ function buildAutoAiChatService(
     : undefined;
   const { runner, resumer } = createMastraRunner({
     settings: {
+      internalAiGate,
       provider: env.AI_PROVIDER,
       model: env.AI_MODEL,
       apiKey: env.AI_API_KEY,
       baseUrl: env.AI_BASE_URL,
     },
-    decisionModel,
+    decisionModel: decisionModel ? meteredDecision(decisionModel, internalAiGate, env.JEV_MODEL) : undefined,
     jevConfidenceThreshold: env.JEV_CONFIDENCE_THRESHOLD,
     // 资源检索查询向量与保存路径共用同一服务端 embedding key（RR-014）
     embeddingProvider,
@@ -357,8 +363,9 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     ?? createContentResearchSessionFactory({ searchExchange: contentSearchExchange });
   const rolloutGateService = options.rolloutGateService
     ?? new RolloutGateService(new SurrealRolloutStore());
+  const internalAiGate = new InternalAiGate(new InternalAiStore(async () => getRootDatabaseSession("_system")));
   const autoAiChatService = options.aiChatService
-    ?? buildAutoAiChatService(runBus, platformContentService, embeddingProvider, contentResearchSession);
+    ?? buildAutoAiChatService(runBus, platformContentService, embeddingProvider, contentResearchSession, internalAiGate);
   const aiAllowanceService = options.aiAllowance ?? new AiAllowanceService({
     workspaceSession: async (db) => (await getRootDatabaseSession(db)) as unknown as AllowanceQueryable,
     systemSession: async () => (await getRootDatabaseSession("_system")) as unknown as AllowanceQueryable,
@@ -526,7 +533,8 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     .route(
       "/",
       createAiChatRoutes({
-      deliveries: env.AI_DELIVERY_KEY ? new ChatDeliveryStore(env.AI_DELIVERY_KEY) : undefined,
+        internalAiGate: options.aiChatService ? undefined : internalAiGate,
+        deliveries: env.AI_DELIVERY_KEY ? new ChatDeliveryStore(env.AI_DELIVERY_KEY) : undefined,
         service: autoAiChatService ?? NOT_WIRED_AI_SERVICE,
         createCallerSession: options.createCallerSession ?? ((rawToken) => createCallerSession(rawToken)),
         registry: runRegistry,
@@ -537,6 +545,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
         requireUser: options.requireUser,
       }),
     )
+    .route("/", createOpsInternalAiRoutes({ gate: internalAiGate, runtime: { provider: env.AI_PROVIDER, model: env.AI_MODEL, endpoint: env.AI_BASE_URL, jevModel: env.JEV_MODEL } }))
     .route("/", createOpsAiAllowanceRoutes({ service: aiAllowanceService }))
     .route("/", createOpsRolloutRoutes({ service: rolloutGateService }))
     .route("/", createOpsInvitationRoutes({ service: inviteService, requireOperator: options.requireOperator }))
