@@ -6,6 +6,9 @@ import { z } from "zod";
  * 权益（内容访问）→ 授予 AI 额度桶。链路为异步契约：POST 在同步窗口内
  * 完成则直接返回结果，超时返回 processing 供轮询 GET；激活链接经
  * collect-delivery 一次性收取。activation_url 属一次性凭证，不写审计、不入证据。
+ * 断链/24h 过期补救走 POST /api/ops/invitations/:idempotencyKey/resend
+ * （subscription.manage）：向 IdP 重铸链接并暂存回行，仍经 collect-delivery
+ * 收取；未收取或上次重签发仍在 token 有效期内的重放不重复铸链。
  */
 export const createOpsInvitationSchema = z.object({
   email: z.string().trim().email().max(200),

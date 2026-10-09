@@ -144,6 +144,41 @@ export class HttpIdpAdminClient {
       activationUrl: typeof body?.activation_url === "string" ? body.activation_url : null,
     };
   }
+
+  /**
+   * 重签发激活链接（POST .../users/:userId/reissue-activation）：仅 provisioned
+   * 用户可用；IdP 作废旧未消耗 token 并签发新 24h token，一次性返回
+   * activation_url。404=用户不存在，409=已激活/已停用（调用方各自映射）。
+   */
+  async reissueActivation(userId: string): Promise<{ user: IdpUser; activationUrl: string | null }> {
+    const tenantId = await this.resolveTenantId();
+    const res = await this.admin(
+      `/admin/tenants/${tenantId}/users/${encodeURIComponent(userId)}/reissue-activation`,
+      { method: "POST" },
+    );
+    const body = await res.json().catch(() => null) as
+      | { user?: unknown; activation_url?: unknown; error?: unknown }
+      | null;
+    if (res.status === 404) {
+      throw new IdpAdminError("idp-admin-user-not-found", `IdP 查无用户 ${userId}`, res.status);
+    }
+    if (res.status === 409) {
+      throw new IdpAdminError("idp-admin-user-not-provisioned", `用户 ${userId} 已激活或已停用，不可重签发激活链接`, res.status);
+    }
+    if (!res.ok) {
+      throw new IdpAdminError(
+        "idp-admin-reissue-failed",
+        `IdP 重签发激活链接失败（${res.status}${body && typeof body.error === "string" ? `: ${body.error}` : ""}）`,
+        res.status,
+      );
+    }
+    const user = asUser(body?.user);
+    if (!user) throw new IdpAdminError("idp-admin-user-malformed", "IdP 返回的用户对象不完整");
+    return {
+      user,
+      activationUrl: typeof body?.activation_url === "string" ? body.activation_url : null,
+    };
+  }
 }
 
 export const IDP_PROVISION_TOKEN_SECRET_NAME = "idp_provision_token";

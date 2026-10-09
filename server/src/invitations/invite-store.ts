@@ -51,6 +51,10 @@ export type InviteAuditRow = Readonly<{
   processingSince: string | null;
   /** activation_url 暂存待收取（completed 且未 collect）；URL 本体不上读路径。 */
   activationUrlPending: boolean;
+  /** 最近一次重签发时刻（resend 归因 + 24h 内重放去重）；从未重发为 null。 */
+  resentAt: string | null;
+  /** 最近一次重签发的操作主体。 */
+  resentBy: string | null;
 }>;
 
 export type InviteClaimInsert = Readonly<{
@@ -95,6 +99,11 @@ export interface InviteAuditStore {
    * 其他状态返回 null + 已知收取时刻。
    */
   collectActivationUrl(recordId: string): Promise<{ activationUrl: string | null; deliveredAt: string | null }>;
+  /**
+   * 重签发回写：仅 completed 行可写；重置 delivered_at 使新链接可被收取，
+   * 并落 resent_at/resent_by 归因。返回是否写入（false = 行状态已变）。
+   */
+  saveResentActivationUrl(recordId: string, activationUrl: string, actorSubject: string): Promise<boolean>;
 }
 
 function parseOutcome(row: Row): InviteOutcome | null {
@@ -152,6 +161,8 @@ function parseRow(row: Row): InviteAuditRow {
     processingSince: toIsoDateTimeString(row.processing_since),
     activationUrlPending: typeof row.activation_url === "string" && row.activation_url !== ""
       && row.activation_url_delivered_at == null,
+    resentAt: toIsoDateTimeString(row.resent_at),
+    resentBy: typeof row.resent_by === "string" ? row.resent_by : null,
   };
 }
 
@@ -293,6 +304,24 @@ export class SurrealInviteAuditStore implements InviteAuditStore {
       return { activationUrl: null, deliveredAt: toIsoDateTimeString(current.activation_url_delivered_at) };
     }
     return { activationUrl: current.activation_url, deliveredAt: new Date().toISOString() };
+  }
+
+  async saveResentActivationUrl(recordId: string, activationUrl: string, actorSubject: string): Promise<boolean> {
+    const db = await this.session(this.database);
+    // IdP 重签发会作废旧 token——最后写入者持有唯一活链，故无条件下覆写
+    //（顺序重放的去重由服务层 pendingCollect/resent_at 闸门挡住）。
+    const updated = rows(
+      await db.query(
+        `UPDATE $id SET
+          activation_url = $url,
+          activation_url_delivered_at = NONE,
+          resent_at = time::now(),
+          resent_by = $by
+         WHERE status = "completed";`,
+        { id: new StringRecordId(recordId), url: activationUrl, by: actorSubject },
+      ),
+    );
+    return updated.length > 0;
   }
 
   async byKey(idempotencyKey: string): Promise<InviteAuditRow | null> {

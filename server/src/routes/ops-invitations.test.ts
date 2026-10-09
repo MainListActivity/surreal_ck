@@ -10,6 +10,7 @@ function makeApp(overrides: {
   provision?: (input: unknown) => Promise<InviteResult>;
   get?: (key: string) => Promise<InviteResult | null>;
   collect?: (key: string) => Promise<{ idempotencyKey: string; status: string; activationUrl: string | null } | null>;
+  resend?: (key: string) => Promise<InviteResult | null>;
   capabilities?: string[];
 } = {}) {
   const calls: { provision?: unknown } = {};
@@ -33,6 +34,7 @@ function makeApp(overrides: {
         },
         get: async (key: string) => overrides.get ? overrides.get(key) : null,
         collect: async (key: string) => overrides.collect ? overrides.collect(key) : null,
+        resend: async (_actor: unknown, key: string) => overrides.resend ? overrides.resend(key) : null,
       } as never,
       requireOperator: requireOperator as never,
     }));
@@ -155,5 +157,32 @@ describe("G2 ops 邀请路由", () => {
     const noCap = makeApp({ capabilities: ["quota.read"], collect: async () => null });
     const res3 = await noCap.app.request("/api/ops/invitations/k1/collect-delivery", { method: "POST" });
     expect(res3.status).toBe(403);
+  });
+
+  test("resend：完成行 → 200 + pendingCollect；不存在 → 404；processing/已激活 → 409；无能力 → 403", async () => {
+    const { app } = makeApp({
+      resend: async (key) => ({
+        idempotencyKey: key, status: "completed", replayed: true,
+        user: { id: "u1", email: "lawyer@example.com", status: "provisioned", outcome: "created" },
+        workspace: null, entitlement: null, aiAllowance: null,
+        delivery: { channel: "activation_url", activationUrl: null, pendingCollect: true, note: "" },
+      } as InviteResult),
+    });
+    const res = await app.request("/api/ops/invitations/k1/resend", { method: "POST" });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { delivery: { pendingCollect: boolean; activationUrl: string | null } };
+    expect(body.delivery.pendingCollect).toBe(true);
+    expect(body.delivery.activationUrl).toBeNull();
+
+    const missing = makeApp({ resend: async () => null });
+    expect((await missing.app.request("/api/ops/invitations/none/resend", { method: "POST" })).status).toBe(404);
+
+    for (const code of ["invite-resend-while-processing", "invite-already-activated", "invite-resend-invalid-state", "invite-idp-user-missing"] as const) {
+      const m = makeApp({ resend: async () => { throw new InviteError(code, "m"); } });
+      expect((await m.app.request("/api/ops/invitations/k1/resend", { method: "POST" })).status).toBe(409);
+    }
+
+    const noCap = makeApp({ capabilities: ["quota.read"], resend: async () => null });
+    expect((await noCap.app.request("/api/ops/invitations/k1/resend", { method: "POST" })).status).toBe(403);
   });
 });

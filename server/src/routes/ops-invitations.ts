@@ -8,10 +8,12 @@ import { InviteError, type InviteService } from "../invitations/invite-service";
 function fail(error: unknown): never {
   if (!(error instanceof InviteError)) throw error;
   const status = error.code === "invite-conflict" || error.code === "invite-in-progress" || error.code === "invite-slug-taken"
+    || error.code === "invite-resend-while-processing" || error.code === "invite-resend-invalid-state"
+    || error.code === "invite-already-activated" || error.code === "invite-idp-user-missing"
     ? 409
     : error.code === "invite-idp-not-configured"
       ? 503
-      : error.code.startsWith("idp-admin-")
+      : error.code.startsWith("idp-admin-") || error.code === "invite-resend-no-url"
         ? 502
         : 400;
   throw new HttpError(status, error.code, error.message);
@@ -62,5 +64,20 @@ export function createOpsInvitationRoutes(input: {
       const result = await input.service.collect(c.req.param("idempotencyKey"));
       if (!result) throw new HttpError(404, "invite-not-found", "邀请记录不存在");
       return c.json(result);
+    })
+    // 激活链接重签发（断链/24h 过期补救）：向 IdP 重铸一次性激活链接并暂存回行，
+    // 收取仍走 collect-delivery。重放去重：未收取或 24h 有效期内不重复铸链。
+    .post("/api/ops/invitations/:idempotencyKey/resend", requireOperator("subscription.manage"), async (c) => {
+      const operator = c.var.platformOperator;
+      try {
+        const result = await input.service.resend(
+          { subject: operator?.subject ?? "unknown", capabilities: operator?.capabilities ?? [] },
+          c.req.param("idempotencyKey"),
+        );
+        if (!result) throw new HttpError(404, "invite-not-found", "邀请记录不存在");
+        return c.json(result);
+      } catch (error) {
+        return fail(error);
+      }
     });
 }

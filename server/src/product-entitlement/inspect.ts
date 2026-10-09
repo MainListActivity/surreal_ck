@@ -37,10 +37,11 @@ export async function inspectProductRevisionRaw(id: string): Promise<unknown> {
   const db = await getRootDatabaseSession("_system", env.SURREAL_NS);
   const revision = first(await db.query(`SELECT * FROM $id;`, { id: parseRevisionId(id) }));
   if (!revision) return { revision: null };
-  const [content, ai, feature] = await Promise.all([
+  const [content, ai, feature, resource] = await Promise.all([
     linkedRow(db, revision.content_template),
     linkedRow(db, revision.ai_template),
     linkedRow(db, revision.feature_template),
+    linkedRow(db, revision.resource_template),
   ]);
   // 复刻 store.productRevision 对 ai 模板的精确读法，便于对照「SELECT * 」与投影读法差异。
   const aiLinkId = linkId(revision.ai_template);
@@ -53,7 +54,7 @@ export async function inspectProductRevisionRaw(id: string): Promise<unknown> {
   ]);
   return {
     revision,
-    templates: { content, ai, feature },
+    templates: { content, ai, feature, resource },
     aiActionsProjection,
     schema: {
       ai_template_revision: aiTemplateSchema,
