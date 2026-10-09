@@ -23,7 +23,7 @@ export class InternalAiGate {
     let tariff: Tariff | undefined;
     try { tariff = tariffFor(provider, model, endpoint); } catch { /* unknown URL denies */ }
     if (!tariff) throw new Error("internal-ai-price-or-bound-unavailable");
-    const row = await this.store.reserve(scope, stage, tariff, worstCost(tariff));
+    const row = await this.store.reserve(scope, scope.stage ?? stage, tariff, worstCost(tariff));
     // 持久sent标记先于传输；此后任意异常均保留预留。
     await this.store.sent(row.id);
     return { id: row.id, tariff };

@@ -30,6 +30,7 @@ DEFINE FIELD IF NOT EXISTS key_hash ON internal_ai_run TYPE string READONLY;
 DEFINE FIELD IF NOT EXISTS logical_hash ON internal_ai_run TYPE string READONLY;
 DEFINE TABLE IF NOT EXISTS internal_ai_attempt SCHEMAFULL PERMISSIONS NONE;
 DEFINE FIELD IF NOT EXISTS activity ON internal_ai_attempt TYPE record<internal_ai_activity>;
+DEFINE FIELD IF NOT EXISTS retry_index ON internal_ai_attempt TYPE int ASSERT $value = 0;
 DEFINE FIELD IF NOT EXISTS sequence ON internal_ai_attempt TYPE int;
 DEFINE FIELD IF NOT EXISTS run_hash ON internal_ai_attempt TYPE string;
 DEFINE FIELD IF NOT EXISTS key_hash ON internal_ai_attempt TYPE string;

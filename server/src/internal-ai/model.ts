@@ -16,13 +16,12 @@ export class InternalBudgetModel extends ModelRouterLanguageModel {
     const config = buildModelConfig(this.settings);
     if (scope && !this.gate) throw new Error("internal-ai-gate-unavailable");
     const endpoint = this.settings.baseUrl ?? "";
-    const ticket = await this.gate?.begin(this.stage, config.providerId, config.modelId, endpoint);
-    if (!ticket) return streaming ? super.doStream(options) : super.doGenerate(options);
-    // 仅证书允许的文本/function调用；多模态、任意provider选项、联网工具可能有额外计费。
-    if (options.tools?.some(t => t.type !== "function") || options.prompt.some(m => m.role !== "system" && m.content.some(c => c.type !== "text" && c.type !== "tool-call" && c.type !== "tool-result" || (c.type === "tool-result" && !["text", "json", "error-text", "error-json"].includes(c.output.type)))) || (options.providerOptions && Object.keys(options.providerOptions).some(k => k !== "openai" || Object.keys(options.providerOptions!.openai ?? {}).some(key => key !== "stream")))) {
-      await this.gate!.finish(ticket, null, null, null, true);
+    // 先拒绝已知不能计费的格式：未发送，不占provider attempt名额。
+    if (scope && (options.tools?.some(t => t.type !== "function") || options.prompt.some(m => m.role !== "system" && m.content.some(c => c.type !== "text" && c.type !== "tool-call" && c.type !== "tool-result" || (c.type === "tool-result" && !["text", "json", "error-text", "error-json"].includes(c.output.type)))) || (options.providerOptions && Object.keys(options.providerOptions).some(k => k !== "openai" || Object.keys(options.providerOptions!.openai ?? {}).some(key => key !== "stream"))))) {
       throw new Error("internal-ai-input-format-unavailable");
     }
+    const ticket = await this.gate?.begin(this.stage, config.providerId, config.modelId, endpoint);
+    if (!ticket) return streaming ? super.doStream(options) : super.doGenerate(options);
     const capped = { ...options, maxOutputTokens: Math.min(options.maxOutputTokens ?? ticket.tariff.maxOutput, ticket.tariff.maxOutput) };
     try {
       const result = streaming ? await super.doStream(capped) : await super.doGenerate(capped);

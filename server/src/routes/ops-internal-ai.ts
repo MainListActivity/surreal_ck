@@ -16,7 +16,7 @@ export function createOpsInternalAiRoutes(input: { gate: InternalAiGate; runtime
   const auth = input.requireOperator ?? requirePlatformOperator("subscription.manage");
   return new Hono<AppBindings>()
     .get("/api/ops/internal-ai/runtime", auth, c => c.json({
-      provider: label(input.runtime.provider), model: label(input.runtime.model), endpointHost: endpointHost(input.runtime.endpoint ?? (input.runtime.provider === "openai" ? "https://api.openai.com/v1" : undefined)),
+      provider: label(input.runtime.provider), model: label(input.runtime.model), endpointHost: endpointHost(input.runtime.endpoint),
       jevModel: label(input.runtime.jevModel), jevEndpointHost: "api.typesafe.ai", mastraVersion: dependencyVersion(),
       priceCertificates: TARIFFS, defaultEnabled: false, balance: { status: "unavailable", reason: "no approved account-bound balance evidence or supported read-only supplier balance API; API key presence is not evidence" },
       implicitRetries: 0, embedding: "forbidden-in-internal-activity", currency: "USD", moneyUnit: "nanoUSD", fx: { rate: 1, currency: "USD", nonUSD: "unsupported" },
@@ -36,8 +36,8 @@ export function createOpsInternalAiRoutes(input: { gate: InternalAiGate; runtime
         spent: activity.spent, reserved: activity.reserved, attemptsUsed: activity.attempts,
         remaining: Math.max(0, activity.total_limit - activity.spent - activity.reserved), moneyUnit: "nanoUSD", currency: "USD",
         priceRevisions: activity.price_revisions,
-        balance: { status: activity.balance_evidence_hash ? "reviewed-evidence" : "unavailable", amount: activity.balance_nano_usd ?? null, currency: activity.balance_currency ?? null, source: activity.balance_source ?? null, evidenceHash: activity.balance_evidence_hash ?? null, sampledAt: activity.balance_sampled_at ?? null, expiresAt: activity.evidence_expires_at ?? null, autoTopupDisabled: activity.auto_topup_disabled, serviceApproved: activity.service_approved },
-        attempts: attempts.map(a => ({ id: String(a.id), sequence: a.sequence, runHash: a.run_hash, keyHash: a.key_hash, logicalHash: a.logical_hash, stage: a.stage, state: a.state, provider: a.provider, model: a.model, actualModel: a.actual_model ?? null, requestId: a.request_id ?? null, usage: a.usage ?? null, usageSource: a.usage_source, priceRevision: a.price_revision, currency: a.currency, reserved: a.reserved, cost: a.cost ?? null, startedAt: a.started_at, endedAt: a.ended_at })),
+        balance: { status: activity.balance_evidence_hash ? "reviewed-evidence" : "unavailable", amount: activity.balance_nano_usd ?? null, currency: activity.balance_currency ?? null, source: activity.balance_source && /^reviewed-document:[0-9a-f]{64}$/.test(activity.balance_source) ? activity.balance_source : null, evidenceHash: activity.balance_evidence_hash ?? null, sampledAt: activity.balance_sampled_at ?? null, expiresAt: activity.evidence_expires_at ?? null, autoTopupDisabled: activity.auto_topup_disabled, serviceApproved: activity.service_approved },
+        attempts: attempts.map(a => ({ id: String(a.id), sequence: a.sequence, retryIndex: a.retry_index, runHash: a.run_hash, keyHash: a.key_hash, logicalHash: a.logical_hash, stage: a.stage, state: a.state, provider: a.provider, model: a.model, actualModel: a.actual_model ?? null, requestId: a.request_id ?? null, usage: a.usage ?? null, usageSource: a.usage_source, priceRevision: a.price_revision, currency: a.currency, reserved: a.reserved, cost: a.cost ?? null, startedAt: a.started_at, endedAt: a.ended_at })),
         nextAfter: attempts.length === 50 ? attempts.at(-1)?.sequence : null,
       });
     });

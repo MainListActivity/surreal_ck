@@ -34,7 +34,7 @@ async function start() {
 }
 async function stop() { try { await db2.close(); await db.close(); } finally { child.kill(); await child.exited; } }
 async function activity(id: string, limits: { total?: number; per?: number; count?: number } = {}) {
-  await db.insert(new Table("internal_ai_activity"), { id: new RecordId("internal_ai_activity", id), goal: GOAL, enabled: true, total_limit: limits.total ?? 1000000000, per_attempt_limit: limits.per ?? 100000000, attempt_limit: limits.count ?? 30, approval_revision: "synthetic-test-only", evidence_expires_at: "2099-01-01T00:00:00Z", price_revisions: TARIFFS.map(t => t.revision), balance_nano_usd: 1000000000, balance_currency: "USD", balance_source: "synthetic-local-fixture-not-supplier-balance", balance_sampled_at: "2026-10-09T00:00:00Z", balance_evidence_hash: "a".repeat(64), auto_topup_disabled: true, service_approved: true });
+  await db.insert(new Table("internal_ai_activity"), { id: new RecordId("internal_ai_activity", id), goal: GOAL, enabled: true, total_limit: limits.total ?? 1000000000, per_attempt_limit: limits.per ?? 100000000, attempt_limit: limits.count ?? 30, approval_revision: "synthetic-test-only", evidence_expires_at: "2099-01-01T00:00:00Z", price_revisions: TARIFFS.map(t => t.revision), balance_nano_usd: 1000000000, balance_currency: "USD", balance_source: `reviewed-document:${"a".repeat(64)}`, balance_sampled_at: "2026-10-09T00:00:00Z", balance_evidence_hash: "a".repeat(64), auto_topup_disabled: true, service_approved: true });
   return { activity: id, runHash: hash(id, "run"), keyHash: hash(id, "key"), logicalHash: hash(id, "key") };
 }
 beforeAll(async () => {
@@ -46,7 +46,7 @@ beforeAll(async () => {
   await db.query(await readFile(new URL("../../../shared/sql/system/033-internal-ai-budget.surql", import.meta.url), "utf8"));
 }, 20000);
 afterAll(async () => { if (!enabled) return; await stop(); await rm(directory, { recursive: true, force: true }); });
-localTest("cross-process concurrent reservations serialize shared cash; uncertain failures retain money", async () => {
+localTest("multi-connection concurrent reservations serialize shared cash; uncertain failures retain money", async () => {
   const tariff = TARIFFS[0]!;
   const scope = await activity("concurrent", { total: 2 * worstCost(tariff) });
   const other = new InternalAiStore(async () => db2);
@@ -61,6 +61,34 @@ localTest("cross-process concurrent reservations serialize shared cash; uncertai
   await store.finish(ticket.value.id, { usage: null, actualModel: null, requestId: null, cost: null, failed: true });
   expect((await store.activity("concurrent"))?.reserved).toBe(2 * worstCost(tariff));
   expect((await store.page("concurrent"))[0]?.usage_source).toBe("unknown");
+}, 20000);
+localTest("independent client processes share the atomic cash reservation", async () => {
+  const tariff = TARIFFS[0]!;
+  const scope = await activity("processes", { total: 2 * worstCost(tariff) });
+  const worker = `
+    import { Surreal } from "surrealdb";
+    import { InternalAiStore, hash } from ${JSON.stringify(new URL("./store.ts", import.meta.url).pathname)};
+    import { TARIFFS, worstCost } from ${JSON.stringify(new URL("./pricing.ts", import.meta.url).pathname)};
+    const db = new Surreal();
+    try {
+      await db.connect(${JSON.stringify(`${endpoint}/rpc`)}, { authentication: { username: "root", password: "root" }, namespace: "budget_test", database: "_system" });
+      const store = new InternalAiStore(async () => db);
+      const scope = ${JSON.stringify(scope)};
+      const tariff = TARIFFS[0];
+      const results = await Promise.allSettled(Array.from({ length: 6 }, (_, i) => store.reserve({ ...scope, runHash: hash(String(process.pid), String(i)) }, "proposal", tariff, worstCost(tariff))));
+      console.log(JSON.stringify({ pid: process.pid, accepted: results.filter(r => r.status === "fulfilled").length }));
+    } finally { await db.close(); }
+  `;
+  const clients = Array.from({ length: 2 }, () => Bun.spawn([process.execPath, "--eval", worker], { stdout: "pipe", stderr: "pipe" }));
+  const results = await Promise.all(clients.map(async client => {
+    const [output, errors, code] = await Promise.all([new Response(client.stdout).text(), new Response(client.stderr).text(), client.exited]);
+    if (code !== 0) throw new Error(`reservation fixture process failed: ${errors}`);
+    return JSON.parse(output) as { pid: number; accepted: number };
+  }));
+  expect(results[0]?.pid).not.toBe(results[1]?.pid);
+  expect(results.reduce((sum, result) => sum + result.accepted, 0)).toBe(2);
+  expect((await store.activity("processes"))?.attempts).toBe(2);
+  expect((await store.activity("processes"))?.reserved).toBe(2 * worstCost(tariff));
 }, 20000);
 localTest("settlement idempotency, spend and model usage persist through actual server restart", async () => {
   const t = TARIFFS[0]!;
@@ -142,3 +170,20 @@ localTest("each provider model step reserves before transport, captures finish u
     expect(embeds).toBe(0);
   } finally { transport.mockRestore(); }
 });
+
+localTest("target cash and attempt limits are shared by separate activities and cannot reset with new run/key", async () => {
+  const schema = await readFile(new URL("../../../shared/sql/system/033-internal-ai-budget.surql", import.meta.url), "utf8");
+  await db.query("DEFINE DATABASE IF NOT EXISTS limits_cash;"); await db.use({ namespace: "budget_test", database: "limits_cash" }); await db.query(schema);
+  const t = TARIFFS[1]!;
+  const a = await activity("target-a"); const b = await activity("target-b");
+  // 合成历史支出fixture，只用于临界拒绝测试，绝非供应商实际成本。
+  await db.query("CREATE ONLY $target SET spent = $spent", { target: new RecordId("internal_ai_target", GOAL), spent: 1000000000 - 2 * worstCost(t) });
+  await store.reserve(a, "classify", t, worstCost(t)); await store.reserve(b, "proposal", t, worstCost(t));
+  await expect(store.reserve({ ...a, runHash: hash("changed"), keyHash: hash("changed") }, "resume", t, worstCost(t))).rejects.toThrow();
+  expect((await store.target()).reserved).toBe(2 * worstCost(t));
+  await db.query("DEFINE DATABASE IF NOT EXISTS limits_attempts;"); await db.use({ namespace: "budget_test", database: "limits_attempts" }); await db.query(schema);
+  const c = await activity("target-c"); const d = await activity("target-d");
+  for (let i = 0; i < 30; i++) await store.reserve({ ...(i % 2 ? c : d), runHash: hash(String(i)), keyHash: hash("new-key", String(i)) }, "classify", t, worstCost(t));
+  await expect(store.reserve(d, "proposal", t, worstCost(t))).rejects.toThrow();
+  expect((await store.target()).attempts).toBe(30);
+}, 20000);
