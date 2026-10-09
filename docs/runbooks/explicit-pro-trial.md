@@ -48,3 +48,28 @@ fixture:true 显示内部验收说明，不能作为正式商业承诺；语义�
 发布兼容下限由 `origin-release.sh` 的 `require_allowance_source_compat` 强制执行：候选与自动回滚目标必须同时包含共享消费谓词、候选读取与原子扣减的同谓词、v4 精确转换及两份新增结构。缺文件、旧代码或检查失败均在 env/服务切换前拒绝。保留已落地的新增 schema、审计和桶；不得回滚结构或删除事实。首次发布若 previous 未满足下限，自动回滚会被拒绝，应提前准备通过 Quality gate 的兼容回滚提交；健康失败时禁止改脚本绕过门禁启动旧代码。后续规则升级须同时维护这一兼容断言。前端回滚也必须保留来源显示规则，选取同一已验证兼容提交重跑 Deploy production。
 
 此链不修复既有生产历史桶的物理终止标记，也不批准客户灰度。若验收坚持补全历史审计，需另报 owner 红线请求、精确影响范围与只读方案，获准前不执行补账或迁移。
+
+
+## 首次价值只读核定（首次价值01、03共用）
+
+以下入口仅 GET，无迁移、回填、slot 释放、资格设置或额度变更。每次请求沿用运营 audience、token 活跃性、active operator 与 `subscription.manage` 实时能力校验；客户 audience 返回 403，无登录返回 401，无能力或撤权返回 403。能力是平台范围，具该能力的运营可核定指定账户；不是 billing owner 身份授权。必须给出精确 `accountKey` 和待核定成员的 IdP `subject`，没有账户枚举入口；额外参数拒绝。通过现有 `ops_request` 调用，不持有 token、不新建代理。
+
+- `GET /api/ops/pro-trial/configuration`：当前配置 `enabled/revision/updated_by/updated_at` 与该不可变修订 `fixture/product_revision/research_rate/rate_revision/duration_days/reminder_hours/approved_by/created_at`。没有配置为 `configurationState:missing`；配置引用悬空为 `revisionState:missing`。不泄漏审批理由。
+- `GET /api/ops/pro-trial/eligibility?accountKey=<精确账户键>&subject=<成员subject>`（URL 编码参数）：账户状态、该成员 role/status、资格批准人/时间、全部有效旧订阅 trial、全部未到期冻结 claim，以及仍存在的 slot（包括已过期或悬空）。`active` 与 `administrator` 针对指定账户/成员；`eligible` 是显式资格开关，**不是可立即开始试用的总判断**。账户缺失返回 `accountState:missing` 及 `active/administrator:null`；没有资格记录为 `eligibilityState:missing, eligible:null`，明确关闭为 `disabled,false`。不会把无记录/未知当 false。slot 悬空返回 `claimState:missing, blocksNewClaim:null`；原冻结修订缺元数据为 null，不代用当前配置。日期/审计元数据 null 表示未知。
+- 数据库 `serverTime` 固定本次观察时钟。有效订阅条件是 `trial_start <= serverTime < trial_end` 且 trialing；claim 的 `unexpired` 是 `ends_at > serverTime`；只有 slot 当前引用的未过期 claim 才使该 slot 的 `blocksNewClaim:true`，与现有启动逻辑一致；lease 只返回 `leaseHeld` 与 `lease_until`（严格大于时钟有效），绝不返回 lease token。数组没有 LIMIT，不能只看第一条；未到期且不再由 slot 引用的冻结 claim 也返回。截止恰等于时钟为过期。
+- 引用商品继续使用 `GET /api/ops/product-entitlements/revisions/<product_revision>/inspect`：`templates.resource` 补充原不可变资源模板（id、selector、finite limits、rules）；content/ai/feature 沿用现有读回。workspace 的当前来源与内容不可变修订继续通过 `GET /api/ops/product-entitlements/workspaces/<slug>`（`quota.read`）核对。本链不复制 entitlement 控制面，不读取客户正文。
+- `GET /api/ops/runtime-version`：独立返回 `origin` 和 `web` 的 `{state,sha,deploymentId}`。origin 是进程启动时从当前发布包 `server/runtime-release.json` 捕获的完整 SHA；web 是从固定 `https://l.maplayer.top/runtime-version.json` 无凭证、no-store 读取的当前 Pages 构建 SHA。发布 workflow 用批准的 RELEASE_SHA 和 run_id-run_attempt 生成，均非 secret；不新增 `ORIGIN_ENV_*` 或主机准备。缺失、无效、404、SPA fallback 或读回失败均为 `state:unknown,sha:null,deploymentId:null`。origin/web 分开观察，滚动发布时可能不一致；不能把 CI 成功或 health 200 当运行 SHA。web 标识证明当前 Pages 部署，不证明某浏览器仍缓存的旧 JS 已刷新。
+
+部署后独立 QA 只读步骤（示意参数，句柄从本任务 ops 登录返回，不写进交付证据）：
+
+```text
+sck call ops_operator_login {"alias":"QA_OPS_LCA11"}
+sck call ops_request {"session":"<本任务运营句柄>","method":"GET","path":"/api/ops/runtime-version"}
+sck call ops_request {"session":"<本任务运营句柄>","method":"GET","path":"/api/ops/pro-trial/configuration"}
+sck call ops_request {"session":"<本任务运营句柄>","method":"GET","path":"/api/ops/pro-trial/eligibility?accountKey=<专用账户键>&subject=<专用管理员subject>"}
+sck call ops_request {"session":"<本任务运营句柄>","method":"GET","path":"/api/ops/product-entitlements/revisions/<配置product_revision>/inspect"}
+```
+
+核对 fixture `pro_trial_revision:lca10_qa_r1` 与原审批商品/资源/内容修订一致；连续读两遍并比较配置审计时间、slot/claim/资格、订阅期限（serverTime 允许变化）。通过既有 entitlement/额度只读入口补核余额，不能使用 POST“读回”。用客户 `ops_login` 句柄调用三个新 GET，均应 403；无 subscription.manage 的运营身份同样拒绝。保存 origin/web 完整 SHA 与部署 ID，再对照获准提交。尚未部署的实现不能宣称完成这些生产条件。
+
+回滚仅重发先前通过 Quality gate 且满足现有试用/来源兼容门禁的应用 SHA，再重发其 web；新增观测无 schema 或数据需要回滚。回滚到无版本标识的版本时返回 unknown/入口缺失，不能伪造当前版本。此只读链不执行旧 runbook 的禁用配置或撤资格操作，不激活 fixture、不扩资格、不调用模型。

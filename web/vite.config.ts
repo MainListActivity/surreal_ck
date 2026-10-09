@@ -11,6 +11,17 @@ export default defineConfig({
     },
   },
   plugins: [
+    {
+      name: "runtime-release",
+      generateBundle() {
+        const sha = process.env.SCK_RELEASE_SHA;
+        const deploymentId = process.env.SCK_DEPLOYMENT_ID;
+        this.emitFile({ type: "asset", fileName: "runtime-version.json", source: JSON.stringify(
+          sha && /^[a-f0-9]{40}$/.test(sha) && deploymentId && /^[0-9]+-[0-9]+$/.test(deploymentId)
+            ? { sha, deploymentId } : { sha: null, deploymentId: null },
+        ) });
+      },
+    },
     tailwindcss(),
     svelte({
       compilerOptions: {

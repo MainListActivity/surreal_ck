@@ -8,6 +8,8 @@ import { requirePlatformOperator } from "../ops/operator-auth";
 import { HttpError } from "../http-error";
 import { getRootDatabaseSession } from "../db/root-connection";
 import type { ProTrialService } from "../workspaces/pro-trial";
+import { ProTrialObservation } from "../ops/pro-trial-observation";
+import { readRuntimeVersion } from "../ops/runtime-version";
 
 const startSchema = z.object({ accountKey: z.string().min(1).max(200), name: z.string().trim().min(1).max(80),
   slug: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/), key: z.string().min(1).max(128), offerRevision: z.string().startsWith("pro_trial_revision:") }).strict();
@@ -15,8 +17,38 @@ const configSchema = z.object({ revisionKey: z.string().regex(/^[a-zA-Z0-9_-]{1,
   researchRate: z.number().int().positive(), rateRevision: z.number().int().min(2), reminderHours: z.array(z.number().int().min(1).max(167)).max(10), fixture: z.boolean(), enabled: z.boolean().default(true), reason: z.string().trim().min(1).max(1000) }).strict();
 const eligibilitySchema = z.object({ accountKey: z.string().min(1).max(200), enabled: z.boolean(), reason: z.string().trim().min(1).max(1000) }).strict();
 
-export function createProTrialRoutes(service: ProTrialService, requireUser: () => MiddlewareHandler<AppBindings> = requireOidc) {
+export function requireTrialObserver(options: Parameters<typeof requirePlatformOperator>[1] = {}): MiddlewareHandler<AppBindings> {
+  const authorize = requirePlatformOperator("subscription.manage", options);
+  return async (c, next) => {
+    try { await authorize(c, next); } catch (error) {
+      if (error instanceof HttpError && error.code === "oidc-ops-audience-invalid") {
+        throw new HttpError(403, "trial-observation-operator-required", "只读核定需要运营会话");
+      }
+      throw error;
+    }
+  };
+}
+
+const accountReadSchema = z.object({ accountKey: z.string().trim().min(1).max(200), subject: z.string().trim().min(1).max(200) }).strict();
+
+export function createProTrialRoutes(service: Pick<ProTrialService, "accounts" | "preview" | "start" | "status">, requireUser: () => MiddlewareHandler<AppBindings> = requireOidc,
+  observation: Pick<ProTrialObservation, "configuration" | "account"> = new ProTrialObservation(), observer: () => MiddlewareHandler<AppBindings> = requireTrialObserver,
+  runtimeVersion: typeof readRuntimeVersion = readRuntimeVersion) {
   return new Hono<AppBindings>()
+    .get("/api/ops/pro-trial/configuration", observer(), async c => {
+      c.header("Cache-Control", "no-store");
+      return c.json(await observation.configuration());
+    })
+    .get("/api/ops/pro-trial/eligibility", observer(), async c => {
+      const parsed = accountReadSchema.safeParse(c.req.query());
+      if (!parsed.success) throw new HttpError(400, "trial-observation-input-invalid", "须指定计费账户与待核定成员，不能列出账户");
+      c.header("Cache-Control", "no-store");
+      return c.json(await observation.account(parsed.data.accountKey, parsed.data.subject));
+    })
+    .get("/api/ops/runtime-version", observer(), async c => {
+      c.header("Cache-Control", "no-store");
+      return c.json(await runtimeVersion());
+    })
     .get("/api/workspaces/:slug/pro-trial", requireUser(), async c => c.json(await service.status(c.var.user.subject, c.req.param("slug"))))
     .get("/api/pro-trial/accounts", requireUser(), async c => c.json(await service.accounts(c.var.user.subject)))
     .get("/api/pro-trial/preview", requireUser(), async c => c.json(await service.preview(c.var.user.subject, c.req.query("accountKey") ?? "", c.req.query("key"))))
