@@ -2,6 +2,7 @@ import { InternalAiStore } from "./internal-ai/store";
 import { InternalAiGate } from "./internal-ai/gate";
 import { meteredDecision } from "./internal-ai/decision";
 import { createOpsInternalAiRoutes } from "./routes/ops-internal-ai";
+import { createInternalAiIdentityRoutes } from "./routes/internal-ai-identity";
 import { ProTrialService } from "./workspaces/pro-trial";
 import { SurrealTrialStore } from "./workspaces/pro-trial-store";
 import { deliverProTrial } from "./workspaces/pro-trial-delivery";
@@ -448,6 +449,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     ))
     .route("/", createInternalIdpRoutes(workspaceScope))
     .route("/", createSessionRoutes(workspaceScope, idpTokenScopeAdapter, options.requireUser))
+    .route("/", createInternalAiIdentityRoutes({ db: async () => getRootDatabaseSession("_system"), requireUser: options.requireUser?.() }))
     .route("/", createContentReaderRoutes({
       exchange: options.contentReaderExchange ?? createContentReaderExchangeHandler({ rolloutGates }),
       searchExchange: contentSearchExchange,
