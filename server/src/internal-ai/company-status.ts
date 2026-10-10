@@ -11,6 +11,8 @@ const statusSchema = z.object({
   iat: z.number().int(), exp: z.number().int(), nonce: z.string(),
 }).strict();
 const denied = () => new HttpError(422, "company-status-unavailable", "公司证明当前状态不可核定或已失效");
+/** 签发方-校检方时钟漂移是常态：checkedAt/iat 正向给30秒容差；负向新鲜度与exp过期仍严格，fail-safe方向不松。 */
+const STATUS_CLOCK_TOLERANCE_SECONDS = 30;
 
 /** 固定用途、公钥、jti、随机nonce和最长60秒窗口；不接受proof JWT作为状态答复。 */
 export function verifyCompanyStatus(jwt: string, claims: Pick<CompanyProofClaims, "jti" | "exp" | "approval">, nonce: string, now: number, trust: CompanyProofAnchor = COMPANY_PROOF_TRUST): void {
@@ -26,7 +28,7 @@ export function verifyCompanyStatus(jwt: string, claims: Pick<CompanyProofClaims
     const status = statusSchema.parse(JSON.parse(Buffer.from(b, "base64url").toString("utf8")));
     const seconds = Math.floor(now / 1000);
     if (status.jti !== claims.jti || status.nonce !== nonce || status.approvalVersion !== (claims.approval?.version ?? null)
-      || status.checkedAt > seconds || seconds - status.checkedAt >= 60 || status.iat < status.checkedAt || status.iat > seconds
+      || status.checkedAt > seconds + STATUS_CLOCK_TOLERANCE_SECONDS || seconds - status.checkedAt >= 60 || status.iat < status.checkedAt || status.iat > seconds + STATUS_CLOCK_TOLERANCE_SECONDS
       || status.exp <= seconds || status.exp > status.checkedAt + 60 || claims.exp <= seconds) throw denied();
   } catch { throw denied(); }
 }
