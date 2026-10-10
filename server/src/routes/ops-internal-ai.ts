@@ -42,7 +42,9 @@ export function createOpsInternalAiRoutes(input: { gate: InternalAiGate; registr
         spent: activity.spent, reserved: activity.reserved, attemptsUsed: activity.attempts,
         remaining: Math.max(0, activity.total_limit - activity.spent - activity.reserved), moneyUnit: "nanoUSD", currency: "USD",
         priceRevisions: activity.price_revisions,
-        balance: { status: activity.balance_evidence_hash ? "reviewed-evidence" : "unavailable", amount: activity.balance_nano_usd ?? null, currency: activity.balance_currency ?? null, source: activity.balance_source && /^reviewed-document:[0-9a-f]{64}$/.test(activity.balance_source) ? activity.balance_source : null, evidenceHash: activity.balance_evidence_hash ?? null, sampledAt: activity.balance_sampled_at ?? null, expiresAt: activity.evidence_expires_at ?? null, autoTopupDisabled: activity.auto_topup_disabled, serviceApproved: activity.service_approved },
+        evidenceKind: activity.evidence_kind ?? null,
+        balance: { status: activity.balance_evidence_hash ? "reviewed-evidence" : "unavailable", amount: activity.balance_nano_usd ?? null, currency: activity.balance_currency ?? null, source: activity.balance_source && /^(reviewed-document|token-plan):[0-9a-f]{64}$/.test(activity.balance_source) ? activity.balance_source : null, evidenceHash: activity.balance_evidence_hash ?? null, sampledAt: activity.balance_sampled_at ?? null, expiresAt: activity.evidence_expires_at ?? null, autoTopupDisabled: activity.auto_topup_disabled, serviceApproved: activity.service_approved },
+        quota: activity.evidence_kind === "reviewed-token-plan" ? { planName: activity.plan_name ?? null, planSourceUrl: activity.plan_source_url ?? null, unit: activity.quota_unit ?? null, amount: activity.quota_amount ?? null, windowSeconds: activity.quota_window_seconds ?? null, remaining: activity.quota_remaining ?? null, noPaymentInstrument: activity.no_payment_instrument ?? null } : null,
         attempts: attempts.map(a => ({ id: String(a.id), sequence: a.sequence, retryIndex: a.retry_index, runHash: a.run_hash, keyHash: a.key_hash, logicalHash: a.logical_hash, stage: a.stage, state: a.state, provider: a.provider, model: a.model, actualModel: a.actual_model ?? null, requestId: a.request_id ?? null, usage: a.usage ?? null, usageSource: a.usage_source, priceRevision: a.price_revision, currency: a.currency, reserved: a.reserved, cost: a.cost ?? null, startedAt: a.started_at, endedAt: a.ended_at })),
         nextAfter: attempts.length === 50 ? attempts.at(-1)?.sequence : null,
       });
@@ -129,5 +131,5 @@ export function createOpsInternalAiRoutes(input: { gate: InternalAiGate; registr
  * 固定 method/path/响应schema/脱敏投影，禁止运行期配置或扫描式探测。
  */
 export const SUPPLIER_PROBES: readonly { provider: string; host: string; capabilities: readonly string[]; reason: string }[] = [
-  { provider: "sensenova", host: "token.sensenova.cn", capabilities: [], reason: "SenseNova 当前没有已核定的官方只读 balance/plan/usage 接口；不得凭 OpenAI-compatible 协议或 .ai 文档推断 .cn 计价" },
+  { provider: "sensenova", host: "token.sensenova.cn", capabilities: [], reason: "SenseNova 当前没有已核定的官方只读 balance/plan/usage 接口；Token Plan 配额与零费率只能经 reviewed-token-plan 受审文档登记，不得凭 OpenAI-compatible 协议、积分换算或 .ai 文档推断 .cn 计价" },
 ];

@@ -33,6 +33,11 @@ export const COMPANY_PROOF_TRUST = {
 
 const hex64 = z.string().regex(/^[a-f0-9]{64}$/);
 const boundedRef = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
+/** 供应商/计划出处只接受无凭据、无查询的 https URL：与 endpoint 同一规则，拒绝 userinfo/port/query/hash。 */
+const httpsSource = z.string().url().refine(v => {
+  const u = new URL(v);
+  return u.protocol === "https:" && !u.username && !u.password && !u.search && !u.hash && !u.port;
+});
 /** 公司侧 model 是有界安全标识：非空安全片段以单点号分隔，长度 1..128，拒绝空白/斜杠/URL/Unicode。 */
 const model = z.string().max(128).regex(/^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*(?![\s\S])/);
 
@@ -131,28 +136,47 @@ export type CompanyProofClaims = z.infer<typeof companyProofClaimsSchema>;
 /** 公司 `ops_internal_ai_deliver` 投递到 `/api/ops/internal-ai/company-proof` 的请求体。 */
 export const companyProofEnvelopeSchema = z.object({ proof: z.string().min(1).max(COMPANY_PROOF_MAX_BYTES) }).strict();
 
-/**
- * 受审余额证据文档（公司侧 evidenceSchema 的等价物）。
- * 这是运营提交的**真实可核定文档**：产品只存其 sha256 与脱敏字段，不存正文；
- * 哈希必须等于公司证明里的 documentHash，否则运营自填的 true / USD 1 一律无效。
- */
-export const reviewedEvidenceSchema = z.object({
+/** 三种证据文档共用的服务标识与采样窗口字段；余额与配额字段按 type 判别，互不混入。 */
+const evidenceBase = {
   schemaVersion: z.literal(1),
-  type: z.enum(["development-disabled", "reviewed-service"]),
   accountRef: boundedRef,
-  endpoint: z.string().url().refine(v => {
-    const u = new URL(v);
-    return u.protocol === "https:" && !u.username && !u.password && !u.search && !u.hash && !u.port;
-  }),
+  endpoint: httpsSource,
   model,
   priceRevision: boundedRef,
-  currency: z.literal("USD"),
-  balanceNanoUsd: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   sampledAt: z.string().datetime(),
   expiresAt: z.string().datetime(),
   autoTopupDisabled: z.literal(true),
   serviceApproved: z.boolean(),
-}).strict();
+};
+const controlFreeText = (max: number) => z.string().min(1).max(max).refine(v => ![...v].some(ch => ch.charCodeAt(0) < 32 || ch.charCodeAt(0) == 127));
+/**
+ * 受审证据文档（公司侧 evidenceSchema 的等价物），按 type 判别的冻结联合：
+ * - development-disabled / reviewed-service：USD-only 余额契约，字段与历史逐字一致；
+ * - reviewed-token-plan：配额型供应商（无 USD 现金价目/余额），用官方 Token Plan 出处与积分/次数
+ *   配额表达可用性；绝不允许把配额换算成美元写余额字段，也不接受 FX/CNY/未知币种。
+ */
+export const reviewedEvidenceSchema = z.discriminatedUnion("type", [
+  z.object({ ...evidenceBase, type: z.literal("development-disabled"), currency: z.literal("USD"), balanceNanoUsd: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER) }).strict(),
+  z.object({ ...evidenceBase, type: z.literal("reviewed-service"), currency: z.literal("USD"), balanceNanoUsd: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER) }).strict(),
+  z.object({
+    ...evidenceBase,
+    type: z.literal("reviewed-token-plan"),
+    /** 官方计划名（如 SenseNova Token Plan 公测档）：非空短文本，禁控制字符。 */
+    planName: controlFreeText(200),
+    /** 计划官方出处 URL（https、无 userinfo/port/query/hash）。 */
+    planSourceUrl: httpsSource,
+    /** 配额单位：积分点或请求次数；无 USD 语义。 */
+    quotaUnit: z.enum(["points", "requests"]),
+    /** 滚动窗口内的配额总量，必须为正整数。 */
+    quotaAmount: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    /** 配额滚动窗口秒数（如 5 小时 = 18000）。 */
+    quotaWindowSeconds: z.number().int().positive(),
+    /** 采样时剩余配额；可空（官方只读接口未核定时不得臆造），存在时必须非负。 */
+    quotaRemaining: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable(),
+    /** 账户无任何支付方式绑定：字面 true，缺省/臆造即拒。 */
+    noPaymentInstrument: z.literal(true),
+  }).strict(),
+]);
 export type ReviewedEvidence = z.infer<typeof reviewedEvidenceSchema>;
 
 /** 提交证据文档的请求体上限：与公司侧读取边界一致（256KiB），且正文绝不落库。 */
@@ -178,5 +202,9 @@ export const companyProofGapSchema = z.array(z.enum([
   "identity-binding",
   "identity-revoked",
   "budget-bounds",
+  // 配额型证据（reviewed-token-plan）专用缺口：替代 USD 余额三项检查，语义不互换。
+  "quota-evidence",
+  "quota-positive",
+  "payment-instrument-absent",
 ]));
 export type CompanyProofGap = z.infer<typeof companyProofGapSchema>[number];

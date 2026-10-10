@@ -55,6 +55,20 @@ function evidenceDocument(tag: string, over: Record<string, unknown> = {}): stri
   });
 }
 
+/** 配额型受审证据：官方 Token Plan 出处与积分配额表达可用性，无 USD 余额语义。 */
+function tokenPlanDocument(over: Record<string, unknown> = {}): string {
+  const tariff = TARIFFS.find(t => t.model === "sensenova-6.8-flash-lite")!;
+  return JSON.stringify({
+    schemaVersion: 1, type: "reviewed-token-plan", accountRef: "synthetic-sensenova-account",
+    endpoint: `https://${tariff.host}/v1`, model: tariff.model, priceRevision: tariff.revision,
+    planName: "SenseNova Token Plan 公测", planSourceUrl: "https://www.sensenova.cn/token-plan",
+    quotaUnit: "points", quotaAmount: 60000, quotaWindowSeconds: 18000, quotaRemaining: 60000,
+    noPaymentInstrument: true,
+    sampledAt: new Date(NOW - 60000).toISOString(), expiresAt: new Date(NOW + 3600000).toISOString(),
+    autoTopupDisabled: true, serviceApproved: true, ...over,
+  });
+}
+
 /** 按公司 proof-bridge 的 sign('proof', …) 形状构造并自签一份证明；documentHash 由真实文档字节算。 */
 function proof(tag: string, overrides: {
   jti?: string; type?: "development-disabled" | "approved-service"; scope?: "register-disabled" | "enable";
@@ -123,7 +137,7 @@ beforeAll(async () => {
   db = new Surreal(); await db.connect(`${endpoint}/rpc`, { authentication: { username: "root", password: "root" } });
   await db.query("DEFINE NAMESPACE IF NOT EXISTS registration_test;"); await db.use({ namespace: "registration_test" });
   await db.query("DEFINE DATABASE IF NOT EXISTS _system;"); await db.use({ namespace: "registration_test", database: "_system" });
-  for (const file of ["034-internal-ai-budget.surql", "035-internal-ai-registration.surql"]) {
+  for (const file of ["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql"]) {
     await db.query(await readFile(new URL(`../../../shared/sql/system/${file}`, import.meta.url), "utf8"));
   }
   registration = new InternalAiRegistration(async () => db!, { check: async () => {}, current: async () => {}, remember: () => {} });
@@ -323,6 +337,113 @@ localTest("a fully reviewed openai activity enables, keeps its ledger, and can b
   // 派生 revision 不带 proof_jti，只带 source_jti 追溯来源。
   expect(revisions[2]!.proof_jti ?? null).toBe(null);
   expect(revisions[2]!.source_jti).toBe(`jti-${tag}`);
+});
+
+localTest("a reviewed token-plan evidence enables the zero-rate certificate and settles at zero cost without a USD balance", async () => {
+  if (!db) throw new Error("fixture unavailable");
+  const tariff = TARIFFS.find(t => t.model === "sensenova-6.8-flash-lite")!;
+  const tag = "tokenplan";
+  const activityId = `activity-${tag}`;
+  const endpoint = `https://${tariff.host}/v1`;
+  const document = tokenPlanDocument();
+  const documentHash = bytesHash(document);
+  const registered = await registration.register({ claims: claimsOf(proof(tag, {
+    type: "approved-service", scope: "enable", paidCallsAllowed: 1, activityId, document,
+    model: tariff.model, endpoint, accountRef: "synthetic-sensenova-account", priceRevision: tariff.revision,
+    approval: { taskId: "synthetic-approval-task", version: 3, action: "accept", auditId: "audit:tokenplan", reviewer: "synthetic-reviewer", digest: digest(`configuration:${tag}:jti-${tag}`) },
+  })), operator: "synthetic-operator", reason: "SenseNova Token Plan 受审登记" });
+  expect(registered.proofType).toBe("approved-service");
+  const submitted = await registration.submitEvidence({ activity: activityId, revision: registered.revision, document, operator: "synthetic-operator", reason: "提交配额型受审证据" });
+  expect(submitted.evidenceKind).toBe("reviewed-token-plan");
+  expect(submitted.currency).toBeNull();
+  expect(submitted.balanceNanoUsd).toBeNull();
+  expect(submitted.balanceSource).toBe(`token-plan:${documentHash}`);
+  expect(submitted.quotaUnit).toBe("points");
+  expect(submitted.quotaAmount).toBe(60000);
+  expect(submitted.noPaymentInstrument).toBe(true);
+  expect(submitted.gaps).toEqual([]);
+  const enabled = await registration.enable({ activity: activityId, revision: submitted.revision, operator: "synthetic-operator", reason: "显式启用配额型活动", runtime: { provider: tariff.provider, model: tariff.model, endpoint } });
+  expect(enabled.state).toBe("enabled");
+  expect(enabled.dataReady).toBe(true);
+  const activity = rows(await db.query("SELECT * FROM ONLY $id", { id: new RecordId("internal_ai_activity", activityId) }))[0]!;
+  expect(activity.enabled).toBe(true);
+  expect(activity.evidence_kind).toBe("reviewed-token-plan");
+  expect(activity.balance_nano_usd ?? null).toBe(null);
+  expect(activity.balance_currency ?? null).toBe(null);
+  expect(activity.balance_source).toBe(`token-plan:${documentHash}`);
+  expect(activity.quota_amount).toBe(60000);
+  expect(activity.quota_window_seconds).toBe(18000);
+  expect(activity.no_payment_instrument).toBe(true);
+  expect(activity.price_revisions).toEqual([tariff.revision]);
+  // 零费率证书走同一门禁：预留 0、按实际 usage 结算 0，账本仍是 nanoUSD。
+  const scope = await gate.bind(`owner-${tag}`, `ws_${tag}`, "run-tokenplan", "key-tokenplan");
+  expect(scope?.activity).toBe(activityId);
+  const ticket = await gate.inRun(scope, () => gate.begin("proposal", tariff.provider, tariff.model, endpoint));
+  expect(ticket?.tariff.revision).toBe(tariff.revision);
+  await gate.inRun(scope, () => gate.finish(ticket, { inputTokens: 2000, outputTokens: 500, cachedInputTokens: null, reasoningTokens: null }, tariff.model, "synthetic-request", false));
+  const attempt = (await gate.store.page(activityId))[0]!;
+  expect(attempt.state).toBe("settled");
+  expect(attempt.cost).toBe(0);
+  expect(attempt.reserved).toBe(0);
+  expect(attempt.currency).toBe("USD");
+  const ledger = rows(await db.query("SELECT reserved, spent, attempts FROM ONLY $id", { id: new RecordId("internal_ai_activity", activityId) }))[0]!;
+  expect(ledger.spent).toBe(0);
+  expect(ledger.reserved).toBe(0);
+  expect(ledger.attempts).toBe(1);
+});
+
+localTest("token-plan evidence stays fail-closed: schema, quota gaps, wrong runtime and unapproved proof all deny enable", async () => {
+  if (!db) throw new Error("fixture unavailable");
+  const tariff = TARIFFS.find(t => t.model === "sensenova-6.8-flash-lite")!;
+  const runtime = { provider: "openai", model: tariff.model, endpoint: `https://${tariff.host}/v1` };
+  const approval = (tag: string) => ({ taskId: "synthetic-approval", version: 1, action: "accept", auditId: `audit:${tag}`, reviewer: "synthetic-reviewer", digest: digest(`configuration:${tag}:jti-${tag}`) });
+  const service = { model: tariff.model, endpoint: runtime.endpoint, accountRef: "synthetic-sensenova-account", priceRevision: tariff.revision };
+  const registerWith = async (tag: string, document: string, approved = true) =>
+    registration.register({ claims: claimsOf(proof(tag, approved
+      ? { type: "approved-service", scope: "enable", paidCallsAllowed: 1, document, approval: approval(tag), ...service }
+      : { document, ...service })), operator: "synthetic-operator", reason: "配额型登记" });
+  const enroll = async (tag: string, over: Record<string, unknown>, approved = true) => {
+    const document = tokenPlanDocument(over);
+    const registered = await registerWith(tag, document, approved);
+    return registration.submitEvidence({ activity: registered.activity, revision: registered.revision, document, operator: "synthetic-operator", reason: "提交配额证据" });
+  };
+  // schema 层拒绝：每种非法文档都经公司证明哈希绑定后提交，仍被严格契约拒绝。
+  for (const [index, over] of [
+    { quotaAmount: 0 }, { quotaAmount: -1 }, { planSourceUrl: "http://www.sensenova.cn/token-plan" },
+    { planSourceUrl: "https://www.sensenova.cn/token-plan?x=1" }, { noPaymentInstrument: false },
+    { quotaUnit: "usd" }, { balanceNanoUsd: 1, currency: "USD" }, { unknownField: 1 }, { type: "reviewed-service" },
+  ].entries()) {
+    const tag = `tpstrict${index}`, document = tokenPlanDocument(over);
+    const registered = await registerWith(tag, document);
+    await expect(registration.submitEvidence({ activity: registered.activity, revision: registered.revision, document, operator: "synthetic-operator", reason: "非法配额字段" })).rejects.toThrow(/字段不合法/);
+    expect((await registration.revisions(registered.activity)).length).toBe(1);
+  }
+  // 配额耗尽（remaining=0）→ quota-positive，enable 拒绝。
+  const exhausted = await enroll("tpexhausted", { quotaRemaining: 0 });
+  expect(await registration.gapsFor((await registration.revision(exhausted.activity, exhausted.revision))!, runtime)).toContain("quota-positive");
+  await expect(registration.enable({ activity: exhausted.activity, revision: exhausted.revision, operator: "synthetic-operator", reason: "配额耗尽启用", runtime })).rejects.toThrow(/启用证据不足/);
+  // remaining 可空（官方只读接口未核定时写 null）：不产生 quota-positive。
+  const unknownRemaining = await enroll("tpunknownremaining", { quotaRemaining: null });
+  expect(await registration.gapsFor((await registration.revision(unknownRemaining.activity, unknownRemaining.revision))!, runtime)).toEqual([]);
+  // 服务未批准 → service-approved；采样在未来 → balance-sampled-at；过期 → evidence-not-expired。
+  const unapproved = await enroll("tpunapproved", { serviceApproved: false });
+  expect(await registration.gapsFor((await registration.revision(unapproved.activity, unapproved.revision))!, runtime)).toContain("service-approved");
+  const stale = await enroll("tpstale", { expiresAt: new Date(NOW - 1).toISOString() });
+  expect(await registration.gapsFor((await registration.revision(stale.activity, stale.revision))!, runtime)).toContain("evidence-not-expired");
+  // runtime 与证书不一致 → price-certificate。
+  const mismatched = await enroll("tpmismatch", {});
+  for (const bad of [
+    { ...runtime, model: "sensenova-6.8-flash" },
+    { ...runtime, provider: "sensenova" },
+    { ...runtime, endpoint: "https://api.sensenova.cn/v1" },
+    { ...runtime, jevEnabled: true, jevModel: "jev-1.13.0" },
+  ]) {
+    await expect(registration.enable({ activity: mismatched.activity, revision: mismatched.revision, operator: "synthetic-operator", reason: "错配启用", runtime: bad })).rejects.toThrow(/启用证据不足/);
+  }
+  // development-disabled 证明可以登记配额文档（类型不受限），但缺独立批准永远不可启用。
+  const devOnly = await enroll("tpdevonly", {}, false);
+  expect(devOnly.gaps).toContain("approved-service-evidence");
+  await expect(registration.enable({ activity: devOnly.activity, revision: devOnly.revision, operator: "synthetic-operator", reason: "开发证明启用", runtime })).rejects.toThrow(/启用证据不足/);
 });
 
 localTest("shared target ledger is never reset by re-registration, evidence or disable", async () => {

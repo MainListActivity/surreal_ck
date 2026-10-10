@@ -17,18 +17,25 @@ export type ActivitySnapshot = {
   evidenceExpiresAt: string | null; priceRevisions: string[]; balanceNanoUsd: number | null;
   balanceCurrency: string | null; balanceSource: string | null; balanceSampledAt: string | null;
   balanceEvidenceHash: string | null; autoTopupDisabled: boolean; serviceApproved: boolean;
+  evidenceKind: string | null; planName: string | null; planSourceUrl: string | null;
+  quotaUnit: string | null; quotaAmount: number | null; quotaWindowSeconds: number | null;
+  quotaRemaining: number | null; noPaymentInstrument: boolean | null;
 };
 
-/** 数据库行形状（snake_case，与 035 schema 列名一致）。 */
+/** 数据库行形状（snake_case，与 035/036 schema 列名一致）。 */
 export type RevisionRow = {
   activity: string; revision: number; state: "disabled" | "enabled" | "revoked"; proof_type: string;
   goal: string; project: string; env: string; operator: string; reason: string; request_task: string;
   proof_expires_at: number; proof_jti: string | null; manifest_hash: string; document_hash: string; configuration_digest: string;
   identities_digest: string; approval_task: string | null; approval_version: number | null;
   approval_action: string | null; approval_audit_id: string | null; account_ref: string; endpoint: string;
-  model: string; price_revision: string; currency: string; balance_nano_usd: number | null;
-  balance_sampled_at: string | null; evidence_expires_at: string | null; auto_topup_disabled: boolean;
+  model: string; price_revision: string; currency: string | null; balance_nano_usd: number | null;
+  balance_sampled_at: string | null; balance_source: string | null; evidence_expires_at: string | null; auto_topup_disabled: boolean;
   service_approved: boolean; status_capability_hash: string | null; gaps: string[];
+  evidence_kind: "development-disabled" | "reviewed-service" | "reviewed-token-plan" | null;
+  plan_name: string | null; plan_source_url: string | null; quota_unit: "points" | "requests" | null;
+  quota_amount: number | null; quota_window_seconds: number | null; quota_remaining: number | null;
+  no_payment_instrument: boolean | null;
   before: ActivitySnapshot | null; after: ActivitySnapshot | null; created_at?: unknown;
   source_jti: string | null;
 };
@@ -42,8 +49,12 @@ export type IdentityRow = {
 export type RegistrationSummary = {
   activity: string; revision: number; currentRevision: number; currentEnabled: boolean; state: "disabled" | "enabled" | "revoked"; proofType: string;
   configurationDigest: string; documentHash: string; manifestHash: string; accountRef: string;
-  endpoint: string; endpointHost: string | null; model: string; priceRevision: string; currency: "USD";
-  balanceNanoUsd: number | null; sampledAt: string | null; expiresAt: string | null;
+  endpoint: string; endpointHost: string | null; model: string; priceRevision: string; currency: string | null;
+  balanceNanoUsd: number | null; balanceSource: string | null; sampledAt: string | null; expiresAt: string | null;
+  evidenceKind: "development-disabled" | "reviewed-service" | "reviewed-token-plan" | null;
+  planName: string | null; planSourceUrl: string | null; quotaUnit: "points" | "requests" | null;
+  quotaAmount: number | null; quotaWindowSeconds: number | null; quotaRemaining: number | null;
+  noPaymentInstrument: boolean | null;
   autoTopupDisabled: boolean; serviceApproved: boolean; paidCallsAllowed: 0 | 1;
   limits: { totalNanoUsd: number; perAttemptNanoUsd: number; maxAttempts: number };
   approval: { taskId: string; version: number; action: string; auditId: string } | null;
@@ -74,7 +85,10 @@ const SNAPSHOT = `SELECT enabled, goal, total_limit AS totalLimit, per_attempt_l
   attempt_limit AS attemptLimit, reserved, spent, attempts, approval_revision AS approvalRevision,
   evidence_expires_at AS evidenceExpiresAt, price_revisions AS priceRevisions, balance_nano_usd AS balanceNanoUsd,
   balance_currency AS balanceCurrency, balance_source AS balanceSource, balance_sampled_at AS balanceSampledAt,
-  balance_evidence_hash AS balanceEvidenceHash, auto_topup_disabled AS autoTopupDisabled, service_approved AS serviceApproved FROM ONLY $activity`;
+  balance_evidence_hash AS balanceEvidenceHash, auto_topup_disabled AS autoTopupDisabled, service_approved AS serviceApproved,
+  evidence_kind AS evidenceKind, plan_name AS planName, plan_source_url AS planSourceUrl,
+  quota_unit AS quotaUnit, quota_amount AS quotaAmount, quota_window_seconds AS quotaWindowSeconds,
+  quota_remaining AS quotaRemaining, no_payment_instrument AS noPaymentInstrument FROM ONLY $activity`;
 
 export class InternalAiRegistration {
   constructor(private readonly db: () => Promise<Queryable>, private readonly status: CompanyStatus = new CompanyStatusClient(undefined)) {}
@@ -161,7 +175,9 @@ export class InternalAiRegistration {
       manifest_hash: manifestHash, document_hash: c.documentHash, configuration_digest: c.configurationDigest, identities_digest: c.identitiesDigest,
       approval_task: c.approval?.taskId ?? null, approval_version: c.approval?.version ?? null, approval_action: c.approval?.action ?? null,
       approval_audit_id: c.approval?.auditId ?? null, account_ref: m.service.accountRef, endpoint: m.service.endpoint, model: m.service.model,
-      price_revision: m.service.priceRevision, currency: "USD", balance_nano_usd: null, balance_sampled_at: null, evidence_expires_at: null,
+      price_revision: m.service.priceRevision, currency: null, balance_nano_usd: null, balance_sampled_at: null, balance_source: null, evidence_expires_at: null,
+      evidence_kind: null, plan_name: null, plan_source_url: null, quota_unit: null, quota_amount: null,
+      quota_window_seconds: null, quota_remaining: null, no_payment_instrument: null,
       auto_topup_disabled: true, service_approved: false, status_capability_hash: statusCapabilityHash(c.status.bearer),
       gaps: ["approved-service-evidence", "balance-evidence", "price-certificate"], before: null, after: null };
     const sql = `FOR $b IN $bindings {
@@ -191,13 +207,21 @@ export class InternalAiRegistration {
     let json: unknown;
     try { json = JSON.parse(input.document); } catch { throw denied("证据文档不是合法 JSON"); }
     const parsed = reviewedEvidenceSchema.safeParse(json);
-    if (!parsed.success) throw denied("证据文档字段不合法或非 USD-only 契约");
+    if (!parsed.success) throw denied("证据文档字段不合法或不符合受审证据契约");
     const e: ReviewedEvidence = parsed.data;
     if (e.accountRef !== target.account_ref || e.endpoint !== target.endpoint || e.model !== target.model || e.priceRevision !== target.price_revision
-      || (target.proof_type === "approved-service" && e.type !== "reviewed-service")) throw denied("证据文档服务标识或类型不一致");
+      || (target.proof_type === "approved-service" && e.type !== "reviewed-service" && e.type !== "reviewed-token-plan")) throw denied("证据文档服务标识或类型不一致");
     await this.status.current(input.activity, target.source_jti ?? target.proof_jti ?? "");
+    // 配额型证据：USD 余额字段必须为空，绝不允许把配额换算成美元；余额型证据则清空全部配额字段。
+    const tokenPlan = e.type === "reviewed-token-plan";
     const row: RevisionRow = { ...target, revision: target.revision + 1, state: "disabled", operator: input.operator, reason,
-      proof_jti: null, balance_nano_usd: e.balanceNanoUsd, balance_sampled_at: e.sampledAt, evidence_expires_at: e.expiresAt,
+      proof_jti: null, evidence_kind: e.type, currency: tokenPlan ? null : "USD",
+      balance_nano_usd: tokenPlan ? null : e.balanceNanoUsd, balance_sampled_at: e.sampledAt, evidence_expires_at: e.expiresAt,
+      balance_source: `${tokenPlan ? "token-plan" : "reviewed-document"}:${documentHash}`,
+      plan_name: tokenPlan ? e.planName : null, plan_source_url: tokenPlan ? e.planSourceUrl : null,
+      quota_unit: tokenPlan ? e.quotaUnit : null, quota_amount: tokenPlan ? e.quotaAmount : null,
+      quota_window_seconds: tokenPlan ? e.quotaWindowSeconds : null, quota_remaining: tokenPlan ? e.quotaRemaining : null,
+      no_payment_instrument: tokenPlan ? e.noPaymentInstrument : null,
       auto_topup_disabled: e.autoTopupDisabled, service_approved: e.serviceApproved, before: null, after: null };
     row.gaps = this.evidenceGaps(row);
     return this.summary(await this.mutate(row, target.revision, "UPDATE ONLY $activity SET enabled = false;"), false);
@@ -205,9 +229,16 @@ export class InternalAiRegistration {
   private evidenceGaps(r: RevisionRow): CompanyProofGap[] {
     const gaps: CompanyProofGap[] = [];
     if (r.proof_type !== "approved-service" || !r.approval_task || !r.approval_version) gaps.push("approved-service-evidence");
-    if (r.balance_nano_usd == null) gaps.push("balance-evidence");
-    else if (r.balance_nano_usd <= 0) gaps.push("balance-positive");
-    if (r.currency !== "USD") gaps.push("balance-currency");
+    if (r.evidence_kind === "reviewed-token-plan") {
+      // 配额型证据：USD 余额三项检查整体替换为配额检查；两族缺口语义不互换。
+      if (!r.plan_name || !r.plan_source_url || !r.quota_unit || r.quota_amount == null || r.quota_window_seconds == null) gaps.push("quota-evidence");
+      else if (r.quota_amount <= 0 || (r.quota_remaining != null && r.quota_remaining <= 0)) gaps.push("quota-positive");
+      if (r.no_payment_instrument !== true) gaps.push("payment-instrument-absent");
+    } else {
+      if (r.balance_nano_usd == null) gaps.push("balance-evidence");
+      else if (r.balance_nano_usd <= 0) gaps.push("balance-positive");
+      if (r.currency !== "USD") gaps.push("balance-currency");
+    }
     const sampled = Date.parse(r.balance_sampled_at ?? ""), expires = Date.parse(r.evidence_expires_at ?? "");
     if (!Number.isFinite(sampled) || sampled > Date.now()) gaps.push("balance-sampled-at");
     // 最大24小时资料窗口；未知、无限期或过期均不能获得现金许可。
@@ -234,15 +265,20 @@ export class InternalAiRegistration {
     const cert = certificateFor(target.endpoint, target.model) as Tariff;
     await this.status.current(input.activity, target.source_jti ?? target.proof_jti ?? "");
     const row: RevisionRow = { ...target, revision: target.revision + 1, state: "enabled", operator: input.operator, reason, proof_jti: null, gaps: [], before: null, after: null };
+    // 配额型证据没有 USD 余额：跳过余额覆盖上限，配额资料与余额资料互斥写入（NONE 清除另一种类的陈旧字段）。
     const sql = `LET $a = (SELECT * FROM ONLY $activity);
-      IF $a.registration_jti != $row.source_jti OR $a.goal != $row.goal OR $a.total_limit <= 0 OR $a.total_limit > 1000000000 OR $a.total_limit > $row.balance_nano_usd OR $a.per_attempt_limit < $worst OR $a.per_attempt_limit > 100000000 OR $a.attempt_limit <= 0 OR $a.attempt_limit > 30 { THROW "budget-bounds"; };
+      IF $a.registration_jti != $row.source_jti OR $a.goal != $row.goal OR $a.total_limit <= 0 OR $a.total_limit > 1000000000 OR ($row.evidence_kind != "reviewed-token-plan" AND $a.total_limit > $row.balance_nano_usd) OR $a.per_attempt_limit < $worst OR $a.per_attempt_limit > 100000000 OR $a.attempt_limit <= 0 OR $a.attempt_limit > 30 { THROW "budget-bounds"; };
       IF array::len(SELECT * FROM internal_ai_identity WHERE activity = $name AND revoked = false) != 2 { THROW "identity-revoked"; };
       IF <datetime>$row.evidence_expires_at <= time::now() OR $row.proof_expires_at <= time::unix() { THROW "proof-expired"; };
       UPDATE ONLY $activity SET enabled = true, approval_revision = $approval, evidence_expires_at = $row.evidence_expires_at,
-        price_revisions = [$row.price_revision], balance_nano_usd = $row.balance_nano_usd, balance_currency = "USD",
+        price_revisions = [$row.price_revision], evidence_kind = $row.evidence_kind,
+        balance_nano_usd = $row.balance_nano_usd, balance_currency = $row.currency,
         balance_source = $source, balance_sampled_at = $row.balance_sampled_at, balance_evidence_hash = $row.document_hash,
+        plan_name = $row.plan_name, plan_source_url = $row.plan_source_url, quota_unit = $row.quota_unit,
+        quota_amount = $row.quota_amount, quota_window_seconds = $row.quota_window_seconds,
+        quota_remaining = $row.quota_remaining, no_payment_instrument = $row.no_payment_instrument,
         auto_topup_disabled = true, service_approved = true;`;
-    return this.summary(await this.mutate(row, target.revision, sql, { worst: worstCost(cert), approval: `${target.approval_task}@${target.approval_version}`, source: `reviewed-document:${target.document_hash}` }), false);
+    return this.summary(await this.mutate(row, target.revision, sql, { worst: worstCost(cert), approval: `${target.approval_task}@${target.approval_version}`, source: `${target.evidence_kind === "reviewed-token-plan" ? "token-plan" : "reviewed-document"}:${target.document_hash}` }), false);
   }
   async disable(input: { activity: string; operator: string; reason: string }): Promise<RegistrationSummary> {
     const reason = normalizeReason(input.reason); this.id(input.activity);
@@ -272,7 +308,12 @@ export class InternalAiRegistration {
     return { activity: row.activity, revision: row.revision, currentRevision: latest?.revision ?? 0, currentEnabled: latest?.state === "enabled", state: row.state, proofType: row.proof_type,
       configurationDigest: row.configuration_digest, documentHash: row.document_hash, manifestHash: row.manifest_hash,
       accountRef: row.account_ref, endpoint: row.endpoint, endpointHost: endpointHost(row.endpoint), model: row.model, priceRevision: row.price_revision,
-      currency: "USD", balanceNanoUsd: row.balance_nano_usd ?? null, sampledAt: row.balance_sampled_at ?? null, expiresAt: row.evidence_expires_at ?? null,
+      currency: row.currency ?? null, balanceNanoUsd: row.balance_nano_usd ?? null, balanceSource: row.balance_source ?? null,
+      sampledAt: row.balance_sampled_at ?? null, expiresAt: row.evidence_expires_at ?? null,
+      evidenceKind: row.evidence_kind ?? null,
+      planName: row.plan_name ?? null, planSourceUrl: row.plan_source_url ?? null, quotaUnit: row.quota_unit ?? null,
+      quotaAmount: row.quota_amount ?? null, quotaWindowSeconds: row.quota_window_seconds ?? null,
+      quotaRemaining: row.quota_remaining ?? null, noPaymentInstrument: row.no_payment_instrument ?? null,
       autoTopupDisabled: row.auto_topup_disabled, serviceApproved: row.service_approved, paidCallsAllowed: ready ? 1 : 0,
       limits: { totalNanoUsd: a?.total_limit ?? 0, perAttemptNanoUsd: a?.per_attempt_limit ?? 0, maxAttempts: a?.attempt_limit ?? 0 },
       approval: row.approval_task && row.approval_version && row.approval_action && row.approval_audit_id ? { taskId: row.approval_task, version: row.approval_version, action: row.approval_action, auditId: row.approval_audit_id } : null,
