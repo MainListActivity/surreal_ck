@@ -54,12 +54,17 @@ export class InternalAiStore {
           LET $total = (SELECT * FROM ONLY $target);
           LET $a = (SELECT * FROM ONLY $activity);
           IF $a.goal != $goal OR $a.enabled != true OR $a.service_approved != true OR $a.auto_topup_disabled != true OR $a.approval_revision = NONE OR $a.balance_nano_usd = NONE OR $a.balance_nano_usd <= 0 OR $a.balance_currency != "USD" OR $a.balance_source = NONE OR $a.balance_evidence_hash = NONE OR string::len($a.balance_evidence_hash) != 64 OR $a.balance_source != "reviewed-document:" + $a.balance_evidence_hash OR $a.balance_sampled_at = NONE OR $a.evidence_expires_at = NONE OR <datetime>$a.evidence_expires_at <= time::now() OR $revision NOT IN $a.price_revisions { THROW "internal-ai-evidence-unavailable"; };
+          IF $a.registration_jti != NONE {
+            LET $runBinding = (SELECT identity_hash FROM internal_ai_run WHERE run_hash = $run LIMIT 1)[0];
+            LET $binding = (SELECT * FROM internal_ai_binding WHERE identity_hash = $runBinding.identity_hash LIMIT 1)[0];
+            IF $a.proof_expires_at = NONE OR $a.proof_expires_at <= time::unix() OR $binding = NONE OR $binding.revoked = true OR $binding.activity != $activityName { THROW "internal-ai-proof-unavailable"; };
+          };
           IF $total.attempts >= 30 OR $total.spent + $total.reserved + $amount > 1000000000 { THROW "internal-ai-budget-exhausted"; };
           IF $amount > $a.per_attempt_limit OR $a.attempts >= $a.attempt_limit OR $a.spent + $a.reserved + $amount > $a.total_limit OR $total.spent + $total.reserved + $amount > $a.balance_nano_usd { THROW "internal-ai-budget-exhausted"; };
           UPDATE ONLY $target SET reserved += $amount, attempts += 1;
           UPDATE ONLY $activity SET reserved += $amount, attempts += 1;
           CREATE ONLY $attempt CONTENT { activity: $activity, sequence: $a.attempts + 1, retry_index: 0, run_hash: $run, key_hash: $key, logical_hash: $logical, stage: $stage, provider: $provider, model: $model, actual_model: NONE, request_id: NONE, reserved: $amount, cost: NONE, state: "reserved", usage: NONE, usage_source: "unknown", price_revision: $revision, currency: "USD", started_at: time::now(), ended_at: NONE };
-          COMMIT TRANSACTION;`, { activity, attempt, target: new RecordId("internal_ai_target", GOAL), goal: GOAL, revision: tariff.revision, amount, run: scope.runHash, key: scope.keyHash, logical: scope.logicalHash, stage, provider: tariff.provider, model: tariff.model });
+          COMMIT TRANSACTION;`, { activity, activityName: scope.activity, attempt, target: new RecordId("internal_ai_target", GOAL), goal: GOAL, revision: tariff.revision, amount, run: scope.runHash, key: scope.keyHash, logical: scope.logicalHash, stage, provider: tariff.provider, model: tariff.model });
         void result;
         const found = rows<Attempt>(await db.query("SELECT * FROM ONLY $attempt", { attempt }))[0];
         if (!found) throw new Error("internal-ai-reservation-unconfirmed");

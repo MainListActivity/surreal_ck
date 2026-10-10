@@ -1,7 +1,10 @@
 import { InternalAiStore } from "./internal-ai/store";
 import { InternalAiGate } from "./internal-ai/gate";
+import { CompanyStatusClient } from "./internal-ai/company-status";
+import { InternalAiRegistration } from "./internal-ai/registration";
 import { meteredDecision } from "./internal-ai/decision";
 import { createOpsInternalAiRoutes } from "./routes/ops-internal-ai";
+import { createInternalAiIdentityRoutes } from "./routes/internal-ai-identity";
 import { ProTrialService } from "./workspaces/pro-trial";
 import { SurrealTrialStore } from "./workspaces/pro-trial-store";
 import { deliverProTrial } from "./workspaces/pro-trial-delivery";
@@ -363,7 +366,8 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     ?? createContentResearchSessionFactory({ searchExchange: contentSearchExchange });
   const rolloutGateService = options.rolloutGateService
     ?? new RolloutGateService(new SurrealRolloutStore());
-  const internalAiGate = new InternalAiGate(new InternalAiStore(async () => getRootDatabaseSession("_system")));
+  const internalAiRegistration = new InternalAiRegistration(async () => getRootDatabaseSession("_system"), new CompanyStatusClient(env.INTERNAL_AI_COMPANY_STATUS_URL));
+  const internalAiGate = new InternalAiGate(new InternalAiStore(async () => getRootDatabaseSession("_system")), activity => internalAiRegistration.assertCurrent(activity));
   const autoAiChatService = options.aiChatService
     ?? buildAutoAiChatService(runBus, platformContentService, embeddingProvider, contentResearchSession, internalAiGate);
   const aiAllowanceService = options.aiAllowance ?? new AiAllowanceService({
@@ -448,6 +452,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     ))
     .route("/", createInternalIdpRoutes(workspaceScope))
     .route("/", createSessionRoutes(workspaceScope, idpTokenScopeAdapter, options.requireUser))
+    .route("/", createInternalAiIdentityRoutes({ db: async () => getRootDatabaseSession("_system"), requireUser: options.requireUser?.() }))
     .route("/", createContentReaderRoutes({
       exchange: options.contentReaderExchange ?? createContentReaderExchangeHandler({ rolloutGates }),
       searchExchange: contentSearchExchange,
@@ -545,7 +550,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
         requireUser: options.requireUser,
       }),
     )
-    .route("/", createOpsInternalAiRoutes({ gate: internalAiGate, runtime: { provider: env.AI_PROVIDER, model: env.AI_MODEL, endpoint: env.AI_BASE_URL, jevModel: env.JEV_MODEL } }))
+    .route("/", createOpsInternalAiRoutes({ gate: internalAiGate, registration: internalAiRegistration, runtime: { provider: env.AI_PROVIDER, model: env.AI_MODEL, endpoint: env.AI_BASE_URL, jevModel: env.JEV_MODEL, jevEnabled: Boolean(env.TYPESAFE_API_KEY) } }))
     .route("/", createOpsAiAllowanceRoutes({ service: aiAllowanceService }))
     .route("/", createOpsRolloutRoutes({ service: rolloutGateService }))
     .route("/", createOpsInvitationRoutes({ service: inviteService, requireOperator: options.requireOperator }))

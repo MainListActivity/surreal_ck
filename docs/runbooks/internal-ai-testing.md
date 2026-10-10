@@ -35,7 +35,7 @@ Embedding在内部活动中发送前禁止（包括资源检索调用生成器�
 
 ## 受审配置与余额未就绪
 
-本PR只提供受控只读运营接口，没有客户或通用HTTP启用/充值/资料上传接口。配置由独立工程/运营评审的服务器控制面维护，必须保留审批证据与配置版本，绑定明确批准的内部账号+workspace；不得临时读取凭证或让QA绕 `_system` 写配置。需要运营代理登记配置时，由经理安排专用受审配置交付，不能用 `ops_query` 绕身份边界。没有资料就保持disabled与paidCallsAllowed=0。
+内部控制面通过专用运营路由消费公司可信证明，客户没有配置入口。配置由独立工程/运营评审的服务器控制面维护，必须保留审批证据与配置版本，绑定明确批准的内部账号+workspace；不得临时读取凭证或让QA绕 `_system` 写配置。需要运营代理登记配置时，由经理安排专用受审配置交付，不能用 `ops_query` 绕身份边界。没有资料就保持disabled与paidCallsAllowed=0。
 
 活动字段须同时具备固定goal、enabled、service_approved、approval_revision、匹配price_revisions、未到期evidence_expires_at、USD现有余额、balance_sampled_at、余额证据SHA256、`balance_source=reviewed-document:<同SHA256>`、auto_topup_disabled=true。这些是服务器审核资料的绑定，不是客户端自报余额。真实批准服务、证据内容真实性/账户绑定、官方当时价格、余额采样和自动充值停用须由运营独立核查后进入受审配置；代码不会自动从key推导或伪造余额。本轮没有取得这些资料，也没有配置生产活动。
 
@@ -63,3 +63,23 @@ RocksDB tests覆盖多连接及两个独立客户端进程并发、真实服务�
 迁移034仅新增内部控制面结构，无回填或删除已有生产数据；无需新增环境变量或主机准备。受审活动配置是另一个启用关口。回滚前必须通过既有运营rollout接口把所有登记内部workspace的 `legal_research_ai` 禁用，确认旧版本也拒绝新run/续跑，再停用内部活动并回退origin SHA。旧版本没有现金门禁，不能仅回退代码或只依赖新活动disabled字段；禁用灰度不得在回滚后恢复。保留账本及未结预留，禁止重置以重跑测试。
 
 统计分母：总测试成本包含全部有效底层尝试（失败/重试仍计），除以全部有效尝试数；同一总成本除以成功闭环数。任何uncertain成本使实际统计未核定，不能用预留额冒充实际成本；零成功闭环时后一项null。AI单位账本单独报告。
+
+
+## 公司证明登记（54697f41）
+
+只用已有 `subscription.manage` 实时运营能力：
+
+- `POST /api/ops/internal-ai/company-proof` 接受公司代理实际 `{proof}` 信封（也可带 `reason`），固定 EdDSA/kid/JWK/issuer/audience/用途验签。真实 proof.type 是 `approved-service`，脱敏文档 type 才是 `reviewed-service`。登记永远 disabled；双身份仅来自公司正常 OIDC 权威投影，不接受 caller subject。
+- `POST /api/ops/internal-ai/activities/:id/evidence`：`{revision, document, reason}`；文档 UTF-8 SHA256 必须与已签 documentHash 相同，严格 USD-only schema、服务账户/endpoint/模型/priceRevision 对齐。正文不入库。每次新增审计 revision 并禁用活动。
+- `POST /api/ops/internal-ai/activities/:id/enable`：`{revision, reason}`；仅最新 disabled revision、真实独立批准、正余额、过去采样/最多24小时资料窗口、停自动充值、服务批准、精确当前 provider/endpoint/model 和受审价目版本均齐全才可启用。未知币种/FX/TokenPlan拒绝。当前单账户契约无法证明Jev自己的余额/证书，Jev启用时也拒绝启用。
+- `POST /api/ops/internal-ai/activities/:id/disable`：`{reason}`；`POST /api/ops/internal-ai/identities/revoke`：`{activity, alias, reason}`；撤销持久标记并禁用活动，重复撤销幂等，保留身份、run、ledger和uncertain预留。
+- `GET /api/ops/internal-ai/activities/:id/revisions`：脱敏历史预览、操作者与原因、公司批准引用、真实 manifest hash、配置摘要及事务内前后快照。revision字段READONLY，服务无覆盖/删除历史路径。root维护权限不作为客户入口。
+- `GET /api/ops/internal-ai/supplier-probe?host=token.sensenova.cn`：固定注册表明确 unsupported，无注册官方只读balance/plan/usage能力则不发送任何探测请求，列需补证据。不是断言供应商不存在官方API；后续须独立核定固定能力后代码评审加入。不得套OpenAI证书、积分、CNY或零价。
+
+公司状态由服务端 `INTERNAL_AI_COMPANY_STATUS_URL` 指向公司已核定的固定 HTTPS `/internal-ai/status`（无userinfo/port/query/hash、不跟随重定向）。该非secret部署值不得从caller或manifest读取。登记、补证、enable及每个底层attempt重新请求随机nonce的签名状态；核对jti/批准版本、用途、pin、checkedAt/iat/exp（最长60秒）及proof自身最长300秒。地址缺失、不可达、撤回、租约/文件/身份变化、到期或key轮换均拒绝，无模型外发。status bearer只在进程内存，不入库/日志；重启后无能力也拒绝，必须重新投递仍有效证明；没有timer。
+
+登记/补证/enable/disable/revoke与审计快照单事务提交；活动版本CAS与身份唯一索引拒绝并发冲突，调用方先读回再重试。同jti同摘要幂等，不同配置或身份改绑冲突。同配置的新证明可以刷新，但绝不重置spent/reserved/attempts或共享target；旧证据revision不能绕过disable或revoke重新启用。
+
+035迁移仅新增表/字段/索引，不回填或改写生产数据。公开pin由 `ops_internal_ai_trust` 核对，轮换须代码发布。当前生产公网状态发布面未配置（本轮ops_info读回），本轮也未取得真实SenseNova财务/价目资料：`unsupported`、`dataReady=false`、`paidCallsAllowed=0`。上线链须先核定公司公开状态地址，再按runbook通过CI设 `ORIGIN_ENV_INTERNAL_AI_COMPANY_STATUS_URL`；缺地址可安全部署身份只读端点，登记/启用继续拒绝。真实prove/deliver/revoke/expiry/status公网实测归部署后的独立QA，不以合成fixture代替。
+
+所有本地证明、余额及OpenAI正向启用均为隔离公司fork合成fixture，未替换生产SenseNova，未调用任何真实模型。回退仍按上文先关闭已有灰度并确认新旧run/续跑拒绝，保留所有历史和预留。
