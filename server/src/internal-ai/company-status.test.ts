@@ -15,8 +15,12 @@ function token(over: Record<string, unknown> = {}, header: Record<string, unknow
 }
 test("current signed status accepts only bound jti, nonce, approval and <=60s window", () => {
   expect(() => verifyCompanyStatus(token(), expected, nonce, now, anchor)).not.toThrow();
+  for (const over of [{ checkedAt: seconds + 30, iat: seconds + 30 }, { iat: seconds + 30 }]) {
+    expect(() => verifyCompanyStatus(token(over), expected, nonce, now, anchor)).not.toThrow();
+  }
   for (const over of [{ valid: false }, { nonce: "B".repeat(32) }, { jti: "other" }, { approvalVersion: 2 }, { exp: seconds },
-    { exp: seconds + 61 }, { checkedAt: seconds + 1 }, { checkedAt: seconds - 60 }, { iat: seconds + 1 }, { unknown: true }, { aud: "other" }]) {
+    { exp: seconds + 61 }, { checkedAt: seconds + 31, iat: seconds + 31 }, { checkedAt: seconds - 60 }, { iat: seconds + 31 },
+    { unknown: true }, { aud: "other" }]) {
     expect(() => verifyCompanyStatus(token(over), expected, nonce, now, anchor)).toThrow(/当前状态/);
   }
   expect(() => verifyCompanyStatus(token(), { ...expected, exp: seconds }, nonce, now, anchor)).toThrow();
