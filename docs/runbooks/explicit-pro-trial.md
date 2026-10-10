@@ -73,3 +73,19 @@ sck call ops_request {"session":"<本任务运营句柄>","method":"GET","path":
 核对 fixture `pro_trial_revision:lca10_qa_r1` 与原审批商品/资源/内容修订一致；连续读两遍并比较配置审计时间、slot/claim/资格、订阅期限（serverTime 允许变化）。通过既有 entitlement/额度只读入口补核余额，不能使用 POST“读回”。用客户 `ops_login` 句柄调用三个新 GET，均应 403；无 subscription.manage 的运营身份同样拒绝。保存 origin/web 完整 SHA 与部署 ID，再对照获准提交。尚未部署的实现不能宣称完成这些生产条件。
 
 回滚仅重发先前通过 Quality gate 且满足现有试用/来源兼容门禁的应用 SHA，再重发其 web；新增观测无 schema 或数据需要回滚。回滚到无版本标识的版本时返回 unknown/入口缺失，不能伪造当前版本。此只读链不执行旧 runbook 的禁用配置或撤资格操作，不激活 fixture、不扩资格、不调用模型。
+
+## 统一规则口径（首次价值03）
+
+产品 create/preview/start、额度/到期页、营销站试用说明与本文档使用同一套规则。数值一律来自服务端核定的不可变 `pro_trial_revision`，不在前端或营销页硬编码（历史 12/40 单位等数字不视为现值）。
+
+- 开放对象与计费资格：具备显式 `pro_trial_eligibility` 资格的 active 计费账户 owner/admin 才可在产品内经显式确认启动；workspace admin 身份不构成资格。既有 G2 律师邀请灰度维持其获批范围，本统一文案不扩大也不取消其授权。
+- 显式确认：preview 展示完整范围（内容、额度、容量、期限、排除项、fixture 标记）后，须人工勾选确认才 `start`。
+- 内部 fixture：`fixture:true` 配置仅用于受控验收，不代表正式商业承诺；产品界面与营销页必须标明。
+- 有限容量与共享 AI 额度：容量、研究费率、额度由审批 revision 给出；全体成员共享同一 `ai_cycle_allowance`。
+- 七日服务端时钟：起止以数据库 `time::now()` 为准，预览起止仅为估计；期间失败仍消耗原七日，不重置计时。
+- 到期保留：到期进入保留模式，成果保留；全文与追问按当前权限重新核验。
+- 新来源转换：转 Plus/Pro/Max 必须使用新商业来源与新周期，不继承试用桶。
+- 不自动收费与失败重试：无需信用卡、不自动转付费；交付失败用原请求字段重试，不重新计时；slug 冲突或输入错误可修改后重试。
+- 无资格/无有效配置：给出明确可恢复步骤（联系计费管理员或邀请人、稍后重试），不承诺所有新用户能新建工作区。
+
+运营配置与读回：更改用 `POST /api/ops/pro-trial/configuration` 与 `eligibility`（`subscription.manage`）；`GET` 同名端点读回 revision/资格/期限/费率/fixture/enabled 与 slot/claim/订阅边界，容量经 `GET /api/ops/product-entitlements/revisions/<product_revision>/inspect` 的不可变资源模板核对。`enabled:false` 停止新领取，已领取按原不可变版本恢复；撤销资格停止旧请求恢复。新增配置不默认启用公众试用，配置与权限 fail-closed。
