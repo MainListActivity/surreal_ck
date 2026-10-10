@@ -122,11 +122,16 @@ export class InternalAiRegistration {
     if (latest.revision !== revision) throw conflict("internal-ai-stale-revision", "登记版本已变更，禁止使用旧证据启用");
     return latest;
   }
-  /** 状态与root账本分离；每次attempt重新请求签名状态，不缓存60秒的撤回窗口。 */
+  /**
+   * 用户门禁只锚定受审账本：最新 revision 必须 enabled（disable/revoke 产生的非 enabled revision 立即拒绝）。
+   * def-capability-300s-fragility：操作者投递会话（proof ≤300s + 投递租约，公司状态在该会话过期后必回
+   * valid=false）只约束 register/submitEvidence/enable 受控链路；已启用活动的用户流量不再逐 attempt
+   * 复核远端状态，否则窗口过期后全部拒绝、须人工整链重刷。evidence 窗口、身份绑定与预算由 reserve
+   * 事务在同一事务内强制，不受进程重启影响。
+   */
   async assertCurrent(activity: string): Promise<void> {
     const latest = await this.latest(activity);
     if (!latest || latest.state !== "enabled") throw denied("内部活动已禁用");
-    await this.status.current(activity, latest.source_jti ?? latest.proof_jti ?? "");
   }
   /** 活动、身份、前后快照和审计一次提交。CAS版本和写冲突阻止并发部分更新。 */
   private async mutate(row: RevisionRow, expected: number, sql: string, vars: Record<string, unknown> = {}): Promise<RevisionRow> {

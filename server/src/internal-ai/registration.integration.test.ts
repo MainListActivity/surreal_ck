@@ -506,7 +506,7 @@ localTest("enable cannot resurrect disabled old evidence; refresh and revoke pre
   expect(latest.after).toMatchObject({ spent: 7, reserved: 11, attempts: 3, enabled: false });
 });
 
-localTest("missing or withdrawn company status denies registration and every model attempt", async () => {
+localTest("missing or withdrawn company status denies the controlled chain (register/evidence/enable)", async () => {
   if (!db) throw new Error("fixture unavailable");
   const tag = "status";
   const unavailable = new InternalAiRegistration(async () => db!);
@@ -518,9 +518,7 @@ localTest("missing or withdrawn company status denies registration and every mod
   await service.register({ claims: claimsOf(proof(tag)), operator: "synthetic-operator", reason: "状态仍有效" });
   valid = false;
   await expect(service.submitEvidence({ activity: `activity-${tag}`, revision: 1, document: evidenceDocument(tag), operator: "synthetic-operator", reason: "撤回后补证" })).rejects.toThrow(/revoked/);
-  const checkedGate = new InternalAiGate(new InternalAiStore(async () => db!), async () => assert());
-  const scope = await checkedGate.bind(`owner-${tag}`, `ws_${tag}`, "run-status", "key-status");
-  await expect(checkedGate.inRun(scope, () => checkedGate.begin("proposal", "openai", "sensenova-6.8-flash-lite", "https://token.sensenova.cn/v1"))).rejects.toThrow(/revoked/);
+  // 状态不可达/无效只在受控链路 fail-closed；用户 attempt 的锚定见下方解耦用例。
 });
 
 
@@ -591,4 +589,45 @@ localTest("pre-commit store failures collapse to 503 company-proof-store-unavail
   expect(preserved).toBeInstanceOf(HttpError);
   expect((preserved as HttpError).code).toBe("synthetic-preserved");
   expect((preserved as HttpError).status).toBe(409);
+});
+
+localTest("enabled activity serves user attempts after the operator proof window; controlled chain stays fail-closed", async () => {
+  if (!db) throw new Error("fixture unavailable");
+  const tariff = TARIFFS.find(t => t.model === "sensenova-6.8-flash-lite")!;
+  const tag = "decouple";
+  const activityId = `activity-${tag}`;
+  const endpoint = `https://${tariff.host}/v1`;
+  const document = tokenPlanDocument();
+  // 可变状态桩：true=投递会话仍有效，false=证明窗口过期/撤回（公司侧此刻必回 valid=false）。
+  let revoked = false;
+  const assert = async () => { if (revoked) throw new Error("synthetic-status-revoked"); };
+  const service = new InternalAiRegistration(async () => db!, { check: assert, current: assert, remember: () => {} });
+  const registered = await service.register({ claims: claimsOf(proof(tag, {
+    type: "approved-service", scope: "enable", paidCallsAllowed: 1, activityId, document,
+    model: tariff.model, endpoint, accountRef: "synthetic-sensenova-account", priceRevision: tariff.revision,
+    approval: { taskId: "synthetic-approval-task", version: 6, action: "accept", auditId: "audit:decouple", reviewer: "synthetic-reviewer", digest: digest(`configuration:${tag}:jti-${tag}`) },
+  })), operator: "synthetic-operator", reason: "解耦受审登记" });
+  const submitted = await service.submitEvidence({ activity: activityId, revision: registered.revision, document, operator: "synthetic-operator", reason: "提交配额证据" });
+  const enabled = await service.enable({ activity: activityId, revision: submitted.revision, operator: "synthetic-operator", reason: "显式启用", runtime: { provider: tariff.provider, model: tariff.model, endpoint } });
+  expect(enabled.state).toBe("enabled");
+  // 默认接线形状：gate 的 assertCurrent 读受审账本，不请求公司状态。
+  const wiredGate = new InternalAiGate(new InternalAiStore(async () => db!), activity => service.assertCurrent(activity));
+  const scope = await wiredGate.bind(`owner-${tag}`, `ws_${tag}`, "run-decouple", "key-decouple");
+  expect(scope?.activity).toBe(activityId);
+  // 模拟 >300s：活动行的投递证明窗口拨到过去，公司状态会话终结（撤回/租约终结同型）。
+  await db.query("UPDATE ONLY $id SET proof_expires_at = 1", { id: new RecordId("internal_ai_activity", activityId) });
+  revoked = true;
+  // >300s 后无人工重刷仍可调用：用户 attempt 照常预留（零费率证书预留 0）并结算。
+  const ticket = await wiredGate.inRun(scope, () => wiredGate.begin("proposal", tariff.provider, tariff.model, endpoint));
+  expect(ticket?.tariff.revision).toBe(tariff.revision);
+  await wiredGate.inRun(scope, () => wiredGate.finish(ticket, { inputTokens: 100, outputTokens: 10, cachedInputTokens: null, reasoningTokens: null }, tariff.model, "synthetic-request", false));
+  expect((await wiredGate.store.page(activityId))[0]?.state).toBe("settled");
+  // disable 后立即拒绝。
+  const disabled = await service.disable({ activity: activityId, operator: "synthetic-operator", reason: "禁用" });
+  await expect(wiredGate.inRun(scope, () => wiredGate.begin("proposal", tariff.provider, tariff.model, endpoint))).rejects.toThrow();
+  // 受控链路 fail-closed：状态撤回后 enable 立即拒绝，已吊销会话不能复活同一证据。
+  await expect(service.enable({ activity: activityId, revision: disabled.revision, operator: "synthetic-operator", reason: "撤回后启用", runtime: { provider: tariff.provider, model: tariff.model, endpoint } })).rejects.toThrow(/revoked/);
+  // 绑定撤销后立即拒绝：换 run/key 也一样，持久标记不复活。
+  await service.revokeIdentity({ activity: activityId, alias: "LCA04_MEMBER", operator: "synthetic-operator", reason: "撤销成员" });
+  await expect(wiredGate.bind(`member-${tag}`, `ws_${tag}`, "run-after-revoke", "key-after-revoke")).rejects.toThrow(/revoked/);
 });

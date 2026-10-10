@@ -59,10 +59,14 @@ export class InternalAiStore {
           } ELSE {
             IF $a.balance_nano_usd = NONE OR $a.balance_nano_usd <= 0 OR $a.balance_currency != "USD" OR $a.balance_source != "reviewed-document:" + $a.balance_evidence_hash { THROW "internal-ai-evidence-unavailable"; };
           };
+          // def-capability-300s-fragility：用户门禁锚定受审账本，不锚定操作者投递会话。
+          // 投递 proof 自身 ≤300s 且公司状态有效性绑定投递租约（公司侧 valid() 在 proof 过期后必回 valid=false），
+          // 把 attempt 绑在该会话上会让已启用活动在 >300s 后全部拒绝、须人工整链重刷。
+          // 因此这里只复核持久 fail-closed 状态：绑定存在、未撤销、归属本活动；撤销/删除式撤权仍立即拒绝。
           IF $a.registration_jti != NONE {
             LET $runBinding = (SELECT identity_hash FROM internal_ai_run WHERE run_hash = $run LIMIT 1)[0];
             LET $binding = (SELECT * FROM internal_ai_binding WHERE identity_hash = $runBinding.identity_hash LIMIT 1)[0];
-            IF $a.proof_expires_at = NONE OR $a.proof_expires_at <= time::unix() OR $binding = NONE OR $binding.revoked = true OR $binding.activity != $activityName { THROW "internal-ai-proof-unavailable"; };
+            IF $binding = NONE OR $binding.revoked = true OR $binding.activity != $activityName { THROW "internal-ai-binding-unavailable"; };
           };
           IF $total.attempts >= 30 OR $total.spent + $total.reserved + $amount > 1000000000 { THROW "internal-ai-budget-exhausted"; };
           IF $amount > $a.per_attempt_limit OR $a.attempts >= $a.attempt_limit OR $a.spent + $a.reserved + $amount > $a.total_limit OR ($a.evidence_kind != "reviewed-token-plan" AND $total.spent + $total.reserved + $amount > $a.balance_nano_usd) { THROW "internal-ai-budget-exhausted"; };
