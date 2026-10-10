@@ -5,7 +5,7 @@ import type { RecordId } from "surrealdb";
 export type AttemptTicket = { id: RecordId; tariff: Tariff };
 /** Interface：bind/inRun保持身份；begin/finish包住实际provider尝试。没有客户可设置的budget字段。 */
 export class InternalAiGate {
-  constructor(readonly store: InternalAiStore) {}
+  constructor(readonly store: InternalAiStore, private readonly assertCurrent?: (activity: string) => Promise<void>) {}
   async bind(subject: string, database: string, run: string, key?: string): Promise<InternalScope | undefined> {
     const bound = await this.store.binding(subject, database);
     // 撤销身份保持拒绝：标记撤销或曾有内部run（含binding被删）的新旧run/key一律拒绝，不降级非计量run。
@@ -21,6 +21,7 @@ export class InternalAiGate {
   async begin(stage: string, provider: string, model: string, endpoint: string): Promise<AttemptTicket | undefined> {
     const scope = internalScope();
     if (!scope) return undefined;
+    await this.assertCurrent?.(scope.activity);
     let tariff: Tariff | undefined;
     try { tariff = tariffFor(provider, model, endpoint); } catch { /* unknown URL denies */ }
     if (!tariff) throw new Error("internal-ai-price-or-bound-unavailable");

@@ -82,6 +82,7 @@ const EnvSchema = z.object({
   AI_MODEL: z.string().min(1).optional(),
   AI_API_KEY: z.string().min(1).optional(),
   AI_DELIVERY_KEY: z.string().regex(/^[a-fA-F0-9]{64}$/).optional(),
+  INTERNAL_AI_COMPANY_STATUS_URL: z.preprocess(value => value === "" ? undefined : value, z.string().url().optional()),
   AI_BASE_URL: z.string().url().optional(),
 
   // 资源保存确认动作的 embedding provider key（与 chat 模型设置分离；openai-compatible）。

@@ -32,7 +32,7 @@ const kid = createHash("sha256").update(JSON.stringify(jwk)).digest("hex").slice
 const anchor = { alg: "EdDSA", kid, jwk };
 const digest = (seed: string) => createHash("sha256").update(seed).digest("hex");
 const bytesHash = (value: string) => createHash("sha256").update(Buffer.from(value, "utf8")).digest("hex");
-const NOW = 1_800_000_000_000;
+const NOW = Date.now();
 const SECONDS = Math.floor(NOW / 1000);
 const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
 
@@ -50,14 +50,14 @@ function evidenceDocument(tag: string, over: Record<string, unknown> = {}): stri
     schemaVersion: 1, type: "development-disabled", accountRef: "synthetic-existing-service",
     endpoint: "https://token.sensenova.cn/v1", model: "sensenova-6.8-flash-lite",
     priceRevision: "synthetic-unsupported", currency: "USD", balanceNanoUsd: 0,
-    sampledAt: "2026-10-09T00:00:00.000Z", expiresAt: "2099-01-01T00:00:00.000Z",
+    sampledAt: new Date(NOW - 60000).toISOString(), expiresAt: new Date(NOW + 3600000).toISOString(),
     autoTopupDisabled: true, serviceApproved: false, ...over,
   });
 }
 
 /** 按公司 proof-bridge 的 sign('proof', …) 形状构造并自签一份证明；documentHash 由真实文档字节算。 */
 function proof(tag: string, overrides: {
-  jti?: string; type?: "development-disabled" | "reviewed-service"; scope?: "register-disabled" | "enable";
+  jti?: string; type?: "development-disabled" | "approved-service"; scope?: "register-disabled" | "enable";
   paidCallsAllowed?: 0 | 1; model?: string; endpoint?: string; accountRef?: string; activityId?: string;
   priceRevision?: string; budget?: Record<string, unknown>; approval?: unknown;
   document?: string; evidence?: Record<string, unknown>;
@@ -69,7 +69,7 @@ function proof(tag: string, overrides: {
   const priceRevision = overrides.priceRevision ?? "synthetic-unsupported";
   const document = overrides.document ?? evidenceDocument(tag, overrides.evidence);
   const documentHash = bytesHash(document);
-  const configurationDigest = digest(`configuration:${tag}:${overrides.jti ?? `jti-${tag}`}`);
+  const configurationDigest = digest(`configuration:${tag}:jti-${tag}`);
   const manifest = {
     schemaVersion: 1, goalId: COMPANY_PROOF_GOAL, project: COMPANY_PROOF_PROJECT, env: "production",
     activityId: overrides.activityId ?? `activity-${tag}`, workspaceSlug: "ui01", documentHash,
@@ -86,10 +86,10 @@ function proof(tag: string, overrides: {
     paidCallsAllowed: overrides.paidCallsAllowed ?? 0, scope: overrides.scope ?? "register-disabled",
     project: COMPANY_PROOF_PROJECT, env: "production", goal: COMPANY_PROOF_GOAL,
     requestTask: `company-task-${tag}`,
-    lease: { employee: "synthetic-employee", taskId: `company-task-${tag}`, delivery: `delivery-${tag}`, fence: 1 },
+    lease: { goal: COMPANY_PROOF_GOAL, project: COMPANY_PROOF_PROJECT, role: "engineering", employee: "synthetic-employee", taskId: `company-task-${tag}`, delivery: `delivery-${tag}`, fence: 1 },
     approval: overrides.approval ?? null, documentHash, manifest, configurationDigest,
     identities: [ids.owner, ids.member],
-    identitiesDigest: digest(`identities:${tag}:${overrides.jti ?? `jti-${tag}`}`),
+    identitiesDigest: digest(`identities:${tag}`),
     jti: overrides.jti ?? `jti-${tag}`, nonce: "abcdefghijklmnopqrstuvwx",
     iat: SECONDS, exp: SECONDS + 60,
     status: { path: "/internal-ai/status", bearer: "C".repeat(43) },
@@ -126,7 +126,7 @@ beforeAll(async () => {
   for (const file of ["034-internal-ai-budget.surql", "035-internal-ai-registration.surql"]) {
     await db.query(await readFile(new URL(`../../../shared/sql/system/${file}`, import.meta.url), "utf8"));
   }
-  registration = new InternalAiRegistration(async () => db!);
+  registration = new InternalAiRegistration(async () => db!, { check: async () => {}, current: async () => {}, remember: () => {} });
   gate = new InternalAiGate(new InternalAiStore(async () => db!));
 }, 30000);
 
@@ -188,12 +188,12 @@ localTest("identity cannot be rebound to another activity and a revoked identity
   const tag = "revoke";
   const bound = await registration.register({ claims: claimsOf(proof(tag)), operator: "synthetic-operator", reason: "先正常绑定" });
   expect(bound.activity).toBe(`activity-${tag}`);
-  await expect(registration.register({ claims: claimsOf(proof(tag, { activityId: `other-${tag}`, jti: "other-jti" })), operator: "synthetic-operator", reason: "改绑活动" })).rejects.toThrow(/已绑定其它活动/);
+  await expect(registration.register({ claims: claimsOf(proof(tag, { activityId: `other-${tag}`, jti: "other-jti" })), operator: "synthetic-operator", reason: "改绑活动" })).rejects.toThrow(/登记事务/);
   const revoked = await registration.revokeIdentity({ alias: "LCA04_MEMBER", activity: `activity-${tag}`, operator: "synthetic-operator", reason: "合成撤销" });
   expect(revoked.revoked).toBe(true);
   expect(revoked.identityHash).toBe(hash(`member-${tag}`, `ws_${tag}`));
-  await expect(registration.revokeIdentity({ alias: "LCA04_MEMBER", activity: `activity-${tag}`, operator: "synthetic-operator", reason: "重复撤销" })).rejects.toThrow(/已被撤销/);
-  await expect(registration.register({ claims: claimsOf(proof(tag, { jti: "after-revoke" })), operator: "synthetic-operator", reason: "撤销后重新登记" })).rejects.toThrow(/不得重新绑定/);
+  expect((await registration.revokeIdentity({ alias: "LCA04_MEMBER", activity: `activity-${tag}`, operator: "synthetic-operator", reason: "重复撤销" })).revoked).toBe(true);
+  await expect(registration.register({ claims: claimsOf(proof(tag, { jti: "after-revoke" })), operator: "synthetic-operator", reason: "撤销后重新登记" })).rejects.toThrow(/登记事务/);
   // 撤销后门禁拒绝：不降级为非计量路径。
   await expect(gate.bind(`member-${tag}`, `ws_${tag}`, "run-after-revoke")).rejects.toThrow(/revoked/);
   // 撤销只置标记：identity 与 binding 行都还在。
@@ -232,11 +232,11 @@ localTest("enable stays fail-closed for expired evidence, zero balance, illegal 
   /** 每个变体一份独立证明 + 独立活动：证明签的就是即将提交的那一份文档。 */
   const enroll = async (tag: string, over: Record<string, unknown>) => {
     const document = evidenceDocument(tag, { type: "reviewed-service", ...over });
-    const registered = await registration.register({ claims: claimsOf(proof(tag, { type: "reviewed-service", scope: "enable", paidCallsAllowed: 1, document, approval: { ...approval, digest: digest(`configuration:${tag}:jti-${tag}`) } })), operator: "synthetic-operator", reason: "受审登记" });
+    const registered = await registration.register({ claims: claimsOf(proof(tag, { type: "approved-service", scope: "enable", paidCallsAllowed: 1, document, approval: { ...approval, digest: digest(`configuration:${tag}:jti-${tag}`) } })), operator: "synthetic-operator", reason: "受审登记" });
     return registration.submitEvidence({ activity: registered.activity, revision: registered.revision, document, operator: "synthetic-operator", reason: "提交证据" });
   };
   // 证据过期 → evidence-not-expired。
-  const expired = await enroll("expired", { balanceNanoUsd: 1_000_000_000, expiresAt: "2026-10-10T00:00:00.000Z", serviceApproved: true });
+  const expired = await enroll("expired", { balanceNanoUsd: 1_000_000_000, expiresAt: new Date(NOW - 1).toISOString(), serviceApproved: true });
   expect(await registration.gapsFor((await registration.revision(expired.activity, expired.revision))!, runtime)).toContain("evidence-not-expired");
   await expect(registration.enable({ activity: expired.activity, revision: expired.revision, operator: "synthetic-operator", reason: "启用过期证据", runtime })).rejects.toThrow(/启用证据不足/);
   // 余额为 0 → balance-positive。
@@ -257,6 +257,7 @@ localTest("enable stays fail-closed for expired evidence, zero balance, illegal 
   await expect(registration.enable({ activity: complete.activity, revision: complete.revision, operator: "synthetic-operator", reason: "缺价目启用", runtime })).rejects.toThrow(/启用证据不足/);
   // 换成 OpenAI 模型/host：与当前生产连接不一致，仍然拒绝（不得替换模型）。
   await expect(registration.enable({ activity: complete.activity, revision: complete.revision, operator: "synthetic-operator", reason: "换模型", runtime: { provider: "openai", model: "gpt-4o-mini-2024-07-18", endpoint: "https://api.openai.com/v1" } })).rejects.toThrow(/启用证据不足/);
+  await expect(registration.enable({ activity: complete.activity, revision: complete.revision, operator: "synthetic-operator", reason: "Jev缺独立证据", runtime: { ...runtime, jevEnabled: true, jevModel: "jev-1.13.0" } })).rejects.toThrow(/启用证据不足/);
   // 生产连接未配置：同样拒绝。
   await expect(registration.enable({ activity: complete.activity, revision: complete.revision, operator: "synthetic-operator", reason: "无生产连接", runtime: {} })).rejects.toThrow(/启用证据不足/);
 });
@@ -270,17 +271,17 @@ localTest("a fully reviewed openai activity enables, keeps its ledger, and can b
   const document = JSON.stringify({
     schemaVersion: 1, type: "reviewed-service", accountRef: "synthetic-openai-account", endpoint,
     model: tariff.model, priceRevision: tariff.revision, currency: "USD", balanceNanoUsd: 1_000_000_000,
-    sampledAt: "2026-10-09T00:00:00.000Z", expiresAt: "2099-01-01T00:00:00.000Z",
+    sampledAt: new Date(NOW - 60000).toISOString(), expiresAt: new Date(NOW + 3600000).toISOString(),
     autoTopupDisabled: true, serviceApproved: true,
   });
   const documentHash = bytesHash(document);
   const registered = await registration.register({ claims: claimsOf(proof(tag, {
-    type: "reviewed-service", scope: "enable", paidCallsAllowed: 1, activityId, document,
+    type: "approved-service", scope: "enable", paidCallsAllowed: 1, activityId, document,
     model: tariff.model, endpoint, accountRef: "synthetic-openai-account", priceRevision: tariff.revision,
     budget: { totalNanoUsd: 1_000_000_000, perAttemptNanoUsd: worstCost(tariff), maxAttempts: 30, autoTopupDisabled: true },
     approval: { taskId: "synthetic-approval-task", version: 4, action: "accept", auditId: "audit:openai", reviewer: "synthetic-reviewer", digest: digest(`configuration:${tag}:jti-${tag}`) },
   })), operator: "synthetic-operator", reason: "OpenAI 受审登记" });
-  expect(registered.proofType).toBe("reviewed-service");
+  expect(registered.proofType).toBe("approved-service");
   expect(registered.approval?.taskId).toBe("synthetic-approval-task");
   const submitted = await registration.submitEvidence({ activity: activityId, revision: registered.revision, document, operator: "synthetic-operator", reason: "提交受审余额证据" });
   expect(submitted.gaps).toEqual([]);
@@ -346,4 +347,53 @@ localTest("reason is mandatory and bounded; unknown activity revisions are rejec
   await expect((async () => registration.submitEvidence({ activity: "missing-activity", revision: 1, document: evidenceDocument(tag), operator: "synthetic-operator", reason: "不存在" }))()).rejects.toThrow(/登记版本不存在/);
   // manifest 里的活动标识不合法：验签层就拒绝，根本进不到登记。
   await expect((async () => registration.register({ claims: claimsOf(proof(tag, { jti: "jti-bad-id", activityId: "bad id with spaces" })), operator: "synthetic-operator", reason: "非法活动标识" }))()).rejects.toThrow(/声明不合法/);
+});
+
+localTest("registration races cannot leave partial activities/bindings; history rejects mutation", async () => {
+  if (!db) throw new Error("fixture unavailable");
+  const tag = "race";
+  const inputs = ["a", "b"].map(key => ({ claims: claimsOf(proof(tag, { activityId: `race-${key}`, jti: `jti-race-${key}` })), operator: "synthetic-operator", reason: "并发绑定" }));
+  const results = await Promise.allSettled(inputs.map(i => registration.register(i)));
+  expect(results.filter(r => r.status === "fulfilled").length).toBe(1);
+  expect((await registration.identities("race-a")).length + (await registration.identities("race-b")).length).toBe(2);
+  const rejectedIndex = results.findIndex(r => r.status === "rejected");
+  const missing = inputs[rejectedIndex]!.claims.manifest.activityId;
+  expect((await registration.revisions(missing)).length).toBe(0);
+  expect(rows(await db.query("SELECT * FROM ONLY $id", { id: new RecordId("internal_ai_activity", missing) })).length).toBe(0);
+  const saved = inputs[results.findIndex(r => r.status === "fulfilled")]!.claims.manifest.activityId;
+  await expect((async () => db!.query("UPDATE internal_ai_revision SET reason = 'tampered' WHERE activity = $activity", { activity: saved }))()).rejects.toThrow();
+  expect((await registration.revisions(saved))[0]!.reason).toBe("并发绑定");
+});
+
+localTest("enable cannot resurrect disabled old evidence; refresh and revoke preserve counters", async () => {
+  if (!db) throw new Error("fixture unavailable");
+  const tag = "preserve";
+  const c = claimsOf(proof(tag));
+  const first = await registration.register({ claims: c, operator: "synthetic-operator", reason: "首次登记" });
+  await db.query("UPDATE ONLY $id SET spent = 7, reserved = 11, attempts = 3", { id: new RecordId("internal_ai_activity", first.activity) });
+  const replay = await registration.register({ claims: claimsOf(proof(tag, { jti: "preserve-refresh" })), operator: "synthetic-operator", reason: "刷新证明" });
+  expect(replay.after).toMatchObject({ spent: 7, reserved: 11, attempts: 3 });
+  const disabled = await registration.disable({ activity: first.activity, operator: "synthetic-operator", reason: "禁用" });
+  await expect(registration.enable({ activity: first.activity, revision: replay.revision, operator: "synthetic-operator", reason: "旧版本启用", runtime: {} })).rejects.toThrow(/旧证据/);
+  await registration.revokeIdentity({ activity: first.activity, alias: "LCA04_REMOVABLE", operator: "synthetic-operator", reason: "撤销" });
+  const latest = (await registration.revisions(first.activity)).at(-1)!;
+  expect(latest.revision).toBe(disabled.revision + 1);
+  expect(latest.after).toMatchObject({ spent: 7, reserved: 11, attempts: 3, enabled: false });
+});
+
+localTest("missing or withdrawn company status denies registration and every model attempt", async () => {
+  if (!db) throw new Error("fixture unavailable");
+  const tag = "status";
+  const unavailable = new InternalAiRegistration(async () => db!);
+  await expect(unavailable.register({ claims: claimsOf(proof(tag)), operator: "synthetic-operator", reason: "状态地址未配置" })).rejects.toThrow(/当前状态/);
+  expect((await registration.revisions(`activity-${tag}`)).length).toBe(0);
+  let valid = true;
+  const assert = async () => { if (!valid) throw new Error("synthetic-status-revoked"); };
+  const service = new InternalAiRegistration(async () => db!, { check: assert, current: assert, remember: () => {} });
+  await service.register({ claims: claimsOf(proof(tag)), operator: "synthetic-operator", reason: "状态仍有效" });
+  valid = false;
+  await expect(service.submitEvidence({ activity: `activity-${tag}`, revision: 1, document: evidenceDocument(tag), operator: "synthetic-operator", reason: "撤回后补证" })).rejects.toThrow(/revoked/);
+  const checkedGate = new InternalAiGate(new InternalAiStore(async () => db!), async () => assert());
+  const scope = await checkedGate.bind(`owner-${tag}`, `ws_${tag}`, "run-status", "key-status");
+  await expect(checkedGate.inRun(scope, () => checkedGate.begin("proposal", "openai", "sensenova-6.8-flash-lite", "https://token.sensenova.cn/v1"))).rejects.toThrow(/revoked/);
 });

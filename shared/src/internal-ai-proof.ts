@@ -82,6 +82,9 @@ export const companyProofIdentitySchema = z.object({
 export type CompanyProofIdentity = z.infer<typeof companyProofIdentitySchema>;
 
 const leaseSchema = z.object({
+  goal: z.literal(COMPANY_PROOF_GOAL),
+  project: z.literal(COMPANY_PROOF_PROJECT),
+  role: z.enum(["engineering", "product", "qa"]),
   employee: z.string().min(1).max(200),
   taskId: boundedRef,
   delivery: z.string().min(1).max(200),
@@ -101,7 +104,7 @@ const approvalSchema = z.object({
 export const companyProofClaimsSchema = z.object({
   contractVersion: z.literal(1),
   /** development-disabled 只允许登记，不允许启用；approved-service 才可走 enable。 */
-  type: z.enum(["development-disabled", "reviewed-service"]),
+  type: z.enum(["development-disabled", "approved-service"]),
   paidCallsAllowed: z.union([z.literal(0), z.literal(1)]),
   scope: z.enum(["register-disabled", "enable"]),
   project: z.literal(COMPANY_PROOF_PROJECT),

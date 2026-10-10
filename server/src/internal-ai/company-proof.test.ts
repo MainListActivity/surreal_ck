@@ -34,7 +34,7 @@ function claims(overrides: Record<string, unknown> = {}): Record<string, unknown
   return {
     contractVersion: 1, type: "development-disabled", paidCallsAllowed: 0, scope: "register-disabled",
     project: COMPANY_PROOF_PROJECT, env: "production", goal: COMPANY_PROOF_GOAL, requestTask: "synthetic-task",
-    lease: { employee: "synthetic-employee", taskId: "synthetic-task", delivery: "synthetic-delivery", fence: 1 },
+    lease: { goal: COMPANY_PROOF_GOAL, project: COMPANY_PROOF_PROJECT, role: "engineering", employee: "synthetic-employee", taskId: "synthetic-task", delivery: "synthetic-delivery", fence: 1 },
     approval: null, documentHash, manifest, configurationDigest: manifest.configurationDigest,
     identities: [
       { alias: "LCA04_REMOVABLE", subject: "subject-owner", spaceId: "workspace:ui01", database: "ws_ui01", workspaceRole: "admin", billingRole: "owner", billingAccountRef: "ui01-account" },
@@ -129,12 +129,12 @@ test("paid-call许可, registration scope and enable scope are cross-checked", (
   // 禁用证明不得携带付费许可。
   expect(() => verifyCompanyProof(signWith(claims({ paidCallsAllowed: 1 }), testPair.privateKey, testKid), now, anchor)).toThrow(/不得携带付费许可/);
   // 登记范围只接受 development-disabled。
-  expect(() => verifyCompanyProof(signWith(claims({ type: "reviewed-service", paidCallsAllowed: 1 }), testPair.privateKey, testKid), now, anchor)).toThrow(/登记范围与证明类型不符/);
+  expect(() => verifyCompanyProof(signWith(claims({ type: "approved-service", paidCallsAllowed: 1 }), testPair.privateKey, testKid), now, anchor)).toThrow(/登记范围与证明类型不符/);
   // 启用范围必须同时带受审服务证据与独立批准。
-  expect(() => verifyCompanyProof(signWith(claims({ scope: "enable", type: "reviewed-service", paidCallsAllowed: 1 }), testPair.privateKey, testKid), now, anchor)).toThrow(/必须带受审服务证据与独立批准/);
+  expect(() => verifyCompanyProof(signWith(claims({ scope: "enable", type: "approved-service", paidCallsAllowed: 1 }), testPair.privateKey, testKid), now, anchor)).toThrow(/必须带受审服务证据与独立批准/);
   expect(() => verifyCompanyProof(signWith(claims({ scope: "enable", type: "development-disabled", paidCallsAllowed: 0 }), testPair.privateKey, testKid), now, anchor)).toThrow(/必须带受审服务证据与独立批准/);
   const approved = claims({
-    scope: "enable", type: "reviewed-service", paidCallsAllowed: 1,
+    scope: "enable", type: "approved-service", paidCallsAllowed: 1,
     approval: { taskId: "synthetic-approval", version: 3, action: "accept", auditId: "audit:1", reviewer: "synthetic-reviewer", digest: digest("configuration") },
   });
   expect(verifyCompanyProof(signWith(approved, testPair.privateKey, testKid), now, anchor).approval?.taskId).toBe("synthetic-approval");

@@ -12,6 +12,7 @@ export type CompanyProofAnchor = { readonly alg: string; readonly kid: string; r
 const denied = (code: string, message: string) => new HttpError(422, code, message);
 
 function segment(part: string): string {
+  if (!/^[A-Za-z0-9_-]+$/.test(part)) throw denied("company-proof-malformed", "公司证明格式无效");
   return Buffer.from(part, "base64url").toString("utf8");
 }
 
@@ -29,7 +30,7 @@ function segment(part: string): string {
 export function verifyCompanyProof(jwt: string, now: number, trust: CompanyProofAnchor = COMPANY_PROOF_TRUST): CompanyProofClaims {
   if (jwt.length > COMPANY_PROOF_MAX_BYTES) throw denied("company-proof-too-large", "公司证明过大");
   const parts = jwt.split(".");
-  if (parts.length !== 3) throw denied("company-proof-malformed", "公司证明格式无效");
+  if (parts.length !== 3 || parts.some(part => !/^[A-Za-z0-9_-]+$/.test(part))) throw denied("company-proof-malformed", "公司证明格式无效");
   const [headerPart, bodyPart, signaturePart] = parts as [string, string, string];
   let header: unknown;
   let claims: unknown;
@@ -39,7 +40,7 @@ export function verifyCompanyProof(jwt: string, now: number, trust: CompanyProof
   } catch { throw denied("company-proof-malformed", "公司证明格式无效"); }
   if (!header || typeof header !== "object") throw denied("company-proof-malformed", "公司证明格式无效");
   const head = header as Record<string, unknown>;
-  if (head.alg !== COMPANY_PROOF_ALG || head.kid !== trust.kid || head.typ !== COMPANY_PROOF_TYP) {
+  if (Object.keys(head).length !== 3 || head.alg !== COMPANY_PROOF_ALG || head.kid !== trust.kid || head.typ !== COMPANY_PROOF_TYP) {
     throw denied("company-proof-anchor-mismatch", "公司证明信任锚不匹配");
   }
   let key: ReturnType<typeof createPublicKey>;
@@ -67,13 +68,16 @@ export function verifyCompanyProof(jwt: string, now: number, trust: CompanyProof
   const parsed = companyProofClaimsSchema.safeParse(record);
   if (!parsed.success) throw denied("company-proof-claims-invalid", "公司证明声明不合法");
   const value = parsed.data;
+  if (value.lease.taskId !== value.requestTask || (value.approval && value.approval.digest !== value.configurationDigest)) {
+    throw denied("company-proof-scope-mismatch", "公司证明租约或批准摘要不匹配");
+  }
   if (value.documentHash !== value.manifest.documentHash || value.configurationDigest !== value.manifest.configurationDigest) {
     throw denied("company-proof-digest-mismatch", "公司证明摘要与文档不一致");
   }
   if (value.type === "development-disabled" && value.paidCallsAllowed !== 0) throw denied("company-proof-claims-invalid", "禁用证明不得携带付费许可");
-  if (value.type === "reviewed-service" && value.paidCallsAllowed !== 1) throw denied("company-proof-claims-invalid", "受审服务证明必须携带付费许可");
+  if (value.type === "approved-service" && value.paidCallsAllowed !== 1) throw denied("company-proof-claims-invalid", "受审服务证明必须携带付费许可");
   if (value.scope === "register-disabled" && value.type !== "development-disabled") throw denied("company-proof-claims-invalid", "登记范围与证明类型不符");
-  if (value.scope === "enable" && (value.type !== "reviewed-service" || !value.approval)) {
+  if (value.scope === "enable" && (value.type !== "approved-service" || !value.approval)) {
     throw denied("company-proof-claims-invalid", "启用范围必须带受审服务证据与独立批准");
   }
   return value;
