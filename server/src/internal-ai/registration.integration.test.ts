@@ -136,7 +136,7 @@ afterAll(async () => {
 
 function rows(result: unknown): Record<string, unknown>[] {
   const first: unknown = Array.isArray(result) ? result[0] : undefined;
-  return Array.isArray(first) ? first : first && typeof first === "object" ? [first] : [];
+  return Array.isArray(first) ? first as Record<string, unknown>[] : first && typeof first === "object" ? [first as Record<string, unknown>] : [];
 }
 
 localTest("company proof registers a disabled activity with both frozen identities and no paid authorization", async () => {
@@ -396,4 +396,14 @@ localTest("missing or withdrawn company status denies registration and every mod
   const checkedGate = new InternalAiGate(new InternalAiStore(async () => db!), async () => assert());
   const scope = await checkedGate.bind(`owner-${tag}`, `ws_${tag}`, "run-status", "key-status");
   await expect(checkedGate.inRun(scope, () => checkedGate.begin("proposal", "openai", "sensenova-6.8-flash-lite", "https://token.sensenova.cn/v1"))).rejects.toThrow(/revoked/);
+});
+
+
+localTest("normal identity projection cannot swap roles or billing accounts", async () => {
+  const valid = claimsOf(proof("roles"));
+  const [owner, member] = valid.identities;
+  for (const identities of [[member, owner], [owner, { ...member, billingAccountRef: "different-account" }], [owner, { ...member, subject: owner.subject }]] as const) {
+    await expect(registration.register({ claims: { ...valid, identities: [identities[0], identities[1]] }, operator: "synthetic-operator", reason: "身份配对冲突" })).rejects.toThrow(/身份角色/);
+  }
+  expect((await registration.revisions(valid.manifest.activityId)).length).toBe(0);
 });

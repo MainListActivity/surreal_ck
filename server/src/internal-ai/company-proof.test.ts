@@ -141,8 +141,9 @@ test("paid-call许可, registration scope and enable scope are cross-checked", (
 });
 
 test("identity claim shape is strict, but two-role semantics belong to the registration layer", () => {
-  const swap = claims({ identities: [claims().identities[1], claims().identities[0]] });
-  expect(() => verifyCompanyProof(swap, now, anchor)).toThrow(); // zod tuple 顺序固定
+  const ids = claims().identities as unknown[];
+  const swap = claims({ identities: [ids[1], ids[0]] });
+  expect(verifyCompanyProof(signWith(swap, testPair.privateKey, testKid), now, anchor).identities[0].alias).toBe("LCA04_MEMBER"); // 配对语义由登记层拒绝
   // manifest 里的冻结配对由验签层强制：owner/admin 与 member/participant 不可互换。
   const wrongManifestRole = claims({ manifest: { ...claims().manifest as object, identities: [{ alias: "LCA04_REMOVABLE", workspaceRole: "admin", billingRole: "member" }, { alias: "LCA04_MEMBER", workspaceRole: "participant", billingRole: "member" }] } });
   expect(() => verifyCompanyProof(signWith(wrongManifestRole, testPair.privateKey, testKid), now, anchor)).toThrow(/声明不合法/);
