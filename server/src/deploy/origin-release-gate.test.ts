@@ -631,6 +631,24 @@ describe("origin-release.sh 整段发布流：env 顺序与门禁拒绝恢复原
     expect(r.currentTarget).toContain("lca10-ci7");
     expect(r.calls.some((c) => c === "systemctl:restart fixture-svc")).toBe(true);
   });
+
+  test("UNSET 哨兵：值精确等于 UNSET → 从 server.env 删除该键、不写 UNSET 行，同批普通值仍 upsert", () => {
+    const r = runFullRelease({ target: "explicit", filteredTarget: true, additions: "REVIEW_FIXTURE=UNSET\nNEW_K=v\n", healthyBody: '{"status":"ok","surrealdb":"up"}' });
+    expect(r.exitCode).toBe(0);
+    expect(r.envAfter).toBe("BASE_KEY=keep\nNEW_K=v\n");
+    expect(r.stdout).toContain("env: unset REVIEW_FIXTURE");
+    expect(r.stdout).toContain("env: set NEW_K");
+    expect(r.currentTarget).toContain("lca10-ci7");
+  });
+
+  test("UNSET 不存在的键 → 幂等无残留；UNSETX 等前缀变体仍按普通值 upsert", () => {
+    const r = runFullRelease({ target: "explicit", filteredTarget: true, additions: "ABSENT_K=UNSET\nREVIEW_FIXTURE=UNSETX\n", healthyBody: '{"status":"ok","surrealdb":"up"}' });
+    expect(r.exitCode).toBe(0);
+    expect(r.envAfter).toBe("BASE_KEY=keep\nREVIEW_FIXTURE=UNSETX\n");
+    expect(r.stdout).toContain("env: unset ABSENT_K");
+    expect(r.stdout).toContain("env: set REVIEW_FIXTURE");
+    expect(r.stdout).not.toContain("ABSENT_K=UNSET");
+  });
 });
 
 

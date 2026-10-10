@@ -285,7 +285,8 @@ if ! require_allowance_source_compat "$release"; then
   exit 1
 fi
 
-# 环境变量：GitHub production Environment 里的 ORIGIN_ENV_<NAME> secret 写入 server.env 的 <NAME>，只增改这些键。
+# 环境变量：GitHub production Environment 里的 ORIGIN_ENV_<NAME> secret 写入 server.env 的 <NAME>，只增改这些键；
+# 值精确等于 UNSET 时改为从 server.env 删除该键（不写入 KEY=UNSET 行），用于撤销主机上手工预置的键。
 mkdir -p "$env_dir" && chmod 700 "$env_dir"
 cat "$env_file" > "$env_backup" && chmod 600 "$env_backup"
 if [ -n "$env_additions" ] && [ -s "$env_additions" ]; then
@@ -293,10 +294,17 @@ if [ -n "$env_additions" ] && [ -s "$env_additions" ]; then
     key=${line%%=*}
     [[ "$key" =~ ^[A-Z][A-Z0-9_]*$ ]] || { echo "invalid env key" >&2; restore_env; exit 1; }
     next="$env_dir/server.env.next"
-    (umask 077; { grep -v "^${key}=" "$env_file" || true; printf '%s\n' "$line"; } > "$next")
-    cat "$next" > "$env_file"
-    rm -f "$next"
-    echo "env: set $key"
+    if [ "${line#*=}" = "UNSET" ]; then
+      (umask 077; grep -v "^${key}=" "$env_file" > "$next" || true)
+      cat "$next" > "$env_file"
+      rm -f "$next"
+      echo "env: unset $key"
+    else
+      (umask 077; { grep -v "^${key}=" "$env_file" || true; printf '%s\n' "$line"; } > "$next")
+      cat "$next" > "$env_file"
+      rm -f "$next"
+      echo "env: set $key"
+    fi
   done < "$env_additions"
 fi
 [ -n "$env_additions" ] && rm -f "$env_additions"
