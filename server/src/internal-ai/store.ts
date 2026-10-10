@@ -6,7 +6,7 @@ export type Queryable = { query(sql: string, vars?: Record<string, unknown>): Pr
 export const GOAL = "2e2a6e41c1193595";
 export const hash = (...parts: string[]) => createHash("sha256").update(JSON.stringify([GOAL, ...parts])).digest("hex");
 function rows<T>(result: unknown): T[] { const first: unknown = Array.isArray(result) ? result[0] : undefined; return Array.isArray(first) ? first as T[] : first && typeof first === "object" ? [first as T] : []; }
-export type Activity = { goal: string; enabled: boolean; total_limit: number; per_attempt_limit: number; attempt_limit: number; reserved: number; spent: number; attempts: number; approval_revision: string | null; evidence_expires_at: string | null; price_revisions: string[]; balance_nano_usd: number | null; balance_currency: string | null; balance_source: string | null; balance_sampled_at: string | null; balance_evidence_hash: string | null; auto_topup_disabled: boolean; service_approved: boolean };
+export type Activity = { goal: string; enabled: boolean; total_limit: number; per_attempt_limit: number; attempt_limit: number; reserved: number; spent: number; attempts: number; approval_revision: string | null; evidence_expires_at: string | null; price_revisions: string[]; balance_nano_usd: number | null; balance_currency: string | null; balance_source: string | null; balance_sampled_at: string | null; balance_evidence_hash: string | null; auto_topup_disabled: boolean; service_approved: boolean; evidence_kind?: string | null; plan_name?: string | null; plan_source_url?: string | null; quota_unit?: string | null; quota_amount?: number | null; quota_window_seconds?: number | null; quota_remaining?: number | null; no_payment_instrument?: boolean | null };
 export type Attempt = { id: RecordId; sequence: number; retry_index: number; state: string; reserved: number; cost: number | null; run_hash: string; key_hash: string; logical_hash: string; stage: string; provider: string; model: string; actual_model: string | null; request_id: string | null; usage: Usage | null; usage_source: string; price_revision: string; currency: string; started_at: unknown; ended_at: unknown };
 export class InternalAiStore {
   constructor(private readonly db: () => Promise<Queryable>) {}
@@ -53,14 +53,19 @@ export class InternalAiStore {
           INSERT INTO internal_ai_target { id: $target } ON DUPLICATE KEY UPDATE attempts = attempts;
           LET $total = (SELECT * FROM ONLY $target);
           LET $a = (SELECT * FROM ONLY $activity);
-          IF $a.goal != $goal OR $a.enabled != true OR $a.service_approved != true OR $a.auto_topup_disabled != true OR $a.approval_revision = NONE OR $a.balance_nano_usd = NONE OR $a.balance_nano_usd <= 0 OR $a.balance_currency != "USD" OR $a.balance_source = NONE OR $a.balance_evidence_hash = NONE OR string::len($a.balance_evidence_hash) != 64 OR $a.balance_source != "reviewed-document:" + $a.balance_evidence_hash OR $a.balance_sampled_at = NONE OR $a.evidence_expires_at = NONE OR <datetime>$a.evidence_expires_at <= time::now() OR $revision NOT IN $a.price_revisions { THROW "internal-ai-evidence-unavailable"; };
+          IF $a.goal != $goal OR $a.enabled != true OR $a.service_approved != true OR $a.auto_topup_disabled != true OR $a.approval_revision = NONE OR $a.balance_evidence_hash = NONE OR string::len($a.balance_evidence_hash) != 64 OR $a.balance_source = NONE OR $a.balance_sampled_at = NONE OR $a.evidence_expires_at = NONE OR <datetime>$a.evidence_expires_at <= time::now() OR $revision NOT IN $a.price_revisions { THROW "internal-ai-evidence-unavailable"; };
+          IF $a.evidence_kind = "reviewed-token-plan" {
+            IF $a.plan_name = NONE OR string::len($a.plan_name) = 0 OR $a.plan_source_url = NONE OR $a.quota_unit = NONE OR $a.quota_amount = NONE OR $a.quota_amount <= 0 OR $a.quota_window_seconds = NONE OR ($a.quota_remaining != NONE AND $a.quota_remaining <= 0) OR $a.no_payment_instrument != true OR $a.balance_nano_usd != NONE OR $a.balance_currency != NONE OR $a.balance_source != "token-plan:" + $a.balance_evidence_hash OR $amount != 0 { THROW "internal-ai-evidence-unavailable"; };
+          } ELSE {
+            IF $a.balance_nano_usd = NONE OR $a.balance_nano_usd <= 0 OR $a.balance_currency != "USD" OR $a.balance_source != "reviewed-document:" + $a.balance_evidence_hash { THROW "internal-ai-evidence-unavailable"; };
+          };
           IF $a.registration_jti != NONE {
             LET $runBinding = (SELECT identity_hash FROM internal_ai_run WHERE run_hash = $run LIMIT 1)[0];
             LET $binding = (SELECT * FROM internal_ai_binding WHERE identity_hash = $runBinding.identity_hash LIMIT 1)[0];
             IF $a.proof_expires_at = NONE OR $a.proof_expires_at <= time::unix() OR $binding = NONE OR $binding.revoked = true OR $binding.activity != $activityName { THROW "internal-ai-proof-unavailable"; };
           };
           IF $total.attempts >= 30 OR $total.spent + $total.reserved + $amount > 1000000000 { THROW "internal-ai-budget-exhausted"; };
-          IF $amount > $a.per_attempt_limit OR $a.attempts >= $a.attempt_limit OR $a.spent + $a.reserved + $amount > $a.total_limit OR $total.spent + $total.reserved + $amount > $a.balance_nano_usd { THROW "internal-ai-budget-exhausted"; };
+          IF $amount > $a.per_attempt_limit OR $a.attempts >= $a.attempt_limit OR $a.spent + $a.reserved + $amount > $a.total_limit OR ($a.evidence_kind != "reviewed-token-plan" AND $total.spent + $total.reserved + $amount > $a.balance_nano_usd) { THROW "internal-ai-budget-exhausted"; };
           UPDATE ONLY $target SET reserved += $amount, attempts += 1;
           UPDATE ONLY $activity SET reserved += $amount, attempts += 1;
           CREATE ONLY $attempt CONTENT { activity: $activity, sequence: $a.attempts + 1, retry_index: 0, run_hash: $run, key_hash: $key, logical_hash: $logical, stage: $stage, provider: $provider, model: $model, actual_model: NONE, request_id: NONE, reserved: $amount, cost: NONE, state: "reserved", usage: NONE, usage_source: "unknown", price_revision: $revision, currency: "USD", started_at: time::now(), ended_at: NONE };

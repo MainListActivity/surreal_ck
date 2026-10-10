@@ -10,16 +10,17 @@
 
 `inRun` 把绑定放入 AsyncLocalStorage，后台工作流、分类、工具往返、研究回答与暂停续跑共用它。`internal_ai_run` 固定 run/key/logical 关联；续跑必须找到既有记录，不能用新 key 改归属。所有关联用目标域分隔的SHA256，不记录 subject/database 原文。客户更换 run/key 不增加预算；即使不同内部活动，`internal_ai_target:2e2a6e41c1193595` 同一事务汇总现金和次数。内部身份绑定须由经过评审的服务器配置登记，不能由客户创建或切换。
 
-固定模型证书只覆盖直连、固定版本的文本/function调用：OpenAI `gpt-4o-mini-2024-07-18` 和 TypeSafe `jev-1.13.0`。这不是要求或允许切换生产模型；生产现有模型若不符合证书，内部活动拒绝发送。OpenAI-compatible 协议、其它模型、浮动 alias、非USD、无法认证的endpoint或价格一律不可放行。模型路由若缺显式 baseUrl，也拒绝内部调用，避免把推断的host当作实际传输地址。
+固定模型证书只覆盖直连、固定版本的文本/function调用：OpenAI `gpt-4o-mini-2024-07-18`、TypeSafe `jev-1.13.0` 与 SenseNova `sensenova-6.8-flash-lite`（Token Plan 零费率）。这不是要求或允许切换生产模型；生产现有模型若不符合证书，内部活动拒绝发送。OpenAI-compatible 协议、其它模型、浮动 alias、非USD、无法认证的endpoint或价格一律不可放行。模型路由若缺显式 baseUrl，也拒绝内部调用，避免把推断的host当作实际传输地址。
 
 ## 官方上界与价格
 
-核实日期2026-10-09，来源：
+核实日期2026-10-09（SenseNova 2026-10-10），来源：
 
 - [OpenAI模型官方资料](https://developers.openai.com/api/docs/models/gpt-4o-mini)：128000上下文、16384输出上限；输入USD0.15、缓存输入USD0.075、输出USD0.60 / 百万token。
 - [TypeSafe官方模型资料](https://docs.typesafe.ai/models)：固定Jev1.13；全部state与问题合计上下文上限64000；输入USD0.042 / 百万token，输出不收费。
+- [SenseNova 官方文档 List Models](https://platform.sensenova.cn/docs)（`GET https://token.sensenova.cn/v1/models`）：`sensenova-6.8-flash-lite` context_length 262144、max_output_length 65536、pricing 全 0；[SenseNova Token Plan 官方页](https://www.sensenova.cn/token-plan)明示公测期完全免费（60,000积分/5小时滚动窗口，付费档未上线）。该服务是配额制，不存在 USD 现金价目与 USD 余额。
 
-nanoUSD=USD×10^9，整数费率分别是150/75/600或42/42/0 nanoUSD/token。最坏预留按**供应商整个上下文窗口**和最大输出计算，含system、history、工具定义和所有工具回传；无需猜分词或把字符裁剪当tokenizer。OpenAI预留29030400 nanoUSD，Jev2688000 nanoUSD。输入超过供应商context ceiling不可接受；即使供应商拒绝或报错，也不释放这笔保守预留。输出显式收紧到证书上限。此证书限非推理文本模型，不支持联网付费工具或多模态；provider-defined工具、嵌套媒体tool结果和未知provider options发送前拒绝。证书不覆盖第三方代理附加费用。
+nanoUSD=USD×10^9，整数费率分别是150/75/600或42/42/0 nanoUSD/token，SenseNova Token Plan 证书费率全 0（最坏预留 0）。最坏预留按**供应商整个上下文窗口**和最大输出计算，含system、history、工具定义和所有工具回传；无需猜分词或把字符裁剪当tokenizer。OpenAI预留29030400 nanoUSD，Jev2688000 nanoUSD，SenseNova预留 0 nanoUSD（成本按官方零费率结算为 0，额度占用仍以官方配额页面为准、不折算美元）。输入超过供应商context ceiling不可接受；即使供应商拒绝或报错，也不释放这笔保守预留。输出显式收紧到证书上限。此证书限非推理文本模型，不支持联网付费工具或多模态；provider-defined工具、嵌套媒体tool结果和未知provider options发送前拒绝。证书不覆盖第三方代理附加费用。
 
 输入包含cache，费用按 `(input-cache)*inputRate + cache*cacheRate + output*outputRate`，不把cache再重复加入input。reasoning原字段保留，当前证书不接受非零reasoning。缓存独立费率模型缺cache字段、缺input/output、实际model不匹配或usage超过上界，不能核定费用，保留预留；不会记零，也不会把估算标provider实测。不能从Mastra聚合usage和逐step usage双算费用。
 
@@ -37,7 +38,7 @@ Embedding在内部活动中发送前禁止（包括资源检索调用生成器�
 
 内部控制面通过专用运营路由消费公司可信证明，客户没有配置入口。配置由独立工程/运营评审的服务器控制面维护，必须保留审批证据与配置版本，绑定明确批准的内部账号+workspace；不得临时读取凭证或让QA绕 `_system` 写配置。需要运营代理登记配置时，由经理安排专用受审配置交付，不能用 `ops_query` 绕身份边界。没有资料就保持disabled与paidCallsAllowed=0。
 
-活动字段须同时具备固定goal、enabled、service_approved、approval_revision、匹配price_revisions、未到期evidence_expires_at、USD现有余额、balance_sampled_at、余额证据SHA256、`balance_source=reviewed-document:<同SHA256>`、auto_topup_disabled=true。这些是服务器审核资料的绑定，不是客户端自报余额。真实批准服务、证据内容真实性/账户绑定、官方当时价格、余额采样和自动充值停用须由运营独立核查后进入受审配置；代码不会自动从key推导或伪造余额。本轮没有取得这些资料，也没有配置生产活动。
+活动字段须同时具备固定goal、enabled、service_approved、approval_revision、匹配price_revisions、未到期evidence_expires_at、balance_sampled_at、余额/配额证据SHA256、auto_topup_disabled=true；余额型证据还须 USD 现有余额与 `balance_source=reviewed-document:<同SHA256>`，配额型（reviewed-token-plan）证据还须 `balance_source=token-plan:<同SHA256>`、planName/planSourceUrl/quotaUnit/quotaAmount/quotaWindowSeconds 齐全、quotaRemaining 存在时大于 0、noPaymentInstrument=true，且 USD 余额字段必须为 NONE（配额绝不折算美元）。这些是服务器审核资料的绑定，不是客户端自报余额。真实批准服务、证据内容真实性/账户绑定、官方当时价格、余额或配额采样和自动充值停用须由运营独立核查后进入受审配置；代码不会自动从key推导或伪造余额。本轮没有取得这些资料，也没有配置生产活动。
 
 只读接口使用既有运营audience与实时 `subscription.manage` capability：
 
@@ -69,17 +70,17 @@ RocksDB tests覆盖多连接及两个独立客户端进程并发、真实服务�
 
 只用已有 `subscription.manage` 实时运营能力：
 
-- `POST /api/ops/internal-ai/company-proof` 接受公司代理实际 `{proof}` 信封（也可带 `reason`），固定 EdDSA/kid/JWK/issuer/audience/用途验签。真实 proof.type 是 `approved-service`，脱敏文档 type 才是 `reviewed-service`。登记永远 disabled；双身份仅来自公司正常 OIDC 权威投影，不接受 caller subject。
-- `POST /api/ops/internal-ai/activities/:id/evidence`：`{revision, document, reason}`；文档 UTF-8 SHA256 必须与已签 documentHash 相同，严格 USD-only schema、服务账户/endpoint/模型/priceRevision 对齐。正文不入库。每次新增审计 revision 并禁用活动。
-- `POST /api/ops/internal-ai/activities/:id/enable`：`{revision, reason}`；仅最新 disabled revision、真实独立批准、正余额、过去采样/最多24小时资料窗口、停自动充值、服务批准、精确当前 provider/endpoint/model 和受审价目版本均齐全才可启用。未知币种/FX/TokenPlan拒绝。当前单账户契约无法证明Jev自己的余额/证书，Jev启用时也拒绝启用。
+- `POST /api/ops/internal-ai/company-proof` 接受公司代理实际 `{proof}` 信封（也可带 `reason`），固定 EdDSA/kid/JWK/issuer/audience/用途验签。真实 proof.type 是 `approved-service`，脱敏文档 type 是 `reviewed-service`（USD 余额）或 `reviewed-token-plan`（官方配额计划）。登记永远 disabled；双身份仅来自公司正常 OIDC 权威投影，不接受 caller subject。
+- `POST /api/ops/internal-ai/activities/:id/evidence`：`{revision, document, reason}`；文档 UTF-8 SHA256 必须与已签 documentHash 相同，严格受审证据 schema（USD-only 余额型 `development-disabled`/`reviewed-service`，或配额型 `reviewed-token-plan`）、服务账户/endpoint/模型/priceRevision 对齐。配额型字段：planName、planSourceUrl（官方出处 https）、quotaUnit(points|requests)、quotaAmount>0、quotaWindowSeconds>0、quotaRemaining 可空（存在时须>0才无缺口）、noPaymentInstrument=true。正文不入库。每次新增审计 revision 并禁用活动。
+- `POST /api/ops/internal-ai/activities/:id/enable`：`{revision, reason}`；仅最新 disabled revision、真实独立批准、过去采样/最多24小时资料窗口、停自动充值、服务批准、精确当前 provider/endpoint/model 和受审价目版本均齐全才可启用；余额型要求正 USD 余额，配额型要求有效配额字段且无 USD 余额/支付方式/自动充值。未知币种/FX 仍拒绝；TokenPlan 只能以 reviewed-token-plan 证据类型进入，配额绝不折算美元写余额。当前单账户契约无法证明Jev自己的余额/证书，Jev启用时也拒绝启用。
 - `POST /api/ops/internal-ai/activities/:id/disable`：`{reason}`；`POST /api/ops/internal-ai/identities/revoke`：`{activity, alias, reason}`；撤销持久标记并禁用活动，重复撤销幂等，保留身份、run、ledger和uncertain预留。
 - `GET /api/ops/internal-ai/activities/:id/revisions`：脱敏历史预览、操作者与原因、公司批准引用、真实 manifest hash、配置摘要及事务内前后快照。revision字段READONLY，服务无覆盖/删除历史路径。root维护权限不作为客户入口。
-- `GET /api/ops/internal-ai/supplier-probe?host=token.sensenova.cn`：固定注册表明确 unsupported，无注册官方只读balance/plan/usage能力则不发送任何探测请求，列需补证据。不是断言供应商不存在官方API；后续须独立核定固定能力后代码评审加入。不得套OpenAI证书、积分、CNY或零价。
+- `GET /api/ops/internal-ai/supplier-probe?host=token.sensenova.cn`：固定注册表明确 unsupported，无注册官方只读balance/plan/usage能力则不发送任何探测请求，列需补证据；Token Plan 配额与零费率只能经 reviewed-token-plan 受审文档登记。不是断言供应商不存在官方API；后续须独立核定固定能力后代码评审加入。不得套OpenAI证书、积分、CNY或推断价目。
 
 公司状态由服务端 `INTERNAL_AI_COMPANY_STATUS_URL` 指向公司已核定的固定 HTTPS `/internal-ai/status`（无userinfo/port/query/hash、不跟随重定向）。该非secret部署值不得从caller或manifest读取。登记、补证、enable及每个底层attempt重新请求随机nonce的签名状态；核对jti/批准版本、用途、pin、checkedAt/iat/exp（最长60秒）及proof自身最长300秒。地址缺失、不可达、撤回、租约/文件/身份变化、到期或key轮换均拒绝，无模型外发。status bearer只在进程内存，不入库/日志；重启后无能力也拒绝，必须重新投递仍有效证明；没有timer。
 
 登记/补证/enable/disable/revoke与审计快照单事务提交；活动版本CAS与身份唯一索引拒绝并发冲突，调用方先读回再重试。同jti同摘要幂等，不同配置或身份改绑冲突。同配置的新证明可以刷新，但绝不重置spent/reserved/attempts或共享target；旧证据revision不能绕过disable或revoke重新启用。
 
-035迁移仅新增表/字段/索引，不回填或改写生产数据。公开pin由 `ops_internal_ai_trust` 核对，轮换须代码发布。当前生产公网状态发布面未配置（本轮ops_info读回），本轮也未取得真实SenseNova财务/价目资料：`unsupported`、`dataReady=false`、`paidCallsAllowed=0`。上线链须先核定公司公开状态地址，再按runbook通过CI设 `ORIGIN_ENV_INTERNAL_AI_COMPANY_STATUS_URL`；缺地址可安全部署身份只读端点，登记/启用继续拒绝。真实prove/deliver/revoke/expiry/status公网实测归部署后的独立QA，不以合成fixture代替。
+035迁移仅新增表/字段/索引，不回填或改写生产数据。036 迁移为 internal_ai_activity/internal_ai_revision 追加配额型证据字段（evidence_kind、plan_*、quota_*、no_payment_instrument、balance_source），并把 revision.currency 放宽为可空（USD-only 旧行值不变）；同样只新增、不回填或删除既有数据。公开pin由 `ops_internal_ai_trust` 核对，轮换须代码发布。当前生产公网状态发布面未配置（本轮ops_info读回），本轮也未取得真实SenseNova财务/价目资料：`unsupported`、`dataReady=false`、`paidCallsAllowed=0`。上线链须先核定公司公开状态地址，再按runbook通过CI设 `ORIGIN_ENV_INTERNAL_AI_COMPANY_STATUS_URL`；缺地址可安全部署身份只读端点，登记/启用继续拒绝。真实prove/deliver/revoke/expiry/status公网实测归部署后的独立QA，不以合成fixture代替。
 
 所有本地证明、余额及OpenAI正向启用均为隔离公司fork合成fixture，未替换生产SenseNova，未调用任何真实模型。回退仍按上文先关闭已有灰度并确认新旧run/续跑拒绝，保留所有历史和预留。

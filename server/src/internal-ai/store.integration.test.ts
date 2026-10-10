@@ -37,6 +37,12 @@ async function activity(id: string, limits: { total?: number; per?: number; coun
   await db.insert(new Table("internal_ai_activity"), { id: new RecordId("internal_ai_activity", id), goal: GOAL, enabled: true, total_limit: limits.total ?? 1000000000, per_attempt_limit: limits.per ?? 100000000, attempt_limit: limits.count ?? 30, approval_revision: "synthetic-test-only", evidence_expires_at: "2099-01-01T00:00:00Z", price_revisions: TARIFFS.map(t => t.revision), balance_nano_usd: 1000000000, balance_currency: "USD", balance_source: `reviewed-document:${"a".repeat(64)}`, balance_sampled_at: "2026-10-09T00:00:00Z", balance_evidence_hash: "a".repeat(64), auto_topup_disabled: true, service_approved: true });
   return { activity: id, runHash: hash(id, "run"), keyHash: hash(id, "key"), logicalHash: hash(id, "key") };
 }
+/** 配额型活动：官方 Token Plan 证据，无 USD 余额字段；与 enable 写入形状一致。 */
+async function tokenPlanActivity(id: string) {
+  const tariff = TARIFFS.find(t => t.model === "sensenova-6.8-flash-lite")!;
+  await db.insert(new Table("internal_ai_activity"), { id: new RecordId("internal_ai_activity", id), goal: GOAL, enabled: true, total_limit: 1000000000, per_attempt_limit: 100000000, attempt_limit: 30, approval_revision: "synthetic-test-only", evidence_expires_at: "2099-01-01T00:00:00Z", price_revisions: [tariff.revision], evidence_kind: "reviewed-token-plan", plan_name: "SenseNova Token Plan 公测", plan_source_url: "https://www.sensenova.cn/token-plan", quota_unit: "points", quota_amount: 60000, quota_window_seconds: 18000, quota_remaining: 60000, no_payment_instrument: true, balance_source: `token-plan:${"b".repeat(64)}`, balance_sampled_at: "2026-10-09T00:00:00Z", balance_evidence_hash: "b".repeat(64), auto_topup_disabled: true, service_approved: true });
+  return { activity: id, runHash: hash(id, "run"), keyHash: hash(id, "key"), logicalHash: hash(id, "key") };
+}
 beforeAll(async () => {
   if (!enabled) return;
   directory = await mkdtemp(join(tmpdir(), "internal-ai-fork-"));
@@ -44,6 +50,7 @@ beforeAll(async () => {
   endpoint = `ws://127.0.0.1:${port}`;
   await start();
   await db.query(await readFile(new URL("../../../shared/sql/system/034-internal-ai-budget.surql", import.meta.url), "utf8"));
+  await db.query(await readFile(new URL("../../../shared/sql/system/036-internal-ai-token-plan.surql", import.meta.url), "utf8"));
 }, 20000);
 afterAll(async () => { if (!enabled) return; await stop(); await rm(directory, { recursive: true, force: true }); });
 localTest("multi-connection concurrent reservations serialize shared cash; uncertain failures retain money", async () => {
@@ -211,6 +218,35 @@ localTest("each provider model step reserves before transport, captures finish u
     await expect(inInternalScope(scope, () => embeddings.embed({ text: "fixture", profile: { provider: "openai", model: "fixture", dimensions: 1, version: "1" } }))).rejects.toThrow("path-unavailable");
     expect(embeds).toBe(0);
   } finally { transport.mockRestore(); }
+});
+
+localTest("token-plan activities reserve zero cash, settle zero cost and deny on quota or source mismatch", async () => {
+  const tariff = TARIFFS.find(t => t.model === "sensenova-6.8-flash-lite")!;
+  expect(worstCost(tariff)).toBe(0);
+  const scope = await tokenPlanActivity("token-plan");
+  const attempt = await store.reserve(scope, "proposal", tariff, worstCost(tariff));
+  expect(attempt.reserved).toBe(0);
+  await store.sent(attempt.id);
+  await store.finish(attempt.id, { usage: { inputTokens: 2000, outputTokens: 500, cachedInputTokens: null, reasoningTokens: null }, actualModel: tariff.model, requestId: "synthetic-only", cost: 0, failed: false });
+  expect((await store.activity("token-plan"))?.spent).toBe(0);
+  expect((await store.activity("token-plan"))?.attempts).toBe(1);
+  expect((await store.page("token-plan"))[0]?.state).toBe("settled");
+  // 配额型证据缺失、出处前缀错误、夹带 USD 余额、价目版本不符、非零金额预留：全部 fail-closed。
+  for (const [id, mutate] of [
+    ["tp-exhausted", "quota_remaining = 0"],
+    ["tp-missing-plan", "plan_name = NONE"],
+    ["tp-wrong-source", `balance_source = "reviewed-document:" + balance_evidence_hash`],
+    ["tp-usd-mixed", `balance_nano_usd = 1000, balance_currency = "USD"`],
+    ["tp-wrong-price", "price_revisions = []"],
+    ["tp-disabled", "enabled = false"],
+  ] as const) {
+    const s = await tokenPlanActivity(id);
+    await db.query(`UPDATE ONLY $id SET ${mutate}`, { id: new RecordId("internal_ai_activity", id) });
+    await expect(store.reserve(s, "proposal", tariff, worstCost(tariff))).rejects.toThrow();
+  }
+  // 配额活动上任何非零现金预留同样拒绝（证书/证据不一致）。
+  const clean = await tokenPlanActivity("tp-nonzero");
+  await expect(store.reserve(clean, "proposal", tariff, 1)).rejects.toThrow();
 });
 
 localTest("target cash and attempt limits are shared by separate activities and cannot reset with new run/key", async () => {

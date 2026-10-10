@@ -5,6 +5,10 @@ export type Tariff = { revision: string; provider: string; model: string; host: 
 export const TARIFFS: readonly Tariff[] = [
   { revision: "openai-mini-2026-10-09", provider: "openai", model: "gpt-4o-mini-2024-07-18", host: "api.openai.com", source: "https://developers.openai.com/api/docs/models/gpt-4o-mini", checkedAt: "2026-10-09", maxInput: 128000, maxOutput: 16384, input: 150, cached: 75, output: 600 },
   { revision: "jev-2026-10-09", provider: "typesafe", model: "jev-1.13.0", host: "api.typesafe.ai", source: "https://docs.typesafe.ai/models", checkedAt: "2026-10-09", maxInput: 64000, maxOutput: 0, input: 42, cached: 42, output: 0 },
+  // SenseNova Token Plan 公测零费率证书：官方 List Models（platform.sensenova.cn/docs）明示 context_length 262144、
+  // max_output_length 65536、pricing 全 0；官方 token-plan 页（www.sensenova.cn/token-plan）明示公测期完全免费。
+  // provider=openai 是 SDK providerId 协议身份（OpenAI-compatible 装配所需），供应商事实由 host/model/revision/source 承载。
+  { revision: "sensenova-token-plan-2026-10-10", provider: "openai", model: "sensenova-6.8-flash-lite", host: "token.sensenova.cn", source: "https://platform.sensenova.cn/docs", checkedAt: "2026-10-10", maxInput: 262144, maxOutput: 65536, input: 0, cached: 0, output: 0 },
 ];
 export function endpointHost(url: string | undefined): string | null {
   try { const u = new URL(url ?? ""); return u.protocol === "https:" && !u.username && !u.password ? u.hostname : null; } catch { return null; }
