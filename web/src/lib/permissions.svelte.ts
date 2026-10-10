@@ -2,7 +2,9 @@ import { getCurrentWorkspace } from "./workspace-store.svelte";
 import {
   canWriteEntityData as canWriteEntityDataFor,
   canWriteSharedStructure as canWriteSharedStructureFor,
+  editorAccessLevel as editorAccessLevelFor,
   isWorkspaceAdmin as isWorkspaceAdminFor,
+  type EditorAccessLevel,
 } from "./permissions";
 
 /** 当前签入工作区的 role（admin / participant / employee），来自 workspace-store 的 runes 状态。 */
@@ -20,4 +22,8 @@ export function canWriteEntityData(): boolean {
 
 export function canWriteSharedStructure(): boolean {
   return canWriteSharedStructureFor(currentRole());
+}
+
+export function editorAccessLevel(): EditorAccessLevel {
+  return editorAccessLevelFor(currentRole());
 }

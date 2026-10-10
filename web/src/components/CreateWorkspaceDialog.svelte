@@ -42,7 +42,7 @@
     preview = null; confirmed = false;
     try {
       const res = await api.api["pro-trial"].preview.$get({ query: { accountKey, key: requestKey } });
-      if (!res.ok) throw new Error("试用配置尚未获批或账户没有资格");
+      if (!res.ok) throw new Error("试用配置尚未获批或账户没有资格，请稍后重试或联系计费管理员");
       const offered = await res.json();
       if (accountKey === requestedAccount) preview = offered;
     } catch (e) { error = e instanceof Error ? e.message : "试用暂不可用"; }
@@ -156,7 +156,7 @@
 
     <form onsubmit={submit}>
       {#if loading}<p>正在核对试用资格…</p>
-      {:else if accounts.length === 0}<p>仅有资格的计费账户管理员可以启动试用。请联系计费管理员；普通创建不会启动倒计时。</p>
+      {:else if accounts.length === 0}<p>仅有资格的计费账户管理员可以启动试用。请联系计费管理员或你的邀请人；普通创建不会启动倒计时。</p>
       {:else}
         <label class="field"><span>计费账户</span><select bind:value={accountKey} onchange={() => void loadPreview()} disabled={submitting || requestLocked}>
           {#each accounts as account}<option value={account.key}>{account.name}</option>{/each}
