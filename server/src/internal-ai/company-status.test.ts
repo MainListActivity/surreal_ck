@@ -3,7 +3,7 @@ import { generateKeyPairSync, sign } from "node:crypto";
 import { COMPANY_PROOF_ISSUER, COMPANY_PROOF_AUDIENCE } from "@surreal-ck/shared";
 import { verifyCompanyStatus } from "./company-status";
 const pair = generateKeyPairSync("ed25519");
-const anchor = { alg: "EdDSA", kid: "test-status-key", jwk: pair.publicKey.export({ format: "jwk" }) };
+const anchor = { alg: "EdDSA", kid: "test-status-key", jwk: { ...pair.publicKey.export({ format: "jwk" }) } };
 const now = Date.now(), seconds = Math.floor(now / 1000), nonce = "A".repeat(32);
 const expected = { jti: "synthetic-status-jti", exp: seconds + 300, approval: null };
 const base = { iss: COMPANY_PROOF_ISSUER, aud: COMPANY_PROOF_AUDIENCE, jti: expected.jti, valid: true, version: 1, approvalVersion: null,

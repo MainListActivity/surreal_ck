@@ -60,7 +60,7 @@ const valid = () => signWith(claims(), testPair.privateKey, testKid);
 test("pinned company trust anchor is internally consistent", () => {
   // 固定 kid 必须由固定公钥导出：任一侧写错都会在这里失败，避免放行一个不存在锚点。
   expect(COMPANY_PROOF_TRUST.alg).toBe(COMPANY_PROOF_ALG);
-  expect(COMPANY_PROOF_TRUST.kid).toBe(createHash("sha256").update(JSON.stringify(COMPANY_PROOF_TRUST.jwk)).digest("hex").slice(0, 32));
+  expect(String(COMPANY_PROOF_TRUST.kid)).toBe(createHash("sha256").update(JSON.stringify(COMPANY_PROOF_TRUST.jwk)).digest("hex").slice(0, 32));
   expect(COMPANY_PROOF_TRUST.jwk.crv).toBe("Ed25519");
   expect(COMPANY_PROOF_TRUST.jwk.kty).toBe("OKP");
   expect(COMPANY_PROOF_MAX_AGE_SECONDS).toBe(300);

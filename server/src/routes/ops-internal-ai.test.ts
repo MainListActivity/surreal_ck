@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { InternalAiRegistration } from "../internal-ai/registration";
 import { HttpError } from "../http-error";
 import { expect, test, spyOn } from "bun:test";
@@ -18,7 +19,7 @@ test("customer without ops auth cannot read runtime or ledger", async () => {
 test("runtime reports unavailable balance, strips URL credentials, and never exposes key/query", async () => {
   const app = new Hono<AppBindings>().route("/", createOpsInternalAiRoutes({ gate: neverDb, requireOperator: allow, runtime: { provider: "openai", model: "gpt-4o-mini", endpoint: "https://user:secret@example.com/v1?key=secret" } }));
   const response = await app.request("/api/ops/internal-ai/runtime");
-  const body = await response.json();
+  const body = z.object({ endpointHost: z.string().nullable(), balance: z.object({ status: z.string() }), defaultEnabled: z.boolean(), mastraVersion: z.string() }).passthrough().parse(await response.json());
   expect(body.endpointHost).toBeNull(); expect(body.balance.status).toBe("unavailable"); expect(body.defaultEnabled).toBe(false);
   expect(body.mastraVersion).toBe("1.36.0"); expect(JSON.stringify(body)).not.toContain("secret");
   expect((await app.request("/api/ops/internal-ai/activities/test", { method: "POST" })).status).toBe(404);
