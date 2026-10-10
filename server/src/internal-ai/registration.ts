@@ -136,7 +136,11 @@ export class InternalAiRegistration {
     const prior = rows<RevisionRow>(await (await this.db()).query("SELECT * FROM internal_ai_revision WHERE proof_jti = $jti LIMIT 1", { jti: c.jti }))[0];
     const manifestHash = createHash("sha256").update(canonical(m)).digest("hex");
     if (prior) {
-      if (prior.activity !== activity || prior.configuration_digest !== c.configurationDigest || prior.document_hash !== c.documentHash || prior.identities_digest !== c.identitiesDigest || prior.manifest_hash !== manifestHash) {
+      if (prior.activity !== activity || prior.configuration_digest !== c.configurationDigest || prior.document_hash !== c.documentHash
+        || prior.identities_digest !== c.identitiesDigest || prior.manifest_hash !== manifestHash || prior.proof_type !== c.type
+        || prior.request_task !== c.requestTask || prior.proof_expires_at !== c.exp
+        || (prior.approval_task ?? null) !== (c.approval?.taskId ?? null) || (prior.approval_version ?? null) !== (c.approval?.version ?? null)
+        || (prior.approval_action ?? null) !== (c.approval?.action ?? null) || (prior.approval_audit_id ?? null) !== (c.approval?.auditId ?? null)) {
         throw conflict("company-proof-revision-conflict", "同一证明标识已登记不同证据");
       }
       this.status.remember(activity, c);

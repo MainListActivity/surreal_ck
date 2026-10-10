@@ -178,6 +178,9 @@ localTest("replayed proof is idempotent, but a different digest under the same j
   const replay = await registration.register({ claims: claimsOf(proof(tag)), operator: "synthetic-operator", reason: "重复投递" });
   expect(replay.idempotentReplay).toBe(true);
   expect(replay.revision).toBe(first.revision);
+  const changedGrant: CompanyProofClaims = { ...claimsOf(proof(tag)), type: "approved-service", scope: "enable", paidCallsAllowed: 1,
+    approval: { taskId: "synthetic-changed-approval", version: 1, action: "accept", auditId: "audit:changed", reviewer: "synthetic-reviewer", digest: first.configurationDigest } };
+  await expect(registration.register({ claims: changedGrant, operator: "synthetic-operator", reason: "同jti篡改批准" })).rejects.toThrow(/同一证明标识已登记不同证据/);
   const clash = proof(tag, { evidence: { priceRevision: "synthetic-other" } });
   await expect(registration.register({ claims: claimsOf(clash), operator: "synthetic-operator", reason: "同标识不同证据" })).rejects.toThrow(/同一证明标识已登记不同证据/);
   expect((await registration.revisions(`activity-${tag}`)).length).toBe(1);
