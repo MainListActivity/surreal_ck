@@ -357,6 +357,7 @@
 
 <style>
   .quota-section {
+    flex-shrink: 0;
     border: 1px solid var(--border);
     border-radius: 18px;
     background: var(--surface-2);
