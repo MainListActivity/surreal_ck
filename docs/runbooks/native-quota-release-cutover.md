@@ -1,5 +1,17 @@
 # Native quota 发布、切换与恢复 Runbook
 
+> **状态：已冻结（2026-09-29）**
+>
+> 老板决定（2026-09-29）：生产 SurrealDB 按现状运行——当前为单机 native-quota
+> fork 部署，数据面部署拓扑不得变更。本文档阶段一（exact digest fork 接管
+> RocksDB 数据目录 + format migration）以「对生产 datastore 做部署级切换」为
+> 前提，与该红线冲突；阶段二/三依赖阶段一，三阶段整体冻结。
+> 下文原方案仅作备查保留：仅当出现与生产现网兼容的认证候选、且阶段一按实际
+> 部署拓扑重写后才可重启。
+>
+> 关联任务：`477e239e-2f1c-46c8-a377-4be98b9341d7`（冻结归档）、
+> `98ba14f2-7601-4345-9e5a-88a09da86665`（backend 配额契约实测与认证差距评估）。
+
 ## 适用范围与不可变前提
 
 本 Runbook 适用于 `MainListActivity/surrealdb` 的
