@@ -17,6 +17,20 @@ export function tariffFor(provider: string, model: string, endpoint: string): Ta
   return TARIFFS.find(t => t.provider === provider && t.model === model && t.host === u.hostname);
 }
 export function worstCost(t: Tariff): number { return t.maxInput * t.input + t.maxOutput * t.output; }
+/**
+ * 按端点与模型查**已核定价目证书**：provider 不由调用方给，而是逐本证书用自己的 provider 复核
+ * 固定 API 路径，因此不可能把 OpenAI 的协议/证书价套到 token.sensenova.cn 或别的模型上。
+ * 找不到即 unsupported——不编造每 token 现金价，也不把积分当 USD。
+ */
+export function certificateFor(endpoint: string, model: string): Tariff | undefined {
+  let host: string;
+  try { host = new URL(endpoint).hostname; } catch { return undefined; }
+  for (const tariff of TARIFFS) {
+    if (tariff.model !== model || tariff.host !== host) continue;
+    if (tariffFor(tariff.provider, model, endpoint)) return tariff;
+  }
+  return undefined;
+}
 export function normalizeUsage(raw: { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number; reasoningTokens?: number }): Usage {
   const token = (n: number | undefined) => Number.isSafeInteger(n) && n! >= 0 ? n! : null;
   return { inputTokens: token(raw.inputTokens), outputTokens: token(raw.outputTokens), cachedInputTokens: token(raw.cachedInputTokens), reasoningTokens: token(raw.reasoningTokens) };

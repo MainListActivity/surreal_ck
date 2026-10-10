@@ -1,5 +1,6 @@
 import { InternalAiStore } from "./internal-ai/store";
 import { InternalAiGate } from "./internal-ai/gate";
+import { InternalAiRegistration } from "./internal-ai/registration";
 import { meteredDecision } from "./internal-ai/decision";
 import { createOpsInternalAiRoutes } from "./routes/ops-internal-ai";
 import { createInternalAiIdentityRoutes } from "./routes/internal-ai-identity";
@@ -365,6 +366,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
   const rolloutGateService = options.rolloutGateService
     ?? new RolloutGateService(new SurrealRolloutStore());
   const internalAiGate = new InternalAiGate(new InternalAiStore(async () => getRootDatabaseSession("_system")));
+  const internalAiRegistration = new InternalAiRegistration(async () => getRootDatabaseSession("_system"));
   const autoAiChatService = options.aiChatService
     ?? buildAutoAiChatService(runBus, platformContentService, embeddingProvider, contentResearchSession, internalAiGate);
   const aiAllowanceService = options.aiAllowance ?? new AiAllowanceService({
@@ -547,7 +549,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
         requireUser: options.requireUser,
       }),
     )
-    .route("/", createOpsInternalAiRoutes({ gate: internalAiGate, runtime: { provider: env.AI_PROVIDER, model: env.AI_MODEL, endpoint: env.AI_BASE_URL, jevModel: env.JEV_MODEL } }))
+    .route("/", createOpsInternalAiRoutes({ gate: internalAiGate, registration: internalAiRegistration, runtime: { provider: env.AI_PROVIDER, model: env.AI_MODEL, endpoint: env.AI_BASE_URL, jevModel: env.JEV_MODEL } }))
     .route("/", createOpsAiAllowanceRoutes({ service: aiAllowanceService }))
     .route("/", createOpsRolloutRoutes({ service: rolloutGateService }))
     .route("/", createOpsInvitationRoutes({ service: inviteService, requireOperator: options.requireOperator }))
