@@ -10,6 +10,7 @@ import {
   type CompanyProofClaims,
 } from "@surreal-ck/shared";
 import { InternalAiRegistration } from "./registration";
+import { HttpError } from "../http-error";
 import { verifyCompanyProof } from "./company-proof";
 import { InternalAiGate } from "./gate";
 import { InternalAiStore, hash } from "./store";
@@ -541,4 +542,53 @@ localTest("hash-bound illegal currency, unknown FX/plan, missing balance and top
     await expect(registration.submitEvidence({ activity: row.activity, revision: row.revision, document, operator: "synthetic-operator", reason: "非法资料" })).rejects.toThrow(/字段不合法/);
     expect((await registration.revisions(row.activity)).length).toBe(1);
   }
+});
+
+localTest("development-disabled first registration writes exactly one disabled revision and never requires a USD currency", async () => {
+  if (!db) throw new Error("fixture unavailable");
+  const tag = "devfirst";
+  const summary = await registration.register({ claims: claimsOf(proof(tag)), operator: "synthetic-operator", reason: "开发禁用首登" });
+  expect(summary.state).toBe("disabled");
+  expect(summary.revision).toBe(1);
+  expect(summary.currency).toBeNull();
+  const revisions = await registration.revisions(`activity-${tag}`);
+  // 恰好一条 disabled revision；036 放宽后 currency 落库为 NONE，不强制 USD。
+  expect(revisions.map(r => r.state)).toEqual(["disabled"]);
+  const stored = rows(await db.query("SELECT currency FROM ONLY $id", { id: new RecordId("internal_ai_revision", `activity-${tag}:1`) }))[0]!;
+  expect(stored.currency ?? null).toBe(null);
+});
+
+localTest("pre-commit store failures collapse to 503 company-proof-store-unavailable and write nothing", async () => {
+  if (!db) throw new Error("fixture unavailable");
+  const status = { check: async () => {}, current: async () => {}, remember: () => {} };
+  // 提交前的三次读查询（proof_jti 幂等查重、latest、identities）各自独立故障都必须收成 503。
+  const markers = ["proof_jti = $jti", "ORDER BY revision", "internal_ai_identity"];
+  for (const [index, marker] of markers.entries()) {
+    const tag = `store503_${index}`;
+    const realDb = db;
+    const degraded = new InternalAiRegistration(async () => ({
+      query: (sql: string, vars?: Record<string, unknown>) => sql.includes(marker)
+        ? Promise.reject(new TypeError(`synthetic failure near ${marker}`))
+        : realDb.query(sql, vars),
+    }), status);
+    const error = await degraded.register({ claims: claimsOf(proof(tag)), operator: "synthetic-operator", reason: "存储故障登记" }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(HttpError);
+    const http = error as HttpError;
+    expect(http.status).toBe(503);
+    expect(http.code).toBe("company-proof-store-unavailable");
+    // 消息只含错误类型名：不带 SQL、证明、bearer 或 subject。
+    expect(http.message).toBe("公司证明存储不可用（TypeError）");
+    expect(JSON.stringify(http)).not.toContain(marker);
+    expect(JSON.stringify(http)).not.toContain(`owner-${tag}`);
+    expect(JSON.stringify(http)).not.toContain("C".repeat(43));
+    expect(await registration.revisions(`activity-${tag}`)).toEqual([]);
+  }
+  // HttpError 原样透传，不被收成 503。
+  const passthrough = new InternalAiRegistration(async () => ({
+    query: () => Promise.reject(new HttpError(409, "synthetic-preserved", "原样抛出")),
+  }), status);
+  const preserved = await passthrough.register({ claims: claimsOf(proof("store503_keep")), operator: "synthetic-operator", reason: "冲突透传" }).catch((e: unknown) => e);
+  expect(preserved).toBeInstanceOf(HttpError);
+  expect((preserved as HttpError).code).toBe("synthetic-preserved");
+  expect((preserved as HttpError).status).toBe(409);
 });

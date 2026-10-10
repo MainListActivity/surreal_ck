@@ -104,6 +104,16 @@ export class InternalAiRegistration {
   private id(activity: string): void {
     if (!ACTIVITY_ID.test(activity)) throw new HttpError(422, "internal-ai-id-invalid", "活动标识无效");
   }
+  /** 提交前读路径的存储故障收成 503；消息只带错误类型名，绝不夹带 SQL、证明、bearer 或 subject。 */
+  private async preflight<T>(read: () => Promise<T>): Promise<T> {
+    try {
+      return await read();
+    } catch (e) {
+      if (e instanceof HttpError) throw e;
+      const name = e instanceof Error && /^[A-Za-z0-9_]{1,40}$/.test(e.name) ? e.name : "Error";
+      throw new HttpError(503, "company-proof-store-unavailable", `公司证明存储不可用（${name}）`);
+    }
+  }
   private async latest(activity: string): Promise<RevisionRow | undefined> { return (await this.revisions(activity)).at(-1); }
   private async fresh(activity: string, revision: number): Promise<RevisionRow> {
     this.id(activity);
@@ -147,7 +157,7 @@ export class InternalAiRegistration {
       throw denied("身份角色或 workspace/计费账户不匹配");
     }
     await this.status.check(c);
-    const prior = rows<RevisionRow>(await (await this.db()).query("SELECT * FROM internal_ai_revision WHERE proof_jti = $jti LIMIT 1", { jti: c.jti }))[0];
+    const prior = await this.preflight(async () => rows<RevisionRow>(await (await this.db()).query("SELECT * FROM internal_ai_revision WHERE proof_jti = $jti LIMIT 1", { jti: c.jti }))[0]);
     const manifestHash = createHash("sha256").update(canonical(m)).digest("hex");
     if (prior) {
       if (prior.activity !== activity || prior.configuration_digest !== c.configurationDigest || prior.document_hash !== c.documentHash
@@ -158,14 +168,14 @@ export class InternalAiRegistration {
         throw conflict("company-proof-revision-conflict", "同一证明标识已登记不同证据");
       }
       this.status.remember(activity, c);
-      return this.summary(prior, true);
+      return this.preflight(() => this.summary(prior, true));
     }
-    const latest = await this.latest(activity);
+    const latest = await this.preflight(() => this.latest(activity));
     if (latest && latest.configuration_digest !== c.configurationDigest) throw conflict("company-proof-activity-conflict", "同活动已登记不同配置摘要");
-    const bindings = c.identities.map(i => ({ identity_hash: hash(i.subject, i.database), activity, revision: (latest?.revision ?? 0) + 1,
+    const bindings: IdentityRow[] = c.identities.map(i => ({ identity_hash: hash(i.subject, i.database), activity, revision: (latest?.revision ?? 0) + 1,
       alias: i.alias, space_id: i.spaceId, database: i.database, workspace_role: i.workspaceRole,
       billing_role: i.billingRole, billing_account_ref: i.billingAccountRef, revoked: false }));
-    const current = await this.identities(activity);
+    const current = await this.preflight(() => this.identities(activity));
     if (current.length && (current.length !== 2 || current.some(i => !bindings.some(b => b.identity_hash === i.identity_hash && b.alias === i.alias)))) {
       throw conflict("internal-ai-identity-bound", "同活动身份改绑冲突");
     }

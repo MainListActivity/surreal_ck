@@ -47,7 +47,11 @@ export function verifyCompanyProof(jwt: string, now: number, trust: CompanyProof
   try { key = createPublicKey({ key: trust.jwk, format: "jwk" }); } catch { throw denied("company-proof-anchor-invalid", "公司证明信任锚不可用"); }
   let signature: Buffer;
   try { signature = Buffer.from(signaturePart, "base64url"); } catch { throw denied("company-proof-malformed", "公司证明格式无效"); }
-  if (!verify(null, Buffer.from(`${headerPart}.${bodyPart}`, "utf8"), key, signature)) {
+  // 验签器内部抛错（例如运行时对密钥/签名形状拒绝）等同签名无效：不外泄成 500。
+  let verified: boolean;
+  try { verified = verify(null, Buffer.from(`${headerPart}.${bodyPart}`, "utf8"), key, signature); }
+  catch { throw denied("company-proof-signature-invalid", "公司证明签名无效"); }
+  if (!verified) {
     throw denied("company-proof-signature-invalid", "公司证明签名无效");
   }
   if (!claims || typeof claims !== "object") throw denied("company-proof-malformed", "公司证明格式无效");
