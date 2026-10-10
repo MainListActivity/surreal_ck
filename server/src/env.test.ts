@@ -54,4 +54,12 @@ describe("loadEnv template pack selection", () => {
     expect(loaded.CLAIMS_ATTACHMENT_BUCKET).toBe("bucket");
     expect(loadEnv(requiredEnv).CLAIMS_PORTAL_TOKEN_PEPPER).toBeUndefined();
   });
+
+  test("TYPESAFE_API_KEY：缺省、空串与 UNSET 哨兵均按未配置处理，普通非空值原样保留", () => {
+    expect(loadEnv(requiredEnv).TYPESAFE_API_KEY).toBeUndefined();
+    expect(loadEnv({ ...requiredEnv, TYPESAFE_API_KEY: "" }).TYPESAFE_API_KEY).toBeUndefined();
+    expect(loadEnv({ ...requiredEnv, TYPESAFE_API_KEY: "UNSET" }).TYPESAFE_API_KEY).toBeUndefined();
+    expect(loadEnv({ ...requiredEnv, TYPESAFE_API_KEY: "unset" }).TYPESAFE_API_KEY).toBe("unset");
+    expect(loadEnv({ ...requiredEnv, TYPESAFE_API_KEY: "real-key" }).TYPESAFE_API_KEY).toBe("real-key");
+  });
 });

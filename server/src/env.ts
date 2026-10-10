@@ -90,7 +90,12 @@ const EnvSchema = z.object({
   EMBEDDING_API_KEY: z.string().min(1).optional(),
 
   // TypeSafe 决策模型（System One / Jev）：意图分类的单意图捷径。key 缺省即纯 LLM 分类。
-  TYPESAFE_API_KEY: z.string().min(1).optional(),
+  // 空串与哨兵值 UNSET 一律按未配置处理：发布端以 UNSET 删除主机上的键，
+  // 进程侧即使读到 KEY=UNSET 也不启用 Jev（兜底，防旧发布脚本写残值）。
+  TYPESAFE_API_KEY: z.preprocess(
+    (value) => (value === "" || value === "UNSET" ? undefined : value),
+    z.string().min(1).optional(),
+  ),
   JEV_MODEL: z.string().min(1).default("jev-latest"),
   JEV_CONFIDENCE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.75),
   JEV_TIMEOUT_MS: z.coerce.number().int().positive().default(1500),
