@@ -162,7 +162,7 @@
 <!-- 可见性已由各 modal 内部读 editorUi 绑到 bits-ui Dialog 的 bind:open；此处无条件挂载 -->
 <AddRecordModal />
 <FieldsModal />
-<ShareModal {workbookId} />
+<ShareModal />
 <LeaveDraftModal />
 <TemplateSheetImportDialog />
 <DataCheckDialog />

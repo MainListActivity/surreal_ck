@@ -3,7 +3,10 @@
   import Avatar from "../../components/Avatar.svelte";
   import Logo from "../../components/Logo.svelte";
   import { ChevronLeft, RefreshCw, AlertCircle, WifiOff, Check, Share, Ellipsis, Pencil, X } from "@lucide/svelte";
-  import { canWriteSharedStructure as canWriteSharedStructureFn } from "../../lib/permissions.svelte";
+  import {
+    canWriteSharedStructure as canWriteSharedStructureFn,
+    editorAccessLevel as editorAccessLevelFn,
+  } from "../../lib/permissions.svelte";
   import { editorStore } from "../../lib/editor-store.svelte";
   import { editorUi } from "./lib/editor-ui.svelte";
   import { panelRegistry } from "./registries/panels";
@@ -12,6 +15,9 @@
   let { workbookName = "", onback }: { workbookName?: string; onback?: () => void } = $props();
 
   const canWriteSharedStructure = $derived(canWriteSharedStructureFn());
+  // 顶栏访问级别三分支：editable（admin）/ structure-readonly（participant，数据可写）/ readonly。
+  // 徽标只反映权限事实：participant 能写数据行，不得标「只读」。
+  const accessLevel = $derived(editorAccessLevelFn());
   const titleValue = $derived(editorStore.workbook?.name ?? workbookName);
 
   let editingTitle = $state(false);
@@ -134,18 +140,21 @@
   <span
     class="sync"
     class:error={Boolean(editorStore.saveError)}
-    class:warning={!canWriteSharedStructure}
+    class:warning={accessLevel === "readonly"}
   >
     {#if editorStore.saving}
       <RefreshCw size={13} />保存中…
     {:else if editorStore.saveError}
       <AlertCircle size={13} />保存失败
-    {:else if !canWriteSharedStructure}
+    {:else if accessLevel === "readonly"}
       <WifiOff size={13} />只读
     {:else}
       <Check size={13} />已保存
     {/if}
   </span>
+  {#if accessLevel === "structure-readonly"}
+    <span class="access-badge" title="可编辑数据行；表结构仅管理员可修改">结构只读</span>
+  {/if}
   {#if editorStore.pendingDraftCount > 0}
     <span class="draft-hint" title="这些草稿仅存在于内存中，待必填字段填齐后会自动保存">
       <AlertCircle size={12} />
@@ -293,6 +302,20 @@
 
   .sync.error {
     color: var(--error);
+  }
+
+  .access-badge {
+    display: inline-flex;
+    height: 22px;
+    flex-shrink: 0;
+    align-items: center;
+    padding: 0 8px;
+    border-radius: 11px;
+    background: var(--bg);
+    color: var(--text-2);
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
   }
 
   .draft-hint {
