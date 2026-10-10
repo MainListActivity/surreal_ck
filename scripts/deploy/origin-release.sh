@@ -240,6 +240,7 @@ require_allowance_source_compat() {
 }
 
 rollback() {
+  trap - HUP INT TERM
   echo "release $release_id failed: $1; restoring $previous" >&2
   sudo -n journalctl -u "$service" -n 40 --no-pager >&2 || true
   # 先做纯静态的试用来源检查（无副作用）：拒绝时 env/current/服务均未被触碰。
@@ -320,6 +321,9 @@ fi
 # 发布钩子：发布代码里有 scripts/deploy/origin-pre-start.sh 时，停掉旧服务（冻结写入）后在新版本目录执行，
 # 例如一次性数据复制迁移。钩子必须幂等，读取 $ORIGIN_ENV_FILE。
 hook="$release/scripts/deploy/origin-pre-start.sh"
+# Catch a remote termination during the stopped-service window. The detached
+# runner keeps an ordinary SSH disconnect from sending this signal at all.
+trap 'rollback "release interrupted"' HUP INT TERM
 if [ -f "$hook" ]; then
   echo "stopping $service for pre-start hook"
   sudo -n systemctl stop "$service"
@@ -332,6 +336,7 @@ echo "switching $previous -> $release"
 point_to "$release"
 sudo -n systemctl restart "$service"
 healthy || rollback "health check failed"
+trap - HUP INT TERM
 echo "release $release_id healthy"
 
 # 只清理 CI 生成的旧发布与 env 备份，保留最近 $keep 个；手工发布目录不动。
