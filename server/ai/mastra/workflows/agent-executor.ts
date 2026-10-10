@@ -12,7 +12,33 @@ export type AgentExecutorOptions = {
   maxSteps?: number;
   /** 收集 tool 调用时的回调（runId 由 router-chat 注入）。 */
   onToolCall?: (call: AiToolCallRecord) => void;
+  /**
+   * 无可见产出（reasoning 模型只思考不落地）时替换空文本的显式收尾文案。
+   * 缺席时保持历史行为：text 返回空串，由上游兜底——调用方负责不把空回复
+   * 伪装成有效回答（def-row-analysis-no-proposal 的生产故障形态）。
+   */
+  noOutputText?: string;
 };
+
+/**
+ * 无可见产出的显式归类（仅当最终 text 为空且未产生 suspend 提案时上报）：
+ * - `reasoning-only`：模型只输出推理内容，没有文本、也没有工具调用；
+ * - `empty`：没有任何可见输出（含调了工具但无可确认产出的情形）。
+ */
+export type AgentExecutorNoOutput = "reasoning-only" | "empty";
+
+/**
+ * LLM 流中途失败（provider 断流 / 网关错误）的显式错误态。
+ * 面向用户只呈现稳定文案；原始 cause 保留在 error 上供服务端日志定位，
+ * 不进入用户可见消息（不得泄露内部错误细节，也不得退化成空回复）。
+ */
+export class AgentStreamInterruptedError extends Error {
+  readonly code = "ai-stream-interrupted";
+  constructor(cause: unknown) {
+    super("AI 生成流中断：本次未产出完整结果，请重试。");
+    this.cause = cause;
+  }
+}
 
 const SchemaSummarySchema = z.object({
   tables: z.array(z.string()),
@@ -33,7 +59,8 @@ const ResourceCitationListSchema = z.array(z.object({
 /**
  * 把 Mastra Agent 适配成 SubAgentExecutor。
  * - taskText + shared 序列化为单条 user 消息
- * - 通过 textStream 收集 deltas，让 router-chat 转推到统一 streamId 上
+ * - 通过 fullStream 收集 text deltas（reasoning 只做归类、不进可见流），
+ *   让 router-chat 转推到统一 streamId 上
  */
 export function makeAgentExecutor(agent: Agent, options: AgentExecutorOptions = {}): SubAgentExecutor {
   return async ({ taskText, shared, surrealSession, onDelta }) => {
@@ -89,24 +116,52 @@ export function makeAgentExecutor(agent: Agent, options: AgentExecutorOptions = 
       },
     );
 
+    // 消费 fullStream 而不是 textStream：reasoning 模型（如 sensenova-6.8-flash-lite）
+    // 会把全部产出放在 reasoning 通道，textStream 只透传 text-delta——推理内容会被
+    // 整体丢弃，最终 text 为空并被上游兜底成「我没有生成有效回复。」（隐藏失败）。
+    // fullStream 同时暴露 reasoning-delta 与 error part，用于显式归类无产出与流中断。
     const deltas: string[] = [];
     let aggregated = "";
-    for await (const delta of stream.textStream) {
-      if (!delta) continue;
-      deltas.push(delta);
-      aggregated += delta;
-      onDelta?.(delta);
+    let sawReasoning = false;
+    let observedStreamError: unknown;
+    for await (const part of stream.fullStream) {
+      if (part.type === "text-delta") {
+        const delta = part.payload?.text ?? "";
+        if (!delta) continue;
+        deltas.push(delta);
+        aggregated += delta;
+        onDelta?.(delta);
+        continue;
+      }
+      // 推理内容不进用户可见流：只记录「模型确实思考过」，供无产出归类与排障。
+      if (part.type === "reasoning-delta") {
+        sawReasoning = true;
+        continue;
+      }
+      // 流中途 error part：先记录，循环结束后统一转成显式错误态（不等 stream.error 兜底）。
+      if (part.type === "error") {
+        observedStreamError = (part as { payload?: { error?: unknown } }).payload?.error;
+      }
     }
-    const failure = streamFailure(stream);
-    if (failure) throw failure;
-    const text = aggregated || (await stream.text) || "";
+    // 双保险：error part 与 stream.error 任一出现都按中断处理，绝不以静默空回复收尾。
+    const failure = streamFailure(stream) ?? streamFailure({ error: observedStreamError });
+    if (failure) throw new AgentStreamInterruptedError(failure);
+    let text = aggregated || (await stream.text) || "";
+    const suspend = deriveSuspendSignalFromToolCalls(observedToolCalls);
+    let noOutput: AgentExecutorNoOutput | undefined;
+    if (!text && !suspend) {
+      // 无可见产出不静默：按是否走过推理通道归类，交给调用方的契约文案显式收尾。
+      noOutput = observedToolCalls.length === 0 && sawReasoning ? "reasoning-only" : "empty";
+      if (options.noOutputText) text = options.noOutputText;
+    }
     const citations = deriveCitationsFromToolCalls(observedToolCalls);
     return {
       text,
       confirmed: deriveConfirmedFromToolCalls(observedToolCalls),
       citations: citations.length ? citations : undefined,
       deltas,
-      suspend: deriveSuspendSignalFromToolCalls(observedToolCalls),
+      suspend,
+      ...(noOutput ? { noOutput } : {}),
     };
   };
 }

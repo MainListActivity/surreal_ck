@@ -273,6 +273,8 @@ describe("AI 抽屉会话", () => {
     const cases = [
       ["chat-signin-failed", "PERMISSIONS denied for user:abc", "没有权限执行此操作，请联系工作区管理员。"],
       ["chat-resume-invalid", "ZodError: expected string", "请求内容未通过校验，请检查后重试。"],
+      // def-row-analysis-no-proposal：provider 流中途断与未知故障区分，提示本次生成被中断、可重试。
+      ["chat-failed", "AI 生成流中断：本次未产出完整结果，请重试。 | caused by: internal-ai-provider-stream-failed", "AI 生成中断：本次未产出完整结果，请重试。"],
     ] as const;
 
     for (const [code, rawMessage, expected] of cases) {

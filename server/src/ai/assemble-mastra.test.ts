@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { Agent } from "@mastra/core/agent";
+import { createDefaultAiContextSnapshot } from "@surreal-ck/shared";
 import { buildExecutors, buildRouterLlmCaller } from "./assemble-mastra";
+import { ROW_ANALYSIS_NO_PROPOSAL_TEXT } from "../../ai/mastra/agents/row-analysis-agent";
 
 describe("buildRouterLlmCaller", () => {
   test("把 agent.generate(prompt) 的 text 作为 llmCaller 返回值", async () => {
@@ -56,6 +58,38 @@ describe("buildExecutors", () => {
       },
     );
     expect(typeof executors["resource-retrieval"]).toBe("function");
+  });
+
+  test("row-analysis executor 配 no-proposal 契约：reasoning-only 空输出给出显式态（def-row-analysis-no-proposal）", async () => {
+    // 生产 fv02-2 形态：全部产出落在 reasoning 通道，零可见文本、零工具调用。
+    const reasoningOnlyAgent = {
+      async stream() {
+        return {
+          fullStream: (async function* () {
+            yield { type: "reasoning-start", payload: { id: "r1" } };
+            yield { type: "reasoning-delta", payload: { id: "r1", text: "先看字段定义……" } };
+            yield { type: "reasoning-end", payload: { id: "r1" } };
+            yield { type: "finish", payload: { finishReason: "stop" } };
+          })(),
+          text: Promise.resolve(""),
+        };
+      },
+    } as unknown as Agent;
+    const executors = buildExecutors({
+      navigationAgent: fakeAgent,
+      dashboardAgent: fakeAgent,
+      rowAnalysisAgent: reasoningOnlyAgent,
+      chitchatAgent: fakeAgent,
+    });
+
+    const out = await executors["row-analysis"]({
+      taskText: "分析当前记录",
+      shared: { userContext: createDefaultAiContextSnapshot(), confirmed: {} },
+    });
+
+    expect(out.text).toBe(ROW_ANALYSIS_NO_PROPOSAL_TEXT);
+    expect(out.text).not.toBe("");
+    expect(out.suspend).toBeUndefined();
   });
 });
 

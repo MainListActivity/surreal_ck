@@ -125,6 +125,11 @@ export type SubAgentOutput = {
   /** 可选：流式片段。 */
   deltas?: string[];
   /**
+   * 无可见产出的显式归类（executor 已按 noOutputText 契约收尾时附带）。
+   * 供 workflow / 测试区分「推理式模型空输出」与「完全无输出」，不得静默丢弃。
+   */
+  noOutput?: import("./agent-executor").AgentExecutorNoOutput;
+  /**
    * 可选：要求 workflow 在该步骤暂停。
    * - ambiguous：搜索结果有多个候选，需要用户选择
    * - await-write-confirm：本步是写操作，需要前端确认
