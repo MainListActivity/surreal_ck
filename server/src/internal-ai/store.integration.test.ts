@@ -33,8 +33,8 @@ async function start() {
   store = new InternalAiStore(async () => db); gate = new InternalAiGate(store);
 }
 async function stop() { try { await db2.close(); await db.close(); } finally { child.kill(); await child.exited; } }
-async function activity(id: string, limits: { total?: number; per?: number; count?: number } = {}) {
-  await db.insert(new Table("internal_ai_activity"), { id: new RecordId("internal_ai_activity", id), goal: GOAL, enabled: true, total_limit: limits.total ?? 1000000000, per_attempt_limit: limits.per ?? 100000000, attempt_limit: limits.count ?? 30, approval_revision: "synthetic-test-only", evidence_expires_at: "2099-01-01T00:00:00Z", price_revisions: TARIFFS.map(t => t.revision), balance_nano_usd: 1000000000, balance_currency: "USD", balance_source: `reviewed-document:${"a".repeat(64)}`, balance_sampled_at: "2026-10-09T00:00:00Z", balance_evidence_hash: "a".repeat(64), auto_topup_disabled: true, service_approved: true });
+async function activity(id: string, limits: { total?: number; per?: number; count?: number } = {}, registration?: { jti: string; proofExpiresAt: number }) {
+  await db.insert(new Table("internal_ai_activity"), { id: new RecordId("internal_ai_activity", id), goal: GOAL, enabled: true, total_limit: limits.total ?? 1000000000, per_attempt_limit: limits.per ?? 100000000, attempt_limit: limits.count ?? 30, approval_revision: "synthetic-test-only", evidence_expires_at: "2099-01-01T00:00:00Z", price_revisions: TARIFFS.map(t => t.revision), balance_nano_usd: 1000000000, balance_currency: "USD", balance_source: `reviewed-document:${"a".repeat(64)}`, balance_sampled_at: "2026-10-09T00:00:00Z", balance_evidence_hash: "a".repeat(64), auto_topup_disabled: true, service_approved: true, ...(registration ? { registration_jti: registration.jti, proof_expires_at: registration.proofExpiresAt } : {}) });
   return { activity: id, runHash: hash(id, "run"), keyHash: hash(id, "key"), logicalHash: hash(id, "key") };
 }
 /** 配额型活动：官方 Token Plan 证据，无 USD 余额字段；与 enable 写入形状一致。 */
@@ -50,6 +50,8 @@ beforeAll(async () => {
   endpoint = `ws://127.0.0.1:${port}`;
   await start();
   await db.query(await readFile(new URL("../../../shared/sql/system/034-internal-ai-budget.surql", import.meta.url), "utf8"));
+  // 035 带来 registration_jti/proof_expires_at：解耦用例要在「已登记活动」的真实形状上验证 proof 窗口。
+  await db.query(await readFile(new URL("../../../shared/sql/system/035-internal-ai-registration.surql", import.meta.url), "utf8"));
   await db.query(await readFile(new URL("../../../shared/sql/system/036-internal-ai-token-plan.surql", import.meta.url), "utf8"));
 }, 20000);
 afterAll(async () => { if (!enabled) return; await stop(); await rm(directory, { recursive: true, force: true }); });
@@ -184,6 +186,32 @@ localTest("revoked identity denies old and new run/key across restart; deleted b
     expect((await store.activity("bystander"))?.attempts).toBe(0);
   } finally { mock.mockRestore(); }
 }, 20000);
+
+localTest("user gate anchors on reviewed ledger: expired operator proof window neither blocks attempts nor revives denied ones", async () => {
+  const t = TARIFFS[0]!;
+  const begin = () => gate.begin("proposal", t.provider, t.model, "https://api.openai.com/v1");
+  // 登记过的活动（registration_jti 存在），投递证明窗口已远超 300s（proof_expires_at 拨到过去，不真等）。
+  await activity("window-live", {}, { jti: "jti-window", proofExpiresAt: 1 });
+  await db.insert(new Table("internal_ai_binding"), { identity_hash: hash("window-subject", "ws_window"), activity: "window-live" });
+  const bound = await gate.bind("window-subject", "ws_window", "run-live", "key-live");
+  expect(bound?.activity).toBe("window-live");
+  // >300s 后无人工重刷仍可预留：proof TTL 不再是用户门禁条件。
+  const ticket = await gate.inRun(bound, () => begin());
+  expect(ticket?.tariff.revision).toBe(t.revision);
+  // 证据窗口到期：活动仍 enabled 也立即拒绝（evidence_expires_at 在同一事务强制）。
+  await db.query("UPDATE ONLY $id SET evidence_expires_at = '2026-01-01T00:00:00Z'", { id: new RecordId("internal_ai_activity", "window-live") });
+  await expect(gate.inRun(bound, () => begin())).rejects.toThrow();
+  // disable：立即拒绝。
+  await db.query("UPDATE ONLY $id SET evidence_expires_at = '2099-01-01T00:00:00Z', enabled = false", { id: new RecordId("internal_ai_activity", "window-live") });
+  await expect(gate.inRun(bound, () => begin())).rejects.toThrow();
+  // 撤销：持久标记，同活动内换 run/key 仍拒绝。
+  await activity("window-revoked", {}, { jti: "jti-window-revoked", proofExpiresAt: 1 });
+  await db.insert(new Table("internal_ai_binding"), { identity_hash: hash("revoked-window-subject", "ws_window"), activity: "window-revoked" });
+  const revokedScope = await gate.bind("revoked-window-subject", "ws_window", "run-revoked", "key-revoked");
+  await store.revoke("revoked-window-subject", "ws_window");
+  await expect(gate.inRun(revokedScope, () => begin())).rejects.toThrow();
+  expect((await store.activity("window-revoked"))?.attempts ?? 0).toBe(0);
+});
 
 localTest("each provider model step reserves before transport, captures finish usage only, rejects unmetered embedding", async () => {
   const scope = await activity("model-steps");
