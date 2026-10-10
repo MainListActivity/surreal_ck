@@ -273,7 +273,7 @@ localTest("a fully reviewed openai activity enables, keeps its ledger, and can b
   const endpoint = `https://${tariff.host}/v1`;
   const document = JSON.stringify({
     schemaVersion: 1, type: "reviewed-service", accountRef: "synthetic-openai-account", endpoint,
-    model: tariff.model, priceRevision: tariff.revision, currency: "USD", balanceNanoUsd: 1_000_000_000,
+    model: tariff.model, priceRevision: tariff.revision, currency: "USD", balanceNanoUsd: 2_000_000_000,
     sampledAt: new Date(NOW - 60000).toISOString(), expiresAt: new Date(NOW + 3600000).toISOString(),
     autoTopupDisabled: true, serviceApproved: true,
   });
@@ -409,4 +409,15 @@ localTest("normal identity projection cannot swap roles or billing accounts", as
     await expect(registration.register({ claims: { ...valid, identities: [identities[0], identities[1]] }, operator: "synthetic-operator", reason: "身份配对冲突" })).rejects.toThrow(/身份角色/);
   }
   expect((await registration.revisions(valid.manifest.activityId)).length).toBe(0);
+});
+
+
+localTest("hash-bound illegal currency, unknown FX/plan, missing balance and topup fields cannot become evidence", async () => {
+  const cases: Record<string, unknown>[] = [{ currency: "CNY" }, { fx: { rate: 1 } }, { tokenPlan: true }, { balanceNanoUsd: undefined }, { autoTopupDisabled: false }, { sampledAt: "invalid" }];
+  for (let index = 0; index < cases.length; index++) {
+    const tag = `strict_${index}`, document = evidenceDocument(tag, cases[index]);
+    const row = await registration.register({ claims: claimsOf(proof(tag, { document })), operator: "synthetic-operator", reason: "真实字节哈希合成反例登记" });
+    await expect(registration.submitEvidence({ activity: row.activity, revision: row.revision, document, operator: "synthetic-operator", reason: "非法资料" })).rejects.toThrow(/字段不合法/);
+    expect((await registration.revisions(row.activity)).length).toBe(1);
+  }
 });
