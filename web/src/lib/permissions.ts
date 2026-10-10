@@ -24,3 +24,17 @@ export function canWriteEntityData(role: string | null | undefined): boolean {
 export function canWriteSharedStructure(role: string | null | undefined): boolean {
   return isWorkspaceAdmin(role);
 }
+
+/**
+ * 编辑器顶栏的访问级别，与 schema PERMISSIONS 对齐：
+ * - `editable`：admin，DDL + DML 都可用；
+ * - `structure-readonly`：participant，行级 DML 可用但结构只读；
+ * - `readonly`：employee / 未签入，无任何写权限。
+ */
+export type EditorAccessLevel = "editable" | "structure-readonly" | "readonly";
+
+export function editorAccessLevel(role: string | null | undefined): EditorAccessLevel {
+  if (canWriteSharedStructure(role)) return "editable";
+  if (canWriteEntityData(role)) return "structure-readonly";
+  return "readonly";
+}

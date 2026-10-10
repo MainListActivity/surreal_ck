@@ -42,6 +42,7 @@
   import ClaimsTokenDialog from "../components/ClaimsTokenDialog.svelte";
   import ClaimsInterestDialog from "../components/ClaimsInterestDialog.svelte";
   import ClaimsReconcileDialog from "../components/ClaimsReconcileDialog.svelte";
+  import InviteMemberDialog from "../components/InviteMemberDialog.svelte";
   import CsvImportDialog from "../components/CsvImportDialog.svelte";
   import XlsxImportDialog from "../components/XlsxImportDialog.svelte";
   import { parseCsvImport, type ParsedCsvImport } from "../lib/csv-import";
@@ -92,6 +93,7 @@
   let claimsTokenOpen = $state(false);
   let claimsInterestOpen = $state(false);
   let claimsReconcileOpen = $state(false);
+  let inviteOpen = $state(false);
   let memberMetric = $state<HomeWorkspaceMetric | null>(null);
 
   const greeting = $derived(homeGreetingForDate());
@@ -247,7 +249,7 @@
           {/if}
         </div>
       </div>
-      <button type="button" class="invite-btn" onclick={() => onworkspaceclick?.()}>
+      <button type="button" class="invite-btn" onclick={() => (inviteOpen = true)}>
         <UserPlus size={16} />
         邀请协作者
       </button>
@@ -530,6 +532,10 @@
 
 {#if claimsReconcileOpen}
   <ClaimsReconcileDialog onclose={() => (claimsReconcileOpen = false)} />
+{/if}
+
+{#if inviteOpen}
+  <InviteMemberDialog onclose={() => (inviteOpen = false)} />
 {/if}
 
 {#snippet tableMark(color: string)}

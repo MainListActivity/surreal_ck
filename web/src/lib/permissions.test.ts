@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { canWriteEntityData, canWriteSharedStructure, isWorkspaceAdmin } from "./permissions";
+import {
+  canWriteEntityData,
+  canWriteSharedStructure,
+  editorAccessLevel,
+  isWorkspaceAdmin,
+} from "./permissions";
 
 describe("isWorkspaceAdmin", () => {
   test("仅 admin 为真", () => {
@@ -25,5 +30,21 @@ describe("canWriteSharedStructure", () => {
     expect(canWriteSharedStructure("admin")).toBe(true);
     expect(canWriteSharedStructure("participant")).toBe(false);
     expect(canWriteSharedStructure(null)).toBe(false);
+  });
+});
+
+describe("editorAccessLevel — 顶栏徽标权限源", () => {
+  test("admin 为 editable（结构+数据可写）", () => {
+    expect(editorAccessLevel("admin")).toBe("editable");
+  });
+
+  test("participant 为 structure-readonly（数据可写、结构只读），不得归为只读", () => {
+    expect(editorAccessLevel("participant")).toBe("structure-readonly");
+  });
+
+  test("employee 与未签入为 readonly", () => {
+    expect(editorAccessLevel("employee")).toBe("readonly");
+    expect(editorAccessLevel(null)).toBe("readonly");
+    expect(editorAccessLevel(undefined)).toBe("readonly");
   });
 });
