@@ -5,6 +5,7 @@ import {
   COMPANY_PROOF_MAX_AGE_SECONDS, COMPANY_PROOF_PROJECT, COMPANY_PROOF_TRUST, COMPANY_PROOF_TYP,
 } from "@surreal-ck/shared";
 import { verifyCompanyProof, statusCapabilityHash } from "./company-proof";
+import { HttpError } from "../http-error";
 
 /** 测试自签钥匙：生产信任锚不可用于本地签名，故仅在此注入；生产路径固定用 COMPANY_PROOF_TRUST。 */
 const testPair = generateKeyPairSync("ed25519");
@@ -80,6 +81,20 @@ test("wrong key, wrong kid, wrong alg or wrong typ are rejected", () => {
   expect(() => verifyCompanyProof(signWith(claims(), testPair.privateKey, createHash("sha256").update(JSON.stringify(otherJwk)).digest("hex").slice(0, 32)), now, anchor)).toThrow(/信任锚不匹配/);
   expect(() => verifyCompanyProof(signWith(claims(), testPair.privateKey, testKid, { alg: "HS256" }), now, anchor)).toThrow(/信任锚不匹配/);
   expect(() => verifyCompanyProof(signWith(claims(), testPair.privateKey, testKid, { typ: "sck-internal-ai-status+jwt" }), now, anchor)).toThrow(/信任锚不匹配/);
+});
+
+test("a thrown verifier error collapses to signature-invalid instead of a bare 500", () => {
+  // Bun 的 verify(null, …) 对没有默认摘要算法的 EC 公钥直接抛错；注入这种锚即可走抛错分支。
+  const ecPair = generateKeyPairSync("ec", { namedCurve: "P-256" });
+  const ecJwk = ecPair.publicKey.export({ format: "jwk" }) as Record<string, unknown>;
+  const ecKid = createHash("sha256").update(JSON.stringify(ecJwk)).digest("hex").slice(0, 32);
+  const error = (() => {
+    try { verifyCompanyProof(signWith(claims(), testPair.privateKey, ecKid), now, { alg: "EdDSA", kid: ecKid, jwk: ecJwk }); return null; }
+    catch (e) { return e; }
+  })();
+  expect(error).toBeInstanceOf(HttpError);
+  expect((error as HttpError).status).toBe(422);
+  expect((error as HttpError).code).toBe("company-proof-signature-invalid");
 });
 
 test("tampered payload or truncated token are rejected", () => {
