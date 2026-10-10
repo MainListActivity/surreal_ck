@@ -77,7 +77,9 @@ RocksDB tests覆盖多连接及两个独立客户端进程并发、真实服务�
 - `GET /api/ops/internal-ai/activities/:id/revisions`：脱敏历史预览、操作者与原因、公司批准引用、真实 manifest hash、配置摘要及事务内前后快照。revision字段READONLY，服务无覆盖/删除历史路径。root维护权限不作为客户入口。
 - `GET /api/ops/internal-ai/supplier-probe?host=token.sensenova.cn`：固定注册表明确 unsupported，无注册官方只读balance/plan/usage能力则不发送任何探测请求，列需补证据；Token Plan 配额与零费率只能经 reviewed-token-plan 受审文档登记。不是断言供应商不存在官方API；后续须独立核定固定能力后代码评审加入。不得套OpenAI证书、积分、CNY或推断价目。
 
-公司状态由服务端 `INTERNAL_AI_COMPANY_STATUS_URL` 指向公司已核定的固定 HTTPS `/internal-ai/status`（无userinfo/port/query/hash、不跟随重定向）。该非secret部署值不得从caller或manifest读取。登记、补证、enable及每个底层attempt重新请求随机nonce的签名状态；核对jti/批准版本、用途、pin、checkedAt/iat/exp（最长60秒）及proof自身最长300秒。地址缺失、不可达、撤回、租约/文件/身份变化、到期或key轮换均拒绝，无模型外发。status bearer只在进程内存，不入库/日志；重启后无能力也拒绝，必须重新投递仍有效证明；没有timer。
+公司状态由服务端 `INTERNAL_AI_COMPANY_STATUS_URL` 指向公司已核定的固定 HTTPS `/internal-ai/status`（无userinfo/port/query/hash、不跟随重定向）。该非secret部署值不得从caller或manifest读取。登记、补证、enable 在受控链路上重新请求随机nonce的签名状态；核对jti/批准版本、用途、pin、checkedAt/iat/exp（最长60秒）及proof自身最长300秒。地址缺失、不可达、撤回、租约/文件/身份变化、到期或key轮换均拒绝，无模型外发。status bearer只在进程内存，不入库/日志；受控链路重启后无能力也拒绝，必须重新投递仍有效证明；没有timer。
+
+用户门禁与操作者投递会话解耦（def-capability-300s-fragility）：投递 proof 自身 ≤300s 且公司状态有效性绑定投递租约（proof 过期后公司状态服务必回 valid=false），因此底层 attempt 不再逐次请求签名状态，也不检查 `proof_expires_at`；用户流量只锚定受审账本状态——最新 revision enabled、未到期 evidence_expires_at、未撤销身份绑定、预算上限，全部在 reserve 同一事务内强制复核，与进程重启无关。绑定撤销、活动 disable、证据过期在同一事务内立即拒绝；登记/补证/enable 的验签、实时状态与审计链路不变，已吊销证明无法借用户流量复活，也不能重新启用。对已启用活动的远程即时断流走产品受控面（POST disable / identities/revoke，operator 鉴权），最坏漏杀窗口被证据窗口（≤24h）与预算上界（总额 USD1 / 30 次 / 单次 USD0.10）封顶。
 
 登记/补证/enable/disable/revoke与审计快照单事务提交；活动版本CAS与身份唯一索引拒绝并发冲突，调用方先读回再重试。同jti同摘要幂等，不同配置或身份改绑冲突。同配置的新证明可以刷新，但绝不重置spent/reserved/attempts或共享target；旧证据revision不能绕过disable或revoke重新启用。
 

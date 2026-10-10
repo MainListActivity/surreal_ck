@@ -129,7 +129,7 @@
       <div>
         <strong>{trial.state === "active" ? "共享 Pro 试用" : trial.state === "converted" ? "已转付费来源" : trial.state === "ended" ? "试用已到期" : "试用交付中"}</strong>
         {#if trial.fixture}<span>内部验收配置，不代表正式商业承诺</span>{/if}
-        <span>截止 {trial.endsAt}（UTC）；剩余 {Math.ceil(trial.remainingSeconds / 3600)} 小时；全体成员共享可用 AI 额度 {trial.allowance}</span>
+        <span>七日试用以服务端时钟为准，截止 {trial.endsAt}（UTC）；剩余 {Math.ceil(trial.remainingSeconds / 3600)} 小时；全体成员共享可用 AI 额度 {trial.allowance}，容量有限</span>
         <span>试用内容：{trial.collections.map(c => c.label).join("、")}。不含专业模块、Max 机器通道和批量复制。</span>
         {#if trial.reminder}<span role="status">试用即将结束，无需绑卡，不会自动扣款；可由计费管理员选择 Plus / Pro / Max。</span>{/if}
         <span>{trial.retention}</span>
@@ -357,6 +357,7 @@
 
 <style>
   .quota-section {
+    flex-shrink: 0;
     border: 1px solid var(--border);
     border-radius: 18px;
     background: var(--surface-2);
