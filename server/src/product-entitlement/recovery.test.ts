@@ -278,7 +278,7 @@ describe("LCA13 运营解释、临时授权与交付修复", () => {
     expect(idle.items).toHaveLength(0);
   });
 
-  test("运营解释视图带来源理由/操作者、投影核验与 AI 账本事实；客户视图保持收敛", async () => {
+  test("运营解释视图带来源理由/操作者、投影核验与 AI 账本事实；客户视图只投影可消费/已结算", async () => {
     const store = new EntitlementRecoveryStore();
     seedWorkspace(store);
     const now = new Date("2026-09-24T00:00:00.000Z");
@@ -305,10 +305,58 @@ describe("LCA13 运营解释、临时授权与交付修复", () => {
     expect(opsView.ai.consumableAllowance).toBe(7);
     expect(opsView.ai.stuckReservations).toBe(0);
 
+    // 客户读面（PG-2）：consumable/settled/ledger 与运营、桶表一致；
+    // 运营专属字段（预留、结算诊断、投影核验）不向客户投影。
     const customerView = await service.getForCustomer("lawyer", "team");
     expect(customerView.content.projection).toBeNull();
-    expect(customerView.ai.ledger).toBe("unavailable");
-    expect(customerView.ai.consumableAllowance).toBeNull();
+    expect(customerView.ai.ledger).toBe("ok");
+    expect(customerView.ai.ledgerLabel).toBe("账本可用");
+    expect(customerView.ai.consumableAllowance).toBe(7);
+    expect(customerView.ai.settled).toBe(2);
+    expect(customerView.ai.reserved).toBeUndefined();
+    expect(customerView.ai.stuckReservations).toBeUndefined();
+  });
+
+  test("PG-2：invite/manual 来源桶在 admin 与 member 客户读面与桶表一致；账本读不到如实回落", async () => {
+    const store = new EntitlementRecoveryStore();
+    seedWorkspace(store);
+    store.members.set("member1:workspace:team", "participant");
+    const now = new Date("2026-09-24T00:00:00.000Z");
+    const revisionId = "product_plan_revision:fixture:1";
+    store.revisions.set(revisionId, fixtureRevision());
+    // 与生产一致：ops-invite 的 compensation 桶经 balance() 计入可消费（170/ok/settled）。
+    const inviteStatus = { consumableAllowance: 170, reserved: 0, settled: 0, suspended: 0, terminated: 0, expired: 0, stuckReservations: 0, settlementAnomaly: false, anomalyNote: null };
+    const service = new ProductEntitlementService(store, () => now, {
+      aiStatus: async (dbName) => dbName === "ws_team" ? inviteStatus : null,
+    });
+    await service.assign(operator, fixtureAssignment(revisionId));
+
+    // workspace admin 与普通成员读面一致：可消费/已结算/账本状态对齐桶事实。
+    for (const subject of ["lawyer", "member1"]) {
+      const view = await service.getForCustomer(subject, "team");
+      expect(view.ai.ledger).toBe("ok");
+      expect(view.ai.consumableAllowance).toBe(170);
+      expect(view.ai.settled).toBe(0);
+      expect(view.ai.reserved).toBeUndefined();
+      expect(view.ai.suspended).toBeUndefined();
+      expect(view.ai.stuckReservations).toBeUndefined();
+    }
+
+    // aiStatus 未接线（无 ops 依赖）：如实回落「尚无可用 AI 额度账本」，不把未知当零。
+    const bare = new ProductEntitlementService(store, () => now);
+    const bareView = await bare.getForCustomer("lawyer", "team");
+    expect(bareView.ai.ledger).toBe("unavailable");
+    expect(bareView.ai.ledgerLabel).toBe("尚无可用 AI 额度账本");
+    expect(bareView.ai.consumableAllowance).toBeNull();
+
+    // 账本读不到（aiStatus 回 null 字段）：同样如实回落，不伪造可用额度。
+    const dark = new ProductEntitlementService(store, () => now, {
+      aiStatus: async () => ({ consumableAllowance: null, reserved: null, settled: null, suspended: null, terminated: null, expired: null, stuckReservations: null, settlementAnomaly: false, anomalyNote: null }),
+    });
+    const darkView = await dark.getForCustomer("lawyer", "team");
+    expect(darkView.ai.ledger).toBe("unavailable");
+    expect(darkView.ai.consumableAllowance).toBeNull();
+    expect(darkView.ai.settled).toBeNull();
   });
 
   test("赠送到期：effectiveUntil 过后赠送来源自动失效，基础订阅保留", async () => {
