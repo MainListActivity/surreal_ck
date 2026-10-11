@@ -98,4 +98,36 @@ describe("analyzeRow tool", () => {
       },
     ]);
   });
+
+  test("字段类型未知（fieldType=unknown）的字段上的建议同样被阻止，不出现在提案里", async () => {
+    // def-row-analysis-no-proposal 生产 AC：错误提案须被字段校验阻止且可观测。
+    const { analyzeRowTool } = await import("./row-analysis-tools");
+    const execute = analyzeRowTool.execute as unknown as (input: {
+      sheetId: string;
+      recordId: string;
+      values: Record<string, unknown>;
+      fields: GridColumnDef[];
+      suggestions: Array<{
+        field: string;
+        suggestedValue: unknown;
+        basis: string;
+        confidence: "high" | "medium" | "low";
+      }>;
+    }) => Promise<{ intent: { proposals: Array<{ field: string }> } }>;
+
+    const result = await execute({
+      sheetId: "sheet:devices",
+      recordId: "ent_devices:abc",
+      fields: [
+        ...fields,
+        { key: "mystery", label: "未识别列", fieldType: "unknown" },
+      ],
+      values: { device_name: "", reading: 1000, created_at: "2026-05-01T00:00:00.000Z", mystery: "x" },
+      suggestions: [
+        { field: "mystery", suggestedValue: "补齐", basis: "模型猜测", confidence: "low" },
+      ],
+    });
+
+    expect(result.intent.proposals).toEqual([]);
+  });
 });

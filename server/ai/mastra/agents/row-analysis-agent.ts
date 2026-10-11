@@ -10,6 +10,13 @@ import { type AiSettings } from "./model-config";
 
 export const ROW_ANALYSIS_AGENT_ID = "rowAnalysisAgent";
 
+/**
+ * 行分析无可见产出时的契约化显式态（def-row-analysis-no-proposal 修复）。
+ * reasoning 模型可能只思考不落地（全部产出落在 reasoning 通道），此时不得把空回复
+ * 伪装成有效回答；executor 用这句替换空文本，用户看到的是明确的「未生成提案」。
+ */
+export const ROW_ANALYSIS_NO_PROPOSAL_TEXT = "未生成字段补全提案：模型本轮没有给出可确认的字段建议。请补充当前记录的相关信息后重试。";
+
 export const ROW_ANALYSIS_INSTRUCTIONS = `你是 Surreal CK 的通用记录分析 AI 助手。
 始终使用简体中文回答。
 你的职责只有三类：
@@ -19,7 +26,10 @@ export const ROW_ANALYSIS_INSTRUCTIONS = `你是 Surreal CK 的通用记录分�
 调用工具时优先传入用户上下文里的 workbookId、sheetId、recordId；工具会通过调用者会话读取真实字段定义和记录值。
 不要直接写入数据库；所有字段变更必须作为提案等待用户逐字段确认。
 提案只面向当前记录的可编辑字段，必须包含当前值、建议值、依据和置信度。
-没有关联资源时，必须明确区分台账中的可核验事实与模型给出的分析建议。`;
+没有关联资源时，必须明确区分台账中的可核验事实与模型给出的分析建议。
+输出契约（必须遵守）：
+- 每一轮思考都必须落地为可见结果：调用工具，或用一句简体中文给出明确结论；禁止只推理不输出。
+- 确实无法给出字段补全建议时，调用 analyzeRow 并传空 suggestions 数组，让界面呈现「未生成提案」的明确状态；不要用空回复收尾。`;
 
 export type TemplateRowAnalysis = {
   background: string;

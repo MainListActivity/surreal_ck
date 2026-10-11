@@ -12,7 +12,7 @@ import { inInternalStage, internalScope } from "../internal-ai/context";
 import type { Mastra } from "@mastra/core";
 import type { Agent } from "@mastra/core/agent";
 import { createChitchatAgent } from "../../ai/mastra/agents/chitchat-agent";
-import { createRowAnalysisAgent } from "../../ai/mastra/agents/row-analysis-agent";
+import { createRowAnalysisAgent, ROW_ANALYSIS_NO_PROPOSAL_TEXT } from "../../ai/mastra/agents/row-analysis-agent";
 import { createDashboardAgent } from "../../ai/mastra/agents/dashboard-agent";
 import {
   answerSelectedResourceIds,
@@ -123,7 +123,9 @@ export function buildExecutors(agents: AssembleAgents, deps: AssembleExecutorDep
   const executors: SubAgentExecutors = {
     navigation: makeAgentExecutor(agents.navigationAgent),
     dashboard: makeAgentExecutor(agents.dashboardAgent),
-    "row-analysis": makeAgentExecutor(agents.rowAnalysisAgent),
+    // def-row-analysis-no-proposal：reasoning 模型可能只思考不落地。行分析是首值主路径，
+    // 无可见产出时必须给出契约化的显式 no-proposal 态，不得退化成空回复。
+    "row-analysis": makeAgentExecutor(agents.rowAnalysisAgent, { noOutputText: ROW_ANALYSIS_NO_PROPOSAL_TEXT }),
     chitchat: makeAgentExecutor(agents.chitchatAgent),
   };
   if (deps.research) {

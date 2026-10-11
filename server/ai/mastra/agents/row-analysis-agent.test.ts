@@ -145,4 +145,23 @@ describe("row-analysis agent 模板 instructions", () => {
     expect(queried).toBe(false);
     expect(JSON.stringify(modelCalls[0]?.prompt)).toContain("通用记录分析");
   });
+
+  test("通用 instructions 含输出契约：必须落地工具调用或显式结论，禁止只推理不输出", async () => {
+    // def-row-analysis-no-proposal：reasoning 模型曾全部产出落在 reasoning 通道、零可见文本。
+    // instructions 必须把「每轮思考落地为可见结果」写成契约，空回复不再是被允许的收尾。
+    const modelCalls: ModelCall[] = [];
+    const model = await createPromptCapturingModel(modelCalls);
+    const session = { async query() { return [[{ row_analysis: undefined }]]; } };
+    const agent = createRowAnalysisAgent(fakeSettings, { model });
+
+    const stream = await agent.stream("分析当前记录", {
+      requestContext: ctxWith(session, selectedRowContext),
+    });
+    await stream.text;
+
+    const prompt = JSON.stringify(modelCalls[0]?.prompt);
+    expect(prompt).toContain("输出契约");
+    expect(prompt).toContain("禁止只推理不输出");
+    expect(prompt).toContain("未生成提案");
+  });
 });

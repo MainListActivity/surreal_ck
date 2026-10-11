@@ -1,8 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { Mastra } from "@mastra/core";
 import { InMemoryStore } from "@mastra/core/storage";
+import type { Agent } from "@mastra/core/agent";
 import { runRouterChat, type RouterChatStreamPusher } from "./router-chat";
+import { makeAgentExecutor } from "./agent-executor";
 import { createRouterWorkflow, ROUTER_WORKFLOW_ID, type SubAgentExecutor, type SubAgentExecutors } from "./router-workflow";
+import { ROW_ANALYSIS_NO_PROPOSAL_TEXT } from "../agents/row-analysis-agent";
 import type { RouterLlmCaller } from "./router-classifier";
 import type { AiContextSnapshot } from "@surreal-ck/shared";
 
@@ -290,5 +293,103 @@ describe("runRouterChat 端到端", () => {
     expect(workflowsStore).toBeDefined();
     const runs = await workflowsStore!.listWorkflowRuns({ workflowName: ROUTER_WORKFLOW_ID });
     expect(runs.runs.length).toBeGreaterThan(0);
+  });
+});
+
+// ─── def-row-analysis-no-proposal 工作流级回归 ──────────────────────────────
+
+const rowAnalysisContext: AiContextSnapshot = {
+  route: { screen: "editor", workbookId: "workbook:inspection", sheetId: "sheet:devices" },
+  workbook: { id: "workbook:inspection", name: "巡检台账" },
+  sheet: { id: "sheet:devices", label: "设备", tableName: "ent_devices" },
+  selectedRow: {
+    id: "ent_devices:pump-7",
+    label: "冷却泵 7 号",
+    visibleValues: { last_checked_at: "2026-09-01", check_status: "待复核" },
+  },
+  contextHint: "设备 / 冷却泵 7 号",
+};
+
+/** 与 MastraModelOutput.fullStream 同形状（payload 包裹）的最小 fake agent。 */
+function fakeStreamAgent(chunks: unknown[]): Agent {
+  return {
+    async stream() {
+      return {
+        fullStream: (async function* () {
+          for (const chunk of chunks) yield chunk;
+        })(),
+        text: Promise.resolve(""),
+      };
+    },
+  } as unknown as Agent;
+}
+
+const rowAnalysisPlan = [{ category: "row-analysis" as const, taskText: "分析当前记录" }];
+
+// 生产 fv02-2 形态：全部产出落在 reasoning 通道，零可见文本、零工具调用。
+const reasoningOnlyChunks = [
+  { type: "reasoning-start", payload: { id: "r1" } },
+  { type: "reasoning-delta", payload: { id: "r1", text: "先看字段定义和当前值……" } },
+  { type: "reasoning-end", payload: { id: "r1" } },
+  { type: "finish", payload: { finishReason: "stop" } },
+];
+
+describe("行分析 reasoning-only / 流中断的工作流级回归（def-row-analysis-no-proposal）", () => {
+  test("reasoning-only 输出：done 消息是契约化 no-proposal 显式态，不是「我没有生成有效回复。」", async () => {
+    const mastra = makeMastra();
+    const executors = makeExecutors({
+      "row-analysis": makeAgentExecutor(fakeStreamAgent(reasoningOnlyChunks), {
+        noOutputText: ROW_ANALYSIS_NO_PROPOSAL_TEXT,
+      }),
+    });
+    const done: string[] = [];
+
+    const result = await runRouterChat({
+      mastra,
+      text: "分析当前记录",
+      userContext: rowAnalysisContext,
+      surrealSession: fakeSession,
+      executors,
+      llmCaller: async () => "不应调用",
+      planOverride: rowAnalysisPlan,
+      streamId: "row-no-proposal",
+      pushChunk: (e) => {
+        if (e.type === "done") done.push(e.message.content);
+      },
+    });
+
+    expect(result.status).toBe("success");
+    expect(done).toEqual([ROW_ANALYSIS_NO_PROPOSAL_TEXT]);
+    expect(done[0]).not.toBe("我没有生成有效回复。");
+    expect(result.finalText).toBe(ROW_ANALYSIS_NO_PROPOSAL_TEXT);
+  });
+
+  test("流中途错误：run 以明确错误态失败（可读中断信息），不静默变成空回复", async () => {
+    const mastra = makeMastra();
+    const executors = makeExecutors({
+      "row-analysis": makeAgentExecutor(fakeStreamAgent([
+        ...reasoningOnlyChunks.slice(0, 3),
+        { type: "text-start", payload: { id: "t1" } },
+        { type: "text-delta", payload: { id: "t1", text: "正在核对字段定义" } },
+        { type: "error", payload: { error: new Error("internal-ai-provider-stream-failed") } },
+      ])),
+    });
+    const done: string[] = [];
+
+    await expect(runRouterChat({
+      mastra,
+      text: "分析当前记录",
+      userContext: rowAnalysisContext,
+      surrealSession: fakeSession,
+      executors,
+      llmCaller: async () => "不应调用",
+      planOverride: rowAnalysisPlan,
+      streamId: "row-stream-error",
+      pushChunk: (e) => {
+        if (e.type === "done") done.push(e.message.content);
+      },
+    })).rejects.toThrow(/生成流中断/);
+
+    expect(done).toEqual([]);
   });
 });

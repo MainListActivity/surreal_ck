@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Agent } from "@mastra/core/agent";
-import { makeAgentExecutor } from "./agent-executor";
+import { AgentStreamInterruptedError, makeAgentExecutor } from "./agent-executor";
 import { ROUTER_RUNTIME_KEY } from "./router-workflow";
 import { EXECUTION_CONTEXT_KEY } from "../execution-context";
 import type { AiContextSnapshot } from "@surreal-ck/shared";
@@ -22,8 +22,11 @@ function makeRecordingAgent(): { agent: Agent; lastOptions: () => unknown } {
     async stream(_messages: unknown, options: unknown) {
       captured = options;
       return {
-        textStream: (async function* () {
-          yield "ok";
+        // 与 MastraModelOutput.fullStream 同形状：payload 包裹的 chunk。
+        fullStream: (async function* () {
+          yield { type: "text-start", payload: { id: "t1" } };
+          yield { type: "text-delta", payload: { id: "t1", text: "ok" } };
+          yield { type: "text-end", payload: { id: "t1" } };
         })(),
         text: Promise.resolve("ok"),
       };
@@ -69,11 +72,11 @@ describe("makeAgentExecutor — 把调用者 session 透传给 tool", () => {
 });
 
 describe("makeAgentExecutor — LLM stream 失败不得伪装成空回复", () => {
-  test("textStream 为空且 stream.error 存在时向上抛错", async () => {
+  test("fullStream 无产出且 stream.error 存在时抛 AgentStreamInterruptedError（cause 保留）", async () => {
     const agent = {
       async stream() {
         return {
-          textStream: (async function* () {})(),
+          fullStream: (async function* () {})(),
           text: Promise.resolve(""),
           error: new Error("model route not found"),
           finishReason: Promise.resolve("error"),
@@ -82,9 +85,15 @@ describe("makeAgentExecutor — LLM stream 失败不得伪装成空回复", () =
     } as unknown as Agent;
     const executor = makeAgentExecutor(agent);
 
-    await expect(executor({
+    const error = await executor({
       taskText: "你好",
       shared: { userContext: emptyUserContext(), confirmed: {} },
-    })).rejects.toThrow("model route not found");
+    }).then(() => undefined, (err: unknown) => err);
+
+    expect(error).toBeInstanceOf(AgentStreamInterruptedError);
+    expect((error as AgentStreamInterruptedError).code).toBe("ai-stream-interrupted");
+    expect((error as AgentStreamInterruptedError).message).toContain("生成流中断");
+    expect((error as AgentStreamInterruptedError).cause).toBeInstanceOf(Error);
+    expect(((error as AgentStreamInterruptedError).cause as Error).message).toBe("model route not found");
   });
 });
