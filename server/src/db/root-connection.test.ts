@@ -103,6 +103,8 @@ class FakeSurreal {
   }
 
   async query(): Promise<unknown[]> {
+    // 真实 SDK 对已关闭实例的 RPC 立即拒绝。
+    if (this.closed) throw new Error("fake query on closed connection");
     if (this.probeMode === "fail") throw new Error("fake probe failed");
     if (this.probeMode === "hang") return new Promise<unknown[]>(() => {});
     return [];
@@ -290,6 +292,122 @@ describe("root connection manager health state machine", () => {
     expect(FakeSurreal.created).toHaveLength(before);
     expect(await manager.checkConnection()).toBe(false);
     expect(manager.snapshot().state).toBe("disconnected");
+  });
+});
+
+describe("root connection manager exerciseDisconnect（受控演练）", () => {
+  test("真实断开当前连接实例 → 探测如实 down；hold 窗口内抑制重连，窗口后自动恢复 up", async () => {
+    resetFakes();
+    const manager = createManager();
+
+    await manager.init();
+    const original = FakeSurreal.created[0]!;
+    expect(await manager.checkConnection()).toBe(true);
+    expect(FakeSurreal.created).toHaveLength(1);
+
+    // 演练：真实关闭探针评估的连接对象，窗口内 /health 探测必须如实 down。
+    const result = await manager.exerciseDisconnect(150);
+    expect(result.exercised).toBe(true);
+    expect(original.closed).toBe(true);
+    expect(manager.snapshot().state).toBe("disconnected");
+
+    // 窗口内反复探测：仍如实 down（重连被抑制，不产生新实例）。
+    expect(await manager.checkConnection()).toBe(false);
+    await Bun.sleep(60);
+    expect(await manager.checkConnection()).toBe(false);
+    expect(FakeSurreal.created).toHaveLength(1);
+
+    // 窗口结束：既有自动重连把状态修回 connected，探测恢复 up。
+    const deadline = Date.now() + 3_000;
+    while (manager.snapshot().state !== "connected" && Date.now() < deadline) {
+      await Bun.sleep(20);
+    }
+    expect(manager.snapshot().state).toBe("connected");
+    expect(await manager.checkConnection()).toBe(true);
+    expect(FakeSurreal.created).toHaveLength(2);
+    // 旧实例被替换且关闭的是探针评估的原实例。
+    expect(original.closed).toBe(true);
+    expect(FakeSurreal.created[1]!.closed).toBe(false);
+
+    await manager.close();
+  });
+
+  test("幂等：已断开/无连接实例时 no-op，不产生新连接", async () => {
+    resetFakes();
+    const manager = createManager();
+
+    // 未 init：无连接实例。
+    expect((await manager.exerciseDisconnect(50)).exercised).toBe(false);
+    expect(FakeSurreal.created).toHaveLength(0);
+
+    await manager.init();
+    const original = FakeSurreal.created[0]!;
+    expect((await manager.exerciseDisconnect(50)).exercised).toBe(true);
+    // 已断开状态下再次演练：幂等 no-op，不重复关闭、不新建连接。
+    const second = await manager.exerciseDisconnect(50);
+    expect(second.exercised).toBe(false);
+    if (!second.exercised) expect(second.reason).toBe("already_disconnected");
+    expect(FakeSurreal.created).toHaveLength(1);
+    expect(original.closed).toBe(true);
+
+    await manager.close();
+  });
+
+  test("并发保护：进行中的候选握手被演练中止，down 窗口由演练窗口统一决定", async () => {
+    resetFakes();
+    const manager = createManager();
+
+    await manager.init();
+    const original = FakeSurreal.created[0]!;
+
+    // 让一次真实重连挂起：探测失败 + 候选握手 hang；不 await，让挂起持续。
+    original.probeMode = "fail";
+    FakeSurreal.defaultMode = "hang";
+    const pending = manager.checkConnection();
+    await Bun.sleep(20);
+    expect(FakeSurreal.created).toHaveLength(2); // 候选实例已创建并挂起
+    expect(manager.snapshot().state).toBe("connecting");
+
+    // 演练与挂起的候选并发：候选被中止，不能落地翻转 down 窗口。
+    const result = await manager.exerciseDisconnect(120);
+    expect(result.exercised).toBe(true);
+    expect(manager.snapshot().state).toBe("disconnected");
+    expect(await pending).toBe(false);
+    FakeSurreal.defaultMode = "ok";
+
+    const deadline = Date.now() + 3_000;
+    while (manager.snapshot().state !== "connected" && Date.now() < deadline) {
+      await Bun.sleep(20);
+    }
+    expect(manager.snapshot().state).toBe("connected");
+    expect(await manager.checkConnection()).toBe(true);
+    // 挂起的候选实例已被丢弃关闭，最终生效的是窗口后的新实例。
+    expect(FakeSurreal.created[1]!.closed).toBe(true);
+
+    await manager.close();
+  });
+
+  test("hold=0：断连后立即交给既有自动重连，down→up 过渡仍真实发生", async () => {
+    resetFakes();
+    const manager = createManager();
+
+    await manager.init();
+    const original = FakeSurreal.created[0]!;
+
+    const result = await manager.exerciseDisconnect(0);
+    expect(result.exercised).toBe(true);
+    expect(original.closed).toBe(true);
+    expect(manager.snapshot().state).toBe("disconnected");
+
+    const deadline = Date.now() + 3_000;
+    while (manager.snapshot().state !== "connected" && Date.now() < deadline) {
+      await Bun.sleep(20);
+    }
+    expect(manager.snapshot().state).toBe("connected");
+    expect(await manager.checkConnection()).toBe(true);
+    expect(FakeSurreal.created).toHaveLength(2);
+
+    await manager.close();
   });
 });
 

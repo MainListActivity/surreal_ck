@@ -110,6 +110,8 @@ import { OpsRunService } from "./ops-run/service";
 import { SurrealOpsRunStore } from "./ops-run/store";
 import { createOpsRunRoutes } from "./routes/ops-run";
 import { createOpsEmployeeRuntimeRoutes } from "./routes/ops-employee-runtime";
+import { createOpsSurrealHealthRoutes } from "./routes/ops-surreal-health";
+import type { SurrealHealthExercisePort } from "./ops/surreal-health-exercise";
 import { ProductEntitlementService } from "./product-entitlement/service";
 import { SurrealProductEntitlementStore } from "./product-entitlement/store";
 import { createDiscoverService, type DiscoverService } from "./discover/service";
@@ -223,6 +225,8 @@ export type AppOptions = {
   employeeRuntimeHealth?: () => EmployeeRuntimeMetrics & { startup: EmployeeStartupProgress };
   /** ops 路由鉴权 seam；默认 requirePlatformOperator。 */
   requireOperator?: () => MiddlewareHandler<AppBindings>;
+  /** /health 探测连接受控演练服务；默认生产装配（专用探测连接 + 限频/审计）。 */
+  surrealHealthExercise?: SurrealHealthExercisePort;
   /** LCA06：调用者 content_reader 研究窗口工厂；默认生产装配（search exchange 复用）。 */
   createContentResearchSession?: ContentResearchSessionFactory;
   /** LCA14/D1：recover/WS 补取的交付复核器工厂；默认生产实现（事实+快照重算，不经 IdP）。 */
@@ -524,6 +528,10 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     .route("/", createOpsRunRoutes({ service: opsRunService }))
     .route("/", createOpsEmployeeRuntimeRoutes({
       health: options.employeeRuntimeHealth,
+      requireOperator: options.requireOperator,
+    }))
+    .route("/", createOpsSurrealHealthRoutes({
+      service: options.surrealHealthExercise,
       requireOperator: options.requireOperator,
     }))
     .route("/", createProductEntitlementRoutes({ service: productEntitlementService, requireCustomer: options.requireUser }))
