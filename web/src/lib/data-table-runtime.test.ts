@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { DateTime } from "surrealdb";
+import { formatDateValue } from "@surreal-ck/shared/date-format";
 import type { GridColumnDef, ViewParams } from "@surreal-ck/shared/dto";
 import type { LiveMessage, SurrealConn, SurrealTransactionWriter } from "./surreal";
 import { openDataTableRuntime } from "./data-table-runtime";
@@ -235,6 +237,29 @@ describe("数据表运行时打开与记录入口", () => {
     expect(liveIndex).toBeGreaterThan(metadataIndex);
     expect(recordsIndex).toBeGreaterThan(liveIndex);
     expect(runtime.snapshot.records).toEqual([{ id: "ent_items:a", values: { name: "甲", amount: 1 } }]);
+  });
+
+  test("D9：直连日期穿过网格读边界后可显示，文本和数字保持原值", async () => {
+    const dates = ["2026-06-02", "2026-06-15"];
+    const h = runtimeHarness(dates.map((day, index) => ({
+      id: `ent_items:d${index}`, name: `记录${index}`, amount: index,
+      due_at: new DateTime(new Date(`${day}T12:00:00`)),
+    })), [...storedColumns(), { key: "due_at", label: "截止日期", field_type: "date", required: false }]);
+    const runtime = await openDataTableRuntime({
+      conn: h.conn, workbookId: "workbook:w1", dataTableId: "sheet:s1", query: emptyView,
+    });
+    try {
+      expect(runtime.snapshot.records).toHaveLength(2);
+      runtime.snapshot.records.forEach((row, index) => {
+        expect(row.values.due_at).toBeInstanceOf(DateTime);
+        // GridView 日期 cellTemplate 使用同一入口。
+        expect(formatDateValue(row.values.due_at, "YYYY-MM-DD")).toBe(dates[index]);
+        expect(row.values.name).toBe(`记录${index}`);
+        expect(row.values.amount).toBe(index);
+      });
+    } finally {
+      await runtime.close();
+    }
   });
 
   test("完整记录用于校验，数据库 MERGE 只携带实际变化字段", async () => {

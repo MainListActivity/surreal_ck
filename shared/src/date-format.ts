@@ -1,5 +1,6 @@
 import dayjs from "dayjs";
 import customParseFormat from "dayjs/plugin/customParseFormat";
+import { DateTime } from "surrealdb";
 
 dayjs.extend(customParseFormat);
 
@@ -42,6 +43,11 @@ export function toDate(value: unknown): Date | null {
   if (value === undefined || value === null || value === "") return null;
   if (value instanceof Date) {
     return Number.isNaN(value.getTime()) ? null : value;
+  }
+  // SDK 2.x 将数据库 datetime 解码为 DateTime，而非 JS Date。
+  if (value instanceof DateTime) {
+    const d = value.toDate();
+    return Number.isNaN(d.getTime()) ? null : d;
   }
   if (typeof value === "number") {
     const d = new Date(value);
