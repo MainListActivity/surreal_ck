@@ -25,6 +25,8 @@ export type RootConnectionState = "disconnected" | "connecting" | "connected";
 export type RootConnectionManagerOptions = {
   /** 连接工厂（测试注入假连接；生产为 () => new Surreal()）。 */
   createSurreal?: () => Surreal;
+  /** 日志/查询埋点标签（业务连接为 root，/health 专用探测连接为 health-probe）。 */
+  label?: string;
   /** 单次 connect() 的超时（握手挂起时放弃并换尝试）。 */
   connectTimeoutMs?: number;
   /** 两次连接尝试之间的最小间隔（防止 /health 高频轮询变成连接风暴）。 */
@@ -40,6 +42,18 @@ export type RootConnectionSnapshot = {
   reconnectAttempts: number;
   poolSize: number;
 };
+
+/** 受控演练断连的结果：真实断开当前实例，或说明为何是幂等 no-op。 */
+export type ExerciseDisconnectResult =
+  | { exercised: true; holdMs: number; resumeAt: number }
+  | {
+      exercised: false;
+      reason:
+        | "closing"
+        | "no_connection"
+        | "already_disconnected"
+        | "superseded";
+    };
 
 const DEFAULT_BACKOFF_MS = [1000, 2000, 5000, 10000, 15000] as const;
 const DEFAULT_CONNECT_TIMEOUT_MS = 3000;
@@ -87,6 +101,7 @@ export function nextBackoffDelayMs(
 
 export class RootConnectionManager {
   private readonly createSurreal: () => Surreal;
+  private readonly label: string;
   private readonly connectTimeoutMs: number;
   private readonly minReconnectIntervalMs: number;
   private readonly backoffMs: readonly number[];
@@ -107,10 +122,13 @@ export class RootConnectionManager {
   private lifecycle = 0;
   private lastAttemptAt = 0;
   private lastWorkerErrorProbeAt = 0;
+  /** 受控演练的重连抑制窗口：此前任何路径都不允许发起连接尝试。 */
+  private reconnectNotBefore = 0;
   private closing = false;
 
   constructor(options: RootConnectionManagerOptions = {}) {
     this.createSurreal = options.createSurreal ?? (() => new Surreal());
+    this.label = options.label ?? "root";
     this.connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
     this.minReconnectIntervalMs =
       options.minReconnectIntervalMs ?? DEFAULT_MIN_RECONNECT_INTERVAL_MS;
@@ -129,6 +147,7 @@ export class RootConnectionManager {
 
   async init(): Promise<void> {
     this.closing = false;
+    this.reconnectNotBefore = 0;
     await this.ensureConnected();
   }
 
@@ -194,8 +213,8 @@ export class RootConnectionManager {
           this.state = "connected";
           this.reconnectAttempts = 0;
           // 实测旧连接已恢复：不让并行的候选握手再替换它、清空仍可用的池。
-          this.connectAbort?.abort(new Error("SurrealDB root connection recovered via probe"));
-          console.info("[surrealdb] root connection recovered via probe", {
+          this.connectAbort?.abort(new Error(`SurrealDB ${this.label} connection recovered via probe`));
+          console.info(`[surrealdb] ${this.label} connection recovered via probe`, {
             url: env.SURREAL_URL,
           });
         }
@@ -252,7 +271,7 @@ export class RootConnectionManager {
       ]);
       return true;
     } catch (error) {
-      console.warn("[surrealdb] root health probe failed", {
+      console.warn(`[surrealdb] ${this.label} health probe failed`, {
         message: error instanceof Error ? error.message : String(error),
       });
       return false;
@@ -264,11 +283,70 @@ export class RootConnectionManager {
   private markDisconnected(reason: string): void {
     if (this.state !== "disconnected") {
       this.state = "disconnected";
-      console.warn("[surrealdb] root connection marked disconnected", { reason });
+      console.warn(`[surrealdb] ${this.label} connection marked disconnected`, { reason });
     }
     // 无论此前是否已 disconnected，都要保证有自治重试计划：
     // 被最小间隔 gate 挡住的探测失败不能变成「谁都不再重试」。
     this.scheduleReconnect();
+  }
+
+  /**
+   * 受控演练断连（ops 健康演练端点）：主动关闭本管理器当前持有的连接实例，
+   * 并在 holdMs 窗口内抑制一切重连（含 /health 轮询驱动的单飞尝试），使
+   * 依赖本连接的探测呈现真实 down→up 过渡；窗口结束由既有
+   * scheduleReconnect → ensureConnected → connectOnce 自动恢复。
+   * - 幂等/并发保护：closing、无实例、已断开时 no-op 返回 false；
+   *   进行中的候选握手被中止（其 finally 仍保证重连排程存在）；
+   * - 实例身份隔离不变式保持：close 期间连接被新候选替换时不误伤新实例，
+   *   该情况按 superseded 如实返回 false。
+   */
+  async exerciseDisconnect(holdMs: number): Promise<ExerciseDisconnectResult> {
+    if (this.closing) return { exercised: false, reason: "closing" };
+    const current = this.connection;
+    if (!current) return { exercised: false, reason: "no_connection" };
+    if (this.state === "disconnected") {
+      return { exercised: false, reason: "already_disconnected" };
+    }
+
+    const hold = Math.max(0, holdMs);
+    const resumeAt = this.now() + hold;
+    this.reconnectNotBefore = Math.max(this.reconnectNotBefore, resumeAt);
+    this.connectAbort?.abort(new Error(`${this.label} connection exercise disconnect`));
+
+    // 先落状态与日志：演练断开必须在日志里可辨识（否则 SDK 的
+    // disconnected 事件会以通用 reason 抢先落第一行）。事件处理器的
+    // 重复标记幂等；实例被并发候选替换时不误标。
+    if (this.connection === current) {
+      this.markDisconnected(`ops exercise disconnect, resume in ${hold}ms`);
+    }
+
+    let closeBound: ReturnType<typeof setTimeout> | undefined;
+    try {
+      // close() 理论上有界；挂起也不能让演练端点无界等待——超时也按已断开处理。
+      await Promise.race([
+        current.close(),
+        new Promise((resolve) => {
+          closeBound = setTimeout(resolve, 2_000);
+        }),
+      ]);
+    } catch {
+      // close 失败不阻塞演练：连接对象被丢弃，重连换新实例。
+    } finally {
+      clearTimeout(closeBound);
+      if (this.connection === current) {
+        this.markDisconnected(`ops exercise disconnect, resume in ${hold}ms`);
+      }
+    }
+    if (this.connection !== current) {
+      return { exercised: false, reason: "superseded" };
+    }
+    // 统一到窗口结束再重连：覆盖 markDisconnected/候选 finally 排的更早定时。
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.scheduleReconnect(Math.max(0, this.reconnectNotBefore - this.now()));
+    return { exercised: true, holdMs: hold, resumeAt };
   }
 
   /** 单飞入口：已连接直接 true；有进行中尝试则搭载其 promise；否则按最小间隔发起新尝试。 */
@@ -283,10 +361,14 @@ export class RootConnectionManager {
       return this.inFlight;
     }
     const now = this.now();
-    if (this.lastAttemptAt > 0 && now - this.lastAttemptAt < this.minReconnectIntervalMs) {
-      // 刚刚尝试失败且 DB 仍不可达：如实 down，不加速重试；
+    const earliestAttemptAt = Math.max(
+      this.lastAttemptAt > 0 ? this.lastAttemptAt + this.minReconnectIntervalMs : 0,
+      this.reconnectNotBefore,
+    );
+    if (now < earliestAttemptAt) {
+      // 刚刚尝试失败（最小间隔）或处于演练抑制窗口：如实 down，不加速重试；
       // 但要保证 gate 窗口结束后有人再试（自治恢复不依赖轮询节奏）。
-      this.scheduleReconnect(this.minReconnectIntervalMs - (now - this.lastAttemptAt));
+      this.scheduleReconnect(earliestAttemptAt - now);
       return Promise.resolve(false);
     }
     this.inFlight = this.connectOnce(this.connectTimeoutMs);
@@ -303,7 +385,7 @@ export class RootConnectionManager {
     if (delayMs === undefined) {
       this.reconnectAttempts += 1;
     }
-    console.warn("[surrealdb] root reconnect scheduled", {
+    console.warn(`[surrealdb] ${this.label} reconnect scheduled`, {
       delayMs: delay,
       attempt: this.reconnectAttempts,
     });
@@ -322,7 +404,7 @@ export class RootConnectionManager {
     const abort = new AbortController();
     this.connectAbort = abort;
     const timeout = setTimeout(
-      () => abort.abort(new Error("SurrealDB root connection timeout")),
+      () => abort.abort(new Error(`SurrealDB ${this.label} connection timeout`)),
       timeoutMs,
     );
     const invalidated = () =>
@@ -363,7 +445,7 @@ export class RootConnectionManager {
               namespace: env.SURREAL_NS,
               database: "_system",
             });
-            if (invalidated()) throw new Error("SurrealDB root connection attempt cancelled");
+            if (invalidated()) throw new Error(`SurrealDB ${this.label} connection attempt cancelled`);
             await db.use({ namespace: env.SURREAL_NS, database: "_system" });
           } finally {
             // SDK 握手可能在超时/close 后迟到完成，再次关闭以免留下活连接。
@@ -382,12 +464,12 @@ export class RootConnectionManager {
       // 先切换引用再关闭旧连接：旧实例 close() 会发布 disconnected，
       // 此时身份已不等于当前连接，处理器会忽略（陈旧事件隔离）。
       this.connection = instrumentSurrealQuery(db, {
-        source: "server:root",
+        source: `server:${this.label}`,
         initialScope: { namespace: env.SURREAL_NS, database: "_system" },
       });
       this.state = "connected";
       this.reconnectAttempts = 0;
-      console.info("[surrealdb] root connected", { url: env.SURREAL_URL, namespace: env.SURREAL_NS });
+      console.info(`[surrealdb] ${this.label} connected`, { url: env.SURREAL_URL, namespace: env.SURREAL_NS });
 
       await this.pool.closeAll();
       if (previousConnection && previousConnection !== db) {
@@ -401,7 +483,7 @@ export class RootConnectionManager {
     } catch (error) {
       await closeCandidate();
 
-      console.warn("[surrealdb] root connection failed", {
+      console.warn(`[surrealdb] ${this.label} connection failed`, {
         message: error instanceof Error ? error.message : String(error),
       });
       // 尝试失败即断开；除非探测自愈在尝试期间已把旧连接修回 connected

@@ -1,6 +1,7 @@
 import { createApp } from "./app";
 import { env } from "./env";
 import { closeRootConnection, getRootDatabaseSession, initRootConnection } from "./db/root-connection";
+import { closeHealthProbe, initHealthProbe } from "./db/health-probe";
 import { ensureSystemSchema } from "./db/system-schema";
 import { ensurePlatformContentSchema } from "./content/schema";
 import { assertLegacyContentMigrated } from "./content/migrate-legacy";
@@ -52,6 +53,8 @@ export type StartServerDeps = {
   envName?: string;
   probeNativeQuotaHttp?: () => Promise<unknown>;
   initRootConnection?: () => Promise<void>;
+  /** /health 专用探测连接；test 环境默认不建立（探针断开即 /health 如实 down）。 */
+  initHealthProbe?: () => Promise<void>;
   verifyNativeQuotaRootHandshake?: () => Promise<unknown>;
   ensureSystemSchema?: () => Promise<unknown>;
   ensurePlatformContentSchema?: () => Promise<unknown>;
@@ -77,6 +80,7 @@ export type StartServerDeps = {
   /** 办公室领域 reconciliation（VO02）；test 环境默认不启动。 */
   startOfficeReconciler?: () => OfficeReconcilerHandle;
   closeRootConnection?: () => Promise<void>;
+  closeHealthProbe?: () => Promise<void>;
   closeContentPublisherSession?: () => Promise<void>;
   closeContentProjectionSession?: () => Promise<void>;
 };
@@ -138,6 +142,9 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
   const startOffice = deps.startOfficeReconciler
     ?? (envName === "test" ? () => ({ async stop() {} }) : startOfficeReconciler);
   const closeRoot = deps.closeRootConnection ?? closeRootConnection;
+  const initProbe = deps.initHealthProbe
+    ?? (envName === "test" ? async () => undefined : initHealthProbe);
+  const closeProbe = deps.closeHealthProbe ?? closeHealthProbe;
 
   let rootConnectionAttempted = false;
   try {
@@ -163,6 +170,15 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
       });
     }
     throw cause;
+  }
+  // /health 专用探测连接：init 失败不阻塞启动（root 已证明 DB 可达），
+  // 既有自动重连兜底；连接真正断开期间 /health 如实 down。
+  try {
+    await initProbe();
+  } catch (cause) {
+    console.error("[server] health probe connection init failed; relying on auto-reconnect", {
+      message: cause instanceof Error ? cause.message : String(cause),
+    });
   }
   await ensureSchema();
   await ensureContentSchema();
@@ -257,6 +273,7 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
       await stopEmployeeRuntime();
       await (deps.closeContentPublisherSession ?? closeContentPublisherSession)();
       await (deps.closeContentProjectionSession ?? closeContentProjectionSession)();
+      await closeProbe();
       await closeRoot();
     },
   };
