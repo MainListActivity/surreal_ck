@@ -12,7 +12,8 @@ type GrantRow = ContentGrantFact & {
 
 export class EntitlementRecoveryStore implements ProductEntitlementStore {
   workspaces = new Map<string, WorkspaceRef>();
-  members = new Set<string>();
+  /** `${subject}:${workspaceId}` → workspace 角色（admin / participant）。 */
+  members = new Map<string, "admin" | "participant">();
   items = new Map<string, SubscriptionFact>();
   revisions = new Map<string, ProductRevisionBody>();
   resources = new Set<string>();
@@ -30,7 +31,7 @@ export class EntitlementRecoveryStore implements ProductEntitlementStore {
     const ref = this.workspaces.get(id);
     return ref ? { ...ref, dbName: this.dbNames.get(id) ?? `ws_${ref.slug}` } : null;
   }
-  async membership(subject: string, workspaceId: string) { return this.members.has(`${subject}:${workspaceId}`) ? "admin" as const : null; }
+  async membership(subject: string, workspaceId: string) { return this.members.get(`${subject}:${workspaceId}`) ?? null; }
   async activeItem(workspaceId: string) { return this.items.get(workspaceId) ?? null; }
   async bindProductRevision(itemId: string, productPlanRevisionId: string) {
     for (const [workspaceId, item] of this.items) if (item.itemId === itemId) this.items.set(workspaceId, { ...item, productPlanRevisionId });
@@ -145,7 +146,7 @@ export function seedWorkspace(store: EntitlementRecoveryStore, overrides: Partia
   const ref = { id: "workspace:team", slug: "team" };
   store.workspaces.set(ref.id, ref);
   store.dbNames.set(ref.id, "ws_team");
-  store.members.add("lawyer:workspace:team");
+  store.members.set("lawyer:workspace:team", "admin");
   store.resources.add("quota_plan_revision:fixture");
   store.items.set(ref.id, {
     itemId: "quota_subscription_item:team", status: "active", effectiveFrom: "2026-09-01T00:00:00.000Z",
