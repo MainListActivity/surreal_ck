@@ -3,11 +3,15 @@ import { RecordId } from "surrealdb";
 import type { InternalScope } from "./context";
 import type { Usage, Tariff } from "./pricing";
 export type Queryable = { query(sql: string, vars?: Record<string, unknown>): Promise<unknown> };
+export const MEASUREMENT_CYCLE = "f3974e8f-4c4d-41e2-af63-e4de68ea5f91";
+export const MEASUREMENT_DATABASE = "ws_ddad14a98469";
+export const MEASUREMENT_PRICE = "sensenova-token-plan-2026-10-10";
+export type MeasurementCycle = { activity: string; attempts: number; attempt_limit: number; enabled_revision: number; approval_revision: string; evidence_hash: string; expires_at: string };
 export const GOAL = "2e2a6e41c1193595";
 export const hash = (...parts: string[]) => createHash("sha256").update(JSON.stringify([GOAL, ...parts])).digest("hex");
 function rows<T>(result: unknown): T[] { const first: unknown = Array.isArray(result) ? result[0] : undefined; return Array.isArray(first) ? first as T[] : first && typeof first === "object" ? [first as T] : []; }
 export type Activity = { goal: string; enabled: boolean; total_limit: number; per_attempt_limit: number; attempt_limit: number; reserved: number; spent: number; attempts: number; approval_revision: string | null; evidence_expires_at: string | null; price_revisions: string[]; balance_nano_usd: number | null; balance_currency: string | null; balance_source: string | null; balance_sampled_at: string | null; balance_evidence_hash: string | null; auto_topup_disabled: boolean; service_approved: boolean; evidence_kind?: string | null; plan_name?: string | null; plan_source_url?: string | null; quota_unit?: string | null; quota_amount?: number | null; quota_window_seconds?: number | null; quota_remaining?: number | null; no_payment_instrument?: boolean | null };
-export type Attempt = { id: RecordId; sequence: number; retry_index: number; state: string; reserved: number; cost: number | null; run_hash: string; key_hash: string; logical_hash: string; stage: string; provider: string; model: string; actual_model: string | null; request_id: string | null; usage: Usage | null; usage_source: string; price_revision: string; currency: string; started_at: unknown; ended_at: unknown };
+export type Attempt = { id: RecordId; measurement_cycle?: string; sequence: number; retry_index: number; state: string; reserved: number; cost: number | null; run_hash: string; key_hash: string; logical_hash: string; stage: string; provider: string; model: string; actual_model: string | null; request_id: string | null; usage: Usage | null; usage_source: string; price_revision: string; currency: string; started_at: unknown; ended_at: unknown };
 export class InternalAiStore {
   constructor(private readonly db: () => Promise<Queryable>) {}
   async binding(subject: string, database: string): Promise<{ activity: string; revoked: boolean } | undefined> {
@@ -42,6 +46,9 @@ export class InternalAiStore {
   async target(): Promise<{ reserved: number; spent: number; attempts: number }> {
     return rows<{ reserved: number; spent: number; attempts: number }>(await (await this.db()).query("SELECT reserved, spent, attempts FROM ONLY $target", { target: new RecordId("internal_ai_target", GOAL) }))[0] ?? { reserved: 0, spent: 0, attempts: 0 };
   }
+  async measurementCycle(): Promise<MeasurementCycle | undefined> {
+    return rows<MeasurementCycle>(await (await this.db()).query("SELECT activity, attempts, attempt_limit, enabled_revision, approval_revision, evidence_hash, expires_at FROM ONLY $cycle", { cycle: new RecordId("internal_ai_measurement_cycle", MEASUREMENT_CYCLE) }))[0];
+  }
   async reserve(scope: InternalScope, stage: string, tariff: Tariff, amount: number): Promise<Attempt> {
     const db = await this.db();
     const activity = new RecordId("internal_ai_activity", scope.activity);
@@ -53,6 +60,15 @@ export class InternalAiStore {
           INSERT INTO internal_ai_target { id: $target } ON DUPLICATE KEY UPDATE attempts = attempts;
           LET $total = (SELECT * FROM ONLY $target);
           LET $a = (SELECT * FROM ONLY $activity);
+          LET $cycle = (SELECT * FROM ONLY $cycleId);
+          LET $measurement = $cycle != NONE AND $cycle.activity = $activityName;
+          IF $measurement {
+            IF $cycle.attempts >= $cycle.attempt_limit OR <datetime>$cycle.expires_at <= time::now() { THROW "internal-ai-budget-exhausted"; };
+            LET $runIdentity = (SELECT identity_hash FROM internal_ai_run WHERE run_hash = $run LIMIT 1)[0];
+            LET $bound = (SELECT * FROM internal_ai_binding WHERE identity_hash = $runIdentity.identity_hash LIMIT 1)[0];
+            IF $bound = NONE OR $bound.revoked = true OR $bound.activity != $activityName OR $bound.database != $measurementDatabase { THROW "internal-ai-binding-unavailable"; };
+            IF $revision != $measurementPrice OR $model != "sensenova-6.8-flash-lite" OR $provider != "openai" OR $amount != 0 OR $a.evidence_kind != "reviewed-token-plan" OR $a.balance_evidence_hash != $cycle.evidence_hash OR $a.approval_revision != $cycle.approval_revision { THROW "internal-ai-evidence-unavailable"; };
+          };
           IF $a.goal != $goal OR $a.enabled != true OR $a.service_approved != true OR $a.auto_topup_disabled != true OR $a.approval_revision = NONE OR $a.balance_evidence_hash = NONE OR string::len($a.balance_evidence_hash) != 64 OR $a.balance_source = NONE OR $a.balance_sampled_at = NONE OR $a.evidence_expires_at = NONE OR <datetime>$a.evidence_expires_at <= time::now() OR $revision NOT IN $a.price_revisions { THROW "internal-ai-evidence-unavailable"; };
           IF $a.evidence_kind = "reviewed-token-plan" {
             IF $a.plan_name = NONE OR string::len($a.plan_name) = 0 OR $a.plan_source_url = NONE OR $a.quota_unit = NONE OR $a.quota_amount = NONE OR $a.quota_amount <= 0 OR $a.quota_window_seconds = NONE OR ($a.quota_remaining != NONE AND $a.quota_remaining <= 0) OR $a.no_payment_instrument != true OR $a.balance_nano_usd != NONE OR $a.balance_currency != NONE OR $a.balance_source != "token-plan:" + $a.balance_evidence_hash OR $amount != 0 { THROW "internal-ai-evidence-unavailable"; };
@@ -68,12 +84,16 @@ export class InternalAiStore {
             LET $binding = (SELECT * FROM internal_ai_binding WHERE identity_hash = $runBinding.identity_hash LIMIT 1)[0];
             IF $binding = NONE OR $binding.revoked = true OR $binding.activity != $activityName { THROW "internal-ai-binding-unavailable"; };
           };
-          IF $total.attempts >= 30 OR $total.spent + $total.reserved + $amount > 1000000000 { THROW "internal-ai-budget-exhausted"; };
-          IF $amount > $a.per_attempt_limit OR $a.attempts >= $a.attempt_limit OR $a.spent + $a.reserved + $amount > $a.total_limit OR ($a.evidence_kind != "reviewed-token-plan" AND $total.spent + $total.reserved + $amount > $a.balance_nano_usd) { THROW "internal-ai-budget-exhausted"; };
-          UPDATE ONLY $target SET reserved += $amount, attempts += 1;
-          UPDATE ONLY $activity SET reserved += $amount, attempts += 1;
-          CREATE ONLY $attempt CONTENT { activity: $activity, sequence: $a.attempts + 1, retry_index: 0, run_hash: $run, key_hash: $key, logical_hash: $logical, stage: $stage, provider: $provider, model: $model, actual_model: NONE, request_id: NONE, reserved: $amount, cost: NONE, state: "reserved", usage: NONE, usage_source: "unknown", price_revision: $revision, currency: "USD", started_at: time::now(), ended_at: NONE };
-          COMMIT TRANSACTION;`, { activity, activityName: scope.activity, attempt, target: new RecordId("internal_ai_target", GOAL), goal: GOAL, revision: tariff.revision, amount, run: scope.runHash, key: scope.keyHash, logical: scope.logicalHash, stage, provider: tariff.provider, model: tariff.model });
+          IF ($measurement = false AND $total.attempts >= 30) OR $total.spent + $total.reserved + $amount > 1000000000 { THROW "internal-ai-budget-exhausted"; };
+          IF $amount > $a.per_attempt_limit OR ($measurement = false AND $a.attempts >= $a.attempt_limit) OR $a.spent + $a.reserved + $amount > $a.total_limit OR ($a.evidence_kind != "reviewed-token-plan" AND $total.spent + $total.reserved + $amount > $a.balance_nano_usd) { THROW "internal-ai-budget-exhausted"; };
+          IF $measurement {
+            UPDATE ONLY $cycleId SET attempts += 1;
+          } ELSE {
+            UPDATE ONLY $target SET reserved += $amount, attempts += 1;
+            UPDATE ONLY $activity SET reserved += $amount, attempts += 1;
+          };
+          CREATE ONLY $attempt CONTENT { activity: $activity, sequence: $a.attempts + 1 + IF $measurement { $cycle.attempts } ELSE { 0 }, measurement_cycle: IF $measurement { $cycleName } ELSE { NONE }, retry_index: 0, run_hash: $run, key_hash: $key, logical_hash: $logical, stage: $stage, provider: $provider, model: $model, actual_model: NONE, request_id: NONE, reserved: $amount, cost: NONE, state: "reserved", usage: NONE, usage_source: "unknown", price_revision: $revision, currency: "USD", started_at: time::now(), ended_at: NONE };
+          COMMIT TRANSACTION;`, { activity, activityName: scope.activity, cycleId: new RecordId("internal_ai_measurement_cycle", MEASUREMENT_CYCLE), cycleName: MEASUREMENT_CYCLE, measurementPrice: MEASUREMENT_PRICE, measurementDatabase: MEASUREMENT_DATABASE, attempt, target: new RecordId("internal_ai_target", GOAL), goal: GOAL, revision: tariff.revision, amount, run: scope.runHash, key: scope.keyHash, logical: scope.logicalHash, stage, provider: tariff.provider, model: tariff.model });
         void result;
         const found = rows<Attempt>(await db.query("SELECT * FROM ONLY $attempt", { attempt }))[0];
         if (!found) throw new Error("internal-ai-reservation-unconfirmed");

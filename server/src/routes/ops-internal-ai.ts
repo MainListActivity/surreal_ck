@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 import type { AppBindings } from "../hono-types";
 import { requirePlatformOperator } from "../ops/operator-auth";
+import { MEASUREMENT_CYCLE } from "../internal-ai/store";
 import type { InternalAiGate } from "../internal-ai/gate";
 import { InternalAiRegistration, normalizeReason, PRICE_REQUIRED_EVIDENCE } from "../internal-ai/registration";
 import { verifyCompanyProof } from "../internal-ai/company-proof";
@@ -36,16 +37,17 @@ export function createOpsInternalAiRoutes(input: { gate: InternalAiGate; registr
       if (!Number.isSafeInteger(after) || after < 0) throw new HttpError(400, "internal-ai-cursor-invalid", "游标无效");
       const attempts = await input.gate.store.page(id, after);
       const target = await input.gate.store.target();
+      const measurementCycle = await input.gate.store.measurementCycle();
       // 固定字段投影，绝不序列化config任意对象/请求/响应/工具载荷。
-      return c.json({ target: { ...target, totalLimit: 1000000000, attemptLimit: 30, remaining: Math.max(0, 1000000000 - target.spent - target.reserved) }, activity: id, enabled: activity.enabled, approvalRevision: activity.approval_revision ?? null,
+      return c.json({ measurementCycle: measurementCycle ? { id: MEASUREMENT_CYCLE, ...measurementCycle } : null, target: { ...target, cumulativeAttempts: target.attempts + (measurementCycle?.attempts ?? 0), totalLimit: 1000000000, attemptLimit: 30, remaining: Math.max(0, 1000000000 - target.spent - target.reserved) }, activity: id, enabled: activity.enabled, approvalRevision: activity.approval_revision ?? null,
         limits: { total: activity.total_limit, perAttempt: activity.per_attempt_limit, attempts: activity.attempt_limit },
-        spent: activity.spent, reserved: activity.reserved, attemptsUsed: activity.attempts,
+        spent: activity.spent, reserved: activity.reserved, attemptsUsed: activity.attempts, cumulativeAttemptsUsed: activity.attempts + (measurementCycle?.activity === id ? measurementCycle.attempts : 0),
         remaining: Math.max(0, activity.total_limit - activity.spent - activity.reserved), moneyUnit: "nanoUSD", currency: "USD",
         priceRevisions: activity.price_revisions,
         evidenceKind: activity.evidence_kind ?? null,
         balance: { status: activity.balance_evidence_hash ? "reviewed-evidence" : "unavailable", amount: activity.balance_nano_usd ?? null, currency: activity.balance_currency ?? null, source: activity.balance_source && /^(reviewed-document|token-plan):[0-9a-f]{64}$/.test(activity.balance_source) ? activity.balance_source : null, evidenceHash: activity.balance_evidence_hash ?? null, sampledAt: activity.balance_sampled_at ?? null, expiresAt: activity.evidence_expires_at ?? null, autoTopupDisabled: activity.auto_topup_disabled, serviceApproved: activity.service_approved },
         quota: activity.evidence_kind === "reviewed-token-plan" ? { planName: activity.plan_name ?? null, planSourceUrl: activity.plan_source_url ?? null, unit: activity.quota_unit ?? null, amount: activity.quota_amount ?? null, windowSeconds: activity.quota_window_seconds ?? null, remaining: activity.quota_remaining ?? null, noPaymentInstrument: activity.no_payment_instrument ?? null } : null,
-        attempts: attempts.map(a => ({ id: String(a.id), sequence: a.sequence, retryIndex: a.retry_index, runHash: a.run_hash, keyHash: a.key_hash, logicalHash: a.logical_hash, stage: a.stage, state: a.state, provider: a.provider, model: a.model, actualModel: a.actual_model ?? null, requestId: a.request_id ?? null, usage: a.usage ?? null, usageSource: a.usage_source, priceRevision: a.price_revision, currency: a.currency, reserved: a.reserved, cost: a.cost ?? null, startedAt: a.started_at, endedAt: a.ended_at })),
+        attempts: attempts.map(a => ({ id: String(a.id), sequence: a.sequence, measurementCycle: a.measurement_cycle ?? null, retryIndex: a.retry_index, runHash: a.run_hash, keyHash: a.key_hash, logicalHash: a.logical_hash, stage: a.stage, state: a.state, provider: a.provider, model: a.model, actualModel: a.actual_model ?? null, requestId: a.request_id ?? null, usage: a.usage ?? null, usageSource: a.usage_source, priceRevision: a.price_revision, currency: a.currency, reserved: a.reserved, cost: a.cost ?? null, startedAt: a.started_at, endedAt: a.ended_at })),
         nextAfter: attempts.length === 50 ? attempts.at(-1)?.sequence : null,
       });
     })
@@ -81,9 +83,9 @@ export function createOpsInternalAiRoutes(input: { gate: InternalAiGate; registr
       const id = c.req.param("id");
       if (!/^[a-zA-Z0-9_-]{1,100}$/.test(id)) throw new HttpError(400, "internal-ai-id-invalid", "活动标识无效");
       const payload = await json(c);
-      const parsed = z.object({ revision: z.number().int().positive(), reason: z.string().min(1).max(500) }).strict().safeParse(payload);
+      const parsed = z.object({ revision: z.number().int().positive(), reason: z.string().min(1).max(500), measurementCycle: z.boolean().optional() }).strict().safeParse(payload);
       if (!parsed.success) throw new HttpError(400, "internal-ai-revision-invalid", "必须指定正整数登记版本");
-      const summary = await registration.enable({ activity: id, revision: parsed.data.revision, operator: c.var.platformOperator.subject, reason: reasonOf(payload), runtime: input.runtime });
+      const summary = await registration.enable({ measurementCycle: parsed.data.measurementCycle, activity: id, revision: parsed.data.revision, operator: c.var.platformOperator.subject, reason: reasonOf(payload), runtime: input.runtime });
       return c.json(summary);
     })
     /** 显式禁用：保留历史与账本。 */

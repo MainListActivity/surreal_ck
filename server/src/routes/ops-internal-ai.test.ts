@@ -66,7 +66,7 @@ test("evidence, enable, disable and revoke forward a strict reason and authentic
   try {
     for (const [path, body] of [
       ["activities/test/evidence", { revision: 1, document: "{}", reason: "受审操作" }],
-      ["activities/test/enable", { revision: 1, reason: "受审操作" }],
+      ["activities/test/enable", { revision: 1, reason: "受审操作", measurementCycle: true }],
       ["activities/test/disable", { reason: "受审操作" }],
       ["identities/revoke", { activity: "test", alias: "LCA04_MEMBER", reason: "受审操作" }],
     ] as const) {
