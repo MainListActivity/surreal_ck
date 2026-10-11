@@ -115,8 +115,9 @@ function bridgeToBus(bus: RunBus, runId: string) {
     onSuspend(e: WorkflowSuspendedEvent) {
       emit({ kind: "suspend", runId, payload: e });
     },
-    publishErrorIfNotTerminal(message: string) {
-      emit({ kind: "error", runId, code: "chat-failed", message });
+    publishErrorIfNotTerminal(message: string, interrupted = false) {
+      emit({ kind: "error", runId, code: interrupted ? "ai-stream-interrupted" : "chat-failed",
+        message: interrupted ? "AI 生成中断：本次未产出完整结果，请重试。" : message });
     },
     /**
      * 终态兜底：runner/resumer resolve 出终态却没有投递任何 done/error 时补发。
@@ -190,7 +191,9 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
           if (outcome === "success") { await bridge.commit(onResult, onTerminal); committed = true; }
         } catch (cause) {
           outcome = "failed";
-          bridge.publishErrorIfNotTerminal(cause instanceof Error ? cause.message : String(cause));
+          // deadline 取消可能先由 runner 的 AbortError 拒绝；两条路径使用同一中断契约。
+          bridge.publishErrorIfNotTerminal(cause instanceof Error ? cause.message : String(cause),
+            controller.signal.aborted || (cause instanceof Error && cause.name === "AbortError"));
           bridge.stop();
         } finally {
           if (timeout) clearTimeout(timeout);
@@ -243,7 +246,9 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
           if (outcome === "success") { await bridge.commit(onResult, onTerminal); committed = true; }
         } catch (cause) {
           outcome = "failed";
-          bridge.publishErrorIfNotTerminal(cause instanceof Error ? cause.message : String(cause));
+          // deadline 取消可能先由 runner 的 AbortError 拒绝；两条路径使用同一中断契约。
+          bridge.publishErrorIfNotTerminal(cause instanceof Error ? cause.message : String(cause),
+            controller.signal.aborted || (cause instanceof Error && cause.name === "AbortError"));
           bridge.stop();
         } finally {
           if (timeout) clearTimeout(timeout);

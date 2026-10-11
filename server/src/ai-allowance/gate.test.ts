@@ -13,6 +13,8 @@ import {
 } from "../routes/ai-chat";
 import { createRunRegistry } from "../ai/run-registry";
 import { AiAllowanceError } from "./service";
+import { createAiChatService } from "../ai/chat-service";
+import { createRunBus } from "../ai/run-bus";
 
 /**
  * /api/chat 计量门禁的接线测试：启动前预留、终态收口映射、错误码映射。
@@ -138,6 +140,46 @@ describe("/api/chat AI 额度门禁", () => {
     expect(finishCalls).toHaveLength(1);
     await new Promise((r) => setImmediate(r));
     expect(finishCalls[0]).toMatchObject({ db: "ws_test", outcome: "failure" });
+  });
+
+  test("真实 chat service 的 deadline → 门禁只以 failure 释放预留，不以 success 扣费", async () => {
+    const finishCalls: Array<{ db: string; runId: string; outcome: string }> = [];
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => { finish = resolve; });
+    const bus = createRunBus();
+    const service = createAiChatService({
+      runBus: bus,
+      maxRunMs: 5,
+      runner: () => new Promise(() => {}),
+    });
+    const app = new Hono<AppBindings>();
+    app.onError(handleError);
+    app.route("/", createAiChatRoutes({
+      service,
+      createCallerSession: async () => fakeSession,
+      registry: createRunRegistry(),
+      allowance: {
+        reserve: async () => ({ metered: true }),
+        finishByRun: async (input) => { finishCalls.push(input); finish(); },
+      },
+      rolloutGates: async () => "enabled",
+      requireUser: () => useUser(),
+    }));
+    const res = await app.request("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "分析记录" }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { runId: string };
+    await finished;
+    expect(finishCalls).toEqual([{ db: "ws_test", runId: body.runId, outcome: "failure" }]);
+    const events: unknown[] = [];
+    bus.subscribe(body.runId, (event) => events.push(event));
+    expect(events).toEqual([{
+      kind: "error", runId: body.runId, code: "ai-stream-interrupted",
+      message: "AI 生成中断：本次未产出完整结果，请重试。",
+    }]);
   });
 
   test("账本不可用 → 503 ai-allowance-unavailable，不启动 run", async () => {

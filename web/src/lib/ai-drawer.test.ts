@@ -275,6 +275,11 @@ describe("AI 抽屉会话", () => {
       ["chat-resume-invalid", "ZodError: expected string", "请求内容未通过校验，请检查后重试。"],
       // def-row-analysis-no-proposal：provider 流中途断与未知故障区分，提示本次生成被中断、可重试。
       ["chat-failed", "AI 生成流中断：本次未产出完整结果，请重试。 | caused by: internal-ai-provider-stream-failed", "AI 生成中断：本次未产出完整结果，请重试。"],
+      ["chat-failed", "chat-run-deadline", "AI 生成中断：本次未产出完整结果，请重试。"],
+      ["chat-run-deadline", "run expired", "AI 生成中断：本次未产出完整结果，请重试。"],
+      ["ai-stream-interrupted", "provider connection reset", "AI 生成中断：本次未产出完整结果，请重试。"],
+      ["chat-failed", "AbortError: The operation was aborted.", "AI 生成中断：本次未产出完整结果，请重试。"],
+      ["chat-failed", "provider connection reset", "网络连接异常，请检查网络后重试。"],
     ] as const;
 
     for (const [code, rawMessage, expected] of cases) {

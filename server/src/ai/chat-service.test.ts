@@ -381,3 +381,55 @@ describe("AiChatService.startChat", () => {
     expect(closed).toEqual(["closed"]);
   });
 });
+
+
+describe("生成挂起 / deadline 中断契约", () => {
+  for (const phase of ["start", "resume"] as const) {
+    for (const rejectsOnAbort of [false, true]) {
+      test(`${phase} deadline，abort 拒绝=${rejectsOnAbort}：唯一失败终态、取消信号、关闭会话`, async () => {
+        const bus = createRunBus();
+        const { session, closed } = closableSession();
+        const events = collect(bus, "deadline-run");
+        let signal: AbortSignal | undefined;
+        let lateChunk: (() => void) | undefined;
+        const hanging: ChatRunner = (input) => {
+          signal = input.signal;
+          lateChunk = () => input.pushChunk({ streamId: input.streamId, type: "delta", text: "迟到输出" });
+          return new Promise((_, reject) => {
+            if (rejectsOnAbort) input.signal?.addEventListener("abort", () => reject(new DOMException("The operation was aborted.", "AbortError")), { once: true });
+          });
+        };
+        const outcomes: string[] = [];
+        let results = 0;
+        let finished!: () => void;
+        const finishedPromise = new Promise<void>((resolve) => { finished = resolve; });
+        const service = createAiChatService({
+          runBus: bus,
+          runner: hanging,
+          resumer: (input) => hanging({ ...input, text: "resume" }),
+          maxRunMs: 5,
+        });
+        const hooks = {
+          runId: "deadline-run", surrealSession: session,
+          onTerminal: (outcome: string) => { outcomes.push(outcome); finished(); },
+          onResult: async () => { results += 1; },
+        };
+        if (phase === "start") await service.startChat({ ...hooks, message: "分析记录", userContext: ctx });
+        else await service.resumeChat({ ...hooks, decision: { kind: "write-confirmed" } });
+        await finishedPromise;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(signal?.aborted).toBe(true);
+        expect(outcomes).toEqual(["failed"]);
+        expect(results).toBe(0);
+        expect(closed).toEqual(["closed"]);
+        expect(events.filter((e) => e.kind === "error")).toEqual([{
+          kind: "error", runId: "deadline-run", code: "ai-stream-interrupted",
+          message: "AI 生成中断：本次未产出完整结果，请重试。",
+        }]);
+        expect(events.some((e) => e.kind === "done")).toBe(false);
+        lateChunk?.();
+        expect(events.some((e) => e.kind === "chunk")).toBe(false);
+      });
+    }
+  }
+});
