@@ -188,13 +188,12 @@ function aiErrorMessage(error: unknown): string {
   if (/validation|invalid|bad-request|zoderror|unprocessable/u.test(searchable)) {
     return "请求内容未通过校验，请检查后重试。";
   }
+  // 生成中断契约优先于网络关键词；兼容旧服务端的 deadline / abort 消息。
+  if (/生成流中断|ai-stream-interrupted|chat-run-deadline|aborterror|operation (?:was|is) aborted/u.test(searchable)) {
+    return "AI 生成中断：本次未产出完整结果，请重试。";
+  }
   if (/network|fetch failed|connection|stream-interrupted/u.test(searchable)) {
     return "网络连接异常，请检查网络后重试。";
-  }
-  // def-row-analysis-no-proposal：provider 流中途断（长推理后断流）与未知故障区分开，
-  // 让用户知道是本次生成被中断、可以重试，而不是笼统的「服务不可用」。
-  if (/生成流中断|ai-stream-interrupted/u.test(searchable)) {
-    return "AI 生成中断：本次未产出完整结果，请重试。";
   }
   return "AI 服务暂时不可用，请稍后重试。";
 }

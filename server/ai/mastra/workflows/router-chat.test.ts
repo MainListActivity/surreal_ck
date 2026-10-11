@@ -364,6 +364,28 @@ describe("行分析 reasoning-only / 流中断的工作流级回归（def-row-an
     expect(result.finalText).toBe(ROW_ANALYSIS_NO_PROPOSAL_TEXT);
   });
 
+  test("纯空白流：工作流结束并发布契约 no-proposal done", async () => {
+    const done: string[] = [];
+    const result = await runRouterChat({
+      mastra: makeMastra(),
+      text: "分析当前记录",
+      userContext: rowAnalysisContext,
+      surrealSession: fakeSession,
+      executors: makeExecutors({
+        "row-analysis": makeAgentExecutor(fakeStreamAgent([
+          { type: "text-delta", payload: { text: "\n\n" } },
+        ]), { noOutputText: ROW_ANALYSIS_NO_PROPOSAL_TEXT }),
+      }),
+      llmCaller: async () => "不应调用",
+      planOverride: rowAnalysisPlan,
+      streamId: "row-whitespace",
+      pushChunk: (e) => { if (e.type === "done") done.push(e.message.content); },
+    });
+    expect(result.status).toBe("success");
+    expect(result.finalText).toBe(ROW_ANALYSIS_NO_PROPOSAL_TEXT);
+    expect(done).toEqual([ROW_ANALYSIS_NO_PROPOSAL_TEXT]);
+  });
+
   test("流中途错误：run 以明确错误态失败（可读中断信息），不静默变成空回复", async () => {
     const mastra = makeMastra();
     const executors = makeExecutors({

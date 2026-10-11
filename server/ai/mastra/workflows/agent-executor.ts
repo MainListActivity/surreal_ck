@@ -21,7 +21,7 @@ export type AgentExecutorOptions = {
 };
 
 /**
- * 无可见产出的显式归类（仅当最终 text 为空且未产生 suspend 提案时上报）：
+ * 无可见产出的显式归类（仅当最终 text 为空或纯空白且未产生 suspend 提案时上报）：
  * - `reasoning-only`：模型只输出推理内容，没有文本、也没有工具调用；
  * - `empty`：没有任何可见输出（含调了工具但无可确认产出的情形）。
  */
@@ -149,10 +149,10 @@ export function makeAgentExecutor(agent: Agent, options: AgentExecutorOptions = 
     let text = aggregated || (await stream.text) || "";
     const suspend = deriveSuspendSignalFromToolCalls(observedToolCalls);
     let noOutput: AgentExecutorNoOutput | undefined;
-    if (!text && !suspend) {
+    if (!text.trim() && !suspend) {
       // 无可见产出不静默：按是否走过推理通道归类，交给调用方的契约文案显式收尾。
       noOutput = observedToolCalls.length === 0 && sawReasoning ? "reasoning-only" : "empty";
-      if (options.noOutputText) text = options.noOutputText;
+      text = options.noOutputText ?? "";
     }
     const citations = deriveCitationsFromToolCalls(observedToolCalls);
     return {

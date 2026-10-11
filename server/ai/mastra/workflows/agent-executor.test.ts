@@ -320,6 +320,34 @@ describe("agent executor — reasoning 模型无可见产出走契约化显式�
     expect(out.suspend).toBeUndefined();
   });
 
+  for (const whitespace of ["\n\n", " \t\r\n", "\u00a0\u3000"]) {
+    for (const reasoning of [false, true]) {
+      test(`纯空白 ${JSON.stringify(whitespace)}，reasoning=${reasoning} → 契约无产出`, async () => {
+        const chunks = [
+          ...(reasoning ? reasoningOnlyChunks : []),
+          { type: "text-delta", payload: { text: whitespace } },
+        ];
+        for (const noOutputText of [undefined, ROW_ANALYSIS_NO_PROPOSAL_TEXT]) {
+          const out = await makeAgentExecutor(fakeStreamAgent(chunks), { noOutputText })({
+            taskText: "分析当前记录",
+            shared: { userContext: regressionContext, confirmed: {} },
+          });
+          expect(out.noOutput).toBe(reasoning ? "reasoning-only" : "empty");
+          expect(out.text).toBe(noOutputText ?? "");
+          expect(out.suspend).toBeUndefined();
+        }
+      });
+    }
+  }
+
+  test("stream.text 兜底中的纯空白也归类无产出", async () => {
+    const out = await makeAgentExecutor(fakeStreamAgent([], { text: " \n" }), {
+      noOutputText: ROW_ANALYSIS_NO_PROPOSAL_TEXT,
+    })({ taskText: "分析当前记录", shared: { userContext: regressionContext, confirmed: {} } });
+    expect(out.noOutput).toBe("empty");
+    expect(out.text).toBe(ROW_ANALYSIS_NO_PROPOSAL_TEXT);
+  });
+
   test("未配 noOutputText 时保持空串并上报归类（上游兜底责任不下沉）", async () => {
     const executor = makeAgentExecutor(fakeStreamAgent(reasoningOnlyChunks));
 
