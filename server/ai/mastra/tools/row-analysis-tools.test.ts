@@ -131,3 +131,31 @@ describe("analyzeRow tool", () => {
     expect(result.intent.proposals).toEqual([]);
   });
 });
+
+describe("analyzeRow 提案字段名归一化", () => {
+  test("建议 field 写成列 label（如「读数」）时归一到存储 key，取 currentValue 仍按 key", async () => {
+    const { analyzeRowTool } = await import("./row-analysis-tools");
+    const execute = analyzeRowTool.execute as unknown as (input: {
+      sheetId: string;
+      recordId: string;
+      values: Record<string, unknown>;
+      fields: GridColumnDef[];
+      suggestions: Array<{ field: string; suggestedValue: unknown; basis: string; confidence: "high" | "medium" | "low" }>;
+    }) => Promise<{ intent: { proposals: Array<{ field: string; currentValue: unknown }> } }>;
+
+    const result = await execute({
+      sheetId: "sheet:devices",
+      recordId: "ent_devices:abc",
+      fields,
+      values: { device_name: "", reading: 1000, created_at: "2026-05-01T00:00:00.000Z" },
+      suggestions: [
+        { field: "读数", suggestedValue: 1250, basis: "巡检附件二", confidence: "high" },
+        { field: "不存在的字段", suggestedValue: "x", basis: "臆测", confidence: "low" },
+      ],
+    });
+
+    expect(result.intent.proposals).toEqual([
+      { field: "reading", currentValue: 1000, suggestedValue: 1250, basis: "巡检附件二", confidence: "high" },
+    ]);
+  });
+});

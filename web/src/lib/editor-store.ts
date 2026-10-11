@@ -398,6 +398,27 @@ export function createEditorStore(deps: EditorDeps) {
     }
   }
 
+  /**
+   * 提案 values 的 key 可能是模型照抄的列 label 而非存储 key（恢复出的旧卡仍可能如此）：
+   * 写入前按当前列定义把唯一 label 归一到存储 key；key 本身与未知字段原样保留，
+   * 未知字段由运行时的字段校验正常拒绝。
+   */
+  function remapProposalValuesToFieldKeys(values: Record<string, unknown>): Record<string, unknown> {
+    const labelToKey = new Map<string, string>();
+    for (const column of state.columns) {
+      if (column.label && column.label !== column.key) labelToKey.set(column.label, column.key);
+    }
+    if (!labelToKey.size) return values;
+    let changed = false;
+    const next: Record<string, unknown> = {};
+    for (const [field, value] of Object.entries(values)) {
+      const key = labelToKey.get(field) ?? field;
+      if (key !== field) changed = true;
+      next[key] = value;
+    }
+    return changed ? next : values;
+  }
+
   /** AI 提案与手工编辑共用活动数据表运行时，不再根据物理表名另开写入路径。 */
   async function writeRecordPatch(
     sheetId: string,
@@ -407,7 +428,7 @@ export function createEditorStore(deps: EditorDeps) {
     if (sheetId !== state.activeSheetId || !runtime) {
       return { ok: false, message: "提案对应的数据表当前未打开，请打开该数据表后重试。" };
     }
-    const ok = await saveRows([{ id: recordId, values }]);
+    const ok = await saveRows([{ id: recordId, values: remapProposalValuesToFieldKeys(values) }]);
     return ok ? { ok: true } : { ok: false, message: state.saveError ?? "记录写入失败" };
   }
 
@@ -422,10 +443,11 @@ export function createEditorStore(deps: EditorDeps) {
     if (proposal.operation === "update" && !proposal.recordId) {
       return { ok: false, message: "更新提案缺少目标记录。" };
     }
+    const mapped = remapProposalValuesToFieldKeys(values);
     const ok = await saveRows([
       proposal.operation === "update"
-        ? { id: proposal.recordId, values }
-        : { values },
+        ? { id: proposal.recordId, values: mapped }
+        : { values: mapped },
     ]);
     return ok ? { ok: true } : { ok: false, message: state.saveError ?? "记录写入失败" };
   }

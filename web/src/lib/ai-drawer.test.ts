@@ -695,3 +695,81 @@ test("断线与页面刷新按原 run 补取完整结果，不调用 startChat�
   expect(reload.session.snapshot().messages.at(-1)?.content).toBe("完整授权答案"); expect(values.has("sck.ai.pending:acme")).toBe(false);
   await h.session.retryMessage("id-1"); expect(h.starts).toHaveLength(1); expect(recovered).toEqual(["run-original", "run-original"]);
 });
+
+
+test("刷新后恢复 suspended run：recover 返回决策载荷即重建确认卡，确认仍走 resume 契约", async () => {
+  const proposal = {
+    type: "row-patch-proposal" as const,
+    sheetId: "sheet:items",
+    recordId: "ent_items:one",
+    proposals: [
+      { field: "amount", currentValue: 100, suggestedValue: 250, basis: "依据巡检附件二", confidence: "high" as const },
+    ],
+  };
+  const values = new Map<string, string>([["sck.ai.pending:acme", "run-original"]]);
+  const pendingStorage = { getItem: (k: string) => values.get(k) ?? null, setItem: (k: string, v: string) => { values.set(k, v); }, removeItem: (k: string) => { values.delete(k); } };
+  const recovered: string[] = [];
+  const recoverChat = async (runId: string): Promise<ChatRunStart> => {
+    recovered.push(runId);
+    return {
+      runId,
+      streamUrl: "",
+      streamToken: "",
+      suspended: { kind: "await-write-confirm", runId, intent: proposal },
+    };
+  };
+  const h = harness({ pendingStorage, recoverChat });
+
+  h.session.syncWorkspace("acme");
+  await h.session.retryMessage(h.session.snapshot().retryableMessageId!);
+
+  // 确认卡从持久化决策载荷确定性重建：不连 stream、不自动写入。
+  expect(recovered).toEqual(["run-original"]);
+  expect(h.handles).toHaveLength(0);
+  const intents = h.session.snapshot().pendingIntents;
+  expect(intents).toEqual([
+    { messageId: "id-4", runId: "run-original", kind: "await-write-confirm", proposal, dismissed: false },
+  ]);
+  expect(h.session.snapshot().sending).toBe(false);
+
+  // 显式确认：resume 同一 run 并重连 stream，done 后卡片 dismiss、恢复指针清除。
+  const resuming = h.session.resumeWrite("id-4", "write-confirmed");
+  await Promise.resolve();
+  expect(h.resumes).toEqual([{ runId: "run-original", decision: { kind: "write-confirmed" } }]);
+  expect(h.session.snapshot().pendingIntents[0]?.dismissed).toBe(false);
+  expect(h.handles).toHaveLength(1);
+
+  h.emit({ kind: "done", runId: "run-original", message: assistantMessage("已写入 1 个字段"), toolCalls: [] }, 0);
+  await resuming;
+  const done = h.session.snapshot();
+  expect(done.pendingIntents[0]?.dismissed).toBe(true);
+  expect(done.messages.at(-1)?.content).toBe("已写入 1 个字段");
+  expect(values.has("sck.ai.pending:acme")).toBe(false);
+});
+
+test("同一 run 的 suspend 载荷重复到达（recover 持久态 + stream 回放）只建一张卡", async () => {
+  const proposal = {
+    type: "row-patch-proposal" as const,
+    sheetId: "sheet:items",
+    recordId: "ent_items:one",
+    proposals: [],
+  };
+  const h = harness({
+    recoverChat: async (runId) => ({
+      runId,
+      streamUrl: "",
+      streamToken: "",
+      suspended: { kind: "await-write-confirm", runId, intent: proposal },
+    }),
+  });
+
+  const sending = h.session.sendMessage("分析这条记录", context());
+  h.start.resolve({ runId: "run-1", streamUrl: "/stream", streamToken: "t" });
+  await sending;
+
+  // 先后两次等价 suspend 事件（stream 侧 + recover 合成的同 runId 载荷）。
+  h.emit({ kind: "suspend", runId: "run-1", payload: { kind: "await-write-confirm", runId: "run-1", intent: proposal } });
+  h.emit({ kind: "suspend", runId: "run-1", payload: { kind: "await-write-confirm", runId: "run-1", intent: proposal } });
+
+  expect(h.session.snapshot().pendingIntents).toHaveLength(1);
+});

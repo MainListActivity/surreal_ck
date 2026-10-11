@@ -151,3 +151,46 @@ describe("row-analysis tools — 走调用者 session", () => {
     });
   });
 });
+
+describe("proposeRecordWrite 提案字段名归一化（session 读 column_defs）", () => {
+  test("label 归一到存储 key、未知字段丢弃；无 session 时保持透传", async () => {
+    // QA 报障场景：提案 field=「状态」label，存储键是 field_2。
+    const session = makeFakeSession([
+      [[{ column_defs: [
+        { key: "field_1", label: "标题", field_type: "text" },
+        { key: "field_2", label: "状态", field_type: "single_select" },
+      ] }]],
+    ]);
+    const { proposeRecordWriteTool } = await import("./row-analysis-tools");
+    const execute = proposeRecordWriteTool.execute as unknown as (
+      input: {
+        operation: "create" | "update";
+        sheetId: string;
+        recordId?: string;
+        proposals: Array<{ field: string; currentValue: unknown; suggestedValue: unknown; basis: string; confidence: "high" | "medium" | "low" }>;
+      },
+      ctx?: { requestContext: RequestContext },
+    ) => Promise<{ intent: { proposals: Array<{ field: string }> } }>;
+
+    const result = await execute({
+      operation: "update",
+      sheetId: "sheet:members",
+      recordId: "ent_members:m1",
+      proposals: [
+        { field: "状态", currentValue: "在职", suggestedValue: "离职", basis: "成员表更新", confidence: "high" },
+        { field: "field_1", currentValue: "甲", suggestedValue: "乙", basis: "key 原样保留", confidence: "medium" },
+        { field: "幽灵字段", currentValue: null, suggestedValue: "x", basis: "未知字段被丢弃", confidence: "low" },
+      ],
+    }, ctxWithSession(session));
+
+    expect(result.intent.proposals.map((p) => p.field)).toEqual(["field_2", "field_1"]);
+
+    // 无 session：行为不变，原样透传。
+    const passthrough = await execute({
+      operation: "create",
+      sheetId: "sheet:members",
+      proposals: [{ field: "状态", currentValue: null, suggestedValue: "在职", basis: "b", confidence: "high" }],
+    });
+    expect(passthrough.intent.proposals.map((p) => p.field)).toEqual(["状态"]);
+  });
+});

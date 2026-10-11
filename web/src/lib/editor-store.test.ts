@@ -486,3 +486,44 @@ describe("addField / removeFieldByKey / reorderFields — 字段编排入口", (
     expect(rec.updates.length).toBe(before + 1);
   });
 });
+
+describe("writeRecordPatch / writeRecordProposal — 提案 values 字段名归一", () => {
+  test("values 用列 label 时按当前列定义归一到存储 key 再写库", async () => {
+    const { store, rec } = setup({
+      sheets: [sheetRecord({
+        column_defs: [
+          { key: "field_1", label: "标题", field_type: "text" },
+          { key: "field_2", label: "状态", field_type: "single_select" },
+        ],
+      })],
+      rows: [{ id: "ent_items:m1", field_1: "甲", field_2: "在职" }],
+    });
+    await store.loadWorkbook("workbook:wb1");
+
+    const ok = await store.writeRecordPatch("sheet:s1", "ent_items:m1", { 状态: "离职" });
+
+    expect(ok).toEqual({ ok: true });
+    expect(rec.updates).toEqual([{ id: "ent_items:m1", patch: { field_2: "离职" } }]);
+  });
+
+  test("record-write-proposal update：label/key 混合 values 统一归一到存储 key", async () => {
+    const { store, rec } = setup({
+      sheets: [sheetRecord({
+        column_defs: [
+          { key: "field_1", label: "标题", field_type: "text" },
+          { key: "field_2", label: "状态", field_type: "single_select" },
+        ],
+      })],
+      rows: [{ id: "ent_items:m1", field_1: "甲", field_2: "在职" }],
+    });
+    await store.loadWorkbook("workbook:wb1");
+
+    const ok = await store.writeRecordProposal(
+      { type: "record-write-proposal", operation: "update", sheetId: "sheet:s1", recordId: "ent_items:m1", proposals: [] },
+      { 状态: "离职", field_1: "乙" },
+    );
+
+    expect(ok).toEqual({ ok: true });
+    expect(rec.updates).toEqual([{ id: "ent_items:m1", patch: { field_2: "离职", field_1: "乙" } }]);
+  });
+});

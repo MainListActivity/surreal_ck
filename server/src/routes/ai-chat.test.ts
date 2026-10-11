@@ -5,6 +5,7 @@ import type { Surreal } from "surrealdb";
 import type { AppBindings } from "../hono-types";
 import { handleError } from "../middleware/error";
 import { createAiChatRoutes, type AiChatService, type CallerSessionFactory } from "./ai-chat";
+import { ChatDeliveryStore } from "../ai/delivery-store";
 import { createRunRegistry } from "../ai/run-registry";
 
 const testUser = {
@@ -64,6 +65,7 @@ function makeApp(opts: {
   service?: AiChatService;
   sessionFactory?: CallerSessionFactory;
   registry?: ReturnType<typeof createRunRegistry>;
+  deliveries?: ChatDeliveryStore;
   /** LCA14：默认放行；注入 disabled/抛错替身覆盖开关拒绝与 fail closed 路径。 */
   rolloutGates?: import("../rollout/gate-check").RolloutGateChecker;
   /** 传 undefined 时用真实 requireOidc（用于鉴权失败用例）。 */
@@ -77,6 +79,7 @@ function makeApp(opts: {
       service: opts.service ?? stubService(),
       createCallerSession: opts.sessionFactory ?? okSessionFactory,
       registry: opts.registry ?? createRunRegistry(),
+      deliveries: opts.deliveries,
       rolloutGates: opts.rolloutGates ?? (async () => "enabled"),
       requireUser: opts.requireUser === "real" ? undefined : (opts.requireUser ?? (() => useUser())),
     }),
@@ -429,5 +432,118 @@ describe("LCA14 legal_research_ai 灰度开关", () => {
     expect(res.status).toBe(403);
     expect((await res.json()).error.code).toBe("legal-research-ai-suspended");
     expect(service.resumeCalls).toHaveLength(0);
+  });
+});
+
+describe("POST /api/chat/runs/:runId/recover — suspended run 决策载荷恢复", () => {
+  const deliveries = new ChatDeliveryStore("a".repeat(64));
+  const writeConfirmPayload = {
+    kind: "await-write-confirm",
+    intent: {
+      type: "row-patch-proposal",
+      sheetId: "sheet:items",
+      recordId: "ent_items:one",
+      proposals: [
+        { field: "amount", currentValue: 100, suggestedValue: 250, basis: "依据巡检附件二", confidence: "high" },
+      ],
+    },
+  };
+
+  /** 会话按语句分派：chat_delivery 行 + workflow_run 行 + fn::current_user() 校验。 */
+  function recoverSession(input: {
+    deliveryStatus: "running" | "suspended" | "complete" | "failed";
+    workflowRow?: { status: string; state: unknown } | null;
+  }) {
+    const queries: string[] = [];
+    const session = {
+      close: async () => {},
+      async query(sql: string) {
+        queries.push(sql);
+        if (sql.includes("FROM chat_delivery")) {
+          return [[{ run_id: "run-1", nonce: "n1", request_hash: "h1", status: input.deliveryStatus }]];
+        }
+        if (sql.includes("FROM workflow_run")) {
+          return [input.workflowRow ? [input.workflowRow] : []];
+        }
+        if (sql.includes("RETURN fn::current_user() != NONE")) return [true];
+        return [[]];
+      },
+    } as unknown as Surreal;
+    return { session, queries };
+  }
+
+  test("suspended run：返回持久化 suspendPayload，前端据此重渲染确认卡（不连 stream、不消费决策）", async () => {
+    const { session } = recoverSession({
+      deliveryStatus: "suspended",
+      workflowRow: {
+        status: "suspended",
+        state: {
+          suspendedPaths: { "execute-one": [0] },
+          context: {
+            "execute-one": { status: "suspended", suspendPayload: writeConfirmPayload, suspendedAt: 1 },
+          },
+        },
+      },
+    });
+    const app = makeApp({ deliveries, sessionFactory: async () => session });
+
+    const res = await app.request("/api/chat/runs/run-1/recover", { method: "POST" });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      runId: string; streamUrl: string; streamToken: string;
+      suspended?: { kind: string; runId: string; intent?: { type: string } };
+    };
+    expect(body.runId).toBe("run-1");
+    expect(body.suspended).toMatchObject({ kind: "await-write-confirm", runId: "run-1", intent: { type: "row-patch-proposal" } });
+    // 恢复的是等待中的确认卡：不附 streamToken，不恢复活流（决策仍走 resume 契约）。
+    expect(body.streamToken).toBe("");
+    expect(body.streamUrl).toBe("");
+  });
+
+  test("suspended 但持久态已被 resume 成 running 且 run 仍在执行窗：改签 streamToken 重挂 stream", async () => {
+    const { session } = recoverSession({
+      deliveryStatus: "suspended",
+      workflowRow: { status: "running", state: { context: {} } },
+    });
+    const registry = createRunRegistry();
+    // 模拟 resume 已受理、run 仍活跃。
+    registry.register({ runId: "run-1", ownerSubject: testUser.subject });
+    const app = makeApp({ deliveries, registry, sessionFactory: async () => session });
+
+    const res = await app.request("/api/chat/runs/run-1/recover", { method: "POST" });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { runId: string; streamUrl: string; streamToken: string; suspended?: unknown };
+    expect(body.suspended).toBeUndefined();
+    expect(body.streamToken).toBeTruthy();
+    expect(body.streamUrl).toBe("/api/chat/stream?runId=run-1");
+    expect(registry.resolveStreamToken({ runId: "run-1", streamToken: body.streamToken })?.ownerSubject).toBe(testUser.subject);
+  });
+
+  test("suspended 且 workflow_run 不可见（他人/丢失）→ 409，不泄露 run 状态", async () => {
+    const { session } = recoverSession({ deliveryStatus: "suspended", workflowRow: null });
+    const app = makeApp({ deliveries, sessionFactory: async () => session });
+
+    const res = await app.request("/api/chat/runs/run-1/recover", { method: "POST" });
+
+    expect(res.status).toBe(409);
+    expect((await res.json()).error.code).toBe("chat-run-not-running");
+  });
+
+  test("suspended 但持久载荷无法映射为已知决策事件 → 409，不伪造确认卡", async () => {
+    const { session } = recoverSession({
+      deliveryStatus: "suspended",
+      workflowRow: {
+        status: "suspended",
+        state: { context: { "execute-one": { status: "suspended", suspendPayload: { kind: "unknown" }, suspendedAt: 1 } } },
+      },
+    });
+    const app = makeApp({ deliveries, sessionFactory: async () => session });
+
+    const res = await app.request("/api/chat/runs/run-1/recover", { method: "POST" });
+
+    expect(res.status).toBe(409);
+    expect((await res.json()).error.code).toBe("chat-run-not-running");
   });
 });

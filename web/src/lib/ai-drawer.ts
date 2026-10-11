@@ -9,6 +9,7 @@ import type {
   ResumeDecision,
   RecordWriteProposal,
   RowPatchProposal,
+  WorkflowSuspendedEvent,
 } from "@surreal-ck/shared";
 
 export type AiDrawerContextSnapshot = AiContextSnapshot & {
@@ -20,6 +21,11 @@ export type ChatRunStart = {
   streamUrl: string;
   streamToken: string;
   result?: Extract<ChatStreamEvent, { kind: "done" }>;
+  /**
+   * recover 命中仍处于 suspended 的 run 时返回等待中的决策载荷（从 workflow_run
+   * 持久态还原）：前端据此重渲染确认卡/候选卡，无需先连 stream。
+   */
+  suspended?: WorkflowSuspendedEvent;
 };
 
 export type AiComposerMode = "chat" | "resource-search";
@@ -301,6 +307,12 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
       try { options.pendingStorage?.setItem(`sck.ai.pending:${state.workspaceSlug}`, run.runId); } catch { /* Storage may be disabled. */ }
     }
     if (run.result) { handleStreamEvent(run.result, messageId, allowRequestRetry); return; }
+    if (run.suspended) {
+      // 持久态还原的 suspended 决策：按 suspend 事件同一语义落成 pendingIntent，
+      // 确认/选择后仍走 resume 契约（不自动写入），随后重连 stream 收口。
+      handleStreamEvent({ kind: "suspend", runId: run.runId, payload: run.suspended }, messageId, allowRequestRetry);
+      return;
+    }
     activeStream = options.connectStream({
       url: run.streamUrl,
       streamToken: run.streamToken,
@@ -362,6 +374,8 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
 
     if (event.kind === "suspend") {
       settleRunCompletion(event.runId);
+      // 幂等：同一 run 的 suspend 载荷可从 stream 与 recover 持久态各来一次，只建一张卡。
+      if (state.pendingIntents.some((intent) => intent.runId === event.runId && !intent.dismissed)) return;
       if (event.payload.kind === "authorization_changed") {
         state.pendingIntents = [...state.pendingIntents, { messageId, runId: event.runId, kind: "authorization_changed",
           authorizationChange: { query: event.payload.query, message: event.payload.message, restart: event.payload.restart }, dismissed: false }];
