@@ -102,6 +102,9 @@ export class RootConnectionManager {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   /** 单飞：同一时刻至多一个进行中的连接尝试。 */
   private inFlight: Promise<boolean> | null = null;
+  private connectAbort: AbortController | null = null;
+  /** close 后递增：旧生命周期的异步结果不能影响重新 init 的管理器。 */
+  private lifecycle = 0;
   private lastAttemptAt = 0;
   private lastWorkerErrorProbeAt = 0;
   private closing = false;
@@ -177,17 +180,21 @@ export class RootConnectionManager {
       return false;
     }
 
+    const lifecycle = this.lifecycle;
     const current = this.connection;
     if (current) {
       const alive = await this.probe(current, timeoutMs);
+      if (this.closing || this.lifecycle !== lifecycle) return false;
+      if (this.connection !== current) {
+        // 成功与失败都可能来自已替换的实例；重新实测当前连接，不能用旧结果改状态。
+        return this.checkConnection(timeoutMs);
+      }
       if (alive) {
-        if (this.connection !== current) {
-          // 探测期间连接已被替换（另一尝试成功）：取最新状态。
-          return this.ensureConnected();
-        }
         if (this.state !== "connected") {
           this.state = "connected";
           this.reconnectAttempts = 0;
+          // 实测旧连接已恢复：不让并行的候选握手再替换它、清空仍可用的池。
+          this.connectAbort?.abort(new Error("SurrealDB root connection recovered via probe"));
           console.info("[surrealdb] root connection recovered via probe", {
             url: env.SURREAL_URL,
           });
@@ -213,6 +220,9 @@ export class RootConnectionManager {
 
   async close(): Promise<void> {
     this.closing = true;
+    this.lifecycle += 1;
+    const pending = this.inFlight;
+    this.connectAbort?.abort();
 
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
@@ -223,21 +233,22 @@ export class RootConnectionManager {
     this.connection = null;
     this.state = "disconnected";
 
+    // SDK 的 closeSession 会派发 detach RPC；必须先结束会话，再关底层 socket。
+    // 并行关闭会让已派发的 detach 永远等不到响应，卡住整个 shutdown。
     await this.pool.closeAll();
-
-    if (db) {
-      await db.close();
-    }
+    await db?.close();
+    await pending;
   }
 
   /** 对指定连接实例做一次真实查询（有界）。只读探测，不改状态。 */
   private async probe(connection: Surreal, timeoutMs: number): Promise<boolean> {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
         connection.query("RETURN 1"),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("SurrealDB health timeout")), timeoutMs)
-        ),
+        new Promise((_, reject) => {
+          timeout = setTimeout(() => reject(new Error("SurrealDB health timeout")), timeoutMs);
+        }),
       ]);
       return true;
     } catch (error) {
@@ -245,6 +256,8 @@ export class RootConnectionManager {
         message: error instanceof Error ? error.message : String(error),
       });
       return false;
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
@@ -305,6 +318,27 @@ export class RootConnectionManager {
     this.lastAttemptAt = this.now();
     this.state = "connecting";
     const db = this.createSurreal();
+    const lifecycle = this.lifecycle;
+    const abort = new AbortController();
+    this.connectAbort = abort;
+    const timeout = setTimeout(
+      () => abort.abort(new Error("SurrealDB root connection timeout")),
+      timeoutMs,
+    );
+    const invalidated = () =>
+      abort.signal.aborted || this.closing || this.lifecycle !== lifecycle;
+    const closeCandidate = async () => {
+      try {
+        await db.close();
+      } catch {
+        // 已失效候选的清理不能改变当前连接或重试结果。
+      }
+    };
+    let onAbort = () => {};
+    const cancelled = new Promise<never>((_, reject) => {
+      onAbort = () => reject(abort.signal.reason);
+      abort.signal.addEventListener("abort", onAbort, { once: true });
+    });
 
     // 事件处理器按实例身份隔离：只有「当前连接实例」的事件才允许改状态。
     // 被替换的旧实例（已 close 或握手迟到失败）不能再把健康的连接标成 down。
@@ -322,18 +356,27 @@ export class RootConnectionManager {
     try {
       await Promise.race([
         (async () => {
-          await db.connect(env.SURREAL_URL, {
-            reconnect: false,
-            authentication: rootAuthentication,
-            namespace: env.SURREAL_NS,
-            database: "_system",
-          });
-          await db.use({ namespace: env.SURREAL_NS, database: "_system" });
+          try {
+            await db.connect(env.SURREAL_URL, {
+              reconnect: false,
+              authentication: rootAuthentication,
+              namespace: env.SURREAL_NS,
+              database: "_system",
+            });
+            if (invalidated()) throw new Error("SurrealDB root connection attempt cancelled");
+            await db.use({ namespace: env.SURREAL_NS, database: "_system" });
+          } finally {
+            // SDK 握手可能在超时/close 后迟到完成，再次关闭以免留下活连接。
+            if (invalidated()) await closeCandidate();
+          }
         })(),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("SurrealDB root connection timeout")), timeoutMs)
-        ),
+        cancelled,
       ]);
+      if (invalidated()) {
+        await closeCandidate();
+        return false;
+      }
+      clearTimeout(timeout);
 
       const previousConnection = this.connection;
       // 先切换引用再关闭旧连接：旧实例 close() 会发布 disconnected，
@@ -354,24 +397,25 @@ export class RootConnectionManager {
           // Ignore cleanup errors for a stale connection after reconnect.
         }
       }
-      return true;
+      return !this.closing && this.lifecycle === lifecycle && this.connection === db;
     } catch (error) {
-      try {
-        await db.close();
-      } catch {
-        // Ignore close errors while handling a failed connection attempt.
-      }
+      await closeCandidate();
 
       console.warn("[surrealdb] root connection failed", {
         message: error instanceof Error ? error.message : String(error),
       });
       // 尝试失败即断开；除非探测自愈在尝试期间已把旧连接修回 connected
       // （此时旧连接经过真实查询验证，保持现状更 truthful）。
-      if (this.state === "connecting") {
+      if (this.lifecycle === lifecycle && this.state === "connecting") {
         this.state = "disconnected";
       }
-      return false;
+      // 另一探测已实测旧连接恢复时，这次候选失败/取消不代表当前连接 down。
+      return !this.closing && this.lifecycle === lifecycle &&
+        this.state === "connected" && this.connection !== null;
     } finally {
+      clearTimeout(timeout);
+      abort.signal.removeEventListener("abort", onAbort);
+      if (this.connectAbort === abort) this.connectAbort = null;
       this.inFlight = null;
       // 尝试结束（成功或失败）后，未连接且未关闭时必须保证有重连计划。
       // 探测自愈把状态修回 connected 时无需再排。

@@ -53,6 +53,9 @@ export async function checkRootConnection(timeoutMs = 5000): Promise<boolean> {
    disconnected/error 事件处理器无实例身份校验，陈旧事件误翻健康标志；
    退避上限 10s、每次成功都 closeAll 池+换连接，重连循环加剧 ops/login 间歇超时。
 
+生产网络、认证或连接容量导致首次瞬断的具体触发原因尚未证实。以上是代码侧可复现的
+假阴性机制与放大条件，不代表已经从生产日志查明网络根因。
+
 ## Fix
 
 重写为显式三态状态机（`RootConnectionManager`，可注入连接工厂便于测试）：
@@ -67,12 +70,19 @@ export async function checkRootConnection(timeoutMs = 5000): Promise<boolean> {
 3. **事件处理器按实例身份隔离**：只有当前连接实例的 disconnected/error
    才允许改状态；成功路径先切换引用再关闭旧连接，旧实例 close() 发布的
    disconnected 被身份检查忽略；
-4. 失败如实报 down、绝不常 ok；`/health` 响应形状不变。
+4. **异步探测同样按实例隔离**：成功和失败都要核对当前实例；旧连接的迟到结果
+   不能修改新连接状态，实例变化时重新实测当前连接；
+5. **关闭使旧生命周期失效**：取消在途连接尝试，发布前核对生命周期；SDK 握手
+   在超时或关闭后迟到完成时再次清理候选，禁止重新发布。清理 root session pool
+   的 detach RPC 必须先于关闭 socket，避免请求悬挂；
+6. 失败如实报 down、绝不常 ok；`/health` 响应形状不变。
 
 ## Verification
 
 - 单元测试（假连接工厂）：瞬断恢复不卡死不 churn、陈旧事件不翻转、并发检查
   单飞、真实不可达如实 down 且恢复后转 ok、gate 防轮询风暴、close 后停止重连；
+- 并发回归：旧探测迟到失败不再触发第三条连接/关闭健康新实例，迟到成功不掩盖
+  当前实例不可达；关闭与重新 init 的代际隔离、握手超时/关闭后的迟到清理；
 - 行为级新旧对比（mock.module 注入可控假连接）：旧实现同场景 STUCK DOWN
   （instances churn 增长、originalClosed=false），新实现恢复 up 且零 churn；
 - 集成测试（真实公司 fork，`RUN_LOCAL_SURREALDB_ROOT_CONNECTION_TESTS=1`）：
