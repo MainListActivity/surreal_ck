@@ -342,8 +342,8 @@
         </article>
         <article>
           <span>AI 额度</span>
-          <strong>{product.ai.ledgerLabel}</strong>
-          <p>{product.ai.actions.join("、") || "当前版本没有 AI 动作"}</p>
+          <strong>{product.ai.ledger === "ok" && product.ai.consumableAllowance !== null ? `可用 ${product.ai.consumableAllowance}` : product.ai.ledgerLabel}</strong>
+          <p>{product.ai.actions.join("、") || "当前版本没有 AI 动作"}{typeof product.ai.settled === "number" ? ` · 已结算 ${product.ai.settled}` : ""}</p>
         </article>
         <article>
           <span>资源容量</span>

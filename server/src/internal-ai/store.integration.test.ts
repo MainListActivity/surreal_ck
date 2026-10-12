@@ -53,6 +53,7 @@ beforeAll(async () => {
   // 035 带来 registration_jti/proof_expires_at：解耦用例要在「已登记活动」的真实形状上验证 proof 窗口。
   await db.query(await readFile(new URL("../../../shared/sql/system/035-internal-ai-registration.surql", import.meta.url), "utf8"));
   await db.query(await readFile(new URL("../../../shared/sql/system/036-internal-ai-token-plan.surql", import.meta.url), "utf8"));
+  await db.query(await readFile(new URL("../../../shared/sql/system/037-internal-ai-measurement-cycle.surql", import.meta.url), "utf8"));
 }, 20000);
 afterAll(async () => { if (!enabled) return; await stop(); await rm(directory, { recursive: true, force: true }); });
 localTest("multi-connection concurrent reservations serialize shared cash; uncertain failures retain money", async () => {
@@ -278,7 +279,7 @@ localTest("token-plan activities reserve zero cash, settle zero cost and deny on
 });
 
 localTest("target cash and attempt limits are shared by separate activities and cannot reset with new run/key", async () => {
-  const schema = await readFile(new URL("../../../shared/sql/system/034-internal-ai-budget.surql", import.meta.url), "utf8");
+  const schema = await readFile(new URL("../../../shared/sql/system/034-internal-ai-budget.surql", import.meta.url), "utf8") + await readFile(new URL("../../../shared/sql/system/037-internal-ai-measurement-cycle.surql", import.meta.url), "utf8");
   await db.query("DEFINE DATABASE IF NOT EXISTS limits_cash;"); await db.use({ namespace: "budget_test", database: "limits_cash" }); await db.query(schema);
   const t = TARIFFS[1]!;
   const a = await activity("target-a"); const b = await activity("target-b");

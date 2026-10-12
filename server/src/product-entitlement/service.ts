@@ -279,7 +279,8 @@ export class ProductEntitlementService {
     if (!workspace || !(await this.store.membership(subject, workspace.id))) {
       throw new ProductEntitlementError("not_found", "工作区不存在或不可访问");
     }
-    return this.viewFor(workspace);
+    const view = await this.viewFor(workspace);
+    return await this.enrichCustomerView(workspace, view);
   }
 
   private async requireWorkspace(slug: string): Promise<WorkspaceRef> {
@@ -612,6 +613,29 @@ export class ProductEntitlementService {
       if (kinds.length > 0) items.push({ workspaceSlug: workspace.slug, kinds, detail });
     }
     return { items, total: null };
+  }
+
+  /**
+   * 客户读面的 AI 账本事实（PG-2）：与运营读面同一 aiStatus 口径——
+   * balance() 内含来源门禁，invite/manual 等非周期来源桶同样如实投影，
+   * admin 与 member 成员读面一致。只投影客户可读子集（可消费/已结算/
+   * 账本可用性）；预留、暂停/终止/过期明细与卡死预留诊断仍属运营解释。
+   * aiStatus 未接线或账本读不到时如实回落「尚无可用 AI 额度账本」，不把未知当零。
+   */
+  private async enrichCustomerView(workspace: WorkspaceRef, view: ProductEntitlementView): Promise<ProductEntitlementView> {
+    const runtime = await this.store.workspaceById(workspace.id);
+    const ai = runtime && this.ops?.aiStatus ? await this.ops.aiStatus(runtime.dbName) : null;
+    if (!ai) return view;
+    return {
+      ...view,
+      ai: {
+        ...view.ai,
+        consumableAllowance: ai.consumableAllowance,
+        settled: ai.settled,
+        ledger: ai.consumableAllowance === null ? view.ai.ledger : "ok",
+        ledgerLabel: ai.consumableAllowance === null ? view.ai.ledgerLabel : "账本可用",
+      },
+    };
   }
 
   /** LCA13：运营解释视图增强——来源理由/操作者、投影核验、AI 账本事实。 */

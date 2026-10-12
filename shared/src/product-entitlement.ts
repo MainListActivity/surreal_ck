@@ -209,12 +209,14 @@ export type ProductEntitlementView = {
   };
   ai: {
     actions: string[];
+    /** 可消费 AI 额度（真实账本事实；账本读不到或未接线时为 null）。 */
     consumableAllowance: number | null;
     ledger: "unavailable" | "ok";
     ledgerLabel: string;
-    /** LCA13：AI 预留/结算状态（运营视图注入真实账本事实；客户视图为 null）。 */
-    reserved?: number | null;
+    /** 已结算 AI 额度（真实账本事实，客户与运营读面一致；读不到时为 null）。 */
     settled?: number | null;
+    /** LCA13：预留/暂停/终止/过期明细仅运营视图注入；客户视图为 null。 */
+    reserved?: number | null;
     suspended?: number | null;
     terminated?: number | null;
     expired?: number | null;

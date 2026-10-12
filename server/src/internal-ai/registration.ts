@@ -5,7 +5,7 @@ import {
   type CompanyProofClaims, type CompanyProofGap, type ReviewedEvidence,
 } from "@surreal-ck/shared";
 import { HttpError } from "../http-error";
-import { GOAL, hash, type Queryable } from "./store";
+import { GOAL, MEASUREMENT_CYCLE, MEASUREMENT_DATABASE, MEASUREMENT_PRICE, hash, type Queryable } from "./store";
 import { certificateFor, endpointHost, worstCost, type Tariff } from "./pricing";
 import { CompanyStatusClient, type CompanyStatus } from "./company-status";
 import { statusCapabilityHash } from "./company-proof";
@@ -273,11 +273,13 @@ export class InternalAiRegistration {
     if (ids.some(i => i.revoked)) gaps.push("identity-revoked");
     return [...new Set(gaps)];
   }
-  async enable(input: { activity: string; revision: number; operator: string; reason: string; runtime: { provider?: string; model?: string; endpoint?: string; jevModel?: string; jevEnabled?: boolean } }): Promise<RegistrationSummary> {
+  async enable(input: { measurementCycle?: boolean; activity: string; revision: number; operator: string; reason: string; runtime: { provider?: string; model?: string; endpoint?: string; jevModel?: string; jevEnabled?: boolean } }): Promise<RegistrationSummary> {
     const reason = normalizeReason(input.reason), target = await this.fresh(input.activity, input.revision);
     const gaps = await this.gapsFor(target, input.runtime);
     if (gaps.length) throw denied(`启用证据不足：${gaps.join(", ")}`);
     const cert = certificateFor(target.endpoint, target.model) as Tariff;
+    if (input.measurementCycle && (target.evidence_kind !== "reviewed-token-plan" || cert.revision !== MEASUREMENT_PRICE || worstCost(cert) !== 0
+      || (await this.identities(input.activity)).some(i => i.database !== MEASUREMENT_DATABASE))) throw denied("测量周期仅限指定复测 workspace 与 SenseNova 零费率受审证据");
     await this.status.current(input.activity, target.source_jti ?? target.proof_jti ?? "");
     const row: RevisionRow = { ...target, revision: target.revision + 1, state: "enabled", operator: input.operator, reason, proof_jti: null, gaps: [], before: null, after: null };
     // 配额型证据没有 USD 余额：跳过余额覆盖上限，配额资料与余额资料互斥写入（NONE 清除另一种类的陈旧字段）。
@@ -292,8 +294,14 @@ export class InternalAiRegistration {
         plan_name = $row.plan_name, plan_source_url = $row.plan_source_url, quota_unit = $row.quota_unit,
         quota_amount = $row.quota_amount, quota_window_seconds = $row.quota_window_seconds,
         quota_remaining = $row.quota_remaining, no_payment_instrument = $row.no_payment_instrument,
-        auto_topup_disabled = true, service_approved = true;`;
-    return this.summary(await this.mutate(row, target.revision, sql, { worst: worstCost(cert), approval: `${target.approval_task}@${target.approval_version}`, source: `${target.evidence_kind === "reviewed-token-plan" ? "token-plan" : "reviewed-document"}:${target.document_hash}` }), false);
+        auto_topup_disabled = true, service_approved = true;
+      ${input.measurementCycle ? `LET $existingCycle = (SELECT * FROM ONLY $cycle);
+      IF $existingCycle != NONE {
+        IF $existingCycle.activity != $name OR $existingCycle.evidence_hash != $row.document_hash OR $existingCycle.approval_revision != $approval { THROW "measurement-cycle-conflict"; };
+      } ELSE {
+        CREATE ONLY $cycle CONTENT { activity: $name, attempts: 0, attempt_limit: $a.attempt_limit, enabled_revision: $row.revision, approval_revision: $approval, evidence_hash: $row.document_hash, expires_at: $row.evidence_expires_at, created_at: time::now() };
+      };` : ""}`;
+    return this.summary(await this.mutate(row, target.revision, sql, { cycle: new RecordId("internal_ai_measurement_cycle", MEASUREMENT_CYCLE), worst: worstCost(cert), approval: `${target.approval_task}@${target.approval_version}`, source: `${target.evidence_kind === "reviewed-token-plan" ? "token-plan" : "reviewed-document"}:${target.document_hash}` }), false);
   }
   async disable(input: { activity: string; operator: string; reason: string }): Promise<RegistrationSummary> {
     const reason = normalizeReason(input.reason); this.id(input.activity);

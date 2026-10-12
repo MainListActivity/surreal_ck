@@ -13,7 +13,7 @@ import { InternalAiRegistration } from "./registration";
 import { HttpError } from "../http-error";
 import { verifyCompanyProof } from "./company-proof";
 import { InternalAiGate } from "./gate";
-import { InternalAiStore, hash } from "./store";
+import { InternalAiStore, GOAL, MEASUREMENT_DATABASE, hash } from "./store";
 import { TARIFFS, worstCost } from "./pricing";
 
 const enabled = process.env.RUN_INTERNAL_AI_FORK_TESTS === "1";
@@ -40,8 +40,8 @@ const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("
 /** 每个用例一套独立 subject，避免跨用例共享绑定/撤销状态。 */
 function identities(tag: string) {
   return {
-    owner: { alias: "LCA04_REMOVABLE", subject: `owner-${tag}`, spaceId: `workspace:${tag}`, database: `ws_${tag}`, workspaceRole: "admin", billingRole: "owner", billingAccountRef: `account-${tag}` },
-    member: { alias: "LCA04_MEMBER", subject: `member-${tag}`, spaceId: `workspace:${tag}`, database: `ws_${tag}`, workspaceRole: "participant", billingRole: "member", billingAccountRef: `account-${tag}` },
+    owner: { alias: "LCA04_REMOVABLE", subject: `owner-${tag}`, spaceId: `workspace:${tag}`, database: tag.startsWith("measurement") ? MEASUREMENT_DATABASE : `ws_${tag}`, workspaceRole: "admin", billingRole: "owner", billingAccountRef: `account-${tag}` },
+    member: { alias: "LCA04_MEMBER", subject: `member-${tag}`, spaceId: `workspace:${tag}`, database: tag.startsWith("measurement") ? MEASUREMENT_DATABASE : `ws_${tag}`, workspaceRole: "participant", billingRole: "member", billingAccountRef: `account-${tag}` },
   };
 }
 
@@ -138,7 +138,7 @@ beforeAll(async () => {
   db = new Surreal(); await db.connect(`${endpoint}/rpc`, { authentication: { username: "root", password: "root" } });
   await db.query("DEFINE NAMESPACE IF NOT EXISTS registration_test;"); await db.use({ namespace: "registration_test" });
   await db.query("DEFINE DATABASE IF NOT EXISTS _system;"); await db.use({ namespace: "registration_test", database: "_system" });
-  for (const file of ["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql"]) {
+  for (const file of ["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql", "037-internal-ai-measurement-cycle.surql"]) {
     await db.query(await readFile(new URL(`../../../shared/sql/system/${file}`, import.meta.url), "utf8"));
   }
   registration = new InternalAiRegistration(async () => db!, { check: async () => {}, current: async () => {}, remember: () => {} });
@@ -363,6 +363,7 @@ localTest("a reviewed token-plan evidence enables the zero-rate certificate and 
   expect(submitted.quotaAmount).toBe(60000);
   expect(submitted.noPaymentInstrument).toBe(true);
   expect(submitted.gaps).toEqual([]);
+  await expect(registration.enable({ activity: activityId, revision: submitted.revision, measurementCycle: true, operator: "synthetic-operator", reason: "错误workspace不可分配测量周期", runtime: { provider: tariff.provider, model: tariff.model, endpoint } })).rejects.toThrow("指定复测 workspace");
   const enabled = await registration.enable({ activity: activityId, revision: submitted.revision, operator: "synthetic-operator", reason: "显式启用配额型活动", runtime: { provider: tariff.provider, model: tariff.model, endpoint } });
   expect(enabled.state).toBe("enabled");
   expect(enabled.dataReady).toBe(true);
@@ -631,3 +632,94 @@ localTest("enabled activity serves user attempts after the operator proof window
   await service.revokeIdentity({ activity: activityId, alias: "LCA04_MEMBER", operator: "synthetic-operator", reason: "撤销成员" });
   await expect(wiredGate.bind(`member-${tag}`, `ws_${tag}`, "run-after-revoke", "key-after-revoke")).rejects.toThrow(/revoked/);
 });
+
+localTest("one approved measurement cycle preserves 30 historical attempts and shares a nonresettable zero-rate budget", async () => {
+  if (!db) throw new Error("fixture unavailable");
+  const tariff = TARIFFS.find(t => t.model === "sensenova-6.8-flash-lite")!;
+  const tag = "measurement", activityId = `activity-${tag}`, endpoint = `https://${tariff.host}/v1`;
+  const runtime = { provider: tariff.provider, model: tariff.model, endpoint };
+  await db.query("DEFINE DATABASE IF NOT EXISTS measurement_test;");
+  await db.use({ namespace: "registration_test", database: "measurement_test" });
+  for (const file of ["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql", "037-internal-ai-measurement-cycle.surql"]) {
+    await db.query(await readFile(new URL(`../../../shared/sql/system/${file}`, import.meta.url), "utf8"));
+  }
+  const document = tokenPlanDocument();
+  const registered = await registration.register({ claims: claimsOf(proof(tag, {
+    type: "approved-service", scope: "enable", paidCallsAllowed: 1, activityId, document,
+    model: tariff.model, endpoint, accountRef: "synthetic-sensenova-account", priceRevision: tariff.revision,
+    approval: { taskId: "synthetic-approval-task", version: 3, action: "accept", auditId: "audit:measurement", reviewer: "synthetic-reviewer", digest: digest(`configuration:${tag}:jti-${tag}`) },
+  })), operator: "synthetic-operator", reason: "受审测量登记" });
+  const submitted = await registration.submitEvidence({ activity: activityId, revision: registered.revision, document, operator: "synthetic-operator", reason: "真实字节哈希的合成证据" });
+  let current = await registration.enable({ activity: activityId, revision: submitted.revision, operator: "synthetic-operator", reason: "旧周期启用", runtime });
+  // 独立数据库中的 30 次合成传输历史；不冒充生产调用。
+  const scope = await gate.bind(`owner-${tag}`, MEASUREMENT_DATABASE, "history", "history-key");
+  if (!scope) throw new Error("missing bound fixture");
+  for (let i = 0; i < 30; i++) {
+    const ticket = await gate.inRun(scope, () => gate.begin("proposal", tariff.provider, tariff.model, endpoint));
+    await gate.finish(ticket, { inputTokens: 10, outputTokens: 5, cachedInputTokens: null, reasoningTokens: null }, tariff.model, `synthetic-old-${i}`, false);
+  }
+  const old = await gate.store.page(activityId);
+  const target = await gate.store.target();
+  expect(target.attempts).toBe(30);
+  await expect(gate.store.reserve(scope, "proposal", tariff, 0)).rejects.toThrow();
+  const disabled = await registration.disable({ activity: activityId, operator: "synthetic-operator", reason: "开启新受限周期前禁用" });
+  await expect(gate.store.reserve(scope, "proposal", tariff, 0)).rejects.toThrow();
+  current = await registration.enable({ activity: activityId, revision: disabled.revision, measurementCycle: true, operator: "synthetic-operator", reason: "GM批准的新受限周期", runtime });
+  expect(current.state).toBe("enabled");
+  expect((await gate.store.measurementCycle())?.attempt_limit).toBe(30);
+  // 合成故障注入：证据过期、hash 改变、身份撤销都不能消耗本周期。
+  const activityRecord = new RecordId("internal_ai_activity", activityId);
+  await db.query('UPDATE ONLY $id SET evidence_expires_at = "2000-01-01T00:00:00Z"', { id: activityRecord });
+  await expect(gate.store.reserve(scope, "proposal", tariff, 0)).rejects.toThrow();
+  await db.query('UPDATE ONLY $id SET evidence_expires_at = $expires, balance_evidence_hash = $hash', { id: activityRecord, expires: current.expiresAt, hash: "0".repeat(64) });
+  await expect(gate.store.reserve(scope, "proposal", tariff, 0)).rejects.toThrow();
+  await db.query('UPDATE ONLY $id SET balance_evidence_hash = $hash', { id: activityRecord, hash: bytesHash(document) });
+  await gate.store.revoke(`owner-${tag}`, MEASUREMENT_DATABASE);
+  await expect(gate.store.reserve(scope, "proposal", tariff, 0)).rejects.toThrow();
+  // 仅隔离测试 fixture 恢复；生产撤销不可按此方式恢复。
+  await db.query('UPDATE internal_ai_binding SET revoked = false WHERE identity_hash = $identity', { identity: hash(`owner-${tag}`, MEASUREMENT_DATABASE) });
+  expect((await gate.store.measurementCycle())?.attempts).toBe(0);
+  const unbound = { ...scope, runHash: hash("unbound-measurement") };
+  await expect(gate.store.reserve(unbound, "proposal", tariff, 0)).rejects.toThrow();
+  await expect(gate.store.reserve(scope, "proposal", TARIFFS[0]!, worstCost(TARIFFS[0]!))).rejects.toThrow();
+  const attempts: PromiseSettledResult<Awaited<ReturnType<InternalAiStore["reserve"]>>>[] = [];
+  for (let batch = 0; batch < 7; batch++) attempts.push(...await Promise.allSettled(Array.from({ length: 5 }, () => gate.store.reserve(scope, "proposal", tariff, 0))));
+  const admitted = attempts.flatMap(r => r.status === "fulfilled" ? [r.value] : []);
+  expect(admitted.length).toBeGreaterThan(0);
+  expect(admitted.length).toBeLessThanOrEqual(30);
+  // SDK hides some concurrent conflict causes as NotExecuted; fail closed, never retry an unknown commit.
+  while (admitted.length < 30) admitted.push(await gate.store.reserve(scope, "proposal", tariff, 0));
+  await expect(gate.store.reserve(scope, "proposal", tariff, 0)).rejects.toThrow();
+  await gate.store.sent(admitted[0]!.id);
+  await gate.store.finish(admitted[0]!.id, { usage: { inputTokens: 11, outputTokens: 7, cachedInputTokens: null, reasoningTokens: null }, actualModel: tariff.model, requestId: "synthetic-new", cost: 0, failed: false });
+  await gate.store.sent(admitted[1]!.id);
+  await gate.store.finish(admitted[1]!.id, { usage: null, actualModel: null, requestId: null, cost: null, failed: true });
+  const ledger = [...await gate.store.page(activityId), ...await gate.store.page(activityId, 50)];
+  expect(ledger.slice(0, 30)).toEqual(old);
+  expect(ledger.length).toBe(60);
+  expect(ledger.filter(a => a.measurement_cycle).length).toBe(30);
+  expect(ledger.find(a => String(a.id) === String(admitted[0]!.id))).toMatchObject({ state: "settled", cost: 0, usage_source: "provider" });
+  expect(ledger.find(a => String(a.id) === String(admitted[1]!.id))).toMatchObject({ state: "uncertain", usage_source: "unknown" });
+  expect(await gate.store.target()).toEqual(target);
+  expect((await gate.store.activity(activityId))?.attempts).toBe(30);
+  const cycle = await gate.store.measurementCycle();
+  const disabledAgain = await registration.disable({ activity: activityId, operator: "synthetic-operator", reason: "再次禁用" });
+  await registration.enable({ activity: activityId, revision: disabledAgain.revision, measurementCycle: true, operator: "synthetic-operator", reason: "幂等重启不补次数", runtime });
+  expect(await gate.store.measurementCycle()).toEqual(cycle);
+  await expect(gate.store.reserve(scope, "proposal", tariff, 0)).rejects.toThrow();
+  // 同一目标换 activity 也不能重建一次性预算，失败事务不能启用新活动。
+  const nextTag = "measurementsecond", nextActivity = `activity-${nextTag}`;
+  const nextRegistered = await registration.register({ claims: claimsOf(proof(nextTag, {
+    type: "approved-service", scope: "enable", paidCallsAllowed: 1, activityId: nextActivity, document,
+    model: tariff.model, endpoint, accountRef: "synthetic-sensenova-account", priceRevision: tariff.revision,
+    approval: { taskId: "synthetic-new-approval", version: 4, action: "accept", auditId: "audit:measurementsecond", reviewer: "synthetic-reviewer", digest: digest(`configuration:${nextTag}:jti-${nextTag}`) },
+  })), operator: "synthetic-operator", reason: "换活动受审登记" });
+  const nextEvidence = await registration.submitEvidence({ activity: nextActivity, revision: nextRegistered.revision, document, operator: "synthetic-operator", reason: "换活动证据" });
+  await expect(registration.enable({ activity: nextActivity, revision: nextEvidence.revision, measurementCycle: true, operator: "synthetic-operator", reason: "换活动不可重置预算", runtime })).rejects.toThrow("登记事务未确认");
+  expect((await gate.store.activity(nextActivity))?.enabled).toBe(false);
+  expect(await gate.store.measurementCycle()).toEqual(cycle);
+  // 进程对象重建也不能重置次数。
+  expect((await new InternalAiStore(async () => db!).measurementCycle())?.attempts).toBe(30);
+  expect(rows(await db.query("SELECT * FROM ONLY $id", { id: new RecordId("internal_ai_target", GOAL) }))[0]?.attempts).toBe(30);
+  await db.use({ namespace: "registration_test", database: "_system" });
+}, 30000);

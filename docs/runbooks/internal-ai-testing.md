@@ -86,3 +86,21 @@ RocksDB tests覆盖多连接及两个独立客户端进程并发、真实服务�
 035迁移仅新增表/字段/索引，不回填或改写生产数据。036 迁移为 internal_ai_activity/internal_ai_revision 追加配额型证据字段（evidence_kind、plan_*、quota_*、no_payment_instrument、balance_source），并把 revision.currency 放宽为可空（USD-only 旧行值不变）；同样只新增、不回填或删除既有数据。公开pin由 `ops_internal_ai_trust` 核对，轮换须代码发布。当前生产公网状态发布面未配置（本轮ops_info读回），本轮也未取得真实SenseNova财务/价目资料：`unsupported`、`dataReady=false`、`paidCallsAllowed=0`。上线链须先核定公司公开状态地址，再按runbook通过CI设 `ORIGIN_ENV_INTERNAL_AI_COMPANY_STATUS_URL`；缺地址可安全部署身份只读端点，登记/启用继续拒绝。真实prove/deliver/revoke/expiry/status公网实测归部署后的独立QA，不以合成fixture代替。
 
 所有本地证明、余额及OpenAI正向启用均为隔离公司fork合成fixture，未替换生产SenseNova，未调用任何真实模型。回退仍按上文先关闭已有灰度并确认新旧run/续跑拒绝，保留所有历史和预留。
+
+
+## 一次性复测周期（f3974e8f）
+
+037 迁移只新增 `internal_ai_measurement_cycle` 与 attempt 的可空 `measurement_cycle`；不回填、不覆盖旧 30 条账本，也不改旧活动/目标计数约束。新周期固定 ID 为任务 `f3974e8f-4c4d-41e2-af63-e4de68ea5f91`，追加最多 30 次（GM 批准上界 40 的收紧，且取该活动受审 attempt_limit，不放宽更小的预算），仅限 `ws_ddad14a98469`、`sensenova-token-plan-2026-10-10` 零费率证书。一次底层 model step 消耗一次，并非一个业务 run 固定只耗一次；uncertain 仍占次数。零费率不能推导配额余额。
+
+部署腿按以下顺序准备并留证，本实现腿不产生供应商财务/配额事实：
+
+1. 通过 `ops_info`、`ops_login` 与成员工具确认/复用 `sck-fv05-retest-01`，核对数据库为 `ws_ddad14a98469`。确认 LCA04_REMOVABLE 是该 workspace 的 admin/计费 owner，LCA04_MEMBER 是 participant/计费 member。不得把这些角色靠自填 proof 改成事实。若现有身份已经绑定别的活动，使用本 workspace 的新受审 activityId；不得覆盖旧绑定或撤销记录。
+2. 运维协调取得当前真实服务账户的 reviewed-token-plan 采样文档，记录采样来源、账户脱敏引用、采样时刻、计划官方出处、额度与剩余额度（无法核定时 nullable，不能伪造）、无支付方式与自动充值停用事实。使用 shared 的 reviewedEvidenceSchema，UTF-8 SHA256 必须与公司签名 documentHash 一致；expiresAt > sampledAt 且窗口 <=24h。此供应商是零费率配额计划，不以 USD 余额文档替代。
+3. 使用公司代理 `ops_internal_ai_prepare/prove/deliver` 的既有 manifest/文档契约，取得新独立批准引用并签发 approved-service proof。manifest 的 workspaceSlug 指向复测 workspace，priceRevision 使用上述证书，budget.maxAttempts <=30、autoTopupDisabled=true；身份来自正常 OIDC 权威投影。证明、状态 bearer、原始账号资料不写证据。登记先 disabled，之后通过 evidence 路由提交同一受审文档。
+4. 若 deliver 已自动启用活动，先用既有 disable 路由产生 disabled revision（不做模型调用）。读回当前 disabled revision，在 proof 与公司状态仍有效时，用运营会话调用 `POST /api/ops/internal-ai/activities/<id>/enable`，body 为 `{revision, reason, measurementCycle:true}`。活动启用、周期建立、revision 审计同事务提交。所有既有服务批准/实时状态/证据/runtime/身份门禁继续生效。未取得真实材料必须保持 disabled。
+5. 读回 GET activities/<id>：measurementCycle 中有 attempts、attempt_limit、approval_revision、enabled_revision（创建周期的不可变审计版本）、evidence_hash、expires_at；target.attempts 与 attemptsUsed 保留旧周期语义，cumulativeAttempts/cumulativeAttemptsUsed 包含新周期。账本条目 measurementCycle 标记新周期，sequence 延续该活动旧记录；分页 nextAfter 规则不变。
+6. QA 先快照旧 30 条记录，再以绑定主体执行一次真实调用，确认新 attempt 带实际 usage，按既有 settled/uncertain 语义记成本（缺 usage 不能当作已核定零成本），并逐条对比旧记录。未绑定 run 不能取得本周期预留，撤销身份、过期证据、disabled 活动、非本证书/非零预留均拒绝。普通从未参与内部活动的客户仍遵循既有非计量路径，不把它误当内部受测身份。
+
+周期由全目标唯一固定记录控制，换 run/key/activity 不能加预算；重复 enable 不重置次数、不续期、不改变 documentHash/approvalRevision。首次周期绑定的文档到期后该周期停止，新的批准或证据不能复活/重新分配该周期，需要另行受审交付。并发数据库冲突可能由 SDK 只返回 NotExecuted；保留既有 fail-closed 行为，不把未知提交当作可安全重发。自动重试 provider 仍为 0。
+
+回退：通过既有 disable 路由禁用复测活动并读回；保留新旧 attempt、周期计数和 revision。代码回滚后旧目标 30 次上限会拒绝继续调用，不删除 037 新结构。无需新增环境变量或主机停写迁移。
