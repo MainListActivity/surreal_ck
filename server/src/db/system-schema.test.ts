@@ -138,8 +138,8 @@ describe("system schema seed", () => {
     const secondRun = await ensureSystemSchema(db, { namespace: "main" });
 
     expect(secondRun).toEqual({
-      fromVersion: 37,
-      toVersion: 37,
+      fromVersion: 38,
+      toVersion: 38,
       appliedVersions: [],
     });
     expect(db.queryCalls.slice(callsAfterFirstRun).map((call) => call.sql.trim())).toEqual([
