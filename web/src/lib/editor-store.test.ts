@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { StringRecordId } from "surrealdb";
 import type { SurrealConn, LiveMessage } from "./surreal";
 import { createEditorStore, type EditorSnapshot } from "./editor-store";
+import type { RecordWriteProposal, RowPatchProposal } from "@surreal-ck/shared/dto";
+import { createRowPatchCard, type RowPatchResumeDecision } from "./row-patch-card";
 
 /** sheet 记录形态（column_defs 是 stored field def）。 */
 function sheetRecord(over: Record<string, unknown> = {}) {
@@ -23,6 +25,7 @@ type Recorder = {
   updates: Array<{ id: string; patch: Record<string, unknown> }>;
   creates: Array<{ table: string; data: Record<string, unknown> }>;
   deletes: string[];
+  transactions: number;
   live: ((msg: LiveMessage) => void) | null;
 };
 
@@ -37,14 +40,15 @@ function setup(opts: {
   workbookTemplateRef?: string;
   updateThrows?: unknown;
 } = {}) {
-  const rec: Recorder = { queries: [], updates: [], creates: [], deletes: [], live: null };
+  const rec: Recorder = { queries: [], updates: [], creates: [], deletes: [], transactions: 0, live: null };
   const sheets = opts.sheets ?? [sheetRecord()];
   const rows = opts.rows ?? [];
   let createSeq = 0;
 
-  const conn = {
+  const conn: SurrealConn = {
     status: "connected",
     connect: async () => true,
+    authenticate: async () => ({}),
     use: async () => ({}),
     close: async () => true,
     subscribe: () => () => {},
@@ -57,6 +61,10 @@ function setup(opts: {
       }];
       return rows;
     }) as SurrealConn["query"],
+    queryRaw: async (sql: string) => {
+      rec.queries.push({ sql, bindings: undefined });
+      return [];
+    },
     liveTable: (async (_table: string, onMessage: (m: LiveMessage) => void) => {
       rec.live = onMessage;
       return () => {};
@@ -75,8 +83,11 @@ function setup(opts: {
       rec.deletes.push(id);
       return {};
     }) as SurrealConn["deleteRecord"],
-    transaction: (async (run: (tx: SurrealConn) => Promise<unknown>) => run(conn)) as SurrealConn["transaction"],
-  } as SurrealConn;
+    transaction: (async (run: (tx: SurrealConn) => Promise<unknown>) => {
+      rec.transactions += 1;
+      return run(conn);
+    }) as SurrealConn["transaction"],
+  };
 
   const snapshots: EditorSnapshot[] = [];
   const store = createEditorStore({
@@ -361,19 +372,21 @@ describe("reset — 切 workspace 时清空并退订 LIVE", () => {
 
 function setupWithUnsub(onUnsub: () => void) {
   const sheets = [sheetRecord()];
-  const conn = {
+  const conn: SurrealConn = {
     status: "connected",
     connect: async () => true,
+    authenticate: async () => ({}),
     use: async () => ({}),
     close: async () => true,
     subscribe: () => () => {},
     query: (async (sql: string) => (/FROM sheet/i.test(sql) ? sheets : [])) as SurrealConn["query"],
+    queryRaw: async () => [],
     liveTable: (async () => onUnsub) as SurrealConn["liveTable"],
     updateRecord: (async (_id: string, patch: Record<string, unknown>) => patch) as SurrealConn["updateRecord"],
     createRecord: (async (_t: string, data: Record<string, unknown>) => data) as SurrealConn["createRecord"],
     deleteRecord: (async () => ({})) as SurrealConn["deleteRecord"],
     transaction: (async (run: (tx: SurrealConn) => Promise<unknown>) => run(conn)) as SurrealConn["transaction"],
-  } as SurrealConn;
+  };
   const store = createEditorStore({ getConn: () => conn });
   return { store, conn };
 }
@@ -486,3 +499,214 @@ describe("addField / removeFieldByKey / reorderFields — 字段编排入口", (
     expect(rec.updates.length).toBe(before + 1);
   });
 });
+
+describe("writeRecordPatch / writeRecordProposal — 提案 values 字段名归一", () => {
+  test("values 用列 label 时按当前列定义归一到存储 key 再写库", async () => {
+    const { store, rec } = setup({
+      sheets: [sheetRecord({
+        column_defs: [
+          { key: "field_1", label: "标题", field_type: "text" },
+          { key: "field_2", label: "状态", field_type: "single_select" },
+        ],
+      })],
+      rows: [{ id: "ent_items:m1", field_1: "甲", field_2: "在职" }],
+    });
+    await store.loadWorkbook("workbook:wb1");
+
+    const ok = await store.writeRecordPatch("sheet:s1", "ent_items:m1", { 状态: "离职" });
+
+    expect(ok).toEqual({ ok: true });
+    expect(rec.updates).toEqual([{ id: "ent_items:m1", patch: { field_2: "离职" } }]);
+  });
+
+  test("精确 key 优先：不会被其他列的同名 label 劫持", async () => {
+    const { store, rec } = setup({
+      sheets: [sheetRecord({
+        column_defs: [
+          { key: "field_1", label: "标题", field_type: "text" },
+          { key: "field_2", label: "field_1", field_type: "text" },
+        ],
+      })],
+      rows: [{ id: "ent_items:m1", field_1: "甲", field_2: "乙" }],
+    });
+    await store.loadWorkbook("workbook:wb1");
+
+    expect(await store.writeRecordPatch("sheet:s1", "ent_items:m1", { field_1: "新标题" })).toEqual({ ok: true });
+    expect(rec.updates).toEqual([{ id: "ent_items:m1", patch: { field_1: "新标题" } }]);
+  });
+
+  test("唯一 label 可归一，重复 label 拒绝且不调用数据库", async () => {
+    const { store, rec } = setup({
+      sheets: [sheetRecord({
+        column_defs: [
+          { key: "field_1", label: "标题", field_type: "text" },
+          { key: "field_2", label: "状态", field_type: "text" },
+        ],
+      })],
+      rows: [{ id: "ent_items:m1", field_1: "甲", field_2: "乙" }],
+    });
+    await store.loadWorkbook("workbook:wb1");
+
+    expect(await store.writeRecordPatch("sheet:s1", "ent_items:m1", { 状态: "新状态" })).toEqual({ ok: true });
+    expect(rec.updates).toEqual([{ id: "ent_items:m1", patch: { field_2: "新状态" } }]);
+
+    const ambiguous = setup({
+      sheets: [sheetRecord({
+        column_defs: [
+          { key: "field_1", label: "重复", field_type: "text" },
+          { key: "field_2", label: "重复", field_type: "text" },
+        ],
+      })],
+      rows: [{ id: "ent_items:m1", field_1: "甲", field_2: "乙" }],
+    });
+    await ambiguous.store.loadWorkbook("workbook:wb1");
+    expect(await ambiguous.store.writeRecordPatch("sheet:s1", "ent_items:m1", { 重复: "不确定" })).toMatchObject({ ok: false });
+    expect(ambiguous.rec.updates).toEqual([]);
+  });
+
+  test("key 与 label 归一到同一目标时拒绝整个 proposal 写入", async () => {
+    const { store, rec } = setup({
+      sheets: [sheetRecord({
+        column_defs: [
+          { key: "field_1", label: "标题", field_type: "text" },
+          { key: "field_2", label: "状态", field_type: "text" },
+        ],
+      })],
+      rows: [{ id: "ent_items:m1", field_1: "甲", field_2: "乙" }],
+    });
+    await store.loadWorkbook("workbook:wb1");
+
+    expect(await store.writeRecordProposal(
+      { type: "record-write-proposal", operation: "update", sheetId: "sheet:s1", recordId: "ent_items:m1", proposals: [] },
+      { field_1: "按 key", 标题: "按 label" },
+    )).toMatchObject({ ok: false });
+    expect(rec.updates).toEqual([]);
+  });
+
+  test("record-write-proposal update：label/key 混合 values 统一归一到存储 key", async () => {
+    const { store, rec } = setup({
+      sheets: [sheetRecord({
+        column_defs: [
+          { key: "field_1", label: "标题", field_type: "text" },
+          { key: "field_2", label: "状态", field_type: "single_select" },
+        ],
+      })],
+      rows: [{ id: "ent_items:m1", field_1: "甲", field_2: "在职" }],
+    });
+    await store.loadWorkbook("workbook:wb1");
+
+    const ok = await store.writeRecordProposal(
+      { type: "record-write-proposal", operation: "update", sheetId: "sheet:s1", recordId: "ent_items:m1", proposals: [] },
+      { 状态: "离职", field_1: "乙" },
+    );
+
+    expect(ok).toEqual({ ok: true });
+    expect(rec.updates).toEqual([{ id: "ent_items:m1", patch: { field_2: "离职", field_1: "乙" } }]);
+  });
+});
+
+// 三条公开写入路径共享同一语义，避免只测 helper 或单个入口掩盖误写。
+for (const mode of ["patch", "update", "create"] as const) {
+  describe(`提案字段安全写入 — ${mode}`, () => {
+    async function setupWrite() {
+      const h = setup({
+        sheets: [sheetRecord({ column_defs: [
+          { key: "field_1", label: "标题", field_type: "text" },
+          { key: "field_2", label: "status", field_type: "text" },
+          { key: "field_3", label: "field_1", field_type: "text" },
+          { key: "field_4", label: "重复", field_type: "text" },
+          { key: "field_5", label: "重复", field_type: "text" },
+        ] })],
+        rows: [{ id: "ent_items:m1", field_1: "旧标题", field_2: "旧状态", field_3: "未接受" }],
+      });
+      await h.store.loadWorkbook("workbook:wb1");
+      const proposal: RecordWriteProposal = {
+        type: "record-write-proposal",
+        operation: mode === "create" ? "create" : "update",
+        sheetId: "sheet:s1",
+        ...(mode === "create" ? {} : { recordId: "ent_items:m1" }),
+        proposals: [],
+      };
+      const queriesBefore = h.rec.queries.length;
+      const transactionsBefore = h.rec.transactions;
+      return {
+        ...h,
+        proposal,
+        write: (values: Record<string, unknown>) => mode === "patch"
+          ? h.store.writeRecordPatch("sheet:s1", "ent_items:m1", values)
+          : h.store.writeRecordProposal(proposal, values),
+        expectNoDatabaseCalls: () => {
+          expect(h.rec.queries).toHaveLength(queriesBefore);
+          expect(h.rec.transactions).toBe(transactionsBefore);
+          expect(h.rec.updates).toEqual([]);
+          expect(h.rec.creates).toEqual([]);
+          expect(h.rec.deletes).toEqual([]);
+        },
+        expectWritten: (values: Record<string, unknown>) => {
+          if (mode === "create") {
+            expect(h.rec.creates).toEqual([{ table: "ent_items", data: values }]);
+            expect(h.rec.updates).toEqual([]);
+          } else {
+            expect(h.rec.updates).toEqual([{ id: "ent_items:m1", patch: values }]);
+            expect(h.rec.creates).toEqual([]);
+          }
+          expect(h.rec.deletes).toEqual([]);
+        },
+      };
+    }
+
+    test("精确 key 不被另一列 label 劫持", async () => {
+      const h = await setupWrite();
+      expect(await h.write({ field_1: "新标题" })).toEqual({ ok: true });
+      h.expectWritten({ field_1: "新标题" });
+    });
+
+    test("唯一 status label 归一到 field_2", async () => {
+      const h = await setupWrite();
+      expect(await h.write({ status: "已完成" })).toEqual({ ok: true });
+      h.expectWritten({ field_2: "已完成" });
+    });
+
+    test("重复 label 与合法字段混合时整次拒绝，数据库零调用", async () => {
+      const h = await setupWrite();
+      expect(await h.write({ field_2: "合法值", 重复: "歧义值" })).toMatchObject({ ok: false });
+      h.expectNoDatabaseCalls();
+    });
+
+    for (const labelFirst of [false, true]) {
+      test(`key/label 混合目标冲突整次拒绝，数据库零调用（labelFirst=${labelFirst}）`, async () => {
+        const h = await setupWrite();
+        const conflict: Record<string, unknown> = labelFirst
+          ? { 标题: "按 label", field_1: "按 key" }
+          : { field_1: "按 key", 标题: "按 label" };
+        expect(await h.write({ field_2: "合法值", ...conflict })).toMatchObject({ ok: false });
+        h.expectNoDatabaseCalls();
+      });
+    }
+
+    test("真实确认卡经公开接口：确认前零写入，部分确认仅写接受的字段", async () => {
+      const h = await setupWrite();
+      const proposals: RecordWriteProposal["proposals"] = [
+        { field: "field_1", currentValue: "旧标题", suggestedValue: "已接受标题", basis: "用户确认", confidence: "high" },
+        { field: "status", currentValue: "旧状态", suggestedValue: "不应写入", basis: "用户忽略", confidence: "high" },
+      ];
+      const proposal: RowPatchProposal | RecordWriteProposal = mode === "patch"
+        ? { type: "row-patch-proposal", sheetId: "sheet:s1", recordId: "ent_items:m1", proposals }
+        : { ...h.proposal, proposals };
+      const resumes: RowPatchResumeDecision[] = [];
+      const card = createRowPatchCard({
+        proposal,
+        write: h.write,
+        resume: async (decision) => { resumes.push(decision); },
+      });
+      h.expectNoDatabaseCalls();
+      card.setAccepted("status", false);
+      h.expectNoDatabaseCalls();
+      expect(resumes).toEqual([]);
+      await card.confirm();
+      h.expectWritten({ field_1: "已接受标题" });
+      expect(card.snapshot().status).toBe("done");
+      expect(resumes).toEqual([{ kind: "write-confirmed" }]);
+    });
+  });
+}

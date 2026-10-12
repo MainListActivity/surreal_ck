@@ -398,6 +398,46 @@ export function createEditorStore(deps: EditorDeps) {
     }
   }
 
+  /**
+   * 提案 values 的 key 可能是模型照抄的列 label 而非存储 key（恢复出的旧卡仍可能如此）。
+   * 存储 key 始终优先；只有唯一 label 才能归一。归一后的目标键若发生碰撞，
+   * 在调用数据库前拒绝整次写入，避免静默覆盖或丢值。
+   */
+  function remapProposalValuesToFieldKeys(
+    values: Record<string, unknown>,
+  ): { ok: true; values: Record<string, unknown> } | { ok: false; message: string } {
+    const fieldKeys = new Set(state.columns.map((column) => column.key));
+    const labelToKeys = new Map<string, string[]>();
+    for (const column of state.columns) {
+      if (!column.label || column.label === column.key) continue;
+      const keys = labelToKeys.get(column.label) ?? [];
+      keys.push(column.key);
+      labelToKeys.set(column.label, keys);
+    }
+
+    const next: Record<string, unknown> = {};
+    let changed = false;
+    const sourcesByTarget = new Map<string, string>();
+    for (const [field, value] of Object.entries(values)) {
+      let key = field;
+      if (!fieldKeys.has(field)) {
+        const matches = labelToKeys.get(field);
+        if (matches?.length === 1) key = matches[0];
+        else if (matches && matches.length > 1) {
+          return { ok: false, message: `字段 label「${field}」存在歧义，已拒绝写入。` };
+        }
+      }
+      const previousSource = sourcesByTarget.get(key);
+      if (previousSource !== undefined) {
+        return { ok: false, message: `字段「${previousSource}」与「${field}」归一后目标相同，已拒绝写入。` };
+      }
+      if (key !== field) changed = true;
+      sourcesByTarget.set(key, field);
+      next[key] = value;
+    }
+    return { ok: true, values: changed ? next : values };
+  }
+
   /** AI 提案与手工编辑共用活动数据表运行时，不再根据物理表名另开写入路径。 */
   async function writeRecordPatch(
     sheetId: string,
@@ -407,7 +447,9 @@ export function createEditorStore(deps: EditorDeps) {
     if (sheetId !== state.activeSheetId || !runtime) {
       return { ok: false, message: "提案对应的数据表当前未打开，请打开该数据表后重试。" };
     }
-    const ok = await saveRows([{ id: recordId, values }]);
+    const mapped = remapProposalValuesToFieldKeys(values);
+    if (!mapped.ok) return mapped;
+    const ok = await saveRows([{ id: recordId, values: mapped.values }]);
     return ok ? { ok: true } : { ok: false, message: state.saveError ?? "记录写入失败" };
   }
 
@@ -422,10 +464,12 @@ export function createEditorStore(deps: EditorDeps) {
     if (proposal.operation === "update" && !proposal.recordId) {
       return { ok: false, message: "更新提案缺少目标记录。" };
     }
+    const mapped = remapProposalValuesToFieldKeys(values);
+    if (!mapped.ok) return mapped;
     const ok = await saveRows([
       proposal.operation === "update"
-        ? { id: proposal.recordId, values }
-        : { values },
+        ? { id: proposal.recordId, values: mapped.values }
+        : { values: mapped.values },
     ]);
     return ok ? { ok: true } : { ok: false, message: state.saveError ?? "记录写入失败" };
   }

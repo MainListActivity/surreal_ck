@@ -18,7 +18,8 @@ import type { ContentResearchSessionFactory } from "../research/window";
 import type { OpenContentResearchSession } from "../../ai/mastra/workflows/router-workflow";
 import { claimResumeWindow } from "../research/resume-window";
 import { ChatDeliveryStore, authorizeDelivery, requestDigest, type DeliveryPlatformVerifier } from "../ai/delivery-store";
-import type { AiDeliveryProof, ChatStreamEvent, SessionUser } from "@surreal-ck/shared";
+import { loadSuspendedRunDecision } from "../ai/suspend-recovery";
+import type { AiDeliveryProof, ChatStreamEvent, SessionUser, WorkflowSuspendedEvent } from "@surreal-ck/shared";
 import type { RunRegistry } from "../ai/run-registry";
 import { createRolloutGateChecker, type RolloutGateChecker } from "../rollout/gate-check";
 
@@ -239,7 +240,8 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
       },
     };
   }
-  async function recoverRun(session: Surreal, runId: string, user: AppBindings["Variables"]["user"]) {
+  async function recoverRun(session: Surreal, runId: string, user: AppBindings["Variables"]["user"]):
+    Promise<{ runId: string; streamUrl: string; streamToken: string; result?: Extract<ChatStreamEvent, { kind: "done" }>; suspended?: WorkflowSuspendedEvent }> {
     const row = await deps.deliveries!.read(session, runId);
     if (row.status === "complete") {
       const payload = deps.deliveries!.decrypt(row, workspaceDb(user)!, user.subject);
@@ -250,6 +252,20 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
       return { runId, streamUrl: `/api/chat/stream?runId=${runId}`, streamToken: "", result: payload.event };
     }
     if (row.status !== "running" || !deps.registry.get(runId)) {
+      if (row.status === "suspended") {
+        // suspended run 的等待决策载荷在 workflow_run 持久态里：还原给前端重渲染确认卡；
+        // 已被 resume 且仍在执行窗内时改为重挂 stream。决策仍走 resume 契约，不自动写入。
+        const decision = await loadSuspendedRunDecision(session, runId);
+        if (decision?.suspended) {
+          await authorizeDelivery(session, [], platformVerifier(user));
+          return { runId, streamUrl: "", streamToken: "", suspended: decision.suspended };
+        }
+        if (decision?.status === "running" && deps.registry.get(runId)) {
+          await authorizeDelivery(session, [], platformVerifier(user));
+          const { streamToken } = registerRun(runId, user);
+          return { runId, streamUrl: `/api/chat/stream?runId=${runId}`, streamToken };
+        }
+      }
       if (row.status === "running") {
         await deps.deliveries!.status(session, runId, "failed");
         const db = workspaceDb(user);

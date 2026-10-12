@@ -186,6 +186,19 @@ async function resolveRecordResourcesViaSession(
   };
 }
 
+/**
+ * 提案 field 归一：模型有时照抄列 label 而非存储 key（QA 曾报 status/field_2 不一致）。
+ * key 精确命中原样返回；label 唯一命中归一到 key；歧义或未知返回 undefined（丢弃）。
+ */
+function normalizeProposalFieldKey(
+  field: string,
+  fields: ReadonlyArray<Pick<GridColumnDef, "key" | "label">>,
+): string | undefined {
+  if (fields.some((item) => item.key === field)) return field;
+  const byLabel = fields.filter((item) => item.label === field);
+  return byLabel.length === 1 ? byLabel[0]!.key : undefined;
+}
+
 function buildRowPatchProposal(input: {
   sheetId: string;
   recordId: string;
@@ -204,10 +217,11 @@ function buildRowPatchProposal(input: {
     sheetId: input.sheetId,
     recordId: input.recordId,
     proposals: input.suggestions
-      .filter((suggestion) => editableFields.has(suggestion.field))
-      .map((suggestion) => ({
-        field: suggestion.field,
-        currentValue: input.values[suggestion.field],
+      .map((suggestion) => ({ suggestion, key: normalizeProposalFieldKey(suggestion.field, input.fields) }))
+      .filter((entry): entry is { suggestion: RowSuggestion; key: string } => !!entry.key && editableFields.has(entry.key))
+      .map(({ suggestion, key }) => ({
+        field: key,
+        currentValue: input.values[key],
         suggestedValue: suggestion.suggestedValue,
         basis: suggestion.basis,
         confidence: suggestion.confidence,
@@ -264,16 +278,55 @@ export const proposeRecordWriteTool = createTool({
     }
   }),
   outputSchema: RecordWriteProposalIntentSchema,
-  execute: async (input) => ({
-    intent: {
-      type: "record-write-proposal" as const,
-      operation: input.operation,
-      sheetId: input.sheetId,
-      ...(input.recordId ? { recordId: input.recordId } : {}),
-      proposals: input.proposals,
-    } satisfies RecordWriteProposal,
-  }),
+  execute: async (input, ctx) => {
+    // 有调用者 session 时按 sheet.column_defs 归一提案字段名（label→存储 key、丢弃未知字段）；
+    // session/列定义不可用时保持透传（不引入强制 DB 依赖）。
+    const fields = await resolveProposalFieldDefs(input.sheetId, ctx as ToolRequestContext);
+    const proposals = fields
+      ? input.proposals.flatMap((item) => {
+          const key = normalizeProposalFieldKey(item.field, fields);
+          return key ? [{ ...item, field: key }] : [];
+        })
+      : input.proposals;
+    return {
+      intent: {
+        type: "record-write-proposal" as const,
+        operation: input.operation,
+        sheetId: input.sheetId,
+        ...(input.recordId ? { recordId: input.recordId } : {}),
+        proposals,
+      } satisfies RecordWriteProposal,
+    };
+  },
 });
+
+/**
+ * 读 sheet.column_defs 供提案字段归一。无调用者 session 或列定义缺失返回 undefined；
+ * 存储形状是 field_type 蛇形键，归一化只依赖 key/label。
+ */
+async function resolveProposalFieldDefs(
+  sheetId: string,
+  ctx: ToolRequestContext,
+): Promise<GridColumnDef[] | undefined> {
+  let session: Surreal;
+  try {
+    session = getSurrealSession(ctx);
+  } catch {
+    return undefined;
+  }
+  const result = await session.query(`SELECT column_defs FROM $sheet LIMIT 1`, {
+    sheet: new StringRecordId(sheetId),
+  });
+  const row = firstStatementRows<{ column_defs?: unknown }>(result)[0];
+  const raw = Array.isArray(row?.column_defs) ? row.column_defs : [];
+  const defs = raw.flatMap((item) => {
+    const key = (item as { key?: unknown })?.key;
+    return typeof key === "string" && key.length > 0
+      ? [{ key, label: String((item as { label?: unknown })?.label ?? "") } as GridColumnDef]
+      : [];
+  });
+  return defs.length > 0 ? defs : undefined;
+}
 
 const FetchRelatedRecordsOutputSchema = z.object({
   source: z.enum(["record-resources", "related-records"]),

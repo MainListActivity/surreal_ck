@@ -660,3 +660,44 @@ test("LCA07：研究暂停跨进程恢复重新开窗口，快照不含证据文
   expect(persisted).not.toContain("surrealSession");
   expect(opens).toBe(3);
 });
+
+
+test("PG-1：真实持久化快照经 loadSuspendedRunDecision 还原 await-write-confirm 决策卡", async () => {
+  workflowRows.clear();
+  const { loadSuspendedRunDecision } = await import("../../../src/ai/suspend-recovery");
+  const proposal = {
+    type: "record-write-proposal" as const,
+    operation: "create" as const,
+    sheetId: "sheet:tasks",
+    proposals: [
+      { field: "task_name", currentValue: null, suggestedValue: "补充送货签收单", basis: "材料记录标记为缺失", confidence: "high" as const },
+    ],
+  };
+  const executors: SubAgentExecutors = {
+    navigation: async () => ({ text: "", confirmed: {} }),
+    dashboard: async () => ({ text: "", confirmed: {} }),
+    "row-analysis": async () => ({
+      text: "已生成待办写入提案，等待确认。",
+      confirmed: {},
+      suspend: { kind: "await-write-confirm", intent: proposal },
+    }),
+    chitchat: async () => ({ text: "", confirmed: {} }),
+  };
+  const run = await buildMastra().getWorkflow(ROUTER_WORKFLOW_ID).createRun();
+  const rc = new RequestContext();
+  rc.set(ROUTER_RUNTIME_KEY, makeRuntime({ executors, llmCaller: async () => "[]",
+    planOverride: [{ category: "row-analysis", taskText: "提出补全建议" }] }));
+  expect((await run.start({ inputData: { text: "提出补全建议" }, requestContext: rc })).status).toBe("suspended");
+
+  // 模拟 recover 端点：用调用者 session 读 workflow_run 行 → 还原 suspend 决策载荷。
+  const stored = workflowRows.get(run.runId)!;
+  const session = {
+    query: async (sql: string, params?: Record<string, unknown>) =>
+      sql.includes("FROM workflow_run") && params?.runId === run.runId ? [[stored]] : [[]],
+  };
+  const decision = await loadSuspendedRunDecision(session as never, run.runId);
+
+  expect(decision?.status).toBe("suspended");
+  expect(decision?.suspended).toMatchObject({ kind: "await-write-confirm", runId: run.runId, intent: proposal });
+  expect(WorkflowSuspendedEventSchema.safeParse(decision?.suspended).success).toBe(true);
+});
