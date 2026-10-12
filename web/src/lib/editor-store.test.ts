@@ -45,9 +45,10 @@ function setup(opts: {
   const rows = opts.rows ?? [];
   let createSeq = 0;
 
-  const conn = {
+  const conn: SurrealConn = {
     status: "connected",
     connect: async () => true,
+    authenticate: async () => ({}),
     use: async () => ({}),
     close: async () => true,
     subscribe: () => () => {},
@@ -60,6 +61,10 @@ function setup(opts: {
       }];
       return rows;
     }) as SurrealConn["query"],
+    queryRaw: async (sql: string) => {
+      rec.queries.push({ sql, bindings: undefined });
+      return [];
+    },
     liveTable: (async (_table: string, onMessage: (m: LiveMessage) => void) => {
       rec.live = onMessage;
       return () => {};
@@ -82,7 +87,7 @@ function setup(opts: {
       rec.transactions += 1;
       return run(conn);
     }) as SurrealConn["transaction"],
-  } as SurrealConn;
+  };
 
   const snapshots: EditorSnapshot[] = [];
   const store = createEditorStore({
@@ -367,19 +372,21 @@ describe("reset — 切 workspace 时清空并退订 LIVE", () => {
 
 function setupWithUnsub(onUnsub: () => void) {
   const sheets = [sheetRecord()];
-  const conn = {
+  const conn: SurrealConn = {
     status: "connected",
     connect: async () => true,
+    authenticate: async () => ({}),
     use: async () => ({}),
     close: async () => true,
     subscribe: () => () => {},
     query: (async (sql: string) => (/FROM sheet/i.test(sql) ? sheets : [])) as SurrealConn["query"],
+    queryRaw: async () => [],
     liveTable: (async () => onUnsub) as SurrealConn["liveTable"],
     updateRecord: (async (_id: string, patch: Record<string, unknown>) => patch) as SurrealConn["updateRecord"],
     createRecord: (async (_t: string, data: Record<string, unknown>) => data) as SurrealConn["createRecord"],
     deleteRecord: (async () => ({})) as SurrealConn["deleteRecord"],
     transaction: (async (run: (tx: SurrealConn) => Promise<unknown>) => run(conn)) as SurrealConn["transaction"],
-  } as SurrealConn;
+  };
   const store = createEditorStore({ getConn: () => conn });
   return { store, conn };
 }
