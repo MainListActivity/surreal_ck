@@ -24,6 +24,9 @@ export const COMPANY_PROOF_MAX_BYTES = 32_000;
 export const COMPANY_PROOF_GOAL = "2e2a6e41c1193595";
 export const COMPANY_PROOF_PROJECT = "surreal_ck";
 
+/** 供应商账户计划类型读回常量：reviewed-token-plan 文档只接受 FREE，非 FREE 值不过校验。 */
+export const TOKEN_PLAN_PLAN_TYPE_FREE = "TOKEN_PLAN_PLAN_TYPE_FREE";
+
 /** 固定 kid 与公钥 JWK。轮换只能改代码并发布，不允许 env 覆盖。 */
 export const COMPANY_PROOF_TRUST = {
   alg: COMPANY_PROOF_ALG,
@@ -145,26 +148,31 @@ const evidenceBase = {
   priceRevision: boundedRef,
   sampledAt: z.string().datetime(),
   expiresAt: z.string().datetime(),
-  autoTopupDisabled: z.literal(true),
   serviceApproved: z.boolean(),
 };
 const controlFreeText = (max: number) => z.string().min(1).max(max).refine(v => ![...v].some(ch => ch.charCodeAt(0) < 32 || ch.charCodeAt(0) == 127));
 /**
  * 受审证据文档（公司侧 evidenceSchema 的等价物），按 type 判别的冻结联合：
  * - development-disabled / reviewed-service：USD-only 余额契约，字段与历史逐字一致；
- * - reviewed-token-plan：配额型供应商（无 USD 现金价目/余额），用官方 Token Plan 出处与积分/次数
- *   配额表达可用性；绝不允许把配额换算成美元写余额字段，也不接受 FX/CNY/未知币种。
+ * - reviewed-token-plan（schemaVersion 2）：配额型供应商（无 USD 现金价目/余额），用官方 Token Plan
+ *   出处、积分/次数配额与账户计划类型读回表达可用性；绝不允许把配额换算成美元写余额字段，
+ *   也不接受 FX/CNY/未知币种。v1 的账户级断言（noPaymentInstrument/autoTopupDisabled）在供应商侧
+ *   无可核定来源已移除；账户是否零扣费改由 accountPlanType=FREE 读回 + 官方付费功能未上线
+ *   + 配额硬顶 + 零费率证书（worstCost=0）表达；auto_topup_disabled 由我方计量配置断言。
  */
 export const reviewedEvidenceSchema = z.discriminatedUnion("type", [
-  z.object({ ...evidenceBase, type: z.literal("development-disabled"), currency: z.literal("USD"), balanceNanoUsd: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER) }).strict(),
-  z.object({ ...evidenceBase, type: z.literal("reviewed-service"), currency: z.literal("USD"), balanceNanoUsd: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER) }).strict(),
+  z.object({ ...evidenceBase, type: z.literal("development-disabled"), autoTopupDisabled: z.literal(true), currency: z.literal("USD"), balanceNanoUsd: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER) }).strict(),
+  z.object({ ...evidenceBase, type: z.literal("reviewed-service"), autoTopupDisabled: z.literal(true), currency: z.literal("USD"), balanceNanoUsd: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER) }).strict(),
   z.object({
     ...evidenceBase,
+    schemaVersion: z.literal(2),
     type: z.literal("reviewed-token-plan"),
     /** 官方计划名（如 SenseNova Token Plan 公测档）：非空短文本，禁控制字符。 */
     planName: controlFreeText(200),
     /** 计划官方出处 URL（https、无 userinfo/port/query/hash）。 */
     planSourceUrl: httpsSource,
+    /** 供应商账户计划类型读回值：仅接受 FREE 常量，非 FREE 即拒绝，不放宽为任意字符串。 */
+    accountPlanType: z.literal(TOKEN_PLAN_PLAN_TYPE_FREE),
     /** 配额单位：积分点或请求次数；无 USD 语义。 */
     quotaUnit: z.enum(["points", "requests"]),
     /** 滚动窗口内的配额总量，必须为正整数。 */
@@ -173,8 +181,6 @@ export const reviewedEvidenceSchema = z.discriminatedUnion("type", [
     quotaWindowSeconds: z.number().int().positive(),
     /** 采样时剩余配额；可空（官方只读接口未核定时不得臆造），存在时必须非负。 */
     quotaRemaining: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable(),
-    /** 账户无任何支付方式绑定：字面 true，缺省/臆造即拒。 */
-    noPaymentInstrument: z.literal(true),
   }).strict(),
 ]);
 export type ReviewedEvidence = z.infer<typeof reviewedEvidenceSchema>;
@@ -205,6 +211,6 @@ export const companyProofGapSchema = z.array(z.enum([
   // 配额型证据（reviewed-token-plan）专用缺口：替代 USD 余额三项检查，语义不互换。
   "quota-evidence",
   "quota-positive",
-  "payment-instrument-absent",
+  "account-plan-free",
 ]));
 export type CompanyProofGap = z.infer<typeof companyProofGapSchema>[number];

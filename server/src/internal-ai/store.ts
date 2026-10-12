@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { RecordId } from "surrealdb";
+import { TOKEN_PLAN_PLAN_TYPE_FREE } from "@surreal-ck/shared";
 import type { InternalScope } from "./context";
 import type { Usage, Tariff } from "./pricing";
 export type Queryable = { query(sql: string, vars?: Record<string, unknown>): Promise<unknown> };
@@ -10,7 +11,7 @@ export type MeasurementCycle = { activity: string; attempts: number; attempt_lim
 export const GOAL = "2e2a6e41c1193595";
 export const hash = (...parts: string[]) => createHash("sha256").update(JSON.stringify([GOAL, ...parts])).digest("hex");
 function rows<T>(result: unknown): T[] { const first: unknown = Array.isArray(result) ? result[0] : undefined; return Array.isArray(first) ? first as T[] : first && typeof first === "object" ? [first as T] : []; }
-export type Activity = { goal: string; enabled: boolean; total_limit: number; per_attempt_limit: number; attempt_limit: number; reserved: number; spent: number; attempts: number; approval_revision: string | null; evidence_expires_at: string | null; price_revisions: string[]; balance_nano_usd: number | null; balance_currency: string | null; balance_source: string | null; balance_sampled_at: string | null; balance_evidence_hash: string | null; auto_topup_disabled: boolean; service_approved: boolean; evidence_kind?: string | null; plan_name?: string | null; plan_source_url?: string | null; quota_unit?: string | null; quota_amount?: number | null; quota_window_seconds?: number | null; quota_remaining?: number | null; no_payment_instrument?: boolean | null };
+export type Activity = { goal: string; enabled: boolean; total_limit: number; per_attempt_limit: number; attempt_limit: number; reserved: number; spent: number; attempts: number; approval_revision: string | null; evidence_expires_at: string | null; price_revisions: string[]; balance_nano_usd: number | null; balance_currency: string | null; balance_source: string | null; balance_sampled_at: string | null; balance_evidence_hash: string | null; auto_topup_disabled: boolean; service_approved: boolean; evidence_kind?: string | null; plan_name?: string | null; plan_source_url?: string | null; quota_unit?: string | null; quota_amount?: number | null; quota_window_seconds?: number | null; quota_remaining?: number | null; no_payment_instrument?: boolean | null; account_plan_type?: string | null };
 export type Attempt = { id: RecordId; measurement_cycle?: string; sequence: number; retry_index: number; state: string; reserved: number; cost: number | null; run_hash: string; key_hash: string; logical_hash: string; stage: string; provider: string; model: string; actual_model: string | null; request_id: string | null; usage: Usage | null; usage_source: string; price_revision: string; currency: string; started_at: unknown; ended_at: unknown };
 export class InternalAiStore {
   constructor(private readonly db: () => Promise<Queryable>) {}
@@ -71,7 +72,7 @@ export class InternalAiStore {
           };
           IF $a.goal != $goal OR $a.enabled != true OR $a.service_approved != true OR $a.auto_topup_disabled != true OR $a.approval_revision = NONE OR $a.balance_evidence_hash = NONE OR string::len($a.balance_evidence_hash) != 64 OR $a.balance_source = NONE OR $a.balance_sampled_at = NONE OR $a.evidence_expires_at = NONE OR <datetime>$a.evidence_expires_at <= time::now() OR $revision NOT IN $a.price_revisions { THROW "internal-ai-evidence-unavailable"; };
           IF $a.evidence_kind = "reviewed-token-plan" {
-            IF $a.plan_name = NONE OR string::len($a.plan_name) = 0 OR $a.plan_source_url = NONE OR $a.quota_unit = NONE OR $a.quota_amount = NONE OR $a.quota_amount <= 0 OR $a.quota_window_seconds = NONE OR ($a.quota_remaining != NONE AND $a.quota_remaining <= 0) OR $a.no_payment_instrument != true OR $a.balance_nano_usd != NONE OR $a.balance_currency != NONE OR $a.balance_source != "token-plan:" + $a.balance_evidence_hash OR $amount != 0 { THROW "internal-ai-evidence-unavailable"; };
+            IF $a.plan_name = NONE OR string::len($a.plan_name) = 0 OR $a.plan_source_url = NONE OR $a.quota_unit = NONE OR $a.quota_amount = NONE OR $a.quota_amount <= 0 OR $a.quota_window_seconds = NONE OR ($a.quota_remaining != NONE AND $a.quota_remaining <= 0) OR $a.account_plan_type != $tokenPlanFree OR $a.balance_nano_usd != NONE OR $a.balance_currency != NONE OR $a.balance_source != "token-plan:" + $a.balance_evidence_hash OR $amount != 0 { THROW "internal-ai-evidence-unavailable"; };
           } ELSE {
             IF $a.balance_nano_usd = NONE OR $a.balance_nano_usd <= 0 OR $a.balance_currency != "USD" OR $a.balance_source != "reviewed-document:" + $a.balance_evidence_hash { THROW "internal-ai-evidence-unavailable"; };
           };
@@ -93,7 +94,7 @@ export class InternalAiStore {
             UPDATE ONLY $activity SET reserved += $amount, attempts += 1;
           };
           CREATE ONLY $attempt CONTENT { activity: $activity, sequence: $a.attempts + 1 + IF $measurement { $cycle.attempts } ELSE { 0 }, measurement_cycle: IF $measurement { $cycleName } ELSE { NONE }, retry_index: 0, run_hash: $run, key_hash: $key, logical_hash: $logical, stage: $stage, provider: $provider, model: $model, actual_model: NONE, request_id: NONE, reserved: $amount, cost: NONE, state: "reserved", usage: NONE, usage_source: "unknown", price_revision: $revision, currency: "USD", started_at: time::now(), ended_at: NONE };
-          COMMIT TRANSACTION;`, { activity, activityName: scope.activity, cycleId: new RecordId("internal_ai_measurement_cycle", MEASUREMENT_CYCLE), cycleName: MEASUREMENT_CYCLE, measurementPrice: MEASUREMENT_PRICE, measurementDatabase: MEASUREMENT_DATABASE, attempt, target: new RecordId("internal_ai_target", GOAL), goal: GOAL, revision: tariff.revision, amount, run: scope.runHash, key: scope.keyHash, logical: scope.logicalHash, stage, provider: tariff.provider, model: tariff.model });
+          COMMIT TRANSACTION;`, { activity, activityName: scope.activity, cycleId: new RecordId("internal_ai_measurement_cycle", MEASUREMENT_CYCLE), cycleName: MEASUREMENT_CYCLE, measurementPrice: MEASUREMENT_PRICE, measurementDatabase: MEASUREMENT_DATABASE, attempt, target: new RecordId("internal_ai_target", GOAL), goal: GOAL, revision: tariff.revision, amount, run: scope.runHash, key: scope.keyHash, logical: scope.logicalHash, stage, provider: tariff.provider, model: tariff.model, tokenPlanFree: TOKEN_PLAN_PLAN_TYPE_FREE });
         void result;
         const found = rows<Attempt>(await db.query("SELECT * FROM ONLY $attempt", { attempt }))[0];
         if (!found) throw new Error("internal-ai-reservation-unconfirmed");

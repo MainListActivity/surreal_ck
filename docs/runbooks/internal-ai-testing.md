@@ -38,7 +38,7 @@ Embedding在内部活动中发送前禁止（包括资源检索调用生成器�
 
 内部控制面通过专用运营路由消费公司可信证明，客户没有配置入口。配置由独立工程/运营评审的服务器控制面维护，必须保留审批证据与配置版本，绑定明确批准的内部账号+workspace；不得临时读取凭证或让QA绕 `_system` 写配置。需要运营代理登记配置时，由经理安排专用受审配置交付，不能用 `ops_query` 绕身份边界。没有资料就保持disabled与paidCallsAllowed=0。
 
-活动字段须同时具备固定goal、enabled、service_approved、approval_revision、匹配price_revisions、未到期evidence_expires_at、balance_sampled_at、余额/配额证据SHA256、auto_topup_disabled=true；余额型证据还须 USD 现有余额与 `balance_source=reviewed-document:<同SHA256>`，配额型（reviewed-token-plan）证据还须 `balance_source=token-plan:<同SHA256>`、planName/planSourceUrl/quotaUnit/quotaAmount/quotaWindowSeconds 齐全、quotaRemaining 存在时大于 0、noPaymentInstrument=true，且 USD 余额字段必须为 NONE（配额绝不折算美元）。这些是服务器审核资料的绑定，不是客户端自报余额。真实批准服务、证据内容真实性/账户绑定、官方当时价格、余额或配额采样和自动充值停用须由运营独立核查后进入受审配置；代码不会自动从key推导或伪造余额。本轮没有取得这些资料，也没有配置生产活动。
+活动字段须同时具备固定goal、enabled、service_approved、approval_revision、匹配price_revisions、未到期evidence_expires_at、balance_sampled_at、余额/配额证据SHA256、auto_topup_disabled=true；余额型证据还须 USD 现有余额与 `balance_source=reviewed-document:<同SHA256>`，配额型（reviewed-token-plan）证据还须 `balance_source=token-plan:<同SHA256>`、planName/planSourceUrl/account_plan_type/quotaUnit/quotaAmount/quotaWindowSeconds 齐全、account_plan_type 等于 `TOKEN_PLAN_PLAN_TYPE_FREE`、quotaRemaining 存在时大于 0，且 USD 余额字段必须为 NONE（配额绝不折算美元）。这些是服务器审核资料的绑定，不是客户端自报余额。真实批准服务、证据内容真实性/账户绑定、官方当时价格、余额或配额采样和自动充值停用须由运营独立核查后进入受审配置；代码不会自动从key推导或伪造余额。本轮没有取得这些资料，也没有配置生产活动。
 
 只读接口使用既有运营audience与实时 `subscription.manage` capability：
 
@@ -71,8 +71,8 @@ RocksDB tests覆盖多连接及两个独立客户端进程并发、真实服务�
 只用已有 `subscription.manage` 实时运营能力：
 
 - `POST /api/ops/internal-ai/company-proof` 接受公司代理实际 `{proof}` 信封（也可带 `reason`），固定 EdDSA/kid/JWK/issuer/audience/用途验签。真实 proof.type 是 `approved-service`，脱敏文档 type 是 `reviewed-service`（USD 余额）或 `reviewed-token-plan`（官方配额计划）。登记永远 disabled；双身份仅来自公司正常 OIDC 权威投影，不接受 caller subject。
-- `POST /api/ops/internal-ai/activities/:id/evidence`：`{revision, document, reason}`；文档 UTF-8 SHA256 必须与已签 documentHash 相同，严格受审证据 schema（USD-only 余额型 `development-disabled`/`reviewed-service`，或配额型 `reviewed-token-plan`）、服务账户/endpoint/模型/priceRevision 对齐。配额型字段：planName、planSourceUrl（官方出处 https）、quotaUnit(points|requests)、quotaAmount>0、quotaWindowSeconds>0、quotaRemaining 可空（存在时须>0才无缺口）、noPaymentInstrument=true。正文不入库。每次新增审计 revision 并禁用活动。
-- `POST /api/ops/internal-ai/activities/:id/enable`：`{revision, reason}`；仅最新 disabled revision、真实独立批准、过去采样/最多24小时资料窗口、停自动充值、服务批准、精确当前 provider/endpoint/model 和受审价目版本均齐全才可启用；余额型要求正 USD 余额，配额型要求有效配额字段且无 USD 余额/支付方式/自动充值。未知币种/FX 仍拒绝；TokenPlan 只能以 reviewed-token-plan 证据类型进入，配额绝不折算美元写余额。当前单账户契约无法证明Jev自己的余额/证书，Jev启用时也拒绝启用。
+- `POST /api/ops/internal-ai/activities/:id/evidence`：`{revision, document, reason}`；文档 UTF-8 SHA256 必须与已签 documentHash 相同，严格受审证据 schema（USD-only 余额型 `development-disabled`/`reviewed-service`，或配额型 `reviewed-token-plan`）、服务账户/endpoint/模型/priceRevision 对齐。配额型字段（schemaVersion 2）：planName、planSourceUrl（官方出处 https）、accountPlanType（仅接受供应商读回常量 `TOKEN_PLAN_PLAN_TYPE_FREE`）、quotaUnit(points|requests)、quotaAmount>0、quotaWindowSeconds>0、quotaRemaining 可空（存在时须>0才无缺口）。v1 的 noPaymentInstrument/autoTopupDisabled 账户级断言已移除：前者在供应商侧无可核定来源，后者由我方计量配置断言；v1 文档全部过期且无在飞消费者，双端同步切换。正文不入库。每次新增审计 revision 并禁用活动。
+- `POST /api/ops/internal-ai/activities/:id/enable`：`{revision, reason}`；仅最新 disabled revision、真实独立批准、过去采样/最多24小时资料窗口、停自动充值、服务批准、精确当前 provider/endpoint/model 和受审价目版本均齐全才可启用；余额型要求正 USD 余额，配额型要求有效配额字段、account_plan_type=FREE 且无 USD 余额。未知币种/FX 仍拒绝；TokenPlan 只能以 reviewed-token-plan 证据类型进入，配额绝不折算美元写余额。当前单账户契约无法证明Jev自己的余额/证书，Jev启用时也拒绝启用。
 - `POST /api/ops/internal-ai/activities/:id/disable`：`{reason}`；`POST /api/ops/internal-ai/identities/revoke`：`{activity, alias, reason}`；撤销持久标记并禁用活动，重复撤销幂等，保留身份、run、ledger和uncertain预留。
 - `GET /api/ops/internal-ai/activities/:id/revisions`：脱敏历史预览、操作者与原因、公司批准引用、真实 manifest hash、配置摘要及事务内前后快照。revision字段READONLY，服务无覆盖/删除历史路径。root维护权限不作为客户入口。
 - `GET /api/ops/internal-ai/supplier-probe?host=token.sensenova.cn`：固定注册表明确 unsupported，无注册官方只读balance/plan/usage能力则不发送任何探测请求，列需补证据；Token Plan 配额与零费率只能经 reviewed-token-plan 受审文档登记。不是断言供应商不存在官方API；后续须独立核定固定能力后代码评审加入。不得套OpenAI证书、积分、CNY或推断价目。
@@ -83,7 +83,7 @@ RocksDB tests覆盖多连接及两个独立客户端进程并发、真实服务�
 
 登记/补证/enable/disable/revoke与审计快照单事务提交；活动版本CAS与身份唯一索引拒绝并发冲突，调用方先读回再重试。同jti同摘要幂等，不同配置或身份改绑冲突。同配置的新证明可以刷新，但绝不重置spent/reserved/attempts或共享target；旧证据revision不能绕过disable或revoke重新启用。
 
-035迁移仅新增表/字段/索引，不回填或改写生产数据。036 迁移为 internal_ai_activity/internal_ai_revision 追加配额型证据字段（evidence_kind、plan_*、quota_*、no_payment_instrument、balance_source），并把 revision.currency 放宽为可空（USD-only 旧行值不变）；同样只新增、不回填或删除既有数据。公开pin由 `ops_internal_ai_trust` 核对，轮换须代码发布。当前生产公网状态发布面未配置（本轮ops_info读回），本轮也未取得真实SenseNova财务/价目资料：`unsupported`、`dataReady=false`、`paidCallsAllowed=0`。上线链须先核定公司公开状态地址，再按runbook通过CI设 `ORIGIN_ENV_INTERNAL_AI_COMPANY_STATUS_URL`；缺地址可安全部署身份只读端点，登记/启用继续拒绝。真实prove/deliver/revoke/expiry/status公网实测归部署后的独立QA，不以合成fixture代替。
+035迁移仅新增表/字段/索引，不回填或改写生产数据。036 迁移为 internal_ai_activity/internal_ai_revision 追加配额型证据字段（evidence_kind、plan_*、quota_*、no_payment_instrument、balance_source），并把 revision.currency 放宽为可空（USD-only 旧行值不变）；同样只新增、不回填或删除既有数据。038 迁移追加 `account_plan_type`（两表，`option<string>`，ASSERT 仅 `TOKEN_PLAN_PLAN_TYPE_FREE`）；no_payment_instrument 列保留兼容历史行但不再写入，v1 启用的 token-plan 活动因缺 account_plan_type 会被 reserve 拒绝，属预期切换。公开pin由 `ops_internal_ai_trust` 核对，轮换须代码发布。当前生产公网状态发布面未配置（本轮ops_info读回），本轮也未取得真实SenseNova财务/价目资料：`unsupported`、`dataReady=false`、`paidCallsAllowed=0`。上线链须先核定公司公开状态地址，再按runbook通过CI设 `ORIGIN_ENV_INTERNAL_AI_COMPANY_STATUS_URL`；缺地址可安全部署身份只读端点，登记/启用继续拒绝。真实prove/deliver/revoke/expiry/status公网实测归部署后的独立QA，不以合成fixture代替。
 
 所有本地证明、余额及OpenAI正向启用均为隔离公司fork合成fixture，未替换生产SenseNova，未调用任何真实模型。回退仍按上文先关闭已有灰度并确认新旧run/续跑拒绝，保留所有历史和预留。
 
@@ -95,7 +95,7 @@ RocksDB tests覆盖多连接及两个独立客户端进程并发、真实服务�
 部署腿按以下顺序准备并留证，本实现腿不产生供应商财务/配额事实：
 
 1. 通过 `ops_info`、`ops_login` 与成员工具确认/复用 `sck-fv05-retest-01`，核对数据库为 `ws_ddad14a98469`。确认 LCA04_REMOVABLE 是该 workspace 的 admin/计费 owner，LCA04_MEMBER 是 participant/计费 member。不得把这些角色靠自填 proof 改成事实。若现有身份已经绑定别的活动，使用本 workspace 的新受审 activityId；不得覆盖旧绑定或撤销记录。
-2. 运维协调取得当前真实服务账户的 reviewed-token-plan 采样文档，记录采样来源、账户脱敏引用、采样时刻、计划官方出处、额度与剩余额度（无法核定时 nullable，不能伪造）、无支付方式与自动充值停用事实。使用 shared 的 reviewedEvidenceSchema，UTF-8 SHA256 必须与公司签名 documentHash 一致；expiresAt > sampledAt 且窗口 <=24h。此供应商是零费率配额计划，不以 USD 余额文档替代。
+2. 运维协调取得当前真实服务账户的 reviewed-token-plan 采样文档，记录采样来源、账户脱敏引用、采样时刻、计划官方出处、供应商读回的 accountPlanType（须为 `TOKEN_PLAN_PLAN_TYPE_FREE`，非 FREE 不收）、额度与剩余额度（无法核定时 nullable，不能伪造）。使用 shared 的 reviewedEvidenceSchema，UTF-8 SHA256 必须与公司签名 documentHash 一致；expiresAt > sampledAt 且窗口 <=24h。此供应商是零费率配额计划，不以 USD 余额文档替代。
 3. 使用公司代理 `ops_internal_ai_prepare/prove/deliver` 的既有 manifest/文档契约，取得新独立批准引用并签发 approved-service proof。manifest 的 workspaceSlug 指向复测 workspace，priceRevision 使用上述证书，budget.maxAttempts <=30、autoTopupDisabled=true；身份来自正常 OIDC 权威投影。证明、状态 bearer、原始账号资料不写证据。登记先 disabled，之后通过 evidence 路由提交同一受审文档。
 4. 若 deliver 已自动启用活动，先用既有 disable 路由产生 disabled revision（不做模型调用）。读回当前 disabled revision，在 proof 与公司状态仍有效时，用运营会话调用 `POST /api/ops/internal-ai/activities/<id>/enable`，body 为 `{revision, reason, measurementCycle:true}`。活动启用、周期建立、revision 审计同事务提交。所有既有服务批准/实时状态/证据/runtime/身份门禁继续生效。未取得真实材料必须保持 disabled。
 5. 读回 GET activities/<id>：measurementCycle 中有 attempts、attempt_limit、approval_revision、enabled_revision（创建周期的不可变审计版本）、evidence_hash、expires_at；target.attempts 与 attemptsUsed 保留旧周期语义，cumulativeAttempts/cumulativeAttemptsUsed 包含新周期。账本条目 measurementCycle 标记新周期，sequence 延续该活动旧记录；分页 nextAfter 规则不变。

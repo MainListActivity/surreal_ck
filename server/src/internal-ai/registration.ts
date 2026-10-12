@@ -1,7 +1,7 @@
 import { RecordId } from "surrealdb";
 import { createHash } from "node:crypto";
 import {
-  COMPANY_PROOF_PROJECT, REVIEWED_DOCUMENT_MAX_BYTES, reviewedEvidenceSchema,
+  COMPANY_PROOF_PROJECT, REVIEWED_DOCUMENT_MAX_BYTES, TOKEN_PLAN_PLAN_TYPE_FREE, reviewedEvidenceSchema,
   type CompanyProofClaims, type CompanyProofGap, type ReviewedEvidence,
 } from "@surreal-ck/shared";
 import { HttpError } from "../http-error";
@@ -19,7 +19,7 @@ export type ActivitySnapshot = {
   balanceEvidenceHash: string | null; autoTopupDisabled: boolean; serviceApproved: boolean;
   evidenceKind: string | null; planName: string | null; planSourceUrl: string | null;
   quotaUnit: string | null; quotaAmount: number | null; quotaWindowSeconds: number | null;
-  quotaRemaining: number | null; noPaymentInstrument: boolean | null;
+  quotaRemaining: number | null; noPaymentInstrument: boolean | null; accountPlanType: string | null;
 };
 
 /** 数据库行形状（snake_case，与 035/036 schema 列名一致）。 */
@@ -35,7 +35,7 @@ export type RevisionRow = {
   evidence_kind: "development-disabled" | "reviewed-service" | "reviewed-token-plan" | null;
   plan_name: string | null; plan_source_url: string | null; quota_unit: "points" | "requests" | null;
   quota_amount: number | null; quota_window_seconds: number | null; quota_remaining: number | null;
-  no_payment_instrument: boolean | null;
+  no_payment_instrument: boolean | null; account_plan_type: string | null;
   before: ActivitySnapshot | null; after: ActivitySnapshot | null; created_at?: unknown;
   source_jti: string | null;
 };
@@ -54,7 +54,7 @@ export type RegistrationSummary = {
   evidenceKind: "development-disabled" | "reviewed-service" | "reviewed-token-plan" | null;
   planName: string | null; planSourceUrl: string | null; quotaUnit: "points" | "requests" | null;
   quotaAmount: number | null; quotaWindowSeconds: number | null; quotaRemaining: number | null;
-  noPaymentInstrument: boolean | null;
+  noPaymentInstrument: boolean | null; accountPlanType: string | null;
   autoTopupDisabled: boolean; serviceApproved: boolean; paidCallsAllowed: 0 | 1;
   limits: { totalNanoUsd: number; perAttemptNanoUsd: number; maxAttempts: number };
   approval: { taskId: string; version: number; action: string; auditId: string } | null;
@@ -88,7 +88,8 @@ const SNAPSHOT = `SELECT enabled, goal, total_limit AS totalLimit, per_attempt_l
   balance_evidence_hash AS balanceEvidenceHash, auto_topup_disabled AS autoTopupDisabled, service_approved AS serviceApproved,
   evidence_kind AS evidenceKind, plan_name AS planName, plan_source_url AS planSourceUrl,
   quota_unit AS quotaUnit, quota_amount AS quotaAmount, quota_window_seconds AS quotaWindowSeconds,
-  quota_remaining AS quotaRemaining, no_payment_instrument AS noPaymentInstrument FROM ONLY $activity`;
+  quota_remaining AS quotaRemaining, no_payment_instrument AS noPaymentInstrument,
+  account_plan_type AS accountPlanType FROM ONLY $activity`;
 
 export class InternalAiRegistration {
   constructor(private readonly db: () => Promise<Queryable>, private readonly status: CompanyStatus = new CompanyStatusClient(undefined)) {}
@@ -192,7 +193,7 @@ export class InternalAiRegistration {
       approval_audit_id: c.approval?.auditId ?? null, account_ref: m.service.accountRef, endpoint: m.service.endpoint, model: m.service.model,
       price_revision: m.service.priceRevision, currency: null, balance_nano_usd: null, balance_sampled_at: null, balance_source: null, evidence_expires_at: null,
       evidence_kind: null, plan_name: null, plan_source_url: null, quota_unit: null, quota_amount: null,
-      quota_window_seconds: null, quota_remaining: null, no_payment_instrument: null,
+      quota_window_seconds: null, quota_remaining: null, no_payment_instrument: null, account_plan_type: null,
       auto_topup_disabled: true, service_approved: false, status_capability_hash: statusCapabilityHash(c.status.bearer),
       gaps: ["approved-service-evidence", "balance-evidence", "price-certificate"], before: null, after: null };
     const sql = `FOR $b IN $bindings {
@@ -236,8 +237,10 @@ export class InternalAiRegistration {
       plan_name: tokenPlan ? e.planName : null, plan_source_url: tokenPlan ? e.planSourceUrl : null,
       quota_unit: tokenPlan ? e.quotaUnit : null, quota_amount: tokenPlan ? e.quotaAmount : null,
       quota_window_seconds: tokenPlan ? e.quotaWindowSeconds : null, quota_remaining: tokenPlan ? e.quotaRemaining : null,
-      no_payment_instrument: tokenPlan ? e.noPaymentInstrument : null,
-      auto_topup_disabled: e.autoTopupDisabled, service_approved: e.serviceApproved, before: null, after: null };
+      // v2：账户计划类型由文档读回灌入；no_payment_instrument 保留兼容历史行但不再写入；
+      // auto_topup_disabled 不取自供应商文档，沿用登记初始 true（我方计量配置断言）。
+      no_payment_instrument: null, account_plan_type: tokenPlan ? e.accountPlanType : null,
+      auto_topup_disabled: tokenPlan ? true : e.autoTopupDisabled, service_approved: e.serviceApproved, before: null, after: null };
     row.gaps = this.evidenceGaps(row);
     return this.summary(await this.mutate(row, target.revision, "UPDATE ONLY $activity SET enabled = false;"), false);
   }
@@ -248,7 +251,7 @@ export class InternalAiRegistration {
       // 配额型证据：USD 余额三项检查整体替换为配额检查；两族缺口语义不互换。
       if (!r.plan_name || !r.plan_source_url || !r.quota_unit || r.quota_amount == null || r.quota_window_seconds == null) gaps.push("quota-evidence");
       else if (r.quota_amount <= 0 || (r.quota_remaining != null && r.quota_remaining <= 0)) gaps.push("quota-positive");
-      if (r.no_payment_instrument !== true) gaps.push("payment-instrument-absent");
+      if (r.account_plan_type !== TOKEN_PLAN_PLAN_TYPE_FREE) gaps.push("account-plan-free");
     } else {
       if (r.balance_nano_usd == null) gaps.push("balance-evidence");
       else if (r.balance_nano_usd <= 0) gaps.push("balance-positive");
@@ -294,6 +297,7 @@ export class InternalAiRegistration {
         plan_name = $row.plan_name, plan_source_url = $row.plan_source_url, quota_unit = $row.quota_unit,
         quota_amount = $row.quota_amount, quota_window_seconds = $row.quota_window_seconds,
         quota_remaining = $row.quota_remaining, no_payment_instrument = $row.no_payment_instrument,
+        account_plan_type = $row.account_plan_type,
         auto_topup_disabled = true, service_approved = true;
       ${input.measurementCycle ? `LET $existingCycle = (SELECT * FROM ONLY $cycle);
       IF $existingCycle != NONE {
@@ -337,6 +341,7 @@ export class InternalAiRegistration {
       planName: row.plan_name ?? null, planSourceUrl: row.plan_source_url ?? null, quotaUnit: row.quota_unit ?? null,
       quotaAmount: row.quota_amount ?? null, quotaWindowSeconds: row.quota_window_seconds ?? null,
       quotaRemaining: row.quota_remaining ?? null, noPaymentInstrument: row.no_payment_instrument ?? null,
+      accountPlanType: row.account_plan_type ?? null,
       autoTopupDisabled: row.auto_topup_disabled, serviceApproved: row.service_approved, paidCallsAllowed: ready ? 1 : 0,
       limits: { totalNanoUsd: a?.total_limit ?? 0, perAttemptNanoUsd: a?.per_attempt_limit ?? 0, maxAttempts: a?.attempt_limit ?? 0 },
       approval: row.approval_task && row.approval_version && row.approval_action && row.approval_audit_id ? { taskId: row.approval_task, version: row.approval_version, action: row.approval_action, auditId: row.approval_audit_id } : null,

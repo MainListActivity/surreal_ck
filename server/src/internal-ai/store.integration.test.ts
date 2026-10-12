@@ -40,7 +40,7 @@ async function activity(id: string, limits: { total?: number; per?: number; coun
 /** 配额型活动：官方 Token Plan 证据，无 USD 余额字段；与 enable 写入形状一致。 */
 async function tokenPlanActivity(id: string) {
   const tariff = TARIFFS.find(t => t.model === "sensenova-6.8-flash-lite")!;
-  await db.insert(new Table("internal_ai_activity"), { id: new RecordId("internal_ai_activity", id), goal: GOAL, enabled: true, total_limit: 1000000000, per_attempt_limit: 100000000, attempt_limit: 30, approval_revision: "synthetic-test-only", evidence_expires_at: "2099-01-01T00:00:00Z", price_revisions: [tariff.revision], evidence_kind: "reviewed-token-plan", plan_name: "SenseNova Token Plan 公测", plan_source_url: "https://www.sensenova.cn/token-plan", quota_unit: "points", quota_amount: 60000, quota_window_seconds: 18000, quota_remaining: 60000, no_payment_instrument: true, balance_source: `token-plan:${"b".repeat(64)}`, balance_sampled_at: "2026-10-09T00:00:00Z", balance_evidence_hash: "b".repeat(64), auto_topup_disabled: true, service_approved: true });
+  await db.insert(new Table("internal_ai_activity"), { id: new RecordId("internal_ai_activity", id), goal: GOAL, enabled: true, total_limit: 1000000000, per_attempt_limit: 100000000, attempt_limit: 30, approval_revision: "synthetic-test-only", evidence_expires_at: "2099-01-01T00:00:00Z", price_revisions: [tariff.revision], evidence_kind: "reviewed-token-plan", plan_name: "SenseNova Token Plan 公测", plan_source_url: "https://www.sensenova.cn/token-plan", account_plan_type: "TOKEN_PLAN_PLAN_TYPE_FREE", quota_unit: "points", quota_amount: 60000, quota_window_seconds: 18000, quota_remaining: 60000, balance_source: `token-plan:${"b".repeat(64)}`, balance_sampled_at: "2026-10-09T00:00:00Z", balance_evidence_hash: "b".repeat(64), auto_topup_disabled: true, service_approved: true });
   return { activity: id, runHash: hash(id, "run"), keyHash: hash(id, "key"), logicalHash: hash(id, "key") };
 }
 beforeAll(async () => {
@@ -54,6 +54,7 @@ beforeAll(async () => {
   await db.query(await readFile(new URL("../../../shared/sql/system/035-internal-ai-registration.surql", import.meta.url), "utf8"));
   await db.query(await readFile(new URL("../../../shared/sql/system/036-internal-ai-token-plan.surql", import.meta.url), "utf8"));
   await db.query(await readFile(new URL("../../../shared/sql/system/037-internal-ai-measurement-cycle.surql", import.meta.url), "utf8"));
+  await db.query(await readFile(new URL("../../../shared/sql/system/038-internal-ai-account-plan-type.surql", import.meta.url), "utf8"));
 }, 20000);
 afterAll(async () => { if (!enabled) return; await stop(); await rm(directory, { recursive: true, force: true }); });
 localTest("multi-connection concurrent reservations serialize shared cash; uncertain failures retain money", async () => {
@@ -260,10 +261,12 @@ localTest("token-plan activities reserve zero cash, settle zero cost and deny on
   expect((await store.activity("token-plan"))?.spent).toBe(0);
   expect((await store.activity("token-plan"))?.attempts).toBe(1);
   expect((await store.page("token-plan"))[0]?.state).toBe("settled");
-  // 配额型证据缺失、出处前缀错误、夹带 USD 余额、价目版本不符、非零金额预留：全部 fail-closed。
+  // 配额型证据缺失、计划类型缺失（v1 旧行无 account_plan_type）、出处前缀错误、夹带 USD 余额、
+  // 价目版本不符、非零金额预留：全部 fail-closed。非 FREE 值被 schema ASSERT 挡在写入外。
   for (const [id, mutate] of [
     ["tp-exhausted", "quota_remaining = 0"],
     ["tp-missing-plan", "plan_name = NONE"],
+    ["tp-v1-legacy", "account_plan_type = NONE, no_payment_instrument = true"],
     ["tp-wrong-source", `balance_source = "reviewed-document:" + balance_evidence_hash`],
     ["tp-usd-mixed", `balance_nano_usd = 1000, balance_currency = "USD"`],
     ["tp-wrong-price", "price_revisions = []"],

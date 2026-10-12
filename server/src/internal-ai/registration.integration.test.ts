@@ -7,6 +7,7 @@ import { createServer } from "node:net";
 import { RecordId, Surreal } from "surrealdb";
 import {
   COMPANY_PROOF_AUDIENCE, COMPANY_PROOF_GOAL, COMPANY_PROOF_ISSUER, COMPANY_PROOF_PROJECT, COMPANY_PROOF_TYP,
+  TOKEN_PLAN_PLAN_TYPE_FREE,
   type CompanyProofClaims,
 } from "@surreal-ck/shared";
 import { InternalAiRegistration } from "./registration";
@@ -56,17 +57,17 @@ function evidenceDocument(tag: string, over: Record<string, unknown> = {}): stri
   });
 }
 
-/** 配额型受审证据：官方 Token Plan 出处与积分配额表达可用性，无 USD 余额语义。 */
+/** 配额型受审证据 v2：官方 Token Plan 出处、积分配额与账户计划类型读回表达可用性，无 USD 余额语义。 */
 function tokenPlanDocument(over: Record<string, unknown> = {}): string {
   const tariff = TARIFFS.find(t => t.model === "sensenova-6.8-flash-lite")!;
   return JSON.stringify({
-    schemaVersion: 1, type: "reviewed-token-plan", accountRef: "synthetic-sensenova-account",
+    schemaVersion: 2, type: "reviewed-token-plan", accountRef: "synthetic-sensenova-account",
     endpoint: `https://${tariff.host}/v1`, model: tariff.model, priceRevision: tariff.revision,
     planName: "SenseNova Token Plan 公测", planSourceUrl: "https://www.sensenova.cn/token-plan",
+    accountPlanType: TOKEN_PLAN_PLAN_TYPE_FREE,
     quotaUnit: "points", quotaAmount: 60000, quotaWindowSeconds: 18000, quotaRemaining: 60000,
-    noPaymentInstrument: true,
     sampledAt: new Date(NOW - 60000).toISOString(), expiresAt: new Date(NOW + 3600000).toISOString(),
-    autoTopupDisabled: true, serviceApproved: true, ...over,
+    serviceApproved: true, ...over,
   });
 }
 
@@ -138,7 +139,7 @@ beforeAll(async () => {
   db = new Surreal(); await db.connect(`${endpoint}/rpc`, { authentication: { username: "root", password: "root" } });
   await db.query("DEFINE NAMESPACE IF NOT EXISTS registration_test;"); await db.use({ namespace: "registration_test" });
   await db.query("DEFINE DATABASE IF NOT EXISTS _system;"); await db.use({ namespace: "registration_test", database: "_system" });
-  for (const file of ["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql", "037-internal-ai-measurement-cycle.surql"]) {
+  for (const file of ["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql", "037-internal-ai-measurement-cycle.surql", "038-internal-ai-account-plan-type.surql"]) {
     await db.query(await readFile(new URL(`../../../shared/sql/system/${file}`, import.meta.url), "utf8"));
   }
   registration = new InternalAiRegistration(async () => db!, { check: async () => {}, current: async () => {}, remember: () => {} });
@@ -361,7 +362,8 @@ localTest("a reviewed token-plan evidence enables the zero-rate certificate and 
   expect(submitted.balanceSource).toBe(`token-plan:${documentHash}`);
   expect(submitted.quotaUnit).toBe("points");
   expect(submitted.quotaAmount).toBe(60000);
-  expect(submitted.noPaymentInstrument).toBe(true);
+  expect(submitted.noPaymentInstrument).toBeNull();
+  expect(submitted.accountPlanType).toBe(TOKEN_PLAN_PLAN_TYPE_FREE);
   expect(submitted.gaps).toEqual([]);
   await expect(registration.enable({ activity: activityId, revision: submitted.revision, measurementCycle: true, operator: "synthetic-operator", reason: "错误workspace不可分配测量周期", runtime: { provider: tariff.provider, model: tariff.model, endpoint } })).rejects.toThrow("指定复测 workspace");
   const enabled = await registration.enable({ activity: activityId, revision: submitted.revision, operator: "synthetic-operator", reason: "显式启用配额型活动", runtime: { provider: tariff.provider, model: tariff.model, endpoint } });
@@ -375,7 +377,8 @@ localTest("a reviewed token-plan evidence enables the zero-rate certificate and 
   expect(activity.balance_source).toBe(`token-plan:${documentHash}`);
   expect(activity.quota_amount).toBe(60000);
   expect(activity.quota_window_seconds).toBe(18000);
-  expect(activity.no_payment_instrument).toBe(true);
+  expect(activity.no_payment_instrument ?? null).toBe(null);
+  expect(activity.account_plan_type).toBe(TOKEN_PLAN_PLAN_TYPE_FREE);
   expect(activity.price_revisions).toEqual([tariff.revision]);
   // 零费率证书走同一门禁：预留 0、按实际 usage 结算 0，账本仍是 nanoUSD。
   const scope = await gate.bind(`owner-${tag}`, `ws_${tag}`, "run-tokenplan", "key-tokenplan");
@@ -412,7 +415,9 @@ localTest("token-plan evidence stays fail-closed: schema, quota gaps, wrong runt
   // schema 层拒绝：每种非法文档都经公司证明哈希绑定后提交，仍被严格契约拒绝。
   for (const [index, over] of [
     { quotaAmount: 0 }, { quotaAmount: -1 }, { planSourceUrl: "http://www.sensenova.cn/token-plan" },
-    { planSourceUrl: "https://www.sensenova.cn/token-plan?x=1" }, { noPaymentInstrument: false },
+    { planSourceUrl: "https://www.sensenova.cn/token-plan?x=1" }, { accountPlanType: "TOKEN_PLAN_PLAN_TYPE_PAID" },
+    { accountPlanType: "free" }, { accountPlanType: undefined }, { schemaVersion: 1 },
+    { noPaymentInstrument: true }, { autoTopupDisabled: true },
     { quotaUnit: "usd" }, { balanceNanoUsd: 1, currency: "USD" }, { unknownField: 1 }, { type: "reviewed-service" },
   ].entries()) {
     const tag = `tpstrict${index}`, document = tokenPlanDocument(over);
@@ -640,7 +645,7 @@ localTest("one approved measurement cycle preserves 30 historical attempts and s
   const runtime = { provider: tariff.provider, model: tariff.model, endpoint };
   await db.query("DEFINE DATABASE IF NOT EXISTS measurement_test;");
   await db.use({ namespace: "registration_test", database: "measurement_test" });
-  for (const file of ["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql", "037-internal-ai-measurement-cycle.surql"]) {
+  for (const file of ["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql", "037-internal-ai-measurement-cycle.surql", "038-internal-ai-account-plan-type.surql"]) {
     await db.query(await readFile(new URL(`../../../shared/sql/system/${file}`, import.meta.url), "utf8"));
   }
   const document = tokenPlanDocument();
