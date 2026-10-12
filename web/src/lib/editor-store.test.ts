@@ -506,6 +506,70 @@ describe("writeRecordPatch / writeRecordProposal — 提案 values 字段名归�
     expect(rec.updates).toEqual([{ id: "ent_items:m1", patch: { field_2: "离职" } }]);
   });
 
+  test("精确 key 优先：不会被其他列的同名 label 劫持", async () => {
+    const { store, rec } = setup({
+      sheets: [sheetRecord({
+        column_defs: [
+          { key: "field_1", label: "标题", field_type: "text" },
+          { key: "field_2", label: "field_1", field_type: "text" },
+        ],
+      })],
+      rows: [{ id: "ent_items:m1", field_1: "甲", field_2: "乙" }],
+    });
+    await store.loadWorkbook("workbook:wb1");
+
+    expect(await store.writeRecordPatch("sheet:s1", "ent_items:m1", { field_1: "新标题" })).toEqual({ ok: true });
+    expect(rec.updates).toEqual([{ id: "ent_items:m1", patch: { field_1: "新标题" } }]);
+  });
+
+  test("唯一 label 可归一，重复 label 拒绝且不调用数据库", async () => {
+    const { store, rec } = setup({
+      sheets: [sheetRecord({
+        column_defs: [
+          { key: "field_1", label: "标题", field_type: "text" },
+          { key: "field_2", label: "状态", field_type: "text" },
+        ],
+      })],
+      rows: [{ id: "ent_items:m1", field_1: "甲", field_2: "乙" }],
+    });
+    await store.loadWorkbook("workbook:wb1");
+
+    expect(await store.writeRecordPatch("sheet:s1", "ent_items:m1", { 状态: "新状态" })).toEqual({ ok: true });
+    expect(rec.updates).toEqual([{ id: "ent_items:m1", patch: { field_2: "新状态" } }]);
+
+    const ambiguous = setup({
+      sheets: [sheetRecord({
+        column_defs: [
+          { key: "field_1", label: "重复", field_type: "text" },
+          { key: "field_2", label: "重复", field_type: "text" },
+        ],
+      })],
+      rows: [{ id: "ent_items:m1", field_1: "甲", field_2: "乙" }],
+    });
+    await ambiguous.store.loadWorkbook("workbook:wb1");
+    expect(await ambiguous.store.writeRecordPatch("sheet:s1", "ent_items:m1", { 重复: "不确定" })).toMatchObject({ ok: false });
+    expect(ambiguous.rec.updates).toEqual([]);
+  });
+
+  test("key 与 label 归一到同一目标时拒绝整个 proposal 写入", async () => {
+    const { store, rec } = setup({
+      sheets: [sheetRecord({
+        column_defs: [
+          { key: "field_1", label: "标题", field_type: "text" },
+          { key: "field_2", label: "状态", field_type: "text" },
+        ],
+      })],
+      rows: [{ id: "ent_items:m1", field_1: "甲", field_2: "乙" }],
+    });
+    await store.loadWorkbook("workbook:wb1");
+
+    expect(await store.writeRecordProposal(
+      { type: "record-write-proposal", operation: "update", sheetId: "sheet:s1", recordId: "ent_items:m1", proposals: [] },
+      { field_1: "按 key", 标题: "按 label" },
+    )).toMatchObject({ ok: false });
+    expect(rec.updates).toEqual([]);
+  });
+
   test("record-write-proposal update：label/key 混合 values 统一归一到存储 key", async () => {
     const { store, rec } = setup({
       sheets: [sheetRecord({
