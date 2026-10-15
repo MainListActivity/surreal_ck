@@ -7,11 +7,13 @@ import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
 import { RecordId, Surreal, Table } from "surrealdb";
-import { InternalAiStore, GOAL, hash } from "./store";
+import { InternalAiStore, GOAL, MEASUREMENT_CYCLE, hash, type Attempt } from "./store";
 import { InternalAiGate } from "./gate";
 import { TARIFFS, worstCost } from "./pricing";
 import { inInternalScope } from "./context";
 import { meteredDecision } from "./decision";
+import { assessAttempt, type AssessmentContext } from "./assessment";
+import { TOKEN_PLAN_PLAN_TYPE_FREE } from "@surreal-ck/shared";
 const enabled = process.env.RUN_INTERNAL_AI_FORK_TESTS === "1";
 const localTest = test.skipIf(!enabled);
 // 公司fork，绝不回退PATH中的上游CLI。
@@ -297,3 +299,40 @@ localTest("target cash and attempt limits are shared by separate activities and 
   await expect(store.reserve(d, "proposal", t, worstCost(t))).rejects.toThrow();
   expect((await store.target()).attempts).toBe(30);
 }, 20000);
+
+localTest("revisionEvidence reads the string-typed revision activity so a covered cycle attempt reaches measured_derived", async () => {
+  const tariff = TARIFFS.find(t => t.model === "sensenova-6.8-flash-lite")!;
+  const name = "assess-evidence";
+  const docHash = "c".repeat(64);
+  // internal_ai_revision.activity 是 TYPE string（035 schema），必须按登记写入的真实形状造行：
+  // revisionEvidence 若改用 record 链接绑定则查询恒空，周期内全部 attempt 落
+  // measurement-cycle-evidence-mismatch（生产实测缺陷的回归钉）。
+  await db.query(`CREATE ONLY $id CONTENT {
+    activity: $name, revision: 6, state: "enabled", proof_type: "approved-service",
+    goal: $goal, project: "surreal_ck", env: "test", operator: "synthetic", reason: "synthetic",
+    request_task: "synthetic", manifest_hash: $docHash, document_hash: $docHash,
+    configuration_digest: $docHash, identities_digest: $docHash,
+    account_ref: "snv67a4f8085b59953cf4ce7af9", endpoint: $endpoint, model: $model,
+    price_revision: $priceRevision, currency: "USD",
+    balance_sampled_at: "2026-10-15T17:57:35.106Z", evidence_expires_at: "2026-10-15T20:37:59.000Z",
+    auto_topup_disabled: true, service_approved: true, proof_expires_at: 9999999999,
+    evidence_kind: "reviewed-token-plan", account_plan_type: $planType
+  }`, {
+    id: new RecordId("internal_ai_revision", `${name}:6`), name, goal: GOAL, docHash,
+    endpoint: `https://${tariff.host}/v1`, model: tariff.model, priceRevision: tariff.revision,
+    planType: TOKEN_PLAN_PLAN_TYPE_FREE,
+  });
+  const found = await store.revisionEvidence(name);
+  expect(found.map(r => r.revision)).toEqual([6]);
+  expect(found[0]?.document_hash).toBe(docHash);
+  await db.query(`CREATE ONLY $cycle CONTENT { activity: $name, attempts: 1, attempt_limit: 30, enabled_revision: 6, approval_revision: "synthetic@6", evidence_hash: $docHash, expires_at: "2026-10-15T20:37:59.000Z", created_at: time::now() }`, { cycle: new RecordId("internal_ai_measurement_cycle", MEASUREMENT_CYCLE), name, docHash });
+  const cycle = await store.measurementCycle();
+  const ctx: AssessmentContext = {
+    cycle: cycle ? { id: MEASUREMENT_CYCLE, ...cycle } : null,
+    revisions: found.map(r => ({ revision: r.revision, state: r.state, createdAt: r.created_at, documentHash: r.document_hash, evidenceKind: r.evidence_kind, accountPlanType: r.account_plan_type, accountRef: r.account_ref, sampledAt: r.balance_sampled_at, expiresAt: r.evidence_expires_at, endpoint: r.endpoint, model: r.model, priceRevision: r.price_revision })),
+  };
+  const attempt: Attempt = { id: new RecordId("internal_ai_attempt", "assess-fixture"), sequence: 1, retry_index: 0, run_hash: hash("subject", "db", "run"), key_hash: "k", logical_hash: "l", stage: "proposal", provider: tariff.provider, model: tariff.model, actual_model: tariff.model, request_id: "synthetic", reserved: 0, cost: null, state: "uncertain", price_revision: tariff.revision, currency: "USD", measurement_cycle: MEASUREMENT_CYCLE, usage: { inputTokens: 349, outputTokens: 62, cachedInputTokens: 0, reasoningTokens: 37 }, usage_source: "provider", started_at: "2026-10-15T18:22:03.492Z", ended_at: "2026-10-15T18:22:05.531Z" };
+  const assessed = assessAttempt(attempt, ctx);
+  expect(assessed.status).toBe("measured_derived");
+  expect(assessed.costNanoUsd).toBe(0);
+});

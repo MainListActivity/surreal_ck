@@ -135,6 +135,7 @@ export class InternalAiStore {
   }
   /** FV06 只读投影：评价所需的授权 revision 字段，绝不读 operator/identity 明细。 */
   async revisionEvidence(activity: string): Promise<RevisionEvidenceRow[]> {
-    return rows<RevisionEvidenceRow>(await (await this.db()).query("SELECT revision, state, created_at, document_hash, evidence_kind, account_plan_type, account_ref, balance_sampled_at, evidence_expires_at, endpoint, model, price_revision FROM internal_ai_revision WHERE activity = $activity ORDER BY revision", { activity: new RecordId("internal_ai_activity", activity) }));
+    // internal_ai_revision.activity 是 TYPE string（035 schema）；记录链接绑定恒不匹配。
+    return rows<RevisionEvidenceRow>(await (await this.db()).query("SELECT revision, state, created_at, document_hash, evidence_kind, account_plan_type, account_ref, balance_sampled_at, evidence_expires_at, endpoint, model, price_revision FROM internal_ai_revision WHERE activity = $activity ORDER BY revision", { activity }));
   }
 }
