@@ -176,8 +176,8 @@ export const searchRecordTool = createTool({
     const lowerQuery = query.trim().toLowerCase();
 
     const filterClause = fieldKey
-      ? `string::contains(string::lowercase(string(${ fieldKey })), $q)`
-      : `string::contains(string::lowercase(string(name ?? display_name ?? id)), $q)`;
+      ? `string::contains(string::lowercase(<string>(${ fieldKey })), $q)`
+      : `string::contains(string::lowercase(<string>(name ?? display_name ?? id)), $q)`;
 
     const recordResult = await db.query(
       `SELECT id, name, display_name FROM type::table($table) WHERE ${filterClause} LIMIT 20`,
