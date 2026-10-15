@@ -88,13 +88,25 @@ RocksDB tests覆盖多连接及两个独立客户端进程并发、真实服务�
 所有本地证明、余额及OpenAI正向启用均为隔离公司fork合成fixture，未替换生产SenseNova，未调用任何真实模型。回退仍按上文先关闭已有灰度并确认新旧run/续跑拒绝，保留所有历史和预留。
 
 
+## 同活动证据续期（lca-v2-deploy-qa01，fv05 受审宿主）
+
+本次 fv05 受审宿主固定为活动 `lca-v2-deploy-qa01`：两个现有身份绑定（LCA04_REMOVABLE/LCA04_MEMBER）保留在该活动，不新建 workspace、不改 `MEASUREMENT_DATABASE`、不撤销改绑、不换别名绕过。旧 `first_value_internal_v1` 在 `ws_45892981716d` 的 30 条账本不迁移、不重置。身份已绑定该活动是续期的前提——“绑定别的活动就换 activityId”是误导，已删除：同活动新文档走下面的续期链，而不是另起活动。
+
+续期链（与首次受审同一条公司 prepare→独立 accept marker→fresh approved-service prove/deliver→产品登记/evidence/显式 enable 链）：
+
+1. GM 另建 fresh 批准任务（依赖本代码部署 done 后才采样），取得新独立批准引用并签发 approved-service proof。新 manifest 除 documentHash 外与原受审配置逐字段相同（activityId/goal/project/env/workspace/service 全对象/全部 budget 字段/alias 与角色），新 configurationDigest 按公司规则从新 manifest 派生；新旧 identitiesDigest 一致（真实 subject/space/database/billingAccount/角色未变且未撤销）。旧 proof/旧批准不能替新文档授权；旧过期票据不能复活。budget.autoTopupDisabled 始终 true。
+2. 产品登记（`POST /api/ops/internal-ai/company-proof`）：同活动新摘要不再整体拒绝，核验通过后追加新 revision（disabled）并冻结原路径（活动 disabled），前后快照进审计；新 proofJti/新 approvalTask 落库，旧 READONLY revision 与旧批准审计不动。登记时没有正文也可先登记，严格核验延至 evidence 阶段。
+3. 短 proof 窗口：proof 自身 ≤300 秒且公司状态当前（lease/签名/nonce 实时核对），过期即整链拒绝；证据窗口 ≤24 小时（expiresAt−sampledAt），过期/未来/采样倒退（早于原已核定采样）分别在 enable/evidence 阶段拒绝；旧文档字节对不上新 revision 的 documentHash 即拒绝，旧 fresh proof 的未用 nonce 不能把链路滚回旧文档。
+4. 提交新文档（`POST .../evidence`）后必须显式 enable（`POST .../enable`）：新 revision disabled 直到原字节 hash 匹配且全部门禁通过；重复 enable 同一 revision、已有 measurementCycle 上的新证据 enable（evidence_hash 失配）照旧拒绝。
+5. 旧活动上限与目标单例 cycle 不被续期刷新：renewal 不清零 activity/target/cycle 的 attempts/reserved/spent/sequence，不动旧 attempt 与 identity_hash，不重置/延长/重建已有 measurementCycle；cycle 已存在时其固定 id/owner/attempt_limit/attempts/approval/evidence_hash/expiry 保持原样。本次实际 cycle=null，后续只可创建已批准的一次 ≤30 周期（见下节复测周期）。
+
 ## 一次性复测周期（f3974e8f）
 
 037 迁移只新增 `internal_ai_measurement_cycle` 与 attempt 的可空 `measurement_cycle`；不回填、不覆盖旧 30 条账本，也不改旧活动/目标计数约束。新周期固定 ID 为任务 `f3974e8f-4c4d-41e2-af63-e4de68ea5f91`，追加最多 30 次（GM 批准上界 40 的收紧，且取该活动受审 attempt_limit，不放宽更小的预算），仅限 `ws_ddad14a98469`、`sensenova-token-plan-2026-10-10` 零费率证书。一次底层 model step 消耗一次，并非一个业务 run 固定只耗一次；uncertain 仍占次数。零费率不能推导配额余额。
 
 部署腿按以下顺序准备并留证，本实现腿不产生供应商财务/配额事实：
 
-1. 通过 `ops_info`、`ops_login` 与成员工具确认/复用 `sck-fv05-retest-01`，核对数据库为 `ws_ddad14a98469`。确认 LCA04_REMOVABLE 是该 workspace 的 admin/计费 owner，LCA04_MEMBER 是 participant/计费 member。不得把这些角色靠自填 proof 改成事实。若现有身份已经绑定别的活动，使用本 workspace 的新受审 activityId；不得覆盖旧绑定或撤销记录。
+1. 通过 `ops_info`、`ops_login` 与成员工具确认/复用 `sck-fv05-retest-01`，核对数据库为 `ws_ddad14a98469`。确认 LCA04_REMOVABLE 是该 workspace 的 admin/计费 owner，LCA04_MEMBER 是 participant/计费 member。不得把这些角色靠自填 proof 改成事实。本 workspace 的受审活动若已有身份绑定在别的活动，不得覆盖旧绑定或撤销记录——同活动续期走上一节续期链（lca-v2-deploy-qa01 宿主），不在此另起活动规避。
 2. 运维协调取得当前真实服务账户的 reviewed-token-plan 采样文档，记录采样来源、账户脱敏引用、采样时刻、计划官方出处、供应商读回的 accountPlanType（须为 `TOKEN_PLAN_PLAN_TYPE_FREE`，非 FREE 不收）、额度与剩余额度（无法核定时 nullable，不能伪造）。使用 shared 的 reviewedEvidenceSchema，UTF-8 SHA256 必须与公司签名 documentHash 一致；expiresAt > sampledAt 且窗口 <=24h。此供应商是零费率配额计划，不以 USD 余额文档替代。
 3. 使用公司代理 `ops_internal_ai_prepare/prove/deliver` 的既有 manifest/文档契约，取得新独立批准引用并签发 approved-service proof。manifest 的 workspaceSlug 指向复测 workspace，priceRevision 使用上述证书，budget.maxAttempts <=30、autoTopupDisabled=true；身份来自正常 OIDC 权威投影。证明、状态 bearer、原始账号资料不写证据。登记先 disabled，之后通过 evidence 路由提交同一受审文档。
 4. 若 deliver 已自动启用活动，先用既有 disable 路由产生 disabled revision（不做模型调用）。读回当前 disabled revision，在 proof 与公司状态仍有效时，用运营会话调用 `POST /api/ops/internal-ai/activities/<id>/enable`，body 为 `{revision, reason, measurementCycle:true}`。活动启用、周期建立、revision 审计同事务提交。所有既有服务批准/实时状态/证据/runtime/身份门禁继续生效。未取得真实材料必须保持 disabled。
