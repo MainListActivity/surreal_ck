@@ -42,11 +42,14 @@ describe("row-analysis agent", () => {
     expect(Object.keys(ROW_ANALYSIS_TOOLS).sort()).toEqual([
       "analyzeRow",
       "fetchRelatedRecords",
+      "findRecords",
       "proposeRecordWrite",
     ]);
     expect(ROW_ANALYSIS_INSTRUCTIONS).toContain("优先使用当前记录的关联资源");
     expect(ROW_ANALYSIS_INSTRUCTIONS).toContain("[1]");
     expect(ROW_ANALYSIS_INSTRUCTIONS).toContain("无关联资源");
+    // 写入路径依赖：未选中目标行时先定位再提案
+    expect(ROW_ANALYSIS_INSTRUCTIONS).toContain("findRecords");
   });
 });
 

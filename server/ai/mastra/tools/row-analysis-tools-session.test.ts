@@ -194,3 +194,55 @@ describe("proposeRecordWrite 提案字段名归一化（session 读 column_defs�
     expect(passthrough.intent.proposals.map((p) => p.field)).toEqual(["状态"]);
   });
 });
+
+describe("findRecords 按字段值定位记录（def-write-intent-misroute）", () => {
+  test("唯一命中返回记录 id 与字段值；查询按归一后的存储 key 过滤", async () => {
+    const session = makeFakeSession([
+      [[{ id: "sheet:items", table_name: "ent_items", column_defs: [
+        { key: "field_1", label: "事项", field_type: "text" },
+        { key: "field_2", label: "状态", field_type: "single_select" },
+      ] }]],
+      [[{ id: "ent_items:a1", field_1: "FV06-ee1-admin-1015-1950-2", field_2: "进行中" }]],
+    ]);
+    const { findRecordsTool } = await import("./row-analysis-tools");
+    const execute = findRecordsTool.execute as unknown as (
+      input: { sheetId: string; field: string; value: string; limit?: number },
+      ctx?: { requestContext: RequestContext },
+    ) => Promise<{ matches: { id: string; values: Record<string, unknown> }[] }>;
+
+    const result = await execute(
+      { sheetId: "sheet:items", field: "事项", value: "FV06-ee1-admin-1015-1950-2" },
+      ctxWithSession(session),
+    );
+
+    expect(session.calls).toHaveLength(2);
+    // label「事项」归一到存储 key field_1 后才进查询
+    expect(session.calls[1]!.sql).toContain("field_1");
+    expect(session.calls[1]!.vars).toMatchObject({ table: "ent_items" });
+    expect(result.matches).toEqual([
+      { id: "ent_items:a1", values: { id: "ent_items:a1", field_1: "FV06-ee1-admin-1015-1950-2", field_2: "进行中" } },
+    ]);
+    // 返回纯数据、无 intent——不触发 executor 的 await-write-confirm 挂起
+    expect((result as { intent?: unknown }).intent).toBeUndefined();
+  });
+
+  test("字段 key/label 都查不到列时返回空匹配，不发起第二条查询", async () => {
+    const session = makeFakeSession([
+      [[{ id: "sheet:items", table_name: "ent_items", column_defs: [
+        { key: "field_1", label: "事项", field_type: "text" },
+      ] }]],
+    ]);
+    const { findRecordsTool } = await import("./row-analysis-tools");
+    const execute = findRecordsTool.execute as unknown as (
+      input: { sheetId: string; field: string; value: string },
+      ctx?: { requestContext: RequestContext },
+    ) => Promise<{ matches: unknown[] }>;
+
+    const result = await execute(
+      { sheetId: "sheet:items", field: "幽灵字段", value: "x" },
+      ctxWithSession(session),
+    );
+    expect(result.matches).toEqual([]);
+    expect(session.calls).toHaveLength(1);
+  });
+});

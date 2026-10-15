@@ -223,3 +223,71 @@ describe("router classifier 决策模型路径", () => {
     expect(events[0].multiProb).toBeCloseTo(0.05);
   });
 });
+
+describe("router classifier 写入意图回归（def-write-intent-misroute）", () => {
+  test("写入指令被分类为 row-analysis 而非 chitchat", async () => {
+    const text = "把「事项」为 A-001 的那一行的「状态」字段改为「待复核」，只改这一行";
+    const llm = fakeLlm(`[{"category":"row-analysis","taskText":"${text}"}]`);
+    const plan = await classifyTask({ text, llmCaller: llm });
+    expect(plan).toEqual([{ category: "row-analysis", taskText: text }]);
+    expect(plan[0].category).not.toBe("chitchat");
+  });
+
+  test("创建记录的写入指令同样走 row-analysis", async () => {
+    const llm = fakeLlm(`[{"category":"row-analysis","taskText":"新增一条记录"}]`);
+    const plan = await classifyTask({ text: "在当前表里新增一条记录", llmCaller: llm });
+    expect(plan[0].category).toBe("row-analysis");
+  });
+
+  test("复合指令（先定位再写）可拆成 navigation + row-analysis 两步", async () => {
+    const llm = fakeLlm(
+      `[{"category":"navigation","taskText":"打开理赔工作簿"},{"category":"row-analysis","taskText":"把选中行状态改为待复核"}]`,
+    );
+    const plan = await classifyTask({
+      text: "打开理赔工作簿，然后把选中行状态改为待复核",
+      llmCaller: llm,
+    });
+    expect(plan.map((item) => item.category)).toEqual(["navigation", "row-analysis"]);
+  });
+
+  test("传给分类模型的提示词：类目定义覆盖记录写入、判定规则禁止写入落 chitchat", async () => {
+    let prompt = "";
+    const llm: RouterLlmCaller = async (input) => {
+      prompt = input;
+      return `[{"category":"chitchat","taskText":"x"}]`;
+    };
+    await classifyTask({ text: "任意输入", llmCaller: llm });
+
+    // row-analysis 类目定义必须显式覆盖写入/修改/创建语义（生产三次复现根因：定义只写「分析」）
+    expect(prompt).toMatch(/row-analysis：[^\n]*写入/);
+    expect(prompt).toMatch(/row-analysis：[^\n]*修改/);
+    // 判定要点必须明令写入归 row-analysis、禁止落入 chitchat
+    expect(prompt).toMatch(/新增、修改、填写、更新、删除记录或字段值的请求一律归入 row-analysis/);
+    expect(prompt).toMatch(/绝不能归入 chitchat/);
+    // chitchat 兜底只收与工作簿数据无关的消息
+    expect(prompt).toMatch(/chitchat：[^\n]*数据无关/);
+  });
+
+  test("提示词区分只读提问与写入：字段含义询问不误判为写入", async () => {
+    let prompt = "";
+    const llm: RouterLlmCaller = async (input) => {
+      prompt = input;
+      return `[{"category":"row-analysis","taskText":"x"}]`;
+    };
+    await classifyTask({ text: "「状态」字段是什么意思", llmCaller: llm });
+    expect(prompt).toMatch(/只读提问[^\n]*不算写入/);
+  });
+
+  test("Jev 决策 criteria 与系统提示同源：row-analysis 覆盖写入，chitchat 排除数据操作", async () => {
+    const { buildJevClassifyRequest } = await import("./router-classifier");
+    const request = buildJevClassifyRequest("把状态改为待复核");
+    const category = request.questions["category"];
+    expect(category.type).toBe("choice");
+    if (category.type !== "choice") return;
+
+    expect(category.criteria["row-analysis"]).toMatch(/写入|修改|更新|创建/);
+    expect(category.criteria["chitchat"]).toMatch(/数据无关|不涉及/);
+    // 题目指令本身也要带写入判定（决策模型看不到系统提示词）
+    expect(category.instructions).toMatch(/属于 row-analysis/);
+  });
+});

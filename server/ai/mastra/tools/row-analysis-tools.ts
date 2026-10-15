@@ -390,8 +390,61 @@ function collectReferenceIds(values: Record<string, unknown>, fields: GridColumn
   return Array.from(new Set(ids));
 }
 
+const FindRecordsOutputSchema = z.object({
+  matches: z.array(z.object({
+    id: z.string(),
+    values: z.record(z.string(), z.unknown()),
+  })),
+});
+
+/**
+ * 按字段值定位数据表中的记录。产物是纯数据（无 intent），
+ * 不会触发 executor 的挂起信号——find → 再生成提案都在同一个子任务内完成。
+ */
+export const findRecordsTool = createTool({
+  id: "findRecords",
+  description: [
+    "在指定数据表中按字段值检索记录，用于定位要分析或写入的目标行。",
+    "传入 sheetId、要匹配的字段（key 或显示名）与期望值，返回匹配记录的 id 与当前字段值；不执行任何写入。",
+    "唯一命中后把返回的 id 作为 recordId 传给 analyzeRow 或 proposeRecordWrite；多条命中时在回答中列出候选让用户选择。",
+  ].join(" "),
+  inputSchema: z.object({
+    sheetId: z.string().describe("目标数据表 record id，例如 sheet:items"),
+    field: z.string().describe("要匹配的字段 key 或显示名"),
+    value: z.string().describe("要匹配的字段值（不区分大小写的包含匹配）"),
+    limit: z.number().int().min(1).max(20).optional().describe("最多返回条数，默认 10"),
+  }),
+  outputSchema: FindRecordsOutputSchema,
+  execute: async ({ sheetId, field, value, limit }, ctx) => {
+    const db = getSurrealSession(ctx as ToolRequestContext);
+    const sheetResult = await db.query(
+      `SELECT table_name, column_defs FROM $sheet LIMIT 1`,
+      { sheet: new StringRecordId(sheetId) },
+    );
+    const sheetRow = firstStatementRows<{ table_name: string; column_defs?: GridColumnDef[] }>(sheetResult)[0];
+    if (!sheetRow) {
+      throw new Error(`找不到数据表定义: ${sheetId}`);
+    }
+    // field 只允许落到已声明列的 key/label 上——既避免模型幻觉字段，也保证下界查询不拼接任意标识符。
+    const fieldKey = normalizeProposalFieldKey(field, sheetRow.column_defs ?? []);
+    if (!fieldKey) return { matches: [] };
+    const rows = await db.query(
+      `SELECT * FROM type::table($table)
+       WHERE string::contains(string::lowercase(<string>(${fieldKey} ?? "")), $q)
+       LIMIT $lim`,
+      { table: sheetRow.table_name, q: value.trim().toLowerCase(), lim: limit ?? 10 },
+    );
+    const matches = firstStatementRows<Record<string, unknown>>(rows).map((row) => ({
+      id: String(row.id),
+      values: row,
+    }));
+    return { matches };
+  },
+});
+
 export const ROW_ANALYSIS_TOOLS = {
   analyzeRow: analyzeRowTool,
   fetchRelatedRecords: fetchRelatedRecordsTool,
+  findRecords: findRecordsTool,
   proposeRecordWrite: proposeRecordWriteTool,
 } as const;

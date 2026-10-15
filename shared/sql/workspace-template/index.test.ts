@@ -342,8 +342,24 @@ describe("workspace template scripts", () => {
     expect(sql).toContain("DEFAULT fn::current_user()");
     // 至少覆盖 owner_user + status 的索引，便于恢复未完成 run
     expect(sql).toMatch(/DEFINE INDEX IF NOT EXISTS \w+ ON TABLE workflow_run COLUMNS owner_user, status/);
-    // 普通成员只能看自己的 run，管理员可审计本 workspace 内 run
-    expect(sql).toContain("FOR select WHERE owner_user = $auth OR $auth.is_admin = true");
+  });
+
+  test("workflow_run 权限归属走 fn::current_user()：admin JWT 会话（$auth NONE）也能落 run 行", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.name === "056-workflow-run-current-user-permissions.surql");
+
+    expect(migration).toBeDefined();
+    const sql = migration!.sql;
+    // admin access 是 TYPE JWT，$auth=NONE；归属判断必须经 fn::current_user() 归一（022 同款先例），
+    // 否则 FOR create 的 owner_user = $auth 恒 false，INSERT 被静默拒绝——管理员 run 不落行。
+    expect(sql).toContain("DEFINE TABLE OVERWRITE workflow_run SCHEMAFULL CHANGEFEED 7d");
+    expect(sql).toContain("FOR select WHERE owner_user = fn::current_user() OR fn::current_user().is_admin = true");
+    expect(sql).toContain("FOR create WHERE owner_user = fn::current_user()");
+    expect(sql).toContain("FOR update WHERE owner_user = fn::current_user()");
+    expect(sql).toContain("FOR delete WHERE owner_user = fn::current_user() OR fn::current_user().is_admin = true");
+    // 权限谓词不得再直接引用 $auth 判归属（只校验语句体，注释里的背景说明不算）
+    const statement = sql.slice(sql.indexOf("DEFINE TABLE"));
+    expect(statement).not.toMatch(/owner_user = \$auth/);
   });
 
   test("Mastra runtime storage schema covers workflow statuses, memory, and observability tables", async () => {
@@ -610,7 +626,7 @@ describe("workspace template scripts", () => {
     const migration = scripts.find((script) => script.name === "055-claims-reconciliation-finding.surql");
 
     expect(migration?.version).toBe(55);
-    expect(WORKSPACE_TEMPLATE_VERSION).toBe(55);
+    expect(WORKSPACE_TEMPLATE_VERSION).toBe(56);
     const sql = migration?.sql ?? "";
     expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS reconciliation_finding SCHEMAFULL/);
     expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS claim_supplement SCHEMAFULL/);
