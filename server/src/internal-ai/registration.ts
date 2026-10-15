@@ -116,6 +116,32 @@ export class InternalAiRegistration {
     }
   }
   private async latest(activity: string): Promise<RevisionRow | undefined> { return (await this.revisions(activity)).at(-1); }
+  /**
+   * 同活动续期核验：新旧 manifest 除 documentHash 外逐字段相同、新摘要确为新文档的必然派生、
+   * 身份摘要一致且批准全新时，才允许追加新 revision。任何未知/缺失基准都返回 false，
+   * 调用方保持原冲突拒绝——绝不放宽为“同 activityId 就可续”。
+   *
+   * 比较无需旧 manifest 原文：configurationDigest 是去 digest 后 manifest 的 canonical sha256，
+   * 把新 manifest 的 documentHash 换回旧值后复算，相等 ⟺ 其余稳定字段
+   *（activityId/goal/project/env/workspace/service 全对象/全部 budget 字段/alias 与角色）全同。
+   * canonical 与公司侧 proof-contract.ts 逐字等价（键排序、无空白分隔），两边复算可互认。
+   */
+  private renewalMatches(latest: RevisionRow, c: CompanyProofClaims): boolean {
+    // 续期只走 fresh approved-service 链：开发登记、旧批准或旧 scope 一律不放宽。
+    if (c.type !== "approved-service" || c.scope !== "enable" || !c.approval) return false;
+    // 旧批准不能替新文档授权：批准任务必须全新。
+    if (!c.approval.taskId || (latest.approval_task ?? null) === c.approval.taskId) return false;
+    // 身份与摘要的核定基准缺失即拒绝。
+    if (!latest.identities_digest || !latest.configuration_digest || !latest.document_hash) return false;
+    // 真实身份（subject/space/database/billingAccount/角色）必须与原受审配置一致。
+    if (c.identitiesDigest !== latest.identities_digest) return false;
+    const { configurationDigest: _drop, ...rest } = c.manifest;
+    void _drop;
+    // 新摘要必须确为新 manifest 的必然派生，防任意值冒充派生。
+    if (createHash("sha256").update(canonical(rest)).digest("hex") !== c.configurationDigest) return false;
+    // 旧摘要必须等于“新 manifest 换回旧 documentHash”后的复算。
+    return createHash("sha256").update(canonical({ ...rest, documentHash: latest.document_hash })).digest("hex") === latest.configuration_digest;
+  }
   private async fresh(activity: string, revision: number): Promise<RevisionRow> {
     this.id(activity);
     const latest = await this.latest(activity);
@@ -173,11 +199,16 @@ export class InternalAiRegistration {
         || (prior.approval_action ?? null) !== (c.approval?.action ?? null) || (prior.approval_audit_id ?? null) !== (c.approval?.auditId ?? null)) {
         throw conflict("company-proof-revision-conflict", "同一证明标识已登记不同证据");
       }
-      this.status.remember(activity, c);
+      // 旧证明重放只读返回旧 revision：不得 remember 旧 claims 覆盖内存中的新鲜 status 能力，
+      // 否则一次重放就能让后续新链路的 submitEvidence/enable 因 jti 失配被拒绝。
       return this.preflight(() => this.summary(prior, true));
     }
     const latest = await this.preflight(() => this.latest(activity));
-    if (latest && latest.configuration_digest !== c.configurationDigest) throw conflict("company-proof-activity-conflict", "同活动已登记不同配置摘要");
+    // 同活动新摘要默认仍是冲突；仅“文档更新及必然派生摘要变化”的续期可追加新 revision，
+    // 不能简单删除本检查（续期条件见 renewalMatches）。
+    if (latest && latest.configuration_digest !== c.configurationDigest && !this.renewalMatches(latest, c)) {
+      throw conflict("company-proof-activity-conflict", "同活动已登记不同配置摘要");
+    }
     const bindings: IdentityRow[] = c.identities.map(i => ({ identity_hash: hash(i.subject, i.database), activity, revision: (latest?.revision ?? 0) + 1,
       alias: i.alias, space_id: i.spaceId, database: i.database, workspace_role: i.workspaceRole,
       billing_role: i.billingRole, billing_account_ref: i.billingAccountRef, revoked: false }));
@@ -227,6 +258,15 @@ export class InternalAiRegistration {
     const e: ReviewedEvidence = parsed.data;
     if (e.accountRef !== target.account_ref || e.endpoint !== target.endpoint || e.model !== target.model || e.priceRevision !== target.price_revision
       || (target.proof_type === "approved-service" && e.type !== "reviewed-service" && e.type !== "reviewed-token-plan")) throw denied("证据文档服务标识或类型不一致");
+    // 续期证据的采样不得比原已核定证据倒退：基线是该活动历史已核定采样的最大值，
+    // 首次证据（无旧采样）跳过。伪造未来与过期仍由 enable 的全部门禁拒绝。
+    const sampledAt = Date.parse(e.sampledAt);
+    const priorSampled = rows<{ balance_sampled_at: string }>(await (await this.db()).query(
+      "SELECT balance_sampled_at FROM internal_ai_revision WHERE activity = $activity AND balance_sampled_at != NONE", { activity: input.activity }))
+      .map(r => Date.parse(r.balance_sampled_at)).filter(Number.isFinite);
+    if (priorSampled.length && !(sampledAt >= Math.max(...priorSampled))) {
+      throw conflict("company-proof-evidence-stale", "证据采样时间早于原已核定证据");
+    }
     await this.status.current(input.activity, target.source_jti ?? target.proof_jti ?? "");
     // 配额型证据：USD 余额字段必须为空，绝不允许把配额换算成美元；余额型证据则清空全部配额字段。
     const tokenPlan = e.type === "reviewed-token-plan";

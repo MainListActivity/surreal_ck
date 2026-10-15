@@ -71,12 +71,21 @@ function tokenPlanDocument(over: Record<string, unknown> = {}): string {
   });
 }
 
+/** 按公司 proof-contract 的 configurationDigest 规则：去 digest 后 manifest 的 canonical sha256。 */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") return `{${Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(",")}}`;
+  return JSON.stringify(value);
+}
 /** 按公司 proof-bridge 的 sign('proof', …) 形状构造并自签一份证明；documentHash 由真实文档字节算。 */
 function proof(tag: string, overrides: {
   jti?: string; type?: "development-disabled" | "approved-service"; scope?: "register-disabled" | "enable";
   paidCallsAllowed?: 0 | 1; model?: string; endpoint?: string; accountRef?: string; activityId?: string;
   priceRevision?: string; budget?: Record<string, unknown>; approval?: unknown;
-  document?: string; evidence?: Record<string, unknown>;
+  document?: string; evidence?: Record<string, unknown>; manifestOver?: Record<string, unknown>;
+  identitiesDigest?: string; identities?: { owner?: Record<string, unknown>; member?: Record<string, unknown> };
+  /** 按公司 proof-contract 规则派生摘要（去 digest 后 manifest 的 canonical sha256），并把批准 digest 机械对齐；调用方仍显式传全新批准任务。 */
+  deriveDigest?: boolean;
 } = {}): string {
   const ids = identities(tag);
   const model = overrides.model ?? "sensenova-6.8-flash-lite";
@@ -85,8 +94,7 @@ function proof(tag: string, overrides: {
   const priceRevision = overrides.priceRevision ?? "synthetic-unsupported";
   const document = overrides.document ?? evidenceDocument(tag, overrides.evidence);
   const documentHash = bytesHash(document);
-  const configurationDigest = digest(`configuration:${tag}:jti-${tag}`);
-  const manifest = {
+  const manifestBody = {
     schemaVersion: 1, goalId: COMPANY_PROOF_GOAL, project: COMPANY_PROOF_PROJECT, env: "production",
     activityId: overrides.activityId ?? `activity-${tag}`, workspaceSlug: "ui01", documentHash,
     service: { accountRef, endpoint, model, priceRevision },
@@ -95,17 +103,31 @@ function proof(tag: string, overrides: {
       { alias: "LCA04_REMOVABLE", workspaceRole: "admin", billingRole: "owner" },
       { alias: "LCA04_MEMBER", workspaceRole: "participant", billingRole: "member" },
     ],
-    configurationDigest,
+    ...overrides.manifestOver,
   };
+  // 默认按公司规则派生摘要（与产品侧 renewalMatches 的复算互认）；manifestOver 可整体替换 body。
+  // 旧用例沿用固定种子摘要（与旧 manifest 逐项比对的幂等/冲突语义不变）；deriveDigest 用于续期用例。
+  const manifestWithoutDigest = { ...manifestBody };
+  const derived = createHash("sha256").update(canonicalJson(manifestWithoutDigest)).digest("hex");
+  const configurationDigest = overrides.deriveDigest ? derived : digest(`configuration:${tag}:jti-${tag}`);
+  const manifest = { ...manifestBody, configurationDigest };
+  const owner = { ...ids.owner, ...overrides.identities?.owner };
+  const member = { ...ids.member, ...overrides.identities?.member };
+  // 派生摘要时批准 digest 必须机械对齐新摘要（verifyCompanyProof 强制 approval.digest === configurationDigest）；
+  // 显式传的 approval 仍保留调用方的任务/版本/审计字段，只对齐 digest，保证“新独立批准任务”可断言。
+  const approvalInput = overrides.approval as { digest?: string } | null | undefined;
+  const approval = overrides.deriveDigest && approvalInput && typeof approvalInput === "object"
+    ? { ...approvalInput, digest: derived }
+    : (overrides.approval ?? null);
   const payload = {
     contractVersion: 1, type: overrides.type ?? "development-disabled",
     paidCallsAllowed: overrides.paidCallsAllowed ?? 0, scope: overrides.scope ?? "register-disabled",
     project: COMPANY_PROOF_PROJECT, env: "production", goal: COMPANY_PROOF_GOAL,
     requestTask: `company-task-${tag}`,
     lease: { goal: COMPANY_PROOF_GOAL, project: COMPANY_PROOF_PROJECT, role: "engineering", employee: "synthetic-employee", taskId: `company-task-${tag}`, delivery: `delivery-${tag}`, fence: 1 },
-    approval: overrides.approval ?? null, documentHash, manifest, configurationDigest,
-    identities: [ids.owner, ids.member],
-    identitiesDigest: digest(`identities:${tag}`),
+    approval, documentHash, manifest, configurationDigest,
+    identities: [owner, member],
+    identitiesDigest: overrides.identitiesDigest ?? digest(`identities:${tag}`),
     jti: overrides.jti ?? `jti-${tag}`, nonce: "abcdefghijklmnopqrstuvwx",
     iat: SECONDS, exp: SECONDS + 60,
     status: { path: "/internal-ai/status", bearer: "C".repeat(43) },
@@ -727,4 +749,259 @@ localTest("one approved measurement cycle preserves 30 historical attempts and s
   expect((await new InternalAiStore(async () => db!).measurementCycle())?.attempts).toBe(30);
   expect(rows(await db.query("SELECT * FROM ONLY $id", { id: new RecordId("internal_ai_target", GOAL) }))[0]?.attempts).toBe(30);
   await db.use({ namespace: "registration_test", database: "_system" });
+}, 30000);
+
+localTest("same-activity renewal with a fresh independent approval appends a disabled revision and enables only on the new document", async () => {
+  if (!db) throw new Error("fixture unavailable");
+  const tariff = TARIFFS.find(t => t.model === "sensenova-6.8-flash-lite")!;
+  const tag = "renewal", activityId = `activity-${tag}`, endpoint = `https://${tariff.host}/v1`;
+  const runtime = { provider: tariff.provider, model: tariff.model, endpoint };
+  const service = { model: tariff.model, endpoint, accountRef: "synthetic-sensenova-account", priceRevision: tariff.revision };
+  const approvalV1 = { taskId: "synthetic-renewal-approval-1", version: 1, action: "accept", auditId: "audit:renewal-1", reviewer: "synthetic-reviewer", digest: "" };
+  const approvalV2 = { taskId: "synthetic-renewal-approval-2", version: 1, action: "accept", auditId: "audit:renewal-2", reviewer: "synthetic-reviewer", digest: "" };
+  // 隔离库：旧 30 条账本与 target 单例都不污染主库。
+  await db.query("DEFINE DATABASE IF NOT EXISTS renewal_test;");
+  await db.use({ namespace: "registration_test", database: "renewal_test" });
+  try {
+    for (const file of ["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql", "037-internal-ai-measurement-cycle.surql", "038-internal-ai-account-plan-type.surql"]) {
+      await db.query(await readFile(new URL(`../../../shared/sql/system/${file}`, import.meta.url), "utf8"));
+    }
+    const docV1 = tokenPlanDocument({ sampledAt: new Date(NOW - 3600000).toISOString(), expiresAt: new Date(NOW + 3600000).toISOString() });
+    // 旧受审链首登即用公司规则派生摘要（续期复算的核定基准）；续期 proof 同规则派生。
+    const registered = await registration.register({ claims: claimsOf(proof(tag, {
+      type: "approved-service", scope: "enable", paidCallsAllowed: 1, activityId, document: docV1,
+      ...service, approval: approvalV1, deriveDigest: true,
+    })), operator: "synthetic-operator", reason: "旧受审登记" });
+    const submitted = await registration.submitEvidence({ activity: activityId, revision: registered.revision, document: docV1, operator: "synthetic-operator", reason: "旧证据" });
+    const enabled = await registration.enable({ activity: activityId, revision: submitted.revision, operator: "synthetic-operator", reason: "旧启用", runtime });
+    expect(enabled.state).toBe("enabled");
+    expect(await gate.store.measurementCycle()).toBeUndefined();
+    // 旧 30 已用尽：30 次零费率真实预留+结算（零费率证书预留 0，账本仍计数）。
+    const scope = await gate.bind(`owner-${tag}`, `ws_${tag}`, "run-renewal-old", "key-renewal-old");
+    if (!scope) throw new Error("missing bound fixture");
+    for (let i = 0; i < 30; i++) {
+      const ticket = await gate.inRun(scope, () => gate.begin("proposal", tariff.provider, tariff.model, endpoint));
+      await gate.inRun(scope, () => gate.finish(ticket, { inputTokens: 10, outputTokens: 5, cachedInputTokens: null, reasoningTokens: null }, tariff.model, `synthetic-old-${i}`, false));
+    }
+    expect((await gate.store.activity(activityId))?.attempts).toBe(30);
+    expect((await gate.store.target()).attempts).toBe(30);
+    await expect(gate.store.reserve(scope, "proposal", tariff, 0)).rejects.toThrow();
+    const oldAttempts = await gate.store.page(activityId);
+    expect(oldAttempts.length).toBe(30);
+    // 旧证据过期后冻结原路径：拨过期 + 显式禁用。
+    await db.query('UPDATE ONLY $id SET evidence_expires_at = "2000-01-01T00:00:00Z"', { id: new RecordId("internal_ai_activity", activityId) });
+    const frozen = await registration.disable({ activity: activityId, operator: "synthetic-operator", reason: "旧证据过期冻结" });
+    const beforeRenewal = await registration.revisions(activityId);
+    const beforeIdentities = await registration.identities(activityId);
+    // 续期：同稳定配置 + 新文档（采样更新）+ 全新独立批准 + 新 jti，摘要按公司规则派生。
+    const docV2 = tokenPlanDocument({ sampledAt: new Date(NOW - 60000).toISOString(), expiresAt: new Date(NOW + 3600000).toISOString(), quotaRemaining: 59999 });
+    const renewed = await registration.register({ claims: claimsOf(proof(tag, {
+      type: "approved-service", scope: "enable", paidCallsAllowed: 1, activityId, document: docV2,
+      ...service, approval: approvalV2, jti: "jti-renewal-2", deriveDigest: true,
+    })), operator: "synthetic-operator", reason: "同活动续期登记" });
+    expect(renewed.revision).toBe(frozen.revision + 1);
+    expect(renewed.state).toBe("disabled");
+    expect(renewed.proofType).toBe("approved-service");
+    expect(renewed.approval?.taskId).toBe("synthetic-renewal-approval-2");
+    expect(renewed.documentHash).toBe(bytesHash(docV2));
+    expect(renewed.configurationDigest).not.toBe(beforeRenewal.at(-1)!.configuration_digest);
+    expect(renewed.idempotentReplay).toBe(false);
+    // 旧 revision/绑定逐字节不变；计数/reserved/spent 保持；identity_hash 不动。
+    expect(await registration.revisions(activityId).then(rs => rs.slice(0, beforeRenewal.length))).toEqual(beforeRenewal);
+    expect(await registration.identities(activityId)).toEqual(beforeIdentities.map(i => ({ ...i, revision: renewed.revision })));
+    const ledger = await gate.store.activity(activityId);
+    expect(ledger).toMatchObject({ attempts: 30, reserved: 0, spent: 0 });
+    expect((await gate.store.target()).attempts).toBe(30);
+    expect(await gate.store.page(activityId)).toEqual(oldAttempts);
+    // 旧文档不能提交到新 revision（失配 hash）。
+    await expect(registration.submitEvidence({ activity: activityId, revision: renewed.revision, document: docV1, operator: "synthetic-operator", reason: "旧文档回放" })).rejects.toThrow(/文档摘要不一致/);
+    // 新文档走完 evidence → 显式 enable 才放行；旧 revision 号不能再启用。
+    const submittedV2 = await registration.submitEvidence({ activity: activityId, revision: renewed.revision, document: docV2, operator: "synthetic-operator", reason: "新证据" });
+    expect(submittedV2.gaps).toEqual([]);
+    await expect(registration.enable({ activity: activityId, revision: renewed.revision, operator: "synthetic-operator", reason: "旧版本启用", runtime })).rejects.toThrow(/旧证据/);
+    const enabledV2 = await registration.enable({ activity: activityId, revision: submittedV2.revision, operator: "synthetic-operator", reason: "续期显式启用", runtime });
+    expect(enabledV2.state).toBe("enabled");
+    expect(enabledV2.dataReady).toBe(true);
+    expect((await gate.store.activity(activityId))?.attempts).toBe(30);
+    // 旧 proof 重放：只读返回旧 revision，不新增、不覆盖新 status、不降回旧证据。
+    const replay = await registration.register({ claims: claimsOf(proof(tag, {
+      type: "approved-service", scope: "enable", paidCallsAllowed: 1, activityId, document: docV1,
+      ...service, approval: approvalV1, deriveDigest: true,
+    })), operator: "synthetic-operator", reason: "旧票据重放" });
+    expect(replay.idempotentReplay).toBe(true);
+    expect(replay.revision).toBe(registered.revision);
+    expect((await registration.revisions(activityId)).length).toBe(submittedV2.revision + 1);
+    // 旧票据重放后新链路仍可用：新 revision 的 status 能力未被覆盖。
+    const latestRevision = (await registration.revisions(activityId)).at(-1)!;
+    expect(latestRevision.state).toBe("enabled");
+    expect((await gate.store.activity(activityId))?.balance_evidence_hash).toBe(bytesHash(docV2));
+    // 重复 enable 同一已启用 revision：fresh 版本检查拒绝，不补预算。
+    await expect(registration.enable({ activity: activityId, revision: submittedV2.revision, operator: "synthetic-operator", reason: "重复启用", runtime })).rejects.toThrow(/旧证据/);
+    expect((await gate.store.target()).attempts).toBe(30);
+  } finally {
+    await db.use({ namespace: "registration_test", database: "_system" });
+  }
+}, 30000);
+
+localTest("renewal rejects any stable-field change, stale approval, missing approval, revoked identity and concurrent doubles", async () => {
+  if (!db) throw new Error("fixture unavailable");
+  const tariff = TARIFFS.find(t => t.model === "sensenova-6.8-flash-lite")!;
+  const tag = "renewreject", activityId = `activity-${tag}`, endpoint = `https://${tariff.host}/v1`;
+  const service = { model: tariff.model, endpoint, accountRef: "synthetic-sensenova-account", priceRevision: tariff.revision };
+  const approvalV1 = { taskId: "synthetic-reject-approval-1", version: 1, action: "accept", auditId: "audit:reject-1", reviewer: "synthetic-reviewer", digest: "" };
+  await db.query("DEFINE DATABASE IF NOT EXISTS renewal_reject_test;");
+  await db.use({ namespace: "registration_test", database: "renewal_reject_test" });
+  try {
+    for (const file of ["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql", "037-internal-ai-measurement-cycle.surql", "038-internal-ai-account-plan-type.surql"]) {
+      await db.query(await readFile(new URL(`../../../shared/sql/system/${file}`, import.meta.url), "utf8"));
+    }
+    const docV1 = tokenPlanDocument({ sampledAt: new Date(NOW - 3600000).toISOString(), expiresAt: new Date(NOW + 3600000).toISOString() });
+    const first = await registration.register({ claims: claimsOf(proof(tag, {
+      type: "approved-service", scope: "enable", paidCallsAllowed: 1, activityId, document: docV1,
+      ...service, approval: approvalV1, deriveDigest: true,
+    })), operator: "synthetic-operator", reason: "旧受审登记" });
+    // 先落旧证据，形成已核定采样基线（stale 采样检查的比对对象）；不启用，避免门禁干扰拒绝矩阵。
+    await registration.submitEvidence({ activity: activityId, revision: first.revision, document: docV1, operator: "synthetic-operator", reason: "旧证据基线" });
+    const revisionCount = () => registration.revisions(activityId).then(rs => rs.length);
+    expect(await revisionCount()).toBe(2);
+    const docV2 = tokenPlanDocument({ sampledAt: new Date(NOW - 60000).toISOString(), expiresAt: new Date(NOW + 3600000).toISOString() });
+    const attemptRenew = (over: Record<string, unknown>, jti: string, approval: unknown = { taskId: `synthetic-reject-${jti}`, version: 1, action: "accept", auditId: `audit:${jti}`, reviewer: "synthetic-reviewer", digest: "" }) =>
+      registration.register({ claims: claimsOf(proof(tag, {
+        type: "approved-service", scope: "enable", paidCallsAllowed: 1, activityId, document: docV2,
+        ...service, ...over, approval, jti, deriveDigest: true,
+      })), operator: "synthetic-operator", reason: "拒绝矩阵" });
+    // 改任一稳定字段：服务对象/预算/workspace/证书均拒绝，且无部分写。
+    for (const [name, over] of [
+      ["endpoint", { endpoint: "https://other.sensenova.cn/v1" }],
+      ["model", { model: "sensenova-6.8-flash" }],
+      ["accountRef", { accountRef: "synthetic-other-account" }],
+      ["priceRevision", { priceRevision: "synthetic-other-revision" }],
+      ["budget-total", { budget: { totalNanoUsd: 500_000_000 } }],
+      ["budget-attempts", { budget: { maxAttempts: 10 } }],
+      ["workspace", { manifestOver: { workspaceSlug: "other-ws" } }],
+    ] as const) {
+      await expect(attemptRenew(over as Record<string, unknown>, `jti-reject-${name}`)).rejects.toThrow(/同活动已登记不同配置摘要/);
+      expect(await revisionCount()).toBe(2);
+    }
+    // 改身份/别库/计费账户：摘要或绑定检查拒绝（该段仅示意，真实改库用例见下）。
+    // 用 identities 覆盖构造改库身份（与 identitiesDigest 一并改，仍被绑定检查拒绝）。
+    const movedIds = identities(tag);
+    await expect(registration.register({ claims: claimsOf(proof(tag, {
+      type: "approved-service", scope: "enable", paidCallsAllowed: 1, activityId, document: docV2,
+      ...service, approval: { taskId: "synthetic-reject-moved", version: 1, action: "accept", auditId: "audit:moved", reviewer: "synthetic-reviewer", digest: "" },
+      jti: "jti-reject-moved", deriveDigest: true,
+      identities: { owner: { ...movedIds.owner, database: "ws_moved" }, member: { ...movedIds.member, database: "ws_moved" } },
+      identitiesDigest: "0".repeat(64),
+    })), operator: "synthetic-operator", reason: "改库续期" })).rejects.toThrow();
+    expect(await revisionCount()).toBe(2);
+    // 缺批准（development-disabled 旧 marker）不放宽。
+    await expect(registration.register({ claims: claimsOf(proof(tag, {
+      type: "development-disabled", scope: "register-disabled", paidCallsAllowed: 0, activityId, document: docV2,
+      ...service, jti: "jti-reject-dev", deriveDigest: true,
+    })), operator: "synthetic-operator", reason: "开发证明续期" })).rejects.toThrow(/同活动已登记不同配置摘要/);
+    // 复用旧批准任务替新文档授权：拒绝。
+    await expect(attemptRenew({}, "jti-reject-oldapproval", { ...approvalV1, digest: "" })).rejects.toThrow(/同活动已登记不同配置摘要/);
+    expect(await revisionCount()).toBe(2);
+    // 采样倒退的新文档（早于原已核定采样）：登记可追加 revision，但证据提交拒绝。
+    const staleDoc = tokenPlanDocument({ sampledAt: new Date(NOW - 7200000).toISOString(), expiresAt: new Date(NOW + 3600000).toISOString() });
+    const staleReg = await registration.register({ claims: claimsOf(proof(tag, {
+      type: "approved-service", scope: "enable", paidCallsAllowed: 1, activityId, document: staleDoc,
+      ...service, approval: { taskId: "synthetic-reject-stale", version: 1, action: "accept", auditId: "audit:stale", reviewer: "synthetic-reviewer", digest: "" },
+      jti: "jti-reject-stale", deriveDigest: true,
+    })), operator: "synthetic-operator", reason: "倒退采样登记" });
+    await expect(registration.submitEvidence({ activity: activityId, revision: staleReg.revision, document: staleDoc, operator: "synthetic-operator", reason: "倒退采样证据" })).rejects.toThrow(/早于原已核定证据/);
+    expect((await registration.revisions(activityId)).length).toBe(staleReg.revision);
+    // 撤销身份后：续期事务拒绝。
+    await registration.revokeIdentity({ activity: activityId, alias: "LCA04_MEMBER", operator: "synthetic-operator", reason: "合成撤销" });
+    await expect(attemptRenew({}, "jti-reject-revoked")).rejects.toThrow(/登记事务/);
+    // 并发双续期：仅一成功，无部分写。
+    await db.query("DEFINE DATABASE IF NOT EXISTS renewal_race_test;");
+    await db.use({ namespace: "registration_test", database: "renewal_race_test" });
+    for (const file of ["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql", "037-internal-ai-measurement-cycle.surql", "038-internal-ai-account-plan-type.surql"]) {
+      await db.query(await readFile(new URL(`../../../shared/sql/system/${file}`, import.meta.url), "utf8"));
+    }
+    const raceTag = "renewrace", raceActivity = `activity-${raceTag}`;
+    const raceService = { model: tariff.model, endpoint, accountRef: "synthetic-sensenova-account", priceRevision: tariff.revision };
+    const raceDocV1 = tokenPlanDocument({ sampledAt: new Date(NOW - 3600000).toISOString(), expiresAt: new Date(NOW + 3600000).toISOString() });
+    await registration.register({ claims: claimsOf(proof(raceTag, {
+      type: "approved-service", scope: "enable", paidCallsAllowed: 1, activityId: raceActivity, document: raceDocV1,
+      ...raceService, approval: { taskId: "synthetic-race-approval-1", version: 1, action: "accept", auditId: "audit:race-1", reviewer: "synthetic-reviewer", digest: "" },
+      deriveDigest: true,
+    })), operator: "synthetic-operator", reason: "竞态旧登记" });
+    const raceDocV2 = tokenPlanDocument({ sampledAt: new Date(NOW - 60000).toISOString(), expiresAt: new Date(NOW + 3600000).toISOString() });
+    const racer = (key: string) => registration.register({ claims: claimsOf(proof(raceTag, {
+      type: "approved-service", scope: "enable", paidCallsAllowed: 1, activityId: raceActivity, document: raceDocV2,
+      ...raceService, approval: { taskId: `synthetic-race-${key}`, version: 1, action: "accept", auditId: `audit:race-${key}`, reviewer: "synthetic-reviewer", digest: "" },
+      jti: `jti-race-${key}`, deriveDigest: true,
+    })), operator: "synthetic-operator", reason: "并发续期" });
+    const raced = await Promise.allSettled([racer("a"), racer("b")]);
+    expect(raced.filter(r => r.status === "fulfilled").length).toBe(1);
+    expect(raced.filter(r => r.status === "rejected").length).toBe(1);
+    expect((await registration.revisions(raceActivity)).length).toBe(2);
+    await db.use({ namespace: "registration_test", database: "renewal_reject_test" });
+    void first;
+  } finally {
+    await db.use({ namespace: "registration_test", database: "_system" });
+  }
+}, 30000);
+
+localTest("renewal on an activity with an existing measurement cycle cannot top up or move the cycle", async () => {
+  if (!db) throw new Error("fixture unavailable");
+  const tariff = TARIFFS.find(t => t.model === "sensenova-6.8-flash-lite")!;
+  const tag = "renewcycle", activityId = `activity-${tag}`, endpoint = `https://${tariff.host}/v1`;
+  const runtime = { provider: tariff.provider, model: tariff.model, endpoint };
+  await db.query("DEFINE DATABASE IF NOT EXISTS renewal_cycle_test;");
+  await db.use({ namespace: "registration_test", database: "renewal_cycle_test" });
+  try {
+    for (const file of ["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql", "037-internal-ai-measurement-cycle.surql", "038-internal-ai-account-plan-type.surql"]) {
+      await db.query(await readFile(new URL(`../../../shared/sql/system/${file}`, import.meta.url), "utf8"));
+    }
+    // 周期活动用测量身份（MEASUREMENT_DATABASE）：与 identities(tag) 的默认 ws 库不同，
+    // 使 enable(measurementCycle:true) 的复测库门禁通过；续期仍要求同一身份。
+    const cycleIds = {
+      owner: { alias: "LCA04_REMOVABLE", subject: `owner-measurement${tag}`, spaceId: `workspace:measurement${tag}`, database: MEASUREMENT_DATABASE, workspaceRole: "admin", billingRole: "owner", billingAccountRef: `account-measurement${tag}` },
+      member: { alias: "LCA04_MEMBER", subject: `member-measurement${tag}`, spaceId: `workspace:measurement${tag}`, database: MEASUREMENT_DATABASE, workspaceRole: "participant", billingRole: "member", billingAccountRef: `account-measurement${tag}` },
+    } as const;
+    const docV1 = tokenPlanDocument({ sampledAt: new Date(NOW - 3600000).toISOString(), expiresAt: new Date(NOW + 3600000).toISOString() });
+    const registered = await registration.register({ claims: claimsOf(proof(tag, {
+      type: "approved-service", scope: "enable", paidCallsAllowed: 1, activityId, document: docV1,
+      model: tariff.model, endpoint, accountRef: "synthetic-sensenova-account", priceRevision: tariff.revision,
+      approval: { taskId: "synthetic-cycle-approval-1", version: 1, action: "accept", auditId: "audit:cycle-1", reviewer: "synthetic-reviewer", digest: "" },
+      identities: { owner: cycleIds.owner, member: cycleIds.member }, deriveDigest: true,
+    })), operator: "synthetic-operator", reason: "周期旧登记" });
+    const submitted = await registration.submitEvidence({ activity: activityId, revision: registered.revision, document: docV1, operator: "synthetic-operator", reason: "周期旧证据" });
+    const cycled = await registration.enable({ activity: activityId, revision: submitted.revision, measurementCycle: true, operator: "synthetic-operator", reason: "建一次性周期", runtime });
+    expect(cycled.state).toBe("enabled");
+    const cycleBefore = await gate.store.measurementCycle();
+    expect(cycleBefore?.attempt_limit).toBe(30);
+    // 周期内先消耗 2 次：已有非空 cycle。
+    const scope = await gate.bind(cycleIds.owner.subject, MEASUREMENT_DATABASE, "run-renewcycle", "key-renewcycle");
+    if (!scope) throw new Error("missing bound fixture");
+    for (let i = 0; i < 2; i++) {
+      const ticket = await gate.inRun(scope, () => gate.begin("proposal", tariff.provider, tariff.model, endpoint));
+      await gate.inRun(scope, () => gate.finish(ticket, { inputTokens: 10, outputTokens: 5, cachedInputTokens: null, reasoningTokens: null }, tariff.model, `synthetic-cycle-${i}`, false));
+    }
+    const cycleUsed = await gate.store.measurementCycle();
+    expect(cycleUsed?.attempts).toBe(2);
+    // 续期登记+新证据：允许（追加 disabled revision），但 measurementCycle enable 照旧冲突。
+    const docV2 = tokenPlanDocument({ sampledAt: new Date(NOW - 60000).toISOString(), expiresAt: new Date(NOW + 3600000).toISOString() });
+    const renewed = await registration.register({ claims: claimsOf(proof(tag, {
+      type: "approved-service", scope: "enable", paidCallsAllowed: 1, activityId, document: docV2,
+      model: tariff.model, endpoint, accountRef: "synthetic-sensenova-account", priceRevision: tariff.revision,
+      approval: { taskId: "synthetic-cycle-approval-2", version: 1, action: "accept", auditId: "audit:cycle-2", reviewer: "synthetic-reviewer", digest: "" },
+      jti: "jti-cycle-2", deriveDigest: true,
+      identities: { owner: cycleIds.owner, member: cycleIds.member },
+    })), operator: "synthetic-operator", reason: "周期活动续期" });
+    const submittedV2 = await registration.submitEvidence({ activity: activityId, revision: renewed.revision, document: docV2, operator: "synthetic-operator", reason: "周期新证据" });
+    // 普通 enable 可走（新证据门禁全过），但 measurementCycle 分支因 evidence_hash 失配照旧拒绝。
+    const enabledV2 = await registration.enable({ activity: activityId, revision: submittedV2.revision, operator: "synthetic-operator", reason: "周期活动普通启用", runtime });
+    expect(enabledV2.state).toBe("enabled");
+    await expect(registration.enable({ activity: activityId, revision: submittedV2.revision, operator: "synthetic-operator", reason: "周期不可搬迁", runtime })).rejects.toThrow(/旧证据/);
+    const disabledV2 = await registration.disable({ activity: activityId, operator: "synthetic-operator", reason: "再冻结" });
+    await expect(registration.enable({ activity: activityId, revision: disabledV2.revision, measurementCycle: true, operator: "synthetic-operator", reason: "新证据不可重建周期", runtime })).rejects.toThrow("登记事务未确认");
+    // 已有非空 cycle 完整快照不变：固定 id/owner/attempt_limit/attempts/approval/evidence_hash/expiry。
+    expect(await gate.store.measurementCycle()).toEqual(cycleUsed);
+  } finally {
+    await db.use({ namespace: "registration_test", database: "_system" });
+  }
 }, 30000);
