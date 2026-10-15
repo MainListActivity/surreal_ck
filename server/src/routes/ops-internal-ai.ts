@@ -11,6 +11,7 @@ import type { InternalAiGate } from "../internal-ai/gate";
 import { InternalAiRegistration, normalizeReason, PRICE_REQUIRED_EVIDENCE } from "../internal-ai/registration";
 import { verifyCompanyProof } from "../internal-ai/company-proof";
 import { endpointHost, TARIFFS } from "../internal-ai/pricing";
+import { aggregateAssessments, assessAttempt, type AssessedAttempt, type AssessmentContext } from "../internal-ai/assessment";
 import { HttpError } from "../http-error";
 function dependencyVersion(): string | null {
   try { const entry = createRequire(import.meta.url).resolve("@mastra/core"); const parsed: unknown = JSON.parse(readFileSync(join(dirname(entry), "../package.json"), "utf8")); return parsed && typeof parsed === "object" && "version" in parsed && typeof parsed.version === "string" ? parsed.version : null; } catch { return null; }
@@ -35,9 +36,33 @@ export function createOpsInternalAiRoutes(input: { gate: InternalAiGate; registr
       if (!activity) throw new HttpError(404, "internal-ai-unconfigured", "内部活动尚未受审配置，禁止付费调用");
       const after = Number(c.req.query("after") ?? 0);
       if (!Number.isSafeInteger(after) || after < 0) throw new HttpError(400, "internal-ai-cursor-invalid", "游标无效");
+      // FV06 可选只读成本评价：?assessment=1 才追加投影与聚合；未知取值拒绝，避免悄悄换语义。
+      const assessmentParam = c.req.query("assessment");
+      if (assessmentParam !== undefined && assessmentParam !== "1") throw new HttpError(400, "internal-ai-assessment-invalid", "成本评价仅支持 assessment=1");
+      const successfulTasksParam = c.req.query("successfulTasks");
+      const successfulTasks = successfulTasksParam === undefined ? undefined : Number(successfulTasksParam);
+      if (successfulTasks !== undefined && (!Number.isSafeInteger(successfulTasks) || successfulTasks < 0)) throw new HttpError(400, "internal-ai-assessment-invalid", "successfulTasks 必须是非负整数");
       const attempts = await input.gate.store.page(id, after);
       const target = await input.gate.store.target();
       const measurementCycle = await input.gate.store.measurementCycle();
+      // 评价上下文：调用时刻的授权 revision 证据窗口 + 固定测量周期，全部只读。
+      let assessments: Map<string, ReturnType<typeof assessAttempt>> | null = null;
+      let aggregate: ReturnType<typeof aggregateAssessments> | null = null;
+      if (assessmentParam === "1") {
+        const ctx: AssessmentContext = {
+          cycle: measurementCycle ? { id: MEASUREMENT_CYCLE, ...measurementCycle } : null,
+          revisions: (await input.gate.store.revisionEvidence(id)).map(r => ({
+            revision: r.revision, state: r.state, createdAt: r.created_at, documentHash: r.document_hash,
+            evidenceKind: r.evidence_kind, accountPlanType: r.account_plan_type, accountRef: r.account_ref,
+            sampledAt: r.balance_sampled_at, expiresAt: r.evidence_expires_at,
+            endpoint: r.endpoint, model: r.model, priceRevision: r.price_revision,
+          })),
+        };
+        assessments = new Map(attempts.map(a => [String(a.id), assessAttempt(a, ctx)]));
+        const assessed: AssessedAttempt[] = attempts.map(a => ({ id: String(a.id), sequence: a.sequence, runHash: a.run_hash, state: a.state, costAssessment: assessments!.get(String(a.id))! }));
+        aggregate = aggregateAssessments(assessed, { successfulTasks });
+      }
+      const nextAfter = attempts.length === 50 ? attempts.at(-1)?.sequence ?? null : null;
       // 固定字段投影，绝不序列化config任意对象/请求/响应/工具载荷。
       return c.json({ measurementCycle: measurementCycle ? { id: MEASUREMENT_CYCLE, ...measurementCycle } : null, target: { ...target, cumulativeAttempts: target.attempts + (measurementCycle?.attempts ?? 0), totalLimit: 1000000000, attemptLimit: 30, remaining: Math.max(0, 1000000000 - target.spent - target.reserved) }, activity: id, enabled: activity.enabled, approvalRevision: activity.approval_revision ?? null,
         limits: { total: activity.total_limit, perAttempt: activity.per_attempt_limit, attempts: activity.attempt_limit },
@@ -47,8 +72,9 @@ export function createOpsInternalAiRoutes(input: { gate: InternalAiGate; registr
         evidenceKind: activity.evidence_kind ?? null,
         balance: { status: activity.balance_evidence_hash ? "reviewed-evidence" : "unavailable", amount: activity.balance_nano_usd ?? null, currency: activity.balance_currency ?? null, source: activity.balance_source && /^(reviewed-document|token-plan):[0-9a-f]{64}$/.test(activity.balance_source) ? activity.balance_source : null, evidenceHash: activity.balance_evidence_hash ?? null, sampledAt: activity.balance_sampled_at ?? null, expiresAt: activity.evidence_expires_at ?? null, autoTopupDisabled: activity.auto_topup_disabled, serviceApproved: activity.service_approved },
         quota: activity.evidence_kind === "reviewed-token-plan" ? { planName: activity.plan_name ?? null, planSourceUrl: activity.plan_source_url ?? null, accountPlanType: activity.account_plan_type ?? null, unit: activity.quota_unit ?? null, amount: activity.quota_amount ?? null, windowSeconds: activity.quota_window_seconds ?? null, remaining: activity.quota_remaining ?? null, noPaymentInstrument: activity.no_payment_instrument ?? null } : null,
-        attempts: attempts.map(a => ({ id: String(a.id), sequence: a.sequence, measurementCycle: a.measurement_cycle ?? null, retryIndex: a.retry_index, runHash: a.run_hash, keyHash: a.key_hash, logicalHash: a.logical_hash, stage: a.stage, state: a.state, provider: a.provider, model: a.model, actualModel: a.actual_model ?? null, requestId: a.request_id ?? null, usage: a.usage ?? null, usageSource: a.usage_source, priceRevision: a.price_revision, currency: a.currency, reserved: a.reserved, cost: a.cost ?? null, startedAt: a.started_at, endedAt: a.ended_at })),
-        nextAfter: attempts.length === 50 ? attempts.at(-1)?.sequence : null,
+        attempts: attempts.map(a => ({ id: String(a.id), sequence: a.sequence, measurementCycle: a.measurement_cycle ?? null, retryIndex: a.retry_index, runHash: a.run_hash, keyHash: a.key_hash, logicalHash: a.logical_hash, stage: a.stage, state: a.state, provider: a.provider, model: a.model, actualModel: a.actual_model ?? null, requestId: a.request_id ?? null, usage: a.usage ?? null, usageSource: a.usage_source, priceRevision: a.price_revision, currency: a.currency, reserved: a.reserved, cost: a.cost ?? null, startedAt: a.started_at, endedAt: a.ended_at, ...(assessments ? { costAssessment: assessments.get(String(a.id)) } : {}) })),
+        nextAfter,
+        ...(aggregate ? { costAssessment: { ...aggregate, window: { after, pageSize: attempts.length, complete: nextAfter === null }, computedAt: new Date().toISOString() } } : {}),
       });
     })
     /** 公司运营程序投递可信证明：验签后先建 disabled，绝不因运营自填而放行。 */

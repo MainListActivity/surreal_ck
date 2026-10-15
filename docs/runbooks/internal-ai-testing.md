@@ -44,6 +44,7 @@ Embedding在内部活动中发送前禁止（包括资源检索调用生成器�
 
 - `GET /api/ops/internal-ai/runtime`：配置provider/model、实际配置endpoint的host（不含userinfo/query/key）、当前安装Mastra版本、支持的price证书、余额unavailable原因。实际modelVersion只由已完成尝试的返回值证明，配置值不是实测版本。
 - `GET /api/ops/internal-ai/activities/:id?after=0`：固定50行分页，匿名run/key/logical关联、attempt序号、usage来源和字段、实际模型/requestId、货币/价格版本/成本、活动及目标支出/预留/剩余、审核余额证据引用与时点。无配置返回404，未知usage/cost/model/requestId显式null。不会返回客户业务快照、凭证或账单身份。没有余额API时runtime明确unavailable；活动审核资料与供应商实时余额不是同一事实。
+- `GET /api/ops/internal-ai/activities/:id?after=0&assessment=1`（FV06）：在上述读面追加版本化只读成本评价，默认参数下响应完全不变。逐 attempt 增加 `costAssessment`（version、status=`measured_derived|unverifiable|uncertain`、costNanoUsd、reasons、certificate、priceRevision、usage快照、evidence窗口引用、sourceHash）；顶层 `costAssessment` 为 run/路径聚合（按 runHash 分组、唯一 attempt ID 去重、knownSubtotalNanoUsd/unknownCallCount/unknownRunCount、总成本仅全覆盖时核定，任一缺口→unassessed）。`successfulTasks=N` 提供成功闭环分母；N=0 或总成本未核定时 perSuccessfulTask=null（reason=`undefined_zero_success`/`cost-unassessed`）。评价规则见 `server/src/internal-ai/assessment.ts`：仅显式评价证书覆盖的 `priceRevision×host/path×model×reviewed-token-plan×FREE×调用时刻证据窗口` 得 `measured_derived`；reasoning 计为 output 子集不二次计费，maxOutput 无条件检查；缺 usage/越界/非法值→uncertain，范围/证据/身份不符→unverifiable。该投影不改动账本 state/cost/usage，也绝不代表供应商实扣或积分扣减。
 
 运行origin/web SHA复用原发布标识链，本模块不增加或改写其路由。
 
