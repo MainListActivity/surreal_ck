@@ -13,6 +13,8 @@ export const hash = (...parts: string[]) => createHash("sha256").update(JSON.str
 function rows<T>(result: unknown): T[] { const first: unknown = Array.isArray(result) ? result[0] : undefined; return Array.isArray(first) ? first as T[] : first && typeof first === "object" ? [first as T] : []; }
 export type Activity = { goal: string; enabled: boolean; total_limit: number; per_attempt_limit: number; attempt_limit: number; reserved: number; spent: number; attempts: number; approval_revision: string | null; evidence_expires_at: string | null; price_revisions: string[]; balance_nano_usd: number | null; balance_currency: string | null; balance_source: string | null; balance_sampled_at: string | null; balance_evidence_hash: string | null; auto_topup_disabled: boolean; service_approved: boolean; evidence_kind?: string | null; plan_name?: string | null; plan_source_url?: string | null; quota_unit?: string | null; quota_amount?: number | null; quota_window_seconds?: number | null; quota_remaining?: number | null; no_payment_instrument?: boolean | null; account_plan_type?: string | null };
 export type Attempt = { id: RecordId; measurement_cycle?: string; sequence: number; retry_index: number; state: string; reserved: number; cost: number | null; run_hash: string; key_hash: string; logical_hash: string; stage: string; provider: string; model: string; actual_model: string | null; request_id: string | null; usage: Usage | null; usage_source: string; price_revision: string; currency: string; started_at: unknown; ended_at: unknown };
+/** 成本评价所需的 revision 证据投影字段（internal_ai_revision，FV06 只读）。 */
+export type RevisionEvidenceRow = { revision: number; state: string; created_at: unknown; document_hash: string | null; evidence_kind: string | null; account_plan_type: string | null; account_ref: string | null; balance_sampled_at: unknown; evidence_expires_at: unknown; endpoint: string; model: string; price_revision: string };
 export class InternalAiStore {
   constructor(private readonly db: () => Promise<Queryable>) {}
   async binding(subject: string, database: string): Promise<{ activity: string; revoked: boolean } | undefined> {
@@ -130,5 +132,9 @@ export class InternalAiStore {
   }
   async page(activity: string, after = 0): Promise<Attempt[]> {
     return rows<Attempt>(await (await this.db()).query("SELECT * FROM internal_ai_attempt WHERE activity = $activity AND sequence > $after ORDER BY sequence LIMIT 50", { activity: new RecordId("internal_ai_activity", activity), after }));
+  }
+  /** FV06 只读投影：评价所需的授权 revision 字段，绝不读 operator/identity 明细。 */
+  async revisionEvidence(activity: string): Promise<RevisionEvidenceRow[]> {
+    return rows<RevisionEvidenceRow>(await (await this.db()).query("SELECT revision, state, created_at, document_hash, evidence_kind, account_plan_type, account_ref, balance_sampled_at, evidence_expires_at, endpoint, model, price_revision FROM internal_ai_revision WHERE activity = $activity ORDER BY revision", { activity: new RecordId("internal_ai_activity", activity) }));
   }
 }
