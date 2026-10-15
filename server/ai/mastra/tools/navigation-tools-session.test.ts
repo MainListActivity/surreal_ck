@@ -40,6 +40,73 @@ type SearchWorkbookResult = {
     | { type: "open-workbook"; workbookId: string; label: string };
 };
 
+describe("searchRecord tool — 走调用者 session", () => {
+  type SearchRecordResult = {
+    intent:
+      | { type: "ambiguous"; candidates: { label: string; id: string }[] }
+      | { type: "open-record"; workbookId: string; sheetId: string; recordId: string; label: string };
+  };
+
+  function makeSheetThenRecordsSession(recordRows: unknown[]) {
+    return makeFakeSession({
+      results: [
+        // 第一条语句：sheet 定义查询
+        [[{ id: "sheet:pumps", table_name: "ent_pump", column_defs: [] }]],
+        // 第二条语句：实体表检索
+        [recordRows],
+      ],
+    });
+  }
+
+  async function executeSearchRecord(
+    session: ReturnType<typeof makeFakeSession>,
+    input: { sheetId: string; workbookId: string; query: string; fieldKey?: string },
+  ): Promise<SearchRecordResult> {
+    const { searchRecordTool } = await import("./navigation-tools");
+    const execute = searchRecordTool.execute as unknown as (
+      input: typeof input,
+      ctx: { requestContext: RequestContext },
+    ) => Promise<SearchRecordResult>;
+    return await execute(input, ctxWithSession(session));
+  }
+
+  test("无 fieldKey 分支生成 <string> cast（生产 fork 拒解析 string(...) 函数式 cast）", async () => {
+    const session = makeSheetThenRecordsSession([
+      { id: "ent_pump:one", name: "离心泵A" },
+      { id: "ent_pump:two", name: "离心泵B" },
+    ]);
+    const result = await executeSearchRecord(session, {
+      sheetId: "sheet:pumps",
+      workbookId: "workbook:wb1",
+      query: "离心泵",
+    });
+    const sql = session.calls[1].sql;
+    expect(sql).toContain("type::table($table)");
+    expect(sql).toContain("<string>");
+    // fork 把 string(...) 当函数路径解析并报 Invalid function/constant path
+    expect(sql).not.toMatch(/\bstring\s*\(/);
+    expect(result.intent.type).toBe("ambiguous");
+    expect((result.intent as { type: "ambiguous"; candidates: unknown[] }).candidates).toHaveLength(2);
+  });
+
+  test("有 fieldKey 分支同样生成 <string> cast 并插入字段名", async () => {
+    const session = makeSheetThenRecordsSession([
+      { id: "ent_pump:three", display_name: "轴流风机" },
+    ]);
+    const result = await executeSearchRecord(session, {
+      sheetId: "sheet:pumps",
+      workbookId: "workbook:wb1",
+      query: "pump",
+      fieldKey: "code",
+    });
+    const sql = session.calls[1].sql;
+    expect(sql).toContain("<string>(code)");
+    expect(sql).not.toMatch(/\bstring\s*\(/);
+    expect(result.intent.type).toBe("open-record");
+    expect((result.intent as { type: "open-record"; recordId: string }).recordId).toBe("ent_pump:three");
+  });
+});
+
 describe("searchWorkbook tool — 走调用者 session", () => {
   test("唯一匹配时用 session SELECT workbook 并返回 open-workbook", async () => {
     // SurrealDB SDK query() 返回「每条语句结果」的数组：单条 SELECT → [[row, ...]]
