@@ -42,26 +42,41 @@ export type RouterLlmCaller = (prompt: string) => Promise<string>;
 
 export const DEFAULT_JEV_CONFIDENCE_THRESHOLD = 0.75;
 
+/**
+ * 类目语义唯一事实源：ROUTER_SYSTEM_PROMPT 与 Jev 决策 criteria 都由它生成，禁止两处漂移。
+ * 写入/字段修改意图必须显式落在 row-analysis——它名下挂着 analyzeRow / proposeRecordWrite，
+ * 提案经 executor 转成 await-write-confirm 挂起态；chitchat 名下没有任何写工具，
+ * 把数据操作归到这里等于把写入请求判死刑（生产三次复现的根因）。
+ */
+const ROUTER_CATEGORY_DEFINITIONS: Record<RouterCategory, string> = {
+  navigation: "浏览/跳转/打开/搜索工作簿、数据表、记录、仪表盘等对象，只定位不改变数据",
+  dashboard: "让 AI 分析数据并生成统计图、图表、看板",
+  "row-analysis": "对具体记录的分析、补全或写入：查看/补全/修改某条记录的字段值、创建或更新记录（写入产出待用户逐字段确认的提案，不直接执行）",
+  "resource-retrieval": "检索、查找、引用已有资源/资料/知识库内容，或基于当前上下文找相似资料",
+  chitchat: "与工作簿数据无关的闲聊、问候、自我介绍；兜底仅用于不涉及工作簿、数据表、记录或字段操作的消息",
+};
+
 const ROUTER_SYSTEM_PROMPT = `你是 Surreal CK 的意图路由器。把用户消息切分为按执行顺序排列的子任务列表。
 
 可选 category：
-- navigation：浏览/跳转/打开/搜索工作簿、Sheet、记录、仪表盘
-- dashboard：让 AI 分析数据并生成统计图、图表、看板
-- row-analysis：分析具体某条记录（当前选中行的字段值、关联记录与缺失项）
-- resource-retrieval：检索、查找、引用已有资源/资料/知识库内容，或基于当前上下文找相似资料
-- chitchat：闲聊、自我介绍、无法归入以上任一类的兜底
+${Object.entries(ROUTER_CATEGORY_DEFINITIONS).map(([category, definition]) => `- ${category}：${definition}`).join("\n")}
+
+判定要点：
+- 要求新增、修改、填写、更新、删除记录或字段值的请求一律归入 row-analysis，绝不能归入 chitchat；
+- 只读提问（解释字段含义、查看记录内容、检索资料）不算写入，按语义归 navigation / row-analysis / resource-retrieval；
+- 「先定位记录再操作」的复合指令可拆成按顺序排列的多个子任务（先 navigation 定位，后其它操作）；
+- 拿不准且与数据操作无关时才归 chitchat；涉及数据操作的含糊请求优先归 row-analysis。
+
+示例：
+- 「把「事项」为 A-001 的那一行的「状态」字段改为「待复核」」→ [{"category":"row-analysis","taskText":"把「事项」为 A-001 的那一行的「状态」字段改为「待复核」"}]
+- 「打开销售工作簿，然后把选中行标记为已完成」→ [{"category":"navigation","taskText":"打开销售工作簿"},{"category":"row-analysis","taskText":"把选中行标记为已完成"}]
+- 「你好」→ [{"category":"chitchat","taskText":"你好"}]
 
 输出严格 JSON 数组，元素形如 {"category": "...", "taskText": "..."}，taskText 是从用户原话切分得到的自然语言子任务描述。
 即使只有一个意图，也要包成长度为 1 的数组。`;
 
-/** 与 ROUTER_SYSTEM_PROMPT 类别定义保持一致：决策模型 choice 题的 criteria。 */
-const JEV_CATEGORY_CRITERIA: Record<RouterCategory, string> = {
-  navigation: "浏览/跳转/打开/搜索工作簿、数据表、记录、仪表盘",
-  dashboard: "让 AI 分析数据并生成统计图、图表、看板",
-  "row-analysis": "分析具体某条记录（当前选中行的字段值、关联记录与缺失项）",
-  "resource-retrieval": "检索、查找、引用已有资源/资料/知识库内容，或基于当前上下文找相似资料",
-  chitchat: "闲聊、自我介绍、无法归入以上任一类的兜底",
-};
+/** 决策模型 choice 题的 criteria：与 ROUTER_SYSTEM_PROMPT 同源生成。 */
+const JEV_CATEGORY_CRITERIA = ROUTER_CATEGORY_DEFINITIONS;
 
 function buildRouterPrompt(text: string): string {
   return `${ROUTER_SYSTEM_PROMPT}\n\n用户消息：${text}`;
@@ -126,7 +141,9 @@ export function buildJevClassifyRequest(text: string, userContext?: AiContextSna
       },
       category: {
         type: "choice",
-        instructions: "用户消息最主要属于哪个类别？请结合 context 中的页面与选中状态判断。",
+        instructions:
+          "用户消息最主要属于哪个类别？请结合 context 中的页面与选中状态判断。" +
+          "要求新增、修改、填写、更新、删除记录或字段值的消息属于 row-analysis，不属于 chitchat。",
         criteria: JEV_CATEGORY_CRITERIA,
       },
     },

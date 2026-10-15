@@ -160,6 +160,39 @@ describe("router-workflow 调度", () => {
     expect(result.shared.confirmed.resolvedRecord).toEqual({ id: "wb:x", label: "X" });
   });
 
+  test("写入意图经分类后由 row-analysis executor 执行，不进入 chitchat（def-write-intent-misroute）", async () => {
+    const calls: string[] = [];
+    const llm: RouterLlmCaller = async () =>
+      `[{"category":"row-analysis","taskText":"把「事项」为 A-001 的行的「状态」改为「待复核」"}]`;
+    const executors: SubAgentExecutors = {
+      navigation: async () => {
+        calls.push("navigation");
+        return { text: "", confirmed: {} };
+      },
+      dashboard: async () => {
+        calls.push("dashboard");
+        return { text: "", confirmed: {} };
+      },
+      "row-analysis": async ({ taskText }) => {
+        calls.push(`row-analysis:${taskText}`);
+        return { text: "已生成写入提案", confirmed: {} };
+      },
+      chitchat: async () => {
+        calls.push("chitchat");
+        return { text: "", confirmed: {} };
+      },
+    };
+    const result = await routeAndDispatch({
+      text: "把「事项」为 A-001 的行的「状态」改为「待复核」",
+      shared: makeShared(),
+      executors,
+      llmCaller: llm,
+    });
+    // 挂起/提案链路本身由 router-workflow-suspend.test.ts 覆盖，这里只锁分发去向
+    expect(calls).toEqual(["row-analysis:把「事项」为 A-001 的行的「状态」改为「待复核」"]);
+    expect(result.steps[0].category).toBe("row-analysis");
+  });
+
   test("routeAndDispatch 在 LLM 解析失败时降级到 chitchat", async () => {
     const calls: string[] = [];
     const llm: RouterLlmCaller = async () => "not json";
