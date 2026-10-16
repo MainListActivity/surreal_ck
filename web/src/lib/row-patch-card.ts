@@ -14,6 +14,11 @@ export type ConfirmableRecordProposal = RowPatchProposal | RecordWriteProposal;
  *
  * 写入失败（含 PERMISSIONS 拒绝）时卡片保留并展示中文错误，**不**以
  * write-confirmed resume；用户可重试或全部忽略。
+ *
+ * 上游工具把 label+key 归一到同一存储 key 后，proposals[] 可能出现重复 field；
+ * Object.fromEntries 会静默 last-wins 折叠成单键。因此卡层在调用 write 前检测
+ * accepted 条目中的重复 field（初始构建全接受即含提案自带重复）：发现即进入可见
+ * error 态，不写库、不 resume；用户可取消勾选重复项之一后重试，或全部忽略。
  */
 
 export type RowPatchWriteResult = { ok: true } | { ok: false; message: string };
@@ -43,6 +48,21 @@ export type RowPatchCardDeps = {
   resume: (decision: RowPatchResumeDecision) => Promise<void>;
   onChange?: (state: RowPatchCardState) => void;
 };
+/** 上游归一后同 key 多条的提案不能折叠写入：返回 accepted 中首个重复 field 名，无则 null。 */
+function findDuplicateAcceptedField(fields: RowPatchFieldView[]): string | null {
+  const seen = new Set<string>();
+  for (const item of fields) {
+    if (!item.accepted) continue;
+    if (seen.has(item.field)) return item.field;
+    seen.add(item.field);
+  }
+  return null;
+}
+
+function duplicateFieldMessage(field: string): string {
+  return `提案存在重复字段「${field}」，已拒绝写入；请取消勾选重复项后重试，或全部忽略。`;
+}
+
 export function createRowPatchCard(deps: RowPatchCardDeps) {
   const state: RowPatchCardState = {
     status: "pending",
@@ -58,6 +78,14 @@ export function createRowPatchCard(deps: RowPatchCardDeps) {
     writeCommitted: false,
   };
 
+  // 初始 fields 全部接受，提案自带的重复 field 此刻即已处于 accepted；
+  // 构建时立即进入可见 error 态，不等用户 confirm 才暴露。
+  const initialDuplicate = findDuplicateAcceptedField(state.fields);
+  if (initialDuplicate !== null) {
+    state.status = "error";
+    state.error = duplicateFieldMessage(initialDuplicate);
+  }
+
   function cloneState(): RowPatchCardState {
     return { ...state, fields: state.fields.map((field) => ({ ...field })) };
   }
@@ -66,9 +94,10 @@ export function createRowPatchCard(deps: RowPatchCardDeps) {
     deps.onChange?.(cloneState());
   }
 
-  function setAccepted(field: string, accepted: boolean): void {
+  /** 按条目索引切换：重复 field 的各条目可独立勾选，正常单 key 提案行为不变。 */
+  function setAccepted(index: number, accepted: boolean): void {
     if ((state.status !== "pending" && state.status !== "error") || state.writeCommitted) return;
-    state.fields = state.fields.map((item) => (item.field === field ? { ...item, accepted } : item));
+    state.fields = state.fields.map((item, i) => (i === index ? { ...item, accepted } : item));
     emitChange();
   }
 
@@ -109,6 +138,15 @@ export function createRowPatchCard(deps: RowPatchCardDeps) {
     const accepted = state.fields.filter((field) => field.accepted);
     if (!accepted.length) {
       await rejectAll();
+      return;
+    }
+    // 调用 write 前的硬闸：accepted 中仍有重复 field 时整笔拒绝，
+    // 不写库、不 resume、writeCommitted 保持 false，避免 Object.fromEntries 静默折叠。
+    const duplicateField = findDuplicateAcceptedField(state.fields);
+    if (duplicateField !== null) {
+      state.status = "error";
+      state.error = duplicateFieldMessage(duplicateField);
+      emitChange();
       return;
     }
 
