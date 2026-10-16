@@ -464,3 +464,236 @@ describe("agent executor — reasoning 模型无可见产出走契约化显式�
     expect(out.text).toBe(ROW_ANALYSIS_NO_PROPOSAL_TEXT);
   });
 });
+
+describe("agent executor — PG-1 诊断可观测性缺口（suspend 白名单 / dropped 说明 / 审计摘要）", () => {
+  const navCall = (type: string): AiToolCallRecord => ({
+    toolName: "go",
+    result: { intent: { type, workbookId: "workbook:demo", label: "演示" } },
+  });
+
+  test("navigation 类 intent 不再 suspend：前端无确认卡，run 走文本收尾", () => {
+    for (const type of ["navigate", "open-workbook", "open-dashboard", "open-record"]) {
+      expect(deriveSuspendSignalFromToolCalls([navCall(type)])).toBeUndefined();
+    }
+  });
+
+  test("resource-draft / rowPatch / legacy dashboardDraft 不再 suspend", () => {
+    expect(deriveSuspendSignalFromToolCalls([{
+      toolName: "createResourceDraftIntent",
+      result: { intent: { type: "resource-draft", draft: {} } },
+    }])).toBeUndefined();
+    expect(deriveSuspendSignalFromToolCalls([{
+      toolName: "applyPatch",
+      result: { intent: { type: "rowPatch", sheetId: "s", rowId: "r", patch: {} } },
+    }])).toBeUndefined();
+    expect(deriveSuspendSignalFromToolCalls([{
+      toolName: "generateDashboardDraft",
+      result: { intent: { type: "dashboardDraft", draft: { title: "T" } } },
+    }])).toBeUndefined();
+  });
+
+  test("白名单 intent 仍 suspend：ambiguous / 非空提案 / dashboard-draft", () => {
+    expect(deriveSuspendSignalFromToolCalls([{
+      toolName: "searchRecord",
+      result: { intent: { type: "ambiguous", candidates: [{ id: "r:1", label: "一" }] } },
+    }])?.kind).toBe("ambiguous");
+    expect(deriveSuspendSignalFromToolCalls([{
+      toolName: "analyzeRow",
+      result: { intent: { type: "row-patch-proposal", sheetId: "s", recordId: "r",
+        proposals: [{ field: "f", currentValue: 1, suggestedValue: 2, basis: "b", confidence: "high" }] } },
+    }])?.kind).toBe("await-write-confirm");
+  });
+
+  test("summarizeToolCallForAudit：只记形状不记业务值", async () => {
+    const { summarizeToolCallForAudit } = await import("./agent-executor");
+    const summary = summarizeToolCallForAudit({
+      toolName: "analyzeRow",
+      args: {
+        sheetId: "sheet:devices",
+        values: { check_status: "待复核", secret_note: "机密" },
+        suggestions: [
+          { field: "check_status", suggestedValue: "已复核", basis: "附件", confidence: "high" },
+        ],
+      },
+      result: {
+        intent: {
+          type: "row-patch-proposal",
+          sheetId: "sheet:devices",
+          recordId: "ent_devices:pump-7",
+          proposals: [{ field: "check_status", currentValue: "待复核", suggestedValue: "已复核", basis: "附件", confidence: "high" }],
+          dropped: [{ field: "ghost", reason: "unknown-field" }],
+        },
+      },
+    });
+    expect(summary.toolName).toBe("analyzeRow");
+    expect(summary.argShape).toContain("sheetId");
+    expect(summary.argShape).toContain("suggestions[].field=check_status");
+    expect(summary.argShape).toContain("values{keys…}");
+    expect(summary.resultIntent).toBe("row-patch-proposal");
+    expect(summary.proposalCount).toBe(1);
+    expect(summary.droppedCount).toBe(1);
+    expect(JSON.stringify(summary)).not.toContain("已复核");
+    expect(JSON.stringify(summary)).not.toContain("机密");
+    expect(JSON.stringify(summary)).not.toContain("pump-7");
+  });
+
+  test("summarizeToolCallForAudit：无 intent 的纯查询调用只记工具名与参数形状", async () => {
+    const { summarizeToolCallForAudit } = await import("./agent-executor");
+    const summary = summarizeToolCallForAudit({
+      toolName: "inspectSchema",
+      args: { table: "ent_items" },
+      result: { schemaSummary: { tables: ["ent_items"], fieldsByTable: { ent_items: ["name"] } } },
+    });
+    expect(summary).toEqual({ toolName: "inspectSchema", argShape: ["table"] });
+  });
+
+  test("deriveDroppedProposalNote：全丢弃才有说明；有存活提案或无丢弃返回 undefined", async () => {
+    const { deriveDroppedProposalNote } = await import("./agent-executor");
+    const full: AiToolCallRecord[] = [{
+      toolName: "analyzeRow",
+      result: { intent: { type: "row-patch-proposal", sheetId: "s", recordId: "r", proposals: [],
+        dropped: [
+          { field: "ghost", reason: "unknown-field" },
+          { field: "金额", reason: "ambiguous-label" },
+          { field: "created_at", reason: "non-editable" },
+        ] } },
+    }];
+    const note = deriveDroppedProposalNote(full);
+    expect(note).toContain("3 条字段建议均无法对应到数据表字段，已忽略");
+    expect(note).toContain("ghost（未知字段）");
+    expect(note).toContain("金额（名称歧义）");
+    expect(note).toContain("created_at（不可编辑）");
+
+    // 有存活提案：不打扰用户。
+    expect(deriveDroppedProposalNote([{
+      toolName: "analyzeRow",
+      result: { intent: { type: "row-patch-proposal", sheetId: "s", recordId: "r",
+        proposals: [{ field: "f", currentValue: 1, suggestedValue: 2, basis: "b", confidence: "high" }],
+        dropped: [{ field: "ghost", reason: "unknown-field" }] } },
+    }])).toBeUndefined();
+    // 无提案 intent：与本函数无关。
+    expect(deriveDroppedProposalNote([navCall("open-record")])).toBeUndefined();
+    // 空列表。
+    expect(deriveDroppedProposalNote([])).toBeUndefined();
+  });
+
+  test("executor 的 SubAgentInput.onToolCall 收到与 options.onToolCall 相同的 record", async () => {
+    const { analyzeRowTool } = await import("../tools/row-analysis-tools");
+    // @ts-expect-error @mastra/core 1.36.0 test-utils/llm-mock 缺少声明文件
+    const { MastraLanguageModelV2Mock } = await import("@mastra/core/test-utils/llm-mock");
+    const toolCallInput = {
+      sheetId: "sheet:devices",
+      recordId: "ent_devices:pump-7",
+      values: { check_status: "待复核" },
+      fields: [{ key: "check_status", label: "复核状态", fieldType: "select", options: ["待复核", "已复核"] }],
+      suggestions: [
+        { field: "check_status", suggestedValue: "已复核", basis: "超期", confidence: "medium" },
+      ],
+    };
+    let probeCallCount = 0;
+    const model = new MastraLanguageModelV2Mock({
+      doStream: async () => {
+        probeCallCount += 1;
+        const chunks = probeCallCount === 1
+          ? [
+              { type: "stream-start", warnings: [] },
+              { type: "tool-call", toolCallId: "call-9", toolName: "analyzeRow", input: JSON.stringify(toolCallInput) },
+              { type: "finish", finishReason: "tool-calls", usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } },
+            ]
+          : [
+              { type: "stream-start", warnings: [] },
+              { type: "finish", finishReason: "stop", usage: { inputTokens: 1, outputTokens: 0, totalTokens: 1 } },
+            ];
+        return {
+          stream: new ReadableStream({
+            start(controller) {
+              for (const chunk of chunks) controller.enqueue(chunk);
+              controller.close();
+            },
+          }),
+          rawCall: { rawPrompt: null, rawSettings: {} },
+          warnings: [],
+        };
+      },
+    });
+    const agent = new Agent({
+      name: "on-tool-call-probe",
+      instructions: "调用 analyzeRow。",
+      model,
+      tools: { analyzeRow: analyzeRowTool },
+    });
+    const viaOptions: AiToolCallRecord[] = [];
+    const viaInput: AiToolCallRecord[] = [];
+    const executor = makeAgentExecutor(agent, { onToolCall: (record) => viaOptions.push(record) });
+    await executor({
+      taskText: "分析当前记录",
+      shared: { userContext, confirmed: {} },
+      onToolCall: (record) => viaInput.push(record),
+    });
+    expect(viaInput).toHaveLength(1);
+    expect(viaOptions).toHaveLength(1);
+    expect(viaInput[0]).toEqual(viaOptions[0]);
+    expect(viaInput[0]?.toolName).toBe("analyzeRow");
+  });
+
+  test("全丢弃 + 无可见文本：dropped 说明拼接到 noOutputText 之后", async () => {
+    const { analyzeRowTool } = await import("../tools/row-analysis-tools");
+    // @ts-expect-error @mastra/core 1.36.0 test-utils/llm-mock 缺少声明文件
+    const { MastraLanguageModelV2Mock } = await import("@mastra/core/test-utils/llm-mock");
+    const toolCallInput = {
+      sheetId: "sheet:devices",
+      recordId: "ent_devices:pump-7",
+      values: { check_status: "待复核" },
+      fields: [{ key: "check_status", label: "复核状态", fieldType: "select", options: ["待复核", "已复核"] }],
+      suggestions: [
+        { field: "不存在的字段", suggestedValue: "x", basis: "臆测", confidence: "low" },
+      ],
+    };
+    let callCount = 0;
+    const model = new MastraLanguageModelV2Mock({
+      doStream: async () => {
+        callCount += 1;
+        if (callCount === 1) {
+          return {
+            stream: new ReadableStream({
+              start(controller) {
+                controller.enqueue({ type: "stream-start", warnings: [] });
+                controller.enqueue({ type: "tool-call", toolCallId: "call-drop", toolName: "analyzeRow", input: JSON.stringify(toolCallInput) });
+                controller.enqueue({ type: "finish", finishReason: "tool-calls", usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } });
+                controller.close();
+              },
+            }),
+            rawCall: { rawPrompt: null, rawSettings: {} },
+            warnings: [],
+          };
+        }
+        return {
+          stream: new ReadableStream({
+            start(controller) {
+              controller.enqueue({ type: "stream-start", warnings: [] });
+              controller.enqueue({ type: "finish", finishReason: "stop", usage: { inputTokens: 1, outputTokens: 0, totalTokens: 1 } });
+              controller.close();
+            },
+          }),
+          rawCall: { rawPrompt: null, rawSettings: {} },
+          warnings: [],
+        };
+      },
+    });
+    const agent = new Agent({
+      name: "all-dropped-probe",
+      instructions: "调用 analyzeRow。",
+      model,
+      tools: { analyzeRow: analyzeRowTool },
+    });
+    const executor = makeAgentExecutor(agent, { noOutputText: ROW_ANALYSIS_NO_PROPOSAL_TEXT });
+    const out = await executor({
+      taskText: "分析当前记录",
+      shared: { userContext, confirmed: {} },
+    });
+    expect(out.suspend).toBeUndefined();
+    expect(out.text).toContain(ROW_ANALYSIS_NO_PROPOSAL_TEXT);
+    expect(out.text).toContain("不存在的字段（未知字段）");
+    expect(out.text).not.toContain("等待确认");
+  });
+});

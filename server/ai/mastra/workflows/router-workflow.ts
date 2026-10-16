@@ -1,13 +1,15 @@
 import { createStep, createWorkflow } from "@mastra/core/workflows";
+import { summarizeToolCallForAudit } from "./agent-executor";
 import { z } from "zod";
 import { StringRecordId, type Surreal } from "surrealdb";
-import type { AiContextSnapshot } from "@surreal-ck/shared";
 import type {
   ResearchAuthorization,
   AiMessageChunkEvent,
   AiProgressEvent,
   ResourceCitationDTO,
+  AiContextSnapshot,
   AiToolCallRecord,
+  AiToolCallSummary,
   AiStructuredIntent,
   CandidateOption,
   ResolvedRecord,
@@ -111,6 +113,12 @@ export type SubAgentInput = {
    */
   onDelta?: (delta: string) => void;
   /**
+   * tool 调用收集回调（PG-1 诊断 §4-2：工具调用持久化）。
+   * 调度器传入后，executor 每次 tool 落定即回调；调度器负责汇入 runtime.toolCalls
+   *（done 事件带出）与 step 审计摘要（workflow state 持久）。缺席时不收集。
+   */
+  onToolCall?: (call: AiToolCallRecord) => void;
+  /**
    * LCA06：调用者 content_reader 窗口工厂（runtime 注入；缺席 = 本 run 不做平台语料研究）。
    */
   openContentSession?: OpenContentResearchSession;
@@ -157,6 +165,11 @@ export type RouterStepResult = {
   taskText: string;
   text: string;
   citations?: ResourceCitationDTO[];
+  /**
+   * 本步工具调用脱敏审计摘要（PG-1 诊断 §4-2）。只记工具名/参数形状/intent 类型，
+   * 不记业务值，随 workflow state 持久，供事后审计"模型调了什么工具传了什么 field"。
+   */
+  toolCallSummary?: AiToolCallSummary[];
 };
 
 export type RouterDispatchResult = {
@@ -180,12 +193,15 @@ export async function runRouterDispatch(input: RouterDispatchInput): Promise<Rou
     if (!executor) {
       throw new Error(`router-workflow: 缺少 ${category} executor`);
     }
+    const dispatchCalls: AiToolCallRecord[] = [];
     const out = await executor({
       taskText: item.taskText,
       shared: { userContext: shared.userContext, confirmed: shared.confirmed },
+      onToolCall: (call) => dispatchCalls.push(call),
     });
     mergeConfirmed(shared.confirmed, out.confirmed);
-    steps.push({ category, taskText: item.taskText, text: out.text, citations: out.citations });
+    steps.push({ category, taskText: item.taskText, text: out.text, citations: out.citations,
+      ...(dispatchCalls.length > 0 ? { toolCallSummary: dispatchCalls.map(summarizeToolCallForAudit) } : {}) });
   }
 
   shared.userContext = JSON.parse(JSON.stringify(frozenUserContext)) as AiContextSnapshot;
@@ -259,6 +275,13 @@ const RouterStepResultSchema = z.object({
         bodyDigest: z.string(),
       }).nullable(),
     }).optional(),
+  })).optional(),
+  toolCallSummary: z.array(z.object({
+    toolName: z.string(),
+    argShape: z.array(z.string()).optional(),
+    resultIntent: z.string().optional(),
+    proposalCount: z.number().optional(),
+    droppedCount: z.number().optional(),
   })).optional(),
 });
 
@@ -598,6 +621,9 @@ export function createRouterWorkflow() {
         runtime.pushChunk?.({ streamId: runtime.streamId, type: "delta", text: d });
       };
 
+      // PG-1 诊断 §4-2：工具调用持久化——full record 进 runtime.toolCalls（done 事件带出，
+      // 经 chat_delivery envelope 持久），脱敏摘要随 step 进 workflow state。
+      const stepCalls: AiToolCallRecord[] = [];
       const out = await executor({
         taskText: planItem.taskText,
         shared: {
@@ -608,6 +634,10 @@ export function createRouterWorkflow() {
         surrealSession: runtime.surrealSession,
         onDelta,
         openContentSession: runtime.openContentSession,
+        onToolCall: (call) => {
+          stepCalls.push(call);
+          (runtime.toolCalls ??= []).push(call);
+        },
       });
 
       // 非流式 executor 的 deltas 补播
@@ -699,7 +729,8 @@ export function createRouterWorkflow() {
         userContext,
         steps: [
           ...state.steps,
-          out.researchAuthorization ? persistedResearchStep(planItem, out) : { category: planItem.category, taskText: planItem.taskText, text: out.text, citations: out.citations },
+          out.researchAuthorization ? persistedResearchStep(planItem, out) : { category: planItem.category, taskText: planItem.taskText, text: out.text, citations: out.citations,
+            ...(stepCalls.length > 0 ? { toolCallSummary: stepCalls.map(summarizeToolCallForAudit) } : {}) },
         ],
         cursor: cursor + 1,
       });

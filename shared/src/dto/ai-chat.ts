@@ -65,6 +65,17 @@ export type RowPatchProposal = {
     basis: string;
     confidence: "high" | "medium" | "low";
   }>;
+  /**
+   * 归一化阶段被丢弃的建议（PG-1 诊断 §3.3-2 可观测性缺口）。
+   * 只记原 field 名与丢弃原因，不记业务值；供 executor 在全丢弃时做用户可见说明。
+   */
+  dropped?: Array<ProposalDropRecord>;
+};
+
+/** 单条被丢弃建议的审计记录：原 field 名 + 机器可读原因。 */
+export type ProposalDropRecord = {
+  field: string;
+  reason: "unknown-field" | "ambiguous-label" | "non-editable";
 };
 
 export type RecordWriteProposal = {
@@ -74,6 +85,8 @@ export type RecordWriteProposal = {
   /** update 必填；create 不携带。 */
   recordId?: RecordIdString;
   proposals: RowPatchProposal["proposals"];
+  /** 同 RowPatchProposal.dropped：归一化丢弃明细，只记 field 名与原因。 */
+  dropped?: Array<ProposalDropRecord>;
 };
 
 export type RowPatchIntent = {
@@ -218,6 +231,11 @@ const LegacyDashboardDraftIntentSchema = z.object({
   draft: z.record(z.string(), z.unknown()),
 });
 
+const ProposalDropRecordSchema = z.object({
+  field: z.string(),
+  reason: z.enum(["unknown-field", "ambiguous-label", "non-editable"]),
+});
+
 const RowPatchProposalSchema = z.object({
   type: z.literal("row-patch-proposal"),
   sheetId: z.string(),
@@ -229,6 +247,7 @@ const RowPatchProposalSchema = z.object({
     basis: z.string(),
     confidence: z.enum(["high", "medium", "low"]),
   })),
+  dropped: z.array(ProposalDropRecordSchema).optional(),
 });
 
 const RecordWriteProposalSchema = z.object({
@@ -243,6 +262,7 @@ const RecordWriteProposalSchema = z.object({
     basis: z.string(),
     confidence: z.enum(["high", "medium", "low"]),
   })),
+  dropped: z.array(ProposalDropRecordSchema).optional(),
 }).superRefine((value, ctx) => {
   if (value.operation === "update" && !value.recordId) {
     ctx.addIssue({ code: "custom", path: ["recordId"], message: "update proposal requires recordId" });
@@ -309,6 +329,23 @@ export type AiToolCallRecord = {
   toolName: string;
   args?: unknown;
   result?: unknown;
+};
+
+/**
+ * 工具调用脱敏审计摘要（PG-1 诊断 §3.3-1 可观测性缺口）。
+ * 只记"调了什么工具、传了什么 field、结果什么类型、丢了什么"，不记业务值与明文 prompt。
+ * 随 RouterStepResult 持久进 workflow state，供事后审计。
+ */
+export type AiToolCallSummary = {
+  toolName: string;
+  /** 输入参数的形状摘要：顶层 key 名 + 建议类 field 名，不含值。 */
+  argShape?: string[];
+  /** 结果 intent 类型（如 row-patch-proposal / open-record / ambiguous），无 intent 时缺席。 */
+  resultIntent?: string;
+  /** 存活提案条数（仅提案类 intent）。 */
+  proposalCount?: number;
+  /** 被归一化丢弃的建议数（仅提案类 intent）。 */
+  droppedCount?: number;
 };
 
 /** 主进程推送给 webview 的流式增量；与 SendAiMessageRequest.streamId 配对。 */

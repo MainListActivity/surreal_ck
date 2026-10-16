@@ -773,3 +773,36 @@ test("同一 run 的 suspend 载荷重复到达（recover 持久态 + stream 回
 
   expect(h.session.snapshot().pendingIntents).toHaveLength(1);
 });
+
+test("suspend await-write-confirm 携带未知 intent：pending 照常形成，可被 resumeWrite 确认/拒绝（兜底按钮前提）", async () => {
+  const h = harness();
+
+  const sending = h.session.sendMessage("带我去看看", context());
+  h.start.resolve({ runId: "run-1", streamUrl: "/api/chat/stream?runId=run-1", streamToken: "stream-token" });
+  await sending;
+
+  // suspend 白名单外的未知 intent（正常不可达）：逻辑层不丢弃，模板兜底分支负责渲染。
+  const unknownIntent = { type: "open-record", workbookId: "workbook:demo", sheetId: "sheet:items", recordId: "ent_items:x" };
+  h.emit({
+    kind: "suspend",
+    runId: "run-1",
+    payload: { kind: "await-write-confirm", runId: "run-1", intent: unknownIntent },
+  });
+
+  const state = h.session.snapshot();
+  expect(state.pendingIntents).toEqual([
+    {
+      messageId: "id-2",
+      runId: "run-1",
+      kind: "await-write-confirm",
+      dismissed: false,
+    },
+  ]);
+
+  const resuming = h.session.resumeWrite("id-2", "write-rejected");
+  await Promise.resolve();
+  expect(h.resumes).toEqual([{ runId: "run-1", decision: { kind: "write-rejected" } }]);
+  h.emit({ kind: "done", runId: "run-1", message: assistantMessage("已取消"), toolCalls: [] }, 1);
+  await resuming;
+  expect(h.session.snapshot().pendingIntents[0]?.dismissed).toBe(true);
+});

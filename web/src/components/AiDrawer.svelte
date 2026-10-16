@@ -583,7 +583,12 @@
                     resume={(decision) => session.resumeWrite(pending.messageId, decision.kind)}
                   />
                 {:else}
-                  <span>等待确认</span>
+                  <!-- 防御性兜底：suspend 白名单外的未知 intent 正常不可达。若出现，给出明确文案与确认/拒绝入口，避免无按钮死卡。 -->
+                  <span>收到了一项暂不支持在此确认的请求，已暂停等待你的决定。</span>
+                  <div class="candidate-list">
+                    <button type="button" onclick={() => void session.resumeWrite(pending.messageId, "write-confirmed")}>继续</button>
+                    <button type="button" onclick={() => void session.resumeWrite(pending.messageId, "write-rejected")}>取消</button>
+                  </div>
                 {/if}
               </div>
             {/each}
