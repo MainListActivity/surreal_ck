@@ -287,6 +287,8 @@ export type RunDiagnostics = {
       signal?: AbortSignal;
       /** persist 等终态清理操作：不随 run 信号取消（它们恰恰是取消后要完成的清理）。 */
       skipRunSignal?: boolean;
+      /** 超时只记 op 终态，不置 run 级 fatal/不触发 cancelRun（终态清理失败不污染业务错误名）。 */
+      suppressFatal?: boolean;
       timeoutError: () => Error;
       abortedError?: () => Error;
       onTimeout?: () => void;
@@ -327,16 +329,18 @@ export function createRunDiagnostics(config: RunDiagnosticsConfig = {}): RunDiag
 
   const endOp = (op: MutableOp, outcome: RunOpOutcome, error?: unknown) => {
     // 取消瞬间在途 op 先落 cancelled；真正的超时错误传播上来时改写为
-    // timeout ——超时是取消的根因，保留它比 cancelled 更有诊断价值。
+    // timeout——超时是取消的根因，保留它比 cancelled 更有诊断价值。
+    // skipRunSignal 的 persist 写在 run 取消后仍真实落库时改写为 ok——账本忠于实际结果。
     if (op.record.status !== "in-flight") {
-      if (!(op.record.status === "cancelled" && outcome === "timeout")) return;
+      if (!(op.record.status === "cancelled" && (outcome === "timeout" || outcome === "ok"))) return;
+    } else {
+      finished += 1; // 只在首次终结计数；cancelled→timeout/ok 覆写不重复计。
     }
     const endedAtMs = now();
     op.record.status = outcome;
     op.record.endedAt = new Date(endedAtMs).toISOString();
     op.record.durationMs = Math.max(0, Math.round(endedAtMs - op.startedAtMs));
     if (error !== undefined) op.record.error = stableErrorCode(error);
-    finished += 1;
   };
 
   const diag: RunDiagnostics = {
@@ -429,7 +433,7 @@ export function createRunDiagnostics(config: RunDiagnosticsConfig = {}): RunDiag
           : error instanceof AiRunCancelledError ? "cancelled"
           : "failed";
         if (op) endOp(op, outcome, error);
-        if (outcome === "timeout") diag.fail(error);
+        if (outcome === "timeout" && !bound.suppressFatal) diag.fail(error);
         throw error;
       }
     },

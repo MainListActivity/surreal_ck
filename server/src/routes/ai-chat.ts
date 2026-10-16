@@ -235,12 +235,29 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
         await deps.deliveries!.save(persist, workspaceDb(user)!, user.subject, { event, proofs });
       } : undefined,
       onTerminal: async (outcome: RunTerminalOutcome) => {
-        const row = await deps.deliveries?.find(persist, runId);
+        // 终态链各环节尽力而为且失败可见：任何一步抛错不得跳过后续的
+        // 账本落库 / 额度释放 / 诊断写（它们各有独立守卫，互不拖垮）。
+        const warn = (step: string, error: unknown) => console.warn(`[ai-chat] onTerminal ${step} failed`, {
+          runId,
+          message: error instanceof Error ? error.message : String(error),
+        });
+        const row = deps.deliveries
+          ? await deps.deliveries.find(persist, runId).catch((error) => { warn("find", error); return undefined; })
+          : undefined;
         // Persistence survived a settlement/network failure: keep the successful result authoritative.
         const durableSuccess = row?.status === "complete";
-        if (durableSuccess) deps.deliveries!.decrypt(row!, workspaceDb(user)!, user.subject);
-        if (deps.deliveries && !durableSuccess) await deps.deliveries.status(persist, runId, outcome === "suspended" ? "suspended" : "failed");
-        if (meteredDb) await meteredTerminalHandler(meteredDb, runId)(durableSuccess ? "success" : outcome);
+        if (durableSuccess) {
+          try { deps.deliveries!.decrypt(row!, workspaceDb(user)!, user.subject); } catch (error) { warn("decrypt", error); }
+        }
+        // status 的 WHERE 守卫（status INSIDE ["running","suspended"]）保证不会覆盖 complete 行。
+        if (deps.deliveries && !durableSuccess) {
+          await deps.deliveries.status(persist, runId, outcome === "suspended" ? "suspended" : "failed")
+            .catch((error) => warn("status", error));
+        }
+        if (meteredDb) {
+          await meteredTerminalHandler(meteredDb, runId)(durableSuccess ? "success" : outcome)
+            .catch((error) => warn("metered", error));
+        }
         // PG-1：终态操作诊断快照随 chat_delivery 行持久化。审计写自身有界，
         // 失败只记 warn——不得拖住终态，也不得覆盖上面的业务终态结果。
         const diag = callerRunDiagnostics(session);

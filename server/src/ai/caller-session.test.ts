@@ -185,4 +185,106 @@ describe("caller session PG-1 有界与诊断", () => {
     expect(op?.phase).toBe("persist");
     expect(op?.argShape).toEqual(["c"]);
   });
+
+  // 验收退回回归：deadline 用尽取消后，persist 终态写必须仍有完整有界预算，
+  // 不得被 min(剩余期限≈0) 压到 ~1ms 必超时、不得关连接、不得污染 fatalError。
+  test("deadline 取消后 persist 查询用固定预算正常落库，不关连接不置 fatal", async () => {
+    const diag = createRunDiagnostics({ queryTimeoutMs: 1000 });
+    const controller = new AbortController();
+    diag.bindRun({ runId: "r1", signal: controller.signal, deadlineAt: Date.now() + 20, cancelRun: () => {} });
+
+    const fake = queryableSurreal(async () => {
+      await new Promise((r) => setTimeout(r, 5));
+      return [[]];
+    });
+    const session = await createCallerSession("t", {
+      surrealUrl: "ws://db/rpc",
+      newSurreal: () => fake as never,
+      diagnostics: diag,
+    });
+
+    await session.query("SELECT 1");
+    await new Promise((r) => setTimeout(r, 30));
+    controller.abort();
+    expect(diag.remainingMs()).toBe(0);
+
+    const persist = sessionForPhase(session, "persist");
+    const err1 = await persist.query("UPDATE chat_delivery SET status='failed' WHERE run_id='r1'")
+      .then(() => null, (e: unknown) => e);
+    expect(err1).toBeNull();
+    const err2 = await persist.query("UPDATE chat_delivery SET run_diagnostic=$d WHERE run_id='r1'")
+      .then(() => null, (e: unknown) => e);
+    expect(err2).toBeNull();
+
+    expect(fake.closed).toBe(false);
+    const snap = diag.snapshot("failed");
+    expect(snap.fatalError).toBeUndefined();
+    const persistOps = snap.completed.filter((record) => record.phase === "persist");
+    expect(persistOps.length).toBe(2);
+    expect(persistOps.every((record) => record.status === "ok")).toBe(true);
+  });
+
+  test("persist 查询自身超时：记 timeout 但不关连接、不污染 fatalError、后续写仍可用", async () => {
+    const diag = createRunDiagnostics({ queryTimeoutMs: 20 });
+    const controller = new AbortController();
+    diag.bindRun({ runId: "r1", signal: controller.signal, deadlineAt: Date.now() + 5, cancelRun: () => {} });
+
+    let hang = false;
+    const fake = queryableSurreal(async () => {
+      if (hang) return new Promise(() => {});
+      await new Promise((r) => setTimeout(r, 2));
+      return [[]];
+    });
+    const session = await createCallerSession("t", {
+      surrealUrl: "ws://db/rpc",
+      newSurreal: () => fake as never,
+      diagnostics: diag,
+    });
+
+    await new Promise((r) => setTimeout(r, 15));
+    controller.abort();
+    const persist = sessionForPhase(session, "persist");
+
+    hang = true;
+    const timeoutErr = await persist.query("UPDATE chat_delivery SET status='failed' WHERE run_id='r1'")
+      .then(() => null, (e: unknown) => e);
+    expect(timeoutErr).toBeInstanceOf(AiCallerQueryTimeoutError);
+
+    hang = false;
+    const err2 = await persist.query("UPDATE chat_delivery SET run_diagnostic=$d WHERE run_id='r1'")
+      .then(() => null, (e: unknown) => e);
+    expect(err2).toBeNull();
+    expect(fake.closed).toBe(false);
+
+    const snap = diag.snapshot("failed");
+    expect(snap.fatalError).toBeUndefined();
+    const persistOps = snap.completed.filter((record) => record.phase === "persist");
+    expect(persistOps.map((record) => record.status)).toEqual(["timeout", "ok"]);
+    expect(persistOps[0]?.error).toBe("ai-caller-query-timeout");
+  });
+
+  test("run 取消时在途 persist 写继续执行：落账如实记 ok 而非 cancelled", async () => {
+    const diag = createRunDiagnostics();
+    const controller = new AbortController();
+    diag.bindRun({ runId: "r1", signal: controller.signal, cancelRun: () => {} });
+
+    const fake = queryableSurreal(async () => {
+      await new Promise((r) => setTimeout(r, 15));
+      return [[]];
+    });
+    const session = await createCallerSession("t", {
+      surrealUrl: "ws://db/rpc",
+      newSurreal: () => fake as never,
+      diagnostics: diag,
+    });
+
+    const persist = sessionForPhase(session, "persist");
+    const inFlight = persist.query("UPDATE workflow_run SET status='canceled'");
+    controller.abort();
+    await inFlight;
+
+    const snap = diag.snapshot("cancelled");
+    const op = snap.completed.find((record) => record.phase === "persist");
+    expect(op?.status).toBe("ok");
+  });
 });

@@ -83,6 +83,7 @@ function paramKeys(params: unknown): string[] | undefined {
 function wrapQueryForDiagnostics(
   query: unknown,
   execute: (inner: PromiseLike<unknown>) => Promise<unknown>,
+  onResultProcessing?: () => void,
 ): unknown {
   if (query === null || (typeof query !== "object" && typeof query !== "function")) return query;
   const target = query as Record<PropertyKey, unknown>;
@@ -100,13 +101,16 @@ function wrapQueryForDiagnostics(
       }
       if (typeof value !== "function") return value;
       if (prop === "collect" || prop === "responses" || prop === "json") {
-        return (...args: unknown[]) =>
-          execute(Promise.resolve((value as (...a: unknown[]) => unknown).apply(t, args)));
+        return (...args: unknown[]) => {
+          // collect/responses/json 是对已返回响应做整形——如实把 op 迁到 result-processing。
+          onResultProcessing?.();
+          return execute(Promise.resolve((value as (...a: unknown[]) => unknown).apply(t, args)));
+        };
       }
       return (...args: unknown[]) => {
         const result = (value as (...a: unknown[]) => unknown).apply(t, args);
         // 返回新 Query 的链式方法（retry 等）递归再包一层，诊断不丢。
-        return isThenable(result) ? wrapQueryForDiagnostics(result, execute) : result;
+        return isThenable(result) ? wrapQueryForDiagnostics(result, execute, onResultProcessing) : result;
       };
     },
   });
@@ -141,19 +145,23 @@ function instrumentSessionDiagnostics(db: Surreal, diag: RunDiagnostics): void {
     }
     const op = diag.begin({ name: statementKind(sql), phase, argShape: paramKeys(params) });
     const inner = rawQuery(sql, params) as PromiseLike<unknown>;
-    const bound = {
-      timeoutMs: diag.effectiveMs(diag.config.queryTimeoutMs),
-      // SDK 无 query 级取消：超时后关闭本 run 独占的连接，迟到 settle 由 mask 吞掉。
-      onTimeout: () => void closeQuietly(db),
-    };
+    const isPersist = phase === "persist";
     return wrapQueryForDiagnostics(inner, (terminal) =>
       diag.trackOp(op, terminal, {
-        ...bound,
-        // persist 阶段（终态落库）不随 run 信号取消——它恰恰是取消后要完成的清理。
-        skipRunSignal: phase === "persist",
+        // persist 终态写从派发时刻起算固定有界预算：它恰恰在 run deadline
+        // 用尽之后执行，再 min(剩余期限) 会压到 ~0 必超时（验收退回的真实缺陷）。
+        timeoutMs: isPersist ? diag.config.queryTimeoutMs : diag.effectiveMs(diag.config.queryTimeoutMs),
+        // SDK 无 query 级取消：业务查询超时后关闭本 run 独占的连接，迟到 settle 由 mask 吞掉。
+        // persist 不关——终态链上后续写（status/额度/诊断快照）还在复用这条连接。
+        ...(isPersist ? {} : { onTimeout: () => void closeQuietly(db) }),
+        // persist 不随 run 信号取消；其超时也不置 run 级 fatal——清理失败不得
+        // 覆盖业务终态的稳定错误名。
+        skipRunSignal: isPersist,
+        suppressFatal: isPersist,
         timeoutError: () => new AiCallerQueryTimeoutError("query"),
         abortedError: () => new AiRunCancelledError(),
       }),
+      () => diag.markPhase(op, "result-processing"),
     );
   };
 

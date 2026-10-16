@@ -68,6 +68,7 @@ function makeApp(opts: {
   sessionFactory?: CallerSessionFactory;
   registry?: ReturnType<typeof createRunRegistry>;
   deliveries?: ChatDeliveryStore;
+  allowance?: Parameters<typeof createAiChatRoutes>[0]["allowance"];
   /** LCA14：默认放行；注入 disabled/抛错替身覆盖开关拒绝与 fail closed 路径。 */
   rolloutGates?: import("../rollout/gate-check").RolloutGateChecker;
   /** 传 undefined 时用真实 requireOidc（用于鉴权失败用例）。 */
@@ -82,6 +83,7 @@ function makeApp(opts: {
       createCallerSession: opts.sessionFactory ?? okSessionFactory,
       registry: opts.registry ?? createRunRegistry(),
       deliveries: opts.deliveries,
+      allowance: opts.allowance,
       rolloutGates: opts.rolloutGates ?? (async () => "enabled"),
       requireUser: opts.requireUser === "real" ? undefined : (opts.requireUser ?? (() => useUser())),
     }),
@@ -600,5 +602,55 @@ describe("PG-1：终态诊断快照持久化（有界 best-effort）", () => {
     expect(snapshot?.inFlight?.[0]?.phase).toBe("tool");
     // 脱敏自检：快照里不允许出现参数值/SQL 原文。
     expect(JSON.stringify(snapshot)).not.toContain("分析一下");
+  });
+
+  // 验收退回回归：onTerminal 首步 find 抛错不得跳过后续终态链——
+  // status 落库、额度释放、诊断写各尽力而为且失败可见（不静默整链吞掉）。
+  test("onTerminal 单步失败不拖垮终态链：find 抛错后 status/额度/诊断写照常执行", async () => {
+    const deliveries = new ChatDeliveryStore("a".repeat(64));
+    const diag = createRunDiagnostics();
+    const finishCalls: Array<{ db: string; runId: string; outcome: string }> = [];
+    const queries: string[] = [];
+    const session = attachRunDiagnostics({
+      close: async () => {},
+      query: async (sql: string, params?: Record<string, unknown>) => {
+        queries.push(sql);
+        if (sql.includes("INSERT INTO chat_delivery")) {
+          const content = params?.content as { run_id: string; request_hash: string; nonce: string };
+          return [[{ ...content, status: "running" }]];
+        }
+        if (sql.includes("RETURN fn::current_user()")) return [["user:u1"]];
+        if (sql.includes("SELECT * FROM chat_delivery")) throw new Error("find exploded");
+        return [[]];
+      },
+    } as unknown as Surreal, diag);
+
+    const service = stubService({
+      async startChat(input) {
+        await input.onTerminal?.("failed");
+      },
+    });
+    const app = makeApp({
+      service,
+      deliveries,
+      sessionFactory: async () => session,
+      allowance: {
+        reserve: async () => ({ metered: true }),
+        finishByRun: async (input) => { finishCalls.push(input); },
+      },
+    });
+
+    const res = await app.request("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "查一下" }),
+    });
+    expect(res.status).toBe(200);
+    const { runId } = (await res.json()) as { runId: string };
+
+    // find 已抛错，但后续链没有断：
+    expect(queries.some((sql) => sql.includes("SET status"))).toBe(true);      // delivery 终态落库
+    expect(finishCalls).toEqual([{ db: "ws_demo", runId, outcome: "failure" }]); // 额度释放
+    expect(queries.some((sql) => sql.includes("run_diagnostic"))).toBe(true);   // 诊断快照写
   });
 });
