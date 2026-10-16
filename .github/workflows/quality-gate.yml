@@ -71,6 +71,9 @@ jobs:
       - name: Test
         run: pnpm test
 
+      - name: Origin release disconnect drill
+        run: bash scripts/deploy/origin-release-runner.test.sh
+
       - name: Build web application
         run: pnpm --filter @surreal-ck/web build
 

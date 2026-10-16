@@ -59,16 +59,24 @@ Variables：
 
 origin 是 `data.maplayer.top`（`129.146.179.37`）上的 systemd 服务 `surreal-ck-hono`，工作目录 `/home/ubuntu/surreal_ck/current`，环境文件 `/etc/surreal-ck/server.env`（只在主机上，CI 不读取也不改写）。
 
-`Deploy origin` 的步骤：确认 commit 通过 Quality gate → `git archive` 打包 → scp 到主机 → 执行 `scripts/deploy/origin-release.sh`：
+`Deploy origin` 的步骤：确认 commit 通过 Quality gate → `git archive` 打包 → scp 到主机 → 由 `scripts/deploy/origin-release-runner.sh` 在主机上启动一次**与 SSH 会话解耦**的发布：
 
-1. 解包到 `releases/<sha7>-ci<run_id>`，`bunx pnpm@10.32.1 install --frozen-lockfile --prod`。
+- `runner launch` 以 `nohup+setsid`（stdin=/dev/null、无控制终端）派生分离的 `run` 子进程执行 `origin-release.sh`；CI 的 SSH 会话在任意时刻死亡（断连、job 中止）都不会打断远端——健康检查与失败回滚在主机上无人值守收尾。
+- 每次发布的 job 目录是 `~/surreal_ck/deploy-jobs/<release_id>/`（release_id 形如 `<sha7>-ci<run_id>-a<attempt>`）：`result` 是原子写入的终态权威（`success`/`failed:<rc>`/`failed:runner_*`），`output.log` 留存发布全程输出供审计，`run.pid` 供存活探测。终态以 result 为准，不是以 SSH 会话为准。
+- job 由 `mkdir` 原子认领：同一 release_id 的重发/并发调用 attach 到同一次发布而不重入；`deploy-jobs/release.lock` 的 flock 保证同一时刻只有一个发布在执行（CI 轮询超时放弃后新发布不会与残留 job 重叠）。CI job 目录只保留最近 16 个。
+- CI 侧 `launch` 失败重试 5 次，随后每 10s 轮询 `runner status`（中途 SSH 失败不计为远端失败），15 分钟未出终态按失败处理并提示远端可能仍在跑；出终态后回取 `runner log` 进 Actions 日志。
+- `origin-release.sh` 在 env 备份完成后武装 `HUP/INT/TERM` trap：进入任何改变主机状态的窗口（env 增改/撤销门禁停服/pre-start 停服/切换/健康检查）后被终止，按发布失败走完整 `rollback`；`rollback` 执行期间忽略同类信号，回滚不被二次打断。
+
+分离的 `origin-release.sh` 在主机上依次执行：
+
+1. 解包到 `releases/<release_id>`，`bunx pnpm@10.32.1 install --frozen-lockfile --prod`。
 2. 试用来源门禁（见下）：纯静态、无副作用，在任何主机状态变更之前拒绝目标。
-3. 备份 `server.env` 到 `~/surreal_ck/backups/env/`，再把 GitHub `production` Environment 中所有 `ORIGIN_ENV_<NAME>` secret 写成 `server.env` 的 `<NAME>=<值>`（只增改这些键，值必须单行，日志只打印键名；非法键或后续门禁拒绝会先把 env 恢复成备份再退出）。
+3. 备份 `server.env` 到 `~/surreal_ck/backups/env/`，再把 GitHub `production` Environment 中所有 `ORIGIN_ENV_<NAME>` secret 写成 `server.env` 的 `<NAME>=<值>`（只增改这些键，值必须单行，日志只打印键名；非法键或后续门禁拒绝会先把 env 恢复成备份再退出）。此后到达的 `HUP/INT/TERM` 按「发布中断」回滚。
 4. 撤销兼容门禁（见下）：目标不含撤销过滤时停服冻结并查 `_system`，拒绝则恢复 env 备份并拉回服务后退出。
 5. 发布代码里存在 `scripts/deploy/origin-pre-start.sh` 时：停掉 `surreal-ck-hono`（冻结 origin 写入），在新版本目录执行该钩子（`ORIGIN_ENV_FILE` 指向 `server.env`）。钩子必须幂等，用于一次性数据复制迁移等。
 6. 原子切换 `current`，重启服务，轮询 `http://127.0.0.1:8080/health`。
 
-钩子失败或 90 秒内不健康：先过门禁再恢复 `server.env` 备份和上一个 `current` 并重启，job 失败，Cloudflare 不会发布。CI 发布目录与 env 备份各保留最近 8 个，手工发布目录不动。
+钩子失败或 90 秒内不健康：先过门禁再恢复 `server.env` 备份和上一个 `current` 并重启，job 失败（终态 `failed:1`），Cloudflare 不会发布。CI 发布目录与 env 备份各保留最近 8 个，手工发布目录不动。断连收尾语义由 `scripts/deploy/origin-release-runner.test.sh` 演练（launch 会话在 pre-start/healthy 窗口被 SIGHUP+KILL 后，run 仍完成发布或回滚并写终态），接入 Quality gate。
 
 ### 切换与回滚的可执行门禁
 

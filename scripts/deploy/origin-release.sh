@@ -240,6 +240,9 @@ require_allowance_source_compat() {
 }
 
 rollback() {
+  # 回滚期间到达的终止信号一律忽略（且不得重入）：回滚必须执行完毕，
+  # 中途被打断会留下比发布失败更糟的半回滚态。
+  trap '' HUP INT TERM
   echo "release $release_id failed: $1; restoring $previous" >&2
   sudo -n journalctl -u "$service" -n 40 --no-pager >&2 || true
   # 先做纯静态的试用来源检查（无副作用）：拒绝时 env/current/服务均未被触碰。
@@ -289,6 +292,12 @@ fi
 # 值精确等于 UNSET 时改为从 server.env 删除该键（不写入 KEY=UNSET 行），用于撤销主机上手工预置的键。
 mkdir -p "$env_dir" && chmod 700 "$env_dir"
 cat "$env_file" > "$env_backup" && chmod 600 "$env_backup"
+# env 备份完成后，脚本进入会改变主机状态的窗口（env 增改/撤销门禁停服/
+# pre-start 停服/切换 current/健康检查）。此处起到成功前的中断一律按
+# 发布失败回滚处理，不在「已切 current、已写 env、服务未健康」的半部署态
+# 留下现场。经 runner 分离执行时 SSH 断连的 SIGHUP 到不了本进程，trap 是
+# 针对显式 kill/会话终止的第二道防线；env 备份已存在，回滚可以完整执行。
+trap 'rollback "release interrupted"' HUP INT TERM
 if [ -n "$env_additions" ] && [ -s "$env_additions" ]; then
   while IFS= read -r line; do
     key=${line%%=*}
@@ -332,6 +341,7 @@ echo "switching $previous -> $release"
 point_to "$release"
 sudo -n systemctl restart "$service"
 healthy || rollback "health check failed"
+trap - HUP INT TERM
 echo "release $release_id healthy"
 
 # 只清理 CI 生成的旧发布与 env 备份，保留最近 $keep 个；手工发布目录不动。
