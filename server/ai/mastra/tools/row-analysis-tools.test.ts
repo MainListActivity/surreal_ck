@@ -159,3 +159,110 @@ describe("analyzeRow 提案字段名归一化", () => {
     ]);
   });
 });
+
+describe("analyzeRow 归一化丢弃明细（PG-1 诊断 §3.3-2）", () => {
+  const callAnalyze = async (input: {
+    fields: GridColumnDef[];
+    values: Record<string, unknown>;
+    suggestions: Array<{ field: string; suggestedValue: unknown; basis: string; confidence: "high" | "medium" | "low" }>;
+  }) => {
+    const { analyzeRowTool } = await import("./row-analysis-tools");
+    const execute = analyzeRowTool.execute as unknown as (input: {
+      sheetId: string;
+      recordId: string;
+      values: Record<string, unknown>;
+      fields: GridColumnDef[];
+      suggestions: Array<{ field: string; suggestedValue: unknown; basis: string; confidence: "high" | "medium" | "low" }>;
+    }) => Promise<{
+      intent: {
+        type: "row-patch-proposal";
+        proposals: Array<{ field: string }>;
+        dropped?: Array<{ field: string; reason: string }>;
+      };
+    }>;
+    return execute({
+      sheetId: "sheet:devices",
+      recordId: "ent_devices:abc",
+      fields: input.fields,
+      values: input.values,
+      suggestions: input.suggestions,
+    });
+  };
+
+  test("未知字段丢弃记 unknown-field，不记业务值", async () => {
+    const result = await callAnalyze({
+      fields,
+      values: { device_name: "", reading: 1000, created_at: "2026-05-01T00:00:00.000Z" },
+      suggestions: [
+        { field: "ghost_field", suggestedValue: "机密值", basis: "臆测", confidence: "low" },
+      ],
+    });
+    expect(result.intent.proposals).toEqual([]);
+    expect(result.intent.dropped).toEqual([{ field: "ghost_field", reason: "unknown-field" }]);
+  });
+
+  test("label 歧义（多列同名）丢弃记 ambiguous-label", async () => {
+    const result = await callAnalyze({
+      fields: [
+        { key: "amount_a", label: "金额", fieldType: "currency" },
+        { key: "amount_b", label: "金额", fieldType: "currency" },
+      ],
+      values: { amount_a: 1, amount_b: 2 },
+      suggestions: [
+        { field: "金额", suggestedValue: 999, basis: "附件", confidence: "medium" },
+      ],
+    });
+    expect(result.intent.proposals).toEqual([]);
+    expect(result.intent.dropped).toEqual([{ field: "金额", reason: "ambiguous-label" }]);
+  });
+
+  test("不可编辑字段（系统列 / unknown 类型）丢弃记 non-editable", async () => {
+    const result = await callAnalyze({
+      fields: [
+        ...fields,
+        { key: "mystery", label: "未识别列", fieldType: "unknown" },
+      ],
+      values: { device_name: "", reading: 1000, created_at: "x", mystery: "y" },
+      suggestions: [
+        { field: "created_at", suggestedValue: "2026-05-02T00:00:00.000Z", basis: "系统字段", confidence: "medium" },
+        { field: "mystery", suggestedValue: "补齐", basis: "模型猜测", confidence: "low" },
+      ],
+    });
+    expect(result.intent.proposals).toEqual([]);
+    expect(result.intent.dropped).toEqual([
+      { field: "created_at", reason: "non-editable" },
+      { field: "mystery", reason: "non-editable" },
+    ]);
+  });
+
+  test("无丢弃时 dropped 缺席（不污染存量 intent 形状）", async () => {
+    const result = await callAnalyze({
+      fields,
+      values: { device_name: "", reading: 1000, created_at: "2026-05-01T00:00:00.000Z" },
+      suggestions: [
+        { field: "device_name", suggestedValue: "冷却泵", basis: "巡检单抬头", confidence: "high" },
+      ],
+    });
+    expect(result.intent.proposals).toHaveLength(1);
+    expect(result.intent.dropped).toBeUndefined();
+  });
+
+  test("proposeRecordWrite 有列定义时同样带回 dropped；无 session 透传时不记", async () => {
+    const { proposeRecordWriteTool } = await import("./row-analysis-tools");
+    const execute = proposeRecordWriteTool.execute as unknown as (input: {
+      operation: "create";
+      sheetId: string;
+      proposals: Array<{ field: string; currentValue: unknown; suggestedValue: unknown; basis: string; confidence: "high" }>;
+    }) => Promise<{
+      intent: { type: string; proposals: Array<{ field: string }>; dropped?: Array<{ field: string; reason: string }> };
+    }>;
+    // 无 session：resolveProposalFieldDefs 返回 undefined，透传且不记 dropped。
+    const passthrough = await execute({
+      operation: "create",
+      sheetId: "sheet:tasks",
+      proposals: [{ field: "anything", currentValue: null, suggestedValue: "v", basis: "b", confidence: "high" }],
+    });
+    expect(passthrough.intent.proposals).toHaveLength(1);
+    expect(passthrough.intent.dropped).toBeUndefined();
+  });
+});

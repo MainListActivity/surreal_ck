@@ -2,7 +2,13 @@ import { internalScope } from "../../../src/internal-ai/context";
 import type { Agent } from "@mastra/core/agent";
 import { RequestContext } from "@mastra/core/request-context";
 import { z } from "zod";
-import type { AiStructuredIntent, AiToolCallRecord, ResourceCitationDTO } from "@surreal-ck/shared";
+import type {
+  AiStructuredIntent,
+  AiToolCallRecord,
+  AiToolCallSummary,
+  ProposalDropRecord,
+  ResourceCitationDTO,
+} from "@surreal-ck/shared";
 import { serializeContextForAi } from "@surreal-ck/shared";
 import { ROUTER_RUNTIME_KEY, type SharedConfirmed, type SubAgentExecutor, type SubAgentSuspendSignal } from "./router-workflow";
 import { setExecutionContext } from "../execution-context";
@@ -63,7 +69,7 @@ const ResourceCitationListSchema = z.array(z.object({
  *   让 router-chat 转推到统一 streamId 上
  */
 export function makeAgentExecutor(agent: Agent, options: AgentExecutorOptions = {}): SubAgentExecutor {
-  return async ({ taskText, shared, surrealSession, onDelta }) => {
+  return async ({ taskText, shared, surrealSession, onDelta, onToolCall }) => {
     const prompt = [
       `子任务：${taskText}`,
       "",
@@ -110,6 +116,7 @@ export function makeAgentExecutor(agent: Agent, options: AgentExecutorOptions = 
             };
             observedToolCalls.push(record);
             options.onToolCall?.(record);
+            onToolCall?.(record);
           }
         },
         providerOptions: { openai: { stream: true } },
@@ -154,6 +161,10 @@ export function makeAgentExecutor(agent: Agent, options: AgentExecutorOptions = 
       noOutput = observedToolCalls.length === 0 && sawReasoning ? "reasoning-only" : "empty";
       text = options.noOutputText ?? "";
     }
+    // 全丢弃说明确定性拼接（PG-1 诊断 §4-1）：无论模型是否有可见文本，
+    // 只要 suggestions 全被归一化丢弃就给出数量/原因；保留模型原文、不 suspend、不伪造卡。
+    const droppedNote = deriveDroppedProposalNote(observedToolCalls);
+    if (droppedNote) text = text ? `${text}\n${droppedNote}` : droppedNote;
     const citations = deriveCitationsFromToolCalls(observedToolCalls);
     return {
       text,
@@ -204,10 +215,21 @@ export function deriveConfirmedFromToolCalls(toolCalls: AiToolCallRecord[]): Sha
   return confirmed;
 }
 
+/**
+ * 可 suspend 的 intent 白名单（PG-1 诊断 §5.4-b navigation 死卡修复）。
+ * 只有前端 AiDrawer 能渲染确认卡的类型才允许挂起：
+ * ambiguous（候选卡）、非空行分析提案（RowPatchCard）、dashboard-draft（DashboardDraftCard）。
+ * 其余 intent（navigation 的 navigate/open-*、resource-draft、rowPatch、legacy dashboardDraft）
+ * 前端无确认入口，suspend 会渲染无按钮的"等待确认"死卡并卡住 run——一律跳过，
+ * 由 agent 的文本输出如实收尾（navigation agent 指令本就要求先文字说明建议）。
+ */
+const SUSPENDABLE_INTENT_TYPES = new Set(["ambiguous", "row-patch-proposal", "record-write-proposal", "dashboard-draft"]);
+
 export function deriveSuspendSignalFromToolCalls(toolCalls: AiToolCallRecord[]): SubAgentSuspendSignal | undefined {
   for (const call of toolCalls) {
     const intent = readToolIntent(call);
     if (!intent) continue;
+    if (!SUSPENDABLE_INTENT_TYPES.has(intent.type)) continue;
     if (intent.type === "ambiguous") {
       return { kind: "ambiguous", candidates: intent.candidates };
     }
@@ -219,6 +241,79 @@ export function deriveSuspendSignalFromToolCalls(toolCalls: AiToolCallRecord[]):
     return { kind: "await-write-confirm", intent };
   }
   return undefined;
+}
+
+/**
+ * 工具调用脱敏审计摘要（PG-1 诊断 §4-2：事后可审计"调了什么工具、传了什么 field"）。
+ * - argShape：args 顶层 key 名；suggestions/proposals 数组额外提取其中的 field 名；
+ * - 不记录任何业务值（suggestedValue、values、recordId 具体值均不进摘要）。
+ */
+export function summarizeToolCallForAudit(call: AiToolCallRecord): AiToolCallSummary {
+  const summary: AiToolCallSummary = { toolName: call.toolName };
+  const args = asRecord(call.args);
+  if (args) {
+    const shape = new Set<string>();
+    for (const key of Object.keys(args)) {
+      if (key === "suggestions" || key === "proposals") {
+        const items = args[key];
+        if (Array.isArray(items)) {
+          for (const item of items) {
+            const field = asRecord(item)?.field;
+            if (typeof field === "string") shape.add(`${key}[].field=${field}`);
+          }
+        } else {
+          shape.add(key);
+        }
+      } else if (key === "values") {
+        shape.add("values{keys…}");
+      } else {
+        shape.add(key);
+      }
+    }
+    if (shape.size > 0) summary.argShape = [...shape];
+  }
+  const intent = readToolIntent(call);
+  if (intent) {
+    summary.resultIntent = intent.type;
+    if (intent.type === "row-patch-proposal" || intent.type === "record-write-proposal") {
+      if (Array.isArray(intent.proposals)) summary.proposalCount = intent.proposals.length;
+      if (Array.isArray(intent.dropped)) summary.droppedCount = intent.dropped.length;
+    }
+  }
+  return summary;
+}
+
+/**
+ * 全丢弃用户可见说明（PG-1 诊断 §4-1：有 suggestions 输入但全被归一化丢弃）。
+ * 返回追加到 step 文本的说明，不 suspend、不伪造提案卡。
+ * 无丢弃或仍有存活提案时返回 undefined；全丢弃时调用方无条件拼接（含模型已有文本的情形）。
+ */
+export function deriveDroppedProposalNote(toolCalls: AiToolCallRecord[]): string | undefined {
+  let dropped: ProposalDropRecord[] = [];
+  let liveProposals = 0;
+  let sawProposalIntent = false;
+  for (const call of toolCalls) {
+    const intent = readToolIntent(call);
+    if (!intent) continue;
+    if (intent.type !== "row-patch-proposal" && intent.type !== "record-write-proposal") continue;
+    sawProposalIntent = true;
+    liveProposals += Array.isArray(intent.proposals) ? intent.proposals.length : 0;
+    if (Array.isArray(intent.dropped)) {
+      for (const entry of intent.dropped) {
+        if (entry && typeof entry.field === "string" && typeof entry.reason === "string") {
+          dropped.push({ field: entry.field, reason: entry.reason as ProposalDropRecord["reason"] });
+        }
+      }
+    }
+  }
+  if (!sawProposalIntent || liveProposals > 0 || dropped.length === 0) return undefined;
+  const reasonLabel: Record<ProposalDropRecord["reason"], string> = {
+    "unknown-field": "未知字段",
+    "ambiguous-label": "名称歧义",
+    "non-editable": "不可编辑",
+  };
+  const detail = dropped.map((entry) => `${entry.field}（${reasonLabel[entry.reason] ?? entry.reason}）`).join("、");
+  return `模型给出的 ${dropped.length} 条字段建议均无法对应到数据表字段，已忽略：${detail}。请用字段存储名或唯一显示名重试。`;
 }
 
 type StepChunkFields = {

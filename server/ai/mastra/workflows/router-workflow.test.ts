@@ -268,3 +268,55 @@ describe("router-workflow 调度", () => {
     ]);
   });
 });
+
+describe("router-workflow 工具调用审计摘要（PG-1 诊断 §4-2）", () => {
+  const idleExecutors = (): SubAgentExecutors => ({
+    navigation: async () => ({ text: "n", confirmed: {} }),
+    dashboard: async () => ({ text: "d", confirmed: {} }),
+    "row-analysis": async () => ({ text: "c", confirmed: {} }),
+    chitchat: async () => ({ text: "h", confirmed: {} }),
+  });
+
+  test("executor 经 onToolCall 上报调用时，step 带 toolCallSummary 且不记业务值", async () => {
+    const executors = idleExecutors();
+    executors["row-analysis"] = async ({ onToolCall }) => {
+      onToolCall?.({
+        toolName: "analyzeRow",
+        args: {
+          sheetId: "sheet:devices",
+          suggestions: [{ field: "check_status", suggestedValue: "已复核", basis: "附件", confidence: "high" }],
+        },
+        result: {
+          intent: {
+            type: "row-patch-proposal",
+            sheetId: "sheet:devices",
+            recordId: "ent_devices:pump-7",
+            proposals: [{ field: "check_status", currentValue: "待复核", suggestedValue: "已复核", basis: "附件", confidence: "high" }],
+            dropped: [{ field: "ghost", reason: "unknown-field" }],
+          },
+        },
+      });
+      return { text: "已生成提案。", confirmed: {} };
+    };
+    const plan: RouterPlan = [{ category: "row-analysis", taskText: "分析这条记录" }];
+    const result = await runRouterDispatch({ plan, shared: makeShared(), executors });
+
+    expect(result.steps).toHaveLength(1);
+    expect(result.steps[0]?.toolCallSummary).toEqual([{
+      toolName: "analyzeRow",
+      argShape: ["sheetId", "suggestions[].field=check_status"],
+      resultIntent: "row-patch-proposal",
+      proposalCount: 1,
+      droppedCount: 1,
+    }]);
+    expect(JSON.stringify(result.steps[0]?.toolCallSummary)).not.toContain("已复核");
+    expect(JSON.stringify(result.steps[0]?.toolCallSummary)).not.toContain("pump-7");
+  });
+
+  test("executor 无 tool 调用（chitchat 直答）时 step 不带 toolCallSummary", async () => {
+    const plan: RouterPlan = [{ category: "chitchat", taskText: "你好" }];
+    const result = await runRouterDispatch({ plan, shared: makeShared(), executors: idleExecutors() });
+    expect(result.steps).toHaveLength(1);
+    expect(result.steps[0]?.toolCallSummary).toBeUndefined();
+  });
+});

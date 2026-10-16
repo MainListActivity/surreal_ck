@@ -1,7 +1,7 @@
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
 import { StringRecordId, type Surreal } from "surrealdb";
-import type { GridColumnDef, RecordWriteProposal } from "@surreal-ck/shared";
+import type { GridColumnDef, ProposalDropRecord, RecordWriteProposal } from "@surreal-ck/shared";
 import { getSurrealSession, type ToolRequestContext } from "../execution-context";
 
 const SYSTEM_FIELDS = new Set(["id", "workspace", "created_by", "created_at", "updated_at"]);
@@ -37,12 +37,18 @@ const RowPatchProposalItemSchema = z.object({
   confidence: ConfidenceSchema,
 });
 
+const ProposalDropRecordSchema = z.object({
+  field: z.string(),
+  reason: z.enum(["unknown-field", "ambiguous-label", "non-editable"]),
+});
+
 const RowPatchProposalIntentSchema = z.object({
   intent: z.object({
     type: z.literal("row-patch-proposal"),
     sheetId: z.string(),
     recordId: z.string(),
     proposals: z.array(RowPatchProposalItemSchema),
+    dropped: z.array(ProposalDropRecordSchema).optional(),
   }),
 });
 
@@ -53,6 +59,7 @@ const RecordWriteProposalIntentSchema = z.object({
     sheetId: z.string(),
     recordId: z.string().optional(),
     proposals: z.array(RowPatchProposalItemSchema),
+    dropped: z.array(ProposalDropRecordSchema).optional(),
   }),
 });
 
@@ -199,6 +206,19 @@ function normalizeProposalFieldKey(
   return byLabel.length === 1 ? byLabel[0]!.key : undefined;
 }
 
+/**
+ * 归一化丢弃原因（PG-1 诊断 §3.3-2：静默丢弃无计数无提示）。
+ * 与 normalizeProposalFieldKey 同规则，返回机器可读原因供 intent.dropped 带回。
+ */
+function describeProposalDropReason(
+  field: string,
+  fields: ReadonlyArray<Pick<GridColumnDef, "key" | "label">>,
+): ProposalDropRecord["reason"] {
+  if (fields.some((item) => item.key === field)) return "unknown-field";
+  const byLabel = fields.filter((item) => item.label === field);
+  return byLabel.length > 1 ? "ambiguous-label" : "unknown-field";
+}
+
 function buildRowPatchProposal(input: {
   sheetId: string;
   recordId: string;
@@ -212,20 +232,33 @@ function buildRowPatchProposal(input: {
       .map((field) => field.key),
   );
 
+  const proposals: z.infer<typeof RowPatchProposalIntentSchema>["intent"]["proposals"] = [];
+  const dropped: ProposalDropRecord[] = [];
+  for (const suggestion of input.suggestions) {
+    const key = normalizeProposalFieldKey(suggestion.field, input.fields);
+    if (!key) {
+      dropped.push({ field: suggestion.field, reason: describeProposalDropReason(suggestion.field, input.fields) });
+      continue;
+    }
+    if (!editableFields.has(key)) {
+      dropped.push({ field: suggestion.field, reason: "non-editable" });
+      continue;
+    }
+    proposals.push({
+      field: key,
+      currentValue: input.values[key],
+      suggestedValue: suggestion.suggestedValue,
+      basis: suggestion.basis,
+      confidence: suggestion.confidence,
+    });
+  }
+
   return {
     type: "row-patch-proposal",
     sheetId: input.sheetId,
     recordId: input.recordId,
-    proposals: input.suggestions
-      .map((suggestion) => ({ suggestion, key: normalizeProposalFieldKey(suggestion.field, input.fields) }))
-      .filter((entry): entry is { suggestion: RowSuggestion; key: string } => !!entry.key && editableFields.has(entry.key))
-      .map(({ suggestion, key }) => ({
-        field: key,
-        currentValue: input.values[key],
-        suggestedValue: suggestion.suggestedValue,
-        basis: suggestion.basis,
-        confidence: suggestion.confidence,
-      })),
+    proposals,
+    ...(dropped.length > 0 ? { dropped } : {}),
   };
 }
 
@@ -282,12 +315,20 @@ export const proposeRecordWriteTool = createTool({
     // 有调用者 session 时按 sheet.column_defs 归一提案字段名（label→存储 key、丢弃未知字段）；
     // session/列定义不可用时保持透传（不引入强制 DB 依赖）。
     const fields = await resolveProposalFieldDefs(input.sheetId, ctx as ToolRequestContext);
-    const proposals = fields
-      ? input.proposals.flatMap((item) => {
-          const key = normalizeProposalFieldKey(item.field, fields);
-          return key ? [{ ...item, field: key }] : [];
-        })
-      : input.proposals;
+    // session/列定义不可用时透传（不引入强制 DB 依赖），此时无归一化、无丢弃可记。
+    let proposals = input.proposals;
+    let dropped: ProposalDropRecord[] | undefined;
+    if (fields) {
+      const kept: typeof proposals = [];
+      const lost: ProposalDropRecord[] = [];
+      for (const item of input.proposals) {
+        const key = normalizeProposalFieldKey(item.field, fields);
+        if (key) kept.push({ ...item, field: key });
+        else lost.push({ field: item.field, reason: describeProposalDropReason(item.field, fields) });
+      }
+      proposals = kept;
+      if (lost.length > 0) dropped = lost;
+    }
     return {
       intent: {
         type: "record-write-proposal" as const,
@@ -295,6 +336,7 @@ export const proposeRecordWriteTool = createTool({
         sheetId: input.sheetId,
         ...(input.recordId ? { recordId: input.recordId } : {}),
         proposals,
+        ...(dropped ? { dropped } : {}),
       } satisfies RecordWriteProposal,
     };
   },

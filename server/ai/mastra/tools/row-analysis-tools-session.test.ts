@@ -170,7 +170,7 @@ describe("proposeRecordWrite 提案字段名归一化（session 读 column_defs�
         proposals: Array<{ field: string; currentValue: unknown; suggestedValue: unknown; basis: string; confidence: "high" | "medium" | "low" }>;
       },
       ctx?: { requestContext: RequestContext },
-    ) => Promise<{ intent: { proposals: Array<{ field: string }> } }>;
+    ) => Promise<{ intent: { proposals: Array<{ field: string }>; dropped?: Array<{ field: string; reason: string }> } }>;
 
     const result = await execute({
       operation: "update",
@@ -184,6 +184,7 @@ describe("proposeRecordWrite 提案字段名归一化（session 读 column_defs�
     }, ctxWithSession(session));
 
     expect(result.intent.proposals.map((p) => p.field)).toEqual(["field_2", "field_1"]);
+    expect(result.intent.dropped).toEqual([{ field: "幽灵字段", reason: "unknown-field" }]);
 
     // 无 session：行为不变，原样透传。
     const passthrough = await execute({
@@ -192,6 +193,7 @@ describe("proposeRecordWrite 提案字段名归一化（session 读 column_defs�
       proposals: [{ field: "状态", currentValue: null, suggestedValue: "在职", basis: "b", confidence: "high" }],
     });
     expect(passthrough.intent.proposals.map((p) => p.field)).toEqual(["状态"]);
+    expect(passthrough.intent.dropped).toBeUndefined();
   });
 });
 

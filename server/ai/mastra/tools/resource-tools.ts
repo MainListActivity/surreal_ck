@@ -68,7 +68,7 @@ export const getResourceDetailTool = createTool({
 
 export const createResourceDraftIntentTool = createTool({
   id: "createResourceDraftIntent",
-  description: "生成 resource-draft 写确认意图。该工具不保存资源，必须等待用户确认后由通用写确认路径处理。",
+  description: "生成 resource-draft 资源草稿说明。该工具不保存资源、不挂起确认卡；调用后必须在回答文字中向用户说明草稿内容并请用户用文字确认。",
   inputSchema: z.object({
     workspaceId: z.string(),
     resourceType: z.string().default("generic_note"),
