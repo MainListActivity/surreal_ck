@@ -700,13 +700,37 @@ for (const mode of ["patch", "update", "create"] as const) {
         resume: async (decision) => { resumes.push(decision); },
       });
       h.expectNoDatabaseCalls();
-      card.setAccepted("status", false);
+      card.setAccepted(1, false);
       h.expectNoDatabaseCalls();
       expect(resumes).toEqual([]);
       await card.confirm();
       h.expectWritten({ field_1: "已接受标题" });
       expect(card.snapshot().status).toBe("done");
       expect(resumes).toEqual([{ kind: "write-confirmed" }]);
+    });
+
+    test("经工具归一后同 key 重复提案：卡层整笔拒绝，数据库零调用零 resume", async () => {
+      const h = await setupWrite();
+      const proposals: RecordWriteProposal["proposals"] = [
+        { field: "field_1", currentValue: "旧标题", suggestedValue: "按 key 值", basis: "用户确认", confidence: "high" },
+        { field: "field_1", currentValue: "旧标题", suggestedValue: "label 归一值", basis: "归一后同 key", confidence: "medium" },
+      ];
+      const proposal: RowPatchProposal | RecordWriteProposal = mode === "patch"
+        ? { type: "row-patch-proposal", sheetId: "sheet:s1", recordId: "ent_items:m1", proposals }
+        : { ...h.proposal, proposals };
+      const resumes: RowPatchResumeDecision[] = [];
+      const card = createRowPatchCard({
+        proposal,
+        write: h.write,
+        resume: async (decision) => { resumes.push(decision); },
+      });
+      await card.confirm();
+
+      h.expectNoDatabaseCalls();
+      expect(resumes).toEqual([]);
+      expect(card.snapshot().status).toBe("error");
+      expect(card.snapshot().error).toContain("重复字段「field_1」");
+      expect(card.snapshot().writeCommitted).toBe(false);
     });
   });
 }

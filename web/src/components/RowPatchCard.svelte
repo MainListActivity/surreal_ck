@@ -52,14 +52,15 @@
   </header>
 
   <ul class="proposal-list">
-    {#each cardState.fields as field (field.field)}
+    <!-- 按索引遍历：归一后的提案可能含重复 field，不能用 field 名做 each key -->
+    {#each cardState.fields as field, i}
       <li class:ignored={!field.accepted} class:low-confidence={field.confidence === "low"}>
         <label>
           <input
             type="checkbox"
             checked={field.accepted}
             disabled={busy || cardState.writeCommitted}
-            onchange={(event) => card.setAccepted(field.field, event.currentTarget.checked)}
+            onchange={(event) => card.setAccepted(i, event.currentTarget.checked)}
           />
           <span class="field-name">{field.field}</span>
           <span class="confidence" data-level={field.confidence}>{confidenceLabel[field.confidence]}</span>
