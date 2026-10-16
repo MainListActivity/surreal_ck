@@ -4,6 +4,8 @@ import { TOKEN_PLAN_PLAN_TYPE_FREE } from "@surreal-ck/shared";
 import type { InternalScope } from "./context";
 import type { Usage, Tariff } from "./pricing";
 export type Queryable = { query(sql: string, vars?: Record<string, unknown>): Promise<unknown> };
+/** reserve 拒绝的内部诊断类别：预算/证据/身份/持久化（含事务内引擎中止，如唯一索引冲突）。对外仍只报通用错误。 */
+export type ReserveDenial = "budget" | "evidence" | "identity" | "persist";
 export const MEASUREMENT_CYCLE = "53ca2126-cf86-4722-8322-a0ad49981bf6";
 export const MEASUREMENT_DATABASE = "ws_ddad14a98469";
 export const MEASUREMENT_PRICE = "sensenova-token-plan-2026-10-10";
@@ -95,17 +97,70 @@ export class InternalAiStore {
             UPDATE ONLY $target SET reserved += $amount, attempts += 1;
             UPDATE ONLY $activity SET reserved += $amount, attempts += 1;
           };
-          CREATE ONLY $attempt CONTENT { activity: $activity, sequence: $a.attempts + 1 + IF $measurement { $cycle.attempts } ELSE { 0 }, measurement_cycle: IF $measurement { $cycleName } ELSE { NONE }, retry_index: 0, run_hash: $run, key_hash: $key, logical_hash: $logical, stage: $stage, provider: $provider, model: $model, actual_model: NONE, request_id: NONE, reserved: $amount, cost: NONE, state: "reserved", usage: NONE, usage_source: "unknown", price_revision: $revision, currency: "USD", started_at: time::now(), ended_at: NONE };
+          // measurement 模式下 sequence 延续该活动全部历史账本：周期轮换重置 cycle.attempts，
+          // 基于它派生会撞 internal_ai_sequence (activity, sequence) 唯一索引；现金路径保持 a.attempts+1 不变。
+          // 子查询只在 measurement 分支求值（IF 惰性），并发由上行 cycle/activity 写冲突串行化重试。
+          CREATE ONLY $attempt CONTENT { activity: $activity, sequence: IF $measurement { ((SELECT sequence FROM internal_ai_attempt WHERE activity = $activity ORDER BY sequence DESC LIMIT 1)[0].sequence ?? 0) + 1 } ELSE { $a.attempts + 1 }, measurement_cycle: IF $measurement { $cycleName } ELSE { NONE }, retry_index: 0, run_hash: $run, key_hash: $key, logical_hash: $logical, stage: $stage, provider: $provider, model: $model, actual_model: NONE, request_id: NONE, reserved: $amount, cost: NONE, state: "reserved", usage: NONE, usage_source: "unknown", price_revision: $revision, currency: "USD", started_at: time::now(), ended_at: NONE };
           COMMIT TRANSACTION;`, { activity, activityName: scope.activity, cycleId: new RecordId("internal_ai_measurement_cycle", MEASUREMENT_CYCLE), cycleName: MEASUREMENT_CYCLE, measurementPrice: MEASUREMENT_PRICE, measurementDatabase: MEASUREMENT_DATABASE, attempt, target: new RecordId("internal_ai_target", GOAL), goal: GOAL, revision: tariff.revision, amount, run: scope.runHash, key: scope.keyHash, logical: scope.logicalHash, stage, provider: tariff.provider, model: tariff.model, tokenPlanFree: TOKEN_PLAN_PLAN_TYPE_FREE });
         void result;
         const found = rows<Attempt>(await db.query("SELECT * FROM ONLY $attempt", { attempt }))[0];
         if (!found) throw new Error("internal-ai-reservation-unconfirmed");
         return found;
       } catch (e) {
-        if (retry < 8 && String(e).includes("can be retried")) continue;
-        throw new Error(String(e).includes("budget-exhausted") ? "internal-ai-budget-exhausted" : "internal-ai-reservation-denied");
+        const raw = e instanceof Error ? e.message : String(e);
+        if (retry < 8 && raw.includes("can be retried")) continue;
+        if (raw.includes("budget-exhausted")) throw new Error("internal-ai-budget-exhausted");
+        const reason = await this.reserveDenial(scope, tariff, amount, raw);
+        // 门禁全过的引擎中止（唯一索引/序列化失败）从未提交：执行期失败可安全重试，
+        // 不会像 unknown-commit 那样重复留账；门禁拒绝与读回型异常仍不重试。
+        if (reason === "persist" && retry < 4 && raw.includes("failed transaction")) continue;
+        console.warn("[internal-ai] reserve denied", { reason, activity: scope.activity, stage });
+        throw new Error(reason === "budget" ? "internal-ai-budget-exhausted" : "internal-ai-reservation-denied");
       }
     }
+  }
+  /**
+   * 只读复核 reserve 同一组门禁，把 generic 事务中止归类到预算/证据/身份/持久化。
+   * 本 fork 里事务内一旦执行过任何语句，后续 THROW 的标记也被折叠成 "failed transaction"
+   * （标记透出仅作防御性快路径），因此按事务评估顺序重放各条件定位真实拦截点。
+   * 只输出布尔与计数投影，不读客户正文、不返回任何行内容。
+   */
+  private async reserveDenial(scope: InternalScope, tariff: Tariff, amount: number, raw: string): Promise<ReserveDenial> {
+    if (raw.includes("internal-ai-binding-unavailable")) return "identity";
+    if (raw.includes("internal-ai-evidence-unavailable")) return "evidence";
+    try {
+      // db.query 返回按语句排列的结果数组：各 LET 占 null 位，RETURN 的对象在末位。
+      const result = await (await this.db()).query(`
+        LET $total = (SELECT * FROM ONLY $target);
+        LET $a = (SELECT * FROM ONLY $activity);
+        LET $cycle = (SELECT * FROM ONLY $cycleId);
+        LET $measurement = $cycle != NONE AND $cycle.activity = $activityName;
+        LET $runIdentity = (SELECT identity_hash FROM internal_ai_run WHERE run_hash = $run LIMIT 1)[0];
+        LET $bound = (SELECT * FROM internal_ai_binding WHERE identity_hash = $runIdentity.identity_hash LIMIT 1)[0];
+        RETURN {
+          cycleBudget: $measurement AND ($cycle.attempts >= $cycle.attempt_limit OR <datetime>$cycle.expires_at <= time::now()),
+          binding: $measurement AND ($bound = NONE OR $bound.revoked = true OR $bound.activity != $activityName OR $bound.database != $measurementDatabase),
+          measurementEvidence: $measurement AND ($revision != $measurementPrice OR $model != "sensenova-6.8-flash-lite" OR $provider != "openai" OR $amount != 0
+            OR $a.evidence_kind != "reviewed-token-plan" OR $a.balance_evidence_hash != $cycle.evidence_hash OR $a.approval_revision != $cycle.approval_revision),
+          evidence: $a.goal != $goal OR $a.enabled != true OR $a.service_approved != true OR $a.auto_topup_disabled != true OR $a.approval_revision = NONE
+            OR $a.balance_evidence_hash = NONE OR string::len($a.balance_evidence_hash) != 64 OR $a.balance_source = NONE OR $a.balance_sampled_at = NONE
+            OR $a.evidence_expires_at = NONE OR <datetime>$a.evidence_expires_at <= time::now() OR $revision NOT IN $a.price_revisions
+            OR (IF $a.evidence_kind = "reviewed-token-plan" { $a.plan_name = NONE OR string::len($a.plan_name) = 0 OR $a.plan_source_url = NONE OR $a.quota_unit = NONE OR $a.quota_amount = NONE OR $a.quota_amount <= 0 OR $a.quota_window_seconds = NONE OR ($a.quota_remaining != NONE AND $a.quota_remaining <= 0) OR $a.account_plan_type != $tokenPlanFree OR $a.balance_nano_usd != NONE OR $a.balance_currency != NONE OR $a.balance_source != "token-plan:" + $a.balance_evidence_hash OR $amount != 0 } ELSE { $a.balance_nano_usd = NONE OR $a.balance_nano_usd <= 0 OR $a.balance_currency != "USD" OR $a.balance_source != "reviewed-document:" + $a.balance_evidence_hash }),
+          registeredBinding: $a.registration_jti != NONE AND ($bound = NONE OR $bound.revoked = true OR $bound.activity != $activityName),
+          budget: ($measurement = false AND $total != NONE AND $total.attempts >= 30) OR ($total.spent ?? 0) + ($total.reserved ?? 0) + $amount > 1000000000
+            OR ($a.per_attempt_limit != NONE AND $amount > $a.per_attempt_limit) OR ($measurement = false AND $a.attempt_limit != NONE AND $a.attempts != NONE AND $a.attempts >= $a.attempt_limit) OR ($a.total_limit != NONE AND ($a.spent ?? 0) + ($a.reserved ?? 0) + $amount > $a.total_limit)
+            OR ($a.evidence_kind != "reviewed-token-plan" AND ($total.spent ?? 0) + ($total.reserved ?? 0) + $amount > ($a.balance_nano_usd ?? 0)),
+          ledgerMax: (SELECT sequence FROM internal_ai_attempt WHERE activity = $activity ORDER BY sequence DESC LIMIT 1)[0].sequence
+        };`, { activity: new RecordId("internal_ai_activity", scope.activity), activityName: scope.activity, cycleId: new RecordId("internal_ai_measurement_cycle", MEASUREMENT_CYCLE), measurementPrice: MEASUREMENT_PRICE, measurementDatabase: MEASUREMENT_DATABASE, target: new RecordId("internal_ai_target", GOAL), goal: GOAL, revision: tariff.revision, amount, run: scope.runHash, provider: tariff.provider, model: tariff.model, tokenPlanFree: TOKEN_PLAN_PLAN_TYPE_FREE });
+      const gates = (Array.isArray(result) ? result.at(-1) : result) as { cycleBudget: boolean; binding: boolean; measurementEvidence: boolean; evidence: boolean; registeredBinding: boolean; budget: boolean; ledgerMax: number | null } | undefined;
+      // 与事务内门禁评估顺序一致：周期预算 → 测量绑定 → 测量证据 → 活动证据 → 登记绑定 → 目标/活动预算。
+      if (gates?.cycleBudget) return "budget";
+      if (gates?.binding) return "identity";
+      if (gates?.measurementEvidence || gates?.evidence) return "evidence";
+      if (gates?.registeredBinding) return "identity";
+      if (gates?.budget) return "budget";
+      return "persist";
+    } catch (probeErr) { console.warn("[internal-ai] denial probe failed", { error: probeErr instanceof Error ? probeErr.name : "unknown" }); return "persist"; }
   }
   async sent(id: RecordId): Promise<void> {
     const result = rows<Attempt>(await (await this.db()).query('UPDATE ONLY $id SET state = "sent" WHERE state = "reserved" RETURN AFTER', { id }));
