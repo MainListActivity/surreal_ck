@@ -90,12 +90,12 @@ function wrapQueryForDiagnostics(
   // await proxy 会把内部 resolve/reject 传进 .then，直接代理 inner.then 会让
   // awaiter 在 inner settle 时就放行——超时/取消判定形同虚设。
   let boundedOnce: Promise<unknown> | undefined;
-  const bounded = () => (boundedOnce ??= execute(Promise.resolve(target as PromiseLike<unknown>)));
+  const bounded = () => (boundedOnce ??= execute(Promise.resolve(target as unknown as PromiseLike<unknown>)));
   return new Proxy(target, {
     get(t, prop) {
       const value = Reflect.get(t, prop);
       if (prop === "then" || prop === "catch" || prop === "finally") {
-        const promise = bounded() as Record<PropertyKey, (...a: unknown[]) => unknown>;
+        const promise = bounded() as unknown as Record<PropertyKey, (...a: unknown[]) => unknown>;
         return promise[prop].bind(promise);
       }
       if (typeof value !== "function") return value;
