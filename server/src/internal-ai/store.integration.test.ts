@@ -7,7 +7,7 @@ import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
 import { RecordId, Surreal, Table } from "surrealdb";
-import { InternalAiStore, GOAL, MEASUREMENT_CYCLE, hash, type Attempt } from "./store";
+import { InternalAiStore, GOAL, MEASUREMENT_CYCLE, MEASUREMENT_DATABASE, hash, type Attempt } from "./store";
 import { InternalAiGate } from "./gate";
 import { TARIFFS, worstCost } from "./pricing";
 import { inInternalScope } from "./context";
@@ -282,6 +282,98 @@ localTest("token-plan activities reserve zero cash, settle zero cost and deny on
   const clean = await tokenPlanActivity("tp-nonzero");
   await expect(store.reserve(clean, "proposal", tariff, 1)).rejects.toThrow();
 });
+
+// 测量周期轮换/拒绝诊断用例：独立库隔离（measurement_cycle 单例行不可跨用例复用）。
+async function isolatedDb(name: string) {
+  const schema = (await Promise.all(["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql", "037-internal-ai-measurement-cycle.surql", "038-internal-ai-account-plan-type.surql"].map(async f => readFile(new URL(`../../../shared/sql/system/${f}`, import.meta.url), "utf8")))).join("\n");
+  await db.query(`DEFINE DATABASE IF NOT EXISTS ${name};`);
+  await db.use({ namespace: "budget_test", database: name });
+  await db.query(schema);
+}
+/** 与生产受审活动同形（token-plan 证据 + 已登记 + 测量周期绑定该活动）。 */
+async function auditedFixture(activityId: string, subject: string) {
+  await tokenPlanActivity(activityId);
+  await db.query('UPDATE ONLY $id SET registration_jti = "synthetic-jti", proof_expires_at = 9999999999', { id: new RecordId("internal_ai_activity", activityId) });
+  await db.insert(new Table("internal_ai_binding"), { identity_hash: hash(subject, MEASUREMENT_DATABASE), activity: activityId, revoked: false, alias: "LCA04_REMOVABLE", space_id: "synthetic-space", database: MEASUREMENT_DATABASE, workspace_role: "admin", billing_role: "owner", billing_account_ref: "synthetic-billing", revision: 12 });
+  const bound = await gate.bind(subject, MEASUREMENT_DATABASE, `run-${activityId}`, `key-${activityId}`);
+  if (!bound) throw new Error("missing bound fixture");
+  await db.query(`CREATE ONLY $cycle CONTENT { activity: $name, attempts: 0, attempt_limit: 30, enabled_revision: 12, approval_revision: "synthetic-test-only", evidence_hash: $docHash, expires_at: "2099-01-01T00:00:00Z", created_at: time::now() }`, { cycle: new RecordId("internal_ai_measurement_cycle", MEASUREMENT_CYCLE), name: activityId, docHash: "b".repeat(64) });
+  return bound;
+}
+
+localTest("rotated measurement cycle continues ledger sequence after prior cycle consumed attempts", async () => {
+  // 生产故障同形回归钉：旧周期占满 sequence 1..30 且 activity.attempts=0，
+  // 轮换新周期 attempts=0 时按 cycle.attempts 派生会撞 internal_ai_sequence 唯一索引。
+  const tariff = TARIFFS.find(t => t.model === "sensenova-6.8-flash-lite")!;
+  const name = "rotated-cycle";
+  await isolatedDb("rotated_cycle");
+  const bound = await auditedFixture(name, "rotated-subject");
+  const before = await store.target();
+  for (let seq = 1; seq <= 30; seq++) {
+    await db.query(`CREATE ONLY $id CONTENT { activity: $a, sequence: $seq, measurement_cycle: "f3974e8f-4c4d-41e2-af63-e4de68ea5f91", retry_index: 0, run_hash: "old", key_hash: "old", logical_hash: "old", stage: "llm-classify", provider: "openai", model: "sensenova-6.8-flash-lite", actual_model: NONE, request_id: NONE, reserved: 0, cost: NONE, state: "uncertain", usage: NONE, usage_source: "provider", price_revision: $pr, currency: "USD", started_at: time::now(), ended_at: time::now() }`, { id: new RecordId("internal_ai_attempt", `rotated-old-${seq}`), a: new RecordId("internal_ai_activity", name), seq, pr: tariff.revision });
+  }
+  // 新周期首个 reserve 必须延续账本而非重启：sequence=31，打上新周期标记。
+  const first = await store.reserve(bound, "llm-classify", tariff, 0);
+  expect(first.sequence).toBe(31);
+  expect(first.measurement_cycle).toBe(MEASUREMENT_CYCLE);
+  expect((await store.measurementCycle())?.attempts).toBe(1);
+  // 成功 reserve → sent → settle（零费率成本 0）。
+  await store.sent(first.id);
+  await store.finish(first.id, { usage: { inputTokens: 100, outputTokens: 20, cachedInputTokens: null, reasoningTokens: null }, actualModel: tariff.model, requestId: "synthetic-rotated", cost: 0, failed: false });
+  expect((await store.page(name, 30))[0]?.state).toBe("settled");
+  // 并发预留同周期串行化：成功者的 sequence 互不重复且递增，cycle.attempts 与成功者一致。
+  const batch = await Promise.allSettled(Array.from({ length: 6 }, () => store.reserve(bound, "llm-classify", tariff, 0)));
+  const admitted = batch.flatMap(r => r.status === "fulfilled" ? [r.value] : []);
+  expect(admitted.length).toBeGreaterThan(0);
+  const sequences = admitted.map(a => a.sequence).sort((x, y) => x - y);
+  expect(sequences).toEqual(Array.from({ length: admitted.length }, (_, i) => 32 + i));
+  expect((await store.measurementCycle())?.attempts).toBe(1 + admitted.length);
+  // measurement 分支不动 activity/target 计数：仍 0 / 旧值；页序延续旧账本。
+  expect((await store.activity(name))?.attempts).toBe(0);
+  expect(await store.target()).toEqual(before);
+  expect((await store.page(name, 30)).map(a => a.sequence)).toEqual([31, ...sequences]);
+  await db.use({ namespace: "budget_test", database: "_system" });
+}, 30000);
+
+localTest("reserve denial diagnostics classify gate vs persist failures without leaking internals", async () => {
+  const tariff = TARIFFS.find(t => t.model === "sensenova-6.8-flash-lite")!;
+  const name = "denial-diag", subject = "denial-subject";
+  await isolatedDb("denial_diag");
+  const bound = await auditedFixture(name, subject);
+  const cycleId = new RecordId("internal_ai_measurement_cycle", MEASUREMENT_CYCLE);
+  const warns: { reason?: string }[] = [];
+  const spy = spyOn(console, "warn").mockImplementation((...args: unknown[]) => { warns.push((args[1] ?? {}) as { reason?: string }); });
+  try {
+    // 证据失配：fork 把事务内 THROW 折叠成 generic failed-transaction，经探针分类为 evidence。
+    await db.query('UPDATE ONLY $id SET balance_evidence_hash = $bad', { id: new RecordId("internal_ai_activity", name), bad: "0".repeat(64) });
+    await expect(store.reserve(bound, "llm-classify", tariff, 0)).rejects.toThrow("internal-ai-reservation-denied");
+    expect(warns.at(-1)?.reason).toBe("evidence");
+    await db.query('UPDATE ONLY $id SET balance_evidence_hash = $doc', { id: new RecordId("internal_ai_activity", name), doc: "b".repeat(64) });
+    // 撤销绑定：探针经绑定复核分类为 identity。
+    await db.query('UPDATE internal_ai_binding SET revoked = true WHERE identity_hash = $identity', { identity: hash(subject, MEASUREMENT_DATABASE) });
+    await expect(store.reserve(bound, "llm-classify", tariff, 0)).rejects.toThrow("internal-ai-reservation-denied");
+    expect(warns.at(-1)?.reason).toBe("identity");
+    await db.query('UPDATE internal_ai_binding SET revoked = false WHERE identity_hash = $identity', { identity: hash(subject, MEASUREMENT_DATABASE) });
+    // 周期到期：expires_at 是 READONLY，删除重建到期行；外部恢复报 budget-exhausted。
+    await db.query("DELETE $id", { id: cycleId });
+    await db.query(`CREATE ONLY $cycle CONTENT { activity: $name, attempts: 0, attempt_limit: 30, enabled_revision: 12, approval_revision: "synthetic-test-only", evidence_hash: $docHash, expires_at: "2000-01-01T00:00:00Z", created_at: time::now() }`, { cycle: cycleId, name, docHash: "b".repeat(64) });
+    await expect(store.reserve(bound, "llm-classify", tariff, 0)).rejects.toThrow("internal-ai-budget-exhausted");
+    await db.query("DELETE $id", { id: cycleId });
+    await db.query(`CREATE ONLY $cycle CONTENT { activity: $name, attempts: 0, attempt_limit: 30, enabled_revision: 12, approval_revision: "synthetic-test-only", evidence_hash: $docHash, expires_at: "2099-01-01T00:00:00Z", created_at: time::now() }`, { cycle: cycleId, name, docHash: "b".repeat(64) });
+    // 引擎级中止（事务内唯一索引/断言等语句细节被 SDK 吞掉）：门禁全过仍失败 → persist 经探针分类。
+    const flaky = new InternalAiStore(async () => ({ query: async (sql: string, vars?: Record<string, unknown>) => { if (sql.includes("BEGIN TRANSACTION")) throw new Error("The query was not executed due to a failed transaction"); return db.query(sql, vars); } }));
+    await expect(flaky.reserve(bound, "llm-classify", tariff, 0)).rejects.toThrow("internal-ai-reservation-denied");
+    expect(warns.at(-1)?.reason).toBe("persist");
+    // 诊断不输出 subject/database/密钥等原文，只有脱敏类别与活动名。
+    expect(warns.every(w => !JSON.stringify(w).includes(subject) && !JSON.stringify(w).includes(MEASUREMENT_DATABASE))).toBe(true);
+  } finally { spy.mockRestore(); }
+  // 提交结果未知仍保留预算不发送：事务已提交但读回失败 → 拒绝（attempt 已按预留留账）。
+  const unconfirmed = new InternalAiStore(async () => ({ query: async (sql: string, vars?: Record<string, unknown>) => { const r = await db.query(sql, vars); if (sql.includes("FROM ONLY $attempt")) return []; return r; } }));
+  await expect(unconfirmed.reserve(bound, "llm-classify", tariff, 0)).rejects.toThrow("internal-ai-reservation-denied");
+  expect((await store.page(name)).map(a => a.state)).toEqual(["reserved"]);
+  expect((await store.measurementCycle())?.attempts).toBe(1);
+  await db.use({ namespace: "budget_test", database: "_system" });
+}, 30000);
 
 localTest("target cash and attempt limits are shared by separate activities and cannot reset with new run/key", async () => {
   const schema = await readFile(new URL("../../../shared/sql/system/034-internal-ai-budget.surql", import.meta.url), "utf8") + await readFile(new URL("../../../shared/sql/system/037-internal-ai-measurement-cycle.surql", import.meta.url), "utf8");
