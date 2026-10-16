@@ -101,9 +101,9 @@ RocksDB tests覆盖多连接及两个独立客户端进程并发、真实服务�
 4. 提交新文档（`POST .../evidence`）后必须显式 enable（`POST .../enable`）：新 revision disabled 直到原字节 hash 匹配且全部门禁通过；重复 enable 同一 revision、已有 measurementCycle 上的新证据 enable（evidence_hash 失配）照旧拒绝。
 5. 旧活动上限与目标单例 cycle 不被续期刷新：renewal 不清零 activity/target/cycle 的 attempts/reserved/spent/sequence，不动旧 attempt 与 identity_hash，不重置/延长/重建已有 measurementCycle；cycle 已存在时其固定 id/owner/attempt_limit/attempts/approval/evidence_hash/expiry 保持原样。本次实际 cycle=null，后续只可创建已批准的一次 ≤30 周期（见下节复测周期）。
 
-## 一次性复测周期（按交付任务轮换，当前 886db7cb）
+## 一次性复测周期（按交付任务轮换，当前 108dfacb）
 
-037 迁移只新增 `internal_ai_measurement_cycle` 与 attempt 的可空 `measurement_cycle`；不回填、不覆盖旧 30 条账本，也不改旧活动/目标计数约束。周期固定 ID 取交付它的任务 ID：首个周期 `f3974e8f-4c4d-41e2-af63-e4de68ea5f91` 已于 2026-10-15T20:37:59Z 用满（30/30）并随证据到期停止；第二周期 `09a8ab21-5850-4329-ab86-c55a91743c02` 随绑定证据 2026-10-16T01:37:59Z 到期停止；第三周期 `53ca2126-cf86-4722-8322-a0ad49981bf6` 已于 2026-10-16T06:37:59Z 用满（30/30）并随证据到期停止；本交付（任务 `886db7cb-7f44-4e63-a074-2ad56f1fe1a8`）把 `MEASUREMENT_CYCLE` 轮换为本任务 ID，enable 时在同一事务新建该行，旧行作为审计历史原样保留、不复活不重置。新周期追加最多 30 次（GM 批准上界 40 的收紧，且取该活动受审 attempt_limit，不放宽更小的预算），仅限 `ws_ddad14a98469`、`sensenova-token-plan-2026-10-10` 零费率证书。一次底层 model step 消耗一次，并非一个业务 run 固定只耗一次；uncertain 仍占次数。零费率不能推导配额余额。
+037 迁移只新增 `internal_ai_measurement_cycle` 与 attempt 的可空 `measurement_cycle`；不回填、不覆盖旧 30 条账本，也不改旧活动/目标计数约束。周期固定 ID 取交付它的任务 ID：首个周期 `f3974e8f-4c4d-41e2-af63-e4de68ea5f91` 已于 2026-10-15T20:37:59Z 用满（30/30）并随证据到期停止；第二周期 `09a8ab21-5850-4329-ab86-c55a91743c02` 随绑定证据 2026-10-16T01:37:59Z 到期停止；第三周期 `53ca2126-cf86-4722-8322-a0ad49981bf6` 已于 2026-10-16T06:37:59Z 用满（30/30）并随证据到期停止；第四周期 `886db7cb-7f44-4e63-a074-2ad56f1fe1a8` 已于 2026-10-16T11:37:59Z 用满（30/30）并随证据到期停止；本交付（任务 `108dfacb-260a-4ac0-a9af-7d1abc70b189`）把 `MEASUREMENT_CYCLE` 轮换为本任务 ID，enable 时在同一事务新建该行，旧行作为审计历史原样保留、不复活不重置。新周期追加最多 30 次（GM 批准上界 40 的收紧，且取该活动受审 attempt_limit，不放宽更小的预算），仅限 `ws_ddad14a98469`、`sensenova-token-plan-2026-10-10` 零费率证书。一次底层 model step 消耗一次，并非一个业务 run 固定只耗一次；uncertain 仍占次数。零费率不能推导配额余额。
 
 部署腿按以下顺序准备并留证，本实现腿不产生供应商财务/配额事实：
 
