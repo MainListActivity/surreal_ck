@@ -4,7 +4,7 @@ import { TOKEN_PLAN_PLAN_TYPE_FREE } from "@surreal-ck/shared";
 import type { InternalScope } from "./context";
 import type { Usage, Tariff } from "./pricing";
 export type Queryable = { query(sql: string, vars?: Record<string, unknown>): Promise<unknown> };
-export const MEASUREMENT_CYCLE = "09a8ab21-5850-4329-ab86-c55a91743c02";
+export const MEASUREMENT_CYCLE = "53ca2126-cf86-4722-8322-a0ad49981bf6";
 export const MEASUREMENT_DATABASE = "ws_ddad14a98469";
 export const MEASUREMENT_PRICE = "sensenova-token-plan-2026-10-10";
 export type MeasurementCycle = { activity: string; attempts: number; attempt_limit: number; enabled_revision: number; approval_revision: string; evidence_hash: string; expires_at: string };
