@@ -160,10 +160,11 @@ export function makeAgentExecutor(agent: Agent, options: AgentExecutorOptions = 
       // 无可见产出不静默：按是否走过推理通道归类，交给调用方的契约文案显式收尾。
       noOutput = observedToolCalls.length === 0 && sawReasoning ? "reasoning-only" : "empty";
       text = options.noOutputText ?? "";
-      // 全丢弃说明拼接到 step 文本（PG-1 诊断 §4-1）：用户可见，不 suspend、不伪造卡。
-      const droppedNote = deriveDroppedProposalNote(observedToolCalls);
-      if (droppedNote) text = text ? `${text}\n${droppedNote}` : droppedNote;
     }
+    // 全丢弃说明确定性拼接（PG-1 诊断 §4-1）：无论模型是否有可见文本，
+    // 只要 suggestions 全被归一化丢弃就给出数量/原因；保留模型原文、不 suspend、不伪造卡。
+    const droppedNote = deriveDroppedProposalNote(observedToolCalls);
+    if (droppedNote) text = text ? `${text}\n${droppedNote}` : droppedNote;
     const citations = deriveCitationsFromToolCalls(observedToolCalls);
     return {
       text,
@@ -285,7 +286,7 @@ export function summarizeToolCallForAudit(call: AiToolCallRecord): AiToolCallSum
 /**
  * 全丢弃用户可见说明（PG-1 诊断 §4-1：有 suggestions 输入但全被归一化丢弃）。
  * 返回追加到 step 文本的说明，不 suspend、不伪造提案卡。
- * 无丢弃或仍有存活提案时返回 undefined（调用方只在无可见产出时拼接）。
+ * 无丢弃或仍有存活提案时返回 undefined；全丢弃时调用方无条件拼接（含模型已有文本的情形）。
  */
 export function deriveDroppedProposalNote(toolCalls: AiToolCallRecord[]): string | undefined {
   let dropped: ProposalDropRecord[] = [];

@@ -696,4 +696,71 @@ describe("agent executor — PG-1 诊断可观测性缺口（suspend 白名单 /
     expect(out.text).toContain("不存在的字段（未知字段）");
     expect(out.text).not.toContain("等待确认");
   });
+
+  test("全丢弃 + 模型有可见文本：dropped 说明无条件拼接且保留模型原文（上线评审退回项）", async () => {
+    const { analyzeRowTool } = await import("../tools/row-analysis-tools");
+    // @ts-expect-error @mastra/core 1.36.0 test-utils/llm-mock 缺少声明文件
+    const { MastraLanguageModelV2Mock } = await import("@mastra/core/test-utils/llm-mock");
+    const toolCallInput = {
+      sheetId: "sheet:devices",
+      recordId: "ent_devices:pump-7",
+      values: { check_status: "待复核" },
+      fields: [{ key: "check_status", label: "复核状态", fieldType: "select", options: ["待复核", "已复核"] }],
+      suggestions: [
+        { field: "不存在的字段", suggestedValue: "x", basis: "臆测", confidence: "low" },
+      ],
+    };
+    let callCount = 0;
+    const model = new MastraLanguageModelV2Mock({
+      doStream: async () => {
+        callCount += 1;
+        if (callCount === 1) {
+          return {
+            stream: new ReadableStream({
+              start(controller) {
+                controller.enqueue({ type: "stream-start", warnings: [] });
+                controller.enqueue({ type: "tool-call", toolCallId: "call-drop", toolName: "analyzeRow", input: JSON.stringify(toolCallInput) });
+                controller.enqueue({ type: "finish", finishReason: "tool-calls", usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } });
+                controller.close();
+              },
+            }),
+            rawCall: { rawPrompt: null, rawSettings: {} },
+            warnings: [],
+          };
+        }
+        // 第二轮模型输出普通文本（未解释字段归一化失败）：说明仍须确定性出现。
+        return {
+          stream: new ReadableStream({
+            start(controller) {
+              controller.enqueue({ type: "stream-start", warnings: [] });
+              controller.enqueue({ type: "text-start", id: "t1" });
+              controller.enqueue({ type: "text-delta", id: "t1", delta: "已检查该记录。" });
+              controller.enqueue({ type: "text-end", id: "t1" });
+              controller.enqueue({ type: "finish", finishReason: "stop", usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } });
+              controller.close();
+            },
+          }),
+          rawCall: { rawPrompt: null, rawSettings: {} },
+          warnings: [],
+        };
+      },
+    });
+    const agent = new Agent({
+      name: "all-dropped-with-text-probe",
+      instructions: "调用 analyzeRow。",
+      model,
+      tools: { analyzeRow: analyzeRowTool },
+    });
+    const executor = makeAgentExecutor(agent, { noOutputText: ROW_ANALYSIS_NO_PROPOSAL_TEXT });
+    const out = await executor({
+      taskText: "分析当前记录",
+      shared: { userContext, confirmed: {} },
+    });
+    expect(out.suspend).toBeUndefined();
+    expect(out.noOutput).toBeUndefined();
+    // 模型原文保留 + 丢弃说明确定性出现（数量 + 字段名 + 原因）。
+    expect(out.text).toContain("已检查该记录。");
+    expect(out.text).toContain("1 条字段建议均无法对应到数据表字段，已忽略");
+    expect(out.text).toContain("不存在的字段（未知字段）");
+  });
 });
