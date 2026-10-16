@@ -3,6 +3,7 @@ import { z } from "zod";
 import { StringRecordId, type Surreal } from "surrealdb";
 import type { GridColumnDef, ProposalDropRecord, RecordWriteProposal } from "@surreal-ck/shared";
 import { getSurrealSession, type ToolRequestContext } from "../execution-context";
+import { runBoundedTool } from "./bounded-tool";
 
 const SYSTEM_FIELDS = new Set(["id", "workspace", "created_by", "created_at", "updated_at"]);
 
@@ -276,21 +277,22 @@ export const analyzeRowTool = createTool({
   ].join(" "),
   inputSchema: AnalyzeRowInputSchema,
   outputSchema: RowPatchProposalIntentSchema,
-  execute: async (input, ctx) => {
-    const parsed = input as z.infer<typeof AnalyzeRowInputSchema>;
-    // values+fields 已齐时不需要 session；否则取调用者 session 读取
-    const session = (parsed.values && parsed.fields) ? undefined : getSurrealSession(ctx as ToolRequestContext);
-    const context = await resolveRowContext(parsed, session);
-    return {
-      intent: buildRowPatchProposal({
-        sheetId: parsed.sheetId,
-        recordId: parsed.recordId,
-        values: context.values,
-        fields: context.fields,
-        suggestions: parsed.suggestions,
-      }),
-    };
-  },
+  execute: async (input, ctx) =>
+    runBoundedTool("analyzeRow", ctx as ToolRequestContext, async () => {
+      const parsed = input as z.infer<typeof AnalyzeRowInputSchema>;
+      // values+fields 已齐时不需要 session；否则取调用者 session 读取
+      const session = (parsed.values && parsed.fields) ? undefined : getSurrealSession(ctx as ToolRequestContext);
+      const context = await resolveRowContext(parsed, session);
+      return {
+        intent: buildRowPatchProposal({
+          sheetId: parsed.sheetId,
+          recordId: parsed.recordId,
+          values: context.values,
+          fields: context.fields,
+          suggestions: parsed.suggestions,
+        }),
+      };
+    }),
 });
 
 export const proposeRecordWriteTool = createTool({
@@ -311,35 +313,36 @@ export const proposeRecordWriteTool = createTool({
     }
   }),
   outputSchema: RecordWriteProposalIntentSchema,
-  execute: async (input, ctx) => {
-    // 有调用者 session 时按 sheet.column_defs 归一提案字段名（label→存储 key、丢弃未知字段）；
-    // session/列定义不可用时保持透传（不引入强制 DB 依赖）。
-    const fields = await resolveProposalFieldDefs(input.sheetId, ctx as ToolRequestContext);
-    // session/列定义不可用时透传（不引入强制 DB 依赖），此时无归一化、无丢弃可记。
-    let proposals = input.proposals;
-    let dropped: ProposalDropRecord[] | undefined;
-    if (fields) {
-      const kept: typeof proposals = [];
-      const lost: ProposalDropRecord[] = [];
-      for (const item of input.proposals) {
-        const key = normalizeProposalFieldKey(item.field, fields);
-        if (key) kept.push({ ...item, field: key });
-        else lost.push({ field: item.field, reason: describeProposalDropReason(item.field, fields) });
+  execute: async (input, ctx) =>
+    runBoundedTool("proposeRecordWrite", ctx as ToolRequestContext, async () => {
+      // 有调用者 session 时按 sheet.column_defs 归一提案字段名（label→存储 key、丢弃未知字段）；
+      // session/列定义不可用时保持透传（不引入强制 DB 依赖）。
+      const fields = await resolveProposalFieldDefs(input.sheetId, ctx as ToolRequestContext);
+      // session/列定义不可用时透传（不引入强制 DB 依赖），此时无归一化、无丢弃可记。
+      let proposals = input.proposals;
+      let dropped: ProposalDropRecord[] | undefined;
+      if (fields) {
+        const kept: typeof proposals = [];
+        const lost: ProposalDropRecord[] = [];
+        for (const item of input.proposals) {
+          const key = normalizeProposalFieldKey(item.field, fields);
+          if (key) kept.push({ ...item, field: key });
+          else lost.push({ field: item.field, reason: describeProposalDropReason(item.field, fields) });
+        }
+        proposals = kept;
+        if (lost.length > 0) dropped = lost;
       }
-      proposals = kept;
-      if (lost.length > 0) dropped = lost;
-    }
-    return {
-      intent: {
-        type: "record-write-proposal" as const,
-        operation: input.operation,
-        sheetId: input.sheetId,
-        ...(input.recordId ? { recordId: input.recordId } : {}),
-        proposals,
-        ...(dropped ? { dropped } : {}),
-      } satisfies RecordWriteProposal,
-    };
-  },
+      return {
+        intent: {
+          type: "record-write-proposal" as const,
+          operation: input.operation,
+          sheetId: input.sheetId,
+          ...(input.recordId ? { recordId: input.recordId } : {}),
+          proposals,
+          ...(dropped ? { dropped } : {}),
+        } satisfies RecordWriteProposal,
+      };
+    }),
 });
 
 /**
@@ -393,27 +396,28 @@ export const fetchRelatedRecordsTool = createTool({
     fields: z.array(GridColumnDefSchema).optional(),
   }),
   outputSchema: FetchRelatedRecordsOutputSchema,
-  execute: async ({ workbookId, sheetId, recordId, values, fields }, ctx) => {
-    const db = getSurrealSession(ctx as ToolRequestContext);
-    const context = sheetId && recordId
-      ? await resolveRowContext({
-          workbookId,
-          sheetId,
-          recordId,
-          values,
-          fields: fields as GridColumnDef[] | undefined,
-        }, db)
-      : { values: values ?? {}, fields: (fields ?? []) as GridColumnDef[] };
-    if (recordId) {
-      const resources = await resolveRecordResourcesViaSession(db, recordId);
-      if (resources.items.length > 0) {
-        return { source: "record-resources" as const, ...resources };
+  execute: async ({ workbookId, sheetId, recordId, values, fields }, ctx) =>
+    runBoundedTool("fetchRelatedRecords", ctx as ToolRequestContext, async () => {
+      const db = getSurrealSession(ctx as ToolRequestContext);
+      const context = sheetId && recordId
+        ? await resolveRowContext({
+            workbookId,
+            sheetId,
+            recordId,
+            values,
+            fields: fields as GridColumnDef[] | undefined,
+          }, db)
+        : { values: values ?? {}, fields: (fields ?? []) as GridColumnDef[] };
+      if (recordId) {
+        const resources = await resolveRecordResourcesViaSession(db, recordId);
+        if (resources.items.length > 0) {
+          return { source: "record-resources" as const, ...resources };
+        }
       }
-    }
-    const ids = collectReferenceIds(context.values, context.fields);
-    const related = await resolveReferencesViaSession(db, ids);
-    return { source: "related-records" as const, items: related.items, citations: [] };
-  },
+      const ids = collectReferenceIds(context.values, context.fields);
+      const related = await resolveReferencesViaSession(db, ids);
+      return { source: "related-records" as const, items: related.items, citations: [] };
+    }),
 });
 
 function collectReferenceIds(values: Record<string, unknown>, fields: GridColumnDef[]): string[] {
@@ -457,31 +461,32 @@ export const findRecordsTool = createTool({
     limit: z.number().int().min(1).max(20).optional().describe("最多返回条数，默认 10"),
   }),
   outputSchema: FindRecordsOutputSchema,
-  execute: async ({ sheetId, field, value, limit }, ctx) => {
-    const db = getSurrealSession(ctx as ToolRequestContext);
-    const sheetResult = await db.query(
-      `SELECT table_name, column_defs FROM $sheet LIMIT 1`,
-      { sheet: new StringRecordId(sheetId) },
-    );
-    const sheetRow = firstStatementRows<{ table_name: string; column_defs?: GridColumnDef[] }>(sheetResult)[0];
-    if (!sheetRow) {
-      throw new Error(`找不到数据表定义: ${sheetId}`);
-    }
-    // field 只允许落到已声明列的 key/label 上——既避免模型幻觉字段，也保证下界查询不拼接任意标识符。
-    const fieldKey = normalizeProposalFieldKey(field, sheetRow.column_defs ?? []);
-    if (!fieldKey) return { matches: [] };
-    const rows = await db.query(
-      `SELECT * FROM type::table($table)
-       WHERE string::contains(string::lowercase(<string>(${fieldKey} ?? "")), $q)
-       LIMIT $lim`,
-      { table: sheetRow.table_name, q: value.trim().toLowerCase(), lim: limit ?? 10 },
-    );
-    const matches = firstStatementRows<Record<string, unknown>>(rows).map((row) => ({
-      id: String(row.id),
-      values: row,
-    }));
-    return { matches };
-  },
+  execute: async ({ sheetId, field, value, limit }, ctx) =>
+    runBoundedTool("findRecords", ctx as ToolRequestContext, async () => {
+      const db = getSurrealSession(ctx as ToolRequestContext);
+      const sheetResult = await db.query(
+        `SELECT table_name, column_defs FROM $sheet LIMIT 1`,
+        { sheet: new StringRecordId(sheetId) },
+      );
+      const sheetRow = firstStatementRows<{ table_name: string; column_defs?: GridColumnDef[] }>(sheetResult)[0];
+      if (!sheetRow) {
+        throw new Error(`找不到数据表定义: ${sheetId}`);
+      }
+      // field 只允许落到已声明列的 key/label 上——既避免模型幻觉字段，也保证下界查询不拼接任意标识符。
+      const fieldKey = normalizeProposalFieldKey(field, sheetRow.column_defs ?? []);
+      if (!fieldKey) return { matches: [] };
+      const rows = await db.query(
+        `SELECT * FROM type::table($table)
+         WHERE string::contains(string::lowercase(<string>(${fieldKey} ?? "")), $q)
+         LIMIT $lim`,
+        { table: sheetRow.table_name, q: value.trim().toLowerCase(), lim: limit ?? 10 },
+      );
+      const matches = firstStatementRows<Record<string, unknown>>(rows).map((row) => ({
+        id: String(row.id),
+        values: row,
+      }));
+      return { matches };
+    }),
 });
 
 export const ROW_ANALYSIS_TOOLS = {

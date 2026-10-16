@@ -4,6 +4,7 @@ import { AiContextSnapshotSchema, createDefaultAiContextSnapshot } from "@surrea
 import type { AiContextSnapshot, ChatStreamEvent, ResumeDecision } from "@surreal-ck/shared";
 import { createRunBus } from "./run-bus";
 import { createAiChatService, type ChatRunner } from "./chat-service";
+import { AiCallerQueryTimeoutError, AiRunCancelledError, AiToolTimeoutError } from "./run-diagnostics";
 
 const ctx: AiContextSnapshot = {
   route: { screen: "home" },
@@ -380,6 +381,28 @@ describe("AiChatService.startChat", () => {
     expect((err as { message: string }).message).toBe("LLM provider 500");
     expect(closed).toEqual(["closed"]);
   });
+
+  // PG-1：具名超时/取消错误要把稳定 code 透给用户，不能塌缩成 chat-failed。
+  for (const [label, thrown, code] of [
+    ["工具超时", new AiToolTimeoutError("analyzeRow"), "ai-tool-timeout"],
+    ["调用者查询超时", new AiCallerQueryTimeoutError("query"), "ai-caller-query-timeout"],
+    ["run 取消", new AiRunCancelledError(), "ai-run-cancelled"],
+  ] as const) {
+    test(`runner 抛${label}错误 → error 事件透稳定 code=${code}`, async () => {
+      const bus = createRunBus();
+      const { session } = closableSession();
+      const runner: ChatRunner = async () => { throw thrown; };
+      const service = createAiChatService({ runBus: bus, runner });
+
+      const events: ChatStreamEvent[] = [];
+      bus.subscribe("run-1", (e) => events.push(e));
+      await service.startChat({ runId: "run-1", message: "x", userContext: ctx, surrealSession: session });
+      await new Promise((r) => setTimeout(r, 0));
+
+      const err = events.find((e) => e.kind === "error");
+      expect(err).toMatchObject({ kind: "error", runId: "run-1", code });
+    });
+  }
 });
 
 

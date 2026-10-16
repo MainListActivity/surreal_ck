@@ -43,6 +43,8 @@ import {
 import { setExecutionContext } from "../../ai/mastra/execution-context";
 import { RequestContext } from "@mastra/core/request-context";
 import type { Surreal } from "surrealdb";
+import { callerRunDiagnostics, sessionForPhase } from "./caller-session";
+import { AiRunCancelledError, firstAbortOf } from "./run-diagnostics";
 import type { DecisionCaller } from "../../ai/decision/model";
 import type { ChatRunner, ChatResumer } from "./chat-service";
 import type { SearchContentResponse } from "@surreal-ck/shared/platform-content";
@@ -57,8 +59,11 @@ import type { ContentResearchSessionFactory } from "../research/window";
  * 所以这里只关心「把 prompt 喂进去、把 text 拿出来」，不解析、不重试。
  */
 export function buildRouterLlmCaller(agent: Agent, stage = "llm-classify"): RouterLlmCaller {
-  return async (prompt: string): Promise<string> => {
-    const response = await inInternalStage(stage, () => agent.generate(prompt, internalScope() ? { modelSettings: { maxRetries: 0 } } : {}));
+  return async (prompt: string, opts?: { signal?: AbortSignal }): Promise<string> => {
+    const response = await inInternalStage(stage, () => agent.generate(prompt, {
+      ...(opts?.signal ? { abortSignal: opts.signal } : {}),
+      ...(internalScope() ? { modelSettings: { maxRetries: 0 } } : {}),
+    }));
     return response.text ?? "";
   };
 }
@@ -171,6 +176,8 @@ export type CreateMastraRunnerOptions = {
 
 export type ResumeWorkflowInput = {
   signal?: AbortSignal;
+  /** run 绝对期限（epoch ms）；诊断器折算剩余上界用。 */
+  deadlineAt?: number;
   mastra: Mastra;
   runId: string;
   decision: import("@surreal-ck/shared").ResumeDecision;
@@ -197,7 +204,9 @@ const defaultBuildLlmCaller: NonNullable<CreateMastraRunnerOptions["buildLlmCall
   buildRouterLlmCaller(agents.chitchatAgent);
 
 const defaultBuildMastra: NonNullable<CreateMastraRunnerOptions["buildMastra"]> = (session, subject) =>
-  initMastraForCurrentUser(() => ({ db: session, subject }));
+  // PG-1：workflow/Mastra 存储读写记 persist 阶段——取消后仍允许派发
+  // （被取消 run 的终态快照必须能落库），业务 query 则在取消后拒绝派发。
+  initMastraForCurrentUser(() => ({ db: sessionForPhase(session, "persist"), subject }));
 
 /**
  * 默认 resume 实现：用 storage 校验 runId 是否已 suspended，然后 run.resume({ resumeData, requestContext })。
@@ -269,10 +278,33 @@ const defaultResumeWorkflow: NonNullable<CreateMastraRunnerOptions["resumeWorkfl
   const abort = () => { void run.cancel().catch(() => undefined); };
   input.signal?.addEventListener("abort", abort, { once: true });
   if (input.signal?.aborted) abort();
-  const result = await run.resume({ resumeData: { decision: input.decision }, requestContext }).finally(() => input.signal?.removeEventListener("abort", abort));
+
+  // PG-1：与 runRouterChat 同一套诊断绑定——取消快照立刻可读，超时 fatal 优先透出。
+  const diag = callerRunDiagnostics(input.surrealSession);
+  diag?.bindRun({
+    runId: input.runId,
+    signal: firstAbortOf([input.signal, run.abortController.signal]),
+    deadlineAt: input.deadlineAt,
+    cancelRun: abort,
+  });
+
+  let result: Awaited<ReturnType<typeof run.resume>>;
+  try {
+    result = await run.resume({ resumeData: { decision: input.decision }, requestContext });
+  } catch (error) {
+    if (diag?.fatalError) throw diag.fatalError;
+    throw error;
+  } finally {
+    input.signal?.removeEventListener("abort", abort);
+  }
+  if (diag?.fatalError) throw diag.fatalError;
   if (result.status === "success") {
     const finalText = (result.result as { finalText?: string } | undefined)?.finalText ?? "";
     return { runId: input.runId, finalText, status: "success" };
+  }
+  // 与 start 路径同一防护：已取消的 run 不得按 suspended 回报——否则前端会渲染幽灵确认卡。
+  if ((result.status as string) === "canceled" || diag?.aborted) {
+    throw new AiRunCancelledError();
   }
   if (result.status === "suspended") {
     return { runId: input.runId, finalText: "", status: "suspended" };
@@ -337,6 +369,7 @@ export function createMastraRunner(options: CreateMastraRunnerOptions = {}): { r
       return runRouterChatImpl({
         mastra,
         signal: input.signal,
+        deadlineAt: input.deadlineAt,
         text: input.text,
         userContext: input.userContext,
         surrealSession: input.surrealSession,
@@ -361,6 +394,7 @@ export function createMastraRunner(options: CreateMastraRunnerOptions = {}): { r
       return resumeWorkflowImpl({
         mastra,
         runId: input.runId,
+        deadlineAt: input.deadlineAt,
         decision: input.decision,
         openContentSession: input.openContentSession,
         surrealSession: input.surrealSession,

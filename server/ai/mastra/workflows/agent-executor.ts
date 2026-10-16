@@ -12,6 +12,8 @@ import type {
 import { serializeContextForAi } from "@surreal-ck/shared";
 import { ROUTER_RUNTIME_KEY, type SharedConfirmed, type SubAgentExecutor, type SubAgentSuspendSignal } from "./router-workflow";
 import { setExecutionContext } from "../execution-context";
+import { callerRunDiagnostics } from "../../../src/ai/caller-session";
+import { AiRunCancelledError, type RunOpHandle } from "../../../src/ai/run-diagnostics";
 
 export type AgentExecutorOptions = {
   /** 调用 agent 时透传给 stream() 的最大步数。默认 4。 */
@@ -69,7 +71,7 @@ const ResourceCitationListSchema = z.array(z.object({
  *   让 router-chat 转推到统一 streamId 上
  */
 export function makeAgentExecutor(agent: Agent, options: AgentExecutorOptions = {}): SubAgentExecutor {
-  return async ({ taskText, shared, surrealSession, onDelta, onToolCall }) => {
+  return async ({ taskText, shared, surrealSession, onDelta, onToolCall, signal }) => {
     const prompt = [
       `子任务：${taskText}`,
       "",
@@ -88,10 +90,15 @@ export function makeAgentExecutor(agent: Agent, options: AgentExecutorOptions = 
     requestContext.set(ROUTER_RUNTIME_KEY, { userContext: shared.userContext });
 
     const observedToolCalls: AiToolCallRecord[] = [];
+    // PG-1：tool 阶段 op 从 fullStream 的 tool-call 起算（早于 execute 入口），
+    // 覆盖该 agent 的全部 tool；tool-error/tool-result 记终态。
+    const diag = callerRunDiagnostics(surrealSession);
+    const inFlightToolOps = new Map<string, RunOpHandle>();
     const stream = await agent.stream(
       [{ role: "user", content: prompt }],
       {
         requestContext,
+        abortSignal: signal,
         ...(internalScope() ? { modelSettings: { maxRetries: 0 } } : {}),
         maxSteps: options.maxSteps ?? 4,
         onStepFinish: ({ toolCalls, toolResults }) => {
@@ -131,23 +138,57 @@ export function makeAgentExecutor(agent: Agent, options: AgentExecutorOptions = 
     let aggregated = "";
     let sawReasoning = false;
     let observedStreamError: unknown;
-    for await (const part of stream.fullStream) {
-      if (part.type === "text-delta") {
-        const delta = part.payload?.text ?? "";
-        if (!delta) continue;
-        deltas.push(delta);
-        aggregated += delta;
-        onDelta?.(delta);
-        continue;
+    try {
+      for await (const part of stream.fullStream) {
+        if (part.type === "text-delta") {
+          const delta = part.payload?.text ?? "";
+          if (!delta) continue;
+          deltas.push(delta);
+          aggregated += delta;
+          onDelta?.(delta);
+          continue;
+        }
+        // 推理内容不进用户可见流：只记录「模型确实思考过」，供无产出归类与排障。
+        if (part.type === "reasoning-delta") {
+          sawReasoning = true;
+          continue;
+        }
+        // 流中途 error part：先记录，循环结束后统一转成显式错误态（不等 stream.error 兜底）。
+        if (part.type === "error") {
+          observedStreamError = (part as { payload?: { error?: unknown } }).payload?.error;
+          continue;
+        }
+        if (diag && part.type === "tool-call") {
+          const payload = part.payload as { toolCallId?: unknown; toolName?: unknown; args?: unknown };
+          if (typeof payload.toolCallId === "string" && typeof payload.toolName === "string") {
+            inFlightToolOps.set(
+              payload.toolCallId,
+              diag.begin({
+                name: payload.toolName,
+                phase: "tool",
+                argShape: summarizeToolCallForAudit({ toolName: payload.toolName, args: payload.args }).argShape,
+              }),
+            );
+          }
+          continue;
+        }
+        if (diag && (part.type === "tool-result" || part.type === "tool-error")) {
+          const payload = part.payload as { toolCallId?: unknown; error?: unknown };
+          const op = typeof payload.toolCallId === "string" ? inFlightToolOps.get(payload.toolCallId) : undefined;
+          if (op) {
+            diag.end(op, part.type === "tool-result" ? "ok" : "failed", payload.error);
+            inFlightToolOps.delete(payload.toolCallId as string);
+          }
+          continue;
+        }
       }
-      // 推理内容不进用户可见流：只记录「模型确实思考过」，供无产出归类与排障。
-      if (part.type === "reasoning-delta") {
-        sawReasoning = true;
-        continue;
-      }
-      // 流中途 error part：先记录，循环结束后统一转成显式错误态（不等 stream.error 兜底）。
-      if (part.type === "error") {
-        observedStreamError = (part as { payload?: { error?: unknown } }).payload?.error;
+    } finally {
+      // 流异常/取消收尾时仍在飞的 tool op 记 cancelled——不留永远 in-flight 的幽灵操作。
+      if (diag && inFlightToolOps.size > 0) {
+        const cancelled = diag.aborted || signal?.aborted === true;
+        const cause = cancelled ? new AiRunCancelledError() : { code: "tool-stream-dangling" };
+        for (const op of inFlightToolOps.values()) diag.end(op, cancelled ? "cancelled" : "failed", cause);
+        inFlightToolOps.clear();
       }
     }
     // 双保险：error part 与 stream.error 任一出现都按中断处理，绝不以静默空回复收尾。

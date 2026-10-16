@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { Agent } from "@mastra/core/agent";
+import type { Surreal } from "surrealdb";
+import { attachRunDiagnostics } from "../../../src/ai/caller-session";
+import { createRunDiagnostics } from "../../../src/ai/run-diagnostics";
 import {
   AgentStreamInterruptedError,
   deriveCitationsFromToolCalls,
@@ -762,5 +765,98 @@ describe("agent executor — PG-1 诊断可观测性缺口（suspend 白名单 /
     expect(out.text).toContain("已检查该记录。");
     expect(out.text).toContain("1 条字段建议均无法对应到数据表字段，已忽略");
     expect(out.text).toContain("不存在的字段（未知字段）");
+  });
+});
+
+describe("PG-1：tool 阶段诊断 op 从 tool-call 起算，随终态/取消收尾", () => {
+  const diagSession = () => {
+    const diag = createRunDiagnostics();
+    const session = attachRunDiagnostics({ query: async () => [] } as unknown as Surreal, diag);
+    return { diag, session };
+  };
+
+  test("tool-call → tool-result：op 记 ok，argShape 只有键名不落值", async () => {
+    const { diag, session } = diagSession();
+    const executor = makeAgentExecutor(fakeStreamAgent([
+      { type: "tool-call", payload: { toolCallId: "c1", toolName: "analyzeRow", args: { sheetId: "sheet:s", values: { secret: "abc" } } } },
+      { type: "tool-result", payload: { toolCallId: "c1", toolName: "analyzeRow", result: { intent: { type: "none" } } } },
+      { type: "text-delta", payload: { text: "完成" } },
+    ]));
+    const out = await executor({
+      taskText: "x",
+      shared: { userContext: regressionContext, confirmed: {} },
+      surrealSession: session,
+    });
+    expect(out.text).toBe("完成");
+    const snap = diag.snapshot("x");
+    const op = snap.completed.find((record) => record.name === "analyzeRow");
+    expect(op?.phase).toBe("tool");
+    expect(op?.status).toBe("ok");
+    expect(JSON.stringify(snap)).not.toContain("abc");
+  });
+
+  test("tool-call → tool-error：op 记 failed + 稳定错误名", async () => {
+    const { diag, session } = diagSession();
+    const executor = makeAgentExecutor(fakeStreamAgent([
+      { type: "tool-call", payload: { toolCallId: "c1", toolName: "analyzeRow", args: {} } },
+      { type: "tool-error", payload: { toolCallId: "c1", toolName: "analyzeRow", error: new Error("内部细节不上账") } },
+      { type: "text-delta", payload: { text: "降级回答" } },
+    ]));
+    const out = await executor({
+      taskText: "x",
+      shared: { userContext: regressionContext, confirmed: {} },
+      surrealSession: session,
+    });
+    expect(out.text).toBe("降级回答");
+    const op = diag.snapshot("x").completed.find((record) => record.name === "analyzeRow");
+    expect(op?.status).toBe("failed");
+    expect(op?.error).toBe("Error");
+    expect(JSON.stringify(op)).not.toContain("内部细节");
+  });
+
+  test("tool-call 后 run 取消：在途 tool op 记 cancelled（取消瞬间可见，不等流收尾）", async () => {
+    const diag = createRunDiagnostics();
+    const session = attachRunDiagnostics({ query: async () => [] } as unknown as Surreal, diag);
+    const controller = new AbortController();
+    diag.bindRun({ signal: controller.signal, runId: "r1" });
+
+    // 模拟挂在 tool 执行里的流：tool-call 之后永不产出，直到 abort 打破。
+    const hanging = {
+      async stream(_msgs: unknown, opts: { abortSignal?: AbortSignal }) {
+        const signal = opts?.abortSignal;
+        return {
+          fullStream: (async function* () {
+            yield { type: "tool-call", payload: { toolCallId: "c1", toolName: "analyzeRow", args: {} } };
+            await new Promise<never>((_, reject) => {
+              signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+            });
+          })(),
+          text: Promise.resolve(""),
+          error: undefined,
+        };
+      },
+    } as unknown as Agent;
+
+    const executor = makeAgentExecutor(hanging);
+    const pending = executor({
+      taskText: "x",
+      shared: { userContext: regressionContext, confirmed: {} },
+      surrealSession: session,
+      signal: controller.signal,
+    });
+    const outcome = pending.then(() => "resolved" as const, () => "rejected" as const);
+
+    await new Promise((r) => setTimeout(r, 0));
+    controller.abort();
+
+    const mid = diag.snapshot("cancelled");
+    expect(mid.aborted).toBe(true);
+    // 取消瞬间该 op 已落终态（cancelled），不会永远挂在 inFlight。
+    const op = [...mid.completed, ...mid.inFlight].find((record) => record.name === "analyzeRow");
+    expect(op?.status).toBe("cancelled");
+
+    expect(await outcome).toBe("rejected");
+    const final = diag.snapshot("cancelled");
+    expect(final.inFlight).toHaveLength(0);
   });
 });

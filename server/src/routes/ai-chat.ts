@@ -18,6 +18,8 @@ import type { ContentResearchSessionFactory } from "../research/window";
 import type { OpenContentResearchSession } from "../../ai/mastra/workflows/router-workflow";
 import { claimResumeWindow } from "../research/resume-window";
 import { ChatDeliveryStore, authorizeDelivery, requestDigest, type DeliveryPlatformVerifier } from "../ai/delivery-store";
+import { callerRunDiagnostics, sessionForPhase } from "../ai/caller-session";
+import { boundedAwait } from "../ai/run-diagnostics";
 import { loadSuspendedRunDecision } from "../ai/suspend-recovery";
 import type { AiDeliveryProof, ChatStreamEvent, SessionUser, WorkflowSuspendedEvent } from "@surreal-ck/shared";
 import type { RunRegistry } from "../ai/run-registry";
@@ -225,18 +227,39 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
     } : undefined });
   }
   function deliveryHooks(session: Surreal, runId: string, user: AppBindings["Variables"]["user"], meteredDb?: string) {
+    // PG-1：delivery 读写记 persist 阶段——run 取消后终态落库仍须可派发。
+    const persist = sessionForPhase(session, "persist");
     return {
       onResult: deps.deliveries ? async (event: Extract<ChatStreamEvent, { kind: "done" }>, proofs: AiDeliveryProof[]) => {
         await authorizeDelivery(session, proofs, platformVerifier(user));
-        await deps.deliveries!.save(session, workspaceDb(user)!, user.subject, { event, proofs });
+        await deps.deliveries!.save(persist, workspaceDb(user)!, user.subject, { event, proofs });
       } : undefined,
       onTerminal: async (outcome: RunTerminalOutcome) => {
-        const row = await deps.deliveries?.find(session, runId);
+        const row = await deps.deliveries?.find(persist, runId);
         // Persistence survived a settlement/network failure: keep the successful result authoritative.
         const durableSuccess = row?.status === "complete";
         if (durableSuccess) deps.deliveries!.decrypt(row!, workspaceDb(user)!, user.subject);
-        if (deps.deliveries && !durableSuccess) await deps.deliveries.status(session, runId, outcome === "suspended" ? "suspended" : "failed");
+        if (deps.deliveries && !durableSuccess) await deps.deliveries.status(persist, runId, outcome === "suspended" ? "suspended" : "failed");
         if (meteredDb) await meteredTerminalHandler(meteredDb, runId)(durableSuccess ? "success" : outcome);
+        // PG-1：终态操作诊断快照随 chat_delivery 行持久化。审计写自身有界，
+        // 失败只记 warn——不得拖住终态，也不得覆盖上面的业务终态结果。
+        const diag = callerRunDiagnostics(session);
+        if (deps.deliveries && diag) {
+          try {
+            await boundedAwait(
+              deps.deliveries.recordRunDiagnostics(persist, runId, diag.snapshot(outcome)),
+              {
+                timeoutMs: diag.config.auditWriteTimeoutMs,
+                timeoutError: () => new Error("run-diagnostics-persist-timeout"),
+              },
+            );
+          } catch (error) {
+            console.warn("[ai-chat] run diagnostics persist failed", {
+              runId,
+              message: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
       },
     };
   }

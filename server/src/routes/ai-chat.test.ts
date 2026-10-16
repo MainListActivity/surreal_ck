@@ -7,6 +7,8 @@ import { handleError } from "../middleware/error";
 import { createAiChatRoutes, type AiChatService, type CallerSessionFactory } from "./ai-chat";
 import { ChatDeliveryStore } from "../ai/delivery-store";
 import { createRunRegistry } from "../ai/run-registry";
+import { attachRunDiagnostics } from "../ai/caller-session";
+import { createRunDiagnostics } from "../ai/run-diagnostics";
 
 const testUser = {
   subject: "user-123",
@@ -545,5 +547,58 @@ describe("POST /api/chat/runs/:runId/recover — suspended run 决策载荷恢�
 
     expect(res.status).toBe(409);
     expect((await res.json()).error.code).toBe("chat-run-not-running");
+  });
+});
+
+describe("PG-1：终态诊断快照持久化（有界 best-effort）", () => {
+  test("run_diagnostic 审计写挂起：有界超时收尾，不拖住/不掩盖业务终态", async () => {
+    const deliveries = new ChatDeliveryStore("a".repeat(64));
+    const diag = createRunDiagnostics({ auditWriteTimeoutMs: 40 });
+    const queries: Array<{ sql: string; params?: Record<string, unknown> }> = [];
+    const session = attachRunDiagnostics({
+      close: async () => {},
+      query: async (sql: string, params?: Record<string, unknown>) => {
+        queries.push({ sql, params });
+        if (sql.includes("INSERT INTO chat_delivery")) {
+          const content = params?.content as { run_id: string; request_hash: string; nonce: string };
+          return [[{ ...content, status: "running" }]];
+        }
+        if (sql.includes("SELECT * FROM chat_delivery")) {
+          return [[{ run_id: params?.runId, status: "running" }]];
+        }
+        if (sql.includes("run_diagnostic")) {
+          // 诊断写自身挂起：必须由 auditWriteTimeoutMs 兜底，不能拖住终态。
+          return new Promise(() => {});
+        }
+        return [[]];
+      },
+    } as unknown as Surreal, diag);
+    // 终态时刻仍在飞的工具操作：审计快照必须带上。
+    diag.begin({ name: "analyzeRow", phase: "tool", argShape: ["sheetId"] });
+
+    const service = stubService({
+      async startChat(input) {
+        await input.onTerminal?.("failed");
+      },
+    });
+    const app = makeApp({ service, deliveries, sessionFactory: async () => session });
+
+    const startedAt = Date.now();
+    const res = await app.request("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "分析一下" }),
+    });
+    expect(Date.now() - startedAt).toBeLessThan(2000);
+    expect(res.status).toBe(200);
+
+    const diagWrite = queries.find((q) => q.sql.includes("run_diagnostic"));
+    expect(diagWrite).toBeDefined();
+    const snapshot = diagWrite?.params?.diag as { reason?: string; inFlight?: Array<{ name: string; phase: string }> } | undefined;
+    expect(snapshot?.reason).toBe("failed");
+    expect(snapshot?.inFlight?.[0]?.name).toBe("analyzeRow");
+    expect(snapshot?.inFlight?.[0]?.phase).toBe("tool");
+    // 脱敏自检：快照里不允许出现参数值/SQL 原文。
+    expect(JSON.stringify(snapshot)).not.toContain("分析一下");
   });
 });

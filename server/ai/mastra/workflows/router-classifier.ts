@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { AiContextSnapshot } from "@surreal-ck/shared";
 import { DecisionModelError, type DecisionCaller, type DecisionRequest } from "../../decision/model";
+import { outcomeForError } from "../../../src/ai/run-diagnostics";
 
 const CanonicalRouterCategorySchema = z.enum([
   "navigation",
@@ -38,7 +39,7 @@ const RouterPlanItemSchema = z.object({
 export const RouterPlanSchema = z.array(RouterPlanItemSchema).min(1);
 export type RouterPlan = z.infer<typeof RouterPlanSchema>;
 
-export type RouterLlmCaller = (prompt: string) => Promise<string>;
+export type RouterLlmCaller = (prompt: string, opts?: { signal?: AbortSignal }) => Promise<string>;
 
 export const DEFAULT_JEV_CONFIDENCE_THRESHOLD = 0.75;
 
@@ -111,6 +112,8 @@ export type ClassifyTaskInput = {
   confidenceThreshold?: number;
   /** 每次决策调用的结构化日志回调；默认 console.info("[jev]", ...)。 */
   onJevDecision?: (event: JevClassifyLog) => void;
+  /** run 取消信号（PG-1：透传给 llmCaller → Mastra stream/generate）。 */
+  signal?: AbortSignal;
 };
 
 function chitchatFallback(text: string): RouterPlan {
@@ -328,12 +331,14 @@ export async function classifyTask(input: ClassifyTaskInput): Promise<RouterPlan
 
   const prompt = buildRouterPrompt(text);
   try {
-    const raw = await llmCaller(prompt);
+    const raw = await llmCaller(prompt, input.signal ? { signal: input.signal } : undefined);
     const parsed = JSON.parse(raw);
     const validated = RouterPlanSchema.safeParse(parsed);
     const plan = validated.success ? validated.data : chitchatFallback(text);
     return applyWriteIntentGuard(text, plan, input.userContext);
-  } catch {
+  } catch (error) {
+    // PG-1：取消/超时不得被吞成 chitchat 兜底计划——重抛，让 run 以具名错误终止。
+    if (input.signal?.aborted || outcomeForError(error) !== "failed") throw error;
     return applyWriteIntentGuard(text, chitchatFallback(text), input.userContext);
   }
 }
