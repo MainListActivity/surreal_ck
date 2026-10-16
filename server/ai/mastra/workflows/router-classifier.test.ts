@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { classifyTask, type RouterLlmCaller } from "./router-classifier";
+import type { AiContextSnapshot } from "@surreal-ck/shared";
+import { classifyTask, hasWriteIntentSignal, type RouterLlmCaller } from "./router-classifier";
 
 function fakeLlm(jsonReply: string): RouterLlmCaller {
   return async () => jsonReply;
@@ -289,5 +290,128 @@ describe("router classifier 写入意图回归（def-write-intent-misroute）", 
     expect(category.criteria["chitchat"]).toMatch(/数据无关|不涉及/);
     // 题目指令本身也要带写入判定（决策模型看不到系统提示词）
     expect(category.instructions).toMatch(/属于 row-analysis/);
+  });
+});
+
+describe("router classifier 写入意图护栏（qa-return：代词+上下文漏判 chitchat 的确定性兜底）", () => {
+  const ctxWithSelectedRow: AiContextSnapshot = {
+    route: { screen: "editor" },
+    workbook: { id: "workbook:w1", name: "示例工作簿" },
+    sheet: { id: "sheet:s1", label: "事项表", tableName: "ent_items" },
+    selectedRow: {
+      id: "ent_items:r1",
+      label: "示例事项-001",
+      visibleValues: { field_1: "示例事项-001", field_2: "待处理" },
+    },
+    contextHint: "事项表 / 示例事项-001",
+  };
+
+  test("生产 QA 复现形态：模型把「把这行的状态改为待复核」判 chitchat → 护栏回收为 row-analysis", async () => {
+    const text = "把这行的状态改为待复核";
+    const llm = fakeLlm(`[{"category":"chitchat","taskText":"${text}"}]`);
+    const plan = await classifyTask({ text, llmCaller: llm, userContext: ctxWithSelectedRow });
+    expect(plan).toEqual([{ category: "row-analysis", taskText: text }]);
+  });
+
+  test("代词表述无上下文时同样不落 chitchat（「这行」自带量词信号）", async () => {
+    const text = "把这行的状态改为待复核";
+    const llm = fakeLlm(`[{"category":"chitchat","taskText":"${text}"}]`);
+    const plan = await classifyTask({ text, llmCaller: llm });
+    expect(plan[0].category).toBe("row-analysis");
+  });
+
+  test("明确记录名写入被判 chitchat → 护栏回收", async () => {
+    const text = "把「示例事项-001」的状态改为待复核";
+    const llm = fakeLlm(`[{"category":"chitchat","taskText":"${text}"}]`);
+    const plan = await classifyTask({ text, llmCaller: llm, userContext: ctxWithSelectedRow });
+    expect(plan[0].category).toBe("row-analysis");
+  });
+
+  test("删除/新增等其它写入动词同样被护栏回收", async () => {
+    for (const text of ["把这行删了", "在当前表里新增一条记录", "把选中行标记为已完成"]) {
+      const llm = fakeLlm(`[{"category":"chitchat","taskText":"${text}"}]`);
+      const plan = await classifyTask({ text, llmCaller: llm, userContext: ctxWithSelectedRow });
+      expect(plan[0].category).toBe("row-analysis");
+    }
+  });
+
+  test("Jev 采纳 chitchat 的写入指令也被护栏回收（护栏在 Jev 与 LLM 双路之后）", async () => {
+    const jev: import("../../decision/model").DecisionCaller = async () => ({
+      model: "jev-1.13.0",
+      answers: {
+        multi_intent: { type: "noul", noul: 0.02 },
+        category: { type: "choice", choice: "chitchat", probabilities: { chitchat: 0.95 }, confidence: 0.95 },
+      } as never,
+      usage: {},
+    });
+    const text = "把这行的状态改为待复核";
+    const plan = await classifyTask({
+      text,
+      llmCaller: fakeLlm(`[]`),
+      decisionModel: jev,
+      userContext: ctxWithSelectedRow,
+      onJevDecision: () => {},
+    });
+    expect(plan).toEqual([{ category: "row-analysis", taskText: text }]);
+  });
+
+  test("LLM 输出不可解析时，写入指令兜底升级为 row-analysis 而非死在 chitchat", async () => {
+    const llm: RouterLlmCaller = async () => "not json";
+    const plan = await classifyTask({
+      text: "把这行的状态改为待复核",
+      llmCaller: llm,
+      userContext: ctxWithSelectedRow,
+    });
+    expect(plan[0].category).toBe("row-analysis");
+  });
+
+  test("纯闲聊不误收：有选中行时「你好，你是谁」仍落 chitchat", async () => {
+    const llm = fakeLlm(`[{"category":"chitchat","taskText":"你好，你是谁"}]`);
+    const plan = await classifyTask({
+      text: "你好，你是谁",
+      llmCaller: llm,
+      userContext: ctxWithSelectedRow,
+    });
+    expect(plan).toEqual([{ category: "chitchat", taskText: "你好，你是谁" }]);
+  });
+
+  test("只读提问不误收：「这行的状态字段是什么意思」无写入动词，保持 chitchat", async () => {
+    const text = "这行的状态字段是什么意思";
+    const llm = fakeLlm(`[{"category":"chitchat","taskText":"${text}"}]`);
+    const plan = await classifyTask({ text, llmCaller: llm, userContext: ctxWithSelectedRow });
+    expect(plan[0].category).toBe("chitchat");
+  });
+
+  test("多意图拆分不误伤无写入信号子项：问候项保持 chitchat", async () => {
+    const llm = fakeLlm(
+      `[{"category":"chitchat","taskText":"你好"},{"category":"row-analysis","taskText":"把状态改为待复核"}]`,
+    );
+    const plan = await classifyTask({
+      text: "你好，把状态改为待复核",
+      llmCaller: llm,
+      userContext: ctxWithSelectedRow,
+    });
+    expect(plan.map((item) => item.category)).toEqual(["chitchat", "row-analysis"]);
+  });
+
+  test("非 chitchat 项带写入信号同样回收：导航标签下的写入子任务归 row-analysis", async () => {
+    const llm = fakeLlm(
+      `[{"category":"navigation","taskText":"打开事项表"},{"category":"navigation","taskText":"把这行删掉"}]`,
+    );
+    const plan = await classifyTask({
+      text: "打开事项表，把这行删掉",
+      llmCaller: llm,
+      userContext: ctxWithSelectedRow,
+    });
+    expect(plan.map((item) => item.category)).toEqual(["navigation", "row-analysis"]);
+  });
+
+  test("hasWriteIntentSignal：省略宾语的祈使写入需页面上下文兜底", async () => {
+    expect(hasWriteIntentSignal("改成待复核")).toBe(false);
+    expect(hasWriteIntentSignal("改成待复核", ctxWithSelectedRow)).toBe(true);
+    expect(hasWriteIntentSignal("把这行的状态改为待复核")).toBe(true);
+    expect(hasWriteIntentSignal("你好")).toBe(false);
+    expect(hasWriteIntentSignal("这行状态是什么")).toBe(false);
+    expect(hasWriteIntentSignal("改天再聊", ctxWithSelectedRow)).toBe(false);
   });
 });

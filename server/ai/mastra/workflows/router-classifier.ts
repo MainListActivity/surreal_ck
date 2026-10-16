@@ -117,6 +117,109 @@ function chitchatFallback(text: string): RouterPlan {
   return [{ category: "chitchat", taskText: text }];
 }
 
+// ─── 写入意图护栏 ────────────────────────────────────────────────────────────
+//
+// chitchat 名下没有任何写工具：写入指令被判给 chitchat 时兜底代理只读拒绝、
+// 不产出 write-confirm 提案卡，等于写入路径死亡（生产三次复现 + QA 独立复现
+// 的根因）。类目定义收紧后模型判决层仍存在随机漏判，因此在分类器出口加一条
+// 确定性路由不变量：凡携带「写入动作 + 数据对象」信号的 plan 项，无论被判成
+// 哪个无写工具的类目，一律回收为 row-analysis（唯一挂写工具的类目）。
+// 护栏不臆造切分：模型正确切出的 navigation/chitchat 等无写入信号的项保持原样。
+
+/**
+ * 写入动作动词：新增/修改/填写/更新/删除/清空/替换/标记等「要求改变数据」的命令词。
+ * 裸「改」排除改天/改进/改善等非写入词；其余一律多字词避免歧义。
+ */
+const WRITE_ACTION_PATTERN = new RegExp(
+  [
+    "改(?!(?:天|进|善|良|革|观|邪|道|派|头|口|朝|装|编|版|造|组))(?:为|成|到|下|一下|掉|好|写|动|正|变|名|作|过来|过去)?",
+    "修改|修正|更正|订正|更新|更改|变更",
+    "设置为|设定为|设为|置为|定为|记为|标为|标成|标记为|标记|标注|标上",
+    "填写|填入|填上|填充|填报|填好|填个|填完|填满",
+    "写入|录入|补录|登记",
+    "删(?:除|掉|去|下|了|一|完)",
+    "移除|去掉|去除|清空|清除|抹掉",
+    "新增|添加|增加|加上|加个|插入|创建|新建",
+    "补一?(?:条|行|个|项|份)|生成一?(?:条|行|个|份)",
+    "换成|换为|换掉|替换|替代|调整|更名|重命名|改名叫",
+    "备注",
+    "\\b(?:update|delete|remove|add|create|set|change|modify|fill|mark|rename)\\b",
+  ].join("|"),
+  "i",
+);
+
+/**
+ * 数据对象：工作簿域内可被写入的对象。短词（行/条/个/列…）必须带量词或
+ * 指示代词前缀才作数，避免「进行」「一行代码」误伤；字段/记录/状态等
+ * 域内专有名词可独立成立。
+ */
+const DATA_OBJECT_PATTERN = new RegExp(
+  [
+    "字段", "记录", "单元格", "格子", "状态", "条目", "属性", "备注", "标签",
+    "数据表", "数据", "清单", "台账", "名单", "事项", "内容", "名字", "名称", "值", "栏位",
+    "(?:这|那|该|本|选中|当前|对应|同一|每|所有|全部|任一|第\\s*\\d+|\\d+|[一二两三四五六七八九十]+)\\s*(?:行|条|个|项|列|栏|笔|单|号|份|张)",
+    "它|其|本条|该行|此行|这条|该条|此条",
+    "\\b(?:row|record|field|cell|status|column|value|item|entry)\\b",
+  ].join("|"),
+  "i",
+);
+
+/**
+ * 强写入动词：省略宾语的祈使句（「改成待复核」「删掉吧」）只能由强动词 + 页面
+ * 上下文兜底成立。排除了「设置」「调整」「生成」这类兼作页面名/弱语义的词。
+ */
+const STRONG_WRITE_ACTION_PATTERN = new RegExp(
+  [
+    "改为|改成|改到|改下|改一下|改掉|改好|改写|改动|改名",
+    "修改|更正|更新为|变更为",
+    "设定为|设置为|设为|置为|定为|记为|标为|标成|标记为|标记",
+    "填写|填入|填上|写入|录入|补录|登记",
+    "删(?:除|掉|去|下|了|一|完)|移除|去掉|清空|清除",
+    "新增|添加|加上|加个|插入|创建|新建",
+    "换成|换为|换掉|替换|更名|重命名",
+    "\\b(?:update|delete|remove|add|create|set|change|modify|fill|mark|rename)\\b",
+  ].join("|"),
+  "i",
+);
+
+/** 判定一段文本是否携带「要求写入数据」的信号。 */
+export function hasWriteIntentSignal(text: string, ctx?: AiContextSnapshot): boolean {
+  if (!WRITE_ACTION_PATTERN.test(text)) return false;
+  if (DATA_OBJECT_PATTERN.test(text)) return true;
+  // 省略宾语的祈使写入依赖页面上下文兜底：有选中行/表时「改成待复核」指向当前行
+  return Boolean(ctx?.selectedRow ?? ctx?.sheet) && STRONG_WRITE_ACTION_PATTERN.test(text);
+}
+
+/**
+ * 对分类结果应用写入意图护栏。逐项检查 taskText；若整个 plan 全是 chitchat
+ * （模型整体漏判），用原始消息兜底判定——taskText 可能被模型改写丢掉信号。
+ */
+export function applyWriteIntentGuard(
+  text: string,
+  plan: RouterPlan,
+  ctx?: AiContextSnapshot,
+): RouterPlan {
+  const allChitchat = plan.every((item) => item.category === "chitchat");
+  let fired = false;
+  const guarded = plan.map((item) => {
+    if (item.category === "row-analysis") return item;
+    const hit =
+      hasWriteIntentSignal(item.taskText, ctx) ||
+      (allChitchat && hasWriteIntentSignal(text, ctx));
+    if (!hit) return item;
+    fired = true;
+    return { ...item, category: "row-analysis" as RouterCategory };
+  });
+  if (fired) {
+    console.info("[router]", {
+      kind: "write-intent-guard",
+      from: plan.map((item) => item.category),
+      to: guarded.map((item) => item.category),
+    });
+  }
+  return guarded;
+}
+
 function compactContext(ctx?: AiContextSnapshot) {
   if (!ctx) return undefined;
   return {
@@ -220,7 +323,7 @@ export async function classifyTask(input: ClassifyTaskInput): Promise<RouterPlan
       input.confidenceThreshold ?? DEFAULT_JEV_CONFIDENCE_THRESHOLD,
       input.onJevDecision ?? defaultJevLog,
     );
-    if (plan) return plan;
+    if (plan) return applyWriteIntentGuard(text, plan, input.userContext);
   }
 
   const prompt = buildRouterPrompt(text);
@@ -228,9 +331,9 @@ export async function classifyTask(input: ClassifyTaskInput): Promise<RouterPlan
     const raw = await llmCaller(prompt);
     const parsed = JSON.parse(raw);
     const validated = RouterPlanSchema.safeParse(parsed);
-    if (!validated.success) return chitchatFallback(text);
-    return validated.data;
+    const plan = validated.success ? validated.data : chitchatFallback(text);
+    return applyWriteIntentGuard(text, plan, input.userContext);
   } catch {
-    return chitchatFallback(text);
+    return applyWriteIntentGuard(text, chitchatFallback(text), input.userContext);
   }
 }
