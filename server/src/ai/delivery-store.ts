@@ -81,6 +81,15 @@ export class ChatDeliveryStore {
     await session.query(`UPDATE chat_delivery SET status = $status WHERE run_id = $runId
       AND owner_user = fn::current_user() AND status INSIDE ["running", "suspended"];`, { runId, status });
   }
+  /**
+   * PG-1 停滞防护：run 终态把脱敏操作诊断快照（in-flight + 已完成摘要）写到本行。
+   * best-effort：调用方负责有界等待与失败兜底；内容只含阶段/工具名/参数键/稳定错误码，
+   * 不含 SQL、变量值、行数据或凭证。
+   */
+  async recordRunDiagnostics(session: Session, runId: string, diagnostic: unknown): Promise<void> {
+    await session.query(`UPDATE chat_delivery SET run_diagnostic = $diag WHERE run_id = $runId
+      AND owner_user = fn::current_user();`, { runId, diag: diagnostic });
+  }
 }
 
 /**

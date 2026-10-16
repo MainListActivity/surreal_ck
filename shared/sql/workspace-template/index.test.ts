@@ -626,7 +626,7 @@ describe("workspace template scripts", () => {
     const migration = scripts.find((script) => script.name === "055-claims-reconciliation-finding.surql");
 
     expect(migration?.version).toBe(55);
-    expect(WORKSPACE_TEMPLATE_VERSION).toBe(56);
+    expect(WORKSPACE_TEMPLATE_VERSION).toBe(57);
     const sql = migration?.sql ?? "";
     expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS reconciliation_finding SCHEMAFULL/);
     expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS claim_supplement SCHEMAFULL/);
@@ -635,5 +635,18 @@ describe("workspace template scripts", () => {
     expect(sql).toMatch(/FOR update, delete\s+WHERE false/);
     expect(sql).toMatch(/ALLINSIDE \["amount_mismatch", "interest_mismatch", "missing_evidence", "identity_mismatch"\]/);
     expect(sql).not.toMatch(/UPDATE |DELETE |REMOVE /i);
+  });
+
+  test("PG-1：057 为 chat_delivery 增 run_diagnostic FLEXIBLE 字段（纯增量）", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.name === "057-run-diagnostics.surql");
+
+    expect(migration?.version).toBe(57);
+    const sql = migration?.sql ?? "";
+    expect(sql).toMatch(
+      /DEFINE FIELD IF NOT EXISTS run_diagnostic ON TABLE chat_delivery TYPE option<object> FLEXIBLE/,
+    );
+    // 纯增量字段，不改写/删除已有数据。
+    expect(sql).not.toMatch(/UPDATE |DELETE |REMOVE |OVERWRITE/i);
   });
 });

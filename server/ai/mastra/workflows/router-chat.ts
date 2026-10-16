@@ -20,6 +20,8 @@ import {
 } from "./router-workflow";
 import { setExecutionContext } from "../execution-context";
 import type { RouterPlan } from "./router-classifier";
+import { callerRunDiagnostics } from "../../../src/ai/caller-session";
+import { AiRunCancelledError, firstAbortOf } from "../../../src/ai/run-diagnostics";
 
 export type RouterChatStreamPusher = (event: AiMessageChunkEvent) => void;
 export type RouterChatProgressPusher = (event: AiProgressEvent) => void;
@@ -27,6 +29,8 @@ export type RouterChatSuspendPusher = (event: WorkflowSuspendedEvent) => void;
 
 export type RunRouterChatInput = {
   signal?: AbortSignal;
+  /** run 绝对期限（epoch ms）：诊断器据此把单操作有效上界折算成剩余期限。 */
+  deadlineAt?: number;
   /** Mastra 实例：必须已通过 new Mastra({ workflows: { routerWorkflow } }) 注册了 router workflow */
   mastra: Mastra;
   text: string;
@@ -114,13 +118,41 @@ export async function runRouterChat(input: RunRouterChatInput): Promise<RunRoute
   const abort = () => { void run.cancel().catch(() => undefined); };
   input.signal?.addEventListener("abort", abort, { once: true });
   if (input.signal?.aborted) abort();
-  const result = await run.start({
-    inputData: { text: input.text },
-    requestContext,
-  }).finally(() => input.signal?.removeEventListener("abort", abort));
 
+  // PG-1：把 run 诊断器绑进本 run。上游 signal（chat-service 控制器：deadline/取消）
+  // 与 Mastra 自身 abortController（run.cancel()，含工具超时触发的 diag.fail）任一触发
+  // 都按取消记账——in-flight op 即刻可快照持久化，不等被挂起的执行体返回。
+  const diag = callerRunDiagnostics(input.surrealSession);
+  diag?.bindRun({
+    runId: businessRunId,
+    signal: firstAbortOf([input.signal, run.abortController.signal]),
+    deadlineAt: input.deadlineAt,
+    cancelRun: abort,
+  });
+
+  let result: Awaited<ReturnType<typeof run.start>>;
+  try {
+    result = await run.start({
+      inputData: { text: input.text },
+      requestContext,
+    });
+  } catch (error) {
+    // 具名 fatal（工具/查询超时）优先于引擎包装后的异常向外传。
+    if (diag?.fatalError) throw diag.fatalError;
+    throw error;
+  } finally {
+    input.signal?.removeEventListener("abort", abort);
+  }
+
+  // run.cancel() 让 status 落到 canceled——把真实的超时名吞掉前先还原 fatal。
+  if (diag?.fatalError) throw diag.fatalError;
   if (result.status === "failed") {
     throw new Error(describeRunFailure(result.error));
+  }
+  // canceled 不在 start() 返回类型联合里（运行期确实会出现），按字符串比较；
+  // 已取消的 run 即便落出 suspended 态也不得回报「挂起成功」——否则前端会渲染等待确认卡。
+  if ((result.status as string) === "canceled" || diag?.aborted) {
+    throw new AiRunCancelledError();
   }
   if (result.status === "suspended") {
     return { runId: businessRunId, finalText: "", status: "suspended" };

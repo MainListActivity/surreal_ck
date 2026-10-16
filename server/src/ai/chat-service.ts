@@ -36,6 +36,8 @@ export type ChatRunner = (input: {
   text: string;
   runId: string;
   signal?: AbortSignal;
+  /** 本 run 的绝对期限（epoch ms）——诊断器折算单操作剩余上界用。 */
+  deadlineAt?: number;
   streamId: string;
   surrealSession: Surreal;
   /** 调用者 OIDC subject；stream 授权和 Mastra 上下文识别用，DB 归因走 caller session 的 $auth。 */
@@ -53,6 +55,8 @@ export type ChatRunner = (input: {
 export type ChatResumer = (input: {
   runId: string;
   signal?: AbortSignal;
+  /** 本 run 的绝对期限（epoch ms）。 */
+  deadlineAt?: number;
   streamId: string;
   decision: ResumeDecision;
   surrealSession: Surreal;
@@ -115,9 +119,17 @@ function bridgeToBus(bus: RunBus, runId: string) {
     onSuspend(e: WorkflowSuspendedEvent) {
       emit({ kind: "suspend", runId, payload: e });
     },
-    publishErrorIfNotTerminal(message: string, interrupted = false) {
-      emit({ kind: "error", runId, code: interrupted ? "ai-stream-interrupted" : "chat-failed",
-        message: interrupted ? "AI 生成中断：本次未产出完整结果，请重试。" : message });
+    publishErrorIfNotTerminal(cause: unknown, interrupted = false) {
+      // PG-1：具名错误（ai-tool-timeout / ai-caller-query-timeout / ai-run-cancelled 等）
+      // 保留稳定 code 透出，让用户可见失败归因；无名错误仍归 chat-failed。
+      const namedCode = !interrupted && typeof cause === "object" && cause !== null
+        && typeof (cause as { code?: unknown }).code === "string"
+          ? (cause as { code: string }).code
+          : undefined;
+      emit({ kind: "error", runId, code: interrupted ? "ai-stream-interrupted" : (namedCode ?? "chat-failed"),
+        message: interrupted
+          ? "AI 生成中断：本次未产出完整结果，请重试。"
+          : (cause instanceof Error ? cause.message : String(cause)) });
     },
     /**
      * 终态兜底：runner/resumer resolve 出终态却没有投递任何 done/error 时补发。
@@ -166,10 +178,13 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
         let committed = false;
         const controller = new AbortController();
         let timeout: ReturnType<typeof setTimeout> | undefined;
-        const deadline = new Promise<never>((_, reject) => { timeout = setTimeout(() => { controller.abort(); reject(new Error("chat-run-deadline")); }, options.maxRunMs ?? 10 * 60_000); });
+        const maxRunMs = options.maxRunMs ?? 10 * 60_000;
+        const deadlineAt = Date.now() + maxRunMs;
+        const deadline = new Promise<never>((_, reject) => { timeout = setTimeout(() => { controller.abort(); reject(new Error("chat-run-deadline")); }, maxRunMs); });
         try {
           const result = await Promise.race([deadline, runner({
             signal: controller.signal,
+            deadlineAt,
             text: message,
             runId,
             streamId: runId, // streamId 与 runId 同步，前端无需再额外配对
@@ -192,7 +207,7 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
         } catch (cause) {
           outcome = "failed";
           // deadline 取消可能先由 runner 的 AbortError 拒绝；两条路径使用同一中断契约。
-          bridge.publishErrorIfNotTerminal(cause instanceof Error ? cause.message : String(cause),
+          bridge.publishErrorIfNotTerminal(cause,
             controller.signal.aborted || (cause instanceof Error && cause.name === "AbortError"));
           bridge.stop();
         } finally {
@@ -225,10 +240,13 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
         let committed = false;
         const controller = new AbortController();
         let timeout: ReturnType<typeof setTimeout> | undefined;
-        const deadline = new Promise<never>((_, reject) => { timeout = setTimeout(() => { controller.abort(); reject(new Error("chat-run-deadline")); }, options.maxRunMs ?? 10 * 60_000); });
+        const maxRunMs = options.maxRunMs ?? 10 * 60_000;
+        const deadlineAt = Date.now() + maxRunMs;
+        const deadline = new Promise<never>((_, reject) => { timeout = setTimeout(() => { controller.abort(); reject(new Error("chat-run-deadline")); }, maxRunMs); });
         try {
           const result = await Promise.race([deadline, resumer({
             signal: controller.signal,
+            deadlineAt,
             runId,
             streamId: runId,
             decision,
@@ -247,7 +265,7 @@ export function createAiChatService(options: CreateAiChatServiceOptions): AiChat
         } catch (cause) {
           outcome = "failed";
           // deadline 取消可能先由 runner 的 AbortError 拒绝；两条路径使用同一中断契约。
-          bridge.publishErrorIfNotTerminal(cause instanceof Error ? cause.message : String(cause),
+          bridge.publishErrorIfNotTerminal(cause,
             controller.signal.aborted || (cause instanceof Error && cause.name === "AbortError"));
           bridge.stop();
         } finally {

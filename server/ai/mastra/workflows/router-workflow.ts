@@ -27,6 +27,8 @@ import {
 } from "./router-classifier";
 import type { DecisionCaller } from "../../decision/model";
 import type { ContentResearchWindow } from "../../../src/research/window";
+import { callerRunDiagnostics } from "../../../src/ai/caller-session";
+import { AiRunCancelledError, outcomeForError } from "../../../src/ai/run-diagnostics";
 
 export const ROUTER_WORKFLOW_ID = "routerWorkflow";
 export const ROUTER_RUNTIME_KEY = "routerRuntime";
@@ -122,6 +124,8 @@ export type SubAgentInput = {
    * LCA06：调用者 content_reader 窗口工厂（runtime 注入；缺席 = 本 run 不做平台语料研究）。
    */
   openContentSession?: OpenContentResearchSession;
+  /** run 取消信号（step abortSignal 透传）：executor 把它传给 agent.stream / 上游等待。 */
+  signal?: AbortSignal;
 };
 
 export type SubAgentOutput = {
@@ -411,6 +415,29 @@ function getRuntime(requestContext: { get(key: string): unknown }): RouterRuntim
   return runtime;
 }
 
+/**
+ * PG-1：run 取消后立刻抛——挡在 setState / suspend / onSuspend 之前，
+ * 迟到 executor 结果不得再推进 workflow 状态或发确认卡。
+ */
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new AiRunCancelledError();
+}
+
+/** 记一段 executor/模型调用（phase=executor）：begin → 跑 → end，终态按错误归类。 */
+async function trackStepOp<T>(session: Surreal | undefined, name: string, work: () => Promise<T>): Promise<T> {
+  const diag = callerRunDiagnostics(session);
+  if (!diag) return work();
+  const op = diag.begin({ name, phase: "executor" });
+  try {
+    const result = await work();
+    diag.end(op, "ok");
+    return result;
+  } catch (error) {
+    diag.end(op, outcomeForError(error), error);
+    throw error;
+  }
+}
+
 /** 研究快照仅保留查询、选择与允许存储的引用元数据。 */
 function persistedResearchStep(item: { category: RouterCategory; taskText: string }, out: SubAgentOutput, selectedResourceIds?: string[]): RouterStepResult {
   return { ...item, text: "", researchAuthorization: out.researchAuthorization, selectedResourceIds,
@@ -424,16 +451,18 @@ export function createRouterWorkflow() {
     inputSchema: RouterWorkflowInputSchema,
     outputSchema: z.object({ plan: z.array(RouterPlanItemSchema) }),
     stateSchema: RouterStateSchema,
-    execute: async ({ inputData, requestContext, setState }) => {
+    execute: async ({ inputData, requestContext, setState, abortSignal }) => {
       const runtime = getRuntime(requestContext);
       runtime.pushProgress?.({ kind: "routing", runId: runtime.runId });
-      const plan = runtime.planOverride ?? await classifyTask({
+      const plan = runtime.planOverride ?? await trackStepOp(runtime.surrealSession, "classify", () => classifyTask({
         text: inputData.text,
         llmCaller: runtime.llmCaller,
         decisionModel: runtime.decisionModel,
         userContext: runtime.userContext,
         confidenceThreshold: runtime.jevConfidenceThreshold,
-      });
+        signal: abortSignal,
+      }));
+      throwIfAborted(abortSignal);
       await setState({
         plan,
         cursor: 0,
@@ -458,6 +487,12 @@ export function createRouterWorkflow() {
       const { inputData, requestContext, setState, resumeData, suspendData, suspend } = ctx;
       const state = ctx.state as RouterState;
       const runtime = getRuntime(requestContext);
+      const guardAbort = () => throwIfAborted(ctx.abortSignal);
+      /** 取消后不再 suspend/setState：先 guard 再落 Mastra 挂起态。 */
+      const suspendGuarded = async (payload: z.infer<typeof SuspendPayloadSchema>) => {
+        guardAbort();
+        await suspend(payload);
+      };
 
       // —— Resume 分支：消化用户决策 ——
       if (resumeData) {
@@ -493,7 +528,7 @@ export function createRouterWorkflow() {
           if (sus.kind === "resource-candidates" && selected.some(id => !sus.candidates.some(c => c.id === id))) {
             runtime.onSuspend?.({ kind: "authorization_changed", runId: runtime.runId, query: item.taskText,
               message: "所选候选不属于当前运行，请重新检索。" });
-            await suspend({ kind: "authorization_changed", query: item.taskText, resourceIds: [],
+            await suspendGuarded({ kind: "authorization_changed", query: item.taskText, resourceIds: [],
               authorization: sus.authorization ?? { workspaceId: "", kind: "unavailable" } });
             return { plan: inputData.plan };
           }
@@ -508,19 +543,21 @@ export function createRouterWorkflow() {
             const allowedIds = new Set((result[0]?.[0]?.created_resources ?? []).map(String));
             if (selected.some(id => !allowedIds.has(id))) throw new Error("人工检索材料不属于当前运行");
           }
-          const out = await runtime.executors["resource-retrieval"]!({ taskText: item.taskText,
-            shared: { userContext: state.userContext ?? runtime.userContext, confirmed: state.confirmed },
-            surrealSession: runtime.surrealSession, openContentSession: runtime.openContentSession, runId: runtime.runId,
-            selectedResourceIds: selected, expectedAuthorization: sus.kind === "manual-research" ? undefined : sus.authorization,
-            acceptAuthorizationChange: sus.kind === "authorization_changed" });
+          const out = await trackStepOp(runtime.surrealSession, CATEGORY_TO_AGENT_NAME["resource-retrieval"], () =>
+            runtime.executors["resource-retrieval"]!({ taskText: item.taskText,
+              shared: { userContext: state.userContext ?? runtime.userContext, confirmed: state.confirmed },
+              surrealSession: runtime.surrealSession, openContentSession: runtime.openContentSession, runId: runtime.runId,
+              selectedResourceIds: selected, expectedAuthorization: sus.kind === "manual-research" ? undefined : sus.authorization,
+              acceptAuthorizationChange: sus.kind === "authorization_changed", signal: ctx.abortSignal }));
+          guardAbort();
           if (out.suspend) {
             if (out.suspend.kind === "authorization_changed") {
               runtime.onSuspend?.({ kind: "authorization_changed", runId: runtime.runId, query: item.taskText,
                 message: "授权或材料可用性已变化。请重新检索，或继续使用当前合法材料。" });
-              await suspend(out.suspend);
+              await suspendGuarded(out.suspend);
             } else if (out.suspend.kind === "resource-candidates") {
               runtime.onSuspend?.({ kind: "resource-candidates", runId: runtime.runId, candidates: out.suspend.candidates });
-              await suspend(out.suspend);
+              await suspendGuarded(out.suspend);
             } else throw new Error("无法恢复研究步骤");
             return { plan: inputData.plan };
           }
@@ -567,6 +604,7 @@ export function createRouterWorkflow() {
         // write-confirmed：不写入 confirmed（写动作由 ai.executeAction 在 RPC 层做）
 
         // 写入第 cursor 步的结果记录（如果不是取消）
+        guardAbort();
         const cursor = state.cursor;
         const planItem = planItemAt(cursor);
         const newSteps = cancelled
@@ -624,21 +662,25 @@ export function createRouterWorkflow() {
       // PG-1 诊断 §4-2：工具调用持久化——full record 进 runtime.toolCalls（done 事件带出，
       // 经 chat_delivery envelope 持久），脱敏摘要随 step 进 workflow state。
       const stepCalls: AiToolCallRecord[] = [];
-      const out = await executor({
-        taskText: planItem.taskText,
-        shared: {
-          userContext,
-          confirmed: state.confirmed,
-        },
-        runId: runtime.runId,
-        surrealSession: runtime.surrealSession,
-        onDelta,
-        openContentSession: runtime.openContentSession,
-        onToolCall: (call) => {
-          stepCalls.push(call);
-          (runtime.toolCalls ??= []).push(call);
-        },
-      });
+      const out = await trackStepOp(runtime.surrealSession, CATEGORY_TO_AGENT_NAME[planItem.category] ?? planItem.category, () =>
+        executor({
+          taskText: planItem.taskText,
+          shared: {
+            userContext,
+            confirmed: state.confirmed,
+          },
+          runId: runtime.runId,
+          surrealSession: runtime.surrealSession,
+          onDelta,
+          openContentSession: runtime.openContentSession,
+          signal: ctx.abortSignal,
+          onToolCall: (call) => {
+            stepCalls.push(call);
+            (runtime.toolCalls ??= []).push(call);
+          },
+        }));
+      // 迟到结果防护：run 已取消时不得再推进 state / suspend / 事件。
+      guardAbort();
 
       // 非流式 executor 的 deltas 补播
       if (!out.deltas?.length && out.text) {
@@ -653,6 +695,7 @@ export function createRouterWorkflow() {
       if (out.suspend) {
         const confirmedAtSuspend: SharedConfirmed = { ...state.confirmed };
         mergeConfirmed(confirmedAtSuspend, out.confirmed);
+        guardAbort();
         await setState({
           ...state,
           confirmed: confirmedAtSuspend,
@@ -662,7 +705,7 @@ export function createRouterWorkflow() {
         if (out.suspend.kind === "authorization_changed") {
           runtime.onSuspend?.({ kind: "authorization_changed", runId: runtime.runId, query: out.suspend.query,
             message: "授权已变化。请重新检索，或继续使用当前合法材料。" });
-          await suspend(out.suspend);
+          await suspendGuarded(out.suspend);
           return { plan: inputData.plan };
         }
         if (out.suspend.kind === "ambiguous") {
@@ -675,7 +718,7 @@ export function createRouterWorkflow() {
             candidates: exposed,
             truncated,
           });
-          await suspend({ kind: "ambiguous", candidates: all, truncated });
+          await suspendGuarded({ kind: "ambiguous", candidates: all, truncated });
           return { plan: inputData.plan };
         }
         if (out.suspend.kind === "resource-candidates") {
@@ -688,7 +731,7 @@ export function createRouterWorkflow() {
             candidates: exposed,
             truncated,
           });
-          await suspend({ kind: "resource-candidates", candidates: all, truncated, authorization: out.suspend.authorization });
+          await suspendGuarded({ kind: "resource-candidates", candidates: all, truncated, authorization: out.suspend.authorization });
           return { plan: inputData.plan };
         }
         if (out.suspend.kind === "manual-research") {
@@ -700,7 +743,7 @@ export function createRouterWorkflow() {
             query: out.suspend.query,
             resourceType: out.suspend.resourceType,
           });
-          await suspend({
+          await suspendGuarded({
             kind: "manual-research",
             sessionId: out.suspend.sessionId,
             workspaceId: out.suspend.workspaceId,
@@ -715,7 +758,7 @@ export function createRouterWorkflow() {
             runId: runtime.runId,
             intent: out.suspend.intent,
           });
-          await suspend({ kind: "await-write-confirm", intent: out.suspend.intent });
+          await suspendGuarded({ kind: "await-write-confirm", intent: out.suspend.intent });
           return { plan: inputData.plan };
         }
       }
@@ -757,15 +800,19 @@ export function createRouterWorkflow() {
         if (!step.researchAuthorization) { currentSteps.push(step); continue; }
         let out = runtime.researchOutputs?.get(index);
         if (!out || (out.researchAuthorization?.leaseEndSeconds ?? Infinity) <= Date.now() / 1000) {
-          out = await runtime.executors["resource-retrieval"]!({ taskText: step.taskText,
-            shared: { userContext, confirmed: state.confirmed }, surrealSession: runtime.surrealSession,
-            openContentSession: runtime.openContentSession, selectedResourceIds: step.selectedResourceIds,
-            expectedAuthorization: step.researchAuthorization,
-            expectedPlatformVersionIds: step.citations?.flatMap(c => c.platformContent?.versionPublicId ? [c.platformContent.versionPublicId] : []),
-            acceptAuthorizationChange: ctx.resumeData?.decision.kind === "research-retry" || ctx.resumeData?.decision.kind === "research-continue-current" });
+          out = await trackStepOp(runtime.surrealSession, CATEGORY_TO_AGENT_NAME["resource-retrieval"], () =>
+            runtime.executors["resource-retrieval"]!({ taskText: step.taskText,
+              shared: { userContext, confirmed: state.confirmed }, surrealSession: runtime.surrealSession,
+              openContentSession: runtime.openContentSession, selectedResourceIds: step.selectedResourceIds,
+              expectedAuthorization: step.researchAuthorization,
+              expectedPlatformVersionIds: step.citations?.flatMap(c => c.platformContent?.versionPublicId ? [c.platformContent.versionPublicId] : []),
+              acceptAuthorizationChange: ctx.resumeData?.decision.kind === "research-retry" || ctx.resumeData?.decision.kind === "research-continue-current",
+              signal: ctx.abortSignal }));
+          throwIfAborted(ctx.abortSignal);
           if (out.suspend) {
             runtime.onSuspend?.({ kind: "authorization_changed", runId: runtime.runId, query: step.taskText,
               message: "之前的研究授权或材料已变化。请重新检索或使用当前合法材料。" });
+            throwIfAborted(ctx.abortSignal);
             await ctx.suspend({ kind: "authorization_changed", query: step.taskText,
               authorization: out.researchAuthorization ?? step.researchAuthorization, resourceIds: step.selectedResourceIds ?? [] });
             return { steps: state.steps, finalText: "" };
