@@ -24,7 +24,24 @@ function useUser(subject = testUser.subject): MiddlewareHandler<AppBindings> {
   };
 }
 
-const fakeSession = { close: async () => {}, query: async (_sql: string, params: Record<string, unknown>) => [[{ id: "workflow_run:fixture", resume_fence: params?.fence }]] } as unknown as Surreal;
+/**
+ * 永远成功的会话桩。
+ *
+ * PG-1 写栅栏新增了两类查询，必须分别如实应答，否则「首次确认/首次 resume」会被误判成
+ * 已消费：workflow_run 报 suspended（进行中），chat_write_fence 报 pending（未消费）。
+ */
+const fakeSession = {
+  close: async () => {},
+  query: async (sql: string, params: Record<string, unknown>) => {
+    if (sql.includes("FROM chat_write_fence")) {
+      return [[{ status: "pending", run_id: params?.runId, suspend_path: params?.suspendKey }]];
+    }
+    if (sql.includes("FROM workflow_run")) {
+      return [[{ status: "suspended", state: null }]];
+    }
+    return [[{ id: "workflow_run:fixture", resume_fence: params?.fence }]];
+  },
+} as unknown as Surreal;
 
 // 永远成功的会话工厂：把 rawToken authenticate 后的会话交给 service。
 const okSessionFactory: CallerSessionFactory = async () => fakeSession;

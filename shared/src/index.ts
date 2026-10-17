@@ -30,3 +30,5 @@ export * from "./surreal-query-log";
 export * from "./surreal-values";
 export * from "./claims-interest";
 export * from "./workspace-migration-manifest";
+export * from "./chat-write-fence";
+export * from "./proposal-write";

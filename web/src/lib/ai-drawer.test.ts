@@ -49,7 +49,8 @@ function harness(over: {
   }) => Promise<{ runId: string; streamUrl: string; streamToken: string }>;
   pendingStorage?: Pick<Storage, "getItem" | "setItem" | "removeItem">;
   recoverChat?: (runId: string) => Promise<ChatRunStart>;
-  resumeChat?: (runId: string, decision: ResumeDecision) => Promise<{ runId: string; streamUrl: string; streamToken: string }>;
+  resumeChat?: (runId: string, decision: ResumeDecision, suspendKey?: string) => Promise<{ runId: string; streamUrl: string; streamToken: string }>;
+  writeProposal?: (input: { runId: string; suspendKey: string; intent: unknown; values: Record<string, unknown> }) => Promise<unknown>;
 } = {}) {
   const start = deferred<{ runId: string; streamUrl: string; streamToken: string }>();
   const starts: Array<{
@@ -58,7 +59,8 @@ function harness(over: {
     composerMode?: "chat" | "resource-search";
     idempotencyKey?: string;
   }> = [];
-  const resumes: Array<{ runId: string; decision: ResumeDecision }> = [];
+  const resumes: Array<{ runId: string; decision: ResumeDecision; suspendKey?: string }> = [];
+  const writes: Array<{ runId: string; suspendKey: string; intent: unknown; values: Record<string, unknown> }> = [];
   const handles: AiDrawerStreamHandle[] = [];
   const streamListeners: Array<(event: ChatStreamEvent) => void> = [];
   const idleTimeoutListeners: Array<() => void> = [];
@@ -73,10 +75,15 @@ function harness(over: {
         if (over.startChat) return over.startChat(input);
         return start.promise;
       },
-      async resumeChat(runId, decision) {
-        if (over.resumeChat) return over.resumeChat(runId, decision);
-        resumes.push({ runId, decision });
+      async resumeChat(runId, decision, suspendKey) {
+        if (over.resumeChat) return over.resumeChat(runId, decision, suspendKey);
+        resumes.push({ runId, decision, suspendKey });
         return { runId, streamUrl: `/api/chat/stream?runId=${runId}`, streamToken: "resume-token" };
+      },
+      async writeProposal(input) {
+        writes.push(input as { runId: string; suspendKey: string; intent: unknown; values: Record<string, unknown> });
+        if (over.writeProposal) return over.writeProposal(input as never);
+        return { written: input.values, created: false };
       },
     },
     connectStream(input) {
@@ -104,6 +111,7 @@ function harness(over: {
     start,
     starts,
     resumes,
+    writes,
     handles,
     emit(event: ChatStreamEvent, index = 0) {
       streamListeners[index]?.(event);
@@ -805,4 +813,153 @@ test("suspend await-write-confirm 携带未知 intent：pending 照常形成，�
   h.emit({ kind: "done", runId: "run-1", message: assistantMessage("已取消"), toolCalls: [] }, 1);
   await resuming;
   expect(h.session.snapshot().pendingIntents[0]?.dismissed).toBe(true);
+});
+
+describe("PG-1：同 run 第二次 suspend 与受栅栏确认写", () => {
+  /** 让 harness 走到「已连上 stream」的状态：一条用户消息 + 一次 startChat。 */
+  async function connected(h: ReturnType<typeof harness>) {
+    const sending = h.session.sendMessage("分析这一行", { userId: "u1" } as never);
+    h.start.resolve({ runId: "run-1", streamUrl: "/api/chat/stream?runId=run-1", streamToken: "t" });
+    await sending;
+    return "id-2" as string;
+  }
+
+  test("同 run 第二次 suspend 各自成卡，不再被 runId 级去重吞掉", async () => {
+    const h = harness();
+    await connected(h);
+
+    h.emit({ kind: "suspend", runId: "run-1", payload: { kind: "ambiguous-candidates", runId: "run-1", suspendKey: "execute-one#0", candidates: [{ id: "a", label: "A" }] } });
+    h.emit({ kind: "suspend", runId: "run-1", payload: { kind: "resource-candidates", runId: "run-1", suspendKey: "execute-one#1", candidates: [{ id: "b", label: "B" }] } });
+
+    const pending = h.session.snapshot().pendingIntents;
+    expect(pending).toHaveLength(2);
+    expect(pending.map((intent) => intent.suspendKey)).toEqual(["execute-one#0", "execute-one#1"]);
+  });
+
+  test("同一次暂停从 stream 与 recover 各来一次 → 只建一张卡（幂等）", async () => {
+    const h = harness();
+    await connected(h);
+
+    const payload = { kind: "ambiguous-candidates", runId: "run-1", suspendKey: "execute-one#0", candidates: [{ id: "a", label: "A" }] } as const;
+    h.emit({ kind: "suspend", runId: "run-1", payload });
+    h.emit({ kind: "suspend", runId: "run-1", payload });
+
+    expect(h.session.snapshot().pendingIntents).toHaveLength(1);
+  });
+
+  test("第二张卡的确认动作作用在第二张卡上，不误伤第一张", async () => {
+    const h = harness();
+    const messageId = await connected(h);
+
+    h.emit({ kind: "suspend", runId: "run-1", payload: { kind: "ambiguous-candidates", runId: "run-1", suspendKey: "execute-one#0", candidates: [{ id: "a", label: "A" }] } });
+    h.emit({ kind: "suspend", runId: "run-1", payload: { kind: "resource-candidates", runId: "run-1", suspendKey: "execute-one#1", candidates: [{ id: "b", label: "B" }] } });
+
+    h.session.chooseCandidate(messageId, "b", "execute-one#1");
+
+    const pending = h.session.snapshot().pendingIntents;
+    // 第一张卡仍在，第二张已 dismiss（按对象身份而非 messageId 批量置位）。
+    expect(pending.find((i) => i.suspendKey === "execute-one#0")?.dismissed).toBe(false);
+    expect(pending.find((i) => i.suspendKey === "execute-one#1")?.dismissed).toBe(true);
+    expect(h.resumes[0]?.suspendKey).toBe("execute-one#1");
+  });
+
+  test("确认写带上 suspendKey 走服务端写端点；resume 随后才发", async () => {
+    const h = harness();
+    const messageId = await connected(h);
+    const intent = { type: "row-patch-proposal", sheetId: "sheet:s1", recordId: "p1:v1", proposals: [] };
+    h.emit({ kind: "suspend", runId: "run-1", payload: { kind: "await-write-confirm", runId: "run-1", suspendKey: "execute-one#0", intent } });
+
+    const result = await h.session.confirmProposalWrite({ messageId, suspendKey: "execute-one#0", values: { field_1: false } });
+    expect(result.ok).toBe(true);
+    expect(h.writes).toEqual([{ runId: "run-1", suspendKey: "execute-one#0", intent, values: { field_1: false } }]);
+  });
+
+  test("第二实例的迟到确认：服务端具名拒绝 → stale，且文案说明零写入", async () => {
+    const h = harness({
+      writeProposal: async () => {
+        throw Object.assign(new Error("这项确认已被处理，本次没有写入任何数据。"), {
+          code: "chat-write-fence-consumed",
+          status: 409,
+        });
+      },
+    });
+    const messageId = await connected(h);
+    const intent = { type: "row-patch-proposal", sheetId: "sheet:s1", recordId: "p1:v1", proposals: [] };
+    h.emit({ kind: "suspend", runId: "run-1", payload: { kind: "await-write-confirm", runId: "run-1", suspendKey: "execute-one#0", intent } });
+
+    const result = await h.session.confirmProposalWrite({ messageId, suspendKey: "execute-one#0", values: { field_1: false } });
+    expect(result).toEqual({ ok: false, message: "这项确认已被处理，本次没有写入任何数据。", stale: true });
+  });
+
+  test("run 终态拒绝与「已消费」是不同的文案", async () => {
+    const h = harness({
+      writeProposal: async () => {
+        throw Object.assign(new Error("x"), { code: "chat-write-fence-run-ended", status: 409 });
+      },
+    });
+    const messageId = await connected(h);
+    const intent = { type: "row-patch-proposal", sheetId: "sheet:s1", recordId: "p1:v1", proposals: [] };
+    h.emit({ kind: "suspend", runId: "run-1", payload: { kind: "await-write-confirm", runId: "run-1", suspendKey: "execute-one#0", intent } });
+
+    const result = await h.session.confirmProposalWrite({ messageId, suspendKey: "execute-one#0", values: { field_1: false } });
+    expect(result.ok).toBe(false);
+    expect((result as { stale?: boolean }).stale).toBe(true);
+    if (!result.ok) expect(result.message).toContain("运行已结束");
+  });
+
+  test("非栅栏类写失败不标 stale：卡片保持可重试", async () => {
+    const h = harness({
+      writeProposal: async () => {
+        throw Object.assign(new Error("记录未通过字段校验"), { code: "chat-write-validation-failed", status: 422 });
+      },
+    });
+    const messageId = await connected(h);
+    const intent = { type: "row-patch-proposal", sheetId: "sheet:s1", recordId: "p1:v1", proposals: [] };
+    h.emit({ kind: "suspend", runId: "run-1", payload: { kind: "await-write-confirm", runId: "run-1", suspendKey: "execute-one#0", intent } });
+
+    const result = await h.session.confirmProposalWrite({ messageId, suspendKey: "execute-one#0", values: { field_1: false } });
+    expect(result).toEqual({ ok: false, message: "请求内容未通过校验，请检查后重试。" });
+  });
+
+  test("resume 带上 suspendKey，已消费的 suspend 不再静默成功", async () => {
+    const h = harness();
+    const messageId = await connected(h);
+    const intent = { type: "row-patch-proposal", sheetId: "sheet:s1", recordId: "p1:v1", proposals: [] };
+    h.emit({ kind: "suspend", runId: "run-1", payload: { kind: "await-write-confirm", runId: "run-1", suspendKey: "execute-one#0", intent } });
+
+    const resuming = h.session.resumeWrite(messageId, "write-confirmed", "execute-one#0");
+    await Promise.resolve();
+    expect(h.resumes[0]).toEqual({ runId: "run-1", decision: { kind: "write-confirmed" }, suspendKey: "execute-one#0" });
+    h.emit({ kind: "done", runId: "run-1", message: assistantMessage("已写入"), toolCalls: [] }, 1);
+    await resuming;
+  });
+
+  test("老事件（无 suspendKey）：确认写不降级为浏览器直写，明确报错", async () => {
+    const h = harness();
+    const messageId = await connected(h);
+    const intent = { type: "row-patch-proposal", sheetId: "sheet:s1", recordId: "p1:v1", proposals: [] };
+    h.emit({ kind: "suspend", runId: "run-1", payload: { kind: "await-write-confirm", runId: "run-1", intent } });
+
+    const result = await h.session.confirmProposalWrite({ messageId, suspendKey: "", values: { field_1: false } });
+    expect(result.ok).toBe(false);
+    expect(h.writes).toHaveLength(0);
+  });
+
+  test("断线后的手动恢复是显式入口：既有 banner 与按钮不静默空白", async () => {
+    const h = harness({
+      recoverChat: async (runId) => ({ runId, streamUrl: `/api/chat/stream?runId=${runId}`, streamToken: "recovered" }),
+    });
+    const sending = h.session.sendMessage("分析这一行", { userId: "u1" } as never);
+    h.start.resolve({ runId: "run-1", streamUrl: "/api/chat/stream?runId=run-1", streamToken: "t" });
+    await sending;
+
+    h.disconnect();
+    const state = h.session.snapshot();
+    expect(state.sendError).toContain("AI 连接已中断");
+    // 有可点的重试 id：恢复走 recoverChat 重鉴权并换新 stream token，不是空白。
+    expect(state.retryableMessageId).toBe("id-1");
+
+    await h.session.retryMessage(state.retryableMessageId!);
+    expect(h.session.snapshot().sending).toBe(true);
+  });
 });

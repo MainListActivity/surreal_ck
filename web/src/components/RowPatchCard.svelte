@@ -12,21 +12,39 @@
     type RowPatchResumeDecision,
     type RowPatchWriteResult,
   } from "../lib/row-patch-card";
+  import type { AiDrawerSession } from "../lib/ai-drawer";
 
   type Props = {
     proposal: RowPatchProposal | RecordWriteProposal;
-    write: (values: Record<string, unknown>) => Promise<RowPatchWriteResult>;
+    /** 承载该卡的会话：确认写与 resume 都经它发，写因此带上服务端栅栏键。 */
+    session: AiDrawerSession;
+    messageId: string;
+    /** 本次暂停的键；缺席（老事件）时回落到浏览器直写，卡片显式提示。 */
+    suspendKey?: string;
     resume: (decision: RowPatchResumeDecision) => Promise<void>;
   };
 
-  let { proposal, write, resume }: Props = $props();
+  let { proposal, session, messageId, suspendKey, resume }: Props = $props();
+
+  /**
+   * PG-1：确认写走服务端受栅栏端点，写与「消费该 suspend」同一事务原子完成。
+   *
+   * 缺席 suspendKey（本次发布前的历史事件）或会话未开启写端点时**不做任何降级直写**——
+   * 旧路径正是「浏览器先写、栅栏只是内存标志」的缺陷来源，宁可明确报错也不静默写入。
+   */
+  const fencedWrite = async (values: Record<string, unknown>): Promise<RowPatchWriteResult> => {
+    if (!suspendKey) {
+      return { ok: false, message: "这次确认已缺少防重复校验信息，请重新发起 AI 分析后再确认。" };
+    }
+    return session.confirmProposalWrite({ messageId, suspendKey, values });
+  };
 
   // 卡片随 pending intent 按 key 创建/销毁，提案在组件生命周期内不变——
   // 初始值捕获是有意的。
   // svelte-ignore state_referenced_locally
   const card = createRowPatchCard({
     proposal,
-    write: (values) => write(values),
+    write: (values) => fencedWrite(values),
     resume: (decision) => resume(decision),
     onChange(next) {
       cardState = next;
@@ -37,6 +55,9 @@
 
   const acceptedCount = $derived(cardState.fields.filter((field) => field.accepted).length);
   const busy = $derived(cardState.status === "writing" || cardState.status === "rejecting");
+  // stale = 服务端已具名拒绝（该 suspend 已被另一实例消费，或 run 已终态）：本次零写入是
+  // 预期结果，按已处理终态呈现，而不是错误——否则用户会对一块永远成功的按钮反复重试。
+  const stale = $derived(cardState.status === "stale");
 
   const confidenceLabel: Record<string, string> = {
     high: "高置信度",
@@ -76,26 +97,30 @@
   </ul>
 
   {#if cardState.error}
-    <p class="write-error" role="alert">{cardState.error}</p>
+    <p class="write-error" class:stale-note={stale} role={stale ? "status" : "alert"}>{cardState.error}</p>
   {/if}
 
-  <footer>
-    <button
-      type="button"
-      class="primary-btn"
-      disabled={busy}
-      onclick={() => void card.confirm()}
-    >
-      {cardState.status === "writing"
-        ? (cardState.writeCommitted ? "再次提交中…" : "写入中…")
-        : cardState.writeCommitted
-          ? "再次提交确认"
-          : `确认写入（${acceptedCount} 个字段）`}
-    </button>
-    <button type="button" class="ghost-btn" disabled={busy || cardState.writeCommitted} onclick={() => void card.rejectAll()}>
-      全部忽略
-    </button>
-  </footer>
+  {#if stale}
+    <!-- 无按钮：重试在服务端语义上不可能成功（该 suspend 已消费 / run 已终态）。 -->
+  {:else}
+    <footer>
+      <button
+        type="button"
+        class="primary-btn"
+        disabled={busy}
+        onclick={() => void card.confirm()}
+      >
+        {cardState.status === "writing"
+          ? (cardState.writeCommitted ? "再次提交中…" : "写入中…")
+          : cardState.writeCommitted
+            ? "再次提交确认"
+            : `确认写入（${acceptedCount} 个字段）`}
+      </button>
+      <button type="button" class="ghost-btn" disabled={busy || cardState.writeCommitted} onclick={() => void card.rejectAll()}>
+        全部忽略
+      </button>
+    </footer>
+  {/if}
 </div>
 
 <style>
@@ -197,6 +222,11 @@
     background: #fef2f2;
     color: #b91c1c;
     font-size: 12px;
+  }
+
+  .write-error.stale-note {
+    background: #f1f5f9;
+    color: #475569;
   }
 
   footer {

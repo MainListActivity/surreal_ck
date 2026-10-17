@@ -10,6 +10,7 @@
 import type { Surreal } from "surrealdb";
 import {
   WorkflowSuspendedEventSchema,
+  suspendPathKeyFromState,
   type CandidateOption,
   type WorkflowSuspendedEvent,
 } from "@surreal-ck/shared";
@@ -50,24 +51,24 @@ function candidates(value: unknown): CandidateOption[] | undefined {
 }
 
 /** 持久化 suspendPayload（SuspendPayloadSchema 形状）→ 面向前端的 WorkflowSuspendedEvent。 */
-function suspendedEventFromPayload(runId: string, payload: unknown): WorkflowSuspendedEvent | undefined {
+function suspendedEventFromPayload(runId: string, payload: unknown, suspendKey: string): WorkflowSuspendedEvent | undefined {
   const p = asRecord(payload);
   if (!p) return undefined;
   switch (p.kind) {
     case "await-write-confirm":
-      return { kind: "await-write-confirm", runId, intent: p.intent as never };
+      return { kind: "await-write-confirm", runId, suspendKey, intent: p.intent as never };
     case "ambiguous":
-      return { kind: "ambiguous-candidates", runId, candidates: candidates(p.candidates) as never,
+      return { kind: "ambiguous-candidates", runId, suspendKey, candidates: candidates(p.candidates) as never,
         truncated: p.truncated === true ? true : undefined };
     case "resource-candidates":
-      return { kind: "resource-candidates", runId, candidates: candidates(p.candidates) as never,
+      return { kind: "resource-candidates", runId, suspendKey, candidates: candidates(p.candidates) as never,
         truncated: p.truncated === true ? true : undefined };
     case "manual-research":
-      return { kind: "manual-research", runId, sessionId: String(p.sessionId ?? ""),
+      return { kind: "manual-research", runId, suspendKey, sessionId: String(p.sessionId ?? ""),
         workspaceId: String(p.workspaceId ?? ""), query: String(p.query ?? ""), resourceType: String(p.resourceType ?? "") };
     case "authorization_changed":
       // authorization/resourceIds 留在 snapshot 里供 resume 消费；事件只需呈现与继续入口。
-      return { kind: "authorization_changed", runId, query: String(p.query ?? ""),
+      return { kind: "authorization_changed", runId, suspendKey, query: String(p.query ?? ""),
         message: "授权已变化。请重新检索，或继续使用当前合法材料。" };
     default:
       return undefined;
@@ -123,7 +124,10 @@ export async function loadSuspendedRunDecision(session: Session, runId: string):
   if (!row) return undefined;
   const status = typeof row.status === "string" ? row.status : "";
   if (status !== "suspended") return { status };
-  const event = suspendedEventFromPayload(runId, extractSuspendedPayload(row.state));
+  // 恢复出来的卡必须带与原 stream 事件同一个 suspendKey：否则前端会去重成新卡、
+  // 提交决策时也无法命中服务端那一条栅栏行。键从同一份持久态推导（payload 优先）。
+  const suspendKey = suspendPathKeyFromState({ state: row.state });
+  const event = suspendedEventFromPayload(runId, extractSuspendedPayload(row.state), suspendKey);
   const parsed = event ? WorkflowSuspendedEventSchema.safeParse(event) : undefined;
   return parsed?.success ? { status, suspended: parsed.data } : { status };
 }

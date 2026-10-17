@@ -21,7 +21,14 @@ export type ConfirmableRecordProposal = RowPatchProposal | RecordWriteProposal;
  * error 态，不写库、不 resume；用户可取消勾选重复项之一后重试，或全部忽略。
  */
 
-export type RowPatchWriteResult = { ok: true } | { ok: false; message: string };
+/**
+ * `stale` 具名拒绝：服务端判定该 suspend 已被消费或 run 已终态，本次零写入。
+ * 与 `error` 区分——它是**预期结果**（另一标签页/恢复卡已处理过），不该显示成红色报错
+ * 诱使用户反复重试；重试在服务端语义上永远不可能成功。
+ */
+export type RowPatchWriteResult =
+  | { ok: true }
+  | { ok: false; message: string; stale?: boolean };
 
 export type RowPatchResumeDecision = { kind: "write-confirmed" | "write-rejected" };
 
@@ -35,10 +42,16 @@ export type RowPatchFieldView = {
 };
 
 export type RowPatchCardState = {
-  status: "pending" | "writing" | "rejecting" | "done" | "rejected" | "error";
+  status: "pending" | "writing" | "rejecting" | "done" | "rejected" | "stale" | "error";
   fields: RowPatchFieldView[];
   error: string | null;
-  /** 写入已成功、仅 workflow resume 待重试；此时不得再次写数据库。 */
+  /**
+   * 本卡片实例已成功写入、仅 workflow resume 待重试：重试 confirm 时跳过写、只补 resume。
+   *
+   * 它**不是**防重复写的安全机制（那是服务端 `chat_write_fence` 的职责，跨实例/跨标签页
+   * 可见）。它只服务于「写成功但 resume 失败」这一次重试不必再走一趟写端点；恢复出来的
+   * 卡片实例里它恒为 false，仍会真实调用写端点并拿到具名拒绝——这正是期望路径。
+   */
   writeCommitted: boolean;
 };
 
@@ -127,6 +140,7 @@ export function createRowPatchCard(deps: RowPatchCardDeps) {
   }
 
   async function confirm(): Promise<void> {
+    // stale 是终态：服务端已具名拒绝（已被消费 / run 终态），重试无意义也不安全。
     if (state.status !== "pending" && state.status !== "error") return;
     if (state.writeCommitted) {
       state.status = "writing";
@@ -157,7 +171,7 @@ export function createRowPatchCard(deps: RowPatchCardDeps) {
     const values = Object.fromEntries(accepted.map((field) => [field.field, field.suggestedValue]));
     const result = await deps.write(values);
     if (!result.ok) {
-      state.status = "error";
+      state.status = result.stale ? "stale" : "error";
       state.error = result.message;
       emitChange();
       return;

@@ -1,4 +1,4 @@
-import { createDefaultAiContextSnapshot } from "@surreal-ck/shared";
+import { createDefaultAiContextSnapshot, chatWriteFenceMessage } from "@surreal-ck/shared";
 import type {
   AiChatMessage,
   AiContextSnapshot,
@@ -11,6 +11,7 @@ import type {
   RowPatchProposal,
   WorkflowSuspendedEvent,
 } from "@surreal-ck/shared";
+import type { RowPatchWriteResult } from "./row-patch-card";
 
 export type AiDrawerContextSnapshot = AiContextSnapshot & {
   workspaceSlug?: string;
@@ -40,7 +41,18 @@ export type AiDrawerChatClient = {
     idempotencyKey?: string;
   }): Promise<ChatRunStart>;
   recoverChat?(runId: string): Promise<ChatRunStart>;
-  resumeChat(runId: string, decision: ResumeDecision): Promise<ChatRunStart>;
+  /** `suspendKey` 为本次暂停的键；缺席时服务端按持久态推导当前挂起的那次。 */
+  resumeChat(runId: string, decision: ResumeDecision, suspendKey?: string): Promise<ChatRunStart>;
+  /**
+   * PG-1 受栅栏写端点：确认写与「消费该 suspend」在服务端同一事务内原子完成。
+   * 缺席 = 服务端未开启栅栏，调用方必须回落到旧的浏览器直写路径。
+   */
+  writeProposal?(input: {
+    runId: string;
+    suspendKey: string;
+    intent: RowPatchProposal | RecordWriteProposal;
+    values: Record<string, unknown>;
+  }): Promise<{ written: Record<string, unknown>; created: boolean }>;
 };
 
 export type AiDrawerStreamInput = {
@@ -64,6 +76,14 @@ export type ActiveAiRun = {
 export type PendingAiIntent = {
   messageId: string;
   runId: string;
+  /**
+   * 本次 suspend 的稳定键（`<stepId>#<seq>`，服务端权威）。
+   *
+   * 去重粒度从 runId 降到「本次暂停」：同一 run 里的第二次暂停（不同 plan item，或同一
+   * item 因授权变化再次提问）必须各自成卡，否则会被 runId 级去重整条吞掉。
+   * 缺席（旧事件 / 老恢复态）时按 `runId|kind` 退化，保证历史数据仍只渲染一张卡。
+   */
+  suspendKey?: string;
   kind: "authorization_changed" | "ambiguous-candidates" | "resource-candidates" | "await-write-confirm" | "manual-research";
   authorizationChange?: { query: string; message: string; restart?: boolean };
   candidates?: Array<{
@@ -117,11 +137,16 @@ export type AiDrawerSession = {
     contextSnapshot: AiDrawerContextSnapshot,
     options?: { composerMode?: AiComposerMode },
   ): Promise<void>;
-  continueResearch(messageId: string, action: "research-retry" | "research-continue-current"): Promise<void>;
-  chooseCandidate(messageId: string, candidateId: string): Promise<void>;
-  resumeWrite(messageId: string, decision: "write-confirmed" | "write-rejected"): Promise<void>;
+  continueResearch(messageId: string, action: "research-retry" | "research-continue-current", suspendKey?: string): Promise<void>;
+  chooseCandidate(messageId: string, candidateId: string, suspendKey?: string): Promise<void>;
+  resumeWrite(messageId: string, decision: "write-confirmed" | "write-rejected", suspendKey?: string): Promise<void>;
+  /**
+   * PG-1 受栅栏确认写：服务端在同一事务内「消费该 suspend + 落业务数据」。
+   * 写成功后由卡片继续走 `resumeWrite`；被拒时返回具名文案，卡片进 error 态可重试。
+   */
+  confirmProposalWrite(input: { messageId: string; suspendKey: string; values: Record<string, unknown> }): Promise<RowPatchWriteResult>;
   /** 人工检索完成：用已保存的资源 id resume workflow。成功才 dismiss 检索卡，失败上抛可重试。 */
-  finishResearch(messageId: string, resourceIds: string[]): Promise<void>;
+  finishResearch(messageId: string, resourceIds: string[], suspendKey?: string): Promise<void>;
   /** 在原用户消息下重发同一读取请求，不复制用户消息。 */
   retryMessage(messageId: string): Promise<void>;
   syncWorkspace(workspaceSlug: string | null | undefined): void;
@@ -184,6 +209,9 @@ function aiErrorMessage(error: unknown): string {
   }
   if (code === "ai-allowance-unavailable") return "AI 额度账本暂不可用，请稍后重试。";
   if (code === "authorization_changed") return "当前材料或授权已变化，不能恢复旧答案。请重新研究。";
+  // PG-1 写栅栏：已消费 / run 已终态。服务端具名拒绝，前端给固定文案，绝不静默成功。
+  const fenceMessage = chatWriteFenceMessage(code);
+  if (fenceMessage) return fenceMessage;
   if (code === "chat-run-interrupted") return "该研究已中断且没有可恢复结果。请发起新研究。";
   if (code === "chat-run-not-running") return "该研究已暂停或中断。请回到原操作卡继续，或发起新研究。";
   if (code === "chat-run-ended") return "该研究已结束且没有可恢复结果。请发起新研究。";
@@ -269,6 +297,22 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
       if (request.assistantMessageId === assistantMessageId) return userMessageId;
     }
     return null;
+  }
+
+  /**
+   * 一张卡的唯一身份：`suspendKey`（本次暂停），缺席时退回 `runId|kind`（老事件）。
+   *
+   * 所有「按消息找卡」的入口都必须用这个键：同一 run 的第二次 suspend 与第一次共享
+   * messageId 与 runId，只按 messageId / runId 找会让第二张卡误操作第一张。
+   */
+  function intentKey(intent: Pick<PendingAiIntent, "runId" | "kind" | "suspendKey">): string {
+    return intent.suspendKey ?? `${intent.runId}|${intent.kind}`;
+  }
+
+  function findIntent(messageId: string, suspendKey: string | undefined, kind: PendingAiIntent["kind"]): PendingAiIntent | undefined {
+    return state.pendingIntents.find((intent) =>
+      intent.messageId === messageId && !intent.dismissed && intent.kind === kind
+      && intentKey(intent) === (suspendKey ?? `${intent.runId}|${kind}`));
   }
 
   function markPendingDismissed(messageId: string): void {
@@ -374,10 +418,17 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
 
     if (event.kind === "suspend") {
       settleRunCompletion(event.runId);
-      // 幂等：同一 run 的 suspend 载荷可从 stream 与 recover 持久态各来一次，只建一张卡。
-      if (state.pendingIntents.some((intent) => intent.runId === event.runId && !intent.dismissed)) return;
+      // 幂等按「本次暂停」而非 run：同一 run 的第 2 次 suspend（不同 plan item，或同一 item
+      // 授权变化后再次提问）必须能各自成卡——旧的 runId 级去重会把它整条吞掉。键缺席
+      // （老事件 / 老恢复态）时退化成 run|kind，仍保持「同一次暂停只一张卡」。
+      const suspendKey = event.payload.suspendKey;
+      const alreadyShown = state.pendingIntents.some((intent) =>
+        intent.runId === event.runId && !intent.dismissed
+        && (suspendKey ? intent.suspendKey === suspendKey : intent.suspendKey === undefined && intent.kind === event.payload.kind));
+      if (alreadyShown) return;
+      const key = suspendKey ? { suspendKey } : {};
       if (event.payload.kind === "authorization_changed") {
-        state.pendingIntents = [...state.pendingIntents, { messageId, runId: event.runId, kind: "authorization_changed",
+        state.pendingIntents = [...state.pendingIntents, { messageId, runId: event.runId, ...key, kind: "authorization_changed",
           authorizationChange: { query: event.payload.query, message: event.payload.message, restart: event.payload.restart }, dismissed: false }];
         patchMessage(messageId, { content: event.payload.message });
       } else if (event.payload.kind === "ambiguous-candidates" || event.payload.kind === "resource-candidates") {
@@ -386,6 +437,7 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
           {
             messageId,
             runId: event.runId,
+            ...key,
             kind: event.payload.kind,
             candidates: event.payload.candidates,
             dismissed: false,
@@ -405,6 +457,7 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
           {
             messageId,
             runId: event.runId,
+            ...key,
             kind: "manual-research",
             research: {
               sessionId: event.payload.sessionId,
@@ -427,6 +480,7 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
           {
             messageId,
             runId: event.runId,
+            ...key,
             kind: event.payload.kind,
             ...(intent.type === "row-patch-proposal" || intent.type === "record-write-proposal"
               ? { proposal: intent }
@@ -465,8 +519,8 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
       authorizationChange: { query, restart: true, message: "当前授权或运行状态已变化，请重新检索当前合法材料。" } });
   }
 
-  async function continueResearch(messageId: string, action: "research-retry" | "research-continue-current"): Promise<void> {
-    const pending = state.pendingIntents.find(i => i.messageId === messageId && !i.dismissed && i.kind === "authorization_changed");
+  async function continueResearch(messageId: string, action: "research-retry" | "research-continue-current", suspendKey?: string): Promise<void> {
+    const pending = findIntent(messageId, suspendKey, "authorization_changed");
     if (!pending?.authorizationChange) return;
     state.sending = true;
     state.sendError = null;
@@ -478,7 +532,7 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
         await sendMessage(pending.authorizationChange.query, context, { composerMode: "resource-search" });
         if (state.sendError) throw new Error(state.sendError);
       } else {
-        const run = await options.chatClient.resumeChat(pending.runId, { kind: action });
+        const run = await options.chatClient.resumeChat(pending.runId, { kind: action }, pending.suspendKey);
         connectRun(run, messageId);
       }
       markIntentDismissed(pending);
@@ -489,11 +543,12 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
     emitChange();
   }
 
-  async function chooseCandidate(messageId: string, candidateId: string): Promise<void> {
+  async function chooseCandidate(messageId: string, candidateId: string, suspendKey?: string): Promise<void> {
     const pending = state.pendingIntents.find((intent) =>
       intent.messageId === messageId
       && !intent.dismissed
-      && (intent.kind === "ambiguous-candidates" || intent.kind === "resource-candidates"),
+      && (intent.kind === "ambiguous-candidates" || intent.kind === "resource-candidates")
+      && intentKey(intent) === (suspendKey ?? `${intent.runId}|${intent.kind}`),
     );
     if (!pending) return;
 
@@ -501,14 +556,14 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
       ? { kind: "resource-candidates-chosen", resourceIds: [candidateId] }
       : { kind: "candidate-chosen", candidateId };
 
-    markPendingDismissed(messageId);
+    markIntentDismissed(pending);
     state.sending = true;
     state.sendError = null;
     state.progressHint = ROUTING_HINT;
     emitChange();
 
     try {
-      const run = await options.chatClient.resumeChat(pending.runId, decision);
+      const run = await options.chatClient.resumeChat(pending.runId, decision, pending.suspendKey);
       connectRun(run, messageId);
     } catch (error) {
       recordAuthorizationChange(messageId, error);
@@ -523,10 +578,8 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
    * 提案卡确认/忽略后的 resume：成功才 dismiss 卡片并重连 stream；
    * 失败把错误上抛给卡片状态机展示（卡片保留可重试），不污染 sendError。
    */
-  async function resumeWrite(messageId: string, decision: "write-confirmed" | "write-rejected"): Promise<void> {
-    const pending = state.pendingIntents.find((intent) =>
-      intent.messageId === messageId && !intent.dismissed && intent.kind === "await-write-confirm",
-    );
+  async function resumeWrite(messageId: string, decision: "write-confirmed" | "write-rejected", suspendKey?: string): Promise<void> {
+    const pending = findIntent(messageId, suspendKey, "await-write-confirm");
     if (!pending) return;
 
     state.sending = true;
@@ -535,7 +588,7 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
     emitChange();
 
     try {
-      const run = await options.chatClient.resumeChat(pending.runId, { kind: decision });
+      const run = await options.chatClient.resumeChat(pending.runId, { kind: decision }, pending.suspendKey);
       const completion = new Promise<void>((resolve, reject) => {
         pendingRunCompletion = { runId: run.runId, pendingIntent: pending, resolve, reject };
       });
@@ -550,11 +603,42 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
     }
   }
 
+  /**
+   * PG-1 提案卡确认写：走服务端受栅栏写端点。
+   *
+   * 与旧路径的差别不在「写不写」，而在**谁判定这次确认还有效**：服务端在同一事务里
+   * 消费该 suspend 并落业务数据，已消费 / run 已终态一律具名 409、零写入。
+   * 浏览器不再先写后 resume，因此第二标签页的迟到确认碰不到业务行。
+   *
+   * 写成功后才 resume（write-confirmed）；写被拒时把具名文案上抛给卡片，卡片保留，
+   * 用户可改勾选重试或全部忽略——绝不出现「显示成功但库里没写」的静默路径。
+   */
+  async function confirmProposalWrite(input: {
+    messageId: string;
+    suspendKey: string;
+    values: Record<string, unknown>;
+  }): Promise<RowPatchWriteResult> {
+    const pending = findIntent(input.messageId, input.suspendKey, "await-write-confirm");
+    const writeProposal = options.chatClient.writeProposal;
+    if (!pending?.proposal || !writeProposal) {
+      return { ok: false, message: "这张提案卡已失效，请重新发起 AI 分析。" };
+    }
+    const proposal = pending.proposal;
+    try {
+      await writeProposal({ runId: pending.runId, suspendKey: input.suspendKey, intent: proposal, values: input.values });
+    } catch (error) {
+      // 具名栅栏拒绝（已消费 / run 终态）标 stale：卡片显示为已处理终态，不诱导重试。
+      const code = errorCode(error);
+      const stale = code !== undefined && chatWriteFenceMessage(code) !== null;
+      // 其它错误同样上抛，卡片进 error 态可重试（写未发生，重试是安全的）。
+      return { ok: false, message: aiErrorMessage(error), ...(stale ? { stale: true } : {}) };
+    }
+    return { ok: true };
+  }
+
   /** 与 resumeWrite 同语义：成功才 dismiss 检索卡并重连 stream；失败上抛，检索卡保留可重试。 */
-  async function finishResearch(messageId: string, resourceIds: string[]): Promise<void> {
-    const pending = state.pendingIntents.find((intent) =>
-      intent.messageId === messageId && !intent.dismissed && intent.kind === "manual-research",
-    );
+  async function finishResearch(messageId: string, resourceIds: string[], suspendKey?: string): Promise<void> {
+    const pending = findIntent(messageId, suspendKey, "manual-research");
     if (!pending || resourceIds.length === 0) return;
 
     state.sending = true;
@@ -566,8 +650,8 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
       const run = await options.chatClient.resumeChat(pending.runId, {
         kind: "manual-research-completed",
         resourceIds,
-      });
-      markPendingDismissed(messageId);
+      }, pending.suspendKey);
+      markIntentDismissed(pending);
       connectRun(run, messageId);
     } catch (error) {
       recordAuthorizationChange(messageId, error);
@@ -706,6 +790,7 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
     sendMessage,
     chooseCandidate,
     resumeWrite,
+    confirmProposalWrite,
     continueResearch,
     finishResearch,
     retryMessage,

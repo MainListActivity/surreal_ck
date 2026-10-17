@@ -23,7 +23,6 @@
     type AiDrawerState,
     type ChatRunStart,
   } from "../lib/ai-drawer";
-  import type { RowPatchWriteResult } from "../lib/row-patch-card";
   import {
     persistDashboardDraft,
     previewDashboardDraft,
@@ -186,12 +185,29 @@
         const res = await api.api.chat.runs[":runId"].recover.$post({ param: { runId } });
         return expectJson<ChatRunStart>(res, "研究结果恢复失败。");
       },
-      async resumeChat(runId: string, decision: ResumeDecision) {
+      async resumeChat(runId: string, decision: ResumeDecision, suspendKey?: string) {
         const res = await api.api.chat.runs[":runId"].resume.$post({
           param: { runId },
-          json: { runId, decision },
+          json: { runId, decision, ...(suspendKey ? { suspendKey } : {}) },
         });
         return expectJson<ChatRunStart>(res, "AI 会话续跑失败。");
+      },
+      /**
+       * PG-1 受栅栏确认写：写与「消费该 suspend」在服务端同一事务内完成。
+       * 具名 409（已消费 / run 终态）由 expectJson 抛成带 code 的错误，
+       * 卡片据此给固定文案，绝不静默成功。
+       */
+      async writeProposal(input: {
+        runId: string;
+        suspendKey: string;
+        intent: RowPatchProposal | RecordWriteProposal;
+        values: Record<string, unknown>;
+      }) {
+        const res = await api.api.chat.runs[":runId"]["proposal-write"].$post({
+          param: { runId: input.runId },
+          json: { suspendKey: input.suspendKey, intent: input.intent, values: input.values },
+        });
+        return expectJson<{ written: Record<string, unknown>; created: boolean }>(res, "AI 提案写入失败。");
       },
     },
     connectStream(input) {
@@ -318,20 +334,6 @@
   }
 
   /**
-   * 提案卡确认后的写入统一走活动数据表运行时，复用手工编辑的字段规则、
-   * 最小 patch、RecordId·Date 编解码和结构化错误。
-   * 失败（含 PERMISSIONS 拒绝）返回中文错误，卡片保留可重试。
-   */
-  function writeProposalValues(proposal: RowPatchProposal | RecordWriteProposal) {
-    return async (values: Record<string, unknown>): Promise<RowPatchWriteResult> => {
-      if (proposal.type === "record-write-proposal") {
-        return editorStore.writeRecordProposal(proposal, values);
-      }
-      return editorStore.writeRecordPatch(proposal.sheetId, proposal.recordId, values);
-    };
-  }
-
-  /**
    * 仪表盘草稿卡的预览/保存：均以当前 workspace 的浏览器 SurrealDB 会话直连——
    * 预览执行 D3-02 编译出的只读聚合，保存走 D3-01 dashboard_page 写入路径
    * （PERMISSIONS 兜底，拒绝时中文错误，卡片保留可重试）。
@@ -356,11 +358,19 @@
    * 人工检索完成：先浏览器直连把 research_session 置 completed（幂等可重试），
    * 再用已保存资源 id resume workflow；resume 失败由 panel 显示 finishError 供重试。
    */
-  function finishResearchFor(messageId: string) {
+  function finishResearchFor(messageId: string, suspendKey?: string) {
     return async (input: { sessionId: string; runId?: string; resourceIds: string[] }): Promise<void> => {
       await completeResearchSession(getSurreal(), input.sessionId);
-      await session.finishResearch(messageId, input.resourceIds);
+      await session.finishResearch(messageId, input.resourceIds, suspendKey);
     };
+  }
+
+  /**
+   * 每张暂停卡的渲染键：`suspendKey`（本次暂停）优先，缺席时退回 `runId|kind`（老事件）。
+   * 不能只用 messageId+kind——同一 run 的第二次暂停会与第一次撞键，被 Svelte 当成同一节点复用。
+   */
+  function pendingIntentKey(pending: AiDrawerState["pendingIntents"][number]): string {
+    return pending.suspendKey ?? `${pending.runId}|${pending.kind}`;
   }
 
   function visiblePendingFor(messageId: string) {
@@ -534,13 +544,13 @@
               {/if}
             </article>
 
-            {#each visiblePendingFor(message.id) as pending (`${pending.messageId}-${pending.kind}`)}
+            {#each visiblePendingFor(message.id) as pending (pendingIntentKey(pending))}
               <div class="intent-card">
                 {#if pending.kind === "ambiguous-candidates"}
                   <span>选择一个结果</span>
                   <div class="candidate-list">
                     {#each pending.candidates ?? [] as candidate (candidate.id)}
-                      <button type="button" onclick={() => void session.chooseCandidate(pending.messageId, candidate.id)}>
+                      <button type="button" onclick={() => void session.chooseCandidate(pending.messageId, candidate.id, pending.suspendKey)}>
                         <strong>{candidate.label}</strong>
                         {#if candidate.summary}<small>{candidate.summary}</small>{/if}
                       </button>
@@ -550,7 +560,7 @@
                   <span>选择资料</span>
                   <div class="candidate-list">
                     {#each pending.candidates ?? [] as candidate (candidate.id)}
-                      <button type="button" onclick={() => void session.chooseCandidate(pending.messageId, candidate.id)}>
+                      <button type="button" onclick={() => void session.chooseCandidate(pending.messageId, candidate.id, pending.suspendKey)}>
                         <strong>{candidate.label}</strong>
                         {#if candidate.summary}<small>{candidate.summary}</small>{/if}
                       </button>
@@ -558,8 +568,8 @@
                   </div>
                 {:else if pending.kind === "authorization_changed"}
                   <span>{pending.authorizationChange?.message}</span>
-                  <button type="button" onclick={() => void session.continueResearch(pending.messageId, "research-retry")}>重新检索</button>
-                  <button type="button" onclick={() => void session.continueResearch(pending.messageId, "research-continue-current")}>继续当前合法材料</button>
+                  <button type="button" onclick={() => void session.continueResearch(pending.messageId, "research-retry", pending.suspendKey)}>重新检索</button>
+                  <button type="button" onclick={() => void session.continueResearch(pending.messageId, "research-continue-current", pending.suspendKey)}>继续当前合法材料</button>
                 {:else if pending.kind === "manual-research" && pending.research}
                   <ResearchPanel
                     sessionId={pending.research.sessionId}
@@ -567,27 +577,29 @@
                     query={pending.research.query}
                     resourceType={pending.research.resourceType}
                     recordId={editorUi.selectedRowId ?? undefined}
-                    finish={finishResearchFor(pending.messageId)}
+                    finish={finishResearchFor(pending.messageId, pending.suspendKey)}
                   />
                 {:else if pending.proposal}
                   <RowPatchCard
                     proposal={pending.proposal}
-                    write={writeProposalValues(pending.proposal)}
-                    resume={(decision) => session.resumeWrite(pending.messageId, decision.kind)}
+                    session={session}
+                    messageId={pending.messageId}
+                    suspendKey={pending.suspendKey}
+                    resume={(decision) => session.resumeWrite(pending.messageId, decision.kind, pending.suspendKey)}
                   />
                 {:else if pending.dashboardDraft}
                   <DashboardDraftCard
                     intent={pending.dashboardDraft}
                     preview={previewDashboardDraftFor(pending.dashboardDraft)}
                     save={saveDashboardDraftFor(pending.dashboardDraft)}
-                    resume={(decision) => session.resumeWrite(pending.messageId, decision.kind)}
+                    resume={(decision) => session.resumeWrite(pending.messageId, decision.kind, pending.suspendKey)}
                   />
                 {:else}
                   <!-- 防御性兜底：suspend 白名单外的未知 intent 正常不可达。若出现，给出明确文案与确认/拒绝入口，避免无按钮死卡。 -->
                   <span>收到了一项暂不支持在此确认的请求，已暂停等待你的决定。</span>
                   <div class="candidate-list">
-                    <button type="button" onclick={() => void session.resumeWrite(pending.messageId, "write-confirmed")}>继续</button>
-                    <button type="button" onclick={() => void session.resumeWrite(pending.messageId, "write-rejected")}>取消</button>
+                    <button type="button" onclick={() => void session.resumeWrite(pending.messageId, "write-confirmed", pending.suspendKey)}>继续</button>
+                    <button type="button" onclick={() => void session.resumeWrite(pending.messageId, "write-rejected", pending.suspendKey)}>取消</button>
                   </div>
                 {/if}
               </div>

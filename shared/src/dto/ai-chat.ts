@@ -236,7 +236,7 @@ const ProposalDropRecordSchema = z.object({
   reason: z.enum(["unknown-field", "ambiguous-label", "non-editable"]),
 });
 
-const RowPatchProposalSchema = z.object({
+export const RowPatchProposalSchema = z.object({
   type: z.literal("row-patch-proposal"),
   sheetId: z.string(),
   recordId: z.string(),
@@ -250,7 +250,7 @@ const RowPatchProposalSchema = z.object({
   dropped: z.array(ProposalDropRecordSchema).optional(),
 });
 
-const RecordWriteProposalSchema = z.object({
+export const RecordWriteProposalSchema = z.object({
   type: z.literal("record-write-proposal"),
   operation: z.enum(["create", "update"]),
   sheetId: z.string(),
@@ -372,12 +372,20 @@ export type AiProgressEvent =
 // router workflow 在 ambiguous 候选 / 写操作前需要暂停等待用户决策。
 // 暂停时主进程通过 webview.messages.aiSuspended 把 payload 推给 AI 抽屉；
 // 用户选择后通过 ai.resumeAiWorkflow request 触达，主进程拉起对应 run.resume()。
+//
+// `suspendKey` 标识「同一 run 的第几次暂停」（见 chat-write-fence 的 suspendPathKey）。
+// 它是三处共同的唯一基准：服务端 exactly-once 消费按它建栅栏行、前端卡片去重按它
+// 分辨不同 plan item 的暂停（而非 runId 级去重误吞）、recover 从持久态还原时按它与
+// stream 事件对齐。老 payload 无此字段时缺席，读取方按 runId 退化（旧数据兼容）。
 
 export const ResolvedRecordSchema = z.object({
   id: z.string().min(1),
   label: z.string().min(1),
 });
 export type ResolvedRecord = z.infer<typeof ResolvedRecordSchema>;
+
+/** 一次 suspend 的路径键：`<stepId>#<iteration>`，由 shared/chat-write-fence 生成。 */
+export const SuspendKeySchema = z.string().min(1);
 
 export type CandidateOption = {
   id: string;
@@ -400,6 +408,7 @@ const CandidateOptionSchema = z.object({
 const AmbiguousCandidatesEventSchema = z.object({
   kind: z.literal("ambiguous-candidates"),
   runId: z.string(),
+  suspendKey: SuspendKeySchema.optional(),
   candidates: z.array(CandidateOptionSchema),
   truncated: z.boolean().optional(),
 });
@@ -407,6 +416,7 @@ const AmbiguousCandidatesEventSchema = z.object({
 const ResourceCandidatesEventSchema = z.object({
   kind: z.literal("resource-candidates"),
   runId: z.string(),
+  suspendKey: SuspendKeySchema.optional(),
   candidates: z.array(CandidateOptionSchema),
   truncated: z.boolean().optional(),
 });
@@ -414,6 +424,7 @@ const ResourceCandidatesEventSchema = z.object({
 const ManualResearchEventSchema = z.object({
   kind: z.literal("manual-research"),
   runId: z.string(),
+  suspendKey: SuspendKeySchema.optional(),
   sessionId: z.string(),
   workspaceId: z.string(),
   query: z.string(),
@@ -423,6 +434,7 @@ const ManualResearchEventSchema = z.object({
 const AwaitWriteConfirmEventSchema = z.object({
   kind: z.literal("await-write-confirm"),
   runId: z.string(),
+  suspendKey: SuspendKeySchema.optional(),
   intent: AiStructuredIntentSchema,
 });
 
@@ -445,6 +457,7 @@ export type AiDeliveryProof = {
 const AuthorizationChangedEventSchema = z.object({
   kind: z.literal("authorization_changed"),
   runId: z.string(),
+  suspendKey: SuspendKeySchema.optional(),
   query: z.string(),
   message: z.string(),
   restart: z.boolean().optional(),
