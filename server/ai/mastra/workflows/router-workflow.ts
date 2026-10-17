@@ -16,7 +16,7 @@ import type {
   ResumeDecision,
   WorkflowSuspendedEvent,
 } from "@surreal-ck/shared";
-import { AiContextSnapshotSchema, ResolvedRecordSchema, ResearchAuthorizationSchema, ResumeDecisionSchema } from "@surreal-ck/shared";
+import { AiContextSnapshotSchema, ResolvedRecordSchema, ResearchAuthorizationSchema, ResumeDecisionSchema, suspendPathKey } from "@surreal-ck/shared";
 import {
   classifyTask,
   normalizeRouterCategory,
@@ -28,6 +28,7 @@ import {
 import type { DecisionCaller } from "../../decision/model";
 import type { ContentResearchWindow } from "../../../src/research/window";
 import { callerRunDiagnostics } from "../../../src/ai/caller-session";
+import { registerSuspendFence, type SuspendFenceKind } from "../../../src/ai/write-fence";
 import { AiRunCancelledError, outcomeForError } from "../../../src/ai/run-diagnostics";
 
 export const ROUTER_WORKFLOW_ID = "routerWorkflow";
@@ -308,6 +309,15 @@ const RouterStateSchema = z.object({
   steps: z.array(RouterStepResultSchema).default([]),
   cancelled: z.boolean().default(false),
   userContext: AiContextSnapshotSchema.optional(),
+  /**
+   * PG-1：本 run 已发生的 suspend 次数（单调递增，跨 resume 保留）。
+   *
+   * suspend 路径键必须**逐次暂停唯一**而非按 plan item：同一个 plan item 在 resume 后
+   * 可能再次 suspend（例如研究授权变化后重问），若键只按 cursor 生成，第二次暂停会撞上
+   * 已消费的那一行，栅栏永不重开 → 卡片永久无法确认。计数器随 workflow state 持久化，
+   * 因此「同一次暂停」在 stream 与 recover 两侧算出的键恒等。
+   */
+  suspendSeq: z.number().int().nonnegative().default(0),
 });
 /** 运行时已被 schema default 兜底的状态形状（去除可选）。 */
 type RouterState = {
@@ -317,6 +327,7 @@ type RouterState = {
   steps: RouterStepResult[];
   cancelled: boolean;
   userContext?: AiContextSnapshot;
+  suspendSeq: number;
 };
 
 const RouterWorkflowInputSchema = z.object({
@@ -328,16 +339,33 @@ const RouterWorkflowOutputSchema = z.object({
   finalText: z.string(),
 });
 
+/**
+ * 共享字段 `suspendKey`：一次暂停的稳定标识（`<stepId>#<cursor>`）。
+ *
+ * PG-1 写栅栏的共同基准，三处共用同一处来源：
+ * - 落进 suspendPayload（Mastra 持久化在 `workflow_run.state.context` 的 suspended 结果里）；
+ * - 注册 `chat_write_fence` 栅栏行时作唯一键；
+ * - stream 的 `WorkflowSuspendedEvent` 与 recover 还原出来的事件都带它。
+ *
+ * 前端所有 `runtime.onSuspend?.({...})` 调用点因此不再各自计算——由
+ * `suspendGuarded` 在真挂起前统一补齐，杜绝「事件里的键」与「持久化里的键」不一致。
+ */
+const SuspendKeyFieldSchema = z.object({
+  suspendKey: z.string().min(1).describe("`<stepId>#<cursor>`，PG-1 写栅栏与前端去重的唯一基准"),
+});
+
 const SuspendPayloadSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("authorization_changed"), query: z.string(), authorization: ResearchAuthorizationSchema,
-    resourceIds: z.array(z.string()) }),
-  z.object({
+  SuspendKeyFieldSchema.extend({
+    kind: z.literal("authorization_changed"), query: z.string(), authorization: ResearchAuthorizationSchema,
+    resourceIds: z.array(z.string()),
+  }),
+  SuspendKeyFieldSchema.extend({
     kind: z.literal("ambiguous"),
     /** 留存完整候选（可能 > 20）以便 resolve 时按 candidateId 还原 label */
     candidates: z.array(z.object({ id: z.string(), label: z.string() })),
     truncated: z.boolean().optional(),
   }),
-  z.object({
+  SuspendKeyFieldSchema.extend({
     kind: z.literal("resource-candidates"),
     authorization: ResearchAuthorizationSchema.optional(),
     candidates: z.array(z.object({
@@ -350,19 +378,35 @@ const SuspendPayloadSchema = z.discriminatedUnion("kind", [
     })),
     truncated: z.boolean().optional(),
   }),
-  z.object({
+  SuspendKeyFieldSchema.extend({
     kind: z.literal("manual-research"),
     sessionId: z.string(),
     workspaceId: z.string(),
     query: z.string(),
     resourceType: z.string(),
   }),
-  z.object({
+  SuspendKeyFieldSchema.extend({
     kind: z.literal("await-write-confirm"),
     /** 用 unknown 容纳 AiStructuredIntent；运行时由 caller 校验 */
     intent: z.unknown(),
   }),
 ]);
+
+type SuspendPayload = z.infer<typeof SuspendPayloadSchema>;
+/** union 的 keyof 语义：只有所有分支共有的键才是可选键（否则会误放宽分支独有字段）。 */
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+/** stream 事件：kind 之外的全部字段 + runId 由 suspendGuarded 统一补。 */
+type SuspendEventInput = DistributiveOmit<WorkflowSuspendedEvent, "suspendKey" | "runId">;
+/** suspendPayload.kind → chat_write_fence.suspend_kind（DB 列有 ASSERT 白名单）。 */
+const FENCE_KIND_BY_SUSPEND = {
+  "await-write-confirm": "await-write-confirm",
+  ambiguous: "ambiguous",
+  "resource-candidates": "resource-candidates",
+  "manual-research": "manual-research",
+  authorization_changed: "authorization_changed",
+} as const satisfies Record<SuspendPayload["kind"], SuspendFenceKind>;
+const executeStepId = "execute-one";
+const finalizeStepId = "finalize";
 
 const CATEGORY_TO_AGENT_NAME: Record<RouterCategory, string> = {
   navigation: "navigationAgent",
@@ -488,10 +532,31 @@ export function createRouterWorkflow() {
       const state = ctx.state as RouterState;
       const runtime = getRuntime(requestContext);
       const guardAbort = () => throwIfAborted(ctx.abortSignal);
-      /** 取消后不再 suspend/setState：先 guard 再落 Mastra 挂起态。 */
-      const suspendGuarded = async (payload: z.infer<typeof SuspendPayloadSchema>) => {
+      /**
+       * 唯一的 suspend 出口（PG-1 栅栏的挂载点）。
+       *
+       * 顺序：guard 取消 → 落 `suspendSeq` 进持久态 → 建 pending 栅栏行 → 推 stream 事件
+       * → 真挂起。三处必须同键：`setState` 写的是 workflow state（resume 后仍可见），
+       * 栅栏行的 `suspend_path` 是 exactly-once 消费的唯一键，stream 事件是前端去重粒度。
+       * 栅栏注册失败不阻断挂起——确认卡由前端渲染，写入时的服务端判定才是强约束。
+       */
+      const suspendGuarded = async (
+        payload: DistributiveOmit<SuspendPayload, "suspendKey">,
+        event: SuspendEventInput,
+      ) => {
         guardAbort();
-        await suspend(payload);
+        const suspendKey = suspendPathKey(executeStepId, state.suspendSeq);
+        await setState({ ...state, suspendSeq: state.suspendSeq + 1 });
+        await registerSuspendFence(runtime.surrealSession, {
+          runId: runtime.runId,
+          suspendKey,
+          kind: FENCE_KIND_BY_SUSPEND[payload.kind],
+        }).catch(() => {
+          // 建栅栏失败 = 服务端写端点会以「未命中」具名拒绝本次确认；宁可用户看见拒绝，
+          // 也不在没有栅栏的情况下放行直写。挂起本身不受影响。
+        });
+        runtime.onSuspend?.({ ...event, runId: runtime.runId, suspendKey });
+        await suspend({ ...payload, suspendKey });
       };
 
       // —— Resume 分支：消化用户决策 ——
@@ -526,10 +591,9 @@ export function createRouterWorkflow() {
           const selected = decision.kind === "resource-candidates-chosen" || decision.kind === "manual-research-completed" ? decision.resourceIds
             : sus.kind === "authorization_changed" && decision.kind === "research-continue-current" ? sus.resourceIds : [];
           if (sus.kind === "resource-candidates" && selected.some(id => !sus.candidates.some(c => c.id === id))) {
-            runtime.onSuspend?.({ kind: "authorization_changed", runId: runtime.runId, query: item.taskText,
-              message: "所选候选不属于当前运行，请重新检索。" });
             await suspendGuarded({ kind: "authorization_changed", query: item.taskText, resourceIds: [],
-              authorization: sus.authorization ?? { workspaceId: "", kind: "unavailable" } });
+              authorization: sus.authorization ?? { workspaceId: "", kind: "unavailable" } },
+            { kind: "authorization_changed", query: item.taskText, message: "所选候选不属于当前运行，请重新检索。" });
             return { plan: inputData.plan };
           }
           const allowed = (sus.kind === "resource-candidates" && ["resource-candidates-chosen", "resource-candidates-manual-research"].includes(decision.kind))
@@ -552,12 +616,10 @@ export function createRouterWorkflow() {
           guardAbort();
           if (out.suspend) {
             if (out.suspend.kind === "authorization_changed") {
-              runtime.onSuspend?.({ kind: "authorization_changed", runId: runtime.runId, query: item.taskText,
+              await suspendGuarded(out.suspend, { kind: "authorization_changed", query: item.taskText,
                 message: "授权或材料可用性已变化。请重新检索，或继续使用当前合法材料。" });
-              await suspendGuarded(out.suspend);
             } else if (out.suspend.kind === "resource-candidates") {
-              runtime.onSuspend?.({ kind: "resource-candidates", runId: runtime.runId, candidates: out.suspend.candidates });
-              await suspendGuarded(out.suspend);
+              await suspendGuarded(out.suspend, { kind: "resource-candidates", candidates: out.suspend.candidates });
             } else throw new Error("无法恢复研究步骤");
             return { plan: inputData.plan };
           }
@@ -703,47 +765,34 @@ export function createRouterWorkflow() {
         });
 
         if (out.suspend.kind === "authorization_changed") {
-          runtime.onSuspend?.({ kind: "authorization_changed", runId: runtime.runId, query: out.suspend.query,
+          await suspendGuarded(out.suspend, { kind: "authorization_changed", query: out.suspend.query,
             message: "授权已变化。请重新检索，或继续使用当前合法材料。" });
-          await suspendGuarded(out.suspend);
           return { plan: inputData.plan };
         }
         if (out.suspend.kind === "ambiguous") {
           const all = out.suspend.candidates;
           const exposed = all.slice(0, AMBIGUOUS_CANDIDATES_LIMIT);
           const truncated = all.length > AMBIGUOUS_CANDIDATES_LIMIT;
-          runtime.onSuspend?.({
-            kind: "ambiguous-candidates",
-            runId: runtime.runId,
-            candidates: exposed,
-            truncated,
-          });
-          await suspendGuarded({ kind: "ambiguous", candidates: all, truncated });
+          await suspendGuarded({ kind: "ambiguous", candidates: all, truncated },
+            { kind: "ambiguous-candidates", candidates: exposed, ...(truncated ? { truncated } : {}) });
           return { plan: inputData.plan };
         }
         if (out.suspend.kind === "resource-candidates") {
           const all = out.suspend.candidates;
           const exposed = all.slice(0, AMBIGUOUS_CANDIDATES_LIMIT);
           const truncated = all.length > AMBIGUOUS_CANDIDATES_LIMIT;
-          runtime.onSuspend?.({
-            kind: "resource-candidates",
-            runId: runtime.runId,
-            candidates: exposed,
-            truncated,
-          });
-          await suspendGuarded({ kind: "resource-candidates", candidates: all, truncated, authorization: out.suspend.authorization });
+          await suspendGuarded({ kind: "resource-candidates", candidates: all, truncated, authorization: out.suspend.authorization },
+            { kind: "resource-candidates", candidates: exposed, ...(truncated ? { truncated } : {}) });
           return { plan: inputData.plan };
         }
         if (out.suspend.kind === "manual-research") {
-          runtime.onSuspend?.({
+          await suspendGuarded({
             kind: "manual-research",
-            runId: runtime.runId,
             sessionId: out.suspend.sessionId,
             workspaceId: out.suspend.workspaceId,
             query: out.suspend.query,
             resourceType: out.suspend.resourceType,
-          });
-          await suspendGuarded({
+          }, {
             kind: "manual-research",
             sessionId: out.suspend.sessionId,
             workspaceId: out.suspend.workspaceId,
@@ -753,12 +802,8 @@ export function createRouterWorkflow() {
           return { plan: inputData.plan };
         }
         if (out.suspend.kind === "await-write-confirm") {
-          runtime.onSuspend?.({
-            kind: "await-write-confirm",
-            runId: runtime.runId,
-            intent: out.suspend.intent,
-          });
-          await suspendGuarded({ kind: "await-write-confirm", intent: out.suspend.intent });
+          await suspendGuarded({ kind: "await-write-confirm", intent: out.suspend.intent },
+            { kind: "await-write-confirm", intent: out.suspend.intent });
           return { plan: inputData.plan };
         }
       }
@@ -810,10 +855,21 @@ export function createRouterWorkflow() {
               signal: ctx.abortSignal }));
           throwIfAborted(ctx.abortSignal);
           if (out.suspend) {
-            runtime.onSuspend?.({ kind: "authorization_changed", runId: runtime.runId, query: step.taskText,
-              message: "之前的研究授权或材料已变化。请重新检索或使用当前合法材料。" });
+            // 与 executeStep 同一挂载点：键落持久态 + 建栅栏 + 带键推事件（finalize 的键按
+            // stepId 区分，序号仍取 run 内全局递增的 suspendSeq，两步不会撞键）。
             throwIfAborted(ctx.abortSignal);
-            await ctx.suspend({ kind: "authorization_changed", query: step.taskText,
+            const suspendKey = suspendPathKey(finalizeStepId, state.suspendSeq);
+            await ctx.setState({ ...state, suspendSeq: state.suspendSeq + 1 });
+            await registerSuspendFence(runtime.surrealSession, {
+              runId: runtime.runId,
+              suspendKey,
+              kind: FENCE_KIND_BY_SUSPEND.authorization_changed,
+            }).catch(() => {
+              // 同 executeStep：栅栏缺失时确认会被具名拒绝，不放行直写。
+            });
+            runtime.onSuspend?.({ kind: "authorization_changed", runId: runtime.runId, suspendKey, query: step.taskText,
+              message: "之前的研究授权或材料已变化。请重新检索或使用当前合法材料。" });
+            await ctx.suspend({ suspendKey, kind: "authorization_changed", query: step.taskText,
               authorization: out.researchAuthorization ?? step.researchAuthorization, resourceIds: step.selectedResourceIds ?? [] });
             return { steps: state.steps, finalText: "" };
           }

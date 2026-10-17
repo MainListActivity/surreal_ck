@@ -401,7 +401,14 @@ describe("router workflow suspend & resume", () => {
     const llm: RouterLlmCaller = async () =>
       '[{"category":"row-analysis","taskText":"提出补全建议"}]';
     let businessQueries = 0;
-    const businessSession = { query: async () => { businessQueries += 1; return [[]]; } } as never;
+    // 栅栏行（PG-1 的 chat_write_fence）不是业务写：它只标记「这次暂停待确认」，
+    // 用户确认前不得触碰任何业务表才是本测试要钉的不变量。
+    const seenSql: string[] = [];
+    const businessSession = { query: async (sql: string) => {
+      seenSql.push(sql);
+      if (!sql.includes("chat_write_fence")) businessQueries += 1;
+      return [[]];
+    } } as never;
     const proposal = {
       type: "record-write-proposal" as const,
       operation: "create" as const,
@@ -447,9 +454,15 @@ describe("router workflow suspend & resume", () => {
     const result = await run.start({ inputData: { text: "提出补全建议" }, requestContext: rc });
 
     expect(result.status).toBe("suspended");
+    // 确认前零业务写；栅栏行已建，且键与公开事件一致。
     expect(businessQueries).toBe(0);
+    expect(seenSql.filter((sql) => sql.includes("chat_write_fence")).length).toBeGreaterThan(0);
     expect(WorkflowSuspendedEventSchema.safeParse(events[0]).success).toBe(true);
-    expect(events[0]).toMatchObject({ kind: "await-write-confirm", intent: proposal });
+    expect(events[0]).toMatchObject({
+      kind: "await-write-confirm",
+      suspendKey: expect.stringMatching(/^execute-one#\d+$/),
+      intent: proposal,
+    });
   });
 
   test("resume 写入 confirmed.resolvedRecord 前经过 zod 校验：候选 label 缺失则视为取消", async () => {

@@ -76,6 +76,7 @@ describe("loadSuspendedRunDecision", () => {
     expect(decision?.suspended).toEqual({
       kind: "await-write-confirm",
       runId: "run-1",
+      suspendKey: "execute-one#0",
       intent: proposal,
     });
     // owner 谓词随调用者 session 生效，防跨用户读他人 run。
@@ -100,6 +101,7 @@ describe("loadSuspendedRunDecision", () => {
     expect(decision?.suspended).toEqual({
       kind: "ambiguous-candidates",
       runId: "run-9",
+      suspendKey: "execute-one#0",
       candidates: [{ id: "r:1", label: "A" }],
       truncated: undefined,
     });
@@ -127,5 +129,66 @@ describe("loadSuspendedRunDecision", () => {
   test("调用者不可见 / 不存在的 run：返回 undefined", async () => {
     const session = makeSession(undefined);
     expect(await loadSuspendedRunDecision(session as never, "run-x")).toBeUndefined();
+  });
+});
+
+describe("PG-1：recover 还原的卡必须带与原 stream 事件同一个 suspendKey", () => {
+  function makeSession(row: unknown) {
+    const calls: Array<{ sql: string; params?: Record<string, unknown> }> = [];
+    return {
+      calls,
+      async query(sql: string, params?: Record<string, unknown>) {
+        calls.push({ sql, params });
+        return [row ? [row] : []];
+      },
+    };
+  }
+
+  function stateWith(payload: Record<string, unknown>, index = 0) {
+    return {
+      suspendedPaths: { "execute-one": [index] },
+      context: {
+        "execute-one": {
+          status: "suspended",
+          suspendPayload: payload,
+          suspendedAt: 1,
+          foreachIndex: index,
+        },
+      },
+    };
+  }
+
+  test("payload 带 suspendKey 时原样带出（与服务端栅栏行、stream 事件同键）", async () => {
+    const session = makeSession({
+      status: "suspended",
+      state: stateWith({ kind: "await-write-confirm", suspendKey: "execute-one#3", intent: proposal }),
+    });
+    const decision = await loadSuspendedRunDecision(session as never, "run-1");
+    expect(decision?.suspended?.suspendKey).toBe("execute-one#3");
+  });
+
+  test("同一 run 的第二次暂停还原出的是第二个键（不会被第一张卡吞掉）", async () => {
+    const session = makeSession({
+      status: "suspended",
+      state: stateWith({ kind: "resource-candidates", suspendKey: "execute-one#1", candidates: [] }, 1),
+    });
+    const decision = await loadSuspendedRunDecision(session as never, "run-1");
+    expect(decision?.suspended?.kind).toBe("resource-candidates");
+    expect(decision?.suspended?.suspendKey).toBe("execute-one#1");
+  });
+
+  test("老快照无 suspendKey：退化出按游标的键，仍可提交决策", async () => {
+    const session = makeSession({
+      status: "suspended",
+      state: stateWith({ kind: "manual-research", sessionId: "s", workspaceId: "w", query: "q", resourceType: "r" }, 2),
+    });
+    const decision = await loadSuspendedRunDecision(session as never, "run-1");
+    expect(decision?.suspended?.suspendKey).toBe("execute-one#2");
+  });
+
+  test("run 已非 suspended：只回状态，不还原卡片", async () => {
+    const session = makeSession({ status: "success", state: null });
+    const decision = await loadSuspendedRunDecision(session as never, "run-1");
+    expect(decision).toEqual({ status: "success" });
   });
 });

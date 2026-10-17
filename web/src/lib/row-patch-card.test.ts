@@ -22,7 +22,7 @@ function proposal(over: Partial<RowPatchProposal> = {}): RowPatchProposal {
 
 function cardHarness(input: {
   proposal?: ConfirmableRecordProposal;
-  write?: (values: Record<string, unknown>) => Promise<{ ok: true } | { ok: false; message: string }>;
+  write?: (values: Record<string, unknown>) => Promise<{ ok: true } | { ok: false; message: string; stale?: boolean }>;
   resume?: (decision: { kind: "write-confirmed" | "write-rejected" }) => Promise<void>;
 } = {}) {
   const writes: Array<Record<string, unknown>> = [];
@@ -165,6 +165,41 @@ describe("行分析提案卡状态机", () => {
     expect(writes).toHaveLength(1);
     expect(card.snapshot().status).toBe("done");
   });
+
+  test("resume 撞到具名栅栏 409（另一实例已落定）：标 stale 终态、不可重试、不再发请求", async () => {
+    const fenceError = Object.assign(new Error("这项确认已被处理，本次没有写入任何数据。"), {
+      code: "chat-write-fence-consumed",
+    });
+    const { card, resumes, writes } = cardHarness({
+      resume: async () => { throw fenceError; },
+    });
+
+    await card.confirm();
+    // 写已提交（服务端事务），resume 被拒 → 卡片是 stale 终态而非 error。
+    expect(writes).toHaveLength(1);
+    expect(card.snapshot().status).toBe("stale");
+    expect(card.snapshot().error).toBe("这项确认已被处理，本次没有写入任何数据。");
+
+    // stale 终态：confirm / rejectAll 都不再发任何请求。
+    await card.confirm();
+    await card.rejectAll();
+    expect(writes).toHaveLength(1);
+    expect(resumes).toEqual([]);
+    expect(card.snapshot().status).toBe("stale");
+  });
+
+  test("resume 的非栅栏错误仍是可重试 error 态", async () => {
+    let failResume = true;
+    const { card } = cardHarness({
+      resume: async () => {
+        if (failResume) { failResume = false; throw Object.assign(new Error("网络断"), { code: "stream-timeout" }); }
+      },
+    });
+    await card.confirm();
+    expect(card.snapshot().status).toBe("error");
+    await card.confirm();
+    expect(card.snapshot().status).toBe("done");
+  });
 });
 
 describe("重复 field 折叠写入防护（上游归一后同 key 多条）", () => {
@@ -291,5 +326,70 @@ describe("formatRowPatchValue — 卡片值展示", () => {
     expect(formatRowPatchValue(["ent_party:a", "ent_party:b"])).toBe("ent_party:a、ent_party:b");
     expect(formatRowPatchValue({ a: 1 })).toBe('{"a":1}');
     expect(formatRowPatchValue("已确认")).toBe("已确认");
+  });
+});
+
+describe("PG-1：stale 终态——服务端具名拒绝后零写入、不再可重试", () => {
+  test("具名拒绝 → stale 终态，不显示成可重试的 error", async () => {
+    const h = cardHarness({
+      write: async () => ({ ok: false, message: "这项确认已被处理，本次没有写入任何数据。", stale: true }),
+    });
+
+    await h.card.confirm();
+
+    expect(h.card.snapshot().status).toBe("stale");
+    expect(h.card.snapshot().error).toBe("这项确认已被处理，本次没有写入任何数据。");
+    // 未 resume：run 状态不推进。
+    expect(h.resumes).toHaveLength(0);
+  });
+
+  test("stale 终态下再次 confirm 是 no-op（重试在服务端语义上不可能成功）", async () => {
+    let writeCalls = 0;
+    const h = cardHarness({
+      write: async () => {
+        writeCalls += 1;
+        return { ok: false, message: "该次 AI 运行已结束，本次没有写入任何数据。", stale: true };
+      },
+    });
+
+    await h.card.confirm();
+    await h.card.confirm();
+    await h.card.confirm();
+
+    expect(writeCalls).toBe(1);
+    expect(h.card.snapshot().status).toBe("stale");
+  });
+
+  test("stale 后不可再切换勾选或全部忽略", async () => {
+    const h = cardHarness({
+      write: async () => ({ ok: false, message: "已处理", stale: true }),
+    });
+
+    await h.card.confirm();
+    h.card.setAccepted(0, false);
+    await h.card.rejectAll();
+
+    expect(h.card.snapshot().status).toBe("stale");
+    expect(h.resumes).toHaveLength(0);
+    expect(h.card.snapshot().fields[0]?.accepted).toBe(true);
+  });
+
+  test("非 stale 的写失败仍是可重试的 error 态", async () => {
+    let attempts = 0;
+    const h = cardHarness({
+      write: async () => {
+        attempts += 1;
+        return attempts === 1
+          ? { ok: false, message: "记录未通过字段校验" }
+          : { ok: true };
+      },
+    });
+
+    await h.card.confirm();
+    expect(h.card.snapshot().status).toBe("error");
+
+    await h.card.confirm();
+    expect(h.card.snapshot().status).toBe("done");
+    expect(attempts).toBe(2);
   });
 });

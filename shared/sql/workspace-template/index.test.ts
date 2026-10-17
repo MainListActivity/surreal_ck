@@ -626,7 +626,7 @@ describe("workspace template scripts", () => {
     const migration = scripts.find((script) => script.name === "055-claims-reconciliation-finding.surql");
 
     expect(migration?.version).toBe(55);
-    expect(WORKSPACE_TEMPLATE_VERSION).toBe(57);
+    expect(WORKSPACE_TEMPLATE_VERSION).toBe(58);
     const sql = migration?.sql ?? "";
     expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS reconciliation_finding SCHEMAFULL/);
     expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS claim_supplement SCHEMAFULL/);
@@ -648,5 +648,29 @@ describe("workspace template scripts", () => {
     );
     // 纯增量字段，不改写/删除已有数据。
     expect(sql).not.toMatch(/UPDATE |DELETE |REMOVE |OVERWRITE/i);
+  });
+
+  test("PG-1：058 建 chat_write_fence 提案写栅栏表（纯新增结构）", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.name === "058-chat-write-fence.surql");
+
+    expect(migration?.version).toBe(58);
+    const sql = migration?.sql ?? "";
+    expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS chat_write_fence SCHEMAFULL/);
+    // owner_user 是写栅栏的身份边界：只能读写自己的行，且禁用身份无栅栏。
+    expect(sql).toMatch(/owner_user ON chat_write_fence TYPE record<user> DEFAULT fn::current_user\(\) READONLY/);
+    expect(sql).toMatch(/FOR select, create, update WHERE owner_user = fn::current_user\(\)/);
+    // 删除一律禁止：已消费的栅栏行必须留作审计与幂等依据。
+    expect(sql).toMatch(/FOR delete NONE/);
+    // (run_id, suspend_path) 唯一 = exactly-once 消费键；同一次 suspend 跨标签页只有一行。
+    expect(sql).toMatch(
+      /DEFINE INDEX IF NOT EXISTS chat_write_fence_suspend_unique ON chat_write_fence COLUMNS run_id, suspend_path UNIQUE/,
+    );
+    expect(sql).toMatch(/DEFINE INDEX IF NOT EXISTS chat_write_fence_owner_status ON chat_write_fence COLUMNS owner_user, status/);
+    // status 白名单 + suspend_kind 白名单：消费判定只认 pending。
+    expect(sql).toMatch(/\$value INSIDE \["pending", "consumed", "resumed", "abandoned"\]/);
+    expect(sql).toMatch(/\$value INSIDE \["await-write-confirm", "ambiguous", "resource-candidates", "manual-research", "authorization_changed"\]/);
+    // 纯新增：没有任何改写或删除已有数据的语句。
+    expect(sql).not.toMatch(/^\s*(UPDATE|DELETE|REMOVE|OVERWRITE)\b/im);
   });
 });

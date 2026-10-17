@@ -21,6 +21,21 @@ import { ChatDeliveryStore, authorizeDelivery, requestDigest, type DeliveryPlatf
 import { callerRunDiagnostics, sessionForPhase } from "../ai/caller-session";
 import { boundedAwait } from "../ai/run-diagnostics";
 import { loadSuspendedRunDecision } from "../ai/suspend-recovery";
+import {
+  CHAT_WRITE_FENCE_ERRORS,
+  claimSuspendDecision,
+  consumeSuspendAndWrite,
+  fenceRejected,
+  isRunTerminal,
+  loadRunFenceState,
+  releaseSuspendDecision,
+} from "../ai/write-fence";
+import { proposalWriteTargetFrom, writeProposalValues } from "../ai/proposal-write";
+import {
+  AiStructuredIntentSchema,
+  type RecordWriteProposal,
+  type RowPatchProposal,
+} from "@surreal-ck/shared";
 import type { AiDeliveryProof, ChatStreamEvent, SessionUser, WorkflowSuspendedEvent } from "@surreal-ck/shared";
 import type { RunRegistry } from "../ai/run-registry";
 import { createRolloutGateChecker, type RolloutGateChecker } from "../rollout/gate-check";
@@ -108,7 +123,7 @@ async function closeCallerSessionQuietly(session: Surreal): Promise<void> {
   }
 }
 
-const resumeDecisionJson = validator("json", (value: { decision?: unknown }, c) => {
+const resumeDecisionJson = validator("json", (value: { decision?: unknown; suspendKey?: unknown }, c) => {
   const parsed = ResumeAiWorkflowRequestSchema.safeParse({
     runId: c.req.param("runId"),
     decision: value?.decision,
@@ -116,9 +131,11 @@ const resumeDecisionJson = validator("json", (value: { decision?: unknown }, c) 
   if (!parsed.success) {
     throw new HttpError(400, "chat-resume-invalid", "resume payload is invalid", parsed.error.flatten());
   }
+  const suspendKey = typeof value?.suspendKey === "string" && value.suspendKey ? value.suspendKey : undefined;
   return {
     runId: parsed.data.runId,
     decision: parsed.data.decision as ResumeDecision,
+    ...(suspendKey ? { suspendKey } : {}),
   };
 });
 
@@ -322,6 +339,8 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
     runId: string;
     decision: ResumeDecision;
     user: AppBindings["Variables"]["user"];
+    /** 调用方声明的 suspend 路径键；缺席时由持久态推导当前挂起的那次暂停。 */
+    suspendKey?: string;
   }): Promise<{ runId: string; streamUrl: string; streamToken: string; result?: Extract<ChatStreamEvent, { kind: "done" }> }> {
     const { runId, decision, user } = input;
     const known = deps.registry.get(runId);
@@ -331,12 +350,29 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
     // 内存 registry 只负责 stream；运行归属和并发窗口由当前 workspace 的持久化记录决定。
     const session = await signIn(user.rawToken);
     let release: (() => Promise<void>) | undefined;
+    let fenceClaim: { claimed: boolean; prevStatus?: string } | undefined;
+    let suspendKeyForClaim: string | undefined;
     try {
+      const runState = await loadRunFenceState(session, runId);
+      const suspendKey = input.suspendKey ?? runState?.suspendKey;
+      suspendKeyForClaim = suspendKey;
       const delivered = await deps.deliveries?.find(session, runId);
       if (delivered?.status === "complete") {
         const recovered = await recoverRun(session, runId, user);
         await closeCallerSessionQuietly(session);
         return recovered;
+      }
+      // PG-1 栅栏：resume 前先原子认领这次 suspend 的决策位（pending → resumed，
+      // 或写已落库的 consumed → resumed 仅限 write-confirmed）。已 resumed / 已消费 /
+      // run 终态一律具名 409，不静默成功、不推进任何状态；恢复卡 / 第二标签页的重复
+      // 决策在这里被挡掉。delivered-complete 的恢复路径先行返回，不参与认领。
+      if (suspendKey) {
+        fenceClaim = await claimSuspendDecision(session, {
+          runId,
+          suspendKey,
+          decision: decision.kind,
+          runStatus: runState?.status,
+        });
       }
       release = await claimResumeWindow(session, runId);
       const resumeDb = workspaceDb(user);
@@ -360,12 +396,86 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
         onResult: hooks?.onResult, onTerminal }));
       return { runId, streamUrl: `/api/chat/stream?runId=${runId}`, streamToken };
     } catch (error) {
+      // resume 投递失败：认领过的决策位回滚到原状态（pending/consumed），卡片可重试；
+      // 不回滚会让一次瞬时失败把这次 suspend 永久锁死在 resumed。
+      if (fenceClaim?.claimed && suspendKeyForClaim) {
+        await releaseSuspendDecision(session, {
+          runId,
+          suspendKey: suspendKeyForClaim,
+          decision: decision.kind,
+          prevStatus: fenceClaim.prevStatus,
+        }).catch(() => undefined);
+      }
       await release?.();
       await closeCallerSessionQuietly(session);
       throw error;
     }
 
   }
+
+  /**
+   * PG-1 写栅栏端点：提案确认写在**调用者身份**的同一事务内完成
+   * 「消费该 suspend + 落业务数据」，首次确认原子消费，后续任何实例
+   * （恢复卡 / 第二标签页 / 回放流）具名幂等拒绝，零写入、零状态推进。
+   *
+   * 拒绝在事务内以「UPDATE 未命中」判定后回滚，不依赖任何客户端内存标志；
+   * 写失败同样回滚，消费随之撤销，卡片可重试。
+   */
+  async function confirmProposalWrite(input: {
+    runId: string;
+    suspendKey: string;
+    intent: unknown;
+    values: Record<string, unknown>;
+    user: AppBindings["Variables"]["user"];
+  }): Promise<{ written: Record<string, unknown>; created: boolean }> {
+    const parsed = AiStructuredIntentSchema.safeParse(input.intent);
+    if (!parsed.success || (parsed.data.type !== "row-patch-proposal" && parsed.data.type !== "record-write-proposal")) {
+      throw new HttpError(422, "chat-write-invalid-intent", "提案内容无法识别，请重新发起 AI 分析。");
+    }
+    const runState = await (async () => {
+      const session = await signIn(input.user.rawToken);
+      try {
+        return await loadRunFenceState(session, input.runId);
+      } finally {
+        await closeCallerSessionQuietly(session);
+      }
+    })();
+    if (!runState) throw new HttpError(403, "chat-run-forbidden", "当前身份不能确认该次运行");
+    if (isRunTerminal(runState.status)) throw fenceRejected(CHAT_WRITE_FENCE_ERRORS.runEnded);
+    // 只允许确认「当前挂着的那次 suspend」：键对不上说明该 suspend 已被后续决策推进
+    // （或客户端拿的是陈旧/伪造键），一律具名拒绝，不落在任何残留 pending 行上。
+    if (runState.suspendKey && runState.suspendKey !== input.suspendKey) {
+      throw fenceRejected(CHAT_WRITE_FENCE_ERRORS.notPending);
+    }
+
+    const session = await signIn(input.user.rawToken);
+    try {
+      return await consumeSuspendAndWrite(session, {
+        runId: input.runId,
+        suspendKey: input.suspendKey,
+        decision: "write-confirmed",
+        runStatus: runState.status,
+        work: (tx) => writeProposalValues(tx, {
+          target: proposalWriteTargetFrom(parsed.data as RowPatchProposal | RecordWriteProposal),
+          values: input.values,
+        }),
+      });
+    } finally {
+      await closeCallerSessionQuietly(session);
+    }
+  }
+
+  const proposalWriteJson = validator("json", (value: unknown) => {
+    const body = value as { suspendKey?: unknown; intent?: unknown; values?: unknown } | null;
+    const suspendKey = typeof body?.suspendKey === "string" ? body.suspendKey : "";
+    const values = body?.values && typeof body.values === "object" && !Array.isArray(body.values)
+      ? body.values as Record<string, unknown>
+      : undefined;
+    if (!suspendKey || !values) {
+      throw new HttpError(400, "chat-write-invalid", "suspendKey 与 values are required");
+    }
+    return { suspendKey, intent: body?.intent, values };
+  });
 
   return new Hono<AppBindings>()
     .post("/api/chat/runs/:runId/recover", requireUser(), async (c) => {
@@ -374,11 +484,23 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
       try { return c.json(await recoverRun(session, c.req.param("runId"), c.var.user)); }
       finally { await closeCallerSessionQuietly(session); }
     })
+    .post("/api/chat/runs/:runId/proposal-write", requireUser(), proposalWriteJson, async (c) => {
+      const parsed = c.req.valid("json");
+      const result = await confirmProposalWrite({
+        runId: c.req.param("runId"),
+        suspendKey: parsed.suspendKey,
+        intent: parsed.intent,
+        values: parsed.values,
+        user: c.var.user,
+      });
+      return c.json(result);
+    })
     .post("/api/chat/runs/:runId/resume", requireUser(), resumeDecisionJson, async (c) => {
       const parsed = c.req.valid("json");
       const result = await resumeRun({
         runId: parsed.runId,
         decision: parsed.decision,
+        ...(parsed.suspendKey ? { suspendKey: parsed.suspendKey } : {}),
         user: c.var.user,
       });
       return c.json(result);
@@ -394,7 +516,13 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
           throw new HttpError(400, "chat-resume-invalid", "resume payload is invalid", parsed.error.flatten());
         }
         const { runId, decision } = parsed.data;
-        return c.json(await resumeRun({ runId, decision: decision as ResumeDecision, user }));
+        const legacySuspendKey = typeof body?.resume?.suspendKey === "string" ? body.resume.suspendKey : undefined;
+        return c.json(await resumeRun({
+          runId,
+          decision: decision as ResumeDecision,
+          ...(legacySuspendKey ? { suspendKey: legacySuspendKey } : {}),
+          user,
+        }));
       }
 
       // ── 新 run 路径 ──
