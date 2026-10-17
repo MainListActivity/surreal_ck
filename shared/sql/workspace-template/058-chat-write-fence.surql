@@ -5,9 +5,14 @@
 -- 确认时内存标志看不见，于是真实写入业务行。本迁移把「哪个 run 的哪次 suspend 已被消费」
 -- 落到服务端持久行，让确认写与消费在同一事务内原子判定（exactly-once）。
 --
--- 行语义：每个待确认的 suspend 路径一行 pending 行；首次确认在同事务内把它消费
--- （consumed_at 置位）。后续任何实例（恢复卡 / 第二标签页 / 回放流）的确认都在事务内
--- 看到已消费，具名幂等拒绝、零写入、零状态推进。
+-- 行语义：每个待确认的 suspend 路径一行，状态机 pending → consumed → resumed：
+-- - pending：suspend 待决策。提案确认写在同事务内把它置 consumed（写已落库、
+--   resume 待送达）；任何终局决策的 resume 把它置 resumed（含 write-confirmed 的
+--   收尾 resume，以及 write-rejected / 候选选择等非写决策——栅栏随之关闭）。
+-- - consumed → resumed：仅 write-confirmed 的首次 resume 允许这一转移，保证
+--   「写成功 + resume」的一次确认流完整；其余决策或重放一律具名幂等拒绝。
+-- 后续任何实例（恢复卡 / 第二标签页 / 回放流）的确认与重复 resume 都在事务内
+-- 看到非 pending 态，具名幂等拒绝、零写入、零状态推进。
 --
 -- 纯增量：只新建一张表与两个索引，不改写、不删除任何已有数据；PERMISSIONS 与
 -- workflow_run / chat_delivery 同口径（归属走 fn::current_user()，DELETE 一律拒绝，
@@ -31,7 +36,7 @@ DEFINE FIELD IF NOT EXISTS suspend_path ON chat_write_fence TYPE string;
 -- 结构化 suspend 载荷（仅供定位与诊断，不含明文 prompt 或凭证）。
 DEFINE FIELD IF NOT EXISTS suspend_payload ON chat_write_fence TYPE option<object> FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS status ON chat_write_fence TYPE string
-  ASSERT $value INSIDE ["pending", "consumed", "abandoned"];
+  ASSERT $value INSIDE ["pending", "consumed", "resumed", "abandoned"];
 DEFINE FIELD IF NOT EXISTS consumed_at ON chat_write_fence TYPE option<datetime>;
 -- 消费方：write-confirmed / write-rejected / 候选选择等 resume 决策 kind 的稳定串。
 DEFINE FIELD IF NOT EXISTS consumed_by ON chat_write_fence TYPE option<string>;

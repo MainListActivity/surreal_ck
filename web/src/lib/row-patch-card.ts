@@ -1,3 +1,4 @@
+import { chatWriteFenceMessage } from "@surreal-ck/shared";
 import type { RecordWriteProposal, RowPatchProposal } from "@surreal-ck/shared";
 
 export type ConfirmableRecordProposal = RowPatchProposal | RecordWriteProposal;
@@ -124,12 +125,17 @@ export function createRowPatchCard(deps: RowPatchCardDeps) {
     await resumeTo({ kind: "write-rejected" }, "rejected");
   }
 
-  /** resume 失败时回到 error 态保留卡片（写入可能已落库，重试 confirm 走 MERGE 幂等）。 */
+  /**
+   * resume 失败时回到 error 态保留卡片（写入可能已落库，重试 confirm 走 MERGE 幂等）。
+   * 例外：具名栅栏 409（chat-write-fence-*）说明该 suspend 已被另一实例落定——
+   * 标 stale 终态而非 error，重试在服务端语义上永远不可能成功。
+   */
   async function resumeTo(decision: RowPatchResumeDecision, doneStatus: "done" | "rejected"): Promise<void> {
     try {
       await deps.resume(decision);
     } catch (err) {
-      state.status = "error";
+      const code = (err as { code?: string }).code;
+      state.status = chatWriteFenceMessage(code) !== null ? "stale" : "error";
       state.error = err instanceof Error ? err.message : String(err);
       emitChange();
       return;

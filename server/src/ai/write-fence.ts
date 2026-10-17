@@ -45,7 +45,7 @@ export type SuspendFenceRow = {
   run_id: string;
   suspend_path: string;
   suspend_kind: string;
-  status: "pending" | "consumed" | "abandoned";
+  status: "pending" | "consumed" | "resumed" | "abandoned";
   consumed_at?: string | null;
   consumed_by?: string | null;
 };
@@ -82,10 +82,10 @@ export async function registerSuspendFence(
   };
   await session.query(
     `INSERT INTO chat_write_fence $content ON DUPLICATE KEY UPDATE
-       suspend_kind = IF status = "pending" THEN $content.suspend_kind ELSE suspend_kind,
+       suspend_kind = IF status = "pending" THEN $content.suspend_kind ELSE suspend_kind END,
        suspend_payload = IF status = "pending" AND $content.suspend_payload != NONE
-         THEN $content.suspend_payload ELSE suspend_payload,
-       updated_at = IF status = "pending" THEN time::now() ELSE updated_at;`,
+         THEN $content.suspend_payload ELSE suspend_payload END,
+       updated_at = IF status = "pending" THEN time::now() ELSE updated_at END;`,
     { content },
   );
 }
@@ -137,15 +137,23 @@ export async function consumeSuspendAndWrite<T>(
       `UPDATE chat_write_fence SET status = "consumed", consumed_at = time::now(),
          consumed_by = $decision, updated_at = time::now()
        WHERE run_id = $runId AND suspend_path = $suspendKey AND owner_user = fn::current_user()
-         AND status = "pending" RETURN AFTER;`,
+         AND suspend_kind = "await-write-confirm" AND status = "pending" RETURN AFTER;`,
       { runId: input.runId, suspendKey: input.suspendKey, decision: input.decision },
     ));
     if (!consumed) {
-      // 已消费或不存在：本次零写入、零状态推进。
+      // 已消费 / 终态 / 无此待确认 suspend：本次零写入、零状态推进。
       await tx.cancel();
-      throw input.runStatus && isRunTerminal(input.runStatus)
-        ? fenceRejected(CHAT_WRITE_FENCE_ERRORS.runEnded)
-        : fenceRejected(CHAT_WRITE_FENCE_ERRORS.consumed);
+      if (input.runStatus && isRunTerminal(input.runStatus)) {
+        throw fenceRejected(CHAT_WRITE_FENCE_ERRORS.runEnded);
+      }
+      const existing = firstRow<{ status?: unknown }>(await session.query(
+        `SELECT status FROM chat_write_fence WHERE run_id = $runId AND suspend_path = $suspendKey
+          AND owner_user = fn::current_user() LIMIT 1;`,
+        { runId: input.runId, suspendKey: input.suspendKey },
+      ));
+      throw existing
+        ? fenceRejected(CHAT_WRITE_FENCE_ERRORS.consumed)
+        : fenceRejected(CHAT_WRITE_FENCE_ERRORS.notPending);
     }
     const result = await input.work(tx);
     await tx.commit();
@@ -160,23 +168,70 @@ export async function consumeSuspendAndWrite<T>(
   }
 }
 
-/** resume 前的具名判定：run 已终态 / 该 suspend 已消费 / 仍 pending 三选一。 */
-export async function assertResumeAllowed(
+/**
+ * resume 前的原子认领：一次 suspend 只允许一次决策送达（exactly-once 的另一半）。
+ *
+ * 状态机 `pending → consumed → resumed`：
+ * - `pending → resumed`：终局决策直接落定——非写决策（write-rejected、候选选择、
+ *   研究类）与老路径的 write-confirmed 都走这里；落定后栅栏关闭，迟到的确认写
+ *   只能拿到具名拒绝（不写已拒绝/已决定的提案）。
+ * - `consumed → resumed`：仅 write-confirmed 放行——它是「写端点消费 + resume 收尾」
+ *   同一次确认的后半段；其它决策在已写状态下送达会被拒绝（不能确认后又忽略）。
+ * - `resumed`（或 consumed 上的非 write-confirmed）：具名幂等冲突 409，不静默成功、
+ *   不推进任何状态。
+ *
+ * 命中返回 `{claimed: true, prevStatus}`；未命中视情况抛具名 409，或在老 run
+ * （无栅栏行）且 run 未终态时返回 `{claimed: false}` 放行——旧兼容路径不变。
+ */
+export async function claimSuspendDecision(
   session: Pick<Surreal, "query">,
-  input: { runId: string; suspendKey: string },
-): Promise<void> {
-  const rows = firstRow<{ status?: unknown }>(await session.query(
+  input: { runId: string; suspendKey: string; decision: string; runStatus?: string },
+): Promise<{ claimed: boolean; prevStatus?: string }> {
+  const claimed = firstRow<{ status?: unknown }>(await session.query(
+    `UPDATE chat_write_fence SET status = "resumed", consumed_by = $decision, updated_at = time::now()
+     WHERE run_id = $runId AND suspend_path = $suspendKey AND owner_user = fn::current_user()
+       AND (status = "pending"
+         OR (status = "consumed" AND consumed_by = "write-confirmed" AND $decision = "write-confirmed"))
+     RETURN BEFORE;`,
+    { runId: input.runId, suspendKey: input.suspendKey, decision: input.decision },
+  ));
+  if (claimed) {
+    return { claimed: true, prevStatus: typeof claimed.status === "string" ? claimed.status : undefined };
+  }
+  const existing = firstRow<{ status?: unknown }>(await session.query(
     `SELECT status FROM chat_write_fence WHERE run_id = $runId AND suspend_path = $suspendKey
       AND owner_user = fn::current_user() LIMIT 1;`,
     { runId: input.runId, suspendKey: input.suspendKey },
   ));
-  if (rows) {
-    if (rows.status !== "pending") throw fenceRejected(CHAT_WRITE_FENCE_ERRORS.consumed);
-    return;
+  if (existing) throw fenceRejected(CHAT_WRITE_FENCE_ERRORS.consumed);
+  if (input.runStatus && isRunTerminal(input.runStatus)) {
+    throw fenceRejected(CHAT_WRITE_FENCE_ERRORS.runEnded);
   }
-  // 老 run（栅栏行是本次发布后才有）：回落到 run 状态判定，终态同样具名拒绝。
-  const state = await loadRunFenceState(session, input.runId);
-  if (state && isRunTerminal(state.status)) throw fenceRejected(CHAT_WRITE_FENCE_ERRORS.runEnded);
+  // 老 run（栅栏行是本次发布后才有）：无栅栏行且 run 未终态，放行。
+  return { claimed: false };
+}
+
+/**
+ * resume 实际投递失败时回滚认领：只把「仍是本次认领置位」的行恢复到原状态，
+ * 不覆盖其它消费者的推进。回滚失败不得覆盖业务错误。
+ */
+export async function releaseSuspendDecision(
+  session: Pick<Surreal, "query">,
+  input: { runId: string; suspendKey: string; decision: string; prevStatus?: string },
+): Promise<void> {
+  if (!input.prevStatus) return;
+  await session.query(
+    `UPDATE chat_write_fence SET status = $prevStatus, updated_at = time::now(),
+       consumed_by = IF $prevStatus = "consumed" THEN "write-confirmed" ELSE NONE END
+     WHERE run_id = $runId AND suspend_path = $suspendKey AND owner_user = fn::current_user()
+       AND status = "resumed" AND consumed_by = $decision;`,
+    {
+      runId: input.runId,
+      suspendKey: input.suspendKey,
+      decision: input.decision,
+      prevStatus: input.prevStatus,
+    },
+  );
 }
 
 /** 写端点解析目标记录：提案的 recordId 是 `table:id` 字符串，在 SDK 边界包成 RecordId。 */

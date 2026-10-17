@@ -22,12 +22,13 @@ import { callerRunDiagnostics, sessionForPhase } from "../ai/caller-session";
 import { boundedAwait } from "../ai/run-diagnostics";
 import { loadSuspendedRunDecision } from "../ai/suspend-recovery";
 import {
-  assertResumeAllowed,
   CHAT_WRITE_FENCE_ERRORS,
+  claimSuspendDecision,
   consumeSuspendAndWrite,
   fenceRejected,
   isRunTerminal,
   loadRunFenceState,
+  releaseSuspendDecision,
 } from "../ai/write-fence";
 import { proposalWriteTargetFrom, writeProposalValues } from "../ai/proposal-write";
 import {
@@ -349,17 +350,29 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
     // 内存 registry 只负责 stream；运行归属和并发窗口由当前 workspace 的持久化记录决定。
     const session = await signIn(user.rawToken);
     let release: (() => Promise<void>) | undefined;
+    let fenceClaim: { claimed: boolean; prevStatus?: string } | undefined;
+    let suspendKeyForClaim: string | undefined;
     try {
-      // PG-1 栅栏：已消费的 suspend 不得再 resume——恢复卡 / 第二标签页对已确认过的
-      // suspend 提交决策时，具名 409 拒绝，不静默成功、不推进任何状态。
       const runState = await loadRunFenceState(session, runId);
       const suspendKey = input.suspendKey ?? runState?.suspendKey;
-      if (suspendKey) await assertResumeAllowed(session, { runId, suspendKey });
+      suspendKeyForClaim = suspendKey;
       const delivered = await deps.deliveries?.find(session, runId);
       if (delivered?.status === "complete") {
         const recovered = await recoverRun(session, runId, user);
         await closeCallerSessionQuietly(session);
         return recovered;
+      }
+      // PG-1 栅栏：resume 前先原子认领这次 suspend 的决策位（pending → resumed，
+      // 或写已落库的 consumed → resumed 仅限 write-confirmed）。已 resumed / 已消费 /
+      // run 终态一律具名 409，不静默成功、不推进任何状态；恢复卡 / 第二标签页的重复
+      // 决策在这里被挡掉。delivered-complete 的恢复路径先行返回，不参与认领。
+      if (suspendKey) {
+        fenceClaim = await claimSuspendDecision(session, {
+          runId,
+          suspendKey,
+          decision: decision.kind,
+          runStatus: runState?.status,
+        });
       }
       release = await claimResumeWindow(session, runId);
       const resumeDb = workspaceDb(user);
@@ -383,6 +396,16 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
         onResult: hooks?.onResult, onTerminal }));
       return { runId, streamUrl: `/api/chat/stream?runId=${runId}`, streamToken };
     } catch (error) {
+      // resume 投递失败：认领过的决策位回滚到原状态（pending/consumed），卡片可重试；
+      // 不回滚会让一次瞬时失败把这次 suspend 永久锁死在 resumed。
+      if (fenceClaim?.claimed && suspendKeyForClaim) {
+        await releaseSuspendDecision(session, {
+          runId,
+          suspendKey: suspendKeyForClaim,
+          decision: decision.kind,
+          prevStatus: fenceClaim.prevStatus,
+        }).catch(() => undefined);
+      }
       await release?.();
       await closeCallerSessionQuietly(session);
       throw error;
@@ -419,6 +442,11 @@ export function createAiChatRoutes(deps: AiChatRoutesDeps) {
     })();
     if (!runState) throw new HttpError(403, "chat-run-forbidden", "当前身份不能确认该次运行");
     if (isRunTerminal(runState.status)) throw fenceRejected(CHAT_WRITE_FENCE_ERRORS.runEnded);
+    // 只允许确认「当前挂着的那次 suspend」：键对不上说明该 suspend 已被后续决策推进
+    // （或客户端拿的是陈旧/伪造键），一律具名拒绝，不落在任何残留 pending 行上。
+    if (runState.suspendKey && runState.suspendKey !== input.suspendKey) {
+      throw fenceRejected(CHAT_WRITE_FENCE_ERRORS.notPending);
+    }
 
     const session = await signIn(input.user.rawToken);
     try {

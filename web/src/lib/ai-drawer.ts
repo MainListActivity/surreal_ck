@@ -599,7 +599,12 @@ export function createAiDrawerSession(options: AiDrawerSessionOptions): AiDrawer
       state.sending = false;
       state.progressHint = null;
       emitChange();
-      throw new Error(aiErrorMessage(error));
+      // 保留服务端具名 code：栅栏 409（chat-write-fence-*）由卡片据此标 stale 终态，
+      // 而非红色 error——「该 suspend 已落定」是预期结果，重试永远不可能成功。
+      const mapped = new Error(aiErrorMessage(error));
+      const code = errorCode(error);
+      if (code) (mapped as Error & { code?: string }).code = code;
+      throw mapped;
     }
   }
 

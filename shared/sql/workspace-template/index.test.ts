@@ -668,7 +668,7 @@ describe("workspace template scripts", () => {
     );
     expect(sql).toMatch(/DEFINE INDEX IF NOT EXISTS chat_write_fence_owner_status ON chat_write_fence COLUMNS owner_user, status/);
     // status 白名单 + suspend_kind 白名单：消费判定只认 pending。
-    expect(sql).toMatch(/\$value INSIDE \["pending", "consumed", "abandoned"\]/);
+    expect(sql).toMatch(/\$value INSIDE \["pending", "consumed", "resumed", "abandoned"\]/);
     expect(sql).toMatch(/\$value INSIDE \["await-write-confirm", "ambiguous", "resource-candidates", "manual-research", "authorization_changed"\]/);
     // 纯新增：没有任何改写或删除已有数据的语句。
     expect(sql).not.toMatch(/^\s*(UPDATE|DELETE|REMOVE|OVERWRITE)\b/im);

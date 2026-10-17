@@ -27,24 +27,76 @@ function useUser(subject = testUser.subject): MiddlewareHandler<AppBindings> {
 /**
  * 永远成功的会话桩。
  *
- * PG-1 写栅栏新增了两类查询，必须分别如实应答，否则「首次确认/首次 resume」会被误判成
- * 已消费：workflow_run 报 suspended（进行中），chat_write_fence 报 pending（未消费）。
+ * PG-1 写栅栏有三类查询必须分别如实应答，否则「首次确认/首次 resume」会被误判成
+ * 已消费或反之：workflow_run 报 suspended（进行中）、chat_write_fence 按可变状态应答。
+ * `UPDATE chat_write_fence`（消费 / 决策认领）按真实条件转移状态：pending → consumed
+ * （写端点）、pending 或 consumed+write-confirmed → resumed（resume 认领），
+ * RETURN BEFORE 命中才返回行——桩的状态跨调用保持，写后 resume 的真实语义可测。
  */
-const fakeSession = {
-  close: async () => {},
-  query: async (sql: string, params: Record<string, unknown>) => {
-    if (sql.includes("FROM chat_write_fence")) {
-      return [[{ status: "pending", run_id: params?.runId, suspend_path: params?.suspendKey }]];
-    }
-    if (sql.includes("FROM workflow_run")) {
-      return [[{ status: "suspended", state: null }]];
-    }
-    return [[{ id: "workflow_run:fixture", resume_fence: params?.fence }]];
-  },
-} as unknown as Surreal;
+function makeFenceSession() {
+  const fence = { status: "pending" as string, consumed_by: null as string | null };
+  const session = {
+    close: async () => {},
+    async query(sql: string, params?: Record<string, unknown>) {
+      // release（回滚）：SET status = $prevStatus …… WHERE status = "resumed" AND consumed_by = $decision。
+      // 先匹配它——其 WHERE 字面量也含 status = "resumed"，顺序错了会落到认领分支。
+      if (sql.includes("UPDATE chat_write_fence") && sql.includes("$prevStatus")) {
+        if (fence.status !== "resumed" || fence.consumed_by !== params?.decision) return [[]];
+        fence.status = params?.prevStatus as string;
+        fence.consumed_by = fence.status === "consumed" ? "write-confirmed" : null;
+        return [[{ status: "resumed" }]];
+      }
+      if (sql.includes("UPDATE chat_write_fence") && sql.includes('status = "resumed"')) {
+        const decision = params?.decision as string;
+        const ok = fence.status === "pending"
+          || (fence.status === "consumed" && fence.consumed_by === "write-confirmed" && decision === "write-confirmed");
+        if (!ok) return [[]];
+        const before = { status: fence.status };
+        fence.status = "resumed";
+        fence.consumed_by = decision;
+        return [[before]];
+      }
+      if (sql.includes("UPDATE chat_write_fence")) {
+        if (fence.status !== "pending") return [[]];
+        fence.status = "consumed";
+        fence.consumed_by = params?.decision as string;
+        return [[{ suspend_path: params?.suspendKey, status: "consumed" }]];
+      }
+      if (sql.includes("FROM chat_write_fence")) {
+        return [[{ status: fence.status, run_id: params?.runId, suspend_path: params?.suspendKey }]];
+      }
+      if (sql.includes("FROM workflow_run")) {
+        return [[{ status: "suspended", state: null }]];
+      }
+      // 受栅栏写端点事务内的业务查询：sheet 元数据、目标记录、MERGE/CREATE 落库。
+      if (sql.includes("FROM ONLY $sheet")) {
+        return [[{ id: "sheet:s1", table_name: "p1",
+          column_defs: [{ key: "field_1", label: "field 1", field_type: "checkbox" }] }]];
+      }
+      if (sql.includes("FROM ONLY $record")) {
+        return [[{ id: "p1:v1", field_1: true }]];
+      }
+      if (sql.includes("UPDATE $record MERGE") || sql.includes("CREATE type::table")) {
+        return [[{ id: "p1:v1" }]];
+      }
+      return [[{ id: "workflow_run:fixture", resume_fence: params?.fence }]];
+    },
+    async beginTransaction() {
+      return {
+        query: (sql: string, params?: Record<string, unknown>) => session.query(sql, params),
+        commit: async () => {},
+        cancel: async () => {},
+      };
+    },
+  } as unknown as Surreal;
+  return { session, fence };
+}
 
-// 永远成功的会话工厂：把 rawToken authenticate 后的会话交给 service。
-const okSessionFactory: CallerSessionFactory = async () => fakeSession;
+const fakeSession = makeFenceSession().session;
+
+// 默认会话工厂：每次签会话给一个全新栅栏实例（fence 状态按会话隔离）。
+// 需要跨请求共享栅栏状态的用例（写后 resume）显式注入同一个 makeFenceSession()。
+const okSessionFactory: CallerSessionFactory = async () => makeFenceSession().session;
 
 function closableSession() {
   const closed: string[] = [];
@@ -149,7 +201,7 @@ describe("POST /api/chat", () => {
     // workflow 已用调用者 session + message + 同一 runId 在后台启动
     expect(service.startCalls).toHaveLength(1);
     expect(service.startCalls[0].message).toBe("打开巡检工作簿");
-    expect(service.startCalls[0].session).toBe(fakeSession);
+    expect(service.startCalls[0].session).toBeDefined();
     expect(service.startCalls[0].runId).toBe(body.runId);
   });
 
@@ -333,7 +385,7 @@ describe("POST /api/chat", () => {
     expect(service.resumeCalls[0].runId).toBe(runId);
     expect(service.resumeCalls[0].decision).toEqual({ kind: "candidate-chosen", candidateId: "record:abc" });
     // 用新建的 session（workflow state 不持有旧 session）
-    expect(service.resumeCalls[0].session).toBe(fakeSession);
+    expect(service.resumeCalls[0].session).toBeDefined();
   });
 
   test("resume endpoint：POST /api/chat/runs/:runId/resume 提交 decision 并返回新的 streamToken", async () => {
@@ -390,6 +442,99 @@ describe("POST /api/chat", () => {
 
     expect(res.status).toBe(403);
     expect(service.resumeCalls).toHaveLength(0);
+  });
+
+  describe("PG-1 栅栏：写后 resume 放行一次、决策落定后拒写", () => {
+    const intent = { type: "row-patch-proposal", sheetId: "sheet:s1", recordId: "p1:v1", proposals: [] };
+    const post = (app: ReturnType<typeof makeApp>, path: string, body: unknown) =>
+      app.request(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+    test("正常确认流：proposal-write 200（消费+写）→ resume write-confirmed 200（放行一次）→ 重放 resume 409", async () => {
+      const fs = makeFenceSession();
+      const service = stubService();
+      const app = makeApp({ service, sessionFactory: async () => fs.session });
+
+      // 步骤1：受栅栏写——消费 pending→consumed 并落业务写。
+      const write = await post(app, "/api/chat/runs/run-1/proposal-write", {
+        suspendKey: "execute-one#0", intent, values: { field_1: false },
+      });
+      expect(write.status).toBe(200);
+      expect(fs.fence.status).toBe("consumed");
+
+      // 步骤2：同一次确认的收尾 resume——consumed + write-confirmed → 放行并置 resumed。
+      const resume = await post(app, "/api/chat/runs/run-1/resume", {
+        runId: "run-1", decision: { kind: "write-confirmed" }, suspendKey: "execute-one#0",
+      });
+      expect(resume.status).toBe(200);
+      expect(service.resumeCalls).toHaveLength(1);
+      expect(fs.fence.status).toBe("resumed");
+
+      // 步骤3：第二标签页/重放的 resume——已 resumed → 具名 409，不再触达 resumeChat。
+      const replay = await post(app, "/api/chat/runs/run-1/resume", {
+        runId: "run-1", decision: { kind: "write-confirmed" }, suspendKey: "execute-one#0",
+      });
+      expect(replay.status).toBe(409);
+      expect(((await replay.json()) as { error: { code: string } }).error.code).toBe("chat-write-fence-consumed");
+      expect(service.resumeCalls).toHaveLength(1);
+    });
+
+    test("write-rejected 决策落定栅栏 → 同 suspendKey 迟到确认具名拒绝、零写入", async () => {
+      const fs = makeFenceSession();
+      const service = stubService();
+      const app = makeApp({ service, sessionFactory: async () => fs.session });
+
+      // 用户「全部忽略」：resume write-rejected 认领 pending→resumed。
+      const reject = await post(app, "/api/chat/runs/run-1/resume", {
+        runId: "run-1", decision: { kind: "write-rejected" }, suspendKey: "execute-one#0",
+      });
+      expect(reject.status).toBe(200);
+      expect(service.resumeCalls).toHaveLength(1);
+      expect(fs.fence.status).toBe("resumed");
+
+      // 另一标签页迟到确认同一 suspend：run 未终态但栅栏已落定 → 具名 409、零写入。
+      const late = await post(app, "/api/chat/runs/run-1/proposal-write", {
+        suspendKey: "execute-one#0", intent, values: { field_1: false },
+      });
+      expect(late.status).toBe(409);
+      expect(((await late.json()) as { error: { code: string } }).error.code).toBe("chat-write-fence-consumed");
+    });
+
+    test("consumed（已写）上的 write-rejected → 409：确认后不能再忽略", async () => {
+      const fs = makeFenceSession();
+      const app = makeApp({ sessionFactory: async () => fs.session });
+
+      const write = await post(app, "/api/chat/runs/run-1/proposal-write", {
+        suspendKey: "execute-one#0", intent, values: { field_1: false },
+      });
+      expect(write.status).toBe(200);
+
+      const reject = await post(app, "/api/chat/runs/run-1/resume", {
+        runId: "run-1", decision: { kind: "write-rejected" }, suspendKey: "execute-one#0",
+      });
+      expect(reject.status).toBe(409);
+    });
+
+    test("resume 投递失败 → 认领回滚到原状态，可重试", async () => {
+      const fs = makeFenceSession();
+      let calls = 0;
+      const service = stubService({
+        async resumeChat() { calls += 1; if (calls === 1) throw new Error("upstream boom"); },
+      });
+      const app = makeApp({ service, sessionFactory: async () => fs.session });
+
+      const first = await post(app, "/api/chat/runs/run-1/resume", {
+        runId: "run-1", decision: { kind: "write-rejected" }, suspendKey: "execute-one#0",
+      });
+      expect(first.status).not.toBe(200);
+      // 认领被回滚：栅栏回到 pending，不是永久锁死在 resumed。
+      expect(fs.fence.status).toBe("pending");
+
+      const retry = await post(app, "/api/chat/runs/run-1/resume", {
+        runId: "run-1", decision: { kind: "write-rejected" }, suspendKey: "execute-one#0",
+      });
+      expect(retry.status).toBe(200);
+      expect(fs.fence.status).toBe("resumed");
+    });
   });
 });
 

@@ -12,12 +12,13 @@ import { describe, expect, mock, test } from "bun:test";
 import { StringRecordId } from "surrealdb";
 import { CHAT_WRITE_FENCE_ERRORS } from "@surreal-ck/shared";
 import {
-  assertResumeAllowed,
+  claimSuspendDecision,
   consumeSuspendAndWrite,
   fenceRejected,
   isRunTerminal,
   loadRunFenceState,
   registerSuspendFence,
+  releaseSuspendDecision,
   type FenceSession,
 } from "./write-fence";
 
@@ -90,7 +91,12 @@ describe("consumeSuspendAndWrite", () => {
 
   test("二次确认（另一实例）：UPDATE 未命中 → 零写入、回滚、具名 409", async () => {
     const { calls, tx } = makeTx([[]]);
-    const { session } = makeSession(tx);
+    const base = makeSession(tx);
+    const session = {
+      ...base.session,
+      // 未命中后的区分查询：行存在（已 consumed/resumed）→ consumed
+      query: async () => [[{ status: "consumed" }]],
+    };
     const work = mock(async () => ({ written: {}, created: false }));
 
     const error = await consumeSuspendAndWrite(session, {
@@ -107,6 +113,20 @@ describe("consumeSuspendAndWrite", () => {
     expect(work).not.toHaveBeenCalled();
     expect(calls).toContain("cancel");
     expect(calls).not.toContain("commit");
+  });
+
+  test("无此待确认 suspend（键错 / 非写 suspend）：具名 not-pending 拒绝", async () => {
+    const { tx } = makeTx([[]]);
+    const base = makeSession(tx);
+    const session = { ...base.session, query: async () => [[]] };
+    const error = await consumeSuspendAndWrite(session, {
+      runId: "run-1",
+      suspendKey: "execute-one#9",
+      decision: "write-confirmed",
+      runStatus: "suspended",
+      work: async () => ({}),
+    }).catch((e) => e);
+    expect((error as { code: string }).code).toBe(CHAT_WRITE_FENCE_ERRORS.notPending);
   });
 
   test("run 已终态时二次确认：具名 run-ended 拒绝（与「已消费」分开）", async () => {
@@ -144,27 +164,79 @@ describe("consumeSuspendAndWrite", () => {
   });
 });
 
-describe("assertResumeAllowed", () => {
-  test("pending → 放行", async () => {
+describe("claimSuspendDecision", () => {
+  test("pending → resumed：认领命中并返回原状态", async () => {
     const seen: string[] = [];
     const scoped = sessionOf(seen, [[[{ status: "pending" }]]]);
-    await expect(assertResumeAllowed(scoped, { runId: "run-1", suspendKey: "execute-one#0" })).resolves.toBeUndefined();
-    // 只查该次暂停的栅栏行，不牵动别的暂停。
+    const claim = await claimSuspendDecision(scoped, {
+      runId: "run-1", suspendKey: "execute-one#0", decision: "write-rejected",
+    });
+    expect(claim).toEqual({ claimed: true, prevStatus: "pending" });
+    // 认领是条件 UPDATE（原子转移），不是「先查后改」。
+    expect(seen[0]).toContain('status = "resumed"');
     expect(seen[0]).toContain("suspend_path = $suspendKey");
   });
 
-  test("已消费 → 具名 409（不再静默成功）", async () => {
-    const scoped = sessionOf([], [[[{ status: "consumed" }]]]);
-    const error = await assertResumeAllowed(scoped, { runId: "run-1", suspendKey: "execute-one#0" }).catch((e) => e);
+  test("写已落库（consumed + write-confirmed）的收尾 resume 放行一次", async () => {
+    const scoped = sessionOf([], [[[{ status: "consumed", consumed_by: "write-confirmed" }]]]);
+    const claim = await claimSuspendDecision(scoped, {
+      runId: "run-1", suspendKey: "execute-one#0", decision: "write-confirmed",
+    });
+    expect(claim).toEqual({ claimed: true, prevStatus: "consumed" });
+  });
+
+  test("consumed 上的非 write-confirmed 决策 → 具名 409（确认后不能再忽略）", async () => {
+    // 认领 UPDATE 未命中；区分查询显示行已 consumed。
+    const scoped = sessionOf([], [[], [[{ status: "consumed" }]]]);
+    const error = await claimSuspendDecision(scoped, {
+      runId: "run-1", suspendKey: "execute-one#0", decision: "write-rejected",
+    }).catch((e) => e);
     expect((error as { status: number }).status).toBe(409);
     expect((error as { code: string }).code).toBe(CHAT_WRITE_FENCE_ERRORS.consumed);
   });
 
-  test("老 run 无栅栏行：回落 run 状态，终态同样具名拒绝", async () => {
-    // 第一次查栅栏表 → 空（本次发布前的 run）；再查 workflow_run → success。
-    const scoped = sessionOf([], [[], [[{ status: "success", state: null }]]]);
-    const error = await assertResumeAllowed(scoped, { runId: "run-1", suspendKey: "execute-one#0" }).catch((e) => e);
+  test("已 resumed 的重放 resume → 具名 409，不静默成功", async () => {
+    const scoped = sessionOf([], [[], [[{ status: "resumed" }]]]);
+    const error = await claimSuspendDecision(scoped, {
+      runId: "run-1", suspendKey: "execute-one#0", decision: "write-confirmed",
+    }).catch((e) => e);
+    expect((error as { status: number }).status).toBe(409);
+    expect((error as { code: string }).code).toBe(CHAT_WRITE_FENCE_ERRORS.consumed);
+  });
+
+  test("老 run 无栅栏行：回落 run 状态，终态具名拒绝、非终态放行", async () => {
+    // 认领未命中；区分查询无行；run 已终态 → runEnded。
+    const terminal = sessionOf([], [[], [], []]);
+    const error = await claimSuspendDecision(terminal, {
+      runId: "run-1", suspendKey: "execute-one#0", decision: "write-confirmed", runStatus: "success",
+    }).catch((e) => e);
     expect((error as { code: string }).code).toBe(CHAT_WRITE_FENCE_ERRORS.runEnded);
+
+    // 无行且 run 未终态 → 放行但不持有认领（claimed=false）。
+    const live = sessionOf([], [[], []]);
+    await expect(claimSuspendDecision(live, {
+      runId: "run-1", suspendKey: "execute-one#0", decision: "write-confirmed", runStatus: "suspended",
+    })).resolves.toEqual({ claimed: false });
+  });
+});
+
+describe("releaseSuspendDecision", () => {
+  test("回滚只命中「本次认领置位」的行（resumed + 同 decision）", async () => {
+    const seen: string[] = [];
+    const scoped = sessionOf(seen, [[[{ status: "resumed" }]]]);
+    await releaseSuspendDecision(scoped, {
+      runId: "run-1", suspendKey: "execute-one#0", decision: "write-confirmed", prevStatus: "consumed",
+    });
+    expect(seen[0]).toContain('status = "resumed"');
+    expect(seen[0]).toContain("consumed_by = $decision");
+  });
+
+  test("无 prevStatus（未认领）时不发任何写", async () => {
+    const seen: string[] = [];
+    await releaseSuspendDecision(sessionOf(seen, []), {
+      runId: "run-1", suspendKey: "execute-one#0", decision: "write-confirmed",
+    });
+    expect(seen).toHaveLength(0);
   });
 });
 

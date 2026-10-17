@@ -165,6 +165,41 @@ describe("行分析提案卡状态机", () => {
     expect(writes).toHaveLength(1);
     expect(card.snapshot().status).toBe("done");
   });
+
+  test("resume 撞到具名栅栏 409（另一实例已落定）：标 stale 终态、不可重试、不再发请求", async () => {
+    const fenceError = Object.assign(new Error("这项确认已被处理，本次没有写入任何数据。"), {
+      code: "chat-write-fence-consumed",
+    });
+    const { card, resumes, writes } = cardHarness({
+      resume: async () => { throw fenceError; },
+    });
+
+    await card.confirm();
+    // 写已提交（服务端事务），resume 被拒 → 卡片是 stale 终态而非 error。
+    expect(writes).toHaveLength(1);
+    expect(card.snapshot().status).toBe("stale");
+    expect(card.snapshot().error).toBe("这项确认已被处理，本次没有写入任何数据。");
+
+    // stale 终态：confirm / rejectAll 都不再发任何请求。
+    await card.confirm();
+    await card.rejectAll();
+    expect(writes).toHaveLength(1);
+    expect(resumes).toEqual([]);
+    expect(card.snapshot().status).toBe("stale");
+  });
+
+  test("resume 的非栅栏错误仍是可重试 error 态", async () => {
+    let failResume = true;
+    const { card } = cardHarness({
+      resume: async () => {
+        if (failResume) { failResume = false; throw Object.assign(new Error("网络断"), { code: "stream-timeout" }); }
+      },
+    });
+    await card.confirm();
+    expect(card.snapshot().status).toBe("error");
+    await card.confirm();
+    expect(card.snapshot().status).toBe("done");
+  });
 });
 
 describe("重复 field 折叠写入防护（上游归一后同 key 多条）", () => {
