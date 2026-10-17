@@ -41,9 +41,19 @@ export type ProposalWriteOutcome = {
 type SheetRow = { id?: unknown; table_name?: unknown; column_defs?: unknown };
 type RecordRow = Record<string, unknown>;
 
+/**
+ * 解 SDK 查询结果的第一语句行集。
+ *
+ * 公司 fork 的 surrealdb SDK 对 `SELECT ... FROM ONLY <record>` 返回裸对象形状
+ * （results[0] = {row} 或 null），常规 `SELECT` / `CREATE` 仍是 [[rows]]。
+ * 只认数组会把 ONLY 读路径恒解成 []，loadSheet 误报 403、读记录误报 404。
+ * 先例：secret-store rows()（182f0e8e）。
+ */
 function firstRows<T>(result: unknown): T[] {
-  const first = Array.isArray(result) ? result[0] : undefined;
-  return Array.isArray(first) ? (first as T[]) : [];
+  if (!Array.isArray(result)) return [];
+  const first = result[0];
+  if (Array.isArray(first)) return first as T[];
+  return first !== null && typeof first === "object" ? [first as T] : [];
 }
 
 function isLikelyRecordId(value: unknown): value is string {
