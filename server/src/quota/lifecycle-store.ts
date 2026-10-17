@@ -161,6 +161,20 @@ function operatorIntentSubmitError(error: unknown): QuotaLifecycleError {
   );
 }
 
+// applyOperatorMutation 事务内的确定性业务拒绝以 RETURN { failure }
+// 传出（事务内 THROW 的值不会随 QueryError/NotExecuted 传到调用方，
+// 见 persistOperatorIntent）。映射为 QuotaLifecycleError：code 取连
+// 字符拒绝码的下划线形式，message 保留原码，retryable=false，使
+// processNextOperatorIntent 一次失败即落 terminal_failed，不再被
+// claimOperatorIntent 重新认领。
+function operatorMutationFailureError(failure: string): QuotaLifecycleError {
+  return new QuotaLifecycleError(
+    failure.replaceAll("-", "_"),
+    failure,
+    false,
+  );
+}
+
 function snapshotObject(
   snapshot: ProviderSubscriptionSnapshot,
 ): ControlPlaneObject {
@@ -1189,18 +1203,6 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
         LET $workspaceExists = record::exists($workspace);
         LET $billingExists = record::exists($billingAccount);
         LET $plan = SELECT * FROM ONLY $planRevision;
-        IF !$workspaceExists OR !$billingExists OR $plan = NONE {
-          THROW "operator-subscription-reference-missing";
-        };
-        IF $status = "trialing" AND $plan.template_kind != "trial" {
-          THROW "operator-subscription-trial-plan-mismatch";
-        };
-        IF $source = "contract" AND $plan.template_kind != "contract" {
-          THROW "operator-subscription-contract-plan-mismatch";
-        };
-        IF $source = "manual" AND $plan.template_kind = "contract" {
-          THROW "operator-subscription-manual-plan-mismatch";
-        };
         LET $current = (
           SELECT *
           FROM quota_subscription_item
@@ -1210,17 +1212,11 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
         LET $oldSubscription = IF $current != NONE { SELECT * FROM ONLY $current.subscription } ELSE { NONE };
         LET $convertingTrial = $current != NONE AND $oldSubscription.status = "trialing"
           AND $oldSubscription.billing_account = $billingAccount AND $status = "active" AND $mode != "plan_rollout";
-        IF $productInput != NONE
-          AND record::table($productInput) != "product_plan_revision" {
-          THROW "operator-subscription-product-revision-missing";
-        };
-        LET $product = IF $productInput != NONE {
+        LET $product = IF $productInput != NONE
+          AND record::table($productInput) = "product_plan_revision" {
           SELECT * FROM ONLY $productInput
         } ELSE {
           NONE
-        };
-        IF $productInput != NONE AND $product = NONE {
-          THROW "operator-subscription-product-revision-missing";
         };
         LET $productBinding = IF $product != NONE {
           $productInput
@@ -1230,21 +1226,63 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
           NONE
         };
         LET $targetSubscription = IF $mode = "plan_rollout" {
-          IF $current = NONE {
-            THROW "plan-rollout-requires-active-assignment";
-          };
-          $current.subscription
+          IF $current != NONE { $current.subscription } ELSE { NONE }
         } ELSE IF $requestedSubscription != NONE {
           $requestedSubscription
         } ELSE {
           $generatedSubscription
         };
-        LET $subscription = SELECT * FROM ONLY $targetSubscription;
+        LET $subscription = IF $targetSubscription != NONE {
+          SELECT * FROM ONLY $targetSubscription
+        } ELSE {
+          NONE
+        };
         LET $replayed = $current != NONE
           AND $current.causation_id = $intent
           AND $current.subscription = $targetSubscription
           AND $current.plan_revision = $planRevision;
-        IF !$replayed {
+        LET $same = $current != NONE
+          AND $current.subscription = $targetSubscription
+          AND $current.plan_revision = $planRevision
+          AND ($productBinding = NONE
+            OR $current.product_plan_revision = $productBinding);
+        // 写后与写前窗口同值：plan_rollout 不动订阅行，取既有订阅窗口；
+        // 其余分支订阅会被 CREATE/UPDATE 成入参，窗口即入参。
+        LET $windowEnd = IF $mode = "plan_rollout" AND $subscription != NONE {
+          $subscription.current_period_end
+            ?? $subscription.paid_through
+            ?? $subscription.trial_end
+        } ELSE {
+          $currentPeriodEnd ?? $paidThrough ?? $trialEnd
+        };
+        // 确定性业务拒绝必须在任何 CREATE/UPDATE 之前判定并以 RETURN
+        // 传出（事务内 THROW 的值不会随 QueryError/NotExecuted 传到
+        // 调用方，见 persistOperatorIntent）；写后 RETURN 会提交半截
+        // 业务写（如旧 item 已 ended、新 item 未建）。
+        LET $failure = IF !$workspaceExists OR !$billingExists OR $plan = NONE {
+          "operator-subscription-reference-missing"
+        } ELSE IF $status = "trialing" AND $plan.template_kind != "trial" {
+          "operator-subscription-trial-plan-mismatch"
+        } ELSE IF $source = "contract" AND $plan.template_kind != "contract" {
+          "operator-subscription-contract-plan-mismatch"
+        } ELSE IF $source = "manual" AND $plan.template_kind = "contract" {
+          "operator-subscription-manual-plan-mismatch"
+        } ELSE IF $productInput != NONE AND $product = NONE {
+          "operator-subscription-product-revision-missing"
+        } ELSE IF $mode = "plan_rollout" AND $current = NONE {
+          "plan-rollout-requires-active-assignment"
+        } ELSE IF !$replayed AND $subscription != NONE
+          AND $mode != "plan_rollout"
+          AND ($subscription.billing_account != $billingAccount
+            OR $subscription.source != $source) {
+          "operator-subscription-authority-mismatch"
+        } ELSE IF !$replayed AND !$same
+          AND $windowEnd != NONE AND $windowEnd <= $effectiveAt {
+          "operator-subscription-item-window-invalid"
+        } ELSE {
+          NONE
+        };
+        IF $failure = NONE AND !$replayed {
           IF $subscription = NONE {
             CREATE $targetSubscription CONTENT {
               billing_account: $billingAccount,
@@ -1261,10 +1299,6 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
               causation_id: $intent
             };
           } ELSE IF $mode != "plan_rollout" {
-            IF $subscription.billing_account != $billingAccount
-              OR $subscription.source != $source {
-              THROW "operator-subscription-authority-mismatch";
-            };
             UPDATE $targetSubscription SET
               status = $status,
               revision += 1,
@@ -1281,15 +1315,6 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
               correlation_id = $correlationId,
               causation_id = $intent;
           };
-          LET $subNow = SELECT * FROM ONLY $targetSubscription;
-          LET $windowEnd = $subNow.current_period_end
-            ?? $subNow.paid_through
-            ?? $subNow.trial_end;
-          LET $same = $current != NONE
-            AND $current.subscription = $targetSubscription
-            AND $current.plan_revision = $planRevision
-            AND ($productBinding = NONE
-              OR $current.product_plan_revision = $productBinding);
           IF !$same {
             IF $current != NONE {
               UPDATE $current.id SET
@@ -1298,9 +1323,6 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
                 ended_reason = $mode,
                 correlation_id = $correlationId,
                 causation_id = $intent;
-            };
-            IF $windowEnd != NONE AND $windowEnd <= $effectiveAt {
-              THROW "operator-subscription-item-window-invalid";
             };
             CREATE $item CONTENT {
               converted_trial_source: IF $convertingTrial { $oldSubscription.id }
@@ -1339,8 +1361,10 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
             };
           };
         };
-        UPDATE $state SET affected_workspaces = [$workspace];
-        RETURN { workspace: $workspace };
+        IF $failure = NONE {
+          UPDATE $state SET affected_workspaces = [$workspace];
+        };
+        RETURN { failure: $failure, workspace: $workspace };
         COMMIT TRANSACTION;
       `,
       {
@@ -1372,6 +1396,10 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
       },
     );
     const row = lastRecord(result);
+    const failure = optionalString(row?.failure);
+    if (failure !== undefined) {
+      throw operatorMutationFailureError(failure);
+    }
     return Object.freeze({
       workspaces: Object.freeze([
         requiredRecordId(row?.workspace, "subscription workspace"),
@@ -1404,9 +1432,6 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
           THROW "operator-intent-lease-lost";
         };
         LET $subscriptionRow = SELECT * FROM ONLY $subscription;
-        IF $subscriptionRow = NONE {
-          THROW "operator-subscription-missing";
-        };
         LET $activeWorkspaces = SELECT VALUE workspace
           FROM quota_subscription_item
           WHERE subscription = $subscription AND status = "active";
@@ -1417,7 +1442,14 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
         } ELSE {
           $intentState.affected_workspaces
         };
-        IF !$replayed {
+        // 确定性业务拒绝在任何 UPDATE 之前判定并以 RETURN 传出（事务
+        // 内 THROW 的值不会传到调用方，见 persistOperatorIntent）。
+        LET $failure = IF $subscriptionRow = NONE {
+          "operator-subscription-missing"
+        } ELSE {
+          NONE
+        };
+        IF $failure = NONE AND !$replayed {
           UPDATE $subscription SET
             status = $status,
             revision += 1,
@@ -1445,7 +1477,7 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
           WHERE subscription = $subscription AND status = "active";
           UPDATE $state SET affected_workspaces = $workspaces;
         };
-        RETURN { workspaces: $workspaces };
+        RETURN { failure: $failure, workspaces: $workspaces };
         COMMIT TRANSACTION;
       `,
       {
@@ -1459,8 +1491,13 @@ export class SurrealQuotaLifecycleStore implements QuotaLifecycleStore {
         intent: claim.intent.toString(),
       },
     );
+    const row = lastRecord(result);
+    const failure = optionalString(row?.failure);
+    if (failure !== undefined) {
+      throw operatorMutationFailureError(failure);
+    }
     return Object.freeze({
-      workspaces: Object.freeze(recordIds(lastRecord(result)?.workspaces)),
+      workspaces: Object.freeze(recordIds(row?.workspaces)),
     });
   }
 

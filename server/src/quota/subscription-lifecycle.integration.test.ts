@@ -11,9 +11,13 @@ import { SurrealEntitlementRefreshService } from "./entitlement-refresh";
 import { SurrealLifecycleBoundarySweepHandler } from "./lifecycle-sweep";
 import { SurrealQuotaLifecycleStore } from "./lifecycle-store";
 import {
-  operatorIntentDigest,
+  type EntitlementRefreshPort,
+  type OperatorIntentClaim,
   type OperatorIntentSubmission,
+  operatorIntentDigest,
+  type OperatorMutationResult,
   type ProviderSubscriptionEventInput,
+  QuotaLifecycleCoordinator,
 } from "./subscription-lifecycle";
 import { SurrealQuotaAuthorityReader } from "./quota-authority-reader";
 import { SurrealQuotaObservationStore } from "./quota-observation";
@@ -992,6 +996,237 @@ describe("quota subscription lifecycle against local SurrealDB", () => {
         now: new DateTime("2026-08-16T00:00:00.000Z"),
         leaseDurationMs: 10_000,
       })).resolves.toBeUndefined();
+    },
+    30_000,
+  );
+
+  localTest(
+    "deterministic business rejection settles terminal_failed once while transient errors still retry",
+    async () => {
+      const client = queryClient();
+      const store = new SurrealQuotaLifecycleStore(client);
+      const refreshCalls: unknown[] = [];
+      const refresher: EntitlementRefreshPort = {
+        refreshWorkspace: async (input) => {
+          refreshCalls.push(input);
+          return {};
+        },
+      };
+      let now = new DateTime("2026-09-01T00:00:00.000Z");
+      const coordinator = new QuotaLifecycleCoordinator(
+        store,
+        refresher,
+        "worker-terminal",
+        undefined,
+        {
+          clock: { now: () => now },
+          leaseDurationMs: 10_000,
+          retryMs: 5_000,
+        },
+      );
+      const persist = async (
+        submission: OperatorIntentSubmission,
+      ): Promise<StringRecordId> => {
+        const persisted = await store.persistOperatorIntent({
+          ...submission,
+          requiredCapability: submission.actorCapability,
+          inputDigest: operatorIntentDigest(submission),
+          now,
+        });
+        expect(persisted.kind).toBe("accepted");
+        return persisted.intent;
+      };
+      const stateOf = async (intent: StringRecordId) =>
+        rows(await db!.query(
+          `
+            SELECT state, attempt_count, next_attempt_at, last_error_code
+            FROM quota_operator_intent_state
+            WHERE intent = $intent;
+          `,
+          { intent },
+        ))[0];
+      const businessWrites = async (intent: StringRecordId) => ({
+        subscriptions: rows(await db!.query(
+          "SELECT id FROM quota_subscription WHERE causation_id = $causation;",
+          { causation: intent.toString() },
+        )),
+        items: rows(await db!.query(
+          "SELECT id FROM quota_subscription_item WHERE causation_id = $causation;",
+          { causation: intent.toString() },
+        )),
+      });
+
+      const missingBilling: OperatorIntentSubmission = {
+        kind: "subscription_upsert",
+        actorSubject: "operator:alice",
+        actorCapability: "subscription.manage",
+        requestId: "terminal-missing-billing",
+        workspace: id("workspace:acme"),
+        billingAccount: id("billing_account:ghost"),
+        customerReason: "缺失计费账号的确定性拒绝",
+        operatorReason: "billing_account 不存在",
+        effectiveAt: now,
+        input: {
+          mode: "manual_assignment",
+          workspace: id("workspace:acme"),
+          billing_account: id("billing_account:ghost"),
+          plan_revision: id("quota_plan_revision:plus_v1"),
+          source: "manual",
+          status: "active",
+        },
+        impactPreview: {},
+        correlationId: "corr-terminal-missing-billing",
+      };
+      const missingBillingIntent = await persist(missingBilling);
+      await expect(coordinator.processNextOperatorIntent()).resolves.toBe(
+        "failed",
+      );
+      let stateRow = await stateOf(missingBillingIntent);
+      expect(stateRow).toMatchObject({
+        state: "terminal_failed",
+        attempt_count: 1,
+        last_error_code: "operator_subscription_reference_missing",
+      });
+      expect(stateRow?.next_attempt_at ?? null).toBeNull();
+      await expect(store.claimOperatorIntent({
+        workerId: "worker-terminal",
+        now: new DateTime("2026-09-01T00:01:00.000Z"),
+        leaseDurationMs: 10_000,
+      })).resolves.toBeUndefined();
+      expect(await businessWrites(missingBillingIntent)).toEqual({
+        subscriptions: [],
+        items: [],
+      });
+
+      // 第二条确定性拒绝覆盖窗口判定：判断已挪到任何写入之前，失败时
+      // 既有 active item 不得被标 ended，也不得新建 item / subscription。
+      await db!.query(`
+        CREATE workspace:winfrag CONTENT {
+          db_name: "ws_winfrag",
+          owner_subject: "operator:alice",
+          slug: "winfrag",
+          name: "Winfrag",
+          status: "active"
+        };
+        CREATE quota_subscription:winfrag CONTENT {
+          billing_account: billing_account:acme,
+          source: "manual",
+          status: "active",
+          revision: 1,
+          correlation_id: "corr-fixture-winfrag"
+        };
+        CREATE quota_subscription_item:winfrag CONTENT {
+          subscription: quota_subscription:winfrag,
+          workspace: workspace:winfrag,
+          plan_revision: quota_plan_revision:plus_v1,
+          revision: 1,
+          status: "active",
+          effective_from: d"2026-08-01T00:00:00.000Z",
+          correlation_id: "corr-fixture-winfrag"
+        };
+      `);
+      const invalidWindow: OperatorIntentSubmission = {
+        kind: "subscription_upsert",
+        actorSubject: "operator:alice",
+        actorCapability: "subscription.manage",
+        requestId: "terminal-item-window",
+        workspace: id("workspace:winfrag"),
+        billingAccount: id("billing_account:acme"),
+        customerReason: "窗口已过期的确定性拒绝",
+        operatorReason: "付费窗口早于生效时间",
+        effectiveAt: now,
+        input: {
+          mode: "manual_assignment",
+          workspace: id("workspace:winfrag"),
+          billing_account: id("billing_account:acme"),
+          plan_revision: id("quota_plan_revision:pro_v1"),
+          source: "manual",
+          status: "active",
+          current_period_end: new DateTime("2026-08-20T00:00:00.000Z"),
+        },
+        impactPreview: {},
+        correlationId: "corr-terminal-item-window",
+      };
+      const invalidWindowIntent = await persist(invalidWindow);
+      await expect(coordinator.processNextOperatorIntent()).resolves.toBe(
+        "failed",
+      );
+      stateRow = await stateOf(invalidWindowIntent);
+      expect(stateRow).toMatchObject({
+        state: "terminal_failed",
+        attempt_count: 1,
+        last_error_code: "operator_subscription_item_window_invalid",
+      });
+      expect(stateRow?.next_attempt_at ?? null).toBeNull();
+      const winfragItems = rows(await db!.query(
+        `
+          SELECT status
+          FROM quota_subscription_item
+          WHERE workspace = workspace:winfrag;
+        `,
+      ));
+      expect(winfragItems).toHaveLength(1);
+      expect(winfragItems[0]?.status).toBe("active");
+      expect(await businessWrites(invalidWindowIntent)).toEqual({
+        subscriptions: [],
+        items: [],
+      });
+      expect(refreshCalls).toHaveLength(0);
+
+      // 对照：注入的非 QuotaLifecycleError 仍按可重试调度并可再认领。
+      class TransientErrorStore extends SurrealQuotaLifecycleStore {
+        override async applyOperatorMutation(
+          _claim: OperatorIntentClaim,
+        ): Promise<OperatorMutationResult> {
+          throw new Error("injected transient failure");
+        }
+      }
+      const transientStore = new TransientErrorStore(client);
+      const transientCoordinator = new QuotaLifecycleCoordinator(
+        transientStore,
+        refresher,
+        "worker-retry",
+        undefined,
+        {
+          clock: { now: () => now },
+          leaseDurationMs: 10_000,
+          retryMs: 5_000,
+        },
+      );
+      const transientIntent = await (async () => {
+        const submission = manualAssignment("retryable-transient", now);
+        const persisted = await transientStore.persistOperatorIntent({
+          ...submission,
+          requiredCapability: "subscription.manage",
+          inputDigest: operatorIntentDigest(submission),
+          now,
+        });
+        expect(persisted.kind).toBe("accepted");
+        return persisted.intent;
+      })();
+      await expect(
+        transientCoordinator.processNextOperatorIntent(),
+      ).resolves.toBe("retry_scheduled");
+      stateRow = await stateOf(transientIntent);
+      expect(stateRow).toMatchObject({
+        state: "failed",
+        attempt_count: 1,
+        last_error_code: "quota_lifecycle_processing_failed",
+      });
+      expect(stateRow?.next_attempt_at ?? null).not.toBeNull();
+      now = new DateTime("2026-09-01T00:00:10.000Z");
+      const reclaimed = await transientStore.claimOperatorIntent({
+        workerId: "worker-retry",
+        now,
+        leaseDurationMs: 10_000,
+      });
+      expect(reclaimed?.requestId).toBe("retryable-transient");
+      expect(Number(reclaimed?.attemptNumber)).toBe(2);
+      await transientStore.failOperatorIntent(reclaimed!, {
+        errorCode: "test_cleanup",
+        errorDetails: {},
+        failedAt: now,
+      });
     },
     30_000,
   );
