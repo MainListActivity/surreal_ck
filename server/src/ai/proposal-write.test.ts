@@ -6,6 +6,9 @@
  * - 与现值相同的字段不进 patch（最小 patch 与手工编辑一致）；
  * - 校验 / 未知字段 / 目标不可见一律抛具名 HttpError —— 抛错即回滚，
  *   连同栅栏消费一起撤销，卡片可重试。
+ *
+ * FROM ONLY 假应答必须用真实 SDK 裸对象形状（[{row}] / [null]），
+ * 不能再用 [[row]]——那会把 firstRows 形状回归漏掉（生产 403 根因）。
  */
 import { describe, expect, test } from "bun:test";
 import { proposalWriteTargetFrom, writeProposalValues } from "./proposal-write";
@@ -27,7 +30,8 @@ function tx(responses: unknown[]) {
   };
 }
 
-const SHEET_ROW = [[{
+/** 真实 SDK：SELECT ... FROM ONLY $sheet → results[0] = 裸对象。 */
+const SHEET_ROW = [{
   id: "sheet:s1",
   table_name: "p1",
   column_defs: [
@@ -35,7 +39,10 @@ const SHEET_ROW = [[{
     { key: "field_1", label: "field 1", field_type: "checkbox" },
     { key: "field_2", label: "field 2", field_type: "text" },
   ],
-}]];
+}];
+
+/** 真实 SDK：SELECT * FROM ONLY $record → results[0] = 裸对象。 */
+const RECORD_ROW = [{ id: "p1:v1", field_1: true, field_2: "原值" }];
 
 describe("proposalWriteTargetFrom", () => {
   test("row-patch 一律映射成 patch 目标", () => {
@@ -69,7 +76,7 @@ describe("writeProposalValues", () => {
   test("部分接受：只写勾选的字段，未勾选字段不出现在 patch 里", async () => {
     const { calls, tx: session } = tx([
       SHEET_ROW,
-      [[{ id: "p1:v1", field_1: true, field_2: "原值" }]],
+      RECORD_ROW,
     ]);
 
     const outcome = await writeProposalValues(session, {
@@ -88,7 +95,7 @@ describe("writeProposalValues", () => {
   test("勾选的值与现值相同 → 零写入（不 MERGE 空 patch）", async () => {
     const { calls, tx: session } = tx([
       SHEET_ROW,
-      [[{ id: "p1:v1", field_1: true }]],
+      [{ id: "p1:v1", field_1: true }],
     ]);
 
     const outcome = await writeProposalValues(session, {
@@ -111,8 +118,9 @@ describe("writeProposalValues", () => {
     expect((error as { code: string }).code).toBe("chat-write-unknown-field");
   });
 
-  test("目标 sheet 不可见 → 403，不泄露他人 sheet 存在性", async () => {
-    const { tx: session } = tx([[]]);
+  test("目标 sheet 不可见（ONLY 返回 null）→ 403，不泄露他人 sheet 存在性", async () => {
+    // 真实 SDK：FROM ONLY 不存在时 results[0] = null
+    const { tx: session } = tx([[null]]);
     const error = await writeProposalValues(session, {
       target: { sheetId: "sheet:s1", recordId: "p1:v1", operation: "patch" },
       values: { field_1: true },
@@ -121,8 +129,8 @@ describe("writeProposalValues", () => {
     expect((error as { code: string }).code).toBe("chat-write-target-unavailable");
   });
 
-  test("目标记录不存在 → 404（区别于「不可见」，避免把权限问题报成数据问题）", async () => {
-    const { tx: session } = tx([SHEET_ROW, []]);
+  test("目标记录不存在（ONLY 返回 null）→ 404", async () => {
+    const { tx: session } = tx([SHEET_ROW, [null]]);
     const error = await writeProposalValues(session, {
       target: { sheetId: "sheet:s1", recordId: "p1:missing", operation: "patch" },
       values: { field_1: true },
@@ -141,7 +149,8 @@ describe("writeProposalValues", () => {
     expect(calls).toHaveLength(0);
   });
 
-  test("create：直接 CREATE 并回传新记录 id", async () => {
+  test("create：直接 CREATE 并回传新记录 id（CREATE 仍是数组形状）", async () => {
+    // CREATE 不走 ONLY，SDK 仍返回 [[row]]；数组形状行为必须不变。
     const { calls, tx: session } = tx([SHEET_ROW, [[{ id: "p1:new" }]]]);
     const outcome = await writeProposalValues(session, {
       target: { sheetId: "sheet:s1", operation: "create" },
@@ -150,5 +159,22 @@ describe("writeProposalValues", () => {
     expect(outcome.created).toBe(true);
     expect(outcome.createdRecordId).toBe("p1:new");
     expect(calls.at(-1)!.sql).toContain("CREATE type::table($table) CONTENT $content");
+  });
+
+  test("回归：旧 mock 的 [[row]] 数组形状仍可解（兼容双形状）", async () => {
+    const nestedSheet = [[{
+      id: "sheet:s1",
+      table_name: "p1",
+      column_defs: [
+        { key: "field_1", label: "field 1", field_type: "checkbox" },
+      ],
+    }]];
+    const nestedRecord = [[{ id: "p1:v1", field_1: true }]];
+    const { tx: session } = tx([nestedSheet, nestedRecord]);
+    const outcome = await writeProposalValues(session, {
+      target: { sheetId: "sheet:s1", recordId: "p1:v1", operation: "patch" },
+      values: { field_1: false },
+    });
+    expect(Object.keys(outcome.written)).toEqual(["field_1"]);
   });
 });
