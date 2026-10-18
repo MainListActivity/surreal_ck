@@ -24,9 +24,19 @@ const opened: Surreal[] = [];
 const fixtureCleanup: Array<() => void> = [];
 
 afterEach(async () => {
-  await Promise.allSettled(opened.splice(0).map((db) => db.close()));
+  // 先结束测试库进程，再有界关闭会话：服务端已断开的连接不会再挂起关闭，关闭超时也不拖垮 afterEach 钩子。
   for (const cleanup of fixtureCleanup.splice(0)) cleanup();
+  await closeWithin(opened.splice(0), 3_000);
 });
+
+async function closeWithin(dbs: Surreal[], ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const limit = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, ms);
+  });
+  await Promise.race([Promise.allSettled(dbs.map((db) => db.close())), limit]);
+  clearTimeout(timer);
+}
 
 type Fixture = {
   url: string;
@@ -328,13 +338,13 @@ describe("VER06 关停门禁：确定性红测（公司 fork 隔离库）", () =
     const fixture = await setupFixture();
     const cancels = { calls: 0 };
     const spy = countRunCancels(cancels);
+    const runtime = createEmployeeRuntime({
+      surrealUrl: fixture.url,
+      namespace: fixture.namespace,
+      rootSession: (database) => rootSession(fixture, database),
+    });
     try {
       // 员工会话（与生产 openSession 一致）：快照的 owner 由员工身份写入，root 会话不满足表约束。
-      const runtime = createEmployeeRuntime({
-        surrealUrl: fixture.url,
-        namespace: fixture.namespace,
-        rootSession: (database) => rootSession(fixture, database),
-      });
       const session = await runtime.openSession(fixture.database, "user:ve_slow");
       const driver = createMastraEmployeeDriver({
         session: session as unknown as Parameters<typeof createMastraEmployeeDriver>[0]["session"],
@@ -361,6 +371,8 @@ describe("VER06 关停门禁：确定性红测（公司 fork 隔离库）", () =
       expect(await snapshotStatus(fixture.root, runId)).toBe("success");
     } finally {
       spy.mockRestore();
+      // 关闭本用例打开的员工会话，避免续约与重连订阅残留到后续用例。
+      await runtime.stop().catch(() => undefined);
     }
   }, 30_000);
 });
@@ -456,12 +468,12 @@ async function sharedGraceScenario(laneCount: number) {
   const clock = virtualClock();
   const hold = queryHold();
   let stopping: Promise<void> | undefined;
+  const runtime = createEmployeeRuntime({
+    surrealUrl: fixture.url,
+    namespace: fixture.namespace,
+    rootSession: (database) => rootSession(fixture, database),
+  });
   try {
-    const runtime = createEmployeeRuntime({
-      surrealUrl: fixture.url,
-      namespace: fixture.namespace,
-      rootSession: (database) => rootSession(fixture, database),
-    });
     const sessions: TriggerSessionManager = {
       async openSession(database, employeeId) {
         const session = await runtime.openSession(database, employeeId);
@@ -537,6 +549,8 @@ async function sharedGraceScenario(laneCount: number) {
       await Bun.sleep(10);
     }
     if (stopping) await settledWithin(stopping, 5_000);
+    // 停止本场景的员工运行时，释放会话续约与重连订阅，避免残留后台任务影响同进程后续用例。
+    await settledWithin(runtime.stop(), 5_000);
     cancelSpy.mockRestore();
     persistSpy.mockRestore();
   }
