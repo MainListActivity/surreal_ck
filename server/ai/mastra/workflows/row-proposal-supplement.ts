@@ -35,6 +35,11 @@ const WRITE_VERB = new RegExp(WRITE_VERBS.join("|"), "g");
 const CLOSING_QUOTE = new Map([["「", "」"], ["“", "”"], ['"', '"']]);
 /** 配对引号内的文字（含引号本身）。开引号与闭引号之间又出现同类开引号的，不算一对，保持原样。 */
 const QUOTED_SPAN = /「[^「」]*」|“[^“”]*”|"[^"]*"/g;
+/**
+ * 行定位短语：「字段」为 <行名> 的这一行。行名加不加引号都只用来定位，不参与写入动词与问句词判定。
+ * 起点的「为」紧跟字段名的闭引号，句首的「为什么」不会被当作行定位。
+ */
+const ROW_LOCATOR = /(?<=[」”"])为[^。；;！!？?]*?的这一行/g;
 /** 动词后的空白与一个冒号（：或 :），例如「填为：「待复核」」。 */
 const VALUE_LEAD = /^\s*[：:]?\s*/;
 /** 无引号目标值的结束字符：空白与标点。 */
@@ -72,9 +77,13 @@ export function explicitEditTargetValue(taskText: string): string | undefined {
 
 type ExplicitTarget = { kind: "none" } | { kind: "unclear" } | { kind: "value"; value: string };
 
-/** 引号内的文字换成等长占位符：位置与原文一一对应，写入动词与问句词只在引号外查找。 */
-function maskQuoted(text: string): string {
-  return text.replace(QUOTED_SPAN, (span) => "_".repeat(span.length));
+/**
+ * 行定位短语与引号内的文字只作数据：换成等长占位符，位置与原文一一对应。
+ * 先遮罩行定位（它依赖「字段」的闭引号），再遮罩引号内的文字。写入动词与问句词只在其余文字里查找。
+ */
+function maskData(text: string): string {
+  const mask = (span: string) => "_".repeat(span.length);
+  return text.replace(ROW_LOCATOR, mask).replace(QUOTED_SPAN, mask);
 }
 
 /**
@@ -82,10 +91,11 @@ function maskQuoted(text: string): string {
  * - none：没有写入动词，或是问句（不是写入请求）；
  * - unclear：有写入请求，但目标值无法完整界定（多个写入动词、引号未闭合或内含同类开引号、句内停顿、含虚词或语气词）；
  * - value：唯一写入动词后的完整目标值。引号内原样截取到配对右引号，无引号时只认句末结束的值。
- * 引号内的文字只作数据：行名含「如何」、目标值含「已改为」都不影响判定，值仍从原文截取。
+ * 行定位短语与引号内的文字只作数据：行名含「如何」、不加引号的行名含如何或设为、目标值含「已改为」都不影响判定，
+ * 值仍从原文截取。
  */
 function explicitEditTarget(taskText: string): ExplicitTarget {
-  const masked = maskQuoted(taskText);
+  const masked = maskData(taskText);
   const verbs = [...masked.matchAll(WRITE_VERB)];
   if (verbs.length === 0) return { kind: "none" };
   const [verb] = verbs;
