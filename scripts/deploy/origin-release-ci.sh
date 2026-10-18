@@ -3,7 +3,7 @@
 # 用法：origin-release-ci.sh <release-id> <archive> <env-additions> <sha> <approval-ref> <deployment-id>
 #   archive / env-additions 为 origin 上的暂存路径，由工作流先行 scp 上传（此时尚未停服）。
 # 结果只以主机状态文件为准：SSH 断开、超时或状态不可读都不是成功，也不是已回滚。
-# 重复调用安全：launch 幂等；已登记的 release 只回显状态；interrupted 时请求一次 --recover。
+# 重复调用安全：launch 幂等；已登记的 release 只回显状态；interrupted 时在主机接受 --recover 之前每轮请求（忙或结果未知时下一轮重试），接受后只等待主机状态。
 # 退出码：0 healthy；1 失败（终态失败、请求被拒、或截止时结果仍未知——未知由运维读取主机状态判定）。
 set -euo pipefail
 

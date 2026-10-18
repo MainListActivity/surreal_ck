@@ -6,6 +6,7 @@ run-name: "Frontend recovery ${{ inputs.sha }} (origin ${{ inputs.origin_sha }},
 # 本文件不调用 deploy-origin.yml，不依赖 Deploy production 的 origin 作业，不含 SSH/SCP，
 # 不停服、不切换 current、不改 server.env。origin 健康或核定不成立时不发布前端。
 # 只能从默认分支手动触发；origin_sha 与 origin_verified_at 须由运营只读核定后填写（见 runbook）。
+# deploy 作业开头再次检查核定时效：单独重跑 deploy 不会重跑 validate，超时即失败，须整条工作流重新派发。
 on:
   workflow_dispatch:
     inputs:
@@ -93,6 +94,7 @@ jobs:
       contents: read
     env:
       RELEASE_SHA: ${{ inputs.sha }}
+      ORIGIN_VERIFIED_AT: ${{ inputs.origin_verified_at }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       WEB_PAGES_PROJECT: ${{ vars.WEB_PAGES_PROJECT }}
@@ -112,6 +114,22 @@ jobs:
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
           egress-policy: audit
+
+      - name: Check origin verification is still fresh
+        run: |
+          set -euo pipefail
+          # 与 validate 的 frontend-recovery-gate.sh 同一窗口：核定时间须在 [-60s, 1800s] 之内。
+          # 单独重跑本作业时不会重跑 validate，因此在作业开头再检查一次（只用本 workflow 自身的 bash 与 python3，不依赖检出的 RELEASE_SHA 树）。
+          [[ "$ORIGIN_VERIFIED_AT" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
+            || { echo "::error::origin_verified_at is malformed (expects UTC YYYY-MM-DDTHH:MM:SSZ); re-dispatch the whole Frontend recovery workflow"; exit 1; }
+          verified=$(python3 -c 'import sys, datetime as d; print(int(d.datetime.strptime(sys.argv[1], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=d.timezone.utc).timestamp()))' "$ORIGIN_VERIFIED_AT") \
+            || { echo "::error::origin_verified_at does not parse; re-dispatch the whole Frontend recovery workflow"; exit 1; }
+          age=$(( $(date -u +%s) - verified ))
+          if [ "$age" -lt -60 ] || [ "$age" -gt 1800 ]; then
+            echo "::error::origin verification is stale or in the future (age ${age}s, allowed 0..1800s). Re-running this job alone is refused: re-dispatch the whole Frontend recovery workflow after ops re-verifies origin."
+            exit 1
+          fi
+          echo "origin verification is fresh (age ${age}s)"
 
       - name: Verify the release commit passed CI
         env:

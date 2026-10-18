@@ -69,7 +69,7 @@ origin 是 `data.maplayer.top`（`129.146.179.37`）上的 systemd 服务 `surre
 
 1. **上传（CI，不停服）**：确认 commit 通过 Quality gate；`git archive` 打包并附加 `server/runtime-release.json`；scp 上传 env 增改件、发布包与 `origin-release.sh` 副本到 `/tmp`（文件名含 `<sha7>-ci<run_id>`）。上传失败在停服之前结束，旧版本继续运行。
 2. **登记并分离执行（主机）**：`scripts/deploy/origin-release-ci.sh` 通过 SSH 调用 `--launch`。launch 只校验参数与上传件，登记状态并取锁，然后以 `nohup` 启动分离的工作进程并立即返回；SSH 断开不影响工作进程。工作进程依次执行：解包到 `releases/<sha7>-ci<run_id>`；`bunx pnpm@10.32.1 install --frozen-lockfile --prod`；试用与分配来源门禁（纯静态、无副作用）；备份 `server.env` 到 `~/surreal_ck/backups/env/`；把 GitHub `production` Environment 中的 `ORIGIN_ENV_<NAME>` secret 逐行写成 `<NAME>=<值>`（只增改这些键，值必须单行，日志只打印键名；`UNSET` 哨兵表示删除该键）；撤销兼容门禁（见下）；若存在 `scripts/deploy/origin-pre-start.sh` 则停服执行该钩子（`ORIGIN_ENV_FILE` 指向 `server.env`，钩子必须幂等）；原子切换 `current`；重启服务；健康探测。
-3. **收敛（CI 读取主机状态文件）**：CI 每 15 秒用 `--status` 读取状态，最多等 20 分钟。只有 `healthy` 才算成功。`interrupted`（工作进程已消失且未到终态）时 CI 请求一次 `--recover`。任何终态失败都会让 job 失败。SSH 失败、超时或状态不可读**既不是成功，也不是回滚**：job 以「结果未知」失败，由运维读取主机状态后判定。
+3. **收敛（CI 读取主机状态文件）**：CI 每 15 秒用 `--status` 读取状态，最多等 20 分钟。只有 `healthy` 才算成功。`interrupted`（工作进程已消失且未到终态）时 CI 在主机接受 `--recover` 之前每轮请求一次（忙或结果未知时下一轮重试），接受后只等待主机状态，不重复请求。任何终态失败都会让 job 失败。SSH 失败、超时或状态不可读**既不是成功，也不是回滚**：job 以「结果未知」失败，由运维读取主机状态后判定。
 
 健康探测轮询 `http://127.0.0.1:8080/health` 最多 30 次，每次 curl 超时 5 秒、间隔 3 秒，合计约 240 秒（旧文档写的 90 秒已更正）。钩子失败或健康探测失败时，先过门禁，再恢复 `server.env` 备份与上一个 `current` 并重启，结果为 `rolled-back`，job 失败，Cloudflare 不会发布。CI 发布目录与 env 备份各保留最近 8 个，手工发布目录不动。
 
@@ -78,7 +78,7 @@ origin 是 `data.maplayer.top`（`129.146.179.37`）上的 systemd 服务 `surre
 | 状态 | 含义 | 处置 |
 | --- | --- | --- |
 | `running` | 工作进程仍在执行 | 等待；超过截止时间时读取 `--status` 与 `--log` |
-| `interrupted` | 工作进程已消失且未到终态（例如主机重启或进程被杀） | CI 自动请求 `--recover`；恢复被拒时由运维处理 |
+| `interrupted` | 工作进程已消失且未到终态（例如主机重启或进程被杀） | CI 自动请求 `--recover`（主机接受前每轮重试，接受后只等待）；恢复被拒时由运维处理 |
 | `healthy` | 已切换并通过健康探测 | 成功 |
 | `rolled-back` | 切换或健康失败后已恢复上一个版本并健康 | job 失败；先看日志中的失败原因 |
 | `rollback-refused` | 上一个版本未通过门禁，回滚被拒，当前版本保持原状 | 人工处置，优先向前修复 |
@@ -128,6 +128,10 @@ GitHub `production` Environment 额外配置：
 
 准入门禁（`scripts/deploy/frontend-recovery-gate.sh`）检查：`sha` 等于 `origin_sha`；核定时间新鲜；目标已合入 `main`；Quality gate 成功；运营批准评论可核查（作者授权、正文绑定 sha 与核定时间、创建不早于核定时间）；origin 健康探测返回 `status=ok` 且 `surrealdb=up`。任何一项不成立都拒绝发布前端。
 
+核定时效在两处检查，窗口相同：`validate` 运行准入门禁；`deploy` 作业开头再检查一次。核定时间须距运行时刻不超过 30 分钟，且不得超前当前时间 60 秒以上；超时即 `deploy` 失败。
+
+**失败后不得只重跑失败的作业。** `validate` 或 `deploy` 任一失败，都须整条工作流重新派发（Run workflow）。核定已超过 30 分钟时，先由运营重新只读核定 origin，填写新的 `origin_sha` 与 `origin_verified_at`，并在批准评论中写明新的核定时间。整条重新派发会让 `validate` 重新跑全部准入检查（含 origin 健康探测），`deploy` 只在它之后执行。即使仍在 30 分钟窗口内，单独重跑 `deploy` 也不允许：它会跳过 `validate` 的健康探测与批准复核。代码只拦截过期的重跑，窗口内的单独重跑靠本条操作规程禁止。
+
 `RELEASE_APPROVER_LOGINS` 由仓库所有者配置（`gh variable set RELEASE_APPROVER_LOGINS --repo MainListActivity/surreal_ck --body '<登录名,…>'`）。**未配置前前端恢复一律拒绝**（fail closed）。本页不写死任何登录名。
 
 发布后检查：`https://l.maplayer.top/runtime-version.json` 必须显示本次 `sha` 与运行的 `deploymentId`；同时检查 `/health`、应用首页、营销站与 `/ops/` 标题。runtime-version 只证明当前 Pages 部署是目标构建，不证明某个浏览器仍缓存的旧 JS 已刷新。
@@ -137,7 +141,7 @@ GitHub `production` Environment 额外配置：
 1. `Deploy production` 保持禁用（`disabled_manually`），前端恢复不会启用它。
 2. 工具 PR 经独立评审并获运营批准后合并到 `main`，确认 `main` 上的 Quality gate 通过。
 3. 运营只读核定 origin 运行 SHA，并填写 `origin_sha` 与 `origin_verified_at`。
-4. 从 `main` 运行 `Frontend recovery`，目标为已核定的 SHA。
+4. 从 `main` 运行 `Frontend recovery`，目标为已核定的 SHA。任何失败都整条重新派发，不只重跑失败的作业（见上文）。
 5. 运营只读确认 origin 与 web 的 SHA、`www` 与 `/ops/` 正常；独立 QA 复核。
 6. 只有前端恢复与 QA 证据齐全、且运营批准之后，才重新启用 `Deploy production`，并核对启用后的状态。
 

@@ -53,6 +53,15 @@ function needsOf(job: Doc): string[] {
   return [job.needs ?? []].flat().filter((n): n is string => typeof n === "string");
 }
 
+const GATE = join(import.meta.dir, "../../../scripts/deploy/frontend-recovery-gate.sh");
+const FRESHNESS_STEP = "Check origin verification is still fresh";
+
+function freshnessRun(doc: Doc): string {
+  const step = (doc.jobs.deploy.steps as Step[]).find((item) => item.name === FRESHNESS_STEP);
+  expect(step).toBeDefined();
+  return String(step?.run ?? "");
+}
+
 const FILES = [
   "deploy-origin.yml",
   "deploy-origin-manual.yml",
@@ -251,6 +260,49 @@ describe("release-frontend-recovery.yml（前端定向恢复，不触碰 origin�
     const joined = runs.join("\n");
     expect(joined).toMatch(/\.sha\s*==\s*\$sha/);
     expect(joined).toMatch(/\.deploymentId\s*==\s*\$dep/);
+  });
+
+  test("deploy job 的 env 含 ORIGIN_VERIFIED_AT，取自 workflow 输入", () => {
+    expect(doc.jobs.deploy.env?.ORIGIN_VERIFIED_AT).toBe("${{ inputs.origin_verified_at }}");
+  });
+
+  test("deploy job 的核定时效步骤位于 CI 检查与任何 checkout 之前", () => {
+    const steps: Step[] = doc.jobs.deploy.steps ?? [];
+    const fresh = steps.findIndex((step) => step.name === FRESHNESS_STEP);
+    const ci = steps.findIndex((step) => step.name === "Verify the release commit passed CI");
+    const firstCheckout = steps.findIndex((step) => String(step.uses ?? "").startsWith("actions/checkout"));
+    expect(fresh).toBeGreaterThanOrEqual(0);
+    expect(fresh).toBeLessThan(ci);
+    expect(fresh).toBeLessThan(firstCheckout);
+  });
+
+  test("时效步骤与 gate 同一窗口（-60 至 1800 秒），超时错误要求整条工作流重新派发", () => {
+    const run = freshnessRun(doc);
+    expect(run).toContain("ORIGIN_VERIFIED_AT");
+    expect(run).toContain('"$age" -lt -60');
+    expect(run).toContain('"$age" -gt 1800');
+    expect(run).toContain("re-dispatch the whole Frontend recovery workflow");
+    const gate = readFileSync(GATE, "utf8");
+    expect(gate).toContain('"$age" -lt -60');
+    expect(gate).toContain("MAX_ORIGIN_AGE_SEC:-1800");
+  });
+
+  test("时效步骤按 run 原文执行：窗口内放行；过期、未来或格式错误均失败并提示重新派发", () => {
+    const run = freshnessRun(doc);
+    const check = (verifiedAt: string) => {
+      const proc = Bun.spawnSync(["bash", "-c", run], {
+        env: { ...process.env, ORIGIN_VERIFIED_AT: verifiedAt },
+      });
+      return { code: proc.exitCode, out: `${proc.stdout.toString()}${proc.stderr.toString()}` };
+    };
+    const at = (offsetSec: number) => new Date(Date.now() + offsetSec * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
+
+    expect(check(at(-30)).code).toBe(0);
+    const stale = check(at(-1920));
+    expect(stale.code).not.toBe(0);
+    expect(stale.out).toContain("re-dispatch the whole Frontend recovery workflow");
+    expect(check(at(300)).code).not.toBe(0);
+    expect(check("2026-10-18 22:00:00").code).not.toBe(0);
   });
 
   test("顶层 permissions 为空对象", () => {
