@@ -447,7 +447,7 @@ const settledWithin = (promise: Promise<unknown>, ms: number): Promise<boolean> 
   Promise.race([promise.then(() => true, () => true), Bun.sleep(ms).then(() => false)]);
 
 /**
- * 共享宽限场景：laneCount 个 lane 各有一个挂起的 run。到点中止后员工会话的查询全部挂起
+ * 共享宽限场景：laneCount 个 lane 各有一个挂起的 run（逐个启动，到点前全部在途）。到点中止后员工会话的查询全部挂起
  * （窗口收尾与 canceled 快照写库都无法结算），宽限只由虚拟钟推进一次。
  */
 async function sharedGraceScenario(laneCount: number) {
@@ -498,16 +498,25 @@ async function sharedGraceScenario(laneCount: number) {
       return {};
     });
     triggerRuntime.start();
-    const enqueued = employeeIds.map((employeeId, index) =>
-      triggerRuntime.enqueue({
-        database: fixture.database,
-        employeeId,
-        reason: "daily-claims-risk",
-        payloadRef: "2026-09-30",
-        idempotencyKey: `grace:${laneCount}:${index}`,
-      }),
-    );
-    expect(await waitUntil(async () => handlerStarts === laneCount)).toBe(true);
+    // 逐个启动 lane：每个 handler 进入后再入队下一条。同库并发的启动写入会在 fork 的配额准入上冲突
+    // （CI 实测 "Quota admission conflicted with another transaction"，冲突 lane 在窗口启动阶段崩溃且永不进入 handler）。
+    // 到点中止时仍是 laneCount 个 lane 同时在途，只去掉启动阶段的写库竞争。
+    const enqueued: Array<ReturnType<typeof triggerRuntime.enqueue>> = [];
+    for (const [index, employeeId] of employeeIds.entries()) {
+      enqueued.push(
+        triggerRuntime.enqueue({
+          database: fixture.database,
+          employeeId,
+          reason: "daily-claims-risk",
+          payloadRef: "2026-09-30",
+          idempotencyKey: `grace:${laneCount}:${index}`,
+        }),
+      );
+      expect({ lane: index, started: await waitUntil(async () => handlerStarts === index + 1) }).toEqual({
+        lane: index,
+        started: true,
+      });
+    }
 
     // 中止之后数据库不再响应：员工会话的每次查询（含 canceled 写库与窗口收尾）都挂起。
     hold.engage();
