@@ -10,6 +10,7 @@ import {
   explicitEditTargetValue,
   keepValueMatchedProposals,
   planExplicitEditProposal,
+  REASON_VALUE_UNCLEAR,
   ROW_PROPOSAL_TOOL,
 } from "./row-proposal-supplement";
 import { ROW_ANALYSIS_NO_PROPOSAL_TEXT } from "../agents/row-analysis-agent";
@@ -90,6 +91,32 @@ describe("explicitEditTargetValue：只认写入动词后的目标值", () => {
   test("普通提问不命中写入动词", () => {
     expect(explicitEditTargetValue("分析当前记录的巡检状态")).toBeUndefined();
   });
+
+  for (const [text, value] of [
+    ["把状态填为「已联系客户的负责人」", "已联系客户的负责人"],
+    ["把状态填为「待复核，已确认」", "待复核，已确认"],
+    ["把状态填为「待 复核」", "待 复核"],
+    ["把状态填为“待复核”", "待复核"],
+    ["把状态填为「 待复核 」", "待复核"],
+  ] as const) {
+    test(`引号内原样截取到配对右引号：${text} → ${value}`, () => {
+      expect(explicitEditTargetValue(text)).toBe(value);
+    });
+  }
+
+  for (const text of [
+    "把复核状态设为什么比较合适？",
+    "把状态改为待复核吗？",
+    "把状态设为「待复核」吗？",
+    "把状态改为已联系客户的负责人，只改这一行。",
+    "把状态改为待复核，只改这一行。",
+    "把状态填为「待复核",
+    "把状态设为待复核，并把备注改为「已确认」",
+  ]) {
+    test(`问句或无法完整界定的目标值不作写入值：${text}`, () => {
+      expect(explicitEditTargetValue(text)).toBeUndefined();
+    });
+  }
 });
 
 describe("planExplicitEditProposal：判定是否补一次提案调用", () => {
@@ -134,6 +161,28 @@ describe("planExplicitEditProposal：判定是否补一次提案调用", () => {
   test("limit=1 时唯一命中也无法证明唯一 → blocked", () => {
     const plan = planExplicitEditProposal(EXPLICIT_TASK, [locateCall([UNIQUE_MATCH], { limit: 1 })]);
     expect(plan.kind === "blocked" && plan.reason).toContain("无法确认目标行唯一");
+  });
+
+  test("目标值无法完整界定 → blocked 并说明须把目标值放进「」里，不补调用", () => {
+    for (const text of ["把状态改为待复核，只改这一行。", "把状态改为已联系客户的负责人，只改这一行。"]) {
+      expect(planExplicitEditProposal(text, [locateCall([UNIQUE_MATCH])])).toEqual({
+        kind: "blocked",
+        reason: REASON_VALUE_UNCLEAR,
+      });
+    }
+  });
+
+  test("问句不是写入请求 → skip", () => {
+    expect(planExplicitEditProposal("把复核状态设为什么比较合适？", [locateCall([UNIQUE_MATCH])])).toEqual({ kind: "skip" });
+  });
+
+  test("引号内完整目标值 → supplement，值逐字保留", () => {
+    expect(planExplicitEditProposal("把冷却泵 7 号的复核状态填为「待复核，已确认」", [locateCall([UNIQUE_MATCH])])).toEqual({
+      kind: "supplement",
+      sheetId: "sheet:devices",
+      recordId: "ent_devices:pump-7",
+      value: "待复核，已确认",
+    });
   });
 });
 
@@ -330,10 +379,47 @@ describe("row-analysis 显式改字段的补充提案（FV06）", () => {
     expect(out.text).not.toContain(ROW_ANALYSIS_NO_PROPOSAL_TEXT);
   });
 
-  const blockedCases: Array<{ name: string; matches: LocateMatch[]; locate: Record<string, unknown>; reason: string }> = [
+  test("引号内含逗号的完整目标值：提案卡建议值逐字等于用户原话", async () => {
+    const taskText = "把冷却泵 7 号的复核状态填为「待复核，已确认」";
+    const { model, calls } = await scriptedModel([
+      toolTurn("c1", "findRecords", LOCATE_INPUT),
+      textTurn(""),
+      toolTurn("c2", "analyzeRow", analyzeInput([{ field: "复核状态", suggestedValue: "待复核，已确认" }])),
+    ]);
+    const out = await run(
+      { ensureExplicitEditProposal: true, noOutputText: ROW_ANALYSIS_NO_PROPOSAL_TEXT },
+      rowAgent("fv06-full-value", model, [UNIQUE_MATCH]),
+      taskText,
+    );
+
+    expect(calls).toHaveLength(3);
+    expect(JSON.stringify(calls[2]?.prompt)).toContain("「待复核，已确认」");
+    expect(out.suspend?.kind).toBe("await-write-confirm");
+    expect(out.suspend).toMatchObject({
+      intent: {
+        type: "row-patch-proposal",
+        proposals: [{ field: "check_status", currentValue: "已复核", suggestedValue: "待复核，已确认" }],
+      },
+    });
+  });
+
+  const blockedCases: Array<{
+    name: string;
+    matches: LocateMatch[];
+    locate: Record<string, unknown>;
+    reason: string;
+    task?: string;
+  }> = [
     { name: "未找到", matches: [], locate: LOCATE_INPUT, reason: "没有找到与目标行匹配的记录" },
     { name: "多条命中", matches: [UNIQUE_MATCH, SECOND_MATCH], locate: LOCATE_INPUT, reason: "命中 2 条" },
     { name: "limit=1 不能证明唯一", matches: [UNIQUE_MATCH], locate: { ...LOCATE_INPUT, limit: 1 }, reason: "无法确认目标行唯一" },
+    {
+      name: "目标值无法界定",
+      matches: [UNIQUE_MATCH],
+      locate: LOCATE_INPUT,
+      reason: "请把目标值放进「」里",
+      task: "把冷却泵 7 号的复核状态填为待复核，只改这一行。",
+    },
   ];
   for (const item of blockedCases) {
     test(`${item.name}：不补调用、不挂起，以明确原因收尾`, async () => {
@@ -344,7 +430,7 @@ describe("row-analysis 显式改字段的补充提案（FV06）", () => {
       const out = await run(
         { ensureExplicitEditProposal: true, noOutputText: ROW_ANALYSIS_NO_PROPOSAL_TEXT },
         rowAgent(`fv06-blocked-${item.name}`, model, item.matches),
-        EXPLICIT_TASK,
+        item.task ?? EXPLICIT_TASK,
       );
 
       expect(calls).toHaveLength(2);
