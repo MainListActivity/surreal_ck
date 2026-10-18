@@ -142,6 +142,7 @@ export function createMastraEmployeeDriver(
     logger: new ConsoleLogger({ name: "Mastra-employee", level: "warn" }),
   });
   const workflow = mastra.getWorkflow(EMPLOYEE_WORKFLOW_ID);
+  type MastraRun = Awaited<ReturnType<typeof workflow.createRun>>;
 
   function jobContext(): RequestContext {
     const requestContext = new RequestContext();
@@ -155,11 +156,84 @@ export function createMastraEmployeeDriver(
   }
 
   /**
-   * 当前驱动创建的最近一个 workflow run（一个窗口一次只有一个 run 在执行）。
-   * 关停到点时 runtime 调 abort() → run.cancel()：中止执行并把 snapshot
-   * 落 canceled，reconcile 随后把触发收敛为 failed。
+   * 本驱动的中止状态机：一个驱动只承载一次 run（start / restart / resume 三选一）。
+   * - idle / creating：中止记为 abortRequested，不丢失；run 创建后立即 cancel。
+   *   createRun 尚未返回时到达的中止，abort() 的 promise 在取消完成后才结算。
+   * - running：中止即 run.cancel()，同一 run 只取消一次（幂等）。
+   * - finished：start/restart/resume 已返回（成功、失败或 suspended）；终态不再取消。
    */
-  let activeRun: { cancel(): Promise<void> } | null = null;
+  let phase: "idle" | "creating" | "running" | "finished" = "idle";
+  let activeRun: MastraRun | null = null;
+  let abortRequested = false;
+  let cancelling: Promise<void> | undefined;
+  let cancelSettled: Promise<void> | undefined;
+  let settleCancelSettled: (() => void) | undefined;
+
+  function cancelActiveRun(): Promise<void> {
+    if (!activeRun) return Promise.resolve();
+    cancelling ??= activeRun.cancel().catch((cause: unknown) => {
+      // cancel 只终止执行并落 canceled snapshot；失败时触发仍靠 lease 回收兜底。
+      console.warn("[employee-mastra-runner] run cancel failed", {
+        message: cause instanceof Error ? cause.message : String(cause),
+      });
+    });
+    return cancelling;
+  }
+
+  async function execute(
+    createRun: () => Promise<MastraRun>,
+    body: (run: MastraRun) => Promise<MastraRunResult>,
+    // resume 的 run 可能处于 suspended（可恢复的等待态）：创建期间的中止只放弃本次恢复，不取消它。
+    cancelIfAbortedWhileCreating = true,
+  ): Promise<EmployeeRunResult> {
+    if (phase !== "idle") throw new Error("employee-run-driver-reused");
+    phase = "creating";
+    let run: MastraRun;
+    try {
+      run = await createRun();
+    } catch (cause) {
+      phase = "finished";
+      settleCancelSettled?.();
+      throw cause;
+    }
+    activeRun = run;
+    phase = "running";
+    if (abortRequested) {
+      // 中止在 createRun 期间到达：不再执行 body（否则 start 会把已取消的快照改回 running）。
+      // start/restart 取消 run，快照落 canceled；resume 保留 suspended 快照，只放弃本次恢复。
+      if (cancelIfAbortedWhileCreating) await cancelActiveRun();
+      settleCancelSettled?.();
+      phase = "finished";
+      return { status: "failed", error: "window-aborted" };
+    }
+    const result = await body(run).then(
+      (outcome) => {
+        phase = "finished";
+        return outcome;
+      },
+      (cause: unknown) => {
+        phase = "finished";
+        throw cause;
+      },
+    );
+    return toRunResult(result);
+  }
+
+  async function abort(): Promise<void> {
+    if (phase === "finished") return;
+    abortRequested = true;
+    if (phase === "running") {
+      await cancelActiveRun();
+      return;
+    }
+    if (phase === "creating") {
+      cancelSettled ??= new Promise<void>((resolve) => {
+        settleCancelSettled = resolve;
+      });
+      await cancelSettled;
+    }
+    // idle：尚未启动；后续 start 创建 run 后按 abortRequested 立即取消。
+  }
 
   return {
     async loadRunState(runId) {
@@ -173,45 +247,35 @@ export function createMastraEmployeeDriver(
     },
 
     async start({ runId, trigger }) {
-      const run = await workflow.createRun({ runId });
-      activeRun = run;
-      const result = (await run.start({
-        inputData: trigger,
-        requestContext: jobContext(),
-      })) as MastraRunResult;
-      return toRunResult(result);
+      return execute(
+        () => workflow.createRun({ runId }),
+        async (run) =>
+          (await run.start({
+            inputData: trigger,
+            requestContext: jobContext(),
+          })) as MastraRunResult,
+      );
     },
 
     async restart({ runId }) {
-      const run = await workflow.createRun({ runId });
-      activeRun = run;
-      const result = (await run.restart({
-        requestContext: jobContext(),
-      })) as MastraRunResult;
-      return toRunResult(result);
+      return execute(
+        () => workflow.createRun({ runId }),
+        async (run) => (await run.restart({ requestContext: jobContext() })) as MastraRunResult,
+      );
     },
 
     async resume({ runId, resumeData }) {
-      const run = await workflow.createRun({ runId });
-      activeRun = run;
-      const result = (await run.resume({
-        resumeData,
-        requestContext: jobContext(),
-      })) as MastraRunResult;
-      return toRunResult(result);
+      return execute(
+        () => workflow.createRun({ runId }),
+        async (run) =>
+          (await run.resume({
+            resumeData,
+            requestContext: jobContext(),
+          })) as MastraRunResult,
+        false,
+      );
     },
 
-    async abort() {
-      const run = activeRun;
-      if (!run) return;
-      try {
-        await run.cancel();
-      } catch (cause) {
-        // cancel 只终止执行并落 canceled snapshot；失败时触发仍靠 lease 回收兜底。
-        console.warn("[employee-mastra-runner] run cancel failed", {
-          message: cause instanceof Error ? cause.message : String(cause),
-        });
-      }
-    },
+    abort,
   };
 }

@@ -462,6 +462,8 @@ type Lane = {
   windowAbort?: AbortController;
   /** 本窗口的中止原因（abortWindow 设置；waiter 结算用）。 */
   windowAbortReason?: WindowAbortReason;
+  /** 窗口中止后仍在途的驱动 abort 结算（run.cancel 写库）：关闭员工会话前须等齐。 */
+  pendingAborts: Set<Promise<void>>;
   /** 当前窗口开始时间戳（lease age 指标）。 */
   windowStartedAt?: number;
   /** triggerId → 等待其终态的 enqueue 调用方。 */
@@ -593,6 +595,7 @@ export function createEmployeeTriggerRuntime(deps: {
         windowPlanned: false,
         followupWanted: false,
         waiters: new Map(),
+        pendingAborts: new Set(),
       };
       lanes.set(key, lane);
     }
@@ -718,7 +721,13 @@ export function createEmployeeTriggerRuntime(deps: {
   async function closeLaneSession(lane: Lane): Promise<void> {
     const session = lane.session;
     lane.session = undefined;
-    if (session) await deps.sessions.close(lane.database, lane.employeeId).catch(() => undefined);
+    if (!session) return;
+    // 游离的中止（run.cancel 写 canceled 快照）须先于会话关闭结算，否则快照写库会撞上已断开的连接。
+    // 有界等待：到点仍未结算的不再等（与 abortGraceMs 的强制收尾语义一致）。
+    if (lane.pendingAborts.size > 0) {
+      await Promise.race([Promise.allSettled([...lane.pendingAborts]), sleep(abortGraceMs)]);
+    }
+    await deps.sessions.close(lane.database, lane.employeeId).catch(() => undefined);
   }
 
   // ── waiter 结算 ─────────────────────────────────────────────────────────
@@ -1169,15 +1178,7 @@ export function createEmployeeTriggerRuntime(deps: {
     });
     // 窗口被 abort（关停到点）→ 尽力把中止传到 workflow 层（run.cancel），
     // 之后 reconcile 看到 canceled snapshot 会把触发收敛为 failed。
-    if (abortSignal) {
-      const kick = () => {
-        void Promise.resolve()
-          .then(() => driver.abort?.())
-          .catch(() => undefined);
-      };
-      if (abortSignal.aborted) kick();
-      else abortSignal.addEventListener("abort", kick, { once: true });
-    }
+    if (abortSignal) forwardWindowAbort(lane, driver, abortSignal);
     const state = await driver.loadRunState(runId);
 
     if (state && state.status === "suspended") {
@@ -1202,12 +1203,16 @@ export function createEmployeeTriggerRuntime(deps: {
     }
 
     await setStatus(session, triggerId, "running");
+    // 窗口已中止：不再启动新 run（取消与快照写库无法再保证），触发保持 lease 已清回的可回收态。
+    if (abortSignal?.aborted) return abortedFailure(lane, triggerId);
     const result = state === null
       ? await driver.start({ runId, trigger: envelope })
       : RESTARTABLE_SNAPSHOT_STATUSES.has(state.status)
         ? await driver.restart({ runId, trigger: envelope })
         : { status: "failed", error: `unsupported-snapshot-status:${state.status}` } satisfies EmployeeRunResult;
 
+    // 窗口已中止且未成功：canceled 快照即事实来源，本次结果不覆写触发状态，交 reconcile 收敛。
+    if (abortSignal?.aborted && result.status !== "success") return abortedFailure(lane, triggerId);
     if (result.status === "success") {
       await setStatus(session, triggerId, "completed", { result: result.output });
       return { outcome: "completed", triggerId };
@@ -1241,6 +1246,30 @@ export function createEmployeeTriggerRuntime(deps: {
     });
     settleWaiter(lane, triggerId, { outcome: "failed", triggerId, error: message });
     return true;
+  }
+
+  /** 窗口已中止时的触发结果：归一化原因，不写触发状态（交 reconcile 按 canceled 快照收敛）。 */
+  function abortedFailure(lane: Lane, triggerId: string): EnqueueResult {
+    return { outcome: "failed", triggerId, error: lane.windowAbortReason ?? "window-aborted" };
+  }
+
+  /**
+   * 窗口中止 → 驱动 abort（run.cancel 落 canceled 快照）。驱动 abort 返回的 promise 记入
+   * lane.pendingAborts：closeLaneSession 关闭员工会话前须等它结算，否则快照写库撞上已断开的连接。
+   */
+  function forwardWindowAbort(lane: Lane, driver: EmployeeRunDriver, signal: AbortSignal): void {
+    const kick = () => {
+      const pending: Promise<void> = Promise.resolve()
+        .then(() => driver.abort?.())
+        .then(
+          () => undefined,
+          () => undefined,
+        );
+      lane.pendingAborts.add(pending);
+      void pending.then(() => lane.pendingAborts.delete(pending));
+    };
+    if (signal.aborted) kick();
+    else signal.addEventListener("abort", kick, { once: true });
   }
 
   /**
@@ -1632,17 +1661,7 @@ export function createEmployeeTriggerRuntime(deps: {
               resolveHandler: (r) => handlers.get(r),
               gates: gatesFor(lane, session, { count: 0 }),
             });
-            if (driver.abort) {
-              abort.signal.addEventListener(
-                "abort",
-                () => {
-                  void Promise.resolve()
-                    .then(() => driver.abort?.())
-                    .catch(() => undefined);
-                },
-                { once: true },
-              );
-            }
+            forwardWindowAbort(lane, driver, abort.signal);
             const state = await driver.loadRunState(runId);
             if (!state) {
               // 显式 suspended 的触发缺 snapshot = 持久层不一致，fail-closed。
@@ -1653,6 +1672,7 @@ export function createEmployeeTriggerRuntime(deps: {
               return { outcome: "failed", triggerId, error: `run-not-suspended:${state.status}` };
             }
             await setStatus(session, triggerId, "running");
+            if (abort.signal.aborted) return abortedFailure(lane, triggerId);
             const resuming = driver.resume({ runId, trigger: envelope, resumeData });
             resuming.catch(() => undefined);
             const raced = await Promise.race<EmployeeRunResult | "aborted">([
