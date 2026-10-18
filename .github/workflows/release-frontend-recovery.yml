@@ -22,7 +22,7 @@ on:
         type: string
         required: true
       approval_ref:
-        description: 运营批准编号（写入运行名称、作业摘要与审计）
+        description: 运营批准评论的数字 ID（本仓库 issue 评论；作者须在仓库变量 RELEASE_APPROVER_LOGINS 中，正文须含目标 sha 与核定时间）
         type: string
         required: true
 
@@ -45,10 +45,12 @@ jobs:
     permissions:
       checks: read
       contents: read
+      issues: read
     env:
       GH_TOKEN: ${{ github.token }}
       RELEASE_SHA: ${{ inputs.sha }}
       ORIGIN_SHA: ${{ inputs.origin_sha }}
+      RELEASE_APPROVER_LOGINS: ${{ vars.RELEASE_APPROVER_LOGINS }}
       ORIGIN_VERIFIED_AT: ${{ inputs.origin_verified_at }}
       APPROVAL_REF: ${{ inputs.approval_ref }}
     steps:

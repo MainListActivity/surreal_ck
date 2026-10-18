@@ -63,6 +63,8 @@ origin 是 `data.maplayer.top`（`129.146.179.37`）上的 systemd 服务 `surre
 
 `Deploy origin` 只能被调用（`workflow_call`），没有顶层 `workflow_dispatch`。两条入口执行同一份 `deploy-origin.yml`，并必须带 `approval_ref`：自动路径为 `deploy-production-<运行号>`，手动路径为运营批准号（见下文「手动发布 origin」）。
 
+发布目标门禁（`scripts/deploy/release-target-gate.sh`）在任何上传之前执行：目标提交须是 `origin/main` 的祖先（compare 状态为 `behind` 或 `identical`），且 Quality gate 成功。回滚目标同样适用。未合入 main 的提交（例如 PR 头）在这里被拒绝，即使它的 Quality gate 是绿的。
+
 发布分三段。**停服只发生在第 2 段的工作进程内，且只在上传、解包、依赖安装与全部门禁通过之后。**
 
 1. **上传（CI，不停服）**：确认 commit 通过 Quality gate；`git archive` 打包并附加 `server/runtime-release.json`；scp 上传 env 增改件、发布包与 `origin-release.sh` 副本到 `/tmp`（文件名含 `<sha7>-ci<run_id>`）。上传失败在停服之前结束，旧版本继续运行。
@@ -122,9 +124,11 @@ GitHub `production` Environment 额外配置：
 - `sha`：目标 commit（完整 SHA），必须已合入 `main` 且 Quality gate 成功。
 - `origin_sha`：运营只读核定的 origin 运行 SHA（完整 SHA），必须等于 `sha`。`/api/ops/runtime-version` 需要运营会话，CI 无法读取，因此由运营核定后填写。
 - `origin_verified_at`：核定时间（UTC，格式 `YYYY-MM-DDTHH:MM:SSZ`），核定后 30 分钟内有效。
-- `approval_ref`：运营批准编号，写入运行名称与作业摘要。
+- `approval_ref`：运营批准评论的数字 ID（本仓库 issue 评论）。评论作者须在仓库变量 `RELEASE_APPROVER_LOGINS` 中（大小写不敏感），正文须逐字包含目标 `sha` 与 `origin_verified_at`，且创建时间不早于核定时间。
 
-准入门禁（`scripts/deploy/frontend-recovery-gate.sh`）检查：`sha` 等于 `origin_sha`；核定时间新鲜；目标已合入 `main`；Quality gate 成功；origin 健康探测返回 `status=ok` 且 `surrealdb=up`。任何一项不成立都拒绝发布前端。
+准入门禁（`scripts/deploy/frontend-recovery-gate.sh`）检查：`sha` 等于 `origin_sha`；核定时间新鲜；目标已合入 `main`；Quality gate 成功；运营批准评论可核查（作者授权、正文绑定 sha 与核定时间、创建不早于核定时间）；origin 健康探测返回 `status=ok` 且 `surrealdb=up`。任何一项不成立都拒绝发布前端。
+
+`RELEASE_APPROVER_LOGINS` 由仓库所有者配置（`gh variable set RELEASE_APPROVER_LOGINS --repo MainListActivity/surreal_ck --body '<登录名,…>'`）。**未配置前前端恢复一律拒绝**（fail closed）。本页不写死任何登录名。
 
 发布后检查：`https://l.maplayer.top/runtime-version.json` 必须显示本次 `sha` 与运行的 `deploymentId`；同时检查 `/health`、应用首页、营销站与 `/ops/` 标题。runtime-version 只证明当前 Pages 部署是目标构建，不证明某个浏览器仍缓存的旧 JS 已刷新。
 
@@ -139,7 +143,9 @@ GitHub `production` Environment 额外配置：
 
 ## 已知问题：action_required
 
-运行 39153839203 被 GitHub 记为 `action_required`，没有作业，也没有检查项。API 没有给出根因，**根因尚未证实**。当前的手动入口改为 `deploy-origin-manual.yml` 调用可复用的 `deploy-origin.yml`，顶层不再有 `workflow_dispatch`。这个入口是否消除该状态，需要在 `main` 上实际运行后确认。若仍出现 `action_required`，记录运行号，由仓库所有者检查 Actions 设置（环境保护规则、分支策略），不要绕过 owner-only 保护或必需检查。
+运行 39153839203 被 GitHub 记为 `action_required`，没有作业，也没有检查项。核对结果（只读，2026-10-18）：`deploy-origin.yml` 的直接派发（`workflow_dispatch`）自 2026-09-29 起共 20 次全部记为 `action_required`，没有作业，没有检查项，API 不给出原因；最后一次成功的直接派发是 2026-09-28。同一文件经 `Deploy production` 的 `workflow_call` 调用、使用同一 `production` 环境时仍成功（如运行 `39074722491`，2026-10-17）。**根因尚未证实。**
+
+当前手动入口为 `deploy-origin-manual.yml`（顶层只有 `workflow_dispatch`，调用可复用的 `deploy-origin.yml`），并新增 `dry_run` 探针：`dry_run=true` 时只运行 `probe` 作业，它不使用 `environment` 也不使用 `secrets`。**合入 `main` 后须先运行一次 `dry_run=true`：** 探针产生作业，说明派发本身可用，问题在可复用工作流的环境或密钥；探针仍为 `action_required` 且无作业，则记录运行号，由仓库所有者检查 Actions 设置（环境保护规则、分支策略），不要绕过 owner-only 保护或必需检查。
 
 ## 边界
 

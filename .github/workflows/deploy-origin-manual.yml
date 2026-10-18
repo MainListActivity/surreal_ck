@@ -4,25 +4,42 @@ run-name: "Deploy origin ${{ inputs.sha }} (manual, approval ${{ inputs.approval
 
 # 手动重发/回滚 origin 的唯一入口。顶层只做输入登记与 main 守卫，真正的发布逻辑在
 # deploy-origin.yml（workflow_call，与 Deploy production 调用的是同一份代码）。
-# 运行 39153839203 曾被记为 action_required 且没有作业，根因未能经 API 证实，见 runbook。
+# dry_run=true 时只运行 probe 作业：它不使用 environment 也不使用 secrets，用于验证派发能否产生作业。
+# 运行 39153839203 等自 2026-09-29 起的直接派发被记为 action_required 且没有作业，根因未经 API 证实，见 runbook。
 on:
   workflow_dispatch:
     inputs:
       sha:
-        description: 已通过 Quality gate 的提交（完整 SHA；回滚时填上一个已通过 Quality gate 的提交）
+        description: 已通过 Quality gate 的提交（完整 SHA；须是 origin/main 的祖先；回滚时填上一个已通过 Quality gate 的提交）
         type: string
         required: true
       approval_ref:
         description: 运营批准或回滚记录编号（写入运行名称与作业日志，用于审计）
         type: string
         required: true
+      dry_run:
+        description: 探针模式：只运行不接触 environment 与 secrets 的 probe 作业，不发布（用于验证派发能否产生作业）
+        type: boolean
+        default: false
 
 permissions: {}
 
 jobs:
+  probe:
+    name: Dispatch probe (no environment, no secrets)
+    if: github.ref == 'refs/heads/main' && inputs.dry_run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Record the probe
+        env:
+          PROBE_SHA: ${{ inputs.sha }}
+        run: echo "dispatch probe reached a job; requested sha=$PROBE_SHA; no environment and no secrets were used"
+
   origin:
     name: Hono origin (manual)
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && !inputs.dry_run
     permissions:
       checks: read
       contents: read

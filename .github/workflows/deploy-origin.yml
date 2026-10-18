@@ -6,8 +6,9 @@ run-name: "Deploy origin ${{ inputs.sha }} (approval ${{ inputs.approval_ref }})
 # （手动，approval_ref 为运营批准号）。顶层不提供 workflow_dispatch，手动入口统一经
 # deploy-origin-manual.yml，见 docs/runbooks/production-release.md。
 #
-# 步骤顺序即安全边界：先校验 Quality gate，再上传（只写暂存件，不停服），最后由
-# origin-release-ci.sh 登记激活并观察主机状态文件。SSH 断开不是成功，也不是回滚。
+# 步骤顺序即安全边界：先校验发布目标（须是 origin/main 的祖先且 Quality gate 成功，回滚目标同样适用），
+# 再上传（只写暂存件，不停服），最后由 origin-release-ci.sh 登记激活并观察主机状态文件。
+# SSH 断开不是成功，也不是回滚。
 on:
   workflow_call:
     inputs:
@@ -49,25 +50,16 @@ jobs:
         with:
           egress-policy: audit
 
-      - name: Verify the release commit passed CI
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          test -n "$RELEASE_SHA"
-          passed="$(gh api \
-            "repos/$GITHUB_REPOSITORY/commits/$RELEASE_SHA/check-runs" \
-            --jq 'any(.check_runs[]; .name == "Quality gate" and .conclusion == "success")')"
-          if [ "$passed" != "true" ]; then
-            echo "::error::Quality gate for $RELEASE_SHA has not succeeded"
-            exit 1
-          fi
-
       - name: Checkout deploy tooling
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           sparse-checkout: scripts/deploy
           persist-credentials: false
+
+      - name: Verify the release target (main ancestor and Quality gate)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/deploy/release-target-gate.sh
 
       - name: Checkout the CI-approved commit
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

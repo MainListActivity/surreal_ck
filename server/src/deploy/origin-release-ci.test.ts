@@ -289,6 +289,27 @@ describe("origin-release-ci.sh 收敛", () => {
     STATUS_TIMEOUT,
   );
 
+  test("恢复已被接受后，同一运行再次出现 interrupted 不重复请求 recover", async () => {
+    const h = makeHarness({
+      status: ["state=interrupted", "state=interrupted", "state=healthy"],
+      recover: [0],
+    });
+    const r = await runCi(h, validArgs(h));
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("already accepted");
+    expect(count(h, "--recover")).toBe(1);
+  });
+
+  test("恢复请求忙（退出 75）时未被接受，下一轮继续请求直到被接受", async () => {
+    const h = makeHarness({
+      status: ["state=interrupted", "state=interrupted", "state=healthy"],
+      recover: [75, 0],
+    });
+    const r = await runCi(h, validArgs(h));
+    expect(r.code).toBe(0);
+    expect(count(h, "--recover")).toBe(2);
+  });
+
   describe("参数校验先于任何 ssh 调用", () => {
     const cases: Array<[string, (h: Harness) => string[], string]> = [
       ["sha 非 40 位小写 hex（大写）", (h) => [ID, h.archive, h.envFile, SHA.toUpperCase(), APPROVAL, DEPLOY_ID], "sha must be"],

@@ -20,6 +20,8 @@ interval_sec=${ORIGIN_WATCH_INTERVAL_SEC:-15}
 remote_script="$staging/origin-release-${release_id}.sh"
 ssh_opts=(-o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
 contacted=0
+# 恢复请求是否已被主机接受：接受后同一运行再次出现 interrupted 只等待，不重复请求。
+recover_accepted=0
 
 fail() {
   echo "::error::$*" >&2
@@ -107,7 +109,7 @@ recover_request() {
   out=$(origin_run --recover "$release_id" 2>&1) || rc=$?
   printf '%s\n' "$out"
   case "$rc" in
-    0) echo "recovery requested on origin for $release_id" ;;
+    0) recover_accepted=1; echo "recovery requested on origin for $release_id" ;;
     75) echo "origin is busy; waiting" ;;
     255) echo "recovery request outcome unknown (ssh); reading the host state on the next poll" ;;
     *) fail "origin refused recovery for $release_id (rc=$rc); ops must read the host state" ;;
@@ -133,7 +135,11 @@ while :; do
     running)
       echo "origin activation $release_id is running" ;;
     interrupted)
-      recover_request ;;
+      if [ "$recover_accepted" = 1 ]; then
+        echo "recovery for $release_id was already accepted; waiting for the host state"
+      else
+        recover_request
+      fi ;;
     absent)
       launch_request ;;
     "")

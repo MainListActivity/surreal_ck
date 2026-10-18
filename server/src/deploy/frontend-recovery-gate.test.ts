@@ -6,16 +6,26 @@ import { join } from "node:path";
 /**
  * 前端恢复准入门禁契约测试（scripts/deploy/frontend-recovery-gate.sh）。
  *
- * 在临时 git 仓库中验证：目标必须等于运营核定的 origin SHA、核定时间新鲜、
- * 目标已合入 main、Quality gate 成功、origin 健康探测通过。
- * gh / curl / ssh / scp 全部为桩；ssh 与 scp 在任何用例中都不得被调用。
+ * 在临时 git 仓库中验证：目标必须等于运营核定的 origin SHA、核定时间新鲜、目标已合入 main、
+ * Quality gate 成功、运营批准可核查（评论存在、作者授权、正文绑定 sha 与核定时间、创建不早于核定时间）、
+ * origin 健康探测通过。gh / curl / ssh / scp 全部为桩；ssh 与 scp 在任何用例中都不得被调用。
  */
 
 const GATE = join(import.meta.dir, "../../../scripts/deploy/frontend-recovery-gate.sh");
 const NOW = Date.UTC(2026, 0, 1, 0, 0, 0) / 1000;
 const HEALTHY_BODY = '{"status":"ok","surrealdb":"up"}';
 
+// gh 桩：issues/comments 端点输出 FAKE_COMMENT（或失败）；其它调用（check-runs）输出 FAKE_QG。
 const FAKE_GH = `#!/usr/bin/env bash
+case "$*" in
+  *issues/comments*)
+    if [ "$FAKE_COMMENT_FAIL" = "1" ]; then
+      echo "gh: simulated comment failure" >&2
+      exit 1
+    fi
+    printf '%s' "$FAKE_COMMENT"
+    exit 0 ;;
+esac
 if [ "$FAKE_GH_FAIL" = "1" ]; then
   echo "gh: simulated failure" >&2
   exit 1
@@ -102,6 +112,17 @@ function makeContext(): Ctx {
 
 const iso = (sec: number) => new Date(sec * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
 
+function approvalComment(opts: {
+  sha: string;
+  verifiedAt: string;
+  createdAt: string;
+  login: string;
+  body?: string;
+}): string {
+  const body = opts.body ?? `批准前端恢复 ${opts.sha}，origin 核定于 ${opts.verifiedAt}`;
+  return JSON.stringify({ user: { login: opts.login }, body, created_at: opts.createdAt });
+}
+
 function baseEnv(ctx: Ctx, overrides: Record<string, string | undefined> = {}): Record<string, string> {
   const env: Record<string, string> = {
     PATH: `${ctx.bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
@@ -111,7 +132,15 @@ function baseEnv(ctx: Ctx, overrides: Record<string, string | undefined> = {}): 
     RELEASE_SHA: ctx.A,
     ORIGIN_SHA: ctx.A,
     ORIGIN_VERIFIED_AT: iso(NOW - 60),
-    APPROVAL_REF: "approval-123",
+    APPROVAL_REF: "4500000001",
+    RELEASE_APPROVER_LOGINS: "approver-a,approver-b",
+    FAKE_COMMENT: approvalComment({
+      sha: ctx.A,
+      verifiedAt: iso(NOW - 60),
+      createdAt: iso(NOW - 30),
+      login: "approver-a",
+    }),
+    FAKE_COMMENT_FAIL: "0",
     GITHUB_REPOSITORY: "owner/repo",
     GH_TOKEN: "test-token-placeholder",
     MAIN_REF: "main",
@@ -181,9 +210,13 @@ describe("frontend-recovery-gate.sh 准入门禁", () => {
     expect(remoteCalls(ctx)).toEqual([]);
   });
 
-  test("核定时间在未来 60 秒以内允许通过（边界）", async () => {
+  test("核定时间在未来 60 秒以内允许通过（边界，批准创建时间与核定时间相同）", async () => {
     const ctx = makeContext();
-    const r = await runGate(ctx, { ORIGIN_VERIFIED_AT: iso(NOW + 60) });
+    const verifiedAt = iso(NOW + 60);
+    const r = await runGate(ctx, {
+      ORIGIN_VERIFIED_AT: verifiedAt,
+      FAKE_COMMENT: approvalComment({ sha: ctx.A, verifiedAt, createdAt: verifiedAt, login: "approver-a" }),
+    });
     expect(r.code).toBe(0);
     expect(remoteCalls(ctx)).toEqual([]);
   });
@@ -247,6 +280,7 @@ describe("frontend-recovery-gate.sh 准入门禁", () => {
   for (const [name, ref] of [
     ["含空格", "bad ref"],
     ["过短", "abc"],
+    ["旧式字符串（须为评论数字 ID）", "approval-123"],
   ] as const) {
     test(`APPROVAL_REF ${name} 时拒绝`, async () => {
       const ctx = makeContext();
@@ -272,6 +306,92 @@ describe("frontend-recovery-gate.sh 准入门禁", () => {
     const r = await runGate(ctx, { RELEASE_SHA: short, ORIGIN_SHA: short });
     expect(r.code).toBe(1);
     expect(r.out).toContain("release_sha must be a full lowercase commit SHA");
+    expect(remoteCalls(ctx)).toEqual([]);
+  });
+});
+
+describe("运营批准可核查（评论绑定 sha 与核定时间）", () => {
+  test("RELEASE_APPROVER_LOGINS 未配置时拒绝（fail closed）", async () => {
+    const ctx = makeContext();
+    const r = await runGate(ctx, { RELEASE_APPROVER_LOGINS: undefined });
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("RELEASE_APPROVER_LOGINS is not configured");
+    expect(remoteCalls(ctx)).toEqual([]);
+  });
+
+  test("RELEASE_APPROVER_LOGINS 只含空白与逗号时同样拒绝", async () => {
+    const ctx = makeContext();
+    const r = await runGate(ctx, { RELEASE_APPROVER_LOGINS: " , " });
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("RELEASE_APPROVER_LOGINS is not configured");
+    expect(remoteCalls(ctx)).toEqual([]);
+  });
+
+  test("评论作者不在白名单时拒绝", async () => {
+    const ctx = makeContext();
+    const r = await runGate(ctx, {
+      FAKE_COMMENT: approvalComment({ sha: ctx.A, verifiedAt: iso(NOW - 60), createdAt: iso(NOW - 30), login: "mallory" }),
+    });
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("is not by an authorized approver");
+    expect(remoteCalls(ctx)).toEqual([]);
+  });
+
+  test("作者按大小写不敏感匹配白名单时通过", async () => {
+    const ctx = makeContext();
+    const r = await runGate(ctx, {
+      FAKE_COMMENT: approvalComment({ sha: ctx.A, verifiedAt: iso(NOW - 60), createdAt: iso(NOW - 30), login: "Approver-B" }),
+    });
+    expect(r.code).toBe(0);
+  });
+
+  test("评论不可读（gh 失败）时拒绝", async () => {
+    const ctx = makeContext();
+    const r = await runGate(ctx, { FAKE_COMMENT_FAIL: "1" });
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("is not readable in this repository");
+    expect(remoteCalls(ctx)).toEqual([]);
+  });
+
+  test("正文缺少目标 sha 时拒绝", async () => {
+    const ctx = makeContext();
+    const r = await runGate(ctx, {
+      FAKE_COMMENT: approvalComment({
+        sha: ctx.A,
+        verifiedAt: iso(NOW - 60),
+        createdAt: iso(NOW - 30),
+        login: "approver-a",
+        body: `批准，核定于 ${iso(NOW - 60)}`,
+      }),
+    });
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("does not name the release sha");
+    expect(remoteCalls(ctx)).toEqual([]);
+  });
+
+  test("正文缺少核定时间时拒绝", async () => {
+    const ctx = makeContext();
+    const r = await runGate(ctx, {
+      FAKE_COMMENT: approvalComment({
+        sha: ctx.A,
+        verifiedAt: iso(NOW - 60),
+        createdAt: iso(NOW - 30),
+        login: "approver-a",
+        body: `批准 ${ctx.A}`,
+      }),
+    });
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("does not name the origin verification time");
+    expect(remoteCalls(ctx)).toEqual([]);
+  });
+
+  test("评论创建早于核定时间时拒绝（不能复用更早的批准）", async () => {
+    const ctx = makeContext();
+    const r = await runGate(ctx, {
+      FAKE_COMMENT: approvalComment({ sha: ctx.A, verifiedAt: iso(NOW - 60), createdAt: iso(NOW - 120), login: "approver-a" }),
+    });
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("predates the origin verification");
     expect(remoteCalls(ctx)).toEqual([]);
   });
 });
