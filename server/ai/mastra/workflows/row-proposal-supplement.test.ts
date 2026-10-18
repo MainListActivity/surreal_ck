@@ -129,6 +129,28 @@ describe("explicitEditTargetValue：只认写入动词后的目标值", () => {
     });
   }
 
+  for (const ending of ["的这一行", "的那一行", "的该行", "这一行"]) {
+    for (const rowName of ["如何部署上线", "为什么超时", "怎么办", "设为重点的泵"]) {
+      const text = `把「事项」为 ${rowName} ${ending}的「状态」字段填为「待复核」，只改这一行。`;
+      test(`行定位结尾「${ending}」，行名不加引号：${rowName} → 待复核`, () => {
+        expect(explicitEditTargetValue(text)).toBe("待复核");
+      });
+    }
+  }
+
+  test("行名含逗号：以「的这一行」或后接「的」的「这一行」结尾，仍作行定位，问句词不参与判定", () => {
+    for (const text of [
+      "把「事项」为 修复，如何上线 的这一行的「状态」字段填为「待复核」，只改这一行。",
+      "把「事项」为 修复，如何上线 这一行的「状态」字段填为「待复核」，只改这一行。",
+    ]) {
+      expect(explicitEditTargetValue(text)).toBe("待复核");
+    }
+  });
+
+  test("行定位不跨过引号：后面的字段与写入动词不被遮罩", () => {
+    expect(explicitEditTargetValue("把「事项」为 A 的行的「状态」字段填为「待复核」，只改这一行。")).toBe("待复核");
+  });
+
   test("未闭合的开引号不遮罩写入动词：把「状态改为「待复核」→ 待复核", () => {
     expect(explicitEditTargetValue("把「状态改为「待复核」")).toBe("待复核");
   });
@@ -178,6 +200,13 @@ describe("explicitEditTargetValue：只认写入动词后的目标值", () => {
     "怎么把「事项」为 设为重点的泵 的这一行的「状态」字段填为「待复核」，只改这一行。",
     "把「状态」改为「待复核」会怎样？",
     "把状态改为「待复核「已确认」",
+    "为什么把「事项」为 如何部署上线 的那一行的「状态」字段填为「待复核」，只改这一行。",
+    "分析为什么把「事项」为 如何部署上线 的该行的「状态」字段填为「待复核」，只改这一行。",
+    "怎么把「事项」为 设为重点的泵 这一行的「状态」字段填为「待复核」，只改这一行。",
+    "为什么要把「事项」为 如何部署上线 这一行的「状态」字段填为「待复核」，只改这一行。",
+    "把「事项」为 如何部署上线 的那一行的「状态」字段填为「待复核」会怎样？",
+    "把「事项」为 如何部署上线 这一行的「状态」字段填为「待复核」吗？",
+    "把「事项」为 怎么办 的该行的「状态」字段改为待复核吗？",
   ]) {
     test(`问句或无法完整界定的目标值不作写入值：${text}`, () => {
       expect(explicitEditTargetValue(text)).toBeUndefined();
@@ -283,6 +312,28 @@ describe("planExplicitEditProposal：判定是否补一次提案调用", () => {
     }
   });
 
+  test("行定位四种结尾（行名不加引号）：问句词与写入动词不参与判定 → supplement", () => {
+    for (const ending of ["的这一行", "的那一行", "的该行", "这一行"]) {
+      for (const rowName of ["如何部署上线", "为什么超时", "怎么办", "设为重点的泵"]) {
+        expect(planExplicitEditProposal(`把「事项」为 ${rowName} ${ending}的「状态」字段填为「待复核」，只改这一行。`, [locateCall([UNIQUE_MATCH])])).toEqual({
+          kind: "supplement",
+          sheetId: "sheet:devices",
+          recordId: "ent_devices:pump-7",
+          value: "待复核",
+        });
+      }
+    }
+  });
+
+  test("裸「这一行」后不接「的」时不作行定位：写入动词仍被判定，目标值无法界定 → blocked", () => {
+    for (const text of ["把「事项」为 A，填为待复核，只改这一行。", "把「事项」为 A 的状态字段填为待复核 只改这一行。"]) {
+      expect(planExplicitEditProposal(text, [locateCall([UNIQUE_MATCH])])).toEqual({
+        kind: "blocked",
+        reason: REASON_VALUE_UNCLEAR,
+      });
+    }
+  });
+
   test("句首问句与分析为什么类、怎么把、为什么要类 → skip，不补调用", () => {
     for (const text of [
       "为什么把「状态」改为「待复核」",
@@ -291,6 +342,9 @@ describe("planExplicitEditProposal：判定是否补一次提案调用", () => {
       "为什么要把「状态」改为「待复核」",
       "为什么把「事项」为 如何部署上线 的这一行的「状态」字段填为「待复核」，只改这一行。",
       "怎么把「事项」为 设为重点的泵 的这一行的「状态」字段填为「待复核」，只改这一行。",
+      "分析为什么把「事项」为 如何部署上线 的该行的「状态」字段填为「待复核」，只改这一行。",
+      "为什么要把「事项」为 如何部署上线 这一行的「状态」字段填为「待复核」，只改这一行。",
+      "为什么把「事项」为 如何部署上线 的那一行的「状态」字段填为「待复核」会怎样？",
     ]) {
       expect(planExplicitEditProposal(text, [locateCall([UNIQUE_MATCH])])).toEqual({ kind: "skip" });
     }
@@ -568,6 +622,29 @@ describe("row-analysis 显式改字段的补充提案（FV06）", () => {
 
     expect(calls).toHaveLength(3);
     expect(toolNames(calls[2])).toEqual([ROW_PROPOSAL_TOOL]);
+    expect(out.suspend?.kind).toBe("await-write-confirm");
+    expect(out.suspend).toMatchObject({
+      intent: { type: "row-patch-proposal", proposals: [{ field: "check_status", suggestedValue: "待复核" }] },
+    });
+  });
+
+  test("行定位结尾为「的那一行」（行名不加引号含「如何」）：同一请求内只补一次 analyzeRow，建议值为「待复核」", async () => {
+    const { model, calls } = await scriptedModel([
+      toolTurn("c1", "findRecords", LOCATE_INPUT),
+      textTurn(""),
+      toolTurn("c2", "analyzeRow", analyzeInput([{ field: "复核状态", suggestedValue: "待复核" }])),
+    ]);
+    const records: AiToolCallRecord[] = [];
+    const out = await run(
+      { ensureExplicitEditProposal: true, noOutputText: ROW_ANALYSIS_NO_PROPOSAL_TEXT, onToolCall: (r) => records.push(r) },
+      rowAgent("fv06-row-ending-na-yi-hang", model, [UNIQUE_MATCH]),
+      "把「事项」为 如何部署上线 的那一行的「状态」字段填为「待复核」，只改这一行。",
+    );
+
+    expect(calls).toHaveLength(3);
+    expect(toolNames(calls[2])).toEqual([ROW_PROPOSAL_TOOL]);
+    expect(records.map((r) => r.toolName)).toEqual(["findRecords", "analyzeRow"]);
+    expect(out.text).not.toContain(ROW_ANALYSIS_NO_PROPOSAL_TEXT);
     expect(out.suspend?.kind).toBe("await-write-confirm");
     expect(out.suspend).toMatchObject({
       intent: { type: "row-patch-proposal", proposals: [{ field: "check_status", suggestedValue: "待复核" }] },
