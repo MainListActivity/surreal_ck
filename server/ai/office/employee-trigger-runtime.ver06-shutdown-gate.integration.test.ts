@@ -6,7 +6,7 @@ import { Surreal } from "surrealdb";
 import { SurrealWorkflowsStorage } from "../mastra/storage/surreal-workflows-storage";
 import { createMastraEmployeeDriver } from "./employee-mastra-runner";
 import { createEmployeeRuntime } from "./employee-runtime";
-import { createEmployeeTriggerRuntime } from "./employee-trigger-runtime";
+import { createEmployeeTriggerRuntime, type TriggerSessionManager } from "./employee-trigger-runtime";
 
 /**
  * VER06 关停门禁的确定性红测，跑在公司 fork 的隔离临时库上。
@@ -17,6 +17,7 @@ import { createEmployeeTriggerRuntime } from "./employee-trigger-runtime";
  *   handler 不得执行，快照落 canceled。
  * - teardown 次序：canceled 快照写库未完成时，stop 不得结束、员工会话不得被关闭。
  * - 幂等与终态：重复 stop 只取消一次；run 已正常完成后的 driver.abort 不得把成功快照改写为 canceled。
+ * - 共享宽限：1 与 8 个 lane 的在途中止共用同一次停机宽限（虚拟钟逐次推进，员工会话查询被闸门挂起）。
  */
 
 const opened: Surreal[] = [];
@@ -362,4 +363,191 @@ describe("VER06 关停门禁：确定性红测（公司 fork 隔离库）", () =
       spy.mockRestore();
     }
   }, 30_000);
+});
+
+const SHARED_GRACE_MS = 2_000;
+
+/** 虚拟钟：sleep 只在测试推进时返回，停机宽限由测试逐次推进，不依赖真实等待。 */
+function virtualClock() {
+  let elapsed = 0;
+  let timers: Array<{ at: number; resolve: () => void }> = [];
+  return {
+    sleep(ms: number): Promise<void> {
+      return new Promise<void>((resolve) => {
+        timers.push({ at: elapsed + ms, resolve });
+      });
+    },
+    pending: () => timers.length,
+    elapsed: () => elapsed,
+    advance(ms: number): void {
+      elapsed += ms;
+      const due = timers.filter((timer) => timer.at <= elapsed);
+      timers = timers.filter((timer) => timer.at > elapsed);
+      for (const timer of due) timer.resolve();
+    },
+  };
+}
+
+/** 查询闸：engage 之后员工会话上的每次 query 都挂起，直到 release（模拟中止后数据库不再响应）。 */
+function queryHold() {
+  const released = deferred();
+  let engaged = false;
+  return {
+    engage: () => {
+      engaged = true;
+    },
+    release: () => released.resolve(),
+    pass: async (): Promise<void> => {
+      if (engaged) await released.promise;
+    },
+  };
+}
+
+/** 员工会话包装：query 经查询闸放行，其余成员绑定到真实会话原样透出。 */
+function holdingSession(session: Surreal, hold: ReturnType<typeof queryHold>): Surreal {
+  return new Proxy(session, {
+    get(target, prop) {
+      if (prop === "query") {
+        return (sql: string, params?: Record<string, unknown>) => hold.pass().then(() => target.query(sql, params));
+      }
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+async function addEmployees(fixture: Fixture, count: number): Promise<string[]> {
+  const ids: string[] = [];
+  const statements: string[] = [];
+  for (let i = 0; i < count; i++) {
+    const id = `ve_gate_${i}`;
+    ids.push(`user:${id}`);
+    statements.push(
+      `CREATE user:${id} CONTENT { email: "${id}@virtual.local", subject: "${id}", kind: "virtual", is_admin: false, display_name: "门禁专员${i}", virtual_profile: { status: "active", role_key: "gate" } };`,
+      `INSERT INTO employee_credential { employee: user:${id}, secret: "ver06-pass", created_at: time::now() };`,
+    );
+  }
+  await fixture.root.query(statements.join("\n")).collect();
+  return ids;
+}
+
+const settledWithin = (promise: Promise<unknown>, ms: number): Promise<boolean> =>
+  Promise.race([promise.then(() => true, () => true), Bun.sleep(ms).then(() => false)]);
+
+/**
+ * 共享宽限场景：laneCount 个 lane 各有一个挂起的 run。到点中止后员工会话的查询全部挂起
+ * （窗口收尾与 canceled 快照写库都无法结算），宽限只由虚拟钟推进一次。
+ */
+async function sharedGraceScenario(laneCount: number) {
+  const fixture = await setupFixture();
+  const employeeIds = await addEmployees(fixture, laneCount);
+  const cancels = { calls: 0 };
+  const cancelSpy = countRunCancels(cancels);
+  const canceledWrites = { calls: 0 };
+  const originalPersist = SurrealWorkflowsStorage.prototype.persistWorkflowSnapshot;
+  const persistSpy = spyOn(SurrealWorkflowsStorage.prototype, "persistWorkflowSnapshot").mockImplementation(async function (
+    this: unknown,
+    args: Parameters<SurrealWorkflowsStorage["persistWorkflowSnapshot"]>[0],
+  ) {
+    if (args.snapshot.status === "canceled") canceledWrites.calls += 1;
+    return (originalPersist as unknown as (...a: unknown[]) => Promise<void>).call(this, args);
+  });
+  const closes = { calls: 0 };
+  const clock = virtualClock();
+  const hold = queryHold();
+  let stopping: Promise<void> | undefined;
+  try {
+    const runtime = createEmployeeRuntime({
+      surrealUrl: fixture.url,
+      namespace: fixture.namespace,
+      rootSession: (database) => rootSession(fixture, database),
+    });
+    const sessions: TriggerSessionManager = {
+      async openSession(database, employeeId) {
+        const session = await runtime.openSession(database, employeeId);
+        return holdingSession(session, hold) as unknown as Awaited<ReturnType<TriggerSessionManager["openSession"]>>;
+      },
+      async close(database, employeeId) {
+        closes.calls += 1;
+        return runtime.close(database, employeeId);
+      },
+    };
+    const triggerRuntime = createEmployeeTriggerRuntime({
+      sessions,
+      driver: createMastraEmployeeDriver,
+      abortGraceMs: SHARED_GRACE_MS,
+      sessionOpDeadlineMs: 60_000,
+      sleep: clock.sleep,
+    });
+    let handlerStarts = 0;
+    triggerRuntime.registerHandler("daily-claims-risk", async () => {
+      handlerStarts += 1;
+      await new Promise<never>(() => {});
+      return {};
+    });
+    triggerRuntime.start();
+    const enqueued = employeeIds.map((employeeId, index) =>
+      triggerRuntime.enqueue({
+        database: fixture.database,
+        employeeId,
+        reason: "daily-claims-risk",
+        payloadRef: "2026-09-30",
+        idempotencyKey: `grace:${laneCount}:${index}`,
+      }),
+    );
+    expect(await waitUntil(async () => handlerStarts === laneCount)).toBe(true);
+
+    // 中止之后数据库不再响应：员工会话的每次查询（含 canceled 写库与窗口收尾）都挂起。
+    hold.engage();
+    stopping = triggerRuntime.stop({ deadlineMs: 0 });
+    expect(triggerRuntime.stop({ deadlineMs: 0 })).toBe(stopping);
+    clock.advance(0); // 到点：只推进到 deadline，不推进宽限
+    expect(await waitUntil(async () => cancels.calls === laneCount)).toBe(true);
+    expect(await waitUntil(async () => clock.pending() > 0)).toBe(true);
+    await Bun.sleep(100);
+    // 宽限未到：在途中止未结算，会话不得关闭，stop 不得结束。
+    expect({ closes: closes.calls, settled: await settledWithin(stopping, 0) }).toEqual({ closes: 0, settled: false });
+
+    // 宽限只推进一次：全部会话应在这一次到点后关闭，stop 随之结束，不再等待额外的宽限。
+    clock.advance(SHARED_GRACE_MS);
+    expect(await waitUntil(async () => closes.calls === laneCount, 3_000)).toBe(true);
+    expect(await settledWithin(stopping, 3_000)).toBe(true);
+    expect(clock.elapsed()).toBe(SHARED_GRACE_MS);
+    const shutdown = triggerRuntime.metrics().shutdown;
+    expect({
+      timedOut: shutdown.timedOut,
+      abortedWindows: shutdown.abortedWindows,
+      abandonedAborts: shutdown.abandonedAborts,
+    }).toEqual({ timedOut: true, abortedWindows: laneCount, abandonedAborts: laneCount });
+
+    // 释放数据库后的迟到结果：不重复取消、不重复写 canceled、不重复关闭会话。
+    // 放弃的中止仍挂在查询闸后；释放后只会在已关闭的连接上失败，不得产生新的取消、写库或关闭。
+    const atBudget = { cancels: cancels.calls, canceledWrites: canceledWrites.calls, closes: closes.calls };
+    expect({ cancels: atBudget.cancels, closes: atBudget.closes }).toEqual({ cancels: laneCount, closes: laneCount });
+    expect(atBudget.canceledWrites).toBeLessThanOrEqual(laneCount);
+    hold.release();
+    expect((await Promise.all(enqueued)).map((result) => result.outcome)).toEqual(employeeIds.map(() => "failed"));
+    await Bun.sleep(100);
+    expect({ cancels: cancels.calls, canceledWrites: canceledWrites.calls, closes: closes.calls }).toEqual(atBudget);
+  } finally {
+    // 失败路径也要放行挂起的查询并推进虚拟钟，避免残留停机任务阻塞后续用例。
+    hold.release();
+    for (let i = 0; i < laneCount + 2; i++) {
+      clock.advance(SHARED_GRACE_MS);
+      await Bun.sleep(10);
+    }
+    if (stopping) await settledWithin(stopping, 5_000);
+    cancelSpy.mockRestore();
+    persistSpy.mockRestore();
+  }
+}
+
+describe("VER06 关停门禁：共享宽限预算（公司 fork 隔离库）", () => {
+  test("1 lane：在途中止的宽限到点一次即收尾，会话关闭且 stop 结束", async () => {
+    await sharedGraceScenario(1);
+  }, 60_000);
+
+  test("8 lane：在途中止共享同一次宽限，到点不随 lane 数线性累加", async () => {
+    await sharedGraceScenario(8);
+  }, 60_000);
 });

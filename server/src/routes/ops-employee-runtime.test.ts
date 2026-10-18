@@ -24,7 +24,7 @@ const sampleHealth = () => ({
     renewals: 2, renewalFailures: 0, invalidated: 0,
   },
   reconcile: { runs: 2, scanned: 9, reclaimed: 3, lastRunAt: "2026-10-01T00:05:00.000Z" },
-  shutdown: { runs: 0, timedOut: false, abortedWindows: 0, durationMs: null },
+  shutdown: { runs: 0, timedOut: false, abortedWindows: 0, abandonedAborts: 0, durationMs: null },
   signals: 1,
   startup: {
     state: "done" as const,
