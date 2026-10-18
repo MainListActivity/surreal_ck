@@ -33,6 +33,10 @@ const WRITE_VERBS = [
 const WRITE_VERB = new RegExp(WRITE_VERBS.join("|"), "g");
 /** 配对引号：只有引号内的文本才原样截取为目标值。 */
 const CLOSING_QUOTE = new Map([["「", "」"], ["“", "”"], ['"', '"']]);
+/** 配对引号内的文字（含引号本身）。开引号与闭引号之间又出现同类开引号的，不算一对，保持原样。 */
+const QUOTED_SPAN = /「[^「」]*」|“[^“”]*”|"[^"]*"/g;
+/** 动词后的空白与一个冒号（：或 :），例如「填为：「待复核」」。 */
+const VALUE_LEAD = /^\s*[：:]?\s*/;
 /** 无引号目标值的结束字符：空白与标点。 */
 const UNQUOTED_STOP = /[\s，,。；;！!？?、：:「」“”"（）()【】\[\].]/;
 /** 句末标点。无引号目标值只有在句末结束时才可界定；句内停顿（逗号等）说明边界不清。 */
@@ -68,21 +72,29 @@ export function explicitEditTargetValue(taskText: string): string | undefined {
 
 type ExplicitTarget = { kind: "none" } | { kind: "unclear" } | { kind: "value"; value: string };
 
+/** 引号内的文字换成等长占位符：位置与原文一一对应，写入动词与问句词只在引号外查找。 */
+function maskQuoted(text: string): string {
+  return text.replace(QUOTED_SPAN, (span) => "_".repeat(span.length));
+}
+
 /**
  * 判定子任务文本的写入目标。
  * - none：没有写入动词，或是问句（不是写入请求）；
- * - unclear：有写入请求，但目标值无法完整界定（多个写入动词、引号未闭合、句内停顿、含虚词或语气词）；
+ * - unclear：有写入请求，但目标值无法完整界定（多个写入动词、引号未闭合或内含同类开引号、句内停顿、含虚词或语气词）；
  * - value：唯一写入动词后的完整目标值。引号内原样截取到配对右引号，无引号时只认句末结束的值。
+ * 引号内的文字只作数据：行名含「如何」、目标值含「已改为」都不影响判定，值仍从原文截取。
  */
 function explicitEditTarget(taskText: string): ExplicitTarget {
-  const verbs = [...taskText.matchAll(WRITE_VERB)];
+  const masked = maskQuoted(taskText);
+  const verbs = [...masked.matchAll(WRITE_VERB)];
   if (verbs.length === 0) return { kind: "none" };
   const [verb] = verbs;
   const start = verb.index ?? 0;
-  if (QUESTION_BEFORE_VERB.test(taskText.slice(0, start))) return { kind: "none" };
+  if (QUESTION_BEFORE_VERB.test(masked.slice(0, start))) return { kind: "none" };
   if (verbs.length > 1) return { kind: "unclear" };
-  // 动词后可以有一个冒号（：或 :）再接目标值，例如「填为：「待复核」」。
-  const after = taskText.slice(start + verb[0].length).replace(/^\s*[：:]?\s*/, "");
+  const verbEnd = start + verb[0].length;
+  const after = taskText.slice(verbEnd).replace(VALUE_LEAD, "");
+  const afterMasked = masked.slice(verbEnd).replace(VALUE_LEAD, "");
 
   const opener = after.charAt(0);
   const closer = CLOSING_QUOTE.get(opener);
@@ -90,8 +102,8 @@ function explicitEditTarget(taskText: string): ExplicitTarget {
     const end = after.indexOf(closer, opener.length);
     if (end < 0) return { kind: "unclear" };
     const value = after.slice(opener.length, end).trim();
-    if (!value) return { kind: "unclear" };
-    const tail = after.slice(end + closer.length).split(SENTENCE_END)[0] ?? "";
+    if (!value || value.includes(opener)) return { kind: "unclear" };
+    const tail = afterMasked.slice(end + closer.length).split(SENTENCE_END)[0] ?? "";
     if (isQuestion(tail)) return { kind: "none" };
     return { kind: "value", value };
   }

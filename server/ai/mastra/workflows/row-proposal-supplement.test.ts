@@ -104,6 +104,23 @@ describe("explicitEditTargetValue：只认写入动词后的目标值", () => {
     });
   }
 
+  for (const [text, value] of [
+    ["把「事项」为「如何部署上线」的这一行的「状态」字段填为「待复核」，只改这一行。", "待复核"],
+    ["把「事项」为「为什么超时」的这一行的「状态」字段填为「待复核」，只改这一行。", "待复核"],
+    ["把「事项」为「怎么办」的这一行的「状态」字段改为「待复核」，只改这一行。", "待复核"],
+    ["把「事项」为「设为重点的泵」的这一行的「状态」字段填为「待复核」，只改这一行。", "待复核"],
+    ["把「如何」状态改为「待复核」", "待复核"],
+    ["把状态改为「已改为待复核」。", "已改为待复核"],
+  ] as const) {
+    test(`引号内的文字只作数据，不参与写入动词与问句判定：${text} → ${value}`, () => {
+      expect(explicitEditTargetValue(text)).toBe(value);
+    });
+  }
+
+  test("未闭合的开引号不遮罩写入动词：把「状态改为「待复核」→ 待复核", () => {
+    expect(explicitEditTargetValue("把「状态改为「待复核」")).toBe("待复核");
+  });
+
   for (const verb of [
     "改为", "改成", "改到", "改正为", "改正成", "修改为", "修正为", "修正成", "更正为", "更正成", "订正为", "订正成",
     "更新为", "更新成", "变更为", "变更成", "变为", "变成", "写为", "写成", "调整为", "调整成", "换为", "换成",
@@ -141,6 +158,9 @@ describe("explicitEditTargetValue：只认写入动词后的目标值", () => {
     "如果把状态改为待复核会怎样",
     "把状态改为待复核行不行",
     "为什么把状态改为待复核",
+    "为什么把「状态」改为「待复核」",
+    "把「状态」改为「待复核」会怎样？",
+    "把状态改为「待复核「已确认」",
   ]) {
     test(`问句或无法完整界定的目标值不作写入值：${text}`, () => {
       expect(explicitEditTargetValue(text)).toBeUndefined();
@@ -212,6 +232,22 @@ describe("planExplicitEditProposal：判定是否补一次提案调用", () => {
       recordId: "ent_devices:pump-7",
       value: "待复核，已确认",
     });
+  });
+
+  test("引号内的行名含问句词或写入动词、引号值含写入动词 → 判定不受影响，仍补调用", () => {
+    for (const [text, value] of [
+      ["把「事项」为「如何部署上线」的这一行的「状态」字段填为「待复核」，只改这一行。", "待复核"],
+      ["把「事项」为「为什么超时」的这一行的「状态」字段填为「待复核」，只改这一行。", "待复核"],
+      ["把「事项」为「设为重点的泵」的这一行的「状态」字段填为「待复核」，只改这一行。", "待复核"],
+      ["把状态改为「已改为待复核」。", "已改为待复核"],
+    ] as const) {
+      expect(planExplicitEditProposal(text, [locateCall([UNIQUE_MATCH])])).toEqual({
+        kind: "supplement",
+        sheetId: "sheet:devices",
+        recordId: "ent_devices:pump-7",
+        value,
+      });
+    }
   });
 });
 
@@ -449,6 +485,46 @@ describe("row-analysis 显式改字段的补充提案（FV06）", () => {
     expect(out.suspend?.kind).toBe("await-write-confirm");
     expect(out.suspend).toMatchObject({
       intent: { type: "row-patch-proposal", proposals: [{ field: "check_status", suggestedValue: "待复核" }] },
+    });
+  });
+
+  test("行名含「如何」：引号内的问句词不影响写入请求，同一请求内补出提案卡", async () => {
+    const { model, calls } = await scriptedModel([
+      toolTurn("c1", "findRecords", LOCATE_INPUT),
+      textTurn(""),
+      toolTurn("c2", "analyzeRow", analyzeInput([{ field: "复核状态", suggestedValue: "待复核" }])),
+    ]);
+    const out = await run(
+      { ensureExplicitEditProposal: true, noOutputText: ROW_ANALYSIS_NO_PROPOSAL_TEXT },
+      rowAgent("fv06-question-in-row-name", model, [UNIQUE_MATCH]),
+      "把「事项」为「如何部署上线」的这一行的「状态」字段填为「待复核」，只改这一行。",
+    );
+
+    expect(calls).toHaveLength(3);
+    expect(JSON.stringify(calls[2]?.prompt)).toContain("「待复核」");
+    expect(out.suspend?.kind).toBe("await-write-confirm");
+    expect(out.suspend).toMatchObject({
+      intent: { type: "row-patch-proposal", proposals: [{ field: "check_status", suggestedValue: "待复核" }] },
+    });
+  });
+
+  test("引号值含写入动词：提案卡建议值逐字等于引号内的完整原话", async () => {
+    const { model, calls } = await scriptedModel([
+      toolTurn("c1", "findRecords", LOCATE_INPUT),
+      textTurn(""),
+      toolTurn("c2", "analyzeRow", analyzeInput([{ field: "复核状态", suggestedValue: "已改为待复核" }])),
+    ]);
+    const out = await run(
+      { ensureExplicitEditProposal: true, noOutputText: ROW_ANALYSIS_NO_PROPOSAL_TEXT },
+      rowAgent("fv06-verb-in-value", model, [UNIQUE_MATCH]),
+      "把冷却泵 7 号的复核状态改为「已改为待复核」。",
+    );
+
+    expect(calls).toHaveLength(3);
+    expect(JSON.stringify(calls[2]?.prompt)).toContain("「已改为待复核」");
+    expect(out.suspend?.kind).toBe("await-write-confirm");
+    expect(out.suspend).toMatchObject({
+      intent: { type: "row-patch-proposal", proposals: [{ field: "check_status", suggestedValue: "已改为待复核" }] },
     });
   });
 
