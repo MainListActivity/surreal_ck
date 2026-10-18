@@ -6,7 +6,7 @@ import type { Usage, Tariff } from "./pricing";
 export type Queryable = { query(sql: string, vars?: Record<string, unknown>): Promise<unknown> };
 /** reserve 拒绝的内部诊断类别：预算/证据/身份/持久化（含事务内引擎中止，如唯一索引冲突）。对外仍只报通用错误。 */
 export type ReserveDenial = "budget" | "evidence" | "identity" | "persist";
-export const MEASUREMENT_CYCLE = "d27efa74-c9cd-48b5-b309-0ef92cff76dd";
+export const MEASUREMENT_CYCLE = "a7537d2c-3b76-42b3-bfb8-459956340984";
 export const MEASUREMENT_DATABASE = "ws_ddad14a98469";
 export const MEASUREMENT_PRICE = "sensenova-token-plan-2026-10-10";
 export type MeasurementCycle = { activity: string; attempts: number; attempt_limit: number; enabled_revision: number; approval_revision: string; evidence_hash: string; expires_at: string };
