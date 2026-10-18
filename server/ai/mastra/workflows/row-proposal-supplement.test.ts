@@ -104,6 +104,21 @@ describe("explicitEditTargetValue：只认写入动词后的目标值", () => {
     });
   }
 
+  for (const verb of [
+    "改为", "改成", "填为", "填写为", "填成", "填入", "设为", "设定为", "设置为", "设成", "置为", "定为", "记为",
+    "标记为", "标注为", "标为", "标成", "更新为", "修改为", "写成", "写为", "变更为", "变为", "变成", "换为", "换成", "调整为",
+  ]) {
+    test(`每个写入动词都能取到引号值：${verb}`, () => {
+      expect(explicitEditTargetValue(`把状态${verb}「待复核」。`)).toBe("待复核");
+    });
+  }
+
+  for (const text of ["把状态填为：「待复核」", "把状态填为:「待复核」", "把状态填为： 「待复核」"]) {
+    test(`写入动词后允许一个冒号再接引号值：${text}`, () => {
+      expect(explicitEditTargetValue(text)).toBe("待复核");
+    });
+  }
+
   for (const text of [
     "把复核状态设为什么比较合适？",
     "把状态改为待复核吗？",
@@ -112,6 +127,10 @@ describe("explicitEditTargetValue：只认写入动词后的目标值", () => {
     "把状态改为待复核，只改这一行。",
     "把状态填为「待复核",
     "把状态设为待复核，并把备注改为「已确认」",
+    "把状态改为待复核吧。",
+    "如果把状态改为待复核会怎样",
+    "把状态改为待复核行不行",
+    "为什么把状态改为待复核",
   ]) {
     test(`问句或无法完整界定的目标值不作写入值：${text}`, () => {
       expect(explicitEditTargetValue(text)).toBeUndefined();
@@ -400,6 +419,26 @@ describe("row-analysis 显式改字段的补充提案（FV06）", () => {
         type: "row-patch-proposal",
         proposals: [{ field: "check_status", currentValue: "已复核", suggestedValue: "待复核，已确认" }],
       },
+    });
+  });
+
+  test("标记为：只读定位后同一请求内补一次强制 analyzeRow → 可确认 suspend（提案卡）", async () => {
+    const { model, calls } = await scriptedModel([
+      toolTurn("c1", "findRecords", LOCATE_INPUT),
+      textTurn(""),
+      toolTurn("c2", "analyzeRow", analyzeInput([{ field: "复核状态", suggestedValue: "待复核" }])),
+    ]);
+    const out = await run(
+      { ensureExplicitEditProposal: true, noOutputText: ROW_ANALYSIS_NO_PROPOSAL_TEXT },
+      rowAgent("fv06-mark-as", model, [UNIQUE_MATCH]),
+      "把冷却泵 7 号的复核状态标记为「待复核」",
+    );
+
+    expect(calls).toHaveLength(3);
+    expect(JSON.stringify(calls[2]?.prompt)).toContain("「待复核」");
+    expect(out.suspend?.kind).toBe("await-write-confirm");
+    expect(out.suspend).toMatchObject({
+      intent: { type: "row-patch-proposal", proposals: [{ field: "check_status", suggestedValue: "待复核" }] },
     });
   });
 

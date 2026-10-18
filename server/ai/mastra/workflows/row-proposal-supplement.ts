@@ -17,8 +17,12 @@ const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([LOCATE_TOOL, "fetchRelated
 /** findRecords 未传 limit 时的默认上限（与工具定义一致）。 */
 const DEFAULT_LOCATE_LIMIT = 10;
 
-/** 写入动词。只有紧跟在动词之后的文本才可能是目标值。 */
-const WRITE_VERB = /改为|改成|填为|填写为|设为|设置为|更新为|修改为|写成|变更为/g;
+/**
+ * 写入动词，与路由写入动作词表（router-classifier.ts）对齐。只有紧跟在动词之后的文本才可能是目标值。
+ * 路由词表里不带「为/成/入」的动词（标记、替换、调整等）不在此匹配：直接接值的写法无法界定值的边界，
+ * 误判会把普通句子当作写入值。
+ */
+const WRITE_VERB = /改为|改成|填为|填写为|填成|填入|设为|设定为|设置为|设成|置为|定为|记为|标记为|标注为|标为|标成|更新为|修改为|写成|写为|变更为|变为|变成|换为|换成|调整为/g;
 /** 配对引号：只有引号内的文本才原样截取为目标值。 */
 const CLOSING_QUOTE = new Map([["「", "」"], ["“", "”"], ['"', '"']]);
 /** 无引号目标值的结束字符：空白与标点。 */
@@ -28,9 +32,11 @@ const SENTENCE_END = /[。；;！!]/;
 /** 问号：目标值或其后紧跟问号时是在提问，不是写入值。 */
 const QUESTION_MARK = /[？?]/;
 /** 问句用语：出现时是在提问，不是写入值。 */
-const QUESTION_WORD = /什么|哪|怎么|如何|是否|能否|吗|呢/;
-/** 无引号目标值含这些虚词时，值的边界无法单凭文本界定。 */
-const PARTICLE = /[的了着过地得]/;
+const QUESTION_WORD = /什么|哪|怎么样|怎样|怎么|如何|是否|能否|会不会|有没有|是不是|要不要|行不行|多少|吗|呢/;
+/** 写入动词之前出现这些词时是在提问（为什么把状态改为……），不是写入请求。 */
+const QUESTION_BEFORE_VERB = /为什么|为何|怎么|如何/;
+/** 无引号目标值含这些虚词或语气词时，值的边界无法单凭文本界定。 */
+const PARTICLE = /[的了着过地得吧啊呀哦嘛呗啦]/;
 
 const NO_PROPOSAL_PREFIX = "未生成字段补全提案：";
 const REASON_NOT_FOUND = `${NO_PROPOSAL_PREFIX}没有找到与目标行匹配的记录，请确认目标行的名称或编号、要修改的字段名后重试。`;
@@ -57,15 +63,18 @@ type ExplicitTarget = { kind: "none" } | { kind: "unclear" } | { kind: "value"; 
 /**
  * 判定子任务文本的写入目标。
  * - none：没有写入动词，或是问句（不是写入请求）；
- * - unclear：有写入请求，但目标值无法完整界定（多个写入动词、引号未闭合、句内停顿、含虚词）；
+ * - unclear：有写入请求，但目标值无法完整界定（多个写入动词、引号未闭合、句内停顿、含虚词或语气词）；
  * - value：唯一写入动词后的完整目标值。引号内原样截取到配对右引号，无引号时只认句末结束的值。
  */
 function explicitEditTarget(taskText: string): ExplicitTarget {
   const verbs = [...taskText.matchAll(WRITE_VERB)];
   if (verbs.length === 0) return { kind: "none" };
-  if (verbs.length > 1) return { kind: "unclear" };
   const [verb] = verbs;
-  const after = taskText.slice((verb.index ?? 0) + verb[0].length).replace(/^\s+/, "");
+  const start = verb.index ?? 0;
+  if (QUESTION_BEFORE_VERB.test(taskText.slice(0, start))) return { kind: "none" };
+  if (verbs.length > 1) return { kind: "unclear" };
+  // 动词后可以有一个冒号（：或 :）再接目标值，例如「填为：「待复核」」。
+  const after = taskText.slice(start + verb[0].length).replace(/^\s*[：:]?\s*/, "");
 
   const opener = after.charAt(0);
   const closer = CLOSING_QUOTE.get(opener);
