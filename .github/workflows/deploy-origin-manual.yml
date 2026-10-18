@@ -1,0 +1,33 @@
+name: Deploy origin (manual)
+
+run-name: "Deploy origin ${{ inputs.sha }} (manual, approval ${{ inputs.approval_ref }})"
+
+# 手动重发/回滚 origin 的唯一入口。顶层只做输入登记与 main 守卫，真正的发布逻辑在
+# deploy-origin.yml（workflow_call，与 Deploy production 调用的是同一份代码）。
+# 运行 39153839203 曾被记为 action_required 且没有作业，根因未能经 API 证实，见 runbook。
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 已通过 Quality gate 的提交（完整 SHA；回滚时填上一个已通过 Quality gate 的提交）
+        type: string
+        required: true
+      approval_ref:
+        description: 运营批准或回滚记录编号（写入运行名称与作业日志，用于审计）
+        type: string
+        required: true
+
+permissions: {}
+
+jobs:
+  origin:
+    name: Hono origin (manual)
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      checks: read
+      contents: read
+    uses: ./.github/workflows/deploy-origin.yml
+    with:
+      sha: ${{ inputs.sha }}
+      approval_ref: ${{ inputs.approval_ref }}
+    secrets: inherit

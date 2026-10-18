@@ -1,0 +1,240 @@
+name: Frontend recovery
+
+run-name: "Frontend recovery ${{ inputs.sha }} (origin ${{ inputs.origin_sha }}, approval ${{ inputs.approval_ref }})"
+
+# 前端定向恢复：只把 web / marketing / ops / edge 发布到 Cloudflare。
+# 本文件不调用 deploy-origin.yml，不依赖 Deploy production 的 origin 作业，不含 SSH/SCP，
+# 不停服、不切换 current、不改 server.env。origin 健康或核定不成立时不发布前端。
+# 只能从默认分支手动触发；origin_sha 与 origin_verified_at 须由运营只读核定后填写（见 runbook）。
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 目标提交（完整 SHA；须已合入 main 且 Quality gate 成功）
+        type: string
+        required: true
+      origin_sha:
+        description: 运营只读核定的 origin 运行 SHA（完整 SHA；必须等于目标提交）
+        type: string
+        required: true
+      origin_verified_at:
+        description: 运营核定 origin 的 UTC 时间（YYYY-MM-DDTHH:MM:SSZ，核定后 30 分钟内有效）
+        type: string
+        required: true
+      approval_ref:
+        description: 运营批准编号（写入运行名称、作业摘要与审计）
+        type: string
+        required: true
+
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+permissions: {}
+
+jobs:
+  validate:
+    name: Validate frontend recovery target
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      checks: read
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_SHA: ${{ inputs.sha }}
+      ORIGIN_SHA: ${{ inputs.origin_sha }}
+      ORIGIN_VERIFIED_AT: ${{ inputs.origin_verified_at }}
+      APPROVAL_REF: ${{ inputs.approval_ref }}
+    steps:
+      - name: Harden the runner
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout deploy tooling and main history
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run frontend recovery gate
+        run: bash scripts/deploy/frontend-recovery-gate.sh
+
+      - name: Record recovery target
+        run: |
+          set -euo pipefail
+          {
+            echo "### Frontend recovery target"
+            echo "- release sha: $RELEASE_SHA"
+            echo "- origin sha (operator verified): $ORIGIN_SHA at $ORIGIN_VERIFIED_AT"
+            echo "- approval: $APPROVAL_REF"
+            echo "- origin is not called by this workflow"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Cloudflare frontend (origin untouched)
+    needs: validate
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment:
+      name: production
+      url: https://l.maplayer.top
+    permissions:
+      checks: read
+      contents: read
+    env:
+      RELEASE_SHA: ${{ inputs.sha }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      WEB_PAGES_PROJECT: ${{ vars.WEB_PAGES_PROJECT }}
+      MARKETING_PAGES_PROJECT: ${{ vars.MARKETING_PAGES_PROJECT }}
+      VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+      VITE_SURREAL_URL: ${{ vars.VITE_SURREAL_URL }}
+      VITE_OIDC_ISSUER: ${{ vars.VITE_OIDC_ISSUER }}
+      VITE_OIDC_CLIENT_ID: ${{ vars.VITE_OIDC_CLIENT_ID }}
+      VITE_OIDC_REDIRECT_URI: ${{ vars.VITE_OIDC_REDIRECT_URI }}
+      VITE_OIDC_AUDIENCE: ${{ vars.VITE_OIDC_AUDIENCE }}
+      VITE_OPS_OIDC_ISSUER: ${{ vars.VITE_OPS_OIDC_ISSUER }}
+      VITE_OPS_OIDC_CLIENT_ID: ${{ vars.VITE_OPS_OIDC_CLIENT_ID }}
+      VITE_OPS_OIDC_AUDIENCE: ${{ vars.VITE_OPS_OIDC_AUDIENCE }}
+      VITE_OPS_API_BASE_URL: ${{ vars.VITE_OPS_API_BASE_URL }}
+    steps:
+      - name: Harden the runner
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        with:
+          egress-policy: audit
+
+      - name: Verify the release commit passed CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test -n "$RELEASE_SHA"
+          passed="$(gh api \
+            "repos/$GITHUB_REPOSITORY/commits/$RELEASE_SHA/check-runs" \
+            --jq 'any(.check_runs[]; .name == "Quality gate" and .conclusion == "success")')"
+          if [ "$passed" != "true" ]; then
+            echo "::error::Quality gate for $RELEASE_SHA has not succeeded"
+            exit 1
+          fi
+
+      - name: Validate production configuration
+        run: |
+          set -euo pipefail
+          required=(
+            CLOUDFLARE_API_TOKEN
+            CLOUDFLARE_ACCOUNT_ID
+            WEB_PAGES_PROJECT
+            MARKETING_PAGES_PROJECT
+            VITE_API_BASE_URL
+            VITE_SURREAL_URL
+            VITE_OIDC_ISSUER
+            VITE_OIDC_CLIENT_ID
+            VITE_OIDC_REDIRECT_URI
+            VITE_OIDC_AUDIENCE
+            VITE_OPS_OIDC_ISSUER
+            VITE_OPS_OIDC_CLIENT_ID
+            VITE_OPS_OIDC_AUDIENCE
+            VITE_OPS_API_BASE_URL
+          )
+          for name in "${required[@]}"; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name is not configured in the production environment"
+              exit 1
+            fi
+          done
+
+      - name: Checkout the CI-approved commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+          persist-credentials: false
+
+      - name: Install exact Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.11
+
+      - name: Install exact pnpm and frozen dependencies
+        run: |
+          set -euo pipefail
+          corepack enable
+          corepack prepare pnpm@10.32.1 --activate
+          test "$(pnpm --version)" = "10.32.1"
+          pnpm install --frozen-lockfile
+
+      - name: Build production sites
+        env:
+          SCK_RELEASE_SHA: ${{ env.RELEASE_SHA }}
+          SCK_DEPLOYMENT_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          pnpm --filter @surreal-ck/web build
+          pnpm build:marketing
+          # ops 控制台同域子路径发布：与 Deploy production 相同的产物布局。
+          VITE_OPS_BASE=/ops/ pnpm build:ops
+          mkdir -p web/dist
+          rm -rf web/dist/ops
+          cp -r ops/dist web/dist/ops
+
+      - name: Deploy Hono edge proxy
+        run: pnpm dlx wrangler@4.135.0 deploy
+
+      - name: Deploy application
+        run: |
+          set -euo pipefail
+          pnpm dlx wrangler@4.135.0 pages deploy web/dist \
+            --project-name "$WEB_PAGES_PROJECT" \
+            --branch main \
+            --commit-hash "$RELEASE_SHA" \
+            --commit-dirty=false
+
+      - name: Deploy marketing site
+        run: |
+          set -euo pipefail
+          pnpm dlx wrangler@4.135.0 pages deploy marketing/dist/client \
+            --project-name "$MARKETING_PAGES_PROJECT" \
+            --branch main \
+            --commit-hash "$RELEASE_SHA" \
+            --commit-dirty=false
+
+      - name: Verify production
+        env:
+          EXPECTED_DEPLOYMENT_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --retry 8 --retry-all-errors \
+            --retry-delay 5 https://l.maplayer.top/ >/dev/null
+          curl --fail --silent --show-error --retry 8 --retry-all-errors \
+            --retry-delay 5 https://l.maplayer.top/health \
+            | jq -e '.status == "ok" and .surrealdb == "up"' >/dev/null
+          # 前端身份：公开的 runtime-version.json 必须显示本次目标 SHA 与本次运行的 deploymentId。
+          # 这证明当前 Pages 部署即目标构建；不证明某浏览器仍缓存的旧 JS 已刷新。
+          ok=0
+          for _ in $(seq 1 30); do
+            if curl --fail --silent --show-error --max-time 10 \
+              "https://l.maplayer.top/runtime-version.json?t=$(date +%s)" \
+              | jq -e --arg sha "$RELEASE_SHA" --arg dep "$EXPECTED_DEPLOYMENT_ID" \
+                '.sha == $sha and .deploymentId == $dep' >/dev/null; then
+              ok=1
+              break
+            fi
+            sleep 10
+          done
+          if [ "$ok" != 1 ]; then
+            echo "::error::https://l.maplayer.top/runtime-version.json does not show $RELEASE_SHA ($EXPECTED_DEPLOYMENT_ID)"
+            exit 1
+          fi
+          curl --fail --silent --show-error --retry 8 --retry-all-errors \
+            --retry-delay 5 https://www.maplayer.top/ >/dev/null
+          # /ops/ 必须是 ops 控制台页面；未发布时 SPA fallback 会返回客户应用壳，用标题区分。
+          curl --fail --silent --show-error --retry 8 --retry-all-errors \
+            --retry-delay 5 https://l.maplayer.top/ops/ \
+            | grep -q '运营控制台'

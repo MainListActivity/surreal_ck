@@ -85,6 +85,7 @@ jobs:
     uses: ./.github/workflows/deploy-origin.yml
     with:
       sha: ${{ github.event.workflow_run.head_sha || github.sha }}
+      approval_ref: ${{ format('deploy-production-{0}', github.run_id) }}
     secrets: inherit
 
   deploy:

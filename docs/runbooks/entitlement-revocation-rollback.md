@@ -75,7 +75,7 @@ SURREAL_BINARY=~/.surrealdb/surreal \
    首次 LCA13 发布即受此约束：其 previous（5808b26）不含过滤，
    若健康检查窗口内已有撤销行则自动回退被拒——设计行为，
    向前修复而不是复活撤销。
-2. **手动回滚**：GitHub Actions `Deploy origin`，sha 填**包含
+2. **手动回滚**：GitHub Actions 在 `main` 上运行 `Deploy origin (manual)`（填写 sha 与 approval_ref），sha 填**包含
    撤销过滤且 Quality gate SUCCESS 的提交**（`gh run list --workflow
    'Deploy production'` / `gh api …/check-runs` 核对），前端重跑同一
    sha 的 Deploy production。若误填旧 sha，同一门禁在主机侧拦截：
@@ -96,7 +96,7 @@ SURREAL_BINARY=~/.surrealdb/surreal \
 门禁拒绝意味着「该目标会把已撤销赠送复活」或「无法证明其安全」。此时：
 
 1. 服务已自动恢复原 current 版本运行（带病也比授权回退安全）；
-   用 `Deploy origin`/`Deploy production` 部署最新的兼容 SHA 向前修复；
+   用 `Deploy origin (manual)`/`Deploy production` 部署最新的兼容 SHA 向前修复；
 2. 用 ops 通道读 `content_grant_revocation` 与权益视图，确认撤销语义
    在运行版本上生效；
 3. 记录门禁拒绝事件（发布日志 `revocation gate:` 行）到事故说明。
