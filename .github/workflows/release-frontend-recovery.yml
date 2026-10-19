@@ -1,35 +1,32 @@
 name: Frontend recovery
 
-run-name: "Frontend recovery ${{ inputs.sha }} (origin ${{ inputs.origin_sha }}, approval ${{ inputs.approval_ref }})"
+run-name: "Frontend recovery ${{ inputs.sha }} (evidence PR #${{ inputs.evidence_pr }}, approval ${{ inputs.approval_ref }})"
 
 # 前端定向恢复：只把 web / marketing / ops / edge 发布到 Cloudflare。
-# 本文件不调用 deploy-origin.yml，不依赖 Deploy production 的 origin 作业，不含 SSH/SCP，
-# 不停服、不切换 current、不改 server.env。origin 健康或核定不成立时不发布前端。
-# 只能从默认分支手动触发；origin_sha 与 origin_verified_at 须由运营只读核定后填写（见 runbook）。
-# deploy 作业开头再次检查核定时效：单独重跑 deploy 不会重跑 validate，超时即失败，须整条工作流重新派发。
-# 顶层发布锁组 production-release 与 Deploy production、Deploy origin (manual) 共用：任一入口运行时其余入口排队，前端发布不与 origin 变更并发。
-# dry_run=true 时只运行 probe 作业（不使用 environment 与 secrets），用于验证派发能否产生作业；hold_seconds 用于验证与其它入口的排队互斥。
+# 本文件不调用 deploy-origin.yml，不含 SSH/SCP，不停服、不切换 current、不改 server.env；origin 不由本工作流改动。
+# 只能从默认分支手动触发。发布作业先完成构建（无生产写入），再在本次运行内生成 barrier 并写入作业摘要。
+# 运营在 barrier 之后只读核定 origin 运行 SHA，并在证据 PR 上发表绑定该 barrier 的评论（见 runbook）。
+# 发布作业有界等待该评论（最多 20 分钟），并在第一次生产写入之前再次校验评论与 origin 健康；任一失败即结束，发布锁随之释放。
+# 顶层发布锁组 production-release 与 Deploy production、Deploy origin (manual) 共用：任一入口运行时其余入口排队。
+# 局部重跑（run attempt 大于 1）被拒绝：须整条重新派发，每次运行都需要新的 barrier 与新的核定评论。
+# dry_run=true 时只运行 probe 作业（不使用 environment 与 secrets），用于验证派发与锁互斥；不生成 barrier，不等待批准，不发布。
 on:
   workflow_dispatch:
     inputs:
       sha:
-        description: 目标提交（完整 SHA；须已合入 main 且 Quality gate 成功）
+        description: 目标提交（完整 SHA；须已合入 main 且 Quality gate 成功；须等于运营在锁内核定的 origin 运行 SHA）
         type: string
         required: true
-      origin_sha:
-        description: 运营只读核定的 origin 运行 SHA（完整 SHA；必须等于目标提交）
-        type: string
-        required: true
-      origin_verified_at:
-        description: 运营核定 origin 的 UTC 时间（YYYY-MM-DDTHH:MM:SSZ，核定后 30 分钟内有效）
+      evidence_pr:
+        description: 承载运营核定证据评论的 PR 编号（评论作者须在仓库变量 RELEASE_APPROVER_LOGINS 中）
         type: string
         required: true
       approval_ref:
-        description: 运营批准评论的数字 ID（本仓库 issue 评论；作者须在仓库变量 RELEASE_APPROVER_LOGINS 中，正文须含目标 sha 与核定时间）
+        description: fa 运营 accept 审计编号（须与证据评论中的 fa_audit_ref 逐字相同）
         type: string
         required: true
       dry_run:
-        description: 探针模式：只运行不接触 environment 与 secrets 的 probe 作业，不做前端发布（合入后须先跑一次）
+        description: 探针模式：只运行不接触 environment 与 secrets 的 probe 作业，不生成 barrier、不发布（合入后须先跑一次）
         type: boolean
         default: false
       hold_seconds:
@@ -73,14 +70,12 @@ jobs:
     permissions:
       checks: read
       contents: read
-      issues: read
+      pull-requests: read
     env:
-      GH_TOKEN: ${{ github.token }}
       RELEASE_SHA: ${{ inputs.sha }}
-      ORIGIN_SHA: ${{ inputs.origin_sha }}
-      RELEASE_APPROVER_LOGINS: ${{ vars.RELEASE_APPROVER_LOGINS }}
-      ORIGIN_VERIFIED_AT: ${{ inputs.origin_verified_at }}
+      EVIDENCE_PR: ${{ inputs.evidence_pr }}
       APPROVAL_REF: ${{ inputs.approval_ref }}
+      RELEASE_APPROVER_LOGINS: ${{ vars.RELEASE_APPROVER_LOGINS }}
     steps:
       - name: Harden the runner
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
@@ -94,69 +89,60 @@ jobs:
           persist-credentials: false
 
       - name: Run frontend recovery gate
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: bash scripts/deploy/frontend-recovery-gate.sh
 
       - name: Record recovery target
         run: |
           set -euo pipefail
           {
-            echo "### Frontend recovery target"
+            echo "### Frontend recovery target (read-only gate passed)"
             echo "- release sha: $RELEASE_SHA"
-            echo "- origin sha (operator verified): $ORIGIN_SHA at $ORIGIN_VERIFIED_AT"
+            echo "- evidence PR: #$EVIDENCE_PR"
             echo "- approval: $APPROVAL_REF"
-            echo "- origin is not called by this workflow"
+            echo "- origin is verified under the lock in the deploy job; this job does not change origin"
           } >> "$GITHUB_STEP_SUMMARY"
 
   deploy:
-    name: Cloudflare frontend (origin untouched)
+    name: Cloudflare frontend (origin verified under the lock)
     needs: validate
     if: github.ref == 'refs/heads/main' && !inputs.dry_run
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     environment:
       name: production
       url: https://l.maplayer.top
     permissions:
       checks: read
       contents: read
+      issues: read
+      pull-requests: read
     env:
       RELEASE_SHA: ${{ inputs.sha }}
-      ORIGIN_VERIFIED_AT: ${{ inputs.origin_verified_at }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      WEB_PAGES_PROJECT: ${{ vars.WEB_PAGES_PROJECT }}
-      MARKETING_PAGES_PROJECT: ${{ vars.MARKETING_PAGES_PROJECT }}
-      VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
-      VITE_SURREAL_URL: ${{ vars.VITE_SURREAL_URL }}
-      VITE_OIDC_ISSUER: ${{ vars.VITE_OIDC_ISSUER }}
-      VITE_OIDC_CLIENT_ID: ${{ vars.VITE_OIDC_CLIENT_ID }}
-      VITE_OIDC_REDIRECT_URI: ${{ vars.VITE_OIDC_REDIRECT_URI }}
-      VITE_OIDC_AUDIENCE: ${{ vars.VITE_OIDC_AUDIENCE }}
-      VITE_OPS_OIDC_ISSUER: ${{ vars.VITE_OPS_OIDC_ISSUER }}
-      VITE_OPS_OIDC_CLIENT_ID: ${{ vars.VITE_OPS_OIDC_CLIENT_ID }}
-      VITE_OPS_OIDC_AUDIENCE: ${{ vars.VITE_OPS_OIDC_AUDIENCE }}
-      VITE_OPS_API_BASE_URL: ${{ vars.VITE_OPS_API_BASE_URL }}
+      EVIDENCE_PR: ${{ inputs.evidence_pr }}
+      APPROVAL_REF: ${{ inputs.approval_ref }}
+      RELEASE_APPROVER_LOGINS: ${{ vars.RELEASE_APPROVER_LOGINS }}
     steps:
       - name: Harden the runner
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
         with:
           egress-policy: audit
 
-      - name: Check origin verification is still fresh
+      - name: Checkout deploy tooling (audited main, sparse)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: scripts/deploy
+          persist-credentials: false
+
+      - name: Refuse reruns (each run needs a new barrier and a new evidence comment)
         run: |
           set -euo pipefail
-          # 与 validate 的 frontend-recovery-gate.sh 同一窗口：核定时间须在 [-60s, 1800s] 之内。
-          # 单独重跑本作业时不会重跑 validate，因此在作业开头再检查一次（只用本 workflow 自身的 bash 与 python3，不依赖检出的 RELEASE_SHA 树）。
-          [[ "$ORIGIN_VERIFIED_AT" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
-            || { echo "::error::origin_verified_at is malformed (expects UTC YYYY-MM-DDTHH:MM:SSZ); re-dispatch the whole Frontend recovery workflow"; exit 1; }
-          verified=$(python3 -c 'import sys, datetime as d; print(int(d.datetime.strptime(sys.argv[1], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=d.timezone.utc).timestamp()))' "$ORIGIN_VERIFIED_AT") \
-            || { echo "::error::origin_verified_at does not parse; re-dispatch the whole Frontend recovery workflow"; exit 1; }
-          age=$(( $(date -u +%s) - verified ))
-          if [ "$age" -lt -60 ] || [ "$age" -gt 1800 ]; then
-            echo "::error::origin verification is stale or in the future (age ${age}s, allowed 0..1800s). Re-running this job alone is refused: re-dispatch the whole Frontend recovery workflow after ops re-verifies origin."
+          if [ "$GITHUB_RUN_ATTEMPT" != "1" ]; then
+            echo "::error::rerun refused (attempt $GITHUB_RUN_ATTEMPT): dispatch a new Frontend recovery run; it needs a new barrier and a new operator evidence comment"
             exit 1
           fi
-          echo "origin verification is fresh (age ${age}s)"
 
       - name: Verify the release commit passed CI
         env:
@@ -173,6 +159,21 @@ jobs:
           fi
 
       - name: Validate production configuration
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WEB_PAGES_PROJECT: ${{ vars.WEB_PAGES_PROJECT }}
+          MARKETING_PAGES_PROJECT: ${{ vars.MARKETING_PAGES_PROJECT }}
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+          VITE_SURREAL_URL: ${{ vars.VITE_SURREAL_URL }}
+          VITE_OIDC_ISSUER: ${{ vars.VITE_OIDC_ISSUER }}
+          VITE_OIDC_CLIENT_ID: ${{ vars.VITE_OIDC_CLIENT_ID }}
+          VITE_OIDC_REDIRECT_URI: ${{ vars.VITE_OIDC_REDIRECT_URI }}
+          VITE_OIDC_AUDIENCE: ${{ vars.VITE_OIDC_AUDIENCE }}
+          VITE_OPS_OIDC_ISSUER: ${{ vars.VITE_OPS_OIDC_ISSUER }}
+          VITE_OPS_OIDC_CLIENT_ID: ${{ vars.VITE_OPS_OIDC_CLIENT_ID }}
+          VITE_OPS_OIDC_AUDIENCE: ${{ vars.VITE_OPS_OIDC_AUDIENCE }}
+          VITE_OPS_API_BASE_URL: ${{ vars.VITE_OPS_API_BASE_URL }}
         run: |
           set -euo pipefail
           required=(
@@ -202,6 +203,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ env.RELEASE_SHA }}
+          path: release
           persist-credentials: false
 
       - name: Install exact Bun
@@ -210,6 +212,7 @@ jobs:
           bun-version: 1.3.11
 
       - name: Install exact pnpm and frozen dependencies
+        working-directory: release
         run: |
           set -euo pipefail
           corepack enable
@@ -218,7 +221,18 @@ jobs:
           pnpm install --frozen-lockfile
 
       - name: Build production sites
+        working-directory: release
         env:
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+          VITE_SURREAL_URL: ${{ vars.VITE_SURREAL_URL }}
+          VITE_OIDC_ISSUER: ${{ vars.VITE_OIDC_ISSUER }}
+          VITE_OIDC_CLIENT_ID: ${{ vars.VITE_OIDC_CLIENT_ID }}
+          VITE_OIDC_REDIRECT_URI: ${{ vars.VITE_OIDC_REDIRECT_URI }}
+          VITE_OIDC_AUDIENCE: ${{ vars.VITE_OIDC_AUDIENCE }}
+          VITE_OPS_OIDC_ISSUER: ${{ vars.VITE_OPS_OIDC_ISSUER }}
+          VITE_OPS_OIDC_CLIENT_ID: ${{ vars.VITE_OPS_OIDC_CLIENT_ID }}
+          VITE_OPS_OIDC_AUDIENCE: ${{ vars.VITE_OPS_OIDC_AUDIENCE }}
+          VITE_OPS_API_BASE_URL: ${{ vars.VITE_OPS_API_BASE_URL }}
           SCK_RELEASE_SHA: ${{ env.RELEASE_SHA }}
           SCK_DEPLOYMENT_ID: ${{ github.run_id }}-${{ github.run_attempt }}
         run: |
@@ -231,10 +245,70 @@ jobs:
           rm -rf web/dist/ops
           cp -r ops/dist web/dist/ops
 
+      - name: Generate the in-lock origin barrier
+        run: |
+          set -euo pipefail
+          # barrier 在构建之后、任何生产写入之前生成；它绑定本次运行、受审 tooling、目标与随机 nonce。
+          python3 scripts/deploy/origin-verification.py barrier \
+            --target "$RELEASE_SHA" \
+            --out "$RUNNER_TEMP/origin-barrier.json"
+          {
+            echo "### Origin verification barrier (generated under production-release, before any production write)"
+            echo ""
+            echo "Only an evidence comment on PR #$EVIDENCE_PR that binds this barrier is accepted."
+            echo "The operator samples origin only after this barrier is visible, and posts with the origin-verification.py post subcommand from the checkout of tooling_sha."
+            echo ""
+            echo '```json'
+            cat "$RUNNER_TEMP/origin-barrier.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Wait for operator origin evidence (bounded, 20 minutes)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # 超时、无证据、证据不合格或读取错误都使本作业失败，发布锁随之释放。
+          python3 scripts/deploy/origin-verification.py wait \
+            --barrier "$RUNNER_TEMP/origin-barrier.json" \
+            --target "$RELEASE_SHA" \
+            --pr "$EVIDENCE_PR" \
+            --approvers "$RELEASE_APPROVER_LOGINS" \
+            --approval-ref "$APPROVAL_REF" \
+            --timeout 1200 \
+            --interval 30 \
+            --result "$RUNNER_TEMP/origin-evidence.json"
+
+      - name: Re-verify origin evidence and origin health before the first production write
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/deploy/origin-verification.py verify \
+            --barrier "$RUNNER_TEMP/origin-barrier.json" \
+            --target "$RELEASE_SHA" \
+            --pr "$EVIDENCE_PR" \
+            --approvers "$RELEASE_APPROVER_LOGINS" \
+            --approval-ref "$APPROVAL_REF" \
+            --result "$RUNNER_TEMP/origin-evidence.json"
+          curl --fail --silent --show-error --max-time 15 https://l.maplayer.top/health \
+            | jq -e '.status == "ok" and .surrealdb == "up"' >/dev/null \
+            || { echo "::error::origin health is not ok immediately before the production writes; stopping"; exit 1; }
+          echo "origin evidence and origin health hold immediately before the first production write"
+
       - name: Deploy Hono edge proxy
+        working-directory: release
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: pnpm dlx wrangler@4.135.0 deploy
 
       - name: Deploy application
+        working-directory: release
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WEB_PAGES_PROJECT: ${{ vars.WEB_PAGES_PROJECT }}
         run: |
           set -euo pipefail
           pnpm dlx wrangler@4.135.0 pages deploy web/dist \
@@ -244,6 +318,11 @@ jobs:
             --commit-dirty=false
 
       - name: Deploy marketing site
+        working-directory: release
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          MARKETING_PAGES_PROJECT: ${{ vars.MARKETING_PAGES_PROJECT }}
         run: |
           set -euo pipefail
           pnpm dlx wrangler@4.135.0 pages deploy marketing/dist/client \

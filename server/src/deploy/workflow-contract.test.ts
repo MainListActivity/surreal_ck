@@ -53,15 +53,6 @@ function needsOf(job: Doc): string[] {
   return [job.needs ?? []].flat().filter((n): n is string => typeof n === "string");
 }
 
-const GATE = join(import.meta.dir, "../../../scripts/deploy/frontend-recovery-gate.sh");
-const FRESHNESS_STEP = "Check origin verification is still fresh";
-
-function freshnessRun(doc: Doc): string {
-  const step = (doc.jobs.deploy.steps as Step[]).find((item) => item.name === FRESHNESS_STEP);
-  expect(step).toBeDefined();
-  return String(step?.run ?? "");
-}
-
 /** 以 workflow 中 probe 作业的 run 原文执行 hold_seconds 校验；返回退出码。 */
 function runHoldCheck(run: string, holdSeconds: string): number | null {
   const proc = Bun.spawnSync(["bash", "-c", run], {
@@ -245,48 +236,227 @@ describe("deploy-production.yml（自动发布编排）", () => {
   });
 });
 
-describe("release-frontend-recovery.yml（前端定向恢复，不触碰 origin）", () => {
+describe("release-frontend-recovery.yml（前端定向恢复：锁内 barrier、绑定证据、生产写入前复核）", () => {
   const doc = load("release-frontend-recovery.yml");
+  const deploySteps: Step[] = doc.jobs.deploy.steps ?? [];
+  const deployNames = deploySteps.map((step) => String(step.name ?? ""));
+  const indexOfStep = (prefix: string) => deployNames.findIndex((name) => name.startsWith(prefix));
+  const stepNamed = (prefix: string): Step => {
+    const index = indexOfStep(prefix);
+    expect(index).toBeGreaterThanOrEqual(0);
+    return deploySteps[index] as Step;
+  };
+  // 读取 GitHub 的步骤（唯一允许携带 GH_TOKEN 的步骤）。
+  const GH_TOKEN_STEPS = [
+    "Run frontend recovery gate",
+    "Verify the release commit passed CI",
+    "Wait for operator origin evidence",
+    "Re-verify origin evidence and origin health",
+  ];
+  // 允许接触 secrets 的步骤：配置校验与三个 Cloudflare 写入步骤。
+  const SECRET_STEPS = [
+    "Validate production configuration",
+    "Deploy Hono edge proxy",
+    "Deploy application",
+    "Deploy marketing site",
+  ];
 
   test("on 仅包含 workflow_dispatch", () => {
     expect(onKeys(doc)).toEqual(["workflow_dispatch"]);
   });
 
-  test("不存在任何 uses 指向 deploy-origin.yml", () => {
-    expect(usesOf(doc).some((use) => use.includes("deploy-origin.yml"))).toBe(false);
-  });
-
-  test("任何 job 的 needs 都不包含 origin", () => {
-    for (const [, job] of jobsOf(doc)) {
-      expect(needsOf(job)).not.toContain("origin");
+  test("inputs 恰为 sha、evidence_pr、approval_ref、dry_run、hold_seconds；不再接受 origin_sha 或 origin_verified_at", () => {
+    const inputs = doc.on.workflow_dispatch.inputs ?? {};
+    expect(Object.keys(inputs).sort()).toEqual(["approval_ref", "dry_run", "evidence_pr", "hold_seconds", "sha"]);
+    for (const name of ["sha", "evidence_pr", "approval_ref"]) {
+      expect(inputs[name]?.required).toBe(true);
     }
+    expect(JSON.stringify(doc)).not.toMatch(/origin_sha|origin_verified_at|ORIGIN_SHA|ORIGIN_VERIFIED_AT/);
   });
 
-  test("任何 run 或 uses 中都不出现 ssh、scp、origin-release、systemctl", () => {
-    const text = [...runsOf(doc), ...usesOf(doc)];
-    for (const item of text) {
-      for (const forbidden of ["ssh", "scp", "origin-release", "systemctl"]) {
-        expect(item).not.toContain(forbidden);
+  test("inputs 含 dry_run（boolean，默认 false）与 hold_seconds（string，默认 \"0\"）", () => {
+    const inputs = doc.on.workflow_dispatch.inputs ?? {};
+    expect(inputs.dry_run?.type).toBe("boolean");
+    expect(inputs.dry_run?.default).toBe(false);
+    expect(inputs.hold_seconds?.type).toBe("string");
+    expect(inputs.hold_seconds?.default).toBe("0");
+  });
+
+  test("顶层 permissions 为空对象；每个作业的权限只取 read", () => {
+    expect(doc.permissions).toEqual({});
+    for (const [, job] of jobsOf(doc)) {
+      for (const value of Object.values(job.permissions ?? {})) {
+        expect(value).toBe("read");
       }
     }
   });
 
-  test("deploy job 的 environment.name 为 production", () => {
-    expect(doc.jobs.deploy.environment?.name).toBe("production");
+  test("顶层 concurrency 为 production-release 且 cancel-in-progress 为 false", () => {
+    expect(doc.concurrency?.group).toBe("production-release");
+    expect(doc.concurrency?.["cancel-in-progress"]).toBe(false);
   });
 
-  test("validate 与 deploy 两个 job 都有 if 且包含 refs/heads/main", () => {
+  test("probe 只在 dry_run 时运行，不使用 environment 也不引用 secrets", () => {
+    const probe = doc.jobs.probe;
+    expect(probe).toBeDefined();
+    expect(String(probe.if ?? "")).toContain("inputs.dry_run");
+    expect(probe.environment).toBeUndefined();
+    expect(JSON.stringify(probe)).not.toContain("secrets.");
+  });
+
+  test("hold_seconds 在 sleep 之前校验：0 放行，负数、非整数与超过 900 均拒绝", () => {
+    const run = String(doc.jobs.probe.steps[0].run ?? "");
+    expect(run.indexOf("-le 900")).toBeGreaterThan(-1);
+    expect(run.indexOf("-le 900")).toBeLessThan(run.indexOf("sleep "));
+    expect(runHoldCheck(run, "0")).toBe(0);
+    expect(runHoldCheck(run, "901")).not.toBe(0);
+    expect(runHoldCheck(run, "-1")).not.toBe(0);
+    expect(runHoldCheck(run, "abc")).not.toBe(0);
+  });
+
+  test("validate 与 deploy 两个 job 都有 if 且包含 refs/heads/main，并排除 dry_run", () => {
     for (const name of ["validate", "deploy"]) {
       const job = doc.jobs[name];
       expect(job).toBeDefined();
       expect(String(job.if ?? "")).toContain("refs/heads/main");
+      expect(String(job.if ?? "")).toContain("!inputs.dry_run");
     }
   });
 
-  test("validate 的 run 调用 frontend-recovery-gate.sh", () => {
+  test("validate 不使用 environment、不引用 secrets；只运行只读准入门禁", () => {
     const validate = doc.jobs.validate;
-    const runs = (validate.steps ?? []).map((step: Step) => String(step.run ?? ""));
-    expect(runs.some((run: string) => run.includes("frontend-recovery-gate.sh"))).toBe(true);
+    expect(validate.environment).toBeUndefined();
+    expect(JSON.stringify(validate)).not.toContain("secrets.");
+    const gate = validate.steps.find((step: Step) => step.name === "Run frontend recovery gate");
+    expect(String(gate?.run ?? "")).toBe("bash scripts/deploy/frontend-recovery-gate.sh");
+  });
+
+  test("deploy 依赖 validate，使用 production environment，超时不少于 45 分钟（20 分钟等待 + 构建 + 写入）", () => {
+    expect(needsOf(doc.jobs.deploy)).toContain("validate");
+    expect(doc.jobs.deploy.environment?.name).toBe("production");
+    expect(doc.jobs.deploy["timeout-minutes"]).toBeGreaterThanOrEqual(45);
+  });
+
+  test("deploy 的权限包含 issues 与 pull-requests 读取（证据评论与 PR 读取），不含写权限", () => {
+    expect(doc.jobs.deploy.permissions).toEqual({
+      checks: "read",
+      contents: "read",
+      issues: "read",
+      "pull-requests": "read",
+    });
+  });
+
+  test("作业级 env 不含 GH_TOKEN 或 secrets：令牌与凭证只放在需要它们的步骤", () => {
+    for (const name of ["validate", "deploy"]) {
+      const env = JSON.stringify(doc.jobs[name].env ?? {});
+      expect(env).not.toContain("GH_TOKEN");
+      expect(env).not.toContain("secrets.");
+    }
+  });
+
+  test("GH_TOKEN 只出现在读取 GitHub 的四个步骤中，且四个步骤都携带它", () => {
+    const carriers = stepsOf(doc)
+      .filter(([, , step]) => step.env?.GH_TOKEN !== undefined)
+      .map(([, , step]) => String(step.name));
+    for (const name of carriers) {
+      expect(GH_TOKEN_STEPS.some((prefix) => name.startsWith(prefix))).toBe(true);
+    }
+    expect(carriers.length).toBe(GH_TOKEN_STEPS.length);
+  });
+
+  test("secrets 只出现在配置校验与三个 Cloudflare 写入步骤；barrier、wait、verify 不接触 secrets", () => {
+    const withSecrets = stepsOf(doc)
+      .filter(([, , step]) => JSON.stringify(step).includes("secrets."))
+      .map(([, , step]) => String(step.name));
+    expect(withSecrets.length).toBeGreaterThan(0);
+    for (const name of withSecrets) {
+      expect(SECRET_STEPS.some((prefix) => name.startsWith(prefix))).toBe(true);
+    }
+    for (const prefix of ["Generate the in-lock origin barrier", "Wait for operator origin evidence", "Re-verify origin evidence"]) {
+      expect(JSON.stringify(stepNamed(prefix))).not.toContain("secrets.");
+    }
+  });
+
+  test("重跑被拒绝：deploy 在构建之前检查 GITHUB_RUN_ATTEMPT 必须为 1", () => {
+    const refuse = stepNamed("Refuse reruns");
+    expect(String(refuse.run ?? "")).toContain('"$GITHUB_RUN_ATTEMPT" != "1"');
+    expect(indexOfStep("Refuse reruns")).toBeLessThan(indexOfStep("Build production sites"));
+  });
+
+  test("发布顺序：tooling → 重跑检查 → Quality gate → 配置 → 检出 → 构建 → barrier → wait → 复核 → 写入（edge、app、marketing）→ 验证", () => {
+    const order = [
+      "Checkout deploy tooling",
+      "Refuse reruns",
+      "Verify the release commit passed CI",
+      "Validate production configuration",
+      "Checkout the CI-approved commit",
+      "Build production sites",
+      "Generate the in-lock origin barrier",
+      "Wait for operator origin evidence",
+      "Re-verify origin evidence",
+      "Deploy Hono edge proxy",
+      "Deploy application",
+      "Deploy marketing site",
+      "Verify production",
+    ];
+    const indices = order.map(indexOfStep);
+    for (const index of indices) expect(index).toBeGreaterThanOrEqual(0);
+    for (let i = 1; i < indices.length; i += 1) {
+      expect(indices[i]).toBeGreaterThan(indices[i - 1]!);
+    }
+  });
+
+  test("写入步骤在构建目录 release 中执行；barrier、wait、verify 只从 tooling 检出的 scripts/deploy 执行", () => {
+    for (const prefix of ["Build production sites", "Install exact pnpm", "Deploy Hono edge proxy", "Deploy application", "Deploy marketing site"]) {
+      expect(stepNamed(prefix)["working-directory"]).toBe("release");
+    }
+    for (const prefix of ["Generate the in-lock origin barrier", "Wait for operator origin evidence", "Re-verify origin evidence"]) {
+      const step = stepNamed(prefix);
+      expect(step["working-directory"]).toBeUndefined();
+      expect(String(step.run ?? "")).toContain("scripts/deploy/origin-verification.py");
+      expect(String(step.run ?? "")).not.toContain("release/");
+    }
+  });
+
+  test("tooling 检出固定为 github.sha 且只取 scripts/deploy；release 检出固定为 RELEASE_SHA 并放入 release 目录", () => {
+    const tooling = stepNamed("Checkout deploy tooling");
+    expect(tooling.with?.ref).toBe("${{ github.sha }}");
+    expect(tooling.with?.["sparse-checkout"]).toBe("scripts/deploy");
+    const release = stepNamed("Checkout the CI-approved commit");
+    expect(release.with?.ref).toBe("${{ env.RELEASE_SHA }}");
+    expect(release.with?.path).toBe("release");
+  });
+
+  test("barrier 在构建之后生成，写入作业摘要并保存到 RUNNER_TEMP", () => {
+    const run = String(stepNamed("Generate the in-lock origin barrier").run ?? "");
+    expect(run).toContain("origin-verification.py barrier");
+    expect(run).toContain("$RUNNER_TEMP/origin-barrier.json");
+    expect(run).toContain("$GITHUB_STEP_SUMMARY");
+    expect(indexOfStep("Build production sites")).toBeLessThan(indexOfStep("Generate the in-lock origin barrier"));
+  });
+
+  test("wait 有界（--timeout 1200）且只读真实评论：不接受 --comments-json", () => {
+    const run = String(stepNamed("Wait for operator origin evidence").run ?? "");
+    expect(run).toContain("origin-verification.py wait");
+    expect(run).toContain("--timeout 1200");
+    expect(run).toContain('--approvers "$RELEASE_APPROVER_LOGINS"');
+    expect(run).toContain('--approval-ref "$APPROVAL_REF"');
+    expect(run).not.toContain("--comments-json");
+  });
+
+  test("写入前复核：先 verify 再检查 origin 健康，且只读真实评论", () => {
+    const run = String(stepNamed("Re-verify origin evidence").run ?? "");
+    expect(run).toContain("origin-verification.py verify");
+    expect(run.indexOf("origin-verification.py verify")).toBeLessThan(run.indexOf("https://l.maplayer.top/health"));
+    expect(run).not.toContain("--comments-json");
+  });
+
+  test("重跑检查与 wait/verify 使用的审批人与证据 PR 均来自输入，审批人列表取自仓库变量", () => {
+    for (const name of ["validate", "deploy"]) {
+      expect(doc.jobs[name].env?.RELEASE_APPROVER_LOGINS).toBe("${{ vars.RELEASE_APPROVER_LOGINS }}");
+      expect(doc.jobs[name].env?.EVIDENCE_PR).toBe("${{ inputs.evidence_pr }}");
+      expect(doc.jobs[name].env?.APPROVAL_REF).toBe("${{ inputs.approval_ref }}");
+    }
   });
 
   test("固定版本：bun-version 1.3.11、pnpm@10.32.1、wrangler@4.135.0", () => {
@@ -305,88 +475,13 @@ describe("release-frontend-recovery.yml（前端定向恢复，不触碰 origin�
     expect(joined).toMatch(/\.deploymentId\s*==\s*\$dep/);
   });
 
-  test("顶层 concurrency 为 production-release 且 cancel-in-progress 为 false", () => {
-    expect(doc.concurrency?.group).toBe("production-release");
-    expect(doc.concurrency?.["cancel-in-progress"]).toBe(false);
-  });
-
-  test("inputs 含 dry_run（boolean，默认 false）与 hold_seconds（string，默认 \"0\"）", () => {
-    const inputs = doc.on.workflow_dispatch.inputs ?? {};
-    expect(inputs.dry_run?.type).toBe("boolean");
-    expect(inputs.dry_run?.default).toBe(false);
-    expect(inputs.hold_seconds?.type).toBe("string");
-    expect(inputs.hold_seconds?.default).toBe("0");
-  });
-
-  test("probe 只在 dry_run 时运行，不使用 environment 也不引用 secrets", () => {
-    const probe = doc.jobs.probe;
-    expect(probe).toBeDefined();
-    expect(String(probe.if ?? "")).toContain("inputs.dry_run");
-    expect(probe.environment).toBeUndefined();
-    expect(JSON.stringify(probe)).not.toContain("secrets.");
-  });
-
-  test("validate 与 deploy 均排除 dry_run，dry_run 时不进入发布路径", () => {
-    for (const name of ["validate", "deploy"]) {
-      expect(String(doc.jobs[name].if)).toContain("!inputs.dry_run");
+  test("任何 run 或 uses 中都不出现 ssh、scp、origin-release、systemctl", () => {
+    const text = [...runsOf(doc), ...usesOf(doc)];
+    for (const item of text) {
+      for (const forbidden of ["ssh", "scp", "origin-release", "systemctl"]) {
+        expect(item).not.toContain(forbidden);
+      }
     }
-  });
-
-  test("hold_seconds 在 sleep 之前校验：0 放行，负数、非整数与超过 900 均拒绝", () => {
-    const run = String(doc.jobs.probe.steps[0].run ?? "");
-    expect(run.indexOf("-le 900")).toBeGreaterThan(-1);
-    expect(run.indexOf("-le 900")).toBeLessThan(run.indexOf("sleep "));
-    expect(runHoldCheck(run, "0")).toBe(0);
-    expect(runHoldCheck(run, "901")).not.toBe(0);
-    expect(runHoldCheck(run, "-1")).not.toBe(0);
-    expect(runHoldCheck(run, "abc")).not.toBe(0);
-  });
-
-  test("deploy job 的 env 含 ORIGIN_VERIFIED_AT，取自 workflow 输入", () => {
-    expect(doc.jobs.deploy.env?.ORIGIN_VERIFIED_AT).toBe("${{ inputs.origin_verified_at }}");
-  });
-
-  test("deploy job 的核定时效步骤位于 CI 检查与任何 checkout 之前", () => {
-    const steps: Step[] = doc.jobs.deploy.steps ?? [];
-    const fresh = steps.findIndex((step) => step.name === FRESHNESS_STEP);
-    const ci = steps.findIndex((step) => step.name === "Verify the release commit passed CI");
-    const firstCheckout = steps.findIndex((step) => String(step.uses ?? "").startsWith("actions/checkout"));
-    expect(fresh).toBeGreaterThanOrEqual(0);
-    expect(fresh).toBeLessThan(ci);
-    expect(fresh).toBeLessThan(firstCheckout);
-  });
-
-  test("时效步骤与 gate 同一窗口（-60 至 1800 秒），超时错误要求整条工作流重新派发", () => {
-    const run = freshnessRun(doc);
-    expect(run).toContain("ORIGIN_VERIFIED_AT");
-    expect(run).toContain('"$age" -lt -60');
-    expect(run).toContain('"$age" -gt 1800');
-    expect(run).toContain("re-dispatch the whole Frontend recovery workflow");
-    const gate = readFileSync(GATE, "utf8");
-    expect(gate).toContain('"$age" -lt -60');
-    expect(gate).toContain("MAX_ORIGIN_AGE_SEC:-1800");
-  });
-
-  test("时效步骤按 run 原文执行：窗口内放行；过期、未来或格式错误均失败并提示重新派发", () => {
-    const run = freshnessRun(doc);
-    const check = (verifiedAt: string) => {
-      const proc = Bun.spawnSync(["bash", "-c", run], {
-        env: { ...process.env, ORIGIN_VERIFIED_AT: verifiedAt },
-      });
-      return { code: proc.exitCode, out: `${proc.stdout.toString()}${proc.stderr.toString()}` };
-    };
-    const at = (offsetSec: number) => new Date(Date.now() + offsetSec * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
-
-    expect(check(at(-30)).code).toBe(0);
-    const stale = check(at(-1920));
-    expect(stale.code).not.toBe(0);
-    expect(stale.out).toContain("re-dispatch the whole Frontend recovery workflow");
-    expect(check(at(300)).code).not.toBe(0);
-    expect(check("2026-10-18 22:00:00").code).not.toBe(0);
-  });
-
-  test("顶层 permissions 为空对象", () => {
-    expect(doc.permissions).toEqual({});
   });
 
   test("所有非本地 uses 均为 owner/repo@<40 位小写 hex>", () => {
