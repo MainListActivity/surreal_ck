@@ -7,7 +7,8 @@ import { join } from "node:path";
  * 前端恢复的 origin 运行版本核定证据契约测试（scripts/deploy/origin-verification.py）。
  *
  * 时间由 NOW_EPOCH 固定；GitHub 评论由 --comments-json 提供；post 的 gh 为桩（记录调用，不联网）。
- * 退出码：0 通过；1 用法、运行绑定或接口错误；2 找到绑定评论但不合格；3 尚无绑定评论或超时。
+ * 退出码：0 通过；1 脚本校验的用法错误、运行绑定或本地写入错误，以及 post / verify 中未被重试的接口错误；2 找到绑定评论或 artifact 但不合格；
+ * 3 尚无绑定评论、artifact 尚不可读、运行已结束却无 artifact，或 wait / fetch 等待预算耗尽（含持续的临时接口错误）。
  */
 
 const SCRIPT = join(import.meta.dir, "../../../scripts/deploy/origin-verification.py");
@@ -578,5 +579,374 @@ describe("post：运营发表证据并回读校验", () => {
     );
     expectNoEvidence(r);
     expect(r.comment_id).toBe(42);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fetch：运行中经 GitHub Actions artifact 取回 barrier（运营执行，只读）。
+// gh 为桩：run 元数据、artifact 列表为 JSON，zip 端点输出原始字节；每次调用写入 gh-calls.log。
+// ---------------------------------------------------------------------------
+
+const ARTIFACT_MEMBER = "origin-barrier.json";
+const ARTIFACT_NAME = `origin-barrier-${RUN_ID}-1`;
+const ARTIFACT_ID = 555;
+const WF_PATH = ".github/workflows/release-frontend-recovery.yml";
+const PROBE_PATH = ".github/workflows/frontend-barrier-artifact-probe.yml";
+
+const GH_FETCH_STUB = `#!/usr/bin/env bash
+echo "gh $*" >> "$GH_CALLS"
+if [ -f "$FAKE_GH_DIR/fail" ]; then echo "HTTP 502" >&2; exit 1; fi
+case "$2" in
+  repos/*/actions/runs/*/artifacts*) cat "$FAKE_GH_DIR/artifacts.json" ;;
+  repos/*/actions/artifacts/*/zip) cat "$FAKE_GH_DIR/artifact.zip" ;;
+  repos/*/actions/runs/*) cat "$FAKE_GH_DIR/run.json" ;;
+  *) echo "unexpected endpoint: $2" >&2; exit 1 ;;
+esac
+`;
+
+type FetchFixture = { run?: Record<string, unknown>; artifacts?: unknown; zip?: Uint8Array | string; fail?: boolean };
+
+function runMeta(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: Number(RUN_ID),
+    path: WF_PATH,
+    run_attempt: 1,
+    status: "in_progress",
+    head_branch: "main",
+    head_sha: TOOLING,
+    run_started_at: iso(BARRIER_AT - 60),
+    ...over,
+  };
+}
+
+function artifactMeta(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: ARTIFACT_ID,
+    name: ARTIFACT_NAME,
+    expired: false,
+    size_in_bytes: 512,
+    created_at: iso(BARRIER_AT + 5),
+    workflow_run: { id: Number(RUN_ID), head_sha: TOOLING },
+    ...over,
+  };
+}
+
+/** 用 python3 的 zipfile 生成 artifact 压缩包（成员名 → 内容），与 GitHub 的 zip 结构一致；deflate 为真时压缩成员。 */
+function zipOf(members: Record<string, string>, deflate = false): Uint8Array {
+  const dir = newDir();
+  const args: string[] = [];
+  Object.entries(members).forEach(([name, content], index) => {
+    const path = join(dir, `member-${index}`);
+    writeFileSync(path, content);
+    args.push(name, path);
+  });
+  const out = join(dir, "artifact.zip");
+  const proc = Bun.spawnSync(
+    [
+      "python3",
+      "-c",
+      "import sys, zipfile\nmode = zipfile.ZIP_DEFLATED if sys.argv[1] == '1' else zipfile.ZIP_STORED\nz = zipfile.ZipFile(sys.argv[2], 'w', mode)\na = sys.argv[3:]\nfor i in range(0, len(a), 2): z.write(a[i + 1], a[i])\nz.close()",
+      deflate ? "1" : "0",
+      out,
+      ...args,
+    ],
+    { stdout: "pipe", stderr: "pipe" },
+  );
+  if (proc.exitCode !== 0) throw new Error(`zip failed: ${proc.stderr.toString()}`);
+  return readFileSync(out);
+}
+
+function ghFetch(fixture: FetchFixture) {
+  const dir = newDir();
+  const binDir = join(dir, "bin");
+  mkdirSync(binDir);
+  writeFileSync(join(binDir, "gh"), GH_FETCH_STUB);
+  chmodSync(join(binDir, "gh"), 0o755);
+  writeFileSync(join(dir, "run.json"), JSON.stringify(fixture.run ?? runMeta()));
+  writeFileSync(
+    join(dir, "artifacts.json"),
+    JSON.stringify(fixture.artifacts ?? { total_count: 1, artifacts: [artifactMeta()] }),
+  );
+  if (fixture.zip !== undefined) writeFileSync(join(dir, "artifact.zip"), fixture.zip);
+  if (fixture.fail) writeFileSync(join(dir, "fail"), "");
+  const calls = join(dir, "gh-calls.log");
+  return {
+    calls,
+    env: {
+      PATH: `${binDir}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+      GH_CALLS: calls,
+      FAKE_GH_DIR: dir,
+    } as Env,
+  };
+}
+
+function fetchRun(gh: { env: Env }, extra: string[] = [], opts: { target?: string; env?: Env } = {}): Outcome & { out: string } {
+  const out = join(newDir(), "barrier.json");
+  const r = runPy(
+    ["fetch", "--repo", REPO, "--run-id", RUN_ID, "--target", opts.target ?? TARGET, "--out", out, "--timeout", "0", ...extra],
+    { ...gh.env, ...(opts.env ?? {}) },
+  );
+  return { ...outcome(r), out };
+}
+
+/** 以指定的 GITHUB_* 环境生成 barrier（例如其它运行或探针工作流），返回文件路径。 */
+function barrierWith(env: Env): string {
+  const file = join(newDir(), "barrier.json");
+  const run = runPy(["barrier", "--target", TARGET, "--out", file], { NOW_EPOCH: String(BARRIER_AT), ...env });
+  if (run.code !== 0) throw new Error(`barrier failed: ${run.stderr}`);
+  return file;
+}
+
+/** 本运行的规范 barrier 字节，作为 artifact 的成员内容。 */
+function goodZip(file: string): Uint8Array {
+  return zipOf({ [ARTIFACT_MEMBER]: readFileSync(file, "utf8") });
+}
+
+describe("fetch：运行中经 artifact 取回 barrier（运营执行，只读）", () => {
+  test("通过：artifact 与本运行一致时写出与 barrier 文件逐字节相同的内容，查询按精确名称进行，并可直接交给 render", () => {
+    const { file } = makeBarrier();
+    const gh = ghFetch({ zip: goodZip(file) });
+    const r = fetchRun(gh);
+    expect(r.code).toBe(0);
+    expect(r.status).toBe("ok");
+    expect(r.artifact_id).toBe(ARTIFACT_ID);
+    expect(r.barrier_generated_at).toBe(iso(BARRIER_AT));
+    expect(readFileSync(r.out, "utf8")).toBe(readFileSync(file, "utf8"));
+    expect(readFileSync(gh.calls, "utf8")).toContain(`name=${ARTIFACT_NAME}`);
+    const body = runPy([
+      "render",
+      "--barrier",
+      r.out,
+      "--origin-sha",
+      TARGET,
+      "--origin-verified-at",
+      iso(SAMPLE_AT),
+      "--ops-task-id",
+      "ops-task-42",
+      "--fa-audit-ref",
+      FA_REF,
+    ]);
+    expect(body.code).toBe(0);
+  });
+
+  test("尚不可读：运行进行中且还没有 artifact 时退出码 3，并说明未就绪", () => {
+    const r = fetchRun(ghFetch({ artifacts: { total_count: 0, artifacts: [] } }));
+    expectNoEvidence(r);
+    expect(String(r.reason)).toContain("is not readable yet");
+  });
+
+  test("预算超时：按 --timeout 等待后仍不可读时退出码 3", () => {
+    const r = fetchRun(ghFetch({ artifacts: { total_count: 0, artifacts: [] } }), ["--timeout", "1", "--interval", "1"]);
+    expectNoEvidence(r);
+    expect(String(r.reason)).toContain("timed out after 1s");
+  });
+
+  test("运行已结束却没有 artifact：立即退出码 3，不再等待", () => {
+    const r = fetchRun(
+      ghFetch({ run: runMeta({ status: "completed" }), artifacts: { total_count: 0, artifacts: [] } }),
+      ["--timeout", "5", "--interval", "1"],
+    );
+    expectNoEvidence(r);
+    expect(String(r.reason)).toContain("completed without a barrier artifact");
+  });
+
+  test("GitHub 瞬时失败：预算内视为尚无证据，超时后退出码 3 并给出原因", () => {
+    const r = fetchRun(ghFetch({ fail: true }));
+    expectNoEvidence(r);
+    expect(String(r.reason)).toContain("transient GitHub API error");
+  });
+
+  test("重名 artifact（同一运行两个同名）时拒绝", () => {
+    const { file } = makeBarrier();
+    const gh = ghFetch({
+      artifacts: { total_count: 2, artifacts: [artifactMeta(), artifactMeta({ id: 556 })] },
+      zip: goodZip(file),
+    });
+    expectRefused(fetchRun(gh), "refusing duplicates");
+  });
+
+  test("错误的 artifact（挂在其它运行上）时拒绝", () => {
+    const { file } = makeBarrier();
+    const gh = ghFetch({
+      artifacts: { total_count: 1, artifacts: [artifactMeta({ workflow_run: { id: 999, head_sha: TOOLING } })] },
+      zip: goodZip(file),
+    });
+    expectRefused(fetchRun(gh), "attached to run 999");
+  });
+
+  test("artifact 的提交与运行提交不一致时拒绝", () => {
+    const { file } = makeBarrier();
+    const gh = ghFetch({
+      artifacts: { total_count: 1, artifacts: [artifactMeta({ workflow_run: { id: Number(RUN_ID), head_sha: OTHER } })] },
+      zip: goodZip(file),
+    });
+    expectRefused(fetchRun(gh), "artifact commit does not match run");
+  });
+
+  test("已过期的 artifact 拒绝", () => {
+    const { file } = makeBarrier();
+    const gh = ghFetch({ artifacts: { total_count: 1, artifacts: [artifactMeta({ expired: true })] }, zip: goodZip(file) });
+    expectRefused(fetchRun(gh), "expired");
+  });
+
+  test("artifact 大小为零或越界时拒绝", () => {
+    const { file } = makeBarrier();
+    const gh = ghFetch({ artifacts: { total_count: 1, artifacts: [artifactMeta({ size_in_bytes: 0 })] }, zip: goodZip(file) });
+    expectRefused(fetchRun(gh), "size is out of bounds");
+  });
+
+  test("内容不是 zip 时拒绝", () => {
+    const gh = ghFetch({ zip: "not a zip archive" });
+    expectRefused(fetchRun(gh), "not a zip archive");
+  });
+
+  test("压缩包内多出文件时拒绝", () => {
+    const { file } = makeBarrier();
+    const gh = ghFetch({ zip: zipOf({ [ARTIFACT_MEMBER]: readFileSync(file, "utf8"), "extra.txt": "x" }) });
+    expectRefused(fetchRun(gh), "must contain exactly origin-barrier.json");
+  });
+
+  test("成员压缩后很小、解压后超过上限时拒绝（防止压缩炸弹）", () => {
+    const gh = ghFetch({ zip: zipOf({ [ARTIFACT_MEMBER]: "x".repeat(40000) }, true) });
+    expectRefused(fetchRun(gh), "once decompressed");
+  });
+
+  test("成员名不是 origin-barrier.json 时拒绝", () => {
+    const { file } = makeBarrier();
+    const gh = ghFetch({ zip: zipOf({ "barrier.json": readFileSync(file, "utf8") }) });
+    expectRefused(fetchRun(gh), "must contain exactly origin-barrier.json");
+  });
+
+  test("成员内容不是 JSON 时拒绝", () => {
+    const gh = ghFetch({ zip: zipOf({ [ARTIFACT_MEMBER]: "not json {" }) });
+    expectRefused(fetchRun(gh), "is not JSON");
+  });
+
+  test("字段缺失时拒绝", () => {
+    const { file } = makeBarrier();
+    const partial = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+    delete partial.nonce;
+    const gh = ghFetch({ zip: zipOf({ [ARTIFACT_MEMBER]: `${JSON.stringify(partial, null, 2)}\n` }) });
+    expectRefused(fetchRun(gh), "is malformed");
+  });
+
+  test("字段被篡改（目标改为其它 SHA，格式仍为规范字节）时拒绝", () => {
+    const { file } = makeBarrier();
+    const tampered = tamper(readFileSync(file, "utf8"), TARGET, OTHER);
+    const gh = ghFetch({ zip: zipOf({ [ARTIFACT_MEMBER]: tampered }) });
+    expectRefused(fetchRun(gh), "is not the requested target");
+  });
+
+  test("字节不规范（格式被改写，内容未变）时拒绝", () => {
+    const { file } = makeBarrier();
+    const reformatted = tamper(readFileSync(file, "utf8"), '"repo": "', '"repo":  "');
+    const gh = ghFetch({ zip: zipOf({ [ARTIFACT_MEMBER]: reformatted }) });
+    expectRefused(fetchRun(gh), "not the canonical barrier");
+  });
+
+  test("barrier 属于其它运行（内容的 run id 不符）时拒绝", () => {
+    const file = barrierWith({ GITHUB_RUN_ID: "999" });
+    const gh = ghFetch({ zip: goodZip(file) });
+    expectRefused(fetchRun(gh), "belongs to run 999");
+  });
+
+  test("barrier 的 run attempt 不是 1 时拒绝", () => {
+    const { file } = makeBarrier();
+    const tampered = tamper(readFileSync(file, "utf8"), '"run_attempt": "1"', '"run_attempt": "2"');
+    const gh = ghFetch({ zip: zipOf({ [ARTIFACT_MEMBER]: tampered }) });
+    expectRefused(fetchRun(gh), "barrier run attempt 2 is not 1");
+  });
+
+  test("barrier 的工作流引用与运行分支不符时拒绝", () => {
+    const { file } = makeBarrier();
+    const gh = ghFetch({ run: runMeta({ head_branch: "feature" }), zip: goodZip(file) });
+    expectRefused(fetchRun(gh), "does not match run");
+  });
+
+  test("barrier 的工具 SHA 与运行提交不符时拒绝", () => {
+    const { file } = makeBarrier();
+    const gh = ghFetch({
+      run: runMeta({ head_sha: OTHER }),
+      artifacts: { total_count: 1, artifacts: [artifactMeta({ workflow_run: { id: Number(RUN_ID), head_sha: OTHER } })] },
+      zip: goodZip(file),
+    });
+    expectRefused(fetchRun(gh), "tooling sha does not match the commit of run");
+  });
+
+  test("运行的工作流路径不符（例如探针工作流）时拒绝", () => {
+    const { file } = makeBarrier();
+    const gh = ghFetch({ run: runMeta({ path: PROBE_PATH }), zip: goodZip(file) });
+    expectRefused(fetchRun(gh), "not the expected workflow");
+  });
+
+  test("重跑（run attempt 为 2）整体拒绝", () => {
+    const { file } = makeBarrier();
+    const gh = ghFetch({ run: runMeta({ run_attempt: 2 }), zip: goodZip(file) });
+    expectRefused(fetchRun(gh), "only the first attempt is accepted");
+  });
+
+  test("GitHub 返回的运行 id 与请求不符时拒绝", () => {
+    const { file } = makeBarrier();
+    const gh = ghFetch({ run: runMeta({ id: 999 }), zip: goodZip(file) });
+    expectRefused(fetchRun(gh), "GitHub returned run 999");
+  });
+
+  test("目标与请求的目标不同时拒绝", () => {
+    const { file } = makeBarrier();
+    const gh = ghFetch({ zip: goodZip(file) });
+    expectRefused(fetchRun(gh, [], { target: OTHER }), "is not the requested target");
+  });
+
+  test("barrier 早于运行开始时拒绝", () => {
+    const { file } = makeBarrier();
+    const gh = ghFetch({ run: runMeta({ run_started_at: iso(BARRIER_AT + 600) }), zip: goodZip(file) });
+    expectRefused(fetchRun(gh), "generated before run");
+  });
+
+  test("barrier 生成时间在未来时拒绝", () => {
+    const { file } = makeBarrier();
+    const gh = ghFetch({ zip: goodZip(file) });
+    expectRefused(fetchRun(gh, [], { env: { NOW_EPOCH: String(BARRIER_AT - 500) } }), "in the future");
+  });
+
+  test("陈旧 barrier（超过 --max-age）时拒绝", () => {
+    const { file } = makeBarrier();
+    const gh = ghFetch({ zip: goodZip(file) });
+    expectRefused(fetchRun(gh, ["--max-age", "300"]), "is stale");
+  });
+
+  test("旧 artifact（上传时间早于 barrier 生成）时拒绝", () => {
+    const { file } = makeBarrier();
+    const gh = ghFetch({
+      artifacts: { total_count: 1, artifacts: [artifactMeta({ created_at: iso(BARRIER_AT - 300) })] },
+      zip: goodZip(file),
+    });
+    expectRefused(fetchRun(gh), "predates the barrier it carries");
+  });
+
+  test("探针产生的合成 barrier 不能用于正式校验（工作流引用与发布运行不符）", () => {
+    const probeFile = barrierWith({ GITHUB_WORKFLOW_REF: `${REPO}/${PROBE_PATH}@refs/heads/main` });
+    const r = check("verify", probeFile, []);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("does not belong to this run");
+  });
+
+  test("取回的 barrier 不构成证据：非审批人带 nonce 的评论仍被忽略，审批人评论通过", () => {
+    const { file } = makeBarrier();
+    const gh = ghFetch({ zip: goodZip(file) });
+    const r = fetchRun(gh);
+    expect(r.code).toBe(0);
+    expectNoEvidence(check("verify", r.out, [comment({ body: renderBody(r.out), login: "mallory" })]));
+    expect(check("verify", r.out, [comment({ body: renderBody(r.out) })]).code).toBe(0);
+  });
+
+  test("篡改 nonce（格式仍规范）：取回可通过，但 CI 以自身 barrier 比对，由此写出的评论不会绑定", () => {
+    const { file } = makeBarrier();
+    const original = readFileSync(file, "utf8");
+    const nonce = (JSON.parse(original) as { nonce: string }).nonce;
+    const gh = ghFetch({ zip: zipOf({ [ARTIFACT_MEMBER]: tamper(original, nonce, "f".repeat(32)) }) });
+    const r = fetchRun(gh);
+    expect(r.code).toBe(0);
+    expectNoEvidence(check("verify", file, [comment({ body: renderBody(r.out) })]));
   });
 });

@@ -137,8 +137,8 @@ GitHub `production` Environment 额外配置：
    1. 拒绝重跑：`GITHUB_RUN_ATTEMPT` 不为 `1` 即失败。
    2. 复核 `Quality gate` 成功，校验 production 配置。
    3. 检出 `sha` 并安装依赖、构建 web、marketing 与 ops。此时没有生产写入。
-   4. **生成 barrier**：`origin-verification.py barrier` 在构建之后、任何生产写入之前生成 barrier，并写入作业摘要。barrier 绑定仓库、run id、run attempt、workflow ref、受审 tooling 的完整 SHA（即本运行的 `GITHUB_SHA`）、目标 `sha`、生成时间与随机 nonce。
-   5. **有界等待**：最多 20 分钟，等待一条绑定该 barrier 的运营核定评论。超时、无证据、证据不合格或 API 持续失败，作业都会失败，锁随之释放。
+   4. **生成 barrier**：`origin-verification.py barrier` 在构建之后、任何生产写入之前生成 barrier，并写入作业摘要。barrier 绑定仓库、run id、run attempt、workflow ref、受审 tooling 的完整 SHA（即本运行的 `GITHUB_SHA`）、目标 `sha`、生成时间与随机 nonce。同一份 barrier 紧接着以 artifact `origin-barrier-<run id>-<run attempt>` 上传（同名不覆盖，保留 1 天），运营在作业仍运行时经 `fetch` 取回。
+   5. **有界等待**：最多 20 分钟，等待一条绑定该 barrier 的运营核定评论。CI 只以本作业生成的 barrier 比对，不读取 artifact。超时、无证据、证据不合格或 API 持续失败，作业都会失败，锁随之释放。
    6. **写入前复核**：`verify` 再次校验评论，并检查 origin `/health`。任一失败都在第一次 Cloudflare 写入之前停止。
    7. **写入**：Hono edge Worker，然后 Pages 应用（含 `/ops/`），最后 marketing 站点。
    8. **发布后检查**（`Verify production` 步骤，按顺序）：`https://l.maplayer.top/` 返回 HTTP 200；`https://l.maplayer.top/health` 返回 HTTP 200，且 JSON 中 `status` 为 `ok`、`surrealdb` 为 `up`；`https://l.maplayer.top/runtime-version.json` 的 `sha` 为本次 `sha`、`deploymentId` 为本次运行的 `<run id>-<run attempt>`（每 10 秒轮询，最多 30 次）；`https://www.maplayer.top/` 返回 HTTP 200；`https://l.maplayer.top/ops/` 页面包含「运营控制台」。
@@ -147,7 +147,24 @@ GitHub `production` Environment 额外配置：
 
 barrier 生成之后，运营（执行人）按以下顺序操作。工具名与调用方式以 `sck call ops_info '{}'` 返回为准。执行人是持有效公司租约的原正式部署任务执行者（本次维护期间为任务 `3a9b0b3c-da89-4090-a0ea-a442b1608a7e`）。
 
-1. 从本次运行的作业摘要复制 barrier JSON，保存为本地 `barrier.json`，不修改。确认 `target_sha` 与派发的 `sha` 相同，`run_attempt` 为 `1`。
+取回 barrier 的命令对应下面的第 1 步。发布作业生成 barrier 后，同一份内容以 artifact `origin-barrier-<run id>-<run attempt>` 上传，作业仍在运行时即可取回。取回使用运营本机已登录的 `gh`（只读），不需要 production 环境或任何 secret。脚本须与运行提交一致，即 barrier 的 `tooling_sha`：
+
+```bash
+# 取得运行提交（需先 git fetch）；fetch 子命令自引入它的工具 PR 合入之后的版本起可用
+gh api repos/MainListActivity/surreal_ck/actions/runs/<run id> --jq .head_sha
+git -C <本地仓库> show <head_sha>:scripts/deploy/origin-verification.py > origin-verification.py
+
+# 作业仍为 in_progress 时取回；--timeout 为 0 时只查一次
+python3 origin-verification.py fetch --repo MainListActivity/surreal_ck \
+  --run-id <run id> --target <派发的 sha> --out barrier.json \
+  --timeout 600 --interval 15
+```
+
+`fetch` 逐项核验：运行是 `Frontend recovery` 的第一次尝试；artifact 未过期，挂在本运行上，提交与运行一致；压缩包内只有 `origin-barrier.json`，大小在界内，且为规范字节；barrier 的仓库、run id、attempt、工作流引用与 tooling SHA 都与本运行一致，目标与 `--target` 相同；生成时间不早于运行开始，距今不超过 20 分钟。退出码：`0` 取回并通过；`2` 校验拒绝（重名、错误运行、篡改、过期、非 JSON 等），停止，不发表评论，整条重新派发；新的正式派发须经原正式部署任务的受控流程，不得因 `2` 自动重新派发；`3` 尚不可读，或等待 / 重试预算耗尽（含持续的临时 GitHub 接口错误），或运行已结束却没有 artifact；`1` 脚本校验的用法错误、写入 `--out` 失败，或未被重试分支捕获的意外错误。临时接口错误不返回 `1`，预算内重试，耗尽后返回 `3`。命令行参数缺失、拼写错误或类型不合法时，解析器（argparse）以 `2` 退出，这不是校验拒绝，也未执行取回，核对命令后重试即可，不据此重新派发。`fetch` 不构成证据：绑定评论仍须由白名单审批人发表，CI 的等待与校验仍只以本作业生成的 barrier 为准。
+
+对 `3` 再取的边界：只有原运行仍有效（仍为第一次尝试），且 barrier 仍在 20 分钟有效窗内（以作业摘要中的 `generated_at` 计），才可用同一命令再取，每次仍受 `--timeout` 预算约束，不得无限重取。运行已结束却没有 artifact 时（退出码 `3`），之后不会再出现 barrier，不得重取；本次运行即不可用，停止，不发表评论，整条重新派发须经原正式部署任务的受控流程另行决定。
+
+1. 按上面的命令取回 barrier，保存为本地 `barrier.json`，不修改。确认 `target_sha` 与派发的 `sha` 相同，`run_attempt` 为 `1`。作业摘要中的 JSON 只供人工对照；`fetch` 退出码为 `2` 时，不得改用摘要内容发表评论。
 2. `ops_info`：确认运维工具可用。
 3. `ops_operator_login`：登录运营会话。
 4. `ops_request`：以 GET 请求 `/api/ops/runtime-version`。记下 origin 实际运行的完整 SHA，以及核定时间（UTC，`YYYY-MM-DDTHH:MM:SSZ`）。
@@ -194,6 +211,8 @@ CI 的 `wait` 与写入前的 `verify` 按下表判定。任一项失败都使�
 | 同一 barrier 有两条绑定评论 | 拒绝（歧义） |
 | 整条运行被重跑（run attempt 大于 1） | 拒绝；barrier 不会生成 |
 
+运营取回 barrier 的 `fetch` 不在上表之内，其规则见「运营核定证据」；CI 的等待与校验不读取 artifact。
+
 ## 发布互斥
 
 三个入口共用顶层并发组 `production-release`，不取消进行中的运行（`cancel-in-progress: false`）：
@@ -221,6 +240,17 @@ CI 的 `wait` 与写入前的 `verify` 按下表判定。任一项失败都使�
 3. 排队验证：先派发 `Frontend recovery`（`dry_run=true`，`hold_seconds=300`），运行中再派发 `Deploy origin (manual)`（`dry_run=true`）。第二个运行应显示为等待，在第一个结束后才开始。若它被取消而不是等待，记录两个运行号并报告 GM。
 
 探针只证明派发、互斥与权限边界。它不证明 barrier、评论校验或真实发布可用，这些只能在真实运行中验证。
+
+## 运行中可读性探针（artifact 通道）
+
+`.github/workflows/frontend-barrier-artifact-probe.yml` 验证 barrier artifact 能否在作业仍运行时经 `gh` 取回。合入前它只存在于本线分支 `lane/c11970f4-frontend-barrier-artifact`，由推送到该分支触发，hold 为 600 秒。合入默认分支后，可手动派发并输入 `hold_seconds`（60 至 900 的整数，默认 600）。
+
+- 不使用 `environment`，不引用 secrets，权限只读，不写 Cloudflare、origin 或产品数据，不加入 `production-release` 组。
+- 作业生成合成 barrier（工作流引用指向探针文件，目标为探针自身的提交），以与正式发布相同的名称上传，在作业内回读并逐字节比对，然后保持 `hold_seconds` 秒。
+- 工程在作业仍为 `in_progress` 时，用 `fetch --workflow-path .github/workflows/frontend-barrier-artifact-probe.yml --target <探针提交>` 取回，并与作业摘要中的 sha256 对照。
+- 合成 barrier 不能用于正式评论：正式的 `fetch` 因工作流路径与发布运行不符而拒绝它；即使手工发表，绑定评论也与发布运行的 barrier 不符，CI 不会接受。
+
+探针只证明传输：artifact 能在运行中被取回，且与生成内容逐字节一致。它不证明评论校验或真实发布。
 
 ## 前端部分失败的恢复路径
 

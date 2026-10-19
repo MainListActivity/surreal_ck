@@ -405,6 +405,7 @@ describe("release-frontend-recovery.yml（前端定向恢复：锁内 barrier、
       "Build production sites",
       "Checkout deploy tooling",
       "Generate the in-lock origin barrier",
+      "Publish the origin barrier as a run artifact",
       "Wait for operator origin evidence",
       "Re-verify origin evidence",
       "Deploy Hono edge proxy",
@@ -477,7 +478,7 @@ describe("release-frontend-recovery.yml（前端定向恢复：锁内 barrier、
     }
   });
 
-  test("barrier 写好后发出单行 notice（运行中可经 annotations API 读取）：位于 barrier 步骤内、wait 步骤之前", () => {
+  test("barrier 写好后发出单行 notice（仅作业结束后可读，运行中的通道是 artifact）：位于 barrier 步骤内、wait 步骤之前", () => {
     const run = String(stepNamed("Generate the in-lock origin barrier").run ?? "");
     expect(run.split("\n").filter((line) => line.includes("::notice"))).toHaveLength(1);
     expect(run.indexOf("origin-verification.py barrier")).toBeLessThan(run.indexOf("::notice"));
@@ -514,6 +515,39 @@ describe("release-frontend-recovery.yml（前端定向恢复：锁内 barrier、
       expect(JSON.parse(result.stdout.slice(prefix.length))).toEqual(barrier);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("barrier artifact 上传：位于 barrier 之后、wait 之前；名称含 run id 与 attempt；路径为 barrier 文件；缺失即失败；同名不覆盖；保留 1 天", () => {
+    const upload = stepNamed("Publish the origin barrier as a run artifact");
+    expect(indexOfStep("Publish the origin barrier as a run artifact")).toBeGreaterThan(indexOfStep("Generate the in-lock origin barrier"));
+    expect(indexOfStep("Publish the origin barrier as a run artifact")).toBeLessThan(indexOfStep("Wait for operator origin evidence"));
+    expect(upload.uses).toBe("actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f");
+    expect(upload.with?.name).toBe("origin-barrier-${{ github.run_id }}-${{ github.run_attempt }}");
+    expect(upload.with?.path).toBe("${{ runner.temp }}/origin-barrier.json");
+    expect(upload.with?.["if-no-files-found"]).toBe("error");
+    expect(upload.with?.overwrite).toBe(false);
+    expect(upload.with?.["retention-days"]).toBe(1);
+  });
+
+  test("barrier artifact 上传步骤不携带 GH_TOKEN、secrets 或额外环境变量", () => {
+    const upload = stepNamed("Publish the origin barrier as a run artifact");
+    expect(JSON.stringify(upload)).not.toContain("GH_TOKEN");
+    expect(JSON.stringify(upload)).not.toContain("secrets.");
+    expect(upload.env).toBeUndefined();
+  });
+
+  test("barrier artifact 名称与 origin-verification.py 的 artifact_name 格式一致（origin-barrier-<run>-<attempt>）", () => {
+    const script = readFileSync(join(import.meta.dir, "../../../scripts/deploy/origin-verification.py"), "utf8");
+    expect(script).toContain('"origin-barrier-%s-%s"');
+    expect(stepNamed("Publish the origin barrier as a run artifact").with?.name).toBe(
+      "origin-barrier-${{ github.run_id }}-${{ github.run_attempt }}",
+    );
+  });
+
+  test("CI 不读取 artifact：wait 与写入前的 verify 仍只以本作业生成的 barrier 文件为准", () => {
+    for (const prefix of ["Wait for operator origin evidence", "Re-verify origin evidence"]) {
+      expect(String(stepNamed(prefix).run ?? "")).not.toContain("artifact");
     }
   });
 
@@ -595,6 +629,102 @@ describe("发布入口共用顶层发布锁（跨入口互斥的唯一机制）"
     for (const file of FILES) {
       expect(load(file).concurrency?.group).not.toBe("production");
     }
+  });
+});
+
+describe("frontend-barrier-artifact-probe.yml（无生产环境的只读探针：合成 barrier 的 artifact 通道）", () => {
+  const PROBE_FILE = "frontend-barrier-artifact-probe.yml";
+  const doc = load(PROBE_FILE);
+  const text = readFileSync(join(WORKFLOWS, PROBE_FILE), "utf8");
+  const steps: Step[] = doc.jobs.publish.steps ?? [];
+  const find = (prefix: string): Step => {
+    const step = steps.find((candidate) => String(candidate.name ?? "").startsWith(prefix));
+    expect(step).toBeDefined();
+    return step as Step;
+  };
+
+  test("on 为本线分支推送（路径受限）与 workflow_dispatch；hold_seconds 为字符串且默认 \"600\"", () => {
+    expect(onKeys(doc).sort()).toEqual(["push", "workflow_dispatch"]);
+    expect(doc.on.push.branches).toEqual(["lane/c11970f4-frontend-barrier-artifact"]);
+    expect(doc.on.push.paths).toEqual([
+      ".github/workflows/frontend-barrier-artifact-probe.yml",
+      "scripts/deploy/origin-verification.py",
+    ]);
+    const inputs = doc.on.workflow_dispatch.inputs ?? {};
+    expect(inputs.hold_seconds?.type).toBe("string");
+    expect(inputs.hold_seconds?.default).toBe("600");
+  });
+
+  test("顶层 permissions 为空对象；作业只取 contents 读取", () => {
+    expect(doc.permissions).toEqual({});
+    expect(doc.jobs.publish.permissions).toEqual({ contents: "read" });
+  });
+
+  test("不使用 environment，不引用 secrets，不加入 production-release 发布锁", () => {
+    for (const [, job] of jobsOf(doc)) expect(job.environment).toBeUndefined();
+    expect(text).not.toContain("secrets.");
+    expect(doc.concurrency).toBeUndefined();
+    expect(text).not.toContain("production-release");
+  });
+
+  test("不含任何生产写入或 origin 相关命令", () => {
+    const surface = [...runsOf(doc), ...usesOf(doc)].join("\n");
+    for (const forbidden of ["wrangler", "ssh", "scp", "systemctl", "origin-release", "deploy-origin", "CLOUDFLARE", "pages deploy"]) {
+      expect(surface).not.toContain(forbidden);
+    }
+  });
+
+  test("所有非本地 uses 均为 owner/repo@<40 位小写 hex>", () => {
+    for (const use of usesOf(doc)) {
+      if (use.startsWith("./")) continue;
+      expect(use).toMatch(/^[^/\s]+\/[^@\s]+@[0-9a-f]{40}$/);
+    }
+  });
+
+  test("hold 窗口在 sleep 之前校验：60 与 900 放行，0、59、901、1000、负数、非整数均拒绝", () => {
+    const validate = find("Validate the hold window");
+    const hold = find("Hold the job open");
+    expect(steps.indexOf(validate)).toBeLessThan(steps.indexOf(hold));
+    const run = String(validate.run ?? "");
+    expect(runHoldCheck(run, "60")).toBe(0);
+    expect(runHoldCheck(run, "900")).toBe(0);
+    for (const bad of ["0", "59", "901", "1000", "-1", "abc"]) {
+      expect(runHoldCheck(run, bad)).not.toBe(0);
+    }
+  });
+
+  test("合成 barrier 与正式发布使用同一生成入口（origin-verification.py barrier）", () => {
+    expect(String(find("Generate the synthetic barrier").run ?? "")).toContain("scripts/deploy/origin-verification.py barrier");
+  });
+
+  test("发布、回读、比较与保持运行的顺序：上传 → 回读 → cmp 逐字节比较 → sleep", () => {
+    const upload = steps.indexOf(find("Publish the synthetic barrier as a run artifact"));
+    const readback = steps.indexOf(find("Read the artifact back"));
+    const compare = steps.indexOf(find("Compare the read-back bytes"));
+    const hold = steps.indexOf(find("Hold the job open"));
+    expect(upload).toBeLessThan(readback);
+    expect(readback).toBeLessThan(compare);
+    expect(compare).toBeLessThan(hold);
+    expect(String(find("Compare the read-back bytes").run ?? "")).toContain("cmp ");
+  });
+
+  test("制品名称、保留与覆盖设置与正式发布完全一致（fetch 按同一名称取回）", () => {
+    const releaseSteps = load("release-frontend-recovery.yml").jobs.deploy.steps as Step[];
+    const releaseUpload = releaseSteps.find((step) =>
+      String(step.name ?? "").startsWith("Publish the origin barrier as a run artifact"),
+    );
+    const probeUpload = find("Publish the synthetic barrier as a run artifact");
+    expect(probeUpload.with?.name).toBe(releaseUpload?.with?.name);
+    for (const key of ["if-no-files-found", "retention-days", "overwrite", "include-hidden-files"]) {
+      expect(probeUpload.with?.[key]).toBe(releaseUpload?.with?.[key]);
+    }
+  });
+
+  test("固定版本：upload-artifact 与正式发布相同（v7.0.0），download-artifact 为仓库已用的 v8.0.1", () => {
+    expect(find("Publish the synthetic barrier as a run artifact").uses).toBe(
+      "actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f",
+    );
+    expect(find("Read the artifact back").uses).toBe("actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c");
   });
 });
 
