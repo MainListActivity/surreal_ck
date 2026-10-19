@@ -6,6 +6,7 @@ run-name: "Frontend recovery ${{ inputs.sha }} (evidence PR #${{ inputs.evidence
 # 本文件不调用 deploy-origin.yml，不含 SSH/SCP，不停服、不切换 current、不改 server.env；origin 不由本工作流改动。
 # 只能从默认分支手动触发。发布作业先完成构建（无生产写入），再在本次运行内生成 barrier 并写入作业摘要。
 # 运营在 barrier 之后只读核定 origin 运行 SHA，并在证据 PR 上发表绑定该 barrier 的评论（见 runbook）。
+# barrier 同时以 artifact origin-barrier-<run id>-<attempt> 上传，运行中由运营经 origin-verification.py fetch 取回并校验（见 runbook）。
 # 发布作业有界等待该评论（最多 20 分钟），并在第一次生产写入之前再次校验评论与 origin 健康；任一失败即结束，发布锁随之释放。
 # 顶层发布锁组 production-release 与 Deploy production、Deploy origin (manual) 共用：任一入口运行时其余入口排队。
 # 局部重跑（run attempt 大于 1）被拒绝：须整条重新派发，每次运行都需要新的 barrier 与新的核定评论。
@@ -257,7 +258,7 @@ jobs:
           python3 tooling/scripts/deploy/origin-verification.py barrier \
             --target "$RELEASE_SHA" \
             --out "$RUNNER_TEMP/origin-barrier.json"
-          # 作业日志在作业结束前不可经 API 读取，所以 barrier 同时以注解输出：运营可在运行中经 check-run annotations API 读取。
+          # 注解只在作业结束后可读（运行中经 check-run annotations API 读取为空，已实测），因此它只作事后审计；运行中的取回通道是下一步的 artifact。
           # 单行，消息只含 barrier 本身（不含凭证）。先赋值再输出：jq 失败时 set -e 使本步骤失败，不会发出空消息。
           barrier_compact="$(jq -c . "$RUNNER_TEMP/origin-barrier.json")"
           printf '::notice title=origin-verification-barrier::%s\n' "$barrier_compact"
@@ -265,12 +266,25 @@ jobs:
             echo "### Origin verification barrier (generated under production-release, before any production write)"
             echo ""
             echo "Only an evidence comment on PR #$EVIDENCE_PR that binds this barrier is accepted."
-            echo "The operator samples origin only after this barrier is visible, and posts with the origin-verification.py post subcommand from the checkout of tooling_sha."
+            echo "While the run is in progress, the same barrier is readable as artifact origin-barrier-<run id>-<run attempt>; fetch it with origin-verification.py fetch and sample origin only after that. Post with the post subcommand from the checkout of tooling_sha."
             echo ""
             echo '```json'
             cat "$RUNNER_TEMP/origin-barrier.json"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # 运行中可读的机器通道：同一份 barrier 以 artifact 上传；名称含 run id 与 attempt，overwrite 为 false（同名即失败），保留 1 天。
+      # 运营在 Wait 期间经 origin-verification.py fetch 按名称取回并逐项校验；CI 的 wait 与 verify 仍以本作业生成的文件为准，不读取此 artifact。
+      # 本步骤不需要 GH_TOKEN 或 secrets；上传失败则作业失败，Wait 与任何生产写入都不会开始。
+      - name: Publish the origin barrier as a run artifact (readable while the run is in progress)
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: origin-barrier-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/origin-barrier.json
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: false
+          include-hidden-files: false
 
       - name: Wait for operator origin evidence (bounded, 20 minutes)
         env:

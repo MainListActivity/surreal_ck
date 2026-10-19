@@ -13,10 +13,18 @@ CI 读不到 origin 的运行 SHA：公开入口没有，/api/ops/runtime-versio
 
 顶层发布锁 production-release 保证 barrier 与发布之间没有其它受管 origin 变更。
 
-退出码：0 通过；1 用法或接口错误；2 拒绝（找到绑定评论但不符合）；3 尚无绑定评论。
+运行中可读的取回通道（fetch）：发布作业在生成 barrier 之后、Wait 之前把它上传为 artifact
+origin-barrier-<run_id>-<attempt>。运营在作业仍运行时经 gh API 取回，逐项核验运行身份、提交、目标、
+时间与字节规范性后，才把文件交给 render / post。fetch 不构成证据：绑定评论仍须由白名单审批人发表，
+CI 的 wait / verify 仍以自己生成的 barrier 逐项比对。
+
+退出码：0 通过；1 用法或接口错误；2 拒绝（找到绑定评论或 artifact 但不符合）；
+3 尚无绑定评论、artifact 尚不可读或等待超时。
 """
 
 import argparse
+import hashlib
+import io
 import json
 import os
 import re
@@ -25,6 +33,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 from datetime import datetime, timezone
 
 FENCE_OPEN = "```origin-verification-v1"
@@ -62,6 +71,12 @@ DEFAULT_MAX_AGE = 1800
 FUTURE_SKEW = 60
 PAGE_SIZE = 100
 MAX_PAGES = 20
+# barrier 有效期与 release 工作流的 wait 上限一致（1200 秒）：超过即视为过期，须整条重新派发。
+BARRIER_MAX_AGE = 1200
+RELEASE_WORKFLOW = ".github/workflows/release-frontend-recovery.yml"
+WORKFLOW_PATH_RE = re.compile(r"^\.github/workflows/[A-Za-z0-9._-]{1,100}\.yml$")
+ARTIFACT_MEMBER = "origin-barrier.json"
+ARTIFACT_MAX_BYTES = 16384
 
 
 class UsageError(Exception):
@@ -78,6 +93,10 @@ class Refused(Exception):
 
 class NoEvidence(Exception):
     """尚无与 barrier 绑定的评论；退出码 3。"""
+
+
+class RunEnded(NoEvidence):
+    """运行已结束却没有 barrier artifact：之后不会再出现，立即退出码 3。"""
 
 
 def now_epoch():
@@ -326,6 +345,168 @@ def write_result(path, result):
             handle.write("\n")
 
 
+def artifact_name(run_id, run_attempt):
+    return "origin-barrier-%s-%s" % (run_id, run_attempt)
+
+
+def canonical_bytes(barrier):
+    """barrier 文件的唯一规范字节，与 cmd_barrier 写出的内容逐字节一致。"""
+    return (json.dumps(barrier, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def gh_api_bytes(endpoint):
+    try:
+        proc = subprocess.run(["gh", "api", endpoint], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except OSError as exc:
+        raise ApiError("cannot run gh: %s" % exc)
+    if proc.returncode != 0:
+        raise ApiError("gh api %s failed: %s" % (endpoint, proc.stderr.decode("utf-8", "replace").strip()[:300]))
+    return proc.stdout
+
+
+def gh_api_json(endpoint):
+    try:
+        payload = json.loads(gh_api_bytes(endpoint).decode("utf-8"))
+    except ValueError:
+        raise ApiError("gh api %s did not return JSON" % endpoint)
+    if not isinstance(payload, dict):
+        raise ApiError("gh api %s did not return a JSON object" % endpoint)
+    return payload
+
+
+def list_named_artifacts(repo, run_id, name):
+    payload = gh_api_json("repos/%s/actions/runs/%s/artifacts?name=%s&per_page=%d" % (repo, run_id, name, PAGE_SIZE))
+    items = payload.get("artifacts")
+    if not isinstance(items, list):
+        raise ApiError("artifacts response has no artifacts list")
+    total = payload.get("total_count")
+    if isinstance(total, int) and total > len(items):
+        raise Refused("more than one page of artifacts named %s; refusing" % name)
+    return [item for item in items if isinstance(item, dict) and item.get("name") == name]
+
+
+def check_artifact_entry(artifact, args, head):
+    """下载之前核对 artifact 元数据：未过期、挂在本运行上、提交一致、大小在界内。"""
+    if artifact.get("expired") is not False:
+        raise Refused("barrier artifact is expired or its state is unknown; dispatch a new run")
+    workflow_run = artifact.get("workflow_run")
+    attached = workflow_run.get("id") if isinstance(workflow_run, dict) else None
+    if str(attached) != args.run_id:
+        raise Refused("artifact is attached to run %s, not %s" % (attached, args.run_id))
+    if workflow_run.get("head_sha") != head:
+        raise Refused("artifact commit does not match run %s" % args.run_id)
+    size = artifact.get("size_in_bytes")
+    if not isinstance(size, int) or isinstance(size, bool) or not 0 < size <= ARTIFACT_MAX_BYTES:
+        raise Refused("barrier artifact size is out of bounds")
+
+
+def download_artifact(repo, artifact):
+    artifact_id = artifact.get("id")
+    if not isinstance(artifact_id, int) or isinstance(artifact_id, bool) or artifact_id <= 0:
+        raise ApiError("artifact id is malformed")
+    return gh_api_bytes("repos/%s/actions/artifacts/%d/zip" % (repo, artifact_id))
+
+
+def parse_barrier_artifact(data):
+    """artifact 字节必须是恰好一个 origin-barrier.json：可解析、字段齐全、为规范字节。"""
+    if len(data) > ARTIFACT_MAX_BYTES:
+        raise Refused("barrier artifact is larger than %d bytes" % ARTIFACT_MAX_BYTES)
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile:
+        raise Refused("barrier artifact is not a zip archive")
+    names = archive.namelist()
+    if names != [ARTIFACT_MEMBER]:
+        raise Refused("barrier artifact must contain exactly %s (found %s)" % (ARTIFACT_MEMBER, names))
+    if archive.getinfo(ARTIFACT_MEMBER).file_size > ARTIFACT_MAX_BYTES:
+        raise Refused("barrier artifact member is larger than %d bytes once decompressed" % ARTIFACT_MAX_BYTES)
+    try:
+        raw = archive.read(ARTIFACT_MEMBER)
+    except (zipfile.BadZipFile, RuntimeError, OSError) as exc:
+        raise Refused("barrier artifact cannot be read: %s" % exc)
+    try:
+        barrier = json.loads(raw.decode("utf-8"))
+    except ValueError:
+        raise Refused("barrier artifact is not JSON")
+    try:
+        validate_barrier(barrier)
+    except UsageError as exc:
+        raise Refused("barrier artifact is malformed: %s" % exc)
+    if raw != canonical_bytes(barrier):
+        raise Refused("barrier artifact bytes are not the canonical barrier (reformatted or tampered)")
+    return barrier, raw
+
+
+def check_artifact_binding(run, artifact, barrier, args, now):
+    """barrier 必须属于本运行：仓库、run id、attempt、工作流路径与分支、tooling（即运行提交）、目标与时间窗口。"""
+    if barrier["repo"] != args.repo:
+        raise Refused("barrier repository %s is not %s" % (barrier["repo"], args.repo))
+    if barrier["run_id"] != args.run_id:
+        raise Refused("barrier belongs to run %s, not %s" % (barrier["run_id"], args.run_id))
+    if barrier["run_attempt"] != "1":
+        raise Refused("barrier run attempt %s is not 1" % barrier["run_attempt"])
+    expected_ref = "%s/%s@refs/heads/%s" % (args.repo, args.workflow_path, run.get("head_branch"))
+    if barrier["workflow_ref"] != expected_ref:
+        raise Refused("barrier workflow ref %s does not match run %s" % (barrier["workflow_ref"], args.run_id))
+    if barrier["tooling_sha"] != run.get("head_sha"):
+        raise Refused("barrier tooling sha does not match the commit of run %s" % args.run_id)
+    if barrier["target_sha"] != args.target:
+        raise Refused("barrier target %s is not the requested target %s" % (barrier["target_sha"], args.target))
+    generated = parse_utc(barrier["generated_at"])
+    try:
+        started = parse_utc(run.get("run_started_at") or run.get("created_at"))
+        created = parse_utc(artifact.get("created_at"))
+    except ValueError as exc:
+        raise Refused("run or artifact timestamp is malformed: %s" % exc)
+    if generated < started - FUTURE_SKEW:
+        raise Refused("barrier was generated before run %s started" % args.run_id)
+    if generated > now + FUTURE_SKEW:
+        raise Refused("barrier generated_at is in the future")
+    if now - generated > args.max_age:
+        raise Refused("barrier is stale (age %ds, allowed %ds); dispatch a new run" % (now - generated, args.max_age))
+    if created < generated - FUTURE_SKEW:
+        raise Refused("artifact predates the barrier it carries")
+    if created > now + FUTURE_SKEW:
+        raise Refused("artifact created_at is in the future")
+
+
+def fetch_barrier_once(args, now):
+    """单次取回：返回 (规范字节, barrier, artifact 元数据)；尚不可读抛 NoEvidence，不合格抛 Refused。"""
+    run = gh_api_json("repos/%s/actions/runs/%s" % (args.repo, args.run_id))
+    if str(run.get("id")) != args.run_id:
+        raise Refused("GitHub returned run %s, not %s" % (run.get("id"), args.run_id))
+    if run.get("path") != args.workflow_path:
+        raise Refused("run %s is %s, not the expected workflow %s" % (args.run_id, run.get("path"), args.workflow_path))
+    if str(run.get("run_attempt")) != "1":
+        raise Refused("run attempt is %s; only the first attempt is accepted" % run.get("run_attempt"))
+    head = run.get("head_sha")
+    if not isinstance(head, str) or not SHA_RE.match(head):
+        raise Refused("run %s has no full commit sha" % args.run_id)
+    name = artifact_name(args.run_id, "1")
+    matches = list_named_artifacts(args.repo, args.run_id, name)
+    if len(matches) > 1:
+        raise Refused("%d artifacts are named %s; refusing duplicates" % (len(matches), name))
+    if not matches:
+        if run.get("status") == "completed":
+            raise RunEnded("run %s completed without a barrier artifact; nothing to read" % args.run_id)
+        raise NoEvidence("barrier artifact %s is not readable yet (run status %s)" % (name, run.get("status")))
+    artifact = matches[0]
+    check_artifact_entry(artifact, args, head)
+    barrier, raw = parse_barrier_artifact(download_artifact(args.repo, artifact))
+    check_artifact_binding(run, artifact, barrier, args, now)
+    return raw, barrier, artifact
+
+
+def write_bytes(path, data):
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "wb") as handle:
+            handle.write(data)
+        os.replace(tmp, path)
+    except OSError as exc:
+        raise UsageError("cannot write %s: %s" % (path, exc))
+
+
 def build_body(barrier, args, now):
     origin_sha = args.origin_sha or ""
     if not SHA_RE.match(origin_sha):
@@ -477,6 +658,50 @@ def cmd_wait(args):
         time.sleep(min(float(args.interval), remaining))
 
 
+def cmd_fetch(args):
+    if not REPO_RE.match(args.repo or ""):
+        raise UsageError("--repo must be owner/name")
+    if not DIGITS_RE.match(args.run_id or ""):
+        raise UsageError("--run-id must be a numeric run id")
+    if not SHA_RE.match(args.target or ""):
+        raise UsageError("--target must be a full lowercase commit SHA")
+    if not WORKFLOW_PATH_RE.match(args.workflow_path or ""):
+        raise UsageError("--workflow-path must be a .github/workflows/*.yml path")
+    if args.max_age <= 0 or args.interval <= 0 or args.timeout < 0:
+        raise UsageError("--max-age and --interval must be positive; --timeout must not be negative")
+    started = time.monotonic()
+    last = "barrier artifact not checked yet"
+    while True:
+        try:
+            raw, barrier, artifact = fetch_barrier_once(args, now_epoch())
+        except Refused as exc:
+            emit("refused", str(exc))
+            return 2
+        except RunEnded as exc:
+            emit("no_evidence", str(exc))
+            return 3
+        except NoEvidence as exc:
+            last = str(exc)
+        except ApiError as exc:
+            last = "transient GitHub API error: %s" % exc
+        else:
+            write_bytes(args.out, raw)
+            emit(
+                "ok",
+                "barrier artifact %s verified for run %s" % (artifact.get("name"), args.run_id),
+                artifact_id=artifact.get("id"),
+                artifact_created_at=artifact.get("created_at"),
+                barrier_generated_at=barrier["generated_at"],
+                barrier_sha256=hashlib.sha256(raw).hexdigest(),
+            )
+            return 0
+        remaining = args.timeout - (time.monotonic() - started)
+        if remaining <= 0:
+            emit("no_evidence", "timed out after %ds: %s" % (args.timeout, last))
+            return 3
+        time.sleep(min(float(args.interval), remaining))
+
+
 def add_barrier_arg(parser):
     parser.add_argument("--barrier", required=True, help="barrier.json 路径（发布作业生成）")
 
@@ -533,6 +758,17 @@ def build_parser():
     p.add_argument("--timeout", type=int, default=1200, help="等待上限秒数")
     p.add_argument("--interval", type=int, default=30, help="轮询间隔秒数")
     p.set_defaults(func=cmd_wait)
+
+    p = sub.add_parser("fetch", help="运行中经 artifact 取回并校验 barrier（运营执行，只读）")
+    p.add_argument("--repo", required=True, help="owner/name")
+    p.add_argument("--run-id", required=True, help="发布运行的 run id")
+    p.add_argument("--target", required=True, help="派发的目标完整 SHA（须等于 barrier 目标）")
+    p.add_argument("--out", required=True, help="校验通过后写入 barrier.json 的路径")
+    p.add_argument("--workflow-path", default=RELEASE_WORKFLOW, help="期望的工作流文件路径")
+    p.add_argument("--max-age", type=int, default=BARRIER_MAX_AGE, help="barrier 最长有效秒数")
+    p.add_argument("--timeout", type=int, default=0, help="等待 artifact 可读的上限秒数（0 表示只查一次）")
+    p.add_argument("--interval", type=int, default=15, help="轮询间隔秒数")
+    p.set_defaults(func=cmd_fetch)
     return parser
 
 
