@@ -136,6 +136,54 @@ GitHub `production` Environment 额外配置：
 
 发布后检查：`https://l.maplayer.top/runtime-version.json` 必须显示本次 `sha` 与运行的 `deploymentId`；同时检查 `/health`、应用首页、营销站与 `/ops/` 标题。runtime-version 只证明当前 Pages 部署是目标构建，不证明某个浏览器仍缓存的旧 JS 已刷新。
 
+## 发布互斥、dry_run 与配置责任
+
+**互斥。** `Deploy production`、`Deploy origin (manual)`、`Frontend recovery` 共用顶层并发组 `production-release`（不取消进行中的运行）。任一入口运行时其余入口排队，origin 变更与前端发布因此不会并发。被调用的 `deploy-origin.yml` 只保留 job 级组 `production-origin`，不设顶层组，否则会与调用方嵌套死锁。
+
+按 GitHub 并发组语义，同一组同时只保留一个排队中的运行：后排队的运行会取代先排队的运行，先排队的被取消。因此不要同时派发多个入口；被取消的运行须整条重新派发。
+
+**已知缺口（经理裁定前）。** `deploy` 作业在锁内不复核 origin 运行 SHA：CI 无法读取（`/api/ops/runtime-version` 需要运营会话，`/health` 不含 SHA）。核定时效只在作业开头按 30 分钟窗口检查。因此运营核定 origin 之后、前端恢复结束之前，若 origin 被变更，门禁不会发现。在此期间不得放行 origin 变更；必须放行时，重新核定 origin 并整条重新派发前端恢复。
+
+**dry_run 探针（合入后必跑）。** `Frontend recovery` 与 `Deploy origin (manual)` 都有 `dry_run` 输入（默认 `false`）。`dry_run=true` 时只运行 `probe` 作业：它不使用 `environment`，不引用 `secrets`，只校验 `hold_seconds`（0 至 900 的整数）并持有发布锁这么多秒。其它必填输入仍须填写，探针不读取它们。
+
+合入 `main` 后按顺序执行，并记录运行号：
+
+1. `Deploy origin (manual)`，`dry_run=true`，`hold_seconds=0`：probe 作业产生即说明派发可用。仍为 `action_required` 且没有作业的，按上文「已知问题」处理。
+2. `Frontend recovery`，`dry_run=true`，`hold_seconds=0`：同上，并确认 `validate` 与 `deploy` 被跳过。
+3. 排队验证：先派发 `Frontend recovery`（`dry_run=true`，`hold_seconds=300`），运行中再派发 `Deploy origin (manual)`（`dry_run=true`）。第二个运行应显示为等待，在第一个结束后才开始。若它被取消而不是等待，记录两个运行号并报告仓库所有者。
+
+探针只证明派发、互斥与权限边界，不证明发布可用。
+
+**前端部分失败的恢复路径。**
+
+- 入口：只有 `Frontend recovery`。不 SSH，不停服，不切换 `current`，不改 `server.env`，origin 不变。
+- 版本匹配：`sha` 必须等于运营核定的 `origin_sha`（准入门禁强制）。前端只能恢复到 origin 当前运行的提交。origin 不在目标提交时，门禁拒绝前端发布；先经 `Deploy origin (manual)` 处理 origin，再恢复前端。
+- 责任：运营只读核定 origin 运行 SHA，写入 `origin_sha` 与 `origin_verified_at`，并在 issue 评论中批准；派发人负责整条重新派发。
+- 部分失败（例如 web 已发布而 marketing 失败）：不得只重跑 `deploy` 作业。运营重新核定 origin，以同一 `sha` 整条重新派发，批准评论中写明新的核定时间。
+- 诊断顺序：validate 日志（准入门禁各项）；deploy 日志（哪一个 `wrangler pages deploy` 或探测失败）；`https://l.maplayer.top/runtime-version.json` 与 `/health`；Cloudflare Pages 部署记录。
+- 不得用 `Deploy production` 代替前端恢复：它先发布 origin，且当前处于禁用状态。
+
+**启用 `Deploy production` 的条件与执行责任。** 在以下条件全部成立前，`Deploy production` 保持 `disabled_manually`：
+
+1. 修复 PR 合入 `main`，`main` 上同一提交的 `Quality gate` 通过。
+2. 两个入口的 `dry_run` 运行均已完成，排队验证结论已记录。
+3. 前端恢复与独立 QA 证据齐全。
+4. 运营批准已记录，批准人在 `RELEASE_APPROVER_LOGINS` 中。
+5. 下方配置责任表中的变量已全部配置。
+
+谁执行启用**待经理裁定**，本页不指定。启用后用 `gh workflow list --all` 核对状态，并记录启用时间与运行号。
+
+**配置责任表。** 只列名称，值见上文各节。其余变量本次未逐项核对。
+
+| 配置 | 位置 | 责任人 | 2026-10-18 只读核对 | 缺失时 |
+| --- | --- | --- | --- | --- |
+| `RELEASE_APPROVER_LOGINS` | 仓库变量 | 仓库所有者 | 为空 | 前端准入门禁拒绝 |
+| `WEB_PAGES_PROJECT` | `production` Environment 变量 | 仓库所有者 | 缺失 | 前端 `deploy` 与 `Deploy production` 的配置校验失败 |
+| `VITE_SURREAL_URL` | `production` Environment 变量 | 仓库所有者 | 缺失 | 同上 |
+| `VITE_OPS_OIDC_ISSUER` | `production` Environment 变量 | 仓库所有者 | 缺失 | 同上 |
+| `VITE_OPS_OIDC_CLIENT_ID` | `production` Environment 变量 | 仓库所有者 | 缺失 | 同上 |
+| `VITE_OPS_OIDC_AUDIENCE` | `production` Environment 变量 | 仓库所有者 | 缺失 | 同上 |
+
 ## 事故恢复顺序（维护暂停期间）
 
 1. `Deploy production` 保持禁用（`disabled_manually`），前端恢复不会启用它。
