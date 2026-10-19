@@ -61,7 +61,7 @@ Variables（2026-10-19 只读核对，前端 12 项全部存在，核对方法�
 
 ## Hono origin（`Deploy origin`）
 
-origin 是 `data.maplayer.top`（`129.146.179.37`）上的 systemd 服务 `surreal-ck-hono`，工作目录 `/home/ubuntu/surreal_ck/current`，环境文件 `/etc/surreal-ck/server.env`（只在主机上，CI 不读取也不改写）。
+origin 是 `data.maplayer.top`（`129.146.179.37`）上的 systemd 服务 `surreal-ck-hono`，工作目录 `/home/ubuntu/surreal_ck/current`，环境文件 `/etc/surreal-ck/server.env`（只在主机上。CI 不直接读取或改写它；发布时 CI 只上传 env 增改件，由主机上的发布进程写入，见下文）。
 
 `Deploy origin` 只能被调用（`workflow_call`），没有顶层 `workflow_dispatch`。两条入口执行同一份 `deploy-origin.yml`，并必须带 `approval_ref`：自动路径为 `deploy-production-<运行号>`，手动路径为运营批准号（见下文「手动发布 origin」）。
 
@@ -141,7 +141,7 @@ GitHub `production` Environment 额外配置：
    5. **有界等待**：最多 20 分钟，等待一条绑定该 barrier 的运营核定评论。超时、无证据、证据不合格或 API 持续失败，作业都会失败，锁随之释放。
    6. **写入前复核**：`verify` 再次校验评论，并检查 origin `/health`。任一失败都在第一次 Cloudflare 写入之前停止。
    7. **写入**：Hono edge Worker，然后 Pages 应用（含 `/ops/`），最后 marketing 站点。
-   8. **发布后检查**：`https://l.maplayer.top/runtime-version.json` 显示本次 `sha` 与 `deploymentId`；`/health`、`https://www.maplayer.top/` 与 `https://l.maplayer.top/ops/` 页面包含「运营控制台」。
+   8. **发布后检查**（`Verify production` 步骤，按顺序）：`https://l.maplayer.top/` 返回 HTTP 200；`https://l.maplayer.top/health` 返回 HTTP 200，且 JSON 中 `status` 为 `ok`、`surrealdb` 为 `up`；`https://l.maplayer.top/runtime-version.json` 的 `sha` 为本次 `sha`、`deploymentId` 为本次运行的 `<run id>-<run attempt>`（每 10 秒轮询，最多 30 次）；`https://www.maplayer.top/` 返回 HTTP 200；`https://l.maplayer.top/ops/` 页面包含「运营控制台」。
 
 ### 运营核定证据
 
@@ -212,7 +212,7 @@ CI 的 `wait` 与写入前的 `verify` 按下表判定。任一项失败都使�
 
 ## dry_run 探针（合入后必跑）
 
-`Frontend recovery` 与 `Deploy origin (manual)` 都有 `dry_run` 输入（默认 `false`）。`dry_run=true` 时只运行 `probe` 作业：它不使用 `environment`，不引用 `secrets`，不生成 barrier，不等待批准，不发布。它只校验 `hold_seconds`（0 至 900 的整数）并持有 `production-release` 这么多秒。其它必填输入仍须填写，探针不读取它们。
+`Frontend recovery` 与 `Deploy origin (manual)` 都有 `dry_run` 输入（默认 `false`）。`dry_run=true` 时只运行 `probe` 作业：它不使用 `environment`，不引用 `secrets`，不生成 barrier，不等待批准，不发布。它只校验 `hold_seconds`（0 至 900 的整数）并持有 `production-release` 这么多秒。两个入口读取的输入不同：`Deploy origin (manual)` 的探针把 `sha` 写入作业日志（`approval_ref` 只出现在运行名称中）；`Frontend recovery` 的探针只读取 `hold_seconds`。两个入口的必填输入仍须按表单填写，但探针不依据它们做任何判断。
 
 合入 `main` 后按顺序执行，并记录运行号：
 
