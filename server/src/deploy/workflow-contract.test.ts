@@ -62,6 +62,14 @@ function freshnessRun(doc: Doc): string {
   return String(step?.run ?? "");
 }
 
+/** 以 workflow 中 probe 作业的 run 原文执行 hold_seconds 校验；返回退出码。 */
+function runHoldCheck(run: string, holdSeconds: string): number | null {
+  const proc = Bun.spawnSync(["bash", "-c", run], {
+    env: { ...process.env, PROBE_SHA: "a".repeat(40), HOLD_SECONDS: holdSeconds },
+  });
+  return proc.exitCode;
+}
+
 const FILES = [
   "deploy-origin.yml",
   "deploy-origin-manual.yml",
@@ -141,6 +149,10 @@ describe("deploy-origin.yml（workflow_call 发布核心）", () => {
       expect(use).toMatch(/^[^/\s]+\/[^@\s]+@[0-9a-f]{40}$/);
     }
   });
+
+  test("顶层不设 concurrency：被 Deploy production 与手动入口调用时，不得在被调用工作流上叠加顶层发布锁（嵌套死锁）", () => {
+    expect(doc.concurrency).toBeUndefined();
+  });
 });
 
 describe("deploy-origin-manual.yml（手动入口）", () => {
@@ -154,6 +166,37 @@ describe("deploy-origin-manual.yml（手动入口）", () => {
     const inputs = doc.on.workflow_dispatch.inputs ?? {};
     expect(inputs).toHaveProperty("sha");
     expect(inputs).toHaveProperty("approval_ref");
+  });
+
+  test("顶层 concurrency 为 production-release 且 cancel-in-progress 为 false", () => {
+    expect(doc.concurrency?.group).toBe("production-release");
+    expect(doc.concurrency?.["cancel-in-progress"]).toBe(false);
+  });
+
+  test("inputs 含 dry_run（boolean，默认 false）与 hold_seconds（string，默认 \"0\"）", () => {
+    const inputs = doc.on.workflow_dispatch.inputs ?? {};
+    expect(inputs.dry_run?.type).toBe("boolean");
+    expect(inputs.dry_run?.default).toBe(false);
+    expect(inputs.hold_seconds?.type).toBe("string");
+    expect(inputs.hold_seconds?.default).toBe("0");
+  });
+
+  test("probe 只在 dry_run 时运行，不使用 environment 也不引用 secrets；origin 排除 dry_run", () => {
+    const probe = doc.jobs.probe;
+    expect(String(probe.if ?? "")).toContain("inputs.dry_run");
+    expect(probe.environment).toBeUndefined();
+    expect(JSON.stringify(probe)).not.toContain("secrets.");
+    expect(String(doc.jobs.origin.if)).toContain("!inputs.dry_run");
+  });
+
+  test("hold_seconds 在 sleep 之前校验：0 放行，负数、非整数与超过 900 均拒绝", () => {
+    const run = String(doc.jobs.probe.steps[0].run ?? "");
+    expect(run.indexOf("-le 900")).toBeGreaterThan(-1);
+    expect(run.indexOf("-le 900")).toBeLessThan(run.indexOf("sleep "));
+    expect(runHoldCheck(run, "0")).toBe(0);
+    expect(runHoldCheck(run, "901")).not.toBe(0);
+    expect(runHoldCheck(run, "-1")).not.toBe(0);
+    expect(runHoldCheck(run, "abc")).not.toBe(0);
   });
 
   test("job origin 的 if 限定 refs/heads/main", () => {
@@ -262,6 +305,43 @@ describe("release-frontend-recovery.yml（前端定向恢复，不触碰 origin�
     expect(joined).toMatch(/\.deploymentId\s*==\s*\$dep/);
   });
 
+  test("顶层 concurrency 为 production-release 且 cancel-in-progress 为 false", () => {
+    expect(doc.concurrency?.group).toBe("production-release");
+    expect(doc.concurrency?.["cancel-in-progress"]).toBe(false);
+  });
+
+  test("inputs 含 dry_run（boolean，默认 false）与 hold_seconds（string，默认 \"0\"）", () => {
+    const inputs = doc.on.workflow_dispatch.inputs ?? {};
+    expect(inputs.dry_run?.type).toBe("boolean");
+    expect(inputs.dry_run?.default).toBe(false);
+    expect(inputs.hold_seconds?.type).toBe("string");
+    expect(inputs.hold_seconds?.default).toBe("0");
+  });
+
+  test("probe 只在 dry_run 时运行，不使用 environment 也不引用 secrets", () => {
+    const probe = doc.jobs.probe;
+    expect(probe).toBeDefined();
+    expect(String(probe.if ?? "")).toContain("inputs.dry_run");
+    expect(probe.environment).toBeUndefined();
+    expect(JSON.stringify(probe)).not.toContain("secrets.");
+  });
+
+  test("validate 与 deploy 均排除 dry_run，dry_run 时不进入发布路径", () => {
+    for (const name of ["validate", "deploy"]) {
+      expect(String(doc.jobs[name].if)).toContain("!inputs.dry_run");
+    }
+  });
+
+  test("hold_seconds 在 sleep 之前校验：0 放行，负数、非整数与超过 900 均拒绝", () => {
+    const run = String(doc.jobs.probe.steps[0].run ?? "");
+    expect(run.indexOf("-le 900")).toBeGreaterThan(-1);
+    expect(run.indexOf("-le 900")).toBeLessThan(run.indexOf("sleep "));
+    expect(runHoldCheck(run, "0")).toBe(0);
+    expect(runHoldCheck(run, "901")).not.toBe(0);
+    expect(runHoldCheck(run, "-1")).not.toBe(0);
+    expect(runHoldCheck(run, "abc")).not.toBe(0);
+  });
+
   test("deploy job 的 env 含 ORIGIN_VERIFIED_AT，取自 workflow 输入", () => {
     expect(doc.jobs.deploy.env?.ORIGIN_VERIFIED_AT).toBe("${{ inputs.origin_verified_at }}");
   });
@@ -313,6 +393,30 @@ describe("release-frontend-recovery.yml（前端定向恢复，不触碰 origin�
     for (const use of usesOf(doc)) {
       if (use.startsWith("./")) continue;
       expect(use).toMatch(/^[^/\s]+\/[^@\s]+@[0-9a-f]{40}$/);
+    }
+  });
+});
+
+describe("发布入口共用顶层发布锁（跨入口互斥的唯一机制）", () => {
+  const ENTRIES = ["deploy-production.yml", "deploy-origin-manual.yml", "release-frontend-recovery.yml"] as const;
+
+  test("Deploy production、Deploy origin (manual)、Frontend recovery 的顶层 concurrency 组名相同，均为 production-release 且不取消进行中的运行", () => {
+    for (const file of ENTRIES) {
+      const concurrency = load(file).concurrency;
+      expect(concurrency?.group).toBe("production-release");
+      expect(concurrency?.["cancel-in-progress"]).toBe(false);
+    }
+  });
+
+  test("被调用的 deploy-origin.yml 不设顶层 concurrency，origin 作业保持 job 级 production-origin", () => {
+    const doc = load("deploy-origin.yml");
+    expect(doc.concurrency).toBeUndefined();
+    expect(doc.jobs.origin.concurrency?.group).toBe("production-origin");
+  });
+
+  test("没有任何入口仍使用旧的顶层组名 production", () => {
+    for (const file of FILES) {
+      expect(load(file).concurrency?.group).not.toBe("production");
     }
   });
 });

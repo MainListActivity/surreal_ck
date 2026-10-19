@@ -21,6 +21,15 @@ on:
         description: 探针模式：只运行不接触 environment 与 secrets 的 probe 作业，不发布（用于验证派发能否产生作业）
         type: boolean
         default: false
+      hold_seconds:
+        description: 探针模式下持有 production-release 发布锁的秒数（0 至 900，仅 dry_run 生效；用于验证与其它入口的排队互斥）
+        type: string
+        default: "0"
+
+# 与 release-frontend-recovery.yml、deploy-production.yml 共用顶层发布锁组，origin 发布与前端发布互斥。
+concurrency:
+  group: production-release
+  cancel-in-progress: false
 
 permissions: {}
 
@@ -29,13 +38,19 @@ jobs:
     name: Dispatch probe (no environment, no secrets)
     if: github.ref == 'refs/heads/main' && inputs.dry_run
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 20
     permissions: {}
+    env:
+      PROBE_SHA: ${{ inputs.sha }}
+      HOLD_SECONDS: ${{ inputs.hold_seconds }}
     steps:
-      - name: Record the probe
-        env:
-          PROBE_SHA: ${{ inputs.sha }}
-        run: echo "dispatch probe reached a job; requested sha=$PROBE_SHA; no environment and no secrets were used"
+      - name: Record the probe and hold the release lock
+        run: |
+          set -euo pipefail
+          [[ "$HOLD_SECONDS" =~ ^[0-9]{1,3}$ ]] && [ "$HOLD_SECONDS" -le 900 ] \
+            || { echo "::error::hold_seconds must be an integer from 0 to 900"; exit 1; }
+          echo "dispatch probe reached a job; requested sha=$PROBE_SHA; holding production-release for ${HOLD_SECONDS}s; no environment and no secrets were used"
+          sleep "$HOLD_SECONDS"
 
   origin:
     name: Hono origin (manual)
