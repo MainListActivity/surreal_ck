@@ -129,14 +129,6 @@ jobs:
         with:
           egress-policy: audit
 
-      - name: Checkout deploy tooling (audited main, sparse)
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: ${{ github.sha }}
-          sparse-checkout: scripts/deploy
-          path: tooling
-          persist-credentials: false
-
       - name: Refuse reruns (each run needs a new barrier and a new evidence comment)
         run: |
           set -euo pipefail
@@ -201,7 +193,8 @@ jobs:
           done
 
       # 与 deploy-production.yml 相同的根布局：营销站构建会解析工作区根的 shared 包，放在 release/ 子目录会失败。
-      # 审计工具只从 tooling/ 读取；clean: false 防止本检出清理 tooling/ 嵌套仓库。
+      # 本检出是 deploy 作业唯一的根目录检出，且必须先于 tooling 检出：根目录没有 .git 时，actions/checkout 会先清空整个目录，
+      # clean: false 不阻止这一点。审计工具在构建之后才检出到 tooling/。
       - name: Checkout the CI-approved commit
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -246,10 +239,21 @@ jobs:
           rm -rf web/dist/ops
           cp -r ops/dist web/dist/ops
 
+      # 审计工具在构建之后检出：构建树与发布提交保持一致，不含嵌套的 tooling 仓库。之后只有 barrier、wait、verify 使用它。
+      - name: Checkout deploy tooling (audited main, sparse)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: scripts/deploy
+          path: tooling
+          persist-credentials: false
+
       - name: Generate the in-lock origin barrier
         run: |
           set -euo pipefail
           # barrier 在构建之后、任何生产写入之前生成；它绑定本次运行、受审 tooling、目标与随机 nonce。
+          test -f tooling/scripts/deploy/origin-verification.py \
+            || { echo "::error::tooling/scripts/deploy/origin-verification.py is missing from the audited tooling checkout"; exit 1; }
           python3 tooling/scripts/deploy/origin-verification.py barrier \
             --target "$RELEASE_SHA" \
             --out "$RUNNER_TEMP/origin-barrier.json"

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 /**
@@ -58,6 +59,12 @@ function runHoldCheck(run: string, holdSeconds: string): number | null {
   const proc = Bun.spawnSync(["bash", "-c", run], {
     env: { ...process.env, PROBE_SHA: "a".repeat(40), HOLD_SECONDS: holdSeconds },
   });
+  return proc.exitCode;
+}
+
+/** 在指定目录以 set -euo pipefail 执行一段 run 原文；返回退出码。 */
+function runIn(cwd: string, script: string): number | null {
+  const proc = Bun.spawnSync(["bash", "-c", `set -euo pipefail\n${script}`], { cwd });
   return proc.exitCode;
 }
 
@@ -383,14 +390,14 @@ describe("release-frontend-recovery.yml（前端定向恢复：锁内 barrier、
     expect(indexOfStep("Refuse reruns")).toBeLessThan(indexOfStep("Build production sites"));
   });
 
-  test("发布顺序：tooling → 重跑检查 → Quality gate → 配置 → 检出 → 构建 → barrier → wait → 复核 → 写入（edge、app、marketing）→ 验证", () => {
+  test("发布顺序：重跑检查 → Quality gate → 配置 → 根目录发布检出 → 构建 → tooling 检出 → barrier → wait → 复核 → 写入（edge、app、marketing）→ 验证", () => {
     const order = [
-      "Checkout deploy tooling",
       "Refuse reruns",
       "Verify the release commit passed CI",
       "Validate production configuration",
       "Checkout the CI-approved commit",
       "Build production sites",
+      "Checkout deploy tooling",
       "Generate the in-lock origin barrier",
       "Wait for operator origin evidence",
       "Re-verify origin evidence",
@@ -418,7 +425,7 @@ describe("release-frontend-recovery.yml（前端定向恢复：锁内 barrier、
     }
   });
 
-  test("tooling 检出固定为 github.sha、只取 scripts/deploy 并放入 tooling 目录；release 检出固定为 RELEASE_SHA、位于根目录且不清理 tooling", () => {
+  test("tooling 检出固定为 github.sha、只取 scripts/deploy 并放入 tooling 目录；release 检出固定为 RELEASE_SHA、位于根目录", () => {
     const tooling = stepNamed("Checkout deploy tooling");
     expect(tooling.with?.ref).toBe("${{ github.sha }}");
     expect(tooling.with?.["sparse-checkout"]).toBe("scripts/deploy");
@@ -429,12 +436,39 @@ describe("release-frontend-recovery.yml（前端定向恢复：锁内 barrier、
     expect(release.with?.clean).toBe(false);
   });
 
+  test("deploy 作业只有一次根目录检出（发布提交）；它先于 tooling 检出，tooling 在构建之后、barrier 之前检出", () => {
+    // actions/checkout 在目标目录没有 .git 时会清空整个目录（clean 不影响这一点），之后的根目录检出会删除 tooling/。
+    const rootCheckouts = deploySteps.filter(
+      (step) => String(step.uses ?? "").startsWith("actions/checkout") && step.with?.path === undefined,
+    );
+    expect(rootCheckouts.map((step) => String(step.name))).toEqual(["Checkout the CI-approved commit"]);
+    const toolingIndex = indexOfStep("Checkout deploy tooling");
+    expect(indexOfStep("Checkout the CI-approved commit")).toBeLessThan(toolingIndex);
+    expect(indexOfStep("Build production sites")).toBeLessThan(toolingIndex);
+    expect(toolingIndex).toBeLessThan(indexOfStep("Generate the in-lock origin barrier"));
+  });
+
   test("barrier 在构建之后生成，写入作业摘要并保存到 RUNNER_TEMP", () => {
     const run = String(stepNamed("Generate the in-lock origin barrier").run ?? "");
     expect(run).toContain("origin-verification.py barrier");
     expect(run).toContain("$RUNNER_TEMP/origin-barrier.json");
     expect(run).toContain("$GITHUB_STEP_SUMMARY");
     expect(indexOfStep("Build production sites")).toBeLessThan(indexOfStep("Generate the in-lock origin barrier"));
+  });
+
+  test("barrier 前校验 tooling 脚本：缺失时失败，存在时通过", () => {
+    const run = String(stepNamed("Generate the in-lock origin barrier").run ?? "");
+    const guard = run.slice(run.indexOf("test -f"), run.indexOf("python3 tooling/scripts/deploy/origin-verification.py barrier"));
+    expect(guard).toContain("tooling/scripts/deploy/origin-verification.py");
+    const dir = mkdtempSync(join(tmpdir(), "tooling-guard-"));
+    try {
+      expect(runIn(dir, guard)).not.toBe(0);
+      mkdirSync(join(dir, "tooling/scripts/deploy"), { recursive: true });
+      writeFileSync(join(dir, "tooling/scripts/deploy/origin-verification.py"), "");
+      expect(runIn(dir, guard)).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("wait 有界（--timeout 1200）且只读真实评论：不接受 --comments-json", () => {
