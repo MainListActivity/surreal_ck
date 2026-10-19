@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { type TrialCompat, writeAllowanceTree, writeTrialTree } from "./origin-release-fixtures";
 
 /**
  * LCA13 撤销兼容门禁回归测试（Finding A 修复验证）。
@@ -38,6 +39,10 @@ const EXTRACTED = [
   "target_has_explicit_trial_source",
   "require_trial_source_compat",
   "require_allowance_source_compat",
+  "write_state",
+  "release_lock",
+  "settle",
+  "service_active",
   "rollback",
 ]
   .map((name) => {
@@ -60,83 +65,6 @@ type SimEnv = {
   checkerPresent?: boolean;
   envBackupMissing?: boolean;
 };
-
-type TrialCompat =
-  | "explicit"
-  | "implicit"
-  | "implicit-spacing"
-  | "indirect-source"
-  | "hybrid-literal"
-  | "stub-entry"
-  | "unmounted-entry"
-  | "old-origin"
-  | "no-entry"
-  | "no-route"
-  | "unreadable-route";
-
-// 逐变体夹具：三份关键文件分别构造，正向契约每层都有独立命中的拒绝用例。
-const ROUTE_CLOSED = 'return c.json({ error: { code: "workspace-commercial-source-required" } });\n';
-const ROUTE_IMPLICIT =
-  'const r = await workspaceCreator.createWorkspace({ resourceSource: { planKey: "trial", sourceKind: "trial" } });\n';
-const ROUTE_IMPLICIT_SPACING =
-  "const r = await workspaceCreator.createWorkspace({ resourceSource: { planKey : 'trial' } });\n";
-// 间接来源赋值：trial 来源经变量传入，路由文件里没有 "trial" 字面量。
-const ROUTE_INDIRECT =
-  ROUTE_CLOSED + "const src = pickSource();\nconst r = await workspaceCreator.createWorkspace({ resourceSource: src });\n";
-// 混合树：关闭契约在场但仍残留 trial 键值字面量。
-const ROUTE_HYBRID_LITERAL = ROUTE_CLOSED + 'const fallback = { planKey : "trial" };\n';
-const ENTRY_REAL = "// POST /api/pro-trial/start gated by pro_trial_configuration\nexport function createProTrialRoutes() {}\n";
-const ENTRY_STUB = "export function createProTrialRoutes() {}\n";
-const APP_MOUNTED = '.route("/", createProTrialRoutes(service));\n';
-const APP_UNMOUNTED = '.route("/", createWorkspaceRoutes());\n';
-
-function writeAllowanceTree(base: string, compatible = true) {
-  for (const path of ["shared/src", "shared/sql/system", "shared/sql/workspace-template", "server/src/ai-allowance"]) mkdirSync(join(base, path), { recursive: true });
-  writeFileSync(join(base, "shared/src/ai-allowance.ts"), "AI_ALLOWANCE_CONSUMABLE_SQL");
-  writeFileSync(join(base, "shared/sql/system/027-ai-trial-conversion-source.surql"), "// structure");
-  writeFileSync(join(base, "shared/sql/workspace-template/047-ai-source-termination.surql"), "// structure");
-  writeFileSync(join(base, "server/src/ai-allowance/service.ts"), compatible ? "aiAllowancePlanPrefix\nWHERE AI_ALLOWANCE_CONSUMABLE_SQL\nWHERE AI_ALLOWANCE_CONSUMABLE_SQL\n" : "// old unrestricted consumption");
-  writeFileSync(join(base, "server/src/ai-allowance/plan-cycle.ts"), "plan-cycle-rules-v4 conversion.sourceId");
-}
-
-function writeTrialTree(base: string, compat: TrialCompat) {
-  writeAllowanceTree(base);
-  const routes = join(base, "server", "src", "routes");
-  mkdirSync(routes, { recursive: true });
-  const routeByCompat: Partial<Record<TrialCompat, string>> = {
-    explicit: ROUTE_CLOSED,
-    implicit: ROUTE_IMPLICIT,
-    "implicit-spacing": ROUTE_IMPLICIT_SPACING,
-    "indirect-source": ROUTE_INDIRECT,
-    "hybrid-literal": ROUTE_HYBRID_LITERAL,
-    "stub-entry": ROUTE_CLOSED,
-    "unmounted-entry": ROUTE_CLOSED,
-    "old-origin": ROUTE_IMPLICIT,
-    "no-entry": ROUTE_CLOSED,
-    "unreadable-route": ROUTE_CLOSED,
-  };
-  const route = routeByCompat[compat];
-  if (route !== undefined) {
-    const path = join(routes, "workspaces.ts");
-    writeFileSync(path, route);
-    if (compat === "unreadable-route") chmodSync(path, 0o000);
-  }
-  const entryByCompat: Partial<Record<TrialCompat, string>> = {
-    explicit: ENTRY_REAL,
-    implicit: ENTRY_REAL,
-    "implicit-spacing": ENTRY_REAL,
-    "indirect-source": ENTRY_REAL,
-    "hybrid-literal": ENTRY_REAL,
-    "stub-entry": ENTRY_STUB,
-    "unmounted-entry": ENTRY_REAL,
-    "no-route": ENTRY_REAL,
-    "unreadable-route": ENTRY_REAL,
-  };
-  const entry = entryByCompat[compat];
-  if (entry !== undefined) writeFileSync(join(routes, "pro-trial.ts"), entry);
-  const app = compat === "unmounted-entry" || compat === "old-origin" ? APP_UNMOUNTED : APP_MOUNTED;
-  writeFileSync(join(base, "server", "src", "app.ts"), app);
-}
 
 type SimResult = { stdout: string; stderr: string; exitCode: number; calls: string[] };
 
@@ -193,6 +121,8 @@ function runSim(
           `if require_trial_source_compat "${target}"; then\n  echo "RESULT:pass"\nelse\n  echo "RESULT:refuse"\nfi`
         : `if require_revocation_compat "${target}"; then\n  echo "RESULT:pass"\nelse\n  echo "RESULT:refuse"\nfi`;
 
+  // 回滚模式下主机已被本激活改动（服务停过/已切换、env 已写入）；其它模式不读这些标记。
+  const hostTouched = opts.mode === "rollback" ? 1 : 0;
   const harness = `#!/usr/bin/env bash
 set -euo pipefail
 service=svc
@@ -202,7 +132,24 @@ previous=${previous}
 env_file=${envDir}/server.env
 env_backup=${envDir}/server.env.bak
 env_additions=
+archive=
 release_id=rel-new
+sha=
+phase=sim
+settled=0
+state_file=
+state=
+approval_ref=
+deployment_id=
+worker_pid=
+created_at=
+updated_at=
+note=
+log_file=
+lock_dir=${dir}/lock-absent
+svc_touched=${hostTouched}
+env_dirty=${hostTouched}
+switched=${hostTouched}
 REVOCATION_GATE_DRAIN_SEC=0
 LOG=${log}
 : > "$LOG"

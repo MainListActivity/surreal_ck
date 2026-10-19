@@ -1,17 +1,21 @@
 name: Deploy origin
 
-run-name: "Deploy origin ${{ inputs.sha }}"
+run-name: "Deploy origin ${{ inputs.sha }} (approval ${{ inputs.approval_ref }})"
 
+# 只能被调用：Deploy production（自动，approval_ref 为本次运行号）与 Deploy origin (manual)
+# （手动，approval_ref 为运营批准号）。顶层不提供 workflow_dispatch，手动入口统一经
+# deploy-origin-manual.yml，见 docs/runbooks/production-release.md。
+#
+# 步骤顺序即安全边界：先校验发布目标（须是 origin/main 的祖先且 Quality gate 成功，回滚目标同样适用），
+# 再上传（只写暂存件，不停服），最后由 origin-release-ci.sh 登记激活并观察主机状态文件。
+# SSH 断开不是成功，也不是回滚。
 on:
   workflow_call:
     inputs:
       sha:
         type: string
         required: true
-  workflow_dispatch:
-    inputs:
-      sha:
-        description: 已通过 Quality gate 的提交（完整 SHA）
+      approval_ref:
         type: string
         required: true
 
@@ -25,7 +29,7 @@ jobs:
   origin:
     name: Hono origin (systemd)
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     concurrency:
       group: production-origin
       cancel-in-progress: false
@@ -37,6 +41,7 @@ jobs:
       contents: read
     env:
       RELEASE_SHA: ${{ inputs.sha }}
+      APPROVAL_REF: ${{ inputs.approval_ref }}
       ORIGIN_HOST: ${{ vars.ORIGIN_HOST }}
       ORIGIN_USER: ${{ vars.ORIGIN_USER }}
     steps:
@@ -45,25 +50,16 @@ jobs:
         with:
           egress-policy: audit
 
-      - name: Verify the release commit passed CI
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          test -n "$RELEASE_SHA"
-          passed="$(gh api \
-            "repos/$GITHUB_REPOSITORY/commits/$RELEASE_SHA/check-runs" \
-            --jq 'any(.check_runs[]; .name == "Quality gate" and .conclusion == "success")')"
-          if [ "$passed" != "true" ]; then
-            echo "::error::Quality gate for $RELEASE_SHA has not succeeded"
-            exit 1
-          fi
-
       - name: Checkout deploy tooling
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           sparse-checkout: scripts/deploy
           persist-credentials: false
+
+      - name: Verify the release target (main ancestor and Quality gate)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/deploy/release-target-gate.sh
 
       - name: Checkout the CI-approved commit
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -104,14 +100,17 @@ jobs:
             ServerAliveInterval 15
           CFG
 
-      - name: Upload and activate release
+      - name: Derive release identifiers
+        run: |
+          set -euo pipefail
+          echo "RELEASE_ID=${RELEASE_SHA:0:7}-ci${GITHUB_RUN_ID}" >> "$GITHUB_ENV"
+          echo "DEPLOYMENT_ID=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
+
+      - name: Build release bundle and env additions
         env:
           ALL_SECRETS: ${{ toJSON(secrets) }}
         run: |
           set -euo pipefail
-          release_id="${RELEASE_SHA:0:7}-ci${GITHUB_RUN_ID}"
-          archive="/tmp/surreal_ck-${release_id}.tar.gz"
-          env_additions="/tmp/surreal_ck-env-${release_id}"
           umask 077
           # ORIGIN_ENV_<NAME> secrets become <NAME>=<value> in the origin server.env.
           jq -r 'to_entries[] | select(.key | startswith("ORIGIN_ENV_")) | "\(.key | ltrimstr("ORIGIN_ENV_"))=\(.value)"' \
@@ -122,18 +121,45 @@ jobs:
             exit 1
           fi
           echo "env keys: $(cut -d= -f1 env.additions | tr '\n' ' ')"
-          scp -q env.additions "origin:$env_additions"
-          rm -f env.additions
           # Non-secret, release-local metadata rolls back with the artifact, never server.env.
           mkdir -p runtime-metadata/server
-          jq -n --arg sha "$RELEASE_SHA" --arg deploymentId "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+          jq -n --arg sha "$RELEASE_SHA" --arg deploymentId "$DEPLOYMENT_ID" \
             '{sha: $sha, deploymentId: $deploymentId}' > runtime-metadata/server/runtime-release.json
           git -C release archive --format=tar -o "$PWD/release.tar" "$RELEASE_SHA"
           tar -rf release.tar -C runtime-metadata server/runtime-release.json
           gzip release.tar
-          scp -q release.tar.gz "origin:$archive"
-          scp -q scripts/deploy/origin-release.sh "origin:/tmp/origin-release-${release_id}.sh"
-          ssh origin "bash /tmp/origin-release-${release_id}.sh '$release_id' '$archive' '$env_additions'; status=\$?; rm -f /tmp/origin-release-${release_id}.sh '$env_additions'; exit \$status"
+
+      - name: Upload release bundle (staging only, no origin service change)
+        run: |
+          set -euo pipefail
+          # 上传只写暂存件与工具副本：此时 origin 服务仍运行旧版本。任何上传失败都在停服之前结束。
+          # 失败时尽力删除已上传的暂存件：env 增改含密钥，不能留在主机 /tmp 中。
+          cleanup_staged() {
+            local rc=$?
+            rm -f env.additions
+            if [ "$rc" -ne 0 ]; then
+              ssh -o BatchMode=yes -o ConnectTimeout=20 origin \
+                "rm -f /tmp/surreal_ck-env-${RELEASE_ID} /tmp/surreal_ck-${RELEASE_ID}.tar.gz /tmp/origin-release-${RELEASE_ID}.sh" \
+                >/dev/null 2>&1 || true
+            fi
+          }
+          trap cleanup_staged EXIT
+          scp -q env.additions "origin:/tmp/surreal_ck-env-${RELEASE_ID}"
+          rm -f env.additions
+          scp -q release.tar.gz "origin:/tmp/surreal_ck-${RELEASE_ID}.tar.gz"
+          scp -q scripts/deploy/origin-release.sh "origin:/tmp/origin-release-${RELEASE_ID}.sh"
+
+      - name: Activate release on origin (detached worker, bounded watch)
+        run: |
+          set -euo pipefail
+          # 激活在 origin 分离的工作进程中完成；本步骤只登记并按主机状态文件收敛结果。
+          bash scripts/deploy/origin-release-ci.sh \
+            "$RELEASE_ID" \
+            "/tmp/surreal_ck-${RELEASE_ID}.tar.gz" \
+            "/tmp/surreal_ck-env-${RELEASE_ID}" \
+            "$RELEASE_SHA" \
+            "$APPROVAL_REF" \
+            "$DEPLOYMENT_ID"
 
       - name: Remove SSH key
         if: always()
