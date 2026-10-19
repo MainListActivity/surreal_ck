@@ -406,25 +406,27 @@ describe("release-frontend-recovery.yml（前端定向恢复：锁内 barrier、
     }
   });
 
-  test("写入步骤在构建目录 release 中执行；barrier、wait、verify 只从 tooling 检出的 scripts/deploy 执行", () => {
+  test("构建与写入步骤在仓库根目录执行（与 deploy-production 相同布局）；barrier、wait、verify 只从 tooling 检出的 scripts/deploy 执行", () => {
     for (const prefix of ["Build production sites", "Install exact pnpm", "Deploy Hono edge proxy", "Deploy application", "Deploy marketing site"]) {
-      expect(stepNamed(prefix)["working-directory"]).toBe("release");
+      expect(stepNamed(prefix)["working-directory"]).toBeUndefined();
     }
     for (const prefix of ["Generate the in-lock origin barrier", "Wait for operator origin evidence", "Re-verify origin evidence"]) {
       const step = stepNamed(prefix);
       expect(step["working-directory"]).toBeUndefined();
-      expect(String(step.run ?? "")).toContain("scripts/deploy/origin-verification.py");
+      expect(String(step.run ?? "")).toContain("tooling/scripts/deploy/origin-verification.py");
       expect(String(step.run ?? "")).not.toContain("release/");
     }
   });
 
-  test("tooling 检出固定为 github.sha 且只取 scripts/deploy；release 检出固定为 RELEASE_SHA 并放入 release 目录", () => {
+  test("tooling 检出固定为 github.sha、只取 scripts/deploy 并放入 tooling 目录；release 检出固定为 RELEASE_SHA、位于根目录且不清理 tooling", () => {
     const tooling = stepNamed("Checkout deploy tooling");
     expect(tooling.with?.ref).toBe("${{ github.sha }}");
     expect(tooling.with?.["sparse-checkout"]).toBe("scripts/deploy");
+    expect(tooling.with?.path).toBe("tooling");
     const release = stepNamed("Checkout the CI-approved commit");
     expect(release.with?.ref).toBe("${{ env.RELEASE_SHA }}");
-    expect(release.with?.path).toBe("release");
+    expect(release.with?.path).toBeUndefined();
+    expect(release.with?.clean).toBe(false);
   });
 
   test("barrier 在构建之后生成，写入作业摘要并保存到 RUNNER_TEMP", () => {
