@@ -7,7 +7,8 @@ import { join } from "node:path";
  * 前端恢复的 origin 运行版本核定证据契约测试（scripts/deploy/origin-verification.py）。
  *
  * 时间由 NOW_EPOCH 固定；GitHub 评论由 --comments-json 提供；post 的 gh 为桩（记录调用，不联网）。
- * 退出码：0 通过；1 用法、运行绑定或接口错误；2 找到绑定评论但不合格；3 尚无绑定评论或超时。
+ * 退出码：0 通过；1 脚本校验的用法错误、运行绑定或本地写入错误，以及 post / verify 中未被重试的接口错误；2 找到绑定评论或 artifact 但不合格；
+ * 3 尚无绑定评论、artifact 尚不可读、运行已结束却无 artifact，或 wait / fetch 等待预算耗尽（含持续的临时接口错误）。
  */
 
 const SCRIPT = join(import.meta.dir, "../../../scripts/deploy/origin-verification.py");

@@ -18,8 +18,8 @@ origin-barrier-<run_id>-<attempt>。运营在作业仍运行时经 gh API 取回
 时间与字节规范性后，才把文件交给 render / post。fetch 不构成证据：绑定评论仍须由白名单审批人发表，
 CI 的 wait / verify 仍以自己生成的 barrier 逐项比对。
 
-退出码：0 通过；1 用法或接口错误；2 拒绝（找到绑定评论或 artifact 但不符合）；
-3 尚无绑定评论、artifact 尚不可读或等待超时。
+退出码：0 通过；1 脚本校验的用法错误、运行绑定或本地写入错误，以及 post / verify 中未被重试的接口错误；2 拒绝（找到绑定评论或 artifact 但不符合）；
+3 尚无绑定评论、artifact 尚不可读、运行已结束却无 artifact，或 wait / fetch 等待预算耗尽（含持续的临时接口错误）。命令行解析错误由 argparse 以 2 退出，未执行任何子命令。
 """
 
 import argparse
