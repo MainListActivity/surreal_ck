@@ -257,6 +257,10 @@ jobs:
           python3 tooling/scripts/deploy/origin-verification.py barrier \
             --target "$RELEASE_SHA" \
             --out "$RUNNER_TEMP/origin-barrier.json"
+          # 作业日志在作业结束前不可经 API 读取，所以 barrier 同时以注解输出：运营可在运行中经 check-run annotations API 读取。
+          # 单行，消息只含 barrier 本身（不含凭证）。先赋值再输出：jq 失败时 set -e 使本步骤失败，不会发出空消息。
+          barrier_compact="$(jq -c . "$RUNNER_TEMP/origin-barrier.json")"
+          printf '::notice title=origin-verification-barrier::%s\n' "$barrier_compact"
           {
             echo "### Origin verification barrier (generated under production-release, before any production write)"
             echo ""

@@ -68,6 +68,12 @@ function runIn(cwd: string, script: string): number | null {
   return proc.exitCode;
 }
 
+/** 在指定目录以 set -euo pipefail 执行一段 run 原文，注入环境变量；返回退出码与标准输出。 */
+function runCapture(cwd: string, script: string, env: Record<string, string>): { code: number | null; stdout: string } {
+  const proc = Bun.spawnSync(["bash", "-c", `set -euo pipefail\n${script}`], { cwd, env: { ...process.env, ...env } });
+  return { code: proc.exitCode, stdout: proc.stdout.toString() };
+}
+
 const FILES = [
   "deploy-origin.yml",
   "deploy-origin-manual.yml",
@@ -466,6 +472,46 @@ describe("release-frontend-recovery.yml（前端定向恢复：锁内 barrier、
       mkdirSync(join(dir, "tooling/scripts/deploy"), { recursive: true });
       writeFileSync(join(dir, "tooling/scripts/deploy/origin-verification.py"), "");
       expect(runIn(dir, guard)).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("barrier 写好后发出单行 notice（运行中可经 annotations API 读取）：位于 barrier 步骤内、wait 步骤之前", () => {
+    const run = String(stepNamed("Generate the in-lock origin barrier").run ?? "");
+    expect(run.split("\n").filter((line) => line.includes("::notice"))).toHaveLength(1);
+    expect(run.indexOf("origin-verification.py barrier")).toBeLessThan(run.indexOf("::notice"));
+    expect(indexOfStep("Generate the in-lock origin barrier")).toBeLessThan(indexOfStep("Wait for operator origin evidence"));
+  });
+
+  test("barrier notice 实际执行：文件存在时输出单行 workflow command，消息即 barrier JSON；文件缺失时失败", () => {
+    const run = String(stepNamed("Generate the in-lock origin barrier").run ?? "");
+    const lines = run.split("\n");
+    const start = lines.findIndex((line) => line.includes("barrier_compact="));
+    const end = lines.findIndex((line) => line.includes("::notice"));
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const notice = lines.slice(start, end + 1).join("\n");
+    const barrier = {
+      generated_at: "2026-10-19T06:14:52Z",
+      nonce: "0123456789abcdef0123456789abcdef",
+      repo: "MainListActivity/surreal_ck",
+      run_attempt: "1",
+      run_id: "39208693272",
+      target_sha: "50663e3a6c89ee9a61a25eddf334a682c445bee1",
+      tooling_sha: "0f26fbf919db18b68e98e66bab47ff60395ce7c1",
+      workflow_ref: "MainListActivity/surreal_ck/.github/workflows/release-frontend-recovery.yml@refs/heads/main",
+    };
+    const dir = mkdtempSync(join(tmpdir(), "barrier-notice-"));
+    try {
+      expect(runCapture(dir, notice, { RUNNER_TEMP: dir }).code).not.toBe(0);
+      writeFileSync(join(dir, "origin-barrier.json"), `${JSON.stringify(barrier, null, 2)}\n`);
+      const result = runCapture(dir, notice, { RUNNER_TEMP: dir });
+      expect(result.code).toBe(0);
+      const prefix = "::notice title=origin-verification-barrier::";
+      expect(result.stdout.startsWith(prefix)).toBe(true);
+      expect(result.stdout.trimEnd().split("\n")).toHaveLength(1);
+      expect(JSON.parse(result.stdout.slice(prefix.length))).toEqual(barrier);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
