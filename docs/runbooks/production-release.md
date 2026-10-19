@@ -241,7 +241,7 @@ CI 的 `wait` 与写入前的 `verify` 按下表判定。任一项失败都使�
 
 ## 运行中可读性探针（artifact 通道）
 
-`.github/workflows/frontend-barrier-artifact-probe.yml` 验证 barrier artifact 能否在作业仍运行时经 `gh` 取回。它只能手动派发，输入 `hold_seconds`（60 至 900 的整数，默认 600）。
+`.github/workflows/frontend-barrier-artifact-probe.yml` 验证 barrier artifact 能否在作业仍运行时经 `gh` 取回。合入前它只存在于本线分支 `lane/c11970f4-frontend-barrier-artifact`，由推送到该分支触发，hold 为 600 秒。合入默认分支后，可手动派发并输入 `hold_seconds`（60 至 900 的整数，默认 600）。
 
 - 不使用 `environment`，不引用 secrets，权限只读，不写 Cloudflare、origin 或产品数据，不加入 `production-release` 组。
 - 作业生成合成 barrier（工作流引用指向探针文件，目标为探针自身的提交），以与正式发布相同的名称上传，在作业内回读并逐字节比对，然后保持 `hold_seconds` 秒。

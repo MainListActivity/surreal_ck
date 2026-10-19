@@ -643,8 +643,13 @@ describe("frontend-barrier-artifact-probe.yml（无生产环境的只读探针�
     return step as Step;
   };
 
-  test("on 仅包含 workflow_dispatch，hold_seconds 为字符串且默认 \"600\"", () => {
-    expect(onKeys(doc)).toEqual(["workflow_dispatch"]);
+  test("on 为本线分支推送（路径受限）与 workflow_dispatch；hold_seconds 为字符串且默认 \"600\"", () => {
+    expect(onKeys(doc).sort()).toEqual(["push", "workflow_dispatch"]);
+    expect(doc.on.push.branches).toEqual(["lane/c11970f4-frontend-barrier-artifact"]);
+    expect(doc.on.push.paths).toEqual([
+      ".github/workflows/frontend-barrier-artifact-probe.yml",
+      "scripts/deploy/origin-verification.py",
+    ]);
     const inputs = doc.on.workflow_dispatch.inputs ?? {};
     expect(inputs.hold_seconds?.type).toBe("string");
     expect(inputs.hold_seconds?.default).toBe("600");

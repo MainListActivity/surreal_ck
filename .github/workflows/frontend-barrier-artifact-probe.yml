@@ -1,11 +1,19 @@
 name: Frontend barrier artifact probe
 
-run-name: "Barrier artifact probe ${{ github.sha }} (hold ${{ inputs.hold_seconds }}s)"
+run-name: "Barrier artifact probe ${{ github.sha }} (hold ${{ inputs.hold_seconds || '600' }}s)"
 
 # 只读探针：验证 origin barrier 的 artifact 通道在作业仍运行（in_progress）时，能经 gh API 取回并逐字节核验。
 # 不使用 environment，不引用 secrets，不写 Cloudflare、origin 或产品数据，也不加入生产发布的顶层并发组。
 # 生成的是合成 barrier：它的 workflow_ref 指向本文件，正式发布的 fetch / wait / verify 都会因工作流路径不符而拒绝它。
+# 触发方式：推送到本线分支时自动运行，hold 为默认的 600 秒。GitHub 只允许按文件名手动派发默认分支上已存在的工作流；
+# 本文件合入前只存在于本线分支，所以由 push 触发。合入默认分支后，workflow_dispatch 才可手动指定 hold_seconds。
 on:
+  push:
+    branches:
+      - lane/c11970f4-frontend-barrier-artifact
+    paths:
+      - .github/workflows/frontend-barrier-artifact-probe.yml
+      - scripts/deploy/origin-verification.py
   workflow_dispatch:
     inputs:
       hold_seconds:
@@ -27,7 +35,7 @@ jobs:
     permissions:
       contents: read
     env:
-      HOLD_SECONDS: ${{ inputs.hold_seconds }}
+      HOLD_SECONDS: ${{ inputs.hold_seconds || '600' }}
     steps:
       - name: Harden the runner
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
