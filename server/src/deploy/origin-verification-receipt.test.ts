@@ -129,7 +129,7 @@ function runReceipt(fx: { dir: string; bin: string }, args: string[]) {
   });
   const stdout = proc.stdout.toString();
   const last = stdout.trim().split("\n").filter(Boolean).pop() ?? "";
-  let payload: { status?: string; reason?: string } = {};
+  let payload: { status?: string; reason?: string; run_id?: string; attempt?: string; head_sha?: string } = {};
   try {
     payload = JSON.parse(last);
   } catch {
@@ -338,6 +338,112 @@ describe("receipt：派发运行回执的判定（经 fake gh，只读）", () =
   });
 });
 
+/**
+ * 真实成功样本：运行 39074722491（Deploy production 的 workflow_run，main，cfb870c3，尝试 1，2026-10-17）。
+ * 字段与三个作业的结论取自 GitHub 只读核对（见 evidence 目录），不发起派发。
+ * 父运行的路径是 deploy-production.yml；其中调用的 deploy-origin.yml 在父运行内以「父作业 / 子作业」显示，
+ * 回执只核验顶层运行，因此须以 --event workflow_run 与父路径核验，不能以子工作流路径代替。
+ */
+const RECORDED_RUN_ID = "39074722491";
+const RECORDED_SHA = "cfb870c3a8d2dedfd248a7140c14311eb4b0a382";
+const RECORDED_PATH = ".github/workflows/deploy-production.yml";
+const RECORDED_CHILD_PATH = ".github/workflows/deploy-origin.yml";
+const RECORDED_CHILD_JOB = "Hono origin / Hono origin (systemd)";
+
+function recordedRun(over: Record<string, unknown> = {}) {
+  return {
+    id: Number(RECORDED_RUN_ID),
+    run_attempt: 1,
+    head_sha: RECORDED_SHA,
+    head_branch: REF,
+    event: "workflow_run",
+    path: RECORDED_PATH,
+    status: "completed",
+    conclusion: "success",
+    ...over,
+  };
+}
+
+function recordedJobs() {
+  return {
+    total_count: 3,
+    jobs: [
+      { name: "Validate production configuration", status: "completed", conclusion: "success" },
+      { name: RECORDED_CHILD_JOB, status: "completed", conclusion: "success" },
+      { name: "Cloudflare production", status: "completed", conclusion: "success" },
+    ],
+  };
+}
+
+function recordedArgs(extra: string[] = [], over: Partial<Record<"attempt" | "sha" | "ref" | "workflow-path", string>> = {}) {
+  return baseArgs(["--event", "workflow_run", ...extra], {
+    "run-id": RECORDED_RUN_ID,
+    sha: RECORDED_SHA,
+    "workflow-path": RECORDED_PATH,
+    ...over,
+  });
+}
+
+describe("receipt：真实成功样本（运行 39074722491，Deploy production 的 workflow_run）", () => {
+  test("录得的成功运行与三个作业全部 success → 退出 0，并回报录得的运行号与提交", () => {
+    const fx = makeFixture({ run: recordedRun(), jobs: recordedJobs() });
+    const r = runReceipt(fx, recordedArgs());
+    expect(r.code).toBe(0);
+    expect(r.payload.status).toBe("ok");
+    expect(r.payload.run_id).toBe(RECORDED_RUN_ID);
+    expect(r.payload.head_sha).toBe(RECORDED_SHA);
+    expect(ghLog(fx)).toHaveLength(2);
+  });
+
+  test("同一运行未声明事件（默认 workflow_dispatch）→ 退出 2：父运行不得被当作派发通过", () => {
+    const fx = makeFixture({ run: recordedRun(), jobs: recordedJobs() });
+    const r = runReceipt(fx, baseArgs([], { "run-id": RECORDED_RUN_ID, sha: RECORDED_SHA, "workflow-path": RECORDED_PATH }));
+    expect(r.code).toBe(2);
+    expect(r.payload.reason).toContain("event");
+  });
+
+  test("以 --event workflow_dispatch 核验 workflow_run 运行 → 退出 2", () => {
+    const fx = makeFixture({ run: recordedRun(), jobs: recordedJobs() });
+    const r = runReceipt(fx, baseArgs(["--event", "workflow_dispatch"], { "run-id": RECORDED_RUN_ID, sha: RECORDED_SHA, "workflow-path": RECORDED_PATH }));
+    expect(r.code).toBe(2);
+    expect(r.payload.reason).toContain("event");
+  });
+
+  test("以子工作流路径 deploy-origin.yml 核验父运行 → 退出 2（路径绑定的是顶层运行）", () => {
+    const fx = makeFixture({ run: recordedRun(), jobs: recordedJobs() });
+    const r = runReceipt(fx, recordedArgs([], { "workflow-path": RECORDED_CHILD_PATH }));
+    expect(r.code).toBe(2);
+    expect(r.payload.reason).toContain("path");
+  });
+
+  test("作业名以运行内显示为准：仅写子工作流自身名 'Hono origin (systemd)' → 退出 2", () => {
+    const fx = makeFixture({ run: recordedRun(), jobs: recordedJobs() });
+    const r = runReceipt(fx, recordedArgs(["--job-name", "Hono origin (systemd)"]));
+    expect(r.code).toBe(2);
+    expect(r.payload.reason).toContain("Hono origin (systemd)");
+  });
+
+  test("作业名取运行内显示名 → 退出 0", () => {
+    const fx = makeFixture({ run: recordedRun(), jobs: recordedJobs() });
+    expect(runReceipt(fx, recordedArgs(["--job-name", RECORDED_CHILD_JOB])).code).toBe(0);
+  });
+
+  test("提交与录得运行不符 → 退出 2", () => {
+    const fx = makeFixture({ run: recordedRun(), jobs: recordedJobs() });
+    expect(runReceipt(fx, recordedArgs([], { sha: "fedcba9876543210fedcba9876543210fedcba98" })).code).toBe(2);
+  });
+
+  test("尝试号与录得运行不符（请求 2，运行给出 1）→ 退出 2", () => {
+    const fx = makeFixture({ run: recordedRun(), jobs: recordedJobs() });
+    expect(runReceipt(fx, recordedArgs([], { attempt: "2" })).code).toBe(2);
+  });
+
+  test("分支与录得运行不符（请求 release，运行为 main）→ 退出 2", () => {
+    const fx = makeFixture({ run: recordedRun(), jobs: recordedJobs() });
+    expect(runReceipt(fx, recordedArgs([], { ref: "release" })).code).toBe(2);
+  });
+});
+
 describe("receipt：参数校验先于任何接口调用", () => {
   const cases: Array<[string, string[]]> = [
     ["sha 大写", baseArgs([], { sha: SHA.toUpperCase() })],
@@ -346,6 +452,7 @@ describe("receipt：参数校验先于任何接口调用", () => {
     ["attempt 带前导零", baseArgs([], { attempt: "01" })],
     ["run-id 非数字", baseArgs([], { "run-id": "12a" })],
     ["工作流路径非法", baseArgs([], { "workflow-path": "../deploy.yml" })],
+    ["事件非法（push）", baseArgs(["--event", "push"])],
     ["interval 为 0", baseArgs(["--interval", "0"])],
     ["timeout 为负", baseArgs(["--timeout", "-1"])],
   ];

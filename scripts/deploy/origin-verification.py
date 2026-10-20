@@ -22,7 +22,7 @@ CI 的 wait / verify 仍以自己生成的 barrier 逐项比对。
 3 尚无绑定评论、artifact 尚不可读、运行已结束却无 artifact，或 wait / fetch 等待预算耗尽（含持续的临时接口错误）。命令行解析错误由 argparse 以 2 退出，未执行任何子命令。
 
 receipt（派发运行回执，运营执行，只读）：只校验一次已派发运行的身份（运行号、尝试号、提交、分支、事件与工作流路径）、
-结论与作业结论，不派发、不探测生产。退出码：0 通过（运行已完成、结论 success、作业可完整读取且全部 success）；
+结论与作业结论，不派发、不探测生产。事件默认 workflow_dispatch；Deploy production 等包装工作流的运行须以 --event workflow_run 显式指定。退出码：0 通过（运行已完成、结论 success、作业可完整读取且全部 success）；
 2 拒绝（任一绑定不符，或结论为 failure / cancelled / action_required 等，含 action_required 且无作业）；
 3 尚未判定（排队、进行中、接口临时失败或超时）。3 不是通过，调用方不得据此继续。
 """
@@ -711,6 +711,7 @@ def cmd_fetch(args):
 RECEIPT_PENDING_STATUSES = ("queued", "in_progress", "waiting", "requested", "pending")
 RECEIPT_ATTEMPT_RE = re.compile(r"^[1-9][0-9]{0,8}$")
 RECEIPT_JOBS_PAGE = 100
+RECEIPT_EVENTS = ("workflow_dispatch", "workflow_run")
 
 
 def check_receipt(run, jobs, expected):
@@ -726,7 +727,7 @@ def check_receipt(run, jobs, expected):
         ("run_attempt", str(run.get("run_attempt")), expected["attempt"]),
         ("head_sha", run.get("head_sha"), expected["sha"]),
         ("head_branch", run.get("head_branch"), expected["ref"]),
-        ("event", run.get("event"), "workflow_dispatch"),
+        ("event", run.get("event"), expected["event"]),
         ("path", run.get("path"), expected["path"]),
     )
     for field, actual, wanted in bindings:
@@ -779,6 +780,8 @@ def cmd_receipt(args):
         raise UsageError("--ref must be a branch name")
     if not WORKFLOW_PATH_RE.match(args.workflow_path or ""):
         raise UsageError("--workflow-path must be a .github/workflows/*.yml path")
+    if args.event not in RECEIPT_EVENTS:
+        raise UsageError("--event must be workflow_dispatch or workflow_run")
     if args.interval <= 0 or args.timeout < 0:
         raise UsageError("--interval must be positive; --timeout must not be negative")
     expected = {
@@ -786,6 +789,7 @@ def cmd_receipt(args):
         "attempt": args.attempt,
         "sha": args.sha,
         "ref": args.ref,
+        "event": args.event,
         "path": args.workflow_path,
         "job_name": args.job_name,
     }
@@ -886,7 +890,8 @@ def build_parser():
     p.add_argument("--sha", required=True, help="派发的目标完整 SHA")
     p.add_argument("--ref", required=True, help="派发所用分支名")
     p.add_argument("--workflow-path", required=True, help="期望的工作流文件路径")
-    p.add_argument("--job-name", help="可选：必须成功的作业名")
+    p.add_argument("--event", default="workflow_dispatch", help="期望的触发事件：workflow_dispatch（默认，手动派发）或 workflow_run（Deploy production 等由上游运行触发的包装工作流）")
+    p.add_argument("--job-name", help="可选：必须成功的作业名（以运行内显示的名称为准，复合工作流为「调用方作业 / 被调用作业」）")
     p.add_argument("--timeout", type=int, default=0, help="等待结论的上限秒数（0 表示只查一次）")
     p.add_argument("--interval", type=int, default=15, help="轮询间隔秒数")
     p.set_defaults(func=cmd_receipt)
