@@ -13,7 +13,8 @@
 **维护暂停（当前状态）**：前端补发已完成（`Frontend recovery` 运行 `39248415340` 成功，不重做）。origin 恢复补修尚未在主机实跑（G4 未验证），origin 当前运行的 SHA 未经核实。在下列事项闭合前，不激活 origin、不启用自动发布，也不把新 `main` 当作生产 origin 的应用 SHA：
 
 - 生产 origin 应用目标固定为 `50663e3a6c89ee9a61a25eddf334a682c445bee1`。
-- 发布工具（`scripts/deploy` 与 `server/src/db/grant-revocation-*`）的修补以其 PR 头提交为准，合入后以合并提交为准。审批须引用同一个 SHA，并记录在 PR 描述与证据包 `report.md` 中。
+- 发布工具（`scripts/deploy`、`server/src/deploy` 与 `server/src/db/grant-revocation-*`）的修补以其 PR 头提交为准，合入后以合并提交为准。审批须引用同一个 SHA，并记录在 PR 描述与证据包 `report.md` 中。
+- 当前待审的工具代码提交为 `f1f3d199`（PR #204：前向拒绝时先恢复 `server.env` 再拉起原服务；派发回执 `--event`）。本文档的修订提交只改文档：`git diff --stat f1f3d199 <PR 头> -- scripts server/src/deploy server/src/db` 应为空。合入 `main` 后，以合并提交替换本行。
 - 首次前向激活的前置项见「前向钩子（`origin-pre-start.sh`）」（F4）与「主机锁与陈旧锁回收」（F13）。
 - 未验证项：G4（主机实跑前向故障与 scp 失败）未执行，本补修的结论只来自执行级测试，不来自主机结果。`39153839203` 等 `action_required` 派发的历史根因未经 API 证实。「N1」在本仓库 runbook 与证据包中未找到定义，待 GM 提供后核对。
 - PR #36、#55、#160 保持未合入。#36 头的 `origin-pre-start.sh` 与 main 字节相同，但其 `server/src/content/migrate-legacy-cli.ts` 与 main 不同（见「前向钩子」），不能以「钩子与 CLI 相同」为由合入或关闭。
@@ -99,22 +100,43 @@ origin 是 `data.maplayer.top`（`129.146.179.37`）上的 systemd 服务 `surre
 | `rolled-back` | 切换或健康失败后已恢复上一个版本并健康 | job 失败；先看日志中的失败原因 |
 | `rollback-refused` | 上一个版本未通过门禁，回滚被拒，当前版本保持原状 | 人工处置，优先向前修复（见「回滚被拒」） |
 | `rollback-failed` | 回滚过程本身失败；服务停止时 origin 不可用 | 立即人工核查主机并报告 GM（见「回滚被拒」） |
-| `refused` | 门禁在切换前拒绝（已恢复 env） | 修复目标后用新运行重新发布 |
-| `failed` | 主机未改动即结束（例如恢复时发现尚未开始切换） | 核查日志，用新运行重新发布 |
+| `refused` | 门禁在切换前拒绝（已恢复 env；撤销门禁拒绝时原服务已拉回运行） | 修复目标后用新运行重新发布 |
+| `failed` | 主机未改动即结束（例如恢复时发现尚未开始切换）；或 env 恢复失败，服务保持停止 | 核查日志；env 恢复失败时先人工核查服务与 `backups/env/` 中的备份，再用新运行重新发布 |
 | `absent` | 主机从未登记该激活 | CI 会重新登记 |
 
 同一运行的重试沿用同一个 release id。终态不会被重新激活；要重新发布，用 `Deploy origin (manual)` 启动新的运行。
 
 只读查看（不改变主机状态）：在 origin 上用 `main` 分支中 `scripts/deploy/origin-release.sh` 的副本执行 `--status <release-id>` 与 `--log <release-id>`。CI 在终态后会删除 `/tmp` 中的副本。
 
+### 失败后的受控读回（F8）
+
+以下情况 CI 以 exit 1 结束：终态失败（`rolled-back`、`rollback-refused`、`rollback-failed`、`failed`、`refused`）、截止时结果仍未知、恢复请求被拒。结束前 CI 先回读一次主机状态字段与日志末尾 60 行（只读；SSH 不通时输出 `status unavailable`），再报错。回读不改变退出码，也不把结果判为成功或回滚。`launch` 被拒（退出码 2）时 CI 直接以 exit 1 结束，不回读。
+
+失败后的读回由运维执行，全部只读，不得重新激活：
+
+1. 记录 CI 运行号、release id 与日志中最后一个 `state=`。
+2. 用 `main` 侧的 `scripts/deploy/origin-release.sh` 副本执行 `--status <release-id>` 与 `--log <release-id>`。
+3. 执行 `systemctl is-active surreal-ck-hono` 与 `/health`。
+4. 结果写入证据包，并按下一节交接。
+
+### 交接与暂存件（F10）
+
+处理责任归该次发布的执行者，依据 GM v28 第 4 项：
+
+- 明确失败，或轮询截止时，当轮即交接给受控运维做上述读回，不留给下一轮或自动处理。
+- 不可达（SSH 失败、状态不可读）时，报告真实阻塞并保留未知结果。不得自动再次激活：不 `--launch`、不 `--recover`，也不整条重跑。
+- 暂存件（远端工具副本、发布包、env 增改件）只有在确认终态或 `absent`、且没有工作进程使用之后，才能按 CI 的清理路径删除（`origin-release-ci.sh` 的 `cleanup`，只含终态与 `absent` 分支）。运行中或未知状态的件保留。不得按固定 TTL 盲删；代码中没有按时间删除暂存件的逻辑。
+- CI 的远端删除失败会被忽略（`|| true`），CI 不报告残留。终态后，运维用只读的 `ls` 核对 `/tmp` 是否残留 `surreal_ck-<release-id>.tar.gz`、`surreal_ck-env-<release-id>` 与 `origin-release-<release-id>.sh`，残留件按上面的条件处理。
+- 首次激活前须核对两点：暂存件在主机上的权限（应为 `0600`，只读 `stat -c %a`；工作流在 runner 以 `umask 077` 生成 env 增改件，主机侧未核实）；清理失败的处置（只能在满足上述条件时由运维手工删除，并记录）。
+
 ### 切换与回滚的可执行门禁
 
 每次激活（正常发布、自动回滚、手动 Deploy origin 旧 sha）前，`origin-release.sh` 按序执行两道门禁。脚本副本来自 main 侧的 deploy tooling checkout（不是发布包），因此门禁代码始终是最新版，对旧目标一视同仁：
 
 1. **试用来源门禁（LCA10，纯静态、无副作用）**：目标是正向契约判定，不是「没命中危险拼写」——必须同时满足：①`server/src/routes/workspaces.ts` 命中 `workspace-commercial-source-required` 关闭契约（LCA10 起公共创建入口一律 409 并指向显式入口）；②该文件不再发起任何 `createWorkspace` 供应调用（直接/间接来源赋值同拒）；③无 `planKey`/`sourceKind`/`resourceSource` 的 trial 键值字面量（含空白与引号变体）；④`server/src/routes/pro-trial.ts` 在场且为配置驱动实现（引用 `pro_trial_configuration`）、并被 `server/src/app.ts` 挂载（`createProTrialRoutes`）。目标树缺失/不可读/检查命令出错一律 fail-closed 拒绝。门禁在 env 增改与停服之前执行，拒绝时 `current`/`server.env`/服务零接触。
-2. **撤销兼容门禁（LCA13）**：目标不含撤销过滤时，先停服冻结写入、静置排空 in-flight，再以受控检查器读 `_system` 撤销计数；有撤销或无法证明为空即拒绝。stop 失败时仅当 is-active 证明进程已死才采信冻结（进程已死与命令失败区分）。
+2. **撤销兼容门禁（LCA13）**：目标不含撤销过滤时，先停服冻结写入、静置排空 in-flight，再以受控检查器读 `_system` 撤销计数；有撤销或无法证明为空即拒绝。stop 失败时仅当 is-active 证明进程已死才采信冻结（进程已死与命令失败区分）。检查器的任何失败都按拒绝处理：非零退出、非整数计数、前导零、重复或缺失的计数行（F2，见 `server/src/deploy/origin-release-faults.test.ts`）。
 
-门禁拒绝 = 发布/自动回滚失败：job 以明确原因退出，`current`、`server.env` 与服务状态保持不变——试用门禁在 env 写入之前拒绝所以本就零接触；env 键校验失败或撤销门禁拒绝时先把 `server.env` 恢复成发布前备份（恢复失败会显式中止、备份保留在 `backups/env/`），撤销门禁同时把服务拉回运行——等待人工处置，**向前修复优先**。自动回滚在「上一个 release 不满足门禁」（例如 LCA10/LCA13 之前的旧 origin）时会被拒绝，不会在人工处置前静默恢复旧入口。两道门禁的判定矩阵回归在 `server/src/deploy/origin-release-gate.test.ts`（逐字提取脚本函数在受控 harness 中仿真）。
+门禁拒绝 = 发布/自动回滚失败：job 以明确原因退出，`current`、`server.env` 与服务状态保持不变——试用门禁在 env 写入之前拒绝所以本就零接触；env 键校验失败时先把 `server.env` 恢复成发布前备份。撤销门禁拒绝时同样先恢复 `server.env`，再拉起原服务：服务只能以激活前的配置启动，不得以被拒绝的增改启动。恢复失败会显式中止，服务保持停止，备份保留在 `backups/env/`，结果为 `failed`，须人工核查。之后等待人工处置，**向前修复优先**。自动回滚在「上一个 release 不满足门禁」（例如 LCA10/LCA13 之前的旧 origin）时会被拒绝，不会在人工处置前静默恢复旧入口。两道门禁的判定矩阵回归在 `server/src/deploy/origin-release-gate.test.ts`（逐字提取脚本函数在受控 harness 中仿真）。
 
 新增服务端环境变量：`gh secret set ORIGIN_ENV_<NAME> --env production`，下一次发布生效。不需要登录主机。
 
@@ -146,6 +168,16 @@ GitHub `production` Environment 额外配置：
 
 当前钩子执行 `migrate-legacy-cli.ts --writes-frozen`：把 `_system` 的平台内容复制到隔离内容库并校验。只复制、不删除，重复执行结果一致。
 
+迁移类型（PR 提交须与此一致）：复制（只复制、不删除），沿用既有钩子，使用 root 身份。
+
+- **调用链**：`run_release` 在全部门禁与 env 写入之后停服（冻结），再执行 `scripts/deploy/origin-pre-start.sh`，即 `bun run --env-file=<server.env> src/content/migrate-legacy-cli.ts --writes-frozen`。
+- **身份**：CLI 以 `server.env` 中的 `SURREAL_ROOT_USER` 与 `SURREAL_ROOT_PASS` 登录（即 root 凭证），在 `_system` 读取，在 `CONTENT_DATABASE` 写入。这是当前实现。是否接受 root，或改用限定用户，由 GM 决定（见下文第 4 项）。
+- **冻结**：只依靠停服。CLI 要求显式传入 `--writes-frozen`，但不核实其它写入者是否已停止。
+- **写入范围**：先对 `CONTENT_DATABASE` 执行 `ensurePlatformContentSchema`（先于标记检查）。它执行 `DEFINE DATABASE IF NOT EXISTS`，并按 `platform_content_schema_version` 只执行版本号大于当前值的脚本；版本 7 另含数据回填。随后把 `_system` 中目标库缺失的记录 `CREATE` 或 `RELATE` 到 `CONTENT_DATABASE`；已存在的记录只做一致性断言，不改写。最后 `UPSERT` 标记 `content_migration_state:legacy`。迁移模块（`server/src/content/migrate-legacy.ts`）不含 `DELETE` 或 `UPDATE` 语句，也不写 `_system`。
+- **幂等**：标记存在（来源为 `_system` 且 `verified_at` 非空）时输出 `already migrated` 并跳过复制。标记不存在时，上次中途失败留下的部分复制会在本次续做。
+- **失败处置**：钩子失败按本节开头的规则转入回滚。回滚不删除已复制的内容，也不删除标记，回滚路径不执行钩子。
+- **何时运行**：下一次从 `main` 执行的前向激活会执行该钩子。标记不存在时复制，标记已存在时跳过。生产库是否已有标记未经核实（见下文第 1 项）。合并 PR #36 不是这一项的前置条件。
+
 只读核对的事实：
 
 - 钩子在 main 上自 `7cdf330f`（PR #143，2026-10-04）起存在，`50663e3a` 与 `cfb870c3` 都包含它（blob `7164b64e`）。
@@ -158,6 +190,7 @@ GitHub `production` Environment 额外配置：
 1. 核对生产内容复制状态。claim 写「钩子在 PR #36 里，随 #29 一起合入发布」，并写「#29 尚未发布到 origin」，与上面的事实不一致。由运营核对，工程不直接访问生产数据。
 2. 选定钩子使用的 CLI 版本（main 版或 #36 版）。选定后同步更新本节。
 3. 确认每次前向激活都会先停服再执行钩子的停服窗口可接受。
+4. 接受本钩子以 root 身份运行（见上文「调用链」与「身份」），或要求改用限定用户后再激活。
 
 ## 主机锁与陈旧锁回收（F13）
 
@@ -179,6 +212,8 @@ GitHub `production` Environment 额外配置：
 3. 两项都确认后才手工删除 `lock.reclaim` 目录，并把两步的输出记入证据。不得为让发布通过而删除 `lock` 目录或改写状态文件。
 
 F13 的并发与回收互斥由 `server/src/deploy/origin-release-faults.test.ts` 的 F13 用例覆盖，包括两个登记同时争抢同一陈旧锁（5 轮）时每轮恰好一个成功。
+
+测试范围：该用例在本地 harness 中运行两个真实的 `--launch` 进程，`systemctl`、`sudo`、`bun`、`curl` 等为替身。主机上的 `mkdir` 与 `find -mmin` 行为未验证（G4）。F13 的修复与并发回归需独立复核，复核通过前不视为闭合（见「启用 `Deploy production`」第 10 项）。
 
 ## 回滚被拒（`rollback-refused` / `rollback-failed`）
 
@@ -218,6 +253,8 @@ python3 origin-verification.py receipt --repo MainListActivity/surreal_ck \
 
 `Frontend recovery` 的 `--workflow-path` 为 `.github/workflows/release-frontend-recovery.yml`。
 
+`--event` 默认为 `workflow_dispatch`。`Deploy production` 的自动运行由 `workflow_run` 触发，核验时须用 `--event workflow_run --workflow-path .github/workflows/deploy-production.yml`；事件不符即拒绝。`--job-name` 以运行内显示的名称为准：被调用的复合工作流在调用方运行内显示为「调用方作业 / 被调用作业」，例如 `Hono origin / Hono origin (systemd)`。
+
 退出码：
 
 - `0`：运行已完成，结论 `success`，作业可完整读取且全部 `success`。
@@ -225,6 +262,8 @@ python3 origin-verification.py receipt --repo MainListActivity/surreal_ck \
 - `3`：尚未判定。排队、进行中、接口临时失败，或等待超时。`3` 不是通过，不得据此继续。
 
 回执不是发布结果，发布结果仍以 `--status`、`--log`、健康探测与终态为准。历史样本：运行 `39153839203` 为 `action_required` 且 0 作业，回执退出码为 `2`，不得当作已部署。
+
+成功样本：运行 `39074722491`（`Deploy production`，`workflow_run`，提交 `cfb870c3`，2026-10-17，三个作业全部 `success`）以 `--event workflow_run` 与上述父路径核验，退出码为 `0`。以默认事件核验同一运行，或以 `deploy-origin.yml` 为路径核验，退出码均为 `2`。
 
 ## 前端定向恢复（`Frontend recovery`）
 
@@ -382,8 +421,10 @@ CI 的 `wait` 与写入前的 `verify` 按下表判定。任一项失败都使�
 5. 下方配置表中的变量与 `RELEASE_APPROVER_LOGINS` 已核对。
 6. 本补修的工具 PR 经另一位工程师复核、`Quality gate` 成功，并合入 `main`。证据记录 PR 头 SHA 与合并提交 SHA。
 7. G4（主机实跑的前向故障与 scp 失败）由 GM 决定：在批准的维护窗口执行并记录，或书面接受其未执行为残余风险。两种结论都写入启用证据。
-8. F1（撤销门禁被拒后的 `hold` 策略）与 F4（钩子的首次激活与 CLI 版本）已由 GM 决定并记录，见「回滚被拒」与「前向钩子」。
+8. F1（撤销门禁被拒后的 `hold` 策略）与 F4（钩子的首次激活、CLI 版本与 root 身份）已由 GM 决定并记录，见「回滚被拒」与「前向钩子」。
 9. `N1` 由 GM 定义并核对。本仓库 runbook、证据包与 claim 的正文均未定义。
+10. F13 的修复与并发回归已由独立复核通过，复核人不是实现者。
+11. 「交接与暂存件（F10）」中的首次激活准备（暂存件权限核对与清理失败处置）已完成并记录。
 
 执行人是原正式部署任务 `3a9b0b3c-da89-4090-a0ea-a442b1608a7e` 当次持有效租约的工程执行者。修复 PR 的实现者不负责启用，也不由仓库所有者代为启用。
 
@@ -442,3 +483,9 @@ gh api repos/MainListActivity/surreal_ck/actions/variables/RELEASE_APPROVER_LOGI
 ## 边界
 
 Hono 启动时会执行 schema 与数据迁移，代码回滚不会回滚数据库。需要的新环境变量先用 `ORIGIN_ENV_*` secret 配好，需要停写执行的迁移放进 `origin-pre-start.sh`，再合入 main。SurrealDB 服务本身（`surrealdb.service`）与 root 凭证不由 CI 管理。
+
+### 各次运行所用的 SurrealDB 构建
+
+- Quality gate（CI）安装公司 fork 的候选制品 `sck-3.3.0-native-quota.1-candidate.105`（`MainListActivity/surrealdb`），sha256 固定并校验。集成测试使用此构建。
+- 本机检查器日志 `checker-live-local-surreal-v3.3-nightly.log` 对应 v3.3 nightly 本地构建，不等同于 CI 或生产所用构建。
+- 生产主机 `surrealdb.service` 所用的构建未记录。启用前由运营只读记录（`surreal version` 的输出与服务的可执行文件路径）。
