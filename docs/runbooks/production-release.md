@@ -166,14 +166,14 @@ GitHub `production` Environment 额外配置：
 
 `scripts/deploy/origin-pre-start.sh` 只在转发激活中执行。发布包含该文件时，`run_release` 在全部门禁与 env 写入之后、切换 `current` 之前停服并执行它（`ORIGIN_ENV_FILE` 指向 `server.env`）。钩子失败即转入回滚：服务已停，回滚到登记的 `previous`，结果为 `rolled-back`；回滚本身失败则为 `rollback-failed`。回滚路径不执行钩子。
 
-当前钩子执行 `migrate-legacy-cli.ts --writes-frozen`：把 `_system` 的平台内容复制到隔离内容库并校验。只复制、不删除，重复执行结果一致。
+当前钩子执行 `migrate-legacy-cli.ts --writes-frozen`：先按版本执行内容库结构脚本，再把 `_system` 的平台内容复制到隔离内容库并校验。数据上只新增、不删除、不改写，重复执行结果一致。
 
-迁移类型（PR 提交须与此一致）：复制（只复制、不删除），沿用既有钩子，使用 root 身份。
+迁移类型（PR 提交须与此一致）：数据只新增（复制缺失记录、v7 回填缺失的搜索 facet、标记 UPSERT），不删除或改写业务记录；版本门控的结构脚本含对既有定义的修改（`ALTER ... PERMISSIONS`、`ALTER FIELD ... FLEXIBLE`、`REMOVE EVENT IF EXISTS`、`DEFINE ACCESS OVERWRITE`），因此不得标为「只新增结构」。沿用既有钩子，使用 root 身份。生产当前 `platform_content_schema_version` 未核，待运营确认。
 
 - **调用链**：`run_release` 在全部门禁与 env 写入之后停服（冻结），再执行 `scripts/deploy/origin-pre-start.sh`，即 `bun run --env-file=<server.env> src/content/migrate-legacy-cli.ts --writes-frozen`。
 - **身份**：CLI 以 `server.env` 中的 `SURREAL_ROOT_USER` 与 `SURREAL_ROOT_PASS` 登录（即 root 凭证），在 `_system` 读取，在 `CONTENT_DATABASE` 写入。这是当前实现。是否接受 root，或改用限定用户，由 GM 决定（见下文第 4 项）。
 - **冻结**：只依靠停服。CLI 要求显式传入 `--writes-frozen`，但不核实其它写入者是否已停止。
-- **写入范围**：先对 `CONTENT_DATABASE` 执行 `ensurePlatformContentSchema`（先于标记检查）。它执行 `DEFINE DATABASE IF NOT EXISTS`，并按 `platform_content_schema_version` 只执行版本号大于当前值的脚本；版本 7 另含数据回填。随后把 `_system` 中目标库缺失的记录 `CREATE` 或 `RELATE` 到 `CONTENT_DATABASE`；已存在的记录只做一致性断言，不改写。最后 `UPSERT` 标记 `content_migration_state:legacy`。迁移模块（`server/src/content/migrate-legacy.ts`）不含 `DELETE` 或 `UPDATE` 语句，也不写 `_system`。
+- **写入范围**：先对 `CONTENT_DATABASE` 执行 `ensurePlatformContentSchema`（先于标记检查）。它执行 `DEFINE DATABASE IF NOT EXISTS`，并按 `platform_content_schema_version` 只执行版本号大于当前值的脚本（`shared/sql/platform-content/`）。这些脚本含 `DEFINE`（新增结构）与对既有定义的修改（`ALTER ... PERMISSIONS`、`ALTER FIELD ... FLEXIBLE`、`REMOVE EVENT IF EXISTS`、`DEFINE ACCESS OVERWRITE`），不含对业务记录的 `DELETE` 或 `UPDATE`。版本 7 另含数据回填：对缺少搜索 facet 的已发布条目 `CREATE` 一条 `content_search_facet`。随后把 `_system` 中目标库缺失的记录 `CREATE` 或 `RELATE` 到 `CONTENT_DATABASE`；已存在的记录只做一致性断言，不改写。最后 `UPSERT` 标记 `content_migration_state:legacy`。迁移模块（`server/src/content/migrate-legacy.ts`）不含 `DELETE` 或 `UPDATE` 语句，也不写 `_system`。
 - **幂等**：标记存在（来源为 `_system` 且 `verified_at` 非空）时输出 `already migrated` 并跳过复制。标记不存在时，上次中途失败留下的部分复制会在本次续做。
 - **失败处置**：钩子失败按本节开头的规则转入回滚。回滚不删除已复制的内容，也不删除标记，回滚路径不执行钩子。
 - **何时运行**：下一次从 `main` 执行的前向激活会执行该钩子。标记不存在时复制，标记已存在时跳过。生产库是否已有标记未经核实（见下文第 1 项）。合并 PR #36 不是这一项的前置条件。
