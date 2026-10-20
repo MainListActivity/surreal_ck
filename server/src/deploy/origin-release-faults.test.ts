@@ -19,8 +19,10 @@ import {
   launch,
   listFiles,
   makeHarness,
+  pinSensitive,
   readText,
   run,
+  sensitiveViolations,
   serviceState,
   snapshotTree,
   spawnLaunch,
@@ -443,35 +445,60 @@ describe("G3 surrealdb 与数据目录零触碰（运行时：成功、回滚、
     writeFileSync(join(dir, "data", "wal.bin"), "fake-data\n");
     return dir;
   };
+  // 变异运行：在 run_release 入口前插入一行 shell（脚本其余部分不变），经真实 --launch 执行到终态，返回终态名。
+  const runMutant = async (h: Harness, id: string, line: string) => {
+    const original = readFileSync(SCRIPT_PATH, "utf8");
+    const marker = "run_release() {\n";
+    expect(original).toContain(marker);
+    const mutatedPath = join(h.dir, `origin-release-${id}.sh`);
+    writeFileSync(mutatedPath, original.replace(marker, `${marker}${line}\n`));
+    stageRelease(h, id);
+    expect(launch(h, id, { script: mutatedPath }).exitCode).toBe(0);
+    return (await waitTerminal(h, id)).state;
+  };
 
-  t("成功路径：systemctl 只作用于 surreal-ck-hono，假敏感对象快照前后一致", async () => {
+  t("访问检测自检：对假 root.env 的读取必须被 atime 观测到，且检测本身无误报", async () => {
+    const h = makeHarness("explicit", true, service);
+    const dir = seedSensitive(h);
+    const pin = await pinSensitive(dir);
+    expect(sensitiveViolations(pin)).toEqual([]);
+    readText(join(dir, "root.env"));
+    expect(sensitiveViolations(pin)).toEqual(["read:root.env"]);
+  });
+
+  t("成功路径：systemctl 只作用于 surreal-ck-hono，假敏感对象无读取、写入或元数据变化", async () => {
     const h = makeHarness("explicit", true, service);
     const dir = seedSensitive(h);
     const before = snapshotTree(dir);
+    const pin = await pinSensitive(dir);
     stageRelease(h, "g3-ok");
     expect(launch(h, "g3-ok").exitCode).toBe(0);
     expect((await waitTerminal(h, "g3-ok")).state).toBe("healthy");
     expect(unitMutations(h).length).toBeGreaterThan(0);
     expect(zeroTouchViolations(gateCalls(h), service)).toEqual([]);
+    expect(sensitiveViolations(pin)).toEqual([]);
     expect(snapshotTree(dir)).toEqual(before);
   });
 
-  t("钩子失败回滚路径：systemctl 只作用于 surreal-ck-hono，假敏感对象快照前后一致", async () => {
+  t("钩子失败回滚路径：systemctl 只作用于 surreal-ck-hono，假敏感对象无读取、写入或元数据变化", async () => {
     const h = makeHarness("explicit", true, service);
     const dir = seedSensitive(h);
     const before = snapshotTree(dir);
+    const pin = await pinSensitive(dir);
     stageRelease(h, "g3-rb", { hookBody: HOOK_FAIL });
     expect(launch(h, "g3-rb").exitCode).toBe(0);
     expect((await waitTerminal(h, "g3-rb")).state).toBe("rolled-back");
     expect(unitMutations(h).length).toBeGreaterThan(0);
     expect(zeroTouchViolations(gateCalls(h), service)).toEqual([]);
+    expect(sensitiveViolations(pin)).toEqual([]);
     expect(snapshotTree(dir)).toEqual(before);
   });
 
-  t("中断后 --recover 路径：systemctl 只作用于 surreal-ck-hono，假敏感对象快照前后一致", async () => {
+  t("中断后 --recover 路径：systemctl 只作用于 surreal-ck-hono，假敏感对象无读取、写入或元数据变化", async () => {
     const h = makeHarness("explicit", true, service);
     const dir = seedSensitive(h);
     const before = snapshotTree(dir);
+    const pin = await pinSensitive(dir);
     stageRelease(h, "g3-rec", { hookBody: HOOK_BLOCK });
     const blockFile = join(h.dir, "hook-block");
     const mark = join(h.dir, "hook-mark");
@@ -485,39 +512,61 @@ describe("G3 surrealdb 与数据目录零触碰（运行时：成功、回滚、
       expect((await waitTerminal(h, "g3-rec")).state).toBe("rolled-back");
       expect(unitMutations(h).length).toBeGreaterThan(0);
       expect(zeroTouchViolations(gateCalls(h), service)).toEqual([]);
+      expect(sensitiveViolations(pin)).toEqual([]);
       expect(snapshotTree(dir)).toEqual(before);
     } finally {
       rmSync(blockFile, { force: true });
     }
   });
 
-  t("变异检测：在 run_release 中注入对 surrealdb 的重启，零触碰审计必须捕获", async () => {
-    const h = makeHarness("explicit", true, service);
-    const original = readFileSync(SCRIPT_PATH, "utf8");
-    const marker = "run_release() {\n";
-    expect(original).toContain(marker);
-    const mutatedPath = join(h.dir, "origin-release-mutated.sh");
-    writeFileSync(mutatedPath, original.replace(marker, `${marker}  sudo -n systemctl restart surrealdb || true\n`));
-    stageRelease(h, "g3-mut");
-    expect(launch(h, "g3-mut", { script: mutatedPath }).exitCode).toBe(0);
-    await waitTerminal(h, "g3-mut");
-    expect(zeroTouchViolations(gateCalls(h), service)).toContain("systemctl:restart surrealdb");
-  });
-
-  t("变异检测：在 run_release 中写入假数据目录，快照比对必须捕获该改动", async () => {
+  t("变异检测（只读）：run_release 只读取假 root.env、不改内容，快照不变但访问检测必须报告 read", async () => {
     const h = makeHarness("explicit", true, service);
     const dir = seedSensitive(h);
     const before = snapshotTree(dir);
-    const original = readFileSync(SCRIPT_PATH, "utf8");
-    const marker = "run_release() {\n";
-    expect(original).toContain(marker);
-    const target = join(dir, "data", "wal.bin");
-    const mutatedPath = join(h.dir, "origin-release-mutated-data.sh");
-    writeFileSync(mutatedPath, original.replace(marker, `${marker}  echo tampered >> "${target}" || true\n`));
-    stageRelease(h, "g3-mut-data");
-    expect(launch(h, "g3-mut-data", { script: mutatedPath }).exitCode).toBe(0);
-    await waitTerminal(h, "g3-mut-data");
+    const pin = await pinSensitive(dir);
+    expect(await runMutant(h, "g3-mut-cat", `  command cat "${join(dir, "root.env")}" >/dev/null || true`)).toBe("healthy");
+    expect(sensitiveViolations(pin)).toEqual(["read:root.env"]);
+    expect(snapshotTree(dir)).toEqual(before);
+  });
+
+  t("变异检测（只读）：run_release 读取假 surrealdb.service 首字节，必须报告 read:surrealdb.service", async () => {
+    const h = makeHarness("explicit", true, service);
+    const dir = seedSensitive(h);
+    const pin = await pinSensitive(dir);
+    expect(await runMutant(h, "g3-mut-head", `  head -c 1 "${join(dir, "surrealdb.service")}" >/dev/null || true`)).toBe("healthy");
+    expect(sensitiveViolations(pin)).toEqual(["read:surrealdb.service"]);
+  });
+
+  t("变异检测（目录）：run_release 列出假数据目录，必须报告 read:data", async () => {
+    const h = makeHarness("explicit", true, service);
+    const dir = seedSensitive(h);
+    const pin = await pinSensitive(dir);
+    expect(await runMutant(h, "g3-mut-ls", `  command ls "${join(dir, "data")}" >/dev/null || true`)).toBe("healthy");
+    expect(sensitiveViolations(pin)).toEqual(["read:data"]);
+  });
+
+  t("变异检测（元数据）：run_release 修改假 root.env 权限，必须报告 meta:root.env", async () => {
+    const h = makeHarness("explicit", true, service);
+    const dir = seedSensitive(h);
+    const pin = await pinSensitive(dir);
+    expect(await runMutant(h, "g3-mut-chmod", `  chmod 600 "${join(dir, "root.env")}" || true`)).toBe("healthy");
+    expect(sensitiveViolations(pin)).toEqual(["meta:root.env"]);
+  });
+
+  t("变异检测（写入）：run_release 写入假数据文件，快照比对与访问检测都必须捕获该改动", async () => {
+    const h = makeHarness("explicit", true, service);
+    const dir = seedSensitive(h);
+    const before = snapshotTree(dir);
+    const pin = await pinSensitive(dir);
+    expect(await runMutant(h, "g3-mut-data", `  echo tampered >> "${join(dir, "data", "wal.bin")}" || true`)).toBe("healthy");
+    expect(sensitiveViolations(pin)).toEqual(["write:data/wal.bin"]);
     expect(snapshotTree(dir)).not.toEqual(before);
+  });
+
+  t("变异检测：在 run_release 中注入对 surrealdb 的重启，零触碰审计必须捕获", async () => {
+    const h = makeHarness("explicit", true, service);
+    await runMutant(h, "g3-mut", "  sudo -n systemctl restart surrealdb || true");
+    expect(zeroTouchViolations(gateCalls(h), service)).toContain("systemctl:restart surrealdb");
   });
 
   t("静态：部署工具与工作流不引用 surrealdb 服务单元、journalctl 或数据目录，也不引用根凭证变量", () => {
