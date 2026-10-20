@@ -24,7 +24,8 @@ import { type TrialCompat, writeAllowanceTree, writeTrialTree } from "./origin-r
  *      app.ts 挂载（createProTrialRoutes）。
  * 发布主流上该门禁在任何主机状态变更（env 增改/停服/切换）之前执行，拒绝时
  * env/current/服务零接触；撤销门禁/env 键校验拒绝路径统一 restore_env 恢复
- * 备份（恢复失败显式中止）。
+ * 备份（恢复失败显式中止）。撤销门禁拒绝时先恢复 env 再拉起原服务；env 未恢复时任何路径都不拉起服务
+ * （ensure_service_running 守卫，恢复失败则服务保持停止并以 failed 结束）。
  */
 
 const SCRIPT_PATH = join(import.meta.dir, "../../../scripts/deploy/origin-release.sh");
@@ -44,6 +45,7 @@ const EXTRACTED = [
   "release_lock",
   "settle",
   "service_active",
+  "ensure_service_running",
   "rollback_refuse",
   "rollback",
 ]
@@ -72,7 +74,7 @@ type SimResult = { stdout: string; stderr: string; exitCode: number; calls: stri
 
 function runSim(
   env: SimEnv,
-  opts: { filteredTarget?: boolean; mode?: "gate" | "rollback" | "trial-gate" | "allowance-gate"; trialCompat?: TrialCompat; allowanceCompat?: boolean } = {},
+  opts: { filteredTarget?: boolean; mode?: "gate" | "rollback" | "trial-gate" | "allowance-gate" | "ensure-service"; trialCompat?: TrialCompat; allowanceCompat?: boolean; envDirty?: 0 | 1 } = {},
 ): SimResult {
   const dir = mkdtempSync(join(tmpdir(), "gate-sim-"));
   const root = join(dir, "root");
@@ -121,10 +123,13 @@ function runSim(
       : opts.mode === "trial-gate"
         ? // 与生产调用点一致：门禁经 if 条件调用，函数体内 errexit 被抑制。
           `if require_trial_source_compat "${target}"; then\n  echo "RESULT:pass"\nelse\n  echo "RESULT:refuse"\nfi`
+        : opts.mode === "ensure-service"
+          ? `ensure_service_running\necho "RESULT:done"`
         : `if require_revocation_compat "${target}"; then\n  echo "RESULT:pass"\nelse\n  echo "RESULT:refuse"\nfi`;
 
   // 回滚模式下主机已被本激活改动（服务停过/已切换、env 已写入）；其它模式不读这些标记。
-  const hostTouched = opts.mode === "rollback" ? 1 : 0;
+  const hostTouched = opts.mode === "rollback" || opts.mode === "ensure-service" ? 1 : 0;
+  const envDirty = opts.envDirty ?? hostTouched;
   const harness = `#!/usr/bin/env bash
 set -euo pipefail
 service=svc
@@ -150,7 +155,7 @@ note=
 log_file=
 lock_dir=${dir}/lock-absent
 svc_touched=${hostTouched}
-env_dirty=${hostTouched}
+env_dirty=${envDirty}
 switched=${hostTouched}
 REVOCATION_GATE_DRAIN_SEC=0
 LOG=${log}
@@ -301,6 +306,21 @@ describe("origin-release revocation gate", () => {
   });
 });
 
+describe("origin-release 服务拉起守卫（ensure_service_running）：env 未恢复时绝不拉起", () => {
+  test("env 仍为本激活增改（env_dirty=1）且服务停止 → 不拉起，告知原因", () => {
+    const r = runSim({ isActive: "inactive" }, { mode: "ensure-service", envDirty: 1 });
+    expect(r.stdout).toContain("RESULT:done");
+    expect(r.stderr).toContain("service not started");
+    expect(has(r, "sudo:-n systemctl start svc")).toBe(false);
+  });
+
+  test("env 已恢复（env_dirty=0）且服务停止 → 拉起（冻结不得长期停服）", () => {
+    const r = runSim({ isActive: "inactive" }, { mode: "ensure-service", envDirty: 0 });
+    expect(r.stdout).toContain("RESULT:done");
+    expect(has(r, "sudo:-n systemctl start svc")).toBe(true);
+  });
+});
+
 describe("origin-release rollback hardening", () => {
   test("回滚路径同样经门禁：previous 无过滤 + 有撤销 → 拒绝回滚，不动 env/pointer", () => {
     const r = runSim({ count: 2 }, { mode: "rollback" });
@@ -446,7 +466,17 @@ type FullSimResult = {
   envAfter: string;
   envBackupExists: boolean;
   currentTarget: string;
+  /** 终态（状态文件 state=），不存在时为空串。 */
+  state: string;
+  /** 桩 systemctl 维护的服务单元状态（active/inactive）。 */
+  unit: string;
 };
+
+function readStateField(path: string, key: string): string {
+  if (!existsSync(path)) return "";
+  const m = readFileSync(path, "utf8").match(new RegExp(`^${key}=(.*)$`, "m"));
+  return m ? m[1] : "";
+}
 
 function runFullRelease(opts: {
   target: TrialCompat;
@@ -455,6 +485,12 @@ function runFullRelease(opts: {
   additions?: string;
   healthyBody?: string;
   catFailBackup?: boolean;
+  /** 发布包内置撤销检查器（使 find_revocation_checker_dir 在目标中命中）。 */
+  checker?: boolean;
+  /** 检查器标准输出（如 grant_revocations=3）；缺省为 grant_revocations=0。 */
+  checkerOut?: string;
+  /** systemctl stop 失败（服务仍活跃时即 Finding A 路径）。 */
+  stopFails?: boolean;
 }): FullSimResult {
   const dir = mkdtempSync(join(tmpdir(), "full-release-sim-"));
   const root = join(dir, "root");
@@ -472,6 +508,9 @@ function runFullRelease(opts: {
   writeFileSync(envFile, "REVIEW_FIXTURE=before\nBASE_KEY=keep\n");
   if (opts.additions !== undefined) writeFileSync(additionsPath, opts.additions);
   writeFileSync(log, "");
+  // 服务单元状态：发布前为 active（正在运行的旧版本），停服/拉起由桩维护。
+  const unitFile = join(dir, "unit.state");
+  writeFileSync(unitFile, "active");
 
   // 发布负载：git archive 风格的全树 server/ 目录。
   const payload = join(dir, "payload");
@@ -479,6 +518,10 @@ function runFullRelease(opts: {
   writeAllowanceTree(payload, opts.allowanceCompat !== false);
   mkdirSync(join(payload, "server", "src", "product-entitlement"), { recursive: true });
   writeFileSync(join(payload, "server", "src", "product-entitlement", "store.ts"), opts.filteredTarget ? "content_grant_revocation\n" : "content_grant\n");
+  if (opts.checker) {
+    mkdirSync(join(payload, "server", "src", "db"), { recursive: true });
+    writeFileSync(join(payload, "server", "src", "db", "grant-revocation-check-cli.ts"), "// checker\n");
+  }
   const archive = join(dir, "payload.tar.gz");
   Bun.spawnSync(["tar", "-czf", archive, "-C", payload, "server", "shared"]);
 
@@ -487,9 +530,17 @@ function runFullRelease(opts: {
   writeFileSync(
     prelude,
     `bunx() { echo "bunx:$*" >>"$GATE_LOG"; return 0; }
-bun() { echo "bun:$*" >>"$GATE_LOG"; echo "grant_revocations=0"; }
+bun() { echo "bun:$*" >>"$GATE_LOG"; printf '%s\\n' "\${T_CHECKER_OUT:-grant_revocations=0}"; }
 sudo() { echo "sudo:$*" >>"$GATE_LOG"; [ "\${1:-}" = "-n" ] && shift; "$@"; }
-systemctl() { echo "systemctl:$*" >>"$GATE_LOG"; case "\${1:-}" in is-active) echo "inactive"; return 3 ;; *) return 0 ;; esac; }
+systemctl() {
+  echo "systemctl:$*" >>"$GATE_LOG"
+  case "\${1:-}" in
+    is-active) local s; s=$(command cat "$GATE_UNIT"); echo "$s"; [ "$s" = active ] ;;
+    stop) if [ -n "\${T_STOP_FAIL:-}" ]; then return 1; fi; echo inactive >"$GATE_UNIT"; return 0 ;;
+    start|restart) echo "ENVSNAP:\${1}:$(command cat "$ORIGIN_ENV_FILE" | tr '\\n' '|')" >>"$GATE_LOG"; echo active >"$GATE_UNIT"; return 0 ;;
+    *) return 0 ;;
+  esac
+}
 curl() { printf '%s' "\${T_HEALTH_BODY:-}"; }
 sleep() { :; }
 journalctl() { :; }
@@ -515,6 +566,9 @@ cat() {
       REVOCATION_GATE_DRAIN_SEC: "0",
       T_HEALTH_BODY: opts.healthyBody ?? "",
       T_CAT_FAIL_BACKUP: opts.catFailBackup ? "1" : "",
+      GATE_UNIT: unitFile,
+      T_CHECKER_OUT: opts.checkerOut ?? "",
+      T_STOP_FAIL: opts.stopFails ? "1" : "",
     },
   });
 
@@ -526,6 +580,8 @@ cat() {
     envAfter: readFileSync(envFile, "utf8"),
     envBackupExists: existsSync(join(root, "backups", "env", `server.env.${releaseId}`)),
     currentTarget: readlinkSync(join(root, "current")),
+    state: readStateField(join(root, "deploy-state", `${releaseId}.state`), "state"),
+    unit: readFileSync(unitFile, "utf8").trim(),
   };
 }
 
@@ -559,9 +615,38 @@ describe("origin-release.sh 整段发布流：env 顺序与门禁拒绝恢复原
     const r = runFullRelease({ target: "explicit", filteredTarget: false, additions: "REVIEW_FIXTURE=after\n", catFailBackup: true });
     expect(r.exitCode).not.toBe(0);
     expect(r.stderr).toContain("env restore failed");
+    // 恢复未完成：服务保持门禁冻结的停止态，任何路径都不得以未恢复的 env 拉起（无 start/restart，无 ENVSNAP）。
+    expect(r.calls.filter((c) => c.startsWith("ENVSNAP:"))).toEqual([]);
+    expect(r.calls.some((c) => c.startsWith("systemctl:start") || c.startsWith("systemctl:restart"))).toBe(false);
+    expect(r.unit).toBe("inactive");
+    expect(r.state).toBe("failed");
     // 恢复失败是真实故障注入：env 保持增改后内容（键序按脚本重排），
     // 脚本以非零退出暴露不一致，不伪装恢复成功
     expect(r.envAfter).toBe("BASE_KEY=keep\nREVIEW_FIXTURE=after\n");
+    expect(r.currentTarget).toContain("rel-old");
+  });
+
+  test("前向撤销门禁拒绝（检查器计数 3）→ 唯一一次 start 观测到的 env 为激活前内容，服务拉回，终态 refused，current 不动", () => {
+    const r = runFullRelease({ target: "explicit", filteredTarget: false, additions: "REVIEW_FIXTURE=after\n", checker: true, checkerOut: "grant_revocations=3" });
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr).toContain("refusing to activate");
+    expect(r.calls.filter((c) => c.startsWith("ENVSNAP:"))).toEqual(["ENVSNAP:start:REVIEW_FIXTURE=before|BASE_KEY=keep|"]);
+    expect(r.calls.some((c) => c.includes("restart"))).toBe(false);
+    expect(r.envAfter).toBe(BEFORE);
+    expect(r.unit).toBe("active");
+    expect(r.state).toBe("refused");
+    expect(r.currentTarget).toContain("rel-old");
+  });
+
+  test("撤销门禁停服失败且服务仍活跃（Finding A）→ 拒绝且不进入计数检查；拉起原服务时 env 已恢复，终态 refused", () => {
+    const r = runFullRelease({ target: "explicit", filteredTarget: false, additions: "REVIEW_FIXTURE=after\n", stopFails: true });
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr).toContain("not confirmed stopped");
+    expect(r.calls.some((c) => c.startsWith("bun:"))).toBe(false);
+    expect(r.calls.filter((c) => c.startsWith("ENVSNAP:"))).toEqual(["ENVSNAP:start:REVIEW_FIXTURE=before|BASE_KEY=keep|"]);
+    expect(r.envAfter).toBe(BEFORE);
+    expect(r.unit).toBe("active");
+    expect(r.state).toBe("refused");
     expect(r.currentTarget).toContain("rel-old");
   });
 
@@ -580,6 +665,8 @@ describe("origin-release.sh 整段发布流：env 顺序与门禁拒绝恢复原
     expect(r.envAfter).toBe("BASE_KEY=keep\nREVIEW_FIXTURE=after\n");
     expect(r.currentTarget).toContain("lca10-ci7");
     expect(r.calls.some((c) => c === "systemctl:restart fixture-svc")).toBe(true);
+    // 对照：正向重启时 env 已是增改后的内容（证明 ENVSNAP 仪器有效，非恒为激活前内容）。
+    expect(r.calls.filter((c) => c.startsWith("ENVSNAP:"))).toEqual(["ENVSNAP:restart:BASE_KEY=keep|REVIEW_FIXTURE=after|"]);
   });
 
   test("UNSET 哨兵：值精确等于 UNSET → 从 server.env 删除该键、不写 UNSET 行，同批普通值仍 upsert", () => {

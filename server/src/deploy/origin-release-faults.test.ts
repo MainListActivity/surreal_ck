@@ -47,6 +47,18 @@ afterEach(() => {
 
 const t = (name: string, fn: () => unknown | Promise<unknown>) => test(name, fn, TEST_TIMEOUT_MS);
 
+// 仪器（仅测试桩）：每次 start/restart 时刻记录 server.env 中本激活被拒绝增改的出现次数；0 即激活前内容。
+// 只记录计数，不记录值，保证测试日志不含 env 内容。
+const ENV_AT_START_INSTRUMENT = `
+eval "$(declare -f systemctl | sed '1s/^systemctl /orig_systemctl /')"
+systemctl() {
+  case "\${1:-}" in
+    start|restart) echo "ENVSNAP:\${1}:additions_present=$(grep -cE 'after-value-7f3|new-value-9c1' "$ORIGIN_ENV_FILE" || true)" >>"$GATE_LOG" ;;
+  esac
+  orig_systemctl "$@"
+}
+`;
+
 function expectNoSecrets(h: Harness, id: string, extra: string[] = []) {
   const texts = [run(h, ["--status", id]).stdout, run(h, ["--log", id]).stdout, readText(h.gateLog), ...extra];
   for (const text of texts) {
@@ -314,6 +326,21 @@ describe("F1 回滚前提：转发激活在停服与 env 写入之前核验，�
     expect(serviceState(h)).toBe("active");
     expect(readText(h.envFile)).toBe(BEFORE);
     expect(currentBasename(h)).toBe("rel-old");
+    expectNoSecrets(h, id);
+  });
+
+  t("转发拒绝时每次 start/restart 观测到的 env 均为激活前内容（拒绝的增改不得在服务拉起时生效）", async () => {
+    const h = makeHarness();
+    const id = "f1-envorder";
+    stageRelease(h, id, { filtered: false, hookBody: HOOK_OK });
+    // 仪器：在桩 systemctl 之外记录 start/restart 时刻 server.env 中被拒绝增改的出现次数（0 = 激活前内容）。
+    writeFileSync(h.prelude, readFileSync(h.prelude, "utf8") + ENV_AT_START_INSTRUMENT);
+    expect(launch(h, id, { extraEnv: { T_CHECKER_OUT: "grant_revocations=3\\n" } }).exitCode).toBe(0);
+    const s = await waitTerminal(h, id);
+    expect(s.state).toBe("refused");
+    const snaps = gateCalls(h).filter((c) => c.startsWith("ENVSNAP:"));
+    expect(snaps).toEqual(["ENVSNAP:start:additions_present=0"]);
+    expect(readText(h.envFile)).toBe(BEFORE);
     expectNoSecrets(h, id);
   });
 });

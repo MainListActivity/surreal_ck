@@ -141,11 +141,18 @@ grant_revocations_present() {
 }
 
 # 门禁拒绝后的服务处置。restore（前向激活：被冻结的是原 current）拉回原服务，即使带病也好过授权语义回退；
+# 拉起前必须先恢复 server.env：服务只能以激活前的配置启动，不得以已被拒绝的增改启动。
+# restore_env 失败时直接退出，服务保持停止（ensure_service_running 在 env 未恢复时不拉起）。
 # hold（回滚：被拒的是 previous）不拉起被拒目标，保持冻结态并留痕，由运维决定（见 runbook）。
 revival_after_refusal() {
   if [ "${1:-restore}" = hold ]; then
     echo "revocation gate: $service is left stopped (rollback target refused; not restarted by rollback)" >&2
     return 0
+  fi
+  if [ "$env_dirty" = 1 ]; then
+    phase=env-restore
+    restore_env
+    env_dirty=0
   fi
   sudo -n systemctl start "$service" || echo "revocation gate: WARN failed to restore $service" >&2
 }
@@ -567,15 +574,20 @@ service_active() {
   [ "$(systemctl is-active "$service" 2>/dev/null || true)" = active ]
 }
 
-# 不让本激活的冻结（停服）留下长期停止的服务。
+# 不让本激活的冻结（停服）留下长期停止的服务。env 仍含本激活的增改（env_dirty=1，恢复未完成）时绝不拉起：
+# 服务不得以未恢复、可能已被拒绝的配置启动，保持停止态并由终态要求人工核查。
 ensure_service_running() {
+  if [ "$env_dirty" = 1 ]; then
+    echo "service not started: server.env still carries this activation's additions" >&2
+    return 0
+  fi
   if [ "$svc_touched" = 1 ] && ! service_active; then
     sudo -n systemctl start "$service" >/dev/null 2>&1 || true
   fi
 }
 
-# refuse_with_env_restore <reason>：门禁拒绝。env 已写入则先恢复备份；门禁在拒绝前已把停过的服务拉回，
-# 若服务仍不活跃则不能报告为 refused，以 failed 结束并要求人工核查。
+# refuse_with_env_restore <reason>：门禁或 env 校验拒绝。env 已写入则先恢复备份；门禁拒绝时已在拉起服务前恢复 env
+# 并拉回原服务（见 revival_after_refusal）。若服务仍不活跃则不能报告为 refused，以 failed 结束并要求人工核查。
 refuse_with_env_restore() {
   if [ "$env_dirty" = 1 ]; then
     phase=env-restore
@@ -681,9 +693,22 @@ rollback() {
 # abort_unsettled <why>：工作进程在终态前异常结束（未预期失败或信号）。
 abort_unsettled() {
   case "$phase" in
-    env-restore*)
+    env-restore)
+      # 前向路径（门禁拒绝或中止后的 env 恢复）：恢复未完成则服务保持停止，以 failed 结束要求人工核查。
       ensure_service_running
-      settle rollback-failed "$1; env restore did not complete; backup kept at $env_backup"
+      if [ "$env_dirty" = 1 ]; then
+        settle failed "$1; env restore did not complete; $service left stopped; backup kept at $env_backup"
+      else
+        settle failed "$1; env restored"
+      fi
+      ;;
+    env-restore-rollback)
+      ensure_service_running
+      if [ "$env_dirty" = 1 ]; then
+        settle rollback-failed "$1; env restore did not complete; $service left stopped; backup kept at $env_backup"
+      else
+        settle rollback-failed "$1; env restored; rollback did not complete"
+      fi
       ;;
     rollback*)
       ensure_service_running
