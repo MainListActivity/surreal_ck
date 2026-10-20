@@ -10,18 +10,18 @@
 
 当前 `Deploy production` 在 GitHub 上为 `disabled_manually`（workflow id `362937295`），合入 `main` 不会自动发布。启用条件与执行责任见「启用 `Deploy production`」。
 
-**维护暂停（当前状态）**：前端补发已完成（`Frontend recovery` 运行 `39248415340` 成功，不重做）。origin 恢复补修尚未在主机实跑（G4 未验证），origin 当前运行的 SHA 未经核实。在下列事项闭合前，不激活 origin、不启用自动发布，也不把新 `main` 当作生产 origin 的应用 SHA：
+**维护暂停（当前状态）**：前端补发已完成（`Frontend recovery` 运行 `39248415340` 成功，不重做）。origin 恢复补修尚未在主机实跑（G4 未验证），origin 当前运行的 SHA 未经核实。工具修补已合入 `main`（PR #205 合并提交 `5db5e18b`，2026-10-20 22:36:38Z），这次合入没有发布任何东西：前端仍运行 `50663e3a`，origin 未读回。在下列事项闭合前，不激活 origin、不启用自动发布，也不把新 `main` 当作生产 origin 的应用 SHA：
 
 - 生产 origin 应用目标固定为 `50663e3a6c89ee9a61a25eddf334a682c445bee1`。
 - 发布工具（`scripts/deploy`、`server/src/deploy` 与 `server/src/db/grant-revocation-*`）的修补以其 PR 头提交为准，合入后以合并提交为准。审批须引用同一个 SHA，并记录在 PR 描述与证据包 `report.md` 中。
-- 当前待审的工具代码提交为 `f1f3d199`（PR #204：前向拒绝时先恢复 `server.env` 再拉起原服务；派发回执 `--event`）。本文档的修订提交只改文档：`git diff --stat f1f3d199 <PR 头> -- scripts server/src/deploy server/src/db` 应为空。合入 `main` 后，以合并提交替换本行。
+- 工具代码已合入 `main`，两轮审批各绑定一个 SHA：PR #204 合并提交 `03d686728d1b9897583113e7529cd8211f268e85`（受审头 `f9182f4f161ffa8b8c8784ad0e634cbc139587d8`，2026-10-20T20:15:05Z）；PR #205 合并提交 `5db5e18bb4848cb49f100c7ea617731a5830e32a`（受审头 `45fd50b33c74985ae9371dfd1959361dba767ced`，2026-10-20T22:36:38Z，合并树 `5ba27ea8…` 与受审头逐字节一致，相对 base `03d68672` 只改 `server/src/deploy` 下两个测试与 harness 文件，+132/−24）。以 `main` 最新合并提交为工具 SHA，不把新 `main` 当作生产 origin 的应用 SHA（应用目标仍为 `50663e3a`）。本文档的修订提交只改文档：`git diff --stat 5db5e18b <PR 头> -- scripts server/src/deploy server/src/db` 应为空。
 - 首次前向激活的前置项见「前向钩子（`origin-pre-start.sh`）」（F4）与「主机锁与陈旧锁回收」（F13）。
 - 未验证项：G4（主机实跑前向故障与 scp 失败）未执行，本补修的结论只来自执行级测试，不来自主机结果。`39153839203` 等 `action_required` 派发的历史根因未经 API 证实。「N1」在本仓库 runbook 与证据包中未找到定义，待 GM 提供后核对。
 - PR #36、#55、#160 保持未合入。#36 头的 `origin-pre-start.sh` 与 main 字节相同，但其 `server/src/content/migrate-legacy-cli.ts` 与 main 不同（见「前向钩子」），不能以「钩子与 CLI 相同」为由合入或关闭。
 
 公司项目元数据与本 runbook 有以下差异，以本 runbook 为准。更正由 GM 通过受控条目完成，工程不改元数据，也不用 owner 或 admin 凭证改写。
 
-- `project.release` 写「合入即发布，不需要其他人批准」，同一元数据的 `notes` 却写「合入即触发发布，须先经上线申请批准」。两处互相矛盾。维护暂停期间不启用自动发布。
+- `project.release` 写「合入即发布，不需要其他人批准」，同一元数据的 `notes` 却写「合入即触发发布，须先经上线申请批准」。两处互相矛盾。而且 GitHub 上 `Deploy production` 实际是 `disabled_manually`，合入 `main` 不会自动发布，与「合入即发布」的字面描述不符。维护暂停期间不启用自动发布；恢复自动发布的条件见「启用 `Deploy production`」。
 - `project.rollback` 写「在 Actions 手动运行 Deploy origin」。`Deploy origin` 只能被调用，没有直接派发入口。实际入口是 `Deploy origin (manual)`，并须带 `approval_ref`。
 - `project.rollback` 写「前端重跑该提交的 Deploy production」。`Deploy production` 仍为 `disabled_manually`，前端只能经 `Frontend recovery` 恢复。
 
@@ -98,9 +98,9 @@ origin 是 `data.maplayer.top`（`129.146.179.37`）上的 systemd 服务 `surre
 | `interrupted` | 工作进程已消失且未到终态（例如主机重启或进程被杀） | CI 自动请求 `--recover`（主机接受前每轮重试，接受后只等待）；恢复被拒时由运维处理 |
 | `healthy` | 已切换并通过健康探测 | 成功 |
 | `rolled-back` | 切换或健康失败后已恢复上一个版本并健康 | job 失败；先看日志中的失败原因 |
-| `rollback-refused` | 上一个版本未通过门禁，回滚被拒，当前版本保持原状 | 人工处置，优先向前修复（见「回滚被拒」） |
-| `rollback-failed` | 回滚过程本身失败；服务停止时 origin 不可用 | 立即人工核查主机并报告 GM（见「回滚被拒」） |
-| `refused` | 门禁在切换前拒绝（已恢复 env；撤销门禁拒绝时原服务已拉回运行） | 修复目标后用新运行重新发布 |
+| `rollback-refused` | 回滚被门禁拒绝；已写入的 env 恢复为激活前备份，服务仍活跃（运行 `current` 当时指向的版本，可能是失败的新版本），回滚未执行 | 人工处置，优先向前修复（见「回滚被拒」） |
+| `rollback-failed` | 回滚被门禁拒绝且服务已被本次激活停止（回滚不拉起被拒的 `previous`）；或回滚过程本身失败（切换、重启或健康探测失败）。服务停止时 origin 不可用 | 立即人工核查主机并报告 GM（见「回滚被拒」） |
+| `refused` | 门禁在主机改动前拒绝（零服务与 env 变更）；或前向撤销门禁在停服后拒绝：先恢复 `server.env` 备份，再拉起原服务。拒绝后服务仍不活跃时不报 `refused`，以 `failed` 结束并要求人工核查 | 修复目标后用新运行重新发布 |
 | `failed` | 主机未改动即结束（例如恢复时发现尚未开始切换）；或 env 恢复失败，服务保持停止 | 核查日志；env 恢复失败时先人工核查服务与 `backups/env/` 中的备份，再用新运行重新发布 |
 | `absent` | 主机从未登记该激活 | CI 会重新登记 |
 
@@ -419,11 +419,11 @@ CI 的 `wait` 与写入前的 `verify` 按下表判定。任一项失败都使�
 3. fa 运营重新批准的审计编号已记录。
 4. 原正式部署任务的执行人已完成前端补发：锁内 barrier 之后的运营核定与 `Frontend recovery` 发布，并经 QA 复核双面版本、`/health`、登录、`www` 与 `/ops/`。
 5. 下方配置表中的变量与 `RELEASE_APPROVER_LOGINS` 已核对。
-6. 本补修的工具 PR 经另一位工程师复核、`Quality gate` 成功，并合入 `main`。证据记录 PR 头 SHA 与合并提交 SHA。
-7. G4（主机实跑的前向故障与 scp 失败）由 GM 决定：在批准的维护窗口执行并记录，或书面接受其未执行为残余风险。两种结论都写入启用证据。
-8. F1（撤销门禁被拒后的 `hold` 策略）与 F4（钩子的首次激活、CLI 版本与 root 身份）须由 GM 决定并记录，见「回滚被拒」与「前向钩子」。两项当前均未决定。
+6. 本补修的工具 PR 经另一位工程师复核、`Quality gate` 成功，并合入 `main`。证据记录 PR 头 SHA 与合并提交 SHA。当前状态（2026-10-20）：已完成。PR #204（受审头 `f9182f4f`，合并 `03d68672`）经独立复核 595869 与运营 1c767dab 批准合入；PR #205（受审头 `45fd50b3`，合并 `5db5e18b`）经独立复核 2ddb0a70 与运营 27ff8ef6 批准合入；`main` 上合并提交的 Quality gate 运行 `39509366116` 成功。本项闭合只覆盖工具修补合入，不闭合本表其它条件。
+7. G4（主机实跑的前向故障与 scp 失败）由 GM 决定：在批准的维护窗口执行并记录，或书面接受其未执行为残余风险。两种结论都写入启用证据。当前状态（2026-10-20）：未执行，GM 尚未作出书面决定；现有结论全部来自隔离 harness 的执行级测试，不来自主机。
+8. F1（撤销门禁被拒后的 `hold` 策略）与 F4（钩子的首次激活、CLI 版本与 root 身份）须由 GM 决定并记录，见「回滚被拒」与「前向钩子」。当前状态（2026-10-20）：两项均未决定。F1 的代码层行为（停服后拒绝以 `rollback-failed` 结束、不拉起被拒的 `previous`、env 先恢复）已实现并有回归测试，但 `hold` 策略本身仍待 GM 确认。
 9. `N1` 由 GM 定义并核对。本仓库 runbook、证据包与 claim 的正文均未定义。
-10. F13 的修复与并发回归已由独立复核通过（复核对象为 `6df8d938`，其后锁代码未变），复核人不是实现者。
+10. F13（陈旧锁回收）当前状态（2026-10-20）：修复为回收互斥 `lock.reclaim` 加原子移出再删除（引入于 `f53d080c`，其后锁代码未变，`git log -S lock.reclaim -- scripts/deploy/origin-release.sh` 止于该提交）。并发回归（两个登记争抢同一陈旧锁，5 轮）在 `origin-release-faults.test.ts` 的 F13 用例。独立复核记录 `review-c501-6df8d938`（复核人 engineering-factory-droid-c501ef，非实现者）对该项的结论为「代码与测试满足，未经主机验证」，但该复核对该 head 的整体结论为 return（针对当时其它未闭合项，不是锁代码）。R7 竞态是否视为闭合，由 GM 书面决定。
 11. 「交接与暂存件（F10）」中的首次激活准备（暂存件权限核对与清理失败处置）已完成并记录。
 
 执行人是原正式部署任务 `3a9b0b3c-da89-4090-a0ea-a442b1608a7e` 当次持有效租约的工程执行者。修复 PR 的实现者不负责启用，也不由仓库所有者代为启用。
@@ -436,6 +436,16 @@ gh api repos/MainListActivity/surreal_ck/actions/workflows/deploy-production.yml
 记录启用时间与读回结果。
 
 QA 与启用的先后：原执行人可以先提交前端补发阶段的 QA。QA 核对上述条件 1 至 4，并在验收中写明「只待已批准的启用与读回」。原执行人启用后再提交最终 QA 验收，附 `active` 读回与完整收口证据。
+
+### 收口模板
+
+每次启用或恢复尝试（含中途停止）的收口证据须逐项记录，缺项即视为未收口：
+
+1. 工作流状态：`Deploy production`、`Deploy origin (manual)`、`Frontend recovery` 的当时状态读回（命令、时间戳），写明 `disabled_manually` 或 `active`；合并时间窗内的发布入口运行列表（分页取全）。
+2. 版本事实：origin 运行的完整 SHA（运营经 `/api/ops/runtime-version` 采样）与采样时间；web 的 `runtime-version.json` 的 `sha` 与 `deploymentId`；本次合并提交与受审头 SHA。工具 SHA 与应用 SHA 分记，历史样本不冒称本轮读数。
+3. 事故状态与未验证项：本次涉及的主机终态（`healthy`、`rolled-back`、`refused`、`rollback-refused`、`rollback-failed`、`failed` 等）；仍未验证项清单（如 G4、F1/F4 决定、N1、`39153839203` 根因）与各项负责人。
+4. 回滚路径：本次变更的受审撤回方式（`git revert -m 1 <合并提交>` 或 `Deploy origin (manual)` 的目标 SHA 与 `approval_ref`）及前提。
+5. 值班接手：遗留会话与句柄（例如 ops 登录会话的登录与到期时间）、暂存件残留核对结果、下一班须继续的事项。
 
 禁止为了启用而追补未经批准的 `main`，或重跑健康的 origin。条件不满足时保持 `disabled_manually`，并向 GM 报告具体缺口。
 
