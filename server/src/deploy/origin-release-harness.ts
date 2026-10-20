@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, type Stats, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { type TrialCompat, writeTrialTree } from "./origin-release-fixtures";
@@ -392,6 +392,65 @@ export function snapshotTree(dir: string): Record<string, string> {
   };
   if (existsSync(dir)) walk(dir);
   return out;
+}
+
+// 敏感对象访问检测（仅用于假敏感对象）。pinSensitive 把各对象的 atime、mtime 固定到过去时刻并记录基线；
+// sensitiveViolations 只用 lstat 比对、不读取内容，因此检测本身不会制造读取记录。
+// - atime 变化 = 有读取（cat、head、ls 列目录与 readFileSync 已在本平台验证；Linux relatime 下 atime 早于 mtime 时首次读取同样更新）；
+// - mtime 或 size 变化 = 写入（内容相同的覆写也会更新 mtime）；
+// - mode、nlink、uid、gid 变化，或仅 ctime 变化 = 元数据修改（chmod、chown、硬链接、xattr）；
+// - ino 或 dev 变化 = 替换；条目消失 = 删除或改名。
+// 局限：只查询元数据的调用（stat、test -r）与只 open 不 read 的调用不更新 atime，超出本检测范围。
+const PIN_ATIME = new Date("2000-01-01T00:00:00Z");
+const PIN_MTIME = new Date("2001-01-01T00:00:00Z");
+
+export type SensitiveBaseline = { root: string; entries: Map<string, Stats> };
+
+// 相对 root 的全部条目（根记为 "."）。夹具不得含符号链接：固定时间戳会穿透链接改动外部对象。
+function sensitiveEntries(root: string): string[] {
+  const out = ["."];
+  const walk = (rel: string) => {
+    for (const name of readdirSync(join(root, rel)).sort()) {
+      const child = rel === "." ? name : `${rel}/${name}`;
+      const st = lstatSync(join(root, child));
+      if (st.isSymbolicLink()) throw new Error(`sensitive fixture must not contain symlinks: ${child}`);
+      out.push(child);
+      if (st.isDirectory()) walk(child);
+    }
+  };
+  walk(".");
+  return out;
+}
+
+export async function pinSensitive(root: string): Promise<SensitiveBaseline> {
+  const rels = sensitiveEntries(root);
+  for (const rel of rels) utimesSync(join(root, rel), PIN_ATIME, PIN_MTIME);
+  // 固定后等待一个时钟粒度：此后 inode 变化记入的 ctime 必晚于基线中的固定时刻。
+  await Bun.sleep(20);
+  const entries = new Map<string, Stats>();
+  for (const rel of rels) entries.set(rel, lstatSync(join(root, rel)));
+  return { root, entries };
+}
+
+// 返回违规标签列表（如 read:root.env），空数组表示无读取、写入、替换或元数据变化。
+export function sensitiveViolations(baseline: SensitiveBaseline): string[] {
+  const bad: string[] = [];
+  for (const [rel, before] of baseline.entries) {
+    let now: Stats;
+    try {
+      now = lstatSync(join(baseline.root, rel));
+    } catch {
+      bad.push(`missing:${rel}`);
+      continue;
+    }
+    if (now.dev !== before.dev || now.ino !== before.ino) bad.push(`replaced:${rel}`);
+    if (now.atimeMs !== before.atimeMs) bad.push(`read:${rel}`);
+    const wrote = now.mtimeMs !== before.mtimeMs || now.size !== before.size;
+    if (wrote) bad.push(`write:${rel}`);
+    const attr = now.mode !== before.mode || now.nlink !== before.nlink || now.uid !== before.uid || now.gid !== before.gid;
+    if (attr || (!wrote && now.ctimeMs !== before.ctimeMs)) bad.push(`meta:${rel}`);
+  }
+  return bad;
 }
 
 // 零触碰审计：systemctl 调用只能作用于目标服务，且不得出现 surrealdb 相关 unit 或 journalctl。
