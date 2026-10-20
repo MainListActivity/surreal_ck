@@ -203,13 +203,18 @@ describe("origin-release-ci.sh 收敛", () => {
   });
 
   for (const rc of [76, 2]) {
-    test(`中断且恢复被拒（recover 退出 ${rc}）：exit 1，输出说明恢复被拒`, async () => {
+    test(`中断且恢复被拒（recover 退出 ${rc}）：退出前回读主机状态与日志，exit 1，输出说明恢复被拒`, async () => {
       const h = makeHarness({ status: ["state=interrupted"], recover: [rc] });
       const r = await runCi(h, validArgs(h));
       expect(r.code).toBe(1);
       expect(r.out).toContain("origin refused recovery");
       expect(count(h, "--recover")).toBe(1);
       expect(count(h, "--launch")).toBe(0);
+      // F8：拒绝前的回读（状态与日志）必须先于 exit 1 的错误输出，且不因此改变退出码。
+      expect(count(h, "--log")).toBe(1);
+      expect(r.out.indexOf("state=interrupted")).toBeGreaterThanOrEqual(0);
+      expect(r.out.indexOf("state=interrupted")).toBeLessThan(r.out.indexOf("origin refused recovery"));
+      expect(r.out.indexOf("stub log line")).toBeLessThan(r.out.indexOf("origin refused recovery"));
     });
   }
 
@@ -314,6 +319,8 @@ describe("origin-release-ci.sh 收敛", () => {
     const cases: Array<[string, (h: Harness) => string[], string]> = [
       ["sha 非 40 位小写 hex（大写）", (h) => [ID, h.archive, h.envFile, SHA.toUpperCase(), APPROVAL, DEPLOY_ID], "sha must be"],
       ["sha 长度 39", (h) => [ID, h.archive, h.envFile, SHA.slice(0, 39), APPROVAL, DEPLOY_ID], "sha must be"],
+      ["sha 为空字符串", (h) => [ID, h.archive, h.envFile, "", APPROVAL, DEPLOY_ID], "sha must be"],
+      ["sha 省略（参数左移，approval 落入 sha 位）", (h) => [ID, h.archive, h.envFile, APPROVAL, DEPLOY_ID], "sha must be"],
       ["release-id 与 sha 不匹配", (h) => ["fffffff-ci42", h.archive, h.envFile, SHA, APPROVAL, DEPLOY_ID], "release id does not match"],
       ["approval 含空格", (h) => [ID, h.archive, h.envFile, SHA, "bad ref", DEPLOY_ID], "approval ref is missing"],
       ["approval 过短", (h) => [ID, h.archive, h.envFile, SHA, "abc", DEPLOY_ID], "approval ref is missing"],

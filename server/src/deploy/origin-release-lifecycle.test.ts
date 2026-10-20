@@ -628,16 +628,19 @@ describe("origin-release 生命周期（脚本级）", () => {
       expect(log).not.toContain("new-value-9c1");
     });
 
-    t("回滚被拒（previous 为旧隐式 origin）→ rollback-refused，current 仍指向新 release，无 stop", async () => {
+    t("前向激活：previous 为旧隐式 origin → refused（回滚预检先于依赖安装、停服与切换）：current 不变，无 stop/restart，env 不变", async () => {
       const h = makeHarness("old-origin");
       const id = "rel-ci-refuse";
       stageRelease(h, id, { target: "explicit", filtered: true });
-      expect(launch(h, id, { extraEnv: { T_HEALTH_BAD_RELEASE: id } }).exitCode).toBe(0);
+      expect(launch(h, id).exitCode).toBe(0);
       const s = await waitTerminal(h, id);
-      expect(s.state).toBe("rollback-refused");
-      expect(currentBasename(h)).toBe(id);
-      expect(countPrefix(gateCalls(h), "systemctl:restart")).toBe(1);
+      expect(s.state).toBe("refused");
+      expect(s.note).toContain("rollback preflight");
+      expect(currentBasename(h)).toBe("rel-old");
+      expect(countPrefix(gateCalls(h), "bunx:")).toBe(0);
+      expect(countPrefix(gateCalls(h), "systemctl:restart")).toBe(0);
       expect(countPrefix(gateCalls(h), "systemctl:stop")).toBe(0);
+      expect(readText(h.envFile)).toBe(BEFORE);
       const log = run(h, ["--log", id]).stdout;
       expect(log).toContain("would restore implicit trial creation");
     });

@@ -36,6 +36,7 @@ const EXTRACTED = [
   "find_revocation_checker_dir",
   "grant_revocations_present",
   "require_revocation_compat",
+  "revival_after_refusal",
   "target_has_explicit_trial_source",
   "require_trial_source_compat",
   "require_allowance_source_compat",
@@ -43,6 +44,7 @@ const EXTRACTED = [
   "release_lock",
   "settle",
   "service_active",
+  "rollback_refuse",
   "rollback",
 ]
   .map((name) => {
@@ -422,10 +424,11 @@ describe("origin-release trial source gate (LCA10)", () => {
     expect(countOf(r, "healthy")).toBe(1);
   });
 
-  test("共存：previous 显式语义但有撤销记录 → 撤销门禁拒绝并恢复服务", () => {
+  test("共存：previous 显式语义但有撤销记录 → 撤销门禁拒绝，回滚 hold 策略不拉起被拒 previous（F1）", () => {
     const r = runSim({ count: 2 }, { mode: "rollback", trialCompat: "explicit" });
     expect(r.exitCode).not.toBe(0);
-    expect(has(r, "sudo:-n systemctl start svc")).toBe(true);
+    expect(has(r, "sudo:-n systemctl stop svc")).toBe(true);
+    expect(has(r, "sudo:-n systemctl start svc")).toBe(false);
     expect(has(r, "point_to:")).toBe(false);
   });
 });
@@ -614,7 +617,8 @@ describe("LCA14 allowance source compatibility", () => {
     const r = runSim({}, { mode: "rollback", allowanceCompat: false });
     expect(r.stderr).toContain("not allowance-source-compatible");
     expect(has(r, "point_to:")).toBe(false);
-    expect(has(r, "systemctl:")).toBe(false);
+    // 只读 is-active 用于判定终态（rollback-refused / rollback-failed）；不允许任何变更性 systemctl 调用。
+    expect(r.calls.filter((c) => /^systemctl:(stop|start|restart)\b/.test(c))).toEqual([]);
   });
   test("forward release refusal precedes env writes and service changes", () => {
     const r = runFullRelease({ target: "explicit", allowanceCompat: false, additions: "REVIEW_FIXTURE=after\n" });

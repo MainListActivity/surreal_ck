@@ -10,6 +10,20 @@
 
 当前 `Deploy production` 在 GitHub 上为 `disabled_manually`（workflow id `362937295`），合入 `main` 不会自动发布。启用条件与执行责任见「启用 `Deploy production`」。
 
+**维护暂停（当前状态）**：前端补发已完成（`Frontend recovery` 运行 `39248415340` 成功，不重做）。origin 恢复补修尚未在主机实跑（G4 未验证），origin 当前运行的 SHA 未经核实。在下列事项闭合前，不激活 origin、不启用自动发布，也不把新 `main` 当作生产 origin 的应用 SHA：
+
+- 生产 origin 应用目标固定为 `50663e3a6c89ee9a61a25eddf334a682c445bee1`。
+- 发布工具（`scripts/deploy` 与 `server/src/db/grant-revocation-*`）的修补以其 PR 头提交为准，合入后以合并提交为准。审批须引用同一个 SHA，并记录在 PR 描述与证据包 `report.md` 中。
+- 首次前向激活的前置项见「前向钩子（`origin-pre-start.sh`）」（F4）与「主机锁与陈旧锁回收」（F13）。
+- 未验证项：G4（主机实跑前向故障与 scp 失败）未执行，本补修的结论只来自执行级测试，不来自主机结果。`39153839203` 等 `action_required` 派发的历史根因未经 API 证实。「N1」在本仓库 runbook 与证据包中未找到定义，待 GM 提供后核对。
+- PR #36、#55、#160 保持未合入。#36 头的 `origin-pre-start.sh` 与 main 字节相同，但其 `server/src/content/migrate-legacy-cli.ts` 与 main 不同（见「前向钩子」），不能以「钩子与 CLI 相同」为由合入或关闭。
+
+公司项目元数据与本 runbook 有以下差异，以本 runbook 为准。更正由 GM 通过受控条目完成，工程不改元数据，也不用 owner 或 admin 凭证改写。
+
+- `project.release` 写「合入即发布，不需要其他人批准」，同一元数据的 `notes` 却写「合入即触发发布，须先经上线申请批准」。两处互相矛盾。维护暂停期间不启用自动发布。
+- `project.rollback` 写「在 Actions 手动运行 Deploy origin」。`Deploy origin` 只能被调用，没有直接派发入口。实际入口是 `Deploy origin (manual)`，并须带 `approval_ref`。
+- `project.rollback` 写「前端重跑该提交的 Deploy production」。`Deploy production` 仍为 `disabled_manually`，前端只能经 `Frontend recovery` 恢复。
+
 ## Cloudflare 生产面
 
 | 组件 | Cloudflare 资源 | 生产地址 |
@@ -70,7 +84,7 @@ origin 是 `data.maplayer.top`（`129.146.179.37`）上的 systemd 服务 `surre
 发布分三段。**停服只发生在第 2 段的工作进程内，且只在上传、解包、依赖安装与全部门禁通过之后。**
 
 1. **上传（CI，不停服）**：确认 commit 通过 Quality gate；`git archive` 打包并附加 `server/runtime-release.json`；scp 上传 env 增改件、发布包与 `origin-release.sh` 副本到 `/tmp`（文件名含 `<sha7>-ci<run_id>`）。上传失败在停服之前结束，旧版本继续运行。
-2. **登记并分离执行（主机）**：`scripts/deploy/origin-release-ci.sh` 通过 SSH 调用 `--launch`。launch 只校验参数与上传件，登记状态并取锁，然后以 `nohup` 启动分离的工作进程并立即返回；SSH 断开不影响工作进程。工作进程依次执行：解包到 `releases/<sha7>-ci<run_id>`；`bunx pnpm@10.32.1 install --frozen-lockfile --prod`；试用与分配来源门禁（纯静态、无副作用）；备份 `server.env` 到 `~/surreal_ck/backups/env/`；把 GitHub `production` Environment 中的 `ORIGIN_ENV_<NAME>` secret 逐行写成 `<NAME>=<值>`（只增改这些键，值必须单行，日志只打印键名；`UNSET` 哨兵表示删除该键）；撤销兼容门禁（见下）；若存在 `scripts/deploy/origin-pre-start.sh` 则停服执行该钩子（`ORIGIN_ENV_FILE` 指向 `server.env`，钩子必须幂等）；原子切换 `current`；重启服务；健康探测。
+2. **登记并分离执行（主机）**：`scripts/deploy/origin-release-ci.sh` 通过 SSH 调用 `--launch`。launch 只校验参数与上传件，登记状态并取锁，然后以 `nohup` 启动分离的工作进程并立即返回；SSH 断开不影响工作进程。工作进程依次执行：解包到 `releases/<sha7>-ci<run_id>`；回滚前提预检（登记的 `previous` 必须存在，并通过试用与分配来源门禁；纯静态，零服务与 env 变更，不通过即以 `refused` 结束）；`bunx pnpm@10.32.1 install --frozen-lockfile --prod`；撤销预检（`previous` 不含撤销过滤时，于新发布目录中读取撤销计数，计数非零或不可证明即以 `refused` 结束；零服务与 env 变更）；试用与分配来源门禁（纯静态、无副作用）；备份 `server.env` 到 `~/surreal_ck/backups/env/`；把 GitHub `production` Environment 中的 `ORIGIN_ENV_<NAME>` secret 逐行写成 `<NAME>=<值>`（只增改这些键，值必须单行，日志只打印键名；`UNSET` 哨兵表示删除该键）；撤销兼容门禁（见下）；若存在 `scripts/deploy/origin-pre-start.sh` 则停服执行该钩子（`ORIGIN_ENV_FILE` 指向 `server.env`，钩子必须幂等）；原子切换 `current`；重启服务；健康探测。
 3. **收敛（CI 读取主机状态文件）**：CI 每 15 秒用 `--status` 读取状态，最多等 20 分钟。只有 `healthy` 才算成功。`interrupted`（工作进程已消失且未到终态）时 CI 在主机接受 `--recover` 之前每轮请求一次（忙或结果未知时下一轮重试），接受后只等待主机状态，不重复请求。任何终态失败都会让 job 失败。SSH 失败、超时或状态不可读**既不是成功，也不是回滚**：job 以「结果未知」失败，由运维读取主机状态后判定。
 
 健康探测轮询 `http://127.0.0.1:8080/health` 最多 30 次，每次 curl 超时 5 秒、间隔 3 秒，合计约 240 秒（旧文档写的 90 秒已更正）。钩子失败或健康探测失败时，先过门禁，再恢复 `server.env` 备份与上一个 `current` 并重启，结果为 `rolled-back`，job 失败，Cloudflare 不会发布。CI 发布目录与 env 备份各保留最近 8 个，手工发布目录不动。
@@ -83,8 +97,8 @@ origin 是 `data.maplayer.top`（`129.146.179.37`）上的 systemd 服务 `surre
 | `interrupted` | 工作进程已消失且未到终态（例如主机重启或进程被杀） | CI 自动请求 `--recover`（主机接受前每轮重试，接受后只等待）；恢复被拒时由运维处理 |
 | `healthy` | 已切换并通过健康探测 | 成功 |
 | `rolled-back` | 切换或健康失败后已恢复上一个版本并健康 | job 失败；先看日志中的失败原因 |
-| `rollback-refused` | 上一个版本未通过门禁，回滚被拒，当前版本保持原状 | 人工处置，优先向前修复 |
-| `rollback-failed` | 回滚过程本身失败 | 立即人工核查主机 |
+| `rollback-refused` | 上一个版本未通过门禁，回滚被拒，当前版本保持原状 | 人工处置，优先向前修复（见「回滚被拒」） |
+| `rollback-failed` | 回滚过程本身失败；服务停止时 origin 不可用 | 立即人工核查主机并报告 GM（见「回滚被拒」） |
 | `refused` | 门禁在切换前拒绝（已恢复 env） | 修复目标后用新运行重新发布 |
 | `failed` | 主机未改动即结束（例如恢复时发现尚未开始切换） | 核查日志，用新运行重新发布 |
 | `absent` | 主机从未登记该激活 | CI 会重新登记 |
@@ -116,6 +130,101 @@ GitHub `production` Environment 额外配置：
 在 `main` 上从 Actions 运行 `Deploy origin (manual)`，填入完整 SHA 与 `approval_ref`（运营批准或回滚记录编号，写入运行名称与审计）。该运行只允许在 `main` 上启动（作业守卫）。合入后的首次探针验证见「dry_run 探针」。
 
 回滚就是重发上一个已通过 Quality gate 的 commit，两道门禁仍会检查目标：目标是 LCA10/LCA13 之前的旧 origin 时会被拒绝激活（Actions 日志给出具体拒绝原因）。确需恢复旧语义 origin 时按门禁语义先做人工处置（停服评估、补齐配置或撤销资格），不要在脚本里找绕过参数——没有。
+
+### 回滚的合法路径
+
+1. 选定目标：上一个已通过 Quality gate、且已在 `main` 上的完整 SHA。登记的回滚目标可从 `origin-release.sh --status <release id>` 输出的 `previous=` 读取（只读）。
+2. 在 `main` 上派发 `Deploy origin (manual)`：`sha` 填目标，`approval_ref` 填回滚记录编号，`dry_run` 保持 `false`。
+3. 用「派发回执」核验这一次运行，再读取 `--status` 与 `--log`。
+4. 只有终态为 `healthy` 才算回滚完成。其它终态见「回滚被拒」。
+
+不得手工执行 `systemctl`、改写 `current` 或 `server.env` 来代替这条路径。
+
+## 前向钩子（`origin-pre-start.sh`）
+
+`scripts/deploy/origin-pre-start.sh` 只在转发激活中执行。发布包含该文件时，`run_release` 在全部门禁与 env 写入之后、切换 `current` 之前停服并执行它（`ORIGIN_ENV_FILE` 指向 `server.env`）。钩子失败即转入回滚：服务已停，回滚到登记的 `previous`，结果为 `rolled-back`；回滚本身失败则为 `rollback-failed`。回滚路径不执行钩子。
+
+当前钩子执行 `migrate-legacy-cli.ts --writes-frozen`：把 `_system` 的平台内容复制到隔离内容库并校验。只复制、不删除，重复执行结果一致。
+
+只读核对的事实：
+
+- 钩子在 main 上自 `7cdf330f`（PR #143，2026-10-04）起存在，`50663e3a` 与 `cfb870c3` 都包含它（blob `7164b64e`）。
+- 运行 `39074722491`（`Deploy production`，成功，`cfb870c3`，2026-10-17）的 origin 日志依次显示 `stopping surreal-ck-hono for pre-start hook`、`[platform-content] already migrated`，然后切换到 `releases/cfb870c-ci39074722491`。该次激活执行过钩子，内容复制已处于完成状态。
+- 这是本仓库可查到的最后一次有记录的成功 origin 激活。之后 origin 实际运行的 SHA 未经运营核定，不能据此假定。
+- PR #36 的 `origin-pre-start.sh` 与 main 字节相同，但它的 `server/src/content/migrate-legacy-cli.ts` 不同：main 调用 `migrateLegacyPlatformContentIfNeeded`（已完成则输出 `already-migrated`），#36 直接调用 `migrateLegacyPlatformContent`。因此「钩子与 CLI 相同」不成立，#36 不得以此为由合入或关闭。
+
+首次激活前须由 GM 决定（未闭合）：
+
+1. 核对生产内容复制状态。claim 写「钩子在 PR #36 里，随 #29 一起合入发布」，并写「#29 尚未发布到 origin」，与上面的事实不一致。由运营核对，工程不直接访问生产数据。
+2. 选定钩子使用的 CLI 版本（main 版或 #36 版）。选定后同步更新本节。
+3. 确认每次前向激活都会先停服再执行钩子的停服窗口可接受。
+
+## 主机锁与陈旧锁回收（F13）
+
+主机锁是 `/home/ubuntu/surreal_ck/deploy-state/lock`，由 `mkdir` 原子创建。目录内 `pid` 记录持有者，`release` 记录激活 id。
+
+| 情况 | 结果 | 处置 |
+| --- | --- | --- |
+| 持有者进程存活 | `busy`（退出码 75） | 等待，不删除锁 |
+| 持有者已死，激活未到终态 | `interrupted=<id>`（退出码 76） | 对该激活执行 `--recover <id>`（CI 会自动请求） |
+| 持有者已死，且激活已终态、无状态文件，或即为 `--recover` 指定的激活 | 陈旧锁，回收并重建 | 无需处置 |
+| 回收互斥 `lock.reclaim` 已存在，且持有者已死（或无 pid 超过 1 分钟） | `busy`（退出码 75），不自动删除 | 运维核查，见下 |
+
+回收顺序：先 `mkdir lock.reclaim` 取得回收互斥，同一时刻只有一个回收者。互斥内重新核验锁（它可能已被释放或已被他人重建），再把陈旧锁原子移出为隔离名并删除，最后重建锁。回收互斥只由其持有者释放。
+
+回收互斥的持有者已死（回收中途被终止）时，运维按以下步骤处理：
+
+1. 确认 `lock.reclaim/pid` 指向的进程不存在，且没有 `origin-release.sh` 工作进程在运行（只读）。
+2. 用 `--status` 读取 `lock/release` 中记录的激活，确认其状态（只读）。
+3. 两项都确认后才手工删除 `lock.reclaim` 目录，并把两步的输出记入证据。不得为让发布通过而删除 `lock` 目录或改写状态文件。
+
+F13 的并发与回收互斥由 `server/src/deploy/origin-release-faults.test.ts` 的 F13 用例覆盖，包括两个登记同时争抢同一陈旧锁（5 轮）时每轮恰好一个成功。
+
+## 回滚被拒（`rollback-refused` / `rollback-failed`）
+
+回滚门禁有三个拒绝位置，结果与主机状态不同：
+
+| 位置 | 主机状态 | 终态 |
+| --- | --- | --- |
+| 回滚前提预检（依赖安装之前）：无登记的 `previous`（含主机尚无 `current` 的首次激活）、`previous` 目录缺失，或试用/分配来源不兼容 | 服务、`current`、env 均未改动 | `refused` |
+| 撤销预检（依赖安装之后，停服之前） | 均未改动 | `refused` |
+| 激活失败后的自动回滚：无 `previous`、试用或分配来源不兼容、撤销门禁拒绝 | 服务仍活跃则为 `rollback-refused`；本次激活已停服且服务非活跃则为 `rollback-failed` | 人工处置 |
+
+没有登记的 `previous` 时，前向激活在依赖安装之前即以 `refused` 结束。这是有意的 fail closed：没有可回滚目标时不停服。因此，主机尚无 `current` 的首次部署会被拒绝，须由 GM 另行决定。
+
+`rollback-refused` 时服务仍活跃，运行的是 `current` 指向的版本（通常是失败的新版本），并未被回滚。
+
+撤销门禁拒绝回滚目标时，当前实现为 `hold`。被拒的 `previous` 缺少撤销过滤，且撤销计数非零或无法证明为零。回滚不拉起它，服务保持停止，结果为 `rollback-failed`。这样做是为了不重新放开已撤销的授权。**此时 origin 不可用，`/health` 失败。** 服务已被本次激活停止时，任何回滚门禁拒绝都以 `rollback-failed` 结束，服务同样保持停止。
+
+`hold` 策略待 GM 确认（F1）。确认前，`rollback-failed` 且服务停止的状态按生产事故处理。
+
+处置：
+
+1. 只读核对：`--status <release id>`、`--log <release id>`、`systemctl is-active surreal-ck-hono` 与 `/health`。
+2. 服务停止时立即报告 GM。不得手工 `systemctl start`、改写 `current` 或 `server.env`，也不得删除撤销记录或 `deploy-state`，除非 GM 书面批准并记录。
+3. 优先向前修复：修复提交合入 `main` 后，用 `Deploy origin (manual)` 发布，`approval_ref` 填运营批准号。回滚目标须重新通过两道门禁。
+4. 处置过程、命令输出与时间记入证据包。
+
+## 派发回执（`receipt`）
+
+派发 `Deploy origin (manual)` 或 `Frontend recovery` 后，用 `origin-verification.py receipt` 只读核验这一次运行。它只校验身份与结论，不派发，也不探测生产。运营本机需有已登录的 `gh`。该子命令自工具 PR 合入 `main` 之后可用，使用与 `main` 一致的脚本副本。
+
+```bash
+python3 origin-verification.py receipt --repo MainListActivity/surreal_ck \
+  --run-id <run id> --attempt 1 --sha <派发的完整 SHA> --ref main \
+  --workflow-path .github/workflows/deploy-origin-manual.yml \
+  --timeout 1200 --interval 15
+```
+
+`Frontend recovery` 的 `--workflow-path` 为 `.github/workflows/release-frontend-recovery.yml`。
+
+退出码：
+
+- `0`：运行已完成，结论 `success`，作业可完整读取且全部 `success`。
+- `2`：拒绝。运行号、尝试号、提交、分支、事件或工作流路径与派发不符；结论为 `failure`、`cancelled` 或 `action_required`（含 0 作业）；或某个作业未成功。
+- `3`：尚未判定。排队、进行中、接口临时失败，或等待超时。`3` 不是通过，不得据此继续。
+
+回执不是发布结果，发布结果仍以 `--status`、`--log`、健康探测与终态为准。历史样本：运行 `39153839203` 为 `action_required` 且 0 作业，回执退出码为 `2`，不得当作已部署。
 
 ## 前端定向恢复（`Frontend recovery`）
 
@@ -271,6 +380,10 @@ CI 的 `wait` 与写入前的 `verify` 按下表判定。任一项失败都使�
 3. fa 运营重新批准的审计编号已记录。
 4. 原正式部署任务的执行人已完成前端补发：锁内 barrier 之后的运营核定与 `Frontend recovery` 发布，并经 QA 复核双面版本、`/health`、登录、`www` 与 `/ops/`。
 5. 下方配置表中的变量与 `RELEASE_APPROVER_LOGINS` 已核对。
+6. 本补修的工具 PR 经另一位工程师复核、`Quality gate` 成功，并合入 `main`。证据记录 PR 头 SHA 与合并提交 SHA。
+7. G4（主机实跑的前向故障与 scp 失败）由 GM 决定：在批准的维护窗口执行并记录，或书面接受其未执行为残余风险。两种结论都写入启用证据。
+8. F1（撤销门禁被拒后的 `hold` 策略）与 F4（钩子的首次激活与 CLI 版本）已由 GM 决定并记录，见「回滚被拒」与「前向钩子」。
+9. `N1` 由 GM 定义并核对。本仓库 runbook、证据包与 claim 的正文均未定义。
 
 执行人是原正式部署任务 `3a9b0b3c-da89-4090-a0ea-a442b1608a7e` 当次持有效租约的工程执行者。修复 PR 的实现者不负责启用，也不由仓库所有者代为启用。
 

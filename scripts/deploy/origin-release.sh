@@ -104,24 +104,48 @@ find_revocation_checker_dir() {
 }
 
 # 撤销存在性受控检查：0=无撤销、1=有撤销、2=无法证明（失败按不安全处理）。
+# 输出必须恰好含一行 grant_revocations=<规范非负整数>，其余行为工具噪声予以忽略。
+# 子串匹配不可用：grant_revocations=00、同一输出含 0 与 3 两行都必须拒绝。
 grant_revocations_present() {
   local server_dir="$1"
-  local output
-  if ! output=$(cd "$server_dir" \
-    && bun run --env-file="$env_file" src/db/grant-revocation-check-cli.ts 2>&1); then
-    echo "revocation gate: check command failed: $output" >&2
+  local output matches count rc=0
+  output=$(cd "$server_dir" \
+    && bun run --env-file="$env_file" src/db/grant-revocation-check-cli.ts 2>&1) || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "revocation gate: check command failed (rc=$rc): $output" >&2
     return 2
   fi
   echo "revocation gate: $output (checker dir: $server_dir)" >&2
-  case "$output" in
-    *grant_revocations=0*) return 0 ;;
-    *grant_revocations=[1-9]*) return 1 ;;
-    *) return 2 ;;
-  esac
+  matches=$(printf '%s\n' "$output" | grep -E '^grant_revocations=' || true)
+  count=$(printf '%s' "$matches" | grep -c . || true)
+  if [ "$count" != 1 ]; then
+    echo "revocation gate: checker output must contain exactly one grant_revocations line; cannot prove safety" >&2
+    return 2
+  fi
+  if [[ "$matches" =~ ^grant_revocations=0$ ]]; then
+    return 0
+  fi
+  if [[ "$matches" =~ ^grant_revocations=[1-9][0-9]*$ ]]; then
+    return 1
+  fi
+  echo "revocation gate: grant_revocations value is not a canonical count; cannot prove safety" >&2
+  return 2
 }
 
+# 门禁拒绝后的服务处置。restore（前向激活：被冻结的是原 current）拉回原服务，即使带病也好过授权语义回退；
+# hold（回滚：被拒的是 previous）不拉起被拒目标，保持冻结态并留痕，由运维决定（见 runbook）。
+revival_after_refusal() {
+  if [ "${1:-restore}" = hold ]; then
+    echo "revocation gate: $service is left stopped (rollback target refused; not restarted by rollback)" >&2
+    return 0
+  fi
+  sudo -n systemctl start "$service" || echo "revocation gate: WARN failed to restore $service" >&2
+}
+
+# 第二参数 policy：restore（默认，前向激活，拉回被冻结的原 current）或 hold（回滚，被拒的是 previous，
+# 门禁拒绝后不拉起它）。拒绝时的服务处置统一由 revival_after_refusal 决定。
 require_revocation_compat() {
-  local target="$1"
+  local target="$1" policy="${2:-restore}"
   if target_has_revocation_filter "$target"; then
     return 0
   fi
@@ -134,7 +158,7 @@ require_revocation_compat() {
     state=$(systemctl is-active "$service" 2>/dev/null || true)
     if [ "$state" != "inactive" ] && [ "$state" != "failed" ]; then
       echo "revocation gate: systemctl stop $service failed and state='$state' (not confirmed stopped); refusing" >&2
-      sudo -n systemctl start "$service" || echo "revocation gate: WARN failed to restore $service" >&2
+      revival_after_refusal "$policy"
       return 1
     fi
     echo "revocation gate: stop reported failure but $service is already $state; freeze holds" >&2
@@ -152,8 +176,7 @@ require_revocation_compat() {
   fi
   if [ "$verdict" -ne 0 ]; then
     echo "revocation gate: refusing to activate $target" >&2
-    # 拒绝激活：服务保持原 current 指向，拉回运行（即使带病也好过授权语义回退）。
-    sudo -n systemctl start "$service" || echo "revocation gate: WARN failed to restore $service" >&2
+    revival_after_refusal "$policy"
     return 1
   fi
   # 服务保持停止：调用方随即完成 point_to + restart；冻结覆盖检查到切换全程。
@@ -427,9 +450,11 @@ adopt_worker_pid() {
 
 # acquire_lock <release-id> <owner-pid> [reclaim-id]：mkdir 互斥。
 # 锁被存活进程持有 → 75；持有者已死且其激活未终态（且不是 reclaim-id）→ 76 并输出 interrupted=<id>；
-# 其余为陈旧锁，回收后登记。
+# 其余为陈旧锁：先取得回收互斥 lock.reclaim（mkdir 原子，同一时刻只有一个回收者），在互斥内重新核验锁，
+# 再把陈旧锁原子重命名到隔离名后删除副本并重建。回收互斥的持有者已死（回收中途被终止）时不自动删除，
+# 返回 75 并要求运维核查；不存在自动豁免。
 acquire_lock() {
-  local owner other other_state
+  local owner other other_state reclaim="$state_dir/lock.reclaim" quarantine="$state_dir/lock.stale.$$"
   mkdir -p "$state_dir"
   chmod 700 "$state_dir"
   if mkdir "$lock_dir" 2>/dev/null; then
@@ -437,14 +462,36 @@ acquire_lock() {
     set_lock_owner "$2"
     return 0
   fi
+  if ! mkdir "$reclaim" 2>/dev/null; then
+    local rpid
+    rpid=$(cat "$reclaim/pid" 2>/dev/null || true)
+    if [ -n "$rpid" ] && kill -0 "$rpid" 2>/dev/null; then
+      echo "busy: stale-lock reclaim is in progress (pid $rpid)" >&2
+    elif [ -z "$rpid" ] && [ -z "$(find "$reclaim" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
+      echo "busy: stale-lock reclaim is being claimed" >&2
+    else
+      echo "busy: stale-lock reclaim mutex $reclaim is held by pid ${rpid:-unknown}, which is gone; needs operator review (not removed)" >&2
+    fi
+    return 75
+  fi
+  printf '%s\n' "$$" > "$reclaim/pid"
+  # 互斥内重新核验：锁可能已被释放（此时直接取得）或已被他人重建。
+  if mkdir "$lock_dir" 2>/dev/null; then
+    printf '%s\n' "$1" > "$lock_dir/release"
+    set_lock_owner "$2"
+    release_reclaim
+    return 0
+  fi
   owner=$(cat "$lock_dir/pid" 2>/dev/null || true)
   other=$(cat "$lock_dir/release" 2>/dev/null || true)
   if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then
     echo "busy: activation ${other:-unknown} is running (pid $owner)" >&2
+    release_reclaim
     return 75
   fi
   if [ -z "$owner" ] && [ -z "$(find "$lock_dir" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
     echo "busy: activation lock is being claimed" >&2
+    release_reclaim
     return 75
   fi
   if [ -n "$other" ] && [ "$other" != "${3:-}" ]; then
@@ -452,17 +499,30 @@ acquire_lock() {
     if [ -n "$other_state" ] && ! is_terminal "$other_state"; then
       echo "interrupted=$other"
       echo "activation $other was interrupted (worker gone); run --recover $other first" >&2
+      release_reclaim
       return 76
     fi
   fi
-  rm -rf "$lock_dir"
+  # 原子移出陈旧锁（重命名）后删除移出的副本：删除的对象不再占用活动锁路径。
+  if mv "$lock_dir" "$quarantine" 2>/dev/null; then
+    rm -rf "$quarantine"
+  fi
   if mkdir "$lock_dir" 2>/dev/null; then
     printf '%s\n' "$1" > "$lock_dir/release"
     set_lock_owner "$2"
+    release_reclaim
     return 0
   fi
   echo "busy: lock was claimed concurrently" >&2
+  release_reclaim
   return 75
+}
+
+# 回收互斥只由其持有者（pid 为本进程）释放；其余情况保持原样。
+release_reclaim() {
+  if [ "$(cat "$state_dir/lock.reclaim/pid" 2>/dev/null || true)" = "$$" ]; then
+    rm -rf "$state_dir/lock.reclaim"
+  fi
 }
 
 probe_once() {
@@ -538,6 +598,24 @@ abort_forward() {
   exit 1
 }
 
+# rollback_refuse <reason>：自动回滚被门禁拒绝。回滚尚未切换 current，先恢复已写入的 env。
+# 服务仍活跃 → rollback-refused（运行中的版本未变）；服务已被冻结停止 → rollback-failed，
+# 回滚不拉起被拒目标，需人工决定（见 runbook「回滚被拒」）。
+rollback_refuse() {
+  if [ "$env_dirty" = 1 ]; then
+    phase=env-restore-rollback
+    restore_env
+    env_dirty=0
+  fi
+  if [ "$svc_touched" = 1 ] && ! service_active; then
+    settle rollback-failed "$1; $service is not active and was not restarted by rollback; host needs a manual decision"
+  else
+    svc_touched=0
+    settle rollback-refused "$1"
+  fi
+  exit 1
+}
+
 # rollback <reason>：恢复登记的 previous（env 备份、current、服务）。总是以 exit 1 结束。
 # 门禁先于任何状态变更执行：试用与分配来源门禁拒绝时 env/current/服务均未被触碰；
 # 撤销门禁拒绝时门禁已自行拉回服务。
@@ -557,26 +635,17 @@ rollback() {
     exit 1
   fi
   if [ -z "$previous" ]; then
-    settle rollback-refused "automatic rollback refused: no previous release was recorded"
-    exit 1
+    rollback_refuse "automatic rollback refused: no previous release was recorded"
   fi
   if ! require_trial_source_compat "$previous"; then
-    settle rollback-refused "automatic rollback refused: $previous would restore implicit trial creation"
-    exit 1
+    rollback_refuse "automatic rollback refused: $previous would restore implicit trial creation"
   fi
   if ! require_allowance_source_compat "$previous"; then
-    settle rollback-refused "automatic rollback refused: $previous is not allowance-source-compatible"
-    exit 1
+    rollback_refuse "automatic rollback refused: $previous is not allowance-source-compatible"
   fi
   svc_touched=1
-  if ! require_revocation_compat "$previous"; then
-    if service_active; then
-      svc_touched=0
-      settle rollback-refused "automatic rollback refused: $previous is not revocation-compatible"
-    else
-      settle rollback-failed "automatic rollback refused and $service is not active; host needs a manual check"
-    fi
-    exit 1
+  if ! require_revocation_compat "$previous" hold; then
+    rollback_refuse "automatic rollback refused: $previous is not revocation-compatible"
   fi
   if [ "$env_dirty" = 1 ]; then
     phase=env-restore-rollback
@@ -678,6 +747,46 @@ apply_env_additions() {
   done < "$env_additions"
 }
 
+# rollback_preflight：转发激活在依赖安装之前核验登记的 previous 可被回滚（存在，且通过试用与分配来源门禁）。
+# 纯静态检查：零服务变更、零 env 写入；任一不成立即以 refused 结束。
+rollback_preflight() {
+  if [ -z "$previous" ]; then
+    settle refused "rollback preflight refused: no previous release recorded"
+    exit 1
+  fi
+  if [ ! -d "$previous" ]; then
+    settle refused "rollback preflight refused: previous release $previous is missing"
+    exit 1
+  fi
+  if ! require_trial_source_compat "$previous"; then
+    settle refused "rollback preflight refused: $previous would restore implicit trial creation"
+    exit 1
+  fi
+  if ! require_allowance_source_compat "$previous"; then
+    settle refused "rollback preflight refused: $previous is not allowance-source-compatible"
+    exit 1
+  fi
+}
+
+# rollback_revocation_precheck：previous 不含撤销过滤时，停服前的撤销计数非零或无法证明即拒绝。
+# 检查器导入依赖包（surrealdb），因此在依赖安装之后、停服与 env 写入之前，于新发布目录中执行。
+# 计数为零只表示允许继续，停服冻结之后的撤销复核仍然必需（排空窗口内的 in-flight 写入）。
+rollback_revocation_precheck() {
+  local server_dir="" verdict=0
+  if target_has_revocation_filter "$previous"; then
+    return 0
+  fi
+  if server_dir=$(find_revocation_checker_dir); then
+    grant_revocations_present "$server_dir" || verdict=$?
+  else
+    verdict=2
+  fi
+  if [ "$verdict" -ne 0 ]; then
+    settle refused "rollback preflight refused: previous $previous lacks revocation filtering and grant revocations are present or unprovable"
+    exit 1
+  fi
+}
+
 # run_release：转发激活主流程，工作进程与前台入口共用。停服、切换、env 写入之前，
 # 上传校验、解包、依赖安装与静态门禁已全部完成；每个可能中断的动作前标记已先落盘。
 run_release() {
@@ -689,10 +798,18 @@ run_release() {
   fi
   rm -f "$archive"
 
+  # 回滚前提预检：依赖安装、env 写入、停服之前核验登记的 previous 可被回滚。
+  set_phase preflight "rollback preconditions for ${previous:-none}"
+  rollback_preflight
+
   set_phase install "installing production dependencies"
   if ! (cd "$release" && bunx pnpm@10.32.1 install --frozen-lockfile --prod --config.confirmModulesPurge=false); then
     abort_forward "dependency install failed"
   fi
+
+  # 撤销预检：安装之后、任何 env 写入与停服之前执行（检查器需要新发布的依赖）。
+  set_phase preflight "revocation precheck for previous ${previous:-none}"
+  rollback_revocation_precheck
 
   # 试用与分配来源门禁：纯静态、无副作用，先于 env 与服务的任何变更执行。
   set_phase gate "static trial and allowance source gates"
