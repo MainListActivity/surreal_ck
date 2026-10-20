@@ -62,6 +62,14 @@ point_to() {
   mv -T "$root/current.next" "$root/current"
 }
 
+# current_target：输出 current 当前指向的发布目录；current 缺失（不是符号链接）时输出空，即无 previous。
+# 不直接用 readlink -f：GNU 对不存在的路径仍返回原路径，BSD 则失败，同一缺失状态会得到不同的 previous。
+current_target() {
+  if [ -L "$root/current" ]; then
+    readlink -f "$root/current" 2>/dev/null || true
+  fi
+}
+
 # 拒绝/中止路径统一恢复 live env：先写临时文件再 mv 覆盖——若直接
 # cat > $env_file，重定向会先于 cat 失败截断目标，把 env 清成空文件。
 # 恢复失败显式中止（备份仍在 $env_backup 供人工排查），不静默留下
@@ -962,7 +970,7 @@ launch_main() {
   deployment_id=$deploy_in
   archive=$archive_in
   env_additions=$env_in
-  previous=$(readlink -f "$root/current" 2>/dev/null || true)
+  previous=$(current_target)
   created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   release="$root/releases/$id"
   env_backup="$env_dir/server.env.$id"
@@ -1077,7 +1085,7 @@ foreground_main() {
   deployment_id="foreground"
   archive=$archive_in
   env_additions=$env_in
-  previous=$(readlink -f "$root/current" 2>/dev/null || true)
+  previous=$(current_target)
   created_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   release="$root/releases/$id"
   env_backup="$env_dir/server.env.$id"
