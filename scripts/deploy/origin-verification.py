@@ -20,6 +20,11 @@ CI 的 wait / verify 仍以自己生成的 barrier 逐项比对。
 
 退出码：0 通过；1 脚本校验的用法错误、运行绑定或本地写入错误，以及 post / verify 中未被重试的接口错误；2 拒绝（找到绑定评论或 artifact 但不符合）；
 3 尚无绑定评论、artifact 尚不可读、运行已结束却无 artifact，或 wait / fetch 等待预算耗尽（含持续的临时接口错误）。命令行解析错误由 argparse 以 2 退出，未执行任何子命令。
+
+receipt（派发运行回执，运营执行，只读）：只校验一次已派发运行的身份（运行号、尝试号、提交、分支、事件与工作流路径）、
+结论与作业结论，不派发、不探测生产。事件默认 workflow_dispatch；Deploy production 等包装工作流的运行须以 --event workflow_run 显式指定。退出码：0 通过（运行已完成、结论 success、作业可完整读取且全部 success）；
+2 拒绝（任一绑定不符，或结论为 failure / cancelled / action_required 等，含 action_required 且无作业）；
+3 尚未判定（排队、进行中、接口临时失败或超时）。3 不是通过，调用方不得据此继续。
 """
 
 import argparse
@@ -702,6 +707,114 @@ def cmd_fetch(args):
         time.sleep(min(float(args.interval), remaining))
 
 
+# receipt：排队与进行中不是失败，也不是通过；action_required 视为未启动的失败；任何无法判定的状态都不是通过。
+RECEIPT_PENDING_STATUSES = ("queued", "in_progress", "waiting", "requested", "pending")
+RECEIPT_ATTEMPT_RE = re.compile(r"^[1-9][0-9]{0,8}$")
+RECEIPT_JOBS_PAGE = 100
+RECEIPT_EVENTS = ("workflow_dispatch", "workflow_run")
+
+
+def check_receipt(run, jobs, expected):
+    """纯判定（无 I/O）：返回 (状态, 原因)，状态为 ok / pending / refused / unknown。
+
+    绑定先于状态判断：运行号、尝试号、提交、分支、事件与工作流路径任一与期望不符即 refused。
+    只有运行已完成、结论 success、作业列表完整可读且全部 success（若指定作业名则该作业必须成功）才是 ok。
+    """
+    if not isinstance(run, dict):
+        return "unknown", "run payload is not an object"
+    bindings = (
+        ("id", str(run.get("id")), expected["run_id"]),
+        ("run_attempt", str(run.get("run_attempt")), expected["attempt"]),
+        ("head_sha", run.get("head_sha"), expected["sha"]),
+        ("head_branch", run.get("head_branch"), expected["ref"]),
+        ("event", run.get("event"), expected["event"]),
+        ("path", run.get("path"), expected["path"]),
+    )
+    for field, actual, wanted in bindings:
+        if actual != wanted:
+            return "refused", "run %s does not match the dispatch (got %r, want %r)" % (field, actual, wanted)
+    status = run.get("status")
+    if status in RECEIPT_PENDING_STATUSES:
+        return "pending", "run is %s; not a failure and not a pass" % status
+    if status != "completed":
+        return "unknown", "run status %r is not recognised" % (status,)
+    conclusion = run.get("conclusion")
+    if conclusion == "action_required":
+        return "refused", "run requires action (action_required); the run did not start and counts as a failure"
+    if conclusion is None:
+        return "unknown", "completed run reports no conclusion"
+    if conclusion != "success":
+        return "refused", "run concluded %s" % conclusion
+    items = jobs.get("jobs") if isinstance(jobs, dict) else None
+    total = jobs.get("total_count") if isinstance(jobs, dict) else None
+    if not isinstance(items, list) or not isinstance(total, int) or isinstance(total, bool):
+        return "unknown", "job list is not readable"
+    if total > len(items):
+        return "unknown", "job list is incomplete (%d of %d); cannot prove every job succeeded" % (len(items), total)
+    if not items:
+        return "unknown", "successful run reports no jobs; cannot prove it ran"
+    for job in items:
+        if not isinstance(job, dict):
+            return "unknown", "job entry is not an object"
+        name = job.get("name")
+        if job.get("status") != "completed":
+            return "pending", "job %s is %s" % (name, job.get("status"))
+        if job.get("conclusion") != "success":
+            return "refused", "job %s concluded %s" % (name, job.get("conclusion"))
+    wanted_job = expected.get("job_name")
+    if wanted_job and not any(isinstance(j, dict) and j.get("name") == wanted_job for j in items):
+        return "refused", "expected job %s is absent from the run" % wanted_job
+    return "ok", "run %s attempt %s succeeded on %s" % (expected["run_id"], expected["attempt"], expected["sha"])
+
+
+def cmd_receipt(args):
+    if not REPO_RE.match(args.repo or ""):
+        raise UsageError("--repo must be owner/name")
+    if not DIGITS_RE.match(args.run_id or ""):
+        raise UsageError("--run-id must be a numeric run id")
+    if not RECEIPT_ATTEMPT_RE.match(args.attempt or ""):
+        raise UsageError("--attempt must be a positive attempt number")
+    if not SHA_RE.match(args.sha or ""):
+        raise UsageError("--sha must be a full lowercase commit SHA")
+    if not REF_RE.match(args.ref or ""):
+        raise UsageError("--ref must be a branch name")
+    if not WORKFLOW_PATH_RE.match(args.workflow_path or ""):
+        raise UsageError("--workflow-path must be a .github/workflows/*.yml path")
+    if args.event not in RECEIPT_EVENTS:
+        raise UsageError("--event must be workflow_dispatch or workflow_run")
+    if args.interval <= 0 or args.timeout < 0:
+        raise UsageError("--interval must be positive; --timeout must not be negative")
+    expected = {
+        "run_id": args.run_id,
+        "attempt": args.attempt,
+        "sha": args.sha,
+        "ref": args.ref,
+        "event": args.event,
+        "path": args.workflow_path,
+        "job_name": args.job_name,
+    }
+    attempt_path = "repos/%s/actions/runs/%s/attempts/%s" % (args.repo, args.run_id, args.attempt)
+    started = time.monotonic()
+    while True:
+        try:
+            run = gh_api_json(attempt_path)
+            jobs = gh_api_json("%s/jobs?per_page=%d" % (attempt_path, RECEIPT_JOBS_PAGE))
+            state, reason = check_receipt(run, jobs, expected)
+        except ApiError as exc:
+            state, reason = "unknown", "transient GitHub API error: %s" % exc
+        if state == "ok":
+            emit("ok", reason, run_id=args.run_id, attempt=args.attempt, head_sha=args.sha)
+            return 0
+        if state == "refused":
+            emit("refused", reason)
+            return 2
+        remaining = args.timeout - (time.monotonic() - started)
+        if remaining <= 0:
+            emit(state, "no pass within %ds: %s" % (args.timeout, reason))
+            return 3
+        time.sleep(min(float(args.interval), remaining))
+
+
 def add_barrier_arg(parser):
     parser.add_argument("--barrier", required=True, help="barrier.json 路径（发布作业生成）")
 
@@ -769,6 +882,19 @@ def build_parser():
     p.add_argument("--timeout", type=int, default=0, help="等待 artifact 可读的上限秒数（0 表示只查一次）")
     p.add_argument("--interval", type=int, default=15, help="轮询间隔秒数")
     p.set_defaults(func=cmd_fetch)
+
+    p = sub.add_parser("receipt", help="派发运行回执：只读、有界校验运行身份、尝试号、提交与结论（运营执行）")
+    p.add_argument("--repo", required=True, help="owner/name")
+    p.add_argument("--run-id", required=True, help="派发产生的 run id")
+    p.add_argument("--attempt", required=True, help="期望的尝试号（正整数）")
+    p.add_argument("--sha", required=True, help="派发的目标完整 SHA")
+    p.add_argument("--ref", required=True, help="派发所用分支名")
+    p.add_argument("--workflow-path", required=True, help="期望的工作流文件路径")
+    p.add_argument("--event", default="workflow_dispatch", help="期望的触发事件：workflow_dispatch（默认，手动派发）或 workflow_run（Deploy production 等由上游运行触发的包装工作流）")
+    p.add_argument("--job-name", help="可选：必须成功的作业名（以运行内显示的名称为准，复合工作流为「调用方作业 / 被调用作业」）")
+    p.add_argument("--timeout", type=int, default=0, help="等待结论的上限秒数（0 表示只查一次）")
+    p.add_argument("--interval", type=int, default=15, help="轮询间隔秒数")
+    p.set_defaults(func=cmd_receipt)
     return parser
 
 

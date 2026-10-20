@@ -112,7 +112,10 @@ recover_request() {
     0) recover_accepted=1; echo "recovery requested on origin for $release_id" ;;
     75) echo "origin is busy; waiting" ;;
     255) echo "recovery request outcome unknown (ssh); reading the host state on the next poll" ;;
-    *) fail "origin refused recovery for $release_id (rc=$rc); ops must read the host state" ;;
+    *)
+      # 拒绝前回读主机状态与日志（仅状态字段与阶段记录，不含 env 值），供 CI 日志判读；仍以 exit 1 结束。
+      show_remote
+      fail "origin refused recovery for $release_id (rc=$rc); ops must read the host state" ;;
   esac
 }
 
