@@ -41,13 +41,13 @@
 - **历史根因 `39153839203`**：未证实。
 - **R7/F13**：代码与执行级回归已闭合（GM v30 第 5 项）；主机未验。
 
-## 二、合入、CI 与准入开关（截至 2026-10-21T06:53Z）
+## 二、合入、CI 与准入开关（历史读数截至 2026-10-21T06:53Z；PR #206 合入时点 2026-10-21T08:10:30Z 另列于下表）
 
 | 对象 | 值 | 核对方式 |
 | --- | --- | --- |
 | PR #204 受审头 / 合并提交 | `f9182f4f161ffa8b8c8784ad0e634cbc139587d8` / `03d686728d1b9897583113e7529cd8211f268e85` | GitHub 只读 |
 | PR #205 受审头 / 合并提交 | `45fd50b33c74985ae9371dfd1959361dba767ced` / `5db5e18bb4848cb49f100c7ea617731a5830e32a`（合并树 `5ba27ea8…` 与受审头一致） | GitHub 只读 |
-| main（工具 SHA） | `5db5e18bb4848cb49f100c7ea617731a5830e32a` | `gh api git/ref/heads/main` |
+| 历史 main 快照（2026-10-21T06:53Z；含 PR #204/#205 工具合并） | `5db5e18bb4848cb49f100c7ea617731a5830e32a` | `gh api git/ref/heads/main`（历史值；其后 PR #206 于 2026-10-21T08:10:30Z 合入 `2e4b8c46…`，CI `39567292377`，见下两行） |
 | main Quality gate | run `39509366116`，success（push） | `gh api actions/runs/39509366116` |
 | PR #205 Quality gate | run `39495764215`，success（pull_request，ubuntu-24.04） | 同上 |
 | `Deploy production` | workflow `362937295`，`disabled_manually` | `gh api actions/workflows/362937295` |
@@ -55,7 +55,7 @@
 | PR #206 合并后 main CI | run `39567292377`（push）success | `gh api actions/runs/39567292377` |
 | QA 退回后的文档/测试补修 PR | head/合并 SHA 与 CI 待合入后补记 | 本 PR 描述 |
 
-工具 SHA 与应用 SHA 分记：`main` 的合并提交是被批准的工具版本；生产 origin 的应用版本是 `50663e3a…`（见下）。不得把新 `main` 当作生产 origin 的应用 SHA。
+工具 SHA 与应用 SHA 分记：被批准的工具版本只取 PR #204 合并提交 `03d686728d1b9897583113e7529cd8211f268e85` 与 PR #205 合并提交 `5db5e18bb4848cb49f100c7ea617731a5830e32a`；PR #206 合并提交 `2e4b8c46aa575d5b7bc2ccd31e2806c2de9e0f59`（2026-10-21T08:10:30Z，CI `39567292377`）与 PR #207 未来的 doc/tests 合并属于文档/测试分栏，**不是**新的工具批准，也不得把任意最新 `main` 当作工具版本。生产 origin 的应用版本是 `50663e3a6c89ee9a61a25eddf334a682c445bee1`（见下），不得把新 `main` 当作生产 origin 的应用 SHA。
 
 ## 三、直接版本读数（2026-10-21T06:53Z）
 
