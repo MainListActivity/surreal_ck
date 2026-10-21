@@ -31,6 +31,11 @@ type Call = {
   table?: string;
   sql?: string;
   content?: Record<string, unknown>;
+  /** connect 观测：命名空间与维护身份是否与预期一致（只记录布尔，绝不记录用户名/口令本身）。 */
+  namespace?: string;
+  authPresent?: boolean;
+  authUsernameMatches?: boolean;
+  authPasswordMatches?: boolean;
 };
 type Row = Record<string, unknown>;
 
@@ -105,10 +110,20 @@ function installSurrealSpiesOnce(): void {
   for (const method of ["connect", "query", "select", "create", "upsert", "relate", "close", "use"] as const) {
     originalSurrealMethods.set(method, (Surreal.prototype as unknown as Record<string, unknown>)[method]);
   }
-  spyOn(Surreal.prototype, "connect").mockImplementation(async function (this: object, _url: string, options?: { database?: string }) {
+  spyOn(Surreal.prototype, "connect").mockImplementation(async function (this: object, _url: string, options?: {
+    namespace?: string;
+    database?: string;
+    authentication?: { username?: string; password?: string };
+  }) {
     const database = String(options?.database ?? "");
     scopes.set(this, { role: roleFor(database), database });
-    record(roleFor(database), database, "connect");
+    const authentication = options?.authentication;
+    record(roleFor(database), database, "connect", {
+      namespace: options?.namespace,
+      authPresent: Boolean(authentication),
+      authUsernameMatches: authentication?.username === env.SURREAL_ROOT_USER,
+      authPasswordMatches: authentication?.password === env.SURREAL_ROOT_PASS,
+    });
     return undefined as never;
   });
   spyOn(Surreal.prototype, "use").mockImplementation(async function () {
@@ -280,6 +295,22 @@ function orderingViolations(recorded: Call[]): string[] {
   return violations;
 }
 
+/** 连接必须使用预期的服务与命名空间、且携带预期的维护身份；只比对结果，不保存秘密。 */
+function identityViolations(recorded: Call[]): string[] {
+  const violations: string[] = [];
+  const connects = recorded.filter((call) => call.kind === "connect");
+  if (connects.length === 0) violations.push("no connection recorded");
+  for (const connect of connects) {
+    const label = `${connect.role}:${connect.database}`;
+    if (!connect.authPresent) violations.push(`${label} connected without authentication`);
+    else if (!connect.authUsernameMatches || !connect.authPasswordMatches) {
+      violations.push(`${label} used an unexpected maintenance identity`);
+    }
+    if (connect.namespace !== env.SURREAL_NS) violations.push(`${label} used an unexpected namespace`);
+  }
+  return violations;
+}
+
 const tablesWrittenOnTarget = () => calls
   .filter((call) => call.role === "content" && (call.kind === "create" || call.kind === "upsert" || call.kind === "relate"))
   .map((call) => call.table ?? "");
@@ -294,6 +325,7 @@ describe("CL02 pre-start 迁移调用链边界（真实 CLI 入口，替身 DB +
 
     expect(orderingViolations(calls)).toEqual([]);
     expect(boundaryViolations(calls)).toEqual([]);
+    expect(identityViolations(calls)).toEqual([]);
     expect(connectedDatabases().sort()).toEqual(["_system", env.CONTENT_DATABASE].sort());
     expect(schemaBootstrapCalls).toBeGreaterThan(0);
 
@@ -438,18 +470,30 @@ function makeMutantFixture(): { dir: string; cli: (mutate: boolean) => string; m
   };
   // CLI 的 ./migrate-legacy 固定解析到干净副本；M7 变异体写到独立文件，避免互换。
   const cleanMigrate = write(join(dir, "content", "migrate-legacy.ts"), readFileSync(SOURCE_MIGRATE, "utf8"));
-  const cli = (mutate: boolean) => {
+  type CliMutation = "clean" | "m8" | "m9" | "m10" | "m11";
+  const cliMutations: Record<Exclude<CliMutation, "clean">, Array<[string, string]>> = {
+    // M8：schema 引导挪到迁移之后
+    m8: [[
+      "  await ensurePlatformContentSchema(root);\n  await source.connect(env.SURREAL_URL, {",
+      "  await source.connect(env.SURREAL_URL, {",
+    ], [
+      "  if (summary === \"already-migrated\") {",
+      "  await ensurePlatformContentSchema(root);\n  if (summary === \"already-migrated\") {",
+    ]],
+    // M9：错误维护身份（假值，不含任何真实秘密）
+    m9: [[
+      "const authentication = { username: env.SURREAL_ROOT_USER, password: env.SURREAL_ROOT_PASS };",
+      'const authentication = { username: "fixture-unapproved-principal", password: "fixture-wrong-auth" };',
+    ]],
+    // M10：省略 authentication
+    m10: [[", authentication,", ","]],
+    // M11：错误命名空间
+    m11: [["namespace: env.SURREAL_NS", 'namespace: "fixture_wrong_namespace"']],
+  };
+  const cli = (kind: CliMutation) => {
     const original = readFileSync(SOURCE_CLI, "utf8");
-    const text = mutate
-      ? replace(SOURCE_CLI, original, [[
-        "  await ensurePlatformContentSchema(root);\n  await source.connect(env.SURREAL_URL, {",
-        "  await source.connect(env.SURREAL_URL, {",
-      ], [
-        "  if (summary === \"already-migrated\") {",
-        "  await ensurePlatformContentSchema(root);\n  if (summary === \"already-migrated\") {",
-      ]])
-      : original;
-    return write(join(dir, "content", mutate ? "migrate-legacy-cli.m8.ts" : "migrate-legacy-cli.ts"), text);
+    const text = kind === "clean" ? original : replace(SOURCE_CLI, original, cliMutations[kind]);
+    return write(join(dir, "content", kind === "clean" ? "migrate-legacy-cli.ts" : `migrate-legacy-cli.${kind}.ts`), text);
   };
   const migrate = (mutate: boolean) => {
     if (!mutate) return cleanMigrate;
@@ -493,16 +537,61 @@ describe("CL02 M7/M8 变异：夹具注入数据后必须判红（同一不变�
   test("M8（schema 引导挪到迁移之后）：顺序检查器判红；真实入口判绿", async () => {
     const fixture = makeMutantFixture();
     installCopyDataset();
-    const mutantEntry = fixture.cli(true);
+    const mutantEntry = fixture.cli("m8");
     await runCliEntry({ entry: mutantEntry });
     expect(orderingViolations(calls)).toContain("schema bootstrap ran after the migration started");
 
     resetFixture();
     installCopyDataset();
-    const cleanEntry = fixture.cli(false);
+    const cleanEntry = fixture.cli("clean");
     const clean = await runCliEntry({ entry: cleanEntry });
     expect(clean.ok).toBe(true);
     expect(orderingViolations(calls)).toEqual([]);
+  });
+});
+
+describe("CL02 维护身份与命名空间：错误/缺失认证与错误命名空间必须判红", () => {
+  test("M9（错误维护身份）：identityViolations 判红；真实入口判绿；记录中不含口令", async () => {
+    const fixture = makeMutantFixture();
+    installCopyDataset();
+    const mutant = await runCliEntry({ entry: fixture.cli("m9") });
+    expect(mutant.ok).toBe(true);
+    expect(identityViolations(calls).join("\n")).toContain("used an unexpected maintenance identity");
+    expect(JSON.stringify(calls)).not.toContain(TEST_ROOT_PASSWORD);
+
+    resetFixture();
+    installCopyDataset();
+    const clean = await runCliEntry({ entry: fixture.cli("clean") });
+    expect(clean.ok).toBe(true);
+    expect(identityViolations(calls)).toEqual([]);
+  });
+
+  test("M10（省略 authentication）：identityViolations 判红；真实入口判绿", async () => {
+    const fixture = makeMutantFixture();
+    installCopyDataset();
+    const mutant = await runCliEntry({ entry: fixture.cli("m10") });
+    expect(mutant.ok).toBe(true);
+    expect(identityViolations(calls).join("\n")).toContain("connected without authentication");
+
+    resetFixture();
+    installCopyDataset();
+    const clean = await runCliEntry({ entry: fixture.cli("clean") });
+    expect(clean.ok).toBe(true);
+    expect(identityViolations(calls)).toEqual([]);
+  });
+
+  test("M11（错误命名空间）：identityViolations 判红；真实入口判绿", async () => {
+    const fixture = makeMutantFixture();
+    installCopyDataset();
+    const mutant = await runCliEntry({ entry: fixture.cli("m11") });
+    expect(mutant.ok).toBe(true);
+    expect(identityViolations(calls).join("\n")).toContain("used an unexpected namespace");
+
+    resetFixture();
+    installCopyDataset();
+    const clean = await runCliEntry({ entry: fixture.cli("clean") });
+    expect(clean.ok).toBe(true);
+    expect(identityViolations(calls)).toEqual([]);
   });
 });
 

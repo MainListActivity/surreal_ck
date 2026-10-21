@@ -16,7 +16,7 @@ G5 十七行映射、合入/CI、直接版本读数与未闭合项见 [`producti
 
 - 生产 origin 应用目标固定为 `50663e3a6c89ee9a61a25eddf334a682c445bee1`。
 - 发布工具（`scripts/deploy`、`server/src/deploy` 与 `server/src/db/grant-revocation-*`）的修补以其 PR 头提交为准，合入后以合并提交为准。审批须引用同一个 SHA，并记录在 PR 描述与证据包 `report.md` 中。
-- 工具代码已合入 `main`，两轮审批各绑定一个 SHA：PR #204 合并提交 `03d686728d1b9897583113e7529cd8211f268e85`（受审头 `f9182f4f161ffa8b8c8784ad0e634cbc139587d8`，2026-10-20T20:15:05Z）；PR #205 合并提交 `5db5e18bb4848cb49f100c7ea617731a5830e32a`（受审头 `45fd50b33c74985ae9371dfd1959361dba767ced`，2026-10-20T22:36:38Z，合并树 `5ba27ea8…` 与受审头逐字节一致，相对 base `03d68672` 只改 `server/src/deploy` 下两个测试与 harness 文件，+132/−24）。以 `main` 最新合并提交为工具 SHA，不把新 `main` 当作生产 origin 的应用 SHA（应用目标仍为 `50663e3a`）。本文档的修订提交只改文档：`git diff --stat 5db5e18b <PR 头> -- scripts server/src/deploy server/src/db` 应为空。
+- 工具代码已合入 `main`，两轮审批各绑定一个 SHA：PR #204 合并提交 `03d686728d1b9897583113e7529cd8211f268e85`（受审头 `f9182f4f161ffa8b8c8784ad0e634cbc139587d8`，2026-10-20T20:15:05Z）；PR #205 合并提交 `5db5e18bb4848cb49f100c7ea617731a5830e32a`（受审头 `45fd50b33c74985ae9371dfd1959361dba767ced`，2026-10-20T22:36:38Z，合并树 `5ba27ea8…` 与受审头逐字节一致，相对 base `03d68672` 只改 `server/src/deploy` 下两个测试与 harness 文件，+132/−24）。工具 SHA 只取两轮工具合入：PR #204 合并提交 `03d68672…`、PR #205 合并提交 `5db5e18b…`。此后 PR #206 是文档/测试合并（合并提交 `2e4b8c46aa575d5b7bc2ccd31e2806c2de9e0f59`，2026-10-21T08:10:30Z；QA 退回后另有同类补修 PR），**不是**工具 SHA。不得把任意最新 `main` 当作被批准的工具版本；不把新 `main` 当作生产 origin 的应用 SHA（应用目标仍为 `50663e3a`）。本文档的修订提交只改文档：`git diff --stat 5db5e18b <PR 头> -- scripts server/src/deploy server/src/db` 应为空。
 - 首次前向激活的前置项见「前向钩子（`origin-pre-start.sh`）」（F4）与「主机锁与陈旧锁回收」（F13）。
 - 未验证项：G4（主机实跑前向故障与 scp 失败）未执行，本补修的结论只来自执行级测试，不来自主机结果。`39153839203` 等 `action_required` 派发的历史根因未经 API 证实。
 - **工具 SHA 与后续文档/测试合并 SHA 分栏记录，互不代替**：工具实现为 PR #204 合并 `03d68672`、PR #205 合并 `5db5e18b`；之后仅文档与测试的修复合入时另记其合并 SHA，不能把任意最新 `main` 都写成被批准的工具版本。
@@ -205,15 +205,17 @@ GitHub `production` Environment 额外配置：
 - `origin-pre-start.sh` 在发布目录的 `server/` 下以 `bun run --env-file=<server.env> src/content/migrate-legacy-cli.ts --writes-frozen` 调用 CLI；缺 `ORIGIN_ENV_FILE` 时在调用前失败。黑盒用例只校验 argv 与执行目录，不执行真实 bun 或 CLI。
 - CLI 入口在缺少 `--writes-frozen` 时、建立任何连接之前拒绝，错误信息指明写入冻结。
 - 数据夹具注入普通表记录、`cites_*` 关系记录与 v7 facet 回填输入，使真实复制循环执行：root 连接指向 `CONTENT_DATABASE`，来源连接指向 `_system` 且只执行 `SELECT`。
+- 维护身份与命名空间：`connect` 观测只记录布尔比对结果（是否携带认证、用户名/口令是否与 `server.env` 的维护身份一致、namespace 是否一致），**不保存或输出秘密**。
 - 顺序断言：`ensurePlatformContentSchema`（`DEFINE DATABASE`）先于迁移 marker 检查与来源读取。
 - 目标写入只落在内容迁移白名单表（含 `cites_*` 关系）、`content_migration_state:legacy` 标记（`source_database=_system`）与 schema 阶段的 `content_search_facet` 回填；迁移阶段不允许任何写形态的原始 query。
 - 已迁移 marker（`verified_at` 非空）时幂等短路：不读来源、不复制、不重写 marker；未验证 marker 不算完成。
 - 变异检测（红→绿）：
   - M7 复制循环的 `create` 改写到未授权表 `system_admin`：边界检查器判红；未变异副本判绿。
   - M8 把 `ensurePlatformContentSchema` 挪到迁移之后：顺序检查器判红；真实入口判绿。
+  - M9 维护身份改错、M10 省略 authentication、M11 命名空间改错：身份检查器判红；真实入口判绿，且记录中不含口令。
   - 另有无守卫入口在已迁移状态下仍读来源并重写 marker、来源写入、异常数据库、迁移阶段写查询等用例。
 
-结果（本地，2026-10-21）：新用例 13 pass / 0 fail，连续 3 次一致；既有 `migrate-legacy` 与 `src/deploy` 套件 357 pass / 0 fail。测试只使用隔离替身，不连接真实数据库、不启动 SurrealDB、不读取真实 `.env` 或凭证。它是执行级回归，不等于主机级 G3：主机上钩子以 root 连接真实内容库的行为仍未实测。
+结果（本地，2026-10-21）：新用例 16 pass / 0 fail；既有 `migrate-legacy` 与 `src/deploy` 套件 357 pass / 0 fail。测试只使用隔离替身，不连接真实数据库、不启动 SurrealDB、不读取真实 `.env` 或凭证。它是执行级回归，不等于主机级 G3：主机上钩子以 root 连接真实内容库的行为仍未实测。
 
 ## 主机锁与陈旧锁回收（F13）
 

@@ -51,7 +51,9 @@
 | main Quality gate | run `39509366116`，success（push） | `gh api actions/runs/39509366116` |
 | PR #205 Quality gate | run `39495764215`，success（pull_request，ubuntu-24.04） | 同上 |
 | `Deploy production` | workflow `362937295`，`disabled_manually` | `gh api actions/workflows/362937295` |
-| 本收口 PR（文档+测试） | head/合并 SHA 与本轮 CI 待合入后补记 | 本 PR 描述 |
+| 收口文档+测试 PR（PR #206） | 受审头 `0b152b14…` / 合并提交 `2e4b8c46aa575d5b7bc2ccd31e2806c2de9e0f59`（2026-10-21T08:10:30Z，合并树与受审头一致） | GitHub 只读 |
+| PR #206 合并后 main CI | run `39567292377`（push）success | `gh api actions/runs/39567292377` |
+| QA 退回后的文档/测试补修 PR | head/合并 SHA 与 CI 待合入后补记 | 本 PR 描述 |
 
 工具 SHA 与应用 SHA 分记：`main` 的合并提交是被批准的工具版本；生产 origin 的应用版本是 `50663e3a…`（见下）。不得把新 `main` 当作生产 origin 的应用 SHA。
 
