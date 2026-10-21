@@ -202,14 +202,18 @@ GitHub `production` Environment 额外配置：
 
 `server/src/content/migrate-legacy-cli-boundary.test.ts` 在隔离环境中执行真实入口，验证：
 
-- `origin-pre-start.sh` 在发布目录的 `server/` 下以 `bun run --env-file=<server.env> src/content/migrate-legacy-cli.ts --writes-frozen` 调用 CLI，缺 `ORIGIN_ENV_FILE` 时在调用前失败。
-- CLI 入口在缺少 `--writes-frozen` 时、建立任何连接之前拒绝。
-- root 连接指向 `CONTENT_DATABASE`，来源连接指向 `_system` 且只执行 `SELECT`；`ensurePlatformContentSchema` 先于 marker 判断与复制。
-- 目标写入只落在内容迁移白名单表与 `content_migration_state:legacy` 标记（`source_database=_system`）。
+- `origin-pre-start.sh` 在发布目录的 `server/` 下以 `bun run --env-file=<server.env> src/content/migrate-legacy-cli.ts --writes-frozen` 调用 CLI；缺 `ORIGIN_ENV_FILE` 时在调用前失败。黑盒用例只校验 argv 与执行目录，不执行真实 bun 或 CLI。
+- CLI 入口在缺少 `--writes-frozen` 时、建立任何连接之前拒绝，错误信息指明写入冻结。
+- 数据夹具注入普通表记录、`cites_*` 关系记录与 v7 facet 回填输入，使真实复制循环执行：root 连接指向 `CONTENT_DATABASE`，来源连接指向 `_system` 且只执行 `SELECT`。
+- 顺序断言：`ensurePlatformContentSchema`（`DEFINE DATABASE`）先于迁移 marker 检查与来源读取。
+- 目标写入只落在内容迁移白名单表（含 `cites_*` 关系）、`content_migration_state:legacy` 标记（`source_database=_system`）与 schema 阶段的 `content_search_facet` 回填；迁移阶段不允许任何写形态的原始 query。
 - 已迁移 marker（`verified_at` 非空）时幂等短路：不读来源、不复制、不重写 marker；未验证 marker 不算完成。
-- 变异检测：钩子丢掉 `--writes-frozen` 时 argv 断言失败；无守卫入口在已迁移状态下仍读来源并重写 marker；来源写入、未授权目标表、异常数据库或来源非只读查询均被边界检查器判红。
+- 变异检测（红→绿）：
+  - M7 复制循环的 `create` 改写到未授权表 `system_admin`：边界检查器判红；未变异副本判绿。
+  - M8 把 `ensurePlatformContentSchema` 挪到迁移之后：顺序检查器判红；真实入口判绿。
+  - 另有无守卫入口在已迁移状态下仍读来源并重写 marker、来源写入、异常数据库、迁移阶段写查询等用例。
 
-结果（本地，2026-10-21）：新用例 11 pass / 0 fail，连续 3 次一致；既有 `migrate-legacy` 与 `src/deploy` 套件 357 pass / 0 fail。测试只使用隔离替身，不连接真实数据库、不启动 SurrealDB、不读取真实 `.env` 或凭证。它是执行级回归，不等于主机级 G3：主机上钩子以 root 连接真实内容库的行为仍未实测。
+结果（本地，2026-10-21）：新用例 13 pass / 0 fail，连续 3 次一致；既有 `migrate-legacy` 与 `src/deploy` 套件 357 pass / 0 fail。测试只使用隔离替身，不连接真实数据库、不启动 SurrealDB、不读取真实 `.env` 或凭证。它是执行级回归，不等于主机级 G3：主机上钩子以 root 连接真实内容库的行为仍未实测。
 
 ## 主机锁与陈旧锁回收（F13）
 

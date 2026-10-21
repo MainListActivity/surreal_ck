@@ -13,123 +13,154 @@ import { CONTENT_MIGRATION_TABLES, migrateLegacyPlatformContent, migrateLegacyPl
  *    `./schema`、`./migrate-legacy`），只在 `Surreal` 原型方法上装本文件作用域的 spy（不注册任何
  *    mock.module，避免 Bun 进程级模块替身泄漏到同进程的其它测试文件）。
  *    --writes-frozen 守卫、IfNeeded 选择、marker 幂等短路、_system 只读来源与 CONTENT_DATABASE
- *    只写目标，全部由被测代码决定；真实 schema 引导只读版本号，测试让版本号已是最新，不执行迁移脚本。
- * 2) 不变量与变异检测：同一替身下直接调用真实的 IfNeeded 与无守卫的 migrateLegacyPlatformContent，
- *    验证“已迁移却继续读来源/重写 marker”和“越界写入”会被边界检查器判红。
+ *    只写目标，全部由被测代码决定。
+ * 2) 数据夹具注入普通表记录、`cites_*` 关系记录与 v7 facet 回填输入，使复制循环真实执行；
+ *    断言 schema 引导先于迁移、目标写入表在白名单内、来源零写入，并对 M7（复制写入未授权表）
+ *    与 M8（schema 引导挪到迁移之后）两个变异副本给出红→绿证据。
  * 3) 黑盒执行真实 `scripts/deploy/origin-pre-start.sh`：PATH 上的 bun 为只记录 argv 的替身，
- *    校验 cwd、bun run 参数与 --writes-frozen；钩子变异（丢掉 flag）必须被同一断言检出。
+ *    只校验 cwd 与 `bun run` 参数（不执行真实 CLI）；钩子变异（丢掉 flag）必须被同一断言检出。
  */
 
+type Role = "content" | "_system" | "other";
+type Phase = "schema" | "migration";
 type Call = {
-  role: "content" | "_system" | "other";
+  role: Role;
   database: string;
   kind: "connect" | "query" | "select" | "create" | "upsert" | "relate" | "close";
+  phase: Phase;
   table?: string;
   sql?: string;
   content?: Record<string, unknown>;
 };
+type Row = Record<string, unknown>;
 
-// env 使用真实模块（test/setup-env.ts 提供所需变量）；root 口令来自测试环境，不进入断言输出。
-const SENTINEL_PASSWORD = env.SURREAL_ROOT_PASS;
+// env 使用真实模块（test/setup-env.ts 提供所需变量）；root 口令只用于断言不进入记录。
+const TEST_ROOT_PASSWORD = env.SURREAL_ROOT_PASS;
 
 const calls: Call[] = [];
-let markerRows: Array<Record<string, unknown>> = [];
-/** schema 引导读取的当前版本号；设为高于仓库内全部脚本，避免在替身上执行 schema 脚本。 */
-let schemaVersion = 999;
-/** 真实 schema 引导的调用次数（经原型 query spy 观测）。 */
+let markerRows: Row[] = [];
+/** schema 引导读到的当前版本；6 表示待执行 7/8/9，其中 7 会触发 facet 回填。 */
+let schemaVersion = 6;
 let schemaBootstrapCalls = 0;
+let phase: Phase = "schema";
+/** 来源库 `_system` 的夹具数据：table -> rows。 */
+let sourceDataset: Record<string, Row[]> = {};
+/** v7 facet 回填补丁查询的输入行。 */
+let publishedRows: Row[] = [];
+/** 目标库（CONTENT_DATABASE）已写入的行：table -> rows。 */
+const targetRows = new Map<string, Row[]>();
 
 function resetFixture(): void {
   calls.length = 0;
   markerRows = [];
-  schemaVersion = 999;
+  schemaVersion = 6;
   schemaBootstrapCalls = 0;
+  phase = "schema";
+  sourceDataset = {};
+  publishedRows = [];
+  targetRows.clear();
 }
 
-type Scope = { role: Call["role"]; database: string };
-const scopes = new WeakMap<object, Scope>();
-
-function scopeFor(database: string): Scope {
-  const role: Call["role"] = database === "_system" ? "_system" : database === env.CONTENT_DATABASE ? "content" : "other";
-  return { role, database };
-}
-
-function record(instance: object, kind: Call["kind"], extra: Partial<Call> = {}): void {
-  const scope = scopes.get(instance);
-  if (scope) calls.push({ ...scope, kind, ...extra });
+function roleFor(database: string): Role {
+  return database === "_system" ? "_system" : database === env.CONTENT_DATABASE ? "content" : "other";
 }
 
 function tableOf(id: unknown): string {
-  // StringRecordId 与 RecordId 的字符串形式都是 "table:id"，SDK 的私有字段不可枚举。
   return String(id).split(":")[0];
 }
 
-/** 原型方法原件：afterAll 复原，避免同进程其它测试文件受影响。 */
-const originalSurrealMethods = new Map<string, unknown>();
-
-/** 在真实 Surreal 原型上一次性装本文件作用域的 spy：不替换包模块，也不在每个测试重复安装。 */
-const surrealdbSpiesInstalled = { value: false };
-function installSurrealSpiesOnce(): void {
-  if (surrealdbSpiesInstalled.value) return;
-  surrealdbSpiesInstalled.value = true;
-  installSurrealSpies();
+function pushRow(table: string, row: Row): void {
+  const rows = targetRows.get(table) ?? [];
+  rows.push(row);
+  targetRows.set(table, rows);
 }
 
-function installSurrealSpies(): void {
+function rowsFor(table: string): Row[] {
+  return targetRows.get(table) ?? [];
+}
+
+function record(role: Role, database: string, kind: Call["kind"], extra: Partial<Call> = {}): void {
+  calls.push({ role, database, kind, phase, ...extra });
+}
+
+/** 替身查询应答：schema 引导、marker、来源/目标表读取、v7 facet 回填共用同一套规则。 */
+function answerQuery(role: Role, sql: string): unknown {
+  const q = sql.trim();
+  if (/DEFINE DATABASE IF NOT EXISTS/i.test(q)) {
+    schemaBootstrapCalls += 1;
+    return [[]];
+  }
+  if (/SELECT version FROM platform_content_schema_version:current/i.test(q)) return [[{ version: schemaVersion }]];
+  if (/FROM content_migration_state:legacy/i.test(q)) return [markerRows];
+  if (/FROM content_publication_projection/i.test(q)) return [publishedRows];
+  if (/FROM content_search_facet/i.test(q)) return [[]];
+  const table = /^SELECT \* FROM ([a-z_]+)/i.exec(q)?.[1];
+  if (table) return [role === "_system" ? (sourceDataset[table] ?? []) : rowsFor(table)];
+  return [[]];
+}
+
+function installSurrealSpiesOnce(): void {
+  if (spiesInstalled.value) return;
+  spiesInstalled.value = true;
   for (const method of ["connect", "query", "select", "create", "upsert", "relate", "close", "use"] as const) {
     originalSurrealMethods.set(method, (Surreal.prototype as unknown as Record<string, unknown>)[method]);
   }
   spyOn(Surreal.prototype, "connect").mockImplementation(async function (this: object, _url: string, options?: { database?: string }) {
-    const scope = scopeFor(String(options?.database ?? ""));
-    scopes.set(this, scope);
-    record(this, "connect");
-    return undefined as unknown as Awaited<ReturnType<typeof Surreal.prototype.connect>>;
-  });
-  spyOn(Surreal.prototype, "query").mockImplementation(async function (this: object, sql: string) {
-    record(this, "query", { sql });
-    if (/DEFINE DATABASE IF NOT EXISTS/i.test(sql)) schemaBootstrapCalls += 1;
-    if (/platform_content_schema_version:current/i.test(sql)) return [[{ version: schemaVersion }]] as never;
-    if (/content_migration_state:legacy/i.test(sql)) return [markerRows] as never;
-    return [[]] as never;
+    const database = String(options?.database ?? "");
+    scopes.set(this, { role: roleFor(database), database });
+    record(roleFor(database), database, "connect");
+    return undefined as never;
   });
   spyOn(Surreal.prototype, "use").mockImplementation(async function () {
     return undefined as never;
   });
-  spyOn(Surreal.prototype, "select").mockImplementation(async function (this: object) {
-    record(this, "select");
-    return undefined as never;
+  spyOn(Surreal.prototype, "query").mockImplementation(async function (this: object, sql: string) {
+    const scope = scopes.get(this) ?? { role: "other" as Role, database: "" };
+    if (/content_migration_state:legacy/i.test(sql)) phase = "migration";
+    record(scope.role, scope.database, "query", { sql });
+    return answerQuery(scope.role, sql) as never;
   });
-  spyOn(Surreal.prototype, "create").mockImplementation(function (this: object, id: unknown) {
-    record(this, "create", { table: tableOf(id) });
+  spyOn(Surreal.prototype, "select").mockImplementation(async function (this: object, id: unknown) {
+    const scope = scopes.get(this) ?? { role: "other" as Role, database: "" };
+    record(scope.role, scope.database, "select");
+    return (rowsFor(tableOf(id)).find((row) => String(row.id) === String(id))) as never;
+  });
+  const writeSpy = (kind: "create" | "upsert") => spyOn(Surreal.prototype, kind).mockImplementation(function (this: object, id: unknown) {
+    const scope = scopes.get(this) ?? { role: "other" as Role, database: "" };
+    record(scope.role, scope.database, kind, { table: tableOf(id) });
     const index = calls.length - 1;
     return {
-      content: async (data: Record<string, unknown>) => {
-        if (index >= 0) calls[index] = { ...calls[index], content: data };
+      content: async (data: Row) => {
+        calls[index] = { ...calls[index], content: data };
+        if (scope.role === "content") pushRow(tableOf(id), { id: String(id), ...data });
         return data;
       },
     } as never;
   });
-  spyOn(Surreal.prototype, "upsert").mockImplementation(function (this: object, id: unknown) {
-    record(this, "upsert", { table: tableOf(id) });
-    const index = calls.length - 1;
-    return {
-      content: async (data: Record<string, unknown>) => {
-        if (index >= 0) calls[index] = { ...calls[index], content: data };
-        return data;
-      },
-    } as never;
-  });
-  spyOn(Surreal.prototype, "relate").mockImplementation(async function (this: object) {
-    record(this, "relate");
+  writeSpy("create");
+  writeSpy("upsert");
+  spyOn(Surreal.prototype, "relate").mockImplementation(async function (this: object, from: unknown, edge: unknown, to: unknown, data: Row) {
+    const scope = scopes.get(this) ?? { role: "other" as Role, database: "" };
+    record(scope.role, scope.database, "relate", { table: tableOf(edge) });
+    if (scope.role === "content") pushRow(tableOf(edge), { id: String(edge), in: String(from), out: String(to), ...data });
     return undefined as never;
   });
   spyOn(Surreal.prototype, "close").mockImplementation(async function (this: object) {
-    record(this, "close");
+    const scope = scopes.get(this) ?? { role: "other" as Role, database: "" };
+    record(scope.role, scope.database, "close");
     return undefined as never;
   });
 }
 
-beforeEach(installSurrealSpiesOnce);
+const scopes = new WeakMap<object, { role: Role; database: string }>();
+const originalSurrealMethods = new Map<string, unknown>();
+const spiesInstalled = { value: false };
+
+beforeEach(() => {
+  installSurrealSpiesOnce();
+  resetFixture();
+});
+
 afterAll(() => {
   // 复原原型方法：Bun 可能在同一进程/VM 中继续运行其它测试文件。
   for (const [method, original] of originalSurrealMethods) {
@@ -140,13 +171,13 @@ afterAll(() => {
 
 const CLI_ENTRY = join(import.meta.dir, "migrate-legacy-cli.ts");
 
-async function runCliEntry(options: { skipFlag?: boolean } = {}): Promise<{ ok: true } | { ok: false; error: Error }> {
+async function runCliEntry(options: { skipFlag?: boolean; entry?: string } = {}): Promise<{ ok: true } | { ok: false; error: Error }> {
   // 真实调用由 origin-pre-start.sh 传入 --writes-frozen；bun test 自身的 process.argv 不含该参数。
   const injected = !options.skipFlag;
   const originalArgv = process.argv;
   if (injected) process.argv = [...process.argv.filter((arg) => arg !== "--writes-frozen"), "--writes-frozen"];
   try {
-    await import(`${CLI_ENTRY}?boundary=${crypto.randomUUID()}`);
+    await import(`${options.entry ?? CLI_ENTRY}?boundary=${crypto.randomUUID()}`);
     return { ok: true };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error : new Error(String(error)) };
@@ -155,107 +186,166 @@ async function runCliEntry(options: { skipFlag?: boolean } = {}): Promise<{ ok: 
   }
 }
 
+/** 直接调用真实迁移函数用的轻量 DB（不经过 Surreal 类，因此同时覆盖不变量的独立路径）。 */
 class FakeDb {
   constructor(readonly database: string) {}
-  #push(role: Call["role"], kind: Call["kind"], extra: Partial<Call> = {}) {
-    calls.push({ role, database: this.database, kind, ...extra });
-  }
-  get role(): Call["role"] {
-    return this.database === "_system" ? "_system" : this.database === env.CONTENT_DATABASE ? "content" : "other";
+  get role(): Role {
+    return roleFor(this.database);
   }
   async query(sql: string) {
-    this.#push(this.role, "query", { sql });
-    if (/platform_content_schema_version:current/i.test(sql)) return [[{ version: schemaVersion }]];
-    if (/content_migration_state:legacy/i.test(sql)) return [markerRows];
-    return [[]];
+    if (/content_migration_state:legacy/i.test(sql)) phase = "migration";
+    record(this.role, this.database, "query", { sql });
+    return answerQuery(this.role, sql);
   }
-  async use() { return undefined; }
-  async select() { this.#push(this.role, "select"); return undefined; }
-  #write(kind: "create" | "upsert", id: { text?: string }) {
-    this.#push(this.role, kind, { table: tableOf(id) });
+  async select(id: unknown) {
+    record(this.role, this.database, "select");
+    return rowsFor(tableOf(id)).find((row) => String(row.id) === String(id));
+  }
+  #write(kind: "create" | "upsert", id: unknown) {
+    const role = this.role;
+    record(role, this.database, kind, { table: tableOf(id) });
     const index = calls.length - 1;
-    return { async content(data: Record<string, unknown>) { calls[index] = { ...calls[index], content: data }; return data; } };
+    return {
+      content: async (data: Row) => {
+        calls[index] = { ...calls[index], content: data };
+        if (role === "content") pushRow(tableOf(id), { id: String(id), ...data });
+        return data;
+      },
+    };
   }
-  create(id: { text?: string }) { return this.#write("create", id); }
-  upsert(id: { text?: string }) { return this.#write("upsert", id); }
-  async relate() { this.#push(this.role, "relate"); }
+  create(id: unknown) { return this.#write("create", id); }
+  upsert(id: unknown) { return this.#write("upsert", id); }
+  async relate(from: unknown, edge: unknown, to: unknown, data: Row) {
+    record(this.role, this.database, "relate", { table: tableOf(edge) });
+    pushRow(tableOf(edge), { id: String(edge), in: String(from), out: String(to), ...data });
+  }
 }
 
-/** 直接调用真实迁移函数（不经 CLI 入口），用于不变量与变异检测。 */
-async function callIfNeeded(writesFrozen = true): Promise<unknown> {
-  return migrateLegacyPlatformContentIfNeeded({
-    source: new FakeDb("_system"),
-    target: new FakeDb(env.CONTENT_DATABASE),
-    writesFrozen,
-  });
+/** 普通表、cites_* 关系与引用闭合的最小数据集；v7 facet 回填另有 publishedRows。 */
+function installCopyDataset(): void {
+  sourceDataset = {
+    content_source: [{ id: "content_source:src1" }],
+    content_item: [{ id: "content_item:item1", current_version: "content_version:v1" }],
+    content_version: [{ id: "content_version:v1", item: "content_item:item1", source: "content_source:src1" }],
+    legal_article_version: [{ id: "legal_article_version:law1" }],
+    content_citation: [{ id: "content_citation:cit1", document_version: "legal_article_version:law1" }],
+    citation_resolution: [{ id: "citation_resolution:res1", citation: "content_citation:cit1" }],
+    cites_article: [{
+      id: "cites_article:edge1",
+      in: "content_citation:cit1",
+      out: "legal_article_version:law1",
+      resolution_revision: "citation_resolution:res1",
+    }],
+  };
+  publishedRows = [{
+    id: "content_publication_projection:p1",
+    item: "content_item:item1",
+    version: "content_version:v1",
+    kind: "article",
+  }];
 }
 
-const ALLOWED_TARGET_TABLES = new Set<string>([...CONTENT_MIGRATION_TABLES, "content_migration_state"]);
+const ALLOWED_TARGET_TABLES = new Set<string>([...CONTENT_MIGRATION_TABLES, "content_migration_state", "content_search_facet"]);
 
-/** 任何对来源写入、或目标越出白名单的写操作都算违规。返回违规描述（空数组表示无）。 */
+/** 来源零写、目标只写白名单表；迁移阶段（marker 检出之后）不允许任何写形态的原始 query。 */
 function boundaryViolations(recorded: Call[]): string[] {
   const violations: string[] = [];
   for (const call of recorded) {
-    const isWrite = call.kind === "create" || call.kind === "upsert" || call.kind === "relate";
-    if (!isWrite) {
-      if (call.role === "_system" && call.sql && !/^\s*(SELECT|INFO\b)/i.test(call.sql.trim())) {
-        violations.push(`non-read query on _system: ${call.sql.slice(0, 60)}`);
-      }
+    if (call.kind === "query") {
+      const sql = (call.sql ?? "").trim();
+      if (/^(SELECT|INFO)\b/i.test(sql)) continue;
+      if (call.role === "_system") violations.push(`non-read query on _system: ${sql.slice(0, 60)}`);
+      else if (call.phase === "migration") violations.push(`non-read query in migration on ${call.role}: ${sql.slice(0, 60)}`);
       continue;
     }
+    if (call.kind !== "create" && call.kind !== "upsert" && call.kind !== "relate") continue;
     if (call.role === "_system") violations.push(`${call.kind} on _system source`);
-    if (call.role === "other") violations.push(`${call.kind} on unexpected database ${call.database}`);
-    if (call.role === "content" && call.table && !ALLOWED_TARGET_TABLES.has(call.table)) {
-      violations.push(`${call.kind} on unlisted target table ${call.table}`);
-    }
+    else if (call.role === "other") violations.push(`${call.kind} on unexpected database ${call.database}`);
+    else if (call.table && !ALLOWED_TARGET_TABLES.has(call.table)) violations.push(`${call.kind} on unlisted target table ${call.table}`);
   }
   return violations;
 }
 
+/** schema 引导必须在迁移 marker 检查与来源读取之前。 */
+function orderingViolations(recorded: Call[]): string[] {
+  const indexOf = (predicate: (call: Call) => boolean) => recorded.findIndex(predicate);
+  const schema = indexOf((call) => call.kind === "query" && /DEFINE DATABASE IF NOT EXISTS/i.test(call.sql ?? ""));
+  const marker = indexOf((call) => call.kind === "query" && /content_migration_state:legacy/i.test(call.sql ?? ""));
+  const source = indexOf((call) => call.role === "_system" && call.kind === "query");
+  const violations: string[] = [];
+  if (schema < 0) violations.push("schema bootstrap did not run");
+  if (marker < 0) violations.push("migration marker check did not run");
+  if (schema >= 0 && marker >= 0 && schema > marker) violations.push("schema bootstrap ran after the migration started");
+  if (schema >= 0 && source >= 0 && schema > source) violations.push("schema bootstrap ran after source reads");
+  return violations;
+}
+
+const tablesWrittenOnTarget = () => calls
+  .filter((call) => call.role === "content" && (call.kind === "create" || call.kind === "upsert" || call.kind === "relate"))
+  .map((call) => call.table ?? "");
+
 const connectedDatabases = () => calls.filter((call) => call.kind === "connect").map((call) => call.database);
 
-describe("CL02 pre-start 迁移调用链边界（真实 CLI 入口，替身 DB）", () => {
-  beforeEach(resetFixture);
-
-  test("空目标：只连每个库一次（root 内容库 + _system 来源），schema 先于迁移，来源只读、目标只写白名单表，并写 marker", async () => {
+describe("CL02 pre-start 迁移调用链边界（真实 CLI 入口，替身 DB + 非空数据集）", () => {
+  test("schema 先于迁移；复制普通表与 cites_* 关系；v7 facet 回填；来源只读、目标只写白名单表；写 marker", async () => {
+    installCopyDataset();
     const result = await runCliEntry();
     expect(result.ok).toBe(true);
-    expect(schemaBootstrapCalls).toBeGreaterThan(0);
-    expect(connectedDatabases().sort()).toEqual(["_system", env.CONTENT_DATABASE].sort());
+
+    expect(orderingViolations(calls)).toEqual([]);
     expect(boundaryViolations(calls)).toEqual([]);
+    expect(connectedDatabases().sort()).toEqual(["_system", env.CONTENT_DATABASE].sort());
+    expect(schemaBootstrapCalls).toBeGreaterThan(0);
+
+    // 普通表复制：真实 create 发生在目标库
+    const created = calls.filter((call) => call.kind === "create" && call.role === "content").map((call) => call.table);
+    for (const table of ["content_source", "content_item", "content_version", "legal_article_version", "content_citation", "citation_resolution"]) {
+      expect(created).toContain(table);
+    }
+    // cites_* 关系复制走 relate
+    expect(calls.some((call) => call.kind === "relate" && call.table === "cites_article" && call.role === "content")).toBe(true);
+    // v7 facet 回填在 schema 阶段创建 content_search_facet
+    expect(calls.some((call) => call.phase === "schema" && call.kind === "query" && /CREATE content_search_facet/i.test(call.sql ?? ""))).toBe(true);
+    expect(tablesWrittenOnTarget().every((table) => ALLOWED_TARGET_TABLES.has(table))).toBe(true);
+
+    // 来源只读
     const sourceQueries = calls.filter((call) => call.role === "_system" && call.kind === "query");
     expect(sourceQueries.length).toBeGreaterThan(0);
     for (const query of sourceQueries) expect(query.sql ?? "").toMatch(/^\s*SELECT\b/i);
+
     const markerWrite = calls.find((call) => call.kind === "upsert" && call.table === "content_migration_state");
     expect(markerWrite?.role).toBe("content");
     expect(markerWrite?.content).toMatchObject({ source_database: "_system" });
-    expect(JSON.stringify(calls)).not.toContain(SENTINEL_PASSWORD);
+    expect(JSON.stringify(calls)).not.toContain(TEST_ROOT_PASSWORD);
   });
 
-  test("已迁移 marker（verified_at 非空）：幂等短路——不读来源、不复制、不重写 marker", async () => {
+  test("已迁移 marker：即使来源有数据也幂等短路——不读来源、不复制、不重写 marker", async () => {
+    installCopyDataset();
     markerRows = [{ source_database: "_system", verified_at: new Date(0) }];
     const result = await runCliEntry();
     expect(result.ok).toBe(true);
-    expect(schemaBootstrapCalls).toBeGreaterThan(0);
+    expect(calls.filter((call) => call.kind === "query" && /DEFINE DATABASE IF NOT EXISTS/i.test(call.sql ?? "")).length).toBeGreaterThan(0);
     expect(calls.filter((call) => call.role === "_system" && call.kind === "query")).toEqual([]);
     expect(calls.filter((call) => ["create", "relate", "upsert"].includes(call.kind))).toEqual([]);
+    expect(targetRows.size).toBe(0);
   });
 
-  test("未验证 marker（verified_at 为空）不算已完成：仍执行复制并写入新 marker", async () => {
+  test("未验证 marker 不算完成：仍执行复制并写入新 marker", async () => {
+    installCopyDataset();
     markerRows = [{ source_database: "_system", verified_at: null }];
     const result = await runCliEntry();
     expect(result.ok).toBe(true);
     expect(calls.some((call) => call.kind === "upsert" && call.table === "content_migration_state")).toBe(true);
+    expect(calls.some((call) => call.kind === "create" && call.table === "content_item")).toBe(true);
   });
 
-  test("缺少 --writes-frozen：入口在建立任何连接之前拒绝", async () => {
-    resetFixture();
+  test("缺少 --writes-frozen：入口在建立任何连接之前拒绝，错误信息指明写入冻结", async () => {
     const original = process.argv;
     process.argv = original.filter((arg) => arg !== "--writes-frozen");
     try {
       const result = await runCliEntry({ skipFlag: true });
-      // 缺 flag 时 CLI 在建立任何连接与 schema 引导之前就抛出；失败也可能来自真实 env 校验。
       expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error.message).toContain("writes-frozen");
       expect(calls).toEqual([]);
       expect(schemaBootstrapCalls).toBe(0);
     } finally {
@@ -263,32 +353,45 @@ describe("CL02 pre-start 迁移调用链边界（真实 CLI 入口，替身 DB�
     }
   });
 
-  test("边界检查器自检：来源写入、未授权目标表、来源非只读查询、异常数据库都必须被检出", () => {
-    expect(boundaryViolations([{ role: "_system", database: "_system", kind: "query", sql: "DELETE content_item;" }]))
+  test("边界检查器自检：来源写入、来源非只读查询、未授权目标表、异常数据库、迁移阶段写查询都必须被检出", () => {
+    expect(boundaryViolations([{ role: "_system", database: "_system", kind: "query", phase: "migration", sql: "DELETE content_item;" }]))
       .toEqual(["non-read query on _system: DELETE content_item;"]);
-    expect(boundaryViolations([{ role: "_system", database: "_system", kind: "create", table: "content_item" }]))
+    expect(boundaryViolations([{ role: "_system", database: "_system", kind: "create", phase: "migration", table: "content_item" }]))
       .toEqual(["create on _system source"]);
-    expect(boundaryViolations([{ role: "content", database: env.CONTENT_DATABASE, kind: "create", table: "system_admin" }]))
+    expect(boundaryViolations([{ role: "content", database: env.CONTENT_DATABASE, kind: "create", phase: "migration", table: "system_admin" }]))
       .toEqual(["create on unlisted target table system_admin"]);
-    expect(boundaryViolations([{ role: "other", database: "platform_content_v2", kind: "upsert", table: "content_item" }]))
+    expect(boundaryViolations([{ role: "other", database: "platform_content_v2", kind: "upsert", phase: "migration", table: "content_item" }]))
       .toEqual(["upsert on unexpected database platform_content_v2"]);
+    expect(boundaryViolations([{ role: "content", database: env.CONTENT_DATABASE, kind: "query", phase: "migration", sql: "UPSERT content_item CONTENT {}" }]))
+      .toEqual(["non-read query in migration on content: UPSERT content_item CONTENT {}"]);
     expect(boundaryViolations(calls)).toEqual([]);
+  });
+
+  test("顺序检查器自检：schema 在迁移之后必须被判红", () => {
+    expect(orderingViolations([
+      { role: "content", database: env.CONTENT_DATABASE, kind: "query", phase: "migration", sql: "SELECT * FROM content_migration_state:legacy;" },
+      { role: "content", database: env.CONTENT_DATABASE, kind: "query", phase: "migration", sql: "DEFINE DATABASE IF NOT EXISTS platform_content;" },
+    ])).toContain("schema bootstrap ran after the migration started");
   });
 });
 
 describe("CL02 不变量变异检测：绕过 IfNeeded、未冻结与越界写入必须判红", () => {
-  beforeEach(resetFixture);
-
   test("已迁移目标：真实 IfNeeded 零来源读取、零写；无守卫入口继续读来源并重写 marker，行为可区分", async () => {
+    installCopyDataset();
     markerRows = [{ source_database: "_system", verified_at: new Date(0) }];
-    const guarded = await callIfNeeded();
+    phase = "migration";
+    const guarded = await migrateLegacyPlatformContentIfNeeded({
+      source: new FakeDb("_system"),
+      target: new FakeDb(env.CONTENT_DATABASE),
+      writesFrozen: true,
+    });
     expect(guarded).toBe("already-migrated");
     expect(calls.filter((call) => call.role === "_system" && call.kind === "query")).toEqual([]);
     expect(calls.filter((call) => ["create", "relate", "upsert"].includes(call.kind))).toEqual([]);
-    expect(boundaryViolations(calls)).toEqual([]);
 
     resetFixture();
-    markerRows = [{ source_database: "_system", verified_at: new Date(0) }];
+    installCopyDataset();
+    phase = "migration";
     await migrateLegacyPlatformContent({
       source: new FakeDb("_system"),
       target: new FakeDb(env.CONTENT_DATABASE),
@@ -299,34 +402,112 @@ describe("CL02 不变量变异检测：绕过 IfNeeded、未冻结与越界写�
   });
 
   test("未冻结（--writes-frozen 缺失等价）：真实 IfNeeded 在建立任何连接之前抛错", async () => {
-    await expect(callIfNeeded(false)).rejects.toThrow("writes must be frozen");
+    await expect(migrateLegacyPlatformContentIfNeeded({
+      source: new FakeDb("_system"),
+      target: new FakeDb(env.CONTENT_DATABASE),
+      writesFrozen: false,
+    })).rejects.toThrow("writes must be frozen");
     expect(calls).toEqual([]);
-  });
-
-  test("越界写入变异：真实迁移的写入全在目标白名单表；换成来源、未授权表或异常数据库即被判红", async () => {
-    await callIfNeeded();
-    expect(boundaryViolations(calls)).toEqual([]);
-    expect(calls.filter((call) => call.kind === "create").every((call) => call.role === "content")).toBe(true);
-
-    expect(boundaryViolations([...calls, { role: "_system", database: "_system", kind: "upsert", table: "content_migration_state" }]))
-      .toContain("upsert on _system source");
-    expect(boundaryViolations([...calls, { role: "content", database: env.CONTENT_DATABASE, kind: "create", table: "system_admin" }]))
-      .toContain("create on unlisted target table system_admin");
-    expect(boundaryViolations([...calls, { role: "other", database: "platform_content_v2", kind: "create", table: "content_item" }]))
-      .toContain("create on unexpected database platform_content_v2");
   });
 });
 
 const REPO_ROOT = join(import.meta.dir, "../../..");
+const SOURCE_CLI = join(import.meta.dir, "migrate-legacy-cli.ts");
+const SOURCE_MIGRATE = join(import.meta.dir, "migrate-legacy.ts");
 const SOURCE_HOOK = join(REPO_ROOT, "scripts/deploy/origin-pre-start.sh");
 const tempDirs: string[] = [];
 
-describe("CL02 黑盒：真实 scripts/deploy/origin-pre-start.sh 传给 CLI 的参数", () => {
-  type HookFixture = { root: string; envFile: string; argvFile: string; script: string; home: string };
+/** 在仓库内建变异副本：真实相对导入（../env、./schema、./migrate-legacy）经同层 stub 解析到真实模块。 */
+function makeMutantFixture(): { dir: string; cli: (mutate: boolean) => string; migrate: (mutate: boolean) => string } {
+  const dir = mkdtempSync(join(import.meta.dir, ".boundary-mutant-"));
+  tempDirs.push(dir);
+  mkdirSync(join(dir, "content"), { recursive: true });
+  writeFileSync(join(dir, "env.ts"), 'export { env } from "../../env";\n');
+  writeFileSync(join(dir, "content", "schema.ts"), 'export * from "../../schema";\n');
+  const replace = (source: string, text: string, pairs: Array<[string, string]>) => {
+    let out = text;
+    for (const [from, to] of pairs) {
+      expect(out.includes(from)).toBe(true);
+      out = out.split(from).join(to);
+    }
+    return out;
+  };
+  const write = (target: string, text: string) => {
+    writeFileSync(target, text);
+    return target;
+  };
+  // CLI 的 ./migrate-legacy 固定解析到干净副本；M7 变异体写到独立文件，避免互换。
+  const cleanMigrate = write(join(dir, "content", "migrate-legacy.ts"), readFileSync(SOURCE_MIGRATE, "utf8"));
+  const cli = (mutate: boolean) => {
+    const original = readFileSync(SOURCE_CLI, "utf8");
+    const text = mutate
+      ? replace(SOURCE_CLI, original, [[
+        "  await ensurePlatformContentSchema(root);\n  await source.connect(env.SURREAL_URL, {",
+        "  await source.connect(env.SURREAL_URL, {",
+      ], [
+        "  if (summary === \"already-migrated\") {",
+        "  await ensurePlatformContentSchema(root);\n  if (summary === \"already-migrated\") {",
+      ]])
+      : original;
+    return write(join(dir, "content", mutate ? "migrate-legacy-cli.m8.ts" : "migrate-legacy-cli.ts"), text);
+  };
+  const migrate = (mutate: boolean) => {
+    if (!mutate) return cleanMigrate;
+    const original = readFileSync(SOURCE_MIGRATE, "utf8");
+    const text = replace(SOURCE_MIGRATE, original, [[
+      "await input.target.create(id).content(content);",
+      "await input.target.create(new StringRecordId(\"system_admin:rogue\")).content(content);",
+    ]]);
+    return write(join(dir, "content", "migrate-legacy.m7.ts"), text);
+  };
+  return { dir, cli, migrate };
+}
 
-  afterAll(() => {
-    for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+describe("CL02 M7/M8 变异：夹具注入数据后必须判红（同一不变量对真实入口判绿）", () => {
+  test("M7（复制循环把 create 写到未授权表 system_admin）：检查器判红；未变异副本判绿", async () => {
+    const fixture = makeMutantFixture();
+    installCopyDataset();
+    phase = "migration";
+    const mutantEntry = fixture.migrate(true);
+    const mutant = await import(`${mutantEntry}?m7=${crypto.randomUUID()}`) as typeof import("./migrate-legacy");
+    await expect(mutant.migrateLegacyPlatformContentIfNeeded({
+      source: new FakeDb("_system"),
+      target: new FakeDb(env.CONTENT_DATABASE),
+      writesFrozen: true,
+    })).rejects.toThrow();
+    expect(boundaryViolations(calls)).toContain("create on unlisted target table system_admin");
+
+    resetFixture();
+    installCopyDataset();
+    phase = "migration";
+    const cleanEntry = fixture.migrate(false);
+    const clean = await import(`${cleanEntry}?m7-clean=${crypto.randomUUID()}`) as typeof import("./migrate-legacy");
+    await clean.migrateLegacyPlatformContentIfNeeded({
+      source: new FakeDb("_system"),
+      target: new FakeDb(env.CONTENT_DATABASE),
+      writesFrozen: true,
+    });
+    expect(boundaryViolations(calls)).toEqual([]);
   });
+
+  test("M8（schema 引导挪到迁移之后）：顺序检查器判红；真实入口判绿", async () => {
+    const fixture = makeMutantFixture();
+    installCopyDataset();
+    const mutantEntry = fixture.cli(true);
+    await runCliEntry({ entry: mutantEntry });
+    expect(orderingViolations(calls)).toContain("schema bootstrap ran after the migration started");
+
+    resetFixture();
+    installCopyDataset();
+    const cleanEntry = fixture.cli(false);
+    const clean = await runCliEntry({ entry: cleanEntry });
+    expect(clean.ok).toBe(true);
+    expect(orderingViolations(calls)).toEqual([]);
+  });
+});
+
+describe("CL02 黑盒：真实 scripts/deploy/origin-pre-start.sh 传给 CLI 的参数（只到 argv）", () => {
+  type HookFixture = { root: string; envFile: string; argvFile: string; script: string; home: string };
 
   function makeHookFixture(): HookFixture {
     const dir = mkdtempSync(join(tmpdir(), "hook-boundary-"));
@@ -334,12 +515,11 @@ describe("CL02 黑盒：真实 scripts/deploy/origin-pre-start.sh 传给 CLI 的
     const root = join(dir, "root");
     const content = join(root, "releases", "rel-boundary");
     mkdirSync(join(content, "server", "src", "content"), { recursive: true });
-    // 只满足脚本 cd 的路径存在性；bun 是替身，不会真的执行它
+    // 只满足脚本 cd 的路径存在性；bun 是替身，不执行真实 CLI。
     writeFileSync(join(content, "server", "src", "content", "migrate-legacy-cli.ts"), "// boundary fixture placeholder\n");
     const envFile = join(dir, "server.env");
     writeFileSync(envFile, "FIXTURE_ONLY=1\n");
     const argvFile = join(dir, "argv.json");
-    // 钩子把 $HOME/.bun/bin 前置到 PATH：替身必须放在夹具 HOME 下，真实 bun 才会被遮蔽。
     const home = join(dir, "home");
     const bunBin = join(home, ".bun", "bin");
     mkdirSync(bunBin, { recursive: true });
@@ -379,17 +559,21 @@ describe("CL02 黑盒：真实 scripts/deploy/origin-pre-start.sh 传给 CLI 的
     });
   }
 
-  const EXPECTED_TAIL = (envFile: string) => [`--env-file=${envFile}`, "src/content/migrate-legacy-cli.ts", "--writes-frozen"];
+  const expectedArgs = (envFile: string) => ["run", `--env-file=${envFile}`, "src/content/migrate-legacy-cli.ts", "--writes-frozen"];
 
-  test("钩子在发布目录 server/ 下经 bun run 调 CLI，并传 --writes-frozen；bun 为夹具替身", async () => {
-    const fixture = makeHookFixture();
-    const proc = runHook(fixture);
-    expect(proc.exitCode).toBe(0);
-    const recorded = await Bun.file(fixture.argvFile).json() as Recorded;
+  /** 正例与变异用例共用同一断言：参数、替身来源与执行目录。 */
+  function assertInvocation(recorded: Recorded, fixture: HookFixture): void {
     expect(recorded.which).toBe(join(fixture.home, ".bun", "bin", "bun"));
     expect(recorded.home).toBe(fixture.home);
     expect(realpathSync(recorded.pwd)).toBe(realpathSync(join(fixture.root, "releases", "rel-boundary", "server")));
-    expect(recorded.args).toEqual(["run", ...EXPECTED_TAIL(fixture.envFile)]);
+    expect(recorded.args).toEqual(expectedArgs(fixture.envFile));
+  }
+
+  test("钩子在发布目录 server/ 下经 bun run 调 CLI，并传 --writes-frozen", async () => {
+    const fixture = makeHookFixture();
+    const proc = runHook(fixture);
+    expect(proc.exitCode).toBe(0);
+    assertInvocation(await Bun.file(fixture.argvFile).json() as Recorded, fixture);
   });
 
   test("缺少 ORIGIN_ENV_FILE 时钩子在执行 CLI 之前失败（set -u 参数展开）", () => {
@@ -398,7 +582,7 @@ describe("CL02 黑盒：真实 scripts/deploy/origin-pre-start.sh 传给 CLI 的
     expect(proc.exitCode).not.toBe(0);
   });
 
-  test("变异（钩子丢掉 --writes-frozen）：同一 argv 断言必须检出", async () => {
+  test("变异（钩子丢掉 --writes-frozen）：共用断言必须判红", async () => {
     const fixture = makeHookFixture();
     const realText = readFileSync(fixture.script, "utf8");
     expect(realText).toContain("src/content/migrate-legacy-cli.ts --writes-frozen");
@@ -407,7 +591,7 @@ describe("CL02 黑盒：真实 scripts/deploy/origin-pre-start.sh 传给 CLI 的
     const proc = runHook(fixture, mutated);
     expect(proc.exitCode).toBe(0);
     const recorded = await Bun.file(fixture.argvFile).json() as Recorded;
-    expect(recorded.args).toEqual(["run", "--env-file=" + fixture.envFile, "src/content/migrate-legacy-cli.ts"]);
-    expect(recorded.args).not.toEqual(["run", ...EXPECTED_TAIL(fixture.envFile)]);
+    expect(() => assertInvocation(recorded, fixture)).toThrow();
+    expect(recorded.args).toEqual(["run", `--env-file=${fixture.envFile}`, "src/content/migrate-legacy-cli.ts"]);
   });
 });

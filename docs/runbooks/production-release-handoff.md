@@ -57,7 +57,13 @@
 
 ## 三、直接版本读数（2026-10-21T06:53Z）
 
-来源：本任务有效租约内一次 `ops_operator_login`（`LCA04_OPS`），同句柄 `GET /api/ops/runtime-version`（HTTP 200），随后公开 `runtime-version.json` 与 `/health`，finally `ops_logout` → `{"closed":true}`。
+来源与过程（如实记录全部登录调用）：本任务有效租约内共 3 次 `ops_operator_login`（`LCA04_OPS`），其中 2 次成功：
+
+1. 2026-10-21T06:44:14Z：第一次登录失败，token exchange 连接超时（代理上游错误）。
+2. 06:45:16Z：第二次登录成功；但脚本未保住该会话句柄，未用该会话读取版本。该会话在 06:52:56Z 才被补登出（`closed:true`），距登录约 7 分 40 秒。重试发生在失败后约 38 秒，**少于 GM 裁定要求的 ≥60 秒**，属流程偏差。
+3. 06:53:24Z：第三次登录成功；06:53:26Z 用同句柄 `GET /api/ops/runtime-version`（HTTP 200），06:53:40Z 读公开 `runtime-version.json`，06:53:44Z 读 canonical `/health`，06:53:45Z `ops_logout` → `{"closed":true}`。
+
+`ops_logout` 只 drop 代理侧会话句柄，不等于全局 IdP 注销；本轮未核全局 IdP 会话。
 
 | 对象 | 读数 |
 | --- | --- |
@@ -87,6 +93,7 @@
 - **本收口 PR 的建议回滚**：受审 revert 本 PR 实际合并的文档与测试变更（`git revert -m 1 <本 PR 合并提交>`；若为 squash/rebase 则 revert 实际合并提交），不 reset、不 force push、不手改 `main`；不重启健康的 origin。
 - **生产 origin 回滚**：合法入口是 `Deploy origin (manual)`，带目标 SHA 与 `approval_ref`；或按 runbook 的自动回滚。数据库迁移不随代码回滚。
 - **值班**：出现 `rollback-failed` 且服务停止、健康异常或回读不可达时，先只读核对 `--status`/`--log`/`systemctl is-active`/`/health` 并立即报告 GM；不得手工拉起被拒版本、改写 `current`/`server.env` 或删除 `deploy-state`，除非 GM 书面批准并记录。处置过程与输出记入证据包。
+- **本轮 ops 会话与句柄**（2026-10-21，供值班对账）：06:44:14Z 登录失败（连接超时）；06:45:16Z 登录成功但句柄未保住，06:52:56Z 补登出 `closed:true`；06:53:24Z 登录成功并完成读数，06:53:45Z 登出 `closed:true`。QA 报告的旧 `LCA04_OPS` 句柄已于 2026-10-20T23:53:47Z 过代理报告 TTL，未执行 logout、未核全局 IdP 会话。`ops_logout` 只 drop 代理句柄，不能视为全局 IdP 注销。
 
 ## 六、本收口链的交付顺序
 
