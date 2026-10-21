@@ -1,5 +1,5 @@
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
-import * as realSurreal from "surrealdb";
+import { afterAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { Surreal } from "surrealdb";
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -8,9 +8,10 @@ import { CONTENT_MIGRATION_TABLES, migrateLegacyPlatformContent, migrateLegacyPl
 /**
  * CL02：pre-start 钩子的迁移调用链边界回归（隔离、无真实 DB、无网络）。
  *
- * 1) 真实入口 `server/src/content/migrate-legacy-cli.ts`：只把 `surrealdb`、`../env`、`./schema` 换成等价替身，
- *    `./migrate-legacy` 用真实实现。--writes-frozen 守卫、IfNeeded 选择、marker 幂等短路、
- *    _system 只读来源与 CONTENT_DATABASE 只写目标，全部由被测代码决定。
+ * 1) 真实入口 `server/src/content/migrate-legacy-cli.ts`：`surrealdb` 用真实模块，
+ *    只在 `Surreal` 原型方法上装本文件作用域的 spy；`./migrate-legacy` 用真实实现。
+ *    --writes-frozen 守卫、IfNeeded 选择、marker 幂等短路、_system 只读来源与 CONTENT_DATABASE 只写目标，
+ *    全部由被测代码决定。`../env` 与 `./schema` 用 mock.module，结束时显式 mock.restore() 复原。
  * 2) 不变量与变异检测：同一替身下直接调用真实的 IfNeeded 与无守卫的 migrateLegacyPlatformContent，
  *    验证“已迁移却继续读来源/重写 marker”和“越界写入”会被边界检查器判红。
  * 3) 黑盒执行真实 `scripts/deploy/origin-pre-start.sh`：PATH 上的 bun 为只记录 argv 的替身，
@@ -46,6 +47,7 @@ function resetFixture(): void {
   markerRows = [];
 }
 
+// 只 mock 两个无副作用的模块；surrealdb 保持真实，避免进程级 mock 泄漏到其它测试文件。
 mock.module("../env", () => ({ env }));
 mock.module("./schema", () => ({
   ensurePlatformContentSchema: async (db: unknown) => {
@@ -53,47 +55,84 @@ mock.module("./schema", () => ({
     return { db, fromVersion: 0, toVersion: 0, appliedVersions: [] };
   },
 }));
-mock.module("surrealdb", () => ({
-  ...realSurreal,
-  DateTime: class { constructor(readonly value: Date) {} },
-  StringRecordId: class { constructor(readonly text: string) {} },
-  RecordId: class { constructor(readonly table: string, readonly id: string) {} },
-  Surreal: class FakeSurreal {
-    #current: { role: Call["role"]; database: string } | null = null;
-    #record(kind: Call["kind"], extra: Partial<Call> = {}) {
-      if (this.#current) calls.push({ ...this.#current, kind, ...extra });
-    }
-    async connect(_url: string, options: { database: string }) {
-      const database = options.database;
-      const role: Call["role"] = database === "_system" ? "_system" : database === env.CONTENT_DATABASE ? "content" : "other";
-      this.#current = { role, database };
-      this.#record("connect");
-    }
-    async query(sql: string) {
-      this.#record("query", { sql });
-      if (/content_migration_state:legacy/i.test(sql)) return [markerRows];
-      return [[]];
-    }
-    async select(_id: unknown) {
-      this.#record("select");
-      return undefined;
-    }
-    #writeWithContent(kind: "create" | "upsert", id: { text?: string }) {
-      this.#record(kind, { table: String(id?.text ?? "").split(":")[0] });
-      const index = calls.length - 1;
-      return {
-        async content(data: Record<string, unknown>) {
-          if (index >= 0) calls[index] = { ...calls[index], content: data };
-          return data;
-        },
-      };
-    }
-    create(id: { text?: string }) { return this.#writeWithContent("create", id); }
-    upsert(id: { text?: string }) { return this.#writeWithContent("upsert", id); }
-    async relate() { this.#record("relate"); }
-    async close() { this.#record("close"); }
-  },
-}));
+
+type Scope = { role: Call["role"]; database: string };
+const scopes = new WeakMap<object, Scope>();
+
+function scopeFor(database: string): Scope {
+  const role: Call["role"] = database === "_system" ? "_system" : database === env.CONTENT_DATABASE ? "content" : "other";
+  return { role, database };
+}
+
+function record(instance: object, kind: Call["kind"], extra: Partial<Call> = {}): void {
+  const scope = scopes.get(instance);
+  if (scope) calls.push({ ...scope, kind, ...extra });
+}
+
+function tableOf(id: unknown): string {
+  // StringRecordId 与 RecordId 的字符串形式都是 "table:id"，SDK 的私有字段不可枚举。
+  return String(id).split(":")[0];
+}
+
+/** 在真实 Surreal 原型上一次性装本文件作用域的 spy：不替换包模块，也不在每个测试重复安装。 */
+const surrealdbSpiesInstalled = { value: false };
+function installSurrealSpiesOnce(): void {
+  if (surrealdbSpiesInstalled.value) return;
+  surrealdbSpiesInstalled.value = true;
+  installSurrealSpies();
+}
+
+function installSurrealSpies(): void {
+  spyOn(Surreal.prototype, "connect").mockImplementation(async function (this: object, _url: string, options?: { database?: string }) {
+    const scope = scopeFor(String(options?.database ?? ""));
+    scopes.set(this, scope);
+    record(this, "connect");
+    return undefined as unknown as Awaited<ReturnType<typeof Surreal.prototype.connect>>;
+  });
+  spyOn(Surreal.prototype, "query").mockImplementation(async function (this: object, sql: string) {
+    record(this, "query", { sql });
+    if (/content_migration_state:legacy/i.test(sql)) return [markerRows] as never;
+    return [[]] as never;
+  });
+  spyOn(Surreal.prototype, "select").mockImplementation(async function (this: object) {
+    record(this, "select");
+    return undefined as never;
+  });
+  spyOn(Surreal.prototype, "create").mockImplementation(function (this: object, id: unknown) {
+    record(this, "create", { table: tableOf(id) });
+    const index = calls.length - 1;
+    return {
+      content: async (data: Record<string, unknown>) => {
+        if (index >= 0) calls[index] = { ...calls[index], content: data };
+        return data;
+      },
+    } as never;
+  });
+  spyOn(Surreal.prototype, "upsert").mockImplementation(function (this: object, id: unknown) {
+    record(this, "upsert", { table: tableOf(id) });
+    const index = calls.length - 1;
+    return {
+      content: async (data: Record<string, unknown>) => {
+        if (index >= 0) calls[index] = { ...calls[index], content: data };
+        return data;
+      },
+    } as never;
+  });
+  spyOn(Surreal.prototype, "relate").mockImplementation(async function (this: object) {
+    record(this, "relate");
+    return undefined as never;
+  });
+  spyOn(Surreal.prototype, "close").mockImplementation(async function (this: object) {
+    record(this, "close");
+    return undefined as never;
+  });
+}
+
+beforeEach(installSurrealSpiesOnce);
+afterAll(() => {
+  // 只复原本文件的 mock 注册；原型 spy 由进程结束回收。
+  mock.restore();
+});
 
 const CLI_ENTRY = join(import.meta.dir, "migrate-legacy-cli.ts");
 
@@ -127,7 +166,7 @@ class FakeDb {
   }
   async select() { this.#push(this.role, "select"); return undefined; }
   #write(kind: "create" | "upsert", id: { text?: string }) {
-    this.#push(this.role, kind, { table: String(id?.text ?? "").split(":")[0] });
+    this.#push(this.role, kind, { table: tableOf(id) });
     const index = calls.length - 1;
     return { async content(data: Record<string, unknown>) { calls[index] = { ...calls[index], content: data }; return data; } };
   }
