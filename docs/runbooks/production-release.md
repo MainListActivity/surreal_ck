@@ -8,20 +8,25 @@
 4. `Deploy production` 先调用 `Deploy origin`，把同一 commit 发布到 Hono origin 主机；origin 健康后才发布 Cloudflare。
 5. 发布后探测应用、Hono `/health` 和营销站；任一失败都会把 production deployment 标记为失败。
 
+G5 十七行映射、合入/CI、直接版本读数与未闭合项见 [`production-release-handoff.md`](production-release-handoff.md)。
+
 当前 `Deploy production` 在 GitHub 上为 `disabled_manually`（workflow id `362937295`），合入 `main` 不会自动发布。启用条件与执行责任见「启用 `Deploy production`」。
 
-**维护暂停（当前状态）**：前端补发已完成（`Frontend recovery` 运行 `39248415340` 成功，不重做）。origin 恢复补修尚未在主机实跑（G4 未验证），origin 当前运行的 SHA 未经核实。在下列事项闭合前，不激活 origin、不启用自动发布，也不把新 `main` 当作生产 origin 的应用 SHA：
+**维护暂停（当前状态）**：前端补发已完成（`Frontend recovery` 运行 `39248415340` 成功，不重做）。origin 恢复补修尚未在主机实跑（G4 未验证）。origin 当前运行版本已于 2026-10-21T06:53:26Z 直接读回：`/api/ops/runtime-version` 返回 origin `state=known`、完整 SHA `50663e3a6c89ee9a61a25eddf334a682c445bee1`、`deploymentId=39153379368-1`；web 为同一 SHA、`deploymentId=39248415340-1`；canonical `/health` 为 `status=ok`、`surrealdb=up`。工具修补已合入 `main`（PR #205 合并提交 `5db5e18b`，2026-10-20 22:36:38Z），这次合入没有发布任何东西。在下列事项闭合前，不激活 origin、不启用自动发布，也不把新 `main` 当作生产 origin 的应用 SHA：
 
 - 生产 origin 应用目标固定为 `50663e3a6c89ee9a61a25eddf334a682c445bee1`。
 - 发布工具（`scripts/deploy`、`server/src/deploy` 与 `server/src/db/grant-revocation-*`）的修补以其 PR 头提交为准，合入后以合并提交为准。审批须引用同一个 SHA，并记录在 PR 描述与证据包 `report.md` 中。
-- 当前待审的工具代码提交为 `f1f3d199`（PR #204：前向拒绝时先恢复 `server.env` 再拉起原服务；派发回执 `--event`）。本文档的修订提交只改文档：`git diff --stat f1f3d199 <PR 头> -- scripts server/src/deploy server/src/db` 应为空。合入 `main` 后，以合并提交替换本行。
+- 工具代码已合入 `main`，两轮审批各绑定一个 SHA：PR #204 合并提交 `03d686728d1b9897583113e7529cd8211f268e85`（受审头 `f9182f4f161ffa8b8c8784ad0e634cbc139587d8`，2026-10-20T20:15:05Z）；PR #205 合并提交 `5db5e18bb4848cb49f100c7ea617731a5830e32a`（受审头 `45fd50b33c74985ae9371dfd1959361dba767ced`，2026-10-20T22:36:38Z，合并树 `5ba27ea8…` 与受审头逐字节一致，相对 base `03d68672` 只改 `server/src/deploy` 下两个测试与 harness 文件，+132/−24）。以 `main` 最新合并提交为工具 SHA，不把新 `main` 当作生产 origin 的应用 SHA（应用目标仍为 `50663e3a`）。本文档的修订提交只改文档：`git diff --stat 5db5e18b <PR 头> -- scripts server/src/deploy server/src/db` 应为空。
 - 首次前向激活的前置项见「前向钩子（`origin-pre-start.sh`）」（F4）与「主机锁与陈旧锁回收」（F13）。
-- 未验证项：G4（主机实跑前向故障与 scp 失败）未执行，本补修的结论只来自执行级测试，不来自主机结果。`39153839203` 等 `action_required` 派发的历史根因未经 API 证实。「N1」在本仓库 runbook 与证据包中未找到定义，待 GM 提供后核对。
+- 未验证项：G4（主机实跑前向故障与 scp 失败）未执行，本补修的结论只来自执行级测试，不来自主机结果。`39153839203` 等 `action_required` 派发的历史根因未经 API 证实。
+- **工具 SHA 与后续文档/测试合并 SHA 分栏记录，互不代替**：工具实现为 PR #204 合并 `03d68672`、PR #205 合并 `5db5e18b`；之后仅文档与测试的修复合入时另记其合并 SHA，不能把任意最新 `main` 都写成被批准的工具版本。
+- **N1（GM v30 第 6 项已给出定义，不再索要）**：`N1` = HTTP/2 framing error。来源父任务 3a v88（2026-10-19T12:55:33Z）；v95（2026-10-20T05:45:10Z）记录 9 次 HTTP/2 请求未复现，原因未知、未关闭；v97 明确保留 open。它与 `/health?query` 返回 SPA HTML、以及另一次登录连接超时分开记录，不混称根因。不因少量未复现关闭，也不授权改路由或放宽健康判定。
+- **旧 LCA04_OPS 句柄（GM v30 第 7 项）**：QA 报告到期点 2026-10-20T23:53:47Z，经理 2026-10-21T02:13:05Z 读时已过该点；记为「已过代理报告 TTL、未执行 logout/未核全局 IdP 会话」，不冒充成功登出。`ops_logout` 只 drop 代理侧句柄，不等于全局 IdP 注销。
 - PR #36、#55、#160 保持未合入。#36 头的 `origin-pre-start.sh` 与 main 字节相同，但其 `server/src/content/migrate-legacy-cli.ts` 与 main 不同（见「前向钩子」），不能以「钩子与 CLI 相同」为由合入或关闭。
 
 公司项目元数据与本 runbook 有以下差异，以本 runbook 为准。更正由 GM 通过受控条目完成，工程不改元数据，也不用 owner 或 admin 凭证改写。
 
-- `project.release` 写「合入即发布，不需要其他人批准」，同一元数据的 `notes` 却写「合入即触发发布，须先经上线申请批准」。两处互相矛盾。维护暂停期间不启用自动发布。
+- `project.release` 写「合入即发布，不需要其他人批准」，同一元数据的 `notes` 却写「合入即触发发布，须先经上线申请批准」。两处互相矛盾。而且 GitHub 上 `Deploy production` 实际是 `disabled_manually`，合入 `main` 不会自动发布，与「合入即发布」的字面描述不符。维护暂停期间不启用自动发布；恢复自动发布的条件见「启用 `Deploy production`」。
 - `project.rollback` 写「在 Actions 手动运行 Deploy origin」。`Deploy origin` 只能被调用，没有直接派发入口。实际入口是 `Deploy origin (manual)`，并须带 `approval_ref`。
 - `project.rollback` 写「前端重跑该提交的 Deploy production」。`Deploy production` 仍为 `disabled_manually`，前端只能经 `Frontend recovery` 恢复。
 
@@ -98,9 +103,9 @@ origin 是 `data.maplayer.top`（`129.146.179.37`）上的 systemd 服务 `surre
 | `interrupted` | 工作进程已消失且未到终态（例如主机重启或进程被杀） | CI 自动请求 `--recover`（主机接受前每轮重试，接受后只等待）；恢复被拒时由运维处理 |
 | `healthy` | 已切换并通过健康探测 | 成功 |
 | `rolled-back` | 切换或健康失败后已恢复上一个版本并健康 | job 失败；先看日志中的失败原因 |
-| `rollback-refused` | 上一个版本未通过门禁，回滚被拒，当前版本保持原状 | 人工处置，优先向前修复（见「回滚被拒」） |
-| `rollback-failed` | 回滚过程本身失败；服务停止时 origin 不可用 | 立即人工核查主机并报告 GM（见「回滚被拒」） |
-| `refused` | 门禁在切换前拒绝（已恢复 env；撤销门禁拒绝时原服务已拉回运行） | 修复目标后用新运行重新发布 |
+| `rollback-refused` | 回滚被门禁拒绝；已写入的 env 恢复为激活前备份，服务仍活跃（运行 `current` 当时指向的版本，可能是失败的新版本），回滚未执行 | 人工处置，优先向前修复（见「回滚被拒」） |
+| `rollback-failed` | 回滚被门禁拒绝且服务已被本次激活停止（回滚不拉起被拒的 `previous`）；或回滚过程本身失败（切换、重启或健康探测失败）。服务停止时 origin 不可用 | 立即人工核查主机并报告 GM（见「回滚被拒」） |
+| `refused` | 门禁在主机改动前拒绝（零服务与 env 变更）；或前向撤销门禁在停服后拒绝：先恢复 `server.env` 备份，再拉起原服务。拒绝后服务仍不活跃时不报 `refused`，以 `failed` 结束并要求人工核查 | 修复目标后用新运行重新发布 |
 | `failed` | 主机未改动即结束（例如恢复时发现尚未开始切换）；或 env 恢复失败，服务保持停止 | 核查日志；env 恢复失败时先人工核查服务与 `backups/env/` 中的备份，再用新运行重新发布 |
 | `absent` | 主机从未登记该激活 | CI 会重新登记 |
 
@@ -171,7 +176,7 @@ GitHub `production` Environment 额外配置：
 迁移类型（PR 提交须与此一致）：数据只新增（复制缺失记录、v7 回填缺失的搜索 facet、标记 UPSERT），不删除或改写业务记录；版本门控的结构脚本含对既有定义的修改（`ALTER ... PERMISSIONS`、`ALTER FIELD ... FLEXIBLE`、`REMOVE EVENT IF EXISTS`、`DEFINE ACCESS OVERWRITE`），因此不得标为「只新增结构」。沿用既有钩子，使用 root 身份。生产当前 `platform_content_schema_version` 未核，待运营确认。
 
 - **调用链**：`run_release` 在全部门禁与 env 写入之后停服（冻结），再执行 `scripts/deploy/origin-pre-start.sh`，即 `bun run --env-file=<server.env> src/content/migrate-legacy-cli.ts --writes-frozen`。
-- **身份**：CLI 以 `server.env` 中的 `SURREAL_ROOT_USER` 与 `SURREAL_ROOT_PASS` 登录（即 root 凭证），在 `_system` 读取，在 `CONTENT_DATABASE` 写入。这是当前实现。是否接受 root，或改用限定用户，由 GM 决定（见下文第 4 项）。
+- **身份**：CLI 以 `server.env` 中的 `SURREAL_ROOT_USER` 与 `SURREAL_ROOT_PASS` 登录（即 root 凭证），在 `_system` 读取，在 `CONTENT_DATABASE` 写入。GM v30 第 3 项已确认：沿既有 root 平台维护身份作为 schema 与复制迁移的限定用途，不新建身份、不修改 root 凭证或权限，也不把 secret 读到员工侧。root 调用是受控例外；任何方案不得改变 `surrealdb.service`、root 凭证或生产数据目录。
 - **冻结**：只依靠停服。CLI 要求显式传入 `--writes-frozen`，但不核实其它写入者是否已停止。
 - **写入范围**：先对 `CONTENT_DATABASE` 执行 `ensurePlatformContentSchema`（先于标记检查）。它执行 `DEFINE DATABASE IF NOT EXISTS`，并按 `platform_content_schema_version` 只执行版本号大于当前值的脚本（`shared/sql/platform-content/`）。这些脚本含 `DEFINE`（新增结构）与对既有定义的修改（`ALTER ... PERMISSIONS`、`ALTER FIELD ... FLEXIBLE`、`REMOVE EVENT IF EXISTS`、`DEFINE ACCESS OVERWRITE`），不含对业务记录的 `DELETE` 或 `UPDATE`。版本 7 另含数据回填：对缺少搜索 facet 的已发布条目 `CREATE` 一条 `content_search_facet`。随后把 `_system` 中目标库缺失的记录 `CREATE` 或 `RELATE` 到 `CONTENT_DATABASE`；已存在的记录只做一致性断言，不改写。最后 `UPSERT` 标记 `content_migration_state:legacy`。迁移模块（`server/src/content/migrate-legacy.ts`）不含 `DELETE` 或 `UPDATE` 语句，也不写 `_system`。
 - **幂等**：标记存在（来源为 `_system` 且 `verified_at` 非空）时输出 `already migrated` 并跳过复制。标记不存在时，上次中途失败留下的部分复制会在本次续做。
@@ -188,9 +193,27 @@ GitHub `production` Environment 额外配置：
 首次激活前须由 GM 决定（未闭合）：
 
 1. 核对生产内容复制状态。claim 写「钩子在 PR #36 里，随 #29 一起合入发布」，并写「#29 尚未发布到 origin」，与上面的事实不一致。由运营核对，工程不直接访问生产数据。
-2. 选定钩子使用的 CLI 版本（main 版或 #36 版）。选定后同步更新本节。
-3. 确认每次前向激活都会先停服再执行钩子的停服窗口可接受。
-4. 接受本钩子以 root 身份运行（见上文「调用链」与「身份」），或要求改用限定用户后再激活。
+2. 钩子使用的 CLI 版本：GM v30 第 3 项已选定 main 版 `migrateLegacyPlatformContentIfNeeded`（`5db5e18b` 及之后），保留 marker 判断与 `--writes-frozen` 守卫，不切换 PR #36 的无条件迁移入口，也不为此合入 #36/#55/#160。标记已存在时走 `already-migrated`；未核或无能力时不得冒称已迁移。
+3. 停服窗口：GM v30 确认该「先停服再执行钩子」窗口是既有设计的一部分，但**本轮不批准实际停服窗口**；当前健康 origin 继续运行，也不把 CI 轮询 deadline 当作服务恢复 SLA。首次真实执行仍须另一次针对准确 head 的上线申请与受控维护窗口。
+4. root 身份：GM v30 已接受为受控例外（见上文「身份」）；同时禁止改变 `surrealdb.service`、root 凭证或生产数据目录。首次实际执行仍须受控只读核对 marker、CLI/工具 SHA、写入范围与冻结准备。
+5. **生产 marker 未核（能力缺口，CL04）**：`content_migration_state:legacy` 的 `source_database`、`verified_at` 及计数/版本元数据，需要内容库 `CONTENT_DATABASE` 的受控只读读取。截至本次收口，ops 工具面没有提供该对象的字段读取工具（无对应只读路由；`ops_query` 的客户会话按设计不能进入 `_system`/内容控制面，运营会话也不裸查 SQL）。因此记「首次激活前 marker 未核」，**首次激活保持阻断**；不得把「无权限/无工具」解释为 marker 不存在。所需精确缺口：项目 `surreal_ck`、环境 `production`、目标库 `CONTENT_DATABASE`、记录 `content_migration_state:legacy`、字段 `source_database`、`verified_at`、`summary`，另加版本元数据 `platform_content_schema_version:current` 的 `version`。
+
+### 钩子调用链的边界回归（CL02，2026-10-21）
+
+`server/src/content/migrate-legacy-cli-boundary.test.ts` 在隔离环境中执行真实入口，验证：
+
+- `origin-pre-start.sh` 在发布目录的 `server/` 下以 `bun run --env-file=<server.env> src/content/migrate-legacy-cli.ts --writes-frozen` 调用 CLI；缺 `ORIGIN_ENV_FILE` 时在调用前失败。黑盒用例只校验 argv 与执行目录，不执行真实 bun 或 CLI。
+- CLI 入口在缺少 `--writes-frozen` 时、建立任何连接之前拒绝，错误信息指明写入冻结。
+- 数据夹具注入普通表记录、`cites_*` 关系记录与 v7 facet 回填输入，使真实复制循环执行：root 连接指向 `CONTENT_DATABASE`，来源连接指向 `_system` 且只执行 `SELECT`。
+- 顺序断言：`ensurePlatformContentSchema`（`DEFINE DATABASE`）先于迁移 marker 检查与来源读取。
+- 目标写入只落在内容迁移白名单表（含 `cites_*` 关系）、`content_migration_state:legacy` 标记（`source_database=_system`）与 schema 阶段的 `content_search_facet` 回填；迁移阶段不允许任何写形态的原始 query。
+- 已迁移 marker（`verified_at` 非空）时幂等短路：不读来源、不复制、不重写 marker；未验证 marker 不算完成。
+- 变异检测（红→绿）：
+  - M7 复制循环的 `create` 改写到未授权表 `system_admin`：边界检查器判红；未变异副本判绿。
+  - M8 把 `ensurePlatformContentSchema` 挪到迁移之后：顺序检查器判红；真实入口判绿。
+  - 另有无守卫入口在已迁移状态下仍读来源并重写 marker、来源写入、异常数据库、迁移阶段写查询等用例。
+
+结果（本地，2026-10-21）：新用例 13 pass / 0 fail，连续 3 次一致；既有 `migrate-legacy` 与 `src/deploy` 套件 357 pass / 0 fail。测试只使用隔离替身，不连接真实数据库、不启动 SurrealDB、不读取真实 `.env` 或凭证。它是执行级回归，不等于主机级 G3：主机上钩子以 root 连接真实内容库的行为仍未实测。
 
 ## 主机锁与陈旧锁回收（F13）
 
@@ -213,7 +236,7 @@ GitHub `production` Environment 额外配置：
 
 F13 的并发与回收互斥由 `server/src/deploy/origin-release-faults.test.ts` 的 F13 用例覆盖，包括两个登记同时争抢同一陈旧锁（5 轮）时每轮恰好一个成功。
 
-测试范围：该用例在本地 harness 中运行两个真实的 `--launch` 进程，`systemctl`、`sudo`、`bun`、`curl` 等为替身。主机上的 `mkdir` 与 `find -mmin` 行为未验证（G4）。F13 的修复与并发回归需独立复核，复核通过前不视为闭合（见「启用 `Deploy production`」第 10 项）。
+测试范围：该用例在本地 harness 中运行两个真实的 `--launch` 进程，`systemctl`、`sudo`、`bun`、`curl` 等为替身。主机上的 `mkdir` 与 `find -mmin` 行为未验证（G4）。F13 的修复与并发回归已由独立复核确认该段代码与测试满足（复核人非实现者；该复核对当时 head 的整体结论为 return，针对其它未闭合项）。GM v30 第 5 项接受「该已知竞态在代码与测试层闭合」，同时明确不能把旧 `6df8d938` 的整体 return 写成整体 accept。回收互斥持有者猝死时不自动豁免、以 `busy`(75) 要求受控运维核查的失败关闭设计保留，不强删锁；主机上的文件系统/`mkdir`/`find` 行为仍归 G4，未验证。
 
 ## 回滚被拒（`rollback-refused` / `rollback-failed`）
 
@@ -231,7 +254,7 @@ F13 的并发与回收互斥由 `server/src/deploy/origin-release-faults.test.ts
 
 撤销门禁拒绝回滚目标时，当前实现为 `hold`。被拒的 `previous` 缺少撤销过滤，且撤销计数非零或无法证明为零。回滚不拉起它，服务保持停止，结果为 `rollback-failed`。这样做是为了不重新放开已撤销的授权。**此时 origin 不可用，`/health` 失败。** 服务已被本次激活停止时，任何回滚门禁拒绝都以 `rollback-failed` 结束，服务同样保持停止。
 
-`hold` 策略待 GM 确认（F1）。确认前，`rollback-failed` 且服务停止的状态按生产事故处理。
+`hold` 策略已由 GM v30 第 2 项确认为安全失败关闭策略（F1）：previous 预检与撤销预检不通过时，必须在停服与 env 写入之前拒绝；回滚被撤销门禁拒绝后先恢复 env，服务已停则保持停止并以 `rollback-failed` 非成功终态留痕，禁止拉起被拒 `previous`；恢复 env 失败同样不启动。可用性损失须告警交 GM，并走受审前向修复，不得伪报已回滚。该结论基于 main 的固定源码与已通过的回归；真实主机操作仍未验证，不授权故障注入。`rollback-failed` 且服务停止的状态仍按生产事故处理。
 
 处置：
 
@@ -419,12 +442,14 @@ CI 的 `wait` 与写入前的 `verify` 按下表判定。任一项失败都使�
 3. fa 运营重新批准的审计编号已记录。
 4. 原正式部署任务的执行人已完成前端补发：锁内 barrier 之后的运营核定与 `Frontend recovery` 发布，并经 QA 复核双面版本、`/health`、登录、`www` 与 `/ops/`。
 5. 下方配置表中的变量与 `RELEASE_APPROVER_LOGINS` 已核对。
-6. 本补修的工具 PR 经另一位工程师复核、`Quality gate` 成功，并合入 `main`。证据记录 PR 头 SHA 与合并提交 SHA。
-7. G4（主机实跑的前向故障与 scp 失败）由 GM 决定：在批准的维护窗口执行并记录，或书面接受其未执行为残余风险。两种结论都写入启用证据。
-8. F1（撤销门禁被拒后的 `hold` 策略）与 F4（钩子的首次激活、CLI 版本与 root 身份）须由 GM 决定并记录，见「回滚被拒」与「前向钩子」。两项当前均未决定。
-9. `N1` 由 GM 定义并核对。本仓库 runbook、证据包与 claim 的正文均未定义。
-10. F13 的修复与并发回归已由独立复核通过（复核对象为 `6df8d938`，其后锁代码未变），复核人不是实现者。
+6. 本补修的工具 PR 经另一位工程师复核、`Quality gate` 成功，并合入 `main`。证据记录 PR 头 SHA 与合并提交 SHA。当前状态（2026-10-20）：已完成。PR #204（受审头 `f9182f4f`，合并 `03d68672`）经独立复核 595869 与运营 1c767dab 批准合入；PR #205（受审头 `45fd50b3`，合并 `5db5e18b`）经独立复核 2ddb0a70 与运营 27ff8ef6 批准合入；`main` 上合并提交的 Quality gate 运行 `39509366116` 成功。本项闭合只覆盖工具修补合入，不闭合本表其它条件。
+7. G4（主机实跑的前向故障与 scp 失败）由 GM 决定：在批准的维护窗口执行并记录，或书面接受其未执行为残余风险。两种结论都写入启用证据。当前状态（2026-10-21）：未执行。GM v30 第 1 项裁定：本轮不安排生产前向故障/scp 失败注入，不为补证据停健康服务；接受「仅工具合入/收口」阶段 G4 未实跑的残余验证边界，但**不能据此满足恢复自动发布条件或宣称主机安全**。G4 未证实仍由父任务 3a 的合法真实激活/受控只读诊断计划处理；部署 QA 不得以执行本链明令禁止的生产故障注入作为前置。
+8. F1（`hold`）与 F4（钩子首次激活、CLI 版本与 root 身份）须由 GM 决定并记录，见「回滚被拒」与「前向钩子」。当前状态（2026-10-21）：F1 已确认（GM v30 第 2 项，安全失败关闭，代码与 runbook 一致）；F4 已确定使用 main 版 `migrateLegacyPlatformContentIfNeeded`、root 维护身份为受控例外，但**本轮不批准停服窗口与实际执行**，生产 marker 未核（能力缺口），首次激活仍阻断。
+9. `N1` 的定义与状态：GM v30 第 6 项已定义 `N1` = HTTP/2 framing error（来源父 3a v88；v95 记录 9 次未复现、原因未知；v97 保留 open）。与 `/health?query` 返回 SPA HTML、另一次登录连接超时分开记录。当前状态：未关闭，原因未知；不因少量未复现关闭，也不授权改路由或放宽健康判定。
+10. F13（陈旧锁回收）当前状态（2026-10-20）：修复为回收互斥 `lock.reclaim` 加原子移出再删除（引入于 `f53d080c`，其后锁代码未变，`git log -S lock.reclaim -- scripts/deploy/origin-release.sh` 止于该提交）。并发回归（两个登记争抢同一陈旧锁，5 轮）在 `origin-release-faults.test.ts` 的 F13 用例。独立复核记录 `review-c501-6df8d938`（复核人 engineering-factory-droid-c501ef，非实现者）对该项的结论为「代码与测试满足，未经主机验证」，但该复核对该 head 的整体结论为 return（针对当时其它未闭合项，不是锁代码）。GM v30 第 5 项已书面接受该已知竞态在代码与测试层闭合，同时明确不得把旧 `6df8d938` 的整体 return 写成整体 accept；回收互斥持有者猝死时 `busy`(75) 要求受控运维核查的失败关闭设计保留；主机行为仍归 G4。
 11. 「交接与暂存件（F10）」中的首次激活准备（暂存件权限核对与清理失败处置）已完成并记录。
+12. **旧 LCA04_OPS 句柄**：已过代理报告 TTL（到期 2026-10-20T23:53:47Z），未执行 logout、未核全局 IdP 会话；如实记录，不冒充已登出。`ops_logout` 仅 drop 代理侧句柄。
+13. **本收口链的工具/文档/测试合并 SHA 分记**：文档与测试补修另开 PR，合入后记录其合并 SHA 与 `main` CI；它**不**替代 PR #204/#205 的工具 SHA，也不把新 `main` 当作生产 origin 的应用 SHA。
 
 执行人是原正式部署任务 `3a9b0b3c-da89-4090-a0ea-a442b1608a7e` 当次持有效租约的工程执行者。修复 PR 的实现者不负责启用，也不由仓库所有者代为启用。
 
@@ -436,6 +461,16 @@ gh api repos/MainListActivity/surreal_ck/actions/workflows/deploy-production.yml
 记录启用时间与读回结果。
 
 QA 与启用的先后：原执行人可以先提交前端补发阶段的 QA。QA 核对上述条件 1 至 4，并在验收中写明「只待已批准的启用与读回」。原执行人启用后再提交最终 QA 验收，附 `active` 读回与完整收口证据。
+
+### 收口模板
+
+每次启用或恢复尝试（含中途停止）的收口证据须逐项记录，缺项即视为未收口：
+
+1. 工作流状态：`Deploy production`、`Deploy origin (manual)`、`Frontend recovery` 的当时状态读回（命令、时间戳），写明 `disabled_manually` 或 `active`；合并时间窗内的发布入口运行列表（分页取全）。
+2. 版本事实：origin 运行的完整 SHA（运营经 `/api/ops/runtime-version` 采样）与采样时间；web 的 `runtime-version.json` 的 `sha` 与 `deploymentId`；本次合并提交与受审头 SHA。工具 SHA 与应用 SHA 分记，历史样本不冒称本轮读数。
+3. 事故状态与未验证项：本次涉及的主机终态（`healthy`、`rolled-back`、`refused`、`rollback-refused`、`rollback-failed`、`failed` 等）；仍未验证项清单（如 G4、F1/F4 决定、N1、`39153839203` 根因）与各项负责人。
+4. 回滚路径：本次变更的受审撤回方式（`git revert -m 1 <合并提交>` 或 `Deploy origin (manual)` 的目标 SHA 与 `approval_ref`）及前提。
+5. 值班接手：遗留会话与句柄（例如 ops 登录会话的登录与到期时间）、暂存件残留核对结果、下一班须继续的事项。
 
 禁止为了启用而追补未经批准的 `main`，或重跑健康的 origin。条件不满足时保持 `disabled_manually`，并向 GM 报告具体缺口。
 
@@ -485,6 +520,8 @@ gh api repos/MainListActivity/surreal_ck/actions/variables/RELEASE_APPROVER_LOGI
 Hono 启动时会执行 schema 与数据迁移，代码回滚不会回滚数据库。需要的新环境变量先用 `ORIGIN_ENV_*` secret 配好，需要停写执行的迁移放进 `origin-pre-start.sh`，再合入 main。SurrealDB 服务本身（`surrealdb.service`）与 root 凭证不由 CI 管理。
 
 ### 各次运行所用的 SurrealDB 构建
+
+- 2026-10-21 收口链的 Quality gate 运行（本 PR 头）使用与既有仓库标准一致的 Linux runner 与公司 fork 候选制品；具体 run 号与合并 SHA 记录在交接文档与 PR 描述中。
 
 - Quality gate（CI）安装公司 fork 的候选制品 `sck-3.3.0-native-quota.1-candidate.105`（`MainListActivity/surrealdb`），sha256 固定并校验。集成测试使用此构建。
 - 本机检查器日志 `checker-live-local-surreal-v3.3-nightly.log` 对应 v3.3 nightly 本地构建，不等同于 CI 或生产所用构建。
