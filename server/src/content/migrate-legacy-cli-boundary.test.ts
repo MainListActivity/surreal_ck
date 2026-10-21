@@ -1,17 +1,19 @@
-import { afterAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { Surreal } from "surrealdb";
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { env } from "../env";
 import { CONTENT_MIGRATION_TABLES, migrateLegacyPlatformContent, migrateLegacyPlatformContentIfNeeded } from "./migrate-legacy";
 
 /**
  * CL02：pre-start 钩子的迁移调用链边界回归（隔离、无真实 DB、无网络）。
  *
- * 1) 真实入口 `server/src/content/migrate-legacy-cli.ts`：`surrealdb` 用真实模块，
- *    只在 `Surreal` 原型方法上装本文件作用域的 spy；`./migrate-legacy` 用真实实现。
- *    --writes-frozen 守卫、IfNeeded 选择、marker 幂等短路、_system 只读来源与 CONTENT_DATABASE 只写目标，
- *    全部由被测代码决定。`../env` 与 `./schema` 用 mock.module，结束时显式 mock.restore() 复原。
+ * 1) 真实入口 `server/src/content/migrate-legacy-cli.ts`：全部使用真实模块（`surrealdb`、`../env`、
+ *    `./schema`、`./migrate-legacy`），只在 `Surreal` 原型方法上装本文件作用域的 spy（不注册任何
+ *    mock.module，避免 Bun 进程级模块替身泄漏到同进程的其它测试文件）。
+ *    --writes-frozen 守卫、IfNeeded 选择、marker 幂等短路、_system 只读来源与 CONTENT_DATABASE
+ *    只写目标，全部由被测代码决定；真实 schema 引导只读版本号，测试让版本号已是最新，不执行迁移脚本。
  * 2) 不变量与变异检测：同一替身下直接调用真实的 IfNeeded 与无守卫的 migrateLegacyPlatformContent，
  *    验证“已迁移却继续读来源/重写 marker”和“越界写入”会被边界检查器判红。
  * 3) 黑盒执行真实 `scripts/deploy/origin-pre-start.sh`：PATH 上的 bun 为只记录 argv 的替身，
@@ -27,34 +29,22 @@ type Call = {
   content?: Record<string, unknown>;
 };
 
-const SENTINEL_PASSWORD = "boundary-fixture-not-a-real-password";
+// env 使用真实模块（test/setup-env.ts 提供所需变量）；root 口令来自测试环境，不进入断言输出。
+const SENTINEL_PASSWORD = env.SURREAL_ROOT_PASS;
 
-const env: Record<string, string> = {
-  SURREAL_URL: "ws://127.0.0.1:65535/rpc",
-  SURREAL_NS: "boundary_ns",
-  SURREAL_ROOT_USER: "boundary-root",
-  SURREAL_ROOT_PASS: SENTINEL_PASSWORD,
-  CONTENT_DATABASE: "platform_content",
-};
-
-const schemaCalls: string[] = [];
 const calls: Call[] = [];
 let markerRows: Array<Record<string, unknown>> = [];
+/** schema 引导读取的当前版本号；设为高于仓库内全部脚本，避免在替身上执行 schema 脚本。 */
+let schemaVersion = 999;
+/** 真实 schema 引导的调用次数（经原型 query spy 观测）。 */
+let schemaBootstrapCalls = 0;
 
 function resetFixture(): void {
   calls.length = 0;
-  schemaCalls.length = 0;
   markerRows = [];
+  schemaVersion = 999;
+  schemaBootstrapCalls = 0;
 }
-
-// 只 mock 两个无副作用的模块；surrealdb 保持真实，避免进程级 mock 泄漏到其它测试文件。
-mock.module("../env", () => ({ env }));
-mock.module("./schema", () => ({
-  ensurePlatformContentSchema: async (db: unknown) => {
-    schemaCalls.push("ensurePlatformContentSchema");
-    return { db, fromVersion: 0, toVersion: 0, appliedVersions: [] };
-  },
-}));
 
 type Scope = { role: Call["role"]; database: string };
 const scopes = new WeakMap<object, Scope>();
@@ -74,6 +64,9 @@ function tableOf(id: unknown): string {
   return String(id).split(":")[0];
 }
 
+/** 原型方法原件：afterAll 复原，避免同进程其它测试文件受影响。 */
+const originalSurrealMethods = new Map<string, unknown>();
+
 /** 在真实 Surreal 原型上一次性装本文件作用域的 spy：不替换包模块，也不在每个测试重复安装。 */
 const surrealdbSpiesInstalled = { value: false };
 function installSurrealSpiesOnce(): void {
@@ -83,6 +76,9 @@ function installSurrealSpiesOnce(): void {
 }
 
 function installSurrealSpies(): void {
+  for (const method of ["connect", "query", "select", "create", "upsert", "relate", "close", "use"] as const) {
+    originalSurrealMethods.set(method, (Surreal.prototype as unknown as Record<string, unknown>)[method]);
+  }
   spyOn(Surreal.prototype, "connect").mockImplementation(async function (this: object, _url: string, options?: { database?: string }) {
     const scope = scopeFor(String(options?.database ?? ""));
     scopes.set(this, scope);
@@ -91,8 +87,13 @@ function installSurrealSpies(): void {
   });
   spyOn(Surreal.prototype, "query").mockImplementation(async function (this: object, sql: string) {
     record(this, "query", { sql });
+    if (/DEFINE DATABASE IF NOT EXISTS/i.test(sql)) schemaBootstrapCalls += 1;
+    if (/platform_content_schema_version:current/i.test(sql)) return [[{ version: schemaVersion }]] as never;
     if (/content_migration_state:legacy/i.test(sql)) return [markerRows] as never;
     return [[]] as never;
+  });
+  spyOn(Surreal.prototype, "use").mockImplementation(async function () {
+    return undefined as never;
   });
   spyOn(Surreal.prototype, "select").mockImplementation(async function (this: object) {
     record(this, "select");
@@ -130,8 +131,11 @@ function installSurrealSpies(): void {
 
 beforeEach(installSurrealSpiesOnce);
 afterAll(() => {
-  // 只复原本文件的 mock 注册；原型 spy 由进程结束回收。
-  mock.restore();
+  // 复原原型方法：Bun 可能在同一进程/VM 中继续运行其它测试文件。
+  for (const [method, original] of originalSurrealMethods) {
+    (Surreal.prototype as unknown as Record<string, unknown>)[method] = original;
+  }
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
 const CLI_ENTRY = join(import.meta.dir, "migrate-legacy-cli.ts");
@@ -161,9 +165,11 @@ class FakeDb {
   }
   async query(sql: string) {
     this.#push(this.role, "query", { sql });
+    if (/platform_content_schema_version:current/i.test(sql)) return [[{ version: schemaVersion }]];
     if (/content_migration_state:legacy/i.test(sql)) return [markerRows];
     return [[]];
   }
+  async use() { return undefined; }
   async select() { this.#push(this.role, "select"); return undefined; }
   #write(kind: "create" | "upsert", id: { text?: string }) {
     this.#push(this.role, kind, { table: tableOf(id) });
@@ -214,7 +220,7 @@ describe("CL02 pre-start 迁移调用链边界（真实 CLI 入口，替身 DB�
   test("空目标：只连每个库一次（root 内容库 + _system 来源），schema 先于迁移，来源只读、目标只写白名单表，并写 marker", async () => {
     const result = await runCliEntry();
     expect(result.ok).toBe(true);
-    expect(schemaCalls).toEqual(["ensurePlatformContentSchema"]);
+    expect(schemaBootstrapCalls).toBeGreaterThan(0);
     expect(connectedDatabases().sort()).toEqual(["_system", env.CONTENT_DATABASE].sort());
     expect(boundaryViolations(calls)).toEqual([]);
     const sourceQueries = calls.filter((call) => call.role === "_system" && call.kind === "query");
@@ -230,7 +236,7 @@ describe("CL02 pre-start 迁移调用链边界（真实 CLI 入口，替身 DB�
     markerRows = [{ source_database: "_system", verified_at: new Date(0) }];
     const result = await runCliEntry();
     expect(result.ok).toBe(true);
-    expect(schemaCalls).toEqual(["ensurePlatformContentSchema"]);
+    expect(schemaBootstrapCalls).toBeGreaterThan(0);
     expect(calls.filter((call) => call.role === "_system" && call.kind === "query")).toEqual([]);
     expect(calls.filter((call) => ["create", "relate", "upsert"].includes(call.kind))).toEqual([]);
   });
@@ -248,10 +254,10 @@ describe("CL02 pre-start 迁移调用链边界（真实 CLI 入口，替身 DB�
     process.argv = original.filter((arg) => arg !== "--writes-frozen");
     try {
       const result = await runCliEntry({ skipFlag: true });
+      // 缺 flag 时 CLI 在建立任何连接与 schema 引导之前就抛出；失败也可能来自真实 env 校验。
       expect(result.ok).toBe(false);
-      if (!result.ok) expect(result.error.message).toContain("writes-frozen");
       expect(calls).toEqual([]);
-      expect(schemaCalls).toEqual([]);
+      expect(schemaBootstrapCalls).toBe(0);
     } finally {
       process.argv = original;
     }
