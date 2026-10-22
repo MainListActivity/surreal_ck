@@ -133,11 +133,11 @@ function runSim(
   const harness = `#!/usr/bin/env bash
 set -euo pipefail
 service=svc
-root=${root}
-release=${release}
-previous=${previous}
-env_file=${envDir}/server.env
-env_backup=${envDir}/server.env.bak
+root="${root}"
+release="${release}"
+previous="${previous}"
+env_file="${envDir}/server.env"
+env_backup="${envDir}/server.env.bak"
 env_additions=
 archive=
 release_id=rel-new
@@ -153,12 +153,12 @@ created_at=
 updated_at=
 note=
 log_file=
-lock_dir=${dir}/lock-absent
+lock_dir="${dir}/lock-absent"
 svc_touched=${hostTouched}
 env_dirty=${envDirty}
 switched=${hostTouched}
 REVOCATION_GATE_DRAIN_SEC=0
-LOG=${log}
+LOG="${log}"
 : > "$LOG"
 
 T_STOP_RC=${env.stopRc ?? 0}
