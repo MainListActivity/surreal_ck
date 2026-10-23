@@ -438,7 +438,7 @@ describe("F13 陈旧锁回收：互斥与并发", () => {
 describe("G3 surrealdb 与数据目录零触碰（运行时：成功、回滚、中断恢复）", () => {
   const service = "surreal-ck-hono";
   const seedSensitive = (h: Harness) => {
-    const dir = join(h.dir, "sensitive");
+    const dir = join(h.dir, ".sensitive");
     mkdirSync(join(dir, "data"), { recursive: true });
     writeFileSync(join(dir, "surrealdb.service"), "[Service]\nExecStart=/fake/surreal\n");
     writeFileSync(join(dir, "root.env"), "SURREAL_ROOT_PASS=fake-root-value\n");
