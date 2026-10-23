@@ -292,6 +292,8 @@ export type EmployeeRuntimeMetrics = {
     runs: number;
     timedOut: boolean;
     abortedWindows: number;
+    /** 停机宽限到点仍未结算、被放弃等待的在途中止数（末次停机）；放弃后下一次 reconcile 按快照判定。 */
+    abandonedAborts: number;
     durationMs: number | null;
   };
   signals: number;
@@ -462,6 +464,8 @@ type Lane = {
   windowAbort?: AbortController;
   /** 本窗口的中止原因（abortWindow 设置；waiter 结算用）。 */
   windowAbortReason?: WindowAbortReason;
+  /** 窗口中止后仍在途的驱动 abort 结算（run.cancel 写库）：关闭员工会话前须等齐。 */
+  pendingAborts: Set<Promise<void>>;
   /** 当前窗口开始时间戳（lease age 指标）。 */
   windowStartedAt?: number;
   /** triggerId → 等待其终态的 enqueue 调用方。 */
@@ -505,7 +509,10 @@ export function createEmployeeTriggerRuntime(deps: {
   sleep?: (ms: number) => Promise<void>;
   /** stop() 的默认截止时间（毫秒）；stop(options.deadlineMs) 优先。默认 30s。 */
   shutdownDeadlineMs?: number;
-  /** 到点 abort 后等待窗口收尾的宽限（毫秒）；默认 5s。 */
+  /**
+   * 停机到点后的在途中止结算宽限（毫秒）：窗口收尾与各 lane 会话关闭前的中止结算共用这一次宽限，
+   * 自到点中止起算，不按 lane 重置、不分段累加。默认 5s。
+   */
   abortGraceMs?: number;
 }): EmployeeTriggerRuntime {
   const handlers = new Map<string, TriggerHandler>();
@@ -535,7 +542,13 @@ export function createEmployeeTriggerRuntime(deps: {
     retries: 0,
     tokenUsage: { providerIn: 0, providerOut: 0, estIn: 0, estOut: 0, calls: 0 },
     reconcile: { runs: 0, scanned: 0, reclaimed: 0, lastRunAt: null as string | null },
-    shutdowns: [] as Array<{ at: string; durationMs: number; timedOut: boolean; abortedWindows: number }>,
+    shutdowns: [] as Array<{
+      at: string;
+      durationMs: number;
+      timedOut: boolean;
+      abortedWindows: number;
+      abandonedAborts: number;
+    }>,
     signals: 0,
   };
   /** 本进程标记 running 的触发集合：供 running 计数在终态转换时精确归零。 */
@@ -593,6 +606,7 @@ export function createEmployeeTriggerRuntime(deps: {
         windowPlanned: false,
         followupWanted: false,
         waiters: new Map(),
+        pendingAborts: new Set(),
       };
       lanes.set(key, lane);
     }
@@ -715,10 +729,44 @@ export function createEmployeeTriggerRuntime(deps: {
     return lane.sessionOpening;
   }
 
-  async function closeLaneSession(lane: Lane): Promise<void> {
+  /**
+   * 停机宽限（单一截止）：所有在途中止的结算等待共用这一个预算，武装一次、之后不再重置，
+   * 也不分段累加。到点中止时武装；正常收尾（未到点）则在关闭阶段首次需要等待时武装。
+   */
+  let stopBudget: Promise<void> | undefined;
+  const armStopBudget = (): Promise<void> => (stopBudget ??= sleep(abortGraceMs));
+  /** 到点中止已开始：此后的收尾关闭共用停机宽限（停机前的收尾仍按本 lane 独立计时）。 */
+  let shutdownAborting = false;
+  /** 窗口收尾时的关闭宽限：到点中止之后共用停机宽限；其余情况按本次关闭独立计时一次。 */
+  const windowCloseBudget = (): Promise<void> => (shutdownAborting ? armStopBudget() : sleep(abortGraceMs));
+
+  /**
+   * 关闭 lane 会话。游离的中止（run.cancel 写 canceled 快照）须先于会话关闭结算，否则快照写库会
+   * 撞上已断开的连接；等待受 budget 约束。到点仍未结算则放弃等待、照常关闭会话：放弃后的迟到结果
+   * 不触发任何后续动作（不重复取消、不重复关闭、不另行写库）。返回 true 表示发生了放弃。
+   */
+  async function closeLaneSession(lane: Lane, budget: () => Promise<void>): Promise<boolean> {
     const session = lane.session;
     lane.session = undefined;
-    if (session) await deps.sessions.close(lane.database, lane.employeeId).catch(() => undefined);
+    if (!session) return false;
+    let abandoned = false;
+    if (lane.pendingAborts.size > 0) {
+      const pending = lane.pendingAborts.size;
+      const settled = await Promise.race([
+        Promise.allSettled([...lane.pendingAborts]).then(() => true),
+        budget().then(() => false),
+      ]);
+      if (!settled) {
+        abandoned = true;
+        console.warn("[employee-trigger] in-flight abort abandoned at shutdown budget", {
+          database: lane.database,
+          employeeId: lane.employeeId,
+          pending,
+        });
+      }
+    }
+    await deps.sessions.close(lane.database, lane.employeeId).catch(() => undefined);
+    return abandoned;
   }
 
   // ── waiter 结算 ─────────────────────────────────────────────────────────
@@ -831,7 +879,7 @@ export function createEmployeeTriggerRuntime(deps: {
         scheduleWindow(lane);
         return;
       }
-      if (!lane.windowPlanned) await closeLaneSession(lane);
+      if (!lane.windowPlanned) await closeLaneSession(lane, windowCloseBudget);
     });
   }
 
@@ -1169,15 +1217,7 @@ export function createEmployeeTriggerRuntime(deps: {
     });
     // 窗口被 abort（关停到点）→ 尽力把中止传到 workflow 层（run.cancel），
     // 之后 reconcile 看到 canceled snapshot 会把触发收敛为 failed。
-    if (abortSignal) {
-      const kick = () => {
-        void Promise.resolve()
-          .then(() => driver.abort?.())
-          .catch(() => undefined);
-      };
-      if (abortSignal.aborted) kick();
-      else abortSignal.addEventListener("abort", kick, { once: true });
-    }
+    if (abortSignal) forwardWindowAbort(lane, driver, abortSignal);
     const state = await driver.loadRunState(runId);
 
     if (state && state.status === "suspended") {
@@ -1202,12 +1242,16 @@ export function createEmployeeTriggerRuntime(deps: {
     }
 
     await setStatus(session, triggerId, "running");
+    // 窗口已中止：不再启动新 run（取消与快照写库无法再保证），触发保持 lease 已清回的可回收态。
+    if (abortSignal?.aborted) return abortedFailure(lane, triggerId);
     const result = state === null
       ? await driver.start({ runId, trigger: envelope })
       : RESTARTABLE_SNAPSHOT_STATUSES.has(state.status)
         ? await driver.restart({ runId, trigger: envelope })
         : { status: "failed", error: `unsupported-snapshot-status:${state.status}` } satisfies EmployeeRunResult;
 
+    // 窗口已中止且未成功：canceled 快照即事实来源，本次结果不覆写触发状态，交 reconcile 收敛。
+    if (abortSignal?.aborted && result.status !== "success") return abortedFailure(lane, triggerId);
     if (result.status === "success") {
       await setStatus(session, triggerId, "completed", { result: result.output });
       return { outcome: "completed", triggerId };
@@ -1241,6 +1285,30 @@ export function createEmployeeTriggerRuntime(deps: {
     });
     settleWaiter(lane, triggerId, { outcome: "failed", triggerId, error: message });
     return true;
+  }
+
+  /** 窗口已中止时的触发结果：归一化原因，不写触发状态（交 reconcile 按 canceled 快照收敛）。 */
+  function abortedFailure(lane: Lane, triggerId: string): EnqueueResult {
+    return { outcome: "failed", triggerId, error: lane.windowAbortReason ?? "window-aborted" };
+  }
+
+  /**
+   * 窗口中止 → 驱动 abort（run.cancel 落 canceled 快照）。驱动 abort 返回的 promise 记入
+   * lane.pendingAborts：closeLaneSession 关闭员工会话前须等它结算，否则快照写库撞上已断开的连接。
+   */
+  function forwardWindowAbort(lane: Lane, driver: EmployeeRunDriver, signal: AbortSignal): void {
+    const kick = () => {
+      const pending: Promise<void> = Promise.resolve()
+        .then(() => driver.abort?.())
+        .then(
+          () => undefined,
+          () => undefined,
+        );
+      lane.pendingAborts.add(pending);
+      void pending.then(() => lane.pendingAborts.delete(pending));
+    };
+    if (signal.aborted) kick();
+    else signal.addEventListener("abort", kick, { once: true });
   }
 
   /**
@@ -1632,17 +1700,7 @@ export function createEmployeeTriggerRuntime(deps: {
               resolveHandler: (r) => handlers.get(r),
               gates: gatesFor(lane, session, { count: 0 }),
             });
-            if (driver.abort) {
-              abort.signal.addEventListener(
-                "abort",
-                () => {
-                  void Promise.resolve()
-                    .then(() => driver.abort?.())
-                    .catch(() => undefined);
-                },
-                { once: true },
-              );
-            }
+            forwardWindowAbort(lane, driver, abort.signal);
             const state = await driver.loadRunState(runId);
             if (!state) {
               // 显式 suspended 的触发缺 snapshot = 持久层不一致，fail-closed。
@@ -1653,6 +1711,7 @@ export function createEmployeeTriggerRuntime(deps: {
               return { outcome: "failed", triggerId, error: `run-not-suspended:${state.status}` };
             }
             await setStatus(session, triggerId, "running");
+            if (abort.signal.aborted) return abortedFailure(lane, triggerId);
             const resuming = driver.resume({ runId, trigger: envelope, resumeData });
             resuming.catch(() => undefined);
             const raced = await Promise.race<EmployeeRunResult | "aborted">([
@@ -1701,6 +1760,20 @@ export function createEmployeeTriggerRuntime(deps: {
       signalSubscribers.push(emitter);
     },
 
+    /**
+     * 停机（幂等：重复调用返回同一轮结算）。覆盖范围逐项说明：
+     * - 纳入停机宽限（deadlineMs 到点之后）：窗口排空等待、在途中止（run.cancel）的结算等待、
+     *   各 lane 会话关闭前的在途中止结算等待。三者共用一次 abortGraceMs：到点中止时武装，
+     *   正常收尾（未到点）则在关闭阶段首次需要等待时武装；不按 lane 重置，也不分段累加。
+     *   到点仍未结算的中止被放弃：照常关闭会话，计入
+     *   metrics().shutdown.abandonedAborts 并告警。放弃的中止可能未落库 canceled，此时快照仍为 running；
+     *   触发 lease 待回收，下一次 reconcile 按已落库快照判定（canceled/failed → failed，
+     *   running/waiting/pending → restart，无快照 → start），与崩溃恢复同一规则。
+     * - 未纳入停机宽限：deadlineMs 之前的排空（由 deadlineMs 独立约束）；各 lane 持久化队列的串行等待
+     *   （inPersist，含会话打开的重试退避）；单个会话 close（employee-runtime 的 closeTimeoutMs 按单连接约束）；
+     *   窗口内单次数据库查询（sessionOpDeadlineMs 逐条约束）。各 lane 的收尾并行执行。
+     * 因此 deadlineMs + abortGraceMs 只约束在途中止的结算，不是 stop 的严格总时长上限。
+     */
     stop(options) {
       if (!stopping) {
         stopping = (async () => {
@@ -1723,25 +1796,32 @@ export function createEmployeeTriggerRuntime(deps: {
         const deadlineMs = options?.deadlineMs ?? shutdownDeadlineMs;
         if (!(await deadline(deadlineMs))) {
           timedOut = true;
-          // 到点：对在途窗口发 abort（窗口任务竞速收尾 + driver.abort →
-          // run.cancel），再宽限 abortGraceMs；仍排不完的不再等。
+          // 到点：宽限在此刻武装一次，全部在途窗口共用它。对在途窗口发 abort（窗口任务竞速收尾 +
+          // driver.abort → run.cancel）；宽限到点即止，仍排不完的窗口不再等。
+          shutdownAborting = true;
+          const budget = armStopBudget();
           for (const lane of lanes.values()) {
             if (lane.windowAbort && !lane.windowAbort.signal.aborted) {
               abortWindow(lane, "window-aborted");
               abortedWindows += 1;
             }
           }
-          await deadline(abortGraceMs);
+          await Promise.race([tails(), budget]);
         }
-        for (const lane of lanes.values()) {
-          await inPersist(lane, () => closeLaneSession(lane)).catch(() => undefined);
-        }
+        // 各 lane 并行收尾：会话关闭前的在途中止结算共用同一个停机宽限，总等待不随 lane 数增长。
+        const abandoned = await Promise.all(
+          [...lanes.values()].map((lane) =>
+            inPersist(lane, () => closeLaneSession(lane, armStopBudget)).catch(() => false),
+          ),
+        );
+        const abandonedAborts = abandoned.filter(Boolean).length;
         lanes.clear();
         metricsState.shutdowns.push({
           at: now().toISOString(),
           durationMs: now().getTime() - t0,
           timedOut,
           abortedWindows,
+          abandonedAborts,
         });
         })();
       }
@@ -1820,6 +1900,7 @@ export function createEmployeeTriggerRuntime(deps: {
           runs: metricsState.shutdowns.length,
           timedOut: last?.timedOut ?? false,
           abortedWindows: last?.abortedWindows ?? 0,
+          abandonedAborts: last?.abandonedAborts ?? 0,
           durationMs: last?.durationMs ?? null,
         },
         signals: metricsState.signals,

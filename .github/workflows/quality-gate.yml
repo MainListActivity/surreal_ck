@@ -54,19 +54,24 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
-      - name: Install SurrealDB for content integration tests
+      - name: Install company SurrealDB fork for integration tests
         run: |
           set -euo pipefail
-          archive="$RUNNER_TEMP/surreal-v3.2.3.linux-amd64.tgz"
+          # 公司 fork 的已发布候选制品（MainListActivity/surrealdb）：固定到具体候选 tag，并校验 sha256。
+          # 候选清单 image.digest 与生产晋升回执一致（release 3.3.0-native-quota.1）。不使用上游官方发行版或 latest。
+          candidate="sck-3.3.0-native-quota.1-candidate.105"
+          archive="$RUNNER_TEMP/surreal-native-quota.linux-amd64.tgz"
           curl --fail --location --silent --show-error \
-            https://github.com/surrealdb/surrealdb/releases/download/v3.2.3/surreal-v3.2.3.linux-amd64.tgz \
+            "https://github.com/MainListActivity/surrealdb/releases/download/${candidate}/surreal-native-quota.linux-amd64.tgz" \
             --output "$archive"
-          echo "f8daafa0655fb3825e6a23911a808e80a2621acff231ccbe9364cae9987e9d84  $archive" | sha256sum --check
+          echo "06af02af91e90a245f1f30a145629d965ed8837912118915c11b1d46812ec49e  $archive" | sha256sum --check
           mkdir -p "$RUNNER_TEMP/surreal-cli"
           tar -xzf "$archive" -C "$RUNNER_TEMP/surreal-cli"
-          test -x "$RUNNER_TEMP/surreal-cli/surreal"
-          "$RUNNER_TEMP/surreal-cli/surreal" version
-          echo "SURREAL_BINARY=$RUNNER_TEMP/surreal-cli/surreal" >> "$GITHUB_ENV"
+          binary="$(find "$RUNNER_TEMP/surreal-cli" -type f -name surreal -print -quit)"
+          test -n "$binary"
+          chmod +x "$binary"
+          "$binary" version
+          echo "SURREAL_BINARY=$binary" >> "$GITHUB_ENV"
 
       - name: Test
         run: pnpm test

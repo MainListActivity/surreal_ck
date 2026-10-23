@@ -196,16 +196,18 @@ describe("RunDiagnostics 记账与快照", () => {
   });
 
   test("effectiveMs = min(配置, 剩余期限)；已过期时给 1ms 下界；deadline 只认首次绑定", () => {
-    const now = Date.now();
-    const diag = createRunDiagnostics({ queryTimeoutMs: 30_000 });
-    diag.bindRun({ deadlineAt: now + 100 });
+    // 固定时钟：墙钟跨毫秒边界时剩余期限会少 1ms，断言不得依赖调度时机。
+    const clock = 1_000_000;
+    const now = () => clock;
+    const diag = createRunDiagnostics({ queryTimeoutMs: 30_000, now });
+    diag.bindRun({ deadlineAt: clock + 100 });
     expect(diag.effectiveMs(30_000)).toBe(100);
     // 重复绑定不覆盖首个 deadline（bindRun ??= 语义）。
-    diag.bindRun({ deadlineAt: now + 999_999 });
+    diag.bindRun({ deadlineAt: clock + 999_999 });
     expect(diag.effectiveMs(30_000)).toBe(100);
 
-    const expired = createRunDiagnostics({ queryTimeoutMs: 30_000 });
-    expired.bindRun({ deadlineAt: now - 10 });
+    const expired = createRunDiagnostics({ queryTimeoutMs: 30_000, now });
+    expired.bindRun({ deadlineAt: clock - 10 });
     expect(expired.effectiveMs(30_000)).toBe(1);
   });
 

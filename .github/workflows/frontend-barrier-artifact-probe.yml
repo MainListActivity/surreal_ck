@@ -1,0 +1,96 @@
+name: Frontend barrier artifact probe
+
+run-name: "Barrier artifact probe ${{ github.sha }} (hold ${{ inputs.hold_seconds || '600' }}s)"
+
+# 只读探针：验证 origin barrier 的 artifact 通道在作业仍运行（in_progress）时，能经 gh API 取回并逐字节核验。
+# 不使用 environment，不引用 secrets，不写 Cloudflare、origin 或产品数据，也不加入生产发布的顶层并发组。
+# 生成的是合成 barrier：它的 workflow_ref 指向本文件，正式发布的 fetch / wait / verify 都会因工作流路径不符而拒绝它。
+# 触发方式：推送到本线分支时自动运行，hold 为默认的 600 秒。GitHub 只允许按文件名手动派发默认分支上已存在的工作流；
+# 本文件合入前只存在于本线分支，所以由 push 触发。合入默认分支后，workflow_dispatch 才可手动指定 hold_seconds。
+on:
+  push:
+    branches:
+      - lane/c11970f4-frontend-barrier-artifact
+    paths:
+      - .github/workflows/frontend-barrier-artifact-probe.yml
+      - scripts/deploy/origin-verification.py
+  workflow_dispatch:
+    inputs:
+      hold_seconds:
+        description: 上传并回读之后保持运行的秒数（60 至 900），供工程在作业仍 in_progress 时经 gh API 取回
+        type: string
+        default: "600"
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  publish:
+    name: Publish a synthetic barrier and hold (no environment, no secrets)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      HOLD_SECONDS: ${{ inputs.hold_seconds || '600' }}
+    steps:
+      - name: Harden the runner
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594 # v2.16.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout the probe tooling
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Validate the hold window
+        run: |
+          set -euo pipefail
+          [[ "$HOLD_SECONDS" =~ ^[0-9]{2,3}$ ]] && [ "$HOLD_SECONDS" -ge 60 ] && [ "$HOLD_SECONDS" -le 900 ] \
+            || { echo "::error::hold_seconds must be an integer from 60 to 900"; exit 1; }
+
+      - name: Generate the synthetic barrier
+        run: |
+          set -euo pipefail
+          # 与正式发布相同的生成代码路径；目标为本探针的提交，仅用于传输验证。
+          python3 scripts/deploy/origin-verification.py barrier \
+            --target "$GITHUB_SHA" \
+            --out "$RUNNER_TEMP/origin-barrier.json"
+
+      - name: Publish the synthetic barrier as a run artifact
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: origin-barrier-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/origin-barrier.json
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: false
+          include-hidden-files: false
+
+      - name: Read the artifact back inside the run
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: origin-barrier-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/readback
+
+      - name: Compare the read-back bytes with the generated barrier
+        run: |
+          set -euo pipefail
+          cmp "$RUNNER_TEMP/origin-barrier.json" "$RUNNER_TEMP/readback/origin-barrier.json"
+          digest="$(sha256sum "$RUNNER_TEMP/origin-barrier.json" | cut -d' ' -f1)"
+          echo "read-back bytes are identical; barrier sha256 $digest"
+          {
+            echo "### Barrier artifact probe"
+            echo "- artifact: origin-barrier-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            echo "- barrier sha256: $digest"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Hold the job open for in-progress reads (bounded)
+        run: |
+          set -euo pipefail
+          echo "artifact published and read back at $(date -u +%Y-%m-%dT%H:%M:%SZ); holding ${HOLD_SECONDS}s so it can be read while the job is in progress"
+          sleep "$HOLD_SECONDS"
