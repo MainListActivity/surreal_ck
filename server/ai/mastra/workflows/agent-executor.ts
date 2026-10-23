@@ -14,6 +14,13 @@ import { ROUTER_RUNTIME_KEY, type SharedConfirmed, type SubAgentExecutor, type S
 import { setExecutionContext } from "../execution-context";
 import { callerRunDiagnostics } from "../../../src/ai/caller-session";
 import { AiRunCancelledError, type RunOpHandle } from "../../../src/ai/run-diagnostics";
+import {
+  buildSupplementPrompt,
+  explainSupplementMiss,
+  keepValueMatchedProposals,
+  planExplicitEditProposal,
+  ROW_PROPOSAL_TOOL,
+} from "./row-proposal-supplement";
 
 export type AgentExecutorOptions = {
   /** 调用 agent 时透传给 stream() 的最大步数。默认 4。 */
@@ -26,6 +33,12 @@ export type AgentExecutorOptions = {
    * 伪装成有效回答（def-row-analysis-no-proposal 的生产故障形态）。
    */
   noOutputText?: string;
+  /**
+   * FV06：显式改字段（子任务点名了目标行与写入值）且本轮只做了只读定位、没有提案调用时，
+   * 在同一次请求内补一次强制 analyzeRow（maxSteps=1）。缺席时不补调用，行为与历史一致。
+   * 判定与保真见 row-proposal-supplement.ts。
+   */
+  ensureExplicitEditProposal?: boolean;
 };
 
 /**
@@ -64,11 +77,28 @@ const ResourceCitationListSchema = z.array(z.object({
   })).optional(),
 }));
 
+/** 单次 LLM 流的输入：主轮使用全部工具；FV06 补充轮只开放并强制提案工具。 */
+type AgentRunInput = {
+  prompt: string;
+  maxSteps: number;
+  toolChoice?: { type: "tool"; toolName: string };
+  activeTools?: string[];
+};
+
+/** 单次 LLM 流的产出：可见文本、文本增量、是否经过推理通道、本轮工具记录（原始形状）。 */
+type AgentRunOutcome = {
+  text: string;
+  deltas: string[];
+  sawReasoning: boolean;
+  toolCalls: AiToolCallRecord[];
+};
+
 /**
  * 把 Mastra Agent 适配成 SubAgentExecutor。
  * - taskText + shared 序列化为单条 user 消息
  * - 通过 fullStream 收集 text deltas（reasoning 只做归类、不进可见流），
  *   让 router-chat 转推到统一 streamId 上
+ * - 启用 ensureExplicitEditProposal 时，显式改字段的只读轮若无提案，同一次请求内补一次强制提案（FV06）
  */
 export function makeAgentExecutor(agent: Agent, options: AgentExecutorOptions = {}): SubAgentExecutor {
   return async ({ taskText, shared, surrealSession, onDelta, onToolCall, signal }) => {
@@ -89,129 +119,176 @@ export function makeAgentExecutor(agent: Agent, options: AgentExecutorOptions = 
     }
     requestContext.set(ROUTER_RUNTIME_KEY, { userContext: shared.userContext });
 
-    const observedToolCalls: AiToolCallRecord[] = [];
     // PG-1：tool 阶段 op 从 fullStream 的 tool-call 起算（早于 execute 入口），
     // 覆盖该 agent 的全部 tool；tool-error/tool-result 记终态。
     const diag = callerRunDiagnostics(surrealSession);
-    const inFlightToolOps = new Map<string, RunOpHandle>();
-    const stream = await agent.stream(
-      [{ role: "user", content: prompt }],
-      {
-        requestContext,
-        abortSignal: signal,
-        ...(internalScope() ? { modelSettings: { maxRetries: 0 } } : {}),
-        maxSteps: options.maxSteps ?? 4,
-        onStepFinish: ({ toolCalls, toolResults }) => {
-          if (!toolResults?.length) return;
-          // Mastra 回调里 toolCalls/toolResults 是 ChunkType：字段在 payload 内。
-          // 同时容忍顶层平铺与 input/output 命名，避免上游再改形状时静默丢结果。
-          const callArgsById = new Map<string, unknown>();
-          for (const tc of toolCalls ?? []) {
-            const payload = stepChunkFields(tc);
-            if (typeof payload?.toolCallId === "string") {
-              callArgsById.set(payload.toolCallId, payload.args ?? payload.input);
-            }
-          }
-          for (const tr of toolResults as unknown[]) {
-            const payload = stepChunkFields(tr);
-            if (typeof payload?.toolName !== "string") continue;
-            const record: AiToolCallRecord = {
-              toolName: payload.toolName,
-              args: (typeof payload.toolCallId === "string" ? callArgsById.get(payload.toolCallId) : undefined)
-                ?? payload.args ?? payload.input,
-              result: payload.result ?? payload.output,
-            };
-            observedToolCalls.push(record);
-            options.onToolCall?.(record);
-            onToolCall?.(record);
-          }
-        },
-        providerOptions: { openai: { stream: true } },
-      },
-    );
 
-    // 消费 fullStream 而不是 textStream：reasoning 模型（如 sensenova-6.8-flash-lite）
-    // 会把全部产出放在 reasoning 通道，textStream 只透传 text-delta——推理内容会被
-    // 整体丢弃，最终 text 为空并被上游兜底成「我没有生成有效回复。」（隐藏失败）。
-    // fullStream 同时暴露 reasoning-delta 与 error part，用于显式归类无产出与流中断。
-    const deltas: string[] = [];
-    let aggregated = "";
-    let sawReasoning = false;
-    let observedStreamError: unknown;
-    try {
-      for await (const part of stream.fullStream) {
-        if (part.type === "text-delta") {
-          const delta = part.payload?.text ?? "";
-          if (!delta) continue;
-          deltas.push(delta);
-          aggregated += delta;
-          onDelta?.(delta);
-          continue;
-        }
-        // 推理内容不进用户可见流：只记录「模型确实思考过」，供无产出归类与排障。
-        if (part.type === "reasoning-delta") {
-          sawReasoning = true;
-          continue;
-        }
-        // 流中途 error part：先记录，循环结束后统一转成显式错误态（不等 stream.error 兜底）。
-        if (part.type === "error") {
-          observedStreamError = (part as { payload?: { error?: unknown } }).payload?.error;
-          continue;
-        }
-        if (diag && part.type === "tool-call") {
-          const payload = part.payload as { toolCallId?: unknown; toolName?: unknown; args?: unknown };
-          if (typeof payload.toolCallId === "string" && typeof payload.toolName === "string") {
-            inFlightToolOps.set(
-              payload.toolCallId,
-              diag.begin({
-                name: payload.toolName,
-                phase: "tool",
-                argShape: summarizeToolCallForAudit({ toolName: payload.toolName, args: payload.args }).argShape,
-              }),
-            );
+    // 单次 LLM 流：主轮与补充轮共用同一套工具记录、文本增量与流失败处理。
+    const runOnce = async (run: AgentRunInput): Promise<AgentRunOutcome> => {
+      const observed: AiToolCallRecord[] = [];
+      const inFlightToolOps = new Map<string, RunOpHandle>();
+      const stream = await agent.stream(
+        [{ role: "user", content: run.prompt }],
+        {
+          requestContext,
+          abortSignal: signal,
+          ...(internalScope() ? { modelSettings: { maxRetries: 0 } } : {}),
+          maxSteps: run.maxSteps,
+          ...(run.toolChoice ? { toolChoice: run.toolChoice } : {}),
+          ...(run.activeTools ? { activeTools: run.activeTools } : {}),
+          onStepFinish: ({ toolCalls, toolResults }) => {
+            if (!toolResults?.length) return;
+            // Mastra 回调里 toolCalls/toolResults 是 ChunkType：字段在 payload 内。
+            // 同时容忍顶层平铺与 input/output 命名，避免上游再改形状时静默丢结果。
+            const callArgsById = new Map<string, unknown>();
+            for (const tc of toolCalls ?? []) {
+              const payload = stepChunkFields(tc);
+              if (typeof payload?.toolCallId === "string") {
+                callArgsById.set(payload.toolCallId, payload.args ?? payload.input);
+              }
+            }
+            for (const tr of toolResults as unknown[]) {
+              const payload = stepChunkFields(tr);
+              if (typeof payload?.toolName !== "string") continue;
+              const record: AiToolCallRecord = {
+                toolName: payload.toolName,
+                args: (typeof payload.toolCallId === "string" ? callArgsById.get(payload.toolCallId) : undefined)
+                  ?? payload.args ?? payload.input,
+                result: payload.result ?? payload.output,
+              };
+              observed.push(record);
+              options.onToolCall?.(record);
+              onToolCall?.(record);
+            }
+          },
+          providerOptions: { openai: { stream: true } },
+        },
+      );
+
+      // 消费 fullStream 而不是 textStream：reasoning 模型（如 sensenova-6.8-flash-lite）
+      // 会把全部产出放在 reasoning 通道，textStream 只透传 text-delta——推理内容会被
+      // 整体丢弃，最终 text 为空并被上游兜底成「我没有生成有效回复。」（隐藏失败）。
+      // fullStream 同时暴露 reasoning-delta 与 error part，用于显式归类无产出与流中断。
+      const deltas: string[] = [];
+      let aggregated = "";
+      let sawReasoning = false;
+      let observedStreamError: unknown;
+      try {
+        for await (const part of stream.fullStream) {
+          if (part.type === "text-delta") {
+            const delta = part.payload?.text ?? "";
+            if (!delta) continue;
+            deltas.push(delta);
+            aggregated += delta;
+            onDelta?.(delta);
+            continue;
           }
-          continue;
-        }
-        if (diag && (part.type === "tool-result" || part.type === "tool-error")) {
-          const payload = part.payload as { toolCallId?: unknown; error?: unknown };
-          const op = typeof payload.toolCallId === "string" ? inFlightToolOps.get(payload.toolCallId) : undefined;
-          if (op) {
-            diag.end(op, part.type === "tool-result" ? "ok" : "failed", payload.error);
-            inFlightToolOps.delete(payload.toolCallId as string);
+          // 推理内容不进用户可见流：只记录「模型确实思考过」，供无产出归类与排障。
+          if (part.type === "reasoning-delta") {
+            sawReasoning = true;
+            continue;
           }
-          continue;
+          // 流中途 error part：先记录，循环结束后统一转成显式错误态（不等 stream.error 兜底）。
+          if (part.type === "error") {
+            observedStreamError = (part as { payload?: { error?: unknown } }).payload?.error;
+            continue;
+          }
+          if (diag && part.type === "tool-call") {
+            const payload = part.payload as { toolCallId?: unknown; toolName?: unknown; args?: unknown };
+            if (typeof payload.toolCallId === "string" && typeof payload.toolName === "string") {
+              inFlightToolOps.set(
+                payload.toolCallId,
+                diag.begin({
+                  name: payload.toolName,
+                  phase: "tool",
+                  argShape: summarizeToolCallForAudit({ toolName: payload.toolName, args: payload.args }).argShape,
+                }),
+              );
+            }
+            continue;
+          }
+          if (diag && (part.type === "tool-result" || part.type === "tool-error")) {
+            const payload = part.payload as { toolCallId?: unknown; error?: unknown };
+            const op = typeof payload.toolCallId === "string" ? inFlightToolOps.get(payload.toolCallId) : undefined;
+            if (op) {
+              diag.end(op, part.type === "tool-result" ? "ok" : "failed", payload.error);
+              inFlightToolOps.delete(payload.toolCallId as string);
+            }
+            continue;
+          }
+        }
+      } finally {
+        // 流异常/取消收尾时仍在飞的 tool op 记 cancelled——不留永远 in-flight 的幽灵操作。
+        if (diag && inFlightToolOps.size > 0) {
+          const cancelled = diag.aborted || signal?.aborted === true;
+          const cause = cancelled ? new AiRunCancelledError() : { code: "tool-stream-dangling" };
+          for (const op of inFlightToolOps.values()) diag.end(op, cancelled ? "cancelled" : "failed", cause);
+          inFlightToolOps.clear();
         }
       }
-    } finally {
-      // 流异常/取消收尾时仍在飞的 tool op 记 cancelled——不留永远 in-flight 的幽灵操作。
-      if (diag && inFlightToolOps.size > 0) {
-        const cancelled = diag.aborted || signal?.aborted === true;
-        const cause = cancelled ? new AiRunCancelledError() : { code: "tool-stream-dangling" };
-        for (const op of inFlightToolOps.values()) diag.end(op, cancelled ? "cancelled" : "failed", cause);
-        inFlightToolOps.clear();
-      }
+      // 双保险：error part 与 stream.error 任一出现都按中断处理，绝不以静默空回复收尾。
+      const failure = streamFailure(stream) ?? streamFailure({ error: observedStreamError });
+      if (failure) throw new AgentStreamInterruptedError(failure);
+      return {
+        text: aggregated || (await stream.text) || "",
+        deltas,
+        sawReasoning,
+        toolCalls: observed,
+      };
+    };
+
+    const mainRun = await runOnce({ prompt, maxSteps: options.maxSteps ?? 4 });
+    const plan = options.ensureExplicitEditProposal
+      ? planExplicitEditProposal(taskText, mainRun.toolCalls)
+      : { kind: "skip" as const };
+    const allDeltas = [...mainRun.deltas];
+    let modelText = mainRun.text;
+    let reasoningSeen = mainRun.sawReasoning;
+    let finalCalls = mainRun.toolCalls;
+    // 未挂起时写给用户的明确原因（仅 FV06 启用且判定为显式改字段时产生）。
+    let missReason = plan.kind === "blocked" ? plan.reason : undefined;
+
+    if (plan.kind === "supplement" && !signal?.aborted) {
+      // 同一次请求内补一次强制提案：maxSteps=1，只开放 analyzeRow，工具选择指向它。
+      const supplement = await runOnce({
+        prompt: buildSupplementPrompt(prompt, plan),
+        maxSteps: 1,
+        toolChoice: { type: "tool", toolName: ROW_PROPOSAL_TOOL },
+        activeTools: [ROW_PROPOSAL_TOOL],
+      });
+      allDeltas.push(...supplement.deltas);
+      reasoningSeen = reasoningSeen || supplement.sawReasoning;
+      modelText = [modelText, supplement.text].filter((part) => part.trim()).join("\n");
+      // 建议值保真：只保留与用户指定值逐字一致的建议。派生副本用于挂起与展示，
+      // 原始记录已由 onToolCall 上报，审计仍是模型原始输出。
+      finalCalls = [
+        ...mainRun.toolCalls,
+        ...supplement.toolCalls.map((call) => keepValueMatchedProposals(call, plan.value)),
+      ];
+      missReason = explainSupplementMiss(supplement.toolCalls, plan.value);
     }
-    // 双保险：error part 与 stream.error 任一出现都按中断处理，绝不以静默空回复收尾。
-    const failure = streamFailure(stream) ?? streamFailure({ error: observedStreamError });
-    if (failure) throw new AgentStreamInterruptedError(failure);
-    let text = aggregated || (await stream.text) || "";
-    const suspend = deriveSuspendSignalFromToolCalls(observedToolCalls);
+
+    const suspend = deriveSuspendSignalFromToolCalls(finalCalls);
+    if (suspend) missReason = undefined;
+    let text = modelText;
     let noOutput: AgentExecutorNoOutput | undefined;
     if (!text.trim() && !suspend) {
-      // 无可见产出不静默：按是否走过推理通道归类，交给调用方的契约文案显式收尾。
-      noOutput = observedToolCalls.length === 0 && sawReasoning ? "reasoning-only" : "empty";
-      text = options.noOutputText ?? "";
+      // 无可见产出不静默：按是否走过推理通道归类；有明确原因时以原因收尾，否则交给调用方的契约文案。
+      noOutput = finalCalls.length === 0 && reasoningSeen ? "reasoning-only" : "empty";
+      text = missReason ?? options.noOutputText ?? "";
+    } else if (missReason) {
+      text = `${text}\n${missReason}`;
     }
     // 全丢弃说明确定性拼接（PG-1 诊断 §4-1）：无论模型是否有可见文本，
     // 只要 suggestions 全被归一化丢弃就给出数量/原因；保留模型原文、不 suspend、不伪造卡。
-    const droppedNote = deriveDroppedProposalNote(observedToolCalls);
+    const droppedNote = deriveDroppedProposalNote(finalCalls);
     if (droppedNote) text = text ? `${text}\n${droppedNote}` : droppedNote;
-    const citations = deriveCitationsFromToolCalls(observedToolCalls);
+    const citations = deriveCitationsFromToolCalls(finalCalls);
     return {
       text,
-      confirmed: deriveConfirmedFromToolCalls(observedToolCalls),
+      confirmed: deriveConfirmedFromToolCalls(finalCalls),
       citations: citations.length ? citations : undefined,
-      deltas,
+      deltas: allDeltas,
       suspend,
       ...(noOutput ? { noOutput } : {}),
     };

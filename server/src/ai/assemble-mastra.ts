@@ -130,7 +130,11 @@ export function buildExecutors(agents: AssembleAgents, deps: AssembleExecutorDep
     dashboard: makeAgentExecutor(agents.dashboardAgent),
     // def-row-analysis-no-proposal：reasoning 模型可能只思考不落地。行分析是首值主路径，
     // 无可见产出时必须给出契约化的显式 no-proposal 态，不得退化成空回复。
-    "row-analysis": makeAgentExecutor(agents.rowAnalysisAgent, { noOutputText: ROW_ANALYSIS_NO_PROPOSAL_TEXT }),
+    // FV06：显式改字段的只读轮无提案时，同一次请求内补一次强制提案（生成可确认的提案卡）。
+    "row-analysis": makeAgentExecutor(agents.rowAnalysisAgent, {
+      noOutputText: ROW_ANALYSIS_NO_PROPOSAL_TEXT,
+      ensureExplicitEditProposal: true,
+    }),
     chitchat: makeAgentExecutor(agents.chitchatAgent),
   };
   if (deps.research) {
