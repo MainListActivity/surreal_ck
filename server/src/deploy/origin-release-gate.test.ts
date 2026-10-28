@@ -32,6 +32,7 @@ const SCRIPT_PATH = join(import.meta.dir, "../../../scripts/deploy/origin-releas
 const scriptSrc = readFileSync(SCRIPT_PATH, "utf8");
 
 const EXTRACTED = [
+  "restore_env_command",
   "restore_env",
   "target_has_revocation_filter",
   "find_revocation_checker_dir",
@@ -211,6 +212,10 @@ bun() {
   echo "grant_revocations=$T_COUNT"
 }
 journalctl() { :; }
+cp() {
+  if [ -n "$T_MISSING_ENV_BACKUP" ]; then return 1; fi
+  command cp "$@"
+}
 cat() {
   if [ -n "$T_MISSING_ENV_BACKUP" ]; then
     echo "cat: no such file" >&2
@@ -329,7 +334,7 @@ describe("origin-release rollback hardening", () => {
     expect(has(r, "point_to:")).toBe(false);
   });
 
-  test("回滚：previous 无过滤 + 空表 + env 备份缺失 → cat 失败即中止，不碰 point_to", () => {
+  test("回滚：previous 无过滤 + 空表 + env 备份缺失 → 复制失败即中止，不碰 point_to", () => {
     const r = runSim({ count: 0, envBackupMissing: true }, { mode: "rollback" });
     expect(r.exitCode).not.toBe(0);
     expect(has(r, "point_to:")).toBe(false);
@@ -484,7 +489,7 @@ function runFullRelease(opts: {
   filteredTarget?: boolean;
   additions?: string;
   healthyBody?: string;
-  catFailBackup?: boolean;
+  copyFailBackup?: boolean;
   /** 发布包内置撤销检查器（使 find_revocation_checker_dir 在目标中命中）。 */
   checker?: boolean;
   /** 检查器标准输出（如 grant_revocations=3）；缺省为 grant_revocations=0。 */
@@ -545,8 +550,14 @@ curl() { printf '%s' "\${T_HEALTH_BODY:-}"; }
 sleep() { :; }
 journalctl() { :; }
 mv() { if [ "\${1:-}" = "-T" ]; then shift; [ -L "\$2" ] && command rm -f "\$2"; fi; command mv -f "$@"; }
+cp() {
+  case "\${T_COPY_FAIL_BACKUP:-}" in
+    1) case "\${2##*/}" in server.env.*-ci*) echo "copy: injected failure" >&2; return 1 ;; esac ;;
+  esac
+  command cp "$@"
+}
 cat() {
-  case "\${T_CAT_FAIL_BACKUP:-}" in
+  case "\${T_COPY_FAIL_BACKUP:-}" in
     1) case "\${1##*/}" in server.env.*-ci*) echo "cat: injected failure" >&2; return 1 ;; esac ;;
   esac
   command cat "$@"
@@ -565,7 +576,7 @@ cat() {
       ORIGIN_KEEP_RELEASES: "8",
       REVOCATION_GATE_DRAIN_SEC: "0",
       T_HEALTH_BODY: opts.healthyBody ?? "",
-      T_CAT_FAIL_BACKUP: opts.catFailBackup ? "1" : "",
+      T_COPY_FAIL_BACKUP: opts.copyFailBackup ? "1" : "",
       GATE_UNIT: unitFile,
       T_CHECKER_OUT: opts.checkerOut ?? "",
       T_STOP_FAIL: opts.stopFails ? "1" : "",
@@ -612,7 +623,7 @@ describe("origin-release.sh 整段发布流：env 顺序与门禁拒绝恢复原
   });
 
   test("env 恢复命令本身失败 → 显式中止且不静默（stderr 点名恢复失败与备份位置）", () => {
-    const r = runFullRelease({ target: "explicit", filteredTarget: false, additions: "REVIEW_FIXTURE=after\n", catFailBackup: true });
+    const r = runFullRelease({ target: "explicit", filteredTarget: false, additions: "REVIEW_FIXTURE=after\n", copyFailBackup: true });
     expect(r.exitCode).not.toBe(0);
     expect(r.stderr).toContain("env restore failed");
     // 恢复未完成：服务保持门禁冻结的停止态，任何路径都不得以未恢复的 env 拉起（无 start/restart，无 ENVSNAP）。
