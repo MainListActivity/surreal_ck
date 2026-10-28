@@ -19,7 +19,8 @@
 | POST | `/api/ops/internal-ai/windows/:id/bind` | 绑定到活动（`window_revision` CAS，幂等） |
 
 活动读面 `GET /api/ops/internal-ai/activities/:id` 追加 `window`、`activityRevision`
-与逐 attempt 新字段。
+与逐 attempt 新字段。窗口投影的 `window.id` 是**裸 UUID**（不含
+`internal_ai_window:` 或 `⟨⟩`），create 响应可直接用于 GET/bind。
 
 ## 2. 创建请求
 
@@ -82,6 +83,10 @@
    同批准摘要 409。创建/绑定事务先写活动 `window_revision` 形成串行化锁，并复核
    active 窗口承诺次数，防并发超支。**重试必须原样重放同一请求体**（含 `sampledAt`/
    `expiresAt` 等时间字段）；任何字段变化都视为新载荷。
+8. **窗口生命周期**：同一活动同时只绑定一个未过期且未耗尽的 active 窗口。旧窗口
+   证据期到期或次数耗尽后，绑定新的独立批准窗口会把旧窗口状态改为 `expired`/
+   `exhausted`（只改状态，历史 attempt/路由/预算字段不改写），旧窗口未用次数不再
+   占用 30 次全局剩余；不会把旧窗口的已用次数返还为新预算。
 
 ## 4. 价格依据与成本状态
 

@@ -176,8 +176,35 @@ test("window routes reject malformed bodies before touching the store and map de
   expect((await denied.json() as { error?: { code?: string } }).error?.code).toBe("magpie-window-legacy-rejected");
   const got = await app.request("/api/ops/internal-ai/windows/w1");
   expect(got.status).toBe(200);
-  expect(await got.json()).toMatchObject({ contract: "magpie-window/v1", window: { id: "internal_ai_window:w1", status: "active", route: { priceBasis: "free-evidence", endpointHost: "127.0.0.1:3425" }, capacity: { database: "ws_ddad14a98469", destructive: false } } });
+  expect(await got.json()).toMatchObject({ contract: "magpie-window/v1", window: { id: "w1", status: "active", route: { priceBasis: "free-evidence", endpointHost: "127.0.0.1:3425" }, capacity: { database: "ws_ddad14a98469", destructive: false } } });
   const bound = await app.request("/api/ops/internal-ai/windows/w1/bind", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ activity: "lca-v2-deploy-qa01", expectedRevision: 3, reason: "绑定" }) });
   expect(bound.status).toBe(200);
   expect(await bound.json()).toMatchObject({ contract: "magpie-window/v1", activityRevision: 4, idempotentReplay: false });
+});
+
+test("window create → GET → bind round-trip uses the bare id returned by create", async () => {
+  const uuid = "3f2c9a1e-8b7d-4c6a-9e2f-1a2b3c4d5e6f";
+  const row: WindowRow = { ...windowRow, id: new RecordId("internal_ai_window", uuid) };
+  const operator: MiddlewareHandler<AppBindings> = async (c, next) => {
+    c.set("platformOperator", { subject: "synthetic-operator", capabilities: ["subscription.manage"] });
+    await next();
+  };
+  const fake = {
+    createWindow: async () => ({ window: row, idempotentReplay: false }),
+    window: async (id: string) => id === uuid ? row : undefined,
+    windowRevision: async () => 3,
+    bindWindow: async (id: string) => {
+      if (id !== uuid) throw new Error("route passed a non-bare id");
+      return { window: row, activityRevision: 4, idempotentReplay: false };
+    },
+  };
+  const app = new Hono<AppBindings>().route("/", createOpsInternalAiRoutes({ gate: { store: fake } as unknown as InternalAiGate, requireOperator: operator, runtime: {} })).onError(handleError);
+  const created = await app.request("/api/ops/internal-ai/windows", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(windowBody()) });
+  expect(created.status).toBe(201);
+  const body = await created.json() as { window: { id: string } };
+  expect(body.window.id).toBe(uuid);
+  expect((await app.request(`/api/ops/internal-ai/windows/${body.window.id}`)).status).toBe(200);
+  const bound = await app.request(`/api/ops/internal-ai/windows/${body.window.id}/bind`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ activity: "lca-v2-deploy-qa01", expectedRevision: 3, reason: "绑定" }) });
+  expect(bound.status).toBe(200);
+  expect(await bound.json()).toMatchObject({ contract: "magpie-window/v1", window: { id: uuid }, activityRevision: 4 });
 });

@@ -28,7 +28,8 @@ const isoOf = (value: unknown): string | null => {
 /** 固定投影：不含 operator subject、请求/响应正文或任何秘密。 */
 function windowView(row: WindowRow): MagpieWindowView {
   return {
-    id: String(row.id), activity: row.activity, status: row.status, revision: row.revision,
+    // 只暴露裸 UUID：路由 :id 校验不接受 record 表名前缀/⟨⟩，create 响应必须能直接用于 GET/bind。
+    id: String(row.id.id), activity: row.activity, status: row.status, revision: row.revision,
     approvalDigest: row.approval_digest, approvalTask: row.approval_task, accountRef: row.account_ref,
     evidenceExpiresAt: row.evidence_expires_at, attempts: row.attempts, attemptLimit: row.attempt_limit,
     reserved: row.reserved, spent: row.spent,

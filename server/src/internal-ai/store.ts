@@ -213,8 +213,15 @@ export class InternalAiStore {
           IF $w.activity != $activityName { THROW "magpie-window-activity-mismatch"; };
           IF $already = false AND $a.window_revision != $expected + 1 { THROW "magpie-window-revision-conflict"; };
           IF $already = false AND ($w.status != "active" OR <datetime>$w.evidence_expires_at <= time::now()) { THROW "magpie-window-evidence-expired"; };
-          LET $current = IF $a.window_id = NONE { NONE } ELSE { (SELECT * FROM $a.window_id)[0] };
-          IF $already = false AND $current != NONE AND $current.status = "active" { THROW "magpie-window-already-bound"; };
+          LET $currentId = $a.window_id;
+          LET $current = IF $currentId = NONE { NONE } ELSE { (SELECT * FROM $currentId)[0] };
+          LET $currentExpired = IF $current = NONE { false } ELSE { $current.status = "active" AND <datetime>$current.evidence_expires_at <= time::now() };
+          LET $currentExhausted = IF $current = NONE { false } ELSE { $current.status = "active" AND $current.attempts >= $current.attempt_limit };
+          // 同一活动只允许一个未过期且未耗尽的 active 窗口；旧窗口过期/耗尽后可绑定新的独立批准窗口，
+          // 只把旧窗口状态改为 expired/exhausted，历史 attempt/路由/预算字段不改写。
+          IF $already = false AND $current != NONE AND $current.status = "active" AND $currentExpired = false AND $currentExhausted = false { THROW "magpie-window-already-bound"; };
+          IF $already = false AND $currentExpired { UPDATE ONLY $currentId SET status = "expired"; };
+          IF $already = false AND $currentExhausted { UPDATE ONLY $currentId SET status = "exhausted"; };
           IF $already = false {
             UPDATE ONLY $activity SET window_id = $windowId;
             UPDATE ONLY $windowId SET bound_at = time::now();
@@ -244,7 +251,9 @@ export class InternalAiStore {
           if (winRow.status !== "active" || Date.parse(winRow.evidence_expires_at) <= Date.now()) throw new WindowDenied("magpie-window-evidence-expired", "窗口证据已过期");
           if (actRow.window_id != null) {
             const current = await this.window(String(actRow.window_id.id));
-            if (current?.status === "active") throw new WindowDenied("magpie-window-already-bound", "活动已绑定另一个 active 窗口");
+            if (current?.status === "active" && Date.parse(current.evidence_expires_at) > Date.now() && current.attempts < current.attempt_limit) {
+              throw new WindowDenied("magpie-window-already-bound", "活动已绑定另一个有效 active 窗口");
+            }
           }
         } catch (classified) { if (classified instanceof WindowDenied) throw classified; }
         if (raw.includes("magpie-window-")) throw new WindowDenied(raw.match(/magpie-window-[a-z-]+/)?.[0] ?? "magpie-window-bind-denied", "窗口绑定被拒绝");

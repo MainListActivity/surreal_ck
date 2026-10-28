@@ -259,3 +259,32 @@ localTest("a window never lifts the global 30-attempt cap", async () => {
   expect(await store.target()).toMatchObject({ attempts: 30 });
   await expect(inInternalScope(scope, () => gate.begin("chat", "openai", "group/work", "http://127.0.0.1:3425/v1"))).rejects.toThrow("internal-ai-budget-exhausted");
 });
+
+localTest("real-fork contract negatives: legacy prefix, expired evidence, wrong account", async () => {
+  const { db, store } = await database("win_neg");
+  await activity(db, "win-neg");
+  const base = windowInput("win-neg");
+  await rejects(() => store.createWindow({ ...base, approvalTask: "a7537d2c-3b76-42b3-bfb8-459956340984" }, "ops-test"), "magpie-window-legacy-rejected");
+  await rejects(() => store.createWindow({ ...base, approvalDigest: digest("1"), evidenceExpiresAt: new Date(Date.now() - 60_000).toISOString() }, "ops-test"), "magpie-window-evidence-expired");
+  await rejects(() => store.createWindow({ ...base, approvalDigest: digest("2"), accountRef: "other-account" }, "ops-test"), "magpie-window-account-mismatch");
+});
+
+localTest("expired or exhausted active windows can be replaced by a new independent approval window", async () => {
+  const { db, store } = await database("win_rotate");
+  await activity(db, "win-rotate");
+  // evidence_expires_at 是 READONLY，只能用短证据期 + 等待来模拟自然到期。
+  const first = await store.createWindow(windowInput("win-rotate", { evidenceExpiresAt: new Date(Date.now() + 1_500).toISOString() }), "ops-test");
+  await store.bindWindow(String(first.window.id.id), { activity: "win-rotate", expectedRevision: await store.windowRevision("win-rotate") }, "ops-test");
+  await Bun.sleep(1_700);
+  const second = await store.createWindow(windowInput("win-rotate", { approvalDigest: digest("e") }), "ops-test");
+  await store.bindWindow(String(second.window.id.id), { activity: "win-rotate", expectedRevision: await store.windowRevision("win-rotate") }, "ops-test");
+  expect((await store.window(String(first.window.id.id)))?.status).toBe("expired");
+  expect(String((await store.activity("win-rotate"))?.window_id)).toBe(String(second.window.id));
+
+  // 耗尽：把第二窗口 attempts 直接推到上限，再用第三个独立批准窗口替换。
+  await db.query("UPDATE ONLY $id SET attempts = attempt_limit", { id: second.window.id });
+  const third = await store.createWindow(windowInput("win-rotate", { approvalDigest: digest("f") }), "ops-test");
+  await store.bindWindow(String(third.window.id.id), { activity: "win-rotate", expectedRevision: await store.windowRevision("win-rotate") }, "ops-test");
+  expect((await store.window(String(second.window.id.id)))?.status).toBe("exhausted");
+  expect((await store.window(String(third.window.id.id)))?.status).toBe("active");
+});
