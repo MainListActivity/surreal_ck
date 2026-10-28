@@ -45,11 +45,12 @@ export class InternalBudgetModel extends ModelRouterLanguageModel {
       let model: string | null = null;
       let request: string | null = null;
       let failed = false;
+      let failure: string | null = null;
       let ended = false;
-      const finish = async (error: boolean) => {
+      const finish = async (error: boolean, failureClass?: string) => {
         if (ended) return;
         ended = true;
-        await this.gate!.finish(ticket, usage, model, request, failed || error);
+        await this.gate!.finish(ticket, usage, model, request, failed || error, failureClass ?? failure);
       };
       return { ...result, stream: new ReadableStream({
         async pull(controller) {
@@ -59,14 +60,14 @@ export class InternalBudgetModel extends ModelRouterLanguageModel {
             const part = item.value;
             if (part.type === "response-metadata") { model = part.modelId ?? null; request = part.id ?? null; }
             if (part.type === "finish") usage = normalizeUsage(part.usage);
-            if (part.type === "error") failed = true;
+            if (part.type === "error") { failed = true; failure = "provider-error"; }
             controller.enqueue(part);
-          } catch { await finish(true); controller.error(new Error("internal-ai-provider-stream-failed")); }
+          } catch { await finish(true, "stream-error"); controller.error(new Error("internal-ai-provider-stream-failed")); }
         },
-        async cancel() { try { await reader.cancel(); } finally { await finish(true); } },
+        async cancel() { try { await reader.cancel(); } finally { await finish(true, "cancelled"); } },
       }) };
     } catch {
-      await this.gate!.finish(ticket, null, null, null, true);
+      await this.gate!.finish(ticket, null, null, null, true, "provider-failed");
       throw new Error("internal-ai-provider-failed");
     }
   }

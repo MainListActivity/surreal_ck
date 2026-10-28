@@ -4,10 +4,12 @@ import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
+import { MAGPIE_WINDOW_CONTRACT_VERSION, magpieWindowBindSchema, magpieWindowCreateSchema, type MagpieWindowView } from "@surreal-ck/shared";
 import type { AppBindings } from "../hono-types";
 import { requirePlatformOperator } from "../ops/operator-auth";
 import { MEASUREMENT_CYCLE } from "../internal-ai/store";
 import type { InternalAiGate } from "../internal-ai/gate";
+import { WindowDenied, type WindowRow } from "../internal-ai/window";
 import { InternalAiRegistration, normalizeReason, PRICE_REQUIRED_EVIDENCE } from "../internal-ai/registration";
 import { verifyCompanyProof } from "../internal-ai/company-proof";
 import { endpointHost, TARIFFS } from "../internal-ai/pricing";
@@ -17,6 +19,44 @@ function dependencyVersion(): string | null {
   try { const entry = createRequire(import.meta.url).resolve("@mastra/core"); const parsed: unknown = JSON.parse(readFileSync(join(dirname(entry), "../package.json"), "utf8")); return parsed && typeof parsed === "object" && "version" in parsed && typeof parsed.version === "string" ? parsed.version : null; } catch { return null; }
 }
 const label = (value: string | undefined) => value && /^[a-zA-Z0-9_.\/-]{1,100}$/.test(value) ? value : null;
+const hostOf = (endpoint: string): string | null => { try { return new URL(endpoint).host; } catch { return null; } };
+const isoOf = (value: unknown): string | null => {
+  if (value === null || value === undefined) return null;
+  const date = value instanceof Date ? value : new Date(String(value));
+  return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+};
+/** 固定投影：不含 operator subject、请求/响应正文或任何秘密。 */
+function windowView(row: WindowRow): MagpieWindowView {
+  return {
+    // 只暴露裸 UUID：路由 :id 校验不接受 record 表名前缀/⟨⟩，create 响应必须能直接用于 GET/bind。
+    id: String(row.id.id), activity: row.activity, status: row.status, revision: row.revision,
+    approvalDigest: row.approval_digest, approvalTask: row.approval_task, accountRef: row.account_ref,
+    evidenceExpiresAt: row.evidence_expires_at, attempts: row.attempts, attemptLimit: row.attempt_limit,
+    reserved: row.reserved, spent: row.spent,
+    route: {
+      revision: row.route_revision, digest: row.route_digest, requestedModel: row.requested_model,
+      servedModel: row.served_model, endpointHost: hostOf(row.endpoint), accountBinding: row.account_binding,
+      priceRevision: row.price_revision, priceBasis: row.price_basis,
+      amortizedNanoUsd: row.amortized_nano_usd ?? null, marginalNanoUsd: row.marginal_nano_usd ?? null,
+      sampledAt: row.sampled_at, expiresAt: row.route_expires_at,
+    },
+    capacity: {
+      database: row.capacity_database, entityTables: row.capacity_tables, fieldsPerTable: row.capacity_fields,
+      recordsPerTable: row.capacity_records, ttlSeconds: row.capacity_ttl_seconds,
+      destructive: row.capacity_destructive, source: row.capacity_source,
+    },
+    createdAt: isoOf(row.created_at), boundAt: isoOf(row.bound_at),
+  };
+}
+function windowHttpError(e: unknown): HttpError {
+  if (e instanceof WindowDenied) {
+    const status = e.code === "magpie-window-activity-unknown" || e.code === "magpie-window-unknown" ? 404
+      : ["magpie-window-idempotency-conflict", "magpie-window-approval-consumed", "magpie-window-already-bound", "magpie-window-revision-conflict"].includes(e.code) ? 409
+      : 422;
+    return new HttpError(status, e.code, e.message);
+  }
+  return new HttpError(503, "magpie-window-store-unavailable", "窗口存储不可用");
+}
 export function createOpsInternalAiRoutes(input: { gate: InternalAiGate; registration?: InternalAiRegistration; runtime: { provider?: string; model?: string; endpoint?: string; jevModel?: string; jevEnabled?: boolean }; requireOperator?: MiddlewareHandler<AppBindings> }) {
   const registration = input.registration ?? new InternalAiRegistration(async () => { throw new Error("registration unavailable"); });
   const auth = input.requireOperator ?? requirePlatformOperator("subscription.manage");
@@ -45,6 +85,7 @@ export function createOpsInternalAiRoutes(input: { gate: InternalAiGate; registr
       const attempts = await input.gate.store.page(id, after);
       const target = await input.gate.store.target();
       const measurementCycle = await input.gate.store.measurementCycle();
+      const bound = await input.gate.store.boundWindow(id);
       // 评价上下文：调用时刻的授权 revision 证据窗口 + 固定测量周期，全部只读。
       let assessments: Map<string, ReturnType<typeof assessAttempt>> | null = null;
       let aggregate: ReturnType<typeof aggregateAssessments> | null = null;
@@ -65,6 +106,7 @@ export function createOpsInternalAiRoutes(input: { gate: InternalAiGate; registr
       const nextAfter = attempts.length === 50 ? attempts.at(-1)?.sequence ?? null : null;
       // 固定字段投影，绝不序列化config任意对象/请求/响应/工具载荷。
       return c.json({ measurementCycle: measurementCycle ? { id: MEASUREMENT_CYCLE, ...measurementCycle } : null, target: { ...target, cumulativeAttempts: target.attempts + (measurementCycle?.attempts ?? 0), totalLimit: 1000000000, attemptLimit: 30, remaining: Math.max(0, 1000000000 - target.spent - target.reserved) }, activity: id, enabled: activity.enabled, approvalRevision: activity.approval_revision ?? null,
+        window: bound ? windowView(bound) : null, activityRevision: activity.window_revision ?? 0,
         limits: { total: activity.total_limit, perAttempt: activity.per_attempt_limit, attempts: activity.attempt_limit },
         spent: activity.spent, reserved: activity.reserved, attemptsUsed: activity.attempts, cumulativeAttemptsUsed: activity.attempts + (measurementCycle?.activity === id ? measurementCycle.attempts : 0),
         remaining: Math.max(0, activity.total_limit - activity.spent - activity.reserved), moneyUnit: "nanoUSD", currency: "USD",
@@ -72,7 +114,7 @@ export function createOpsInternalAiRoutes(input: { gate: InternalAiGate; registr
         evidenceKind: activity.evidence_kind ?? null,
         balance: { status: activity.balance_evidence_hash ? "reviewed-evidence" : "unavailable", amount: activity.balance_nano_usd ?? null, currency: activity.balance_currency ?? null, source: activity.balance_source && /^(reviewed-document|token-plan):[0-9a-f]{64}$/.test(activity.balance_source) ? activity.balance_source : null, evidenceHash: activity.balance_evidence_hash ?? null, sampledAt: activity.balance_sampled_at ?? null, expiresAt: activity.evidence_expires_at ?? null, autoTopupDisabled: activity.auto_topup_disabled, serviceApproved: activity.service_approved },
         quota: activity.evidence_kind === "reviewed-token-plan" ? { planName: activity.plan_name ?? null, planSourceUrl: activity.plan_source_url ?? null, accountPlanType: activity.account_plan_type ?? null, unit: activity.quota_unit ?? null, amount: activity.quota_amount ?? null, windowSeconds: activity.quota_window_seconds ?? null, remaining: activity.quota_remaining ?? null, noPaymentInstrument: activity.no_payment_instrument ?? null } : null,
-        attempts: attempts.map(a => ({ id: String(a.id), sequence: a.sequence, measurementCycle: a.measurement_cycle ?? null, retryIndex: a.retry_index, runHash: a.run_hash, keyHash: a.key_hash, logicalHash: a.logical_hash, stage: a.stage, state: a.state, provider: a.provider, model: a.model, actualModel: a.actual_model ?? null, requestId: a.request_id ?? null, usage: a.usage ?? null, usageSource: a.usage_source, priceRevision: a.price_revision, currency: a.currency, reserved: a.reserved, cost: a.cost ?? null, startedAt: a.started_at, endedAt: a.ended_at, ...(assessments ? { costAssessment: assessments.get(String(a.id)) } : {}) })),
+        attempts: attempts.map(a => ({ id: String(a.id), sequence: a.sequence, measurementCycle: a.measurement_cycle ?? null, window: a.window ? String(a.window) : null, retryIndex: a.retry_index, runHash: a.run_hash, keyHash: a.key_hash, logicalHash: a.logical_hash, stage: a.stage, state: a.state, provider: a.provider, model: a.model, requestedModel: a.requested_model ?? null, actualModel: a.actual_model ?? null, servedModel: a.served_model ?? a.actual_model ?? null, routeRevision: a.route_revision ?? null, routeDigest: a.route_digest ?? null, accountBinding: a.account_binding ?? null, requestId: a.request_id ?? null, usage: a.usage ?? null, usageRaw: a.usage_raw ?? null, usageSource: a.usage_source, priceRevision: a.price_revision, priceBasis: a.price_basis ?? null, currency: a.currency, reserved: a.reserved, cost: a.cost ?? null, costStatus: a.cost_status ?? null, amortizedCost: a.amortized_cost_nano_usd ?? null, marginalCost: a.marginal_cost_nano_usd ?? null, failureClass: a.failure_class ?? null, routeDrift: a.route_drift === true, startedAt: a.started_at, endedAt: a.ended_at, ...(assessments ? { costAssessment: assessments.get(String(a.id)) } : {}) })),
         nextAfter,
         ...(aggregate ? { costAssessment: { ...aggregate, window: { after, pageSize: attempts.length, complete: nextAfter === null }, computedAt: new Date().toISOString() } } : {}),
       });
@@ -135,6 +177,39 @@ export function createOpsInternalAiRoutes(input: { gate: InternalAiGate; registr
       const id = c.req.param("id");
       if (!/^[a-zA-Z0-9_-]{1,100}$/.test(id)) throw new HttpError(400, "internal-ai-id-invalid", "活动标识无效");
       return c.json({ activity: id, revisions: await registration.preview(id) });
+    })
+    /**
+     * 新受控授权窗口：输入新独立批准 digest/证据期/源预算 + 冻结路由/容量声明。
+     * 产品侧拒绝旧周期/旧批准/旧 proof、过期证据、超出剩余次数与容量 scope；
+     * 幂等键重复且载荷一致返回既有窗口，批准摘要重复一律 409。
+     */
+    .post("/api/ops/internal-ai/windows", auth, async c => {
+      const payload = await json(c);
+      const parsed = magpieWindowCreateSchema.safeParse(payload);
+      if (!parsed.success) throw new HttpError(400, "magpie-window-body-invalid", "窗口创建参数不合法");
+      try {
+        const result = await input.gate.store.createWindow(parsed.data, c.var.platformOperator.subject);
+        return c.json({ contract: MAGPIE_WINDOW_CONTRACT_VERSION, idempotentReplay: result.idempotentReplay, window: windowView(result.window), activityRevision: await input.gate.store.windowRevision(parsed.data.activity) }, result.idempotentReplay ? 200 : 201);
+      } catch (e) { throw windowHttpError(e); }
+    })
+    .get("/api/ops/internal-ai/windows/:id", auth, async c => {
+      const id = c.req.param("id");
+      if (!/^[a-zA-Z0-9_-]{1,100}$/.test(id)) throw new HttpError(400, "magpie-window-id-invalid", "窗口标识无效");
+      const row = await input.gate.store.window(id);
+      if (!row) throw new HttpError(404, "magpie-window-unknown", "窗口不存在");
+      return c.json({ contract: MAGPIE_WINDOW_CONTRACT_VERSION, window: windowView(row) });
+    })
+    /** 绑定窗口到活动：activity window_revision CAS，已绑同一窗口时幂等返回。 */
+    .post("/api/ops/internal-ai/windows/:id/bind", auth, async c => {
+      const id = c.req.param("id");
+      if (!/^[a-zA-Z0-9_-]{1,100}$/.test(id)) throw new HttpError(400, "magpie-window-id-invalid", "窗口标识无效");
+      const payload = await json(c);
+      const parsed = magpieWindowBindSchema.safeParse(payload);
+      if (!parsed.success) throw new HttpError(400, "magpie-window-body-invalid", "窗口绑定参数不合法");
+      try {
+        const result = await input.gate.store.bindWindow(id, { activity: parsed.data.activity, expectedRevision: parsed.data.expectedRevision }, c.var.platformOperator.subject);
+        return c.json({ contract: MAGPIE_WINDOW_CONTRACT_VERSION, idempotentReplay: result.idempotentReplay, window: windowView(result.window), activityRevision: result.activityRevision, reason: parsed.data.reason });
+      } catch (e) { throw windowHttpError(e); }
     })
     /**
      * 固定官方供应商账户资料探测：封闭白名单，只读、脱敏。

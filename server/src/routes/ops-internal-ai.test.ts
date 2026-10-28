@@ -9,6 +9,8 @@ import type { AppBindings } from "../hono-types";
 import { createOpsInternalAiRoutes } from "./ops-internal-ai";
 import { InternalAiStore } from "../internal-ai/store";
 import { InternalAiGate } from "../internal-ai/gate";
+import { WindowDenied, type WindowRow } from "../internal-ai/window";
+import { RecordId } from "surrealdb";
 const neverDb = new InternalAiGate(new InternalAiStore(async () => { throw new Error("must not reach store"); }));
 const allow: MiddlewareHandler<AppBindings> = async (_c, next) => next();
 test("customer without ops auth cannot read runtime or ledger", async () => {
@@ -27,9 +29,10 @@ test("runtime reports unavailable balance, strips URL credentials, and never exp
 
 test("registration endpoints retain ops authentication", async () => {
   const app = new Hono<AppBindings>().route("/", createOpsInternalAiRoutes({ gate: neverDb, runtime: {} })).onError(handleError);
-  for (const path of ["company-proof", "activities/test/evidence", "activities/test/enable", "activities/test/disable", "identities/revoke"]) {
+  for (const path of ["company-proof", "activities/test/evidence", "activities/test/enable", "activities/test/disable", "identities/revoke", "windows", "windows/w1/bind"]) {
     expect((await app.request(`/api/ops/internal-ai/${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status).toBe(401);
   }
+  expect((await app.request("/api/ops/internal-ai/windows/w1")).status).toBe(401);
 });
 test("company broker proof-only envelope reaches verification; unknown fields cannot pass", async () => {
   const app = new Hono<AppBindings>().route("/", createOpsInternalAiRoutes({ gate: neverDb, runtime: {}, requireOperator: allow })).onError(handleError);
@@ -130,4 +133,78 @@ test("evidence, enable, disable and revoke forward a strict reason and authentic
       expect((await request({ ...body, budget: 1000000000 })).status).toBe(400);
     }
   } finally { mocks.forEach(mock => mock.mockRestore()); }
+});
+
+const windowRow: WindowRow = {
+  id: new RecordId("internal_ai_window", "w1"), activity: "lca-v2-deploy-qa01",
+  approval_digest: "a".repeat(64), approval_task: "cdc2dd4c", account_ref: "snv67a4f8085b59953cf4ce7af9",
+  evidence_expires_at: "2099-01-01T00:00:00Z", attempt_limit: 2, source_budget_nano_usd: 100000000,
+  per_attempt_nano_usd: 10000000, attempts: 0, reserved: 0, spent: 0, status: "active", revision: 1,
+  route_revision: "magpie-route-1", route_digest: "b".repeat(64), requested_model: "group/work",
+  served_model: "sn-sensenova-6-8-flash", endpoint: "http://127.0.0.1:3425/v1",
+  account_binding: "snv67a4f8085b59953cf4ce7af9", price_revision: "magpie-free-1",
+  price_basis: "free-evidence", free_evidence_hash: "c".repeat(64), amortized_nano_usd: null,
+  marginal_nano_usd: null, max_output_tokens: 8192, sampled_at: "2026-10-28T00:00:00Z",
+  route_expires_at: "2099-01-01T00:00:00Z", capacity_database: "ws_ddad14a98469", capacity_tables: 4,
+  capacity_fields: 12, capacity_records: 12, capacity_ttl_seconds: 3600, capacity_destructive: false,
+  capacity_source: "9e44a95d", idempotency_key: "idem-00000001", payload_hash: "d".repeat(64),
+  operator: "synthetic-operator", reason: "test", created_at: new Date(), bound_at: null,
+};
+function windowBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    activity: "lca-v2-deploy-qa01", approvalDigest: "a".repeat(64), approvalTask: "cdc2dd4c-0000-4000-8000-000000000000",
+    accountRef: "snv67a4f8085b59953cf4ce7af9", evidenceExpiresAt: "2099-01-01T00:00:00Z",
+    sourceBudgetAttempts: 2, sourceBudgetNanoUsd: 100000000, perAttemptNanoUsd: 10000000,
+    route: { revision: "magpie-route-1", digest: "b".repeat(64), requestedModel: "group/work", servedModel: "sn-sensenova-6-8-flash", endpoint: "http://127.0.0.1:3425/v1", accountBinding: "snv67a4f8085b59953cf4ce7af9", priceRevision: "magpie-free-1", priceBasis: "free-evidence", freeEvidenceHash: "c".repeat(64), maxOutputTokens: 8192, sampledAt: "2026-10-28T00:00:00Z", expiresAt: "2099-01-01T00:00:00Z" },
+    capacity: { database: "ws_ddad14a98469", entityTables: 4, fieldsPerTable: 12, recordsPerTable: 12, ttlSeconds: 3600, destructive: false, source: "9e44a95d" },
+    idempotencyKey: "idem-00000001", reason: "受控窗口测试", ...overrides,
+  };
+}
+test("window routes reject malformed bodies before touching the store and map denials to 4xx", async () => {
+  const operator: MiddlewareHandler<AppBindings> = async (c, next) => {
+    c.set("platformOperator", { subject: "synthetic-operator", capabilities: ["subscription.manage"] });
+    await next();
+  };
+  const invalid = new Hono<AppBindings>().route("/", createOpsInternalAiRoutes({ gate: neverDb, requireOperator: operator, runtime: {} })).onError(handleError);
+  const sendInvalid = (body: unknown) => invalid.request("/api/ops/internal-ai/windows", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  expect((await sendInvalid({})).status).toBe(400);
+  expect((await sendInvalid(windowBody({ purchase: true }))).status).toBe(400);
+  const fake = { createWindow: async () => { throw new WindowDenied("magpie-window-legacy-rejected", "旧"); }, window: async () => windowRow, windowRevision: async () => 3, bindWindow: async () => ({ window: windowRow, activityRevision: 4, idempotentReplay: false }) };
+  const app = new Hono<AppBindings>().route("/", createOpsInternalAiRoutes({ gate: { store: fake } as unknown as InternalAiGate, requireOperator: operator, runtime: {} })).onError(handleError);
+  const denied = await app.request("/api/ops/internal-ai/windows", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(windowBody()) });
+  expect(denied.status).toBe(422);
+  expect((await denied.json() as { error?: { code?: string } }).error?.code).toBe("magpie-window-legacy-rejected");
+  const got = await app.request("/api/ops/internal-ai/windows/w1");
+  expect(got.status).toBe(200);
+  expect(await got.json()).toMatchObject({ contract: "magpie-window/v1", window: { id: "w1", status: "active", route: { priceBasis: "free-evidence", endpointHost: "127.0.0.1:3425" }, capacity: { database: "ws_ddad14a98469", destructive: false } } });
+  const bound = await app.request("/api/ops/internal-ai/windows/w1/bind", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ activity: "lca-v2-deploy-qa01", expectedRevision: 3, reason: "绑定" }) });
+  expect(bound.status).toBe(200);
+  expect(await bound.json()).toMatchObject({ contract: "magpie-window/v1", activityRevision: 4, idempotentReplay: false });
+});
+
+test("window create → GET → bind round-trip uses the bare id returned by create", async () => {
+  const uuid = "3f2c9a1e-8b7d-4c6a-9e2f-1a2b3c4d5e6f";
+  const row: WindowRow = { ...windowRow, id: new RecordId("internal_ai_window", uuid) };
+  const operator: MiddlewareHandler<AppBindings> = async (c, next) => {
+    c.set("platformOperator", { subject: "synthetic-operator", capabilities: ["subscription.manage"] });
+    await next();
+  };
+  const fake = {
+    createWindow: async () => ({ window: row, idempotentReplay: false }),
+    window: async (id: string) => id === uuid ? row : undefined,
+    windowRevision: async () => 3,
+    bindWindow: async (id: string) => {
+      if (id !== uuid) throw new Error("route passed a non-bare id");
+      return { window: row, activityRevision: 4, idempotentReplay: false };
+    },
+  };
+  const app = new Hono<AppBindings>().route("/", createOpsInternalAiRoutes({ gate: { store: fake } as unknown as InternalAiGate, requireOperator: operator, runtime: {} })).onError(handleError);
+  const created = await app.request("/api/ops/internal-ai/windows", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(windowBody()) });
+  expect(created.status).toBe(201);
+  const body = await created.json() as { window: { id: string } };
+  expect(body.window.id).toBe(uuid);
+  expect((await app.request(`/api/ops/internal-ai/windows/${body.window.id}`)).status).toBe(200);
+  const bound = await app.request(`/api/ops/internal-ai/windows/${body.window.id}/bind`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ activity: "lca-v2-deploy-qa01", expectedRevision: 3, reason: "绑定" }) });
+  expect(bound.status).toBe(200);
+  expect(await bound.json()).toMatchObject({ contract: "magpie-window/v1", window: { id: uuid }, activityRevision: 4 });
 });
