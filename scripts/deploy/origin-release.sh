@@ -86,7 +86,7 @@ restore_env_command() {
 
 restore_env() {
   local tmp="$env_file.restore.$$"
-  # tmp 以默认 umask 创建；env_file 含密钥，恢复后权限收紧到与备份一致。
+  # tmp 保留受保护备份的所有者与属性；切换前再明确收紧为 0600。
   if restore_env_command cp -p "$env_backup" "$tmp" \
     && restore_env_command chmod 600 "$tmp" \
     && restore_env_command mv -f "$tmp" "$env_file"; then
