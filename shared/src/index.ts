@@ -2,6 +2,7 @@ export * from "./ai-context";
 export * from "./ai-allowance";
 export * from "./activation-summary";
 export * from "./internal-ai-proof";
+export * from "./internal-ai-window";
 export * from "./capabilities";
 export * from "./date-format";
 export * from "./field-schema";
