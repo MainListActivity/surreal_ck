@@ -152,6 +152,10 @@ GitHub `production` Environment 额外配置：
 - Secret `ORIGIN_SSH_KEY`：专用 ed25519 部署私钥（指纹 `SHA256:a6kDk9GJtawCz+OAP4dhJXQ2iAscwlyLDe/BRuo5gt0`），公钥以 `restrict` 选项登记在主机 `~ubuntu/.ssh/authorized_keys`。未配置时回退到 `SSH_KEY`。
 - Variables：`ORIGIN_HOST=129.146.179.37`、`ORIGIN_USER=ubuntu`、`ORIGIN_KNOWN_HOSTS`（主机 ed25519 公钥，指纹 `SHA256:lXW+YzF2c6i7Lr8oziMi1Iy/sOj0zDhZR4DvPErvFFM`）。
 
+### 环境恢复所需权限
+
+`server.env` 可由部署用户持有，而 `/etc/surreal-ck` 仍可保持 root 持有的受限目录。原子恢复需要父目录写权：脚本在父目录不可写时仅通过 `sudo -n` 执行备份复制、0600 权限设置、原子移动及临时件清理，不放宽目录权限。部署账号须具备这些受控文件操作权限；拒绝时恢复失败仍显式报错并保留备份，不截断在线文件，不改写失败状态为成功。
+
 ## 手动发布 origin
 
 在 `main` 上从 Actions 运行 `Deploy origin (manual)`，填入完整 SHA 与 `approval_ref`（运营批准或回滚记录编号，写入运行名称与审计）。该运行只允许在 `main` 上启动（作业守卫）。合入后的首次探针验证见「dry_run 探针」。

@@ -74,13 +74,25 @@ current_target() {
 # cat > $env_file，重定向会先于 cat 失败截断目标，把 env 清成空文件。
 # 恢复失败显式中止（备份仍在 $env_backup 供人工排查），不静默留下
 # 被增改的 env，否则原服务下次重启会读到一次被拒绝发布的配置。
+restore_env_command() {
+  # 部署用户可能仅拥有 server.env，而父目录仍由 root 管理（0750）。
+  # 原子替换需要父目录写权；不放宽目录权限，也不退回截断 live 文件。
+  if [ -w "$(dirname "$env_file")" ]; then
+    "$@"
+  else
+    sudo -n "$@"
+  fi
+}
+
 restore_env() {
   local tmp="$env_file.restore.$$"
   # tmp 以默认 umask 创建；env_file 含密钥，恢复后权限收紧到与备份一致。
-  if cat "$env_backup" > "$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$env_file"; then
+  if restore_env_command cp -p "$env_backup" "$tmp" \
+    && restore_env_command chmod 600 "$tmp" \
+    && restore_env_command mv -f "$tmp" "$env_file"; then
     return 0
   fi
-  rm -f "$tmp"
+  restore_env_command rm -f "$tmp" || true
   echo "release aborted: env restore failed; backup kept at $env_backup" >&2
   exit 1
 }
