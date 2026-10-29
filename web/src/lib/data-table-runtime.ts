@@ -27,6 +27,7 @@ import {
   wrapRecordField,
 } from "./workbook-data";
 import { recordValueToString, toRecordId } from "./record-id";
+import { quotaExceededMessage } from "./quota/presentation";
 import type { LiveMessage, SurrealConn, SurrealTransactionWriter } from "./surreal";
 import {
   normalizeTemplateImportRows,
@@ -1228,17 +1229,7 @@ function runtimeError(
 
 function quotaFailureMessage(failure: QuotaFailure): string {
   if (failure.kind === "exceeded") {
-    const resources = [...new Set(
-      failure.violations.map((violation) =>
-        violation.resource === "table"
-          ? "数据表数量"
-          : violation.resource === "field"
-            ? "字段数量"
-            : "记录数量"
-      ),
-    )];
-    const scope = resources.length > 0 ? resources.join("、") : "当前资源";
-    return `${scope}已达到配额。本次事务未提交，草稿已保留；请删除或减少用量、升级计划，或联系工作区管理员。`;
+    return quotaExceededMessage(failure.violations);
   }
   if (failure.kind === "policy_changed") {
     return "配额策略在操作期间发生变化，草稿已保留。请刷新用量后重试；只有幂等操作才可自动重试一次。";

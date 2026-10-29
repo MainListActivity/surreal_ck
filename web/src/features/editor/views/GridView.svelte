@@ -598,6 +598,11 @@
   <section class="grid-shell" aria-label="表格视图">
     <div class="grid-table" style={tableStyle}>
       <div class="grid-card">
+        {#if gridSource.length === 0}
+          <p class="grid-empty" role="status">
+            这张数据表还没有记录。可点击上方「导入文件」导入已有数据，或在首页「从模板创建」中选择「包含样例数据」重新建簿。
+          </p>
+        {/if}
         <RevoGrid
           bind:this={gridRef}
           source={gridSource}
@@ -735,6 +740,14 @@
 {/if}
 
 <style>
+  .grid-empty {
+    margin: 0;
+    padding: 12px 16px;
+    color: var(--text-3);
+    font-size: 13px;
+    line-height: 1.6;
+  }
+
   .grid-wrap {
     position: relative;
     display: flex;
