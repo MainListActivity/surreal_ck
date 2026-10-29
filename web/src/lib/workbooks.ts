@@ -4,6 +4,8 @@ import {
   gridColumnToStoredDef,
 } from "@surreal-ck/shared/field-schema";
 import {
+  extractNativeQuotaError,
+  mapQuotaFailure,
   computeEntityCapacityNeed,
   describeCapacityGaps,
   evaluateEntityCapacity,
@@ -20,6 +22,7 @@ import type {
 } from "@surreal-ck/shared/dto";
 import type { SurrealConn } from "./surreal";
 import { describeWriteError } from "./workbook-data";
+import { quotaExceededMessage } from "./quota/presentation";
 import { toRecordId } from "./record-id";
 import { compileDashboardWidgetQuery } from "./dashboard-query";
 import {
@@ -695,6 +698,14 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
       }
       await deps.getConn().query(sql, bindings);
     } catch (err) {
+      if (extractNativeQuotaError(err)) {
+        const failure = mapQuotaFailure(err, { kind: "participant" });
+        state.error = failure.kind === "exceeded"
+          ? quotaExceededMessage(failure.violations)
+          : describeWriteError(err);
+        emit();
+        return null;
+      }
       const message = describeWriteError(err);
       const isInfraFailure = /processing event|does not exist|quota/i.test(message);
       state.error = options.includesTemplateDashboard && !message.startsWith("没有权限") && !isInfraFailure

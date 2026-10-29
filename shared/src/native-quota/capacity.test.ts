@@ -199,5 +199,7 @@ describe("describeCapacityGaps", () => {
     expect(text).toContain("需要 11");
     expect(text).toContain("需要 12");
     expect(text).toContain("上限 6");
+    expect(text).not.toContain("升级");
+    expect(text).toContain("邀请人");
   });
 });
