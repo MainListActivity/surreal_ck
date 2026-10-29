@@ -73,6 +73,15 @@ Variables（2026-10-19 只读核对，前端 12 项全部存在，核对方法�
 
 这些 `VITE_*` 值会进入公开的浏览器 bundle，因此只能放公开配置；OIDC client secret、SurrealDB root 密码、模型 key 等服务端凭证绝不能放在这里。ops SPA 是纯 public client（PKCE），`VITE_OPS_OIDC_CLIENT_ID` 只是公开标识符而非凭证。
 
+### 服务端环境变量：漏斗埋点 `ORIGIN_ENV_FUNNEL_HASH_KEY`
+
+漏斗埋点聚合任务把各工作区的日计数写入 `_system.funnel_event_count`，行内工作区标识 `workspace_key = HMAC-SHA256(FUNNEL_HASH_KEY, db_name)`。操作口径：
+
+- **生成**：从本机随机源取 ≥16 字符的值（例如 `openssl rand -hex 32`），只经 stdin 写入——`gh secret set ORIGIN_ENV_FUNNEL_HASH_KEY --env production < <临时文件>`，再删除临时文件。值不得出现在命令行参数、日志、任务证据或报告里。
+- **生效**：CI 发布 origin 时把该 secret 写成 `server.env` 的 `FUNNEL_HASH_KEY=...`；未配置时聚合任务只重算不写入（无密钥的摘要可枚举还原，故禁止用空密钥落库）。
+- **不轮换**：轮换会使同一工作区的历史 `workspace_key` 与新值断开，历史计数无法对齐。确需更换必须同时接受历史断裂，并按新命名域重新累计。
+- **读取**：运营身份持 `funnel.read` 能力时 `GET /api/ops/funnel-counts` 只读查看；行内只有 event/day/workspace_key/count 四字段。
+
 ## 手动重发
 
 可以从 Actions 手动运行 `Deploy production`（启用之后）。工作流仍会查询目标 commit 的 check runs；该 commit 没有成功的 `Quality gate` 时会拒绝发布。

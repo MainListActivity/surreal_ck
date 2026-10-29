@@ -117,11 +117,11 @@ describe("aggregateFunnelCounts", () => {
   test("重算 (event, day) 计数并 UPSERT，count 为精确值", async () => {
     const { client, calls } = fakeClient(baseRoutes({
       funnelRows: [[
-        { event: "first_login", day: "2026-10-28", subject: "user:1" },
-        { event: "first_login", day: "2026-10-28", subject: "user:2" },
-        { event: "import_succeeded", day: "2026-10-29", subject: "import_batch:1" },
-        { event: "first_success", day: "2026-10-29", subject: "import_batch:1" },
-        { event: "ai_proposal_adopted", day: "2026-10-29", subject: "chat_write_fence:1" },
+        { event: "first_login", day: "2026-10-28" },
+        { event: "first_login", day: "2026-10-28" },
+        { event: "import_succeeded", day: "2026-10-29" },
+        { event: "first_success", day: "2026-10-29" },
+        { event: "ai_proposal_adopted", day: "2026-10-29" },
       ]],
     }));
     const result = await aggregateFunnelCounts(client, { hashKey: HASH_KEY });
@@ -137,7 +137,7 @@ describe("aggregateFunnelCounts", () => {
   });
 
   test("return_week2 只在日差 7–13 命中；day+14 不产生计数", async () => {
-    const funnelRows = [[{ event: "first_success", day: "2026-10-20", subject: "import_batch:1" }]];
+    const funnelRows = [[{ event: "first_success", day: "2026-10-20" }]];
     const inside = fakeClient(baseRoutes({ funnelRows, writeDays: [["2026-10-27"]] }));
     const insideResult = await aggregateFunnelCounts(inside.client, { hashKey: HASH_KEY });
     expect(insideResult.computed).toBe(4); // 3 邀请 + 1 first_success + 1 return_week2
@@ -151,7 +151,7 @@ describe("aggregateFunnelCounts", () => {
 
   test("重复执行幂等：INSERT 带 ON DUPLICATE KEY UPDATE 且 count 恒为重算值", async () => {
     const routes = baseRoutes({
-      funnelRows: [[{ event: "first_login", day: "2026-10-28", subject: "user:1" }]],
+      funnelRows: [[{ event: "first_login", day: "2026-10-28" }]],
     });
     const first = fakeClient(routes);
     const second = fakeClient(routes);
@@ -165,9 +165,25 @@ describe("aggregateFunnelCounts", () => {
     }
   });
 
+  test("返工 B1/B3：原始事件只读 event/day，计数 UPSERT 不含 updated_at", async () => {
+    const { client, calls } = fakeClient(baseRoutes({
+      funnelRows: [[{ event: "first_login", day: "2026-10-28" }]],
+    }));
+    await aggregateFunnelCounts(client, { hashKey: HASH_KEY });
+
+    const funnelSelect = calls.find((call) => call.sql.includes("FROM funnel_event"));
+    expect(funnelSelect?.sql.trim()).toBe("SELECT event, day FROM funnel_event;");
+    expect(funnelSelect?.sql).not.toContain("subject");
+
+    const insert = calls.find((call) => call.sql.includes("INSERT INTO funnel_event_count"));
+    // 计数表四字段（event/day/workspace_key/count），不写 updated_at。
+    expect(insert?.sql).not.toContain("updated_at");
+    expect(insert?.sql).toContain("event: $event, day: $day, workspace_key: $workspaceKey, count: $count");
+  });
+
   test("无哈希密钥：只重算不写入", async () => {
     const { client, calls } = fakeClient(baseRoutes({
-      funnelRows: [[{ event: "first_login", day: "2026-10-28", subject: "user:1" }]],
+      funnelRows: [[{ event: "first_login", day: "2026-10-28" }]],
     }));
     const result = await aggregateFunnelCounts(client, { hashKey: "" });
     expect(result.skippedNoHashKey).toBe(true);

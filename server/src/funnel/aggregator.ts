@@ -182,7 +182,7 @@ export async function aggregateFunnelCounts(
     try {
       await client.use({ namespace, database: workspace.dbName });
       const funnelRows: RawFunnelRow[] = rowsOf(
-        await client.query("SELECT event, day, subject FROM funnel_event;"),
+        await client.query("SELECT event, day FROM funnel_event;"),
       ).filter((value): value is RawFunnelRow => !!value && typeof value === "object");
       for (const [key, count] of countFunnelRows(funnelRows)) {
         const [event, day] = key.split("|");
@@ -243,7 +243,7 @@ export async function aggregateFunnelCounts(
     const key = workspaceKey(item.workspaceHashInput, options.hashKey);
     if (!key) continue;
     await client.query(
-      "INSERT INTO funnel_event_count { event: $event, day: $day, workspace_key: $workspaceKey, count: $count } ON DUPLICATE KEY UPDATE count = $count, updated_at = time::now();",
+      "INSERT INTO funnel_event_count { event: $event, day: $day, workspace_key: $workspaceKey, count: $count } ON DUPLICATE KEY UPDATE count = $count;",
       { event: item.event, day: item.day, workspaceKey: key, count: item.count },
     );
     result.written += 1;

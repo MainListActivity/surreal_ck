@@ -638,7 +638,7 @@ describe("workspace template scripts", () => {
     expect(sql).not.toMatch(/UPDATE |DELETE |REMOVE /i);
   });
 
-  test("a1e2791c：059 funnel_event 追加式漏斗事件——事件枚举、幂等约束与无内容字段", async () => {
+  test("a1e2791c/ad5d63f0：059 funnel_event 追加式漏斗事件——去 subject、触发点幂等、无内容字段", async () => {
     const scripts = await loadTemplateScripts();
     const migration = scripts.find((script) => script.name === "059-funnel-event.surql");
 
@@ -646,18 +646,25 @@ describe("workspace template scripts", () => {
     const sql = migration?.sql ?? "";
     expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS funnel_event SCHEMAFULL CHANGEFEED 7d/);
     expect(sql).toMatch(/FOR create WHERE \$auth != NONE/);
-    expect(sql).toMatch(/funnel_event_subject_unique/);
+    // 返工 B1：不存主体 id，也不设主体唯一索引；幂等靠事件触发点。
+    expect(sql).not.toContain("subject");
+    expect(sql).not.toMatch(/funnel_event_subject_unique/);
     // 五个可落行事件；return_week2 由聚合任务推算，不在本表落行。
     for (const event of ["first_login", "template_created", "import_succeeded", "first_success", "ai_proposal_adopted"]) {
       expect(sql).toContain(`event: "${event}"`);
     }
-    // 幂等：五处事件写入前先查重（含 first_success 的全局首个判断）。
-    expect((sql.match(/SELECT VALUE id FROM funnel_event WHERE event =/g) ?? []).length).toBe(5);
-    // 行内不含内容字段：只有 event / day / subject / created_at。
+    // 幂等：仅 first_success 需要全局首个查重；其余事件挂在 CREATE 或带 $before 的边沿 UPDATE 上。
+    expect((sql.match(/SELECT VALUE id FROM funnel_event WHERE event =/g) ?? []).length).toBe(1);
+    expect(sql).toContain('event = "first_success" LIMIT 1');
+    expect(sql).toMatch(/\$before\.status NOT IN \["completed", "partial_failure"\]/);
+    expect(sql).toMatch(/\$before\.status != "consumed" OR \$before\.consumed_by != "write-confirmed"/);
+    expect(sql).toMatch(/WHEN \$event = "CREATE" AND \$after\.kind = "human"/);
+    expect(sql).toMatch(/WHEN \$event = "CREATE" AND \$after\.template != NONE/);
+    // 行内不含内容字段：只有 event / day / created_at。
     expect(sql).toMatch(/DEFINE FIELD IF NOT EXISTS event ON TABLE funnel_event/);
     expect(sql).toMatch(/DEFINE FIELD IF NOT EXISTS day ON TABLE funnel_event/);
-    expect(sql).toMatch(/DEFINE FIELD IF NOT EXISTS subject ON TABLE funnel_event/);
     expect(sql).toMatch(/DEFINE FIELD IF NOT EXISTS created_at ON TABLE funnel_event/);
+    expect((sql.match(/DEFINE FIELD IF NOT EXISTS \w+ ON TABLE funnel_event/g) ?? []).length).toBe(3);
     expect(sql).not.toMatch(/DEFINE FIELD[^\n]*content|DEFINE FIELD[^\n]*amount|DEFINE FIELD[^\n]*email/);
     // 只允许 DEFINE/INSERT 类语句；WHEN $event = "UPDATE" 是事件条件，不是写语句。
     expect(sql).not.toMatch(/^\s*(UPDATE|DELETE|REMOVE)\s/mi);

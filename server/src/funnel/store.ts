@@ -6,7 +6,6 @@ export type FunnelCountRow = {
   day: string;
   workspaceKey: string;
   count: number;
-  updatedAt: string | null;
 };
 
 export type FunnelCountQuery = {
@@ -22,24 +21,13 @@ function rows(result: unknown): Record<string, unknown>[] {
   return Array.isArray(result) && Array.isArray(result[0]) ? result[0] as Record<string, unknown>[] : [];
 }
 
-function toIso(value: unknown): string | null {
-  if (value == null) return null;
-  if (typeof value === "string") return value;
-  if (value instanceof Date) return value.toISOString();
-  if (typeof value === "object" && "toString" in value) {
-    const text = String(value);
-    return Number.isNaN(Date.parse(text)) ? null : text;
-  }
-  return null;
-}
-
 function mapRow(row: Record<string, unknown>): FunnelCountRow | null {
   const event = typeof row.event === "string" ? row.event : null;
   const day = typeof row.day === "string" ? row.day : null;
   const workspaceKey = typeof row.workspace_key === "string" ? row.workspace_key : null;
   const count = typeof row.count === "number" ? row.count : null;
   if (!event || !day || !workspaceKey || count === null) return null;
-  return { event, day, workspaceKey, count, updatedAt: toIso(row.updated_at) };
+  return { event, day, workspaceKey, count };
 }
 
 export interface FunnelCountStore {
@@ -65,7 +53,7 @@ export class SurrealFunnelCountStore implements FunnelCountStore {
     }
     const session = await this.getSession("_system", this.namespace);
     const result = await session.query(
-      `SELECT event, day, workspace_key, count, updated_at FROM funnel_event_count
+      `SELECT event, day, workspace_key, count FROM funnel_event_count
        WHERE ${conditions.join(" AND ")} ORDER BY day DESC, event ASC LIMIT $limit;`,
       params,
     );
