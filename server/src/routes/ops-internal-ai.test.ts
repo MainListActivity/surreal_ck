@@ -208,3 +208,14 @@ test("window create → GET → bind round-trip uses the bare id returned by cre
   expect(bound.status).toBe(200);
   expect(await bound.json()).toMatchObject({ contract: "magpie-window/v1", window: { id: uuid }, activityRevision: 4 });
 });
+
+test('runtime discloses the configured loopback endpoint without treating it as a direct-provider price certificate', async () => {
+  const endpoint = 'http://127.0.0.1:3425/v1';
+  const app = new Hono<AppBindings>().route('/', createOpsInternalAiRoutes({ gate: neverDb, requireOperator: allow, runtime: { provider: 'openai', model: 'group/work', endpoint } }));
+  const response = await app.request('/api/ops/internal-ai/runtime');
+  const body = await response.json();
+  expect(body.endpointHost).toBe('127.0.0.1');
+  expect(body.endpointBinding).toEqual({ endpoint, host: '127.0.0.1', port: '3425', path: '/v1', protocol: 'http', source: 'runtime-config' });
+  expect(body.model).toBe('group/work');
+  expect(body.priceCertificates.some((t: {model:string}) => t.model === 'group/work')).toBe(false);
+});

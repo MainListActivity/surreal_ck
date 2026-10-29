@@ -117,3 +117,9 @@ RocksDB tests覆盖多连接及两个独立客户端进程并发、真实服务�
 周期由全目标唯一固定记录控制，换 run/key/activity 不能加预算；重复 enable 不重置次数、不续期、不改变 documentHash/approvalRevision。首次周期绑定的文档到期后该周期停止，新的批准或证据不能复活/重新分配该周期，需要另行受审交付。并发数据库冲突可能由 SDK 只返回 NotExecuted；保留既有 fail-closed 行为，不把未知提交当作可安全重发。自动重试 provider 仍为 0。
 
 回退：通过既有 disable 路由禁用复测活动并读回；保留新旧 attempt、周期计数和 revision。代码回滚后旧目标 30 次上限会拒绝继续调用，不删除 037 新结构。无需新增环境变量或主机停写迁移。
+
+## 运行时端点与模型能力的披露
+
+`GET /api/ops/internal-ai/runtime` 保持运营鉴权；`endpointBinding` 来自运行中配置，仅披露无凭证的 protocol/host/port/path/endpoint。HTTP 仅允许 loopback，禁止泄露 userinfo/query/fragment。`endpointHost` 现在可正确返回 `127.0.0.1`，不能再把旧版 null 当成产品未配置；供应商 tariffFor 的 HTTPS/精确主机和路径限制保持不变。
+
+模型 catalog 的 max_output_tokens 是能力上限，不是请求必须使用的输出量。内部活动每次真实调用由 InternalBudgetModel 在发送前取 min(请求值, 获批窗口maxOutput)，因此能力384000的模型可在65536或更小的获批窗口运行。新增回归拦截实际模型传输seam验证此限制，不发真实模型请求，不扩大窗口或预算。
