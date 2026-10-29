@@ -324,14 +324,18 @@ function createSurrealControlPlane(
         { planKey },
       );
       const planRow = firstRow(result);
-      if (!planRow?.active_revision && !revisionId) return null;
+      // 套餐不存在一律拒绝——即使给了 revisionId 也不能用别的套餐的修订顶上。
+      if (!planRow) return null;
 
       const revisionResult = await systemDb.query(
         "SELECT * FROM ONLY $revision;",
-        { revision: revisionId ? new StringRecordId(revisionId) : planRow!.active_revision },
+        { revision: revisionId ? new StringRecordId(revisionId) : planRow.active_revision },
       );
       const revisionRow = firstRow(revisionResult);
       if (!revisionRow) return null;
+      // 修订必须属于该套餐：修订缺 plan 链接或指向别的套餐都按 plan not found 处理。
+      const revisionPlanId = (revisionRow.plan as { toString(): string } | undefined)?.toString();
+      if (revisionPlanId !== String(planRow.id)) return null;
 
       const planRevision: EntitlementPlanRevision = {
         id: asRecordId(revisionRow.id, `quota_plan_revision:${planKey}_v1`),

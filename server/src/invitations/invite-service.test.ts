@@ -173,8 +173,8 @@ function makeService(overrides: {
     syncWindowMs: overrides.syncWindowMs,
     staleProcessingMs: overrides.staleProcessingMs,
     workspaceCreator: {
-      createWorkspace: async () => {
-        calls.push({ name: "createWorkspace" });
+      createWorkspace: async (input: { resourceSource?: { planKey: string; sourceKind: string; revisionId?: string } }) => {
+        calls.push({ name: "createWorkspace", detail: input.resourceSource });
         if (overrides.createDelayMs) {
           await new Promise((resolve) => setTimeout(resolve, overrides.createDelayMs));
         }
@@ -226,6 +226,32 @@ describe("G2 InviteService", () => {
     expect(audit?.outcome?.activationUrlIssued).toBe(true);
     // 审计行不存 token/url 本体。
     expect(JSON.stringify(audit)).not.toContain("SECRET");
+  });
+
+  test("显式指定 trial_v2 修订：resourceSource 带 revisionId，产品版本仍由 productPlanRevisionId 决定", async () => {
+    const { service, calls } = makeService();
+    const result = await service.provision(ACTOR, input({
+      planKey: "trial",
+      quotaPlanRevisionId: "quota_plan_revision:trial_v2",
+      productPlanRevisionId: "product_plan_revision:trial_v2",
+    }));
+    expect(result.status).toBe("completed");
+    const create = calls.find((c) => c.name === "createWorkspace");
+    expect(create?.detail).toEqual({
+      planKey: "trial",
+      sourceKind: "manual",
+      revisionId: "quota_plan_revision:trial_v2",
+    });
+    const assign = calls.find((c) => c.name === "assign");
+    expect(assign?.detail?.productPlanRevisionId).toBe("product_plan_revision:trial_v2");
+  });
+
+  test("缺省行为：不传 quotaPlanRevisionId 时不携带修订，planKey 保持显式值", async () => {
+    const { service, calls } = makeService();
+    await service.provision(ACTOR, input({ planKey: "trial" }));
+    const create = calls.find((c) => c.name === "createWorkspace");
+    expect(create?.detail).toEqual({ planKey: "trial", sourceKind: "manual" });
+    expect(create?.detail?.revisionId).toBeUndefined();
   });
 
   test("幂等重放：同键同参返回既有结果，不重复建 ws/授额，activation_url 不再下发", async () => {
@@ -298,7 +324,7 @@ describe("G2 InviteService", () => {
     const { stableSha256 } = await import("../quota/canonical");
     const digest = stableSha256(JSON.stringify({
       email: "lawyer@example.com", displayName: "陈律师", workspaceSlug: "acme-bankruptcy",
-      workspaceName: null, planKey: "pro", productPlanRevisionId: null,
+      workspaceName: null, planKey: "pro", productPlanRevisionId: null, quotaPlanRevisionId: null,
       aiAllowance: { amount: 500, expiresAt: "2099-01-01T00:00:00Z", label: "邀请试点 AI 额度" }, reason: "G2 试点邀请",
     }));
     store.rows.set("invite-test-key-001", {
@@ -364,7 +390,7 @@ describe("G2 InviteService", () => {
     const { stableSha256 } = await import("../quota/canonical");
     const digest = stableSha256(JSON.stringify({
       email: "lawyer@example.com", displayName: "陈律师", workspaceSlug: "acme-bankruptcy",
-      workspaceName: null, planKey: "pro", productPlanRevisionId: null,
+      workspaceName: null, planKey: "pro", productPlanRevisionId: null, quotaPlanRevisionId: null,
       aiAllowance: { amount: 500, expiresAt: "2099-01-01T00:00:00Z", label: "邀请试点 AI 额度" }, reason: "G2 试点邀请",
     }));
     const recordId = "ops_invitation:x";
@@ -408,7 +434,7 @@ describe("G2 InviteService", () => {
     const { stableSha256 } = await import("../quota/canonical");
     const digest = stableSha256(JSON.stringify({
       email: "lawyer@example.com", displayName: "陈律师", workspaceSlug: "acme-bankruptcy",
-      workspaceName: null, planKey: "pro", productPlanRevisionId: null,
+      workspaceName: null, planKey: "pro", productPlanRevisionId: null, quotaPlanRevisionId: null,
       aiAllowance: { amount: 500, expiresAt: "2099-01-01T00:00:00Z", label: "邀请试点 AI 额度" }, reason: "G2 试点邀请",
     }));
     store.rows.set("invite-test-key-001", {
