@@ -68,6 +68,10 @@ const EnvSchema = z.object({
 
   RECONCILE_INTERVAL_SEC: z.coerce.number().int().positive().default(3600),
 
+  // 漏斗埋点（任务 d70c3748）：工作区标识 HMAC-SHA256 的密钥。未配置时聚合任务
+  // 只重算不写入（无密钥哈希可枚举还原，见 funnel/hash.ts）。生产经 ORIGIN_ENV_FUNNEL_HASH_KEY 下发。
+  FUNNEL_HASH_KEY: z.string().min(16).optional(),
+
   // 虚拟员工 runtime（VER06）：会话续约点必须低于 employee access 的 session
   // DURATION（1h）；关停 deadline 之外另给 abort 宽限；启动 reconcile 有界并发。
   EMPLOYEE_SESSION_RENEW_AFTER_SEC: z.coerce.number().int().positive().default(2700),

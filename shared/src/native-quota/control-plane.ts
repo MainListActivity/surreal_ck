@@ -461,6 +461,9 @@ export const PLATFORM_OPERATOR_CAPABILITIES = [
   "activation.autonomy.manage",
   // LCA14：受控灰度开关/批次写操作独立持能；读沿用 quota.read。
   "rollout.manage",
+  // 漏斗埋点只读（任务 d70c3748 第 4 版 §6）：读 _system.funnel_event_count，
+  // 行内无内容字段；写只由服务端聚合任务完成，不设运营写能力。
+  "funnel.read",
 ] as const;
 export type PlatformOperatorCapability =
   (typeof PLATFORM_OPERATOR_CAPABILITIES)[number];

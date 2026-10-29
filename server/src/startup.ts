@@ -14,6 +14,7 @@ import { seedPlatformOperators } from "./db/platform-operator-seed";
 import { seedQuotaPlans } from "./db/quota-plan-seed";
 import { migrateAllWorkspaces } from "./db/migration-runner";
 import { startReconcileLoop, type ReconcileLoopHandle } from "./db/reconciler";
+import { startFunnelLoop, type FunnelLoopHandle } from "./funnel/loop";
 import {
   NativeQuotaStartupGateError,
   probeNativeQuotaHttp,
@@ -75,6 +76,8 @@ export type StartServerDeps = {
     websocket?: AppLike["websocket"];
   }) => ServerHandle;
   startReconcileLoop?: () => ReconcileLoopHandle;
+  /** 漏斗埋点聚合心跳（任务 d70c3748）；test 环境默认不启动。 */
+  startFunnelLoop?: () => FunnelLoopHandle;
   startQuotaRuntime?: () => NativeQuotaRuntimeHandle;
   startClaimsRiskDispatcher?: () => ClaimsRiskDispatcherHandle;
   /** 办公室领域 reconciliation（VO02）；test 环境默认不启动。 */
@@ -133,6 +136,8 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
     ((options: { hostname: string; port: number; fetch: AppLike["fetch"] }) =>
       Bun.serve(options as Parameters<typeof Bun.serve>[0]));
   const startReconcile = deps.startReconcileLoop ?? startReconcileLoop;
+  const startFunnel = deps.startFunnelLoop
+    ?? (envName === "test" ? () => ({ stop() {} }) : startFunnelLoop);
   const startQuota = deps.startQuotaRuntime
     ?? (envName === "test"
       ? () => ({ stop() {} })
@@ -236,6 +241,16 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
     });
   }
 
+  // 漏斗聚合心跳不阻塞 boot：失败只告警，下个周期重试。
+  let funnelLoop: FunnelLoopHandle | undefined;
+  try {
+    funnelLoop = startFunnel();
+  } catch (cause) {
+    console.error("[server] failed to start funnel aggregation loop; continuing without it", {
+      message: cause instanceof Error ? cause.message : String(cause),
+    });
+  }
+
   let claimsRiskDispatcher: ClaimsRiskDispatcherHandle | undefined;
   try {
     claimsRiskDispatcher = startClaimsRisk();
@@ -264,6 +279,7 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
       console.info("[server] shutting down", { signal });
       server.stop();
       reconcileLoop?.stop();
+      funnelLoop?.stop();
       quotaRuntime.stop();
       await claimsRiskDispatcher?.stop();
       await officeReconciler?.stop();

@@ -97,6 +97,7 @@ import { createContentMcpRoutes } from "./ops/mcp/routes";
 import { ActivationSummaryService } from "./activation-summary/service";
 import { SurrealActivationSummaryStore } from "./activation-summary/store";
 import { createActivationSummaryRoutes } from "./routes/activation-summary";
+import { createFunnelRoutes } from "./routes/funnel";
 import { OpsFollowUpService } from "./ops-follow-up/service";
 import { SurrealOpsFollowUpStore } from "./ops-follow-up/store";
 import { createOpsFollowUpRoutes } from "./routes/ops-follow-up";
@@ -522,6 +523,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
       service: activationSummaryService,
       requireUser: options.requireUser,
     }))
+    .route("/", createFunnelRoutes())
     .route("/", createOpsFollowUpRoutes({ service: opsFollowUpService }))
     .route("/", createOpsProposalRoutes({ service: opsProposalService }))
     .route("/", createOpsAutonomyRoutes({ service: opsAutonomyService }))

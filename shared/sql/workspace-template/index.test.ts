@@ -626,7 +626,8 @@ describe("workspace template scripts", () => {
     const migration = scripts.find((script) => script.name === "055-claims-reconciliation-finding.surql");
 
     expect(migration?.version).toBe(55);
-    expect(WORKSPACE_TEMPLATE_VERSION).toBe(58);
+    // 059-funnel-event（任务 a1e2791c）追加为最新版本。
+    expect(WORKSPACE_TEMPLATE_VERSION).toBe(59);
     const sql = migration?.sql ?? "";
     expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS reconciliation_finding SCHEMAFULL/);
     expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS claim_supplement SCHEMAFULL/);
@@ -635,6 +636,31 @@ describe("workspace template scripts", () => {
     expect(sql).toMatch(/FOR update, delete\s+WHERE false/);
     expect(sql).toMatch(/ALLINSIDE \["amount_mismatch", "interest_mismatch", "missing_evidence", "identity_mismatch"\]/);
     expect(sql).not.toMatch(/UPDATE |DELETE |REMOVE /i);
+  });
+
+  test("a1e2791c：059 funnel_event 追加式漏斗事件——事件枚举、幂等约束与无内容字段", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.name === "059-funnel-event.surql");
+
+    expect(migration?.version).toBe(59);
+    const sql = migration?.sql ?? "";
+    expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS funnel_event SCHEMAFULL CHANGEFEED 7d/);
+    expect(sql).toMatch(/FOR create WHERE \$auth != NONE/);
+    expect(sql).toMatch(/funnel_event_subject_unique/);
+    // 五个可落行事件；return_week2 由聚合任务推算，不在本表落行。
+    for (const event of ["first_login", "template_created", "import_succeeded", "first_success", "ai_proposal_adopted"]) {
+      expect(sql).toContain(`event: "${event}"`);
+    }
+    // 幂等：五处事件写入前先查重（含 first_success 的全局首个判断）。
+    expect((sql.match(/SELECT VALUE id FROM funnel_event WHERE event =/g) ?? []).length).toBe(5);
+    // 行内不含内容字段：只有 event / day / subject / created_at。
+    expect(sql).toMatch(/DEFINE FIELD IF NOT EXISTS event ON TABLE funnel_event/);
+    expect(sql).toMatch(/DEFINE FIELD IF NOT EXISTS day ON TABLE funnel_event/);
+    expect(sql).toMatch(/DEFINE FIELD IF NOT EXISTS subject ON TABLE funnel_event/);
+    expect(sql).toMatch(/DEFINE FIELD IF NOT EXISTS created_at ON TABLE funnel_event/);
+    expect(sql).not.toMatch(/DEFINE FIELD[^\n]*content|DEFINE FIELD[^\n]*amount|DEFINE FIELD[^\n]*email/);
+    // 只允许 DEFINE/INSERT 类语句；WHEN $event = "UPDATE" 是事件条件，不是写语句。
+    expect(sql).not.toMatch(/^\s*(UPDATE|DELETE|REMOVE)\s/mi);
   });
 
   test("PG-1：057 为 chat_delivery 增 run_diagnostic FLEXIBLE 字段（纯增量）", async () => {
