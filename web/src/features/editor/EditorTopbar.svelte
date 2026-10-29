@@ -8,9 +8,11 @@
     editorAccessLevel as editorAccessLevelFn,
   } from "../../lib/permissions.svelte";
   import { editorStore } from "../../lib/editor-store.svelte";
+  import { getSurreal } from "../../lib/surreal";
+  import { exportWorkbookCsv } from "../../lib/workbook-csv-export";
   import { editorUi } from "./lib/editor-ui.svelte";
   import { panelRegistry } from "./registries/panels";
-  import { menuRegistry } from "./registries/menu";
+  import { buildMenuRegistry } from "./registries/menu";
 
   let { workbookName = "", onback }: { workbookName?: string; onback?: () => void } = $props();
 
@@ -76,7 +78,24 @@
   // 占位：真实成员列表应来自 workspace store
   const quickMembers = ["王晓明", "李静"];
 
-  async function runMenuItem(item: (typeof menuRegistry)[number]) {
+  async function exportWorkbook() {
+    const workbook = editorStore.workbook;
+    if (!workbook || editorStore.loading || editorStore.error) return;
+    try {
+      await exportWorkbookCsv({
+        conn: getSurreal(),
+        workbookId: workbook.id,
+        workbookName: workbook.name,
+        sheets: editorStore.sheets,
+      });
+    } catch (err) {
+      globalThis.alert(`导出失败，未生成文件：${String(err)}`);
+    }
+  }
+
+  const menuItems = buildMenuRegistry({ exportCsv: exportWorkbook });
+
+  async function runMenuItem(item: (typeof menuItems)[number]) {
     editorUi.showMenu = false;
     await item.action();
   }
@@ -187,7 +206,7 @@
     </button>
     {#if editorUi.showMenu}
       <div class="menu-pop">
-        {#each menuRegistry as item}
+        {#each menuItems as item}
           <button class:danger={item.danger} onclick={() => runMenuItem(item)}>
             {item.label}
           </button>
