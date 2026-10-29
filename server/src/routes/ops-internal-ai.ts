@@ -1,3 +1,4 @@
+import { runtimeEndpoint } from '../internal-ai/runtime-endpoint';
 import { Hono } from "hono";
 import type { MiddlewareHandler } from "hono";
 import { createRequire } from "node:module";
@@ -64,7 +65,7 @@ export function createOpsInternalAiRoutes(input: { gate: InternalAiGate; registr
   const reasonOf = (payload: unknown) => normalizeReason((payload as { reason?: unknown } | null)?.reason);
   return new Hono<AppBindings>()
     .get("/api/ops/internal-ai/runtime", auth, c => c.json({
-      provider: label(input.runtime.provider), model: label(input.runtime.model), endpointHost: endpointHost(input.runtime.endpoint),
+      provider: label(input.runtime.provider), model: label(input.runtime.model), endpointHost: runtimeEndpoint(input.runtime.endpoint)?.host ?? null, endpointBinding: runtimeEndpoint(input.runtime.endpoint),
       jevEnabled: input.runtime.jevEnabled ?? false, jevModel: label(input.runtime.jevModel), jevEndpointHost: "api.typesafe.ai", mastraVersion: dependencyVersion(),
       priceCertificates: TARIFFS, defaultEnabled: false, balance: { status: "unavailable", reason: "no approved account-bound balance evidence or supported read-only supplier balance API; API key presence is not evidence" },
       implicitRetries: 0, embedding: "forbidden-in-internal-activity", currency: "USD", moneyUnit: "nanoUSD", fx: { rate: 1, currency: "USD", nonUSD: "unsupported" },

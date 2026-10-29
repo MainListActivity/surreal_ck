@@ -172,3 +172,15 @@ test("单步路径不误伤：internal scope 纯文本请求照常发送；非 i
     expect(assistant.role === "assistant" && assistant.content).toHaveLength(2);
   } finally { mock.mockRestore(); }
 });
+
+test('model capability 384000 does not override the approved 65536 output ceiling', async () => {
+  const sent: Options[] = [];
+  const gate = { begin: async () => ({ id: 'attempt:synthetic', tariff: { maxOutput: 65536 } }), finish: async () => {} } as unknown as InternalAiGate;
+  const mock = spyOn(ModelRouterLanguageModel.prototype, 'doStream').mockImplementation(async options => { sent.push(options); return emptyStream(); });
+  try {
+    const model = new InternalBudgetModel({ ...settings, model: 'group/work' }, 'synthetic-stage', gate);
+    await inInternalScope(scope, () => model.doStream({ prompt: [{ role: 'user', content: [{ type: 'text', text: 'synthetic' }] }], maxOutputTokens: 384000 }));
+    expect(sent[0]!.maxOutputTokens).toBe(65536);
+    expect(sent[0]!.maxOutputTokens).toBeLessThan(384000);
+  } finally { mock.mockRestore(); }
+});
