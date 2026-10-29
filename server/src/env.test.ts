@@ -62,4 +62,17 @@ describe("loadEnv template pack selection", () => {
     expect(loadEnv({ ...requiredEnv, TYPESAFE_API_KEY: "unset" }).TYPESAFE_API_KEY).toBe("unset");
     expect(loadEnv({ ...requiredEnv, TYPESAFE_API_KEY: "real-key" }).TYPESAFE_API_KEY).toBe("real-key");
   });
+
+  test("Mastra 遥测缺省关闭（MASTRA_TELEMETRY_DISABLED=1），只有显式 0 才放行，其他值拒绝", () => {
+    expect(loadEnv(requiredEnv).MASTRA_TELEMETRY_DISABLED).toBe("1");
+    expect(loadEnv({ ...requiredEnv, MASTRA_TELEMETRY_DISABLED: "0" }).MASTRA_TELEMETRY_DISABLED).toBe("0");
+    // loadEnv 校验失败会把 process.exitCode 置 1 并抛错；恢复它，避免污染测试进程的退出码。
+    // bun 里把 exitCode 置回 undefined 不能清零，必须给数值 0（真实失败仍由 bun 的失败计数置 1）。
+    const exitCodeBefore = process.exitCode;
+    try {
+      expect(() => loadEnv({ ...requiredEnv, MASTRA_TELEMETRY_DISABLED: "true" })).toThrow();
+    } finally {
+      process.exitCode = exitCodeBefore ?? 0;
+    }
+  });
 });
