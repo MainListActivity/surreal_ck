@@ -62,4 +62,10 @@ describe("loadEnv template pack selection", () => {
     expect(loadEnv({ ...requiredEnv, TYPESAFE_API_KEY: "unset" }).TYPESAFE_API_KEY).toBe("unset");
     expect(loadEnv({ ...requiredEnv, TYPESAFE_API_KEY: "real-key" }).TYPESAFE_API_KEY).toBe("real-key");
   });
+
+  test("Mastra 遥测缺省关闭（MASTRA_TELEMETRY_DISABLED=1），只有显式 0 才放行，其他值拒绝", () => {
+    expect(loadEnv(requiredEnv).MASTRA_TELEMETRY_DISABLED).toBe("1");
+    expect(loadEnv({ ...requiredEnv, MASTRA_TELEMETRY_DISABLED: "0" }).MASTRA_TELEMETRY_DISABLED).toBe("0");
+    expect(() => loadEnv({ ...requiredEnv, MASTRA_TELEMETRY_DISABLED: "true" })).toThrow();
+  });
 });
