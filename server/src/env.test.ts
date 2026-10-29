@@ -76,3 +76,30 @@ describe("loadEnv template pack selection", () => {
     }
   });
 });
+
+describe("loadEnv funnel hash key", () => {
+  test("未配置时为 undefined（聚合任务只重算不写入）", () => {
+    expect(loadEnv(requiredEnv).FUNNEL_HASH_KEY).toBeUndefined();
+  });
+
+  test("空串等价未配置：docker-compose 注入 FUNNEL_HASH_KEY= 不导致启动失败", () => {
+    expect(loadEnv({ ...requiredEnv, FUNNEL_HASH_KEY: "" }).FUNNEL_HASH_KEY).toBeUndefined();
+  });
+
+  test("≥16 字符的密钥原样保留", () => {
+    const key = "0123456789abcdef";
+    expect(loadEnv({ ...requiredEnv, FUNNEL_HASH_KEY: key }).FUNNEL_HASH_KEY).toBe(key);
+  });
+
+  test("过短的密钥仍被拒绝", () => {
+    // loadEnv 失败时会把 process.exitCode 置 1。Bun 里把 exitCode 赋回 undefined
+    // 不会清除已设的 1（实测仍以 1 退出），必须显式还原为 0，否则整轮测试全绿
+    // 也会以 exit 1 结束（CI Quality gate 回归）。
+    const previousExitCode = process.exitCode ?? 0;
+    try {
+      expect(() => loadEnv({ ...requiredEnv, FUNNEL_HASH_KEY: "too-short" })).toThrow();
+    } finally {
+      process.exitCode = previousExitCode;
+    }
+  });
+});
