@@ -79,6 +79,13 @@ describe("loadEnv funnel hash key", () => {
   });
 
   test("过短的密钥仍被拒绝", () => {
-    expect(() => loadEnv({ ...requiredEnv, FUNNEL_HASH_KEY: "too-short" })).toThrow();
+    // loadEnv 失败时会把 process.exitCode 置 1；断言后必须还原，
+    // 否则整轮测试全绿也会以 exit 1 结束（CI Quality gate 回归）。
+    const previousExitCode = process.exitCode;
+    try {
+      expect(() => loadEnv({ ...requiredEnv, FUNNEL_HASH_KEY: "too-short" })).toThrow();
+    } finally {
+      process.exitCode = previousExitCode;
+    }
   });
 });
