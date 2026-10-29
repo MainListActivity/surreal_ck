@@ -18,12 +18,21 @@ export const createOpsInvitationSchema = z.object({
     .regex(/^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/u)
     .max(40),
   workspaceName: z.string().trim().min(1).max(80).optional(),
-  /** 既有商业套餐键（manual 分配，不产生付费事实）；默认 pro。 */
+  /** 既有商业套餐键（manual 分配，不产生付费事实）；默认 pro。pro（2/6/4）装不下
+   *  bankruptcy-claims 模板；需要试用模板容量时显式传 planKey="trial" 并配
+   *  quotaPlanRevisionId 指定修订（如 quota_plan_revision:trial_v2）。不存在的
+   *  套餐或修订会显式拒绝，绝不静默回退到 pro。 */
   planKey: z.string().trim().regex(/^[a-z][a-z0-9_]{1,63}$/u).default("pro"),
   /** 缺省时回退 pro_trial_configuration:current 批准的产品版本。 */
   productPlanRevisionId: z
     .string()
     .startsWith("product_plan_revision:")
+    .optional(),
+  /** 显式指定容量修订（quota_plan_revision 记录），须属于 planKey 对应套餐；
+   *  缺省用该套餐 active_revision。manual 分配 trial 模板修订必须显式指定。 */
+  quotaPlanRevisionId: z
+    .string()
+    .startsWith("quota_plan_revision:")
     .optional(),
   aiAllowance: z.object({
     amount: z.number().int().positive(),

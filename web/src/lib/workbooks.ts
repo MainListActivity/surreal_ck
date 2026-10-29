@@ -4,6 +4,8 @@ import {
   gridColumnToStoredDef,
 } from "@surreal-ck/shared/field-schema";
 import {
+  extractNativeQuotaError,
+  mapQuotaFailure,
   computeEntityCapacityNeed,
   describeCapacityGaps,
   evaluateEntityCapacity,
@@ -20,6 +22,7 @@ import type {
 } from "@surreal-ck/shared/dto";
 import type { SurrealConn } from "./surreal";
 import { describeWriteError } from "./workbook-data";
+import { quotaExceededMessage } from "./quota/presentation";
 import { toRecordId } from "./record-id";
 import { compileDashboardWidgetQuery } from "./dashboard-query";
 import {
@@ -695,6 +698,18 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
       }
       await deps.getConn().query(sql, bindings);
     } catch (err) {
+      if (extractNativeQuotaError(err)) {
+        // 建簿事务是 DDL：产品访问模型下只有 workspace admin 能执行（participant
+        // 先撞权限错误、走下面的 describeWriteError 分支），所以按管理员口径投影
+        // 违规项，保留资源类型与用量数字。participant 视图不带 operated_table
+        // 时 projectViolation 会把违规项全部裁剪掉，文案退化成无资源类型。
+        const failure = mapQuotaFailure(err, { kind: "workspace_admin" });
+        state.error = failure.kind === "exceeded"
+          ? quotaExceededMessage(failure.violations)
+          : describeWriteError(err);
+        emit();
+        return null;
+      }
       const message = describeWriteError(err);
       const isInfraFailure = /processing event|does not exist|quota/i.test(message);
       state.error = options.includesTemplateDashboard && !message.startsWith("没有权限") && !isInfraFailure

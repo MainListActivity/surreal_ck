@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { jsonify, Surreal } from "surrealdb";
 import { seedQuotaPlans, type QuotaPlanSeedClient } from "./quota-plan-seed";
-import { MAX_V2_LIMITS, SEEDED_PLAN_LIMITS } from "./quota-plan-rules";
+import { MAX_V2_LIMITS, SEEDED_PLAN_LIMITS, TRIAL_V2_LIMITS } from "./quota-plan-rules";
 
 /**
  * CV02：seedQuotaPlans 在公司 fork 真机上的幂等验证。
@@ -82,7 +82,7 @@ describe("seedQuotaPlans — Max v2 修订（公司 fork 真机）", () => {
     expect(plan?.active_revision).toBe("quota_plan_revision:max_v2");
 
     // 其他套餐仍指向各自 v1，未受影响。
-    for (const key of ["plus", "pro"] as const) {
+    for (const key of ["plus", "pro", "trial"] as const) {
       const row = jsonify(
         (await db.query<[{ active_revision: string }]>(
           `SELECT active_revision FROM ONLY quota_plan:${key};`,
@@ -91,5 +91,26 @@ describe("seedQuotaPlans — Max v2 修订（公司 fork 真机）", () => {
       expect(row?.active_revision).toBe(`quota_plan_revision:${key}_v1`);
       expect(SEEDED_PLAN_LIMITS[key]).toBeDefined();
     }
+
+    // 试用容量匹配：trial_v2 只新增一行（3/11/12），trial_v1 保留（1/3/2）。
+    const trialRevisions = jsonify(
+      (await db.query<[unknown[]]>(
+        "SELECT id, revision, template_kind FROM quota_plan_revision WHERE id IN [quota_plan_revision:trial_v1, quota_plan_revision:trial_v2];",
+      ))[0],
+    ) as Array<{ id: string; revision: number; template_kind: string }>;
+    expect(trialRevisions.map((row) => row.id).sort()).toEqual([
+      "quota_plan_revision:trial_v1",
+      "quota_plan_revision:trial_v2",
+    ]);
+    expect(trialRevisions.find((row) => row.id.endsWith("trial_v2"))).toMatchObject({ revision: 2, template_kind: "trial" });
+    const trialV2 = jsonify(
+      (await db.query<[{ rules: unknown[] }]>("SELECT rules FROM ONLY quota_plan_revision:trial_v2;"))[0]?.rules,
+    ) as Array<{ resource: string; selector: { kind: string; value: string }; limit: { kind: string; value?: number } }>;
+    const trialEntLimit = (resource: string) => trialV2.find(
+      (rule) => rule.resource === resource && rule.selector.kind === "regex" && rule.selector.value === "^ent_",
+    )?.limit;
+    expect(trialEntLimit("table")).toEqual({ kind: "finite", value: TRIAL_V2_LIMITS.tables });
+    expect(trialEntLimit("field")).toEqual({ kind: "finite", value: TRIAL_V2_LIMITS.fields });
+    expect(trialEntLimit("record")).toEqual({ kind: "finite", value: TRIAL_V2_LIMITS.records });
   }, 30_000);
 });

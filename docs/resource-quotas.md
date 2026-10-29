@@ -22,6 +22,11 @@ workspace database 的 `workspace_resource_quota:current`，因此不存在跨�
 > 破产债权模板包：creditors 6+2 字段、claims 9+2 字段、12 条样例记录）。
 > `max_v1`（3/9/6）保持不可变留存，既有工作区订阅快照不受影响，经
 > `subscription_upsert` 指向 `max_v2` 完成升级。
+>
+> 试用同样新增不可变修订 `trial_v2`（3 表 / 每张 11 物理字段 / 每张 12 记录，
+> 与 `max_v2` 物理口径相同）。`trial_v1`（1/3/2）保持不可变留存，`quota_plan:trial`
+> 的 `active_revision` 不变，既有试用与订阅不迁移。显式七日 Pro 试用的容量
+> 由经批准的产品修订引用 `trial_v2` 决定，价格与是否启用由老板在关口决定。
 
 套餐记录位于 `resource_quota_plan:plus`、`:pro`、`:max`。数据表创建和字段变化由
 `sheet` 上的同步事件检查；记录创建和删除由每张动态实体表自己的

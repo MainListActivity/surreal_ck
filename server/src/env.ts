@@ -82,6 +82,8 @@ const EnvSchema = z.object({
   EMPLOYEE_STARTUP_RECONCILE_CONCURRENCY: z.coerce.number().int().positive().default(4),
 
   MASTRA_OBSERVABILITY_RETENTION_DAYS: z.coerce.number().int().positive().max(3650).default(30),
+  // Mastra EE 遥测（PostHog，us.posthog.com）的开关。"1" 关闭；缺省关闭，只有显式写 "0" 才允许外发。
+  MASTRA_TELEMETRY_DISABLED: z.enum(["0", "1"]).default("1"),
 
   // AI 模型 provider / model / key（生产装配 AiChatService 用；三个齐备才接线，否则 /api/chat 返回 501）。
   AI_PROVIDER: z.string().min(1).optional(),
@@ -151,6 +153,8 @@ export function loadEnv(input: NodeJS.ProcessEnv = process.env): ServerEnv {
 }
 
 export let env = loadEnv();
+// Mastra 在调用时读取 process.env.MASTRA_TELEMETRY_DISABLED；写回同一个解析值，避免 schema 默认值与运行时不一致。
+process.env.MASTRA_TELEMETRY_DISABLED = env.MASTRA_TELEMETRY_DISABLED;
 
 export function overrideEnv(updates: Partial<ServerEnv>) {
   env = { ...env, ...updates };

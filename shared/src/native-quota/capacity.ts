@@ -230,5 +230,5 @@ export function describeCapacityGaps(gaps: readonly CapacityGap[]): string {
       : `${gap.label}需要 ${gap.needed}，上限 ${gap.limit}`;
     return scope;
   });
-  return `当前套餐容量不足：${parts.join("；")}。请升级套餐或联系工作区管理员调整配额后再试。`;
+  return `当前套餐容量不足：${parts.join("；")}。请删除或减少用量，或联系你的邀请人调整容量后再试。`;
 }
