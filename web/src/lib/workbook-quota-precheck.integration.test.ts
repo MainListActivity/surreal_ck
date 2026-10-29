@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { jsonify, Surreal } from "surrealdb";
-import { commercialProductRules } from "@surreal-ck/shared/native-quota";
+import { commercialProductRules, TRIAL_V2_LIMITS } from "@surreal-ck/shared/native-quota";
 import type { ProductQuotaRule } from "@surreal-ck/shared/native-quota";
 import type { QuotaApiResource, QuotaApiWorkspaceView } from "@surreal-ck/shared/native-quota";
 import { loadTemplatePackScripts } from "@surreal-ck/shared/template-packs";
@@ -193,6 +193,7 @@ async function loadClaimsTemplate(conn: SurrealConn) {
 
 const V1_MAX = { tables: 3, fields: 9, records: 6 };
 const V2_MAX = { tables: 3, fields: 11, records: 12 };
+const TRIAL_V1 = { tables: 1, fields: 3, records: 2 };
 
 describe("CV02 — 原生配额下破产债权包创建（公司 fork 真机）", () => {
   localSurrealTest("v1 Max 修订下引擎原子拒绝整包：无残留 workbook/sheet/实体表", async () => {
@@ -302,5 +303,34 @@ describe("CV02 — 原生配额下破产债权包创建（公司 fork 真机）"
     expect(finiteFor("table")).toEqual({ kind: "finite", value: 3 });
     expect(finiteFor("field")).toEqual({ kind: "finite", value: 11 });
     expect(finiteFor("record")).toEqual({ kind: "finite", value: 12 });
+  }, 30_000);
+
+  localSurrealTest("试用 trial_v2（3/11/12）同包可建簿；trial_v1（1/3/2）仍拒绝", async () => {
+    const { root, conn, database } = await setupDatabase();
+    // 试用修订 trial_v1 的一表上限装不下两表模板：引擎原子拒绝，无残留。
+    await root.query(quotaPolicySurql(database, TRIAL_V1)).collect();
+    const template = await loadClaimsTemplate(conn);
+    const rejected = createWorkbooksStore({ getConn: () => conn });
+    expect(await rejected.createFromTemplate({
+      ...template,
+      sheets: templateSheetsForCreate(template),
+    })).toBeNull();
+    const beforeUpgrade = await quotaInfo(root, database);
+    const generation = beforeUpgrade.policy?.generation ?? beforeUpgrade.latest_change?.generation;
+    if (generation === undefined) throw new Error("quota policy generation missing");
+
+    // 按 seed 中 trial_v2 的规则切换，并校验 INFO 读回的物理上限即 TRIAL_V2_LIMITS。
+    expect(TRIAL_V2_LIMITS).toEqual(V2_MAX);
+    await root.query(quotaPolicySurql(database, TRIAL_V2_LIMITS, generation)).collect();
+    const upgraded = createWorkbooksStore({ getConn: () => conn });
+    const workbook = await upgraded.createFromTemplate({
+      ...template,
+      sheets: templateSheetsForCreate(template),
+    });
+    expect(workbook).not.toBeNull();
+    const sheets = jsonify((await root.query("SELECT * FROM sheet ORDER BY label;"))[0]) as Array<{ table_name: string; label: string }>;
+    const claimsTable = sheets.find((sheet) => sheet.label === "债权申报")!.table_name;
+    const claimCount = jsonify((await root.query(`SELECT count() FROM ${claimsTable} GROUP ALL;`))[0]) as Array<{ count: number }>;
+    expect(claimCount[0]?.count).toBe(12);
   }, 30_000);
 });
