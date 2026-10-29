@@ -8,5 +8,7 @@ export {
   MAX_V2_LIMITS,
   MAX_V2_REVISION_KEY,
   SEEDED_PLAN_LIMITS,
+  TRIAL_V2_LIMITS,
+  TRIAL_V2_REVISION_KEY,
 } from "@surreal-ck/shared/native-quota";
 export type { SeededPlanKey } from "@surreal-ck/shared/native-quota";
