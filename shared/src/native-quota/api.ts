@@ -384,3 +384,26 @@ export type QuotaOpsIntentPreflightView = Readonly<{
   affected_capabilities: readonly string[];
   before_digest: string | null;
 }>;
+
+/**
+ * 平台运营主体清单（GET /api/ops/platform-operators）的只读视图。
+ *
+ * 主体只以 `subject_hash` 的伪名出现：原始 OIDC subject、邮箱与 display_name 一律
+ * 不出接口，避免把运营名单的 PII 交给调用方。`subject_hash` 是确定性的
+ * `sha256:<hex 前缀>`，同一主体稳定可对齐，但不可逆。
+ */
+export const PLATFORM_OPERATORS_FORMAT_VERSION = 1 as const;
+
+export type PlatformOperatorSubjectView = Readonly<{
+  subject_hash: string;
+  kind: "human" | "agent" | null;
+  status: "active" | "disabled";
+  capabilities: readonly PlatformOperatorCapability[];
+  /** 是否是发起本次请求的运营主体。 */
+  isCurrent: boolean;
+}>;
+
+export type PlatformOperatorsView = Readonly<{
+  format_version: typeof PLATFORM_OPERATORS_FORMAT_VERSION;
+  operators: readonly PlatformOperatorSubjectView[];
+}>;
