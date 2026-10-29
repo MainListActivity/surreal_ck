@@ -168,10 +168,12 @@ export async function aggregateFunnelCounts(
   }
   for (const [key, count] of inviteCounts) {
     const [day, slug] = key.split("|");
+    // 工作区行已不存在（如已删除）时退回用 `slug:<slug>` 作哈希输入：与 db_name
+    // 分属不同命名域，避免同一工作区的历史分裂成两个 workspace_key（评审观察）。
     computed.push({
       event: "invite_issued",
       day: day!,
-      workspaceHashInput: dbNameBySlug.get(slug!) ?? slug!,
+      workspaceHashInput: dbNameBySlug.get(slug!) ?? `slug:${slug}`,
       count,
     });
   }

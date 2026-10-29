@@ -63,3 +63,22 @@ describe("loadEnv template pack selection", () => {
     expect(loadEnv({ ...requiredEnv, TYPESAFE_API_KEY: "real-key" }).TYPESAFE_API_KEY).toBe("real-key");
   });
 });
+
+describe("loadEnv funnel hash key", () => {
+  test("未配置时为 undefined（聚合任务只重算不写入）", () => {
+    expect(loadEnv(requiredEnv).FUNNEL_HASH_KEY).toBeUndefined();
+  });
+
+  test("空串等价未配置：docker-compose 注入 FUNNEL_HASH_KEY= 不导致启动失败", () => {
+    expect(loadEnv({ ...requiredEnv, FUNNEL_HASH_KEY: "" }).FUNNEL_HASH_KEY).toBeUndefined();
+  });
+
+  test("≥16 字符的密钥原样保留", () => {
+    const key = "0123456789abcdef";
+    expect(loadEnv({ ...requiredEnv, FUNNEL_HASH_KEY: key }).FUNNEL_HASH_KEY).toBe(key);
+  });
+
+  test("过短的密钥仍被拒绝", () => {
+    expect(() => loadEnv({ ...requiredEnv, FUNNEL_HASH_KEY: "too-short" })).toThrow();
+  });
+});
