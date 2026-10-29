@@ -10,6 +10,15 @@
 
 容量模板的审批对象是 `quota_plan_revision:trial_v2`（3 表 / 每张 11 物理字段 / 每张 12 记录，与 `max_v2` 同口径，能装下 `bankruptcy-claims` 模板含样例）。它由 seed 新增，`trial_v1`（1/3/2）保持不可变，`quota_plan:trial.active_revision` 不变。审批新的试用产品修订时应引用 `trial_v2`；既有产品修订不改。这只是模板容量，不代表试用已开放：是否启用和价格仍由老板决定。
 
+## 代办开通选择试用容量修订（ops_invitation_issue）
+
+`POST /api/ops/invitations`（ops_invitation_issue 代办开通）的容量取值：
+
+- 缺省 `planKey` 为 `pro`（2 表 / 每张 6 字段 / 4 记录），**装不下 `bankruptcy-claims` 模板含样例**；新建破产管理人工作区必须显式选择试用容量修订。
+- 选择方式：请求体传 `planKey: "trial"` 与 `quotaPlanRevisionId: "quota_plan_revision:trial_v2"`（3 表 / 11 字段 / 12 记录，与 `max_v2` 同口径）。产品版本（内容权益）仍由 `productPlanRevisionId`（缺省回退 `pro_trial_configuration:current` 批准的版本）决定，与容量修订相互独立。
+- 拒绝语义（均明确报错，绝不静默回退到 pro）：`planKey` 指向不存在或非 active 的套餐 → `workspace-plan-not-found`；`quotaPlanRevisionId` 不存在或不属于该套餐 → `workspace-plan-not-found`；manual 来源配 trial 模板修订但未显式指定修订 → `workspace-resource-source-mismatch`；请求体字段非法（前缀错误等）→ 400 `invite-invalid-request`。
+- 该参数只影响本次代办开通新建的 workspace，不对既有生产工作区自动生效，不调用 `subscription_upsert`，不产生付费事实。启用与费用由老板在关口决定。
+
 使用 operator 的 `subscription.manage` 能力，通过受控运维通道调用：
 
 - `POST /api/ops/pro-trial/configuration`：`revisionKey`、`productRevision`、`researchRate`、`rateRevision`（至少 2）、`reminderHours`（1–167 小时）、`fixture`、`reason`、`enabled`（默认 true）。同 key 内容不可改；新配置使用新 key。费率修订必须避免与既有不同费率修订冲突。`enabled:false` 停止新领取；已有领取仍可按原不可变版本恢复。

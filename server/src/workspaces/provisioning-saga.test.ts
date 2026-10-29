@@ -208,6 +208,72 @@ describe("runProvisioningQuotaSaga", () => {
     expect(cp.stages).toContain("applied-native");
   });
 
+  test("manual + trial 模板 + 显式 revisionId 放行（代办开通选 trial_v2）", async () => {
+    const cp = controlPlane();
+    const result = await runProvisioningQuotaSaga(
+      cp,
+      nativeMatching(),
+      {
+        subject: "user-1",
+        email: "a@b.c",
+        name: "Test",
+        slug: "test",
+        dbName: "ws_test",
+        resourceSource: {
+          planKey: "trial",
+          sourceKind: "manual",
+          revisionId: "quota_plan_revision:trial_v2",
+        },
+      },
+      { now: new DateTime("2026-07-26T00:00:00.000Z") },
+    );
+    expect(result.kind).toBe("ready_for_template");
+  });
+
+  test("manual + trial 模板但未指定修订仍拒绝，不静默放行", async () => {
+    const cp = controlPlane();
+    const result = await runProvisioningQuotaSaga(
+      cp,
+      nativeMatching(),
+      {
+        subject: "user-1",
+        email: "a@b.c",
+        name: "Test",
+        slug: "test",
+        dbName: "ws_test",
+        resourceSource: { planKey: "trial", sourceKind: "manual" },
+      },
+      { now: new DateTime("2026-07-26T00:00:00.000Z") },
+    );
+    expect(result.kind).toBe("no-resource-source");
+    if (result.kind !== "no-resource-source") throw new Error("expected no-resource-source");
+    expect(result.code).toBe("workspace-resource-source-mismatch");
+  });
+
+  test("不存在的套餐显式拒绝为 workspace-plan-not-found，即使给了 revisionId", async () => {
+    const cp = controlPlane();
+    const result = await runProvisioningQuotaSaga(
+      cp,
+      nativeMatching(),
+      {
+        subject: "user-1",
+        email: "a@b.c",
+        name: "Test",
+        slug: "test",
+        dbName: "ws_test",
+        resourceSource: {
+          planKey: "missing",
+          sourceKind: "manual",
+          revisionId: "quota_plan_revision:trial_v2",
+        },
+      },
+      { now: new DateTime("2026-07-26T00:00:00.000Z") },
+    );
+    expect(result.kind).toBe("no-resource-source");
+    if (result.kind !== "no-resource-source") throw new Error("expected no-resource-source");
+    expect(result.code).toBe("workspace-plan-not-found");
+  });
+
   test("resumes its persisted reservation and accepts its existing physical database", async () => {
     const resumedWorkspace: ProvisioningWorkspaceRecord = {
       id: new StringRecordId("workspace:ws_test"),

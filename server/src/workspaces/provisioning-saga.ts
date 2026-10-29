@@ -46,6 +46,10 @@ export type ProvisioningWorkspaceRecord = Readonly<{
 export type ExplicitResourceSource = Readonly<{
   /** Seeded or published plan key (trial / plus / pro / max). */
   planKey: string;
+  /** 显式指定的 quota_plan_revision 记录 id；缺省用套餐 active_revision。
+   *  manual 来源选择 trial 模板修订（如代办开通选 trial_v2）必须显式指定，
+   *  loadPlan 会校验修订归属该套餐。 */
+  revisionId?: string;
   /** Server-owned claimed trial only; never parsed from a customer body. */
   trial?: { claimId: string; billingAccountId: string; productRevisionId: string; resourceRevisionId: string; researchRate: number; rateRevision: number; fixture: boolean; leaseId: string; startsAt: string; endsAt: string };
   /**
@@ -227,7 +231,10 @@ export async function runProvisioningQuotaSaga(
   if (reserved.kind !== "reserved") return reserved;
 
   let workspace = reserved.workspace;
-  const plan = await controlPlane.loadPlan(input.resourceSource.planKey, input.resourceSource.trial?.resourceRevisionId);
+  const plan = await controlPlane.loadPlan(
+    input.resourceSource.planKey,
+    input.resourceSource.trial?.resourceRevisionId ?? input.resourceSource.revisionId,
+  );
   if (!plan) {
     await controlPlane.markStage({
       workspaceId: workspace.id,
@@ -249,11 +256,19 @@ export async function runProvisioningQuotaSaga(
     input.resourceSource.planKey,
     input.resourceSource.sourceKind,
   );
+  // manual 来源默认只能选 commercial 模板；trial 模板修订（容量）仅在
+  // 显式指定 revisionId 时允许（代办开通选 trial_v2，操作可审计），无修订
+  // 指定的 manual + trial 仍然拒绝，防止把 trial 计划静默当商业套餐用。
   const validSourceForTemplate =
     (sourceKind === "trial" && plan.planRevision.template_kind === "trial")
     || (
       sourceKind !== "trial"
       && plan.planRevision.template_kind === "commercial"
+    )
+    || (
+      sourceKind === "manual"
+      && plan.planRevision.template_kind === "trial"
+      && input.resourceSource.revisionId !== undefined
     );
   if (!validSourceForTemplate) {
     await controlPlane.markStage({

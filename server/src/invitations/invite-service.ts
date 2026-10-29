@@ -100,6 +100,7 @@ function requestDigest(input: CreateOpsInvitation): string {
     workspaceName: input.workspaceName ?? null,
     planKey: input.planKey,
     productPlanRevisionId: input.productPlanRevisionId ?? null,
+    quotaPlanRevisionId: input.quotaPlanRevisionId ?? null,
     aiAllowance: input.aiAllowance,
     reason: input.reason,
   }));
@@ -285,7 +286,12 @@ export class InviteService {
       email: user.email,
       name: workspaceName,
       slug: input.workspaceSlug,
-      resourceSource: { planKey: input.planKey, sourceKind: "manual" },
+      resourceSource: {
+        planKey: input.planKey,
+        sourceKind: "manual",
+        // 显式选择的容量修订（如 trial_v2）；缺省走套餐 active_revision。
+        ...(input.quotaPlanRevisionId ? { revisionId: input.quotaPlanRevisionId } : {}),
+      },
     });
     if (created.kind === "created") {
       workspaceDb = created.dbName;
