@@ -91,3 +91,12 @@ export type SeededPlanKey = keyof typeof SEEDED_PLAN_LIMITS;
 export const MAX_V2_REVISION_KEY = "max_v2";
 
 export const MAX_V2_LIMITS = { tables: 3, fields: 11, records: 12 } as const;
+
+/**
+ * 试用容量匹配：trial 第二修订，物理口径与 max_v2 相同（3 表 / 每张 11 物理
+ * 字段 / 每张 12 记录）。trial_v1（1/3/2）保持不可变留存，不迁移既有试用。
+ * 显式七日 Pro 试用经批准的产品修订引用本修订（resource_template），不依赖
+ * quota_plan:trial 的 active_revision。
+ */
+export const TRIAL_V2_REVISION_KEY = "trial_v2";
+export const TRIAL_V2_LIMITS = { tables: 3, fields: 11, records: 12 } as const;
