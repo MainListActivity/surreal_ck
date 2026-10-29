@@ -5,6 +5,8 @@ import {
   MAX_V2_LIMITS,
   MAX_V2_REVISION_KEY,
   SEEDED_PLAN_LIMITS,
+  TRIAL_V2_LIMITS,
+  TRIAL_V2_REVISION_KEY,
   type SeededPlanKey,
 } from "./quota-plan-rules";
 
@@ -144,6 +146,35 @@ export async function seedQuotaPlans(
       rules: maxV2Rules,
       createdBySubject,
       correlationId: `seed-plan-max-v2`,
+    },
+  );
+
+  // 试用容量匹配：trial 第二修订（3/11/12，与 max_v2 物理口径一致）。只新增
+  // 不可变修订，不改 quota_plan:trial.active_revision，也不改 trial_v1 与既有
+  // 试用订阅；显式试用的容量由审批产品修订引用本修订决定。
+  const trialV2Rules = commercialProductRules(TRIAL_V2_LIMITS);
+  await systemDb.query(
+    `
+      LET $existing = (
+        SELECT VALUE id FROM type::record("quota_plan_revision", $revisionKey) LIMIT 1
+      );
+      IF array::len($existing) = 0 {
+        CREATE type::record("quota_plan_revision", $revisionKey) CONTENT {
+          plan: type::record("quota_plan", "trial"),
+          revision: 2,
+          template_kind: "trial",
+          rules: $rules,
+          created_by_subject: $createdBySubject,
+          published_at: time::now(),
+          correlation_id: $correlationId
+        };
+      };
+    `,
+    {
+      revisionKey: TRIAL_V2_REVISION_KEY,
+      rules: trialV2Rules,
+      createdBySubject,
+      correlationId: `seed-plan-trial-v2`,
     },
   );
 

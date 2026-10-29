@@ -7,6 +7,7 @@ import type {
   QuotaCompliance,
   QuotaOperatorIntentKind,
   QuotaOperatorIntentStatusView,
+  NativeQuotaResource,
   QuotaServiceMode,
   QuotaSyncState,
 } from "@surreal-ck/shared/native-quota";
@@ -297,4 +298,36 @@ export function isIntentTerminal(
   value: QuotaOperatorIntentStatusView["state"],
 ): boolean {
   return value === "processed" || value === "terminal_failed";
+}
+
+const QUOTA_RESOURCE_LABELS: Record<NativeQuotaResource, string> = {
+  table: "数据表数量",
+  field: "字段数量",
+  record: "记录数量",
+};
+
+/**
+ * 配额拒绝的用户文案。管理员视图带 limit/current，显示用量与上限；
+ * 参与者视图只有资源类型（数据库裁剪），只给资源名与「联系邀请人」的引导。
+ * 试用没有自助升级，因此不提「升级计划」。
+ */
+export function quotaExceededMessage(
+  violations: readonly Readonly<{
+    resource: NativeQuotaResource;
+    limit?: number | bigint;
+    current?: number | bigint;
+  }>[],
+): string {
+  const tail = "本次事务未提交，草稿已保留；请删除或减少用量，或联系你的邀请人调整容量。";
+  if (violations.length === 0) {
+    return `当前资源已达到配额。${tail}`;
+  }
+  const lines = violations.map((violation) => {
+    const label = QUOTA_RESOURCE_LABELS[violation.resource];
+    if (violation.limit === undefined || violation.current === undefined) {
+      return `${label}已达到上限`;
+    }
+    return `${label}：当前 ${violation.current}，上限 ${violation.limit}`;
+  });
+  return `${[...new Set(lines)].join("；")}。${tail}`;
 }

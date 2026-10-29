@@ -6,6 +6,7 @@ import {
   formatQuotaCount,
   isIntentTerminal,
   quotaApiErrorMessage,
+  quotaExceededMessage,
 } from "./presentation";
 import { QuotaApiError } from "./client";
 
@@ -90,5 +91,31 @@ describe("quota UI presentation", () => {
       key: "record/ent",
       label: "实体记录 · 正则 ^ent_",
     }]);
+  });
+});
+
+describe("quotaExceededMessage", () => {
+  test("管理员视图显示资源类型、当前用量与上限，且不提升级计划", () => {
+    const text = quotaExceededMessage([
+      { resource: "record", limit: 6, current: 6 },
+      { resource: "table", limit: 1, current: 1 },
+    ]);
+    expect(text).toContain("记录数量：当前 6，上限 6");
+    expect(text).toContain("数据表数量：当前 1，上限 1");
+    expect(text).toContain("邀请人");
+    expect(text).not.toContain("升级");
+  });
+
+  test("参与者视图只有资源类型，不泄露用量数字", () => {
+    const text = quotaExceededMessage([{ resource: "field" }]);
+    expect(text).toContain("字段数量已达到上限");
+    expect(text).not.toMatch(/当前 \d|上限 \d/);
+    expect(text).not.toContain("升级");
+  });
+
+  test("无违规项时仍给出可操作的引导", () => {
+    const text = quotaExceededMessage([]);
+    expect(text).toContain("邀请人");
+    expect(text).not.toContain("升级");
   });
 });

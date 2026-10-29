@@ -860,6 +860,40 @@ const claimsPackSheets = [
   },
 ];
 
+describe("CV02 — 引擎原生配额拒绝（建簿事务）", () => {
+  test("建簿被 quota_exceeded 拒绝时按管理员口径给出资源类型、用量与上限", async () => {
+    const quotaEnvelope = Object.assign(new Error("message wording is not parsed"), {
+      kind: "Quota",
+      details: {
+        code: "quota_exceeded",
+        retryable: false,
+        details: {
+          violations: [
+            { resource: "table", table: "ent_probe", rule_ids: ["ent-limit"], limit: 1, current: 1, delta: 1, projected: 2, over_by: 1 },
+            { resource: "field", table: "ent_probe", rule_ids: ["ent-limit"], limit: 11, current: 11, delta: 1, projected: 12, over_by: 1 },
+          ],
+        },
+      },
+    });
+    const conn = {
+      query: async (sql: string) => {
+        if (/BEGIN TRANSACTION/i.test(sql)) throw quotaEnvelope;
+        return [];
+      },
+    } as unknown as SurrealConn;
+    const keys = ["1111111111111111", "2222222222222222"];
+    const store = createWorkbooksStore({ getConn: () => conn, generateKey: () => keys.shift()! });
+
+    const workbook = await store.createBlank("配额测试簿");
+
+    expect(workbook).toBeNull();
+    expect(store.error).toContain("数据表数量：当前 1，上限 1");
+    expect(store.error).toContain("字段数量：当前 11，上限 11");
+    expect(store.error).toContain("邀请人");
+    expect(store.error).not.toContain("升级");
+  });
+});
+
 describe("CV02 — 建簿入口容量预检", () => {
   test("v1 Max（3/9/6）下含样例模板被预检拒绝：准确提示所需/上限，不发起写入", async () => {
     const { store, rec } = setup({ quotaView: quotaWorkspaceView({ tables: 3, fields: 9, records: 6 }) });

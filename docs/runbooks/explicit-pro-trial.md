@@ -8,6 +8,8 @@
 
 上线前审批 Pro 核心 product revision：仅 search/read/cite、research 与共享 `ai_cycle_allowance`，不含 export/专业模块/Max 通道；引用 trial 类型且 `^ent_` table/field/record 有限容量的不可变资源模板。每个 collection 必须有至少一条许可有效、发布状态有效且支持研究的内容，供应才可激活。容量、额度、研究费率、提醒时点由审批版本给出，本文不提供商业数值。
 
+容量模板的审批对象是 `quota_plan_revision:trial_v2`（3 表 / 每张 11 物理字段 / 每张 12 记录，与 `max_v2` 同口径，能装下 `bankruptcy-claims` 模板含样例）。它由 seed 新增，`trial_v1`（1/3/2）保持不可变，`quota_plan:trial.active_revision` 不变。审批新的试用产品修订时应引用 `trial_v2`；既有产品修订不改。这只是模板容量，不代表试用已开放：是否启用和价格仍由老板决定。
+
 使用 operator 的 `subscription.manage` 能力，通过受控运维通道调用：
 
 - `POST /api/ops/pro-trial/configuration`：`revisionKey`、`productRevision`、`researchRate`、`rateRevision`（至少 2）、`reminderHours`（1–167 小时）、`fixture`、`reason`、`enabled`（默认 true）。同 key 内容不可改；新配置使用新 key。费率修订必须避免与既有不同费率修订冲突。`enabled:false` 停止新领取；已有领取仍可按原不可变版本恢复。
