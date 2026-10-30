@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
-import { MAGPIE_WINDOW_CONTRACT_VERSION, magpieWindowBindSchema, magpieWindowCreateSchema, type MagpieWindowView } from "@surreal-ck/shared";
+import { MAGPIE_REMOTE_WINDOW_CONTRACT_VERSION, MAGPIE_WINDOW_CONTRACT_VERSION, magpieRemoteWindowCreateSchema, magpieWindowBindSchema, magpieWindowCreateSchema, type MagpieWindowView } from "@surreal-ck/shared";
 import type { AppBindings } from "../hono-types";
 import { requirePlatformOperator } from "../ops/operator-auth";
 import { MEASUREMENT_CYCLE } from "../internal-ai/store";
@@ -15,6 +15,7 @@ import { InternalAiRegistration, normalizeReason, PRICE_REQUIRED_EVIDENCE } from
 import { verifyCompanyProof } from "../internal-ai/company-proof";
 import { endpointHost, TARIFFS } from "../internal-ai/pricing";
 import { aggregateAssessments, assessAttempt, type AssessedAttempt, type AssessmentContext } from "../internal-ai/assessment";
+import { runtimeIdentity } from "../../ai/mastra/agents/model-config";
 import { HttpError } from "../http-error";
 function dependencyVersion(): string | null {
   try { const entry = createRequire(import.meta.url).resolve("@mastra/core"); const parsed: unknown = JSON.parse(readFileSync(join(dirname(entry), "../package.json"), "utf8")); return parsed && typeof parsed === "object" && "version" in parsed && typeof parsed.version === "string" ? parsed.version : null; } catch { return null; }
@@ -26,7 +27,7 @@ const isoOf = (value: unknown): string | null => {
   const date = value instanceof Date ? value : new Date(String(value));
   return Number.isFinite(date.getTime()) ? date.toISOString() : null;
 };
-/** 固定投影：不含 operator subject、请求/响应正文或任何秘密。 */
+/** 固定投影：不含 operator subject、请求/响应正文或任何秘密。v1 行的 v2 分层字段为 null。 */
 function windowView(row: WindowRow): MagpieWindowView {
   return {
     // 只暴露裸 UUID：路由 :id 校验不接受 record 表名前缀/⟨⟩，create 响应必须能直接用于 GET/bind。
@@ -34,12 +35,26 @@ function windowView(row: WindowRow): MagpieWindowView {
     approvalDigest: row.approval_digest, approvalTask: row.approval_task, accountRef: row.account_ref,
     evidenceExpiresAt: row.evidence_expires_at, envelope: row.envelope ?? null, attempts: row.attempts, attemptLimit: row.attempt_limit,
     reserved: row.reserved, spent: row.spent,
+    contractVersion: row.contract_version ?? MAGPIE_WINDOW_CONTRACT_VERSION,
+    evidenceVersion: row.evidence_version ?? null,
+    observation: row.observation_captured_at == null ? null : {
+      capturedAt: row.observation_captured_at, digest: row.observation_digest ?? null,
+      routingConfigurationVerified: row.routing_configuration_verified ?? null,
+    },
+    routeGaps: row.route_gaps ?? null,
     route: {
-      revision: row.route_revision, digest: row.route_digest, requestedModel: row.requested_model,
+      revision: row.route_revision ?? null, digest: row.route_digest ?? null, requestedModel: row.requested_model,
       servedModel: row.served_model, endpointHost: hostOf(row.endpoint), accountBinding: row.account_binding,
       priceRevision: row.price_revision, priceBasis: row.price_basis,
       amortizedNanoUsd: row.amortized_nano_usd ?? null, marginalNanoUsd: row.marginal_nano_usd ?? null,
-      sampledAt: row.sampled_at, expiresAt: row.route_expires_at,
+      sampledAt: row.sampled_at, expiresAt: row.route_expires_at ?? null, provider: row.route_provider ?? null,
+    },
+    expiry: row.local_freshness_expires_at == null && row.expiry_basis == null ? null : {
+      basis: row.expiry_basis ?? null, localFreshnessExpiresAt: row.local_freshness_expires_at ?? null,
+      sourceExpiresAt: row.source_expires_at ?? [],
+    },
+    priceEvidence: row.pricing_evidence_revision == null && row.pricing_reviewed == null ? null : {
+      evidenceRevision: row.pricing_evidence_revision ?? null, reviewed: row.pricing_reviewed ?? null,
     },
     capacity: {
       database: row.capacity_database, entityTables: row.capacity_tables, fieldsPerTable: row.capacity_fields,
@@ -204,7 +219,7 @@ export function createOpsInternalAiRoutes(input: { gate: InternalAiGate; registr
       if (!/^[a-zA-Z0-9_-]{1,100}$/.test(id)) throw new HttpError(400, "magpie-window-id-invalid", "窗口标识无效");
       const row = await input.gate.store.window(id);
       if (!row) throw new HttpError(404, "magpie-window-unknown", "窗口不存在");
-      return c.json({ contract: MAGPIE_WINDOW_CONTRACT_VERSION, window: windowView(row) });
+      return c.json({ contract: row.contract_version ?? MAGPIE_WINDOW_CONTRACT_VERSION, window: windowView(row) });
     })
     /** 绑定窗口到活动：activity window_revision CAS，已绑同一窗口时幂等返回。 */
     .post("/api/ops/internal-ai/windows/:id/bind", auth, async c => {
@@ -215,7 +230,26 @@ export function createOpsInternalAiRoutes(input: { gate: InternalAiGate; registr
       if (!parsed.success) throw new HttpError(400, "magpie-window-body-invalid", "窗口绑定参数不合法");
       try {
         const result = await input.gate.store.bindWindow(id, { activity: parsed.data.activity, expectedRevision: parsed.data.expectedRevision }, c.var.platformOperator.subject);
-        return c.json({ contract: MAGPIE_WINDOW_CONTRACT_VERSION, idempotentReplay: result.idempotentReplay, window: windowView(result.window), activityRevision: result.activityRevision, reason: parsed.data.reason });
+        return c.json({ contract: result.window.contract_version ?? MAGPIE_WINDOW_CONTRACT_VERSION, idempotentReplay: result.idempotentReplay, window: windowView(result.window), activityRevision: result.activityRevision, reason: parsed.data.reason });
+      } catch (e) { throw windowHttpError(e); }
+    })
+    /**
+     * 远端窗口创建（magpie-window/v2）：接收公司已批准的 remote-magpie-evidence/1
+     * null+gap 证据投影。路由元数据不取自输入——服务端用受控运行配置（env 的
+     * provider/model/endpoint，与实际请求路径同源）交叉核对证据来源后冻结；
+     * 价格由证据复核状态+已核证书派生，unknown 在请求门禁闭锁。创建/读回/CAS
+     * 绑定/请求门禁共用同一窗口行。
+     */
+    .post("/api/ops/internal-ai/remote-windows", auth, async c => {
+      const payload = await json(c);
+      const parsed = magpieRemoteWindowCreateSchema.safeParse(payload);
+      if (!parsed.success) throw new HttpError(400, "magpie-window-body-invalid", "远端窗口创建参数不合法");
+      const runtime = input.runtime.model && input.runtime.endpoint
+        ? runtimeIdentity({ provider: input.runtime.provider ?? "", model: input.runtime.model, baseUrl: input.runtime.endpoint })
+        : null;
+      try {
+        const result = await input.gate.store.createRemoteWindow(parsed.data, c.var.platformOperator.subject, runtime);
+        return c.json({ contract: MAGPIE_REMOTE_WINDOW_CONTRACT_VERSION, idempotentReplay: result.idempotentReplay, window: windowView(result.window), activityRevision: await input.gate.store.windowRevision(parsed.data.activity) }, result.idempotentReplay ? 200 : 201);
       } catch (e) { throw windowHttpError(e); }
     })
     /**

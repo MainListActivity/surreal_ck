@@ -73,6 +73,9 @@ describe("_system native quota control-plane schema", () => {
     expect(versions).toEqual([
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
       22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42,
+      // 043：远端窗口契约（magpie-window/v2）在本分支新增；041=funnel.read、
+      // 042=B 档采样包络已由 main 提供。
+      43,
     ]);
   });
 

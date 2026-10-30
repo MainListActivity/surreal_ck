@@ -176,6 +176,15 @@
 - 数据库迁移：**只新增结构**（`shared/sql/system/039-internal-ai-window.surql`：
   新表 `internal_ai_window`、活动 `window_id`/`window_revision`、attempt 新字段；
   `shared/sql/system/042-internal-ai-sampling-envelope.surql`：新表 `internal_ai_envelope`、
-  window/attempt 的 `envelope` 归属字段）。不回填、不改写、不删除既有生产数据。
+  window/attempt 的 `envelope` 归属字段；
+  `shared/sql/system/043-internal-ai-window-remote.surql`：window 的三个 route 字段放宽为
+  `option<string>`（既有行保持原值）并新增 magpie-window/v2 的 contract/observation/gaps/
+  expiry/pricing 分层字段）。不回填、不改写、不删除既有生产数据。
 - 新环境变量：无。新主机准备：无。
 - 新窗口的正式创建/绑定与容量/源候选启用属于后续受控任务；本契约落地不启用任何调用。
+- 远端窗口契约 v2（`magpie-window/v2`，兼容 `remote-magpie-evidence/1` 的 null+gap）：
+  `POST /api/ops/internal-ai/remote-windows`；route.revision/digest/expiresAt 可为 null，
+  与 `gaps` 声明一一对应；requestedModel/endpoint/provider 由受控运行配置交叉核对后冻结；
+  观测层（capturedAt/快照摘要/routingConfigurationVerified=false）与本地新鲜度层
+  （证据期 = 采集 + 7200s）绝不写入远端 route 字段；价格独立硬门禁——reviewed=false
+  的目录 0/0 一律 unknown（请求门禁闭锁），永不自动等于 free-evidence。
