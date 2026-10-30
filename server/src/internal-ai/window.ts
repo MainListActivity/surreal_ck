@@ -239,11 +239,20 @@ export function buildRemoteWindowRequest(
   // （模型 + 协议/主机/路径）才可用 per-token，否则拒绝。
   let priceBasis: MagpieWindowPriceBasis = "unknown";
   let priceRevision = "unknown";
+  let outputBound = input.maxOutputTokens;
   if (evidence.pricing.reviewed) {
     const matched = TARIFFS.find(t => t.model === evidence.route.servedModel && tariffFor(t.provider, evidence.route.servedModel, runtime.endpoint));
     if (!matched) deny("magpie-window-price-revision-unavailable", "已复核价目没有匹配实际路由（模型/主机/路径）的证书");
+    // 输出上限与已批证书交叉核对：per-token 真正生效的封顶与 worstCost 预留都用证书 maxOutput
+    // （windowTariff → gate → model.ts 封顶、windowAmount），冻结值必须与证书一致；
+    // 入参不等即拒绝，不从调用方入参猜输出上限。天花板检查在本段之前——证书 maxOutput
+    // 高于产品天花板时该证书组合继续拒绝，不扩大天花板。
+    if (input.maxOutputTokens !== matched.maxOutput) {
+      deny("magpie-window-request-bound-mismatch", `输出上限必须等于已核证书 maxOutput ${matched.maxOutput}`);
+    }
     priceBasis = "per-token";
     priceRevision = matched.revision;
+    outputBound = matched.maxOutput;
   }
   return {
     activity: input.activity, approvalDigest: input.approvalDigest, approvalTask: input.approvalTask,
@@ -255,7 +264,7 @@ export function buildRemoteWindowRequest(
       requestedModel: runtime.modelId, servedModel: evidence.route.servedModel,
       endpoint: runtime.endpoint, accountBinding: evidence.accountBinding,
       priceRevision, priceBasis, freeEvidenceHash: null, amortizedNanoUsd: null, marginalNanoUsd: null,
-      maxOutputTokens: input.maxOutputTokens, sampledAt: evidence.route.sampledAt,
+      maxOutputTokens: outputBound, sampledAt: evidence.route.sampledAt,
       expiresAt: evidence.route.expiresAt, provider: runtime.providerId,
     },
     capacity: input.capacity, idempotencyKey: input.idempotencyKey, reason: input.reason,

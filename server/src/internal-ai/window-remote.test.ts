@@ -4,6 +4,7 @@ import {
   MAGPIE_LOCAL_FRESHNESS_SECONDS, MAGPIE_REMOTE_EVIDENCE_VERSION, MAGPIE_REMOTE_WINDOW_CONTRACT_VERSION,
   magpieRemoteWindowCreateSchema, type MagpieRemoteWindowCreate,
 } from "@surreal-ck/shared";
+import { DEFAULT_GATE_LIMITS } from "../../ai/office/employee-gates";
 import { TARIFFS } from "./pricing";
 import {
   assessWindowCost, buildRemoteWindowRequest, routeMatches, windowAmount, windowTariff,
@@ -200,21 +201,34 @@ describe("remote window validation", () => {
   test("unreviewed catalog 0/0 never becomes free-evidence; reviewed price requires a matching certificate", () => {
     const reviewed = evidence();
     expect(code(() => buildRemoteWindowRequest(input({ evidence: { ...reviewed, pricing: { ...reviewed.pricing, reviewed: true } } }), ctx))).toBe("magpie-window-price-revision-unavailable");
+  });
+  test("output bound is cross-checked against the matched certificate; the product ceiling still wins", () => {
     const certified = TARIFFS.find(t => t.revision === "openai-mini-2026-10-09")!;
-    const priced = evidence();
-    const pricedRequest = buildRemoteWindowRequest(
-      input({
+    const priced = () => {
+      const ev = evidence();
+      return input({
         evidence: {
-          ...priced,
-          source: { ...priced.source, endpoint: "https://api.openai.com/v1" },
-          route: { ...priced.route, servedModel: certified.model },
-          pricing: { ...priced.pricing, reviewed: true },
+          ...ev,
+          source: { ...ev.source, endpoint: "https://api.openai.com/v1" },
+          route: { ...ev.route, servedModel: certified.model },
+          pricing: { ...ev.pricing, reviewed: true },
         },
-      }),
-      { ...ctx, runtime: { ...runtime, endpoint: "https://api.openai.com/v1" } },
-    );
-    expect(pricedRequest.route.priceBasis).toBe("per-token");
-    expect(pricedRequest.route.priceRevision).toBe(certified.revision);
+      });
+    };
+    const openaiRuntime = { ...ctx, runtime: { ...runtime, endpoint: "https://api.openai.com/v1" } };
+    // 证书上限高于产品天花板：提交证书值先撞旧天花板——该证书组合继续拒绝，不扩大天花板。
+    expect(certified.maxOutput).toBeGreaterThan(DEFAULT_GATE_LIMITS.maxOutputTokensPerCall);
+    expect(code(() => buildRemoteWindowRequest({ ...priced(), maxOutputTokens: certified.maxOutput }, openaiRuntime))).toBe("magpie-window-request-bound-exceeded");
+    // 天花板内的不等值：通过天花板后必须与证书 maxOutput 交叉核对 → mismatch（不从入参猜输出上限）。
+    expect(code(() => buildRemoteWindowRequest({ ...priced(), maxOutputTokens: DEFAULT_GATE_LIMITS.maxOutputTokensPerCall }, openaiRuntime))).toBe("magpie-window-request-bound-mismatch");
+    expect(code(() => buildRemoteWindowRequest({ ...priced(), maxOutputTokens: 1 }, openaiRuntime))).toBe("magpie-window-request-bound-mismatch");
+  });
+  test("no usable certificate within the product output ceiling exists today (recorded honestly, no fabricated certificates)", () => {
+    // 冻结正例要求已核证书 maxOutput ∈ (0, 产品天花板]；当前 TARIFFS 只有 16384 / 0 / 65536，
+    // 没有可用证书。按授权不改 TARIFFS、不虚构证书：正 per-token 路径在现网数据下不可达，
+    // 如实以本断言记录；将来新增兼容证书时此断言会失败，正是需要补正例的信号。
+    const usable = TARIFFS.filter(t => t.maxOutput > 0 && t.maxOutput <= DEFAULT_GATE_LIMITS.maxOutputTokensPerCall);
+    expect(usable).toEqual([]);
   });
 });
 
