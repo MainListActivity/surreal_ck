@@ -175,7 +175,7 @@
 
 - 数据库迁移：**只新增结构**（`shared/sql/system/039-internal-ai-window.surql`：
   新表 `internal_ai_window`、活动 `window_id`/`window_revision`、attempt 新字段；
-  `shared/sql/system/041-internal-ai-sampling-envelope.surql`：新表 `internal_ai_envelope`、
+  `shared/sql/system/042-internal-ai-sampling-envelope.surql`：新表 `internal_ai_envelope`、
   window/attempt 的 `envelope` 归属字段）。不回填、不改写、不删除既有生产数据。
 - 新环境变量：无。新主机准备：无。
 - 新窗口的正式创建/绑定与容量/源候选启用属于后续受控任务；本契约落地不启用任何调用。

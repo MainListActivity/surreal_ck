@@ -46,7 +46,7 @@ beforeAll(async () => {
   await admin.connect(`${endpoint}/rpc`, { authentication: { username: "root", password: "root" } });
   await admin.query("DEFINE NAMESPACE IF NOT EXISTS budget_test;");
   await admin.use({ namespace: "budget_test" });
-  schema = (await Promise.all(["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql", "037-internal-ai-measurement-cycle.surql", "038-internal-ai-account-plan-type.surql", "039-internal-ai-window.surql", "041-internal-ai-sampling-envelope.surql"]
+  schema = (await Promise.all(["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql", "037-internal-ai-measurement-cycle.surql", "038-internal-ai-account-plan-type.surql", "039-internal-ai-window.surql", "042-internal-ai-sampling-envelope.surql"]
     .map(async f => readFile(new URL(`../../../shared/sql/system/${f}`, import.meta.url), "utf8")))).join("\n");
 }, 30000);
 
