@@ -97,8 +97,8 @@ describe("system schema seed", () => {
 
     expect(firstRun).toEqual({
       fromVersion: 3,
-      toVersion: 40,
-      appliedVersions: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40],
+      toVersion: 41,
+      appliedVersions: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41],
     });
     expect(db.queryCalls.some((call) => call.sql.includes("DEFINE TABLE IF NOT EXISTS internal_ai_window "))).toBeTrue();
     expect(db.queryCalls.some((call) => call.sql.includes("DEFINE TABLE IF NOT EXISTS quota_plan "))).toBeTrue();
@@ -139,8 +139,8 @@ describe("system schema seed", () => {
     const secondRun = await ensureSystemSchema(db, { namespace: "main" });
 
     expect(secondRun).toEqual({
-      fromVersion: 40,
-      toVersion: 40,
+      fromVersion: 41,
+      toVersion: 41,
       appliedVersions: [],
     });
     expect(db.queryCalls.slice(callsAfterFirstRun).map((call) => call.sql.trim())).toEqual([
