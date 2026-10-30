@@ -10,6 +10,7 @@ import { SurrealQuotaControlPlaneStore } from "./control-plane-store";
 import { SurrealEntitlementRefreshService } from "./entitlement-refresh";
 import { SurrealLifecycleBoundarySweepHandler } from "./lifecycle-sweep";
 import { SurrealQuotaLifecycleStore } from "./lifecycle-store";
+import { PolicyCompileError } from "./policy-compiler";
 import {
   type EntitlementRefreshPort,
   type OperatorIntentClaim,
@@ -1227,6 +1228,68 @@ describe("quota subscription lifecycle against local SurrealDB", () => {
         errorDetails: {},
         failedAt: now,
       });
+    },
+    30_000,
+  );
+
+  localTest(
+    "policy compile rejection terminals the intent and it is never reclaimed",
+    async () => {
+      const store = new SurrealQuotaLifecycleStore(queryClient());
+      const refresher: EntitlementRefreshPort = {
+        refreshWorkspace: async () => {
+          // 复现 Retention 来源下 validateRetentionPolicy 的确定性拒绝：
+          // 旧实现把它当非 QuotaLifecycleError → retryable=true → 每 5 秒重试。
+          throw new PolicyCompileError(
+            "invalid_retention_policy",
+            "retention table rule must be a finite zero-growth limit",
+            { resource: "table", ruleKey: "retention-table" },
+          );
+        },
+      };
+      const now = new DateTime("2026-10-30T00:00:00.000Z");
+      const coordinator = new QuotaLifecycleCoordinator(
+        store,
+        refresher,
+        "worker-compile",
+        undefined,
+        {
+          clock: { now: () => now },
+          leaseDurationMs: 10_000,
+          retryMs: 5_000,
+        },
+      );
+      const submission = manualAssignment("compile-retention", now);
+      const persisted = await store.persistOperatorIntent({
+        ...submission,
+        requiredCapability: "subscription.manage",
+        inputDigest: operatorIntentDigest(submission),
+        now,
+      });
+      expect(persisted.kind).toBe("accepted");
+
+      await expect(coordinator.processNextOperatorIntent()).resolves.toBe(
+        "failed",
+      );
+      const stateRow = rows(await db!.query(
+        `
+          SELECT state, attempt_count, next_attempt_at, last_error_code
+          FROM quota_operator_intent_state
+          WHERE intent = $intent;
+        `,
+        { intent: persisted.intent },
+      ))[0];
+      expect(stateRow).toMatchObject({
+        state: "terminal_failed",
+        attempt_count: 1,
+        last_error_code: "invalid_retention_policy",
+      });
+      expect(stateRow?.next_attempt_at ?? null).toBeNull();
+      await expect(store.claimOperatorIntent({
+        workerId: "worker-compile",
+        now: new DateTime("2026-10-30T00:10:00.000Z"),
+        leaseDurationMs: 10_000,
+      })).resolves.toBeUndefined();
     },
     30_000,
   );
