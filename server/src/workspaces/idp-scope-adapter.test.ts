@@ -213,4 +213,41 @@ describe("IdP token scope adapter", () => {
       globalThis.fetch = previousFetch;
     }
   });
+
+  test("scope exchange 网络超时后重试一次", async () => {
+    const previousEnv = { ...env };
+    const previousFetch = globalThis.fetch;
+    let calls = 0;
+
+    try {
+      overrideEnv({
+        IDP_SCOPE_API_URL: "https://idp.example.test/t/ck/scope",
+        OIDC_CLIENT_ID: "web-client",
+        OIDC_CLIENT_SECRET: "server-secret",
+      });
+      globalThis.fetch = (async () => {
+        calls += 1;
+        if (calls === 1) {
+          throw new TypeError("fetch failed", {
+            cause: Object.assign(new Error("connect timed out"), { code: "UND_ERR_CONNECT_TIMEOUT" }),
+          });
+        }
+        return new Response(
+          JSON.stringify({ access_token: "scoped-access-token", expires_in: 3600 }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }) as typeof fetch;
+
+      const result = await createIdpTokenScopeAdapter().updateUserScope({
+        subjectToken: "current-user-token",
+        scope: { db: "ws_alpha", ac: "admin" },
+      });
+
+      expect(result).toEqual({ accessToken: "scoped-access-token", expiresIn: 3600 });
+      expect(calls).toBe(2);
+    } finally {
+      overrideEnv(previousEnv);
+      globalThis.fetch = previousFetch;
+    }
+  });
 });

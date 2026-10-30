@@ -1,4 +1,5 @@
 import { env } from "../env";
+import { fetchIdempotentIdpRequest } from "../oidc/upstream-fetch";
 import type { SurrealTokenScope } from "./workspace-scope";
 
 export type IdpScopeTokenResult = {
@@ -54,7 +55,7 @@ export function createIdpContentReaderScopeAdapter(): IdpContentReaderScopeAdapt
         throw new Error("IdP scope adapter is not configured");
       }
 
-      const response = await fetch(env.IDP_SCOPE_API_URL, {
+      const response = await fetchIdempotentIdpRequest(env.IDP_SCOPE_API_URL, {
         method: "POST",
         headers: {
           authorization: `Basic ${btoa(`${env.OIDC_CLIENT_ID}:${env.OIDC_CLIENT_SECRET}`)}`,
@@ -101,7 +102,7 @@ export function createIdpTokenScopeAdapter(): IdpTokenScopeAdapter {
         throw new Error("IdP scope adapter is not configured");
       }
 
-      const response = await fetch(env.IDP_SCOPE_API_URL, {
+      const response = await fetchIdempotentIdpRequest(env.IDP_SCOPE_API_URL, {
         method: "POST",
         headers: {
           authorization: `Basic ${btoa(`${env.OIDC_CLIENT_ID}:${env.OIDC_CLIENT_SECRET}`)}`,
