@@ -71,9 +71,9 @@ describe("_system native quota control-plane schema", () => {
 
     expect(versions).toEqual([
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
-      22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
-      // 041 由并行分支 lane/7cd9f130-funnel_capability_schema（PR #220）占用；
-      // 本分支新增 042 远端窗口契约，两者合入时按实际文件号取并集。
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41,
+      // 042：远端窗口契约（magpie-window/v2）在本分支新增；041 已由 main 的
+      // 041-platform-operator-funnel-read.surql 提供。
       42,
     ]);
   });
