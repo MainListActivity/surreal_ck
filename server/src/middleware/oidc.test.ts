@@ -241,4 +241,23 @@ describe("OIDC middleware", () => {
       overrideEnv({ OIDC_JWKS_URL: previousUrl });
     }
   });
+
+  test("garbage or forged bearer tokens never produce the upstream-failure log", async () => {
+    const logs: string[] = [];
+    console.error = (...args: unknown[]) => {
+      logs.push(JSON.stringify(args));
+    };
+    const app = createProtectedApp();
+
+    const garbage = await app.fetch(new Request("http://localhost/protected", {
+      headers: { authorization: "Bearer not-a-jwt" },
+    }));
+    const forged = await app.fetch(new Request("http://localhost/protected", {
+      headers: { authorization: `Bearer ${await signToken({ useWrongKey: true })}` },
+    }));
+
+    expect(garbage.status).toBe(401);
+    expect(forged.status).toBe(401);
+    expect(logs.join("\n")).not.toContain("[oidc] bearer verification upstream failure");
+  });
 });

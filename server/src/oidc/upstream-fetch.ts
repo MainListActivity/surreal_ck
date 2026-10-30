@@ -17,11 +17,42 @@ const TIMEOUT_ERROR_NAMES: ReadonlySet<string> = new Set([
   "JWKSTimeout",
 ]);
 
+// 连接层错误码：Node/Bun 直接放在 error.code，undici 放在 error.cause.code。
+// 生产运行时是 Bun 1.3.11（journal bun[pid]/CI 固定版本），fetch 连接重置/
+// 拒绝报 Error(code=ECONNRESET|ConnectionRefused)，不会出现 undici 的
+// UND_ERR_*——两套都收，诊断与重试判定对两种运行时一致。
+const NETWORK_ERROR_CODES: ReadonlySet<string> = new Set([
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ConnectionRefused",
+  "ECONNABORTED",
+  "EPIPE",
+  "ETIMEDOUT",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_SOCKET",
+  "UND_ERR_CLOSED",
+]);
+
 export type UpstreamFailure = {
   name: string;
   causeCode: string | null;
   timeout: boolean;
 };
+
+/**
+ * 是否为网络层失败（超时或连接级错误）。供诊断日志与幂等重试共用：
+ * 只有这类失败值得记录/重试，HTTP 错误与 token 校验错误都不算。
+ */
+export function isNetworkUpstreamFailure(failure: UpstreamFailure): boolean {
+  return failure.timeout
+    || (failure.causeCode !== null && NETWORK_ERROR_CODES.has(failure.causeCode))
+    // undici 的 fetch 网络失败固定是 TypeError（cause 带具体码）；保留兼容。
+    || failure.name === "TypeError";
+}
 
 export function describeUpstreamFailure(error: unknown): UpstreamFailure {
   if (typeof error !== "object" || error === null) {
@@ -56,8 +87,8 @@ export async function fetchIdempotentIdpRequest(url: string, init: RequestInit, 
       return await fetch(url, { ...init, signal: AbortSignal.timeout(IDP_UPSTREAM_TIMEOUT_MS) });
     } catch (error) {
       const failure = describeUpstreamFailure(error);
-      const networkFailure = failure.timeout || failure.name === "TypeError";
-      if (attempt >= attempts || !networkFailure) {
+      // 只重试网络层失败（超时/连接重置/连接拒绝）；HTTP 响应与非网络错误不重试。
+      if (attempt >= attempts || !isNetworkUpstreamFailure(failure)) {
         throw error;
       }
     }

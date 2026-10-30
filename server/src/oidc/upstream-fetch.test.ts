@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { describeUpstreamFailure, fetchIdempotentIdpRequest } from "./upstream-fetch";
+import { describeUpstreamFailure, fetchIdempotentIdpRequest, isNetworkUpstreamFailure } from "./upstream-fetch";
 
 function connectTimeoutError(): TypeError {
   return new TypeError("fetch failed", {
@@ -49,6 +49,27 @@ describe("describeUpstreamFailure", () => {
   });
 });
 
+describe("生产运行时（Bun）错误形态", () => {
+  test("Bun 连接重置/拒绝：Error(code=ECONNRESET|ConnectionRefused) 判为网络失败", () => {
+    for (const code of ["ECONNRESET", "ConnectionRefused"]) {
+      const failure = describeUpstreamFailure(Object.assign(new Error("fetch failed"), { code }));
+      expect(failure).toEqual({ name: "Error", causeCode: code, timeout: false });
+      expect(isNetworkUpstreamFailure(failure)).toBe(true);
+    }
+  });
+
+  test("Bun 连接超时：TimeoutError（code 为数字）判为 timeout", () => {
+    const failure = describeUpstreamFailure(Object.assign(new Error("timed out"), { name: "TimeoutError", code: 23 }));
+    expect(failure.timeout).toBe(true);
+    expect(isNetworkUpstreamFailure(failure)).toBe(true);
+  });
+
+  test("token 校验类错误（jose ERR_*）不算网络失败，不重试也记不成上游日志", () => {
+    const failure = describeUpstreamFailure(Object.assign(new Error("invalid"), { name: "JWSInvalid", code: "ERR_JWS_INVALID" }));
+    expect(isNetworkUpstreamFailure(failure)).toBe(false);
+  });
+});
+
 describe("fetchIdempotentIdpRequest", () => {
   test("网络层超时后重试一次并返回成功响应", async () => {
     const previousFetch = globalThis.fetch;
@@ -64,6 +85,41 @@ describe("fetchIdempotentIdpRequest", () => {
 
       expect(response.status).toBe(200);
       expect(calls).toBe(2);
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  test("Bun 形态连接重置（Error code=ECONNRESET）重试一次后成功", async () => {
+    const previousFetch = globalThis.fetch;
+    let calls = 0;
+    try {
+      globalThis.fetch = (async () => {
+        calls += 1;
+        if (calls === 1) throw Object.assign(new Error("fetch failed"), { code: "ECONNRESET" });
+        return new Response("ok", { status: 200 });
+      }) as typeof fetch;
+
+      const response = await fetchIdempotentIdpRequest("https://idp.example.test/scope", { method: "POST" });
+
+      expect(response.status).toBe(200);
+      expect(calls).toBe(2);
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  test("非网络错误不重试（只尝试一次）", async () => {
+    const previousFetch = globalThis.fetch;
+    let calls = 0;
+    try {
+      globalThis.fetch = (async () => {
+        calls += 1;
+        throw Object.assign(new Error("invalid"), { name: "JWSInvalid", code: "ERR_JWS_INVALID" });
+      }) as typeof fetch;
+
+      await expect(fetchIdempotentIdpRequest("https://idp.example.test/scope", { method: "POST" })).rejects.toThrow("invalid");
+      expect(calls).toBe(1);
     } finally {
       globalThis.fetch = previousFetch;
     }
