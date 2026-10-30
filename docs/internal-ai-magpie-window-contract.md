@@ -16,6 +16,7 @@
 | --- | --- | --- |
 | POST | `/api/ops/internal-ai/windows` | 创建新授权窗口（幂等） |
 | GET | `/api/ops/internal-ai/windows/:id` | 只读窗口投影 |
+| GET | `/api/ops/internal-ai/envelopes/current` | B 档包络只读用量（已用/已承诺/剩余/USD） |
 | POST | `/api/ops/internal-ai/windows/:id/bind` | 绑定到活动（`window_revision` CAS，幂等） |
 
 活动读面 `GET /api/ops/internal-ai/activities/:id` 追加 `window`、`activityRevision`
@@ -127,6 +128,9 @@
 | 422 | `magpie-window-evidence-expired` | 证据期已过 |
 | 422 | `magpie-window-remaining-insufficient` | 剩余次数不足（含并发落败方） |
 | 422 | `magpie-window-cap-inheritance` | USD 上限超出既有活动 |
+| 422 | `magpie-window-envelope-expired` | B 档包络已过期或证据期超出包络期限 |
+| 422 | `magpie-window-envelope-cap-exceeded` | 超出 B 档次数/USD 总额/单次上限 |
+| 422 | `magpie-window-envelope-invalid` | 包络账本行不存在或与批准摘要不一致 |
 | 422 | `magpie-window-capacity-out-of-scope` | 容量声明超出 9e44a95d |
 | 422 | `magpie-window-account-mismatch` | 批准账号与路由账号绑定不一致 |
 | 422 | `magpie-window-price-basis-invalid` | 价格依据/披露自相矛盾 |
@@ -138,10 +142,40 @@
 `internal-ai-price-or-bound-unavailable`、`internal-ai-budget-exhausted`、
 `internal-ai-evidence-unavailable`（全部 fail-closed，不发送 provider 请求）。
 
-## 7. 迁移与环境
+## 7. 第二阶段 B 档独立采样包络
+
+老板 `b796de49` 批准、`4e2ac8dd` 再次确认的 B 档包络是**新的独立额度**，不复活旧 30 次周期：
+
+| 字段 | 值 |
+| --- | --- |
+| 包络标识 | `fv06-b-2026-11-05`（不含旧前缀） |
+| goal | `e159e40ad4e50080` |
+| 最大调用次数 | 20 |
+| USD 总额 | 700000000 nanoUSD（0.70 USD） |
+| 单次上限 | 35000000 nanoUSD（0.035 USD） |
+| 期限 | 2026-11-05T12:10:07Z |
+| 批准引用 | `b796de49`、`4e2ac8dd` |
+
+- 创建窗口时传 `"envelope": "fv06-b-2026-11-05"`；未传则完全沿用上一节的旧 30 次全局路径。
+- 账本行是 `internal_ai_envelope:fv06-b-2026-11-05`（固定 ID，受控字段只读），首次使用时按上述常量建立；字段与常量不一致时拒绝。
+- 该包络内：`剩余次数 = 20 − 已用(含 failed/uncertain/timeout/cancelled) − 已承诺(active 窗口未用次数)`；
+  `已用` 来自带 envelope 归属的 attempt 行，`已承诺` 来自该包络的 active 窗口。旧 `internal_ai_target` /
+  活动 / 旧周期计数**不参与**新包络计算，也不因新包络调用而增加或清零。
+- USD：窗口创建按 `sourceBudgetNanoUsd` 记入包络 `allocated_nano_usd`；每次预留增加 `reserved`，结算把预留转为
+  `spent`（失败/不确定仍计已用并保留预留，绝不把未知成本当 0）。窗口创建、预留与结算都必须满足
+  `allocated_nano_usd + spent + reserved ≤ 700000000`，且单次 `≤ 35000000`。
+- 期限：包络到期或窗口证据期超过包络期限都拒绝创建；预留时再次复核。
+- 只读核对：`GET /api/ops/internal-ai/envelopes/current` 返回 `usedAttempts`、`committedAttempts`、
+  `remainingAttempts`、`committedNanoUsd`（窗口已承诺额度）、`spentNanoUsd`、`reservedNanoUsd`、
+  `remainingNanoUsd` 与 `expired`，供 qa 在调用前核对。
+- 新错误码（422）：`magpie-window-envelope-expired`、`magpie-window-envelope-cap-exceeded`、
+  `magpie-window-envelope-invalid`。
+
+## 8. 迁移与环境
 
 - 数据库迁移：**只新增结构**（`shared/sql/system/039-internal-ai-window.surql`：
-  新表 `internal_ai_window`、活动 `window_id`/`window_revision`、attempt 新字段）。
-  不回填、不改写、不删除既有生产数据。
+  新表 `internal_ai_window`、活动 `window_id`/`window_revision`、attempt 新字段；
+  `shared/sql/system/041-internal-ai-sampling-envelope.surql`：新表 `internal_ai_envelope`、
+  window/attempt 的 `envelope` 归属字段）。不回填、不改写、不删除既有生产数据。
 - 新环境变量：无。新主机准备：无。
 - 新窗口的正式创建/绑定与容量/源候选启用属于后续受控任务；本契约落地不启用任何调用。

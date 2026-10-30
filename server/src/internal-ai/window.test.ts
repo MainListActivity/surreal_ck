@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { RecordId } from "surrealdb";
-import { MAGPIE_WINDOW_CONTRACT_VERSION, magpieWindowCreateSchema, type MagpieWindowCreate } from "@surreal-ck/shared";
+import { MAGPIE_WINDOW_CONTRACT_VERSION, MAGPIE_B_ENVELOPE, magpieWindowCreateSchema, type MagpieWindowCreate } from "@surreal-ck/shared";
 import { TARIFFS, worstCost } from "./pricing";
 import {
   assessWindowCost, canonicalJson, legacyHit, payloadHash, routeMatches, usageValid,
@@ -128,6 +128,36 @@ describe("route and budget", () => {
     expect(code(() => validateWindowCreate(input({ sourceBudgetNanoUsd: 1_000_000_001 }), ctx))).toBe("magpie-window-cap-inheritance");
     expect(code(() => validateWindowCreate(input({ perAttemptNanoUsd: 100_000_001 }), ctx))).toBe("magpie-window-cap-inheritance");
     expect(code(() => validateWindowCreate(input({ evidenceExpiresAt: past() }), ctx))).toBe("magpie-window-evidence-expired");
+  });
+});
+
+describe("B sampling envelope", () => {
+  const now = Date.parse("2026-10-30T00:00:00Z");
+  const envelope = (overrides: Partial<MagpieWindowCreate> = {}): MagpieWindowCreate => input({
+    envelope: MAGPIE_B_ENVELOPE.id, sourceBudgetAttempts: 20, sourceBudgetNanoUsd: 700_000_000, perAttemptNanoUsd: 35_000_000,
+    evidenceExpiresAt: "2026-11-01T00:00:00Z", ...overrides,
+  });
+  const envCtx = { totalUsed: 30, committedAttempts: 0, activityTotalLimit: 0, activityPerAttemptLimit: 0, envelopeUsed: 0, envelopeCommitted: 0, envelopeCommittedNanoUsd: 0, envelopeSpentNanoUsd: 0, envelopeReservedNanoUsd: 0, now };
+  test("schema accepts only the approved envelope id", () => {
+    expect(magpieWindowCreateSchema.safeParse(envelope()).success).toBe(true);
+    expect(magpieWindowCreateSchema.safeParse({ ...envelope(), envelope: "a7537d2c-other" }).success).toBe(false);
+  });
+  test("independent of the legacy 30-attempt history, but capped at 20 attempts and 0.70 USD", () => {
+    expect(code(() => validateWindowCreate(envelope(), envCtx))).toBe("no-throw");
+    expect(code(() => validateWindowCreate(envelope({ sourceBudgetAttempts: 21 }), { ...envCtx, envelopeCommitted: 0 }))).toBe("magpie-window-envelope-cap-exceeded");
+    expect(code(() => validateWindowCreate(envelope({ sourceBudgetNanoUsd: 700_000_001 }), envCtx))).toBe("magpie-window-envelope-cap-exceeded");
+    expect(code(() => validateWindowCreate(envelope({ perAttemptNanoUsd: 35_000_001 }), envCtx))).toBe("magpie-window-envelope-cap-exceeded");
+    expect(code(() => validateWindowCreate(envelope(), { ...envCtx, envelopeUsed: 15, envelopeCommitted: 5 }))).toBe("magpie-window-remaining-insufficient");
+    expect(code(() => validateWindowCreate(envelope({ sourceBudgetAttempts: 10 }), { ...envCtx, envelopeUsed: 10, envelopeCommitted: 0 }))).toBe("no-throw");
+    expect(code(() => validateWindowCreate(envelope(), { ...envCtx, envelopeCommittedNanoUsd: 1 }))).toBe("magpie-window-envelope-cap-exceeded");
+  });
+  test("envelope expiry is enforced on creation and evidence period", () => {
+    expect(code(() => validateWindowCreate(envelope(), { ...envCtx, now: Date.parse("2026-11-05T12:10:07Z") }))).toBe("magpie-window-envelope-expired");
+    expect(code(() => validateWindowCreate(envelope({ evidenceExpiresAt: "2026-11-06T00:00:00Z" }), envCtx))).toBe("magpie-window-envelope-expired");
+  });
+  test("legacy prefix rejection and unknown price basis still apply inside the envelope", () => {
+    expect(code(() => validateWindowCreate(envelope({ approvalTask: "4fff2947-dead" }), envCtx))).toBe("magpie-window-legacy-rejected");
+    expect(code(() => validateWindowCreate(envelope({ route: { ...input().route, priceBasis: "unknown", freeEvidenceHash: undefined } }), envCtx))).toBe("no-throw");
   });
 });
 

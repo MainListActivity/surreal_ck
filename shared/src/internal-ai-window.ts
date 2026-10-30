@@ -13,6 +13,15 @@ import { z } from "zod";
  */
 export const MAGPIE_WINDOW_CONTRACT_VERSION = "magpie-window/v1";
 export const MAGPIE_WINDOW_MAX_TOTAL_ATTEMPTS = 30;
+export const MAGPIE_B_ENVELOPE = {
+  id: "fv06-b-2026-11-05",
+  goal: "e159e40ad4e50080",
+  maxAttempts: 20,
+  totalNanoUsd: 700_000_000,
+  perAttemptNanoUsd: 35_000_000,
+  expiresAt: "2026-11-05T12:10:07Z",
+  approvalRefs: ["b796de49", "4e2ac8dd"],
+} as const;
 export const MAGPIE_WINDOW_PRICE_BASES = ["free-evidence", "per-token", "subscription-amortized", "unknown"] as const;
 export type MagpieWindowPriceBasis = (typeof MAGPIE_WINDOW_PRICE_BASES)[number];
 
@@ -68,6 +77,7 @@ export const magpieWindowCreateSchema = z.object({
   approvalTask: z.string().min(1).max(100),
   accountRef: z.string().min(1).max(200),
   evidenceExpiresAt: isoInstant,
+  envelope: z.literal(MAGPIE_B_ENVELOPE.id).optional(),
   sourceBudgetAttempts: z.number().int().min(1).max(MAGPIE_WINDOW_MAX_TOTAL_ATTEMPTS),
   sourceBudgetNanoUsd: z.number().int().min(1).max(1_000_000_000),
   perAttemptNanoUsd: z.number().int().min(1).max(100_000_000),
@@ -98,6 +108,7 @@ export type MagpieWindowView = {
   approvalTask: string;
   accountRef: string;
   evidenceExpiresAt: string;
+  envelope: string | null;
   attempts: number;
   attemptLimit: number;
   reserved: number;
