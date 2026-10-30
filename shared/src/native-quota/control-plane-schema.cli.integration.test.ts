@@ -172,12 +172,62 @@ const compiledRule = `{
   limit: { kind: "finite", value: 100 }
 }`;
 
+  localSurrealTest(
+    "041 放宽能力白名单到 funnel.read：历史项仍通过、未知能力仍拒绝、重复迁移安全",
+    async () => {
+      const migrations = await readMigrations();
+      expect(migrations).toHaveLength(41);
+      for (const sql of migrations) expectSuccessful(await runSurrealCli(sql));
+
+      expectSuccessful(await runSurrealCli(`
+        CREATE platform_operator:probe CONTENT {
+          subject: "operator:probe",
+          status: "active"
+        };
+        CREATE platform_operator_capability:probe_rollout CONTENT {
+          operator: platform_operator:probe,
+          capability: "rollout.manage",
+          status: "active",
+          granted_by_subject: "test"
+        };
+      `));
+
+      // 迁移后 funnel.read 可写入（81255e7a 生产失败的确切场景）。
+      expectSuccessful(await runSurrealCli(`
+        CREATE platform_operator_capability:probe_funnel CONTENT {
+          operator: platform_operator:probe,
+          capability: "funnel.read",
+          status: "active",
+          granted_by_subject: "test"
+        };
+      `));
+
+      // 白名单仍是封闭集合：未列出的能力继续被引擎拒绝。
+      const unknown = await runSurrealCli(`
+        CREATE platform_operator_capability:probe_unknown CONTENT {
+          operator: platform_operator:probe,
+          capability: "funnel.write",
+          status: "active",
+          granted_by_subject: "test"
+        };
+      `);
+      expect(unknown).toMatch(/must conform to|Found 'funnel\.write'/u);
+
+      // 重复执行最新迁移安全：不报错，既有行不被改写或删除。
+      expectSuccessful(await runSurrealCli(migrations.at(-1)!));
+      const rows = await runSurrealCli(
+        "SELECT count() AS total FROM platform_operator_capability GROUP ALL;",
+      );
+      expect(rows).toContain('"total":2');
+    },
+  );
+
 describe("_system native quota schema against local SurrealDB", () => {
   localSurrealTest(
     "upgrades existing data, enforces authority invariants, denies database users, and reruns safely",
     async () => {
       const migrations = await readMigrations();
-      expect(migrations).toHaveLength(39);
+      expect(migrations).toHaveLength(41);
 
       for (const sql of migrations.slice(0, 3)) {
         expectSuccessful(await runSurrealCli(sql));
