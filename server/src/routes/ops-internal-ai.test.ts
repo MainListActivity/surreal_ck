@@ -209,6 +209,30 @@ test("window create → GET → bind round-trip uses the bare id returned by cre
   expect(await bound.json()).toMatchObject({ contract: "magpie-window/v1", window: { id: uuid }, activityRevision: 4 });
 });
 
+test("B envelope read-only projection reports used/committed/remaining attempts and USD", async () => {
+  const operator: MiddlewareHandler<AppBindings> = async (c, next) => {
+    c.set("platformOperator", { subject: "synthetic-operator", capabilities: ["subscription.manage"] });
+    await next();
+  };
+  const envelope = {
+    id: "fv06-b-2026-11-05", goal: "e159e40ad4e50080", maxAttempts: 20, totalNanoUsd: 700000000, perAttemptNanoUsd: 35000000,
+    expiresAt: "2026-11-05T12:10:07Z", approvalRefs: ["b796de49", "4e2ac8dd"], usedAttempts: 3, committedAttempts: 2,
+    remainingAttempts: 15, committedNanoUsd: 100000000, spentNanoUsd: 0, reservedNanoUsd: 35000000, remainingNanoUsd: 0,
+  };
+  const store = { envelopeSummary: async () => envelope };
+  const app = new Hono<AppBindings>().route("/", createOpsInternalAiRoutes({ gate: { store } as unknown as InternalAiGate, requireOperator: operator, runtime: {} })).onError(handleError);
+  const response = await app.request("/api/ops/internal-ai/envelopes/current");
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({ contract: "magpie-window/v1", moneyUnit: "nanoUSD", currency: "USD", expired: false, envelope: { usedAttempts: 3, committedAttempts: 2, remainingAttempts: 15 } });
+  const missing = new Hono<AppBindings>().route("/", createOpsInternalAiRoutes({ gate: { store: { envelopeSummary: async () => undefined } } as unknown as InternalAiGate, requireOperator: operator, runtime: {} })).onError(handleError);
+  expect((await missing.request("/api/ops/internal-ai/envelopes/current")).status).toBe(404);
+});
+
+test("B envelope read-only projection retains ops authentication", async () => {
+  const app = new Hono<AppBindings>().route("/", createOpsInternalAiRoutes({ gate: neverDb, runtime: {} })).onError(handleError);
+  expect((await app.request("/api/ops/internal-ai/envelopes/current")).status).toBe(401);
+});
+
 test('runtime discloses the configured loopback endpoint without treating it as a direct-provider price certificate', async () => {
   const endpoint = 'http://127.0.0.1:3425/v1';
   const app = new Hono<AppBindings>().route('/', createOpsInternalAiRoutes({ gate: neverDb, requireOperator: allow, runtime: { provider: 'openai', model: 'group/work', endpoint } }));

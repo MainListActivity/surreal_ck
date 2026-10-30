@@ -32,7 +32,7 @@ function windowView(row: WindowRow): MagpieWindowView {
     // 只暴露裸 UUID：路由 :id 校验不接受 record 表名前缀/⟨⟩，create 响应必须能直接用于 GET/bind。
     id: String(row.id.id), activity: row.activity, status: row.status, revision: row.revision,
     approvalDigest: row.approval_digest, approvalTask: row.approval_task, accountRef: row.account_ref,
-    evidenceExpiresAt: row.evidence_expires_at, attempts: row.attempts, attemptLimit: row.attempt_limit,
+    evidenceExpiresAt: row.evidence_expires_at, envelope: row.envelope ?? null, attempts: row.attempts, attemptLimit: row.attempt_limit,
     reserved: row.reserved, spent: row.spent,
     route: {
       revision: row.route_revision, digest: row.route_digest, requestedModel: row.requested_model,
@@ -192,6 +192,12 @@ export function createOpsInternalAiRoutes(input: { gate: InternalAiGate; registr
         const result = await input.gate.store.createWindow(parsed.data, c.var.platformOperator.subject);
         return c.json({ contract: MAGPIE_WINDOW_CONTRACT_VERSION, idempotentReplay: result.idempotentReplay, window: windowView(result.window), activityRevision: await input.gate.store.windowRevision(parsed.data.activity) }, result.idempotentReplay ? 200 : 201);
       } catch (e) { throw windowHttpError(e); }
+    })
+    /** B 档包络只读核对：已用/已承诺/剩余次数与 USD，供 qa 在调用前确认。 */
+    .get("/api/ops/internal-ai/envelopes/current", auth, async c => {
+      const envelope = await input.gate.store.envelopeSummary();
+      if (!envelope) throw new HttpError(404, "magpie-envelope-unknown", "B 档包络账本不存在或与批准摘要不一致");
+      return c.json({ contract: MAGPIE_WINDOW_CONTRACT_VERSION, envelope, moneyUnit: "nanoUSD", currency: "USD", expired: Date.now() >= Date.parse(envelope.expiresAt) });
     })
     .get("/api/ops/internal-ai/windows/:id", auth, async c => {
       const id = c.req.param("id");

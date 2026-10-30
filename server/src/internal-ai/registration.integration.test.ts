@@ -161,7 +161,7 @@ beforeAll(async () => {
   db = new Surreal(); await db.connect(`${endpoint}/rpc`, { authentication: { username: "root", password: "root" } });
   await db.query("DEFINE NAMESPACE IF NOT EXISTS registration_test;"); await db.use({ namespace: "registration_test" });
   await db.query("DEFINE DATABASE IF NOT EXISTS _system;"); await db.use({ namespace: "registration_test", database: "_system" });
-  for (const file of ["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql", "037-internal-ai-measurement-cycle.surql", "038-internal-ai-account-plan-type.surql", "039-internal-ai-window.surql"]) {
+  for (const file of ["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql", "037-internal-ai-measurement-cycle.surql", "038-internal-ai-account-plan-type.surql", "039-internal-ai-window.surql", "042-internal-ai-sampling-envelope.surql"]) {
     await db.query(await readFile(new URL(`../../../shared/sql/system/${file}`, import.meta.url), "utf8"));
   }
   registration = new InternalAiRegistration(async () => db!, { check: async () => {}, current: async () => {}, remember: () => {} });
@@ -667,7 +667,7 @@ localTest("one approved measurement cycle preserves 30 historical attempts and s
   const runtime = { provider: tariff.provider, model: tariff.model, endpoint };
   await db.query("DEFINE DATABASE IF NOT EXISTS measurement_test;");
   await db.use({ namespace: "registration_test", database: "measurement_test" });
-  for (const file of ["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql", "037-internal-ai-measurement-cycle.surql", "038-internal-ai-account-plan-type.surql", "039-internal-ai-window.surql"]) {
+  for (const file of ["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql", "037-internal-ai-measurement-cycle.surql", "038-internal-ai-account-plan-type.surql", "039-internal-ai-window.surql", "042-internal-ai-sampling-envelope.surql"]) {
     await db.query(await readFile(new URL(`../../../shared/sql/system/${file}`, import.meta.url), "utf8"));
   }
   const document = tokenPlanDocument();
@@ -763,7 +763,7 @@ localTest("same-activity renewal with a fresh independent approval appends a dis
   await db.query("DEFINE DATABASE IF NOT EXISTS renewal_test;");
   await db.use({ namespace: "registration_test", database: "renewal_test" });
   try {
-    for (const file of ["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql", "037-internal-ai-measurement-cycle.surql", "038-internal-ai-account-plan-type.surql", "039-internal-ai-window.surql"]) {
+    for (const file of ["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql", "037-internal-ai-measurement-cycle.surql", "038-internal-ai-account-plan-type.surql", "039-internal-ai-window.surql", "042-internal-ai-sampling-envelope.surql"]) {
       await db.query(await readFile(new URL(`../../../shared/sql/system/${file}`, import.meta.url), "utf8"));
     }
     const docV1 = tokenPlanDocument({ sampledAt: new Date(NOW - 3600000).toISOString(), expiresAt: new Date(NOW + 3600000).toISOString() });
@@ -852,7 +852,7 @@ localTest("renewal rejects any stable-field change, stale approval, missing appr
   await db.query("DEFINE DATABASE IF NOT EXISTS renewal_reject_test;");
   await db.use({ namespace: "registration_test", database: "renewal_reject_test" });
   try {
-    for (const file of ["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql", "037-internal-ai-measurement-cycle.surql", "038-internal-ai-account-plan-type.surql", "039-internal-ai-window.surql"]) {
+    for (const file of ["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql", "037-internal-ai-measurement-cycle.surql", "038-internal-ai-account-plan-type.surql", "039-internal-ai-window.surql", "042-internal-ai-sampling-envelope.surql"]) {
       await db.query(await readFile(new URL(`../../../shared/sql/system/${file}`, import.meta.url), "utf8"));
     }
     const docV1 = tokenPlanDocument({ sampledAt: new Date(NOW - 3600000).toISOString(), expiresAt: new Date(NOW + 3600000).toISOString() });
@@ -917,7 +917,7 @@ localTest("renewal rejects any stable-field change, stale approval, missing appr
     // 并发双续期：仅一成功，无部分写。
     await db.query("DEFINE DATABASE IF NOT EXISTS renewal_race_test;");
     await db.use({ namespace: "registration_test", database: "renewal_race_test" });
-    for (const file of ["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql", "037-internal-ai-measurement-cycle.surql", "038-internal-ai-account-plan-type.surql", "039-internal-ai-window.surql"]) {
+    for (const file of ["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql", "037-internal-ai-measurement-cycle.surql", "038-internal-ai-account-plan-type.surql", "039-internal-ai-window.surql", "042-internal-ai-sampling-envelope.surql"]) {
       await db.query(await readFile(new URL(`../../../shared/sql/system/${file}`, import.meta.url), "utf8"));
     }
     const raceTag = "renewrace", raceActivity = `activity-${raceTag}`;
@@ -953,7 +953,7 @@ localTest("renewal on an activity with an existing measurement cycle cannot top 
   await db.query("DEFINE DATABASE IF NOT EXISTS renewal_cycle_test;");
   await db.use({ namespace: "registration_test", database: "renewal_cycle_test" });
   try {
-    for (const file of ["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql", "037-internal-ai-measurement-cycle.surql", "038-internal-ai-account-plan-type.surql", "039-internal-ai-window.surql"]) {
+    for (const file of ["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql", "037-internal-ai-measurement-cycle.surql", "038-internal-ai-account-plan-type.surql", "039-internal-ai-window.surql", "042-internal-ai-sampling-envelope.surql"]) {
       await db.query(await readFile(new URL(`../../../shared/sql/system/${file}`, import.meta.url), "utf8"));
     }
     // 周期活动用测量身份（MEASUREMENT_DATABASE）：与 identities(tag) 的默认 ws 库不同，
