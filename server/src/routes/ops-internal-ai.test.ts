@@ -219,3 +219,143 @@ test('runtime discloses the configured loopback endpoint without treating it as 
   expect(body.model).toBe('group/work');
   expect(body.priceCertificates.some((t: {model:string}) => t.model === 'group/work')).toBe(false);
 });
+
+// ── magpie-window/v2：远端 null+gap 路由分派与投影 ─────────────────────────
+
+const remoteDigest = "e".repeat(64);
+const remoteRow: WindowRow = {
+  ...windowRow,
+  id: new RecordId("internal_ai_window", "w2"),
+  account_ref: "mgpc0cfa2b2cd201c321bc7b42a",
+  route_revision: null, route_digest: null, route_expires_at: null,
+  requested_model: "group/work", served_model: "sn-sensenova-6-8-flash",
+  endpoint: "https://data.maplayer.top/ofm/v1", account_binding: "mgpc0cfa2b2cd201c321bc7b42a",
+  price_revision: "unknown", price_basis: "unknown", free_evidence_hash: null,
+  sampled_at: "2026-10-28T08:08:15.89838551Z",
+  contract_version: "magpie-window/v2", evidence_version: "remote-magpie-evidence/1",
+  observation_captured_at: "2026-10-30T12:25:08.664Z", observation_digest: remoteDigest,
+  routing_configuration_verified: false, route_provider: "openai",
+  route_gaps: [
+    { field: "revision", reason: "远端只读目录未提供该路由的 revision；不自行编造" },
+    { field: "digest", reason: "远端只读接口未提供路由 digest；本工具不计算替代摘要" },
+    { field: "expiresAt", reason: "远端只读接口未提供该路由的到期时刻" },
+  ],
+  expiry_basis: "local-observation-freshness-policy",
+  local_freshness_expires_at: "2026-10-30T14:25:08.664Z", source_expires_at: [],
+  pricing_reviewed: false, pricing_evidence_revision: "remote-magpie-catalog-285bd6a56db6",
+};
+
+function remoteWindowBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    activity: "lca-v2-deploy-qa01", approvalDigest: "a".repeat(64),
+    approvalTask: "cdc2dd4c-0000-4000-8000-000000000000", accountRef: "mgpc0cfa2b2cd201c321bc7b42a",
+    evidenceExpiresAt: "2099-01-01T00:00:00Z", sourceBudgetAttempts: 2, sourceBudgetNanoUsd: 35_000_000,
+    perAttemptNanoUsd: 35_000_000, maxOutputTokens: 8192,
+    evidence: {
+      version: "remote-magpie-evidence/1",
+      source: { kind: "configured-remote-magpie", endpoint: "https://data.maplayer.top/ofm/v1", model: "remote-magpie/group/work", executionHost: "remote" },
+      observation: { capturedAt: "2026-10-30T12:25:08.664Z", digest: remoteDigest, routingConfigurationVerified: false },
+      accountRef: "mgpc0cfa2b2cd201c321bc7b42a", accountBinding: "mgpc0cfa2b2cd201c321bc7b42a",
+      route: {
+        present: true, group: "group/work", revision: null, digest: null,
+        servedModel: "sn-sensenova-6-8-flash", sampledAt: "2026-10-28T08:08:15.89838551Z", expiresAt: null,
+        gaps: [
+          { field: "revision", reason: "远端只读目录未提供该路由的 revision；不自行编造" },
+          { field: "digest", reason: "远端只读接口未提供路由 digest；本工具不计算替代摘要" },
+          { field: "expiresAt", reason: "远端只读接口未提供该路由的到期时刻" },
+        ],
+      },
+      pricing: { priceRevision: "remote-magpie-catalog-285bd6a56db6", rawPrompt: "0", rawCompletion: "0", free: true, freeEvidence: "remote-catalog-zero", reviewed: false },
+      expiry: { basis: "local-observation-freshness-policy", localFreshnessExpiresAt: "2099-01-01T00:00:00Z", sourceExpiresAt: [], expiresAt: "2099-01-01T00:00:00Z" },
+      budget: { currency: "USD", totalNanoUsd: 700_000_000, perAttemptNanoUsd: 35_000_000, maxAttempts: 20 },
+      gaps: [
+        { field: "route.revision", reason: "远端只读目录未提供该路由的 revision；不自行编造" },
+        { field: "route.digest", reason: "远端只读接口未提供路由 digest；本工具不计算替代摘要" },
+        { field: "route.expiresAt", reason: "远端只读接口未提供该路由的到期时刻" },
+      ],
+      configurationDigest: "f".repeat(64),
+    },
+    capacity: { database: "ws_ddad14a98469", entityTables: 4, fieldsPerTable: 12, recordsPerTable: 12, ttlSeconds: 3600, destructive: false, source: "9e44a95d" },
+    idempotencyKey: "idem-remote-0001", reason: "远端窗口路由测试", ...overrides,
+  };
+}
+
+test("remote window route requires ops auth and rejects malformed bodies before the store", async () => {
+  expect((await new Hono<AppBindings>().route("/", createOpsInternalAiRoutes({ gate: neverDb, runtime: {} })).onError(handleError)
+    .request("/api/ops/internal-ai/remote-windows", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status).toBe(401);
+  const app = new Hono<AppBindings>().route("/", createOpsInternalAiRoutes({ gate: neverDb, requireOperator: allow, runtime: {} })).onError(handleError);
+  const send = (body: unknown) => app.request("/api/ops/internal-ai/remote-windows", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  expect((await send({})).status).toBe(400);
+  const body = remoteWindowBody();
+  expect((await send({ ...body, requestedModel: "group/work" })).status).toBe(400);
+  const evidence = body.evidence as Record<string, unknown>;
+  expect((await send({ ...body, evidence: { ...evidence, version: "remote-magpie-evidence/2" } })).status).toBe(400);
+  // 伪造 digest/观测核实声明在 schema 层即拒绝；null⟺gap 语义由 store 侧校验（422）。
+  expect((await send({ ...body, evidence: { ...evidence, route: { ...(evidence.route as object), digest: "not-a-sha256" } } })).status).toBe(400);
+  expect((await send({ ...body, evidence: { ...evidence, observation: { ...(evidence.observation as object), routingConfigurationVerified: true } } })).status).toBe(400);
+});
+
+test("remote window create dispatches v2 with the controlled runtime identity and projects null+gap layers", async () => {
+  const operator: MiddlewareHandler<AppBindings> = async (c, next) => {
+    c.set("platformOperator", { subject: "synthetic-operator", capabilities: ["subscription.manage"] });
+    await next();
+  };
+  const calls: Array<{ input: unknown; runtime: unknown }> = [];
+  const fake = {
+    createRemoteWindow: async (input: unknown, _operator: string, runtime: unknown) => {
+      calls.push({ input, runtime });
+      return { window: remoteRow, idempotentReplay: false };
+    },
+    window: async () => remoteRow,
+    windowRevision: async () => 7,
+  };
+  const app = new Hono<AppBindings>().route("/", createOpsInternalAiRoutes({
+    gate: { store: fake } as unknown as InternalAiGate, requireOperator: operator,
+    runtime: { provider: "openai", model: "remote-magpie/group/work", endpoint: "https://data.maplayer.top/ofm/v1" },
+  })).onError(handleError);
+  const created = await app.request("/api/ops/internal-ai/remote-windows", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(remoteWindowBody()) });
+  expect(created.status).toBe(201);
+  const body = await created.json() as { contract: string; activityRevision: number; window: { contractVersion: string; route: { revision: unknown; digest: unknown; expiresAt: unknown; requestedModel: string }; observation: { capturedAt: string; routingConfigurationVerified: boolean }; routeGaps: unknown[]; expiry: { basis: string }; priceEvidence: { reviewed: boolean; evidenceRevision: string } } };
+  expect(body.contract).toBe("magpie-window/v2");
+  expect(body.activityRevision).toBe(7);
+  expect(body.window).toMatchObject({
+    contractVersion: "magpie-window/v2",
+    route: { revision: null, digest: null, expiresAt: null, requestedModel: "group/work" },
+    observation: { capturedAt: "2026-10-30T12:25:08.664Z", routingConfigurationVerified: false },
+    expiry: { basis: "local-observation-freshness-policy" },
+    priceEvidence: { reviewed: false, evidenceRevision: "remote-magpie-catalog-285bd6a56db6" },
+  });
+  expect(body.window.routeGaps.length).toBe(3);
+  // 受控运行身份来自 env，splitModel 后与实际请求路径同源。
+  expect(calls[0]?.runtime).toEqual({ providerId: "remote-magpie", modelId: "group/work", endpoint: "https://data.maplayer.top/ofm/v1" });
+
+  // 运行时未配置：路由层传 null，由服务端校验 fail-closed 拒绝（不猜）。
+  const unconfiguredCalls: Array<unknown> = [];
+  const unconfigured = new Hono<AppBindings>().route("/", createOpsInternalAiRoutes({
+    gate: { store: { ...fake, createRemoteWindow: async (input: unknown, _operator: string, runtime: unknown) => { unconfiguredCalls.push(runtime); throw new WindowDenied("magpie-window-runtime-unavailable", "受控运行配置不可用"); } } } as unknown as InternalAiGate,
+    requireOperator: operator, runtime: {},
+  })).onError(handleError);
+  const denied = await unconfigured.request("/api/ops/internal-ai/remote-windows", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(remoteWindowBody()) });
+  expect(denied.status).toBe(422);
+  expect((await denied.json() as { error?: { code?: string } }).error?.code).toBe("magpie-window-runtime-unavailable");
+  expect(unconfiguredCalls[0]).toBeNull();
+});
+
+test("window GET reports the stored contract version and null remote metadata honestly", async () => {
+  const operator: MiddlewareHandler<AppBindings> = async (c, next) => {
+    c.set("platformOperator", { subject: "synthetic-operator", capabilities: ["subscription.manage"] });
+    await next();
+  };
+  const fake = { window: async (id: string) => id === "w2" ? remoteRow : undefined };
+  const app = new Hono<AppBindings>().route("/", createOpsInternalAiRoutes({ gate: { store: fake } as unknown as InternalAiGate, requireOperator: operator, runtime: {} })).onError(handleError);
+  const response = await app.request("/api/ops/internal-ai/windows/w2");
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({
+    contract: "magpie-window/v2",
+    window: {
+      id: "w2", evidenceVersion: "remote-magpie-evidence/1",
+      route: { revision: null, digest: null, expiresAt: null, provider: "openai" },
+      expiry: { localFreshnessExpiresAt: "2026-10-30T14:25:08.664Z", sourceExpiresAt: [] },
+    },
+  });
+});

@@ -4,12 +4,12 @@ import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
 import { RecordId, Surreal, Table } from "surrealdb";
-import type { MagpieWindowCreate } from "@surreal-ck/shared";
+import { MAGPIE_LOCAL_FRESHNESS_SECONDS, MAGPIE_REMOTE_EVIDENCE_VERSION, type MagpieRemoteWindowCreate, type MagpieWindowCreate } from "@surreal-ck/shared";
 import { InternalAiStore, GOAL, hash } from "./store";
 import { InternalAiGate } from "./gate";
 import { inInternalScope } from "./context";
 import { TARIFFS, worstCost } from "./pricing";
-import { WindowDenied } from "./window";
+import { WindowDenied, routeMatches, type WindowRow } from "./window";
 
 const enabled = process.env.RUN_INTERNAL_AI_FORK_TESTS === "1";
 const localTest = test.skipIf(!enabled);
@@ -45,7 +45,7 @@ beforeAll(async () => {
   await admin.connect(`${endpoint}/rpc`, { authentication: { username: "root", password: "root" } });
   await admin.query("DEFINE NAMESPACE IF NOT EXISTS budget_test;");
   await admin.use({ namespace: "budget_test" });
-  schema = (await Promise.all(["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql", "037-internal-ai-measurement-cycle.surql", "038-internal-ai-account-plan-type.surql", "039-internal-ai-window.surql"]
+  schema = (await Promise.all(["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql", "037-internal-ai-measurement-cycle.surql", "038-internal-ai-account-plan-type.surql", "039-internal-ai-window.surql", "042-internal-ai-window-remote.surql"]
     .map(async f => readFile(new URL(`../../../shared/sql/system/${f}`, import.meta.url), "utf8")))).join("\n");
 }, 30000);
 
@@ -287,4 +287,178 @@ localTest("expired or exhausted active windows can be replaced by a new independ
   await store.bindWindow(String(third.window.id.id), { activity: "win-rotate", expectedRevision: await store.windowRevision("win-rotate") }, "ops-test");
   expect((await store.window(String(second.window.id.id)))?.status).toBe("exhausted");
   expect((await store.window(String(third.window.id.id)))?.status).toBe("active");
+});
+
+// ── magpie-window/v2：远端 null+gap 契约（042 迁移）────────────────────────
+
+const remoteRuntime = { providerId: "openai", modelId: "group/work", endpoint: "https://data.maplayer.top/ofm/v1" };
+
+/** 与 7c401606 候选同构的 remote-magpie-evidence/1 投影；时间用新鲜值以通过本地新鲜度策略。 */
+function remoteEvidence(capturedAt: string, overrides: Partial<MagpieRemoteWindowCreate["evidence"]> = {}): MagpieRemoteWindowCreate["evidence"] {
+  const freshness = new Date(Date.parse(capturedAt) + MAGPIE_LOCAL_FRESHNESS_SECONDS * 1000).toISOString();
+  return {
+    version: MAGPIE_REMOTE_EVIDENCE_VERSION,
+    source: { kind: "configured-remote-magpie", endpoint: remoteRuntime.endpoint, model: "remote-magpie/group/work", executionHost: "remote" },
+    observation: { capturedAt, digest: digest("d"), routingConfigurationVerified: false },
+    accountRef: "mgpc0cfa2b2cd201c321bc7b42a",
+    accountBinding: "mgpc0cfa2b2cd201c321bc7b42a",
+    route: {
+      present: true, group: "group/work", revision: null, digest: null,
+      servedModel: "sn-sensenova-6-8-flash", sampledAt: "2026-10-28T08:08:15.89838551Z", expiresAt: null,
+      gaps: [
+        { field: "revision", reason: "远端只读目录未提供该路由的 revision；不自行编造" },
+        { field: "digest", reason: "远端只读接口未提供路由 digest；本工具不计算替代摘要" },
+        { field: "expiresAt", reason: "远端只读接口未提供该路由的到期时刻" },
+      ],
+    },
+    pricing: { priceRevision: "remote-magpie-catalog-285bd6a56db6", rawPrompt: "0", rawCompletion: "0", free: true, freeEvidence: "remote-catalog-zero", reviewed: false },
+    expiry: { basis: "local-observation-freshness-policy", localFreshnessExpiresAt: freshness, sourceExpiresAt: [], expiresAt: freshness },
+    budget: { currency: "USD", totalNanoUsd: 700_000_000, perAttemptNanoUsd: 35_000_000, maxAttempts: 20 },
+    gaps: [
+      { field: "route.revision", reason: "远端只读目录未提供该路由的 revision；不自行编造" },
+      { field: "route.digest", reason: "远端只读接口未提供路由 digest；本工具不计算替代摘要" },
+      { field: "route.expiresAt", reason: "远端只读接口未提供该路由的到期时刻" },
+    ],
+    configurationDigest: digest("c"),
+    ...overrides,
+  };
+}
+
+function remoteWindowInput(activityId: string, overrides: Partial<MagpieRemoteWindowCreate> = {}, capturedAt?: string): MagpieRemoteWindowCreate {
+  const evidence = remoteEvidence(capturedAt ?? new Date(Date.now() - 60_000).toISOString());
+  return {
+    activity: activityId,
+    approvalDigest: digest("a"),
+    approvalTask: "cdc2dd4c-0000-4000-8000-000000000000",
+    accountRef: "mgpc0cfa2b2cd201c321bc7b42a",
+    evidenceExpiresAt: evidence.expiry.expiresAt,
+    sourceBudgetAttempts: 1,
+    sourceBudgetNanoUsd: 35_000_000,
+    perAttemptNanoUsd: 35_000_000,
+    maxOutputTokens: 8192,
+    evidence,
+    capacity: { database: "ws_ddad14a98469", entityTables: 4, fieldsPerTable: 12, recordsPerTable: 12, ttlSeconds: 3600, destructive: false, source: "9e44a95d" },
+    idempotencyKey: `idem-remote-${crypto.randomUUID()}`,
+    reason: "integration-remote",
+    ...overrides,
+  };
+}
+
+localTest("remote null+gap window persists layered evidence, reads back the same row, and binds with CAS", async () => {
+  const { db, store, gate } = await database("win_remote");
+  const scope = await activity(db, "win-remote");
+  const request = remoteWindowInput("win-remote");
+  const created = await store.createRemoteWindow(request, "ops-test", remoteRuntime);
+  expect(created.idempotentReplay).toBe(false);
+  const window = created.window;
+  expect(window.contract_version).toBe("magpie-window/v2");
+  // 远端没给的字段保持 NONE/null，绝不以本地摘要或期限冒充。
+  expect(window.route_revision ?? null).toBeNull();
+  expect(window.route_digest ?? null).toBeNull();
+  expect(window.route_expires_at ?? null).toBeNull();
+  expect(window.sampled_at).toBe("2026-10-28T08:08:15.89838551Z");
+  // 本地观测层与受控运行配置冻结值。
+  expect(window.observation_digest).toBe(request.evidence.observation.digest);
+  expect(window.observation_captured_at).toBe(request.evidence.observation.capturedAt);
+  expect(window.routing_configuration_verified).toBe(false);
+  expect(window.route_gaps?.length).toBe(3);
+  expect(window.expiry_basis).toBe("local-observation-freshness-policy");
+  expect(window.local_freshness_expires_at).toBe(request.evidence.expiry.expiresAt);
+  expect(window.source_expires_at).toEqual([]);
+  expect(window.requested_model).toBe("group/work");
+  expect(window.endpoint).toBe(remoteRuntime.endpoint);
+  expect(window.route_provider).toBe("openai");
+  // 价格独立硬门禁：未复核目录 0/0 → unknown，不是 free-evidence。
+  expect(window.price_basis).toBe("unknown");
+  expect(window.price_revision).toBe("unknown");
+  expect(window.pricing_reviewed).toBe(false);
+  expect(window.pricing_evidence_revision).toBe("remote-magpie-catalog-285bd6a56db6");
+
+  // 幂等重放返回同一行；改动观测但复用同一批准摘要一律拒绝。
+  const replay = await store.createRemoteWindow(request, "ops-test", remoteRuntime);
+  expect(replay.idempotentReplay).toBe(true);
+  expect(String(replay.window.id)).toBe(String(window.id));
+  const changedObservation = remoteWindowInput("win-remote", {
+    evidence: remoteEvidence(new Date(Date.now() - 60_000).toISOString(), { observation: { capturedAt: request.evidence.observation.capturedAt, digest: digest("e"), routingConfigurationVerified: false } }),
+  });
+  await rejects(() => store.createRemoteWindow(changedObservation, "ops-test", remoteRuntime), "magpie-window-approval-consumed");
+
+  // CAS 漂移：过期活动版本拒绝，正确版本绑定成功。
+  await rejects(() => store.bindWindow(String(window.id.id), { activity: "win-remote", expectedRevision: 99 }, "ops-test"), "magpie-window-revision-conflict");
+  const revision = await store.windowRevision("win-remote");
+  const bound = await store.bindWindow(String(window.id.id), { activity: "win-remote", expectedRevision: revision }, "ops-test");
+  expect(bound.window.status).toBe("active");
+  expect(bound.window.route_gaps?.length).toBe(3);
+  expect(bound.window.price_basis).toBe("unknown");
+
+  // 请求门禁同源：路由匹配后因价格 unknown 闭锁；端点/模型/provider 漂移分别拒绝。
+  await expect(inInternalScope(scope, () => gate.begin("chat", "openai", "group/work", remoteRuntime.endpoint))).rejects.toThrow("internal-ai-price-unassessed");
+  await expect(inInternalScope(scope, () => gate.begin("chat", "openai", "group/work", "https://data.maplayer.top/other/v1"))).rejects.toThrow("internal-ai-route-drift");
+  await expect(inInternalScope(scope, () => gate.begin("chat", "openai", "group/other", remoteRuntime.endpoint))).rejects.toThrow("internal-ai-route-drift");
+  await expect(inInternalScope(scope, () => gate.begin("chat", "anthropic", "group/work", remoteRuntime.endpoint))).rejects.toThrow("internal-ai-route-drift");
+  expect((await store.window(String(window.id.id))?.attempts ?? 0)).toBe(0);
+  expect((await store.page("win-remote")).length).toBe(0);
+});
+
+localTest("remote evidence expiry rejects create, bind, and the request gate", async () => {
+  const { db, store, gate } = await database("win_remote_exp");
+  const scope = await activity(db, "win-remote-exp");
+  const stale = remoteWindowInput("win-remote-exp", {}, new Date(Date.now() - (MAGPIE_LOCAL_FRESHNESS_SECONDS + 60) * 1000).toISOString());
+  await rejects(() => store.createRemoteWindow(stale, "ops-test", remoteRuntime), "magpie-window-evidence-expired");
+
+  // 请求门禁：先绑定一个即将到期的窗口，到期后 begin 必须闭锁。
+  const soon = remoteWindowInput("win-remote-exp", {}, new Date(Date.now() - (MAGPIE_LOCAL_FRESHNESS_SECONDS - 2) * 1000).toISOString());
+  const created = await store.createRemoteWindow(soon, "ops-test", remoteRuntime);
+  await store.bindWindow(String(created.window.id.id), { activity: "win-remote-exp", expectedRevision: await store.windowRevision("win-remote-exp") }, "ops-test");
+  await Bun.sleep(2_300);
+  await expect(inInternalScope(scope, () => gate.begin("chat", "openai", "group/work", remoteRuntime.endpoint))).rejects.toThrow("internal-ai-evidence-unavailable");
+
+  // 绑定门禁：到期窗口不可再绑定（新的独立批准窗口）。
+  const expiring = remoteWindowInput("win-remote-exp", { approvalDigest: digest("b") }, new Date(Date.now() - (MAGPIE_LOCAL_FRESHNESS_SECONDS - 1) * 1000).toISOString());
+  const second = await store.createRemoteWindow(expiring, "ops-test", remoteRuntime);
+  await Bun.sleep(1_300);
+  const staleRevision = await store.windowRevision("win-remote-exp");
+  await rejects(() => store.bindWindow(String(second.window.id.id), { activity: "win-remote-exp", expectedRevision: staleRevision }, "ops-test"), "magpie-window-evidence-expired");
+});
+
+localTest("042 widening keeps existing v1 rows intact and v2 creation requires the migration first", async () => {
+  const { db, store } = await database("win_compat");
+  await activity(db, "win-compat");
+  // 模拟生产顺序：039 已应用且已有 v1 行；042 尚未应用时新代码拒绝写入（SCHEMAFULL 未知字段）。
+  const routeDigest = digest("b");
+  const futureInstant = future();
+  await db.query(`INSERT INTO internal_ai_window {
+    id: $id, activity: "win-compat", approval_digest: $approval, approval_task: "legacy-task", account_ref: "snv-legacy",
+    evidence_expires_at: $future, attempt_limit: 1, source_budget_nano_usd: 100000000, per_attempt_nano_usd: 10000000,
+    route_revision: "magpie-route-legacy", route_digest: $routeDigest, requested_model: "group/work", served_model: "sn-sensenova-6-8-flash",
+    endpoint: "http://127.0.0.1:3425/v1", account_binding: "snv-legacy", price_revision: "magpie-free-1", price_basis: "free-evidence",
+    free_evidence_hash: $freeHash, max_output_tokens: 8192, sampled_at: $future, route_expires_at: $future,
+    capacity_database: "ws_ddad14a98469", capacity_tables: 4, capacity_fields: 12, capacity_records: 12,
+    capacity_ttl_seconds: 3600, capacity_destructive: false, capacity_source: "9e44a95d",
+    idempotency_key: "legacy-idem-1", payload_hash: $payload, operator: "ops-legacy", reason: "legacy"
+  };`, {
+    id: new RecordId("internal_ai_window", "legacy-window"), approval: digest("1"), future: futureInstant,
+    routeDigest, freeHash: digest("c"), payload: digest("2"),
+  });
+  const before = await store.window("legacy-window");
+  expect(before?.route_revision).toBe("magpie-route-legacy");
+  expect(before?.contract_version ?? null).toBeNull();
+
+  // 042 逐文件重放（迁移可重复执行），既有行值不变。
+  const migration = await readFile(new URL("../../../shared/sql/system/042-internal-ai-window-remote.surql", import.meta.url), "utf8");
+  await db.query(migration);
+  await db.query(migration);
+  const legacy = await store.window("legacy-window");
+  expect(legacy).toMatchObject({ route_revision: "magpie-route-legacy", route_digest: routeDigest, route_expires_at: futureInstant });
+  expect(legacy?.contract_version ?? null).toBeNull();
+  expect(legacy?.price_basis).toBe("free-evidence");
+  // v1 行（route_provider NONE）继续走旧 openai 规则。
+  expect(routeMatches(legacy as WindowRow, "openai", "group/work", "http://127.0.0.1:3425/v1")).toBe(true);
+  expect(routeMatches(legacy as WindowRow, "anthropic", "group/work", "http://127.0.0.1:3425/v1")).toBe(false);
+
+  // 迁移后 v2 创建可用，且与既有 v1 行共存。
+  await activity(db, "win-compat2");
+  const created = await store.createRemoteWindow(remoteWindowInput("win-compat2"), "ops-test", remoteRuntime);
+  expect(created.window.contract_version).toBe("magpie-window/v2");
+  expect(await store.window("legacy-window")).toMatchObject({ route_revision: "magpie-route-legacy" });
 });

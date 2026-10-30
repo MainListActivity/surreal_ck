@@ -57,7 +57,7 @@ beforeAll(async () => {
   await db.query(await readFile(new URL("../../../shared/sql/system/036-internal-ai-token-plan.surql", import.meta.url), "utf8"));
   await db.query(await readFile(new URL("../../../shared/sql/system/037-internal-ai-measurement-cycle.surql", import.meta.url), "utf8"));
   await db.query(await readFile(new URL("../../../shared/sql/system/038-internal-ai-account-plan-type.surql", import.meta.url), "utf8"));
-  await db.query(await readFile(new URL("../../../shared/sql/system/039-internal-ai-window.surql", import.meta.url), "utf8"));
+  await db.query(await readFile(new URL("../../../shared/sql/system/039-internal-ai-window.surql", import.meta.url), "utf8") + await readFile(new URL("../../../shared/sql/system/042-internal-ai-window-remote.surql", import.meta.url), "utf8"));
 }, 20000);
 afterAll(async () => { if (!enabled) return; await stop(); await rm(directory, { recursive: true, force: true }); });
 localTest("multi-connection concurrent reservations serialize shared cash; uncertain failures retain money", async () => {
@@ -286,7 +286,7 @@ localTest("token-plan activities reserve zero cash, settle zero cost and deny on
 
 // 测量周期轮换/拒绝诊断用例：独立库隔离（measurement_cycle 单例行不可跨用例复用）。
 async function isolatedDb(name: string) {
-  const schema = (await Promise.all(["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql", "037-internal-ai-measurement-cycle.surql", "038-internal-ai-account-plan-type.surql", "039-internal-ai-window.surql"].map(async f => readFile(new URL(`../../../shared/sql/system/${f}`, import.meta.url), "utf8")))).join("\n");
+  const schema = (await Promise.all(["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql", "037-internal-ai-measurement-cycle.surql", "038-internal-ai-account-plan-type.surql", "039-internal-ai-window.surql", "042-internal-ai-window-remote.surql"].map(async f => readFile(new URL(`../../../shared/sql/system/${f}`, import.meta.url), "utf8")))).join("\n");
   await db.query(`DEFINE DATABASE IF NOT EXISTS ${name};`);
   await db.use({ namespace: "budget_test", database: name });
   await db.query(schema);
@@ -377,7 +377,7 @@ localTest("reserve denial diagnostics classify gate vs persist failures without 
 }, 30000);
 
 localTest("target cash and attempt limits are shared by separate activities and cannot reset with new run/key", async () => {
-  const schema = await readFile(new URL("../../../shared/sql/system/034-internal-ai-budget.surql", import.meta.url), "utf8") + await readFile(new URL("../../../shared/sql/system/037-internal-ai-measurement-cycle.surql", import.meta.url), "utf8") + await readFile(new URL("../../../shared/sql/system/039-internal-ai-window.surql", import.meta.url), "utf8");
+  const schema = await readFile(new URL("../../../shared/sql/system/034-internal-ai-budget.surql", import.meta.url), "utf8") + await readFile(new URL("../../../shared/sql/system/037-internal-ai-measurement-cycle.surql", import.meta.url), "utf8") + await readFile(new URL("../../../shared/sql/system/039-internal-ai-window.surql", import.meta.url), "utf8") + await readFile(new URL("../../../shared/sql/system/042-internal-ai-window-remote.surql", import.meta.url), "utf8");
   await db.query("DEFINE DATABASE IF NOT EXISTS limits_cash;"); await db.use({ namespace: "budget_test", database: "limits_cash" }); await db.query(schema);
   const t = TARIFFS[1]!;
   const a = await activity("target-a"); const b = await activity("target-b");

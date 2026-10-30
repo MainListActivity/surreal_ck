@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { RecordId } from "surrealdb";
-import { TOKEN_PLAN_PLAN_TYPE_FREE, type MagpieWindowCreate } from "@surreal-ck/shared";
+import { TOKEN_PLAN_PLAN_TYPE_FREE, MAGPIE_WINDOW_CONTRACT_VERSION, type MagpieRemoteWindowCreate, type MagpieWindowCreate } from "@surreal-ck/shared";
 import type { InternalScope } from "./context";
 import type { Usage, Tariff } from "./pricing";
-import { payloadHash, validateWindowCreate, WindowDenied, type WindowRow } from "./window";
+import { payloadHash, validateWindowCreate, WindowDenied, buildRemoteWindowRequest, type WindowCreateRequest, type WindowRow } from "./window";
 export type Queryable = { query(sql: string, vars?: Record<string, unknown>): Promise<unknown> };
 /** reserve 拒绝的内部诊断类别：预算/证据/身份/持久化（含事务内引擎中止，如唯一索引冲突）。对外仍只报通用错误。 */
 export type ReserveDenial = "budget" | "evidence" | "identity" | "persist";
@@ -70,11 +70,41 @@ export class InternalAiStore {
     return (await this.activity(activity))?.window_revision ?? 0;
   }
   /**
-   * 新受控窗口创建：代码侧先做旧证据/容量/路由/剩余次数校验，事务内再用活动写锁
-   * 串行化「全部历史 attempt 数 + 现有 active 窗口承诺次数」，杜绝并发重复领取。
-   * 幂等键相同且载荷一致返回既有窗口；批准摘要重复一律拒绝。
+   * v1 受控窗口创建：旧证据/容量/路由/剩余次数校验后走共用插入事务。
    */
   async createWindow(input: MagpieWindowCreate, operator: string): Promise<{ window: WindowRow; idempotentReplay: boolean }> {
+    return this.insertWindow(input, operator, ctx => {
+      validateWindowCreate(input, ctx);
+      return {
+        ...input,
+        contractVersion: MAGPIE_WINDOW_CONTRACT_VERSION,
+        route: {
+          ...input.route,
+          revision: input.route.revision, digest: input.route.digest, expiresAt: input.route.expiresAt,
+          freeEvidenceHash: input.route.freeEvidenceHash ?? null,
+          amortizedNanoUsd: input.route.amortizedNanoUsd ?? null,
+          marginalNanoUsd: input.route.marginalNanoUsd ?? null,
+          provider: null,
+        },
+        remote: null,
+      };
+    });
+  }
+  /** 远端窗口 v2 创建：同一插入事务与门禁路径，runtime 为受控运行身份（env）。 */
+  async createRemoteWindow(input: MagpieRemoteWindowCreate, operator: string, runtime: Parameters<typeof buildRemoteWindowRequest>[1]["runtime"]): Promise<{ window: WindowRow; idempotentReplay: boolean }> {
+    return this.insertWindow(input, operator, ctx => buildRemoteWindowRequest(input, { ...ctx, runtime }));
+  }
+  /**
+   * 共用插入事务：代码侧先做包络/容量/路由校验，事务内再用活动写锁
+   * 串行化「全部历史 attempt 数 + 现有 active 窗口承诺次数」，杜绝并发重复领取。
+   * 幂等键相同且载荷一致返回既有窗口；批准摘要重复一律拒绝。
+   * v1 与远端 v2 只差 prepare 产出的归一请求，持久化与冲突分类完全同源。
+   */
+  private async insertWindow(
+    input: MagpieWindowCreate | MagpieRemoteWindowCreate,
+    operator: string,
+    prepare: (ctx: { totalUsed: number; committedAttempts: number; activityTotalLimit: number; activityPerAttemptLimit: number }) => WindowCreateRequest,
+  ): Promise<{ window: WindowRow; idempotentReplay: boolean }> {
     const db = await this.db();
     const activity = new RecordId("internal_ai_activity", input.activity);
     const row = new RecordId("internal_ai_window", crypto.randomUUID());
@@ -100,7 +130,9 @@ export class InternalAiStore {
     const countedAttempts = Number((rows<{ count: number }>(usedRows)[0]?.count ?? 0));
     const totalUsed = Math.max(countedAttempts, (target.attempts ?? 0) + (cycle?.attempts ?? 0));
     const committedAttempts = Number(rows<Record<string, number>>(committedRows)[0]?.['math::sum'] ?? 0);
-    validateWindowCreate(input, { totalUsed, committedAttempts, activityTotalLimit: activityRow.total_limit, activityPerAttemptLimit: activityRow.per_attempt_limit });
+    const request = prepare({ totalUsed, committedAttempts, activityTotalLimit: activityRow.total_limit, activityPerAttemptLimit: activityRow.per_attempt_limit });
+    const route = request.route;
+    const remote = request.remote;
     for (let retry = 0; ; retry++) {
       try {
         await db.query(`BEGIN TRANSACTION;
@@ -127,11 +159,26 @@ export class InternalAiStore {
               activity: $activityName, approval_digest: $approval, approval_task: $approvalTask, account_ref: $accountRef,
               evidence_expires_at: $expires, attempt_limit: $sourceAttempts, source_budget_nano_usd: $sourceUsd,
               per_attempt_nano_usd: $perUsd, attempts: 0, reserved: 0, spent: 0, status: "active", revision: 1,
-              route_revision: $routeRevision, route_digest: $routeDigest, requested_model: $requestedModel,
+              route_revision: IF $routeRevision = NULL { NONE } ELSE { $routeRevision },
+              route_digest: IF $routeDigest = NULL { NONE } ELSE { $routeDigest },
+              requested_model: $requestedModel,
               served_model: $servedModel, endpoint: $endpoint, account_binding: $accountBinding,
-              price_revision: $priceRevision, price_basis: $priceBasis, free_evidence_hash: IF $freeEvidenceHash = NULL { NONE } ELSE { $freeEvidenceHash },
+              price_revision: $priceRevision, price_basis: $priceBasis,
+              free_evidence_hash: IF $freeEvidenceHash = NULL { NONE } ELSE { $freeEvidenceHash },
               amortized_nano_usd: IF $amortized = NULL { NONE } ELSE { $amortized }, marginal_nano_usd: IF $marginal = NULL { NONE } ELSE { $marginal }, max_output_tokens: $maxOutput,
-              sampled_at: $sampledAt, route_expires_at: $routeExpires,
+              sampled_at: $sampledAt, route_expires_at: IF $routeExpires = NULL { NONE } ELSE { $routeExpires },
+              contract_version: $contractVersion,
+              evidence_version: IF $evidenceVersion = NULL { NONE } ELSE { $evidenceVersion },
+              observation_captured_at: IF $observationCapturedAt = NULL { NONE } ELSE { $observationCapturedAt },
+              observation_digest: IF $observationDigest = NULL { NONE } ELSE { $observationDigest },
+              routing_configuration_verified: IF $routingVerified = NULL { NONE } ELSE { $routingVerified },
+              route_provider: IF $routeProvider = NULL { NONE } ELSE { $routeProvider },
+              route_gaps: IF $routeGaps = NULL { NONE } ELSE { $routeGaps },
+              expiry_basis: IF $expiryBasis = NULL { NONE } ELSE { $expiryBasis },
+              local_freshness_expires_at: IF $localFreshnessExpiresAt = NULL { NONE } ELSE { $localFreshnessExpiresAt },
+              source_expires_at: IF $sourceExpiresAt = NULL { NONE } ELSE { $sourceExpiresAt },
+              pricing_reviewed: IF $pricingReviewed = NULL { NONE } ELSE { $pricingReviewed },
+              pricing_evidence_revision: IF $pricingEvidenceRevision = NULL { NONE } ELSE { $pricingEvidenceRevision },
               capacity_database: $capacityDatabase, capacity_tables: $capacityTables, capacity_fields: $capacityFields,
               capacity_records: $capacityRecords, capacity_ttl_seconds: $capacityTtl,
               capacity_destructive: $capacityDestructive, capacity_source: $capacitySource,
@@ -143,17 +190,24 @@ export class InternalAiStore {
           COMMIT TRANSACTION;`, {
           activity, activityName: input.activity, row, idem: input.idempotencyKey, payload: digest,
           targetId: new RecordId("internal_ai_target", GOAL), cycleId: new RecordId("internal_ai_measurement_cycle", MEASUREMENT_CYCLE),
-          approval: input.approvalDigest, approvalTask: input.approvalTask, accountRef: input.accountRef,
-          expires: input.evidenceExpiresAt, sourceAttempts: input.sourceBudgetAttempts, sourceUsd: input.sourceBudgetNanoUsd,
-          perUsd: input.perAttemptNanoUsd, routeRevision: input.route.revision, routeDigest: input.route.digest,
-          requestedModel: input.route.requestedModel, servedModel: input.route.servedModel, endpoint: input.route.endpoint,
-          accountBinding: input.route.accountBinding, priceRevision: input.route.priceRevision, priceBasis: input.route.priceBasis,
-          freeEvidenceHash: input.route.freeEvidenceHash ?? null, amortized: input.route.amortizedNanoUsd ?? null,
-          marginal: input.route.marginalNanoUsd ?? null, maxOutput: input.route.maxOutputTokens, sampledAt: input.route.sampledAt,
-          routeExpires: input.route.expiresAt, capacityDatabase: input.capacity.database, capacityTables: input.capacity.entityTables,
-          capacityFields: input.capacity.fieldsPerTable, capacityRecords: input.capacity.recordsPerTable,
-          capacityTtl: input.capacity.ttlSeconds, capacityDestructive: input.capacity.destructive,
-          capacitySource: input.capacity.source, operator, reason: input.reason,
+          approval: request.approvalDigest, approvalTask: request.approvalTask, accountRef: request.accountRef,
+          expires: request.evidenceExpiresAt, sourceAttempts: request.sourceBudgetAttempts, sourceUsd: request.sourceBudgetNanoUsd,
+          perUsd: request.perAttemptNanoUsd, routeRevision: route.revision, routeDigest: route.digest,
+          requestedModel: route.requestedModel, servedModel: route.servedModel, endpoint: route.endpoint,
+          accountBinding: route.accountBinding, priceRevision: route.priceRevision, priceBasis: route.priceBasis,
+          freeEvidenceHash: route.freeEvidenceHash, amortized: route.amortizedNanoUsd,
+          marginal: route.marginalNanoUsd, maxOutput: route.maxOutputTokens, sampledAt: route.sampledAt,
+          routeExpires: route.expiresAt, contractVersion: request.contractVersion,
+          evidenceVersion: remote?.evidenceVersion ?? null, observationCapturedAt: remote?.observationCapturedAt ?? null,
+          observationDigest: remote?.observationDigest ?? null, routingVerified: remote?.routingConfigurationVerified ?? null,
+          routeProvider: route.provider, routeGaps: remote?.gaps ?? null,
+          expiryBasis: remote?.expiryBasis ?? null, localFreshnessExpiresAt: remote?.localFreshnessExpiresAt ?? null,
+          sourceExpiresAt: remote?.sourceExpiresAt ?? null, pricingReviewed: remote?.pricingReviewed ?? null,
+          pricingEvidenceRevision: remote?.pricingEvidenceRevision ?? null,
+          capacityDatabase: request.capacity.database, capacityTables: request.capacity.entityTables,
+          capacityFields: request.capacity.fieldsPerTable, capacityRecords: request.capacity.recordsPerTable,
+          capacityTtl: request.capacity.ttlSeconds, capacityDestructive: request.capacity.destructive,
+          capacitySource: request.capacity.source, operator, reason: request.reason,
         });
         const found = rows<WindowRow>(await db.query("SELECT * FROM internal_ai_window WHERE activity = $activity AND idempotency_key = $idem LIMIT 1", { activity: input.activity, idem: input.idempotencyKey }))[0];
         if (!found) throw new Error("magpie-window-unconfirmed");
@@ -182,7 +236,7 @@ export class InternalAiStore {
           const counted2 = Number(rows<{ count: number }>(usedRows2)[0]?.count ?? 0);
           const target2 = await this.target();
           const cycle2 = await this.measurementCycle();
-          validateWindowCreate(input, {
+          prepare({
             totalUsed: Math.max(counted2, (target2.attempts ?? 0) + (cycle2?.attempts ?? 0)),
             committedAttempts: Number(rows<Record<string, number>>(committedRows2)[0]?.['math::sum'] ?? 0),
             activityTotalLimit: activityRow.total_limit, activityPerAttemptLimit: activityRow.per_attempt_limit,
