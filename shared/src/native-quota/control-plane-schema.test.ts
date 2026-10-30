@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readdir, readFile } from "node:fs/promises";
+import { PLATFORM_OPERATOR_CAPABILITIES } from "./control-plane";
 
 const migrationsDirectoryUrl = new URL("../../sql/system/", import.meta.url);
 
@@ -88,6 +89,35 @@ describe("_system native quota control-plane schema", () => {
     for (const table of quotaTables) {
       expect(tableDefinition(sql, table)).toMatch(/\bPERMISSIONS\s+NONE\b/u);
     }
+  });
+
+  test("platform operator capability whitelist matches the TypeScript union (funnel.read included)", async () => {
+    const entries = await readdir(migrationsDirectoryUrl);
+    // 白名单由多条迁移逐次 OVERWRITE；生效值取编号最大的那一条。
+    const capabilityMigrations = entries
+      .filter((entry) => /^\d{3}-.+\.surql$/u.test(entry))
+      .sort()
+      .reverse();
+    let sql: string | null = null;
+    for (const entry of capabilityMigrations) {
+      const content = await readFile(new URL(entry, migrationsDirectoryUrl), "utf8");
+      if (content.includes("DEFINE FIELD OVERWRITE capability ON TABLE platform_operator_capability")) {
+        sql = content;
+        break;
+      }
+    }
+    if (sql === null) throw new Error("no capability whitelist migration found");
+    const match = sql.match(
+      /DEFINE FIELD OVERWRITE capability ON TABLE platform_operator_capability[\s\S]*?ASSERT \$value INSIDE \[([\s\S]*?)\];/u,
+    );
+    if (!match) throw new Error("capability whitelist assertion not parsed");
+    const whitelist = [...match[1]!.matchAll(/"([^"]+)"/gu)].map((item) => item[1]);
+
+    // 两侧必须逐项一致：TS 联合新增能力时，SQL 白名单必须同步放宽，否则 seed 授权会在
+    // _system schema 处被拒（2026-10-30 run 41069265054 的启动失败根因）。
+    expect(whitelist).toEqual([...PLATFORM_OPERATOR_CAPABILITIES]);
+    expect(whitelist).toContain("funnel.read");
+    expect(whitelist).toContain("rollout.manage");
   });
 
   test("revision and audit records are append-only", async () => {
