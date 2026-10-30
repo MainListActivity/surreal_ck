@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import {
-  MAGPIE_CAPACITY_SCOPE, MAGPIE_LOCAL_FRESHNESS_SECONDS, MAGPIE_REMOTE_WINDOW_CONTRACT_VERSION,
+  MAGPIE_B_ENVELOPE, MAGPIE_CAPACITY_SCOPE, MAGPIE_LOCAL_FRESHNESS_SECONDS, MAGPIE_REMOTE_WINDOW_CONTRACT_VERSION,
   MAGPIE_WINDOW_LEGACY_PREFIXES, MAGPIE_WINDOW_MAX_TOTAL_ATTEMPTS,
   type MagpieRemoteWindowCreate, type MagpieWindowCreate, type MagpieWindowPriceBasis,
 } from "@surreal-ck/shared";
@@ -13,6 +13,7 @@ import type { RecordId } from "surrealdb";
 export type WindowRow = {
   id: RecordId; activity: string; approval_digest: string; approval_task: string; account_ref: string;
   evidence_expires_at: string; attempt_limit: number; source_budget_nano_usd: number; per_attempt_nano_usd: number;
+  envelope?: string;
   attempts: number; reserved: number; spent: number; status: string; revision: number;
   route_revision: string | null; route_digest: string | null; requested_model: string; served_model: string;
   endpoint: string; account_binding: string; price_revision: string; price_basis: MagpieWindowPriceBasis;
@@ -135,25 +136,47 @@ export function validateRoute(input: MagpieWindowCreate): void {
  * USD 继承上限与剩余次数。包络剩余算法（30 − 全部历史已用 − 已承诺）保持
  * 全局唯一一份；B 档独立包络（73a769c4）演进时只改这里，不复制第二套计费。
  */
+/**
+ * 包络/预算门禁（v1 / B 档包络 / 远端 v2 的单一来源）：旧周期/旧批准/旧 proof、证据期、
+ * USD 继承上限与剩余次数。包络剩余算法保持全局唯一一份；B 档独立包络（73a769c4）
+ * 与远端 v2（本线）都只复用这里，不复制第二套计费。
+ */
+export type WindowEnvelopeGate = Pick<MagpieWindowCreate, "approvalDigest" | "approvalTask" | "accountRef" | "evidenceExpiresAt" | "sourceBudgetAttempts" | "sourceBudgetNanoUsd" | "perAttemptNanoUsd" | "envelope">;
+
 export function validateWindowEnvelope(
-  input: Pick<WindowCreateRequest, "approvalDigest" | "approvalTask" | "accountRef" | "evidenceExpiresAt" | "sourceBudgetAttempts" | "sourceBudgetNanoUsd" | "perAttemptNanoUsd">,
-  ctx: { totalUsed: number; committedAttempts: number; activityTotalLimit: number; activityPerAttemptLimit: number },
+  input: WindowEnvelopeGate,
+  ctx: { totalUsed: number; committedAttempts: number; activityTotalLimit: number; activityPerAttemptLimit: number; envelopeUsed?: number; envelopeCommitted?: number; envelopeCommittedNanoUsd?: number; envelopeSpentNanoUsd?: number; envelopeReservedNanoUsd?: number; now?: number },
 ): void {
   const hit = legacyHit(input.approvalDigest, input.approvalTask, input.accountRef);
   if (hit) deny("magpie-window-legacy-rejected", `输入命中旧周期/旧批准/旧 proof 前缀 ${hit}`);
   const expires = parseInstant(input.evidenceExpiresAt);
-  if (!Number.isFinite(expires) || expires <= Date.now()) deny("magpie-window-evidence-expired", "证据期必须晚于当前时间");
-  if (input.sourceBudgetNanoUsd > ctx.activityTotalLimit) deny("magpie-window-cap-inheritance", "源预算 USD 不得超过既有活动总上限");
-  if (input.perAttemptNanoUsd > ctx.activityPerAttemptLimit) deny("magpie-window-cap-inheritance", "单次预算 USD 不得超过既有活动单次上限");
-  const remaining = MAGPIE_WINDOW_MAX_TOTAL_ATTEMPTS - ctx.totalUsed - ctx.committedAttempts;
-  if (remaining <= 0 || input.sourceBudgetAttempts > remaining) deny("magpie-window-remaining-insufficient", `剩余可用次数不足：请求 ${input.sourceBudgetAttempts}，可用 ${Math.max(0, remaining)}`);
+  const now = ctx.now ?? Date.now();
+  if (input.envelope === MAGPIE_B_ENVELOPE.id && now >= Date.parse(MAGPIE_B_ENVELOPE.expiresAt)) deny("magpie-window-envelope-expired", "B 档包络已过期");
+  if (!Number.isFinite(expires) || expires <= now) deny("magpie-window-evidence-expired", "证据期必须晚于当前时间");
+  if (input.envelope !== MAGPIE_B_ENVELOPE.id) {
+    if (input.sourceBudgetNanoUsd > ctx.activityTotalLimit) deny("magpie-window-cap-inheritance", "源预算 USD 不得超过既有活动总上限");
+    if (input.perAttemptNanoUsd > ctx.activityPerAttemptLimit) deny("magpie-window-cap-inheritance", "单次预算 USD 不得超过既有活动单次上限");
+  }
+  if (input.envelope === MAGPIE_B_ENVELOPE.id) {
+    if (now >= Date.parse(MAGPIE_B_ENVELOPE.expiresAt) || expires > Date.parse(MAGPIE_B_ENVELOPE.expiresAt)) deny("magpie-window-envelope-expired", "B 档包络已过期或窗口证据期超出包络期限");
+    const committedUsd = (ctx.envelopeCommittedNanoUsd ?? 0) + (ctx.envelopeReservedNanoUsd ?? 0) + (ctx.envelopeSpentNanoUsd ?? 0);
+    if (input.sourceBudgetNanoUsd > MAGPIE_B_ENVELOPE.totalNanoUsd || input.perAttemptNanoUsd > MAGPIE_B_ENVELOPE.perAttemptNanoUsd || input.sourceBudgetAttempts > MAGPIE_B_ENVELOPE.maxAttempts
+      || committedUsd + input.sourceBudgetNanoUsd > MAGPIE_B_ENVELOPE.totalNanoUsd) {
+      deny("magpie-window-envelope-cap-exceeded", "请求超过 B 档包络次数或 USD 上限");
+    }
+    const remaining = MAGPIE_B_ENVELOPE.maxAttempts - (ctx.envelopeUsed ?? 0) - (ctx.envelopeCommitted ?? 0);
+    if (remaining <= 0 || input.sourceBudgetAttempts > remaining) deny("magpie-window-remaining-insufficient", `B 档剩余可用次数不足：请求 ${input.sourceBudgetAttempts}，可用 ${Math.max(0, remaining)}`);
+  } else {
+    const remaining = MAGPIE_WINDOW_MAX_TOTAL_ATTEMPTS - ctx.totalUsed - ctx.committedAttempts;
+    if (remaining <= 0 || input.sourceBudgetAttempts > remaining) deny("magpie-window-remaining-insufficient", `剩余可用次数不足：请求 ${input.sourceBudgetAttempts}，可用 ${Math.max(0, remaining)}`);
+  }
 }
 
 /**
  * 创建窗口的全部拒绝条件。`totalUsed` = 全部历史 attempt 数（含 failed/uncertain），
  * `committedAttempts` = 现有 active 窗口 attempt_limit 之和；两者共同保证不重领 30。
  */
-export function validateWindowCreate(input: MagpieWindowCreate, ctx: { totalUsed: number; committedAttempts: number; activityTotalLimit: number; activityPerAttemptLimit: number }): void {
+export function validateWindowCreate(input: MagpieWindowCreate, ctx: { totalUsed: number; committedAttempts: number; activityTotalLimit: number; activityPerAttemptLimit: number; envelopeUsed?: number; envelopeCommitted?: number; envelopeCommittedNanoUsd?: number; envelopeSpentNanoUsd?: number; envelopeReservedNanoUsd?: number; now?: number }): void {
   validateWindowEnvelope(input, ctx);
   validateCapacity(input.capacity);
   validateRoute(input);

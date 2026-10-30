@@ -4,7 +4,7 @@ import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
 import { RecordId, Surreal, Table } from "surrealdb";
-import { MAGPIE_LOCAL_FRESHNESS_SECONDS, MAGPIE_REMOTE_EVIDENCE_VERSION, type MagpieRemoteWindowCreate, type MagpieWindowCreate } from "@surreal-ck/shared";
+import { MAGPIE_B_ENVELOPE, MAGPIE_LOCAL_FRESHNESS_SECONDS, MAGPIE_REMOTE_EVIDENCE_VERSION, type MagpieRemoteWindowCreate, type MagpieWindowCreate } from "@surreal-ck/shared";
 import { InternalAiStore, GOAL, hash } from "./store";
 import { InternalAiGate } from "./gate";
 import { inInternalScope } from "./context";
@@ -45,7 +45,7 @@ beforeAll(async () => {
   await admin.connect(`${endpoint}/rpc`, { authentication: { username: "root", password: "root" } });
   await admin.query("DEFINE NAMESPACE IF NOT EXISTS budget_test;");
   await admin.use({ namespace: "budget_test" });
-  schema = (await Promise.all(["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql", "037-internal-ai-measurement-cycle.surql", "038-internal-ai-account-plan-type.surql", "039-internal-ai-window.surql", "042-internal-ai-window-remote.surql"]
+  schema = (await Promise.all(["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql", "037-internal-ai-measurement-cycle.surql", "038-internal-ai-account-plan-type.surql", "039-internal-ai-window.surql", "042-internal-ai-sampling-envelope.surql", "043-internal-ai-window-remote.surql"]
     .map(async f => readFile(new URL(`../../../shared/sql/system/${f}`, import.meta.url), "utf8")))).join("\n");
 }, 30000);
 
@@ -129,6 +129,66 @@ localTest("historical 30 attempts reject a new window; failed and uncertain rows
   await activity(db, "win-full");
   await history(db, 30);
   await rejects(() => store.createWindow(windowInput("win-full"), "ops-test"), "magpie-window-remaining-insufficient");
+});
+
+localTest("B envelope is an independent 20-attempt / 0.70 USD ledger and leaves the old 30 counter untouched", async () => {
+  const { db, store } = await database("win_envelope");
+  const scope = await activity(db, "win-envelope", { total: 1_000_000_000, per: 100_000_000 });
+  await history(db, 30);
+  const before = await store.target();
+  const envelopeInput = (overrides: Partial<MagpieWindowCreate> = {}) => windowInput("win-envelope", {
+    envelope: MAGPIE_B_ENVELOPE.id, sourceBudgetAttempts: 20, sourceBudgetNanoUsd: 100_000_000, perAttemptNanoUsd: 35_000_000,
+    ...overrides,
+  });
+  const created = await store.createWindow(envelopeInput(), "ops-test");
+  expect(created.window.envelope).toBe(MAGPIE_B_ENVELOPE.id);
+  expect((await store.envelopeSummary())?.usedAttempts).toBe(0);
+  await store.bindWindow(String(created.window.id.id), { activity: "win-envelope", expectedRevision: await store.windowRevision("win-envelope") }, "ops-test");
+  for (let i = 0; i < 20; i++) {
+    const ticket = await inInternalScope(scope, () => new InternalAiGate(store).begin("chat", "openai", "group/work", "http://127.0.0.1:3425/v1"));
+    await new InternalAiGate(store).finish(ticket, null, null, null, true, "provider-error");
+  }
+  const summary = await store.envelopeSummary();
+  expect(summary).toMatchObject({ usedAttempts: 20, committedAttempts: 0, remainingAttempts: 0, spentNanoUsd: 0, reservedNanoUsd: 0 });
+  await expect(inInternalScope(scope, () => new InternalAiGate(store).begin("chat", "openai", "group/work", "http://127.0.0.1:3425/v1"))).rejects.toThrow("internal-ai-budget-exhausted");
+  // 旧 target 的 30 次历史与计数既不被新包络清零，也不被增加。
+  expect(await store.target()).toEqual(before);
+  await rejects(() => store.createWindow(envelopeInput({ approvalDigest: digest("1"), idempotencyKey: "idem-env-2" }), "ops-test"), "magpie-window-remaining-insufficient");
+});
+
+localTest("B envelope paid window settles inside the envelope ledger without touching legacy counters", async () => {
+  const { db, store, gate } = await database("win_envelope_paid");
+  const scope = await activity(db, "win-envelope-paid");
+  await history(db, 30);
+  const before = await store.target();
+  const openai = TARIFFS.find(t => t.revision === "openai-mini-2026-10-09")!;
+  const created = await store.createWindow(windowInput("win-envelope-paid", {
+    envelope: MAGPIE_B_ENVELOPE.id, sourceBudgetAttempts: 1, sourceBudgetNanoUsd: 35_000_000, perAttemptNanoUsd: 35_000_000,
+    route: { ...windowInput("win-envelope-paid").route, priceBasis: "per-token", priceRevision: openai.revision, servedModel: openai.model, endpoint: "https://api.openai.com/v1", freeEvidenceHash: undefined, maxOutputTokens: 16384 },
+  }), "ops-test");
+  await store.bindWindow(String(created.window.id.id), { activity: "win-envelope-paid", expectedRevision: await store.windowRevision("win-envelope-paid") }, "ops-test");
+  const ticket = await inInternalScope(scope, () => gate.begin("chat", "openai", "group/work", "https://api.openai.com/v1"));
+  await gate.finish(ticket, { inputTokens: 1_000, outputTokens: 500, cachedInputTokens: 0, reasoningTokens: null }, openai.model, "req-envelope-paid", false);
+  const [row] = await store.page("win-envelope-paid");
+  expect(row).toMatchObject({ state: "settled", cost: 450_000, cost_status: "assessed", envelope: MAGPIE_B_ENVELOPE.id });
+  const summary = await store.envelopeSummary();
+  expect(summary).toMatchObject({ usedAttempts: 1, spentNanoUsd: 450_000, reservedNanoUsd: 0 });
+  // 旧 target 账本完全不参与包络结算。
+  expect(await store.target()).toEqual(before);
+});
+
+localTest("B envelope rejects expired approvals and USD overages; old prefixes still fail", async () => {
+  const { db, store } = await database("win_envelope_neg");
+  await activity(db, "win-envelope-neg");
+  const envelopeInput = (overrides: Partial<MagpieWindowCreate> = {}) => windowInput("win-envelope-neg", {
+    envelope: MAGPIE_B_ENVELOPE.id, sourceBudgetAttempts: 1, sourceBudgetNanoUsd: 35_000_000, perAttemptNanoUsd: 35_000_000, ...overrides,
+  });
+  await rejects(() => store.createWindow(envelopeInput({ approvalTask: "a7537d2c-3b76-42b3-bfb8-459956340984" }), "ops-test"), "magpie-window-legacy-rejected");
+  await rejects(() => store.createWindow(envelopeInput({ sourceBudgetNanoUsd: 35_000_001, perAttemptNanoUsd: 35_000_001, idempotencyKey: "idem-env-usd" }), "ops-test"), "magpie-window-envelope-cap-exceeded");
+  const full = await store.createWindow(envelopeInput({ sourceBudgetAttempts: 1, sourceBudgetNanoUsd: 700_000_000, idempotencyKey: "idem-env-full" }), "ops-test");
+  expect(full.window.envelope).toBe(MAGPIE_B_ENVELOPE.id);
+  await rejects(() => store.createWindow(envelopeInput({ approvalDigest: digest("3"), sourceBudgetAttempts: 1, sourceBudgetNanoUsd: 1, idempotencyKey: "idem-env-over" }), "ops-test"), "magpie-window-envelope-cap-exceeded");
+  expect(await store.envelopeSummary()).toMatchObject({ usedAttempts: 0, committedAttempts: 1, remainingAttempts: 19 });
 });
 
 localTest("window creation is idempotent, approval-digest unique, and never re-grants remaining attempts", async () => {
@@ -445,7 +505,7 @@ localTest("042 widening keeps existing v1 rows intact and v2 creation requires t
   expect(before?.contract_version ?? null).toBeNull();
 
   // 042 逐文件重放（迁移可重复执行），既有行值不变。
-  const migration = await readFile(new URL("../../../shared/sql/system/042-internal-ai-window-remote.surql", import.meta.url), "utf8");
+  const migration = await readFile(new URL("../../../shared/sql/system/043-internal-ai-window-remote.surql", import.meta.url), "utf8");
   await db.query(migration);
   await db.query(migration);
   const legacy = await store.window("legacy-window");
