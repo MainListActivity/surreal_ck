@@ -7,9 +7,17 @@ import type {
 } from "@surreal-ck/shared/native-quota";
 import { DateTime, StringRecordId } from "surrealdb";
 import { canonicalSha256 } from "./canonical";
+import { PolicyCompileError } from "./policy-compiler";
 
 const DEFAULT_LEASE_MS = 60_000;
 const DEFAULT_RETRY_MS = 5_000;
+/**
+ * Operator intent 的可重试失败不是无限重试：每次认领 attempt_count +1，
+ * 达到上限后落 terminal_failed，避免确定性错误被当成瞬时故障每 5 秒空转。
+ * 退避为 retryMs × 2^(attempt-1)，封顶 5 分钟；默认上限 8 次 ≈ 10 分钟窗口。
+ */
+const MAX_OPERATOR_INTENT_ATTEMPTS = 8;
+const MAX_OPERATOR_INTENT_RETRY_MS = 5 * 60_000;
 
 export class QuotaLifecycleError extends Error {
   constructor(
@@ -282,6 +290,19 @@ function errorDetails(error: unknown): Readonly<{
       details: Object.freeze({ error_name: error.name }),
     };
   }
+  // 策略编译是确定性的：同一份 projection/entitlement 每次都会得到同样结论
+  // （例如 Retention 来源下非零 ^ent_ 限额 → invalid_retention_policy）。
+  // 把它当成瞬时故障会形成失败重试循环，因此直接终态化并保留原始 code。
+  if (error instanceof PolicyCompileError) {
+    return {
+      code: error.code,
+      retryable: false,
+      details: Object.freeze({
+        error_name: error.name,
+        ...error.details,
+      }),
+    };
+  }
   return {
     code: "quota_lifecycle_processing_failed",
     retryable: true,
@@ -289,6 +310,14 @@ function errorDetails(error: unknown): Readonly<{
       error_name: error instanceof Error ? error.name : typeof error,
     }),
   };
+}
+
+function operatorIntentRetryDelayMs(
+  attemptNumber: number,
+  retryMs: number,
+): number {
+  const exponent = Math.max(0, Math.min(attemptNumber - 1, 20));
+  return Math.min(retryMs * 2 ** exponent, MAX_OPERATOR_INTENT_RETRY_MS);
 }
 
 function assertNonEmpty(value: string, field: string): void {
@@ -440,6 +469,20 @@ export class QuotaLifecycleCoordinator {
       leaseDurationMs: this.leaseDurationMs,
     });
     if (!claim) return "idle";
+    const attemptNumber = Number(claim.attemptNumber);
+    // 修复前遗留的 failed 行可能已有远超上限的 attempt_count；认领后直接
+    // 终态化，不再执行注定失败的业务/编译工作，也不回写无限重试。
+    if (attemptNumber > MAX_OPERATOR_INTENT_ATTEMPTS) {
+      await this.store.failOperatorIntent(claim, {
+        errorCode: "operator_intent_retry_exhausted",
+        errorDetails: Object.freeze({
+          attempts: attemptNumber,
+          max_attempts: MAX_OPERATOR_INTENT_ATTEMPTS,
+        }),
+        failedAt: this.clock.now(),
+      });
+      return "failed";
+    }
     try {
       const mutation = await this.store.applyOperatorMutation(claim);
       let refreshResult: EntitlementRefreshResult = {};
@@ -482,15 +525,28 @@ export class QuotaLifecycleCoordinator {
       return "processed";
     } catch (error) {
       const failure = errorDetails(error);
+      const exhausted =
+        failure.retryable && attemptNumber >= MAX_OPERATOR_INTENT_ATTEMPTS;
+      const nextAttemptAt = failure.retryable && !exhausted
+        ? addMilliseconds(
+          this.clock.now(),
+          operatorIntentRetryDelayMs(attemptNumber, this.retryMs),
+        )
+        : undefined;
       await this.store.failOperatorIntent(claim, {
         errorCode: failure.code,
-        errorDetails: failure.details,
-        nextAttemptAt: failure.retryable
-          ? addMilliseconds(this.clock.now(), this.retryMs)
-          : undefined,
+        errorDetails: exhausted
+          ? Object.freeze({
+            ...failure.details,
+            retry_exhausted: true,
+            attempts: attemptNumber,
+            max_attempts: MAX_OPERATOR_INTENT_ATTEMPTS,
+          })
+          : failure.details,
+        nextAttemptAt,
         failedAt: this.clock.now(),
       });
-      return failure.retryable ? "retry_scheduled" : "failed";
+      return nextAttemptAt ? "retry_scheduled" : "failed";
     }
   }
 }

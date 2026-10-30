@@ -17,6 +17,7 @@ import {
   type ProviderEventClaim,
   type QuotaLifecycleStore,
 } from "./subscription-lifecycle";
+import { PolicyCompileError } from "./policy-compiler";
 
 const now = new DateTime("2026-08-01T00:00:00.000Z");
 
@@ -371,5 +372,92 @@ describe("QuotaLifecycleCoordinator", () => {
     expect(retryStore.providerFailure?.nextAttemptAt?.toString()).toBe(
       "2026-08-01T00:00:05.000Z",
     );
+  });
+
+  test("deterministic policy compile rejection settles terminal instead of retrying", async () => {
+    const store = new MemoryLifecycleStore();
+    store.operatorClaim = operatorClaim();
+    const refresher = new MemoryRefresher();
+    refresher.error = new PolicyCompileError(
+      "invalid_retention_policy",
+      "retention table rule must be a finite zero-growth limit",
+      { resource: "table", ruleKey: "retention-table" },
+    );
+
+    await expect(
+      coordinator(store, refresher).processNextOperatorIntent(),
+    ).resolves.toBe("failed");
+
+    expect(refresher.calls).toHaveLength(1);
+    expect(store.operatorFailure).toMatchObject({
+      errorCode: "invalid_retention_policy",
+      errorDetails: {
+        error_name: "PolicyCompileError",
+        resource: "table",
+        ruleKey: "retention-table",
+      },
+    });
+    expect(store.operatorFailure?.nextAttemptAt).toBeUndefined();
+  });
+
+  test("operator intent retryable failures back off exponentially and stop at the attempt cap", async () => {
+    const cases: ReadonlyArray<Readonly<{
+      attemptNumber: number;
+      nextAttemptAt?: string;
+      outcome: "retry_scheduled" | "failed";
+    }>> = [
+      { attemptNumber: 1, nextAttemptAt: "2026-08-01T00:00:05.000Z", outcome: "retry_scheduled" },
+      { attemptNumber: 3, nextAttemptAt: "2026-08-01T00:00:20.000Z", outcome: "retry_scheduled" },
+      // 5s × 2^6 = 320s，封顶 300s。
+      { attemptNumber: 7, nextAttemptAt: "2026-08-01T00:05:00.000Z", outcome: "retry_scheduled" },
+      { attemptNumber: 8, outcome: "failed" },
+    ];
+    for (const item of cases) {
+      const store = new MemoryLifecycleStore();
+      store.operatorClaim = operatorClaim({
+        attemptNumber: item.attemptNumber,
+      });
+      store.operatorApplyError = new QuotaLifecycleError(
+        "operator_intent_store_unavailable",
+        "temporary outage",
+        true,
+      );
+
+      await expect(
+        coordinator(store, new MemoryRefresher())
+          .processNextOperatorIntent(),
+      ).resolves.toBe(item.outcome);
+
+      expect(store.operatorFailure?.nextAttemptAt?.toString()).toBe(
+        item.nextAttemptAt,
+      );
+      expect(store.operatorFailure?.errorCode).toBe(
+        "operator_intent_store_unavailable",
+      );
+      if (item.attemptNumber >= 8) {
+        expect(store.operatorFailure?.errorDetails).toMatchObject({
+          retry_exhausted: true,
+          attempts: 8,
+          max_attempts: 8,
+        });
+      }
+    }
+  });
+
+  test("legacy over-cap failed intent terminates without re-running the mutation", async () => {
+    const store = new MemoryLifecycleStore();
+    store.operatorClaim = operatorClaim({ attemptNumber: 30 });
+    const refresher = new MemoryRefresher();
+
+    await expect(
+      coordinator(store, refresher).processNextOperatorIntent(),
+    ).resolves.toBe("failed");
+
+    expect(refresher.calls).toHaveLength(0);
+    expect(store.operatorFailure).toMatchObject({
+      errorCode: "operator_intent_retry_exhausted",
+      errorDetails: { attempts: 30, max_attempts: 8 },
+    });
+    expect(store.operatorFailure?.nextAttemptAt).toBeUndefined();
   });
 });
