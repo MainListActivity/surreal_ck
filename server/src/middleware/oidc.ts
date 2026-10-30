@@ -3,6 +3,7 @@ import { JWTClaimValidationFailed, JWTExpired } from "jose/errors";
 import { HttpError } from "../http-error";
 import type { AppBindings } from "../hono-types";
 import { verifyOidcToken } from "../oidc/verify";
+import { describeUpstreamFailure } from "../oidc/upstream-fetch";
 
 function toOidcHttpError(error: unknown): HttpError {
   if (error instanceof JWTExpired) {
@@ -34,6 +35,15 @@ export function requireOidc(): MiddlewareHandler<AppBindings> {
     try {
       c.set("user", await verifyOidcToken(token));
     } catch (error) {
+      // 上游类失败（JWKS 拉取超时/网络错误）此前完全无日志，登录侧
+      // UND_ERR_CONNECT_TIMEOUT 这类故障无法诊断。只记录错误名与 cause.code，
+      // 不记录 message（可能含 token）；普通过期/claim/签名错误保持静默。
+      if (!(error instanceof JWTExpired) && !(error instanceof JWTClaimValidationFailed)) {
+        const failure = describeUpstreamFailure(error);
+        if (failure.timeout || failure.causeCode !== null || failure.name.startsWith("JWKS")) {
+          console.error("[oidc] bearer verification upstream failure", failure);
+        }
+      }
       throw toOidcHttpError(error);
     }
 

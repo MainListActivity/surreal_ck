@@ -390,4 +390,45 @@ describe("POST /api/auth/token", () => {
     expect(`${responseText}\n${logText}`).not.toContain("server-secret");
     expect(`${responseText}\n${logText}`).not.toContain("access-token");
   });
+
+  test("reports IdP connect timeouts with a distinct error code and without leaking secrets", async () => {
+    const logs: string[] = [];
+    console.error = (...args: unknown[]) => {
+      logs.push(JSON.stringify(args));
+    };
+    const app = createApp({
+      oidcTokenExchange: {
+        clientId: "web-client",
+        clientSecret: "server-secret",
+        tokenEndpoint: "https://idp.example.test/token",
+        fetch: async () => {
+          const cause = Object.assign(new Error("connect timeout for auth-code with server-secret"), {
+            code: "UND_ERR_CONNECT_TIMEOUT",
+          });
+          throw new TypeError("fetch failed for access-token", { cause });
+        },
+      },
+    });
+
+    const response = await app.request("/api/auth/token", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code: "auth-code",
+        redirect_uri: "https://app.example.test/auth/callback",
+        client_id: "web-client",
+        code_verifier: "pkce-verifier",
+      }),
+    });
+
+    const responseText = await response.text();
+    const logText = logs.join("\n");
+    expect(response.status).toBe(502);
+    expect(responseText).toContain("oidc-token-exchange-timeout");
+    expect(logText).toContain("UND_ERR_CONNECT_TIMEOUT");
+    expect(`${responseText}\n${logText}`).not.toContain("auth-code");
+    expect(`${responseText}\n${logText}`).not.toContain("server-secret");
+    expect(`${responseText}\n${logText}`).not.toContain("access-token");
+  });
 });
