@@ -626,8 +626,8 @@ describe("workspace template scripts", () => {
     const migration = scripts.find((script) => script.name === "055-claims-reconciliation-finding.surql");
 
     expect(migration?.version).toBe(55);
-    // 059-funnel-event（任务 a1e2791c）追加为最新版本。
-    expect(WORKSPACE_TEMPLATE_VERSION).toBe(59);
+    // 060-funnel-event-fixes（任务 38ccb7d6）追加为最新版本。
+    expect(WORKSPACE_TEMPLATE_VERSION).toBe(60);
     const sql = migration?.sql ?? "";
     expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS reconciliation_finding SCHEMAFULL/);
     expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS claim_supplement SCHEMAFULL/);
@@ -668,6 +668,30 @@ describe("workspace template scripts", () => {
     expect(sql).not.toMatch(/DEFINE FIELD[^\n]*content|DEFINE FIELD[^\n]*amount|DEFINE FIELD[^\n]*email/);
     // 只允许 DEFINE/INSERT 类语句；WHEN $event = "UPDATE" 是事件条件，不是写语句。
     expect(sql).not.toMatch(/^\s*(UPDATE|DELETE|REMOVE)\s/mi);
+  });
+
+  test("返工 R4：060 收紧 funnel_event 写入、first_login 只计真实绑定、ai_proposal_adopted 只计首次确认", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.name === "060-funnel-event-fixes.surql");
+
+    expect(migration?.version).toBe(60);
+    const sql = migration?.sql ?? "";
+    // 普通会话不能直接 CREATE；select / update / delete 口径与 059 相同。
+    expect(sql).toMatch(/DEFINE TABLE OVERWRITE funnel_event SCHEMAFULL CHANGEFEED 7d/);
+    expect(sql).toMatch(
+      /FOR select WHERE \$auth != NONE,\s+FOR create NONE,\s+FOR update, delete WHERE \$auth\.is_admin = true;/,
+    );
+    expect(sql).not.toMatch(/FOR create WHERE/);
+    // first_login：添加成员（subject 为 NONE）不计；首次绑定的边沿 UPDATE 与带 subject 的创建计一次。
+    expect(sql).toMatch(/DEFINE EVENT OVERWRITE user_first_login_funnel ON TABLE user/);
+    expect(sql).toMatch(/\$after\.subject != NONE/);
+    expect(sql).toMatch(/\$event = "CREATE"\s+OR \(\$event = "UPDATE" AND \(\$before\.subject = NONE/);
+    // ai_proposal_adopted：只认 pending → consumed 的首次确认；释放回滚（resumed → consumed）不计。
+    expect(sql).toMatch(/DEFINE EVENT OVERWRITE chat_write_fence_funnel ON TABLE chat_write_fence/);
+    expect(sql).toMatch(/\$before\.status = "pending"/);
+    expect(sql).not.toMatch(/\$before\.consumed_by/);
+    // 只改定义，不改写或删除任何数据行。
+    expect(sql).not.toMatch(/^\s*(UPDATE|DELETE|REMOVE|INSERT)\s/mi);
   });
 
   test("PG-1：057 为 chat_delivery 增 run_diagnostic FLEXIBLE 字段（纯增量）", async () => {
