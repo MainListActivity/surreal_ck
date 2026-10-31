@@ -491,3 +491,23 @@ test("window GET projects the v3 basis hash and the stop reason; v1 and v2 rows 
   expect(await (await app.request("/api/ops/internal-ai/windows/w1")).json()).toMatchObject({ contract: "magpie-window/v1", window: { freeQuota: null, stop: null } });
   expect(await (await app.request("/api/ops/internal-ai/windows/w2")).json()).toMatchObject({ contract: "magpie-window/v2", window: { freeQuota: null, stop: null } });
 });
+
+test("bind route passes the controlled runtime endpoint to the store; a drifted v3 binding is refused with 422", async () => {
+  const calls: Array<string | undefined> = [];
+  const fake = {
+    bindWindow: async (_id: string, _input: unknown, _operator: string, runtimeEndpoint?: string) => {
+      calls.push(runtimeEndpoint);
+      if (runtimeEndpoint !== "https://data.maplayer.top/ofm/v1") throw new WindowDenied("magpie-window-free-basis-route-mismatch", "窗口或运行时端点与免费额度依据路由不符");
+      return { window: freeRow, activityRevision: 9, idempotentReplay: false };
+    },
+  };
+  const bind = (endpoint: string) => new Hono<AppBindings>()
+    .route("/", createOpsInternalAiRoutes({ gate: { store: fake } as unknown as InternalAiGate, requireOperator: freeOperator, runtime: { provider: "openai", model: "remote-magpie/group/work", endpoint } }))
+    .onError(handleError)
+    .request("/api/ops/internal-ai/windows/w3/bind", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ activity: "free-unit", expectedRevision: 8, reason: "绑定依据路由" }) });
+  expect((await bind("https://data.maplayer.top/ofm/v1")).status).toBe(200);
+  const drifted = await bind("http://127.0.0.1:3425/v1");
+  expect(drifted.status).toBe(422);
+  expect((await drifted.json() as { error?: { code?: string } }).error?.code).toBe("magpie-window-free-basis-route-mismatch");
+  expect(calls).toEqual(["https://data.maplayer.top/ofm/v1", "http://127.0.0.1:3425/v1"]);
+});

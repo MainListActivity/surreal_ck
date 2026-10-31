@@ -202,7 +202,7 @@ v3 的依据与门禁错误码统一列在第 9 节。
 
 | 字段 | 值 |
 | --- | --- |
-| 适用路由 | host `data.maplayer.top`，path `/ofm/v1`，servedModel `sn-sensenova-6-8-flash`（仅 https，无端口、凭据、查询或片段） |
+| 适用路由 | host `data.maplayer.top`，path `/ofm/v1`，servedModel `sn-sensenova-6-8-flash`。端点须逐字为 `https://data.maplayer.top/ofm/v1`（允许一个尾斜杠）；显式 `:443`、大写主机、凭据、查询、片段、点段、首尾空白与 http 均不符（不做 URL 规范化） |
 | 包络 | `fv06-b-2026-11-05`（见第 7 节） |
 | 生效时刻 | 不早于老板决定时刻 2026-10-30T21:55:52Z |
 | 到期时刻 | 不晚于 B 档包络期限 2026-11-05T12:10:07Z；窗口证据期不得超过依据到期时刻 |
@@ -223,9 +223,20 @@ v3 的依据与门禁错误码统一列在第 9 节。
 
 依据必须存在且可复算；必须已生效且未到期；窗口证据期不得越过依据到期时刻；路由 host、path、servedModel 与依据一致；目录必须同时标注免费且原始单价为零，否则 `magpie-window-free-basis-conflict`。窗口价格由依据派生为 `free-evidence`，`priceRevision` 为 `free-quota-basis/1:<hash>`；目录 0/0 与 reviewed 状态都不参与价格派生。B 包络内的免费窗口必须是 v3，否则 `magpie-window-free-basis-required`。
 
+**三端点同源核对（证据 / 依据 / 运行时）**
+
+同一窗口涉及三个端点：证据来源端点（只读目录的 `source.endpoint`）、运行时端点（受控运行配置 `AI_BASE_URL`，经 `runtimeIdentity()` 注入）与依据路由。以下四处都做同源核对，任一不符即拒绝或停止：
+
+- 创建：证据来源端点与运行时端点的 host/path 键必须一致，否则 `magpie-window-endpoint-mismatch`；运行时端点与证据来源端点都必须严格符合依据路由，否则 `magpie-window-free-basis-route-mismatch`；运行时端点缺失即 `magpie-window-runtime-unavailable`，不从证据回推。
+- 幂等重放（读回）：返回既有窗口前，以当前运行时端点与依据重新核对既有行（冻结端点、运行时端点、served model）。不符即拒绝，不写入，也不把既有行当作可信结果返回。
+- CAS 绑定：绑定 v3 active 窗口前，在任何写入之前核对运行时端点；不符即拒绝，窗口与活动版本都不变。已绑定的同一窗口重绑同样核对。
+- 请求门禁（begin）：每次发送前，本次请求端点必须严格符合依据路由，并与冻结端点的 host/path 键一致。不符即停止窗口（`route-drift`），本次不发送。
+
+未绑定的 loopback（如 `http://127.0.0.1:3425/v1`）不能用于 v3 窗口。它不符合依据路由，即使证据与运行时指向同一个 loopback 也会被拒绝。
+
 **请求前复核（begin）**
 
-每次请求前复核依据：依据缺失、不可复算或未生效，停止原因 `free-basis-invalid`；已到期，`free-basis-expired`；路由不符，`route-drift`；served model 不符，`served-model-drift`。命中即窗口进入 `stopped`，本次不发送，抛出 `internal-ai-free-quota-stopped`。
+每次请求前复核依据：依据缺失、不可复算或未生效，停止原因 `free-basis-invalid`；已到期，`free-basis-expired`；路由不符，`route-drift`；served model 不符，`served-model-drift`。本次请求端点不符依据路由，同样为 `route-drift`（见上）。命中即窗口进入 `stopped`，本次不发送，抛出 `internal-ai-free-quota-stopped`。
 
 **请求后（finish）**
 
@@ -239,4 +250,4 @@ v3 的依据与门禁错误码统一列在第 9 节。
 
 - 免费口径仍按次数计数（包络上限 20 次），USD 预留按第 7 节规则，免费证据结算为 0。
 - v1、v2 行及其创建路径语义不变。v1 `POST /windows` 的 free-evidence 遗留路径保持原样，但 B 包络内禁止使用非 v3 的免费窗口。
-- 新增错误码汇总：404 `magpie-window-free-basis-unknown`；400 `magpie-window-free-basis-hash-invalid`；409 `magpie-window-free-quota-stopped`；422 `magpie-window-free-basis-invalid`、`magpie-window-free-basis-not-effective`、`magpie-window-free-basis-expired`、`magpie-window-free-basis-route-mismatch`、`magpie-window-free-basis-conflict`、`magpie-window-free-basis-required`。
+- 新增错误码汇总：404 `magpie-window-free-basis-unknown`；400 `magpie-window-free-basis-hash-invalid`；409 `magpie-window-free-quota-stopped`；422 `magpie-window-free-basis-invalid`、`magpie-window-free-basis-not-effective`、`magpie-window-free-basis-expired`、`magpie-window-free-basis-route-mismatch`、`magpie-window-free-basis-conflict`、`magpie-window-free-basis-required`。三端点核对另有 422 `magpie-window-endpoint-mismatch`、`magpie-window-runtime-unavailable`。绑定与幂等重放的端点不符同样返回 422，且不改动窗口或活动。

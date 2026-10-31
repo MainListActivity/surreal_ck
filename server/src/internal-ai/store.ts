@@ -3,8 +3,8 @@ import { RecordId } from "surrealdb";
 import { TOKEN_PLAN_PLAN_TYPE_FREE, MAGPIE_B_ENVELOPE, MAGPIE_FREE_QUOTA_WINDOW_CONTRACT_VERSION, MAGPIE_WINDOW_CONTRACT_VERSION, type MagpieFreeQuotaBasis, type MagpieFreeQuotaBasisCreate, type MagpieFreeQuotaRemoteWindowCreate, type MagpieFreeStopReason, type MagpieRemoteWindowCreate, type MagpieWindowCreate } from "@surreal-ck/shared";
 import type { InternalScope } from "./context";
 import type { Usage, Tariff } from "./pricing";
-import { buildFreeQuotaRemoteWindowRequest, freeQuotaBasisContent, freeQuotaBasisHash, readFreeQuotaBasis } from "./free-quota";
-import { payloadHash, validateWindowCreate, WindowDenied, buildRemoteWindowRequest, type WindowCreateRequest, type WindowLedgerContext, type WindowRow } from "./window";
+import { basisEndpointMatches, buildFreeQuotaRemoteWindowRequest, freeQuotaBasisContent, freeQuotaBasisHash, isFreeQuotaWindow, readFreeQuotaBasis } from "./free-quota";
+import { endpointKey, payloadHash, validateWindowCreate, WindowDenied, buildRemoteWindowRequest, type WindowCreateRequest, type WindowLedgerContext, type WindowRow } from "./window";
 export type Queryable = { query(sql: string, vars?: Record<string, unknown>): Promise<unknown> };
 /** reserve 拒绝的内部诊断类别：预算/证据/身份/持久化（含事务内引擎中止，如唯一索引冲突）。对外仍只报通用错误。 */
 export type ReserveDenial = "budget" | "evidence" | "identity" | "persist";
@@ -139,10 +139,15 @@ export class InternalAiStore {
   /**
    * v3 免费远端窗口：依据按 hash 读回并复算（缺失 → basis-unknown；篡改 → basis-invalid），
    * 证据与依据门禁统一在 buildFreeQuotaRemoteWindowRequest 内执行，同一插入事务与门禁。
+   * 幂等重放不直接信任既有行：读回后与当前运行时端点、依据做同源核对（assertFreeWindowRoute）。
    */
   async createFreeQuotaRemoteWindow(input: MagpieFreeQuotaRemoteWindowCreate, operator: string, runtime: Parameters<typeof buildRemoteWindowRequest>[1]["runtime"]): Promise<{ window: WindowRow; idempotentReplay: boolean }> {
     const basis = await this.freeQuotaBasis(input.freeQuotaBasisHash);
-    return this.insertWindow(input, operator, ctx => buildFreeQuotaRemoteWindowRequest(input, { ...ctx, runtime, basis }));
+    return this.insertWindow(
+      input, operator,
+      ctx => buildFreeQuotaRemoteWindowRequest(input, { ...ctx, runtime, basis }),
+      existing => this.assertFreeWindowRoute(existing, runtime?.endpoint),
+    );
   }
   async window(id: string): Promise<WindowRow | undefined> {
     return rows<WindowRow>(await (await this.db()).query("SELECT * FROM ONLY $id", { id: new RecordId("internal_ai_window", id) }))[0];
@@ -188,11 +193,13 @@ export class InternalAiStore {
    * 串行化「全部历史 attempt 数 + 现有 active 窗口承诺次数」，杜绝并发重复领取。
    * 幂等键相同且载荷一致返回既有窗口；批准摘要重复一律拒绝。
    * v1 与远端 v2 只差 prepare 产出的归一请求，持久化与冲突分类完全同源。
+   * replay（仅 v3 传入）在幂等重放时读回既有窗口并核对端点与依据，不符即拒绝，不把既有行当作可信结果返回。
    */
   private async insertWindow(
     input: MagpieWindowCreate | MagpieRemoteWindowCreate | MagpieFreeQuotaRemoteWindowCreate,
     operator: string,
     prepare: (ctx: WindowLedgerContext) => WindowCreateRequest,
+    replay?: (existing: WindowRow) => Promise<void>,
   ): Promise<{ window: WindowRow; idempotentReplay: boolean }> {
     const db = await this.db();
     const activityId = new RecordId("internal_ai_activity", input.activity);
@@ -204,6 +211,7 @@ export class InternalAiStore {
     const existing = rows<WindowRow>(await db.query("SELECT * FROM internal_ai_window WHERE activity = $activity AND idempotency_key = $idem LIMIT 1", { activity: input.activity, idem: input.idempotencyKey }))[0];
     if (existing) {
       if (existing.payload_hash !== digest) throw new WindowDenied("magpie-window-idempotency-conflict", "同一幂等键的载荷不一致");
+      await replay?.(existing);
       return { window: existing, idempotentReplay: true };
     }
     // 批准摘要重复优先于剩余次数：同一批准不能因预算变化被误报成「次数不足」。
@@ -317,8 +325,12 @@ export class InternalAiStore {
         });
         const found = rows<WindowRow>(await db.query("SELECT * FROM internal_ai_window WHERE activity = $activity AND idempotency_key = $idem LIMIT 1", { activity: input.activity, idem: input.idempotencyKey }))[0];
         if (!found) throw new Error("magpie-window-unconfirmed");
-        return { window: found, idempotentReplay: String(found.id) !== String(row) };
+        const replayed = String(found.id) !== String(row);
+        if (replayed) await replay?.(found);
+        return { window: found, idempotentReplay: replayed };
       } catch (e) {
+        // 幂等重放的读回核对拒绝原样上抛，不得被下方的回读分支当作并发落败吞掉。
+        if (e instanceof WindowDenied) throw e;
         const raw = e instanceof Error ? e.message : String(e);
         if (retry < 8 && raw.includes("can be retried")) continue;
         // 事务内 THROW 会被引擎折叠成 failed transaction；用幂等键/批准摘要回读把并发结果说清楚。
@@ -330,6 +342,7 @@ export class InternalAiStore {
         } catch { /* 回读失败保留原始拒绝 */ }
         if (raced) {
           if (raced.payload_hash !== digest) throw new WindowDenied("magpie-window-idempotency-conflict", "同一幂等键的载荷不一致");
+          await replay?.(raced);
           return { window: raced, idempotentReplay: true };
         }
         if (consumed) throw new WindowDenied("magpie-window-approval-consumed", "该批准摘要已创建过窗口");
@@ -343,13 +356,32 @@ export class InternalAiStore {
       }
     }
   }
-  /** 绑定窗口到活动：活动 window_revision CAS + 写锁；已绑同一窗口时幂等返回。 */
-  async bindWindow(windowId: string, input: { activity: string; expectedRevision: number }, operator: string): Promise<{ window: WindowRow; activityRevision: number; idempotentReplay: boolean }> {
+  /**
+   * v3 免费窗口与运行时端点的同源核对（幂等重放与 CAS 绑定共用）：依据必须存在且可复算；
+   * 窗口冻结端点与运行时端点都必须严格符合依据路由，served model 一致，且两者 host/path key 相同。
+   * 运行时端点缺失即拒绝，不从窗口回推。只读，不写任何状态。
+   */
+  private async assertFreeWindowRoute(window: WindowRow, runtimeEndpoint: string | null | undefined): Promise<void> {
+    if (!runtimeEndpoint) throw new WindowDenied("magpie-window-runtime-unavailable", "受控运行配置不可用，无法核对免费窗口端点");
+    const basis = window.free_evidence_hash ? await this.freeQuotaBasis(window.free_evidence_hash) : null;
+    if (!basis) throw new WindowDenied("magpie-window-free-basis-invalid", "免费额度依据记录缺失或不可复算");
+    if (!basisEndpointMatches(basis, window.endpoint) || !basisEndpointMatches(basis, runtimeEndpoint) || window.served_model !== basis.route.servedModel) {
+      throw new WindowDenied("magpie-window-free-basis-route-mismatch", "窗口或运行时端点与免费额度依据路由不符");
+    }
+    if (endpointKey(window.endpoint) !== endpointKey(runtimeEndpoint)) throw new WindowDenied("magpie-window-endpoint-mismatch", "窗口冻结端点与运行时端点不一致");
+  }
+  /**
+   * 绑定窗口到活动：活动 window_revision CAS + 写锁；已绑同一窗口时幂等返回。
+   * v3 免费窗口在任何写入之前核对运行时端点与依据路由（仅 active 窗口）；不符即拒绝，不改动窗口或活动状态。
+   */
+  async bindWindow(windowId: string, input: { activity: string; expectedRevision: number }, operator: string, runtimeEndpoint?: string): Promise<{ window: WindowRow; activityRevision: number; idempotentReplay: boolean }> {
     const db = await this.db();
     const activity = new RecordId("internal_ai_activity", input.activity);
     const target = new RecordId("internal_ai_window", windowId);
     const before = await this.activity(input.activity);
     const alreadyBound = before?.window_id != null && String(before.window_id) === String(target);
+    const candidate = await this.window(windowId);
+    if (candidate && isFreeQuotaWindow(candidate) && candidate.status === "active") await this.assertFreeWindowRoute(candidate, runtimeEndpoint);
     for (let retry = 0; ; retry++) {
       try {
         await db.query(`BEGIN TRANSACTION;

@@ -122,4 +122,6 @@ RocksDB tests覆盖多连接及两个独立客户端进程并发、真实服务�
 
 `GET /api/ops/internal-ai/runtime` 保持运营鉴权；`endpointBinding` 来自运行中配置，仅披露无凭证的 protocol/host/port/path/endpoint。HTTP 仅允许 loopback，禁止泄露 userinfo/query/fragment。`endpointHost` 现在可正确返回 `127.0.0.1`，不能再把旧版 null 当成产品未配置；供应商 tariffFor 的 HTTPS/精确主机和路径限制保持不变。
 
+免费额度窗口（v3）只接受依据路由 `https://data.maplayer.top/ofm/v1`（见契约第 9 节）。运行时端点为 loopback 或其它非依据端点时，v3 窗口的创建与绑定被拒绝，已绑定窗口的请求被停止（`route-drift`），不会回落到付费路由。切换生产 `AI_BASE_URL` 须走上线申请，本文不执行该变更。
+
 模型 catalog 的 max_output_tokens 是能力上限，不是请求必须使用的输出量。内部活动每次真实调用由 InternalBudgetModel 在发送前取 min(请求值, 获批窗口maxOutput)，因此能力384000的模型可在65536或更小的获批窗口运行。新增回归拦截实际模型传输seam验证此限制，不发真实模型请求，不扩大窗口或预算。
