@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
-import { MAGPIE_REMOTE_WINDOW_CONTRACT_VERSION, MAGPIE_WINDOW_CONTRACT_VERSION, magpieRemoteWindowCreateSchema, magpieWindowBindSchema, magpieWindowCreateSchema, type MagpieWindowView } from "@surreal-ck/shared";
+import { isMagpieFreeStopReason, MAGPIE_FREE_QUOTA_WINDOW_CONTRACT_VERSION, MAGPIE_REMOTE_WINDOW_CONTRACT_VERSION, MAGPIE_WINDOW_CONTRACT_VERSION, magpieFreeQuotaBasisCreateSchema, magpieFreeQuotaRemoteWindowCreateSchema, magpieRemoteWindowCreateSchema, magpieWindowBindSchema, magpieWindowCreateSchema, type MagpieFreeQuotaBasis, type MagpieWindowView } from "@surreal-ck/shared";
 import type { AppBindings } from "../hono-types";
 import { requirePlatformOperator } from "../ops/operator-auth";
 import { MEASUREMENT_CYCLE } from "../internal-ai/store";
@@ -61,13 +61,15 @@ function windowView(row: WindowRow): MagpieWindowView {
       recordsPerTable: row.capacity_records, ttlSeconds: row.capacity_ttl_seconds,
       destructive: row.capacity_destructive, source: row.capacity_source,
     },
+    freeQuota: row.contract_version === MAGPIE_FREE_QUOTA_WINDOW_CONTRACT_VERSION && row.free_evidence_hash ? { basisHash: row.free_evidence_hash } : null,
+    stop: isMagpieFreeStopReason(row.stop_reason) ? { reason: row.stop_reason, stoppedAt: isoOf(row.stopped_at) } : null,
     createdAt: isoOf(row.created_at), boundAt: isoOf(row.bound_at),
   };
 }
 function windowHttpError(e: unknown): HttpError {
   if (e instanceof WindowDenied) {
-    const status = e.code === "magpie-window-activity-unknown" || e.code === "magpie-window-unknown" ? 404
-      : ["magpie-window-idempotency-conflict", "magpie-window-approval-consumed", "magpie-window-already-bound", "magpie-window-revision-conflict"].includes(e.code) ? 409
+    const status = ["magpie-window-activity-unknown", "magpie-window-unknown", "magpie-window-free-basis-unknown"].includes(e.code) ? 404
+      : ["magpie-window-idempotency-conflict", "magpie-window-approval-consumed", "magpie-window-already-bound", "magpie-window-revision-conflict", "magpie-window-free-quota-stopped"].includes(e.code) ? 409
       : 422;
     return new HttpError(status, e.code, e.message);
   }
@@ -250,6 +252,44 @@ export function createOpsInternalAiRoutes(input: { gate: InternalAiGate; registr
       try {
         const result = await input.gate.store.createRemoteWindow(parsed.data, c.var.platformOperator.subject, runtime);
         return c.json({ contract: MAGPIE_REMOTE_WINDOW_CONTRACT_VERSION, idempotentReplay: result.idempotentReplay, window: windowView(result.window), activityRevision: await input.gate.store.windowRevision(parsed.data.activity) }, result.idempotentReplay ? 200 : 201);
+      } catch (e) { throw windowHttpError(e); }
+    })
+    /**
+     * 免费额度依据（magpie-window/v3）：老板决定引用 + 固定路由 + B 包络 + 生效/到期。
+     * 记录 id 即规范化内容的 sha256，同内容重放返回既有记录；hash 由服务端计算，不接受客户端自填。
+     */
+    .post("/api/ops/internal-ai/free-quota-bases", auth, async c => {
+      const payload = await json(c);
+      const parsed = magpieFreeQuotaBasisCreateSchema.safeParse(payload);
+      if (!parsed.success) throw new HttpError(400, "magpie-window-body-invalid", "免费额度依据参数不合法");
+      try {
+        const result = await input.gate.store.createFreeQuotaBasis(parsed.data, c.var.platformOperator.subject);
+        return c.json({ contract: MAGPIE_FREE_QUOTA_WINDOW_CONTRACT_VERSION, idempotentReplay: result.idempotentReplay, hash: result.hash, basis: result.basis }, result.idempotentReplay ? 200 : 201);
+      } catch (e) { throw windowHttpError(e); }
+    })
+    /** 依据读回：服务端按记录内容复算 hash，不一致返回 422 magpie-window-free-basis-invalid。 */
+    .get("/api/ops/internal-ai/free-quota-bases/:hash", auth, async c => {
+      const hash = c.req.param("hash");
+      if (!/^[0-9a-f]{64}$/.test(hash)) throw new HttpError(400, "magpie-window-free-basis-hash-invalid", "依据 hash 必须是 64 位小写十六进制");
+      let basis: MagpieFreeQuotaBasis | null;
+      try { basis = await input.gate.store.freeQuotaBasis(hash); } catch (e) { throw windowHttpError(e); }
+      if (!basis) throw new HttpError(404, "magpie-window-free-basis-unknown", "免费额度依据不存在");
+      return c.json({ contract: MAGPIE_FREE_QUOTA_WINDOW_CONTRACT_VERSION, hash, basis });
+    })
+    /**
+     * 免费额度远端窗口（magpie-window/v3）：v2 证据门禁 + 依据门禁，只允许 B 档包络。
+     * 价格只由依据派生为 free-evidence；目录 0/0 与 reviewed 状态都不参与价格派生。
+     */
+    .post("/api/ops/internal-ai/free-quota-remote-windows", auth, async c => {
+      const payload = await json(c);
+      const parsed = magpieFreeQuotaRemoteWindowCreateSchema.safeParse(payload);
+      if (!parsed.success) throw new HttpError(400, "magpie-window-body-invalid", "免费额度远端窗口参数不合法");
+      const runtime = input.runtime.model && input.runtime.endpoint
+        ? runtimeIdentity({ provider: input.runtime.provider ?? "", model: input.runtime.model, baseUrl: input.runtime.endpoint })
+        : null;
+      try {
+        const result = await input.gate.store.createFreeQuotaRemoteWindow(parsed.data, c.var.platformOperator.subject, runtime);
+        return c.json({ contract: MAGPIE_FREE_QUOTA_WINDOW_CONTRACT_VERSION, idempotentReplay: result.idempotentReplay, window: windowView(result.window), activityRevision: await input.gate.store.windowRevision(parsed.data.activity) }, result.idempotentReplay ? 200 : 201);
       } catch (e) { throw windowHttpError(e); }
     })
     /**

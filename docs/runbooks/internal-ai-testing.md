@@ -58,7 +58,7 @@ rtk proxy pnpm typecheck
 rtk proxy pnpm lint
 ```
 
-RocksDB tests覆盖多连接及两个独立客户端进程并发、真实服务器重启、幂等、跨活动目标上限、模型step发送前预留、finish usage、缺资料及embedding零外发。transport/usage/余额皆合成fixture，只作开发验证，不是供应商实测/业务基线。
+RocksDB tests覆盖多连接及两个独立客户端进程并发、真实服务器重启、幂等、跨活动目标上限、模型step发送前预留、finish usage、缺资料及embedding零外发。免费额度依据（magpie-window/v3）RocksDB测试另覆盖：依据内容寻址与只读、伪造记录拒绝、依据过期/路由漂移/402停止并同包络闭合、停止后B包络与绑定封堵、缺usage即停。transport/usage/余额皆合成fixture，只作开发验证，不是供应商实测/业务基线。
 
 生产独立QA先验证未配置或disabled、缺余额/未知价格/未知币种、客户身份/撤权拒绝、匿名分页。已耗尽的受审内部低限额活动只能用确定性拒绝探针，核对provider外发计数为0，不能用付费调用耗尽USD1。仅在现有服务资料、价格、余额、自动充值状态和上界均核定后，受控QA才可做最小真实调用，并计入目标总额。记录部署SHA、Mastra实际版本、全部分类/fallback/提案step、失败及续跑usage；测试不能当首次业务基线。
 
