@@ -11,6 +11,8 @@ import { InternalAiStore } from "../internal-ai/store";
 import { InternalAiGate } from "../internal-ai/gate";
 import { WindowDenied, type WindowRow } from "../internal-ai/window";
 import { RecordId } from "surrealdb";
+import { MAGPIE_B_ENVELOPE, MAGPIE_FREE_BASIS_DECISION, MAGPIE_FREE_BASIS_ROUTE, MAGPIE_FREE_BASIS_VERSION, MAGPIE_FREE_QUOTA_WINDOW_CONTRACT_VERSION, type MagpieFreeQuotaBasis } from "@surreal-ck/shared";
+import { freeQuotaBasisHash } from "../internal-ai/free-quota";
 const neverDb = new InternalAiGate(new InternalAiStore(async () => { throw new Error("must not reach store"); }));
 const allow: MiddlewareHandler<AppBindings> = async (_c, next) => next();
 test("customer without ops auth cannot read runtime or ledger", async () => {
@@ -29,10 +31,11 @@ test("runtime reports unavailable balance, strips URL credentials, and never exp
 
 test("registration endpoints retain ops authentication", async () => {
   const app = new Hono<AppBindings>().route("/", createOpsInternalAiRoutes({ gate: neverDb, runtime: {} })).onError(handleError);
-  for (const path of ["company-proof", "activities/test/evidence", "activities/test/enable", "activities/test/disable", "identities/revoke", "windows", "windows/w1/bind"]) {
+  for (const path of ["company-proof", "activities/test/evidence", "activities/test/enable", "activities/test/disable", "identities/revoke", "windows", "windows/w1/bind", "free-quota-bases", "free-quota-remote-windows"]) {
     expect((await app.request(`/api/ops/internal-ai/${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status).toBe(401);
   }
   expect((await app.request("/api/ops/internal-ai/windows/w1")).status).toBe(401);
+  expect((await app.request(`/api/ops/internal-ai/free-quota-bases/${"0".repeat(64)}`)).status).toBe(401);
 });
 test("company broker proof-only envelope reaches verification; unknown fields cannot pass", async () => {
   const app = new Hono<AppBindings>().route("/", createOpsInternalAiRoutes({ gate: neverDb, runtime: {}, requireOperator: allow })).onError(handleError);
@@ -382,4 +385,109 @@ test("window GET reports the stored contract version and null remote metadata ho
       expiry: { localFreshnessExpiresAt: "2026-10-30T14:25:08.664Z", sourceExpiresAt: [] },
     },
   });
+});
+
+// ── magpie-window/v3：免费额度依据与远端免费窗口（用尽即停）──────────────────
+
+const freeHash = "9".repeat(64);
+const freeBasis = (): MagpieFreeQuotaBasis => ({
+  version: MAGPIE_FREE_BASIS_VERSION,
+  decision: { ...MAGPIE_FREE_BASIS_DECISION },
+  route: { ...MAGPIE_FREE_BASIS_ROUTE },
+  envelope: MAGPIE_B_ENVELOPE.id,
+  effectiveAt: "2026-10-30T22:00:00Z",
+  expiresAt: MAGPIE_B_ENVELOPE.expiresAt,
+});
+const freeOperator: MiddlewareHandler<AppBindings> = async (c, next) => {
+  c.set("platformOperator", { subject: "synthetic-operator", capabilities: ["subscription.manage"] });
+  await next();
+};
+const freeRow: WindowRow = {
+  ...remoteRow,
+  id: new RecordId("internal_ai_window", "w3"), envelope: MAGPIE_B_ENVELOPE.id,
+  contract_version: MAGPIE_FREE_QUOTA_WINDOW_CONTRACT_VERSION, free_evidence_hash: freeHash,
+  price_basis: "free-evidence", price_revision: `free-quota-basis/1:${freeHash}`,
+  stop_reason: null, stopped_at: null,
+};
+
+test("free-quota basis routes: create by content hash, replay with 200, read back, and map refusals", async () => {
+  const stored = new Map<string, MagpieFreeQuotaBasis>();
+  const fake = {
+    createFreeQuotaBasis: async (input: { basis: MagpieFreeQuotaBasis }) => {
+      const hash = freeQuotaBasisHash(input.basis);
+      const idempotentReplay = stored.has(hash);
+      stored.set(hash, input.basis);
+      return { hash, basis: input.basis, idempotentReplay };
+    },
+    freeQuotaBasis: async (hash: string) => {
+      if (hash === "0".repeat(64)) throw new WindowDenied("magpie-window-free-basis-invalid", "依据记录不可复算");
+      return stored.get(hash) ?? null;
+    },
+  };
+  const app = new Hono<AppBindings>().route("/", createOpsInternalAiRoutes({ gate: { store: fake } as unknown as InternalAiGate, requireOperator: freeOperator, runtime: {} })).onError(handleError);
+  const send = (body: unknown) => app.request("/api/ops/internal-ai/free-quota-bases", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const body = { basis: freeBasis(), reason: "老板决定引用 45b3ec63" };
+  const hash = freeQuotaBasisHash(freeBasis());
+  const created = await send(body);
+  expect(created.status).toBe(201);
+  expect(await created.json()).toMatchObject({ contract: "magpie-window/v3", idempotentReplay: false, hash });
+  const replay = await send(body);
+  expect(replay.status).toBe(200);
+  expect(await replay.json()).toMatchObject({ idempotentReplay: true, hash });
+  // 客户端自填 hash，或改写固定路由的 served model，均在 schema 层拒绝。
+  expect((await send({ ...body, hash: "f".repeat(64) })).status).toBe(400);
+  expect((await send({ basis: { ...freeBasis(), route: { ...MAGPIE_FREE_BASIS_ROUTE, servedModel: "other-model" } }, reason: "篡改" })).status).toBe(400);
+  // 读回：同 hash 返回依据内容；格式错误 400；未知 404；记录不可复算 422。
+  const read = await app.request(`/api/ops/internal-ai/free-quota-bases/${hash}`);
+  expect(read.status).toBe(200);
+  expect(await read.json()).toMatchObject({ contract: "magpie-window/v3", hash, basis: { envelope: MAGPIE_B_ENVELOPE.id, route: { servedModel: MAGPIE_FREE_BASIS_ROUTE.servedModel } } });
+  expect((await app.request(`/api/ops/internal-ai/free-quota-bases/${"A".repeat(64)}`)).status).toBe(400);
+  expect((await app.request(`/api/ops/internal-ai/free-quota-bases/${"8".repeat(64)}`)).status).toBe(404);
+  const invalid = await app.request(`/api/ops/internal-ai/free-quota-bases/${"0".repeat(64)}`);
+  expect(invalid.status).toBe(422);
+  expect((await invalid.json() as { error?: { code?: string } }).error?.code).toBe("magpie-window-free-basis-invalid");
+});
+
+test("free-quota remote window route dispatches v3 with the controlled runtime identity and maps basis denials", async () => {
+  const calls: Array<{ input: Record<string, unknown>; runtime: unknown }> = [];
+  const fake = {
+    createFreeQuotaRemoteWindow: async (input: Record<string, unknown>, _operator: string, runtime: unknown) => {
+      calls.push({ input, runtime });
+      return { window: freeRow, idempotentReplay: false };
+    },
+    window: async () => freeRow,
+    windowRevision: async () => 8,
+  };
+  const runtime = { provider: "openai", model: "remote-magpie/group/work", endpoint: "https://data.maplayer.top/ofm/v1" };
+  const app = new Hono<AppBindings>().route("/", createOpsInternalAiRoutes({ gate: { store: fake } as unknown as InternalAiGate, requireOperator: freeOperator, runtime })).onError(handleError);
+  const body = { ...remoteWindowBody(), envelope: MAGPIE_B_ENVELOPE.id, freeQuotaBasisHash: freeHash };
+  const created = await app.request("/api/ops/internal-ai/free-quota-remote-windows", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  expect(created.status).toBe(201);
+  expect(await created.json()).toMatchObject({
+    contract: "magpie-window/v3", activityRevision: 8,
+    window: { contractVersion: "magpie-window/v3", envelope: MAGPIE_B_ENVELOPE.id, route: { priceBasis: "free-evidence", provider: "openai" }, freeQuota: { basisHash: freeHash }, stop: null },
+  });
+  expect(calls[0]?.input).toMatchObject({ envelope: MAGPIE_B_ENVELOPE.id, freeQuotaBasisHash: freeHash });
+  expect(calls[0]?.runtime).toEqual({ providerId: "remote-magpie", modelId: "group/work", endpoint: "https://data.maplayer.top/ofm/v1" });
+  // 依据缺失 404、停止后拒绝 409、依据过期 422：错误码原样映射，不吞掉。
+  for (const [code, status] of [["magpie-window-free-basis-unknown", 404], ["magpie-window-free-quota-stopped", 409], ["magpie-window-free-basis-expired", 422]] as const) {
+    const denied = new Hono<AppBindings>().route("/", createOpsInternalAiRoutes({ gate: { store: { ...fake, createFreeQuotaRemoteWindow: async () => { throw new WindowDenied(code, "测试拒绝"); } } } as unknown as InternalAiGate, requireOperator: freeOperator, runtime })).onError(handleError);
+    const response = await denied.request("/api/ops/internal-ai/free-quota-remote-windows", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    expect(response.status).toBe(status);
+    expect((await response.json() as { error?: { code?: string } }).error?.code).toBe(code);
+  }
+  // 非 B 包络或缺少依据 hash 的请求在 schema 层拒绝，不进入存储。
+  expect((await app.request("/api/ops/internal-ai/free-quota-remote-windows", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...body, envelope: "other-envelope" }) })).status).toBe(400);
+  expect((await app.request("/api/ops/internal-ai/free-quota-remote-windows", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...body, freeQuotaBasisHash: undefined }) })).status).toBe(400);
+});
+
+test("window GET projects the v3 basis hash and the stop reason; v1 and v2 rows keep both null", async () => {
+  const stopped: WindowRow = { ...freeRow, status: "stopped", stop_reason: "route-drift", stopped_at: new Date("2026-10-30T23:00:00Z") };
+  const fake = { window: async (id: string) => id === "w3" ? stopped : id === "w1" ? windowRow : remoteRow };
+  const app = new Hono<AppBindings>().route("/", createOpsInternalAiRoutes({ gate: { store: fake } as unknown as InternalAiGate, requireOperator: freeOperator, runtime: {} })).onError(handleError);
+  expect(await (await app.request("/api/ops/internal-ai/windows/w3")).json()).toMatchObject({
+    contract: "magpie-window/v3", window: { status: "stopped", freeQuota: { basisHash: freeHash }, stop: { reason: "route-drift", stoppedAt: "2026-10-30T23:00:00.000Z" } },
+  });
+  expect(await (await app.request("/api/ops/internal-ai/windows/w1")).json()).toMatchObject({ contract: "magpie-window/v1", window: { freeQuota: null, stop: null } });
+  expect(await (await app.request("/api/ops/internal-ai/windows/w2")).json()).toMatchObject({ contract: "magpie-window/v2", window: { freeQuota: null, stop: null } });
 });

@@ -1,11 +1,13 @@
 import { ModelRouterLanguageModel } from "@mastra/core/llm";
 import type { AiSettings } from "../../ai/mastra/agents/model-config";
 import { buildModelConfig } from "../../ai/mastra/agents/model-config";
-import type { InternalAiGate } from "./gate";
+import type { AttemptTicket, InternalAiGate } from "./gate";
 import { internalScope } from "./context";
 import { normalizeUsage, type Usage } from "./pricing";
 type Options = Parameters<ModelRouterLanguageModel["doStream"]>[0];
 type Result = Awaited<ReturnType<ModelRouterLanguageModel["doStream"]>>;
+/** doGenerate 运行时结果的读取形状（LanguageModelV2 的 usage/response 元数据）；Mastra 声明为流式结果类型，故按此形状读取。 */
+type GenerateShape = { usage?: Parameters<typeof normalizeUsage>[0]; response?: { id?: string; modelId?: string } | null };
 /**
  * internal scope 下剥离 Mastra 多步回传的 reasoning part：openai-compatible 会把它上行成
  * reasoning_content，逐步重发全量推理既放大计量 input、又依赖上游对该入站字段的支持；
@@ -38,19 +40,21 @@ export class InternalBudgetModel extends ModelRouterLanguageModel {
     const ticket = await this.gate?.begin(this.stage, config.providerId, config.modelId, endpoint);
     if (!ticket) return streaming ? super.doStream(effective) : super.doGenerate(effective);
     const capped = { ...effective, maxOutputTokens: Math.min(effective.maxOutputTokens ?? ticket.tariff.maxOutput, ticket.tariff.maxOutput) };
+    if (!streaming) return this.generateOnce(ticket, capped);
     try {
-      const result = streaming ? await super.doStream(capped) : await super.doGenerate(capped);
+      const result = await super.doStream(capped);
       const reader = result.stream.getReader();
       let usage: Usage | null = null;
       let model: string | null = null;
       let request: string | null = null;
       let failed = false;
       let failure: string | null = null;
+      let failureDetail: unknown = undefined;
       let ended = false;
-      const finish = async (error: boolean, failureClass?: string) => {
+      const finish = async (error: boolean, failureClass?: string, detail?: unknown) => {
         if (ended) return;
         ended = true;
-        await this.gate!.finish(ticket, usage, model, request, failed || error, failureClass ?? failure);
+        await this.gate!.finish(ticket, usage, model, request, failed || error, failureClass ?? failure, detail ?? failureDetail);
       };
       return { ...result, stream: new ReadableStream({
         async pull(controller) {
@@ -60,16 +64,28 @@ export class InternalBudgetModel extends ModelRouterLanguageModel {
             const part = item.value;
             if (part.type === "response-metadata") { model = part.modelId ?? null; request = part.id ?? null; }
             if (part.type === "finish") usage = normalizeUsage(part.usage);
-            if (part.type === "error") { failed = true; failure = "provider-error"; }
+            if (part.type === "error") { failed = true; failure = "provider-error"; failureDetail = part.error; }
             controller.enqueue(part);
-          } catch { await finish(true, "stream-error"); controller.error(new Error("internal-ai-provider-stream-failed")); }
+          } catch (caught) { await finish(true, "stream-error", caught); controller.error(new Error("internal-ai-provider-stream-failed")); }
         },
         async cancel() { try { await reader.cancel(); } finally { await finish(true, "cancelled"); } },
       }) };
-    } catch {
-      await this.gate!.finish(ticket, null, null, null, true, "provider-failed");
+    } catch (error) {
+      await this.gate!.finish(ticket, null, null, null, true, "provider-failed", error);
       throw new Error("internal-ai-provider-failed");
     }
+  }
+  /** 非流式调用：provider 结果直接携带 usage 与 response 元数据，一次结算；失败按原始错误分类，不重试。 */
+  private async generateOnce(ticket: AttemptTicket, options: Options): Promise<Result> {
+    let generated: GenerateShape;
+    try {
+      generated = await super.doGenerate(options) as unknown as GenerateShape;
+    } catch (error) {
+      await this.gate!.finish(ticket, null, null, null, true, "provider-failed", error);
+      throw new Error("internal-ai-provider-failed");
+    }
+    await this.gate!.finish(ticket, generated.usage ? normalizeUsage(generated.usage) : null, generated.response?.modelId ?? null, generated.response?.id ?? null, false);
+    return generated as unknown as Result;
   }
 }
 export function buildAgentModel(settings: AiSettings, stage: string): ModelRouterLanguageModel { return new InternalBudgetModel(settings, stage, settings.internalAiGate); }

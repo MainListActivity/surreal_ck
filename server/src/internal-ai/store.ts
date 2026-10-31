@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import { RecordId } from "surrealdb";
-import { TOKEN_PLAN_PLAN_TYPE_FREE, MAGPIE_B_ENVELOPE, MAGPIE_WINDOW_CONTRACT_VERSION, type MagpieRemoteWindowCreate, type MagpieWindowCreate } from "@surreal-ck/shared";
+import { TOKEN_PLAN_PLAN_TYPE_FREE, MAGPIE_B_ENVELOPE, MAGPIE_FREE_QUOTA_WINDOW_CONTRACT_VERSION, MAGPIE_WINDOW_CONTRACT_VERSION, type MagpieFreeQuotaBasis, type MagpieFreeQuotaBasisCreate, type MagpieFreeQuotaRemoteWindowCreate, type MagpieFreeStopReason, type MagpieRemoteWindowCreate, type MagpieWindowCreate } from "@surreal-ck/shared";
 import type { InternalScope } from "./context";
 import type { Usage, Tariff } from "./pricing";
-import { payloadHash, validateWindowCreate, WindowDenied, buildRemoteWindowRequest, type WindowCreateRequest, type WindowRow } from "./window";
+import { buildFreeQuotaRemoteWindowRequest, freeQuotaBasisContent, freeQuotaBasisHash, readFreeQuotaBasis } from "./free-quota";
+import { payloadHash, validateWindowCreate, WindowDenied, buildRemoteWindowRequest, type WindowCreateRequest, type WindowLedgerContext, type WindowRow } from "./window";
 export type Queryable = { query(sql: string, vars?: Record<string, unknown>): Promise<unknown> };
 /** reserve 拒绝的内部诊断类别：预算/证据/身份/持久化（含事务内引擎中止，如唯一索引冲突）。对外仍只报通用错误。 */
 export type ReserveDenial = "budget" | "evidence" | "identity" | "persist";
@@ -57,7 +58,7 @@ export class InternalAiStore {
   }
   async envelopeSummary(): Promise<{ id: string; goal: string; maxAttempts: number; totalNanoUsd: number; perAttemptNanoUsd: number; expiresAt: string; approvalRefs: readonly string[]; usedAttempts: number; committedAttempts: number; remainingAttempts: number; committedNanoUsd: number; spentNanoUsd: number; reservedNanoUsd: number; remainingNanoUsd: number } | undefined> {
     const db = await this.db();
-    const row = rows<{ goal: string; max_attempts: number; total_nano_usd: number; per_attempt_nano_usd: number; expires_at: string; approval_refs: readonly string[]; attempts: number; allocated_nano_usd: number; reserved: number; spent: number }>(await db.query("SELECT * FROM ONLY $id", { id: new RecordId("internal_ai_envelope", MAGPIE_B_ENVELOPE.id) }))[0];
+    const row = rows<{ goal: string; max_attempts: number; total_nano_usd: number; per_attempt_nano_usd: number; expires_at: string; approval_refs: readonly string[]; attempts: number; reserved: number; spent: number }>(await db.query("SELECT * FROM ONLY $id", { id: new RecordId("internal_ai_envelope", MAGPIE_B_ENVELOPE.id) }))[0];
     if (!row || row.goal !== MAGPIE_B_ENVELOPE.goal || row.max_attempts !== MAGPIE_B_ENVELOPE.maxAttempts || row.total_nano_usd !== MAGPIE_B_ENVELOPE.totalNanoUsd || row.per_attempt_nano_usd !== MAGPIE_B_ENVELOPE.perAttemptNanoUsd || row.expires_at !== MAGPIE_B_ENVELOPE.expiresAt || row.approval_refs.join(",") !== MAGPIE_B_ENVELOPE.approvalRefs.join(",")) return undefined;
     const committed = rows<{ attempts: number; nano_usd: number }>(await db.query(`SELECT math::sum(attempt_limit - attempts) AS attempts, math::sum(source_budget_nano_usd - spent - reserved) AS nano_usd FROM internal_ai_window WHERE envelope = $envelope AND status = "active" AND <datetime>evidence_expires_at > time::now() GROUP ALL`, { envelope: MAGPIE_B_ENVELOPE.id }))[0];
     const usedRows = await db.query("SELECT count() FROM internal_ai_attempt WHERE envelope = $envelope GROUP ALL", { envelope: MAGPIE_B_ENVELOPE.id });
@@ -65,7 +66,83 @@ export class InternalAiStore {
     const committedAttempts = Number(committed?.attempts ?? 0);
     const committedNanoUsd = Number(committed?.nano_usd ?? 0);
     if (usedAttempts !== row.attempts) return undefined;
-    return { id: MAGPIE_B_ENVELOPE.id, goal: row.goal, maxAttempts: row.max_attempts, totalNanoUsd: row.total_nano_usd, perAttemptNanoUsd: row.per_attempt_nano_usd, expiresAt: row.expires_at, approvalRefs: row.approval_refs, usedAttempts, committedAttempts, remainingAttempts: Math.max(0, row.max_attempts - usedAttempts - committedAttempts), committedNanoUsd, spentNanoUsd: row.spent, reservedNanoUsd: row.reserved, remainingNanoUsd: Math.max(0, row.total_nano_usd - row.allocated_nano_usd) };
+    return { id: MAGPIE_B_ENVELOPE.id, goal: row.goal, maxAttempts: row.max_attempts, totalNanoUsd: row.total_nano_usd, perAttemptNanoUsd: row.per_attempt_nano_usd, expiresAt: row.expires_at, approvalRefs: row.approval_refs, usedAttempts, committedAttempts, remainingAttempts: Math.max(0, row.max_attempts - usedAttempts - committedAttempts), committedNanoUsd, spentNanoUsd: row.spent, reservedNanoUsd: row.reserved, remainingNanoUsd: Math.max(0, row.total_nano_usd - row.spent - row.reserved - committedNanoUsd) };
+  }
+  /** B 档免费口径是否已因任一窗口停止而整体关闭（停止为终态，之后不接受任何 B 档新窗口）。 */
+  async envelopeFreeStopped(): Promise<boolean> {
+    const count = rows<{ count: number }>(await (await this.db()).query('SELECT count() FROM internal_ai_window WHERE envelope = $envelope AND status = "stopped" GROUP ALL', { envelope: MAGPIE_B_ENVELOPE.id }))[0]?.count ?? 0;
+    return Number(count) > 0;
+  }
+  /**
+   * 窗口创建的计数快照（事务外预读；事务内门禁仍以锁后读数为准）。v1 只统计非包络账本；
+   * B 档为实时承诺：全部 B 尝试数 + 活动未过期窗口剩余次数；USD 为已花费 + 在途 + 活动窗口剩余。
+   * 不再使用累计 allocated/committed 列：窗口过期或停止后未用承诺即时释放，累计列无法回收。
+   */
+  private async windowLedger(activity: string, activityRow: Activity, requestedEnvelope: string | undefined): Promise<WindowLedgerContext> {
+    const db = await this.db();
+    const isB = requestedEnvelope === MAGPIE_B_ENVELOPE.id;
+    const [usedRows, committedRows, target, cycle, envelope, freeStopped] = await Promise.all([
+      db.query("SELECT count() FROM internal_ai_attempt WHERE envelope = NONE GROUP ALL", {}),
+      db.query('SELECT math::sum(attempt_limit - attempts) FROM internal_ai_window WHERE envelope = NONE AND activity = $activity AND status = "active" AND <datetime>evidence_expires_at > time::now() GROUP ALL', { activity }),
+      this.target(),
+      this.measurementCycle(),
+      isB ? this.envelopeSummary() : undefined,
+      isB ? this.envelopeFreeStopped() : false,
+    ]);
+    const countedAttempts = Number(rows<{ count: number }>(usedRows)[0]?.count ?? 0);
+    return {
+      totalUsed: Math.max(countedAttempts, (target.attempts ?? 0) + (cycle?.attempts ?? 0)),
+      committedAttempts: Number(rows<Record<string, number>>(committedRows)[0]?.['math::sum'] ?? 0),
+      activityTotalLimit: activityRow.total_limit, activityPerAttemptLimit: activityRow.per_attempt_limit,
+      envelopeUsed: envelope?.usedAttempts, envelopeCommitted: envelope?.committedAttempts,
+      envelopeCommittedNanoUsd: envelope?.committedNanoUsd, envelopeSpentNanoUsd: envelope?.spentNanoUsd, envelopeReservedNanoUsd: envelope?.reservedNanoUsd,
+      envelopeFreeStopped: freeStopped,
+    };
+  }
+  /**
+   * 免费额度依据落库：记录 id = 规范化内容的 sha256，创建后不可改写。同 hash 重放返回既有记录。
+   * 内容由 magpieFreeQuotaBasisSchema 固定（决定引用、固定路由、B 包络、有效期）；hash 由服务端计算，不接受客户端自填。
+   */
+  async createFreeQuotaBasis(input: MagpieFreeQuotaBasisCreate, operator: string): Promise<{ hash: string; basis: MagpieFreeQuotaBasis; idempotentReplay: boolean }> {
+    const basis = input.basis;
+    const hash = freeQuotaBasisHash(basis);
+    const content = freeQuotaBasisContent(basis);
+    try {
+      await (await this.db()).query("CREATE ONLY $id CONTENT $row", {
+        id: new RecordId("internal_ai_free_basis", hash),
+        row: {
+          content, route_host: basis.route.host, route_path: basis.route.path, route_served_model: basis.route.servedModel,
+          envelope: basis.envelope, effective_at: basis.effectiveAt, expires_at: basis.expiresAt, operator, reason: input.reason,
+        },
+      });
+      return { hash, basis, idempotentReplay: false };
+    } catch (error) {
+      // 记录 id 即 hash：并发或重放时记录已存在，内容一致视为重放；内容不一致不可能由 hash 推出，按不可复算拒绝。
+      const existing = await this.freeQuotaBasisRecord(hash);
+      if (existing?.content === content) return { hash, basis, idempotentReplay: true };
+      if (existing) throw new WindowDenied("magpie-window-free-basis-invalid", "免费额度依据记录与内容不一致");
+      console.warn("[magpie-free-basis] create failed", { error: error instanceof Error ? error.name : "unknown" });
+      throw new Error("magpie-window-free-basis-unavailable");
+    }
+  }
+  /** 读回并复算免费额度依据：记录缺失返回 null；内容不能复算为其 hash（篡改/非规范）抛 free-basis-invalid。 */
+  async freeQuotaBasis(hash: string): Promise<MagpieFreeQuotaBasis | null> {
+    const record = await this.freeQuotaBasisRecord(hash);
+    if (!record) return null;
+    const basis = readFreeQuotaBasis(record.content, hash);
+    if (!basis) throw new WindowDenied("magpie-window-free-basis-invalid", "免费额度依据记录不可复算");
+    return basis;
+  }
+  private async freeQuotaBasisRecord(hash: string): Promise<{ content: string } | undefined> {
+    return rows<{ content: string }>(await (await this.db()).query("SELECT content FROM ONLY $id", { id: new RecordId("internal_ai_free_basis", hash) }))[0];
+  }
+  /**
+   * v3 免费远端窗口：依据按 hash 读回并复算（缺失 → basis-unknown；篡改 → basis-invalid），
+   * 证据与依据门禁统一在 buildFreeQuotaRemoteWindowRequest 内执行，同一插入事务与门禁。
+   */
+  async createFreeQuotaRemoteWindow(input: MagpieFreeQuotaRemoteWindowCreate, operator: string, runtime: Parameters<typeof buildRemoteWindowRequest>[1]["runtime"]): Promise<{ window: WindowRow; idempotentReplay: boolean }> {
+    const basis = await this.freeQuotaBasis(input.freeQuotaBasisHash);
+    return this.insertWindow(input, operator, ctx => buildFreeQuotaRemoteWindowRequest(input, { ...ctx, runtime, basis }));
   }
   async window(id: string): Promise<WindowRow | undefined> {
     return rows<WindowRow>(await (await this.db()).query("SELECT * FROM ONLY $id", { id: new RecordId("internal_ai_window", id) }))[0];
@@ -113,9 +190,9 @@ export class InternalAiStore {
    * v1 与远端 v2 只差 prepare 产出的归一请求，持久化与冲突分类完全同源。
    */
   private async insertWindow(
-    input: MagpieWindowCreate | MagpieRemoteWindowCreate,
+    input: MagpieWindowCreate | MagpieRemoteWindowCreate | MagpieFreeQuotaRemoteWindowCreate,
     operator: string,
-    prepare: (ctx: { totalUsed: number; committedAttempts: number; activityTotalLimit: number; activityPerAttemptLimit: number; envelopeUsed?: number; envelopeCommitted?: number; envelopeCommittedNanoUsd?: number; envelopeSpentNanoUsd?: number; envelopeReservedNanoUsd?: number }) => WindowCreateRequest,
+    prepare: (ctx: WindowLedgerContext) => WindowCreateRequest,
   ): Promise<{ window: WindowRow; idempotentReplay: boolean }> {
     const db = await this.db();
     const activityId = new RecordId("internal_ai_activity", input.activity);
@@ -147,21 +224,7 @@ export class InternalAiStore {
     }
     if (requestedEnvelope === MAGPIE_B_ENVELOPE.id && !verifiedEnvelope) throw new WindowDenied("magpie-window-envelope-invalid", "B 档包络账本不可用");
     // 预读只用于把明确拒绝在事务外说清楚；事务内仍以锁后读数为准。
-    const [usedRows, committedRows, target, cycle] = await Promise.all([
-      db.query("SELECT count() FROM internal_ai_attempt WHERE envelope = NONE GROUP ALL", {}),
-      db.query('SELECT math::sum(attempt_limit - attempts) FROM internal_ai_window WHERE envelope = NONE AND activity = $activity AND status = "active" AND <datetime>evidence_expires_at > time::now() GROUP ALL', { activity: input.activity }),
-      this.target(),
-      this.measurementCycle(),
-    ]);
-    const countedAttempts = Number((rows<{ count: number }>(usedRows)[0]?.count ?? 0));
-    const totalUsed = Math.max(countedAttempts, (target.attempts ?? 0) + (cycle?.attempts ?? 0));
-    const committedAttempts = Number(rows<Record<string, number>>(committedRows)[0]?.['math::sum'] ?? 0);
-    const envelopeGate = {
-      totalUsed, committedAttempts, activityTotalLimit: activityRow.total_limit, activityPerAttemptLimit: activityRow.per_attempt_limit,
-      envelopeUsed: verifiedEnvelope?.usedAttempts, envelopeCommitted: verifiedEnvelope?.committedAttempts,
-      envelopeCommittedNanoUsd: verifiedEnvelope?.committedNanoUsd, envelopeSpentNanoUsd: verifiedEnvelope?.spentNanoUsd, envelopeReservedNanoUsd: verifiedEnvelope?.reservedNanoUsd,
-    };
-    const request = prepare(envelopeGate);
+    const request = prepare(await this.windowLedger(input.activity, activityRow, requestedEnvelope));
     const route = request.route;
     const remote = request.remote;
     for (let retry = 0; ; retry++) {
@@ -175,6 +238,9 @@ export class InternalAiStore {
           LET $existingKey = (SELECT * FROM internal_ai_window WHERE activity = $activityName AND idempotency_key = $idem LIMIT 1)[0];
           LET $existingApproval = (SELECT * FROM internal_ai_window WHERE activity = $activityName AND approval_digest = $approval LIMIT 1)[0];
           LET $target = (SELECT * FROM $targetId)[0];
+          LET $bLedgerUsed = IF $isEnvelope { (SELECT count() FROM internal_ai_attempt WHERE envelope = $envelopeName GROUP ALL)[0].count ?? 0 } ELSE { 0 };
+          LET $bCommitted = IF $isEnvelope { (SELECT math::sum(attempt_limit - attempts) AS attempts, math::sum(source_budget_nano_usd - spent - reserved) AS nano_usd FROM internal_ai_window WHERE envelope = $envelopeName AND status = "active" AND <datetime>evidence_expires_at > time::now() GROUP ALL)[0] } ELSE { NONE };
+          LET $bStopped = IF $isEnvelope { (SELECT count() FROM internal_ai_window WHERE envelope = $envelopeName AND status = "stopped" GROUP ALL)[0].count ?? 0 } ELSE { 0 };
           LET $cycle = (SELECT * FROM $cycleId)[0];
           LET $count = (SELECT count() FROM internal_ai_attempt WHERE envelope = NONE GROUP ALL)[0].count ?? 0;
           LET $counter = (IF $target = NONE { 0 } ELSE { $target.attempts }) + (IF $cycle = NONE { 0 } ELSE { $cycle.attempts });
@@ -188,8 +254,9 @@ export class InternalAiStore {
           IF $new AND $isEnvelope = false AND ($sourceUsd > $a.total_limit OR $perUsd > $a.per_attempt_limit) { THROW "magpie-window-cap-inheritance"; };
           IF $new AND $isEnvelope AND $envelope = NONE { THROW "magpie-window-envelope-invalid"; };
           IF $new AND $isEnvelope AND (time::now() >= <datetime>$envelopeExpiry OR <datetime>$expires > <datetime>$envelopeExpiry) { THROW "magpie-window-envelope-expired"; };
-          IF $new AND $isEnvelope AND ($sourceUsd > 700000000 OR $perUsd > 35000000 OR $envelope.allocated_nano_usd + $sourceUsd > 700000000) { THROW "magpie-window-envelope-cap-exceeded"; };
-          IF $new AND $isEnvelope AND $envelope.attempts + $envelope.committed_attempts + $sourceAttempts > 20 { THROW "magpie-window-remaining-insufficient"; };
+          IF $new AND $isEnvelope AND $bStopped > 0 { THROW "magpie-window-free-quota-stopped"; };
+          IF $new AND $isEnvelope AND ($sourceUsd > $envelopeTotalUsd OR $perUsd > $envelopePerUsd OR $envelope.spent + $envelope.reserved + ($bCommitted.nano_usd ?? 0) + $sourceUsd > $envelopeTotalUsd) { THROW "magpie-window-envelope-cap-exceeded"; };
+          IF $new AND $isEnvelope AND ($bLedgerUsed + ($bCommitted.attempts ?? 0) + $sourceAttempts > $envelopeMaxAttempts) { THROW "magpie-window-remaining-insufficient"; };
           IF $new AND $isEnvelope = false AND $sourceAttempts > 30 - $used - $committed { THROW "magpie-window-remaining-insufficient"; };
           IF $new {
             CREATE ONLY $row CONTENT {
@@ -221,7 +288,6 @@ export class InternalAiStore {
               capacity_destructive: $capacityDestructive, capacity_source: $capacitySource,
               idempotency_key: $idem, payload_hash: $payload, operator: $operator, reason: $reason
             };
-            IF $isEnvelope { UPDATE ONLY $envelopeId SET allocated_nano_usd += $sourceUsd, committed_attempts += $sourceAttempts; };
           } ELSE {
             UPDATE ONLY $activityId SET window_revision = window_revision - 1;
           };
@@ -247,7 +313,7 @@ export class InternalAiStore {
           capacityTtl: request.capacity.ttlSeconds, capacityDestructive: request.capacity.destructive,
           capacitySource: request.capacity.source, operator, reason: request.reason,
           isEnvelope: requestedEnvelope === MAGPIE_B_ENVELOPE.id, envelopeId: new RecordId("internal_ai_envelope", MAGPIE_B_ENVELOPE.id), envelopeName: requestedEnvelope ?? null,
-          envelopeExpiry: MAGPIE_B_ENVELOPE.expiresAt,
+          envelopeExpiry: MAGPIE_B_ENVELOPE.expiresAt, envelopeTotalUsd: MAGPIE_B_ENVELOPE.totalNanoUsd, envelopePerUsd: MAGPIE_B_ENVELOPE.perAttemptNanoUsd, envelopeMaxAttempts: MAGPIE_B_ENVELOPE.maxAttempts,
         });
         const found = rows<WindowRow>(await db.query("SELECT * FROM internal_ai_window WHERE activity = $activity AND idempotency_key = $idem LIMIT 1", { activity: input.activity, idem: input.idempotencyKey }))[0];
         if (!found) throw new Error("magpie-window-unconfirmed");
@@ -269,21 +335,7 @@ export class InternalAiStore {
         if (consumed) throw new WindowDenied("magpie-window-approval-consumed", "该批准摘要已创建过窗口");
         // 事务内门禁 THROW 被折叠后，用同一组只读校验重放，把并发落败方归类为真实的 4xx。
         try {
-          const [usedRows2, committedRows2] = await Promise.all([
-            db.query("SELECT count() FROM internal_ai_attempt GROUP ALL", {}),
-            db.query('SELECT math::sum(attempt_limit - attempts) FROM internal_ai_window WHERE activity = $activity AND status = "active" AND <datetime>evidence_expires_at > time::now() GROUP ALL', { activity: input.activity }),
-          ]);
-          const counted2 = Number(rows<{ count: number }>(usedRows2)[0]?.count ?? 0);
-          const target2 = await this.target();
-          const cycle2 = await this.measurementCycle();
-          const envelope2 = requestedEnvelope === MAGPIE_B_ENVELOPE.id ? await this.envelopeSummary() : undefined;
-          prepare({
-            totalUsed: Math.max(counted2, (target2.attempts ?? 0) + (cycle2?.attempts ?? 0)),
-            committedAttempts: Number(rows<Record<string, number>>(committedRows2)[0]?.['math::sum'] ?? 0),
-            activityTotalLimit: activityRow.total_limit, activityPerAttemptLimit: activityRow.per_attempt_limit,
-            envelopeUsed: envelope2?.usedAttempts, envelopeCommitted: envelope2?.committedAttempts,
-            envelopeCommittedNanoUsd: envelope2?.committedNanoUsd, envelopeSpentNanoUsd: envelope2?.spentNanoUsd, envelopeReservedNanoUsd: envelope2?.reservedNanoUsd,
-          });
+          prepare(await this.windowLedger(input.activity, activityRow, requestedEnvelope));
         } catch (denied) { if (denied instanceof WindowDenied) throw denied; }
         if (raw.includes("magpie-window-")) throw new WindowDenied(raw.match(/magpie-window-[a-z-]+/)?.[0] ?? "magpie-window-create-denied", "窗口创建被拒绝");
         console.warn("[magpie-window] create failed", { raw });
@@ -308,7 +360,11 @@ export class InternalAiStore {
           LET $already = $a.window_id = $windowId;
           IF $already { UPDATE ONLY $activityId SET window_revision = window_revision - 1; };
           IF $w.activity != $activityName { THROW "magpie-window-activity-mismatch"; };
+          // B 档免费口径因任一窗口停止即整体关闭：不得以任何新窗口（含非 B 的付费/v1 窗口）绕过停止。
+          LET $freeStopped = ((SELECT count() FROM internal_ai_window WHERE envelope = $freeEnvelope AND status = "stopped" GROUP ALL)[0].count ?? 0) > 0;
+          IF $already = false AND $freeStopped { THROW "magpie-window-free-quota-stopped"; };
           IF $already = false AND $a.window_revision != $expected + 1 { THROW "magpie-window-revision-conflict"; };
+          IF $already = false AND $w.status = "stopped" { THROW "magpie-window-free-quota-stopped"; };
           IF $already = false AND ($w.status != "active" OR <datetime>$w.evidence_expires_at <= time::now()) { THROW "magpie-window-evidence-expired"; };
           LET $currentId = $a.window_id;
           LET $current = IF $currentId = NONE { NONE } ELSE { (SELECT * FROM $currentId)[0] };
@@ -323,7 +379,7 @@ export class InternalAiStore {
             UPDATE ONLY $activityId SET window_id = $windowId;
             UPDATE ONLY $windowId SET bound_at = time::now();
           };
-          COMMIT TRANSACTION;`, { activityId: activity, activityName: input.activity, windowId: target, expected: input.expectedRevision, operator });
+          COMMIT TRANSACTION;`, { activityId: activity, activityName: input.activity, windowId: target, expected: input.expectedRevision, operator, freeEnvelope: MAGPIE_B_ENVELOPE.id });
         const [w, a] = await Promise.all([
           db.query("SELECT * FROM ONLY $id", { id: target }),
           db.query("SELECT window_revision, window_id FROM ONLY $id", { id: activity }),
@@ -345,6 +401,8 @@ export class InternalAiStore {
           if (winRow.activity !== input.activity) throw new WindowDenied("magpie-window-activity-mismatch", "窗口不属于该活动");
           if (actRow.window_id != null && String(actRow.window_id) === String(target)) return { window: winRow, activityRevision: actRow.window_revision, idempotentReplay: true };
           if (actRow.window_revision !== input.expectedRevision) throw new WindowDenied("magpie-window-revision-conflict", "活动窗口版本已变化，请重新读取");
+          if (await this.envelopeFreeStopped()) throw new WindowDenied("magpie-window-free-quota-stopped", "B 档免费额度已停止，不得绑定新窗口");
+          if (winRow.status === "stopped") throw new WindowDenied("magpie-window-free-quota-stopped", "免费额度窗口已停止，不得绑定");
           if (winRow.status !== "active" || Date.parse(winRow.evidence_expires_at) <= Date.now()) throw new WindowDenied("magpie-window-evidence-expired", "窗口证据已过期");
           if (actRow.window_id != null) {
             const current = await this.window(String(actRow.window_id.id));
@@ -373,6 +431,8 @@ export class InternalAiStore {
           LET $measurement = $cycle != NONE AND $cycle.activity = $activityName;
           LET $window = IF $windowId = NONE OR $windowId = NULL { NONE } ELSE { (SELECT * FROM $windowId)[0] };
           LET $windowed = $window != NONE AND $window.status = "active" AND $window.activity = $activityName;
+          // 已绑定但非 active（含免费口径 stopped）的窗口一律拒绝，绝不回落到现金路径。
+          IF $window != NONE AND ($window.status != "active" OR $window.activity != $activityName) { THROW "internal-ai-evidence-unavailable"; };
           LET $envelope = IF $windowed AND $window.envelope != NONE { (SELECT * FROM ONLY $envelopeId) } ELSE { NONE };
           LET $envelopeKey = $envelopeName;
           IF $windowed AND $a.window_id != $windowId { THROW "internal-ai-evidence-unavailable"; };
@@ -486,9 +546,9 @@ export class InternalAiStore {
             OR $a.balance_evidence_hash = NONE OR string::len($a.balance_evidence_hash) != 64 OR $a.balance_source = NONE OR $a.balance_sampled_at = NONE
             OR $a.evidence_expires_at = NONE OR <datetime>$a.evidence_expires_at <= time::now() OR $revision NOT IN $a.price_revisions
             OR (IF $a.evidence_kind = "reviewed-token-plan" { $a.plan_name = NONE OR string::len($a.plan_name) = 0 OR $a.plan_source_url = NONE OR $a.quota_unit = NONE OR $a.quota_amount = NONE OR $a.quota_amount <= 0 OR $a.quota_window_seconds = NONE OR ($a.quota_remaining != NONE AND $a.quota_remaining <= 0) OR $a.account_plan_type != $tokenPlanFree OR $a.balance_nano_usd != NONE OR $a.balance_currency != NONE OR $a.balance_source != "token-plan:" + $a.balance_evidence_hash OR $amount != 0 } ELSE { $a.balance_nano_usd = NONE OR $a.balance_nano_usd <= 0 OR $a.balance_currency != "USD" OR $a.balance_source != "reviewed-document:" + $a.balance_evidence_hash }))),
-          windowEvidence: $windowed AND ($window.evidence_expires_at = NONE OR <datetime>$window.evidence_expires_at <= time::now()
+          windowEvidence: ($window != NONE AND ($window.status != "active" OR $window.activity != $activityName)) OR ($windowed AND ($window.evidence_expires_at = NONE OR <datetime>$window.evidence_expires_at <= time::now()
             OR $window.requested_model != $model OR $window.price_revision != $revision OR $window.account_binding != $accountBinding OR $window.price_basis = "unknown"
-            OR ($window.envelope != NONE AND (<datetime>$envelopeExpiry <= time::now() OR $envelope = NONE))),
+            OR ($window.envelope != NONE AND (<datetime>$envelopeExpiry <= time::now() OR $envelope = NONE)))),
           registeredBinding: $a.registration_jti != NONE AND ($bound = NONE OR $bound.revoked = true OR $bound.activity != $activityName),
           budget: ($windowed AND $window.envelope != NONE AND ($window.attempts >= $window.attempt_limit OR $window.envelope != $envelopeName OR $window.spent + $window.reserved + $amount > $window.source_budget_nano_usd OR ($envelope != NONE AND ($envelope.attempts >= 20 OR $amount > 35000000 OR $envelope.spent + $envelope.reserved + $amount > 700000000)))) OR ($measurement = false AND $windowed = false AND $total != NONE AND $total.attempts >= 30) OR ($windowed AND $window.envelope = NONE AND $total != NONE AND $total.attempts >= 30) OR (($windowed = false OR $window.envelope = NONE) AND ($total.spent ?? 0) + ($total.reserved ?? 0) + $amount > 1000000000)
             OR ($windowed AND $window.attempts >= $window.attempt_limit) OR ($windowed AND $amount > $window.per_attempt_nano_usd)
@@ -511,7 +571,7 @@ export class InternalAiStore {
     const result = rows<Attempt>(await (await this.db()).query('UPDATE ONLY $id SET state = "sent" WHERE state = "reserved" RETURN AFTER', { id }));
     if (result.length !== 1) throw new Error("internal-ai-attempt-replayed");
   }
-  async finish(id: RecordId, input: { usage: Usage | null; actualModel: string | null; requestId: string | null; cost: number | null; failed: boolean; usageRaw?: Record<string, unknown> | null; costStatus?: string | null; amortized?: number | null; marginal?: number | null; failureClass?: string | null; routeDrift?: boolean }): Promise<void> {
+  async finish(id: RecordId, input: { usage: Usage | null; actualModel: string | null; requestId: string | null; cost: number | null; failed: boolean; usageRaw?: Record<string, unknown> | null; costStatus?: string | null; amortized?: number | null; marginal?: number | null; failureClass?: string | null; routeDrift?: boolean; stopReason?: MagpieFreeStopReason | null }): Promise<void> {
     const db = await this.db();
     for (let retry = 0; ; retry++) {
       try {
@@ -529,10 +589,36 @@ export class InternalAiStore {
               UPDATE ONLY $id SET state = "settled", cost = $cost;
             } ELSE { UPDATE ONLY $id SET state = "uncertain"; };
             UPDATE ONLY $id SET usage = IF $usage = NULL { NONE } ELSE { $usage }, actual_model = IF $model = NULL { NONE } ELSE { $model }, served_model = IF $model = NULL { NONE } ELSE { $model }, request_id = IF $request = NULL { NONE } ELSE { $request }, usage_source = IF $usage = NONE OR $usage = NULL { "unknown" } ELSE { "provider" }, usage_raw = IF $usageRaw = NULL { NONE } ELSE { $usageRaw }, cost_status = IF $costStatus = NULL { NONE } ELSE { $costStatus }, amortized_cost_nano_usd = IF $amortized = NULL { NONE } ELSE { $amortized }, marginal_cost_nano_usd = IF $marginal = NULL { NONE } ELSE { $marginal }, failure_class = IF $failure = NULL { NONE } ELSE { $failure }, route_drift = $drift, ended_at = time::now();
+            // 门禁停止（v3 免费窗口）：目标窗口与同包络其它活动窗口同事务进入终态 stopped。
+            // 已发生的 spent 保留；未用承诺随 stopped 即时释放；同一窗口的首个停止原因保持不变。
+            LET $stopTarget = IF $stop = NONE OR $stop = NULL OR $r.window = NONE OR $r.window = NULL { NONE } ELSE { (SELECT * FROM ONLY $r.window) };
+            IF $stopTarget != NONE AND $stopTarget.status = "active" AND $stopTarget.contract_version = $freeVersion AND $stopTarget.envelope = $envelopeName {
+              UPDATE ONLY $r.window SET status = "stopped", stop_reason = $stop, stopped_at = time::now();
+              UPDATE internal_ai_window SET status = "stopped", stop_reason = $stop, stopped_at = time::now() WHERE envelope = $envelopeName AND status = "active";
+            };
           };
-          COMMIT TRANSACTION;`, { id, target: new RecordId("internal_ai_target", GOAL), envelopeId: new RecordId("internal_ai_envelope", MAGPIE_B_ENVELOPE.id), usage: input.usage, model: input.actualModel, request: input.requestId, cost: input.cost, failed: input.failed, usageRaw: input.usageRaw ?? null, costStatus: input.costStatus ?? null, amortized: input.amortized ?? null, marginal: input.marginal ?? null, failure: input.failureClass ?? null, drift: input.routeDrift === true });
+          COMMIT TRANSACTION;`, { id, target: new RecordId("internal_ai_target", GOAL), envelopeId: new RecordId("internal_ai_envelope", MAGPIE_B_ENVELOPE.id), usage: input.usage, model: input.actualModel, request: input.requestId, cost: input.cost, failed: input.failed, usageRaw: input.usageRaw ?? null, costStatus: input.costStatus ?? null, amortized: input.amortized ?? null, marginal: input.marginal ?? null, failure: input.failureClass ?? null, drift: input.routeDrift === true, stop: input.stopReason ?? null, freeVersion: MAGPIE_FREE_QUOTA_WINDOW_CONTRACT_VERSION, envelopeName: MAGPIE_B_ENVELOPE.id });
         return;
       } catch (e) { if (retry < 8 && String(e).includes("can be retried")) continue; throw new Error("internal-ai-settlement-unavailable"); }
+    }
+  }
+  /**
+   * 门禁停止（请求前，尚无尝试可结算）：v3 免费窗口与同包络其它活动窗口同事务进入 stopped。
+   * 只作用于 v3 且 B 包络的活动窗口；已停止的窗口保留首个原因。
+   */
+  async stopFreeWindow(windowId: RecordId, reason: MagpieFreeStopReason): Promise<void> {
+    const db = await this.db();
+    for (let retry = 0; ; retry++) {
+      try {
+        await db.query(`BEGIN TRANSACTION;
+          LET $w = (SELECT * FROM ONLY $id);
+          IF $w != NONE AND $w.status = "active" AND $w.contract_version = $freeVersion AND $w.envelope = $envelopeName {
+            UPDATE ONLY $id SET status = "stopped", stop_reason = $reason, stopped_at = time::now();
+            UPDATE internal_ai_window SET status = "stopped", stop_reason = $reason, stopped_at = time::now() WHERE envelope = $envelopeName AND status = "active";
+          };
+          COMMIT TRANSACTION;`, { id: windowId, reason, freeVersion: MAGPIE_FREE_QUOTA_WINDOW_CONTRACT_VERSION, envelopeName: MAGPIE_B_ENVELOPE.id });
+        return;
+      } catch (e) { if (retry < 8 && String(e).includes("can be retried")) continue; throw new Error("internal-ai-stop-unavailable"); }
     }
   }
   async page(activity: string, after = 0): Promise<Attempt[]> {

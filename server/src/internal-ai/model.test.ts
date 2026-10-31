@@ -10,6 +10,7 @@ import type { AttemptTicket, InternalAiGate } from "./gate";
 import type { Tariff } from "./pricing";
 
 type Options = Parameters<ModelRouterLanguageModel["doStream"]>[0];
+type GenerateResult = Awaited<ReturnType<ModelRouterLanguageModel["doGenerate"]>>;
 const scope: InternalScope = { activity: "synthetic-activity", runHash: "run", keyHash: "key", logicalHash: "logical" };
 const settings = { provider: "openai", model: "sensenova-6.8-flash-lite", baseUrl: "https://token.sensenova.cn/v1", apiKey: "synthetic-only" };
 const tariff = { maxOutput: 65536 } as Tariff;
@@ -182,5 +183,78 @@ test('model capability 384000 does not override the approved 65536 output ceilin
     await inInternalScope(scope, () => model.doStream({ prompt: [{ role: 'user', content: [{ type: 'text', text: 'synthetic' }] }], maxOutputTokens: 384000 }));
     expect(sent[0]!.maxOutputTokens).toBe(65536);
     expect(sent[0]!.maxOutputTokens).toBeLessThan(384000);
+  } finally { mock.mockRestore(); }
+});
+
+const generateResult = () => ({
+  content: [{ type: "text", text: "完成" }],
+  finishReason: "stop",
+  usage: { inputTokens: 10, outputTokens: 5 },
+  response: { id: "req-generate-1", modelId: "group/work" },
+}) as unknown as GenerateResult;
+
+test("internal scope 非流式计量：doGenerate 成功按 provider usage 与响应元数据结算一次", async () => {
+  const sent: Options[] = [];
+  const finishes: unknown[][] = [];
+  const gate = {
+    begin: async (): Promise<AttemptTicket> => ({ id: "attempt:synthetic" as unknown as RecordId, tariff }),
+    finish: async (...args: unknown[]) => { finishes.push(args); },
+  } as unknown as InternalAiGate;
+  const mock = spyOn(ModelRouterLanguageModel.prototype, "doGenerate").mockImplementation(async options => { sent.push(options); return generateResult(); });
+  try {
+    const model = new InternalBudgetModel(settings, "row-analysis-agent", gate);
+    const result = await inInternalScope(scope, () => model.doGenerate({ prompt: [{ role: "user", content: [{ type: "text", text: "synthetic" }] }] }));
+    expect(result).toMatchObject({ finishReason: "stop" });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.maxOutputTokens).toBe(tariff.maxOutput);
+    expect(finishes).toHaveLength(1);
+    const [ticket, usage, actualModel, request, failed] = finishes[0]!;
+    expect(ticket).toEqual({ id: "attempt:synthetic", tariff });
+    expect(usage).toMatchObject({ inputTokens: 10, outputTokens: 5 });
+    expect(actualModel).toBe("group/work");
+    expect(request).toBe("req-generate-1");
+    expect(failed).toBe(false);
+  } finally { mock.mockRestore(); }
+});
+
+test("internal scope 非流式失败：额度用尽类错误不重试，按 provider-failed 结算并停止调用", async () => {
+  let begins = 0;
+  const finishes: unknown[][] = [];
+  const gate = {
+    begin: async (): Promise<AttemptTicket> => { begins++; return { id: "attempt:synthetic" as unknown as RecordId, tariff }; },
+    finish: async (...args: unknown[]) => { finishes.push(args); },
+  } as unknown as InternalAiGate;
+  const quotaError = Object.assign(new Error("insufficient_quota: you exceeded your current quota"), { statusCode: 429 });
+  const mock = spyOn(ModelRouterLanguageModel.prototype, "doGenerate").mockImplementation(async () => { throw quotaError; });
+  try {
+    const model = new InternalBudgetModel(settings, "row-analysis-agent", gate);
+    await expect(inInternalScope(scope, () => model.doGenerate({ prompt: [{ role: "user", content: [{ type: "text", text: "synthetic" }] }] })))
+      .rejects.toThrow("internal-ai-provider-failed");
+    expect(begins).toBe(1);
+    expect(mock).toHaveBeenCalledTimes(1);
+    expect(finishes).toHaveLength(1);
+    expect(finishes[0]!.slice(1)).toEqual([null, null, null, true, "provider-failed", quotaError]);
+  } finally { mock.mockRestore(); }
+});
+
+test("internal scope 流式错误 part：原始错误作为失败详情交给 finish 分类，不重试", async () => {
+  const providerError = { statusCode: 402, message: "payment required" };
+  const finishes: unknown[][] = [];
+  const gate = {
+    begin: async (): Promise<AttemptTicket> => ({ id: "attempt:synthetic" as unknown as RecordId, tariff }),
+    finish: async (...args: unknown[]) => { finishes.push(args); },
+  } as unknown as InternalAiGate;
+  const mock = spyOn(ModelRouterLanguageModel.prototype, "doStream").mockImplementation(async () => ({ stream: new ReadableStream({ start(c) {
+    c.enqueue({ type: "error", error: providerError });
+    c.close();
+  } }) }));
+  try {
+    const model = new InternalBudgetModel(settings, "row-analysis-agent", gate);
+    const result = await inInternalScope(scope, () => model.doStream({ prompt: [{ role: "user", content: [{ type: "text", text: "synthetic" }] }] }));
+    const reader = result.stream.getReader();
+    while (!(await reader.read()).done) { /* consume */ }
+    expect(mock).toHaveBeenCalledTimes(1);
+    expect(finishes).toHaveLength(1);
+    expect(finishes[0]!.slice(1)).toEqual([null, null, null, true, "provider-error", providerError]);
   } finally { mock.mockRestore(); }
 });

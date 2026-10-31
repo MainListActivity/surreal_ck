@@ -30,6 +30,8 @@ export type WindowRow = {
   route_gaps: Array<{ field: string; reason: string }> | null;
   expiry_basis: string | null; local_freshness_expires_at: string | null; source_expires_at: string[] | null;
   pricing_reviewed: boolean | null; pricing_evidence_revision: string | null;
+  // 044 停止终态：旧行 NONE 按 null 处理；仅 v3 免费窗口在门禁停止时写入。
+  stop_reason?: string | null; stopped_at?: unknown;
 };
 
 /**
@@ -132,21 +134,23 @@ export function validateRoute(input: MagpieWindowCreate): void {
 }
 
 /**
- * 包络/预算门禁（v1 与远端 v2 的单一来源）：旧周期/旧批准/旧 proof、证据期、
- * USD 继承上限与剩余次数。包络剩余算法（30 − 全部历史已用 − 已承诺）保持
- * 全局唯一一份；B 档独立包络（73a769c4）演进时只改这里，不复制第二套计费。
- */
-/**
  * 包络/预算门禁（v1 / B 档包络 / 远端 v2 的单一来源）：旧周期/旧批准/旧 proof、证据期、
  * USD 继承上限与剩余次数。包络剩余算法保持全局唯一一份；B 档独立包络（73a769c4）
  * 与远端 v2（本线）都只复用这里，不复制第二套计费。
  */
 export type WindowEnvelopeGate = Pick<MagpieWindowCreate, "approvalDigest" | "approvalTask" | "accountRef" | "evidenceExpiresAt" | "sourceBudgetAttempts" | "sourceBudgetNanoUsd" | "perAttemptNanoUsd" | "envelope">;
 
-export function validateWindowEnvelope(
-  input: WindowEnvelopeGate,
-  ctx: { totalUsed: number; committedAttempts: number; activityTotalLimit: number; activityPerAttemptLimit: number; envelopeUsed?: number; envelopeCommitted?: number; envelopeCommittedNanoUsd?: number; envelopeSpentNanoUsd?: number; envelopeReservedNanoUsd?: number; now?: number },
-): void {
+/**
+ * 窗口创建的计数上下文（v1 / B 档 / 远端 v2、v3 共用）。envelopeFreeStopped：B 档免费口径已因任一窗口停止而整体关闭；
+ * 停止为终态，关闭后 B 档不再接受任何新窗口（不得以付费或 v1 窗口绕过）。
+ */
+export type WindowLedgerContext = {
+  totalUsed: number; committedAttempts: number; activityTotalLimit: number; activityPerAttemptLimit: number;
+  envelopeUsed?: number; envelopeCommitted?: number; envelopeCommittedNanoUsd?: number; envelopeSpentNanoUsd?: number; envelopeReservedNanoUsd?: number;
+  envelopeFreeStopped?: boolean; now?: number;
+};
+
+export function validateWindowEnvelope(input: WindowEnvelopeGate, ctx: WindowLedgerContext): void {
   const hit = legacyHit(input.approvalDigest, input.approvalTask, input.accountRef);
   if (hit) deny("magpie-window-legacy-rejected", `输入命中旧周期/旧批准/旧 proof 前缀 ${hit}`);
   const expires = parseInstant(input.evidenceExpiresAt);
@@ -158,6 +162,7 @@ export function validateWindowEnvelope(
     if (input.perAttemptNanoUsd > ctx.activityPerAttemptLimit) deny("magpie-window-cap-inheritance", "单次预算 USD 不得超过既有活动单次上限");
   }
   if (input.envelope === MAGPIE_B_ENVELOPE.id) {
+    if (ctx.envelopeFreeStopped) deny("magpie-window-free-quota-stopped", "B 档免费口径已因用尽/计费/未知错误/路由漂移停止，不得新增窗口");
     if (now >= Date.parse(MAGPIE_B_ENVELOPE.expiresAt) || expires > Date.parse(MAGPIE_B_ENVELOPE.expiresAt)) deny("magpie-window-envelope-expired", "B 档包络已过期或窗口证据期超出包络期限");
     const committedUsd = (ctx.envelopeCommittedNanoUsd ?? 0) + (ctx.envelopeReservedNanoUsd ?? 0) + (ctx.envelopeSpentNanoUsd ?? 0);
     if (input.sourceBudgetNanoUsd > MAGPIE_B_ENVELOPE.totalNanoUsd || input.perAttemptNanoUsd > MAGPIE_B_ENVELOPE.perAttemptNanoUsd || input.sourceBudgetAttempts > MAGPIE_B_ENVELOPE.maxAttempts
@@ -176,8 +181,12 @@ export function validateWindowEnvelope(
  * 创建窗口的全部拒绝条件。`totalUsed` = 全部历史 attempt 数（含 failed/uncertain），
  * `committedAttempts` = 现有 active 窗口 attempt_limit 之和；两者共同保证不重领 30。
  */
-export function validateWindowCreate(input: MagpieWindowCreate, ctx: { totalUsed: number; committedAttempts: number; activityTotalLimit: number; activityPerAttemptLimit: number; envelopeUsed?: number; envelopeCommitted?: number; envelopeCommittedNanoUsd?: number; envelopeSpentNanoUsd?: number; envelopeReservedNanoUsd?: number; now?: number }): void {
+export function validateWindowCreate(input: MagpieWindowCreate, ctx: WindowLedgerContext): void {
   validateWindowEnvelope(input, ctx);
+  // B 档免费窗口的依据必须是已落库的免费额度依据（v3）；v1 自带的 freeEvidenceHash 不构成依据记录。
+  if (input.envelope === MAGPIE_B_ENVELOPE.id && input.route.priceBasis === "free-evidence") {
+    deny("magpie-window-free-basis-required", "B 档免费窗口必须使用已落库的免费额度依据（v3 契约）");
+  }
   validateCapacity(input.capacity);
   validateRoute(input);
 }
@@ -186,15 +195,17 @@ const endpointKey = (endpoint: string): string | null => {
   try { return endpointParts(endpoint).key; } catch { return null; }
 };
 
+/** 远端窗口的共用上下文：包络计数、活动上限与受控运行身份（runtime 为 null 即闭锁）。 */
+export type RemoteWindowContext = WindowLedgerContext & { runtime: RuntimeIdentity | null };
+/** 远端证据输入：v2 无 envelope；v3 必须是 B 档包络，由 validateWindowEnvelope 的 B 分支校验。 */
+export type RemoteEvidenceInput = MagpieRemoteWindowCreate & { envelope?: typeof MAGPIE_B_ENVELOPE.id };
+
 /**
- * 远端窗口 v2：校验后产出与 v1 完全同构的持久化请求（同一事务/读回/CAS/门禁）。
- * 校验顺序：包络与容量 → 账号身份 → 受控运行配置交叉核对 → null+gap 一一对应 →
- * 观测与本地新鲜度 → 已批请求边界 → 价格派生（unknown 闭锁）。
+ * 远端证据的共用门禁（v2 与 v3 的单一来源）。校验顺序：包络与容量 → 账号身份 →
+ * 受控运行配置交叉核对 → null+gap 一一对应 → 观测与本地新鲜度 → 已批请求边界。
+ * 通过后返回已核对的受控运行身份；价格派生由调用方决定（v2 查已核价目，v3 用免费依据）。
  */
-export function buildRemoteWindowRequest(
-  input: MagpieRemoteWindowCreate,
-  ctx: { totalUsed: number; committedAttempts: number; activityTotalLimit: number; activityPerAttemptLimit: number; runtime: RuntimeIdentity | null },
-): WindowCreateRequest {
+export function assertRemoteEvidence(input: RemoteEvidenceInput, ctx: RemoteWindowContext): RuntimeIdentity {
   validateWindowEnvelope(input, ctx);
   validateCapacity(input.capacity);
   const evidence = input.evidence;
@@ -257,6 +268,16 @@ export function buildRemoteWindowRequest(
   if (input.sourceBudgetAttempts > evidence.budget.maxAttempts) deny("magpie-window-envelope-exceeded", "窗口次数超过已批包络 maxAttempts");
   if (input.sourceBudgetNanoUsd > evidence.budget.totalNanoUsd) deny("magpie-window-envelope-exceeded", "窗口总额超过已批包络 totalNanoUsd");
   if (input.perAttemptNanoUsd > evidence.budget.perAttemptNanoUsd) deny("magpie-window-envelope-exceeded", "窗口单次预算超过已批包络 perAttemptNanoUsd");
+  return runtime;
+}
+
+/**
+ * 远端窗口 v2：证据门禁（assertRemoteEvidence）通过后产出与 v1 完全同构的持久化请求，
+ * 同一事务/读回/CAS/门禁。价格派生在本函数内完成（unknown 闭锁）。
+ */
+export function buildRemoteWindowRequest(input: RemoteEvidenceInput, ctx: RemoteWindowContext): WindowCreateRequest {
+  const runtime = assertRemoteEvidence(input, ctx);
+  const evidence = input.evidence;
   // 价格派生（独立硬门禁）：reviewed=false 的目录 0/0 一律 unknown（请求门禁闭锁），
   // 永不自动等于 free-evidence；reviewed=true 也必须命中产品已核价目证书
   // （模型 + 协议/主机/路径）才可用 per-token，否则拒绝。
@@ -305,7 +326,8 @@ export function buildRemoteWindowRequest(
 
 export type WindowCostAssessment = {
   cost: number | null;
-  status: "free-evidence" | "assessed" | "usage-missing" | "invalid-usage" | "route-drift" | "unassessed" | "unknown";
+  /** provider-failed 仅由门禁对传输/远端失败写入（不经 assessWindowCost），与历史 cost_status 取值保持一致。 */
+  status: "free-evidence" | "assessed" | "usage-missing" | "invalid-usage" | "route-drift" | "unassessed" | "unknown" | "provider-failed";
   routeDrift: boolean;
   amortized: number | null;
   marginal: number | null;

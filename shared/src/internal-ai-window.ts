@@ -37,6 +37,40 @@ export type MagpieWindowPriceBasis = (typeof MAGPIE_WINDOW_PRICE_BASES)[number];
  * v1 契约与既有窗口行保持原语义；历史行以 contract_version 缺失视为 v1。
  */
 export const MAGPIE_REMOTE_WINDOW_CONTRACT_VERSION = "magpie-window/v2";
+/**
+ * FV06 免费额度窗口契约 v3（老板口径，用尽即停）：free-evidence 只能来自一份不可变的
+ * 免费额度依据记录（freeQuotaBasisHash 复算一致），且只允许挂在 B 档包络下。依据过期、
+ * 额度用尽/计费类错误、未知错误、路由或 served model 漂移、usage 缺失/非法一律停止窗口，
+ * 停止为终态：不切付费路由、不充值、不新增订阅。目录 0/0 永不自动等于依据。
+ */
+export const MAGPIE_FREE_QUOTA_WINDOW_CONTRACT_VERSION = "magpie-window/v3";
+/** 免费额度依据记录版本；记录键为规范化内容的 sha256。 */
+export const MAGPIE_FREE_BASIS_VERSION = "free-quota-basis/1";
+/**
+ * 老板口径（45b3ec63 owner_approve，审计 actor owner:local-session，2026-10-30T21:55:52Z）：
+ * 固定远端路由按零新增现金支出处理；不是接受未知现金风险的例外，也不是永久免费。
+ */
+export const MAGPIE_FREE_BASIS_DECISION = {
+  sourceTask: "45b3ec63",
+  kind: "owner_approve",
+  actor: "owner:local-session",
+  decidedAt: "2026-10-30T21:55:52Z",
+  scope: "zero-new-cash",
+} as const;
+/** 依据适用的唯一路由（host + path + servedModel）；扩展到其它路由需要新的老板决定与代码评审。 */
+export const MAGPIE_FREE_BASIS_ROUTE = {
+  host: "data.maplayer.top",
+  path: "/ofm/v1",
+  servedModel: "sn-sensenova-6-8-flash",
+} as const;
+/** 用尽即停的停止原因：写入窗口 stop_reason，窗口进入终态 stopped。 */
+export const MAGPIE_FREE_STOP_REASONS = [
+  "free-basis-expired", "free-basis-invalid", "route-drift", "served-model-drift",
+  "usage-missing", "usage-invalid", "quota-exhausted", "billing-required", "provider-uncertain",
+] as const;
+export type MagpieFreeStopReason = (typeof MAGPIE_FREE_STOP_REASONS)[number];
+export const isMagpieFreeStopReason = (value: unknown): value is MagpieFreeStopReason =>
+  typeof value === "string" && (MAGPIE_FREE_STOP_REASONS as readonly string[]).includes(value);
 export const MAGPIE_REMOTE_EVIDENCE_VERSION = "remote-magpie-evidence/1";
 /** 本地观测新鲜度策略：证据期 = 采集时刻 + 7200s（与公司执行窗口径一致，不变）。 */
 export const MAGPIE_LOCAL_FRESHNESS_SECONDS = 7200;
@@ -196,6 +230,54 @@ export const magpieRemoteWindowCreateSchema = z.object({
   reason: z.string().min(1).max(500),
 }).strict();
 
+// ── 免费额度窗口契约 v3（免费额度依据，用尽即停）──────────────────────────
+
+/**
+ * 免费额度依据记录：老板决定对固定路由「零新增现金支出」口径的不可变落库形状。
+ * 只表达决定引用、适用 host+path+servedModel、生效/到期时刻与所属 B 档包络；
+ * 不含任何供应商价目、金额或秘密。hash 由规范化内容计算，服务端可复算。
+ */
+export const magpieFreeQuotaBasisSchema = z.object({
+  version: z.literal(MAGPIE_FREE_BASIS_VERSION),
+  decision: z.object({
+    sourceTask: z.literal(MAGPIE_FREE_BASIS_DECISION.sourceTask),
+    kind: z.literal(MAGPIE_FREE_BASIS_DECISION.kind),
+    actor: z.literal(MAGPIE_FREE_BASIS_DECISION.actor),
+    decidedAt: z.literal(MAGPIE_FREE_BASIS_DECISION.decidedAt),
+    scope: z.literal(MAGPIE_FREE_BASIS_DECISION.scope),
+  }).strict(),
+  route: z.object({
+    host: z.literal(MAGPIE_FREE_BASIS_ROUTE.host),
+    path: z.literal(MAGPIE_FREE_BASIS_ROUTE.path),
+    servedModel: z.literal(MAGPIE_FREE_BASIS_ROUTE.servedModel),
+  }).strict(),
+  envelope: z.literal(MAGPIE_B_ENVELOPE.id),
+  effectiveAt: isoInstant,
+  expiresAt: isoInstant,
+}).strict()
+  .refine(basis => Date.parse(basis.effectiveAt) >= Date.parse(MAGPIE_FREE_BASIS_DECISION.decidedAt), "生效时刻不得早于老板决定")
+  .refine(basis => Date.parse(basis.expiresAt) > Date.parse(basis.effectiveAt), "到期时刻必须晚于生效时刻")
+  .refine(basis => Date.parse(basis.expiresAt) <= Date.parse(MAGPIE_B_ENVELOPE.expiresAt), "到期时刻不得晚于 B 档包络期限");
+
+/** 依据创建输入：只接收依据内容与理由；hash 由服务端计算并返回，客户端不得自填。 */
+export const magpieFreeQuotaBasisCreateSchema = z.object({
+  basis: magpieFreeQuotaBasisSchema,
+  reason: z.string().min(1).max(500),
+}).strict();
+
+/**
+ * 远端免费窗口创建（v3）：证据形状与 v2 远端窗口相同，额外必须挂在 B 档包络下并引用已落库的
+ * 免费额度依据 hash。依据缺失/篡改/过期/路由不符由服务端复算拒绝；目录 0/0 不能替代依据。
+ */
+export const magpieFreeQuotaRemoteWindowCreateSchema = magpieRemoteWindowCreateSchema.extend({
+  envelope: z.literal(MAGPIE_B_ENVELOPE.id),
+  freeQuotaBasisHash: digest,
+}).strict();
+
+export type MagpieFreeQuotaBasis = z.infer<typeof magpieFreeQuotaBasisSchema>;
+export type MagpieFreeQuotaBasisCreate = z.infer<typeof magpieFreeQuotaBasisCreateSchema>;
+export type MagpieFreeQuotaRemoteWindowCreate = z.infer<typeof magpieFreeQuotaRemoteWindowCreateSchema>;
+
 export type MagpieRemoteGap = z.infer<typeof magpieRemoteGapSchema>;
 export type MagpieRemoteEvidence = z.infer<typeof magpieRemoteEvidenceSchema>;
 export type MagpieRemoteWindowCreate = z.infer<typeof magpieRemoteWindowCreateSchema>;
@@ -254,6 +336,10 @@ export type MagpieWindowView = {
     destructive: boolean;
     source: string;
   };
+  /** 免费额度依据（v3）：窗口挂接的不可变依据记录 hash；v1/v2 窗口为 null。 */
+  freeQuota: { basisHash: string } | null;
+  /** 停止终态（v3）：门禁因用尽/计费/未知错误/漂移停止时的原因与时刻；未停止为 null。 */
+  stop: { reason: MagpieFreeStopReason; stoppedAt: string | null } | null;
   createdAt: string | null;
   boundAt: string | null;
 };
