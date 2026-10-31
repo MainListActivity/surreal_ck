@@ -210,7 +210,7 @@ function paidEnvelopeInput(activityId: string, overrides: Partial<MagpieWindowCr
 /** 创建并绑定一个 v3 免费窗口，返回窗口 id 字符串。 */
 async function boundFreeWindow(store: InternalAiStore, activityId: string, freeHash: string, overrides: Partial<MagpieFreeQuotaRemoteWindowCreate> = {}, capturedAt?: string): Promise<string> {
   const created = await store.createFreeQuotaRemoteWindow(freeRemoteInput(activityId, freeHash, overrides, capturedAt), "ops-test", remoteRuntime);
-  await store.bindWindow(String(created.window.id.id), { activity: activityId, expectedRevision: await store.windowRevision(activityId) }, "ops-test");
+  await store.bindWindow(String(created.window.id.id), { activity: activityId, expectedRevision: await store.windowRevision(activityId) }, "ops-test", remoteRuntime.endpoint);
   return String(created.window.id.id);
 }
 
@@ -327,7 +327,7 @@ localTest("missing usage stops the window while the request stays metered; valid
   await store.createFreeQuotaBasis({ basis: content, reason: "integration" }, "ops-test");
   const created = await store.createFreeQuotaRemoteWindow(freeRemoteInput("fq-usage", freeQuotaBasisHash(content), { sourceBudgetAttempts: 3 }), "ops-test", remoteRuntime);
   const windowId = String(created.window.id.id);
-  await store.bindWindow(windowId, { activity: "fq-usage", expectedRevision: await store.windowRevision("fq-usage") }, "ops-test");
+  await store.bindWindow(windowId, { activity: "fq-usage", expectedRevision: await store.windowRevision("fq-usage") }, "ops-test", remoteRuntime.endpoint);
 
   const first = await inInternalScope(scope, () => gate.begin("chat", "openai", "group/work", remoteRuntime.endpoint));
   await gate.finish(first, { inputTokens: 50, outputTokens: 8, cachedInputTokens: null, reasoningTokens: null }, MAGPIE_FREE_BASIS_ROUTE.servedModel, "req-free-1", false);
@@ -343,4 +343,71 @@ localTest("missing usage stops the window while the request stays metered; valid
   expect(rows[1]).toMatchObject({ state: "uncertain", cost_status: "usage-missing" });
   expect(rows[1]?.cost ?? null).toBeNull();
   await expect(inInternalScope(scope, () => gate.begin("chat", "openai", "group/work", remoteRuntime.endpoint))).rejects.toThrow("internal-ai-free-quota-stopped");
+});
+
+localTest("a v3 bind re-verifies the runtime endpoint before any write, including a re-bind of the bound window", async () => {
+  const { db, store } = await database("fq_bind_drift");
+  await activity(db, "fq-bind-drift");
+  const content = basis();
+  await store.createFreeQuotaBasis({ basis: content, reason: "integration" }, "ops-test");
+  const created = await store.createFreeQuotaRemoteWindow(freeRemoteInput("fq-bind-drift", freeQuotaBasisHash(content)), "ops-test", remoteRuntime);
+  const windowId = String(created.window.id.id);
+  const revision = await store.windowRevision("fq-bind-drift");
+  const loopback = "http://127.0.0.1:3425/v1";
+  // 漂移、带查询串或缺失的运行时端点在任何写入之前即拒绝：窗口、活动绑定与活动版本都不变。
+  await rejects(() => store.bindWindow(windowId, { activity: "fq-bind-drift", expectedRevision: revision }, "ops-test", loopback), "magpie-window-free-basis-route-mismatch");
+  await rejects(() => store.bindWindow(windowId, { activity: "fq-bind-drift", expectedRevision: revision }, "ops-test", `${remoteRuntime.endpoint}?x=1`), "magpie-window-free-basis-route-mismatch");
+  await rejects(() => store.bindWindow(windowId, { activity: "fq-bind-drift", expectedRevision: revision }, "ops-test"), "magpie-window-runtime-unavailable");
+  expect(await store.window(windowId)).toMatchObject({ status: "active", attempts: 0 });
+  expect(await store.boundWindow("fq-bind-drift")).toBeUndefined();
+  expect(await store.windowRevision("fq-bind-drift")).toBe(revision);
+  // 正确端点绑定成功；已绑定的窗口以漂移端点重绑同样拒绝，以正确端点重绑则幂等返回且版本不变。
+  expect(await store.bindWindow(windowId, { activity: "fq-bind-drift", expectedRevision: revision }, "ops-test", remoteRuntime.endpoint))
+    .toMatchObject({ idempotentReplay: false, activityRevision: revision + 1 });
+  await rejects(() => store.bindWindow(windowId, { activity: "fq-bind-drift", expectedRevision: revision + 1 }, "ops-test", loopback), "magpie-window-free-basis-route-mismatch");
+  expect(await store.bindWindow(windowId, { activity: "fq-bind-drift", expectedRevision: revision + 1 }, "ops-test", remoteRuntime.endpoint))
+    .toMatchObject({ idempotentReplay: true, activityRevision: revision + 1 });
+});
+
+localTest("a v3 idempotent replay re-verifies the stored route against the runtime endpoint; a refused replay writes nothing", async () => {
+  const { db, store } = await database("fq_replay");
+  await activity(db, "fq-replay");
+  const content = basis();
+  await store.createFreeQuotaBasis({ basis: content, reason: "integration" }, "ops-test");
+  const input = freeRemoteInput("fq-replay", freeQuotaBasisHash(content));
+  const created = await store.createFreeQuotaRemoteWindow(input, "ops-test", remoteRuntime);
+  await rejects(() => store.createFreeQuotaRemoteWindow(input, "ops-test", { ...remoteRuntime, endpoint: "http://127.0.0.1:3425/v1" }), "magpie-window-free-basis-route-mismatch");
+  await rejects(() => store.createFreeQuotaRemoteWindow(input, "ops-test", { ...remoteRuntime, endpoint: `${remoteRuntime.endpoint}?x=1` }), "magpie-window-free-basis-route-mismatch");
+  await rejects(() => store.createFreeQuotaRemoteWindow(input, "ops-test", { ...remoteRuntime, endpoint: "" }), "magpie-window-runtime-unavailable");
+  const replay = await store.createFreeQuotaRemoteWindow(input, "ops-test", remoteRuntime);
+  expect(replay.idempotentReplay).toBe(true);
+  expect(String(replay.window.id)).toBe(String(created.window.id));
+  expect(await store.window(String(created.window.id.id))).toMatchObject({ status: "active", attempts: 0 });
+  expect(await store.envelopeSummary()).toMatchObject({ committedAttempts: 1 });
+});
+
+localTest("a request to a drifted endpoint stops the v3 window before any reservation, even though the frozen route still matches", async () => {
+  const { db, store, gate } = await database("fq_req_endpoint");
+  const scope = await activity(db, "fq-req-endpoint");
+  const content = basis();
+  await store.createFreeQuotaBasis({ basis: content, reason: "integration" }, "ops-test");
+  const windowId = await boundFreeWindow(store, "fq-req-endpoint", freeQuotaBasisHash(content));
+  await expect(inInternalScope(scope, () => gate.begin("chat", "openai", "group/work", "http://127.0.0.1:3425/v1"))).rejects.toThrow("internal-ai-free-quota-stopped");
+  expect(await store.window(windowId)).toMatchObject({ status: "stopped", stop_reason: "route-drift" });
+  expect(await store.page("fq-req-endpoint")).toHaveLength(0);
+});
+
+localTest("an unbound loopback runtime cannot create a v3 window, and loopback evidence still fails the basis route", async () => {
+  const { db, store } = await database("fq_loopback");
+  await activity(db, "fq-loopback");
+  const content = basis();
+  const freeHash = freeQuotaBasisHash(content);
+  await store.createFreeQuotaBasis({ basis: content, reason: "integration" }, "ops-test");
+  const loopback = "http://127.0.0.1:3425/v1";
+  await rejects(() => store.createFreeQuotaRemoteWindow(freeRemoteInput("fq-loopback", freeHash), "ops-test", { ...remoteRuntime, endpoint: loopback }), "magpie-window-endpoint-mismatch");
+  // 证据与运行时同指向 loopback 时，端点一致也不符合依据路由，同样拒绝。
+  const capturedAt = new Date(Date.now() - 60_000).toISOString();
+  const base = remoteEvidence(capturedAt);
+  const pinned = freeRemoteInput("fq-loopback", freeHash, { evidence: { ...base, source: { ...base.source, endpoint: loopback } } }, capturedAt);
+  await rejects(() => store.createFreeQuotaRemoteWindow(pinned, "ops-test", { ...remoteRuntime, endpoint: loopback }), "magpie-window-free-basis-route-mismatch");
 });

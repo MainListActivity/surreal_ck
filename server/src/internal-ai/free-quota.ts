@@ -31,17 +31,21 @@ export function readFreeQuotaBasis(content: string, hash: string): MagpieFreeQuo
 }
 
 /**
- * 依据适用路由复核：https、主机与路径精确一致（无端口/凭据/查询），served model 必须一致。
+ * 依据端点严格核对：端点必须逐字等于 https://<依据主机><依据路径>，仅允许末尾一个斜杠。
+ * 不做 URL 规范化：显式 :443、大写主机、凭据、查询、片段、点段、首尾空白与 http 一律不符。
+ */
+export function basisEndpointMatches(basis: MagpieFreeQuotaBasis, endpoint: string): boolean {
+  const base = `https://${basis.route.host}${basis.route.path}`;
+  return endpoint === base || endpoint === `${base}/`;
+}
+
+/**
+ * 依据适用路由复核：端点严格符合依据（见 basisEndpointMatches），served model 必须一致。
  * 路由不符返回 route-drift，served model 不符返回 served-model-drift。
  */
 export function basisRouteStop(basis: MagpieFreeQuotaBasis, endpoint: string, servedModel: string): "route-drift" | "served-model-drift" | null {
-  let url: URL;
-  try { url = new URL(endpoint); } catch { return "route-drift"; }
-  const route = basis.route;
-  const sameEndpoint = url.protocol === "https:" && url.port === "" && url.username === "" && url.password === ""
-    && url.search === "" && url.hash === "" && url.hostname === route.host && url.pathname.replace(/\/$/, "") === route.path;
-  if (!sameEndpoint) return "route-drift";
-  return servedModel === route.servedModel ? null : "served-model-drift";
+  if (!basisEndpointMatches(basis, endpoint)) return "route-drift";
+  return servedModel === basis.route.servedModel ? null : "served-model-drift";
 }
 
 /**
@@ -53,6 +57,15 @@ export function freeQuotaBeginStop(basis: MagpieFreeQuotaBasis | null, window: W
   if (now < Date.parse(basis.effectiveAt)) return "free-basis-invalid";
   if (now >= Date.parse(basis.expiresAt)) return "free-basis-expired";
   return basisRouteStop(basis, window.endpoint, window.served_model);
+}
+
+/**
+ * 请求端点门禁（每次发送前）：本次实际请求端点必须仍严格符合依据路由；不符即 route-drift，本次不发送。
+ * 与窗口冻结端点的同源核对由 routeMatches 承担（host/path/端口 key 必须一致）。
+ */
+export function freeQuotaRequestStop(basis: MagpieFreeQuotaBasis | null, endpoint: string): MagpieFreeStopReason | null {
+  if (!basis) return "free-basis-invalid";
+  return basisEndpointMatches(basis, endpoint) ? null : "route-drift";
 }
 
 /**
@@ -134,6 +147,8 @@ export function buildFreeQuotaRemoteWindowRequest(input: MagpieFreeQuotaRemoteWi
   if (now < Date.parse(basis.effectiveAt)) deny("magpie-window-free-basis-not-effective", "免费额度依据尚未生效");
   if (now >= basisExpiry || Date.parse(input.evidenceExpiresAt) > basisExpiry) deny("magpie-window-free-basis-expired", "免费额度依据已过期或窗口证据期超出依据期限");
   if (basisRouteStop(basis, runtime.endpoint, evidence.route.servedModel)) deny("magpie-window-free-basis-route-mismatch", "路由或 served model 与免费额度依据不符");
+  // 证据来源端点同样必须严格符合依据：assertRemoteEvidence 只比较 host/path key，不排除查询串与端口等差异。
+  if (!basisEndpointMatches(basis, evidence.source.endpoint)) deny("magpie-window-free-basis-route-mismatch", "证据来源端点与免费额度依据路由不符");
   if (!evidence.pricing.free || !isZeroPrice(evidence.pricing.rawPrompt) || !isZeroPrice(evidence.pricing.rawCompletion)) {
     deny("magpie-window-free-basis-conflict", "目录未标注免费或原始单价非零，与免费额度依据冲突");
   }

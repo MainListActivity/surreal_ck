@@ -223,7 +223,10 @@ export function createOpsInternalAiRoutes(input: { gate: InternalAiGate; registr
       if (!row) throw new HttpError(404, "magpie-window-unknown", "窗口不存在");
       return c.json({ contract: row.contract_version ?? MAGPIE_WINDOW_CONTRACT_VERSION, window: windowView(row) });
     })
-    /** 绑定窗口到活动：activity window_revision CAS，已绑同一窗口时幂等返回。 */
+    /**
+     * 绑定窗口到活动：activity window_revision CAS，已绑同一窗口时幂等返回。
+     * 受控运行端点随绑定传入：v3 免费窗口须与依据路由同源核对，不符即 422 且不改动窗口或活动。
+     */
     .post("/api/ops/internal-ai/windows/:id/bind", auth, async c => {
       const id = c.req.param("id");
       if (!/^[a-zA-Z0-9_-]{1,100}$/.test(id)) throw new HttpError(400, "magpie-window-id-invalid", "窗口标识无效");
@@ -231,7 +234,7 @@ export function createOpsInternalAiRoutes(input: { gate: InternalAiGate; registr
       const parsed = magpieWindowBindSchema.safeParse(payload);
       if (!parsed.success) throw new HttpError(400, "magpie-window-body-invalid", "窗口绑定参数不合法");
       try {
-        const result = await input.gate.store.bindWindow(id, { activity: parsed.data.activity, expectedRevision: parsed.data.expectedRevision }, c.var.platformOperator.subject);
+        const result = await input.gate.store.bindWindow(id, { activity: parsed.data.activity, expectedRevision: parsed.data.expectedRevision }, c.var.platformOperator.subject, input.runtime.endpoint);
         return c.json({ contract: result.window.contract_version ?? MAGPIE_WINDOW_CONTRACT_VERSION, idempotentReplay: result.idempotentReplay, window: windowView(result.window), activityRevision: result.activityRevision, reason: parsed.data.reason });
       } catch (e) { throw windowHttpError(e); }
     })
