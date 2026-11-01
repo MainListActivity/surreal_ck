@@ -7,7 +7,9 @@ import { Surreal } from "surrealdb";
 
 const RUN_SYSTEM_SCHEMA_TESTS =
   process.env.RUN_LOCAL_SURREALDB_SYSTEM_SCHEMA_TESTS === "1";
-const localSurrealTest = test.skipIf(!RUN_SYSTEM_SCHEMA_TESTS);
+// 迁移链逐条启动 surreal sql 子进程，bun 默认 5s 超时不够（044 之后约 44 条迁移）。
+const localSurrealTest = (name: string, fn: () => Promise<void>) =>
+  test.skipIf(!RUN_SYSTEM_SCHEMA_TESTS)(name, fn, 120_000);
 const surrealBinary = process.env.SURREAL_BINARY ?? "surreal";
 const namespace = "main";
 const database = "_system";
@@ -176,7 +178,7 @@ const compiledRule = `{
     "041 放宽能力白名单到 funnel.read：历史项仍通过、未知能力仍拒绝、重复迁移安全",
     async () => {
       const migrations = await readMigrations();
-      expect(migrations).toHaveLength(41);
+      expect(migrations).toHaveLength(44);
       for (const sql of migrations) expectSuccessful(await runSurrealCli(sql));
 
       expectSuccessful(await runSurrealCli(`
@@ -227,7 +229,7 @@ describe("_system native quota schema against local SurrealDB", () => {
     "upgrades existing data, enforces authority invariants, denies database users, and reruns safely",
     async () => {
       const migrations = await readMigrations();
-      expect(migrations).toHaveLength(41);
+      expect(migrations).toHaveLength(44);
 
       for (const sql of migrations.slice(0, 3)) {
         expectSuccessful(await runSurrealCli(sql));

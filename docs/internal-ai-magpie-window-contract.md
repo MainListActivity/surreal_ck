@@ -140,7 +140,9 @@
 
 预留/完成侧错误：`internal-ai-route-drift`、`internal-ai-price-unassessed`、
 `internal-ai-price-or-bound-unavailable`、`internal-ai-budget-exhausted`、
-`internal-ai-evidence-unavailable`（全部 fail-closed，不发送 provider 请求）。
+`internal-ai-evidence-unavailable`（全部 fail-closed，不发送 provider 请求）。免费窗口（v3，见第 9 节）
+门禁停止时，请求侧抛出 `internal-ai-free-quota-stopped`：该窗口已进入 `stopped` 终态，本次不发送，不重试，不切路由。
+v3 的依据与门禁错误码统一列在第 9 节。
 
 ## 7. 第二阶段 B 档独立采样包络
 
@@ -158,15 +160,16 @@
 
 - 创建窗口时传 `"envelope": "fv06-b-2026-11-05"`；未传则完全沿用上一节的旧 30 次全局路径。
 - 账本行是 `internal_ai_envelope:fv06-b-2026-11-05`（固定 ID，受控字段只读），首次使用时按上述常量建立；字段与常量不一致时拒绝。
-- 该包络内：`剩余次数 = 20 − 已用(含 failed/uncertain/timeout/cancelled) − 已承诺(active 窗口未用次数)`；
-  `已用` 来自带 envelope 归属的 attempt 行，`已承诺` 来自该包络的 active 窗口。旧 `internal_ai_target` /
-  活动 / 旧周期计数**不参与**新包络计算，也不因新包络调用而增加或清零。
-- USD：窗口创建按 `sourceBudgetNanoUsd` 记入包络 `allocated_nano_usd`；每次预留增加 `reserved`，结算把预留转为
-  `spent`（失败/不确定仍计已用并保留预留，绝不把未知成本当 0）。窗口创建、预留与结算都必须满足
-  `allocated_nano_usd + spent + reserved ≤ 700000000`，且单次 `≤ 35000000`。
+- 该包络内（实时口径，不写入累计列）：`剩余次数 = 20 − 已用 − 已承诺`。`已用` 为带 envelope 归属的 attempt 行数
+  （含 failed/uncertain/timeout/cancelled），`已承诺` 为该包络内未过证据期的 active 窗口的未用次数之和
+  （`attempt_limit − attempts`）。旧 `internal_ai_target` / 活动 / 旧周期计数**不参与**新包络计算，也不因新包络调用而增加或清零。
+- USD：`已承诺 USD = Σ(sourceBudgetNanoUsd − spent − reserved)`，仅统计未过证据期的 active 窗口。每次预留增加
+  `reserved`，结算把预留转为 `spent`（失败/不确定仍计已用并保留预留，绝不把未知成本当 0）。窗口创建要求
+  `已承诺 USD + 包络 spent + 包络 reserved + sourceBudgetNanoUsd ≤ 700000000`；预留要求
+  `包络 spent + 包络 reserved + 本次金额 ≤ 700000000`；窗口与单次金额均 `≤ 35000000`。
 - 期限：包络到期或窗口证据期超过包络期限都拒绝创建；预留时再次复核。
 - 只读核对：`GET /api/ops/internal-ai/envelopes/current` 返回 `usedAttempts`、`committedAttempts`、
-  `remainingAttempts`、`committedNanoUsd`（窗口已承诺额度）、`spentNanoUsd`、`reservedNanoUsd`、
+  `remainingAttempts`、`committedNanoUsd`（未过证据期 active 窗口的未用额度之和，实时计算）、`spentNanoUsd`、`reservedNanoUsd`、
   `remainingNanoUsd` 与 `expired`，供 qa 在调用前核对。
 - 新错误码（422）：`magpie-window-envelope-expired`、`magpie-window-envelope-cap-exceeded`、
   `magpie-window-envelope-invalid`。
@@ -188,3 +191,52 @@
   观测层（capturedAt/快照摘要/routingConfigurationVerified=false）与本地新鲜度层
   （证据期 = 采集 + 7200s）绝不写入远端 route 字段；价格独立硬门禁——reviewed=false
   的目录 0/0 一律 unknown（请求门禁闭锁），永不自动等于 free-evidence。
+- 迁移 044（免费额度窗口 v3）：`shared/sql/system/044-internal-ai-free-quota-basis.surql`，只新增结构。
+  `internal_ai_window.status` 的允许取值扩展为 `stopped`（`DEFINE FIELD OVERWRITE`，既有行取值不变）；新增
+  `stop_reason`、`stopped_at`（既有行保持 NONE）；新增不可变表 `internal_ai_free_basis`。不回填、不改写既有行。
+
+## 9. 免费额度窗口契约 v3（magpie-window/v3）
+
+老板决定引用任务 `45b3ec63`（owner_approve，`owner:local-session`，2026-10-30T21:55:52Z）：固定路由按**零新增现金支出**处理。
+这不是对未知现金风险的例外，也不是永久免费。它只适用于下表的固定路由与 B 档包络，到期即失效。
+
+| 字段 | 值 |
+| --- | --- |
+| 适用路由 | host `data.maplayer.top`，path `/ofm/v1`，servedModel `sn-sensenova-6-8-flash`（仅 https，无端口、凭据、查询或片段） |
+| 包络 | `fv06-b-2026-11-05`（见第 7 节） |
+| 生效时刻 | 不早于老板决定时刻 2026-10-30T21:55:52Z |
+| 到期时刻 | 不晚于 B 档包络期限 2026-11-05T12:10:07Z；窗口证据期不得超过依据到期时刻 |
+
+**依据记录（内容寻址、不可变）**
+
+- 依据内容为规范化 JSON（键排序、无空白），字段为 `version`（`free-quota-basis/1`）、`decision`、`route`、`envelope`、`effectiveAt`、`expiresAt`。内容不含供应商价目、金额或秘密。
+- hash = SHA-256(规范化内容)，同时即记录 id。读回时服务端以 content 复算 hash，不一致返回 `magpie-window-free-basis-invalid`。`content` 为 READONLY，同内容重放返回既有记录（200），不同内容无法覆盖。
+- 依据不写入 TARIFFS，不伪造供应商价目。目录 0/0 不能替代依据；目录 0/0 且 `reviewed=false` 仍按 unknown 闭锁。
+
+**端点（运营鉴权）**
+
+- `POST /api/ops/internal-ai/free-quota-bases`：请求体 `{basis, reason}`，新建返回 201，同内容重放返回 200，响应含 `hash`。客户端不得自填 hash（strict 拒绝）。
+- `GET /api/ops/internal-ai/free-quota-bases/:hash`：hash 须为 64 位小写十六进制；复算通过才返回依据内容。
+- `POST /api/ops/internal-ai/free-quota-remote-windows`：请求体为 v2 远端证据加 `envelope: "fv06-b-2026-11-05"` 与 `freeQuotaBasisHash`，新建 201、重放 200。窗口视图的 `contract` 为 `magpie-window/v3`，并含 `freeQuota.basisHash` 与 `stop`（`{reason, stoppedAt}`，未停止时为 null）。
+
+**创建门禁**
+
+依据必须存在且可复算；必须已生效且未到期；窗口证据期不得越过依据到期时刻；路由 host、path、servedModel 与依据一致；目录必须同时标注免费且原始单价为零，否则 `magpie-window-free-basis-conflict`。窗口价格由依据派生为 `free-evidence`，`priceRevision` 为 `free-quota-basis/1:<hash>`；目录 0/0 与 reviewed 状态都不参与价格派生。B 包络内的免费窗口必须是 v3，否则 `magpie-window-free-basis-required`。
+
+**请求前复核（begin）**
+
+每次请求前复核依据：依据缺失、不可复算或未生效，停止原因 `free-basis-invalid`；已到期，`free-basis-expired`；路由不符，`route-drift`；served model 不符，`served-model-drift`。命中即窗口进入 `stopped`，本次不发送，抛出 `internal-ai-free-quota-stopped`。
+
+**请求后（finish）**
+
+只有 served model 一致且 usage 合法（核定为 `free-evidence`）才继续。其余情况：served model 漂移，`served-model-drift`；缺 usage，`usage-missing`；非法 usage，`usage-invalid`；未知核定状态按 fail-closed 处理，`provider-uncertain`。provider 失败按远端错误形状分类：HTTP 402 归为 `billing-required`；错误文本含额度用尽关键字的归为 `quota-exhausted`；含计费关键字的归为 `billing-required`；其余为 `provider-uncertain`。任何失败都计入已用次数，不自动重试，不切付费路由，不充值，不新增订阅。
+
+**停止语义**
+
+停止与该次结算在同一事务内完成，同一包络内其它活动窗口同事务进入 `stopped`。此后 B 包络拒绝新的 B 窗口（`magpie-window-free-quota-stopped`，409），也不允许任何窗口绑定到活动。B 档免费口径整体关闭；恢复路径未定义，列为待决事项，须由运营另行受控处理。
+
+**计量与兼容**
+
+- 免费口径仍按次数计数（包络上限 20 次），USD 预留按第 7 节规则，免费证据结算为 0。
+- v1、v2 行及其创建路径语义不变。v1 `POST /windows` 的 free-evidence 遗留路径保持原样，但 B 包络内禁止使用非 v3 的免费窗口。
+- 新增错误码汇总：404 `magpie-window-free-basis-unknown`；400 `magpie-window-free-basis-hash-invalid`；409 `magpie-window-free-quota-stopped`；422 `magpie-window-free-basis-invalid`、`magpie-window-free-basis-not-effective`、`magpie-window-free-basis-expired`、`magpie-window-free-basis-route-mismatch`、`magpie-window-free-basis-conflict`、`magpie-window-free-basis-required`。

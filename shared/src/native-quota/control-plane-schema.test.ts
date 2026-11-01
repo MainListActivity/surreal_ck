@@ -76,6 +76,8 @@ describe("_system native quota control-plane schema", () => {
       // 043：远端窗口契约（magpie-window/v2）在本分支新增；041=funnel.read、
       // 042=B 档采样包络已由 main 提供。
       43,
+      // 044：免费额度依据与 v3 窗口停止（magpie-window/v3）在本分支新增，只新增结构。
+      44,
     ]);
   });
 

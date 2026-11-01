@@ -1,7 +1,9 @@
 import { internalScope, inInternalScope, type InternalScope } from "./context";
 import { InternalAiStore } from "./store";
 import { actualCost, tariffFor, worstCost, type Tariff, type Usage } from "./pricing";
-import { assessWindowCost, routeMatches, windowAmount, windowTariff, type WindowRow } from "./window";
+import { classifyProviderFailure, freeQuotaBeginStop, freeQuotaFinishStop, isFreeQuotaWindow } from "./free-quota";
+import { assessWindowCost, routeMatches, windowAmount, windowTariff, WindowDenied, type WindowCostAssessment, type WindowRow } from "./window";
+import type { MagpieFreeQuotaBasis, MagpieFreeStopReason } from "@surreal-ck/shared";
 import type { RecordId } from "surrealdb";
 export type AttemptTicket = { id: RecordId; tariff: Tariff; window?: WindowRow };
 /** Interface：bind/inRun保持身份；begin/finish包住实际provider尝试。没有客户可设置的budget字段。 */
@@ -27,10 +29,20 @@ export class InternalAiGate {
     // 完全不匹配时绝不回退旧 tariffFor，避免把旧证书语义套到新路由上。
     const window = await this.store.boundWindow(scope.activity);
     if (window) {
+      if (window.status === "stopped" && isFreeQuotaWindow(window)) throw new Error("internal-ai-free-quota-stopped");
+      // v3 免费窗口：每次请求前先复核依据（生效/到期/hash 复算/冻结路由与 served model）；不符即停止窗口，本次不发送。
+      // 先于证据期与次数检查，依据过期才会落为 stopped 终态（原因 free-basis-expired），而不是仅被时间条件拒绝。
+      if (window.status === "active" && isFreeQuotaWindow(window)) {
+        const stop = freeQuotaBeginStop(await this.freeQuotaBasisOrNull(window), window, Date.now());
+        if (stop) await this.stopAndDeny(window, stop);
+      }
       if (window.status !== "active") throw new Error("internal-ai-evidence-unavailable");
       if (Date.parse(window.evidence_expires_at) <= Date.now()) throw new Error("internal-ai-evidence-unavailable");
       if (window.attempts >= window.attempt_limit) throw new Error("internal-ai-budget-exhausted");
-      if (!routeMatches(window, provider, model, endpoint)) throw new Error("internal-ai-route-drift");
+      if (!routeMatches(window, provider, model, endpoint)) {
+        if (isFreeQuotaWindow(window)) await this.stopAndDeny(window, "route-drift");
+        throw new Error("internal-ai-route-drift");
+      }
       if (window.price_basis === "unknown") throw new Error("internal-ai-price-unassessed");
       let tariff: Tariff;
       let amount: number;
@@ -51,7 +63,7 @@ export class InternalAiGate {
     await this.store.sent(row.id);
     return { id: row.id, tariff };
   }
-  async finish(ticket: AttemptTicket | undefined, usage: Usage | null, model: string | null, request: string | null, failed: boolean, failureClass?: string | null): Promise<void> {
+  async finish(ticket: AttemptTicket | undefined, usage: Usage | null, model: string | null, request: string | null, failed: boolean, failureClass?: string | null, failure?: unknown): Promise<void> {
     if (!ticket) return;
     if (!ticket.window) {
       await this.store.finish(ticket.id, { usage, actualModel: model, requestId: request, cost: usage ? actualCost(ticket.tariff, usage, model) : null, failed, usageRaw: usage ? rawUsage(usage) : null, failureClass: failed ? failureClass ?? "provider-failed" : null });
@@ -59,9 +71,14 @@ export class InternalAiGate {
     }
     // 窗口路径：servedModel 漂移/缺 usage/非法 usage 一律 cost=null；只有真实免费证据才允许 0。
     // 传输失败不是路由漂移：没有响应 metadata 时按 provider-failed 记，仍保留预留与失败类别。
-    const assessment = failed
+    const assessment: WindowCostAssessment = failed
       ? { cost: null, status: "provider-failed", routeDrift: false, amortized: ticket.window.amortized_nano_usd ?? null, marginal: ticket.window.marginal_nano_usd ?? null }
       : assessWindowCost(ticket.window, usage, model);
+    // v3 免费窗口：失败按远端错误形状分类（额度用尽/计费/未知）；非失败按核定结果（漂移/缺失/非法 usage）停止。
+    // 停止与结算同一事务写入；任何停止都不自动重试、不切路由。
+    const stopReason: MagpieFreeStopReason | null = isFreeQuotaWindow(ticket.window)
+      ? (failed ? classifyProviderFailure(failure) : freeQuotaFinishStop(assessment.status))
+      : null;
     await this.store.finish(ticket.id, {
       usage, actualModel: model, requestId: request,
       cost: failed ? null : assessment.cost,
@@ -72,7 +89,18 @@ export class InternalAiGate {
       marginal: assessment.marginal,
       failureClass: failed ? failureClass ?? "provider-failed" : null,
       routeDrift: assessment.routeDrift,
+      stopReason,
     });
+  }
+  /** v3 依据读回：缺失或篡改按 invalid 处理（由调用方停止）；数据库读取异常不停止窗口，直接向上抛出。 */
+  private async freeQuotaBasisOrNull(window: WindowRow): Promise<MagpieFreeQuotaBasis | null> {
+    if (!window.free_evidence_hash) return null;
+    try { return await this.store.freeQuotaBasis(window.free_evidence_hash); } catch (error) { if (error instanceof WindowDenied) return null; throw error; }
+  }
+  /** 免费窗口门禁停止：窗口与同包络其它活动窗口同事务进入终态 stopped；本次不发送，不重试，不切路由。 */
+  private async stopAndDeny(window: WindowRow, reason: MagpieFreeStopReason): Promise<never> {
+    await this.store.stopFreeWindow(window.id, reason);
+    throw new Error("internal-ai-free-quota-stopped");
   }
 }
 /** provider usage 的忠实投影（SDK 已解析字段），不落 HTTP 正文/请求/响应。 */

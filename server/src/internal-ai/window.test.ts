@@ -133,9 +133,15 @@ describe("route and budget", () => {
 
 describe("B sampling envelope", () => {
   const now = Date.parse("2026-10-30T00:00:00Z");
+  const openai = TARIFFS.find(t => t.revision === "openai-mini-2026-10-09")!;
+  // B 档默认使用已核证书的付费路由；v1 自带 free-evidence 在 B 档内被拒绝，免费窗口只能走 v3 依据记录。
+  const paidRoute = (): MagpieWindowCreate["route"] => ({
+    ...input().route, priceBasis: "per-token", priceRevision: openai.revision, servedModel: openai.model,
+    endpoint: "https://api.openai.com/v1", freeEvidenceHash: undefined, maxOutputTokens: 16384,
+  });
   const envelope = (overrides: Partial<MagpieWindowCreate> = {}): MagpieWindowCreate => input({
     envelope: MAGPIE_B_ENVELOPE.id, sourceBudgetAttempts: 20, sourceBudgetNanoUsd: 700_000_000, perAttemptNanoUsd: 35_000_000,
-    evidenceExpiresAt: "2026-11-01T00:00:00Z", ...overrides,
+    evidenceExpiresAt: "2026-11-01T00:00:00Z", route: paidRoute(), ...overrides,
   });
   const envCtx = { totalUsed: 30, committedAttempts: 0, activityTotalLimit: 0, activityPerAttemptLimit: 0, envelopeUsed: 0, envelopeCommitted: 0, envelopeCommittedNanoUsd: 0, envelopeSpentNanoUsd: 0, envelopeReservedNanoUsd: 0, now };
   test("schema accepts only the approved envelope id", () => {

@@ -45,7 +45,7 @@ beforeAll(async () => {
   await admin.connect(`${endpoint}/rpc`, { authentication: { username: "root", password: "root" } });
   await admin.query("DEFINE NAMESPACE IF NOT EXISTS budget_test;");
   await admin.use({ namespace: "budget_test" });
-  schema = (await Promise.all(["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql", "037-internal-ai-measurement-cycle.surql", "038-internal-ai-account-plan-type.surql", "039-internal-ai-window.surql", "042-internal-ai-sampling-envelope.surql", "043-internal-ai-window-remote.surql"]
+  schema = (await Promise.all(["034-internal-ai-budget.surql", "035-internal-ai-registration.surql", "036-internal-ai-token-plan.surql", "037-internal-ai-measurement-cycle.surql", "038-internal-ai-account-plan-type.surql", "039-internal-ai-window.surql", "042-internal-ai-sampling-envelope.surql", "043-internal-ai-window-remote.surql", "044-internal-ai-free-quota-basis.surql"]
     .map(async f => readFile(new URL(`../../../shared/sql/system/${f}`, import.meta.url), "utf8")))).join("\n");
 }, 30000);
 
@@ -131,29 +131,41 @@ localTest("historical 30 attempts reject a new window; failed and uncertain rows
   await rejects(() => store.createWindow(windowInput("win-full"), "ops-test"), "magpie-window-remaining-insufficient");
 });
 
+/** B 档 v1 窗口只接受已核 per-token 证书路由；free-evidence 在 B 档被拒绝，免费口径只走 v3 依据记录。 */
+const openaiMini = TARIFFS.find(t => t.revision === "openai-mini-2026-10-09")!;
+function paidEnvelopeRoute(activityId: string): MagpieWindowCreate["route"] {
+  return {
+    ...windowInput(activityId).route, priceBasis: "per-token", priceRevision: openaiMini.revision, servedModel: openaiMini.model,
+    endpoint: "https://api.openai.com/v1", freeEvidenceHash: undefined, maxOutputTokens: 16384,
+  };
+}
+
 localTest("B envelope is an independent 20-attempt / 0.70 USD ledger and leaves the old 30 counter untouched", async () => {
   const { db, store } = await database("win_envelope");
   const scope = await activity(db, "win-envelope", { total: 1_000_000_000, per: 100_000_000 });
   await history(db, 30);
   const before = await store.target();
+  const worst = worstCost(openaiMini);
   const envelopeInput = (overrides: Partial<MagpieWindowCreate> = {}) => windowInput("win-envelope", {
-    envelope: MAGPIE_B_ENVELOPE.id, sourceBudgetAttempts: 20, sourceBudgetNanoUsd: 100_000_000, perAttemptNanoUsd: 35_000_000,
-    ...overrides,
+    envelope: MAGPIE_B_ENVELOPE.id, sourceBudgetAttempts: 20, sourceBudgetNanoUsd: 700_000_000, perAttemptNanoUsd: 35_000_000,
+    route: paidEnvelopeRoute("win-envelope"), ...overrides,
   });
   const created = await store.createWindow(envelopeInput(), "ops-test");
   expect(created.window.envelope).toBe(MAGPIE_B_ENVELOPE.id);
   expect((await store.envelopeSummary())?.usedAttempts).toBe(0);
   await store.bindWindow(String(created.window.id.id), { activity: "win-envelope", expectedRevision: await store.windowRevision("win-envelope") }, "ops-test");
+  const gate = new InternalAiGate(store);
   for (let i = 0; i < 20; i++) {
-    const ticket = await inInternalScope(scope, () => new InternalAiGate(store).begin("chat", "openai", "group/work", "http://127.0.0.1:3425/v1"));
-    await new InternalAiGate(store).finish(ticket, null, null, null, true, "provider-error");
+    const ticket = await inInternalScope(scope, () => gate.begin("chat", "openai", "group/work", "https://api.openai.com/v1"));
+    await gate.finish(ticket, null, null, null, true, "provider-error");
   }
-  const summary = await store.envelopeSummary();
-  expect(summary).toMatchObject({ usedAttempts: 20, committedAttempts: 0, remainingAttempts: 0, spentNanoUsd: 0, reservedNanoUsd: 0 });
-  await expect(inInternalScope(scope, () => new InternalAiGate(store).begin("chat", "openai", "group/work", "http://127.0.0.1:3425/v1"))).rejects.toThrow("internal-ai-budget-exhausted");
+  // 不确定失败保留预留：20 次全部计入包络次数与 USD 预留；剩余次数与剩余 USD 均为 0。
+  expect(await store.envelopeSummary()).toMatchObject({ usedAttempts: 20, committedAttempts: 0, remainingAttempts: 0, spentNanoUsd: 0, reservedNanoUsd: 20 * worst, committedNanoUsd: 700_000_000 - 20 * worst, remainingNanoUsd: 0 });
+  await expect(inInternalScope(scope, () => gate.begin("chat", "openai", "group/work", "https://api.openai.com/v1"))).rejects.toThrow("internal-ai-budget-exhausted");
   // 旧 target 的 30 次历史与计数既不被新包络清零，也不被增加。
   expect(await store.target()).toEqual(before);
-  await rejects(() => store.createWindow(envelopeInput({ approvalDigest: digest("1"), idempotencyKey: "idem-env-2" }), "ops-test"), "magpie-window-remaining-insufficient");
+  // USD 已全部承诺（次数同时用尽），新窗口先被 USD 上限拒绝。
+  await rejects(() => store.createWindow(envelopeInput({ approvalDigest: digest("1"), sourceBudgetNanoUsd: 1, perAttemptNanoUsd: 1, idempotencyKey: "idem-env-2" }), "ops-test"), "magpie-window-envelope-cap-exceeded");
 });
 
 localTest("B envelope paid window settles inside the envelope ledger without touching legacy counters", async () => {
@@ -177,18 +189,22 @@ localTest("B envelope paid window settles inside the envelope ledger without tou
   expect(await store.target()).toEqual(before);
 });
 
-localTest("B envelope rejects expired approvals and USD overages; old prefixes still fail", async () => {
+localTest("B envelope rejects legacy prefixes, USD overages and evidence outside the envelope; the live ledger counts active windows", async () => {
   const { db, store } = await database("win_envelope_neg");
   await activity(db, "win-envelope-neg");
   const envelopeInput = (overrides: Partial<MagpieWindowCreate> = {}) => windowInput("win-envelope-neg", {
-    envelope: MAGPIE_B_ENVELOPE.id, sourceBudgetAttempts: 1, sourceBudgetNanoUsd: 35_000_000, perAttemptNanoUsd: 35_000_000, ...overrides,
+    envelope: MAGPIE_B_ENVELOPE.id, sourceBudgetAttempts: 1, sourceBudgetNanoUsd: 35_000_000, perAttemptNanoUsd: 35_000_000,
+    route: paidEnvelopeRoute("win-envelope-neg"), ...overrides,
   });
   await rejects(() => store.createWindow(envelopeInput({ approvalTask: "a7537d2c-3b76-42b3-bfb8-459956340984" }), "ops-test"), "magpie-window-legacy-rejected");
   await rejects(() => store.createWindow(envelopeInput({ sourceBudgetNanoUsd: 35_000_001, perAttemptNanoUsd: 35_000_001, idempotencyKey: "idem-env-usd" }), "ops-test"), "magpie-window-envelope-cap-exceeded");
+  await rejects(() => store.createWindow(envelopeInput({ approvalDigest: digest("4"), evidenceExpiresAt: new Date(Date.now() - 60_000).toISOString(), idempotencyKey: "idem-env-stale" }), "ops-test"), "magpie-window-evidence-expired");
+  await rejects(() => store.createWindow(envelopeInput({ approvalDigest: digest("5"), evidenceExpiresAt: new Date(Date.parse(MAGPIE_B_ENVELOPE.expiresAt) + 1_000).toISOString(), idempotencyKey: "idem-env-late" }), "ops-test"), "magpie-window-envelope-expired");
   const full = await store.createWindow(envelopeInput({ sourceBudgetAttempts: 1, sourceBudgetNanoUsd: 700_000_000, idempotencyKey: "idem-env-full" }), "ops-test");
   expect(full.window.envelope).toBe(MAGPIE_B_ENVELOPE.id);
+  // 活动窗口的全部 USD 已计入实时承诺，任何超出 0.70 USD 的新窗口即被拒绝。
   await rejects(() => store.createWindow(envelopeInput({ approvalDigest: digest("3"), sourceBudgetAttempts: 1, sourceBudgetNanoUsd: 1, idempotencyKey: "idem-env-over" }), "ops-test"), "magpie-window-envelope-cap-exceeded");
-  expect(await store.envelopeSummary()).toMatchObject({ usedAttempts: 0, committedAttempts: 1, remainingAttempts: 19 });
+  expect(await store.envelopeSummary()).toMatchObject({ usedAttempts: 0, committedAttempts: 1, remainingAttempts: 19, committedNanoUsd: 700_000_000, remainingNanoUsd: 0 });
 });
 
 localTest("window creation is idempotent, approval-digest unique, and never re-grants remaining attempts", async () => {
@@ -504,10 +520,13 @@ localTest("042 widening keeps existing v1 rows intact and v2 creation requires t
   expect(before?.route_revision).toBe("magpie-route-legacy");
   expect(before?.contract_version ?? null).toBeNull();
 
-  // 042 逐文件重放（迁移可重复执行），既有行值不变。
+  // 043/044 逐文件重放（迁移可重复执行），既有行值不变。
   const migration = await readFile(new URL("../../../shared/sql/system/043-internal-ai-window-remote.surql", import.meta.url), "utf8");
   await db.query(migration);
   await db.query(migration);
+  const migration044 = await readFile(new URL("../../../shared/sql/system/044-internal-ai-free-quota-basis.surql", import.meta.url), "utf8");
+  await db.query(migration044);
+  await db.query(migration044);
   const legacy = await store.window("legacy-window");
   expect(legacy).toMatchObject({ route_revision: "magpie-route-legacy", route_digest: routeDigest, route_expires_at: futureInstant });
   expect(legacy?.contract_version ?? null).toBeNull();
