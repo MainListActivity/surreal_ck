@@ -216,10 +216,14 @@ export function createOpsInternalAiRoutes(input: { gate: InternalAiGate; registr
       if (!envelope) throw new HttpError(404, "magpie-envelope-unknown", "B 档包络账本不存在或与批准摘要不一致");
       return c.json({ contract: MAGPIE_WINDOW_CONTRACT_VERSION, envelope, moneyUnit: "nanoUSD", currency: "USD", expired: Date.now() >= Date.parse(envelope.expiresAt) });
     })
+    /**
+     * 窗口读回与 bind 同口径：v3 免费窗口核对运行时端点、冻结端点与依据，不符即 422 且不返回窗口行；v1/v2 原样返回。
+     */
     .get("/api/ops/internal-ai/windows/:id", auth, async c => {
       const id = c.req.param("id");
       if (!/^[a-zA-Z0-9_-]{1,100}$/.test(id)) throw new HttpError(400, "magpie-window-id-invalid", "窗口标识无效");
-      const row = await input.gate.store.window(id);
+      let row: WindowRow | undefined;
+      try { row = await input.gate.store.windowReadback(id, input.runtime.endpoint); } catch (e) { if (e instanceof WindowDenied) throw windowHttpError(e); throw e; }
       if (!row) throw new HttpError(404, "magpie-window-unknown", "窗口不存在");
       return c.json({ contract: row.contract_version ?? MAGPIE_WINDOW_CONTRACT_VERSION, window: windowView(row) });
     })

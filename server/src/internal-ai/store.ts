@@ -152,6 +152,15 @@ export class InternalAiStore {
   async window(id: string): Promise<WindowRow | undefined> {
     return rows<WindowRow>(await (await this.db()).query("SELECT * FROM ONLY $id", { id: new RecordId("internal_ai_window", id) }))[0];
   }
+  /**
+   * 窗口普通读回（GET）：v3 免费窗口与 bind 同口径，经 assertFreeWindowRoute 核对依据（复算）、冻结端点、
+   * 当前运行时端点与 served model；漂移、缺失或篡改即拒绝，不返回窗口行。v1/v2 与不存在的窗口原样返回。只读。
+   */
+  async windowReadback(id: string, runtimeEndpoint: string | null | undefined): Promise<WindowRow | undefined> {
+    const row = await this.window(id);
+    if (row && isFreeQuotaWindow(row)) await this.assertFreeWindowRoute(row, runtimeEndpoint);
+    return row;
+  }
   /** 活动当前绑定的窗口（可能已过期/耗尽，交由调用方判定；不自动回退旧价目）。 */
   async boundWindow(activity: string): Promise<WindowRow | undefined> {
     const row = await this.activity(activity);

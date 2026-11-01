@@ -172,7 +172,7 @@ test("window routes reject malformed bodies before touching the store and map de
   const sendInvalid = (body: unknown) => invalid.request("/api/ops/internal-ai/windows", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   expect((await sendInvalid({})).status).toBe(400);
   expect((await sendInvalid(windowBody({ purchase: true }))).status).toBe(400);
-  const fake = { createWindow: async () => { throw new WindowDenied("magpie-window-legacy-rejected", "旧"); }, window: async () => windowRow, windowRevision: async () => 3, bindWindow: async () => ({ window: windowRow, activityRevision: 4, idempotentReplay: false }) };
+  const fake = { createWindow: async () => { throw new WindowDenied("magpie-window-legacy-rejected", "旧"); }, windowReadback: async () => windowRow, windowRevision: async () => 3, bindWindow: async () => ({ window: windowRow, activityRevision: 4, idempotentReplay: false }) };
   const app = new Hono<AppBindings>().route("/", createOpsInternalAiRoutes({ gate: { store: fake } as unknown as InternalAiGate, requireOperator: operator, runtime: {} })).onError(handleError);
   const denied = await app.request("/api/ops/internal-ai/windows", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(windowBody()) });
   expect(denied.status).toBe(422);
@@ -194,7 +194,7 @@ test("window create → GET → bind round-trip uses the bare id returned by cre
   };
   const fake = {
     createWindow: async () => ({ window: row, idempotentReplay: false }),
-    window: async (id: string) => id === uuid ? row : undefined,
+    windowReadback: async (id: string) => id === uuid ? row : undefined,
     windowRevision: async () => 3,
     bindWindow: async (id: string) => {
       if (id !== uuid) throw new Error("route passed a non-bare id");
@@ -373,7 +373,7 @@ test("window GET reports the stored contract version and null remote metadata ho
     c.set("platformOperator", { subject: "synthetic-operator", capabilities: ["subscription.manage"] });
     await next();
   };
-  const fake = { window: async (id: string) => id === "w2" ? remoteRow : undefined };
+  const fake = { windowReadback: async (id: string) => id === "w2" ? remoteRow : undefined };
   const app = new Hono<AppBindings>().route("/", createOpsInternalAiRoutes({ gate: { store: fake } as unknown as InternalAiGate, requireOperator: operator, runtime: {} })).onError(handleError);
   const response = await app.request("/api/ops/internal-ai/windows/w2");
   expect(response.status).toBe(200);
@@ -483,7 +483,7 @@ test("free-quota remote window route dispatches v3 with the controlled runtime i
 
 test("window GET projects the v3 basis hash and the stop reason; v1 and v2 rows keep both null", async () => {
   const stopped: WindowRow = { ...freeRow, status: "stopped", stop_reason: "route-drift", stopped_at: new Date("2026-10-30T23:00:00Z") };
-  const fake = { window: async (id: string) => id === "w3" ? stopped : id === "w1" ? windowRow : remoteRow };
+  const fake = { windowReadback: async (id: string) => id === "w3" ? stopped : id === "w1" ? windowRow : remoteRow };
   const app = new Hono<AppBindings>().route("/", createOpsInternalAiRoutes({ gate: { store: fake } as unknown as InternalAiGate, requireOperator: freeOperator, runtime: {} })).onError(handleError);
   expect(await (await app.request("/api/ops/internal-ai/windows/w3")).json()).toMatchObject({
     contract: "magpie-window/v3", window: { status: "stopped", freeQuota: { basisHash: freeHash }, stop: { reason: "route-drift", stoppedAt: "2026-10-30T23:00:00.000Z" } },
@@ -509,5 +509,29 @@ test("bind route passes the controlled runtime endpoint to the store; a drifted 
   const drifted = await bind("http://127.0.0.1:3425/v1");
   expect(drifted.status).toBe(422);
   expect((await drifted.json() as { error?: { code?: string } }).error?.code).toBe("magpie-window-free-basis-route-mismatch");
+  expect(calls).toEqual(["https://data.maplayer.top/ofm/v1", "http://127.0.0.1:3425/v1"]);
+});
+
+test("window GET passes the controlled runtime endpoint to the read-back check; a drifted v3 window returns 422 without a row", async () => {
+  const calls: Array<string | undefined> = [];
+  const fake = {
+    windowReadback: async (_id: string, runtimeEndpoint?: string) => {
+      calls.push(runtimeEndpoint);
+      if (runtimeEndpoint !== "https://data.maplayer.top/ofm/v1") throw new WindowDenied("magpie-window-free-basis-route-mismatch", "窗口或运行时端点与免费额度依据路由不符");
+      return freeRow;
+    },
+  };
+  const read = (endpoint: string) => new Hono<AppBindings>()
+    .route("/", createOpsInternalAiRoutes({ gate: { store: fake } as unknown as InternalAiGate, requireOperator: freeOperator, runtime: { provider: "openai", model: "remote-magpie/group/work", endpoint } }))
+    .onError(handleError)
+    .request("/api/ops/internal-ai/windows/w3");
+  const ok = await read("https://data.maplayer.top/ofm/v1");
+  expect(ok.status).toBe(200);
+  expect(await ok.json()).toMatchObject({ contract: "magpie-window/v3", window: { freeQuota: { basisHash: freeHash } } });
+  const drifted = await read("http://127.0.0.1:3425/v1");
+  expect(drifted.status).toBe(422);
+  const denied = await drifted.json() as { error?: { code?: string }; window?: unknown };
+  expect(denied.error?.code).toBe("magpie-window-free-basis-route-mismatch");
+  expect(denied.window).toBeUndefined();
   expect(calls).toEqual(["https://data.maplayer.top/ofm/v1", "http://127.0.0.1:3425/v1"]);
 });

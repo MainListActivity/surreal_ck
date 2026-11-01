@@ -225,10 +225,11 @@ v3 的依据与门禁错误码统一列在第 9 节。
 
 **三端点同源核对（证据 / 依据 / 运行时）**
 
-同一窗口涉及三个端点：证据来源端点（只读目录的 `source.endpoint`）、运行时端点（受控运行配置 `AI_BASE_URL`，经 `runtimeIdentity()` 注入）与依据路由。以下四处都做同源核对，任一不符即拒绝或停止：
+同一窗口涉及三个端点：证据来源端点（只读目录的 `source.endpoint`）、运行时端点（受控运行配置 `AI_BASE_URL`，经 `runtimeIdentity()` 注入）与依据路由。以下五处都做同源核对，任一不符即拒绝或停止：
 
 - 创建：证据来源端点与运行时端点的 host/path 键必须一致，否则 `magpie-window-endpoint-mismatch`；运行时端点与证据来源端点都必须严格符合依据路由，否则 `magpie-window-free-basis-route-mismatch`；运行时端点缺失即 `magpie-window-runtime-unavailable`，不从证据回推。
 - 幂等重放（读回）：返回既有窗口前，以当前运行时端点与依据重新核对既有行（冻结端点、运行时端点、served model）。不符即拒绝，不写入，也不把既有行当作可信结果返回。
+- 普通读回（`GET /api/ops/internal-ai/windows/:id`）：v3 免费窗口与幂等重放用同一核对（冻结端点、运行时端点、依据复算与 served model）。不符即 422（`magpie-window-free-basis-route-mismatch` 或 `magpie-window-endpoint-mismatch`），不返回窗口行；运行时端点缺失即 `magpie-window-runtime-unavailable`。v1、v2 窗口读回不做运行时端点核对，原样返回。
 - CAS 绑定：绑定 v3 active 窗口前，在任何写入之前核对运行时端点；不符即拒绝，窗口与活动版本都不变。已绑定的同一窗口重绑同样核对。
 - 请求门禁（begin）：每次发送前，本次请求端点必须严格符合依据路由，并与冻结端点的 host/path 键一致。不符即停止窗口（`route-drift`），本次不发送。
 
@@ -250,4 +251,4 @@ v3 的依据与门禁错误码统一列在第 9 节。
 
 - 免费口径仍按次数计数（包络上限 20 次），USD 预留按第 7 节规则，免费证据结算为 0。
 - v1、v2 行及其创建路径语义不变。v1 `POST /windows` 的 free-evidence 遗留路径保持原样，但 B 包络内禁止使用非 v3 的免费窗口。
-- 新增错误码汇总：404 `magpie-window-free-basis-unknown`；400 `magpie-window-free-basis-hash-invalid`；409 `magpie-window-free-quota-stopped`；422 `magpie-window-free-basis-invalid`、`magpie-window-free-basis-not-effective`、`magpie-window-free-basis-expired`、`magpie-window-free-basis-route-mismatch`、`magpie-window-free-basis-conflict`、`magpie-window-free-basis-required`。三端点核对另有 422 `magpie-window-endpoint-mismatch`、`magpie-window-runtime-unavailable`。绑定与幂等重放的端点不符同样返回 422，且不改动窗口或活动。
+- 新增错误码汇总：404 `magpie-window-free-basis-unknown`；400 `magpie-window-free-basis-hash-invalid`；409 `magpie-window-free-quota-stopped`；422 `magpie-window-free-basis-invalid`、`magpie-window-free-basis-not-effective`、`magpie-window-free-basis-expired`、`magpie-window-free-basis-route-mismatch`、`magpie-window-free-basis-conflict`、`magpie-window-free-basis-required`。三端点核对另有 422 `magpie-window-endpoint-mismatch`、`magpie-window-runtime-unavailable`。绑定、幂等重放与普通读回的端点不符同样返回 422；绑定不改动窗口或活动，读回不返回窗口行。

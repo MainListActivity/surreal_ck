@@ -369,6 +369,44 @@ localTest("a v3 bind re-verifies the runtime endpoint before any write, includin
     .toMatchObject({ idempotentReplay: true, activityRevision: revision + 1 });
 });
 
+localTest("a v3 read-back re-verifies the runtime endpoint and the stored basis; drift, missing or tampered basis fails closed", async () => {
+  const { db, store } = await database("fq_readback");
+  await activity(db, "fq-readback");
+  const content = basis();
+  const freeHash = freeQuotaBasisHash(content);
+  await store.createFreeQuotaBasis({ basis: content, reason: "integration" }, "ops-test");
+  const created = await store.createFreeQuotaRemoteWindow(freeRemoteInput("fq-readback", freeHash), "ops-test", remoteRuntime);
+  const windowId = String(created.window.id.id);
+  const readback = (endpoint: string | undefined) => store.windowReadback(windowId, endpoint);
+  // 合法读回：运行时端点、冻结端点与依据路由同源，返回窗口行且不改动窗口状态或活动版本。
+  const revision = await store.windowRevision("fq-readback");
+  expect(await readback(remoteRuntime.endpoint)).toMatchObject({ status: "active", attempts: 0, free_evidence_hash: freeHash });
+  expect(await store.windowRevision("fq-readback")).toBe(revision);
+  // 运行时端点漂移（loopback、host、path、端口、查询串）与缺失均拒绝，不返回窗口行。
+  await rejects(() => readback("http://127.0.0.1:3425/v1"), "magpie-window-free-basis-route-mismatch");
+  await rejects(() => readback("https://data.example.com/ofm/v1"), "magpie-window-free-basis-route-mismatch");
+  await rejects(() => readback("https://data.maplayer.top/ofm/v2"), "magpie-window-free-basis-route-mismatch");
+  await rejects(() => readback("https://data.maplayer.top:8443/ofm/v1"), "magpie-window-free-basis-route-mismatch");
+  await rejects(() => readback(`${remoteRuntime.endpoint}?x=1`), "magpie-window-free-basis-route-mismatch");
+  await rejects(() => readback(undefined), "magpie-window-runtime-unavailable");
+  // 依据篡改：记录 id 仍是窗口引用的 hash，内容不可复算（记录只读，此处经绕过只读的外部写入模拟）。
+  await db.query("DELETE ONLY $id", { id: new RecordId("internal_ai_free_basis", freeHash) });
+  const tampered = freeQuotaBasisContent(content).replace(MAGPIE_FREE_BASIS_ROUTE.servedModel, "other-model");
+  await db.query("CREATE ONLY $id CONTENT $row", {
+    id: new RecordId("internal_ai_free_basis", freeHash),
+    row: {
+      content: tampered, route_host: MAGPIE_FREE_BASIS_ROUTE.host, route_path: MAGPIE_FREE_BASIS_ROUTE.path,
+      route_served_model: MAGPIE_FREE_BASIS_ROUTE.servedModel, envelope: MAGPIE_B_ENVELOPE.id,
+      effective_at: content.effectiveAt, expires_at: content.expiresAt, operator: "ops-test", reason: "forged",
+    },
+  });
+  await rejects(() => readback(remoteRuntime.endpoint), "magpie-window-free-basis-invalid");
+  // 依据缺失：删除记录后读回同样 fail-closed。
+  await db.query("DELETE ONLY $id", { id: new RecordId("internal_ai_free_basis", freeHash) });
+  await rejects(() => readback(remoteRuntime.endpoint), "magpie-window-free-basis-invalid");
+  expect(await store.window(windowId)).toMatchObject({ status: "active", attempts: 0 });
+});
+
 localTest("a v3 idempotent replay re-verifies the stored route against the runtime endpoint; a refused replay writes nothing", async () => {
   const { db, store } = await database("fq_replay");
   await activity(db, "fq-replay");

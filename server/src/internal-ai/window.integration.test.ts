@@ -497,6 +497,22 @@ localTest("remote evidence expiry rejects create, bind, and the request gate", a
   await rejects(() => store.bindWindow(String(second.window.id.id), { activity: "win-remote-exp", expectedRevision: staleRevision }, "ops-test"), "magpie-window-evidence-expired");
 });
 
+localTest("v1 and v2 read-back ignore the runtime endpoint: drift or absence still returns the stored row", async () => {
+  const { db, store } = await database("win_readback_compat");
+  await activity(db, "rb-v1");
+  await activity(db, "rb-v2");
+  const v1 = await store.createWindow(windowInput("rb-v1"), "ops-test");
+  const v2 = await store.createRemoteWindow(remoteWindowInput("rb-v2"), "ops-test", remoteRuntime);
+  const v1Id = String(v1.window.id.id);
+  const v2Id = String(v2.window.id.id);
+  // 非免费窗口不做运行时端点核对：漂移、loopback 或缺失的端点读回仍返回存储行。
+  for (const endpoint of [remoteRuntime.endpoint, "http://127.0.0.1:3425/v1", "https://data.example.com/ofm/v1", undefined]) {
+    expect(String((await store.windowReadback(v1Id, endpoint))?.id.id)).toBe(v1Id);
+    expect(String((await store.windowReadback(v2Id, endpoint))?.id.id)).toBe(v2Id);
+  }
+  expect(await store.windowReadback("missing-window", remoteRuntime.endpoint)).toBeUndefined();
+}, 60_000);
+
 localTest("042 widening keeps existing v1 rows intact and v2 creation requires the migration first", async () => {
   const { db, store } = await database("win_compat");
   await activity(db, "win-compat");
