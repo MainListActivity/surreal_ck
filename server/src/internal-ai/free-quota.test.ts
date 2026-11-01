@@ -7,8 +7,8 @@ import {
   magpieFreeQuotaBasisSchema, type MagpieFreeQuotaBasis, type MagpieFreeQuotaRemoteWindowCreate, type MagpieRemoteWindowCreate,
 } from "@surreal-ck/shared";
 import {
-  basisRouteStop, buildFreeQuotaRemoteWindowRequest, classifyProviderFailure, freeQuotaBasisContent,
-  freeQuotaBasisHash, freeQuotaBeginStop, freeQuotaFinishStop, isFreeQuotaWindow, readFreeQuotaBasis,
+  basisEndpointMatches, basisRouteStop, buildFreeQuotaRemoteWindowRequest, classifyProviderFailure, freeQuotaBasisContent,
+  freeQuotaBasisHash, freeQuotaBeginStop, freeQuotaFinishStop, freeQuotaRequestStop, isFreeQuotaWindow, readFreeQuotaBasis,
   type FreeQuotaWindowContext,
 } from "./free-quota";
 import { canonicalJson, WindowDenied, type WindowRow } from "./window";
@@ -71,6 +71,14 @@ describe("free-quota basis record", () => {
     expect(freeQuotaBasisHash(basis({ effectiveAt: "2026-10-31T00:00:00Z" }))).not.toBe(freeQuotaBasisHash(basis()));
   });
 
+  test("the basis hashes are locked: production (effective at the owner decision) and the test fixture", () => {
+    // 生产口径：生效时刻 = 老板决定时刻；路由端点修复不得改变依据内容或其 hash。
+    const production = basis({ effectiveAt: MAGPIE_FREE_BASIS_DECISION.decidedAt });
+    expect(magpieFreeQuotaBasisSchema.safeParse(production).success).toBe(true);
+    expect(freeQuotaBasisHash(production)).toBe("611bec49b888beb75e7adebad9bd3dc694b0bf5eae17454872c38a2d8c32457f");
+    expect(freeQuotaBasisHash(basis())).toBe("8030eac021ca9b40947798a19b1a41496e403794386e1086b3ac7ecbb0e67502");
+  });
+
   test("readFreeQuotaBasis recomputes the hash and refuses tampered, non-canonical or foreign content", () => {
     const content = freeQuotaBasisContent(basis());
     const hash = freeQuotaBasisHash(basis());
@@ -114,6 +122,36 @@ describe("free-quota route and model checks", () => {
       "not a url",
     ]) expect(basisRouteStop(b, endpoint, MAGPIE_FREE_BASIS_ROUTE.servedModel)).toBe("route-drift");
     expect(basisRouteStop(b, ENDPOINT, "sn-other-model")).toBe("served-model-drift");
+  });
+
+  test("basisEndpointMatches is literal: explicit :443, query, fragment, case, extra path, dot segments, whitespace, bare host and http are not the basis endpoint", () => {
+    const b = basis();
+    expect(basisEndpointMatches(b, ENDPOINT)).toBe(true);
+    expect(basisEndpointMatches(b, `${ENDPOINT}/`)).toBe(true);
+    for (const endpoint of [
+      `https://${MAGPIE_FREE_BASIS_ROUTE.host}:443${MAGPIE_FREE_BASIS_ROUTE.path}`,
+      `${ENDPOINT}?`,
+      `${ENDPOINT}?x=1`,
+      `${ENDPOINT}#frag`,
+      `https://${MAGPIE_FREE_BASIS_ROUTE.host.toUpperCase()}${MAGPIE_FREE_BASIS_ROUTE.path}`,
+      `${ENDPOINT}/extra`,
+      `${ENDPOINT}/../v1`,
+      `${ENDPOINT}//`,
+      `${ENDPOINT} `,
+      `${ENDPOINT}\n`,
+      `https://${MAGPIE_FREE_BASIS_ROUTE.host}`,
+      `http://${MAGPIE_FREE_BASIS_ROUTE.host}${MAGPIE_FREE_BASIS_ROUTE.path}`,
+      `https://user@${MAGPIE_FREE_BASIS_ROUTE.host}${MAGPIE_FREE_BASIS_ROUTE.path}`,
+    ]) expect(basisEndpointMatches(b, endpoint)).toBe(false);
+  });
+
+  test("freeQuotaRequestStop checks every request endpoint against the basis route; a missing basis is invalid", () => {
+    const b = basis();
+    expect(freeQuotaRequestStop(b, ENDPOINT)).toBeNull();
+    expect(freeQuotaRequestStop(b, "http://127.0.0.1:3425/v1")).toBe("route-drift");
+    expect(freeQuotaRequestStop(b, `https://${MAGPIE_FREE_BASIS_ROUTE.host}:443${MAGPIE_FREE_BASIS_ROUTE.path}`)).toBe("route-drift");
+    expect(freeQuotaRequestStop(b, `${ENDPOINT}?x=1`)).toBe("route-drift");
+    expect(freeQuotaRequestStop(null, ENDPOINT)).toBe("free-basis-invalid");
   });
 
   test("freeQuotaBeginStop closes the window on a missing, unready, expired or drifted basis", () => {
@@ -258,5 +296,18 @@ describe("free-quota remote window builder", () => {
     expect(code(() => buildFreeQuotaRemoteWindowRequest(freeInput({ evidence: { ...base, route: { ...base.route, servedModel: "sn-other-model" } } }), ctx()))).toBe("magpie-window-free-basis-route-mismatch");
     expect(code(() => buildFreeQuotaRemoteWindowRequest(freeInput({ evidence: { ...base, pricing: { ...base.pricing, free: false } } }), ctx()))).toBe("magpie-window-free-basis-conflict");
     expect(code(() => buildFreeQuotaRemoteWindowRequest(freeInput({ evidence: { ...base, pricing: { ...base.pricing, rawPrompt: "0.000001" } } }), ctx()))).toBe("magpie-window-free-basis-conflict");
+  });
+
+  test("the builder checks the evidence and runtime endpoints strictly; loopback is never the basis route", () => {
+    // 查询串与显式 :443 不改变 host/path key，assertRemoteEvidence 放行，依据严格核对必须拒绝。
+    expect(code(() => buildFreeQuotaRemoteWindowRequest(freeInput({ evidence: evidence(`${ENDPOINT}?x=1`) }), ctx()))).toBe("magpie-window-free-basis-route-mismatch");
+    expect(code(() => buildFreeQuotaRemoteWindowRequest(freeInput({ evidence: evidence(`https://${MAGPIE_FREE_BASIS_ROUTE.host}:443${MAGPIE_FREE_BASIS_ROUTE.path}`) }), ctx()))).toBe("magpie-window-free-basis-route-mismatch");
+    expect(code(() => buildFreeQuotaRemoteWindowRequest(freeInput(), ctx({ runtime: { ...runtime, endpoint: `${ENDPOINT}?x=1` } })))).toBe("magpie-window-free-basis-route-mismatch");
+    // 未绑定的 loopback：与证据端点 key 不同即 endpoint-mismatch；即使证据与运行时同为 loopback，依据路由也不符。
+    const loopback = "http://127.0.0.1:3425/v1";
+    expect(code(() => buildFreeQuotaRemoteWindowRequest(freeInput(), ctx({ runtime: { ...runtime, endpoint: loopback } })))).toBe("magpie-window-endpoint-mismatch");
+    expect(code(() => buildFreeQuotaRemoteWindowRequest(freeInput({ evidence: evidence(loopback) }), ctx({ runtime: { ...runtime, endpoint: loopback } })))).toBe("magpie-window-free-basis-route-mismatch");
+    // 合法且一致的端点仍然通过，窗口端点即运行时端点。
+    expect(buildFreeQuotaRemoteWindowRequest(freeInput(), ctx()).route.endpoint).toBe(ENDPOINT);
   });
 });

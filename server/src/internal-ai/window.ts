@@ -191,7 +191,7 @@ export function validateWindowCreate(input: MagpieWindowCreate, ctx: WindowLedge
   validateRoute(input);
 }
 
-const endpointKey = (endpoint: string): string | null => {
+export const endpointKey = (endpoint: string): string | null => {
   try { return endpointParts(endpoint).key; } catch { return null; }
 };
 

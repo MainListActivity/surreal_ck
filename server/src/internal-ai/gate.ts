@@ -1,7 +1,7 @@
 import { internalScope, inInternalScope, type InternalScope } from "./context";
 import { InternalAiStore } from "./store";
 import { actualCost, tariffFor, worstCost, type Tariff, type Usage } from "./pricing";
-import { classifyProviderFailure, freeQuotaBeginStop, freeQuotaFinishStop, isFreeQuotaWindow } from "./free-quota";
+import { classifyProviderFailure, freeQuotaBeginStop, freeQuotaFinishStop, freeQuotaRequestStop, isFreeQuotaWindow } from "./free-quota";
 import { assessWindowCost, routeMatches, windowAmount, windowTariff, WindowDenied, type WindowCostAssessment, type WindowRow } from "./window";
 import type { MagpieFreeQuotaBasis, MagpieFreeStopReason } from "@surreal-ck/shared";
 import type { RecordId } from "surrealdb";
@@ -30,10 +30,11 @@ export class InternalAiGate {
     const window = await this.store.boundWindow(scope.activity);
     if (window) {
       if (window.status === "stopped" && isFreeQuotaWindow(window)) throw new Error("internal-ai-free-quota-stopped");
-      // v3 免费窗口：每次请求前先复核依据（生效/到期/hash 复算/冻结路由与 served model）；不符即停止窗口，本次不发送。
-      // 先于证据期与次数检查，依据过期才会落为 stopped 终态（原因 free-basis-expired），而不是仅被时间条件拒绝。
+      // v3 免费窗口：每次请求前先复核依据（生效/到期/hash 复算/冻结路由与 served model），并核对本次请求端点
+      // 仍严格符合依据路由；任一不符即停止窗口，本次不发送。先于证据期与次数检查，依据过期才会落为 stopped 终态。
       if (window.status === "active" && isFreeQuotaWindow(window)) {
-        const stop = freeQuotaBeginStop(await this.freeQuotaBasisOrNull(window), window, Date.now());
+        const basis = await this.freeQuotaBasisOrNull(window);
+        const stop = freeQuotaBeginStop(basis, window, Date.now()) ?? freeQuotaRequestStop(basis, endpoint);
         if (stop) await this.stopAndDeny(window, stop);
       }
       if (window.status !== "active") throw new Error("internal-ai-evidence-unavailable");
