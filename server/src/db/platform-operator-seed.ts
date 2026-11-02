@@ -49,6 +49,12 @@ function parseCapabilities(value: string | undefined): PlatformOperatorCapabilit
       `PLATFORM_OPERATOR_CAPABILITIES contains unsupported values: ${invalid.join(", ")}`,
     );
   }
+  // 探针临时授权走独立表；禁止经 CSV seed 写成全体主体的永久能力。
+  if (values.includes("internal-ai.endpoint-probe")) {
+    throw new Error(
+      "PLATFORM_OPERATOR_CAPABILITIES must not include internal-ai.endpoint-probe; use the temporary-grant control plane",
+    );
+  }
   return values as PlatformOperatorCapability[];
 }
 

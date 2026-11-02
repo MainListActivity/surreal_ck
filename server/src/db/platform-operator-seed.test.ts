@@ -55,6 +55,17 @@ describe("seedPlatformOperators", () => {
     expect(db.uses).toEqual([]);
   });
 
+  test("拒绝经 CSV 永久下发 internal-ai.endpoint-probe（临时授权另走控制面）", async () => {
+    const db = new FakePlatformOperatorDb();
+
+    await expect(seedPlatformOperators(db, {
+      subjectsCsv: "user-1",
+      capabilitiesCsv: "content.read,internal-ai.endpoint-probe",
+    })).rejects.toThrow("temporary-grant control plane");
+    expect(db.uses).toEqual([]);
+    expect(db.queries).toEqual([]);
+  });
+
   test("按 subject 去重并只补缺失的 operator/capability", async () => {
     const db = new FakePlatformOperatorDb();
 

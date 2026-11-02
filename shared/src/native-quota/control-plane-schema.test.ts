@@ -80,6 +80,8 @@ describe("_system native quota control-plane schema", () => {
       44,
       // 045：能力白名单追加 internal-ai.endpoint-probe（受控目录认证探针），只放宽 schema、不授予能力。
       45,
+      // 046：探针临时授权表（单主体、到期闭锁），只新增结构，不改写永久能力行。
+      46,
     ]);
   });
 
