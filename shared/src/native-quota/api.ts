@@ -385,6 +385,36 @@ export type QuotaOpsIntentPreflightView = Readonly<{
   before_digest: string | null;
 }>;
 
+export const QUOTA_OPS_PREFLIGHT_VIEW_MODES = ["full", "summary"] as const;
+
+export type QuotaOpsPreflightViewMode =
+  (typeof QUOTA_OPS_PREFLIGHT_VIEW_MODES)[number];
+
+/**
+ * 预检摘要视图中按资源类型聚合的影响。只给计数与合计，不逐资源输出；
+ * `unknown_rows` 统计无法判定超限的行（目标不限或用量未知）。
+ */
+export type QuotaOpsImpactSummary = Readonly<{
+  resource: QuotaOpsImpactResource["resource"];
+  rows: number;
+  over_count: number;
+  unknown_rows: number;
+  used_total: QuotaApiCount;
+  projected_over_by_total: QuotaApiCount;
+}>;
+
+/**
+ * `view: "summary"` 的预检响应。基线与决策字段与完整视图逐项相同，
+ * 仅 `resources` 换成按资源类型的聚合；完整视图不带 `view` 字段。
+ */
+export type QuotaOpsIntentPreflightSummaryView = Omit<
+  QuotaOpsIntentPreflightView,
+  "resources"
+> & Readonly<{
+  view: "summary";
+  resources: readonly QuotaOpsImpactSummary[];
+}>;
+
 /**
  * 平台运营主体清单（GET /api/ops/platform-operators）的只读视图。
  *

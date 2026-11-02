@@ -163,6 +163,88 @@ describe("QuotaOpsPreflightService", () => {
     });
   });
 
+  test("summary view keeps baseline fields and overage count equal to full view", async () => {
+    const input = {
+      actor: { subject: "operator" },
+      workspaceSlug: "demo",
+      workspace: new StringRecordId("workspace:demo"),
+      kind: "subscription_upsert" as const,
+      effectiveAt: "2026-08-01T00:00:00.000Z",
+      intentInput: { plan_revision: plus.id },
+    };
+    const full = await service(view()).preflight(input);
+    const summary = await service(view()).preflight({
+      ...input,
+      view: "summary",
+    });
+    if (!full || !summary) throw new Error("preflight returned null");
+    for (const field of [
+      "format_version",
+      "workspace",
+      "kind",
+      "required_capability",
+      "observed_at",
+      "usage_trusted",
+      "stale",
+      "effective_at",
+      "current_plan",
+      "target_plan",
+      "affected_capabilities",
+      "before_digest",
+      "overage_count",
+    ] as const) {
+      expect(summary[field]).toEqual(full[field]);
+    }
+    expect(summary).toMatchObject({
+      view: "summary",
+      resources: [{
+        resource: "record",
+        rows: 1,
+        over_count: 1,
+        unknown_rows: 0,
+        used_total: 80,
+        projected_over_by_total: 30,
+      }],
+    });
+    expect(full).not.toHaveProperty("view");
+  });
+
+  test("summary of a wide workspace stays under the 48KiB employee budget", async () => {
+    const template = view().resources[0];
+    const wide: QuotaApiOperatorView = {
+      ...view(),
+      resources: Array.from({ length: 400 }, (_, index) => ({
+        ...template,
+        key: `record/ent_${index}`,
+        label: `实体记录 · ent_${index}`,
+        selector: {
+          kind: "exact" as const,
+          table: `ent_${index}`,
+          description: `固定表 ent_${index}`,
+        },
+      })),
+    };
+    const input = {
+      actor: { subject: "operator" },
+      workspaceSlug: "demo",
+      workspace: new StringRecordId("workspace:demo"),
+      kind: "override_schedule" as const,
+      effectiveAt: "2026-07-29T12:00:00.000Z",
+      intentInput: {},
+    };
+    const full = await service(wide).preflight(input);
+    const summary = await service(wide).preflight({
+      ...input,
+      view: "summary",
+    });
+    if (!full || !summary) throw new Error("preflight returned null");
+    expect(JSON.stringify(summary).length).toBeLessThan(48 * 1024);
+    expect(summary.overage_count).toBe(full.overage_count);
+    expect(
+      summary.resources.reduce((total, row) => total + row.rows, 0),
+    ).toBe(full.resources.length);
+  });
+
   test("rejects mismatched workspace and missing fine-grained capability", async () => {
     const mismatch = await service(view()).preflight({
       actor: { subject: "operator" },
