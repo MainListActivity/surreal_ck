@@ -92,6 +92,9 @@ const EnvSchema = z.object({
   AI_DELIVERY_KEY: z.string().regex(/^[a-fA-F0-9]{64}$/).optional(),
   INTERNAL_AI_COMPANY_STATUS_URL: z.preprocess(value => value === "" ? undefined : value, z.string().url().optional()),
   AI_BASE_URL: z.string().url().optional(),
+  // FV06 受控目录认证探针（零推理）：默认关闭。开启前须另有上线审批确认影响主体，
+  // 且探针只读固定目录端点，不证明推理权限、免费计费或流式兼容。
+  INTERNAL_AI_ENDPOINT_PROBE_ENABLED: z.enum(["0", "1"]).default("0"),
 
   // 资源保存确认动作的 embedding provider key（与 chat 模型设置分离；openai-compatible）。
   // 未配置时：无 profile 的 workspace 照常保存（embedding disabled），有 profile 的保存会失败。
