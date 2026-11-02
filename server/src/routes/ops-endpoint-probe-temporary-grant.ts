@@ -7,6 +7,7 @@ import { requirePlatformOperator } from "../ops/operator-auth";
 import {
   configuredTemporaryGranteeSubject,
   configuredTemporaryGrantorSubject,
+  createSurrealTemporaryGrantStore,
   EndpointProbeTemporaryGrantService,
   type EndpointProbeTemporaryGrantView,
 } from "../ops/endpoint-probe-temporary-grant";
@@ -19,7 +20,14 @@ import { platformOperatorSubjectHash } from "../ops/platform-operators";
  * - 状态读：grantor 可查被授权主体；被授权主体可查自己；其它主体 403。
  * - 不改 CSV、不写永久 capability 行；到期/撤回后旧会话下次请求即失效。
  */
-const reasonSchema = z.object({
+const grantSchema = z.object({
+  reason: z.string().trim().min(1).max(200).optional(),
+  expectedVersion: z.number().int().min(0).optional(),
+  // 授予必须有持久请求标识；相同标识在撤回/过期/重启后重放不得重新授能。
+  idempotencyKey: z.string().trim().min(1).max(128),
+}).strict();
+
+const revokeSchema = z.object({
   reason: z.string().trim().min(1).max(200).optional(),
   expectedVersion: z.number().int().min(0).optional(),
   idempotencyKey: z.string().trim().min(1).max(128).optional(),
@@ -45,7 +53,7 @@ export function createOpsEndpointProbeTemporaryGrantRoutes(input: Readonly<{
   requireReader?: () => MiddlewareHandler<AppBindings>;
   audit?: (event: AuditEvent, payload: Record<string, unknown>) => void;
 }> = {}) {
-  const service = input.service ?? new EndpointProbeTemporaryGrantService();
+  const service = input.service ?? new EndpointProbeTemporaryGrantService(createSurrealTemporaryGrantStore());
   // 用 quota.read 作为“有效运营主体”门槛；真正的 grantor/grantee 约束在服务内按部署配置校验。
   // 这样不会新造万能权限，也不会让仅持探针临时能力的主体自授/延长。
   const requireManager = input.requireManager ?? (() => requirePlatformOperator("quota.read"));
@@ -80,7 +88,7 @@ export function createOpsEndpointProbeTemporaryGrantRoutes(input: Readonly<{
         try { payload = await c.req.json(); }
         catch { throw new HttpError(400, "endpoint-probe-temporary-grant-body-invalid", "请求体不是合法 JSON"); }
       }
-      const parsed = reasonSchema.safeParse(payload);
+      const parsed = grantSchema.safeParse(payload);
       if (!parsed.success) throw new HttpError(400, "endpoint-probe-temporary-grant-body-invalid", "临时授权参数不合法");
       const actor = c.var.platformOperator.subject;
       const view = redactView(await service.grant({
@@ -108,13 +116,14 @@ export function createOpsEndpointProbeTemporaryGrantRoutes(input: Readonly<{
         try { payload = await c.req.json(); }
         catch { throw new HttpError(400, "endpoint-probe-temporary-grant-body-invalid", "请求体不是合法 JSON"); }
       }
-      const parsed = reasonSchema.safeParse(payload);
+      const parsed = revokeSchema.safeParse(payload);
       if (!parsed.success) throw new HttpError(400, "endpoint-probe-temporary-grant-body-invalid", "临时授权参数不合法");
       const actor = c.var.platformOperator.subject;
       const view = redactView(await service.revoke({
         actorSubject: actor,
         reason: parsed.data.reason,
         expectedVersion: parsed.data.expectedVersion,
+        idempotencyKey: parsed.data.idempotencyKey,
       }));
       audit("endpoint-probe-temporary-grant.revoke", {
         actorHash: platformOperatorSubjectHash(actor),

@@ -1,5 +1,6 @@
-import { describe, expect, test } from "bun:test";
-import { overrideEnv } from "../env";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { env, overrideEnv } from "../env";
+import { FakeTemporaryGrantStore } from "../../test/fake-temporary-grant-store";
 import {
   ENDPOINT_PROBE_TEMPORARY_CAPABILITY,
   ENDPOINT_PROBE_TEMPORARY_GRANT_MAX_MS,
@@ -7,97 +8,41 @@ import {
   mergeTemporaryCapabilities,
 } from "./endpoint-probe-temporary-grant";
 
-type Row = Record<string, unknown>;
+const GRANTOR = "grantor-subject";
+const GRANTEE = "grantee-subject";
+const OTHER = "other-subject";
 
-class MemoryDb {
-  private grant: Row | null = null;
-  private permanent = new Map<string, Set<string>>();
-  queries: Array<{ sql: string; params?: Record<string, unknown> }> = [];
+let originalEnv: Record<string, unknown> = {};
 
-  seedPermanent(subject: string, capabilities: string[]) {
-    this.permanent.set(subject, new Set(capabilities));
-  }
+function configure(grantee: string | undefined): void {
+  overrideEnv({
+    ENDPOINT_PROBE_TEMPORARY_GRANTOR_SUBJECT: GRANTOR,
+    ENDPOINT_PROBE_TEMPORARY_GRANTEE_SUBJECT: grantee ?? "",
+  } as never);
+}
 
-  async query(sql: string, params: Record<string, unknown> = {}): Promise<unknown> {
-    this.queries.push({ sql, params });
-    const text = sql.replace(/\s+/g, " ");
+function makeStore(): FakeTemporaryGrantStore {
+  const store = new FakeTemporaryGrantStore();
+  for (const subject of [GRANTOR, GRANTEE, OTHER]) store.seedOperator(subject);
+  return store;
+}
 
-    if (text.includes("FROM platform_operator_temporary_grant") && text.includes("SELECT capability, status, not_after")) {
-      if (!this.grant || this.grant.subject !== params.subject) return [[]];
-      return [[this.grant]];
-    }
-
-    if (text.includes("FROM platform_operator_temporary_grant") && text.includes("SELECT *")) {
-      // status query may be followed by permanent count in the same script.
-      const grantRows = !this.grant || this.grant.subject !== params.subject ? [] : [this.grant];
-      if (text.includes("FROM platform_operator_capability")) {
-        const caps = this.permanent.get(String(params.subject)) ?? new Set();
-        const count = caps.has(String(params.capability)) ? 1 : 0;
-        return [grantRows, [count]];
-      }
-      return [grantRows];
-    }
-
-    if (text.includes("INSERT INTO platform_operator_temporary_grant")) {
-      this.grant = {
-        id: "platform_operator_temporary_grant:1",
-        subject: params.subject,
-        capability: params.capability,
-        status: "active",
-        granted_by_subject: params.grantor,
-        granted_at: params.grantedAt,
-        not_after: params.notAfter,
-        grant_reason: params.reason,
-        version: 1,
-      };
-      return [[{ id: this.grant.id }]];
-    }
-
-    if (text.includes("UPDATE $id SET") && text.includes('status = "active"')) {
-      if (!this.grant) throw new Error("missing grant");
-      this.grant = {
-        ...this.grant,
-        status: "active",
-        granted_by_subject: params.grantor,
-        granted_at: params.grantedAt,
-        not_after: params.notAfter,
-        revoked_at: undefined,
-        revoked_by_subject: undefined,
-        grant_reason: params.reason,
-        revoke_reason: undefined,
-        version: params.version,
-      };
-      return [[{ id: this.grant.id }]];
-    }
-
-    if (text.includes("UPDATE $id SET") && text.includes('status = "revoked"')) {
-      if (!this.grant) throw new Error("missing grant");
-      this.grant = {
-        ...this.grant,
-        status: "revoked",
-        revoked_at: params.revokedAt,
-        revoked_by_subject: params.actor,
-        revoke_reason: params.reason,
-        version: params.version,
-      };
-      return [[{ id: this.grant.id }]];
-    }
-
-    throw new Error(`unexpected sql: ${text}`);
-  }
+function service(store: FakeTemporaryGrantStore, now: () => number) {
+  return new EndpointProbeTemporaryGrantService(store, now);
 }
 
 describe("endpoint probe temporary grant service", () => {
-  const GRANTOR = "grantor-subject";
-  const GRANTEE = "26dba3a6-4392-4840-a856-264d6f07fbee";
+  beforeAll(() => {
+    originalEnv = { ...env };
+  });
 
-  function service(db: MemoryDb, now: () => number) {
-    overrideEnv({
-      ENDPOINT_PROBE_TEMPORARY_GRANTOR_SUBJECT: GRANTOR,
-      ENDPOINT_PROBE_TEMPORARY_GRANTEE_SUBJECT: GRANTEE,
-    } as never);
-    return new EndpointProbeTemporaryGrantService(async () => db, "main", now);
-  }
+  afterEach(() => {
+    configure(GRANTEE);
+  });
+
+  afterAll(() => {
+    overrideEnv(originalEnv as never);
+  });
 
   test("mergeTemporaryCapabilities 去重并排序，不删除永久能力", () => {
     expect(mergeTemporaryCapabilities(
@@ -106,70 +51,216 @@ describe("endpoint probe temporary grant service", () => {
     )).toEqual(["internal-ai.endpoint-probe", "quota.read", "subscription.manage"]);
   });
 
-  test("单主体授予后有效，其它主体读不到临时能力；重放不续期", async () => {
-    const db = new MemoryDb();
+  test("单主体授予后有效；同键重放与新键都不续期", async () => {
+    const store = makeStore();
     let now = Date.parse("2026-11-02T08:00:00.000Z");
-    const svc = service(db, () => now);
+    const svc = service(store, () => now);
 
-    const first = await svc.grant({ actorSubject: GRANTOR, reason: "fv06-once" });
+    const first = await svc.grant({ actorSubject: GRANTOR, reason: "fv06-once", idempotencyKey: "grant-1" });
     expect(first.status).toBe("active");
     expect(first.notAfter).toBe(new Date(now + ENDPOINT_PROBE_TEMPORARY_GRANT_MAX_MS).toISOString());
     expect(await svc.activeCapabilitiesFor(GRANTEE)).toEqual([ENDPOINT_PROBE_TEMPORARY_CAPABILITY]);
-    expect(await svc.activeCapabilitiesFor("other-subject")).toEqual([]);
+    expect(await svc.activeCapabilitiesFor(OTHER)).toEqual([]);
 
-    const replay = await svc.grant({ actorSubject: GRANTOR, reason: "fv06-once" });
+    now += 10 * 60 * 1000;
+    const replay = await svc.grant({ actorSubject: GRANTOR, reason: "fv06-once", idempotencyKey: "grant-1" });
     expect(replay.notAfter).toBe(first.notAfter);
     expect(replay.version).toBe(first.version);
+
+    const newKey = await svc.grant({ actorSubject: GRANTOR, idempotencyKey: "grant-2" });
+    expect(newKey.notAfter).toBe(first.notAfter);
+    expect(newKey.version).toBe(first.version);
+    expect(store.getGrantRow(GRANTEE)?.not_after.toISOString()).toBe(first.notAfter!);
+  });
+
+  test("授予缺少 idempotencyKey 拒绝", async () => {
+    const svc = service(makeStore(), () => Date.parse("2026-11-02T08:00:00.000Z"));
+    await expect(svc.grant({ actorSubject: GRANTOR })).rejects.toMatchObject({
+      status: 400,
+      code: "endpoint-probe-temporary-grant-idempotency-required",
+    });
+  });
+
+  test("撤回后同键重放不复活；重新授予需要新键和当前版本", async () => {
+    const store = makeStore();
+    let now = Date.parse("2026-11-02T08:00:00.000Z");
+    const svc = service(store, () => now);
+    const granted = await svc.grant({ actorSubject: GRANTOR, idempotencyKey: "grant-1" });
+    const revoked = await svc.revoke({ actorSubject: GRANTOR, reason: "done", idempotencyKey: "revoke-1" });
+    expect(revoked.status).toBe("revoked");
+    expect(revoked.version).toBe((granted.version ?? 0) + 1);
+
+    now += 5 * 60 * 1000;
+    const replayGrant = await svc.grant({ actorSubject: GRANTOR, idempotencyKey: "grant-1" });
+    expect(replayGrant.status).toBe("revoked");
+    expect(replayGrant.notAfter).toBe(granted.notAfter);
+    expect(store.getGrantRow(GRANTEE)?.status).toBe("revoked");
+
+    const replayRevoke = await svc.revoke({ actorSubject: GRANTOR, idempotencyKey: "revoke-1" });
+    expect(replayRevoke.status).toBe("revoked");
+
+    await expect(svc.grant({ actorSubject: GRANTOR, idempotencyKey: "grant-2" }))
+      .rejects.toMatchObject({ status: 409, code: "endpoint-probe-temporary-grant-expected-version-required" });
+    await expect(svc.grant({ actorSubject: GRANTOR, idempotencyKey: "grant-2", expectedVersion: 99 }))
+      .rejects.toMatchObject({ status: 409, code: "endpoint-probe-temporary-grant-version-conflict" });
+
+    const regranted = await svc.grant({
+      actorSubject: GRANTOR,
+      idempotencyKey: "grant-2",
+      expectedVersion: revoked.version ?? undefined,
+      reason: "regrant",
+    });
+    expect(regranted.status).toBe("active");
+    expect(regranted.version).toBe((revoked.version ?? 0) + 1);
+    expect(regranted.notAfter).not.toBe(granted.notAfter);
+
+    // 旧键重放只返回当前 active 状态，不重置 notAfter。
+    now += 10 * 60 * 1000;
+    const oldKeyReplay = await svc.grant({ actorSubject: GRANTOR, idempotencyKey: "grant-1" });
+    expect(oldKeyReplay.status).toBe("active");
+    expect(oldKeyReplay.notAfter).toBe(regranted.notAfter);
+  });
+
+  test("到期后同键重放不复活；新授权需要当前版本", async () => {
+    const store = makeStore();
+    let now = Date.parse("2026-11-02T08:00:00.000Z");
+    const svc = service(store, () => now);
+    const granted = await svc.grant({ actorSubject: GRANTOR, idempotencyKey: "grant-1" });
+
+    now += ENDPOINT_PROBE_TEMPORARY_GRANT_MAX_MS;
+    expect(await svc.activeCapabilitiesFor(GRANTEE)).toEqual([]);
+    expect((await svc.getStatusFor(GRANTEE)).status).toBe("expired");
+
+    const replay = await svc.grant({ actorSubject: GRANTOR, idempotencyKey: "grant-1" });
+    expect(replay.status).toBe("expired");
+    expect(replay.notAfter).toBe(granted.notAfter);
+    expect(await svc.activeCapabilitiesFor(GRANTEE)).toEqual([]);
+
+    await expect(svc.grant({ actorSubject: GRANTOR, idempotencyKey: "grant-2" }))
+      .rejects.toMatchObject({ status: 409, code: "endpoint-probe-temporary-grant-expected-version-required" });
+
+    const renewed = await svc.grant({
+      actorSubject: GRANTOR,
+      idempotencyKey: "grant-2",
+      expectedVersion: granted.version ?? undefined,
+    });
+    expect(renewed.status).toBe("active");
+    expect(renewed.notAfter).toBe(new Date(now + ENDPOINT_PROBE_TEMPORARY_GRANT_MAX_MS).toISOString());
+  });
+
+  test("运营主体被禁用/移除后临时能力 fail closed", async () => {
+    const store = makeStore();
+    let now = Date.parse("2026-11-02T08:00:00.000Z");
+    const svc = service(store, () => now);
+    await svc.grant({ actorSubject: GRANTOR, idempotencyKey: "grant-1" });
+    expect(await svc.activeCapabilitiesFor(GRANTEE)).toEqual([ENDPOINT_PROBE_TEMPORARY_CAPABILITY]);
+
+    store.disableOperator(GRANTEE);
+    expect(await svc.activeCapabilitiesFor(GRANTEE)).toEqual([]);
+
+    store.seedOperator(GRANTEE);
+    expect(await svc.activeCapabilitiesFor(GRANTEE)).toEqual([ENDPOINT_PROBE_TEMPORARY_CAPABILITY]);
+
+    store.disableOperator(GRANTEE);
+    now += 1;
+    expect(await svc.activeCapabilitiesFor(GRANTEE)).toEqual([]);
+  });
+
+  test("grantee 配置变更/清空/重启后旧主体不生效，且同一时刻只认当前配置", async () => {
+    const store = makeStore();
+    let now = Date.parse("2026-11-02T08:00:00.000Z");
+    const svc = service(store, () => now);
+    await svc.grant({ actorSubject: GRANTOR, idempotencyKey: "grant-a" });
+    expect(await svc.activeCapabilitiesFor(GRANTEE)).toEqual([ENDPOINT_PROBE_TEMPORARY_CAPABILITY]);
+
+    configure(OTHER);
+    expect(await svc.activeCapabilitiesFor(GRANTEE)).toEqual([]);
+    expect(await svc.activeCapabilitiesFor(OTHER)).toEqual([]);
+
+    const grantedOther = await svc.grant({ actorSubject: GRANTOR, idempotencyKey: "grant-b" });
+    expect(grantedOther.status).toBe("active");
+    expect(await svc.activeCapabilitiesFor(OTHER)).toEqual([ENDPOINT_PROBE_TEMPORARY_CAPABILITY]);
+    expect(await svc.activeCapabilitiesFor(GRANTEE)).toEqual([]);
+
+    // 模拟重启：新 service 实例、同一持久存储、配置仍为 OTHER。
+    const restarted = service(store, () => now);
+    expect(await restarted.activeCapabilitiesFor(GRANTEE)).toEqual([]);
+    expect(await restarted.activeCapabilitiesFor(OTHER)).toEqual([ENDPOINT_PROBE_TEMPORARY_CAPABILITY]);
+
+    configure(undefined);
+    expect(await restarted.activeCapabilitiesFor(GRANTEE)).toEqual([]);
+    expect(await restarted.activeCapabilitiesFor(OTHER)).toEqual([]);
+  });
+
+  test("无临时行时撤回仍正确报告永久能力", async () => {
+    const store = makeStore();
+    store.seedPermanent(GRANTEE, [ENDPOINT_PROBE_TEMPORARY_CAPABILITY]);
+    const svc = service(store, () => Date.parse("2026-11-02T08:00:00.000Z"));
+
+    const revoked = await svc.revoke({ actorSubject: GRANTOR, idempotencyKey: "revoke-none" });
+    expect(revoked.status).toBe("absent");
+    expect(revoked.permanentActive).toBe(true);
+
+    await svc.grant({ actorSubject: GRANTOR, idempotencyKey: "grant-1" });
+    const after = await svc.revoke({ actorSubject: GRANTOR, idempotencyKey: "revoke-1" });
+    expect(after.status).toBe("revoked");
+    expect(after.permanentActive).toBe(true);
+    expect(await svc.activeCapabilitiesFor(GRANTEE)).toEqual([]);
+    // 永久能力仍在，合并读面不应因临时撤回而移除它。
+    expect(mergeTemporaryCapabilities(
+      [ENDPOINT_PROBE_TEMPORARY_CAPABILITY],
+      await svc.activeCapabilitiesFor(GRANTEE),
+    )).toEqual([ENDPOINT_PROBE_TEMPORARY_CAPABILITY]);
+  });
+
+  test("同一 idempotencyKey 不能跨 grant/revoke 复用", async () => {
+    const store = makeStore();
+    const svc = service(store, () => Date.parse("2026-11-02T08:00:00.000Z"));
+    await svc.grant({ actorSubject: GRANTOR, idempotencyKey: "same-key" });
+    await expect(svc.revoke({ actorSubject: GRANTOR, idempotencyKey: "same-key" }))
+      .rejects.toMatchObject({ status: 409, code: "endpoint-probe-temporary-grant-idempotency-conflict" });
+  });
+
+  test("并发同键授予只产生一条授权且不重复延长", async () => {
+    const store = makeStore();
+    const now = Date.parse("2026-11-02T08:00:00.000Z");
+    const svc = service(store, () => now);
+
+    const [left, right] = await Promise.all([
+      svc.grant({ actorSubject: GRANTOR, idempotencyKey: "concurrent" }),
+      svc.grant({ actorSubject: GRANTOR, idempotencyKey: "concurrent" }),
+    ]);
+    expect(store.grants.size).toBe(1);
+    expect(store.requests.size).toBe(1);
+    expect(store.getGrantRow(GRANTEE)?.version).toBe(1);
+    expect(left.notAfter).toBe(right.notAfter);
   });
 
   test("越权授予与自授拒绝；未配置时 503", async () => {
-    const db = new MemoryDb();
-    const svc = service(db, () => Date.parse("2026-11-02T08:00:00.000Z"));
-    await expect(svc.grant({ actorSubject: "stranger" })).rejects.toMatchObject({ status: 403, code: "endpoint-probe-temporary-grant-forbidden" });
+    const store = makeStore();
+    const svc = service(store, () => Date.parse("2026-11-02T08:00:00.000Z"));
+    await expect(svc.grant({ actorSubject: "stranger", idempotencyKey: "k" }))
+      .rejects.toMatchObject({ status: 403, code: "endpoint-probe-temporary-grant-forbidden" });
 
-    overrideEnv({
-      ENDPOINT_PROBE_TEMPORARY_GRANTOR_SUBJECT: GRANTOR,
-      ENDPOINT_PROBE_TEMPORARY_GRANTEE_SUBJECT: GRANTOR,
-    } as never);
-    const misconfigured = new EndpointProbeTemporaryGrantService(async () => db, "main", () => Date.now());
-    await expect(misconfigured.grant({ actorSubject: GRANTOR })).rejects.toMatchObject({ status: 503, code: "endpoint-probe-temporary-grant-misconfigured" });
+    configure(GRANTOR);
+    const misconfigured = service(store, () => Date.now());
+    await expect(misconfigured.grant({ actorSubject: GRANTOR, idempotencyKey: "k" }))
+      .rejects.toMatchObject({ status: 503, code: "endpoint-probe-temporary-grant-misconfigured" });
 
     overrideEnv({
       ENDPOINT_PROBE_TEMPORARY_GRANTOR_SUBJECT: undefined,
       ENDPOINT_PROBE_TEMPORARY_GRANTEE_SUBJECT: undefined,
     } as never);
-    const missing = new EndpointProbeTemporaryGrantService(async () => db, "main", () => Date.now());
-    await expect(missing.grant({ actorSubject: GRANTOR })).rejects.toMatchObject({ status: 503, code: "endpoint-probe-temporary-grant-not-configured" });
-  });
-
-  test("30 分钟界限：到期后 activeCapabilities 立即为空；状态读为 expired", async () => {
-    const db = new MemoryDb();
-    let now = Date.parse("2026-11-02T08:00:00.000Z");
-    const svc = service(db, () => now);
-    await svc.grant({ actorSubject: GRANTOR });
-    now += ENDPOINT_PROBE_TEMPORARY_GRANT_MAX_MS;
-    expect(await svc.activeCapabilitiesFor(GRANTEE)).toEqual([]);
-    const status = await svc.getStatusFor(GRANTEE);
-    expect(status.status).toBe("expired");
-  });
-
-  test("手动撤回后旧会话读面失效；永久能力保留并报告", async () => {
-    const db = new MemoryDb();
-    db.seedPermanent(GRANTEE, ["quota.read", ENDPOINT_PROBE_TEMPORARY_CAPABILITY]);
-    const now = Date.parse("2026-11-02T08:00:00.000Z");
-    const svc = service(db, () => now);
-    await svc.grant({ actorSubject: GRANTOR });
-    const revoked = await svc.revoke({ actorSubject: GRANTOR, reason: "done" });
-    expect(revoked.status).toBe("revoked");
-    expect(revoked.permanentActive).toBe(true);
-    expect(await svc.activeCapabilitiesFor(GRANTEE)).toEqual([]);
+    const missing = service(store, () => Date.now());
+    await expect(missing.grant({ actorSubject: GRANTOR, idempotencyKey: "k" }))
+      .rejects.toMatchObject({ status: 503, code: "endpoint-probe-temporary-grant-not-configured" });
   });
 
   test("版本冲突保护：expectedVersion 不匹配则 409", async () => {
-    const db = new MemoryDb();
-    const svc = service(db, () => Date.parse("2026-11-02T08:00:00.000Z"));
-    await svc.grant({ actorSubject: GRANTOR });
-    await expect(svc.revoke({ actorSubject: GRANTOR, expectedVersion: 99 }))
+    const store = makeStore();
+    const svc = service(store, () => Date.parse("2026-11-02T08:00:00.000Z"));
+    await svc.grant({ actorSubject: GRANTOR, idempotencyKey: "grant-1" });
+    await expect(svc.revoke({ actorSubject: GRANTOR, expectedVersion: 99, idempotencyKey: "revoke-1" }))
       .rejects.toMatchObject({ status: 409, code: "endpoint-probe-temporary-grant-version-conflict" });
   });
 });

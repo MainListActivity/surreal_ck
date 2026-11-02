@@ -8,6 +8,7 @@ import { getRootDatabaseSession } from "../db/root-connection";
 import { introspectOidcAccessToken, type OidcTokenActivityChecker } from "../oidc/introspection";
 import { verifyOidcToken } from "../oidc/verify";
 import {
+  createSurrealTemporaryGrantStore,
   EndpointProbeTemporaryGrantService,
   mergeTemporaryCapabilities,
 } from "./endpoint-probe-temporary-grant";
@@ -61,7 +62,9 @@ export function createPlatformOperatorCapabilityReader(
 ): PlatformOperatorCapabilityReader {
   const getDb = db ? async () => db : () => getRootDatabaseSession("_system");
   // 注入 db 时临时授权与永久读面共用同一会话，避免测试/脚本读到两套库。
-  const temporaryReader = temporary ?? new EndpointProbeTemporaryGrantService(async () => getDb());
+  const temporaryReader = temporary ?? new EndpointProbeTemporaryGrantService(
+    createSurrealTemporaryGrantStore(async () => getDb()),
+  );
   return {
     async getKind(subject) {
       const result = await (await getDb()).query(`SELECT kind FROM platform_operator WHERE subject = $subject AND status = "active" LIMIT 1;`, { subject });
