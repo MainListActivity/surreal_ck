@@ -78,6 +78,8 @@ describe("_system native quota control-plane schema", () => {
       43,
       // 044：免费额度依据与 v3 窗口停止（magpie-window/v3）在本分支新增，只新增结构。
       44,
+      // 045：能力白名单追加 internal-ai.endpoint-probe（受控目录认证探针），只放宽 schema、不授予能力。
+      45,
     ]);
   });
 

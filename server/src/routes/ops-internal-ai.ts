@@ -16,6 +16,8 @@ import { verifyCompanyProof } from "../internal-ai/company-proof";
 import { endpointHost, TARIFFS } from "../internal-ai/pricing";
 import { aggregateAssessments, assessAttempt, type AssessedAttempt, type AssessmentContext } from "../internal-ai/assessment";
 import { runtimeIdentity } from "../../ai/mastra/agents/model-config";
+import { env } from "../env";
+import { createEndpointProbeLimiter, endpointProbeInternalErrorResult, probeErrorName, runEndpointProbe, type EndpointProbeLimiter, type EndpointProbeResult } from "../internal-ai/endpoint-probe";
 import { HttpError } from "../http-error";
 function dependencyVersion(): string | null {
   try { const entry = createRequire(import.meta.url).resolve("@mastra/core"); const parsed: unknown = JSON.parse(readFileSync(join(dirname(entry), "../package.json"), "utf8")); return parsed && typeof parsed === "object" && "version" in parsed && typeof parsed.version === "string" ? parsed.version : null; } catch { return null; }
@@ -75,9 +77,21 @@ function windowHttpError(e: unknown): HttpError {
   }
   return new HttpError(503, "magpie-window-store-unavailable", "窗口存储不可用");
 }
-export function createOpsInternalAiRoutes(input: { gate: InternalAiGate; registration?: InternalAiRegistration; runtime: { provider?: string; model?: string; endpoint?: string; jevModel?: string; jevEnabled?: boolean }; requireOperator?: MiddlewareHandler<AppBindings> }) {
+export function createOpsInternalAiRoutes(input: {
+  gate: InternalAiGate;
+  registration?: InternalAiRegistration;
+  runtime: { provider?: string; model?: string; endpoint?: string; jevModel?: string; jevEnabled?: boolean };
+  requireOperator?: MiddlewareHandler<AppBindings>;
+  /** 探针专用运营权限；测试可注入放行中间件。默认要求 internal-ai.endpoint-probe 能力。 */
+  requireProbeOperator?: MiddlewareHandler<AppBindings>;
+  endpointProbe?: Readonly<{ enabled?: boolean; limiter?: EndpointProbeLimiter; run?: () => Promise<EndpointProbeResult> }>;
+}) {
   const registration = input.registration ?? new InternalAiRegistration(async () => { throw new Error("registration unavailable"); });
   const auth = input.requireOperator ?? requirePlatformOperator("subscription.manage");
+  const probeAuth = input.requireProbeOperator ?? requirePlatformOperator("internal-ai.endpoint-probe");
+  const probeEnabled = input.endpointProbe?.enabled ?? env.INTERNAL_AI_ENDPOINT_PROBE_ENABLED === "1";
+  const probeLimiter = input.endpointProbe?.limiter ?? createEndpointProbeLimiter();
+  const probeRun = input.endpointProbe?.run ?? (() => runEndpointProbe({ apiKey: env.AI_API_KEY }));
   const json = async (c: { req: { json(): Promise<unknown> } }) => { try { return await c.req.json(); } catch { throw new HttpError(400, "internal-ai-body-invalid", "请求体不是合法 JSON"); } };
   const reasonOf = (payload: unknown) => normalizeReason((payload as { reason?: unknown } | null)?.reason);
   return new Hono<AppBindings>()
@@ -314,6 +328,45 @@ export function createOpsInternalAiRoutes(input: { gate: InternalAiGate; registr
       const capability = SUPPLIER_PROBES.find(p => p.host === host);
       if (!capability) return c.json({ host, status: "unsupported", capabilities: [], requiredEvidence: PRICE_REQUIRED_EVIDENCE, reason: "no reviewed official read-only supplier account capability is registered for this host" });
       return c.json({ host, provider: capability.provider, status: "unsupported", capabilities: capability.capabilities, requiredEvidence: PRICE_REQUIRED_EVIDENCE, reason: capability.reason });
+    })
+    /**
+     * FV06 受控目录认证探针（零推理、默认关闭）。
+     * 固定目标 https://data.maplayer.top/ofm/v1 的 GET /models，使用服务进程自己的 AI_API_KEY；
+     * 不接受调用方 key / URL / header / 模型 / 请求体，不读 env 文件，不重试，不跟随重定向。
+     * 200 只表示目录可读，不证明 group/work 推理权限、免费计费或流式兼容。
+     */
+    .post("/api/ops/internal-ai/endpoint-probe", probeAuth, async c => {
+      if (!probeEnabled) throw new HttpError(503, "internal-ai-endpoint-probe-disabled", "端点认证探针默认关闭，需独立上线审批后才可启用");
+      if (new URL(c.req.url).search.length > 0 || (c.req.raw.body ?? null) !== null) {
+        throw new HttpError(400, "internal-ai-endpoint-probe-input-rejected", "探针不接受任何查询串或请求体");
+      }
+      const lease = probeLimiter.tryAcquire();
+      if (lease !== "ok") throw new HttpError(429, `internal-ai-endpoint-probe-${lease}`, lease === "busy" ? "已有探针正在执行" : "探针调用过于频繁");
+      const startedAt = Date.now();
+      try {
+        // 探针实现的任何非预期异常都在这里收口：不交给 handleError（它会记录 stack 与消息，消息可能含凭证），
+        // 只记录异常类名（经白名单过滤），并返回受控 unknown/internal-error 结果。
+        let result: EndpointProbeResult;
+        let unexpectedErrorName: string | null = null;
+        try {
+          result = await probeRun();
+        } catch (error) {
+          unexpectedErrorName = probeErrorName(error);
+          result = endpointProbeInternalErrorResult({ startedAt });
+        }
+        // 审计只写受控字段：调用者、固定端点、时间、结果、关联 ID、延迟、异常类名；不含任何凭证或上游原文。
+        const audit = {
+          caller: c.var.platformOperator?.subject ?? null,
+          requestId: result.requestId, endpointHost: result.endpointHost, endpointPath: result.endpointPath,
+          checkedAt: result.checkedAt, status: result.status, errorType: result.errorType, latencyMs: result.latencyMs,
+          unexpectedErrorName,
+        };
+        if (unexpectedErrorName === null) console.info("[ops-audit] internal-ai.endpoint-probe", audit);
+        else console.error("[ops-audit] internal-ai.endpoint-probe unexpected", audit);
+        return c.json(result);
+      } finally {
+        probeLimiter.release();
+      }
     });
 }
 

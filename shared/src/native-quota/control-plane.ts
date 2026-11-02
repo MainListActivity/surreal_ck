@@ -464,6 +464,9 @@ export const PLATFORM_OPERATOR_CAPABILITIES = [
   // 漏斗埋点只读（任务 d70c3748 第 4 版 §6）：读 _system.funnel_event_count，
   // 行内无内容字段；写只由服务端聚合任务完成，不设运营写能力。
   "funnel.read",
+  // FV06 受控目录认证探针（零推理）：只授予触发固定目标 `GET /models` 的只读探测权限。
+  // 不随生产 CSV 自动配置；授予须经上线申请明确影响主体。
+  "internal-ai.endpoint-probe",
 ] as const;
 export type PlatformOperatorCapability =
   (typeof PLATFORM_OPERATOR_CAPABILITIES)[number];
