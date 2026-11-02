@@ -391,15 +391,22 @@ export type QuotaOpsPreflightViewMode =
   (typeof QUOTA_OPS_PREFLIGHT_VIEW_MODES)[number];
 
 /**
- * 预检摘要视图中按资源类型聚合的影响。只给计数与合计，不逐资源输出；
- * `unknown_rows` 统计无法判定超限的行（目标不限或用量未知）。
+ * 预检摘要视图中按资源类型聚合的影响。只给计数与合计，不逐资源输出。
+ * 三类状态互相独立，同一行可同时计入多项：
+ * - `unknown_usage_rows`：用量未知（used 为 null）。合计中不计入该行，不按零计。
+ * - `unlimited_rows`：目标不限（target_limit 为 "unlimited"）。
+ * - `uncovered_rows`：资源未纳入目标套餐（target_limit 为 null）。
+ * `target_limit_total` 只合计有限目标值，不含不限与未纳入的行。
  */
 export type QuotaOpsImpactSummary = Readonly<{
   resource: QuotaOpsImpactResource["resource"];
   rows: number;
   over_count: number;
-  unknown_rows: number;
+  unknown_usage_rows: number;
+  unlimited_rows: number;
+  uncovered_rows: number;
   used_total: QuotaApiCount;
+  target_limit_total: QuotaApiCount;
   projected_over_by_total: QuotaApiCount;
 }>;
 

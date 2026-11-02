@@ -133,6 +133,126 @@ function service(
   return new QuotaOpsPreflightService(reads, plans);
 }
 
+const BASELINE_FIELDS = [
+  "format_version",
+  "workspace",
+  "kind",
+  "required_capability",
+  "observed_at",
+  "usage_trusted",
+  "stale",
+  "effective_at",
+  "current_plan",
+  "target_plan",
+  "affected_capabilities",
+  "before_digest",
+  "overage_count",
+] as const;
+
+type QuotaRow = QuotaApiOperatorView["resources"][number];
+
+function finiteRow(
+  resource: "record" | "table",
+  key: string,
+  selector: QuotaRow["selector"],
+  limit: number,
+  used: number | null,
+): QuotaRow {
+  return {
+    key,
+    resource,
+    label: key,
+    selector,
+    usage: {
+      kind: "finite",
+      limit,
+      used,
+      remaining: null,
+      over_by: null,
+      utilization_percent: null,
+      at_limit: null,
+      over_limit: null,
+    },
+  };
+}
+
+const mixedPlan: QuotaOpsPlanRevision = {
+  ...plus,
+  id: "quota_plan_revision:mixed_v1",
+  plan_key: "mixed",
+  plan_name: "Mixed",
+  rules: [
+    {
+      rule_key: "record/ent",
+      resource: "record",
+      label: "实体记录",
+      description: "ent 开头的每张表",
+      selector: { kind: "regex", value: "^ent_" },
+      limit: { kind: "finite", value: 50 },
+    },
+    {
+      rule_key: "table/orders",
+      resource: "table",
+      label: "订单表",
+      description: "订单表不限",
+      selector: { kind: "exact", value: "orders" },
+      limit: { kind: "unlimited" },
+    },
+    {
+      rule_key: "record/case",
+      resource: "record",
+      label: "案件记录",
+      description: "尚无匹配资源的规则",
+      selector: { kind: "regex", value: "^case_" },
+      limit: { kind: "finite", value: 20 },
+    },
+  ],
+};
+
+const mixedResources: QuotaRow[] = [
+  finiteRow(
+    "record",
+    "record/ent_a",
+    { kind: "regex", description: "ent 开头的每张表", pattern: "^ent_", matched_tables: ["ent_a"] },
+    100,
+    80,
+  ),
+  finiteRow(
+    "record",
+    "record/ent_b",
+    { kind: "regex", description: "ent 开头的每张表", pattern: "^ent_", matched_tables: ["ent_b"] },
+    100,
+    10,
+  ),
+  finiteRow(
+    "record",
+    "record/ent_c",
+    { kind: "regex", description: "ent 开头的每张表", pattern: "^ent_", matched_tables: ["ent_c"] },
+    100,
+    null,
+  ),
+  {
+    key: "table/orders",
+    resource: "table",
+    label: "业务表 · orders",
+    selector: { kind: "exact", description: "固定表 orders", table: "orders" },
+    usage: {
+      kind: "unlimited",
+      used: 500,
+      utilization_percent: null,
+      at_limit: false,
+      over_limit: false,
+    },
+  },
+  finiteRow(
+    "table",
+    "table/legacy",
+    { kind: "exact", description: "固定表 legacy", table: "legacy" },
+    10,
+    3,
+  ),
+];
+
 describe("QuotaOpsPreflightService", () => {
   test("uses fresh INFO and computes downgrade overage from authoritative plan revision", async () => {
     const result = await service(view()).preflight({
@@ -178,21 +298,7 @@ describe("QuotaOpsPreflightService", () => {
       view: "summary",
     });
     if (!full || !summary) throw new Error("preflight returned null");
-    for (const field of [
-      "format_version",
-      "workspace",
-      "kind",
-      "required_capability",
-      "observed_at",
-      "usage_trusted",
-      "stale",
-      "effective_at",
-      "current_plan",
-      "target_plan",
-      "affected_capabilities",
-      "before_digest",
-      "overage_count",
-    ] as const) {
+    for (const field of BASELINE_FIELDS) {
       expect(summary[field]).toEqual(full[field]);
     }
     expect(summary).toMatchObject({
@@ -201,8 +307,11 @@ describe("QuotaOpsPreflightService", () => {
         resource: "record",
         rows: 1,
         over_count: 1,
-        unknown_rows: 0,
+        unknown_usage_rows: 0,
+        unlimited_rows: 0,
+        uncovered_rows: 0,
         used_total: 80,
+        target_limit_total: 50,
         projected_over_by_total: 30,
       }],
     });
@@ -237,8 +346,19 @@ describe("QuotaOpsPreflightService", () => {
       ...input,
       view: "summary",
     });
-    if (!full || !summary) throw new Error("preflight returned null");
-    expect(JSON.stringify(summary).length).toBeLessThan(48 * 1024);
+    if (!full || !summary || !("view" in summary)) {
+      throw new Error("preflight returned unexpected view");
+    }
+    expect(full).not.toHaveProperty("view");
+    expect(full.resources).toHaveLength(400);
+    expect(full.resources[0]).toMatchObject({
+      key: "record/ent_0",
+      used: 80,
+      projected_over_by: 0,
+    });
+    expect(
+      new TextEncoder().encode(JSON.stringify(summary)).byteLength,
+    ).toBeLessThan(48 * 1024);
     expect(summary.overage_count).toBe(full.overage_count);
     expect(
       summary.resources.reduce((total, row) => total + row.rows, 0),
@@ -335,5 +455,132 @@ describe("QuotaOpsPreflightService", () => {
       used: null,
       projected_over_by: null,
     });
+  });
+
+  test("summary separates unknown usage, unlimited and uncovered rows across resource types", async () => {
+    const mixed: QuotaApiOperatorView = {
+      ...view(),
+      resources: mixedResources,
+    };
+    const plans: QuotaOpsConsolePort = {
+      ...consolePort(),
+      async findPlanRevision() {
+        return mixedPlan;
+      },
+    };
+    const input = {
+      actor: { subject: "operator" },
+      workspaceSlug: "demo",
+      workspace: new StringRecordId("workspace:demo"),
+      kind: "subscription_upsert" as const,
+      effectiveAt: "2026-08-01T00:00:00.000Z",
+      intentInput: { plan_revision: mixedPlan.id },
+    };
+    const full = await service(mixed, plans).preflight(input);
+    const summary = await service(mixed, plans).preflight({
+      ...input,
+      view: "summary",
+    });
+    if (!full || !summary || !("view" in summary)) {
+      throw new Error("preflight returned unexpected view");
+    }
+    for (const field of BASELINE_FIELDS) {
+      expect(summary[field]).toEqual(full[field]);
+    }
+    expect(full).not.toHaveProperty("view");
+    expect(full.overage_count).toBe(1);
+    expect(full.resources).toMatchObject([
+      {
+        key: "record/ent_a",
+        resource: "record",
+        current_limit: 100,
+        target_limit: 50,
+        used: 80,
+        projected_over_by: 30,
+      },
+      {
+        key: "record/ent_b",
+        resource: "record",
+        current_limit: 100,
+        target_limit: 50,
+        used: 10,
+        projected_over_by: 0,
+      },
+      {
+        key: "record/ent_c",
+        resource: "record",
+        current_limit: 100,
+        target_limit: 50,
+        used: null,
+        projected_over_by: null,
+      },
+      {
+        key: "table/orders",
+        resource: "table",
+        current_limit: "unlimited",
+        target_limit: "unlimited",
+        used: 500,
+        projected_over_by: null,
+      },
+      {
+        key: "record/case",
+        resource: "record",
+        current_limit: null,
+        target_limit: 20,
+        used: null,
+        projected_over_by: null,
+      },
+      {
+        key: "table/legacy",
+        resource: "table",
+        current_limit: 10,
+        target_limit: null,
+        used: 3,
+        projected_over_by: null,
+      },
+    ]);
+    expect(summary.resources).toEqual([
+      {
+        resource: "record",
+        rows: 4,
+        over_count: 1,
+        unknown_usage_rows: 2,
+        unlimited_rows: 0,
+        uncovered_rows: 0,
+        used_total: 90,
+        target_limit_total: 170,
+        projected_over_by_total: 30,
+      },
+      {
+        resource: "table",
+        rows: 2,
+        over_count: 0,
+        unknown_usage_rows: 0,
+        unlimited_rows: 1,
+        uncovered_rows: 1,
+        used_total: 503,
+        target_limit_total: 0,
+        projected_over_by_total: 0,
+      },
+    ]);
+    expect(summary.overage_count).toBe(full.overage_count);
+  });
+
+  test("summary view rejects mismatched workspace and missing fine-grained capability", async () => {
+    const input = {
+      actor: { subject: "operator" },
+      workspaceSlug: "demo",
+      workspace: new StringRecordId("workspace:demo"),
+      kind: "override_schedule" as const,
+      effectiveAt: "2026-07-29T12:00:00.000Z",
+      intentInput: {},
+      view: "summary" as const,
+    };
+    await expect(service(view()).preflight({
+      ...input,
+      workspace: new StringRecordId("workspace:other"),
+    })).resolves.toBeNull();
+    await expect(service(view(["quota.read"])).preflight(input))
+      .resolves.toBeNull();
   });
 });
