@@ -7,8 +7,11 @@ import {
   type QuotaApiResource,
   type QuotaOperatorIntentKind,
   type QuotaOpsImpactResource,
+  type QuotaOpsImpactSummary,
+  type QuotaOpsIntentPreflightSummaryView,
   type QuotaOpsIntentPreflightView,
   type QuotaOpsPlanRule,
+  type QuotaOpsPreflightViewMode,
 } from "@surreal-ck/shared/native-quota";
 import { StringRecordId } from "surrealdb";
 import type {
@@ -35,7 +38,10 @@ export interface QuotaOpsPreflightPort {
     kind: QuotaOperatorIntentKind;
     effectiveAt: string;
     intentInput: ControlPlaneObject;
-  }>): Promise<QuotaOpsIntentPreflightView | null>;
+    view?: QuotaOpsPreflightViewMode;
+  }>): Promise<
+    QuotaOpsIntentPreflightView | QuotaOpsIntentPreflightSummaryView | null
+  >;
 }
 
 function asBigInt(value: QuotaApiCount): bigint {
@@ -254,7 +260,10 @@ export class QuotaOpsPreflightService implements QuotaOpsPreflightPort {
     kind: QuotaOperatorIntentKind;
     effectiveAt: string;
     intentInput: ControlPlaneObject;
-  }>): Promise<QuotaOpsIntentPreflightView | null> {
+    view?: QuotaOpsPreflightViewMode;
+  }>): Promise<
+    QuotaOpsIntentPreflightView | QuotaOpsIntentPreflightSummaryView | null
+  > {
     const fresh = await this.reads.getOperatorWorkspaceFresh({
       slug: input.workspaceSlug,
       actor: input.actor,
@@ -306,7 +315,7 @@ export class QuotaOpsPreflightService implements QuotaOpsPreflightPort {
       && asBigInt(resource.projected_over_by) > 0n
     ).length;
 
-    return {
+    const full: QuotaOpsIntentPreflightView = {
       format_version: QUOTA_API_FORMAT_VERSION,
       workspace: fresh.workspace,
       kind: input.kind,
@@ -329,5 +338,73 @@ export class QuotaOpsPreflightService implements QuotaOpsPreflightPort {
       affected_capabilities: affectedCapabilities(input.kind),
       before_digest: fresh.operator.native_digest,
     };
+    if (input.view !== "summary") return full;
+    return {
+      ...full,
+      view: "summary",
+      resources: summarizeImpact(resources),
+    };
   }
+}
+
+function summarizeImpact(
+  resources: readonly QuotaOpsImpactResource[],
+): QuotaOpsImpactSummary[] {
+  const groups = new Map<
+    QuotaOpsImpactResource["resource"],
+    {
+      rows: number;
+      over_count: number;
+      unknown_usage_rows: number;
+      unlimited_rows: number;
+      uncovered_rows: number;
+      used_total: bigint;
+      target_limit_total: bigint;
+      projected_over_by_total: bigint;
+    }
+  >();
+  for (const resource of resources) {
+    const group = groups.get(resource.resource) ?? {
+      rows: 0,
+      over_count: 0,
+      unknown_usage_rows: 0,
+      unlimited_rows: 0,
+      uncovered_rows: 0,
+      used_total: 0n,
+      target_limit_total: 0n,
+      projected_over_by_total: 0n,
+    };
+    group.rows += 1;
+    if (resource.used === null) {
+      group.unknown_usage_rows += 1;
+    } else {
+      group.used_total += asBigInt(resource.used);
+    }
+    if (resource.target_limit === "unlimited") {
+      group.unlimited_rows += 1;
+    } else if (resource.target_limit === null) {
+      group.uncovered_rows += 1;
+    } else {
+      group.target_limit_total += asBigInt(resource.target_limit);
+    }
+    if (resource.projected_over_by !== null) {
+      const over = asBigInt(resource.projected_over_by);
+      if (over > 0n) {
+        group.over_count += 1;
+        group.projected_over_by_total += over;
+      }
+    }
+    groups.set(resource.resource, group);
+  }
+  return [...groups].map(([resource, group]) => ({
+    resource,
+    rows: group.rows,
+    over_count: group.over_count,
+    unknown_usage_rows: group.unknown_usage_rows,
+    unlimited_rows: group.unlimited_rows,
+    uncovered_rows: group.uncovered_rows,
+    used_total: apiCount(group.used_total),
+    target_limit_total: apiCount(group.target_limit_total),
+    projected_over_by_total: apiCount(group.projected_over_by_total),
+  }));
 }

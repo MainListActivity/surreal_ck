@@ -258,6 +258,17 @@ export function createOpsQuotaRoutes(input: Readonly<{
         );
       }
       const at = effectiveAt(body.effectiveAt);
+      if (
+        body.view !== undefined
+        && body.view !== "full"
+        && body.view !== "summary"
+      ) {
+        throw new HttpError(
+          400,
+          "quota-preflight-view-invalid",
+          "view must be full or summary",
+        );
+      }
       const result = await input.preflight.preflight({
         actor: {
           subject: c.var.user.subject,
@@ -272,6 +283,7 @@ export function createOpsQuotaRoutes(input: Readonly<{
         kind: body.kind as QuotaOperatorIntentKind,
         effectiveAt: at.toString(),
         intentInput: object(body.input, "input", {}),
+        view: body.view === "summary" ? "summary" : "full",
       });
       if (!result) {
         throw new HttpError(
@@ -355,12 +367,20 @@ export function createOpsQuotaRoutes(input: Readonly<{
         kind,
         effectiveAt: at.toString(),
         intentInput,
+        view: "full",
       });
       if (!preflight) {
         throw new HttpError(
           404,
           "quota-intent-preflight-not-found",
           "Intent target, plan, or operator capability is not accessible",
+        );
+      }
+      if ("view" in preflight) {
+        throw new HttpError(
+          500,
+          "quota-intent-preflight-view-invalid",
+          "intent preflight must return the full impact view",
         );
       }
       const submission: OperatorIntentSubmission = {
