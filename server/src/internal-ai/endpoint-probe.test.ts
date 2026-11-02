@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createEndpointProbeLimiter, ENDPOINT_PROBE_LIMITS, ENDPOINT_PROBE_TARGET, runEndpointProbe } from "./endpoint-probe";
+import { createEndpointProbeLimiter, ENDPOINT_PROBE_LIMITS, ENDPOINT_PROBE_TARGET, endpointProbeInternalErrorResult, probeErrorName, runEndpointProbe } from "./endpoint-probe";
 
 type Call = { url: string; init: RequestInit };
 function mockFetch(handler: (call: Call) => Response | Promise<Response>) {
@@ -104,6 +104,61 @@ describe("endpoint probe core", () => {
     const refused = mockFetch(() => { throw new TypeError("fetch failed"); });
     expect(await runEndpointProbe({ apiKey: "synthetic", fetchImpl: refused.fn })).toMatchObject({ status: "unknown", errorType: "connection-failed" });
   });
+
+  // round-01 问题 1：200 空正文不是超限，应归为不符合目录的 invalid-json，且不放行。
+  test("200 空正文归为 invalid-json，而不是 response-too-large", async () => {
+    const { fn } = mockFetch(() => new Response(null, { status: 200 }));
+    const result = await runEndpointProbe({ apiKey: "synthetic", fetchImpl: fn });
+    expect(result.status).toBe("unknown");
+    expect(result.errorType).toBe("invalid-json");
+  });
+
+  // round-01 问题 1 的对照：超限仍然是 response-too-large，两者不能混用。
+  test("超限与空正文分开计数，超限仍报 response-too-large", async () => {
+    const big = mockFetch(() => new Response(new Uint8Array(ENDPOINT_PROBE_LIMITS.maxResponseBytes + 1), { status: 200 }));
+    expect(await runEndpointProbe({ apiKey: "synthetic", fetchImpl: big.fn })).toMatchObject({ status: "rejected", errorType: "response-too-large" });
+  });
+
+  // 真实套接字：服务端发出 200 响应头后挂起正文，验证探针在固定 5 秒上限内返回 timeout，而不是无限等待。
+  // 测试超时长于探针上限，避免与 bun 默认 5 秒测试超时竞争；探针实现不改。
+  test("正文挂起时按固定上限返回 timeout（真实套接字）", async () => {
+    const hold = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch() {
+        const stalled = new ReadableStream<Uint8Array>({
+          start(controller) { controller.enqueue(new TextEncoder().encode("{")); },
+        });
+        return new Response(stalled, { status: 200, headers: { "content-type": "application/json" } });
+      },
+    });
+    try {
+      const realFetch = (url: string | URL | Request, init: RequestInit = {}) =>
+        fetch(`http://127.0.0.1:${hold.port}/v1/models`, init);
+      const started = Date.now();
+      const result = await runEndpointProbe({ apiKey: "synthetic", fetchImpl: realFetch as unknown as typeof fetch });
+      const elapsed = Date.now() - started;
+      expect(result.status).toBe("unknown");
+      expect(result.errorType).toBe("timeout");
+      expect(elapsed).toBeGreaterThanOrEqual(ENDPOINT_PROBE_LIMITS.timeoutMs - 250);
+      expect(elapsed).toBeLessThan(ENDPOINT_PROBE_LIMITS.timeoutMs + 3_000);
+    } finally {
+      hold.stop(true);
+    }
+  }, 15_000);
+
+  test("探针错误类名白名单：标准名称保留，其它一律 other，消息不进入结果", () => {
+    expect(probeErrorName(new TypeError("fetch failed"))).toBe("TypeError");
+    expect(probeErrorName(Object.assign(new Error("secret-bearing"), { name: "Bearer synthetic-probe-key" }))).toBe("other");
+    expect(probeErrorName("plain string")).toBe("other");
+  });
+
+  test("未预期异常的受控结果不携带消息或栈", () => {
+    const result = endpointProbeInternalErrorResult({ startedAt: 1_000, now: () => 1_010, requestId: () => "req-internal" });
+    expect(result).toMatchObject({ status: "unknown", errorType: "internal-error", latencyMs: 10, requestId: "req-internal" });
+    expect(JSON.stringify(result)).not.toMatch(/stack|message|Bearer/u);
+  });
+
 
   test("限流：同一时刻只允许一次，两次之间需要冷却", () => {
     let clock = 1_000;

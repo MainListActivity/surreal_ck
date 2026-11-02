@@ -43,9 +43,12 @@
 ```
 
 - `status`：`catalog-readable` / `rejected` / `unknown`。
-- `errorType`：`not-configured` / `unauthorized` / `forbidden` / `rate-limited` / `timeout` / `connection-failed` / `redirected` / `invalid-json` / `response-too-large` / `unexpected-catalog` / `unexpected-status`。
+- `errorType`：`not-configured` / `unauthorized` / `forbidden` / `rate-limited` / `timeout` / `connection-failed` / `redirected` / `invalid-json` / `response-too-large` / `unexpected-catalog` / `unexpected-status` / `internal-error`。
+  - `invalid-json` 包含空正文；只有正文超过 64 KiB 才报 `response-too-large`。
+  - `internal-error` 表示探针实现抛出未预期异常。响应与日志都不含异常消息或栈，结果固定为 `unknown`。
+- 审计行（`[ops-audit] internal-ai.endpoint-probe`）只写调用者 subject、固定端点、时间、结果、关联 ID、延迟与异常类名（仅标准类名，其它记为 `other`）。未预期异常的审计行使用 `[ops-audit] internal-ai.endpoint-probe unexpected`，不附异常消息与栈。
 - `requestId` 是随机关联 ID，**不对凭证或 Authorization 做哈希**；响应不含上游正文、错误原文、密钥或 header。
-- 审计行（`[ops-audit] internal-ai.endpoint-probe`）只写调用者 subject、固定端点、时间、结果、关联 ID 与延迟。
+- 审计行（`[ops-audit] internal-ai.endpoint-probe`）只写调用者 subject、固定端点、时间、结果、关联 ID、延迟与异常类名（仅标准类名，其它记为 `other`）。未预期异常的审计行使用 `[ops-audit] internal-ai.endpoint-probe unexpected`，不附异常消息与栈。
 
 ## 判定
 

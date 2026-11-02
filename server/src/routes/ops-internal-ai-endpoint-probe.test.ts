@@ -155,4 +155,41 @@ describe("ops endpoint probe route", () => {
     expect(throttled.status).toBe(429);
     expect(await throttled.json()).toMatchObject({ error: { code: "internal-ai-endpoint-probe-throttled" } });
   });
+
+  // round-01 问题 2：探针内部抛出的异常消息含凭证时，响应与所有日志都不得含该凭证，且不走 handleError 的 stack 日志。
+  test("探针内部异常含凭证时，响应与日志都不泄密，并返回受控 internal-error", async () => {
+    const KEY = "synthetic-leak-marker-key";
+    const log = spyOn(console, "log").mockImplementation(() => undefined);
+    const info = spyOn(console, "info").mockImplementation(() => undefined);
+    const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+    const error = spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const app = appWith({
+        capabilities: ["internal-ai.endpoint-probe"],
+        enabled: true,
+        limiter: createEndpointProbeLimiter({ minIntervalMs: 0 }),
+        run: async () => { throw new Error(`upstream echoed authorization: Bearer ${KEY}`); },
+      });
+      const response = await call(app, { headers: await authHeader() });
+      const body = await response.text();
+      expect(response.status).toBe(200);
+      expect(JSON.parse(body)).toMatchObject({ status: "unknown", errorType: "internal-error", endpointHost: "data.maplayer.top" });
+      expect(body).not.toContain(KEY);
+
+      const everything = JSON.stringify([...log.mock.calls, ...info.mock.calls, ...warn.mock.calls, ...error.mock.calls]);
+      expect(everything).not.toContain(KEY);
+      expect(everything).not.toContain("upstream echoed");
+      // 不得出现 handleError 的 stack 输出。
+      expect(everything).not.toContain("[http] unhandled error");
+      // 只记录异常类名，且审计行存在。
+      expect(everything).toContain("[ops-audit] internal-ai.endpoint-probe unexpected");
+      expect(everything).toContain("\"unexpectedErrorName\":\"Error\"");
+    } finally {
+      log.mockRestore();
+      info.mockRestore();
+      warn.mockRestore();
+      error.mockRestore();
+    }
+  });
 });
+

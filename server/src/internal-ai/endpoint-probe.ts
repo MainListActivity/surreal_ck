@@ -35,7 +35,8 @@ export type EndpointProbeErrorType =
   | "invalid-json"
   | "response-too-large"
   | "unexpected-catalog"
-  | "unexpected-status";
+  | "unexpected-status"
+  | "internal-error";
 
 /** catalog-readable 只表示目录可读；rejected 表示确定的拒绝；unknown 表示无法判定。 */
 export type EndpointProbeStatus = "catalog-readable" | "rejected" | "unknown";
@@ -81,8 +82,11 @@ function catalogModelCount(value: unknown): number | null {
   return data.length;
 }
 
-async function readCapped(body: ReadableStream<Uint8Array> | null, maxBytes: number): Promise<Uint8Array | null> {
-  if (!body) return null;
+/** 读取结果：正文字节，或超出上限。无正文（null body）按零字节处理，由后续 JSON 解析报 invalid-json。 */
+type CappedBody = { kind: "body"; bytes: Uint8Array } | { kind: "too-large" };
+
+async function readCapped(body: ReadableStream<Uint8Array> | null, maxBytes: number): Promise<CappedBody> {
+  if (!body) return { kind: "body", bytes: new Uint8Array(0) };
   const reader = body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
@@ -93,7 +97,7 @@ async function readCapped(body: ReadableStream<Uint8Array> | null, maxBytes: num
     total += value.byteLength;
     if (total > maxBytes) {
       await reader.cancel().catch(() => undefined);
-      return null;
+      return { kind: "too-large" };
     }
     chunks.push(value);
   }
@@ -103,7 +107,7 @@ async function readCapped(body: ReadableStream<Uint8Array> | null, maxBytes: num
     merged.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  return merged;
+  return { kind: "body", bytes: merged };
 }
 
 export async function runEndpointProbe(input: EndpointProbeRunInput): Promise<EndpointProbeResult> {
@@ -150,18 +154,18 @@ export async function runEndpointProbe(input: EndpointProbeRunInput): Promise<En
     return finish(rejected(errorType), errorType);
   }
 
-  let bytes: Uint8Array | null;
+  let read: CappedBody;
   try {
-    bytes = await readCapped(response.body, ENDPOINT_PROBE_LIMITS.maxResponseBytes);
+    read = await readCapped(response.body, ENDPOINT_PROBE_LIMITS.maxResponseBytes);
   } catch (error) {
     const name = error instanceof Error ? error.name : "";
     return finish("unknown", name === "TimeoutError" || name === "AbortError" ? "timeout" : "connection-failed");
   }
-  if (bytes === null) return finish(rejected("response-too-large"), "response-too-large");
+  if (read.kind === "too-large") return finish(rejected("response-too-large"), "response-too-large");
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(new TextDecoder().decode(bytes));
+    parsed = JSON.parse(new TextDecoder().decode(read.bytes));
   } catch {
     return finish("unknown", "invalid-json");
   }
@@ -197,3 +201,32 @@ export function createEndpointProbeLimiter(options: Readonly<{ maxConcurrent?: n
 }
 
 export type EndpointProbeLimiter = ReturnType<typeof createEndpointProbeLimiter>;
+
+const SAFE_ERROR_NAMES: ReadonlySet<string> = new Set(["Error", "TypeError", "RangeError", "SyntaxError", "AbortError", "TimeoutError"]);
+
+/**
+ * 日志中允许出现的异常类名。只放行标准名称；异常消息、栈与任何自定义 name 一律不进入日志。
+ */
+export function probeErrorName(error: unknown): string {
+  const name = error instanceof Error ? error.name : "";
+  return SAFE_ERROR_NAMES.has(name) ? name : "other";
+}
+
+/**
+ * 探针实现抛出未预期异常时的受控结果。不携带异常消息或栈，只表示 unknown，不放行。
+ */
+export function endpointProbeInternalErrorResult(
+  input: Readonly<{ startedAt: number; now?: () => number; requestId?: () => string }>,
+): EndpointProbeResult {
+  const now = input.now ?? (() => Date.now());
+  const requestId = (input.requestId ?? (() => randomUUID()))();
+  return {
+    endpointHost: ENDPOINT_PROBE_TARGET.host,
+    endpointPath: ENDPOINT_PROBE_TARGET.path,
+    checkedAt: new Date(input.startedAt).toISOString(),
+    status: "unknown",
+    errorType: "internal-error",
+    latencyMs: Math.max(0, now() - input.startedAt),
+    requestId,
+  };
+}

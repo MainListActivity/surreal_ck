@@ -17,7 +17,7 @@ import { endpointHost, TARIFFS } from "../internal-ai/pricing";
 import { aggregateAssessments, assessAttempt, type AssessedAttempt, type AssessmentContext } from "../internal-ai/assessment";
 import { runtimeIdentity } from "../../ai/mastra/agents/model-config";
 import { env } from "../env";
-import { createEndpointProbeLimiter, runEndpointProbe, type EndpointProbeLimiter, type EndpointProbeResult } from "../internal-ai/endpoint-probe";
+import { createEndpointProbeLimiter, endpointProbeInternalErrorResult, probeErrorName, runEndpointProbe, type EndpointProbeLimiter, type EndpointProbeResult } from "../internal-ai/endpoint-probe";
 import { HttpError } from "../http-error";
 function dependencyVersion(): string | null {
   try { const entry = createRequire(import.meta.url).resolve("@mastra/core"); const parsed: unknown = JSON.parse(readFileSync(join(dirname(entry), "../package.json"), "utf8")); return parsed && typeof parsed === "object" && "version" in parsed && typeof parsed.version === "string" ? parsed.version : null; } catch { return null; }
@@ -342,14 +342,27 @@ export function createOpsInternalAiRoutes(input: {
       }
       const lease = probeLimiter.tryAcquire();
       if (lease !== "ok") throw new HttpError(429, `internal-ai-endpoint-probe-${lease}`, lease === "busy" ? "已有探针正在执行" : "探针调用过于频繁");
+      const startedAt = Date.now();
       try {
-        const result = await probeRun();
-        // 审计只写受控字段：调用者、固定端点、时间、结果、关联 ID、延迟；不含任何凭证或上游原文。
-        console.info("[ops-audit] internal-ai.endpoint-probe", {
+        // 探针实现的任何非预期异常都在这里收口：不交给 handleError（它会记录 stack 与消息，消息可能含凭证），
+        // 只记录异常类名（经白名单过滤），并返回受控 unknown/internal-error 结果。
+        let result: EndpointProbeResult;
+        let unexpectedErrorName: string | null = null;
+        try {
+          result = await probeRun();
+        } catch (error) {
+          unexpectedErrorName = probeErrorName(error);
+          result = endpointProbeInternalErrorResult({ startedAt });
+        }
+        // 审计只写受控字段：调用者、固定端点、时间、结果、关联 ID、延迟、异常类名；不含任何凭证或上游原文。
+        const audit = {
           caller: c.var.platformOperator?.subject ?? null,
           requestId: result.requestId, endpointHost: result.endpointHost, endpointPath: result.endpointPath,
           checkedAt: result.checkedAt, status: result.status, errorType: result.errorType, latencyMs: result.latencyMs,
-        });
+          unexpectedErrorName,
+        };
+        if (unexpectedErrorName === null) console.info("[ops-audit] internal-ai.endpoint-probe", audit);
+        else console.error("[ops-audit] internal-ai.endpoint-probe unexpected", audit);
         return c.json(result);
       } finally {
         probeLimiter.release();
