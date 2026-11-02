@@ -36,7 +36,8 @@
 - 有效期内的授予请求只登记请求标识，不改变 `notAfter`；同键重放在撤回、过期、重启后只返回当前状态，不重新授能。
 - 同一 `idempotencyKey` 不能跨 grant/revoke 复用，否则 409。
 - 重新授予必须有新的 `idempotencyKey`，并形成新的 `version`；旧键之后重放仍不会续期。
-- 撤回携带 `expectedVersion` 时做条件更新；不携带时只撤回当前 active 行，但版本仍递增，因此并发旧授予无法覆盖撤回。
+- 撤回无论调用方是否提供 `expectedVersion`，都以本次读到的版本做原子 CAS（`WHERE status = "active" AND version = $observedVersion`）。因此省略参数的旧撤回不会覆盖期间发生的重新授予，版本保持单调。
+- 每条带 `idempotencyKey` 且返回成功的撤回都会登记或确认该键（无临时行、已撤回、版本不匹配但已撤回、写冲突后已撤回四条分支同样登记）；登记失败即返回 409。因此旧撤回请求不能在新授权上重放生效。
 
 ## 不变量
 

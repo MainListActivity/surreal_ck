@@ -6,6 +6,8 @@ import {
   ENDPOINT_PROBE_TEMPORARY_GRANT_MAX_MS,
   EndpointProbeTemporaryGrantService,
   mergeTemporaryCapabilities,
+  type TemporaryGrantRevokeInput,
+  type TemporaryGrantStore,
 } from "./endpoint-probe-temporary-grant";
 
 const GRANTOR = "grantor-subject";
@@ -262,5 +264,88 @@ describe("endpoint probe temporary grant service", () => {
     await svc.grant({ actorSubject: GRANTOR, idempotencyKey: "grant-1" });
     await expect(svc.revoke({ actorSubject: GRANTOR, expectedVersion: 99, idempotencyKey: "revoke-1" }))
       .rejects.toMatchObject({ status: 409, code: "endpoint-probe-temporary-grant-version-conflict" });
+  });
+
+  test("省略 expectedVersion 的撤回仍以观测版本做 CAS", async () => {
+    const store = makeStore();
+    const now = Date.parse("2026-11-02T08:00:00.000Z");
+    const svc = service(store, () => now);
+    await svc.grant({ actorSubject: GRANTOR, idempotencyKey: "grant-1" });
+
+    const calls: TemporaryGrantRevokeInput[] = [];
+    const spyStore: TemporaryGrantStore = {
+      isActiveOperator: store.isActiveOperator.bind(store),
+      getGrant: store.getGrant.bind(store),
+      getRequest: store.getRequest.bind(store),
+      countPermanent: store.countPermanent.bind(store),
+      activate: store.activate.bind(store),
+      recordRequest: store.recordRequest.bind(store),
+      revoke: async (input) => {
+        calls.push(input);
+        return store.revoke(input);
+      },
+    };
+    const revoked = await service(spyStore, () => now).revoke({
+      actorSubject: GRANTOR,
+      idempotencyKey: "revoke-1",
+    });
+    expect(revoked.status).toBe("revoked");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.expectedVersion).toBe(1);
+    expect(calls[0]?.nextVersion).toBe(2);
+  });
+
+  test("已撤回且版本不匹配的带键撤回也会登记幂等键，重放不撤回新授权", async () => {
+    const store = makeStore();
+    const now = Date.parse("2026-11-02T08:00:00.000Z");
+    const svc = service(store, () => now);
+    const first = await svc.grant({ actorSubject: GRANTOR, idempotencyKey: "grant-1" });
+    const revoked = await svc.revoke({
+      actorSubject: GRANTOR,
+      idempotencyKey: "revoke-1",
+      expectedVersion: first.version ?? undefined,
+    });
+    expect(revoked.status).toBe("revoked");
+
+    const stale = await svc.revoke({
+      actorSubject: GRANTOR,
+      idempotencyKey: "revoke-stale",
+      expectedVersion: first.version ?? undefined,
+    });
+    expect(stale.status).toBe("revoked");
+    expect([...store.requests.values()].some((row) => row.idempotency_key === "revoke-stale")).toBe(true);
+
+    const regrant = await svc.grant({
+      actorSubject: GRANTOR,
+      idempotencyKey: "grant-2",
+      expectedVersion: revoked.version ?? undefined,
+    });
+    expect(regrant.status).toBe("active");
+    const versionBefore = store.getGrantRow(GRANTEE)?.version;
+
+    const replay = await svc.revoke({ actorSubject: GRANTOR, idempotencyKey: "revoke-stale" });
+    expect(replay.status).toBe("active");
+    expect(store.getGrantRow(GRANTEE)?.status).toBe("active");
+    expect(store.getGrantRow(GRANTEE)?.version).toBe(versionBefore);
+  });
+
+  test("撤回成功后重放同键不撤回后续新授权", async () => {
+    const store = makeStore();
+    const svc = service(store, () => Date.parse("2026-11-02T08:00:00.000Z"));
+    await svc.grant({ actorSubject: GRANTOR, idempotencyKey: "grant-1" });
+    const revoked = await svc.revoke({ actorSubject: GRANTOR, idempotencyKey: "revoke-1" });
+    expect(revoked.status).toBe("revoked");
+
+    const regrant = await svc.grant({
+      actorSubject: GRANTOR,
+      idempotencyKey: "grant-2",
+      expectedVersion: revoked.version ?? undefined,
+    });
+    expect(regrant.status).toBe("active");
+
+    const replay = await svc.revoke({ actorSubject: GRANTOR, idempotencyKey: "revoke-1" });
+    expect(replay.status).toBe("active");
+    expect(store.getGrantRow(GRANTEE)?.status).toBe("active");
+    expect(store.getGrantRow(GRANTEE)?.version).toBe(regrant.version);
   });
 });

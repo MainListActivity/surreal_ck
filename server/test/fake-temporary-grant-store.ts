@@ -139,7 +139,7 @@ export class FakeTemporaryGrantStore implements TemporaryGrantStore {
     const existingKey = this.grantKey(input.subject, input.capability);
     const existing = this.grants.get(existingKey);
     if (!existing) throw new TemporaryGrantWriteConflictError("missing grant");
-    if (input.expectedVersion !== undefined && existing.version !== input.expectedVersion) {
+    if (existing.version !== input.expectedVersion) {
       throw new TemporaryGrantWriteConflictError("version mismatch");
     }
     if (existing.status !== "active") throw new TemporaryGrantWriteConflictError("already revoked");

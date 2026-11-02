@@ -448,4 +448,121 @@ describe("endpoint probe temporary grant against company fork", () => {
     expect(await service.activeCapabilitiesFor(GRANTEE)).toEqual([]);
     expect((await service.getStatusFor(GRANTEE)).permanentActive).toBe(false);
   }, 60_000);
+
+  localTest("round-02：省略 expectedVersion 的撤回不能覆盖期间新授予（真实 fork 屏障）", async () => {
+    let now = Date.parse("2026-11-02T09:00:00.000Z");
+    setGrantee(RACE);
+    const realStore = new SurrealTemporaryGrantStore(async () => root, "main");
+    const setup = new EndpointProbeTemporaryGrantService(realStore, () => now);
+    await setup.grant({ actorSubject: GRANTOR, idempotencyKey: "noexp-setup" });
+    // 行仍是 status=active / version=1，只是已过 not_after。
+    now += ENDPOINT_PROBE_TEMPORARY_GRANT_MAX_MS;
+
+    const entered = deferred();
+    const release = deferred();
+    const gatedStore: TemporaryGrantStore = {
+      isActiveOperator: realStore.isActiveOperator.bind(realStore),
+      getGrant: realStore.getGrant.bind(realStore),
+      getRequest: realStore.getRequest.bind(realStore),
+      countPermanent: realStore.countPermanent.bind(realStore),
+      activate: realStore.activate.bind(realStore),
+      recordRequest: realStore.recordRequest.bind(realStore),
+      revoke: async (input) => {
+        entered.resolve();
+        await release.promise;
+        return realStore.revoke(input);
+      },
+    };
+    const revokeService = new EndpointProbeTemporaryGrantService(gatedStore, () => now);
+    const grantService = new EndpointProbeTemporaryGrantService(realStore, () => now);
+
+    // 无 expectedVersion 的撤回读完 v1 后停在写前。
+    const revokePromise = revokeService.revoke({ actorSubject: GRANTOR, idempotencyKey: "noexp-revoke" });
+    await entered.promise;
+
+    // 期间一次明确的重新授予（expectedVersion=1）成功生成 v2 新授权。
+    const regrant = await grantService.grant({
+      actorSubject: GRANTOR,
+      idempotencyKey: "noexp-regrant",
+      expectedVersion: 1,
+    });
+    expect(regrant.status).toBe("active");
+    expect(regrant.version).toBe(2);
+
+    release.resolve();
+    await expect(revokePromise).rejects.toMatchObject({
+      status: 409,
+      code: "endpoint-probe-temporary-grant-version-conflict",
+    });
+    const final = await setup.getStatusFor(RACE);
+    expect(final.status).toBe("active");
+    expect(final.version).toBe(2);
+    expect(final.notAfter).toBe(regrant.notAfter);
+    expect(await grantService.activeCapabilitiesFor(RACE)).toEqual([ENDPOINT_PROBE_TEMPORARY_CAPABILITY]);
+  }, 60_000);
+
+  localTest("round-02：冲突后按已撤回成功返回也必须登记幂等键（真实 fork 屏障）", async () => {
+    const now = Date.parse("2026-11-02T09:00:00.000Z");
+    setGrantee(RACE);
+    const realStore = new SurrealTemporaryGrantStore(async () => root, "main");
+    const setup = new EndpointProbeTemporaryGrantService(realStore, () => now);
+    const first = await setup.grant({ actorSubject: GRANTOR, idempotencyKey: "idem-setup" });
+    expect(first.status).toBe("active");
+
+    const entered = deferred();
+    const release = deferred();
+    const gatedStore: TemporaryGrantStore = {
+      isActiveOperator: realStore.isActiveOperator.bind(realStore),
+      getGrant: realStore.getGrant.bind(realStore),
+      getRequest: realStore.getRequest.bind(realStore),
+      countPermanent: realStore.countPermanent.bind(realStore),
+      activate: realStore.activate.bind(realStore),
+      recordRequest: realStore.recordRequest.bind(realStore),
+      revoke: async (input) => {
+        entered.resolve();
+        await release.promise;
+        return realStore.revoke(input);
+      },
+    };
+    const slowService = new EndpointProbeTemporaryGrantService(gatedStore, () => now);
+    const fastService = new EndpointProbeTemporaryGrantService(realStore, () => now);
+
+    // 撤回 A（key=r）读完 v1 后停在写前；撤回 B 先完成，使 A 落入“latest 已撤回”的成功分支。
+    const revokeAPromise = slowService.revoke({ actorSubject: GRANTOR, idempotencyKey: "revoke-r" });
+    await entered.promise;
+    const revokeB = await fastService.revoke({ actorSubject: GRANTOR, idempotencyKey: "revoke-b" });
+    expect(revokeB.status).toBe("revoked");
+    release.resolve();
+
+    const revokeA = await revokeAPromise;
+    expect(revokeA.status).toBe("revoked");
+
+    // key=r 必须已持久登记：先断言请求表存在该键，再做重放演练。
+    const recorded = await root.query(
+      `SELECT * FROM platform_operator_temporary_grant_request WHERE subject = $subject AND idempotency_key = "revoke-r";`,
+      { subject: RACE },
+    ) as unknown[];
+    expect(Array.isArray(recorded[0]) ? recorded[0] : []).toHaveLength(1);
+
+    const regrant = await fastService.grant({
+      actorSubject: GRANTOR,
+      idempotencyKey: "grant-after",
+      expectedVersion: revokeB.version ?? undefined,
+    });
+    expect(regrant.status).toBe("active");
+    expect(await fastService.activeCapabilitiesFor(RACE)).toEqual([ENDPOINT_PROBE_TEMPORARY_CAPABILITY]);
+
+    // 重放旧请求 A：只能返回当前状态，不能撤回这次新授权。
+    const replay = await fastService.revoke({ actorSubject: GRANTOR, idempotencyKey: "revoke-r" });
+    expect(replay.status).toBe("active");
+    expect(await fastService.activeCapabilitiesFor(RACE)).toEqual([ENDPOINT_PROBE_TEMPORARY_CAPABILITY]);
+    const rows = await root.query(
+      `SELECT * FROM platform_operator_temporary_grant WHERE subject = $subject;`,
+      { subject: RACE },
+    ) as unknown[];
+    const grantRows = Array.isArray(rows[0]) ? rows[0] as Array<Record<string, unknown>> : [];
+    expect(grantRows).toHaveLength(1);
+    expect(grantRows[0]?.status).toBe("active");
+    expect(grantRows[0]?.version).toBe(regrant.version);
+  }, 60_000);
 });

@@ -174,7 +174,8 @@ export type TemporaryGrantRevokeInput = Readonly<{
   capability: string;
   actor: string;
   revokedAt: Date;
-  expectedVersion?: number;
+  /** 撤回必须以读到的版本做原子 CAS；调用方即使省略 expectedVersion，服务也会填入观测版本。 */
+  expectedVersion: number;
   nextVersion: number;
   reason?: string;
   idempotencyKey?: string;
@@ -377,13 +378,14 @@ export class SurrealTemporaryGrantStore implements TemporaryGrantStore {
       capability: input.capability,
       actor: input.actor,
       revokedAt: input.revokedAt,
+      expectedVersion: input.expectedVersion,
       nextVersion: input.nextVersion,
     };
-    if (input.expectedVersion !== undefined) params.expectedVersion = input.expectedVersion;
     if (input.reason) params.reason = input.reason;
     if (input.idempotencyKey) params.key = input.idempotencyKey;
 
-    const versionCondition = input.expectedVersion === undefined ? "" : "AND version = $expectedVersion";
+    // 撤回始终以读到的版本做原子 CAS：即使调用方省略 expectedVersion，
+    // 旧撤回也不能覆盖期间发生的重新授予，版本保持单调。
     const update = `
       UPDATE platform_operator_temporary_grant SET
         status = "revoked",
@@ -394,7 +396,7 @@ export class SurrealTemporaryGrantStore implements TemporaryGrantStore {
       WHERE subject = $subject
         AND capability = $capability
         AND status = "active"
-        ${versionCondition}
+        AND version = $expectedVersion
       RETURN AFTER
     `;
 
@@ -485,6 +487,34 @@ export class EndpointProbeTemporaryGrantService {
     if (!prior) return null;
     if (prior.operation !== operation) throw idempotencyConflict();
     return this.getStatusFor(subject);
+  }
+
+  /**
+   * 所有带键撤回的成功返回都必须持久登记该键（或确认已有同键撤回记录）。
+   * 否则一次“因冲突而按已撤回成功返回”的旧请求没有留下幂等记录，
+   * 之后可能在新授权上重放并把它撤回。
+   */
+  private async ensureRevokeRequestRecorded(
+    subject: string,
+    idempotencyKey: string | undefined,
+    version: number | null,
+  ): Promise<void> {
+    if (!idempotencyKey) return;
+    try {
+      await this.store.recordRequest({
+        subject,
+        capability: ENDPOINT_PROBE_TEMPORARY_CAPABILITY,
+        idempotencyKey,
+        operation: "revoke",
+        resultVersion: version ?? undefined,
+      });
+      return;
+    } catch (cause) {
+      if (!(cause instanceof TemporaryGrantWriteConflictError)) throw cause;
+    }
+    const recorded = await this.store.getRequest(subject, ENDPOINT_PROBE_TEMPORARY_CAPABILITY, idempotencyKey);
+    if (!recorded) throw versionConflict();
+    if (recorded.operation !== "revoke") throw idempotencyConflict();
   }
 
   /** 权限检查用：当前时刻对该主体仍然有效的临时探针能力（0 或 1 项）。 */
@@ -605,58 +635,35 @@ export class EndpointProbeTemporaryGrantService {
     const now = this.now();
     const row = await this.store.getGrant(grantee, ENDPOINT_PROBE_TEMPORARY_CAPABILITY);
     if (!row) {
-      if (key) {
-        try {
-          await this.store.recordRequest({
-            subject: grantee,
-            capability: ENDPOINT_PROBE_TEMPORARY_CAPABILITY,
-            idempotencyKey: key,
-            operation: "revoke",
-          });
-        } catch (cause) {
-          if (!(cause instanceof TemporaryGrantWriteConflictError)) throw cause;
-          const recorded = await this.replayRecorded(grantee, key, "revoke");
-          if (!recorded) throw versionConflict();
-          return recorded;
-        }
-      }
-      // 没有临时行也要如实报告永久能力，不能直接写 permanentActive=false。
+      // 没有临时行也要如实报告永久能力，并登记本次带键请求。
+      await this.ensureRevokeRequestRecorded(grantee, key, null);
       return this.getStatusFor(grantee);
     }
 
     const current = projectView({ subject: grantee, row, permanentActive: false, now });
     if (input.expectedVersion !== undefined && input.expectedVersion !== current.version) {
-      if (current.status === "revoked") return this.getStatusFor(grantee);
+      if (current.status === "revoked") {
+        await this.ensureRevokeRequestRecorded(grantee, key, current.version);
+        return this.getStatusFor(grantee);
+      }
       throw versionConflict();
     }
     if (current.status === "revoked") {
-      if (key) {
-        try {
-          await this.store.recordRequest({
-            subject: grantee,
-            capability: ENDPOINT_PROBE_TEMPORARY_CAPABILITY,
-            idempotencyKey: key,
-            operation: "revoke",
-            resultVersion: current.version ?? undefined,
-          });
-        } catch (cause) {
-          if (!(cause instanceof TemporaryGrantWriteConflictError)) throw cause;
-          const recorded = await this.replayRecorded(grantee, key, "revoke");
-          if (!recorded) throw versionConflict();
-          return recorded;
-        }
-      }
+      await this.ensureRevokeRequestRecorded(grantee, key, current.version);
       return this.getStatusFor(grantee);
     }
 
-    const nextVersion = (current.version ?? 0) + 1;
+    // 无论调用方是否提供 expectedVersion，都用本次读到的版本做 CAS。
+    const observedVersion = current.version;
+    if (observedVersion === null) throw versionConflict();
+    const nextVersion = observedVersion + 1;
     try {
       await this.store.revoke({
         subject: grantee,
         capability: ENDPOINT_PROBE_TEMPORARY_CAPABILITY,
         actor: input.actorSubject,
         revokedAt: new Date(now),
-        expectedVersion: input.expectedVersion,
+        expectedVersion: observedVersion,
         nextVersion,
         reason: input.reason,
         idempotencyKey: key,
@@ -668,7 +675,11 @@ export class EndpointProbeTemporaryGrantService {
         if (recorded) return recorded;
       }
       const latest = await this.store.getGrant(grantee, ENDPOINT_PROBE_TEMPORARY_CAPABILITY);
-      if (latest && latest.status === "revoked") return this.getStatusFor(grantee);
+      if (latest && latest.status === "revoked") {
+        // 冲突期间别的撤回已生效；按幂等成功返回，但必须登记/确认本次键。
+        await this.ensureRevokeRequestRecorded(grantee, key, asInt(latest.version));
+        return this.getStatusFor(grantee);
+      }
       throw versionConflict();
     }
     return this.getStatusFor(grantee);
