@@ -7,6 +7,11 @@ import { env } from "../env";
 import { getRootDatabaseSession } from "../db/root-connection";
 import { introspectOidcAccessToken, type OidcTokenActivityChecker } from "../oidc/introspection";
 import { verifyOidcToken } from "../oidc/verify";
+import {
+  createSurrealTemporaryGrantStore,
+  EndpointProbeTemporaryGrantService,
+  mergeTemporaryCapabilities,
+} from "./endpoint-probe-temporary-grant";
 
 export type PlatformOperatorAuth = Readonly<{
   subject: string;
@@ -17,6 +22,10 @@ export type PlatformOperatorAuth = Readonly<{
 export type PlatformOperatorCapabilityReader = {
   getCapabilities(subject: string): Promise<readonly PlatformOperatorCapability[]>;
   getKind?(subject: string): Promise<"human" | "agent" | null>;
+};
+
+export type TemporaryProbeCapabilityReader = {
+  activeCapabilitiesFor(subject: string): Promise<readonly PlatformOperatorCapability[]>;
 };
 
 type Queryable = { query(sql: string, params?: Record<string, unknown>): Promise<unknown> };
@@ -49,8 +58,13 @@ function oidcError(error: unknown): HttpError {
 
 export function createPlatformOperatorCapabilityReader(
   db?: Queryable,
+  temporary?: TemporaryProbeCapabilityReader,
 ): PlatformOperatorCapabilityReader {
   const getDb = db ? async () => db : () => getRootDatabaseSession("_system");
+  // 注入 db 时临时授权与永久读面共用同一会话，避免测试/脚本读到两套库。
+  const temporaryReader = temporary ?? new EndpointProbeTemporaryGrantService(
+    createSurrealTemporaryGrantStore(async () => getDb()),
+  );
   return {
     async getKind(subject) {
       const result = await (await getDb()).query(`SELECT kind FROM platform_operator WHERE subject = $subject AND status = "active" LIMIT 1;`, { subject });
@@ -73,9 +87,12 @@ export function createPlatformOperatorCapabilityReader(
         `,
         { subject },
       );
-      return rows(result).filter((value): value is PlatformOperatorCapability =>
+      const permanent = rows(result).filter((value): value is PlatformOperatorCapability =>
         typeof value === "string" && value.length > 0,
       );
+      // 临时探针能力在读路径即时合并；到期/撤回后下一次请求即失效，不改永久表。
+      const temporaryCaps = await temporaryReader.activeCapabilitiesFor(subject).catch(() => [] as const);
+      return mergeTemporaryCapabilities(permanent, temporaryCaps);
     },
   };
 }

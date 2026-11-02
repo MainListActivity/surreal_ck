@@ -95,6 +95,10 @@ const EnvSchema = z.object({
   // FV06 受控目录认证探针（零推理）：默认关闭。开启前须另有上线审批确认影响主体，
   // 且探针只读固定目录端点，不证明推理权限、免费计费或流式兼容。
   INTERNAL_AI_ENDPOINT_PROBE_ENABLED: z.enum(["0", "1"]).default("0"),
+  // 探针临时授权（单主体、≤30 分钟、可撤回）：部署配置的授予主体与被授权主体。
+  // 空串等价未配置；两者必须同时配置且不能相同；不写入永久 capability CSV。
+  ENDPOINT_PROBE_TEMPORARY_GRANTOR_SUBJECT: z.preprocess(value => value === "" ? undefined : value, z.string().min(1).max(200).optional()),
+  ENDPOINT_PROBE_TEMPORARY_GRANTEE_SUBJECT: z.preprocess(value => value === "" ? undefined : value, z.string().min(1).max(200).optional()),
 
   // 资源保存确认动作的 embedding provider key（与 chat 模型设置分离；openai-compatible）。
   // 未配置时：无 profile 的 workspace 照常保存（embedding disabled），有 profile 的保存会失败。

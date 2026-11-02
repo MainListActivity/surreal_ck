@@ -24,6 +24,8 @@ const quotaTables = [
   "provider_event_state",
   "platform_operator",
   "platform_operator_capability",
+  "platform_operator_temporary_grant",
+  "platform_operator_temporary_grant_request",
   "quota_operator_intent",
   "quota_operator_intent_state",
   "quota_audit_event",
@@ -80,12 +82,16 @@ describe("_system native quota control-plane schema", () => {
       44,
       // 045：能力白名单追加 internal-ai.endpoint-probe（受控目录认证探针），只放宽 schema、不授予能力。
       45,
+      // 046：探针临时授权表（单主体、到期闭锁），只新增结构，不改写永久能力行。
+      46,
+      // 047：探针临时授权持久幂等请求表，只新增结构；与 046 同一事务写入。
+      47,
     ]);
   });
 
   test("every quota control-plane table is root-only", async () => {
     const sql = await Promise.all(
-      [4, 5, 6, 11, 13].map(async (version) => {
+      [4, 5, 6, 11, 13, 46, 47].map(async (version) => {
         const entries = await readdir(migrationsDirectoryUrl);
         const name = entries.find((entry) => entry.startsWith(`${String(version).padStart(3, "0")}-`));
         if (!name) throw new Error(`missing migration ${version}`);
