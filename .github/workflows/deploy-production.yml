@@ -188,6 +188,8 @@ jobs:
         env:
           SCK_RELEASE_SHA: ${{ env.RELEASE_SHA }}
           SCK_DEPLOYMENT_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+          # 营销站登录按钮目标；未配置 vars 时由代码回退到生产应用域名。
+          PUBLIC_APP_URL: ${{ vars.PUBLIC_APP_URL || 'https://l.maplayer.top/auth/login' }}
         run: |
           set -euo pipefail
           pnpm --filter @surreal-ck/web build

@@ -38,6 +38,12 @@ html {
   scroll-behavior: smooth;
 }
 
+/* 固定头部 72px（移动端 64px）：锚点目标预留偏移，避免区块标题被头部盖住。 */
+section[id],
+main[id] {
+  scroll-margin-top: 84px;
+}
+
 body {
   min-width: 320px;
   margin: 0;
@@ -156,6 +162,11 @@ svg {
 
   .button {
     min-height: 44px;
+  }
+
+  section[id],
+  main[id] {
+    scroll-margin-top: 76px;
   }
 }
 

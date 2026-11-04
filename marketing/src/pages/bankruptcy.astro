@@ -25,7 +25,9 @@ import {
   trialPoints,
 } from "../data/bankruptcy";
 
-const appUrl = import.meta.env.PUBLIC_APP_URL || "/auth/login";
+// 静态营销站与应用不同源：登录类按钮必须落到应用域名，同域 /auth/login 会被
+// Pages fallback 吞成营销首页。可用 PUBLIC_APP_URL 覆盖（如预览环境）。
+const appUrl = import.meta.env.PUBLIC_APP_URL || "https://l.maplayer.top/auth/login";
 const iconByName = {
   scale: Scale,
   fileSpreadsheet: FileSpreadsheet,
