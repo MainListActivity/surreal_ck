@@ -1,0 +1,64 @@
+---
+import { ArrowRight } from "@lucide/astro";
+import Brand from "../components/Brand.astro";
+import BaseLayout from "../layouts/BaseLayout.astro";
+
+// Cloudflare Pages 对未匹配路由自动使用 404.html，避免把错误路径静默渲染成
+// 营销首页。登录入口与应用保持同源策略：指向应用域名。
+const appUrl = import.meta.env.PUBLIC_APP_URL || "https://l.maplayer.top/auth/login";
+---
+
+<BaseLayout title="页面未找到｜卯豆" description="你访问的页面不存在或已被移动。">
+  <main class="notfound">
+    <Brand />
+    <p class="code">404</p>
+    <h1>页面不存在或已被移动。</h1>
+    <p class="hint">链接可能已过期，可以从下面的入口继续。</p>
+    <div class="actions">
+      <a class="button button-primary" href="/">返回首页 <ArrowRight size={15} /></a>
+      <a class="button button-secondary" href={appUrl}>进入工作空间 <ArrowRight size={15} /></a>
+    </div>
+  </main>
+</BaseLayout>
+
+<style>
+  .notfound {
+    display: grid;
+    min-height: 100vh;
+    place-content: center;
+    justify-items: center;
+    padding: 48px 24px;
+    text-align: center;
+  }
+
+  .code {
+    margin: 34px 0 0;
+    color: var(--text-3);
+    font-family: var(--font-serif);
+    font-size: 13px;
+    letter-spacing: .3em;
+  }
+
+  .notfound h1 {
+    margin: 14px 0 0;
+    font-family: var(--font-serif);
+    font-size: clamp(30px, 5vw, 44px);
+    font-weight: 600;
+    letter-spacing: -.03em;
+    line-height: 1.25;
+  }
+
+  .hint {
+    margin: 16px 0 0;
+    color: var(--text-2);
+    font-size: 13px;
+  }
+
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 11px;
+    margin-top: 30px;
+  }
+</style>

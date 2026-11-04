@@ -26,7 +26,8 @@ import { views, workbookRows } from "../data/product";
       <div class="workbook">
         <header class="book-head">
           <div><span class="book-kicker">工作簿</span><h3>采购订单台账</h3></div>
-          <button type="button">共享 <ChevronDown size={11} /></button>
+          {/* 示意图装饰，非交互元素：避免可聚焦/可点击却无任何行为的死按钮。 */}
+          <span class="book-share">共享 <ChevronDown size={11} /></span>
         </header>
         <div class="viewbar">
           <div class="views">
@@ -56,7 +57,7 @@ import { views, workbookRows } from "../data/product";
         <span><Bot size={14} /></span>
         <div><strong>已找到 3 条高优先级记录</strong><small>综合到货进度、金额与交付日期排序</small></div>
       </div>
-      <div class="ai-action"><span>已生成优先级视图</span><button type="button">打开视图 →</button></div>
+      <div class="ai-action"><span>已生成优先级视图</span><span class="ai-open">打开视图 →</span></div>
     </div>
   </div>
 </div>
@@ -263,13 +264,12 @@ import { views, workbookRows } from "../data/product";
     font-weight: 600;
   }
 
-  .book-head button {
+  .book-head .book-share {
     display: flex;
     height: 29px;
     align-items: center;
     gap: 5px;
     padding: 0 10px;
-    border: 0;
     border-radius: 7px;
     background: var(--primary);
     color: white;
@@ -384,7 +384,7 @@ import { views, workbookRows } from "../data/product";
   .ai-answer small { color: var(--text-3); font-size: 7.5px; }
   .ai-action { display: flex; align-items: center; justify-content: space-between; padding: 9px 13px; border-top: 1px solid var(--border); background: #f8f5ec; }
   .ai-action span { color: var(--text-3); font-size: 7.5px; }
-  .ai-action button { border: 0; background: transparent; color: var(--primary); font-size: 8px; font-weight: 700; }
+  .ai-action .ai-open { color: var(--primary); font-size: 8px; font-weight: 700; }
 
   @media (max-width: 760px) {
     .stage-wrap { margin-top: 38px; padding: 0 0 28px; }

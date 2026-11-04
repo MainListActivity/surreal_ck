@@ -11,8 +11,10 @@ const {
   description = "从一张表开始，让数据、协作与 AI 在同一个工作空间里自然生长。",
 } = Astro.props;
 
-// Sites Worker 会在响应时把占位域名替换为实际访问域名，确保分享图始终是绝对 URL。
-const siteOrigin = "https://site.invalid";
+// 分享图必须是绝对 URL。营销站域名固定，直接写生产域名——曾计划用 worker 在
+// 响应时替换占位域名，但 Pages 部署只上传 dist/client，替换逻辑从未生效，
+// 线上 og:image 实际是无效的 site.invalid。
+const siteOrigin = "https://www.maplayer.top";
 ---
 
 <!doctype html>
@@ -41,3 +43,15 @@ const siteOrigin = "https://site.invalid";
     <slot />
   </body>
 </html>
+
+<script>
+  // 移动端导航是 details/summary：点菜单内链接跳到锚点后菜单仍展开，会挡住
+  // 目标区块。这里在捕获阶段收起，交给浏览器继续处理跳转。
+  document.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target) return;
+    const details = target.closest<HTMLDetailsElement>("details.mobile-nav");
+    if (!details || !details.open) return;
+    if (target.closest("nav a")) details.open = false;
+  });
+</script>
