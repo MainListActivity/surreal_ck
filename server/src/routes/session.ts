@@ -3,6 +3,7 @@ import type { MiddlewareHandler } from "hono";
 import type { AppBindings } from "../hono-types";
 import { HttpError } from "../http-error";
 import { requireOidc } from "../middleware/oidc";
+import { describeUpstreamFailure } from "../oidc/upstream-fetch";
 import type { IdpTokenScopeAdapter } from "../workspaces/idp-scope-adapter";
 import type { WorkspaceScopeModule } from "../workspaces/workspace-scope";
 
@@ -54,11 +55,16 @@ export function createSessionRoutes(
         });
       } catch (e) {
         // 不打印原始 error、不放进响应 details：上游 message 可能携带 token。
+        const failure = describeUpstreamFailure(e);
         console.error("[session] idp scope exchange failed", {
           scope: result.scope,
-          error: e instanceof Error ? e.name : typeof e,
+          ...failure,
         });
-        throw new HttpError(502, "idp-scope-exchange-failed", "IdP token scope exchange failed");
+        throw new HttpError(
+          502,
+          failure.timeout ? "idp-scope-exchange-timeout" : "idp-scope-exchange-failed",
+          "IdP token scope exchange failed",
+        );
       }
 
       return c.json({
