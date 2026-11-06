@@ -1,5 +1,7 @@
 ---
 import {
+  Activity,
+  ArrowDown,
   ArrowRight,
   ChartColumn,
   Bot,
@@ -41,7 +43,7 @@ const iconByName = {
   <div class="page-shell">
     <header class="site-header">
       <div class="container nav-inner">
-        <a class="brand-link" href="#top" aria-label="卯豆首页"><Brand /></a>
+        <a class="brand-link" href="#top" aria-label="卯豆首页"><Brand inverted /></a>
         <nav class="desktop-nav" aria-label="主导航">
           {navigation.map((item) => <a href={item.href}>{item.label}</a>)}
         </nav>
@@ -62,29 +64,66 @@ const iconByName = {
     <main id="top">
       <section class="hero">
         <div class="hero-grain" aria-hidden="true"></div>
-        <div class="hero-orbit orbit-one" aria-hidden="true"></div>
-        <div class="hero-orbit orbit-two" aria-hidden="true"></div>
+        <div class="hero-grid-lines" aria-hidden="true"></div>
+        <div class="hero-glow glow-one" aria-hidden="true"></div>
+        <div class="hero-glow glow-two" aria-hidden="true"></div>
         <div class="container hero-content">
-          <p class="hero-badge"><Sparkles size={13} /> AI 原生的数据工作空间 <span>NEW</span></p>
-          <h1>让每一张表，<br /><em>成为行动的起点。</em></h1>
-          <p class="hero-lead">
-            卯豆把表格、数据库、团队协作与 AI 放进同一个工作空间。<br class="wide-only" />
-            从整理信息到形成判断，让数据自然长成团队的工作方式。
-          </p>
-          <div class="hero-actions">
-            <a class="button button-primary" data-login-trigger href={appUrl}>开始使用卯豆 <ArrowRight size={15} /></a>
-            <a class="button button-secondary" href="#capabilities">看看能做什么</a>
+          <div class="hero-grid">
+            <div class="hero-copy">
+              <p class="hero-badge"><span class="pulse-dot"></span> AI 原生的数据工作空间 <em>2026</em></p>
+              <h1 aria-label="工作不该困在表里，让数据自己向前走">
+                <span class="hero-line"><span>工作不该</span></span>
+                <span class="hero-line"><span>困在表里。</span></span>
+                <span class="hero-line accent"><span>让数据自己向前走</span></span>
+              </h1>
+              <p class="hero-lead">
+                一张表，是数据库、协作现场，也是 AI 的工作上下文。<br class="wide-only" />
+                卯豆让信息不只被记录，而是持续形成判断与下一步。
+              </p>
+              <div class="hero-actions">
+                <a class="button button-primary" data-login-trigger href={appUrl}>进入工作空间 <ArrowRight size={15} /></a>
+                <a class="button button-secondary" href="#capabilities">探索产品能力 <ArrowDown size={14} /></a>
+              </div>
+              <div class="hero-notes" aria-label="产品特点">
+                <span><Check size={13} /> 实时数据底座</span>
+                <span><Check size={13} /> 多人协作</span>
+                <span><Check size={13} /> 上下文 AI</span>
+              </div>
+            </div>
+
+            <aside class="hero-signal" aria-label="实时工作状态示意">
+              <div class="signal-head">
+                <span><Activity size={14} /> LIVE WORKSPACE</span>
+                <em>同步中</em>
+              </div>
+              <div class="signal-main">
+                <p>本周业务推进率</p>
+                <div><strong>84.6</strong><span>%</span><em>↑ 12.4%</em></div>
+              </div>
+              <div class="signal-chart" aria-hidden="true">
+                {Array.from({ length: 18 }, (_, index) => (
+                  <i style={`--signal-height: ${24 + ((index * 17) % 58)}%`}></i>
+                ))}
+              </div>
+              <div class="signal-foot">
+                <span><i></i> 126 条记录已分析</span>
+                <span>刚刚更新</span>
+              </div>
+              <div class="signal-cursor cursor-one" aria-hidden="true"><b>林</b><span>正在编辑</span></div>
+              <div class="signal-cursor cursor-two" aria-hidden="true"><b>AI</b><span>已生成视图</span></div>
+            </aside>
           </div>
-          <div class="hero-notes" aria-label="产品特点">
-            <span><Check size={13} /> Excel / CSV 快速导入</span>
-            <span><Check size={13} /> 实时多人协作</span>
-            <span><Check size={13} /> AI 理解工作上下文</span>
+          <div class="hero-stage-shell">
+            <div class="stage-caption" aria-hidden="true">
+              <span>01 / PRODUCT VIEW</span>
+              <span>SCROLL TO EXPLORE</span>
+            </div>
+            <ProductStage />
           </div>
-          <ProductStage />
         </div>
       </section>
 
-      <section class="premise section-space">
+      <section class="premise section-space" data-reveal>
         <div class="container premise-grid">
           <div>
             <p class="eyebrow">一个事实源，多种工作方式</p>
@@ -97,7 +136,7 @@ const iconByName = {
         </div>
       </section>
 
-      <section id="capabilities" class="capabilities section-space">
+      <section id="capabilities" class="capabilities section-space" data-reveal>
         <div class="container">
           <div class="section-heading">
             <p class="eyebrow">产品能力</p>
@@ -108,7 +147,7 @@ const iconByName = {
             {capabilityCards.map((item, index) => {
               const Icon = iconByName[item.icon];
               return (
-                <article class:list={["capability-card", `card-${index + 1}`]}>
+                <article class:list={["capability-card", `card-${index + 1}`]} data-gsap-card>
                   <div class="capability-icon"><Icon size={20} stroke-width={1.8} /></div>
                   <p>{item.eyebrow}</p>
                   <h3>{item.title}</h3>
@@ -121,7 +160,7 @@ const iconByName = {
         </div>
       </section>
 
-      <section class="showcase section-space">
+      <section class="showcase section-space" data-reveal>
         <div class="container">
           <div class="section-heading compact">
             <p class="eyebrow">从不同角度看见工作</p>
@@ -129,7 +168,7 @@ const iconByName = {
           </div>
 
           <div class="bento-grid">
-            <article class="bento views-card">
+            <article class="bento views-card" data-gsap-card>
               <div class="bento-copy">
                 <span class="feature-label"><Rows3 size={15} /> 多视图协作</span>
                 <h3>负责人看进度，管理者看全局，<br />数据仍然只有一份。</h3>
@@ -145,7 +184,7 @@ const iconByName = {
               </div>
             </article>
 
-            <article class="bento ai-showcase">
+            <article class="bento ai-showcase" data-gsap-card>
               <div class="ai-orb"><WandSparkles size={22} /></div>
               <span class="feature-label light"><Sparkles size={15} /> 卯豆 AI</span>
               <h3>把问题说出来，<br />让答案回到工作里。</h3>
@@ -156,7 +195,7 @@ const iconByName = {
               </div>
             </article>
 
-            <article class="bento dashboard-card">
+            <article class="bento dashboard-card" data-gsap-card>
               <div class="bento-copy small-copy">
                 <span class="feature-label"><ChartColumn size={15} /> 实时仪表盘</span>
                 <h3>数字变化，结论同步更新</h3>
@@ -172,7 +211,7 @@ const iconByName = {
               </div>
             </article>
 
-            <article class="bento research-card">
+            <article class="bento research-card" data-gsap-card>
               <div class="bento-copy small-copy">
                 <span class="feature-label"><FileSearch size={15} /> 资料与记录关联</span>
                 <h3>结论有出处，材料有归属</h3>
@@ -188,7 +227,7 @@ const iconByName = {
         </div>
       </section>
 
-      <section id="templates" class="templates section-space">
+      <section id="templates" class="templates section-space" data-reveal>
         <div class="container template-layout">
           <div class="template-intro">
             <p class="eyebrow">行业模板</p>
@@ -209,7 +248,7 @@ const iconByName = {
         </div>
       </section>
 
-      <section id="workflow" class="workflow section-space">
+      <section id="workflow" class="workflow section-space" data-reveal>
         <div class="container">
           <div class="workflow-head">
             <div><p class="eyebrow">工作方式</p><h2>三步，把信息变成团队能力</h2></div>
@@ -217,7 +256,7 @@ const iconByName = {
           </div>
           <div class="workflow-steps">
             {workflowSteps.map((step, index) => (
-              <article>
+              <article data-gsap-card>
                 <div class="step-top"><span>{step.number}</span>{index === 0 ? <Import size={19} /> : index === 1 ? <Users size={19} /> : <Sparkles size={19} />}</div>
                 <h3>{step.title}</h3>
                 <p>{step.description}</p>
@@ -227,7 +266,7 @@ const iconByName = {
         </div>
       </section>
 
-      <section id="security" class="security">
+      <section id="security" class="security" data-reveal>
         <div class="security-pattern" aria-hidden="true"></div>
         <div class="container security-grid">
           <div class="security-copy">
@@ -249,7 +288,7 @@ const iconByName = {
         </div>
       </section>
 
-      <section class="final-cta">
+      <section class="final-cta" data-reveal>
         <div class="container final-inner">
           <div class="final-seed seed-a" aria-hidden="true"></div>
           <div class="final-seed seed-b" aria-hidden="true"></div>
@@ -283,9 +322,15 @@ const iconByName = {
     top: 0;
     right: 0;
     left: 0;
-    border-bottom: 1px solid rgba(218, 209, 190, .72);
-    background: rgba(239, 235, 226, .86);
-    backdrop-filter: blur(18px) saturate(135%);
+    border-bottom: 1px solid rgba(255, 255, 255, .09);
+    background: rgba(8, 27, 20, .72);
+    backdrop-filter: blur(20px) saturate(125%);
+    transition: background-color .35s ease, box-shadow .35s ease;
+  }
+
+  .site-header.is-scrolled {
+    background: rgba(8, 27, 20, .94);
+    box-shadow: 0 10px 40px rgba(3, 14, 10, .14);
   }
 
   .nav-inner {
@@ -308,7 +353,7 @@ const iconByName = {
   .desktop-nav a,
   .login-link {
     position: relative;
-    color: var(--text-2);
+    color: rgba(233, 241, 231, .72);
     font-size: 12px;
     font-weight: 600;
   }
@@ -327,7 +372,7 @@ const iconByName = {
   }
 
   .desktop-nav a:hover {
-    color: var(--primary);
+    color: #d9ff91;
   }
 
   .desktop-nav a:hover::after {
@@ -348,16 +393,17 @@ const iconByName = {
     align-items: center;
     gap: 7px;
     padding: 0 14px;
-    border-radius: 9px;
-    background: var(--primary);
-    color: white;
+    border: 1px solid rgba(217, 255, 145, .24);
+    border-radius: 999px;
+    background: #d9ff91;
+    color: #10261c;
     font-size: 11px;
     font-weight: 700;
     transition: background-color .2s ease, transform .2s ease;
   }
 
   .nav-cta:hover {
-    background: var(--primary-hover);
+    background: #edffc8;
     transform: translateY(-1px);
   }
 
@@ -367,98 +413,183 @@ const iconByName = {
 
   .hero {
     position: relative;
-    padding: 151px 0 74px;
-    background:
-      radial-gradient(circle at 15% 30%, rgba(109, 184, 122, .13), transparent 26%),
-      radial-gradient(circle at 86% 15%, rgba(204, 107, 58, .08), transparent 22%),
-      var(--bg);
+    overflow: hidden;
+    padding: 156px 0 92px;
+    background: #081b14;
+    color: #f7f4e9;
   }
 
   .hero-grain {
     position: absolute;
     inset: 0;
-    opacity: .25;
-    background-image: repeating-radial-gradient(circle at 10% 20%, rgba(74, 61, 39, .15) 0, rgba(74, 61, 39, .15) .35px, transparent .5px, transparent 4px);
-    background-size: 6px 6px;
+    z-index: 1;
+    opacity: .11;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.75'/%3E%3C/svg%3E");
     pointer-events: none;
   }
 
-  .hero-orbit {
+  .hero-grid-lines {
     position: absolute;
-    border: 1px solid rgba(47, 122, 76, .1);
-    border-radius: 50%;
+    inset: 0;
+    opacity: .22;
+    background-image:
+      linear-gradient(rgba(160, 203, 174, .12) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(160, 203, 174, .12) 1px, transparent 1px);
+    background-size: 72px 72px;
+    mask-image: linear-gradient(to bottom, black, transparent 72%);
     pointer-events: none;
   }
 
-  .orbit-one { top: 140px; left: -190px; width: 420px; height: 420px; }
-  .orbit-two { top: 85px; right: -135px; width: 310px; height: 310px; }
+  .hero-glow {
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(1px);
+    pointer-events: none;
+  }
+
+  .glow-one {
+    top: -210px;
+    right: -140px;
+    width: 620px;
+    height: 620px;
+    background: radial-gradient(circle, rgba(101, 201, 125, .17), transparent 67%);
+  }
+
+  .glow-two {
+    top: 520px;
+    left: -290px;
+    width: 720px;
+    height: 720px;
+    background: radial-gradient(circle, rgba(217, 255, 145, .09), transparent 67%);
+  }
 
   .hero-content {
     position: relative;
-    text-align: center;
+    z-index: 2;
+  }
+
+  .hero-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.15fr) minmax(320px, .55fr);
+    gap: clamp(60px, 9vw, 132px);
+    align-items: center;
+  }
+
+  .hero-copy {
+    min-width: 0;
   }
 
   .hero-badge {
     display: inline-flex;
     margin: 0;
     align-items: center;
-    gap: 7px;
-    padding: 7px 9px 7px 11px;
-    border: 1px solid #d4ddcf;
+    gap: 9px;
+    padding: 8px 10px;
+    border: 1px solid rgba(201, 238, 208, .16);
     border-radius: 999px;
-    background: rgba(251, 250, 245, .72);
-    color: var(--primary);
-    font-size: 10px;
+    background: rgba(224, 255, 228, .055);
+    color: #b9d3bc;
+    font-size: 9px;
     font-weight: 700;
-    letter-spacing: .08em;
+    letter-spacing: .12em;
   }
 
-  .hero-badge span {
-    padding: 3px 5px;
-    border-radius: 999px;
-    background: var(--primary);
-    color: white;
-    font-size: 7px;
-    letter-spacing: .06em;
+  .hero-badge .pulse-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #d9ff91;
+    box-shadow: 0 0 0 5px rgba(217, 255, 145, .09);
+  }
+
+  .hero-badge em {
+    padding-left: 9px;
+    border-left: 1px solid rgba(255,255,255,.13);
+    color: #d9ff91;
+    font-size: 8px;
+    font-style: normal;
   }
 
   .hero h1 {
-    max-width: 950px;
-    margin: 26px auto 0;
+    max-width: 810px;
+    margin: 31px 0 0;
     font-family: var(--font-serif);
-    font-size: clamp(48px, 7vw, 84px);
-    font-weight: 600;
-    letter-spacing: -.045em;
-    line-height: 1.08;
+    font-size: clamp(58px, 7.2vw, 96px);
+    font-weight: 500;
+    letter-spacing: -.058em;
+    line-height: .98;
   }
 
-  .hero h1 em {
-    color: var(--primary);
+  .hero-line {
+    display: block;
+    overflow: hidden;
+    padding: 0 .08em .08em 0;
+  }
+
+  .hero-line > span {
+    display: block;
+  }
+
+  .hero-line.accent {
+    color: #d9ff91;
     font-style: italic;
-    font-weight: 500;
+    font-size: .72em;
+    letter-spacing: -.04em;
+  }
+
+  .hero-line.accent > span::after {
+    display: inline-block;
+    width: .18em;
+    height: .18em;
+    margin-left: .18em;
+    border-radius: 50%;
+    background: #ef7d4f;
+    content: "";
+    vertical-align: .14em;
   }
 
   .hero-lead {
-    margin: 28px auto 0;
-    color: var(--text-2);
-    font-size: 16px;
-    line-height: 1.9;
+    max-width: 680px;
+    margin: 29px 0 0;
+    color: #a9baae;
+    font-size: 15px;
+    line-height: 1.95;
   }
 
   .hero-actions {
     display: flex;
-    justify-content: center;
     gap: 11px;
-    margin-top: 30px;
+    margin-top: 33px;
+  }
+
+  .hero .button-primary {
+    background: #d9ff91;
+    color: #10261c;
+    box-shadow: 0 16px 36px rgba(168, 222, 117, .14);
+  }
+
+  .hero .button-primary:hover {
+    background: #edffc8;
+  }
+
+  .hero .button-secondary {
+    border-color: rgba(220, 239, 222, .18);
+    background: rgba(255,255,255,.045);
+    color: #dce8de;
+  }
+
+  .hero .button-secondary:hover {
+    border-color: rgba(217,255,145,.45);
+    background: rgba(255,255,255,.08);
   }
 
   .hero-notes {
     display: flex;
-    justify-content: center;
     gap: 24px;
-    margin-top: 22px;
-    color: var(--text-3);
-    font-size: 10px;
+    margin-top: 24px;
+    color: #789083;
+    font-size: 9px;
+    letter-spacing: .03em;
   }
 
   .hero-notes span {
@@ -467,7 +598,145 @@ const iconByName = {
     gap: 5px;
   }
 
-  .hero-notes svg { color: var(--primary); }
+  .hero-notes svg { color: #9bd276; }
+
+  .hero-signal {
+    position: relative;
+    min-height: 410px;
+    padding: 26px;
+    border: 1px solid rgba(220, 239, 222, .14);
+    border-radius: 3px;
+    background: linear-gradient(145deg, rgba(255,255,255,.075), rgba(255,255,255,.025));
+    box-shadow: 0 35px 90px rgba(0,0,0,.25);
+    backdrop-filter: blur(16px);
+  }
+
+  .hero-signal::before,
+  .hero-signal::after {
+    position: absolute;
+    width: 16px;
+    height: 16px;
+    border-color: #d9ff91;
+    content: "";
+  }
+
+  .hero-signal::before { top: -1px; left: -1px; border-top: 1px solid; border-left: 1px solid; }
+  .hero-signal::after { right: -1px; bottom: -1px; border-right: 1px solid; border-bottom: 1px solid; }
+
+  .signal-head,
+  .signal-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .signal-head {
+    padding-bottom: 19px;
+    border-bottom: 1px solid rgba(255,255,255,.1);
+  }
+
+  .signal-head span {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    color: #bcd0c0;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: .13em;
+  }
+
+  .signal-head span svg { color: #d9ff91; }
+  .signal-head em { color: #70917c; font-size: 8px; font-style: normal; }
+
+  .signal-main { margin-top: 34px; }
+  .signal-main p { margin: 0; color: #7f9989; font-size: 9px; letter-spacing: .08em; }
+  .signal-main > div { display: flex; align-items: baseline; margin-top: 7px; }
+  .signal-main strong { font-family: var(--font-serif); font-size: 64px; font-weight: 500; letter-spacing: -.06em; }
+  .signal-main > div > span { margin-left: 5px; color: #81998a; font-size: 17px; }
+  .signal-main em { margin-left: auto; padding: 6px 8px; border-radius: 999px; background: rgba(217,255,145,.1); color: #d9ff91; font-size: 8px; font-style: normal; }
+
+  .signal-chart {
+    display: flex;
+    height: 105px;
+    align-items: flex-end;
+    gap: 5px;
+    margin-top: 25px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(255,255,255,.07);
+    background: repeating-linear-gradient(to bottom, rgba(255,255,255,.055) 0 1px, transparent 1px 31px);
+  }
+
+  .signal-chart i {
+    width: 100%;
+    height: var(--signal-height);
+    min-height: 7px;
+    border-radius: 2px 2px 0 0;
+    background: linear-gradient(to top, #4d765c, #c3ee8e);
+    transform-origin: bottom;
+  }
+
+  .signal-foot {
+    margin-top: 18px;
+    color: #72877a;
+    font-size: 8px;
+  }
+
+  .signal-foot span:first-child { display: flex; align-items: center; gap: 6px; }
+  .signal-foot i { width: 5px; height: 5px; border-radius: 50%; background: #d9ff91; }
+
+  .signal-cursor {
+    position: absolute;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 7px 5px 5px;
+    border: 1px solid rgba(255,255,255,.14);
+    border-radius: 999px;
+    background: #f4f5e9;
+    box-shadow: 0 8px 25px rgba(0,0,0,.25);
+    color: #294233;
+    font-size: 7px;
+  }
+
+  .signal-cursor b {
+    display: grid;
+    width: 19px;
+    height: 19px;
+    place-items: center;
+    border-radius: 50%;
+    background: #2f7a4c;
+    color: white;
+    font-size: 6px;
+  }
+
+  .cursor-one { top: 102px; right: -40px; }
+  .cursor-two { right: 34px; bottom: -20px; }
+  .cursor-two b { background: #ef7d4f; }
+
+  .hero-stage-shell {
+    position: relative;
+    margin-top: 112px;
+    perspective: 1500px;
+  }
+
+  .stage-caption {
+    display: flex;
+    justify-content: space-between;
+    margin: 0 24px -30px;
+    color: #668174;
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: .16em;
+  }
+
+  .hero-stage-shell :global(.stage-wrap) {
+    transform-origin: center top;
+  }
+
+  .hero-stage-shell :global(.stage) {
+    border-color: rgba(255,255,255,.16);
+    box-shadow: 0 50px 120px rgba(0,0,0,.44);
+  }
 
   .section-space {
     padding: 118px 0;
@@ -475,6 +744,7 @@ const iconByName = {
 
   .premise {
     background: var(--surface);
+    border-bottom: 1px solid var(--border);
   }
 
   .premise-grid {
@@ -544,7 +814,7 @@ const iconByName = {
     overflow: hidden;
     padding: 31px;
     border: 1px solid var(--border);
-    border-radius: 18px;
+    border-radius: 4px;
     background: #f7f4eb;
     transition: transform .25s ease, box-shadow .25s ease;
   }
@@ -617,7 +887,7 @@ const iconByName = {
     position: relative;
     overflow: hidden;
     border: 1px solid var(--border-dark);
-    border-radius: 21px;
+    border-radius: 8px;
     background: var(--surface);
   }
 
@@ -814,7 +1084,10 @@ const iconByName = {
   .record-card strong { font-size: 9px; }
 
   .templates {
-    background: #e9e2d4;
+    background:
+      linear-gradient(90deg, rgba(47,122,76,.045) 1px, transparent 1px),
+      #e9e2d4;
+    background-size: 72px 100%;
   }
 
   .template-layout {
@@ -905,8 +1178,8 @@ const iconByName = {
     overflow: hidden;
     max-width: 1220px;
     padding: 105px 30px;
-    border-radius: 22px;
-    background: #dfe9db;
+    border-radius: 8px;
+    background: #d9ff91;
     text-align: center;
   }
 
@@ -914,7 +1187,7 @@ const iconByName = {
   .final-inner::after { position: absolute; width: 350px; height: 350px; border: 1px solid rgba(47,122,76,.1); border-radius: 50%; content: ""; }
   .final-inner::before { top: -190px; left: -90px; box-shadow: 0 0 0 52px rgba(47,122,76,.025), 0 0 0 103px rgba(47,122,76,.02); }
   .final-inner::after { right: -80px; bottom: -240px; box-shadow: 0 0 0 52px rgba(47,122,76,.025), 0 0 0 103px rgba(47,122,76,.02); }
-  .final-inner > p { position: relative; z-index: 1; margin: 0; color: var(--primary); font-size: 10px; font-weight: 700; letter-spacing: .14em; }
+  .final-inner > p { position: relative; z-index: 1; margin: 0; color: #315436; font-size: 10px; font-weight: 700; letter-spacing: .14em; }
   .final-inner h2 { position: relative; z-index: 1; margin-top: 17px; font-size: clamp(43px, 5.5vw, 68px); }
   .final-inner h2 em { color: var(--primary); font-style: italic; font-weight: 500; }
   .final-button { position: relative; z-index: 1; margin-top: 29px; background: var(--text-1); color: white; }
@@ -942,7 +1215,7 @@ const iconByName = {
     .nav-inner { grid-template-columns: 1fr auto; }
     .nav-actions { display: none; }
     .mobile-nav { position: relative; display: block; justify-self: end; }
-    .mobile-nav summary { display: grid; width: 39px; height: 39px; place-items: center; border: 1px solid var(--border-dark); border-radius: 10px; background: var(--surface); cursor: pointer; list-style: none; }
+    .mobile-nav summary { display: grid; width: 39px; height: 39px; place-items: center; border: 1px solid rgba(255,255,255,.14); border-radius: 10px; background: rgba(255,255,255,.08); color: white; cursor: pointer; list-style: none; }
     .mobile-nav summary::-webkit-details-marker { display: none; }
     .menu-close { display: none; }
     .mobile-nav[open] .menu-open { display: none; }
@@ -951,6 +1224,11 @@ const iconByName = {
     .mobile-nav nav a { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--border); color: var(--text-2); font-size: 11px; }
     .mobile-nav nav a:last-child { border-bottom: 0; }
     .mobile-nav .mobile-login { background: var(--primary); color: white; font-weight: 700; }
+
+    .hero-grid { grid-template-columns: 1fr; gap: 70px; }
+    .hero-copy { max-width: 760px; }
+    .hero-signal { width: min(520px, calc(100% - 38px)); margin-left: auto; }
+    .hero-stage-shell { margin-top: 95px; }
 
     .premise-grid,
     .template-layout,
@@ -973,12 +1251,21 @@ const iconByName = {
 
   @media (max-width: 680px) {
     .nav-inner { height: 64px; }
-    .hero { padding: 126px 0 58px; }
-    .hero h1 { font-size: clamp(43px, 13vw, 62px); }
+    .hero { padding: 116px 0 58px; }
+    .hero h1 { font-size: clamp(48px, 14.4vw, 67px); line-height: 1.01; }
+    .hero-line.accent { margin-top: 5px; font-size: .68em; }
     .hero-lead { font-size: 14px; }
     .wide-only { display: none; }
     .hero-actions { flex-direction: column; align-items: stretch; padding: 0 9px; }
     .hero-notes { flex-wrap: wrap; gap: 9px 15px; }
+    .hero-signal { width: calc(100% - 12px); min-height: 372px; margin: 0 0 0 12px; padding: 21px; }
+    .signal-main strong { font-size: 55px; }
+    .signal-chart { height: 88px; }
+    .cursor-one { top: 95px; right: -10px; }
+    .cursor-two { right: 20px; bottom: -18px; }
+    .hero-stage-shell { margin-top: 82px; }
+    .stage-caption { margin: 0 0 -22px; }
+    .stage-caption span:last-child { display: none; }
     .section-space { padding: 85px 0; }
     .premise-grid { gap: 30px; }
     .premise h2,
@@ -1014,3 +1301,146 @@ const iconByName = {
     .footer-login { justify-self: start; }
   }
 </style>
+
+<script>
+  import { gsap } from "gsap";
+  import { ScrollTrigger } from "gsap/ScrollTrigger";
+
+  gsap.registerPlugin(ScrollTrigger);
+
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const header = document.querySelector<HTMLElement>(".site-header");
+
+  const syncHeader = (): void => {
+    header?.classList.toggle("is-scrolled", window.scrollY > 24);
+  };
+
+  syncHeader();
+  window.addEventListener("scroll", syncHeader, { passive: true });
+
+  if (!reducedMotion) {
+    const intro = gsap.timeline({ defaults: { ease: "power3.out" } });
+    const heroLines = gsap.utils.toArray<HTMLElement>(".hero-line > span");
+    const signalBars = gsap.utils.toArray<HTMLElement>(".signal-chart i");
+
+    intro
+      .from(".site-header", { yPercent: -100, duration: .7 })
+      .from(".hero-badge", { y: 18, autoAlpha: 0, duration: .55 }, "-=.25")
+      .from(heroLines, { yPercent: 112, rotate: 2, duration: .9, stagger: .11 }, "-=.25")
+      .from(".hero-lead", { y: 24, autoAlpha: 0, duration: .7 }, "-=.5")
+      .from(".hero-actions, .hero-notes", { y: 18, autoAlpha: 0, duration: .6, stagger: .09 }, "-=.45")
+      .from(".hero-signal", { x: 46, rotateY: -7, autoAlpha: 0, duration: .95 }, "-=.9")
+      .from(signalBars, { scaleY: 0, duration: .7, stagger: .025, ease: "power2.out" }, "-=.55")
+      .from(".signal-cursor", { scale: .75, autoAlpha: 0, duration: .45, stagger: .12 }, "-=.35")
+      .from(".hero-stage-shell", { y: 90, rotateX: 8, autoAlpha: 0, duration: 1.05 }, "-=.4");
+
+    gsap.to(".glow-one", {
+      xPercent: -12,
+      yPercent: 8,
+      duration: 7,
+      repeat: -1,
+      yoyo: true,
+      ease: "sine.inOut",
+    });
+
+    gsap.to(".pulse-dot", {
+      scale: 1.55,
+      opacity: .55,
+      duration: 1.15,
+      repeat: -1,
+      yoyo: true,
+      ease: "sine.inOut",
+    });
+
+    const stageWrap = document.querySelector<HTMLElement>(".hero-stage-shell .stage-wrap");
+    if (stageWrap) {
+      gsap.to(stageWrap, {
+        y: -42,
+        rotateX: 2.5,
+        ease: "none",
+        scrollTrigger: {
+          trigger: stageWrap,
+          start: "top 88%",
+          end: "bottom 30%",
+          scrub: 1,
+        },
+      });
+    }
+
+    gsap.utils.toArray<HTMLElement>("[data-reveal]").forEach((section) => {
+      const heading = section.querySelector<HTMLElement>("h2");
+      const copy = section.querySelector<HTMLElement>(".premise-copy, .section-heading > p:last-child, .workflow-head > p, .security-copy > p");
+      const targets = [heading, copy].filter((target): target is HTMLElement => target !== null);
+      if (targets.length === 0) return;
+
+      gsap.from(targets, {
+        y: 46,
+        autoAlpha: 0,
+        duration: .85,
+        stagger: .1,
+        ease: "power3.out",
+        scrollTrigger: {
+          trigger: section,
+          start: "top 76%",
+          once: true,
+        },
+      });
+    });
+
+    gsap.utils.toArray<HTMLElement>("[data-gsap-card]").forEach((card, index) => {
+      gsap.from(card, {
+        y: 54,
+        autoAlpha: 0,
+        duration: .78,
+        delay: (index % 3) * .07,
+        ease: "power3.out",
+        clearProps: "transform",
+        scrollTrigger: {
+          trigger: card,
+          start: "top 86%",
+          once: true,
+        },
+      });
+    });
+
+    gsap.from(".chart-demo .bars i", {
+      scaleY: 0,
+      duration: .7,
+      stagger: .06,
+      transformOrigin: "bottom",
+      ease: "power2.out",
+      scrollTrigger: {
+        trigger: ".chart-demo",
+        start: "top 82%",
+        once: true,
+      },
+    });
+
+    gsap.from(".security-visual .role", {
+      scale: .8,
+      autoAlpha: 0,
+      duration: .65,
+      stagger: .15,
+      ease: "back.out(1.5)",
+      scrollTrigger: {
+        trigger: ".security-visual",
+        start: "top 72%",
+        once: true,
+      },
+    });
+
+    if (window.matchMedia("(pointer: fine)").matches) {
+      const signal = document.querySelector<HTMLElement>(".hero-signal");
+      const hero = document.querySelector<HTMLElement>(".hero");
+      hero?.addEventListener("pointermove", (event: PointerEvent) => {
+        const x = event.clientX / window.innerWidth - .5;
+        const y = event.clientY / window.innerHeight - .5;
+        gsap.to(signal, { x: x * 12, y: y * 10, rotateY: x * 2, rotateX: y * -2, duration: .8, ease: "power2.out" });
+        gsap.to(".cursor-one", { x: x * -18, y: y * -12, duration: 1, ease: "power2.out" });
+        gsap.to(".cursor-two", { x: x * 15, y: y * 10, duration: 1.1, ease: "power2.out" });
+      });
+    }
+
+    void document.fonts.ready.then(() => ScrollTrigger.refresh());
+  }
+</script>
