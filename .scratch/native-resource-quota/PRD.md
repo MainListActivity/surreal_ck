@@ -20,6 +20,13 @@ digest 固定的自有镜像。
 并保留真实运行记录；验收口径见
 [`native-quota-acceptance-matrix.md`](../../docs/release/native-quota-acceptance-matrix.md)。
 
+**收口已冻结（2026-09-29）**：老板决定生产 SurrealDB 按现状运行（单机
+native-quota fork），数据面部署拓扑不得变更，三份收口文档（上述 runbook×2 +
+验收矩阵）已标注冻结；仅当出现与生产现网兼容的认证候选并按实际部署拓扑
+重写阶段一后才可重启。
+关联任务：`477e239e-2f1c-46c8-a377-4be98b9341d7`（冻结归档）、
+`98ba14f2-7601-4345-9e5a-88a09da86665`（backend 配额契约实测与认证差距评估）。
+
 ## 一句话
 
 把 Plus/Pro/Max、订阅、试用、人工调整和运营控制建模为 `_system` 中不可变资源权益，经确定性 compiler 与可恢复 reconciler 物化到配额受管 SurrealDB；浏览器继续直连业务 database，Bun 只承载资源控制面、角色化读取和运营动作。
