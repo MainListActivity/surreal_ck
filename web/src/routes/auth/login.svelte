@@ -35,15 +35,14 @@
 
 <main class="auth-page">
   <section class="auth-panel" aria-live="polite">
+    <p class="brand">卯豆</p>
     {#if error}
-      <p class="eyebrow">OIDC</p>
       <h1>登录失败</h1>
       <p class="message">{error}</p>
       <button type="button" onclick={startLogin}>重试</button>
     {:else}
-      <p class="eyebrow">OIDC</p>
-      <h1>正在跳转登录</h1>
-      <p class="message">请在身份提供方完成登录。</p>
+      <span class="spinner" aria-hidden="true"></span>
+      <h1>正在前往安全登录…</h1>
       {#if slow}
         <p class="message">跳转时间比预期更长。若页面一直停在这里，请重试。</p>
         <button type="button" onclick={startLogin}>重试</button>
@@ -58,49 +57,77 @@
     display: grid;
     place-items: center;
     padding: 2rem;
-    background: #f7f8fa;
-    color: #16181d;
-    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #efebe2;
+    color: #221e17;
+    font-family: "Plus Jakarta Sans", "Noto Sans SC", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   }
 
   .auth-panel {
-    width: min(100%, 28rem);
-    border: 1px solid #d9dee7;
-    border-radius: 8px;
-    background: #ffffff;
-    padding: 1.5rem;
+    width: min(100%, 24rem);
+    border: 1px solid #e6dfd0;
+    border-radius: 18px;
+    background: #fbfaf5;
+    padding: 2.5rem 2rem;
+    text-align: center;
+    box-shadow: 0 24px 60px -30px rgba(34, 30, 23, 0.28);
   }
 
-  .eyebrow {
-    margin: 0 0 0.5rem;
-    color: #546071;
-    font-size: 0.75rem;
-    font-weight: 700;
-    letter-spacing: 0;
-    text-transform: uppercase;
+  .brand {
+    margin: 0 0 1.5rem;
+    font-family: "Spectral", "Noto Serif SC", serif;
+    font-size: 1.5rem;
+    font-weight: 600;
+    color: #2f7a4c;
+    letter-spacing: 0.02em;
+  }
+
+  .spinner {
+    display: inline-block;
+    width: 30px;
+    height: 30px;
+    margin-bottom: 1.25rem;
+    border-radius: 50%;
+    border: 3px solid rgba(47, 122, 76, 0.18);
+    border-top-color: #2f7a4c;
+    animation: auth-spin 0.8s linear infinite;
+  }
+
+  @keyframes auth-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .spinner {
+      animation: none;
+    }
   }
 
   h1 {
     margin: 0;
+    font-family: "Spectral", "Noto Serif SC", serif;
     font-size: 1.35rem;
-    line-height: 1.25;
+    font-weight: 600;
+    line-height: 1.35;
   }
 
   .message {
     margin: 0.75rem 0 0;
-    color: #3e4654;
+    color: #5c5447;
+    font-size: 0.875rem;
     line-height: 1.6;
   }
 
   button {
-    margin-top: 1rem;
+    margin-top: 1.25rem;
     border: 0;
-    border-radius: 6px;
-    background: #1f6feb;
+    border-radius: 10px;
+    background: #2f7a4c;
     color: #ffffff;
     cursor: pointer;
     font: inherit;
-    font-weight: 650;
-    padding: 0.65rem 0.9rem;
+    font-weight: 600;
+    padding: 0.7rem 1.4rem;
   }
 </style>

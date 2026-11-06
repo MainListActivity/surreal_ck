@@ -1,17 +1,39 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { handleCallback } from "../../lib/auth";
+  import {
+    isFramed,
+    postAuthEmbedMessage,
+    sanitizeReturnTo,
+  } from "../../lib/auth-embed-protocol";
 
   let error = $state<string | null>(null);
+  let embeddedDone = $state(false);
   let started = false;
 
   async function completeLogin(): Promise<void> {
     const result = await handleCallback(window.location.href);
     if (result.ok) {
+      if (isFramed()) {
+        postAuthEmbedMessage({
+          source: "maplayer-auth",
+          type: "success",
+          returnTo: sanitizeReturnTo(result.returnTo),
+        });
+        embeddedDone = true;
+        return;
+      }
       window.location.replace(result.returnTo);
       return;
     }
 
+    if (isFramed()) {
+      postAuthEmbedMessage({
+        source: "maplayer-auth",
+        type: "error",
+        message: result.error,
+      });
+    }
     error = result.error;
   }
 
@@ -22,17 +44,22 @@
   });
 </script>
 
-<main class="auth-page">
-  <section class="auth-panel" aria-live="polite">
-    {#if error}
-      <p class="eyebrow">OIDC</p>
+<main class="auth-page" class:embedded={isFramed()}>
+  <section class="auth-panel" class:compact={isFramed()} aria-live="polite">
+    {#if embeddedDone}
+      <p class="brand">卯豆</p>
+      <span class="check" aria-hidden="true">✓</span>
+      <h1>登录成功</h1>
+      <p class="message">正在进入工作空间…</p>
+    {:else if error}
+      {#if !isFramed()}<p class="brand">卯豆</p>{/if}
       <h1>登录回调失败</h1>
       <p class="message">{error}</p>
       <a href="/auth/login">返回登录</a>
     {:else}
-      <p class="eyebrow">OIDC</p>
-      <h1>正在完成登录</h1>
-      <p class="message">正在保存浏览器会话。</p>
+      <p class="brand">卯豆</p>
+      <span class="spinner" aria-hidden="true"></span>
+      <h1>正在进入工作空间…</h1>
     {/if}
   </section>
 </main>
@@ -43,48 +70,102 @@
     display: grid;
     place-items: center;
     padding: 2rem;
-    background: #f7f8fa;
-    color: #16181d;
-    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #efebe2;
+    color: #221e17;
+    font-family: "Plus Jakarta Sans", "Noto Sans SC", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+
+  .auth-page.embedded {
+    min-height: auto;
+    padding: 2rem 1rem;
+    background: transparent;
   }
 
   .auth-panel {
-    width: min(100%, 28rem);
-    border: 1px solid #d9dee7;
-    border-radius: 8px;
-    background: #ffffff;
-    padding: 1.5rem;
+    width: min(100%, 24rem);
+    border: 1px solid #e6dfd0;
+    border-radius: 18px;
+    background: #fbfaf5;
+    padding: 2.5rem 2rem;
+    text-align: center;
+    box-shadow: 0 24px 60px -30px rgba(34, 30, 23, 0.28);
   }
 
-  .eyebrow {
-    margin: 0 0 0.5rem;
-    color: #546071;
-    font-size: 0.75rem;
+  .auth-panel.compact {
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    padding: 0.5rem;
+  }
+
+  .brand {
+    margin: 0 0 1.5rem;
+    font-family: "Spectral", "Noto Serif SC", serif;
+    font-size: 1.5rem;
+    font-weight: 600;
+    color: #2f7a4c;
+    letter-spacing: 0.02em;
+  }
+
+  .spinner {
+    display: inline-block;
+    width: 30px;
+    height: 30px;
+    margin-bottom: 1.25rem;
+    border-radius: 50%;
+    border: 3px solid rgba(47, 122, 76, 0.18);
+    border-top-color: #2f7a4c;
+    animation: auth-spin 0.8s linear infinite;
+  }
+
+  .check {
+    display: inline-grid;
+    place-items: center;
+    width: 40px;
+    height: 40px;
+    margin-bottom: 1rem;
+    border-radius: 50%;
+    background: #2f7a4c;
+    color: #ffffff;
+    font-size: 1.25rem;
     font-weight: 700;
-    letter-spacing: 0;
-    text-transform: uppercase;
+  }
+
+  @keyframes auth-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .spinner {
+      animation: none;
+    }
   }
 
   h1 {
     margin: 0;
+    font-family: "Spectral", "Noto Serif SC", serif;
     font-size: 1.35rem;
-    line-height: 1.25;
+    font-weight: 600;
+    line-height: 1.35;
   }
 
   .message {
     margin: 0.75rem 0 0;
-    color: #3e4654;
+    color: #5c5447;
+    font-size: 0.875rem;
     line-height: 1.6;
   }
 
   a {
     display: inline-block;
-    margin-top: 1rem;
-    border-radius: 6px;
-    background: #1f6feb;
+    margin-top: 1.25rem;
+    border-radius: 10px;
+    background: #2f7a4c;
     color: #ffffff;
-    font-weight: 650;
-    padding: 0.65rem 0.9rem;
+    font-weight: 600;
+    padding: 0.7rem 1.4rem;
     text-decoration: none;
   }
 </style>

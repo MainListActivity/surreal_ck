@@ -224,7 +224,14 @@ test("B envelope read-only projection reports used/committed/remaining attempts 
   };
   const store = { envelopeSummary: async () => envelope };
   const app = new Hono<AppBindings>().route("/", createOpsInternalAiRoutes({ gate: { store } as unknown as InternalAiGate, requireOperator: operator, runtime: {} })).onError(handleError);
-  const response = await app.request("/api/ops/internal-ai/envelopes/current");
+  // 固定时钟早于包络期限，避免夹具随真实时间过期。
+  const clock = spyOn(Date, "now").mockReturnValue(Date.parse("2026-11-01T00:00:00Z"));
+  let response: Response;
+  try {
+    response = await app.request("/api/ops/internal-ai/envelopes/current");
+  } finally {
+    clock.mockRestore();
+  }
   expect(response.status).toBe(200);
   expect(await response.json()).toMatchObject({ contract: "magpie-window/v1", moneyUnit: "nanoUSD", currency: "USD", expired: false, envelope: { usedAttempts: 3, committedAttempts: 2, remainingAttempts: 15 } });
   const missing = new Hono<AppBindings>().route("/", createOpsInternalAiRoutes({ gate: { store: { envelopeSummary: async () => undefined } } as unknown as InternalAiGate, requireOperator: operator, runtime: {} })).onError(handleError);

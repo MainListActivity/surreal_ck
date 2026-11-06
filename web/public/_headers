@@ -1,2 +1,4 @@
 /runtime-version.json
   Cache-Control: no-store
+/auth/*
+  Content-Security-Policy: frame-ancestors 'self' https://www.maplayer.top

@@ -22,6 +22,8 @@ const code = (fn: () => unknown): string => {
 
 /** 老板决定之后的生效时刻；到期取 B 包络期限（2026-11-05T12:10:07Z）。 */
 const EFFECTIVE = "2026-10-30T22:00:00Z";
+/** 固定时钟：早于 B 包络期限，避免测试随真实时间过期。 */
+const FIXED_NOW = Date.parse("2026-11-01T00:00:00Z");
 const ENDPOINT = `https://${MAGPIE_FREE_BASIS_ROUTE.host}${MAGPIE_FREE_BASIS_ROUTE.path}`;
 const runtime = { providerId: "openai", modelId: "group/work", endpoint: ENDPOINT };
 
@@ -51,7 +53,7 @@ function freeWindow(overrides: Partial<WindowRow> = {}): WindowRow {
     status: "active",
     attempts: 0,
     attempt_limit: 1,
-    evidence_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+    evidence_expires_at: new Date(FIXED_NOW + 3_600_000).toISOString(),
     ...overrides,
   } as WindowRow;
 }
@@ -207,7 +209,7 @@ describe("free-quota remote window builder", () => {
 
   /** 与 window-remote 单元测试同构的 null+gap 远端证据；时间取新鲜值。 */
   function evidence(endpoint = ENDPOINT, overrides: Partial<MagpieRemoteWindowCreate["evidence"]> = {}): MagpieRemoteWindowCreate["evidence"] {
-    const capturedAt = new Date(Date.now() - 60_000).toISOString();
+    const capturedAt = new Date(FIXED_NOW - 60_000).toISOString();
     const freshness = new Date(Date.parse(capturedAt) + MAGPIE_LOCAL_FRESHNESS_SECONDS * 1000).toISOString();
     return {
       version: MAGPIE_REMOTE_EVIDENCE_VERSION,
@@ -263,7 +265,7 @@ describe("free-quota remote window builder", () => {
     return {
       totalUsed: 0, committedAttempts: 0, activityTotalLimit: 1_000_000_000, activityPerAttemptLimit: 100_000_000,
       envelopeUsed: 0, envelopeCommitted: 0, envelopeCommittedNanoUsd: 0, envelopeSpentNanoUsd: 0, envelopeReservedNanoUsd: 0,
-      envelopeFreeStopped: false, runtime, basis: basis(), ...overrides,
+      envelopeFreeStopped: false, runtime, basis: basis(), now: FIXED_NOW, ...overrides,
     };
   }
 
@@ -281,7 +283,7 @@ describe("free-quota remote window builder", () => {
   });
 
   test("the builder refuses a missing, forged, premature, expired, drifted or conflicting basis", () => {
-    const short = basis({ expiresAt: new Date(Date.now() + 3_600_000).toISOString() });
+    const short = basis({ expiresAt: new Date(FIXED_NOW + 3_600_000).toISOString() });
     const shortHash = freeQuotaBasisHash(short);
     const base = evidence();
     const other = `https://${MAGPIE_FREE_BASIS_ROUTE.host}/other/v1`;

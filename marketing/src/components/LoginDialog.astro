@@ -1,0 +1,370 @@
+---
+import { Lock, X } from "@lucide/astro";
+import Brand from "./Brand.astro";
+
+interface Props {
+  appUrl: string;
+}
+
+const { appUrl } = Astro.props;
+---
+
+<dialog
+  class="login-dialog"
+  data-login-dialog
+  data-app-url={appUrl}
+  data-state="loading"
+  aria-label="登录卯豆"
+>
+  <div class="dlg-head">
+    <Brand />
+    <button type="button" class="dlg-close" data-dialog-close aria-label="关闭">
+      <X size={18} />
+    </button>
+  </div>
+
+  <div class="dlg-body">
+    <div class="dlg-loading" data-region="loading">
+      <span class="sk sk-title"></span>
+      <span class="sk sk-field"></span>
+      <span class="sk sk-field"></span>
+      <span class="sk sk-button"></span>
+      <p class="dlg-slow" data-region="slow" hidden>
+        加载较慢？
+        <a href={appUrl}>在新页面登录</a>
+        或
+        <button type="button" data-action="retry">重试</button>
+      </p>
+    </div>
+
+    <div class="dlg-frame" data-region="frame"></div>
+
+    <div class="dlg-success" data-region="success">
+      <span class="dlg-check" aria-hidden="true">✓</span>
+      <p class="dlg-success-title">登录成功</p>
+      <p class="dlg-success-sub">正在进入工作空间…</p>
+    </div>
+
+    <div class="dlg-error" data-region="error">
+      <p class="dlg-error-msg" data-error-message></p>
+      <div class="dlg-error-actions">
+        <button type="button" class="dlg-btn" data-action="retry">重试</button>
+        <a class="dlg-btn-secondary" href={appUrl}>在新页面登录</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="dlg-foot">
+    <span class="dlg-secure"><Lock size={12} /> 由 ma_hono 安全认证</span>
+    <a class="dlg-external" href={appUrl}>在新页面打开</a>
+  </div>
+</dialog>
+
+<script>
+  import { initLoginDialog } from "../scripts/login-dialog";
+  initLoginDialog();
+</script>
+
+<style>
+  .login-dialog {
+    width: 440px;
+    max-width: calc(100vw - 32px);
+    max-height: 92dvh;
+    margin: auto;
+    padding: 0;
+    border: 0;
+    border-radius: 18px;
+    background: var(--surface-2);
+    color: var(--text-1);
+    font-family: var(--font-sans);
+    box-shadow: 0 40px 90px -30px rgba(34, 30, 23, 0.45);
+    overflow: hidden;
+  }
+
+  .login-dialog::backdrop {
+    background: rgba(34, 30, 23, 0.45);
+    backdrop-filter: blur(4px);
+  }
+
+  .login-dialog[open] {
+    animation: dlg-in 0.22s ease-out;
+  }
+
+  @keyframes dlg-in {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .login-dialog[open] {
+      animation: none;
+    }
+  }
+
+  .dlg-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 20px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .dlg-close {
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border: 0;
+    border-radius: 9px;
+    background: transparent;
+    color: var(--text-2);
+    cursor: pointer;
+  }
+
+  .dlg-close:hover {
+    background: var(--surface);
+    color: var(--text-1);
+  }
+
+  .dlg-body {
+    position: relative;
+    display: grid;
+    min-height: 320px;
+  }
+
+  .dlg-loading,
+  .dlg-frame,
+  .dlg-success,
+  .dlg-error {
+    grid-area: 1 / 1;
+  }
+
+  /* 骨架屏 */
+  .dlg-loading {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 30px 28px 24px;
+    background: var(--surface-2);
+  }
+
+  .sk {
+    display: block;
+    border-radius: 9px;
+    background: linear-gradient(
+      100deg,
+      var(--surface) 30%,
+      var(--border) 50%,
+      var(--surface) 70%
+    );
+    background-size: 200% 100%;
+    animation: sk-shimmer 1.4s ease-in-out infinite;
+  }
+
+  .sk-title {
+    width: 45%;
+    height: 26px;
+    margin-bottom: 8px;
+  }
+
+  .sk-field {
+    height: 46px;
+  }
+
+  .sk-button {
+    height: 46px;
+    margin-top: 6px;
+  }
+
+  @keyframes sk-shimmer {
+    from {
+      background-position: 120% 0;
+    }
+    to {
+      background-position: -80% 0;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .sk {
+      animation: none;
+    }
+  }
+
+  .dlg-slow {
+    margin: 10px 0 0;
+    font-size: 12.5px;
+    color: var(--text-2);
+    text-align: center;
+  }
+
+  .dlg-slow a {
+    color: var(--primary);
+    font-weight: 600;
+  }
+
+  .dlg-slow button {
+    border: 0;
+    background: none;
+    padding: 0;
+    color: var(--primary);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  /* iframe 区域 */
+  .dlg-frame {
+    min-height: 320px;
+    overflow: hidden;
+  }
+
+  .dlg-frame :global(.dlg-iframe) {
+    display: block;
+    width: 100%;
+    height: 320px;
+    border: 0;
+    opacity: 0;
+    transition: opacity 0.18s ease-out;
+  }
+
+  .login-dialog[data-state="ready"] .dlg-frame :global(.dlg-iframe) {
+    opacity: 1;
+  }
+
+  /* 状态切换 */
+  .login-dialog[data-state="loading"] .dlg-frame,
+  .login-dialog[data-state="loading"] .dlg-success,
+  .login-dialog[data-state="loading"] .dlg-error,
+  .login-dialog[data-state="ready"] .dlg-loading,
+  .login-dialog[data-state="ready"] .dlg-success,
+  .login-dialog[data-state="ready"] .dlg-error,
+  .login-dialog[data-state="success"] .dlg-loading,
+  .login-dialog[data-state="success"] .dlg-frame,
+  .login-dialog[data-state="success"] .dlg-error,
+  .login-dialog[data-state="error"] .dlg-loading,
+  .login-dialog[data-state="error"] .dlg-frame,
+  .login-dialog[data-state="error"] .dlg-success {
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  /* 成功 / 失败 */
+  .dlg-success,
+  .dlg-error {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 44px 28px;
+    text-align: center;
+  }
+
+  .dlg-check {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    margin-bottom: 8px;
+    border-radius: 50%;
+    background: var(--primary);
+    color: #fff;
+    font-size: 20px;
+    font-weight: 700;
+  }
+
+  .dlg-success-title {
+    margin: 0;
+    font-family: var(--font-serif);
+    font-size: 20px;
+    font-weight: 600;
+  }
+
+  .dlg-success-sub {
+    margin: 0;
+    font-size: 13px;
+    color: var(--text-2);
+  }
+
+  .dlg-error-msg {
+    margin: 0 0 14px;
+    font-size: 13.5px;
+    line-height: 1.6;
+    color: var(--text-2);
+  }
+
+  .dlg-error-actions {
+    display: flex;
+    gap: 10px;
+  }
+
+  .dlg-btn,
+  .dlg-btn-secondary {
+    border-radius: 10px;
+    padding: 10px 18px;
+    font: inherit;
+    font-size: 13.5px;
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: none;
+  }
+
+  .dlg-btn {
+    border: 0;
+    background: var(--primary);
+    color: #fff;
+  }
+
+  .dlg-btn:hover {
+    background: var(--primary-hover);
+  }
+
+  .dlg-btn-secondary {
+    border: 1px solid var(--border-dark);
+    background: var(--surface-2);
+    color: var(--text-1);
+  }
+
+  .dlg-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 20px;
+    border-top: 1px solid var(--border);
+    font-size: 11.5px;
+    color: var(--text-3);
+  }
+
+  .dlg-secure {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .dlg-external {
+    color: var(--text-3);
+    text-decoration: none;
+  }
+
+  .dlg-external:hover {
+    color: var(--primary);
+  }
+
+  /* 移动端：底部抽屉 */
+  @media (max-width: 560px) {
+    .login-dialog {
+      width: 100%;
+      max-width: 100%;
+      max-height: 92dvh;
+      margin: auto 0 0;
+      border-radius: 18px 18px 0 0;
+    }
+  }
+</style>
