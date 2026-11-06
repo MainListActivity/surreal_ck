@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+pnpm --filter @surreal-ck/web build
+[[ -d "web/dist" ]] || {
+  echo "Expected build output at web/dist" >&2
+  exit 1
+}
+figma make deploy --build-dir "web/dist"

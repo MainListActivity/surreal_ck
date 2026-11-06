@@ -1,0 +1,8 @@
+{
+  "installOn": [
+    "package.json",
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+    "{server,shared,web,marketing,ops}/package.json"
+  ]
+}
