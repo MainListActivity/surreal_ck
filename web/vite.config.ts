@@ -51,5 +51,11 @@ export default defineConfig({
   build: {
     target: "esnext",
     emptyOutDir: true,
+    rollupOptions: {
+      input: {
+        main: fileURLToPath(new URL("./index.html", import.meta.url)),
+        authEmbed: fileURLToPath(new URL("./auth/embed.html", import.meta.url)),
+      },
+    },
   },
 });

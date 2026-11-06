@@ -40,6 +40,12 @@ describe("D2-01 vite.config SPA 骨架", () => {
     expect(config.build?.outDir ?? "dist").toBe("dist");
   });
 
+  test("构建包含主 SPA 与轻量 auth embed 两个入口", () => {
+    const input = config.build?.rollupOptions?.input as Record<string, string>;
+    expect(Object.keys(input).sort()).toEqual(["authEmbed", "main"]);
+    expect(input.authEmbed).toContain("auth/embed.html");
+  });
+
   test("dev dependency scan 只从新 SPA 入口开始，避免扫到 web/legacy", () => {
     expect(config.optimizeDeps?.entries).toEqual(["index.html"]);
   });

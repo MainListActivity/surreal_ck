@@ -22,6 +22,7 @@ import {
   X,
 } from "@lucide/astro";
 import Brand from "../components/Brand.astro";
+import LoginDialog from "../components/LoginDialog.astro";
 import ProductStage from "../components/ProductStage.astro";
 import BaseLayout from "../layouts/BaseLayout.astro";
 import { capabilityCards, navigation, templateCards, workflowSteps } from "../data/product";
@@ -45,14 +46,14 @@ const iconByName = {
           {navigation.map((item) => <a href={item.href}>{item.label}</a>)}
         </nav>
         <div class="nav-actions">
-          <a class="login-link" href={appUrl}>登录</a>
-          <a class="nav-cta" href={appUrl}>开始使用 <ArrowRight size={14} /></a>
+          <a class="login-link" data-login-trigger href={appUrl}>登录</a>
+          <a class="nav-cta" data-login-trigger href={appUrl}>开始使用 <ArrowRight size={14} /></a>
         </div>
         <details class="mobile-nav">
           <summary aria-label="打开导航"><Menu class="menu-open" size={21} /><X class="menu-close" size={21} /></summary>
           <nav aria-label="移动端导航">
             {navigation.map((item) => <a href={item.href}>{item.label}<ChevronRight size={14} /></a>)}
-            <a class="mobile-login" href={appUrl}>进入工作空间 <ArrowRight size={14} /></a>
+            <a class="mobile-login" data-login-trigger href={appUrl}>进入工作空间 <ArrowRight size={14} /></a>
           </nav>
         </details>
       </div>
@@ -71,7 +72,7 @@ const iconByName = {
             从整理信息到形成判断，让数据自然长成团队的工作方式。
           </p>
           <div class="hero-actions">
-            <a class="button button-primary" href={appUrl}>开始使用卯豆 <ArrowRight size={15} /></a>
+            <a class="button button-primary" data-login-trigger href={appUrl}>开始使用卯豆 <ArrowRight size={15} /></a>
             <a class="button button-secondary" href="#capabilities">看看能做什么</a>
           </div>
           <div class="hero-notes" aria-label="产品特点">
@@ -193,11 +194,11 @@ const iconByName = {
             <p class="eyebrow">行业模板</p>
             <h2>从行业经验开始，<br />不必从空白表格开始。</h2>
             <p>字段、视图和工作流程已经按实际场景组织好。选择模板，导入资料，然后按照团队习惯继续调整。</p>
-            <a href={appUrl}>浏览全部模板 <ArrowRight size={14} /></a>
+            <a data-login-trigger href={appUrl}>浏览全部模板 <ArrowRight size={14} /></a>
           </div>
           <div class="template-list">
             {templateCards.map((template) => (
-              <a class:list={["template-item", template.tone]} href={appUrl}>
+              <a class:list={["template-item", template.tone]} data-login-trigger href={appUrl}>
                 <span class="template-number">{template.number}</span>
                 <span class="template-icon"><LayoutDashboard size={18} /></span>
                 <span class="template-name"><strong>{template.name}</strong><small>{template.meta}</small></span>
@@ -254,7 +255,7 @@ const iconByName = {
           <div class="final-seed seed-b" aria-hidden="true"></div>
           <p>从一张熟悉的表格开始</p>
           <h2>让团队的数据，<br /><em>自己长出答案。</em></h2>
-          <a class="button final-button" href={appUrl}>开始使用卯豆 <ArrowRight size={15} /></a>
+          <a class="button final-button" data-login-trigger href={appUrl}>开始使用卯豆 <ArrowRight size={15} /></a>
         </div>
       </section>
     </main>
@@ -263,11 +264,12 @@ const iconByName = {
       <div class="container footer-main">
         <div><Brand inverted /><p>AI 原生的数据工作空间</p></div>
         <nav aria-label="页脚导航">{navigation.map((item) => <a href={item.href}>{item.label}</a>)}</nav>
-        <a class="footer-login" href={appUrl}>进入工作空间 <ArrowRight size={14} /></a>
+        <a class="footer-login" data-login-trigger href={appUrl}>进入工作空间 <ArrowRight size={14} /></a>
       </div>
       <div class="container footer-bottom"><span>© {new Date().getFullYear()} 卯豆 Workspace</span><span>让数据自然生长</span></div>
     </footer>
   </div>
+  <LoginDialog appUrl={appUrl} />
 </BaseLayout>
 
 <style>

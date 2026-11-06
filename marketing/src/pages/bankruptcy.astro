@@ -14,6 +14,7 @@ import {
   X,
 } from "@lucide/astro";
 import Brand from "../components/Brand.astro";
+import LoginDialog from "../components/LoginDialog.astro";
 import BaseLayout from "../layouts/BaseLayout.astro";
 import {
   bankruptcyNavigation,
@@ -48,14 +49,14 @@ const iconByName = {
           {bankruptcyNavigation.map((item) => <a href={item.href}>{item.label}</a>)}
         </nav>
         <div class="nav-actions">
-          <a class="login-link" href={appUrl}>登录</a>
+          <a class="login-link" data-login-trigger href={appUrl}>登录</a>
           <a class="nav-cta" href="#trial">了解试用 <ArrowRight size={14} /></a>
         </div>
         <details class="mobile-nav">
           <summary aria-label="打开导航"><Menu class="menu-open" size={21} /><X class="menu-close" size={21} /></summary>
           <nav aria-label="移动端导航">
             {bankruptcyNavigation.map((item) => <a href={item.href}>{item.label}<ChevronRight size={14} /></a>)}
-            <a class="mobile-login" href={appUrl}>进入工作空间 <ArrowRight size={14} /></a>
+            <a class="mobile-login" data-login-trigger href={appUrl}>进入工作空间 <ArrowRight size={14} /></a>
           </nav>
         </details>
       </div>
@@ -215,7 +216,7 @@ const iconByName = {
           <a href="/">产品首页</a>
           {bankruptcyNavigation.map((item) => <a href={item.href}>{item.label}</a>)}
         </nav>
-        <a class="footer-login" href={appUrl}>进入工作空间 <ArrowRight size={14} /></a>
+        <a class="footer-login" data-login-trigger href={appUrl}>进入工作空间 <ArrowRight size={14} /></a>
       </div>
       <div class="container footer-bottom">
         <span>© {new Date().getFullYear()} 卯豆 Workspace</span>
@@ -227,6 +228,7 @@ const iconByName = {
       </div>
     </footer>
   </div>
+  <LoginDialog appUrl={appUrl} />
 </BaseLayout>
 
 <style>

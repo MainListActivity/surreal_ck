@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>登录卯豆</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: transparent;
+      }
+      body {
+        display: grid;
+        place-items: center;
+      }
+      .spinner {
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        border: 3px solid rgba(47, 122, 76, 0.2);
+        border-top-color: #2f7a4c;
+        animation: auth-embed-spin 0.8s linear infinite;
+      }
+      @keyframes auth-embed-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .spinner {
+          animation: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="spinner" role="status" aria-label="正在前往登录"></div>
+    <script type="module" src="/src/auth-embed.ts"></script>
+  </body>
+</html>
