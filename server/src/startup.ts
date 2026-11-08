@@ -1,6 +1,6 @@
 import { createApp } from "./app";
 import { env } from "./env";
-import { closeRootConnection, getRootDatabaseSession, initRootConnection } from "./db/root-connection";
+import { closeRootConnection, getRootConnection, getRootDatabaseSession, initRootConnection } from "./db/root-connection";
 import { closeHealthProbe, initHealthProbe } from "./db/health-probe";
 import { ensureSystemSchema } from "./db/system-schema";
 import { ensurePlatformContentSchema } from "./content/schema";
@@ -14,6 +14,7 @@ import { seedPlatformOperators } from "./db/platform-operator-seed";
 import { seedQuotaPlans } from "./db/quota-plan-seed";
 import { migrateAllWorkspaces } from "./db/migration-runner";
 import { startReconcileLoop, type ReconcileLoopHandle } from "./db/reconciler";
+import { runTestSubjectReaper } from "./test-subjects/reaper";
 import { startFunnelLoop, type FunnelLoopHandle } from "./funnel/loop";
 import {
   NativeQuotaStartupGateError,
@@ -82,6 +83,7 @@ export type StartServerDeps = {
   startClaimsRiskDispatcher?: () => ClaimsRiskDispatcherHandle;
   /** 办公室领域 reconciliation（VO02）；test 环境默认不启动。 */
   startOfficeReconciler?: () => OfficeReconcilerHandle;
+  startTestSubjectReaper?: () => { stop(): void };
   closeRootConnection?: () => Promise<void>;
   closeHealthProbe?: () => Promise<void>;
   closeContentPublisherSession?: () => Promise<void>;
@@ -146,6 +148,29 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
     ?? (envName === "test" ? () => ({ async stop() {} }) : startClaimsRiskReminderDispatcher);
   const startOffice = deps.startOfficeReconciler
     ?? (envName === "test" ? () => ({ async stop() {} }) : startOfficeReconciler);
+  const startReaper = deps.startTestSubjectReaper
+    ?? (envName === "test" ? () => ({ stop() {} }) : () => {
+        // 测试主体清理心跳：每轮扫到期 workspace/test_subject，失败只告警。
+        const intervalMs = env.TEST_SUBJECT_REAPER_INTERVAL_SEC * 1000;
+        let stopped = false;
+        const tick = async () => {
+          try {
+            await runTestSubjectReaper({
+              systemDb: await getRootDatabaseSession("_system"),
+              dropDatabase: async (dbName) => {
+                await getRootConnection().query(`REMOVE DATABASE IF EXISTS ${dbName};`);
+              },
+            });
+          } catch (cause) {
+            console.error("[test-subject-reaper] sweep failed; retry next tick", {
+              message: cause instanceof Error ? cause.message : String(cause),
+            });
+          }
+        };
+        void tick();
+        const timer = setInterval(() => { void tick(); }, intervalMs);
+        return { stop: () => { if (!stopped) { stopped = true; clearInterval(timer); } } };
+      });
   const closeRoot = deps.closeRootConnection ?? closeRootConnection;
   const initProbe = deps.initHealthProbe
     ?? (envName === "test" ? async () => undefined : initHealthProbe);
@@ -260,6 +285,15 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
     });
   }
 
+  let testSubjectReaper: { stop(): void } | undefined;
+  try {
+    testSubjectReaper = startReaper();
+  } catch (cause) {
+    console.error("[server] failed to start test-subject reaper; continuing without it", {
+      message: cause instanceof Error ? cause.message : String(cause),
+    });
+  }
+
   let officeReconciler: OfficeReconcilerHandle | undefined;
   try {
     officeReconciler = startOffice();
@@ -281,6 +315,7 @@ export async function startServer(deps: StartServerDeps = {}): Promise<RunningSe
       reconcileLoop?.stop();
       funnelLoop?.stop();
       quotaRuntime.stop();
+      testSubjectReaper?.stop();
       await claimsRiskDispatcher?.stop();
       await officeReconciler?.stop();
       await stopEmployeeTriggerRuntime({
