@@ -52,6 +52,8 @@ const DB_NAME_REFERENCES: ReadonlyArray<readonly [table: string, field: string]>
 export interface TestSubjectReaperDeps {
   /** _system 库会话（root）。 */
   systemDb: Queryable;
+  /** 供外成员栅栏使用；缺省时现查 test_subject 全量。 */
+  testSubjects?: string[];
   /** 删除一个 database 的客户端（root 平台维护身份）。 */
   dropDatabase: (dbName: string) => Promise<void>;
   now?: () => Date;
@@ -149,6 +151,48 @@ export async function purgeTestSubject(
   );
   await deps.systemDb.query(`DELETE platform_operator WHERE subject = $subject;`, { subject });
   await deps.systemDb.query(`DELETE user_workspace_index WHERE subject = $subject;`, { subject });
+
+  // 计费残留：测试 workspace 走 manual 来源会留下
+  // billing_account(account_key=personal:<subject>) + member + quota_subscription(+item)。
+  // 若该 billing_account 有非测试主体成员则跳过并告警（共享账户不可删）。
+  const testSubjects = new Set(deps.testSubjects ?? firstArray(await deps.systemDb.query(
+    `SELECT subject FROM test_subject;`,
+  )).map((row) => String(row.subject ?? "")).filter((v) => v.length > 0));
+  const billingRows = firstArray(await deps.systemDb.query(
+    `SELECT id FROM billing_account WHERE account_key = $key;`,
+    { key: `personal:${subject}` },
+  ));
+  for (const billingRow of billingRows) {
+    const billingId = String(billingRow.id);
+    const memberRows = firstArray(await deps.systemDb.query(
+      `SELECT subject FROM billing_account_member WHERE billing_account = $bid;`,
+      { bid: new StringRecordId(billingId) },
+    ));
+    const memberSubjects = memberRows
+      .map((row) => String(row.subject ?? ""))
+      .filter((s) => s.length > 0);
+    const foreign = memberSubjects.filter((s) => s !== subject && !testSubjects.has(s));
+    if (foreign.length > 0) {
+      log("billing.skip_foreign_member", { billing_account: billingId, foreign });
+      continue;
+    }
+    await deps.systemDb.query(
+      `DELETE quota_subscription_item
+       WHERE subscription IN (SELECT VALUE id FROM quota_subscription WHERE billing_account = $bid);`,
+      { bid: new StringRecordId(billingId) },
+    );
+    await deps.systemDb.query(
+      `DELETE quota_subscription WHERE billing_account = $bid;`,
+      { bid: new StringRecordId(billingId) },
+    );
+    await deps.systemDb.query(
+      `DELETE billing_account_member WHERE billing_account = $bid;`,
+      { bid: new StringRecordId(billingId) },
+    );
+    await deps.systemDb.query(`DELETE billing_account WHERE id = $bid;`, { bid: new StringRecordId(billingId) });
+    log("billing.purged", { billing_account: billingId, subject });
+  }
+
   await deps.systemDb.query(`DELETE test_subject WHERE subject = $subject;`, { subject });
   log("subject.purged", { subject });
 }

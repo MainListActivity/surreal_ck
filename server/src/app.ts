@@ -532,7 +532,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     .route("/", createOpsAutonomyRoutes({ service: opsAutonomyService }))
     .route("/", createOpsRunRoutes({ service: opsRunService }))
     .route("/", createOpsPlatformOperatorsRoutes())
-    .route("/", createOpsTestSubjectsRoutes())
+    .route("/", createOpsTestSubjectsRoutes({ workspaceCreator }))
     .route("/", createOpsEndpointProbeTemporaryGrantRoutes())
     .route("/", createOpsEmployeeRuntimeRoutes({
       health: options.employeeRuntimeHealth,

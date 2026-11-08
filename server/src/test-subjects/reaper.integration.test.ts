@@ -152,6 +152,18 @@ describe("test-subject reaper against real fork SurrealDB", () => {
       `INSERT INTO quota_lifecycle_intent { workspaces: [workspace:w_exp], status: "pending" };`,
     ).catch(() => undefined);
 
+    // 到期主体的计费残留（manual 来源路径产生的行形状）
+    await db.query(
+      `INSERT INTO billing_account { id: billing_account:expired, account_key: "personal:sub_expired", name: "t", kind: "personal", status: "active" };
+       INSERT INTO billing_account_member { billing_account: billing_account:expired, subject: "sub_expired", role: "owner", status: "active" };
+       INSERT INTO quota_subscription { id: quota_subscription:expired, billing_account: billing_account:expired, source: "manual", status: "active", revision: 1, correlation_id: "c" };
+       INSERT INTO quota_subscription_item { subscription: quota_subscription:expired, workspace: workspace:w_exp, plan_revision: quota_plan_revision:trial_v2, product_plan_revision: NONE, effective_from: <datetime>$t, effective_until: NONE, revision: 1, status: "active", correlation_id: "c", causation_id: "c" };
+       INSERT INTO billing_account { id: billing_account:live, account_key: "personal:sub_live", name: "t", kind: "personal", status: "active" };
+       INSERT INTO billing_account_member { billing_account: billing_account:live, subject: "sub_live", role: "owner", status: "active" };
+       INSERT INTO quota_subscription { id: quota_subscription:live, billing_account: billing_account:live, source: "manual", status: "active", revision: 1, correlation_id: "c" };`,
+      { t: new DateTime("2025-06-01T00:00:00Z") },
+    );
+
     // 到期主体的运营身份
     await db.query(
       `INSERT INTO platform_operator { id: platform_operator:expired, subject: "sub_expired", display_name: "测试", status: "active", kind: "agent" };
@@ -236,5 +248,13 @@ describe("test-subject reaper against real fork SurrealDB", () => {
     expect(rows(await db!.query(`SELECT id FROM test_subject WHERE subject = "sub_expired";`))).toHaveLength(0);
     expect(rows(await db!.query(`SELECT id FROM test_subject WHERE subject = "sub_live";`))).toHaveLength(1);
     expect(rows(await db!.query(`SELECT id FROM platform_operator WHERE subject = "sub_live";`))).toHaveLength(1);
+
+    // 计费残留：到期主体的 billing/subscription 行全清，未到期主体完好
+    expect(rows(await db!.query(`SELECT id FROM billing_account WHERE account_key = "personal:sub_expired";`))).toHaveLength(0);
+    expect(rows(await db!.query(`SELECT id FROM billing_account_member WHERE billing_account = billing_account:expired;`))).toHaveLength(0);
+    expect(rows(await db!.query(`SELECT id FROM quota_subscription WHERE billing_account = billing_account:expired;`))).toHaveLength(0);
+    expect(rows(await db!.query(`SELECT id FROM quota_subscription_item WHERE subscription = quota_subscription:expired;`))).toHaveLength(0);
+    expect(rows(await db!.query(`SELECT id FROM billing_account WHERE account_key = "personal:sub_live";`))).toHaveLength(1);
+    expect(rows(await db!.query(`SELECT id FROM quota_subscription WHERE billing_account = billing_account:live;`))).toHaveLength(1);
   });
 });
