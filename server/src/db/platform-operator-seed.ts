@@ -17,6 +17,8 @@ export type SeedPlatformOperatorsOptions = {
   subjectsCsv?: string;
   /** 逗号分隔的能力列表；默认取 env.PLATFORM_OPERATOR_CAPABILITIES。 */
   capabilitiesCsv?: string;
+  /** 逗号分隔的测试主体管理 subject 列表；默认取 env.PLATFORM_OPERATOR_TEST_MANAGERS。 */
+  testManagersCsv?: string;
   displayName?: string;
   grantedBySubject?: string;
   namespace?: string;
@@ -77,6 +79,7 @@ export async function seedPlatformOperators(
   options: SeedPlatformOperatorsOptions = {},
 ): Promise<SeedPlatformOperatorsResult> {
   const subjects = parseCsv(options.subjectsCsv ?? env.PLATFORM_OPERATOR_SUBJECTS);
+  const testManagers = parseCsv(options.testManagersCsv ?? env.PLATFORM_OPERATOR_TEST_MANAGERS);
   if (subjects.length === 0) {
     return { seededSubjects: [], capabilities: [] };
   }
@@ -154,6 +157,29 @@ export async function seedPlatformOperators(
         },
       );
     }
+  }
+
+  // 测试主体管理通道：PLATFORM_OPERATOR_TEST_MANAGERS 列出的 subject 仅获得
+  // test.manage；与 SUBJECTS/CAPABILITIES 同样「补缺失、不回滚」语义。
+  for (const subject of testManagers) {
+    await db.query(
+      `INSERT INTO platform_operator { subject: $subject, status: "active" }
+       ON DUPLICATE KEY UPDATE updated_at = time::now();`,
+      { subject },
+    );
+    const opRow = await db.query(
+      "SELECT VALUE id FROM platform_operator WHERE subject = $subject LIMIT 1;",
+      { subject },
+    );
+    const operator = firstRecordId(opRow);
+    if (!operator) {
+      throw new Error(`platform operator bootstrap did not resolve subject ${subject}`);
+    }
+    await db.query(
+      `INSERT INTO platform_operator_capability { operator: $operator, capability: "test.manage", status: "active", granted_by_subject: $grantedBySubject }
+       ON DUPLICATE KEY UPDATE updated_at = time::now();`,
+      { operator, grantedBySubject },
+    );
   }
 
   console.info("[platform-operator-seed] bootstrapped operators", {

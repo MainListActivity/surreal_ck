@@ -112,6 +112,7 @@ import { SurrealOpsRunStore } from "./ops-run/store";
 import { createOpsRunRoutes } from "./routes/ops-run";
 import { createOpsEmployeeRuntimeRoutes } from "./routes/ops-employee-runtime";
 import { createOpsPlatformOperatorsRoutes } from "./routes/ops-platform-operators";
+import { createOpsTestSubjectsRoutes } from "./routes/ops-test-subjects";
 import { createOpsEndpointProbeTemporaryGrantRoutes } from "./routes/ops-endpoint-probe-temporary-grant";
 import { createOpsSurrealHealthRoutes } from "./routes/ops-surreal-health";
 import type { SurrealHealthExercisePort } from "./ops/surreal-health-exercise";
@@ -531,6 +532,7 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
     .route("/", createOpsAutonomyRoutes({ service: opsAutonomyService }))
     .route("/", createOpsRunRoutes({ service: opsRunService }))
     .route("/", createOpsPlatformOperatorsRoutes())
+    .route("/", createOpsTestSubjectsRoutes())
     .route("/", createOpsEndpointProbeTemporaryGrantRoutes())
     .route("/", createOpsEmployeeRuntimeRoutes({
       health: options.employeeRuntimeHealth,
