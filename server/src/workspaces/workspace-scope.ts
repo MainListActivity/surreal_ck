@@ -241,6 +241,9 @@ export function createWorkspaceScopeModule(input?: Queryable | WorkspaceScopeMod
     async getDefaultScope(input) {
       const client = await getSystemDb();
       const identity = identityFilter(input);
+      if (await isExpiredTestSubjectForScope(client, input)) {
+        return { kind: "login-denied", reason: "no-workspace" };
+      }
 
       const result = await client.query(
         `
@@ -309,6 +312,9 @@ export function createWorkspaceScopeModule(input?: Queryable | WorkspaceScopeMod
     async switchWorkspace(input) {
       const client = await getSystemDb();
       const identity = identityFilter(input);
+      if (await isExpiredTestSubjectForScope(client, input)) {
+        return { kind: "forbidden" };
+      }
       const result = input.dbName
         ? await client.query(
             `
@@ -433,4 +439,20 @@ export function createWorkspaceScopeModule(input?: Queryable | WorkspaceScopeMod
       return { kind: "switched", scope };
     },
   };
+}
+
+/** 输入 subject 是已到期测试主体；email 路径不判（测试主体以 subject 为准）。 */
+async function isExpiredTestSubjectForScope(
+  client: { query(sql: string, params?: Record<string, unknown>): Promise<unknown> },
+  input: { subject?: string; email?: string },
+): Promise<boolean> {
+  const subject = input.subject?.trim();
+  if (!subject) return false;
+  const result = await client.query(
+    `SELECT expires_at FROM test_subject WHERE subject = $subject LIMIT 1;`,
+    { subject },
+  );
+  const rows = (Array.isArray(result) && Array.isArray(result[0]) ? result[0] : []) as { expires_at?: string }[];
+  const expiresAt = rows[0]?.expires_at;
+  return expiresAt !== undefined && Date.parse(expiresAt) <= Date.now();
 }

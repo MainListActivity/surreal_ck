@@ -86,6 +86,8 @@ describe("_system native quota control-plane schema", () => {
       46,
       // 047：探针临时授权持久幂等请求表，只新增结构；与 046 同一事务写入。
       47,
+      // 048：远程测试主体表与 workspace 到期标记、能力白名单追加 test.manage。
+      48,
     ]);
   });
 
