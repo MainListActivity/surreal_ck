@@ -74,8 +74,21 @@ async function withLock<T>(work: () => Promise<T>): Promise<T> {
   }
 }
 
+const REQUEST_TIMEOUT_MS = 30_000;
+
+export async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "TimeoutError") {
+      fail(`请求超时（${REQUEST_TIMEOUT_MS / 1000} 秒未响应）：${url}`);
+    }
+    throw error;
+  }
+}
+
 async function postForm(url: string, params: Record<string, string>) {
-  const response = await fetch(url, {
+  const response = await fetchWithTimeout(url, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams(params).toString(),
@@ -127,7 +140,7 @@ async function cmdToken(ops: boolean) {
 async function cmdDb(slug: string) {
   const session = await readSession();
   const token = await refreshAccessToken(session, false);
-  const response = await fetch(`${session.api}/api/session/switch-workspace`, {
+  const response = await fetchWithTimeout(`${session.api}/api/session/switch-workspace`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
     body: JSON.stringify({ workspaceSlug: slug }),

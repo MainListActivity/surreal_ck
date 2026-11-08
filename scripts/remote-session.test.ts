@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, test, it } from "bun:test";
 import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -45,4 +45,20 @@ describe("session file layout", () => {
     const parsed = JSON.parse(await readFile(path, "utf8"));
     expect(parsed.issuer).toBe("x");
   });
+});
+
+test("fetchWithTimeout passes a 30s abort signal to fetch", async () => {
+  const { fetchWithTimeout } = await import("./remote-session");
+  let seen: AbortSignal | null | undefined;
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+    seen = init?.signal;
+    return new Response("{}", { status: 200 });
+  }) as typeof fetch;
+  try {
+    await fetchWithTimeout("https://example.test/x", { method: "GET" });
+  } finally {
+    globalThis.fetch = original;
+  }
+  expect(seen).toBeInstanceOf(AbortSignal);
 });
