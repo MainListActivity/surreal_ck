@@ -1,0 +1,712 @@
+---
+import { ArrowLeft, Moon, Pause, Play, Sun } from "@lucide/astro";
+import JijiCat from "../components/JijiCat.astro";
+import JijiLogo, { type JijiLogoVariant } from "../components/JijiLogo.astro";
+import BaseLayout from "../layouts/BaseLayout.astro";
+import { jijiStates } from "../data/jiji";
+
+const logoOptions: ReadonlyArray<{ variant: JijiLogoVariant; name: string; description: string }> = [
+  { variant: "ears", name: "猫耳格", description: "圆角方格长出两只耳朵。最直接的“猫 + 表格”，16px 也认得出。推荐作为主 Logo。" },
+  { variant: "cells", name: "格子眼", description: "眼睛就是两个单元格，下方一条表格分隔线。更偏工具感，适合应用图标。" },
+  { variant: "night", name: "夜瞳", description: "黑夜里只剩一双黄眼睛和耳朵轮廓。最神秘、最有气质，适合深色场景。" },
+];
+
+const palette = [
+  { name: "墨黑", value: "#161513", note: "吉吉的身体" },
+  { name: "琥珀黄", value: "#F5C542", note: "吉吉的眼睛，唯一点缀色" },
+  { name: "暖米白", value: "#F6F1E7", note: "背景" },
+] as const;
+
+const firstState = jijiStates[0];
+---
+
+<BaseLayout title="吉吉 · 品牌实验室" description="吉吉品牌形象草案：Logo 与会动的 AI 助手。" noindex>
+  <div class="lab">
+    <header class="lab-header">
+      <div class="wrap header-inner">
+        <div class="lockup">
+          <JijiLogo size={38} />
+          <span><strong>吉吉</strong><small>Brand Lab</small></span>
+        </div>
+        <span class="draft">草案 v0.1 · 不影响正式站点</span>
+        <a class="back" href="/"><ArrowLeft size={14} /> 返回官网</a>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero wrap">
+        <div class="hero-copy">
+          <p class="kicker">AI 助手 · 会动的吉吉</p>
+          <h1>这是吉吉。<br /><span>它会陪你把数据理清楚。</span></h1>
+          <p class="lead">一只乖巧的黑猫，黄色的眼睛。它安静地待在角落，你说话时竖起耳朵，思考时眼睛转来转去，整理完会开心地跳一下。</p>
+
+          <div class="controls">
+            <p class="control-label">切换状态</p>
+            <div class="state-grid" role="group" aria-label="吉吉状态">
+              {jijiStates.map((state, index) => (
+                <button type="button" data-state-button={state.id} aria-pressed={index === 0 ? "true" : "false"}>
+                  <i></i>{state.label}
+                </button>
+              ))}
+            </div>
+            <div class="control-row">
+              <button type="button" class="ghost" data-auto aria-pressed="false">
+                <span class="when-off"><Play size={14} /> 自动演示</span>
+                <span class="when-on"><Pause size={14} /> 停止演示</span>
+              </button>
+              <button type="button" class="ghost" data-theme-toggle aria-pressed="false">
+                <span class="when-off"><Moon size={14} /> 深色背景</span>
+                <span class="when-on"><Sun size={14} /> 浅色背景</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="stage" data-stage>
+          <div class="stage-grid" aria-hidden="true"></div>
+          <JijiCat class="stage-cat" label="吉吉，点击可以摸摸它" />
+          <div class="stage-status" aria-live="polite">
+            <span class="status-dot"></span>
+            <div>
+              <strong data-state-label>{firstState?.label}</strong>
+              <p data-state-note>{firstState?.note}</p>
+            </div>
+          </div>
+          <p class="stage-tip">点一下吉吉试试</p>
+        </div>
+      </section>
+
+      <section class="section wrap">
+        <div class="section-head">
+          <p class="kicker">在产品里的样子</p>
+          <h2>吉吉住在对话框的角落</h2>
+        </div>
+        <div class="product">
+          <div class="product-table" aria-hidden="true">
+            <div class="table-head"><span>#</span><span>事项</span><span>金额</span><span>状态</span></div>
+            {["房租", "猫粮与猫砂", "健身房年卡", "旅行基金", "订阅服务"].map((name, index) => (
+              <div class="table-row">
+                <span>{index + 1}</span><span>{name}</span><span>¥ {[3200, 386, 1680, 5000, 128][index]}</span><span><em>{index % 2 === 0 ? "已记录" : "待确认"}</em></span>
+              </div>
+            ))}
+          </div>
+          <aside class="assistant">
+            <header><JijiLogo size={22} /><strong>问问吉吉</strong></header>
+            <div class="chat">
+              <p class="bubble user">帮我看看这个月哪些开销可以省一点？</p>
+              <p class="bubble jiji" data-jiji-message>{firstState?.message}</p>
+            </div>
+            <div class="assistant-foot">
+              <JijiCat class="mini-cat" label="吉吉助手" />
+              <div class="composer">给吉吉发消息…</div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section class="section wrap">
+        <div class="section-head">
+          <p class="kicker">Logo 方向</p>
+          <h2>三个静态图标备选</h2>
+          <p>每个都只用墨黑与琥珀黄两种颜色，并检查从 128px 到 16px 的辨识度。</p>
+        </div>
+        <div class="logo-grid">
+          {logoOptions.map((option, index) => (
+            <article class="logo-card">
+              <div class="logo-hero">
+                <span class="logo-index">0{index + 1}</span>
+                <JijiLogo variant={option.variant} size={128} />
+              </div>
+              <div class="logo-sizes">
+                <div class="size-row">
+                  <JijiLogo variant={option.variant} size={64} />
+                  <JijiLogo variant={option.variant} size={32} />
+                  <JijiLogo variant={option.variant} size={16} />
+                  <span class="sizes-text">64 · 32 · 16</span>
+                </div>
+                <div class="tiles">
+                  <span class="tile tile-dark"><JijiLogo variant={option.variant} size={44} /></span>
+                  <span class="tile tile-yellow"><JijiLogo variant={option.variant} size={44} /></span>
+                </div>
+              </div>
+              <div class="logo-copy">
+                <h3>{option.name}</h3>
+                <p>{option.description}</p>
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section class="section wrap">
+        <div class="section-head">
+          <p class="kicker">组合与配色</p>
+          <h2>最多三种颜色</h2>
+        </div>
+        <div class="brand-grid">
+          <div class="lockup-card">
+            <div class="lockup big"><JijiLogo size={64} /><span><strong>吉吉</strong><small>你的数据小猫</small></span></div>
+          </div>
+          <div class="lockup-card tone-dark">
+            <div class="lockup big"><JijiLogo variant="night" size={64} /><span><strong>吉吉</strong><small>你的数据小猫</small></span></div>
+          </div>
+          <div class="palette">
+            {palette.map((color) => (
+              <div class="swatch">
+                <span style={`background:${color.value}`}></span>
+                <p><strong>{color.name}</strong><code>{color.value}</code><small>{color.note}</small></p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="wrap lab-foot">吉吉 Brand Lab · 内部草案，仅用于方向评审</footer>
+  </div>
+</BaseLayout>
+
+<style>
+  .lab {
+    --jiji-ink: #161513;
+    --jiji-eye: #f5c542;
+    --jiji-paper: #f6f1e7;
+    --muted: rgba(22, 21, 19, .58);
+    --hair: rgba(22, 21, 19, .1);
+    min-height: 100vh;
+    background: var(--jiji-paper);
+    color: var(--jiji-ink);
+  }
+
+  .wrap {
+    width: min(1160px, calc(100% - 40px));
+    margin-inline: auto;
+  }
+
+  .lab-header {
+    position: sticky;
+    z-index: 10;
+    top: 0;
+    border-bottom: 1px solid var(--hair);
+    background: rgba(246, 241, 231, .88);
+    backdrop-filter: blur(14px);
+  }
+
+  .header-inner {
+    display: flex;
+    height: 66px;
+    align-items: center;
+    gap: 18px;
+  }
+
+  .lockup {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .lockup span { display: grid; line-height: 1; }
+  .lockup strong { font-size: 20px; font-weight: 700; letter-spacing: .06em; }
+  .lockup small { margin-top: 4px; color: var(--muted); font-size: 9px; font-weight: 600; letter-spacing: .18em; text-transform: uppercase; }
+
+  .draft {
+    padding: 6px 10px;
+    border-radius: 999px;
+    background: rgba(245, 197, 66, .28);
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .back {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .back:hover { color: var(--jiji-ink); }
+
+  .hero {
+    display: grid;
+    grid-template-columns: minmax(0, .95fr) minmax(0, 1.05fr);
+    gap: 56px;
+    align-items: center;
+    padding: 72px 0 84px;
+  }
+
+  .kicker {
+    margin: 0;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: .14em;
+  }
+
+  .hero h1 {
+    margin: 18px 0 0;
+    font-size: clamp(40px, 5.2vw, 64px);
+    font-weight: 700;
+    letter-spacing: -.03em;
+    line-height: 1.12;
+  }
+
+  .hero h1 span {
+    font-size: .62em;
+    font-weight: 600;
+    letter-spacing: -.01em;
+    box-shadow: inset 0 -.42em 0 rgba(245, 197, 66, .55);
+  }
+
+  .lead {
+    max-width: 500px;
+    margin: 22px 0 0;
+    color: var(--muted);
+    font-size: 15px;
+    line-height: 1.85;
+  }
+
+  .controls { margin-top: 34px; }
+
+  .control-label {
+    margin: 0 0 12px;
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .state-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+  }
+
+  .state-grid button,
+  .ghost {
+    display: inline-flex;
+    min-height: 42px;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    border: 1px solid var(--hair);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, .55);
+    color: var(--jiji-ink);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    transition: background-color .2s ease, border-color .2s ease, transform .2s ease;
+  }
+
+  .state-grid button:hover,
+  .ghost:hover { border-color: rgba(22, 21, 19, .3); transform: translateY(-1px); }
+
+  .state-grid button i {
+    width: 7px;
+    height: 7px;
+    border: 1.5px solid currentColor;
+    border-radius: 50%;
+  }
+
+  .state-grid button[aria-pressed="true"] {
+    border-color: var(--jiji-ink);
+    background: var(--jiji-ink);
+    color: var(--jiji-paper);
+  }
+
+  .state-grid button[aria-pressed="true"] i {
+    border-color: var(--jiji-eye);
+    background: var(--jiji-eye);
+  }
+
+  .control-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+  }
+
+  .ghost { padding: 0 14px; }
+  .ghost span { display: inline-flex; align-items: center; gap: 7px; }
+  .ghost .when-on,
+  .ghost[aria-pressed="true"] .when-off { display: none; }
+  .ghost[aria-pressed="true"] .when-on { display: inline-flex; }
+
+  .stage {
+    position: relative;
+    display: grid;
+    min-height: 560px;
+    overflow: hidden;
+    place-items: center;
+    border: 1px solid var(--hair);
+    border-radius: 32px;
+    background: #fbf8f1;
+    transition: background-color .45s ease, border-color .45s ease;
+  }
+
+  .stage.tone-dark {
+    --jiji-paper: #1d1c19;
+    border-color: rgba(245, 197, 66, .14);
+    background: #1d1c19;
+  }
+
+  .stage-grid {
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(22, 21, 19, .05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(22, 21, 19, .05) 1px, transparent 1px);
+    background-size: 44px 44px;
+    mask-image: radial-gradient(circle at 50% 55%, black, transparent 72%);
+  }
+
+  .stage.tone-dark .stage-grid {
+    background-image:
+      linear-gradient(rgba(245, 197, 66, .06) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(245, 197, 66, .06) 1px, transparent 1px);
+  }
+
+  .stage :global(.stage-cat) {
+    position: relative;
+    width: min(380px, 76%);
+    margin-top: -40px;
+  }
+
+  .stage-status {
+    position: absolute;
+    right: 22px;
+    bottom: 22px;
+    left: 22px;
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 15px 17px;
+    border: 1px solid var(--hair);
+    border-radius: 18px;
+    background: rgba(255, 255, 255, .72);
+    backdrop-filter: blur(10px);
+  }
+
+  .stage.tone-dark .stage-status {
+    border-color: rgba(245, 197, 66, .14);
+    background: rgba(255, 255, 255, .05);
+    color: var(--jiji-paper);
+  }
+
+  .stage.tone-dark .stage-status strong { color: #f6f1e7; }
+  .stage.tone-dark .stage-status p { color: rgba(246, 241, 231, .6); }
+
+  .status-dot {
+    width: 9px;
+    height: 9px;
+    flex: 0 0 auto;
+    margin-top: 5px;
+    border-radius: 50%;
+    background: var(--jiji-eye);
+    box-shadow: 0 0 0 5px rgba(245, 197, 66, .2);
+  }
+
+  .stage-status strong { font-size: 14px; }
+  .stage-status p { margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+
+  .stage-tip {
+    position: absolute;
+    top: 20px;
+    right: 22px;
+    margin: 0;
+    color: var(--muted);
+    font-size: 11px;
+  }
+
+  .stage.tone-dark .stage-tip { color: rgba(246, 241, 231, .45); }
+
+  .section { padding: 64px 0; border-top: 1px solid var(--hair); }
+  .section-head { max-width: 640px; margin-bottom: 34px; }
+  .section-head h2 { margin: 12px 0 0; font-size: clamp(28px, 3.4vw, 40px); font-weight: 700; letter-spacing: -.02em; }
+  .section-head > p:last-child:not(.kicker) { margin: 12px 0 0; color: var(--muted); font-size: 14px; line-height: 1.8; }
+
+  .product {
+    display: grid;
+    grid-template-columns: 1fr 360px;
+    overflow: hidden;
+    border: 1px solid var(--hair);
+    border-radius: 24px;
+    background: #fffdf8;
+  }
+
+  .product-table { padding: 26px; }
+  .table-head,
+  .table-row {
+    display: grid;
+    min-height: 46px;
+    grid-template-columns: 38px 1.4fr 1fr 1fr;
+    align-items: center;
+    border-bottom: 1px solid var(--hair);
+    font-size: 13px;
+  }
+
+  .table-head { min-height: 38px; color: var(--muted); font-size: 11px; font-weight: 700; }
+  .table-row span:first-child { color: var(--muted); }
+  .table-row em { padding: 4px 8px; border-radius: 999px; background: rgba(245, 197, 66, .22); font-size: 11px; font-style: normal; font-weight: 600; }
+
+  .assistant {
+    display: flex;
+    flex-direction: column;
+    border-left: 1px solid var(--hair);
+    background: var(--jiji-paper);
+  }
+
+  .assistant header {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 16px 18px;
+    border-bottom: 1px solid var(--hair);
+    font-size: 14px;
+  }
+
+  .chat {
+    display: grid;
+    flex: 1;
+    align-content: start;
+    gap: 10px;
+    padding: 18px;
+  }
+
+  .bubble {
+    max-width: 86%;
+    margin: 0;
+    padding: 11px 14px;
+    border-radius: 16px;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+
+  .bubble.user { justify-self: end; border-bottom-right-radius: 5px; background: var(--jiji-ink); color: var(--jiji-paper); }
+  .bubble.jiji { border: 1px solid var(--hair); border-bottom-left-radius: 5px; background: #fffdf8; }
+
+  .assistant-foot {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    padding: 6px 14px 16px;
+  }
+
+  .assistant-foot :global(.mini-cat) { width: 72px; flex: 0 0 auto; }
+
+  .composer {
+    flex: 1;
+    margin-bottom: 8px;
+    padding: 12px 14px;
+    border: 1px solid var(--hair);
+    border-radius: 14px;
+    background: #fffdf8;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .logo-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+  }
+
+  .logo-card {
+    overflow: hidden;
+    border: 1px solid var(--hair);
+    border-radius: 24px;
+    background: #fffdf8;
+  }
+
+  .logo-hero {
+    position: relative;
+    display: grid;
+    min-height: 230px;
+    place-items: center;
+    background: #fbf8f1;
+  }
+
+  .logo-index { position: absolute; top: 16px; left: 18px; color: var(--muted); font-size: 12px; font-weight: 700; }
+
+  .logo-sizes {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 16px 18px;
+    border-top: 1px solid var(--hair);
+    border-bottom: 1px solid var(--hair);
+  }
+
+  .size-row { display: flex; align-items: flex-end; gap: 12px; }
+  .sizes-text { color: var(--muted); font-size: 10px; }
+  .tiles { display: flex; gap: 8px; }
+
+  .tile {
+    display: grid;
+    width: 58px;
+    height: 58px;
+    place-items: center;
+    border-radius: 15px;
+  }
+
+  .tile-dark {
+    --jiji-ink: #f5c542;
+    --jiji-eye: #161513;
+    --jiji-paper: #161513;
+    background: #161513;
+  }
+
+  .tile-yellow {
+    --jiji-paper: #f5c542;
+    background: #f5c542;
+  }
+
+  .tile-yellow :global(.jiji-logo) { --jiji-eye: #f5c542; }
+
+  .logo-copy { padding: 18px 20px 22px; }
+  .logo-copy h3 { margin: 0; font-size: 18px; }
+  .logo-copy p { margin: 8px 0 0; color: var(--muted); font-size: 13px; line-height: 1.7; }
+
+  .brand-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+
+  .lockup-card {
+    display: grid;
+    min-height: 200px;
+    place-items: center;
+    border: 1px solid var(--hair);
+    border-radius: 24px;
+    background: #fffdf8;
+  }
+
+  .lockup-card.tone-dark { background: #161513; color: #f6f1e7; }
+  .lockup-card.tone-dark small { color: rgba(246, 241, 231, .55); }
+  .lockup.big { gap: 16px; }
+  .lockup.big strong { font-size: 40px; }
+  .lockup.big small { margin-top: 8px; font-size: 11px; letter-spacing: .12em; text-transform: none; }
+
+  .palette {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+  }
+
+  .swatch {
+    overflow: hidden;
+    border: 1px solid var(--hair);
+    border-radius: 20px;
+    background: #fffdf8;
+  }
+
+  .swatch span { display: block; height: 96px; border-bottom: 1px solid var(--hair); }
+  .swatch p { display: grid; gap: 4px; margin: 0; padding: 14px 16px 16px; }
+  .swatch strong { font-size: 14px; }
+  .swatch code { font-size: 12px; }
+  .swatch small { color: var(--muted); font-size: 12px; }
+
+  .lab-foot {
+    padding: 28px 0 40px;
+    border-top: 1px solid var(--hair);
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  @media (max-width: 960px) {
+    .hero { grid-template-columns: 1fr; gap: 36px; padding-top: 48px; }
+    .stage { min-height: 480px; }
+    .product { grid-template-columns: 1fr; }
+    .assistant { border-top: 1px solid var(--hair); border-left: 0; }
+    .logo-grid { grid-template-columns: 1fr; }
+  }
+
+  @media (max-width: 640px) {
+    .draft { display: none; }
+    .state-grid { grid-template-columns: repeat(3, 1fr); }
+    .stage { min-height: 420px; border-radius: 24px; }
+    .stage :global(.stage-cat) { width: 82%; margin-top: -60px; }
+    .product-table { padding: 16px; overflow-x: auto; }
+    .table-head, .table-row { min-width: 420px; }
+    .brand-grid, .palette { grid-template-columns: 1fr; }
+    .lockup.big strong { font-size: 32px; }
+  }
+</style>
+
+<script>
+  import { createJiji, type JijiController } from "../scripts/jiji-cat";
+  import { isJijiState, jijiStates, type JijiState } from "../data/jiji";
+
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const cats: Array<{ element: SVGSVGElement; controller: JijiController }> = Array.from(
+    document.querySelectorAll<SVGSVGElement>("[data-jiji]"),
+  ).map((element) => ({ element, controller: createJiji(element, { reducedMotion }) }));
+
+  const stateButtons = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-state-button]"));
+  const autoButton = document.querySelector<HTMLButtonElement>("[data-auto]");
+  const themeButton = document.querySelector<HTMLButtonElement>("[data-theme-toggle]");
+  const stage = document.querySelector<HTMLElement>("[data-stage]");
+  const stateLabel = document.querySelector<HTMLElement>("[data-state-label]");
+  const stateNote = document.querySelector<HTMLElement>("[data-state-note]");
+  const jijiMessage = document.querySelector<HTMLElement>("[data-jiji-message]");
+
+  let current: JijiState = "idle";
+  let autoTimer: number | null = null;
+
+  const show = (state: JijiState): void => {
+    current = state;
+    const meta = jijiStates.find((item) => item.id === state);
+    cats.forEach(({ controller }) => controller.setState(state));
+    stateButtons.forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.stateButton === state)));
+    if (meta && stateLabel) stateLabel.textContent = meta.label;
+    if (meta && stateNote) stateNote.textContent = meta.note;
+    if (meta && jijiMessage) jijiMessage.textContent = meta.message;
+  };
+
+  const stopAuto = (): void => {
+    if (autoTimer !== null) window.clearInterval(autoTimer);
+    autoTimer = null;
+    autoButton?.setAttribute("aria-pressed", "false");
+  };
+
+  stateButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const state = button.dataset.stateButton;
+      if (!isJijiState(state)) return;
+      stopAuto();
+      show(state);
+    });
+  });
+
+  autoButton?.addEventListener("click", () => {
+    if (autoTimer !== null) {
+      stopAuto();
+      return;
+    }
+    autoButton.setAttribute("aria-pressed", "true");
+    autoTimer = window.setInterval(() => {
+      const index = jijiStates.findIndex((item) => item.id === current);
+      const next = jijiStates[(index + 1) % jijiStates.length];
+      if (next) show(next.id);
+    }, 3600);
+  });
+
+  themeButton?.addEventListener("click", () => {
+    const dark = stage?.classList.toggle("tone-dark") ?? false;
+    themeButton.setAttribute("aria-pressed", String(dark));
+  });
+
+  cats.forEach(({ element }) => {
+    element.addEventListener("click", () => {
+      if (current === "sleeping") {
+        stopAuto();
+        show("idle");
+        return;
+      }
+      cats.forEach(({ controller }) => controller.pet());
+    });
+  });
+</script>

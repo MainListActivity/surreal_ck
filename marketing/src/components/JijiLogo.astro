@@ -1,0 +1,71 @@
+---
+export type JijiLogoVariant = "ears" | "cells" | "night";
+
+interface Props {
+  variant?: JijiLogoVariant;
+  size?: number;
+  label?: string;
+}
+
+const { variant = "ears", size = 64, label = "吉吉" } = Astro.props;
+---
+
+<svg class="jiji-logo" width={size} height={size} viewBox="0 0 64 64" role="img" aria-label={label}>
+  {variant === "night" ? (
+    <>
+      <rect class="ink" width="64" height="64" rx="15" />
+      <path class="ear-line" d="M13 31 L16 13 Q17 8.5 21 11 L29 18 M51 31 L48 13 Q47 8.5 43 11 L35 18" />
+      <ellipse class="eye" cx="23" cy="36" rx="6.4" ry="7" />
+      <ellipse class="eye" cx="41" cy="36" rx="6.4" ry="7" />
+      <ellipse class="ink" cx="23" cy="36.5" rx="1.7" ry="5" />
+      <ellipse class="ink" cx="41" cy="36.5" rx="1.7" ry="5" />
+    </>
+  ) : (
+    <>
+      <path class="ink" d="M10 32 L13 11 Q14 5.5 18.5 8.5 L30 19 Z" />
+      <path class="ink" d="M54 32 L51 11 Q50 5.5 45.5 8.5 L34 19 Z" />
+      <rect class="ink" x="8" y="17" width="48" height="41" rx={variant === "cells" ? 10 : 15} />
+      {variant === "cells" ? (
+        <>
+          <rect class="eye" x="16.5" y="30.5" width="14" height="13" rx="3.5" />
+          <rect class="eye" x="33.5" y="30.5" width="14" height="13" rx="3.5" />
+          <rect class="ink" x="22.4" y="32.5" width="2.2" height="9" rx="1.1" />
+          <rect class="ink" x="39.4" y="32.5" width="2.2" height="9" rx="1.1" />
+          <path class="grid" d="M14 50.5 H50 M32 50.5 V56" />
+        </>
+      ) : (
+        <>
+          <ellipse class="eye" cx="23.5" cy="38" rx="6.4" ry="7" />
+          <ellipse class="eye" cx="40.5" cy="38" rx="6.4" ry="7" />
+          <ellipse class="ink" cx="23.5" cy="38.5" rx="1.7" ry="5" />
+          <ellipse class="ink" cx="40.5" cy="38.5" rx="1.7" ry="5" />
+        </>
+      )}
+    </>
+  )}
+</svg>
+
+<style>
+  .jiji-logo {
+    display: block;
+    flex: 0 0 auto;
+  }
+
+  .ink { fill: var(--jiji-ink, #161513); }
+  .eye { fill: var(--jiji-eye, #f5c542); }
+
+  .ear-line {
+    fill: none;
+    stroke: var(--jiji-eye, #f5c542);
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 2.4;
+  }
+
+  .grid {
+    fill: none;
+    stroke: var(--jiji-paper, #f6f1e7);
+    stroke-linecap: round;
+    stroke-width: 2;
+  }
+</style>

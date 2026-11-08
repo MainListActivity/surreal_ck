@@ -1,0 +1,142 @@
+---
+interface Props {
+  class?: string;
+  label?: string;
+}
+
+const { class: className, label = "吉吉" } = Astro.props;
+const tail = "M158 204 C 198 207 214 184 205 156 C 199 138 185 132 192 114";
+---
+
+<svg class:list={["jiji-cat", className]} viewBox="0 0 240 240" role="img" aria-label={label} data-jiji>
+  <g data-part="cat">
+    <g data-part="tail">
+      <path class="tail-rim" d={tail} />
+      <path class="tail" data-part="tail-stroke" d={tail} />
+    </g>
+
+    <g class="cells" data-part="cells">
+      <rect data-part="cell" x="16" y="204" width="14" height="14" rx="3.5" />
+      <rect data-part="cell" x="36" y="204" width="14" height="14" rx="3.5" />
+      <rect data-part="cell" x="56" y="204" width="14" height="14" rx="3.5" />
+    </g>
+
+    <g data-part="body">
+      <path class="ink rim" d="M120 126 C 84 126 70 168 74 198 C 76 212 92 217 120 217 C 148 217 164 212 166 198 C 170 168 156 126 120 126 Z" />
+    </g>
+    <g data-part="paw-left"><ellipse class="ink paw" cx="104" cy="212" rx="14" ry="8.5" /></g>
+    <g data-part="paw-right"><ellipse class="ink paw" cx="136" cy="212" rx="14" ry="8.5" /></g>
+
+    <g data-part="head">
+      <path data-part="ear-left" class="ink rim" d="M72 84 L76 36 Q78 25 87 32 L114 57 Z" />
+      <path data-part="ear-right" class="ink rim" d="M168 84 L164 36 Q162 25 153 32 L126 57 Z" />
+      <ellipse class="ink rim" cx="120" cy="98" rx="55" ry="46" />
+
+      <g class="whiskers">
+        <path d="M68 111 L42 104" />
+        <path d="M68 120 L40 122" />
+        <path d="M172 111 L198 104" />
+        <path d="M172 120 L200 122" />
+      </g>
+
+      <g data-part="eyes-open">
+        <g data-part="eye">
+          <ellipse class="eye-fill" cx="98" cy="99" rx="13.5" ry="14.5" />
+          <g data-part="gaze"><ellipse data-part="pupil" class="ink" cx="98" cy="100" rx="3.2" ry="10.5" /></g>
+        </g>
+        <g data-part="eye">
+          <ellipse class="eye-fill" cx="142" cy="99" rx="13.5" ry="14.5" />
+          <g data-part="gaze"><ellipse data-part="pupil" class="ink" cx="142" cy="100" rx="3.2" ry="10.5" /></g>
+        </g>
+      </g>
+      <g data-part="eyes-happy" class="eye-line" opacity="0">
+        <path d="M86 103 Q98 88 110 103" />
+        <path d="M130 103 Q142 88 154 103" />
+      </g>
+      <g data-part="eyes-sleepy" class="eye-line" opacity="0">
+        <path d="M87 99 Q98 107 109 99" />
+        <path d="M131 99 Q142 107 153 99" />
+      </g>
+
+      <path class="mouth" d="M112 122 Q116 127 120 122 Q124 127 128 122" />
+    </g>
+
+    <g class="zs">
+      <text data-part="z" x="174" y="64">z</text>
+      <text data-part="z" x="190" y="44">z</text>
+    </g>
+  </g>
+</svg>
+
+<style>
+  .jiji-cat {
+    --jiji-ink: #161513;
+    --jiji-eye: #f5c542;
+    --jiji-line: var(--jiji-paper, #f6f1e7);
+    --jiji-rim: transparent;
+    --jiji-whisker: var(--jiji-ink);
+    display: block;
+    overflow: visible;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  :global(.tone-dark) .jiji-cat {
+    --jiji-line: rgba(245, 197, 66, .42);
+    --jiji-rim: rgba(245, 197, 66, .3);
+    --jiji-whisker: rgba(245, 197, 66, .45);
+  }
+
+  .ink { fill: var(--jiji-ink); }
+  .rim { stroke: var(--jiji-rim); stroke-width: 2.5; }
+  .paw { stroke: var(--jiji-line); stroke-width: 3; }
+  .eye-fill { fill: var(--jiji-eye); }
+
+  .tail,
+  .tail-rim {
+    fill: none;
+    stroke-linecap: round;
+  }
+
+  .tail { stroke: var(--jiji-ink); stroke-width: 13; }
+  .tail-rim { stroke: var(--jiji-rim); stroke-width: 18; }
+
+  .whiskers path {
+    fill: none;
+    stroke: var(--jiji-whisker);
+    stroke-linecap: round;
+    stroke-width: 2.5;
+  }
+
+  .eye-line path {
+    fill: none;
+    stroke: var(--jiji-eye);
+    stroke-linecap: round;
+    stroke-width: 5;
+  }
+
+  .mouth {
+    fill: none;
+    stroke: var(--jiji-line);
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 2.5;
+  }
+
+  .cells { opacity: 0; }
+
+  .cells rect {
+    fill: var(--jiji-eye);
+    fill-opacity: 0;
+    stroke: var(--jiji-eye);
+    stroke-width: 2.5;
+  }
+
+  .zs text {
+    opacity: 0;
+    fill: var(--jiji-eye);
+    font-family: var(--font-sans);
+    font-size: 17px;
+    font-weight: 700;
+  }
+</style>
