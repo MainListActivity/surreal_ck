@@ -1,6 +1,8 @@
 // 测试主体（test_subject）读面：判断某个 subject 是否登记为测试账号、是否已到期。
 // 写面由 ops-test-subjects 路由与 seed 使用；reaper 只依赖这里的查询。
 
+import { dateTimeTimestamp } from "../db/surreal-values";
+
 export type Queryable = {
   query(sql: string, params?: Record<string, unknown>): Promise<unknown>;
 };
@@ -31,7 +33,8 @@ export async function findTestSubject(
 }
 
 export function isExpired(row: Pick<TestSubjectRow, "expires_at">, now: Date): boolean {
-  return Date.parse(row.expires_at) <= now.getTime();
+  // SDK 返回 DateTime；toIsoDateTimeString 兼容 DateTime/string/Date。
+  return dateTimeTimestamp(row.expires_at) <= now.getTime();
 }
 
 /** subject 是登记在案的测试主体且尚未到期。 */

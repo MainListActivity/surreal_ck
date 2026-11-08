@@ -2,6 +2,7 @@
 // 平台内容（platform_content 库与该主体写过的内容记录）不删除。
 // 幂等：重复执行对已删除的行是 no-op；单对象失败不影响其它并记录日志。
 
+import { DateTime, StringRecordId } from "surrealdb";
 import type { Queryable } from "./store";
 
 type Log = (event: string, fields: Record<string, unknown>) => void;
@@ -40,10 +41,12 @@ const WORKSPACE_REFERENCES: ReadonlyArray<readonly [table: string, field: string
   ["product_entitlement_audit", "workspace"],
 ];
 
-/** 以字符串字段（非 record）引用 db_name 的表。 */
+/** 以字符串字段（非 record）引用 db_name 的表。
+ * funnel_event_count.workspace_key 是 HMAC(db_name) 不是 db_name，等值删除永远
+ * 命不中且聚合计数无需随库删除，不在此列。
+ */
 const DB_NAME_REFERENCES: ReadonlyArray<readonly [table: string, field: string]> = [
   ["ops_invitation", "workspace_db"],
-  ["funnel_event_count", "workspace_key"],
 ];
 
 export interface TestSubjectReaperDeps {
@@ -78,9 +81,10 @@ export async function purgeTestWorkspace(
 ): Promise<"purged" | "skipped"> {
   const log = deps.log ?? defaultLog;
 
+  const wid = new StringRecordId(workspaceId);
   const members = firstArray(await deps.systemDb.query(
     `SELECT subject FROM user_workspace_index WHERE workspace = $wid;`,
-    { wid: workspaceId },
+    { wid },
   ));
   const testSubjects = new Set(
     firstArray(await deps.systemDb.query(
@@ -93,7 +97,7 @@ export async function purgeTestWorkspace(
 
   const [workspace] = firstArray(await deps.systemDb.query(
     `SELECT id, slug, db_name, owner_subject, test_origin FROM workspace WHERE id = $wid;`,
-    { wid: workspaceId },
+    { wid },
   )) as unknown as ExpiredWorkspaceRow[];
   if (workspace === undefined) return "purged";
 
@@ -112,16 +116,16 @@ export async function purgeTestWorkspace(
     if (table === "quota_lifecycle_intent") {
       await deps.systemDb.query(
         `DELETE ${table} WHERE workspace = $wid OR workspaces CONTAINS $wid;`,
-        { wid: workspaceId },
+        { wid },
       );
       continue;
     }
-    await deps.systemDb.query(`DELETE ${table} WHERE ${field} = $wid;`, { wid: workspaceId });
+    await deps.systemDb.query(`DELETE ${table} WHERE ${field} = $wid;`, { wid });
   }
   for (const [table, field] of DB_NAME_REFERENCES) {
     await deps.systemDb.query(`DELETE ${table} WHERE ${field} = $dbName;`, { dbName: workspace.db_name });
   }
-  await deps.systemDb.query(`DELETE workspace WHERE id = $wid;`, { wid: workspaceId });
+  await deps.systemDb.query(`DELETE workspace WHERE id = $wid;`, { wid });
 
   log("workspace.purged", {
     slug: workspace.slug,
@@ -155,7 +159,7 @@ export async function runTestSubjectReaper(
 ): Promise<{ workspacesPurged: number; workspacesSkipped: number; subjectsPurged: number }> {
   const log = deps.log ?? defaultLog;
   const now = deps.now?.() ?? new Date();
-  const nowIso = now.toISOString();
+  const nowParam = new DateTime(now);
   let workspacesPurged = 0;
   let workspacesSkipped = 0;
   let subjectsPurged = 0;
@@ -164,7 +168,7 @@ export async function runTestSubjectReaper(
     `SELECT id, slug, db_name, owner_subject, test_origin
      FROM workspace
      WHERE test_expires_at != NONE AND test_expires_at <= $now;`,
-    { now: nowIso },
+    { now: nowParam },
   )) as unknown as ExpiredWorkspaceRow[];
 
   for (const workspace of expiredWorkspaces) {
@@ -184,7 +188,7 @@ export async function runTestSubjectReaper(
 
   const expiredSubjects = firstArray(await deps.systemDb.query(
     `SELECT subject FROM test_subject WHERE expires_at <= $now;`,
-    { now: nowIso },
+    { now: nowParam },
   ));
 
   for (const row of expiredSubjects) {

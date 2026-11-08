@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { DateTime, StringRecordId } from "surrealdb";
 import type { MiddlewareHandler } from "hono";
 import { z } from "zod";
 import { HttpError } from "../http-error";
@@ -12,6 +13,7 @@ import {
 } from "../test-subjects/store";
 import { purgeTestSubject, purgeTestWorkspace, type TestSubjectReaperDeps } from "../test-subjects/reaper";
 import { getRootConnection } from "../db/root-connection";
+import { toSurrealNone } from "../db/surreal-values";
 
 const CONTENT_CAPABILITIES = [
   "content.read",
@@ -86,9 +88,9 @@ export function createOpsTestSubjectsRoutes(input: Readonly<{
            email = $email, expires_at = $expiresAt, origin = $origin, updated_at = time::now();`,
         {
           subject,
-          email: body.email ?? null,
-          expiresAt: new Date(expiresMs),
-          origin: body.origin ?? null,
+          email: toSurrealNone(body.email ?? null),
+          expiresAt: new DateTime(new Date(expiresMs)),
+          origin: toSurrealNone(body.origin ?? null),
         },
       );
 
@@ -103,10 +105,11 @@ export function createOpsTestSubjectsRoutes(input: Readonly<{
            ON DUPLICATE KEY UPDATE display_name = $displayName, updated_at = time::now();`,
           { subject, displayName: `测试主体 ${subject.slice(0, 12)}` },
         );
+        // SELECT VALUE id 直接把 record id 作为行返回（不是 {id} 对象）。
         const operator = rows(await db.query(
           `SELECT VALUE id FROM platform_operator WHERE subject = $subject LIMIT 1;`,
           { subject },
-        ))[0]?.id;
+        ))[0];
         for (const capability of body.contentCapabilities) {
           await db.query(
             `INSERT INTO platform_operator_capability { operator: $operator, capability: $capability, status: "active", granted_by_subject: "test-subject-api" }
@@ -129,7 +132,7 @@ export function createOpsTestSubjectsRoutes(input: Readonly<{
         if (Number(memberCount) === 1) {
           await db.query(
             `UPDATE $wid SET test_expires_at = $expiresAt, test_origin = $origin;`,
-            { wid: workspaceRef, expiresAt: new Date(expiresMs), origin: body.origin ?? null },
+            { wid: new StringRecordId(String(workspaceRef)), expiresAt: new DateTime(new Date(expiresMs)), origin: toSurrealNone(body.origin ?? null) },
           );
         }
       }
@@ -188,6 +191,9 @@ export function createOpsTestSubjectsRoutes(input: Readonly<{
     if (error instanceof HttpError) {
       return c.json({ error: error.code, message: error.message }, error.status as never);
     }
+    console.error("[ops-test-subjects] unexpected error", {
+      message: error instanceof Error ? error.message : String(error),
+    });
     return c.json({ error: "internal_error" }, 500);
   });
   return routes;

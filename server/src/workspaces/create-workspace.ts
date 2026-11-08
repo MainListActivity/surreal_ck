@@ -289,7 +289,7 @@ function createSurrealControlPlane(
             subject: input.ownerSubject,
             slug: input.slug,
             name: input.name,
-            testExpiresAt: testSubjectExpiry?.expires_at ?? null,
+            testExpiresAt: toSurrealNone(testSubjectExpiry?.expires_at ?? null),
             testOrigin: testSubjectExpiry?.origin ?? null,
           },
         );
