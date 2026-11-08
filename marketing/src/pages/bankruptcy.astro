@@ -38,13 +38,13 @@ const iconByName = {
 ---
 
 <BaseLayout
-  title="卯豆｜破产管理人与律所的债权对账与法律研究工作台"
+  title="吉吉｜破产管理人与律所的债权对账与法律研究工作台"
   description="面向破产管理人与律所：破产债权表按模板结构化建簿，申报记录逐项核对，AI 法律研究与引用保存留在同一工作台。第一阶段邀请制免费试用。"
 >
   <div class="page-shell">
     <header class="site-header">
       <div class="container nav-inner">
-        <a class="brand-link" href="/" aria-label="卯豆首页"><Brand /></a>
+        <a class="brand-link" href="/" aria-label="吉吉首页"><Brand /></a>
         <nav class="desktop-nav" aria-label="主导航">
           {bankruptcyNavigation.map((item) => <a href={item.href}>{item.label}</a>)}
         </nav>
@@ -123,7 +123,7 @@ const iconByName = {
           </div>
           <div class="premise-copy">
             <p>破产案件里，债权申报来自几百上千条 Excel 与材料，审查口径需要全团队一致，每个审定数字都要能说明依据。</p>
-            <p>卯豆把建簿、导入、逐项核对与法律研究组织在同一条工作路径上，让审查过程本身就是可追溯的数据。</p>
+            <p>吉吉把建簿、导入、逐项核对与法律研究组织在同一条工作路径上，让审查过程本身就是可追溯的数据。</p>
           </div>
         </div>
       </section>
@@ -219,7 +219,7 @@ const iconByName = {
         <a class="footer-login" data-login-trigger href={appUrl}>进入工作空间 <ArrowRight size={14} /></a>
       </div>
       <div class="container footer-bottom">
-        <span>© {new Date().getFullYear()} 卯豆 Workspace</span>
+        <span>© {new Date().getFullYear()} 吉吉 Workspace</span>
         <span class="legal-links">
           {legalLinks.map((link) =>
             link.href ? <a href={link.href}>{link.label}</a> : <span class="legal-pending">{link.label}（即将上线）</span>

@@ -102,7 +102,7 @@ export function initLoginDialog(): void {
     removeIframe();
     const frame = document.createElement("iframe");
     frame.src = `${appOrigin}/auth/embed?returnTo=${encodeURIComponent("/")}`;
-    frame.title = "登录卯豆";
+    frame.title = "登录吉吉";
     frame.allow = "publickey-credentials-get *; publickey-credentials-create *";
     frame.className = "dlg-iframe";
     frameWrap?.appendChild(frame);

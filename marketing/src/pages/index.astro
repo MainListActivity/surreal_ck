@@ -43,7 +43,7 @@ const iconByName = {
   <div class="page-shell">
     <header class="site-header">
       <div class="container nav-inner">
-        <a class="brand-link" href="#top" aria-label="卯豆首页"><Brand inverted /></a>
+        <a class="brand-link" href="#top" aria-label="吉吉首页"><Brand inverted /></a>
         <nav class="desktop-nav" aria-label="主导航">
           {navigation.map((item) => <a href={item.href}>{item.label}</a>)}
         </nav>
@@ -78,7 +78,7 @@ const iconByName = {
               </h1>
               <p class="hero-lead">
                 一张表，是数据库、协作现场，也是 AI 的工作上下文。<br class="wide-only" />
-                卯豆让信息不只被记录，而是持续形成判断与下一步。
+                吉吉让信息不只被记录，而是持续形成判断与下一步。
               </p>
               <div class="hero-actions">
                 <a class="button button-primary" data-login-trigger href={appUrl}>进入工作空间 <ArrowRight size={15} /></a>
@@ -131,7 +131,7 @@ const iconByName = {
           </div>
           <div class="premise-copy">
             <p>团队真正需要的不是更多散落的工具，而是一份随时准确、人人都能理解、可以继续行动的数据。</p>
-            <p>卯豆保留表格的直觉，把结构、关联、权限和智能藏在背后，让复杂工作仍然简单。</p>
+            <p>吉吉保留表格的直觉，把结构、关联、权限和智能藏在背后，让复杂工作仍然简单。</p>
           </div>
         </div>
       </section>
@@ -186,7 +186,7 @@ const iconByName = {
 
             <article class="bento ai-showcase" data-gsap-card>
               <div class="ai-orb"><WandSparkles size={22} /></div>
-              <span class="feature-label light"><Sparkles size={15} /> 卯豆 AI</span>
+              <span class="feature-label light"><Sparkles size={15} /> 吉吉 AI</span>
               <h3>把问题说出来，<br />让答案回到工作里。</h3>
               <p>AI 会理解当前工作簿、筛选条件与记录关联，不只回答问题，还能生成视图、图表与下一步动作。</p>
               <div class="prompt-card">
@@ -252,7 +252,7 @@ const iconByName = {
         <div class="container">
           <div class="workflow-head">
             <div><p class="eyebrow">工作方式</p><h2>三步，把信息变成团队能力</h2></div>
-            <p>卯豆不要求团队改变熟悉的工作习惯，只把每一步连接得更自然。</p>
+            <p>吉吉不要求团队改变熟悉的工作习惯，只把每一步连接得更自然。</p>
           </div>
           <div class="workflow-steps">
             {workflowSteps.map((step, index) => (
@@ -294,7 +294,7 @@ const iconByName = {
           <div class="final-seed seed-b" aria-hidden="true"></div>
           <p>从一张熟悉的表格开始</p>
           <h2>让团队的数据，<br /><em>自己长出答案。</em></h2>
-          <a class="button final-button" data-login-trigger href={appUrl}>开始使用卯豆 <ArrowRight size={15} /></a>
+          <a class="button final-button" data-login-trigger href={appUrl}>开始使用吉吉 <ArrowRight size={15} /></a>
         </div>
       </section>
     </main>
@@ -305,7 +305,7 @@ const iconByName = {
         <nav aria-label="页脚导航">{navigation.map((item) => <a href={item.href}>{item.label}</a>)}</nav>
         <a class="footer-login" data-login-trigger href={appUrl}>进入工作空间 <ArrowRight size={14} /></a>
       </div>
-      <div class="container footer-bottom"><span>© {new Date().getFullYear()} 卯豆 Workspace</span><span>让数据自然生长</span></div>
+      <div class="container footer-bottom"><span>© {new Date().getFullYear()} 吉吉 Workspace</span><span>让数据自然生长</span></div>
     </footer>
   </div>
   <LoginDialog appUrl={appUrl} />
