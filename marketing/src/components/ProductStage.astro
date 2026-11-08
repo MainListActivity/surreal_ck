@@ -1,9 +1,10 @@
 ---
 import { Bot, ChevronDown, CircleDollarSign, LayoutDashboard, ListFilter, Search, Sparkles, Table2 } from "@lucide/astro";
 import { views, workbookRows } from "../data/product";
+import JijiLogo from "./JijiLogo.astro";
 ---
 
-<div class="stage-wrap" aria-label="卯豆产品界面示意">
+<div class="stage-wrap" aria-label="吉吉产品界面示意">
   <div class="stage-shadow" aria-hidden="true"></div>
   <div class="stage">
     <div class="window-bar">
@@ -13,7 +14,7 @@ import { views, workbookRows } from "../data/product";
     </div>
     <div class="product-shell">
       <aside class="rail">
-        <div class="rail-brand"><span class="mini-sprout">⌁</span><strong>卯豆</strong></div>
+        <div class="rail-brand"><JijiLogo variant="glyph" size={18} /><strong>吉吉</strong></div>
         <div class="rail-search"><Search size={11} /><span>搜索工作簿</span></div>
         <nav aria-label="产品界面示意导航">
           <span><LayoutDashboard size={12} />首页</span>
@@ -51,7 +52,7 @@ import { views, workbookRows } from "../data/product";
     </div>
 
     <div class="ai-card">
-      <div class="ai-head"><span><Sparkles size={13} />卯豆 AI</span><em>理解当前工作簿</em></div>
+      <div class="ai-head"><span><Sparkles size={13} />吉吉 AI</span><em>理解当前工作簿</em></div>
       <p>找出本周需要优先处理的订单，并说明原因。</p>
       <div class="ai-answer">
         <span><Bot size={14} /></span>
@@ -161,21 +162,8 @@ import { views, workbookRows } from "../data/product";
     align-items: center;
     gap: 7px;
     padding: 0 4px 17px;
-    font-family: var(--font-serif);
+    font-family: var(--font-sans);
     font-size: 13px;
-  }
-
-  .mini-sprout {
-    display: grid;
-    width: 23px;
-    height: 23px;
-    place-items: center;
-    border-radius: 7px;
-    background: var(--primary-light);
-    color: var(--primary);
-    font-family: serif;
-    font-size: 18px;
-    transform: rotate(10deg);
   }
 
   .rail-search {

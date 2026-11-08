@@ -1,5 +1,5 @@
 ---
-export type JijiLogoVariant = "wall" | "dawn" | "glyph";
+export type JijiLogoVariant = "wall" | "glyph";
 
 interface Props {
   variant?: JijiLogoVariant;
@@ -41,17 +41,13 @@ const wallCells = Array.from({ length: 56 }, (_, index) => {
     </>
   ) : (
     <>
-      {variant === "wall" && <rect class="ink" width="64" height="64" rx="15" />}
+      <rect class="ink" width="64" height="64" rx="15" />
       {wallCells.map((cell) => (
         <rect class="eye" x={cell.x} y={cell.y} width={cellSize} height={cellSize} rx="1.2" fill-opacity={cell.opacity} />
       ))}
       <path class="floor" d="M9 57 H55" />
-      {variant === "wall" && (
-        <>
-          <path class="rim" d={cat} />
-          <path class="rim tail-rim" d={tail} />
-        </>
-      )}
+      <path class="rim" d={cat} />
+      <path class="rim tail-rim" d={tail} />
       <path class="ink" d={cat} />
       <path class="tail" d={tail} />
     </>
@@ -93,11 +89,6 @@ const wallCells = Array.from({ length: 56 }, (_, index) => {
     stroke-linecap: round;
     stroke-opacity: .4;
     stroke-width: 1;
-  }
-
-  .is-dawn .floor {
-    stroke: var(--jiji-ink, #161513);
-    stroke-opacity: .25;
   }
 
   .scan {
