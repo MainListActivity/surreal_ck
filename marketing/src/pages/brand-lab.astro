@@ -6,9 +6,9 @@ import BaseLayout from "../layouts/BaseLayout.astro";
 import { jijiStates } from "../data/jiji";
 
 const logoOptions: ReadonlyArray<{ variant: JijiLogoVariant; name: string; description: string }> = [
-  { variant: "ears", name: "猫耳格", description: "圆角方格长出两只耳朵。最直接的“猫 + 表格”，16px 也认得出。推荐作为主 Logo。" },
-  { variant: "cells", name: "格子眼", description: "眼睛就是两个单元格，下方一条表格分隔线。更偏工具感，适合应用图标。" },
-  { variant: "night", name: "夜瞳", description: "黑夜里只剩一双黄眼睛和耳朵轮廓。最神秘、最有气质，适合深色场景。" },
+  { variant: "wall", name: "夜读", description: "深夜里，吉吉背对着你，坐在一整面发光的数据墙前。剪影 + 墙面，主 Logo 推荐。" },
+  { variant: "dawn", name: "白昼", description: "去掉深色底，数据墙直接落在页面上。适合浅色官网、文档和印刷物。" },
+  { variant: "glyph", name: "极简", description: "墙面收成六个大格子，猫放大到占满下半部分。为 16px favicon 和应用图标优化。" },
 ];
 
 const palette = [
@@ -91,7 +91,7 @@ const firstState = jijiStates[0];
             ))}
           </div>
           <aside class="assistant">
-            <header><JijiLogo size={22} /><strong>问问吉吉</strong></header>
+            <header><JijiLogo variant="glyph" size={22} /><strong>问问吉吉</strong></header>
             <div class="chat">
               <p class="bubble user">帮我看看这个月哪些开销可以省一点？</p>
               <p class="bubble jiji" data-jiji-message>{firstState?.message}</p>
@@ -107,8 +107,8 @@ const firstState = jijiStates[0];
       <section class="section wrap">
         <div class="section-head">
           <p class="kicker">Logo 方向</p>
-          <h2>三个静态图标备选</h2>
-          <p>每个都只用墨黑与琥珀黄两种颜色，并检查从 128px 到 16px 的辨识度。</p>
+          <h2>背影猫 · 数据墙</h2>
+          <p>一只背对你的黑猫，面对一整面数据墙。只用墨黑与琥珀黄两种颜色，并检查从 128px 到 16px 的辨识度。</p>
         </div>
         <div class="logo-grid">
           {logoOptions.map((option, index) => (
@@ -126,7 +126,7 @@ const firstState = jijiStates[0];
                 </div>
                 <div class="tiles">
                   <span class="tile tile-dark"><JijiLogo variant={option.variant} size={44} /></span>
-                  <span class="tile tile-yellow"><JijiLogo variant={option.variant} size={44} /></span>
+                  <span class="tile tile-paper"><JijiLogo variant={option.variant} size={44} /></span>
                 </div>
               </div>
               <div class="logo-copy">
@@ -148,7 +148,7 @@ const firstState = jijiStates[0];
             <div class="lockup big"><JijiLogo size={64} /><span><strong>吉吉</strong><small>你的数据小猫</small></span></div>
           </div>
           <div class="lockup-card tone-dark">
-            <div class="lockup big"><JijiLogo variant="night" size={64} /><span><strong>吉吉</strong><small>你的数据小猫</small></span></div>
+            <div class="lockup big"><JijiLogo variant="glyph" size={64} /><span><strong>吉吉</strong><small>你的数据小猫</small></span></div>
           </div>
           <div class="palette">
             {palette.map((color) => (
@@ -550,19 +550,8 @@ const firstState = jijiStates[0];
     border-radius: 15px;
   }
 
-  .tile-dark {
-    --jiji-ink: #f5c542;
-    --jiji-eye: #161513;
-    --jiji-paper: #161513;
-    background: #161513;
-  }
-
-  .tile-yellow {
-    --jiji-paper: #f5c542;
-    background: #f5c542;
-  }
-
-  .tile-yellow :global(.jiji-logo) { --jiji-eye: #f5c542; }
+  .tile-dark { background: #161513; box-shadow: inset 0 0 0 1px rgba(245, 197, 66, .18); }
+  .tile-paper { background: var(--jiji-paper); box-shadow: inset 0 0 0 1px var(--hair); }
 
   .logo-copy { padding: 18px 20px 22px; }
   .logo-copy h3 { margin: 0; font-size: 18px; }

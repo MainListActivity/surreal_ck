@@ -1,5 +1,5 @@
 ---
-export type JijiLogoVariant = "ears" | "cells" | "night";
+export type JijiLogoVariant = "wall" | "dawn" | "glyph";
 
 interface Props {
   variant?: JijiLogoVariant;
@@ -7,40 +7,53 @@ interface Props {
   label?: string;
 }
 
-const { variant = "ears", size = 64, label = "吉吉" } = Astro.props;
+const { variant = "wall", size = 64, label = "吉吉" } = Astro.props;
+
+// 坐姿背影猫（含双耳），以 x=32 为中轴，底边落在 y=57。
+const cat =
+  "M20.5 57 C18.5 51 20 44.5 25.5 40.5 C26.6 39.7 27 38.6 26.6 37.4 C25.4 35.8 24.8 33.6 24.9 31 L25.6 20.6 Q25.9 19 27.2 19.9 L30.6 23.2 Q32 22.8 33.4 23.2 L36.8 19.9 Q38.1 19 38.4 20.6 L39.1 31 C39.2 33.6 38.6 35.8 37.4 37.4 C37 38.6 37.4 39.7 38.5 40.5 C44 44.5 45.5 51 43.5 57 Z";
+const tail = "M41 56.6 C48 57.6 52 55 52.5 50.5 C52.8 48 51.6 46.4 50 46";
+
+// 8 × 7 的数据墙；越靠近猫头视线的位置越亮，形成屏幕光晕。
+const cellSize = 4.8;
+const cellStep = 6;
+const wallCells = Array.from({ length: 56 }, (_, index) => {
+  const column = index % 8;
+  const row = Math.floor(index / 8);
+  const x = 8.6 + column * cellStep;
+  const y = 8.6 + row * cellStep;
+  const distance = Math.hypot(x + cellSize / 2 - 32, (y + cellSize / 2 - 24) * 1.15);
+  // 少量“读数”格子保持高亮，打破纯径向渐变，读起来更像数据。
+  const highlighted = [2, 5, 11, 15, 25, 30, 46, 49].includes(index);
+  const opacity = highlighted ? 1 : Math.max(.2, Math.min(1, 1.2 - distance / 34));
+  return { x, y, opacity: Number(opacity.toFixed(2)) };
+});
 ---
 
-<svg class="jiji-logo" width={size} height={size} viewBox="0 0 64 64" role="img" aria-label={label}>
-  {variant === "night" ? (
+<svg class:list={["jiji-logo", `is-${variant}`]} width={size} height={size} viewBox="0 0 64 64" role="img" aria-label={label}>
+  {variant === "glyph" ? (
     <>
-      <rect class="ink" width="64" height="64" rx="15" />
-      <path class="ear-line" d="M13 31 L16 13 Q17 8.5 21 11 L29 18 M51 31 L48 13 Q47 8.5 43 11 L35 18" />
-      <ellipse class="eye" cx="23" cy="36" rx="6.4" ry="7" />
-      <ellipse class="eye" cx="41" cy="36" rx="6.4" ry="7" />
-      <ellipse class="ink" cx="23" cy="36.5" rx="1.7" ry="5" />
-      <ellipse class="ink" cx="41" cy="36.5" rx="1.7" ry="5" />
+      <rect class="eye" width="64" height="64" rx="15" />
+      <path class="scan" d="M0 17.5 H64 M0 30.5 H64" />
+      <g transform="translate(32 64) scale(1.32) translate(-32 -57)">
+        <path class="ink" d={cat} />
+      </g>
     </>
   ) : (
     <>
-      <path class="ink" d="M10 32 L13 11 Q14 5.5 18.5 8.5 L30 19 Z" />
-      <path class="ink" d="M54 32 L51 11 Q50 5.5 45.5 8.5 L34 19 Z" />
-      <rect class="ink" x="8" y="17" width="48" height="41" rx={variant === "cells" ? 10 : 15} />
-      {variant === "cells" ? (
+      {variant === "wall" && <rect class="ink" width="64" height="64" rx="15" />}
+      {wallCells.map((cell) => (
+        <rect class="eye" x={cell.x} y={cell.y} width={cellSize} height={cellSize} rx="1.2" fill-opacity={cell.opacity} />
+      ))}
+      <path class="floor" d="M9 57 H55" />
+      {variant === "wall" && (
         <>
-          <rect class="eye" x="16.5" y="30.5" width="14" height="13" rx="3.5" />
-          <rect class="eye" x="33.5" y="30.5" width="14" height="13" rx="3.5" />
-          <rect class="ink" x="22.4" y="32.5" width="2.2" height="9" rx="1.1" />
-          <rect class="ink" x="39.4" y="32.5" width="2.2" height="9" rx="1.1" />
-          <path class="grid" d="M14 50.5 H50 M32 50.5 V56" />
-        </>
-      ) : (
-        <>
-          <ellipse class="eye" cx="23.5" cy="38" rx="6.4" ry="7" />
-          <ellipse class="eye" cx="40.5" cy="38" rx="6.4" ry="7" />
-          <ellipse class="ink" cx="23.5" cy="38.5" rx="1.7" ry="5" />
-          <ellipse class="ink" cx="40.5" cy="38.5" rx="1.7" ry="5" />
+          <path class="rim" d={cat} />
+          <path class="rim tail-rim" d={tail} />
         </>
       )}
+      <path class="ink" d={cat} />
+      <path class="tail" d={tail} />
     </>
   )}
 </svg>
@@ -54,18 +67,43 @@ const { variant = "ears", size = 64, label = "吉吉" } = Astro.props;
   .ink { fill: var(--jiji-ink, #161513); }
   .eye { fill: var(--jiji-eye, #f5c542); }
 
-  .ear-line {
+  /* 来自数据墙的背光，让黑猫在深色地面上仍然保有轮廓。 */
+  .rim {
+    fill: none;
+    stroke: var(--jiji-eye, #f5c542);
+    stroke-linejoin: round;
+    stroke-width: 1.3;
+  }
+
+  .tail-rim {
+    stroke-linecap: round;
+    stroke-width: 4.6;
+  }
+
+  .tail {
+    fill: none;
+    stroke: var(--jiji-ink, #161513);
+    stroke-linecap: round;
+    stroke-width: 3.4;
+  }
+
+  .floor {
     fill: none;
     stroke: var(--jiji-eye, #f5c542);
     stroke-linecap: round;
-    stroke-linejoin: round;
-    stroke-width: 2.4;
+    stroke-opacity: .4;
+    stroke-width: 1;
   }
 
-  .grid {
+  .is-dawn .floor {
+    stroke: var(--jiji-ink, #161513);
+    stroke-opacity: .25;
+  }
+
+  .scan {
     fill: none;
-    stroke: var(--jiji-paper, #f6f1e7);
-    stroke-linecap: round;
+    stroke: var(--jiji-ink, #161513);
+    stroke-opacity: .16;
     stroke-width: 2;
   }
 </style>
