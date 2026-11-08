@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import Logo from "../../components/Logo.svelte";
   import { handleCallback } from "../../lib/auth";
   import {
     isFramed,
@@ -47,17 +48,17 @@
 <main class="auth-page" class:embedded={isFramed()}>
   <section class="auth-panel" class:compact={isFramed()} aria-live="polite">
     {#if embeddedDone}
-      <p class="brand">卯豆</p>
+      <div class="brand"><Logo /></div>
       <span class="check" aria-hidden="true">✓</span>
       <h1>登录成功</h1>
       <p class="message">正在进入工作空间…</p>
     {:else if error}
-      {#if !isFramed()}<p class="brand">卯豆</p>{/if}
+      {#if !isFramed()}<div class="brand"><Logo /></div>{/if}
       <h1>登录回调失败</h1>
       <p class="message">{error}</p>
       <a href="/auth/login">返回登录</a>
     {:else}
-      <p class="brand">卯豆</p>
+      <div class="brand"><Logo /></div>
       <span class="spinner" aria-hidden="true"></span>
       <h1>正在进入工作空间…</h1>
     {/if}
@@ -99,12 +100,9 @@
   }
 
   .brand {
+    display: flex;
+    justify-content: center;
     margin: 0 0 1.5rem;
-    font-family: "Spectral", "Noto Serif SC", serif;
-    font-size: 1.5rem;
-    font-weight: 600;
-    color: #2f7a4c;
-    letter-spacing: 0.02em;
   }
 
   .spinner {
@@ -113,8 +111,8 @@
     height: 30px;
     margin-bottom: 1.25rem;
     border-radius: 50%;
-    border: 3px solid rgba(47, 122, 76, 0.18);
-    border-top-color: #2f7a4c;
+    border: 3px solid rgba(245, 197, 66, 0.24);
+    border-top-color: #f5c542;
     animation: auth-spin 0.8s linear infinite;
   }
 
@@ -125,8 +123,8 @@
     height: 40px;
     margin-bottom: 1rem;
     border-radius: 50%;
-    background: #2f7a4c;
-    color: #ffffff;
+    background: #161513;
+    color: #f5c542;
     font-size: 1.25rem;
     font-weight: 700;
   }
@@ -162,8 +160,8 @@
     display: inline-block;
     margin-top: 1.25rem;
     border-radius: 10px;
-    background: #2f7a4c;
-    color: #ffffff;
+    background: #161513;
+    color: #f6f1e7;
     font-weight: 600;
     padding: 0.7rem 1.4rem;
     text-decoration: none;

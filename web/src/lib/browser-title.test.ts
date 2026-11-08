@@ -3,28 +3,28 @@ import { buildBrowserTitle } from "./browser-title";
 
 describe("buildBrowserTitle", () => {
   test("为公开页面提供明确标题", () => {
-    expect(buildBrowserTitle({ route: { kind: "home" } })).toBe("卯豆");
-    expect(buildBrowserTitle({ route: { kind: "login" } })).toBe("登录 - 卯豆");
-    expect(buildBrowserTitle({ route: { kind: "callback" } })).toBe("正在登录 - 卯豆");
-    expect(buildBrowserTitle({ route: { kind: "form" } })).toBe("公开表单 - 卯豆");
-    expect(buildBrowserTitle({ route: { kind: "form-success" } })).toBe("提交成功 - 卯豆");
+    expect(buildBrowserTitle({ route: { kind: "home" } })).toBe("吉吉");
+    expect(buildBrowserTitle({ route: { kind: "login" } })).toBe("登录 - 吉吉");
+    expect(buildBrowserTitle({ route: { kind: "callback" } })).toBe("正在登录 - 吉吉");
+    expect(buildBrowserTitle({ route: { kind: "form" } })).toBe("公开表单 - 吉吉");
+    expect(buildBrowserTitle({ route: { kind: "form-success" } })).toBe("提交成功 - 吉吉");
     expect(buildBrowserTitle({ route: { kind: "ops" } })).toBe(
-      "配额运营台 - 卯豆",
+      "配额运营台 - 吉吉",
     );
     expect(buildBrowserTitle({
       route: { kind: "billing-quota", accountKey: "acme" },
-    })).toBe("计费账户配额 - acme - 卯豆");
+    })).toBe("计费账户配额 - acme - 吉吉");
   });
 
   test("工作区首页优先显示工作区名称", () => {
     expect(buildBrowserTitle({
       route: { kind: "workspace", slug: "acme", page: "home" },
       workspaceName: "巡检事项组",
-    })).toBe("巡检事项组 - 卯豆");
+    })).toBe("巡检事项组 - 吉吉");
 
     expect(buildBrowserTitle({
       route: { kind: "workspace", slug: "acme", page: "home" },
-    })).toBe("acme - 卯豆");
+    })).toBe("acme - 吉吉");
   });
 
   test.each([
@@ -39,7 +39,7 @@ describe("buildBrowserTitle", () => {
     expect(buildBrowserTitle({
       route: { kind: "workspace", slug: "acme", page },
       workspaceName: "巡检事项组",
-    })).toBe(`${label} - 巡检事项组 - 卯豆`);
+    })).toBe(`${label} - 巡检事项组 - 吉吉`);
   });
 
   test("工作区仪表盘使用稳定页面名，避免跨工作区沿用旧仪表盘名称", () => {
@@ -47,7 +47,7 @@ describe("buildBrowserTitle", () => {
       route: { kind: "workspace", slug: "acme", page: "dashboard" },
       workspaceName: "巡检事项组",
       dashboardTitle: "事项概览",
-    })).toBe("仪表盘 - 巡检事项组 - 卯豆");
+    })).toBe("仪表盘 - 巡检事项组 - 吉吉");
   });
 
   test("编辑器按数据表、工作簿层级显示标题", () => {
@@ -56,7 +56,7 @@ describe("buildBrowserTitle", () => {
       workspaceName: "巡检事项组",
       workbookName: "恒大事项",
       sheetName: "登记明细",
-    })).toBe("登记明细 - 恒大事项 - 卯豆");
+    })).toBe("登记明细 - 恒大事项 - 吉吉");
   });
 
   test("编辑器仪表盘使用仪表盘页名称", () => {
@@ -65,7 +65,7 @@ describe("buildBrowserTitle", () => {
       workbookName: "恒大事项",
       editorPageKind: "dashboard",
       dashboardTitle: "清偿进度",
-    })).toBe("清偿进度 - 恒大事项 - 卯豆");
+    })).toBe("清偿进度 - 恒大事项 - 吉吉");
   });
 
   test("动态名称为空时不产生空标题段或暴露 record id", () => {
@@ -73,7 +73,7 @@ describe("buildBrowserTitle", () => {
       route: { kind: "editor", slug: "acme", workbookId: "workbook:secret", sheetId: null },
       workspaceName: "巡检事项组",
       workbookName: "  ",
-    })).toBe("工作簿 - 巡检事项组 - 卯豆");
+    })).toBe("工作簿 - 巡检事项组 - 吉吉");
   });
 
   test("忽略与当前路由不匹配的异步 store 上下文", () => {
@@ -81,7 +81,7 @@ describe("buildBrowserTitle", () => {
       route: { kind: "workspace", slug: "new-space", page: "home" },
       workspaceSlug: "old-space",
       workspaceName: "旧工作区",
-    })).toBe("new-space - 卯豆");
+    })).toBe("new-space - 吉吉");
 
     expect(buildBrowserTitle({
       route: { kind: "editor", slug: "new-space", workbookId: "workbook:new", sheetId: "sheet:new" },
@@ -91,7 +91,7 @@ describe("buildBrowserTitle", () => {
       workbookName: "旧工作簿",
       activeSheetId: "sheet:old",
       sheetName: "旧数据表",
-    })).toBe("工作簿 - 新工作区 - 卯豆");
+    })).toBe("工作簿 - 新工作区 - 吉吉");
 
     expect(buildBrowserTitle({
       route: { kind: "editor", slug: "new-space", workbookId: "workbook:new", sheetId: "sheet:new" },
@@ -99,6 +99,6 @@ describe("buildBrowserTitle", () => {
       workbookName: "新工作簿",
       activeSheetId: "sheet:old",
       sheetName: "旧数据表",
-    })).toBe("新工作簿 - 卯豆");
+    })).toBe("新工作簿 - 吉吉");
   });
 });

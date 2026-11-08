@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import Logo from "../../components/Logo.svelte";
   import { login } from "../../lib/auth";
 
   let error = $state<string | null>(null);
@@ -35,7 +36,7 @@
 
 <main class="auth-page">
   <section class="auth-panel" aria-live="polite">
-    <p class="brand">卯豆</p>
+    <div class="brand"><Logo /></div>
     {#if error}
       <h1>登录失败</h1>
       <p class="message">{error}</p>
@@ -73,12 +74,9 @@
   }
 
   .brand {
+    display: flex;
+    justify-content: center;
     margin: 0 0 1.5rem;
-    font-family: "Spectral", "Noto Serif SC", serif;
-    font-size: 1.5rem;
-    font-weight: 600;
-    color: #2f7a4c;
-    letter-spacing: 0.02em;
   }
 
   .spinner {
@@ -87,8 +85,8 @@
     height: 30px;
     margin-bottom: 1.25rem;
     border-radius: 50%;
-    border: 3px solid rgba(47, 122, 76, 0.18);
-    border-top-color: #2f7a4c;
+    border: 3px solid rgba(245, 197, 66, 0.24);
+    border-top-color: #f5c542;
     animation: auth-spin 0.8s linear infinite;
   }
 
@@ -123,8 +121,8 @@
     margin-top: 1.25rem;
     border: 0;
     border-radius: 10px;
-    background: #2f7a4c;
-    color: #ffffff;
+    background: #161513;
+    color: #f6f1e7;
     cursor: pointer;
     font: inherit;
     font-weight: 600;
