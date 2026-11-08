@@ -7,7 +7,6 @@
     Clock,
     Grid3x3,
     LayoutTemplate,
-    Leaf,
     Link2,
     List,
     ListFilter,
@@ -45,6 +44,7 @@
   import InviteMemberDialog from "../components/InviteMemberDialog.svelte";
   import CsvImportDialog from "../components/CsvImportDialog.svelte";
   import XlsxImportDialog from "../components/XlsxImportDialog.svelte";
+  import JijiAssistant from "../components/JijiAssistant.svelte";
   import { parseCsvImport, type ParsedCsvImport } from "../lib/csv-import";
   import type { ParsedXlsxImport } from "../lib/xlsx-import";
   import { createXlsxParseTask } from "../lib/xlsx-parse-task";
@@ -344,17 +344,17 @@
       {/if}
     {/if}
 
-    <section class="ai-banner" aria-label="AI 助手">
-      <span class="ai-orb"><Leaf size={24} color="#fff" class="ai-leaf" /></span>
+    <section class="ai-banner" aria-label="问问吉吉">
+      <span class="ai-orb"><JijiAssistant state="idle" size={64} /></span>
       <div class="ai-copy">
         <div class="ai-title">
-          <strong>吉吉 AI 助手</strong>
+          <strong>问问吉吉</strong>
           <span class="ai-beta">BETA</span>
         </div>
         <p>用自然语言查询数据、生成报表、自动整理数据台账——试试「列出本月即将到期的任务」。</p>
       </div>
       <button type="button" class="ai-action" onclick={() => onopenaichat?.()}>
-        开始对话
+        问问吉吉
         <ArrowRight size={16} />
       </button>
     </section>
@@ -840,17 +840,10 @@
 
   .ai-orb {
     display: grid;
-    width: 50px;
-    height: 50px;
+    width: 64px;
+    height: 64px;
     flex-shrink: 0;
     place-items: center;
-    border-radius: 15px;
-    background: rgba(255, 255, 255, .16);
-  }
-
-  .ai-orb :global(.ai-leaf) {
-    transform-origin: 50% 100%;
-    animation: omSway 4s ease-in-out infinite;
   }
 
   .ai-copy {

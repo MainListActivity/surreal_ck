@@ -41,7 +41,7 @@ function createActivityFeed() {
         const name =
           (typeof r.display_name === "string" && r.display_name) ||
           (typeof r.email === "string" && r.email) ||
-          (r.kind === "virtual" ? "AI 助手" : "未知用户");
+          (r.kind === "virtual" ? "吉吉" : "未知用户");
         map[id] = name;
       }
       state.users = map;

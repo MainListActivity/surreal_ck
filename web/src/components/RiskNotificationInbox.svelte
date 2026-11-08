@@ -255,7 +255,7 @@
               </dl>
               <div class="actions">
                 <button onclick={() => void openRecord(notification)}><ExternalLink size={12} />打开记录</button>
-                <button onclick={() => onaskai?.(notification)}><Sparkles size={12} />继续询问 AI</button>
+                <button onclick={() => onaskai?.(notification)}><Sparkles size={12} />问问吉吉</button>
                 <button onclick={() => void markResolved(notification)}><Check size={12} />已处理</button>
               </div>
             </div>

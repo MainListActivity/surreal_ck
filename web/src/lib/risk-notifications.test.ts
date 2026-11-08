@@ -45,7 +45,7 @@ describe("OIP-18 风险提醒收件箱", () => {
     });
   });
 
-  test("继续询问 AI 的上下文只包含已读取的命中事实和规则", () => {
+  test("问问吉吉的上下文只包含已读取的命中事实和规则", () => {
     const notification: RiskNotification = {
       id: "user_notification:n1",
       workbookId: "workbook:claims",

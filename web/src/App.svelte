@@ -3,7 +3,8 @@
   import LoginRoute from "./routes/auth/login.svelte";
   import CallbackRoute from "./routes/auth/callback.svelte";
   import AiDrawer from "./components/AiDrawer.svelte";
-  import { Sparkles, ClipboardList } from "@lucide/svelte";
+  import JijiAssistant from "./components/JijiAssistant.svelte";
+  import { ClipboardList } from "@lucide/svelte";
   import EditorScreen from "./screens/EditorScreen.svelte";
   import WorkspaceScreen from "./screens/WorkspaceScreen.svelte";
   import ContentReaderScreen from "./screens/ContentReaderScreen.svelte";
@@ -288,9 +289,9 @@
         onclose={() => (aiDrawerOpen = false)}
       />
       {#if !aiDrawerOpen}
-        <button type="button" class="ai-launcher" aria-label="AI 助手" onclick={openAiDrawer}>
-          <Sparkles size={16} color="#fff" />
-          <span>AI</span>
+        <button type="button" class="ai-launcher" aria-label="问问吉吉" onclick={openAiDrawer}>
+          <JijiAssistant state="idle" size={34} />
+          <span>问问吉吉</span>
         </button>
       {/if}
     </div>
@@ -325,9 +326,9 @@
         onclose={() => (aiDrawerOpen = false)}
       />
       {#if !aiDrawerOpen}
-        <button type="button" class="ai-launcher" aria-label="AI 助手" onclick={openAiDrawer}>
-          <Sparkles size={16} color="#fff" />
-          <span>AI</span>
+        <button type="button" class="ai-launcher" aria-label="问问吉吉" onclick={openAiDrawer}>
+          <JijiAssistant state="idle" size={34} />
+          <span>问问吉吉</span>
         </button>
       {/if}
     </div>
@@ -480,23 +481,23 @@
     bottom: 22px;
     z-index: 25;
     display: inline-flex;
-    height: 42px;
+    height: 48px;
     align-items: center;
     justify-content: center;
     gap: 7px;
-    padding: 0 14px;
-    border: 0;
+    padding: 0 16px 0 8px;
+    border: 1px solid rgba(245, 197, 66, .22);
     border-radius: 999px;
-    background: var(--primary);
-    color: #fff;
-    box-shadow: 0 10px 24px rgba(22, 100, 255, .24);
+    background: #161513;
+    color: #f6f1e7;
+    box-shadow: 0 12px 28px rgba(22, 21, 19, .24);
     cursor: pointer;
     font-size: 13px;
     font-weight: 650;
   }
 
   .ai-launcher:hover {
-    background: var(--primary-hover);
+    background: #24221e;
   }
 
   .standalone {
