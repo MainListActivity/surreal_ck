@@ -1,6 +1,6 @@
 import type { Route, WorkspacePage } from "./route";
 
-const BRAND = "卯豆";
+const BRAND = "吉吉";
 
 const WORKSPACE_PAGE_TITLES: Record<Exclude<WorkspacePage, "home">, string> = {
   docs: "我的文档",

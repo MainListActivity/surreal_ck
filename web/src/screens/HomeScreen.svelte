@@ -348,7 +348,7 @@
       <span class="ai-orb"><Leaf size={24} color="#fff" class="ai-leaf" /></span>
       <div class="ai-copy">
         <div class="ai-title">
-          <strong>卯豆 AI 助手</strong>
+          <strong>吉吉 AI 助手</strong>
           <span class="ai-beta">BETA</span>
         </div>
         <p>用自然语言查询数据、生成报表、自动整理数据台账——试试「列出本月即将到期的任务」。</p>
