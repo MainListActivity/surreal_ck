@@ -101,11 +101,32 @@ export function createPlatformOperatorCapabilityReader(
  * 运营端与客户 API 使用同一 issuer 但不同 audience；资格在每次请求从
  * platform_operator / capability 重新读取，故禁用或撤销会立即影响旧 token。
  */
+export type TestSubjectGuard = {
+  /** remote client 签发的 token 是否可用于该 subject（须为未到期测试主体）。 */
+  remoteClientAllowed(subject: string): Promise<boolean>;
+  /** subject 是否是已到期测试主体。 */
+  expired(subject: string): Promise<boolean>;
+};
+
+const defaultTestSubjectGuard = async (): Promise<TestSubjectGuard> => {
+  const db = await getRootDatabaseSession("_system");
+  const { isActiveTestSubject, isExpiredTestSubject } = await import("../test-subjects/store");
+  return {
+    remoteClientAllowed: (subject) => isActiveTestSubject(db, subject),
+    expired: (subject) => isExpiredTestSubject(db, subject),
+  };
+};
+
 export function requirePlatformOperator(
   requiredCapability?: PlatformOperatorCapability,
   options: Readonly<{
     reader?: PlatformOperatorCapabilityReader;
     tokenActivityChecker?: OidcTokenActivityChecker;
+    /**
+     * 测试主体守门；未提供时生产默认查 _system。
+     * 注入自定义 reader 的测试不传此项即跳过守门（等价于非测试主体）。
+     */
+    testSubjectGuard?: TestSubjectGuard;
   }> = {},
 ): MiddlewareHandler<AppBindings> {
   const reader = options.reader ?? createPlatformOperatorCapabilityReader();
@@ -124,7 +145,25 @@ export function requirePlatformOperator(
     if (!(await tokenActivityChecker(token))) {
       throw new HttpError(401, "oidc-revoked", "Bearer token has been revoked");
     }
+    // 测试主体守门：自定义 reader 的测试注入路径默认放行（等同非测试主体）；
+    // 生产默认实现查 _system 的 test_subject 表。
+    const guard = options.testSubjectGuard
+      ?? (options.reader !== undefined
+        ? { remoteClientAllowed: async () => false, expired: async () => false }
+        : await defaultTestSubjectGuard());
+
+    // remote client（测试兑换通道）签发的 token 只允许未到期测试主体。
+    const remoteClientId = env.OIDC_REMOTE_CLIENT_ID;
+    const tokenClientId = typeof user.raw?.client_id === "string" ? user.raw.client_id : null;
+    if (remoteClientId && tokenClientId === remoteClientId) {
+      if (!(await guard.remoteClientAllowed(user.subject))) {
+        throw new HttpError(403, "test-subject-not-allowed", "remote client token 仅限未到期测试主体");
+      }
+    }
     const capabilities = [...await reader.getCapabilities(user.subject)].sort();
+    if (await guard.expired(user.subject)) {
+      throw new HttpError(403, "test-subject-expired", "测试主体已到期");
+    }
     if (capabilities.length === 0) {
       throw new HttpError(403, "platform-operator-inactive", "账号不是有效的平台运营人员");
     }

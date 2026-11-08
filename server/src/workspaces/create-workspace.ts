@@ -256,6 +256,14 @@ function createSurrealControlPlane(
           return { kind: "slug-conflict" };
         }
 
+        // 创建者是未到期的测试主体 → workspace 带同样的到期时间，reaper 统一回收。
+        const testSubjectRows = await systemDb.query(
+          `SELECT expires_at, origin FROM test_subject WHERE subject = $subject LIMIT 1;`,
+          { subject: input.ownerSubject },
+        );
+        const testSubjectExpiry = (firstRow(testSubjectRows) as
+          { expires_at?: string; origin?: string } | undefined) ?? null;
+
         const dbNameResult = await systemDb.query(
           "SELECT VALUE id FROM workspace WHERE db_name = $dbName LIMIT 1;",
           { dbName: input.dbName },
@@ -271,7 +279,9 @@ function createSurrealControlPlane(
               name: $name,
               status: "provisioning",
               provisioning_stage: "reserved",
-              quota_migration_state: "not_started"
+              quota_migration_state: "not_started",
+              test_expires_at: $testExpiresAt,
+              test_origin: $testOrigin
             };
           `,
           {
@@ -279,6 +289,8 @@ function createSurrealControlPlane(
             subject: input.ownerSubject,
             slug: input.slug,
             name: input.name,
+            testExpiresAt: toSurrealNone(testSubjectExpiry?.expires_at ?? null),
+            testOrigin: testSubjectExpiry?.origin ?? null,
           },
         );
         const row = firstRow(result);

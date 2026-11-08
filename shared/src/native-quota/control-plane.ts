@@ -467,6 +467,7 @@ export const PLATFORM_OPERATOR_CAPABILITIES = [
   // FV06 受控目录认证探针（零推理）：只授予触发固定目标 `GET /models` 的只读探测权限。
   // 不随生产 CSV 自动配置；授予须经上线申请明确影响主体。
   "internal-ai.endpoint-probe",
+  "test.manage",
 ] as const;
 export type PlatformOperatorCapability =
   (typeof PLATFORM_OPERATOR_CAPABILITIES)[number];
