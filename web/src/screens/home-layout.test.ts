@@ -134,9 +134,9 @@ describe("HR-05 首页快捷操作与 AI 入口", () => {
 
     expect(home).toMatch(/onopenaichat\?:\s*\(\)\s*=>\s*void/);
     expect(home).toContain('class="ai-banner"');
-    expect(home).toContain("吉吉 AI 助手");
+    expect(home).toContain("问问吉吉");
     expect(home).toContain("用自然语言查询数据、生成报表、自动整理数据台账");
-    expect(home).toContain("开始对话");
+    expect(home).toContain("问问吉吉");
     expect(home).toContain("onopenaichat?.()");
   });
 
@@ -153,7 +153,7 @@ describe("HR-05 首页快捷操作与 AI 入口", () => {
     expect(home).toContain("{connectionDot.label}");
   });
 
-  test("WorkspaceScreen 和 App 把首页开始对话接到现有 AI drawer", () => {
+  test("WorkspaceScreen 和 App 把首页问问吉吉接到现有 AI drawer", () => {
     const workspace = readScreen("WorkspaceScreen.svelte");
     const app = readApp();
 

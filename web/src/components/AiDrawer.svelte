@@ -4,6 +4,7 @@
   import { onDestroy } from "svelte";
   import { marked } from "marked";
   import { X, Sheet, Search, Coins, Sparkles, Send } from "@lucide/svelte";
+  import JijiAssistant, { type JijiState } from "./JijiAssistant.svelte";
   import RowPatchCard from "./RowPatchCard.svelte";
   import DashboardDraftCard from "./DashboardDraftCard.svelte";
   import ResearchPanel from "./ResearchPanel.svelte";
@@ -88,8 +89,61 @@
 
   let drawerState: AiDrawerState = $state(emptyState());
   let prompt: string = $state("");
+  let jijiSleeping = $state(false);
+  let jijiCompleted = $state(false);
+  let wasSending = false;
+  let sleepTimer: ReturnType<typeof setTimeout> | null = null;
+  let completedTimer: ReturnType<typeof setTimeout> | null = null;
   // composer 显式提交模式：「搜索资源」确定性进入资源检索子 agent（RR-011/RR-014）
   let composerMode: "chat" | "resource-search" = $state("chat");
+
+  const jijiState: JijiState = $derived.by(() => {
+    if (drawerState.sendError) return "error";
+    if (drawerState.pendingIntents.some((item) => !item.dismissed) || drawerState.progressHint) return "analyzing";
+    if (drawerState.sending && drawerState.activeRun) return "thinking";
+    if (drawerState.sending || prompt.trim()) return "listening";
+    if (jijiCompleted) return "done";
+    if (jijiSleeping) return "sleeping";
+    return "idle";
+  });
+
+  function showJijiDone(): void {
+    jijiSleeping = false;
+    jijiCompleted = true;
+    if (completedTimer) clearTimeout(completedTimer);
+    completedTimer = setTimeout(() => {
+      jijiCompleted = false;
+    }, 1800);
+  }
+
+  function interactWithJiji(): void {
+    showJijiDone();
+  }
+
+  $effect(() => {
+    const sending = drawerState.sending;
+    if (wasSending && !sending && !drawerState.sendError) showJijiDone();
+    wasSending = sending;
+  });
+
+  $effect(() => {
+    const canSleep = open
+      && drawerState.messages.length === 0
+      && !drawerState.sending
+      && !drawerState.sendError
+      && !prompt.trim();
+    if (sleepTimer) clearTimeout(sleepTimer);
+    if (!canSleep) {
+      jijiSleeping = false;
+      return;
+    }
+    sleepTimer = setTimeout(() => {
+      jijiSleeping = true;
+    }, 8000);
+    return () => {
+      if (sleepTimer) clearTimeout(sleepTimer);
+    };
+  });
 
   // ── LCA09：历史平台引用按当前权限展示 ──────────────────────────────────────
   // 报告可见性属于用户数据（永不因平台失权隐藏）；这里只加载平台引用的当前权限
@@ -274,6 +328,8 @@
   });
   onDestroy(() => {
     if (allowanceTimer) clearTimeout(allowanceTimer);
+    if (sleepTimer) clearTimeout(sleepTimer);
+    if (completedTimer) clearTimeout(completedTimer);
   });
 
   $effect(() => {
@@ -413,13 +469,14 @@
 </script>
 
 {#if open}
-  <aside class="ai-drawer" aria-label="AI 助手">
+  <aside class="ai-drawer" aria-label="问问吉吉">
     <header>
+      <JijiAssistant state={jijiState} size={46} interactive oninteract={interactWithJiji} />
       <div class="header-copy">
-        <strong>AI 助手</strong>
+        <strong>问问吉吉</strong>
         <span title={contextHint}>{contextHint}</span>
       </div>
-      <button type="button" class="icon-btn" aria-label="关闭 AI 助手" onclick={() => onclose?.()}>
+      <button type="button" class="icon-btn" aria-label="关闭问问吉吉" onclick={() => onclose?.()}>
         <X size={16} />
       </button>
     </header>
@@ -474,8 +531,8 @@
     <div class="conversation">
       {#if drawerState.messages.length === 0}
         <div class="empty">
-          <span><Sparkles size={22} /></span>
-          <strong>当前上下文</strong>
+          <JijiAssistant state={jijiState} size={148} interactive oninteract={interactWithJiji} />
+          <strong>有事就问问吉吉</strong>
           <small>{contextHint}</small>
         </div>
       {:else}
