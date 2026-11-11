@@ -108,3 +108,8 @@ Windows 使用原生 Python，并把已有 `C:\msys64\mingw64\bin`、`C:\msys64\
 - 无论构建是否成功，生成器都不会写 `release_approved=true`。成功结果仍需项目方审核许可证、完整对应源码/可重建性及工具链 runtime 义务，完成必要签名，再重新审查并固定清单后才能进入现有 stage。CI artifact 到期前亦须落实长期对应源码分发安排。
 
 当前只证明脚本/合约测试及源码归档校验已通过；此文不宣称三平台原生构建已经成功，不用 fixture 的 smoke 结果生成候选清单。未产生人工许可或签名证据。
+
+### 下载及失败诊断
+
+下载前即创建 `build-records/provenance.json`、固定 lock 和构建脚本快照。`downloads.jsonl` 同时写入 artifact 与 CI 控制台，逐项记录官方源名、固定 URL、阶段、UTC、尝试序号、curl/HTTP 状态及错误。
+下载使用系统 curl，禁用用户 curlrc，限制初始 URL 和所有重定向为 HTTPS，保留证书验证并要求 TLS 1.2 以上；连接超时 20 秒、单次传输 180 秒、每源最多三次。只对暂时网络错误/指定暂时 HTTP 状态退避重试；证书验证失败、hash 不符立即失败，不换源、不变 hash、不运行未验证源码。即使下载失败，已有记录也会由原 workflow 的 `always()` artifact 步骤保留。构建失败同样通过 finally 保存已有 config.log、FFmpeg ffbuild/config.log 等配置诊断；失败不会产生成功候选清单。

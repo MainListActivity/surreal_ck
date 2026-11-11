@@ -51,7 +51,7 @@ for tool in "$CC" "$CXX" make pkg-config; do command -v "$tool"; "$tool" --versi
     --disable-network --disable-doc --disable-debug --disable-x86asm --disable-everything \
     --disable-ffprobe --enable-ffmpeg --enable-ffplay --enable-sdl2 --enable-libvpx --enable-libopus \
     --enable-encoder=libvpx_vp8,libopus,rawvideo,pcm_s16le \
-    --enable-decoder=vp8,opus,rawvideo,mjpeg,bmp,dvvideo,pcm_u8,pcm_s16le,pcm_s16be,pcm_s24le,pcm_s24be,pcm_s32le,pcm_s32be,pcm_f32le,pcm_f32be \
+    --enable-decoder=wrapped_avframe,vp8,opus,rawvideo,mjpeg,bmp,dvvideo,pcm_u8,pcm_s16le,pcm_s16be,pcm_s24le,pcm_s24be,pcm_s32le,pcm_s32be,pcm_f32le,pcm_f32be \
     --enable-parser=vp8,opus,mjpeg --enable-demuxer=ivf,ogg \
     --enable-muxer=ivf,ogg,rawvideo,pcm_s16le,null --enable-protocol=file,pipe \
     --enable-filter=scale,format,aresample,aformat,testsrc2,sine --enable-indev=lavfi \

@@ -1,5 +1,6 @@
 """源码/合成 smoke 合约回归；mock 输出不构成原生运行证据。"""
 import importlib.util
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -117,10 +118,82 @@ class NativeMediaBuildTests(unittest.TestCase):
             self.assertEqual(failed['tests'][0]['stderr'], 'failed')
             self.assertNotIn('clean_path', failed)
 
+    def test_transient_download_retries_with_strict_tls_and_fixed_hash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            payload = b'official fixture bytes'
+            source = dict(url='https://example.invalid/fixed.tar.gz', sha256=hashlib.sha256(payload).hexdigest())
+            attempts = []
+            def run(command, **kwargs):
+                attempts.append(command)
+                self.assertEqual(command[1], '--disable')
+                self.assertEqual(command[command.index('--proto') + 1], '=https')
+                self.assertEqual(command[command.index('--proto-redir') + 1], '=https')
+                self.assertNotIn('--insecure', command)
+                self.assertEqual(command[-1], source['url'])
+                if len(attempts) < 3:
+                    return subprocess.CompletedProcess(command, 35, '000', 'SSL unexpected EOF')
+                Path(command[command.index('--output') + 1]).write_bytes(payload)
+                return subprocess.CompletedProcess(command, 0, '200', '')
+            with patch.object(builder.shutil, 'which', return_value='curl'), patch.object(builder.subprocess, 'run', side_effect=run), patch.object(builder.time, 'sleep'):
+                builder.download_source(source, root / 'archive.tar.gz', 'fixture', root / 'downloads.jsonl')
+            self.assertEqual(len(attempts), 3)
+            self.assertEqual((root / 'archive.tar.gz').read_bytes(), payload)
+            self.assertFalse(list(root.glob('*.partial')))
+            events = [json.loads(line) for line in (root / 'downloads.jsonl').read_text().splitlines()]
+            self.assertEqual(events[-1]['stage'], 'download-verified')
+
+    def test_certificate_failure_not_retried(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.object(builder.shutil, 'which', return_value='curl'), patch.object(builder.subprocess, 'run', return_value=subprocess.CompletedProcess([], 60, '000', 'certificate verify failed')) as run:
+                with self.assertRaises(RuntimeError):
+                    builder.download_source(dict(url='https://example.invalid/fixed', sha256='0'*64), root / 'archive', 'fixture')
+            self.assertEqual(run.call_count, 1)
+            self.assertFalse((root / 'archive').exists())
+
+    def test_hash_failure_not_retried_or_cached(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.object(builder.shutil, 'which', return_value='curl'), patch.object(builder.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '200', '')) as run:
+                with self.assertRaisesRegex(ValueError, 'SHA256'):
+                    builder.download_source(dict(url='https://example.invalid/fixed', sha256='0'*64), root / 'archive', 'fixture')
+            self.assertEqual(run.call_count, 1)
+            self.assertFalse((root / 'archive').exists())
+
+    def test_provenance_exists_before_download_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            def fail(cache, destination, download, log):
+                self.assertTrue((log.parent / 'provenance.json').is_file())
+                self.assertTrue((log.parent / 'media-sources.lock.json').is_file())
+                builder.record_event(log, source='fixture', url='https://example.invalid/fixed', stage='download', status='failed')
+                raise RuntimeError('fixture network failure')
+            with patch.object(builder.smoke, 'native_target', return_value=('macos', 'x86_64')), patch.object(builder.shutil, 'which', return_value='/tool'), patch.object(builder.subprocess, 'check_output', return_value='fixture-commit'), patch.object(builder, 'sources', side_effect=fail):
+                with self.assertRaisesRegex(RuntimeError, 'network'):
+                    builder.build(root / 'work', root / 'cache', 'macos', 'x86_64', True)
+            self.assertTrue((root / 'work/runtime/build-records/downloads.jsonl').is_file())
+            self.assertFalse((root / 'work/candidate-manifest.json').exists())
+
+    def test_failed_build_preserves_configure_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            def source_fixture(cache, destination, download, log):
+                folder = destination / 'ffmpeg/ffbuild'
+                folder.mkdir(parents=True)
+                (folder / 'config.log').write_text('configure failure detail')
+                return dict(sources=dict(ffmpeg=dict(directory='ffmpeg')))
+            with patch.object(builder.smoke, 'native_target', return_value=('macos', 'x86_64')), patch.object(builder.shutil, 'which', return_value='/tool'), patch.object(builder.subprocess, 'check_output', return_value='fixture-commit'), patch.object(builder, 'sources', side_effect=source_fixture), patch.object(builder.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, ['bash'])):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    builder.build(root / 'work', root / 'cache', 'macos', 'x86_64')
+            self.assertEqual((root / 'work/runtime/build-records/ffmpeg-ffbuild-config.log').read_text(), 'configure failure detail')
+            self.assertFalse((root / 'work/candidate-manifest.json').exists())
+
     def test_recipe_remains_minimal_and_never_approves_release(self):
         shell = (builder.HERE / 'build-media-native.sh').read_text(encoding='utf-8')
         for flag in ('--disable-gpl', '--disable-nonfree', '--disable-autodetect', '--disable-network',
-                     '--enable-indev=avfoundation', '--enable-indev=dshow,gdigrab', '--enable-libopus', '--enable-libvpx'):
+                     '--enable-indev=avfoundation', '--enable-indev=dshow,gdigrab', '--enable-libopus', '--enable-libvpx',
+                     '--enable-decoder=wrapped_avframe,', '--enable-filter=scale,format,aresample,aformat,testsrc2,sine'):
             self.assertIn(flag, shell)
         self.assertNotIn('sudo ', shell)
         source = Path(builder.__file__).read_text(encoding='utf-8')

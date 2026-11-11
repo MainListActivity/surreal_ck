@@ -2,6 +2,7 @@
 import importlib.util
 import pathlib
 import unittest
+from unittest.mock import patch
 import test_desktop_enterprise_preview as fixtures
 
 spec = importlib.util.spec_from_file_location('preflight', pathlib.Path(__file__).with_name('check-public-inputs.py'))
@@ -16,12 +17,24 @@ class PublicInputsTests(unittest.TestCase):
         for file, invocation, build in (
             ('package.sh', 'check-public-inputs.py --platform "$target"', 'build-receipt.py begin'),
             ('build-android-host.sh', 'check-public-inputs.py" --platform android', 'cargo build')):
-            source = (scripts / file).read_text()
+            source = (scripts / file).read_text(encoding='utf-8')
             self.assertLess(source.index(invocation), source.index(build))
-        desktop = (scripts / 'build-desktop-app.py').read_text()
+        desktop = (scripts / 'build-desktop-app.py').read_text(encoding='utf-8')
         self.assertEqual(desktop.count('desktop.identity_inputs(os.environ, args.platform)'), 2)
         self.assertIn('python scripts/native-client/test_public_inputs.py',
-                      (root / '.github/workflows/native-client-release.yml').read_text())
+                      (root / '.github/workflows/native-client-release.yml').read_text(encoding='utf-8'))
+
+    def test_source_reads_with_non_utf8_platform_default(self):
+        original = pathlib.Path.read_text
+        encodings = []
+
+        def windows_read_text(path, encoding=None, errors=None):
+            encodings.append(encoding)
+            return original(path, encoding=encoding or 'cp1252', errors=errors)
+
+        with patch.object(pathlib.Path, 'read_text', windows_read_text):
+            self.test_build_entrypoints_check_before_build()
+        self.assertEqual(encodings, ['utf-8'] * 4)
 
     def test_missing_is_explicitly_blocked(self):
         report = preflight.check({}, 'android')

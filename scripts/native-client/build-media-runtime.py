@@ -10,7 +10,8 @@ from pathlib import Path, PurePosixPath
 import shutil
 import subprocess
 import tarfile
-import urllib.request
+import tempfile
+import time
 
 HERE = Path(__file__).resolve().parent
 
@@ -57,30 +58,83 @@ def extract(archive, destination, directory):
                 shutil.copy2(resolved, link)
 
 
-def sources(cache, destination, download):
-    lock = json.loads((HERE / 'media-sources.lock.json').read_text(encoding='utf-8'))
-    for source in lock['sources'].values():
-        archive = cache / source['filename']
-        if archive.is_symlink():
-            raise ValueError('Source cache symlinks are not accepted')
-        if not archive.exists():
-            if not download:
-                raise ValueError('Missing pinned source; use --download explicitly: ' + str(archive))
-            partial = archive.with_suffix(archive.suffix + '.partial')
+def record_event(log, **event):
+    event = dict(utc=datetime.now(timezone.utc).isoformat(), **event)
+    print(json.dumps(event), flush=True)
+    if log is not None:
+        with log.open('a', encoding='utf-8') as output:
+            output.write(json.dumps(event) + '\n')
+
+
+def download_source(source, archive, name, log=None):
+    curl = shutil.which('curl')
+    if not curl:
+        raise ValueError('System curl is required; TLS verification is never disabled')
+    for attempt in range(1, 4):
+        fd, temporary = tempfile.mkstemp(prefix=archive.name + '.', suffix='.partial', dir=archive.parent)
+        os.close(fd)
+        partial = Path(temporary)
+        try:
+            record_event(log, source=name, url=source['url'], stage='download', attempt=attempt)
+            command = [curl, '--disable', '--fail', '--location', '--silent', '--show-error',
+                       '--proto', '=https', '--proto-redir', '=https', '--tlsv1.2',
+                       '--connect-timeout', '20', '--max-time', '180',
+                       '--write-out', '%{http_code}', '--output', str(partial), source['url']]
             try:
-                with urllib.request.urlopen(source['url'], timeout=90) as response, partial.open('xb') as output:
-                    if not response.url.startswith('https://'):
-                        raise ValueError('Source download redirected outside HTTPS')
-                    shutil.copyfileobj(response, output)
+                result = subprocess.run(command, capture_output=True, text=True, timeout=200)
+                code, http, error = result.returncode, result.stdout.strip(), result.stderr
+            except subprocess.TimeoutExpired:
+                code, http, error = 28, '', 'curl exceeded 200-second process timeout'
+            record_event(log, source=name, url=source['url'], stage='download-result', attempt=attempt,
+                         returncode=code, http_status=http, error=error)
+            if code == 0:
                 if digest(partial) != source['sha256']:
-                    raise ValueError('Downloaded source SHA256 mismatch')
-                partial.rename(archive)
-            finally:
-                partial.unlink(missing_ok=True)
-        if digest(archive) != source['sha256']:
-            raise ValueError('Cached source SHA256 mismatch: ' + source['filename'])
-        extract(archive, destination, source['directory'])
+                    record_event(log, source=name, url=source['url'], stage='hash-mismatch', attempt=attempt)
+                    raise ValueError('Downloaded source SHA256 mismatch: ' + name)
+                partial.replace(archive)
+                record_event(log, source=name, url=source['url'], stage='download-verified', sha256=source['sha256'])
+                return
+            transient = code in (6, 7, 18, 28, 35, 52, 55, 56, 92) or (code == 22 and http in ('408', '429', '500', '502', '503', '504'))
+            if not transient or attempt == 3:
+                raise RuntimeError(f'Source download failed: {name}: curl={code}, HTTP={http}: {error}')
+            time.sleep(attempt)
+        finally:
+            partial.unlink(missing_ok=True)
+
+
+def sources(cache, destination, download, log=None):
+    lock = json.loads((HERE / 'media-sources.lock.json').read_text(encoding='utf-8'))
+    for name, source in lock['sources'].items():
+        stage = 'cache-check'
+        record_event(log, source=name, url=source['url'], stage=stage)
+        try:
+            archive = cache / source['filename']
+            if archive.is_symlink():
+                raise ValueError('Source cache symlinks are not accepted')
+            if not archive.exists():
+                if not download:
+                    raise ValueError('Missing pinned source; use --download explicitly: ' + str(archive))
+                stage = 'download'
+                download_source(source, archive, name, log)
+            stage = 'hash-check'
+            if digest(archive) != source['sha256']:
+                raise ValueError('Cached source SHA256 mismatch: ' + source['filename'])
+            stage = 'extract'
+            record_event(log, source=name, url=source['url'], stage=stage)
+            extract(archive, destination, source['directory'])
+            record_event(log, source=name, url=source['url'], stage='source-ready', sha256=source['sha256'])
+        except Exception as error:
+            record_event(log, source=name, url=source['url'], stage=stage, status='failed', error=str(error))
+            raise
     return lock
+
+
+def preserve_configure_logs(src, records, lock):
+    for name, source in lock['sources'].items():
+        for relative in ('config.log', 'config.h', 'config.mk', 'ffbuild/config.log', 'ffbuild/config.mak', 'vpx_config.h'):
+            path = src / source['directory'] / relative
+            if path.is_file():
+                shutil.copy2(path, records / (name + '-' + relative.replace('/', '-')))
 
 
 def posix_path(path, target):
@@ -98,6 +152,8 @@ def build(work, cache, target, arch, download=False):
                 'otool' if target == 'macos' else 'objdump']
     if target == 'windows':
         required += ['cygpath']
+    if download:
+        required += ['curl']
     missing = [tool for tool in required if not shutil.which(tool)]
     if missing:
         raise ValueError('Runner tools missing (nothing was installed): ' + ', '.join(missing))
@@ -105,7 +161,6 @@ def build(work, cache, target, arch, download=False):
     cache.mkdir(parents=True, exist_ok=True)
     src = work / 'src'
     src.mkdir()
-    lock = sources(cache, src, download)
     prefix = work / 'prefix'
     runtime = work / 'runtime'
     records = runtime / 'build-records'
@@ -114,11 +169,18 @@ def build(work, cache, target, arch, download=False):
         platform=target, arch=arch, host=smoke.platform.platform(), started_at=datetime.now(timezone.utc).isoformat(),
         github_run_id=os.environ.get('GITHUB_RUN_ID'), github_run_attempt=os.environ.get('GITHUB_RUN_ATTEMPT'))
     (records / 'provenance.json').write_text(json.dumps(provenance, indent=2), encoding='utf-8')
+    for name in ('build-media-native.sh', 'build-media-runtime.py', 'media-sources.lock.json',
+                 'smoke-media-runtime.py', 'media-runtime.py'):
+        shutil.copy2(HERE / name, records / name)
+    lock = sources(cache, src, download, records / 'downloads.jsonl')
     env = os.environ | dict(MEDIA_TARGET=target, MEDIA_SOURCE_ROOT=posix_path(src, target),
                             MEDIA_PREFIX=posix_path(prefix, target), MEDIA_JOBS='2')
-    with (records / 'native-build.log').open('w', encoding='utf-8') as log:
-        subprocess.run(['bash', posix_path(HERE / 'build-media-native.sh', target)], env=env,
-                       stdout=log, stderr=subprocess.STDOUT, check=True, cwd=work, timeout=7200)
+    try:
+        with (records / 'native-build.log').open('w', encoding='utf-8') as log:
+            subprocess.run(['bash', posix_path(HERE / 'build-media-native.sh', target)], env=env,
+                           stdout=log, stderr=subprocess.STDOUT, check=True, cwd=work, timeout=7200)
+    finally:
+        preserve_configure_logs(src, records, lock)
     (runtime / 'bin').mkdir()
     extension = '.exe' if target == 'windows' else ''
     for name in ('ffmpeg', 'ffplay'):
@@ -131,15 +193,6 @@ def build(work, cache, target, arch, download=False):
         for path in (src / source['directory']).iterdir():
             if path.is_file() and path.name.upper().startswith(('COPYING', 'LICENSE', 'PATENTS', 'AUTHORS')):
                 shutil.copy2(path, licenses / (name + '-' + path.name))
-    for name in ('build-media-native.sh', 'build-media-runtime.py', 'media-sources.lock.json',
-                 'smoke-media-runtime.py', 'media-runtime.py'):
-        shutil.copy2(HERE / name, records / name)
-    # Preserve generated configuration and original logs needed to reproduce the exact build.
-    for name, source in lock['sources'].items():
-        for relative in ('config.log', 'config.h', 'config.mk', 'ffbuild/config.log', 'ffbuild/config.mak', 'vpx_config.h'):
-            path = src / source['directory'] / relative
-            if path.is_file():
-                shutil.copy2(path, records / (name + '-' + relative.replace('/', '-')))
     static = audit.audit(runtime, target, None)
     (records / 'dependency-audit.json').write_text(json.dumps(static, indent=2), encoding='utf-8')
     evidence = smoke.smoke(runtime, target, arch, records / 'native-tests.json')
