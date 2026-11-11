@@ -113,3 +113,5 @@ Windows 使用原生 Python，并把已有 `C:\msys64\mingw64\bin`、`C:\msys64\
 
 下载前即创建 `build-records/provenance.json`、固定 lock 和构建脚本快照。`downloads.jsonl` 同时写入 artifact 与 CI 控制台，逐项记录官方源名、固定 URL、阶段、UTC、尝试序号、curl/HTTP 状态及错误。
 下载使用系统 curl，禁用用户 curlrc，限制初始 URL 和所有重定向为 HTTPS，保留证书验证并要求 TLS 1.2 以上；连接超时 20 秒、单次传输 180 秒、每源最多三次。只对暂时网络错误/指定暂时 HTTP 状态退避重试；证书验证失败、hash 不符立即失败，不换源、不变 hash、不运行未验证源码。即使下载失败，已有记录也会由原 workflow 的 `always()` artifact 步骤保留。构建失败同样通过 finally 保存已有 config.log、FFmpeg ffbuild/config.log 等配置诊断；失败不会产生成功候选清单。
+
+Windows 构建工具查找现限定到现有 `C:/msys64/usr/bin`（bash/cygpath/make）与 `C:/msys64/mingw64/bin`（gcc/g++/pkg-config/objdump），验证解析结果仍在对应目录并记录绝对路径。启动 shell、路径转换和 imports 审计均使用这些绝对路径，shell 内 PATH 仅含已核验 MSYS2 目录和系统目录；不会误启 System32 的 WSL bash，也不配置 WSL。下载使用 Windows System32 的原生 curl。write-out 格式放入 ASCII 临时文件，避免 Windows 参数转换破坏 `%{http_code}`；只有真实三位 HTTP 码记入 `http_status`，异常原始输出单独保留，成功下载返回非 HTTP 状态则直接失败。

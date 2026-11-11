@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path, PurePosixPath
 import shutil
 import subprocess
@@ -66,28 +67,61 @@ def record_event(log, **event):
             output.write(json.dumps(event) + '\n')
 
 
+def find_tool(name, directory=None):
+    found = shutil.which(name, path=str(directory)) if directory is not None else shutil.which(name)
+    if not found:
+        raise ValueError('Runner tool missing (nothing was installed): ' + name)
+    resolved = Path(found).resolve()
+    if directory is not None and (resolved.parent != directory.resolve() or not resolved.is_file()):
+        raise ValueError('Runner tool resolved outside the approved tool directory: ' + name)
+    return str(resolved)
+
+
+def resolve_curl():
+    # Native Windows curl avoids shell wrappers and MSYS argument rewriting.
+    directory = Path(os.environ['SystemRoot']) / 'System32' if os.name == 'nt' else None
+    return find_tool('curl.exe' if os.name == 'nt' else 'curl', directory)
+
+
+def resolve_tools(target, download, windows_root=None):
+    if target == 'windows':
+        root = windows_root or Path('C:/msys64')
+        directories = {name: root / 'usr/bin' for name in ('bash', 'cygpath', 'make')}
+        directories.update({name: root / 'mingw64/bin' for name in ('gcc', 'g++', 'pkg-config', 'objdump')})
+        tools = {name: find_tool(name + '.exe', directory) for name, directory in directories.items()}
+    else:
+        tools = {name: find_tool(name) for name in ('bash', 'make', 'pkg-config', 'clang', 'clang++', 'otool')}
+    tools['git'] = find_tool('git')
+    if download:
+        tools['curl'] = resolve_curl()
+    return tools
+
+
 def download_source(source, archive, name, log=None):
-    curl = shutil.which('curl')
-    if not curl:
-        raise ValueError('System curl is required; TLS verification is never disabled')
+    curl = resolve_curl()
     for attempt in range(1, 4):
         fd, temporary = tempfile.mkstemp(prefix=archive.name + '.', suffix='.partial', dir=archive.parent)
         os.close(fd)
         partial = Path(temporary)
+        format_file = partial.with_suffix('.writeout')
+        format_file.write_text('%{http_code}', encoding='ascii')
         try:
             record_event(log, source=name, url=source['url'], stage='download', attempt=attempt)
             command = [curl, '--disable', '--fail', '--location', '--silent', '--show-error',
                        '--proto', '=https', '--proto-redir', '=https', '--tlsv1.2',
                        '--connect-timeout', '20', '--max-time', '180',
-                       '--write-out', '%{http_code}', '--output', str(partial), source['url']]
+                       '--write-out', '@' + str(format_file), '--output', str(partial), source['url']]
             try:
                 result = subprocess.run(command, capture_output=True, text=True, timeout=200)
-                code, http, error = result.returncode, result.stdout.strip(), result.stderr
+                code, raw_http, error = result.returncode, result.stdout.strip(), result.stderr
             except subprocess.TimeoutExpired:
-                code, http, error = 28, '', 'curl exceeded 200-second process timeout'
+                code, raw_http, error = 28, '', 'curl exceeded 200-second process timeout'
+            http = raw_http if re.fullmatch(r'[1-5][0-9]{2}', raw_http) else None
             record_event(log, source=name, url=source['url'], stage='download-result', attempt=attempt,
-                         returncode=code, http_status=http, error=error)
+                         returncode=code, http_status=http, http_status_raw=raw_http, error=error)
             if code == 0:
+                if http is None:
+                    raise RuntimeError('Invalid curl HTTP status output: ' + repr(raw_http))
                 if digest(partial) != source['sha256']:
                     record_event(log, source=name, url=source['url'], stage='hash-mismatch', attempt=attempt)
                     raise ValueError('Downloaded source SHA256 mismatch: ' + name)
@@ -100,6 +134,7 @@ def download_source(source, archive, name, log=None):
             time.sleep(attempt)
         finally:
             partial.unlink(missing_ok=True)
+            format_file.unlink(missing_ok=True)
 
 
 def sources(cache, destination, download, log=None):
@@ -137,9 +172,9 @@ def preserve_configure_logs(src, records, lock):
                 shutil.copy2(path, records / (name + '-' + relative.replace('/', '-')))
 
 
-def posix_path(path, target):
+def posix_path(path, target, tools):
     if target == 'windows':
-        return subprocess.check_output(['cygpath', '-u', str(path)], text=True).strip()
+        return subprocess.check_output([tools['cygpath'], '-u', str(path)], text=True).strip()
     return str(path)
 
 
@@ -148,15 +183,7 @@ def build(work, cache, target, arch, download=False):
         raise ValueError('Use native macOS ARM/Intel or Windows x86_64; cross compilation is not evidence')
     if work.exists():
         raise ValueError('Build directory must not exist')
-    required = ['bash', 'make', 'pkg-config', 'clang' if target == 'macos' else 'gcc',
-                'otool' if target == 'macos' else 'objdump']
-    if target == 'windows':
-        required += ['cygpath']
-    if download:
-        required += ['curl']
-    missing = [tool for tool in required if not shutil.which(tool)]
-    if missing:
-        raise ValueError('Runner tools missing (nothing was installed): ' + ', '.join(missing))
+    tools = resolve_tools(target, download)
     work.mkdir(parents=True)
     cache.mkdir(parents=True, exist_ok=True)
     src = work / 'src'
@@ -165,19 +192,23 @@ def build(work, cache, target, arch, download=False):
     runtime = work / 'runtime'
     records = runtime / 'build-records'
     records.mkdir(parents=True)
-    provenance = dict(repository_commit=subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=HERE, text=True).strip(),
-        platform=target, arch=arch, host=smoke.platform.platform(), started_at=datetime.now(timezone.utc).isoformat(),
+    provenance = dict(repository_commit=subprocess.check_output([tools['git'], 'rev-parse', 'HEAD'], cwd=HERE, text=True).strip(),
+        platform=target, arch=arch, tools=tools, host=smoke.platform.platform(), started_at=datetime.now(timezone.utc).isoformat(),
         github_run_id=os.environ.get('GITHUB_RUN_ID'), github_run_attempt=os.environ.get('GITHUB_RUN_ATTEMPT'))
     (records / 'provenance.json').write_text(json.dumps(provenance, indent=2), encoding='utf-8')
     for name in ('build-media-native.sh', 'build-media-runtime.py', 'media-sources.lock.json',
                  'smoke-media-runtime.py', 'media-runtime.py'):
         shutil.copy2(HERE / name, records / name)
     lock = sources(cache, src, download, records / 'downloads.jsonl')
-    env = os.environ | dict(MEDIA_TARGET=target, MEDIA_SOURCE_ROOT=posix_path(src, target),
-                            MEDIA_PREFIX=posix_path(prefix, target), MEDIA_JOBS='2')
+    env = os.environ | dict(MEDIA_TARGET=target, MEDIA_SOURCE_ROOT=posix_path(src, target, tools),
+                            MEDIA_PREFIX=posix_path(prefix, target, tools), MEDIA_JOBS='2')
+    if target == 'windows':
+        # The shell's subsequent tool lookups stay within this verified MSYS2 installation.
+        env['PATH'] = os.pathsep.join([str(Path(tools['gcc']).parent), str(Path(tools['bash']).parent),
+                                      str(Path(os.environ['SystemRoot']) / 'System32')])
     try:
         with (records / 'native-build.log').open('w', encoding='utf-8') as log:
-            subprocess.run(['bash', posix_path(HERE / 'build-media-native.sh', target)], env=env,
+            subprocess.run([tools['bash'], posix_path(HERE / 'build-media-native.sh', target, tools)], env=env,
                            stdout=log, stderr=subprocess.STDOUT, check=True, cwd=work, timeout=7200)
     finally:
         preserve_configure_logs(src, records, lock)
@@ -193,7 +224,7 @@ def build(work, cache, target, arch, download=False):
         for path in (src / source['directory']).iterdir():
             if path.is_file() and path.name.upper().startswith(('COPYING', 'LICENSE', 'PATENTS', 'AUTHORS')):
                 shutil.copy2(path, licenses / (name + '-' + path.name))
-    static = audit.audit(runtime, target, None)
+    static = audit.audit(runtime, target, tools['objdump' if target == 'windows' else 'otool'])
     (records / 'dependency-audit.json').write_text(json.dumps(static, indent=2), encoding='utf-8')
     evidence = smoke.smoke(runtime, target, arch, records / 'native-tests.json')
     (records / 'native-tests.json').write_text(json.dumps(evidence, indent=2), encoding='utf-8')
