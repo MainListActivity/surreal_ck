@@ -41,7 +41,7 @@ Apple官方资料：[open/openat](https://github.com/apple-oss-distributions/xnu
 
 - 仅本地固定盘NTFS，固定卷根和逐级目录HANDLE；严格单文件名路径，不接受UNC、设备路径、ADS或已有reparse层。
 - 临时文件创建时设置当前用户SID专用protected DACL，不继承父目录ACL；独占打开并保持同一文件对象的清理HANDLE。
-- 仅使用`SetFileInformationByHandle(FileRenameInfo)`从已校验文件HANDLE发布，`RootDirectory`固定目标目录，`ReplaceIfExists=FALSE`。不用`MoveFile`、路径`CreateHardLink`或检查后按路径重开源。
+- 仅使用`NtSetInformationFile(FileRenameInformation)`从已校验文件HANDLE发布，`RootDirectory`固定目标目录，`ReplaceIfExists=FALSE`。不用`MoveFile`、路径`CreateHardLink`或检查后按路径重开源。
 - 正常取消只对源HANDLE设置`FileDispositionInfo`，不按临时文件名删除。成功后关闭清理guard，不能误删最终文件。进程崩溃时尚不保证回收命名临时文件。
 - 创建阶段并持两套已核对同身份的目录HANDLE，严格套不分享WRITE/DELETE，另一套允许WRITE但同样拒DELETE。独占staging创建后，祖先每层包含不可删除的下一层，最终目录包含不可删除的staging，此时才释放严格套，让rename内部打开不会被自身WRITE分享限制挡住。
 - NTFS非空目录不能新建改变路径解析的name-surrogate junction/symlink，这是交接后的保护依据，不能泛称所有reparse tag或其他文件系统。已有Cloud Filter等tag也拒绝。实际FSCTL测试先在空目录成功设置同一种tag作为正控制，再对接收期间的祖先和最终目录要求ERROR_DIR_NOT_EMPTY，最后必须成功发布。symlink FSCTL测试需要runner原有权限。
@@ -73,3 +73,7 @@ Microsoft官方资料：[NtCreateFile的RootDirectory和创建选项](https://le
 候选后端已对齐生产层 `publish_tracked(file, &mut published)` 契约：原子提交成功后立即记录发布事实，再执行后置核验。macOS 新增真实 `RENAME_EXCL` 后移动父目录的确定性测试，必须返回错误、保留 `published=true` 与原目录内文件，并保留替换目录的无关文件。Windows 同样在句柄重命名成功后、任何后置检查之前记录事实。生产平台开关保持关闭。
 
 现有独立 workflow 可在 `macos-15`、`macos-15-intel`、`windows-2022` 执行默认原生负例。对于已经具备 symlink 权限的 Windows runner，可显式设置 `DESKTOP_RECEIVE_SYMLINK_TESTS=1` 后运行 `scripts/native-client/check-desktop-receive.sh x86_64-pc-windows-msvc`，额外执行全部 ignored 测试。权限不足即失败，不自动跳过、不提权。脚本记录 HEAD、目标和 dirty 状态；CI 必须保存完整日志，不能把 dirty 源码执行记录当作 clean commit 的证据。该开关未加入默认 workflow，默认仍保留既有缺口。此脚本不覆盖跨用户隔离、完整传输/ACK、实际满盘与崩溃验收。
+
+## 2026-11-11 Windows 原生发布失败修复（待复跑）
+
+[Windows Server 2022 原生 job](https://github.com/MainListActivity/surreal_ck/actions/runs/42963540816/job/130335406878) 在 `079aed6` 上实际运行：默认8通过、3发布失败、3ignored；三个发布成功路径均返回 Win32 参数错误87，ignored套件未进入。此次将发布改为与 `NtCreateFile` 配套的 `NtSetInformationFile(FileRenameInformation)`，按其原生结构契约使用固定父HANDLE和单组件UTF-16名，缓冲区长度包含完整结构和名称，仍 `ReplaceIfExists=FALSE`。失败保留 NTSTATUS 与对应 Win32 错误，不使用路径fallback。新增长度为一个字符的实际发布回归，late普通目标测试必须得到名称碰撞状态，防止参数错误使负例假通过。这是待原生复跑的修复，不能把交叉检查当作Windows通过记录。

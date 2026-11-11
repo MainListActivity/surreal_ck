@@ -10,7 +10,7 @@ use std::{
     ffi::c_void,
     fs::File,
     io,
-    mem::{offset_of, size_of},
+    mem::size_of,
     os::windows::{
         ffi::OsStrExt,
         io::{AsRawHandle, FromRawHandle, OwnedHandle},
@@ -23,8 +23,9 @@ use windows_sys::{
     Wdk::{
         Foundation::OBJECT_ATTRIBUTES,
         Storage::FileSystem::{
-            NtCreateFile, FILE_CREATE, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN,
-            FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
+            FileRenameInformation, NtCreateFile, NtSetInformationFile, FILE_CREATE,
+            FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
+            FILE_RENAME_INFORMATION, FILE_SYNCHRONOUS_IO_NONALERT,
         },
     },
     Win32::{
@@ -460,11 +461,16 @@ impl Destination {
             check_directory(directory.as_raw_handle())?;
         }
         file.sync_all().map_err(|e| e.to_string())?;
-        let bytes = offset_of!(FILE_RENAME_INFO, FileName) + self.name.len() * 2;
-        let mut buffer = aligned(bytes.max(size_of::<FILE_RENAME_INFO>()));
-        // SAFETY: 对齐缓冲区包含完整结构及 UTF-16 尾数组；字符串长度以字节计。
+        // NtSetInformationFile 的原生结构明确支持固定 RootDirectory + 单组件名。
+        // 不依赖 Win32 包装层的 DOS 路径转换，也不回退到绝对路径重命名。
+        // 按 FILE_RENAME_INFORMATION 文档提供 sizeof(struct) + 名称字节数，
+        // 保留零填充尾部；FileNameLength 仅计 UTF-16 名称，不含尾部 NUL/对齐。
+        let bytes = size_of::<FILE_RENAME_INFORMATION>() + self.name.len() * 2;
+        let mut buffer = aligned(bytes);
+        let mut status_block = IO_STATUS_BLOCK::default();
+        // SAFETY: 对齐缓冲区包含完整原生结构及 UTF-16 尾数组；句柄同步且存活。
         unsafe {
-            let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+            let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
             (*info).Anonymous.ReplaceIfExists = false;
             (*info).RootDirectory = self.directories.last().unwrap().as_raw_handle();
             (*info).FileNameLength = (self.name.len() * 2) as u32;
@@ -474,14 +480,21 @@ impl Destination {
                 self.name.len(),
             );
             // 源始终是持有的同一对象，目标始终是固定父目录 HANDLE 的单组件名。
-            if SetFileInformationByHandle(
+            let status = NtSetInformationFile(
                 self.staging.as_raw_handle(),
-                FileRenameInfo,
+                &mut status_block,
                 buffer.as_ptr().cast(),
                 bytes as u32,
-            ) == 0
-            {
-                return Err(last_error());
+                FileRenameInformation,
+            );
+            // staging 使用 FILE_SYNCHRONOUS_IO_NONALERT；本调用完成后才释放缓冲区。
+            // 不用 GetLastError 解释 NTSTATUS，保留原生状态便于核对具体失败阶段。
+            if status < 0 {
+                return Err(format!(
+                    "NtSetInformationFile(FileRenameInformation) failed (NTSTATUS {:#010x}): {}",
+                    status as u32,
+                    io::Error::from_raw_os_error(RtlNtStatusToDosError(status) as i32)
+                ));
             }
         }
         self.published = true;
@@ -674,7 +687,11 @@ mod tests {
         let (destination, file) = Destination::prepare(dir.target()).unwrap();
         fs::write(dir.target(), b"late target").unwrap();
         let mut published = false;
-        assert!(destination.publish_tracked(&file, &mut published).is_err());
+        let error = destination
+            .publish_tracked(&file, &mut published)
+            .unwrap_err();
+        // 不允许 API 参数错误冒充“禁止覆盖”通过，必须是实际目标名称碰撞。
+        assert!(error.contains("NTSTATUS 0xc0000035"), "{error}");
         assert!(!published);
         drop(file);
         assert_eq!(fs::read(dir.target()).unwrap(), b"late target");
@@ -767,6 +784,25 @@ mod tests {
         assert!(destination.publish(&file).is_err());
         drop(file);
         assert_eq!(fs::read(sentinel).unwrap(), b"keep");
+        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn shortest_target_name_uses_full_native_rename_structure() {
+        let dir = TestDir::new();
+        let target = dir.0.join("x");
+        let (destination, mut file) = Destination::prepare(target.clone()).unwrap();
+        file.write_all(b"short name").unwrap();
+        let before = identity(&file).unwrap();
+        let mut published = false;
+        assert_eq!(
+            destination.publish_tracked(&file, &mut published).unwrap(),
+            target
+        );
+        assert!(published);
+        drop(file);
+        assert_eq!(identity(&File::open(&target).unwrap()).unwrap(), before);
+        assert_eq!(fs::read(target).unwrap(), b"short name");
         assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
     }
 

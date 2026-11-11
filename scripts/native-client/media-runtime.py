@@ -32,7 +32,7 @@ def audit(root, target, tool):
             if target == 'windows':
                 name = dep.lower()
                 if name.removesuffix('.dll') in SYSTEM_WINDOWS or name.startswith(('api-ms-win-', 'ext-ms-win-')): continue
-                if name not in names: raise ValueError(f'Unbundled PE dependency: {file.name}: {dep}')
+                if name not in names or names[name].parent != root / 'bin': raise ValueError(f'Unbundled PE dependency in executable directory: {file.name}: {dep}')
             else:
                 if dep.startswith(('/System/Library/', '/usr/lib/')): continue
                 if dep.startswith('@loader_path/'):

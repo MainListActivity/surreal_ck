@@ -110,6 +110,8 @@ jobs:
           python scripts/native-client/test_release_readiness.py
           python scripts/native-client/test_update_policy.py
           python scripts/native-client/test_android_host.py
+          python scripts/native-client/test_android_smoke.py
+          python scripts/native-client/test_media_runtime.py
       - name: Install Linux build libraries
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y clang llvm libgtk-4-dev libclang-dev libssl-dev pkg-config ffmpeg libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
@@ -214,6 +216,37 @@ jobs:
           name: native-client-${{ matrix.target }}-${{ matrix.os }}
           path: dist/release/*
           if-no-files-found: error
+
+  android-install-smoke:
+    if: always() && github.event_name == 'push' && needs.package.result != 'cancelled'
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-client-android-ubuntu-24.04
+          path: android-package
+      - name: Install and launch the exact collaboration APK without granting permissions
+        shell: bash
+        run: |
+          apk=$(find android-package -maxdepth 1 -name 'SurrealCK-android-*.apk' -print)
+          test -n "$apk" && test "$(printf '%s\n' "$apk" | wc -l)" -eq 1
+          bash scripts/native-client/android-install-smoke.sh "$apk" "$RUNNER_TEMP/android-smoke"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-install-smoke-evidence
+          path: ${{ runner.temp }}/android-smoke/*
+          if-no-files-found: warn
 
   # Validation only: public candidate bytes must already exist before activating
   # a mandatory policy. Never upload missing bytes after switching live policy.

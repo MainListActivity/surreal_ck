@@ -1,3 +1,5 @@
+#[path = "desktop_runtime.rs"]
+mod runtime;
 use bytes::Bytes;
 use std::{io, process::Stdio, time::Duration};
 use tokio::{
@@ -143,7 +145,7 @@ impl Capture {
             );
         }
         args.extend(["-flush_packets", "1", "pipe:1"].map(String::from));
-        let mut child = Command::new("ffmpeg")
+        let mut child = Command::new(runtime::executable("ffmpeg")?)
             .args(["-hide_banner", "-loglevel", "error", "-nostdin"])
             .args(args)
             .stdin(Stdio::null())
@@ -400,7 +402,7 @@ pub struct VideoDecoder {
 impl VideoDecoder {
     pub async fn new(video: VideoConfig) -> Result<Self, Error> {
         let video = video.validate()?;
-        let mut child = Command::new("ffmpeg")
+        let mut child = Command::new(runtime::executable("ffmpeg")?)
             .args([
                 "-hide_banner",
                 "-loglevel",
@@ -531,7 +533,7 @@ pub struct AudioPlayer {
 }
 impl AudioPlayer {
     pub async fn new() -> Result<Self, Error> {
-        let mut child = Command::new("ffplay")
+        let mut child = Command::new(runtime::executable("ffplay")?)
             .args([
                 "-hide_banner",
                 "-loglevel",

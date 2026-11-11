@@ -34,3 +34,40 @@ Gyan 9.0.2 essentials ZIP 实际下载完成，114,768,076 字节，SHA256 与�
 - ffplay.exe SHA256：`befbbd00a25965365f7fb3eed6ad5aa5f805eb70fabc567883a006de3b26c06f`。
 
 运行时执行、对应源码完整性与 macOS 双架构依赖仍未验收，不启用默认捆绑。
+
+## App-local 查找与离线打包输入契约
+
+`native-media-platform/src/desktop_runtime.rs` 现为桌面媒体三个生产子进程入口解析工具：
+Windows `<app.exe 所在目录>/media-runtime/bin/{ffmpeg,ffplay}.exe`；
+macOS `Contents/Resources/media-runtime/bin/{ffmpeg,ffplay}`。
+Windows/macOS 不回退 PATH、不支持环境变量覆盖，不下载或运行安装器；缺失时返回可定位的安装错误。
+Linux 保持已声明的发行版 PATH 依赖。路径测试可在 Linux 运行，但不是 Windows/macOS 运行证据。
+
+打包器接口（调用者负责将已验证目录纳入完整安装包）：
+
+```sh
+python3 scripts/native-client/prepare-media-runtime.py \
+  --source /reviewed/runtime-tree \
+  --manifest /reviewed/runtime-manifest.json \
+  --manifest-sha256 <独立固定的64位小写SHA256> \
+  --platform windows --arch x86_64 \
+  --destination /staging/app/media-runtime
+```
+
+macOS destination 是 `.app/Contents/Resources/media-runtime`，arch 分别使用 `aarch64` 或 `x86_64`。
+目标目录必须不存在且位于输入目录外；校验失败不复制。脚本不下载或执行 ffmpeg/ffplay，只调用本机 objdump/otool 作静态检查。
+复制后仍须做目标平台原生安装/无开发工具环境测试；macOS 在重写依赖后、最终签名前准备运行时。
+
+manifest 是**审查后的构建输入**，不是自动产生的信任凭证：构建配置须独立固定其 SHA256，不能从同一可变下载处获取 manifest 与期望 hash 后视为可信。
+必填结构：
+
+- `schema: 1`、`platform: "windows"|"macos"`、`arch: "x86_64"|"aarch64"`。
+- `release_approved: true`：发布负责人对来源、许可证和对应源码完成审查后才填写，脚本不能证明法律义务完整。
+- `files`：运行时树内**每个**文件相对 POSIX 路径到 SHA256 的对象；包括全部可执行文件、DLL/dylib、许可证、源代码归档、构建材料和测试证据。不接受符号链接、额外文件或路径穿越。
+- `origins`：所有供应链归档的 `url`（HTTPS）、固定 `version`、`sha256`；来源必须经人工验证为官方或可信发布者，不能靠填写字段自证。现有 lock 只提供待审计候选，不是 release manifest。
+- `license_files`、`corresponding_sources`、`build_records`：非空相对路径数组，必须全部列入 files。静态链接依赖的对应源码和构建修改亦须包含，不能仅放 FFmpeg 首页链接。
+- `native_test_evidence`：已列入 files 的 JSON 路径，含相同 `platform/arch` 及 `clean_path`、`vp8_roundtrip`、`opus_roundtrip`、`ffplay_dummy`、`device_backends_listed`，各为 `"passed"`。证据应记录真实 runner、执行命令、日志与时间；禁止用 Linux 的测试结果或模拟输出填充 Windows/macOS 证据。设备后端枚举仅查询编译能力，不能启动用户设备。
+
+脚本检查两个主程序 PE/薄 Mach-O 架构、全树 hash 与静态导入闭包。Windows 非系统 DLL 必须位于 bin；macOS 仅允许系统路径和可解析的包内 loader/executable-relative 路径，尚不接受未经验证的 rpath。静态检查不覆盖运行时动态加载、硬件驱动、沙盒/TCC 或签名兼容性，必须保留原生测试门槛。
+
+当前没有满足条件的 release manifest：Windows 缺完整源码/合规审查和原生运行记录；macOS 缺固定来源构建产物、两架构依赖闭包和原生测试。这是明确发布阻碍，不是脚本失败或新授权被拒。本次未下载/运行候选二进制、未触发摄像头/麦克风/屏幕权限、未创建凭据或发布。
