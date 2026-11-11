@@ -626,8 +626,8 @@ describe("workspace template scripts", () => {
     const migration = scripts.find((script) => script.name === "055-claims-reconciliation-finding.surql");
 
     expect(migration?.version).toBe(55);
-    // 062-native-signaling 追加为最新版本。
-    expect(WORKSPACE_TEMPLATE_VERSION).toBe(62);
+    // 063 修复模板数组元素的 FLEXIBLE 属性。
+    expect(WORKSPACE_TEMPLATE_VERSION).toBe(63);
     const sql = migration?.sql ?? "";
     expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS reconciliation_finding SCHEMAFULL/);
     expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS claim_supplement SCHEMAFULL/);
