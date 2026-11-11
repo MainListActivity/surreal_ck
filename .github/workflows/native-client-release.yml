@@ -1,6 +1,21 @@
 name: Native client installers
 
 on:
+  # Development branch builds upload workflow artifacts only, never publish/deploy.
+  push:
+    branches: [feat/native-collaboration-bootstrap]
+    paths:
+      - 'native-client/**'
+      - 'native-transport/**'
+      - 'native-updater/**'
+      - 'native-identity/**'
+      - 'native-updater-platform/**'
+      - 'native-media-platform/**'
+      - 'native-call/**'
+      - 'native-video-view/**'
+      - 'native-signaling/**'
+      - 'scripts/native-client/**'
+      - '.github/workflows/native-client*'
   workflow_dispatch:
     inputs:
       experimental_android_media:

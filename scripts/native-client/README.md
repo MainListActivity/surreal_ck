@@ -17,7 +17,9 @@
 
 在仓库根目录运行 `bash scripts/native-client/package.sh linux`（或 `android`、`macos`）；Windows 运行 `./scripts/native-client/package-windows.ps1`。先安装 NSH、Rust 以及平台 SDK/编译依赖。本地脚本不会上传、发布或修改 GitHub 配置。
 
-Actions 的 PR 和手动运行仅产生 workflow artifacts。Release事件现在只校验预先公开的候选安装器及在线签名策略，不再自动上传缺失安装器；这是为防止先切强制策略、后上传资产导致旧用户锁定。全部预检通过后，仅附加尚不存在的验证receipt/索引/校验和等旁证，不覆盖同名文件，不创建tag或发布Release。安装包仍完整保留在workflow artifacts；真正两阶段候选预置/正式晋级流程尚待完成，不能称自动生成完整Release。
+Actions 在 `feat/native-collaboration-bootstrap` 开发分支的原生相关路径 push、PR 和手动运行仅产生 workflow artifacts。开发分支 push 不触发生产部署，`contents: read` 保持不变，Release 验证作业仍只接受 `release` 事件。Release事件现在只校验预先公开的候选安装器及在线签名策略，不再自动上传缺失安装器；这是为防止先切强制策略、后上传资产导致旧用户锁定。全部预检通过后，仅附加尚不存在的验证receipt/索引/校验和等旁证，不覆盖同名文件，不创建tag或发布Release。安装包仍完整保留在workflow artifacts；真正两阶段候选预置/正式晋级流程尚待完成，不能称自动生成完整Release。
+
+本轮普通 NSH 默认安装包**不含 enterprise 实验功能**。NSH 0.4 的 `package` 没有 `--features` 参数；前置 desktop binary 编译不改变 NSH 独立 runner 的 features。Android 企业独立 test-only preview 已在本地 stage9 验证，但不由本轮默认 push 管线构建、不进入正式 Release 索引；桌面企业功能封装留待下一阶段。
 
 ## 签名与公证边界
 
