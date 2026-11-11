@@ -1,0 +1,8 @@
+{
+  "utc": "2026-11-11T00:03:57.367909+00:00",
+  "unit_passed": 61,
+  "headless_passed": 5,
+  "source_and_binary_hashes": "matched before and after direct execution",
+  "compiled_source_binding": "original Cargo dep-info/fingerprint and chronology; no fabricated pre-build hash",
+  "new_compilation": false
+}

@@ -1,0 +1,28 @@
+[package]
+name = "surreal-ck-android-host"
+version = "0.1.0"
+edition = "2024"
+publish = false
+[workspace]
+[lib]
+name = "nsh"
+path = "lib.rs"
+crate-type = ["cdylib"]
+[dependencies]
+nsh-core = "=0.4.0"
+nsh-base = { version = "=0.4.0", features = ["highlight"] }
+app = { package = "nsh-app-native-client", path = "..", features = ["android-auto-update"] }
+surreal-ck-native-updater-platform = { path = "../../native-updater-platform" }
+[target.'cfg(target_os = "android")'.dependencies]
+nsh-platform-android = { version = "=0.4.0", default-features = false }
+jni = "0.21.1"
+[profile.release]
+strip = "debuginfo"
+
+[features]
+default = []
+android-native-oauth = ["app/android-native-oauth"]
+android-native-media = ["app/android-native-media"]
+
+# 仅显式实验构建；默认Release不启用企业媒体/文件。
+enterprise-collaboration = ["android-native-oauth", "android-native-media", "app/experimental-enterprise-media", "app/experimental-enterprise-files"]

@@ -1,0 +1,33 @@
+{
+  "recorded_at_utc": "2026-11-11T00:50:44.235687+00:00",
+  "test_command": "cargo test --manifest-path native-transport/Cargo.toml --locked --offline --lib --config 'profile.test.package.surreal-ck-peer-transport.debug=0' --config 'profile.test.package.surreal-ck-peer-transport.strip=\"debuginfo\"'",
+  "test_count": 33,
+  "result": "passed",
+  "clippy_command": "cargo clippy --manifest-path native-transport/Cargo.toml --locked --offline --all-targets -- -D warnings",
+  "fmt_command": "cargo fmt --manifest-path native-transport/Cargo.toml -- --check",
+  "environment": {
+    "CARGO_TARGET_DIR": "/workspace/scratch/115bfa675150/native-client-probe/surreal_ck/native-client/target",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_BUILD_JOBS": "1"
+  },
+  "sha256": {
+    "native-transport/src/transfer.rs": "2dd90d9beaf62329cd7423a62aaa97bc09b05a47562cf892afbaeab6932b5084",
+    "native-transport/src/transfer_destination.rs": "be2fc6d383b48a6890086fc32b6efb857733c80dd7b72f4dc63b13f4b8e28067",
+    "native-transport/src/chat.rs": "bef188f3dc7b8ec652e549c61babfc429b12fe9d5b67456a491c98da058ba84a",
+    "native-client/target/debug/deps/surreal_ck_peer_transport-ce8e459545f2a126": "50c46bc22d3d3bb7c14f16f2fb098e37107c7c3d675dd17699b8a83b2d782694"
+  },
+  "logs": [
+    "/workspace/scratch/115bfa675150/transfer-terminal-test-r4-20261111.log",
+    "/workspace/scratch/115bfa675150/transfer-terminal-clippy-r4-20261111.log"
+  ],
+  "verified": [
+    "真实虚拟ICE/DTLS文件传输：发布准入先赢后取消，实际保存路径及双方Completed/COMPLETE ACK均确认。",
+    "终态通知满队列后重读账本，已完成优先；独立global工作不阻塞单文件idle或shutdown。",
+    "单调取消标记保留，每会话最多256次传输。",
+    "发送端取消的两条Completed返回路径均独立投递终态；ACK先到/取消等待期间到，且stream不发通知时仍收到真实Completed并解除busy。"
+  ],
+  "limits": [
+    "本地Cancelled不能保证远端未保存；网络竞态以实际收到的最终回执为准。",
+    "未新增企业文件wrapper/UI；未生产连接或发布。"
+  ]
+}

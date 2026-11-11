@@ -1,0 +1,13 @@
+bun test v1.3.12 (700fc117)
+
+source/server/src/db/entity-member-permissions.integration.test.ts:
+[migration] entity member permissions: preserved custom PERMISSIONS on ent_custom
+[migration] entity member permissions: preserved custom PERMISSIONS on ent_custom
+(pass) 实体表成员 DML 权限（fork 真机） > 无 PERMISSIONS 既有表：成员读写全部落空（生产缺陷复现），043 迁移回填后可读写 [271.85ms]
+(pass) 实体表成员 DML 权限（fork 真机） > 新建实体表权限子句：成员 CRUD、活动审计归因、DDL 拒绝、移除即收回 [245.57ms]
+(pass) 实体表成员 DML 权限（fork 真机） > 043 迁移对全量真实 schema 可重入：空工作区返回 no-op 标记 [212.24ms]
+
+ 3 pass
+ 0 fail
+ 34 expect() calls
+Ran 3 tests across 1 file. [1.53s]

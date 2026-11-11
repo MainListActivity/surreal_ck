@@ -1,0 +1,43 @@
+=== test_update_policy.py ===
+............
+----------------------------------------------------------------------
+Ran 12 tests in 0.176s
+
+OK
+External signature verified; envelope prepared. Nothing was published.
+{"status": "healthy", "sequence": 7, "expires_at": 1700604800, "remaining_seconds": 504800, "payload_sha256": "0e7f5e2c68d9b1253dedc726197e63af263cfddc6785b443dbe0d16bb902c2d5", "source": "file"}
+{"status": "healthy", "sequence": 7, "expires_at": 1700604800, "remaining_seconds": 504800, "payload_sha256": "0e7f5e2c68d9b1253dedc726197e63af263cfddc6785b443dbe0d16bb902c2d5", "source": "file"}
+{"status": "healthy", "sequence": 7, "expires_at": 1700604800, "remaining_seconds": 504800, "payload_sha256": "0e7f5e2c68d9b1253dedc726197e63af263cfddc6785b443dbe0d16bb902c2d5", "source": "online"}
+{"status": "healthy", "sequence": 7, "expires_at": 1700604800, "remaining_seconds": 518399, "payload_sha256": "0e7f5e2c68d9b1253dedc726197e63af263cfddc6785b443dbe0d16bb902c2d5", "source": "file"}
+{"status": "healthy", "sequence": 7, "expires_at": 1700604800, "remaining_seconds": 172801, "payload_sha256": "0e7f5e2c68d9b1253dedc726197e63af263cfddc6785b443dbe0d16bb902c2d5", "source": "file"}
+{"status": "warning", "sequence": 7, "expires_at": 1700604800, "remaining_seconds": 172800, "payload_sha256": "0e7f5e2c68d9b1253dedc726197e63af263cfddc6785b443dbe0d16bb902c2d5", "source": "file"}
+{"status": "warning", "sequence": 7, "expires_at": 1700604800, "remaining_seconds": 86401, "payload_sha256": "0e7f5e2c68d9b1253dedc726197e63af263cfddc6785b443dbe0d16bb902c2d5", "source": "file"}
+{"status": "critical", "sequence": 7, "expires_at": 1700604800, "remaining_seconds": 86400, "payload_sha256": "0e7f5e2c68d9b1253dedc726197e63af263cfddc6785b443dbe0d16bb902c2d5", "source": "file"}
+{"status": "critical", "sequence": 7, "expires_at": 1700604800, "remaining_seconds": 1, "payload_sha256": "0e7f5e2c68d9b1253dedc726197e63af263cfddc6785b443dbe0d16bb902c2d5", "source": "file"}
+UNSIGNED payload prepared. External authorized signer must sign these exact UTF-8 bytes.
+UNSIGNED payload prepared. External authorized signer must sign these exact UTF-8 bytes.
+UNSIGNED payload prepared. External authorized signer must sign these exact UTF-8 bytes.
+=== test_android_host.py ===
+.........
+----------------------------------------------------------------------
+Ran 9 tests in 0.004s
+
+OK
+=== test_release_readiness.py ===
+..........
+----------------------------------------------------------------------
+Ran 10 tests in 0.352s
+
+OK
+=== test_collect.py ===
+...
+----------------------------------------------------------------------
+Ran 3 tests in 0.203s
+
+OK
+=== test_native_host.py ===
+..
+----------------------------------------------------------------------
+Ran 2 tests in 0.068s
+
+OK

@@ -1,0 +1,7 @@
+
+running 2 tests
+test absent_device_is_an_error_and_never_enables_a_source ... ok
+test synthetic_ffmpeg_through_real_virtual_webrtc_decodes_camera_and_screen_to_sink ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.86s
+

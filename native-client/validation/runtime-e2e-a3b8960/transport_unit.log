@@ -1,0 +1,25 @@
+
+running 20 tests
+test chat::epoch_tests::observers_share_counter_and_overflow_permanently_invalidates ... ok
+test file::tests::flush_failure_cannot_report_finished ... ok
+test file::tests::rejects_invalid_frames_and_hash ... ok
+test file::tests::empty_file ... ok
+test manual_verification::tests::fingerprints_require_exact_sha256_octets ... ok
+test file::tests::partial_write_failure_poisons_the_receiver ... ok
+test manual_verification::tests::rejects_missing_duplicate_conflicting_and_ambiguous_fingerprints ... ok
+test manual_verification::tests::changes_in_certificate_origin_ice_and_payload_invalidate_material ... ok
+test manual_verification::tests::role_order_and_line_endings_are_stable ... ok
+test transfer::destination::tests::existing_and_late_destination_symlinks_are_not_followed_or_deleted ... ok
+test media::tests::reconstructs_fragments_and_rejects_loss ... ok
+test transfer::destination::tests::trusted_proc_fd_fallback_is_same_inode_and_noreplace ... ok
+test transfer::destination::tests::directory_handle_does_not_require_directory_read_permission ... ok
+test transfer::destination::tests::staging_is_anonymous_and_publishes_the_same_private_inode ... ok
+test manual_verification::tests::rejects_wrong_type_media_pairing_and_session_structure ... ok
+test transfer::destination::tests::replaced_parent_never_redirects_publication_or_cleanup ... ok
+test transfer::tests::metadata_and_local_file_boundaries ... ok
+test transfer::tests::source_rejects_symlink_and_fifo_without_waiting_for_a_writer ... ok
+test media::tests::enabled_samples_are_rejected_before_connection_and_after_close ... ok
+test transfer::tests::real_virtual_chat_approval_stream_integrity_cancel_and_no_overwrite ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.53s
+

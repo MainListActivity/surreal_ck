@@ -1,0 +1,40 @@
+[package]
+name = "surreal-ck-native-video-view"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[features]
+default = []
+# 仅允许已显式接线的实验宿主使用；不代表平台构建/设备验收完成。
+experimental-host = []
+linux-gtk = ["dep:nsh-core", "dep:nsh-platform-linux", "dep:serde_json"]
+macos-appkit = ["dep:nsh-core", "dep:nsh-platform-macos", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation", "dep:serde_json"]
+windows-d2d = ["dep:nsh-core", "dep:nsh-platform-windows", "dep:windows", "dep:serde_json"]
+decoder = ["dep:surreal-ck-native-media-platform"]
+
+[dependencies]
+bytes = "1"
+thiserror = "2"
+serde_json = { version = "1", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nsh-platform-linux = { version = "=0.4.0", default-features = false, optional = true }
+
+[target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))'.dependencies]
+# 注册契约测试使用真实 NSH 根宏；只随原生后端启用，不增大默认帧核心。
+nsh-core = { version = "=0.4.0", default-features = false, optional = true }
+
+surreal-ck-native-media-platform = { path = "../native-media-platform", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+nsh-platform-macos = { version = "=0.4.0", default-features = false, optional = true }
+objc2 = { version = "0.6.5", optional = true }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSImageView", "NSImageCell", "NSBitmapImageRep", "NSImage", "NSImageRep", "NSGraphics", "NSControl", "NSCell", "NSView", "NSResponder", "NSWindow"], optional = true }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSTimer", "NSRunLoop", "NSDate", "NSObjCRuntime", "NSObject", "NSGeometry", "NSString"], optional = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+nsh-platform-windows = { version = "=0.4.0", default-features = false, optional = true }
+windows = { version = "0.62", features = ["Win32_Graphics_Direct2D", "Win32_Graphics_Direct2D_Common", "Win32_Graphics_Dxgi_Common"], optional = true }

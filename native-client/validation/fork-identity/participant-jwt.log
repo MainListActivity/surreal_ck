@@ -1,0 +1,10 @@
+bun test v1.3.12 (700fc117)
+
+source/server/src/db/employee-lifecycle.integration.test.ts:
+(pass) employee lifecycle against real SurrealDB > participant RECORD 会话不能写 user 记录（DB 引擎硬拒） [804.85ms]
+
+ 1 pass
+ 1 filtered out
+ 0 fail
+ 1 expect() calls
+Ran 1 test across 1 file. [872.00ms]

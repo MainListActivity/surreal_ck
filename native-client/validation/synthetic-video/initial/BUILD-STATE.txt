@@ -1,0 +1,4 @@
+初次可见验收基线：1903111，脏树，存在其他worker并行改动。
+初次二进制 SHA256: 647eb145b541fb412bd8667a81a4a9985a02ccab93f1b7b63d8d27b0851ab6c8
+该次完整源码构建前后摘要未捕获；不绑定clean commit。
+截图后只修改example平台feature门和关闭/状态投递，并声明required-features。

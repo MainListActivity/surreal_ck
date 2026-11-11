@@ -1,0 +1,2 @@
+f7d0ba0463789852af48a0532bf6c7e37b5a561b56c63a86f07403dda66c6c3f  native-client/target/debug/deps/one_to_one_session-a63ad52b874eb132
+2507c49d9f6c6ecc660e9ae85c612d5d6289ef4bd0f702c3ab4c869e3f49a3ea  native-call/tests/one_to_one_session.rs

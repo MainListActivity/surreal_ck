@@ -1,0 +1,211 @@
+name: Native client installers
+
+on:
+  workflow_dispatch:
+    inputs:
+      experimental_android_media:
+        description: Build an additional experimental Android media APK (test key, no device validation)
+        type: boolean
+        required: false
+        default: false
+  pull_request:
+    paths:
+      - 'native-client/**'
+      - 'native-transport/**'
+      - 'native-updater/**'
+      - 'native-identity/**'
+      - 'native-updater-platform/**'
+      - 'native-media-platform/**'
+      - 'native-call/**'
+      - 'native-video-view/**'
+      - 'native-signaling/**'
+      - 'scripts/native-client/**'
+      - '.github/workflows/native-client*'
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-client-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'release' }}
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux
+            os: ubuntu-24.04
+            native_host: x86_64-unknown-linux-gnu
+          - target: android
+            os: ubuntu-24.04
+            native_host: x86_64-unknown-linux-gnu
+          - target: macos
+            os: macos-15
+            native_host: aarch64-apple-darwin
+          - target: macos
+            os: macos-15-intel
+            native_host: x86_64-apple-darwin
+          - target: windows
+            os: windows-2022
+            native_host: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.99.1'
+          components: rustfmt, clippy
+      - name: Assert actual native runner CPU and Rust host
+        shell: bash
+        run: bash scripts/native-client/check-native-host.sh '${{ matrix.native_host }}'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native-client
+          key: native-${{ matrix.os }}-${{ matrix.target }}
+      - name: Test release asset collection
+        run: |
+          python scripts/native-client/check-version.py
+          python scripts/native-client/test_collect.py
+          python scripts/native-client/test_native_host.py
+          python scripts/native-client/test_release_readiness.py
+          python scripts/native-client/test_update_policy.py
+          python scripts/native-client/test_android_host.py
+      - name: Install pinned NSH distribution
+        run: python scripts/native-client/install-nsh.py
+      - name: Install Linux build libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y clang llvm libgtk-4-dev libclang-dev libssl-dev pkg-config ffmpeg libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+      - uses: actions/setup-java@v4
+        if: matrix.target == 'android'
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Prepare Android SDK and Rust targets
+        if: matrix.target == 'android'
+        shell: bash
+        run: |
+          sdkmanager 'platforms;android-35' 'build-tools;35.0.1' 'ndk;29.0.14206865'
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
+          rustup target add aarch64-linux-android x86_64-linux-android
+      - name: Compile Android updater source (not APK integration)
+        if: matrix.target == 'android'
+        shell: bash
+        run: |
+          mkdir -p native-updater-platform/build/android
+          javac -Xlint:all -Werror -cp "$ANDROID_HOME/platforms/android-35/android.jar" -d native-updater-platform/build/android native-updater-platform/android/top/maplayer/collaboration/update/*.java
+      - name: Test and lint default native Rust crates
+        if: matrix.target == 'linux'
+        shell: bash
+        run: bash scripts/native-client/check-rust.sh
+      - name: Validate experimental enterprise signaling (not packaged)
+        if: matrix.target == 'linux'
+        shell: bash
+        run: bash scripts/native-client/check-enterprise-signaling.sh
+      - name: Configure compiler stack
+        if: matrix.target == 'windows'
+        shell: bash
+        run: echo "RUST_MIN_STACK=268435456" >> "$GITHUB_ENV"
+      - name: Verify complete native renderer (macOS or Windows MSVC)
+        if: matrix.target == 'macos' || matrix.target == 'windows'
+        shell: bash
+        run: bash scripts/native-client/check-renderer.sh '${{ matrix.target }}'
+      - name: Build desktop entry point
+        if: matrix.target != 'android'
+        run: cargo build --manifest-path native-client/Cargo.toml --features desktop --bin surreal-collaboration
+      - name: Build Linux, macOS or Android package
+        if: matrix.target != 'windows'
+        shell: bash
+        run: bash scripts/native-client/package.sh '${{ matrix.target }}'
+      - name: Build Windows installer
+        if: matrix.target == 'windows'
+        shell: pwsh
+        run: ./scripts/native-client/package-windows.ps1
+      - name: Build explicitly requested experimental Android media artifact
+        if: matrix.target == 'android' && github.event_name == 'workflow_dispatch' && inputs.experimental_android_media
+        shell: bash
+        run: |
+          # Consume the standard test key already used by the NSH base build.
+          # Do not create a new identity or infer production signing permission.
+          test -f "$HOME/.android/debug.keystore" || { echo 'Existing Android test key required'; exit 1; }
+          cargo fetch --manifest-path native-client/android-host/Cargo.toml --locked
+          ANDROID_NATIVE_MEDIA=1 bash scripts/native-client/build-android-host.sh
+          bash native-media-platform/scripts/test-android-host-pure.sh
+          input=$(find dist/native-client/android/raw -maxdepth 1 -name '*.apk' -print -quit)
+          test -n "$input"
+          mkdir -p dist/experimental-android
+          python scripts/native-client/package-android-host.py --enable-experimental-host \
+            --input-apk "$input" \
+            --output-apk dist/experimental-android/SurrealCK-stage5-media-test-only.apk \
+            --sdk "$ANDROID_HOME" \
+            --native-lib "arm64-v8a=$PWD/native-client/target/aarch64-linux-android/release/libnsh.so" \
+            --native-lib "x86_64=$PWD/native-client/target/x86_64-linux-android/release/libnsh.so" \
+            --java-source-dir native-updater-platform/android \
+            --java-source-dir native-media-platform/android/src \
+            --manifest-fragment native-updater-platform/android/manifest-fragment.xml \
+            --manifest-fragment native-media-platform/android/documents-manifest.xml \
+            --manifest-fragment native-media-platform/android/media-manifest.xml \
+            --keystore-existing "$HOME/.android/debug.keystore" \
+            --key-alias androiddebugkey --test-signing
+          sha256sum dist/experimental-android/*.apk > dist/experimental-android/SHA256SUMS.txt
+          printf '%s\n' 'Experimental media host; Android debug/test key; device installation and real media capture NOT VERIFIED.' > dist/experimental-android/STATUS.txt
+      - uses: actions/upload-artifact@v4
+        if: matrix.target == 'android' && github.event_name == 'workflow_dispatch' && inputs.experimental_android_media
+        with:
+          name: experimental-android-media-test-only
+          path: dist/experimental-android/*
+          if-no-files-found: error
+      - name: Collect release assets and checksum manifest
+        shell: bash
+        run: python scripts/native-client/collect.py '${{ matrix.target }}' '${{ matrix.os }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-client-${{ matrix.target }}-${{ matrix.os }}
+          path: dist/release/*
+          if-no-files-found: error
+
+  # Validation only: public candidate bytes must already exist before activating
+  # a mandatory policy. Never upload missing bytes after switching live policy.
+  verify-published-release:
+    if: github.event_name == 'release'
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-client-*
+          path: release-assets
+          merge-multiple: true
+      - name: Verify live signed policy against every release installer
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: python scripts/native-client/check-release-readiness.py release-assets --repository "$RELEASE_REPOSITORY" --tag "$RELEASE_TAG" > release-assets/online-policy-preflight.json
+      - name: Attach missing verification evidence only (never installers)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: python scripts/native-client/attach-release-evidence.py release-assets
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-release-evidence
+          path: |
+            release-assets/*-build-receipt.json
+            release-assets/*-assets.json
+            release-assets/online-policy-preflight.json
+          if-no-files-found: error

@@ -1,0 +1,8 @@
+
+running 1 test
+同一会话(real_udp=true)：文件cancel处于真实事件队列背压，媒体stop耗时 7.377887ms
+PASS real_udp=true: 双向中文聊天；82057字节文件及独立SHA256；三路SRTP/双视频RGBA；损坏文件拒绝；ACK背压取消与迟到ACK；停止后帧拒绝；关闭后全部发送拒绝
+test real_udp_same_session_chat_files_three_tracks_and_negative_cases ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.53s
+

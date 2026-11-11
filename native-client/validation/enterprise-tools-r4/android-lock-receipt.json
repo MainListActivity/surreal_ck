@@ -1,0 +1,4 @@
+{
+  "lock_sha256": "08b23da96644eadc48659aafd3766806aebb3115a2f58d8fadd66350247d5b31",
+  "note": "客户端及底层行为测试后仅为Android宿主启用信令补入本地依赖；保留既有所有注册表版本和windows-sys解析；两个ABI随后严格clippy通过。"
+}

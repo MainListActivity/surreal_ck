@@ -1,0 +1,16 @@
+[package]
+name = "surreal-ck-peer-transport"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+webrtc = "=0.14.0"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync"] }
+bytes = "1"
+sha2 = "0.10"
+thiserror = "2"
+serde_json = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "=0.2.191"

@@ -1,0 +1,11 @@
+
+running 2 tests
+test enterprise_e2e::authenticated_database_to_real_udp_chat ... PASS authenticated RECORD signaling -> real UDP ICE/DTLS/SCTP -> bidirectional Chinese text; loopback company API fixture, not production OIDC/TLS/NAT/media
+ok
+test enterprise_e2e::authenticated_peer_revocation_closes_real_chat ... PASS authenticated RECORD signaling -> real UDP ICE/DTLS/SCTP -> bidirectional Chinese text; loopback company API fixture, not production OIDC/TLS/NAT/media
+ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 42 filtered out; finished in 12.34s
+
+
+TEST_EXIT=0

@@ -1,0 +1,13 @@
+bun test v1.3.12 (700fc117)
+
+source/server/src/db/employee-lifecycle.integration.test.ts:
+PROBE: disabled participant authenticated with original JWT access
+PROBE: own disabled_at cleared = true
+PROBE: own is_admin set true = true
+(pass) probe: disabled participant JWT authenticates and can clear own disabled_at [871.68ms]
+
+ 1 pass
+ 2 filtered out
+ 0 fail
+ 4 expect() calls
+Ran 1 test across 1 file. [949.00ms]

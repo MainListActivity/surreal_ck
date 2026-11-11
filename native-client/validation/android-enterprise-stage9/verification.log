@@ -1,0 +1,21 @@
+{
+  "artifact": "native-client/android-host/build/stage9-9e9a60a/SurrealCK-stage9-9e9a60a-enterprise-test-only.apk",
+  "sha256": "3dd52e5daf4380bd11f428f674b7f63d7c317749b16b1d79c634b337a86d60d1",
+  "bytes": 138433269,
+  "source_commit": "9e9a60a09b6719657e9cf453b29e2d734e1e2777",
+  "tracked_inputs_unchanged": true,
+  "git_status_after_validation": "",
+  "features": [
+    "android-native-media",
+    "android-native-oauth",
+    "enterprise-collaboration"
+  ],
+  "native_library_sha256": {
+    "arm64-v8a": "686087752203cb48d0851cc0ac2313fa94b62d131ec7395ad9544973fbc0f68f",
+    "x86_64": "7a754e250f4cee590edf3475967300369807a9a4fced9bf2daecfc056c35bb9f"
+  },
+  "base_apk_sha256": "d21f9e40246c95bd4f152d2d77356a2d9e2fcfe96b421a94eda5cda9795d48e2",
+  "device_installation": "NOT RUN",
+  "production_oidc_configuration": "NOT SET",
+  "validation": "Current HEAD dual ABI offline release links; Java pure tests and 9 packager positive/negative tests; final APK actual DEX/JNI/manifest; apksigner; 16KiB zipalign and ELF LOAD alignment"
+}

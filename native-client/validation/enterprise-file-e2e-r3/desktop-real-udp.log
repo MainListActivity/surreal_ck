@@ -1,0 +1,8 @@
+
+running 2 tests
+test enterprise_file_e2e::authenticated_real_udp_file_confirm_hash_and_saved_ack ... PASS RECORD/company API fixture -> real OS UDP -> Peer.attach_files -> explicit confirmation API -> SHA256 saved file -> actual saved ACK -> confirmed close receipts
+ok
+test enterprise_file_e2e::authenticated_revocation_stops_file_and_retains_previously_saved_receipt ... PASS local member revocation -> lease invalid -> new file operations refused -> interrupted file not published -> previous committed receipts retained after real close
+ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 52 filtered out; finished in 13.06s

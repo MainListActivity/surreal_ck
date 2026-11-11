@@ -1,0 +1,17 @@
+PASS: 5 pure permission-generation and resource-cleanup negative/positive tests
+PASS: SAF final destruction, recreation, duplicate result and copy ownership
+PASS: exact OAuth URI ingress boundaries; state remains Rust-validated
+
+running 4 tests
+test tests::old_drop_cannot_cancel_new_generation ... ok
+test tests::parallel_bind_cannot_replace_current_attempt ... ok
+test tests::process_reconstruction_has_no_pending_attempt ... ok
+test tests::cancelled_or_consumed_route_rejects_late_delivery ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+.........
+----------------------------------------------------------------------
+Ran 9 tests in 0.007s
+
+OK

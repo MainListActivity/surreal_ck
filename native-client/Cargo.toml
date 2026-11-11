@@ -1,0 +1,67 @@
+[package]
+name = "nsh-app-native-client"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+surreal-ck-native-signaling = { path = "../native-signaling", optional = true }
+surreal-ck-native-call = { path = "../native-call" }
+surreal-ck-native-video-view = { path = "../native-video-view", features = ["linux-gtk"] }
+surreal-ck-native-identity = { path = "../native-identity" }
+surreal-ck-native-updater = { path = "../native-updater" }
+surreal-ck-peer-transport = { path = "../native-transport" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+async-channel = "2"
+serde_json = "1"
+
+nsh-core = "0.4.0"
+nsh-base = { version = "0.4.0", default-features = false }
+env_logger = "0.11"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nsh-platform-linux = { version = "0.4.0", default-features = false, optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+surreal-ck-native-updater-platform = { path = "../native-updater-platform", optional = true }
+nsh-platform-macos = { version = "0.4.0", default-features = false, optional = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+surreal-ck-native-updater-platform = { path = "../native-updater-platform", optional = true }
+nsh-platform-windows = { version = "0.4.0", default-features = false, optional = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+surreal-ck-native-media-platform = { path = "../native-media-platform", optional = true }
+jni = { version = "0.21.1", optional = true }
+zeroize = { version = "1", optional = true }
+surreal-ck-native-updater-platform = { path = "../native-updater-platform", optional = true }
+
+[features]
+default = []
+experimental-enterprise-signaling = ["dep:surreal-ck-native-signaling"]
+experimental-enterprise-media = ["experimental-enterprise-signaling"]
+experimental-enterprise-files = ["experimental-enterprise-signaling"]
+experimental-macos-video = ["surreal-ck-native-video-view/macos-appkit", "surreal-ck-native-video-view/experimental-host"]
+experimental-windows-video = ["surreal-ck-native-video-view/windows-d2d", "surreal-ck-native-video-view/experimental-host"]
+android-native-oauth = ["dep:jni", "dep:zeroize"]
+android-native-media = ["dep:surreal-ck-native-media-platform"]
+android-auto-update = ["dep:surreal-ck-native-updater-platform", "dep:jni"]
+windows-auto-update = ["dep:surreal-ck-native-updater-platform"]
+macos-auto-update = ["dep:surreal-ck-native-updater-platform", "surreal-ck-native-updater-platform/macos-sparkle"]
+desktop = ["dep:nsh-platform-linux", "dep:nsh-platform-macos", "dep:nsh-platform-windows"]
+
+[[bin]]
+name = "surreal-collaboration"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[dev-dependencies]
+nsh-engine = { version = "0.4.0", default-features = false }
+nsh-testing = { version = "0.4.0", default-features = false }
+
+[[example]]
+name = "synthetic_video"
+path = "examples/synthetic_video.rs"
+required-features = ["desktop"]

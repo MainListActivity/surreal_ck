@@ -1,0 +1,12 @@
+Verifies
+Verified using v1 scheme (JAR signing): false
+Verified using v2 scheme (APK Signature Scheme v2): false
+Verified using v3 scheme (APK Signature Scheme v3): true
+Verified using v3.1 scheme (APK Signature Scheme v3.1): false
+Verified using v4 scheme (APK Signature Scheme v4): false
+Verified for SourceStamp: false
+Number of signers: 1
+APK built and verified: /workspace/scratch/115bfa675150/native-client-probe/surreal_ck/native-client/android-host/build/stage9-9e9a60a/SurrealCK-stage9-9e9a60a-enterprise-test-only.apk
+SHA256: 3dd52e5daf4380bd11f428f674b7f63d7c317749b16b1d79c634b337a86d60d1
+Signing: existing-debug-test-only
+Device installation: NOT RUN

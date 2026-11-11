@@ -1,0 +1,55 @@
+
+running 50 tests
+test call_bridge::desktop::tests::disabling_streams_clears_frames_and_reenable_uses_new_ids ... ok
+test call_bridge::desktop::tests::delayed_capture_events_cannot_overwrite_the_authoritative_snapshot ... ok
+test bridge::tests::remote_relay_candidates_only_indicate_possible_relay ... ok
+test call_bridge::desktop::tests::receiver_failure_is_not_a_local_capture_shutdown_failure ... ok
+test call_bridge::desktop::tests::selection_never_defaults_to_a_device_or_whole_screen ... ok
+test call_ui::tests::default_capture_state_has_no_permission_or_device_activity ... ok
+test bridge::tests::file_output_backpressure_is_isolated_and_worker_stop_is_bounded ... ok
+test call_bridge::desktop::tests::invalid_selection_can_be_explicitly_confirmed_stopped_without_a_device ... ok
+test call_bridge::desktop::tests::repeated_playback_configuration_finishes_with_reliable_confirmation ... ok
+test call_bridge::desktop::tests::shutdown_flushes_actual_state_before_confirming_and_stops_pump ... ok
+test call_ui::tests::blank_screen_selection_never_implies_default_display ... ok
+test call_ui::tests::failed_start_does_not_claim_device_is_closed ... ok
+test call_ui::tests::failed_stop_keeps_active_privacy_indicator_until_real_stop ... ok
+test call_ui::tests::queued_stop_never_claims_success ... ok
+test bridge::tests::media_before_connect_is_an_explicit_failure_without_capture ... ok
+test call_ui::tests::late_start_confirmation_preserves_newer_stop_request ... ok
+test file_dialogs::capacity_tests::android_receive_limit_matches_saf_export_capacity_without_lowering_desktop_limit ... ok
+test call_ui::tests::unrelated_failure_does_not_invent_capture_activity ... ok
+test call_ui::tests::x11_scope_discloses_the_exact_requested_area ... ok
+test bridge::tests::invalid_sequence_reports_error_then_can_close ... ok
+test call_ui::tests::unknown_remote_state_is_not_labeled_closed ... ok
+test call_ui::tests::unconfirmed_session_stop_does_not_clear_capture ... ok
+test bridge::tests::relay_requires_a_real_direct_failure_without_contacting_service ... ok
+test identity_ui::tests::backend_gate_rejects_superseded_expired_and_duplicate_completions ... ok
+test identity_ui::tests::failed_switch_keeps_verified_members_and_selection ... ok
+test identity_ui::tests::logout_expiry_and_new_login_prevent_late_results_from_restoring_directory ... ok
+test identity_ui::tests::successful_switch_replaces_members_only_when_complete ... ok
+test model::tests::acknowledgements_are_idempotent ... ok
+test identity_ui::tests::empty_real_workspace_list_does_not_invent_a_selection ... ok
+test identity_ui::tests::missing_configuration_has_no_fake_workspace_or_session ... ok
+test identity_ui::tests::switch_requires_explicit_known_selection_and_blocks_repeated_clicks ... ok
+test call_ui::tests::reception_requests_wait_for_acknowledgement ... ok
+test model::tests::offline_never_claims_delivery ... ok
+test model::tests::rejects_empty_and_oversized_drafts ... ok
+test network_config::tests::default_never_contacts_service ... ok
+test network_config::tests::remote_candidates_are_not_selected_pair_measurements ... ok
+test startup::callback_tests::active_attempt_rejects_overlap_without_closing_current_channel ... ok
+test startup::callback_tests::failure_before_installer_does_not_retain_sender ... ok
+test network_config::tests::validates_without_network ... ok
+test startup::callback_tests::terminal_closes_channel_and_late_old_callbacks_cannot_touch_retry ... ok
+test network_config::tests::secrets_never_appear_in_debug_or_validation_errors ... ok
+test startup::callback_tests::synchronous_start_failure_releases_registration_and_allows_retry ... ok
+test verification_ui::tests::cancelled_or_replaced_request_never_revives_from_queued_material ... ok
+test verification_ui::tests::backpressured_old_output_cannot_restore_material_after_connection_changes ... ok
+test verification_ui::tests::cancellation_renegotiation_and_replacement_revoke_real_observer_tickets ... ok
+test startup::callback_tests::terminal_before_start_returns_is_safe_and_full_queue_still_drains ... ok
+test verification_ui::tests::live_epoch_is_rechecked_on_material_and_confirmation_delivery ... ok
+test verification_ui::tests::repeated_buttons_and_unsolicited_confirmation_do_not_confirm ... ok
+test verification_ui::tests::request_counter_never_wraps_into_an_old_ticket ... ok
+test file_ui::tests::incoming_request_requires_explicit_destination_and_consent ... ok
+
+test result: ok. 50 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+

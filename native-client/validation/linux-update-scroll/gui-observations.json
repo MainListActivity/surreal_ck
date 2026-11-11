@@ -1,0 +1,34 @@
+{
+  "base": "a4a5637bd4223e7c9bae0a274f6fc42398f7a4ad",
+  "date": "2026-11-10",
+  "branch": "fix/linux-update-small-window",
+  "binary_sha256": "cd5e07652800eece3bb918b43f018f92eee5663ac8bce0f27bb7613f5d19a35e",
+  "binary_size": 196693312,
+  "gui_exit": 0,
+  "gui_window": "Surreal Collaboration",
+  "observed_sizes": [
+    [
+      1180,
+      812
+    ],
+    [
+      252,
+      212
+    ]
+  ],
+  "observed_behavior": [
+    "未配置可信更新服务时仅显示更新门，未出现协作业务界面",
+    "旧窗口小尺寸时顶部与底部裁切，无滚动入口",
+    "修复后小窗口品牌与标题可见",
+    "滚动到底部后重试按钮和锁定提示均可见",
+    "点击重试后仍显示缺配置锁定状态；GUI瞬态过短，单次截图不独立证明检查线程已运行",
+    "向上滚动可返回品牌与标题",
+    "恢复大窗口后居中显示",
+    "关闭后窗口消失，进程退出0"
+  ],
+  "screenshots": "本次CUA工具记录中的实际桌面及窗口截图；仓库保留文字交互记录及构建/测试日志。",
+  "ui_tests": 5,
+  "client_unit_tests": 50,
+  "source_inputs_match_receipt": true,
+  "original_worktree_status": ""
+}

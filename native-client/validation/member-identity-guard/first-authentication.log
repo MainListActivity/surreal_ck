@@ -1,0 +1,32 @@
+bun test v1.3.12 (700fc117)
+
+source/server/src/db/member-identity-guard.integration.test.ts:
+(pass) 061 member identity defensive regression > 首次 participant 认证创建合法成员 [942.79ms]
+7231 | 		case "Validation": return new ValidationError(options);
+7232 | 		case "Configuration": return new ConfigurationError(options);
+7233 | 		case "Thrown": return new ThrownError(options);
+7234 | 		case "Query": return new QueryError(options);
+7235 | 		case "Serialization": return new SerializationError(options);
+7236 | 		case "NotAllowed": return new NotAllowedError(options);
+                                   ^
+error: There was a problem with authentication
+       kind: "NotAllowed",
+       code: -32002,
+    details: {
+  details: [Object ...],
+  kind: "Auth",
+},
+ surrealdb.SurrealError: true,
+ surrealdb.ServerError: true,
+
+      at createServerError (/workspace/scratch/115bfa675150/fork-runtime-probe/node_modules/.pnpm/surrealdb@2.0.8_tslib@2.9.1_typescript@5.9.3/node_modules/surrealdb/dist/surrealdb.mjs:7236:29)
+      at handleRpcResponse (/workspace/scratch/115bfa675150/fork-runtime-probe/node_modules/.pnpm/surrealdb@2.0.8_tslib@2.9.1_typescript@5.9.3/node_modules/surrealdb/dist/surrealdb.mjs:7760:34)
+      at <anonymous> (/workspace/scratch/115bfa675150/fork-runtime-probe/node_modules/.pnpm/surrealdb@2.0.8_tslib@2.9.1_typescript@5.9.3/node_modules/surrealdb/dist/surrealdb.mjs:7742:118)
+(fail) 061 member identity defensive regression > 首次 admin 认证创建合法管理员 [937.65ms]
+(pass) 061 member identity defensive regression > 自身身份字段拒绝，展示更新保留，停用后旧会话及重新认证拒绝 [935.68ms]
+(pass) 061 member identity defensive regression > JWT Owner、控制面及PM自有analyst创建激活保持正常 [938.87ms]
+
+ 3 pass
+ 1 fail
+ 34 expect() calls
+Ran 4 tests across 1 file. [3.86s]

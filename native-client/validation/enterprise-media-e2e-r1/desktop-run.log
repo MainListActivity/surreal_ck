@@ -1,0 +1,29 @@
+PRE_RUN
+INDEPENDENT_HASH_CHECK_OK source_count=163
+e358bbd0d3698865d9d12db9155ee2495f8a48aa0c1e32b4ac31892c792ba384 /workspace/scratch/115bfa675150/enterprise-signaling-media-e2e-harness/source-receipt.json
+bcc6ba0306b33efbc2da82232137e9af92da62f0dde0a6fbcb6c7ae0bd528653 /workspace/scratch/115bfa675150/enterprise-signaling-media-e2e-harness/input-receipt.json
+3b8123a8456c9c06d9aa522e86de7334dbd8259cc4726272ab3d3d8a2be9235b /workspace/scratch/115bfa675150/enterprise-signaling-media-e2e-harness/red.ivf
+e8a8d46f5225f3062cec7c07fb145d58ae73c603cb740dcd5bad34bfb54e455a /usr/bin/ffmpeg
+c149fa2226a87461d38080ed91e715b4de11a1f1d87a8d96da1c9c35134ced50 /workspace/scratch/115bfa675150/native-client-probe/surreal_ck/native-client/target/debug/deps/surreal_ck_enterprise_media_e2e_r1-d9ced1bcedaab8fc
+6f6bcc72f8c23848295ed32d6a265f5bf0baad11e7be446294a5ade1b06a84f2 /workspace/scratch/115bfa675150/fork-runtime-probe/surreal
+
+running 2 tests
+test enterprise_peer::enterprise_media_e2e::authenticated_revocation_closes_real_playback ... PASS synthetic VP8 / real enterprise OS UDP / native decoder / FramePublisher RGBA / real final close; revocation=true; no device or GTK display claim
+ok
+test enterprise_peer::enterprise_media_e2e::authenticated_vp8_decode_publish_and_close ... PASS synthetic VP8 / real enterprise OS UDP / native decoder / FramePublisher RGBA / real final close; revocation=false; no device or GTK display claim
+ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 67 filtered out; finished in 13.21s
+
+
+Verified two synthetic media tests; no device/UI presentation acceptance.
+POST_RUN
+INDEPENDENT_HASH_CHECK_OK source_count=163
+e358bbd0d3698865d9d12db9155ee2495f8a48aa0c1e32b4ac31892c792ba384 /workspace/scratch/115bfa675150/enterprise-signaling-media-e2e-harness/source-receipt.json
+bcc6ba0306b33efbc2da82232137e9af92da62f0dde0a6fbcb6c7ae0bd528653 /workspace/scratch/115bfa675150/enterprise-signaling-media-e2e-harness/input-receipt.json
+3b8123a8456c9c06d9aa522e86de7334dbd8259cc4726272ab3d3d8a2be9235b /workspace/scratch/115bfa675150/enterprise-signaling-media-e2e-harness/red.ivf
+e8a8d46f5225f3062cec7c07fb145d58ae73c603cb740dcd5bad34bfb54e455a /usr/bin/ffmpeg
+c149fa2226a87461d38080ed91e715b4de11a1f1d87a8d96da1c9c35134ced50 /workspace/scratch/115bfa675150/native-client-probe/surreal_ck/native-client/target/debug/deps/surreal_ck_enterprise_media_e2e_r1-d9ced1bcedaab8fc
+6f6bcc72f8c23848295ed32d6a265f5bf0baad11e7be446294a5ade1b06a84f2 /workspace/scratch/115bfa675150/fork-runtime-probe/surreal
+TEST_EXIT=0
+POST_HASH_EXIT=0

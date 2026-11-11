@@ -1,0 +1,45 @@
+name: Native desktop media validation
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'native-media-platform/**'
+      - '.github/workflows/native-media-platform.yml'
+      - 'scripts/native-client/check-native-host.sh'
+permissions:
+  contents: read
+jobs:
+  compile-and-contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            native_host: x86_64-unknown-linux-gnu
+          - os: macos-15
+            native_host: aarch64-apple-darwin
+          - os: macos-15-intel
+            native_host: x86_64-apple-darwin
+          - os: windows-2022
+            native_host: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Assert actual native runner architecture
+        shell: bash
+        run: bash scripts/native-client/check-native-host.sh '${{ matrix.native_host }}'
+      - name: Compile all media targets (no device access)
+        run: cargo check --locked --all-targets --manifest-path native-media-platform/Cargo.toml
+      - name: Check formatting
+        run: cargo fmt --manifest-path native-media-platform/Cargo.toml -- --check
+      - name: Lint
+        run: cargo clippy --locked --all-targets --manifest-path native-media-platform/Cargo.toml -- -D warnings
+      - name: Validate explicit desktop device arguments
+        run: cargo test --locked --manifest-path native-media-platform/Cargo.toml desktop_inputs_are_explicit_and_validated
+      - name: Reject invalid device arguments
+        run: cargo test --locked --manifest-path native-media-platform/Cargo.toml rejects_invalid_devices_and_sizes
+      # Hosted runners do not prove camera, microphone, screen consent or native rendering.

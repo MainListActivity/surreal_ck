@@ -1,0 +1,142 @@
+{
+  "schema_version": 1,
+  "capture_time_utc": "2026-11-11T00:01:55.633668+00:00",
+  "capture_method": "Read-only inspection of existing sources/artifacts plus saved verbatim excerpts from the prior tool result. No Cargo or test process started during capture.",
+  "successful_tool_result": {
+    "session_id": 67714,
+    "chunk_id": "894298",
+    "exit_code": 0,
+    "tests": {
+      "unit_passed": 61,
+      "headless_passed": 5
+    },
+    "checks": [
+      "rustfmt --check on identity_ui.rs",
+      "feature cargo clippy --lib -- -D warnings",
+      "default cargo check --lib",
+      "git diff --check on identity_ui.rs"
+    ]
+  },
+  "sources": [
+    {
+      "path": "native-client/src/enterprise_peer.rs",
+      "size_bytes": 8842,
+      "sha256": "ea9b4149e6caaee6d7f33640fed0b26cd002268cbc3182ec5947d9e8afb3404b",
+      "mtime_ns": 1794354973259690368,
+      "mtime_utc": "2026-11-10T23:56:13.259690+00:00"
+    },
+    {
+      "path": "native-client/src/identity_ui.rs",
+      "size_bytes": 77067,
+      "sha256": "16c38e1043c4825ec0a309729f9d39d963cc693aa4640b5fa8c71a84905b2c84",
+      "mtime_ns": 1794354821563427668,
+      "mtime_utc": "2026-11-10T23:53:41.563428+00:00"
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "native-client/target/debug/deps/nsh_app_native_client-08facd2850c27841",
+      "size_bytes": 83780944,
+      "sha256": "7d54aceec9b7a0bc62fa74008a9d9fd03c7823c43659f47a6411f6541644502e",
+      "mtime_ns": 1794355017875206088,
+      "mtime_utc": "2026-11-10T23:56:57.875206+00:00"
+    },
+    {
+      "path": "native-client/target/debug/deps/ui-4027cf7ec47e225a",
+      "size_bytes": 92478400,
+      "sha256": "356c16426631a9fa5d2230865566cb0f78760a606646063214c73dc484f9909f",
+      "mtime_ns": 1794355069678644698,
+      "mtime_utc": "2026-11-10T23:57:49.678645+00:00"
+    }
+  ],
+  "cargo_fingerprints": {
+    "unit": [
+      {
+        "path": "native-client/target/debug/.fingerprint/nsh-app-native-client-08facd2850c27841/test-lib-nsh_app_native_client.json",
+        "size_bytes": 1637,
+        "sha256": "3373b70404f633960bec1e964cc7c54b2cd12f5c12979f9d0dbddecaf891f0b1",
+        "mtime_ns": 1794355018039204304,
+        "mtime_utc": "2026-11-10T23:56:58.039204+00:00"
+      },
+      {
+        "path": "native-client/target/debug/.fingerprint/nsh-app-native-client-08facd2850c27841/invoked.timestamp",
+        "size_bytes": 48,
+        "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+        "mtime_ns": 1794354979311624374,
+        "mtime_utc": "2026-11-10T23:56:19.311624+00:00"
+      }
+    ],
+    "headless": [
+      {
+        "path": "native-client/target/debug/.fingerprint/nsh-app-native-client-4027cf7ec47e225a/test-integration-test-ui.json",
+        "size_bytes": 1703,
+        "sha256": "6b49d208cbbcb973df30ac0be707d6442f97c4991946f6c51b613bd1f630502a",
+        "mtime_ns": 1794355069806643312,
+        "mtime_utc": "2026-11-10T23:57:49.806643+00:00"
+      },
+      {
+        "path": "native-client/target/debug/.fingerprint/nsh-app-native-client-4027cf7ec47e225a/invoked.timestamp",
+        "size_bytes": 48,
+        "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+        "mtime_ns": 1794355062762719616,
+        "mtime_utc": "2026-11-10T23:57:42.762720+00:00"
+      }
+    ],
+    "headless-library": [
+      {
+        "path": "native-client/target/debug/.fingerprint/nsh-app-native-client-b0a959164810bfcc/lib-nsh_app_native_client.json",
+        "size_bytes": 1507,
+        "sha256": "e1baa26073e955ced16ea508d5189bedee9b5cb2189fd66b8cb826a9ddab48f7",
+        "mtime_ns": 1794355062758719659,
+        "mtime_utc": "2026-11-10T23:57:42.758720+00:00"
+      },
+      {
+        "path": "native-client/target/debug/.fingerprint/nsh-app-native-client-b0a959164810bfcc/invoked.timestamp",
+        "size_bytes": 48,
+        "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+        "mtime_ns": 1794355058898761473,
+        "mtime_utc": "2026-11-10T23:57:38.898762+00:00"
+      }
+    ],
+    "feature-clippy": [
+      {
+        "path": "native-client/target/debug/.fingerprint/nsh-app-native-client-96eecd4e993d42a0/lib-nsh_app_native_client.json",
+        "size_bytes": 1507,
+        "sha256": "5354d5f3d26289d270615739cd18bdcb8a0ff782c62451a43528a2e0c28ea972",
+        "mtime_ns": 1794355058082770311,
+        "mtime_utc": "2026-11-10T23:57:38.082770+00:00"
+      },
+      {
+        "path": "native-client/target/debug/.fingerprint/nsh-app-native-client-96eecd4e993d42a0/invoked.timestamp",
+        "size_bytes": 48,
+        "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+        "mtime_ns": 1794355056894783180,
+        "mtime_utc": "2026-11-10T23:57:36.894783+00:00"
+      }
+    ],
+    "default-check": [
+      {
+        "path": "native-client/target/debug/.fingerprint/nsh-app-native-client-b1fe38e476922a3b/lib-nsh_app_native_client.json",
+        "size_bytes": 1389,
+        "sha256": "e996e50d416b10b0d37baef92b65bc6ce98555de4f512118562d0ab497d39876",
+        "mtime_ns": 1794355021727164183,
+        "mtime_utc": "2026-11-10T23:57:01.727164+00:00"
+      },
+      {
+        "path": "native-client/target/debug/.fingerprint/nsh-app-native-client-b1fe38e476922a3b/invoked.timestamp",
+        "size_bytes": 48,
+        "sha256": "5a109e6643e8d3e88642e3f35e85d2a83e639d07523aa6e99166c48178e965c3",
+        "mtime_ns": 1794355020103181844,
+        "mtime_utc": "2026-11-10T23:57:00.103182+00:00"
+      }
+    ]
+  },
+  "binding_assessment": {
+    "latest_single_close_owner_present": true,
+    "source_files_precede_test_compiler_invocations": true,
+    "test_and_headless_library_dep_info_list_both_sources": true,
+    "no_source_changes_known_after_final_freeze": true,
+    "confidence_basis": "Final successful session ran after the parent announced single-close-owner freeze. Current source mtimes precede recorded rustc invocations. Dep-info lists both inputs; current content is the frozen implementation.",
+    "limitation": "Source SHA256 values were collected retrospectively, not recorded before compilation. Cargo fingerprint JSON records checksum=false. This is not a pre-build content-hash attestation and timestamps alone are not cryptographic proof."
+  }
+}

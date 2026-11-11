@@ -1,0 +1,9 @@
+
+running 4 tests
+test rejects_actual_remote_certificate_mismatch_even_when_engine_is_misconfigured ... ok
+test connection_epoch_changes_before_full_event_queue_can_be_drained ... ok
+test remote_data_channel_close_also_invalidates_before_queue_consumption ... ok
+test actual_dtls_pair_matches_and_user_confirmation_is_bound_to_live_epoch ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+

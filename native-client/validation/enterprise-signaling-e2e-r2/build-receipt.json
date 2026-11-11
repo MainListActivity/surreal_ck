@@ -1,0 +1,13 @@
+{
+  "binary": "native-client/target/debug/deps/surreal_ck_enterprise_e2e_r2-743d8e318cce2672",
+  "sha256": "4e081e898680d39e78d2e806a9d3d2334fa8dd3bf0f4f3d0e3f03edd1553489a",
+  "size": 40295376,
+  "source_receipt": "source-receipt.json",
+  "source_count": 101,
+  "desktop_result": "3 passed / 0 failed; 23.07s; TEST_EXIT=0; source and binary verified before and after",
+  "limitations": [
+    "local RECORD/company API fixture, not production OAuth/TLS/public NAT/media/files",
+    "140 messages sent while receiver paused; exact queue occupancy not asserted",
+    "source and generator inputs frozen for this exact binary"
+  ]
+}

@@ -1,0 +1,12 @@
+
+running 1 test
+Error: "no scroll view matches `id:update-scroll`; on screen: [\"吉吉 · 安全更新\", \"尚未配置可信更新服务，暂不能打开应用。\", \"重新检查更新\"]"
+test update_gate_can_scroll_and_retry_in_a_small_window ... FAILED
+
+failures:
+
+failures:
+    update_gate_can_scroll_and_retry_in_a_small_window
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.11s
+

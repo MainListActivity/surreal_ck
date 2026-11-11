@@ -1,0 +1,15 @@
+{
+  "utc": "2026-11-11T00:52:19.707764+00:00",
+  "source_inputs": 113,
+  "after_android_hashes_match": true,
+  "binaries": {
+    "ui-tests": {
+      "sha256": "681cfb8ac27864d630a3ace2e2656ccc38430518c2b8f7e472cfe5f0edcf037c",
+      "size": 93789960
+    },
+    "unit-tests": {
+      "sha256": "4cff870ea44ccf1cd67e338e16bdcd2a59733ff403ead332c35a00246e9d2798",
+      "size": 85346256
+    }
+  }
+}

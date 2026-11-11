@@ -1,0 +1,13 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <application>
+    <provider android:name="top.maplayer.collaboration.auth.AuthInitProvider" android:authorities="top.maplayer.collaboration.auth-init" android:exported="false" android:initOrder="90" />
+    <activity android:name="top.maplayer.collaboration.auth.AuthCallbackActivity" android:exported="true" android:noHistory="true" android:excludeFromRecents="true">
+      <intent-filter>
+        <action android:name="android.intent.action.VIEW" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <category android:name="android.intent.category.BROWSABLE" />
+        <data android:scheme="top.maplayer.collaboration" />
+      </intent-filter>
+    </activity>
+  </application>
+</manifest>

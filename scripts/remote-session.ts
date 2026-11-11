@@ -78,13 +78,19 @@ const REQUEST_TIMEOUT_MS = 30_000;
 
 export async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
   try {
-    return await fetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+    // 兑换/refresh的表单与Bearer不得通过307/308等跳转发送到另一个端点。
+    return await fetch(url, { ...init, redirect: "error", signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
   } catch (error) {
     if (error instanceof DOMException && error.name === "TimeoutError") {
-      fail(`请求超时（${REQUEST_TIMEOUT_MS / 1000} 秒未响应）：${url}`);
+      throw new Error(`请求超时（${REQUEST_TIMEOUT_MS / 1000} 秒未响应）`);
     }
-    throw error;
+    throw new Error("认证网络请求失败或发生不允许的重定向");
   }
+}
+
+export function safeOAuthError(value: unknown): string {
+  const known = ["invalid_grant", "invalid_client", "unauthorized_client", "invalid_request", "invalid_scope", "access_denied", "temporarily_unavailable", "server_error"];
+  return typeof value === "string" && known.includes(value) ? value : "未知";
 }
 
 async function postForm(url: string, params: Record<string, string>) {
@@ -95,7 +101,7 @@ async function postForm(url: string, params: Record<string, string>) {
   });
   const body = await response.json().catch(() => null) as Record<string, unknown> | null;
   if (!response.ok || body === null) {
-    fail(`上游错误 HTTP ${response.status}：${typeof body?.error === "string" ? body.error : "未知"}`);
+    fail(`上游错误 HTTP ${response.status}：${safeOAuthError(body?.error)}`);
   }
   return body;
 }
@@ -137,28 +143,84 @@ async function cmdToken(ops: boolean) {
   });
 }
 
-async function cmdDb(slug: string) {
-  const session = await readSession();
-  const token = await refreshAccessToken(session, false);
-  const response = await fetchWithTimeout(`${session.api}/api/session/switch-workspace`, {
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNonemptyName(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0
+    && value.trim() === value
+    && !Array.from(value).some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127);
+}
+
+/** 仅检查响应之间的一致性；不验证 JWT 签名，也不以 claim 作为授权或库名来源。 */
+function scopeTokenMatchesDatabase(token: string, database: string): boolean {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3 || parts.some((part) => !/^[A-Za-z0-9_-]+$/.test(part))) return false;
+    const payload = parts[1];
+    if (!payload) return false;
+    const bytes = Buffer.from(payload, "base64url");
+    if (bytes.toString("base64url") !== payload) return false;
+    const claims: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    return isObject(claims) && claims.db === database;
+  } catch {
+    return false;
+  }
+}
+
+export async function resolveWorkspaceConnection(api: string, token: string, slug: string) {
+  if (!isNonemptyName(slug)) throw new Error("workspace slug 无效");
+  const listResponse = await fetchWithTimeout(`${api}/api/session/workspaces`, {
+    method: "GET",
+    headers: { authorization: `Bearer ${token}` },
+  });
+  const list: unknown = await listResponse.json().catch(() => null);
+  if (!listResponse.ok || !isObject(list) || !Array.isArray(list.workspaces)) {
+    throw new Error("workspaces 响应无效");
+  }
+  const matches: string[] = [];
+  for (const item of list.workspaces) {
+    if (!isObject(item) || !isNonemptyName(item.slug) || !isNonemptyName(item.dbName)) {
+      throw new Error("workspaces 条目无效");
+    }
+    if (item.slug === slug) matches.push(item.dbName);
+  }
+  const database = matches[0];
+  if (matches.length !== 1 || !database) throw new Error("workspace 不存在或不唯一");
+
+  const response = await fetchWithTimeout(`${api}/api/session/switch-workspace`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
     body: JSON.stringify({ workspaceSlug: slug }),
   });
-  const body = await response.json().catch(() => null) as Record<string, unknown> | null;
-  if (!response.ok || typeof body?.accessToken !== "string") {
-    fail(`switch-workspace 失败 HTTP ${response.status}`);
+  const body: unknown = await response.json().catch(() => null);
+  if (!response.ok || !isObject(body) || body.ok !== true || typeof body.accessToken !== "string"
+    || !scopeTokenMatchesDatabase(body.accessToken, database)) {
+    throw new Error("switch-workspace 响应无效或数据库不一致");
   }
-  const dbName = `workspace_${slug.replaceAll("-", "_")}`;
-  const expiresAt = typeof body.expiresIn === "number"
-    ? new Date(Date.now() + body.expiresIn * 1000).toISOString()
-    : null;
+  let expiresAt: string | null = null;
+  if (body.expiresIn !== null) {
+    if (typeof body.expiresIn !== "number" || !Number.isFinite(body.expiresIn) || body.expiresIn <= 0) {
+      throw new Error("switch-workspace 有效期无效");
+    }
+    const expiry = new Date(Date.now() + body.expiresIn * 1000);
+    if (!Number.isFinite(expiry.getTime())) throw new Error("switch-workspace 有效期无效");
+    expiresAt = expiry.toISOString();
+  }
+  return { database, token: body.accessToken, expiresAt };
+}
+
+async function cmdDb(slug: string) {
+  const session = await readSession();
+  const token = await refreshAccessToken(session, false);
+  // 不回显上游响应、token、库名或底层异常；失败时 stdout 不产生连接信息。
+  const connection = await resolveWorkspaceConnection(session.api, token, slug)
+    .catch(() => fail("无法取得一致的 workspace 连接；请检查会话与 workspace 配置"));
   process.stdout.write(JSON.stringify({
     url: session.dbUrl ?? "wss://data.maplayer.top/rpc",
     namespace: "main",
-    database: dbName,
-    token: body.accessToken,
-    expiresAt,
+    ...connection,
   }));
 }
 

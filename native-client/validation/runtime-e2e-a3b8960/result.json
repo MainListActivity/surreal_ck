@@ -1,0 +1,14 @@
+{
+  "date": "2026-11-10",
+  "base": "a3b89605996df66c0268eea8af21ad5f99bc1c6d",
+  "source_inputs_still_match_build_receipt": true,
+  "fork_binary_sha256": "6f6bcc72f8c23848295ed32d6a265f5bf0baad11e7be446294a5ade1b06a84f2",
+  "fork_version": "3.3.0-native-quota.1+sha.f30704bce914 for linux on x86_64",
+  "fork_scope": "本轮仅运行version；不重试权限探测、不访问生产、不修改SQL或数据库。",
+  "passed_tests": 45,
+  "failed_tests": 1,
+  "failed_test_reason": "real OS UDP ICE gathered no candidates",
+  "tracing": "ptrace operation not permitted; test did not execute under strace",
+  "original_worktree_status": "",
+  "shared_build_directory": "read-only dependency reuse; all rustc outputs in collaboration-runtime-evidence"
+}

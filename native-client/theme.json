@@ -1,0 +1,28 @@
+{
+  "cssVars": {
+    "light": {
+      "background": "#FAF9F6",
+      "foreground": "#161513",
+      "primary": "#F5C542",
+      "primary-foreground": "#161513",
+      "muted": "#F0EEEA",
+      "muted-foreground": "#64615C",
+      "border": "#E3E0DA",
+      "input": "#D9D5CD",
+      "ring": "#A47700",
+      "radius": "0.5rem"
+    },
+    "dark": {
+      "background": "#161513",
+      "foreground": "#FAF9F6",
+      "primary": "#F5C542",
+      "primary-foreground": "#161513",
+      "muted": "#292723",
+      "muted-foreground": "#B8B2A8",
+      "border": "#3B3832",
+      "input": "#514C43",
+      "ring": "#F5C542",
+      "radius": "0.5rem"
+    }
+  }
+}
