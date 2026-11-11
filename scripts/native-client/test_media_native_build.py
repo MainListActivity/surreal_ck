@@ -3,6 +3,7 @@ import importlib.util
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import struct
@@ -299,6 +300,105 @@ class NativeMediaBuildTests(unittest.TestCase):
         expected = ["- '!scripts/native-client/" + name + "'" for name in ('build-media-native.sh', 'build-media-runtime.py', 'media-sources.lock.json', 'smoke-media-runtime.py', 'test_media_native_build.py')]
         self.assertEqual(sorted(excluded), sorted(expected * 2))
 
+    def runtime_material_fixture(self, root):
+        work = root / 'work'
+        source = work / 'src'
+        ffmpeg = source / 'FFmpeg-n9.0.2'
+        runtime = work / 'runtime'
+        msys = root / 'msys64'
+        (runtime / 'bin').mkdir(parents=True)
+        (runtime / 'build-records').mkdir()
+        ffmpeg.mkdir(parents=True)
+        archive = msys / 'mingw64/lib/libpthread.a'
+        archive.parent.mkdir(parents=True)
+        archive.write_bytes(b'fixture archive never executed')
+        for name in ('ffmpeg', 'ffplay'):
+            (runtime / 'bin' / (name + '.exe')).write_bytes(b'stripped fixture')
+            (ffmpeg / (name + '_g.exe')).write_bytes(b'linked fixture')
+            (ffmpeg / (name + '-link.map')).write_text(
+                'Archive member included to satisfy reference by file (symbol)\n' +
+                os.path.relpath(archive, ffmpeg).replace('\\', '/') + '(thread.o)\n  reference (pthread_create)\n\nMemory Configuration\n', encoding='utf-8')
+        inventories = {}
+        installed = {}
+        for package, names in builder.REQUIRED_WINDOWS_NOTICES.items():
+            installed[package] = 'fixture-version'
+            entries = []
+            for name in names:
+                relative = '/mingw64/share/licenses/' + package + '/' + name
+                path = msys / relative.lstrip('/')
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('official license fixture, not a legal assertion', encoding='utf-8')
+                entries.append(package + ' ' + relative)
+            inventories[package] = '\n'.join(entries)
+        tools = dict(gcc=str(msys / 'mingw64/bin/gcc.exe'), cygpath='/fixture/cygpath', pacman='/fixture/pacman')
+        def query(command, **kwargs):
+            if '-Qoq' in command:
+                return 'mingw-w64-x86_64-winpthreads\n'
+            if '-Ql' in command:
+                return inventories[command[-1]]
+            if '-u' in command:
+                return command[-1]
+            raise AssertionError(command)
+        return source, runtime, tools, installed, query, inventories
+
+    def test_actual_link_members_and_toolchain_notice_mapping(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, runtime, tools, installed, query, inventories = self.runtime_material_fixture(Path(tmp))
+            with patch.object(builder.subprocess, 'check_output', side_effect=query):
+                report = builder.collect_windows_runtime_materials(source, runtime, tools, installed)
+            self.assertEqual(set(report['binaries']), {'ffmpeg', 'ffplay'})
+            for binary in report['binaries'].values():
+                self.assertEqual(binary['extracted_archive_members'][0]['member'], 'thread.o')
+                self.assertTrue((runtime / binary['map_path']).is_file())
+            self.assertEqual(set(report['packages']), set(builder.REQUIRED_WINDOWS_NOTICES))
+            for package in report['packages'].values():
+                self.assertEqual(package['version'], 'fixture-version')
+                for notice in package['files']:
+                    self.assertEqual(notice['sha256'], builder.digest(runtime / notice['path']))
+            self.assertIn('pending', report['legal_review'])
+
+    def test_missing_toolchain_exception_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, runtime, tools, installed, query, inventories = self.runtime_material_fixture(Path(tmp))
+            package = 'mingw-w64-x86_64-gcc'
+            inventories[package] = '\n'.join(line for line in inventories[package].splitlines() if not line.endswith('COPYING.RUNTIME'))
+            with patch.object(builder.subprocess, 'check_output', side_effect=query):
+                with self.assertRaisesRegex(ValueError, 'license/exception material missing'):
+                    builder.collect_windows_runtime_materials(source, runtime, tools, installed)
+            self.assertFalse((runtime / 'build-records/windows-static-runtime.json').exists())
+
+    def test_msys_link_archive_paths_use_bound_cygpath(self):
+        tools = {'cygpath': 'D:/job/msys64/usr/bin/cygpath.exe'}
+        for original, converted in (
+            ('/mingw64/lib/libgcc.a', 'D:/job/msys64/mingw64/lib/libgcc.a'),
+            ('/d/work/libvpx.a', 'D:/work/libvpx.a'),
+        ):
+            with self.subTest(original=original), patch.object(builder.subprocess, 'check_output', return_value=converted + '\n') as query:
+                self.assertEqual(builder.windows_archive_path(original, tools), Path(converted))
+                query.assert_called_once_with([tools['cygpath'], '-w', original], text=True, encoding='utf-8')
+        with patch.object(builder.subprocess, 'check_output') as query:
+            for original in ('D:/work/libvpx.a', 'libavcodec/libavcodec.a'):
+                self.assertEqual(builder.windows_archive_path(original, tools), Path(original))
+            query.assert_not_called()
+
+    def test_msys_link_archive_invalid_conversion_fails_closed(self):
+        tools = {'cygpath': 'D:/job/msys64/usr/bin/cygpath.exe'}
+        for converted in ('', '/mingw64/libgcc.a', 'D:relative.a', 'D:/a.a\nD:/b.a'):
+            with self.subTest(converted=converted), patch.object(builder.subprocess, 'check_output', return_value=converted):
+                with self.assertRaisesRegex(ValueError, 'Invalid absolute archive path'):
+                    builder.windows_archive_path('/mingw64/libgcc.a', tools)
+        with self.assertRaisesRegex(ValueError, 'Ambiguous Windows archive path'):
+            builder.windows_archive_path('D:relative.a', tools)
+
+    def test_link_map_requires_extracted_members_not_only_load_lines(self):
+        with self.assertRaisesRegex(ValueError, 'extraction table'):
+            builder.map_members('LOAD /fixture/libgcc.a\n')
+        with self.assertRaisesRegex(ValueError, 'No archive members'):
+            builder.map_members('Archive member included to satisfy reference by file (symbol)\nMemory Configuration\nLOAD libgcc.a\n')
+        text = ('Archive member included to satisfy reference by file (symbol)\n/lib/a.a(actual.o)\n'
+                'Discarded input sections\n/lib/unused.a(not-in-extraction-table.o)\n')
+        self.assertEqual(builder.map_members(text), [('/lib/a.a', 'actual.o')])
+
     def test_recipe_remains_minimal_and_never_approves_release(self):
         shell = (builder.HERE / 'build-media-native.sh').read_text(encoding='utf-8')
         for flag in ('--disable-gpl', '--disable-nonfree', '--disable-autodetect', '--disable-network',
@@ -306,6 +406,8 @@ class NativeMediaBuildTests(unittest.TestCase):
                      '--enable-decoder=wrapped_avframe,', '--enable-filter=scale,format,aresample,aformat,testsrc2,sine'):
             self.assertIn(flag, shell)
         self.assertNotIn('sudo ', shell)
+        self.assertIn('LDFLAGS-ffmpeg=-Wl,-Map,ffmpeg-link.map', shell)
+        self.assertIn('LDFLAGS-ffplay=-Wl,-Map,ffplay-link.map', shell)
         source = Path(builder.__file__).read_text(encoding='utf-8')
         self.assertIn('release_approved=False', source)
         workflow = (builder.HERE.parents[1] / '.github/workflows/native-media-runtime-candidate.yml').read_text(encoding='utf-8')

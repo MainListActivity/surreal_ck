@@ -14,7 +14,7 @@ if [[ "$MEDIA_TARGET" == macos ]]; then
   export MACOSX_DEPLOYMENT_TARGET=11.0
   platform_args=(--enable-avfoundation --enable-indev=avfoundation)
 else
-  export CC=gcc CXX=g++
+  export CC=gcc CXX=g++ LC_ALL=C
   # 不依赖 MinGW runner 私有 DLL；最终 imports 审计仍必须通过。
   export LDFLAGS='-static -static-libgcc -static-libstdc++'
   platform_args=(--target-os=mingw32 --enable-indev=dshow,gdigrab)
@@ -56,6 +56,14 @@ for tool in "$CC" "$CXX" make pkg-config; do command -v "$tool"; "$tool" --versi
     --enable-muxer=ivf,ogg,rawvideo,pcm_s16le,null --enable-protocol=file,pipe \
     --enable-filter=scale,format,aresample,aformat,testsrc2,sine --enable-indev=lavfi \
     "${platform_args[@]}"
-  make -j "$MEDIA_JOBS"
+  if [[ "$MEDIA_TARGET" == windows ]]; then
+    # FFmpeg's per-tool LDFLAGS append to its normal security/link flags.
+    # Separate maps bind extracted archive members to each final link, before strip.
+    make -j "$MEDIA_JOBS" V=1 \
+      'LDFLAGS-ffmpeg=-Wl,-Map,ffmpeg-link.map' \
+      'LDFLAGS-ffplay=-Wl,-Map,ffplay-link.map'
+  else
+    make -j "$MEDIA_JOBS"
+  fi
   make install
 )

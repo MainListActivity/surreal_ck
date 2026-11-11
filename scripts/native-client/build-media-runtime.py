@@ -7,7 +7,7 @@ import importlib.util
 import json
 import os
 import re
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import shutil
 import subprocess
 import tarfile
@@ -215,10 +215,122 @@ def sources(cache, destination, download, log=None):
 
 def preserve_configure_logs(src, records, lock):
     for name, source in lock['sources'].items():
-        for relative in ('config.log', 'config.h', 'config.mk', 'ffbuild/config.log', 'ffbuild/config.mak', 'vpx_config.h'):
+        for relative in ('config.log', 'config.h', 'config.mk', 'ffbuild/config.log', 'ffbuild/config.mak', 'vpx_config.h', 'ffmpeg-link.map', 'ffplay-link.map'):
             path = src / source['directory'] / relative
             if path.is_file():
                 shutil.copy2(path, records / (name + '-' + relative.replace('/', '-')))
+
+
+REQUIRED_WINDOWS_NOTICES = {
+    'mingw-w64-x86_64-gcc': {'COPYING3', 'COPYING.RUNTIME'},
+    'mingw-w64-x86_64-crt': {'COPYING', 'COPYING.MinGW-w64.txt', 'COPYING.MinGW-w64-runtime.txt'},
+    'mingw-w64-x86_64-headers': {'COPYING', 'COPYING.MinGW-w64.txt', 'COPYING.MinGW-w64-runtime.txt'},
+    'mingw-w64-x86_64-winpthreads': {'COPYING'},
+}
+
+
+def map_members(text):
+    # Only the extraction table, not LOAD entries for unused archives or discarded sections.
+    heading = 'Archive member included to satisfy reference by file (symbol)'
+    if heading not in text:
+        raise ValueError('GNU ld archive extraction table missing')
+    table = text.split(heading, 1)[1]
+    for stop in ('Allocating common symbols', 'Discarded input sections', 'Memory Configuration', 'Linker script and memory map'):
+        table = table.split(stop, 1)[0]
+    members = sorted(set(re.findall(r'([^\s()]+\.a)\(([^()\r\n]+)\)', table)))
+    if not members:
+        raise ValueError('No archive members in final linker evidence')
+    return members
+
+
+def windows_archive_path(archive, tools):
+    # GNU MinGW ld can print MSYS mounts (/mingw64) or drive mounts (/d/...).
+    # Never let native pathlib interpret these as current-drive-rooted paths.
+    if archive.startswith('/'):
+        converted = subprocess.check_output(
+            [tools['cygpath'], '-w', archive], text=True, encoding='utf-8').strip()
+        if '\n' in converted or not PureWindowsPath(converted).is_absolute():
+            raise ValueError('Invalid absolute archive path from bound cygpath: ' + archive)
+        return Path(converted)
+    if archive.startswith('\\') or (PureWindowsPath(archive).drive and not PureWindowsPath(archive).is_absolute()):
+        raise ValueError('Ambiguous Windows archive path: ' + archive)
+    return Path(archive)
+
+
+def collect_windows_runtime_materials(src, runtime, tools, installed):
+    records = runtime / 'build-records'
+    root = Path(tools['gcc']).resolve().parents[2]
+    ffmpeg = src / 'FFmpeg-n9.0.2'
+    packages = set(REQUIRED_WINDOWS_NOTICES)
+    archives = {}
+    binaries = {}
+    for name in ('ffmpeg', 'ffplay'):
+        original_map = ffmpeg / (name + '-link.map')
+        if not original_map.is_file() or not original_map.stat().st_size:
+            raise ValueError('Missing final executable link map: ' + name)
+        selected = []
+        for archive, member in map_members(original_map.read_text(encoding='utf-8')):
+            path = windows_archive_path(archive, tools)
+            path = (path if path.is_absolute() else ffmpeg / path).resolve(strict=True)
+            key = str(path)
+            if key not in archives:
+                info = dict(path=key, sha256=digest(path))
+                if path.is_relative_to(root):
+                    query_path = posix_path(path, 'windows', tools)
+                    owner = subprocess.check_output([tools['pacman'], '-Qoq', query_path], text=True, encoding='utf-8').strip()
+                    if not owner or len(owner.split()) != 1 or owner not in installed:
+                        raise ValueError('Unknown static toolchain archive package: ' + key)
+                    packages.add(owner)
+                    info.update(package=owner, version=installed[owner])
+                elif path.is_relative_to(src.parent):
+                    info['source_group'] = 'pinned media source build'
+                else:
+                    raise ValueError('Archive outside prepared toolchain/media build: ' + key)
+                archives[key] = info
+            selected.append(dict(archive=key, member=member))
+        linked = ffmpeg / (name + '_g.exe')
+        if not linked.is_file():
+            raise ValueError('Unstripped link output missing: ' + name)
+        destination_map = records / original_map.name
+        shutil.copy2(original_map, destination_map)
+        binaries[name] = dict(map_path=destination_map.relative_to(runtime).as_posix(),
+            map_sha256=digest(destination_map), linked_executable_sha256=digest(linked),
+            packaged_executable_sha256=digest(runtime / 'bin' / (name + '.exe')),
+            extracted_archive_members=selected)
+    package_records = {}
+    for package in sorted(packages):
+        if package not in installed:
+            raise ValueError('Required runtime notice package not installed: ' + package)
+        listing = subprocess.check_output([tools['pacman'], '-Ql', package], text=True, encoding='utf-8')
+        notices = []
+        seen_names = set()
+        for line in listing.splitlines():
+            owner, separator, relative = line.partition(' ')
+            if owner != package or not separator:
+                raise ValueError('Invalid package file inventory')
+            if '/share/licenses/' not in relative or relative.endswith('/'):
+                continue
+            if '..' in PurePosixPath(relative).parts or '\\' in relative or ':' in relative:
+                raise ValueError('Unsafe package notice path')
+            path = (root / relative.lstrip('/')).resolve(strict=True)
+            if not path.is_relative_to(root) or not path.is_file():
+                raise ValueError('Invalid installed runtime notice: ' + relative)
+            # Preserve package-relative layout and every notice in its license inventory.
+            destination = runtime / 'licenses/toolchain' / package / relative.lstrip('/')
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, destination)
+            notices.append(dict(path=destination.relative_to(runtime).as_posix(), source_path=relative,
+                                sha256=digest(destination)))
+            seen_names.add(path.name)
+        if not notices or not REQUIRED_WINDOWS_NOTICES.get(package, set()).issubset(seen_names):
+            raise ValueError('Required runtime license/exception material missing: ' + package)
+        package_records[package] = dict(version=installed[package], files=notices,
+            reason='baseline runtime/header notices and/or final link archive owner')
+    report = dict(schema=1, binaries=binaries, archives=archives, packages=package_records,
+        legal_review='pending; collection and link evidence are not a legal compliance conclusion',
+        interpretation='members extracted by GNU ld; full per-executable maps retain section/discard details')
+    (records / 'windows-static-runtime.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
+    return report
 
 
 def posix_path(path, target, tools):
@@ -278,6 +390,8 @@ def build(work, cache, target, arch, download=False):
         for path in (src / source['directory']).iterdir():
             if path.is_file() and path.name.upper().startswith(('COPYING', 'LICENSE', 'PATENTS', 'AUTHORS')):
                 shutil.copy2(path, licenses / (name + '-' + path.name))
+    if target == 'windows':
+        collect_windows_runtime_materials(src, runtime, tools, provenance['msys2']['installed_packages'])
     static = audit.audit(runtime, target, tools['objdump' if target == 'windows' else 'otool'])
     (records / 'dependency-audit.json').write_text(json.dumps(static, indent=2), encoding='utf-8')
     evidence = smoke.smoke(runtime, target, arch, records / 'native-tests.json')
@@ -286,7 +400,7 @@ def build(work, cache, target, arch, download=False):
         approval_reason='Candidate only: source/license and signing review required; no human approval inferred',
         origins=[{key: value[key] for key in ('version', 'url', 'sha256')} for value in lock['sources'].values()],
         files={p.relative_to(runtime).as_posix(): digest(p) for p in runtime.rglob('*') if p.is_file()},
-        license_files=[p.relative_to(runtime).as_posix() for p in licenses.iterdir()],
+        license_files=[p.relative_to(runtime).as_posix() for p in licenses.rglob('*') if p.is_file()],
         corresponding_sources=[p.relative_to(runtime).as_posix() for p in (runtime / 'sources').iterdir()],
         build_records=[p.relative_to(runtime).as_posix() for p in records.iterdir()],
         native_test_evidence='build-records/native-tests.json')
