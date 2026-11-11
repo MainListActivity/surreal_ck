@@ -89,6 +89,15 @@ jobs:
         with:
           workspaces: native-client
           key: native-${{ matrix.os }}-${{ matrix.target }}
+      - name: Select OpenSSL 3 for Ed25519 policy checks on macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          openssl_bin="$(brew --prefix openssl@3)/bin"
+          test -x "$openssl_bin/openssl"
+          "$openssl_bin/openssl" version
+          "$openssl_bin/openssl" version | grep -E '^OpenSSL 3\.'
+          echo "$openssl_bin" >> "$GITHUB_PATH"
       - name: Test release asset collection
         run: |
           python scripts/native-client/check-version.py
@@ -111,7 +120,14 @@ jobs:
         if: matrix.target == 'android'
         shell: bash
         run: |
-          sdkmanager 'platforms;android-35' 'build-tools;35.0.1' 'ndk;29.0.14206865'
+          : "${ANDROID_HOME:?GitHub runner Android SDK is required}"
+          sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [[ ! -x "$sdkmanager" ]]; then
+            sdkmanager="$ANDROID_HOME/cmdline-tools/12.0/bin/sdkmanager"
+          fi
+          test -x "$sdkmanager" || { echo '::error::Preinstalled Android sdkmanager is missing'; exit 1; }
+          "$sdkmanager" --version
+          "$sdkmanager" 'platforms;android-35' 'build-tools;35.0.1' 'ndk;29.0.14206865'
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
           rustup target add aarch64-linux-android x86_64-linux-android
       - name: Compile Android updater source (not APK integration)

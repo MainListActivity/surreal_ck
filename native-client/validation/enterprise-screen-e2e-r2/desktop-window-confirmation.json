@@ -1,0 +1,12 @@
+{
+  "confirmed_test_window_only": true,
+  "window_id": "39845893",
+  "display": ":0.0",
+  "x": 80,
+  "y": 80,
+  "width": 640,
+  "height": 360,
+  "selection": ":0.0+80,80",
+  "pattern": "alternating-red-blue-1s",
+  "confirmed_unix_seconds": 1794366543
+}

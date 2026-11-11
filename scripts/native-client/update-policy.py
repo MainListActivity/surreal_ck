@@ -89,9 +89,17 @@ def verify_signature(payload, signature_hex, public_key_hex):
         (temp / 'public.der').write_bytes(bytes.fromhex('302a300506032b6570032100') + public)
         (temp / 'signature').write_bytes(signature)
         (temp / 'payload').write_bytes(payload)
-        subprocess.run(['openssl', 'pkeyutl', '-verify', '-pubin', '-keyform', 'DER',
-                        '-inkey', str(temp / 'public.der'), '-rawin', '-in', str(temp / 'payload'),
-                        '-sigfile', str(temp / 'signature')], check=True, capture_output=True)
+        try:
+            subprocess.run(['openssl', 'pkeyutl', '-verify', '-pubin', '-keyform', 'DER',
+                            '-inkey', str(temp / 'public.der'), '-rawin', '-in', str(temp / 'payload'),
+                            '-sigfile', str(temp / 'signature')], check=True, capture_output=True)
+        except subprocess.CalledProcessError as error:
+            # Verification uses only a public key. Keep the rejecting exception type,
+            # but expose bounded tool diagnostics instead of an unexplained exit 1.
+            diagnostic = (error.stderr or b'')[:2048].decode('utf-8', errors='replace')
+            if hasattr(error, 'add_note'):
+                error.add_note('OpenSSL Ed25519 verification failed: ' + diagnostic.strip())
+            raise
 
 def read_envelope(data, public_key_hex):
     if len(data) > MAX_ENVELOPE_BYTES:

@@ -276,6 +276,41 @@ fn run_config(
     })
 }
 
+#[cfg(all(target_os = "windows", feature = "windows-auto-update"))]
+fn run_config(
+    config: &runtime::RuntimeConfig,
+    _tx: async_channel::Sender<Event>,
+    progress: impl FnMut(Progress),
+) -> Result<StartupOutcome, runtime::RuntimeError> {
+    use surreal_ck_native_updater_platform::{InstallRequest, windows};
+    let mut pending = None;
+    let outcome = runtime::run_startup_with_installer(config, progress, |release, bytes| {
+        let request = InstallRequest::from_verified_policy(release, bytes)
+            .map_err(|_| runtime::RuntimeError::InvalidState)?;
+        pending = Some(
+            windows::prepare(windows::VerifiedUpdate {
+                bytes: request.bytes(),
+                sha256: &release.sha256,
+                publisher: &release.publisher,
+                old_version: env!("CARGO_PKG_VERSION"),
+                target_version: &release.version,
+            })
+            .map_err(|_| runtime::RuntimeError::UnsupportedInstaller)?,
+        );
+        Ok(())
+    })?;
+    if matches!(outcome, StartupOutcome::PlatformInstallerStarted) {
+        // 仅已验证策略/文件且helper确认交接后退出；业务未挂载，无采集会话。
+        // helper还必须等待旧PID退出、验证安装和重启；此处绝不发送Ready。
+        pending
+            .ok_or(runtime::RuntimeError::InvalidState)?
+            .arm_for_exit()
+            .map_err(|_| runtime::RuntimeError::UnsupportedInstaller)?;
+        std::process::exit(0);
+    }
+    Ok(outcome)
+}
+
 #[cfg(test)]
 mod callback_tests {
     use super::{Event, callback_lifecycle::Registry};
@@ -354,39 +389,4 @@ mod callback_tests {
         drop(attempt);
         assert!(receiver.is_closed());
     }
-}
-
-#[cfg(all(target_os = "windows", feature = "windows-auto-update"))]
-fn run_config(
-    config: &runtime::RuntimeConfig,
-    _tx: async_channel::Sender<Event>,
-    progress: impl FnMut(Progress),
-) -> Result<StartupOutcome, runtime::RuntimeError> {
-    use surreal_ck_native_updater_platform::{InstallRequest, windows};
-    let mut pending = None;
-    let outcome = runtime::run_startup_with_installer(config, progress, |release, bytes| {
-        let request = InstallRequest::from_verified_policy(release, bytes)
-            .map_err(|_| runtime::RuntimeError::InvalidState)?;
-        pending = Some(
-            windows::prepare(windows::VerifiedUpdate {
-                bytes: request.bytes(),
-                sha256: &release.sha256,
-                publisher: &release.publisher,
-                old_version: env!("CARGO_PKG_VERSION"),
-                target_version: &release.version,
-            })
-            .map_err(|_| runtime::RuntimeError::UnsupportedInstaller)?,
-        );
-        Ok(())
-    })?;
-    if matches!(outcome, StartupOutcome::PlatformInstallerStarted) {
-        // 仅已验证策略/文件且helper确认交接后退出；业务未挂载，无采集会话。
-        // helper还必须等待旧PID退出、验证安装和重启；此处绝不发送Ready。
-        pending
-            .ok_or(runtime::RuntimeError::InvalidState)?
-            .arm_for_exit()
-            .map_err(|_| runtime::RuntimeError::UnsupportedInstaller)?;
-        std::process::exit(0);
-    }
-    Ok(outcome)
 }

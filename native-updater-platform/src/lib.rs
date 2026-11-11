@@ -137,7 +137,7 @@ pub mod sparkle;
 #[cfg(target_os = "android")]
 pub mod android;
 
-#[cfg(any(target_os = "windows", test))]
-pub mod windows_protocol;
 #[cfg(target_os = "windows")]
 pub mod windows;
+#[cfg(any(target_os = "windows", test))]
+pub mod windows_protocol;

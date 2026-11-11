@@ -3,12 +3,14 @@
 use crate::*;
 use serde::{Deserialize, Serialize};
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(unix)]
+use std::fs::File;
 #[cfg(target_os = "linux")]
 use std::{io::Read, path::Component};
 

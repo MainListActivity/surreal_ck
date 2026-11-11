@@ -897,7 +897,10 @@ mod tests {
             selected_slug: Some(slug.into()),
             current_title: format!("当前工作区：{slug}"),
             members: vec![format!("{slug}-已验证成员")],
-            ..DirectoryView::default()
+            #[cfg(feature = "experimental-enterprise-signaling")]
+            chat_members: Vec::new(),
+            #[cfg(feature = "experimental-enterprise-signaling")]
+            can_chat: false,
         }
     }
     fn signed_in() -> IdentityViewState {

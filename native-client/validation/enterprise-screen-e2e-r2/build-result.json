@@ -1,0 +1,23 @@
+{
+  "exit": 0,
+  "minimum_free_bytes": 2254405632,
+  "disk_guard_stopped": false,
+  "command": [
+    "cargo",
+    "test",
+    "--manifest-path",
+    "/workspace/scratch/115bfa675150/enterprise-signaling-screen-e2e-harness/Cargo.toml",
+    "--locked",
+    "--offline",
+    "--lib",
+    "--features",
+    "experimental-enterprise-media",
+    "--no-run",
+    "--message-format=json",
+    "--config",
+    "profile.test.package.surreal-ck-enterprise-screen-e2e-r2.debug=0",
+    "--config",
+    "profile.test.package.surreal-ck-enterprise-screen-e2e-r2.strip=\"debuginfo\""
+  ],
+  "source_receipt_sha256": "97450e850e997552d889e0627704cfe1da6b1ee3ce055c4c01e4704cad03ae93"
+}

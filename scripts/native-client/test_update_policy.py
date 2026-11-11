@@ -79,6 +79,14 @@ class PolicyTests(unittest.TestCase):
         with self.assertRaises(ValueError): policy.read_envelope(b'x' * (policy.MAX_ENVELOPE_BYTES + 1), PUBLIC)
         with self.assertRaises(ValueError): policy.strict_json('{"sequence":1,"sequence":2}')
 
+    def test_failed_verifier_keeps_rejection_and_bounds_diagnostics(self):
+        failure = policy.subprocess.CalledProcessError(1, ['openssl'], stderr=b'x' * 4096)
+        with mock.patch.object(policy.subprocess, 'run', side_effect=failure):
+            with self.assertRaises(policy.subprocess.CalledProcessError) as caught:
+                policy.verify_signature(PAYLOAD.encode(), SIGNATURE, PUBLIC)
+        self.assertIs(caught.exception, failure)
+        self.assertEqual(failure.__notes__, ['OpenSSL Ed25519 verification failed: ' + 'x' * 2048])
+
     def test_renew_keeps_release_and_identity_and_increments_sequence(self):
         with tempfile.TemporaryDirectory() as temp:
             root = pathlib.Path(temp)

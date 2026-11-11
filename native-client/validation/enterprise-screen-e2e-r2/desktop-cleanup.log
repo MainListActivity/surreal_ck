@@ -1,0 +1,3 @@
+BEFORE_CLEANUP [[1075, ["python3", "/workspace/scratch/115bfa675150/synthetic-capture-window.py"]]]
+AFTER_CLEANUP []
+CLEANUP_OK_NO_CAPTURE_TEST_OR_FIXTURE_PROCESSES
