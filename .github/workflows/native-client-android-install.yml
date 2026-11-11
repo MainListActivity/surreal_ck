@@ -1,0 +1,74 @@
+name: Android pinned package install check
+
+on:
+  push:
+    branches: [feat/native-collaboration-bootstrap]
+    paths:
+      - 'scripts/native-client/android-install-smoke.sh'
+      - 'scripts/native-client/test_android_smoke.py'
+      - 'scripts/native-client/verify-android-smoke-source.py'
+      - 'scripts/native-client/test_android_smoke_source.py'
+      - '.github/workflows/native-client-android-install.yml'
+  workflow_dispatch:
+
+# No deployments, publication, credentials creation or host permission changes.
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: android-pinned-install-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  install-pinned-android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test smoke routing and reject unapproved input
+        run: |
+          python scripts/native-client/test_android_smoke.py
+          python scripts/native-client/test_android_smoke_source.py
+      - name: Read provenance for approved run 42968179684 (9fea475)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const {owner, repo} = context.repo;
+            if (`${owner}/${repo}` !== 'MainListActivity/surreal_ck') throw new Error('Unexpected repository');
+            const run = (await github.rest.actions.getWorkflowRun({owner, repo, run_id: 42968179684})).data;
+            const artifact = (await github.rest.actions.getArtifact({owner, repo, artifact_id: 13832646937})).data;
+            const out = path.join(process.env.RUNNER_TEMP, 'android-smoke');
+            fs.mkdirSync(out, {recursive: true});
+            fs.writeFileSync(path.join(out, 'source-metadata.json'), JSON.stringify({run, artifact}, null, 2));
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: '13832646937'
+          run-id: '42968179684'
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: android-pinned-package
+      - name: Verify exact APK hash, clean build receipt and source metadata
+        run: |
+          python scripts/native-client/verify-android-smoke-source.py android-pinned-package \
+            "$RUNNER_TEMP/android-smoke/source-metadata.json" \
+            "$RUNNER_TEMP/android-smoke/source-verification.json"
+      - name: Install and launch approved 9fea475 package without granting permissions
+        run: |
+          bash scripts/native-client/android-install-smoke.sh \
+            android-pinned-package/SurrealCK-android-test-key.apk "$RUNNER_TEMP/android-smoke"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-pinned-9fea475-install-evidence
+          path: ${{ runner.temp }}/android-smoke/*
+          if-no-files-found: warn
