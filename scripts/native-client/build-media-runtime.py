@@ -17,7 +17,8 @@ import time
 HERE = Path(__file__).resolve().parent
 MSYS2_ACTION_COMMIT = 'ec48f7c5447b3140e2b088413ae3a55687bccb6e'
 MSYS2_PACKAGES = ('bash', 'coreutils', 'diffutils', 'file', 'findutils', 'gawk', 'grep', 'make', 'perl', 'sed',
-                 'mingw-w64-x86_64-binutils', 'mingw-w64-x86_64-gcc', 'mingw-w64-x86_64-pkgconf')
+                 'mingw-w64-x86_64-binutils', 'mingw-w64-x86_64-gcc', 'mingw-w64-x86_64-pkgconf',
+                 'mingw-w64-x86_64-curl')
 
 
 def load(name):
@@ -81,9 +82,34 @@ def find_tool(name, directory=None):
 
 
 def resolve_curl():
-    # Native Windows curl avoids shell wrappers and MSYS argument rewriting.
-    directory = Path(os.environ['SystemRoot']) / 'System32' if os.name == 'nt' else None
-    return find_tool('curl.exe' if os.name == 'nt' else 'curl', directory)
+    if os.name == 'nt':
+        root = Path(os.environ.get('MEDIA_MSYS2_ROOT', 'C:/msys64'))
+        return find_tool('curl.exe', root / 'mingw64/bin')
+    return find_tool('curl')
+
+
+def curl_tls_options(curl, target):
+    env = dict(os.environ)
+    if target != 'windows':
+        return [], env
+    # Official mingw-w64-x86_64-curl uses OpenSSL and depends on ca-certificates.
+    # Bind CA lookup to this job-local package, not a hard-coded build-time prefix.
+    certificates = Path(curl).parent.parent / 'etc/ssl/certs/ca-bundle.crt'
+    if not certificates.is_file():
+        raise ValueError('Official MSYS2 curl CA bundle missing: ' + str(certificates))
+    env['CURL_SSL_BACKEND'] = 'openssl'
+    return ['--cacert', str(certificates)], env
+
+
+def curl_provenance(curl, target):
+    options, env = curl_tls_options(curl, target)
+    version = subprocess.check_output([curl, '--disable', '--version'], env=env, text=True, timeout=20)
+    if target == 'windows' and 'OpenSSL/' not in version:
+        raise ValueError('The selected official curl is not using the required OpenSSL backend')
+    record = dict(executable=curl, version=version.strip(), certificate_verification=True)
+    if options:
+        record.update(ca_bundle=options[1], ca_bundle_sha256=digest(Path(options[1])), ssl_backend='openssl')
+    return record
 
 
 def resolve_tools(target, download, windows_root=None):
@@ -121,6 +147,7 @@ def windows_package_provenance(tools):
 
 def download_source(source, archive, name, log=None):
     curl = resolve_curl()
+    tls_options, env = curl_tls_options(curl, 'windows' if os.name == 'nt' else 'macos')
     for attempt in range(1, 4):
         fd, temporary = tempfile.mkstemp(prefix=archive.name + '.', suffix='.partial', dir=archive.parent)
         os.close(fd)
@@ -132,9 +159,9 @@ def download_source(source, archive, name, log=None):
             command = [curl, '--disable', '--fail', '--location', '--silent', '--show-error',
                        '--proto', '=https', '--proto-redir', '=https', '--tlsv1.2',
                        '--connect-timeout', '20', '--max-time', '180',
-                       '--write-out', '@' + str(format_file), '--output', str(partial), source['url']]
+                       '--write-out', '@' + str(format_file), '--output', str(partial), *tls_options, source['url']]
             try:
-                result = subprocess.run(command, capture_output=True, text=True, timeout=200)
+                result = subprocess.run(command, capture_output=True, text=True, timeout=200, env=env)
                 code, raw_http, error = result.returncode, result.stdout.strip(), result.stderr
             except subprocess.TimeoutExpired:
                 code, raw_http, error = 28, '', 'curl exceeded 200-second process timeout'
@@ -217,8 +244,11 @@ def build(work, cache, target, arch, download=False):
     provenance = dict(repository_commit=subprocess.check_output([tools['git'], 'rev-parse', 'HEAD'], cwd=HERE, text=True).strip(),
         platform=target, arch=arch, tools=tools, host=smoke.platform.platform(), started_at=datetime.now(timezone.utc).isoformat(),
         github_run_id=os.environ.get('GITHUB_RUN_ID'), github_run_attempt=os.environ.get('GITHUB_RUN_ATTEMPT'))
+    (records / 'provenance.json').write_text(json.dumps(provenance, indent=2), encoding='utf-8')
     if target == 'windows':
         provenance['msys2'] = windows_package_provenance(tools)
+        if download:
+            provenance['download_transport'] = curl_provenance(tools['curl'], target)
     (records / 'provenance.json').write_text(json.dumps(provenance, indent=2), encoding='utf-8')
     for name in ('build-media-native.sh', 'build-media-runtime.py', 'media-sources.lock.json',
                  'smoke-media-runtime.py', 'media-runtime.py'):

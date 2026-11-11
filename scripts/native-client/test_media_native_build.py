@@ -98,7 +98,7 @@ class NativeMediaBuildTests(unittest.TestCase):
                 if '-i' in command:
                     self.assertNotIn(command[command.index('-i') + 1], ('dshow', 'gdigrab', 'avfoundation'))
                 return subprocess.CompletedProcess(command, 0, ' D dshow\n D gdigrab\n', '')
-            with patch.object(builder.smoke, 'native_target', return_value=('windows', 'x86_64')), patch.object(builder.smoke.subprocess, 'run', side_effect=fake_run):
+            with patch.object(builder.smoke, 'native_target', return_value=('windows', 'x86_64')), patch.object(builder.smoke.platform, 'platform', return_value='fixture-host'), patch.object(builder.smoke.subprocess, 'run', side_effect=fake_run):
                 evidence = builder.smoke.smoke(root, 'windows', 'x86_64')
             for key in ('clean_path', 'vp8_roundtrip', 'opus_roundtrip', 'ffplay_dummy', 'device_backends_listed'):
                 self.assertEqual(evidence[key], 'passed')
@@ -110,7 +110,7 @@ class NativeMediaBuildTests(unittest.TestCase):
             (root / 'bin').mkdir()
             for name in ('ffmpeg.exe', 'ffplay.exe'):
                 (root / 'bin' / name).write_bytes(self.binary_fixture())
-            with patch.object(builder.smoke, 'native_target', return_value=('windows', 'x86_64')), patch.object(builder.smoke.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, '', 'failed')):
+            with patch.object(builder.smoke, 'native_target', return_value=('windows', 'x86_64')), patch.object(builder.smoke.platform, 'platform', return_value='fixture-host'), patch.object(builder.smoke.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, '', 'failed')):
                 with self.assertRaises(RuntimeError):
                     builder.smoke.smoke(root, 'windows', 'x86_64', root / 'failed.json')
             failed = json.loads((root / 'failed.json').read_text(encoding='utf-8'))
@@ -138,7 +138,7 @@ class NativeMediaBuildTests(unittest.TestCase):
                     return subprocess.CompletedProcess(command, 35, '000', 'SSL unexpected EOF')
                 Path(command[command.index('--output') + 1]).write_bytes(payload)
                 return subprocess.CompletedProcess(command, 0, '200', '')
-            with patch.object(builder, 'resolve_curl', return_value='/fixture/curl'), patch.object(builder.subprocess, 'run', side_effect=run), patch.object(builder.time, 'sleep'):
+            with patch.object(builder, 'resolve_curl', return_value='/fixture/curl'), patch.object(builder, 'curl_tls_options', return_value=([], {})), patch.object(builder.subprocess, 'run', side_effect=run), patch.object(builder.time, 'sleep'):
                 builder.download_source(source, root / 'archive.tar.gz', 'fixture', root / 'downloads.jsonl')
             self.assertEqual(len(attempts), 3)
             self.assertEqual((root / 'archive.tar.gz').read_bytes(), payload)
@@ -149,7 +149,7 @@ class NativeMediaBuildTests(unittest.TestCase):
     def test_certificate_failure_not_retried(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            with patch.object(builder, 'resolve_curl', return_value='/fixture/curl'), patch.object(builder.subprocess, 'run', return_value=subprocess.CompletedProcess([], 60, '000', 'certificate verify failed')) as run:
+            with patch.object(builder, 'resolve_curl', return_value='/fixture/curl'), patch.object(builder, 'curl_tls_options', return_value=([], {})), patch.object(builder.subprocess, 'run', return_value=subprocess.CompletedProcess([], 60, '000', 'certificate verify failed')) as run:
                 with self.assertRaises(RuntimeError):
                     builder.download_source(dict(url='https://example.invalid/fixed', sha256='0'*64), root / 'archive', 'fixture')
             self.assertEqual(run.call_count, 1)
@@ -158,7 +158,7 @@ class NativeMediaBuildTests(unittest.TestCase):
     def test_hash_failure_not_retried_or_cached(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            with patch.object(builder, 'resolve_curl', return_value='/fixture/curl'), patch.object(builder.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '200', '')) as run:
+            with patch.object(builder, 'resolve_curl', return_value='/fixture/curl'), patch.object(builder, 'curl_tls_options', return_value=([], {})), patch.object(builder.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '200', '')) as run:
                 with self.assertRaisesRegex(ValueError, 'SHA256'):
                     builder.download_source(dict(url='https://example.invalid/fixed', sha256='0'*64), root / 'archive', 'fixture')
             self.assertEqual(run.call_count, 1)
@@ -191,7 +191,7 @@ class NativeMediaBuildTests(unittest.TestCase):
             root = Path(tmp)
             tools = dict(bash=str(root / 'msys64/usr/bin/bash.exe'), gcc=str(root / 'msys64/mingw64/bin/gcc.exe'),
                          cygpath=str(root / 'msys64/usr/bin/cygpath.exe'), git=str(root / 'git.exe'))
-            with patch.object(builder.smoke, 'native_target', return_value=('windows', 'x86_64')), patch.object(builder, 'resolve_tools', return_value=tools), patch.object(builder, 'windows_package_provenance', return_value={'fixture': True}), patch.object(builder, 'sources', return_value={'sources': {}}), patch.object(builder.subprocess, 'check_output', return_value='/fixture'), patch.dict(builder.os.environ, {'SystemRoot': str(root / 'Windows')}), patch.object(builder.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, ['fixture'])) as run:
+            with patch.object(builder.smoke, 'native_target', return_value=('windows', 'x86_64')), patch.object(builder.smoke.platform, 'platform', return_value='fixture-host'), patch.object(builder, 'resolve_tools', return_value=tools), patch.object(builder, 'windows_package_provenance', return_value={'fixture': True}), patch.object(builder, 'sources', return_value={'sources': {}}), patch.object(builder.subprocess, 'check_output', return_value='/fixture'), patch.dict(builder.os.environ, {'SystemRoot': str(root / 'Windows')}), patch.object(builder.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, ['fixture'])) as run:
                 with self.assertRaises(subprocess.CalledProcessError):
                     builder.build(root / 'work', root / 'cache', 'windows', 'x86_64')
             self.assertEqual(run.call_args.args[0][0], tools['bash'])
@@ -211,7 +211,7 @@ class NativeMediaBuildTests(unittest.TestCase):
     def test_unexpanded_http_status_never_reported_as_real_status(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            with patch.object(builder, 'resolve_curl', return_value='/fixture/curl'), patch.object(builder.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '%http_code', '')):
+            with patch.object(builder, 'resolve_curl', return_value='/fixture/curl'), patch.object(builder, 'curl_tls_options', return_value=([], {})), patch.object(builder.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '%http_code', '')):
                 with self.assertRaisesRegex(RuntimeError, 'Invalid curl HTTP'):
                     builder.download_source(dict(url='https://example.invalid/fixed', sha256='0'*64), root / 'archive', 'fixture', root / 'log.jsonl')
             events = [json.loads(line) for line in (root / 'log.jsonl').read_text(encoding='utf-8').splitlines()]
@@ -229,7 +229,7 @@ class NativeMediaBuildTests(unittest.TestCase):
                 self.assertTrue((log.parent / 'media-sources.lock.json').is_file())
                 builder.record_event(log, source='fixture', url='https://example.invalid/fixed', stage='download', status='failed')
                 raise RuntimeError('fixture network failure')
-            with patch.object(builder.smoke, 'native_target', return_value=('macos', 'x86_64')), patch.object(builder.shutil, 'which', return_value='/tool'), patch.object(builder, 'resolve_curl', return_value='/tool'), patch.object(builder.subprocess, 'check_output', return_value='fixture-commit'), patch.object(builder, 'sources', side_effect=fail):
+            with patch.object(builder.smoke, 'native_target', return_value=('macos', 'x86_64')), patch.object(builder.smoke.platform, 'platform', return_value='fixture-host'), patch.object(builder.shutil, 'which', return_value='/tool'), patch.object(builder, 'resolve_curl', return_value='/tool'), patch.object(builder.subprocess, 'check_output', return_value='fixture-commit'), patch.object(builder, 'sources', side_effect=fail):
                 with self.assertRaisesRegex(RuntimeError, 'network'):
                     builder.build(root / 'work', root / 'cache', 'macos', 'x86_64', True)
             self.assertTrue((root / 'work/runtime/build-records/downloads.jsonl').is_file())
@@ -243,11 +243,31 @@ class NativeMediaBuildTests(unittest.TestCase):
                 folder.mkdir(parents=True)
                 (folder / 'config.log').write_text('configure failure detail')
                 return dict(sources=dict(ffmpeg=dict(directory='ffmpeg')))
-            with patch.object(builder.smoke, 'native_target', return_value=('macos', 'x86_64')), patch.object(builder.shutil, 'which', return_value='/tool'), patch.object(builder, 'resolve_curl', return_value='/tool'), patch.object(builder.subprocess, 'check_output', return_value='fixture-commit'), patch.object(builder, 'sources', side_effect=source_fixture), patch.object(builder.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, ['bash'])):
+            with patch.object(builder.smoke, 'native_target', return_value=('macos', 'x86_64')), patch.object(builder.smoke.platform, 'platform', return_value='fixture-host'), patch.object(builder.shutil, 'which', return_value='/tool'), patch.object(builder, 'resolve_curl', return_value='/tool'), patch.object(builder.subprocess, 'check_output', return_value='fixture-commit'), patch.object(builder, 'sources', side_effect=source_fixture), patch.object(builder.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, ['bash'])):
                 with self.assertRaises(subprocess.CalledProcessError):
                     builder.build(root / 'work', root / 'cache', 'macos', 'x86_64')
             self.assertEqual((root / 'work/runtime/build-records/ffmpeg-ffbuild-config.log').read_text(), 'configure failure detail')
             self.assertFalse((root / 'work/candidate-manifest.json').exists())
+
+    def test_windows_curl_requires_official_ca_and_openssl(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prefix = Path(tmp) / 'mingw64'
+            curl = prefix / 'bin/curl.exe'
+            with self.assertRaisesRegex(ValueError, 'CA bundle missing'):
+                builder.curl_tls_options(str(curl), 'windows')
+            bundle = prefix / 'etc/ssl/certs/ca-bundle.crt'
+            bundle.parent.mkdir(parents=True)
+            bundle.write_bytes(b'fixture CA, never used for a network request')
+            options, env = builder.curl_tls_options(str(curl), 'windows')
+            self.assertEqual(options, ['--cacert', str(bundle)])
+            self.assertEqual(env['CURL_SSL_BACKEND'], 'openssl')
+            with patch.object(builder.subprocess, 'check_output', return_value='curl fixture OpenSSL/3.fixture'):
+                record = builder.curl_provenance(str(curl), 'windows')
+            self.assertEqual(record['ca_bundle_sha256'], builder.digest(bundle))
+            self.assertTrue(record['certificate_verification'])
+            with patch.object(builder.subprocess, 'check_output', return_value='curl fixture Schannel'):
+                with self.assertRaisesRegex(ValueError, 'OpenSSL backend'):
+                    builder.curl_provenance(str(curl), 'windows')
 
     def test_package_versions_recorded_and_required_packages_checked(self):
         installed = '\n'.join(name + ' 1.2.3-1' for name in builder.MSYS2_PACKAGES) + '\ntransitive-runtime 4.5-1\n'
