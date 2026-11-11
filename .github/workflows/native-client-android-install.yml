@@ -6,6 +6,7 @@ on:
     paths:
       - 'scripts/native-client/android-install-smoke.sh'
       - 'scripts/native-client/test_android_smoke.py'
+      - 'scripts/native-client/android-smoke-result.py'
       - 'scripts/native-client/verify-android-smoke-source.py'
       - 'scripts/native-client/test_android_smoke_source.py'
       - '.github/workflows/native-client-android-install.yml'
@@ -24,6 +25,10 @@ jobs:
   install-pinned-android:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
+    env:
+      # Same API/ABI and APK; reduce background services for unaccelerated CI.
+      # ANR, focused-window and screenshot checks are unchanged.
+      ANDROID_SMOKE_PROFILE: aosp-api35-low-resolution
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
