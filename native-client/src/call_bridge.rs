@@ -502,13 +502,13 @@ mod desktop {
             let device_index = selection
                 .parse::<u32>()
                 .map_err(|_| "请填写本次枚举并确认的AVFoundation数字索引")?;
-            return Ok(match source {
+            Ok(match source {
                 Source::Microphone => CaptureInput::MacMicrophone { device_index },
                 Source::Camera | Source::Screen => CaptureInput::MacVideo {
                     device_index,
                     video: video(),
                 },
-            });
+            })
         }
         #[cfg(target_os = "windows")]
         return match source {

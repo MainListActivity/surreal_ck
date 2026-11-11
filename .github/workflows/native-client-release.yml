@@ -101,13 +101,13 @@ jobs:
       - name: Test release asset collection
         run: |
           python scripts/native-client/check-version.py
+          python scripts/native-client/test_install_nsh.py
+          python scripts/native-client/test_desktop_enterprise_preview.py
           python scripts/native-client/test_collect.py
           python scripts/native-client/test_native_host.py
           python scripts/native-client/test_release_readiness.py
           python scripts/native-client/test_update_policy.py
           python scripts/native-client/test_android_host.py
-      - name: Install pinned NSH distribution
-        run: python scripts/native-client/install-nsh.py
       - name: Install Linux build libraries
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y clang llvm libgtk-4-dev libclang-dev libssl-dev pkg-config ffmpeg libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
@@ -155,6 +155,8 @@ jobs:
       - name: Build desktop entry point
         if: matrix.target != 'android'
         run: cargo build --manifest-path native-client/Cargo.toml --features desktop --bin surreal-collaboration
+      - name: Install pinned NSH distribution
+        run: python scripts/native-client/install-nsh.py
       - name: Build Linux, macOS or Android package
         if: matrix.target != 'windows'
         shell: bash

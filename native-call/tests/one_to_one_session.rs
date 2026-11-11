@@ -411,7 +411,7 @@ async fn run_same_session(real_udp: bool) {
         assert_file(&saved, &data);
         dir.no_partials();
 
-        // ACK不交给发送器，且接收端Progress队列保持满。取消future会明确等待事件消费。
+        // ACK不交给发送器，且接收端Progress队列保持满。取消必须独立完成，不等UI消费。
         ag.hold_ack.store(true, Ordering::SeqCst);
         let chunks_before = bg.chunks.load(Ordering::SeqCst);
         let cancel_id = af.offer(source.clone()).await.unwrap();
@@ -426,22 +426,26 @@ async fn run_same_session(real_udp: bool) {
         confirm_three_inbound_tracks(&b, 2, opus.len()).await;
         let cancelling_files = bf.clone();
         let cancelling_id = cancel_id.clone();
-        let mut cancelling = tokio::spawn(async move { cancelling_files.cancel(&cancelling_id).await });
-        assert!(timeout(Duration::from_millis(75), &mut cancelling).await.is_err(), "fixture应真实阻塞在容量1的文件事件队列");
-        b.send_text("文件取消受背压时，聊天和停止控制仍独立。").await.unwrap();
-        assert!(matches!(next_chat(&mut a_chat).await, ChatNotice::Text(text) if text == "文件取消受背压时，聊天和停止控制仍独立。"));
+        assert_eq!(b_files.max_capacity(), 1);
+        assert_eq!(b_files.len(), 1, "取消前真实容量1事件队列必须已满");
+        timeout(Duration::from_secs(2), cancelling_files.cancel(&cancelling_id))
+            .await.expect("满UI事件队列不得阻断真实文件取消").unwrap();
+        assert_eq!(b_files.len(), 1, "取消完成前后均未消费UI事件");
+        assert!(!cancelled.exists());
+        dir.no_partials();
+        b.send_text("文件事件队列满时，取消、聊天和停止控制仍独立。").await.unwrap();
+        assert!(matches!(next_chat(&mut a_chat).await, ChatNotice::Text(text) if text == "文件事件队列满时，取消、聊天和停止控制仍独立。"));
         let stopping_at = Instant::now();
         timeout(Duration::from_secs(2), call.stop()).await.expect("文件背压不能阻断媒体停止").unwrap();
-        eprintln!("同一会话(real_udp={real_udp})：文件cancel处于真实事件队列背压，媒体stop耗时 {:?}", stopping_at.elapsed());
+        eprintln!("同一会话(real_udp={real_udp})：文件cancel已在满事件队列下完成，媒体stop耗时 {:?}", stopping_at.elapsed());
         assert!(call.set_remote_video_enabled(true).await.is_err());
         assert!(call.set_remote_audio_enabled(true).await.is_err());
         while pixels.try_recv().is_ok() {}
         send_three_tracks(&media, &frame, &opus).await;
         assert!(!matches!(timeout(Duration::from_millis(75), pixels.recv()).await, Ok(Some(_))), "stop完成后不得继续交付RGBA");
 
-        // 释放事件队列才允许文件cancel完成；没有把这个已知背压伪装成无条件即时取消。
+        // 消费仍保留的Progress后，再核实异步终态通知；终态投递与已完成的取消分离。
         assert!(matches!(next_file(&mut b_files).await, FileEvent::Progress { done, .. } if done == file::CHUNK_SIZE as u64));
-        timeout(Duration::from_secs(2), &mut cancelling).await.unwrap().unwrap().unwrap();
         let (sent, received) = tokio::join!(terminal(&mut a_files, &cancel_id), terminal(&mut b_files, &cancel_id));
         assert_eq!(sent.0, FileEvent::Cancelled { id: cancel_id.clone() });
         assert_eq!(received.0, FileEvent::Cancelled { id: cancel_id });
