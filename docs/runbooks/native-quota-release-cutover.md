@@ -9,7 +9,7 @@
 每次执行都必须先记录：
 
 - candidate tag、40 位 source SHA、`sha256:` image digest；
-- `native-quota-v1.0` compatibility manifest 与 surrealdb-js `2.0.8`；
+- `native-quota-v1.0` compatibility manifest 与 surrealdb-js `2.2.2`；
 - RocksDB `native-quota-contract-v1` 认证；
 - `_system` 和全部 active workspace 的 snapshot id/checksum；
 - 执行人、复核人、变更单和回退负责人。
@@ -211,3 +211,9 @@ downgrade。
   `waived_no_certificate` evidence 已归档。
 
 缺任一项不得设置 `dispatch_production=true`。
+
+## SurrealDB 4.0 升级验证
+
+开发分支的 server、shared、web 统一固定 SDK 2.2.2。实测 SDK 2.0.8 在连接时拒绝服务端 4.0.1；2.2.2 已在本地临时 fork 实例上通过 HTTP、WebSocket、配额拒绝和 LIVE 通知检查。
+
+这次依赖调整不代表数据库已可切换：发行身份、存储格式和签名候选包校验仍要求现有认证发行线。候选包必须明确认证 SDK 2.2.2 后才允许验收；固定 2.0.8 的旧清单必须拒绝通过。验证期间没有修改生产镜像或生产数据库。
