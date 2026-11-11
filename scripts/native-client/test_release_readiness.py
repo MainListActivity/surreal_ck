@@ -2,6 +2,7 @@ import copy
 import importlib.util
 import json
 import pathlib
+import runpy
 import subprocess
 import sys
 import tempfile
@@ -94,13 +95,17 @@ class OnlinePreflightTests(unittest.TestCase):
             root=pathlib.Path(tmp); assets=root/'assets';assets.mkdir()
             (assets/'online-policy-preflight.json').write_text(json.dumps({'result':'online-policy-and-public-artifact-bytes-match'}))
             for name in ('app.apk','app.exe','app.dmg','linux-test-SHA256SUMS.txt','linux-test-build-receipt.json'):(assets/name).write_text('fixture')
-            log=root/'calls'; gh=root/'gh'
-            gh.write_text('#!/usr/bin/env python3\nimport json,os,sys\nwith open(os.environ["CALL_LOG"],"a") as f:f.write(json.dumps(sys.argv[1:])+"\\n")\nif sys.argv[1:3]==["release","view"]:print(json.dumps({"assets":[{"name":"linux-test-SHA256SUMS.txt"}]}))\n')
-            gh.chmod(0o755)
-            subprocess.run([sys.executable,str(helper),str(assets)],check=True,capture_output=True,env=os.environ|{'PATH':str(root)+os.pathsep+os.environ['PATH'],'CALL_LOG':str(log),'RELEASE_TAG':'v1.0.0'})
-            calls=[json.loads(x) for x in log.read_text().splitlines()]
-            uploads=[x for x in calls if x[:2]==['release','upload']]
+            # Mock the command boundary, never a PATH executable that can fall
+            # through to the real gh CLI on Windows or contact GitHub.
+            with mock.patch.object(subprocess,'check_output',return_value=json.dumps({'assets':[{'name':'linux-test-SHA256SUMS.txt'}]})) as view, \
+                 mock.patch.object(subprocess,'run') as upload, \
+                 mock.patch.object(sys,'argv',[str(helper),str(assets)]), \
+                 mock.patch.dict(os.environ,{'RELEASE_TAG':'v1.0.0'}):
+                runpy.run_path(str(helper),run_name='__main__')
+            view.assert_called_once_with(['gh','release','view','v1.0.0','--json','assets'],text=True)
+            uploads=[call.args[0] for call in upload.call_args_list]
             self.assertEqual(len(uploads),2)
+            self.assertTrue(all(x[:4]==['gh','release','upload','v1.0.0'] for x in uploads))
             self.assertTrue(all(x[-1].endswith('.json') and '--clobber' not in x for x in uploads))
 
     def test_invalid_signature_and_known_fixture_key(self):
