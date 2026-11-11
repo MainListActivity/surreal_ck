@@ -22,7 +22,11 @@ case "$target" in
   linux|macos) ;;
   *) echo 'unsupported target' >&2; exit 2 ;;
 esac
-nsh "${args[@]}"
+if [[ "$target" == macos ]]; then
+  python scripts/native-client/build-desktop-app.py --platform macos --out "$out/raw"
+else
+  nsh "${args[@]}"
+fi
 case "$target" in
   android)
     apk=$(find "$out/raw" -maxdepth 1 -name '*.apk' -print -quit)
@@ -30,7 +34,28 @@ case "$target" in
     tools="$ANDROID_HOME/build-tools/35.0.1"
     "$tools/apksigner" verify --verbose --print-certs "$apk" > "$out/apk-verification.txt"
     "$tools/zipalign" -c -P 16 4 "$apk"
-    cp "$apk" "$out/SurrealCK-android-$status.apk" ;;
+    # NSH supplies the base resources and signing identity. Replace its default
+    # host with the collaboration/updater-enabled host and verify the merged DEX/JNI/manifest.
+    ANDROID_NATIVE_MEDIA=1 ANDROID_NATIVE_OAUTH=1 ANDROID_ENTERPRISE_COLLABORATION=1 \
+      CARGO_TARGET_DIR="$root/native-client/target" bash scripts/native-client/build-android-host.sh
+    if [[ "$status" == test-key ]]; then
+      signing=(--keystore-existing "$HOME/.android/debug.keystore" --key-alias androiddebugkey --test-signing)
+    else
+      signing=(--keystore-existing "$ANDROID_KEYSTORE_PATH" --key-alias "$ANDROID_KEY_ALIAS")
+    fi
+    python scripts/native-client/package-android-host.py --enable-collaboration-host --enable-experimental-oauth \
+      --input-apk "$apk" --output-apk "$out/SurrealCK-android-$status.apk" \
+      --sdk "$ANDROID_HOME" \
+      --native-lib "arm64-v8a=$root/native-client/target/aarch64-linux-android/release/libnsh.so" \
+      --native-lib "x86_64=$root/native-client/target/x86_64-linux-android/release/libnsh.so" \
+      --java-source-dir native-updater-platform/android \
+      --java-source-dir native-media-platform/android/src \
+      --manifest-fragment native-updater-platform/android/manifest-fragment.xml \
+      --manifest-fragment native-media-platform/android/documents-manifest.xml \
+      --manifest-fragment native-media-platform/android/media-manifest.xml \
+      --manifest-fragment native-media-platform/android/auth-manifest.xml \
+      "${signing[@]}"
+    "$tools/apksigner" verify --verbose --print-certs "$out/SurrealCK-android-$status.apk" > "$out/apk-verification.txt" ;;
   linux)
     archive=$(find "$out/raw" -maxdepth 1 -name '*.tar.gz' -print -quit)
     test -n "$archive"
@@ -42,14 +67,12 @@ case "$target" in
     tar -czf "$archive" -C "$out/raw" "$app_name"
     cp "$archive" "$out/SurrealCK-linux-$(uname -m).tar.gz" ;;
   macos)
-    app=$(find "$out/raw" -maxdepth 1 -name '*.app' -print -quit)
-    test -n "$app"
-    status=ad-hoc-not-notarized
-    if [[ -n ${MACOS_SIGN_IDENTITY:-} ]]; then
-      codesign --force --options runtime --timestamp --sign "$MACOS_SIGN_IDENTITY" "$app"
-      status=developer-id-not-notarized
-    fi
-    codesign --verify --deep --strict --verbose=2 "$app"
+    app="$out/raw/SurrealCK.app"
+    test -d "$app"
+    # 正式协同入口必须包含强制更新器；仅消费已有核验 SDK 和签名身份。
+    bash native-updater-platform/macos/embed-framework.sh "$app"
+    status=developer-id-not-notarized
+    python scripts/native-client/build-desktop-app.py --platform macos --out "$out/raw" --seal
     stage="$out/dmg-stage"
     mkdir -p "$stage"
     cp -R "$app" "$stage/"

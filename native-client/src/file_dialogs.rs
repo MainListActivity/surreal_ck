@@ -5,7 +5,8 @@ use nsh_core::{
     prelude::*,
 };
 use std::path::PathBuf;
-pub const RECEIVE_UNAVAILABLE: &str = "此平台尚未完成安全接收保存适配，仍可发送文件。";
+pub const RECEIVE_UNAVAILABLE: &str =
+    "此平台的安全文件接收尚未通过原生验证，接收暂未启用；仍可发送文件。";
 pub fn receive_unavailable_reason() -> &'static str {
     if available() {
         RECEIVE_UNAVAILABLE

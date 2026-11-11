@@ -16,8 +16,7 @@ import sys
 spec = importlib.util.spec_from_file_location('receipt', Path(__file__).with_name('build-receipt.py'))
 receipt = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(receipt)
-# 企业信令也是此独立 binary 的源码输入，不改变默认安装包 receipt 脚本。
-receipt.SCOPES = [*receipt.SCOPES, "native-signaling"]
+# 共用安装器 receipt 范围，包含企业信令源码。
 
 FEATURES = {
     'macos': ['desktop', 'experimental-enterprise-media', 'experimental-enterprise-files', 'experimental-macos-video'],
@@ -87,15 +86,15 @@ def identity_inputs(environ):
             'present_fields': [k for k, v in values.items() if v is not None]}
 
 
-def command(target, host):
+def command(target, host, features=None):
     if host not in HOSTS[target]:
         raise ValueError('必须在对应原生 runner 构建，禁止以交叉编译冒充原生验证')
     return ['cargo', 'build', '--manifest-path', 'native-client/Cargo.toml', '--locked',
             '--release', '--target', host, '--bin', 'surreal-collaboration',
-            '--features', ','.join(FEATURES[target]), '--message-format=json-render-diagnostics']
+            '--features', ','.join(features or FEATURES[target]), '--message-format=json-render-diagnostics']
 
 
-def artifact(events, target, root):
+def artifact(events, target, root, features=None):
     matches = []
     for event in events:
         t = event.get('target', {})
@@ -105,7 +104,7 @@ def artifact(events, target, root):
             continue
         if Path(t['src_path']).resolve() != (root / 'native-client/src/main.rs').resolve():
             raise ValueError('产物不是手写 desktop main')
-        if not set(FEATURES[target]).issubset(event.get('features', [])):
+        if not set(features or FEATURES[target]).issubset(event.get('features', [])):
             raise ValueError('产物缺少必需企业或平台 renderer feature')
         if event.get('profile', {}).get('test') or event.get('profile', {}).get('opt_level') != '3':
             raise ValueError('产物不是预期 release binary')

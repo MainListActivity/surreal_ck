@@ -24,6 +24,9 @@ class CollectTests(unittest.TestCase):
                 (source / 'signing-status.txt').write_text('signing=unsigned\n')
                 if target == 'android':
                     (source / 'apk-verification.txt').write_text('mock only')
+                    (source / name).with_suffix('.verification.json').write_text(json.dumps({'apk_sha256': hashlib.sha256(b'mock artifact').hexdigest(), 'requested_host_mode': 'collaboration', 'runtime_validation': 'not-run'}), encoding='utf-8')
+                if target in ('windows', 'macos'):
+                    (source / 'desktop-package-evidence.json').write_text(json.dumps({'platform': target, 'entrypoint': 'native-client/src/main.rs', 'runtime_validation': 'not-run'}), encoding='utf-8')
                 # A later source version must never relabel an existing artifact.
                 (root / 'native-client/nsh.json').write_text(json.dumps({'version': '9.9.9'}))
                 subprocess.run([sys.executable, str(SCRIPT), target, 'test'], cwd=root, check=True)
@@ -31,6 +34,10 @@ class CollectTests(unittest.TestCase):
                 self.assertEqual((release / name).read_bytes(), b'mock artifact')
                 manifest = (release / f'{target}-test-SHA256SUMS.txt').read_text()
                 self.assertIn(hashlib.sha256(b'mock artifact').hexdigest() + '  ' + name, manifest)
+                if target in ('windows', 'macos', 'android'):
+                    evidence = release / f'{target}-test-package-evidence.json'
+                    self.assertEqual(json.loads(evidence.read_text())['runtime_validation'], 'not-run')
+                    self.assertIn(hashlib.sha256(evidence.read_bytes()).hexdigest() + '  ' + evidence.name, manifest)
                 self.assertEqual(len(list(release.glob('*signing-status.txt'))), 1)
                 index = json.loads((release / f'{target}-test-assets.json').read_text())
                 self.assertEqual(len(index), 2 if target == 'android' else 1)

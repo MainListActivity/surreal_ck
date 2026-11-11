@@ -3,6 +3,8 @@ sys.dont_write_bytecode = True
 import importlib.util
 from pathlib import Path
 import tempfile
+import os
+import subprocess
 import unittest
 import xml.etree.ElementTree as ET
 
@@ -55,6 +57,92 @@ class HostTests(unittest.TestCase):
         host.verify_jni_exports(exported,required,'test')
         with self.assertRaises(ValueError):host.verify_jni_exports(exported.replace('MediaBridge_nativeClosed','MediaBridge_nativeClosed_wrong'),required,'test')
         with self.assertRaises(ValueError):host.verify_jni_exports(exported.replace('DEFAULT 12','DEFAULT UND'),required,'test')
+
+    def test_standard_host_requires_updater_and_rejects_experimental_components(self):
+        repo = Path(__file__).resolve().parents[2]
+        root = ET.fromstring('<manifest package="top.maplayer.collaboration"><application /></manifest>')
+        for fragment in ('native-updater-platform/android/manifest-fragment.xml',
+                         'native-media-platform/android/documents-manifest.xml'):
+            host.merge_fragment(root, repo / fragment)
+        host.verify_updater_host(root, False)
+        with self.assertRaises(ValueError): host.verify_updater_host(root, True)
+        for name in ('MediaInitProvider', 'AuthInitProvider'):
+            element = ET.SubElement(root.find('application'), 'provider', {
+                host.A+'name': 'top.maplayer.collaboration.media.'+name,
+                host.A+'exported': 'false'})
+            with self.assertRaises(ValueError): host.verify_updater_host(root, False)
+            root.find('application').remove(element)
+        root.find('application').remove(root.find('application/receiver'))
+        with self.assertRaises(ValueError): host.verify_updater_host(root, False)
+
+    @unittest.skipIf(sys.platform == 'win32', 'Android package.sh is executed on POSIX build hosts only')
+    def test_standard_package_routes_through_updater_with_same_signing_identity(self):
+        script = Path(__file__).with_name('package.sh').resolve()
+        for release in (False, True):
+            with self.subTest(release=release), tempfile.TemporaryDirectory() as folder:
+                work = Path(folder)
+                tools = work/'sdk/build-tools/35.0.1'
+                tools.mkdir(parents=True)
+                for tool in ('apksigner', 'zipalign'):
+                    file = tools/tool
+                    file.write_text('#!/bin/sh\nexit 0\n')
+                    file.chmod(0o755)
+                env = os.environ | {'ANDROID_HOME': str(work/'sdk'),
+                    'HOME': str(work), 'CALL_LOG': str(work/'calls'), 'SCRIPT': str(script)}
+                for name in ('ANDROID_KEYSTORE_PATH', 'ANDROID_KEY_ALIAS', 'NSH_KEYSTORE_PASSWORD'):
+                    env.pop(name, None)
+                if release:
+                    env.update(ANDROID_KEYSTORE_PATH=str(work/'existing.keystore'),
+                               ANDROID_KEY_ALIAS='existing-alias', NSH_KEYSTORE_PASSWORD='test-placeholder')
+                commands = r"""
+python() { printf '%s\n' "$*" >> "$CALL_LOG"; }
+nsh() { mkdir -p dist/native-client/android/raw; touch dist/native-client/android/raw/base.apk; }
+bash() { printf 'host %s media=%s oauth=%s enterprise=%s\n' "$*" "$ANDROID_NATIVE_MEDIA" "$ANDROID_NATIVE_OAUTH" "$ANDROID_ENTERPRISE_COLLABORATION" >> "$CALL_LOG"; }
+export -f python nsh bash
+/bin/bash "$SCRIPT" android
+"""
+                result = subprocess.run(['/bin/bash', '-c', commands], cwd=work,
+                                        env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                calls = (work/'calls').read_text()
+                self.assertIn('--enable-collaboration-host --enable-experimental-oauth', calls)
+                self.assertIn('native-media-platform/android/media-manifest.xml', calls)
+                self.assertIn('native-media-platform/android/auth-manifest.xml', calls)
+                self.assertIn('media=1 oauth=1 enterprise=1', calls)
+                self.assertIn('native-updater-platform/android/manifest-fragment.xml', calls)
+                self.assertIn('--native-lib arm64-v8a=', calls)
+                self.assertIn('--native-lib x86_64=', calls)
+                if release:
+                    self.assertIn('--key-alias existing-alias', calls)
+                    self.assertIn('--keystore-existing '+str(work/'existing.keystore'), calls)
+                    self.assertNotIn('--test-signing', calls)
+                else:
+                    self.assertIn('--keystore-existing '+str(work/'.android/debug.keystore'), calls)
+                    self.assertIn('--key-alias androiddebugkey --test-signing', calls)
+
+    def test_actual_signer_fingerprints_are_required(self):
+        value = 'a' * 64
+        self.assertEqual(host.signer_certificates('Signer #1 certificate SHA-256 digest: '+value), {value})
+        with self.assertRaises(ValueError): host.signer_certificates('Verifies')
+        with self.assertRaises(ValueError): host.signer_certificates('Signer #1 certificate SHA-256 digest: invalid')
+
+    def test_collaboration_host_requires_all_bridges_and_audited_oauth(self):
+        repo = Path(__file__).resolve().parents[2]
+        root = ET.fromstring('<manifest package="top.maplayer.collaboration"><application /></manifest>')
+        for fragment in ('native-updater-platform/android/manifest-fragment.xml',
+                         'native-media-platform/android/documents-manifest.xml',
+                         'native-media-platform/android/media-manifest.xml',
+                         'native-media-platform/android/auth-manifest.xml'):
+            host.merge_fragment(root, repo / fragment, True)
+        host.verify_updater_host(root, True, True)
+        with self.assertRaises(ValueError): host.verify_updater_host(root, False, True)
+        application = root.find('application')
+        for component in list(application):
+            application.remove(component)
+            with self.assertRaises(ValueError): host.verify_updater_host(root, True, True)
+            application.append(component)
+        root.find('application/service').set(host.A+'exported', 'true')
+        with self.assertRaises(ValueError): host.verify_updater_host(root, True, True)
 
     def auth_root(self):
         root = ET.fromstring('<manifest package="top.maplayer.collaboration"><application /></manifest>')

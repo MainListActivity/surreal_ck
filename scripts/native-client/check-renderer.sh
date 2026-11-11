@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 case "${1:?usage: check-renderer.sh macos|windows}" in
-  macos) feature=macos-appkit; client_feature=experimental-macos-video ;;
+  macos) feature=macos-appkit; client_feature=experimental-macos-video,macos-auto-update ;;
   windows) feature=windows-d2d; client_feature=experimental-windows-video,windows-auto-update ;;
   *) echo 'Use a native macOS or Windows MSVC runner' >&2; exit 2 ;;
 esac
@@ -15,7 +15,8 @@ cargo clippy --manifest-path native-video-view/Cargo.toml --locked --all-targets
 # Exercise the explicit host gate without opening a window.
 cargo test --manifest-path native-video-view/Cargo.toml --locked --features "$feature,experimental-host" --test registration --test support
 # Check the real application's root registration AND handwritten desktop main.
-# These feature flags apply only to validation commands, never default packaging.
+# Match the intended collaboration package, including enterprise and updater code.
+client_feature="$client_feature,experimental-enterprise-media,experimental-enterprise-files"
 cargo check --manifest-path native-client/Cargo.toml --locked --all-targets --features "desktop,$client_feature"
 cargo test --manifest-path native-client/Cargo.toml --locked --all-targets --features "desktop,$client_feature"
 cargo clippy --manifest-path native-client/Cargo.toml --locked --all-targets --features "desktop,$client_feature" -- -D warnings

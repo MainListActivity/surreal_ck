@@ -41,7 +41,8 @@ def build_intel_macos(dest):
                        cwd=source, check=True)
         for relative in MACOS_FILES:
             built = target / INTEL_TARGET / 'release' / pathlib.Path(relative).name
-            subprocess.run(['lipo', '-verify_arch', 'x86_64', str(built)], check=True)
+            # -verify_arch consumes all following arguments as architecture names.
+            subprocess.run(['lipo', str(built), '-verify_arch', 'x86_64'], check=True)
             installed = dest / 'nsh' / relative
             installed.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(built, installed)

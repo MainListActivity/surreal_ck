@@ -268,7 +268,26 @@ impl Destination {
         Ok(())
     }
 
-    pub(super) fn publish(mut self, file: &File) -> Result<PathBuf, String> {
+    #[cfg(test)]
+    pub(super) fn publish(self, file: &File) -> Result<PathBuf, String> {
+        self.publish_tracked(file, &mut false)
+    }
+
+    // 与生产传输层保持一致：一旦原子发布成功，后置检查失败不能抹去保存事实。
+    pub(super) fn publish_tracked(
+        self,
+        file: &File,
+        published: &mut bool,
+    ) -> Result<PathBuf, String> {
+        self.publish_tracked_inner(file, published, || {})
+    }
+
+    fn publish_tracked_inner(
+        mut self,
+        file: &File,
+        published: &mut bool,
+        after_commit: impl FnOnce(),
+    ) -> Result<PathBuf, String> {
         self.check_directory()?;
         private_object(self.staging_root.as_raw_fd(), libc::S_IFDIR)?;
         private_object(self.staging.as_raw_fd(), libc::S_IFDIR)?;
@@ -292,6 +311,8 @@ impl Destination {
             return Err(last_error());
         }
         self.pending = false;
+        *published = true;
+        after_commit();
         self.check_directory().map_err(|_| "destination directory moved during publication; the verified file may remain in the originally approved directory".to_owned())?;
         Ok(self.path.clone())
     }
@@ -362,7 +383,12 @@ mod tests {
         file.write_all(b"verified bytes").unwrap();
         file.sync_all().unwrap();
         let inode = file.metadata().unwrap().ino();
-        assert_eq!(destination.publish(&file).unwrap(), path);
+        let mut published = false;
+        assert_eq!(
+            destination.publish_tracked(&file, &mut published).unwrap(),
+            path
+        );
+        assert!(published);
         assert_eq!(std::fs::metadata(&path).unwrap().ino(), inode);
         assert_eq!(std::fs::read(&path).unwrap(), b"verified bytes");
         drop(Destination::prepare(dir.path("cancel.bin")).unwrap());
@@ -390,7 +416,9 @@ mod tests {
                 "directory" => std::fs::create_dir(&path).unwrap(),
                 _ => symlink(&victim, &path).unwrap(),
             }
-            assert!(destination.publish(&file).is_err());
+            let mut published = false;
+            assert!(destination.publish_tracked(&file, &mut published).is_err());
+            assert!(!published);
             assert_eq!(std::fs::read(&victim).unwrap(), b"unrelated");
             assert!(std::fs::symlink_metadata(&path).is_ok());
         }
@@ -420,6 +448,37 @@ mod tests {
         assert!(std::fs::symlink_metadata(&root).unwrap().is_symlink());
         assert_eq!(
             std::fs::read_dir(dir.path("moved-cancel")).unwrap().count(),
+            0
+        );
+    }
+
+    #[test]
+    fn directory_moved_after_commit_retains_publication_fact_and_verified_file() {
+        let dir = TestDir::new();
+        let parent = dir.path("approved");
+        let moved = dir.path("moved");
+        std::fs::create_dir(&parent).unwrap();
+        let (destination, mut file) = Destination::prepare(parent.join("received")).unwrap();
+        file.write_all(b"verified").unwrap();
+        file.sync_all().unwrap();
+        let mut published = false;
+        // 在真实 RENAME_EXCL 成功之后确定性移动目录，不模拟发布系统调用。
+        let result = destination.publish_tracked_inner(&file, &mut published, || {
+            std::fs::rename(&parent, &moved).unwrap();
+            std::fs::create_dir(&parent).unwrap();
+            std::fs::write(parent.join("received"), b"unrelated").unwrap();
+        });
+        assert!(result.unwrap_err().contains("may remain"));
+        assert!(published, "取消不能把已保存文件报告为未发布");
+        assert_eq!(std::fs::read(moved.join("received")).unwrap(), b"verified");
+        assert_eq!(
+            std::fs::read(parent.join("received")).unwrap(),
+            b"unrelated"
+        );
+        assert_eq!(
+            std::fs::read_dir(moved.join(".surreal-ck-receive"))
+                .unwrap()
+                .count(),
             0
         );
     }

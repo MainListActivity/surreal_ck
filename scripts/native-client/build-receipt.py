@@ -11,7 +11,7 @@ from update_config import parse_config
 
 SCOPES = ['native-client', 'native-transport', 'native-updater', 'native-identity',
           'native-updater-platform', 'native-media-platform', 'native-call', 'native-video-view',
-          'scripts/native-client']
+          'scripts/native-client', 'native-signaling']
 
 def digest(path):
     h = hashlib.sha256()

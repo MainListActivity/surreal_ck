@@ -1,6 +1,14 @@
 name: Native desktop receive candidate probe
 
 on:
+  push:
+    branches: [feat/native-collaboration-bootstrap]
+    paths:
+      - 'native-transport/src/transfer_destination*'
+      - 'native-transport/validation/desktop-receive-probe/**'
+      - 'scripts/native-client/check-desktop-receive.sh'
+      - 'scripts/native-client/check-native-host.sh'
+      - '.github/workflows/native-client-desktop-receive.yml'
   workflow_dispatch:
   pull_request:
     paths:
@@ -44,6 +52,8 @@ jobs:
           components: rustfmt, clippy
       - name: Run candidate on its actual native OS (no production activation)
         shell: bash
+        env:
+          DESKTOP_RECEIVE_SYMLINK_TESTS: ${{ matrix.target == 'x86_64-pc-windows-msvc' && '1' || '0' }}
         run: |
           set -o pipefail
           bash scripts/native-client/check-desktop-receive.sh '${{ matrix.target }}' 2>&1 | tee "$RUNNER_TEMP/desktop-receive-probe.log"
@@ -53,8 +63,9 @@ jobs:
         run: |
           printf '%s\n' '## Candidate-only receive probe' 'Production receive_supported remains false. A pass here does not authorize enabling it.' >> "$GITHUB_STEP_SUMMARY"
           if [[ '${{ matrix.target }}' == *windows* ]]; then
-            printf '%s\n' 'Windows ignored symlink attack tests were NOT run. No elevation or Developer Mode change is allowed. These remain an acceptance gap.' >> "$GITHUB_STEP_SUMMARY"
+            printf '%s\n' 'Windows symlink attack tests were requested with existing runner privileges. Check the test log: missing privilege is a failure, not a skipped pass. No elevation or Developer Mode change is allowed.' >> "$GITHUB_STEP_SUMMARY"
           fi
+          printf '%s\n' 'Cross-user isolation, full transport/ACK, actual disk-full and crash recovery remain separate acceptance requirements.' >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

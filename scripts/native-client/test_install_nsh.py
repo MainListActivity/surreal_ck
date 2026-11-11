@@ -57,6 +57,9 @@ class InstallTests(unittest.TestCase):
             self.assertIn(installer.INTEL_TARGET, cargo)
             self.assertNotIn('--no-default-features', cargo)
             self.assertEqual(sum(c[0] == 'lipo' for c in commands), 3)
+            for verify in (c for c in commands if c[0] == 'lipo'):
+                self.assertEqual(verify[2:], ['-verify_arch', 'x86_64'])
+                self.assertTrue(pathlib.Path(verify[1]).name in {'nsh', 'nsh-macos-host', 'nsh-macos-app'})
             self.assertIn(installer.SOURCE_COMMIT, (dest / 'nsh/SOURCE_REVISION').read_text())
 
     def test_build_failure_propagates(self):

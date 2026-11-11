@@ -4,6 +4,7 @@
 """
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -186,6 +187,42 @@ def merge_fragment(root, fragment, oauth_enabled=False):
     return root
 
 
+def signer_certificates(output):
+    certificates = set(re.findall(r"^Signer #[0-9]+ certificate SHA-256 digest: ([0-9a-fA-F]{64})$", output, re.MULTILINE))
+    if not certificates:
+        raise ValueError("APK signer certificate is unavailable")
+    return {value.lower() for value in certificates}
+
+
+def verify_updater_host(root, oauth_enabled, collaboration=False):
+    """严格验证所选宿主的完整组件，不将缺桥的 APK 当作完整客户端。"""
+    if oauth_enabled != collaboration:
+        raise ValueError("OAuth ingress must match the selected host mode")
+    allowed = {
+        "top.maplayer.collaboration.update.UpdaterInitProvider",
+        "top.maplayer.collaboration.update.UpdateResultReceiver",
+        "top.maplayer.collaboration.documents.DocumentInitProvider",
+        "top.maplayer.collaboration.documents.DocumentActivity",
+    }
+    if collaboration:
+        allowed.update({AUTH_CALLBACK, AUTH_PROVIDER,
+            "top.maplayer.collaboration.media.MediaInitProvider",
+            "top.maplayer.collaboration.media.NativeCallActivity",
+            "top.maplayer.collaboration.media.NativeCaptureService"})
+    required = allowed
+    seen = set()
+    for component in root.findall("application/*"):
+        name = component.get(A + "name", "")
+        if name.startswith("top.maplayer.collaboration."):
+            if name not in allowed or (name != AUTH_CALLBACK and component.get(A + "exported") != "false"):
+                raise ValueError("Unexpected standard updater host component: " + name)
+            if name.startswith(AUTH_PREFIX):
+                verify_auth_component(component)
+            seen.add(name)
+    if not required <= seen:
+        raise ValueError("Standard updater host is missing required components")
+
+
 def apk_entries(path):
     with zipfile.ZipFile(path) as archive:
         names = archive.namelist()
@@ -223,7 +260,10 @@ def verify_jni_exports(exported, required, abi):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--enable-experimental-host", action="store_true", required=True)
+    mode = p.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--enable-experimental-host", action="store_true")
+    mode.add_argument("--enable-updater-host", action="store_true", help="Updater and document host only")
+    mode.add_argument("--enable-collaboration-host", action="store_true", help="Complete collaboration, OAuth, media and updater host")
     p.add_argument("--enable-experimental-oauth", action="store_true", help="Explicit test-only callback ingress; never configures an identity provider")
     p.add_argument("--input-apk", type=Path, required=True)
     p.add_argument("--output-apk", type=Path, required=True)
@@ -239,6 +279,9 @@ def main():
         p.error("Input APK and existing keystore must exist")
     if args.output_apk.exists() or args.output_apk.resolve() == args.input_apk.resolve():
         p.error("Output must be a new APK path")
+    evidence_path = args.output_apk.with_suffix('.verification.json')
+    if evidence_path.exists():
+        p.error("Package verification evidence must be a new path")
     if args.test_signing and args.key_alias != "androiddebugkey":
         p.error("Test signing only supports the standard debug alias")
     if not args.test_signing and not os.environ.get("NSH_KEYSTORE_PASSWORD"):
@@ -275,6 +318,8 @@ def main():
         p.error("Wrong application identity")
     for fragment in args.manifest_fragment:
         merge_fragment(root, fragment, args.enable_experimental_oauth)
+    if args.enable_updater_host or args.enable_collaboration_host:
+        verify_updater_host(root, args.enable_experimental_oauth, args.enable_collaboration_host)
     verify_auth_manifest(root, args.enable_experimental_oauth)
     if args.enable_experimental_oauth:
         for abi, file in libs.items():
@@ -345,13 +390,30 @@ def main():
         run([tools / "apksigner", "sign", "--ks", args.keystore_existing, "--ks-key-alias", args.key_alias,
              "--ks-pass", password, "--key-pass", password, aligned])
         run([tools / "apksigner", "verify", "--verbose", aligned])
+        if args.enable_updater_host or args.enable_collaboration_host:
+            original_signers = signer_certificates(capture([tools / "apksigner", "verify", "--print-certs", args.input_apk]))
+            final_signers = signer_certificates(capture([tools / "apksigner", "verify", "--print-certs", aligned]))
+            if original_signers != final_signers:
+                raise ValueError("Standard updater packaging must preserve the base APK signing identity")
         run([tools / "zipalign", "-c", "-P", "16", "4", aligned])
         final_xml = capture([analyzer, "manifest", "print", aligned])
+        final_root = ET.fromstring(final_xml)
+        if args.enable_updater_host or args.enable_collaboration_host:
+            verify_updater_host(final_root, args.enable_experimental_oauth, args.enable_collaboration_host)
+        verify_auth_manifest(final_root, args.enable_experimental_oauth)
+        verify_manifest_dex(final_root, all_classes, args.enable_experimental_oauth)
         for required in ["UpdaterInitProvider", "UpdateResultReceiver", "REQUEST_INSTALL_PACKAGES"]:
             if required not in final_xml:
                 raise ValueError(f"Final manifest missing {required}")
         changed = {"AndroidManifest.xml"} | {f"lib/{abi}/libnsh.so" for abi in libs}
         with zipfile.ZipFile(args.input_apk) as original, zipfile.ZipFile(aligned) as final:
+            native_hashes = {}
+            for abi, library in libs.items():
+                packaged = final.read(f'lib/{abi}/libnsh.so')
+                expected = library.read_bytes()
+                if packaged != expected:
+                    raise ValueError(f'Final native host differs from the verified build: {abi}')
+                native_hashes[abi] = hashlib.sha256(packaged).hexdigest()
             for name in names:
                 if name in changed or signing.fullmatch(name):
                     continue
@@ -359,6 +421,14 @@ def main():
                     raise ValueError(f"Original asset changed: {name}")
         aligned.rename(args.output_apk)
         digest = hashlib.sha256(args.output_apk.read_bytes()).hexdigest()
+        report = dict(schema=1, platform='android', apk_filename=args.output_apk.name,
+            apk_sha256=digest, apk_size=args.output_apk.stat().st_size,
+            requested_host_mode='collaboration' if args.enable_collaboration_host else 'updater' if args.enable_updater_host else 'experimental',
+            native_sha256=native_hashes, generated_dex_classes=sorted(additions),
+            manifest_components=sorted(child.get(A+'name', '') for child in final_root.find('application')),
+            original_resources_preserved=True, signing_identity_preserved=bool(args.enable_updater_host or args.enable_collaboration_host),
+            signature_verified=True, zip_alignment='16KiB verified', runtime_validation='not-run', release_eligible=False)
+        evidence_path.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
         print(f"APK built and verified: {args.output_apk}\nSHA256: {digest}\nSigning: {'existing-debug-test-only' if args.test_signing else 'provided-release-key'}\nDevice installation: NOT RUN")
 
 

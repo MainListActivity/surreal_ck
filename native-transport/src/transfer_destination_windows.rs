@@ -442,7 +442,17 @@ impl Destination {
         Ok((destination, writer))
     }
 
-    pub(super) fn publish(mut self, file: &File) -> Result<PathBuf, String> {
+    #[cfg(test)]
+    pub(super) fn publish(self, file: &File) -> Result<PathBuf, String> {
+        self.publish_tracked(file, &mut false)
+    }
+
+    // 与生产传输层保持一致：一旦原子发布成功，后置检查失败不能抹去保存事实。
+    pub(super) fn publish_tracked(
+        mut self,
+        file: &File,
+        published: &mut bool,
+    ) -> Result<PathBuf, String> {
         if identity(file)? != identity(&self.staging)? {
             return Err("received file identity changed".into());
         }
@@ -475,6 +485,7 @@ impl Destination {
             }
         }
         self.published = true;
+        *published = true;
         // 已发布后失败也不得删除目标；只报告目录检查失败，不按名称回滚。
         for directory in &self.directories {
             check_directory(directory.as_raw_handle())?;
@@ -662,7 +673,9 @@ mod tests {
         fs::remove_file(dir.target()).unwrap();
         let (destination, file) = Destination::prepare(dir.target()).unwrap();
         fs::write(dir.target(), b"late target").unwrap();
-        assert!(destination.publish(&file).is_err());
+        let mut published = false;
+        assert!(destination.publish_tracked(&file, &mut published).is_err());
+        assert!(!published);
         drop(file);
         assert_eq!(fs::read(dir.target()).unwrap(), b"late target");
         assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
@@ -765,7 +778,12 @@ mod tests {
         let target = parent.join("空文件.bin");
         let (destination, file) = Destination::prepare(target.clone()).unwrap();
         let before = identity(&file).unwrap();
-        assert_eq!(destination.publish(&file).unwrap(), target);
+        let mut published = false;
+        assert_eq!(
+            destination.publish_tracked(&file, &mut published).unwrap(),
+            target
+        );
+        assert!(published);
         drop(file);
         let published = File::open(&target).unwrap();
         assert_eq!(identity(&published).unwrap(), before);

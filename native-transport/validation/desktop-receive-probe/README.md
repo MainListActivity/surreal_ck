@@ -67,3 +67,9 @@ Microsoft官方资料：[NtCreateFile的RootDirectory和创建选项](https://le
 - 新增原生测试定义：macOS额外硬链接拒绝、准备后私有权限改变时拒绝发布且保留staging；Windows已有目录写句柄阻止准备、late目录保留、固定父HANDLE发布空Unicode文件。它们仅通过目标编译，尚未执行。
 - Microsoft当前`FILE_RENAME_INFO`文档明确允许相对`FileName`搭配目录`RootDirectory`；源码使用的是这一组合。仍需原生测试验证分享模式交接及内部打开，不能把结构字段可编译当作API成功的证据。
 - 复核未改变生产分支或支持开关；候选仍冻结在独立harness范围。macOS私有staging只隔离其他UID，不将文件FD身份检查误称为阻止同UID替换payload名称的机制；权限/ACL改变后无法证明私有性时故意不清理。
+
+## 发布事实回归与 runner 开关
+
+候选后端已对齐生产层 `publish_tracked(file, &mut published)` 契约：原子提交成功后立即记录发布事实，再执行后置核验。macOS 新增真实 `RENAME_EXCL` 后移动父目录的确定性测试，必须返回错误、保留 `published=true` 与原目录内文件，并保留替换目录的无关文件。Windows 同样在句柄重命名成功后、任何后置检查之前记录事实。生产平台开关保持关闭。
+
+现有独立 workflow 可在 `macos-15`、`macos-15-intel`、`windows-2022` 执行默认原生负例。对于已经具备 symlink 权限的 Windows runner，可显式设置 `DESKTOP_RECEIVE_SYMLINK_TESTS=1` 后运行 `scripts/native-client/check-desktop-receive.sh x86_64-pc-windows-msvc`，额外执行全部 ignored 测试。权限不足即失败，不自动跳过、不提权。脚本记录 HEAD、目标和 dirty 状态；CI 必须保存完整日志，不能把 dirty 源码执行记录当作 clean commit 的证据。该开关未加入默认 workflow，默认仍保留既有缺口。此脚本不覆盖跨用户隔离、完整传输/ACK、实际满盘与崩溃验收。

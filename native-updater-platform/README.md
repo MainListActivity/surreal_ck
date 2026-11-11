@@ -2,7 +2,7 @@
 
 ## 当前真实状态
 
-此目录提供独立实现和 macOS 可选宿主桥，默认禁用，尚未进入已验证安装包。现有客户端没有因此获得已验收的 macOS/Windows/Android 自动更新能力。缺失桥时必须继续失败锁定，不能跳过更新，也不能把 `PlatformInstallerStarted` 当作 `Ready`。
+此目录提供平台实现和 macOS 可选宿主桥。Android 标准打包已集成更新宿主并验证静态 DEX/JNI/manifest；macOS/Windows 桥仍默认禁用。现有客户端没有因此获得已验收的 macOS/Windows/Android 自动更新能力。缺失桥时必须继续失败锁定，不能跳过更新，也不能把 `PlatformInstallerStarted` 当作 `Ready`。
 
 - Linux 云机：Rust 8 项测试、fmt、clippy 严格检查通过。Android 三个 Java 类以 JDK 21 的编译器模块和真实 API 35 android.jar、`-Xlint:all -Werror` 编译通过。
 - macOS：Objective-C/Sparkle 源码、Rust/C主队列桥、opt-in构建及框架嵌入脚本已写，尚未取得并链接 Sparkle SDK，没有 macOS 编译、签名安装或重启实测。
@@ -55,7 +55,7 @@ JNI接口为 `android::private_data_dir()` / `android::start(&InstallRequest)`�
 
 实验打包已落实：`native-client/android-host/`使用独立NSH0.4 Rust-root宿主；`scripts/native-client/package-android-host.py`消费基础APK，使用SDK工具重新编译合并manifest、附加DEX，并保持原资源/原DEX逐字节不变。更新/SAF JNI在双ABI的动态符号中实查存在。没有修改第三方CLI。
 
-生产还需：两项权限的渠道合规审核、系统安装会话结果回传UI、真实设备新旧包升级/重启验收；没有权限时目前已明确显示系统安装授权需求并保持锁定。默认release不启用此实验宿主。详见 `../native-client/android-host/README.md`。普通权限下不尝试root、adb或辅助功能绕过。
+生产还需：两项权限的渠道合规审核、系统安装会话结果回传UI、真实设备新旧包升级/重启验收；没有权限时目前已明确显示系统安装授权需求并保持锁定。标准 Android 打包已启用更新/协同宿主，但不等于生产更新验收通过。详见 `../native-client/android-host/README.md`。普通权限下不尝试root、adb或辅助功能绕过。
 
 官方条件：https://developer.android.com/reference/android/content/pm/PackageInstaller.SessionParams#setRequireUserAction(int)
 

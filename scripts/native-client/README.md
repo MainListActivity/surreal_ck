@@ -19,7 +19,7 @@
 
 Actions 在 `feat/native-collaboration-bootstrap` 开发分支的原生相关路径 push、PR 和手动运行仅产生 workflow artifacts。开发分支 push 不触发生产部署，`contents: read` 保持不变，Release 验证作业仍只接受 `release` 事件。Release事件现在只校验预先公开的候选安装器及在线签名策略，不再自动上传缺失安装器；这是为防止先切强制策略、后上传资产导致旧用户锁定。全部预检通过后，仅附加尚不存在的验证receipt/索引/校验和等旁证，不覆盖同名文件，不创建tag或发布Release。安装包仍完整保留在workflow artifacts；真正两阶段候选预置/正式晋级流程尚待完成，不能称自动生成完整Release。
 
-本轮普通 NSH 默认安装包**不含 enterprise 实验功能**。NSH 0.4 的 `package` 没有 `--features` 参数；前置 desktop binary 编译不改变 NSH 独立 runner 的 features。Android 企业独立 test-only preview 已在本地 stage9 验证，但不由本轮默认 push 管线构建、不进入正式 Release 索引；桌面企业功能封装留待下一阶段。
+NSH 0.4 的 `package` 没有 `--features` 参数；前置 desktop binary 编译不改变 NSH 独立 runner 的 features。标准 Android 打包现已替换为完整 enterprise-collaboration 宿主，不再只交付基础 runner；测试签名和更新配置缺失状态仍如实记录。桌面安装包的功能覆盖由各平台打包步骤和验收结果单独说明。
 
 ## 签名与公证边界
 
@@ -80,7 +80,7 @@ CI 额外运行 `test_android_host.py` 的负向及资源保留测试。普通 r
 
 macOS ARM/Intel、Windows MSVC runner 通过 `check-renderer.sh` 对完整 NSH 依赖执行 `native-video-view` 的 check/test/clippy，分别启用 macos-appkit/windows-d2d。当前只是新增检查路径，尚未运行这些 Actions，不能把本机绘制 API 探针结果称为完整平台通过。
 
-手动 workflow_dispatch 新增 `experimental_android_media`，默认 false。只有显式选中才生成独立 `experimental-android-media-test-only` artifact，使用已由普通 NSH 测试构建使用的现存 debug key；缺 key 即失败，不创建新身份。普通 APK 不变，release 事件不启用此分支，实验产物不进入 release 下载匹配或正式更新资产索引。
+手动 workflow_dispatch 新增 `experimental_android_media`，默认 false。只有显式选中才生成独立 `experimental-android-media-test-only` artifact，使用已由普通 NSH 测试构建使用的现存 debug key；缺 key 即失败，不创建新身份。普通 APK 已启用完整协同/更新宿主；release 事件不启用此分支，实验产物不进入 release 下载匹配或正式更新资产索引。
 
 实验步骤运行独立 host 双 ABI 构建、Java 纯逻辑测试与打包器 JNI/DEX/资源/签名/16KiB 对齐校验；输出固定带 test-only 的名称和状态说明。它不安装设备，不授予麦克风/相机/屏幕权限，不声称真实采集、播放或自动升级已经验收。
 
@@ -132,4 +132,10 @@ Linux CI 单独运行 `check-enterprise-signaling.sh`：显式 check/clippy 覆�
 
 ### Android 企业协作实验构建
 
-`ANDROID_ENTERPRISE_COLLABORATION=1` 是单独显式选择，必须同时指定已有 `ANDROID_NATIVE_MEDIA=1` 和 `ANDROID_NATIVE_OAUTH=1`。它启用宿主 `enterprise-collaboration` feature；未指定时默认构建不变。封装仍须显式启用匹配的媒体与 OAuth Java/manifest 组件，不能把仅 Rust feature 当作完整宿主。此入口不配置生产登录、更新信任或签名，也不绕过更新门禁；构建与设备验收结果按具体产物 receipt 单独记录。
+`ANDROID_ENTERPRISE_COLLABORATION=1` 是单独显式选择，必须同时指定已有 `ANDROID_NATIVE_MEDIA=1` 和 `ANDROID_NATIVE_OAUTH=1`。它启用宿主 `enterprise-collaboration` feature；直接调用低层宿主构建脚本且未指定时默认关闭；标准 package.sh 已显式指定完整协同功能。封装仍须显式启用匹配的媒体与 OAuth Java/manifest 组件，不能把仅 Rust feature 当作完整宿主。此入口不配置生产登录、更新信任或签名，也不绕过更新门禁；构建与设备验收结果按具体产物 receipt 单独记录。
+
+### Android 标准包的 updater 集成
+
+标准 `package.sh android` 不再直接复制 NSH 基础 APK：CI 先获取 android-host 的锁定依赖，构建两 ABI 的 enterprise-collaboration/updater host，合并更新、文档、媒体与 OAuth Java DEX/manifest，检查实际 JNI 导出并沿用基础 APK 的签名身份。最终包必须通过签名证书一致性、DEX 类表、组件及 16KiB 对齐检查；标准入口显式启用媒体/OAuth；低层宿主构建仍默认关闭这些功能。可用 `python scripts/native-client/test_android_host.py` 回归命令路由及组件边界。
+
+本地已验证静态打包，不代表系统安装权限、更新提交、进程重启或远端策略服务已验收。缺失 `SURREAL_UPDATE_CONFIG_JSON` 仍阻塞启动；不更改信任、签名凭据或更新安全门。

@@ -28,8 +28,27 @@ if target == 'android':
     shutil.copy2(source / 'apk-verification.txt', dest / 'android-apk-verification.txt')
 receipt_path = dest / f'{target}-{runner}-build-receipt.json'
 shutil.copy2(source / 'build-receipt.json', receipt_path)
+evidence_path = None
+evidence = source / 'desktop-package-evidence.json'
+if target in ('windows', 'macos'):
+    if not evidence.is_file():
+        raise SystemExit('Collaboration desktop package evidence is required')
+    details = json.loads(evidence.read_text(encoding='utf-8'))
+    if details.get('platform') != target or details.get('entrypoint') != 'native-client/src/main.rs':
+        raise SystemExit('Desktop package evidence platform/entrypoint mismatch')
+    evidence_path = dest / f'{target}-{runner}-package-evidence.json'
+    shutil.copy2(evidence, evidence_path)
+elif target == 'android':
+    evidence = asset.with_suffix('.verification.json')
+    if not evidence.is_file():
+        raise SystemExit('Collaboration Android package evidence is required')
+    details = json.loads(evidence.read_text(encoding='utf-8'))
+    if details.get('apk_sha256') != receipt['sha256'] or details.get('requested_host_mode') != 'collaboration':
+        raise SystemExit('Android package evidence does not match the collaboration APK')
+    evidence_path = dest / f'{target}-{runner}-package-evidence.json'
+    shutil.copy2(evidence, evidence_path)
 manifest = dest / f'{target}-{runner}-SHA256SUMS.txt'
-manifest.write_text(''.join(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n' for p in [*(dest / f.name for f in files), status, receipt_path]))
+manifest.write_text(''.join(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n' for p in [*(dest / f.name for f in files), status, receipt_path, *([evidence_path] if evidence_path else [])]), encoding='utf-8')
 
 config_path = pathlib.Path('native-client/nsh.json')
 if config_path.exists():

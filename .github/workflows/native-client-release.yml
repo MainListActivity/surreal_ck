@@ -103,6 +103,8 @@ jobs:
           python scripts/native-client/check-version.py
           python scripts/native-client/test_install_nsh.py
           python scripts/native-client/test_desktop_enterprise_preview.py
+          python scripts/native-client/test_desktop_package.py
+          python scripts/native-client/test_sparkle_sdk.py
           python scripts/native-client/test_collect.py
           python scripts/native-client/test_native_host.py
           python scripts/native-client/test_release_readiness.py
@@ -130,12 +132,13 @@ jobs:
           "$sdkmanager" 'platforms;android-35' 'build-tools;35.0.1' 'ndk;29.0.14206865'
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
           rustup target add aarch64-linux-android x86_64-linux-android
-      - name: Compile Android updater source (not APK integration)
+      - name: Prepare locked Android updater host dependencies
         if: matrix.target == 'android'
         shell: bash
         run: |
-          mkdir -p native-updater-platform/build/android
-          javac -Xlint:all -Werror -cp "$ANDROID_HOME/platforms/android-35/android.jar" -d native-updater-platform/build/android native-updater-platform/android/top/maplayer/collaboration/update/*.java
+          cargo fetch --manifest-path native-client/android-host/Cargo.toml --locked
+          # package.sh builds both ABIs, merges the updater DEX/manifest, and
+          # verifies JNI exports, signing and alignment of the final APK.
       - name: Test and lint default native Rust crates
         if: matrix.target == 'linux'
         shell: bash
@@ -148,6 +151,9 @@ jobs:
         if: matrix.target == 'windows'
         shell: bash
         run: echo "RUST_MIN_STACK=268435456" >> "$GITHUB_ENV"
+      - name: Prepare checksum-pinned official Sparkle SDK (no signing credentials)
+        if: matrix.target == 'macos'
+        run: python scripts/native-client/install-sparkle-sdk.py
       - name: Verify complete native renderer (macOS or Windows MSVC)
         if: matrix.target == 'macos' || matrix.target == 'windows'
         shell: bash
@@ -156,6 +162,7 @@ jobs:
         if: matrix.target != 'android'
         run: cargo build --manifest-path native-client/Cargo.toml --features desktop --bin surreal-collaboration
       - name: Install pinned NSH distribution
+        if: matrix.target == 'linux' || matrix.target == 'android'
         run: python scripts/native-client/install-nsh.py
       - name: Build Linux, macOS or Android package
         if: matrix.target != 'windows'

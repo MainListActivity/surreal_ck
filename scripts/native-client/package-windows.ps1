@@ -5,10 +5,9 @@ $root = (Get-Location).Path
 $out = Join-Path $root 'dist/native-client/windows'
 & python scripts/native-client/build-receipt.py begin $out windows
 if ($LASTEXITCODE -ne 0) { throw 'Build preflight failed' }
-& nsh package native-client --target windows --out "$out/raw"
-if ($LASTEXITCODE -ne 0) { throw 'NSH Windows packaging failed' }
-$exe = @(Get-ChildItem "$out/raw" -Recurse -Filter '*.exe')
-if ($exe.Count -ne 1) { throw 'Expected exactly one NSH application executable' }
+& python scripts/native-client/build-desktop-app.py --platform windows --out "$out/raw"
+if ($LASTEXITCODE -ne 0) { throw 'Collaboration Windows application build failed' }
+$exe = Get-Item "$out/raw/SurrealCK/surreal-collaboration.exe"
 $status = 'unsigned'
 # The certificate must already be installed by an authorized signing service/runner.
 function Sign-File([string]$path) {
@@ -17,9 +16,11 @@ function Sign-File([string]$path) {
     $result = Set-AuthenticodeSignature -FilePath $path -Certificate $cert -HashAlgorithm SHA256 -TimestampServer 'http://timestamp.digicert.com'
     if ($result.Status -ne 'Valid') { throw "Authenticode failed: $($result.Status)" }
 }
-if ($env:WINDOWS_CERT_THUMBPRINT) { Sign-File $exe[0].FullName; $status = 'authenticode' }
-$appDir = $exe[0].Directory.FullName
-$exeName = $exe[0].Name
+if ($env:WINDOWS_CERT_THUMBPRINT) { Sign-File $exe.FullName; $status = 'authenticode' }
+& python scripts/native-client/build-desktop-app.py --platform windows --out "$out/raw" --seal
+if ($LASTEXITCODE -ne 0) { throw 'Packaged application evidence failed' }
+$appDir = $exe.Directory.FullName
+$exeName = $exe.Name
 $version = (Get-Content native-client/nsh.json | ConvertFrom-Json).version
 @"
 [Setup]

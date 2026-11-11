@@ -1,6 +1,6 @@
-# Android 实验宿主与打包
+# Android 更新宿主与实验扩展
 
-此宿主保留NSH0.4 Rust-root模式，显式启用 `android-auto-update`，并引用更新与SAF的JNI初始化函数以保留动态导出。默认客户端/默认发布流水线不因此启用它。
+此宿主保留NSH0.4 Rust-root模式，显式启用 `android-auto-update`，并引用更新与SAF的JNI初始化函数以保留动态导出。标准 Android 打包流程已使用此宿主，把 updater Java/manifest 与两 ABI JNI 一并封装。标准包同时显式启用 `enterprise-collaboration`（媒体/OAuth/企业信令与文件），要求所有 Java/manifest 桥完整，并复用 NSH 基础包已使用的签名身份。直接调用低层 build-android-host.sh 仍需显式功能参数。
 
 ## 已实际验证
 
@@ -26,7 +26,9 @@ ANDROID_HOME=/absolute/android-sdk bash scripts/native-client/build-android-host
 
 ## APK封装
 
-先由现有NSH发布命令生成基础APK，再运行以下显式实验步骤。基础APK资源、原DEX全部保留；其旧native库由刚构建的两ABI库替换。
+完整协同标准流程运行 `bash scripts/native-client/package.sh android`（显式选择全部宿主功能）；CI 预先获取锁定的 host 依赖，本地需要先准备依赖缓存。更新配置缺失时仍保持安全门阻塞，打包成功不代表已部署更新服务。
+
+需要额外媒体/OAuth能力时，先由现有NSH发布命令生成基础APK，再运行以下显式实验步骤。基础APK资源、原DEX全部保留；其旧native库由刚构建的两ABI库替换。
 
 ```
 python scripts/native-client/package-android-host.py \
@@ -56,8 +58,8 @@ python scripts/native-client/package-android-host.py \
 
 测试：`python scripts/native-client/test_android_host.py`。
 
-## 阶段五：默认关闭的原生媒体
+## 单独的媒体实验构建
 
-`ANDROID_NATIVE_MEDIA=1 bash scripts/native-client/build-android-host.sh` 显式启用host的 `android-native-media` feature；默认仍关闭，不替代普通NSH APK。封装时在已有两个manifest片段之外加入 `--manifest-fragment native-media-platform/android/media-manifest.xml`，使用新名称 `SurrealCK-stage5-media-test-only.apk`，不能覆盖既有被测APK。
+`ANDROID_NATIVE_MEDIA=1 bash scripts/native-client/build-android-host.sh` 显式启用host的 `android-native-media` feature；直接调用该低层脚本默认关闭；标准 package.sh 已选择完整协同宿主。封装时在已有两个manifest片段之外加入 `--manifest-fragment native-media-platform/android/media-manifest.xml`，使用新名称 `SurrealCK-stage5-media-test-only.apk`，不能覆盖既有被测APK。
 
 只使用既有已授权测试key。打包器要求媒体Provider、frame/state/error/closed全部JNI真实导出，Java以SDK bootclasspath严格编译并合并DEX。完整行为与局限见 `../../native-media-platform/android/MEDIA-HOST.md`。没有设备采集、播放或两机通话验收前，不能把这份实验包称为功能通过。
