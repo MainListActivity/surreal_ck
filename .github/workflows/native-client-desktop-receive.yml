@@ -4,16 +4,14 @@ on:
   push:
     branches: [feat/native-collaboration-bootstrap]
     paths:
-      - 'native-transport/src/transfer_destination*'
-      - 'native-transport/validation/desktop-receive-probe/**'
+      - 'native-transport/**'
       - 'scripts/native-client/check-desktop-receive.sh'
       - 'scripts/native-client/check-native-host.sh'
       - '.github/workflows/native-client-desktop-receive.yml'
   workflow_dispatch:
   pull_request:
     paths:
-      - 'native-transport/src/transfer_destination*'
-      - 'native-transport/validation/desktop-receive-probe/**'
+      - 'native-transport/**'
       - 'scripts/native-client/check-desktop-receive.sh'
       - 'scripts/native-client/check-native-host.sh'
       - '.github/workflows/native-client-desktop-receive.yml'
@@ -39,7 +37,7 @@ jobs:
           - os: windows-2022
             target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 40
     env:
       CARGO_INCREMENTAL: '0'
       CARGO_PROFILE_DEV_DEBUG: '0'
@@ -57,6 +55,18 @@ jobs:
         run: |
           set -o pipefail
           bash scripts/native-client/check-desktop-receive.sh '${{ matrix.target }}' 2>&1 | tee "$RUNNER_TEMP/desktop-receive-probe.log"
+      - name: Run real Transfer with candidate backend only in unit-test builds
+        shell: bash
+        run: |
+          set -eo pipefail
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/desktop-receive-transport-target"
+          {
+            bash scripts/native-client/check-native-host.sh '${{ matrix.target }}'
+            printf 'Full Transfer source commit: %s\n' "$(git rev-parse HEAD)"
+            cargo test --locked --manifest-path native-transport/Cargo.toml --target '${{ matrix.target }}' --lib transfer:: -- --nocapture
+            cargo test --locked --manifest-path native-transport/Cargo.toml --target '${{ matrix.target }}' --test receive_production_gate -- --nocapture
+            cargo clippy --locked --manifest-path native-transport/Cargo.toml --target '${{ matrix.target }}' --all-targets -- -D warnings
+          } 2>&1 | tee "$RUNNER_TEMP/desktop-receive-transport.log"
       - name: Record scope and untested cases
         if: always()
         shell: bash
@@ -65,10 +75,12 @@ jobs:
           if [[ '${{ matrix.target }}' == *windows* ]]; then
             printf '%s\n' 'Windows symlink attack tests were requested with existing runner privileges. Check the test log: missing privilege is a failure, not a skipped pass. No elevation or Developer Mode change is allowed.' >> "$GITHUB_STEP_SUMMARY"
           fi
-          printf '%s\n' 'Cross-user isolation, full transport/ACK, actual disk-full and crash recovery remain separate acceptance requirements.' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' 'Full Transfer tests use real ICE/DTLS/SCTP over virtual networking and real native disk APIs. The subprocess fixture is ignored only as a standalone entry: its parent test invokes it twice and kills it at actual partial-receive and saved-before-ACK checkpoints. Check logs for execution results. Cross-user isolation, actual disk-full, OS/power failure and automatic orphan recovery remain separate gaps.' >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: desktop-receive-candidate-${{ matrix.target }}
-          path: ${{ runner.temp }}/desktop-receive-probe.log
+          path: |
+            ${{ runner.temp }}/desktop-receive-probe.log
+            ${{ runner.temp }}/desktop-receive-transport.log
           if-no-files-found: warn

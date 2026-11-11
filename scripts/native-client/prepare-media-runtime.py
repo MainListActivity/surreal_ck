@@ -14,7 +14,15 @@ def sha256(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def reject_root_link(path):
+    # Before resolve(): otherwise a symlink/junction root silently becomes trusted input.
+    if path.is_symlink() or getattr(path, 'is_junction', lambda: False)():
+        raise ValueError('Symlinks/junctions are not supported as runtime input roots')
+
+
 def validate(source, manifest, expected_hash, platform, arch, inspection_tool=None):
+    reject_root_link(source)
+    reject_root_link(manifest)
     if not re.fullmatch(r'[0-9a-f]{64}', expected_hash) or sha256(manifest) != expected_hash:
         raise ValueError('Manifest must match the independently pinned SHA256')
     data = json.loads(manifest.read_text(encoding='utf-8'))

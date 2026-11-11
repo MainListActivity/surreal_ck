@@ -55,6 +55,8 @@ class DesktopPackageTests(unittest.TestCase):
             self.assertEqual(evidence['executable'], 'SurrealCK/surreal-collaboration.exe')
             self.assertEqual(evidence['packaged_executable_sha256'], report['compiled_executable_sha256'])
             self.assertFalse(evidence['release_eligible'])
+            self.assertEqual(evidence['media_runtime']['status'], 'not-bundled')
+            self.assertEqual(evidence['media_runtime']['input_validation'], 'not-configured')
             self.assertEqual(evidence['runtime_validation'], 'not-run')
             with self.assertRaises(ValueError): builder.stage(event, 'windows', out, {}, '')
 

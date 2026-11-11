@@ -19,7 +19,18 @@ use tokio::sync::{mpsc, watch, Mutex};
 #[cfg(any(target_os = "linux", target_os = "android"))]
 #[path = "transfer_destination.rs"]
 mod destination;
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
+// 候选桌面后端仅在本crate单元测试中接入真实传输层，绝不进入生产library。
+#[cfg(all(test, target_os = "macos"))]
+#[path = "transfer_destination_macos.rs"]
+mod destination;
+#[cfg(all(test, target_os = "windows"))]
+#[path = "transfer_destination_windows.rs"]
+mod destination;
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    all(test, any(target_os = "macos", target_os = "windows"))
+)))]
 mod destination {
     use std::{fs::File, path::PathBuf};
     pub(super) struct Destination;
@@ -1461,12 +1472,22 @@ mod tests {
             let path = std::env::temp_dir()
                 .join(format!("surreal-ck-transfer-test-{}", id_string(new_id())));
             std::fs::create_dir(&path).unwrap();
+            // macOS /var 与 /tmp 通常是别名；夹具选择真实路径，不改变生产路径策略。
+            #[cfg(target_os = "macos")]
+            let path = path.canonicalize().unwrap();
             Self(path)
         }
         fn path(&self, name: &str) -> PathBuf {
             self.0.join(name)
         }
         fn no_partials(&self) {
+            #[cfg(target_os = "macos")]
+            {
+                let root = self.path(".surreal-ck-receive");
+                if root.exists() {
+                    assert_eq!(std::fs::read_dir(root).unwrap().count(), 0);
+                }
+            }
             assert!(std::fs::read_dir(&self.0).unwrap().all(|entry| {
                 !entry
                     .unwrap()
@@ -1594,7 +1615,12 @@ mod tests {
 
     #[tokio::test]
     #[cfg_attr(
-        not(any(target_os = "linux", target_os = "android")),
+        not(any(
+            target_os = "linux",
+            target_os = "android",
+            target_os = "macos",
+            target_os = "windows"
+        )),
         ignore = "secure receiving is not implemented on this platform"
     )]
     async fn real_virtual_chat_approval_stream_integrity_cancel_and_no_overwrite() {
@@ -1713,6 +1739,192 @@ mod tests {
             a.close().await.unwrap(); b.close().await.unwrap(); a_chat.close().await.unwrap();
             ap.abort(); bp.abort(); router.lock().await.stop().await.unwrap();
         }).await.expect("file session virtual ICE/DTLS/SCTP test timed out");
+    }
+
+    // 子进程入口只由下面的测试按精确名称启动；--ignored单独调用无夹具则失败。
+    #[tokio::test]
+    #[ignore = "subprocess fixture; run interrupted_process_preserves_commit_boundary_and_allows_new_session"]
+    async fn interrupted_receive_child() {
+        let root =
+            PathBuf::from(std::env::var_os("CK_RECEIVE_CRASH_FIXTURE").expect("parent fixture"));
+        let committed = std::env::var("CK_RECEIVE_CRASH_PHASE").unwrap() == "committed";
+        let (a_chat, ae, b_chat, be, _router) = pair().await;
+        let (at, mut ar) = mpsc::channel(128);
+        let (bt, mut br) = mpsc::channel(128);
+        let a = Transfer::new(a_chat, at);
+        let b = Transfer::new(b_chat, bt);
+        let gate = Arc::new(Gate::default());
+        gate.hold_chunk_ack.store(!committed, Ordering::SeqCst);
+        gate.hold_complete.store(committed, Ordering::SeqCst);
+        let _ap = pump(ae, a.clone(), gate.clone());
+        let _bp = pump(be, b.clone(), Arc::new(Gate::default()));
+        let id = a.offer(root.join("source.bin")).await.unwrap();
+        assert!(matches!(next(&mut br).await, Event::Offer { .. }));
+        b.accept(&id, root.join("sink/received.bin")).await.unwrap();
+        if committed {
+            assert!(matches!(
+                terminal(&mut br).await,
+                Event::Completed {
+                    destination: Some(_),
+                    ..
+                }
+            ));
+            assert_eq!(wait_held(&gate).await[4], COMPLETE);
+            while let Ok(event) = ar.try_recv() {
+                assert!(matches!(event, Event::Progress { .. }));
+            }
+        } else {
+            assert!(
+                matches!(next(&mut br).await, Event::Progress { done, .. } if done == file::CHUNK_SIZE as u64)
+            );
+            assert_eq!(wait_held(&gate).await[4], CHUNK_ACK);
+        }
+        // 父进程只在真实接收状态/真实落盘后、最终ACK仍被扣留时终止进程。
+        std::fs::write(root.join("ready"), b"ready").unwrap();
+        std::future::pending::<()>().await;
+    }
+
+    #[tokio::test]
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "windows"
+    ))]
+    async fn interrupted_process_preserves_commit_boundary_and_allows_new_session() {
+        struct ChildGuard(std::process::Child);
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        for phase in ["partial", "committed"] {
+            let root = TestDir::new();
+            let sink = root.path("sink");
+            std::fs::create_dir(&sink).unwrap();
+            let data = vec![7u8; file::CHUNK_SIZE * 3];
+            std::fs::write(root.path("source.bin"), &data).unwrap();
+            let sentinel = sink.join("unrelated.part");
+            std::fs::write(&sentinel, b"existing local file").unwrap();
+            let mut child = ChildGuard(
+                std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "transfer::tests::interrupted_receive_child",
+                        "--ignored",
+                        "--nocapture",
+                    ])
+                    .env("CK_RECEIVE_CRASH_FIXTURE", &root.0)
+                    .env("CK_RECEIVE_CRASH_PHASE", phase)
+                    .spawn()
+                    .unwrap(),
+            );
+            tokio::time::timeout(Duration::from_secs(30), async {
+                loop {
+                    assert!(
+                        child.0.try_wait().unwrap().is_none(),
+                        "child failed before reaching {phase}"
+                    );
+                    if root.path("ready").exists() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("child never reached actual receive checkpoint");
+            child.0.kill().unwrap();
+            assert!(!child.0.wait().unwrap().success());
+            let target = sink.join("received.bin");
+            if phase == "partial" {
+                assert!(
+                    !target.exists(),
+                    "interruption must not publish incomplete bytes"
+                );
+            } else {
+                assert_eq!(
+                    std::fs::read(&target).unwrap(),
+                    data,
+                    "saved before ACK stays saved"
+                );
+            }
+            assert_eq!(std::fs::read(&sentinel).unwrap(), b"existing local file");
+            // 只枚举本测试独占夹具的已知staging位置，不做生产回收或递归删除。
+            #[allow(unused_mut)]
+            let mut leftovers: Vec<PathBuf> = Vec::new();
+            #[cfg(target_os = "macos")]
+            for entry in std::fs::read_dir(sink.join(".surreal-ck-receive")).unwrap() {
+                leftovers.push(entry.unwrap().path().join("payload"));
+            }
+            #[cfg(target_os = "windows")]
+            for entry in std::fs::read_dir(&sink).unwrap() {
+                let entry = entry.unwrap();
+                if entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".surreal-ck-")
+                {
+                    leftovers.push(entry.path());
+                }
+            }
+            // Linux匿名inode在进程关闭后回收；桌面命名staging目前故意不自动回收。
+            let expected = usize::from(
+                phase == "partial" && cfg!(any(target_os = "macos", target_os = "windows")),
+            );
+            assert_eq!(leftovers.len(), expected, "actual orphan count for {phase}");
+            for path in &leftovers {
+                assert_eq!(std::fs::read(path).unwrap(), &data[..file::CHUNK_SIZE]);
+            }
+            println!(
+                "actual process interruption: phase={phase}, staging_payloads={}, saved={}",
+                leftovers.len(),
+                target.exists()
+            );
+            // 终止后由父进程在同一目录创建的新会话必须可完成；不复用/删除旧staging。
+            let (a_chat, ae, b_chat, be, router) = pair().await;
+            let (at, mut ar) = mpsc::channel(128);
+            let (bt, mut br) = mpsc::channel(128);
+            let a = Transfer::new(a_chat.clone(), at);
+            let b = Transfer::new(b_chat.clone(), bt);
+            let ap = pump(ae, a.clone(), Arc::new(Gate::default()));
+            let bp = pump(be, b.clone(), Arc::new(Gate::default()));
+            let id = a.offer(root.path("source.bin")).await.unwrap();
+            assert!(matches!(next(&mut br).await, Event::Offer { .. }));
+            let fresh = sink.join("fresh.bin");
+            b.accept(&id, fresh.clone()).await.unwrap();
+            assert!(matches!(
+                terminal(&mut br).await,
+                Event::Completed {
+                    destination: Some(_),
+                    ..
+                }
+            ));
+            assert!(matches!(
+                terminal(&mut ar).await,
+                Event::Completed {
+                    destination: None,
+                    ..
+                }
+            ));
+            assert_eq!(std::fs::read(fresh).unwrap(), data);
+            assert_eq!(std::fs::read(&sentinel).unwrap(), b"existing local file");
+            for path in &leftovers {
+                assert_eq!(std::fs::read(path).unwrap(), &data[..file::CHUNK_SIZE]);
+            }
+            if phase == "committed" {
+                assert_eq!(std::fs::read(target).unwrap(), data);
+            }
+            a.shutdown().await.unwrap();
+            b.shutdown().await.unwrap();
+            ap.abort();
+            bp.abort();
+            let _ = ap.await;
+            let _ = bp.await;
+            a_chat.close().await.unwrap();
+            b_chat.close().await.unwrap();
+            router.lock().await.stop().await.unwrap();
+        }
     }
 
     async fn isolated(
@@ -2032,7 +2244,12 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "windows"
+    ))]
     async fn publish_gate_distinguishes_cancel_before_and_after_commit_admission() {
         for point in ["before_publish", "publishing"] {
             let (transfer, _events, chat_events) = isolated(1).await;
@@ -2165,7 +2382,12 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "windows"
+    ))]
     async fn real_virtual_chat_publish_wins_cancel_and_still_delivers_saved_ack() {
         tokio::time::timeout(Duration::from_secs(10), async {
             let (a_chat, ae, b_chat, be, router) = pair().await;
@@ -2376,7 +2598,12 @@ mod tests {
             hash: Sha256::digest(b"").into(),
         };
         let target = dir.path("target");
-        if !receive_supported() {
+        if !cfg!(any(
+            target_os = "linux",
+            target_os = "android",
+            target_os = "macos",
+            target_os = "windows"
+        )) {
             assert!(prepare_destination(metadata, target.clone()).is_err());
             assert!(!target.exists());
             dir.no_partials();

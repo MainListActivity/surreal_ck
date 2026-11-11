@@ -71,3 +71,15 @@ manifest 是**审查后的构建输入**，不是自动产生的信任凭证：�
 脚本检查两个主程序 PE/薄 Mach-O 架构、全树 hash 与静态导入闭包。Windows 非系统 DLL 必须位于 bin；macOS 仅允许系统路径和可解析的包内 loader/executable-relative 路径，尚不接受未经验证的 rpath。静态检查不覆盖运行时动态加载、硬件驱动、沙盒/TCC 或签名兼容性，必须保留原生测试门槛。
 
 当前没有满足条件的 release manifest：Windows 缺完整源码/合规审查和原生运行记录；macOS 缺固定来源构建产物、两架构依赖闭包和原生测试。这是明确发布阻碍，不是脚本失败或新授权被拒。本次未下载/运行候选二进制、未触发摄像头/麦克风/屏幕权限、未创建凭据或发布。
+
+### 正式 builder 的可选接线
+
+`build-desktop-app.py` 及调用它的 Windows/macOS 安装脚本现消费三个环境变量：
+`SURREAL_MEDIA_RUNTIME_SOURCE`（已审核运行时树绝对路径）、
+`SURREAL_MEDIA_RUNTIME_MANIFEST`（清单绝对路径）、
+`SURREAL_MEDIA_RUNTIME_MANIFEST_SHA256`（独立固定 SHA256）。三项必须全有；未配置时不捆绑，证据明确标记 `not-bundled / not-configured`。
+
+stage 先完整验证输入，再复制到上述 resolver 路径并重新验证复制结果。
+`desktop-build.json` / `desktop-package-evidence.json` 保留清单 hash、输入/复制静态审计、全树文件 hash、外部提供的原生测试证据 hash 与真实复制结果。seal 再检查运行时树没有改变；证据里的 `not-run-by-packager` 表示本打包器未执行媒体，不把供应商记录当成本次原生验收。
+
+运行时须作为已完成必要签名的固定输入提交；当前 seal 拒绝准备后再修改媒体二进制（含重签），若重签应重新产生并审核清单。应用主程序签名不受此限制。媒体组件签名、安装后设备权限和完整应用动态依赖仍需单独验收，`release_eligible=false` 不变。此接线本身不填补目前缺失的真实合格运行时来源/原生证据。

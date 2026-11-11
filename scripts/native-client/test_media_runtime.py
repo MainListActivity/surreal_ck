@@ -92,6 +92,26 @@ class RuntimeContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'PE architecture'):
             self.validate()
 
+    def test_source_root_symlink_rejected(self):
+        link = Path(self.temp.name) / 'linked-runtime'
+        try:
+            link.symlink_to(self.root, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest('directory symlink unavailable')
+        self.manifest.write_text(json.dumps(self.data), encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'runtime input roots'):
+            module.validate(link, self.manifest, module.sha256(self.manifest), 'windows', 'x86_64')
+
+    def test_manifest_symlink_rejected(self):
+        self.manifest.write_text(json.dumps(self.data), encoding='utf-8')
+        link = Path(self.temp.name) / 'linked-manifest.json'
+        try:
+            link.symlink_to(self.manifest)
+        except (OSError, NotImplementedError):
+            self.skipTest('symlink unavailable')
+        with self.assertRaisesRegex(ValueError, 'runtime input roots'):
+            module.validate(self.root, link, module.sha256(self.manifest), 'windows', 'x86_64')
+
     def test_symlink_rejected(self):
         path = self.root / 'link'
         try:

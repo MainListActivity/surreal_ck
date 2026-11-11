@@ -16,6 +16,36 @@ spec.loader.exec_module(desktop)
 FEATURES = {k: list(v) for k, v in desktop.FEATURES.items()}
 FEATURES['macos'].append('macos-auto-update')
 
+media_spec = importlib.util.spec_from_file_location('media_runtime', Path(__file__).with_name('prepare-media-runtime.py'))
+media = importlib.util.module_from_spec(media_spec)
+media_spec.loader.exec_module(media)
+
+
+def media_config(environ):
+    names = ('SURREAL_MEDIA_RUNTIME_SOURCE', 'SURREAL_MEDIA_RUNTIME_MANIFEST',
+             'SURREAL_MEDIA_RUNTIME_MANIFEST_SHA256')
+    values = [environ.get(name) for name in names]
+    if not any(value is not None for value in values):
+        return None
+    if not all(values):
+        raise ValueError('媒体运行时配置必须同时提供 source、manifest 和固定 SHA256')
+    source, manifest = map(Path, values[:2])
+    if not source.is_absolute() or not manifest.is_absolute():
+        raise ValueError('媒体运行时输入必须使用绝对路径')
+    media.reject_root_link(source)
+    media.reject_root_link(manifest)
+    return dict(source=source, manifest=manifest, expected_hash=values[2])
+
+
+def runtime_inventory(root):
+    files = {}
+    for path in root.rglob('*'):
+        if path.is_symlink() or (not path.is_file() and not path.is_dir()):
+            raise ValueError('包内媒体树包含链接或特殊文件')
+        if path.is_file():
+            files[path.relative_to(root).as_posix()] = media.sha256(path)
+    return files
+
 
 def preflight(target, environ):
     if target == 'macos':
@@ -37,9 +67,19 @@ def command(target, host):
     return cmd
 
 
-def stage(event, target, out, snapshot, host):
+def stage(event, target, out, snapshot, host, runtime=None):
     if out.exists():
         raise ValueError('输出已存在；拒绝混用旧产物')
+    runtime_report = dict(status='not-bundled', input_validation='not-configured',
+        runtime_validation='not-run', device_permissions='unverified')
+    if runtime is not None:
+        if out.resolve().is_relative_to(runtime['source'].resolve()):
+            raise ValueError('媒体运行时目标不能位于输入树内')
+        arch = host.split('-')[0]
+        if arch not in ('x86_64', 'aarch64'):
+            raise ValueError('不支持的媒体运行时架构')
+        # 完整验证必须发生在创建应用目录或复制任何运行时文件之前。
+        input_audit = media.validate(**runtime, platform=target, arch=arch)
     binary = Path(event['executable'])
     with binary.open('rb') as f:
         magic = f.read(4)
@@ -65,11 +105,33 @@ def stage(event, target, out, snapshot, host):
     shutil.copy2(binary, installed)
     if digest != desktop.receipt.digest(installed) or digest != desktop.receipt.digest(binary):
         raise ValueError('复制期间 binary 改变')
+    if runtime is not None:
+        destination = (installed.parent / 'media-runtime' if target == 'windows' else
+                       installed.parent.parent / 'Resources/media-runtime')
+        if destination.resolve().is_relative_to(runtime['source'].resolve()):
+            raise ValueError('媒体运行时目标不能位于输入树内')
+        try:
+            shutil.copytree(runtime['source'], destination)
+            copied_audit = media.validate(source=destination, manifest=runtime['manifest'],
+                expected_hash=runtime['expected_hash'], platform=target, arch=arch)
+        except Exception:
+            if destination.exists():
+                shutil.rmtree(destination)
+            raise
+        manifest_data = json.loads(runtime['manifest'].read_text(encoding='utf-8'))
+        runtime_report = dict(status='bundled', input_validation='passed', copy_validation='passed',
+            manifest_sha256=runtime['expected_hash'], platform=target, arch=arch,
+            path=destination.relative_to(out).as_posix(), files=runtime_inventory(destination),
+            input_static_audit=input_audit, copied_static_audit=copied_audit,
+            supplied_native_test_evidence=dict(path=manifest_data['native_test_evidence'],
+                sha256=manifest_data['files'][manifest_data['native_test_evidence']]),
+            runtime_validation='not-run-by-packager', device_permissions='unverified',
+            code_signing='not-validated-by-media-preparation')
     report = snapshot | dict(schema=1, purpose='collaboration-installer-input', platform=target,
         rust_host=host, features=sorted(event['features']), entrypoint='native-client/src/main.rs',
         executable=installed.relative_to(out).as_posix(), compiled_executable_sha256=digest,
         runtime_validation='not-run', dependency_closure='unverified', release_eligible=False,
-        media_runtime='ffmpeg/ffplay not bundled; availability/device permissions unverified',
+        media_runtime=runtime_report,
         updater='Sparkle SDK embedded by package.sh' if target == 'macos' else 'windows-auto-update helper in application binary')
     (out / 'desktop-build.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
     return report
@@ -79,6 +141,13 @@ def seal(out):
     """在平台签名之后绑定包内入口；签名后的 hash 与编译 hash 分开记录。"""
     report = json.loads((out / 'desktop-build.json').read_text(encoding='utf-8'))
     binary = out / report['executable']
+    runtime = report.get('media_runtime', {})
+    if isinstance(runtime, dict) and runtime.get('status') == 'bundled':
+        root = out / runtime['path']
+        if root.is_symlink() or not root.is_dir() or runtime_inventory(root) != runtime['files']:
+            raise ValueError('包内媒体运行时在校验后改变；必须重新准备和审核')
+        runtime['sealed_inventory_validation'] = 'passed'
+        runtime['packaged_files'] = runtime_inventory(root)
     report['packaged_executable_sha256'] = desktop.receipt.digest(binary)
     report['packaged_executable_size'] = binary.stat().st_size
     if report['platform'] == 'macos':
@@ -104,6 +173,7 @@ def main():
         return
     if args.out.exists():
         parser.error('输出必须不存在')
+    runtime = media_config(os.environ)
     preflight(args.platform, os.environ)
     host = next(line[6:] for line in subprocess.check_output(['rustc', '-vV'], text=True).splitlines() if line.startswith('host: '))
     cmd = command(args.platform, host)
@@ -123,7 +193,7 @@ def main():
     if (desktop.receipt.snapshot() | {'identity_inputs': desktop.identity_inputs(os.environ)}) != before:
         raise SystemExit('构建期间源码或公开配置改变')
     event = desktop.artifact(events, args.platform, Path.cwd(), FEATURES[args.platform])
-    stage(event, args.platform, args.out, before, host)
+    stage(event, args.platform, args.out, before, host, runtime)
 
 
 if __name__ == '__main__':

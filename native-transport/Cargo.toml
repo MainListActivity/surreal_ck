@@ -14,3 +14,7 @@ serde_json = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.191"
+
+# 仅候选桌面后端的真实Transfer单元测试使用；不把候选模块链接到生产library。
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "=0.61.2", features = ["Wdk_Storage_FileSystem", "Wdk_Foundation", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_IO"] }

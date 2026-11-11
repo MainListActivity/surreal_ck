@@ -77,3 +77,19 @@ Microsoft官方资料：[NtCreateFile的RootDirectory和创建选项](https://le
 ## 2026-11-11 Windows 原生发布失败修复（待复跑）
 
 [Windows Server 2022 原生 job](https://github.com/MainListActivity/surreal_ck/actions/runs/42963540816/job/130335406878) 在 `079aed6` 上实际运行：默认8通过、3发布失败、3ignored；三个发布成功路径均返回 Win32 参数错误87，ignored套件未进入。此次将发布改为与 `NtCreateFile` 配套的 `NtSetInformationFile(FileRenameInformation)`，按其原生结构契约使用固定父HANDLE和单组件UTF-16名，缓冲区长度包含完整结构和名称，仍 `ReplaceIfExists=FALSE`。失败保留 NTSTATUS 与对应 Win32 错误，不使用路径fallback。新增长度为一个字符的实际发布回归，late普通目标测试必须得到名称碰撞状态，防止参数错误使负例假通过。这是待原生复跑的修复，不能把交叉检查当作Windows通过记录。
+
+## 完整 Transfer 原生验证（测试专用，生产仍关闭）
+
+`native-transport`仅在`cfg(test)`且目标为macOS/Windows时将候选Destination接入真实Transfer；普通library、应用依赖与集成测试链接的library仍使用拒绝接收stub，`receive_supported()`不变，没有可被打包误开的feature。Windows API依赖仅为target dev-dependency。独立desktop-receive workflow在真实ARM/Intel Mac、Windows MSVC上额外执行：
+
+```sh
+cargo test --locked --manifest-path native-transport/Cargo.toml --lib transfer:: -- --nocapture
+cargo test --locked --manifest-path native-transport/Cargo.toml --test receive_production_gate -- --nocapture
+cargo clippy --locked --manifest-path native-transport/Cargo.toml --all-targets -- -D warnings
+```
+
+Transfer测试使用真实WebRTC ICE/DTLS/SCTP及事件/取消状态机，网络仅为进程内虚拟路由；磁盘使用真实候选API。覆盖明确批准前不接收数据、最终保存ACK、hash损坏、分块乱序/重复、取消、发布准入与取消竞争、已有/late目标冲突、空文件、连接关闭。集成测试另行链接非`cfg(test)`library并验证生产能力仍关闭。
+
+进程中断测试会启动同一测试binary的精确子用例，等真实首块接收后或真实保存成功但最终ACK未交付时由父进程终止子进程。然后核实未完成目标不存在/已保存文件仍在、无关文件不变、新Transfer会话可在原目录成功保存。Linux匿名staging应消失；macOS/Windows在partial阶段应留下一个命名staging payload，后续会话不能复用或清理它。这个子用例默认ignored是因为它必须由父测试提供独占夹具启动，不是省略验收；父用例必须成功且日志记录两个阶段。只清理本次测试独占的临时目录，不引入生产自动回收。
+
+这些测试不等于断电/内核崩溃恢复、不提供跨进程传输receipt恢复，也不实现自动orphan清理。另一个现成普通账号对staging的真实访问攻击、隔离文件系统上的真实磁盘满/配额耗尽仍需单独验收。不能创建账号、提权、更改安全设置或填满共享runner磁盘来冒充完成。上述Windows/Mac新增完整Transfer测试在原生CI成功前只算测试定义，不能用Linux回归或交叉检查代替。

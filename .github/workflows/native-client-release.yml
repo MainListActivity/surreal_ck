@@ -99,11 +99,13 @@ jobs:
           "$openssl_bin/openssl" version | grep -E '^OpenSSL 3\.'
           echo "$openssl_bin" >> "$GITHUB_PATH"
       - name: Test release asset collection
+        shell: bash
         run: |
           python scripts/native-client/check-version.py
           python scripts/native-client/test_install_nsh.py
           python scripts/native-client/test_desktop_enterprise_preview.py
           python scripts/native-client/test_desktop_package.py
+          python scripts/native-client/test_desktop_media_package.py
           python scripts/native-client/test_sparkle_sdk.py
           python scripts/native-client/test_collect.py
           python scripts/native-client/test_native_host.py
@@ -111,6 +113,7 @@ jobs:
           python scripts/native-client/test_update_policy.py
           python scripts/native-client/test_android_host.py
           python scripts/native-client/test_android_smoke.py
+          python scripts/native-client/test_windows_smoke.py
           python scripts/native-client/test_media_runtime.py
       - name: Install Linux build libraries
         if: runner.os == 'Linux'
@@ -246,6 +249,34 @@ jobs:
         with:
           name: android-install-smoke-evidence
           path: ${{ runner.temp }}/android-smoke/*
+          if-no-files-found: warn
+
+  windows-install-smoke:
+    if: always() && github.event_name == 'push' && needs.package.result != 'cancelled'
+    needs: package
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-client-windows-windows-2022
+          path: windows-package
+      - name: Install and launch the exact collaboration installer without bypassing its gate
+        shell: pwsh
+        run: |
+          $setups = @(Get-ChildItem windows-package -File -Filter 'SurrealCK-windows-*-setup.exe')
+          if ($setups.Count -ne 1) { throw 'Expected exactly one collaboration setup EXE' }
+          ./scripts/native-client/windows-install-smoke.ps1 `
+            -SetupPath $setups[0].FullName `
+            -PackageEvidencePath windows-package/windows-windows-2022-package-evidence.json `
+            -BuildReceiptPath windows-package/windows-windows-2022-build-receipt.json `
+            -EvidenceDir "$env:RUNNER_TEMP/windows-smoke"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-install-smoke-evidence
+          path: ${{ runner.temp }}/windows-smoke/*
           if-no-files-found: warn
 
   # Validation only: public candidate bytes must already exist before activating
