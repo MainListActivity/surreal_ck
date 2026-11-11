@@ -15,6 +15,9 @@ import tempfile
 import time
 
 HERE = Path(__file__).resolve().parent
+MSYS2_ACTION_COMMIT = 'ec48f7c5447b3140e2b088413ae3a55687bccb6e'
+MSYS2_PACKAGES = ('bash', 'coreutils', 'diffutils', 'file', 'findutils', 'gawk', 'grep', 'make', 'perl', 'sed',
+                 'mingw-w64-x86_64-binutils', 'mingw-w64-x86_64-gcc', 'mingw-w64-x86_64-pkgconf')
 
 
 def load(name):
@@ -85,8 +88,8 @@ def resolve_curl():
 
 def resolve_tools(target, download, windows_root=None):
     if target == 'windows':
-        root = windows_root or Path('C:/msys64')
-        directories = {name: root / 'usr/bin' for name in ('bash', 'cygpath', 'make')}
+        root = windows_root or Path(os.environ.get('MEDIA_MSYS2_ROOT', 'C:/msys64'))
+        directories = {name: root / 'usr/bin' for name in ('bash', 'cygpath', 'make', 'pacman')}
         directories.update({name: root / 'mingw64/bin' for name in ('gcc', 'g++', 'pkg-config', 'objdump')})
         tools = {name: find_tool(name + '.exe', directory) for name, directory in directories.items()}
     else:
@@ -95,6 +98,25 @@ def resolve_tools(target, download, windows_root=None):
     if download:
         tools['curl'] = resolve_curl()
     return tools
+
+
+def windows_package_provenance(tools):
+    output = subprocess.check_output([tools['pacman'], '-Q'], text=True, encoding='utf-8')
+    installed = {}
+    for line in output.splitlines():
+        fields = line.split()
+        if len(fields) != 2:
+            raise ValueError('Unexpected pacman package inventory line')
+        installed[fields[0]] = fields[1]
+    missing = sorted(set(MSYS2_PACKAGES) - installed.keys())
+    if missing:
+        raise ValueError('Required official MSYS2 packages missing: ' + ', '.join(missing))
+    return dict(configured_action='msys2/setup-msys2', configured_action_commit=MSYS2_ACTION_COMMIT, msystem='MINGW64',
+        official_repositories=['https://repo.msys2.org/msys/x86_64/', 'https://repo.msys2.org/mingw/mingw64/'],
+        requested_packages={name: installed[name] for name in MSYS2_PACKAGES},
+        installed_packages=installed, query=[tools['pacman'], '-Q'],
+        temporary_msys2_update_requested=True, update_scope='fresh job-local MSYS2 only; no host OS update',
+        signature_policy_override=False)
 
 
 def download_source(source, archive, name, log=None):
@@ -195,6 +217,8 @@ def build(work, cache, target, arch, download=False):
     provenance = dict(repository_commit=subprocess.check_output([tools['git'], 'rev-parse', 'HEAD'], cwd=HERE, text=True).strip(),
         platform=target, arch=arch, tools=tools, host=smoke.platform.platform(), started_at=datetime.now(timezone.utc).isoformat(),
         github_run_id=os.environ.get('GITHUB_RUN_ID'), github_run_attempt=os.environ.get('GITHUB_RUN_ATTEMPT'))
+    if target == 'windows':
+        provenance['msys2'] = windows_package_provenance(tools)
     (records / 'provenance.json').write_text(json.dumps(provenance, indent=2), encoding='utf-8')
     for name in ('build-media-native.sh', 'build-media-runtime.py', 'media-sources.lock.json',
                  'smoke-media-runtime.py', 'media-runtime.py'):

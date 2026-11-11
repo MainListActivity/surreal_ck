@@ -191,7 +191,7 @@ class NativeMediaBuildTests(unittest.TestCase):
             root = Path(tmp)
             tools = dict(bash=str(root / 'msys64/usr/bin/bash.exe'), gcc=str(root / 'msys64/mingw64/bin/gcc.exe'),
                          cygpath=str(root / 'msys64/usr/bin/cygpath.exe'), git=str(root / 'git.exe'))
-            with patch.object(builder.smoke, 'native_target', return_value=('windows', 'x86_64')), patch.object(builder, 'resolve_tools', return_value=tools), patch.object(builder, 'sources', return_value={'sources': {}}), patch.object(builder.subprocess, 'check_output', return_value='/fixture'), patch.dict(builder.os.environ, {'SystemRoot': str(root / 'Windows')}), patch.object(builder.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, ['fixture'])) as run:
+            with patch.object(builder.smoke, 'native_target', return_value=('windows', 'x86_64')), patch.object(builder, 'resolve_tools', return_value=tools), patch.object(builder, 'windows_package_provenance', return_value={'fixture': True}), patch.object(builder, 'sources', return_value={'sources': {}}), patch.object(builder.subprocess, 'check_output', return_value='/fixture'), patch.dict(builder.os.environ, {'SystemRoot': str(root / 'Windows')}), patch.object(builder.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, ['fixture'])) as run:
                 with self.assertRaises(subprocess.CalledProcessError):
                     builder.build(root / 'work', root / 'cache', 'windows', 'x86_64')
             self.assertEqual(run.call_args.args[0][0], tools['bash'])
@@ -249,6 +249,36 @@ class NativeMediaBuildTests(unittest.TestCase):
             self.assertEqual((root / 'work/runtime/build-records/ffmpeg-ffbuild-config.log').read_text(), 'configure failure detail')
             self.assertFalse((root / 'work/candidate-manifest.json').exists())
 
+    def test_package_versions_recorded_and_required_packages_checked(self):
+        installed = '\n'.join(name + ' 1.2.3-1' for name in builder.MSYS2_PACKAGES) + '\ntransitive-runtime 4.5-1\n'
+        with patch.object(builder.subprocess, 'check_output', return_value=installed) as query:
+            record = builder.windows_package_provenance({'pacman': '/verified/pacman.exe'})
+        self.assertEqual(query.call_args.args[0], ['/verified/pacman.exe', '-Q'])
+        self.assertEqual(record['requested_packages']['make'], '1.2.3-1')
+        self.assertEqual(record['installed_packages']['transitive-runtime'], '4.5-1')
+        self.assertEqual(record['configured_action_commit'], builder.MSYS2_ACTION_COMMIT)
+        self.assertTrue(record['temporary_msys2_update_requested'])
+        self.assertIn('no host OS update', record['update_scope'])
+        self.assertFalse(record['signature_policy_override'])
+        with patch.object(builder.subprocess, 'check_output', return_value='bash 1.2-1\n'):
+            with self.assertRaisesRegex(ValueError, 'packages missing'):
+                builder.windows_package_provenance({'pacman': '/verified/pacman.exe'})
+
+    def test_workflow_packages_pin_and_scoped_installer_exclusions(self):
+        root = builder.HERE.parents[1]
+        workflow = (root / '.github/workflows/native-media-runtime-candidate.yml').read_text(encoding='utf-8')
+        self.assertIn('msys2/setup-msys2@' + builder.MSYS2_ACTION_COMMIT, workflow)
+        self.assertIn('msystem: MINGW64', workflow)
+        self.assertIn('update: true', workflow)
+        self.assertIn('release: true', workflow)
+        packages = workflow.split('install: >-', 1)[1].split('      - name:', 1)[0].split()
+        self.assertEqual(set(packages), set(builder.MSYS2_PACKAGES))
+        self.assertIn('-m unittest discover -s scripts/native-client -p test_media_native_build.py', workflow)
+        installer = (root / '.github/workflows/native-client-release.yml').read_text(encoding='utf-8')
+        excluded = [line.strip() for line in installer.splitlines() if "'!scripts/native-client/" in line]
+        expected = ["- '!scripts/native-client/" + name + "'" for name in ('build-media-native.sh', 'build-media-runtime.py', 'media-sources.lock.json', 'smoke-media-runtime.py', 'test_media_native_build.py')]
+        self.assertEqual(sorted(excluded), sorted(expected * 2))
+
     def test_recipe_remains_minimal_and_never_approves_release(self):
         shell = (builder.HERE / 'build-media-native.sh').read_text(encoding='utf-8')
         for flag in ('--disable-gpl', '--disable-nonfree', '--disable-autodetect', '--disable-network',
@@ -261,7 +291,10 @@ class NativeMediaBuildTests(unittest.TestCase):
         workflow = (builder.HERE.parents[1] / '.github/workflows/native-media-runtime-candidate.yml').read_text(encoding='utf-8')
         self.assertIn('workflow_dispatch:', workflow)
         self.assertNotIn('secrets.', workflow)
-        self.assertNotIn('pacman -', workflow)
+        self.assertNotIn('-Syu', workflow)
+        self.assertNotIn('--overwrite', workflow)
+        self.assertNotIn('SigLevel', workflow)
+        self.assertNotIn('pacman --noconfirm -Sy --needed', workflow)
 
 
 if __name__ == '__main__':

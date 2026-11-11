@@ -86,7 +86,7 @@ stage 先完整验证输入，再复制到上述 resolver 路径并重新验证�
 
 ## 固定官方源码的原生候选构建（独立 CI）
 
-新增 `.github/workflows/native-media-runtime-candidate.yml`，支持手动触发及授权开发分支的媒体相关路径 push，在 `macos-15` ARM、`macos-15-intel`、`windows-2022` 三个 runner 原生构建。通过官方 setup-python 固定 Python 3.12，其余只消费 runner 已有 clang 或 MSYS2 MinGW64/gcc、make、pkg-config、objdump/otool；缺工具明确失败，不运行系统包管理器或修改凭据。该 workflow 保存短期候选 artifact，不发布正式安装包，也不修改更新、签名或许可批准门。
+新增 `.github/workflows/native-media-runtime-candidate.yml`，支持手动触发及授权开发分支的媒体相关路径 push，在 `macos-15` ARM、`macos-15-intel`、`windows-2022` 三个 runner 原生构建。通过官方 setup-python 固定 Python 3.12，macOS 继续使用 runner 已有 clang/make/pkg-config/otool；Windows 的必要工具准备见下节，未满足工具校验则失败，绝不修改凭据。该 workflow 保存短期候选 artifact，不发布正式安装包，也不修改更新、签名或许可批准门。
 
 `media-sources.lock.json` 固定官方源码的版本、URL 与实际归档 SHA256：FFmpeg 9.0.2、libvpx 1.17.0、Opus 1.6.1、SDL2 2.32.10。四份实际源码归档均在 Linux 研究环境完成 hash 与安全解包验证，但未在该环境运行目标平台二进制。FFmpeg 官网 tarball 本次返回 HTTP 503，因此采用官方 FFmpeg GitHub tag 归档，两个归档不能混用 hash。Opus hash 与[官方网站](https://opus-codec.org/downloads/)一致，libvpx hash 与[Homebrew 公式](https://github.com/Homebrew/homebrew-core/blob/master/Formula/lib/libvpx.rb)一致。SDL 来自[官方 release](https://github.com/libsdl-org/SDL/releases/tag/release-2.32.10)，FFmpeg 许可依据[对应 tag 的 LICENSE](https://github.com/FFmpeg/FFmpeg/blob/n9.0.2/LICENSE.md)。不执行外部二进制下载器，不追踪 latest。
 
@@ -115,3 +115,18 @@ Windows 使用原生 Python，并把已有 `C:\msys64\mingw64\bin`、`C:\msys64\
 下载使用系统 curl，禁用用户 curlrc，限制初始 URL 和所有重定向为 HTTPS，保留证书验证并要求 TLS 1.2 以上；连接超时 20 秒、单次传输 180 秒、每源最多三次。只对暂时网络错误/指定暂时 HTTP 状态退避重试；证书验证失败、hash 不符立即失败，不换源、不变 hash、不运行未验证源码。即使下载失败，已有记录也会由原 workflow 的 `always()` artifact 步骤保留。构建失败同样通过 finally 保存已有 config.log、FFmpeg ffbuild/config.log 等配置诊断；失败不会产生成功候选清单。
 
 Windows 构建工具查找现限定到现有 `C:/msys64/usr/bin`（bash/cygpath/make）与 `C:/msys64/mingw64/bin`（gcc/g++/pkg-config/objdump），验证解析结果仍在对应目录并记录绝对路径。启动 shell、路径转换和 imports 审计均使用这些绝对路径，shell 内 PATH 仅含已核验 MSYS2 目录和系统目录；不会误启 System32 的 WSL bash，也不配置 WSL。下载使用 Windows System32 的原生 curl。write-out 格式放入 ASCII 临时文件，避免 Windows 参数转换破坏 `%{http_code}`；只有真实三位 HTTP 码记入 `http_status`，异常原始输出单独保留，成功下载返回非 HTTP 状态则直接失败。
+
+
+### Windows 官方工具包准备（代码待审查，未执行安装）
+
+真实 CI 证明镜像的 `C:/msys64/usr/bin/make.exe` 缺失，不能再以别处的裸 `make` 代替。独立候选 workflow 改用官方 [msys2/setup-msys2](https://github.com/msys2/setup-msys2/tree/ec48f7c5447b3140e2b088413ae3a55687bccb6e)，固定提交 `ec48f7c5447b3140e2b088413ae3a55687bccb6e`。采用官方支持的完整流程：`MINGW64`、`release:true` 在 RUNNER_TEMP 新建临时安装、`update:true` 更新这个临时 MSYS2、`cache:false`。不使用不受支持的手工 `-Sy` 部分升级，不更新主机 OS、不启动 WSL、不增加 job 权限。
+
+该 action 提交固定官方基础发行版 2026-09-27，校验 installer SHA256 `ad336cccfda47758b5e15cda993fbba421115cb0b126697daef1ee4dfe37209f`。使用 install 输入安装以下明确包及必要依赖：
+
+- `make`：上游 Makefile 构建。
+- `mingw-w64-x86_64-gcc`、`mingw-w64-x86_64-binutils`、`mingw-w64-x86_64-pkgconf`：MINGW64 C/C++、链接/归档/objdump、pkg-config。
+- `bash coreutils diffutils file findutils gawk grep perl sed`：上游 configure/libtool 和 libvpx rtcd.pl 所需标准工具。
+
+上游 action 内部 `--overwrite '*'` 仅用于新建的临时 MSYS2 pacman 安装，不关闭签名验证，不作用于主机 OS/WSL。使用 MSYS2 默认官方镜像配置，参考入口为 `https://repo.msys2.org/msys/x86_64/` 与 `https://repo.msys2.org/mingw/mingw64/`。包版本由当次官方仓库解析，并非逐包版本冻结；构建 provenance 记录固定 action 提交、请求包实际版本、`pacman -Q` 完整已安装版本清单和已验证工具路径。工具查找绑定 action 返回的 job-local 根目录。官方安装若遇到证书/签名/访问或权限阻碍，直接停止，不绕过验证或改变系统安全。
+
+workflow 在原生构建前运行 `test_media_native_build.py`。主安装器 push/PR paths 只排除五个独立候选输入（build-media-native.sh、build-media-runtime.py、media-sources.lock.json、smoke-media-runtime.py、test_media_native_build.py）；正式 packager 消费的 media-runtime.py/prepare-media-runtime.py 以及身份、更新器仍触发完整安装器验证。

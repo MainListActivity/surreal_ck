@@ -43,16 +43,23 @@ jobs:
         id: python
         with:
           python-version: '3.12'
-      - name: Require existing Windows native toolchain
+      - name: Prepare official MSYS2 build packages
         if: runner.os == 'Windows'
-        shell: pwsh
+        id: msys2
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # verified official v2 commit
+        with:
+          msystem: MINGW64
+          release: true
+          update: true
+          cache: false
+          path-type: minimal
+          install: >-
+            bash coreutils diffutils file findutils gawk grep make perl sed
+            mingw-w64-x86_64-binutils mingw-w64-x86_64-gcc mingw-w64-x86_64-pkgconf
+      - name: Media build regression tests
+        shell: bash
         run: |
-          # No setup action, pacman, credential, or toolchain download.
-          $dirs = @('C:\msys64\mingw64\bin', 'C:\msys64\usr\bin')
-          foreach ($dir in $dirs) {
-            if (-not (Test-Path $dir)) { throw "Required preinstalled MSYS2 directory missing: $dir" }
-            $dir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          }
+          "${{ steps.python.outputs.python-path }}" -m unittest discover -s scripts/native-client -p test_media_native_build.py -v
       - name: Build and test on macOS
         if: runner.os == 'macOS'
         shell: bash
@@ -65,8 +72,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          # Native hosted Python drives the preinstalled MSYS2 shell/compiler.
-          $env:PATH = "C:\msys64\mingw64\bin;C:\msys64\usr\bin;" + $env:PATH
+          # Native hosted Python drives the official fresh job-local MSYS2 installation.
+          $env:MEDIA_MSYS2_ROOT = '${{ steps.msys2.outputs.msys2-location }}'
+          if (-not $env:MEDIA_MSYS2_ROOT) { throw 'Official MSYS2 location output missing' }
+          $env:PATH = "$env:MEDIA_MSYS2_ROOT\mingw64\bin;$env:MEDIA_MSYS2_ROOT\usr\bin;" + $env:PATH
           $env:MSYSTEM = 'MINGW64'
           & "${{ steps.python.outputs.python-path }}" scripts/native-client/build-media-runtime.py --platform windows --arch x86_64 --work "$env:RUNNER_TEMP/media-candidate" --cache "$env:RUNNER_TEMP/media-source-cache" --download
           if ($LASTEXITCODE -ne 0) { throw 'Native media candidate failed; not eligible for packaging' }

@@ -15,6 +15,12 @@ on:
       - 'native-video-view/**'
       - 'native-signaling/**'
       - 'scripts/native-client/**'
+      # Candidate-only media recipes are not consumed by default installers.
+      - '!scripts/native-client/build-media-native.sh'
+      - '!scripts/native-client/build-media-runtime.py'
+      - '!scripts/native-client/media-sources.lock.json'
+      - '!scripts/native-client/smoke-media-runtime.py'
+      - '!scripts/native-client/test_media_native_build.py'
       - '.github/workflows/native-client*'
   workflow_dispatch:
     inputs:
@@ -35,6 +41,12 @@ on:
       - 'native-video-view/**'
       - 'native-signaling/**'
       - 'scripts/native-client/**'
+      # Candidate-only media recipes are not consumed by default installers.
+      - '!scripts/native-client/build-media-native.sh'
+      - '!scripts/native-client/build-media-runtime.py'
+      - '!scripts/native-client/media-sources.lock.json'
+      - '!scripts/native-client/smoke-media-runtime.py'
+      - '!scripts/native-client/test_media_native_build.py'
       - '.github/workflows/native-client*'
   release:
     types: [published]
