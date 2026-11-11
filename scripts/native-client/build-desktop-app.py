@@ -177,7 +177,7 @@ def main():
     preflight(args.platform, os.environ)
     host = next(line[6:] for line in subprocess.check_output(['rustc', '-vV'], text=True).splitlines() if line.startswith('host: '))
     cmd = command(args.platform, host)
-    before = desktop.receipt.snapshot() | {'identity_inputs': desktop.identity_inputs(os.environ)}
+    before = desktop.receipt.snapshot() | {'identity_inputs': desktop.identity_inputs(os.environ, args.platform)}
     env = os.environ | {'CARGO_BUILD_JOBS': '1', 'CARGO_INCREMENTAL': '0'}
     env.setdefault('CARGO_TARGET_DIR', str(Path('native-client/target').resolve()))
     events = []
@@ -190,7 +190,7 @@ def main():
             print(event.get('message', {}).get('rendered', ''), file=sys.stderr, end='')
     if process.wait() != 0:
         raise SystemExit('Cargo 构建失败，未生成安装器输入')
-    if (desktop.receipt.snapshot() | {'identity_inputs': desktop.identity_inputs(os.environ)}) != before:
+    if (desktop.receipt.snapshot() | {'identity_inputs': desktop.identity_inputs(os.environ, args.platform)}) != before:
         raise SystemExit('构建期间源码或公开配置改变')
     event = desktop.artifact(events, args.platform, Path.cwd(), FEATURES[args.platform])
     stage(event, args.platform, args.out, before, host, runtime)

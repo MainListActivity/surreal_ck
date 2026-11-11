@@ -3,6 +3,7 @@ set -euo pipefail
 # Run from repository root. The native client is a Rust-root NSH app.
 target=${1:?usage: package.sh linux|macos|android}
 root=$(pwd)
+python scripts/native-client/check-public-inputs.py --platform "$target"
 python scripts/native-client/check-version.py
 out="$root/dist/native-client/$target"
 python scripts/native-client/build-receipt.py begin "$out" "$target"

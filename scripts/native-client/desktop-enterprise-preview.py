@@ -31,14 +31,14 @@ PUBLIC_KEYS = tuple('SURREAL_CK_' + key for key in (
     'NATIVE_REDIRECT_URI', 'OIDC_TOKEN_MODE', 'OIDC_ALLOWED_HOSTS', 'SURREAL_URL', 'SURREAL_NS'))
 
 
-def identity_inputs(environ):
+def identity_inputs(environ, target=None):
     # 只读取明确允许的公开配置；不枚举或读取 secret/token/password 变量。
     values = {key: environ.get(key) for key in PUBLIC_KEYS}
     configured = any(value is not None for value in values.values())
     if configured:
         def value(key):
             return values['SURREAL_CK_' + key]
-        def url(raw, scheme=None):
+        def url(raw, scheme=None, require_host=True):
             if not isinstance(raw, str) or not raw or any(c.isspace() for c in raw):
                 raise ValueError('无效公开身份 URL（值不输出）')
             try:
@@ -46,7 +46,7 @@ def identity_inputs(environ):
                 _ = parsed.port
             except ValueError:
                 raise ValueError("无效公开身份 URL 结构（值不输出）") from None
-            if (not parsed.hostname or parsed.username is not None or parsed.password is not None
+            if ((require_host and not parsed.hostname) or parsed.username is not None or parsed.password is not None
                     or '?' in raw or '#' in raw or (scheme and parsed.scheme != scheme)):
                 raise ValueError('公开身份 URL 必须无凭据/query/fragment')
             _ = parsed.port  # 拒绝非法端口
@@ -59,10 +59,15 @@ def identity_inputs(environ):
                 raise ValueError('缺少或无效公开 client/audience')
         if value('OIDC_CLIENT_ID') == 'change_me':
             raise ValueError('拒绝占位 client ID')
-        redirect = url(value('NATIVE_REDIRECT_URI'))
+        redirect = url(value('NATIVE_REDIRECT_URI'), require_host=False)
         loopback = redirect.scheme == 'http' and redirect.hostname in ('127.0.0.1', '::1') and redirect.port not in (None, 0)
-        if (not loopback and '.' not in redirect.scheme) or redirect.path in ('', '/'):
+        custom = '.' in redirect.scheme and redirect.path.startswith('/')
+        if (not loopback and not custom) or redirect.path in ('', '/'):
             raise ValueError('无效原生 redirect')
+        if target in ('macos', 'windows', 'linux') and not loopback:
+            raise ValueError('桌面宿主仅支持固定端口 IP loopback callback')
+        if target == 'android' and value('NATIVE_REDIRECT_URI') != 'top.maplayer.collaboration:/auth/callback':
+            raise ValueError('Android callback 必须匹配已打包宿主契约')
         mode = value('OIDC_TOKEN_MODE') if value('OIDC_TOKEN_MODE') is not None else 'confidential-proxy'
         if mode not in ('confidential-proxy', 'public-pkce-discovery'):
             raise ValueError('无效 token mode')
@@ -170,7 +175,7 @@ def main():
     host = next(line[6:] for line in subprocess.check_output(['rustc', '-vV'], text=True).splitlines()
                 if line.startswith('host: '))
     cmd = command(args.platform, host)
-    before = receipt.snapshot() | {"identity_inputs": identity_inputs(os.environ)}
+    before = receipt.snapshot() | {"identity_inputs": identity_inputs(os.environ, args.platform)}
     env = os.environ | {'CARGO_BUILD_JOBS': '1', 'CARGO_INCREMENTAL': '0'}
     env.setdefault('CARGO_TARGET_DIR', str(Path('native-client/target').resolve()))
     events = []
@@ -183,7 +188,7 @@ def main():
             print(event.get('message', {}).get('rendered', ''), file=sys.stderr, end='')
     if process.wait() != 0:
         raise SystemExit('Cargo 构建失败，未生成预览 staging')
-    if (receipt.snapshot() | {"identity_inputs": identity_inputs(os.environ)}) != before:
+    if (receipt.snapshot() | {"identity_inputs": identity_inputs(os.environ, args.platform)}) != before:
         raise SystemExit('构建期间源码或公开更新配置改变')
     event = artifact(events, args.platform, Path.cwd())
     report = stage(event, args.platform, args.out, before, host)

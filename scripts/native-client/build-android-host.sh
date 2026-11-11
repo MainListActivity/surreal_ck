@@ -11,6 +11,7 @@ esac
 bin="$ndk/toolchains/llvm/prebuilt/$host/bin"
 [[ -x "$bin/llvm-ar" ]] || { echo 'Existing NDK29 toolchain missing' >&2; exit 1; }
 root=$(cd "$(dirname "$0")/../.." && pwd)
+python "$root/scripts/native-client/check-public-inputs.py" --platform android
 features=()
 if [[ "${ANDROID_NATIVE_MEDIA:-0}" == 1 ]]; then features+=(--features android-native-media); fi
 if [[ "${ANDROID_NATIVE_OAUTH:-0}" == 1 ]]; then features+=(--features android-native-oauth); fi

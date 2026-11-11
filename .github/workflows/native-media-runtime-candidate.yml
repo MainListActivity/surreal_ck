@@ -1,0 +1,84 @@
+name: Native media runtime candidate
+
+on:
+  push:
+    branches: [feat/native-collaboration-bootstrap]
+    paths:
+      - '.github/workflows/native-media-runtime-candidate.yml'
+      - 'scripts/native-client/build-media-native.sh'
+      - 'scripts/native-client/build-media-runtime.py'
+      - 'scripts/native-client/media-sources.lock.json'
+      - 'scripts/native-client/smoke-media-runtime.py'
+      - 'scripts/native-client/test_media_native_build.py'
+      - 'scripts/native-client/media-runtime.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: media-runtime-candidate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            platform: macos
+            arch: aarch64
+          - os: macos-15-intel
+            platform: macos
+            arch: x86_64
+          - os: windows-2022
+            platform: windows
+            arch: x86_64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        id: python
+        with:
+          python-version: '3.12'
+      - name: Require existing Windows native toolchain
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # No setup action, pacman, credential, or toolchain download.
+          $dirs = @('C:\msys64\mingw64\bin', 'C:\msys64\usr\bin')
+          foreach ($dir in $dirs) {
+            if (-not (Test-Path $dir)) { throw "Required preinstalled MSYS2 directory missing: $dir" }
+            $dir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          }
+      - name: Build and test on macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          "${{ steps.python.outputs.python-path }}" scripts/native-client/build-media-runtime.py \
+            --platform macos --arch '${{ matrix.arch }}' \
+            --work "$RUNNER_TEMP/media-candidate" --cache "$RUNNER_TEMP/media-source-cache" --download
+      - name: Build and test on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Native hosted Python drives the preinstalled MSYS2 shell/compiler.
+          $env:PATH = "C:\msys64\mingw64\bin;C:\msys64\usr\bin;" + $env:PATH
+          $env:MSYSTEM = 'MINGW64'
+          & "${{ steps.python.outputs.python-path }}" scripts/native-client/build-media-runtime.py --platform windows --arch x86_64 --work "$env:RUNNER_TEMP/media-candidate" --cache "$env:RUNNER_TEMP/media-source-cache" --download
+          if ($LASTEXITCODE -ne 0) { throw 'Native media candidate failed; not eligible for packaging' }
+      - name: Preserve candidate, complete sources, and build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: media-candidate-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/media-candidate/runtime
+            ${{ runner.temp }}/media-candidate/candidate-manifest.json
+            ${{ runner.temp }}/media-candidate/candidate-manifest.sha256
+          if-no-files-found: warn
+          retention-days: 14
+      # No release upload, signing, credentials or release_approved mutation.

@@ -53,6 +53,20 @@ class PreviewTests(unittest.TestCase):
                 self.assertNotIn(value, str(error.exception))
         with self.assertRaises(ValueError): preview.identity_inputs({'SURREAL_CK_OIDC_CLIENT_ID': 'only-one'})
 
+    def test_platform_callback_contract(self):
+        android = self.config() | {'SURREAL_CK_NATIVE_REDIRECT_URI': 'top.maplayer.collaboration:/auth/callback'}
+        self.assertEqual(preview.identity_inputs(android, 'android')['state'], 'configured-unverified')
+        for platform in ('macos', 'windows', 'linux'):
+            preview.identity_inputs(self.config(), platform)
+            with self.assertRaises(ValueError): preview.identity_inputs(android, platform)
+        for uri in ('top.maplayer.collaboration://auth/callback',
+                    'top.maplayer.collaboration:/auth/callback/extra',
+                    'top.maplayer.collaboration:opaque',
+                    'http://127.0.0.1:3456/callback',
+                    'top.maplayer.collaboration:/auth/callback?secret=value'):
+            with self.assertRaises(ValueError):
+                preview.identity_inputs(android | {'SURREAL_CK_NATIVE_REDIRECT_URI': uri}, 'android')
+
     def test_commands_and_native_host_guard(self):
         for target, host in [('macos', 'aarch64-apple-darwin'), ('windows', 'x86_64-pc-windows-msvc')]:
             cmd = preview.command(target, host)

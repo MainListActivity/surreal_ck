@@ -83,3 +83,28 @@ stage 先完整验证输入，再复制到上述 resolver 路径并重新验证�
 `desktop-build.json` / `desktop-package-evidence.json` 保留清单 hash、输入/复制静态审计、全树文件 hash、外部提供的原生测试证据 hash 与真实复制结果。seal 再检查运行时树没有改变；证据里的 `not-run-by-packager` 表示本打包器未执行媒体，不把供应商记录当成本次原生验收。
 
 运行时须作为已完成必要签名的固定输入提交；当前 seal 拒绝准备后再修改媒体二进制（含重签），若重签应重新产生并审核清单。应用主程序签名不受此限制。媒体组件签名、安装后设备权限和完整应用动态依赖仍需单独验收，`release_eligible=false` 不变。此接线本身不填补目前缺失的真实合格运行时来源/原生证据。
+
+## 固定官方源码的原生候选构建（独立 CI）
+
+新增 `.github/workflows/native-media-runtime-candidate.yml`，支持手动触发及授权开发分支的媒体相关路径 push，在 `macos-15` ARM、`macos-15-intel`、`windows-2022` 三个 runner 原生构建。通过官方 setup-python 固定 Python 3.12，其余只消费 runner 已有 clang 或 MSYS2 MinGW64/gcc、make、pkg-config、objdump/otool；缺工具明确失败，不运行系统包管理器或修改凭据。该 workflow 保存短期候选 artifact，不发布正式安装包，也不修改更新、签名或许可批准门。
+
+`media-sources.lock.json` 固定官方源码的版本、URL 与实际归档 SHA256：FFmpeg 9.0.2、libvpx 1.17.0、Opus 1.6.1、SDL2 2.32.10。四份实际源码归档均在 Linux 研究环境完成 hash 与安全解包验证，但未在该环境运行目标平台二进制。FFmpeg 官网 tarball 本次返回 HTTP 503，因此采用官方 FFmpeg GitHub tag 归档，两个归档不能混用 hash。Opus hash 与[官方网站](https://opus-codec.org/downloads/)一致，libvpx hash 与[Homebrew 公式](https://github.com/Homebrew/homebrew-core/blob/master/Formula/lib/libvpx.rb)一致。SDL 来自[官方 release](https://github.com/libsdl-org/SDL/releases/tag/release-2.32.10)，FFmpeg 许可依据[对应 tag 的 LICENSE](https://github.com/FFmpeg/FFmpeg/blob/n9.0.2/LICENSE.md)。不执行外部二进制下载器，不追踪 latest。
+
+本机原生调用示例（工作目录必须不存在）：
+
+```sh
+python3 scripts/native-client/build-media-runtime.py --platform macos --arch aarch64 \
+  --work /absolute/new-build --cache /absolute/source-cache --download
+```
+
+Windows 使用原生 Python，并把已有 `C:\msys64\mingw64\bin`、`C:\msys64\usr\bin` 放在本次进程 PATH 前端；`--platform windows --arch x86_64`。没有 `--download` 时仅接受本地且 hash 匹配的源归档。构建路径不接受跨编译作为原生证据。源码中的包内符号链接会物化为普通文件/目录，避免 Windows 提权；对应源码保留原始归档字节。
+
+实现范围：
+
+- 禁用 FFmpeg GPL、nonfree、version3、网络和第三方自动探测，仅显式启用 VP8/Opus、必要 PCM/rawvideo/MJPEG/BMP/DV（含 gdigrab 的 BMP 与 AVFoundation PCM 格式）、IVF/Ogg、scale/aresample，以及 AVFoundation 或 DirectShow/gdigrab。libvpx 首版采用 portable C 后端，实际通话实时性能另验，不能由合成 smoke 推断。
+- 静态构建四个媒体项目；SDL 禁用不需要的第三方音频和设备插件，Windows 请求静态 GCC/C++ runtime。仍以实际 imports 审计为准，出现额外 DLL、Homebrew dylib 或未解析 rpath 就失败，不自动从 runner 偷拷库。
+- 原生 smoke 清空 PATH、清除继承的动态库注入环境，仅使用合成 testsrc2/sine 和 SDL dummy。实际通过 pipe 输入/输出检查 VP8 六帧 RGBA 长度、Opus PCM 长度及非静音、ffplay Ogg/Opus 自动退出、编译设备后端列表；绝不打开真实采集设备。
+- 候选目录保留四份完整源码归档、上游 license/patent notices、精确脚本/锁、配置日志、静态审计和原生测试命令/结果、仓库 commit/runner OS/架构/UTC；每条 smoke 完成即落盘，失败保留部分日志和 failed 状态；全部 hash 绑定到 `candidate-manifest.json`。
+- 无论构建是否成功，生成器都不会写 `release_approved=true`。成功结果仍需项目方审核许可证、完整对应源码/可重建性及工具链 runtime 义务，完成必要签名，再重新审查并固定清单后才能进入现有 stage。CI artifact 到期前亦须落实长期对应源码分发安排。
+
+当前只证明脚本/合约测试及源码归档校验已通过；此文不宣称三平台原生构建已经成功，不用 fixture 的 smoke 结果生成候选清单。未产生人工许可或签名证据。

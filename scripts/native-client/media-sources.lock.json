@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "purpose": "Native candidate builds only; not redistribution approval",
+  "sources": {
+    "ffmpeg": {"version":"9.0.2","url":"https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n9.0.2.tar.gz","filename":"ffmpeg-9.0.2.tar.gz","directory":"FFmpeg-n9.0.2","sha256":"6e374ed621e48faa40639307dff48ba6fe574a509977956d2cce9669b7cc27e9","license":"LGPL-2.1-or-later with GPL/nonfree disabled; review selected components"},
+    "libvpx": {"version":"1.17.0","url":"https://github.com/webmproject/libvpx/archive/refs/tags/v1.17.0.tar.gz","filename":"libvpx-1.17.0.tar.gz","directory":"libvpx-1.17.0","sha256":"1020f184046187baa2985dbde38e0691f49c44088bca7a1842b0236c6081dc0a","license":"BSD-3-Clause; retain patent notices"},
+    "opus": {"version":"1.6.1","url":"https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz","filename":"opus-1.6.1.tar.gz","directory":"opus-1.6.1","sha256":"6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1","license":"BSD-3-Clause; retain patent notices"},
+    "sdl2": {"version":"2.32.10","url":"https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-2.32.10.tar.gz","filename":"SDL2-2.32.10.tar.gz","directory":"SDL2-2.32.10","sha256":"5f5993c530f084535c65a6879e9b26ad441169b3e25d789d83287040a9ca5165","license":"Zlib"}
+  }
+}
