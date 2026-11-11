@@ -24,7 +24,14 @@ media_spec.loader.exec_module(media)
 def media_config(environ):
     names = ('SURREAL_MEDIA_RUNTIME_SOURCE', 'SURREAL_MEDIA_RUNTIME_MANIFEST',
              'SURREAL_MEDIA_RUNTIME_MANIFEST_SHA256')
+    mode = environ.get('SURREAL_MEDIA_RUNTIME_MODE', 'release-approved')
+    if mode not in ('release-approved', 'development-candidate'):
+        raise ValueError('Unknown media runtime mode')
+    if mode == 'development-candidate' and (environ.get('GITHUB_EVENT_NAME') == 'release' or environ.get('GITHUB_REF', '').startswith('refs/tags/')):
+        raise ValueError('Development media candidates are forbidden in Release/tag builds')
     values = [environ.get(name) for name in names]
+    if mode == 'development-candidate' and not all(values):
+        raise ValueError('Development mode requires all pinned runtime inputs')
     if not any(value is not None for value in values):
         return None
     if not all(values):
@@ -34,7 +41,7 @@ def media_config(environ):
         raise ValueError('媒体运行时输入必须使用绝对路径')
     media.reject_root_link(source)
     media.reject_root_link(manifest)
-    return dict(source=source, manifest=manifest, expected_hash=values[2])
+    return dict(source=source, manifest=manifest, expected_hash=values[2], development=mode == 'development-candidate')
 
 
 def runtime_inventory(root):
@@ -113,7 +120,8 @@ def stage(event, target, out, snapshot, host, runtime=None):
         try:
             shutil.copytree(runtime['source'], destination)
             copied_audit = media.validate(source=destination, manifest=runtime['manifest'],
-                expected_hash=runtime['expected_hash'], platform=target, arch=arch)
+                expected_hash=runtime['expected_hash'], platform=target, arch=arch,
+                development=runtime.get('development', False))
         except Exception:
             if destination.exists():
                 shutil.rmtree(destination)
@@ -121,6 +129,7 @@ def stage(event, target, out, snapshot, host, runtime=None):
         manifest_data = json.loads(runtime['manifest'].read_text(encoding='utf-8'))
         runtime_report = dict(status='bundled', input_validation='passed', copy_validation='passed',
             manifest_sha256=runtime['expected_hash'], platform=target, arch=arch,
+            development_only=runtime.get('development', False), release_approved=manifest_data['release_approved'],
             path=destination.relative_to(out).as_posix(), files=runtime_inventory(destination),
             input_static_audit=input_audit, copied_static_audit=copied_audit,
             supplied_native_test_evidence=dict(path=manifest_data['native_test_evidence'],
@@ -143,6 +152,8 @@ def seal(out):
     binary = out / report['executable']
     runtime = report.get('media_runtime', {})
     if isinstance(runtime, dict) and runtime.get('status') == 'bundled':
+        if runtime.get('development_only'):
+            media.development_candidate(runtime['manifest_sha256'], report['platform'], runtime['arch'])
         root = out / runtime['path']
         if root.is_symlink() or not root.is_dir() or runtime_inventory(root) != runtime['files']:
             raise ValueError('包内媒体运行时在校验后改变；必须重新准备和审核')

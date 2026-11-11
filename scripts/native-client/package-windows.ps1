@@ -19,6 +19,9 @@ function Sign-File([string]$path) {
 if ($env:WINDOWS_CERT_THUMBPRINT) { Sign-File $exe.FullName; $status = 'authenticode' }
 & python scripts/native-client/build-desktop-app.py --platform windows --out "$out/raw" --seal
 if ($LASTEXITCODE -ne 0) { throw 'Packaged application evidence failed' }
+if ($env:SURREAL_MEDIA_RUNTIME_MODE -eq 'development-candidate') {
+    'DEVELOPMENT ONLY: media redistribution NOT approved; devices and business flows NOT verified; mandatory update gate remains enforced.' | Set-Content "$out/raw/SurrealCK/DEVELOPMENT-ONLY.txt"
+}
 $appDir = $exe.Directory.FullName
 $exeName = $exe.Name
 $version = (Get-Content native-client/nsh.json | ConvertFrom-Json).version

@@ -21,6 +21,27 @@ spec.loader.exec_module(readiness)
 GOOD = dict(trust=dict(public_key=list(range(1,33)), app_id='top.maplayer.collaboration', channel='stable', download_hosts=['github.com']), policy_urls=['https://updates.example.org/policy.json'], network_hosts=['updates.example.org'], linux_executable='Surreal Collaboration/SurrealCollaboration')
 
 class ReadinessTests(unittest.TestCase):
+    def test_desktop_development_artifacts_rejected_without_build_environment(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {}, clear=True):
+            root = pathlib.Path(tmp)
+            receipt_path = root / 'windows-test-build-receipt.json'
+            receipt = dict(platform='windows')
+            receipt_path.write_text(json.dumps(receipt), encoding='utf-8')
+            evidence = root / 'windows-test-package-evidence.json'
+            with self.assertRaisesRegex(ValueError, 'Missing desktop'):
+                readiness.check_release(root, 'owner/repo', 'v1')
+            base = dict(platform='windows', entrypoint='native-client/src/main.rs', release_eligible=True,
+                        media_runtime=dict(status='bundled', development_only=False, release_approved=True))
+            for fields in ({'development_only': True}, {'release_approved': False}, {'release_approved': None}, {'development_only': None}):
+                evidence.write_text(json.dumps(base | {'media_runtime': base['media_runtime'] | fields}), encoding='utf-8')
+                with self.subTest(fields=fields), self.assertRaisesRegex(ValueError, 'unapproved media'):
+                    readiness.check_release(root, 'owner/repo', 'v1')
+            evidence.write_text(json.dumps(base | {'release_eligible': False}), encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'not release eligible'):
+                readiness.check_release(root, 'owner/repo', 'v1')
+            evidence.write_text(json.dumps(base), encoding='utf-8')
+            readiness.check_desktop_package(receipt_path, receipt)
+
     def test_valid_structure_is_not_service_verification(self):
         self.assertEqual(validate_config(copy.deepcopy(GOOD)), GOOD)
 

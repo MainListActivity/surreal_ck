@@ -1,0 +1,13 @@
+{
+  "artifact_id": 13845177716,
+  "platform": "windows",
+  "arch": "x86_64",
+  "zip_sha256": "2967d8e6d99f37b1d0f7a22beeeef1efe9e49324b3c374b9766050c0af370fc1",
+  "manifest_sha256": "a1f2592a783553f9d84113d0b4976b761005115d82e2e7bdd5907531e15a0ed6",
+  "source_commit": "bcd7fe7155c233165fe204148e9d033ccafc88c9",
+  "repository": "MainListActivity/surreal_ck",
+  "run_id": 42997627548,
+  "expires_at": "2026-11-24T00:00:00+00:00",
+  "purpose": "development-only; no redistribution approval; business and devices unverified",
+  "enabled": true
+}

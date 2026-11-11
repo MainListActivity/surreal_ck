@@ -98,6 +98,25 @@ def match_asset(p, item, repository, tag):
     if item['platform']=='android' and item.get('signing')!='release-key':
         raise ValueError('Test-key Android APK cannot enter a production release')
 
+def check_desktop_package(path, receipt):
+    """Release admission is independent of the original build event/environment."""
+    if receipt.get('platform') not in ('windows', 'macos'):
+        return
+    evidence_path = path.with_name(path.name.removesuffix('-build-receipt.json') + '-package-evidence.json')
+    if not evidence_path.is_file():
+        raise ValueError('Missing desktop package evidence for production release')
+    package = policy.strict_json(evidence_path.read_bytes())
+    if package.get('platform') != receipt['platform'] or package.get('entrypoint') != 'native-client/src/main.rs':
+        raise ValueError('Desktop release evidence identity mismatch')
+    runtime = package.get('media_runtime')
+    if not isinstance(runtime, dict) or runtime.get('status') != 'bundled':
+        raise ValueError('Production desktop release requires approved bundled media')
+    if runtime.get('development_only') is not False or runtime.get('release_approved') is not True:
+        raise ValueError('Development-only or unapproved media cannot enter a production release')
+    if package.get('release_eligible') is not True:
+        raise ValueError('Desktop package is not release eligible')
+
+
 def check_release(root, repository, tag, *, fetch=fetch_policy, verify_remote=remote_artifact, now=None):
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository) or not tag:
         raise ValueError('Exact repository and release tag required')
@@ -108,6 +127,7 @@ def check_release(root, repository, tag, *, fetch=fetch_policy, verify_remote=re
     seen, cache, evidence, remote_checked = set(), {}, [], set()
     for path in receipts:
         receipt = policy.strict_json(path.read_bytes())
+        check_desktop_package(path, receipt)
         if receipt.get('update_config') != 'embedded-unverified':
             raise ValueError('Missing embedded update config: startup-locked preview')
         config = validate_config(receipt.get('update_config_public'))

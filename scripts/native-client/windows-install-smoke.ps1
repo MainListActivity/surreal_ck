@@ -65,6 +65,11 @@ try {
     $result.installed_executable_sha256 = $installedHash
     if ($installedHash -ne $package.packaged_executable_sha256) { throw 'Installed executable SHA256 differs from packaged evidence' }
     $result.executable_hash = 'passed'
+    if ($package.media_runtime.status -eq 'bundled') {
+        & python scripts/native-client/smoke-installed-media.py (Join-Path $installDir 'media-runtime') $PackageEvidencePath (Join-Path $EvidenceDir 'installed-media-smoke.json')
+        if ($LASTEXITCODE -ne 0) { throw 'Installed app-local media smoke failed' }
+        $result['media_runtime'] = 'installed-app-local-no-device-smoke-passed'
+    }
     $env:LOCALAPPDATA = Join-Path $tempRoot 'user-data'
     New-Item -ItemType Directory -Path $env:LOCALAPPDATA | Out-Null
     $started = Get-Date

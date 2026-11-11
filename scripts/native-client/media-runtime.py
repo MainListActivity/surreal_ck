@@ -7,6 +7,7 @@ import hashlib
 import json
 import pathlib
 import re
+import shutil
 import subprocess
 
 SYSTEM_WINDOWS = set('avicap32 iphlpapi msimg32 ncrypt advapi32 avrt bcrypt bcryptprimitives cfgmgr32 comctl32 comdlg32 crypt32 d3d11 d3d12 dcomp dbghelp dwmapi dxgi gdi32 imm32 kernel32 mfuuid mf mfplat mfreadwrite msvcrt ntdll ole32 oleaut32 opengl32 powrprof propsys psapi rpcrt4 secur32 setupapi shell32 shlwapi user32 userenv ucrtbase uuid version winmm winspool wintrust ws2_32 wtsapi32'.split())
@@ -25,7 +26,11 @@ def audit(root, target, tool):
         header = file.read_bytes()[:4]
         binary = header[:2] == b'MZ' if target == 'windows' else header in (b'\xcf\xfa\xed\xfe', b'\xce\xfa\xed\xfe', b'\xca\xfe\xba\xbe', b'\xca\xfe\xba\xbf')
         if not binary: continue
-        command = [tool or 'objdump', '-p', str(file)] if target == 'windows' else [tool or 'otool', '-L', str(file)]
+        inspector = tool or shutil.which('objdump') or shutil.which('llvm-objdump')
+        if target == 'windows' and not inspector:
+            llvm = pathlib.Path('C:/Program Files/LLVM/bin/llvm-objdump.exe')
+            inspector = str(llvm) if llvm.is_file() else 'objdump'
+        command = [inspector, '-p', str(file)] if target == 'windows' else [tool or 'otool', '-L', str(file)]
         result = subprocess.run(command, check=True, capture_output=True, text=True).stdout
         deps = re.findall(r'DLL Name:\s*(\S+)', result) if target == 'windows' else [line.strip().split(' (')[0] for line in result.splitlines()[1:]]
         for dep in deps:

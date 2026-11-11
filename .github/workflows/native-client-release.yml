@@ -53,6 +53,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: native-client-${{ github.event_name }}-${{ github.ref }}
@@ -119,6 +120,7 @@ jobs:
           python scripts/native-client/test_public_inputs.py
           python scripts/native-client/test_desktop_package.py
           python scripts/native-client/test_desktop_media_package.py
+          python scripts/native-client/test_development_media.py
           python scripts/native-client/test_sparkle_sdk.py
           python scripts/native-client/test_collect.py
           python scripts/native-client/test_native_host.py
@@ -186,6 +188,12 @@ jobs:
         if: matrix.target != 'windows'
         shell: bash
         run: bash scripts/native-client/package.sh '${{ matrix.target }}'
+      - name: Prepare independently pinned Windows development media (never Release)
+        if: matrix.target == 'windows' && github.event_name == 'push' && github.ref == 'refs/heads/feat/native-collaboration-bootstrap'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/native-client/fetch-development-media.py "$RUNNER_TEMP/verified-development-media"
       - name: Build Windows installer
         if: matrix.target == 'windows'
         shell: pwsh
@@ -275,6 +283,9 @@ jobs:
         with:
           name: native-client-windows-windows-2022
           path: windows-package
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Install and launch the exact collaboration installer without bypassing its gate
         shell: pwsh
         run: |
