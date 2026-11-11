@@ -1760,7 +1760,9 @@ mod tests {
         let _bp = pump(be, b.clone(), Arc::new(Gate::default()));
         let id = a.offer(root.join("source.bin")).await.unwrap();
         assert!(matches!(next(&mut br).await, Event::Offer { .. }));
-        b.accept(&id, root.join("sink/received.bin")).await.unwrap();
+        b.accept(&id, root.join("sink").join("received.bin"))
+            .await
+            .unwrap();
         if committed {
             assert!(matches!(
                 terminal(&mut br).await,

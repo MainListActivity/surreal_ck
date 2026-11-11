@@ -1,6 +1,7 @@
 """Command-routing tests only; they do not run any native API or compile Rust."""
 import os
 import pathlib
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -11,13 +12,30 @@ class NativeHostTests(unittest.TestCase):
     def run_route(self,target,cpu,system,translated='0',probe=True,symlinks='0',fail_ignored=False):
         with tempfile.TemporaryDirectory() as tmp:
             p=pathlib.Path(tmp);log=p/'commands'
-            bodies={'rustc':f'echo "host: {target}"', 'uname':f'if [ "$1" = "-m" ]; then echo "{cpu}"; else echo "{system}"; fi', 'sysctl':f'echo "{translated}"', 'cargo':'printf "%s\\n" "$*" >> "$CALL_LOG"'}
-            if fail_ignored:
-                bodies['cargo'] += '\ncase "$*" in *--ignored*) exit 17;; esac'
-            for name,body in bodies.items():
-                f=p/name;f.write_text('#!/bin/sh\n'+body+'\n');f.chmod(0o755)
+            # Export shell functions rather than POSIX executable fixtures: Windows
+            # text-mode CRLF and PATH conversion must not replace the intended mocks.
+            functions = r'''
+rustc() { printf 'host: %s\n' "$MOCK_TARGET"; }
+uname() { if [[ $1 == -m ]]; then printf '%s\n' "$MOCK_CPU"; else printf '%s\n' "$MOCK_SYSTEM"; fi; }
+sysctl() { printf '%s\n' "$MOCK_TRANSLATED"; }
+cargo() { printf '%s\n' "$*" >> "$CALL_LOG"; if [[ $MOCK_FAIL_IGNORED == 1 && "$*" == *--ignored* ]]; then return 17; fi; }
+export -f rustc uname sysctl cargo
+export PATH="$(dirname "$BASH"):$PATH"
+exec "$BASH" "$MOCK_SCRIPT" "$MOCK_TARGET"
+'''
+            bash = shutil.which('bash')
+            if os.name == 'nt':
+                # Avoid accidentally launching System32/bash.exe (WSL).
+                git = pathlib.Path(shutil.which('git') or '')
+                bash = next((str(parent/'bin/bash.exe') for parent in git.parents
+                             if (parent/'bin/bash.exe').is_file()), None)
+                self.assertIsNotNone(bash, 'Git Bash executable required')
             script='check-desktop-receive.sh' if probe else 'check-native-host.sh'
-            r=subprocess.run(['bash',str(ROOT/'scripts/native-client'/script),target],cwd=ROOT,capture_output=True,text=True,env=os.environ|{'PATH':str(p)+os.pathsep+os.environ['PATH'],'CALL_LOG':str(log),'DESKTOP_RECEIVE_SYMLINK_TESTS':symlinks})
+            r=subprocess.run([bash,'-c',functions],cwd=ROOT,capture_output=True,text=True,env=os.environ|{
+                'CALL_LOG':log.as_posix(),'DESKTOP_RECEIVE_SYMLINK_TESTS':symlinks,
+                'MOCK_SCRIPT':(ROOT/'scripts/native-client'/script).as_posix(),
+                'MOCK_TARGET':target,'MOCK_CPU':cpu,'MOCK_SYSTEM':system,
+                'MOCK_TRANSLATED':translated,'MOCK_FAIL_IGNORED':str(int(fail_ignored))})
             return r,log.read_text().splitlines() if log.exists() else []
 
     def test_three_actual_routes(self):

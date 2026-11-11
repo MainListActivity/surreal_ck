@@ -558,6 +558,7 @@ mod tests {
             "relative.bin",
             "C:relative.bin",
             "C:/parent/file",
+            "C:\\parent/file", // 混合分隔符仍拒绝；夹具必须逐组件join。
             "\\\\server\\share\\file",
             "\\\\?\\C:\\file",
             "\\\\.\\C:\\file",
