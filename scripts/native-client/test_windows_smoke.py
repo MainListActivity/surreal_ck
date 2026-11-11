@@ -12,6 +12,18 @@ class WindowsSmokeContractTests(unittest.TestCase):
     def setUpClass(cls):
         cls.source = SCRIPT.read_text(encoding='utf-8')
 
+    def test_install_jobs_stop_when_workflow_is_cancelled(self):
+        import re
+        workflow = (SCRIPT.parents[2] / '.github/workflows/native-client-release.yml').read_text(encoding='utf-8')
+        conditions = re.findall(r'  (?:windows|android)-install-smoke:\n    if: ([^\n]+)', workflow)
+        self.assertEqual(len(conditions), 2)
+        for condition in conditions:
+            self.assertIn('!cancelled()', condition)
+            self.assertNotIn('always()', condition)
+            self.assertIn("github.event_name == 'push'", condition)
+        # Cleanup/evidence steps retain always(); only the expensive jobs must be cancellable.
+        self.assertIn('if: always()', workflow)
+
     def test_requires_exact_artifact_and_both_receipts(self):
         for name in ('SetupPath', 'PackageEvidencePath', 'BuildReceiptPath', 'EvidenceDir'):
             self.assertIn('[Parameter(Mandatory)][string]$' + name, self.source)

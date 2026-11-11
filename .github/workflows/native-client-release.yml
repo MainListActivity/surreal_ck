@@ -234,7 +234,7 @@ jobs:
           if-no-files-found: error
 
   android-install-smoke:
-    if: always() && github.event_name == 'push' && needs.package.result != 'cancelled'
+    if: ${{ !cancelled() && github.event_name == 'push' && needs.package.result != 'cancelled' }}
     needs: package
     runs-on: ubuntu-24.04
     timeout-minutes: 40
@@ -265,7 +265,7 @@ jobs:
           if-no-files-found: warn
 
   windows-install-smoke:
-    if: always() && github.event_name == 'push' && needs.package.result != 'cancelled'
+    if: ${{ !cancelled() && github.event_name == 'push' && needs.package.result != 'cancelled' }}
     needs: package
     runs-on: windows-2022
     timeout-minutes: 20
