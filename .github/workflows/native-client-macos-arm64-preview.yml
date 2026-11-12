@@ -2,7 +2,7 @@ name: macOS Apple Silicon test package
 
 on:
   push:
-    branches: [codex/macos-arm64-ci]
+    branches: [codex/macos-arm64-ci, feat/native-collaboration-bootstrap]
   pull_request:
     paths:
       - 'native-client/**'
@@ -44,13 +44,12 @@ jobs:
       - name: Build and verify Apple Silicon test DMG
         run: bash scripts/native-client/package-macos-arm-preview.sh
       - name: Launch isolated packaged executable
-        continue-on-error: true
         run: python scripts/native-client/smoke-macos-preview.py dist/macos-arm64-preview
       - uses: actions/upload-artifact@v4
         with:
           name: SurrealCK-macos-apple-silicon-test-only
           path: |
-            dist/macos-arm64-preview/SurrealCK-macos-apple-silicon-test-only.dmg
+            dist/macos-arm64-preview/Jiji-macos-arm64.dmg
             dist/macos-arm64-preview/SHA256SUMS.txt
             dist/macos-arm64-preview/preview-receipt.json
             dist/macos-arm64-preview/architecture.txt
@@ -60,3 +59,33 @@ jobs:
             dist/macos-arm64-preview/TEST-ONLY.txt
           if-no-files-found: error
           retention-days: 30
+  publish-preview:
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/codex/macos-arm64-ci' || github.ref == 'refs/heads/feat/native-collaboration-bootstrap')
+    needs: apple-silicon-preview
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: SurrealCK-macos-apple-silicon-test-only
+          path: package
+      - name: Publish first clearly labeled preview release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(python -c 'import json; print(json.load(open("native-client/nsh.json"))["version"])')
+          tag="v${version}"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo 'Release already exists; refusing to replace its assets.'
+            exit 0
+          fi
+          cat > "$RUNNER_TEMP/jiji-release-notes.md" <<'NOTES'
+          Apple Silicon 测试版。手动检查更新，下载后校验 GitHub SHA-256。
+          应用未经 Apple 公证；企业登录、真实设备媒体和完整协作流程尚未验收。
+          此版本面向测试，不是生产发布。
+          NOTES
+          gh release create "$tag" package/Jiji-macos-arm64.dmg package/SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+            --title "吉吉 ${version} 测试版" --notes-file "$RUNNER_TEMP/jiji-release-notes.md"

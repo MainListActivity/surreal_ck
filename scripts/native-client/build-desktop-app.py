@@ -94,13 +94,14 @@ def stage(event, target, out, snapshot, host, runtime=None):
         (target == 'macos' and magic not in {b'\xcf\xfa\xed\xfe', b'\xfe\xed\xfa\xcf'})):
         raise ValueError('非目标平台可执行文件；此静态检查不能替代原生加载')
     if target == 'macos':
-        contents = out / 'SurrealCK.app/Contents'
+        contents = out / '吉吉.app/Contents'
         installed = contents / 'MacOS/surreal-collaboration'
         installed.parent.mkdir(parents=True)
         (contents / 'Resources').mkdir()
+        shutil.copy2(Path('assets/icon.icns'), contents / 'Resources/AppIcon.icns')
         with (contents / 'Info.plist').open('wb') as f:
             plistlib.dump(dict(CFBundleExecutable=installed.name,
-                CFBundleIdentifier=snapshot['app_id'], CFBundleName='SurrealCK',
+                CFBundleIdentifier=snapshot['app_id'], CFBundleName='吉吉', CFBundleDisplayName='吉吉', CFBundleIconFile='AppIcon.icns',
                 CFBundlePackageType='APPL', CFBundleShortVersionString=snapshot['version'],
                 CFBundleVersion=str(snapshot['build']), NSHighResolutionCapable=True,
                 NSCameraUsageDescription='用户发起视频通话时访问摄像头。',

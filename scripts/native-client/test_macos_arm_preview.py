@@ -12,16 +12,17 @@ class ApplePreviewContract(unittest.TestCase):
         self.assertIn('must not embed identity configuration', script)
         self.assertIn('lipo "$binary" -verify_arch arm64', script)
         self.assertIn('codesign --force --sign -', script)
-        self.assertIn('test-only.dmg', script)
+        self.assertIn('Jiji-macos-arm64.dmg', script)
         self.assertNotIn('release upload', script)
 
     def test_workflow_uploads_only_test_artifacts(self):
         workflow = (ROOT / '.github/workflows/native-client-macos-arm64-preview.yml').read_text()
         self.assertIn('runs-on: macos-15', workflow)
-        self.assertIn('SurrealCK-macos-apple-silicon-test-only.dmg', workflow)
+        self.assertIn('Jiji-macos-arm64.dmg', workflow)
         self.assertIn('smoke-macos-preview.py', workflow)
         self.assertNotIn('release:', workflow)
-        self.assertNotIn('contents: write', workflow)
+        self.assertIn('--prerelease', workflow)
+        self.assertIn('refusing to replace its assets', workflow)
 
 if __name__ == '__main__':
     unittest.main()

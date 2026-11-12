@@ -89,6 +89,9 @@ class PreviewTests(unittest.TestCase):
                 if target == 'macos':
                     info = plistlib.loads(next(out.rglob('Info.plist')).read_bytes())
                     self.assertEqual(info['CFBundleExecutable'], 'surreal-collaboration')
+                    self.assertEqual(info['CFBundleDisplayName'], '吉吉')
+                    self.assertEqual(info['CFBundleIconFile'], 'AppIcon.icns')
+                    self.assertEqual((out / '吉吉.app/Contents/Resources/AppIcon.icns').read_bytes(), pathlib.Path('assets/icon.icns').read_bytes())
                 with self.assertRaises(ValueError): preview.stage(event, target, out, {}, '')
 
     def test_reject_missing_features_wrong_main_and_duplicate(self):

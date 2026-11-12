@@ -18,10 +18,13 @@ pub mod enterprise_peer;
 mod enterprise_tools;
 mod file_dialogs;
 mod file_ui;
+#[cfg(feature = "github-manual-updates")]
+mod github_update_ui;
 mod identity_ui;
 pub mod model;
 mod network_config;
 mod network_ui;
+#[cfg_attr(feature = "github-manual-updates", allow(dead_code))]
 mod startup;
 mod ui;
 mod verification_ui;
@@ -48,6 +51,14 @@ fn video_components(components: &surreal_ck_native_video_view::macos::Components
 #[nsh_core::element::native_components(windows)]
 fn video_components(components: &surreal_ck_native_video_view::windows::Components) {
     surreal_ck_native_video_view::windows::register(components);
+}
+#[cfg(feature = "github-manual-updates")]
+fn update_panel() -> impl IntoElement {
+    github_update_ui::github_update_panel()
+}
+#[cfg(not(feature = "github-manual-updates"))]
+fn update_panel() -> impl IntoElement {
+    view()
 }
 #[component]
 pub fn Collaboration() -> impl IntoElement {
@@ -150,6 +161,7 @@ pub fn Collaboration() -> impl IntoElement {
         .gap_3()
         .child(text("直连会话").text_size(px(24.0)))
         .child(identity_ui::enterprise_identity())
+        .child(update_panel())
         .child(text(move || status.get()).text_color(move || theme().muted_foreground))
         .child(verification.panel(verification_commands, busy))
         .child(ui::action("连接设置",||false,move||show_connection.set(!show_connection.get_untracked())))
@@ -360,7 +372,14 @@ pub fn Collaboration() -> impl IntoElement {
         )
 }
 
+#[cfg(feature = "github-manual-updates")]
+#[component]
+pub fn App() -> impl IntoElement {
+    collaboration()
+}
+
 /// 发布入口：在验证并持久化可信更新策略之前，不创建协作会话或网络线程。
+#[cfg(not(feature = "github-manual-updates"))]
 #[component]
 pub fn App() -> impl IntoElement {
     apply_theme();
@@ -416,6 +435,7 @@ pub fn App() -> impl IntoElement {
         .child(when(move || ready.get(), collaboration))
 }
 
+#[cfg(not(feature = "github-manual-updates"))]
 fn check_update(ready: Signal<bool>, status: Signal<String>, can_retry: Signal<bool>) {
     ready.set(false);
     can_retry.set(false);

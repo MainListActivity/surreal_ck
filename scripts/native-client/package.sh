@@ -68,7 +68,7 @@ case "$target" in
     tar -czf "$archive" -C "$out/raw" "$app_name"
     cp "$archive" "$out/SurrealCK-linux-$(uname -m).tar.gz" ;;
   macos)
-    app="$out/raw/SurrealCK.app"
+    app="$out/raw/吉吉.app"
     test -d "$app"
     # 正式协同入口必须包含强制更新器；仅消费已有核验 SDK 和签名身份。
     bash native-updater-platform/macos/embed-framework.sh "$app"

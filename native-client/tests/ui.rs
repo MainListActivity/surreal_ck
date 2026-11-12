@@ -1,5 +1,6 @@
 use nsh_engine::{EngineConfig, Root};
 use nsh_testing::Headless;
+#[cfg(not(feature = "github-manual-updates"))]
 #[test]
 fn production_entry_fails_closed() -> Result<(), String> {
     let mut app =
@@ -63,6 +64,7 @@ fn scroll_to(app: &mut Headless, text: &str) -> Result<(), String> {
     app.wait_for(text)
 }
 
+#[cfg(not(feature = "github-manual-updates"))]
 #[test]
 fn update_gate_can_scroll_and_retry_in_a_small_window() -> Result<(), String> {
     use nsh_core::prelude::{Size, px};
@@ -97,5 +99,17 @@ fn folding_enterprise_settings_keeps_unconfigured_login_offline() -> Result<(), 
     }
     assert!(!app.shows("已验证登录"));
     assert!(!app.shows("采集已启动，向当前对端发送已启用"));
+    Ok(())
+}
+
+#[cfg(feature = "github-manual-updates")]
+#[test]
+fn manual_update_preview_opens_and_offers_sources() -> Result<(), String> {
+    let mut app =
+        Headless::start(EngineConfig::new(Root::of::<nsh_app_native_client::App>())).unwrap();
+    app.wait_for("创建邀请")?;
+    app.wait_for("GitHub 直连")?;
+    app.press("第三方国内镜像")?;
+    app.wait_for("下载线路：第三方 ghfast.top 镜像")?;
     Ok(())
 }

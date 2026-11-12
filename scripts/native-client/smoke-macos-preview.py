@@ -10,7 +10,7 @@ import tempfile
 import time
 
 out = Path(sys.argv[1]).resolve()
-dmg = out / 'SurrealCK-macos-apple-silicon-test-only.dmg'
+dmg = out / 'Jiji-macos-arm64.dmg'
 result = {'scope': 'test-only; process survival only; GUI and product flows unverified',
           'dmg_mount': 'not-run', 'codesign': 'not-run', 'process_survival': 'not-run'}
 log_path = out / 'launch.log'
@@ -25,7 +25,7 @@ try:
         result['dmg_mount'] = 'passed'
         try:
             app = root / 'SurrealCK Test.app'
-            subprocess.run(['ditto', str(mount / 'SurrealCK Enterprise Test Only.app'), str(app)], check=True)
+            subprocess.run(['ditto', str(mount / '吉吉.app'), str(app)], check=True)
         finally:
             subprocess.run(['hdiutil', 'detach', str(mount)], check=True)
         subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True)

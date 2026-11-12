@@ -59,7 +59,7 @@ class DesktopMediaPackageTests(unittest.TestCase):
     @unittest.skipIf(os.name == 'nt', 'Mach-O fixture needs POSIX executable mode bits; real validation is unchanged')
     def test_macos_resolver_layout(self):
         out, report = self.stage('macos')
-        self.assertEqual(report['media_runtime']['path'], 'SurrealCK.app/Contents/Resources/media-runtime')
+        self.assertEqual(report['media_runtime']['path'], '吉吉.app/Contents/Resources/media-runtime')
         self.assertTrue((out / report['media_runtime']['path'] / 'bin/ffplay').is_file())
         self.assertEqual(report['media_runtime']['arch'], 'aarch64')
 

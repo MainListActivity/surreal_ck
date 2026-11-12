@@ -40,6 +40,7 @@ surreal-ck-native-updater-platform = { path = "../native-updater-platform", opti
 
 [features]
 default = []
+github-manual-updates = []
 experimental-enterprise-signaling = ["dep:surreal-ck-native-signaling"]
 experimental-enterprise-media = ["experimental-enterprise-signaling"]
 experimental-enterprise-files = ["experimental-enterprise-signaling"]
