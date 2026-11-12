@@ -169,6 +169,7 @@ def stage(event, target, out, snapshot, host):
     note = ('仅企业实验 staging，不是已验收安装器。未公证；动态依赖闭包未验证。\n'
             'ffmpeg/ffplay 未捆绑，媒体功能不可假定可用。\n')
     note += ('macOS 预览版使用手动 GitHub 更新检查，不启用签名策略强制更新；企业登录仍需配置。\n'
+             '预览版只下载并校验 SHA-256，DMG 需手动安装；下载完成不等于已升级。\n'
              if target == 'macos' else '强制更新门保持不变；缺少有效配置/策略仍锁定。\n')
     (out / 'TEST-ONLY.txt').write_text(note + '不得进入正式 Release 索引。\n', encoding='utf-8')
     return report

@@ -11,10 +11,15 @@ fn offline_fingerprint_inspection_is_explicit_cancellable_and_never_claims_ident
     use nsh_core::prelude::{Size, px};
     app.set_viewport(Size::new(px(480.0), px(800.0)))?;
     app.wait_for("吉吉协同：团队消息、会议和屏幕共享")?;
-    assert!(!app.shows("查看连接指纹"), "指纹核对位于开发者诊断，不在首屏");
+    assert!(
+        !app.shows("查看连接指纹"),
+        "指纹核对位于开发者诊断，不在首屏"
+    );
     app.press("设置")?;
     for _ in 0..12 {
-        if app.shows("打开开发者诊断") { break; }
+        if app.shows("打开开发者诊断") {
+            break;
+        }
         app.scroll("id:conversation-scroll", px(180.0))?;
     }
     app.press("打开开发者诊断")?;

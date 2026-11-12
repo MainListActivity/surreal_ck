@@ -191,8 +191,11 @@ pub fn Collaboration() -> impl IntoElement {
                 },
             ))
             .child(ui::note(move || {
-                first_screen::conversation_placeholder(&identity.get(), usize::from(connected.get()))
-                    .unwrap_or_default()
+                first_screen::conversation_placeholder(
+                    &identity.get(),
+                    usize::from(connected.get()),
+                )
+                .unwrap_or_default()
             }))
     };
     // 首屏：用途、实验标注、企业身份/工作区、会话列表与消息输入。
@@ -224,7 +227,11 @@ pub fn Collaboration() -> impl IntoElement {
                 move || messages.get().len(),
                 move |at| {
                     text(move || {
-                        messages.get().get(at.index()).map(|m| m.label()).unwrap_or_default()
+                        messages
+                            .get()
+                            .get(at.index())
+                            .map(|m| m.label())
+                            .unwrap_or_default()
                     })
                     .p_3()
                 },
@@ -236,7 +243,11 @@ pub fn Collaboration() -> impl IntoElement {
             view()
                 .flex_row()
                 .gap_2()
-                .child(ui::composer(draft, "输入消息，Enter 发送", move || submit_message()))
+                .child(ui::composer(
+                    draft,
+                    "输入消息，Enter 发送",
+                    move || submit_message(),
+                ))
                 .child(ui::action(
                     "发送消息",
                     move || !connected.get() || sending.get() || draft.get().trim().is_empty(),
@@ -256,11 +267,18 @@ pub fn Collaboration() -> impl IntoElement {
         .child(update_panel())
         .child(text(first_screen::DIAGNOSTICS_TITLE).text_size(px(20.0)))
         .child(ui::note(|| first_screen::DIAGNOSTICS_NOTICE.to_owned()))
-        .child(ui::action("打开开发者诊断", || false, move || page.set(Page::Diagnostics)));
+        .child(ui::action(
+            "打开开发者诊断",
+            || false,
+            move || page.set(Page::Diagnostics),
+        ));
     // 开发者诊断：手动 P2P、STUN/TURN、连接指纹、媒体与文件调试。安全能力保留，只是不在首屏。
     let diagnostics_page = view()
         .gap_3()
-        .style_when(move || page.get() != Page::Diagnostics, |style| style.hidden())
+        .style_when(
+            move || page.get() != Page::Diagnostics,
+            |style| style.hidden(),
+        )
         .child(text("开发者诊断 · 手动直连").text_size(px(24.0)))
         .child(ui::note(|| first_screen::DIAGNOSTICS_NOTICE.to_owned()))
         .child(text(move || status.get()).text_color(move || theme().muted_foreground))
@@ -363,8 +381,16 @@ pub fn Collaboration() -> impl IntoElement {
     let nav = move || {
         view()
             .gap_2()
-            .child(ui::action("消息", || false, move || page.set(Page::Messages)))
-            .child(ui::action("设置", || false, move || page.set(Page::Settings)))
+            .child(ui::action(
+                "消息",
+                || false,
+                move || page.set(Page::Messages),
+            ))
+            .child(ui::action(
+                "设置",
+                || false,
+                move || page.set(Page::Settings),
+            ))
     };
     view()
         .flex_1()
@@ -428,7 +454,13 @@ pub fn Collaboration() -> impl IntoElement {
                             .gap_3()
                             .child(when(
                                 move || page.get() == Page::Diagnostics,
-                                move || ui::action("返回设置", || false, move || page.set(Page::Settings)),
+                                move || {
+                                    ui::action(
+                                        "返回设置",
+                                        || false,
+                                        move || page.set(Page::Settings),
+                                    )
+                                },
                             ))
                             .child(messages_page)
                             .child(settings_page)

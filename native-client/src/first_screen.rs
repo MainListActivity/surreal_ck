@@ -6,12 +6,10 @@ pub const PURPOSE: &str = "吉吉协同：团队消息、会议和屏幕共享";
 /// 预览构建在首屏明确标注实验性质。
 pub const PREVIEW_LABEL: &str = "实验预览版 · 非正式发布，功能仍在验证，请勿用于正式工作";
 /// 会议与屏幕共享尚未接入首屏企业会话：只显示说明文字，不渲染可用按钮。
-pub const MEETING_NOT_CONNECTED: &str =
-    "会议与屏幕共享：尚未接入企业会话，当前版本不提供入口。";
+pub const MEETING_NOT_CONNECTED: &str = "会议与屏幕共享：尚未接入企业会话，当前版本不提供入口。";
 pub const EMPTY_MESSAGES: &str = "暂无消息。消息只保存在本次会话内存中。";
 pub const DIAGNOSTICS_TITLE: &str = "开发者诊断";
-pub const DIAGNOSTICS_NOTICE: &str =
-    "仅供开发与排障：手动 P2P 连接码、STUN/TURN、连接指纹、媒体与文件调试。这不是默认产品路径；连接码含网络地址，仅交给可信对方。";
+pub const DIAGNOSTICS_NOTICE: &str = "仅供开发与排障：手动 P2P 连接码、STUN/TURN、连接指纹、媒体与文件调试。这不是默认产品路径；连接码含网络地址，仅交给可信对方。";
 
 /// 当前构建是否为手动更新的实验预览（GitHub 预览渠道）。
 pub const fn is_preview() -> bool {
@@ -71,7 +69,10 @@ impl Session {
 }
 
 /// 会话列表为空时的说明；有真实会话时返回 None。
-pub fn conversation_placeholder(identity: &IdentitySummary, conversations: usize) -> Option<String> {
+pub fn conversation_placeholder(
+    identity: &IdentitySummary,
+    conversations: usize,
+) -> Option<String> {
     if conversations > 0 {
         return None;
     }
@@ -131,11 +132,25 @@ fn push(messages: &mut Vec<Message>, message: Message) {
 }
 
 pub fn pending(messages: &mut Vec<Message>, text: String) {
-    push(messages, Message { mine: true, text, delivery: Delivery::Sending });
+    push(
+        messages,
+        Message {
+            mine: true,
+            text,
+            delivery: Delivery::Sending,
+        },
+    );
 }
 
 pub fn received(messages: &mut Vec<Message>, text: String) {
-    push(messages, Message { mine: false, text, delivery: Delivery::Sent });
+    push(
+        messages,
+        Message {
+            mine: false,
+            text,
+            delivery: Delivery::Sent,
+        },
+    );
 }
 
 /// 后台确认已交给通道：只更新对应的发送中消息。
@@ -146,13 +161,23 @@ pub fn queued(messages: &mut Vec<Message>, text: &str) {
         .find(|m| m.mine && m.delivery == Delivery::Sending && m.text == text)
     {
         Some(message) => message.delivery = Delivery::Sent,
-        None => push(messages, Message { mine: true, text: text.into(), delivery: Delivery::Sent }),
+        None => push(
+            messages,
+            Message {
+                mine: true,
+                text: text.into(),
+                delivery: Delivery::Sent,
+            },
+        ),
     }
 }
 
 /// 通道报错：仍处于发送中的消息标为失败，绝不显示为已送出。
 pub fn failed(messages: &mut [Message]) {
-    for message in messages.iter_mut().filter(|m| m.mine && m.delivery == Delivery::Sending) {
+    for message in messages
+        .iter_mut()
+        .filter(|m| m.mine && m.delivery == Delivery::Sending)
+    {
         message.delivery = Delivery::Failed;
     }
 }
@@ -181,14 +206,30 @@ mod tests {
         let mut s = IdentitySummary::default();
         assert!(conversation_placeholder(&s, 0).unwrap().contains("未配置"));
         s.configured = true;
-        assert!(conversation_placeholder(&s, 0).unwrap().contains("请先登录"));
+        assert!(
+            conversation_placeholder(&s, 0)
+                .unwrap()
+                .contains("请先登录")
+        );
         s.loading = true;
-        assert!(conversation_placeholder(&s, 0).unwrap().contains("正在加载"));
+        assert!(
+            conversation_placeholder(&s, 0)
+                .unwrap()
+                .contains("正在加载")
+        );
         s.loading = false;
         s.signed_in = true;
-        assert!(conversation_placeholder(&s, 0).unwrap().contains("进入一个工作区"));
+        assert!(
+            conversation_placeholder(&s, 0)
+                .unwrap()
+                .contains("进入一个工作区")
+        );
         s.workspace = Some("w".into());
-        assert!(conversation_placeholder(&s, 0).unwrap().contains("不会生成示例联系人"));
+        assert!(
+            conversation_placeholder(&s, 0)
+                .unwrap()
+                .contains("不会生成示例联系人")
+        );
         assert_eq!(conversation_placeholder(&s, 1), None);
     }
 
@@ -212,7 +253,11 @@ mod tests {
         pending(&mut m, "第二条".into());
         failed(&mut m);
         assert_eq!(m[1].delivery, Delivery::Failed);
-        assert_eq!(m[0].delivery, Delivery::Sent, "已送出的消息不受后续错误影响");
+        assert_eq!(
+            m[0].delivery,
+            Delivery::Sent,
+            "已送出的消息不受后续错误影响"
+        );
         received(&mut m, "收到".into());
         assert_eq!(m[2].label(), "对方：收到");
     }

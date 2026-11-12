@@ -580,7 +580,9 @@ fn summary_of(state: &IdentityViewState, available: bool) -> crate::first_screen
 
 /// 企业身份与工作区面板。summary 向首屏公开真实身份摘要（无假登录）。
 /// 面板常驻挂载：只折叠账号设置，不能将采集隐私与停止区一起隐藏。
-pub fn enterprise_identity(summary: Signal<crate::first_screen::IdentitySummary>) -> impl IntoElement {
+pub fn enterprise_identity(
+    summary: Signal<crate::first_screen::IdentitySummary>,
+) -> impl IntoElement {
     let expanded = signal(false);
     let available = identity_available();
     let state = signal(IdentityViewState::new(available));

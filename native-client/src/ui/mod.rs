@@ -63,3 +63,31 @@ pub fn composer(
 pub fn note(content: impl Fn() -> String + 'static) -> impl IntoElement {
     text(content).text_color(move || theme().muted_foreground)
 }
+
+#[cfg_attr(not(feature = "github-manual-updates"), allow(dead_code))]
+/// 单选项：只改变选择，不触发任何网络请求。文字前缀标明选中状态，不只依赖颜色。
+pub fn radio(
+    label: &'static str,
+    selected: impl Fn() -> bool + Copy + 'static,
+    disabled: impl Fn() -> bool + 'static,
+    press: impl Fn() + 'static,
+) -> impl IntoElement {
+    button()
+        .disabled(disabled)
+        .on_press(press)
+        .px_3()
+        .py_2()
+        .border_1()
+        .border_color(move || {
+            if selected() {
+                theme().primary
+            } else {
+                theme().border
+            }
+        })
+        .rounded(move || theme().radius)
+        .disabled_style(|s| s.opacity(0.4))
+        .child(text(move || {
+            format!("{} {label}", if selected() { "◉" } else { "○" })
+        }))
+}

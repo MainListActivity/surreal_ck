@@ -87,7 +87,10 @@ fn offline_send_is_disabled_and_never_fakes_success() -> Result<(), String> {
     app.type_text("text:输入消息，Enter 发送", "你好\n")?;
     assert!(app.press("发送消息").is_err(), "离线时发送按钮必须禁用");
     let texts = app.screen().texts().join("\n");
-    assert!(!texts.contains("我（"), "离线时不应产生任何已发送/发送中的消息");
+    assert!(
+        !texts.contains("我（"),
+        "离线时不应产生任何已发送/发送中的消息"
+    );
     assert!(!texts.contains("已送出"));
     app.wait_for("离线：当前没有已连接的会话")?;
     Ok(())
@@ -133,7 +136,10 @@ fn window_resize_keeps_navigation_usable() -> Result<(), String> {
 #[test]
 fn preview_label_matches_build_channel() -> Result<(), String> {
     let app = collaboration(480.0, 800.0)?;
-    assert_eq!(app.shows(PREVIEW_LABEL), cfg!(feature = "github-manual-updates"));
+    assert_eq!(
+        app.shows(PREVIEW_LABEL),
+        cfg!(feature = "github-manual-updates")
+    );
     Ok(())
 }
 
@@ -176,7 +182,10 @@ fn opening_media_settings_does_not_enable_capture_or_playback() -> Result<(), St
 
 fn scroll_top(app: &mut Headless) {
     for _ in 0..40 {
-        if app.scroll("id:conversation-scroll", nsh_core::prelude::px(-180.0)).is_err() {
+        if app
+            .scroll("id:conversation-scroll", nsh_core::prelude::px(-180.0))
+            .is_err()
+        {
             break;
         }
     }
@@ -233,14 +242,29 @@ fn folding_enterprise_settings_keeps_unconfigured_login_offline() -> Result<(), 
 #[cfg(feature = "github-manual-updates")]
 #[test]
 fn manual_update_preview_opens_and_offers_sources() -> Result<(), String> {
+    use nsh_core::prelude::{Size, px};
     let mut app =
         Headless::start(EngineConfig::new(Root::of::<nsh_app_native_client::App>())).unwrap();
+    app.set_viewport(Size::new(px(480.0), px(800.0)))?;
     app.wait_for(PURPOSE)?;
     app.wait_for(PREVIEW_LABEL)?;
-    assert!(!app.shows("GitHub 直连"), "更新入口不在首屏");
+    assert!(!app.shows("软件更新"), "更新入口不在首屏");
     app.press("设置")?;
-    app.wait_for("GitHub 直连")?;
-    app.press("第三方国内镜像")?;
-    app.wait_for("下载线路：第三方 ghfast.top 镜像")?;
+    app.wait_for("软件更新")?;
+    app.wait_for("本地版本：0.1.0")?;
+    app.wait_for("远端版本：未知（尚未成功检查）")?;
+    app.wait_for("安装方式：预览版仅下载并校验，需手动安装；不会自动升级。")?;
+    app.wait_for("下载来源")?;
+    app.wait_for("◉ GitHub")?;
+    // 切换下载来源只是单选，不发起网络请求，也不改变检查结果。
+    app.press("○ 第三方代理")?;
+    app.wait_for("◉ 第三方代理")?;
+    app.wait_for("○ GitHub")?;
+    app.wait_for("尚未检查。点击“检查更新”联网查询 GitHub Release。")?;
+    assert!(app.shows("检查更新"));
+    assert!(app.press("下载并校验").is_err(), "未检查出新版本前不能下载");
+    for forbidden in ["升级成功", "更新成功"] {
+        assert!(!app.shows(forbidden));
+    }
     Ok(())
 }

@@ -95,6 +95,9 @@ class PreviewTests(unittest.TestCase):
                     packaged = (out / '吉吉.app/Contents/Resources/AppIcon.icns').read_bytes()
                     self.assertEqual(packaged, (ROOT / 'native-client/assets/app-icon/AppIcon.icns').read_bytes())
                     self.assertNotEqual(packaged, (ROOT / 'assets/icon.icns').read_bytes())
+                    note = (out / 'TEST-ONLY.txt').read_text(encoding='utf-8')
+                    self.assertIn('DMG 需手动安装', note)
+                    self.assertIn('下载完成不等于已升级', note)
                     self.assertEqual(report['app_icon']['icns_sha256'], preview.receipt.digest(out / '吉吉.app/Contents/Resources/AppIcon.icns'))
                 with self.assertRaises(ValueError): preview.stage(event, target, out, {}, '')
 
