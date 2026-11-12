@@ -10,7 +10,7 @@ class ApplePreviewContract(unittest.TestCase):
         self.assertIn('check-native-host.sh aarch64-apple-darwin', script)
         self.assertIn('SURREAL_UPDATE_CONFIG_JSON', script)
         self.assertIn('must not embed identity configuration', script)
-        self.assertIn('lipo -verify_arch arm64', script)
+        self.assertIn('lipo "$binary" -verify_arch arm64', script)
         self.assertIn('codesign --force --sign -', script)
         self.assertIn('test-only.dmg', script)
         self.assertNotIn('release upload', script)
