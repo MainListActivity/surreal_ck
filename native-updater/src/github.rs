@@ -230,14 +230,14 @@ pub fn select_latest(bytes: &[u8]) -> Result<GithubAsset, UpdateCheckError> {
             Ok(asset) => {
                 let version = semver::Version::parse(&asset.version)
                     .map_err(|_| UpdateCheckError::VersionInvalid)?;
-                if best.as_ref().map_or(true, |(v, _)| version > *v) {
+                if best.as_ref().is_none_or(|(v, _)| version > *v) {
                     best = Some((version, asset));
                 }
             }
             Err(error) => {
                 if newest_error
                     .as_ref()
-                    .map_or(true, |(v, _)| tag_version > *v)
+                    .is_none_or(|(v, _)| tag_version > *v)
                 {
                     newest_error = Some((tag_version, error));
                 }
