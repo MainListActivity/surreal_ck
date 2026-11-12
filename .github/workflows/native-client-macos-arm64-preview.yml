@@ -39,6 +39,7 @@ jobs:
           key: macos-arm64-collaboration-preview
       - name: Test preview contracts
         run: |
+          python scripts/native-client/test_brand_icon.py
           python scripts/native-client/test_desktop_enterprise_preview.py
           python scripts/native-client/test_macos_arm_preview.py
       - name: Build and verify Apple Silicon test DMG
@@ -52,6 +53,7 @@ jobs:
             dist/macos-arm64-preview/Jiji-macos-arm64.dmg
             dist/macos-arm64-preview/SHA256SUMS.txt
             dist/macos-arm64-preview/preview-receipt.json
+            dist/macos-arm64-preview/app-icon.json
             dist/macos-arm64-preview/architecture.txt
             dist/macos-arm64-preview/dynamic-libraries.txt
             dist/macos-arm64-preview/launch-smoke.json

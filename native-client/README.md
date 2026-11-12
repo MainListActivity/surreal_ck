@@ -58,7 +58,7 @@ Android默认本地测试签名不能当作正式发布身份，必须明确标�
 
 Linux桌面已编译；初版headless模型/门禁/协作UI测试通过。GUI窗口受当前云机socket能力限制；Android交叉构建和模拟器验证以最新运行报告为准，未完成不标通过。
 
-品牌图 assets/brand.svg 由 scripts/export-brand.py 从仓库原有 Logo.svelte 精确导出几何与配色，不使用生成式近似 Logo。
+品牌图 assets/brand.svg 与 macOS App 图标 assets/app-icon/AppIcon.{svg,icns} 由 scripts/brand_icon.py（export-brand.py 调用）从仓库原有 Logo.svelte 精确导出几何与配色，不使用生成式近似 Logo。App 图标在 1024 画布内留 100 边距，用 resvg 0.46.0 栅格化为 iconutil 同组 PNG 条目，hash 锁定在 assets/app-icon/app-icon.lock.json。预览与正式 macOS 打包器都只通过 `install_app_icon()` 安装该 icns，复制前后校验源 hash 与资源内容，并拒绝旧的顶层 assets/icon.icns。Logo 变化后需运行 `python native-client/scripts/brand_icon.py generate` 并审核；`verify` 不需要栅格化器。
 
 ## 阶段二身份与平台配置
 

@@ -93,12 +93,14 @@ def stage(event, target, out, snapshot, host, runtime=None):
     if ((target == 'windows' and magic[:2] != b'MZ') or
         (target == 'macos' and magic not in {b'\xcf\xfa\xed\xfe', b'\xfe\xed\xfa\xcf'})):
         raise ValueError('非目标平台可执行文件；此静态检查不能替代原生加载')
+    icon = desktop.brand_icon.verify() if target == 'macos' else None
     if target == 'macos':
         contents = out / '吉吉.app/Contents'
         installed = contents / 'MacOS/surreal-collaboration'
         installed.parent.mkdir(parents=True)
         (contents / 'Resources').mkdir()
-        shutil.copy2(Path('assets/icon.icns'), contents / 'Resources/AppIcon.icns')
+        # 与预览打包器共用同一图标安装与校验逻辑；拒绝旧 assets/icon.icns。
+        icon = desktop.brand_icon.install_app_icon(contents / 'Resources/AppIcon.icns')
         with (contents / 'Info.plist').open('wb') as f:
             plistlib.dump(dict(CFBundleExecutable=installed.name,
                 CFBundleIdentifier=snapshot['app_id'], CFBundleName='吉吉', CFBundleDisplayName='吉吉', CFBundleIconFile='AppIcon.icns',
@@ -143,6 +145,8 @@ def stage(event, target, out, snapshot, host, runtime=None):
         runtime_validation='not-run', dependency_closure='unverified', release_eligible=False,
         media_runtime=runtime_report,
         updater='Sparkle SDK embedded by package.sh' if target == 'macos' else 'windows-auto-update helper in application binary')
+    if icon is not None:
+        report['app_icon'] = icon
     (out / 'desktop-build.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
     return report
 
@@ -171,6 +175,10 @@ def seal(out):
             raise ValueError('缺少 Sparkle 验证配置')
         if not (contents / 'Frameworks/Sparkle.framework').is_dir():
             raise ValueError('缺少嵌入的 Sparkle.framework')
+        if info.get('CFBundleIconFile') != 'AppIcon.icns' or not isinstance(report.get('app_icon'), dict):
+            raise ValueError('缺少品牌 App 图标证据')
+        desktop.brand_icon.check_installed(contents / 'Resources/AppIcon.icns', report['app_icon'])
+        report['app_icon']['sealed_resource_validation'] = 'passed'
     (out.parent / 'desktop-package-evidence.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
 
 

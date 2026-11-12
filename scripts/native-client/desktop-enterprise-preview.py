@@ -16,6 +16,9 @@ import sys
 spec = importlib.util.spec_from_file_location('receipt', Path(__file__).with_name('build-receipt.py'))
 receipt = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(receipt)
+icon_spec = importlib.util.spec_from_file_location('brand_icon', Path(__file__).resolve().parents[2] / 'native-client/scripts/brand_icon.py')
+brand_icon = importlib.util.module_from_spec(icon_spec)
+icon_spec.loader.exec_module(brand_icon)
 # 共用安装器 receipt 范围，包含企业信令源码。
 
 FEATURES = {
@@ -128,12 +131,14 @@ def stage(event, target, out, snapshot, host):
     allowed = {b'\xcf\xfa\xed\xfe', b'\xfe\xed\xfa\xcf'}
     if (target == 'macos' and magic not in allowed) or (target == 'windows' and magic[:2] != b'MZ'):
         raise ValueError('不是预期平台可执行文件；magic 检查不能替代原生加载验证')
+    # 品牌图标先于创建输出目录完成源/产物锁校验；失败不留下半成品。
+    icon = brand_icon.verify() if target == 'macos' else None
     out.mkdir(parents=True)
     if target == 'macos':
         contents = out / '吉吉.app/Contents'
         (contents / 'MacOS').mkdir(parents=True)
         (contents / 'Resources').mkdir()
-        shutil.copy2(Path('assets/icon.icns'), contents / 'Resources/AppIcon.icns')
+        icon = brand_icon.install_app_icon(contents / 'Resources/AppIcon.icns')
         installed = contents / 'MacOS/surreal-collaboration'
         with (contents / 'Info.plist').open('wb') as f:
             plistlib.dump(dict(CFBundleExecutable=installed.name,
@@ -158,6 +163,8 @@ def stage(event, target, out, snapshot, host):
         dependency_closure='unverified', runtime_validation='not-run',
         app_resources='brand SVG and theme embedded; dependency resource closure and launch unverified',
         media_runtime='not-bundled; ffmpeg/ffplay availability and device permissions unverified')
+    if icon is not None:
+        report['app_icon'] = icon
     (out / 'preview-receipt.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
     note = ('仅企业实验 staging，不是已验收安装器。未公证；动态依赖闭包未验证。\n'
             'ffmpeg/ffplay 未捆绑，媒体功能不可假定可用。\n')

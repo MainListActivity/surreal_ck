@@ -17,6 +17,8 @@ lipo "$binary" -archs > "$out/architecture.txt"
 otool -L "$binary" > "$out/dynamic-libraries.txt"
 codesign --force --sign - "$app"
 codesign --verify --deep --strict --verbose=2 "$app"
+# 签名后再核对包内图标仍是锁定的 Logo.svelte 品牌 icns，而非旧 assets/icon.icns。
+python3 native-client/scripts/brand_icon.py verify-bundle "$app" > "$out/app-icon.json"
 mkdir "$out/dmg-content"
 ditto "$app" "$out/dmg-content/吉吉.app"
 cp "$out/TEST-ONLY.txt" "$out/dmg-content/TEST-ONLY.txt"
