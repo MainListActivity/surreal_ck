@@ -30,7 +30,7 @@ fn main() -> impl std::process::Termination {
     platform::run_app(
         platform::AppSource::Rust(platform::Root::of::<nsh_app_native_client::App>()),
         platform::AppOptions {
-            title: "吉吉".to_owned(),
+            title: "吉吉 · 团队协同".to_owned(),
             #[cfg(any(target_os = "linux", target_os = "windows"))]
             app_id: "top.maplayer.collaboration".to_owned(),
             size: (1100, 760),

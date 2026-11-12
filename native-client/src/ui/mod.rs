@@ -91,3 +91,115 @@ pub fn radio(
             format!("{} {label}", if selected() { "◉" } else { "○" })
         }))
 }
+
+/// 左侧图标导航项：选中时金色底，可访问名称是产品文案而不是图标本身。
+pub fn nav_item(
+    label: &'static str,
+    glyph: &'static str,
+    selected: impl Fn() -> bool + Copy + 'static,
+    press: impl Fn() + 'static,
+) -> impl IntoElement {
+    button()
+        .accessibility_label(label)
+        .selected(selected)
+        .on_press(press)
+        .w(px(56.0))
+        .h(px(56.0))
+        .gap_1()
+        .items_center()
+        .justify_center()
+        .rounded(move || theme().radius)
+        .bg(move || {
+            if selected() {
+                theme().primary
+            } else {
+                theme().background
+            }
+        })
+        .hover(|s| s.opacity(0.9))
+        .active(|s| s.opacity(0.65))
+        .selected_style(|s| s.bg(theme().primary))
+        .child(text(glyph).text_size(px(16.0)))
+        .child(
+            text(label)
+                .text_size(px(11.0))
+                .text_color(move || theme().foreground),
+        )
+}
+
+/// 会话筛选或共享目标的选择条。
+pub fn chip(
+    label: &'static str,
+    selected: impl Fn() -> bool + Copy + 'static,
+    press: impl Fn() + 'static,
+) -> impl IntoElement {
+    button()
+        .selected(selected)
+        .on_press(press)
+        .px_3()
+        .py_2()
+        .rounded(move || theme().radius)
+        .bg(move || {
+            if selected() {
+                theme().primary
+            } else {
+                theme().muted
+            }
+        })
+        .hover(|s| s.opacity(0.9))
+        .selected_style(|s| s.bg(theme().primary))
+        .child(text(label).text_color(move || theme().foreground))
+}
+
+/// 次要按钮，例如取消。
+pub fn secondary(
+    label: &'static str,
+    disabled: impl Fn() -> bool + 'static,
+    press: impl Fn() + 'static,
+) -> impl IntoElement {
+    button()
+        .disabled(disabled)
+        .on_press(press)
+        .px_4()
+        .py_3()
+        .rounded(move || theme().radius)
+        .border_1()
+        .border_color(move || theme().border)
+        .hover(|s| s.opacity(0.9))
+        .active(|s| s.opacity(0.65))
+        .disabled_style(|s| s.opacity(0.4))
+        .child(text(label).text_color(move || theme().foreground))
+}
+
+/// 会议坞按钮：禁用时仍显示名称和原因，不假装正在开会。
+pub fn dock_item(
+    label: &'static str,
+    disabled: impl Fn() -> bool + 'static,
+    press: impl Fn() + 'static,
+) -> impl IntoElement {
+    button()
+        .disabled(disabled)
+        .on_press(press)
+        .px_4()
+        .py_3()
+        .rounded(move || theme().radius)
+        .bg(rgb(0x2A2825).to_hsla())
+        .hover(|s| s.opacity(0.9))
+        .active(|s| s.opacity(0.65))
+        .disabled_style(|s| s.opacity(0.45))
+        .child(text(label).text_color(rgb(0xFAF9F6).to_hsla()))
+}
+
+/// 紧凑预览徽标，不做成通栏横幅。
+pub fn badge(label: &'static str) -> impl IntoElement {
+    view()
+        .px_2()
+        .py_1()
+        .rounded(move || theme().radius)
+        .bg(move || theme().primary)
+        .child(
+            text(label)
+                .text_size(px(12.0))
+                .text_color(move || theme().primary_foreground),
+        )
+}

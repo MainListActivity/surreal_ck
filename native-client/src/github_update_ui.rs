@@ -116,7 +116,7 @@ pub fn GithubUpdatePanel() -> impl IntoElement {
                             let result = rx
                                 .recv()
                                 .await
-                                .unwrap_or_else(|_| Err(UpdateCheckError::MetadataInvalid));
+                                .unwrap_or(Err(UpdateCheckError::MetadataInvalid));
                             view_state.update(|v| v.checked(result));
                             busy.set(false);
                         });

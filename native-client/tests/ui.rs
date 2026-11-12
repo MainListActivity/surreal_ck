@@ -9,7 +9,8 @@ fn production_entry_fails_closed() -> Result<(), String> {
     assert!(!app.shows("创建邀请"));
     Ok(())
 }
-const PURPOSE: &str = "吉吉协同：团队消息、会议和屏幕共享";
+const APP_TITLE: &str = "吉吉 · 团队协同";
+const PREVIEW_BADGE: &str = "实验预览版";
 const PREVIEW_LABEL: &str = "实验预览版 · 非正式发布，功能仍在验证，请勿用于正式工作";
 
 fn collaboration(width: f32, height: f32) -> Result<Headless, String> {
@@ -19,7 +20,7 @@ fn collaboration(width: f32, height: f32) -> Result<Headless, String> {
     >()))
     .unwrap();
     app.set_viewport(Size::new(px(width), px(height)))?;
-    app.wait_for(PURPOSE)?;
+    app.wait_for(APP_TITLE)?;
     Ok(app)
 }
 
@@ -44,6 +45,7 @@ const DEBUG_ONLY: &[&str] = &[
     "软件更新",
     "检查更新",
     "开发者诊断 · 手动直连",
+    "原生媒体",
 ];
 
 #[test]
@@ -56,28 +58,45 @@ fn collaboration_starts_offline() -> Result<(), String> {
 }
 
 #[test]
-fn first_screen_leads_with_identity_conversations_and_composer() -> Result<(), String> {
+fn first_screen_shows_message_chrome_and_honest_empty_state() -> Result<(), String> {
     for (width, height) in [(480.0, 800.0), (1100.0, 760.0)] {
         let mut app = collaboration(width, height)?;
+        app.wait_for("搜索成员或消息")?;
+        app.wait_for("全部")?;
+        app.wait_for("未读")?;
+        app.wait_for("群聊")?;
         app.wait_for("企业身份：未配置（此构建未接入企业登录，不会模拟登录）")?;
-        app.wait_for("暂无团队会话：企业登录未配置。")?;
-        app.wait_for("企业账号与成员")?;
+        app.wait_for("暂无团队会话：企业登录未配置。此构建未接入企业登录，不会模拟登录。")?;
         app.wait_for("暂无消息。消息只保存在本次会话内存中。")?;
-        app.wait_for("会议与屏幕共享：尚未接入企业会话，当前版本不提供入口。")?;
+        app.wait_for("尚未选择会话。")?;
         assert!(app.screen().matches("text:输入消息，Enter 发送")?);
         for hidden in DEBUG_ONLY {
             assert!(!app.shows(hidden), "首屏不应显示调试入口：{hidden}");
         }
-        // 未接入的会议/共享能力不渲染为按钮。
+        // 未接入的会议能力不在消息页渲染为可用入口。
         for missing in ["发起会议", "加入会议", "共享屏幕", "开始共享"] {
-            assert!(!app.shows(missing));
+            assert!(!app.shows(missing), "{missing} 不应出现在消息首屏");
             assert!(!app.screen().matches(&format!("role:button[{missing}]"))?);
         }
-        // 隐私/紧急停止区在首屏常驻。
+        assert!(!app.shows("正在共享"));
+        assert!(!app.shows("5 人在线"));
         assert!(app.shows("断开并停止媒体"));
+        assert_eq!(
+            app.shows(PREVIEW_BADGE),
+            cfg!(feature = "github-manual-updates")
+        );
+        if cfg!(feature = "github-manual-updates") {
+            assert!(
+                !app.shows(PREVIEW_LABEL),
+                "完整预览说明不应在消息页做成通栏横幅"
+            );
+        }
     }
     let app = collaboration(1100.0, 760.0)?;
-    assert!(app.shows("消息列表"), "宽窗口显示会话栏");
+    assert!(
+        app.screen().matches("id:conversation-heading")?,
+        "宽窗口显示会话栏标题「消息」"
+    );
     Ok(())
 }
 
@@ -101,7 +120,8 @@ fn settings_and_diagnostics_hold_security_tools() -> Result<(), String> {
     let mut app = collaboration(480.0, 800.0)?;
     app.press("设置")?;
     app.wait_for("当前版本：0.1.0")?;
-    assert!(!app.shows(PURPOSE));
+    assert!(!app.shows("搜索成员或消息"), "设置页不应残留消息会话栏");
+    assert!(!app.shows("消息列表"));
     assert!(!app.shows("创建邀请"), "设置页本身不展开手动 P2P");
     open_diagnostics(&mut app)?;
     for tool in ["创建邀请", "复制连接码", "查看连接指纹"] {
@@ -113,8 +133,22 @@ fn settings_and_diagnostics_hold_security_tools() -> Result<(), String> {
     app.press("返回设置")?;
     app.wait_for("当前版本：0.1.0")?;
     app.press("消息")?;
-    app.wait_for(PURPOSE)?;
+    app.wait_for("搜索成员或消息")?;
     assert!(!app.shows("创建邀请"));
+    Ok(())
+}
+
+#[test]
+fn conversation_heading_is_not_stuck_on_settings() -> Result<(), String> {
+    let mut app = collaboration(1100.0, 760.0)?;
+    app.wait_for("搜索成员或消息")?;
+    app.press("设置")?;
+    app.wait_for("当前版本：0.1.0")?;
+    assert!(!app.shows("搜索成员或消息"));
+    assert!(!app.shows("消息列表"));
+    assert!(app.shows("设置"));
+    app.press("消息")?;
+    app.wait_for("搜索成员或消息")?;
     Ok(())
 }
 
@@ -127,28 +161,32 @@ fn window_resize_keeps_navigation_usable() -> Result<(), String> {
     app.set_viewport(Size::new(px(360.0), px(560.0)))?;
     app.wait_for("当前版本：0.1.0")?;
     app.press("消息")?;
-    app.wait_for(PURPOSE)?;
+    app.wait_for("搜索成员或消息")?;
     app.set_viewport(Size::new(px(1280.0), px(800.0)))?;
-    app.wait_for("消息列表")?;
+    app.wait_for("搜索成员或消息")?;
     Ok(())
 }
 
 #[test]
 fn preview_label_matches_build_channel() -> Result<(), String> {
-    let app = collaboration(480.0, 800.0)?;
+    let mut app = collaboration(480.0, 800.0)?;
     assert_eq!(
-        app.shows(PREVIEW_LABEL),
+        app.shows(PREVIEW_BADGE),
         cfg!(feature = "github-manual-updates")
     );
+    if cfg!(feature = "github-manual-updates") {
+        app.press("设置")?;
+        app.wait_for(PREVIEW_LABEL)?;
+    } else {
+        assert!(!app.shows(PREVIEW_LABEL));
+    }
     Ok(())
 }
 
 #[test]
 fn enterprise_login_without_configuration_never_claims_success() -> Result<(), String> {
-    let mut app = Headless::start(EngineConfig::new(Root::of::<
-        nsh_app_native_client::Collaboration,
-    >()))
-    .unwrap();
+    let mut app = collaboration(480.0, 800.0)?;
+    app.press("成员")?;
     app.wait_for("企业账号与成员")?;
     app.press("企业账号与成员")?;
     app.wait_for("企业原生登录尚未配置或平台回调未接入；不会模拟登录成功。")?;
@@ -158,13 +196,7 @@ fn enterprise_login_without_configuration_never_claims_success() -> Result<(), S
 
 #[test]
 fn opening_media_settings_does_not_enable_capture_or_playback() -> Result<(), String> {
-    let mut app = Headless::start(EngineConfig::new(Root::of::<
-        nsh_app_native_client::Collaboration,
-    >()))
-    .unwrap();
-    use nsh_core::prelude::{Size, px};
-    app.set_viewport(Size::new(px(480.0), px(800.0)))?;
-    app.wait_for(PURPOSE)?;
+    let mut app = collaboration(480.0, 800.0)?;
     assert!(!app.shows("原生媒体"), "媒体调试不在首屏");
     open_diagnostics(&mut app)?;
     scroll_to(&mut app, "原生媒体")?;
@@ -224,10 +256,8 @@ fn update_gate_can_scroll_and_retry_in_a_small_window() -> Result<(), String> {
 
 #[test]
 fn folding_enterprise_settings_keeps_unconfigured_login_offline() -> Result<(), String> {
-    let mut app = Headless::start(EngineConfig::new(Root::of::<
-        nsh_app_native_client::Collaboration,
-    >()))
-    .unwrap();
+    let mut app = collaboration(480.0, 800.0)?;
+    app.press("成员")?;
     app.wait_for("企业账号与成员")?;
     for _ in 0..2 {
         app.press("企业账号与成员")?;
@@ -239,6 +269,59 @@ fn folding_enterprise_settings_keeps_unconfigured_login_offline() -> Result<(), 
     Ok(())
 }
 
+#[test]
+fn meeting_page_is_reachable_and_does_not_claim_a_live_session() -> Result<(), String> {
+    let mut app = collaboration(1100.0, 760.0)?;
+    app.press("会议")?;
+    app.wait_for("尚未接入企业会话，无法开始真实会议")?;
+    app.wait_for("尚未加入会议，麦克风、摄像头和离开不可用。")?;
+    assert!(app.shows("麦克风"));
+    assert!(app.shows("摄像头"));
+    assert!(app.shows("共享屏幕"));
+    assert!(app.shows("离开会议"));
+    assert!(!app.shows("正在共享"));
+    assert!(!app.shows("停止共享"));
+    assert!(app.press("麦克风").is_err());
+    assert!(app.press("摄像头").is_err());
+    assert!(app.press("离开会议").is_err());
+    assert!(!app.shows("创建邀请"));
+    assert!(!app.shows("软件更新"));
+    assert!(!app.shows("查看连接指纹"));
+    Ok(())
+}
+
+#[test]
+fn share_picker_defaults_to_window_and_keeps_start_disabled() -> Result<(), String> {
+    let mut app = collaboration(1100.0, 760.0)?;
+    app.press("会议")?;
+    app.press("共享屏幕")?;
+    app.wait_for("选择要共享的内容")?;
+    app.wait_for("尚未接入捕获")?;
+    app.wait_for("共享整个屏幕时，通知和其他窗口可能被看到。")?;
+    app.wait_for("尚未接入企业会话，无法开始共享")?;
+    assert!(
+        app.screen().selected("role:button[窗口]")?,
+        "共享选择器默认选中窗口"
+    );
+    assert!(!app.screen().selected("role:button[整个屏幕]")?);
+    assert!(
+        app.press("开始共享").is_err(),
+        "没有真实源和进行中的会议时不能开始共享"
+    );
+    app.press("整个屏幕")?;
+    assert!(app.screen().selected("role:button[整个屏幕]")?);
+    assert!(app.press("开始共享").is_err());
+    app.press("取消")?;
+    app.wait_for_gone("选择要共享的内容", std::time::Duration::from_secs(2))?;
+    app.wait_for("尚未接入企业会话，无法开始真实会议")?;
+    app.press("共享屏幕")?;
+    app.wait_for("选择要共享的内容")?;
+    app.back()?;
+    app.wait_for_gone("选择要共享的内容", std::time::Duration::from_secs(2))?;
+    app.wait_for("尚未接入企业会话，无法开始真实会议")?;
+    Ok(())
+}
+
 #[cfg(feature = "github-manual-updates")]
 #[test]
 fn manual_update_preview_opens_and_offers_sources() -> Result<(), String> {
@@ -246,11 +329,12 @@ fn manual_update_preview_opens_and_offers_sources() -> Result<(), String> {
     let mut app =
         Headless::start(EngineConfig::new(Root::of::<nsh_app_native_client::App>())).unwrap();
     app.set_viewport(Size::new(px(480.0), px(800.0)))?;
-    app.wait_for(PURPOSE)?;
-    app.wait_for(PREVIEW_LABEL)?;
+    app.wait_for(APP_TITLE)?;
+    app.wait_for(PREVIEW_BADGE)?;
     assert!(!app.shows("软件更新"), "更新入口不在首屏");
     app.press("设置")?;
     app.wait_for("软件更新")?;
+    app.wait_for(PREVIEW_LABEL)?;
     app.wait_for("本地版本：0.1.0")?;
     app.wait_for("远端版本：未知（尚未成功检查）")?;
     app.wait_for("安装方式：预览版仅下载并校验，需手动安装；不会自动升级。")?;

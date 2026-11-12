@@ -758,6 +758,52 @@ impl CallUi {
         }
     }
 
+    /// 壳层顶部的紧凑隐私指示：一行汇总真实采集状态，不占满消息区。
+    pub fn privacy_compact(self) -> impl IntoElement {
+        view()
+            .flex_row()
+            .flex_wrap()
+            .gap_2()
+            .items_center()
+            .child(
+                text(move || {
+                    format!(
+                        "{} · {} · {}",
+                        self.privacy_text(Source::Microphone),
+                        self.privacy_text(Source::Camera),
+                        self.privacy_text(Source::Screen)
+                    )
+                })
+                .text_size(px(12.0))
+                .text_color(move || {
+                    if self.needs_stop() {
+                        theme().destructive
+                    } else {
+                        theme().muted_foreground
+                    }
+                }),
+            )
+            .child(when(
+                move || self.audio_unconfirmed.get() || self.video_unconfirmed.get(),
+                || {
+                    text("远端媒体关闭未获确认，请关闭接收或断开并检查本机播放状态。")
+                        .text_size(px(12.0))
+                        .text_color(move || theme().destructive)
+                },
+            ))
+    }
+
+    fn privacy_text(self, source: Source) -> String {
+        let slot = index(source);
+        let state = self.captures[slot].get();
+        let target = self.requested_targets[slot].get();
+        if state.attention() && !target.is_empty() {
+            format!("{} · {} · 目标：{}", name(source), state.label(), target)
+        } else {
+            format!("{} · {}", name(source), state.label())
+        }
+    }
+
     /// 若外部另做折叠，必须把此视图放在折叠区外，避免隐藏采集风险。
     pub fn privacy_view(self) -> impl IntoElement {
         view()
