@@ -235,10 +235,7 @@ pub fn select_latest(bytes: &[u8]) -> Result<GithubAsset, UpdateCheckError> {
                 }
             }
             Err(error) => {
-                if newest_error
-                    .as_ref()
-                    .is_none_or(|(v, _)| tag_version > *v)
-                {
+                if newest_error.as_ref().is_none_or(|(v, _)| tag_version > *v) {
                     newest_error = Some((tag_version, error));
                 }
             }

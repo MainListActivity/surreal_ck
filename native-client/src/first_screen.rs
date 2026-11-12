@@ -13,6 +13,8 @@ pub const PREVIEW_LABEL: &str = "实验预览版 · 非正式发布，功能仍�
 pub const MEETING_EMPTY_STAGE: &str = "尚未接入企业会话，无法开始真实会议";
 /// 会议坞控件禁用原因（麦克风、摄像头、离开等）。
 pub const MEETING_CONTROLS_DISABLED: &str = "尚未加入会议，麦克风、摄像头和离开不可用。";
+/// 未加入会议时「离开会议」不可用，用此控件回到消息页，避免困在会议舞台。
+pub const MEETING_BACK: &str = "返回消息";
 /// 共享选择器在没有真实捕获源时的空状态。
 pub const SHARE_EMPTY: &str = "尚未接入捕获";
 /// 开始共享在没有真实源或没有进行中的会议时的原因。

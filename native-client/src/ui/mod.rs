@@ -1,6 +1,16 @@
 //! 应用自己的控件风格；页面不重复定义颜色。
 pub mod icons;
 
+/// 侧栏图标列的内容宽度。水平内边距另计，不能从 72 里扣除。
+pub const RAIL_ICON_COLUMN: f32 = 72.0;
+pub const RAIL_PAD: f32 = 12.0;
+pub const RAIL_WIDTH: f32 = RAIL_ICON_COLUMN + RAIL_PAD * 2.0;
+pub const RAIL_NAV: f32 = 64.0;
+pub const RAIL_BRAND: f32 = 48.0;
+pub const SESSION_COLUMN: f32 = 360.0;
+pub const SHARE_PICKER_WIDTH: f32 = 720.0;
+pub const SHARE_SLOT_MIN: f32 = 200.0;
+
 use nsh_base::{button, input, theme};
 use nsh_core::{element::ImageSrc, prelude::*};
 
@@ -37,7 +47,7 @@ pub fn field(value: Signal<String>, placeholder: &'static str) -> impl IntoEleme
         .border_color(move || theme().input)
         .rounded(px(10.0))
         .text_color(move || theme().foreground)
-        .text_size(px(15.0))
+        .text_size(px(16.0))
 }
 
 /// 手写桌面入口没有NSH打包器的asset_base，内嵌同一原始SVG以免品牌图消失。
@@ -75,13 +85,13 @@ pub fn composer(
         .px_3()
         .py_2()
         .text_color(move || theme().foreground)
-        .text_size(px(15.0))
+        .text_size(px(16.0))
 }
 
 /// 次要说明文字。
 pub fn note(content: impl Fn() -> String + 'static) -> impl IntoElement {
     text(content)
-        .text_size(px(13.0))
+        .text_size(px(14.0))
         .text_color(move || theme().muted_foreground)
 }
 
@@ -125,11 +135,11 @@ pub fn nav_item(
         .accessibility_label(label)
         .selected(selected)
         .on_press(press)
-        .w(px(48.0))
-        .h(px(48.0))
+        .w(px(RAIL_NAV))
+        .h(px(RAIL_NAV))
         .items_center()
         .justify_center()
-        .rounded(px(12.0))
+        .rounded(px(14.0))
         .bg(move || {
             if selected() {
                 rgb(0xF5C542).to_hsla()
@@ -144,8 +154,8 @@ pub fn nav_item(
         .selected_style(|s| s.bg(theme().primary))
         .child(
             image(move || icon.src(if selected() || !on_dark() { INK } else { PAPER }))
-                .w(px(22.0))
-                .h(px(22.0)),
+                .w(px(24.0))
+                .h(px(24.0)),
         )
 }
 
@@ -172,7 +182,7 @@ pub fn chip(
         .selected_style(|s| s.bg(theme().primary))
         .child(
             text(label)
-                .text_size(px(14.0))
+                .text_size(px(15.0))
                 .text_color(move || theme().foreground),
         )
 }
@@ -382,7 +392,7 @@ pub fn badge(label: &'static str) -> impl IntoElement {
 
 pub fn page_title(label: &'static str) -> impl IntoElement {
     text(label)
-        .text_size(px(24.0))
+        .text_size(px(28.0))
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(move || theme().foreground)
 }

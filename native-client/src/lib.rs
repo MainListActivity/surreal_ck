@@ -188,7 +188,7 @@ pub fn Collaboration() -> impl IntoElement {
             .gap_4()
             .child(
                 text("消息")
-                    .text_size(px(24.0))
+                    .text_size(px(28.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .test_id("conversation-heading"),
             )
@@ -217,7 +217,7 @@ pub fn Collaboration() -> impl IntoElement {
             .child(
                 text(move || session.get().line())
                     .test_id("session-state")
-                    .text_size(px(13.0))
+                    .text_size(px(14.0))
                     .text_color(move || theme().muted_foreground),
             )
             .child(when(
@@ -280,7 +280,7 @@ pub fn Collaboration() -> impl IntoElement {
                                     first_screen::NO_CONVERSATION.to_owned()
                                 }
                             })
-                            .text_size(px(22.0))
+                            .text_size(px(26.0))
                             .font_weight(FontWeight::SEMIBOLD),
                         )
                         .child(ui::note(move || {
@@ -359,7 +359,7 @@ pub fn Collaboration() -> impl IntoElement {
                                             .map(|message| message.text.clone())
                                             .unwrap_or_default()
                                     })
-                                    .text_size(px(15.0)),
+                                    .text_size(px(16.0)),
                                 )
                                 .child(
                                     text(move || {
@@ -440,12 +440,17 @@ pub fn Collaboration() -> impl IntoElement {
                 .gap_3()
                 .border_b_1()
                 .border_color(rgb(0x2A2825).to_hsla())
+                .child(ui::secondary_on_dark(
+                    first_screen::MEETING_BACK,
+                    || false,
+                    move || page.set(Page::Messages),
+                ))
                 .child(
                     view()
                         .gap_1()
                         .child(
                             text("会议")
-                                .text_size(px(22.0))
+                                .text_size(px(26.0))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(rgb(0xFAF9F6).to_hsla()),
                         )
@@ -486,7 +491,7 @@ pub fn Collaboration() -> impl IntoElement {
                 .child(
                     view().flex_1().items_center().justify_center().child(
                         text(first_screen::MEETING_EMPTY_STAGE)
-                            .text_size(px(18.0))
+                            .text_size(px(20.0))
                             .text_color(rgb(0xFAF9F6).to_hsla()),
                     ),
                 )
@@ -652,7 +657,7 @@ pub fn Collaboration() -> impl IntoElement {
         )
         .child(
             text("开发者诊断 · 手动直连")
-                .text_size(px(24.0))
+                .text_size(px(28.0))
                 .font_weight(FontWeight::SEMIBOLD),
         )
         .child(ui::note(|| first_screen::DIAGNOSTICS_NOTICE.to_owned()))
@@ -820,40 +825,33 @@ pub fn Collaboration() -> impl IntoElement {
                     }
                 })
                 .text_color(move || theme().foreground)
-                .child(when(wide, move || {
-                    view()
-                        .w(px(72.0))
-                        .p_3()
-                        .gap_4()
-                        .items_center()
-                        .border_r_1()
-                        .border_color(move || {
-                            if in_meeting() {
-                                rgb(0x2A2825).to_hsla()
-                            } else {
-                                rgb(0xE3E0DA).to_hsla()
-                            }
-                        })
-                        .bg(move || {
-                            if in_meeting() {
-                                rgb(0x161513).to_hsla()
-                            } else {
-                                rgb(0xFAF9F6).to_hsla()
-                            }
-                        })
-                        .child(ui::brand_mark(40.0))
-                        .child(nav())
-                        .child(view().flex_1())
-                        .child(settings_nav())
-                }))
+                .child(when(
+                    move || wide() && !in_meeting(),
+                    move || {
+                        view()
+                            .w(px(ui::RAIL_WIDTH))
+                            .min_w(px(ui::RAIL_WIDTH))
+                            .p(px(ui::RAIL_PAD))
+                            .gap_4()
+                            .items_center()
+                            .border_r_1()
+                            .border_color(rgb(0xE3E0DA).to_hsla())
+                            .bg(rgb(0xFAF9F6).to_hsla())
+                            .child(ui::brand_mark(ui::RAIL_BRAND))
+                            .child(nav())
+                            .child(view().flex_1())
+                            .child(settings_nav())
+                    },
+                ))
                 .child(when(
                     move || wide() && page.get().shows_conversation_column(),
                     move || {
                         view()
-                            .w(px(300.0))
+                            .w(px(ui::SESSION_COLUMN))
+                            .min_w(px(ui::SESSION_COLUMN))
                             .px_5()
-                            .py_5()
-                            .gap_4()
+                            .py_6()
+                            .gap_5()
                             .border_r_1()
                             .border_color(move || theme().border)
                             .bg(move || theme().background)
@@ -943,7 +941,8 @@ pub fn Collaboration() -> impl IntoElement {
                     .child(
                         view().flex_1().items_center().justify_center().child(
                             view()
-                                .w(px(720.0))
+                                .w(px(ui::SHARE_PICKER_WIDTH))
+                                .min_w(px(ui::SHARE_PICKER_WIDTH))
                                 .p_6()
                                 .gap_4()
                                 .rounded(px(16.0))
@@ -956,7 +955,7 @@ pub fn Collaboration() -> impl IntoElement {
                                         .items_center()
                                         .child(
                                             text("选择要共享的内容")
-                                                .text_size(px(22.0))
+                                                .text_size(px(26.0))
                                                 .font_weight(FontWeight::SEMIBOLD)
                                                 .flex_1(),
                                         )
@@ -998,15 +997,15 @@ pub fn Collaboration() -> impl IntoElement {
                                             view()
                                                 .flex_row()
                                                 .gap_2()
-                                                .child(ui::empty_tile(120.0))
-                                                .child(ui::empty_tile(120.0)),
+                                                .child(ui::empty_tile(ui::SHARE_SLOT_MIN))
+                                                .child(ui::empty_tile(ui::SHARE_SLOT_MIN)),
                                         )
                                         .child(
                                             view()
                                                 .flex_row()
                                                 .gap_2()
-                                                .child(ui::empty_tile(120.0))
-                                                .child(ui::empty_tile(120.0)),
+                                                .child(ui::empty_tile(ui::SHARE_SLOT_MIN))
+                                                .child(ui::empty_tile(ui::SHARE_SLOT_MIN)),
                                         )
                                         .child(ui::note(move || {
                                             share.get().empty_copy().to_owned()

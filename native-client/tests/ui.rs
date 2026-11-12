@@ -287,6 +287,10 @@ fn meeting_page_is_reachable_and_does_not_claim_a_live_session() -> Result<(), S
     assert!(!app.shows("创建邀请"));
     assert!(!app.shows("软件更新"));
     assert!(!app.shows("查看连接指纹"));
+    app.wait_for("返回消息")?;
+    app.press("返回消息")?;
+    app.wait_for("搜索成员或消息")?;
+    app.wait_for("尚未选择会话。")?;
     Ok(())
 }
 
