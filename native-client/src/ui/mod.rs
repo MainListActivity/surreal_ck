@@ -38,3 +38,28 @@ pub fn field(value: Signal<String>, placeholder: &'static str) -> impl IntoEleme
 pub fn brand() -> ImageSrc {
     ImageSrc::svg_markup(include_str!("../../assets/brand.svg"))
 }
+
+/// 消息输入框：回车即提交，保证仅用键盘即可发送。
+pub fn composer(
+    value: Signal<String>,
+    placeholder: &'static str,
+    submit: impl Fn() + 'static,
+) -> impl IntoElement {
+    input()
+        .value(move || value.get())
+        .on_change(move |s: &str| value.set(s.to_owned()))
+        .on_submit(move |_: &str| submit())
+        .placeholder(placeholder)
+        .flex_1()
+        .px_3()
+        .py_3()
+        .border_1()
+        .border_color(move || theme().input)
+        .rounded(move || theme().radius)
+        .text_color(move || theme().foreground)
+}
+
+/// 次要说明文字。
+pub fn note(content: impl Fn() -> String + 'static) -> impl IntoElement {
+    text(content).text_color(move || theme().muted_foreground)
+}

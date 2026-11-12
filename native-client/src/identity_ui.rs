@@ -555,13 +555,41 @@ fn start() -> (
     (tx, events)
 }
 
-#[component]
-pub fn EnterpriseIdentity() -> impl IntoElement {
-    // 组件常驻：只折叠账号设置，不能将采集隐私与停止区一起隐藏。
+/// 当前构建是否接入了企业原生登录（公开配置齐全且平台回调可用）。
+pub fn identity_available() -> bool {
+    configured().is_ok() && (!cfg!(target_os = "android") || cfg!(feature = "android-native-oauth"))
+}
+
+fn summary_of(state: &IdentityViewState, available: bool) -> crate::first_screen::IdentitySummary {
+    let workspace = state.directory.selected_slug.as_deref().map(|slug| {
+        state
+            .directory
+            .workspaces
+            .iter()
+            .find(|w| w.slug == slug)
+            .map(|w| w.name.clone())
+            .unwrap_or_else(|| slug.to_owned())
+    });
+    crate::first_screen::IdentitySummary {
+        configured: available,
+        signed_in: state.signed_in,
+        loading: state.busy(),
+        workspace: if state.signed_in { workspace } else { None },
+    }
+}
+
+/// 企业身份与工作区面板。summary 向首屏公开真实身份摘要（无假登录）。
+/// 面板常驻挂载：只折叠账号设置，不能将采集隐私与停止区一起隐藏。
+pub fn enterprise_identity(summary: Signal<crate::first_screen::IdentitySummary>) -> impl IntoElement {
     let expanded = signal(false);
-    let available = configured().is_ok()
-        && (!cfg!(target_os = "android") || cfg!(feature = "android-native-oauth"));
+    let available = identity_available();
     let state = signal(IdentityViewState::new(available));
+    effect(move || {
+        let next = summary_of(&state.get(), available);
+        if summary.get_untracked() != next {
+            summary.set(next);
+        }
+    });
     #[cfg(feature = "experimental-enterprise-files")]
     let files = crate::enterprise_file_tools::FileTools::new();
     #[cfg(feature = "experimental-enterprise-files")]
