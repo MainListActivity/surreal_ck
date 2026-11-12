@@ -760,6 +760,15 @@ impl CallUi {
 
     /// 壳层顶部的紧凑隐私指示：一行汇总真实采集状态，不占满消息区。
     pub fn privacy_compact(self) -> impl IntoElement {
+        self.privacy_strip(false)
+    }
+
+    /// 深色会议顶栏中的紧凑隐私指示，使用浅色文字以保证对比度。
+    pub fn privacy_on_dark(self) -> impl IntoElement {
+        self.privacy_strip(true)
+    }
+
+    fn privacy_strip(self, on_dark: bool) -> impl IntoElement {
         view()
             .flex_row()
             .flex_wrap()
@@ -777,9 +786,11 @@ impl CallUi {
                 .text_size(px(12.0))
                 .text_color(move || {
                     if self.needs_stop() {
-                        theme().destructive
+                        rgb(0xC4473A).to_hsla()
+                    } else if on_dark {
+                        rgb(0xB8B2A8).to_hsla()
                     } else {
-                        theme().muted_foreground
+                        rgb(0x64615C).to_hsla()
                     }
                 }),
             )
