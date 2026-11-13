@@ -25,6 +25,21 @@ case "$target" in
 esac
 if [[ "$target" == macos ]]; then
   python scripts/native-client/build-desktop-app.py --platform macos --out "$out/raw"
+elif [[ "$target" == linux ]]; then
+  # Official Linux packages include enterprise media/files/signaling at pack
+  # time. NSH generates path deps with default features only; do not change
+  # Cargo.toml default or desktop graphs (check-enterprise-signaling.sh).
+  real_cargo=$(command -v cargo)
+  wrap="$root/native-client/.nsh/official-linux-cargo"
+  mkdir -p "$wrap"
+  cat > "$wrap/cargo" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+python "$root/scripts/native-client/enable-official-linux-enterprise-features.py"
+exec "$real_cargo" "\$@"
+EOF
+  chmod +x "$wrap/cargo"
+  PATH="$wrap:$PATH" nsh "${args[@]}"
 else
   nsh "${args[@]}"
 fi
