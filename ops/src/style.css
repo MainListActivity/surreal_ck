@@ -6,6 +6,8 @@
 }
 
 * { box-sizing: border-box; }
+/* 作者样式（.activation-layout/.source-form label 等的 display）会盖过 UA 的 [hidden]；统一以 hidden 属性为准。 */
+[hidden] { display: none !important; }
 body { margin: 0; min-width: 320px; }
 button, input { font: inherit; }
 button { cursor: pointer; }
@@ -133,3 +135,15 @@ button.primary { padding: 11px 16px; }
 .preflight-meta { display: grid; grid-template-columns: max-content 1fr; gap: 2px 10px; font-size: 12px; margin: 0; }
 .preflight-meta dt { color: #66707c; }
 .preflight-meta dd { margin: 0; word-break: break-all; }
+.source-form textarea[name="reason"] { min-height: 54px; }
+.inv-hint { font-size: 11px; line-height: 1.5; }
+.inv-subject-actions { display: flex; align-items: center; gap: 10px; margin: 10px 0; }
+.inv-delivery { margin-top: 12px; }
+.inv-ack { display: flex !important; align-items: center; gap: 8px; font-size: 12px; color: #4f5965; margin: 6px 0 10px; }
+.inv-ack input { width: auto; }
+.inv-link-box { display: flex; gap: 8px; margin-top: 10px; padding: 10px; border: 1px solid #f0c36d; border-radius: 10px; background: #fff8e8; }
+.inv-link-box input { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.invite-status-completed { color: #23794a; font-weight: 700; }
+.invite-status-processing { color: #9a6a00; font-weight: 700; }
+.invite-status-failed { color: #b33b45; font-weight: 700; }
+#inv-use-trial, #inv-token-refresh { flex: none; white-space: nowrap; }

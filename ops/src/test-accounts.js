@@ -281,5 +281,5 @@ export function setupTestAccounts({ fetchRaw, escapeHtml, isSignedIn }) {
   });
 
   updateGate();
-  return { loadList };
+  return { loadList, useSubject };
 }
