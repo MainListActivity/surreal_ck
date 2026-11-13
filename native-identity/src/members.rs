@@ -146,6 +146,18 @@ pub(crate) async fn rpc<S: AsyncRead + AsyncWrite + Unpin>(
     method: &str,
     params: Value,
 ) -> Result<Value> {
+    rpc_outcome(socket, id, method, params)
+        .await?
+        .map_err(|_| IdentityError::Database)
+}
+/// 与 `rpc` 相同，但把数据库返回的 RPC 错误对象原样交给调用方分类（不含 token）。
+/// 没有 `id` 的服务端通知帧被忽略，不能让无关推送把当前请求判成失败。
+pub(crate) async fn rpc_outcome<S: AsyncRead + AsyncWrite + Unpin>(
+    socket: &mut WebSocketStream<S>,
+    id: u64,
+    method: &str,
+    params: Value,
+) -> Result<std::result::Result<Value, Value>> {
     socket
         .send(Message::Text(
             json!({"id": id, "method": method, "params": params})
@@ -159,14 +171,20 @@ pub(crate) async fn rpc<S: AsyncRead + AsyncWrite + Unpin>(
             Message::Text(text) => {
                 let response: Value =
                     serde_json::from_str(&text).map_err(|_| IdentityError::Response)?;
-                if response.get("id").and_then(Value::as_u64) != Some(id)
-                    || response.get("error").is_some()
-                {
-                    return Err(IdentityError::Database);
+                match response.get("id") {
+                    None | Some(Value::Null) => continue,
+                    Some(value) if value.as_u64() != Some(id) => {
+                        return Err(IdentityError::Database)
+                    }
+                    Some(_) => {}
+                }
+                if let Some(error) = response.get("error") {
+                    return Ok(Err(error.clone()));
                 }
                 return response
                     .get("result")
                     .cloned()
+                    .map(Ok)
                     .ok_or(IdentityError::Response);
             }
             Message::Ping(data) => socket

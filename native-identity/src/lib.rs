@@ -68,6 +68,10 @@ pub enum IdentityError {
     SignalUncertain,
     #[error("信令请求过于频繁，请等待后重试")]
     SignalRateLimited,
+    #[error("本工作区数据库尚未启用信令结构（062 native_signal 迁移未应用）；信令未启用")]
+    SignalSchemaMissing,
+    #[error("数据库拒绝了信令会话（认证已失效或权限不足）；请重新连接")]
+    SignalDenied,
 }
 pub type Result<T> = std::result::Result<T, IdentityError>;
 

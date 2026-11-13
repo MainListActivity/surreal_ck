@@ -44,10 +44,18 @@ fn inputs_and_remote_errors_are_fail_closed_and_redacted() {
     assert!(member_key("user:a; DELETE user").is_err());
     assert!(member_key("employee:a").is_err());
     assert_eq!(member_key("user:a").unwrap(), "a");
-    assert_eq!(
-        member_key("user:\u{27e8}550e8400-e29b-41d4-a716-446655440000\u{27e9}").unwrap(),
-        "550e8400-e29b-41d4-a716-446655440000"
-    );
+    assert_eq!(member_key("user:\u{27e8}a-b_c\u{27e9}").unwrap(), "a-b_c");
+    // fork JSON-RPC 会把这些形状转成 uuid / datetime，必须拒绝。
+    for coerced in [
+        "user:\u{27e8}550e8400-e29b-41d4-a716-446655440000\u{27e9}",
+        "user:550e8400-e29b-41d4-a716-446655440000",
+        "user:2026-11-13",
+        "user:`2026-11-13x`",
+    ] {
+        assert!(member_key(coerced).is_err(), "{coerced}");
+    }
+    assert!(member_key("user:af4fe8s2cv8pwuxgcida").is_ok());
+    assert!(member_key("user:0u3tr8obsmst2jn7o0wv").is_ok());
     assert!(member_key("user:\u{27e8}bad;id\u{27e9}").is_err());
     assert_eq!(member_key("user:`12345`").unwrap(), "12345");
     assert!(member_key("user:`bad;id`").is_err());
@@ -67,6 +75,25 @@ fn inputs_and_remote_errors_are_fail_closed_and_redacted() {
     assert!(live_times(221, 100).is_ok());
 }
 
+#[test]
+fn database_failures_are_classified_without_echoing_messages() {
+    let missing = json!([{"status":"ERR","kind":"NotFound","details":{"kind":"Table","details":{"name":"native_signal"}},"result":"The table 'native_signal' does not exist"}]);
+    assert_eq!(
+        statement_rows(missing),
+        Err(IdentityError::SignalSchemaMissing)
+    );
+    let other = json!([{"status":"ERR","kind":"NotFound","details":{"kind":"Table","details":{"name":"user"}},"result":"x"}]);
+    assert_eq!(statement_rows(other), Err(IdentityError::SignalUnavailable));
+    assert_eq!(
+        rpc_failure(&json!({"code":-32002,"kind":"NotAllowed","message":"secret detail"})),
+        IdentityError::SignalDenied
+    );
+    assert_eq!(
+        rpc_failure(&json!({"code":-32000,"kind":"Internal"})),
+        IdentityError::SignalUnavailable
+    );
+    assert!(!IdentityError::SignalDenied.to_string().contains("secret"));
+}
 #[test]
 fn peer_revalidation_requires_exactly_both_distinct_active_members() {
     assert!(validate_peer_rows(
@@ -162,7 +189,7 @@ impl ForkFixture {
         )
         .await
         .expect("local fixture root signin");
-        let result=rpc(&mut root,2,"query",json!(["DEFINE NAMESPACE local; USE NS local; DEFINE DATABASE ws_signal; DEFINE DATABASE ws_other;",{}])).await.unwrap();
+        let result=rpc(&mut root,2,"query",json!(["DEFINE NAMESPACE local; USE NS local; DEFINE DATABASE ws_signal; DEFINE DATABASE ws_other; DEFINE DATABASE ws_legacy;",{}])).await.unwrap();
         assert_ok_statements(&result);
         let mut root_id = 2;
         let http = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -183,7 +210,8 @@ impl ForkFixture {
             json!({"keys":[{"kty":"EC","crv":"P-256","alg":"ES256","use":"sig","kid":"fixture","x":URL_SAFE_NO_PAD.encode(&point[1..33]),"y":URL_SAFE_NO_PAD.encode(&point[33..])}]}).to_string()
         };
         let jwks_url = format!("http://{http_address}/jwks");
-        for database in ["ws_signal", "ws_other"] {
+        // ws_legacy 只到 061：模拟迁移停在 062 之前的工作区。
+        for database in ["ws_signal", "ws_other", "ws_legacy"] {
             root_id += 1;
             rpc(&mut root, root_id, "use", json!(["local", database]))
                 .await
@@ -201,6 +229,9 @@ impl ForkFixture {
                 include_str!("../../shared/sql/workspace-template/062-native-signaling.surql")
                     .to_owned(),
             ] {
+                if database == "ws_legacy" && sql.contains("native_signal") {
+                    continue;
+                }
                 root_id += 1;
                 let result = rpc(&mut root, root_id, "query", json!([sql, {}]))
                     .await
@@ -540,4 +571,38 @@ async fn real_fork_signal_connection_roundtrip_and_denials() {
         SignalConnection::connect(&fixture.client, expired, &fixture.config, "ws_signal").await,
         Err(IdentityError::SessionExpired)
     ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires SURREAL_TEST_BINARY pointing to the verified local fork; no production connections"]
+async fn real_fork_listening_cadence_and_unmigrated_workspace() {
+    let binary = std::env::var("SURREAL_TEST_BINARY").expect("fixed fork binary required");
+    let fixture = ForkFixture::start(&binary).await;
+    // 062 未应用的工作区：连接即明确失败，不再进入监听后报「身份或工作区已变化」。
+    let legacy = SignalConnection::connect(
+        &fixture.client,
+        fixture.session("d", "ws_legacy").await,
+        &fixture.config,
+        "ws_legacy",
+    )
+    .await;
+    assert_eq!(legacy.err(), Some(IdentityError::SignalSchemaMissing));
+    // 与 UI 相同的 4 秒收件箱节奏（跨越服务端 5 秒 ping），管理员降级会话持续可用。
+    let mut admin = fixture.connection("d", "ws_signal").await;
+    let mut member = fixture.connection("a", "ws_signal").await;
+    let mut ticker = tokio::time::interval(Duration::from_secs(4));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    for round in 0..4 {
+        ticker.tick().await;
+        let rows = admin.inbox().await.expect("admin inbox stays available");
+        assert_eq!(rows.len(), usize::from(round >= 2));
+        if round == 1 {
+            let offer = offer("offer");
+            let hash = sdp_hash(&offer, "offer").unwrap();
+            member
+                .invite(&id(), &id(), &id(), "user:d", &offer, &hash)
+                .await
+                .unwrap();
+        }
+    }
 }
