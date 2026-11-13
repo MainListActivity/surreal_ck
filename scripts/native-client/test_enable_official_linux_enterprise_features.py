@@ -55,6 +55,17 @@ class OfficialLinuxEnterpriseFeaturesTests(unittest.TestCase):
         self.assertLess(shell.index('elif [[ "$target" == linux ]]'), shell.index('PATH="$wrap:$PATH" nsh'))
         self.assertIn('nsh "${args[@]}"', shell)
 
+    def test_main_is_silent_on_stdout(self):
+        import io
+        from contextlib import redirect_stdout, redirect_stderr
+        with tempfile.TemporaryDirectory() as raw:
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                self.assertEqual(features.main(['--workspace', raw]), 0)
+            self.assertEqual(stdout.getvalue(), '')
+            self.assertIn('patched 0', stderr.getvalue())
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -65,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     workspace = args.workspace if args.workspace is not None else generated_workspace()
     changed = patch_workspace(workspace)
-    print(f'official linux enterprise features: patched {changed} nsh path deps in {workspace}')
+    print(f'official linux enterprise features: patched {changed} nsh path deps in {workspace}', file=sys.stderr)
     return 0
 
 
