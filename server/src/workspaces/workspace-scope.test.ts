@@ -582,3 +582,120 @@ describe("WorkspaceScopeModule.getDefaultScope system-admin creation switch", ()
     expect(result).toEqual({ kind: "login-denied", reason: "no-workspace" });
   });
 });
+
+describe("WorkspaceScopeModule.resolveCollaborationScope", () => {
+  function adminIndexDb(users: any[], indexOverrides: Record<string, unknown> = {}) {
+    const db = new FakeDb();
+    db.indexRows = [
+      {
+        id: "user_workspace_index:1",
+        subject: "user-123",
+        db_name: "ws_abc",
+        role: "admin",
+        workspace: { ...GATE_ELIGIBLE_WORKSPACE },
+        email: "ada@example.test",
+        ...indexOverrides,
+      },
+    ];
+    db.workspaceUserRows["ws_abc"] = users;
+    return db;
+  }
+  const adminUser = {
+    id: "user:admin",
+    subject: "user-123",
+    kind: "human",
+    is_admin: true,
+    disabled_at: undefined,
+  };
+
+  test("admin subject with a live human user row gets participant scope without writes", async () => {
+    const db = adminIndexDb([adminUser]);
+
+    const result = await createWorkspaceScopeModule(db).resolveCollaborationScope({
+      subject: "user-123",
+      workspaceSlug: "abc",
+    });
+
+    expect(result).toEqual({ kind: "participant", scope: { db: "ws_abc", ac: "participant" } });
+    expect(db.queries.some((q) => /\b(UPDATE|CREATE|UPSERT|DELETE|INSERT)\b/.test(q.sql))).toBe(false);
+    const userQuery = db.queries.find((q) => q.sql.includes("FROM user WHERE kind = 'human'"));
+    expect(userQuery?.sql).toContain("subject = $subject");
+    expect(userQuery?.sql).toContain("disabled_at = NONE");
+    expect(userQuery?.params).toEqual({ subject: "user-123" });
+    // 读完 workspace 库后回到 _system，避免共享注入连接停在业务库。
+    expect(db.useCalls.at(-1)?.database).toBe("_system");
+  });
+
+  test("index lookup binds strictly by subject, never the email invite path", async () => {
+    const db = adminIndexDb([adminUser]);
+
+    await createWorkspaceScopeModule(db).resolveCollaborationScope({ subject: "user-123", dbName: "ws_abc" });
+
+    const indexQuery = db.queries.find((q) => q.sql.includes("FROM user_workspace_index"));
+    expect(indexQuery?.sql).not.toContain("email");
+    expect(indexQuery?.params).toEqual({ subject: "user-123", dbName: "ws_abc" });
+  });
+
+  test("rejects when no matching human user row exists", async () => {
+    for (const users of [
+      [],
+      [{ ...adminUser, subject: "someone-else" }],
+      [{ ...adminUser, kind: "virtual" }],
+      [{ ...adminUser, disabled_at: "2026-11-01T00:00:00Z" }],
+      [{ ...adminUser, subject: undefined, email: "ada@example.test" }],
+      [adminUser, { ...adminUser, id: "user:dup" }],
+    ]) {
+      const db = adminIndexDb(users);
+      const result = await createWorkspaceScopeModule(db).resolveCollaborationScope({
+        subject: "user-123",
+        workspaceSlug: "abc",
+      });
+      expect(result).toEqual({ kind: "member-missing" });
+    }
+  });
+
+  test("rejects unbound, foreign, inactive, or gated memberships", async () => {
+    for (const overrides of [
+      { subject: undefined },
+      { subject: "someone-else" },
+      { workspace: { ...GATE_ELIGIBLE_WORKSPACE, status: "suspended" } },
+      { workspace: { ...GATE_ELIGIBLE_WORKSPACE, applied_entitlement: "resource_entitlement:v0" } },
+      { role: "owner" },
+      { db_name: "_system" },
+    ]) {
+      const db = adminIndexDb([adminUser], overrides);
+      const result = await createWorkspaceScopeModule(db).resolveCollaborationScope({
+        subject: "user-123",
+        workspaceSlug: "abc",
+      });
+      expect(result).toEqual({ kind: "forbidden" });
+    }
+  });
+
+  test("rejects a slug that does not match the index row's workspace", async () => {
+    const db = adminIndexDb([adminUser]);
+    const result = await createWorkspaceScopeModule(db).resolveCollaborationScope({
+      subject: "user-123",
+      workspaceSlug: "other",
+    });
+    expect(result).toEqual({ kind: "forbidden" });
+  });
+
+  test("participant members also resolve to participant (never admin)", async () => {
+    const db = adminIndexDb([{ ...adminUser, is_admin: false }], { role: "participant" });
+    const result = await createWorkspaceScopeModule(db).resolveCollaborationScope({
+      subject: "user-123",
+      workspaceSlug: "abc",
+    });
+    expect(result).toEqual({ kind: "participant", scope: { db: "ws_abc", ac: "participant" } });
+  });
+
+  test("switchWorkspace for an admin member still returns ac=admin", async () => {
+    const db = adminIndexDb([{ ...adminUser, email: "ada@example.test" }]);
+    const result = await createWorkspaceScopeModule(db).switchWorkspace({
+      subject: "user-123",
+      workspaceSlug: "abc",
+    });
+    expect(result).toEqual({ kind: "switched", scope: { db: "ws_abc", ac: "admin" } });
+  });
+});
