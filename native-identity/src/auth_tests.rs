@@ -848,3 +848,288 @@ fn public_login_rejects_id_token_algorithm_not_advertised_by_discovery() {
     assert_eq!(attempt.finish(&callback).unwrap_err(), IdentityError::Token);
     server.join().unwrap();
 }
+
+fn admin_session(client: &IdentityClient, pair: &EcdsaKeyPair, jwks: &JwkSet, now: u64) -> Session {
+    let mut claims = access_claims(now);
+    claims["db"] = json!("ws_target");
+    claims["ac"] = json!("admin");
+    claims["RL"] = json!(["Owner"]);
+    client
+        .establish(
+            Zeroizing::new(signed(pair, claims)),
+            &signed(pair, id_claims(now)),
+            Some(120),
+            "expected-nonce",
+            jwks,
+            now,
+        )
+        .unwrap()
+}
+fn target(role: WorkspaceRole) -> Workspace {
+    let mut target = workspace(role);
+    target.slug = "target".into();
+    target.db_name = "ws_target".into();
+    target
+}
+fn participant_claims(now: u64) -> Value {
+    let mut claims = access_claims(now);
+    claims["db"] = json!("ws_target");
+    claims["ac"] = json!("participant");
+    claims["RL"] = json!(["Editor"]);
+    claims["client_id"] = json!("backend-confidential-client");
+    claims
+}
+#[test]
+fn collaboration_scope_accepts_same_db_participant_but_never_promotes_it() {
+    let client = IdentityClient::new(config());
+    let now = unix_now().unwrap();
+    let (pair, jwks) = signer();
+    let admin = admin_session(&client, &pair, &jwks, now);
+    let admin_ws = target(WorkspaceRole::Admin);
+    let participant_ws = target(WorkspaceRole::Participant);
+    assert!(admin.require_scope(&admin_ws).is_ok());
+    assert!(admin.require_collaboration_scope(&admin_ws).is_ok());
+    // admin token 不能冒充 participant 工作区。
+    assert_eq!(
+        admin.require_collaboration_scope(&participant_ws),
+        Err(IdentityError::WorkspaceNotSelected)
+    );
+    let participant = client
+        .participant_session(
+            &admin,
+            &admin_ws,
+            Zeroizing::new(signed(&pair, participant_claims(now))),
+            Some(600),
+            &jwks,
+            now,
+        )
+        .unwrap();
+    assert_eq!(participant.access(), Some("participant"));
+    assert!(participant.require_collaboration_scope(&admin_ws).is_ok());
+    assert!(participant
+        .require_collaboration_scope(&participant_ws)
+        .is_ok());
+    // participant 绝不被当作 admin：严格 scope（admin 专用 API）仍拒绝。
+    assert_eq!(
+        participant.require_scope(&admin_ws),
+        Err(IdentityError::WorkspaceNotSelected)
+    );
+    let mut other = admin_ws.clone();
+    other.db_name = "ws_other".into();
+    assert_eq!(
+        participant.require_collaboration_scope(&other),
+        Err(IdentityError::WorkspaceNotSelected)
+    );
+    // 无 Owner 的 admin token 依旧不可用。
+    let mut no_owner = admin_session(&client, &pair, &jwks, now);
+    no_owner.roles = vec!["Editor".into()];
+    assert_eq!(
+        no_owner.require_collaboration_scope(&admin_ws),
+        Err(IdentityError::Token)
+    );
+    let mut expired = client
+        .participant_session(
+            &admin,
+            &admin_ws,
+            Zeroizing::new(signed(&pair, participant_claims(now))),
+            Some(600),
+            &jwks,
+            now,
+        )
+        .unwrap();
+    expired.expires_at = 0;
+    assert_eq!(
+        expired.require_collaboration_scope(&admin_ws),
+        Err(IdentityError::SessionExpired)
+    );
+}
+#[test]
+fn participant_downgrade_keeps_remaining_ttl_and_subject() {
+    let client = IdentityClient::new(config());
+    let now = unix_now().unwrap();
+    let (pair, jwks) = signer();
+    let admin = admin_session(&client, &pair, &jwks, now);
+    let participant = client
+        .participant_session(
+            &admin,
+            &target(WorkspaceRole::Admin),
+            Zeroizing::new(signed(&pair, participant_claims(now))),
+            Some(600),
+            &jwks,
+            now,
+        )
+        .unwrap();
+    assert_eq!(participant.subject(), admin.subject());
+    assert_eq!(participant.database(), Some("ws_target"));
+    assert!(participant.expires_at() <= admin.expires_at());
+    assert_eq!(participant.expires_at(), now + 120);
+}
+#[test]
+fn participant_downgrade_failures_leave_admin_session_in_place() {
+    let client = IdentityClient::new(config());
+    let now = unix_now().unwrap();
+    let (pair, jwks) = signer();
+    let admin = admin_session(&client, &pair, &jwks, now);
+    let admin_ws = target(WorkspaceRole::Admin);
+    let valid = participant_claims(now);
+    for (field, value) in [
+        ("sub", json!("other-person")),
+        ("iss", json!("https://evil.example")),
+        ("aud", json!("other-resource")),
+        ("db", json!("ws_other")),
+        ("db", Value::Null),
+        ("ac", json!("admin")),
+        ("ac", json!("content_reader")),
+        ("ac", Value::Null),
+        // 延长有效期即拒绝。
+        ("exp", json!(now + 601)),
+        ("exp", json!(now)),
+    ] {
+        let mut bad = valid.clone();
+        bad[field] = value;
+        assert!(
+            client
+                .participant_session(
+                    &admin,
+                    &admin_ws,
+                    Zeroizing::new(signed(&pair, bad)),
+                    Some(600),
+                    &jwks,
+                    now
+                )
+                .is_err(),
+            "{field}"
+        );
+        assert_eq!(admin.access(), Some("admin"));
+        assert_eq!(admin.database(), Some("ws_target"));
+        assert_eq!(admin.subject(), "person-1");
+        assert!(admin.require_scope(&admin_ws).is_ok());
+    }
+    let (wrong_pair, _) = signer();
+    assert!(client
+        .participant_session(
+            &admin,
+            &admin_ws,
+            Zeroizing::new(signed(&wrong_pair, valid.clone())),
+            Some(600),
+            &jwks,
+            now
+        )
+        .is_err());
+    // 当前 token 未选定该工作区时不能借此换票。
+    let mut elsewhere = admin_ws.clone();
+    elsewhere.db_name = "ws_other".into();
+    assert_eq!(
+        client
+            .participant_session(
+                &admin,
+                &elsewhere,
+                Zeroizing::new(signed(&pair, valid)),
+                Some(600),
+                &jwks,
+                now
+            )
+            .unwrap_err(),
+        IdentityError::WorkspaceNotSelected
+    );
+    assert!(admin.require_scope(&admin_ws).is_ok());
+}
+#[test]
+fn admin_collaboration_session_uses_dedicated_endpoint_over_real_http() {
+    use crate::test_http;
+    let (pair, jwks) = signer();
+    let now = unix_now().unwrap();
+    let client = IdentityClient::new(config());
+    let admin = admin_session(&client, &pair, &jwks, now);
+    let admin_token = admin.access_token().to_owned();
+    let issued = signed(&pair, participant_claims(now));
+    let jwks_json = serde_json::to_value(&jwks).unwrap();
+    let (origin, server) = test_http::serve(3, move |index, request| match index {
+        0 => {
+            assert!(request.starts_with("GET /api/session/workspaces "));
+            test_http::json(
+                json!({"workspaces":[{"slug":"target","name":"目标团队","dbName":"ws_target","role":"admin","lastSelectedAt":null}],"canCreate":false}),
+            )
+        }
+        1 => {
+            assert!(request.starts_with("POST /api/session/collaboration-scope "));
+            assert!(request.contains(&format!("Bearer {admin_token}")));
+            let body: Value =
+                serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+            // 只有工作区目标；客户端不提交 ac / sender / record id。
+            assert_eq!(body, json!({"workspaceSlug":"target","dbName":"ws_target"}));
+            test_http::json(json!({"ok":true,"accessToken":issued,"expiresIn":600}))
+        }
+        2 => {
+            assert!(request.starts_with("GET /t/ck/jwks.json "));
+            test_http::json(jwks_json.clone())
+        }
+        _ => unreachable!(),
+    });
+    let mut client = client;
+    client.transport = HttpsTransport::local_fixture(origin);
+    let participant = client
+        .collaboration_session(&admin, "target")
+        .unwrap()
+        .expect("admin is downgraded");
+    assert_eq!(participant.access(), Some("participant"));
+    assert_eq!(participant.subject(), admin.subject());
+    assert!(participant.expires_at() <= admin.expires_at());
+    assert_eq!(admin.access(), Some("admin"));
+    server.join().unwrap();
+}
+#[test]
+fn participant_collaboration_session_is_reused_without_exchange() {
+    use crate::test_http;
+    let (origin, server) = test_http::serve(1, |_, request| {
+        assert!(request.starts_with("GET /api/session/workspaces "));
+        test_http::json(
+            json!({"workspaces":[{"slug":"fixture","name":"Fixture","dbName":"ws_fixture","role":"participant","lastSelectedAt":null}],"canCreate":false}),
+        )
+    });
+    let mut client = IdentityClient::new(config());
+    client.transport = HttpsTransport::local_fixture(origin);
+    let now = unix_now().unwrap();
+    let (pair, jwks) = signer();
+    let session = client
+        .establish(
+            Zeroizing::new(signed(&pair, access_claims(now))),
+            &signed(&pair, id_claims(now)),
+            Some(120),
+            "expected-nonce",
+            &jwks,
+            now,
+        )
+        .unwrap();
+    assert!(client
+        .collaboration_session(&session, "fixture")
+        .unwrap()
+        .is_none());
+    server.join().unwrap();
+}
+#[test]
+fn collaboration_endpoint_rejection_leaves_admin_session_valid() {
+    use crate::test_http;
+    for status in ["409 Conflict", "403 Forbidden", "502 Bad Gateway"] {
+        let (origin, server) = test_http::serve(2, move |index, request| {
+            if index == 0 {
+                return test_http::json(
+                    json!({"workspaces":[{"slug":"target","name":"目标团队","dbName":"ws_target","role":"admin","lastSelectedAt":null}],"canCreate":false}),
+                );
+            }
+            assert!(request.starts_with("POST /api/session/collaboration-scope "));
+            format!("HTTP/1.1 {status}\r\nContent-Length: 6\r\nConnection: close\r\n\r\nsecret")
+        });
+        let mut client = IdentityClient::new(config());
+        client.transport = HttpsTransport::local_fixture(origin);
+        let now = unix_now().unwrap();
+        let (pair, jwks) = signer();
+        let admin = admin_session(&client, &pair, &jwks, now);
+        let error = client.collaboration_session(&admin, "target").unwrap_err();
+        assert!(matches!(error, IdentityError::Http(_)));
+        assert!(!error.to_string().contains("secret"));
+        assert_eq!(admin.access(), Some("admin"));
+        assert!(admin.require_scope(&target(WorkspaceRole::Admin)).is_ok());
+        server.join().unwrap();
+    }
+}

@@ -115,12 +115,16 @@ impl DirectoryView {
             ..Self::default()
         }
     }
-    fn select(&mut self, workspace: &Workspace, members: Vec<Member>) {
+    /// `record_identity`：后台已持有本工作区经验证的 participant RECORD 会话
+    /// （普通成员原 token，或管理员经 collaboration-scope 降级所得）。
+    fn select(&mut self, workspace: &Workspace, members: Vec<Member>, record_identity: bool) {
         self.selected_slug = Some(workspace.slug.clone());
         self.current_title = format!("当前工作区：{}", workspace.name);
+        #[cfg(not(feature = "experimental-enterprise-signaling"))]
+        let _ = record_identity;
         #[cfg(feature = "experimental-enterprise-signaling")]
         {
-            self.can_chat = workspace.role == WorkspaceRole::Participant;
+            self.can_chat = record_identity;
             self.chat_members = members
                 .iter()
                 .map(|member| enterprise_chat::MemberChoice {
@@ -150,7 +154,11 @@ impl DirectoryView {
     }
 }
 struct Directory {
+    /// 工作区选择 / 管理员专用 HTTP API 使用的原会话（管理员仍为 ac=admin）。
     session: Arc<Session>,
+    /// 成员目录与信令使用的 participant RECORD 会话；没有时不得启用聊天。
+    #[cfg_attr(not(feature = "experimental-enterprise-signaling"), allow(dead_code))]
+    collaboration: Option<Arc<Session>>,
     view: DirectoryView,
     message: String,
 }
@@ -339,16 +347,20 @@ async fn login_directory(
         "身份已验证，请选择工作区以加载成员。"
     }
     .to_owned();
+    let mut collaboration = None;
     // 只读取 token 已有的真实当前 scope，不取第一个 workspace、不调用 scope 切换。
     if let Some(current) = workspaces
         .workspaces
         .iter()
         .find(|workspace| Some(workspace.db_name.as_str()) == session.database())
     {
-        match load_members(&client, &session, &database, &current.slug).await {
+        let (collab, collab_note) = collaboration_scope(&client, &session, &current.slug).await;
+        collaboration = collab;
+        let reader = collaboration.as_ref().unwrap_or(&session);
+        match load_members(&client, reader, &database, &current.slug).await {
             Ok(members) => {
-                view.select(current, members);
-                message = format!("已验证登录 · {}", current.name);
+                view.select(current, members, collaboration.is_some());
+                message = format!("已验证登录 · {}{collab_note}", current.name);
             }
             Err(IdentityError::WorkspaceNotSelected) => {}
             Err(error) => {
@@ -363,9 +375,26 @@ async fn login_directory(
         .map_err(|error| error.to_string())?;
     Ok(Directory {
         session,
+        collaboration,
         view,
         message,
     })
+}
+/// 已选工作区内取得协作会话。管理员降级失败时保留原管理员会话（只读成员仍可用），
+/// 仅不启用聊天；不从成员列表挑选或拼接 sender。
+async fn collaboration_scope(
+    client: &IdentityClient,
+    session: &Arc<Session>,
+    slug: &str,
+) -> (Option<Arc<Session>>, String) {
+    match client
+        .collaboration_session_async(session.clone(), slug.to_owned())
+        .await
+    {
+        Ok(next) if next.ensure_current().is_ok() => (Some(next), String::new()),
+        Ok(_) => (None, "（协作身份已过期，聊天未启用）".into()),
+        Err(error) => (None, format!("（协作身份未取得：{error}；聊天未启用）")),
+    }
 }
 async fn switch_directory(previous: Arc<Session>, slug: String) -> Result<Directory, String> {
     let (client, database) = configured()?;
@@ -384,18 +413,25 @@ async fn switch_directory(previous: Arc<Session>, slug: String) -> Result<Direct
         .iter()
         .find(|workspace| workspace.slug == slug)
         .ok_or_else(|| "目标工作区不再出现在可访问列表中".to_owned())?;
-    let members = load_members(&client, &session, &database, &slug)
-        .await
-        .map_err(|error| error.to_string())?;
+    let (collaboration, collab_note) = collaboration_scope(&client, &session, &slug).await;
+    let members = load_members(
+        &client,
+        collaboration.as_ref().unwrap_or(&session),
+        &database,
+        &slug,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
     session
         .ensure_current()
         .map_err(|error| error.to_string())?;
     let mut view = DirectoryView::from_workspaces(&workspaces.workspaces);
-    view.select(target, members);
+    view.select(target, members, collaboration.is_some());
     Ok(Directory {
         session,
+        collaboration,
         view,
-        message: format!("已验证登录 · {}", target.name),
+        message: format!("已验证登录 · {}{collab_note}", target.name),
     })
 }
 fn abort(pending: &mut Option<tokio::task::JoinHandle<()>>) {
@@ -1280,9 +1316,13 @@ mod enterprise_chat {
                 .await;
             return;
         }
-        let Some(directory) =
-            directory.filter(|d| d.session.ensure_current().is_ok() && d.view.can_chat)
-        else {
+        let Some(directory) = directory.filter(|d| {
+            d.session.ensure_current().is_ok()
+                && d.view.can_chat
+                && d.collaboration
+                    .as_ref()
+                    .is_some_and(|c| c.ensure_current().is_ok())
+        }) else {
             let _ = out
                 .send((
                     epoch,
@@ -1317,7 +1357,9 @@ mod enterprise_chat {
             let Some(slug) = directory.view.selected_slug.clone() else {
                 return;
             };
-            let session = directory.session.clone();
+            let Some(session) = directory.collaboration.clone() else {
+                return;
+            };
             let members = directory.view.chat_members.clone();
             let (commands, requests) = async_channel::bounded(8);
             let (stop, stopped) = oneshot::channel();
@@ -1935,9 +1977,14 @@ mod enterprise_chat {
                     is_admin: true,
                     pending: false,
                 }],
+                false,
             );
             assert!(!view.can_chat);
             assert_eq!(view.chat_members.len(), 1);
+            // 管理员工作区只有在后台持有降级所得的 participant RECORD 会话时才启用聊天。
+            let mut downgraded = DirectoryView::default();
+            downgraded.select(&workspace, vec![], true);
+            assert!(downgraded.can_chat);
         }
         #[tokio::test]
         async fn enterprise_chat_shutdown_awaits_cleanup_and_latches_uncertain_close() {

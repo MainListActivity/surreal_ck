@@ -124,7 +124,7 @@ impl SignalConnection {
             .iter()
             .find(|workspace| workspace.slug == slug)
             .ok_or(IdentityError::Forbidden)?;
-        session.require_scope(workspace)?;
+        session.require_collaboration_scope(workspace)?;
         // admin TYPE JWT 没有可冒充的 RECORD $auth.id；绝不从 UI 或 member 列表代填 sender。
         if session.access.as_deref() != Some("participant") {
             return Err(IdentityError::SignalRecordRequired);

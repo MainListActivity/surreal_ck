@@ -78,7 +78,7 @@ pub async fn load_members(
         .iter()
         .find(|w| w.slug == slug)
         .ok_or(IdentityError::Forbidden)?;
-    session.require_scope(workspace)?;
+    session.require_collaboration_scope(workspace)?;
     let mut socket = connect_authenticated(session, config, workspace).await?;
     let result = timeout(Duration::from_secs(30), async {
         let data = rpc(&mut socket, 3, "query", json!([MEMBERS_QUERY, {}])).await?;
@@ -97,7 +97,7 @@ pub(crate) async fn connect_authenticated(
     config: &SurrealConfig,
     workspace: &crate::Workspace,
 ) -> Result<DatabaseSocket> {
-    session.require_scope(workspace)?;
+    session.require_collaboration_scope(workspace)?;
     let mut request = config
         .endpoint
         .as_str()

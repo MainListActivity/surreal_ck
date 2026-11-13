@@ -87,7 +87,8 @@ pub(crate) struct ForkFixture {
     root_id: u64,
     pub(crate) config: SurrealConfig,
     pub(crate) client: IdentityClient,
-    members: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
+    /// token → (database, 权威列表中的工作区角色)；`d` 是 is_admin=true 的工作区管理员。
+    members: Arc<std::sync::Mutex<std::collections::HashMap<String, (String, &'static str)>>>,
     workspace_api: tokio::task::JoinHandle<()>,
 }
 impl ForkFixture {
@@ -146,7 +147,7 @@ impl ForkFixture {
             rpc(&mut root, root_id, "use", json!(["local", database]))
                 .await
                 .unwrap();
-            let setup="DEFINE TABLE user SCHEMAFULL PERMISSIONS FOR select FULL; DEFINE FIELD kind ON user TYPE string; DEFINE FIELD email ON user TYPE string; DEFINE FIELD subject ON user TYPE option<string>; DEFINE FIELD is_admin ON user TYPE bool; DEFINE FIELD disabled_at ON user TYPE option<datetime>; CREATE user:a SET kind='human',email='a@invalid.local',subject='fixture-a',is_admin=false; CREATE user:b SET kind='human',email='b@invalid.local',subject='fixture-b',is_admin=false; CREATE user:c SET kind='human',email='c@invalid.local',subject='fixture-c',is_admin=false;";
+            let setup="DEFINE TABLE user SCHEMAFULL PERMISSIONS FOR select FULL; DEFINE FIELD kind ON user TYPE string; DEFINE FIELD email ON user TYPE string; DEFINE FIELD subject ON user TYPE option<string>; DEFINE FIELD is_admin ON user TYPE bool; DEFINE FIELD disabled_at ON user TYPE option<datetime>; CREATE user:a SET kind='human',email='a@invalid.local',subject='fixture-a',is_admin=false; CREATE user:b SET kind='human',email='b@invalid.local',subject='fixture-b',is_admin=false; CREATE user:c SET kind='human',email='c@invalid.local',subject='fixture-c',is_admin=false; CREATE user:d SET kind='human',email='d@invalid.local',subject='fixture-d',is_admin=true;";
             root_id += 1;
             let result = rpc(&mut root, root_id, "query", json!([setup, {}]))
                 .await
@@ -158,7 +159,7 @@ impl ForkFixture {
         }
         let members = Arc::new(std::sync::Mutex::new(std::collections::HashMap::<
             String,
-            String,
+            (String, &'static str),
         >::new()));
         let allowed = members.clone();
         let http = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -186,9 +187,9 @@ impl ForkFixture {
                         .filter(|(name, _)| name.eq_ignore_ascii_case("authorization"))
                         .and_then(|(_, value)| value.trim().strip_prefix("Bearer "))
                 });
-                let database = bearer.and_then(|token| allowed.lock().unwrap().get(token).cloned());
-                let (status, body) = if let Some(database) = database {
-                    ("200 OK",json!({"workspaces":[{"slug":database,"name":"本地夹具工作区","dbName":database,"role":"participant","lastSelectedAt":null}],"canCreate":false}).to_string())
+                let entry = bearer.and_then(|token| allowed.lock().unwrap().get(token).cloned());
+                let (status, body) = if let Some((database, role)) = entry {
+                    ("200 OK",json!({"workspaces":[{"slug":database,"name":"本地夹具工作区","dbName":database,"role":role,"lastSelectedAt":null}],"canCreate":false}).to_string())
                 } else {
                     ("401 Unauthorized", "{}".into())
                 };
@@ -241,15 +242,19 @@ impl ForkFixture {
             .or_else(|| result.get("token").and_then(Value::as_str))
             .expect("fixture token shape")
             .to_owned();
-        self.members
-            .lock()
-            .unwrap()
-            .insert(token.clone(), database.to_owned());
+        self.members.lock().unwrap().insert(
+            token.clone(),
+            (
+                database.to_owned(),
+                if name == "d" { "admin" } else { "participant" },
+            ),
+        );
         let session = Session {
             origin: self.client.config.clone(),
             access_token: zeroize::Zeroizing::new(token),
             subject: format!("fixture-{name}"),
             expires_at: crate::auth::unix_now().unwrap() + 600,
+            token_expires_at: crate::auth::unix_now().unwrap() + 600,
             database: Some(database.into()),
             access: Some("participant".into()),
             roles: vec![],
@@ -320,6 +325,11 @@ async fn real_fork_signal_connection_roundtrip_and_denials() {
     let mut bob = fixture.connection("b", "ws_signal").await;
     let mut outsider = fixture.connection("c", "ws_signal").await;
     let mut other = fixture.connection("a", "ws_other").await;
+    // 工作区管理员经 collaboration-scope 降级得到的同 subject participant RECORD 会话：
+    // 权威列表角色仍是 admin，但 `$auth.id` 绑定到其本人 is_admin=true 的 user 行。
+    let mut admin_member = fixture.connection("d", "ws_signal").await;
+    assert_eq!(admin_member.member_id(), "user:d");
+    admin_member.revalidate_peer("user:a").await.unwrap();
     assert_eq!(alice.member_id(), "user:a");
     assert_eq!(bob.member_id(), "user:b");
     alice.ensure_current().unwrap();
