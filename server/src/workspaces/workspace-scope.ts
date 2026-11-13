@@ -51,6 +51,29 @@ export type SwitchWorkspaceResult =
       kind: "drift";
     };
 
+export type CollaborationScopeInput = {
+  subject: string;
+  workspaceSlug?: string;
+  dbName?: string;
+};
+
+/**
+ * 协作 scope 只会把当前主体降为同一 workspace 的 participant；
+ * 不返回 admin，不写 membership / last_selected_at。
+ */
+export type CollaborationScopeResult =
+  | {
+      kind: "participant";
+      scope: { db: string; ac: "participant" };
+    }
+  | {
+      kind: "forbidden";
+    }
+  | {
+      /** workspace 库中没有与 subject 精确绑定、未禁用的真人 user 行。 */
+      kind: "member-missing";
+    };
+
 /** `_system.system_admin` 表是否已有任意行决定 `canCreate`；有行即允许创建 workspace。 */
 export type ListWorkspacesResult = ListWorkspacesResponse;
 
@@ -58,6 +81,7 @@ export interface WorkspaceScopeModule {
   getDefaultScope(input: DefaultScopeInput): Promise<DefaultScopeResult>;
   listWorkspaces(input: { subject: string; email?: string }): Promise<ListWorkspacesResult>;
   switchWorkspace(input: SwitchWorkspaceInput): Promise<SwitchWorkspaceResult>;
+  resolveCollaborationScope(input: CollaborationScopeInput): Promise<CollaborationScopeResult>;
 }
 
 type Queryable = {
@@ -437,6 +461,82 @@ export function createWorkspaceScopeModule(input?: Queryable | WorkspaceScopeMod
       });
 
       return { kind: "switched", scope };
+    },
+
+    async resolveCollaborationScope(input) {
+      const subject = input.subject.trim();
+      if (!subject) return { kind: "forbidden" };
+      const client = await getSystemDb();
+      if (await isExpiredTestSubjectForScope(client, { subject })) {
+        return { kind: "forbidden" };
+      }
+      // 只接受已按 subject 绑定的 membership；不走 email 待绑定路径，也不绑定/改写任何行。
+      const result = input.dbName
+        ? await client.query(
+            `
+              SELECT id, subject, db_name, role, workspace
+              FROM user_workspace_index
+              WHERE subject = $subject AND disabled_at = NONE AND db_name = $dbName
+              FETCH workspace;
+            `,
+            { subject, dbName: input.dbName },
+          )
+        : await client.query(
+            `
+              SELECT id, subject, db_name, role, workspace
+              FROM user_workspace_index
+              WHERE subject = $subject
+                AND disabled_at = NONE
+                AND workspace IN (SELECT VALUE id FROM workspace WHERE slug = $workspaceSlug)
+              FETCH workspace;
+            `,
+            { subject, workspaceSlug: input.workspaceSlug },
+          );
+
+      const row = rowsFromQueryResult(result).find(
+        (candidate) => candidate.subject === subject && rowToScope(candidate) !== null,
+      );
+      if (!row || row.workspace?.status !== "active") {
+        return { kind: "forbidden" };
+      }
+      if (input.workspaceSlug && row.workspace.slug !== input.workspaceSlug) {
+        return { kind: "forbidden" };
+      }
+      if (!(await isScopeEligible(client, row))) {
+        return { kind: "forbidden" };
+      }
+      const scope = rowToScope(row);
+      if (!scope || scope.db === SYSTEM_DATABASE || (input.dbName && scope.db !== input.dbName)) {
+        return { kind: "forbidden" };
+      }
+
+      const targetClient = db ? await useInjectedDb(db, namespace, scope.db) : await getDbSession(scope.db, namespace);
+      try {
+        // participant ACCESS 按 $token.sub 查 user 并 RETURN 该记录；这里先确认它存在且可用，
+        // 避免 AUTHENTICATE 走首次 CREATE 分支给管理员另造一条成员记录。
+        const userResult = await targetClient.query(
+          `SELECT id, subject, kind, disabled_at FROM user WHERE kind = 'human' AND subject = $subject AND disabled_at = NONE;`,
+          { subject },
+        );
+        const users = Array.isArray(userResult) && Array.isArray(userResult[0]) ? userResult[0] : [];
+        const live = users.filter(
+          (user: { id?: unknown; subject?: unknown; kind?: unknown; disabled_at?: unknown }) =>
+            user.id !== undefined
+            && user.id !== null
+            && user.subject === subject
+            && user.kind === "human"
+            && (user.disabled_at === null || user.disabled_at === undefined),
+        );
+        if (live.length !== 1) {
+          return { kind: "member-missing" };
+        }
+      } finally {
+        if (db) {
+          await useInjectedDb(client, namespace, SYSTEM_DATABASE);
+        }
+      }
+
+      return { kind: "participant", scope: { db: scope.db, ac: "participant" } };
     },
   };
 }

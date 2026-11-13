@@ -523,8 +523,8 @@ describe("workspace template scripts", () => {
     const rawScripts = await loadTemplateScripts();
     const rawSql = rawScripts.map((script) => script.sql).join("\n");
 
-    // 001 两处 + 007 两处（admin / participant 各一）
-    expect(rawSql.match(/<__OIDC_JWKS_URL__>/g)?.length).toBe(4);
+    // 001、007、061 各两处（admin / participant 各一）
+    expect(rawSql.match(/<__OIDC_JWKS_URL__>/g)?.length).toBe(6);
     expect(rawScripts[0]?.sql).toContain("DEFINE ACCESS OVERWRITE employee");
     expect(rawScripts[0]?.sql).not.toContain("DEFINE ACCESS employee ON DATABASE TYPE RECORD\n  WITH JWT");
 
@@ -534,7 +534,7 @@ describe("workspace template scripts", () => {
     const renderedSql = renderedScripts.map((script) => script.sql).join("\n");
 
     expect(renderedSql).not.toContain("<__OIDC_JWKS_URL__>");
-    expect(renderedSql.match(/https:\/\/issuer\.example\.test\/jwks\.json/g)?.length).toBe(4);
+    expect(renderedSql.match(/https:\/\/issuer\.example\.test\/jwks\.json/g)?.length).toBe(6);
   });
 
   test("LCA14 返工：049 增量为 resource_item.evidence 补 FLEXIBLE 子定义并修复既有隐式子字段", async () => {
@@ -626,8 +626,8 @@ describe("workspace template scripts", () => {
     const migration = scripts.find((script) => script.name === "055-claims-reconciliation-finding.surql");
 
     expect(migration?.version).toBe(55);
-    // 060-funnel-event-fixes（任务 38ccb7d6）追加为最新版本。
-    expect(WORKSPACE_TEMPLATE_VERSION).toBe(60);
+    // 062-native-signaling 追加为最新版本。
+    expect(WORKSPACE_TEMPLATE_VERSION).toBe(62);
     const sql = migration?.sql ?? "";
     expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS reconciliation_finding SCHEMAFULL/);
     expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS claim_supplement SCHEMAFULL/);
