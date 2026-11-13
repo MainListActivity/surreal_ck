@@ -139,6 +139,8 @@ pub struct IdentitySummary {
     pub signed_in: bool,
     pub loading: bool,
     pub workspace: Option<String>,
+    /// 当前工作区真实加载到的只读成员数；未进入工作区时为 0。
+    pub members: usize,
 }
 
 impl IdentitySummary {
@@ -246,6 +248,11 @@ pub fn members_placeholder(identity: &IdentitySummary) -> String {
         "暂无成员：请先登录企业账号。".into()
     } else if identity.workspace.is_none() {
         "暂无成员：请先进入一个工作区。".into()
+    } else if identity.members > 0 {
+        format!(
+            "已加载 {} 名工作区成员（只读）。不显示在线状态；聊天、会议与共享需要企业会话。",
+            identity.members
+        )
     } else {
         "暂无成员。不会生成示例联系人或在线状态。".into()
     }
@@ -378,6 +385,24 @@ mod tests {
         assert!(s.line().contains("尚未进入工作区"));
         s.workspace = Some("研发部".into());
         assert_eq!(s.line(), "企业身份：已登录 · 工作区 研发部");
+    }
+
+    #[test]
+    fn members_placeholder_matches_loaded_directory() {
+        let mut s = IdentitySummary {
+            configured: true,
+            signed_in: true,
+            workspace: Some("研发部".into()),
+            ..IdentitySummary::default()
+        };
+        assert!(members_placeholder(&s).starts_with("暂无成员。"));
+        s.members = 1;
+        let loaded = members_placeholder(&s);
+        assert!(!loaded.contains("暂无成员"), "{loaded}");
+        assert!(loaded.contains("1 名工作区成员"));
+        assert!(loaded.contains("不显示在线状态"));
+        s.workspace = None;
+        assert!(members_placeholder(&s).contains("请先进入一个工作区"));
     }
 
     #[test]

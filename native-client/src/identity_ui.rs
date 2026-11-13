@@ -574,6 +574,11 @@ fn summary_of(state: &IdentityViewState, available: bool) -> crate::first_screen
         configured: available,
         signed_in: state.signed_in,
         loading: state.busy(),
+        members: if state.signed_in && workspace.is_some() {
+            state.directory.members.len()
+        } else {
+            0
+        },
         workspace: if state.signed_in { workspace } else { None },
     }
 }
