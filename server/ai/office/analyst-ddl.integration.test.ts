@@ -244,10 +244,32 @@ test("VO05 实际 fork + admin/participant/employee + Mastra：开岗、DDL、�
     managerSession = await employeeSession(fixture, managerId);
     const [[count]] = await fixture.root.query<[{ count: number }[]]>("SELECT count() FROM user WHERE virtual_profile.role_key = 'data-analyst' GROUP ALL");
     expect(count?.count).toBe(1);
-    await expect(analyst.query("UPDATE $employee SET is_admin = true", {
-      employee: new StringRecordId(analystId) }).collect()).rejects.toThrow(/identity/);
-    await expect(managerSession.query("UPDATE $employee SET subject = 'hijacked'", {
-      employee: new StringRecordId(analystId) }).collect()).rejects.toThrow(/provisioning/);
+    // 061 起身份字段的 RECORD 更新可能直接抛错，也可能被字段权限静默拒绝；
+    // 两种结果都要求持久值不变。
+    const selfAdmin = analyst.query("UPDATE $employee SET is_admin = true", {
+      employee: new StringRecordId(analystId),
+    }).collect();
+    await selfAdmin.then(
+      () => undefined,
+      (err) => { expect(String(err)).toMatch(/identity/); },
+    );
+    const [[analystIdentity]] = await fixture.root.query<[{ is_admin: boolean }[]]>(
+      "SELECT is_admin FROM $employee",
+      { employee: new StringRecordId(analystId) },
+    );
+    expect(analystIdentity?.is_admin).toBe(false);
+    const hijack = managerSession.query("UPDATE $employee SET subject = 'hijacked'", {
+      employee: new StringRecordId(analystId),
+    }).collect();
+    await hijack.then(
+      () => undefined,
+      (err) => { expect(String(err)).toMatch(/provisioning/); },
+    );
+    const [[analystSubject]] = await fixture.root.query<[{ subject?: string }[]]>(
+      "SELECT subject FROM $employee",
+      { employee: new StringRecordId(analystId) },
+    );
+    expect(analystSubject?.subject).not.toBe("hijacked");
     const [secrets] = await analyst.query<[unknown[]]>("SELECT id FROM employee_credential");
     expect(secrets).toHaveLength(0);
     const [human] = await managerSession.query<[unknown[]]>(`CREATE user:forbidden CONTENT {
