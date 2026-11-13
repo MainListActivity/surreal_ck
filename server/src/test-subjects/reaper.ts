@@ -74,6 +74,26 @@ function firstArray(result: unknown): Record<string, unknown>[] {
 }
 
 /**
+ * 引用表可能从未被定义（如 quota_lifecycle_intent 没有任何 schema 定义）；
+ * 该 fork 对不存在的表执行 DELETE 会报错，而 REMOVE DATABASE 已先执行，
+ * 报错会让 workspace 行永远悬挂。表不存在即无可删行，只吞这一种错误。
+ */
+async function deleteIfTableExists(
+  db: Queryable,
+  table: string,
+  sql: string,
+  params: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await db.query(sql, params);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes(`'${table}'`) && message.includes("does not exist")) return;
+    throw error;
+  }
+}
+
+/**
  * 删除一个测试 workspace：安全栅栏 → REMOVE DATABASE → 清理 _system 引用行 → 删 workspace 行。
  * 若 workspace 存在任何「不在未到期 test_subject」的成员，跳过并告警。
  */
@@ -116,16 +136,18 @@ export async function purgeTestWorkspace(
 
   for (const [table, field] of WORKSPACE_REFERENCES) {
     if (table === "quota_lifecycle_intent") {
-      await deps.systemDb.query(
+      await deleteIfTableExists(
+        deps.systemDb,
+        table,
         `DELETE ${table} WHERE workspace = $wid OR workspaces CONTAINS $wid;`,
         { wid },
       );
       continue;
     }
-    await deps.systemDb.query(`DELETE ${table} WHERE ${field} = $wid;`, { wid });
+    await deleteIfTableExists(deps.systemDb, table, `DELETE ${table} WHERE ${field} = $wid;`, { wid });
   }
   for (const [table, field] of DB_NAME_REFERENCES) {
-    await deps.systemDb.query(`DELETE ${table} WHERE ${field} = $dbName;`, { dbName: workspace.db_name });
+    await deleteIfTableExists(deps.systemDb, table, `DELETE ${table} WHERE ${field} = $dbName;`, { dbName: workspace.db_name });
   }
   await deps.systemDb.query(`DELETE workspace WHERE id = $wid;`, { wid });
 

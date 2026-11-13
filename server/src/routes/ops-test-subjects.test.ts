@@ -57,26 +57,56 @@ function fakeDb(seed: { sql: string; rows?: Record<string, unknown>[] }[] = []) 
 const FUTURE = new Date(Date.now() + 5 * 24 * 3600_000).toISOString();
 
 describe("PUT /api/ops/test-subjects/:subject", () => {
-  test("登记测试主体并回填单成员 workspace", async () => {
+  test("单成员 workspace 需原样确认后才登记并回填", async () => {
     const { db, writes } = fakeDb([
       // 无既有 operator
       { sql: "FROM platform_operator WHERE subject", rows: [] },
-      // 一个单成员 workspace
-      { sql: "VALUE workspace FROM user_workspace_index", rows: [{ workspace: "workspace:w1" }] },
+      // 一个单成员 workspace（该 subject 为唯一成员）
+      { sql: "FROM user_workspace_index WHERE subject", rows: [{ workspace: "workspace:w1", role: "admin" }] },
+      { sql: "FROM workspace WHERE id", rows: [{ slug: "w1", name: "W1", db_name: "ws_w1", owner_subject: "subj_1" }] },
       { sql: "count() AS n", rows: [{ n: 1 }] },
     ]);
     const app = createOpsTestSubjectsRoutes({ requireOperator: allowAs(), getSystemDb: async () => db });
-    const res = await app.request("/api/ops/test-subjects/subj_1", {
+    const put = (confirm?: string) => app.request("/api/ops/test-subjects/subj_1", {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ expiresAt: FUTURE, origin: "task-x", contentCapabilities: ["content.submit"] }),
+      body: JSON.stringify({ expiresAt: FUTURE, origin: "task-x", contentCapabilities: ["content.submit"], confirm }),
     });
+
+    const refused = await put();
+    expect(refused.status).toBe(409);
+    const refusedBody = await refused.json();
+    expect(refusedBody.error).toBe("test-subject-confirmation-required");
+    expect(refusedBody.preflight.workspaces[0]).toMatchObject({ slug: "w1", wouldBeMarked: true, newlyMarked: true });
+    expect(writes).toHaveLength(0);
+    expect((await put("确认到期清理 subj_2")).status).toBe(409);
+    expect(writes).toHaveLength(0);
+
+    const res = await put(refusedBody.preflight.confirmationPhrase);
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.subject).toBe("subj_1");
     expect(writes.some((w) => w.sql.includes("INSERT INTO test_subject"))).toBe(true);
     expect(writes.some((w) => w.sql.includes("platform_operator_capability"))).toBe(true);
     expect(writes.some((w) => w.sql.includes("test_expires_at"))).toBe(true);
+  });
+
+  test("共享工作区 admin 硬拒绝，确认短语也不能放行", async () => {
+    const { db, writes } = fakeDb([
+      { sql: "FROM platform_operator WHERE subject", rows: [] },
+      { sql: "FROM user_workspace_index WHERE subject", rows: [{ workspace: "workspace:w2", role: "admin" }] },
+      { sql: "FROM workspace WHERE id", rows: [{ slug: "team", owner_subject: "someone-else" }] },
+      { sql: "count() AS n", rows: [{ n: 3 }] },
+    ]);
+    const app = createOpsTestSubjectsRoutes({ requireOperator: allowAs(), getSystemDb: async () => db });
+    const res = await app.request("/api/ops/test-subjects/subj_admin", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expiresAt: FUTURE, confirm: "确认到期清理 subj_admin" }),
+    });
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toBe("test-subject-conflict-shared-workspace-admin");
+    expect(writes).toHaveLength(0);
   });
 
   test("expiresAt 超出 31 天窗口拒绝", async () => {

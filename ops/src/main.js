@@ -1,5 +1,6 @@
 import "./style.css";
 import { authConfig as config, createOpsUserManager, signOutOps } from "./auth.js";
+import { setupTestAccounts, testAccountsMarkup } from "./test-accounts.js";
 import { capacityLabel, planLabel, timelineDetail, timelineTime, usageNumbers, workspaceRecordId } from "./quota-view.js";
 
 const app = document.querySelector("#app");
@@ -20,6 +21,7 @@ const followUpState = { opportunities: [], opportunityCursor: null, items: [], c
 const proposalState = { items: [], cursor: null };
 const autonomyState = { policies: [], history: [] };
 const agentRunState = { items: [] };
+let testAccounts = { loadList: async () => undefined };
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -52,6 +54,7 @@ function renderShell() {
         <button class="section-tab" data-view="proposal">建议审阅</button>
         <button class="section-tab" data-view="autonomy">Agent 授权</button>
         <button class="section-tab" data-view="content">内容维护</button>
+        <button class="section-tab" data-view="testaccounts">测试账号</button>
       </nav>
       <main id="quota-view" class="layout">
         <section class="panel search-panel">
@@ -123,6 +126,7 @@ function renderShell() {
         <section class="panel activation-panel"><div class="panel-heading"><h2>授权操作历史</h2></div><div id="autonomy-history" class="activation-list"></div></section>
         <section class="panel activation-panel"><div class="panel-heading"><div><h2>Agent 运行进度</h2><p class="muted activation-help">仅显示外部运行宿主最后上报的检查点；进程退出后不会自动继续。</p></div><button id="agent-runs-refresh" class="ghost">刷新</button></div><div id="agent-runs-status" class="status muted">尚未加载。</div><div id="agent-runs-list" class="activation-list"></div></section>
       </main>
+${testAccountsMarkup()}
       <main id="content-view" class="content-layout" hidden>
         <section class="panel content-panel">
           <div class="panel-heading"><h2>来源登记与许可</h2><button id="content-refresh" class="ghost">刷新</button></div>
@@ -169,7 +173,7 @@ function renderShell() {
   document.querySelector("#refresh").addEventListener("click", () => void search(document.querySelector("#search-input").value));
   document.querySelectorAll(".section-tab").forEach((button) => {
     button.addEventListener("click", () => {
-      activeView = ["content", "activation", "followup", "proposal", "autonomy"].includes(button.dataset.view) ? button.dataset.view : "quota";
+      activeView = ["content", "activation", "followup", "proposal", "autonomy", "testaccounts"].includes(button.dataset.view) ? button.dataset.view : "quota";
       document.querySelectorAll(".section-tab").forEach((tab) => tab.classList.toggle("active", tab === button));
       document.querySelector("#quota-view").hidden = activeView !== "quota";
       document.querySelector("#content-view").hidden = activeView !== "content";
@@ -177,13 +181,16 @@ function renderShell() {
       document.querySelector("#followup-view").hidden = activeView !== "followup";
       document.querySelector("#proposal-view").hidden = activeView !== "proposal";
       document.querySelector("#autonomy-view").hidden = activeView !== "autonomy";
+      document.querySelector("#testaccounts-view").hidden = activeView !== "testaccounts";
       if (activeView === "content" && user) void loadContent();
       if (activeView === "activation" && user) void loadActivationSummaries();
       if (activeView === "followup" && user) void loadFollowUps();
       if (activeView === "proposal" && user) void loadProposals();
       if (activeView === "autonomy" && user) { void loadAutonomy(); void loadAgentRuns(); }
+      if (activeView === "testaccounts" && user) void testAccounts.loadList();
     });
   });
+  testAccounts = setupTestAccounts({ fetchRaw: apiRaw, escapeHtml, isSignedIn: () => Boolean(user) });
   document.querySelector("#content-refresh").addEventListener("click", () => void loadContent());
   document.querySelector("#activation-refresh").addEventListener("click", () => void loadActivationSummaries());
   document.querySelector("#activation-next").addEventListener("click", () => void loadActivationSummaries(true));
@@ -564,6 +571,19 @@ function renderAuth() {
   const label = config.issuer && config.clientId ? "运营登录" : "未配置 OIDC";
   slot.innerHTML = `<button id="login" class="primary" ${config.issuer && config.clientId ? "" : "disabled"}>${label}</button>`;
   document.querySelector("#login").addEventListener("click", () => void userManager?.signinRedirect());
+}
+
+/** 同 api()，但不抛 HTTP 错误：返回状态码与原始响应体，供逐字展示。 */
+async function apiRaw(path, options = {}) {
+  const headers = new Headers(options.headers);
+  if (user?.access_token) headers.set("authorization", `Bearer ${user.access_token}`);
+  headers.set("accept", "application/json");
+  try {
+    const response = await fetch(`${config.apiBase}${path}`, { ...options, headers });
+    return { ok: response.ok, status: response.status, text: await response.text() };
+  } catch (error) {
+    return { ok: false, status: "network", text: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 async function api(path, options = {}) {
