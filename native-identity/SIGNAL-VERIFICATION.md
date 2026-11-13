@@ -5,8 +5,8 @@
 ## 实测边界
 
 - 使用已有固定 fork `3.3.0-native-quota.1+sha.f30704bce914`，二进制 SHA256：`6f6bcc72f8c23848295ed32d6a265f5bf0baad11e7be446294a5ade1b06a84f2`。
-- 测试仅启动随机 loopback 端口和 memory 存储。Root 仅执行夹具 schema、种子成员与模拟控制面撤销；所有信令操作都使用实际 RECORD SIGNIN 得到的成员 token，执行生产的 `use → authenticate → query` 路径。
-- 夹具加载仓库的 061/062，再仅在本地覆盖 participant SIGNIN 以建立合成测试身份。生产 OIDC/JWKS 验证另由已有密码学测试覆盖；本测试不能证明线上 IdP、原生注册、生产 WSS/TLS 或默认关着的客户端功能已经可用。
+- 测试仅启动随机 loopback 端口和 memory 存储。Root 仅执行夹具 schema、种子成员与模拟控制面撤销；所有信令操作都使用本地 ES256 签发、与生产 collaboration-scope 降级票据同形（UUID `sub`、`ns/db/ac=participant/RL/email`）的 JWT，经生产 061 participant ACCESS（`TYPE RECORD WITH JWT URL` + AUTHENTICATE，JWKS 由 loopback 提供）认证，执行生产的 `use → authenticate → query` 路径。
+- 夹具原样加载仓库的 061/062，不再覆盖 participant ACCESS。fork 的 JSON-RPC 会把 UUID / record / datetime 形状的字符串参数转成对应类型，所以身份与对端复核查询只用数据库已验签的 `$token.sub`，客户端再逐字比对返回的 subject；测试断言该转换存在，防止回归到 `subject = $subject`。生产 OIDC/JWKS 验证另由已有密码学测试覆盖；本测试不能证明线上 IdP、原生注册、生产 WSS/TLS 或默认关着的客户端功能已经可用。
 - 明文 HTTP/WS 与 Session 构造器仅在 `cfg(test)` 内部，公开生产构造器仍要求 HTTPS/WSS，没有 fixture feature、服务 token 回退或生产身份绕过。
 
 ## 已验证

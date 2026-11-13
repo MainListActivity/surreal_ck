@@ -71,7 +71,7 @@
 2. `/api/auth/token` 会丢弃请求自带 client_id，强制用后端 confidential client。因此独立 native public client 必须显式选择本模块的 discovery direct-token 模式。已核实 ma_hono 提交 `02ed958f`：同租户且 subject client 配置 audience 和实际 token audience 都与产品 confidential client audience 一致时，后端可跨 client 换 workspace scope；必须是未过期的 active 真人 token，`content_reader` 被拒绝。换出票由产品 client 签发且只保留原 token 剩余有效期，所以本模块不把换票后的 client_id 改变误判为换人，但严格验证 sub 与目标 scope。源码能力不等于线上部署已支持，尚需部署方确认当前版本、public client auth `none`/S256、精确 callback 白名单、同租户同 audience，以及 access-token claim 配置；本模块不创建或修改这些配置。
 3. loopback receiver 适用于桌面；custom scheme 可表示在配置里，但 receiver 会明确返回 `CallbackUnsupported`。Android 尚需平台原生回调路由，不能通过复制粘贴授权 code/token 伪装完成。
 4. 成员访问仍只读；显式 workspace 切换方法已提供但没有自动调用。未实现成员添加/移除/改角色、refresh token 持久化、服务端 logout/revoke。本模块只提供固定信令原始行，消息对端的二次验证及通道生命周期由 native-signaling 与客户端负责。非当前 db/ac 的成员读取返回 `WorkspaceNotSelected`，不会偷偷换票或跨库查询。
-5. 默认单测使用本机合成身份与协议夹具，不是生产 IdP 联调。另已显式运行固定 SurrealDB fork 的 RECORD 信令验收，覆盖真实权限/查询但使用仅限测试的本地 SIGNIN，不验证生产 OIDC 与 WSS 链路。没有使用真实用户令牌、修改线上数据或请求用户登录。生产集成仍需上述注册信息、授权测试账号和明确上线审批。
+5. 默认单测使用本机合成身份与协议夹具，不是生产 IdP 联调。另已显式运行固定 SurrealDB fork 的 RECORD 信令验收，覆盖真实权限/查询，以本地 ES256 JWT 走生产 participant ACCESS（JWT URL + AUTHENTICATE，UUID subject），不验证生产 IdP 签发与 WSS 链路。没有使用真实用户令牌、修改线上数据或请求用户登录。生产集成仍需上述注册信息、授权测试账号和明确上线审批。
 
 ## 验证
 

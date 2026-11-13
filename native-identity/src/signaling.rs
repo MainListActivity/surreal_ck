@@ -132,25 +132,24 @@ impl SignalConnection {
         let mut socket = connect_authenticated(&session, config, workspace).await?;
         let result = timeout(
             Duration::from_secs(15),
-            rpc(
-                &mut socket,
-                3,
-                "query",
-                json!([IDENTITY, {"subject":session.subject()}]),
-            ),
+            rpc(&mut socket, 3, "query", json!([IDENTITY, {}])),
         )
         .await
         .map_err(|_| IdentityError::Network)??;
         let rows = statement_rows(result)?;
         if rows.len() != 1 {
-            return Err(IdentityError::SignalRecordRequired);
+            return Err(IdentityError::SignalIdentityMissing);
+        }
+        // 数据库按已验签 $token.sub 绑定；本地 Session subject 必须与之逐字一致，防止会话混淆。
+        if rows[0].get("subject").and_then(Value::as_str) != Some(session.subject()) {
+            return Err(IdentityError::SignalIdentityMissing);
         }
         let member_id = rows[0]
             .get("id")
             .and_then(Value::as_str)
-            .ok_or(IdentityError::SignalRecordRequired)?
+            .ok_or(IdentityError::SignalIdentityMissing)?
             .to_owned();
-        member_key(&member_id).map_err(|_| IdentityError::SignalRecordRequired)?;
+        member_key(&member_id).map_err(|_| IdentityError::SignalMemberKey)?;
         session.ensure_current()?;
         Ok(Self {
             socket,
@@ -186,10 +185,7 @@ impl SignalConnection {
         }
         let peer_key = member_key(peer)?;
         let rows = self
-            .run(
-                SignalCommand::Revalidate,
-                json!({"subject":self.session.subject(),"peer":peer_key}),
-            )
+            .run(SignalCommand::Revalidate, json!({"peer":peer_key}))
             .await?;
         validate_peer_rows(&rows, &self.member_id, peer)
     }
@@ -536,6 +532,16 @@ fn member_key(value: &str) -> Result<&str> {
     let key = value
         .strip_prefix("user:")
         .ok_or(IdentityError::SignalInput)?;
+    // Surreal 对含连字符、纯数字等复杂 ID 会转义：SurrealQL 文本用角括号，JSON-RPC 用反引号。
+    // 信令参数只要中间的裸 ID。
+    let key = key
+        .strip_prefix('\u{27e8}')
+        .and_then(|inner| inner.strip_suffix('\u{27e9}'))
+        .or_else(|| {
+            key.strip_prefix('`')
+                .and_then(|inner| inner.strip_suffix('`'))
+        })
+        .unwrap_or(key);
     if key.is_empty()
         || key.len() > 128
         || !key

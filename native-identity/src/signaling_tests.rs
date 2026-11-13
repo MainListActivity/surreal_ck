@@ -12,7 +12,11 @@ fn id() -> String {
 #[test]
 fn fixed_queries_bind_every_mutable_target_and_never_accept_sender_input() {
     assert!(INVITE.contains("sender = $auth.id"));
-    assert!(REVALIDATE.contains("subject = $subject"));
+    // subject 只能来自数据库已验签的 $token.sub：fork 的 JSON-RPC 会把 UUID 形状的字符串参数转成 uuid。
+    assert!(REVALIDATE.contains("subject = $token.sub"));
+    assert!(IDENTITY.contains("subject = $token.sub"));
+    assert!(!REVALIDATE.contains("$subject"));
+    assert!(!IDENTITY.contains("$subject"));
     assert!(REVALIDATE.contains("id = $auth.id"));
     assert!(REVALIDATE.contains("disabled_at = NONE"));
     assert!(!REVALIDATE.contains("native_signal"));
@@ -39,6 +43,15 @@ fn inputs_and_remote_errors_are_fail_closed_and_redacted() {
     assert!(!valid_hex("x'; DELETE user;"));
     assert!(member_key("user:a; DELETE user").is_err());
     assert!(member_key("employee:a").is_err());
+    assert_eq!(member_key("user:a").unwrap(), "a");
+    assert_eq!(
+        member_key("user:\u{27e8}550e8400-e29b-41d4-a716-446655440000\u{27e9}").unwrap(),
+        "550e8400-e29b-41d4-a716-446655440000"
+    );
+    assert!(member_key("user:\u{27e8}bad;id\u{27e9}").is_err());
+    assert_eq!(member_key("user:`12345`").unwrap(), "12345");
+    assert!(member_key("user:`bad;id`").is_err());
+    assert!(member_key("user:`a").is_err());
     assert!(sdp_hash(&offer("offer"), "offer").is_ok());
     assert!(sdp_hash(&offer("answer"), "offer").is_err());
     assert!(sdp_hash(&"a".repeat(49153), "offer").is_err());
@@ -79,7 +92,7 @@ fn peer_revalidation_requires_exactly_both_distinct_active_members() {
     }
 }
 
-// 此夹具仅在 cfg(test) 编译，真实 RECORD SIGNIN 获得本地 token；不提供生产 mock/Session 构造器。
+// 此夹具仅在 cfg(test) 编译，本地 ES256 JWT 经生产 participant ACCESS 认证；不提供生产 mock/Session 构造器。
 // 外层可把此模块包含进同一个验收 test crate；不可作为产品依赖的 feature 导出。
 pub(crate) struct ForkFixture {
     child: std::process::Child,
@@ -90,6 +103,14 @@ pub(crate) struct ForkFixture {
     /// token → (database, 权威列表中的工作区角色)；`d` 是 is_admin=true 的工作区管理员。
     members: Arc<std::sync::Mutex<std::collections::HashMap<String, (String, &'static str)>>>,
     workspace_api: tokio::task::JoinHandle<()>,
+    /// 本地 ES256 夹具签名钥；公钥只经 loopback JWKS 提供给 fork 的 participant ACCESS。
+    signer: ring::signature::EcdsaKeyPair,
+}
+/// 与生产 IdP（ma_hono `crypto.randomUUID()`）同形的 UUID subject。
+/// fork 的 JSON-RPC 会把 UUID 形状的字符串参数解析成 uuid，夹具必须覆盖这一点。
+pub(crate) fn fixture_subject(name: &str) -> String {
+    let tag: String = name.bytes().map(|byte| format!("{byte:02x}")).collect();
+    format!("00000000-0000-4000-8000-{tag:0>12}")
 }
 impl ForkFixture {
     pub(crate) async fn start(binary: &str) -> Self {
@@ -111,6 +132,8 @@ impl ForkFixture {
                 "start",
                 "--bind",
                 &address,
+                "--allow-net",
+                "127.0.0.1",
                 "--user",
                 "fixture",
                 "--pass",
@@ -142,19 +165,65 @@ impl ForkFixture {
         let result=rpc(&mut root,2,"query",json!(["DEFINE NAMESPACE local; USE NS local; DEFINE DATABASE ws_signal; DEFINE DATABASE ws_other;",{}])).await.unwrap();
         assert_ok_statements(&result);
         let mut root_id = 2;
+        let http = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let http_address = http.local_addr().unwrap();
+        let signer = {
+            use ring::signature::{EcdsaKeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
+            let rng = ring::rand::SystemRandom::new();
+            let pkcs8 =
+                EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).unwrap();
+            EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng)
+                .unwrap()
+        };
+        let jwks = {
+            use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+            use ring::signature::KeyPair;
+            let point = signer.public_key().as_ref();
+            assert_eq!(point.len(), 65);
+            json!({"keys":[{"kty":"EC","crv":"P-256","alg":"ES256","use":"sig","kid":"fixture","x":URL_SAFE_NO_PAD.encode(&point[1..33]),"y":URL_SAFE_NO_PAD.encode(&point[33..])}]}).to_string()
+        };
+        let jwks_url = format!("http://{http_address}/jwks");
         for database in ["ws_signal", "ws_other"] {
             root_id += 1;
             rpc(&mut root, root_id, "use", json!(["local", database]))
                 .await
                 .unwrap();
-            let setup="DEFINE TABLE user SCHEMAFULL PERMISSIONS FOR select FULL; DEFINE FIELD kind ON user TYPE string; DEFINE FIELD email ON user TYPE string; DEFINE FIELD subject ON user TYPE option<string>; DEFINE FIELD is_admin ON user TYPE bool; DEFINE FIELD disabled_at ON user TYPE option<datetime>; CREATE user:a SET kind='human',email='a@invalid.local',subject='fixture-a',is_admin=false; CREATE user:b SET kind='human',email='b@invalid.local',subject='fixture-b',is_admin=false; CREATE user:c SET kind='human',email='c@invalid.local',subject='fixture-c',is_admin=false; CREATE user:d SET kind='human',email='d@invalid.local',subject='fixture-d',is_admin=true;";
+            let setup="DEFINE TABLE user SCHEMAFULL PERMISSIONS FOR select FULL; DEFINE FIELD kind ON user TYPE string; DEFINE FIELD email ON user TYPE string; DEFINE FIELD subject ON user TYPE option<string>; DEFINE FIELD is_admin ON user TYPE bool; DEFINE FIELD disabled_at ON user TYPE option<datetime>; ";
             root_id += 1;
             let result = rpc(&mut root, root_id, "query", json!([setup, {}]))
                 .await
                 .unwrap();
             assert_ok_statements(&result);
-            for sql in [include_str!("../../shared/sql/workspace-template/061-member-identity-guard.surql").replace("<__OIDC_JWKS_URL__>","http://127.0.0.1:18737/not-used-by-fixture"),include_str!("../../shared/sql/workspace-template/062-native-signaling.surql").to_owned(),"DEFINE ACCESS OVERWRITE participant ON DATABASE TYPE RECORD SIGNIN { RETURN type::record('user', $name); };".to_owned()] {
-                root_id+=1;let result=rpc(&mut root,root_id,"query",json!([sql,{}])).await.unwrap();assert_ok_statements(&result);
+            // 生产 061 participant ACCESS 原样加载（TYPE RECORD WITH JWT URL + AUTHENTICATE），不再用 SIGNIN 夹具替身。
+            for sql in [
+                include_str!("../../shared/sql/workspace-template/061-member-identity-guard.surql")
+                    .replace("<__OIDC_JWKS_URL__>", &jwks_url),
+                include_str!("../../shared/sql/workspace-template/062-native-signaling.surql")
+                    .to_owned(),
+            ] {
+                root_id += 1;
+                let result = rpc(&mut root, root_id, "query", json!([sql, {}]))
+                    .await
+                    .unwrap();
+                assert_ok_statements(&result);
+            }
+            // subject 经 root 参数绑定（CBOR 之外的 JSON 会把 UUID 形状字符串转成 uuid，这里显式 <string> 落成字符串，与生产 user.subject 一致）。
+            for (name, is_admin) in [("a", false), ("b", false), ("c", false), ("d", true)] {
+                root_id += 1;
+                let result = rpc(
+                    &mut root,
+                    root_id,
+                    "query",
+                    json!(["CREATE type::record('user', $name) SET kind='human', email=string::concat($name, '@invalid.local'), subject=<string> $subject, is_admin=$is_admin; SELECT VALUE type::is_string(subject) FROM ONLY type::record('user', $name);", {"name": name, "subject": fixture_subject(name), "is_admin": is_admin}]),
+                )
+                .await
+                .unwrap();
+                assert_ok_statements(&result);
+                assert_eq!(
+                    result[1]["result"],
+                    json!(true),
+                    "fixture subject must be stored as string"
+                );
             }
         }
         let members = Arc::new(std::sync::Mutex::new(std::collections::HashMap::<
@@ -162,8 +231,6 @@ impl ForkFixture {
             (String, &'static str),
         >::new()));
         let allowed = members.clone();
-        let http = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let http_address = http.local_addr().unwrap();
         let workspace_api = tokio::spawn(async move {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
             loop {
@@ -188,7 +255,9 @@ impl ForkFixture {
                         .and_then(|(_, value)| value.trim().strip_prefix("Bearer "))
                 });
                 let entry = bearer.and_then(|token| allowed.lock().unwrap().get(token).cloned());
-                let (status, body) = if let Some((database, role)) = entry {
+                let (status, body) = if request.starts_with("GET /jwks ") {
+                    ("200 OK", jwks.clone())
+                } else if let Some((database, role)) = entry {
                     ("200 OK",json!({"workspaces":[{"slug":database,"name":"本地夹具工作区","dbName":database,"role":role,"lastSelectedAt":null}],"canCreate":false}).to_string())
                 } else {
                     ("401 Unauthorized", "{}".into())
@@ -223,25 +292,29 @@ impl ForkFixture {
             client,
             members,
             workspace_api,
+            signer,
         }
     }
-    pub(crate) async fn session(&self, name: &str, database: &str) -> Arc<Session> {
-        let (mut socket, _) = tokio_tungstenite::connect_async(self.config.endpoint.as_str())
-            .await
+    /// 按生产 IdP 降级票据形状签发 participant JWT（sub 为 UUID，ns/db/ac/RL/email 同 collaboration-scope）。
+    fn participant_token(&self, name: &str, database: &str, exp: u64) -> String {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+        let now = crate::auth::unix_now().unwrap();
+        let header =
+            URL_SAFE_NO_PAD.encode(json!({"alg":"ES256","typ":"JWT","kid":"fixture"}).to_string());
+        let claims = URL_SAFE_NO_PAD.encode(
+            json!({"iss":"https://id.example.test/t/ck","aud":"fixture-client","sub":fixture_subject(name),"ns":"local","db":database,"ac":"participant","RL":["Editor"],"email":format!("{name}@invalid.local"),"iat":now,"exp":exp})
+                .to_string(),
+        );
+        let input = format!("{header}.{claims}");
+        let signature = self
+            .signer
+            .sign(&ring::rand::SystemRandom::new(), input.as_bytes())
             .unwrap();
-        let result = rpc(
-            &mut socket,
-            1,
-            "signin",
-            json!([{"ns":"local","db":database,"ac":"participant","name":name}]),
-        )
-        .await
-        .expect("fixture member signin");
-        let token = result
-            .as_str()
-            .or_else(|| result.get("token").and_then(Value::as_str))
-            .expect("fixture token shape")
-            .to_owned();
+        format!("{input}.{}", URL_SAFE_NO_PAD.encode(signature.as_ref()))
+    }
+    pub(crate) async fn session(&self, name: &str, database: &str) -> Arc<Session> {
+        let expires = crate::auth::unix_now().unwrap() + 600;
+        let token = self.participant_token(name, database, expires);
         self.members.lock().unwrap().insert(
             token.clone(),
             (
@@ -252,9 +325,9 @@ impl ForkFixture {
         let session = Session {
             origin: self.client.config.clone(),
             access_token: zeroize::Zeroizing::new(token),
-            subject: format!("fixture-{name}"),
-            expires_at: crate::auth::unix_now().unwrap() + 600,
-            token_expires_at: crate::auth::unix_now().unwrap() + 600,
+            subject: fixture_subject(name),
+            expires_at: expires,
+            token_expires_at: expires,
             database: Some(database.into()),
             access: Some("participant".into()),
             roles: vec![],
@@ -327,6 +400,18 @@ async fn real_fork_signal_connection_roundtrip_and_denials() {
     let mut other = fixture.connection("a", "ws_other").await;
     // 工作区管理员经 collaboration-scope 降级得到的同 subject participant RECORD 会话：
     // 权威列表角色仍是 admin，但 `$auth.id` 绑定到其本人 is_admin=true 的 user 行。
+    // 回归根因：fork 的 JSON-RPC 把 UUID 形状的字符串参数解析成 uuid；生产 sub 正是 UUID。
+    // 旧查询用 `subject = $subject` 因此恒为 0 行（SignalIdentityMissing），现只信 `$token.sub`。
+    fixture.root_id += 1;
+    let coerced = rpc(
+        &mut fixture.root,
+        fixture.root_id,
+        "query",
+        json!(["RETURN [type::is_string($s), type::is_uuid($s)];", {"s": fixture_subject("d")}]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(coerced[0]["result"], json!([false, true]));
     let mut admin_member = fixture.connection("d", "ws_signal").await;
     assert_eq!(admin_member.member_id(), "user:d");
     admin_member.revalidate_peer("user:a").await.unwrap();
@@ -438,10 +523,10 @@ async fn real_fork_signal_connection_roundtrip_and_denials() {
     );
     // 本地 Session subject 混淆也不能把同一 record token 绑定成另一个账号。
     let mut confused = fixture.session("a", "ws_signal").await;
-    Arc::get_mut(&mut confused).unwrap().subject = "fixture-c".into();
+    Arc::get_mut(&mut confused).unwrap().subject = fixture_subject("c");
     assert!(matches!(
         SignalConnection::connect(&fixture.client, confused, &fixture.config, "ws_signal").await,
-        Err(IdentityError::SignalRecordRequired)
+        Err(IdentityError::SignalIdentityMissing)
     ));
     Arc::get_mut(&mut alice.session).unwrap().expires_at = 0;
     assert_eq!(alice.ensure_current(), Err(IdentityError::SessionExpired));
