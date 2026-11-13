@@ -12,6 +12,8 @@
 - `/api/session/workspaces` 权威列表；只有当前已验证 token 的 db/ac 与列表记录一致，才以该用户 token 直连 WSS `/rpc`，执行 `use → authenticate → 现有成员只读查询`。
 - `switch_workspace` 为明确用户操作：先获取权威列表，再向既有 `/api/session/switch-workspace` 提交仅含 `workspaceSlug` 的 JSON 与当前 bearer。新 token 的签名、issuer/audience/sub/目标 db/ac/管理员 Owner 均须通过检查；不延长原会话期限，失败不替换旧 Session。
 - participant 即使携带 `RL=[Owner]` 也不被视为管理员。数据库 PERMISSIONS 始终是最终权限边界。不存在 root/service 身份替代。
+- `collaboration_session(_async)`：在已显式选定的工作区内，若当前 token 为 `ac=admin`（TYPE JWT，`$auth` 为空），向 `/api/session/collaboration-scope` 提交 `workspaceSlug` + `dbName`，后端核对该库存在 `kind='human'`、subject 精确匹配、未禁用的本人 user 行后，把同一主体降级为同库 `ac=participant`。新 token 必须验签且 iss/aud/sub 不变、db 为目标库、ac=participant、exp 不超过原 token；失败不替换原管理员 Session。当前 token 已是 participant 时直接复用。成员目录与信令使用该 participant 会话；管理员专用 HTTP API 仍用原管理员 Session。
+- 协作直连（`load_members` / `SignalConnection`）接受与工作区角色一致的 token，或同库 `ac=participant` 的 RECORD 会话；严格 `require_scope` 不把 participant 视为 admin，db 不同一律拒绝。
 - 所有 HTTP 禁止自动重定向、有超时和响应大小限制；网络错误不回显远端正文或凭证。Session 不支持序列化，Debug 隐去 token，令牌仅存在内存并在拥有的缓冲区释放时清零。
 
 ## 接口与配置
@@ -51,7 +53,7 @@
 
 ## 固定数据库信令
 
-`SignalConnection::connect(&client, Arc<Session>, &surreal_config, slug).await` 会重新取得权威 workspace 列表，确认当前已验证 db/ac，再执行固定 WSS `use → authenticate`。当前仅支持真人 `participant` RECORD 会话，并额外核对 `$auth.id` 对应记录的 subject、human 与 active。`admin` TYPE JWT 没有可替代的 RECORD 身份，因此明确拒绝，不能从 UI 或成员目录代填 sender。
+`SignalConnection::connect(&client, Arc<Session>, &surreal_config, slug).await` 会重新取得权威 workspace 列表，确认当前已验证 db/ac，再执行固定 WSS `use → authenticate`。当前仅支持真人 `participant` RECORD 会话，并额外核对 `$auth.id` 对应记录的 subject、human 与 active。`admin` TYPE JWT 没有可替代的 RECORD 身份，因此明确拒绝，不能从 UI 或成员目录代填 sender；工作区管理员需先经 `collaboration_session` 降级为本人 participant 会话。
 
 - `database()` / `member_id()` 是已核对的连接身份；不导出 bearer 或通用 SQL。
 - `invite(id, nonce, generation, recipient, offer, offer_hash)`、`inbox()`、`read(id)` 均为固定查询；创建 sender 只来自 `$auth.id`。
@@ -69,7 +71,7 @@
 2. `/api/auth/token` 会丢弃请求自带 client_id，强制用后端 confidential client。因此独立 native public client 必须显式选择本模块的 discovery direct-token 模式。已核实 ma_hono 提交 `02ed958f`：同租户且 subject client 配置 audience 和实际 token audience 都与产品 confidential client audience 一致时，后端可跨 client 换 workspace scope；必须是未过期的 active 真人 token，`content_reader` 被拒绝。换出票由产品 client 签发且只保留原 token 剩余有效期，所以本模块不把换票后的 client_id 改变误判为换人，但严格验证 sub 与目标 scope。源码能力不等于线上部署已支持，尚需部署方确认当前版本、public client auth `none`/S256、精确 callback 白名单、同租户同 audience，以及 access-token claim 配置；本模块不创建或修改这些配置。
 3. loopback receiver 适用于桌面；custom scheme 可表示在配置里，但 receiver 会明确返回 `CallbackUnsupported`。Android 尚需平台原生回调路由，不能通过复制粘贴授权 code/token 伪装完成。
 4. 成员访问仍只读；显式 workspace 切换方法已提供但没有自动调用。未实现成员添加/移除/改角色、refresh token 持久化、服务端 logout/revoke。本模块只提供固定信令原始行，消息对端的二次验证及通道生命周期由 native-signaling 与客户端负责。非当前 db/ac 的成员读取返回 `WorkspaceNotSelected`，不会偷偷换票或跨库查询。
-5. 默认单测使用本机合成身份与协议夹具，不是生产 IdP 联调。另已显式运行固定 SurrealDB fork 的 RECORD 信令验收，覆盖真实权限/查询但使用仅限测试的本地 SIGNIN，不验证生产 OIDC 与 WSS 链路。没有使用真实用户令牌、修改线上数据或请求用户登录。生产集成仍需上述注册信息、授权测试账号和明确上线审批。
+5. 默认单测使用本机合成身份与协议夹具，不是生产 IdP 联调。另已显式运行固定 SurrealDB fork 的 RECORD 信令验收，覆盖真实权限/查询，以本地 ES256 JWT 走生产 participant ACCESS（JWT URL + AUTHENTICATE，UUID subject），不验证生产 IdP 签发与 WSS 链路。没有使用真实用户令牌、修改线上数据或请求用户登录。生产集成仍需上述注册信息、授权测试账号和明确上线审批。
 
 ## 验证
 

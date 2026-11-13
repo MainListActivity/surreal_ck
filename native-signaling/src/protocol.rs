@@ -25,10 +25,24 @@ pub enum Error {
     Busy,
     #[error("无法生成安全随机数")]
     Random,
+    /// 数据库连接层的非身份失败；保留具体原因，不再一律显示成「身份或工作区已变化」。
+    #[error("{0}")]
+    Connection(surreal_ck_native_identity::IdentityError),
 }
 impl From<surreal_ck_native_identity::IdentityError> for Error {
-    fn from(_: surreal_ck_native_identity::IdentityError) -> Self {
-        Self::Identity
+    fn from(error: surreal_ck_native_identity::IdentityError) -> Self {
+        use surreal_ck_native_identity::IdentityError as E;
+        match error {
+            E::SessionExpired
+            | E::Forbidden
+            | E::WorkspaceNotSelected
+            | E::Token
+            | E::SignalRecordRequired
+            | E::SignalIdentityMissing => Self::Identity,
+            E::SignalRateLimited => Self::RateLimited,
+            E::SignalBinding | E::SignalInput | E::SignalMemberKey => Self::Binding,
+            other => Self::Connection(other),
+        }
     }
 }
 

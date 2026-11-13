@@ -58,7 +58,7 @@ Android默认本地测试签名不能当作正式发布身份，必须明确标�
 
 Linux桌面已编译；初版headless模型/门禁/协作UI测试通过。GUI窗口受当前云机socket能力限制；Android交叉构建和模拟器验证以最新运行报告为准，未完成不标通过。
 
-品牌图 assets/brand.svg 由 scripts/export-brand.py 从仓库原有 Logo.svelte 精确导出几何与配色，不使用生成式近似 Logo。
+品牌图 assets/brand.svg 与 macOS App 图标 assets/app-icon/AppIcon.{svg,icns} 由 scripts/brand_icon.py（export-brand.py 调用）从仓库原有 Logo.svelte 精确导出几何与配色，不使用生成式近似 Logo。App 图标在 1024 画布内留 100 边距，用 resvg 0.46.0 栅格化为 iconutil 同组 PNG 条目，hash 锁定在 assets/app-icon/app-icon.lock.json。预览与正式 macOS 打包器都只通过 `install_app_icon()` 安装该 icns，复制前后校验源 hash 与资源内容，并拒绝旧的顶层 assets/icon.icns。Logo 变化后需运行 `python native-client/scripts/brand_icon.py generate` 并审核；`verify` 不需要栅格化器。
 
 ## 阶段二身份与平台配置
 
@@ -104,3 +104,13 @@ Android SAF 最终销毁取消的后续源码修复尚未重打入已有 APK；c
 `windows-auto-update` 默认关闭，必须使用包含本仓库 `src/main.rs` 的桌面入口。入口在 NSH 初始化前处理固定 helper 模式；生成的 NSH runner 没有该入口，平台桥会明确拒绝，不能作为已支持自动更新的包发布。核心签名策略与下载 hash 通过后，原生 helper 校验私有目录 ACL、重解析点、安装器及当前程序的 Authenticode 证书 SHA256；握手完成且业务尚未挂载时退出旧进程。新进程仍重新经过更新门禁，交接成功不等于安装成功或 Ready。
 
 此实现尚无完整 Windows 客户端原生链接、ACL/WinTrust/Inno/重启系统验收；未签名预览程序不能通过此桥。目标 API 原样源码检查和协议负例不替代真实系统验证。详细限制见 `../native-updater-platform/windows/NATIVE-HOST.md`。
+
+## 预览渠道手动更新（github-manual-updates）
+
+- 入口在「设置 → 软件更新」，不在首屏。显示本地版本、远端版本、安装方式与最近一次结果。
+- 「下载来源：GitHub / 第三方代理」是单选，只决定安装包字节从哪里下载，切换不联网；「检查更新」是独立按钮，真正请求 GitHub API。
+- 版本号、官方资产地址与 SHA-256 只来自 `api.github.com`（TLS + 主机白名单）。第三方代理（ghfast.top）只承载字节，大小与 SHA-256 必须与 GitHub 官方摘要一致才保存；GitHub API 不可达时检查直接失败，不改信代理提供的版本或校验值。没有第一方可独立验证的清单前，不提供“代理元数据”线路。
+- 失败分别提示：GitHub API 非 2xx、速率限制（403/429）、超时、TLS 失败、无法连接、发布中无兼容安装包、摘要缺失/格式无效、下载失败（注明来源和原因）、大小不符、SHA-256 不符、目标文件已存在且内容不同。
+- 下载先写临时文件，再以 hard link 发布，绝不覆盖已有文件；已存在同 SHA-256 的文件则直接复用。
+- 预览版只下载并校验，提示“预览版不会自动安装或升级”，需手动打开 DMG 替换旧版并在设置中确认版本；绝不把下载成功称为升级成功。正式自动更新仍走签名/公证、原生安装器与重启后版本核对（`macos-auto-update` / Sparkle），本渠道不绕过这些安全门。
+- 测试中的 0.1.1 只是受控候选夹具，用于覆盖“有新版本→下载”路径，不是已发布承诺；分支版本仍为 0.1.0。

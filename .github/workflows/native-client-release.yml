@@ -116,6 +116,7 @@ jobs:
         run: |
           python scripts/native-client/check-version.py
           python scripts/native-client/test_install_nsh.py
+          python scripts/native-client/test_brand_icon.py
           python scripts/native-client/test_desktop_enterprise_preview.py
           python scripts/native-client/test_public_inputs.py
           python scripts/native-client/test_desktop_package.py

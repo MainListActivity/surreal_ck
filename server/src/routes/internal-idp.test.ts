@@ -11,6 +11,9 @@ function createWorkspaceScopeStub(result: Awaited<ReturnType<WorkspaceScopeModul
     async listWorkspaces() {
       return [];
     },
+    async resolveCollaborationScope() {
+      return { kind: "forbidden" };
+    },
     async switchWorkspace() {
       return { kind: "forbidden" };
     },

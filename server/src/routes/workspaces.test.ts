@@ -45,6 +45,9 @@ function stubWorkspaceScope(canCreate: boolean): WorkspaceScopeModule {
     async listWorkspaces() {
       return { workspaces: [], canCreate };
     },
+    async resolveCollaborationScope() {
+      return { kind: "forbidden" };
+    },
     async switchWorkspace() {
       return { kind: "forbidden" };
     },

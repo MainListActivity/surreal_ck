@@ -57,7 +57,10 @@ pub fn private_data_dir() -> Option<PathBuf> {
     if result.is_err() {
         let _ = env.exception_clear();
     }
-    result.ok().filter(|path| path.is_absolute())
+    // /data/user/0 -> /data/data 是系统布局；只解析该层链接，应用目录内链接仍被拒绝。
+    result
+        .ok()
+        .and_then(|path| crate::resolve_android_files_dir(&path))
 }
 pub fn start(request: &InstallRequest<'_>) -> Result<InstallState, Error> {
     if request.release().platform != "android" {
