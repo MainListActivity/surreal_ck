@@ -16,3 +16,9 @@ data/
 .content-runner-checkpoint.json
 .scratch/legal-corpus-ingestion/
 history.txt
+
+# 本地调试产物
+error.log
+*.headers
+cv02_hist.json
+.wrangler/state/
