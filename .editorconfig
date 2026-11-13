@@ -1,0 +1,16 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# shadcn-svelte 生成的组件保持其原生 tab 缩进
+[web/src/lib/components/ui/**]
+indent_style = tab
+
+[*.md]
+trim_trailing_whitespace = false
