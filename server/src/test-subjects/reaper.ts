@@ -173,6 +173,19 @@ export async function purgeTestSubject(
   subject: string,
 ): Promise<void> {
   const log = deps.log ?? defaultLog;
+  // 测试物料自助开出的账号：它自己拥有的 workspace 一并清理（含收养后后台执行迟到建出、
+  // 从未被标记到期的库）。有外部成员的照常跳过。
+  const kitOrigin = firstArray(await deps.systemDb.query(
+    `SELECT VALUE origin FROM test_subject WHERE subject = $subject LIMIT 1;`,
+    { subject },
+  ))[0] as unknown;
+  if (typeof kitOrigin === "string" && kitOrigin.startsWith("test-kit:")) {
+    const owned = firstArray(await deps.systemDb.query(
+      `SELECT VALUE id FROM workspace WHERE owner_subject = $subject;`,
+      { subject },
+    )) as unknown[];
+    for (const ref of owned) await purgeTestWorkspace(deps, String(ref));
+  }
   await deps.systemDb.query(
     `DELETE platform_operator_capability
      WHERE operator IN (SELECT VALUE id FROM platform_operator WHERE subject = $subject);`,

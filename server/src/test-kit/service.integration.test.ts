@@ -304,6 +304,17 @@ describe("test kit on real fork SurrealDB with the real invite service", () => {
     expect(await subjectRow("sub-expiring")).toBeUndefined();
   });
 
+  localTest("agent 不再回调：到期 reaper 也会删掉测试物料账号自己拥有但从未被标记的库", async () => {
+    await kit().provision(AGENT, provisionArgs("quiet"));
+    // 模拟收养后后台执行迟到建出、没人标记的第二个库
+    await db!.query(`CREATE workspace CONTENT { slug: "kit-quiet-late", name: "late", db_name: "ws_kit_quiet_late", owner_subject: "sub-quiet", status: "active" }; DEFINE DATABASE ws_kit_quiet_late;`);
+    await db!.query(`UPDATE test_subject SET expires_at = time::now() - 1d WHERE subject = "sub-quiet";`);
+    const { runTestSubjectReaper } = await import("../test-subjects/reaper");
+    await runTestSubjectReaper({ systemDb: queryClient(), dropDatabase: async (n) => { await db!.query(`REMOVE DATABASE IF EXISTS ${n};`); }, log: () => {} });
+    expect(await databases()).not.toContain("ws_kit_quiet_late");
+    expect(await q(`SELECT * FROM workspace WHERE slug = "kit-quiet-late";`)).toEqual([]);
+  });
+
   localTest("开通中计入上限；已清理与他人账号不计入", async () => {
     const active = (await kit().list(AGENT));
     const open = active.subjects.filter((s) => !s.expired).length + active.inFlight.length;

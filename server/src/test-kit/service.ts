@@ -479,6 +479,8 @@ export class TestKitService {
     const until = existing ? new Date(dateTimeTimestamp(existing.expires_at)) : expiresAt;
     for (const workspace of preflight.workspaces) {
       if (!workspace.wouldBeMarked) continue;
+      // 已登记主体的补标记只针对它自己拥有、尚未标记的 workspace（收养后迟到建出的库），不改动别人的测试 workspace。
+      if (existing && (!workspace.isOwner || workspace.testExpiresAt !== null)) continue;
       await db.query(
         `UPDATE $wid SET test_expires_at = $expiresAt, test_origin = $origin;`,
         { wid: new StringRecordId(workspace.id), expiresAt: new DateTime(until), origin },
