@@ -361,7 +361,7 @@ describe("platform content MCP", () => {
       invites: { provision: async () => { throw new Error("unused"); }, get: async () => null, collect: async () => null },
       members: { addMember: async () => ({ kind: "added" }) },
       getSystemDb: async () => ({ query: async () => [[]] }),
-      idpUserExists: async () => false,
+      idpFindUser: async () => null,
       reaperDeps: async () => { throw new Error("unused"); },
       emailPattern: "kit[+][a-z0-9-]+@example[.]com",
     });

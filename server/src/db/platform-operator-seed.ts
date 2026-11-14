@@ -223,7 +223,9 @@ async function seedTestAgents(
     );
     const kind = Array.isArray(existing) && Array.isArray(existing[0]) ? existing[0][0] : undefined;
     if (kind === "human") {
-      throw new Error(`PLATFORM_OPERATOR_TEST_AGENTS subject ${subject} is already a human operator`);
+      // 不因配置冲突拖垮启动：跳过并告警，该 subject 保持 human 身份、不获 test.provision。
+      console.error("[platform-operator-seed] skip test agent: subject is already a human operator", { subject });
+      continue;
     }
     await db.query(
       `INSERT INTO platform_operator { subject: $subject, display_name: "测试物料 agent", status: "active", kind: "agent" }

@@ -173,8 +173,8 @@ describe("GET /api/ops/test-subjects", () => {
 describe("DELETE /api/ops/test-subjects/:subject", () => {
   test("清除 workspace 与 operator 并删除 test_subject", async () => {
     const { db, writes } = fakeDb([
-      { sql: "SELECT subject FROM test_subject", rows: [{ subject: "s1" }] },
-      { sql: "subject FROM user_workspace_index", rows: [{ subject: "s1" }] },
+      { sql: "SELECT subject, email FROM test_subject", rows: [{ subject: "s1" }] },
+      { sql: "SELECT subject, email FROM user_workspace_index", rows: [{ subject: "s1" }] },
       { sql: "VALUE workspace FROM user_workspace_index", rows: [{ workspace: "workspace:w1" }] },
       { sql: "FROM workspace WHERE id", rows: [{ id: "workspace:w1", slug: "w1", db_name: "db1", owner_subject: "s1", test_origin: null }] },
     ]);
@@ -193,8 +193,8 @@ describe("DELETE /api/ops/test-subjects/:subject", () => {
 
   test("含非测试成员的 workspace 跳过不删", async () => {
     const { db } = fakeDb([
-      { sql: "SELECT subject FROM test_subject", rows: [{ subject: "s1" }] },
-      { sql: "subject FROM user_workspace_index", rows: [{ subject: "s1" }, { subject: "normal_user" }] },
+      { sql: "SELECT subject, email FROM test_subject", rows: [{ subject: "s1" }] },
+      { sql: "SELECT subject, email FROM user_workspace_index", rows: [{ subject: "s1" }, { subject: "normal_user" }] },
       { sql: "VALUE workspace FROM user_workspace_index", rows: [{ workspace: "workspace:w1" }] },
       { sql: "FROM workspace WHERE id", rows: [{ id: "workspace:w1", slug: "w1", db_name: "db1", owner_subject: "s1", test_origin: null }] },
     ]);

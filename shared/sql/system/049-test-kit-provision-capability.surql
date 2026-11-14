@@ -15,3 +15,6 @@ DEFINE FIELD OVERWRITE capability ON TABLE platform_operator_capability TYPE str
     "test.manage",
     "test.provision",
   ];
+
+-- 测试物料清理标记：test_kit_purge 清理过的开通行不再被对账补登记。
+DEFINE FIELD IF NOT EXISTS test_kit_purged_at ON ops_invitation TYPE option<datetime>;

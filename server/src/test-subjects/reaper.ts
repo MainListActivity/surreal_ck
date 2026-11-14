@@ -105,17 +105,22 @@ export async function purgeTestWorkspace(
 
   const wid = new StringRecordId(workspaceId);
   const members = firstArray(await deps.systemDb.query(
-    `SELECT subject FROM user_workspace_index WHERE workspace = $wid;`,
+    `SELECT subject, email FROM user_workspace_index WHERE workspace = $wid;`,
     { wid },
   ));
-  const testSubjects = new Set(
-    firstArray(await deps.systemDb.query(
-      `SELECT subject FROM test_subject;`,
-    )).map((row) => String(row.subject)),
-  );
+  const testRows = firstArray(await deps.systemDb.query(
+    `SELECT subject, email FROM test_subject;`,
+  ));
+  const testSubjects = new Set(testRows.map((row) => String(row.subject)));
+  const testEmails = new Set(testRows
+    .map((row) => typeof row.email === "string" ? row.email.toLowerCase() : "")
+    .filter((email) => email.length > 0));
+  // 预加入未登录的成员索引 subject 为 NONE：其邮箱属于测试主体时同样视为测试成员。
   const foreignMembers = members
-    .map((row) => String(row.subject))
-    .filter((subject) => !testSubjects.has(subject));
+    .filter((row) => typeof row.subject === "string"
+      ? !testSubjects.has(row.subject)
+      : !(typeof row.email === "string" && testEmails.has(row.email.toLowerCase())))
+    .map((row) => String(row.subject ?? row.email ?? ""));
 
   const [workspace] = firstArray(await deps.systemDb.query(
     `SELECT id, slug, db_name, owner_subject, test_origin FROM workspace WHERE id = $wid;`,
@@ -173,6 +178,17 @@ export async function purgeTestSubject(
   );
   await deps.systemDb.query(`DELETE platform_operator WHERE subject = $subject;`, { subject });
   await deps.systemDb.query(`DELETE user_workspace_index WHERE subject = $subject;`, { subject });
+  // 预加入但从未登录的成员索引（subject = NONE）按该测试主体的邮箱一并摘除。
+  const ownEmail: unknown = firstArray(await deps.systemDb.query(
+    `SELECT VALUE email FROM test_subject WHERE subject = $subject LIMIT 1;`,
+    { subject },
+  ))[0];
+  if (typeof ownEmail === "string" && ownEmail.length > 0) {
+    await deps.systemDb.query(
+      `DELETE user_workspace_index WHERE subject = NONE AND email != NONE AND string::lowercase(email) = $email;`,
+      { email: ownEmail.toLowerCase() },
+    );
+  }
 
   // 计费残留：测试 workspace 走 manual 来源会留下
   // billing_account(account_key=personal:<subject>) + member + quota_subscription(+item)。

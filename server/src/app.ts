@@ -557,10 +557,11 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
         invites: inviteService,
         members: memberManager,
         getSystemDb: () => getRootDatabaseSession("_system"),
-        idpUserExists: async (email) => {
+        idpFindUser: async (email) => {
           const idp = await idpAdminSource();
           if (!idp) throw new Error("idp admin not configured");
-          return (await idp.findUserByEmail(email)) !== null;
+          const user = await idp.findUserByEmail(email);
+          return user ? { id: user.id } : null;
         },
         reaperDeps: async () => ({
           systemDb: await getRootDatabaseSession("_system"),

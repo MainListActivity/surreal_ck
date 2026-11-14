@@ -110,13 +110,20 @@ describe("seedPlatformOperators", () => {
     expect(db.uses).toEqual([{ namespace: "main", database: "_system" }]);
   });
 
-  test("拒绝把已登记的 human 运营主体改成测试物料 agent", async () => {
+  test("已登记的 human 运营主体不会被改成测试物料 agent：跳过并告警，不拖垮启动", async () => {
     const db = new FakePlatformOperatorDb();
     const query = db.query.bind(db);
     db.query = async (sql, params) => sql.includes("SELECT VALUE kind") ? [["human"]] : query(sql, params);
-
-    await expect(seedPlatformOperators(db, { subjectsCsv: "", capabilitiesCsv: "", testAgentsCsv: "ops-human", namespace: "main" }))
-      .rejects.toThrow("already a human operator");
+    const errors: unknown[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => { errors.push(args); };
+    try {
+      await seedPlatformOperators(db, { subjectsCsv: "", capabilitiesCsv: "", testAgentsCsv: "ops-human", namespace: "main" });
+    } finally {
+      console.error = original;
+    }
+    expect(errors).toHaveLength(1);
+    expect(db.queries.some((q) => q.sql.includes("INSERT INTO platform_operator {"))).toBe(false);
     expect(db.queries.some((q) => q.sql.includes("INSERT INTO platform_operator_capability"))).toBe(false);
   });
 

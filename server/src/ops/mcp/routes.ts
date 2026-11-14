@@ -198,7 +198,7 @@ function buildServer(
       instructions:
         "平台内容维护工具。先 get_data_contract，提交后先 inspect_batch，再由人工审阅结果决定 publish_batch。"
         + "测试物料（需 test.provision）：先 test_kit_rules 看规则，test_kit_provision 开新测试账号并拿一次性激活链接（浏览器打开设密码），"
-        + "processing 时用同一 idempotencyKey 调 test_kit_status；test_kit_add_member 把测试账号加进测试 workspace；"
+        + "processing 时用同一 email 调 test_kit_status；test_kit_add_member 把测试账号加进测试 workspace；"
         + "test_kit_list 查自己开的账号，用完 test_kit_purge 清理（30 天也会自动清理）。",
     },
   );
@@ -530,20 +530,20 @@ function buildServer(
       async () => testKitService.rules(operator));
     testKitTool("test_kit_provision", "开通测试账号",
       "新建一个测试账号：IdP 用户 + trial workspace + 100 AI 额度，登记为 30 天到期的测试主体，并一次性返回激活链接（浏览器打开设置密码；接口不经手密码）。"
-      + "入参 email（须匹配规则里的邮箱正则、且从未用过）、displayName、workspaceSlug（小写 kebab-case、未被占用）、可选 workspaceName、idempotencyKey（自定，重试用同一个）。"
-      + "返回 status=processing 时稍后用同一 idempotencyKey 调 test_kit_status。",
+      + "入参 email（须匹配规则里的邮箱正则、从未用过；一个邮箱 = 一个账号，重复调用同一 email 是幂等的）、displayName、workspaceSlug（小写 kebab-case、未被占用）、可选 workspaceName。"
+      + "返回 status=processing 时稍后用同一 email 调 test_kit_status。",
       (args) => testKitService.provision(operator, args));
-    testKitTool("test_kit_status", "查询测试账号开通进度",
-      "入参 idempotencyKey。完成后登记测试主体，并一次性收取激活链接（已收取过则为 null）。",
+    testKitTool("test_kit_status", "查询/续跑测试账号开通",
+      "入参 email。开通中断时会续跑；完成后登记测试主体，并一次性收取激活链接（已收取过则为 null）。",
       (args) => testKitService.status(operator, args));
     testKitTool("test_kit_list", "列出我开的测试账号",
       "只列本 agent 经 test_kit_provision 开通的测试账号：subject、email、到期时间、所在 workspace。",
       async () => testKitService.list(operator));
     testKitTool("test_kit_add_member", "把测试账号加入测试 workspace",
-      "入参 workspaceSlug、email、可选 isAdmin（默认 false）、displayName。workspace 必须由未到期测试账号拥有，被加入的 email 必须是未到期测试账号。被加入者首次登录后按邮箱绑定。",
+      "入参 workspaceSlug、email、可选 isAdmin（默认 false）、displayName。被加入的 email 必须是本 agent 开的未到期测试账号；workspace 必须由本 agent 开的账号或运营登记的测试账号拥有（后者只能加普通成员）。被加入者首次登录后按邮箱绑定。",
       (args) => testKitService.addMember(operator, args));
     testKitTool("test_kit_purge", "立即清理测试账号",
-      "不可逆：删除本 agent 开的测试账号的登记、成员索引，并整库删除它独占的测试 workspace。入参 subject 与 confirm=\"purge <subject>\"。",
+      "不可逆：删除本 agent 开的测试账号的登记与成员索引，并整库删除它自己拥有的 workspace（它加入的别人的 workspace 保留）。入参 subject 与 confirm=\"purge <subject>\"。",
       (args) => testKitService.purge(operator, args));
   }
 
