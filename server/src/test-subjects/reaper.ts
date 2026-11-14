@@ -105,17 +105,24 @@ export async function purgeTestWorkspace(
 
   const wid = new StringRecordId(workspaceId);
   const members = firstArray(await deps.systemDb.query(
-    `SELECT subject FROM user_workspace_index WHERE workspace = $wid;`,
+    `SELECT subject, email FROM user_workspace_index WHERE workspace = $wid;`,
     { wid },
   ));
-  const testSubjects = new Set(
-    firstArray(await deps.systemDb.query(
-      `SELECT subject FROM test_subject;`,
-    )).map((row) => String(row.subject)),
-  );
+  const testRows = firstArray(await deps.systemDb.query(
+    `SELECT subject, email, origin FROM test_subject;`,
+  ));
+  const testSubjects = new Set(testRows.map((row) => String(row.subject)));
+  // 只信任测试物料自助开出的账号邮箱（来自 IdP）；运营登记时手填的邮箱不参与 NONE 行判定。
+  const testEmails = new Set(testRows
+    .filter((row) => typeof row.origin === "string" && row.origin.startsWith("test-kit:"))
+    .map((row) => typeof row.email === "string" ? row.email.toLowerCase() : "")
+    .filter((email) => email.length > 0));
+  // 预加入未登录的成员索引 subject 为 NONE：其邮箱属于测试物料账号时同样视为测试成员。
   const foreignMembers = members
-    .map((row) => String(row.subject))
-    .filter((subject) => !testSubjects.has(subject));
+    .filter((row) => typeof row.subject === "string"
+      ? !testSubjects.has(row.subject)
+      : !(typeof row.email === "string" && testEmails.has(row.email.toLowerCase())))
+    .map((row) => String(row.subject ?? row.email ?? ""));
 
   const [workspace] = firstArray(await deps.systemDb.query(
     `SELECT id, slug, db_name, owner_subject, test_origin FROM workspace WHERE id = $wid;`,
@@ -166,6 +173,19 @@ export async function purgeTestSubject(
   subject: string,
 ): Promise<void> {
   const log = deps.log ?? defaultLog;
+  // 测试物料自助开出的账号：它自己拥有的 workspace 一并清理（含收养后后台执行迟到建出、
+  // 从未被标记到期的库）。有外部成员的照常跳过。
+  const kitOrigin = firstArray(await deps.systemDb.query(
+    `SELECT VALUE origin FROM test_subject WHERE subject = $subject LIMIT 1;`,
+    { subject },
+  ))[0] as unknown;
+  if (typeof kitOrigin === "string" && kitOrigin.startsWith("test-kit:")) {
+    const owned = firstArray(await deps.systemDb.query(
+      `SELECT VALUE id FROM workspace WHERE owner_subject = $subject;`,
+      { subject },
+    )) as unknown[];
+    for (const ref of owned) await purgeTestWorkspace(deps, String(ref));
+  }
   await deps.systemDb.query(
     `DELETE platform_operator_capability
      WHERE operator IN (SELECT VALUE id FROM platform_operator WHERE subject = $subject);`,
@@ -173,6 +193,25 @@ export async function purgeTestSubject(
   );
   await deps.systemDb.query(`DELETE platform_operator WHERE subject = $subject;`, { subject });
   await deps.systemDb.query(`DELETE user_workspace_index WHERE subject = $subject;`, { subject });
+  // 测试物料自助开出的账号（邮箱来自 IdP）：摘除它在测试 workspace 里预加入但从未登录的成员索引
+  // （subject = NONE），并给它的开通行打清理标记，之后的对账不会把它重新登记回来。
+  const own = firstArray(await deps.systemDb.query(
+    `SELECT email, origin FROM test_subject WHERE subject = $subject LIMIT 1;`,
+    { subject },
+  ))[0];
+  if (own && typeof own.origin === "string" && own.origin.startsWith("test-kit:")
+    && typeof own.email === "string" && own.email.length > 0) {
+    const email = own.email.toLowerCase();
+    await deps.systemDb.query(
+      `DELETE user_workspace_index WHERE subject = NONE AND email != NONE AND string::lowercase(email) = $email AND workspace.test_expires_at != NONE;`,
+      { email },
+    );
+    await deps.systemDb.query(
+      `UPDATE ops_invitation SET test_kit_purged_at = time::now()
+       WHERE string::starts_with(idempotency_key, "test-kit:") AND email = $email AND test_kit_purged_at = NONE;`,
+      { email },
+    );
+  }
 
   // 计费残留：测试 workspace 走 manual 来源会留下
   // billing_account(account_key=personal:<subject>) + member + quota_subscription(+item)。

@@ -88,6 +88,8 @@ describe("_system native quota control-plane schema", () => {
       47,
       // 048：远程测试主体表与 workspace 到期标记、能力白名单追加 test.manage。
       48,
+      // 049：能力白名单追加 test.provision（测试物料自助），只放宽 schema。
+      49,
     ]);
   });
 

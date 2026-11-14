@@ -268,10 +268,11 @@ export class InviteService {
     });
     const user = ensured.user;
     // 一次性激活链接：拿到就先落行——此后任务被断连/超时打断，续跑或
-    // collect-delivery 仍能救回（否则链接随请求死亡永久丢失）。
+    // collect-delivery 仍能救回（否则链接随请求死亡永久丢失）。新建用户时同一次写入记下其 id，
+    // 执行中断/失败后可凭行找回「本行建出的用户」做清理归因（测试物料自助收养用）。
     let activationUrl = ensured.activationUrl;
     if (activationUrl) {
-      await this.deps.store.saveActivationUrl(recordId, activationUrl).catch(() => undefined);
+      await this.deps.store.saveActivationUrl(recordId, activationUrl, ensured.created ? user.id : undefined).catch(() => undefined);
     } else {
       // 续跑/复用：IdP 不重复签发，读回上环已签发暂存的链接。
       activationUrl = await this.deps.store.storedActivationUrl(recordId).catch(() => null);

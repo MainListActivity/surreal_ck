@@ -22,6 +22,12 @@ const EnvSchema = z.object({
   OIDC_OPS_CLIENT_ID: z.string().min(1).optional(),
   OIDC_REMOTE_CLIENT_ID: z.string().min(1).optional(),
   PLATFORM_OPERATOR_TEST_MANAGERS: z.string().optional(),
+  /** 逗号分隔的 agent subject：登记为 kind=agent 运营主体，只授 test.provision（运营 MCP 测试物料自助）。 */
+  PLATFORM_OPERATOR_TEST_AGENTS: z.string().optional(),
+  /** 测试物料自助允许开通的邮箱正则（整串匹配）；未配置则自助开通关闭。 */
+  TEST_KIT_EMAIL_PATTERN: z.preprocess(value => value === "" ? undefined : value, z.string().min(1).optional()),
+  /** 每个 agent 同时持有的未到期测试账号上限，默认 10。 */
+  TEST_KIT_MAX_ACTIVE: z.coerce.number().int().min(1).max(50).default(10),
   TEST_SUBJECT_REAPER_INTERVAL_SEC: z.coerce.number().int().min(60).default(6 * 3600),
   /** 运营代办开通测试 workspace 的容量修订；缺省 trial_v2（与 max_v2 同物理口径）。 */
   TEST_SUBJECT_QUOTA_PLAN_REVISION: z.string().optional(),

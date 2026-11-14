@@ -14,6 +14,7 @@ import { createContentMcpRoutes } from "./routes";
 import { ActivationSummaryService } from "../../activation-summary/service";
 import type { ActivationSummaryV1, FollowUpItem, SharedActivationSummary } from "@surreal-ck/shared";
 import { OpsFollowUpService } from "../../ops-follow-up/service";
+import { TestKitService } from "../../test-kit/service";
 
 const source: ContentSourceRegistration = {
   sourceKey: "official-demo",
@@ -99,6 +100,7 @@ describe("platform content MCP", () => {
         "activation.proposal.takeover",
         "activation.autonomy.read",
         "activation.autonomy.manage",
+        "test.provision",
       ],
       bearer_methods_supported: ["header"],
     });
@@ -352,5 +354,40 @@ describe("platform content MCP", () => {
     const updatedResponse = await call(writableApp, { jsonrpc: "2.0", id: 25, method: "tools/call", params: { name: "update_follow_up", arguments: { followUpId: "activation_follow_up:demo", expectedVersion: 2, status: "resolved", dueCheckAt: null, result: "已处理", idempotencyKey: "mcp-update-0001" } } });
     const updated = await updatedResponse.json() as { result?: { structuredContent?: FollowUpItem } };
     expect(updated.result?.structuredContent).toMatchObject({ status: "resolved", result: "已处理", nextStep: "none" });
+  });
+
+  test("test kit tools serve a kind=agent operator only when the token carries test.provision", async () => {
+    const testKit = new TestKitService({
+      invites: { provision: async () => { throw new Error("unused"); }, get: async () => null, collect: async () => null },
+      members: { addMember: async () => ({ kind: "added" }) },
+      getSystemDb: async () => ({ query: async () => [[]] }),
+      idpFindUser: async () => null,
+      reaperDeps: async () => { throw new Error("unused"); },
+      emailPattern: "kit[+][a-z0-9-]+@example[.]com",
+    });
+    const appFor = (scope: string | undefined) => {
+      const app = new Hono<AppBindings>();
+      app.onError(handleError);
+      app.route("/", createContentMcpRoutes({
+        service: new PlatformContentService({ store: new InMemoryPlatformContentStore(), sources: [source] }),
+        testKitService: testKit,
+        authorizationServer: "https://auth.example.test",
+        requireOperator: async (c, next) => {
+          c.set("user", { subject: "agent-arch", raw: scope === undefined ? {} : { scope }, rawToken: "token" });
+          c.set("platformOperator", { subject: "agent-arch", kind: "agent", capabilities: ["test.provision"] } as never);
+          await next();
+        },
+      }));
+      return app;
+    };
+    const tool = async (app: Hono<AppBindings>, name: string) => (await (await call(app, {
+      jsonrpc: "2.0", id: 40, method: "tools/call", params: { name, arguments: {} },
+    })).json()) as { result?: { isError?: boolean; structuredContent?: { enabled?: boolean; error?: { code?: string } } } };
+
+    const scoped = appFor("test.provision");
+    expect((await tool(scoped, "test_kit_rules")).result?.structuredContent).toMatchObject({ enabled: true, maxActive: 10, ttlDays: 30 });
+    expect((await tool(scoped, "search_content")).result?.structuredContent?.error?.code).toBe("out_of_scope");
+    expect((await tool(appFor(undefined), "test_kit_rules")).result?.structuredContent?.error?.code).toBe("forbidden");
+    expect((await tool(appFor("content.read"), "test_kit_rules")).result?.structuredContent?.error?.code).toBe("forbidden");
   });
 });

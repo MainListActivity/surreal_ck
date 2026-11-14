@@ -91,7 +91,8 @@ export interface InviteAuditStore {
    */
   markProcessing(recordId: string, staleBefore: Date): Promise<boolean>;
   /** ensureUser 一拿到一次性激活链接就先落行——任务此后中断也能被续跑/收取救回。 */
-  saveActivationUrl(recordId: string, activationUrl: string): Promise<void>;
+  /** createdIdpUserId：本行新建出的 IdP 用户 id，与链接同一次写入（执行中断也能凭行找回）。 */
+  saveActivationUrl(recordId: string, activationUrl: string, createdIdpUserId?: string): Promise<void>;
   /** 续跑时读回上次已签发的链接（不读全新建时不签发）。 */
   storedActivationUrl(recordId: string): Promise<string | null>;
   /**
@@ -258,11 +259,13 @@ export class SurrealInviteAuditStore implements InviteAuditStore {
     return updated.length > 0;
   }
 
-  async saveActivationUrl(recordId: string, activationUrl: string): Promise<void> {
+  async saveActivationUrl(recordId: string, activationUrl: string, createdIdpUserId?: string): Promise<void> {
     const db = await this.session(this.database);
     await db.query(
-      `UPDATE $id SET activation_url = $url WHERE status = "processing";`,
-      { id: new StringRecordId(recordId), url: activationUrl },
+      createdIdpUserId
+        ? `UPDATE $id SET activation_url = $url, idp_user_id = $userId WHERE status = "processing";`
+        : `UPDATE $id SET activation_url = $url WHERE status = "processing";`,
+      { id: new StringRecordId(recordId), url: activationUrl, userId: createdIdpUserId },
     );
   }
 

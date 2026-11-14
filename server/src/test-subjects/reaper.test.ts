@@ -35,8 +35,8 @@ describe("runTestSubjectReaper", () => {
       { sql: "test_expires_at != NONE", rows: [
         { id: "workspace:exp", slug: "exp", db_name: "db_exp", owner_subject: "s1", test_origin: "t" },
       ] },
-      { sql: "SELECT subject FROM user_workspace_index WHERE workspace", rows: [{ subject: "s1" }] },
-      { sql: "SELECT subject FROM test_subject", rows: [{ subject: "s1" }] },
+      { sql: "SELECT subject, email FROM user_workspace_index WHERE workspace", rows: [{ subject: "s1" }] },
+      { sql: "SELECT subject, email, origin FROM test_subject", rows: [{ subject: "s1" }] },
       { sql: "FROM workspace WHERE id", rows: [{ id: "workspace:exp", slug: "exp", db_name: "db_exp", owner_subject: "s1", test_origin: "t" }] },
       { sql: "FROM test_subject WHERE expires_at", rows: [] },
     ]);
@@ -54,8 +54,8 @@ describe("runTestSubjectReaper", () => {
       { sql: "test_expires_at != NONE", rows: [
         { id: "workspace:mixed", slug: "mixed", db_name: "db_m", owner_subject: "s1", test_origin: null },
       ] },
-      { sql: "SELECT subject FROM user_workspace_index WHERE workspace", rows: [{ subject: "s1" }, { subject: "human" }] },
-      { sql: "SELECT subject FROM test_subject", rows: [{ subject: "s1" }] },
+      { sql: "SELECT subject, email FROM user_workspace_index WHERE workspace", rows: [{ subject: "s1" }, { subject: "human" }] },
+      { sql: "SELECT subject, email, origin FROM test_subject", rows: [{ subject: "s1" }] },
       { sql: "FROM workspace WHERE id", rows: [{ id: "workspace:mixed", slug: "mixed", db_name: "db_m", owner_subject: "s1", test_origin: null }] },
       { sql: "FROM test_subject WHERE expires_at", rows: [] },
     ]);
@@ -63,6 +63,28 @@ describe("runTestSubjectReaper", () => {
     const result = await runTestSubjectReaper(deps(db, dropped));
     expect(result.workspacesSkipped).toBe(1);
     expect(dropped).toEqual([]);
+  });
+
+  test("未登录成员（subject = NONE）邮箱属于测试主体时不算外部成员；邮箱不属于时仍跳过", async () => {
+    const rules = (memberEmail: string) => fakeSystemDb([
+      { sql: "test_expires_at != NONE", rows: [
+        { id: "workspace:pre", slug: "pre", db_name: "db_pre", owner_subject: "s1", test_origin: null },
+      ] },
+      { sql: "SELECT subject, email FROM user_workspace_index WHERE workspace", rows: [{ subject: "s1" }, { email: memberEmail }] },
+      { sql: "SELECT subject, email, origin FROM test_subject", rows: [{ subject: "s1" }, { subject: "s2", email: "Kit+B@example.com", origin: "test-kit:agent" }, { subject: "s3", email: "typed@example.com", origin: "ops" }] },
+      { sql: "FROM workspace WHERE id", rows: [{ id: "workspace:pre", slug: "pre", db_name: "db_pre", owner_subject: "s1", test_origin: null }] },
+      { sql: "FROM test_subject WHERE expires_at", rows: [] },
+    ]);
+    const dropped: string[] = [];
+    await runTestSubjectReaper(deps(rules("kit+b@example.com").db, dropped));
+    expect(dropped).toEqual(["db_pre"]);
+    const kept: string[] = [];
+    await runTestSubjectReaper(deps(rules("someone@example.com").db, kept));
+    expect(kept).toEqual([]);
+    // 运营登记时手填的邮箱不可信：同邮箱的未登录成员仍算外部成员
+    const opsTyped: string[] = [];
+    await runTestSubjectReaper(deps(rules("typed@example.com").db, opsTyped));
+    expect(opsTyped).toEqual([]);
   });
 
   test("到期 test_subject 摘除 operator/索引，内容记录不受影响", async () => {
