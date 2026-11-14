@@ -391,3 +391,14 @@ describe("platform content MCP", () => {
     expect((await tool(appFor("content.read"), "test_kit_rules")).result?.structuredContent?.error?.code).toBe("forbidden");
   });
 });
+
+describe("static RFC 9728 metadata served by Pages", () => {
+  test("web/public/oauth-protected-resource.json matches the production metadata the API serves", async () => {
+    const { protectedResourceMetadata } = await import("./routes");
+    const file = Bun.file(new URL("../../../../web/public/oauth-protected-resource.json", import.meta.url));
+    expect(await file.json()).toEqual(protectedResourceMetadata({
+      authorizationServer: "https://o.maplayer.top/t/ck",
+      resource: "https://l.maplayer.top/api/ops/mcp",
+    }));
+  });
+});

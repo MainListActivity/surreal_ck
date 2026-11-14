@@ -100,7 +100,7 @@ function toolSuccess(value: unknown) {
   };
 }
 
-function protectedResourceMetadata({
+export function protectedResourceMetadata({
   authorizationServer,
   resource,
 }: Readonly<{ authorizationServer: string; resource: string }>) {
