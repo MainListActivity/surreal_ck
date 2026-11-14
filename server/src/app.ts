@@ -94,6 +94,7 @@ import { SurrealPlatformContentStore } from "./content/store";
 import { activeContentCollectionKeys } from "./content/collection-catalog";
 import { contentPublisherQuery } from "./content/publisher-session";
 import { createContentMcpRoutes } from "./ops/mcp/routes";
+import { TestKitService } from "./test-kit/service";
 import { ActivationSummaryService } from "./activation-summary/service";
 import { SurrealActivationSummaryStore } from "./activation-summary/store";
 import { createActivationSummaryRoutes } from "./routes/activation-summary";
@@ -241,6 +242,7 @@ export type AppOptions = {
   rolloutGates?: RolloutGateChecker;
   /** G2：运营代办开通服务；默认生产装配（IdP provision token client + workspace creator + 权益/额度）。 */
   inviteService?: InviteService;
+  testKitService?: TestKitService;
   /** G2-rot：平台密封密钥仓；默认由 PLATFORM_SECRET_KEY 装配（缺省即 null，轮换端点 503、token 源回退 env）。 */
   platformSecretStore?: PlatformSecretStore | null;
   /** G2-rot：provision token 懒解析源；默认密封仓优先、IDP_PROVISION_TOKEN 兜底。 */
@@ -550,6 +552,19 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
       opsProposalService,
       opsAutonomyService,
       opsRunService,
+      testKitService: options.testKitService ?? new TestKitService({
+        invites: inviteService,
+        members: memberManager,
+        getSystemDb: () => getRootDatabaseSession("_system"),
+        reaperDeps: async () => ({
+          systemDb: await getRootDatabaseSession("_system"),
+          dropDatabase: async (dbName) => { await getRootConnection().query(`REMOVE DATABASE IF EXISTS ${dbName};`); },
+          now: () => new Date(),
+        }),
+        emailPattern: env.TEST_KIT_EMAIL_PATTERN,
+        maxActive: env.TEST_KIT_MAX_ACTIVE,
+        quotaPlanRevisionId: env.TEST_SUBJECT_QUOTA_PLAN_REVISION,
+      }),
     }))
     .route(
       "/",

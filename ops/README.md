@@ -29,3 +29,7 @@ pnpm --filter @surreal-ck/ops build
 生产环境配置 `VITE_OPS_OIDC_ISSUER`、`VITE_OPS_OIDC_CLIENT_ID`、`VITE_OPS_OIDC_AUDIENCE` 和 `VITE_OPS_API_BASE_URL`。后端可选配置同一个 `OIDC_OPS_CLIENT_ID` 做硬绑定；未配置时仍由 IdP 校验 public client、redirect URI 与 PKCE。运营 API 仍在 `surreal_ck/server`。
 
 生产发布走同域子路径：`deploy-production.yml` 用 `VITE_OPS_BASE=/ops/` 构建，产物打进应用 Pages 项目的 `web/dist/ops/`，线上地址 `https://l.maplayer.top/ops/`；`VITE_OPS_OIDC_REDIRECT_URI` 缺省按 `BASE_URL` 推导为 `https://l.maplayer.top/ops/auth/callback.html`。前置的 IdP client 登记与环境变量见 `docs/runbooks/production-release.md`。本地 dev/preview 的 base 仍为 `/`。
+
+## 测试物料自助（test_kit_*）
+
+持 `test.provision` 的 agent（经 `PLATFORM_OPERATOR_TEST_AGENTS` 登记）通过同一 `/api/ops/mcp` 连接器自助开通测试账号：`test_kit_rules`（只读，先调）→ `test_kit_provision`（新 IdP 用户 + trial workspace + 100 AI 额度，登记 30 天到期测试主体，一次性返回激活链接）→ 必要时 `test_kit_status` 收尾；`test_kit_add_member` 把测试账号加入测试 workspace；`test_kit_list` / `test_kit_purge` 管理自己开的账号。邮箱须匹配 `TEST_KIT_EMAIL_PATTERN`，未配置即关闭。接口不经手密码。详见 `docs/runbooks/test-kit.md`。

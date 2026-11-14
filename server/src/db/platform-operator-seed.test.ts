@@ -96,4 +96,35 @@ describe("seedPlatformOperators", () => {
     expect(capabilityWrites[0]?.params?.operator).toBeInstanceOf(StringRecordId);
     expect(capabilityWrites[0]?.sql).toContain("ON DUPLICATE KEY UPDATE updated_at = time::now()");
   });
+
+  test("测试物料 agent 只登记为 kind=agent 并只授 test.provision", async () => {
+    const db = new FakePlatformOperatorDb();
+
+    await seedPlatformOperators(db, { subjectsCsv: "", capabilitiesCsv: "", testAgentsCsv: "agent-arch", namespace: "main" });
+    const operatorInsert = db.queries.find((q) => q.sql.includes("INSERT INTO platform_operator {"));
+    expect(operatorInsert?.sql).toContain('kind: "agent"');
+    expect(operatorInsert?.params).toEqual({ subject: "agent-arch" });
+    const grants = db.queries.filter((q) => q.sql.includes("INSERT INTO platform_operator_capability"));
+    expect(grants).toHaveLength(1);
+    expect(grants[0]!.sql).toContain('capability: "test.provision"');
+    expect(db.uses).toEqual([{ namespace: "main", database: "_system" }]);
+  });
+
+  test("拒绝把已登记的 human 运营主体改成测试物料 agent", async () => {
+    const db = new FakePlatformOperatorDb();
+    const query = db.query.bind(db);
+    db.query = async (sql, params) => sql.includes("SELECT VALUE kind") ? [["human"]] : query(sql, params);
+
+    await expect(seedPlatformOperators(db, { subjectsCsv: "", capabilitiesCsv: "", testAgentsCsv: "ops-human", namespace: "main" }))
+      .rejects.toThrow("already a human operator");
+    expect(db.queries.some((q) => q.sql.includes("INSERT INTO platform_operator_capability"))).toBe(false);
+  });
+
+  test("拒绝经全体主体 CSV 下发 test.provision", async () => {
+    const db = new FakePlatformOperatorDb();
+
+    await expect(seedPlatformOperators(db, { subjectsCsv: "user-1", capabilitiesCsv: "content.read,test.provision" }))
+      .rejects.toThrow("PLATFORM_OPERATOR_TEST_AGENTS");
+    expect(db.queries).toEqual([]);
+  });
 });

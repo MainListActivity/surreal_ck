@@ -468,6 +468,9 @@ export const PLATFORM_OPERATOR_CAPABILITIES = [
   // 不随生产 CSV 自动配置；授予须经上线申请明确影响主体。
   "internal-ai.endpoint-probe",
   "test.manage",
+  // 测试物料自助：只允许经运营 MCP 开通/列出/清理自己开的测试账号（trial、≤30 天、邮箱受限），
+  // 不能登记或删除他人主体。只经 PLATFORM_OPERATOR_TEST_AGENTS 授给 kind=agent 的主体。
+  "test.provision",
 ] as const;
 export type PlatformOperatorCapability =
   (typeof PLATFORM_OPERATOR_CAPABILITIES)[number];

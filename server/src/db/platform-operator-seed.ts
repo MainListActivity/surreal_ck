@@ -19,6 +19,8 @@ export type SeedPlatformOperatorsOptions = {
   capabilitiesCsv?: string;
   /** 逗号分隔的测试主体管理 subject 列表；默认取 env.PLATFORM_OPERATOR_TEST_MANAGERS。 */
   testManagersCsv?: string;
+  /** 逗号分隔的测试物料 agent subject 列表；默认取 env.PLATFORM_OPERATOR_TEST_AGENTS。 */
+  testAgentsCsv?: string;
   displayName?: string;
   grantedBySubject?: string;
   namespace?: string;
@@ -51,6 +53,12 @@ function parseCapabilities(value: string | undefined): PlatformOperatorCapabilit
       `PLATFORM_OPERATOR_CAPABILITIES contains unsupported values: ${invalid.join(", ")}`,
     );
   }
+  // test.provision 只授给 PLATFORM_OPERATOR_TEST_AGENTS 列出的 agent，不经全体主体 CSV 下发。
+  if (values.includes("test.provision")) {
+    throw new Error(
+      "PLATFORM_OPERATOR_CAPABILITIES must not include test.provision; list agent subjects in PLATFORM_OPERATOR_TEST_AGENTS",
+    );
+  }
   // 探针临时授权走独立表；禁止经 CSV seed 写成全体主体的永久能力。
   if (values.includes("internal-ai.endpoint-probe")) {
     throw new Error(
@@ -80,7 +88,12 @@ export async function seedPlatformOperators(
 ): Promise<SeedPlatformOperatorsResult> {
   const subjects = parseCsv(options.subjectsCsv ?? env.PLATFORM_OPERATOR_SUBJECTS);
   const testManagers = parseCsv(options.testManagersCsv ?? env.PLATFORM_OPERATOR_TEST_MANAGERS);
+  const testAgents = parseCsv(options.testAgentsCsv ?? env.PLATFORM_OPERATOR_TEST_AGENTS);
   if (subjects.length === 0) {
+    if (testAgents.length > 0) {
+      await seedTestAgents(db, testAgents, options.namespace ?? env.SURREAL_NS,
+        options.grantedBySubject ?? env.PLATFORM_OPERATOR_GRANTOR_SUBJECT ?? DEFAULT_GRANTOR);
+    }
     return { seededSubjects: [], capabilities: [] };
   }
 
@@ -182,9 +195,50 @@ export async function seedPlatformOperators(
     );
   }
 
+  await seedTestAgents(db, testAgents, namespace, grantedBySubject);
+
   console.info("[platform-operator-seed] bootstrapped operators", {
     subjects: subjects.length,
     capabilities: capabilities.length,
   });
   return { seededSubjects: subjects, capabilities };
+}
+
+/**
+ * 测试物料 agent：kind=agent 的运营主体，只授 test.provision。与其它通道同为「补缺失、不回滚」：
+ * 已禁用的主体或已撤销的能力保持原状；若该 subject 已被登记为 human 运营主体则拒绝改 kind。
+ */
+async function seedTestAgents(
+  db: PlatformOperatorSeedClient,
+  subjects: readonly string[],
+  namespace: string,
+  grantedBySubject: string,
+): Promise<void> {
+  if (subjects.length === 0) return;
+  await db.use({ namespace, database: SYSTEM_DATABASE });
+  for (const subject of subjects) {
+    const existing = await db.query(
+      "SELECT VALUE kind FROM platform_operator WHERE subject = $subject LIMIT 1;",
+      { subject },
+    );
+    const kind = Array.isArray(existing) && Array.isArray(existing[0]) ? existing[0][0] : undefined;
+    if (kind === "human") {
+      throw new Error(`PLATFORM_OPERATOR_TEST_AGENTS subject ${subject} is already a human operator`);
+    }
+    await db.query(
+      `INSERT INTO platform_operator { subject: $subject, display_name: "测试物料 agent", status: "active", kind: "agent" }
+       ON DUPLICATE KEY UPDATE updated_at = time::now();`,
+      { subject },
+    );
+    const operator = firstRecordId(await db.query(
+      "SELECT VALUE id FROM platform_operator WHERE subject = $subject LIMIT 1;",
+      { subject },
+    ));
+    if (!operator) throw new Error(`platform operator bootstrap did not resolve subject ${subject}`);
+    await db.query(
+      `INSERT INTO platform_operator_capability { operator: $operator, capability: "test.provision", status: "active", granted_by_subject: $grantedBySubject }
+       ON DUPLICATE KEY UPDATE updated_at = time::now();`,
+      { operator, grantedBySubject },
+    );
+  }
 }
