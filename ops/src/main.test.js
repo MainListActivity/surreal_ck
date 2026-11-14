@@ -99,3 +99,23 @@ describe("同域子路径生产发布", () => {
     expect(authSource).not.toContain("end_session_endpoint");
   });
 });
+
+describe("邀请开通页挂载", () => {
+  test("main.js 挂载邀请开通页、切页加载 token 状态、复用 apiRaw，并可把 subject 交给测试账号页", () => {
+    expect(source).toContain('import { invitationsMarkup, setupInvitations } from "./invitations.js";');
+    expect(source).toContain('data-view="invitations">邀请开通</button>');
+    expect(source).toContain("${invitationsMarkup()}");
+    expect(source).toContain('"testaccounts", "invitations"].includes');
+    expect(source).toContain('document.querySelector("#invitations-view").hidden = activeView !== "invitations";');
+    expect(source).toContain('if (activeView === "invitations" && user) void invitations.loadTokenStatus();');
+    expect(source).toMatch(/setupInvitations\(\{\s*fetchRaw: apiRaw,/u);
+    expect(source).toContain("testAccounts.useSubject(subject)");
+  });
+});
+
+describe("hidden 属性生效", () => {
+  test("作者样式的 display 不得盖过 [hidden]（否则未选中的页签全部同时显示）", () => {
+    const css = readFileSync(new URL("./style.css", import.meta.url), "utf8");
+    expect(css).toContain("[hidden] { display: none !important; }");
+  });
+});

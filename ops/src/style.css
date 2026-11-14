@@ -6,6 +6,8 @@
 }
 
 * { box-sizing: border-box; }
+/* 作者样式（.activation-layout/.source-form label 等的 display）会盖过 UA 的 [hidden]；统一以 hidden 属性为准。 */
+[hidden] { display: none !important; }
 body { margin: 0; min-width: 320px; }
 button, input { font: inherit; }
 button { cursor: pointer; }
@@ -125,3 +127,23 @@ button.primary { padding: 11px 16px; }
 @media (max-width: 1100px) { .content-layout, .activation-layout { grid-template-columns: 1fr; } .audit-panel { grid-column: auto; } }
 @media (max-width: 560px) { .metric-grid { grid-template-columns: 1fr; } .search-form, .audit-panel .search-form { display: flex; flex-direction: column; } .timeline time { min-width: 0; } .source-form, .detail-grid { grid-template-columns: 1fr; } .source-form .wide { grid-column: auto; } .batch-row { align-items: flex-start; flex-direction: column; } .batch-counts { text-align: left; } .audit-list li { grid-template-columns: 1fr; } }
 @media (max-width: 720px) { .followup-card { grid-template-columns: 1fr; } }
+.raw-result { white-space: pre-wrap; word-break: break-all; background: #f4f5f7; border-radius: 6px; padding: 8px 10px; font-size: 12px; margin: 8px 0 0; }
+.raw-result.error { color: #b33b45; }
+.preflight-table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 8px 0; }
+.preflight-table th, .preflight-table td { border-bottom: 1px solid #e3e6ea; padding: 4px 6px; text-align: left; vertical-align: top; }
+.preflight-table .warn-row { background: #fff6e5; }
+.preflight-meta { display: grid; grid-template-columns: max-content 1fr; gap: 2px 10px; font-size: 12px; margin: 0; }
+.preflight-meta dt { color: #66707c; }
+.preflight-meta dd { margin: 0; word-break: break-all; }
+.source-form textarea[name="reason"] { min-height: 54px; }
+.inv-hint { font-size: 11px; line-height: 1.5; }
+.inv-subject-actions { display: flex; align-items: center; gap: 10px; margin: 10px 0; }
+.inv-delivery { margin-top: 12px; }
+.inv-ack { display: flex !important; align-items: center; gap: 8px; font-size: 12px; color: #4f5965; margin: 6px 0 10px; }
+.inv-ack input { width: auto; }
+.inv-link-box { display: flex; gap: 8px; margin-top: 10px; padding: 10px; border: 1px solid #f0c36d; border-radius: 10px; background: #fff8e8; }
+.inv-link-box input { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.invite-status-completed { color: #23794a; font-weight: 700; }
+.invite-status-processing { color: #9a6a00; font-weight: 700; }
+.invite-status-failed { color: #b33b45; font-weight: 700; }
+#inv-use-trial, #inv-token-refresh { flex: none; white-space: nowrap; }

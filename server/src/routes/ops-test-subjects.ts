@@ -11,6 +11,7 @@ import {
   isExpired,
   type Queryable,
 } from "../test-subjects/store";
+import { computeTestSubjectPreflight, lookupSubjectsByEmail } from "../test-subjects/preflight";
 import { purgeTestSubject, purgeTestWorkspace, type TestSubjectReaperDeps } from "../test-subjects/reaper";
 import type { WorkspaceCreator } from "../workspaces/create-workspace";
 import { env } from "../env";
@@ -29,6 +30,8 @@ const putSchema = z.object({
   expiresAt: z.string().datetime(),
   origin: z.string().min(1).optional(),
   contentCapabilities: z.array(z.enum(CONTENT_CAPABILITIES)).optional(),
+  /** 预检有 warnings 时必须原样回传 preflight.confirmationPhrase。 */
+  confirm: z.string().optional(),
 });
 
 const MAX_TEST_TTL_MS = 31 * 24 * 60 * 60 * 1000;
@@ -80,14 +83,19 @@ export function createOpsTestSubjectsRoutes(input: Readonly<{
       }
 
       const db = await getSystemDb();
-      const existingTestSubject = await findTestSubject(db, subject);
-      const operatorRows = rows(await db.query(
-        `SELECT id FROM platform_operator WHERE subject = $subject LIMIT 1;`,
-        { subject },
-      ));
-      // 已是正式运营主体且不在 test_subject：拒绝把它变成会被清理的测试主体。
-      if (operatorRows.length > 0 && existingTestSubject === null) {
-        throw new HttpError(409, "test-subject-conflict-operator", "该 subject 已是正式运营主体，不能登记为测试主体");
+      // 只读预检：硬拒绝（正式运营主体、共享工作区 owner/admin）与需确认的后果
+      // （单成员工作区将排入到期删除、共享工作区成员索引到期删除、个人计费账户）。
+      const preflight = await computeTestSubjectPreflight(db, subject);
+      if (preflight.blockers.length > 0) {
+        const blocker = preflight.blockers[0]!;
+        return c.json({ error: `test-subject-conflict-${blocker.code}`, message: blocker.message, preflight }, 409);
+      }
+      if (preflight.requiresConfirmation && body.confirm !== preflight.confirmationPhrase) {
+        return c.json({
+          error: "test-subject-confirmation-required",
+          message: `登记会产生不可逆后果，需在 confirm 中原样填写「${preflight.confirmationPhrase}」`,
+          preflight,
+        }, 409);
       }
 
       await db.query(
@@ -127,22 +135,13 @@ export function createOpsTestSubjectsRoutes(input: Readonly<{
         }
       }
 
-      // 回填：唯一成员是该 subject 的既有 workspace 标记到期清理字段。
-      const memberships = rows(await db.query(
-        `SELECT VALUE workspace FROM user_workspace_index WHERE subject = $subject;`,
-        { subject },
-      ));
-      for (const workspaceRef of memberships) {
-        const memberCount = rows(await db.query(
-          `SELECT count() AS n FROM user_workspace_index WHERE workspace = $wid GROUP ALL;`,
-          { wid: workspaceRef },
-        ))[0]?.n;
-        if (Number(memberCount) === 1) {
-          await db.query(
-            `UPDATE $wid SET test_expires_at = $expiresAt, test_origin = $origin;`,
-            { wid: new StringRecordId(String(workspaceRef)), expiresAt: new DateTime(new Date(expiresMs)), origin: toSurrealNone(body.origin ?? null) },
-          );
-        }
+      // 回填：唯一成员是该 subject 的既有 workspace 标记到期清理字段（与预检同一判定）。
+      for (const workspace of preflight.workspaces) {
+        if (!workspace.wouldBeMarked) continue;
+        await db.query(
+          `UPDATE $wid SET test_expires_at = $expiresAt, test_origin = $origin;`,
+          { wid: new StringRecordId(workspace.id), expiresAt: new DateTime(new Date(expiresMs)), origin: toSurrealNone(body.origin ?? null) },
+        );
       }
 
       const stored = await findTestSubject(db, subject);
@@ -152,6 +151,20 @@ export function createOpsTestSubjectsRoutes(input: Readonly<{
         origin: stored?.origin ?? null,
         email: stored?.email ?? null,
       });
+    })
+    .get("/api/ops/test-subjects/lookup", requireOperator(), async (c) => {
+      const email = (c.req.query("email") ?? "").trim();
+      if (!z.string().email().safeParse(email).success) {
+        throw new HttpError(400, "test-subject-lookup-email-invalid", "email 无效");
+      }
+      const db = await getSystemDb();
+      return c.json({ email, subjects: await lookupSubjectsByEmail(db, email) });
+    })
+    .get("/api/ops/test-subjects/:subject/preflight", requireOperator(), async (c) => {
+      const subject = c.req.param("subject").trim();
+      if (!subject) throw new HttpError(400, "test-subject-subject-required", "subject is required");
+      const db = await getSystemDb();
+      return c.json(await computeTestSubjectPreflight(db, subject));
     })
     .get("/api/ops/test-subjects", requireOperator(), async (c) => {
       const db = await getSystemDb();

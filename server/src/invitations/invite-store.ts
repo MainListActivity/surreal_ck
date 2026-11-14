@@ -1,6 +1,6 @@
 import { StringRecordId } from "surrealdb";
 import { getRootDatabaseSession } from "../db/root-connection";
-import { toIsoDateTimeString } from "../db/surreal-values";
+import { toIsoDateTimeString, toSurrealNone } from "../db/surreal-values";
 
 type Queryable = {
   query(sql: string, params?: Record<string, unknown>): Promise<unknown>;
@@ -229,7 +229,7 @@ export class SurrealInviteAuditStore implements InviteAuditStore {
         aiAmount: outcome.aiAllowance.amount,
         aiPeriod: outcome.aiAllowance.periodKey,
         aiExpires: new Date(outcome.aiAllowance.expiresAt),
-        aiBucket: outcome.aiAllowance.bucket,
+        aiBucket: toSurrealNone(outcome.aiAllowance.bucket),
         channel: outcome.deliveryChannel,
         issued: outcome.activationUrlIssued,
       },
