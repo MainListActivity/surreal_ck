@@ -1,0 +1,28 @@
+{
+  "resource": "https://l.maplayer.top/api/ops/mcp",
+  "authorization_servers": [
+    "https://o.maplayer.top/t/ck"
+  ],
+  "scopes_supported": [
+    "content.read",
+    "content.submit",
+    "content.publish",
+    "content.withdraw",
+    "content.restore",
+    "content.source.manage",
+    "activation.summary.read",
+    "activation.followup.read",
+    "activation.followup.write",
+    "activation.proposal.read",
+    "activation.proposal.submit",
+    "activation.proposal.review",
+    "activation.proposal.execute",
+    "activation.proposal.takeover",
+    "activation.autonomy.read",
+    "activation.autonomy.manage",
+    "test.provision"
+  ],
+  "bearer_methods_supported": [
+    "header"
+  ]
+}

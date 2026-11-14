@@ -1,0 +1,9 @@
+# RFC 9728 well-known locations for the ops MCP resource (/api/ops/mcp).
+# The API itself is served by the Worker; these paths would otherwise fall to
+# the SPA and return HTML, which makes MCP connector platforms give up before OAuth.
+/.well-known/oauth-protected-resource/api/ops/mcp  /oauth-protected-resource.json  200
+/.well-known/oauth-protected-resource  /oauth-protected-resource.json  200
+# MCP 2025-03-26 clients fetch authorization-server metadata from the MCP origin itself.
+# Static copy of https://o.maplayer.top/t/ck/.well-known/openid-configuration (issuer stays o.maplayer.top).
+/.well-known/oauth-authorization-server/api/ops/mcp  /oauth-authorization-server.json  200
+/.well-known/oauth-authorization-server  /oauth-authorization-server.json  200

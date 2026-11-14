@@ -2,3 +2,15 @@
   Cache-Control: no-store
 /auth/*
   Content-Security-Policy: frame-ancestors 'self' https://www.maplayer.top
+/.well-known/oauth-protected-resource*
+  Access-Control-Allow-Origin: *
+  Cache-Control: no-store
+/oauth-protected-resource.json
+  Access-Control-Allow-Origin: *
+  Cache-Control: no-store
+/.well-known/oauth-authorization-server*
+  Access-Control-Allow-Origin: *
+  Cache-Control: no-store
+/oauth-authorization-server.json
+  Access-Control-Allow-Origin: *
+  Cache-Control: no-store

@@ -391,3 +391,27 @@ describe("platform content MCP", () => {
     expect((await tool(appFor("content.read"), "test_kit_rules")).result?.structuredContent?.error?.code).toBe("forbidden");
   });
 });
+
+describe("static RFC 9728 metadata served by Pages", () => {
+  test("web/public/oauth-protected-resource.json matches the production metadata the API serves", async () => {
+    const { protectedResourceMetadata } = await import("./routes");
+    const file = Bun.file(new URL("../../../../web/public/oauth-protected-resource.json", import.meta.url));
+    expect(await file.json()).toEqual(protectedResourceMetadata({
+      authorizationServer: "https://o.maplayer.top/t/ck",
+      resource: "https://l.maplayer.top/api/ops/mcp",
+    }));
+  });
+});
+
+describe("static authorization-server metadata served by Pages", () => {
+  test("points at the production issuer and offers every MCP scope", async () => {
+    const { protectedResourceMetadata } = await import("./routes");
+    const as = await Bun.file(new URL("../../../../web/public/oauth-authorization-server.json", import.meta.url)).json();
+    const prm = protectedResourceMetadata({ authorizationServer: "https://o.maplayer.top/t/ck", resource: "https://l.maplayer.top/api/ops/mcp" });
+    expect(as.issuer).toBe(prm.authorization_servers[0]);
+    expect(as.authorization_endpoint).toBe(`${as.issuer}/authorize`);
+    expect(as.token_endpoint).toBe(`${as.issuer}/token`);
+    expect(as.code_challenge_methods_supported).toContain("S256");
+    for (const scope of prm.scopes_supported) expect(as.scopes_supported).toContain(scope);
+  });
+});
