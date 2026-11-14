@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { Surreal, DateTime, StringRecordId } from "surrealdb";
 import { seedQuotaPlans } from "../db/quota-plan-seed";
 import { SurrealNativeQuotaClient } from "../db/native-quota/client";
+import { toIsoDateTimeString } from "../db/surreal-values";
 import {
   createWorkspaceCreator,
   type CreateWorkspaceSessionFactory,
@@ -322,6 +323,93 @@ describe("workspace provisioning against local SurrealDB", () => {
     const snapshot = await productStore.currentSnapshot(String((await productStore.workspaceBySlug("positive-trial"))!.id));
     expect(snapshot?.baseSourceKind).toBe("trial"); expect(snapshot?.effectiveUntil).toBe(active.endsAt);
     expect((await content.query<unknown[][]>("SELECT status, digest FROM content_authorization_projection;"))[0]?.[0]).toMatchObject({ status: "active", digest: snapshot?.digest });
+  }, 30000);
+
+  localTest("stamps test_expires_at and test_origin from a live test_subject, including missing origin", async () => {
+    const systemDb = await getDbSession("_system");
+    const expiresAt = new DateTime(new Date("2099-06-15T12:00:00.000Z"));
+    await systemDb.query(
+      `CREATE test_subject CONTENT {
+         subject: $subject, email: $email, expires_at: $expiresAt, origin: $origin
+       };`,
+      {
+        subject: "test-owner-with-origin",
+        email: "with-origin@example.invalid",
+        expiresAt,
+        origin: "ops-invite",
+      },
+    );
+    await systemDb.query(
+      `CREATE test_subject CONTENT {
+         subject: $subject, email: $email, expires_at: $expiresAt
+       };`,
+      {
+        subject: "test-owner-no-origin",
+        email: "no-origin@example.invalid",
+        expiresAt,
+      },
+    );
+
+    const selected = await systemDb.query<Array<Array<Record<string, unknown>>>>(
+      "SELECT expires_at, origin FROM test_subject WHERE subject = $subject LIMIT 1;",
+      { subject: "test-owner-with-origin" },
+    );
+    const subjectRow = selected[0]?.[0];
+    // Reserve feeds this SDK DateTime back through toSurrealNone into option<datetime>.
+    expect(subjectRow?.expires_at).toBeInstanceOf(DateTime);
+    expect(subjectRow?.origin).toBe("ops-invite");
+
+    const baseOptions = {
+      getDbSession,
+      namespace,
+      nativeQuotaClient: new SurrealNativeQuotaClient(systemDb),
+      loadTemplateScripts: async () => [],
+      loadTemplatePackScripts: async () => [],
+      idpTokenScopeAdapter: {
+        async updateUserScope() {
+          return { accessToken: "local-scope-fixture", expiresIn: 3600 };
+        },
+      },
+    };
+
+    const createdWithOrigin = await createWorkspaceCreator({
+      ...baseOptions,
+      generateId: () => "testorig00001",
+    }).createWorkspace({
+      subject: "test-owner-with-origin",
+      subjectToken: "local-fixture",
+      email: "with-origin@example.invalid",
+      name: "Test origin yes",
+      slug: "test-origin-yes",
+      resourceSource: { planKey: "pro", sourceKind: "manual" as const },
+    });
+    expect(createdWithOrigin).toMatchObject({ kind: "created", dbName: "ws_testorig00001" });
+
+    const createdWithoutOrigin = await createWorkspaceCreator({
+      ...baseOptions,
+      generateId: () => "testorig00002",
+    }).createWorkspace({
+      subject: "test-owner-no-origin",
+      subjectToken: "local-fixture",
+      email: "no-origin@example.invalid",
+      name: "Test origin none",
+      slug: "test-origin-none",
+      resourceSource: { planKey: "pro", sourceKind: "manual" as const },
+    });
+    expect(createdWithoutOrigin).toMatchObject({ kind: "created", dbName: "ws_testorig00002" });
+
+    const persisted = await systemDb.query<Array<Array<Record<string, unknown>>>>(
+      `SELECT slug, test_expires_at, test_origin
+       FROM workspace
+       WHERE slug IN ["test-origin-yes", "test-origin-none"];`,
+    );
+    const bySlug = new Map((persisted[0] ?? []).map((row) => [String(row.slug), row]));
+    const withOrigin = bySlug.get("test-origin-yes");
+    const withoutOrigin = bySlug.get("test-origin-none");
+    expect(withOrigin?.test_origin).toBe("ops-invite");
+    expect(withoutOrigin?.test_origin).toBeUndefined();
+    expect(toIsoDateTimeString(withOrigin?.test_expires_at)).toBe("2099-06-15T12:00:00.000Z");
+    expect(toIsoDateTimeString(withoutOrigin?.test_expires_at)).toBe("2099-06-15T12:00:00.000Z");
   }, 30000);
 
 });

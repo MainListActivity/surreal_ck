@@ -12,6 +12,7 @@
 - Agent 授权：真人运营人员按 agent、工作区和动作白名单配置自治范围，并可暂停、恢复、撤权及查看审计历史（`/api/ops/autonomy/*`）。agent 读取摘要/机会/事项/建议和发起内部动作时，服务端按当前 capability、OIDC scope、工作区与动作策略共同校验；未配置或暂停后的新请求会明确拒绝。已进入执行流程的动作可能自然完成，不会被伪称回滚；恢复保留原幂等历史。
 - Agent 运行：授权页显示外部运行宿主上报的持久检查点、最后上报时间、错误和待人工处理状态。此页面不启动或调度 agent；“运行中”只是最近一次报告，不保证进程当前在线。
 - 测试账号：需要 `test.manage`。按邮箱只读查找 subject、列出测试主体；登记前必须运行只读预检（`GET /api/ops/test-subjects/:subject/preflight`），列出该 subject 的工作区、成员数、登记后是否会写入 `test_expires_at`（到期整库删除）以及到期时会删除的共享工作区成员索引与个人计费账户。正式运营主体、含其他成员工作区的 owner/admin 一律拒绝；其余不可逆后果须逐字填写确认短语，服务端同样强制。可为未到期测试主体代开 trial 测试工作区（`POST /api/ops/test-subjects/:subject/workspaces`）。
+- 邀请开通：G2 运营代办开通。提交需要 `subscription.manage`，查询需要 `quota.read`。表单覆盖 `POST /api/ops/invitations` 的全部字段（邮箱、显示名、workspace slug/名称、`planKey` 缺省 pro 或 trial + `quota_plan_revision:trial_v2`、可选产品版本、AI 额度数量/到期/标签、审计理由、幂等键），一条链路完成 IdP 建用户 → 建工作区（manual 套餐，不产生付费）→ 绑定产品版本 → 授予 AI 额度。201 同步完成时激活链接随响应一次性下发；202 时按幂等键有界自动轮询 `GET /api/ops/invitations/:key`，完成后勾选确认再经 `collect-delivery` 一次性收取，过期/断链用 `resend` 重新签发后再收取。激活链接只显示在专用只读框（可复制、不提供跳转），原始响应中替换为占位符，不写 console。同页显示 IdP provision token 状态（`GET /api/ops/idp-provision-token/status`）并提供密码框式免部署轮换（`POST /api/ops/idp-provision-token/rotate`，提交即清空输入；常规轮换仍优先走 ops broker）。开通得到的 subject 可一键填入「测试账号」登记表单。
 
 建议审阅与接管只允许 `_system.platform_operator.kind = "human"` 的运营主体；agent 应登记为 `kind = "agent"`。`activation.proposal.*` 与 `activation.followup.*` capability 仍需显式授权，OIDC scope 会进一步收窄能力。建议审计仅保存结构化输入定位和幂等键摘要，不存 token、案件正文或模型隐藏推理。
 

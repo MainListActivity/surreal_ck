@@ -1,6 +1,7 @@
 import "./style.css";
 import { authConfig as config, createOpsUserManager, signOutOps } from "./auth.js";
 import { setupTestAccounts, testAccountsMarkup } from "./test-accounts.js";
+import { invitationsMarkup, setupInvitations } from "./invitations.js";
 import { capacityLabel, planLabel, timelineDetail, timelineTime, usageNumbers, workspaceRecordId } from "./quota-view.js";
 
 const app = document.querySelector("#app");
@@ -21,7 +22,8 @@ const followUpState = { opportunities: [], opportunityCursor: null, items: [], c
 const proposalState = { items: [], cursor: null };
 const autonomyState = { policies: [], history: [] };
 const agentRunState = { items: [] };
-let testAccounts = { loadList: async () => undefined };
+let testAccounts = { loadList: async () => undefined, useSubject: () => undefined };
+let invitations = { loadTokenStatus: async () => undefined, stopPolling: () => undefined };
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -55,6 +57,7 @@ function renderShell() {
         <button class="section-tab" data-view="autonomy">Agent 授权</button>
         <button class="section-tab" data-view="content">内容维护</button>
         <button class="section-tab" data-view="testaccounts">测试账号</button>
+        <button class="section-tab" data-view="invitations">邀请开通</button>
       </nav>
       <main id="quota-view" class="layout">
         <section class="panel search-panel">
@@ -127,6 +130,7 @@ function renderShell() {
         <section class="panel activation-panel"><div class="panel-heading"><div><h2>Agent 运行进度</h2><p class="muted activation-help">仅显示外部运行宿主最后上报的检查点；进程退出后不会自动继续。</p></div><button id="agent-runs-refresh" class="ghost">刷新</button></div><div id="agent-runs-status" class="status muted">尚未加载。</div><div id="agent-runs-list" class="activation-list"></div></section>
       </main>
 ${testAccountsMarkup()}
+${invitationsMarkup()}
       <main id="content-view" class="content-layout" hidden>
         <section class="panel content-panel">
           <div class="panel-heading"><h2>来源登记与许可</h2><button id="content-refresh" class="ghost">刷新</button></div>
@@ -173,7 +177,7 @@ ${testAccountsMarkup()}
   document.querySelector("#refresh").addEventListener("click", () => void search(document.querySelector("#search-input").value));
   document.querySelectorAll(".section-tab").forEach((button) => {
     button.addEventListener("click", () => {
-      activeView = ["content", "activation", "followup", "proposal", "autonomy", "testaccounts"].includes(button.dataset.view) ? button.dataset.view : "quota";
+      activeView = ["content", "activation", "followup", "proposal", "autonomy", "testaccounts", "invitations"].includes(button.dataset.view) ? button.dataset.view : "quota";
       document.querySelectorAll(".section-tab").forEach((tab) => tab.classList.toggle("active", tab === button));
       document.querySelector("#quota-view").hidden = activeView !== "quota";
       document.querySelector("#content-view").hidden = activeView !== "content";
@@ -182,15 +186,26 @@ ${testAccountsMarkup()}
       document.querySelector("#proposal-view").hidden = activeView !== "proposal";
       document.querySelector("#autonomy-view").hidden = activeView !== "autonomy";
       document.querySelector("#testaccounts-view").hidden = activeView !== "testaccounts";
+      document.querySelector("#invitations-view").hidden = activeView !== "invitations";
       if (activeView === "content" && user) void loadContent();
       if (activeView === "activation" && user) void loadActivationSummaries();
       if (activeView === "followup" && user) void loadFollowUps();
       if (activeView === "proposal" && user) void loadProposals();
       if (activeView === "autonomy" && user) { void loadAutonomy(); void loadAgentRuns(); }
       if (activeView === "testaccounts" && user) void testAccounts.loadList();
+      if (activeView === "invitations" && user) void invitations.loadTokenStatus();
     });
   });
   testAccounts = setupTestAccounts({ fetchRaw: apiRaw, escapeHtml, isSignedIn: () => Boolean(user) });
+  invitations = setupInvitations({
+    fetchRaw: apiRaw,
+    escapeHtml,
+    isSignedIn: () => Boolean(user),
+    onUseSubject: (subject) => {
+      document.querySelector('[data-view="testaccounts"]').click();
+      testAccounts.useSubject(subject);
+    },
+  });
   document.querySelector("#content-refresh").addEventListener("click", () => void loadContent());
   document.querySelector("#activation-refresh").addEventListener("click", () => void loadActivationSummaries());
   document.querySelector("#activation-next").addEventListener("click", () => void loadActivationSummaries(true));
