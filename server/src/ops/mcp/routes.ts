@@ -533,8 +533,8 @@ function buildServer(
       + "入参 email（须匹配规则里的邮箱正则、从未用过；一个邮箱 = 一个账号，重复调用同一 email 是幂等的）、displayName、workspaceSlug（小写 kebab-case、未被占用）、可选 workspaceName。"
       + "返回 status=processing 时稍后用同一 email 调 test_kit_status。",
       (args) => testKitService.provision(operator, args));
-    testKitTool("test_kit_status", "查询/续跑测试账号开通",
-      "入参 email。开通中断时会续跑；完成后登记测试主体，并一次性收取激活链接（已收取过则为 null）。",
+    testKitTool("test_kit_status", "查询测试账号开通进度",
+      "入参 email。开通完成后登记测试主体，并一次性收取激活链接（已收取过则为 null）；失败或中断的开通返回 failed，该邮箱作废。",
       (args) => testKitService.status(operator, args));
     testKitTool("test_kit_list", "列出我开的测试账号",
       "只列本 agent 经 test_kit_provision 开通的测试账号：subject、email、到期时间、所在 workspace。",

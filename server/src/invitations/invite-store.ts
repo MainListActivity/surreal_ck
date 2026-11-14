@@ -92,6 +92,8 @@ export interface InviteAuditStore {
   markProcessing(recordId: string, staleBefore: Date): Promise<boolean>;
   /** ensureUser 一拿到一次性激活链接就先落行——任务此后中断也能被续跑/收取救回。 */
   saveActivationUrl(recordId: string, activationUrl: string): Promise<void>;
+  /** 本行新建出 IdP 用户后立即落其 id：执行中断也能凭行找回「本行建的用户」做清理归因。 */
+  saveCreatedIdpUser(recordId: string, idpUserId: string): Promise<void>;
   /** 续跑时读回上次已签发的链接（不读全新建时不签发）。 */
   storedActivationUrl(recordId: string): Promise<string | null>;
   /**
@@ -256,6 +258,14 @@ export class SurrealInviteAuditStore implements InviteAuditStore {
       ),
     );
     return updated.length > 0;
+  }
+
+  async saveCreatedIdpUser(recordId: string, idpUserId: string): Promise<void> {
+    const db = await this.session(this.database);
+    await db.query(
+      `UPDATE $id SET idp_user_id = $userId WHERE status = "processing";`,
+      { id: new StringRecordId(recordId), userId: idpUserId },
+    );
   }
 
   async saveActivationUrl(recordId: string, activationUrl: string): Promise<void> {

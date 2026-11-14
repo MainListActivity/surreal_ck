@@ -186,30 +186,34 @@ describe("test kit on real fork SurrealDB with the real invite service", () => {
     expect(await q(`SELECT * FROM ops_invitation WHERE email = "kit+b@example.com";`)).toHaveLength(1);
   });
 
-  localTest("续跑：首轮建出用户后中断，跨两天后 status 续跑 → IdP 报复用仍登记，到期锚定开通行创建时刻", async () => {
+  localTest("中断：首轮建出用户后进程死掉，超过阈值后 status 收养——登记本行建的用户交给 reaper，邮箱作废", async () => {
     assignBehaviour = "hang";
-    const first = await kit(inviteService({ syncWindowMs: 50 })).provision(AGENT, provisionArgs("resume")) as Record<string, unknown>;
+    const first = await kit(inviteService({ syncWindowMs: 50 })).provision(AGENT, provisionArgs("stuck")) as Record<string, unknown>;
     expect(first.status).toBe("processing");
-    expect(idpUsers.has("kit+resume@example.com")).toBe(true);
-    expect((await kit().list(AGENT)).inFlight.map((r) => r.email)).toEqual(["kit+resume@example.com"]);
+    expect((await kit().list(AGENT)).inFlight.map((r) => r.email)).toEqual(["kit+stuck@example.com"]);
+    expect((await q(`SELECT VALUE idp_user_id FROM ops_invitation WHERE email = "kit+stuck@example.com";`))[0]).toBe("sub-stuck");
 
     assignBehaviour = "ok";
     clockOffset = 2 * DAY;
-    const resumed = await kit(inviteService({ staleProcessingMs: 0 })).status(AGENT, { email: "kit+resume@example.com" }) as Record<string, unknown>;
-    expect(resumed).toMatchObject({ status: "completed", subject: "sub-resume" });
-    const created = (await q(`SELECT VALUE created_at FROM ops_invitation WHERE email = "kit+resume@example.com";`))[0];
-    const expires = (await subjectRow("sub-resume"))?.expires_at;
+    const out = await kit().status(AGENT, { email: "kit+stuck@example.com" }) as Record<string, unknown>;
+    expect(out.status).toBe("failed");
+    const created = (await q(`SELECT VALUE created_at FROM ops_invitation WHERE email = "kit+stuck@example.com";`))[0];
+    const expires = (await subjectRow("sub-stuck"))?.expires_at;
+    expect((await subjectRow("sub-stuck"))?.origin).toBe("test-kit:agent-arch");
     expect(Date.parse(String(expires)) - Date.parse(String(created))).toBe(30 * DAY);
+    expect((await q(`SELECT test_expires_at FROM workspace WHERE slug = "kit-stuck";`))[0]?.test_expires_at).toBeTruthy();
+    expect((await kit().list(AGENT)).inFlight).toEqual([]);
   });
 
-  localTest("续跑时额度到期按候选日重试：首调后写回丢失、数据库时钟跨日也能续跑", async () => {
+  localTest("收养绝不按邮箱认领：本行没建出用户（未记 idp_user_id）时，之后别人建的同邮箱用户不会被登记", async () => {
     assignBehaviour = "hang";
-    expect((await kit(inviteService({ syncWindowMs: 50 })).provision(AGENT, provisionArgs("skew")) as Record<string, unknown>).status).toBe("processing");
-    // 模拟：进程在写回首调额度到期前死掉，且数据库时钟比 origin 快一天
-    await db!.query(`UPDATE ops_invitation SET test_kit_allowance_expires_at = NONE, created_at = created_at + 1d WHERE email = "kit+skew@example.com";`);
+    await kit(inviteService({ syncWindowMs: 50 })).provision(AGENT, provisionArgs("ghost"));
+    await db!.query(`UPDATE ops_invitation SET idp_user_id = NONE WHERE email = "kit+ghost@example.com";`);
+    idpUsers.set("kit+ghost@example.com", { id: "real-person", email: "kit+ghost@example.com", displayName: "x", status: "active" });
     assignBehaviour = "ok";
-    const resumed = await kit(inviteService({ staleProcessingMs: 0 })).status(AGENT, { email: "kit+skew@example.com" }) as Record<string, unknown>;
-    expect(resumed).toMatchObject({ status: "completed", subject: "sub-skew" });
+    clockOffset = 2 * DAY;
+    await kit().list(AGENT);
+    expect(await subjectRow("real-person")).toBeUndefined();
   });
 
   localTest("同一邮箱跨 agent：先占到行的 agent 拥有它，另一个 agent 拿 not_owned 且不触发任何开通", async () => {

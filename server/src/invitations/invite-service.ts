@@ -267,6 +267,8 @@ export class InviteService {
       displayName: input.displayName,
     });
     const user = ensured.user;
+    // 新建用户：先把 id 落到本行（不吞错——记不下归因就不继续往下建 workspace）。
+    if (ensured.created) await this.deps.store.saveCreatedIdpUser(recordId, user.id);
     // 一次性激活链接：拿到就先落行——此后任务被断连/超时打断，续跑或
     // collect-delivery 仍能救回（否则链接随请求死亡永久丢失）。
     let activationUrl = ensured.activationUrl;
