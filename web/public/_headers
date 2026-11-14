@@ -8,3 +8,9 @@
 /oauth-protected-resource.json
   Access-Control-Allow-Origin: *
   Cache-Control: no-store
+/.well-known/oauth-authorization-server*
+  Access-Control-Allow-Origin: *
+  Cache-Control: no-store
+/oauth-authorization-server.json
+  Access-Control-Allow-Origin: *
+  Cache-Control: no-store

@@ -1,0 +1,55 @@
+{
+  "issuer": "https://o.maplayer.top/t/ck",
+  "jwks_uri": "https://o.maplayer.top/t/ck/jwks.json",
+  "registration_endpoint": "https://o.maplayer.top/t/ck/connect/mcp/register",
+  "authorization_endpoint": "https://o.maplayer.top/t/ck/authorize",
+  "token_endpoint": "https://o.maplayer.top/t/ck/token",
+  "revocation_endpoint": "https://o.maplayer.top/t/ck/revoke",
+  "introspection_endpoint": "https://o.maplayer.top/t/ck/introspect",
+  "grant_types_supported": [
+    "authorization_code",
+    "refresh_token",
+    "client_credentials"
+  ],
+  "response_types_supported": [
+    "code"
+  ],
+  "code_challenge_methods_supported": [
+    "S256"
+  ],
+  "scopes_supported": [
+    "openid",
+    "content.read",
+    "content.submit",
+    "content.publish",
+    "content.withdraw",
+    "content.restore",
+    "content.source.manage",
+    "test.provision",
+    "activation.summary.read",
+    "activation.followup.read",
+    "activation.followup.write",
+    "activation.proposal.read",
+    "activation.proposal.submit",
+    "activation.proposal.review",
+    "activation.proposal.execute",
+    "activation.proposal.takeover",
+    "activation.autonomy.read",
+    "activation.autonomy.manage"
+  ],
+  "token_endpoint_auth_methods_supported": [
+    "client_secret_basic",
+    "client_secret_post",
+    "none"
+  ],
+  "subject_types_supported": [
+    "public"
+  ],
+  "id_token_signing_alg_values_supported": [
+    "RS256"
+  ],
+  "resource_indicators_supported": true,
+  "resource_parameter_supported": true,
+  "management_registration_endpoint": "https://o.maplayer.top/t/ck/connect/register",
+  "mcp_resource": "https://l.maplayer.top/api/ops/mcp"
+}
