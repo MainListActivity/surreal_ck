@@ -109,13 +109,15 @@ export async function purgeTestWorkspace(
     { wid },
   ));
   const testRows = firstArray(await deps.systemDb.query(
-    `SELECT subject, email FROM test_subject;`,
+    `SELECT subject, email, origin FROM test_subject;`,
   ));
   const testSubjects = new Set(testRows.map((row) => String(row.subject)));
+  // 只信任测试物料自助开出的账号邮箱（来自 IdP）；运营登记时手填的邮箱不参与 NONE 行判定。
   const testEmails = new Set(testRows
+    .filter((row) => typeof row.origin === "string" && row.origin.startsWith("test-kit:"))
     .map((row) => typeof row.email === "string" ? row.email.toLowerCase() : "")
     .filter((email) => email.length > 0));
-  // 预加入未登录的成员索引 subject 为 NONE：其邮箱属于测试主体时同样视为测试成员。
+  // 预加入未登录的成员索引 subject 为 NONE：其邮箱属于测试物料账号时同样视为测试成员。
   const foreignMembers = members
     .filter((row) => typeof row.subject === "string"
       ? !testSubjects.has(row.subject)
@@ -178,15 +180,23 @@ export async function purgeTestSubject(
   );
   await deps.systemDb.query(`DELETE platform_operator WHERE subject = $subject;`, { subject });
   await deps.systemDb.query(`DELETE user_workspace_index WHERE subject = $subject;`, { subject });
-  // 预加入但从未登录的成员索引（subject = NONE）按该测试主体的邮箱一并摘除。
-  const ownEmail: unknown = firstArray(await deps.systemDb.query(
-    `SELECT VALUE email FROM test_subject WHERE subject = $subject LIMIT 1;`,
+  // 测试物料自助开出的账号（邮箱来自 IdP）：摘除它在测试 workspace 里预加入但从未登录的成员索引
+  // （subject = NONE），并给它的开通行打清理标记，之后的对账不会把它重新登记回来。
+  const own = firstArray(await deps.systemDb.query(
+    `SELECT email, origin FROM test_subject WHERE subject = $subject LIMIT 1;`,
     { subject },
   ))[0];
-  if (typeof ownEmail === "string" && ownEmail.length > 0) {
+  if (own && typeof own.origin === "string" && own.origin.startsWith("test-kit:")
+    && typeof own.email === "string" && own.email.length > 0) {
+    const email = own.email.toLowerCase();
     await deps.systemDb.query(
-      `DELETE user_workspace_index WHERE subject = NONE AND email != NONE AND string::lowercase(email) = $email;`,
-      { email: ownEmail.toLowerCase() },
+      `DELETE user_workspace_index WHERE subject = NONE AND email != NONE AND string::lowercase(email) = $email AND workspace.test_expires_at != NONE;`,
+      { email },
+    );
+    await deps.systemDb.query(
+      `UPDATE ops_invitation SET test_kit_purged_at = time::now()
+       WHERE string::starts_with(idempotency_key, "test-kit:") AND email = $email AND test_kit_purged_at = NONE;`,
+      { email },
     );
   }
 

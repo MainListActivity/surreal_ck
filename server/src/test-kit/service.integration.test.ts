@@ -23,6 +23,7 @@ const AGENT: TestKitActor = { subject: "agent-arch", kind: "agent", capabilities
 const OTHER_AGENT: TestKitActor = { subject: "agent-other", kind: "agent", capabilities: ["test.provision"] };
 const A = "7e183d2f-0000-4000-8000-00000000000a";
 const DAY = 86_400_000;
+const MAX_ACTIVE = 10;
 
 let endpoint = "";
 let workingDirectory = "";
@@ -109,7 +110,7 @@ function kit(invites = inviteService()) {
       log: () => {},
     }),
     emailPattern: "kit[+][a-z0-9-]+@example[.]com",
-    maxActive: 5,
+    maxActive: MAX_ACTIVE,
     now: () => new Date(Date.now() + clockOffset),
   });
 }
@@ -201,6 +202,23 @@ describe("test kit on real fork SurrealDB with the real invite service", () => {
     expect(Date.parse(String(expires)) - Date.parse(String(created))).toBe(30 * DAY);
   });
 
+  localTest("续跑时额度到期按候选日重试：首调后写回丢失、数据库时钟跨日也能续跑", async () => {
+    assignBehaviour = "hang";
+    expect((await kit(inviteService({ syncWindowMs: 50 })).provision(AGENT, provisionArgs("skew")) as Record<string, unknown>).status).toBe("processing");
+    // 模拟：进程在写回首调额度到期前死掉，且数据库时钟比 origin 快一天
+    await db!.query(`UPDATE ops_invitation SET test_kit_allowance_expires_at = NONE, created_at = created_at + 1d WHERE email = "kit+skew@example.com";`);
+    assignBehaviour = "ok";
+    const resumed = await kit(inviteService({ staleProcessingMs: 0 })).status(AGENT, { email: "kit+skew@example.com" }) as Record<string, unknown>;
+    expect(resumed).toMatchObject({ status: "completed", subject: "sub-skew" });
+  });
+
+  localTest("同一邮箱跨 agent：先占到行的 agent 拥有它，另一个 agent 拿 not_owned 且不触发任何开通", async () => {
+    const before = (await q(`SELECT VALUE slug FROM workspace;`)).length;
+    expect(await codeOf(kit().provision(OTHER_AGENT, { ...provisionArgs("b"), workspaceSlug: "kit-b-other" }))).toBe("not_owned");
+    expect(await codeOf(kit().status(OTHER_AGENT, { email: "kit+b@example.com" }))).toBe("not_owned");
+    expect((await q(`SELECT VALUE slug FROM workspace;`)).length).toBe(before);
+  });
+
   localTest("建出用户后失败：status=failed，但账号被登记交给 reaper，邮箱作废", async () => {
     assignBehaviour = "fail";
     const out = await kit().provision(AGENT, provisionArgs("broken")) as Record<string, unknown>;
@@ -249,10 +267,21 @@ describe("test kit on real fork SurrealDB with the real invite service", () => {
     expect(await databases()).not.toContain("ws_kit_owner");
   });
 
+  localTest("到期 reaper 清理测试物料账号时同样打清理标记，对账不再补登记", async () => {
+    await kit().provision(AGENT, provisionArgs("expiring"));
+    await db!.query(`UPDATE test_subject SET expires_at = time::now() - 1d WHERE subject = "sub-expiring"; UPDATE workspace SET test_expires_at = time::now() - 1d WHERE slug = "kit-expiring";`);
+    // 先删 workspace 行但保留开通行，模拟开通行没被 workspace_db 引用删掉的情形
+    const { runTestSubjectReaper } = await import("../test-subjects/reaper");
+    await runTestSubjectReaper({ systemDb: queryClient(), dropDatabase: async (n) => { await db!.query(`REMOVE DATABASE IF EXISTS ${n};`); }, log: () => {} });
+    expect(await subjectRow("sub-expiring")).toBeUndefined();
+    await kit().list(AGENT);
+    expect(await subjectRow("sub-expiring")).toBeUndefined();
+  });
+
   localTest("开通中计入上限；已清理与他人账号不计入", async () => {
     const active = (await kit().list(AGENT));
     const open = active.subjects.filter((s) => !s.expired).length + active.inFlight.length;
-    for (let n = open; n < 5; n += 1) await kit().provision(AGENT, provisionArgs(`fill${n}`));
+    for (let n = open; n < MAX_ACTIVE; n += 1) await kit().provision(AGENT, provisionArgs(`fill${n}`));
     expect(await codeOf(kit().provision(AGENT, provisionArgs("over")))).toBe("limit_reached");
   });
 });

@@ -23,7 +23,8 @@
 - 每个 agent「未到期 + 开通中」测试账号 ≤ `TEST_KIT_MAX_ACTIVE`（默认 10）。上限按调用时读数判断，并发开通可能略超，是软上限。
 - 到期时间锚定开通行的创建时刻（+30 天）；补登记、续跑都不会延长。
 - 任何留下产物的结局（完成未轮询、执行中失败、登记出错）都会被补登记交给 reaper；清理过的开通行带 `test_kit_purged_at`，不会被补登记回来。
-- 预加入但从未登录的成员索引（subject = NONE）：邮箱属于测试主体时 reaper 视为测试成员；清理该主体时一并摘除。
+- 预加入但从未登录的成员索引（subject = NONE）：邮箱属于测试物料账号（来自 IdP，运营手填的不算）时 reaper 视为测试成员；该账号被清理/到期时一并摘除（仅限测试 workspace），并给开通行打清理标记。
+- 一个邮箱只属于先开通它的 agent；其他 agent 用同一邮箱一律 `not_owned`。
 - 套餐固定 trial，额度固定 100，有效期固定 30 天；不能登记、清理他人主体，不能操作非测试 workspace。
 - 能力 `test.provision` 只经 `PLATFORM_OPERATOR_TEST_AGENTS` 授给 kind=agent 主体；写进 `PLATFORM_OPERATOR_CAPABILITIES` 会让启动 seed 失败。已登记为 human 的 subject 不能被改成测试 agent。
 
