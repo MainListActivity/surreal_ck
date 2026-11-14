@@ -17,9 +17,11 @@
 
 ## 边界
 
-- 邮箱必须整串匹配 `TEST_KIT_EMAIL_PATTERN`（忽略大小写）；未配置 = 全部关闭。正则应只覆盖测试专用别名（例如 `name[+][a-z0-9-]+@gmail[.]com`；用字符类代替反斜杠，避免 env 文件转义），因为身份系统里已存在的邮箱会被复用：此时工具拒绝登记，但代办开通已为其建过 workspace，需要运营手动清理。
+- 邮箱必须整串匹配 `TEST_KIT_EMAIL_PATTERN`（忽略大小写）；未配置 = 全部关闭。正则只覆盖测试专用别名（例如 `name[+][a-z0-9-]+@gmail[.]com`；用字符类代替反斜杠，避免 env 文件转义）。
+- 身份系统里已有该邮箱（包括清理过的测试账号：清理不删 IdP 用户）→ 开通前直接拒绝。每个测试账号用一个新别名。
 - 邮箱已出现在产品成员索引或测试主体登记里 → 直接拒绝，不开通。
-- 每个 agent 未到期测试账号 ≤ `TEST_KIT_MAX_ACTIVE`（默认 10）。
+- 每个 agent「未到期 + 开通中」测试账号 ≤ `TEST_KIT_MAX_ACTIVE`（默认 10）。开通超过同步窗未轮询的，会在下次 list/provision 时自动补登记。
+- 清理只整库删除该账号自己拥有的 workspace；它被加入的别人的测试 workspace 只摘除成员索引。
 - 套餐固定 trial，额度固定 100，有效期固定 30 天；不能登记、清理他人主体，不能操作非测试 workspace。
 - 能力 `test.provision` 只经 `PLATFORM_OPERATOR_TEST_AGENTS` 授给 kind=agent 主体；写进 `PLATFORM_OPERATOR_CAPABILITIES` 会让启动 seed 失败。已登记为 human 的 subject 不能被改成测试 agent。
 

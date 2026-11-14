@@ -411,12 +411,13 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
   const idpTenantSlug = env.IDP_ADMIN_TENANT
     ?? env.OIDC_ISSUER.replace(/\/+$/, "").split("/").pop()
     ?? "ck";
+  const idpAdminSource = createIdpAdminClientSource({
+    tokenSource: provisionTokenSource,
+    baseUrl: idpBaseUrl,
+    tenantSlug: idpTenantSlug,
+  });
   const inviteService = options.inviteService ?? new InviteService({
-    idp: createIdpAdminClientSource({
-      tokenSource: provisionTokenSource,
-      baseUrl: idpBaseUrl,
-      tenantSlug: idpTenantSlug,
-    }),
+    idp: idpAdminSource,
     workspaceCreator,
     products: productEntitlementService,
     allowance: aiAllowanceService,
@@ -556,6 +557,11 @@ function buildRoutes(options: AppOptions, aiStream: ReturnType<typeof createAiSt
         invites: inviteService,
         members: memberManager,
         getSystemDb: () => getRootDatabaseSession("_system"),
+        idpUserExists: async (email) => {
+          const idp = await idpAdminSource();
+          if (!idp) throw new Error("idp admin not configured");
+          return (await idp.findUserByEmail(email)) !== null;
+        },
         reaperDeps: async () => ({
           systemDb: await getRootDatabaseSession("_system"),
           dropDatabase: async (dbName) => { await getRootConnection().query(`REMOVE DATABASE IF EXISTS ${dbName};`); },

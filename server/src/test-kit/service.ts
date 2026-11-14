@@ -13,7 +13,7 @@
 // （IdP 复用）一律拒绝且不登记；每个 agent 未到期测试账号 ≤ TEST_KIT_MAX_ACTIVE；套餐固定 trial。
 
 import { DateTime, StringRecordId } from "surrealdb";
-import type { CreateOpsInvitation } from "@surreal-ck/shared";
+import { createOpsInvitationSchema, type CreateOpsInvitation } from "@surreal-ck/shared";
 import type { InviteResult, InviteService } from "../invitations/invite-service";
 import { InviteError } from "../invitations/invite-service";
 import type { MemberManager } from "../workspaces/member-manager";
@@ -42,6 +42,8 @@ export type TestKitDeps = Readonly<{
   invites: Pick<InviteService, "provision" | "get" | "collect">;
   members: Pick<MemberManager, "addMember">;
   getSystemDb: () => Promise<Queryable>;
+  /** 身份系统里是否已有该邮箱的用户（有则代办开通会复用，测试物料一律拒绝）。 */
+  idpUserExists: (email: string) => Promise<boolean>;
   reaperDeps: () => Promise<TestSubjectReaperDeps>;
   /** 整串匹配、忽略大小写；未配置 = 自助开通关闭。 */
   emailPattern?: string;
@@ -121,21 +123,35 @@ export class TestKitService {
 
     const key = this.inviteKey(actor, idempotencyKey);
     const existing = await this.deps.invites.get(key);
-    if (existing) return this.settle(actor, existing, null);
+    // 已完成/失败 → 只结算；processing → 原样重发，让 InviteService 接管僵死行续跑。
+    if (existing && existing.status !== "processing") return this.settle(actor, existing, null);
 
     const db = await this.deps.getSystemDb();
-    const active = await this.activeCount(db, actor);
-    if (active >= this.maxActive) {
-      throw new TestKitError("limit_reached", `未到期测试账号已有 ${active} 个（上限 ${this.maxActive}），先用 test_kit_purge 清理不用的`);
+    if (!existing) {
+      await this.settlePending(actor, db);
+      const active = await this.activeCount(db, actor);
+      if (active >= this.maxActive) {
+        throw new TestKitError("limit_reached", `未到期/开通中测试账号已有 ${active} 个（上限 ${this.maxActive}），先用 test_kit_purge 清理不用的`);
+      }
+      if ((await lookupSubjectsByEmail(db, email)).length > 0) {
+        throw new TestKitError("email_in_use", "该邮箱已属于既有账号；测试物料只开新账号，请换一个未用过的邮箱");
+      }
+      const slugOwner = rows(await db.query(`SELECT VALUE owner_subject FROM workspace WHERE slug = $slug LIMIT 1;`, { slug: workspaceSlug }))[0];
+      if (slugOwner !== undefined) throw new TestKitError("slug_taken", "workspaceSlug 已被占用，换一个");
+      let idpHas: boolean;
+      try {
+        idpHas = await this.deps.idpUserExists(email);
+      } catch {
+        throw new TestKitError("idp_unavailable", "身份系统暂不可用，稍后重试");
+      }
+      if (idpHas) {
+        throw new TestKitError("email_in_use", "该邮箱在身份系统已有账号（含清理过的测试账号）；测试物料只开新账号，请换一个未用过的邮箱");
+      }
     }
-    if ((await lookupSubjectsByEmail(db, email)).length > 0) {
-      throw new TestKitError("email_in_use", "该邮箱已属于既有账号；测试物料只开新账号，请换一个未用过的邮箱");
-    }
-    const slugOwner = rows(await db.query(`SELECT VALUE owner_subject FROM workspace WHERE slug = $slug LIMIT 1;`, { slug: workspaceSlug }))[0];
-    if (slugOwner !== undefined) throw new TestKitError("slug_taken", "workspaceSlug 已被占用，换一个");
 
-    const nowMs = this.now().getTime();
-    const input: CreateOpsInvitation = {
+    // 额度到期按 UTC 日取整：同一天内用同一 key 重发得到相同请求摘要，可续跑僵死的开通。
+    const dayStart = Math.floor(this.now().getTime() / DAY_MS) * DAY_MS;
+    const parsed = createOpsInvitationSchema.safeParse({
       email,
       displayName,
       workspaceSlug,
@@ -144,18 +160,24 @@ export class TestKitService {
       quotaPlanRevisionId: this.deps.quotaPlanRevisionId ?? "quota_plan_revision:trial_v2",
       aiAllowance: {
         amount: TEST_KIT_AI_AMOUNT,
-        expiresAt: new Date(nowMs + TEST_KIT_TTL_DAYS * DAY_MS).toISOString(),
+        expiresAt: new Date(dayStart + (TEST_KIT_TTL_DAYS + 1) * DAY_MS).toISOString(),
         label: "测试物料 AI 额度",
       },
       reason: `test-kit: agent ${actor.subject} 自助开通测试账号`,
       idempotencyKey: key,
-    } as CreateOpsInvitation;
+    });
+    if (!parsed.success) throw new TestKitError("invalid_request", "开通参数超出代办开通契约限制");
+    const input: CreateOpsInvitation = parsed.data;
     let result: InviteResult;
     try {
       // 代办开通内部步骤（产品权益分配）以 subscription.manage 执行；对外能力仍只有 test.provision，
       // 输入已被本服务收窄到 trial/小额度/受限邮箱，审计行 operator_subject 记为该 agent。
       result = await this.deps.invites.provision({ subject: actor.subject, capabilities: ["subscription.manage"] }, input);
     } catch (error) {
+      if (error instanceof InviteError && error.code === "invite-conflict" && existing) {
+        // 跨日重发（请求摘要不同）：不再续跑，按现状结算。
+        return this.settle(actor, existing, null);
+      }
       if (error instanceof InviteError) throw new TestKitError(error.code, error.message);
       throw error;
     }
@@ -181,6 +203,7 @@ export class TestKitService {
   async list(actor: TestKitActor) {
     this.authorize(actor);
     const db = await this.deps.getSystemDb();
+    await this.settlePending(actor, db);
     const subjects = rows(await db.query(
       `SELECT subject, email, expires_at FROM test_subject WHERE origin = $origin ORDER BY expires_at;`,
       { origin: TestKitService.originFor(actor.subject) },
@@ -200,7 +223,11 @@ export class TestKitService {
         workspaces: workspaces.map((w) => ({ slug: w.slug ?? null, role: w.role ?? null })),
       });
     }
-    return { maxActive: this.maxActive, subjects: out };
+    const inFlight = rows(await db.query(
+      `SELECT idempotency_key, status, email FROM ops_invitation WHERE operator_subject = $agent AND string::starts_with(idempotency_key, $prefix) AND status = "processing";`,
+      { agent: actor.subject, prefix: this.inviteKey(actor, "") },
+    )).map((row) => ({ idempotencyKey: String(row.idempotency_key).slice(this.inviteKey(actor, "").length), email: row.email ?? null, status: row.status }));
+    return { maxActive: this.maxActive, subjects: out, inFlight };
   }
 
   async addMember(actor: TestKitActor, args: Record<string, unknown>) {
@@ -248,8 +275,9 @@ export class TestKitService {
       throw new TestKitError("not_owned", "只能清理本 agent 经 test_kit_provision 开通的测试账号");
     }
     const deps = await this.deps.reaperDeps();
+    // 只删该账号自己拥有的 workspace；它被加入的别人的测试 workspace 只摘成员索引（purgeTestSubject）。
     const workspaces = rows(await db.query(
-      `SELECT VALUE workspace FROM user_workspace_index WHERE subject = $subject;`,
+      `SELECT VALUE id FROM workspace WHERE owner_subject = $subject;`,
       { subject },
     ));
     let workspacesPurged = 0;
@@ -259,7 +287,7 @@ export class TestKitService {
       else workspacesSkipped += 1;
     }
     await purgeTestSubject(deps, subject);
-    return { subject, workspacesPurged, workspacesSkipped };
+    return { subject, workspacesPurged, workspacesSkipped, membershipsRemoved: true };
   }
 
   private authorize(actor: TestKitActor): void {
@@ -283,7 +311,25 @@ export class TestKitService {
       { origin: TestKitService.originFor(actor.subject) },
     ));
     const now = this.now();
-    return list.filter((row) => !isExpired({ expires_at: row.expires_at as string }, now)).length;
+    const processing = rows(await db.query(
+      `SELECT VALUE idempotency_key FROM ops_invitation WHERE operator_subject = $agent AND string::starts_with(idempotency_key, $prefix) AND status = "processing";`,
+      { agent: actor.subject, prefix: this.inviteKey(actor, "") },
+    ));
+    return list.filter((row) => !isExpired({ expires_at: row.expires_at as string }, now)).length + processing.length;
+  }
+
+  /** 已完成但未登记（同步窗超时后从未调 status）的开通：补登记，避免成为不受清理的孤儿。 */
+  private async settlePending(actor: TestKitActor, db: Queryable): Promise<void> {
+    const prefix = this.inviteKey(actor, "");
+    const keys = rows(await db.query(
+      `SELECT VALUE idempotency_key FROM ops_invitation WHERE operator_subject = $agent AND string::starts_with(idempotency_key, $prefix) AND status = "completed";`,
+      { agent: actor.subject, prefix },
+    ));
+    for (const key of keys) {
+      const row = await this.deps.invites.get(String(key));
+      if (!row?.user || (await findTestSubject(db, row.user.id))) continue;
+      await this.settle(actor, row, null).catch(() => undefined);
+    }
   }
 
   /** 开通完成 → 登记为本 agent 的测试主体（幂等）；复用既有 IdP 用户的一律不登记。 */
@@ -300,6 +346,15 @@ export class TestKitService {
     }
     if (result.user.outcome !== "created") {
       throw new TestKitError("email_in_use", "该邮箱在身份系统已有账号，未登记为测试账号；请换一个未用过的邮箱");
+    }
+    const db = await this.deps.getSystemDb();
+    if (!(await findTestSubject(db, result.user.id))) {
+      const owned = rows(await db.query(
+        `SELECT VALUE owner_subject FROM workspace WHERE slug = $slug LIMIT 1;`,
+        { slug: result.workspace?.slug ?? "" },
+      ))[0];
+      // 已被 test_kit_purge 清理（workspace 已删）：不复活登记。
+      if ((owned as unknown) !== result.user.id) return { ...base, status: "purged" as const, activationUrl: null };
     }
     const registered = await this.register(actor, result.user.id, result.user.email);
     return {
