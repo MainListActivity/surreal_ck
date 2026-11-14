@@ -68,6 +68,8 @@ type InviteRow = {
   /** InviteService 新建 IdP 用户后立即落下的用户 id（= 本行建出的用户）。 */
   idpUserId: string | null;
   purged: boolean;
+  /** 已按失败/中断收养：对外终态恒为 failed，之后哪怕后台执行完成也不改口。 */
+  adopted: boolean;
 };
 
 function rows(result: unknown): Record<string, unknown>[] {
@@ -90,7 +92,7 @@ function str(args: Record<string, unknown>, name: string, required = true): stri
   return value.trim();
 }
 
-const INVITE_ROW_FIELDS = "idempotency_key, operator_subject, email, status, created_at, idp_user_id, test_kit_purged_at";
+const INVITE_ROW_FIELDS = "idempotency_key, operator_subject, email, status, created_at, idp_user_id, test_kit_purged_at, test_kit_adopted_at";
 
 function toInviteRow(row: Record<string, unknown>): InviteRow {
   return {
@@ -101,6 +103,7 @@ function toInviteRow(row: Record<string, unknown>): InviteRow {
     createdAtMs: dateTimeTimestamp(row.created_at),
     idpUserId: typeof row.idp_user_id === "string" && row.idp_user_id.length > 0 ? row.idp_user_id : null,
     purged: dateTimeTimestamp(row.test_kit_purged_at) > 0,
+    adopted: dateTimeTimestamp(row.test_kit_adopted_at) > 0,
   };
 }
 
@@ -356,7 +359,7 @@ export class TestKitService {
   /** 已有开通行的现状：已清理 → 拒绝；中断 → 收养；其余按 InviteService 记录结算并补收链接。 */
   private async report(actor: TestKitActor, db: Queryable, row: InviteRow) {
     if (row.purged) throw new TestKitError("purged", "该邮箱的测试账号已清理，不能复用；换一个新别名");
-    if (this.stale(row)) return this.adopt(actor, db, row);
+    if (row.adopted || this.stale(row)) return this.adopt(actor, db, row);
     const result = await this.deps.invites.get(row.key);
     if (!result) throw new TestKitError("not_found", "开通记录不存在");
     const settled = await this.settle(actor, db, row, result, null);
@@ -390,7 +393,7 @@ export class TestKitService {
       if (this.stale(row)) return this.adopt(actor, db, row);
       return { ...base, activationUrl: null, next: "开通进行中：稍后用同一 email 调 test_kit_status" };
     }
-    if (result.status === "failed" || !result.user) return this.adopt(actor, db, row);
+    if (row.adopted || result.status === "failed" || !result.user) return this.adopt(actor, db, row);
     // 行已由 own() 确认归本 agent；只登记本行建出的用户（新建，或行上记下的新建用户 id）。
     const ours = result.user.outcome === "created" || row.idpUserId === result.user.id;
     if (!ours) throw new TestKitError("email_in_use", "该邮箱在身份系统已有账号，未登记为测试账号；请换一个未用过的邮箱");
@@ -410,6 +413,10 @@ export class TestKitService {
 
   /** 失败或中断的行：登记本行建出的用户交给 reaper 清理（没建出用户则无产物），邮箱作废。 */
   private async adopt(actor: TestKitActor, db: Queryable, row: InviteRow) {
+    if (!row.adopted) {
+      await db.query(`UPDATE ops_invitation SET test_kit_adopted_at = time::now() WHERE idempotency_key = $key AND test_kit_adopted_at = NONE;`, { key: row.key });
+    }
+    // 收养后后台执行仍可能完成并建出 workspace：每次都重新登记（幂等）并补标记它的 workspace。
     if (row.idpUserId) await this.register(actor, db, row.idpUserId, row.email, this.expiry(row));
     return {
       email: row.email,
@@ -432,10 +439,11 @@ export class TestKitService {
       { origin: TestKitService.originFor(actor.subject) },
     )).map(String));
     for (const row of candidates) {
-      if (known.has(row.email.toLowerCase())) continue;
+      // 已登记的正常行跳过；收养过的行每次都过一遍，以标记后台执行迟到建出的 workspace。
+      if (known.has(row.email.toLowerCase()) && !row.adopted) continue;
       if (row.status === "processing" && !this.stale(row)) continue;
       await (async () => {
-        if (this.stale(row)) return this.adopt(actor, db, row);
+        if (row.adopted || this.stale(row)) return this.adopt(actor, db, row);
         const result = await this.deps.invites.get(row.key);
         if (result) await this.settleInner(actor, db, row, result, null);
       })().catch(() => undefined);
@@ -455,24 +463,25 @@ export class TestKitService {
   private async register(actor: TestKitActor, db: Queryable, subject: string, email: string, expiresAt: Date): Promise<void> {
     const origin = TestKitService.originFor(actor.subject);
     const existing = await findTestSubject(db, subject);
-    if (existing) {
-      if (existing.origin !== origin) throw new TestKitError("not_owned", "该账号已由他处登记为测试主体");
-      return;
-    }
+    if (existing && existing.origin !== origin) throw new TestKitError("not_owned", "该账号已由他处登记为测试主体");
     const preflight = await computeTestSubjectPreflight(db, subject);
-    if (preflight.blockers.length > 0) {
-      throw new TestKitError(`conflict-${preflight.blockers[0]!.code}`, preflight.blockers[0]!.message);
+    if (!existing) {
+      if (preflight.blockers.length > 0) {
+        throw new TestKitError(`conflict-${preflight.blockers[0]!.code}`, preflight.blockers[0]!.message);
+      }
+      await db.query(
+        `INSERT INTO test_subject { subject: $subject, email: $email, expires_at: $expiresAt, origin: $origin }
+         ON DUPLICATE KEY UPDATE updated_at = time::now();`,
+        { subject, email, expiresAt: new DateTime(expiresAt), origin },
+      );
     }
-    await db.query(
-      `INSERT INTO test_subject { subject: $subject, email: $email, expires_at: $expiresAt, origin: $origin }
-       ON DUPLICATE KEY UPDATE updated_at = time::now();`,
-      { subject, email, expiresAt: new DateTime(expiresAt), origin },
-    );
+    // 已登记也要补标记：收养后后台执行迟到建出的 workspace 必须进入到期清理。
+    const until = existing ? new Date(dateTimeTimestamp(existing.expires_at)) : expiresAt;
     for (const workspace of preflight.workspaces) {
       if (!workspace.wouldBeMarked) continue;
       await db.query(
         `UPDATE $wid SET test_expires_at = $expiresAt, test_origin = $origin;`,
-        { wid: new StringRecordId(workspace.id), expiresAt: new DateTime(expiresAt), origin },
+        { wid: new StringRecordId(workspace.id), expiresAt: new DateTime(until), origin },
       );
     }
   }

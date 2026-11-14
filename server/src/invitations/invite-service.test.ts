@@ -92,10 +92,6 @@ class MemStore implements InviteAuditStore {
     return true;
   }
 
-  createdIdpUsers = new Map<string, string>();
-  async saveCreatedIdpUser(recordId: string, idpUserId: string) {
-    this.createdIdpUsers.set(recordId, idpUserId);
-  }
   async saveActivationUrl(recordId: string, activationUrl: string) {
     this.storedUrls.set(recordId, activationUrl);
   }

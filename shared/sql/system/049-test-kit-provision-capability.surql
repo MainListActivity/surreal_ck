@@ -18,3 +18,5 @@ DEFINE FIELD OVERWRITE capability ON TABLE platform_operator_capability TYPE str
 
 -- 测试物料清理标记：test_kit_purge 清理过的开通行不再被对账补登记。
 DEFINE FIELD IF NOT EXISTS test_kit_purged_at ON ops_invitation TYPE option<datetime>;
+-- 测试物料收养标记：失败/中断的开通被收养后对外终态恒为 failed。
+DEFINE FIELD IF NOT EXISTS test_kit_adopted_at ON ops_invitation TYPE option<datetime>;

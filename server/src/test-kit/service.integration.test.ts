@@ -205,6 +205,28 @@ describe("test kit on real fork SurrealDB with the real invite service", () => {
     expect((await kit().list(AGENT)).inFlight).toEqual([]);
   });
 
+  localTest("收养后后台执行迟到完成：对外仍是 failed、不发链接，迟到建出的 workspace 照样进入到期清理", async () => {
+    let release: () => void = () => {};
+    assignBehaviour = "ok";
+    const slow = inviteService({ syncWindowMs: 50 });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    // 让工作区创建卡在门上：先过同步窗返回 processing
+    const original = (slow as unknown as { deps: { workspaceCreator: { createWorkspace: (i: unknown) => Promise<unknown> } } }).deps.workspaceCreator;
+    const create = original.createWorkspace.bind(original);
+    original.createWorkspace = async (input) => { await gate; return create(input); };
+    expect((await kit(slow).provision(AGENT, provisionArgs("late")) as Record<string, unknown>).status).toBe("processing");
+
+    clockOffset = 2 * DAY;
+    expect((await kit().status(AGENT, { email: "kit+late@example.com" }) as Record<string, unknown>).status).toBe("failed");
+    expect((await subjectRow("sub-late"))?.origin).toBe("test-kit:agent-arch");
+
+    release();
+    for (let i = 0; i < 50 && (await q(`SELECT VALUE status FROM ops_invitation WHERE email = "kit+late@example.com";`))[0] !== "completed"; i += 1) await Bun.sleep(50);
+    const after = await kit().status(AGENT, { email: "kit+late@example.com" }) as Record<string, unknown>;
+    expect(after).toMatchObject({ status: "failed", activationUrl: null });
+    expect((await q(`SELECT test_expires_at FROM workspace WHERE slug = "kit-late";`))[0]?.test_expires_at).toBeTruthy();
+  });
+
   localTest("收养绝不按邮箱认领：本行没建出用户（未记 idp_user_id）时，之后别人建的同邮箱用户不会被登记", async () => {
     assignBehaviour = "hang";
     await kit(inviteService({ syncWindowMs: 50 })).provision(AGENT, provisionArgs("ghost"));
