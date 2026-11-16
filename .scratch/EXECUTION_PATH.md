@@ -1,6 +1,6 @@
 # .scratch issue execution path
 
-Updated: 2026-11-16 (basis: `origin/main` at 7263024b; corrected after checking ticket files, `main` paths, and PR history)
+Updated: 2026-11-16 (basis: `origin/main` at 7263024b; corrected after checking ticket files, `main` paths, PR history, and QA round-01 findings)
 
 This file is the canonical scheduling order for the next agents.
 
@@ -19,11 +19,38 @@ A ticket header `Status: done` means the implementation was recorded as complete
 - SurrealQL implementation work must load the `surrealql` skill first and follow the project SurrealDB rules. If the skill is unavailable, say so and verify against existing ADR/schema patterns before writing schema.
 - Implementation work follows the `tdd` skill: one public-interface behavior test, then the minimum implementation, then the next behavior. Do not write broad horizontal test suites ahead of implementation.
 
+## Gates and red lines (restored from origin/main 7263024b)
+
+These are the gates and red lines from the `origin/main` version of this file, plus the claims-vertical highest constraint from its PRD. They still apply. Do not weaken them.
+
+Phase 1, virtual employee runtime:
+
+- Router workflow output, tool permissions, and stream events are unchanged after `VER-01` (ticket title: "保持 Router 零回归").
+- Employee sessions are opened and closed by lifecycle transitions. Root is only used for the workspace index and employee credentials.
+- The existing daily claims-risk reminder still reaches users, now through the generic trigger runtime.
+- A crashed process re-establishes active, waiting, and suspended runs without duplicating business side effects.
+- Limits emit a structured runtime signal instead of silently widening.
+
+Phase 2, virtual office:
+
+- The shipped daily claims-risk reminder and inbox keep working while `user_notification` generalizes.
+- Employees write office records with employee `$auth` and DML only. Any DDL is executed by the issuing human's browser admin session.
+- Office UI reads through browser direct SurrealDB LIVE, never backend LIVE forwarding.
+- Budget and loop guards from `VER-05` prevent infinite task loops in a deterministic test.
+
+Claims vertical (highest constraint, from `.scratch/claims-vertical/PRD.md`, "Further Notes"):
+
+- Repository code, platform schema, and platform prompts must not contain legal domain vocabulary. All legal vocabulary stays in `workbook_template` rows. Legal content must be removable as a whole by not seeding the template package or by deleting its template rows.
+
+Evidence for these gates is the named tests in items 1–6 of each phase. No gate is verified as a whole in this file, and no production gate is verified.
+
 ## Current inventory
 
-- Implementation recorded complete (ticket header `Status: done`, code on `main`): `virtual-employee-runtime` VER-01..06; `virtual-office` VO-01..06; `legal-content-mcp` 01..10 (07 included); `claims-vertical` 01..06 (issues already split from the PRD); `shadcn-migration` 01..04; `server-skeleton` WP-B-06; `legal-data-product-wayfinder` 01..12; `legal-content-acquisition` 01..04; `native-resource-quota` 01..10.
+- Implementation recorded complete (ticket header `Status: done`, code on `main`): `virtual-employee-runtime` VER-01..06; `virtual-office` VO-01..06; `legal-content-mcp` 01..10 (07 included); `claims-vertical` 01..06 (issues already split from the PRD); `shadcn-migration` 01..04; `server-skeleton` WP-B-06; `native-resource-quota` 01..10.
+- Decision and scope tickets complete (no code on `main` to dispatch): `legal-data-product-wayfinder` 01..12. Tickets 01..11 are `## Question` decision tickets. Ticket 12 is a scope ticket that says the collection program is not implemented.
+- `legal-content-acquisition` 01..04 is the implementation split of wayfinder 12. Headers are `done`, but acceptance boxes remain unchecked or unaudited. See Parallel slices.
 - Open, evidence or operations only (no new code tickets): see "Open items".
-- Ticket text is historical. Several tickets disagree with themselves: a header `Status: done` with a body `ready-for-agent` label (VER-01, VER-03, VO-01, `legal-content-acquisition` 02..04), or unchecked acceptance boxes (counts in Open items, item 5). Treat those as bookkeeping, not as new work. Reconcile them only in a separate change that is authorized to edit the tickets.
+- Ticket text is historical. Several tickets disagree with themselves: a header `Status: done` with a body status line `ready-for-agent` (VER-01, VER-03, VO-01), a header `Label: ready-for-agent` (claims-vertical 01, 02, 05; `legal-content-acquisition` 02..04), or unchecked acceptance boxes (counts in Open items, item 5). Treat those as bookkeeping, not as new work. Reconcile them only in a separate change that is authorized to edit the tickets.
 - `.scratch/` folders outside the clusters named in this file were not audited.
 - `TODOS.md` (dated 2026-09-18) is stale. It lists VER/VO as the mainline, MCP 07 as `open`, and wayfinder 09..12 as `in_progress`/`open`. Do not use it for dispatch. Fixing it needs a separate change that is authorized to edit it.
 
@@ -40,7 +67,7 @@ Reference: `.scratch/virtual-employee-runtime/PRD.md` (its header still says `re
 
 Gate status:
 
-- The code-side gates above are covered by the named tests.
+- The Phase 1 gates in "Gates and red lines" are not verified as a whole here. Code-side evidence is the tests named in items 1–6 above.
 - Production-side gates have no recorded run in the repo. The runbook `docs/runbooks/employee-runtime-observation.md` says a successful scripted run is not production acceptance (its "运行成功不等于生产验收" line). It also says VER-06 renewal, reconnect, capacity, and long-term operation are not accepted, and that QA still has to revalidate in production. The QA script is `scripts/verify-employee-runtime.ts`. No run record exists in the repo. Treat these as unverified until QA records a run.
 
 ## Phase 2: Virtual office (complete in code)
@@ -56,31 +83,35 @@ Reference: `.scratch/virtual-office/PRD.md` (header still says `ready-for-agent`
 
 Gate status:
 
-- Code-side gates are covered by the tests above.
+- The Phase 2 gates in "Gates and red lines" are not verified as a whole here. Code-side evidence is the tests named in items 1–6 above.
 - The production claims-risk reminder, inbox, and an end-to-end office run have no recorded production evidence in the repo.
 
 ## Parallel slices
 
-- `claims-vertical`: issues 01..06 exist and are `done`, so the earlier "needs `/to-issues` first" note is obsolete. The PRD header still says `ready-for-agent`. Open: acceptance boxes are unchecked on 01, 05, and 06. Issue 06 is the end-to-end acceptance, and no run is recorded.
+- `claims-vertical`: issues 01..06 exist and their headers are `done`, so the earlier "needs `/to-issues` first" note is obsolete. The PRD header still says `ready-for-agent`. Open: acceptance boxes are unchecked on 01 (5), 05 (6), and 06 (6). Headers of 01, 02, and 05 still say `Label: ready-for-agent`.
+  - 06 end-to-end acceptance: the ticket has a 2026-10-02 comment (`06-end-to-end-acceptance.md`, line 39). It says the closure re-test's only blocker, "含样例数据建簿 datetime 强转失败", was fixed by task `2ffbc97b` (`web/src/lib/workbooks.ts`, lines 452–455), and that the remaining acceptance criteria were completed by `CLAIMSE2E`. Neither `2ffbc97b` nor `CLAIMSE2E` appears anywhere in the repo. The six acceptance boxes are unchecked. The comment calls the production deployment re-test the final confirmation step, and no record of it exists. Status: the comment claims closure, the evidence cannot be traced, and production is unknown. Do not treat it as production acceptance.
 - `SHADCN-04`: done, all boxes checked. Its prerequisites 01..03 are `done`, but their acceptance boxes are unchecked (6, 7, and 6 boxes).
 - `WP-B-06`: done. Closeout note dated 2026-09-29 records a local podman build (158MB) and `/health` check. The CI `quality-gate` `docker build .` step keeps guarding it. No Docker-daemon re-run is recorded; this does not block anything.
-- `legal-content-acquisition` (the implementation split of wayfinder 12): headers `done` for 01..04. Bodies of 02..04 still carry a `ready-for-agent` label. Acceptance boxes were not audited in this update. Ticket 12 says its spec closure does not mean real sources are licensed or continuous collection has started. Do not treat the cluster as production-ready from its header.
+- `legal-content-acquisition` (the implementation split of wayfinder 12): headers `done` for 01..04. Acceptance boxes: 01 has 4 unchecked, 02 has 4 checked, 03 has 5 unchecked, 04 has 5 checked. Headers of 02, 03, and 04 still say `Label: ready-for-agent`. Ticket 12 says its spec closure does not mean real sources are licensed or continuous collection has started. Do not treat the cluster as production-ready from its header.
 - `legal-content-mcp` 01..04: headers `done`, but each has 3 acceptance boxes unchecked. This update did not verify whether the implementation covers them. Treat it as an evidence gap.
 
 ## Operations-only remainders
 
 Not implementation work; do not open code tickets for them.
 
-- Native quota production rollout: code tickets SCK-NQ-01..10 are done. The production rollout (maintenance window, ledger backfill, cohort promotion, 24h/48h observation windows, product cutover, 30-day delayed cleanup) follows `docs/runbooks/native-quota-release-cutover.md` and `docs/runbooks/native-quota-legacy-migration.md`. The last recorded status is "production execution not started" in `TODOS.md` (dated 2026-09-18). It cannot be verified from the repo, so ops must confirm the current state.
+- Native quota production rollout: code tickets SCK-NQ-01..10 are done. The rollout steps (maintenance window, ledger backfill, cohort promotion, 24h/48h observation windows, product cutover, 30-day delayed cleanup) are described in `docs/runbooks/native-quota-release-cutover.md` and `docs/runbooks/native-quota-legacy-migration.md`. Do not run them from this file. Their status is to be confirmed:
+  - `TODOS.md` (dated 2026-09-18) says "production execution not started". It is stale on other points, so treat it as unverified.
+  - Unmerged PR #59 (`task/477e239e`, OPEN, not on `main`) records a boss decision dated 2026-09-29 to freeze the three-phase production closure. Production stays as it is, and the data-plane topology must not change. Phase 1 (exact-digest fork takes over the data directory and format migration) conflicts with that, and phases 2 and 3 depend on it. PR #59 is a to-confirm record. It is not a confirmed company decision on `main`.
+  - Current production state: unknown from the repo. The owner must confirm whether the PR #59 freeze is in force before any rollout step.
 - `legal-content-mcp` 07: done. `10-codex-e2e.md` records a production run on 2026-09-11 against `https://l.maplayer.top/api/ops/mcp` (DCR, PKCE, scope, refresh, reconnect, and refresh/access revocation; `--fixture --publish --full-lifecycle`, `ok=true`, 0 failures). This update did not re-run it. The same record says the production operator bootstrap config (OIDC subject and content capability) was not yet written at that time. Its current state is unknown. Confirm it before claiming operator-side readiness. `TODOS.md` still says "open"; that is stale.
-- `legal-data-product-wayfinder` 09..11: done decision tickets. No implementation follows from them. Ticket 12 is done as a spec. Its implementation is split into `legal-content-acquisition` (see Parallel slices). Its real-source licensing and continuous collection are unverified.
+- `legal-data-product-wayfinder` 01..12: decision and scope tickets only. Tickets 01..11 are `## Question` decision tickets. Ticket 12 says the collection program is not implemented, the scheduled task is not enabled, and it is not verified whether specific sites can be continuously fetched (ticket line 121). Its implementation split is `legal-content-acquisition` (see Parallel slices). Real-source licensing and continuous collection are unverified.
 
 ## Open items (evidence, not implementation)
 
 1. VER-06 production QA revalidation (renewal, reconnect, capacity, long-term operation). Owner: QA with ops access. Per the runbook. No run is recorded.
 2. VO-04 acceptance: all eight boxes unchecked. Needs evidence (tests or a browser run) before office roster acceptance is claimed.
 3. VO-06 production onboarding: no production run recorded. Acceptance is unknown in production.
-4. claims-vertical 01/05/06 acceptance boxes, including the 06 end-to-end manual run. Needs evidence.
+4. claims-vertical 01/05/06 acceptance boxes. The 06 end-to-end manual run has only an untraceable closure comment (see Parallel slices). Needs evidence. Production is unknown.
 5. Ticket bookkeeping. Fix only in an authorized ticket-hygiene change. Counts are unchecked acceptance boxes in tickets whose header is `done`:
 
    | Ticket set | Unchecked boxes |
@@ -89,10 +120,11 @@ Not implementation work; do not open code tickets for them.
    | VO-01 / 02 / 04 | 7 / 8 / 8 |
    | claims-vertical 01 / 05 / 06 | 5 / 6 / 6 |
    | shadcn-migration 01 / 02 / 03 | 6 / 7 / 6 |
+   | legal-content-acquisition 01 / 03 | 4 / 5 |
    | legal-content-mcp 01 / 02 / 03 / 04 | 3 / 3 / 3 / 3 |
 
-   Body labels still `ready-for-agent`: VER-01, VER-03, VO-01, and `legal-content-acquisition` 02..04. PRD headers still `ready-for-agent`: VER, VO, claims-vertical. The `legal-content-mcp` PRD header says `Status: open`.
-6. Native quota production rollout status (see Operations-only remainders).
+   Body status line still `ready-for-agent`: VER-01, VER-03, VO-01. Header `Label: ready-for-agent`: claims-vertical 01, 02, 05; `legal-content-acquisition` 02..04. PRD headers still `ready-for-agent`: VER, VO, claims-vertical. The `legal-content-mcp` PRD header says `Status: open`.
+6. Native quota production rollout status: to be confirmed. See Operations-only remainders, including the unmerged PR #59 record.
 7. `legal-content-mcp` production operator bootstrap config (OIDC subject and content capability). Its state is unknown since the 2026-09-11 record.
 
 Code completion is not production acceptance. Do not report a production result from a ticket's `done` header alone.
@@ -107,7 +139,6 @@ Before editing:
 4. If the issue writes Mastra code, load the `mastra` skill first.
 5. If the issue writes schema or SurrealQL, load the `surrealql` skill first; if it is unavailable, verify against existing schema patterns.
 6. Name the first observable behavior before editing production code.
-7. Before re-dispatching any item in Phase 1, Phase 2, or the MCP ticket, show a failing test or a production record that contradicts the current evidence. Otherwise it is already delivered.
 
 During implementation:
 
