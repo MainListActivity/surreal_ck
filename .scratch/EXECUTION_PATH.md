@@ -1,6 +1,6 @@
 # .scratch issue execution path
 
-Updated: 2026-11-16 (basis: `origin/main` at 7263024b; corrected after checking ticket files, `main` paths, PR history, and QA round-01 findings)
+Updated: 2026-11-16 (basis: `origin/main` at 7263024b; corrected after checking ticket files, `main` paths, and the PR history cited below)
 
 This file is the canonical scheduling order for the next agents.
 
@@ -47,10 +47,10 @@ Evidence for these gates is the named tests in items 1–6 of each phase. No gat
 ## Current inventory
 
 - Implementation recorded complete (ticket header `Status: done`, code on `main`): `virtual-employee-runtime` VER-01..06; `virtual-office` VO-01..06; `legal-content-mcp` 01..10 (07 included); `claims-vertical` 01..06 (issues already split from the PRD); `shadcn-migration` 01..04; `server-skeleton` WP-B-06; `native-resource-quota` 01..10.
-- Decision and scope tickets complete (no code on `main` to dispatch): `legal-data-product-wayfinder` 01..12. Tickets 01..11 are `## Question` decision tickets. Ticket 12 is a scope ticket that says the collection program is not implemented.
+- Decision and scope tickets recorded complete in their headers (not proof of an implemented program): `legal-data-product-wayfinder` 01..12. Tickets 01..11 are `## Question` decision tickets. Ticket 12 is a scope ticket that says the collection program is not implemented; its body still says `in_progress` (see the historical-text conflict below).
 - `legal-content-acquisition` 01..04 is the implementation split of wayfinder 12. Headers are `done`, but acceptance boxes remain unchecked or unaudited. See Parallel slices.
 - Open, evidence or operations only (no new code tickets): see "Open items".
-- Ticket text is historical. Several tickets disagree with themselves: a header `Status: done` with a body status line `ready-for-agent` (VER-01, VER-03, VO-01), a header `Label: ready-for-agent` (claims-vertical 01, 02, 05; `legal-content-acquisition` 02..04), or unchecked acceptance boxes (counts in Open items, item 5). Treat those as bookkeeping, not as new work. Reconcile them only in a separate change that is authorized to edit the tickets.
+- Ticket text is historical. Several tickets disagree with themselves: a header `Status: done` with a body status line `ready-for-agent` (VER-01, VER-03, VO-01), a header `Label: ready-for-agent` (claims-vertical 01, 02, 05; `legal-content-acquisition` 02..04), or unchecked acceptance boxes (counts in Open items, item 5). Wayfinder 12 also has a `Status: done` header but says its ticket remains `in_progress` in the body (line 125); this update does not resolve that conflict. Treat those as bookkeeping, not as new work. Reconcile them only in a separate change that is authorized to edit the tickets.
 - `.scratch/` folders outside the clusters named in this file were not audited.
 - `TODOS.md` (dated 2026-09-18) is stale. It lists VER/VO as the mainline, MCP 07 as `open`, and wayfinder 09..12 as `in_progress`/`open`. Do not use it for dispatch. Fixing it needs a separate change that is authorized to edit it.
 
@@ -89,9 +89,9 @@ Gate status:
 ## Parallel slices
 
 - `claims-vertical`: issues 01..06 exist and their headers are `done`, so the earlier "needs `/to-issues` first" note is obsolete. The PRD header still says `ready-for-agent`. Open: acceptance boxes are unchecked on 01 (5), 05 (6), and 06 (6). Headers of 01, 02, and 05 still say `Label: ready-for-agent`.
-  - 06 end-to-end acceptance: the ticket has a 2026-10-02 comment (`06-end-to-end-acceptance.md`, line 39). It says the closure re-test's only blocker, "含样例数据建簿 datetime 强转失败", was fixed by task `2ffbc97b` (`web/src/lib/workbooks.ts`, lines 452–455), and that the remaining acceptance criteria were completed by `CLAIMSE2E`. Neither `2ffbc97b` nor `CLAIMSE2E` appears anywhere in the repo. The six acceptance boxes are unchecked. The comment calls the production deployment re-test the final confirmation step, and no record of it exists. Status: the comment claims closure, the evidence cannot be traced, and production is unknown. Do not treat it as production acceptance.
+  - 06 end-to-end acceptance: the ticket has a 2026-10-02 comment (`06-end-to-end-acceptance.md`, line 39). It says the closure re-test's only blocker was fixed by task `2ffbc97b`, and that the remaining acceptance criteria were completed by `CLAIMSE2E`. The code fix is traceable: branch `origin/task/2ffbc97b` has commit `74cad9d0d6406640835184462a65b147b6f73b34` (PR #132). Its merge `69d91ab2` is not reachable from the cited `origin/main`, but the same fix is on `main` at `web/src/lib/workbooks.ts:452–457`, with regression tests in `web/src/lib/workbooks.test.ts` and `web/src/lib/bankruptcy-claims-template-pack.integration.test.ts`. `CLAIMSE2E` has no run record in the repo; it appears in that comment and the PR #132 description. The six acceptance boxes are unchecked. The production deployment re-test, named as the final confirmation step, has no record. Status: code fix on `main`; closure acceptance unproven; production unknown. Do not treat it as production acceptance.
 - `SHADCN-04`: done, all boxes checked. Its prerequisites 01..03 are `done`, but their acceptance boxes are unchecked (6, 7, and 6 boxes).
-- `WP-B-06`: done. Closeout note dated 2026-09-29 records a local podman build (158MB) and `/health` check. The CI `quality-gate` `docker build .` step keeps guarding it. No Docker-daemon re-run is recorded; this does not block anything.
+- `WP-B-06`: done. Closeout note dated 2026-09-29 records a local podman build (158MB) and `/health` check. The CI `quality-gate` `docker build .` step keeps guarding it. No Docker-daemon re-run is recorded; the ticket says Docker build and compose acceptance must be re-tested on a machine with a container runtime.
 - `legal-content-acquisition` (the implementation split of wayfinder 12): headers `done` for 01..04. Acceptance boxes: 01 has 4 unchecked, 02 has 4 checked, 03 has 5 unchecked, 04 has 5 checked. Headers of 02, 03, and 04 still say `Label: ready-for-agent`. Ticket 12 says its spec closure does not mean real sources are licensed or continuous collection has started. Do not treat the cluster as production-ready from its header.
 - `legal-content-mcp` 01..04: headers `done`, but each has 3 acceptance boxes unchecked. This update did not verify whether the implementation covers them. Treat it as an evidence gap.
 
@@ -111,7 +111,7 @@ Not implementation work; do not open code tickets for them.
 1. VER-06 production QA revalidation (renewal, reconnect, capacity, long-term operation). Owner: QA with ops access. Per the runbook. No run is recorded.
 2. VO-04 acceptance: all eight boxes unchecked. Needs evidence (tests or a browser run) before office roster acceptance is claimed.
 3. VO-06 production onboarding: no production run recorded. Acceptance is unknown in production.
-4. claims-vertical 01/05/06 acceptance boxes. The 06 end-to-end manual run has only an untraceable closure comment (see Parallel slices). Needs evidence. Production is unknown.
+4. claims-vertical 01/05/06 acceptance boxes. For 06, the code fix is traceable, but the claimed `CLAIMSE2E` closure run and the production deployment re-test have no recorded evidence (see Parallel slices). Production is unknown.
 5. Ticket bookkeeping. Fix only in an authorized ticket-hygiene change. Counts are unchecked acceptance boxes in tickets whose header is `done`:
 
    | Ticket set | Unchecked boxes |
