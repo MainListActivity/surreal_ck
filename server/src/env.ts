@@ -40,6 +40,8 @@ const EnvSchema = z.object({
   // 缺省时按 issuer 的 RFC 7662 相对端点推导。
   OIDC_INTROSPECTION_ENDPOINT: z.string().url().optional(),
   OIDC_TOKEN_AUTH_METHOD: z.enum(["client_secret_basic", "client_secret_post"]).default("client_secret_basic"),
+  /** 后端代理调上游 IdP 的显式超时（毫秒），默认 15s；可被注入的 upstreamTimeoutMs 覆盖。 */
+  OIDC_UPSTREAM_TIMEOUT_MS: z.coerce.number().int().positive().default(15000),
 
   IDP_HOOK_SECRET: z.string().min(8),
   IDP_SCOPE_API_URL: z.string().url().optional(),

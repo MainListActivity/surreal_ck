@@ -10,6 +10,8 @@ export type OidcTokenExchangeOptions = {
   clientId: string;
   clientSecret: string;
   tokenAuthMethod?: OidcTokenAuthMethod;
+  /** 上游 IdP 请求超时（毫秒）；缺省走 OIDC_UPSTREAM_TIMEOUT_MS（默认 15000）。 */
+  upstreamTimeoutMs?: number;
   fetch?: typeof fetch;
 };
 
@@ -20,8 +22,44 @@ export type OidcOpsBrowserProxyOptions = {
   revokeEndpoint?: string;
   /** 可选硬绑定；未配置时仍由上游 IdP 校验 public client、redirect URI 与 PKCE。 */
   clientId?: string;
+  /** 上游 IdP 请求超时（毫秒）；缺省走 OIDC_UPSTREAM_TIMEOUT_MS（默认 15000）。 */
+  upstreamTimeoutMs?: number;
   fetch?: typeof fetch;
 };
+
+/** 上游失败脱敏分类：只暴露枚举与状态码，不回显凭据、code 或上游响应体。 */
+export type OidcUpstreamFailureReason = "timeout" | "network" | "invalid_json" | "upstream_status";
+
+const DEFAULT_UPSTREAM_TIMEOUT_MS = 15000;
+
+function resolveUpstreamTimeoutMs(configured?: number): number {
+  return configured ?? env.OIDC_UPSTREAM_TIMEOUT_MS ?? DEFAULT_UPSTREAM_TIMEOUT_MS;
+}
+
+// AbortSignal.timeout 触发时 fetch 以 TimeoutError 拒绝；测试桩可能直接抛
+// TimeoutError/AbortError 而不消费 signal，两者都归为 timeout，其余网络层异常归 network。
+function classifyUpstreamError(err: unknown, signal: AbortSignal): "timeout" | "network" {
+  if (signal.aborted) return "timeout";
+  const name = (err as { name?: unknown } | null)?.name;
+  if (name === "TimeoutError" || name === "AbortError") return "timeout";
+  return "network";
+}
+
+function isValidJson(text: string): boolean {
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// 响应头已到但读取 body 时断流/超时：SyntaxError 才归 invalid_json，
+// abort 与传输错误按 classifyUpstreamError 归 timeout / network，不误报为 JSON 错误。
+function classifyBodyReadError(err: unknown, signal: AbortSignal): OidcUpstreamFailureReason {
+  if (err instanceof SyntaxError) return "invalid_json";
+  return classifyUpstreamError(err, signal);
+}
 
 export function createOidcTokenExchangeFromEnv(): OidcTokenExchangeOptions | undefined {
   if (!env.OIDC_CLIENT_ID || !env.OIDC_CLIENT_SECRET || !env.OIDC_TOKEN_ENDPOINT) return undefined;
@@ -31,6 +69,7 @@ export function createOidcTokenExchangeFromEnv(): OidcTokenExchangeOptions | und
     clientSecret: env.OIDC_CLIENT_SECRET,
     tokenEndpoint: env.OIDC_TOKEN_ENDPOINT,
     tokenAuthMethod: env.OIDC_TOKEN_AUTH_METHOD,
+    upstreamTimeoutMs: env.OIDC_UPSTREAM_TIMEOUT_MS,
   };
 }
 
@@ -40,6 +79,7 @@ export function createOidcOpsBrowserProxyFromEnv(): OidcOpsBrowserProxyOptions |
     tokenEndpoint: env.OIDC_TOKEN_ENDPOINT,
     jwksUrl: env.OIDC_JWKS_URL,
     revokeEndpoint: env.OIDC_REVOKE_ENDPOINT ?? `${env.OIDC_ISSUER}/revoke`,
+    upstreamTimeoutMs: env.OIDC_UPSTREAM_TIMEOUT_MS,
     ...(env.OIDC_OPS_CLIENT_ID ? { clientId: env.OIDC_OPS_CLIENT_ID } : {}),
   };
 }
@@ -72,28 +112,43 @@ export function createAuthRoutes(
       headers.set("authorization", `Basic ${btoa(`${options.clientId}:${options.clientSecret}`)}`);
     }
 
+    // 一次性 authorization code：超时或网络失败只抛 502，绝不自动重试。
+    const signal = AbortSignal.timeout(resolveUpstreamTimeoutMs(options.upstreamTimeoutMs));
     let upstream: Response;
     try {
       upstream = await (options.fetch ?? fetch)(options.tokenEndpoint, {
         method: "POST",
         headers,
         body: params.toString(),
+        signal,
       });
-    } catch {
-      throw new HttpError(502, "oidc-token-exchange-failed", "OIDC token exchange failed");
+    } catch (err) {
+      throw new HttpError(502, "oidc-token-exchange-failed", "OIDC token exchange failed", {
+        reason: classifyUpstreamError(err, signal),
+      });
     }
 
-    const body = await upstream.json().catch(() => null);
     if (!upstream.ok) {
       throw new HttpError(502, "oidc-token-exchange-failed", "OIDC token exchange failed", {
+        reason: "upstream_status",
         upstreamStatus: upstream.status,
       });
     }
+    let body: unknown;
+    try {
+      body = await upstream.json();
+    } catch (err) {
+      throw new HttpError(502, "oidc-token-exchange-failed", "OIDC token exchange failed", {
+        reason: classifyBodyReadError(err, signal),
+      });
+    }
     if (body === null) {
-      throw new HttpError(502, "oidc-token-exchange-failed", "OIDC token exchange failed");
+      throw new HttpError(502, "oidc-token-exchange-failed", "OIDC token exchange failed", {
+        reason: "invalid_json",
+      });
     }
 
-    if (body && typeof body === "object" && !Array.isArray(body)) {
+    if (typeof body === "object" && !Array.isArray(body)) {
       const { refresh_token: _refreshToken, ...browserTokenResponse } = body as Record<string, unknown>;
       return c.json(browserTokenResponse, upstream.status as never);
     }
@@ -105,20 +160,37 @@ export function createAuthRoutes(
     if (!opsBrowser) {
       throw new HttpError(501, "oidc-ops-proxy-not-configured", "Operations OIDC proxy is not configured");
     }
+    const signal = AbortSignal.timeout(resolveUpstreamTimeoutMs(opsBrowser.upstreamTimeoutMs));
     let upstream: Response;
     try {
       upstream = await (opsBrowser.fetch ?? fetch)(opsBrowser.jwksUrl, {
         headers: { accept: "application/json" },
+        signal,
       });
-    } catch {
-      throw new HttpError(502, "oidc-ops-jwks-failed", "Operations OIDC JWKS request failed");
+    } catch (err) {
+      throw new HttpError(502, "oidc-ops-jwks-failed", "Operations OIDC JWKS request failed", {
+        reason: classifyUpstreamError(err, signal),
+      });
     }
     if (!upstream.ok) {
       throw new HttpError(502, "oidc-ops-jwks-failed", "Operations OIDC JWKS request failed", {
+        reason: "upstream_status",
         upstreamStatus: upstream.status,
       });
     }
-    const body = await upstream.text();
+    let body: string;
+    try {
+      body = await upstream.text();
+    } catch (err) {
+      throw new HttpError(502, "oidc-ops-jwks-failed", "Operations OIDC JWKS request failed", {
+        reason: classifyUpstreamError(err, signal),
+      });
+    }
+    if (!isValidJson(body)) {
+      throw new HttpError(502, "oidc-ops-jwks-failed", "Operations OIDC JWKS request failed", {
+        reason: "invalid_json",
+      });
+    }
     c.header("content-type", "application/json");
     c.header("cache-control", "public, max-age=300");
     return c.body(body);
@@ -138,20 +210,38 @@ export function createAuthRoutes(
     }
     params.delete("client_secret");
     params.set("client_id", clientId);
+    // 一次性 authorization code：超时或网络失败只抛 502，绝不自动重试。
+    const signal = AbortSignal.timeout(resolveUpstreamTimeoutMs(opsBrowser.upstreamTimeoutMs));
     let upstream: Response;
     try {
       upstream = await (opsBrowser.fetch ?? fetch)(opsBrowser.tokenEndpoint, {
         method: "POST",
         headers: { "content-type": "application/x-www-form-urlencoded" },
         body: params.toString(),
+        signal,
       });
-    } catch {
-      throw new HttpError(502, "oidc-ops-token-exchange-failed", "Operations OIDC token exchange failed");
-    }
-    const body = await upstream.json().catch(() => null);
-    if (!upstream.ok || body === null) {
+    } catch (err) {
       throw new HttpError(502, "oidc-ops-token-exchange-failed", "Operations OIDC token exchange failed", {
+        reason: classifyUpstreamError(err, signal),
+      });
+    }
+    if (!upstream.ok) {
+      throw new HttpError(502, "oidc-ops-token-exchange-failed", "Operations OIDC token exchange failed", {
+        reason: "upstream_status",
         upstreamStatus: upstream.status,
+      });
+    }
+    let body: unknown;
+    try {
+      body = await upstream.json();
+    } catch (err) {
+      throw new HttpError(502, "oidc-ops-token-exchange-failed", "Operations OIDC token exchange failed", {
+        reason: classifyBodyReadError(err, signal),
+      });
+    }
+    if (body === null) {
+      throw new HttpError(502, "oidc-ops-token-exchange-failed", "Operations OIDC token exchange failed", {
+        reason: "invalid_json",
       });
     }
     if (typeof body === "object" && !Array.isArray(body)) {
@@ -174,18 +264,23 @@ export function createAuthRoutes(
     }
     params.delete("client_secret");
     params.set("client_id", opsBrowser.clientId);
+    const signal = AbortSignal.timeout(resolveUpstreamTimeoutMs(opsBrowser.upstreamTimeoutMs));
     let upstream: Response;
     try {
       upstream = await (opsBrowser.fetch ?? fetch)(opsBrowser.revokeEndpoint, {
         method: "POST",
         headers: { "content-type": "application/x-www-form-urlencoded" },
         body: params.toString(),
+        signal,
       });
-    } catch {
-      throw new HttpError(502, "oidc-ops-revoke-failed", "Operations OIDC revoke failed");
+    } catch (err) {
+      throw new HttpError(502, "oidc-ops-revoke-failed", "Operations OIDC revoke failed", {
+        reason: classifyUpstreamError(err, signal),
+      });
     }
     if (!upstream.ok) {
       throw new HttpError(502, "oidc-ops-revoke-failed", "Operations OIDC revoke failed", {
+        reason: "upstream_status",
         upstreamStatus: upstream.status,
       });
     }
