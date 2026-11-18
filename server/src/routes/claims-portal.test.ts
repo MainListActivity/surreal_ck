@@ -2,9 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { Hono } from "hono";
 import type { MiddlewareHandler } from "hono";
 import type { AppBindings } from "../hono-types";
+import { HttpError } from "../http-error";
 import { handleError } from "../middleware/error";
 import { ClaimsPortalService, type ClaimsQueryable } from "../claims-portal/service";
-import { SESSION_COOKIE_NAME } from "../claims-portal/constants";
+import { MAX_ATTACHMENT_BYTES, SESSION_COOKIE_NAME } from "../claims-portal/constants";
 import { createClaimsPortalRoutes } from "./claims-portal";
 import { hashToken } from "../claims-portal/crypto";
 
@@ -187,12 +188,18 @@ function createMemoryDb(store: Store): ClaimsQueryable {
   };
 }
 
-function makeMemoryStorage() {
+function makeMemoryStorage(putObjectThrow?: HttpError) {
   const objects = new Map<string, { bytes: Uint8Array; contentType: string }>();
+  let putCalls = 0;
   return {
     objects,
+    get putCalls() {
+      return putCalls;
+    },
     storage: {
       async putObject(input: { key: string; bytes: Uint8Array; contentType: string }) {
+        putCalls += 1;
+        if (putObjectThrow) throw putObjectThrow;
         objects.set(input.key, { bytes: input.bytes, contentType: input.contentType });
       },
       async getObject(key: string) {
@@ -215,6 +222,8 @@ function makeApp(options?: {
   pepper?: string | null;
   attachmentConfigured?: boolean;
   user?: typeof testUser;
+  checkDiskSpace?: () => Promise<number>;
+  putObjectThrow?: HttpError;
 }) {
   const store: Store = {
     roster: { id: "creditor_roster:r1", name: "张三", identity_code: "ID-001" },
@@ -225,7 +234,7 @@ function makeApp(options?: {
     seq: 0,
   };
   const db = createMemoryDb(store);
-  const memoryStorage = makeMemoryStorage();
+  const memoryStorage = makeMemoryStorage(options?.putObjectThrow);
   const service = new ClaimsPortalService({
     getSession: async () => db,
     resolveWorkspace: async (slug) => (slug === "case-a" ? { dbName: "ws_case_a" } : null),
@@ -241,6 +250,7 @@ function makeApp(options?: {
           }
         : null,
     createStorage: () => memoryStorage.storage,
+    checkDiskSpace: options?.checkDiskSpace,
   });
   const app = new Hono<AppBindings>();
   app.onError(handleError);
@@ -483,5 +493,105 @@ describe("claims-portal routes", () => {
     expect(download.headers.get("cache-control")).toContain("no-store");
     expect(download.headers.get("content-disposition")).toContain("a.pdf");
     expect(await download.text()).toBe("%PDF-1.4 mock");
+  });
+
+  async function openPortalSession(app: Hono<AppBindings>): Promise<{ token: string; cookie: string }> {
+    const mint = await app.request("/api/workspaces/case-a/claims-portal/tokens", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ rosterId: "creditor_roster:r1" }),
+    });
+    const minted = await mint.json();
+    const open = await app.request(
+      `/api/claims-portal/case-a/${minted.tokenPlaintext}/session`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "张三", identityCode: "ID-001" }),
+      },
+    );
+    expect(open.status).toBe(200);
+    return {
+      token: minted.tokenPlaintext,
+      cookie: (open.headers.get("set-cookie") ?? "").split(";")[0]!,
+    };
+  }
+
+  test("Content-Length 超限：解析请求体前直接 413 attachment-too-large", async () => {
+    const { app, store, memoryStorage } = makeApp({ attachmentConfigured: true });
+    const { token, cookie } = await openPortalSession(app);
+
+    const res = await app.request(
+      `/api/claims-portal/case-a/${token}/attachments`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "content-length": String(MAX_ATTACHMENT_BYTES + 1),
+          cookie,
+        },
+        body: JSON.stringify({ attachmentType: "contract", fileName: "a.pdf" }),
+      },
+    );
+    expect(res.status).toBe(413);
+    expect((await res.json()).error.code).toBe("attachment-too-large");
+    expect(memoryStorage.putCalls).toBe(0);
+    expect(store.attachments).toHaveLength(0);
+  });
+
+  test("磁盘不足：507 upload-insufficient-storage，不写 R2 不落库", async () => {
+    const { app, store, memoryStorage } = makeApp({
+      attachmentConfigured: true,
+      checkDiskSpace: async () => 1024,
+    });
+    const { token, cookie } = await openPortalSession(app);
+
+    const pdfBytes = new TextEncoder().encode("%PDF-1.4 mock");
+    const res = await app.request(
+      `/api/claims-portal/case-a/${token}/attachments`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({
+          attachmentType: "contract",
+          fileName: "a.pdf",
+          contentType: "application/pdf",
+          byteSize: pdfBytes.byteLength,
+          bytesBase64: Buffer.from(pdfBytes).toString("base64"),
+        }),
+      },
+    );
+    expect(res.status).toBe(507);
+    expect((await res.json()).error.code).toBe("upload-insufficient-storage");
+    expect(memoryStorage.putCalls).toBe(0);
+    expect(store.attachments).toHaveLength(0);
+  });
+
+  test("对象存储 507 → 507 attachment-storage-full，不落库", async () => {
+    const { app, store } = makeApp({
+      attachmentConfigured: true,
+      checkDiskSpace: async () => Number.MAX_SAFE_INTEGER,
+      putObjectThrow: new HttpError(507, "attachment-storage-full", "附件存储空间不足，请稍后重试"),
+    });
+    const { token, cookie } = await openPortalSession(app);
+
+    const pdfBytes = new TextEncoder().encode("%PDF-1.4 mock");
+    const res = await app.request(
+      `/api/claims-portal/case-a/${token}/attachments`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({
+          attachmentType: "contract",
+          fileName: "a.pdf",
+          contentType: "application/pdf",
+          byteSize: pdfBytes.byteLength,
+          bytesBase64: Buffer.from(pdfBytes).toString("base64"),
+        }),
+      },
+    );
+    expect(res.status).toBe(507);
+    expect((await res.json()).error.code).toBe("attachment-storage-full");
+    expect(store.attachments).toHaveLength(0);
   });
 });

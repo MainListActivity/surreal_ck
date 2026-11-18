@@ -15,6 +15,8 @@ import { decodeSessionCookie, encodeSessionCookie, generateToken, hashToken } fr
 import {
   buildClaimsAttachmentKey,
   createAttachmentStorage,
+  getTmpDirAvailableBytes,
+  requiredUploadHeadroomBytes,
   type ClaimsAttachmentStorage,
 } from "./storage";
 import {
@@ -34,6 +36,8 @@ export type ClaimsPortalDeps = {
   getAttachmentConfig?: () => ReturnType<typeof getClaimsAttachmentConfig>;
   /** 注入存储实现；缺省按附件配置创建（CF API 或 S3）。 */
   createStorage?: (config: NonNullable<ReturnType<typeof getClaimsAttachmentConfig>>) => ClaimsAttachmentStorage;
+  /** 注入磁盘可用空间检查（默认 statfs os.tmpdir()）；返回可用字节数。 */
+  checkDiskSpace?: () => Promise<number>;
   now?: () => number;
 };
 
@@ -160,6 +164,7 @@ export class ClaimsPortalService {
   private readonly createStorage: (
     config: NonNullable<ReturnType<typeof getClaimsAttachmentConfig>>,
   ) => ClaimsAttachmentStorage;
+  private readonly checkDiskSpace: () => Promise<number>;
   private readonly now: () => number;
 
   constructor(deps: ClaimsPortalDeps = {}) {
@@ -168,6 +173,7 @@ export class ClaimsPortalService {
     this.getPepper = deps.getPepper ?? (() => getClaimsPortalPepper());
     this.getAttachmentConfig = deps.getAttachmentConfig ?? (() => getClaimsAttachmentConfig());
     this.createStorage = deps.createStorage ?? createAttachmentStorage;
+    this.checkDiskSpace = deps.checkDiskSpace ?? getTmpDirAvailableBytes;
     this.now = deps.now ?? (() => Date.now());
   }
 
@@ -754,6 +760,26 @@ export class ClaimsPortalService {
   }
 
   /**
+   * 上传暂存盘预检：可用空间须 >= max(64MB, 2 * requiredBytes)。
+   * 不足时记录脱敏结构化 warn（不含路径 / 凭证），抛 507 upload-insufficient-storage。
+   */
+  async assertUploadDiskHeadroom(requiredBytes: number, workspaceDb?: string): Promise<void> {
+    const availableBytes = await this.checkDiskSpace();
+    if (availableBytes < requiredUploadHeadroomBytes(requiredBytes)) {
+      console.warn("[claims-portal] upload disk headroom insufficient", {
+        workspaceDb: workspaceDb ?? null,
+        requiredBytes,
+        availableBytes,
+      });
+      throw new HttpError(
+        507,
+        "upload-insufficient-storage",
+        "服务器暂存空间不足，请稍后重试",
+      );
+    }
+  }
+
+  /**
    * 上传附件字节到 R2，并写入 claim_attachment 元数据。
    * 缺配置 → 501；无字节 → 400；对象键 claims/{ws}/{submission}/{attachmentId}/{file}。
    */
@@ -801,6 +827,9 @@ export class ClaimsPortalService {
       attachmentId,
       fileName: meta.fileName,
     });
+
+    // 写对象存储前按实际字节数复核暂存盘空间；不足则 507，不写 R2 也不落库。
+    await this.assertUploadDiskHeadroom(input.bytes.byteLength, input.workspaceDb);
 
     const storage = this.createStorage(config);
     await storage.putObject({
