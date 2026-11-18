@@ -10,6 +10,7 @@
  * 行只写事件名、日期、HMAC 工作区标识与计数；不写任何内容字段（方案 §4 禁止采集清单）。
  */
 
+import type { FunnelEventName } from "./events";
 import { workspaceKey } from "./hash";
 
 export type FunnelAggregationClient = {
@@ -17,14 +18,6 @@ export type FunnelAggregationClient = {
   query(sql: string, params?: Record<string, unknown>): Promise<unknown>;
 };
 
-export type FunnelEventName =
-  | "invite_issued"
-  | "first_login"
-  | "template_created"
-  | "import_succeeded"
-  | "first_success"
-  | "ai_proposal_adopted"
-  | "return_week2";
 
 export type FunnelAggregationResult = {
   workspaces: number;

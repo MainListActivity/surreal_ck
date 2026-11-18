@@ -41,4 +41,47 @@ describe("SurrealFunnelCountStore", () => {
     );
     expect(await store.list({})).toEqual([]);
   });
+
+  test("summarize 在数据库内聚合，只返回总量与工作区数", async () => {
+    const calls: Array<{ sql: string; params?: Record<string, unknown> }> = [];
+    const store = new SurrealFunnelCountStore(
+      async () => ({
+        async query(sql: string, params?: Record<string, unknown>) {
+          calls.push({ sql, params });
+          return [[{
+            workspace_count: 501,
+            total_count: 1002,
+            workspace_key: "must-not-escape",
+          }]];
+        },
+      }),
+      "main",
+    );
+
+    const summary = await store.summarize({ event: "first_login", day: "2026-10-29" });
+
+    expect(summary).toEqual({ totalCount: 1002, workspaceCount: 501 });
+    expect(summary).not.toHaveProperty("workspaceKey");
+    expect(calls[0]?.sql).toContain("count() AS workspace_count, math::sum(count) AS total_count");
+    expect(calls[0]?.sql).toContain("GROUP ALL");
+    expect(calls[0]?.params).toEqual({ event: "first_login", day: "2026-10-29" });
+  });
+
+  test("summarize 空结果按零处理", async () => {
+    const store = new SurrealFunnelCountStore(
+      async () => ({ async query() { return [[]]; } }),
+      "main",
+    );
+    expect(await store.summarize({ event: "first_login", day: "2026-10-29" }))
+      .toEqual({ totalCount: 0, workspaceCount: 0 });
+  });
+
+  test("summarize 非法聚合行直接失败，不构造半行", async () => {
+    const store = new SurrealFunnelCountStore(
+      async () => ({ async query() { return [[{ workspace_count: 1 }]]; } }),
+      "main",
+    );
+    await expect(store.summarize({ event: "first_login", day: "2026-10-29" }))
+      .rejects.toThrow("funnel summary aggregate malformed");
+  });
 });

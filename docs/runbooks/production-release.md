@@ -81,6 +81,9 @@ Variables（2026-10-19 只读核对，前端 12 项全部存在，核对方法�
 - **生效**：CI 发布 origin 时把该 secret 写成 `server.env` 的 `FUNNEL_HASH_KEY=...`；未配置时聚合任务只重算不写入（无密钥的摘要可枚举还原，故禁止用空密钥落库）。
 - **不轮换**：轮换会使同一工作区的历史 `workspace_key` 与新值断开，历史计数无法对齐。确需更换必须同时接受历史断裂，并按新命名域重新累计。
 - **读取**：运营身份持 `funnel.read` 能力时 `GET /api/ops/funnel-counts` 只读查看；行内只有 event/day/workspace_key/count 四字段。
+- **汇总读取**：同一能力下 `GET /api/ops/funnel-summary?event=<已定义事件>&day=<YYYY-MM-DD>` 返回固定事件、固定 UTC 日的总量与贡献工作区数。计数在数据库内聚合，不逐行取回，也不返回 `workspace_key`，因此不受 funnel-counts 的 500 行上限影响。只接受白名单事件与合法 UTC 日，额外参数一律 422。
+- **抑制口径**：`totalCount < 5` 或 `workspaceCount < 3` 时 `state="suppressed"`，计数字段为 null，不返回精确小样本；没有任何计数行时 `state="empty"`。两者与 `state="reported"` 可区分。
+- **覆盖口径**：响应 `coverage.state` 恒为 `"unknown"`、`complete=false`。空窗或聚合成功都不代表生产采集完整，不能据此推断漏斗覆盖无缺口。
 
 ## 手动重发
 
