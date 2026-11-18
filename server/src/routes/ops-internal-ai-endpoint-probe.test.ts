@@ -138,17 +138,26 @@ describe("ops endpoint probe route", () => {
   test("并发与冷却都由限流挡住", async () => {
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
+    // 鉴权中间件是异步的，谁先取得唯一租约不由发起顺序决定；
+    // 必须等 first 真正进入受控 run 后再发 second，否则 second 可能先占槽并卡在 gate。
+    let runEntered!: () => void;
+    const enteredRun = new Promise<void>(resolve => { runEntered = resolve; });
     const app = appWith({
       capabilities: ["internal-ai.endpoint-probe"],
       limiter: createEndpointProbeLimiter({ maxConcurrent: 1, minIntervalMs: 60_000 }),
-      run: async () => { await gate; return { endpointHost: "data.maplayer.top", endpointPath: "/ofm/v1", checkedAt: new Date(0).toISOString(), status: "catalog-readable", errorType: null, latencyMs: 1, requestId: "req-concurrent" }; },
+      run: async () => { runEntered(); await gate; return { endpointHost: "data.maplayer.top", endpointPath: "/ofm/v1", checkedAt: new Date(0).toISOString(), status: "catalog-readable", errorType: null, latencyMs: 1, requestId: "req-concurrent" }; },
     });
     const headers = await authHeader();
     const first = call(app, { headers });
-    const second = await call(app, { headers });
-    expect(second.status).toBe(429);
-    expect(await second.json()).toMatchObject({ error: { code: "internal-ai-endpoint-probe-busy" } });
-    release();
+    await enteredRun;
+    let second: Response;
+    try {
+      second = await call(app, { headers });
+      expect(second.status).toBe(429);
+      expect(await second.json()).toMatchObject({ error: { code: "internal-ai-endpoint-probe-busy" } });
+    } finally {
+      release();
+    }
     expect((await first).status).toBe(200);
 
     const throttled = await call(app, { headers });
