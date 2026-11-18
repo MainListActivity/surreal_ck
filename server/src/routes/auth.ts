@@ -142,8 +142,13 @@ export function createAuthRoutes(
         reason: classifyBodyReadError(err, signal),
       });
     }
+    if (body === null) {
+      throw new HttpError(502, "oidc-token-exchange-failed", "OIDC token exchange failed", {
+        reason: "invalid_json",
+      });
+    }
 
-    if (body && typeof body === "object" && !Array.isArray(body)) {
+    if (typeof body === "object" && !Array.isArray(body)) {
       const { refresh_token: _refreshToken, ...browserTokenResponse } = body as Record<string, unknown>;
       return c.json(browserTokenResponse, upstream.status as never);
     }
@@ -232,6 +237,11 @@ export function createAuthRoutes(
     } catch (err) {
       throw new HttpError(502, "oidc-ops-token-exchange-failed", "Operations OIDC token exchange failed", {
         reason: classifyBodyReadError(err, signal),
+      });
+    }
+    if (body === null) {
+      throw new HttpError(502, "oidc-ops-token-exchange-failed", "Operations OIDC token exchange failed", {
+        reason: "invalid_json",
       });
     }
     if (typeof body === "object" && !Array.isArray(body)) {

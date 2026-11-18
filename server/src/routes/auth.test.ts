@@ -399,6 +399,8 @@ describe("OIDC upstream timeout and failure classification", () => {
     code: string;
     /** revoke 成功响应本就是空体，不参与 invalid_json 分类。 */
     parsesJsonBody: boolean;
+    /** token 路由把 2xx 的 JSON null 归为 invalid_json；jwks/revoke 不适用。 */
+    nullBodyIsInvalidJson?: boolean;
     makeApp: (fetchImpl: typeof fetch) => ReturnType<typeof createApp>;
     hit: (app: ReturnType<typeof createApp>) => Promise<Response>;
   };
@@ -427,6 +429,7 @@ describe("OIDC upstream timeout and failure classification", () => {
       name: "POST /api/auth/token",
       code: "oidc-token-exchange-failed",
       parsesJsonBody: true,
+      nullBodyIsInvalidJson: true,
       makeApp: (fetchImpl) => createApp({
         oidcTokenExchange: {
           clientId: "web-client",
@@ -466,6 +469,7 @@ describe("OIDC upstream timeout and failure classification", () => {
       name: "POST /api/auth/ops/token",
       code: "oidc-ops-token-exchange-failed",
       parsesJsonBody: true,
+      nullBodyIsInvalidJson: true,
       makeApp: (fetchImpl) => createApp({
         oidcOpsBrowserProxy: {
           clientId: "ops-public-client",
@@ -609,6 +613,24 @@ describe("OIDC upstream timeout and failure classification", () => {
         const body = await response.json();
         expect(body).toMatchObject({
           error: { code: route.code, details: { reason: "timeout" } },
+        });
+        expectNoSensitiveLeak(JSON.stringify(body));
+      });
+    }
+
+    if (route.nullBodyIsInvalidJson) {
+      test(`${route.name} returns 502 invalid_json when the upstream 2xx body is JSON null`, async () => {
+        const app = route.makeApp(async () => new Response("null", {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }));
+
+        const response = await route.hit(app);
+
+        expect(response.status).toBe(502);
+        const body = await response.json();
+        expect(body).toMatchObject({
+          error: { code: route.code, details: { reason: "invalid_json" } },
         });
         expectNoSensitiveLeak(JSON.stringify(body));
       });
