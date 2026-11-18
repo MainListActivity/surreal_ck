@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { HttpError } from "../http-error";
 import type { AppBindings } from "../hono-types";
 import { env } from "../env";
+import { describeUpstreamFailure, IDP_UPSTREAM_TIMEOUT_MS } from "../oidc/upstream-fetch";
 
 export type OidcTokenAuthMethod = "client_secret_basic" | "client_secret_post";
 
@@ -78,9 +79,18 @@ export function createAuthRoutes(
         method: "POST",
         headers,
         body: params.toString(),
+        signal: AbortSignal.timeout(IDP_UPSTREAM_TIMEOUT_MS),
       });
-    } catch {
-      throw new HttpError(502, "oidc-token-exchange-failed", "OIDC token exchange failed");
+    } catch (error) {
+      // 只记录错误名与 cause.code，不记录 message：上游错误可能回显授权码或 secret。
+      // 授权码一次性，本路由不做重试。
+      const failure = describeUpstreamFailure(error);
+      console.error("[auth] oidc token exchange upstream failed", failure);
+      throw new HttpError(
+        502,
+        failure.timeout ? "oidc-token-exchange-timeout" : "oidc-token-exchange-failed",
+        "OIDC token exchange failed",
+      );
     }
 
     const body = await upstream.json().catch(() => null);

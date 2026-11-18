@@ -205,4 +205,59 @@ describe("OIDC middleware", () => {
     expect(logText).not.toContain(badSignatureToken);
     expect(logText).not.toContain(badAudienceToken);
   });
+
+  test("logs JWKS upstream failures without leaking the token, and keeps the 401 contract", async () => {
+    const logs: string[] = [];
+    console.error = (...args: unknown[]) => {
+      logs.push(JSON.stringify(args));
+    };
+    const { env: currentEnv } = await import("../env");
+    const previousUrl = currentEnv.OIDC_JWKS_URL;
+    overrideEnv({ OIDC_JWKS_URL: "http://127.0.0.1:1/jwks" });
+    try {
+      const app = createProtectedApp();
+      const token = await signToken();
+      const response = await app.fetch(new Request("http://localhost/protected", {
+        headers: { authorization: `Bearer ${token}` },
+      }));
+
+      const body = await response.json();
+      expect(response.status).toBe(401);
+      expect(body.error.code).toBe("oidc-invalid");
+
+      const logText = logs.join("\n");
+      expect(logText).toContain("[oidc] bearer verification upstream failure");
+      // 网络层失败按环境不同报 ECONNRESET（本机）或 ECONNREFUSED（Linux CI），
+      // 断言结构而非具体 errno：描述里必须带非空 causeCode。
+      const failures = logs
+        .map((line) => { try { return JSON.parse(line) as unknown[]; } catch { return null; } })
+        .filter((entry): entry is unknown[] => Array.isArray(entry) && entry[0] === "[oidc] bearer verification upstream failure")
+        .map((entry) => entry[1] as { causeCode?: string | null });
+      expect(failures.length).toBeGreaterThan(0);
+      for (const failure of failures) expect(failure.causeCode).toBeTruthy();
+      expect(logText).not.toContain(token);
+      expect(logText).not.toContain("access-token");
+    } finally {
+      overrideEnv({ OIDC_JWKS_URL: previousUrl });
+    }
+  });
+
+  test("garbage or forged bearer tokens never produce the upstream-failure log", async () => {
+    const logs: string[] = [];
+    console.error = (...args: unknown[]) => {
+      logs.push(JSON.stringify(args));
+    };
+    const app = createProtectedApp();
+
+    const garbage = await app.fetch(new Request("http://localhost/protected", {
+      headers: { authorization: "Bearer not-a-jwt" },
+    }));
+    const forged = await app.fetch(new Request("http://localhost/protected", {
+      headers: { authorization: `Bearer ${await signToken({ useWrongKey: true })}` },
+    }));
+
+    expect(garbage.status).toBe(401);
+    expect(forged.status).toBe(401);
+    expect(logs.join("\n")).not.toContain("[oidc] bearer verification upstream failure");
+  });
 });
