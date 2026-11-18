@@ -8,6 +8,7 @@ import {
   FAIL_THRESHOLD,
   FAIL_WINDOW_MS,
   LOCK_MS,
+  MAX_ATTACHMENT_BYTES,
   OPEN_FAILURE_MESSAGE,
   SESSION_TTL_MS,
 } from "./constants";
@@ -801,6 +802,11 @@ export class ClaimsPortalService {
     });
     if (!input.bytes || input.bytes.byteLength === 0) {
       throw new HttpError(400, "attachment-bytes-required", "Attachment bytes are required");
+    }
+    // 解码后字节才是真实大小：Content-Length 预检容忍 base64/信封开销，
+    // 这里的 413 才是附件本体的硬上限。
+    if (input.bytes.byteLength > MAX_ATTACHMENT_BYTES) {
+      throw new HttpError(413, "attachment-too-large", "附件超出大小限制");
     }
     if (input.bytes.byteLength !== meta.byteSize) {
       throw new HttpError(400, "claims-attachment-size-mismatch", "byte_size does not match uploaded bytes");

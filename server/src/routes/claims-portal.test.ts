@@ -5,7 +5,11 @@ import type { AppBindings } from "../hono-types";
 import { HttpError } from "../http-error";
 import { handleError } from "../middleware/error";
 import { ClaimsPortalService, type ClaimsQueryable } from "../claims-portal/service";
-import { MAX_ATTACHMENT_BYTES, SESSION_COOKIE_NAME } from "../claims-portal/constants";
+import {
+  MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENT_REQUEST_BYTES,
+  SESSION_COOKIE_NAME,
+} from "../claims-portal/constants";
 import { createClaimsPortalRoutes } from "./claims-portal";
 import { hashToken } from "../claims-portal/crypto";
 
@@ -527,7 +531,7 @@ describe("claims-portal routes", () => {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "content-length": String(MAX_ATTACHMENT_BYTES + 1),
+          "content-length": String(MAX_ATTACHMENT_REQUEST_BYTES + 1),
           cookie,
         },
         body: JSON.stringify({ attachmentType: "contract", fileName: "a.pdf" }),
@@ -537,6 +541,38 @@ describe("claims-portal routes", () => {
     expect((await res.json()).error.code).toBe("attachment-too-large");
     expect(memoryStorage.putCalls).toBe(0);
     expect(store.attachments).toHaveLength(0);
+  });
+
+  test("Content-Length 含 base64/信封开销：合法附件不被 413 误杀", async () => {
+    const { app, memoryStorage } = makeApp({
+      attachmentConfigured: true,
+      checkDiskSpace: async () => Number.MAX_SAFE_INTEGER,
+    });
+    const { token, cookie } = await openPortalSession(app);
+
+    // 声明长度 = 上限内附件经 base64/信封膨胀后的大小，仍须放行。
+    const pdfBytes = new TextEncoder().encode("%PDF-1.4 mock");
+    const res = await app.request(
+      `/api/claims-portal/case-a/${token}/attachments`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "content-length": String(MAX_ATTACHMENT_BYTES + 8 * 1024),
+          cookie,
+        },
+        body: JSON.stringify({
+          attachmentType: "contract",
+          fileName: "a.pdf",
+          contentType: "application/pdf",
+          byteSize: pdfBytes.byteLength,
+          bytesBase64: Buffer.from(pdfBytes).toString("base64"),
+        }),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect((await res.json()).ok).toBe(true);
+    expect(memoryStorage.putCalls).toBe(1);
   });
 
   test("磁盘不足：507 upload-insufficient-storage，不写 R2 不落库", async () => {
