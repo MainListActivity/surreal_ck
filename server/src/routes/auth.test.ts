@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createApp } from "../app";
 import { overrideEnv } from "../env";
+import { createOidcOpsBrowserProxyFromEnv, createOidcTokenExchangeFromEnv } from "./auth";
 
 const originalConsoleError = console.error;
 
@@ -389,5 +390,229 @@ describe("POST /api/auth/token", () => {
     expect(`${responseText}\n${logText}`).not.toContain("auth-code");
     expect(`${responseText}\n${logText}`).not.toContain("server-secret");
     expect(`${responseText}\n${logText}`).not.toContain("access-token");
+  });
+});
+
+describe("OIDC upstream timeout and failure classification", () => {
+  type UpstreamRoute = {
+    name: string;
+    code: string;
+    /** revoke 成功响应本就是空体，不参与 invalid_json 分类。 */
+    parsesJsonBody: boolean;
+    makeApp: (fetchImpl: typeof fetch) => ReturnType<typeof createApp>;
+    hit: (app: ReturnType<typeof createApp>) => Promise<Response>;
+  };
+
+  const sensitiveMarkers = [
+    "auth-code",
+    "pkce-verifier",
+    "ops-code",
+    "ops-verifier",
+    "ops-access-token",
+    "access-token-from-idp",
+    "server-secret",
+    "forged-secret",
+    "refresh-token-must-stay-server-side",
+    "upstream-secret-body",
+  ];
+
+  const expectNoSensitiveLeak = (text: string) => {
+    for (const marker of sensitiveMarkers) {
+      expect(text).not.toContain(marker);
+    }
+  };
+
+  const upstreamRoutes: UpstreamRoute[] = [
+    {
+      name: "POST /api/auth/token",
+      code: "oidc-token-exchange-failed",
+      parsesJsonBody: true,
+      makeApp: (fetchImpl) => createApp({
+        oidcTokenExchange: {
+          clientId: "web-client",
+          clientSecret: "server-secret",
+          tokenEndpoint: "https://idp.example.test/token",
+          upstreamTimeoutMs: 10,
+          fetch: fetchImpl,
+        },
+      }),
+      hit: (app) => app.request("/api/auth/token", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          code: "auth-code",
+          code_verifier: "pkce-verifier",
+          redirect_uri: "https://app.example.test/auth/callback",
+        }),
+      }),
+    },
+    {
+      name: "GET /api/auth/ops/jwks",
+      code: "oidc-ops-jwks-failed",
+      parsesJsonBody: true,
+      makeApp: (fetchImpl) => createApp({
+        oidcOpsBrowserProxy: {
+          clientId: "ops-public-client",
+          tokenEndpoint: "https://idp.example.test/token",
+          jwksUrl: "https://idp.example.test/jwks.json",
+          upstreamTimeoutMs: 10,
+          fetch: fetchImpl,
+        },
+      }),
+      hit: (app) => app.request("/api/auth/ops/jwks"),
+    },
+    {
+      name: "POST /api/auth/ops/token",
+      code: "oidc-ops-token-exchange-failed",
+      parsesJsonBody: true,
+      makeApp: (fetchImpl) => createApp({
+        oidcOpsBrowserProxy: {
+          clientId: "ops-public-client",
+          tokenEndpoint: "https://idp.example.test/token",
+          jwksUrl: "https://idp.example.test/jwks.json",
+          upstreamTimeoutMs: 10,
+          fetch: fetchImpl,
+        },
+      }),
+      hit: (app) => app.request("/api/auth/ops/token", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          code: "ops-code",
+          code_verifier: "ops-verifier",
+          client_secret: "forged-secret",
+          redirect_uri: "https://ops.example.test/auth/callback.html",
+        }),
+      }),
+    },
+    {
+      name: "POST /api/auth/ops/revoke",
+      code: "oidc-ops-revoke-failed",
+      parsesJsonBody: false,
+      makeApp: (fetchImpl) => createApp({
+        oidcOpsBrowserProxy: {
+          clientId: "ops-public-client",
+          tokenEndpoint: "https://idp.example.test/token",
+          jwksUrl: "https://idp.example.test/jwks.json",
+          revokeEndpoint: "https://idp.example.test/revoke",
+          upstreamTimeoutMs: 10,
+          fetch: fetchImpl,
+        },
+      }),
+      hit: (app) => app.request("/api/auth/ops/revoke", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          token: "ops-access-token",
+          client_secret: "forged-secret",
+        }),
+      }),
+    },
+  ];
+
+  for (const route of upstreamRoutes) {
+    test(`${route.name} returns 502 timeout when the upstream call exceeds upstreamTimeoutMs`, async () => {
+      let calls = 0;
+      let sawAbortSignal = false;
+      const app = route.makeApp(async (_input, init = {}) => {
+        calls += 1;
+        const signal = init.signal;
+        sawAbortSignal = signal instanceof AbortSignal;
+        return await new Promise<Response>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(signal.reason));
+        });
+      });
+
+      const response = await route.hit(app);
+
+      expect(response.status).toBe(502);
+      expect(sawAbortSignal).toBe(true);
+      const body = await response.json();
+      expect(body).toMatchObject({
+        error: { code: route.code, details: { reason: "timeout" } },
+      });
+      // 一次性 authorization code / token：超时后严禁自动重试，上游只被调一次。
+      expect(calls).toBe(1);
+      expectNoSensitiveLeak(JSON.stringify(body));
+    });
+
+    test(`${route.name} returns 502 network on upstream transport errors without leaking secrets`, async () => {
+      const logs: string[] = [];
+      console.error = (...args: unknown[]) => {
+        logs.push(JSON.stringify(args));
+      };
+      let calls = 0;
+      const app = route.makeApp(async () => {
+        calls += 1;
+        throw new Error("socket failed carrying auth-code ops-verifier ops-access-token server-secret forged-secret");
+      });
+
+      const response = await route.hit(app);
+
+      expect(response.status).toBe(502);
+      const body = await response.json();
+      expect(body).toMatchObject({
+        error: { code: route.code, details: { reason: "network" } },
+      });
+      expect(calls).toBe(1);
+      expectNoSensitiveLeak(`${JSON.stringify(body)}\n${logs.join("\n")}`);
+    });
+
+    test(`${route.name} returns 502 upstream_status with upstreamStatus on non-2xx and never echoes the upstream body`, async () => {
+      const app = route.makeApp(async () =>
+        Response.json(
+          { error: "invalid_grant", error_description: "upstream-secret-body auth-code server-secret" },
+          { status: 400 },
+        ));
+
+      const response = await route.hit(app);
+
+      expect(response.status).toBe(502);
+      const body = await response.json();
+      expect(body).toMatchObject({
+        error: { code: route.code, details: { reason: "upstream_status", upstreamStatus: 400 } },
+      });
+      expectNoSensitiveLeak(JSON.stringify(body));
+    });
+
+    if (route.parsesJsonBody) {
+      test(`${route.name} returns 502 invalid_json when the upstream 2xx body is not JSON`, async () => {
+        const app = route.makeApp(async () => new Response("<upstream-secret-body>not json", { status: 200 }));
+
+        const response = await route.hit(app);
+
+        expect(response.status).toBe(502);
+        const body = await response.json();
+        expect(body).toMatchObject({
+          error: { code: route.code, details: { reason: "invalid_json" } },
+        });
+        expectNoSensitiveLeak(JSON.stringify(body));
+      });
+    }
+  }
+
+  test("reads OIDC_UPSTREAM_TIMEOUT_MS from the environment for both proxies", () => {
+    overrideEnv({
+      OIDC_UPSTREAM_TIMEOUT_MS: 4321,
+      OIDC_CLIENT_ID: "web-client",
+      OIDC_CLIENT_SECRET: "server-secret",
+      OIDC_TOKEN_ENDPOINT: "https://idp.example.test/token",
+      OIDC_JWKS_URL: "https://idp.example.test/jwks.json",
+    });
+
+    try {
+      expect(createOidcTokenExchangeFromEnv()?.upstreamTimeoutMs).toBe(4321);
+      expect(createOidcOpsBrowserProxyFromEnv()?.upstreamTimeoutMs).toBe(4321);
+    } finally {
+      overrideEnv({
+        OIDC_UPSTREAM_TIMEOUT_MS: undefined,
+        OIDC_CLIENT_ID: undefined,
+        OIDC_CLIENT_SECRET: undefined,
+        OIDC_TOKEN_ENDPOINT: undefined,
+        OIDC_JWKS_URL: undefined,
+      });
+    }
   });
 });
