@@ -4,6 +4,7 @@ import { hashToken } from "./crypto";
 import {
   ClaimsPortalService,
   FAIL_THRESHOLD,
+  MAX_ATTACHMENT_BYTES,
   OPEN_FAILURE_MESSAGE,
   type ClaimsQueryable,
 } from "./service";
@@ -808,6 +809,27 @@ describe("ClaimsPortalService", () => {
       }),
     ).rejects.toMatchObject({ status: 507, code: "attachment-storage-full" });
     expect(memoryStorage.putCalls).toBe(1);
+    expect(store.attachments).toHaveLength(0);
+  });
+
+  test("bytes 解码后超 MAX → 413 attachment-too-large（先于 meta 400）", async () => {
+    const { service, store, memoryStorage } = makeService({
+      attachmentConfigured: true,
+      checkDiskSpace: async () => Number.MAX_SAFE_INTEGER,
+    });
+    const bytes = new Uint8Array(MAX_ATTACHMENT_BYTES + 1);
+    await expect(
+      service.uploadBytes({
+        workspaceDb: "ws_case_a",
+        rosterId: "creditor_roster:r1",
+        attachmentType: "contract",
+        fileName: "a.pdf",
+        contentType: "application/pdf",
+        byteSize: bytes.byteLength,
+        bytes,
+      }),
+    ).rejects.toMatchObject({ status: 413, code: "attachment-too-large" });
+    expect(memoryStorage.putCalls).toBe(0);
     expect(store.attachments).toHaveLength(0);
   });
 
