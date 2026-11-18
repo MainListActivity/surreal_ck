@@ -54,6 +54,13 @@ function isValidJson(text: string): boolean {
   }
 }
 
+// 响应头已到但读取 body 时断流/超时：SyntaxError 才归 invalid_json，
+// abort 与传输错误按 classifyUpstreamError 归 timeout / network，不误报为 JSON 错误。
+function classifyBodyReadError(err: unknown, signal: AbortSignal): OidcUpstreamFailureReason {
+  if (err instanceof SyntaxError) return "invalid_json";
+  return classifyUpstreamError(err, signal);
+}
+
 export function createOidcTokenExchangeFromEnv(): OidcTokenExchangeOptions | undefined {
   if (!env.OIDC_CLIENT_ID || !env.OIDC_CLIENT_SECRET || !env.OIDC_TOKEN_ENDPOINT) return undefined;
 
@@ -121,16 +128,18 @@ export function createAuthRoutes(
       });
     }
 
-    const body = await upstream.json().catch(() => null);
     if (!upstream.ok) {
       throw new HttpError(502, "oidc-token-exchange-failed", "OIDC token exchange failed", {
         reason: "upstream_status",
         upstreamStatus: upstream.status,
       });
     }
-    if (body === null) {
+    let body: unknown;
+    try {
+      body = await upstream.json();
+    } catch (err) {
       throw new HttpError(502, "oidc-token-exchange-failed", "OIDC token exchange failed", {
-        reason: "invalid_json",
+        reason: classifyBodyReadError(err, signal),
       });
     }
 
@@ -164,8 +173,15 @@ export function createAuthRoutes(
         upstreamStatus: upstream.status,
       });
     }
-    const body = await upstream.text().catch(() => null);
-    if (body === null || !isValidJson(body)) {
+    let body: string;
+    try {
+      body = await upstream.text();
+    } catch (err) {
+      throw new HttpError(502, "oidc-ops-jwks-failed", "Operations OIDC JWKS request failed", {
+        reason: classifyUpstreamError(err, signal),
+      });
+    }
+    if (!isValidJson(body)) {
       throw new HttpError(502, "oidc-ops-jwks-failed", "Operations OIDC JWKS request failed", {
         reason: "invalid_json",
       });
@@ -204,16 +220,18 @@ export function createAuthRoutes(
         reason: classifyUpstreamError(err, signal),
       });
     }
-    const body = await upstream.json().catch(() => null);
     if (!upstream.ok) {
       throw new HttpError(502, "oidc-ops-token-exchange-failed", "Operations OIDC token exchange failed", {
         reason: "upstream_status",
         upstreamStatus: upstream.status,
       });
     }
-    if (body === null) {
+    let body: unknown;
+    try {
+      body = await upstream.json();
+    } catch (err) {
       throw new HttpError(502, "oidc-ops-token-exchange-failed", "Operations OIDC token exchange failed", {
-        reason: "invalid_json",
+        reason: classifyBodyReadError(err, signal),
       });
     }
     if (typeof body === "object" && !Array.isArray(body)) {

@@ -590,6 +590,28 @@ describe("OIDC upstream timeout and failure classification", () => {
         });
         expectNoSensitiveLeak(JSON.stringify(body));
       });
+
+      test(`${route.name} returns 502 timeout when the upstream body stalls mid-read`, async () => {
+        const app = route.makeApp(async (_input, init = {}) => {
+          const signal = init.signal;
+          const stream = new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode('{"keys":'));
+              signal?.addEventListener("abort", () => controller.error(signal.reason));
+            },
+          });
+          return new Response(stream, { status: 200 });
+        });
+
+        const response = await route.hit(app);
+
+        expect(response.status).toBe(502);
+        const body = await response.json();
+        expect(body).toMatchObject({
+          error: { code: route.code, details: { reason: "timeout" } },
+        });
+        expectNoSensitiveLeak(JSON.stringify(body));
+      });
     }
   }
 
