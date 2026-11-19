@@ -107,7 +107,9 @@ export function protectedResourceMetadata({
   return {
     resource,
     authorization_servers: [authorizationServer],
-    scopes_supported: [...MCP_SCOPES],
+    // Some MCP clients use only the resource metadata to build the request.
+    // The CK authorization server requires openid alongside the MCP scopes.
+    scopes_supported: ["openid", ...MCP_SCOPES],
     bearer_methods_supported: ["header"],
   };
 }
