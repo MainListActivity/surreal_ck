@@ -175,7 +175,7 @@ pub fn nav_item(
         .rounded(px(12.0))
         .hover(|s| s.opacity(0.85))
         .active(|s| s.opacity(0.65))
-        .selected_style(|s| s.bg(theme().primary))
+        .selected_style(|s| s.bg(move || theme().primary))
         .child(
             image(move || icon.src(if selected() { INK } else { MUTED }))
                 .w(px(22.0))
@@ -220,7 +220,7 @@ pub fn segment(
         .py_1()
         .rounded(px(7.0))
         .hover(|s| s.opacity(0.85))
-        .selected_style(|s| s.bg(theme().card))
+        .selected_style(|s| s.bg(move || theme().card))
         .child(
             text(label)
                 .text_size(px(13.0))

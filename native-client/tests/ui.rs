@@ -26,6 +26,65 @@ fn collaboration(width: f32, height: f32) -> Result<Headless, String> {
     Ok(app)
 }
 
+#[test]
+fn selected_navigation_uses_the_app_theme_from_cold_start() -> Result<(), String> {
+    use nsh_core::{Color, MountItem};
+    use std::{
+        collections::HashMap,
+        sync::{Arc, Mutex},
+    };
+
+    let mounted = Arc::new(Mutex::new((HashMap::new(), HashMap::new())));
+    let observed = mounted.clone();
+    let mut app = Headless::start(EngineConfig::new(Root::of::<
+        nsh_app_native_client::Collaboration,
+    >()))
+    .unwrap();
+    app.observe(move |_, batch| {
+        let mut mounted = observed.lock().unwrap();
+        for item in &batch.items {
+            match item {
+                MountItem::ViewProps { id, props } => {
+                    mounted.0.insert(*id, props.accessibility.clone());
+                }
+                MountItem::ViewStyle { id, style } => {
+                    mounted.1.insert(*id, style.background_color);
+                }
+                _ => {}
+            }
+        }
+    });
+    app.wait_for(SEARCH)?;
+    let tokens = nsh_base::tokens_of(Some(include_str!("../theme.json")))?;
+    let segment = app.screen().press_target("全部")?.unwrap();
+    assert_eq!(
+        mounted.lock().unwrap().1.get(&segment),
+        Some(&Color::from(tokens.color("card").unwrap().light)),
+        "分段控件应使用应用主题卡片色"
+    );
+    let expected = Color::from(tokens.color("primary").unwrap().light);
+    for label in ["消息", "会议", "通讯录", "设置"] {
+        if label != "消息" {
+            app.press(label)?;
+        }
+        let mounted = mounted.lock().unwrap();
+        let selected: Vec<_> = mounted
+            .0
+            .iter()
+            .filter(|(_, a)| a.label.as_deref() == Some(label) && a.state.selected)
+            .collect();
+        assert!(!selected.is_empty(), "没有选中的导航项：{label}");
+        for (id, _) in selected {
+            assert_eq!(
+                mounted.1.get(id),
+                Some(&expected),
+                "{label} 应使用主题选中色"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn open_diagnostics(app: &mut Headless) -> Result<(), String> {
     app.press("设置")?;
     app.wait_for("当前版本：0.1.0")?;
