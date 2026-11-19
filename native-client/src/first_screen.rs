@@ -1,36 +1,26 @@
-//! 产品壳层：消息、会议、成员与设置的信息架构与诚实空状态。
+//! 产品壳层：消息、会议、通讯录与设置的信息架构与空状态文案。
 //! 只放可单测的纯状态与文案，不产生假联系人、假会话、假在线人数或假会议。
+//! 文案写给使用者看：说明现在能做什么、下一步去哪，不复述工程约束。
 
-/// 窗口标题与产品壳层名称；Linux 使用系统窗口装饰，不绘制伪造的交通灯。
-pub const APP_TITLE: &str = "吉吉 · 团队协同";
-/// 产品用途说明，不作为首屏主标题。
+/// 产品用途说明，放在设置页的「关于」。
 pub const PURPOSE: &str = "吉吉协同：团队消息、会议和屏幕共享";
 /// 预览构建的紧凑徽标，避免大块横幅占满首屏。
 pub const PREVIEW_BADGE: &str = "实验预览版";
 /// 预览构建的完整说明，放在设置页。
 pub const PREVIEW_LABEL: &str = "实验预览版 · 非正式发布，功能仍在验证，请勿用于正式工作";
-/// 会议舞台空状态：尚未接入，不假装正在开会。
-pub const MEETING_EMPTY_STAGE: &str = "尚未接入企业会话，无法开始真实会议";
-/// 会议坞控件禁用原因（麦克风、摄像头、离开等）。
-pub const MEETING_CONTROLS_DISABLED: &str = "尚未加入会议，麦克风、摄像头和离开不可用。";
-/// 未加入会议时「离开会议」不可用，用此控件回到消息页，避免困在会议舞台。
-pub const MEETING_BACK: &str = "返回消息";
-/// 共享选择器在没有真实捕获源时的空状态。
-pub const SHARE_EMPTY: &str = "尚未接入捕获";
-/// 开始共享在没有真实源或没有进行中的会议时的原因。
-pub const SHARE_START_DISABLED: &str = "尚未接入企业会话，无法开始共享";
-/// 共享整个屏幕的风险提示。
-pub const SHARE_SCREEN_WARNING: &str = "共享整个屏幕时，通知和其他窗口可能被看到。";
-/// 打开共享选择器的补充说明：只预览界面，不会开始共享。
-pub const SHARE_PICKER_REVIEW: &str = "仅供查看共享选择界面，不会开始共享。";
-pub const EMPTY_MESSAGES: &str = "暂无消息。消息只保存在本次会话内存中。";
-pub const NO_CONVERSATION: &str = "尚未选择会话。";
+pub const NO_CONVERSATION: &str = "选择一个会话开始聊天";
+/// 消息只在内存中：用平实的话告诉使用者关闭应用后会清除。
+pub const NO_CONVERSATION_HINT: &str = "聊天记录只保留到关闭应用为止。";
+pub const EMPTY_MESSAGES: &str = "还没有消息，发一条打个招呼吧。";
 pub const COMPOSER_PLACEHOLDER: &str = "输入消息，Enter 发送";
 pub const SEND_LABEL: &str = "发送消息";
 pub const SEARCH_PLACEHOLDER: &str = "搜索成员或消息";
 pub const DIAGNOSTICS_TITLE: &str = "开发者诊断";
 pub const DIAGNOSTICS_NOTICE: &str = "仅供开发与排障：手动 P2P 连接码、STUN/TURN、连接指纹、媒体与文件调试。这不是默认产品路径；连接码含网络地址，仅交给可信对方。";
-pub const LOGIN_HONEST: &str = "此构建未接入企业登录，不会模拟登录";
+pub const MEETING_START: &str = "开始新会议";
+pub const MEETING_JOIN: &str = "加入会议";
+pub const NO_LIVE_MEETINGS: &str = "当前没有进行中的会议";
+pub const NO_LIVE_MEETINGS_HINT: &str = "会话里有人发起会议时，会显示在这里。";
 
 /// 当前构建是否为手动更新的实验预览（GitHub 预览渠道）。
 pub const fn is_preview() -> bool {
@@ -51,8 +41,9 @@ impl Page {
         self == Page::Messages
     }
 
+    /// 除消息页外都是可滚动的内容页（会议首页、通讯录、设置、诊断）。
     pub fn uses_content_scroll(self) -> bool {
-        matches!(self, Page::Members | Page::Settings | Page::Diagnostics)
+        self != Page::Messages
     }
 }
 
@@ -75,63 +66,6 @@ impl ConversationFilter {
     }
 }
 
-/// 共享选择器的目标类型；默认只选窗口。
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum ShareKind {
-    #[default]
-    Window,
-    Display,
-}
-
-impl ShareKind {
-    pub fn label(self) -> &'static str {
-        match self {
-            ShareKind::Window => "窗口",
-            ShareKind::Display => "整个屏幕",
-        }
-    }
-}
-
-/// 共享选择器的纯状态：没有真实源时不能开始共享。
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub struct SharePicker {
-    pub open: bool,
-    pub kind: ShareKind,
-}
-
-impl SharePicker {
-    pub fn open_for_review() -> Self {
-        Self {
-            open: true,
-            kind: ShareKind::Window,
-        }
-    }
-
-    pub fn close(self) -> Self {
-        Self {
-            open: false,
-            kind: self.kind,
-        }
-    }
-
-    /// 必须同时有进行中的会议和已选择的真实源，才能开始共享。
-    pub fn can_start(self, live_meeting: bool, has_real_source: bool) -> bool {
-        self.open && live_meeting && has_real_source
-    }
-
-    pub fn start_reason(self, live_meeting: bool, has_real_source: bool) -> Option<&'static str> {
-        if self.can_start(live_meeting, has_real_source) {
-            None
-        } else {
-            Some(SHARE_START_DISABLED)
-        }
-    }
-
-    pub fn empty_copy(self) -> &'static str {
-        SHARE_EMPTY
-    }
-}
-
 /// 企业身份面板对壳层公开的摘要；只来自真实身份状态机。
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct IdentitySummary {
@@ -144,18 +78,24 @@ pub struct IdentitySummary {
 }
 
 impl IdentitySummary {
-    pub fn line(&self) -> String {
+    /// 通讯录页标题下的一行：当前账号与工作区。
+    pub fn workspace_line(&self) -> String {
         if !self.configured {
-            return format!("企业身份：未配置（{LOGIN_HONEST}）");
+            return "此版本未接入企业登录".into();
         }
         if self.loading {
-            return "企业身份：正在登录或切换工作区…".into();
+            return "正在登录或切换工作区…".into();
         }
         match (self.signed_in, &self.workspace) {
-            (false, _) => "企业身份：未登录".into(),
-            (true, None) => "企业身份：已登录 · 尚未进入工作区".into(),
-            (true, Some(name)) => format!("企业身份：已登录 · 工作区 {name}"),
+            (false, _) => "未登录".into(),
+            (true, None) => "已登录 · 尚未进入工作区".into(),
+            (true, Some(name)) => format!("{name} · {} 位成员", self.members),
         }
+    }
+
+    /// 已配置但未登录、也不在加载中：可以引导去登录。
+    pub fn can_sign_in(&self) -> bool {
+        self.configured && !self.signed_in && !self.loading
     }
 }
 
@@ -171,11 +111,15 @@ pub enum Session {
 impl Session {
     pub fn line(&self) -> String {
         match self {
-            Session::Offline => "离线：当前没有已连接的会话".into(),
+            Session::Offline => "未连接".into(),
             Session::Connecting => "正在连接…".into(),
             Session::Connected => "已连接".into(),
             Session::Failed(reason) => format!("连接失败：{reason}"),
         }
+    }
+
+    pub fn failed(&self) -> bool {
+        matches!(self, Session::Failed(_))
     }
 }
 
@@ -217,57 +161,66 @@ pub fn visible_conversations(
     }
 }
 
-/// 会话列表为空时的说明；有真实可见会话时返回 None。
-pub fn conversation_placeholder(
+/// 会话列表为空时的标题与说明。已连接时按筛选说明，未连接时按身份状态说明下一步。
+pub fn conversation_empty(
     identity: &IdentitySummary,
-    conversations: usize,
-) -> Option<String> {
-    if conversations > 0 {
-        return None;
+    connected: bool,
+    filter: ConversationFilter,
+    query: &str,
+) -> (&'static str, &'static str) {
+    if connected {
+        if !query.trim().is_empty() {
+            return ("没有匹配的会话", "换个关键词试试。");
+        }
+        return match filter {
+            ConversationFilter::All => ("暂无会话", "新的会话会显示在这里。"),
+            ConversationFilter::Unread => ("全部已读", "新消息会显示在这里。"),
+            ConversationFilter::Group => ("没有群聊", "加入的群聊会显示在这里。"),
+        };
     }
-    Some(if !identity.configured {
-        format!("暂无团队会话：企业登录未配置。{LOGIN_HONEST}。")
+    if !identity.configured {
+        ("还没有团队会话", "此版本未接入企业登录，团队会话暂不可用。")
     } else if identity.loading {
-        "正在加载会话…".into()
+        ("正在加载会话…", "")
     } else if !identity.signed_in {
-        "暂无团队会话：请先登录企业账号。".into()
+        ("还没有团队会话", "登录企业账号后，团队会话会显示在这里。")
     } else if identity.workspace.is_none() {
-        "暂无团队会话：请先进入一个工作区。".into()
+        ("还没有团队会话", "进入一个工作区后，团队会话会显示在这里。")
     } else {
-        "暂无会话。不会生成示例联系人或聊天记录。".into()
-    })
+        ("还没有团队会话", "有人给你发消息后，会话会显示在这里。")
+    }
 }
 
-/// 成员页空状态；不生成示例联系人。
-pub fn members_placeholder(identity: &IdentitySummary) -> String {
+/// 通讯录页的标题与说明；不生成示例联系人或在线状态。
+pub fn members_empty(identity: &IdentitySummary) -> (&'static str, String) {
     if !identity.configured {
-        format!("暂无成员：企业登录未配置。{LOGIN_HONEST}。")
+        ("通讯录暂不可用", "此版本未接入企业登录。".into())
     } else if identity.loading {
-        "正在加载成员…".into()
+        ("正在加载成员…", String::new())
     } else if !identity.signed_in {
-        "暂无成员：请先登录企业账号。".into()
+        ("登录后查看通讯录", "登录企业账号后，可以看到工作区成员。".into())
     } else if identity.workspace.is_none() {
-        "暂无成员：请先进入一个工作区。".into()
+        ("选择一个工作区", "进入工作区后，可以看到它的成员。".into())
     } else if identity.members > 0 {
-        format!(
-            "已加载 {} 名工作区成员（只读）。不显示在线状态；聊天、会议与共享需要企业会话。",
-            identity.members
+        (
+            "工作区成员",
+            format!("共 {} 位成员。在线状态暂不显示。", identity.members),
         )
     } else {
-        "暂无成员。不会生成示例联系人或在线状态。".into()
+        ("暂无成员", "这个工作区还没有可见成员。".into())
     }
 }
 
-/// 筛选后没有可见会话，但并非完全没有会话来源时的说明。
-pub fn filter_empty_placeholder(filter: ConversationFilter, query: &str) -> String {
-    if !query.trim().is_empty() {
-        "没有符合搜索的会话。".into()
+/// 会议入口不可用的原因；会议能力接入前，入口保持禁用并说明下一步。
+pub fn meeting_unavailable(identity: &IdentitySummary) -> &'static str {
+    if !identity.configured {
+        "此版本未接入企业登录，暂时不能发起或加入会议。"
+    } else if !identity.signed_in {
+        "登录企业账号后，可以从会话里发起会议。"
+    } else if identity.workspace.is_none() {
+        "进入一个工作区后，可以从会话里发起会议。"
     } else {
-        match filter {
-            ConversationFilter::All => "暂无会话。不会生成示例联系人或聊天记录。".into(),
-            ConversationFilter::Unread => "没有未读会话。".into(),
-            ConversationFilter::Group => "没有群聊会话。".into(),
-        }
+        "会议功能正在接入中，暂不可用。"
     }
 }
 
@@ -296,8 +249,8 @@ impl Message {
         }
         Some(match self.delivery {
             Delivery::Sending => "发送中…",
-            Delivery::Sent => "已送出 · 无送达回执",
-            Delivery::Failed => "发送失败，可重试",
+            Delivery::Sent => "已送出",
+            Delivery::Failed => "发送失败，可再次发送",
         })
     }
 
@@ -371,72 +324,76 @@ pub fn failed(messages: &mut [Message]) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn identity_line_is_honest_for_each_state() {
-        let mut s = IdentitySummary::default();
-        assert!(s.line().contains("未配置"));
-        assert!(s.line().contains(LOGIN_HONEST));
-        s.configured = true;
-        assert_eq!(s.line(), "企业身份：未登录");
-        s.loading = true;
-        assert!(s.line().contains("正在"));
-        s.loading = false;
-        s.signed_in = true;
-        assert!(s.line().contains("尚未进入工作区"));
-        s.workspace = Some("研发部".into());
-        assert_eq!(s.line(), "企业身份：已登录 · 工作区 研发部");
-    }
-
-    #[test]
-    fn members_placeholder_matches_loaded_directory() {
-        let mut s = IdentitySummary {
+    fn signed_in(workspace: Option<&str>, members: usize) -> IdentitySummary {
+        IdentitySummary {
             configured: true,
             signed_in: true,
-            workspace: Some("研发部".into()),
-            ..IdentitySummary::default()
-        };
-        assert!(members_placeholder(&s).starts_with("暂无成员。"));
-        s.members = 1;
-        let loaded = members_placeholder(&s);
-        assert!(!loaded.contains("暂无成员"), "{loaded}");
-        assert!(loaded.contains("1 名工作区成员"));
-        assert!(loaded.contains("不显示在线状态"));
-        s.workspace = None;
-        assert!(members_placeholder(&s).contains("请先进入一个工作区"));
+            loading: false,
+            workspace: workspace.map(str::to_owned),
+            members,
+        }
     }
 
     #[test]
-    fn conversation_placeholder_never_fakes_contacts() {
+    fn workspace_line_follows_each_identity_state() {
         let mut s = IdentitySummary::default();
-        let empty = conversation_placeholder(&s, 0).unwrap();
-        assert!(empty.contains("未配置"));
-        assert!(empty.contains(LOGIN_HONEST));
+        assert_eq!(s.workspace_line(), "此版本未接入企业登录");
+        assert!(!s.can_sign_in());
         s.configured = true;
-        assert!(
-            conversation_placeholder(&s, 0)
-                .unwrap()
-                .contains("请先登录")
-        );
+        assert_eq!(s.workspace_line(), "未登录");
+        assert!(s.can_sign_in());
         s.loading = true;
-        assert!(
-            conversation_placeholder(&s, 0)
-                .unwrap()
-                .contains("正在加载")
-        );
-        s.loading = false;
-        s.signed_in = true;
-        assert!(
-            conversation_placeholder(&s, 0)
-                .unwrap()
-                .contains("进入一个工作区")
-        );
-        s.workspace = Some("w".into());
-        assert!(
-            conversation_placeholder(&s, 0)
-                .unwrap()
-                .contains("不会生成示例联系人")
-        );
-        assert_eq!(conversation_placeholder(&s, 1), None);
+        assert!(s.workspace_line().contains("正在"));
+        assert!(!s.can_sign_in());
+        let s = signed_in(None, 0);
+        assert_eq!(s.workspace_line(), "已登录 · 尚未进入工作区");
+        let s = signed_in(Some("研发部"), 3);
+        assert_eq!(s.workspace_line(), "研发部 · 3 位成员");
+    }
+
+    #[test]
+    fn members_empty_matches_loaded_directory() {
+        let (title, _) = members_empty(&IdentitySummary::default());
+        assert_eq!(title, "通讯录暂不可用");
+        let (title, body) = members_empty(&signed_in(Some("研发部"), 0));
+        assert_eq!(title, "暂无成员");
+        assert!(!body.is_empty());
+        let (title, body) = members_empty(&signed_in(Some("研发部"), 2));
+        assert_eq!(title, "工作区成员");
+        assert!(body.contains("共 2 位成员"), "{body}");
+        assert!(body.contains("在线状态暂不显示"));
+        let (title, _) = members_empty(&signed_in(None, 0));
+        assert_eq!(title, "选择一个工作区");
+    }
+
+    #[test]
+    fn conversation_empty_guides_the_next_step_without_fake_contacts() {
+        let all = ConversationFilter::All;
+        let mut s = IdentitySummary::default();
+        let (_, body) = conversation_empty(&s, false, all, "");
+        assert!(body.contains("未接入企业登录"));
+        s.configured = true;
+        let (_, body) = conversation_empty(&s, false, all, "");
+        assert!(body.contains("登录企业账号"));
+        s.loading = true;
+        assert_eq!(conversation_empty(&s, false, all, "").0, "正在加载会话…");
+        let s = signed_in(None, 0);
+        assert!(conversation_empty(&s, false, all, "").1.contains("工作区"));
+        let s = signed_in(Some("w"), 0);
+        let (title, _) = conversation_empty(&s, true, all, "找不到");
+        assert_eq!(title, "没有匹配的会话");
+        let unread = ConversationFilter::Unread;
+        assert_eq!(conversation_empty(&s, true, unread, "").0, "全部已读");
+    }
+
+    #[test]
+    fn meeting_entry_explains_why_it_is_unavailable() {
+        let mut s = IdentitySummary::default();
+        assert!(meeting_unavailable(&s).contains("未接入企业登录"));
+        s.configured = true;
+        assert!(meeting_unavailable(&s).contains("登录企业账号"));
+        assert!(meeting_unavailable(&signed_in(None, 0)).contains("工作区"));
+        assert!(meeting_unavailable(&signed_in(Some("w"), 1)).contains("暂不可用"));
     }
 
     #[test]
@@ -452,29 +409,13 @@ mod tests {
     }
 
     #[test]
-    fn share_picker_defaults_to_window_and_cannot_start_without_a_live_source() {
-        let picker = SharePicker::open_for_review();
-        assert!(picker.open);
-        assert_eq!(picker.kind, ShareKind::Window);
-        assert!(!picker.can_start(false, false));
-        assert!(!picker.can_start(true, false));
-        assert!(!picker.can_start(false, true));
-        assert_eq!(
-            picker.start_reason(false, false),
-            Some(SHARE_START_DISABLED)
-        );
-        assert_eq!(picker.empty_copy(), SHARE_EMPTY);
-        assert!(picker.can_start(true, true));
-        assert!(!picker.close().open);
-        assert_eq!(picker.close().kind, ShareKind::Window);
-    }
-
-    #[test]
     fn session_lines_distinguish_offline_loading_and_failure() {
-        assert!(Session::Offline.line().starts_with("离线"));
+        assert_eq!(Session::Offline.line(), "未连接");
         assert_eq!(Session::Connecting.line(), "正在连接…");
         assert_eq!(Session::Failed("ice".into()).line(), "连接失败：ice");
         assert_eq!(Session::Connected.line(), "已连接");
+        assert!(Session::Failed("ice".into()).failed());
+        assert!(!Session::Offline.failed());
     }
 
     #[test]
@@ -483,7 +424,7 @@ mod tests {
         pending(&mut m, "你好".into());
         assert_eq!(m[0].label(), "我（发送中…）：你好");
         queued(&mut m, "你好");
-        assert_eq!(m[0].label(), "我（已送出 · 无送达回执）：你好");
+        assert_eq!(m[0].label(), "我（已送出）：你好");
         assert!(!m[0].label().contains("已读"));
         assert!(!m[0].label().contains("已送达"));
         pending(&mut m, "第二条".into());
@@ -514,11 +455,12 @@ mod tests {
     }
 
     #[test]
-    fn settings_and_meeting_pages_do_not_reuse_the_conversation_column() {
+    fn only_the_message_page_uses_the_conversation_column() {
         assert!(Page::Messages.shows_conversation_column());
-        assert!(!Page::Settings.shows_conversation_column());
-        assert!(!Page::Meeting.shows_conversation_column());
-        assert!(!Page::Members.shows_conversation_column());
-        assert!(!Page::Diagnostics.shows_conversation_column());
+        assert!(!Page::Messages.uses_content_scroll());
+        for page in [Page::Meeting, Page::Members, Page::Settings, Page::Diagnostics] {
+            assert!(!page.shows_conversation_column());
+            assert!(page.uses_content_scroll());
+        }
     }
 }

@@ -763,11 +763,6 @@ impl CallUi {
         self.privacy_strip(false)
     }
 
-    /// 深色会议顶栏中的紧凑隐私指示，使用浅色文字以保证对比度。
-    pub fn privacy_on_dark(self) -> impl IntoElement {
-        self.privacy_strip(true)
-    }
-
     fn privacy_strip(self, on_dark: bool) -> impl IntoElement {
         view()
             .flex_row()
