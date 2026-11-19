@@ -6,7 +6,7 @@ import { HttpError } from "../http-error";
 import { requireOidc } from "../middleware/oidc";
 import { ClaimsPortalService } from "../claims-portal/service";
 import {
-  MAX_ATTACHMENT_REQUEST_BYTES,
+  MAX_ATTACHMENT_BYTES,
   SESSION_COOKIE_NAME,
 } from "../claims-portal/constants";
 
@@ -186,7 +186,7 @@ export function createClaimsPortalRoutes(
     // 解析请求体之前按声明大小拦截：Content-Length 超限直接 413，不把大包读进内存。
     const declaredLength = Number(c.req.header("content-length") ?? "0");
     const declaredBytes = Number.isFinite(declaredLength) && declaredLength > 0 ? declaredLength : 0;
-    if (declaredBytes > MAX_ATTACHMENT_REQUEST_BYTES) {
+    if (declaredBytes > MAX_ATTACHMENT_BYTES) {
       throw new HttpError(413, "attachment-too-large", "附件超出大小限制");
     }
     // 暂存盘预检：不足即 507 upload-insufficient-storage，不读体不写库。

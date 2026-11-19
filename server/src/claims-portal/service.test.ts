@@ -9,6 +9,7 @@ import {
   type ClaimsQueryable,
 } from "./service";
 import {
+  createS3AttachmentStorage,
   mapAttachmentStorageUploadError,
   requiredUploadHeadroomBytes,
   UPLOAD_DISK_MIN_HEADROOM_BYTES,
@@ -857,5 +858,108 @@ describe("ClaimsPortalService", () => {
     const other = mapAttachmentStorageUploadError(500, "internal boom");
     expect(other.status).toBe(502);
     expect(other.code).toBe("attachment-upload-failed");
+  });
+});
+
+describe("createS3AttachmentStorage（真实 S3 适配器 + 本地合成 upstream）", () => {
+  type StubSpec = { status: number; body: string };
+  function startStub(spec: StubSpec, seen: Array<{ method: string; path: string }>) {
+    return Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: (req) => {
+        seen.push({ method: req.method, path: new URL(req.url).pathname });
+        return new Response(spec.body, { status: spec.status });
+      },
+    });
+  }
+
+  function storageFor(port: number) {
+    return createS3AttachmentStorage({
+      accountId: "acc",
+      accessKeyId: "test-ak",
+      secretAccessKey: "test-sk",
+      bucket: "claims-bucket",
+      endpoint: `http://127.0.0.1:${port}`,
+    });
+  }
+
+  const input = {
+    key: "claims/ws_case_a/s1/a1/a.pdf",
+    bytes: new Uint8Array([0x25, 0x50, 0x44, 0x46]),
+    contentType: "application/pdf",
+  };
+
+  test("upstream 裸 HTTP 507（普通响应体）→ 507 attachment-storage-full", async () => {
+    const seen: Array<{ method: string; path: string }> = [];
+    const server = startStub({ status: 507, body: "upstream overloaded" }, seen);
+    try {
+      const err = await storageFor(server.port)
+        .putObject(input)
+        .then(() => null, (e: unknown) => e as HttpError);
+      expect(err).toBeInstanceOf(HttpError);
+      expect(err.status).toBe(507);
+      expect(err.code).toBe("attachment-storage-full");
+      expect(seen[0]?.method).toBe("PUT");
+      expect(seen[0]?.path.startsWith("/claims-bucket/claims/")).toBe(true);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("upstream 507 + QuotaExceeded XML → 507 attachment-storage-full", async () => {
+    const seen: Array<{ method: string; path: string }> = [];
+    const server = startStub({
+      status: 507,
+      body: "<Error><Code>QuotaExceeded</Code></Error>",
+    }, seen);
+    try {
+      const err = await storageFor(server.port)
+        .putObject(input)
+        .then(() => null, (e: unknown) => e as HttpError);
+      expect(err).toBeInstanceOf(HttpError);
+      expect(err.status).toBe(507);
+      expect(err.code).toBe("attachment-storage-full");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("upstream 裸 HTTP 413（普通响应体）→ 413 attachment-too-large", async () => {
+    const seen: Array<{ method: string; path: string }> = [];
+    const server = startStub({ status: 413, body: "request too big" }, seen);
+    try {
+      const err = await storageFor(server.port)
+        .putObject(input)
+        .then(() => null, (e: unknown) => e as HttpError);
+      expect(err).toBeInstanceOf(HttpError);
+      expect(err.status).toBe(413);
+      expect(err.code).toBe("attachment-too-large");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("upstream 500 → 502 attachment-upload-failed；200 → 成功", async () => {
+    const seen: Array<{ method: string; path: string }> = [];
+    const server = startStub({ status: 500, body: "boom" }, seen);
+    try {
+      const err = await storageFor(server.port)
+        .putObject(input)
+        .then(() => null, (e: unknown) => e as HttpError);
+      expect(err.status).toBe(502);
+      expect(err.code).toBe("attachment-upload-failed");
+    } finally {
+      server.stop(true);
+    }
+
+    const seen2: Array<{ method: string; path: string }> = [];
+    const okServer = startStub({ status: 200, body: "" }, seen2);
+    try {
+      await storageFor(okServer.port).putObject(input);
+      expect(seen2[0]?.method).toBe("PUT");
+    } finally {
+      okServer.stop(true);
+    }
   });
 });

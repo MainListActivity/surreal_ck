@@ -161,12 +161,25 @@ export function createS3AttachmentStorage(config: ClaimsAttachmentConfig): Claim
   });
 
   async function putObject(input: PutObjectInput): Promise<void> {
+    // Bun S3Client.write 抛出的 S3Error 不携带 HTTP 状态码，裸 507/413
+    // 无法与网络错误区分；改用 presign 生成 SigV4 PUT URL 后自行 fetch，
+    // 拿到结构化 response.status 再映射。
+    let response: Response;
     try {
-      await client.write(input.key, input.bytes, { type: input.contentType });
+      const url = client.presign(input.key, { method: "PUT", expiresIn: 900 });
+      response = await fetch(url, {
+        method: "PUT",
+        headers: { "Content-Type": input.contentType },
+        body: input.bytes,
+      });
     } catch (error) {
       if (error instanceof HttpError) throw error;
       const message = error instanceof Error ? error.message : "unknown";
       throw mapAttachmentStorageUploadError(null, message);
+    }
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      throw mapAttachmentStorageUploadError(response.status, detail);
     }
   }
 

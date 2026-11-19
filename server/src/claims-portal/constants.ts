@@ -25,15 +25,7 @@ export const ALLOWED_ATTACHMENT_MIME = [
   "image/jpg",
 ] as const;
 
-/** 单附件大小上限：20MB。 */
+/** 单附件大小上限：20MB；也作为上传请求体 Content-Length 的预解析上限。 */
 export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
-
-/**
- * 请求体预检上限：multipart 信封与 JSON base64（≈4/3 膨胀）会把
- * Content-Length 抬过附件实际大小，预检阈值须容忍这部分传输开销；
- * 真实容量仍在解析后按解码字节数校验。
- */
-export const MAX_ATTACHMENT_REQUEST_BYTES =
-  Math.ceil((MAX_ATTACHMENT_BYTES * 4) / 3) + 64 * 1024;
 
 export const INTEREST_METHOD_SIMPLE = "simple" as const;

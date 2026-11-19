@@ -7,7 +7,6 @@ import { handleError } from "../middleware/error";
 import { ClaimsPortalService, type ClaimsQueryable } from "../claims-portal/service";
 import {
   MAX_ATTACHMENT_BYTES,
-  MAX_ATTACHMENT_REQUEST_BYTES,
   SESSION_COOKIE_NAME,
 } from "../claims-portal/constants";
 import { createClaimsPortalRoutes } from "./claims-portal";
@@ -531,7 +530,7 @@ describe("claims-portal routes", () => {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "content-length": String(MAX_ATTACHMENT_REQUEST_BYTES + 1),
+          "content-length": String(MAX_ATTACHMENT_BYTES + 1),
           cookie,
         },
         body: JSON.stringify({ attachmentType: "contract", fileName: "a.pdf" }),
@@ -543,14 +542,14 @@ describe("claims-portal routes", () => {
     expect(store.attachments).toHaveLength(0);
   });
 
-  test("Content-Length 含 base64/信封开销：合法附件不被 413 误杀", async () => {
+  test("Content-Length = MAX_ATTACHMENT_BYTES 边界内：放行进入解析与上传", async () => {
     const { app, memoryStorage } = makeApp({
       attachmentConfigured: true,
       checkDiskSpace: async () => Number.MAX_SAFE_INTEGER,
     });
     const { token, cookie } = await openPortalSession(app);
 
-    // 声明长度 = 上限内附件经 base64/信封膨胀后的大小，仍须放行。
+    // 声明长度恰为上限 → 预检放行，随后按解码附件字节数走正常上传。
     const pdfBytes = new TextEncoder().encode("%PDF-1.4 mock");
     const res = await app.request(
       `/api/claims-portal/case-a/${token}/attachments`,
@@ -558,7 +557,7 @@ describe("claims-portal routes", () => {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "content-length": String(MAX_ATTACHMENT_BYTES + 8 * 1024),
+          "content-length": String(MAX_ATTACHMENT_BYTES),
           cookie,
         },
         body: JSON.stringify({
