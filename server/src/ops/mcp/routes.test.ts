@@ -84,6 +84,7 @@ describe("platform content MCP", () => {
       resource: "https://auth.example.test/ops",
       authorization_servers: ["https://auth.example.test"],
       scopes_supported: [
+        "openid",
         "content.read",
         "content.submit",
         "content.publish",

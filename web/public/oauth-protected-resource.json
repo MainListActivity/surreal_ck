@@ -4,6 +4,7 @@
     "https://o.maplayer.top/t/ck"
   ],
   "scopes_supported": [
+    "openid",
     "content.read",
     "content.submit",
     "content.publish",
