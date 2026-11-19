@@ -4,6 +4,8 @@
 mod desktop;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub use desktop::*;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+pub use surreal_ck_native_media_platform::devices;
 
 /// 平台检查可用于宿主禁用尚未实现的入口，不能用静默空实现冒充可用。
 pub const fn supported() -> bool {

@@ -201,6 +201,8 @@ pub struct CallUi {
     camera_received: Signal<bool>,
     screen_received: Signal<bool>,
     status: Signal<String>,
+    #[cfg(target_os = "macos")]
+    devices: Signal<surreal_ck_native_call::devices::Inventory>,
     #[cfg(feature = "experimental-enterprise-media")]
     enterprise_snapshot: Signal<Option<EnterpriseCursor>>,
     #[cfg(feature = "experimental-enterprise-media")]
@@ -214,6 +216,12 @@ impl CallUi {
     /// 必须在 NSH 组件作用域内调用。设备字段、权限和接收开关不从环境自动填充。
     pub fn new() -> Self {
         Self {
+            #[cfg(target_os = "macos")]
+            devices: signal(surreal_ck_native_call::devices::Inventory {
+                devices: Vec::new(),
+                camera: surreal_ck_native_call::devices::Permission::NotDetermined,
+                microphone: surreal_ck_native_call::devices::Permission::NotDetermined,
+            }),
             expanded: signal(false),
             selections: std::array::from_fn(|_| signal(String::new())),
             requested_targets: std::array::from_fn(|_| signal(String::new())),
@@ -959,7 +967,7 @@ impl CallUi {
         view()
             .gap_1()
             .child(text(hint).text_color(move || theme().muted_foreground))
-            .child(ui::field(self.selections[slot], placeholder))
+            .child(self.device_selector(source, placeholder))
             .child(when(
                 move || source == Source::Screen,
                 move || {
@@ -976,6 +984,104 @@ impl CallUi {
                 },
                 move || self.start(&sender, source),
             ))
+    }
+
+    fn device_selector(self, source: Source, placeholder: &'static str) -> impl IntoElement {
+        #[cfg(target_os = "macos")]
+        if source != Source::Screen {
+            use nsh_base::{SelectItem, SelectValue, select};
+            use surreal_ck_native_call::devices::{DeviceKind, Permission, discover};
+            let kind = if source == Source::Camera {
+                DeviceKind::Camera
+            } else {
+                DeviceKind::Microphone
+            };
+            let selection = self.selections[index(source)];
+            let refresh = move || {
+                let inventory = discover();
+                let selected = selection.get_untracked();
+                if !inventory
+                    .devices
+                    .iter()
+                    .any(|device| device.id == selected && device.kind == kind)
+                {
+                    selection.set(String::new());
+                }
+                self.devices.set(inventory);
+            };
+            return view()
+                .gap_1()
+                .child(
+                    select()
+                        .items(move || {
+                            let inventory = self.devices.get();
+                            inventory
+                                .devices
+                                .iter()
+                                .filter(|device| device.kind == kind)
+                                .map(|device| {
+                                    SelectItem::new(device.id.clone(), device.name.clone())
+                                        .disabled(
+                                            inventory.permission(kind) != Permission::Authorized,
+                                        )
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .value(move || {
+                            SelectValue::Controlled(
+                                (!selection.get().is_empty()).then(|| selection.get().into()),
+                            )
+                        })
+                        .trigger({
+                            view()
+                                .px_3()
+                                .py_2()
+                                .rounded(px(8.0))
+                                .bg(move || theme().muted)
+                                .child(
+                                    text(move || {
+                                        let inventory = self.devices.get();
+                                        inventory
+                                            .devices
+                                            .iter()
+                                            .find(|device| {
+                                                device.id == selection.get() && device.kind == kind
+                                            })
+                                            .map(|device| device.name.clone())
+                                            .unwrap_or_else(|| "选择设备 ▾".into())
+                                    })
+                                    .text_color(move || theme().foreground),
+                                )
+                        })
+                        .on_open(refresh)
+                        .on_change(move |value: &Option<SharedString>| {
+                            selection.set(
+                                value
+                                    .as_ref()
+                                    .map(|value| value.to_string())
+                                    .unwrap_or_default(),
+                            )
+                        }),
+                )
+                .child(ui::action("刷新设备列表", || false, refresh))
+                .child(
+                    text(move || {
+                        let inventory = self.devices.get();
+                        format!(
+                            "{} · {} 个设备；热插拔后刷新，开始时重新核对映射",
+                            inventory.permission(kind).label(),
+                            inventory
+                                .devices
+                                .iter()
+                                .filter(|device| device.kind == kind)
+                                .count()
+                        )
+                    })
+                    .text_color(move || theme().muted_foreground),
+                )
+                .into_element();
+        }
+        ui::field(self.selections[index(source)], placeholder).into_element()
     }
 
     fn remote_view(self, source: Source) -> impl IntoElement {
@@ -1044,7 +1150,7 @@ fn selection_labels(source: Source) -> (&'static str, &'static str, &'static str
             } else if cfg!(target_os = "windows") {
                 "麦克风：填写已确认的 DirectShow 音频设备名。"
             } else {
-                "麦克风：填写已确认的 AVFoundation 音频设备索引，并确认系统麦克风授权。"
+                "麦克风：从设备列表明确选择，使用稳定标识；请先确认系统麦克风授权。"
             },
             "明确选择麦克风设备，不自动使用默认设备",
             "开始麦克风采集并发送",
@@ -1055,7 +1161,7 @@ fn selection_labels(source: Source) -> (&'static str, &'static str, &'static str
             } else if cfg!(target_os = "windows") {
                 "摄像头：填写已确认的 DirectShow 视频设备名，发送 640×360、15fps。"
             } else {
-                "摄像头：填写已确认的 AVFoundation 摄像头索引，确认系统相机授权，发送 640×360、15fps。"
+                "摄像头：从设备列表明确选择，使用稳定标识；确认系统相机授权，发送 640×360、15fps。"
             },
             "明确选择摄像头设备",
             "开始摄像头采集并发送",

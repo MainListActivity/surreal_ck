@@ -39,6 +39,11 @@ impl VideoConfig {
     }
 }
 pub enum CaptureInput {
+    MacDevice {
+        id: String,
+        kind: crate::devices::DeviceKind,
+        video: Option<VideoConfig>,
+    },
     /// AVFoundation 枚举后由用户选择的摄像头或屏幕索引。屏幕权限由 macOS TCC 管理。
     MacVideo {
         device_index: u32,
@@ -90,10 +95,71 @@ pub struct Capture {
     fragment: Vec<u8>,
 }
 impl Capture {
+    pub async fn open(input: CaptureInput) -> Result<Self, Error> {
+        #[cfg(target_os = "macos")]
+        let input = match input {
+            CaptureInput::MacDevice { id, kind, video } => {
+                use crate::devices::{discover, map_index, parse_ffmpeg, DeviceKind};
+                let before = discover();
+                let mut child = Command::new(runtime::executable("ffmpeg")?)
+                    .args([
+                        "-hide_banner",
+                        "-nostdin",
+                        "-f",
+                        "avfoundation",
+                        "-list_devices",
+                        "true",
+                        "-i",
+                        "",
+                    ])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::piped())
+                    .kill_on_drop(true)
+                    .spawn()?;
+                let mut stderr = child.stderr.take().ok_or(Error::Invalid)?.take(65536);
+                let mut log = Vec::new();
+                let result = tokio::time::timeout(Duration::from_secs(3), async {
+                    stderr.read_to_end(&mut log).await?;
+                    child.wait().await?;
+                    Ok::<_, Error>(())
+                })
+                .await;
+                if !matches!(result, Ok(Ok(()))) || log.len() >= 65536 {
+                    let _ = child.kill().await;
+                    return Err(Error::Invalid);
+                }
+                if before != discover() {
+                    return Err(Error::Invalid);
+                }
+                let device_index = map_index(
+                    &before,
+                    &parse_ffmpeg(&String::from_utf8_lossy(&log)),
+                    &id,
+                    kind,
+                )
+                .ok_or(Error::Invalid)?;
+                match kind {
+                    DeviceKind::Camera => CaptureInput::MacVideo {
+                        device_index,
+                        video: video.ok_or(Error::Invalid)?,
+                    },
+                    DeviceKind::Microphone if video.is_none() => {
+                        CaptureInput::MacMicrophone { device_index }
+                    }
+                    _ => return Err(Error::Invalid),
+                }
+            }
+            other => other,
+        };
+        Self::start(input)
+    }
     /// 需要官方 FFmpeg（libvpx/libopus、V4L2/Pulse/X11 支持）。缺失时返回错误，不装软件、不改权限。
     pub fn start(input: CaptureInput) -> Result<Self, Error> {
         let platform = match &input {
-            CaptureInput::MacVideo { .. } | CaptureInput::MacMicrophone { .. } => "macos",
+            CaptureInput::MacVideo { .. }
+            | CaptureInput::MacMicrophone { .. }
+            | CaptureInput::MacDevice { .. } => "macos",
             CaptureInput::WindowsCamera { .. }
             | CaptureInput::WindowsMicrophone { .. }
             | CaptureInput::WindowsScreen { .. } => "windows",
@@ -237,6 +303,7 @@ impl Capture {
 }
 fn capture_args(input: CaptureInput) -> Result<(Vec<String>, Option<VideoConfig>), Error> {
     match input {
+        CaptureInput::MacDevice { .. } => Err(Error::Invalid),
         CaptureInput::MacVideo {
             device_index,
             video,

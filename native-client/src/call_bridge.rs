@@ -499,6 +499,18 @@ mod desktop {
         };
         #[cfg(target_os = "macos")]
         {
+            use surreal_ck_native_call::devices::DeviceKind;
+            if source != Source::Screen {
+                return Ok(CaptureInput::MacDevice {
+                    id: selection.into(),
+                    kind: if source == Source::Camera {
+                        DeviceKind::Camera
+                    } else {
+                        DeviceKind::Microphone
+                    },
+                    video: (source == Source::Camera).then(video),
+                });
+            }
             let device_index = selection
                 .parse::<u32>()
                 .map_err(|_| "请填写本次枚举并确认的AVFoundation数字索引")?;

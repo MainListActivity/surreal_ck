@@ -3,5 +3,6 @@
 pub mod android;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub mod desktop;
+pub mod devices;
 #[cfg(target_os = "linux")]
 pub mod linux;

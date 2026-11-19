@@ -320,7 +320,7 @@ impl CallSession {
         } else {
             self.media.set_enabled(source, false);
         }
-        let mut capture = match Capture::start(input) {
+        let mut capture = match Capture::open(input).await {
             Ok(capture) => capture,
             Err(error) => {
                 capture_state_changed(
@@ -511,6 +511,14 @@ impl Drop for CallSession {
 }
 fn validate_input(source: Source, input: &CaptureInput) -> Result<(), Error> {
     let matches = match input {
+        CaptureInput::MacDevice { kind, .. } => match kind {
+            surreal_ck_native_media_platform::devices::DeviceKind::Camera => {
+                source == Source::Camera
+            }
+            surreal_ck_native_media_platform::devices::DeviceKind::Microphone => {
+                source == Source::Microphone
+            }
+        },
         CaptureInput::Microphone { .. }
         | CaptureInput::MacMicrophone { .. }
         | CaptureInput::WindowsMicrophone { .. } => source == Source::Microphone,
