@@ -15,6 +15,7 @@ jni = "0.21.1"
 objc2 = "0.6.5"
 objc2-foundation = "0.3.2"
 objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["std", "AVCaptureDevice", "AVMediaFormat", "block2"] }
+block2 = "0.6.2"
 
 [dev-dependencies]
 jni = "0.21.1"

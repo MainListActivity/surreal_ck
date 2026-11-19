@@ -54,6 +54,34 @@ mod macos {
     use objc2_av_foundation::*;
     use objc2_foundation::NSArray;
 
+    pub fn request_access(kind: DeviceKind, complete: impl FnOnce(Inventory) + Send + 'static) {
+        let inventory = discover();
+        if inventory.permission(kind) != Permission::NotDetermined {
+            complete(inventory);
+            return;
+        }
+        let complete = std::sync::Mutex::new(Some(complete));
+        unsafe {
+            let media = match kind {
+                DeviceKind::Camera => AVMediaTypeVideo,
+                DeviceKind::Microphone => AVMediaTypeAudio,
+            };
+            let Some(media) = media else {
+                if let Some(complete) = complete.into_inner().unwrap_or_else(|e| e.into_inner()) {
+                    complete(inventory);
+                }
+                return;
+            };
+            let callback = block2::RcBlock::new(move |_granted: objc2::runtime::Bool| {
+                let complete = complete.lock().unwrap_or_else(|e| e.into_inner()).take();
+                if let Some(complete) = complete {
+                    complete(discover());
+                }
+            });
+            AVCaptureDevice::requestAccessForMediaType_completionHandler(media, &callback);
+        }
+    }
+
     pub fn discover() -> Inventory {
         autoreleasepool(|_| unsafe {
             #[allow(deprecated)]
@@ -104,7 +132,7 @@ mod macos {
 }
 
 #[cfg(target_os = "macos")]
-pub use macos::discover;
+pub use macos::{discover, request_access};
 
 #[cfg(not(target_os = "macos"))]
 pub fn discover() -> Inventory {

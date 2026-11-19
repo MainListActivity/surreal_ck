@@ -236,6 +236,7 @@ dependencies = [
 name = "surreal-ck-native-media-platform"
 version = "0.1.0"
 dependencies = [
+ "block2",
  "bytes",
  "jni",
  "objc2",

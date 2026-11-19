@@ -8,6 +8,10 @@ use async_channel::Sender;
 use nsh_base::theme;
 use nsh_core::prelude::*;
 
+#[cfg(target_os = "macos")]
+#[path = "device_selector.rs"]
+mod device_selector;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Request {
     #[default]
@@ -203,6 +207,8 @@ pub struct CallUi {
     status: Signal<String>,
     #[cfg(target_os = "macos")]
     devices: Signal<surreal_ck_native_call::devices::Inventory>,
+    #[cfg(target_os = "macos")]
+    device_permission_pending: Signal<bool>,
     #[cfg(feature = "experimental-enterprise-media")]
     enterprise_snapshot: Signal<Option<EnterpriseCursor>>,
     #[cfg(feature = "experimental-enterprise-media")]
@@ -222,6 +228,8 @@ impl CallUi {
                 camera: surreal_ck_native_call::devices::Permission::NotDetermined,
                 microphone: surreal_ck_native_call::devices::Permission::NotDetermined,
             }),
+            #[cfg(target_os = "macos")]
+            device_permission_pending: signal(false),
             expanded: signal(false),
             selections: std::array::from_fn(|_| signal(String::new())),
             requested_targets: std::array::from_fn(|_| signal(String::new())),
@@ -989,96 +997,14 @@ impl CallUi {
     fn device_selector(self, source: Source, placeholder: &'static str) -> impl IntoElement {
         #[cfg(target_os = "macos")]
         if source != Source::Screen {
-            use nsh_base::{SelectItem, SelectValue, select};
-            use surreal_ck_native_call::devices::{DeviceKind, Permission, discover};
+            use surreal_ck_native_call::devices::DeviceKind;
             let kind = if source == Source::Camera {
                 DeviceKind::Camera
             } else {
                 DeviceKind::Microphone
             };
-            let selection = self.selections[index(source)];
-            let refresh = move || {
-                let inventory = discover();
-                let selected = selection.get_untracked();
-                if !inventory
-                    .devices
-                    .iter()
-                    .any(|device| device.id == selected && device.kind == kind)
-                {
-                    selection.set(String::new());
-                }
-                self.devices.set(inventory);
-            };
-            return view()
-                .gap_1()
-                .child(
-                    select()
-                        .items(move || {
-                            let inventory = self.devices.get();
-                            inventory
-                                .devices
-                                .iter()
-                                .filter(|device| device.kind == kind)
-                                .map(|device| {
-                                    SelectItem::new(device.id.clone(), device.name.clone())
-                                        .disabled(
-                                            inventory.permission(kind) != Permission::Authorized,
-                                        )
-                                })
-                                .collect::<Vec<_>>()
-                        })
-                        .value(move || {
-                            SelectValue::Controlled(
-                                (!selection.get().is_empty()).then(|| selection.get().into()),
-                            )
-                        })
-                        .trigger({
-                            view()
-                                .px_3()
-                                .py_2()
-                                .rounded(px(8.0))
-                                .bg(move || theme().muted)
-                                .child(
-                                    text(move || {
-                                        let inventory = self.devices.get();
-                                        inventory
-                                            .devices
-                                            .iter()
-                                            .find(|device| {
-                                                device.id == selection.get() && device.kind == kind
-                                            })
-                                            .map(|device| device.name.clone())
-                                            .unwrap_or_else(|| "选择设备 ▾".into())
-                                    })
-                                    .text_color(move || theme().foreground),
-                                )
-                        })
-                        .on_open(refresh)
-                        .on_change(move |value: &Option<SharedString>| {
-                            selection.set(
-                                value
-                                    .as_ref()
-                                    .map(|value| value.to_string())
-                                    .unwrap_or_default(),
-                            )
-                        }),
-                )
-                .child(ui::action("刷新设备列表", || false, refresh))
-                .child(
-                    text(move || {
-                        let inventory = self.devices.get();
-                        format!(
-                            "{} · {} 个设备；热插拔后刷新，开始时重新核对映射",
-                            inventory.permission(kind).label(),
-                            inventory
-                                .devices
-                                .iter()
-                                .filter(|device| device.kind == kind)
-                                .count()
-                        )
-                    })
-                    .text_color(move || theme().muted_foreground),
-                )
+            return self
+                .mac_device_selector(kind, std::sync::Arc::new(device_selector::NativeAccess))
                 .into_element();
         }
         ui::field(self.selections[index(source)], placeholder).into_element()
