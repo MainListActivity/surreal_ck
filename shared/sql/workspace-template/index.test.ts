@@ -19,6 +19,24 @@ afterEach(async () => {
 });
 
 describe("workspace template scripts", () => {
+  test("064 独立加载原生聊天表、成员权限和幂等索引", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.version === 64);
+    expect(migration?.name).toBe("064-native-chat.surql");
+    const sql = migration?.sql ?? "";
+    for (const table of ["chat_conversation", "chat_member", "chat_message"]) {
+      expect(sql).toContain(`DEFINE TABLE OVERWRITE ${table} SCHEMAFULL`);
+    }
+    expect(sql).toContain("FIELDS direct_key UNIQUE");
+    expect(sql).toContain("FIELDS conversation, user UNIQUE");
+    expect(sql).toContain("FIELDS sender, client_id UNIQUE");
+    expect(sql).toContain("fn::chat_joined(conversation, $auth.id)");
+    expect(sql).toContain("sender = $auth.id");
+    expect(sql).toContain("chat_conversation_created");
+    expect(sql).not.toContain("native_signal");
+    expect(sql).not.toContain("office_message");
+  });
+
   test("自动发现合法编号的 SurQL 增量并严格按版本加载", async () => {
     const migrationsDir = await createMigrationDirectory({
       "002-second.surql": "-- second fixture",
@@ -626,8 +644,7 @@ describe("workspace template scripts", () => {
     const migration = scripts.find((script) => script.name === "055-claims-reconciliation-finding.surql");
 
     expect(migration?.version).toBe(55);
-    // 063 修复模板数组元素的 FLEXIBLE 属性。
-    expect(WORKSPACE_TEMPLATE_VERSION).toBe(63);
+    expect(WORKSPACE_TEMPLATE_VERSION).toBe(64);
     const sql = migration?.sql ?? "";
     expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS reconciliation_finding SCHEMAFULL/);
     expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS claim_supplement SCHEMAFULL/);

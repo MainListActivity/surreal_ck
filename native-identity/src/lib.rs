@@ -1,6 +1,7 @@
 //! 原生企业身份、当前工作区成员只读访问与固定信令。不得以解码 JWT 代替验证。
 //! 网络调用不自动打开浏览器、不保存令牌、不创建账号或注册回调。
 mod auth;
+pub mod chat;
 mod discovery;
 mod loopback;
 mod members;
