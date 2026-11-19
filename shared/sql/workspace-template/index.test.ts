@@ -19,6 +19,29 @@ afterEach(async () => {
 });
 
 describe("workspace template scripts", () => {
+  test("065 独立加载会议、六人上限、结束事件和信令防重放", async () => {
+    const scripts = await loadTemplateScripts();
+    const migration = scripts.find((script) => script.version === 65);
+    expect(migration?.name).toBe("065-native-meeting.surql");
+    const sql = migration?.sql ?? "";
+    for (const table of ["meeting", "meeting_participant", "meeting_signal"]) {
+      expect(sql).toContain(`DEFINE TABLE OVERWRITE ${table} SCHEMAFULL`);
+    }
+    expect(sql).toContain("FIELDS code UNIQUE");
+    expect(sql).toContain("rand::uuid::v4()");
+    expect(sql).toContain("FIELDS meeting, user UNIQUE");
+    expect(sql).toContain("meeting: capacity is six");
+    expect(sql).toContain("UPDATE meeting_participant SET left_at = time::now()");
+    expect(sql).toContain("fn::meeting_join($code: string)");
+    expect(sql).toContain("FIELDS `from`, nonce UNIQUE");
+    expect(sql).toContain("FIELDS handshake_key UNIQUE");
+    expect(sql).toContain("time::now() + 120s READONLY");
+    expect(sql).toContain("FOR update, delete NONE");
+    expect(sql).toContain("meeting_signal_rate");
+    expect(sql).toContain("meeting_presence_lock");
+    expect(sql).not.toContain("native_signal_rate");
+  });
+
   test("064 独立加载原生聊天表、成员权限和幂等索引", async () => {
     const scripts = await loadTemplateScripts();
     const migration = scripts.find((script) => script.version === 64);
@@ -644,7 +667,7 @@ describe("workspace template scripts", () => {
     const migration = scripts.find((script) => script.name === "055-claims-reconciliation-finding.surql");
 
     expect(migration?.version).toBe(55);
-    expect(WORKSPACE_TEMPLATE_VERSION).toBe(64);
+    expect(WORKSPACE_TEMPLATE_VERSION).toBe(65);
     const sql = migration?.sql ?? "";
     expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS reconciliation_finding SCHEMAFULL/);
     expect(sql).toMatch(/DEFINE TABLE IF NOT EXISTS claim_supplement SCHEMAFULL/);

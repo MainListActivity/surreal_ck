@@ -3,6 +3,9 @@ use super::*;
 #[path = "chat_tests.rs"]
 mod chat;
 
+#[path = "meeting_tests.rs"]
+mod meeting;
+
 fn offer(kind: &str) -> String {
     json!({"type":kind,"sdp":"v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 00:11\r\na=ice-ufrag:fixture\r\na=ice-pwd:local-fixture-only\r\n"}).to_string()
 }
