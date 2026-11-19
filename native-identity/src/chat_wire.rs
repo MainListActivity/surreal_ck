@@ -12,7 +12,7 @@ use tokio_tungstenite::tungstenite::Message;
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<ChatResult<Value>>>>>;
 
-pub(super) struct Wire {
+pub(crate) struct Wire {
     writer: Mutex<SplitSink<DatabaseSocket, Message>>,
     pending: Pending,
     reader: JoinHandle<()>,
@@ -152,7 +152,14 @@ impl Drop for Wire {
 }
 
 fn query_error(statement: &Value) -> ChatError {
-    if statement["details"]["retryable"] == true && statement["details"]["code"] == "quota_conflict"
+    if (statement["details"]["retryable"] == true
+        && statement["details"]["code"] == "quota_conflict")
+        || (statement["kind"] == "Query"
+            && statement["details"]["kind"] == "NotExecuted"
+            && statement["result"].as_str().is_some_and(|message| {
+                message.starts_with("Transaction conflict: ")
+                    && message.ends_with("This transaction can be retried")
+            }))
     {
         ChatError::Conflict
     } else if statement["result"]
@@ -243,6 +250,23 @@ mod tests {
         );
         assert_eq!(
             query_error(&json!({"status":"ERR","result":"unrelated database error"})),
+            ChatError::Database
+        );
+        let conflict = "Transaction conflict: Write conflict, retry the transaction. This transaction can be retried";
+        assert_eq!(
+            query_error(
+                &json!({"status":"ERR","kind":"Query","details":{"kind":"NotExecuted"},"result":conflict})
+            ),
+            ChatError::Conflict
+        );
+        assert_eq!(
+            query_error(&json!({"status":"ERR","result":conflict})),
+            ChatError::Database
+        );
+        assert_eq!(
+            query_error(
+                &json!({"status":"ERR","kind":"Query","details":{"kind":"NotExecuted"},"result":"An error occurred: Transaction conflict: rejected"})
+            ),
             ChatError::Database
         );
         assert_eq!(

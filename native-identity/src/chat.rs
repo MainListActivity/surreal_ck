@@ -18,7 +18,7 @@ use tokio::{
 };
 
 #[path = "chat_wire.rs"]
-mod wire;
+pub(crate) mod wire;
 use wire::Wire;
 
 pub type ChatResult<T> = std::result::Result<T, ChatError>;
@@ -429,7 +429,7 @@ impl Worker {
             let result = match established {
                 Ok(mut wire) => {
                     let mut stop = self.stop.clone();
-                    let result = tokio::select! { _=stop.changed()=>Err(ChatError::Stopped), v=self.connected(&mut wire)=>v };
+                    let result = tokio::select! { _=stop.changed()=>Err(ChatError::Stopped), v=self.connected(&mut wire,&mut attempts)=>v };
                     wire.close().await;
                     result
                 }
@@ -457,7 +457,7 @@ impl Worker {
             let _ = command.reply.send(Err(terminal));
         }
     }
-    async fn connected(&mut self, wire: &mut Wire) -> ChatResult<()> {
+    async fn connected(&mut self, wire: &mut Wire, attempts: &mut u8) -> ChatResult<()> {
         self.verify(wire).await?;
         wire.query("RETURN fn::chat_active($auth.id);", json!({}))
             .await?;
@@ -473,6 +473,7 @@ impl Worker {
             .await?;
         self.refresh(wire).await?;
         self.catch_up(wire, &until, initial).await?;
+        *attempts = 0;
         self.status.send_replace(ChatStatus::Connected);
         if let Some(ready) = self.ready.take() {
             let _ = ready.send(Ok(()));

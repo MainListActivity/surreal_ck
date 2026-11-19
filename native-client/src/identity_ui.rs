@@ -455,7 +455,9 @@ fn abort(pending: &mut Option<tokio::task::JoinHandle<()>>) {
         job.abort();
     }
 }
-fn start() -> (
+fn start(
+    read_gate: messages::ReadGate,
+) -> (
     async_channel::Sender<Command>,
     async_channel::Receiver<(u64, Event)>,
 ) {
@@ -592,7 +594,7 @@ fn start() -> (
                                 let event = Event::Ready(next.view.clone(), next.message.clone());
                                 directory = Some(next);
                                 let _ = out.send((id, event)).await;
-                                messages_worker.start(id,directory.as_ref().unwrap(),out.clone());
+                                messages_worker.start(id,directory.as_ref().unwrap(),out.clone(),read_gate.clone());
                             }
                             Ok(_) => {
                                 directory.take();
@@ -607,7 +609,7 @@ fn start() -> (
                                         format!("切换未完成：{error}。已保留原会话与成员；服务端最近选择可能已更新。")
                                     } else { format!("登录未完成：{error}") };
                                     let _ = out.send((id, Event::Failed(message))).await;
-                                    if let Some(previous)=&directory {messages_worker.start(id,previous,out.clone());}
+                                    if let Some(previous)=&directory {messages_worker.start(id,previous,out.clone(),read_gate.clone());}
                                 }
                             }
                         }
@@ -685,7 +687,8 @@ impl Controller {
         let media = crate::enterprise_tools::MediaTools::new();
         #[cfg(feature = "experimental-enterprise-media")]
         cleanup(move || media.invalidate());
-        let (commands, events) = start();
+        let read_gate = messages::ReadGate::default();
+        let (commands, events) = start(read_gate.clone());
         let send = commands.clone();
         let messages = messages::Ui::new(move |action| {
             let id = state.get_untracked().epoch;
@@ -696,12 +699,14 @@ impl Controller {
             let next = (
                 state.get().epoch,
                 messages.state.get().connected,
-                page.get() == crate::first_screen::Page::Messages,
+                messages::readable(page.get() == crate::first_screen::Page::Messages),
             );
-            if last_focus.get_untracked() != next {
+            let previous = last_focus.get_untracked();
+            read_gate.set_active(next.2);
+            if previous != next {
                 last_focus.set(next);
-                if next.1 {
-                    messages.dispatch(messages::Action::Focused(next.2));
+                if next.1 || previous.1 {
+                    messages.dispatch(messages::Action::Focused(next.1 && next.2));
                 }
             }
         });

@@ -97,7 +97,7 @@ DEFINE FUNCTION OVERWRITE fn::meeting_join($code: string) {
   LET $rooms = SELECT * FROM meeting WHERE code = string::lowercase(string::trim($code)) AND status = 'active' LIMIT 1;
   IF array::len($rooms) != 1 { THROW 'meeting: active code not found'; };
   LET $room = $rooms[0].id;
-  INSERT IGNORE INTO meeting_participant { meeting: $room, user: $auth.id };
+  INSERT INTO meeting_participant { meeting: $room, user: $auth.id } ON DUPLICATE KEY UPDATE user = $auth.id;
   RETURN UPDATE meeting_participant SET left_at = NONE WHERE meeting = $room AND user = $auth.id;
 } PERMISSIONS FULL;
 

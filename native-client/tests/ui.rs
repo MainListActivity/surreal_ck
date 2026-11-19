@@ -354,6 +354,29 @@ fn EnterpriseChatFixture() -> impl IntoElement {
         .child(
             nsh_base::button()
                 .on_press(move || {
+                    let state = ui.state.get_untracked();
+                    let Some(row) = state.outbox.first() else {
+                        return;
+                    };
+                    let mut confirmed = chat_message(&row.room, "persisted", &row.body);
+                    confirmed.sender = row.sender.clone();
+                    confirmed.client_id = row.client_id.clone();
+                    let room = row.room.clone();
+                    let client = row.client_id.clone();
+                    ui.apply(ChatUpdate::Status(ChatStatus::Reconnecting));
+                    ui.apply(ChatUpdate::Receipt(client.clone(), Err(ChatError::Timeout)));
+                    ui.apply(ChatUpdate::Opened("chat_conversation:other".into()));
+                    ui.apply(ChatUpdate::Status(ChatStatus::Connected));
+                    ui.apply(ChatUpdate::Opened(room.clone()));
+                    ui.apply(ChatUpdate::History(room, vec![confirmed], true));
+                    ui.apply(ChatUpdate::Receipt(client, Err(ChatError::Timeout)));
+                    assert!(ui.state.get_untracked().outbox.is_empty());
+                })
+                .child(text("模拟落库成功后超时重连重开")),
+        )
+        .child(
+            nsh_base::button()
+                .on_press(move || {
                     if let Some(client_id) = pending_receipt.get_untracked() {
                         ui.apply(ChatUpdate::Receipt(client_id, Err(ChatError::Timeout)));
                     }
@@ -415,6 +438,62 @@ fn enterprise_chat_marks_read_and_retries_same_client_id() -> Result<(), String>
     app.wait_for("12:34 已送出")?;
     app.wait_for("重发沿用同一 client_id")?;
     assert!(!app.shows("发送失败，可重发"));
+    Ok(())
+}
+
+#[test]
+fn enterprise_chat_persisted_message_wins_after_timeout_reconnect_and_reopen() -> Result<(), String>
+{
+    let mut app = enterprise_fixture()?;
+    app.press("柏林 · 2 未读")?;
+    app.wait_for("历史消息")?;
+    app.type_text("text:输入消息，Enter 发送", "已落库但回执丢失")?;
+    app.press("发送消息")?;
+    app.wait_for("发送中…")?;
+    app.press("模拟落库成功后超时重连重开")?;
+    app.wait_for("已落库但回执丢失")?;
+    app.wait_for("12:34 已送出")?;
+    assert!(!app.shows("发送失败，可重发"));
+    assert!(!app.shows("重发"));
+    Ok(())
+}
+
+#[component]
+fn WindowReadFixture() -> impl IntoElement {
+    let messages = signal(true);
+    view()
+        .child(text(move || {
+            if nsh_app_native_client::enterprise_messages::readable(messages.get()) {
+                "允许推进已读"
+            } else {
+                "后台保留未读"
+            }
+        }))
+        .child(
+            nsh_base::button()
+                .on_press(move || messages.set(false))
+                .child(text("离开消息页")),
+        )
+}
+#[test]
+fn enterprise_chat_requires_active_visible_window_to_advance_read_cursor() -> Result<(), String> {
+    use nsh_core::platform::Lifecycle;
+    let mut app = Headless::start(EngineConfig::new(Root::of::<WindowReadFixture>())).unwrap();
+    app.wait_for("允许推进已读")?;
+    for state in [
+        Lifecycle::Inactive,
+        Lifecycle::Background,
+        Lifecycle::Active,
+    ] {
+        app.set_environment("window lifecycle", |env| env.lifecycle = state)?;
+        app.wait_for(if state == Lifecycle::Active {
+            "允许推进已读"
+        } else {
+            "后台保留未读"
+        })?;
+    }
+    app.press("离开消息页")?;
+    app.wait_for("后台保留未读")?;
     Ok(())
 }
 

@@ -32,13 +32,13 @@ async fn event(
     .expect("expected chat event")
 }
 
-struct Proxy {
-    config: SurrealConfig,
-    paused: watch::Sender<bool>,
+pub(crate) struct Proxy {
+    pub(crate) config: SurrealConfig,
+    pub(crate) paused: watch::Sender<bool>,
     task: tokio::task::JoinHandle<()>,
 }
 impl Proxy {
-    async fn start(backend: &SurrealConfig) -> Self {
+    pub(crate) async fn start(backend: &SurrealConfig) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint =
             url::Url::parse(&format!("ws://{}/rpc", listener.local_addr().unwrap())).unwrap();
@@ -262,6 +262,46 @@ async fn real_fork_chat_client_expiry_and_drop() {
     .await;
     assert_eq!(alice.conversations().await.unwrap_err(), ChatError::Expired);
     drop(alice);
+}
+
+#[tokio::test]
+#[ignore = "requires SURREAL_TEST_BINARY verified fork; consecutive reconnect regression"]
+async fn real_fork_chat_client_reconnect_budget_resets_after_each_recovery() {
+    let fixture = fixture().await;
+    let proxy = Proxy::start(&fixture.config).await;
+    let alice = client(&fixture, "a", &proxy.config).await;
+    let bob = client(&fixture, "b", &fixture.config).await;
+    let room = bob.open_direct("user:a").await.unwrap();
+    let mut events = alice.subscribe();
+    for round in 0..7 {
+        proxy.paused.send_replace(true);
+        if let ChatEvent::Reconnecting { attempt } =
+            event(&mut events, |e| matches!(e, ChatEvent::Reconnecting { .. })).await
+        {
+            assert_eq!(attempt, 1, "reconnect round {round}");
+        }
+        let missed = bob
+            .send(&room, "offline fixture", &format!("round-{round}"))
+            .await
+            .unwrap();
+        proxy.paused.send_replace(false);
+        event(
+            &mut events,
+            |e| matches!(e, ChatEvent::Message(m) if m.id==missed.id),
+        )
+        .await;
+        let mut status = alice.status();
+        timeout(Duration::from_secs(10), async {
+            while *status.borrow_and_update() != ChatStatus::Connected {
+                status.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(alice.conversations().await.unwrap().len(), 1);
+    }
+    alice.stop().await.unwrap();
+    bob.stop().await.unwrap();
 }
 
 #[tokio::test]

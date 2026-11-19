@@ -88,7 +88,7 @@ DEFINE FUNCTION OVERWRITE fn::chat_direct($peer: record<user>) {
     THROW 'chat: two active humans required';
   };
   LET $key = encoding::json::encode(array::sort([<string>$auth.id, <string>$peer]));
-  INSERT IGNORE INTO chat_conversation { kind: 'direct', direct_users: [$auth.id, $peer] };
+  INSERT INTO chat_conversation { kind: 'direct', direct_users: [$auth.id, $peer] } ON DUPLICATE KEY UPDATE direct_key = $key;
   LET $existing = SELECT VALUE id FROM chat_conversation WHERE direct_key = $key LIMIT 1;
   IF array::len($existing) != 1 { THROW 'chat: direct creation failed'; };
   RETURN $existing[0];

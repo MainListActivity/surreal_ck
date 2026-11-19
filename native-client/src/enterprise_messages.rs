@@ -6,7 +6,7 @@ use nsh_core::prelude::*;
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -205,6 +205,7 @@ impl Ui {
                     state.more = messages.len() == 50;
                 }
                 for message in messages {
+                    confirm(state, &message);
                     merge(&mut state.rows, message.into());
                 }
                 for row in &state.outbox {
@@ -222,6 +223,7 @@ impl Ui {
                 }
             }
             Update::Message(message) => {
+                confirm(state, &message);
                 if state.active.as_deref() == Some(&message.conversation) {
                     merge(&mut state.rows, message.into());
                     if state.rows.len() > 1000 {
@@ -238,9 +240,12 @@ impl Ui {
                     }
                 }
                 Err(error) => {
+                    if !state.outbox.iter().any(|row| row.client_id == client_id) {
+                        return;
+                    }
                     state.status = error.to_string();
                     for row in state.outbox.iter_mut().chain(state.rows.iter_mut()) {
-                        if row.client_id == client_id {
+                        if row.client_id == client_id && row.delivery != Delivery::Sent {
                             row.delivery = Delivery::Failed;
                         }
                     }
@@ -987,9 +992,45 @@ fn merge(rows: &mut Vec<Row>, row: Row) {
         (r.id.is_some() && r.id == row.id)
             || (r.sender == row.sender && r.client_id == row.client_id)
     }) {
-        *existing = row;
+        if existing.delivery != Delivery::Sent || row.delivery == Delivery::Sent {
+            *existing = row;
+        }
     } else {
         rows.push(row);
+    }
+}
+fn confirm(state: &mut Model, message: &ChatMessage) {
+    state
+        .outbox
+        .retain(|row| row.sender != message.sender || row.client_id != message.client_id);
+}
+pub fn readable(messages_page: bool) -> bool {
+    messages_page && lifecycle() == nsh_core::platform::Lifecycle::Active
+}
+#[derive(Clone, Default)]
+pub(super) struct ReadGate(Arc<AtomicBool>);
+impl ReadGate {
+    pub fn set_active(&self, active: bool) {
+        self.0.store(active, Ordering::Release);
+    }
+    fn allows(&self, focused: bool) -> bool {
+        focused && self.0.load(Ordering::Acquire)
+    }
+}
+#[cfg(test)]
+mod read_tests {
+    use super::ReadGate;
+
+    #[test]
+    fn background_gate_rejects_stale_or_queued_focus() {
+        let gate = ReadGate::default();
+        let worker = gate.clone();
+        assert!(!worker.allows(true));
+        gate.set_active(true);
+        assert!(worker.allows(true));
+        assert!(!worker.allows(false));
+        gate.set_active(false);
+        assert!(!worker.allows(true));
     }
 }
 fn bound_rows(rows: &mut Vec<Row>) {
@@ -1049,6 +1090,7 @@ impl Slot {
         epoch: u64,
         directory: &super::Directory,
         out: async_channel::Sender<(u64, super::Event)>,
+        read_gate: ReadGate,
     ) {
         let Some(slug) = directory.view.selected_slug.clone() else {
             let _ = out.try_send((
@@ -1106,12 +1148,12 @@ impl Slot {
                         let Ok(action)=command else{break;};
                         let operation=async {
                             match action {
-                                Action::Direct(peer)=>{let room=client.open_direct(&peer).await?;let _=emit(Update::Opened(room.clone())).await;active=Some(room.clone());let history=client.messages(&room,None,50).await?;client.mark_read(&room).await?;let _=emit(Update::History(room,history,true)).await;}
-                                Action::Group(title,members)=>{let room=client.create_group(&title,&members).await?;let _=emit(Update::Opened(room.clone())).await;active=Some(room.clone());client.mark_read(&room).await?;let _=emit(Update::History(room,Vec::new(),true)).await;}
-                                Action::Open(room)=>{active=Some(room.clone());let messages=client.messages(&room,None,50).await?;client.mark_read(&room).await?;let _=emit(Update::History(room,messages,true)).await;}
+                                Action::Direct(peer)=>{let room=client.open_direct(&peer).await?;let _=emit(Update::Opened(room.clone())).await;active=Some(room.clone());let history=client.messages(&room,None,50).await?;if read_gate.allows(focused) {client.mark_read(&room).await?;}let _=emit(Update::History(room,history,true)).await;}
+                                Action::Group(title,members)=>{let room=client.create_group(&title,&members).await?;let _=emit(Update::Opened(room.clone())).await;active=Some(room.clone());if read_gate.allows(focused) {client.mark_read(&room).await?;}let _=emit(Update::History(room,Vec::new(),true)).await;}
+                                Action::Open(room)=>{active=Some(room.clone());let messages=client.messages(&room,None,50).await?;if read_gate.allows(focused) {client.mark_read(&room).await?;}let _=emit(Update::History(room,messages,true)).await;}
                                 Action::Older(room,before)=>{let history=client.messages(&room,before,50).await?;let _=emit(Update::History(room,history,true)).await;}
-                                Action::Read(room)=>{client.mark_read(&room).await?;}
-                                Action::Focused(visible)=>{focused=visible;if visible && let Some(room)=&active {client.mark_read(room).await?;}}
+                                Action::Read(room)=>{if read_gate.allows(focused) {client.mark_read(&room).await?;}}
+                                Action::Focused(visible)=>{focused=visible;if read_gate.allows(focused) && let Some(room)=&active {client.mark_read(room).await?;}}
                                 Action::Send{room,body,client_id}=>{let result=client.send(&room,&body,&client_id).await;let _=emit(Update::Receipt(client_id,result)).await;}
                             }
                             let _=emit(Update::Snapshot(client.snapshot())).await;
@@ -1122,7 +1164,7 @@ impl Slot {
                     }
                     event=events.recv()=>match event {
                         Ok(ChatEvent::Snapshot(snapshot))=>{let _=emit(Update::Snapshot(snapshot)).await;}
-                        Ok(ChatEvent::Message(message))=>{let read=focused && active.as_deref()==Some(&message.conversation);let room=message.conversation.clone();let _=emit(Update::Message(message)).await;if read {let _=tokio::select!{_=stopping.changed()=>break,result=client.mark_read(&room)=>result};}}
+                        Ok(ChatEvent::Message(message))=>{let room=message.conversation.clone();let _=emit(Update::Message(message)).await;if read_gate.allows(focused) && active.as_deref()==Some(&room) {let _=tokio::select!{_=stopping.changed()=>break,result=client.mark_read(&room)=>result};}}
                         Ok(ChatEvent::Reconnecting{..})=>{let _=emit(Update::Status(ChatStatus::Reconnecting)).await;}
                         Ok(ChatEvent::Ended(error))=>{let _=emit(Update::Status(ChatStatus::Ended(error))).await;break;}
                         Ok(ChatEvent::Membership{conversation,joined})=>{if !joined && active.as_deref()==Some(&conversation){active=None;}}

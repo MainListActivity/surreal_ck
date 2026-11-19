@@ -3,7 +3,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
 
 #[path = "chat_api_tests.rs"]
-mod api;
+pub(crate) mod api;
 
 async fn query(socket: &mut DatabaseSocket, sql: &str, vars: Value) -> Value {
     rpc(socket, 100, "query", json!([sql, vars])).await.unwrap()

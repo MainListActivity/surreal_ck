@@ -1,4 +1,6 @@
 use super::*;
+#[path = "meeting_api_tests.rs"]
+mod api;
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
 
