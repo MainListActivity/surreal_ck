@@ -55,6 +55,12 @@ export type WorkbookRow = {
 export type WorkbooksState = {
   loading: boolean;
   error: string | null;
+  /**
+   * 导入向导自己的错误。导入失败（含建表权限拒绝）只落这里，由向导展示；
+   * 关闭向导时用 {@link createWorkbooksStore.clearImportError} 清掉，
+   * 不触碰 `error`（列表读取、重命名等其他错误仍保留在页面）。
+   */
+  importError: string | null;
   workbooks: WorkbookRow[];
 };
 
@@ -613,11 +619,17 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
   const state: WorkbooksState = {
     loading: false,
     error: null,
+    importError: null,
     workbooks: [],
   };
 
   function emit(): void {
-    deps.onChange?.({ loading: state.loading, error: state.error, workbooks: state.workbooks });
+    deps.onChange?.({
+      loading: state.loading,
+      error: state.error,
+      importError: state.importError,
+      workbooks: state.workbooks,
+    });
   }
 
   async function load(): Promise<void> {
@@ -667,8 +679,12 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
    * 「workbook 已建但无 sheet / sheet 指向不存在表」的中间态。
    * DDL/写权限由 access 类型卡死，participant 触发的权限错误翻成中文提示。
    */
-  async function create(name: string, options: CreateWorkbookOptions): Promise<WorkbookRow | null> {
-    state.error = null;
+  async function create(
+    name: string,
+    options: CreateWorkbookOptions,
+    errorScope: "error" | "importError" = "error",
+  ): Promise<WorkbookRow | null> {
+    state[errorScope] = null;
     let workbookId: RecordIdString;
     try {
       // 先探测配额模式（只读点查），再一次性构造事务；构造错误会在写入前抛出。
@@ -689,7 +705,7 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
               "ent_probe",
             );
             if (verdict.kind === "insufficient") {
-              state.error = describeCapacityGaps(verdict.gaps);
+              state[errorScope] = describeCapacityGaps(verdict.gaps);
               emit();
               return null;
             }
@@ -704,7 +720,7 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
         // 违规项，保留资源类型与用量数字。participant 视图不带 operated_table
         // 时 projectViolation 会把违规项全部裁剪掉，文案退化成无资源类型。
         const failure = mapQuotaFailure(err, { kind: "workspace_admin" });
-        state.error = failure.kind === "exceeded"
+        state[errorScope] = failure.kind === "exceeded"
           ? quotaExceededMessage(failure.violations)
           : describeWriteError(err);
         emit();
@@ -712,7 +728,7 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
       }
       const message = describeWriteError(err);
       const isInfraFailure = /processing event|does not exist|quota/i.test(message);
-      state.error = options.includesTemplateDashboard && !message.startsWith("没有权限") && !isInfraFailure
+      state[errorScope] = options.includesTemplateDashboard && !message.startsWith("没有权限") && !isInfraFailure
         ? `模板默认仪表盘无效，工作簿未创建：${message}`
         : options.includesTemplateSamples && !message.startsWith("没有权限") && !isInfraFailure
           ? `模板样例数据不符合字段定义，工作簿未创建：${message}`
@@ -737,9 +753,10 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
   async function importCsvWorkbook(
     input: CsvWorkbookImportInput,
   ): Promise<CsvWorkbookImportResult | null> {
+    state.importError = null;
     const workbookName = input.workbookName.trim();
     if (!workbookName) {
-      state.error = "工作簿名称不能为空";
+      state.importError = "工作簿名称不能为空";
       emit();
       return null;
     }
@@ -748,7 +765,7 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
       label: field.label.trim(),
     }));
     if (fields.some((field) => !field.label)) {
-      state.error = "字段名称不能为空";
+      state.importError = "字段名称不能为空";
       emit();
       return null;
     }
@@ -767,7 +784,7 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
           values,
         })),
       }],
-    });
+    }, "importError");
     if (!workbook) return null;
 
     return {
@@ -781,15 +798,16 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
   async function importXlsxWorkbook(
     input: XlsxWorkbookImportInput,
   ): Promise<XlsxWorkbookImportResult | null> {
+    state.importError = null;
     const workbookName = input.workbookName.trim();
     if (!workbookName) {
-      state.error = "工作簿名称不能为空";
+      state.importError = "工作簿名称不能为空";
       emit();
       return null;
     }
     const sheets = input.sheets.filter((sheet) => sheet.status === "ready");
     if (!sheets.length) {
-      state.error = "至少选择一个可导入的 Sheet";
+      state.importError = "至少选择一个可导入的 Sheet";
       emit();
       return null;
     }
@@ -848,7 +866,7 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
       };
     });
     if (convertedSheets.some(({ fields }) => fields.some((field) => !field.label))) {
-      state.error = "字段名称不能为空";
+      state.importError = "字段名称不能为空";
       emit();
       return null;
     }
@@ -861,7 +879,7 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
           receipts: convertedSheets.flatMap(({ receipts }) => receipts),
         },
       } : {}),
-    });
+    }, "importError");
     if (!workbook) return null;
     return {
       workbook,
@@ -921,11 +939,20 @@ export function createWorkbooksStore(deps: WorkbooksDeps) {
     }
   }
 
+  /** 只清导入向导自己的错误；列表 / 重命名等页面错误保持不变。 */
+  function clearImportError(): void {
+    if (state.importError === null) return;
+    state.importError = null;
+    emit();
+  }
+
   return {
     get loading(): boolean { return state.loading; },
     get error(): string | null { return state.error; },
+    get importError(): string | null { return state.importError; },
     get workbooks(): WorkbookRow[] { return state.workbooks; },
     load,
+    clearImportError,
     createBlank,
     importCsvWorkbook,
     importXlsxWorkbook,

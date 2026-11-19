@@ -159,12 +159,18 @@
     }
   }
 
+  // 首页「导入文件」走新建工作簿路径（importCsvWorkbook / importXlsxWorkbook），
+  // 会建实体表，因此和「空白工作簿」一样受结构权限约束；编辑器工具栏的
+  // 「导入文件到当前数据表」是独立入口，只写现有表，权限保持原样。
   function handleImportClick() {
+    if (!canWriteSharedStructure) return;
+    workbooksStore.clearImportError();
     importStatus = "";
     fileInput?.click();
   }
 
   async function handleImportFile(event: Event): Promise<void> {
+    if (!canWriteSharedStructure) return;
     const input = event.currentTarget as HTMLInputElement;
     const file = input.files?.[0];
     input.value = "";
@@ -283,11 +289,16 @@
           accept=".csv,.xls,.xlsx,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
           onchange={(event) => void handleImportFile(event)}
         />
-        <button type="button" class="qa qa-neutral" onclick={handleImportClick}>
+        <button
+          type="button"
+          class="qa qa-neutral"
+          onclick={handleImportClick}
+          disabled={!canWriteSharedStructure}
+        >
           <span class="qa-icon"><Upload size={21} /></span>
           <span class="qa-text">
             <strong>导入文件</strong>
-            <small>Excel / CSV · 自动识别字段</small>
+            <small>{canWriteSharedStructure ? "Excel / CSV · 自动识别字段" : "需要管理员权限"}</small>
           </span>
         </button>
         <button
@@ -502,7 +513,10 @@
 {#if csvImport}
   <CsvImportDialog
     parsed={csvImport}
-    onclose={() => (csvImport = null)}
+    onclose={() => {
+      workbooksStore.clearImportError();
+      csvImport = null;
+    }}
     onopen={(workbookId) => onopen?.(workbookId)}
   />
 {/if}
@@ -510,7 +524,10 @@
 {#if xlsxImport}
   <XlsxImportDialog
     parsed={xlsxImport}
-    onclose={() => (xlsxImport = null)}
+    onclose={() => {
+      workbooksStore.clearImportError();
+      xlsxImport = null;
+    }}
     onopen={(workbookId) => onopen?.(workbookId)}
   />
 {/if}

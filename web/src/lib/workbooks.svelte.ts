@@ -20,6 +20,7 @@ import {
 const reactive = $state<WorkbooksSnapshot>({
   loading: false,
   error: null,
+  importError: null,
   workbooks: [],
 });
 
@@ -35,6 +36,7 @@ const store = createWorkbooksStore({
   onChange(snapshot) {
     reactive.loading = snapshot.loading;
     reactive.error = snapshot.error;
+    reactive.importError = snapshot.importError;
     reactive.workbooks = snapshot.workbooks;
   },
 });
@@ -42,9 +44,11 @@ const store = createWorkbooksStore({
 export const workbooksStore = {
   get loading(): boolean { return reactive.loading; },
   get error(): string | null { return reactive.error; },
+  get importError(): string | null { return reactive.importError; },
   get workbooks(): WorkbookRow[] { return reactive.workbooks; },
 
   load: () => store.load(),
+  clearImportError: () => store.clearImportError(),
   createBlank: (name: string) => store.createBlank(name),
   importCsvWorkbook: (input: CsvWorkbookImportInput) => store.importCsvWorkbook(input),
   importXlsxWorkbook: (input: XlsxWorkbookImportInput) => store.importXlsxWorkbook(input),

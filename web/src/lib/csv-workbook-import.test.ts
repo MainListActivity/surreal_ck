@@ -75,7 +75,9 @@ describe("workbooksStore.importCsvWorkbook — CSV 新工作簿原子导入", ()
 
     expect(result).toBeNull();
     expect(queries.filter((query) => /BEGIN TRANSACTION/i.test(query.sql))).toHaveLength(1);
-    expect(store.error).toBe("没有权限执行该操作（仅工作区管理员可修改表结构）");
+    // 导入失败归向导作用域：页面 error 不被污染
+    expect(store.importError).toBe("没有权限执行该操作（仅工作区管理员可修改表结构）");
+    expect(store.error).toBeNull();
     expect(store.workbooks).toEqual([]);
   });
 });

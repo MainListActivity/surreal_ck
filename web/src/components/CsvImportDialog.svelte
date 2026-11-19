@@ -51,7 +51,7 @@
         fields,
         rows: parsed.rows,
       });
-      if (!result) error = workbooksStore.error ?? "导入失败，请稍后重试";
+      if (!result) error = workbooksStore.importError ?? "导入失败，请稍后重试";
     } finally {
       importing = false;
     }

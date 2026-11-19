@@ -79,7 +79,7 @@
     existingTargetOrder: initialExistingTargets.map((target) => target.id),
     importNewWorkbook: async ({ workbookName, sheets, batch }) => {
       const imported = await workbooksStore.importXlsxWorkbook({ workbookName, sheets, batch });
-      if (!imported) throw new Error(workbooksStore.error ?? "导入失败，请稍后重试");
+      if (!imported) throw new Error(workbooksStore.importError ?? "导入失败，请稍后重试");
       return { workbookId: imported.workbook.id, sheets: imported.sheets };
     },
     importExistingSheet: async ({ sheet, targetSheetId, batch }) => {
