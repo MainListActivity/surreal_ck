@@ -87,7 +87,8 @@ describe("OIP-13 workbooksStore.importXlsxWorkbook", () => {
 
     expect(result).toBeNull();
     expect(store.workbooks).toEqual([]);
-    expect(store.error).toBe("没有权限执行该操作（仅工作区管理员可修改表结构）");
+    expect(store.importError).toBe("没有权限执行该操作（仅工作区管理员可修改表结构）");
+    expect(store.error).toBeNull();
   });
 
   test("持久批次的新工作簿在同一原子事务写业务记录与逐行回执", async () => {
