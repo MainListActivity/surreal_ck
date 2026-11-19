@@ -57,6 +57,7 @@ pub enum ConversationFilter {
 }
 
 impl ConversationFilter {
+    #[cfg(test)]
     pub fn label(self) -> &'static str {
         match self {
             ConversationFilter::All => "全部",
@@ -94,6 +95,7 @@ impl IdentitySummary {
     }
 
     /// 已配置但未登录、也不在加载中：可以引导去登录。
+    #[cfg(test)]
     pub fn can_sign_in(&self) -> bool {
         self.configured && !self.signed_in && !self.loading
     }
@@ -140,6 +142,7 @@ pub fn direct_conversation() -> Conversation {
 }
 
 /// 当前可见的真实会话；未连接时为空。筛选不会编造会话。
+#[cfg(test)]
 pub fn visible_conversations(
     connected: bool,
     query: &str,
@@ -162,6 +165,7 @@ pub fn visible_conversations(
 }
 
 /// 会话列表为空时的标题与说明。已连接时按筛选说明，未连接时按身份状态说明下一步。
+#[cfg(test)]
 pub fn conversation_empty(
     identity: &IdentitySummary,
     connected: bool,

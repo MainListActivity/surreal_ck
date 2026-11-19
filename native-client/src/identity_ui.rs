@@ -7,6 +7,9 @@ use surreal_ck_native_identity::{
     WorkspaceRole, load_members,
 };
 
+#[path = "enterprise_messages.rs"]
+pub mod messages;
+
 #[cfg(not(all(target_os = "android", feature = "android-native-oauth")))]
 use surreal_ck_native_identity::LoopbackReceiver;
 
@@ -14,10 +17,12 @@ enum Command {
     Login(u64),
     Switch(u64, String),
     Logout(u64, &'static str),
+    Messages(u64, messages::Action),
     #[cfg(feature = "experimental-enterprise-signaling")]
     Chat(u64, u64, enterprise_chat::Action),
 }
 enum Event {
+    Messages(messages::Update),
     #[cfg(feature = "experimental-enterprise-files")]
     FileTools(
         u64,
@@ -88,6 +93,7 @@ struct WorkspaceChoice {
 /// UI 只持有权威 API 返回的展示数据，不持有 JWT、Session 或 callback。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct DirectoryView {
+    people: Vec<messages::Person>,
     workspaces: Vec<WorkspaceChoice>,
     selected_slug: Option<String>,
     current_title: String,
@@ -118,6 +124,17 @@ impl DirectoryView {
     /// `record_identity`：后台已持有本工作区经验证的 participant RECORD 会话
     /// （普通成员原 token，或管理员经 collaboration-scope 降级所得）。
     fn select(&mut self, workspace: &Workspace, members: Vec<Member>, record_identity: bool) {
+        self.people = members
+            .iter()
+            .map(|member| messages::Person {
+                id: member.id.clone(),
+                name: member
+                    .display_name
+                    .clone()
+                    .unwrap_or_else(|| member.email.clone()),
+                pending: member.pending,
+            })
+            .collect();
         self.selected_slug = Some(workspace.slug.clone());
         self.current_title = format!("当前工作区：{}", workspace.name);
         #[cfg(not(feature = "experimental-enterprise-signaling"))]
@@ -157,7 +174,6 @@ struct Directory {
     /// 工作区选择 / 管理员专用 HTTP API 使用的原会话（管理员仍为 ac=admin）。
     session: Arc<Session>,
     /// 成员目录与信令使用的 participant RECORD 会话；没有时不得启用聊天。
-    #[cfg_attr(not(feature = "experimental-enterprise-signaling"), allow(dead_code))]
     collaboration: Option<Arc<Session>>,
     view: DirectoryView,
     message: String,
@@ -455,6 +471,7 @@ fn start() -> (
             let (done, results) = async_channel::bounded::<(u64, Result<Directory, String>)>(2);
             let mut pending: Option<tokio::task::JoinHandle<()>> = None;
             let mut directory: Option<Directory> = None;
+            let mut messages_worker=messages::Slot::default();
             let mut gate = CompletionGate::default();
             #[cfg(feature = "experimental-enterprise-signaling")]
             let mut chat_worker = enterprise_chat::Slot::default();
@@ -463,6 +480,7 @@ fn start() -> (
                 tokio::select! {
                     _ = expiry.tick() => {
                         if directory.as_ref().is_some_and(|entry| entry.session.ensure_current().is_err()) {
+                            messages_worker.shutdown().await;
                             #[cfg(feature = "experimental-enterprise-signaling")]
                             {
                                 gate.invalidate(gate.epoch);
@@ -483,6 +501,16 @@ fn start() -> (
                         let Ok(command) = command else { break; };
                         // 卸载关闭 Sender 后不再执行队列中尚未开始的邀请/发送操作。
                         if rx.is_closed() { break; }
+                        let command=match command {
+                            Command::Messages(id,action)=> {
+                                if id==gate.epoch && !gate.accepting && !messages_worker.dispatch(action.clone()) {
+                                    let update=match action {messages::Action::Send{client_id,..}=>messages::Update::Receipt(client_id,Err(surreal_ck_native_identity::chat::ChatError::Stopped)),_=>messages::Update::Error("聊天尚未连接，请检查工作区和连接状态。".into())};
+                                    let _=out.send((id,Event::Messages(update))).await;
+                                }
+                                continue;
+                            }
+                            other=>other,
+                        };
                         #[cfg(feature = "experimental-enterprise-signaling")]
                         let command = match command {
                             Command::Chat(id, generation, action) => {
@@ -494,11 +522,13 @@ fn start() -> (
                             other => other,
                         };
                         abort(&mut pending);
+                        messages_worker.shutdown().await;
                         #[cfg(feature = "experimental-enterprise-signaling")]
                         let close = enterprise_chat::shutdown(&mut chat_worker).await;
                         #[cfg(feature = "experimental-enterprise-signaling")]
                         let close_warning = close.as_ref().ok().cloned().flatten();
                         match command {
+                            Command::Messages(_,_)=>unreachable!(),
                             #[cfg(feature = "experimental-enterprise-signaling")]
                             Command::Chat(_, _, _) => unreachable!(),
                             Command::Logout(id, reason) => {
@@ -562,6 +592,7 @@ fn start() -> (
                                 let event = Event::Ready(next.view.clone(), next.message.clone());
                                 directory = Some(next);
                                 let _ = out.send((id, event)).await;
+                                messages_worker.start(id,directory.as_ref().unwrap(),out.clone());
                             }
                             Ok(_) => {
                                 directory.take();
@@ -576,6 +607,7 @@ fn start() -> (
                                         format!("切换未完成：{error}。已保留原会话与成员；服务端最近选择可能已更新。")
                                     } else { format!("登录未完成：{error}") };
                                     let _ = out.send((id, Event::Failed(message))).await;
+                                    if let Some(previous)=&directory {messages_worker.start(id,previous,out.clone());}
                                 }
                             }
                         }
@@ -583,6 +615,7 @@ fn start() -> (
                 }
             }
             abort(&mut pending);
+            messages_worker.shutdown().await;
             #[cfg(feature = "experimental-enterprise-signaling")]
             let _ = enterprise_chat::shutdown(&mut chat_worker).await;
             drop(directory);
@@ -621,147 +654,323 @@ fn summary_of(state: &IdentityViewState, available: bool) -> crate::first_screen
 
 /// 企业身份与工作区面板。summary 向首屏公开真实身份摘要（无假登录）。
 /// 面板常驻挂载：只折叠账号设置，不能将采集隐私与停止区一起隐藏。
-pub fn enterprise_identity(
-    summary: Signal<crate::first_screen::IdentitySummary>,
-) -> impl IntoElement {
-    let expanded = signal(false);
-    let available = identity_available();
-    let state = signal(IdentityViewState::new(available));
-    effect(move || {
-        let next = summary_of(&state.get(), available);
-        if summary.get_untracked() != next {
-            summary.set(next);
-        }
-    });
+#[derive(Clone, Copy)]
+pub(crate) struct Controller {
+    state: Signal<IdentityViewState>,
+    commands: Signal<async_channel::Sender<Command>>,
+    pub messages: messages::Ui,
     #[cfg(feature = "experimental-enterprise-files")]
-    let files = crate::enterprise_file_tools::FileTools::new();
-    #[cfg(feature = "experimental-enterprise-files")]
-    cleanup(move || files.invalidate());
+    files: crate::enterprise_file_tools::FileTools,
     #[cfg(feature = "experimental-enterprise-media")]
-    let media = crate::enterprise_tools::MediaTools::new();
-    #[cfg(feature = "experimental-enterprise-media")]
-    cleanup(move || media.invalidate());
-    let (commands, events) = start();
-    let cleanup_commands = commands.clone();
-    cleanup(move || {
-        cleanup_commands.close();
-    });
-    let browser_commands = commands.clone();
-    spawn(async move {
-        while let Ok((id, event)) = events.recv().await {
-            #[cfg(feature = "experimental-enterprise-files")]
-            let event = match event {
-                Event::FileTools(generation, handle, notices) => {
-                    let current = state.get_untracked();
-                    if current.epoch == id
-                        && current.chat.generation == generation
-                        && handle.is_active()
-                    {
-                        if let Err(error) = files.bind(id, generation, handle, notices) {
-                            state.update(|state| {
-                                state.status = format!("企业文件界面未建立：{error}")
-                            });
-                        }
-                    } else {
-                        handle.request_stop();
-                    }
-                    continue;
-                }
-                event => {
-                    match &event {
-                        Event::Chat(generation, enterprise_chat::Update::Open(_))
-                            if state.get_untracked().epoch == id
-                                && state.get_untracked().chat.generation == *generation =>
-                        {
-                            files.opened(id, *generation)
-                        }
-                        Event::Cleared(_) if state.get_untracked().epoch == id => {
-                            files.invalidate()
-                        }
-                        Event::Chat(generation, enterprise_chat::Update::Stopped(_, _))
-                            if state.get_untracked().epoch == id
-                                && state.get_untracked().chat.generation == *generation =>
-                        {
-                            files.invalidate();
-                            let current = state.get_untracked();
-                            if current.signed_in && current.phase == Phase::Ready {
-                                files.retain_identity(id);
-                            }
-                        }
-                        _ => {}
-                    }
-                    event
-                }
-            };
-            #[cfg(feature = "experimental-enterprise-media")]
-            let event = match event {
-                Event::MediaTools(generation, lease, handle, states) => {
-                    let current = state.get_untracked();
-                    if current.epoch == id
-                        && current.chat.generation == generation
-                        && lease.is_active()
-                    {
-                        media.bind(id, generation, lease, handle, states);
-                    } else {
-                        handle.request_stop();
-                    }
-                    continue;
-                }
-                Event::Media(generation, notice) => {
-                    let current = state.get_untracked();
-                    if current.epoch == id && current.chat.generation == generation {
-                        media.event(id, generation, notice);
-                    }
-                    continue;
-                }
-                event => {
-                    match &event {
-                        Event::Chat(generation, enterprise_chat::Update::Open(_))
-                            if state.get_untracked().epoch == id
-                                && state.get_untracked().chat.generation == *generation =>
-                        {
-                            media.opened(id, *generation)
-                        }
-                        Event::Cleared(_) if state.get_untracked().epoch == id => {
-                            media.invalidate()
-                        }
-                        Event::Chat(generation, enterprise_chat::Update::Stopped(_, _))
-                            if state.get_untracked().epoch == id
-                                && state.get_untracked().chat.generation == *generation =>
-                        {
-                            media.invalidate()
-                        }
-                        _ => {}
-                    }
-                    event
-                }
-            };
-            let mut next = state.get_untracked();
-            let browser = next.apply(id, event);
-            state.set(next);
-            if let Some(url) = browser {
-                let opened = open_url(url).await;
-                let mut latest = state.get_untracked();
-                if !opened && latest.epoch == id && latest.phase == Phase::Login {
-                    let id = latest.next_epoch();
-                    let reason = "无法打开系统浏览器，本次登录等待已取消。";
-                    latest.clear(id, reason.into());
-                    state.set(latest);
-                    let _ = browser_commands.try_send(Command::Logout(id, reason));
+    media: crate::enterprise_tools::MediaTools,
+}
+impl Controller {
+    pub fn new(
+        summary: Signal<crate::first_screen::IdentitySummary>,
+        page: Signal<crate::first_screen::Page>,
+    ) -> Self {
+        let available = identity_available();
+        let state = signal(IdentityViewState::new(available));
+        effect(move || {
+            let next = summary_of(&state.get(), available);
+            if summary.get_untracked() != next {
+                summary.set(next);
+            }
+        });
+        #[cfg(feature = "experimental-enterprise-files")]
+        let files = crate::enterprise_file_tools::FileTools::new();
+        #[cfg(feature = "experimental-enterprise-files")]
+        cleanup(move || files.invalidate());
+        #[cfg(feature = "experimental-enterprise-media")]
+        let media = crate::enterprise_tools::MediaTools::new();
+        #[cfg(feature = "experimental-enterprise-media")]
+        cleanup(move || media.invalidate());
+        let (commands, events) = start();
+        let send = commands.clone();
+        let messages = messages::Ui::new(move |action| {
+            let id = state.get_untracked().epoch;
+            send.try_send(Command::Messages(id, action)).is_ok()
+        });
+        let last_focus = signal((0, false, false));
+        effect(move || {
+            let next = (
+                state.get().epoch,
+                messages.state.get().connected,
+                page.get() == crate::first_screen::Page::Messages,
+            );
+            if last_focus.get_untracked() != next {
+                last_focus.set(next);
+                if next.1 {
+                    messages.dispatch(messages::Action::Focused(next.2));
                 }
             }
+        });
+        effect(move || {
+            let identity = state.get();
+            messages.identity(
+                identity.epoch,
+                identity.signed_in,
+                identity.directory.people,
+                if available {
+                    identity.status
+                } else {
+                    "企业登录尚未配置 · 未连接".into()
+                },
+            );
+        });
+        let cleanup_commands = commands.clone();
+        cleanup(move || {
+            cleanup_commands.close();
+        });
+        let browser_commands = commands.clone();
+        spawn(async move {
+            while let Ok((id, event)) = events.recv().await {
+                let event = match event {
+                    Event::Messages(update) => {
+                        if state.get_untracked().epoch == id && state.get_untracked().signed_in {
+                            messages.apply(update);
+                        }
+                        continue;
+                    }
+                    event => event,
+                };
+                #[cfg(feature = "experimental-enterprise-files")]
+                let event = match event {
+                    Event::FileTools(generation, handle, notices) => {
+                        let current = state.get_untracked();
+                        if current.epoch == id
+                            && current.chat.generation == generation
+                            && handle.is_active()
+                        {
+                            if let Err(error) = files.bind(id, generation, handle, notices) {
+                                state.update(|state| {
+                                    state.status = format!("企业文件界面未建立：{error}")
+                                });
+                            }
+                        } else {
+                            handle.request_stop();
+                        }
+                        continue;
+                    }
+                    event => {
+                        match &event {
+                            Event::Chat(generation, enterprise_chat::Update::Open(_))
+                                if state.get_untracked().epoch == id
+                                    && state.get_untracked().chat.generation == *generation =>
+                            {
+                                files.opened(id, *generation)
+                            }
+                            Event::Cleared(_) if state.get_untracked().epoch == id => {
+                                files.invalidate()
+                            }
+                            Event::Chat(generation, enterprise_chat::Update::Stopped(_, _))
+                                if state.get_untracked().epoch == id
+                                    && state.get_untracked().chat.generation == *generation =>
+                            {
+                                files.invalidate();
+                                let current = state.get_untracked();
+                                if current.signed_in && current.phase == Phase::Ready {
+                                    files.retain_identity(id);
+                                }
+                            }
+                            _ => {}
+                        }
+                        event
+                    }
+                };
+                #[cfg(feature = "experimental-enterprise-media")]
+                let event = match event {
+                    Event::MediaTools(generation, lease, handle, states) => {
+                        let current = state.get_untracked();
+                        if current.epoch == id
+                            && current.chat.generation == generation
+                            && lease.is_active()
+                        {
+                            media.bind(id, generation, lease, handle, states);
+                        } else {
+                            handle.request_stop();
+                        }
+                        continue;
+                    }
+                    Event::Media(generation, notice) => {
+                        let current = state.get_untracked();
+                        if current.epoch == id && current.chat.generation == generation {
+                            media.event(id, generation, notice);
+                        }
+                        continue;
+                    }
+                    event => {
+                        match &event {
+                            Event::Chat(generation, enterprise_chat::Update::Open(_))
+                                if state.get_untracked().epoch == id
+                                    && state.get_untracked().chat.generation == *generation =>
+                            {
+                                media.opened(id, *generation)
+                            }
+                            Event::Cleared(_) if state.get_untracked().epoch == id => {
+                                media.invalidate()
+                            }
+                            Event::Chat(generation, enterprise_chat::Update::Stopped(_, _))
+                                if state.get_untracked().epoch == id
+                                    && state.get_untracked().chat.generation == *generation =>
+                            {
+                                media.invalidate()
+                            }
+                            _ => {}
+                        }
+                        event
+                    }
+                };
+                let mut next = state.get_untracked();
+                let browser = next.apply(id, event);
+                state.set(next);
+                if let Some(url) = browser {
+                    let opened = open_url(url).await;
+                    let mut latest = state.get_untracked();
+                    if !opened && latest.epoch == id && latest.phase == Phase::Login {
+                        let id = latest.next_epoch();
+                        let reason = "无法打开系统浏览器，本次登录等待已取消。";
+                        latest.clear(id, reason.into());
+                        state.set(latest);
+                        let _ = browser_commands.try_send(Command::Logout(id, reason));
+                    }
+                }
+            }
+        });
+        Self {
+            state,
+            commands: signal_with(commands, SignalEquals::Never),
+            messages,
+            #[cfg(feature = "experimental-enterprise-files")]
+            files,
+            #[cfg(feature = "experimental-enterprise-media")]
+            media,
         }
-    });
+    }
+    pub fn account(self) -> impl IntoElement {
+        let state = self.state;
+        let expanded = signal(false);
+        view()
+            .gap_2()
+            .child(text(move || {
+                if identity_available() {
+                    state.get().status
+                } else {
+                    "企业登录尚未配置".into()
+                }
+            }))
+            .child(ui::action(
+                "登录企业账号",
+                move || !identity_available() || state.get().busy(),
+                move || self.login(),
+            ))
+            .child(when(
+                move || state.get().signed_in,
+                move || {
+                    view()
+                        .gap_1()
+                        .child(ui::secondary(
+                            "选择工作区",
+                            || false,
+                            move || expanded.set(!expanded.get_untracked()),
+                        ))
+                        .child(when(
+                            move || expanded.get(),
+                            move || {
+                                virtual_list(
+                                    move || state.get().directory.workspaces.len(),
+                                    move |at| {
+                                        view()
+                                            .gap_1()
+                                            .child(text(move || {
+                                                state
+                                                    .get()
+                                                    .directory
+                                                    .workspaces
+                                                    .get(at.index())
+                                                    .map(|w| w.name.clone())
+                                                    .unwrap_or_default()
+                                            }))
+                                            .child(ui::secondary(
+                                                "进入此工作区",
+                                                move || state.get().busy(),
+                                                move || {
+                                                    let mut next = state.get_untracked();
+                                                    if let Some(slug) = next
+                                                        .directory
+                                                        .workspaces
+                                                        .get(at.index())
+                                                        .map(|w| w.slug.clone())
+                                                        && let Some(id) = next.begin_switch(&slug)
+                                                    {
+                                                        self.invalidate_tools();
+                                                        if self
+                                                            .commands
+                                                            .get_untracked()
+                                                            .try_send(Command::Switch(id, slug))
+                                                            .is_err()
+                                                        {
+                                                            next.status =
+                                                                "登录后台繁忙，请重试。".into();
+                                                            next.phase = Phase::Ready;
+                                                        }
+                                                        state.set(next);
+                                                    }
+                                                },
+                                            ))
+                                    },
+                                )
+                                .estimated_item_size(px(64.0))
+                                .h(px(120.0))
+                            },
+                        ))
+                },
+            ))
+    }
+    fn invalidate_tools(self) {
+        #[cfg(feature = "experimental-enterprise-files")]
+        self.files.invalidate();
+        #[cfg(feature = "experimental-enterprise-media")]
+        self.media.invalidate();
+    }
+    fn login(self) {
+        let mut next = self.state.get_untracked();
+        if !identity_available() || next.busy() {
+            return;
+        }
+        self.invalidate_tools();
+        let id = next.begin_login();
+        if self
+            .commands
+            .get_untracked()
+            .try_send(Command::Login(id))
+            .is_err()
+        {
+            next.clear(id, "登录后台已关闭。".into());
+        }
+        self.state.set(next);
+    }
+}
+
+pub(crate) fn enterprise_identity(
+    controller: Controller,
+    page: Signal<crate::first_screen::Page>,
+) -> impl IntoElement {
+    let Controller {
+        state,
+        commands,
+        messages,
+        #[cfg(feature = "experimental-enterprise-files")]
+        files,
+        #[cfg(feature = "experimental-enterprise-media")]
+        media,
+    } = controller;
+    let expanded = signal(false);
+    let available = identity_available();
+    let commands = commands.get_untracked();
     let login = commands.clone();
     let logout = commands.clone();
     let choose = commands.clone();
-    #[cfg(feature = "experimental-enterprise-signaling")]
-    let chat_panel = enterprise_chat::panel(state, commands, move || {
-        #[cfg(feature = "experimental-enterprise-files")]
-        files.invalidate();
-        #[cfg(feature = "experimental-enterprise-media")]
-        media.invalidate();
-    });
     let panel = view()
         .style_when(move || !expanded.get(), |style| style.hidden())
         .gap_2()
@@ -912,15 +1121,46 @@ pub fn enterprise_identity(
                         virtual_list(
                             move || state.get().directory.members.len(),
                             move |at| {
-                                text(move || {
-                                    state
-                                        .get()
-                                        .directory
-                                        .members
-                                        .get(at.index())
-                                        .cloned()
-                                        .unwrap_or_default()
-                                })
+                                view()
+                                    .gap_1()
+                                    .child(text(move || {
+                                        state
+                                            .get()
+                                            .directory
+                                            .members
+                                            .get(at.index())
+                                            .cloned()
+                                            .unwrap_or_default()
+                                    }))
+                                    .child(ui::secondary(
+                                        "发消息",
+                                        move || {
+                                            !messages.state.get().connected
+                                                || state
+                                                    .get()
+                                                    .directory
+                                                    .people
+                                                    .get(at.index())
+                                                    .is_none_or(|p| {
+                                                        p.pending
+                                                            || p.id
+                                                                == messages.state.get().member_id
+                                                    })
+                                        },
+                                        move || {
+                                            if let Some(person) = state
+                                                .get_untracked()
+                                                .directory
+                                                .people
+                                                .get(at.index())
+                                            {
+                                                messages.dispatch(messages::Action::Direct(
+                                                    person.id.clone(),
+                                                ));
+                                                page.set(crate::first_screen::Page::Messages);
+                                            }
+                                        },
+                                    ))
                             },
                         )
                         .estimated_item_size(px(28.0))
@@ -931,8 +1171,6 @@ pub fn enterprise_identity(
         .child(text(
             "会话仅保存在应用内存，退出或关闭应用会清除。成员目录未与手工 P2P 对端身份绑定。",
         ));
-    #[cfg(feature = "experimental-enterprise-signaling")]
-    let panel = panel.child(chat_panel);
     let root = view()
         .gap_2()
         .child(ui::action(
@@ -948,11 +1186,21 @@ pub fn enterprise_identity(
     root
 }
 
+#[cfg(feature = "experimental-enterprise-signaling")]
+pub(crate) fn peer_diagnostics(controller: Controller) -> impl IntoElement {
+    enterprise_chat::panel(
+        controller.state,
+        controller.commands.get_untracked(),
+        move || controller.invalidate_tools(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     fn verified_view(slug: &str) -> DirectoryView {
         DirectoryView {
+            people: Vec::new(),
             workspaces: vec![
                 WorkspaceChoice {
                     slug: "old".into(),

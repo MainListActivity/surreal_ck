@@ -22,6 +22,7 @@ mod first_screen;
 #[cfg(feature = "github-manual-updates")]
 mod github_update_ui;
 mod identity_ui;
+pub use identity_ui::messages as enterprise_messages;
 pub mod model;
 mod network_config;
 mod network_ui;
@@ -63,7 +64,7 @@ fn update_panel() -> impl IntoElement {
 }
 #[component]
 pub fn Collaboration() -> impl IntoElement {
-    use first_screen::{ConversationFilter, Delivery, Page, Session};
+    use first_screen::{Delivery, Page, Session};
     use ui::icons::{INK, Icon};
     apply_theme();
     let page = signal(Page::Messages);
@@ -76,9 +77,8 @@ pub fn Collaboration() -> impl IntoElement {
     let status = signal("离线".to_owned());
     let session = signal(Session::Offline);
     let identity = signal(first_screen::IdentitySummary::default());
+    let enterprise = identity_ui::Controller::new(identity, page);
     let messages = signal(Vec::<first_screen::Message>::new());
-    let query = signal(String::new());
-    let filter = signal(ConversationFilter::All);
     let (commands, updates, verification_gate) = bridge::start();
     let verification = verification_ui::VerificationUi::new(verification_gate, connected, busy);
     let verification_commands = commands.clone();
@@ -199,108 +199,29 @@ pub fn Collaboration() -> impl IntoElement {
         )
     };
     let conversation_list = move || {
-        let visible = move || {
-            first_screen::visible_conversations(connected.get(), &query.get(), filter.get())
-        };
-        let empty = move || {
-            first_screen::conversation_empty(
-                &identity.get(),
-                connected.get(),
-                filter.get(),
-                &query.get(),
-            )
-        };
         view()
-            .gap_3()
-            .child(
-                view()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        text("消息")
-                            .text_size(px(22.0))
-                            .font_weight(FontWeight::BOLD)
-                            .test_id("conversation-heading"),
-                    )
-                    .child(view().flex_1())
-                    .child(when(first_screen::is_preview, || {
-                        ui::badge(first_screen::PREVIEW_BADGE)
-                    })),
-            )
-            .child(ui::search_field(query, first_screen::SEARCH_PLACEHOLDER))
-            .child(
-                ui::segment_track()
-                    .child(ui::segment(
-                        ConversationFilter::All.label(),
-                        move || filter.get() == ConversationFilter::All,
-                        move || filter.set(ConversationFilter::All),
-                    ))
-                    .child(ui::segment(
-                        ConversationFilter::Unread.label(),
-                        move || filter.get() == ConversationFilter::Unread,
-                        move || filter.set(ConversationFilter::Unread),
-                    ))
-                    .child(ui::segment(
-                        ConversationFilter::Group.label(),
-                        move || filter.get() == ConversationFilter::Group,
-                        move || filter.set(ConversationFilter::Group),
-                    )),
-            )
+            .flex_1()
+            .gap_2()
+            .child(enterprise.messages.list())
+            .child(enterprise.account())
             .child(when(
-                move || visible().is_empty(),
+                move || connected.get(),
                 move || {
-                    ui::empty_state(
-                        Icon::Chat,
-                        move || empty().0.to_owned(),
-                        move || empty().1.to_owned(),
-                    )
-                    .child(when(
-                        move || identity.get().can_sign_in(),
-                        move || {
-                            ui::action("登录企业账号", || false, move || page.set(Page::Members))
-                        },
+                    view().child(text("手工 P2P（诊断）")).child(ui::secondary(
+                        "打开直连会话",
+                        || false,
+                        move || page.set(Page::Diagnostics),
                     ))
-                },
-            ))
-            .child(when(
-                move || !visible().is_empty(),
-                move || {
-                    view()
-                        .flex_row()
-                        .items_center()
-                        .gap_3()
-                        .p_3()
-                        .rounded(px(10.0))
-                        .bg(rgba(ui::GOLD_TINT).to_hsla())
-                        .child(ui::avatar(|| "直".to_owned(), 40.0))
-                        .child(
-                            view()
-                                .flex_1()
-                                .gap_1()
-                                .child(
-                                    text(move || {
-                                        visible()
-                                            .first()
-                                            .map(|conversation| conversation.title.clone())
-                                            .unwrap_or_default()
-                                    })
-                                    .text_size(px(15.0))
-                                    .font_weight(FontWeight::SEMIBOLD),
-                                )
-                                .child(ui::note(move || session.get().line())),
-                        )
                 },
             ))
     };
     // 消息页：会话头、气泡记录、底部输入。没有会话时显示空状态，不编造联系人。
-    let messages_page = view()
+    let direct_messages = view()
         .flex_1()
-        .style_when(move || page.get() != Page::Messages, |style| style.hidden())
-        .child(when(
-            move || !wide(),
-            move || view().px_4().pt(px(12.0)).child(conversation_list()),
-        ))
+        .style_when(
+            move || page.get() != Page::Diagnostics,
+            |style| style.hidden(),
+        )
         .child(when(
             move || connected.get(),
             move || {
@@ -472,6 +393,14 @@ pub fn Collaboration() -> impl IntoElement {
                     )),
             ),
         );
+    let messages_page = view()
+        .flex_1()
+        .style_when(move || page.get() != Page::Messages, |s| s.hidden())
+        .child(when(
+            move || !wide(),
+            move || view().h(px(280.0)).px_4().child(conversation_list()),
+        ))
+        .child(enterprise.messages.conversation());
     // 会议首页：入口与进行中列表。会议能力接入前入口保持禁用，并说明下一步，不显示假舞台。
     let meeting_page = view()
         .gap_4()
@@ -571,7 +500,7 @@ pub fn Collaboration() -> impl IntoElement {
             move || first_screen::members_empty(&identity.get()).0.to_owned(),
             move || first_screen::members_empty(&identity.get()).1,
         )))
-        .child(ui::card().child(identity_ui::enterprise_identity(identity)));
+        .child(ui::card().child(identity_ui::enterprise_identity(enterprise, page)));
     // 开发者诊断：手动 P2P、STUN/TURN、连接指纹、媒体与文件调试。安全能力保留，只是不在首屏。
     let diagnostics_page = view()
         .gap_3()
@@ -682,6 +611,9 @@ pub fn Collaboration() -> impl IntoElement {
         .child(network.panel(network_commands, remote, local, connected, busy, status))
         .child(call.view(call_commands, connected))
         .child(files.panel(file_commands, connected));
+    let diagnostics_page = diagnostics_page.child(direct_messages);
+    #[cfg(feature = "experimental-enterprise-signaling")]
+    let diagnostics_page = diagnostics_page.child(identity_ui::peer_diagnostics(enterprise));
     let nav = move || {
         view()
             .gap_1()

@@ -1,5 +1,13 @@
+use nsh_app_native_client::enterprise_messages::{
+    Action as ChatAction, Model as ChatModel, Person, Ui as ChatUi, Update as ChatUpdate,
+};
+use nsh_core::prelude::*;
 use nsh_engine::{EngineConfig, Root};
 use nsh_testing::Headless;
+use std::sync::Arc;
+use surreal_ck_native_identity::chat::{
+    ChatError, ChatMessage, ChatPeer, ChatSnapshot, ChatStatus, Conversation, ConversationKind,
+};
 #[cfg(not(feature = "github-manual-updates"))]
 #[test]
 fn production_entry_fails_closed() -> Result<(), String> {
@@ -127,9 +135,9 @@ fn first_screen_shows_message_chrome_and_honest_empty_state() -> Result<(), Stri
         app.wait_for("未读")?;
         app.wait_for("群聊")?;
         app.wait_for("还没有团队会话")?;
-        app.wait_for("此版本未接入企业登录，团队会话暂不可用。")?;
+        app.wait_for("企业登录尚未配置")?;
         app.wait_for("选择一个会话开始聊天")?;
-        app.wait_for("聊天记录只保留到关闭应用为止。")?;
+        app.wait_for("企业消息保存在工作区，选择会话后加载历史记录。")?;
         // 首屏不再复述工程约束。
         for engineering in ["不会模拟登录", "不会生成示例联系人或聊天记录。"] {
             assert!(!app.screen().texts().join("\n").contains(engineering));
@@ -181,6 +189,299 @@ fn offline_send_is_disabled_and_never_fakes_success() -> Result<(), String> {
     assert!(!texts.contains("已送出"));
     app.wait_for(OFFLINE)?;
     Ok(())
+}
+
+fn chat_rooms() -> Vec<Conversation> {
+    vec![
+        Conversation {
+            id: "chat_conversation:direct".into(),
+            kind: ConversationKind::Direct,
+            title: None,
+            peer: Some(ChatPeer {
+                id: "user:b".into(),
+                display_name: "柏林".into(),
+            }),
+            last_message: Some(chat_message("chat_conversation:direct", "last", "上条私聊")),
+            unread_count: 2,
+            member_count: 2,
+        },
+        Conversation {
+            id: "chat_conversation:group".into(),
+            kind: ConversationKind::Group,
+            title: Some("研发组".into()),
+            peer: None,
+            last_message: Some(chat_message(
+                "chat_conversation:group",
+                "group-last",
+                "群内消息",
+            )),
+            unread_count: 0,
+            member_count: 3,
+        },
+    ]
+}
+fn chat_message(room: &str, id: &str, body: &str) -> ChatMessage {
+    ChatMessage {
+        id: format!("chat_message:{id}"),
+        conversation: room.into(),
+        sender: "user:b".into(),
+        body: body.into(),
+        client_id: id.into(),
+        created_at: "2026-01-01T12:34:00Z".into(),
+    }
+}
+#[component]
+fn EnterpriseChatFixture() -> impl IntoElement {
+    let model = ChatModel {
+        member_id: "user:a".into(),
+        rooms: chat_rooms(),
+        people: vec![
+            Person {
+                id: "user:b".into(),
+                name: "柏林".into(),
+                pending: false,
+            },
+            Person {
+                id: "user:c".into(),
+                name: "陈辰".into(),
+                pending: false,
+            },
+        ],
+        connected: true,
+        status: "企业聊天已连接".into(),
+        ..ChatModel::default()
+    };
+    let (send, actions) = async_channel::bounded::<ChatAction>(16);
+    let ui = ChatUi::injected(model, move |action| send.try_send(action).is_ok());
+    let retry_verified = signal(false);
+    let pending_receipt = signal(None::<String>);
+    spawn(async move {
+        let mut first_client = None;
+        while let Ok(action) = actions.recv().await {
+            match action {
+                ChatAction::Open(room) => {
+                    let mut rooms = ui.state.get_untracked().rooms;
+                    for entry in &mut rooms {
+                        if entry.id == room {
+                            entry.unread_count = 0;
+                        }
+                    }
+                    ui.apply(ChatUpdate::Snapshot(Arc::new(ChatSnapshot {
+                        member_id: "user:a".into(),
+                        conversations: rooms,
+                    })));
+                    ui.apply(ChatUpdate::History(
+                        room.clone(),
+                        vec![chat_message(&room, "history", "历史消息")],
+                        true,
+                    ));
+                }
+                ChatAction::Send {
+                    room,
+                    body,
+                    client_id,
+                } => {
+                    if let Some(first) = &first_client {
+                        retry_verified.set(first == &client_id);
+                        let mut receipt = chat_message(&room, "receipt", &body);
+                        receipt.sender = "user:a".into();
+                        receipt.client_id = client_id.clone();
+                        ui.apply(ChatUpdate::Receipt(client_id, Ok(receipt)));
+                    } else {
+                        first_client = Some(client_id.clone());
+                        pending_receipt.set(Some(client_id));
+                    }
+                }
+                ChatAction::Direct(peer) => {
+                    let mut rooms = ui.state.get_untracked().rooms;
+                    let room = "chat_conversation:new".to_owned();
+                    rooms.push(Conversation {
+                        id: room.clone(),
+                        kind: ConversationKind::Direct,
+                        title: None,
+                        peer: Some(ChatPeer {
+                            id: peer,
+                            display_name: "陈辰".into(),
+                        }),
+                        last_message: None,
+                        unread_count: 0,
+                        member_count: 2,
+                    });
+                    ui.apply(ChatUpdate::Snapshot(Arc::new(ChatSnapshot {
+                        member_id: "user:a".into(),
+                        conversations: rooms,
+                    })));
+                    ui.apply(ChatUpdate::Opened(room));
+                }
+                ChatAction::Group(title, members) => {
+                    let mut rooms = ui.state.get_untracked().rooms;
+                    let room = "chat_conversation:new-group".to_owned();
+                    rooms.push(Conversation {
+                        id: room.clone(),
+                        kind: ConversationKind::Group,
+                        title: Some(title),
+                        peer: None,
+                        last_message: None,
+                        unread_count: 0,
+                        member_count: members.len() as u64 + 1,
+                    });
+                    ui.apply(ChatUpdate::Snapshot(Arc::new(ChatSnapshot {
+                        member_id: "user:a".into(),
+                        conversations: rooms,
+                    })));
+                    ui.apply(ChatUpdate::Opened(room));
+                }
+                _ => {}
+            }
+        }
+    });
+    view()
+        .flex_1()
+        .child(
+            view()
+                .flex_row()
+                .flex_1()
+                .child(view().w(px(300.0)).child(ui.list()))
+                .child(ui.conversation()),
+        )
+        .child(text(move || {
+            if retry_verified.get() {
+                "重发沿用同一 client_id"
+            } else {
+                ""
+            }
+        }))
+        .child(
+            nsh_base::button()
+                .on_press(move || {
+                    if let Some(client_id) = pending_receipt.get_untracked() {
+                        ui.apply(ChatUpdate::Receipt(client_id, Err(ChatError::Timeout)));
+                    }
+                })
+                .child(text("模拟发送失败")),
+        )
+        .child(
+            nsh_base::button()
+                .on_press(move || ui.apply(ChatUpdate::Status(ChatStatus::Reconnecting)))
+                .child(text("模拟重连")),
+        )
+        .child(
+            nsh_base::button()
+                .on_press(move || {
+                    ui.apply(ChatUpdate::Status(ChatStatus::Ended(ChatError::Expired)))
+                })
+                .child(text("模拟过期")),
+        )
+}
+fn enterprise_fixture() -> Result<Headless, String> {
+    let mut app = Headless::start(EngineConfig::new(Root::of::<EnterpriseChatFixture>())).unwrap();
+    app.set_viewport(Size::new(px(1100.0), px(900.0)))?;
+    app.wait_for("上条私聊 · 12:34")?;
+    Ok(app)
+}
+#[test]
+fn enterprise_chat_lists_filters_and_searches_real_snapshot() -> Result<(), String> {
+    let mut app = enterprise_fixture()?;
+    app.wait_for("柏林 · 2 未读")?;
+    app.wait_for("研发组 · 3 人")?;
+    app.press("群聊")?;
+    assert!(!app.shows("柏林 · 2 未读"));
+    app.wait_for("研发组 · 3 人")?;
+    app.press("未读")?;
+    app.wait_for("柏林 · 2 未读")?;
+    assert!(!app.shows("研发组 · 3 人"));
+    app.press("全部")?;
+    app.type_text("text:搜索成员或消息", "研发")?;
+    app.wait_for("研发组 · 3 人")?;
+    assert!(!app.shows("柏林 · 2 未读"));
+    app.clear("text:研发")?;
+    app.type_text("text:搜索成员或消息", "3")?;
+    app.wait_for("没有匹配的会话")?;
+    assert!(!app.shows("研发组 · 3 人"));
+    Ok(())
+}
+#[test]
+fn enterprise_chat_marks_read_and_retries_same_client_id() -> Result<(), String> {
+    let mut app = enterprise_fixture()?;
+    app.press("柏林 · 2 未读")?;
+    app.wait_for("历史消息")?;
+    assert!(!app.shows("柏林 · 2 未读"));
+    app.type_text("text:输入消息，Enter 发送", "你好")?;
+    app.press("发送消息")?;
+    app.wait_for("发送中…")?;
+    app.press("模拟发送失败")?;
+    app.wait_for("发送失败，可重发")?;
+    app.press("重发")?;
+    app.wait_for("12:34 已送出")?;
+    app.wait_for("重发沿用同一 client_id")?;
+    assert!(!app.shows("发送失败，可重发"));
+    Ok(())
+}
+
+#[test]
+fn enterprise_chat_creates_group_with_selected_members() -> Result<(), String> {
+    let mut app = enterprise_fixture()?;
+    app.press("新建")?;
+    app.press("群聊模式")?;
+    assert!(app.press("创建对话").is_err());
+    app.press("id:new-conversation-dialog >> 柏林")?;
+    app.press("id:new-conversation-dialog >> 陈辰")?;
+    assert!(app.press("创建对话").is_err());
+    app.type_text("text:群聊标题", &"群".repeat(201))?;
+    assert!(app.press("创建对话").is_err());
+    app.clear(&format!("text:{}", "群".repeat(201)))?;
+    app.type_text("text:群聊标题", "远程协作")?;
+    app.press("创建对话")?;
+    app.wait_for("远程协作 · 3 人")?;
+    assert!(!app.shows("新建对话"));
+    Ok(())
+}
+#[test]
+fn enterprise_chat_new_direct_and_terminal_states_are_honest() -> Result<(), String> {
+    let mut app = enterprise_fixture()?;
+    app.press("新建")?;
+    app.wait_for("新建对话")?;
+    app.press("id:new-conversation-dialog >> 陈辰")?;
+    app.press("创建对话")?;
+    app.wait_for("陈辰")?;
+    assert!(!app.shows("新建对话"));
+    app.press("模拟重连")?;
+    app.wait_for("连接中断，正在重连并同步消息…")?;
+    app.type_text("text:输入消息，Enter 发送", "不能发送")?;
+    assert!(app.press("发送消息").is_err());
+    app.press("模拟过期")?;
+    app.wait_for("聊天会话已过期，请重新登录")?;
+    assert!(app.press("发送消息").is_err());
+    Ok(())
+}
+#[test]
+fn enterprise_chat_expiry_fails_pending_send_without_faking_receipt() -> Result<(), String> {
+    let mut app = enterprise_fixture()?;
+    app.press("柏林 · 2 未读")?;
+    app.wait_for("历史消息")?;
+    app.type_text("text:输入消息，Enter 发送", "待确认消息")?;
+    app.press("发送消息")?;
+    app.wait_for("发送中…")?;
+    app.press("模拟过期")?;
+    app.wait_for("发送失败，可重发")?;
+    assert!(app.press("重发").is_err());
+    assert!(!app.shows("12:34 已送出"));
+    Ok(())
+}
+#[test]
+fn local_insecure_identity_fixture_is_not_a_production_configuration() {
+    use surreal_ck_native_identity::{IdentityConfig, SurrealConfig};
+    assert!(
+        IdentityConfig::new(
+            "http://127.0.0.1:9876",
+            "http://127.0.0.1:9877",
+            "native-local",
+            "local",
+            "http://127.0.0.1:43123/auth/callback"
+        )
+        .is_err()
+    );
+    assert!(SurrealConfig::new("ws://127.0.0.1:8000/rpc", "local").is_err());
 }
 
 #[test]
@@ -274,8 +575,32 @@ fn opening_media_settings_does_not_enable_capture_or_playback() -> Result<(), St
     app.wait_for("屏幕共享 · 未启用")?;
     app.press("展开/收起媒体设备与接收设置")?;
     scroll_to(&mut app, "允许远端音频")?;
-    scroll_to(&mut app, "允许远端视频")?;
+    assert!(!app.screen().enabled("允许远端音频")?);
+    scroll_to(&mut app, "远端音频：关闭")?;
+    scroll_to(&mut app, "远端视频：关闭")?;
+    let video_supported = (cfg!(target_os = "linux")
+        || cfg!(all(
+            target_os = "macos",
+            feature = "experimental-macos-video"
+        ))
+        || cfg!(all(
+            target_os = "windows",
+            feature = "experimental-windows-video"
+        )))
+        && surreal_ck_native_video_view::rendering_supported();
+    if video_supported {
+        scroll_to(&mut app, "允许远端视频")?;
+        assert!(!app.screen().enabled("允许远端视频")?);
+    } else {
+        scroll_to(
+            &mut app,
+            "此平台尚未实现原生视频纹理，不能接收显示远端视频；不会用占位图冒充视频。",
+        )?;
+        assert!(!app.shows("允许远端视频"));
+    }
     app.wait_for("麦克风 · 未启用")?;
+    app.wait_for("摄像头 · 未启用")?;
+    app.wait_for("屏幕共享 · 未启用")?;
     assert!(app.shows("断开并停止媒体"));
     assert!(!app.shows("已收到真实解码帧"));
     Ok(())
