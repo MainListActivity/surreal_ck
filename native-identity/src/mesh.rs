@@ -6,8 +6,15 @@ use crate::meeting::{
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
+pub const REQUEST_OFFER_PAYLOAD: &str = "mesh:request-offer";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MeshAction {
+    /// 使用旧 session、fresh nonce 发送 bye，payload 为 REQUEST_OFFER_PAYLOAD。
+    RequestOffer {
+        peer: String,
+        session: String,
+    },
     Offer {
         peer: String,
         generation: u64,
@@ -46,6 +53,7 @@ pub struct MeshCoordinator {
     present: BTreeSet<String>,
     peers: BTreeMap<String, Peer>,
     retired: HashSet<String>,
+    recoveries: BTreeMap<String, String>,
 }
 impl MeshCoordinator {
     /// epoch 须由 fresh_key 生成，每次新建协调器使用新值。
@@ -61,14 +69,16 @@ impl MeshCoordinator {
             present: BTreeSet::new(),
             peers: BTreeMap::new(),
             retired: HashSet::new(),
+            recoveries: BTreeMap::new(),
         })
     }
     pub fn sync(&mut self, participants: &[Participant]) -> MeetingResult<Vec<MeshAction>> {
-        let present = participants
+        let present: BTreeSet<String> = participants
             .iter()
             .filter(|p| p.meeting == self.meeting && p.left_at.is_none())
             .map(|p| p.user.clone())
             .collect();
+        self.recoveries.retain(|user, _| present.contains(user));
         self.reconcile(present)
     }
     /// 用 LIVE 行保留快照之间短暂的离开/重新加入转换。
@@ -81,6 +91,7 @@ impl MeshCoordinator {
             present.insert(participant.user.clone());
         } else {
             present.remove(&participant.user);
+            self.recoveries.remove(&participant.user);
         }
         self.reconcile(present)
     }
@@ -166,16 +177,40 @@ impl MeshCoordinator {
             }
         }
         self.present = present;
+        for (user, session) in &self.recoveries {
+            if self
+                .peers
+                .get(user)
+                .is_some_and(|peer| peer.phase == Phase::Waiting)
+            {
+                actions.push(MeshAction::RequestOffer {
+                    peer: user.clone(),
+                    session: session.clone(),
+                });
+            }
+        }
         Ok(actions)
     }
     /// 连接断开/成员快照丢失时立即关闭旧 peer；随后 sync 会创建新 generation。
     pub fn reset(&mut self) -> MeetingResult<Vec<MeshAction>> {
+        for (user, peer) in &self.peers {
+            if self.local > *user {
+                if let Some(session) = &peer.session {
+                    self.recoveries.insert(user.clone(), session.clone());
+                }
+            }
+        }
         self.reconcile(BTreeSet::new())
     }
     /// 媒体后端失败后显式重建。只有确定的 offer 方会主动发送新 offer。
     pub fn restart(&mut self, user: &str) -> MeetingResult<Vec<MeshAction>> {
         if !self.present.contains(user) || user == self.local {
             return Err(MeetingError::Input);
+        }
+        if self.local.as_str() > user {
+            if let Some(session) = self.peers.get(user).and_then(|peer| peer.session.clone()) {
+                self.recoveries.insert(user.into(), session);
+            }
         }
         let present = self.present.clone();
         let mut reduced = present.clone();
@@ -239,6 +274,7 @@ impl MeshCoordinator {
                 peer.phase = Phase::Answering;
                 peer.latest_offer_ns = signal.created_ns;
                 peer.nonces.clear();
+                self.recoveries.remove(&signal.from);
             }
             SignalKind::Answer => {
                 if peer.phase != Phase::Offering || peer.session.as_deref() != Some(&signal.session)
@@ -257,6 +293,9 @@ impl MeshCoordinator {
             SignalKind::Bye => {
                 if peer.session.as_deref() != Some(&signal.session) || peer.phase == Phase::Closed {
                     return Ok(Vec::new());
+                }
+                if self.local < signal.from && signal.payload == REQUEST_OFFER_PAYLOAD {
+                    return self.restart(&signal.from);
                 }
                 peer.phase = Phase::Closed;
                 return Ok(vec![MeshAction::Close {
@@ -416,5 +455,72 @@ mod tests {
         assert!(polite.receive(&ice, 110).unwrap().is_empty());
         assert!(polite.answered("user:a", &offer.session).is_err());
         assert!(polite.restart("user:outsider").is_err());
+    }
+    #[test]
+    fn answerer_restart_and_unilateral_reset_complete_a_fresh_handshake() {
+        for reset in [false, true] {
+            let members = vec![member("a"), member("b")];
+            let mut a = coordinator("a");
+            let mut b = coordinator("b");
+            let initial = a.sync(&members).unwrap();
+            b.sync(&members).unwrap();
+            let MeshAction::Offer { session: old, .. } = &initial[0] else {
+                panic!()
+            };
+            b.receive(&signal("a", "b", SignalKind::Offer, old), 110)
+                .unwrap();
+            b.answered("user:a", old).unwrap();
+            a.receive(&signal("b", "a", SignalKind::Answer, old), 110)
+                .unwrap();
+            let actions = if reset {
+                b.reset().unwrap();
+                b.sync(&members).unwrap()
+            } else {
+                b.restart("user:a").unwrap()
+            };
+            assert!(
+                actions.len() > usize::from(!reset),
+                "answerer must request a fresh offer after unilateral recovery"
+            );
+            let session = actions
+                .iter()
+                .find_map(|action| match action {
+                    MeshAction::RequestOffer { peer, session } if peer == "user:a" => Some(session),
+                    _ => None,
+                })
+                .expect("request to deterministic offerer");
+            assert_eq!(session, old);
+            assert!(a.sync(&members).unwrap().is_empty());
+            let mut request = signal("b", "a", SignalKind::Bye, session);
+            request.payload = REQUEST_OFFER_PAYLOAD.into();
+            request.nonce = "d".repeat(64);
+            let offered = a.receive(&request, 110).unwrap();
+            assert!(matches!(offered[0], MeshAction::Close { .. }));
+            let MeshAction::Offer { session: new, .. } = &offered[1] else {
+                panic!()
+            };
+            assert_ne!(new, old);
+            assert!(a.receive(&request, 110).unwrap().is_empty());
+            assert!(b
+                .receive(&signal("a", "b", SignalKind::Offer, old), 110)
+                .unwrap()
+                .is_empty());
+            assert_eq!(
+                b.receive(&signal("a", "b", SignalKind::Offer, new), 110)
+                    .unwrap()
+                    .len(),
+                1
+            );
+            b.answered("user:a", new).unwrap();
+            assert_eq!(
+                a.receive(&signal("b", "a", SignalKind::Answer, new), 110)
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert!(b.sync(&members).unwrap().is_empty());
+            assert!(a.peers["user:b"].phase == Phase::Stable);
+            assert!(b.peers["user:a"].phase == Phase::Stable);
+        }
     }
 }
