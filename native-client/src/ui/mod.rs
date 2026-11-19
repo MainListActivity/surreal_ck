@@ -493,19 +493,13 @@ pub fn status_dot(
         .flex_row()
         .items_center()
         .gap_2()
-        .child(
-            view()
-                .w(px(8.0))
-                .h(px(8.0))
-                .rounded_full()
-                .bg(move || {
-                    if alert() {
-                        theme().destructive
-                    } else {
-                        theme().input
-                    }
-                }),
-        )
+        .child(view().w(px(8.0)).h(px(8.0)).rounded_full().bg(move || {
+            if alert() {
+                theme().destructive
+            } else {
+                theme().input
+            }
+        }))
         .child(note(label))
 }
 

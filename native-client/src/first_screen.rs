@@ -198,7 +198,10 @@ pub fn members_empty(identity: &IdentitySummary) -> (&'static str, String) {
     } else if identity.loading {
         ("正在加载成员…", String::new())
     } else if !identity.signed_in {
-        ("登录后查看通讯录", "登录企业账号后，可以看到工作区成员。".into())
+        (
+            "登录后查看通讯录",
+            "登录企业账号后，可以看到工作区成员。".into(),
+        )
     } else if identity.workspace.is_none() {
         ("选择一个工作区", "进入工作区后，可以看到它的成员。".into())
     } else if identity.members > 0 {
@@ -458,7 +461,12 @@ mod tests {
     fn only_the_message_page_uses_the_conversation_column() {
         assert!(Page::Messages.shows_conversation_column());
         assert!(!Page::Messages.uses_content_scroll());
-        for page in [Page::Meeting, Page::Members, Page::Settings, Page::Diagnostics] {
+        for page in [
+            Page::Meeting,
+            Page::Members,
+            Page::Settings,
+            Page::Diagnostics,
+        ] {
             assert!(!page.shows_conversation_column());
             assert!(page.uses_content_scroll());
         }

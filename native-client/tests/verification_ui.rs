@@ -10,7 +10,7 @@ fn offline_fingerprint_inspection_is_explicit_cancellable_and_never_claims_ident
     .unwrap();
     use nsh_core::prelude::{Size, px};
     app.set_viewport(Size::new(px(480.0), px(800.0)))?;
-    app.wait_for("吉吉 · 团队协同")?;
+    app.wait_for("选择一个会话开始聊天")?;
     assert!(
         !app.shows("查看连接指纹"),
         "指纹核对位于开发者诊断，不在首屏"

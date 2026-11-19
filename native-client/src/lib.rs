@@ -510,7 +510,9 @@ pub fn Collaboration() -> impl IntoElement {
     let settings_page = view()
         .gap_4()
         .style_when(move || page.get() != Page::Settings, |style| style.hidden())
-        .child(ui::page_header("设置", || first_screen::PURPOSE.to_owned()))
+        .child(ui::page_header("设置", || {
+            first_screen::PURPOSE.to_owned()
+        }))
         .child(ui::section_label("关于"))
         .child(
             ui::card()
