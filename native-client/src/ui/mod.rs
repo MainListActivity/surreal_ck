@@ -16,7 +16,7 @@ pub const GOLD_TINT: u32 = 0xF5C54238;
 use nsh_base::{button, input, theme};
 use nsh_core::{element::ImageSrc, prelude::*};
 
-use self::icons::{Icon, INK, MUTED};
+use self::icons::{INK, Icon, MUTED};
 
 pub fn action(
     label: &'static str,
