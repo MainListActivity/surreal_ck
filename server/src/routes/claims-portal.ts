@@ -5,7 +5,10 @@ import type { AppBindings } from "../hono-types";
 import { HttpError } from "../http-error";
 import { requireOidc } from "../middleware/oidc";
 import { ClaimsPortalService } from "../claims-portal/service";
-import { SESSION_COOKIE_NAME } from "../claims-portal/constants";
+import {
+  MAX_ATTACHMENT_BYTES,
+  SESSION_COOKIE_NAME,
+} from "../claims-portal/constants";
 
 export type ClaimsPortalRouteOptions = {
   service?: ClaimsPortalService;
@@ -179,6 +182,16 @@ export function createClaimsPortalRoutes(
 
     // 缺附件存储配置时先 fail-closed，不把 multipart/字节体读入内存再 501。
     service.assertAttachmentStorageConfigured();
+
+    // 解析请求体之前按声明大小拦截：Content-Length 超限直接 413，不把大包读进内存。
+    const declaredLength = Number(c.req.header("content-length") ?? "0");
+    const declaredBytes = Number.isFinite(declaredLength) && declaredLength > 0 ? declaredLength : 0;
+    if (declaredBytes > MAX_ATTACHMENT_BYTES) {
+      throw new HttpError(413, "attachment-too-large", "附件超出大小限制");
+    }
+    // 暂存盘预检：不足即 507 upload-insufficient-storage，不读体不写库。
+    await service.assertUploadDiskHeadroom(declaredBytes, workspaceDb);
+
     const contentType = c.req.header("content-type") ?? "";
     let attachmentType: unknown;
     let fileName: unknown;

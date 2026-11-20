@@ -4,9 +4,16 @@ import { hashToken } from "./crypto";
 import {
   ClaimsPortalService,
   FAIL_THRESHOLD,
+  MAX_ATTACHMENT_BYTES,
   OPEN_FAILURE_MESSAGE,
   type ClaimsQueryable,
 } from "./service";
+import {
+  createS3AttachmentStorage,
+  mapAttachmentStorageUploadError,
+  requiredUploadHeadroomBytes,
+  UPLOAD_DISK_MIN_HEADROOM_BYTES,
+} from "./storage";
 
 const PEPPER = "test-claims-portal-pepper-32bytes-min!!";
 
@@ -214,12 +221,18 @@ function createMemoryDb(store: Store): ClaimsQueryable {
   };
 }
 
-function makeMemoryStorage() {
+function makeMemoryStorage(putObjectThrow?: HttpError) {
   const objects = new Map<string, { bytes: Uint8Array; contentType: string }>();
+  let putCalls = 0;
   return {
     objects,
+    get putCalls() {
+      return putCalls;
+    },
     storage: {
       async putObject(input: { key: string; bytes: Uint8Array; contentType: string }) {
+        putCalls += 1;
+        if (putObjectThrow) throw putObjectThrow;
         objects.set(input.key, { bytes: input.bytes, contentType: input.contentType });
       },
       async getObject(key: string) {
@@ -242,6 +255,8 @@ function makeService(options?: {
   attachmentConfigured?: boolean;
   now?: () => number;
   store?: Store;
+  checkDiskSpace?: () => Promise<number>;
+  putObjectThrow?: HttpError;
 }) {
   const store: Store = options?.store ?? {
     roster: {
@@ -256,7 +271,7 @@ function makeService(options?: {
     seq: 0,
   };
   const db = createMemoryDb(store);
-  const memoryStorage = makeMemoryStorage();
+  const memoryStorage = makeMemoryStorage(options?.putObjectThrow);
   const service = new ClaimsPortalService({
     getSession: async () => db,
     resolveWorkspace: async (slug) => (slug === "case-a" ? { dbName: "ws_case_a" } : null),
@@ -272,6 +287,7 @@ function makeService(options?: {
           }
         : null,
     createStorage: () => memoryStorage.storage,
+    checkDiskSpace: options?.checkDiskSpace,
     now: options?.now,
   });
   return { service, store, db, memoryStorage };
@@ -684,5 +700,266 @@ describe("ClaimsPortalService", () => {
     await expect(
       service.addCreditorSupplementReply({ workspaceDb: "ws_case_a", rosterId: "creditor_roster:r1", body: "hi" }),
     ).rejects.toMatchObject({ status: 409, code: "claims-submission-locked" });
+  });
+
+  test("requiredUploadHeadroomBytes：至少 64MB，大附件按 2 倍字节数", () => {
+    expect(requiredUploadHeadroomBytes(0)).toBe(UPLOAD_DISK_MIN_HEADROOM_BYTES);
+    expect(requiredUploadHeadroomBytes(1024)).toBe(UPLOAD_DISK_MIN_HEADROOM_BYTES);
+    expect(requiredUploadHeadroomBytes(40 * 1024 * 1024)).toBe(80 * 1024 * 1024);
+  });
+
+  test("磁盘不足：assertUploadDiskHeadroom 507 upload-insufficient-storage 且记脱敏 warn", async () => {
+    const warnings: unknown[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args);
+    };
+    try {
+      const { service } = makeService({ checkDiskSpace: async () => 1024 });
+      await expect(service.assertUploadDiskHeadroom(10, "ws_case_a")).rejects.toMatchObject({
+        status: 507,
+        code: "upload-insufficient-storage",
+      });
+      expect(warnings).toHaveLength(1);
+      const [tag, payload] = warnings[0] as [string, Record<string, unknown>];
+      expect(tag).toContain("disk headroom insufficient");
+      expect(payload).toMatchObject({
+        workspaceDb: "ws_case_a",
+        requiredBytes: 10,
+        availableBytes: 1024,
+      });
+      expect(JSON.stringify(payload)).not.toMatch(/\/(tmp|var|Users|home)\b/);
+    } finally {
+      console.warn = original;
+    }
+  });
+
+  test("磁盘充足：assertUploadDiskHeadroom 放行", async () => {
+    const { service } = makeService({
+      checkDiskSpace: async () => UPLOAD_DISK_MIN_HEADROOM_BYTES,
+    });
+    await expect(service.assertUploadDiskHeadroom(10, "ws_case_a")).resolves.toBeUndefined();
+  });
+
+  test("磁盘不足：uploadBytes 507 且不写 R2 不落库", async () => {
+    const { service, store, memoryStorage } = makeService({
+      attachmentConfigured: true,
+      checkDiskSpace: async () => 1024,
+    });
+    const minted = await service.mintToken({
+      workspaceDb: "ws_case_a",
+      slug: "case-a",
+      rosterId: "creditor_roster:r1",
+      createdBy: "user-1",
+    });
+    await service.openSession({
+      workspaceDb: "ws_case_a",
+      slug: "case-a",
+      tokenPlaintext: minted.tokenPlaintext,
+      name: "张三",
+      identityCode: "ID-001",
+    });
+
+    const bytes = new TextEncoder().encode("%PDF-mock");
+    await expect(
+      service.uploadBytes({
+        workspaceDb: "ws_case_a",
+        rosterId: "creditor_roster:r1",
+        attachmentType: "contract",
+        fileName: "a.pdf",
+        contentType: "application/pdf",
+        byteSize: bytes.byteLength,
+        bytes,
+      }),
+    ).rejects.toMatchObject({ status: 507, code: "upload-insufficient-storage" });
+    expect(memoryStorage.putCalls).toBe(0);
+    expect(memoryStorage.objects.size).toBe(0);
+    expect(store.attachments).toHaveLength(0);
+  });
+
+  test("对象存储 507 → 透传 attachment-storage-full 且不落库", async () => {
+    const { service, store, memoryStorage } = makeService({
+      attachmentConfigured: true,
+      checkDiskSpace: async () => Number.MAX_SAFE_INTEGER,
+      putObjectThrow: new HttpError(507, "attachment-storage-full", "附件存储空间不足，请稍后重试"),
+    });
+    const minted = await service.mintToken({
+      workspaceDb: "ws_case_a",
+      slug: "case-a",
+      rosterId: "creditor_roster:r1",
+      createdBy: "user-1",
+    });
+    await service.openSession({
+      workspaceDb: "ws_case_a",
+      slug: "case-a",
+      tokenPlaintext: minted.tokenPlaintext,
+      name: "张三",
+      identityCode: "ID-001",
+    });
+
+    const bytes = new TextEncoder().encode("%PDF-mock");
+    await expect(
+      service.uploadBytes({
+        workspaceDb: "ws_case_a",
+        rosterId: "creditor_roster:r1",
+        attachmentType: "contract",
+        fileName: "a.pdf",
+        contentType: "application/pdf",
+        byteSize: bytes.byteLength,
+        bytes,
+      }),
+    ).rejects.toMatchObject({ status: 507, code: "attachment-storage-full" });
+    expect(memoryStorage.putCalls).toBe(1);
+    expect(store.attachments).toHaveLength(0);
+  });
+
+  test("bytes 解码后超 MAX → 413 attachment-too-large（先于 meta 400）", async () => {
+    const { service, store, memoryStorage } = makeService({
+      attachmentConfigured: true,
+      checkDiskSpace: async () => Number.MAX_SAFE_INTEGER,
+    });
+    const bytes = new Uint8Array(MAX_ATTACHMENT_BYTES + 1);
+    await expect(
+      service.uploadBytes({
+        workspaceDb: "ws_case_a",
+        rosterId: "creditor_roster:r1",
+        attachmentType: "contract",
+        fileName: "a.pdf",
+        contentType: "application/pdf",
+        byteSize: bytes.byteLength,
+        bytes,
+      }),
+    ).rejects.toMatchObject({ status: 413, code: "attachment-too-large" });
+    expect(memoryStorage.putCalls).toBe(0);
+    expect(store.attachments).toHaveLength(0);
+  });
+
+  test("mapAttachmentStorageUploadError：507/QuotaExceeded/InsufficientStorage → 507；413/EntityTooLarge → 413；不含路径与凭证", () => {
+    for (const [status, detail] of [
+      [507, "whatever"],
+      [400, "<Error><Code>QuotaExceeded</Code></Error>"],
+      [500, "InsufficientStorage: bucket full"],
+      [502, "insufficient storage on node"],
+    ] as const) {
+      const err = mapAttachmentStorageUploadError(status, detail);
+      expect(err.status).toBe(507);
+      expect(err.code).toBe("attachment-storage-full");
+      expect(err.message).not.toContain(detail);
+      expect(JSON.stringify(err)).not.toMatch(/secret|token|\/(tmp|var|Users|home)\b/i);
+    }
+    for (const [status, detail] of [
+      [413, "Request Entity Too Large"],
+      [400, "<Error><Code>EntityTooLarge</Code></Error>"],
+    ] as const) {
+      const err = mapAttachmentStorageUploadError(status, detail);
+      expect(err.status).toBe(413);
+      expect(err.code).toBe("attachment-too-large");
+    }
+    const other = mapAttachmentStorageUploadError(500, "internal boom");
+    expect(other.status).toBe(502);
+    expect(other.code).toBe("attachment-upload-failed");
+  });
+});
+
+describe("createS3AttachmentStorage（真实 S3 适配器 + 本地合成 upstream）", () => {
+  type StubSpec = { status: number; body: string };
+  function startStub(spec: StubSpec, seen: Array<{ method: string; path: string }>) {
+    return Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: (req) => {
+        seen.push({ method: req.method, path: new URL(req.url).pathname });
+        return new Response(spec.body, { status: spec.status });
+      },
+    });
+  }
+
+  function storageFor(port: number) {
+    return createS3AttachmentStorage({
+      accountId: "acc",
+      accessKeyId: "test-ak",
+      secretAccessKey: "test-sk",
+      bucket: "claims-bucket",
+      endpoint: `http://127.0.0.1:${port}`,
+    });
+  }
+
+  const input = {
+    key: "claims/ws_case_a/s1/a1/a.pdf",
+    bytes: new Uint8Array([0x25, 0x50, 0x44, 0x46]),
+    contentType: "application/pdf",
+  };
+
+  test("upstream 裸 HTTP 507（普通响应体）→ 507 attachment-storage-full", async () => {
+    const seen: Array<{ method: string; path: string }> = [];
+    const server = startStub({ status: 507, body: "upstream overloaded" }, seen);
+    try {
+      const err = await storageFor(server.port)
+        .putObject(input)
+        .then(() => null, (e: unknown) => e as HttpError);
+      expect(err).toBeInstanceOf(HttpError);
+      expect(err.status).toBe(507);
+      expect(err.code).toBe("attachment-storage-full");
+      expect(seen[0]?.method).toBe("PUT");
+      expect(seen[0]?.path.startsWith("/claims-bucket/claims/")).toBe(true);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("upstream 507 + QuotaExceeded XML → 507 attachment-storage-full", async () => {
+    const seen: Array<{ method: string; path: string }> = [];
+    const server = startStub({
+      status: 507,
+      body: "<Error><Code>QuotaExceeded</Code></Error>",
+    }, seen);
+    try {
+      const err = await storageFor(server.port)
+        .putObject(input)
+        .then(() => null, (e: unknown) => e as HttpError);
+      expect(err).toBeInstanceOf(HttpError);
+      expect(err.status).toBe(507);
+      expect(err.code).toBe("attachment-storage-full");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("upstream 裸 HTTP 413（普通响应体）→ 413 attachment-too-large", async () => {
+    const seen: Array<{ method: string; path: string }> = [];
+    const server = startStub({ status: 413, body: "request too big" }, seen);
+    try {
+      const err = await storageFor(server.port)
+        .putObject(input)
+        .then(() => null, (e: unknown) => e as HttpError);
+      expect(err).toBeInstanceOf(HttpError);
+      expect(err.status).toBe(413);
+      expect(err.code).toBe("attachment-too-large");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("upstream 500 → 502 attachment-upload-failed；200 → 成功", async () => {
+    const seen: Array<{ method: string; path: string }> = [];
+    const server = startStub({ status: 500, body: "boom" }, seen);
+    try {
+      const err = await storageFor(server.port)
+        .putObject(input)
+        .then(() => null, (e: unknown) => e as HttpError);
+      expect(err.status).toBe(502);
+      expect(err.code).toBe("attachment-upload-failed");
+    } finally {
+      server.stop(true);
+    }
+
+    const seen2: Array<{ method: string; path: string }> = [];
+    const okServer = startStub({ status: 200, body: "" }, seen2);
+    try {
+      await storageFor(okServer.port).putObject(input);
+      expect(seen2[0]?.method).toBe("PUT");
+    } finally {
+      okServer.stop(true);
+    }
   });
 });

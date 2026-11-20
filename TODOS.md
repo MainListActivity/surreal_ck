@@ -82,8 +82,9 @@ VER、VO、legal-content-mcp、claims-vertical、shadcn-migration、server-skele
 ### 文件上传磁盘满错误处理
 
 - 优先级：Medium
-- 状态：Not started
+- 状态：Done
 - 范围：上传前检查可用磁盘空间，空间不足时返回明确错误并记录日志。
+- 实现：Content-Length 超限在解析请求体前 413 `attachment-too-large`；`assertUploadDiskHeadroom` 按 max(64MB, 2×字节数) 预检暂存盘，不足记脱敏 warn 并 507 `upload-insufficient-storage`；R2/S3 507/QuotaExceeded/413 映射为 507 `attachment-storage-full` / 413 `attachment-too-large`，不泄露路径与凭证。生产磁盘满场景复验未做。
 
 ### `GRAPH_TRAVERSE` 计算字段重算防抖
 

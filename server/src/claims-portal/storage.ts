@@ -1,6 +1,53 @@
+import { statfs } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { S3Client } from "bun";
 import { HttpError } from "../http-error";
 import type { ClaimsAttachmentConfig } from "./config";
+
+/** 上传暂存盘最低可用空间（64MB）。 */
+export const UPLOAD_DISK_MIN_HEADROOM_BYTES = 64 * 1024 * 1024;
+
+/** 上传所需 headroom：至少 64MB，或待写字节数的 2 倍。 */
+export function requiredUploadHeadroomBytes(requiredBytes: number): number {
+  const bytes = Number.isFinite(requiredBytes) && requiredBytes > 0 ? requiredBytes : 0;
+  return Math.max(UPLOAD_DISK_MIN_HEADROOM_BYTES, bytes * 2);
+}
+
+/** os.tmpdir() 所在卷可用字节数（bavail * bsize）。 */
+export async function getTmpDirAvailableBytes(): Promise<number> {
+  const stats = await statfs(tmpdir());
+  return Number(stats.bavail) * Number(stats.bsize);
+}
+
+/**
+ * R2/S3 错误映射：507 / QuotaExceeded / InsufficientStorage → 507 attachment-storage-full；
+ * 413 / EntityTooLarge → 413 attachment-too-large。映射后的 message 为固定文案，
+ * 不携带宿主机路径、对象键或凭证；其它错误保留 502 + 截断 detail。
+ */
+export function mapAttachmentStorageUploadError(status: number | null, detail: string): HttpError {
+  const text = detail.toLowerCase();
+  if (
+    status === 507
+    || text.includes("quotaexceeded")
+    || text.includes("quota exceeded")
+    || text.includes("insufficientstorage")
+    || text.includes("insufficient storage")
+  ) {
+    return new HttpError(507, "attachment-storage-full", "附件存储空间不足，请稍后重试");
+  }
+  if (
+    status === 413
+    || text.includes("entitytoolarge")
+    || text.includes("entity too large")
+  ) {
+    return new HttpError(413, "attachment-too-large", "附件超出大小限制");
+  }
+  return new HttpError(
+    502,
+    "attachment-upload-failed",
+    `R2 upload failed (${status ?? "error"})${detail ? `: ${detail.slice(0, 200)}` : ""}`,
+  );
+}
 
 export type PutObjectInput = {
   key: string;
@@ -75,11 +122,7 @@ export function createCloudflareApiAttachmentStorage(
     });
     if (!response.ok) {
       const detail = await response.text().catch(() => "");
-      throw new HttpError(
-        502,
-        "attachment-upload-failed",
-        `R2 upload failed (${response.status})${detail ? `: ${detail.slice(0, 200)}` : ""}`,
-      );
+      throw mapAttachmentStorageUploadError(response.status, detail);
     }
   }
 
@@ -118,11 +161,25 @@ export function createS3AttachmentStorage(config: ClaimsAttachmentConfig): Claim
   });
 
   async function putObject(input: PutObjectInput): Promise<void> {
+    // Bun S3Client.write 抛出的 S3Error 不携带 HTTP 状态码，裸 507/413
+    // 无法与网络错误区分；改用 presign 生成 SigV4 PUT URL 后自行 fetch，
+    // 拿到结构化 response.status 再映射。
+    let response: Response;
     try {
-      await client.write(input.key, input.bytes, { type: input.contentType });
+      const url = client.presign(input.key, { method: "PUT", expiresIn: 900 });
+      response = await fetch(url, {
+        method: "PUT",
+        headers: { "Content-Type": input.contentType },
+        body: input.bytes,
+      });
     } catch (error) {
+      if (error instanceof HttpError) throw error;
       const message = error instanceof Error ? error.message : "unknown";
-      throw new HttpError(502, "attachment-upload-failed", `R2 S3 upload failed: ${message.slice(0, 200)}`);
+      throw mapAttachmentStorageUploadError(null, message);
+    }
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      throw mapAttachmentStorageUploadError(response.status, detail);
     }
   }
 
