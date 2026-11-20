@@ -533,7 +533,7 @@ async fn run(
         }
     }
     // 通道关闭或 stop：尽力清理本机资源；会话已结束时不发 RPC。
-    media.shutdown().await;
+    let _ = media.shutdown().await;
     for (_, work) in edges {
         let _ = work.edge.close().await;
     }
@@ -935,7 +935,7 @@ async fn drop_edges(
     }
 }
 async fn teardown(media: &mut MeetingMedia, edges: &mut BTreeMap<String, EdgeWork>) {
-    media.shutdown().await;
+    let _ = media.shutdown().await;
     for (_, work) in std::mem::take(edges) {
         let _ = work.edge.close().await;
     }

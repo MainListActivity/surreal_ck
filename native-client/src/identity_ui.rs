@@ -90,7 +90,7 @@ struct WorkspaceChoice {
 }
 /// UI 只持有权威 API 返回的展示数据，不持有 JWT、Session 或 callback。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct DirectoryView {
+pub(crate) struct DirectoryView {
     workspaces: Vec<WorkspaceChoice>,
     selected_slug: Option<String>,
     current_title: String,
@@ -1204,7 +1204,7 @@ mod enterprise_chat {
         Send(u64, String),
         Stop,
     }
-    pub(super) enum Update {
+    pub(crate) enum Update {
         Listening(String),
         Inbox(Vec<Invitation>),
         Negotiating(String),
