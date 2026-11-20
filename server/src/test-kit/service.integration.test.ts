@@ -277,6 +277,50 @@ describe("test kit on real fork SurrealDB with the real invite service", () => {
     expect(await q(`SELECT * FROM user_workspace_index WHERE workspace = workspace:a AND subject = NONE;`)).toEqual([]);
   });
 
+  localTest("清理：名下不可变控制面行随库一起删除，UPDATE 仍禁；重复 purge 返回幂等结果", async () => {
+    await kit().provision(AGENT, provisionArgs("immut"));
+    await db!.query(`
+      CREATE quota_audit_event:immut_evt CONTENT {
+        event_kind: "quota.test.fixture",
+        workspace: (SELECT VALUE id FROM ONLY workspace WHERE slug = "kit-immut" LIMIT 1),
+        actor_kind: "system",
+        correlation_id: "corr-immut"
+      };
+      CREATE entitlement_operation:immut_op CONTENT {
+        workspace: (SELECT VALUE id FROM ONLY workspace WHERE slug = "kit-immut" LIMIT 1),
+        operation_kind: "workspace_provisioning",
+        outcome: "succeeded",
+        idempotency_key: "immut-op",
+        actor_kind: "system",
+        effective_at: time::now(),
+        correlation_id: "corr-immut"
+      };
+    `);
+    // 测试 workspace 名下的行：UPDATE 仍被不可变事件禁止
+    const denied = await db!.query(`UPDATE quota_audit_event:immut_evt SET correlation_id = "mutated";`)
+      .then(() => null, (e: Error) => e.message ?? String(e));
+    expect(String(denied)).toContain("immutable-control-plane-record");
+
+    // 复现 daec1e5f：清理前这些行的 DELETE 会抛错，使整个 purge 返回 internal error
+    const out = await kit().purge(AGENT, { subject: "sub-immut", confirm: "purge sub-immut" });
+    expect(out).toMatchObject({ subject: "sub-immut", workspacesPurged: 1, workspacesSkipped: 0 });
+    expect(await q(`SELECT * FROM quota_audit_event WHERE id = quota_audit_event:immut_evt;`)).toEqual([]);
+    expect(await q(`SELECT * FROM entitlement_operation WHERE id = entitlement_operation:immut_op;`)).toEqual([]);
+
+    const again = await kit().purge(AGENT, { subject: "sub-immut", confirm: "purge sub-immut" });
+    expect(again).toMatchObject({ subject: "sub-immut", alreadyPurged: true, workspacesPurged: 0, workspacesSkipped: 0 });
+
+    // 非测试 workspace 的行照旧完全不可变
+    await db!.query(`
+      INSERT INTO workspace { id: workspace:real, slug: "real-ws", name: "real", db_name: "ws_real", owner_subject: "human-x", status: "active" };
+      CREATE quota_audit_event:real_evt CONTENT { event_kind: "quota.test.fixture", workspace: workspace:real, actor_kind: "system", correlation_id: "corr-real" };
+    `);
+    const stillImmutable = await db!.query(`DELETE quota_audit_event:real_evt;`)
+      .then(() => null, (e: Error) => e.message ?? String(e));
+    expect(String(stillImmutable)).toContain("immutable-control-plane-record");
+    await db!.query(`DELETE workspace WHERE id = workspace:real;`);
+  });
+
   localTest("清理后不复活：list 不补登记，同邮箱再开通被拒", async () => {
     expect((await kit().list(AGENT)).subjects.map((s) => s.subject)).not.toContain("sub-b");
     expect(await subjectRow("sub-b")).toBeUndefined();
