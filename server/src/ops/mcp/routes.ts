@@ -539,7 +539,7 @@ function buildServer(
       "入参 email。开通完成后登记测试主体，并一次性收取激活链接（已收取过则为 null）；失败或中断的开通返回 failed，该邮箱作废。",
       (args) => testKitService.status(operator, args));
     testKitTool("test_kit_list", "列出我开的测试账号",
-      "只列本 agent 经 test_kit_provision 开通的测试账号：subject、email、到期时间、所在 workspace。已清理的条目标 purged=true 并保留在列表里（该邮箱作废不可复用），是预期行为。",
+      "只列本 agent 经 test_kit_provision 开通的测试账号：subject、email、到期时间、所在 workspace。已清理的账号不再出现在列表里；要确认某个邮箱是否已清理，用 test_kit_status，返回 code=purged 表示已清理且该邮箱作废不可复用。",
       async () => testKitService.list(operator));
     testKitTool("test_kit_add_member", "把测试账号加入测试 workspace",
       "入参 workspaceSlug、email、可选 isAdmin（默认 false）、displayName。被加入的 email 必须是本 agent 开的未到期测试账号；workspace 必须由本 agent 开的账号或运营登记的测试账号拥有（后者只能加普通成员）。被加入者首次登录后按邮箱绑定。",
