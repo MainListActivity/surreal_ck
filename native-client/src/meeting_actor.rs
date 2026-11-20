@@ -438,7 +438,7 @@ async fn run(
                         let _ = meeting.fail_edge(slot.join_id.as_str());
                         fail!(message);
                     }
-                    MeetingEvent::RemoteEnded { slot } => {
+                    MeetingEvent::RemoteEnded(slot) => {
                         if let Some(work) = edges.remove(slot.join_id.as_str()) {
                             let _ = media.detach_edge(&work.slot).await;
                             let _ = work.edge.close().await;

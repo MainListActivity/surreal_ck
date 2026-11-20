@@ -749,6 +749,7 @@ pub fn enterprise_identity(
         cleanup_commands.close();
     });
     let browser_commands = commands.clone();
+    #[cfg(feature = "experimental-enterprise-meeting")]
     let meeting_bridge = meeting.clone();
     spawn(async move {
         while let Ok((id, event)) = events.recv().await {
