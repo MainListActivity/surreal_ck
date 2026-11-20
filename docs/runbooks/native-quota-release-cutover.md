@@ -143,11 +143,14 @@ marker 32772 本身不绑定某个引擎；`storage.backend` 与 backend certifi
    binary fallback 存在版本化 `/opt/surrealdb/releases/<release>/surreal`，只读挂载
    为 `/surreal-upgrade`；不调用主机 PATH 中的 surreal。
    重启正式服务后核验 binary/version/hash、`/health`、manifest、backend 生产认证、
-   32772 clean marker 与全部表行数。默认模式再启动兼容 origin，要求
-   `http://127.0.0.1:8080/health` 返回 `status=ok,surrealdb=up` 才解除围栏。
-   `defer_origin_start=true` 则返回 `database_ready_origin_stopped`，只表示数据库阶段
-   完成；origin 保持停止、写围栏保留，不读取旧 `current` 的契约。随后用手动发布流程
-   部署已通过 main CI 的兼容 origin 和前端，核验版本与健康，再由运营执行已审计的
+   32772 clean marker 与全部表行数。**本维护窗必须设置 `defer_origin_start=true`**，
+   让下述延迟探针在解除围栏前执行。默认 false 会自行启动兼容 origin 并在
+   `http://127.0.0.1:8080/health` 返回 `status=ok,surrealdb=up` 后直接解除围栏，
+   不适用于此人工延迟比较流程。
+   `defer_origin_start=true` 返回 `database_ready_origin_stopped`，只表示数据库阶段
+   完成；origin 保持停止、写围栏保留，不读取旧 `current` 的契约。
+   先完成下述 4.0 延迟采样与 3.3 基线比较，再用手动发布流程部署已通过 main CI 的兼容 origin
+   和前端，核验版本与健康，最后由运营执行已审计的
    `SURREAL_UPGRADE_UNFENCE` hook。保留的围栏必须允许发布所需的健康检查和维护访问，
    仍阻断公众写入和原有长连接。不能以重跑 upgrade 代替最终解除围栏：已是目标版本
    时仍只读 no-op。新应用启动后可能产生后台写入，不得再自动切回旧数据库；应用或前端
@@ -160,6 +163,73 @@ marker 32772 本身不绑定某个引擎；`storage.backend` 与 backend certifi
    升级运行在独立 `sck-surrealdb-<run>-<attempt>` systemd 单元；SSH/runner
    中断不是成功。先查主机 `/var/lib/surreal-ck/db-upgrades/<unit>/` 的报告、错误与
    systemd 状态，确认进程/围栏/数据路径后再处理，禁止盲目再次派发。
+
+### 维护窗只读延迟探针（3.3 基线 → 4.0，解除围栏前比较）
+
+从已审代码的仓库根目录安装；以下为**生产主机人工执行命令**，不是 CI 自动步骤：
+
+```bash
+sudo install -o root -g root -m 0700 scripts/deploy/surrealdb-latency-probe.py /usr/local/sbin/sck-surrealdb-latency-probe
+sudo install -d -o root -g root -m 0700 /var/lib/surreal-ck/latency
+```
+
+探针选择 HTTP `/sql` 方案：只连接 `127.0.0.1:8000`，不经 Caddy，不跟随重定向、
+不使用代理或主机的 3.2.3 CLI。`sample` 必须以 root 运行，凭证只读取
+`/etc/surrealdb/surrealdb.env`，要求 root-owned、无 group/other 权限且不是符号链接。
+支持 `SURREAL_USER` / `SURREAL_PASS` 或 `SURREAL_ROOT_USER` / `SURREAL_ROOT_PASS`；
+不接受命令行或进程环境凭证，不输出响应正文、查询文本、样本行或凭证。
+
+1. **在 3.3 仍运行、正式停库之前**，按第 2 步安装并执行维护围栏，停止 origin/MCP、
+   断开公众 HTTP/WSS 与直接 8000 连接。围栏成功后采集静止数据基线；随后 upgrade
+   再次调用 fence 是幂等的。报告目录须保持 root-only，不上传 CI artifacts。
+
+   ```bash
+   sudo /usr/local/sbin/sck-surrealdb-fence
+   sudo /usr/local/sbin/sck-surrealdb-latency-probe sample \
+     --workspaces 5 --repeat 5 \
+     --out /var/lib/surreal-ck/latency/3.3-baseline.json
+   ```
+
+2. 使用认证镜像运行 upgrade，**`storage_engine=rocksdb`、`defer_origin_start=true`**。
+   确认返回 `database_ready_origin_stopped`、容器已在正式端口运行 4.0，且围栏仍在。
+   在新 origin 启动前采样相同查询，避免后台写入和不同负载污染比较：
+
+   ```bash
+   sudo /usr/local/sbin/sck-surrealdb-latency-probe sample \
+     --workspaces 5 --repeat 5 \
+     --out /var/lib/surreal-ck/latency/4.0-current.json
+   sudo /usr/local/sbin/sck-surrealdb-latency-probe compare \
+     /var/lib/surreal-ck/latency/3.3-baseline.json \
+     /var/lib/surreal-ck/latency/4.0-current.json --max-ratio 2.0
+   ```
+
+3. 比较任一 p50/p95/max 超过基线两倍时退出 1，JSON `worst` 列出最差 20 个指标。
+   采样错误、缺少必要库、空 inventory 不视为成功；覆盖范围、索引、样本查询指纹、
+   跳过原因或采样设置改变也拒绝通过。保持围栏，人工检查退化/不一致原因并在相同
+   数据、负载和设置下复测；不得删去失败条目或用空报告放行。只有通过或明确记录人工
+   审核决定后，才继续部署兼容 origin/前端、健康与业务验收，最后执行 unfence。
+
+`INFO FOR ROOT/NS/DB` 枚举所有 namespace/database；采样每个匹配的 `_system`、
+`platform_content` 及全局按 database 名称（同名按 namespace）排序的前 N 个 `ws_`
+库（workspace 命名约定见 `server/src/workspaces/create-workspace.ts`）。默认 N=5；
+`--workspaces 0` 仅采系统/内容库。基础表排除 `AS SELECT` 视图。每表运行
+`SELECT count() FROM <t> GROUP ALL`、`SELECT * FROM <t> LIMIT 50`，并从
+`INFO FOR TABLE` 推断普通索引首列，用样本中一个值及 `WITH INDEX` 做等值查找。
+只推断简单 string/bool/int/float/number（含 option）字段；嵌套、向量、全文、datetime、
+record 等不安全推断或空样本的索引项明确标为 skipped，不伪造零耗时。
+
+每条默认 R=5 次串行请求，`--repeat` 调整；`--timeout` 默认 30 秒，写入 SELECT 的
+服务端 TIMEOUT 并约束客户端连接。耗时为主机端 HTTP 往返和 JSON 解码的墙钟毫秒，
+p50 为中位数，p95 为 nearest-rank（5 次时等于 max），不代表数据库内部执行时间。
+完整 count 会扫描数据或索引、读样本会预热缓存；只在批准维护窗运行，保持两侧参数、
+停写状态与负载一致。5 次的小样本不是正式压测或 SLA 证明。
+
+JSON 包含 server version、ns/db/表/类别、样本耗时、p50/p95/max 和查询 SHA-256
+指纹，不含查询或数据值；指纹不同（包括 LIMIT 样本值变化）时拒绝直接比较。
+默认写 stdout，`--out` 新建 0600 文件并拒绝覆盖/符号链接，复测请换新的文件名。
+compare 可离线执行，不访问数据库或凭证。退出码：0 成功；1 采样不完整、不可比或
+超阈值；2 权限/文件/协议/报告格式错误。stdout 和报告仍含库表名称，须按内部运维
+元数据保护，不公开传播。探针没有 DDL/DML 写入、重建索引或解除围栏操作。
 
 旧库保持数据库 compatibility level 3；不要为存储升级顺便切换到 level 4。
 新建 4.0 库为 level 4，全链从空库应用；有旧行的后续 DDL 如需收紧字段类型，
