@@ -100,7 +100,7 @@ function oneLineSurql(sql: string): string {
     .trim();
 }
 
-async function runSurrealCli(database: string, sql: string): Promise<string> {
+async function runSurrealCli(database: string, sql: string, expectFailure = false): Promise<string> {
   const child = Bun.spawn([
     surrealBinary,
     "sql",
@@ -129,8 +129,8 @@ async function runSurrealCli(database: string, sql: string): Promise<string> {
     new Response(child.stderr).text(),
     child.exited,
   ]);
-  if (exitCode !== 0) {
-    throw new Error(`surreal sql failed (${exitCode}): ${stderr || stdout}`);
+  if (exitCode !== (expectFailure ? 1 : 0)) {
+    throw new Error(`unexpected surreal sql exit (${exitCode}): ${stdout}\n${stderr}`);
   }
   return `${stdout}\n${stderr}`;
 }
@@ -166,6 +166,7 @@ async function createManagedSheet(
   database: string,
   index: number,
   fieldCount: number,
+  expectFailure = false,
 ): Promise<string> {
   const sheetId = `sheet:s${index}`;
   const tableName = `ent_quota_${index}`;
@@ -181,6 +182,7 @@ async function createManagedSheet(
        column_defs: ${columnDefs(fieldCount)}
      };
      COMMIT TRANSACTION;`,
+    expectFailure,
   );
 }
 
@@ -192,7 +194,7 @@ async function verifyPlanLimits(plan: LegacyQuotaTestPlanKey): Promise<string> {
   for (let index = 1; index <= limits.maxSheets; index += 1) {
     expectSuccessful(await createManagedSheet(database, index, index === 1 ? limits.maxFieldsPerSheet : 1));
   }
-  expect(await createManagedSheet(database, limits.maxSheets + 1, 1)).toContain("quota-sheets-exceeded");
+  expect(await createManagedSheet(database, limits.maxSheets + 1, 1, true)).toContain("quota-sheets-exceeded");
 
   const fieldOverflow = await runSurrealCli(
     database,
@@ -200,6 +202,7 @@ async function verifyPlanLimits(plan: LegacyQuotaTestPlanKey): Promise<string> {
      DEFINE FIELD overflow ON TABLE ent_quota_1 TYPE string;
      UPDATE sheet:s1 SET column_defs += { key: "overflow" };
      COMMIT TRANSACTION;`,
+    true,
   );
   expect(fieldOverflow).toContain("quota-fields-exceeded");
   const fieldRollback = await runSurrealCli(
@@ -217,6 +220,7 @@ async function verifyPlanLimits(plan: LegacyQuotaTestPlanKey): Promise<string> {
   const recordOverflow = await runSurrealCli(
     database,
     `CREATE ent_quota_1:overflow CONTENT { field_1: 999 };`,
+    true,
   );
   expect(recordOverflow).toContain("quota-records-exceeded");
 
